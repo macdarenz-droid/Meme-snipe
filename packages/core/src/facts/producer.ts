@@ -17,6 +17,8 @@ import {
 } from '../chain/index.ts';
 import type { Commitment, QualityFlag } from '../domain/index.ts';
 import type { MarketEvent } from '../engine/feed.ts';
+import type { PoolState } from '../amm/index.ts';
+import { swapEventState } from '../fills/pool.ts';
 import {
   type Candle, type CandlesFact, type FactObs, type GraduatesFact, type InsidersFact, type MintFact, type PoolFact, type Price,
   type SoftFact, type XcheckFact, CURVE_VOLUME_KEY, EXEC_HEALTH_KEY, GRADUATES_KEY, SOL_USD_KEY, candlesKey, createKey, curveKey,
@@ -24,7 +26,7 @@ import {
 } from '../gates/facts.ts';
 import { HOURLY_MAX_AGE_MS } from '../gates/series.ts';
 import { insiderLinks } from './funding.ts';
-import { dailyChainVolume } from './volume.ts';
+import { ChainVolumeDays } from './volume.ts';
 import type { VolumeHour } from './raw.ts';
 import { BPS_DENOMINATOR } from '../units/index.ts';
 import {
@@ -88,7 +90,7 @@ export const producerOptions = (p: Policy, execHealth?: ExecHealthLimits): Produ
   survivalReadWindowMs: MINUTE_MS,
   graduatesKeepMs: (p.regime.survivalMedianDays + 2) * 24 * HOUR_MS + p.regime.survivalAfterMs,
   solUsdKeepMs: 24 * HOUR_MS + (p.regime.failedChecksToDisable + 1) * HOUR_MS + HOURLY_MAX_AGE_MS,
-  volumeKeepMs: (p.regime.volumeWindowDays + 2) * 24 * HOUR_MS,
+  volumeKeepMs: (p.regime.volumeWindowDays + p.regime.volumeLagDays + 2) * 24 * HOUR_MS,
   insiderSlots: 2,
   firstBuyers: 20,
   ...(execHealth === undefined ? {} : { execHealth }),
@@ -299,6 +301,28 @@ interface Reserve {
   readonly effective: bigint;
 }
 
+/**
+ * A pool's state kept current from its swap stream (POS-1). The base is the last coherent account read (its static
+ * fields: index, vaults, LP mint, flags); the reserves move with each confirmed swap the stream carries. Valid only
+ * while the pool's trade stream has had no gap since `coveredFrom`.
+ */
+interface PoolChain {
+  readonly mint: string;
+  /** The pool fact of the last coherent account read: the static fields every derived fact carries. */
+  readonly read: PoolFact & { readonly accountBytes: number };
+  /** The pool's reserves after the last swap applied (or as read): current only while `stale` is null. */
+  state: PoolState;
+  /** The first slot the stream must cover for `state` to be current: the read's slot + 1, or a re-basing swap's slot. */
+  coveredFrom: bigint;
+  /** Slot of the newest swap seen since the read (applied or not); swaps up to the read's slot are already in it. */
+  lastSlot: bigint;
+  readonly readSlot: bigint;
+  /** Why the state is stale, while it is; a gap clears once a swap re-bases it, anything else needs a read. */
+  stale: { readonly reason: string; readonly kind: 'gap' | 'mismatch' } | null;
+  /** Swaps seen at `lastSlot` (a delivery twice, from a log line and a fetched transaction, counts once); older slots are refused anyway. */
+  readonly seen: Set<string>;
+}
+
 export class FactProducer {
   readonly #o: ProducerOptions;
   readonly #mints = new Map<string, Track>();
@@ -309,10 +333,11 @@ export class FactProducer {
   readonly #funders = new Map<string, FunderRead>();
   readonly #walletMints = new Map<string, Set<string>>();
   readonly #reserves = new Map<string, Reserve>();
+  readonly #chains = new Map<string, PoolChain>();
   readonly #pending = new Map<string, Pending>();
   readonly #graduates: GraduatesFact['items'][number][] = [];
   readonly #sol = new Map<number, bigint>();
-  readonly #volume = new Map<number, VolumeHour>();
+  readonly #volume: ChainVolumeDays;
   #abstain = new Map<string, number>();
   #abstainDay = -1;
   #head: bigint | null = null;
@@ -325,6 +350,7 @@ export class FactProducer {
       if (k !== 'execHealth' && !(Number.isSafeInteger(v) && (v as number) >= 0)) throw new RangeError(`producer option ${k} must be a whole number >= 0`);
     }
     this.#o = options;
+    this.#volume = new ChainVolumeDays(options.volumeKeepMs);
   }
 
   /** Feed every released market event, in release order. Returns the facts it changes, each at most once. */
@@ -489,6 +515,7 @@ export class FactProducer {
   }
 
   #swap(ev: Extract<PumpEventData, { name: 'BuyEvent' | 'SellEvent' }>, seen: Seen, put: (k: string, v: unknown) => void): void {
+    this.#chainSwap(ev, seen, put);
     const d = ev.data;
     const book = this.#books.get(d.pool);
     const atMs = ms(d.timestamp);
@@ -677,6 +704,7 @@ export class FactProducer {
     const f = this.#streamFact(s, e);
     if (f !== undefined) put(streamKey(c.stream), f);
     this.#refreshInsiders(c.stream, e, put);
+    this.#chainCoverage(c.stream, e, put);
   }
 
   #hole(via: string, slot: bigint, put: (k: string, v: unknown) => void, e: MarketEvent): void {
@@ -686,6 +714,7 @@ export class FactProducer {
       const f = this.#streamFact(s, e);
       if (f !== undefined) put(streamKey(name), f);
       this.#refreshInsiders(name, e, put);
+      this.#chainCoverage(name, e, put);
     }
   }
 
@@ -756,9 +785,8 @@ export class FactProducer {
       const r = parseVolumeHour(v);
       // An hour row is usable only once its hour has ended: earlier it would be a look into the future.
       if (r === null || at < r.hourStartMs + HOUR_MS) return;
-      this.#volume.set(r.hourStartMs, this.#volume.has(r.hourStartMs) && (this.#volume.get(r.hourStartMs)!.lamports !== r.lamports || this.#volume.get(r.hourStartMs)!.covered !== r.covered) ? { ...r, covered: false } : r);
-      for (const t of [...this.#volume.keys()]) if (t < r.hourStartMs - this.#o.volumeKeepMs) this.#volume.delete(t);
-      put(CURVE_VOLUME_KEY, { obs: { provider, slot: null, receivedAt: at, quality: [] }, days: dailyChainVolume([...this.#volume.values()]) });
+      // Linear in rows: a new fact only when the complete days change (a whole window loads at once after a restart).
+      if (this.#volume.add(r)) put(CURVE_VOLUME_KEY, { obs: { provider, slot: null, receivedAt: at, quality: [] }, days: this.#volume.days() });
     } else if (key === RAW.exec) {
       const r = parseExecStats(v);
       if (r === null) return;
@@ -875,7 +903,7 @@ export class FactProducer {
           baseVault: base.amount,
           quoteVault: quote.amount,
         };
-        put(poolKey(r.mint), fact);
+        this.#chainRead(r.mint, fact, put);
         this.#readReserve(address, quote.amount + (pool.virtualQuoteReserves ?? 0n), at);
       }
       const lp = this.#accounts.get(pool.lpMint);
@@ -889,6 +917,112 @@ export class FactProducer {
       }
       break;
     }
+  }
+
+  // ---------- Pool state from the swap stream (POS-1) ----------
+
+  /** The trade stream of `pool` has started by `from` and may have missed nothing from `from` on. */
+  #tradesCovered(pool: string, from: bigint): boolean {
+    const s = this.#streams.get(STREAMS.trades(pool));
+    if (s === undefined || s.fromSlot > from || s.open.size > 0) return false;
+    return s.gaps.every((g) => g.to < from);
+  }
+
+  /**
+   * A coherent account read of the pool re-bases its chain, unless the chain already holds a newer state (a read
+   * answered for an older slot than the swaps applied since): that read's pool fact is then left out, never released
+   * over a newer one.
+   */
+  #chainRead(mint: string, fact: PoolFact & { readonly accountBytes: number }, put: (k: string, v: unknown) => void): void {
+    // The fact's slot: the oldest of the accounts it was built from, so a swap after it is never taken as already in it.
+    const slot = fact.obs.slot ?? 0n;
+    const c = this.#chains.get(fact.address);
+    if (c !== undefined && c.lastSlot > slot) return;
+    this.#chains.set(fact.address, {
+      mint, read: fact, coveredFrom: slot + 1n, lastSlot: slot, readSlot: slot, stale: null, seen: new Set(),
+      state: { baseReserve: fact.baseVault, quoteVault: fact.quoteVault, virtualQuoteReserves: fact.pool.virtualQuoteReserves ?? 0n },
+    });
+    put(poolKey(mint), fact);
+  }
+
+  /** The pool fact of a chain's current state, observed as `obs`; flagged `partial` with its reason while stale. */
+  #chainFact(c: PoolChain, obs: FactObs, state: PoolState, stale: string | null): unknown {
+    return {
+      ...c.read, obs: stale === null ? obs : { ...obs, quality: [...obs.quality, 'partial'] },
+      pool: { ...c.read.pool, virtualQuoteReserves: state.virtualQuoteReserves },
+      baseVault: state.baseReserve, quoteVault: state.quoteVault,
+      ...(stale === null ? {} : { stale }),
+    };
+  }
+
+  /** Marks a chain stale and releases its last state flagged, so neither a gate nor an exit prices from it. */
+  #stale(c: PoolChain, kind: 'gap' | 'mismatch', reason: string, obs: FactObs, put: (k: string, v: unknown) => void): void {
+    // Already stale: only a mismatch replaces a gap (it needs a read, not just a gap-free swap, to clear).
+    if (c.stale !== null && (c.stale.kind === 'mismatch' || kind === 'gap')) return;
+    c.stale = { kind, reason };
+    put(poolKey(c.mint), this.#chainFact(c, obs, c.state, reason));
+  }
+
+  /** A gap or hole in a pool's trade stream makes its chain stale at once; a pool no longer watched drops its chain. */
+  #chainCoverage(stream: string, e: MarketEvent, put: (k: string, v: unknown) => void): void {
+    if (!stream.startsWith('trades:')) return;
+    const pool = stream.slice('trades:'.length);
+    // WORKER-1's PoolWatch unwatches a pool that left its list with reason 'not watched': nothing will read its state.
+    const v = unwrap(e.value);
+    if (e.key.endsWith(':gap') && isObj(v) && v['toSlot'] === null && v['reason'] === 'not watched') {
+      const gone = this.#chains.get(pool);
+      this.#chains.delete(pool);
+      if (gone !== undefined && gone.stale === null) put(poolKey(gone.mint), this.#chainFact(gone, { provider: 'facts', slot: e.moment.slot, receivedAt: e.moment.receivedAt, quality: [], commitment: 'confirmed' }, gone.state, 'swap stream gap'));
+      return;
+    }
+    const c = this.#chains.get(pool);
+    if (c === undefined || c.stale !== null || this.#tradesCovered(stream.slice('trades:'.length), c.coveredFrom)) return;
+    this.#stale(c, 'gap', 'swap stream gap', { provider: 'facts', slot: e.moment.slot, receivedAt: e.moment.receivedAt, quality: [], commitment: 'confirmed' }, put);
+  }
+
+  /**
+   * A confirmed swap moves the chain to the pool right after it (core fills `swapEventState`, the backtest's replay).
+   * Fail closed: a stream gap since the base, pre-trade reserves that differ from the chain's state (a swap or a
+   * liquidity change not seen) or a swap that does not reproduce its event make the state stale. After a gap the
+   * stream re-bases on the first swap it carries gap-free: its pre-trade reserves are the program's own report.
+   */
+  #chainSwap(ev: Extract<PumpEventData, { name: 'BuyEvent' | 'SellEvent' }>, seen: Seen, put: (k: string, v: unknown) => void): void {
+    const d = ev.data;
+    const c = this.#chains.get(d.pool);
+    if (c === undefined || seen.slot <= c.readSlot) return;
+    const id = `${seen.signature}:${d.poolBaseTokenReserves}:${d.poolQuoteTokenReserves}`;
+    if (c.seen.has(id)) return;
+    c.seen.add(id);
+    const older = seen.slot < c.lastSlot;
+    if (seen.slot > c.lastSlot) {
+      c.lastSlot = seen.slot;
+      c.seen.clear();
+      c.seen.add(id);
+    }
+    const obs: FactObs = { provider: seen.provider, slot: seen.slot, receivedAt: seen.receivedAt, quality: quality(seen.backfilled), commitment: seen.commitment };
+    if (c.stale?.kind === 'mismatch') return;
+    if (c.stale !== null) {
+      // Re-base after a gap on the swap's own pre-trade reserves; the coverage check below keeps it stale unless the
+      // stream has had no gap from this swap's slot on.
+      if (older) return;
+      c.coveredFrom = seen.slot;
+      c.state = { baseReserve: d.poolBaseTokenReserves, quoteVault: d.poolQuoteTokenReserves, virtualQuoteReserves: d.virtualQuoteReserves ?? 0n };
+      c.stale = null;
+      c.seen.clear();
+      c.seen.add(id);
+    } else if (older) return;
+    const state = c.state;
+    if (!this.#tradesCovered(d.pool, c.coveredFrom)) return this.#stale(c, 'gap', 'swap stream gap', obs, put);
+    const pre = { baseReserve: d.poolBaseTokenReserves, effective: d.poolQuoteTokenReserves + (d.virtualQuoteReserves ?? 0n) };
+    // The price-setting reserves (base, and vault + virtual) must chain exactly; the vault/virtual split is taken from
+    // the event, which reports it (a sell does not say whether it was v2, so the split after a sell may be the v1 one).
+    if (pre.baseReserve !== state.baseReserve || pre.effective !== state.quoteVault + state.virtualQuoteReserves) {
+      return this.#stale(c, 'mismatch', `reserves mismatch: swap ${seen.signature} starts at ${pre.baseReserve}/${pre.effective}, state ${state.baseReserve}/${state.quoteVault + state.virtualQuoteReserves}`, obs, put);
+    }
+    const r = swapEventState(ev);
+    if (!r.ok) return this.#stale(c, 'mismatch', r.reason, obs, put);
+    c.state = r.after;
+    put(poolKey(c.mint), this.#chainFact(c, obs, r.after, null));
   }
 
   // ---------- Graduate survival (§6.4) ----------

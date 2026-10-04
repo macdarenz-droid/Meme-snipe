@@ -102,7 +102,10 @@ export class Desk {
     // A world event: written unless the ledger already holds it.
     if (r.result === 'illegal') {
       this.illegal++;
-      this.#d.journal('decision', { action: 'world_refused', event: r.eventId, reasons: [`world event ${r.event.type} refused: ${r.reason ?? ''}`] });
+      const reason = `world event ${r.event.type} refused: ${r.reason ?? ''}`;
+      this.#d.journal('decision', { action: 'world_refused', event: r.eventId, reasons: [reason] });
+      // One the ledger already holds: the engine and the ledger no longer agree, so entries stop until a restart.
+      if (this.#written.has(r.eventId)) this.#d.diverged(reason);
       return;
     }
     if (this.#written.delete(r.eventId)) return;

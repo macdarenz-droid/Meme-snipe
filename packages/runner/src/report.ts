@@ -1,8 +1,8 @@
 // The dry-run report: uptime, memory, journal, drills, recorded data. Pure; the runner feeds it.
-import { REGISTERED_STRATEGIES } from './contract.ts';
+import { RESTART_CAUSES, type RestartCause } from './contract.ts';
 import type { Item4 } from './item4.ts';
 import type { JournalReport } from './journal.ts';
-import type { CoverageReport, LookupLatency, QuotaReport, Rejections } from './quota.ts';
+import { entryRule, type CoverageReport, type EntryRule, type LookupLatency, type QuotaReport, type Rejections } from './quota.ts';
 import type { Drill } from './plan.ts';
 
 export type Label = 'rehearsal' | 'vps';
@@ -28,10 +28,14 @@ export interface Sample {
   readonly exit_capable?: boolean;
   /** Mark of the open position, decimal string. */
   readonly mark?: string | null;
+  /** What the worker would have to keep at this moment; null when the reply was missing or invalid. */
+  readonly kept?: Kept | null;
 }
 
 /** Unprotected exposure of a restart drill with an open position: the watchdog can alert but cannot sell. */
 export interface Exposure {
+  /** `unknown`: no health reply at the window's end, so nothing can be said; it fails like an unmeasured one. */
+  readonly status?: 'measured' | 'unmeasured' | 'unknown';
   /** Kill → the new boot is exit capable; null when it never got there within the recovery limit. */
   readonly duration_ms: number | null;
   readonly reconciled_ms: number | null;
@@ -47,9 +51,40 @@ export interface Exposure {
   readonly move_source: 'marks' | 'chain';
 }
 
+export interface RecoveredState {
+  readonly source: string | null;
+  readonly expected_pending_exits: readonly string[];
+  readonly recovered_pending_exits: readonly string[];
+  /** Expected but not recovered: pending exits and positions a restart lost. */
+  readonly missing: readonly string[];
+  /** Chain rebuild: positions open at the kill that the chain could not give back (paper positions are not on chain). */
+  readonly lost: readonly string[];
+  readonly state_ok: boolean;
+  readonly universe_ok: boolean;
+  readonly notes: readonly string[];
+}
+
+/** What a restart had to keep: pending exits and positions with their universe. */
+export interface Kept {
+  readonly pending_exits: readonly string[];
+  readonly positions: readonly { readonly trade: string; readonly universe: string }[];
+}
+
 export interface DrillOutcome {
   readonly id: string;
-  readonly kind: 'restart' | 'feed' | 'handover';
+  readonly kind: 'restart' | 'feed' | 'handover' | 'rpc';
+  readonly cause?: RestartCause;
+  /** Recovery as "reconciled and able to exit", ms after the kill (rpc: after the providers came back). */
+  readonly recovery?: { readonly reconciled_ms: number | null; readonly exit_capable_ms: number | null; readonly clock: 'monotonic' | 'wall' };
+  readonly state?: RecoveredState;
+  /** Qualifying host: host loss or chain rebuild ran as a tabletop worker beside the run, not in it. */
+  readonly off_run?: boolean;
+  /** Not run here; never counts as passed. */
+  readonly skipped?: boolean;
+  /** Tabletop host loss: false when the restore could only be self-reported, not compared to the live worker at the backup. */
+  readonly compared?: boolean;
+  /** What the restart had to keep (positions, in-flight entries, pending exits; the backup's for host loss). 0: proved nothing. */
+  readonly keep?: number;
   readonly plannedAt: number | null;
   readonly at: number;
   readonly pass: boolean;
@@ -72,6 +107,8 @@ export interface RunMeta {
   readonly runId: string;
   /** Host runs: the requested name (packages/runner/qualifying-run.json). */
   readonly name?: string;
+  /** The registered strategy id the worker must run (`none` until BT-2 registers one). */
+  readonly strategy?: string;
   readonly label: Label;
   readonly commit: string;
   readonly startedAt: number;
@@ -84,6 +121,10 @@ export interface Report {
   readonly runId: string;
   readonly label: Label;
   readonly counts: string;
+  /** The qualifying guard on a named host run's start lines; null for a run without a name. */
+  readonly qualifying: EntryRule | null;
+  /** A VPS run on `--strategy none` whose boots ran entry rule none: it cannot qualify, whatever else passes. */
+  readonly no_strategy: boolean;
   readonly commit: string;
   readonly commits_seen: readonly string[];
   readonly started: string;
@@ -97,6 +138,7 @@ export interface Report {
   readonly stub: boolean;
   readonly journal: JournalReport;
   readonly drills: readonly DrillOutcome[];
+  readonly recovery_by_cause: Readonly<Record<string, CauseSummary>>;
   readonly drills_summary: {
     readonly restarts_mid_trade_passed: number;
     readonly feeds_planned: readonly string[];
@@ -110,6 +152,21 @@ export interface Report {
   /** §15 item 4, judged separately from the same run. */
   readonly item4: Item4;
   readonly ops: Ops;
+  readonly exposure: { readonly drills: number; readonly worst_duration_ms: number | null; readonly worst_move_bps: number | null };
+}
+
+export interface CauseSummary {
+  readonly planned: number;
+  readonly drills: number;
+  readonly passed: number;
+  /** Passed drills that had something to keep: only these show the cause was exercised. */
+  readonly exercised: number;
+  readonly mid_trade: number;
+  readonly off_run: number;
+  readonly skipped: number;
+  /** Tabletop host losses whose restore was self-reported, not compared to the backup. */
+  readonly self_reported: number;
+  readonly exit_capable_ms: { readonly median: number | null; readonly worst: number | null };
   readonly exposure: { readonly drills: number; readonly worst_duration_ms: number | null; readonly worst_move_bps: number | null };
 }
 
@@ -155,14 +212,20 @@ export const buildReport = (
   recorded: readonly RecordedFile[],
   item4: Item4,
   ops: Ops,
+  /** The registered strategies (contract.ts REGISTERED_STRATEGIES); tests pass their own. */
+  registered?: readonly string[],
 ): Report => {
+  const guard = meta.name === undefined ? null : entryRule(journal.starts, meta.strategy ?? 'none', registered);
   const up = uptime(samples, sampleMs, meta.startedAt, endedAt);
   const rss = samples.flatMap((s) => (s.rss_bytes === null ? [] : [s.rss_bytes / MB])).sort((a, b) => a - b);
   const commits = [...new Set(samples.flatMap((s) => (s.git_sha === null ? [] : [s.git_sha])))];
   const firstUp = samples.find((s) => s.up);
   const upSamples = samples.filter((s) => s.up);
   const stub = upSamples.some((s) => s.stub);
-  const restartsMidTrade = drills.filter((d) => d.kind === 'restart' && d.pass && d.midTrade === true).length;
+  // The accept's "kill mid-trade at least 3 times" counts process crashes; the other causes are counted per cause.
+  const restartsMidTrade = drills.filter((d) => d.kind === 'restart' && (d.cause ?? 'crash') === 'crash' && d.pass && d.midTrade === true).length;
+  const restarts = drills.filter((d) => d.kind === 'restart');
+  const byCause = recoveryByCause(meta, drills);
   const feedsPlanned = meta.plan.flatMap((d) => (d.kind === 'feed' ? [d.feed] : []));
   const feedsPassed = [...new Set(drills.flatMap((d) => (d.kind === 'feed' && d.pass && d.feed !== undefined ? [d.feed] : [])))].sort();
   const durationMs = endedAt - meta.startedAt;
@@ -187,18 +250,26 @@ export const buildReport = (
     exposure_measured: drills.every(
       (d) =>
         d.exposure === undefined ||
-        (d.exposure.duration_ms !== null &&
+        (d.exposure.status !== 'unknown' &&
+          d.exposure.duration_ms !== null &&
           d.exposure.worst_move_bps !== null &&
           // Exposed with no trade ids, or fewer ids than intents, cannot be checked: it fails, never passes vacuously.
           d.exposure.trades.length > 0 &&
           d.exposure.trades_complete &&
-          (stub || d.exposure.trades.every((t) => d.exposure!.chain_trades.includes(t)))),
+          // A chain rebuild cannot rebuild a paper position's path: those trades are reported lost instead (state.lost).
+          (stub || d.cause === 'chain-rebuild' || d.exposure.trades.every((t) => d.exposure!.chain_trades.includes(t)))),
     ),
     coverage_valid: ops.coverage.problems.length === 0,
-    // A named host run is the qualifying run: every boot must start with a registered strategy, no paper edge and
-    // qualifying true (re-review of #48). A run without a name (a rehearsal) is not judged here.
-    qualifying_start: meta.name === undefined || (journal.starts.length > 0 && journal.starts.every((s) =>
-      typeof s.entry_rule === 'string' && REGISTERED_STRATEGIES.includes(s.entry_rule) && s.paper_edge_ppm == null && s.qualifying === true)),
+    // A rehearsal is never judged here. Any other run passes only as a named host run whose start lines pass the
+    // guard: a start line, every boot on the run's registered --strategy with no paper edge and qualifying true, and
+    // neither the rule nor the salt changed between boots. A 'vps' run without a name can never pass.
+    qualifying_start: meta.label === 'rehearsal' || guard?.ok === true,
+    // RUN-1d: every planned cause drilled and passed (a crash, a reboot, a host loss, a chain rebuild, RPC loss).
+    // A restart cause counts only when a passed drill of it had something to keep; a skipped drill never counts.
+    drills_by_cause: [...RESTART_CAUSES, 'rpc'].every((c) => byCause[c]!.planned > 0 && (c === 'rpc' ? byCause[c]!.passed > 0 : byCause[c]!.exercised > 0)),
+    // Nothing a restart had to keep was lost, and every restored position kept its universe (CFG-2).
+    recovered_state: restarts.every((d) => d.skipped === true || d.state?.state_ok === true),
+    restored_universe_kept: restarts.every((d) => d.skipped === true || d.state?.universe_ok === true),
   };
   const exposed = drills.flatMap((d) => (d.exposure ? [d.exposure] : []));
   const maxOf = (xs: readonly (number | null)[]): number | null => xs.reduce<number | null>((m, x) => (x === null ? m : Math.max(m ?? x, x)), null);
@@ -207,9 +278,13 @@ export const buildReport = (
     label: meta.label,
     // The fallback never counts (ARCHITECTURE.md §15): it is labelled so in the report itself.
     counts:
-      meta.label === 'rehearsal'
+      guard !== null && !guard.ok
+        ? `NOT qualifying: ${guard.problems.join('; ')}.`
+        : meta.label === 'rehearsal'
         ? 'Rehearsal: counts for none of §15 items 3, 4 or G3. The gaps between GitHub jobs count as down time, so a 48 h rehearsal fails the 99% uptime check by design.'
         : 'VPS run: candidate for §15 item 3 and the drills of item 5 only if every check passes; items 4 and G3 are judged from the same run by TEST-2 and STATS-1.',
+    qualifying: guard,
+    no_strategy: meta.label === 'vps' && (meta.strategy ?? 'none') === 'none' && journal.starts.length > 0 && journal.starts.every((s) => s.entry_rule === 'none'),
     commit: meta.commit,
     commits_seen: commits,
     started: new Date(meta.startedAt).toISOString(),
@@ -223,6 +298,7 @@ export const buildReport = (
     stub,
     journal,
     drills,
+    recovery_by_cause: byCause,
     drills_summary: {
       restarts_mid_trade_passed: restartsMidTrade,
       feeds_planned: feedsPlanned,
@@ -238,6 +314,40 @@ export const buildReport = (
   };
 };
 
+const median = (xs: readonly number[]): number | null => {
+  if (xs.length === 0) return null;
+  const s = [...xs].sort((a, b) => a - b);
+  const m = Math.floor(s.length / 2);
+  return s.length % 2 ? s[m]! : Math.round((s[m - 1]! + s[m]!) / 2);
+};
+
+/** Per restart cause and for RPC loss: how often it was drilled, and how long it took to be able to exit again. */
+export const recoveryByCause = (meta: RunMeta, drills: readonly DrillOutcome[]): Record<string, CauseSummary> => {
+  const out: Record<string, CauseSummary> = {};
+  for (const c of [...RESTART_CAUSES, 'rpc'] as const) {
+    const planned = meta.plan.filter((d) => (c === 'rpc' ? d.kind === 'rpc' : d.kind === 'restart' && (d.cause ?? 'crash') === c)).length;
+    const ds = drills.filter((d) => (c === 'rpc' ? d.kind === 'rpc' : d.kind === 'restart' && (d.cause ?? 'crash') === c));
+    const exits = ds.flatMap((d) => (d.recovery?.exit_capable_ms != null ? [Math.round(d.recovery.exit_capable_ms)] : []));
+    const ex = ds.flatMap((d) => (d.exposure ? [d.exposure] : []));
+    const worst = (xs: (number | null)[]): number | null => xs.reduce<number | null>((m, x) => (x === null ? m : Math.max(m ?? x, x)), null);
+    out[c] = {
+      planned,
+      drills: ds.length,
+      passed: ds.filter((d) => d.pass && d.skipped !== true).length,
+      // On a VPS run a host loss counts only when its restore was compared with the live worker at the backup;
+      // a self-reported one is listed, labelled, and retried, but proves nothing.
+      exercised: ds.filter((d) => d.pass && d.skipped !== true && (d.keep ?? 0) > 0 && (c !== 'host-loss' || meta.label !== 'vps' || d.compared === true)).length,
+      mid_trade: ds.filter((d) => d.midTrade === true).length,
+      off_run: ds.filter((d) => d.off_run === true).length,
+      skipped: ds.filter((d) => d.skipped === true).length,
+      self_reported: ds.filter((d) => d.compared === false).length,
+      exit_capable_ms: { median: median(exits), worst: exits.length ? Math.max(...exits) : null },
+      exposure: { drills: ex.length, worst_duration_ms: worst(ex.map((e) => e.duration_ms)), worst_move_bps: worst(ex.map((e) => e.worst_move_bps)) },
+    };
+  }
+  return out;
+};
+
 const round = (x: number, d: number): number => Math.round(x * 10 ** d) / 10 ** d;
 const r1 = (x: number | null): number | null => (x === null ? null : round(x, 1));
 
@@ -248,6 +358,7 @@ export const reportMarkdown = (r: Report): string => {
     '',
     `**${r.label === 'rehearsal' ? 'Rehearsal' : 'VPS run'}.** ${r.counts}`,
     '',
+    ...(r.no_strategy ? ['**No registered strategy, not qualifying.**', ''] : []),
     `| Item | Value |`,
     `| --- | --- |`,
     `| Commit | \`${r.commit}\` |`,
@@ -276,6 +387,20 @@ export const reportMarkdown = (r: Report): string => {
         } | ${yes(d.pass)} | ${d.notes.join('; ').replace(/\|/g, '/')} |`,
     ),
   ];
+  const sec = (ms: number | null): string => (ms === null ? '-' : `${(ms / 1000).toFixed(1)} s`);
+  lines.push(
+    '',
+    '## Recovery by cause',
+    '',
+    'Recovered means reconciled and able to exit, timed from the kill on the monotonic clock (a host reboot is timed on the wall clock).',
+    '',
+    '| Cause | Planned | Drilled | Passed | Exercised | Mid-trade | Exit capable, median | Exit capable, worst | Exposed | Longest exposure | Worst move |',
+    '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+    ...Object.entries(r.recovery_by_cause).map(
+      ([c, v]) =>
+        `| ${c}${v.off_run ? ' (tabletop beside the run)' : ''}${v.skipped ? ' (not proven on this run)' : ''}${v.self_reported ? ' (self-reported, not compared to the backup)' : ''} | ${v.planned} | ${v.drills} | ${v.passed} | ${c === 'rpc' ? '-' : v.exercised === 0 ? 'not exercised' : v.exercised} | ${v.mid_trade} | ${sec(v.exit_capable_ms.median)} | ${sec(v.exit_capable_ms.worst)} | ${v.exposure.drills} | ${sec(v.exposure.worst_duration_ms)} | ${v.exposure.worst_move_bps === null ? '-' : `${v.exposure.worst_move_bps} bps`} |`,
+    ),
+  );
   const q = r.ops.quota;
   lines.push(
     '',

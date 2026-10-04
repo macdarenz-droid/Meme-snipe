@@ -1,6 +1,7 @@
 // Quota and coverage for the dry-run report (RUN-1c): provider credits by class with a monthly projection,
 // historical-lookup latency, discovery coverage gaps, and the rejection rate by gate reason. Pure.
-import { LOOKUP_BOUNDS_MS, type JournalLine, type QuotaStatus } from './contract.ts';
+import { LOOKUP_BOUNDS_MS, REGISTERED_STRATEGIES, type JournalLine, type QuotaStatus } from './contract.ts';
+import type { StartFields } from './journal.ts';
 
 /**
  * The free plans the run is judged against: the runner's own facts, never the worker's. A worker that reports another
@@ -247,7 +248,10 @@ export interface Rejections {
 
 const rate = (n: number, d: number): number => (d === 0 ? 0 : Math.round((n / d) * 10_000) / 10_000);
 
-/** From `decision` lines: action `enter` is not a rejection; every other decision's typed `gate_reasons` are counted. */
+/**
+ * From `decision` lines. Only `reject` and `skip` are rejections; `enter` and the worker's lifecycle steps (prepare,
+ * sign, submit, reconcile, …) are decisions but not rejections. The rate is over all decision lines.
+ */
 export const rejections = (journal: readonly JournalLine[]): Rejections => {
   let decisions = 0;
   let rejected = 0;
@@ -255,7 +259,7 @@ export const rejections = (journal: readonly JournalLine[]): Rejections => {
   for (const l of journal) {
     if (l.kind !== 'decision') continue;
     decisions += 1;
-    if (l['action'] === 'enter') continue;
+    if (l['action'] !== 'reject' && l['action'] !== 'skip') continue;
     rejected += 1;
     const gr = Array.isArray(l['gate_reasons']) ? (l['gate_reasons'] as unknown[]) : [];
     const keys = new Set(
@@ -271,4 +275,35 @@ export const rejections = (journal: readonly JournalLine[]): Rejections => {
     by_reason: Object.fromEntries([...counts].sort(([a], [b]) => a.localeCompare(b)).map(([k, n]) => [k, { count: n, rate: rate(n, decisions) }])),
     h16_not_covered: { count: h16, rate: rate(h16, decisions) },
   };
+};
+
+export interface EntryRule {
+  /** The runner's `--strategy`: the strategy id every boot must run (`none` until BT-2 registers one). */
+  readonly expected: string;
+  readonly seen: readonly string[];
+  readonly ok: boolean;
+  readonly problems: readonly string[];
+}
+
+/**
+ * The qualifying run's start lines: at least one; every boot runs the runner's `--strategy`, which must be a registered
+ * strategy (REGISTERED_STRATEGIES), with no paper edge and `qualifying: true`; neither the rule nor the random-entry
+ * salt changes between boots. A host unit or resumed state carrying the S0 shakedown or a paper edge into the
+ * qualifying run would otherwise pass on random entries.
+ */
+export const entryRule = (starts: readonly StartFields[], expected: string, registered: readonly string[] = REGISTERED_STRATEGIES): EntryRule => {
+  const problems: string[] = [];
+  const seen = [...new Set(starts.map((l) => String(l.entry_rule ?? null)))];
+  const salts = new Set(starts.map((l) => JSON.stringify(l.s0_salt ?? null)));
+  if (starts.length === 0) problems.push('no start line');
+  if (expected === 'none') problems.push('no registered strategy (--strategy none)');
+  else if (!registered.includes(expected)) problems.push(`strategy ${expected} is not registered (registered: ${registered.join(', ') || 'none yet'})`);
+  for (const l of starts) {
+    if (l.entry_rule !== expected) problems.push(`boot ${l.boot}: entry rule ${JSON.stringify(l.entry_rule ?? null)}, the run's strategy is ${expected}`);
+    if (l.paper_edge_ppm !== null && l.paper_edge_ppm !== undefined) problems.push(`boot ${l.boot}: paper edge ${String(l.paper_edge_ppm)} ppm`);
+    if (l.qualifying !== true) problems.push(`boot ${l.boot}: qualifying ${JSON.stringify(l.qualifying ?? null)}`);
+  }
+  if (seen.length > 1) problems.push(`entry rule changed between boots: ${seen.join(', ')}`);
+  if (salts.size > 1) problems.push('random-entry salt changed between boots');
+  return { expected, seen, ok: problems.length === 0, problems };
 };
