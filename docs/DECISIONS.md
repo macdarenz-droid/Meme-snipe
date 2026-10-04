@@ -873,7 +873,7 @@ The second reviewer, the third opinion and the supervisor reached one position o
   - So the trade holds no position slot, reservation or entry count of the run. It reads no provider (no sources, no fact producers, no network).
   - The paper seed is fixed per run and mint, so a rescore gives the same bytes.
   - The report refuses a scoring that refused an event, held another mint, or ran another seed.
-  - A position still open when the recording ends is censored, which G3 reports as "not proven: extend the run".
+  - A position still open when the recording ends is censored, with its reason (`censoredReason`), never given a return. G3 reports it as "not proven: extend the run". REC-1 (rejected candidates' pools watched until windowEnd + T_max) will make that rarer.
 - **Evidence, on recorded harness sessions:**
   - An H16 cross-check disagreement vetoes the candidate live. Offline it enters and is stopped out when the pool falls 30%; r = net / cost.
   - The state directory is byte-identical before and after (in process, and through the script).

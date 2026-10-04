@@ -100,7 +100,13 @@ describe('G3: live-only vetoes and their counterfactual trades (TEST-3)', () => 
     // The counterfactual: entered once the cross-check is not applied, stopped out when the pool fell 30%.
     expect(report.counterfactuals).toHaveLength(1);
     const cf = report.counterfactuals[0]!;
-    expect(cf).toMatchObject({ mint: MINT, entered: true, censored: false, exitReasons: ['stop'] });
+    expect(cf).toMatchObject({ mint: MINT, entered: true, censored: false, censoredReason: null, exitReasons: ['stop'] });
+    // The same recording cut before the stop: the trade is censored, with its reason, never given a return.
+    const run2 = runStrategy(readRun(h.stateDir).start);
+    const all = readRecording(h.stateDir).flatMap((b) => b.frames);
+    const cut = await scoreCounterfactual({ mint: MINT, frames: all.filter((f) => f.receivedAt <= cf.enteredAtMs! + 2_000), session: run2.session, rugs: RUG_CONFIG, strategy: run2.strategy, scenario: LANDS, network: FILL_CONFIG.network, seed: 'cut' });
+    expect(cut).toMatchObject({ entered: true, censored: true, r: null, net: null });
+    expect(cut.censoredReason).toMatch(/^position open when the recording ends/);
     expect(cf.r!).toBeLessThan(-0.25);
     expect(cf.r!).toBeGreaterThan(-0.35);
     expect(cf.r).toBe(Number(cf.net) / Number(cf.cost));
