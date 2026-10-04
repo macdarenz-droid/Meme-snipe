@@ -11,7 +11,7 @@ import { executableMark } from '../../core/src/exits/index.ts';
 import { type Lamports, type MicroUsd, lamportsToMicroUsd } from '../../core/src/units/index.ts';
 import { markSettings, markedHistory } from '../src/engine/marks.ts';
 import { MARK_PREFIX, TRIPPED_PREFIX } from '../src/engine/strategy.ts';
-import { DEV, MINT, Market, SOL_PRICE, SUPPLY, makeWorker, passingMarket } from './worker-harness.ts';
+import { MINT, type Market, SOL_PRICE, makeWorker, passingMarket } from './worker-harness.ts';
 
 type H = ReturnType<typeof makeWorker>;
 const lines = (h: H) => readFileSync(join(h.stateDir, 'journal.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>);
@@ -41,13 +41,9 @@ const until = async (m: Market, done: () => boolean, maxMs: number, each?: () =>
 };
 
 /** The passing market, the pool's trade stream and one account read, then the entry (pool facts only until it fills). */
-const entered = async (o: { reads?: boolean; create?: boolean } = {}): Promise<{ h: H; m: Market; readSlot: bigint }> => {
+const entered = async (o: { reads?: boolean } = {}): Promise<{ h: H; m: Market; readSlot: bigint }> => {
   const h = makeWorker();
   expect(await h.worker.reconcile()).toEqual({ ok: true });
-  if (o.create === true) {
-    new Market(h).create();
-    h.worker.step();
-  }
   const m = await passingMarket(h);
   const readSlot = h.worker.feed.releasedThrough;
   m.tradesStart(readSlot - 100n);
@@ -112,19 +108,22 @@ describe('a held position priced from its pool\'s swap stream (POS-1)', () => {
     await h.worker.stop();
   });
 
-  it('a market older than maxQuoteAgeMs leaves the mark unknown: a deployer-sell exit is judged with mark_unknown', async () => {
-    const { h, m } = await entered({ create: true });
+  it('an input older than maxQuoteAgeMs leaves the mark unknown: with a stale SOL price the stop is judged with mark_unknown', async () => {
+    // Since EXIT-1c a due exit waits for a fresh quote, so an exit is never judged on a stale market; the SOL price
+    // is the other input a mark needs fresh (the same maxQuoteAgeMs).
+    const { h, m } = await entered();
     const pid = position(h)!.id;
-    // No swap on the pool for longer than maxQuoteAgeMs; the SOL price stays fresh.
-    await until(m, () => false, 4_000, () => m.solPrice());
-    m.swap('SellEvent', DEV, (SUPPLY * 300n) / 10_000n);
-    const decided = await until(m, () => decisions(h).some((r) => r[0] === 'exit'), 20_000, () => m.solPrice());
-    expect(decided, JSON.stringify(decisions(h).slice(-12))).toBe(true);
+    await until(m, () => false, 2_000, ticks(h, m));
+    // Swaps keep the pool fresh; the SOL price is no longer refreshed and ages past maxQuoteAgeMs.
+    const poolOnly = (): void => m.chainSwap('buy', m.chainState.baseReserve / 1_000_000n, h.worker.feed.openSlot);
+    await until(m, () => false, 3_000, poolOnly);
+    m.chainSwap('sell', (m.chainState.baseReserve * 20n) / 100n, h.worker.feed.openSlot);
+    const closed = await until(m, () => h.worker.book.positions[pid]!.status === 'closed', 20_000, poolOnly);
+    expect(closed, JSON.stringify(decisions(h).slice(-12))).toBe(true);
     const exit = decisions(h).find((r) => r[0] === 'exit')!;
-    expect(exit.some((x) => x.startsWith('deployer_sell: '))).toBe(true);
+    expect(exit.some((x) => x.startsWith('price_stop: '))).toBe(true);
     expect(exit).toContain(`${MARK_PREFIX}unknown`);
-    expect(exit.find((x) => x.startsWith(TRIPPED_PREFIX))?.split(',').some((c) => c.endsWith('mark_unknown'))).toBe(true);
-    expect(h.worker.book.positions[pid]!.status).not.toBe('open');
+    expect(exit.find((x) => x.startsWith(TRIPPED_PREFIX))?.slice(TRIPPED_PREFIX.length).split(',')).toContain('mark_unknown');
     await h.worker.stop();
   });
 
