@@ -99,7 +99,7 @@ const per = (total: bigint, n: number): bigint | null => (n === 0 ? null : total
 export const economics = (i: EconomicsInput): Economics => {
   const n = i.trades.length;
   const tradeUsd = i.trades.map((t) => ({ at: t.closedAt, net: micro(tradeInUsd(t, 'S0', i.solUsd).netUsd) }));
-  const strayUsd = i.stray.map((s) => ({ at: s.at, net: -toUsd(s.lamports, priceAt(i.solUsd, s.at)) }));
+  const strayUsd = i.stray.map((s) => ({ at: s.at, net: -toUsd(s.lamports, priceAt(i.solUsd, s.at), 'up') }));
   const tradeNetMicro = tradeUsd.reduce((a, x) => a + x.net, 0n);
   const strayMicro = strayUsd.reduce((a, x) => a + x.net, 0n);
   const allInMicro = tradeNetMicro + strayMicro;
@@ -156,12 +156,12 @@ export const economics = (i: EconomicsInput): Economics => {
       conditionalMeanPerTradeMicro: per(tradeNetMicro, n),
       allInPerFilledTradeMicro: per(allInMicro, n),
       allInPerEntryDecisionMicro: per(allInMicro, i.entryDecisions),
-      allInNoRentRecoveryMicro: allInMicro - i.trades.reduce((a, t) => a + toUsd(t.rentReturned, priceAt(i.solUsd, t.closedAt)), 0n),
+      allInNoRentRecoveryMicro: allInMicro - i.trades.reduce((a, t) => a + toUsd(t.rentReturned, priceAt(i.solUsd, t.closedAt), 'down'), 0n),
     },
     survival: { minEquityMicro: minEquity, killLineMicro: killLine, survived: minEquity > killLine },
     markToMarket: {
       startPriceMicro: startPx, endPriceMicro: endPx, bankrollLamports, opsReserveLamports: ops,
-      idleRevaluationMicro: toUsd(held as Lamports, endPx) - toUsd(held as Lamports, startPx),
+      idleRevaluationMicro: toUsd(held as Lamports, endPx, 'down') - toUsd(held as Lamports, startPx, 'up'),
     },
     operating: {
       hostingUsdPerMonthMicro: perMonth,
