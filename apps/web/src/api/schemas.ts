@@ -1,5 +1,5 @@
-import { STATUS_FLAGS, type Mode } from './contract.ts';
-import { arr, bool, day, dec, fail, int, iso, modeIs, nullable, obj, oneOf, re, str, usd, type Check } from './schema.ts';
+import { ALERT_CODES, HALT_CODES, REGIME_REASON_CODES, STATUS_FLAGS, WAIVED_PARTS, type Mode } from './contract.ts';
+import { arr, bool, day, dec, fail, int, iso, modeIs, nullable, obj, oneOf, optional, re, str, usd, type Check } from './schema.ts';
 
 /**
  * Strict schemas for every worker endpoint, one per contract type in
@@ -46,6 +46,10 @@ function build(m: Mode): Record<Endpoint, Check> {
       connected: bool,
       flags: arr(oneOf(...STATUS_FLAGS), STATUS_FLAGS.length),
       risk: arr(obj({ mode, kind: oneOf('open-exposure', 'daily-loss', 'weekly-loss', 'session-loss'), usedUsd: usd, limitUsd: nullable(usd) }), 10),
+      haltReasons: optional(arr(obj({ mode, code: oneOf(...HALT_CODES), source: nullable(str) }), 50)),
+      exitCapable: optional(bool),
+      alerts: optional(arr(obj({ mode, code: oneOf(...ALERT_CODES), subject: str, at: iso }), 50)),
+      regime: optional(nullable(obj({ state: oneOf('on', 'off'), at: iso, current: bool, reasons: arr(obj({ mode, code: oneOf(...REGIME_REASON_CODES), input: nullable(str) }), 20), waived: arr(oneOf(...WAIVED_PARTS), 4) }))),
     }),
     funnel: obj({
       mode,
