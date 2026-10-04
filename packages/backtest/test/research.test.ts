@@ -12,10 +12,12 @@ import { poolBuyExactQuoteIn, poolSell } from '../../core/src/amm/index.ts';
 import { accountGetsDust, closeSucceeds, observedFeeContext, replaySwap } from '../../core/src/fills/index.ts';
 import { bps } from '../../core/src/units/index.ts';
 import {
-  addDays, assertReadable, guardRows, HoldoutWallError, isPracticeDay, loadWindow, latestRegime, melbourneDay, melbourneStart, type PracticeWindow, readableDays, regimeAt, resolveWindow, wallDay, wallMs,
+  addDays, assertReadable, guardRows, HoldoutWallError, isPracticeDay, loadWindow, latestRegime, melbourneDay, melbourneStart, type PracticeWindow, readableDays, regimeAt, resolveWindow, wallDay, wallMs, holdoutStarts, type HoldoutStoreStarts,
 } from '../src/research/practice.ts';
 import { createHoldoutRegistry, registerHoldout } from '../../core/src/stats/index.ts';
 import { melbourneDay as reportDay } from '../src/report.ts';
+import type { HoldoutStore } from '../src/holdout.ts';
+import { researchWindow, STORE_PATH } from '../src/research/wall.ts';
 import { AsOfError, FEATURE_IDS, type Features, SignalTracker } from '../src/research/tracker.ts';
 import { SOL_USD, syntheticRows, T0 } from './synthetic.ts';
 
@@ -38,7 +40,7 @@ describe('holdout wall', () => {
     // UTC holdout day; nothing later.
     expect(new Date(wallMs(w)).toISOString()).toBe('2026-09-21T14:00:00.000Z');
     expect(wallMs(w)).toBeLessThanOrEqual(Date.parse('2026-09-22T00:00:00Z') - 10 * 3_600_000);
-    expect(() => resolveWindow(w, { ...w, holdoutFrom: '2026-09-24' }, null)).toThrow(/later than the committed wall/);
+    expect(() => resolveWindow(w, { ...w, holdoutFrom: '2026-09-24' }, [])).toThrow(/later than the committed wall/);
     expect(isPracticeDay(w, wallDay(w))).toBe(false);
     expect(isPracticeDay(w, w.holdoutFrom)).toBe(false);
     expect(regimeAt(w, Date.parse('2026-08-03T00:00:00Z'))).toBe('B2-boost');
@@ -69,38 +71,76 @@ describe('holdout wall', () => {
     expect(kept).toEqual(['2026-09-05', '2026-09-22']);
   });
 
-  test('a window file cannot move the wall later than the committed one; a confirmed one must match the registry', () => {
+  test('a window file cannot move the wall later than the committed one; a confirmed one must match every holdout start', () => {
     const committed = loadWindow(join(ROOT, 'research', 'signals', 'window.json'));
     const later = { ...committed, holdoutFrom: addDays(committed.holdoutFrom, 1) };
-    expect(() => resolveWindow(committed, later, null)).toThrow(/later than the committed wall/);
-    const earlier = { ...committed, holdoutFrom: addDays(committed.holdoutFrom, -3) };
-    expect(resolveWindow(committed, earlier, null)).toBe(earlier);
+    expect(() => resolveWindow(committed, later, [])).toThrow(/later than the committed wall/);
+    // An earlier copy carries no ruling of its own (confirmedBy null): it may only move the wall earlier, and the
+    // committed window is the one checked.
+    const earlier = { ...committed, holdoutFrom: addDays(committed.holdoutFrom, -3), confirmedBy: null };
+    const config = { fromDay: wallDay(committed) };
+    expect(resolveWindow(committed, earlier, holdoutStarts(config, null))).toBe(earlier);
+    // The committed window is checked even then: a config that disagrees with it refuses an earlier copy too.
+    expect(() => resolveWindow(committed, earlier, holdoutStarts({ fromDay: addDays(wallDay(committed), -1) }, null))).toThrow(/the research config .* must be equal/);
     const confirmed = { ...earlier, confirmedBy: 'registry@abc' };
-    // The committed window agrees with a registry fixed on its own date, and is refused by one fixed a day earlier.
-    const own = { holdouts: createHoldoutRegistry(2, 'spa'), plan: { holdout: { fromDay: wallDay(committed) } } };
-    expect(resolveWindow(committed, committed, own)).toBe(committed);
-    expect(() => resolveWindow(committed, committed, { ...own, plan: { holdout: { fromDay: addDays(wallDay(committed), -1) } } })).toThrow(/must be equal/);
-    // Below: the registry checks on an earlier confirmed wall, against a committed window with no ruling of its own.
-    const committedOpen = { ...committed, confirmedBy: null };
-    // The registry's fromDay is a UTC day; the confirmed wall must be the Melbourne day of that date.
+    // The committed window agrees with a store fixed on its own date, and is refused by one fixed a day earlier.
+    const store = (registry: ReturnType<typeof createHoldoutRegistry>, planDay: string | null): HoldoutStoreStarts => ({ registry, plan: planDay === null ? null : { fromDay: planDay } });
+    expect(resolveWindow(committed, committed, holdoutStarts(config, store(createHoldoutRegistry(2, 'spa'), wallDay(committed))))).toBe(committed);
+    expect(() => resolveWindow(committed, committed, holdoutStarts(config, store(createHoldoutRegistry(2, 'spa'), addDays(wallDay(committed), -1))))).toThrow(/the holdout store plan starts.*must be equal/);
+    // Below: the starts checked on an earlier confirmed wall, against a committed window on the same earlier date.
     const fromDay = wallDay(earlier);
-    const study = (holdouts: ReturnType<typeof createHoldoutRegistry>, planDay?: string) => ({ holdouts, ...(planDay === undefined ? {} : { plan: { holdout: { fromDay: planDay } } }) });
-    // A ruling fixes the date, so no registry (or one without a boundary) does not block; one that disagrees refuses.
-    expect(resolveWindow(committedOpen, confirmed, null)).toBe(confirmed);
-    expect(resolveWindow(committedOpen, confirmed, study(createHoldoutRegistry(2, 'spa')))).toBe(confirmed);
+    const atEarlier = { fromDay };
+    // A store with no boundary and no entries does not block; one that disagrees refuses.
+    expect(resolveWindow(earlier, confirmed, holdoutStarts(atEarlier, null))).toBe(confirmed);
+    expect(resolveWindow(earlier, confirmed, holdoutStarts(atEarlier, store(createHoldoutRegistry(2, 'spa'), null)))).toBe(confirmed);
     const reg = registerHoldout(createHoldoutRegistry(2, 'spa'), { holdoutId: 'h-u2', universe: 'U2', configId: 'c', fromDay: addDays(fromDay, -1), toDay: '2026-10-01', registeredOnDay: '2026-09-01' });
-    expect(() => resolveWindow(committedOpen, confirmed, study(reg))).toThrow(/must be equal/);
+    expect(() => resolveWindow(earlier, confirmed, holdoutStarts(atEarlier, store(reg, null)))).toThrow(/registered holdout h-u2.*must be equal/);
     const laterReg = registerHoldout(createHoldoutRegistry(2, 'spa'), { holdoutId: 'h-u2', universe: 'U2', configId: 'c', fromDay: addDays(fromDay, 1), toDay: '2026-10-01', registeredOnDay: '2026-09-01' });
-    expect(() => resolveWindow(committedOpen, confirmed, study(laterReg))).toThrow(/must be equal/);
+    expect(() => resolveWindow(earlier, confirmed, holdoutStarts(atEarlier, store(laterReg, null)))).toThrow(/must be equal/);
     const okReg = registerHoldout(createHoldoutRegistry(2, 'spa'), { holdoutId: 'h-u2', universe: 'U2', configId: 'c', fromDay, toDay: '2026-10-01', registeredOnDay: '2026-09-01' });
-    const ok = study(okReg);
     // The plan's boundary alone confirms a wall (entries come only when configurations freeze); it must agree too.
-    expect(resolveWindow(committedOpen, confirmed, study(createHoldoutRegistry(2, 'spa'), fromDay))).toBe(confirmed);
-    expect(() => resolveWindow(committedOpen, confirmed, study(createHoldoutRegistry(2, 'spa'), addDays(fromDay, 1)))).toThrow(/the study plan starts/);
-    expect(() => resolveWindow(committedOpen, confirmed, study(okReg, addDays(fromDay, -1)))).toThrow(/must be equal/);
+    expect(resolveWindow(earlier, confirmed, holdoutStarts(atEarlier, store(createHoldoutRegistry(2, 'spa'), fromDay)))).toBe(confirmed);
+    expect(() => resolveWindow(earlier, confirmed, holdoutStarts(atEarlier, store(createHoldoutRegistry(2, 'spa'), addDays(fromDay, 1))))).toThrow(/the holdout store plan starts/);
+    expect(() => resolveWindow(earlier, confirmed, holdoutStarts(atEarlier, store(okReg, addDays(fromDay, -1))))).toThrow(/must be equal/);
+    // The config's date is always checked: a config a day earlier or later refuses, even with no store.
+    expect(() => resolveWindow(earlier, confirmed, holdoutStarts({ fromDay: addDays(fromDay, -1) }, null))).toThrow(/the research config .* must be equal/);
+    expect(() => resolveWindow(earlier, confirmed, holdoutStarts({ fromDay: addDays(fromDay, 1) }, store(okReg, fromDay)))).toThrow(/the research config .* must be equal/);
     // The wall (Melbourne midnight) comes 10 h before the registered UTC day starts.
     expect(utcStart(fromDay) - wallMs(confirmed)).toBe(10 * 3_600_000);
-    expect(resolveWindow(committedOpen, confirmed, ok)).toBe(confirmed);
+    expect(resolveWindow(earlier, confirmed, holdoutStarts(atEarlier, store(okReg, null)))).toBe(confirmed);
+  });
+
+  test('the real config and BT-2\'s real holdout store: the committed wall agrees; a store or config a day earlier refuses', async () => {
+    const { mkdtempSync, rmSync, writeFileSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const committed = loadWindow(join(ROOT, 'research', 'signals', 'window.json'));
+    // The real research config's sealed holdout is the committed wall's date.
+    expect(RESEARCH_CONFIG.holdout.fromDay).toBe(wallDay(committed));
+    expect(researchWindow()).toEqual(committed);
+    expect(STORE_PATH).toBe(join(ROOT, RESEARCH_CONFIG.holdout.registryPath));
+    const dir = mkdtempSync(join(tmpdir(), 'res3-wall-'));
+    try {
+      // A store in BT-2's real shape (HoldoutStore), read by BT-2's own reader.
+      const write = (planDay: string, entryDay: string | null): string => {
+        const registry = entryDay === null ? createHoldoutRegistry(2, 'spa')
+          : registerHoldout(createHoldoutRegistry(2, 'spa'), { holdoutId: 'h-u1', universe: 'U1', configId: 'c', fromDay: entryDay, toDay: '2026-10-01', registeredOnDay: '2026-09-01' });
+        const s: HoldoutStore = {
+          version: 2, registry, attempts: [], g1: [], runs: [],
+          plan: { fromDay: planDay, entryCutoffDay: RESEARCH_CONFIG.holdout.entryCutoffDay, tailEndDay: RESEARCH_CONFIG.holdout.tailEndDay, familySize: 2, tieSalt: 't', alpha: { first: 0.04, laterBase: 0.01 }, decoderBoundaries: [], procedure: [], details: {} },
+        };
+        const p = join(dir, `store-${planDay}-${entryDay}.json`);
+        writeFileSync(p, JSON.stringify(s));
+        return p;
+      };
+      const day = RESEARCH_CONFIG.holdout.fromDay;
+      expect(researchWindow({ storePath: write(day, day) })).toEqual(committed);
+      expect(() => researchWindow({ storePath: write(addDays(day, -1), null) })).toThrow(/the holdout store plan starts/);
+      expect(() => researchWindow({ storePath: write(day, addDays(day, -1)) })).toThrow(/registered holdout h-u1/);
+      expect(() => researchWindow({ config: { fromDay: addDays(day, -1) } })).toThrow(/the research config/);
+      expect(() => researchWindow({ storePath: join(dir, 'missing.json') })).toThrow(/does not exist/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test('a planted holdout-day row stops both stages', () => {
@@ -517,13 +557,15 @@ describe('cli', () => {
       expect(summary.counts['U2']!.decisions).toBe(9);
       expect(summary.handoff).toEqual(['U1: no reliable signal', 'U2: no reliable signal']);
       for (const f of ['results.json', 'trials.jsonl', 'handoff.json']) expect(existsSync(join(dir, 'out', f)), f).toBe(true);
+      expect((JSON.parse(readFileSync(join(dir, 'out', 'results.json'), 'utf8')) as { dsrNote: string }).dsrNote).toMatch(/^descriptive: .* G1 gates on SPA/);
       const committed = loadWindow(join(ROOT, 'research', 'signals', 'window.json'));
       writeFileSync(join(dir, 'late.json'), JSON.stringify({ ...committed, holdoutFrom: addDays(committed.holdoutFrom, 1) }));
       const late = spawnSync(process.execPath, ['--no-warnings', ...cmd(['--window', join(dir, 'late.json')])], { encoding: 'utf8' });
       expect(late.status).not.toBe(0);
       expect(late.stderr).toMatch(/later than the committed wall/);
       // An earlier wall, before the fixture's day: the day file is dropped unread.
-      writeFileSync(join(dir, 'early.json'), JSON.stringify({ ...committed, holdoutFrom: '2026-08-21' }));
+      // An earlier copy carries no ruling (confirmedBy null): it may only move the wall earlier.
+      writeFileSync(join(dir, 'early.json'), JSON.stringify({ ...committed, holdoutFrom: '2026-08-21', confirmedBy: null }));
       const early = JSON.parse(execFileSync(process.execPath, ['--no-warnings', ...cmd(['--window', join(dir, 'early.json')])], { encoding: 'utf8' })) as { days: number };
       expect(early.days).toBe(0);
     } finally {
