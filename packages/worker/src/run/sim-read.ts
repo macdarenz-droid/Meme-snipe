@@ -40,16 +40,16 @@ export interface SimReadOptions {
   /** Wall clock (the worker's timers) and the hourly cap (`SIM_READS_PER_HOUR`). */
   readonly now: () => number;
   readonly perHour: number;
-  /** Every attempt, fact or not, for the log (G3 measures H15's bias from these). */
-  readonly record: (r: SimRecord | { readonly mint: string; readonly spend: bigint; readonly outcome: 'not-run'; readonly reason: string }) => void;
+  /** Every attempt, fact or not, for the log (G3 measures H15's bias from these); `credits` include the market read's 1. */
+  readonly record: (r: SimRecord | { readonly mint: string; readonly spend: bigint; readonly outcome: 'not-run'; readonly reason: string; readonly credits: number }) => void;
 }
 
 /** One simulation for `mint` at `spend`: true when a fact (ok or failed) went on the feed. */
 export const simReader = (o: SimReadOptions) => {
   const started: number[] = [];
   return async (mint: string, spend: bigint, ingest: (read: SimRead) => void): Promise<boolean> => {
-    const skip = (reason: string): boolean => {
-      o.record({ mint, spend, outcome: 'not-run', reason });
+    const skip = (reason: string, credits = 0): boolean => {
+      o.record({ mint, spend, outcome: 'not-run', reason, credits });
       return false;
     };
     const now = o.now();
@@ -65,7 +65,8 @@ export const simReader = (o: SimReadOptions) => {
     if (!quote.ok) return skip(`no local round trip: ${quote.reason}`);
     started.push(now);
     const chain = await readPoolMarket(o.rpc, m.address, mint, slot, o.lamportsPerSignature).catch((e: unknown) => (e instanceof Error ? e.message : 'chain read failed'));
-    if (typeof chain === 'string') return skip(chain);
+    // The market read is one getMultipleAccounts (1 credit), counted whether or not it answered.
+    if (typeof chain === 'string') return skip(chain, 1);
     const c = choiceOf(`sim:${mint}`);
     const policy: ExecutionPolicy = {
       maxSlippageBps: o.maxSlippageBps, maxPriorityFeeLamports: o.maxPriorityFee as Lamports, tipLamports: o.tip as Lamports, maxTipLamports: o.maxTip as Lamports,
@@ -81,7 +82,7 @@ export const simReader = (o: SimReadOptions) => {
       },
     };
     const r = await o.simulator.simulate(req);
-    o.record(r.record);
+    o.record({ ...r.record, credits: r.record.credits + 1 });
     if (r.read === null) return false;
     ingest(r.read);
     return true;

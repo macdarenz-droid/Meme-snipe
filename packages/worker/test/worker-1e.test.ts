@@ -1,10 +1,10 @@
-// WORKER-1e: can the live dry run make paper trades? The S0 shakedown on live-like facts (no curve-volume series, no
+// WORKER-1e: can the live dry run make paper trades? The S0 shakedown on live-like facts (no curve-volume or graduates series, no
 // execution-health limits, a host whose creates coverage is days old) enters only with S0's diagnostic set, and every
 // entry is still simulated; the qualifying configuration refuses the set.
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { CURVE_VOLUME_KEY, EXEC_HEALTH_KEY, S0_DIAGNOSTIC_PARTS, simKey } from '../../core/src/gates/index.ts';
+import { CURVE_VOLUME_KEY, EXEC_HEALTH_KEY, GRADUATES_KEY, S0_DIAGNOSTIC_PARTS, simKey } from '../../core/src/gates/index.ts';
 import { RAW } from '../../core/src/facts/index.ts';
 import { roundTrip } from '../../core/test/gates/world.ts';
 import { lamports } from '../../core/src/units/index.ts';
@@ -46,7 +46,7 @@ const simulating = (asked: [string, bigint][]) => new LiveFacts({
   mintHistory: { maxPages: 20, funderPages: 3, funderTransactions: 10, insiderSlots: 2, firstBuyers: 20 },
 });
 
-/** The S0 shakedown on live-like facts: no curve volume, no exec-health fact, creates coverage from 2 days ago, H15 simulated live. */
+/** The S0 shakedown on live-like facts: no curve volume, no graduates series, no exec-health fact, creates coverage from 2 days ago, H15 simulated live. */
 const shakedown = async (diag: boolean, asked: [string, bigint][] = []) => {
   const h = makeWorker({ timers: dueTimers(T - 16 * DAY), entry: { timing: 'random', salt: early, s0Diagnostic: diag }, facts: [simulating(asked)], config: { ZEROED_HEALTH_ADDR: '127.0.0.1:18980', ZEROED_API_ADDR: '127.0.0.1:18981' } });
   // Started, so the fact source runs; the critical feed is up, so entries are not halted.
@@ -59,7 +59,7 @@ const shakedown = async (diag: boolean, asked: [string, bigint][] = []) => {
   }
   expect(started).toEqual({ ok: true });
   h.worker.feed.ingest('helius', { type: 'offchain', key: 'feed:status:helius', value: { state: 'up' } }, { receivedAt: h.timers.now() });
-  const m = await passingMarket(h, { ...HELD, omit: [CURVE_VOLUME_KEY, EXEC_HEALTH_KEY, simKey(MINT)], coverageAt: T - 2 * DAY });
+  const m = await passingMarket(h, { ...HELD, omit: [CURVE_VOLUME_KEY, GRADUATES_KEY, EXEC_HEALTH_KEY, simKey(MINT)], coverageAt: T - 2 * DAY });
   await m.run(4_000, 100, () => m.pool());
   await m.run(10_000, 400, () => {
     m.slot();
@@ -91,13 +91,13 @@ describe('the S0 shakedown on live-like facts', () => {
     expect(h.legs.filter((l) => l.leg === 'entry').length).toBe(report.entries);
     const all = lines(h.stateDir);
     const enter = all.find((l) => l['kind'] === 'decision' && l['action'] === 'enter')!;
-    expect(enter['s0_diagnostic']).toEqual(['regime-volume', 'exec-health', 'h14-creates-coverage']);
+    expect(enter['s0_diagnostic']).toEqual(['regime-volume', 'regime-survival', 'exec-health', 'h14-creates-coverage']);
     expect(all.find((l) => l['kind'] === 'decision' && l['action'] === 'mark_eligible')!['s0_diagnostic']).toEqual(enter['s0_diagnostic']);
     expect(all.find((l) => l['kind'] === 'decision' && l['action'] === 'approve_risk')!['s0_diagnostic']).toBeUndefined();
     // Every part on every line it changed (the entry's two lines and the rejects before it), counted for the report.
     const n = report.s0_diagnostic['exec-health']!;
     expect(n).toBeGreaterThanOrEqual(2);
-    expect(report.s0_diagnostic).toEqual({ 'regime-volume': n, 'exec-health': n, 'h14-creates-coverage': n });
+    expect(report.s0_diagnostic).toEqual({ 'regime-volume': n, 'regime-survival': n, 'exec-health': n, 'h14-creates-coverage': n });
     // Exec-health is measured from paper's own attempts (every one lands in this scenario), for the owner's limits.
     const stats = h.worker.execStats();
     expect(stats.attempts).toBeGreaterThanOrEqual(report.entries);
@@ -174,5 +174,18 @@ describe('EXIT-1 negative flow from the held pool\'s swaps', () => {
     expect(exitReasons(h.stateDir).some((r) => r.startsWith('negative_flow'))).toBe(false);
     expect(h.worker.book.positions[id]!.status).toBe('open');
     await h.worker.stop();
+  });
+});
+
+describe('the runner report counts H15\'s simulations and their credits', () => {
+  it('h15_sim lines: how many, how many ran, the credits spent (the live feed\'s are in the quota)', () => {
+    const line = (seq: number, kind: string, more: Record<string, unknown> = {}) => JSON.stringify({ seq, ts: '2026-10-04T00:00:00.000Z', boot: 'b', kind, ...more });
+    const text = [
+      line(1, 'start'),
+      line(2, 'h15_sim', { outcome: 'simulated', credits: 3 }),
+      line(3, 'h15_sim', { outcome: 'not-run', reason: 'hourly cap: 120 simulations in the last hour', credits: 0 }),
+      line(4, 'h15_sim', { outcome: 'rpc-error', credits: 2 }),
+    ].join('\n');
+    expect(checkJournal(text).h15_sim).toEqual({ lines: 3, run: 2, credits: 5 });
   });
 });

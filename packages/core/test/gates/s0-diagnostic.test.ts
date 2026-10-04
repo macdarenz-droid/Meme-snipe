@@ -2,7 +2,7 @@
 // and each reported where it was relied on; without the set every check is judged as before.
 import { describe, expect, it } from 'vitest';
 import { OFF_CHAIN } from '../../src/engine/index.ts';
-import { CURVE_VOLUME_KEY, DAY_MS, EXEC_HEALTH_KEY, S0_DIAGNOSTIC_PARTS, SOL_USD_KEY, deployerKey, evaluateHardRejects, evaluateRegime } from '../../src/gates/index.ts';
+import { CURVE_VOLUME_KEY, DAY_MS, EXEC_HEALTH_KEY, GRADUATES_KEY, S0_DIAGNOSTIC_PARTS, SOL_USD_KEY, deployerKey, evaluateHardRejects, evaluateRegime } from '../../src/gates/index.ts';
 import { DEV, SLOT, T, contextOf, deps, drop, passingFacts, patch, request, type Facts } from './world.ts';
 
 const DIAG = { s0Diagnostic: true } as const;
@@ -18,8 +18,22 @@ const freshHost = (days: number): Facts => {
 };
 
 describe('S0 diagnostic set', () => {
-  it('names exactly three parts', () => {
-    expect(S0_DIAGNOSTIC_PARTS).toEqual(['regime-volume', 'exec-health', 'h14-creates-coverage']);
+  it('names exactly four parts', () => {
+    expect(S0_DIAGNOSTIC_PARTS).toEqual(['regime-volume', 'regime-survival', 'exec-health', 'h14-creates-coverage']);
+  });
+
+  it('regime survival: a missing graduates series turns the regime off, and with the set is logged but not judged', () => {
+    const f = drop(passingFacts(), GRADUATES_KEY);
+    expect(regime(f, false).reasons).toContainEqual(expect.objectContaining({ code: 'unknown', input: 'graduates' }));
+    const r = regime(f, true);
+    expect(r.on).toBe(true);
+    expect(r.waived).toEqual(['regime-survival', 'exec-health']);
+    expect(r.checks[0]!.conditions).toContainEqual(expect.objectContaining({ condition: 'survival', ok: null, input: 'graduates' }));
+    // Both series missing: both parts named, the SOL change still judged.
+    const both = regime(drop(f, CURVE_VOLUME_KEY), true);
+    expect(both.on).toBe(true);
+    expect(both.waived).toEqual(['regime-volume', 'regime-survival', 'exec-health']);
+    expect(regime(drop(f, SOL_USD_KEY), true).on).toBe(false);
   });
 
   it('regime volume: a missing curve-volume fact turns the regime off, and with the set is logged but not judged', () => {

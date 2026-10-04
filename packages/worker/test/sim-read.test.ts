@@ -51,7 +51,7 @@ const setup = (over: Partial<SimReadOptions> = {}, rpcFails = false) => {
       simulate: async (req): Promise<SimResult> => {
         reqs.push(req);
         const r: SimRead = { mint: MINT, slot: req.minContextSlot, spend: req.spend, ok: true, paid: req.spend, proceeds: req.spend - 1n, error: null };
-        return { read: r, record: { mint: MINT, spend: req.spend, outcome: 'simulated' } as never };
+        return { read: r, record: { mint: MINT, spend: req.spend, outcome: 'simulated', credits: 1 } as never };
       },
     },
     wallet: STAND_IN, calibration: CALIBRATION,
@@ -75,7 +75,8 @@ describe('H15 simulation read', () => {
     expect(String(r.common.wallet)).toBe(STAND_IN);
     expect(r.venue.venue).toBe('pool');
     expect(s.reads).toEqual([expect.objectContaining({ mint: MINT, spend: SPEND, ok: true })]);
-    expect(s.records).toEqual([expect.objectContaining({ outcome: 'simulated' })]);
+    // The simulation's credit plus the market read's.
+    expect(s.records).toEqual([expect.objectContaining({ outcome: 'simulated', credits: 2 })]);
   });
 
   it('runs at most perHour in any rolling hour; a skipped one is recorded with its reason and puts nothing on the feed', async () => {
@@ -84,7 +85,7 @@ describe('H15 simulation read', () => {
     expect(await s.read()).toBe(true);
     expect(await s.read()).toBe(false);
     expect(s.reqs).toHaveLength(2);
-    expect(s.records.at(-1)).toEqual({ mint: MINT, spend: SPEND, outcome: 'not-run', reason: 'hourly cap: 2 simulations in the last hour' });
+    expect(s.records.at(-1)).toEqual({ mint: MINT, spend: SPEND, outcome: 'not-run', reason: 'hourly cap: 2 simulations in the last hour', credits: 0 });
     s.advance(HOUR);
     expect(await s.read()).toBe(true);
     expect(s.reqs).toHaveLength(3);
@@ -92,19 +93,19 @@ describe('H15 simulation read', () => {
   });
 
   it('without a stand-in, a pool, a slot or a chain read: no simulation, no fact, the reason recorded', async () => {
-    const cases: [Partial<SimReadOptions>, string, boolean][] = [
-      [{ wallet: null }, 'no stand-in address (ZEROED_STANDINS)', false],
-      [{ calibration: null }, 'no compute-unit calibration table', false],
-      [{ poolOf: () => null }, 'pool state unknown', false],
-      [{ head: () => null }, 'no slot seen yet', false],
-      [{}, 'rpc timeout', true],
+    const cases: [Partial<SimReadOptions>, string, boolean, number][] = [
+      [{ wallet: null }, 'no stand-in address (ZEROED_STANDINS)', false, 0],
+      [{ calibration: null }, 'no compute-unit calibration table', false, 0],
+      [{ poolOf: () => null }, 'pool state unknown', false, 0],
+      [{ head: () => null }, 'no slot seen yet', false, 0],
+      [{}, 'rpc timeout', true, 1],
     ];
-    for (const [over, reason, rpcFails] of cases) {
+    for (const [over, reason, rpcFails, credits] of cases) {
       const s = setup(over, rpcFails);
       expect(await s.read()).toBe(false);
       expect(s.reqs).toEqual([]);
       expect(s.reads).toEqual([]);
-      expect(s.records).toEqual([{ mint: MINT, spend: SPEND, outcome: 'not-run', reason }]);
+      expect(s.records).toEqual([{ mint: MINT, spend: SPEND, outcome: 'not-run', reason, credits }]);
     }
   });
 });
