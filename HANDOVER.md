@@ -33,7 +33,7 @@ Supervisor: session_01Ec4DXEAqLxM6M1WGVQG5se (same account as every worker). Hou
 | 01XVYJj | persist builder | #172 7f2ce17b; #130 base merge local (not pushed) | full check running | push #130 for the EXIT reviewer |
 | 012uJsL | WATCH builder | #141 pushed 23787229 (9:16) | parked | risk delta sent 9:18 |
 | 01AYk3q | BT builder | #154 base merge | active | BT delta |
-| 01L9Zdh | EXIT builder | #176 ready at 97b25025 (sent to EXIT and persist reviewers 9:39); #171 46aefee full check | active | — |
+| 01L9Zdh | EXIT builder | #176 97b25025 and #171 46aefee5 in review | parked 10:14 | branch claude/exit-downtime ba785bc (downtime held-pool fill, stacked on #176, no PR) built before the park message; not on the board; decide after #176 merges |
 | 01QvPYM | RES builder | #191, #115 full checks | stream 5b, low priority | park after these heads |
 | 01TSRXx | READ-COHERENT builder | FEES-KEEP + no-market split (9:53) | active | persist review |
 | 01MgoMn | practice-on builder | #186 PASS a152e3e6; #203 4ec9c3bf | waiting | #203 base merge after #198 |
