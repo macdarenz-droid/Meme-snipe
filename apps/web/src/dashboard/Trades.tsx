@@ -3,7 +3,7 @@ import type { Fill, TradeRecord } from '../api/contract.ts';
 import { TokenActions } from '../components/TokenActions.tsx';
 import { Empty } from '../components/ui.tsx';
 import { formatDuration, shortAddress } from '../lib/format.ts';
-import { formatPriceDec, formatR, formatReturn, formatUsdExact, negUsd, returnHundredths, toneOf, toneOfReturn } from '../lib/money.ts';
+import { formatPriceDec, formatR, formatReturn, formatSolExact, formatUsdExact, negUsd, returnHundredths, toneOf, toneOfReturn } from '../lib/money.ts';
 import { EXIT_LABEL, TRADE_REASON_LABEL, VENUE_LABEL } from './labels.ts';
 import { Checks } from './Sections.tsx';
 import { melDateTime, melTime } from './time.ts';
@@ -142,6 +142,9 @@ export function TradeDetail({ trade }: { trade: TradeRecord }) {
           ['Costs', formatUsdExact(negUsd(c.totalUsd)), 'num'],
           ['Net', formatUsdExact(trade.netUsd, true), `num ${toneOf(trade.netUsd)}`],
           ['Return', formatReturn(returnHundredths(trade.netUsd, trade.sizeUsd)), `num ${toneOfReturn(returnHundredths(trade.netUsd, trade.sizeUsd))}`],
+          ['Net in SOL', formatSolExact(trade.netSol, true), `num ${toneOf(trade.tradingUsd)}`],
+          ['Trading', formatUsdExact(trade.tradingUsd, true), `num ${toneOf(trade.tradingUsd)}`],
+          ['SOL price move', formatUsdExact(trade.solMoveUsd, true), `num ${toneOf(trade.solMoveUsd)}`],
           ['Planned R', trade.plannedR ? formatR(trade.plannedR) : '—', 'num'],
           ['Realized R', trade.realizedR ? formatR(trade.realizedR) : '—', 'num'],
           ['Best while open', trade.mfeR ? formatR(trade.mfeR) : '—', 'num'],
