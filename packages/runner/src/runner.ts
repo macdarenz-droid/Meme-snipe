@@ -6,13 +6,13 @@ import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readF
 import { performance } from 'node:perf_hooks';
 import { dirname, join } from 'node:path';
 import { checkStartHealth, LOOKUP_BOUNDS_MS, type RestartCause, MARK_MAX_AGE_MS, RUN_NAME, STATE_FILES, type Health, type JournalLine, type OpenPositionHealth } from './contract.ts';
-import { snapshotState, type WorkerControl } from './control.ts';
+import { snapshotState, type Tabletop, type WorkerControl } from './control.ts';
 import { EXIT_UNIVERSES } from '../../core/src/config/index.ts';
 import { item4 } from './item4.ts';
 import { checkQuota, coverageGaps, lookupLatency, quotaReport, rejections, type BootTotals } from './quota.ts';
 import { checkJournal } from './journal.ts';
 import { makePlan, type Drill } from './plan.ts';
-import { buildReport, reportMarkdown, type DrillOutcome, type Label, type RecordedFile, type RecoveredState, type Report, type RunMeta, type Sample } from './report.ts';
+import { buildReport, reportMarkdown, type DrillOutcome, type Kept, type Label, type RecordedFile, type RecoveredState, type Report, type RunMeta, type Sample } from './report.ts';
 
 export interface SegmentOptions {
   readonly control: WorkerControl;
@@ -42,6 +42,13 @@ export interface SegmentOptions {
   readonly sampleMs?: number;
   /** Local only: take the runner's own backup of the bot state this often, for host-loss drills. */
   readonly backupEveryMs?: number;
+  /** Host tabletop: how long before its file's time a backup may have read the database (default BACKUP_WINDOW_MS). */
+  readonly backupWindowMs?: number;
+  /**
+   * Host: a host-loss tabletop that could only self-report is tried again this long after the backup it restored
+   * (default HOST_RETRY_AFTER_MS: the hourly zeroed-backup.timer plus a margin, so the next backup exists and is done).
+   */
+  readonly hostRetryAfterMs?: number;
   /**
    * How host loss and chain rebuild are drilled. `wipe` (rehearsal): the bot state is deleted (and the backup restored
    * for host loss). `tabletop` (the qualifying host): a second worker in `--reconcile-only` mode cold-starts beside the
@@ -107,6 +114,7 @@ export const httpDropFeed = async (addr: string, token: string, feed: string, ms
 
 const toSample = (t: number, h: Health | null): Sample => ({
   t,
+  kept: killReplyValid(h) ? kept(h) : null,
   up: h !== null,
   ready: h !== null && h.reconciled === true,
   boot: h?.boot ?? null,
@@ -149,11 +157,6 @@ type Pending =
   | { kind: 'feed'; drill: Extract<Drill, { kind: 'feed' }>; since: number; sawDown: boolean; sawHalt: boolean; critical: boolean; boot: string | null; stayedUp: boolean; requested: boolean }
   | { kind: 'handover'; since: number; prevBoot: string | null; midTrade: boolean; plannedAt: number };
 
-interface Kept {
-  readonly pending_exits: readonly string[];
-  readonly positions: readonly { readonly trade: string; readonly universe: string }[];
-}
-
 /** A restart drill in progress. Durations run on the monotonic clock, except across a host reboot (wall, from the journal). */
 interface RestartPending {
   kind: 'restart';
@@ -172,7 +175,10 @@ interface RestartPending {
   atKill?: Kept;
   expect?: Kept | null;
   /** Host-loss or chain-rebuild tabletop on the qualifying host: the second worker's address and state dir. */
-  table?: { healthAddr: string; stateDir: string };
+  table?: Tabletop;
+  /** Tabletop host loss on the host: the live worker's state when the restored backup was taken, or why it is unknown. */
+  backupKept?: Kept;
+  notCompared?: string;
   /** Rehearsal host loss: the backup was taken at the first trade of the window; the host is lost one sample later. */
   snapped?: boolean;
   /** The health reply at the kill was present and valid (pending exits are ids; an open position names its universe). */
@@ -202,7 +208,7 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
   const dropFeed = o.dropFeed ?? httpDropFeed;
   const ev = o.evidenceDir;
   mkdirSync(ev, { recursive: true });
-  const P = { meta: join(ev, 'run.json'), samples: join(ev, 'samples.jsonl'), drills: join(ev, 'drills.json'), segments: join(ev, 'segments.json'), manifest: join(ev, 'recorded.json'), boots: join(ev, 'boots.json'), backup: join(ev, 'backup.json'), reboot: join(ev, 'pending-reboot.json') };
+  const P = { meta: join(ev, 'run.json'), samples: join(ev, 'samples.jsonl'), drills: join(ev, 'drills.json'), segments: join(ev, 'segments.json'), manifest: join(ev, 'recorded.json'), boots: join(ev, 'boots.json'), backup: join(ev, 'backup.json'), reboot: join(ev, 'pending-reboot.json'), retry: join(ev, 'host-loss-retry.json') };
   const resumed = existsSync(P.meta);
   if (!resumed && !o.newRun) throw new Error(`no run in ${ev} and no new-run options`);
 
@@ -212,6 +218,9 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
   const manifest: RecordedFile[] = readJson(P.manifest, []);
   const backupDir = join(ev, 'backup');
   let backup: { at: number; expect: Kept } | null = readJson(P.backup, null);
+  // A host-loss tabletop that could only self-report is tried again after the host's next backup (kept on disk across
+  // segments). Each try is its own drill, labelled; only a compared one exercises host loss on a VPS run.
+  let retry = readJson<HostLossRetry | null>(P.retry, null);
   const prev = segments[segments.length - 1];
   const segStart = Date.now();
   segments.push({ start: segStart, end: null, lastInTrade: false, lastBoot: null });
@@ -273,9 +282,16 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
     resumed && prev && o.handover !== false ? { kind: 'handover', since: segStart, prevBoot: prev.lastBoot, midTrade: prev.lastInTrade, plannedAt: prev.end ?? segStart } : null;
   // Back from a host reboot drill: the runner died with the host, so this drill is timed on the wall clock.
   // Kept on disk until the drill is recorded, so a runner crash before then cannot lose it.
-  const rebooted: RestartPending | null = readJson(P.reboot, null);
-  if (rebooted) pending = rebooted;
   const done = new Set(outcomes.map((d) => d.id));
+  // A retry already recorded (the runner stopped between recording it and deleting the file) is never run twice.
+  if (retry !== null && done.has(retryId(retry))) {
+    rmSync(P.retry, { force: true });
+    retry = null;
+  }
+  const rebooted = readJson<RestartPending | null>(P.reboot, null);
+  // Already recorded (the runner stopped between recording it and deleting the file): never run it twice.
+  if (rebooted && done.has(rebooted.drill.id)) rmSync(P.reboot, { force: true });
+  else if (rebooted) pending = rebooted;
   const handovers = outcomes.filter((d) => d.kind === 'handover').length;
 
   let last: Sample | null = null;
@@ -283,20 +299,7 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
     const t = Date.now();
     const h = await fetchHealth(o.healthAddr);
     const s = toSample(t, h);
-    if (h) {
-      // Last quota and lookup counters per boot: they restart at 0 each boot, so the run's totals sum the boots.
-      // A sample with a missing or invalid quota never overwrites the boot's last valid counters; it marks the boot.
-      const prev = boots[h.boot] ?? { quota: [], lookups: { counts: [] }, problems: [] };
-      const c = checkQuota(h.quota);
-      const lk = lookupsOk(h.lookups);
-      const problems = [...(prev.problems ?? []), ...(c.ok ? [] : c.problems), ...(lk ? [] : ['lookups.counts is not a list of non-negative integers'])];
-      boots[h.boot] = {
-        quota: c.ok ? c.quota : prev.quota,
-        lookups: lk ? h.lookups : prev.lookups,
-        problems: [...new Set(problems)].map((p) => (p.startsWith('boot ') ? p : `boot ${h.boot}: ${p}`)),
-      };
-      writeFileSync(P.boots, JSON.stringify(boots));
-    }
+    if (h) noteBoot(h);
     appendFileSync(P.samples, `${JSON.stringify(s)}\n`);
     last = s;
     const rel = t - meta.startedAt;
@@ -310,6 +313,12 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
 
     if (pending === null) {
       const due = meta.plan.find((d) => !done.has(d.id) && d.atMs <= rel);
+      if (due === undefined && retry !== null && t >= retry.dueAt) {
+        const orig = meta.plan.find((d): d is Extract<Drill, { kind: 'restart' }> => d.id === retry!.drill && d.kind === 'restart');
+        if (orig) pending = { kind: 'restart', drill: { ...orig, id: retryId(retry) }, since: t };
+        // The file stays until the try is recorded, so a runner crash mid-try runs it again after the restart.
+        retry = null;
+      }
       if (due?.kind === 'restart') pending = { kind: 'restart', drill: due, since: t };
       else if (due?.kind === 'rpc') {
         pending = { kind: 'rpc', drill: due, since: t, sinceMono: performance.now(), requested: false, boot: s.boot, sawIncapable: false, sawHalt: false, stayedUp: true, shedBefore: h ? exitShed(h) : null, pendingBefore: kept(h).pending_exits };
@@ -375,6 +384,12 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
             p.prevBoot = null;
             try {
               p.table = await o.control.tabletop({ restore: cause === 'host-loss', restoreFrom: backupDir });
+              if (cause === 'host-loss' && o.backupEveryMs === undefined) {
+                // The host's own hourly backup: compare the restore with what the live worker held when it was taken.
+                const at = p.table.backup ? keptAt(readLines<Sample>(P.samples), p.table.backup.at, sampleMs, o.backupWindowMs) : { why: 'the restored backup is not known' };
+                if ('kept' in at) p.backupKept = at.kept;
+                else p.notCompared = at.why;
+              }
               log(`Drill ${p.drill.id} (${cause}): tabletop worker started beside the run.`);
             } catch (e) {
               record({ ...base, at: t, off_run: true, pass: false, recoveredMs: null, notes: [cause === 'host-loss' ? 'no backup to restore' : 'tabletop did not start', String((e as Error).message).slice(0, 200)] });
@@ -399,6 +414,7 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
       }
       // A tabletop drill watches the second worker; every other restart watches the live one.
       const th = pending !== null && p.table && p.killedAt !== undefined ? await fetchHealth(p.table.healthAddr) : null;
+      if (th) noteBoot(th);
       const ws: { ready: boolean; boot: string | null; exit_capable: boolean } = p.table
         ? { ready: th?.reconciled === true, boot: th?.boot ?? null, exit_capable: th?.exit_capable === true }
         : { ready: s.ready, boot: s.boot, exit_capable: s.exit_capable === true };
@@ -419,19 +435,25 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
           if (fromJournal) recovery = { ...recovery, ...fromJournal };
           notes.push(fromJournal ? 'timed on the wall clock across the reboot, from the journal' : 'timed on the wall clock across the reboot (no exit_capable line: upper bound)');
         }
-        let state = recoveredState(lines, ws.boot!, cause, p.table && cause === 'host-loss' && o.backupEveryMs === undefined ? { pending_exits: [], positions: [] } : (p.expect ?? null), p.atKill ?? { pending_exits: [], positions: [] });
+        const hostTable = p.table !== undefined && cause === 'host-loss' && o.backupEveryMs === undefined;
+        let state = recoveredState(lines, ws.boot!, cause, hostTable ? (p.backupKept ?? { pending_exits: [], positions: [] }) : (p.expect ?? null), p.atKill ?? { pending_exits: [], positions: [] });
         if (p.table && cause === 'host-loss' && state.source !== 'state') state = { ...state, state_ok: false, notes: [...state.notes, `restored from the backup but reported source ${String(state.source)}`] };
         // Tabletop host loss: what the backup held is what the tabletop worker restored.
-        if (p.table && cause === 'host-loss') {
+        // Compared: what the live worker held when the backup was taken. Otherwise only what the tabletop reports.
+        if (hostTable && p.backupKept) {
+          p.keep = p.backupKept.positions.length + p.backupKept.pending_exits.length;
+          notes.push(`compared with the live worker's state when ${p.table!.backup!.name} was taken`);
+        } else if (p.table && cause === 'host-loss') {
           const rl = lines.find((l) => l.boot === ws.boot && l.kind === 'recovered');
           p.keep = (Array.isArray(rl?.['positions']) ? (rl['positions'] as unknown[]).length : 0) + (Array.isArray(rl?.['pending_exits']) ? (rl['pending_exits'] as unknown[]).length : 0);
+          if (hostTable) notes.push(`self-reported, not compared to the backup (${p.notCompared ?? 'no record'})`);
         }
         if (p.killValid === false) state = { ...state, state_ok: false, notes: [...state.notes, 'the reply at the kill was missing or invalid: what had to be kept is unknown'] };
         notes.unshift(p.ok ? 'reconciled before any entry' : 'no successful reconcile before entry', ...state.notes);
         if (p.afterBackup?.length) notes.push(`opened after the backup, not expected back: ${p.afterBackup.join(', ')}`);
         if (hostLossWipe) notes.push('rehearsal backup copied while the worker ran: a ledger database copied that way can be torn (the host backs up with the database\'s own online backup)');
         if (p.table) {
-          await o.control.endTabletop();
+          await endTabletop(p.drill.id, p.table);
           notes.push('tabletop beside the qualifying run: the live worker kept running', offsiteNote(o.offsiteBackup));
         }
         const unknown = p.killValid === false;
@@ -442,10 +464,19 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
               worst_move_bps: unknown ? null : moveBps(p.markBefore ?? null, h ? freshMark(h) : null), move_source: 'marks' as const,
             }
           : undefined;
-        record({ ...base, at: k, pass: p.ok === true && state.state_ok && state.universe_ok && !unknown, ...(p.table ? { off_run: true } : {}), keep: p.keep ?? 0, recoveredMs: recovery.reconciled_ms, recovery, state, ...(exposure ? { exposure } : {}), notes });
+        if (hostTable && p.backupKept === undefined) {
+          const root = p.drill.id.replace(/-retry-\d+$/, '');
+          const attempt = p.drill.id === root ? 1 : Number(p.drill.id.slice(root.length + '-retry-'.length)) + 1;
+          if (attempt <= HOST_LOSS_RETRIES) {
+            retry = { drill: root, attempt, dueAt: (p.table!.backup?.at ?? k) + (o.hostRetryAfterMs ?? HOST_RETRY_AFTER_MS) };
+            writeFileSync(P.retry, JSON.stringify(retry));
+            notes.push(`tried again after the next backup (try ${attempt} of ${HOST_LOSS_RETRIES})`);
+          } else notes.push(`no compared restore after ${HOST_LOSS_RETRIES} retries`);
+        }
+        record({ ...base, at: k, pass: p.ok === true && state.state_ok && state.universe_ok && !unknown, ...(p.table ? { off_run: true } : {}), ...(hostTable ? { compared: p.backupKept !== undefined } : {}), keep: p.keep ?? 0, recoveredMs: recovery.reconciled_ms, recovery, state, ...(exposure ? { exposure } : {}), notes });
         pending = null;
       } else if (pending !== null && p.killedAt !== undefined && since() > recoverMs) {
-        if (p.table) await o.control.endTabletop();
+        if (p.table) await endTabletop(p.drill.id, p.table);
         const stage = p.reconciledAt === undefined ? 'not ready' : 'not exit capable';
         // No reply at all at the window's end: the exposure is unknown, never assumed.
         const status = h === null || p.killValid === false ? ('unknown' as const) : ('unmeasured' as const);
@@ -527,8 +558,40 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
 
   return finish(null);
 
+  /**
+   * Last quota and lookup counters per boot (the live worker's and a tabletop worker's): they restart at 0 each boot,
+   * so the run's totals sum the boots. A sample with a missing or invalid quota never overwrites the boot's last valid
+   * counters; it marks the boot.
+   */
+  function noteBoot(h: Health): void {
+    const prev = boots[h.boot] ?? { quota: [], lookups: { counts: [] }, problems: [] };
+    const c = checkQuota(h.quota);
+    const lk = lookupsOk(h.lookups);
+    const problems = [...(prev.problems ?? []), ...(c.ok ? [] : c.problems), ...(lk ? [] : ['lookups.counts is not a list of non-negative integers'])];
+    boots[h.boot] = {
+      quota: c.ok ? c.quota : prev.quota,
+      lookups: lk ? h.lookups : prev.lookups,
+      problems: [...new Set(problems)].map((p) => (p.startsWith('boot ') ? p : `boot ${h.boot}: ${p}`)),
+    };
+    writeFileSync(P.boots, JSON.stringify(boots));
+  }
+
+  /** Ends a tabletop drill: its worker's journal goes into the evidence folder first. */
+  async function endTabletop(id: string, table: Tabletop): Promise<void> {
+    const src = join(table.stateDir, STATE_FILES.journal);
+    if (existsSync(src)) {
+      mkdirSync(join(ev, 'tabletop'), { recursive: true });
+      copyFileSync(src, join(ev, 'tabletop', `${id}-journal.jsonl`));
+    }
+    await o.control.endTabletop();
+  }
+
   function record(d: DrillOutcome): void {
-    if (rebooted && d.id === rebooted.drill.id) rmSync(P.reboot, { force: true });
+    // Any record of the drill on disk ends it, whether it was loaded at start or written in this segment.
+    if (readJson<RestartPending | null>(P.reboot, null)?.drill.id === d.id) rmSync(P.reboot, { force: true });
+    // A host-loss retry ends when its own try is recorded (a self-reported try has already written the next one).
+    const r = readJson<HostLossRetry | null>(P.retry, null);
+    if (r !== null && retryId(r) === d.id) rmSync(P.retry, { force: true });
     outcomes.push(d);
     done.add(d.id);
     saveDrills();
@@ -772,6 +835,41 @@ export const recoveredState = (journal: readonly JournalLine[], boot: string, ca
   if (changed.length) notes.push(`universe changed for ${changed.map((x) => x.trade).join(', ')}`);
   if (cause === 'host-loss') notes.push('restored from the latest backup');
   return { source, expected_pending_exits: expect.pending_exits, recovered_pending_exits: recoveredExits, missing, lost: [], state_ok: missing.length === 0, universe_ok: universesNamed && changed.length === 0, notes };
+};
+
+interface HostLossRetry {
+  /** The planned drill's id. */
+  readonly drill: string;
+  readonly attempt: number;
+  readonly dueAt: number;
+}
+
+const retryId = (r: HostLossRetry): string => `${r.drill}-retry-${r.attempt}`;
+
+/** Retries of a self-reported host-loss tabletop, at most; each starts the tabletop worker once. */
+export const HOST_LOSS_RETRIES = 3;
+/** The hourly host backup plus 2 min, so the next backup has finished and its window has samples on both sides. */
+export const HOST_RETRY_AFTER_MS = 3_600_000 + 120_000;
+
+/** How long before its file's time a host backup may have read the database (sqlite .backup, its check, packing). */
+export const BACKUP_WINDOW_MS = 120_000;
+
+const keptKey = (k: Kept): string =>
+  JSON.stringify({ e: [...k.pending_exits].sort(), p: [...k.positions].map((x) => `${x.trade}\u0000${x.universe}`).sort() });
+
+/**
+ * What the live worker held when a host backup was taken at `at` (its file's time): the samples must cover
+ * [at − BACKUP_WINDOW_MS, at] without a gap, every reply valid, and the state unchanged across it. Otherwise the
+ * restore cannot be compared, and why.
+ */
+export const keptAt = (samples: readonly Sample[], at: number, sampleMs: number, windowMs = BACKUP_WINDOW_MS): { kept: Kept } | { why: string } => {
+  const from = at - windowMs;
+  const win = samples.filter((s) => s.t >= from - 2 * sampleMs && s.t <= at + 2 * sampleMs);
+  if (!win.length || win[0]!.t > from || win.at(-1)!.t < at) return { why: 'no samples around the backup' };
+  for (let i = 1; i < win.length; i++) if (win[i]!.t - win[i - 1]!.t > 2 * sampleMs) return { why: 'a gap in the samples around the backup' };
+  if (win.some((s) => !s.kept)) return { why: 'a missing or invalid reply around the backup' };
+  const keys = new Set(win.map((s) => keptKey(s.kept!)));
+  return keys.size === 1 ? { kept: win[0]!.kept! } : { why: 'the state changed while the backup was taken' };
 };
 
 /** A CFG-2 universe with its own exit parameters (U1, U2). 'unknown', or anything else, counts as missing. */

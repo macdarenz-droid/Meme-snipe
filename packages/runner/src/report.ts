@@ -28,6 +28,8 @@ export interface Sample {
   readonly exit_capable?: boolean;
   /** Mark of the open position, decimal string. */
   readonly mark?: string | null;
+  /** What the worker would have to keep at this moment; null when the reply was missing or invalid. */
+  readonly kept?: Kept | null;
 }
 
 /** Unprotected exposure of a restart drill with an open position: the watchdog can alert but cannot sell. */
@@ -62,6 +64,12 @@ export interface RecoveredState {
   readonly notes: readonly string[];
 }
 
+/** What a restart had to keep: pending exits and positions with their universe. */
+export interface Kept {
+  readonly pending_exits: readonly string[];
+  readonly positions: readonly { readonly trade: string; readonly universe: string }[];
+}
+
 export interface DrillOutcome {
   readonly id: string;
   readonly kind: 'restart' | 'feed' | 'handover' | 'rpc';
@@ -73,6 +81,8 @@ export interface DrillOutcome {
   readonly off_run?: boolean;
   /** Not run here; never counts as passed. */
   readonly skipped?: boolean;
+  /** Tabletop host loss: false when the restore could only be self-reported, not compared to the live worker at the backup. */
+  readonly compared?: boolean;
   /** What the restart had to keep (positions, in-flight entries, pending exits; the backup's for host loss). 0: proved nothing. */
   readonly keep?: number;
   readonly plannedAt: number | null;
@@ -113,6 +123,8 @@ export interface Report {
   readonly counts: string;
   /** The qualifying guard on a named host run's start lines; null for a run without a name. */
   readonly qualifying: EntryRule | null;
+  /** A VPS run on `--strategy none` whose boots ran entry rule none: it cannot qualify, whatever else passes. */
+  readonly no_strategy: boolean;
   readonly commit: string;
   readonly commits_seen: readonly string[];
   readonly started: string;
@@ -152,6 +164,8 @@ export interface CauseSummary {
   readonly mid_trade: number;
   readonly off_run: number;
   readonly skipped: number;
+  /** Tabletop host losses whose restore was self-reported, not compared to the backup. */
+  readonly self_reported: number;
   readonly exit_capable_ms: { readonly median: number | null; readonly worst: number | null };
   readonly exposure: { readonly drills: number; readonly worst_duration_ms: number | null; readonly worst_move_bps: number | null };
 }
@@ -270,6 +284,7 @@ export const buildReport = (
         ? 'Rehearsal: counts for none of §15 items 3, 4 or G3. The gaps between GitHub jobs count as down time, so a 48 h rehearsal fails the 99% uptime check by design.'
         : 'VPS run: candidate for §15 item 3 and the drills of item 5 only if every check passes; items 4 and G3 are judged from the same run by TEST-2 and STATS-1.',
     qualifying: guard,
+    no_strategy: meta.label === 'vps' && (meta.strategy ?? 'none') === 'none' && journal.starts.length > 0 && journal.starts.every((s) => s.entry_rule === 'none'),
     commit: meta.commit,
     commits_seen: commits,
     started: new Date(meta.startedAt).toISOString(),
@@ -319,10 +334,13 @@ export const recoveryByCause = (meta: RunMeta, drills: readonly DrillOutcome[]):
       planned,
       drills: ds.length,
       passed: ds.filter((d) => d.pass && d.skipped !== true).length,
-      exercised: ds.filter((d) => d.pass && d.skipped !== true && (d.keep ?? 0) > 0).length,
+      // On a VPS run a host loss counts only when its restore was compared with the live worker at the backup;
+      // a self-reported one is listed, labelled, and retried, but proves nothing.
+      exercised: ds.filter((d) => d.pass && d.skipped !== true && (d.keep ?? 0) > 0 && (c !== 'host-loss' || meta.label !== 'vps' || d.compared === true)).length,
       mid_trade: ds.filter((d) => d.midTrade === true).length,
       off_run: ds.filter((d) => d.off_run === true).length,
       skipped: ds.filter((d) => d.skipped === true).length,
+      self_reported: ds.filter((d) => d.compared === false).length,
       exit_capable_ms: { median: median(exits), worst: exits.length ? Math.max(...exits) : null },
       exposure: { drills: ex.length, worst_duration_ms: worst(ex.map((e) => e.duration_ms)), worst_move_bps: worst(ex.map((e) => e.worst_move_bps)) },
     };
@@ -340,6 +358,7 @@ export const reportMarkdown = (r: Report): string => {
     '',
     `**${r.label === 'rehearsal' ? 'Rehearsal' : 'VPS run'}.** ${r.counts}`,
     '',
+    ...(r.no_strategy ? ['**No registered strategy, not qualifying.**', ''] : []),
     `| Item | Value |`,
     `| --- | --- |`,
     `| Commit | \`${r.commit}\` |`,
@@ -379,7 +398,7 @@ export const reportMarkdown = (r: Report): string => {
     '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
     ...Object.entries(r.recovery_by_cause).map(
       ([c, v]) =>
-        `| ${c}${v.off_run ? ' (tabletop beside the run)' : ''}${v.skipped ? ' (not proven on this run)' : ''} | ${v.planned} | ${v.drills} | ${v.passed} | ${c === 'rpc' ? '-' : v.exercised === 0 ? 'not exercised' : v.exercised} | ${v.mid_trade} | ${sec(v.exit_capable_ms.median)} | ${sec(v.exit_capable_ms.worst)} | ${v.exposure.drills} | ${sec(v.exposure.worst_duration_ms)} | ${v.exposure.worst_move_bps === null ? '-' : `${v.exposure.worst_move_bps} bps`} |`,
+        `| ${c}${v.off_run ? ' (tabletop beside the run)' : ''}${v.skipped ? ' (not proven on this run)' : ''}${v.self_reported ? ' (self-reported, not compared to the backup)' : ''} | ${v.planned} | ${v.drills} | ${v.passed} | ${c === 'rpc' ? '-' : v.exercised === 0 ? 'not exercised' : v.exercised} | ${v.mid_trade} | ${sec(v.exit_capable_ms.median)} | ${sec(v.exit_capable_ms.worst)} | ${v.exposure.drills} | ${sec(v.exposure.worst_duration_ms)} | ${v.exposure.worst_move_bps === null ? '-' : `${v.exposure.worst_move_bps} bps`} |`,
     ),
   );
   const q = r.ops.quota;

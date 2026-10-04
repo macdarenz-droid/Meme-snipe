@@ -1,0 +1,108 @@
+# BT-1e: the owner-program supplement (packages/backtest/src/dataset/owner-programs.ts, BT-1d R2) for published
+# datasets: the program that owns each off-curve holder owner, looked up once with getMultipleAccounts.
+#
+# - Manual dispatch only, one run at a time (concurrency group owner-programs, never cancelled).
+# - Input: dataset releases `data-FROM-TO` (built from the data-day releases by data-scan.yml mode=assemble; a day
+#   release holds scanner units, not rows). Each must be published by github-actions[bot]; its files are checked
+#   against its SHA256SUMS before any row is read (packages/backtest/ci/owner-programs-collect.sh).
+# - dry_run (the default) only plans: owners and getMultipleAccounts calls, in the summary. No RPC, nothing published.
+# - Otherwise the fetch job reads the owners' programs from Helius, at most 100 per call. HELIUS_API_KEY reaches that
+#   one step only, as env; the script keeps the URL and the key out of every output and file, errors included.
+# - Publish: release `owner-programs-DAY` (DAY = the UTC day of the fetch) with the JSON lines, the manifest (sha256,
+#   rows, calls, accounts, source, fetchedAt, datasets) and SHA256SUMS, made by github-actions[bot]. Only the publish
+#   job has contents: write, and only its last step sees the token, under env -i; it never sees the RPC key. An existing
+#   release is never edited.
+# - Every action is pinned to a commit; checkouts keep persist-credentials: false; inputs reach the shell only as env.
+name: owner-programs
+
+on:
+  workflow_dispatch:
+    inputs:
+      datasets:
+        description: "dataset releases to cover, space-separated (data-YYYY-MM-DD-YYYY-MM-DD)"
+        required: true
+        type: string
+      dry_run:
+        description: "plan only: owners and calls; no RPC, nothing published"
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: owner-programs
+  cancel-in-progress: false
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Collect the owners
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DATASETS: ${{ inputs.datasets }}
+        run: |
+          set -euo pipefail
+          # dataset releases are a few GB each: work on the runner's larger /mnt volume, one release at a time
+          sudo mkdir -p /mnt/work && sudo chown "$USER" /mnt/work
+          read -r -a tags <<<"$DATASETS"
+          packages/backtest/ci/owner-programs-collect.sh "$RUNNER_TEMP/owners" /mnt/work "${tags[@]}"
+      - name: Plan (dry run)
+        if: inputs.dry_run
+        run: |
+          set -euo pipefail
+          node --no-warnings packages/backtest/scripts/owner-programs.ts fetch --owners "$RUNNER_TEMP/owners/owners.txt" \
+            --datasets "$RUNNER_TEMP/owners/datasets.json" --out "$RUNNER_TEMP/out" --dry-run
+          { echo '### Owner programs: dry run'; echo '```json'; cat "$RUNNER_TEMP/out/owner-programs.plan.json"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Fetch the owner programs
+        if: ${{ !inputs.dry_run }}
+        env:
+          HELIUS_API_KEY: ${{ secrets.HELIUS_API_KEY }}
+        run: |
+          set -euo pipefail
+          [ -n "$HELIUS_API_KEY" ] || { echo "HELIUS_API_KEY: missing"; exit 1; }
+          node --no-warnings packages/backtest/scripts/owner-programs.ts fetch --owners "$RUNNER_TEMP/owners/owners.txt" \
+            --datasets "$RUNNER_TEMP/owners/datasets.json" --out "$RUNNER_TEMP/out"
+          (cd "$RUNNER_TEMP/out" && sha256sum owner-programs.jsonl owner-programs.manifest.json > SHA256SUMS)
+          { echo '### Owner programs'; echo '```json'; cat "$RUNNER_TEMP/out/owner-programs.manifest.json"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Keep the supplement for the publish job
+        if: ${{ !inputs.dry_run }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: owner-programs
+          path: ${{ runner.temp }}/out/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: fetch
+    if: ${{ !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write # used only by the "Publish" step
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: owner-programs
+          path: ${{ runner.temp }}/assets
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          env -i PATH=/usr/bin:/bin GH_TOKEN="$GH_TOKEN" GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_SHA="$GITHUB_SHA" \
+            GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY" /usr/bin/bash packages/backtest/ci/publish-owner-programs.sh "$RUNNER_TEMP/assets"
