@@ -57,12 +57,12 @@ Earlier FAILs (#48 at f679188, 6a9e19d, f55538f, 9fdf837; FACTS-1e at 42786f1; #
   - In #117 (cost order, stop at first), an H1–H6 reject skipped H14.
   - `runner/src/journal.ts:75` counts `s0_diagnostic` on all decision lines, rejects included, so the `h14-creates-coverage` count will be higher than under #117.
   - This affects only a reporting figure, not entries. Say so in DECISIONS, or count entry lines only.
-- `pnpm check` at d06ebdb: **not run (stopped at the handover).** The supervisor reports 4530 pass, unverified by me.
-- Draft verdict: PASS pending `pnpm check` exit 0 on d06ebdb.
+- `pnpm check` at d06ebdb: exit 0, 4530/4530 passed. It was still running when I wrote these notes and finished afterwards (log: `docs/handover/sandbox/session_012QdDAuRuYt57E9PCjHfuKT/f6.log`, sent with the verdict).
+- **Verdict: PASS at d06ebdb**, with the non-blocking H14 count note above.
 
 ## Next steps, in order
 1. #123: run `pnpm check` on b849d9f (more than 10 min: run it in the background). Send FAIL (small) with the two blocking items above, unless the builder has already added `sol_usd`. On the fix head, re-run the mutants listed above and a fail-before test for the price.
-2. #106: run `pnpm check` on d06ebdb (or the current head; evidence counts only for the exact SHA). If exit 0, PASS with the H14 count note.
+2. #106: PASS at d06ebdb. Only re-check if the head moves.
 3. EXIT-ROUTE: queued by the supervisor "later". Not started, and I have no spec for it.
 
 ## Findings and numbers
@@ -76,7 +76,7 @@ Earlier FAILs (#48 at f679188, 6a9e19d, f55538f, 9fdf837; FACTS-1e at 42786f1; #
 ## Open risks and gaps
 - #123: the crash-path USD valuation (blocking item 1) and the missing missed-entry test (item 2).
 - #106: the semantics of the H14 waived count on reject lines (non-blocking).
-- Neither head has my own `pnpm check` result.
+- #123 has no `pnpm check` result of mine (the run at b849d9f was stopped, exit 143).
 
 ## How to verify
 - `pnpm install --frozen-lockfile && pnpm check` in a worktree of the SHA.
