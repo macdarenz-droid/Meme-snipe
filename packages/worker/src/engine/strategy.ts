@@ -175,11 +175,27 @@ export const s0EntryAt = (salt: string, mint: string, from: number, to: number):
 };
 
 /** The universe in an entry intent key's decision id (`entry:<mint>:<universe>.<rest>`), or null for an older key. */
+/** The plan universe of a position with none on record (no saved plan universe, no universe in its entry key). */
+export const NO_UNIVERSE = 'none on record' as ExitUniverse;
+
 export const universeOfKey = (key: string): ExitUniverse | null => {
   const local = key.split(':')[2] ?? '';
   const u = local.split('.')[0] ?? '';
   return (EXIT_UNIVERSES as readonly string[]).includes(u) ? (u as ExitUniverse) : null;
 };
+
+/** A position's universe: its saved plan's, else its entry key's; null when neither has one. */
+export const resolveUniverse = (saved: string | undefined, entryKey: string | undefined): string | null =>
+  saved ?? (entryKey === undefined ? null : universeOfKey(entryKey));
+
+/**
+ * Why a restored position puts the process in sell-only (no new entries; it is flattened through the global exit
+ * ladder): its universe is not in the loaded policy, or none is on record (unknown means no entry). Null: neither.
+ */
+export const sellOnlyReason = (pid: string, universe: string | null, universes: Readonly<Record<string, unknown>>, policyVersion: string): string | null =>
+  universe === null ? `sell-only: no universe on record for ${pid}`
+    : Object.hasOwn(universes, universe) ? null
+      : `sell-only: policy ${policyVersion} lacks universe ${universe} of ${pid}`;
 
 export class LiveStrategy implements Strategy {
   readonly #d: StrategyDeps;
@@ -692,9 +708,10 @@ export class LiveStrategy implements Strategy {
         // A plan saved before universes were stored: its universe from the entry's intent key, never a default.
         const entry = ctx.book.intents[p.entryIntentId];
         const u = entry === undefined ? null : universeOfKey(entry.intent.key);
-        saved = { ...saved, plan: { ...saved.plan, universe: u ?? this.#d.config.universe } };
+        // None on record: unknown is never guessed. The position is flattened like one whose universe the policy lacks.
+        saved = { ...saved, plan: { ...saved.plan, universe: u ?? NO_UNIVERSE } };
         this.#exits.set(p.id, saved);
-        out.push({ action: null, reasons: ['plan universe restored', p.id, u === null ? `no universe on record; ${this.#d.config.universe}, the only universe this worker trades` : u] });
+        out.push({ action: null, reasons: ['plan universe restored', p.id, u === null ? 'no universe on record; flattened through the global exit ladder' : u] });
       }
       if (!this.#fromBook.has(p.id)) {
         // Once per position per process (after a restart): partials come from the book, not the saved file. Each exit
@@ -799,8 +816,8 @@ export class LiveStrategy implements Strategy {
     const riskUnit = cost - stopValue > 0n ? cost - stopValue : 1n;
     // The universe the entry was made under: its plan, else its intent key (`entry:<mint>:<universe>.<version>.<n>`).
     const universe = seed?.universe ?? (entry === undefined ? null : universeOfKey(entry.intent.key));
-    if (universe === null) out.push({ action: null, reasons: ['no entry universe', p.mint, `managed with ${this.#d.config.universe}'s exits, the only universe this worker trades`] });
-    const plan: EntryPlan = { openedAtMs: fillAt, universe: universe ?? this.#d.config.universe, notional: seed?.notional ?? this.#d.session.policy.capital.minNotional, riskUnit, stopPrice, entryReserve: seed?.entryReserve ?? 0n };
+    if (universe === null) out.push({ action: null, reasons: ['no entry universe', p.mint, 'no universe on record; flattened through the global exit ladder'] });
+    const plan: EntryPlan = { openedAtMs: fillAt, universe: universe ?? NO_UNIVERSE, notional: seed?.notional ?? this.#d.session.policy.capital.minNotional, riskUnit, stopPrice, entryReserve: seed?.entryReserve ?? 0n };
     const saved: SavedExit = { plan, tracker: newTracker(), bars: this.#bars.get(p.mint) ?? [] };
     this.#bars.set(pid, [...saved.bars]);
     this.#exits.set(pid, saved);

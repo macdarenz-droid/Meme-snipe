@@ -4,6 +4,7 @@ import { readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { JournalLine } from '../../runner/src/contract.ts';
+import { resolveUniverse, sellOnlyReason } from '../src/engine/strategy.ts';
 import { exitsFile } from '../src/run/state.ts';
 import { LANDS, Market, makeWorker, passingMarket, tempState } from './worker-harness.ts';
 
@@ -137,5 +138,51 @@ describe('a restored position whose universe the loaded policy lacks (EXIT-1b re
     expect(decisions.some((d) => (d.reasons ?? [])[0] === 'exit' && (d.reasons ?? []).includes('universe missing: flatten'))).toBe(true);
     expect(h2.worker.health().halt_reasons).toEqual(expect.arrayContaining([expect.stringMatching(/^sell-only: /)]));
     await h2.worker.stop();
+  });
+  it('flattens at once on the global ladder even when the restored tracker already met its flat target (time max 0)', async () => {
+    const h = makeWorker();
+    await entered(h);
+    const pid = Object.values(h.worker.book.positions).find((p) => p.status === 'open')!.id;
+    const quantity = h.worker.book.positions[pid]!.quantity;
+    await h.worker.kill();
+    // flatMet: the flat time stop no longer fires, so only the time max (0 for a missing universe) can end it at an
+    // unchanged price with no other trigger.
+    const file = exitsFile(h.stateDir);
+    const saved = file.read({});
+    file.write({ ...saved, [pid]: { ...saved[pid]!, plan: { ...saved[pid]!.plan, universe: 'U9' as never }, tracker: { ...saved[pid]!.tracker, flatMet: true } } });
+    const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers });
+    expect(await h2.worker.reconcile()).toEqual({ ok: true });
+    const m = new Market(h2);
+    const t0 = h2.timers.now();
+    // Well inside an hour: a time max left at a universe's own value would hold the position past this run. As in the
+    // test above, the first decision may meet only the stale pre-kill quote and book the exit blocked; it retries.
+    await m.run(150_000, 1_000, () => {
+      m.slot();
+      m.pool();
+    });
+    expect(h2.worker.book.positions[pid]!.status).toBe('closed');
+    const exits = Object.values(h2.worker.book.intents).filter((i) => i.intent.purpose === 'exit' && i.intent.positionId === pid && i.fills.length > 0);
+    // The whole position in one exit, never a partial.
+    expect(exits).toHaveLength(1);
+    expect(exits[0]!.fills.reduce((t, f) => t + f.tokens, 0n)).toBe(quantity);
+    const decisions = lines(h.stateDir).filter((l) => l.kind === 'decision' && l.boot === h2.worker.boot);
+    const exit = decisions.find((d) => (d.reasons ?? [])[0] === 'exit')!;
+    expect(exit.reasons).toEqual(expect.arrayContaining(['universe missing: flatten', expect.stringMatching(/^time_max: /)]));
+    // Decided on the first step that could, not after a wait.
+    expect(Date.parse(exit.ts) - t0).toBeLessThan(5_000);
+    // The ladder's usual start rung: the first exit leg pays step 0's priority fee.
+    const leg = h2.legs.find((l) => l.leg === 'exit')!;
+    expect(leg.priorityFee).toBe(h2.session.policy.exits.ladder.steps[0]!.priorityFeeLamports);
+    await h2.worker.stop();
+  }, 60_000);
+
+  it('a position with no universe on record is sell-only too: unknown means no entry', () => {
+    const universes = { U1: {}, U2: {} };
+    expect(resolveUniverse(undefined, 'entry:MINT:legacy-version.1')).toBeNull();
+    expect(resolveUniverse(undefined, 'entry:MINT:U2.v.1')).toBe('U2');
+    expect(resolveUniverse('U9', 'entry:MINT:U2.v.1')).toBe('U9');
+    expect(sellOnlyReason('p:1', null, universes, 'h')).toBe('sell-only: no universe on record for p:1');
+    expect(sellOnlyReason('p:1', 'U9', universes, 'h')).toBe('sell-only: policy h lacks universe U9 of p:1');
+    expect(sellOnlyReason('p:1', 'U2', universes, 'h')).toBeNull();
   });
 });

@@ -20,7 +20,7 @@ import type { FillNetwork, FillScenario } from '../../../core/src/fills/index.ts
 import type { MicroUsd } from '../../../core/src/units/index.ts';
 import { EXIT, LOOKUP_BOUNDS_MS, STATE_FILES, type FeedHealth, type Health, type JournalKind, type QuotaStatus } from '../../../runner/src/contract.ts';
 import type { DryRunRecord } from '../dryrun/index.ts';
-import { universeOfKey } from '../engine/strategy.ts';
+import { NO_UNIVERSE, resolveUniverse, sellOnlyReason } from '../engine/strategy.ts';
 import { ACCOUNT_KEY, HALT_KEY, LiveStrategy, POOL_PREFIX, RESTORE_KEY, SEED_KEY, SEEDING, SHORTLIST, SOL_PRICE_KEY, type StrategyConfig, TRIP_PREFIX } from '../engine/strategy.ts';
 import { DEFAULT_LIVE_FEED, type Frame, type HttpClient, LiveFeed, type Release, seqId } from '../providers/index.ts';
 import type { Timers } from '../scheduler/timers.ts';
@@ -264,8 +264,8 @@ export class Worker {
     for (const p of Object.values(stored.book.positions)) {
       if (p.status === 'closed') continue;
       const entry = stored.book.intents[p.entryIntentId];
-      const u = savedPlans[p.id]?.plan.universe ?? (entry === undefined ? null : universeOfKey(entry.intent.key));
-      if (u !== null && !Object.hasOwn(d.session.policy.exits.universes, u)) this.#sellOnly.push(`sell-only: policy ${d.session.versionHash} lacks universe ${u} of ${p.id}`);
+      const why = sellOnlyReason(p.id, resolveUniverse(savedPlans[p.id]?.plan.universe, entry?.intent.key), d.session.policy.exits.universes, d.session.versionHash);
+      if (why !== null) this.#sellOnly.push(why);
     }
     // The start line goes first in this boot's journal lines, with everything above known (nothing above writes one).
     this.#journal.write('start', {
@@ -842,7 +842,8 @@ export class Worker {
     const saved = this.#strategy.saved();
     return Object.values(book.positions).filter((p) => p.status !== 'closed').map((p) => {
       const entry = book.intents[p.entryIntentId];
-      const universe = saved[p.id]?.plan.universe ?? (entry === undefined ? null : universeOfKey(entry.intent.key)) ?? 'unknown';
+      // None on record is said as such (the strategy flattens it), never guessed and never a bare 'unknown'.
+      const universe = resolveUniverse(saved[p.id]?.plan.universe, entry?.intent.key) ?? NO_UNIVERSE;
       return { trade: p.id, universe };
     }).sort((a, b) => (a.trade < b.trade ? -1 : 1));
   }
