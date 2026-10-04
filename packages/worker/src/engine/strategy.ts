@@ -22,6 +22,7 @@ import {
   attemptId, blockhash, entryKey, intentId, mint as toMint, positionId, reservationId, signature,
 } from '../../../core/src/domain/index.ts';
 import { type AsOfEntry, type Decision, type MarketEvent, type Moment, type Strategy, type StrategyContext, compareMoments } from '../../../core/src/engine/index.ts';
+import { RAW } from '../../../core/src/facts/raw.ts';
 import { observedFeeContext } from '../../../core/src/fills/index.ts';
 import {
   type EntryPlan, type ExitDecision, type FlowMinute, type ExitSettings, type ExitTracker, type Holding, type PriceBar,
@@ -649,6 +650,9 @@ export class LiveStrategy implements Strategy {
     }
     this.#discover(e, ctx, out);
     this.#readLanded(e);
+    // READ-COHERENT: a batch's close is judged at once, on its own event, when every member's facts are out.
+    const closed = this.#batchLanded(e);
+    if (closed !== null) due.set(closed.mint, closed.read);
     this.#poolTrade(e, ctx);
     if (e.key === SEED_KEY || e.key === 'chain:slot' || e.key.startsWith('coverage:creates:')) {
       // H14's creates coverage over its look-back as of each slot and coverage change, for health and the restart drill.
@@ -1406,6 +1410,30 @@ export class LiveStrategy implements Strategy {
     this.#due.set(mint, { slot: isObj(v) && typeof v['slot'] === 'bigint' ? v['slot'] : null, receivedAt: e.moment.receivedAt });
   }
 
+  /** Mints whose read batch is on the feed but not closed yet: never judged on part of a batch. */
+  readonly #batchOpen = new Set<string>();
+
+  /**
+   * READ-COHERENT: a coherent batch of reads (FactReaders.readBatch) is put on the feed between `RAW.batchOpen` and
+   * `RAW.batchClose`, and at one moment the open is released before its members and the close after them and after
+   * every fact they made. While open the candidate is not evaluated (`#entries`), so no decision is made on part of a
+   * batch; the close is the batch's landing, judged at its own event (not the next one, which may be
+   * a slot later), with the batch's oldest slot-judged member as its age. Recorded frames, so a replay does the same.
+   */
+  #batchLanded(e: MarketEvent): { readonly mint: string; readonly read: { readonly slot: bigint | null; readonly receivedAt: number } } | null {
+    const open = RAW.batchOpen('');
+    const close = RAW.batchClose('');
+    if (e.key.startsWith(open)) {
+      this.#batchOpen.add(e.key.slice(open.length));
+      return null;
+    }
+    if (!e.key.startsWith(close)) return null;
+    const mint = e.key.slice(close.length);
+    this.#batchOpen.delete(mint);
+    const v = unwrap(e.value);
+    return { mint, read: { slot: isObj(v) && typeof v['slot'] === 'bigint' ? v['slot'] : null, receivedAt: e.moment.receivedAt } };
+  }
+
   /** A read landed for the mint and is still fresh now: a slower event after it (a quiet feed) can outlive it. */
   #landedFresh(due: ReadonlyMap<string, { readonly slot: bigint | null; readonly receivedAt: number }>, mint: string, ctx: StrategyContext): boolean {
     const read = due.get(mint);
@@ -1449,6 +1477,7 @@ export class LiveStrategy implements Strategy {
       const to = cand.migratedAtMs + c.windowToMs;
       // Backstop: `#windowEnds` has already removed it on this event; an ended window is never an entry whatever the order.
       if (now >= to) continue;
+      if (this.#batchOpen.has(cand.mint)) continue;
       if (now < from || (cand.lastEvalMs !== null && now - cand.lastEvalMs < c.evaluateEveryMs && !this.#landedFresh(due, cand.mint, ctx))) continue;
       if (c.entryTiming === 'random' && now < s0EntryAt(c.entrySalt, cand.mint, from, to)) continue;
       if (Object.values(ctx.book.positions).some((p) => p.mint === cand.mint && p.status !== 'closed')) continue;
