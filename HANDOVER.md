@@ -210,7 +210,7 @@ The supervisor wrote this file, `PROJECT_STATE.md`, `docs/DECISIONS.md` and `doc
 | 173 | ENTRY-TRIPS | 75145cd | FAIL (risk 1:41 AM: entry-path trips latch on stale/null marks; gate them with #124 latchable(); tests a–c) | entry-path trips latch; R11 applies in paper; sim-latency report fields |
 | 168 | ACCOUNT-RATE | 57d2a71 (on #133) | FAIL (risk 1:43 AM: unvalued close vanishes from risk; open-trade fee dated at send) — fix (a) unvalued facts refuse entries; worker/facts review pending | items 1–3, F1–F3, no-price entry fees; 21 mutants; merges after #133 |
 | 170 | RESTART-KEEP | 8b2e77b (46d4c48 local) | after #125; persist + worker/facts review | candidates and bars across restarts; downtime migrations; REC-1 tails |
-| 172 | N2-WRITES | 832c913 | data review | checked writes (loop + on-disk size before rename) for atomicWrite, deployer state and store |
+| 172 | N2-WRITES | 832c913 | PASS (data 1:45 AM; 7/9 mutants; N1 temp-cleanup assertions asked before merge) | checked writes (loop + on-disk size before rename) for atomicWrite, deployer state and store |
 | 171 | EXIT-PRUNE | c5cb67d | EXIT review | restore drops a saved exit plan whose position never reached the book |
 | 169 | APP-MONEY | 09a5410 | FAIL (run/CI 1:24 AM: typecheck; risk 1:37 AM: gap-fill test missing; partials must be emitted at their own time after #132); merges after #132 and #133 | app totals and daily-loss meter from the account's one cost list and R7's dayLoss (AUDIT-RM1 F4) |
 | 167 | API-1 N1' (S0 waived union) | e1d8aeb6 | PASS (run/CI 1:28 AM; V1–V3 killed; 4803); needs a base update | served waived list = S0 set union while diagnostic is on |
