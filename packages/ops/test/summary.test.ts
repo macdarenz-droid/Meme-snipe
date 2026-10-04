@@ -80,7 +80,7 @@ describe('the summary guards', () => {
     const withPos = (p: object) => JSON.stringify(goodSummary({ open: { ...goodSummary().open, positions: [{ ...pos, ...p }] } }));
     // An unquotable position: its marked net leaves the total and it is counted (the headline follows the total).
     const nullPos = JSON.stringify(goodSummary({
-      headline: { ...goodSummary().headline, open_marked_net_sol: '0' },
+      headline: { ...goodSummary().headline, equity_sol: null, open_marked_net_sol: '0' },
       open: { positions: [{ ...pos, value_lamports: null, marked_net_lamports: null }], marked_net_lamports: '0', unquotable: 1, unlisted: 0 },
     }));
     expect(checkSummary(nullPos).ok).toBe(true);
@@ -101,6 +101,32 @@ describe('the summary guards', () => {
     expect(checkSummary(JSON.stringify(goodSummary({ open: { ...goodSummary().open, unquotable: -1 } }))).ok).toBe(false);
     expect(checkSummary(JSON.stringify(goodSummary({ memory: { ...goodSummary().memory, rss_change_bytes: -5 } }))).ok).toBe(true);
     expect(checkSummary(JSON.stringify(goodSummary({ memory: { ...goodSummary().memory, rss_change_bytes: 1.5 } }))).ok).toBe(false);
+    // Ops review of c741adf (golden rule): each headline figure agrees with the figures it comes from.
+    const hl = (h: object, over: Partial<Summary> = {}) => JSON.stringify(goodSummary({ ...over, headline: { ...goodSummary().headline, ...h } }));
+    // (a) the day's net is the closed net in SOL.
+    expect(checkSummary(hl({ day_net_sol: '-0.0016' })).ok).toBe(false);
+    expect(checkSummary(hl({ day_net_sol: '-0.0016' }, { pnl: { ...goodSummary().pnl, net_lamports: '-1600000' } })).ok).toBe(true);
+    // (b) a position's marked net is its value less its cost (the total and the headline moved with it).
+    expect(checkSummary(JSON.stringify(goodSummary({
+      headline: { ...goodSummary().headline, open_marked_net_sol: '-0.002' },
+      open: { ...goodSummary().open, marked_net_lamports: '-2000000', positions: [{ ...pos, marked_net_lamports: '-2000000' }] },
+    }))).ok).toBe(false);
+    // (c) equity now is the balance plus every value, unknown exactly when the balance or a value is.
+    expect(checkSummary(hl({ equity_sol: '2.013' })).ok).toBe(false);
+    expect(checkSummary(hl({ equity_sol: null })).ok).toBe(false);
+    expect(checkSummary(hl({ balance_sol: null })).ok).toBe(false);
+    expect(checkSummary(hl({ balance_sol: null, equity_sol: null })).ok).toBe(true);
+    expect(checkSummary(hl({ balance_sol: '1.5', equity_sol: '1.512' })).ok).toBe(true);
+    expect(checkSummary(JSON.stringify(goodSummary({
+      headline: { ...goodSummary().headline, open_marked_net_sol: '0' },
+      open: { positions: [{ ...pos, value_lamports: null, marked_net_lamports: null }], marked_net_lamports: '0', unquotable: 1, unlisted: 0 },
+    }))).ok).toBe(false);
+    // With positions unlisted, equity now cannot be summed from the list and is not checked.
+    expect(checkSummary(JSON.stringify(goodSummary({ headline: { ...goodSummary().headline, equity_sol: '9' }, open: { ...goodSummary().open, marked_net_lamports: '-3000000', unlisted: 2 } }))).ok).toBe(true);
+    // (d) a final post: equity is the day's last sample (not summed now), and no day change without it.
+    expect(checkSummary(hl({ equity_sol: '9' }, { final: true })).ok).toBe(true);
+    expect(checkSummary(hl({ equity_sol: null }, { final: true })).ok).toBe(false);
+    expect(checkSummary(hl({ equity_sol: null, day_change_sol: null }, { final: true })).ok).toBe(true);
     // rss counts are non-negative integers, all known or all unknown, and lowest <= last <= highest.
     const mem = (m: object) => JSON.stringify(goodSummary({ memory: { ...goodSummary().memory, ...m } }));
     for (const k of ['rss_min_bytes', 'rss_max_bytes', 'rss_last_bytes']) {

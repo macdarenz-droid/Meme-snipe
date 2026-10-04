@@ -235,7 +235,7 @@ export const isSummary = (x: unknown): x is Summary | SummaryV1 => {
       str(o['marked_net_lamports'], PATTERNS.LAMPORTS) && count(o['unquotable']) && count(o['unlisted']))) return false;
     if (!(exact(m, ['rss_min_bytes', 'rss_max_bytes', 'rss_last_bytes', 'rss_change_bytes']) && countOrNull(m['rss_min_bytes']) &&
       countOrNull(m['rss_max_bytes']) && countOrNull(m['rss_last_bytes']) && (m['rss_change_bytes'] === null || int(m['rss_change_bytes'])))) return false;
-    if (!consistent(o as Summary['open'], m as Summary['memory'], hl as Summary['headline'])) return false;
+    if (!consistent(o as Summary['open'], m as Summary['memory'], hl as Summary['headline'], x['pnl'] as Summary['pnl'], x['final'] === true)) return false;
     const { headline: _h, open: _o, memory: _m, ...rest } = x;
     return isCommon({ ...rest, v: 1 });
   }
@@ -244,11 +244,37 @@ export const isSummary = (x: unknown): x is Summary | SummaryV1 => {
 
 /**
  * Version 2's figures agree with each other (golden rule: a report that contradicts itself is refused, not stored):
- * with every position listed, the marked total is the sum of the listed marked nets and `unquotable` is the number of
- * null values (with some unlisted, at least that many); the headline's open marked net is the same total in SOL; memory
- * is all known or all unknown, and lowest ≤ last ≤ highest.
+ * the headline's day net is the closed net in SOL; each position's marked net is its value less its cost (the shape
+ * already makes it null exactly when the value is); with every position listed, the marked total is the sum of the
+ * listed marked nets and `unquotable` is the number of null values (with some unlisted, at least that many); the
+ * headline's open marked net is the same total in SOL; memory is all known or all unknown, and lowest ≤ last ≤ highest. Equity now (not final, every position listed) is the
+ * balance plus every value, and unknown exactly when the balance or a value is; a final post without equity has no
+ * day change.
  */
-const consistent = (o: Summary['open'], m: Summary['memory'], hl: Summary['headline']): boolean => {
+const consistent = (o: Summary['open'], m: Summary['memory'], hl: Summary['headline'], pnl: Summary['pnl'], final: boolean): boolean => {
+  // Shapes are checked before this; a bad number string still refuses rather than throws.
+  try {
+    return figuresAgree(o, m, hl, pnl, final);
+  } catch {
+    return false;
+  }
+};
+
+/** An exact SOL decimal string (PATTERNS.SOL) as lamports. */
+const solLamports = (text: string): bigint => {
+  const neg = text.startsWith('-');
+  const [whole = '0', frac = ''] = (neg ? text.slice(1) : text).split('.');
+  const v = BigInt(whole) * 1_000_000_000n + BigInt(frac.padEnd(9, '0'));
+  return neg ? -v : v;
+};
+
+const figuresAgree = (o: Summary['open'], m: Summary['memory'], hl: Summary['headline'], pnl: Summary['pnl'], final: boolean): boolean => {
+  // The day's closed net is the same figure in SOL.
+  if (hl.day_net_sol !== solText(BigInt(pnl.net_lamports))) return false;
+  // Each position with a value: its marked net is value less cost (the shape check already pairs the two nulls).
+  for (const p of o.positions) {
+    if (p.value_lamports !== null && BigInt(p.marked_net_lamports!) !== BigInt(p.value_lamports) - BigInt(p.cost_lamports)) return false;
+  }
   const nulls = o.positions.filter((p) => p.value_lamports === null).length;
   if (o.unlisted === 0) {
     const sum = o.positions.reduce((a, p) => a + (p.marked_net_lamports === null ? 0n : BigInt(p.marked_net_lamports)), 0n);
@@ -258,6 +284,15 @@ const consistent = (o: Summary['open'], m: Summary['memory'], hl: Summary['headl
   const known = [m.rss_min_bytes, m.rss_max_bytes, m.rss_last_bytes].filter((v) => v !== null).length;
   if (known !== 0 && known !== 3) return false;
   if (known === 3 && !(m.rss_min_bytes! <= m.rss_last_bytes! && m.rss_last_bytes! <= m.rss_max_bytes!)) return false;
+  if (final) {
+    // A final post's equity and day change both come from the day's last equity sample: no change without it.
+    if (hl.equity_sol === null && hl.day_change_sol !== null) return false;
+  } else if (o.unlisted === 0) {
+    // Equity now is the balance plus every value: unknown exactly when the balance or any value is.
+    const unknown = hl.balance_sol === null || o.unquotable > 0;
+    if ((hl.equity_sol === null) !== unknown) return false;
+    if (!unknown && hl.equity_sol !== solText(o.positions.reduce((a, p) => a + BigInt(p.value_lamports!), solLamports(hl.balance_sol!)))) return false;
+  }
   return true;
 };
 
