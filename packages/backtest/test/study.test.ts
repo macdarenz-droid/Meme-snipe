@@ -7,7 +7,7 @@ import { STUDY_CONFIG, configId } from '../src/strategy/config.ts';
 import { tradesOf } from '../src/trades.ts';
 import { devFunderOf, NO_CLUSTER, scoreRun } from '../src/study/score.ts';
 import { mintHashFraction } from '../src/sim/facts.ts';
-import { key, type MintPlan, studyWorld, W0 } from './study-world.ts';
+import { key, type MintPlan, studyWorld, W0, WSLOT0 } from './study-world.ts';
 import { SOL_USD } from './synthetic.ts';
 import { oneTimeRent } from '../../worker/src/run/settings.ts';
 import { ASSUMPTIONS } from '../../worker/src/facts/budget.ts';
@@ -156,6 +156,19 @@ describe('BT-2 study runs', () => {
     const enters = decisions(r.records).filter((d) => d.reasons[0] === 'enter');
     expect(enters.length).toBeGreaterThan(0);
     for (const d of enters) expect(d.eventId).toMatch(/^r:\d{9}:.*~landed$/);
+  });
+
+  it('re-runs every stage at the decision moment (audit B2): a stage-1 gate that fails after the check stops the entry at the landing', () => {
+    const one = run([{ ...SETUP, creator: 'dev' }]);
+    const enter = decisions(one.r.records).find((d) => d.reasons[0] === 'enter');
+    expect(enter).toBeDefined();
+    const landed = Number(enter!.at.slot - WSLOT0);
+    // Two more mints by the same deployer, created after the passing check and before its reads land: H14 (stage 1)
+    // calls it a serial deployer at the decision moment. A stage-1 pass carried from the check would enter anyway.
+    const later = run([{ ...SETUP, creator: 'dev' }, ...[0, 1].map((k) => ({ ...SETUP, label: `late${k}`, creator: 'dev', createSlot: landed - 12 + k, swapsFor: 1 }))]);
+    const mint = enter!.reasons[2];
+    expect(decisions(later.r.records).filter((d) => d.reasons[0] === 'enter' && d.reasons[2] === mint)).toHaveLength(0);
+    expect(decisions(later.r.records).some((d) => d.reasons[0] === 'reject' && d.reasons[2] === mint && d.reasons.includes('H14:serial-deployer'))).toBe(true);
   });
 
   it('the holder scan budget is the live cap: spent, H12 and H13 are "not evaluated", never a pass', () => {

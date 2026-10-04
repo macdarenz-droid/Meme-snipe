@@ -1,8 +1,7 @@
 // The funnel counts every check once, at the first failed gate in H1…H16 order or the later stage it stopped at, and
 // keeps adverse rejects apart from missing evidence ("not covered"); mints are counted at their furthest stage.
 import { describe, expect, it } from 'vitest';
-import { type GateReason, HARD_GATES, type HardGate, type HardResult } from '../../core/src/gates/index.ts';
-import { mergeGates } from '../src/strategy/study.ts';
+import { type GateReason, type HardGate, type HardResult } from '../../core/src/gates/index.ts';
 import { firstStop, Funnel, funnelLines } from '../src/study/funnel.ts';
 
 const result = (reasons: GateReason[]): HardResult => {
@@ -62,11 +61,4 @@ describe('feature rule', () => {
   });
 });
 
-describe('staged gates', () => {
-  const staged = (gates: readonly HardGate[]): HardResult => ({ pass: true, complete: false, mode: 'backtest', mint: 'm', evaluated: [...gates], passed: [...gates], failed: [], reasons: [], notes: [] });
-  it('is complete only when the stages together evaluated every hard gate (GATE-2)', () => {
-    const all = HARD_GATES.slice();
-    expect(mergeGates(staged(all.slice(0, 8)), staged(all.slice(8))).complete).toBe(true);
-    expect(mergeGates(staged(all.slice(0, 8)), staged(all.slice(9))).complete).toBe(false);
-  });
-});
+// The staged evaluation's GATE-2 completeness is tested with the evaluation itself (staged-parity.test.ts).

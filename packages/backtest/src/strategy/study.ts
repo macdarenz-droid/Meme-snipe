@@ -140,7 +140,7 @@ export class StudyStrategy implements Strategy {
   readonly #navMarks: NavMark[] = [];
   #setupCost: AccountCost | null = null;
   /** Candidates past stage 1 whose stage-2 and stage-3 reads have not landed yet, by tag and mint. */
-  readonly #pending = new Map<string, { readonly n: number; readonly awaiting: 2 | 3; readonly gates: HardResult }>();
+  readonly #pending = new Map<string, { readonly n: number; readonly awaiting: 2 | 3 }>();
   /** Complete holder scans spent per UTC day (the live cap). */
   readonly #scans = new Map<string, number>();
   /** When each mint's reads were last asked: at most one read round per mint per `minReadGapMs`. */
@@ -346,14 +346,16 @@ export class StudyStrategy implements Strategy {
   }
 
   /**
-   * The hard rejects of the given gates as of now, every one evaluated. S0 runs its universe's gates (audit B1: U2's
-   * chase check, U1's liquidity floor); it differs from the universe only in which check it enters at.
+   * The hard rejects as of now through the first `groups` stage groups (1; 1 and 2; or all three), in one call at one
+   * moment (audit B2, FACTS-1f's live staged path): every stage from stage 1 is evaluated again at each step, so a pass
+   * is never carried from an earlier moment. S0 runs its universe's gates (audit B1: U2's chase check, U1's liquidity
+   * floor); it differs from the universe only in which check it enters at.
    */
-  #gates(ctx: StrategyContext, u: UniverseConfig, mint: string, roundTrip: ReturnType<ReturnType<typeof pumpSwapRoundTrip>>, spend: bigint, only: readonly HardGate[]): HardResult {
+  #gates(ctx: StrategyContext, u: UniverseConfig, mint: string, roundTrip: ReturnType<ReturnType<typeof pumpSwapRoundTrip>>, spend: bigint, groups: 1 | 2 | 3): Staged {
     const policy = this.#o.session.policy;
     const gctx: GateContext = { now: ctx.now, lookup: (k, a) => ctx.lookup(k, a), history: (k, f, t) => ctx.history(k, f, t), deployers: this.#deployers, observedTip: this.#tip(ctx) ?? ctx.now.slot };
-    return evaluateHardRejects(gctx, { session: this.#o.session, mode: 'backtest', rugLabeller: 'RUG-1' },
-      { mint, universe: u.universe as Universe, notional: policy.capital.minNotional, spend: spend as Lamports, roundTrip }, { stopAtFirst: false, only });
+    return stagedHardRejects(gctx, { session: this.#o.session, mode: 'backtest', rugLabeller: 'RUG-1' },
+      { mint, universe: u.universe as Universe, notional: policy.capital.minNotional, spend: spend as Lamports, roundTrip }, groups, this.#o.ablate ?? []);
   }
 
   #check(e: MarketEvent, ctx: StrategyContext, out: Decision[]): void {
@@ -405,14 +407,13 @@ export class StudyStrategy implements Strategy {
 
     // Stage 1 (FACTS-1 staging): the stream-derived hard rejects, every one evaluated (calibration log). Only a
     // candidate that passes asks for the reads of stages 2 and 3; their answers land later (`LANDED_PREFIX`).
-    const g1 = this.#gates(ctx, u, mint, quoter(spend), spend, STAGE_1);
-    const ablated1 = this.#o.ablate !== undefined && !g1.pass && g1.failed.every((g) => this.#o.ablate!.includes(g));
-    if (!g1.pass && !ablated1) return void (this.funnel.gates(tag, mint, g1), say('reject', ...gateCodes(g1), `not evaluated: ${STAGES_LATER.join(',')}`));
+    const g1 = this.#gates(ctx, u, mint, quoter(spend), spend, 1);
+    if (g1.stopped) return void (this.funnel.gates(tag, mint, g1.hard), say('reject', ...gateCodes(g1.hard), `not evaluated: ${g1.notEvaluated.join(',')}`));
     // One read round per mint per minute (live cap): a check inside that gap waits for the next one.
     const last = this.#lastAsk.get(mint);
     if (last !== undefined && now - last < this.#o.readLimits.minReadGapMs) return;
     this.#lastAsk.set(mint, now);
-    this.#pending.set(key, { n: (e.value as { n: number }).n, awaiting: 2, gates: g1 });
+    this.#pending.set(key, { n: (e.value as { n: number }).n, awaiting: 2 });
   }
 
   /**
@@ -443,21 +444,24 @@ export class StudyStrategy implements Strategy {
     const policy = this.#o.session.policy;
     const spend = microUsdToLamports(policy.capital.minNotional, px.price as MicroUsd, 'ceil');
     const quoter = pumpSwapRoundTrip(poolState(view), observedFeeContext(view.fees, view.baseSupply, NORMAL));
-    const gates = mergeGates(p.gates, this.#gates(ctx, u, mint, quoter(spend), spend, stage === 2 ? STAGE_2 : STAGES_3_4));
+    // Every stage from stage 1 again, at this moment (audit B2): stages 1-2 when the account reads land, all of them
+    // when the holder scan lands. The earlier stages' answers only decided which reads to ask for.
+    const staged = this.#gates(ctx, u, mint, quoter(spend), spend, stage === 2 ? 2 : 3);
+    const gates = staged.hard;
     const ablated = this.#o.ablate !== undefined && !gates.pass && gates.failed.every((g) => this.#o.ablate!.includes(g));
     if (stage === 2) {
-      if (!gates.pass && !ablated) return void (this.#pending.delete(key), this.funnel.gates(tag, mint, gates), say('reject', ...gateCodes(gates), `not evaluated: ${STAGES_3_4.join(',')}`));
+      if (staged.stopped) return void (this.#pending.delete(key), this.funnel.gates(tag, mint, gates), say('reject', ...gateCodes(gates), `not evaluated: ${staged.notEvaluated.join(',')}`));
       // The complete holder scan runs only for a candidate past stage 2, within the live daily cap (FACTS-1's
       // HOLDER_SCANS_PER_DAY); reached, H12 and H13 abstain: "not evaluated", never a pass.
       const day = new Date(now).toISOString().slice(0, 10);
       const used = this.#scans.get(day) ?? 0;
-      if (used >= this.#o.readLimits.holderScansPerUtcDay) return void (this.#pending.delete(key), stop('not evaluated', 'not covered'), say('not evaluated', 'holder scan budget spent', STAGES_3_4.join(',')));
+      if (used >= this.#o.readLimits.holderScansPerUtcDay) return void (this.#pending.delete(key), stop('not evaluated', 'not covered'), say('not evaluated', 'holder scan budget spent', HARD_STAGE_GROUPS[2]!.join(',')));
       this.#scans.set(day, used + 1);
-      this.#pending.set(key, { n, awaiting: 3, gates });
+      this.#pending.set(key, { n, awaiting: 3 });
       return;
     }
     this.#pending.delete(key);
-    if (!gates.pass && !ablated) return void (this.funnel.gates(tag, mint, gates), say('reject', ...gateCodes(gates)));
+    if (staged.stopped || (!gates.pass && !ablated)) return void (this.funnel.gates(tag, mint, gates), say('reject', ...gateCodes(gates), ...(staged.notEvaluated.length > 0 ? [`not evaluated: ${staged.notEvaluated.join(',')}`] : [])));
     // An entry needs a complete evaluation with no reasons (GATE-2): a gate left out is never a pass.
     if (!gates.complete) return void (stop('not evaluated', 'not covered'), say('not evaluated', `gates not evaluated: ${HARD_GATES.filter((g) => !gates.evaluated.includes(g)).join(',')}`));
     // An ablation run enters only what the filter blocks: everything else is the main run's.
@@ -797,19 +801,34 @@ export const u1Setup = (r: U1Rules, tape: PoolTape, spot: bigint, now: number, c
 
 export { LAMPORTS_PER_SOL };
 
-const STAGE_1 = gatesOfStages([1]);
-const STAGES_LATER = gatesOfStages([2, 3, 4]);
-const STAGE_2 = gatesOfStages([2]);
-const STAGES_3_4 = gatesOfStages([3, 4]);
+/** GATE-2's stage groups, as live (FACTS-1f): stage 1 (stream-derived), stage 2 (account reads), stages 3 and 4. */
+export const HARD_STAGE_GROUPS: readonly (readonly HardGate[])[] = [gatesOfStages([1]), gatesOfStages([2]), gatesOfStages([3, 4])];
 
-/** Two partial gate results as one (stages evaluated so far). */
-/** Two staged evaluations as one: complete only when together they evaluated every hard gate (GATE-2). */
-export const mergeGates = (a: HardResult, b: HardResult): HardResult => {
-  const evaluated = [...a.evaluated, ...b.evaluated];
-  return {
-    ...b, pass: a.pass && b.pass, complete: HARD_GATES.every((g) => evaluated.includes(g)), evaluated, passed: [...a.passed, ...b.passed],
-    failed: [...a.failed, ...b.failed], reasons: [...a.reasons, ...b.reasons], notes: [...a.notes, ...b.notes],
-  };
+/** A staged evaluation: `stopped` when a group failed on a gate that is not ablated, the groups after it unread. */
+export interface Staged {
+  readonly hard: HardResult;
+  readonly stopped: boolean;
+  readonly notEvaluated: readonly HardGate[];
+}
+
+/**
+ * The hard rejects in GATE-2's stage groups, as FACTS-1f's live `stagedHardRejects` evaluates them (#106), in one call
+ * at one `ctx.now`: groups in order, every gate of a group evaluated, stopping at the first group with a reject; the
+ * gates after it are not evaluated, never passed. `groups` limits how far the reads have landed. A paper ablation run
+ * goes on past a group whose only failures are its ablated gates. `complete` is GATE-2's: every hard gate evaluated.
+ */
+export const stagedHardRejects = (gctx: GateContext, deps: Parameters<typeof evaluateHardRejects>[1], req: Parameters<typeof evaluateHardRejects>[2], groups: 1 | 2 | 3 = 3, ablate: readonly HardGate[] = []): Staged => {
+  let hard: HardResult | null = null;
+  for (let k = 0; k < groups; k++) {
+    const r = evaluateHardRejects(gctx, deps, req, { stopAtFirst: false, only: HARD_STAGE_GROUPS[k]! });
+    hard = hard === null ? r : {
+      ...r, pass: hard.pass && r.pass, evaluated: [...hard.evaluated, ...r.evaluated], passed: [...hard.passed, ...r.passed],
+      failed: [...hard.failed, ...r.failed], reasons: [...hard.reasons, ...r.reasons], notes: [...hard.notes, ...r.notes],
+    };
+    if (!r.pass && !r.failed.every((g) => ablate.includes(g))) return { hard: { ...hard, complete: false }, stopped: true, notEvaluated: HARD_STAGE_GROUPS.slice(k + 1).flat() };
+  }
+  const done = hard!;
+  return { hard: { ...done, complete: HARD_GATES.every((g) => done.evaluated.includes(g)) }, stopped: false, notEvaluated: HARD_STAGE_GROUPS.slice(groups).flat() };
 };
 
 const fixedStop = (stopBelowBps: number, spot: bigint): { ok: true; stopSpot: bigint } | { ok: false; why: string } => {
