@@ -22,7 +22,7 @@ import { feesKey } from '../src/engine/strategy.ts';
 import { FEE_CONTEXT, passingFacts } from '../../core/test/gates/world.ts';
 import { chainTx } from '../../core/test/facts/helpers.ts';
 import { transactionEvents } from '../../core/src/chain/index.ts';
-import { loadState, saveState } from '../src/persist/index.ts';
+import { loadState, saveState, type SavedCandidateState } from '../src/persist/index.ts';
 import { runSeed } from '../src/run/seed-start.ts';
 import { CREATE_WALK_PAGES, PERSIST_FILE, type SeedRequest } from '../src/run/worker.ts';
 import { PUMP_MIGRATION_AUTHORITY } from '../src/run/sources.ts';
@@ -503,6 +503,37 @@ describe('RESTART-KEEP: a restart keeps the candidates in their window', () => {
     writeFileSync(path, JSON.stringify({ version: outer.version, sha256: createHash('sha256').update(payload).digest('hex'), payload }));
     const r = loadState(path, RUG_CONFIG);
     expect(r.ok).toBe(false);
+    expect(r.ok ? '' : r.reason).toMatch(why);
+  }, 60_000);
+
+  it.each([
+    ['migrated after the snapshot moment', (c: SavedCandidateState, at: number) => [{ ...c, migratedAtMs: at + 1 }], /candidate .* is dated after the snapshot moment/],
+    ['evaluated after the snapshot moment', (c: SavedCandidateState, at: number) => [{ ...c, lastEvalMs: at + 1 }], /candidate .* is dated after the snapshot moment/],
+    ['with a bar started after the snapshot moment', (c: SavedCandidateState, at: number) => [{ ...c, bars: [{ startMs: at + 1, high: 2n, low: 1n, close: 2n }] }], /candidate .* is dated after the snapshot moment/],
+    ['named twice', (c: SavedCandidateState) => [c, c], /appears twice/],
+  ])('saveState refuses a candidate %s, and the old file stays whole (a bad save would discard the index next load)', async (_, change, why) => {
+    const { h } = await shortlistedAndStopped();
+    const path = join(h.stateDir, PERSIST_FILE);
+    const before = readFileSync(path);
+    const st = loadState(path, RUG_CONFIG);
+    if (!st.ok) throw new Error(st.reason);
+    const base = { asOf: st.asOf, index: st.index.snapshot(st.asOf), labeller: st.labeller.snapshot(), coverage: st.coverage.filter((e) => !e.id.startsWith('persist:restart:')), ...(st.graduates === null ? {} : { graduates: st.graduates }) };
+    expect(() => saveState(path, { ...base, candidates: change(st.candidates[0]!, st.asOf.receivedAt) })).toThrow(why);
+    expect(readFileSync(path).equals(before)).toBe(true);
+    expect(loadState(path, RUG_CONFIG).ok).toBe(true);
+  }, 60_000);
+
+  it.each([
+    ['malformed', [{ mint: 'tail-a', pool: '', untilMs: 1 }], /a saved tail is malformed/],
+    ['named twice', [{ mint: 'tail-a', pool: 'p', untilMs: 1 }, { mint: 'tail-a', pool: 'p', untilMs: 2 }], /tail tail-a appears twice/],
+  ])('a saved tail list %s discards the whole file (state, load)', async (_, tails, why) => {
+    const { h } = await shortlistedAndStopped();
+    const path = join(h.stateDir, PERSIST_FILE);
+    const outer = JSON.parse(readFileSync(path, 'utf8')) as { version: number; sha256: string; payload: string };
+    const payload = JSON.stringify({ ...JSON.parse(outer.payload), tails });
+    const { createHash } = await import('node:crypto');
+    writeFileSync(path, JSON.stringify({ version: outer.version, sha256: createHash('sha256').update(payload).digest('hex'), payload }));
+    const r = loadState(path, RUG_CONFIG);
     expect(r.ok ? '' : r.reason).toMatch(why);
   }, 60_000);
 
