@@ -1298,6 +1298,8 @@ cleanup() {
   rm -rf "$tmp"
 }
 trap cleanup EXIT
+# The scratch directory belongs to the worker's user (mktemp makes it root's): the trial writes its state there.
+chown zeroed-worker:zeroed-worker "$tmp"
 install -d -m 0700 -o zeroed-worker -g zeroed-worker "$tmp/state"
 # run LIMIT_S ARGS...: the release's worker with the worker unit's environment (worker-start) and nothing from this
 # shell, stopped after LIMIT_S seconds (0: no limit). ZEROED_GIT_SHA names the trial release.
@@ -1309,13 +1311,16 @@ run() {
     ZEROED_HEALTH_ADDR="$SMOKE_HEALTH_ADDR" ZEROED_API_ADDR="$SMOKE_API_ADDR" ZEROED_GIT_SHA="$(basename "$dir")" \
     /usr/local/bin/node --no-warnings "$entry" "$@"
 }
-last() { tail -n 1 "$1" | tr -cd '[:print:]' | cut -c1-200; }
+# why LOG: the line that says what went wrong (an error or a refusal), else the last line; one line, printable.
+why() {
+  { grep -m1 -E '(^|[^A-Za-z])([A-Za-z]*Error|refused)([^A-Za-z]|$)' "$1" || tail -n 1 "$1"; } | tr -cd '[:print:]' | cut -c1-200
+}
 
 cd "$dir"
 rc=0
 run 120 --reconcile >"$tmp/reconcile.log" 2>&1 || rc=$?
 if [ "$rc" != 0 ]; then
-  echo "its reconcile exited $rc: $(last "$tmp/reconcile.log")"
+  echo "its reconcile exited $rc: $(why "$tmp/reconcile.log")"
   exit 1
 fi
 run 0 >"$tmp/start.log" 2>&1 &
@@ -1323,7 +1328,7 @@ pid=$!
 for _ in $(seq 1 90); do
   if ! kill -0 "$pid" 2>/dev/null; then
     rc=0; wait "$pid" || rc=$?; pid=""
-    echo "it exited $rc: $(last "$tmp/start.log")"
+    echo "it exited $rc: $(why "$tmp/start.log")"
     exit 1
   fi
   if curl -fsS -m 2 "http://$SMOKE_HEALTH_ADDR/health" 2>/dev/null | jq -e '.mode == "paper"' >/dev/null 2>&1; then
@@ -1331,7 +1336,7 @@ for _ in $(seq 1 90); do
   fi
   sleep 1
 done
-echo "its health route did not answer within 90 s: $(last "$tmp/start.log")"
+echo "its health route did not answer within 90 s: $(why "$tmp/start.log")"
 exit 1
 __ZEROED_FILE__
 install_file /usr/local/lib/zeroed/worker-start 0755 <<'__ZEROED_FILE__'
