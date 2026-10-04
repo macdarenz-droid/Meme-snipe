@@ -1,0 +1,89 @@
+name: helius-ledger
+
+# The account-wide Helius credit ledger (DATA-4, research/historical/ci/rpc-ledger.sh):
+# release helius-ledger, file ledger.json. Every helius job (data-scan source helius,
+# data-helius-pilot) reserves its credits there before any request and settles after,
+# and fails closed while no ledger exists.
+#   show: prints the ledger.
+#   unlock: removes ledger.lock left by a job that died holding it (check first that no
+#     helius job is running).
+#   init: creates the ledger for a billing period; refused when one exists. Inputs:
+#     period         a label for the plan's month (the reset date is on the Helius dashboard)
+#     limit          the plan's credits for the month (free plan: 1000000)
+#     worker_budget  the live worker's share, held back from every reservation (the
+#                    worker spends on the same account but does not write here): its
+#                    budget for the rest of the period, H15's about 8600 a day plus the
+#                    creates catch-up cap of 150000, never above its 700000 halt
+#     used           credits already used this period (from the Helius dashboard) by
+#                    everything but the worker's share, so nothing spent before the
+#                    ledger is forgotten
+#     days           optional DAY=CREDITS pairs, comma-separated, for what of `used` was
+#                    spent on practice days (counts against their day caps)
+# No Helius key is used here.
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        type: choice
+        options: [show, init, unlock]
+        default: show
+      period:
+        default: ""
+      limit:
+        default: "1000000"
+      worker_budget:
+        default: ""
+      used:
+        default: ""
+      days:
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: data-helius
+  cancel-in-progress: false
+
+jobs:
+  ledger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write # the ledger release, in the one step below
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Ledger
+        shell: /usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc -eo pipefail {0}
+        env:
+          ACTION: ${{ inputs.action }}
+          PERIOD: ${{ inputs.period }}
+          LIMIT: ${{ inputs.limit }}
+          WORKER_BUDGET: ${{ inputs.worker_budget }}
+          USED: ${{ inputs.used }}
+          DAYS: ${{ inputs.days }}
+          GH_TOKEN: ${{ github.token }}
+          BASH_ENV: ""
+          LD_PRELOAD: ""
+          LD_AUDIT: ""
+          LD_LIBRARY_PATH: ""
+        run: |
+          args=(show)
+          [ "$ACTION" = unlock ] && args=(unlock)
+          if [ "$ACTION" = init ]; then
+            [[ "$PERIOD" =~ ^[0-9A-Za-z._-]+$ && "$LIMIT" =~ ^[0-9]+$ && "$WORKER_BUDGET" =~ ^[0-9]+$ && "$USED" =~ ^[0-9]+$ ]] ||
+              { echo "init needs period, limit, worker_budget and used (whole numbers)"; exit 1; }
+            args=(init "$PERIOD" "$LIMIT" "$WORKER_BUDGET" "$USED")
+            IFS=, read -ra pairs <<< "$DAYS"
+            for kv in "${pairs[@]}"; do
+              kv=${kv// /}
+              [ -z "$kv" ] && continue
+              [[ "$kv" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}=[0-9]+$ ]] || { echo "bad days entry '$kv'"; exit 1; }
+              args+=("$kv")
+            done
+          fi
+          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" GH_TOKEN="$GH_TOKEN" GITHUB_REPOSITORY="$GITHUB_REPOSITORY" \
+            /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/rpc-ledger.sh" "${args[@]}" | tee -a "$GITHUB_STEP_SUMMARY"

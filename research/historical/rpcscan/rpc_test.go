@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -725,19 +724,24 @@ func lens(l []string) []int {
 	return out
 }
 
-// The usage file rpc-run writes is the one ci/rpc-credits.sh books: a credit count
-// that is not read back would let the day's cap be passed.
-func TestUsageFileBooksInRpcCredits(t *testing.T) {
+// The usage file carries "final" only at a clean exit: ci/rpc-ledger.sh books a
+// non-final file's whole reservation, since a run killed mid-unit may have spent more
+// than it last wrote.
+func TestUsageFileFinalFlag(t *testing.T) {
 	h := &heliusClient{}
 	h.Credits.Store(4242)
 	dir := t.TempDir()
-	writeUsage(filepath.Join(dir, "u.json"), h)
-	cmd := exec.Command("bash", "../ci/rpc-credits.sh", "add", dir, filepath.Join(dir, "u.json"))
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("rpc-credits add: %v %s", err, out)
-	}
-	if b, _ := os.ReadFile(filepath.Join(dir, "rpc-credits-used")); strings.TrimSpace(string(b)) != "4242" {
-		t.Fatalf("booked %q", b)
+	for _, final := range []bool{false, true} {
+		p := filepath.Join(dir, "u.json")
+		writeUsage(p, h, final)
+		var u map[string]any
+		b, _ := os.ReadFile(p)
+		if err := json.Unmarshal(b, &u); err != nil {
+			t.Fatal(err)
+		}
+		if u["final"] != final || u["credits"] != float64(4242) {
+			t.Fatalf("final=%v: wrote %s", final, b)
+		}
 	}
 	if rpcExitCode(fmt.Errorf("x: %w", errCreditCap)) != 3 || rpcExitCode(fmt.Errorf("x: %w", errBackoffBudget)) != 75 || rpcExitCode(errors.New("x")) != 1 {
 		t.Fatalf("exit codes")

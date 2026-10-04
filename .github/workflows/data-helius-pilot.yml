@@ -37,6 +37,8 @@ jobs:
   pilot:
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    permissions:
+      contents: write # used only by the two Helius credit ledger steps
     steps:
       - name: Check the credit stop
         env:
@@ -63,12 +65,32 @@ jobs:
           rev=$("$GITHUB_WORKSPACE/research/historical/ci/rpcscan-rev.sh")
           go build -trimpath -ldflags "-X main.scannerRevision=$rev" -o "$RUNNER_TEMP/bin/zeroed-rpcscan" .
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      # DATA-4: the pilot's credits are reserved in the account-wide ledger
+      # (ci/rpc-ledger.sh, release helius-ledger) before any request, in a clean shell
+      # without the Helius key; a missing ledger fails closed. The run id as the day key gives
+      # it its own cap of max_credits.
+      - name: Reserve Helius credits
+        id: reserve
+        shell: /usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc -eo pipefail {0}
+        env:
+          RID: pilot-${{ github.run_id }}-${{ github.run_attempt }}
+          GH_TOKEN: ${{ github.token }}
+          MAX_CREDITS: ${{ inputs.max_credits }}
+          BASH_ENV: ""
+          LD_PRELOAD: ""
+          LD_AUDIT: ""
+          LD_LIBRARY_PATH: ""
+        run: >-
+          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" GH_TOKEN="$GH_TOKEN" GITHUB_REPOSITORY="$GITHUB_REPOSITORY"
+          /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/rpc-ledger.sh"
+          reserve "$RID" "$RID" "$MAX_CREDITS" "$MAX_CREDITS" "$RUNNER_TEMP/rpc-reservation"
       - name: Pilot (free plan, hard credit stop)
         env:
           HELIUS_API_KEY: ${{ secrets.HELIUS_API_KEY }}
-          MAX_CREDITS: ${{ inputs.max_credits }}
         run: |
-          mkdir -p "$RUNNER_TEMP/report"
+          mkdir -p "$RUNNER_TEMP/report" "$RUNNER_TEMP/ledger"
+          MAX_CREDITS=$(cat "$RUNNER_TEMP/rpc-reservation")
+          : > "$RUNNER_TEMP/ledger/rpc-started-pilot"
           # -sample 0.05 is the baseline unit's (and CI's) sample; the scanner refuses
           # any other. -rps 8 stays under the free plan's 10 requests a second.
           zeroed-rpcscan pilot \
@@ -76,6 +98,28 @@ jobs:
             -compare 1046:452277000-452281499 -sample 0.05 \
             -max-credits "$MAX_CREDITS" -rps 8 -conc 4 -workers 4 \
             -work "$RUNNER_TEMP/pilot-work" -report "$RUNNER_TEMP/report/pilot-report.json"
+      # The report is written after the last request, so its usage is final; with no
+      # report (a killed run) the whole reservation is booked.
+      - name: Settle Helius credits
+        if: always() && steps.reserve.outcome == 'success'
+        shell: /usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc -eo pipefail {0}
+        env:
+          RID: pilot-${{ github.run_id }}-${{ github.run_attempt }}
+          GH_TOKEN: ${{ github.token }}
+          MAX_CREDITS: ${{ inputs.max_credits }}
+          BASH_ENV: ""
+          LD_PRELOAD: ""
+          LD_AUDIT: ""
+          LD_LIBRARY_PATH: ""
+        run: |
+          /usr/bin/python3 - "$RUNNER_TEMP/report/pilot-report.json" "$RUNNER_TEMP/ledger/rpc-usage-pilot.json" <<'EOF' || true
+          import json, sys
+          u = json.load(open(sys.argv[1]))["usage"]
+          u["final"] = True
+          json.dump(u, open(sys.argv[2], "w"))
+          EOF
+          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" GH_TOKEN="$GH_TOKEN" GITHUB_REPOSITORY="$GITHUB_REPOSITORY" \
+            /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/rpc-ledger.sh" settle "$RID" "$RUNNER_TEMP/ledger"
       - name: Summarise the report
         if: always()
         run: |
