@@ -1417,3 +1417,22 @@ Built to the supervisor's revised spec and the consensus rulings that followed i
   - `packages/ops/test/host-logic.test.ts`: `worker_shakedown`, the `worker-start` and `worker-smoke` wiring.
   - `ops/test/e2e.sh` 10b2: the release built from this commit shows S0 and the four parts in `/health`, the start line (not qualifying, the edge) and the worker's environment. The trial refuses the shakedown in a release with a qualifying run, and a block with a name outside the five.
   - Hand mutants, all caught: `ENV_NAMES` without the name; parity without the set; a fixed `entry_rule`; the wallet refusal only when qualifying; the edge one lower and one higher; a tip-account stand-in; `worker_shakedown` with no name check, a longer value limit, or shell characters allowed.
+
+## Bounded growth over a long run (WORKER-GROW, card 4)
+
+- **2026-10-04 · Timeline (supervisor).** Measured tonight: a restart after about 4–5 days of running would be killed at boot (the deployer store, fixed in part by GROWTH-SWEEP #159). The worker's memory also grew in RAM with no restart: the engine's as-of store kept every released event for the whole process. Card 4 has to be merged and deployed before Thursday 8 Oct (Melbourne). It goes in three PRs: G4a (the store), G4b (the deployer seed, the index and producer maps, `state.json`), G4c (journal rotation, bounded runner readers, the recorder manifest).
+- **2026-10-04 · G4a: the as-of store is pruned (core, `engine/asof.ts`, `engine/engine.ts`, `gates/retention.ts`).**
+  - **Readers, checked by reading every `lookup` and `history` call.** `history` is read only by the coverage readers (`createsCoverage`, every `coverage:*` entry from the start) and the trade-tail checks (GATE-1c: a candidate pool's trades since migration, and its curve trades with no start). Everything else reads `lookup` as of now, which is the newest entry.
+  - **When pruning runs.** At each hour of the event clock: the received time of the events, never the wall clock, so a replay of the same events prunes at the same points. `AsOfStore.prune` then drops, per key, the entries received before the key's horizon, except the newest of them. So every lookup and every history that starts at or after the cut answers as before.
+  - **Rules (`retentionFor`, from the policy and the strategy window):**
+    - `coverage:*`: every entry kept;
+    - trade-event keys: the look-back plus a day (15 days), then the key goes;
+    - per-object keys (a mint's `gates/*` facts, `pump`/`pump_amm` chain events, accounts): a day, or the candidate window plus the longest hold plus an hour if that is longer, then the key goes;
+    - everything else: the newest entry plus an hour.
+  - **Effect on decisions.**
+    - The create fact: create facts alone measure about 67 MB a day, too much to keep for the look-back. The producer emits a mint's create fact once (`t.create`), so a re-fetch would not bring it back. So the producer now releases it again, unchanged, with the migration fact (`#migration`), from which point the coin is a candidate. The candidate then reads the same value inside the per-object horizon, whatever the gap between create and migration (test: a store pruned between them still answers it; it fails without the second release).
+    - A curve tape older than 15 days reads like one never seen, which the curve check already accepts.
+    - Any other per-object fact is made near its candidate's window and read within it. A missing fact rejects, never passes.
+  - **Who uses it.** Live, the parity replay and the backtest all pass the same rule set (guard test).
+  - **Measured.** Through the engine with slots, create sightings, create logs and create facts at live rates: heap +201, +402, +606, +801 MB after days 1–4 without retention; +134, +138, +137, +137 MB with it, about one day of per-object keys.
+  - **Tests.** `packages/core/test/facts/producer.test.ts` (the create fact at migration). `packages/core/test/retention.test.ts`: lookups and in-horizon history unchanged; the same decision log hash with and without retention over 3 days; a store that stays the same size from day 2 to day 6; the rules; refusals. Hand mutants A1–A7 are killed.

@@ -276,6 +276,8 @@ interface Account {
 interface Track {
   readonly mint: string;
   create?: { readonly creator: string; readonly atMs: number; readonly slot: bigint; readonly signature: string };
+  /** The create fact as first made: released again, unchanged, with the migration fact (see `#migration`). */
+  createFact?: unknown;
   completeAtMs?: number;
   /** Slot of the CompleteEvent: no curve buy can follow it. */
   completeSlot?: bigint;
@@ -395,7 +397,8 @@ export class FactProducer {
         if (atMs === null || t.create !== undefined) return;
         t.create = { creator: d.creator, atMs, slot: seen.slot, signature: seen.signature };
         this.#walletMints.set(d.creator, (this.#walletMints.get(d.creator) ?? new Set<string>()).add(d.mint));
-        put(createKey(d.mint), { obs: obs(seen.slot), createdAtMs: atMs, creator: d.creator });
+        t.createFact = { obs: obs(seen.slot), createdAtMs: atMs, creator: d.creator };
+        put(createKey(d.mint), t.createFact);
         this.#prune(t);
         this.#insiders(t, e, put);
         return;
@@ -462,6 +465,10 @@ export class FactProducer {
       obs: { provider: sourceOf(e), slot: m.slot, receivedAt: e.moment.receivedAt, quality: [], commitment: 'confirmed' },
       graduatedAtMs: t.completeAtMs, migratedAtMs: m.atMs, pool: m.pool, quoteAtMigration: created.quote, price: p,
     });
+    // The coin is a candidate only from its migration, which can come days after its create. The engine's store keeps a
+    // per-mint fact for about a day (WORKER-GROW retention), so the create fact goes out again here, the same value
+    // (its own obs, slot and time): the candidate reads what it would have read, and the store need not hold every create.
+    if (t.createFact !== undefined) put(createKey(t.mint), t.createFact);
     this.#pending.set(m.pool, { mint: t.mint, pool: m.pool, migratedAtMs: m.atMs, slot: m.slot });
     if (this.#books.has(m.pool)) this.#writeCandles(m.pool, sourceOf(e), e.moment.receivedAt, put);
   }

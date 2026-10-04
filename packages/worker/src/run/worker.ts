@@ -43,6 +43,7 @@ import { jsonText } from './json.ts';
 import { Journal } from './journal.ts';
 import { type PaperMarket, type PaperState, PaperWorld, type SimLeg } from './paper-world.ts';
 import { Recorder, sealLeftovers } from './recorder.ts';
+import { retentionFor } from '../../../core/src/gates/retention.ts';
 import { entryPrice, openPositionsHealth } from './open-positions.ts';
 import { riskSnapshot } from '../../../core/src/risk/index.ts';
 import { markSettings, riskAccount } from '../engine/marks.ts';
@@ -392,7 +393,7 @@ export class Worker {
     this.#facts = engineFeed(this.#feed, d.session.policy, (e) => {
       if (e.key.startsWith(POOL_PREFIX)) this.#setPool(e.key.slice(POOL_PREFIX.length), e.value);
     });
-    this.#engine = new Engine({ clock: this.#feed.clock, feed: this.#facts.feed, strategy: this.#strategy, runner: this.#world, seed, book: bookConfig });
+    this.#engine = new Engine({ clock: this.#feed.clock, feed: this.#facts.feed, strategy: this.#strategy, runner: this.#world, seed, book: bookConfig, retention: retentionFor(d.session.policy, d.strategy.windowToMs) });
     this.#deployerStore = new DeployerStore(c.stateDir);
     this.#saved = this.#deployerStore.load(now - (d.session.policy.gates.deployerRugLookbackDays + 1) * 86_400_000);
     // PERSIST-1: the saved index, labeller and coverage, when the file holds up (else a fresh start: not covered).

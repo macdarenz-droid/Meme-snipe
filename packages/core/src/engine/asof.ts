@@ -10,6 +10,9 @@ export interface AsOfEntry {
 
 export type AsOfFailure = 'future' | 'missing';
 
+/** How long a key's entries are kept (see `AsOfStore.prune`). */
+export type RetentionRule = 'all' | { readonly horizonMs: number; readonly dropStale: boolean };
+
 export type Lookup = ({ readonly ok: true } & AsOfEntry) | { readonly ok: false; readonly reason: AsOfFailure };
 
 /**
@@ -54,6 +57,50 @@ export class AsOfStore {
     let start = end;
     while (start > 0 && compareMoments(series[start - 1]!.moment, from) >= 0) start--;
     return series.slice(start, end);
+  }
+
+  /**
+   * Retention (WORKER-GROW): drops what no read inside a key's horizon can see. `rule(key)` is 'all' (every entry kept:
+   * coverage, whose readers replay the stream from the start) or a horizon. For a horizon, the entries received before
+   * `atMs - horizonMs` go, except the newest of them, so a lookup answers as before and a history that starts at or after
+   * the cut holds the same entries; with `dropStale`, a key whose newest entry is older than the cut goes whole (a
+   * per-object key nobody reads after its horizon). Returns what was dropped.
+   */
+  prune(atMs: number, rule: (key: string) => RetentionRule): { readonly entries: number; readonly keys: number } {
+    let entries = 0;
+    let keys = 0;
+    for (const [key, series] of this.#series) {
+      const r = rule(key);
+      if (r === 'all') continue;
+      const cutMs = atMs - r.horizonMs;
+      // The last entry received before the cut; every entry after it was received at or after the cut.
+      let last = -1;
+      for (let i = series.length - 1; i >= 0; i--) {
+        if (series[i]!.moment.receivedAt < cutMs) {
+          last = i;
+          break;
+        }
+      }
+      if (last === -1) continue;
+      if (last === series.length - 1 && r.dropStale) {
+        this.#series.delete(key);
+        entries += series.length;
+        keys++;
+        continue;
+      }
+      if (last > 0) {
+        series.splice(0, last);
+        entries += last;
+      }
+    }
+    return { entries, keys };
+  }
+
+  /** How many keys and entries the store holds (for the retention measure). */
+  get size(): { readonly keys: number; readonly entries: number } {
+    let entries = 0;
+    for (const s of this.#series.values()) entries += s.length;
+    return { keys: this.#series.size, entries };
   }
 
   /** Index of the last entry with moment <= `at`, or -1. */

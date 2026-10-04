@@ -2,6 +2,7 @@
 // control as its strategy and the §11 fill model as its outside world. Live and backtest share the engine; only the
 // feed, clock and effect runner here are backtest parts (docs/ARCHITECTURE.md §16.1, §16.2).
 import { exitsFor, type Policy } from '../../core/src/config/index.ts';
+import { retentionFor } from '../../core/src/gates/retention.ts';
 import type { FillConfig, ResearchConfig } from '../../core/src/config/index.ts';
 import { createRng, Engine, type FeedEvent, type LogRecord, type MarketEvent, type Strategy } from '../../core/src/engine/index.ts';
 import { blockedExitValue, type DelayProfileName, drawDiscoverySlots, type PoolDelta, type ScenarioName } from '../../core/src/fills/index.ts';
@@ -169,7 +170,8 @@ export const runBacktest = (o: RunOptions): RunResult => {
   const config = s0Config(o);
   const strategy = o.strategy?.(config) ?? new S0(config);
   // The backtest takes every eligible candidate: no open-position cap beyond one entry in flight at a time (§14).
-  engine = new Engine({ clock: replay.clock, feed: replay.feed, strategy, runner: world, seed: o.seed, book: { maxOpenPositions: maxOpen } });
+  // The same retention as live (WORKER-GROW), so a long backtest keeps the same as-of store as the live worker.
+  engine = new Engine({ clock: replay.clock, feed: replay.feed, strategy, runner: world, seed: o.seed, book: { maxOpenPositions: maxOpen }, retention: retentionFor(o.policy, config.windowToMs) });
 
   let crash: string | null = null;
   try {

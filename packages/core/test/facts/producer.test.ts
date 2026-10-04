@@ -79,6 +79,29 @@ describe('create', () => {
   });
 });
 
+describe('the create fact at migration (WORKER-GROW)', () => {
+  it('goes out again with the migration fact, the same value, so a store pruned between the create and the migration still answers it', () => {
+    // The create seen two days before its graduation (same slots, earlier receipt): a coin that took days to migrate.
+    const early = txEvents(create).map((e) => ({ ...e, moment: { ...e.moment, receivedAt: e.moment.receivedAt - 2 * 86_400_000 } }));
+    const w = new FactWorld().push(...early, ...txEvents(complete), ...txEvents(migrate));
+    const facts = w.facts(createKey(MINT));
+    expect(facts).toHaveLength(2);
+    expect(facts[1]!.value).toEqual(facts[0]!.value);
+    // Released right with the migration fact, from the same source event.
+    const mig = w.facts(migrationKey(MINT)).at(-1)!;
+    expect(facts[1]!.moment).toEqual(mig.moment);
+    expect(facts[1]!.id.split('~')[0]).toBe(mig.id.split('~')[0]);
+    // A cut after the create and before the migration, the per-object rule dropping stale keys: the lookup still answers
+    // the first create fact's value (without the second release, the key would be gone).
+    const createdAt = facts[0]!.moment.receivedAt;
+    const migratedAt = mig.moment.receivedAt;
+    expect(migratedAt).toBeGreaterThan(createdAt);
+    w.store.prune(migratedAt, () => ({ horizonMs: migratedAt - createdAt, dropStale: true }));
+    const r = w.store.lookup(createKey(MINT));
+    expect(r).toMatchObject({ ok: true, value: facts[0]!.value });
+  });
+});
+
 describe('migration and curve', () => {
   it('graduation, migration and the created pool make the migration fact from real events', () => {
     const w = new FactWorld().push(...lifecycle());
