@@ -15,6 +15,8 @@ import type { Policy } from '../../../core/src/config/policy.ts';
 import { HELIUS_RPC_CREDITS } from '../scheduler/limits.ts';
 import { VOLUME_TAG, dayName, dayNumber, sha256Hex, volumeCheckPassed, volumeRelease, volumeReleaseAssets } from './volume-hours.ts';
 import type { ChainVolumeStore, StoredVolumeDay } from './volume-store.ts';
+import type { RugCheckRequest } from '../providers/deployer-check.ts';
+import type { DeployerChecks } from './deployer-checks.ts';
 import { P2, type Priority, type Scheduler, ScheduleRefused } from '../scheduler/scheduler.ts';
 import type { Timers } from '../scheduler/timers.ts';
 import type { FrameBody, Source } from '../providers/canonical.ts';
@@ -213,6 +215,8 @@ export interface FactReadersOptions {
   readonly coinbase?: ThirdParty;
   /** DATA-1c's volume releases: the regime's chain volume. */
   readonly releases?: ReleasesSource;
+  /** RUG-1c's on-demand deployer check, cached per creator under a daily credit cap (`DeployerChecks`). */
+  readonly deployerChecks?: DeployerChecks;
   /** Complete holder scans allowed per UTC day (default HOLDER_SCANS_PER_DAY). Reached: no scan, H12/H13 abstain. */
   readonly holderScansPerDay?: number;
   readonly token2022Filter?: Token2022Filter;
@@ -742,6 +746,25 @@ export class FactReaders {
       }
     }
     return all;
+  }
+
+  /**
+   * RUG-1c: one deployer's prior mints judged through the per-creator cache (`DeployerChecks`): only mints not yet
+   * held, and those not final once the creator's re-read gap has passed, are read from the history. Ingests any new
+   * `rug:<mint>` labels, then the creator's `coverage:rugs:deployer:<creator>` fact at the asking slot. True when that
+   * fact covers every prior mint (H14 accepts it); a fact that does not is ingested too, so H14 says why.
+   */
+  async readDeployerCheck(req: RugCheckRequest): Promise<boolean> {
+    const c = this.#o.deployerChecks;
+    if (c === undefined) return false;
+    let covered = false;
+    const ok = await this.#guard(`deployer-check:${req.creator}`, async () => {
+      const r = await c.check(req, this.#o.timers.now());
+      for (const f of r.facts) this.#ingest('helius', f.key, f.value);
+      covered = r.covered;
+      return `${req.mints.length} prior mints, ${r.read.length} read, ${r.credits} credits${covered ? '' : ', not covered'}`;
+    });
+    return ok && covered;
   }
 
   /** A round-trip simulation answer (H15), from the simulation builder. Refused unless well formed. */

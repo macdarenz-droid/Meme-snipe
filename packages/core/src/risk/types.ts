@@ -246,6 +246,7 @@ export interface RiskSnapshot {
   /** Realized equity plus marked losses (unrealized gains are not counted), net of deposits and withdrawals. */
   readonly equity: MicroUsd;
   readonly highWaterMark: MicroUsd;
+  /** Loss since the Melbourne day / week start: the stricter of the realized and marked measures (see `dayChangeMarked`). */
   readonly dayLoss: MicroUsd;
   readonly weekLoss: MicroUsd;
   readonly weekStartEquity: MicroUsd;
@@ -258,9 +259,10 @@ export interface RiskSnapshot {
   readonly lossStreak: number;
   /**
    * Change since the start of today and of this week at one valuation: equity now − marked equity at the boundary − net
-   * flows since. Reported next to `dayLoss` / `weekLoss`, which measure from realized equity at the boundary and so
-   * count an open loss carried over the boundary again (stricter; kept until the owner changes it). Null when the
-   * boundary valuation was not recorded.
+   * flows since. Null when the boundary valuation was not recorded. `dayLoss` / `weekLoss` are the stricter of the
+   * loss from realized equity at the boundary (which counts an open loss carried over it again) and the loss this
+   * figure shows (WORKER-1c ruling); a null figure leaves the realized loss alone. Moving the limits onto this figure
+   * alone is the owner's call.
    */
   readonly dayChangeMarked: MicroUsd | null;
   readonly weekChangeMarked: MicroUsd | null;

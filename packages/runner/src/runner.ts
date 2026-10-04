@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { performance } from 'node:perf_hooks';
 import { dirname, join } from 'node:path';
-import { checkStartHealth, LOOKUP_BOUNDS_MS, type RestartCause, MARK_MAX_AGE_MS, RUN_NAME, STATE_FILES, type Health, type JournalLine } from './contract.ts';
+import { checkStartHealth, LOOKUP_BOUNDS_MS, type RestartCause, MARK_MAX_AGE_MS, RUN_NAME, STATE_FILES, type Health, type JournalLine, type OpenPositionHealth } from './contract.ts';
 import { snapshotState, type Tabletop, type WorkerControl } from './control.ts';
 import { EXIT_UNIVERSES } from '../../core/src/config/index.ts';
 import { item4 } from './item4.ts';
@@ -198,9 +198,13 @@ interface RestartPending {
   ok?: boolean;
 }
 
+/** Every open position the reply lists: `open_positions` (WORKER-1c), else the single `open_position` of older workers. */
+export const openPositions = (h: Health | null): readonly OpenPositionHealth[] =>
+  h === null ? [] : Array.isArray(h.open_positions) ? h.open_positions : h.open_position ? [h.open_position] : [];
+
 const kept = (h: Health | null): Kept => ({
   pending_exits: h && Array.isArray(h.pending_exits) ? [...h.pending_exits] : [],
-  positions: h?.open_position ? [{ trade: h.open_position.trade, universe: h.open_position.universe }] : [],
+  positions: openPositions(h).map((p) => ({ trade: p.trade, universe: p.universe })),
 });
 
 export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
@@ -824,17 +828,17 @@ const lookupsOk = (x: unknown): x is { counts: number[] } => {
   return Array.isArray(c) && c.length === LOOKUP_BOUNDS_MS.length + 1 && c.every((n) => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0);
 };
 
-/** The trade ids exposed when the worker dies: the open position's and every unresolved intent's. */
+/** The trade ids exposed when the worker dies: every open position's and every unresolved intent's. */
 export const exposedTrades = (h: Health): string[] =>
-  [...new Set([...(h.open_position ? [h.open_position.trade] : []), ...(Array.isArray(h.unresolved_intents.trades) ? h.unresolved_intents.trades : [])])].filter(
+  [...new Set([...openPositions(h).map((p) => p.trade), ...(Array.isArray(h.unresolved_intents.trades) ? h.unresolved_intents.trades : [])])].filter(
     (t) => typeof t === 'string' && t !== '',
   );
 
-/** Every exposed trade has an id: the open position's, and one per unresolved intent. */
+/** Every exposed trade has an id: each open position's, and one per unresolved intent. */
 export const tradeIdsComplete = (h: Health): boolean => {
   const id = (t: unknown): boolean => typeof t === 'string' && t !== '';
   const u = h.unresolved_intents;
-  return (h.open_position === null || id(h.open_position.trade)) && Array.isArray(u.trades) && u.trades.length === u.count && u.trades.every(id);
+  return openPositions(h).every((p) => id(p.trade)) && Array.isArray(u.trades) && u.trades.length === u.count && u.trades.every(id);
 };
 
 /** The open position's mark when it is fresh (seen at most MARK_MAX_AGE_MS before the reply); otherwise unmeasured. */
@@ -982,12 +986,12 @@ export const withoutTrades = (k: Kept, gone: readonly string[]): Kept => ({
 /** A CFG-2 universe with its own exit parameters (U1, U2). 'unknown', or anything else, counts as missing. */
 export const knownUniverse = (u: unknown): boolean => typeof u === 'string' && (EXIT_UNIVERSES as readonly string[]).includes(u);
 
-/** The reply at a kill can be trusted: pending exits are ids, and an open position names a known universe. */
+/** The reply at a kill can be trusted: pending exits are ids, and every open position names a known universe. */
 export const killReplyValid = (h: Health | null): boolean =>
   h !== null &&
   Array.isArray(h.pending_exits) &&
   h.pending_exits.every((x) => typeof x === 'string' && x !== '') &&
-  (h.open_position === null || knownUniverse(h.open_position.universe));
+  openPositions(h).every((p) => knownUniverse(p.universe));
 
 /** Across a host reboot: reconciled and exit capable from the new boot's own journal lines, ms after the kill. */
 export const journalTimes = (journal: readonly JournalLine[], boot: string, killedAt: number): { reconciled_ms: number; exit_capable_ms: number } | null => {
