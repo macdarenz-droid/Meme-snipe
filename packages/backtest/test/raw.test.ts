@@ -74,8 +74,8 @@ describe('raw records', () => {
         { programIdIndex: tok, accounts: [6, 4, 4], data: toBase64(new Uint8Array([9])), stackHeight: 2 },
       );
     }))!;
-    const ops = r.ops.filter((o) => o.op === 'approve' || o.op === 'revoke');
-    expect(ops.map((o) => o.op)).toEqual(['approve', 'approve', 'revoke', 'revoke']);
+    const ops = r.ops.filter((o) => o.op === 'approve' || o.op === 'revoke' || o.op === 'close');
+    expect(ops.map((o) => o.op)).toEqual(['approve', 'approve', 'revoke', 'close']);
     expect(ops[0]).toMatchObject({ amount: 500n });
     expect(ops[1]).toMatchObject({ amount: 70n });
     // ApproveChecked names the delegate third, after the mint; Approve second.

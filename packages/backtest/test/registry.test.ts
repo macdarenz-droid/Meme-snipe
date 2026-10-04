@@ -1,108 +1,102 @@
-// The study registry's holdout run log: every run is recorded before it starts, and any second run burns the holdout
-// (PR #24 review follow-up), whatever became of the first.
+// BT-2 through the one holdout registry (src/holdout.ts): the study's sealed run uses the registry's checks, start
+// record, burn and seal with one configuration per universe; G2's opened registry is stored only when every opening
+// had a G1 pass; the experiment registry keeps one entry per trial.
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
-import { openHoldout } from '../../core/src/stats/index.ts';
+import { RESEARCH_CONFIG } from '../../core/src/config/index.ts';
+import { burnHoldout, openHoldout } from '../../core/src/stats/index.ts';
 import {
-  beginHoldoutRun, failHoldoutRun, g1Blocks, newStudyRegistry, recordG1, readStudyRegistry, recordTrial, register, sealHoldoutRun, writeStudyRegistry,
-} from '../src/study/registry.ts';
-import { attemptAlpha } from '../src/strategy/config.ts';
+  type HoldoutPlan, readHoldoutStore, recordHoldoutG1, recordHoldoutG2, registerAttempt, RULED_ALPHA, sealThroughStore, setHoldoutPlan,
+} from '../src/holdout.ts';
 import { openSealed } from '../src/study/sealed.ts';
+import { loadTrialLog, readTrialLog, recordTrial, writeTrialLog } from '../src/study/trials.ts';
 
 const dir = mkdtempSync(join(tmpdir(), 'reg-'));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
-const fresh = () => register(newStudyRegistry(2), [
-  { holdoutId: 'U1-h', universe: 'U1', configId: 'U1-c', fromDay: '2026-09-22', toDay: '2026-10-01' },
-  { holdoutId: 'U2-h', universe: 'U2', configId: 'U2-c', fromDay: '2026-09-22', toDay: '2026-10-01' },
-]);
-const ids = ['U1-h', 'U2-h'];
+const h = RESEARCH_CONFIG.holdout;
+const plan: HoldoutPlan = {
+  fromDay: h.fromDay, entryCutoffDay: h.entryCutoffDay, tailEndDay: h.tailEndDay, familySize: 2, tieSalt: 't', alpha: RULED_ALPHA,
+  decoderBoundaries: [], procedure: ['p'], details: {},
+};
+const window = { fromDay: h.fromDay, toDay: new Date(Date.parse(`${h.tailEndDay}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10) };
+const ids = { U1: 'U1-h', U2: 'U2-h' };
+const configs: Record<string, string> = { U1: 'U1-c', U2: 'U2-c' };
 const counts = { candidates: 40, entries: 12, entryDays: 5 };
-const seal = (r: ReturnType<typeof fresh>) => sealHoldoutRun(r, [{ holdoutId: 'U1-h', configId: 'U1-c', counts }, { holdoutId: 'U2-h', configId: 'U2-c', counts }], 'abc');
+let n = 0;
+/** A fresh registry with the plan and attempt 1 for U1 and U2. */
+const fresh = () => {
+  const a = { registryPath: join(dir, `r${n++}.json`), codeCommit: 'c', datasetId: 'd' };
+  setHoldoutPlan(a, plan, RESEARCH_CONFIG);
+  registerAttempt(a, { index: 1, entries: [{ holdoutId: 'U1-h', universe: 'U1', configId: 'U1-c' }, { holdoutId: 'U2-h', universe: 'U2', configId: 'U2-c' }] });
+  return a;
+};
+const seal = (a: ReturnType<typeof fresh>, configOf = (u: string) => configs[u]!) =>
+  sealThroughStore({ ...a, byUniverse: ids, window }, configOf, join(dir, `l${n++}.db`), () => ({ ledgerHash: 'abc', counts: { U1: counts, U2: counts } }));
 
-describe('holdout run log', () => {
-  it('records a run before it starts and seals it once', () => {
-    const b = beginHoldoutRun(fresh(), ids, '/x/h.db', '2026-10-04T00:00:00Z', 1);
-    expect(b.ok).toBe(true);
-    expect(b.registry.runs).toEqual([expect.objectContaining({ holdoutIds: ids, status: 'started', sealHash: null, attempt: 1, alpha: 0.04 })]);
-    const s = seal(b.registry);
-    expect(s.steps.every((x) => x.ok)).toBe(true);
-    expect(s.registry.runs[0]).toMatchObject({ status: 'sealed', sealHash: 'abc' });
-    expect(s.registry.holdouts.entries.map((e) => e.seal)).toEqual(['sealed', 'sealed']);
+describe('study holdouts through the one registry', () => {
+  it('seals each universe under its own configuration, passing the registered cutoff to the run', () => {
+    const a = fresh();
+    let cutoff = 0;
+    sealThroughStore({ ...a, byUniverse: ids, window }, (u) => configs[u]!, join(dir, 'x.db'), (c) => { cutoff = c; return { ledgerHash: 'abc', counts: { U1: counts, U2: counts } }; });
+    expect(cutoff).toBe(Date.parse(`${h.entryCutoffDay}T00:00:00Z`));
+    const s = readHoldoutStore(a.registryPath);
+    expect(s.registry.entries.map((e) => [e.holdoutId, e.seal, e.ledgerHash])).toEqual([['U1-h', 'sealed', 'abc'], ['U2-h', 'sealed', 'abc']]);
+    expect(s.runs.filter((r) => r.outcome === 'sealed').map((r) => r.configId)).toEqual(['U1-c', 'U2-c']);
   });
 
-  it('burns every holdout of a second run after a sealed one, into a new file', () => {
-    const sealed = seal(beginHoldoutRun(fresh(), ids, '/x/h.db', 't1', 1).registry).registry;
-    const again = beginHoldoutRun(sealed, ids, '/x/other.db', 't2', 2);
-    expect(again.ok).toBe(false);
-    expect(again.registry.holdouts.entries.every((e) => e.burned && e.burnReason === 'reconfigured')).toBe(true);
-    // Burned holdouts never open, whatever is presented to the scoring stage.
-    const step = openHoldout(again.registry.holdouts, 'U1-h', { configId: 'U1-c', ledgerHash: 'abc', requiredTrades: 1, minDays: 1, nowMs: 0 });
-    expect(step.ok).toBe(false);
+  it('refuses a universe run under another configuration, before anything runs', () => {
+    const a = fresh();
+    expect(() => seal(a, (u) => (u === 'U2' ? 'U2-other' : configs[u]!))).toThrow(/U2-other is not the authorised U2-c/);
+    expect(readHoldoutStore(a.registryPath).registry.entries.every((e) => e.seal === 'registered')).toBe(true);
   });
 
-  it('burns after a run that crashed before sealing, and after a run that failed', () => {
-    const started = beginHoldoutRun(fresh(), ids, '/x/h.db', 't1', 1).registry;
-    expect(beginHoldoutRun(started, ids, '/x/h2.db', 't2', 2)).toMatchObject({ ok: false });
-    const failed = failHoldoutRun(started, ids, 'crashed');
-    expect(failed.runs[0]).toMatchObject({ status: 'failed', detail: 'crashed' });
-    const again = beginHoldoutRun(failed, ids, '/x/h3.db', 't3', 2);
-    expect(again.ok).toBe(false);
-    expect(again.registry.holdouts.entries.every((e) => e.burned)).toBe(true);
+  it('burns every holdout of the attempt when the run fails', () => {
+    const a = fresh();
+    expect(() => sealThroughStore({ ...a, byUniverse: ids, window }, (u) => configs[u]!, join(dir, 'f.db'), () => { throw new Error('crashed'); })).toThrow(/crashed/);
+    const s = readHoldoutStore(a.registryPath);
+    expect(s.registry.entries.every((e) => e.burned && e.burnReason === 'run-failed')).toBe(true);
+    expect(s.attempts[0]!.ended?.outcome).toBe('failed');
   });
 
-  it('burns when only one of the universes was run before', () => {
-    const one = register(newStudyRegistry(2), [{ holdoutId: 'U1-h', universe: 'U1', configId: 'U1-c', fromDay: '2026-09-22', toDay: '2026-10-01' }]);
-    const r1 = beginHoldoutRun(one, ['U1-h'], '/x/a.db', 't1', 1).registry;
-    const r2 = register(r1, [{ holdoutId: 'U2-h', universe: 'U2', configId: 'U2-c', fromDay: '2026-09-22', toDay: '2026-10-01' }]);
-    const b = beginHoldoutRun(r2, ids, '/x/b.db', 't2', 2);
-    expect(b.ok).toBe(false);
-    expect(b.registry.holdouts.entries.find((e) => e.holdoutId === 'U1-h')!.burned).toBe(true);
+  it('stores G2\'s registry only when every opening had a latest G1 pass, and only seal changes', () => {
+    const a = fresh();
+    seal(a);
+    const opened = (id: string) => openHoldout(readHoldoutStore(a.registryPath).registry, id, { configId: id === 'U1-h' ? 'U1-c' : 'U2-c', ledgerHash: 'abc', requiredTrades: 10, minDays: 5, nowMs: 1 });
+    const u1 = opened('U1-h');
+    expect(u1.ok).toBe(true);
+    expect(() => recordHoldoutG2(a, u1.registry)).toThrow(/U1-h cannot be opened: U1-h has no G1 result/);
+    recordHoldoutG1(a, { holdoutId: 'U1-h', configId: 'U1-c', passed: false, evaluatedOn: 'wf' });
+    expect(() => recordHoldoutG2(a, u1.registry)).toThrow(/did not pass/);
+    // A burn needs no G1 pass (a mismatch burns before anything opens).
+    const burned = burnHoldout(readHoldoutStore(a.registryPath).registry, 'U2-h', 'hash-mismatch', 'x').registry;
+    expect(recordHoldoutG2(a, burned).registry.entries[1]!.burned).toBe(true);
+    // Anything but the seal is refused.
+    const b = fresh();
+    seal(b);
+    recordHoldoutG1(b, { holdoutId: 'U1-h', configId: 'U1-c', passed: true, evaluatedOn: 'wf' });
+    const reg = readHoldoutStore(b.registryPath).registry;
+    expect(() => recordHoldoutG2(b, { ...reg, entries: reg.entries.map((e) => ({ ...e, configId: 'changed' })) })).toThrow(/more than the seal/);
+    expect(() => recordHoldoutG2(b, { ...reg, familySize: 3 })).toThrow(/resize/);
+    const ok = openHoldout(reg, 'U1-h', { configId: 'U1-c', ledgerHash: 'abc', requiredTrades: 10, minDays: 5, nowMs: 1 });
+    expect(recordHoldoutG2(b, ok.registry).registry.entries[0]!.seal).toBe('opened');
   });
 
-  it('refuses an unregistered holdout and keeps one entry per trial', () => {
-    expect(beginHoldoutRun(fresh(), ['U3-h'], '/x/h.db', 't', 1)).toMatchObject({ ok: false });
-    const t = { trialId: 'U2-c', sharpe: 0.1, nTrades: 10, configId: 'U2-c', evaluatedOn: 'wf' };
-    expect(recordTrial(recordTrial(fresh(), t), t).trials).toHaveLength(1);
+  it('keeps the sealed outcomes closed without a latest G1 pass', () => {
+    const a = fresh();
+    seal(a);
+    recordHoldoutG1(a, { holdoutId: 'U1-h', configId: 'U1-c', passed: false, evaluatedOn: 'wf' });
+    expect(() => openSealed('/nonexistent/h.db', readHoldoutStore(a.registryPath), ['U1-h'])).toThrow(/stays closed: U1-h's latest G1 did not pass/);
   });
 
-  it('spends the error budget in order: attempt 1 at 0.04, attempt k at 0.01 / 2^(k-1), never skipped or repeated', () => {
-    expect([1, 2, 3, 4].map(attemptAlpha)).toEqual([0.04, 0.005, 0.0025, 0.00125]);
-    expect(() => attemptAlpha(0)).toThrow(RangeError);
-    const skipped = beginHoldoutRun(fresh(), ids, '/x/h.db', 't1', 2);
-    expect(skipped).toMatchObject({ ok: false, reason: expect.stringMatching(/attempt 2 after 0/) });
-    expect(skipped.registry.holdouts.entries.every((e) => e.burned)).toBe(true);
-    // A new window registered after a sealed first attempt runs as attempt 2 at 0.005.
-    const first = seal(beginHoldoutRun(fresh(), ids, '/x/h.db', 't1', 1).registry).registry;
-    // (The first window's holdouts are scored by then; only its run record matters to the budget.)
-    const later = { ...register(newStudyRegistry(2), [{ holdoutId: 'U1-h2', universe: 'U1', configId: 'U1-c', fromDay: '2026-10-21', toDay: '2026-10-31' }]), runs: first.runs };
-    expect(beginHoldoutRun(later, ['U1-h2'], '/x/h4.db', 't4', 1)).toMatchObject({ ok: false });
-    const second = beginHoldoutRun(later, ['U1-h2'], '/x/h4.db', 't4', 2);
-    expect(second.ok).toBe(true);
-    expect(second.registry.runs[1]).toMatchObject({ attempt: 2, alpha: 0.005 });
-  });
-
-  it('refuses to open a holdout without a latest G1 pass for its registered configuration', () => {
-    const r = fresh();
-    expect(g1Blocks(r, 'U1-h')).toMatch(/no G1 result/);
-    const failed = recordG1(r, { holdoutId: 'U1-h', configId: 'U1-c', passed: false, evaluatedOn: 'wf' });
-    expect(g1Blocks(failed, 'U1-h')).toMatch(/did not pass/);
-    const other = recordG1(failed, { holdoutId: 'U1-h', configId: 'U1-other', passed: true, evaluatedOn: 'wf' });
-    expect(g1Blocks(other, 'U1-h')).toMatch(/registered U1-c/);
-    const passed = recordG1(other, { holdoutId: 'U1-h', configId: 'U1-c', passed: true, evaluatedOn: 'wf' });
-    expect(g1Blocks(passed, 'U1-h')).toBeNull();
-    // Nothing earlier is replaced: the fail stays on record.
-    expect(passed.g1!.map((g) => g.passed)).toEqual([false, true, true]);
-    expect(g1Blocks(passed, 'U3-h')).toMatch(/not registered/);
-    expect(() => openSealed('/nonexistent/h.db', failed, ['U1-h'])).toThrow(/stays closed: U1-h's latest G1 did not pass/);
-  });
-
-  it('survives a write and read', () => {
-    const p = join(dir, 'registry.json');
-    const r = beginHoldoutRun(fresh(), ids, '/x/h.db', 't1', 1).registry;
-    writeStudyRegistry(p, r);
-    expect(readStudyRegistry(p)).toEqual(r);
+  it('keeps one experiment-registry entry per trial and survives a write and read', () => {
+    const t = { trialId: 'x', configId: 'x', evaluatedOn: 'wf', sharpe: 0.1, n: 10, skew: 0, kurt: 3 } as unknown as Parameters<typeof recordTrial>[1];
+    const log = recordTrial(recordTrial(loadTrialLog(join(dir, 'none.json')), t), t);
+    expect(log.trials).toHaveLength(1);
+    const p = join(dir, 'trials.json');
+    writeTrialLog(p, log);
+    expect(readTrialLog(p)).toEqual(log);
   });
 });

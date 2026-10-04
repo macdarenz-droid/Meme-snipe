@@ -7,10 +7,12 @@ Historical backtest and strategy study (ARCHITECTURE §20 BT-2, pre-funding item
 ```
 node packages/backtest/src/study/cli.ts day   --dataset <dir> --sol-usd <file> [--days 2026-09-01] [--seeds 5] [--replays 10]
 node packages/backtest/src/study/cli.ts trial --dataset <dir> --sol-usd <file>
-node packages/backtest/src/study/cli.ts study --dataset <dir> --sol-usd <file> --registry docs/evidence/bt2/registry.json [--run-holdout]
+node packages/backtest/src/study/cli.ts study --dataset <dir> --sol-usd <file> [--trials <file>] [--run-holdout]
 ```
 
 All three accept `--insiders <file>`, a funding supplement (FACTS-1).
+
+`study` writes the holdout plan, the attempt, each G1 result and every run through the one holdout registry (`research/holdout/registry.json`, kept on the `holdout-registry` branch; every write is a pushed commit), so it needs a clean tree. `--trials` is the experiment registry (default `docs/evidence/bt2/trials.json`).
 
 - **day:** the strategies and S0 through the whole engine on the given days, then the engine evidence:
   - 0 crashes, illegal states and unreconciled intents;

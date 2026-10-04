@@ -1,6 +1,6 @@
 // The whole BT-2 study on a synthetic multi-day market: walk-forward, S0, G1, registration, the sealed holdout run
 // once, G2 "not proven" with the seals closed, G0 proofs and the ledger replay check.
-import { statSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, statSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it, vi } from 'vitest';
@@ -8,7 +8,8 @@ import { FILL_CONFIG, RESEARCH_CONFIG, TRIAL_POLICY } from '../../core/src/confi
 import type { DatasetRow } from '../src/dataset/rows.ts';
 import { STUDY_CONFIG, configId } from '../src/strategy/config.ts';
 import { replayLedgerFile } from '../../core/src/ledger/replay/index.ts';
-import { readStudyRegistry } from '../src/study/registry.ts';
+import { readHoldoutStore } from '../src/holdout.ts';
+import { readTrialLog } from '../src/study/trials.ts';
 import { runSealedHoldout } from '../src/study/sealed.ts';
 import { runFullStudy, type StudyInputs } from '../src/study/study.ts';
 import { type MintPlan, studyWorld, W0 } from './study-world.ts';
@@ -26,21 +27,26 @@ const plan = (label: string, day: number): MintPlan => ({
   label, createSlot: day * DAY + 2 * 60 * MIN, graduateAfter: 20 * MIN, migrationQuote: 400_000_000_000n, buyBias: reclaim, swapEvery: 10,
   buySize: 3e9, sellDivisor: 8, swapsFor: 300 * MIN,
 });
-const { rows } = studyWorld({ leadInDays: 15, blockEvery: 25, slots: 3 * DAY, mints: [plan('d0', 0), plan('d1', 1), plan('d2', 2)] });
+const { rows, ownerPrograms } = studyWorld({ leadInDays: 15, blockEvery: 25, slots: 4 * DAY, mints: [plan('d0', 0), plan('d1', 1), plan('d2', 2)] });
 const dayOf = (r: DatasetRow) => new Date(r.blockTime * 1000).toISOString().slice(0, 10);
 const sol = { ...SOL_USD, bars: Array.from({ length: 24 * 20 }, (_, k) => ({ start: W0 - 16 * 86_400_000 + k * 3_600_000, close: '120.00' })) };
-const config = { ...STUDY_CONFIG, frozen: true, window: { decisionFrom: '2026-09-20', decisionTo: '2026-09-22', leadInDays: 14 }, folds: 2, holdout: { fromDay: '2026-09-22', entryCutoff: '2026-09-22T21:00:00Z', tailDays: 0 }, s0SeedsWalkForward: 2, s0SeedsHoldout: 2 };
-const decisionDays = ['2026-09-20', '2026-09-21', '2026-09-22'];
+const config = { ...STUDY_CONFIG, frozen: true, window: { decisionFrom: '2026-09-20', decisionTo: '2026-09-22', leadInDays: 14 }, folds: 2, holdout: { fromDay: '2026-09-22', entryCutoff: '2026-09-23T00:00:00Z', tailDays: 1 }, s0SeedsWalkForward: 2, s0SeedsHoldout: 2 };
+const decisionDays = ['2026-09-20', '2026-09-21', '2026-09-22', '2026-09-23'];
+// The research config's holdout matches the study's (the registry refuses a plan that differs).
+const research = { ...RESEARCH_CONFIG, holdout: { ...RESEARCH_CONFIG.holdout, fromDay: '2026-09-22', entryCutoffDay: '2026-09-23', tailEndDay: '2026-09-24' } };
+const HOLD = '2026-09-22-2026-09-23';
+const storeAt = (name = 'registry.json') => readHoldoutStore(join(dir, name));
+const authority = (name = 'registry.json') => ({ registryPath: join(dir, name), codeCommit: 'test', datasetId: 'synthetic' });
 
 // Seed 'study3': under BT-1c's conservative fill model its walk-forward entries land (with 'study' and 'study2' the
 // draws drop or fail every entry, leaving no trade to score).
 const inputs = (over: Partial<StudyInputs> = {}): StudyInputs => ({
-  config, policy: TRIAL_POLICY, fills: FILL_CONFIG, research: RESEARCH_CONFIG, availableDays: decisionDays,
+  config, policy: TRIAL_POLICY, fills: FILL_CONFIG, research, availableDays: decisionDays,
   rows: (from, to) => () => rows.filter((r) => dayOf(r) >= from && dayOf(r) <= to)[Symbol.iterator](),
-  firstDay: '2026-09-05', series: [sol], sampleRate: 1, insiders: () => ({ knownAtMs: 0, funded: [], devCluster: [] }), poolAccounts: POOL_ACCOUNTS, delegatesComplete: true,
+  firstDay: '2026-09-05', series: [sol], sampleRate: 1, insiders: () => ({ knownAtMs: 0, funded: [], devCluster: [] }), poolAccounts: POOL_ACCOUNTS, delegatesComplete: true, holders: () => ({ ownerPrograms }),
   // The synthetic world produces no regime inputs: the walk-forward runs as a labelled diagnostic, the holdout as live.
   regimeGate: 'assume-on',
-  registryPath: join(dir, 'registry.json'), outDir: dir,
+  holdout: authority(), trialsPath: join(dir, 'trials.json'), outDir: dir,
   ledgerReplay: (p) => { const r = replayLedgerFile(p); return { ok: r.ok, detail: JSON.stringify(r) }; }, seed: 'study3', replays: 2, runHoldout: false, startedAt: '2026-10-04T00:00:00Z', ...over,
 });
 
@@ -79,10 +85,9 @@ describe('BT-2 study', () => {
   });
 
   it('a diagnostic run (regime assumed on) registers nothing, records no trial or G1, and reports G1 as descriptive only', () => {
-    const reg = readStudyRegistry(join(dir, 'registry.json'));
-    expect(reg.holdouts.entries).toEqual([]);
-    expect(reg.trials).toEqual([]);
-    expect(reg.g1 ?? []).toEqual([]);
+    expect(existsSync(join(dir, 'registry.json'))).toBe(false);
+    expect(readTrialLog(join(dir, 'trials.json')).trials).toEqual([]);
+    expect(first.holdoutStore).toBeNull();
     for (const g of Object.values(first.gates.G1)) {
       expect(g).toMatchObject({ passed: false, status: 'not-proven' });
       expect(g.reasons[0]).toBe('regime gate assumed on (diagnostic): these counts never feed G1');
@@ -92,10 +97,14 @@ describe('BT-2 study', () => {
   it('registers one configuration per universe before any holdout run, and G1 is not proven on 2 days', () => {
     // Run with the regime gate evaluated as live (the synthetic world has no regime inputs, so nothing enters).
     const evaluated = runFullStudy(inputs({ regimeGate: 'evaluate' }));
-    const reg = readStudyRegistry(join(dir, 'registry.json'));
-    expect(reg.holdouts.familySize).toBe(2);
-    expect(reg.holdouts.entries.map((e) => [e.universe, e.configId, e.seal])).toEqual([['U1', configId(config, 'U1'), 'registered'], ['U2', configId(config, 'U2'), 'registered']]);
-    expect(reg.trials.map((t) => t.trialId).sort()).toEqual([configId(config, 'U1'), configId(config, 'U2')].sort());
+    const reg = storeAt();
+    expect(reg.registry.familySize).toBe(2);
+    expect(reg.registry.entries.map((e) => [e.holdoutId, e.universe, e.configId, e.seal])).toEqual([[`U1-${HOLD}`, 'U1', configId(config, 'U1'), 'registered'], [`U2-${HOLD}`, 'U2', configId(config, 'U2'), 'registered']]);
+    // The plan is registered once, the attempt commits α 0.04, and each G1 result is on record (not a pass: 2 days).
+    expect(reg.plan).toMatchObject({ fromDay: '2026-09-22', entryCutoffDay: '2026-09-23', tailEndDay: '2026-09-24', familySize: 2, tieSalt: config.tieSalt, alpha: { first: 0.04, laterBase: 0.01 } });
+    expect(reg.attempts.map((a) => [a.index, a.alpha, a.holdoutIds])).toEqual([[1, 0.04, [`U1-${HOLD}`, `U2-${HOLD}`]]]);
+    expect(reg.g1.map((g) => [g.holdoutId, g.passed])).toEqual([[`U1-${HOLD}`, false], [`U2-${HOLD}`, false]]);
+    expect(readTrialLog(join(dir, 'trials.json')).trials.map((t) => t.trialId).sort()).toEqual([configId(config, 'U1'), configId(config, 'U2')].sort());
     // Reported per regime (here every trade is after B4) and pooled under its own label (the diagnostic run has the
     // trades); 2 days are too few.
     expect(Object.keys(first.gates.G1)).toEqual(expect.arrayContaining(['U1 all regimes (pooled)', 'U2 all regimes (pooled)', 'U2 regime B4']));
@@ -117,49 +126,47 @@ describe('BT-2 study', () => {
   it('runs the holdout once into read-only sealed files; G2 stays "not proven" and nothing is opened', () => {
     const second = runFullStudy(inputs({ runHoldout: true, regimeGate: 'evaluate' }));
     expect(second.holdout.ran).toBe(true);
-    const reg = readStudyRegistry(join(dir, 'registry.json'));
-    expect(reg.runs).toHaveLength(1);
-    expect(reg.runs[0]!.status).toBe('sealed');
-    for (const e of reg.holdouts.entries) {
+    const reg = storeAt();
+    // One start record and one seal per universe, written through the registry.
+    expect(reg.runs.map((r) => [r.holdoutId, r.outcome])).toEqual([[`U1-${HOLD}`, 'started'], [`U2-${HOLD}`, 'started'], [`U1-${HOLD}`, 'sealed'], [`U2-${HOLD}`, 'sealed']]);
+    expect(reg.attempts[0]!.ended?.outcome).toBe('sealed');
+    for (const e of reg.registry.entries) {
       expect(e.seal).toBe('sealed');
       expect(Object.keys(e.counts!).sort()).toEqual(['candidates', 'entries', 'entryDays']);
       expect(e.burned).toBe(false);
     }
-    const ledger = join(dir, 'holdout-2026-09-22-2026-09-22.db');
+    const ledger = join(dir, `holdout-${HOLD}.db`);
     expect(statSync(ledger).mode & 0o777).toBe(0o400);
     expect(statSync(`${ledger}.outcomes.json`).mode & 0o777).toBe(0o400);
     expect(second.gates.G2.status).toBe('not-proven');
     expect(second.gates.G2.reasons.join(' ')).toMatch(/sealed entries/);
     // The seals open only after a G1 pass (review consensus); G1 is not proven on 2 days, so they stay closed.
     expect(second.gates.G2.reasons.join(' ')).toMatch(/G1 did not pass: the seal stays closed/);
-    // The run is attempt 1 of the shared error budget, at family α 0.04.
-    expect(reg.runs[0]).toMatchObject({ attempt: 1, alpha: 0.04 });
     // Asking again does not run it again.
     const third = runFullStudy(inputs({ runHoldout: true, regimeGate: 'evaluate' }));
-    expect(readStudyRegistry(join(dir, 'registry.json')).runs).toHaveLength(1);
+    expect(storeAt().runs).toHaveLength(4);
     expect(third.holdout.sealHash).toBeNull();
   });
 
   it('with configurations not frozen, nothing is registered and the holdout refuses to run', () => {
-    const other = join(dir, 'unfrozen.json');
-    const r = runFullStudy(inputs({ config: { ...config, frozen: false }, registryPath: other }));
-    expect(readStudyRegistry(other).holdouts.entries).toEqual([]);
+    const r = runFullStudy(inputs({ config: { ...config, frozen: false }, holdout: authority('unfrozen.json'), regimeGate: 'evaluate' }));
+    expect(storeAt('unfrozen.json').registry.entries).toEqual([]);
+    expect(storeAt('unfrozen.json').attempts).toEqual([]);
     expect(r.gates.G2.reasons.join(' ')).toMatch(/not frozen/);
-    expect(() => runFullStudy(inputs({ config: { ...config, frozen: false }, registryPath: other, runHoldout: true }))).toThrow(/not frozen/);
+    expect(() => runFullStudy(inputs({ config: { ...config, frozen: false }, holdout: authority('unfrozen.json'), runHoldout: true, regimeGate: 'evaluate' }))).toThrow(/not frozen/);
     // A diagnostic run with the regime assumed on never runs the holdout.
-    expect(() => runFullStudy(inputs({ registryPath: join(dir, 'registry-diag.json'), runHoldout: true }))).toThrow(/regime gate is assumed on/);
+    expect(() => runFullStudy(inputs({ holdout: authority('registry-diag.json'), runHoldout: true }))).toThrow(/regime gate is assumed on/);
   });
 
-  it('a second holdout run into a new file is refused and burns the holdout', () => {
-    const regPath = join(dir, 'registry.json');
-    expect(() => runSealedHoldout(regPath, join(dir, 'again.db'), {
-      rows: () => [][Symbol.iterator](), series: [sol], seed: 'x', scenario: 'conservative', policy: TRIAL_POLICY, fills: FILL_CONFIG, research: RESEARCH_CONFIG,
+  it('a second holdout run into a new file is refused and logged; the sealed holdout is untouched', () => {
+    const before = storeAt();
+    expect(() => runSealedHoldout(authority(), join(dir, 'again.db'), {
+      rows: () => [][Symbol.iterator](), series: [sol], seed: 'x', scenario: 'conservative', policy: TRIAL_POLICY, fills: FILL_CONFIG, research,
       windowEnd: 0, study: config, entriesFrom: 0, entriesTo: 0, sampleRate: 1,
-    }, { byUniverse: ['U1', 'U2'].map((u) => ({ universe: u, holdoutId: `${u}-2026-09-22-2026-09-22`, configId: configId(config, u) })), required: {} }, [], FILL_CONFIG, 't')).toThrow(/refused and burned/);
-    const reg = readStudyRegistry(regPath);
-    expect(reg.holdouts.entries.every((e) => e.burned && e.burnReason === 'reconfigured')).toBe(true);
-    const after = runFullStudy(inputs());
-    expect(after.gates.G2.status).toBe('not-proven');
-    expect(after.gates.G2.reasons.join(' ')).toMatch(/burned/);
+    }, { byUniverse: ['U1', 'U2'].map((u) => ({ universe: u, holdoutId: `${u}-${HOLD}`, configId: configId(config, u) })), required: {}, window: { fromDay: '2026-09-22', toDay: '2026-09-23' } }, [], FILL_CONFIG)).toThrow(/window already run/);
+    const reg = storeAt();
+    expect(reg.registry).toEqual(before.registry);
+    expect(reg.runs.at(-1)).toMatchObject({ holdoutId: `U1-${HOLD}`, outcome: 'refused', reason: 'window already run' });
+    expect(existsSync(join(dir, 'again.db'))).toBe(false);
   });
 });

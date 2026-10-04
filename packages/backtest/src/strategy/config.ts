@@ -104,7 +104,7 @@ export interface StudyConfig {
    * finishes. One endpoint for every universe; opened once, after a G1 pass, and mandatory once the counts are met.
    */
   readonly holdout: { readonly fromDay: string; readonly entryCutoff: string; readonly tailDays: number };
-  /** Which holdout attempt this configuration registers (1 for the first window); its family α is `attemptAlpha`. */
+  /** Which holdout attempt this configuration registers (1 for the first window); its family α comes from the holdout registry (src/holdout.ts `attemptAlpha`). */
   readonly holdoutAttempt: number;
   /** Salt of the hash that breaks true ties between simultaneous signals, fixed before any replay. */
   readonly tieSalt: string;
@@ -177,11 +177,3 @@ export const configId = (c: StudyConfig, universe: string): string => {
 /** The study's hash, recorded with every report. */
 export const studyHash = (c: StudyConfig): string => createHash('sha256').update(canonical(c)).digest('hex');
 
-/**
- * The family α of holdout attempt k from one shared error budget (consensus of the three reviews, 2026-10-04): attempt
- * 1 at 0.04, attempt k ≥ 2 at 0.01 / 2^(k−1) on a new later window, so all attempts together spend less than 0.05.
- */
-export const attemptAlpha = (k: number): number => {
-  if (!Number.isInteger(k) || k < 1) throw new RangeError(`holdout attempt must be a positive integer, got ${k}`);
-  return k === 1 ? 0.04 : 0.01 / 2 ** (k - 1);
-};

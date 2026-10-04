@@ -21,11 +21,12 @@ import { MINUTE_MS } from '../../../core/src/config/index.ts';
 import { solPriceMicroUsd } from '../../../core/src/units/index.ts';
 import type { SeriesBar } from '../dataset/offchain.ts';
 import type { RawRow } from '../dataset/raw.ts';
-import type { AmmSwapRow, CurveTradeRow, DatasetRow, EventRow } from '../dataset/rows.ts';
+import type { AmmSwapRow, CoverageRow, CurveTradeRow, DatasetRow, EventRow, MovementRow } from '../dataset/rows.ts';
 import type { PoolView } from './market.ts';
 import { SignalTracker } from '../research/tracker.ts';
 import { FactProducer, graduatesFact, type ProducerOptions, RAW, type VolumeHour } from '../../../core/src/facts/index.ts';
 import { landings, type ReadLatency } from '../study/reads.ts';
+import { type AccountOp, compareChainKey, HolderBook } from '../dataset/holders.ts';
 
 export const ATA_PROGRAM = toAddress('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL');
 
@@ -98,6 +99,12 @@ export interface FactOptions {
    * so every holder read is marked partial and H12 is "not covered" (supervisor ruling, 2026-10-04). Default false.
    */
   readonly delegatesComplete?: boolean;
+  /**
+   * BT-1d's holder rebuild inputs (one rebuild, `dataset/holders.ts`): the dataset's movement coverage notes, the
+   * owner-program supplement and the token movements (any order; fed in chain order before each row). Without them the
+   * book still rebuilds from trade rows, and leaves mints it cannot prove unresolved.
+   */
+  readonly holders?: { readonly coverage?: readonly CoverageRow[]; readonly ownerPrograms?: ReadonlyMap<string, string | null>; readonly movements?: readonly MovementRow[] };
   /**
    * Run RES-3's as-of signal tracker on the same rows (feed side, in chain order) and release its features with each
    * check, for configurations with a feature rule. Off by default.
@@ -172,7 +179,6 @@ interface MintState {
   /** Extensions set up before InitializeMint (fixed-size ones must be). */
   pendingExt: { kind: string; type: number; state?: string }[];
   /** Token accounts of the mint, tracked from the create on; null until the create's raw record is seen. */
-  holders: Map<string, { owner: string; amount: bigint; delegate: string | null; delegated: bigint }> | null;
   supply: bigint;
   /** Why the holder rebuild cannot be trusted any more (first problem seen). */
   holderProblem: string | null;
@@ -221,11 +227,18 @@ export class FactProjector {
   readonly #reads: { atMs: number; mint: string; universe: string; n: number; stage: 2 | 3 }[] = [];
   #readSeq = 0;
   /** Counts for the report: rows seen by kind and problems by cause (no outcomes). */
-  readonly counts = { creates: 0, sampledCreates: 0, unjudged: 0, labels: 0, checks: 0, holderProblems: 0, undecodableRaw: 0 };
+  readonly counts = { creates: 0, sampledCreates: 0, unjudged: 0, labels: 0, checks: 0, holderProblems: 0, undecodableRaw: 0, holderAbstentions: {} as Record<string, number> };
+  /** Mints whose holder read abstained, by reason (each mint counted once per reason; never imputed). */
+  readonly holderAbstainedMints: Record<string, Set<string>> = {};
+  readonly #book: HolderBook;
+  readonly #movements: readonly MovementRow[];
+  #movementAt = 0;
 
   constructor(o: FactOptions) {
     this.#o = o;
     this.#labeller = new RugLabeller(o.rugs);
+    this.#book = new HolderBook({ ...(o.holders?.coverage === undefined ? {} : { coverage: o.holders.coverage }), ...(o.holders?.ownerPrograms === undefined ? {} : { ownerPrograms: o.holders.ownerPrograms }) });
+    this.#movements = [...(o.holders?.movements ?? [])].sort((a, b) => compareChainKey(a, b));
     if (o.volumeHours !== undefined && o.survival !== undefined) {
       this.#volumeProducer = new FactProducer(o.survival);
       this.#volumeQueue = [...o.volumeHours].sort((a, b) => a.hourStartMs - b.hourStartMs);
@@ -252,7 +265,7 @@ export class FactProjector {
       if (!this.sampled(mint)) return null;
       s = {
         mint, sampled: true, create: null, graduatedAtMs: null, migration: null, pool: null,
-        lp: { supply: 0n, known: false, minted: 0n, burned: 0n }, account: null, pendingExt: [], holders: null, supply: 0n, holderProblem: null,
+        lp: { supply: 0n, known: false, minted: 0n, burned: 0n }, account: null, pendingExt: [], supply: 0n, holderProblem: null,
         candlesHead: [], candlesTail: [], creationBuyers: new Set(), view: null, checks: new Map(), checkSeq: 0, tailSeen: false,
       };
       this.#mints.set(mint, s);
@@ -269,6 +282,7 @@ export class FactProjector {
   observe(row: DatasetRow, m: Moment, blockHeight: bigint): FeedEvent[] {
     this.#height = blockHeight;
     if (row.kind !== 'raw') this.#tracker?.push(row);
+    this.#feedBook(row);
     const out: FeedEvent[] = [];
     if (!this.#started) {
       this.#started = true;
@@ -547,14 +561,9 @@ export class FactProjector {
       }
       return;
     }
-    const accountOps: (Extract<RawRow['ops'][number], { op: 'approve' | 'revoke' | 'set-authority' }>)[] = [];
     for (const op of row.ops) {
-      if (op.op === 'approve' || op.op === 'revoke') {
-        accountOps.push(op);
-        continue;
-      }
+      if (op.op === 'approve' || op.op === 'revoke' || op.op === 'close') continue;
       if (op.op === 'set-authority') {
-        accountOps.push(op);
         const s = this.#mints.get(op.account);
         if (s?.account) {
           if (op.authorityType === 0) s.account.mintAuthority = op.newAuthority;
@@ -586,9 +595,28 @@ export class FactProjector {
         s.supply -= op.amount;
       }
     }
-    for (const mint of row.mints) {
-      const s = this.#state(mint);
-      if (s !== null) this.#holders(s, row, accountOps);
+  }
+
+  /** BT-1d's holder book, fed in chain order: movements up to this row, then the row itself. */
+  #feedBook(row: DatasetRow): void {
+    if (row.kind === 'block') return;
+    while (this.#movementAt < this.#movements.length && compareChainKey(this.#movements[this.#movementAt]!, row) <= 0) this.#book.movement(this.#movements[this.#movementAt++]!);
+    if (row.kind === 'event') this.#book.event(row);
+    else if (row.kind === 'amm' || row.kind === 'curve') this.#book.swap(row);
+    else if (row.undecodable === null) {
+      // Account operations name a token account; its mint is the one the record's balances list for it.
+      const mintOf = new Map(row.balances.map((b) => [b.account, b.mint]));
+      const ops: AccountOp[] = [];
+      for (const op of row.ops) {
+        if (op.op !== 'approve' && op.op !== 'revoke' && op.op !== 'close' && !(op.op === 'set-authority' && op.authorityType === 2 && op.newAuthority !== null)) continue;
+        const mint = mintOf.get(op.account);
+        if (mint === undefined) continue;
+        if (op.op === 'approve') ops.push({ kind: 'approve', mint, account: op.account, delegate: op.delegate, amount: op.amount });
+        else if (op.op === 'revoke') ops.push({ kind: 'revoke', mint, account: op.account });
+        else if (op.op === 'close') ops.push({ kind: 'close', mint, account: op.account });
+        else if (op.op === 'set-authority') ops.push({ kind: 'owner', mint, account: op.account, newOwner: op.newAuthority! });
+      }
+      if (ops.length > 0) this.#book.applyAccountOps(row, ops);
     }
   }
 
@@ -597,40 +625,6 @@ export class FactProjector {
       s.holderProblem = why;
       this.counts.holderProblems++;
     }
-  }
-
-  /** Token accounts from the record's balances. A balance that does not match what we tracked means a missed flow. */
-  #holders(s: MintState, row: RawRow, accountOps: readonly Extract<RawRow['ops'][number], { op: 'approve' | 'revoke' | 'set-authority' }>[]): void {
-    const mine = row.balances.filter((b) => b.mint === s.mint);
-    if (s.holders === null) {
-      // Tracking starts at the create's record: the whole supply is minted there.
-      if (s.create === null || s.create.signature !== row.signature) {
-        if (mine.length > 0) this.#problem(s, 'token movements seen before the create was recorded');
-        return;
-      }
-      s.holders = new Map();
-    }
-    for (const b of mine) {
-      const prev = s.holders.get(b.account);
-      const had = prev?.amount ?? 0n;
-      if ((b.pre ?? 0n) !== had) this.#problem(s, `${b.account} held ${b.pre ?? 0n} before ${row.signature}, the rebuild has ${had}`);
-      if (b.owner === null) this.#problem(s, `${b.account} has no owner in ${row.signature}`);
-      if (b.post === null || b.post === 0n) s.holders.delete(b.account);
-      else s.holders.set(b.account, { owner: b.owner ?? prev?.owner ?? b.account, amount: b.post, delegate: prev?.delegate ?? null, delegated: prev?.delegated ?? 0n });
-    }
-    // Delegates (GATE-1e), in instruction order, applied to the balances after the transaction. A delegate's own
-    // transfers are not tracked down from the approved amount: the delegated amount only overstates its control
-    // (the conservative side). An owner change (SetAuthority AccountOwner) moves the account and clears its delegate.
-    for (const op of accountOps) {
-      const h = s.holders.get(op.account);
-      if (h === undefined) continue;
-      if (op.op === 'approve') s.holders.set(op.account, { ...h, delegate: op.delegate, delegated: op.amount });
-      else if (op.op === 'revoke') s.holders.set(op.account, { ...h, delegate: null, delegated: 0n });
-      else if (op.authorityType === 2 && op.newAuthority !== null) s.holders.set(op.account, { ...h, owner: op.newAuthority, delegate: null, delegated: 0n });
-    }
-    let sum = 0n;
-    for (const h of s.holders.values()) sum += h.amount;
-    if (sum !== s.supply) this.#problem(s, `holder balances sum to ${sum}, the supply is ${s.supply} after ${row.signature}`);
   }
 
   /**
@@ -788,11 +782,15 @@ export class FactProjector {
     }
     const candles = [...s.candlesHead, ...s.candlesTail.filter((c) => !s.candlesHead.some((h) => h.startMs === c.startMs))].filter((c) => c.startMs <= m.receivedAt);
     if (s.migration !== null) put('candles', candlesKey(mint), { obs: obs(), intervalMs: MINUTE_MS, candles });
-    if (s.holders !== null) {
-      const accounts: HolderAccount[] = [...s.holders].map(([address, h]) => ({ address, mint, owner: h.owner, ownerProgram: null, amount: h.amount, delegate: h.delegate, delegatedAmount: h.delegate === null ? 0n : h.delegated }))
-        .sort((a, b) => (a.amount > b.amount ? -1 : a.amount < b.amount ? 1 : a.address < b.address ? -1 : 1));
-      const holderQuality = quality.length === 0 && this.#o.delegatesComplete !== true ? ['partial' as const] : quality;
-      put('holders', holdersKey(mint), { obs: obs(holderQuality), supply: s.supply, coverage: 'all', accounts });
+    // Holders from BT-1d's book. An unresolved mint gets no holder fact (H12/H13 then "not covered"), and its reason is
+    // counted: never imputed.
+    const h = this.#book.holdersAsOf(mint);
+    if (h.unresolved) {
+      this.counts.holderAbstentions[h.reason] = (this.counts.holderAbstentions[h.reason] ?? 0) + 1;
+      (this.holderAbstainedMints[h.reason] ??= new Set()).add(mint);
+    } else {
+      const holderQuality = this.#o.delegatesComplete !== true ? ['partial' as const] : [];
+      put('holders', holdersKey(mint), { obs: obs(holderQuality), supply: h.supply, coverage: 'all', accounts: h.accounts });
     }
     // Deployer-funded wallets and the dev's cluster are not in the dataset (DATA-1 "Not covered"): complete only with a
     // funding source dated at or before now, and with the create (creation-slot buyers) recorded.

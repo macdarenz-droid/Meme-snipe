@@ -22,8 +22,9 @@ const U2 = { universe: 'U2', fromMs: 60 * 60_000, toMs: 70 * 60_000, everyMs: 5 
 const solUsd = { ...SOL_USD, bars: SOL_USD.bars.map((b, k) => ({ ...b, start: W0 - 6 * 3_600_000 + k * 3_600_000 })) };
 
 const replay = (plans: readonly MintPlan[], slots: number, sampleRate: number | null = 1, tradesFromMs?: number, tieSalt = 'test-salt', poolAccounts?: FactOptions['poolAccounts'], delegatesComplete = true, readLatency?: FactOptions['readLatency'], survival?: FactOptions['survival'], volumeHours?: FactOptions['volumeHours']) => {
-  const { rows, mints } = studyWorld({ mints: plans, slots });
+  const { rows, mints, ownerPrograms } = studyWorld({ mints: plans, slots });
   const facts = new FactProjector({
+    holders: { ownerPrograms },
     sampleRate, rugs: RUG_CONFIG, windows: [U2], solUsd: seriesReleases(solUsd), solUsdPoints: 30, candlesHead: 10, candlesTail: 360, tieSalt, delegatesComplete, ...(readLatency === undefined ? {} : { readLatency }), ...(survival === undefined ? {} : { survival }), ...(volumeHours === undefined ? {} : { volumeHours }),
     ...(tradesFromMs === undefined ? {} : { tradesFromMs }), ...(poolAccounts === undefined ? {} : { poolAccounts }),
   });
@@ -202,12 +203,18 @@ describe('fact projector', () => {
     expect(cv[0]!.moment.receivedAt).toBeGreaterThanOrEqual((d0 + 1) * 86_400_000);
   });
 
-  it('flags holders and the mint partial after a missed token movement', () => {
-    const r = replay([{ ...PLAN, dropBalancesAfter: 30 * MIN }], SLOTS);
-    const c = r.events.filter((e) => e.key === `check:${r.mints[0]!.mint}`)[0]!;
-    const h = r.events.filter((e) => e.key === holdersKey(r.mints[0]!.mint) && e.moment.slot === c.moment.slot).at(-1)!;
-    expect(parseHolders(h.value)!.obs.quality).toEqual(['partial']);
-    expect(r.facts.state(r.mints[0]!.mint)!.holderProblem).toMatch(/held .* before/);
+  it('takes holders from BT-1d\'s book: a swap with no token owner leaves the mint unresolved, with no fact and its reason counted', () => {
+    const r = replay([{ ...PLAN, emptyOwnerAfter: 30 * MIN }], SLOTS);
+    const mint = r.mints[0]!.mint;
+    const checks = r.events.filter((e) => e.key === `check:${mint}`);
+    expect(checks.length).toBeGreaterThan(0);
+    // Every check is after the unknown owner (migration + 30 min < the first check at + 60 min): no holder fact at any.
+    for (const c of checks) expect(r.events.some((e) => e.key === holdersKey(mint) && e.moment.slot === c.moment.slot)).toBe(false);
+    expect(r.facts.counts.holderAbstentions).toEqual({ swap_owner_unknown: checks.length });
+    expect([...r.facts.holderAbstainedMints['swap_owner_unknown']!]).toEqual([mint]);
+    // The same world without it has a resolved holder read at every check.
+    const ok = replay([PLAN], SLOTS);
+    expect(ok.facts.counts.holderAbstentions).toEqual({});
   });
 
   it('releases a pool\'s first trade event since migration and every event with a tail, for H5', () => {
@@ -236,8 +243,8 @@ describe('fact projector', () => {
   });
 
   it('drops a launch that never graduates after a week, and a graduate past every window', () => {
-    const { rows, mints } = studyWorld({ mints: [{ ...PLAN, graduateAfter: 10 ** 9 }, PLAN], slots: SLOTS });
-    const facts = new FactProjector({ sampleRate: 1, rugs: RUG_CONFIG, windows: [U2], solUsd: [], solUsdPoints: 30, candlesHead: 10, candlesTail: 360, tieSalt: 'test-salt' });
+    const { rows, mints, ownerPrograms } = studyWorld({ mints: [{ ...PLAN, graduateAfter: 10 ** 9 }, PLAN], slots: SLOTS });
+    const facts = new FactProjector({ holders: { ownerPrograms }, sampleRate: 1, rugs: RUG_CONFIG, windows: [U2], solUsd: [], solUsdPoints: 30, candlesHead: 10, candlesTail: 360, tieSalt: 'test-salt' });
     const market = new Market({ heartbeatBlocks: 1_000_000, discoveryLag: () => 1, active: () => false, observe: null, volumeWindowSlots: 150, hook: () => {}, hasRows: () => true, schedule: () => {}, facts });
     for (const r of rows) market.release(r);
     expect(facts.state(mints[0]!.mint)).toBeDefined();
@@ -251,10 +258,11 @@ describe('fact projector', () => {
     expect(facts.tracked).toBe(0);
   });
 
-  it('leaves out the mint fact when the create was not recorded', () => {
+  it('leaves out the mint fact when the create\'s raw record is missing; holders still come from the trade rows', () => {
     const r = replay([{ ...PLAN, noCreateRaw: true }], SLOTS);
     const mint = r.mints[0]!.mint;
     expect(r.events.some((e) => e.key === mintKey(mint))).toBe(false);
-    expect(r.events.some((e) => e.key === holdersKey(mint))).toBe(false);
+    // Holders come from the trade rows (BT-1d's book), not from raw records: they are still known.
+    expect(r.events.some((e) => e.key === holdersKey(mint))).toBe(true);
   });
 });

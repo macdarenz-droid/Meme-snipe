@@ -47,6 +47,8 @@ export interface MintPlan {
   readonly devDelegate?: bigint;
   /** Omit the balances of one swap's raw record past this many slots after migration (a missed flow). */
   readonly dropBalancesAfter?: number;
+  /** The first swap past this many slots after migration carries no token owner (schema 3's swap_owner_unknown). */
+  readonly emptyOwnerAfter?: number;
   /** Largest random buy, lamports (default 2 SOL), and the share of a holder's tokens a sell takes (1/n, default 2). */
   readonly buySize?: number;
   readonly sellDivisor?: number;
@@ -83,8 +85,10 @@ const FEES = { split: { lp: bps(20), protocol: bps(5), creator: bps(95) }, buyba
 export const slotTime = (s: number): number => Math.floor((W0 + s * SLOT_MS) / 1000);
 
 /** Deterministic rows in chain order, and the addresses of each mint. */
-export const studyWorld = (o: WorldOptions): { rows: DatasetRow[]; mints: WorldMint[] } => {
+export const studyWorld = (o: WorldOptions): { rows: DatasetRow[]; mints: WorldMint[]; ownerPrograms: ReadonlyMap<string, string | null> } => {
   const rows: DatasetRow[] = [];
+  /** Every wallet that holds the mints: the owner-program supplement lists them (none has an account program here). */
+  const owners = new Set<string>();
   const seed = o.seed ?? 'w';
   let h = 7;
   const rnd = () => {
@@ -109,7 +113,7 @@ export const studyWorld = (o: WorldOptions): { rows: DatasetRow[]; mints: WorldM
     const vault = associatedTokenAddress(pool, mint, TOKEN_2022_PROGRAM);
     const migrateSlot = p.createSlot + p.graduateAfter;
     out.push({ mint, creator, pool, lpMint, createSlot: p.createSlot, migrateSlot });
-    return { p, mint, creator, auth, pool, lpMint, curve, curveAta, vault, migrateSlot, holders: new Map<string, { owner: string; amount: bigint }>(), state: null as null | { baseReserve: bigint; quoteVault: bigint; virtualQuoteReserves: bigint }, dropped: false, tailed: false };
+    return { p, mint, creator, auth, pool, lpMint, curve, curveAta, vault, migrateSlot, holders: new Map<string, { owner: string; amount: bigint }>(), state: null as null | { baseReserve: bigint; quoteVault: bigint; virtualQuoteReserves: bigint }, dropped: false, tailed: false, blanked: false };
   });
   const raw = (s: number, tx: number, signature: string, mints: string[], balances: RawBalance[], ops: TokenOp[]): RawRow =>
     ({ kind: 'raw', slot: WSLOT0 + BigInt(s), blockTime: slotTime(s), txIdx: tx, evIdx: RAW_EV_IDX, signature, mints, balances, ops, undecodable: null });
@@ -142,10 +146,21 @@ export const studyWorld = (o: WorldOptions): { rows: DatasetRow[]; mints: WorldM
           fields: {
             name: p.label, symbol: p.label.slice(0, 4).toUpperCase(), uri: '', mint: pl.mint, bonding_curve: pl.curve, user: pl.creator, creator: pl.creator,
             timestamp: String(blockTime), token_total_supply: String(SUPPLY), token_program: TOKEN_2022_PROGRAM, quote_mint: '11111111111111111111111111111111', is_mayhem_mode: 'false',
+            // The curve's real reserves at creation: what the dev buy and the 100 curve buys take, so the curve ends empty.
+            real_token_reserves: String(CURVE_SOLD + (SUPPLY * BigInt(p.devBuyBps ?? 0)) / 10_000n),
           },
         });
         const dev = (SUPPLY * BigInt(p.devBuyBps ?? 0)) / 10_000n;
         const devAta = key(`${seed}:ata:${p.label}:dev`);
+        owners.add(pl.creator);
+        // The dev's buy in the create transaction, as a curve trade (schema 3: the holder rebuild credits its owner).
+        if (dev > 0n) {
+          rows.push({
+            kind: 'curve', slot, blockTime, txIdx: tx, evIdx: 1, signature, mint: pl.mint, isBuy: true, solAmount: 30_000_000n, tokenAmount: dev,
+            virtualSolReserves: 31_000_000_000n, virtualTokenReserves: 1_000_000_000_000_000n, realSolReserves: 1_000_000_000n, realTokenReserves: CURVE_SOLD,
+            mayhem: false, quoteMint: '11111111111111111111111111111111', user: pl.creator, extraHex: '', userTokenAccount: devAta, userTokenOwner: pl.creator,
+          });
+        }
         // The chain state exists either way; only the record of it may be missing from the dataset.
         const balances = move(pl, [{ account: pl.curveAta, owner: pl.curve, delta: SUPPLY - dev }, ...(dev > 0n ? [{ account: devAta, owner: pl.creator, delta: dev }] : [])]);
         if (!p.noCreateRaw) {
@@ -172,9 +187,10 @@ export const studyWorld = (o: WorldOptions): { rows: DatasetRow[]; mints: WorldM
         const amount = CURVE_SOLD / 100n;
         rows.push({
           kind: 'curve', slot, blockTime, txIdx: tx, evIdx: 0, signature, mint: pl.mint, isBuy: true, solAmount: 30_000_000n, tokenAmount: amount,
-          virtualSolReserves: 31_000_000_000n, virtualTokenReserves: 1_000_000_000_000_000n, realSolReserves: 1_000_000_000n, realTokenReserves: 700_000_000_000_000n,
+          virtualSolReserves: 31_000_000_000n, virtualTokenReserves: 1_000_000_000_000_000n, realSolReserves: 1_000_000_000n, realTokenReserves: CURVE_SOLD - BigInt(k + 1) * amount,
           mayhem: false, quoteMint: '11111111111111111111111111111111', user, extraHex: '', userTokenAccount: key(`${seed}:ata:${user}:${p.label}`), userTokenOwner: user,
         });
+        owners.add(user);
         rows.push(raw(s, tx, signature, [pl.mint], move(pl, [{ account: pl.curveAta, owner: pl.curve, delta: -amount }, { account: key(`${seed}:ata:${user}:${p.label}`), owner: user, delta: amount }]), []));
       }
       if (s === pl.migrateSlot) {
@@ -185,7 +201,7 @@ export const studyWorld = (o: WorldOptions): { rows: DatasetRow[]; mints: WorldM
         rows.push({ kind: 'event', slot, blockTime, txIdx: tx, evIdx: 0, signature, program: 'pump', event: 'CompleteEvent', fields: { mint: pl.mint, bonding_curve: pl.curve, user: pl.creator, timestamp: String(blockTime) } });
         rows.push({
           kind: 'event', slot, blockTime, txIdx: tx, evIdx: 1, signature, program: 'amm', event: 'CreatePoolEvent',
-          fields: { index: '0', creator: pl.auth, base_mint: pl.mint, quote_mint: NATIVE_MINT, pool: pl.pool, lp_mint: pl.lpMint, lp_token_amount_out: '1000', is_mayhem_mode: 'false', pool_base_amount: String(left), pool_quote_amount: String(quote), timestamp: String(blockTime) },
+          fields: { index: '0', creator: pl.auth, base_mint: pl.mint, quote_mint: NATIVE_MINT, pool: pl.pool, lp_mint: pl.lpMint, lp_token_amount_out: '1000', is_mayhem_mode: 'false', base_amount_in: String(left), pool_base_amount: String(left), pool_quote_amount: String(quote), timestamp: String(blockTime) },
         });
         rows.push({
           kind: 'event', slot, blockTime, txIdx: tx, evIdx: 2, signature, program: 'pump', event: 'CompletePumpAmmMigrationEvent',
@@ -202,6 +218,7 @@ export const studyWorld = (o: WorldOptions): { rows: DatasetRow[]; mints: WorldM
       if (pl.state !== null && since > 0 && since % every === 0 && (p.swapsFor === undefined || since <= p.swapsFor)) {
         const buy = rnd() < (p.buyBias?.(since) ?? 0.5);
         const user = key(`${seed}:t:${p.label}:${Math.floor(rnd() * 80)}`);
+        owners.add(user);
         const ata = key(`${seed}:ata:${user}:${p.label}`);
         const heldBy = pl.holders.get(ata)?.amount ?? 0n;
         if (!buy && heldBy === 0n) continue;
@@ -221,7 +238,9 @@ export const studyWorld = (o: WorldOptions): { rows: DatasetRow[]; mints: WorldM
         const base = q.trade.base;
         const tailHere = p.tail !== undefined && since >= p.tail.after && !pl.tailed;
         if (tailHere) pl.tailed = true;
-        rows.push({ ...swap, baseAmount: base, quoteAmount: buy ? swap.amount : q.trade.userQuote, extraHex: tailHere ? p.tail!.hex : '' });
+        const blank = p.emptyOwnerAfter !== undefined && since > p.emptyOwnerAfter && !pl.blanked;
+        if (blank) pl.blanked = true;
+        rows.push({ ...swap, baseAmount: base, quoteAmount: buy ? swap.amount : q.trade.userQuote, extraHex: tailHere ? p.tail!.hex : '', ...(blank ? { userTokenAccount: '', userTokenOwner: '' } : {}) });
         pl.state = q.trade.after;
         const balances = move(pl, [{ account: pl.vault, owner: pl.pool, delta: buy ? -base : base }, { account: ata, owner: user, delta: buy ? base : -base }]);
         const drop = p.dropBalancesAfter !== undefined && since > p.dropBalancesAfter && !pl.dropped;
@@ -231,7 +250,7 @@ export const studyWorld = (o: WorldOptions): { rows: DatasetRow[]; mints: WorldM
     }
     if (s % (o.blockEvery ?? 1) === 0 || txAt.has(s)) rows.push({ kind: 'block', slot, blockTime, parentSlot: slot - 1n });
   }
-  return { rows: rows.sort(compareRows), mints: out };
+  return { rows: rows.sort(compareRows), mints: out, ownerPrograms: new Map<string, string | null>([...owners].map((o) => [o, null])) };
 };
 
 /** H17's pool-account record for the synthetic pools: a current layout, no cashback, the creator as coin creator. */

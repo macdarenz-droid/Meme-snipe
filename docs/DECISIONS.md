@@ -727,6 +727,29 @@ The second reviewer, the third opinion and the supervisor reached one position o
   Curve volume waits for FACTS-1d's core `parseVolumeHoursCsv` (#78) and DATA-1c's `volume-hours` assets. SOL/USD uses the existing hourly series. Until volume exists, the regime reads "unknown" and real-day counts run in the labelled assume-on mode. The synthetic CreatePoolEvent gained `pool_base_amount` and `pool_quote_amount`, as the real event carries them. Test: `test/facts.test.ts`.
 ## External review of the promotion gates (STATS-1b)
 
+- **2026-10-04 · BT-2 writes through the one holdout registry (supervisor ruling).** BT-2's own registry file and `docs/evidence/bt2/registry.json` are gone. The study now:
+  - sets its plan once with `setHoldoutPlan`: window, cutoff E, tail, tie salt, the ruled α schedule, B5 as a decoder boundary, and the procedure in words (`holdoutPlanOf` in `src/study/plan.ts`). The plan holds only what was fixed before any data was read, so the same study registers the same plan;
+  - registers attempt 1 for U1 and U2 with `registerAttempt` when the configurations are frozen (registering commits the attempt and its α). A registry holding only some of an attempt's universes stops the study;
+  - takes each attempt's α from the registry (`attemptAlpha` of `src/holdout.ts`; the study config's copy is removed) for n_power and G2's family α;
+  - appends each G1 result with `recordHoldoutG1`;
+  - runs the sealed holdout through `sealThroughStore`, the checks, start record, failure burn and seal of `runAndSealHoldout`, now shared. It takes each universe's own configuration id and the caller's run, and `runAndSealHoldout` uses it unchanged;
+  - stores G2's registry with `recordHoldoutG2`. That write is refused unless only sealed holdouts changed, each to opened or burned, and every opening had a latest G1 pass.
+
+  The registry's rules now apply to BT-2: a second run of a sealed window is refused and logged, and the seal stays untouched (BT-2 burned it before). The study's sealed run reads its 14-day lead-in from before the window, and a row after the window's last day stops it. Its entry window must end at the registered cutoff. Trials go to their own experiment registry (`--trials`, default `docs/evidence/bt2/trials.json`). The CLI's `--registry` is refused, and a tree with uncommitted changes may not write the registry. The leak test's planted token is now a valid address (the holder rebuild decodes every owner), and its create carries the initial real reserves. Tests: `test/registry.test.ts` and `test/full-study.test.ts` (plan, attempt, G1 records, start and seal records, the second run refused).
+- **2026-10-04 · Holders come from BT-1d's HolderBook (agreed with BT-1d: one rebuild, no copy).** The projector feeds the book in chain order:
+  - the dataset's token movements (fed before each row they precede), the lifecycle events, and every curve and pool trade row (crediting `user_token_owner`, never `user` or the signer);
+  - the account operations from raw records: approve, revoke, close and owner change, each mint taken from the record's balances for that account.
+
+  Each check reads `holdersAsOf(mint)`. A resolved read becomes the holder fact (supply, every account with its owner program and delegate), still marked partial until the dataset keeps every approval-changing transaction. An unresolved read gives no fact, so H12 and H13 are "not covered". Its reason (`sum_mismatch`, `no_create`, `owner_program_unknown`, `swap_owner_unknown`, …) is counted per check and per distinct mint in the run's evidence (`holderAbstentions`), never imputed.
+
+  The CLI loads the movement coverage notes, each run's movements and the owner-program supplement (`--owner-programs <dir>`). BT-2's raw-balance rebuild is removed. Raw records still give mint authorities, extensions, supply and LP. The synthetic world became schema-3 consistent:
+  - the create's initial real reserves;
+  - curve reserves that track every buy;
+  - the dev buy as a curve trade;
+  - the pool creation's `base_amount_in`;
+  - an owner-program map for every holder.
+
+  Tests: `test/facts.test.ts` (a swap with no owner leaves the mint unresolved with its reason counted; holders no longer depend on raw records), `test/raw.test.ts`.
 - **2026-10-04 · Regime volume in the backtest, through FACTS-1's producer.** Volume hours come from the dataset's `days/DAY/volume_hours-NNN.csv.zst` files (`loadVolumeHours`), plus DATA-1c's `volume-hours-DAY.csv` release assets (CLI `--volume-hours <dir>`). Both are parsed by core's `parseVolumeHoursCsv`, the live reader's parser; a malformed day is refused whole. Each hour reaches a FACTS-1 producer as the live reader's `read:chain-volume-hour` answer once the hour has ended, and the producer's curve-volume fact is released. Complete covered days only; an uncovered hour leaves its day unknown. The regime's window rule (expanding from 2026-07-20, at least 28 days, day D−3) is FACTS-1d's, in regime.ts. Tests: `test/dataset.test.ts`, `test/facts.test.ts`.
 - **2026-10-04 · G3's holdout summary** (`src/study/summary.ts`; shape from the G3 builder's `HoldoutSummary`). When a universe's seal is opened, the scoring stage writes `holdout-summary-<U>.json` next to the sealed result:
   - n, mean and sd of net return;

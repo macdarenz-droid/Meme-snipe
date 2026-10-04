@@ -27,12 +27,12 @@ const sol = { ...SOL_USD, bars: Array.from({ length: 24 * 20 }, (_, k) => ({ sta
 // Seed 'e2': its entry draws land under BT-1c's conservative fill model (with 'e' a provider-outage window drops the
 // one entry; the mechanics under test need it to land).
 const run = (plans: readonly MintPlan[], over: Partial<StudyRunOptions> = {}) => {
-  const { rows, mints } = studyWorld({ leadInDays: 15, slots: SLOTS, mints: plans });
+  const { rows, mints, ownerPrograms } = studyWorld({ leadInDays: 15, slots: SLOTS, mints: plans });
   const r = runStudy({
     rows: () => rows[Symbol.iterator](), series: [sol], seed: 'e2', scenario: 'conservative', policy: TRIAL_POLICY, fills: FILL_CONFIG, research: RESEARCH_CONFIG,
     windowEnd: W0 + 12 * 3_600_000, study: STUDY_CONFIG, mode: 'strategy', entriesFrom: W0, entriesTo: W0 + 10 * 3_600_000, sampleRate: 1,
     // No regime inputs in the synthetic world: runs assume it on (labelled diagnostic) unless a test evaluates it.
-    insiders: () => ({ knownAtMs: 0, funded: [], devCluster: [] }), poolAccounts: POOL_ACCOUNTS, delegatesComplete: true, regime: 'assume-on', ...over,
+    insiders: () => ({ knownAtMs: 0, funded: [], devCluster: [] }), poolAccounts: POOL_ACCOUNTS, delegatesComplete: true, regime: 'assume-on', holders: { ownerPrograms }, ...over,
   });
   return { r, mints };
 };

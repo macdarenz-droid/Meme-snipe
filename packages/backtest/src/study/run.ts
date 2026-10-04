@@ -37,6 +37,8 @@ export interface StudyRunOptions extends Omit<RunOptions, 'strategy' | 'facts' |
   readonly readLimits?: ReadLimits;
   /** The regime's chain-volume hours (DATA-1c), for FACTS-1's curve-volume fact. */
   readonly volumeHours?: ConstructorParameters<typeof FactProjector>[0]['volumeHours'];
+  /** BT-1d's holder rebuild inputs: movement coverage notes, owner-program supplement, token movements. */
+  readonly holders?: ConstructorParameters<typeof FactProjector>[0]['holders'];
   /** When trade rows begin (an assembled window's first day); see FactOptions.tradesFromMs. */
   readonly tradesFromMs?: number;
 }
@@ -78,6 +80,7 @@ export const studyRunOptions = (o: StudyRunOptions): RunOptions => {
       // Graduate survival for the regime gate, from FACTS-1's producer sized by the locked policy.
       survival: producerOptions(o.policy),
       ...(o.volumeHours === undefined ? {} : { volumeHours: o.volumeHours }),
+      ...(o.holders === undefined ? {} : { holders: o.holders }),
       ...(o.tradesFromMs === undefined ? {} : { tradesFromMs: o.tradesFromMs }),
     }),
     // A fresh locked session per run: the policy cannot change while it runs (R15).

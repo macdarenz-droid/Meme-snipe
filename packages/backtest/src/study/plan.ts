@@ -4,6 +4,7 @@
 // whose hold crosses a fold's end is purged and the first embargo after each boundary is dropped.
 import { DAY_MS } from '../../../core/src/config/index.ts';
 import type { DayReturn } from '../../../core/src/stats/index.ts';
+import type { HoldoutPlan } from '../holdout.ts';
 import type { StudyConfig } from '../strategy/config.ts';
 
 export interface Fold {
@@ -125,3 +126,43 @@ export const foldSummary = (trades: readonly (DayReturn & { fold: number })[], f
     const xs = trades.filter((t) => t.fold === f.index).map((t) => t.rNet);
     return { fold: f.index, from: f.days[0]!, to: f.days[f.days.length - 1]!, trades: xs.length, mean: xs.length === 0 ? null : xs.reduce((a, b) => a + b, 0) / xs.length };
   });
+
+const iso = (ms: number) => new Date(ms).toISOString();
+
+/**
+ * The holdout plan BT-2 registers in the one holdout registry (setHoldoutPlan): the window and cutoff (they must equal
+ * the research config's), the tie salt, the ruled α schedule, the decoder boundaries inside the window and the
+ * procedure in words. Only what is fixed before any data was read goes in, so the same study registers the same plan.
+ */
+export const holdoutPlanOf = (c: StudyConfig, plan: StudyPlan, alpha: { readonly first: number; readonly laterBase: number }): HoldoutPlan => {
+  const cutoff = Date.parse(c.holdout.entryCutoff);
+  if (cutoff % DAY_MS !== 0) throw new RangeError(`the entry cutoff ${c.holdout.entryCutoff} must be a UTC midnight to be registered`);
+  const tailEnd = dayStart(plan.holdout.toDay) + DAY_MS;
+  const inside = c.regimes.filter((b) => !b.market && b.atMs > dayStart(plan.holdout.fromDay) && b.atMs < tailEnd);
+  const universes = c.universes.map((u) => u.universe);
+  const first = (alpha.first * 100).toFixed(0);
+  return {
+    fromDay: plan.holdout.fromDay, entryCutoffDay: iso(cutoff).slice(0, 10), tailEndDay: iso(tailEnd).slice(0, 10),
+    familySize: universes.length, tieSalt: c.tieSalt, alpha,
+    decoderBoundaries: inside.map((b) => ({ label: b.label, at: iso(b.atMs) })),
+    procedure: [
+      'Configurations are chosen from practice days only, then frozen and registered before any of them runs live; whoever selects them reads no live shakedown P&L before the freeze.',
+      'Registering a configuration commits its attempt: at E the attempt is spent whatever happens. Halted, abandoned or short counts as a failed attempt, and the next configuration takes the next level.',
+      `Entries stop at the cutoff E = ${iso(cutoff)} (UTC); the observation-only tail matures before anything is scored.`,
+      `One sealed ledger with one endpoint for ${universes.join(' and ')}: run once, opened once after the tail, never for one universe while another is pending.`,
+      "A universe's seal opens only if its latest recorded G1 (practice days, all regimes pooled) passed; the registry refuses otherwise. Once G1 passed and the counts are met, opening is mandatory.",
+      `Required: n >= max(300, n_power, closed form) at family alpha ${alpha.first} (Holm across the ${universes.length} universes) on >= 10 Melbourne trade days; short means "not proven".`,
+      ...inside.map((b) => `${b.label} (${iso(b.atMs)}) is a decoder boundary, not a market boundary: allowed inside the window, reported before and after as a non-gating line.`),
+      `Attempt k >= 2 is registered after the earlier attempts are scored or burned; its window starts on the first whole UTC day after that registration and runs 28 entry days, at family alpha ${alpha.laterBase} / 2^(k-1), same procedure, opened once.`,
+    ],
+    details: {
+      study: 'study-1', practice: { fromDay: plan.walkForward.days[0], toDay: plan.walkForward.days[plan.walkForward.days.length - 1] },
+      entriesFrom: iso(plan.holdout.entriesFrom), embargoMs: c.embargoMs, after: c.holdoutAfter,
+      sizing: {
+        note: `Pre-registered estimates (supervisor ruling 2026-10-04); no data was read. Attempt 1 spends ${first}% of the error budget.`,
+        graduatesPerDay: 1270, h9PassShare: 0.24, otherHardRejectPassShareAssumed: 0.3, setupAndRiskShareAssumed: 0.25,
+        expectedEntriesPerDayPerUniverse: 23, plausibleRange: '280-1400 over 28 entry days',
+      },
+    },
+  };
+};

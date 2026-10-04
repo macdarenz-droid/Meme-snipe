@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { refuseSymlink } from './registry-git.ts';
 import { canonical } from '../../core/src/engine/index.ts';
-import { burnHoldout, createHoldoutRegistry, type HoldoutCounts, holdoutReady, type HoldoutRegistry, openHoldout, registerHoldout, sealHoldout } from '../../core/src/stats/index.ts';
+import { burnHoldout, createHoldoutRegistry, type HoldoutCounts, type HoldoutEntry, holdoutReady, type HoldoutRegistry, openHoldout, registerHoldout, sealHoldout } from '../../core/src/stats/index.ts';
 import type { DatasetRow } from './dataset/rows.ts';
 import { melbourneDay } from './report.ts';
 import { type RunOptions, runBacktest, s0Config } from './run.ts';
@@ -165,7 +165,7 @@ export interface HoldoutStore {
  */
 export const RULED_ALPHA = { first: 0.04, laterBase: 0.01 } as const;
 
-export const attemptAlpha = (plan: HoldoutPlan, index: number): number => {
+export const attemptAlpha = (plan: Pick<HoldoutPlan, 'alpha'>, index: number): number => {
   if (!Number.isSafeInteger(index) || index < 1) throw new RangeError(`attempt index must be >= 1, got ${index}`);
   return index === 1 ? plan.alpha.first : plan.alpha.laterBase / 2 ** (index - 1);
 };
@@ -281,6 +281,31 @@ export const openSealedHoldout = (a: HoldoutAuthority, holdoutId: string,
   });
 
 /**
+ * Stores the registry G2 returns (gateG2 opens and burns holdouts itself). Refused unwritten unless only sealed
+ * holdouts changed, each to opened or burned with nothing else touched, and every opened one had a latest G1 pass for
+ * its registered configuration (g1Blocks) before this write.
+ */
+export const recordHoldoutG2 = (a: HoldoutAuthority, after: HoldoutRegistry): HoldoutStore =>
+  mutate(a, 'Holdout G2: opened or burned seals', (s) => {
+    if (s === null) throw new RangeError('no holdout registry');
+    const before = s.registry;
+    if (after.familySize !== before.familySize || after.entries.length !== before.entries.length) throw new RangeError('G2 may not add, remove or resize holdouts');
+    const fixed = (e: HoldoutEntry) => canonical({ ...e, seal: null, openedAtMs: null, burned: null, burnReason: null });
+    after.entries.forEach((e, k) => {
+      const b = before.entries[k]!;
+      if (canonical(b) === canonical(e)) return;
+      if (b.holdoutId !== e.holdoutId || fixed(b) !== fixed(e)) throw new RangeError(`G2 changed more than the seal of ${b.holdoutId}`);
+      if (b.seal !== 'sealed' || b.burned) throw new RangeError(`holdout ${b.holdoutId} was ${b.burned ? 'burned' : b.seal}, not sealed, before G2`);
+      if (e.seal === 'opened') {
+        const blocked = g1Blocks(s, b.holdoutId);
+        if (blocked !== null) throw new RangeError(`holdout ${b.holdoutId} cannot be opened: ${blocked}`);
+      } else if (!e.burned) throw new RangeError(`G2 left holdout ${b.holdoutId} ${e.seal} without a burn`);
+    });
+    const store = { ...s, registry: after };
+    return { store, value: store };
+  });
+
+/**
  * Registers attempt `index` of the shared error budget: one holdout per universe, all on the plan's window, with their
  * configuration ids. Registering commits the attempt. The index must be the next one: a skipped or repeated index is
  * refused and burns the holdouts it names (and, if repeated, the earlier attempt's), recorded before the refusal.
@@ -388,12 +413,35 @@ const utcDay = (blockTimeSeconds: number): string => new Date(blockTimeSeconds *
  */
 export const runAndSealHoldout = (o: RunOptions & { readonly ledgerPath: string }, t: HoldoutTargets): SealedHoldout => {
   const configId = holdoutConfigId(o, t);
+  // Rows outside the authorised window stop the run (and so burn the holdout).
+  const inWindow = (): Iterator<DatasetRow> => {
+    const it = o.rows();
+    return { next: () => {
+      const r = it.next();
+      if (!r.done) {
+        const d = utcDay(r.value.blockTime);
+        if (d < t.window.fromDay || d > t.window.toDay) throw new RangeError(`row at ${d} is outside the authorised window`);
+      }
+      return r;
+    } };
+  };
+  return sealThroughStore(t, () => configId, o.ledgerPath, (cutoff) => runHoldout({ ...o, rows: inWindow, entryCutoff: cutoff }));
+};
+
+/**
+ * The checks, start record, burn on failure and seal of runAndSealHoldout around any holdout run (BT-2's study run
+ * writes its own ledger and outcomes). `configIdOf` gives the configuration each universe ran under; `run` receives
+ * the attempt's entry cutoff (ms) and returns the seal: one hash and the counts per universe.
+ */
+export const sealThroughStore = (t: HoldoutTargets, configIdOf: (universe: string) => string, ledgerPath: string, run: (entryCutoffMs: number) => SealedHoldout): SealedHoldout => {
   t.vcs?.check();
   if (!existsSync(t.registryPath)) throw new RangeError(`no holdout registry at ${t.registryPath}: holdout not registered`);
   let store = readHoldoutStore(t.registryPath);
   const save = (message: string) => saveStore(t.registryPath, store, t.vcs, message);
+  const universeOf = new Map(Object.entries(t.byUniverse).map(([u, id]) => [id, u]));
   const log = (holdoutId: string, outcome: HoldoutRunRecord['outcome'], reason: string) => {
-    store = { ...store, runs: [...store.runs, { holdoutId, outcome, configId, ledgerPath: o.ledgerPath, at: new Date().toISOString(), reason }] };
+    const u = universeOf.get(holdoutId);
+    store = { ...store, runs: [...store.runs, { holdoutId, outcome, configId: u === undefined ? '' : configIdOf(u), ledgerPath, at: new Date().toISOString(), reason }] };
   };
   const burnAll = (why: string) => {
     let reg = store.registry;
@@ -414,7 +462,7 @@ export const runAndSealHoldout = (o: RunOptions & { readonly ledgerPath: string 
       if (e.seal === 'registered') burnAll(`holdout ${id} has a start record and no result`);
       refuse(id, 'window already run');
     } else if (e.universe !== u) refuse(id, `registered for ${e.universe}, run for ${u}`);
-    else if (e.configId !== configId) refuse(id, `configuration ${configId} is not the authorised ${e.configId}`);
+    else if (e.configId !== configIdOf(u)) refuse(id, `configuration ${configIdOf(u)} is not the authorised ${e.configId}`);
     else if (e.fromDay !== t.window.fromDay || e.toDay !== t.window.toDay) refuse(id, `window ${t.window.fromDay}..${t.window.toDay} is not the authorised ${e.fromDay}..${e.toDay}`);
   }
   // One sealed ledger and one endpoint for every holdout of the attempt: the run must feed all of them.
@@ -430,21 +478,9 @@ export const runAndSealHoldout = (o: RunOptions & { readonly ledgerPath: string 
   t.vcs?.check();
   // Entries stop at the attempt's cutoff; the run keeps observing to the end of the tail so every position can finish.
   const cutoff = Date.parse(`${attempt!.window.entryCutoffDay}T00:00:00Z`);
-  // Rows outside the authorised window stop the run (and so burn the holdout).
-  const inWindow = (): Iterator<DatasetRow> => {
-    const it = o.rows();
-    return { next: () => {
-      const r = it.next();
-      if (!r.done) {
-        const d = utcDay(r.value.blockTime);
-        if (d < t.window.fromDay || d > t.window.toDay) throw new RangeError(`row at ${d} is outside the authorised window`);
-      }
-      return r;
-    } };
-  };
   let sealed: SealedHoldout;
   try {
-    sealed = runHoldout({ ...o, rows: inWindow, entryCutoff: cutoff });
+    sealed = run(cutoff);
   } catch (err) {
     const why = err instanceof Error ? err.message : String(err);
     burnAll(why);
@@ -455,7 +491,7 @@ export const runAndSealHoldout = (o: RunOptions & { readonly ledgerPath: string 
   }
   for (const [u, id] of Object.entries(t.byUniverse)) {
     const counts = sealed.counts[u] ?? { candidates: 0, entries: 0, entryDays: 0 };
-    const step = sealHoldout(store.registry, id, { configId, ledgerHash: sealed.ledgerHash, counts });
+    const step = sealHoldout(store.registry, id, { configId: configIdOf(u), ledgerHash: sealed.ledgerHash, counts });
     store = { ...store, registry: step.registry };
     log(id, step.ok ? 'sealed' : 'failed', step.reason);
   }

@@ -36,9 +36,10 @@ export type TokenOp =
   | { readonly op: 'mint-to'; readonly program: string; readonly mint: string; readonly amount: bigint }
   | { readonly op: 'burn'; readonly program: string; readonly mint: string; readonly amount: bigint }
   | { readonly op: 'extension'; readonly program: string; readonly mint: string; readonly ext: ExtensionInit }
-  /** Approve / ApproveChecked on a token account; Revoke and CloseAccount clear it (GATE-1e delegates). */
+  /** Approve / ApproveChecked on a token account; Revoke clears it; CloseAccount removes the account (GATE-1e delegates). */
   | { readonly op: 'approve'; readonly program: string; readonly account: string; readonly delegate: string; readonly amount: bigint }
-  | { readonly op: 'revoke'; readonly program: string; readonly account: string };
+  | { readonly op: 'revoke'; readonly program: string; readonly account: string }
+  | { readonly op: 'close'; readonly program: string; readonly account: string };
 
 export interface RawRow extends ChainPos {
   readonly kind: 'raw';
@@ -146,9 +147,9 @@ const tokenOp = (program: string, d: Uint8Array, acct: (i: number) => string | u
     }
     case 5:
     case 9: {
-      // Revoke: [source, owner]; CloseAccount: [account, destination, owner]. Either leaves the account with no delegate.
+      // Revoke: [source, owner] clears the delegate; CloseAccount: [account, destination, owner] removes the account.
       const account = acct(0);
-      return account === undefined ? null : { op: 'revoke', program, account };
+      return account === undefined ? null : { op: tag === 5 ? 'revoke' : 'close', program, account };
     }
     case 7:
     case 14: {

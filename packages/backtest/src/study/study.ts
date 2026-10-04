@@ -5,7 +5,9 @@
 //   4. the sealed holdout, run once (recorded first; a second run burns it), size-checked from its counts;
 //   5. G2: opened only when every check on the counts passes, else "not proven yet" with the seals closed;
 //   6. G0 from the engine proofs and the ledger replay check.
-import { writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, writeFileSync } from 'node:fs';
+import { encodeBase58 } from '../../../core/src/chain/base58.ts';
 import { exitsFor, type FillConfig, type Policy, type ResearchConfig } from '../../../core/src/config/index.ts';
 import { OFF_CHAIN } from '../../../core/src/engine/index.ts';
 import { createRng, type DayReturn, type GateResult, MIN_DAYS } from '../../../core/src/stats/index.ts';
@@ -14,10 +16,11 @@ import type { DatasetRow } from '../dataset/rows.ts';
 import { leakTest, type ProofReport, shiftTest } from '../proofs.ts';
 import type { RunResult } from '../run.ts';
 import { replayHashes } from '../proofs.ts';
-import { attemptAlpha, type StudyConfig, configId, studyHash } from '../strategy/config.ts';
+import { type StudyConfig, configId, studyHash } from '../strategy/config.ts';
 import { g0, g1, g2NotProven, gateG2, type G2Short, pboMatrix, powerOf, trialOf } from './gates.ts';
-import { foldSummary, purge, regimeOf, studyPlan, type StudyPlan } from './plan.ts';
-import { g1Blocks, loadOrCreate, readStudyRegistry, recordG1, recordTrial, register, type StudyRegistry, writeStudyRegistry } from './registry.ts';
+import { foldSummary, holdoutPlanOf, purge, regimeOf, studyPlan, type StudyPlan } from './plan.ts';
+import { attemptAlpha, g1Blocks, type HoldoutAuthority, type HoldoutStore, readHoldoutStore, recordHoldoutG1, recordHoldoutG2, registerAttempt, RULED_ALPHA, setHoldoutPlan } from '../holdout.ts';
+import { loadTrialLog, recordTrial, type TrialLog, writeTrialLog } from './trials.ts';
 import { runStudy, studyRunOptions, type StudyRunOptions } from './run.ts';
 import { type FunnelSummary } from './funnel.ts';
 import { type SpaPanel, spaPanel } from './spa.ts';
@@ -50,7 +53,12 @@ export interface StudyInputs {
   /** The regime gate as live (default), or assumed on (a labelled diagnostic; the holdout refuses to run then). */
   readonly regimeGate?: 'evaluate' | 'assume-on';
   readonly volumeHours?: StudyRunOptions['volumeHours'];
-  readonly registryPath: string;
+  /** Holder rebuild inputs for a day range (movements are loaded per run's days). */
+  readonly holders?: (from: string, to: string) => StudyRunOptions['holders'];
+  /** The one holdout registry (plan, attempts, G1 records, runs) and what a holdout is bound to. */
+  readonly holdout: HoldoutAuthority;
+  /** The experiment registry: every trial evaluated, kept across runs. */
+  readonly trialsPath: string;
   /** Where the walk-forward and holdout ledgers go (new files). */
   readonly outDir: string;
   readonly seed: string;
@@ -128,7 +136,9 @@ export interface StudyReport {
   readonly gates: { readonly G0: GateResult; readonly G1: Readonly<Record<string, GateResult>>; readonly G2: GateResult };
   readonly holdoutRegime: string;
   readonly proofs: { readonly replayHashes: readonly string[]; readonly leak: ProofReport; readonly shift: ProofReport };
-  readonly registry: StudyRegistry;
+  /** The holdout registry after the run (null when nothing was written to it: a diagnostic run before any plan). */
+  readonly holdoutStore: HoldoutStore | null;
+  readonly trials: TrialLog;
   /** How the regime gate ran: 'evaluated' as live, or 'assumed on (diagnostic)'. */
   readonly regimeGate: 'evaluated' | 'assumed on (diagnostic)';
 }
@@ -164,6 +174,7 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
     ...(i.delegatesComplete === undefined ? {} : { delegatesComplete: i.delegatesComplete }),
     ...(i.regimeGate === undefined ? {} : { regime: i.regimeGate }),
     ...(i.volumeHours === undefined ? {} : { volumeHours: i.volumeHours }),
+    ...(i.holders === undefined ? {} : { holders: i.holders(from, to) }),
     ...(i.regimeBoundaries === undefined ? {} : { regimeBoundaries: i.regimeBoundaries }),
   });
 
@@ -197,31 +208,43 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
   const lastRegime = regimeOf(c, Date.parse(`${plan.holdout.fromDay}T00:00:00Z`));
   const sameRegime = <T extends DayReturn & { regime: string }>(xs: readonly T[]): T[] => xs.filter((t) => t.regime === lastRegime);
 
-  let reg = loadOrCreate(i.registryPath, universes.length);
   // A run with the regime assumed on is a labelled diagnostic: its counts never feed G1, the trial registry or a
   // holdout registration (supervisor ruling).
   const diagnostic = i.regimeGate === 'assume-on';
-  if (!diagnostic) for (const u of universes) reg = recordTrial(reg, { ...trialOf(ids[u]!, tradesOf(u)), configId: ids[u]!, evaluatedOn: `walk-forward ${wfDays[0]}..${wfDays[wfDays.length - 1]}` });
-  // 3. One configuration per universe registered for the holdout window before any holdout run.
+  let trials = loadTrialLog(i.trialsPath);
+  if (!diagnostic) for (const u of universes) trials = recordTrial(trials, { ...trialOf(ids[u]!, tradesOf(u)), configId: ids[u]!, evaluatedOn: `walk-forward ${wfDays[0]}..${wfDays[wfDays.length - 1]}` });
+  writeTrialLog(i.trialsPath, trials);
+  const storeNow = (): HoldoutStore | null => (existsSync(i.holdout.registryPath) ? readHoldoutStore(i.holdout.registryPath) : null);
+  // 3. The plan (fixed once) and one configuration per universe registered as this attempt before any holdout run.
+  // Registering commits the attempt: its α is spent whatever happens later.
+  if (!diagnostic) setHoldoutPlan(i.holdout, holdoutPlanOf(c, plan, RULED_ALPHA), i.research);
   const holdoutIdOf = (u: string) => `${u}-${plan.holdout.fromDay}-${plan.holdout.toDay}`;
-  const missing = c.frozen && !diagnostic ? universes.filter((u) => !reg.holdouts.entries.some((e) => e.holdoutId === holdoutIdOf(u))) : [];
-  reg = register(reg, missing.map((u) => ({ holdoutId: holdoutIdOf(u), universe: u, configId: ids[u]!, fromDay: plan.holdout.fromDay, toDay: plan.holdout.toDay })));
-  writeStudyRegistry(i.registryPath, reg);
+  const registered = (u: string) => storeNow()?.registry.entries.some((e) => e.holdoutId === holdoutIdOf(u)) === true;
+  if (c.frozen && !diagnostic && !universes.every(registered)) {
+    if (universes.some(registered)) throw new RangeError('only some universes of this attempt are registered: the registry needs repair before the study runs');
+    registerAttempt(i.holdout, { index: c.holdoutAttempt, entries: universes.map((u) => ({ holdoutId: holdoutIdOf(u), universe: u, configId: ids[u]! })) });
+  }
+  let store = storeNow();
+  const familySize = store?.plan?.familySize ?? universes.length;
+  const attempt = store?.attempts.find((x) => x.index === c.holdoutAttempt);
+  // The attempt's α as registered; before registration, the α it would spend under the ruled schedule.
+  const alpha = attempt?.alpha ?? attemptAlpha({ alpha: store?.plan?.alpha ?? RULED_ALPHA }, c.holdoutAttempt);
+  if (store?.plan != null && attempt === undefined && c.frozen && !diagnostic) throw new RangeError(`holdout attempt ${c.holdoutAttempt} is not registered`);
 
-  const matrix = pboMatrix(Object.fromEntries(reg.trials.map((t) => [t.trialId, scored.kept.filter((x) => ids[x.tag] === t.trialId)])), wfDays.map((d) => d));
+  const matrix = pboMatrix(Object.fromEntries(trials.trials.map((t) => [t.trialId, scored.kept.filter((x) => ids[x.tag] === t.trialId)])), wfDays.map((d) => d));
   // G1 per universe and regime (§6.5: never pooled silently); the pooled figure is reported under its own label.
   const regimes = [...new Set(scored.kept.map((t) => t.regime))].sort();
   const G1: Record<string, GateResult> = {};
   for (const u of universes) {
-    const e = reg.holdouts.entries.find((x) => x.holdoutId === holdoutIdOf(u));
+    const e = store?.registry.entries.find((x) => x.holdoutId === holdoutIdOf(u));
     const before = e !== undefined && e.seal !== 'opened' && e.configId === ids[u];
     for (const g of [...regimes, 'pooled']) {
       const pick = <T extends { regime: string }>(xs: readonly T[]) => (g === 'pooled' ? xs : xs.filter((t) => t.regime === g));
-      G1[`${u} ${g === 'pooled' ? 'all regimes (pooled)' : `regime ${g}`}`] = g1({ universe: u, configId: ids[u]!, trades: pick(tradesOf(u)), control: pick(controlOf(u)) }, reg.trials, matrix, seedNumber(`${i.seed}:g1:${u}:${g}`), before);
+      G1[`${u} ${g === 'pooled' ? 'all regimes (pooled)' : `regime ${g}`}`] = g1({ universe: u, configId: ids[u]!, trades: pick(tradesOf(u)), control: pick(controlOf(u)) }, trials.trials, matrix, seedNumber(`${i.seed}:g1:${u}:${g}`), before);
     }
     // Sensitivity, reported and never gating: the same trades with the token-account rent never returned (fills-2 note).
     const noRent = <T extends { rNetNoRent: number }>(xs: readonly T[]) => xs.map((t) => ({ ...t, rNet: t.rNetNoRent }));
-    G1[`${u} all regimes (pooled), sensitivity: no rent recovery`] = g1({ universe: u, configId: ids[u]!, trades: noRent(tradesOf(u)), control: noRent(controlOf(u)) }, reg.trials, matrix, seedNumber(`${i.seed}:g1:${u}:norent`), before);
+    G1[`${u} all regimes (pooled), sensitivity: no rent recovery`] = g1({ universe: u, configId: ids[u]!, trades: noRent(tradesOf(u)), control: noRent(controlOf(u)) }, trials.trials, matrix, seedNumber(`${i.seed}:g1:${u}:norent`), before);
     // Coverage exclusions on the pooled line: candidates abstained for missing evidence, count and share (not rejects).
     const ex = research[u]?.coverageExclusions;
     const pooled = G1[`${u} all regimes (pooled)`]!;
@@ -234,35 +257,35 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
   }
 
   // 4. The holdout's size requirement from the walk-forward only (σ̂ and the day structure, §14).
-  const power = Object.fromEntries(universes.map((u) => [u, powerOf(sameRegime(tradesOf(u)), sameRegime(controlOf(u)), reg.holdouts.familySize, seedNumber(`${i.seed}:power:${u}`), attemptAlpha(c.holdoutAttempt))]));
+  const power = Object.fromEntries(universes.map((u) => [u, powerOf(sameRegime(tradesOf(u)), sameRegime(controlOf(u)), familySize, seedNumber(`${i.seed}:power:${u}`), alpha)]));
   const required = Object.fromEntries(universes.map((u) => [u, power[u]!.ok ? power[u]!.required : null]));
   const holdLedger = `${i.outDir}/holdout-${plan.holdout.fromDay}-${plan.holdout.toDay}.db`;
   let sealed: ReturnType<typeof runSealedHoldout> | null = null;
-  const alreadyRun = reg.runs.some((r) => r.holdoutIds.some((h) => universes.some((u) => holdoutIdOf(u) === h)));
+  const alreadyRun = store?.runs.some((r) => r.outcome !== 'refused' && universes.some((u) => holdoutIdOf(u) === r.holdoutId)) === true;
   if (i.runHoldout && !c.frozen) throw new Error('the configurations are not frozen: the holdout cannot be run');
   if (i.runHoldout && i.regimeGate === 'assume-on') throw new Error('the regime gate is assumed on (diagnostic): the holdout runs only with the gate evaluated as live');
   if (i.runHoldout && !alreadyRun) {
     const holdEnd = Date.parse(`${plan.holdout.toDay}T00:00:00Z`) + 86_400_000;
     const leadFrom = dayBefore(plan.holdout.fromDay, 14) < i.firstDay ? i.firstDay : dayBefore(plan.holdout.fromDay, 14);
-    sealed = runSealedHoldout(i.registryPath, holdLedger, base(leadFrom, plan.holdout.toDay, holdEnd, plan.holdout.entriesFrom, plan.holdout.entriesTo), {
+    sealed = runSealedHoldout(i.holdout, holdLedger, base(leadFrom, plan.holdout.toDay, holdEnd, plan.holdout.entriesFrom, plan.holdout.entriesTo), {
       byUniverse: universes.map((u) => ({ universe: u, holdoutId: holdoutIdOf(u), configId: ids[u]! })),
       required: Object.fromEntries(universes.map((u) => [u, required[u] ?? Number.POSITIVE_INFINITY])),
-    }, Array.from({ length: c.s0SeedsHoldout }, (_, k) => `${i.seed}:holdout-s0:${k}`), i.fills, i.startedAt);
-    reg = readStudyRegistry(i.registryPath);
+      window: { fromDay: plan.holdout.fromDay, toDay: plan.holdout.toDay },
+    }, Array.from({ length: c.s0SeedsHoldout }, (_, k) => `${i.seed}:holdout-s0:${k}`), i.fills);
+    store = storeNow();
   }
 
   // 5. G2: the scoring stage opens a seal only after that universe's G1 passed (pooled over the practice days, the
   // cross-regime evidence) and then must open it once its counts are met (consensus of the three reviews).
-  const entryOf = (u: string) => reg.holdouts.entries.find((x) => x.holdoutId === holdoutIdOf(u));
+  const entryOf = (u: string) => store?.registry.entries.find((x) => x.holdoutId === holdoutIdOf(u));
   for (const u of universes) {
     const e = entryOf(u);
     if (!diagnostic && e !== undefined && !e.burned && e.seal !== 'opened') {
-      reg = recordG1(reg, { holdoutId: e.holdoutId, configId: ids[u]!, passed: G1[`${u} all regimes (pooled)`]?.passed === true, evaluatedOn: `practice ${wfDays[0]}..${wfDays[wfDays.length - 1]} at ${i.startedAt}` });
+      store = recordHoldoutG1(i.holdout, { holdoutId: e.holdoutId, configId: ids[u]!, passed: G1[`${u} all regimes (pooled)`]?.passed === true, evaluatedOn: `practice ${wfDays[0]}..${wfDays[wfDays.length - 1]} at ${i.startedAt}` });
     }
   }
-  writeStudyRegistry(i.registryPath, reg);
-  const g1Passed = (u: string) => g1Blocks(reg, holdoutIdOf(u)) === null;
-  const ready = universes.filter((u) => g1Passed(u) && required[u] !== null && sealedReady(reg, holdoutIdOf(u), required[u]!));
+  const g1Passed = (u: string) => store !== null && g1Blocks(store, holdoutIdOf(u)) === null;
+  const ready = universes.filter((u) => g1Passed(u) && required[u] !== null && sealedReady(store!, holdoutIdOf(u), required[u]!));
   let G2: GateResult;
   if (ready.length === 0) {
     const shorts: G2Short[] = universes.map((u) => {
@@ -273,16 +296,15 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
     });
     G2 = g2NotProven(shorts);
   } else {
-    const open = openSealed(holdLedger, reg, ready.map(holdoutIdOf));
+    const open = openSealed(holdLedger, store!, ready.map(holdoutIdOf));
     const r = gateG2({
-      scenario: 'conservative', registry: reg.holdouts, nowMs: Date.parse(i.startedAt), rng: createRng(seedNumber(`${i.seed}:g2`)),
+      scenario: 'conservative', registry: store!.registry, nowMs: Date.parse(i.startedAt), rng: createRng(seedNumber(`${i.seed}:g2`)),
       universes: ready.map((u) => ({
         universe: u, configId: ids[u]!, holdoutId: holdoutIdOf(u), ledgerHash: open.sealHash, trades: open.outcomes.strategy[u] ?? [],
         controlRuns: open.outcomes.s0.map((s) => s[`S0-${u}`] ?? []), walkForward: sameRegime(tradesOf(u)), power: (power[u] as { power: Parameters<typeof gateG2>[0]['universes'][number]['power'] }).power,
       })),
-    }, { familyAlpha: attemptAlpha(c.holdoutAttempt) });
-    reg = { ...reg, holdouts: r.registry };
-    writeStudyRegistry(i.registryPath, reg);
+    }, { familyAlpha: alpha });
+    store = recordHoldoutG2(i.holdout, r.registry);
     // G3's holdout summary, one file per opened universe, next to the sealed result.
     const hours = (plan.holdout.entriesTo - plan.holdout.entriesFrom) / 3_600_000;
     for (const u of ready) {
@@ -373,14 +395,15 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
         strandedLamports: tradesOfRun(dep, i.fills).trades.filter((t) => t.exitReason === 'blocked').reduce((a, t) => a + t.exitSol, 0n).toString(),
         maxDrawdownUsd: (ds?.maxDrawdownUsd ?? 0n).toString(), killSwitchTrips: ds?.trips.filter((x) => x.trip === 'kill_switch').length ?? 0,
         weeklyTrips: ds?.trips.filter((x) => x.trip === 'weekly_loss').length ?? 0, rejectedOpportunities: ds?.rejected ?? {},
-        notes: ['The regime gate (R16) is not applied: its inputs are not produced in the backtest yet (FACTS-1).', 'Signal priority: the earliest fully eligible signal wins; checks due at the same block break ties by sha256(salt | universe | mint), the salt fixed in the study configuration.', 'S0 runs under the same account, capacity, timing and cost rules (control).'],
+        notes: ['Signal priority: the earliest fully eligible signal wins; checks due at the same block break ties by sha256(salt | universe | mint), the salt fixed in the study configuration.', 'S0 runs under the same account, capacity, timing and cost rules (control).'],
       };
     })(),
     holdout: { ran: sealed !== null || alreadyRun, counts: sealed?.counts ?? Object.fromEntries(universes.map((u) => [u, entryOf(u)?.counts ?? null])), sealHash: sealed?.sealHash ?? null, required },
     gates: { G0: G0full, G1, G2 },
     holdoutRegime: lastRegime,
     proofs: { replayHashes: hashes, leak, shift },
-    registry: reg,
+    holdoutStore: store,
+    trials,
     regimeGate: i.regimeGate === 'assume-on' ? 'assumed on (diagnostic)' : 'evaluated',
   };
 };
@@ -414,11 +437,12 @@ export const studyLeak = (o: ReturnType<typeof studyRunOptions>, days: readonly 
     }
   }
   if (at === null) return { ok: false, violations: ['no block at the middle of the walk-forward'] };
-  const token = `FUTURE-ONLY-${seed}-${mid}`;
+  // A valid address (the holder rebuild decodes every owner), derived from the seed and the moment.
+  const token = encodeBase58(createHash('sha256').update(`FUTURE-ONLY-${seed}-${mid}`).digest());
   const m = { slot: at.slot, txIndex: OFF_CHAIN - 4, ixIndex: 0, receivedAt: at.blockTime * 1000 };
   const created: DatasetRow = {
     kind: 'event', slot: at.slot, blockTime: at.blockTime, txIdx: OFF_CHAIN - 4, evIdx: 0, signature: `plant-${token}`, program: 'pump', event: 'CreateEvent',
-    fields: { mint: token, creator: token, user: token, timestamp: String(at.blockTime), token_total_supply: '1000000000000000' },
+    fields: { mint: token, creator: token, user: token, timestamp: String(at.blockTime), token_total_supply: '1000000000000000', real_token_reserves: '793100000000000' },
   };
   return leakTest(o, {
     token, at: m, rows: [created],
