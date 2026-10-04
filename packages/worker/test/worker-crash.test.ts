@@ -114,6 +114,14 @@ describe('(b) a crash of the engine loop exits with the crash code', () => {
     expect(await h.worker.stopped).toBe(EXIT.crash);
   });
 
+  it('a stop after a kill (the restart drills) returns at once with the crash code, never hangs', async () => {
+    const h = makeWorker();
+    await h.worker.reconcile();
+    await h.worker.kill();
+    expect(await h.worker.stop()).toBe(EXIT.crash);
+    expect(await h.worker.stopped).toBe(EXIT.crash);
+  });
+
   it('the entry exits on every stop of the worker, with its code (nothing is left lingering after a loop crash)', () => {
     const src = readFileSync(join(import.meta.dirname, '..', 'src', 'main.ts'), 'utf8');
     expect(src).toMatch(/w\.stopped\.then\(\(code\) => \{\s*credits\.flush\(\);\s*process\.exit\(code\);/);

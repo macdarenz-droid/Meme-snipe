@@ -1356,6 +1356,10 @@ export class Worker {
    */
   async kill(): Promise<void> {
     this.#stopping = true;
+    // A killed process ends with no code of its own; a later `stop` on this object returns at once, as a crash.
+    this.#stopCode = EXIT.crash;
+    this.#stoppingNow(EXIT.crash);
+    this.#stoppedNow(EXIT.crash);
     this.#world.stop();
     if (this.#loop !== null) this.#d.timers.clearTimeout(this.#loop);
     if (this.#beat !== null) this.#d.timers.clearTimeout(this.#beat);
