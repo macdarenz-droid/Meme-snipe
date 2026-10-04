@@ -3,136 +3,112 @@
   "rentBack": 0.855,
   "rows": [
     {
-      "setup": "curve",
-      "usd": 2,
-      "feeBps": 125,
-      "proportionalPct": 2.5767315866434046,
-      "fixedLamports": 339507,
-      "fixedPct": 2.024479069333114,
-      "rentNoRecoveryPct": 9.02702801333947,
-      "breakEvenPct": 4.6012106559765185,
-      "breakEvenNoRentPct": 12.319319607381765
-    },
-    {
-      "setup": "curve",
-      "usd": 5,
-      "feeBps": 125,
-      "proportionalPct": 2.7376371803071686,
-      "fixedLamports": 339507,
-      "fixedPct": 0.8097916277332456,
-      "rentNoRecoveryPct": 3.610811205335788,
-      "breakEvenPct": 3.547428808040414,
-      "breakEvenNoRentPct": 6.634672388602512
-    },
-    {
-      "setup": "curve",
-      "usd": 20,
-      "feeBps": 125,
-      "proportionalPct": 3.534314837969696,
-      "fixedLamports": 339507,
-      "fixedPct": 0.20244790572611454,
-      "rentNoRecoveryPct": 0.9027027959511301,
-      "breakEvenPct": 3.7367627436958104,
-      "breakEvenNoRentPct": 4.508573634234027
-    },
-    {
       "setup": "young",
       "usd": 2,
       "feeBps": 125,
+      "paid": 16770082,
+      "proportional": 420453,
       "proportionalPct": 2.5071612649240476,
-      "fixedLamports": 310935,
-      "fixedPct": 1.8541076390000444,
-      "rentNoRecoveryPct": 9.02702801333947,
-      "breakEvenPct": 4.361268903924092,
-      "breakEvenNoRentPct": 12.079377855329337
+      "fixedLamports": 414009,
+      "fixedPct": 2.468736111558668,
+      "breakEvenPct": 4.975897376482715,
+      "breakEvenNoRentPct": 12.69400632788796
     },
     {
       "setup": "young",
       "usd": 5,
       "feeBps": 125,
+      "paid": 41925205,
+      "proportional": 1074994,
       "proportionalPct": 2.564075715312543,
-      "fixedLamports": 310935,
-      "fixedPct": 0.7416430556000178,
-      "rentNoRecoveryPct": 3.610811205335788,
-      "breakEvenPct": 3.3057187709125606,
-      "breakEvenNoRentPct": 6.392962351474659
+      "fixedLamports": 414009,
+      "fixedPct": 0.9874944446234671,
+      "breakEvenPct": 3.55157015993601,
+      "breakEvenNoRentPct": 6.638813740498108
     },
     {
       "setup": "young",
       "usd": 20,
       "feeBps": 125,
+      "paid": 167700821,
+      "proportional": 4775716,
       "proportionalPct": 2.847759463264643,
-      "fixedLamports": 310935,
-      "fixedPct": 0.18541076279440005,
-      "rentNoRecoveryPct": 0.9027027959511301,
-      "breakEvenPct": 3.033170226059043,
-      "breakEvenNoRentPct": 3.804981116597259
+      "fixedLamports": 414009,
+      "fixedPct": 0.24687360968375943,
+      "breakEvenPct": 3.094633072948403,
+      "breakEvenNoRentPct": 3.8664439634866192
     },
     {
       "setup": "u1",
       "usd": 2,
       "feeBps": 95,
+      "paid": 16770082,
+      "proportional": 316941,
       "proportionalPct": 1.8899192025417646,
-      "fixedLamports": 310935,
-      "fixedPct": 1.8541076390000444,
-      "rentNoRecoveryPct": 9.02702801333947,
-      "breakEvenPct": 3.744026841541809,
-      "breakEvenNoRentPct": 11.462135792947056
+      "fixedLamports": 414009,
+      "fixedPct": 2.468736111558668,
+      "breakEvenPct": 4.358655314100432,
+      "breakEvenNoRentPct": 12.076764265505679
     },
     {
       "setup": "u1",
       "usd": 5,
       "feeBps": 95,
+      "paid": 41925205,
+      "proportional": 797236,
       "proportionalPct": 1.9015673268622062,
-      "fixedLamports": 310935,
-      "fixedPct": 0.7416430556000178,
-      "rentNoRecoveryPct": 3.610811205335788,
-      "breakEvenPct": 2.643210382462224,
-      "breakEvenNoRentPct": 5.730453963024322
+      "fixedLamports": 414009,
+      "fixedPct": 0.9874944446234671,
+      "breakEvenPct": 2.889061771485673,
+      "breakEvenNoRentPct": 5.976305352047771
     },
     {
       "setup": "u1",
       "usd": 20,
       "feeBps": 95,
+      "paid": 167700821,
+      "proportional": 3286629,
       "proportionalPct": 1.9598168812781185,
-      "fixedLamports": 310935,
-      "fixedPct": 0.18541076279440005,
-      "rentNoRecoveryPct": 0.9027027959511301,
-      "breakEvenPct": 2.1452276440725186,
-      "breakEvenNoRentPct": 2.9170385346107346
+      "fixedLamports": 414009,
+      "fixedPct": 0.24687360968375943,
+      "breakEvenPct": 2.206690490961878,
+      "breakEvenNoRentPct": 2.9785013815000942
     },
     {
       "setup": "u1-1.15",
       "usd": 2,
       "feeBps": 115,
+      "paid": 16770082,
+      "proportional": 382627,
       "proportionalPct": 2.2816048245917937,
-      "fixedLamports": 310935,
-      "fixedPct": 1.8541076390000444,
-      "rentNoRecoveryPct": 9.02702801333947,
-      "breakEvenPct": 4.1357124635918385,
-      "breakEvenNoRentPct": 11.853821414997084
+      "fixedLamports": 414009,
+      "fixedPct": 2.468736111558668,
+      "breakEvenPct": 4.750340936150462,
+      "breakEvenNoRentPct": 12.468449887555709
     },
     {
       "setup": "u1-1.15",
       "usd": 5,
       "feeBps": 115,
+      "paid": 41925205,
+      "proportional": 961421,
       "proportionalPct": 2.2931813929114955,
-      "fixedLamports": 310935,
-      "fixedPct": 0.7416430556000178,
-      "rentNoRecoveryPct": 3.610811205335788,
-      "breakEvenPct": 3.0348244485115132,
-      "breakEvenNoRentPct": 6.122068029073612
+      "fixedLamports": 414009,
+      "fixedPct": 0.9874944446234671,
+      "breakEvenPct": 3.2806758375349627,
+      "breakEvenNoRentPct": 6.367919418097061
     },
     {
       "setup": "u1-1.15",
       "usd": 20,
       "feeBps": 115,
+      "paid": 167700821,
+      "proportional": 3942788,
       "proportionalPct": 2.351084494690697,
-      "fixedLamports": 310935,
-      "fixedPct": 0.18541076279440005,
-      "rentNoRecoveryPct": 0.9027027959511301,
-      "breakEvenPct": 2.536495257485097,
-      "breakEvenNoRentPct": 3.308306148023313
+      "fixedLamports": 414009,
+      "fixedPct": 0.24687360968375943,
+      "breakEvenPct": 2.5979581043744564,
+      "breakEvenNoRentPct": 3.3697689949126732
     }
   ]
 }

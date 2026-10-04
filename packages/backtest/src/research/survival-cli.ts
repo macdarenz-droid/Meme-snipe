@@ -57,7 +57,7 @@ const C = new Set(check);
 const eligible = drive.decisions.filter((d) => d.eligibleAs !== null && C.has(d.day));
 const scored = new Map(scoreCandidates(rows(), eligible.map(({ id, pool, decisionSlot, decisionMs, solUsd: px }) => ({ id, pool, decisionSlot, decisionMs, solUsd: px })), {
   window, policy: TRIAL_POLICY, fills: FILL_CONFIG, scenario: 'conservative', barriers: PLAN_BARRIERS.slice(0, 2), seed, entryMinOutBelowBps: RESEARCH_CONFIG.s0.entryMinOutBelowBps,
-  rentRefundPpm: (FILL_CONFIG.scenarios.conservative.closeSuccessPpm * (1_000_000n - FILL_CONFIG.scenarios.conservative.dustPpm)) / 1_000_000n,
+  rentModel: 'rent-1',
 }).map((o) => [o.id, o]));
 const pre = JSON.parse(readFileSync(join(ROOT, 'research', 'edge', 'preregistration.json'), 'utf8')) as { hypotheses: { id: string; universe: 'U1' | 'U2'; rules: { kind: string; conds?: FeatureCond[] } }[] };
 const rule = survivalRule(tests);

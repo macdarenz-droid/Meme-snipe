@@ -118,14 +118,19 @@ describe('outcome stage', () => {
 });
 
 describe('RENT-1 in the outcome stage', () => {
-  test('rent refunded on a landed sell-and-close lifts the round trip by the rent over the cost', () => {
+  test('RENT-1: the rent comes back when the close lands without dust; a failed close without dust pays one failed exit', () => {
     const t = [of('A', 60)].map(({ id, pool, decisionSlot, decisionMs, solUsd }) => ({ id, pool, decisionSlot, decisionMs, solUsd }));
-    const run = (ppm: bigint) => scoreCandidates(fx.rows, t, { window: W, policy: TRIAL_POLICY, fills: FILL_CONFIG, scenario: 'conservative', barriers: PLAN_BARRIERS.slice(1, 2), seed: 'land', entryMinOutBelowBps: RESEARCH_CONFIG.s0.entryMinOutBelowBps, rentRefundPpm: ppm })[0]!;
-    const back = run(1_000_000n);
-    const lost = run(0n);
-    expect(back.labels[0]!.entryFilled).toBe(true);
-    expect(back.labels[0]!.censored).toBe(false);
-    expect(back.labels[0]!.rNet! - lost.labels[0]!.rNet!).toBeCloseTo(Number(FILL_CONFIG.network.tokenAccountRent) / Number(back.entryCost), 9);
+    const c = FILL_CONFIG.scenarios.conservative;
+    const fills = (closeSuccessPpm: bigint, dustPpm: bigint) => ({ ...FILL_CONFIG, scenarios: { ...FILL_CONFIG.scenarios, conservative: { ...c, closeSuccessPpm, dustPpm } } });
+    const run = (f: typeof FILL_CONFIG, rentModel: 'scenario' | 'rent-1') => scoreCandidates(fx.rows, t, { window: W, policy: TRIAL_POLICY, fills: f, scenario: 'conservative', barriers: PLAN_BARRIERS.slice(1, 2), seed: 'land', entryMinOutBelowBps: RESEARCH_CONFIG.s0.entryMinOutBelowBps, rentModel })[0]!;
+    const none = run(FILL_CONFIG, 'scenario');
+    expect(none.labels[0]!.entryFilled).toBe(true);
+    expect(none.labels[0]!.censored).toBe(false);
+    const cost = Number(none.entryCost);
+    const failedExit = Number(FILL_CONFIG.network.signaturesPerTx * FILL_CONFIG.network.baseFeePerSignature + TRIAL_POLICY.exits.ladder.steps[2]!.priorityFeeLamports);
+    expect(run(fills(1_000_000n, 0n), 'rent-1').labels[0]!.rNet! - none.labels[0]!.rNet!).toBeCloseTo(Number(FILL_CONFIG.network.tokenAccountRent) / cost, 9);
+    expect(run(fills(0n, 0n), 'rent-1').labels[0]!.rNet! - none.labels[0]!.rNet!).toBeCloseTo(-failedExit / cost, 9);
+    expect(run(fills(1_000_000n, 1_000_000n), 'rent-1').labels[0]!.rNet!).toBeCloseTo(none.labels[0]!.rNet!, 12);
   });
 });
 

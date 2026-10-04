@@ -4,8 +4,16 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, test } from 'vitest';
-import { FILL_CONFIG, TRIAL_POLICY } from '../../core/src/config/index.ts';
-import { BRACKETS, breakEvenWinRate, rows, SETUPS } from '../src/research/edge-costs.ts';
+import { FILL_CONFIG, RESEARCH_CONFIG, TRIAL_POLICY } from '../../core/src/config/index.ts';
+import { BRACKETS, breakEvenWinRate, costRow, rows, SETUPS } from '../src/research/edge-costs.ts';
+import { replaySwap, observedFeeContext } from '../../core/src/fills/index.ts';
+import type { AmmSwapRow } from '../src/dataset/rows.ts';
+import { collectCandidates, PLAN_DRIVE, solUsdAsOf } from '../src/research/candidates.ts';
+import { PLAN_BARRIERS, scoreCandidates } from '../src/research/outcome.ts';
+import type { PracticeWindow } from '../src/research/practice.ts';
+import { SOL_USD, syntheticRows, T0 } from './synthetic.ts';
+
+const synth = syntheticRows({ mints: 1, slots: 2.5 * 3600 * 6 });
 import { FEATURE_IDS } from '../src/research/tracker.ts';
 
 const ROOT = join(import.meta.dirname, '..', '..', '..');
@@ -15,7 +23,8 @@ describe('cost math', () => {
   const committed = JSON.parse(read('research/edge/costs.json')) as { rows: ReturnType<typeof rows> };
   const now = rows();
 
-  test('the committed table is what the code computes now', () => {
+  test('the committed table is what the code computes now; only PumpSwap setups are scored', () => {
+    expect(SETUPS.map((x) => x.id)).toEqual(['young', 'u1', 'u1-1.15']);
     expect(now.length).toBe(SETUPS.length * 3);
     for (const [i, r] of now.entries()) {
       const c = committed.rows[i]!;
@@ -25,26 +34,50 @@ describe('cost math', () => {
     }
   });
 
-  test('fixed costs: both legs landed, paid failed attempts, and rent lost when the close fails', () => {
+  test('fixed costs are the outcome stage\'s: landed legs, failed exits on the ladder at rung 3, RENT-1 rent and failed close', () => {
     const net = FILL_CONFIG.network;
     const s = FILL_CONFIG.scenarios.conservative;
+    const steps = TRIAL_POLICY.exits.ladder.steps;
     const base = Number(net.signaturesPerTx * net.baseFeePerSignature);
-    const leg = base + Number(net.entryPriorityFee) + Number(net.tip);
-    const miss = 1 - Number(s.landPpm.pumpswap) / 1e6;
-    const fails = ((1 - Number(s.dropPpm) / 1e6) * miss) / (1 - miss);
-    const rentLost = (1 - (Number(s.closeSuccessPpm) / 1e6) * (1 - Number(s.dustPpm) / 1e6)) * Number(net.tokenAccountRent);
-    const expected = 2 * leg + 2 * fails * (base + Number(net.entryPriorityFee)) + rentLost;
-    expect(TRIAL_POLICY.exits.ladder.steps[0]!.priorityFeeLamports).toBe(net.entryPriorityFee);
-    for (const r of now.filter((x) => x.setup !== 'curve')) expect(r.fixedLamports).toBe(Math.round(expected));
+    const f = 1 - Number(s.landPpm.pumpswap) / 1e6;
+    let failures = 0;
+    for (let k = 1; k <= TRIAL_POLICY.exits.ladder.maxAttempts; k++) failures += f ** k;
+    const failed = base + Number(steps[2]!.priorityFeeLamports);
+    const close = Number(s.closeSuccessPpm) / 1e6;
+    const dust = Number(s.dustPpm) / 1e6;
+    const expected = (base + Number(net.entryPriorityFee) + Number(net.tip)) + (base + Number(steps[0]!.priorityFeeLamports) + Number(net.tip))
+      + failures * failed + (1 - close * (1 - dust)) * Number(net.tokenAccountRent) + (1 - close) * (1 - dust) * failed;
+    for (const r of now) expect(r.fixedLamports).toBe(Math.round(expected));
   });
 
-  test('a bigger trade has a lower hurdle on every PumpSwap setup; break-even win rate formula', () => {
+  test('parity: on a still pool the outcome stage\'s mean loss equals the cost math, within its sampling error', () => {
+    // No swap after 50 min: every entry and exit trades on the same pool, so −r_net × cost is fees, impact and fixed costs only.
+    const still = synth.filter((r) => r.kind !== 'amm' || r.blockTime * 1000 < T0 + 50 * 60_000);
+    const win: PracticeWindow = { decisionFrom: '2026-09-19', decisionTo: '2026-10-01', holdoutFrom: '2026-09-25', embargoDays: 1, confirmedBy: 'test' };
+    const c = collectCandidates(still, { window: win, policy: TRIAL_POLICY, solUsd: solUsdAsOf(SOL_USD, 3 * 3_600_000), ...PLAN_DRIVE }).candidates[0]!;
+    const targets = Array.from({ length: 2000 }, (_, i) => ({ id: `${c.id}#${i}`, pool: c.pool, decisionSlot: c.decisionSlot, decisionMs: c.decisionMs, solUsd: c.solUsd }));
+    const out = scoreCandidates(still, targets, { window: win, policy: TRIAL_POLICY, fills: FILL_CONFIG, scenario: 'conservative', barriers: PLAN_BARRIERS.slice(1, 2), seed: 'parity', entryMinOutBelowBps: RESEARCH_CONFIG.s0.entryMinOutBelowBps, rentModel: 'rent-1' });
+    const losses = out.filter((o) => o.labels[0]!.entryFilled && o.labels[0]!.rNet !== null).map((o) => -o.labels[0]!.rNet! * Number(o.entryCost));
+    expect(losses.length).toBeGreaterThan(800);
+    const sw = still.filter((r): r is AmmSwapRow => r.kind === 'amm' && r.pool === c.pool).at(-1)!;
+    const st = replaySwap(sw.pre, sw);
+    if (!st.ok) throw new Error('fixture swap does not replay');
+    const spend = BigInt(Math.floor((Number(TRIAL_POLICY.capital.minNotional) / 1e6 / c.solUsd) * 1e9));
+    const row = costRow('fixture', 2, 120, st.trade.after, observedFeeContext(sw.fees, sw.baseSupply, { mayhemMode: false, transferFee: false, transferHook: false }), spend);
+    const mean = losses.reduce((a, b) => a + b, 0) / losses.length;
+    const sd = Math.sqrt(losses.reduce((a, b) => a + (b - mean) ** 2, 0) / (losses.length - 1));
+    const expected = row.proportional + row.fixedLamports;
+    expect(Math.abs(mean - expected)).toBeLessThan(4 * (sd / Math.sqrt(losses.length)));
+    // And the same in break-even terms: the mean loss over what was paid is the break-even move.
+    expect(Math.abs((100 * mean) / row.paid - row.breakEvenPct)).toBeLessThan((400 * sd) / Math.sqrt(losses.length) / row.paid);
+  }, 120_000);
+
+  test('a bigger trade has a lower hurdle on every setup; break-even win rate formula', () => {
     for (const id of ['young', 'u1', 'u1-1.15']) {
       const be = now.filter((r) => r.setup === id).map((r) => r.breakEvenPct);
       expect(be[0]!).toBeGreaterThan(be[1]!);
       expect(be[1]!).toBeGreaterThan(be[2]!);
     }
-    // Win +W with probability p, lose −L otherwise, cost c: p·W − (1 − p)·L − c = 0.
     for (const [w, l] of BRACKETS) {
       const p = breakEvenWinRate(w, l, 4);
       expect(p * w - (1 - p) * l - 4).toBeCloseTo(0, 12);
