@@ -2088,3 +2088,29 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
 
 - **2026-10-05 · The gates and H15's simulation judge the size risk will use.** The strategy judged every gate and simulation at q_min, and risk then sized the entry. With the owner's step-up approved (`sizeStepUpApproved`) and no drawdown, risk sizes above q_min (`evaluate.ts`: `atMinimum` false, the size from its caps), so the decision refused every entry as `size-mismatch` (gates judged one size, risk another). This is fail-closed, but it would have stopped all trading the moment the owner raised sizes. Today it is masked: the paper wallet's NAV starts about 12% under its high-water mark (the ops floor, RISK-LATCH-2's open F3), so the drawdown reset keeps every size at q_min. Before the gates run, `#riskSize` now asks risk (the same `evaluateEntry` call the decision makes) which size it would choose at the stop for that size. The stop depends on the size (the executable price after the buy), and risk's caps depend on the stop, so it asks again at the stop of the size risk chose, up to three times, until the size settles. That size and its notional go to the gates, and `cand.spend` sends it to the simulation (READ-COHERENT's batch reads the simulation at it). This probe decides nothing, books nothing and latches nothing; its trips and reasons are dropped. Anything it cannot judge (no account, no stop, a risk refusal, a size that does not settle) leaves q_min, as before. After the gates, the decision runs risk again and still refuses any size it did not settle on (`size-mismatch`): the guard stays. Without the latch nothing changes, since risk itself sizes at q_min.
 - **Evidence.** `packages/worker/test/size-step-up.test.ts`: a worker with the latch set and a wallet above its high-water mark (about $23 of SOL on the $20 bankroll) is refused as `size-mismatch` on the base code, and is now entered above q_min, with H15 judged on a simulation at that exact size. Without the latch it is entered at q_min, simulated at q_min. The guard is pinned: with the probe's answer forced to q_min (test seam `sizeProbe`, never set in production) while risk sizes above it, the decision is a `size-mismatch` refusal and nothing is booked. Hand mutants killed: never sizing, the simulation asked at q_min, the gates judged at q_min, the size-mismatch guard disabled (review of #189), the probe's risk-fault catch rethrowing (review of #189 B2: with the latch set and risk unable to evaluate, the probe stays at q_min, the entry is refused as `risk_fault`, nothing is booked, no step fails, and the coin is entered above q_min once risk can evaluate again). Removing the latch shortcut is an equivalent mutant: risk itself sizes at q_min without the latch.
+
+## Fee terms across restarts and typed no-market codes (FEES-KEEP, POOL-DATA; `engine/strategy.ts` `SavedFees`, `marketMissCode`, `persist/state.ts`, `facts/source.ts`)
+
+- **Why (supervisor, 2026-10-05):** with the worker restarting about every 7 min, every candidate came back with no fee terms. Without a fee-context fact (nothing produces one live), #market takes the terms of the latest swap seen on the pool, so a restored coin stayed `fee context unknown` until its next swap.
+- **What a save keeps:** each saved candidate keeps `fees`. These are the latest swap's own terms as the event reported them (lp, protocol, creator and buyback bps, v1/v2, base supply), with the swap's receipt time. The restore rebuilds the context with the same `observedFeeContext` the live swap used.
+  - Absent (an older file) or malformed (a rate outside 0–10,000 whole bps, an unknown instruction, a supply that is not a positive bigint, no receipt time): restores as none, the same fail-closed path as before.
+  - Received after the restore moment: refuses the saved candidates whole, exactly like a bar. The state file refuses it like a bar too.
+  - A save leaves out terms received after its own moment. Moments order by slot first, and receipt times need not follow.
+  - A swap seen live before the restore fact keeps its own terms.
+- **No new reads, no credits.** Stored data: public chain data only (supervisor-approved under the stored-data ruling, 2026-10-03).
+- **Typed codes (POOL-DATA):** the worker's one `no-market` code is split into the case #market met, still under gate `worker`:
+  - `no-pool-state`: no pool fact yet;
+  - `pool-malformed`;
+  - `pool-flagged`: POS-1's swap-stream gap or reserve mismatch;
+  - `no-fee-context`.
+  - Each still asks for the account read, as `no-market` did. The app reads each as "No pool data" with a short qualifier, and keeps the old label for journal lines written before.
+  - The same engine code runs live and in the backtest, so parity holds.
+  - No G3 or STATS code list names worker codes, so none changes. G3's reject mix counts each new code as its own reason.
+- **Tests that fail before:** `packages/worker/test/fees-keep.test.ts`:
+  - a restored candidate with a pre-restart swap and none after is judged by the gates (H15), with no `worker` reason;
+  - malformed terms restore as none;
+  - future-dated terms refuse the list, and the state file refuses them;
+  - the save's moment bound;
+  - the four codes on the journal's gate reasons.
+  - Also `facts-source.test.ts`: every typed code asks for the account read.
+- **Hand mutants killed:** restore not setting the terms; the save's moment bound removed; the state file's date check removed.

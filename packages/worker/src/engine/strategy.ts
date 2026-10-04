@@ -339,7 +339,37 @@ export interface SavedCandidate {
   readonly lastReason: string | null;
   /** Its price bars (the entry's ATR stop needs a contiguous run of them), none started after the save. */
   readonly bars: readonly PriceBar[];
+  /**
+   * FEES-KEEP: the fee terms of the latest swap seen on its pool, as that swap reported them, with its receipt time; null
+   * (or absent, in a save from before FEES-KEEP) when none was seen. A malformed one restores as none.
+   */
+  readonly fees?: SavedFees | null;
 }
+
+/** FEES-KEEP: a swap's own fee terms (public chain data), from which `observedFeeContext` builds the fee context again. */
+export interface SavedFees {
+  readonly atMs: number;
+  readonly lp: number;
+  readonly protocol: number;
+  readonly creator: number;
+  readonly buyback: number;
+  readonly instruction: 'v1' | 'v2';
+  readonly baseSupply: bigint;
+}
+
+const feeContextOf = (f: SavedFees): PoolFeeContext => observedFeeContext(
+  { split: { lp: bps(f.lp), protocol: bps(f.protocol), creator: bps(f.creator) }, buybackFeeBps: bps(f.buyback), instruction: f.instruction },
+  f.baseSupply, { mayhemMode: false, transferFee: false, transferHook: false },
+);
+
+/** Saved fee terms as the strategy can take them; null when absent or malformed (fail closed: no fee terms). */
+const savedFees = (x: unknown): SavedFees | null => {
+  if (!isObj(x)) return null;
+  const rate = (v: unknown): boolean => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 && v <= 10_000;
+  const ok = typeof x['atMs'] === 'number' && Number.isSafeInteger(x['atMs']) && rate(x['lp']) && rate(x['protocol']) && rate(x['creator']) && rate(x['buyback'])
+    && (x['instruction'] === 'v1' || x['instruction'] === 'v2') && typeof x['baseSupply'] === 'bigint' && x['baseSupply'] > 0n;
+  return ok ? { atMs: x['atMs'] as number, lp: x['lp'] as number, protocol: x['protocol'] as number, creator: x['creator'] as number, buyback: x['buyback'] as number, instruction: x['instruction'] as 'v1' | 'v2', baseSupply: x['baseSupply'] as bigint } : null;
+};
 
 /** RESTART-KEEP: one filled swap of a restored candidate's downtime: its block time, reserves before and after, and the spot after. */
 interface GapTrade {
@@ -383,6 +413,21 @@ export interface SavedTail {
 /** Decision naming a candidate restored from the saved state: the worker reads its migration and create again. */
 export const CANDIDATE_RESTORED = 'candidate restored';
 
+/** Why #market has no market for a mint, in words (the reject reason). */
+const NO_POOL_STATE = 'pool state unknown';
+const POOL_MALFORMED = 'pool state malformed';
+const POOL_FLAGGED = 'pool state flagged';
+const NO_FEE_CONTEXT = 'fee context unknown';
+
+/**
+ * POOL-DATA: the worker's typed code for each case #market has no market (once one `no-market`), so the journal's gate
+ * reasons and the app's summary tell a pool never read, a flagged swap stream and unknown fee terms apart.
+ */
+export const MARKET_MISS_CODES = ['no-pool-state', 'pool-malformed', 'pool-flagged', 'no-fee-context'] as const;
+export type MarketMissCode = (typeof MARKET_MISS_CODES)[number];
+export const marketMissCode = (why: string): MarketMissCode =>
+  why === NO_POOL_STATE ? 'no-pool-state' : why === NO_FEE_CONTEXT ? 'no-fee-context' : why.startsWith(POOL_FLAGGED) ? 'pool-flagged' : 'pool-malformed';
+
 /** A saved candidate as the strategy can take it; null when malformed. */
 const savedCandidate = (x: unknown): SavedCandidate | null => {
   if (!isObj(x)) return null;
@@ -391,7 +436,7 @@ const savedCandidate = (x: unknown): SavedCandidate | null => {
     && (x['migrationSlot'] === null || (typeof x['migrationSlot'] === 'bigint' && x['migrationSlot'] >= 0n))
     && typeof x['tries'] === 'number' && Number.isSafeInteger(x['tries']) && x['tries'] >= 0 && ms(x['lastEvalMs'], true) && (x['lastReason'] === null || typeof x['lastReason'] === 'string')
     && Array.isArray(x['bars']) && x['bars'].every((b) => isObj(b) && ms(b['startMs'], false) && ['high', 'low', 'close'].every((k) => typeof b[k] === 'bigint' && (b[k] as bigint) > 0n));
-  return ok ? { mint: x['mint'] as string, pool: x['pool'] as string | null, migratedAtMs: x['migratedAtMs'] as number, migrationSlot: x['migrationSlot'] as bigint | null, tries: x['tries'] as number, lastEvalMs: x['lastEvalMs'] as number | null, lastReason: x['lastReason'] as string | null, bars: x['bars'] as PriceBar[] } : null;
+  return ok ? { mint: x['mint'] as string, pool: x['pool'] as string | null, migratedAtMs: x['migratedAtMs'] as number, migrationSlot: x['migrationSlot'] as bigint | null, tries: x['tries'] as number, lastEvalMs: x['lastEvalMs'] as number | null, lastReason: x['lastReason'] as string | null, bars: x['bars'] as PriceBar[], fees: savedFees(x['fees']) } : null;
 };
 
 /** What an entry needs once it fills: fixed at the decision, completed with the fill. */
@@ -539,7 +584,8 @@ export class LiveStrategy implements Strategy {
   readonly #migrationSlot = new Map<string, bigint>();
   readonly #mintOfPool = new Map<string, string>();
   /** The fee terms of the latest released swap on each mint's pool (rates are per trade on chain). */
-  readonly #observedFees = new Map<string, PoolFeeContext>();
+  /** FEES-KEEP: with the terms the context was built from and the swap's receipt time, as a save keeps them. */
+  readonly #observedFees = new Map<string, { readonly ctx: PoolFeeContext; readonly terms: SavedFees }>();
   /** Receipt time of the latest released swap on each mint's pool: how current the sales below are. */
   readonly #tradeAt = new Map<string, number>();
   /** Sales by each mint's deployer (its creator and the create's signer), deduplicated by event id. */
@@ -660,7 +706,7 @@ export class LiveStrategy implements Strategy {
 
   /** The fee terms of the latest swap seen on a mint's pool (for the paper fill when no fee-context fact exists). */
   observedFees(mint: string): PoolFeeContext | undefined {
-    return this.#observedFees.get(mint);
+    return this.#observedFees.get(mint)?.ctx;
   }
 
   /**
@@ -716,7 +762,7 @@ export class LiveStrategy implements Strategy {
     const items = (this.#graduatesFact?.items ?? []).filter((g) => g.migratedAtMs + this.#d.session.policy.regime.survivalAfterMs <= asOf.receivedAt);
     // RESTART-KEEP: every candidate in its window, none migrated after the save moment.
     const candidates = [...this.#cands.values()].filter((c) => c.migratedAtMs <= asOf.receivedAt).sort((a, b) => (a.mint < b.mint ? -1 : a.mint > b.mint ? 1 : 0))
-      .map((c): SavedCandidate => ({ mint: c.mint, pool: this.#poolOfMint.get(c.mint) ?? null, migratedAtMs: c.migratedAtMs, migrationSlot: this.#migrationSlot.get(c.mint) ?? null, tries: c.tries, lastEvalMs: c.lastEvalMs, lastReason: c.lastReason, bars: (this.#bars.get(c.mint) ?? []).filter((b) => b.startMs <= asOf.receivedAt) }));
+      .map((c): SavedCandidate => ({ mint: c.mint, pool: this.#poolOfMint.get(c.mint) ?? null, migratedAtMs: c.migratedAtMs, migrationSlot: this.#migrationSlot.get(c.mint) ?? null, tries: c.tries, lastEvalMs: c.lastEvalMs, lastReason: c.lastReason, bars: (this.#bars.get(c.mint) ?? []).filter((b) => b.startMs <= asOf.receivedAt), fees: this.#feeTermsAsOf(c.mint, asOf.receivedAt) }));
     // WORKER-GROW: the index's mint rows are streamed into the file by the save, never built whole; the graduates ride
     // in the payload line.
     return {
@@ -820,7 +866,7 @@ export class LiveStrategy implements Strategy {
   #restoreCandidates(v: unknown, atMs: number, out: Decision[]): void {
     const list = Array.isArray(v) ? v.map(savedCandidate) : null;
     const why = list === null || list.some((c) => c === null) ? 'malformed saved candidates'
-      : list.some((c) => c!.migratedAtMs > atMs || (c!.lastEvalMs ?? Number.NEGATIVE_INFINITY) > atMs || c!.bars.some((b) => b.startMs > atMs)) ? 'a saved candidate is dated after the restore' : null;
+      : list.some((c) => c!.migratedAtMs > atMs || (c!.lastEvalMs ?? Number.NEGATIVE_INFINITY) > atMs || c!.bars.some((b) => b.startMs > atMs) || (c!.fees != null && c!.fees.atMs > atMs)) ? 'a saved candidate is dated after the restore' : null;
     if (why !== null) {
       out.push({ action: null, reasons: ['candidates refused', why] });
       return;
@@ -831,6 +877,8 @@ export class LiveStrategy implements Strategy {
       this.#noteMigrationSlot(c.mint, c.migrationSlot);
       this.#cands.set(c.mint, { mint: c.mint, migratedAtMs: c.migratedAtMs, lastEvalMs: c.lastEvalMs, lastReason: c.lastReason, lastWaived: '', tries: c.tries, gates: null, spend: null });
       if (c.pool !== null) this.#notePool(c.mint, c.pool);
+      // FEES-KEEP: the last swap's fee terms come back with it, so a restart does not leave it unpriced until its next swap.
+      if (c.fees != null && !this.#observedFees.has(c.mint)) this.#observedFees.set(c.mint, { ctx: feeContextOf(c.fees), terms: c.fees });
       if (c.bars.length > 0 && !this.#bars.has(c.mint)) this.#bars.set(c.mint, [...c.bars]);
       // The downtime's bars, from the saved last bar (or the migration) to the restore, come from the pool's filled trades.
       const barMs = this.#d.config.barMs;
@@ -1157,6 +1205,12 @@ export class LiveStrategy implements Strategy {
   }
 
   /** Drops a mint's pool state once nothing watches it (its window ended and no position holds it). */
+  /** FEES-KEEP: the fee terms a save keeps for a mint: the latest swap's, unless it was received after the save moment. */
+  #feeTermsAsOf(mint: string, atMs: number): SavedFees | null {
+    const f = this.#observedFees.get(mint)?.terms;
+    return f !== undefined && f.atMs <= atMs ? f : null;
+  }
+
   #forget(mint: string): void {
     if (this.watched().has(mint)) return;
     const pool = this.#poolOfMint.get(mint);
@@ -1206,10 +1260,8 @@ export class LiveStrategy implements Strategy {
     const supply = typeof d['baseSupply'] === 'bigint' && d['baseSupply'] > 0n ? d['baseSupply'] : null;
     if (lp !== null && protocol !== null && supply !== null) {
       const ix = typeof d['ixName'] === 'string' && d['ixName'].endsWith('_v2') ? 'v2' : 'v1';
-      this.#observedFees.set(mint, observedFeeContext(
-        { split: { lp: bps(lp), protocol: bps(protocol), creator: bps(n('coinCreatorFeeBasisPoints') ?? 0) }, buybackFeeBps: bps(n('buybackFeeBasisPoints') ?? 0), instruction: ix },
-        supply, { mayhemMode: false, transferFee: false, transferHook: false },
-      ));
+      const terms: SavedFees = { atMs: e.moment.receivedAt, lp, protocol, creator: n('coinCreatorFeeBasisPoints') ?? 0, buyback: n('buybackFeeBasisPoints') ?? 0, instruction: ix, baseSupply: supply };
+      this.#observedFees.set(mint, { ctx: feeContextOf(terms), terms });
     }
     this.#addFlow(mint, e, v, ev['name'], d);
     if (ev['name'] !== 'SellEvent' || typeof d['user'] !== 'string' || typeof d['baseAmountIn'] !== 'bigint') return;
@@ -1286,16 +1338,16 @@ export class LiveStrategy implements Strategy {
       this.#notePool(mint, snap.pool);
       return { pool: snap.state, ctx: snap.ctx, atMs: snap.atMs, address: snap.pool };
     }
-    if (!p.ok) return 'pool state unknown';
-    if (pool === null) return 'pool state malformed';
+    if (!p.ok) return NO_POOL_STATE;
+    if (pool === null) return POOL_MALFORMED;
     // A flagged pool fact (POS-1: the swap stream lost continuity) is never priced from, whatever its age.
     const flags = pool.obs.quality.filter((q) => q !== 'backfilled' && q !== 'deduplicated');
-    if (flags.length > 0) return `pool state flagged ${flags.join(', ')}${typeof (p.value as { stale?: unknown }).stale === 'string' ? ` (${(p.value as { stale: string }).stale})` : ''}`;
+    if (flags.length > 0) return `${POOL_FLAGGED} ${flags.join(', ')}${typeof (p.value as { stale?: unknown }).stale === 'string' ? ` (${(p.value as { stale: string }).stale})` : ''}`;
     this.#notePool(mint, pool.address);
     // A fee-context fact when one is published, else the terms of the latest swap seen on the pool.
     const f = ctx.lookup(feesKey(mint));
-    const fees = f.ok ? (unwrap(f.value) as PoolFeeContext) : this.#observedFees.get(mint);
-    if (fees === undefined) return 'fee context unknown';
+    const fees = f.ok ? (unwrap(f.value) as PoolFeeContext) : this.#observedFees.get(mint)?.ctx;
+    if (fees === undefined) return NO_FEE_CONTEXT;
     return {
       pool: { baseReserve: pool.baseVault, quoteVault: pool.quoteVault, virtualQuoteReserves: pool.pool.virtualQuoteReserves ?? 0n },
       ctx: fees, atMs: pool.obs.receivedAt, address: pool.address,
@@ -1902,7 +1954,7 @@ export class LiveStrategy implements Strategy {
     const sol = this.#spotSol(ctx);
     if (sol === null) return this.#fail('live SOL price unknown', [{ gate: 'worker', code: 'no-sol-price', detail: 'no live SOL/USD price' }]);
     const m = this.#market(ctx, cand.mint);
-    if (typeof m === 'string') return this.#fail(m, [{ gate: 'worker', code: 'no-market', detail: m }]);
+    if (typeof m === 'string') return this.#fail(m, [{ gate: 'worker', code: marketMissCode(m), detail: m }]);
     const quoter = pumpSwapRoundTrip(m.pool, m.ctx);
     // AUDIT-RM4 F3: the gates and H15's simulation judge the size risk will use. At q_min unless the owner approved the
     // step-up and no drawdown returns it to the minimum; then the size risk settles on, found before the gates run.
