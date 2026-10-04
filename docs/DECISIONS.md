@@ -1151,7 +1151,10 @@ Built to the supervisor's revised spec and the consensus rulings that followed i
     - Gaps, cut logs and lost streams work as before.
   - **What the stream cannot see.** A transfer straight into or out of a pool vault mentions no pool account. A slow verify read covers it: one snapshot per held pool every `ZEROED_WATCH_VERIFY_MS` (default 30 s, never shorter than `staleMs`). A verify read that disagrees with the proven state makes the snapshot the market, and normal reads follow until a swap re-bases the chain. Tested: the vault reads 30% lower with no event, and the stop goes out within verify + period + 2 s.
   - **Cost at the defaults.** A quiet or trading held pool on a healthy feed costs 1 read at the open plus 1 per 30 s: 20 CU each, about 4.8 k CU per 120-minute hold (it was about 0.36 M). Tested: 20 reads in ten quiet minutes, where there had been about 1,500. A gap is read on the next look.
-  - **Residual risk.** A logs subscription that stalls silently (no gap reported) while slot notices keep coming would keep carrying for up to one verify period. The verify read bounds that at 30 s.
+  - **Residual risks.**
+    - A donation (a transfer into or out of a pool vault) can skew an exit quote for at most one verify interval (30 s), at the attacker's cost.
+    - A logs subscription that stalls silently (no gap reported) while slot notices keep coming would keep carrying for up to one verify period, bounded by the same read.
+    - A disagreeing verify read does not change the producer's chain. It outranks the chain as the market, which has the same effect as flagging it: no carry, normal reads, until a swap re-bases the chain.
   - **Slot time.** The guard's release time stays 2 slots × 400 ms. Measured mainnet p99 of one-minute mean slot times is 278 ms (docs/RESEARCH.md "Slot time"). Single slots are to be measured from the dry run's recorded slot receipts. Both bounds are unchanged at the defaults: steady 1900 < 2000, transition 2700 ≤ 2800.
   - **Mutants.** 12 of 12 killed:
     - no carry;

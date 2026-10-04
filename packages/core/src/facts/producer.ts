@@ -325,8 +325,8 @@ interface PoolChain {
   readonly applied: Set<string>;
 }
 
-/** Swap ids a pool chain remembers for repeats (a busy pool's few minutes). */
-const APPLIED_KEPT = 4_096;
+/** Swap ids a pool chain remembers for repeats: a repeat (a log line and a fetched transaction) comes within seconds. */
+const APPLIED_KEPT = 512;
 
 export class FactProducer {
   readonly #o: ProducerOptions;
