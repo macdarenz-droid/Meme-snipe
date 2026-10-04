@@ -212,8 +212,13 @@ describe('outcome stage', () => {
       const expected = Number(value - cost - failed) / Number(cost);
       expect(Math.abs(b2.rNet! - expected)).toBeLessThan(1e-9);
       // A flat trade costs about 2.6% with the rent back, about 11% without it.
-      if (closes) expect(b2.rNet!).toBeGreaterThan(-0.05);
-      else expect(b2.rNet!).toBeLessThan(-0.10);
+      if (closes) {
+        expect(b2.rNet!).toBeGreaterThan(-0.05);
+        expect(b2.rNet!).toBeLessThan(-0.01);
+      } else {
+        expect(b2.rNet!).toBeGreaterThan(-0.14);
+        expect(b2.rNet!).toBeLessThan(-0.10);
+      }
       // B1 never touches its barriers on a still pool, sees the same exit draws, and ends where B2 does.
       expect(o.labels[0]!.yTb).toBe(0);
       expect(o.labels[0]!.rNet).toBeCloseTo(b2.rNet!, 12);
