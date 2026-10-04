@@ -1,0 +1,9 @@
+     × turns off when curve volume is below its 365-day 25th percentile 67ms
+     × is off at once when the current check cannot be computed (unknown evidence) 49ms
+     × packages/core/src outside adapters folders has none of them 94ms
+     × packages/core/src holds none outside config/ except the allow-listed protocol constants 155ms
+     × has a pinned value for the trial preset, so an accidental change to the defaults is visible 11ms
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 5 ⎯⎯⎯⎯⎯⎯⎯
+      Tests  5 failed | 2720 passed (2725)
+
+[exited with code 0]

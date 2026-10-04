@@ -1,0 +1,12 @@
+import { TRIAL_POLICY } from '/home/user/Meme-snipe/packages/core/src/config/index.ts';
+import { collectCandidates, PLAN_DRIVE, solUsdAsOf } from '/home/user/Meme-snipe/packages/backtest/src/research/candidates.ts';
+import { wallMs } from '/home/user/Meme-snipe/packages/backtest/src/research/practice.ts';
+import { SOL_USD, syntheticRows } from '/home/user/Meme-snipe/packages/backtest/test/synthetic.ts';
+let t = performance.now();
+const rows = syntheticRows({ mints: 3, slots: 2.5 * 3600 * 6 });
+console.log('rows', rows.length, performance.now() - t); t = performance.now();
+const w = { decisionFrom: '2026-09-19', decisionTo: '2026-10-01', holdoutFrom: '2026-09-22', embargoDays: 1, confirmedBy: 'test' };
+const shifted = rows.map((r) => ({ ...r, blockTime: r.blockTime + 11 * 3600 })).filter((r) => r.blockTime * 1000 < wallMs(w));
+console.log('shift', shifted.length, performance.now() - t); t = performance.now();
+const res = collectCandidates(shifted, { window: w, policy: TRIAL_POLICY, solUsd: solUsdAsOf(SOL_USD, 3 * 3600000), ...PLAN_DRIVE });
+console.log('collect', res.purged, performance.now() - t);

@@ -1,0 +1,31 @@
+
+> meme-snipe@ check /tmp/claude-0/rv2
+> pnpm typecheck && pnpm test
+
+
+> meme-snipe@ typecheck /tmp/claude-0/rv2
+> pnpm -r --if-present typecheck
+
+Scope: 6 of 7 workspace projects
+apps/web typecheck$ tsc -p tsconfig.json --noEmit
+packages/backtest typecheck$ tsc -p tsconfig.json --noEmit
+packages/core typecheck$ tsc -p tsconfig.json --noEmit
+packages/ops typecheck$ tsc -p tsconfig.json --noEmit
+packages/ops typecheck: Done
+packages/runner typecheck$ tsc -p tsconfig.json --noEmit
+packages/backtest typecheck: Done
+packages/worker typecheck$ tsc -p tsconfig.json --noEmit
+packages/runner typecheck: Done
+apps/web typecheck: Done
+packages/core typecheck: Done
+packages/worker typecheck: src/run/worker.ts(750,7): error TS2322: Type '{ mint: Mint; qty: string; entry: string; stop: string; } | null' is not assignable to type '{ readonly trade: string; readonly mint: string; readonly qty: string; readonly entry: string; readonly stop: string; readonly mark: string; readonly mark_slot: number; readonly mark_ts: number; } | null'.
+packages/worker typecheck:   Type '{ mint: Mint; qty: string; entry: string; stop: string; }' is missing the following properties from type '{ readonly trade: string; readonly mint: string; readonly qty: string; readonly entry: string; readonly stop: string; readonly mark: string; readonly mark_slot: number; readonly mark_ts: number; }': trade, mark, mark_slot, mark_ts
+packages/worker typecheck: src/run/worker.ts(751,7): error TS2741: Property 'trades' is missing in type '{ readonly count: number; readonly oldest_age_s: number | null; }' but required in type '{ readonly count: number; readonly oldest_age_s: number | null; readonly trades: readonly string[]; }'.
+packages/worker typecheck: Failed
+/tmp/claude-0/rv2/packages/worker:
+ ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL  @meme-snipe/worker@0.1.0 typecheck: `tsc -p tsconfig.json --noEmit`
+Exit status 1
+ WARN   Local package.json exists, but node_modules missing, did you mean to install?
+ ELIFECYCLE  Command failed with exit code 1.
+ ELIFECYCLE  Command failed with exit code 1.
+EXIT 1

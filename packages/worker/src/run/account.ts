@@ -4,7 +4,7 @@
 import type { Mint } from '../../../core/src/domain/index.ts';
 import type { Ledger } from '../../../core/src/ledger/index.ts';
 import { type Book, isTerminal } from '../../../core/src/lifecycle/index.ts';
-import type { AccountCost, AccountHistory, ClosedTrade, Latches } from '../../../core/src/risk/index.ts';
+import { type AccountCost, type AccountHistory, type ClosedTrade, type Latches, type RiskSnapshot, melbourneDay, melbourneWeek } from '../../../core/src/risk/index.ts';
 import { type Lamports, type MicroUsd, lamportsToMicroUsd, microUsdToLamports } from '../../../core/src/units/index.ts';
 import type { AccountFact } from '../engine/strategy.ts';
 import { StateFile } from './state.ts';
@@ -38,6 +38,20 @@ export interface AccountState {
   oneTimePaid?: boolean;
   /** That setup as a realised cost: when, in lamports, and in micro-dollars at the setup SOL price (rounded up). */
   setup?: { readonly atMs: number; readonly lamports: bigint; readonly cost: MicroUsd };
+  /**
+   * Marked equity at the start of the Melbourne day and week (WORKER-1c): the first equity the worker saw at or after
+   * the boundary `startMs`, taken at `atMs` (later than the boundary when the worker was down then).
+   */
+  dayMark?: BoundaryMark;
+  weekMark?: BoundaryMark;
+  /** The highest economic NAV seen since the last kill-switch re-arm (R10's NAV high-water mark reads it). */
+  navPeak?: { readonly atMs: number; readonly nav: MicroUsd };
+}
+
+export interface BoundaryMark {
+  readonly startMs: number;
+  readonly atMs: number;
+  readonly equity: MicroUsd;
 }
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -88,6 +102,35 @@ export class PaperAccount {
     this.#s.oneTimePaid = true;
     // A realised cost, so equity, the high-water mark and the day and week losses all include it (risk review of #48).
     this.#s.setup = { atMs: nowMs, lamports: this.#oneTimeRent, cost: lamportsToMicroUsd(this.#oneTimeRent as Lamports, solPrice, 'ceil') };
+  }
+
+  /**
+   * Records the boundary marks and the NAV peak from the figures risk would use now, on the marked account (WORKER-1c,
+   * RISK-MARK). A day or week mark is taken once, at the first look at or after its boundary when every open position
+   * has a fresh mark (`marked`; none open counts): an unmarked position is a total loss to equity, and recording that
+   * would show a phantom gain once it is marked again. The NAV peak only rises, and restarts after a re-arm (R10
+   * restarts its high-water mark there); risk gives a NAV only when every mark is fresh. With no deposits or
+   * withdrawals in paper, keeping the peak alone gives R10 the same high-water mark as keeping every observation. True
+   * when anything changed (the account fact must be put again).
+   */
+  mark(s: Pick<RiskSnapshot, 'dayStartMs' | 'weekStartMs' | 'equity' | 'nav'>, marked: boolean, rearmAtMs: number | null, nowMs: number): boolean {
+    let changed = false;
+    if (marked && this.#s.dayMark?.startMs !== s.dayStartMs) {
+      this.#s.dayMark = { startMs: s.dayStartMs, atMs: nowMs, equity: s.equity };
+      changed = true;
+    }
+    if (marked && this.#s.weekMark?.startMs !== s.weekStartMs) {
+      this.#s.weekMark = { startMs: s.weekStartMs, atMs: nowMs, equity: s.equity };
+      changed = true;
+    }
+    const peak = this.#s.navPeak;
+    const stale = peak !== undefined && rearmAtMs !== null && peak.atMs < rearmAtMs;
+    if (s.nav !== null && s.nav > 0n && (peak === undefined || stale || s.nav > peak.nav)) {
+      this.#s.navPeak = { atMs: nowMs, nav: s.nav };
+      changed = true;
+    }
+    if (changed) this.#file.write(this.#s);
+    return changed;
   }
 
   reserved(mint: string, atMs: number): void {
@@ -144,9 +187,11 @@ export class PaperAccount {
     });
     const history: AccountHistory = {
       openingEquity: this.#s.openingEquity, openedAtMs: this.#s.openedAtMs, flows: [], closedTrades, costs, openPositions,
-      // Not recorded yet (WORKER-1b): the marked-boundary figures are reported as unknown, and R10's NAV peak is taken
-      // from NAV now only.
-      markedAtDayStart: null, markedAtWeekStart: null, navMarks: [],
+      // WORKER-1c: the boundary marks of this day and week (none recorded for them: null, and risk uses the realized
+      // loss only), and the NAV peak since the last re-arm.
+      markedAtDayStart: this.#s.dayMark !== undefined && this.#s.dayMark.startMs === melbourneDay(nowMs).start ? this.#s.dayMark.equity : null,
+      markedAtWeekStart: this.#s.weekMark !== undefined && this.#s.weekMark.startMs === melbourneWeek(nowMs).start ? this.#s.weekMark.equity : null,
+      navMarks: this.#s.navPeak === undefined || this.#s.navPeak.atMs > nowMs ? [] : [{ atMs: this.#s.navPeak.atMs, nav: this.#s.navPeak.nav }],
       entries: this.#s.entries.map((e) => ({ mint: e.mint as Mint, atMs: e.atMs })),
       unresolvedEntries: Object.values(book.intents).filter((i) => i.intent.purpose === 'entry' && !isTerminal(i) && i.reservation?.status === 'held').map((i) => ({ mint: i.intent.mint })),
       heldReservations: held, version,

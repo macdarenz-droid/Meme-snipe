@@ -1,0 +1,8 @@
+err types [('{"InstructionError": [1, {"Custom": 13}]}', 142), ('{"InstructionError": [5, {"Custom": 6042}]}', 4), ('{"InstructionError": [4, {"Custom": 6042}]}', 2), ('{"InstructionError": [0, {"Custom": 6000}]}', 1), ('{"InstructionError": [0, {"Custom": 100}]}', 1), ('{"InstructionError": [3, {"Custom": 6042}]}', 1)]
+failed prio p50 233 failed cu p50 4298
+n 300 trades 118 failed 153
+prio p25 10000 p50 13334 p75 100000 p90 280645 mean 108865
+cu p25 70818 p50 97758 p75 123413 p90 144120 mean 105712
+jito p25 0 p50 0 p75 0 p90 10000 mean 20305
+with jito tip 15 / 118
+versions {'legacy', '0', '1'}
