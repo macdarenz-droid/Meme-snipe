@@ -52,8 +52,8 @@ describe('regime gate', () => {
     expect(run(f).checks[0]!.conditions[2]).toEqual(expect.objectContaining({ ok: false, value: '-800' }));
   });
 
-  it('turns off when curve volume is below its 365-day 25th percentile', () => {
-    const f = patch(passingFacts(), CURVE_VOLUME_KEY, { days: volumeDays(Math.floor(T / DAY_MS) - 1, 400, (k) => (k === 0 ? 1n : 10_000_000_000n)) });
+  it('turns off when the D-3 curve volume is below its window\'s 25th percentile', () => {
+    const f = patch(passingFacts(), CURVE_VOLUME_KEY, { days: volumeDays(Math.floor(T / DAY_MS) - 1, 400, (k) => (k === 2 ? 1n : 10_000_000_000n)) });
     const r = run(f);
     expect(r.on).toBe(false);
     expect(r.checks[0]!.conditions[1]).toEqual(expect.objectContaining({ ok: false, value: '1', limit: '10000000000' }));
@@ -68,7 +68,7 @@ describe('regime gate', () => {
   });
 
   it('is off at once when the current check cannot be computed (unknown evidence)', () => {
-    const missingDay = patch(passingFacts(), CURVE_VOLUME_KEY, { days: volumeDays(Math.floor(T / DAY_MS) - 1, 100) });
+    const missingDay = patch(passingFacts(), CURVE_VOLUME_KEY, { days: volumeDays(Math.floor(T / DAY_MS) - 1, 400).filter((d) => d.day !== Math.floor(T / DAY_MS) - 50) });
     const r = run(missingDay);
     expect(r.on).toBe(false);
     expect(r.reasons).toContainEqual(expect.objectContaining({ code: 'unknown', input: 'curve-volume' }));
