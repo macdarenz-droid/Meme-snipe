@@ -250,6 +250,18 @@ describe('fact projector', () => {
     expect(firstBlock('test-salt')).toEqual(firstBlock('test-salt'));
   });
 
+  // The regime's minimum count of graduates (REGIME-MIN, 100 a day) reads this fact: a sampling or decoding change that
+  // dropped or doubled migrations would push every backtest day across it and zero or inflate the entries unseen.
+  it('holds exactly one graduate per migration of the day: none dropped, none counted twice', () => {
+    const plans = [0, 1, 2, 3, 4].map((k) => ({ ...PLAN, label: `g${k}`, createSlot: 10 + k * 40 }));
+    const r = replay(plans, SLOTS + 200, 1, undefined, 'test-salt', undefined, true, undefined, producerOptions(TRIAL_POLICY));
+    const last = parseGraduates(r.events.filter((e) => e.key === GRADUATES_KEY).at(-1)!.value)!;
+    const mints = last.items.map((x) => x.mint);
+    expect(mints.length).toBe(r.mints.length);
+    expect(new Set(mints).size).toBe(mints.length);
+    expect([...mints].sort()).toEqual(r.mints.map((m) => m.mint).sort());
+  });
+
   it('drops a launch that never graduates after a week, and a graduate past every window', () => {
     const { rows, mints, ownerPrograms } = studyWorld({ mints: [{ ...PLAN, graduateAfter: 10 ** 9 }, PLAN], slots: SLOTS });
     const facts = new FactProjector({ holders: { ownerPrograms }, sampleRate: 1, rugs: RUG_CONFIG, windows: [U2], solUsd: [], solUsdPoints: 30, candlesHead: 10, candlesTail: 360, tieSalt: 'test-salt' });
