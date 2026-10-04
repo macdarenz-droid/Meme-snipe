@@ -1,6 +1,7 @@
 // BT-2 fact projector: historical gate facts as of each check moment, creates for the deployer index, rug coverage
 // and unjudged mints outside the sample.
 import { describe, expect, it } from 'vitest';
+import { DELEGATES_PARTIAL } from '../src/strategy/study.ts';
 import { RUG_CONFIG, TRIAL_POLICY } from '../../core/src/config/index.ts';
 import { isCanonicalPool, type Pool, TOKEN_2022_PROGRAM, toAddress } from '../../core/src/chain/index.ts';
 import type { FeedEvent, MarketEvent } from '../../core/src/engine/index.ts';
@@ -150,6 +151,13 @@ describe('fact projector', () => {
     const c = r.events.find((e) => e.key.startsWith('check:'))!;
     const h = parseHolders(r.events.filter((e) => e.key === holdersKey(r.mints[0]!.mint) && e.moment.slot === c.moment.slot).at(-1)?.value)!;
     expect(h.obs.quality).toEqual(['partial']);
+    // Tagged as a delegate-only gap, the tag H3's owner count reads (BT review N1); with complete delegations, neither.
+    const raw = r.events.filter((e) => e.key === holdersKey(r.mints[0]!.mint) && e.moment.slot === c.moment.slot).at(-1)?.value as { partialReason?: string };
+    expect(raw.partialReason).toBe(DELEGATES_PARTIAL);
+    const full = replay([PLAN], SLOTS, 1, undefined, 'test-salt', undefined, true);
+    const fc = full.events.find((e) => e.key.startsWith('check:'))!;
+    const fh = full.events.filter((e) => e.key === holdersKey(full.mints[0]!.mint) && e.moment.slot === fc.moment.slot).at(-1)?.value as { obs: { quality: string[] }; partialReason?: string };
+    expect([fh.obs.quality, fh.partialReason]).toEqual([[], undefined]);
     // The mint read is unaffected.
     const mint = parseMint(r.events.filter((e) => e.key === mintKey(r.mints[0]!.mint) && e.moment.slot === c.moment.slot).at(-1)?.value)!;
     expect(mint.obs.quality).toEqual([]);

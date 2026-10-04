@@ -790,7 +790,8 @@ export class FactProjector {
       (this.holderAbstainedMints[h.reason] ??= new Set()).add(mint);
     } else {
       const holderQuality = this.#o.delegatesComplete !== true ? ['partial' as const] : [];
-      put('holders', holdersKey(mint), { obs: obs(holderQuality), supply: h.supply, coverage: 'all', accounts: h.accounts });
+      // A delegate-only gap is tagged, so H3's owner count can tell it from any other (BT review N1).
+      put('holders', holdersKey(mint), { obs: obs(holderQuality), supply: h.supply, coverage: 'all', accounts: h.accounts, ...(holderQuality.length > 0 ? { partialReason: 'delegates' } : {}) });
     }
     // Deployer-funded wallets and the dev's cluster are not in the dataset (DATA-1 "Not covered"): complete only with a
     // funding source dated at or before now, and with the create (creation-slot buyers) recorded.

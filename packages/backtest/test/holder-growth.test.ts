@@ -64,4 +64,18 @@ describe('holder growth counts distinct owners (audit B3)', () => {
     const none = accounts.map((a) => (a.delegate === D ? { ...a, delegatedAmount: 0n } : a));
     expect(walletHolders(ctx({ [holdersKey(MINT)]: { ...h, accounts: none }, [poolKey(MINT)]: pool() }), MINT, POOL)).toBe(4);
   });
+
+  // BT review N1 (#115 definitions.holderGrowth counts owners): the backtest's delegate-only 'partial' flag (delegations
+  // not rebuilt, `--delegates-complete` absent) says nothing about owner balances, so it leaves H3's count standing.
+  // Any other flag, or 'partial' for any other reason, still makes the count unknown.
+  it('a delegate-only partial flag leaves the count; any other flag, or partial for another reason, nulls it', () => {
+    const p = { [poolKey(MINT)]: pool() };
+    const delegatesOnly = holders({ obs: { ...obs, quality: ['partial'] }, partialReason: 'delegates' });
+    expect(walletHolders(ctx({ ...p, [holdersKey(MINT)]: delegatesOnly }), MINT, POOL)).toBe(2);
+    expect(walletHolders(ctx({ ...p, [holdersKey(MINT)]: holders({ obs: { ...obs, quality: ['partial'] } }) }), MINT, POOL)).toBeNull();
+    for (const flag of ['backfilled', 'deduplicated', 'estimated', 'fork-suspect', 'rate-limited', 'provider-degraded']) {
+      expect(walletHolders(ctx({ ...p, [holdersKey(MINT)]: holders({ obs: { ...obs, quality: [flag] } }) }), MINT, POOL), flag).toBeNull();
+      expect(walletHolders(ctx({ ...p, [holdersKey(MINT)]: holders({ obs: { ...obs, quality: ['partial', flag] }, partialReason: 'delegates' }) }), MINT, POOL), `partial+${flag}`).toBeNull();
+    }
+  });
 });

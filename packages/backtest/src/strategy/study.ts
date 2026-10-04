@@ -775,10 +775,17 @@ export const u2Setup = (r: U2Rules, tape: PoolTape, spot: bigint, now: number, m
  * largest-accounts view, a quality flag, accounts that do not sum to the supply, or no pool fact for the tape's pool
  * leave it unknown (null), and the condition then fails.
  */
+/** The holder fact's tag when its only gap is delegations not rebuilt from the dataset (`--delegates-complete` absent). */
+export const DELEGATES_PARTIAL = 'delegates';
+
 export const walletHolders = (ctx: Pick<StrategyContext, 'lookup'>, mint: string, pool: string, asOf?: Parameters<StrategyContext['lookup']>[1]): number | null => {
   const r = ctx.lookup(holdersKey(mint), asOf);
   const h = r.ok ? parseHolders(r.value) : null;
-  if (h === null || h.obs.quality.length > 0 || h.coverage !== 'all') return null;
+  // The backtest's delegate-only 'partial' flag (delegations not rebuilt) says nothing about owner balances, so it leaves
+  // the count standing (BT review N1, #115 definitions.holderGrowth); every other flag makes it unknown.
+  const delegatesOnly = r.ok && (r.value as { partialReason?: unknown }).partialReason === DELEGATES_PARTIAL;
+  const flags = h === null ? [] : h.obs.quality.filter((q) => !(delegatesOnly && q === 'partial'));
+  if (h === null || flags.length > 0 || h.coverage !== 'all') return null;
   const pr = ctx.lookup(poolKey(mint), asOf);
   const pf = pr.ok ? parsePool(pr.value) : null;
   if (pf === null || pf.address !== pool) return null;
