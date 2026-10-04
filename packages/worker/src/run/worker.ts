@@ -208,6 +208,8 @@ const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object
 
 /** Present while the state dir began empty and no full start has journaled its `recovered` line yet. */
 const COLD_START = 'cold_start';
+/** CREATE-AFTER-RESTART: the wait before the one retry of a create lookup stopped by a transient error. */
+export const CREATE_RETRY_MS = 60_000;
 /** A saved create's id, live (`log:<signature>…`) or fetched (`ev:<signature>:…`): its transaction signature. */
 const CREATE_ID = /^(?:log|ev):([1-9A-HJ-NP-Za-km-z]{64,88})(?=[:#]|$)/;
 
@@ -638,12 +640,24 @@ export class Worker {
     if (find === undefined) return this.#d.log(`Shortlisted ${mint}: its create was not seen by this process; H9 and H12-H14 wait for it.`);
     if (this.#createLookups.has(mint)) return;
     this.#createLookups.add(mint);
-    void find(mint).then((r) => {
-      this.#journal.write('create_lookup', { ...r });
+    this.#lookupCreate(find, mint, 1);
+  }
+
+  /**
+   * One create lookup, journaled. A lookup stopped by a transient error (a rate limit, a timeout) is tried once more
+   * after CREATE_RETRY_MS, within the same budget; a mint whose history answered (not the create, no signature, the
+   * cap) is never retried: that answer stands.
+   */
+  #lookupCreate(find: NonNullable<WorkerDeps['findCreate']>, mint: string, attempt: 1 | 2): void {
+    const failed = (): CreateLookup => ({ mint, found: false, signature: null, slot: null, pages: 0, credits: 0, stopped_by: 'error', latency_ms: 0 });
+    void find(mint).catch(failed).then((r) => {
+      this.#journal.write('create_lookup', { ...r, attempt });
+      const retry = r.stopped_by === 'error' && attempt === 1 && !this.#stopping;
       this.#d.log(r.found
         ? `Shortlisted ${mint}: its create (slot ${r.slot}) found from the mint's oldest signature, ${r.credits} credits.`
-        : `Shortlisted ${mint}: create lookup stopped (${r.stopped_by}, ${r.credits} credits); H9 and H12-H14 wait for it.`);
-    }, () => this.#d.log(`Shortlisted ${mint}: create lookup failed; H9 and H12-H14 wait for it.`));
+        : `Shortlisted ${mint}: create lookup stopped (${r.stopped_by}, ${r.credits} credits)${retry ? '; trying once more in a minute' : ''}; H9 and H12-H14 wait for it.`);
+      if (retry) this.#d.timers.setTimeout(() => (this.#stopping ? undefined : this.#lookupCreate(find, mint, 2)), CREATE_RETRY_MS);
+    });
   }
 
   /** WORKER-1e: the paper attempts' execution statistics over the last 24 h (S0's diagnostic exec-health). */

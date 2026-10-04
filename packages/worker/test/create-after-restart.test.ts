@@ -4,7 +4,7 @@
 // store holds is read by its signature, one the downtime fill brings is read once the seed is placed, and any other is
 // looked up from the mint's oldest signature under the fills' daily budget, journaled; a failed lookup stays missing.
 import { describe, expect, it } from 'vitest';
-import { transactionEvents } from '../../core/src/chain/index.ts';
+import { transactionEvents, type TransactionRecord } from '../../core/src/chain/index.ts';
 import type { MarketEvent } from '../../core/src/engine/index.ts';
 import { LOG_CREATE_PREFIX, TX_CREATE_PREFIX, createKey, migrationKey } from '../../core/src/gates/index.ts';
 import { passingFacts } from '../../core/test/gates/world.ts';
@@ -12,12 +12,12 @@ import { MINT as FIX_MINT, RECORDS } from '../../core/test/facts/helpers.ts';
 import { checkJournal } from '../../runner/src/journal.ts';
 import { DeployerStore } from '../src/run/deployer-store.ts';
 import { CREATE_LOOKUP_CREDITS, CreditBook, type CreateLookup, LiveProviders, findCreate } from '../src/run/sources.ts';
-import { FakeSocketHub, rpcHandler, scriptedHttp } from '../src/providers/index.ts';
+import { DEFAULT_LIVE_FEED, FakeSocketHub, LiveFeed, rpcHandler, scriptedHttp, type Frame } from '../src/providers/index.ts';
 import type { DailyBudget } from '../src/persist/index.ts';
 import { ManualTimers } from '../src/scheduler/index.ts';
-import { blockNetwork, testSecrets } from './helpers.ts';
+import { blockNetwork, recordOf, testSecrets, tx } from './helpers.ts';
 import { MINT, T, Market, dueTimers, makeWorker, passingMarket, slotAt, tempState } from './worker-harness.ts';
-import type { SeedResult } from '../src/run/worker.ts';
+import { CREATE_RETRY_MS, type SeedResult } from '../src/run/worker.ts';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -46,68 +46,83 @@ const budget = (left: number) => {
   };
 };
 
-/** The mint's signatures, newest first, `total` of them; the oldest successful one is `create`, older ones failed. */
-const history = (total: number, create: string, failedBefore = 0) => {
-  const all = [...Array.from({ length: total - 1 - failedBefore }, (_, k) => ({ signature: `n${k}`, err: null })), { signature: create, err: null }, ...Array.from({ length: failedBefore }, (_, k) => ({ signature: `f${k}`, err: { InstructionError: [0, 'x'] } }))];
+/**
+ * The mint's RPC: its signatures, newest first, `total` of them (the oldest successful one is `create`, older ones
+ * failed), and `getTransaction` answering `tx` (a record, null, or a function of the signature).
+ */
+const history = (total: number, create: string, tx: TransactionRecord | null | ((s: string) => TransactionRecord | null) = CREATE_TX, failedBefore = 0) => {
+  const all = [...Array.from({ length: total - 1 - failedBefore }, (_, k) => ({ signature: `n${k}`, err: null as unknown })), { signature: create, err: null as unknown }, ...Array.from({ length: failedBefore }, (_, k) => ({ signature: `f${k}`, err: { InstructionError: [0, 'x'] } as unknown }))];
   const calls: (string | undefined)[] = [];
+  const reads: string[] = [];
   return {
-    calls,
+    calls, reads,
     getSignaturesForAddress: async (_a: string, o: { readonly before?: string; readonly limit: number }) => {
       calls.push(o.before);
       const from = o.before === undefined ? 0 : all.findIndex((x) => x.signature === o.before) + 1;
       return all.slice(from, from + o.limit);
+    },
+    getTransaction: async (sig: string) => {
+      reads.push(sig);
+      return typeof tx === 'function' ? tx(sig) : tx;
     },
   };
 };
 
 describe('findCreate: the create from the mint\'s oldest signature, under the fills\' budget', () => {
   const timers = new ManualTimers(T);
+  const ingested: TransactionRecord[] = [];
+  const ingest = (r: TransactionRecord): boolean => (ingested.push(r), true);
 
-  it('pages back to the start, reads the oldest successful transaction, and accepts it only as this mint\'s create', async () => {
-    const rpc = history(2_400, CREATE_TX.signature, 3);
-    const fetched: string[] = [];
+  it('pages back to the start, reads the oldest successful transaction itself, and puts it on the feed only as this mint\'s create', async () => {
+    ingested.length = 0;
+    const rpc = history(2_400, CREATE_TX.signature, CREATE_TX, 3);
     const bud = budget(1_000);
-    const r = await findCreate(FIX_MINT, { rpc, fetch: async (s) => (fetched.push(s), CREATE_TX), timers, budget: bud });
+    const r = await findCreate(FIX_MINT, { rpc, ingest, timers, budget: bud });
     expect(r).toMatchObject({ mint: FIX_MINT, found: true, signature: CREATE_TX.signature, slot: String(CREATE_TX.slot), pages: 3, credits: 4, stopped_by: 'found' });
     expect(rpc.calls).toEqual([undefined, 'n999', 'n1999']);
     // The failed transactions older than the create are passed over.
-    expect(fetched).toEqual([CREATE_TX.signature]);
+    expect(rpc.reads).toEqual([CREATE_TX.signature]);
+    expect(ingested).toEqual([CREATE_TX]);
     // The whole cap is counted first, the unused part given back: the budget is charged exactly what was used.
     expect(bud.b.calls).toEqual([`spend ${CREATE_LOOKUP_CREDITS}`, `refund ${CREATE_LOOKUP_CREDITS - 4}`]);
     expect(bud.b.spent).toBe(4);
   });
 
-  it('a transaction that is not this mint\'s create, or that cannot be read, leaves it missing', async () => {
-    const other = await findCreate(FIX_MINT, { rpc: history(5, OTHER_TX.signature), fetch: async () => OTHER_TX, timers, budget: budget(100) });
+  it('a transaction that is not this mint\'s create, or that cannot be read, leaves it missing and puts nothing on the feed', async () => {
+    ingested.length = 0;
+    const other = await findCreate(FIX_MINT, { rpc: history(5, OTHER_TX.signature, OTHER_TX), ingest, timers, budget: budget(100) });
     expect(other).toMatchObject({ found: false, signature: null, stopped_by: 'not-create', credits: 2 });
     // The fixture's create, for another mint, is not this mint's create.
-    const wrongMint = await findCreate(MINT, { rpc: history(5, CREATE_TX.signature), fetch: async () => CREATE_TX, timers, budget: budget(100) });
+    const wrongMint = await findCreate(MINT, { rpc: history(5, CREATE_TX.signature), ingest, timers, budget: budget(100) });
     expect(wrongMint).toMatchObject({ found: false, stopped_by: 'not-create' });
-    const gone = await findCreate(FIX_MINT, { rpc: history(5, CREATE_TX.signature), fetch: async () => null, timers, budget: budget(100) });
+    const gone = await findCreate(FIX_MINT, { rpc: history(5, CREATE_TX.signature, null), ingest, timers, budget: budget(100) });
     expect(gone).toMatchObject({ found: false, stopped_by: 'not-found', credits: 2 });
-    const none = await findCreate(FIX_MINT, { rpc: { getSignaturesForAddress: async () => [{ signature: 'f', err: 'x' }] }, fetch: async () => CREATE_TX, timers, budget: budget(100) });
+    const none = await findCreate(FIX_MINT, { rpc: { getSignaturesForAddress: async () => [{ signature: 'f', err: 'x' }], getTransaction: async () => CREATE_TX }, ingest, timers, budget: budget(100) });
     expect(none).toMatchObject({ found: false, stopped_by: 'no-signature', credits: 1 });
+    expect(ingested).toEqual([]);
+    // Verified, but with no feed to put it on: not found.
+    expect(await findCreate(FIX_MINT, { rpc: history(5, CREATE_TX.signature), ingest: () => false, timers, budget: budget(100) })).toMatchObject({ found: false, stopped_by: 'no-feed', signature: null });
   });
 
   it('a history longer than the cap stops at the cap, never past it, and reads no transaction', async () => {
-    const fetched: string[] = [];
     const bud = budget(1_000);
-    const r = await findCreate(FIX_MINT, { rpc: history(100_000, CREATE_TX.signature), fetch: async (s) => (fetched.push(s), CREATE_TX), timers, budget: bud });
+    const rpc = history(100_000, CREATE_TX.signature);
+    const r = await findCreate(FIX_MINT, { rpc, ingest, timers, budget: bud });
     expect(r).toMatchObject({ found: false, stopped_by: 'credit-cap', pages: CREATE_LOOKUP_CREDITS - 1, credits: CREATE_LOOKUP_CREDITS - 1 });
-    expect(fetched).toEqual([]);
+    expect(rpc.reads).toEqual([]);
     expect(bud.b.spent).toBe(CREATE_LOOKUP_CREDITS - 1);
   });
 
   it('the budget caps it: too little left (or none given) makes no call; what is left bounds the pages', async () => {
     const rpc = history(5, CREATE_TX.signature);
     const low = budget(1);
-    expect(await findCreate(FIX_MINT, { rpc, fetch: async () => CREATE_TX, timers, budget: low })).toMatchObject({ found: false, stopped_by: 'skipped-no-budget', credits: 0, pages: 0 });
-    expect(await findCreate(FIX_MINT, { rpc, fetch: async () => CREATE_TX, timers, budget: undefined })).toMatchObject({ stopped_by: 'skipped-no-budget' });
+    expect(await findCreate(FIX_MINT, { rpc, ingest, timers, budget: low })).toMatchObject({ found: false, stopped_by: 'skipped-no-budget', credits: 0, pages: 0 });
+    expect(await findCreate(FIX_MINT, { rpc, ingest, timers, budget: undefined })).toMatchObject({ stopped_by: 'skipped-no-budget' });
     expect(rpc.calls).toEqual([]);
     expect(low.b.calls).toEqual([]);
     // Three credits left: two pages at most, so a three-page history stops there.
     const three = budget(3);
-    expect(await findCreate(FIX_MINT, { rpc: history(2_400, CREATE_TX.signature), fetch: async () => CREATE_TX, timers, budget: three })).toMatchObject({ stopped_by: 'credit-cap', credits: 2 });
+    expect(await findCreate(FIX_MINT, { rpc: history(2_400, CREATE_TX.signature), ingest, timers, budget: three })).toMatchObject({ stopped_by: 'credit-cap', credits: 2 });
     expect(three.b.left).toBe(1);
   });
 
@@ -115,8 +130,9 @@ describe('findCreate: the create from the mint\'s oldest signature, under the fi
     const bud = budget(CREATE_LOOKUP_CREDITS + 3);
     let release: () => void = () => undefined;
     const gate = new Promise<void>((r) => (release = r));
-    const slow = { getSignaturesForAddress: async (a: string, o: { readonly before?: string; readonly limit: number }) => (await gate, history(100_000, 'x').getSignaturesForAddress(a, o)) };
-    const runs = [findCreate(FIX_MINT, { rpc: slow, fetch: async () => null, timers, budget: bud }), findCreate(FIX_MINT, { rpc: slow, fetch: async () => null, timers, budget: bud })];
+    const long = history(100_000, 'x');
+    const slow = { ...long, getSignaturesForAddress: async (a: string, o: { readonly before?: string; readonly limit: number }) => (await gate, long.getSignaturesForAddress(a, o)) };
+    const runs = [findCreate(FIX_MINT, { rpc: slow, ingest, timers, budget: bud }), findCreate(FIX_MINT, { rpc: slow, ingest, timers, budget: bud })];
     // The first holds its whole cap; the second gets the three left.
     expect(bud.b.left).toBe(0);
     release();
@@ -127,36 +143,51 @@ describe('findCreate: the create from the mint\'s oldest signature, under the fi
 
   it('an RPC error stops it; only the calls made are charged', async () => {
     const bud = budget(100);
-    const r = await findCreate(FIX_MINT, { rpc: { getSignaturesForAddress: async () => { throw new Error('429'); } }, fetch: async () => CREATE_TX, timers, budget: bud });
+    const r = await findCreate(FIX_MINT, { rpc: { getSignaturesForAddress: async () => { throw new Error('429'); }, getTransaction: async () => CREATE_TX }, ingest, timers, budget: bud });
     expect(r).toMatchObject({ found: false, stopped_by: 'error', credits: 1 });
     expect(bud.b.spent).toBe(1);
+    const failedRead = await findCreate(FIX_MINT, { rpc: history(5, CREATE_TX.signature, () => { throw new Error('timeout'); }), ingest, timers, budget: budget(100) });
+    expect(failedRead).toMatchObject({ found: false, stopped_by: 'error', credits: 2 });
   });
 });
 
-describe('LiveProviders.findCreate: Helius RPC, charged to the fills\' budget', () => {
+describe('LiveProviders.findCreate: Helius RPC, charged to the fills\' budget, onto the worker\'s feed', () => {
+  const create = tx('pump CreateEvent');
+  const record = recordOf(create);
+  const mint = transactionEvents(record).find((e) => e.name === 'CreateEvent')!.data.mint as string;
   const providers = (budget?: { spent: number }) => {
     const timers = new ManualTimers(T);
-    const http = scriptedHttp(rpcHandler((m) => (m === 'getSignaturesForAddress' ? [{ signature: CREATE_TX.signature, slot: Number(CREATE_TX.slot), err: null, blockTime: 1 }] : undefined)));
+    const http = scriptedHttp(rpcHandler((m) => (m === 'getSignaturesForAddress' ? [{ signature: create.signature, slot: Number(record.slot), err: null, blockTime: 1 }] : m === 'getTransaction' ? create.base64 : undefined)));
     const p = new LiveProviders({
       tradeStreams: false, secrets: testSecrets, http, factory: new FakeSocketHub().factory, credits: new CreditBook(tempState(), timers),
       ...(budget === undefined ? {} : { fillBudget: { remaining: () => 1_000 - budget.spent, spend: (c: number) => { budget.spent += c; }, refund: (c: number) => { budget.spent -= c; } } as unknown as DailyBudget }),
     });
     return { p, http, timers };
   };
+  const methods = (http: { calls: { body?: unknown }[] }) => http.calls.map((c) => (JSON.parse(String(c.body)) as { method: string }).method);
 
-  it('pages the mint\'s signatures on Helius and charges the budget what it used (no fetcher yet: the create cannot be read)', async () => {
+  it('pages the mint\'s signatures and reads the create on Helius, puts it on the feed, and charges the budget what it used', async () => {
     const budget = { spent: 0 };
     const { p, http, timers } = providers(budget);
-    const r = await p.findCreate(FIX_MINT, timers);
-    expect(r).toMatchObject({ found: false, stopped_by: 'not-found', pages: 1, credits: 2 });
-    expect(http.calls.map((c) => JSON.parse(String(c.body)).method)).toEqual(['getSignaturesForAddress']);
-    expect(String(http.calls[0]!.url)).toContain('helius');
+    const frames: Frame[] = [];
+    const feed = new LiveFeed({ ...DEFAULT_LIVE_FEED, horizonSlots: 0, onFrame: (f) => frames.push(f) });
+    p.feeds({ feed, timers, pools: () => new Map() });
+    const r = await p.findCreate(mint, timers);
+    expect(r).toMatchObject({ found: true, stopped_by: 'found', signature: create.signature, pages: 1, credits: 2 });
+    expect(methods(http)).toEqual(['getSignaturesForAddress', 'getTransaction']);
+    expect(http.calls.every((c) => String((c as { url?: unknown }).url).includes('helius'))).toBe(true);
+    expect(frames.some((f) => f.body.type === 'tx' && f.body.record.signature === create.signature)).toBe(true);
     expect(budget.spent).toBe(2);
+  });
+
+  it('before the feeds run, a verified create has nowhere to go: not found', async () => {
+    const { p, timers } = providers({ spent: 0 });
+    expect(await p.findCreate(mint, timers)).toMatchObject({ found: false, stopped_by: 'no-feed' });
   });
 
   it('without the fills\' budget it makes no call', async () => {
     const { p, http, timers } = providers();
-    expect(await p.findCreate(FIX_MINT, timers)).toMatchObject({ stopped_by: 'skipped-no-budget', credits: 0 });
+    expect(await p.findCreate(mint, timers)).toMatchObject({ stopped_by: 'skipped-no-budget', credits: 0 });
     expect(http.calls).toEqual([]);
   });
 });
@@ -276,6 +307,56 @@ describe('a candidate created before the start reaches H9 with its real create',
     expect(decisions(stateDir).filter((r) => r[0] === 'shortlist')).toHaveLength(2);
     expect(asked).toEqual([MINT]);
   });
+});
+
+describe('one delayed retry, only for a lookup stopped by a transient error', () => {
+  const answer = (mint: string, stopped_by: CreateLookup['stopped_by']): CreateLookup => ({ mint, found: stopped_by === 'found', signature: stopped_by === 'found' ? SIG('C') : null, slot: stopped_by === 'found' ? '1' : null, pages: 1, credits: 1, stopped_by, latency_ms: 0 });
+  /** A worker whose lookups answer in turn from `answers` (the last repeats); `found` lands the create first. */
+  const scripted = async (answers: readonly CreateLookup['stopped_by'][]) => {
+    const asked: number[] = [];
+    let market: Market | null = null;
+    let clock: () => number = () => 0;
+    const find = async (mint: string): Promise<CreateLookup> => {
+      const r = answers[Math.min(asked.length, answers.length - 1)]!;
+      asked.push(clock());
+      if (r === 'found') {
+        do await new Promise<void>((res) => setImmediate(res));
+        while (market === null);
+        landCreate(market);
+      }
+      return answer(mint, r);
+    };
+    const { h, stateDir } = await restarted({ findCreate: find });
+    clock = () => h.timers.now();
+    market = await passingMarket(h, { omit: [createKey(MINT)] });
+    await market.run(CREATE_RETRY_MS + 20_000, 400, tick(market));
+    await h.worker.stop();
+    const lines = readFileSync(join(stateDir, 'journal.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>).filter((l) => l['kind'] === 'create_lookup');
+    return { asked, lines, stateDir };
+  };
+
+  it('an error, then a minute later the create found: the candidate enters; both attempts journaled', async () => {
+    const r = await scripted(['error', 'found']);
+    expect(r.asked).toHaveLength(2);
+    expect(r.asked[1]! - r.asked[0]!).toBeGreaterThanOrEqual(CREATE_RETRY_MS);
+    expect(r.lines.map((l) => [l['attempt'], l['stopped_by']])).toEqual([[1, 'error'], [2, 'found']]);
+    expect(entered(r.stateDir)).toBe(true);
+  });
+
+  it('two errors: tried twice, never a third time; the create stays missing', async () => {
+    const r = await scripted(['error']);
+    expect(r.asked).toHaveLength(2);
+    expect(missingCreate(r.stateDir)).toBe(true);
+    expect(entered(r.stateDir)).toBe(false);
+  });
+
+  for (const stop of ['not-create', 'no-signature', 'credit-cap', 'not-found', 'skipped-no-budget'] as const) {
+    it(`an answered history (${stop}) is not retried`, async () => {
+      const r = await scripted([stop, 'found']);
+      expect(r.asked).toHaveLength(1);
+      expect(entered(r.stateDir)).toBe(false);
+    });
+  }
 });
 
 describe('a shortlist while the seed is built waits for it: the downtime fill may bring the create', () => {

@@ -136,7 +136,7 @@ export const tradesFill = (o: {
 export const CREATE_LOOKUP_CREDITS = 25;
 
 /** Why a create lookup stopped. Only `found` puts a create on the feed. */
-export type CreateLookupStop = 'found' | 'skipped-no-budget' | 'credit-cap' | 'no-signature' | 'not-found' | 'not-create' | 'error';
+export type CreateLookupStop = 'found' | 'skipped-no-budget' | 'credit-cap' | 'no-signature' | 'not-found' | 'not-create' | 'no-feed' | 'error';
 
 /** One create lookup, as journaled (`create_lookup`). */
 export interface CreateLookup {
@@ -153,14 +153,19 @@ export interface CreateLookup {
 /**
  * CREATE-AFTER-RESTART: a shortlisted mint whose create this process never saw (it came before the start, and the saved
  * store does not hold it). The mint's signatures are paged back to the start: its oldest successful transaction is the
- * one that created the mint. That transaction is read at confirmed through `fetch`, which puts it on the feed, and is
- * accepted only when it holds the pump CreateEvent of this mint; anything else leaves the create missing. The whole
- * cap is counted from the fills' daily budget before the first call and the unused part given back after, so lookups
- * running together never spend past it.
+ * one that created the mint. That transaction is read at confirmed here, and only when it holds the pump CreateEvent
+ * of this mint is it put on the feed (`ingest`), where the producer makes the create fact from it; anything else leaves
+ * the create missing. (Not through the shared fetcher: it answers a repeat ask without the record, and only the
+ * transaction itself proves the create.) The whole cap is counted from the fills' daily budget before the first call
+ * and the unused part given back after, so lookups running together never spend past it.
  */
 export const findCreate = async (mint: string, o: {
-  readonly rpc: { getSignaturesForAddress(address: string, opts: { readonly before?: string; readonly limit: number }, priority: typeof P2): Promise<readonly Pick<SignatureInfo, 'signature' | 'err'>[]> };
-  readonly fetch: (signature: string) => Promise<TransactionRecord | null>;
+  readonly rpc: {
+    getSignaturesForAddress(address: string, opts: { readonly before?: string; readonly limit: number }, priority: typeof P2): Promise<readonly Pick<SignatureInfo, 'signature' | 'err'>[]>;
+    getTransaction(signature: string, priority: typeof P2): Promise<TransactionRecord | null>;
+  };
+  /** Puts the verified create transaction on the feed; false when there is no feed to put it on. */
+  readonly ingest: (record: TransactionRecord) => boolean;
   readonly timers: Timers;
   readonly budget: Pick<DailyBudget, 'remaining' | 'spend' | 'refund'> | undefined;
 }): Promise<CreateLookup> => {
@@ -189,9 +194,10 @@ export const findCreate = async (mint: string, o: {
     }
     if (oldest === null) return done('no-signature');
     used += read;
-    const rec = await o.fetch(oldest);
+    const rec = await o.rpc.getTransaction(oldest, P2);
     if (rec === null) return done('not-found');
-    return transactionEvents(rec).some((e) => e.name === 'CreateEvent' && e.data.mint === mint) ? done('found', rec) : done('not-create');
+    if (!transactionEvents(rec).some((e) => e.name === 'CreateEvent' && e.data.mint === mint)) return done('not-create');
+    return o.ingest(rec) ? done('found', rec) : done('no-feed');
   } catch {
     return done('error');
   } finally {
@@ -205,6 +211,8 @@ export class LiveProviders {
   readonly jupiter: Scheduler;
   readonly rugcheck: Scheduler;
   #fetcher: TxFetcher | null = null;
+  /** The worker's feed, once `feeds` has run: where a create lookup puts the create it verified. */
+  #feed: SourcesContext['feed'] | null = null;
 
   constructor(o: LiveProviderOptions) {
     this.helius = o.credits.scheduler(HELIUS_FREE);
@@ -246,6 +254,7 @@ export class LiveProviders {
     const aRpc = new RpcHttp({ provider: 'alchemy', url: () => alchemyRpcUrl(o.secrets), http: o.http, scheduler: this.alchemy, timeoutMs: 10_000 });
     const fetcher = new TxFetcher({ clients: [hRpc, aRpc], feed, timers, retries: 3, retryMs: 1_000, remember: 50_000, onLookup: (ms) => this.#lookup(ms) });
     this.#fetcher = fetcher;
+    this.#feed = feed;
     const socket = { initialMs: 1_000, maxMs: 30_000, idleMs: 30_000 };
     const helius = new RpcStream({
       provider: 'helius', url: () => heliusWsUrl(o.secrets), factory: o.factory, timers, feed, scheduler: this.helius,
@@ -305,8 +314,13 @@ export class LiveProviders {
 
   /** CREATE-AFTER-RESTART: a shortlisted mint's create looked up from its oldest signature, under the fills' budget. */
   async findCreate(mint: string, timers: Timers): Promise<CreateLookup> {
-    const fetcher = this.#fetcher;
-    return findCreate(mint, { rpc: this.seedRpc(), fetch: (sig) => (fetcher === null ? Promise.resolve(null) : fetcher.fetch(sig, P2)), timers, budget: this.#o.fillBudget });
+    const ingest = (record: TransactionRecord): boolean => {
+      const feed = this.#feed;
+      if (feed === null) return false;
+      feed.ingest('helius', { type: 'tx', record }, { receivedAt: timers.now(), lookup: true });
+      return true;
+    };
+    return findCreate(mint, { rpc: this.seedRpc(), ingest, timers, budget: this.#o.fillBudget });
   }
 
   /** A transaction at confirmed (P2), put on the feed; true when found. */
