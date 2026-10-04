@@ -232,7 +232,7 @@ const tick = (): void => {
     state.position = null;
     state.intent = null;
     saveState(state);
-    journal('exit', { trade, reasons: ['stub: hold time reached'] });
+    journal('exit', { trade, position: 'closed', reasons: ['stub: hold time reached'] });
   }
 };
 

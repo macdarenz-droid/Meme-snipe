@@ -922,11 +922,14 @@ export const keptAt = (samples: readonly Sample[], at: number, sampleMs: number,
   return keys.size === 1 ? { kept: win[0]!.kept! } : { why: 'the state changed while the backup was taken' };
 };
 
-/** Trades whose exit the boot journaled after the given seq (after the reply, before the kill), sorted. */
+/**
+ * Trades the boot closed after the given seq (after the reply, before the kill), sorted. Only an `exit` line whose
+ * `position` is 'closed' counts: a partial exit leaves the position open, and it still had to be kept.
+ */
 export const closedSince = (journal: readonly JournalLine[], boot: string | null, seq: number | null): string[] =>
   boot === null || seq === null
     ? []
-    : [...new Set(journal.filter((l) => l.boot === boot && l.seq > seq && l.kind === 'exit' && typeof l.trade === 'string').map((l) => l.trade!))].sort();
+    : [...new Set(journal.filter((l) => l.boot === boot && l.seq > seq && l.kind === 'exit' && l['position'] === 'closed' && typeof l.trade === 'string').map((l) => l.trade!))].sort();
 
 const withoutTrades = (k: Kept, gone: readonly string[]): Kept => ({
   pending_exits: k.pending_exits.filter((x) => !gone.includes(x)),
