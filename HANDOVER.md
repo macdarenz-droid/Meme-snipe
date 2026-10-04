@@ -14,7 +14,7 @@ Supervisor: session_01Ec4DXEAqLxM6M1WGVQG5se (same account as every worker). Hou
 | #130 EXIT-ROUTE | 992da7ce (EXIT merge delta PASS 10:05) | behind base; GitHub update when its slot comes |
 | #198 PAPER-2 | f0b7764f (run/CI PASS 9:34; risk PASS at 64972b76, meter change checked by run/CI: only tightens) | behind ad358fe9 (merge is clean, base code only); GitHub update when its slot comes |
 | #172 N2-WRITES | 7f2ce17b (persist delta PASS 9:34) | behind ad358fe9; conflicts with #139 in DeployerStore.load (second lander keeps #139's coverage pass and #172's written + commitTemp) |
-| #209 RESTART-CAUSE | 9b3d601b (facts PASS 9:45; ops FAIL at 6d7ce423 → fix in 9b3d601b not yet re-reviewed) | builder merges base with #148 (worker.ts, harness conflicts) + pins; then facts resolution check and ops summary.ts re-check |
+| #209 RESTART-CAUSE | f1e3112d pushed 10:11 (base 09100c9f + both pins; builder full check 5311) | facts re-check of the #148 resolution (the plain merge had dropped the crash site from #148's stop wrapper; fixed and pinned) and ops re-check of summary.ts/400-resend, both sent by the builder |
 | #141 WATCH-1d | 23787229 (risk delta PASS 10:01; CI green 9:40) | behind base (trial merge clean); GitHub update when its slot comes |
 | #168 ACCOUNT-RATE | eb1918dd (risk PASS; facts PASS 10:07) | conflicts with base in strategy.ts; builder base-merges, facts re-checks; #197 lands after it |
 | #171 EXIT-1h follow-up | 46aefee5 (EXIT delta pending) | — |
