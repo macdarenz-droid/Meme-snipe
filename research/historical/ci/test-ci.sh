@@ -733,5 +733,21 @@ saq = next(s for s in steps if s.get("name") == "Save progress after QA")
 assert "inputs.source == 'helius'" in saq["if"] and "always()" in saq["if"], saq["if"]
 PY
 
+# The plan job's own validation, run as written in data-scan.yml.
+python3 - "$here/../../../.github/workflows/data-scan.yml" > "$T/plan.py" <<'PY'
+import sys, yaml
+run = yaml.safe_load(open(sys.argv[1]))["jobs"]["plan"]["steps"][0]["run"]
+print(run.split("<<'EOF' >> \"$GITHUB_OUTPUT\"\n", 1)[1].rsplit("\nEOF", 1)[0])
+PY
+plan() { env MODE=scan DAYS=2026-09-21 MAX_MBPS=80 SOURCE=helius MAX_CREDITS=260000 RPC_RPS=5 REGIME_BOUNDARY_DAY=2026-10-02 "$@" python3 "$T/plan.py" > "$T/plan.out" 2>&1; }
+bad=""
+plan || bad+=" valid-refused"
+for v in 0 51 5.5 ""; do plan RPC_RPS="$v" && bad+=" rps=$v"; done
+for v in 0 1000001 ""; do plan MAX_CREDITS="$v" && bad+=" credits=$v"; done
+plan MODE=volume && bad+=" helius-volume"
+plan SOURCE=other && bad+=" source=other"
+plan SOURCE=archive MAX_CREDITS=0 RPC_RPS=0 || bad+=" archive-refused"
+[[ -z "$bad" ]] && ok "data-scan plan: refuses rpc_rps 0, 51, 5.5 and empty, a cap outside 1..1000000, helius outside scan, an unknown source; accepts the free day and archive scans" || no "data-scan plan validation:$bad"
+
 echo "$pass passed, $fail failed"
 (( fail == 0 ))
