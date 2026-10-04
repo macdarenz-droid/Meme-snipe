@@ -96,9 +96,9 @@ export const scoreCandidates = (rows: Iterable<DatasetRow>, targets: readonly Sc
   const failedExit = base + ladder.steps[Math.min(2, ladder.steps.length - 1)]!.priorityFeeLamports;
   const failProbability = 1 - Number(scen.landPpm.pumpswap) / 1e6;
   const rent = net.tokenAccountRent;
-  const maxHorizon = Math.max(...o.barriers.map((b) => b.horizonMs));
-  // Time after the horizon for the exit ladder, at 1 s per slot: conservative, since slots run ~0.27–0.4 s (more slots fit).
-  const tail = (ladder.maxAttempts + 1) * latency * 1000;
+  // Slots after the last horizon for the exit ladder: every attempt (latency + retries) plus one more, counted in slots,
+  // so the ladder is fully observed whatever the slot time (a wall-clock tail assumed at most 1 s per slot).
+  const tailSlots = BigInt((ladder.maxAttempts + 1) * latency);
 
   const byPool = new Map<string, Pending[]>();
   const all: Pending[] = [];
@@ -240,7 +240,8 @@ export const scoreCandidates = (rows: Iterable<DatasetRow>, targets: readonly Sc
         o.barriers.forEach((b, i) => {
           if (p.vertical[i] === null && ms >= p.entryMs + b.horizonMs) p.vertical[i] = row.slot;
         });
-        if (ms >= p.entryMs + maxHorizon + tail) finish(p, row.slot);
+        const last = p.vertical.reduce<bigint | null>((m, v) => (v === null || m === null ? null : v > m ? v : m), 0n);
+        if (last !== null && row.slot >= last + tailSlots) finish(p, row.slot);
       }
     }
     if (active.some((p) => p.phase === 'done')) active = active.filter((p) => p.phase !== 'done');
