@@ -32,13 +32,13 @@ import {
   type Coverage, type DeployerIndexState, type GateContext, type GateDeps, type GateRequest, type GraduatesFact, type HardGate, type HardResult, type RugLabellerState, type S0DiagnosticPart, DeployerIndex, GRADUATES_KEY, gatesOfStages, HARD_GATES, LOG_CREATE_PREFIX, RugLabeller, TX_CREATE_PREFIX, createKey, createsCoverage, evaluateHardRejects, evaluateRegime, migrationKey, parseCreate, parseGraduates, parseMigration, parsePool, poolKey,
 } from '../../../core/src/gates/index.ts';
 import type { GraduatesSeed } from '../../../core/src/facts/raw.ts';
-
-/** PERSIST-2: the graduates series as saved (a `GraduatesSeed` without its source). */
-export type SavedGraduates = Omit<GraduatesSeed, 'source'>;
 import { type BookEvent, type IntentState, isTerminal } from '../../../core/src/lifecycle/index.ts';
 import { type AccountHistory, type Latches, type Timed, dayLossLine, evaluateEntry, evaluateExit, maxTradeCosts, riskSnapshot } from '../../../core/src/risk/index.ts';
 import { latchable, type markedHistory, markSettings, riskAccount } from './marks.ts';
 import { type Bps, BPS_DENOMINATOR, type Lamports, type MicroUsd, bps, lamportsToMicroUsd, mulDiv, microUsdToLamports } from '../../../core/src/units/index.ts';
+
+/** PERSIST-2: the graduates series as saved (a `GraduatesSeed` without its source). */
+export type SavedGraduates = Omit<GraduatesSeed, 'source'>;
 
 export const ACCOUNT_KEY = 'worker:account';
 /** Key prefixes of GATE-1's pool and migration facts. */
@@ -226,6 +226,19 @@ export interface SavedExit {
    * that ends unfilled, before or after a restart, never leaves the position held under the fallback plan.
    */
   readonly recovery?: string | null;
+  /**
+   * PERSIST-3: the position mint's deployer sales (EXIT-1's `deployer_sell`) and net flow minutes (`negative_flow`),
+   * with the dedupe ids, as of the save. Absent or malformed at a restart: the position is flattened (sell-only).
+   */
+  readonly deployerSales?: { readonly ids: readonly string[]; readonly list: readonly { readonly atMs: number; readonly amount: bigint }[] };
+  readonly flow?: { readonly minutes: readonly (readonly [number, bigint])[]; readonly ids: readonly (readonly [string, number])[] };
+  /** PERSIST-3: the mint's deployer (creator and the create's signer) and total supply, from its create; null when never seen. */
+  readonly deployer?: { readonly sellers: readonly string[]; readonly supply: bigint | null } | null;
+  /**
+   * PERSIST-3: set when a restart could not restore these inputs. Saved with the exit, so every later restart keeps the
+   * position flattened (sell-only) instead of reading the inputs written since as complete.
+   */
+  readonly inputsLost?: true;
 }
 
 export interface RestoreFact {
@@ -273,10 +286,23 @@ export interface StrategyConfig {
   readonly maxTails: number;
 }
 
+/** The saved state a seed names (WORKER-GROW): the file in the boot's recording, its sha256 over every byte, its format version. */
+export interface SavedStateRef {
+  readonly file: string;
+  readonly sha256: string;
+  readonly version: number;
+}
+
 export interface StrategyDeps {
   readonly session: PolicySession;
   readonly rugs: RugConfig;
   readonly config: StrategyConfig;
+  /**
+   * The saved index and labeller a seed names by `SavedStateRef` (WORKER-GROW): live, what the worker restored from the
+   * recording's copy; in the parity replay, read from that copy and checked against the hash. Throws when it cannot give
+   * exactly that state (the seed is then refused, as a fresh process).
+   */
+  readonly savedState?: (ref: SavedStateRef) => { readonly index: DeployerIndex; readonly labeller: RugLabeller };
   /** Replaces marks.ts `markedHistory` (tests inject a failure; production never sets it). */
   readonly markedHistory?: typeof markedHistory;
 }
@@ -419,9 +445,23 @@ export class LiveStrategy implements Strategy {
   saved(): Record<string, SavedExit> {
     const out: Record<string, SavedExit> = {};
     for (const [pid, s] of this.#exits) {
-      out[pid] = { ...s, bars: this.#bars.get(pid) ?? s.bars, pool: this.#poolOfMint.get(this.#mintOf(pid)) ?? s.pool ?? null, spot: this.#spot.get(pid) ?? s.spot ?? null };
+      const mint = this.#mintOf(pid);
+      out[pid] = { ...s, bars: this.#bars.get(pid) ?? s.bars, pool: this.#poolOfMint.get(mint) ?? s.pool ?? null, spot: this.#spot.get(pid) ?? s.spot ?? null, ...this.#exitInputs(mint) };
     }
     return out;
+  }
+
+  /** PERSIST-3: a mint's deployer sales and flow as saved, nothing after the latest released moment. */
+  #exitInputs(mint: string): Pick<SavedExit, 'deployerSales' | 'flow' | 'deployer'> {
+    const until = this.#lastMoment?.receivedAt ?? Number.NEGATIVE_INFINITY;
+    const sales = this.#deployerSales.get(mint);
+    const f = this.#flow.get(mint);
+    const minutes = [...(f?.minutes ?? [])].filter(([start]) => start <= until).sort((a, b) => a[0] - b[0]);
+    return {
+      deployer: this.#deployerMemo.get(mint) ?? null,
+      deployerSales: { ids: [...(sales?.ids ?? [])].sort(), list: (sales?.list ?? []).filter((x) => x.atMs <= until) },
+      flow: { minutes, ids: [...(f?.ids ?? [])].filter(([, start]) => start <= until).sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)) },
+    };
   }
 
   /** Each candidate's migration time and the typed reasons of its last evaluation (FACTS-1b stages its reads on them). */
@@ -455,10 +495,12 @@ export class LiveStrategy implements Strategy {
   readonly #deployerSales = new Map<string, { readonly ids: Set<string>; readonly list: { readonly atMs: number; readonly amount: bigint }[] }>();
   /**
    * WORKER-1e: one-minute net SOL flow (pool side: buys' quoteAmountIn − sells' quoteAmountOut) on each held mint's
-   * pool, from released swaps, deduplicated like the deployer's sales; EXIT-1's negative-flow trigger reads it. Kept in
-   * memory only: after a restart the run of negative minutes starts again (the trigger fires later, never earlier).
+   * pool, from released swaps, deduplicated like the deployer's sales (each id with its minute); EXIT-1's negative-flow trigger reads
+   * it. Saved with each held position's exit (PERSIST-3), every id included, so a restart continues the run of minutes.
    */
-  readonly #flow = new Map<string, { readonly ids: Set<string>; readonly minutes: Map<number, bigint> }>();
+  readonly #flow = new Map<string, { readonly ids: Map<string, number>; readonly minutes: Map<number, bigint> }>();
+  /** PERSIST-3: each held mint's deployer as last read from its create (a restart does not see the create again). */
+  readonly #deployerMemo = new Map<string, { readonly sellers: readonly string[]; readonly supply: bigint | null }>();
   /** Positions whose deployer-sell trigger could not be judged, reported once each. */
   readonly #unjudgedDeployer = new Set<string>();
   /** Each held position's last spot price, for the saved plan (the exposure rebuild's reference). */
@@ -616,13 +658,18 @@ export class LiveStrategy implements Strategy {
    * PERSIST-1: what a save holds, as of the latest released moment: the index (entries older than `retainFromMs`
    * left out), the labeller's tables and every coverage fact. Null before anything was released or the seed applied.
    */
-  persistable(retainFromMs: number): { readonly asOf: Moment; readonly index: DeployerIndexState; readonly labeller: RugLabellerState; readonly coverage: readonly MarketEvent[]; readonly graduates: SavedGraduates } | null {
+  persistable(retainFromMs: number): { readonly state: { readonly asOf: Moment; readonly index: DeployerIndexState; readonly labeller: RugLabellerState; readonly coverage: readonly MarketEvent[]; readonly graduates: SavedGraduates }; readonly mintRows: Iterable<readonly [string, readonly (readonly [string, number])[]]> } | null {
     const asOf = this.#lastMoment;
     if (asOf === null || !this.#seedApplied || this.#waiting !== null) return null;
     // PERSIST-2: the newest graduates fact released so far, with only the entries whose survival mark was reached by
     // the save moment (the fact itself is never newer than the last released event).
     const items = (this.#graduatesFact?.items ?? []).filter((g) => g.migratedAtMs + this.#d.session.policy.regime.survivalAfterMs <= asOf.receivedAt);
-    return { asOf, index: this.#deployers.snapshot(asOf, retainFromMs), labeller: this.#labeller.snapshot(), coverage: [...this.#coverageFacts], graduates: { asOfMs: asOf.receivedAt, items } };
+    // WORKER-GROW: the index's mint rows are streamed into the file by the save, never built whole; the graduates ride
+    // in the payload line.
+    return {
+      state: { asOf, index: this.#deployers.snapshot(asOf, retainFromMs, { mints: false }), labeller: this.#labeller.snapshot(), coverage: [...this.#coverageFacts], graduates: { asOfMs: asOf.receivedAt, items } },
+      mintRows: this.#deployers.mintRows(retainFromMs),
+    };
   }
 
   /** PERSIST-2: the newest graduates fact released (the regime's survival series), for the saved state. */
@@ -645,7 +692,7 @@ export class LiveStrategy implements Strategy {
     if (COVERAGE_FACT.test(e.key)) this.#coverageFacts.push(e);
     if (e.key === GRADUATES_KEY) this.#graduatesFact = parseGraduates(unwrap(e.value)) ?? this.#graduatesFact;
     this.#observe(e);
-    if (e.key === RESTORE_KEY) this.#restore(unwrap(e.value), out);
+    if (e.key === RESTORE_KEY) this.#restore(unwrap(e.value), out, e.moment.receivedAt);
     if (e.key === SEED_KEY) this.#seed(e.value, out);
     if (e.key === 'chain:slot') {
       const s = unwrap(e.value);
@@ -710,7 +757,39 @@ export class LiveStrategy implements Strategy {
     };
   }
 
-  #restore(v: unknown, out: Decision[]): void {
+  /** PERSIST-3: restores a mint's deployer sales and flow from a saved exit; the reason when they cannot be. */
+  #restoreInputs(mint: string, s: Record<string, unknown>, atMs: number): string | null {
+    const ds = s['deployerSales'];
+    const fl = s['flow'];
+    const dp = s['deployer'];
+    if (ds === undefined || fl === undefined || dp === undefined) return 'not in the saved exit';
+    const deployer = dp === null ? null
+      : isObj(dp) && Array.isArray(dp['sellers']) && dp['sellers'].length > 0 && dp['sellers'].every((x) => typeof x === 'string') && (dp['supply'] === null || (typeof dp['supply'] === 'bigint' && dp['supply'] > 0n))
+        ? { sellers: dp['sellers'] as string[], supply: dp['supply'] as bigint | null } : undefined;
+    if (deployer === undefined) return 'malformed';
+    const sales = isObj(ds) && Array.isArray(ds['ids']) && ds['ids'].every((x) => typeof x === 'string') && Array.isArray(ds['list'])
+      && ds['list'].every((x) => isObj(x) && typeof x['atMs'] === 'number' && Number.isFinite(x['atMs']) && typeof x['amount'] === 'bigint' && x['amount'] >= 0n)
+      ? { ids: ds['ids'] as string[], list: ds['list'] as { atMs: number; amount: bigint }[] } : null;
+    const pair = (x: unknown, t: 'bigint' | 'number'): boolean => Array.isArray(x) && x.length === 2 && typeof x[0] === (t === 'bigint' ? 'number' : 'string') && typeof x[1] === t;
+    const flow = isObj(fl) && Array.isArray(fl['minutes']) && fl['minutes'].every((x) => pair(x, 'bigint')) && Array.isArray(fl['ids']) && fl['ids'].every((x) => pair(x, 'number'))
+      ? { minutes: fl['minutes'] as [number, bigint][], ids: fl['ids'] as [string, number][] } : null;
+    if (sales === null || flow === null) return 'malformed';
+    // As of the restore: an entry dated after it (a host clock behind the save) refuses the inputs whole, like a future
+    // seed (PERSIST-2); dropping it alone would keep its dedupe id and lose a real sale.
+    if (sales.list.some((x) => x.atMs > atMs) || flow.minutes.some(([start]) => start > atMs) || flow.ids.some(([, start]) => start > atMs)) return 'dated after the restore';
+    if (deployer !== null && !this.#deployerMemo.has(mint)) this.#deployerMemo.set(mint, deployer);
+    const s0 = this.#deployerSales.get(mint) ?? { ids: new Set<string>(), list: [] };
+    for (const id of sales.ids) s0.ids.add(id);
+    s0.list.push(...sales.list);
+    this.#deployerSales.set(mint, s0);
+    const f0 = this.#flow.get(mint) ?? { ids: new Map<string, number>(), minutes: new Map<number, bigint>() };
+    for (const [start, net] of flow.minutes) f0.minutes.set(start, (f0.minutes.get(start) ?? 0n) + net);
+    for (const [id, start] of flow.ids) f0.ids.set(id, start);
+    this.#flow.set(mint, f0);
+    return null;
+  }
+
+  #restore(v: unknown, out: Decision[], atMs: number): void {
     this.#restoreSeen = true;
     if (isObj(v) && isObj(v['openedAt'])) {
       for (const [pid, at] of Object.entries(v['openedAt'])) if (typeof at === 'number' && Number.isFinite(at)) this.#bookedOpenAt.set(pid, at);
@@ -742,7 +821,10 @@ export class LiveStrategy implements Strategy {
         this.#recoveryWhy.set(pid, 'saved plan refused');
         continue;
       }
-      let saved = s as unknown as SavedExit;
+      // PERSIST-3: the exit inputs come back as saved; without them (or lost at an earlier restart, the flag kept in the
+      // file) the position's deployer_sell and negative_flow exits would count from zero, so it is flattened instead.
+      const why = s['inputsLost'] !== undefined ? 'lost at an earlier restart' : this.#restoreInputs(this.#mintOf(pid), s, atMs);
+      let saved: SavedExit = why === null ? s as unknown as SavedExit : { ...(s as unknown as SavedExit), inputsLost: true };
       if (!runnableTracker(s['tracker'] as Record<string, unknown>)) {
         // A tracker the exit rules would throw on is never applied. Its trail, peak and flat target cannot be recovered, and
         // starting them again would weaken the position's protection: sell-only recovery instead (EXIT-1g).
@@ -754,6 +836,9 @@ export class LiveStrategy implements Strategy {
       this.#bars.set(pid, [...saved.bars]);
       if (typeof saved.pool === 'string') this.#notePool(this.#mintOf(pid), saved.pool);
       if (saved.spot != null) this.#spot.set(pid, saved.spot);
+      if (why !== null) {
+        out.push({ action: null, reasons: ['sell-only', pid, `exit inputs not restored (${why}); flattened through the global exit ladder`] });
+      }
       n++;
     }
     out.push({ action: null, reasons: ['restore', `${n} exit plans and trackers restored`] });
@@ -792,8 +877,16 @@ export class LiveStrategy implements Strategy {
       // nothing), then the downtime fill and the saved rug facts.
       try {
         const st = v['state'];
-        const index = DeployerIndex.restore(st['index'] as DeployerIndexState);
-        const labeller = RugLabeller.restore(this.#d.rugs, st['labeller'] as RugLabellerState, asOf);
+        let index: DeployerIndex;
+        let labeller: RugLabeller;
+        if (isObj(st['ref'])) {
+          // WORKER-GROW: the seed names the saved file by its hash; the state itself never travels in the seed.
+          if (this.#d.savedState === undefined) throw new Error('the seed names a saved state file and nothing reads it');
+          ({ index, labeller } = this.#d.savedState(st['ref'] as unknown as SavedStateRef));
+        } else {
+          index = DeployerIndex.restore(st['index'] as DeployerIndexState);
+          labeller = RugLabeller.restore(this.#d.rugs, st['labeller'] as RugLabellerState, asOf);
+        }
         const f = index.fill(v['fill'] as MarketEvent[], asOf);
         this.#deployers = index;
         this.#labeller = labeller;
@@ -860,7 +953,7 @@ export class LiveStrategy implements Strategy {
     if (this.watched().has(mint)) return;
     const pool = this.#poolOfMint.get(mint);
     if (pool !== undefined) this.#mintOfPool.delete(pool);
-    for (const m of [this.#poolOfMint, this.#observedFees, this.#tradeAt, this.#deployerSales, this.#migrationSlot]) m.delete(mint);
+    for (const m of [this.#poolOfMint, this.#observedFees, this.#tradeAt, this.#deployerSales, this.#flow, this.#deployerMemo, this.#migrationSlot]) m.delete(mint);
   }
 
   #noteMigrationSlot(mint: string, slot: bigint | null): void {
@@ -921,12 +1014,12 @@ export class LiveStrategy implements Strategy {
     }
     const amount = name === 'BuyEvent' ? d['quoteAmountIn'] : d['quoteAmountOut'];
     if (typeof amount !== 'bigint' || amount < 0n) return;
-    const f = this.#flow.get(mint) ?? { ids: new Set<string>(), minutes: new Map<number, bigint>() };
+    const f = this.#flow.get(mint) ?? { ids: new Map<string, number>(), minutes: new Map<number, bigint>() };
     this.#flow.set(mint, f);
     const id = `${String(v['signature'] ?? e.id)}|${String(name)}|${String(d['user'])}|${String(d['baseAmountIn'] ?? d['baseAmountOut'])}|${amount}`;
     if (f.ids.has(id)) return;
-    f.ids.add(id);
     const start = Math.floor(e.moment.receivedAt / FLOW_MINUTE_MS) * FLOW_MINUTE_MS;
+    f.ids.set(id, start);
     f.minutes.set(start, (f.minutes.get(start) ?? 0n) + (name === 'BuyEvent' ? amount : -amount));
   }
 
@@ -944,9 +1037,11 @@ export class LiveStrategy implements Strategy {
       const d = isObj(v) && isObj(v['event']) && isObj(v['event']['data']) ? v['event']['data'] : null;
       if (d === null || typeof d['creator'] !== 'string') continue;
       const sellers = typeof d['user'] === 'string' && d['user'] !== d['creator'] ? [d['creator'], d['user']] : [d['creator']];
-      return { sellers, supply: typeof d['tokenTotalSupply'] === 'bigint' && d['tokenTotalSupply'] > 0n ? d['tokenTotalSupply'] : null };
+      const dep = { sellers, supply: typeof d['tokenTotalSupply'] === 'bigint' && d['tokenTotalSupply'] > 0n ? d['tokenTotalSupply'] : null };
+      if ([...this.#exits.keys()].some((pid) => this.#mintOf(pid) === mint)) this.#deployerMemo.set(mint, dep);
+      return dep;
     }
-    return null;
+    return this.#deployerMemo.get(mint) ?? null;
   }
 
   /** EXIT-1's deployer-sell observation for a position: the share of supply its deployer sold since the entry. */
@@ -1259,8 +1354,10 @@ export class LiveStrategy implements Strategy {
       // A universe the loaded policy no longer has (a restart under a policy that dropped it): its own time stops and
       // partials are unknown, so the position is flattened at once through the global exit ladder (supervisor ruling).
       // Exits are never blocked: no throw, no missing decision.
-      const known = Object.hasOwn(this.#d.session.policy.exits.universes, saved.plan.universe);
-      if (!known && !this.#flattening.has(p.id)) {
+      const inPolicy = Object.hasOwn(this.#d.session.policy.exits.universes, saved.plan.universe);
+      // PERSIST-3: a position whose exit inputs did not come back is flattened the same way (reported at the restore).
+      const known = inPolicy && saved.inputsLost === undefined;
+      if (!inPolicy && !this.#flattening.has(p.id)) {
         this.#flattening.add(p.id);
         out.push({ action: null, reasons: ['universe missing', p.id, `${String(saved.plan.universe)} is not in policy ${this.#d.session.versionHash}; flattened through the global exit ladder`] });
       }
@@ -1282,7 +1379,7 @@ export class LiveStrategy implements Strategy {
       saved = { ...saved, tracker: step.tracker, bars: this.#bars.get(p.id) ?? saved.bars, waitingSinceMs };
       this.#exits.set(p.id, saved);
       for (const why of step.ignored) out.push({ action: null, reasons: ['exit input ignored', p.mint, why] });
-      this.#exitDecision(p.id, p.mint, p.exitSeq, step.decision, ctx, out, known ? [] : ['universe missing: flatten']);
+      this.#exitDecision(p.id, p.mint, p.exitSeq, step.decision, ctx, out, known ? [] : [inPolicy ? 'exit inputs lost: flatten' : 'universe missing: flatten']);
     }
   }
 
