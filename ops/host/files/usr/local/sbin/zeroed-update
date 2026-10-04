@@ -83,11 +83,20 @@ if [ -n "$run" ]; then
 fi
 
 # Fails closed: a worker that is starting, reconciling, restarting or stopped holds the update too unless its
-# last count is 0 (logic.sh intents_hold).
-if intents_hold "$(systemctl is-active zeroed-worker.service 2>/dev/null || true)" /var/lib/zeroed; then
-  log "Waiting on ${commit:0:12}: the worker has open intents ($(cat /var/lib/zeroed/open_intents 2>/dev/null || echo unknown))."
+# last count is 0 (logic.sh intents_hold). A hold by a worker that is not running is never silent: only a worker
+# that starts and reconciles can lift it, so the owner is told once, with where the console steps are.
+wstate="$(systemctl is-active zeroed-worker.service 2>/dev/null || true)"
+if intents_hold "$wstate" /var/lib/zeroed; then
+  n="$(cat /var/lib/zeroed/open_intents 2>/dev/null || echo unknown)"
+  log "Waiting on ${commit:0:12}: the worker has open intents ($n)."
+  if [ "$wstate" != active ]; then
+    alert intents-hold "ALERT Zeroed host: update ${commit:0:12} is held: the worker is ${wstate:-unknown} and its last open-intent count is $n. Nothing updates until a worker starts and reconciles. Console steps: ops/README.md, \"Updates held by open intents\"."
+  else
+    alert_clear intents-hold "CLEARED Zeroed host: the worker is running again; update ${commit:0:12} waits for its open intents ($n) to finish."
+  fi
   exit 0
 fi
+alert_clear intents-hold "CLEARED Zeroed host: no open intents hold update ${commit:0:12} now."
 
 dest="/opt/zeroed/releases/$commit"
 if [ ! -d "$dest" ]; then

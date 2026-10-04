@@ -307,8 +307,16 @@ fi
 in_c "echo 2 > /var/lib/zeroed/open_intents"
 upd_run || true
 [ -z "$(current)" ] || fail "deployed with open intents"
+# Held by a worker that is not running: one alert with where the console steps are; its start (reconcile first)
+# writes the count again, and the deploy that follows says the hold is gone.
+in_c "systemctl stop zeroed-worker.service && echo 2 > /var/lib/zeroed/open_intents"
+upd_run || true
+[ -z "$(current)" ] || fail "deployed with open intents and the worker stopped"
+grep -q 'is held: the worker is inactive and its last open-intent count is 2. Nothing updates until a worker starts and reconciles.' "$STATE/telegram.jsonl" || fail "no alert for an update held by a stopped worker"
+in_c "systemctl start zeroed-worker.service"
 in_c "echo 0 > /var/lib/zeroed/open_intents"
 upd_run || fail "update failed on a green, GitHub-signed commit"
+grep -q 'CLEARED Zeroed host: no open intents hold update' "$STATE/telegram.jsonl" || fail "the intents hold was not cleared"
 [ "$(current)" = "/opt/zeroed/releases/$signed" ] || fail "current release not switched"
 in_c "journalctl -u zeroed-update -o cat --no-pager" >"$LOGS/update-journal.txt"
 grep -q 'its checks are red' "$LOGS/update-journal.txt" && grep -q 'its checks are pending' "$LOGS/update-journal.txt" && grep -q 'open intents (2)' "$LOGS/update-journal.txt" || fail "update reasons not logged"

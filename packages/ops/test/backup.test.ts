@@ -297,9 +297,55 @@ describe('open intents hold updates and restarts, fail closed', () => {
     expect(busy('active', unit, { open_intents: '0\n', 'ledger.sqlite': 'x' })).toBe('busy');
   });
 
+  it("zeroed-update's hold, run in bash: a hold by a worker that is not running alerts once, and clears when it lifts", () => {
+    const update = read('ops/host/files/usr/local/sbin/zeroed-update');
+    const gate = update.slice(update.indexOf('# Fails closed:'), update.indexOf('dest="/opt/zeroed/releases/$commit"'));
+    const common = read('ops/host/files/usr/local/lib/zeroed/common.sh');
+    const alerts = common.slice(common.indexOf('# alert KEY TEXT'), common.indexOf('}', common.indexOf('alert_clear() {')) + 1);
+    const host = mkdtempSync(join(tmp, 'hold-host-'));
+    const state = mkdtempSync(join(tmp, 'hold-state-'));
+    const sent = join(host, 'sent');
+    writeFileSync(join(state, 'ledger.sqlite'), 'x');
+    const step = (worker: string, count: string | null) => {
+      if (count === null) rmSync(join(state, 'open_intents'), { force: true });
+      else writeFileSync(join(state, 'open_intents'), count);
+      const before = existsSync(sent) ? readFileSync(sent, 'utf8') : '';
+      const body = [
+        'set -euo pipefail',
+        `. "${LIB}/logic.sh"`,
+        `STATE_DIR="${host}"; commit=${'d'.repeat(40)}`,
+        'log() { :; }',
+        `notify() { printf '%s\\n' "$1" >> "${sent}"; }`,
+        "systemctl() { printf '%s\\n' \"$WORKER\"; }",
+        alerts,
+        gate.replaceAll('/var/lib/zeroed', state),
+        'echo PROCEED',
+      ].join('\n');
+      const r = spawnSync('bash', ['-c', body], { encoding: 'utf8', env: { PATH: process.env['PATH'] ?? '', WORKER: worker } });
+      expect(r.status, r.stderr).toBe(0);
+      const after = existsSync(sent) ? readFileSync(sent, 'utf8') : '';
+      return { proceed: r.stdout.includes('PROCEED'), told: after.slice(before.length).trim() };
+    };
+    expect(gate.split('/var/lib/zeroed').length).toBeGreaterThan(2);
+    // A running worker with intents open: a normal wait, nothing to tell.
+    expect(step('active', '2\n')).toEqual({ proceed: false, told: '' });
+    // It goes down with intents open: one alert naming its state and last count, then silence while it stays down.
+    const down = step('failed', '2\n');
+    expect(down.proceed).toBe(false);
+    expect(down.told).toBe(`ALERT Zeroed host: update ${'d'.repeat(12)} is held: the worker is failed and its last open-intent count is 2. Nothing updates until a worker starts and reconciles. Console steps: ops/README.md, "Updates held by open intents".`);
+    expect(step('activating', null)).toEqual({ proceed: false, told: '' });
+    // Back up and still busy: the episode closes; the update keeps waiting.
+    expect(step('active', '1\n')).toEqual({ proceed: false, told: `CLEARED Zeroed host: the worker is running again; update ${'d'.repeat(12)} waits for its open intents (1) to finish.` });
+    // Down again with no readable count: a new episode, "unknown".
+    expect(step('inactive', null).told).toContain('the worker is inactive and its last open-intent count is unknown.');
+    // Reconciled to 0: the update goes ahead and the owner hears the hold is gone.
+    expect(step('inactive', '0\n')).toEqual({ proceed: true, told: `CLEARED Zeroed host: no open intents hold update ${'d'.repeat(12)} now.` });
+    expect(step('active', '0\n')).toEqual({ proceed: true, told: '' });
+  });
+
   it('the update gate and the safe-restart check both use it, whatever the worker state', () => {
     const update = read('ops/host/files/usr/local/sbin/zeroed-update');
-    expect(update).toContain('if intents_hold "$(systemctl is-active zeroed-worker.service 2>/dev/null || true)" /var/lib/zeroed; then');
+    expect(update).toContain('wstate="$(systemctl is-active zeroed-worker.service 2>/dev/null || true)"\nif intents_hold "$wstate" /var/lib/zeroed; then');
     expect(update).not.toContain('if systemctl is-active --quiet zeroed-worker.service; then');
     const common = read('ops/host/files/usr/local/lib/zeroed/common.sh');
     const busy = common.slice(common.indexOf('worker_busy() {'), common.indexOf('keys_stored()'));

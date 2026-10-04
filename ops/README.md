@@ -10,7 +10,7 @@ Server: Vultr High Performance, Frankfurt, 1 vCPU / 1 GB, image **Ubuntu 24.04 L
 2. **Install.** Paste this one line the same way (Clipboard → Paste), then press Enter:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/9edf1ac68cc1bd37a5d0f1d82988d250ab0d46c8/ops/install.sh -o i && echo '6e7644bca2940a2b3c35c3b68b71cdaea6ea67d906824724c42321364746ec69  i' | sha256sum -c && bash i
+curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/9edf1ac68cc1bd37a5d0f1d82988d250ab0d46c8/ops/install.sh -o i && echo 'eee8d9302e465a3b62faf4f40d44e94de7a00bcfbf784b8eab90ab5215e42f58  i' | sha256sum -c && bash i
 ```
 
    The line checks the file against its SHA-256 before anything runs; a changed file stops at `sha256sum -c`. After about two minutes the screen shows a **deploy code** of 6 words.
@@ -19,7 +19,7 @@ curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/9edf1ac6
 
 The console screen can be left at any time (Ctrl+C); setup carries on in the background. `zeroed-status` shows where it stands and the codes again.
 
-SHA-256 of `install.sh`: `6e7644bca2940a2b3c35c3b68b71cdaea6ea67d906824724c42321364746ec69`
+SHA-256 of `install.sh`: `eee8d9302e465a3b62faf4f40d44e94de7a00bcfbf784b8eab90ab5215e42f58`
 
 After any change to `ops/install.sh`, the commit in the line must move to one that holds the new file (`ops/test/e2e.sh` fails otherwise).
 
@@ -68,9 +68,32 @@ Every Deploy run also moves the tag `deploy` to the newest commit on `ccr-14987b
 - GitHub Actions' `check` passed on it, and every other GitHub Actions run on it finished green (public API; runs from other apps do not count, and none at all means wait);
 - `e2e` passed on the newest commit at or before it that changed the ops end-to-end paths (`ops/`, `packages/ops/`, the Deploy and ops e2e workflows), since a merge that leaves ops alone runs no e2e of its own;
 - no qualifying dry run is active: no `zeroed-dryrun@…` unit is running, and no named run in the evidence directory is missing its `report.json` (this covers the minutes after a reboot drill before the runner resumes);
-- the worker reports no open intent: `/var/lib/zeroed/open_intents` reads exactly `0`, whether the worker is running, starting or stopped. A missing or unreadable count holds, except on a new server with no worker state at all. Limit: a worker that never comes back (a release that crash-loops with intents open) leaves its last count, so every code update holds, the fixing one included; recovery is from the server console.
+- the worker reports no open intent: `/var/lib/zeroed/open_intents` reads exactly `0`, whether the worker is running, starting or stopped. A missing or unreadable count holds, except on a new server with no worker state at all. Limit: a worker that never comes back (a release that crash-loops with intents open) leaves its last count, so every code update holds, the fixing one included, until someone at the console brings a worker back (below).
 
 First it tries the new release's worker (`/usr/local/lib/zeroed/worker-smoke`). The trial runs beside the running worker as transient units, under the worker unit's own sandbox and environment file. It has a scratch state directory as its only writable path, its own loopback ports (127.0.0.1:8797 and 8798), and memory capped at 280M. Its `--reconcile` must exit 0. It must then answer its health route in paper mode within 90 seconds, and still be running and answering 30 seconds later. If it does not (a file that does not strip or load, a missing file, a refused config, a worker that dies), nothing changes: current stays, the running worker keeps running, and one Telegram alert says why. It is tried again every 5 minutes. After the switch, the new worker must answer within 60 seconds and then run 30 seconds without a restart. If it does not, the server goes back to the release it ran: current, the deployed record, its host files and its worker. That commit is not tried again (a newer deploy is), and one alert says why. Then it runs the new release's own installer as `install.sh --update`, so changes to host scripts and units arrive with the code; the install line is pasted only once. Only when that succeeds does it switch and restart the worker. The update is all or nothing: it keeps each host file it changes (the Node link included) and notes each unit it stops. If any step fails, it puts every file back, removes new ones, reloads systemd, restarts what was running and re-applies the old firewall. An update cut off half-way is rolled back by the next one first. Packages apt added stay installed. A failure keeps the running release and worker as they are, alerts once, and is tried again every 5 minutes under the same gates. An update keeps SSH exactly as the running firewall has it, makes no code and shows nothing on the console. It also installs RUN-1's units from the release (`packages/runner/systemd/zeroed-dryrun*` and `zeroed-worker-tabletop.service`, the host-loss tabletop worker on 127.0.0.1:8789, which is never published), enables only `zeroed-dryrun-tick.timer`, and removes units a newer release dropped. The worker reconciles before every start. Residual risk: write access to the repository is the ability to deploy; the signer (SIGN-1) is the separate guard on funds.
+
+### Updates held by open intents
+
+Only the worker's own count lifts this gate, and only a worker that starts writes it: its start runs `--reconcile` first, which reconciles every intent against the ledger and writes `open_intents`. When an update is waiting and the worker is not running, Telegram gets one alert: "update … is held: the worker is … and its last open-intent count is …". A second message says when the hold is gone. Never write `open_intents` or change the ledger by hand: a `0` the worker did not write lets an update through over intents nobody reconciled.
+
+At the server console, as root:
+1. Where it stands: `zeroed-status`, `systemctl status zeroed-worker --no-pager`, `journalctl -u zeroed-worker -n 100 --no-pager` (why it stopped) and `cat /var/lib/zeroed/open_intents` (the last count).
+2. Which intents are open (read-only; the same rule as the worker's count: not rejected, cancelled or abandoned, and not reconciled with a fill):
+   ```sh
+   sqlite3 -readonly /var/lib/zeroed/ledger.sqlite "SELECT i.intent_id, i.purpose, i.side, i.mint, e.status, e.ts FROM intent i JOIN intent_event e ON e.seq = (SELECT max(seq) FROM intent_event WHERE intent_id = i.intent_id) WHERE NOT (e.status IN ('rejected','cancelled','abandoned') OR (e.status = 'reconciled' AND EXISTS (SELECT 1 FROM fill f WHERE f.intent_id = i.intent_id))) ORDER BY e.seq"
+   ```
+3. Reconcile by starting the worker: `systemctl reset-failed zeroed-worker && systemctl start zeroed-worker`, then `journalctl -u zeroed-worker -n 20 --no-pager` shows `Reconcile: done, open intents written.` and `cat /var/lib/zeroed/open_intents` the new count.
+4. If the running release's worker cannot start, go back to the release that ran before it, as `zeroed-update`'s own roll-back does:
+   ```sh
+   journalctl -u zeroed-update -o cat --no-pager | grep '^Deployed ' | tail -2   # the earlier line is the release before
+   prev=$(ls -d /opt/zeroed/releases/<the first 12 characters of that commit>*)
+   cat /var/lib/zeroed-host/deployed > /var/lib/zeroed-host/failed_release      # zeroed-update does not switch back to it
+   ln -sfn "$prev" /opt/zeroed/current.new && mv -Tf /opt/zeroed/current.new /opt/zeroed/current
+   basename "$prev" > /var/lib/zeroed-host/deployed
+   ZEROED_RELEASE_DIR="$prev" bash "$prev/ops/install.sh" --update                # its host files
+   ```
+   Then step 3.
+5. It is safe to deploy once the count the worker wrote reads `0`. `zeroed-update` then deploys on its own within 5 minutes; nothing else is needed. While a running worker reports open intents, the update waits for them to finish.
 
 ## Backups
 
