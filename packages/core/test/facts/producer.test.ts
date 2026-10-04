@@ -11,7 +11,7 @@ import {
   holdersKey, insidersKey, lpKey, migrationKey, mintKey, parseCandles, parseCreate, parseHolders, parseInsiders, parseLp, parseMigration, parseMint,
   parsePool, parseSim, parseSolUsd, parseXcheck, poolKey, simKey, streamKey, xcheckKey, type CandlesFact, type GateRequest,
 } from '../../src/gates/index.ts';
-import { FACT_KINDS, FactFeed, FactProducer, HOLDER_ABSTENTIONS_KEY, RAW, STREAMS, dailyChainVolume, insiderLinks, decimalToMicro, producerOptions } from '../../src/facts/index.ts';
+import { FACT_KINDS, FactFeed, FactProducer, GRADUATES_SEED_KEY, HOLDER_ABSTENTIONS_KEY, RAW, STREAMS, dailyChainVolume, insiderLinks, decimalToMicro, producerOptions } from '../../src/facts/index.ts';
 import { lamports, microUsd } from '../../src/units/index.ts';
 import { FEE_CONTEXT } from '../gates/world.ts';
 import { FIX, FactWorld, MINT, OPTIONS, POOL, RECORDS, atOf, chainTx, coverage, logEvents, offchain, slotNotice, txEvents } from './helpers.ts';
@@ -829,6 +829,23 @@ describe('graduate survival', () => {
       expect(new FactWorld().push(seed(built, mark + 30_000, mark + 29_999)).facts(GRADUATES_KEY)).toEqual([]);
       expect(new FactWorld().push(seed(built, mark - 1, mark + 30_000)).facts(GRADUATES_KEY)).toEqual([]);
       expect(items(new FactWorld().push(seed(built, mark, mark + 30_000)))).toEqual(built);
+    });
+
+    it('a graduate this process measures replaces its seeded entry: counted once, at the live value', () => {
+      const built = items(live())!;
+      // Saved before the restart with another reserve, released after the mark and before this process's own read.
+      const seeded = { ...built[0]!, reserveAfter: built[0]!.reserveAfter + 7n };
+      const w = new FactWorld().push(...lifecycle(), offchain(RAW.graduatesSeed, { source: 'persist', asOfMs: mark, items: [seeded] }, migrate.slot + 4400n, mark + 10_000), offchain(RAW.accounts(MINT), read, migrate.slot + 4500n, mark + 20_000));
+      expect(w.facts(GRADUATES_KEY).map((f) => (f.value as { items: Items }).items)).toEqual([[seeded], built]);
+    });
+
+    it('every seed\'s outcome is a fact: taken with its count, or refused with its reason', () => {
+      const built = items(live())!;
+      expect(new FactWorld().push(seed(built, mark + 30_000)).last(GRADUATES_SEED_KEY)).toEqual({ source: 'persist', atMs: mark + 30_000, accepted: true, added: 1, reason: null });
+      expect(new FactWorld().push(seed(built, mark + 30_000, mark + 29_999)).last(GRADUATES_SEED_KEY)).toEqual({ source: 'persist', atMs: mark + 29_999, accepted: false, added: 0, reason: `dated ${mark + 30_000}, after its release at ${mark + 29_999}` });
+      const bad = live().push(seed([{ ...built[0]!, reserveAfter: 1n }], mark + 30_000, mark + 40_000, 'data-1'));
+      expect(bad.last(GRADUATES_SEED_KEY)).toEqual({ source: 'data-1', atMs: mark + 40_000, accepted: false, added: 0, reason: `disagrees with the series on ${MINT}` });
+      expect(new FactWorld().push(offchain(RAW.graduatesSeed, { source: 'x' }, 1n, mark)).last(GRADUATES_SEED_KEY)).toEqual({ source: null, atMs: mark, accepted: false, added: 0, reason: 'malformed seed' });
     });
 
     it('a seed that disagrees with the series on any graduate is refused whole', () => {

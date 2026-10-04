@@ -105,7 +105,19 @@ describe('PERSIST-1 in the worker', () => {
     const back = h2.worker.strategy.persistable(0)?.graduates;
     expect(back?.items).toEqual(items);
     expect(survivalCondition({ obs: { provider: 'facts', slot: null, receivedAt: m2.now, quality: [] }, items: back!.items }, m2.now, P).ok).not.toBeNull();
+    // The seed's outcome is journaled and shown in /health.
+    expect(h2.worker.health().graduates_seed).toEqual({ source: 'persist', accepted: true, added: items.length, reason: null });
+    expect(journal(stateDir).filter((l) => l['boot'] === h2.worker.boot && l['kind'] === 'graduates_seed').map((l) => l['accepted'])).toEqual([true]);
     await h2.worker.stop();
+    // A host clock behind the save (a VM restored, NTP stepping back): the seed is dated after its release and refused,
+    // visibly, so the regime's unknown survival has a named cause.
+    const behind = makeWorker({ stateDir, timers: virtualTimers(saved.ok ? saved.asOf.receivedAt - 3_600_000 : 0), seed });
+    expect(behind.worker.health().graduates_seed).toBeUndefined();
+    await boot(behind);
+    expect(behind.worker.health().graduates_seed).toMatchObject({ source: 'persist', accepted: false, added: 0, reason: expect.stringMatching(/after its release/) });
+    expect(behind.logs.some((l) => l.startsWith('ALERT graduates seed refused: '))).toBe(true);
+    expect(journal(stateDir).filter((l) => l['boot'] === behind.worker.boot && l['kind'] === 'graduates_seed').map((l) => l['accepted'])).toEqual([false]);
+    await behind.worker.stop();
     // Replay parity: the series travels as a recorded raw read.
     const dir = join(stateDir, 'recorder', h2.worker.boot, 'days');
     const frames = readdirSync(dir).flatMap((d) => readdirSync(join(dir, d)).filter((f) => /^frames-/.test(f)).map((f) => zstdDecompressSync(readFileSync(join(dir, d, f))).toString('utf8')))

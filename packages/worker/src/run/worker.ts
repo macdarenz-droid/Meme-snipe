@@ -21,6 +21,7 @@ import { EXIT, LOOKUP_BOUNDS_MS, STATE_FILES, type FeedHealth, type Health, type
 import type { DryRunRecord } from '../dryrun/index.ts';
 import { NO_UNIVERSE, type SavedGraduates, resolveUniverse, sellOnlyReason } from '../engine/strategy.ts';
 import { RAW } from '../../../core/src/facts/raw.ts';
+import { GRADUATES_SEED_KEY } from '../../../core/src/facts/producer.ts';
 import { ACCOUNT_KEY, HALT_KEY, LiveStrategy, POOL_PREFIX, RESTORE_KEY, SEED_KEY, SEEDING, SHORTLIST, SNAPSHOT_PREFIX, SOL_PRICE_KEY, type SnapshotFact, type StrategyConfig, type StrategyDeps, TRIP_PREFIX, parseSnapshotFact, snapshotKey, snapshotWins } from '../engine/strategy.ts';
 import { SLOT_MS, watchTimingProblem } from './config.ts';
 import { PositionWatch, type WatchRead } from './watch.ts';
@@ -367,6 +368,7 @@ export class Worker {
     // FACTS-1b: the engine reads through core's FactFeed (engine-feed.ts); a replay of the recording uses the same.
     this.#facts = engineFeed(this.#feed, d.session.policy, (e) => {
       if (e.key.startsWith(POOL_PREFIX)) this.#setPool(e.key.slice(POOL_PREFIX.length), e.value);
+      if (e.key === GRADUATES_SEED_KEY) this.#graduatesSeed(e.value);
     });
     this.#engine = new Engine({ clock: this.#feed.clock, feed: this.#facts.feed, strategy: this.#strategy, runner: this.#world, seed, book: bookConfig });
     this.#deployerStore = new DeployerStore(c.stateDir);
@@ -456,6 +458,19 @@ export class Worker {
   #report(event: BookEvent, atMs: number = this.#d.timers.now()): string {
     const f = this.#feed.ingest('worker', { type: 'world', event }, { receivedAt: atMs });
     return `world#${seqId(f.seq)}`;
+  }
+
+  /** PERSIST-2: the last graduates seed's outcome, for /health. */
+  #seedOutcome: NonNullable<Health['graduates_seed']> | null = null;
+
+  /** PERSIST-2: a seed taken or refused is journaled and shown in /health; a refusal leaves survival unknown, so it is logged too. */
+  #graduatesSeed(v: unknown): void {
+    if (typeof v !== 'object' || v === null) return;
+    const o = v as Record<string, unknown>;
+    const out = { source: typeof o['source'] === 'string' ? o['source'] : null, accepted: o['accepted'] === true, added: typeof o['added'] === 'number' ? o['added'] : 0, reason: typeof o['reason'] === 'string' ? o['reason'] : null };
+    this.#seedOutcome = out;
+    this.#journal.write('graduates_seed', out);
+    if (!out.accepted) this.#d.log(`ALERT graduates seed refused: ${out.reason ?? 'no reason given'}; regime survival stays unknown until the series rebuilds.`);
   }
 
   #fact(key: string, value: unknown, atMs: number = this.#d.timers.now()): void {
@@ -1194,6 +1209,7 @@ export class Worker {
       rss_bytes: process.memoryUsage().rss, mode: 'paper', recorder: this.#d.config.recorder ? 'on' : 'off', simulation: this.#d.config.simulate ? 'on' : 'off',
       reconciled: this.#reconciled, exit_capable: this.#exitCapable(now), quota: ops.quota, lookups: ops.lookups, entries_halted: this.#halted.length > 0, halt_reasons: [...this.#halted], critical: [...(this.#watch?.critical ?? [])], feeds, journal_seq: this.#journal.seq, signing_key: false,
       ...(this.#d.strategy.s0Diagnostic === true ? { s0_diagnostic: S0_DIAGNOSTIC_PARTS } : {}),
+      ...(this.#seedOutcome === null ? {} : { graduates_seed: this.#seedOutcome }),
     };
     return h;
   }

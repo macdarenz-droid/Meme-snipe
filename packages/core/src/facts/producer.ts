@@ -38,6 +38,12 @@ import {
 /** Holder facts not formed, and scans that fell back after a refused mint-only scan, per UTC day and reason (the coverage report reads it; it never feeds a gate). */
 export const HOLDER_ABSTENTIONS_KEY = 'facts/abstentions:holders';
 
+/**
+ * PERSIST-2: the outcome of each graduates seed, `{ source, atMs, accepted, added, reason }` (no gate reads it; the
+ * worker journals it and shows it in /health, so a restart that leaves survival unknown is visible).
+ */
+export const GRADUATES_SEED_KEY = 'facts/graduates-seed';
+
 export interface FactWrite {
   readonly key: string;
   readonly value: unknown;
@@ -789,7 +795,8 @@ export class FactProducer {
       if (this.#volume.add(r)) put(CURVE_VOLUME_KEY, { obs: { provider, slot: null, receivedAt: at, quality: [] }, days: this.#volume.days() });
     } else if (key === RAW.graduatesSeed) {
       const r = parseGraduatesSeed(v);
-      if (r !== null) this.#seedGraduates(r, at);
+      if (r === null) put(GRADUATES_SEED_KEY, { source: null, atMs: at, accepted: false, added: 0, reason: 'malformed seed' });
+      else put(GRADUATES_SEED_KEY, { source: r.source, atMs: at, ...this.#seedGraduates(r, at) });
     } else if (key === RAW.exec) {
       const r = parseExecStats(v);
       if (r === null) return;
@@ -1055,23 +1062,25 @@ export class FactProducer {
    * the series already holds keeps its entry (a live measurement or an earlier seed); one that disagrees with it
    * refuses the whole seed, since two sources that differ on one graduate cannot both be trusted for the others.
    */
-  #seedGraduates(r: NonNullable<ReturnType<typeof parseGraduatesSeed>>, at: number): void {
-    if (r.asOfMs > at) return;
+  #seedGraduates(r: NonNullable<ReturnType<typeof parseGraduatesSeed>>, at: number): { accepted: boolean; added: number; reason: string | null } {
+    if (r.asOfMs > at) return { accepted: false, added: 0, reason: `dated ${r.asOfMs}, after its release at ${at}` };
     const have = new Map(this.#graduates.map((g) => [g.mint, g]));
     const add: GraduatesFact['items'][number][] = [];
     for (const i of r.items) {
       if (i.migratedAtMs + this.#o.survivalAfterMs > r.asOfMs) continue;
       const h = have.get(i.mint);
       if (h !== undefined) {
-        if (h.migratedAtMs !== i.migratedAtMs || h.reserveAfter !== i.reserveAfter) return;
+        if (h.migratedAtMs !== i.migratedAtMs || h.reserveAfter !== i.reserveAfter) return { accepted: false, added: 0, reason: `disagrees with the series on ${i.mint}` };
         continue;
       }
       have.set(i.mint, i);
       add.push({ mint: i.mint, migratedAtMs: i.migratedAtMs, reserveAfter: i.reserveAfter });
     }
-    if (add.length === 0) return;
-    this.#graduates.push(...add);
-    this.#graduatesChanged = true;
+    if (add.length > 0) {
+      this.#graduates.push(...add);
+      this.#graduatesChanged = true;
+    }
+    return { accepted: true, added: add.length, reason: null };
   }
 
   #survival(e: MarketEvent, put: (k: string, v: unknown) => void): void {

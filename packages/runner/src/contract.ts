@@ -131,6 +131,8 @@ export interface Health {
   readonly stub?: true;
   /** WORKER-1e: S0's diagnostic set (its parts) when the shakedown runs with it; absent otherwise. */
   readonly s0_diagnostic?: readonly string[];
+  /** PERSIST-2: the last graduates seed this boot (`accepted` false with its reason when refused); absent before any. */
+  readonly graduates_seed?: { readonly source: string | null; readonly accepted: boolean; readonly added: number; readonly reason: string | null };
 }
 
 export type JournalKind =
@@ -153,7 +155,9 @@ export type JournalKind =
    */
   | 'exit_capable'
   /** H15's round-trip simulation of a candidate (WORKER-1e: SIM-1's `SimRecord`, or `not-run` with its reason). Not item 4's `simulation`. */
-  | 'h15_sim';
+  | 'h15_sim'
+  /** PERSIST-2: a graduates seed taken or refused (`source`, `accepted`, `added`, `reason`). */
+  | 'graduates_seed';
 
 /**
  * The fields of a `recovered` line, typed so the worker writes what the runner reads (no cast can hide drift). A
