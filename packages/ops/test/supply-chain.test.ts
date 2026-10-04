@@ -74,7 +74,10 @@ const pnpm = (deps: Record<string, string>, withSettings: boolean) => {
   mkdirSync(app);
   writeFileSync(join(app, 'package.json'), JSON.stringify({ name: 'app', version: '0.0.0', private: true, dependencies: deps }));
   writeFileSync(join(app, 'pnpm-workspace.yaml'), `packages: []\n${withSettings ? repoSettings : ''}\n`);
-  const env = { ...process.env, NO_PROXY: '127.0.0.1', no_proxy: '127.0.0.1' };
+  // Under `pnpm test`, pnpm hands its own settings to children as npm_config_* variables: drop them, so only
+  // the project's pnpm-workspace.yaml decides.
+  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(npm|pnpm)_config_/i.test(k)));
+  Object.assign(env, { NO_PROXY: '127.0.0.1', no_proxy: '127.0.0.1' });
   const args = ['install', '--ignore-scripts', '--registry', registry, '--store-dir', join(dir, 'store'), '--config.confirmModulesPurge=false'];
   return new Promise<{ ok: boolean; out: string; lock: string }>((done) =>
     execFile('pnpm', args, { cwd: app, env, encoding: 'utf8', timeout: 60_000 }, (e, out, err) => {
