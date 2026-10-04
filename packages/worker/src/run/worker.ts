@@ -104,6 +104,8 @@ export interface WorkerDeps {
   readonly strategy: StrategyConfig;
   /** Test seam: replaces the strategy's position marking (marks.ts `markedHistory`). */
   readonly markedHistory?: StrategyDeps['markedHistory'];
+  /** Test seam: replaces the strategy's entry-size probe result (`StrategyDeps.sizeProbe`). */
+  readonly sizeProbe?: StrategyDeps['sizeProbe'];
   readonly scenario: FillScenario;
   readonly network: FillNetwork;
   readonly timers: Timers;
@@ -348,7 +350,7 @@ export class Worker {
       onFrame: (f) => this.#onFrame(f),
       onRelease: (e, r) => this.#onRelease(e, r),
     });
-    this.#strategy = new LiveStrategy({ session: d.session, rugs: d.rugs, config: d.strategy, ...(d.markedHistory === undefined ? {} : { markedHistory: d.markedHistory }) });
+    this.#strategy = new LiveStrategy({ session: d.session, rugs: d.rugs, config: d.strategy, ...(d.markedHistory === undefined ? {} : { markedHistory: d.markedHistory }), ...(d.sizeProbe === undefined ? {} : { sizeProbe: d.sizeProbe }) });
     const bookConfig = { maxOpenPositions: d.session.policy.positions.maxOpen };
     const stored = this.#ledger.storedBookEvents(bookConfig);
     // RUN-1c: trades open or in flight when the previous process stopped writing, kept until a full start journals them.

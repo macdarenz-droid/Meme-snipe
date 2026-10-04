@@ -14,6 +14,7 @@ import { BASE_VAULT, FEE_CONTEXT, POOL, QUOTE_VAULT } from '../../core/test/gate
 import { LiveFacts, type LiveReaders } from '../src/facts/index.ts';
 import { controlFile } from '../src/run/state.ts';
 import { accountFile } from '../src/run/account.ts';
+import type { WorkerDeps } from '../src/run/worker.ts';
 import { blockNetwork } from './helpers.ts';
 import { MINT, SOL_PRICE, T, dueTimers, makeWorker, passingMarket, tempState } from './worker-harness.ts';
 
@@ -52,14 +53,14 @@ const simulating = (asked: bigint[]) => new LiveFacts({
 
 type Line = { kind: string; action?: string; reasons?: string[]; gate_reasons?: { gate: string; code: string; detail?: string }[] };
 
-const run = async (stepUp: boolean, port: number) => {
+const run = async (stepUp: boolean, port: number, sizeProbe?: WorkerDeps['sizeProbe']) => {
   const stateDir = tempState();
   controlFile(stateDir).write({ paused: false, pausedAtMs: null, latches: { ...NO_LATCHES, sizeStepUpApproved: stepUp } });
   // A wallet that has grown past the bankroll (about $23 of SOL on a $20 bankroll, its setup paid): above every
   // high-water mark, so no drawdown returns the size to the minimum and the owner's step-up applies.
   accountFile(stateDir).write({ openedAtMs: T - 20 * DAY, openingEquity: TRIAL_POLICY.capital.bankroll, walletLamports: 153_333_333n, trades: [], entries: [], oneTimePaid: true });
   const asked: bigint[] = [];
-  const h = makeWorker({ stateDir, timers: dueTimers(T - 16 * DAY), facts: [simulating(asked)], config: { ZEROED_HEALTH_ADDR: `127.0.0.1:${port}`, ZEROED_API_ADDR: `127.0.0.1:${port + 1}` } });
+  const h = makeWorker({ stateDir, timers: dueTimers(T - 16 * DAY), facts: [simulating(asked)], ...(sizeProbe === undefined ? {} : { sizeProbe }), config: { ZEROED_HEALTH_ADDR: `127.0.0.1:${port}`, ZEROED_API_ADDR: `127.0.0.1:${port + 1}` } });
   let started: unknown = null;
   void h.worker.start().then((r) => void (started = r));
   for (let k = 0; k < 200 && started === null; k++) {
@@ -90,6 +91,19 @@ describe('size step-up: the gates and the simulation judge the size risk uses', 
     expect(spend).toBeGreaterThan(MIN_SPEND);
     // H15 was judged on a simulation at the very size risk approved.
     expect(asked).toContain(spend);
+  }, 120_000);
+
+  it('a size the probe did not settle on is refused as a size mismatch after the gates, and nothing is booked', async () => {
+    // The probe's answer forced back to q_min while risk, with the latch set, sizes above it: the gates and H15 judge
+    // one size, risk another (as when a size does not settle in three rounds). The guard must refuse it.
+    const seen: bigint[] = [];
+    const { h, decisions } = await run(true, 19018, (sized) => (seen.push(sized.spend), { spend: MIN_SPEND, notional: TRIAL_POLICY.capital.minNotional }));
+    // The real probe had sized above q_min, so the forced answer differs from risk's own.
+    expect(seen.some((s) => s > MIN_SPEND)).toBe(true);
+    const codes = decisions.filter((l) => l.action === 'reject').flatMap((l) => (l.gate_reasons ?? []).map((g) => g.code));
+    expect(codes).toContain('size-mismatch');
+    expect(Object.values(h.worker.book.intents).filter((i) => i.intent.purpose === 'entry')).toEqual([]);
+    expect(Object.values(h.worker.book.positions)).toEqual([]);
   }, 120_000);
 
   it('without the latch, the coin is entered at the minimum, as before', async () => {

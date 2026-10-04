@@ -279,6 +279,8 @@ export interface StrategyDeps {
   readonly config: StrategyConfig;
   /** Replaces marks.ts `markedHistory` (tests inject a failure; production never sets it). */
   readonly markedHistory?: typeof markedHistory;
+  /** Test seam: replaces the size `#riskSize` settled on (tests force the probe and risk to disagree); production never sets it. */
+  readonly sizeProbe?: (sized: { readonly spend: Lamports; readonly notional: MicroUsd }) => { readonly spend: Lamports; readonly notional: MicroUsd };
 }
 
 const NORMAL = { mayhemMode: false, transferFee: false, transferHook: false } as const;
@@ -1553,7 +1555,8 @@ export class LiveStrategy implements Strategy {
     // AUDIT-RM4 F3: the gates and H15's simulation judge the size risk will use. At q_min unless the owner approved the
     // step-up and no drawdown returns it to the minimum; then the size risk settles on, found before the gates run.
     const minSpend = microUsdToLamports(policy.capital.minNotional, sol.value, 'ceil');
-    const sized = this.#riskSize(cand, ctx, sol, m, quoter, minSpend);
+    const probed = this.#riskSize(cand, ctx, sol, m, quoter, minSpend);
+    const sized = this.#d.sizeProbe === undefined ? probed : this.#d.sizeProbe(probed);
     const notional = sized.notional;
     const spend = sized.spend;
     cand.spend = spend;
