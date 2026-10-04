@@ -302,6 +302,7 @@ const health = (): Health => {
     lookups: { counts: lookupCounts },
     entries_halted: halted,
     halt_reasons: haltReasons(now),
+    critical: [],
     feeds: feedHealth,
     journal_seq: seq,
     signing_key: false,

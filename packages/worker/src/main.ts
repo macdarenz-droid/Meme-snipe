@@ -8,9 +8,9 @@ import { EXIT } from '../../runner/src/contract.ts';
 import { DryRunRpc } from './dryrun/index.ts';
 import { liveFacts } from './facts/index.ts';
 import { COINBASE_PUBLIC, GITHUB_DOWNLOADS, GITHUB_RELEASES, GOPLUS_FREE } from './scheduler/index.ts';
-import { fetchHttp, globalSocketFactory, heliusRpcUrl } from './providers/index.ts';
+import { DEFAULT_LIVE_FEED, fetchHttp, globalSocketFactory, heliusRpcUrl } from './providers/index.ts';
 import { systemTimers } from './scheduler/index.ts';
-import { parseConfig } from './run/config.ts';
+import { SLOT_MS, parseConfig, watchTimingProblem } from './run/config.ts';
 import { liveSimulator, provisionalCalibration } from './run/live-sim.ts';
 import { PAPER_SCENARIO, strategyConfig } from './run/settings.ts';
 import { CreditBook, FEED_COMMITMENTS, LiveProviders, PUMP_CREATE_AUTHORITY } from './run/sources.ts';
@@ -42,6 +42,11 @@ const http = liveHttp(rpcCut, fetchHttp);
 const providerHttp = http.providers;
 const providers = new LiveProviders({ tradeStreams: false, secrets: environment.secrets, http: providerHttp, factory: globalSocketFactory, credits });
 const policy = session.policy;
+const timing = watchTimingProblem(config.watch, policy.gates.maxQuoteAgeMs, DEFAULT_LIVE_FEED.horizonSlots * SLOT_MS);
+if (timing !== null) {
+  fail(timing);
+  process.exit(EXIT.config);
+}
 const rpc = new DryRunRpc({ url: () => heliusRpcUrl(environment.secrets), http: providerHttp, scheduler: providers.helius, timeoutMs: 10_000 });
 let worker: Worker | null = null;
 const simulate = liveSimulator({
@@ -77,6 +82,8 @@ try {
     facts: [liveFacts({ policy, secrets: environment.secrets, http: http.facts, goplus: credits.scheduler(GOPLUS_FREE), coinbase: credits.scheduler(COINBASE_PUBLIC), github: { api: credits.scheduler(GITHUB_RELEASES), downloads: credits.scheduler(GITHUB_DOWNLOADS), stateDir: config.stateDir } })],
     schedulers: { helius: providers.helius, alchemy: providers.alchemy, jupiter: providers.jupiter, rugcheck: providers.rugcheck },
     exposureRpc: providers.seedRpc(),
+    watchRead: providers.watchRead(),
+    watchHalted: () => providers.alchemy.halted,
     delayProbe: { confirmed: (sig) => providers.confirmed(sig), via: `logs:${PUMP_CREATE_AUTHORITY}`, everyMs: 60_000 },
     commitments: FEED_COMMITMENTS,
     heartbeat: { http: http.heartbeat, key: environment.host.heartbeat_hmac_key, ownerChatId: environment.host.telegram_chat_id },

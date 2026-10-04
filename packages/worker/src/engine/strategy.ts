@@ -70,6 +70,38 @@ export interface CandidateReason {
 /** `{ halted, reasons }`: entries stop while a critical feed is down or stale (§18); exits and monitoring go on. */
 export const HALT_KEY = 'worker:halt';
 export const feesKey = (mint: string): string => `worker:fees:${mint}`;
+/**
+ * `{ pool, slot, atMs, state, ctx }`: WATCH-1's coherent snapshot of a held position's pool (run/snapshot.ts), read by
+ * a second path when the feed's pool state went stale. When newer than the pool fact, it is the whole market: its
+ * reserves and its fee context together, never mixed with the feed's.
+ */
+export const SNAPSHOT_PREFIX = 'worker:snapshot:';
+export const snapshotKey = (mint: string): string => `${SNAPSHOT_PREFIX}${mint}`;
+
+export interface SnapshotFact {
+  readonly pool: string;
+  readonly slot: bigint;
+  readonly atMs: number;
+  readonly state: PoolState;
+  readonly ctx: PoolFeeContext;
+}
+
+/**
+ * Whether a snapshot is newer than the pool fact (null: none). By slot when both carry one (the chain's own order),
+ * the receipt time only breaking a tie or standing in when the pool fact has no slot.
+ */
+export const snapshotWins = (snap: SnapshotFact, pool: { readonly slot: bigint | null; readonly receivedAt: number } | null): boolean => {
+  if (pool === null) return true;
+  if (pool.slot !== null && snap.slot !== pool.slot) return snap.slot > pool.slot;
+  return snap.atMs > pool.receivedAt;
+};
+
+export const parseSnapshotFact = (v: unknown): SnapshotFact | null => {
+  if (!isObj(v) || typeof v['pool'] !== 'string' || typeof v['slot'] !== 'bigint' || typeof v['atMs'] !== 'number' || !isObj(v['state']) || !isObj(v['ctx'])) return null;
+  const st = v['state'];
+  if (typeof st['baseReserve'] !== 'bigint' || typeof st['quoteVault'] !== 'bigint' || typeof st['virtualQuoteReserves'] !== 'bigint') return null;
+  return v as unknown as SnapshotFact;
+};
 /** Machine-read reason on `approve_risk`: the reservation request the worker sends to the ledger. */
 export const RESERVE_PREFIX = 'reserve ';
 /** REC-1: a rejected candidate's pool not watched past its window because `maxTails` were already watched. */
@@ -614,8 +646,15 @@ export class LiveStrategy implements Strategy {
   /** The pool market of a mint as of now: the gate pool fact and the fee context. */
   #market(ctx: StrategyContext, mint: string): Market | string {
     const p = ctx.lookup(poolKey(mint));
+    const sr = ctx.lookup(snapshotKey(mint));
+    const snap = sr.ok ? parseSnapshotFact(unwrap(sr.value)) : null;
+    const pool = p.ok ? parsePool(p.value) : null;
+    // WATCH-1: a snapshot newer than the pool fact is the market, reserves and fee context alike.
+    if (snap !== null && snapshotWins(snap, pool === null ? null : pool.obs)) {
+      this.#notePool(mint, snap.pool);
+      return { pool: snap.state, ctx: snap.ctx, atMs: snap.atMs, address: snap.pool };
+    }
     if (!p.ok) return 'pool state unknown';
-    const pool = parsePool(p.value);
     if (pool === null) return 'pool state malformed';
     // A flagged pool fact (POS-1: the swap stream lost continuity) is never priced from, whatever its age.
     const flags = pool.obs.quality.filter((q) => q !== 'backfilled' && q !== 'deduplicated');
@@ -633,8 +672,9 @@ export class LiveStrategy implements Strategy {
 
   /** Price bars per mint: the spot price (effective quote per base, PRICE_SCALE) at each pool update. */
   #track(e: MarketEvent, ctx: StrategyContext): void {
-    if (!e.key.startsWith(POOL_PREFIX)) return;
-    const mint = e.key.slice(POOL_PREFIX.length);
+    const prefix = e.key.startsWith(POOL_PREFIX) ? POOL_PREFIX : e.key.startsWith(SNAPSHOT_PREFIX) ? SNAPSHOT_PREFIX : null;
+    if (prefix === null) return;
+    const mint = e.key.slice(prefix.length);
     const held = [...this.#exits.keys()].filter((pid) => this.#mintOf(pid) === mint);
     if (!this.#cands.has(mint) && held.length === 0) return;
     const m = this.#market(ctx, mint);
