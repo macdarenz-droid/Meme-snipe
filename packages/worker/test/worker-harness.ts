@@ -278,7 +278,7 @@ export class Market {
     const spend = microUsdToLamports(TRIAL_POLICY.capital.minNotional, SOL_PRICE as MicroUsd, 'ceil');
     const q = roundTrip(spend);
     if (!q.ok) throw new Error('the passing pool must quote');
-    this.fact(simKey(MINT), { ...now(simKey(MINT)), spend, paid: q.trade.paid, proceeds: q.trade.proceeds });
+    this.fact(simKey(MINT), { ...now(simKey(MINT)), spend, paid: q.trade.paid, proceeds: q.trade.immediateProceeds });
     const stream = facts.get(streamKey('chain'))!.value as { obs: FactObs; gapFreeSince: bigint };
     this.fact(streamKey('chain'), { ...stream, obs: { ...stream.obs, slot, receivedAt: this.now - 50 } });
   }
