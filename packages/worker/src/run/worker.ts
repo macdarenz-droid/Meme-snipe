@@ -41,7 +41,7 @@ import type { FactContext, FactSource } from './facts.ts';
 import { engineFeed, type EngineFeed } from './engine-feed.ts';
 import { startHealthServer } from './health.ts';
 import { type HeartbeatPosition, heartbeatBody, sendHeartbeat } from './heartbeat.ts';
-import { Summarizer, nextSummaryDelay } from './summary.ts';
+import { Summarizer, SummaryClock } from './summary.ts';
 import { jsonText } from './json.ts';
 import { Journal } from './journal.ts';
 import { type PaperMarket, type PaperState, PaperWorld, type SimLeg } from './paper-world.ts';
@@ -339,7 +339,7 @@ export class Worker {
   #beatSeq = 0;
   #loop: ReturnType<Timers['setTimeout']> | null = null;
   #beat: ReturnType<Timers['setTimeout']> | null = null;
-  #summaryTimer: ReturnType<Timers['setTimeout']> | null = null;
+  #summaryClock: SummaryClock | null = null;
   #summary: Summarizer | null = null;
   #server: Server | null = null;
   #api: Server | null = null;
@@ -1518,19 +1518,16 @@ export class Worker {
   }
 
   /**
-   * OPS-SUMMARY: the daily summary, posted every `summaryMs` and just after Melbourne midnight. Only with a watchdog
-   * and its key; it runs beside the loop and never touches the engine, the ledger or the journal (it only reads it).
+   * OPS-SUMMARY: the daily summary, posted on the Melbourne wall-clock slots of `summaryMs`, just after Melbourne
+   * midnight, and once shortly after this (reconciled) start (SUMMARY-CLOCK). Only with a watchdog and its key; it runs
+   * beside the loop and never touches the engine, the ledger or the journal (it only reads it).
    */
   #startSummary(): void {
     const d = this.#d;
-    if (this.#summarizer() === null) return;
-    const run = (): void => {
-      if (this.#stopping) return;
-      void this.summaryNow().finally(() => {
-        if (!this.#stopping) this.#summaryTimer = d.timers.setTimeout(run, nextSummaryDelay(d.timers.now(), d.config.summaryMs));
-      });
-    };
-    this.#summaryTimer = d.timers.setTimeout(run, nextSummaryDelay(d.timers.now(), d.config.summaryMs));
+    const s = this.#summarizer();
+    if (s === null || this.#stopping) return;
+    this.#summaryClock = new SummaryClock({ timers: d.timers, everyMs: d.config.summaryMs, tick: () => this.summaryNow(), lastPostedMs: () => s.lastPostedMs });
+    this.#summaryClock.start();
   }
 
   /** The summarizer, made on first use; null without a watchdog or its key. */
@@ -1602,7 +1599,7 @@ export class Worker {
     const d = this.#d;
     if (this.#loop !== null) d.timers.clearTimeout(this.#loop);
     if (this.#beat !== null) d.timers.clearTimeout(this.#beat);
-    if (this.#summaryTimer !== null) d.timers.clearTimeout(this.#summaryTimer);
+    this.#summaryClock?.stop();
     for (const s of this.#sources) s.stop();
     this.#probe?.stop();
     this.#watch?.stop();
@@ -1640,7 +1637,7 @@ export class Worker {
     this.#world.stop();
     if (this.#loop !== null) this.#d.timers.clearTimeout(this.#loop);
     if (this.#beat !== null) this.#d.timers.clearTimeout(this.#beat);
-    if (this.#summaryTimer !== null) this.#d.timers.clearTimeout(this.#summaryTimer);
+    this.#summaryClock?.stop();
     for (const s of this.#sources) s.stop();
     this.#watch?.stop();
     this.#ledger.close();

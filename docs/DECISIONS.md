@@ -1740,6 +1740,16 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
 
   The worker codes or drops anything that fails (`fits`) before building the summary. The watchdog refuses the body if either guard fails. Tests plant an age key, GitHub tokens, IPv4 and IPv6 addresses, a tailnet name, URLs, hostnames, a Telegram token, a UUID key, a 64-byte secret, an email address, a PEM header and a chat id in every free-text field on both sides. Residual: an amount field can hold any digits, but the worker fills amounts only from its own numbers.
 - **Risk recorded, fixed separately (KEY-ROTATE-SAFE, next card):** a Deploy run while `DEPLOY_CODE` holds an already-used code gives the watchdog a new `HEARTBEAT_HMAC_KEY` (`publish.sh` deploys and sets it before pickup). The server has wiped its code (`zeroed-pair`, `shred -u "$DEPLOY_CODE_FILE"`) and exits before downloading, so it keeps the old key. Every heartbeat then gets 401: a stale-heartbeat alert fires and `/pause` stops reaching the worker. It does not occur today: tonight's Deploy log says "No DEPLOY_CODE secret: code update only, no keys sent." The fix rotates the watchdog key only after pickup is confirmed, and keeps or restores the old key on a timeout.
+- **2026-10-05 · When it posts (SUMMARY-CLOCK, supervisor card).**
+  - **The bug.** The timer started at each start, 30 minutes later, and nothing about it was kept on disk. A worker restarting more often than every 30 minutes never posted (5 Oct: deploy 5:41, a restart about 6:27, nothing in the reports).
+  - **The fix.** `SummaryClock` posts on the Melbourne wall-clock slots of `ZEROED_SUMMARY_MS` (:00 and :30, one minute after) and just after Melbourne midnight. It also posts once 3 minutes after each reconciled start, unless the watchdog took a post less than 10 minutes before. That moment is `last_posted_ms` in `summary.json`, the bot's own state (supervisor-approved). The midnight final is unchanged: the day that ended is posted `final` until the watchdog takes it. A process that starts at midnight itself posts the final on the 00:01 slot.
+  - **Evidence.** `packages/worker/test/summary.test.ts` "SUMMARY-CLOCK" runs processes on one manual clock and one state directory:
+    - restarts every 20 minutes for 6 hours post on all 12 half-hours;
+    - restarts every 5 seconds post on every half-hour and never twice within 10 minutes;
+    - restarts every 4 minutes post 3 minutes in only after a 10-minute quiet;
+    - midnight gives exactly one final.
+
+    All four fail on the old schedule (hand mutant M1). M2 (no 10-minute check), M3 (`last_posted_ms` not kept) and M4 (no midnight post) are each killed.
 
 ## Growing files read whole (GROWTH-SWEEP, `runner/src/lines.ts`, `run/deployer-store.ts`, `run/booked.ts`, `runner/src/runner.ts`)
 
