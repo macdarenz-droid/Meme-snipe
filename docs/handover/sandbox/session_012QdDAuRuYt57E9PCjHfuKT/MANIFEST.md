@@ -9,16 +9,16 @@ Everything this session produced outside the repo checkout, under `/tmp/claude-0
 
 | Path | Size (bytes) | sha256 | Status |
 |---|---|---|---|
-| `-home-user-Meme-snipe/21f75bfa-2b13-5313-a3e3-4a806f3da55e/tasks/b1ftbew11.output` | 0 | `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` | committed |
-| `-home-user-Meme-snipe/21f75bfa-2b13-5313-a3e3-4a806f3da55e/tasks/bb6gvk3xn.output` | 256 | `eeb7c4b187159e299b846955fdfb768f2d8c39c29029be0be52f6e18c85ab95a` | committed |
-| `-home-user-Meme-snipe/21f75bfa-2b13-5313-a3e3-4a806f3da55e/tasks/bbav1uch3.output` | 114 | `8f4100c30b03bcb2a2e2a8c23d7f5afc6eb89baedbdaf50403f377cee32529cd` | committed |
-| `-home-user-Meme-snipe/21f75bfa-2b13-5313-a3e3-4a806f3da55e/tasks/bdgrubegt.output` | 657 | `44c98c3e2d0c09d81c7125e408e8aaae731d3b19e2576a1601a020dbe6bfcf73` | committed |
-| `-home-user-Meme-snipe/21f75bfa-2b13-5313-a3e3-4a806f3da55e/tasks/bgscz5uge.output` | 305 | `4a0fe25caf198cc40841f1bc603e08b39ce07719fc04321e4dc56850cfdf8121` | committed |
-| `-home-user-Meme-snipe/21f75bfa-2b13-5313-a3e3-4a806f3da55e/tasks/bhat42ahf.output` | 12 | `37f73743db78702df5e22b50771ced78fb28e2c842fa6cd2252c5d4f9b6f06f5` | committed |
-| `-home-user-Meme-snipe/21f75bfa-2b13-5313-a3e3-4a806f3da55e/tasks/bok1ny1gz.output` | 786 | `b423115cb0669b2653cd0505a94985ba37836cb58cea6daa1373a04e66041cb8` | committed |
-| `-home-user-Meme-snipe/21f75bfa-2b13-5313-a3e3-4a806f3da55e/tasks/bskomyj9z.output` | 50 | `3bccf1676bfae9bb51bcfde25cc33ab7bc08c4ea8ac3af7dad4081238b3c92cc` | committed |
-| `-home-user-Meme-snipe/21f75bfa-2b13-5313-a3e3-4a806f3da55e/tasks/bvrsbmea6.output` | 24 | `98a76774ed1f67045446490cf3d0cbdee89fbb3bcc588cdbd6d8bdedb2802d82` | committed |
-| `-home-user-Meme-snipe/21f75bfa-2b13-5313-a3e3-4a806f3da55e/tasks/bz8jo1az7.output` | 202 | `6a9e56bff90fe49acff72e0f8d463cbd31100cd50c49819b863abf728aaf6894` | committed |
+| `-home-user-Meme-snipe/21f75bfa-2b13-5313-a3e3-4a806f3da55e/tasks/b1ftbew11.output` | 0 | `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` | committed as `tasks/b1ftbew11.output` |
+| `-home-user-Meme-snipe/21f75bfa-2b13-5313-a3e3-4a806f3da55e/tasks/bb6gvk3xn.output` | 256 | `eeb7c4b187159e299b846955fdfb768f2d8c39c29029be0be52f6e18c85ab95a` | committed as `tasks/bb6gvk3xn.output` |
+| `-home-user-Meme-snipe/21f75bfa-2b13-5313-a3e3-4a806f3da55e/tasks/bbav1uch3.output` | 114 | `8f4100c30b03bcb2a2e2a8c23d7f5afc6eb89baedbdaf50403f377cee32529cd` | committed as `tasks/bbav1uch3.output` |
+| `-home-user-Meme-snipe/21f75bfa-2b13-5313-a3e3-4a806f3da55e/tasks/bdgrubegt.output` | 657 | `44c98c3e2d0c09d81c7125e408e8aaae731d3b19e2576a1601a020dbe6bfcf73` | committed as `tasks/bdgrubegt.output` |
+| `-home-user-Meme-snipe/21f75bfa-2b13-5313-a3e3-4a806f3da55e/tasks/bgscz5uge.output` | 305 | `4a0fe25caf198cc40841f1bc603e08b39ce07719fc04321e4dc56850cfdf8121` | committed as `tasks/bgscz5uge.output` |
+| `-home-user-Meme-snipe/21f75bfa-2b13-5313-a3e3-4a806f3da55e/tasks/bhat42ahf.output` | 12 | `37f73743db78702df5e22b50771ced78fb28e2c842fa6cd2252c5d4f9b6f06f5` | committed as `tasks/bhat42ahf.output` |
+| `-home-user-Meme-snipe/21f75bfa-2b13-5313-a3e3-4a806f3da55e/tasks/bok1ny1gz.output` | 786 | `b423115cb0669b2653cd0505a94985ba37836cb58cea6daa1373a04e66041cb8` | committed as `tasks/bok1ny1gz.output` |
+| `-home-user-Meme-snipe/21f75bfa-2b13-5313-a3e3-4a806f3da55e/tasks/bskomyj9z.output` | 50 | `3bccf1676bfae9bb51bcfde25cc33ab7bc08c4ea8ac3af7dad4081238b3c92cc` | committed as `tasks/bskomyj9z.output` |
+| `-home-user-Meme-snipe/21f75bfa-2b13-5313-a3e3-4a806f3da55e/tasks/bvrsbmea6.output` | 24 | `98a76774ed1f67045446490cf3d0cbdee89fbb3bcc588cdbd6d8bdedb2802d82` | committed as `tasks/bvrsbmea6.output` |
+| `-home-user-Meme-snipe/21f75bfa-2b13-5313-a3e3-4a806f3da55e/tasks/bz8jo1az7.output` | 202 | `6a9e56bff90fe49acff72e0f8d463cbd31100cd50c49819b863abf728aaf6894` | committed as `tasks/bz8jo1az7.output` |
 | `bak` | 13292 | `3bb860ba5485504d7b84e1da9ea223d65a5cba8e9d6a8d72f79fa95c6ff397d5` | committed |
 | `bak6` | 83886 | `3f54ac054d2e46cf62c18deb5ef478060ee86c95b53e5f5a4661a598be9e99a4` | committed |
 | `bash-edit-diff/14773755366104191454-1901614831328433311-a48ff0e4af05b048/HEAD` | 21 | `28d25bf82af4c0e2b72f50959b2beb859e3e60b9630a5e8c603dad4ddb2b6e80` | excluded: Claude Code tool-internal git cache, not my work |
