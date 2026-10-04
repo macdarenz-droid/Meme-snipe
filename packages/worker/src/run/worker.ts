@@ -226,6 +226,9 @@ interface FeedState {
 }
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+/** Refused API commands journaled one by one per minute; more are counted on one line. */
+export const COMMAND_LINES_PER_MINUTE = 10;
+const errorText = (e: unknown): string => (e instanceof Error ? `${e.name}: ${e.message}` : 'error');
 /**
  * The most saved creates a start seeds the index with when no saved index restores (WORKER-GROW): about three days of
  * creates, which a boot holds well under MemoryMax (measured: docs/DECISIONS.md, WORKER-GROW G4b). Past it the seed is refused whole.
@@ -273,7 +276,14 @@ export class Worker {
   readonly #boot: string;
   readonly #started: number;
   readonly #journal: Journal;
-  readonly #recorder: Recorder | null;
+  #recorder: Recorder | null = null;
+  /**
+   * The recorder's first failure (a full disk, ENOSPC): recording stops, entries halt for the rest of the process and
+   * the alert goes up; exits and the rest of the worker go on. Never a crash, so a disk that stays full is no crash loop.
+   */
+  #recorderFault: string | null = null;
+  /** API command refusals journaled in the current minute, and those counted only (see `#commandRefused`). */
+  readonly #refusals = { since: -Infinity, written: 0, dropped: 0 };
   readonly #ledger: Ledger;
   readonly #control: StateFile<Control>;
   readonly #exitsFile: ReturnType<typeof exitsFile>;
@@ -370,6 +380,14 @@ export class Worker {
   readonly #funnel = { fromMs: 0, stage: new Map<string, { day: string; stage: number; check: string | null }>(), enteredByDay: new Map<string, number>() };
   readonly #symbols = new Map<string, string>();
   #stopping = false;
+  /** The code of the stop under way (the first `stop` call's). */
+  #stopCode: number = EXIT.clean;
+  #stoppingNow: (code: number) => void = () => {};
+  #stoppedNow: (code: number) => void = () => {};
+  /** Resolves with the stop's code when a stop begins (a signal, a refused start or a loop crash). */
+  readonly stopping = new Promise<number>((r) => (this.#stoppingNow = r));
+  /** Resolves with the stop's code once the stop has finished: the entry exits with it (a loop crash exits 1). */
+  readonly stopped = new Promise<number>((r) => (this.#stoppedNow = r));
   #sources: readonly FeedSource[] = [];
 
   constructor(d: WorkerDeps) {
@@ -388,11 +406,19 @@ export class Worker {
     const seed = `paper:${this.#boot}`;
 
     const recRoot = join(c.stateDir, STATE_FILES.recorder);
-    mkdirSync(recRoot, { recursive: true });
-    for (const b of sealLeftovers(recRoot, this.#boot)) d.log(`Recorder: sealed files of boot ${b} left by a stop without a clean stop.`);
-    this.#recorder = c.recorder ? new Recorder({ root: recRoot, boot: this.#boot, gitSha: c.gitSha, rotateBytes: 64 * 1024 * 1024, ...(d.commitments === undefined ? {} : { commitments: d.commitments }) }) : null;
-    const rec = this.#recorder;
-    this.#probe = d.delayProbe === undefined || rec === null ? null : new DelayProbe({ timers: d.timers, confirmed: d.delayProbe.confirmed, via: d.delayProbe.via, everyMs: d.delayProbe.everyMs, record: (row, at) => rec.delay(row, at) });
+    try {
+      mkdirSync(recRoot, { recursive: true });
+      for (const b of sealLeftovers(recRoot, this.#boot)) d.log(`Recorder: sealed files of boot ${b} left by a stop without a clean stop.`);
+      this.#recorder = c.recorder ? new Recorder({ root: recRoot, boot: this.#boot, gitSha: c.gitSha, rotateBytes: 64 * 1024 * 1024, ...(d.commitments === undefined ? {} : { commitments: d.commitments }) }) : null;
+    } catch (e) {
+      if (c.recorder) this.#recorderFailed(e);
+      else d.log(`Recorder: leftovers not sealed: ${errorText(e)}.`);
+    }
+    this.#probe = d.delayProbe === undefined || this.#recorder === null ? null : new DelayProbe({
+      timers: d.timers, confirmed: d.delayProbe.confirmed, via: d.delayProbe.via, everyMs: d.delayProbe.everyMs,
+      record: (row, at) => this.#record((r) => r.delay(row, at)),
+      onError: (e) => d.log(`Delay probe: sample not recorded: ${errorText(e)}.`),
+    });
 
     // RUN-1d: no ledger at all means a cold start (host lost with no backup): what comes back comes from the chain. A
     // paper position is not on chain, so nothing does. Marked until a full start journals its `recovered` line.
@@ -534,7 +560,7 @@ export class Worker {
         }
       }
       const ref: SavedStateRef = { file: PERSIST_FILE, sha256: fileSha256(loadFrom), version: restored.version };
-      if (loadFrom !== statePath) this.#recorder?.attach(PERSIST_FILE, ref.sha256, statSync(loadFrom).size);
+      if (loadFrom !== statePath) this.#record((r) => r.attach(PERSIST_FILE, ref.sha256, statSync(loadFrom).size));
       this.#restored = { asOf: restored.asOf, ref };
       this.#handoff = { ref, index: restored.index, labeller: restored.labeller };
       this.#saved = { creates: [], rugs: [], coverage: restored.coverage, last: { slot: restored.asOf.slot, ms: restored.asOf.receivedAt } };
@@ -567,6 +593,8 @@ export class Worker {
         this.#checkHalt(this.#d.timers.now());
       },
       reserved: (r) => this.#account.reserved(r.mint, r.atMs),
+      // The recorder fault refuses entries from the moment it is found, ahead of its halt fact (WORKER-CRASH review B1).
+      entriesBlocked: () => this.#recorderFault,
       filled: (r) => {
         // A fill re-booked from its held journal line carries that line's rate (PAPER-1); otherwise the price now.
         this.#account.filled(r, r.solUsd !== undefined ? r.solUsd : this.#solPrice, this.#legs());
@@ -657,6 +685,62 @@ export class Worker {
     this.#feed.ingest('worker', { type: 'fact', key, value }, { receivedAt: atMs });
   }
 
+  /**
+   * A refused API command, journaled; at most COMMAND_LINES_PER_MINUTE lines a minute, so a client on the tailnet cannot
+   * grow the journal without bound. The refusals past that are counted on one line when the next minute's first comes.
+   */
+  #commandRefused(command: string, auth: string | null): void {
+    const now = this.#d.timers.now();
+    const r = this.#refusals;
+    if (now - r.since >= 60_000) {
+      this.#countRefusals();
+      r.since = now;
+      r.written = 0;
+    }
+    if (r.written >= COMMAND_LINES_PER_MINUTE) {
+      r.dropped++;
+      return;
+    }
+    r.written++;
+    this.#journal.write('decision', { action: 'command_refused', reasons: [`command ${command.slice(0, 32)} refused`, auth === null ? 'unknown command' : `needs ${auth}`] });
+  }
+
+  /** The refusals counted but not journaled, on one line; also at the heartbeat once the minute is over (a flood that stopped). */
+  #countRefusals(): void {
+    const r = this.#refusals;
+    if (r.dropped === 0) return;
+    this.#journal.write('decision', { action: 'command_refused', reasons: [`${r.dropped} more commands refused`, `not journaled one by one (over ${COMMAND_LINES_PER_MINUTE} a minute)`] });
+    r.dropped = 0;
+  }
+
+  /** Every recorder write goes through here: a throw (ENOSPC) is the recorder's fault, never the caller's crash. */
+  #record(write: (r: Recorder) => void): void {
+    const r = this.#recorder;
+    if (r === null || this.#recorderFault !== null) return;
+    try {
+      write(r);
+    } catch (e) {
+      this.#recorderFailed(e);
+    }
+  }
+
+  /**
+   * The recorder failed: it records nothing more in this process (its open files are sealed by the next start), entries
+   * halt with the reason from the next step on, and the critical alert goes up in /health and the heartbeat. It does not
+   * ingest or halt here: it can run inside the feed's ingest.
+   */
+  #recorderFailed(e: unknown): void {
+    if (this.#recorderFault !== null) return;
+    const code = isObj(e) && typeof e['code'] === 'string' ? e['code'] : e instanceof Error ? e.name : 'error';
+    this.#recorderFault = `recorder failed (${code}): recording stopped, entries off until a restart`;
+    this.#d.log(`Recorder failed: ${errorText(e)}. Recording stopped; entries halt, exits go on.`);
+    try {
+      this.#journal.write('alert', { level: 'critical', code: 'recorder_failed', reasons: [this.#recorderFault, errorText(e)] });
+    } catch (j) {
+      this.#d.log(`Journal: the recorder alert was not written: ${errorText(j)}.`);
+    }
+  }
+
   /** The strategy's `savedState`: the restored index and labeller, once, only for the seed that names exactly them. */
   savedStateFor(ref: SavedStateRef): { readonly index: DeployerIndex; readonly labeller: RugLabeller } {
     const h = this.#handoff;
@@ -666,7 +750,7 @@ export class Worker {
   }
 
   #onFrame(f: Frame): void {
-    this.#recorder?.frame(f);
+    this.#record((r) => r.frame(f));
     this.#probe?.frame(f);
     for (const s of this.#feeds.values()) if (s.src.sources.includes(f.source)) s.last = f.receivedAt;
     const b = f.body;
@@ -685,12 +769,12 @@ export class Worker {
         this.#liveStartAt = { slot: f.place.slot, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt: f.receivedAt };
       }
     }
-    if ((b.type === 'offchain' || b.type === 'fact') && /^coverage:.+:gap$/.test(b.key)) this.#recorder?.gap({ key: b.key, value: isObj(b.value) ? b.value : null, receivedAt: f.receivedAt });
+    if ((b.type === 'offchain' || b.type === 'fact') && /^coverage:.+:gap$/.test(b.key)) this.#record((r) => r.gap({ key: b.key, value: isObj(b.value) ? b.value : null, receivedAt: f.receivedAt }));
     if (b.type === 'offchain' || b.type === 'fact') this.#coverageJournal.fact(b.key, b.value, f.receivedAt);
   }
 
   #onRelease(e: { readonly kind: string; readonly key?: string; readonly value?: unknown; readonly moment: { readonly receivedAt: number } }, r: Release): void {
-    this.#recorder?.release(r, e.moment.receivedAt);
+    this.#record((rec) => rec.release(r, e.moment.receivedAt));
     if (e.kind !== 'market') return;
     const m = e as unknown as MarketEvent;
     // The deployer index's inputs and the creates/rugs coverage, kept across restarts (SEED-1 ruling).
@@ -988,10 +1072,10 @@ export class Worker {
   /** One engine step: release what is due, decide, record, write. */
   step(): void {
     const now = this.#d.timers.now();
-    this.#recorder?.flush();
+    this.#record((r) => r.flush());
     this.#feed.advance(now);
     this.#engine.drain();
-    this.#recorder?.flush();
+    this.#record((r) => r.flush());
     this.#watchOpened();
     // Entry decisions' plan inputs reach disk before the desk books anything this step decided (EXIT-1h, the same order
     // as WORKER-ORDER: the durable record first, then the ledger), so an entry that fills is never without its plan.
@@ -1232,6 +1316,7 @@ export class Worker {
     // A position entered now could lose its price with no second path to read it (review of #87): entries stop.
     if (this.#d.watchRead === undefined || this.#d.watchHalted?.() === true) reasons.push(SECOND_PATH_UNAVAILABLE);
     if (this.#seeding) reasons.push(SEEDING);
+    if (this.#recorderFault !== null) reasons.push(this.#recorderFault);
     if (Object.keys(this.#desk.book.positions).some((id) => lateFillOf(id) !== null)) reasons.push(LATE_BUY);
     reasons.push(...this.#diverged, ...this.#sellOnly);
     const same = reasons.length === this.#halted.length && reasons.every((x, k) => x === this.#halted[k]);
@@ -1252,7 +1337,7 @@ export class Worker {
     // restart's status reads first.
     const asked = new Set<string>();
     for (;;) {
-      if (this.#stopping) return { ok: false, code: EXIT.clean, message: 'stopped during the start reconcile' };
+      if (this.#stopping) return { ok: false, code: this.#stopCode, message: 'stopped during the start reconcile' };
       this.step();
       const book = this.#engine.book;
       for (const i of Object.values(book.intents)) {
@@ -1312,9 +1397,7 @@ export class Worker {
       return { ok: false, code: EXIT.crash, message: `health server: ${e instanceof Error ? e.message : 'error'}` };
     }
     try {
-      this.#api = await startApiServer(d.config.api.host, d.config.api.port, () => this.apiInputs(), (command, auth) => {
-        this.#journal.write('decision', { action: 'command_refused', reasons: [`command ${command} refused`, auth === null ? 'unknown command' : `needs ${auth}`] });
-      });
+      this.#api = await startApiServer(d.config.api.host, d.config.api.port, () => this.apiInputs(), (command, auth) => this.#commandRefused(command, auth));
     } catch (e) {
       return { ok: false, code: EXIT.crash, message: `API server: ${e instanceof Error ? e.message : 'error'}` };
     }
@@ -1369,7 +1452,8 @@ export class Worker {
     // RESTART-KEEP: after the seed (whose fill reserves the shared budget while it runs), in the background.
     this.#readRestored();
     void this.#downtimeMigrations().catch((e: unknown) => d.log(`Downtime migrations not read: ${e instanceof Error ? e.message : 'error'}.`));
-    if (this.#stopping) return { ok: false, code: EXIT.clean, message: 'stopped during the start' };
+    // A loop crash during the seed stopped the worker with the crash code: the start reports that code, never 0.
+    if (this.#stopping) return { ok: false, code: this.#stopCode, message: 'stopped during the start' };
     d.log(`Worker up: boot ${this.#boot}, release ${d.config.gitSha.slice(0, 12)}, recorder ${d.config.recorder ? 'on' : 'off'}, simulation ${d.config.simulate ? 'on' : 'off'}, ${this.#sources.length} feeds.`);
     return { ok: true };
   }
@@ -1637,8 +1721,8 @@ export class Worker {
       signer: 'none', lease_epoch: null,
       sol_reserve: this.#account.state.walletLamports === null ? null : String(this.#account.state.walletLamports),
       paused: this.#ctl.paused, boot: this.#boot, pid: process.pid, uptime_s: Math.round((now - this.#started) / 1000),
-      rss_bytes: process.memoryUsage().rss, mode: 'paper', recorder: this.#d.config.recorder ? 'on' : 'off', simulation: this.#d.config.simulate ? 'on' : 'off',
-      reconciled: this.#reconciled, exit_capable: this.#exitCapable(now), quota: ops.quota, lookups: ops.lookups, entries_halted: this.#halted.length > 0, halt_reasons: [...this.#halted], critical: [...(this.#watch?.critical ?? [])], feeds, journal_seq: this.#journal.seq, signing_key: false,
+      rss_bytes: process.memoryUsage().rss, mode: 'paper', recorder: this.#d.config.recorder && this.#recorderFault === null ? 'on' : 'off', simulation: this.#d.config.simulate ? 'on' : 'off',
+      reconciled: this.#reconciled, exit_capable: this.#exitCapable(now), quota: ops.quota, lookups: ops.lookups, entries_halted: this.#halted.length > 0, halt_reasons: [...this.#halted], critical: [...(this.#watch?.critical ?? []), ...(this.#recorderFault === null ? [] : [this.#recorderFault])], feeds, journal_seq: this.#journal.seq, signing_key: false,
       entry_rule: this.#d.config.strategy.name,
       ...(this.#d.strategy.s0Diagnostic === true ? { s0_diagnostic: S0_DIAGNOSTIC_PARTS } : {}),
       ...(this.#seedOutcome === null ? {} : { graduates_seed: this.#seedOutcome }),
@@ -1691,6 +1775,7 @@ export class Worker {
     const hb = this.#d.heartbeat;
     const url = this.#d.config.watchdogUrl;
     this.#beatSeq++;
+    if (this.#d.timers.now() - this.#refusals.since >= 60_000) this.#countRefusals();
     if (url === null || hb.key === null) return;
     const h = this.health();
     const p = Object.values(this.#engine.book.positions).find((x) => x.status !== 'closed' && x.status !== 'opening');
@@ -1723,8 +1808,22 @@ export class Worker {
 
   /** Clean stop: entries stop, simulations finish (bounded), journal and recorder close, the ledger closes. */
   async stop(code: number = EXIT.clean): Promise<number> {
-    if (this.#stopping) return code;
+    if (this.#stopping) return this.stopped;
     this.#stopping = true;
+    this.#stopCode = code;
+    this.#stoppingNow(code);
+    try {
+      await this.#stop(code);
+    } catch (e) {
+      // A stop that fails half way (a full disk) still ends the process, as a crash.
+      this.#d.log(`Stop failed: ${errorText(e)}.`);
+      this.#stopCode = code = EXIT.crash;
+    }
+    this.#stoppedNow(code);
+    return code;
+  }
+
+  async #stop(code: number): Promise<void> {
     const d = this.#d;
     if (this.#loop !== null) d.timers.clearTimeout(this.#loop);
     if (this.#beat !== null) d.timers.clearTimeout(this.#beat);
@@ -1748,12 +1847,11 @@ export class Worker {
     this.#world.stop();
     const open = Object.values(this.#engine.book.positions).filter((p) => p.status !== 'closed').map((p) => p.id);
     this.#journal.write('stop', { open_positions: open, open_intents: openIntents(this.#desk.book), reasons: [code === EXIT.clean ? 'signal' : 'crash'] });
-    this.#recorder?.close();
+    this.#record((r) => r.close());
     this.#ledger.close();
     if (code === EXIT.clean) writeFileSync(join(d.config.stateDir, STATE_FILES.cleanStop), new Date(d.timers.now()).toISOString());
     await new Promise<void>((r) => (this.#server === null ? r() : this.#server.close(() => r())));
     await new Promise<void>((r) => (this.#api === null ? r() : this.#api.close(() => r())));
-    return code;
   }
 
   /**
@@ -1763,6 +1861,10 @@ export class Worker {
    */
   async kill(): Promise<void> {
     this.#stopping = true;
+    // A killed process ends with no code of its own; a later `stop` on this object returns at once, as a crash.
+    this.#stopCode = EXIT.crash;
+    this.#stoppingNow(EXIT.crash);
+    this.#stoppedNow(EXIT.crash);
     this.#world.stop();
     if (this.#loop !== null) this.#d.timers.clearTimeout(this.#loop);
     if (this.#beat !== null) this.#d.timers.clearTimeout(this.#beat);
@@ -1779,7 +1881,7 @@ export class Worker {
     const r = await this.reconcile();
     // A signal during the reconcile runs the clean stop, which closes both.
     if (!this.#stopping) {
-      this.#recorder?.close();
+      this.#record((r) => r.close());
       this.#ledger.close();
     }
     return r;
