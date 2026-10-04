@@ -14,7 +14,7 @@ import { LiveStrategy, RESTORE_KEY } from '../src/engine/strategy.ts';
 import { strategyConfig } from '../src/run/settings.ts';
 import { migrationKey, poolKey, rugCheckKey, simKey } from '../../core/src/gates/index.ts';
 import { STREAMS } from '../../core/src/facts/index.ts';
-import { atr } from '../../core/src/exits/index.ts';
+import { atr, newTracker } from '../../core/src/exits/index.ts';
 import type { PoolState } from '../../core/src/amm/index.ts';
 import { swapLog } from '../../core/test/facts/swaps.ts';
 import { encode } from '../../core/test/chain/encode.ts';
@@ -435,6 +435,24 @@ describe('RESTART-KEEP: a restart keeps the candidates in their window', () => {
       expect(minute(t + 60_400)).not.toBe(minute(t + 130_000));
     });
 
+    it('the 150-slot bound holds both ways: a read more than 150 slots before the anchor takes its receipt time too', () => {
+      const w = world();
+      const t = minute(m0) + 10_000;
+      // The anchor is 1,000 slots ahead of the read (a fill's swap released before an older account read).
+      w.anchor(S + 1_000n, t + 400_000, t + 401_000);
+      w.read(S, t + 470_000);
+      // From the anchor it would be t (400 s back); the receipt time is minutes later.
+      expect(minute(t)).not.toBe(minute(t + 470_000));
+      expect(w.bars().map((b) => b.startMs)).toEqual([minute(t + 470_000)]);
+    });
+
+    it('a swap block time ahead of the local clock dates its pool update at now, never in a later bar', () => {
+      const w = world();
+      const now = minute(m0) + 2 * MIN + 10_000;
+      w.own(S, now + 90_000, now);
+      expect(w.bars().map((b) => b.startMs)).toEqual([minute(now)]);
+    });
+
     it('a late sample in an earlier bar widens it, keeps the order, and never moves its close back (K4, K5)', () => {
       const w = world();
       w.anchor(S, m0, m0 + 500);
@@ -450,6 +468,45 @@ describe('RESTART-KEEP: a restart keeps the candidates in their window', () => {
       expect(after[0]!.close).toBe(b0!.close);
       expect(after[1]).toEqual(b1);
     });
+  });
+
+  it('a mint forgotten when its position closes starts empty when watched again: flow, deployer, sales, own swap time', () => {
+    const session = startSession(TRIAL_POLICY);
+    const strategy = new LiveStrategy({ session, rugs: RUG_CONFIG, config: strategyConfig(session.policy, FILL_CONFIG, RESEARCH_CONFIG) });
+    const M2 = 'Mint2222222222222222222222222222222222222222';
+    const facts = new Map<string, unknown>([[feesKey(M2), FEE_CONTEXT]]);
+    let seq = 0;
+    const t0 = Math.floor(NOW / MIN) * MIN + 10_000;
+    const ev = (key: string, value: unknown, recv: number, positions: Record<string, unknown> = {}, slot = SLOT) => {
+      const moment = { slot, txIndex: 0, ixIndex: 0, receivedAt: recv };
+      const ctx = {
+        now: moment, book: { ...emptyBook({ maxOpenPositions: session.policy.positions.maxOpen }), positions }, rng: { next: () => 0 }, history: () => [],
+        lookup: (k: string) => (facts.has(k) ? { ok: true, moment, value: facts.get(k), source: 'test' } : { ok: false, reason: 'missing' }),
+      } as unknown as StrategyContext;
+      return strategy.onMarket({ kind: 'market', id: `f${seq++}`, moment, key, value }, ctx);
+    };
+    const plan = { openedAtMs: t0 - 60_000, universe: 'U2', notional: 2_000_000n, riskUnit: 1_000n, stopPrice: 1n, entryReserve: 1n };
+    const exit = (o: Record<string, unknown>) => ({ plan, tracker: newTracker(), bars: [], pool: POOL_ADDRESS, ...o });
+    // Held first: its exit inputs as saved, and a swap on its pool at slot S dated t0.
+    ev(RESTORE_KEY, { exits: { [`p:${M2}:1`]: exit({ deployer: { sellers: ['dev-a'], supply: 1_000n }, deployerSales: { ids: ['s1'], list: [{ atMs: t0 - 30_000, amount: 5n }] }, flow: { minutes: [[t0 - 60_000, -7n]], ids: [['f1', t0 - 60_000]] } }) } }, t0);
+    ev(`logs:pump_amm:BuyEvent:${POOL_ADDRESS}`, { event: { program: 'pump_amm', name: 'BuyEvent', data: { pool: POOL_ADDRESS, user: 'u', timestamp: BigInt(Math.floor(t0 / 1000)) } }, signature: 'own1', txSlot: SLOT }, t0 + 1_000);
+    // Another pool's swap 100 slots later, its slots slow: from it, slot S would be dated a minute after t0.
+    ev('logs:pump_amm:BuyEvent:other-pool', { event: { program: 'pump_amm', name: 'BuyEvent', data: { pool: 'other-pool', timestamp: BigInt(Math.floor((t0 + 100_000) / 1000)) } }, signature: 'b1', txSlot: SLOT + 100n }, t0 + 2_000);
+    // The position closes: its exit and the mint's pool state are forgotten.
+    ev('test:tick', null, t0 + 3_000, { [`p:${M2}:1`]: { id: `p:${M2}:1`, mint: M2, status: 'closed' } });
+    expect(strategy.saved()[`p:${M2}:1`]).toBeUndefined();
+    // Held again (a new position on the same mint): nothing of the first one carries over.
+    ev(RESTORE_KEY, { exits: { [`p:${M2}:2`]: exit({ deployer: { sellers: ['dev-b'], supply: 1_000n }, deployerSales: { ids: [], list: [] }, flow: { minutes: [], ids: [] } }) } }, t0 + 4_000);
+    const again = strategy.saved()[`p:${M2}:2`]!;
+    expect(again.flow).toEqual({ minutes: [], ids: [] });
+    expect(again.deployerSales).toEqual({ ids: [], list: [] });
+    expect(again.deployer).toEqual({ sellers: ['dev-b'], supply: 1_000n });
+    // A pool update at slot S: dated from the anchor (t0 + 60 s), not by the forgotten swap's t0.
+    const base = passingFacts().get(poolKey(MINT))!.value as { obs: Record<string, unknown> };
+    const v = { ...base, obs: { ...base.obs, slot: SLOT, receivedAt: t0 + 130_000 } };
+    facts.set(poolKey(M2), v);
+    ev(poolKey(M2), v, t0 + 130_000);
+    expect(strategy.barsOf(M2).map((b) => b.startMs)).toEqual([Math.floor((t0 + 60_000) / MIN) * MIN]);
   });
 
   it('restores REC-1\'s tail watches: a live one keeps its pool watched, an ended one is dropped, past the cap logged', () => {
