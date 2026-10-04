@@ -415,6 +415,7 @@ export const reportMarkdown = (r: Report): string => {
     '',
     `H15 simulations: ${r.journal.h15_sim.run} run of ${r.journal.h15_sim.lines}, ${r.journal.h15_sim.credits} Helius credits (inside the helius row above).`,
     `Trade-gap fills: ${r.journal.trades_fill.complete} complete of ${r.journal.trades_fill.lines}, ${r.journal.trades_fill.transactions} transactions, ${r.journal.trades_fill.credits} Helius credits (inside the helius row above).`,
+    `Create lookups: ${r.journal.create_lookup.found} found of ${r.journal.create_lookup.lines}, ${r.journal.create_lookup.skipped_no_budget} skipped for want of budget, ${r.journal.create_lookup.credits} Helius credits (inside the helius row above).`,
     '',
     `Historical lookups: ${r.ops.lookups.count}, median ≤ ${r.ops.lookups.p50_ms_at_most ?? '-'} ms, p95 ≤ ${r.ops.lookups.p95_ms_at_most ?? '-'} ms, ${r.ops.lookups.slower_than_last_bound} slower than the last bucket.`,
     '',
@@ -455,6 +456,8 @@ export const reportMarkdown = (r: Report): string => {
     `| Largest amount error | ${pts(i4.bounds.each.max_seen_points)} | ≤ ${i4.bounds.each.max_points} pts each | ${yes(i4.bounds.each.pass)} |`,
     '',
     `Outcomes: ${Object.entries(i4.outcomes).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => `${k} ${v}`).join(', ') || 'none'}. Stand-in legs: ${i4.stand_ins}. Close omitted: ${i4.close_omitted}. Median quote age: ${i4.median_quote_age_slots ?? '-'} slots.`,
+    '',
+    `Simulation time (paper attempts land only once simulated): median ${i4.latency.median_ms ?? '-'} ms, ${i4.latency.median_slots ?? '-'} slots, over ${i4.latency.timed} timed legs; held the drawn landing ${i4.latency.held_landing}; past the blockhash ${i4.latency.expired_by_simulation} (should be 0: our own queue, not the network).`,
     '',
     i4.counts ? `Item 4: **${i4.pass ? 'pass' : 'not passed'}**` : `Item 4: **not counted** (bounds met: ${i4.bounds_pass ? 'yes' : 'no'})`,
   );

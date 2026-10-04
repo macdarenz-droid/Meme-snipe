@@ -15,7 +15,7 @@ export const CONTROL_IDS: readonly ControlId[] = [
 /** Why an entry is refused. Every code belongs to exactly one control (see CODE_CONTROL). */
 export type RiskCode =
   // R1 bankroll and its valuation
-  | 'bankroll_invalid' | 'sol_price_unknown' | 'sol_price_stale' | 'mark_unknown' | 'mark_stale'
+  | 'bankroll_invalid' | 'sol_price_unknown' | 'sol_price_stale' | 'mark_unknown' | 'mark_stale' | 'risk_fault'
   // R2 trade size range
   | 'size_below_minimum'
   // R3 open positions
@@ -50,7 +50,7 @@ export type RiskCode =
   | 'withdrawal_queued' | 'withdrawal_unreconciled' | 'withdrawal_over_free_cash' | 'withdrawal_invalid';
 
 export const CODE_CONTROL: Readonly<Record<RiskCode, ControlId>> = {
-  bankroll_invalid: 'R1', sol_price_unknown: 'R1', sol_price_stale: 'R1', mark_unknown: 'R1', mark_stale: 'R1',
+  bankroll_invalid: 'R1', sol_price_unknown: 'R1', sol_price_stale: 'R1', mark_unknown: 'R1', mark_stale: 'R1', risk_fault: 'R1',
   size_below_minimum: 'R2',
   max_open_positions: 'R3',
   balance_unknown: 'R4', balance_stale: 'R4', ops_reserve: 'R4',
@@ -373,4 +373,9 @@ export interface ExitDecision {
   readonly tripped: readonly RiskReason[];
   /** Triggers that tripped now and are not latched yet (R9, R10): the caller stores them, as for an entry. */
   readonly trips: readonly Trip[];
+  /**
+   * RISK-FAULT: null when the account was evaluated; otherwise why it could not be (`tripped` then holds `risk_fault`
+   * and `trips` is empty). Empty `trips` with a fault means "not known", never "nothing tripped".
+   */
+  readonly fault: string | null;
 }
