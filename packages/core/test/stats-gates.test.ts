@@ -5,7 +5,7 @@ import {
   burnHoldout, createHoldoutRegistry, freezeRequirement, nPower, registerHoldout, summarizeWalkForward, type WalkForwardSummary, sealHoldout, type DemotionInput, type HoldoutRegistry, type G0Input, type G1Input, type G2Input, type G2PowerResult, type G2Universe,
   type G3Input, type G4Input, type G5Input, type TradeOutcome, type HoldoutTrade, type TripleBarrierLabel,
   clopperPearsonUpper, evaluateRevalidation, VETO_COMPOSITE_LEVEL, VETO_COMPOSITE_ALPHA, g2Sensitivity, RETURN_FLOOR, scoreVetoCounterfactuals,
-  type RevalidationInput, G2_DEFAULTS, MIN_DAYS, REQUIREMENT_FLOOR,
+  type RevalidationInput, G1_TESTS, G2_DEFAULTS, MIN_DAYS, REQUIREMENT_FLOOR,
 } from '../src/stats/index.ts';
 import { EXIT_UNIVERSES, KNOWN_PLATFORM_CHANGES, RESEARCH_CONFIG, TRIAL_POLICY } from '../src/config/index.ts';
 import { bracketTrades, dayKey, type DayTrade } from './stats-fixtures.ts';
@@ -47,10 +47,16 @@ const matrixFor = (ts: readonly DayTrade[]): Record<string, number[]> => {
 };
 const winnerDaily = dailyOf(wf);
 const pboMatrix = matrixFor(wf);
+// S0 at −20% a day on the walk-forward calendar; every variant traded on all 40 days.
+const spaInputs = { s0Daily: dailyOf(control.map((t) => ({ ...t, ySevere: false, blocked: false }))), activeDays: Object.fromEntries(registry.map((t) => [t.trialId, 40])), seFloor: 1e-9 };
+// G1's test is the one stored in the holdout registry (created with the plan): SPA, the owner's decision of 2026-10-04.
 const g1Pass = (): G1Input => ({
   scenario: 'conservative', rulesRegisteredBeforeHoldout: true, trades: wf, control, selectedTrialId: 't19', registry,
   pboMatrix, pboBlocks: 8, modelUsed: false, calibrationSlope: null, rng: createRng(1), replicates: 1000,
+  holdoutRegistry: createHoldoutRegistry(1, 'spa'), spa: spaInputs,
 });
+/** A registry that stores the clamped per-trade DSR: the path the owner can still select. */
+const g1Dsr = (): G1Input => ({ ...g1Pass(), holdoutRegistry: createHoldoutRegistry(1, 'dsr') });
 
 describe('G1 walk-forward', () => {
   test('passes a strong, spread-out edge', () => {
@@ -60,14 +66,16 @@ describe('G1 walk-forward', () => {
     expect(r.metrics.dsr!).toBeGreaterThanOrEqual(0.95);
     expect(r.metrics.pbo).toBe(0);
   });
-  test('fails a zero-edge strategy on the bound, DSR, concentration and S0', () => {
+  test('fails a zero-edge strategy on the bound, the registered significance test (SPA, or DSR when registered), concentration and S0', () => {
     const flat = bracketTrades(23, 0, 40, 15);
-    const r = gateG1({ ...g1Pass(), trades: flat, control: bracketTrades(24, 0, 40, 15), pboMatrix: matrixFor(flat) });
-    expect(r.passed).toBe(false);
-    const failed = r.reasons.map((x) => x.split(':')[0]);
-    expect(failed).toContain('mean');
-    expect(failed).toContain('DSR');
-    expect(failed).toContain('S0');
+    for (const [g1, test] of [[g1Pass, 'SPA'], [g1Dsr, 'DSR']] as const) {
+      const r = gateG1({ ...g1(), trades: flat, control: bracketTrades(24, 0, 40, 15), pboMatrix: matrixFor(flat) });
+      expect(r.passed).toBe(false);
+      const failed = r.reasons.map((x) => x.split(':')[0]);
+      expect(failed).toContain('mean');
+      expect(failed).toContain(test);
+      expect(failed).toContain('S0');
+    }
   });
   test('fails a non-conservative scenario, a late registration, a missing calibration and an unregistered trial', () => {
     const r = gateG1({ ...g1Pass(), scenario: 'base', rulesRegisteredBeforeHoldout: false, modelUsed: true, selectedTrialId: 'nope' });
@@ -88,7 +96,7 @@ describe('G1 walk-forward', () => {
     const returns = twoPoint.map((t) => t.rNet);
     expect(deflatedSharpe(returns, registry).dsr).toBeGreaterThanOrEqual(0.95);
     expect(deflatedSharpe(returns, registry, { clamp: true }).dsr).toBeLessThan(0.95);
-    const r = gateG1({ ...g1Pass(), trades: twoPoint, pboMatrix: matrixFor(twoPoint) });
+    const r = gateG1({ ...g1Dsr(), trades: twoPoint, pboMatrix: matrixFor(twoPoint) });
     expect(r.metrics.dsr!).toBeCloseTo(deflatedSharpe(returns, registry, { clamp: true }).dsr, 12);
     expect(r.reasons.join(' | ')).toMatch(/DSR: deflated Sharpe 0\.93\d* over 20 trials, moments clamped/);
   });
@@ -103,14 +111,14 @@ describe('G1 walk-forward', () => {
   // DSR is reported only. While the DSR gates, its moments are clamped (tighten-only, ruling C).
   test('the gate is the per-trade DSR with clamped moments; the day-level DSR is reported only', () => {
     const corr = bracketTrades(25, 0.06, 40, 15, 0.4);
-    const r = gateG1({ ...g1Pass(), trades: corr, pboMatrix: matrixFor(corr) });
+    const r = gateG1({ ...g1Dsr(), trades: corr, pboMatrix: matrixFor(corr) });
     expect(r.metrics.dsr).toBeCloseTo(deflatedSharpe(corr.map((t) => t.rNet), registry, { clamp: true }).dsr, 12);
     expect(r.metrics.dsrDays).toBe(40);
     expect(r.metrics.dsrDaily!).not.toBeCloseTo(r.metrics.dsr!, 3);
     expect(r.checks.find((c) => c.name === 'DSR')!.detail).toMatch(/moments clamped .*reported only: day-level DSR/);
   });
   test('the DSR reports day-level lines under raw, configuration and effective N, and a bootstrap p; only per-trade raw N gates', () => {
-    const r = gateG1(g1Pass());
+    const r = gateG1(g1Dsr());
     expect(r.metrics.trials).toBe(20);
     expect(r.metrics.trialsDeduplicated).toBe(20);
     expect(r.metrics.trialsEffective).toBeGreaterThanOrEqual(1);
@@ -127,21 +135,54 @@ describe('G1 walk-forward', () => {
     expect(r.status).toBe('not-proven');
     expect(r.passed).toBe(false);
   });
-  // S0 at −20% a day on the walk-forward calendar; every variant traded on all 40 days.
-  const spaInputs = { s0Daily: dailyOf(control.map((t) => ({ ...t, ySevere: false, blocked: false }))), activeDays: Object.fromEntries(registry.map((t) => [t.trialId, 40])), seFloor: 1e-9 };
-  test('SPA is always reported; it gates G1 only when edgeTest is "spa", and the config keeps "dsr"', () => {
-    expect(RESEARCH_CONFIG.g1EdgeTest).toBe('dsr');
-    const r = gateG1({ ...g1Pass(), spa: spaInputs });
-    expect(r.metrics.spaP).not.toBeNull();
-    expect(r.checks.some((c) => c.name === 'SPA')).toBe(false);
-    expect(gateG1(g1Pass()).checks.find((c) => c.name === 'DSR')!.detail).toMatch(/SPA not run/);
-    const s = gateG1({ ...g1Pass(), spa: spaInputs, edgeTest: 'spa' });
-    expect(s.checks.some((c) => c.name === 'DSR')).toBe(false);
-    expect(s.checks.find((c) => c.name === 'SPA')!.passed).toBe(true);
+  test('G1 gates on the registered test: SPA by the owner\'s decision; the clamped DSR is reported only (STATS-1f)', () => {
+    expect(RESEARCH_CONFIG.g1Test).toBe('spa');
+    expect(G1_TESTS).toEqual(['spa', 'dsr']);
+    const r = gateG1(g1Pass());
+    expect(r.passed).toBe(true);
+    expect(r.checks.some((c) => c.name === 'DSR')).toBe(false);
+    expect(r.checks.find((c) => c.name === 'SPA')!.detail).toMatch(/t19 passes against zero and S0 .*reported only: deflated Sharpe/);
+    expect(r.metrics.dsr).not.toBeNull();
+    // SPA decides, DSR does not: a registry whose Sharpe ratios are spread wide drives the DSR benchmark up (DSR fails)
+    // without touching SPA (it reads only the daily P&L matrix).
+    const spread = registry.map((t, k) => ({ ...t, sharpe: k % 2 === 0 ? -2 : 2 }));
+    expect(gateG1({ ...g1Dsr(), registry: spread }).reasons.join(' | ')).toMatch(/DSR: deflated Sharpe/);
+    expect(gateG1({ ...g1Pass(), registry: spread }).checks.find((c) => c.name === 'SPA')!.passed).toBe(true);
+    // ... and the other way: a zero-edge daily P&L matrix (all SPA reads) fails SPA, while the trades and the registry
+    // (all the DSR reads) are unchanged, so the DSR still passes.
+    const flatDaily = Object.fromEntries(registry.map((t, k) => [t.trialId, dailyOf(bracketTrades(900 + k, 0, 40, 15))]));
+    expect(gateG1({ ...g1Pass(), pboMatrix: flatDaily }).reasons.join(' | ')).toMatch(/SPA: SPA over 20 variants .*t19 does not pass/);
+    expect(gateG1({ ...g1Dsr(), pboMatrix: flatDaily }).checks.find((c) => c.name === 'DSR')!.passed).toBe(true);
+    // Fail closed: SPA without its inputs fails; a zero-edge stream fails.
+    const { spa: _spa, ...noSpa } = g1Pass();
+    expect(gateG1(noSpa).checks.find((c) => c.name === 'SPA')).toMatchObject({ passed: false, detail: expect.stringMatching(/SPA not run/) });
     const flat = bracketTrades(23, 0, 40, 15);
-    const f = gateG1({ ...g1Pass(), trades: flat, pboMatrix: Object.fromEntries(registry.map((t, k) => [t.trialId, dailyOf(bracketTrades(900 + k, 0, 40, 15))])), spa: spaInputs, edgeTest: 'spa' });
+    const f = gateG1({ ...g1Pass(), trades: flat, pboMatrix: Object.fromEntries(registry.map((t, k) => [t.trialId, dailyOf(bracketTrades(900 + k, 0, 40, 15))])) });
     expect(f.reasons.join(' | ')).toMatch(/SPA: SPA over 20 variants .*t19 does not pass/);
-    expect(gateG1({ ...g1Pass(), edgeTest: 'spa' }).checks.find((c) => c.name === 'SPA')!.passed).toBe(false);
+  });
+  test('G1 takes its test from the stored registry, never from the caller (review of #109, B1)', () => {
+    // Storing a registry without a valid test is refused.
+    for (const bad of [undefined, 'both', '']) expect(() => createHoldoutRegistry(1, bad as never)).toThrow(/needs G1's test/);
+    expect(createHoldoutRegistry(1, 'spa').g1Test).toBe('spa');
+    // The stored test is what gates: SPA stored → the SPA check; DSR stored → the DSR check.
+    expect(gateG1(g1Pass()).checks.map((c) => c.name)).toEqual(expect.arrayContaining(['G1 test', 'SPA']));
+    expect(gateG1(g1Dsr()).checks.map((c) => c.name)).toEqual(expect.arrayContaining(['G1 test', 'DSR']));
+    // A caller asking for the other test fails G1, and neither test gates: it cannot pick the one that passes.
+    for (const [g1, asked] of [[g1Pass, 'dsr'], [g1Dsr, 'spa']] as const) {
+      const r = gateG1({ ...g1(), g1Test: asked });
+      expect(r.passed).toBe(false);
+      expect(r.reasons[0]).toMatch(new RegExp(`^G1 test: the registry stores .*; the caller asked for ${asked}`));
+      expect(r.checks.some((c) => c.name === 'SPA' || c.name === 'DSR')).toBe(false);
+    }
+    // Asking for the stored test is fine.
+    expect(gateG1({ ...g1Pass(), g1Test: 'spa' }).passed).toBe(true);
+    // A record stored before STATS-1f (no g1Test) fails G1 closed.
+    for (const old of [{}, { g1Test: undefined }, { g1Test: 'both' }]) {
+      const r = gateG1({ ...g1Pass(), holdoutRegistry: old as never });
+      expect(r.passed).toBe(false);
+      expect(r.reasons[0]).toMatch(/^G1 test: the holdout registry stores no G1 test/);
+      expect(r.checks.some((c) => c.name === 'SPA' || c.name === 'DSR')).toBe(false);
+    }
   });
   test('repeated runs of one configuration count once; different configurations with identical returns count twice', () => {
     const one = { t19: winnerDaily, t0: pboMatrix.t0!, t1: pboMatrix.t1! };
@@ -164,7 +205,7 @@ describe('G1 walk-forward', () => {
     expect(spaOf(rerun).statistic).toBeCloseTo(spaOf(one).statistic, 12);
   });
   test('thresholds tighten but never loosen', () => {
-    expect(gateG1(g1Pass(), { dsrMin: 0.999999 }).reasons.some((x) => x.startsWith('DSR'))).toBe(true);
+    expect(gateG1(g1Dsr(), { dsrMin: 0.999999 }).reasons.some((x) => x.startsWith('DSR'))).toBe(true);
     expect(() => gateG1(g1Pass(), { dsrMin: 0.9 })).toThrow(/only be tightened/);
     expect(() => gateG1(g1Pass(), { pboMax: 0.5 })).toThrow(/only be tightened/);
     expect(() => gateG1(g1Pass(), { madeUp: 1 } as never)).toThrow(/unknown threshold/);
@@ -185,7 +226,7 @@ const closedFor = (familySize: number) => nPower(sd(wf.map((t) => t.rNet)), 0.05
 const window1 = { fromDay: '2026-08-01', toDay: '2026-08-25', registeredOnDay: '2026-07-20' };
 const sealed = (familySize: number, universes: readonly string[], c = counts, required = Math.max(300, 330, closedFor(familySize)), requiredDays = 10): HoldoutRegistry => {
   // A day requirement under the floor needs a test rule (it exists only to show that G2 refuses it).
-  let reg = createHoldoutRegistry(familySize, requiredDays < 10 ? { windowDays: 28, tailDays: 1, minDays: 1 } : undefined);
+  let reg = createHoldoutRegistry(familySize, 'spa', requiredDays < 10 ? { windowDays: 28, tailDays: 1, minDays: 1 } : undefined);
   for (const u of universes) {
     reg = registerHoldout(reg, { holdoutId: `h-${u}`, universe: u, configId: `${u}-v1`, ...window1 });
     reg = freezeRequirement(reg, `h-${u}`, { requiredTrades: required, requiredDays, nPower: 300, nPowerSeed: 7 }).registry;
@@ -401,7 +442,7 @@ describe('G2 holdout (sealed, ARCHITECTURE.md §14 at 333f4ac)', () => {
   }, 120_000);
   test('a second attempt is tested at 0.005: n_power simulated at 0.04 is refused, at 0.005 it is accepted', () => {
     // Attempt 1 in July, spent; attempt 2 registered 08-02 runs 08-03..08-30 and opens from 09-01 (NOW is 09-21).
-    let reg = registerHoldout(createHoldoutRegistry(1), { holdoutId: 'h-old', universe: 'U1', configId: 'U1-v0', fromDay: '2026-07-01', toDay: '2026-07-25', registeredOnDay: '2026-06-20' });
+    let reg = registerHoldout(createHoldoutRegistry(1, 'spa'), { holdoutId: 'h-old', universe: 'U1', configId: 'U1-v0', fromDay: '2026-07-01', toDay: '2026-07-25', registeredOnDay: '2026-06-20' });
     reg = burnHoldout(reg, 'h-old', 'inspected', 'test').registry;
     reg = registerHoldout(reg, { holdoutId: 'h-U1', universe: 'U1', configId: 'U1-v1', fromDay: '2026-08-03', toDay: '2026-08-30', registeredOnDay: '2026-08-02' });
     reg = freezeRequirement(reg, 'h-U1', { requiredTrades: 600, requiredDays: 10, nPower: 300, nPowerSeed: 7 }).registry;
