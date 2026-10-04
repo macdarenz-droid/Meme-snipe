@@ -804,7 +804,7 @@ install_file /opt/zeroed/stub/worker.mjs 0644 <<'__ZEROED_FILE__'
 // encrypted credentials (it counts them, never prints them), the state directory with a SQLite ledger
 // (so the hourly backup has real data), the signer socket, and the HMAC-signed heartbeat to the watchdog.
 // `--reconcile` is the ExecStartPre step: the real worker settles open intents against the chain there.
-import { createHmac } from 'node:crypto';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import { existsSync, readFileSync, readlinkSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { connect } from 'node:net';
@@ -901,9 +901,19 @@ async function beat() {
       body,
       signal: AbortSignal.timeout(10_000),
     });
-    const reply = await res.json().catch(() => ({}));
-    // Worker contract (ops/README.md): apply the watchdog's flag both ways, so the state and the message agree.
-    if (res.ok && typeof reply.paused === 'boolean' && reply.paused !== paused) {
+    const text = await res.text();
+    let reply = {};
+    try {
+      reply = JSON.parse(text);
+    } catch {}
+    // The reply counts only when signed for this heartbeat: "t\nREPLY\n/heartbeat\n<our v1>\nbody" with the same key.
+    const m = /^t=(\d{1,12}),v1=([0-9a-f]{64})$/.exec(res.headers.get('x-zeroed-signature') ?? '');
+    const want = m ? createHmac('sha256', key).update(`${m[1]}\nREPLY\n/heartbeat\n${sig}\n${text}`).digest('hex') : '';
+    const signed = m !== null && timingSafeEqual(Buffer.from(want, 'hex'), Buffer.from(m[2], 'hex'));
+    if (res.ok && !signed) console.log('Heartbeat reply not signed: an un-pause in it is ignored.');
+    // Worker contract (ops/README.md): apply the watchdog's flag both ways, so the state and the message agree; an
+    // unsigned reply may only start a pause (fail closed).
+    if (res.ok && typeof reply.paused === 'boolean' && reply.paused !== paused && (signed || reply.paused)) {
       paused = reply.paused;
       event(paused ? 'pause' : 'resume', paused ? 'owner /pause via watchdog' : 'cleared from the host');
       console.log(paused ? 'Entries paused by the owner (watchdog). Exits keep running.' : 'Entries allowed again (pause cleared from the host).');
