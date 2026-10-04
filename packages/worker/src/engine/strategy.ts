@@ -32,6 +32,7 @@ import {
 } from '../../../core/src/gates/index.ts';
 import { type BookEvent, type IntentState, isTerminal } from '../../../core/src/lifecycle/index.ts';
 import { type AccountHistory, type Latches, type Timed, evaluateEntry, evaluateExit } from '../../../core/src/risk/index.ts';
+import { markedHistory } from './marks.ts';
 import { type Bps, BPS_DENOMINATOR, type Lamports, type MicroUsd, bps, lamportsToMicroUsd, mulDiv, microUsdToLamports } from '../../../core/src/units/index.ts';
 
 export const ACCOUNT_KEY = 'worker:account';
@@ -75,6 +76,8 @@ export const RESERVE_PREFIX = 'reserve ';
 /** Reason on a `shortlist` decision: the worker fetches the mint's confirmed create (live H9, H12–H14). */
 export const SHORTLIST = 'shortlist';
 export const TRIP_PREFIX = 'trip ';
+/** Reason on an exit decision: the entry controls tripped right now (they never block an exit), by code. */
+export const TRIPPED_PREFIX = 'risk tripped ';
 
 /** The ledger's account as the worker publishes it. Marks of open positions are filled in by the strategy. */
 export interface AccountFact {
@@ -768,8 +771,10 @@ export class LiveStrategy implements Strategy {
     const why = d.fired.map((t) => `${t.code}: ${t.detail}`);
     if (risk !== null) {
       // Exits are never blocked; tripped controls are logged and latched.
-      const r = evaluateExit({ session: this.#d.session, mode: 'paper', clock: { now: () => ctx.now }, account: risk.history, latches: risk.latches, market: { solPrice: this.#spotSol(ctx), solBalance: this.#balance(risk, ctx), regime: 'unknown' } });
+      const sol = this.#spotSol(ctx);
+      const r = evaluateExit({ session: this.#d.session, mode: 'paper', clock: { now: () => ctx.now }, account: this.#marked(risk.history, ctx, sol), latches: risk.latches, market: { solPrice: sol, solBalance: this.#balance(risk, ctx), regime: 'unknown' } });
       for (const t of r.trips) why.push(`${TRIP_PREFIX}${t}`);
+      if (r.tripped.length > 0) why.push(`${TRIPPED_PREFIX}${[...new Set(r.tripped.map((x) => x.code))].sort().join(',')}`);
     }
     const id = intentId(`x${pid.slice(1)}:${exitSeq + 1}`);
     const events = exitBookEvents(pid, d, id);
@@ -950,16 +955,19 @@ export class LiveStrategy implements Strategy {
     return null;
   }
 
-  /** The account with each open position's mark: its liquidation value now, or null (risk counts it as a total loss). */
-  #marked(h: AccountHistory, ctx: StrategyContext, sol: Timed<MicroUsd>): AccountHistory {
-    const openPositions = h.openPositions.map((o) => {
-      const p = Object.values(ctx.book.positions).find((x) => x.mint === o.mint && x.status !== 'closed');
-      const m = this.#market(ctx, o.mint);
-      if (p === undefined || typeof m === 'string' || p.quantity <= 0n) return o;
-      const q = poolSell(m.pool, p.quantity, m.ctx);
-      return q.ok ? { ...o, mark: lamportsToMicroUsd(q.trade.userQuote as Lamports, sol.value, 'floor'), markAtMs: m.atMs } : o;
+  /** The account with each open position's executable mark now, or null when its market is unknown, flagged or stale (marks.ts). */
+  #marked(h: AccountHistory, ctx: StrategyContext, sol: Timed<MicroUsd> | null): AccountHistory {
+    const policy = this.#d.session.policy;
+    const n = this.#d.config.network;
+    const step = policy.exits.ladder.steps[0]!;
+    return markedHistory(h, (mint) => {
+      const p = Object.values(ctx.book.positions).find((x) => x.mint === mint && x.status !== 'closed');
+      if (p === undefined) return undefined;
+      const m = this.#market(ctx, mint);
+      return { quantity: p.quantity, market: typeof m === 'string' ? null : m };
+    }, sol, ctx.now.receivedAt, {
+      slippageBps: step.minOutBelowTriggerBps, exitCost: n.signaturesPerTx * n.baseFeePerSignature + step.priorityFeeLamports + n.tip, maxAgeMs: policy.gates.maxQuoteAgeMs,
     });
-    return { ...h, openPositions };
   }
 }
 

@@ -6,6 +6,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { parsePool, poolKey } from '../../core/src/gates/index.ts';
+import { TRIPPED_PREFIX } from '../src/engine/strategy.ts';
 import { MINT, type Market, makeWorker, passingMarket } from './worker-harness.ts';
 
 type H = ReturnType<typeof makeWorker>;
@@ -75,6 +76,22 @@ describe('a held position priced from its pool\'s swap stream (POS-1)', () => {
     m.chainSwap('sell', (m.chainState.baseReserve * 20n) / 100n, h.worker.feed.openSlot);
     expect(await until(m, () => h.worker.book.positions[pid]!.status === 'closed', 20_000, ticks(h, m))).toBe(true);
     expect(decisions(h).some((r) => r[0] === 'exit blocked')).toBe(false);
+    await h.worker.stop();
+  });
+
+  it('risk judges the exit with the position marked from the swap-derived market (RISK-MARK): no unknown or stale mark', async () => {
+    const { h, m } = await entered();
+    const pid = position(h)!.id;
+    // The account snapshot that risk reads holds the open position once the fill's snapshot is released.
+    await until(m, () => false, 2_000, ticks(h, m));
+    m.chainSwap('sell', (m.chainState.baseReserve * 20n) / 100n, h.worker.feed.openSlot);
+    expect(await until(m, () => h.worker.book.positions[pid]!.status === 'closed', 20_000, ticks(h, m))).toBe(true);
+    const exit = decisions(h).find((r) => r[0] === 'exit')!;
+    const tripped = exit.find((x) => x.startsWith(TRIPPED_PREFIX))?.slice(TRIPPED_PREFIX.length).split(',') ?? [];
+    // The position itself still counts against maxOpen; its value is known and fresh.
+    expect(tripped).toContain('max_open_positions');
+    expect(tripped).not.toContain('mark_unknown');
+    expect(tripped).not.toContain('mark_stale');
     await h.worker.stop();
   });
 
