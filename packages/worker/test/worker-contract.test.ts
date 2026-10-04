@@ -22,7 +22,7 @@ import { RESERVE_PREFIX } from '../src/engine/strategy.ts';
 import type { HttpRequest } from '../src/providers/index.ts';
 import { DEFAULT_LIVE_FEED, LiveFeed } from '../src/providers/index.ts';
 import { HELIUS_FREE } from '../src/scheduler/index.ts';
-import { REGISTERED_STRATEGIES, UNREADABLE, parseConfig } from '../src/run/config.ts';
+import { REGISTERED_STRATEGIES, SLOT_MS, UNREADABLE, parseConfig, watchTimingProblem } from '../src/run/config.ts';
 import { Desk } from '../src/run/desk.ts';
 import type { FactContext } from '../src/run/facts.ts';
 import { Journal } from '../src/run/journal.ts';
@@ -42,6 +42,10 @@ describe('config and exit codes (§12.4)', () => {
       [{ ZEROED_MODE: 'paper' }, /no state directory/],
       [{ ...base, ZEROED_HEALTH_ADDR: '0.0.0.0:8787' }, /loopback/],
       [{ ...base, ZEROED_HEARTBEAT_MS: '10' }, /HEARTBEAT/],
+      [{ ...base, ZEROED_WATCH_EVERY_MS: '50' }, /ZEROED_WATCH_EVERY_MS/],
+      [{ ...base, ZEROED_WATCH_EVERY_MS: 'x' }, /ZEROED_WATCH_EVERY_MS/],
+      [{ ...base, ZEROED_WATCH_EVERY_MS: '2000', ZEROED_WATCH_STALE_MS: '1000' }, /ZEROED_WATCH_STALE_MS/],
+      [{ ...base, ZEROED_WATCH_LATENCY_MS: '10' }, /ZEROED_WATCH_LATENCY_MS/],
       [{ ...base, WATCHDOG_URL: 'http://plain.example' }, /https/],
       [{ ...base, ZEROED_WALLET: 'not-an-address' }, /ZEROED_WALLET/],
       [{ ...base, ZEROED_API_ADDR: '100.64.0.1:8788' }, /API address must be loopback/],
@@ -54,6 +58,23 @@ describe('config and exit codes (§12.4)', () => {
         expect(p.message).toMatch(why);
       }
     }
+  });
+
+  it('the position watch reads its period and stale limit from config (WATCH-1), 1 s and 3 s when unset', () => {
+    const watch = (env: Record<string, string>) => {
+      const p = parseConfig({ ...base, ...env }, () => null);
+      return p.ok ? p.config.watch : null;
+    };
+    expect(watch({})).toEqual({ everyMs: 200, staleMs: 500, latencyMs: 400 });
+    expect(watch({ ZEROED_WATCH_EVERY_MS: '300', ZEROED_WATCH_STALE_MS: '300', ZEROED_WATCH_LATENCY_MS: '100' })).toEqual({ everyMs: 300, staleMs: 300, latencyMs: 100 });
+    // Tied to the policy (review of #87): the oldest a watched market can be must stay below the quote age.
+    const policyAge = TRIAL_POLICY.gates.maxQuoteAgeMs;
+    const release = DEFAULT_LIVE_FEED.horizonSlots * SLOT_MS;
+    expect(watchTimingProblem(watch({})!, policyAge, release)).toBeNull();
+    expect(200 + 500 + 400 + release).toBeLessThan(policyAge);
+    expect(watchTimingProblem({ everyMs: 200, staleMs: 600, latencyMs: 400 }, policyAge, release)).toMatch(/must stay below the policy's quote age of 2000 ms/);
+    expect(watchTimingProblem({ everyMs: 200, staleMs: 599, latencyMs: 400 }, policyAge, release)).toBeNull();
+    expect(() => makeWorker({ config: { ZEROED_WATCH_STALE_MS: '1500' } })).toThrow(/quote age/);
   });
 
   it('reports its own release: ZEROED_GIT_SHA, else the release folder, else unknown', () => {
@@ -70,6 +91,9 @@ describe('config and exit codes (§12.4)', () => {
     const run = (env: Record<string, string>) => spawnSync(process.execPath, ['--no-warnings', 'packages/worker/src/main.ts'], { cwd: ROOT, env: { PATH: process.env['PATH'] ?? '', ...env }, encoding: 'utf8', timeout: 30_000 });
     const dir = tempState();
     expect(run({ ZEROED_STATE_DIR: dir, ZEROED_MODE: 'live' }).status).toBe(2);
+    const late = run({ ZEROED_STATE_DIR: dir, ZEROED_MODE: 'paper', ZEROED_WATCH_STALE_MS: '1500' });
+    expect(late.status).toBe(2);
+    expect(late.stderr).toMatch(/quote age/);
     const keyed = run({ ZEROED_STATE_DIR: dir, ZEROED_MODE: 'paper', BOT_PRIVATE_KEY: 'x' });
     expect(keyed.status).toBe(2);
     expect(keyed.stderr).toContain('BOT_PRIVATE_KEY');

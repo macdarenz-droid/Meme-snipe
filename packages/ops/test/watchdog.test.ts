@@ -101,6 +101,13 @@ describe('checks', () => {
 });
 
 describe('alert dedupe and escalation', () => {
+  it('flags the worker\'s own critical alerts (WATCH-1), and nothing for an empty or missing list', () => {
+    const a = evaluate(stored(hb({ critical: ['MintA: no fresh price (timeout)'] })), T0, L, noChain);
+    expect(a).toEqual([{ key: 'worker_critical', text: 'Worker critical: MintA: no fresh price (timeout).' }]);
+    expect(evaluate(stored(hb({ critical: [] })), T0, L, noChain)).toEqual([]);
+    expect(evaluate(stored(hb()), T0, L, noChain)).toEqual([]);
+  });
+
   it('sends once, repeats every 5 min in the first hour, then hourly, and always sends a cleared line', () => {
     const a = [{ key: 'heartbeat', text: 'No heartbeat.' }];
     const r1 = planAlerts({}, a, T0, L);

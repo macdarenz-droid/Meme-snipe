@@ -9,7 +9,7 @@ import { PUMP_AMM_PROGRAM, PUMP_PROGRAM, type TransactionRecord } from '../../..
 import type { SocketFactory, HttpClient, Secrets } from '../providers/index.ts';
 import { CoinbaseSolPrice, alchemyRpcUrl, heliusRpcUrl, heliusWsUrl, PumpPortalSource, RpcHttp, RpcStream, TxFetcher } from '../providers/index.ts';
 import {
-  ALCHEMY_FREE, HELIUS_FREE, HELIUS_WS_CREDITS_PER_BYTE, HELIUS_WS_CREDITS_PER_CONNECTION, JUPITER_FREE, P1, P2, P3,
+  ALCHEMY_FREE, HELIUS_FREE, HELIUS_WS_CREDITS_PER_BYTE, HELIUS_WS_CREDITS_PER_CONNECTION, JUPITER_FREE, P0, P1, P2, P3,
   RUGCHECK_FREE, Scheduler, type SchedulerSpec,
 } from '../scheduler/index.ts';
 import type { Timers } from '../scheduler/timers.ts';
@@ -18,6 +18,7 @@ import { SOL_PRICE_KEY } from '../engine/strategy.ts';
 import { PoolWatch } from './pool-watch.ts';
 import { LOOKUP_BOUNDS_MS, type QuotaStatus } from '../../../runner/src/contract.ts';
 import type { FeedSource, SourcesContext } from './worker.ts';
+import type { WatchRead } from './watch.ts';
 
 /** Pump's mint authority PDA: only `create`/`create_v2` mention it (venues.md, measured). */
 export const PUMP_CREATE_AUTHORITY = 'TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM';
@@ -170,6 +171,16 @@ export class LiveProviders {
       // Critical: without a fresh SOL price risk refuses every entry anyway; marked so the halt says why.
       { name: 'coinbase-ws', critical: true, sources: ['coinbase'], start: () => sol.start(), stop: () => sol.stop() },
     ];
+  }
+
+  /**
+   * WATCH-1's second path: Alchemy over HTTP, independent of the Helius socket the feed runs on, charged to Alchemy's
+   * scheduler at P0 (review of #87): it prices a held position's exit, only for open positions, only while their market
+   * is stale, at most T_max each, so the monthly budget's halt never takes the price an exit needs.
+   */
+  watchRead(): (addresses: readonly string[]) => Promise<WatchRead> {
+    const rpc = new RpcHttp({ provider: 'alchemy', url: () => alchemyRpcUrl(this.#o.secrets), http: this.#o.http, scheduler: this.alchemy, timeoutMs: 10_000 });
+    return (addresses) => rpc.getMultipleAccounts(addresses, P0);
   }
 
   /** SEED-1's backfill RPC: Helius, charged to its scheduler like every other call. */
