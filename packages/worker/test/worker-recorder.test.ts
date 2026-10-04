@@ -381,4 +381,38 @@ describe('a restore the strategy cannot use never stalls exits (EXIT-1e review B
     expect(late.booked).toBe(live.booked);
     expect(late.opened).toBeLessThan(late.booked);
   });
+
+  it('on the reconcile path, a booking earlier than the slot dating keeps the booking (EXIT-1g N4)', async () => {
+    const { replay } = await recordedBoot2();
+    let opened: number[] = [];
+    let early = 0;
+    replay((v) => {
+      const r = v as { exits: Record<string, { plan: Record<string, unknown> }>; openedAt: Record<string, number> };
+      // A booking an hour before the real fill: earlier than any slot dating of it.
+      early = Object.values(r.openedAt)[0]! - 3_600_000;
+      return {
+        exits: Object.fromEntries(Object.entries(r.exits).map(([pid, s]) => [pid, { ...s, plan: { ...s.plan, stopPrice: 'none' } }])),
+        openedAt: Object.fromEntries(Object.keys(r.openedAt).map((pid) => [pid, early])),
+        bookedWhen: Object.fromEntries(Object.keys(r.openedAt).map((pid) => [pid, 'reconcile'])),
+      };
+    }, 0, (st) => {
+      if (opened.length === 0) opened = Object.values(st.saved()).map((x) => x.plan.openedAtMs);
+    });
+    expect(opened).toEqual([early]);
+  });
+
+  it('a booking the journal could not place keeps its time and says why (EXIT-1g N6)', async () => {
+    const { replay } = await recordedBoot2();
+    const got = replay((v) => {
+      const r = v as { exits: Record<string, { plan: Record<string, unknown> }>; openedAt: Record<string, number> };
+      return {
+        exits: Object.fromEntries(Object.entries(r.exits).map(([pid, s]) => [pid, { ...s, plan: { ...s.plan, stopPrice: 'none' } }])),
+        openedAt: r.openedAt,
+        bookedWhen: Object.fromEntries(Object.keys(r.openedAt).map((pid) => [pid, 'unplaced: that boot has no reconcile line'])),
+      };
+    });
+    const said = got.filter((x) => x[0] === 'open time from the booking');
+    expect(said).toHaveLength(1);
+    expect(said[0]!.at(-1)).toBe('unplaced: that boot has no reconcile line');
+  });
 });
