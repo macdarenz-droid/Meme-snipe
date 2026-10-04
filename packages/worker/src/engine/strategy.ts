@@ -249,7 +249,7 @@ const runnableTracker = (t: Record<string, unknown>): boolean => {
   return big('peak', true) && big('trail', true) && big('lastSold', false)
     && num('partials', false) && num('partialSeq', true) && num('lastRung', true) && num('quoteFailures', false) && num('lastQuoteAtMs', true)
     && num('blockedAtMs', true) && num('blockedRetries', false) && typeof t['flatMet'] === 'boolean'
-    && (pending === null || pending === undefined || (Array.isArray(pending) && pending.every((r) => typeof r === 'string')));
+    && (pending === null || (Array.isArray(pending) && pending.every((r) => typeof r === 'string')));
 };
 
 const runnablePlan = (p: Record<string, unknown>): boolean =>
@@ -496,9 +496,6 @@ export class LiveStrategy implements Strategy {
         // trail and flat target start again from now (the plan, its stop and its open time are kept).
         out.push({ action: null, reasons: ['restore tracker refused', pid, 'malformed saved tracker; tracker reset'] });
         saved = { ...saved, tracker: newTracker() };
-      } else if (saved.tracker.pendingFull === undefined) {
-        // Saved before EXIT-1b added it.
-        saved = { ...saved, tracker: { ...saved.tracker, pendingFull: null } };
       }
       this.#exits.set(pid, saved);
       this.#bars.set(pid, [...saved.bars]);

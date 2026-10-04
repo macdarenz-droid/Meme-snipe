@@ -716,6 +716,45 @@ describe('a restart never extends a time stop (EXIT-1f)', () => {
   });
 });
 
+describe('the fallback plan opens at the first open event (EXIT-1f review B1)', () => {
+  it('an exit attempt left unfilled reopens the position (a second open event); a refused plan still opens at the entry fill, and the time stop runs on that clock', async () => {
+    const h = makeWorker();
+    const m = await entered(h);
+    const pid = positions(h).find((p) => p.status === 'open')!.id;
+    // The price falls through the stop: the exit attempt is sent, and the worker is killed before it can land.
+    const held = new Market(h, HELD);
+    await until(held, 10_000, () => Object.values(h.worker.book.intents).some((i) => i.intent.purpose === 'exit' && (i.status === 'submitted' || i.status === 'pending')), () => {
+      held.slot();
+      held.pool(700_000n);
+    });
+    await h.worker.kill();
+    // The next boot's reconcile settles that attempt unfilled: the position is open again.
+    const b2 = await reboot(h, LANDS);
+    await b2.m.run(400, 400, () => b2.m.slot());
+    expect(b2.b.worker.book.positions[pid]!.status).toBe('open');
+    await b2.b.worker.kill();
+    const ledger = openLedgerReader(join(h.stateDir, 'ledger.sqlite'));
+    const opens = ledger.positionEvents().filter((e) => e.positionId === pid && e.status === 'open').map((e) => Number(e.ts));
+    ledger.close();
+    expect(opens.length).toBeGreaterThanOrEqual(2);
+    const [first, last] = [opens[0]!, opens[opens.length - 1]!];
+    expect(last - first).toBeGreaterThan(10_000);
+    // Refuse the saved plan, and come back 5 s past T_max counted from the entry fill (still inside it from the reopen).
+    const file = exitsFile(h.stateDir);
+    const saved = file.read({});
+    file.write({ ...saved, [pid]: { ...saved[pid]!, plan: { ...saved[pid]!.plan, stopPrice: 'none' as unknown as bigint } } });
+    h.timers.set(first + TRIAL_POLICY.exits.universes.U2.tMaxMs + 5_000);
+    const { b, m: m3, first: said } = await reboot(h, LANDS);
+    expect(await until(m3, 4_000, () => b.worker.strategy.saved()[pid] !== undefined, () => m3.slot())).toBe(true);
+    expect(said('restore entry refused')).toHaveLength(1);
+    expect(b.worker.strategy.saved()[pid]!.plan.openedAtMs).toBe(first);
+    m3.pool();
+    expect(await until(m3, 4_000, () => said('exit').length > 0, () => m3.slot())).toBe(true);
+    expect((said('exit')[0]!['reasons'] as string[]).some((r) => r.startsWith('time_max'))).toBe(true);
+    await b.worker.stop();
+  });
+});
+
 describe('the --reconcile entry (the host unit\'s ExecStartPre)', () => {
   it('settles what a killed worker left open, writes open_intents 0 and exits 0, as a separate process', async () => {
     const h = makeWorker();

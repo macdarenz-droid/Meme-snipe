@@ -177,7 +177,7 @@ describe('a restore the strategy cannot use never stalls exits (EXIT-1e review B
     const start = readFileSync(join(h.stateDir, 'journal.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as { kind: string; boot: string; seed: string })
       .find((l) => l.kind === 'start' && l.boot === h2.worker.boot)!;
     /** Replays with the restore fact changed; `early` market events reach the strategy just before the restore. */
-    const replay = (restore: (value: unknown) => unknown, early = 0): readonly string[][] => {
+    const replay = (restore: (value: unknown) => unknown, early = 0, seen?: (s: LiveStrategy, restoreAt: number) => void): readonly string[][] => {
       let changed = 0;
       const altered = frames.map((f) => {
         const b = f.body as { type: string; key?: string; value?: unknown };
@@ -189,12 +189,16 @@ describe('a restore the strategy cannot use never stalls exits (EXIT-1e review B
       const { clock, feed } = replayRecorded(altered, releases);
       const inner = new LiveStrategy({ session: h2.session, rugs: RUG_CONFIG, config: h2.worker.strategyConfig });
       const before: string[][] = [];
+      let restoreAt = 0;
       const strategy: Strategy = {
         onMarket: (e, ctx) => {
           if (e.key === RESTORE_KEY) {
+            restoreAt = e.moment.receivedAt;
             for (let k = 0; k < early; k++) before.push(...inner.onMarket({ ...e, id: `${e.id}:early-${k}`, key: `test:early-${k}`, value: null }, ctx).map((d) => [...d.reasons]));
           }
-          return inner.onMarket(e, ctx);
+          const out = inner.onMarket(e, ctx);
+          seen?.(inner, restoreAt);
+          return out;
         },
       };
       const engine = new Engine({ clock, feed: engineFeed(feed, h2.session.policy).feed, strategy, runner: { run: () => undefined }, seed: start.seed, book: { maxOpenPositions: h2.session.policy.positions.maxOpen } });
@@ -303,5 +307,50 @@ describe('a restore the strategy cannot use never stalls exits (EXIT-1e review B
     const exit = got.find((x) => x[0] === 'exit');
     expect(exit).toBeDefined();
     expect(exit!.some((r) => r.startsWith('time_max'))).toBe(true);
+  });
+
+  it('a booked open time in the future is capped at now (EXIT-1f review N1)', async () => {
+    const { replay } = await recordedBoot2();
+    let opened: number[] = [];
+    let at = 0;
+    replay((v) => {
+      const exits = (v as { exits: Record<string, { plan: Record<string, unknown> }> }).exits;
+      // The saved plan refused, and a booked moment an hour ahead of the restore.
+      return {
+        exits: Object.fromEntries(Object.entries(exits).map(([pid, s]) => [pid, { ...s, plan: { ...s.plan, stopPrice: 'none' } }])),
+        openedAt: Object.fromEntries(Object.keys(exits).map((pid) => [pid, 4_102_444_800_000])),
+      };
+    }, 0, (st, restoreAt) => {
+      // The plan as first made (the position closes on the stop later in the replay).
+      if (opened.length === 0) opened = Object.values(st.saved()).map((x) => x.plan.openedAtMs);
+      at = restoreAt;
+    });
+    expect(opened).toHaveLength(1);
+    expect(opened[0]!).toBeLessThan(4_102_444_800_000);
+    expect(opened[0]!).toBeGreaterThanOrEqual(at);
+  });
+
+  it('a valid saved tracker is accepted as is, flatMet false included (EXIT-1f review N3)', async () => {
+    const { replay } = await recordedBoot2();
+    const got = replay((v) => {
+      const exits = (v as { exits: Record<string, { tracker: Record<string, unknown> }> }).exits;
+      return { ...(v as object), exits: Object.fromEntries(Object.entries(exits).map(([pid, s]) => [pid, { ...s, tracker: { ...s.tracker, flatMet: false } }])) };
+    });
+    expect(got.some((x) => x[0] === 'restore tracker refused')).toBe(false);
+    expect(got.find((x) => x[0] === 'restore')).toContain('1 exit plans and trackers restored');
+  });
+
+  it('a saved tracker missing a field is reset, never filled in by a guess (EXIT-1f review N3)', async () => {
+    const { replay } = await recordedBoot2();
+    for (const field of ['lastRung', 'partialSeq', 'pendingFull']) {
+      const got = replay((v) => {
+        const exits = (v as { exits: Record<string, { tracker: Record<string, unknown> }> }).exits;
+        return { ...(v as object), exits: Object.fromEntries(Object.entries(exits).map(([pid, s]) => {
+          const { [field]: _gone, ...rest } = s.tracker;
+          return [pid, { ...s, tracker: rest }];
+        })) };
+      });
+      expect(got.some((x) => x[0] === 'restore tracker refused')).toBe(true);
+    }
   });
 });
