@@ -3,6 +3,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { crashSite, eventKind } from '../src/run/crash-site.ts';
 import { RESTARTS_MAX, restartsAfterBoot } from '../src/run/state.ts';
+import { emptySummaryState, foldText } from '../src/run/summary.ts';
 import { heartbeatBody } from '../src/run/heartbeat.ts';
 import { EXIT, STATE_FILES } from '../../runner/src/contract.ts';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
@@ -196,6 +197,73 @@ describe('crash-site guarantees (review of #209)', () => {
     expect(eventKind(`logs:pump:CreateEvent:${'M'.repeat(44)}`)).toBe('logs:pump:CreateEvent');
     expect(eventKind(`pool:${'a'.repeat(30)}:state`)).toBe('pool:state');
     expect(eventKind(`chain:slot`)).toBe('chain:slot');
+  });
+});
+
+describe('the unit\'s --reconcile pre-step (RESTART-CAUSE)', () => {
+  /** The unit's two processes for one start: the `--reconcile` pre-step, then the main worker. */
+  const unitStart = async (stateDir: string, timers: ReturnType<typeof virtualTimers>, config: Record<string, string> = {}) => {
+    const pre = makeWorker({ stateDir, timers, phase: 'reconcile', config });
+    expect(await pre.worker.reconcileOnly()).toEqual({ ok: true });
+    return makeWorker({ stateDir, timers, config });
+  };
+
+  it('the main boot names the crash before the pre-step, not the pre-step; the restart is recorded once', async () => {
+    const stateDir = tempState();
+    const timers = virtualTimers(T);
+    const first = await unitStart(stateDir, timers);
+    await first.worker.reconcile();
+    first.worker.crashed(new RangeError('boom'));
+    await first.worker.kill();
+    const second = await unitStart(stateDir, timers);
+    expect(second.worker.health().last_exit).toMatch(/^stop: crash \(RangeError at packages\/worker\/test\/restart-alert\.test\.ts:\d+\)$/);
+    expect(second.worker.health().restarts_24h).toEqual({ planned: 0, deploy: 0, unplanned: 1 });
+    expect(existsSync(join(stateDir, 'last_exit.json'))).toBe(false);
+    await second.worker.stop();
+  });
+
+  it('a drill\'s marker survives the pre-step: the main boot reports it as planned', async () => {
+    const stateDir = tempState();
+    const timers = virtualTimers(T);
+    const first = await unitStart(stateDir, timers);
+    await first.worker.reconcile();
+    await first.worker.kill();
+    writeFileSync(join(stateDir, STATE_FILES.plannedRestart), JSON.stringify({ cause: 'drill restart-1 (crash)', at: timers.now() }));
+    const second = await unitStart(stateDir, timers);
+    expect(second.worker.health().last_exit).toBe('planned: drill restart-1 (crash)');
+    expect(second.worker.health().restarts_24h).toEqual({ planned: 1, deploy: 0, unplanned: 0 });
+    await second.worker.stop();
+  });
+
+  it('the pre-step\'s start line is marked and the daily summary counts real boots only', async () => {
+    const stateDir = tempState();
+    const timers = virtualTimers(T);
+    const a = await unitStart(stateDir, timers);
+    await a.worker.reconcile();
+    await a.worker.stop();
+    const b = await unitStart(stateDir, timers);
+    await b.worker.reconcile();
+    await b.worker.stop();
+    const text = readFileSync(join(stateDir, STATE_FILES.journal), 'utf8');
+    const starts = text.split('\n').filter((l) => l.includes('"kind":"start"'));
+    expect(starts).toHaveLength(4);
+    expect(starts.filter((l) => l.includes('"phase":"reconcile"'))).toHaveLength(2);
+    const s = emptySummaryState();
+    for (const l of text.split('\n')) foldText(s, l, new Date(T - 30 * 86_400_000).toISOString());
+    expect(Object.values(s.days).reduce((n, d) => n + d.starts, 0)).toBe(2);
+  });
+
+  it('the counts are read at report time: a day later with no restart, they are back to zero', async () => {
+    const stateDir = tempState();
+    const timers = virtualTimers(T);
+    const a = makeWorker({ stateDir, timers });
+    await a.worker.reconcile();
+    await a.worker.kill();
+    const b = makeWorker({ stateDir, timers });
+    expect(b.worker.health().restarts_24h).toEqual({ planned: 0, deploy: 0, unplanned: 1 });
+    timers.set(timers.now() + 86_400_000 + 1);
+    expect(b.worker.health().restarts_24h).toEqual({ planned: 0, deploy: 0, unplanned: 0 });
+    await b.worker.stop();
   });
 });
 

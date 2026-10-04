@@ -89,7 +89,8 @@ export const foldLine = (s: SummaryState, line: unknown): void => {
   const kind = line['kind'];
   const reasons = Array.isArray(line['reasons']) ? line['reasons'].filter((r): r is string => typeof r === 'string') : [];
   if (kind === 'start') {
-    day.starts += 1;
+    // The unit's `--reconcile` pre-step writes its own start line (RESTART-CAUSE): only real boots are counted.
+    if (line['phase'] !== 'reconcile') day.starts += 1;
     day.recorder = line['recorder'] === true || line['recorder'] === 'on' ? 'on' : line['recorder'] === false || line['recorder'] === 'off' ? 'off' : null;
     day.gitSha = fits(line['git_sha'], PATTERNS.SHA) ? line['git_sha'] : null;
     day.entryRule = fits(line['entry_rule'], PATTERNS.RULE) ? line['entry_rule'] : 'other';

@@ -144,6 +144,11 @@ export interface WorkerDeps {
   readonly seedMaxMs?: number;
   /** The most create signatures kept (default `CREATE_SIGS_MAX`; a test passes a small one). */
   readonly createSigsMax?: number;
+  /**
+   * RESTART-CAUSE: 'reconcile' for the unit's `--reconcile` pre-step: its start line is marked, it records no restart,
+   * and it hands its reading of the previous exit to the main boot.
+   */
+  readonly phase?: 'reconcile';
   /** The seed cap when no saved index restores (default `MAX_SEED_CREATES`; a test passes a small one). */
   readonly maxSeedCreates?: number;
   /** BT-1c's delay samples (the recorder's `delays` table): the confirmed read and the sampled processed watch. */
@@ -251,6 +256,21 @@ export const readJournalFills = (path: string, chunkBytes?: number): Record<stri
       // a torn line
     }
   }
+  return out;
+};
+
+/** RESTART-CAUSE: the `--reconcile` pre-step's reading of the previous exit, for the main boot that follows it. */
+export const EXIT_HANDOFF = 'last_exit.json';
+
+/** The pre-step's handoff, read and removed: its reading when recent and well formed (null is a first start), else undefined. */
+export const takeHandoff = (path: string, nowMs: number): string | null | undefined => {
+  if (!existsSync(path)) return undefined;
+  let out: string | null | undefined;
+  try {
+    const m = JSON.parse(readFileSync(path, 'utf8')) as { exit?: unknown; at?: unknown };
+    if ((typeof m.exit === 'string' || m.exit === null) && typeof m.at === 'number' && nowMs - m.at >= 0 && nowMs - m.at < PLANNED_RESTART_MS) out = typeof m.exit === 'string' ? m.exit.slice(0, 300) : null;
+  } catch {}
+  rmSync(path, { force: true });
   return out;
 };
 
@@ -384,8 +404,16 @@ export class Worker {
     this.#journal = new Journal(join(c.stateDir, STATE_FILES.journal), this.#boot, () => d.timers.now());
     this.#fillLines = readJournalFills(join(c.stateDir, STATE_FILES.journal));
     rmSync(join(c.stateDir, STATE_FILES.cleanStop), { force: true });
-    this.#lastExit = plannedRestart(join(c.stateDir, STATE_FILES.plannedRestart), now) ?? this.#journal.previousExit;
-    // RESTART-ALERT: restarts in the last 24 h, planned (a runner drill) or not, for the heartbeat and the daily summary.
+    // RESTART-CAUSE: the systemd unit runs a `--reconcile` pre-step (its own process) before each start, and it writes
+    // journal lines of its own. So the pre-step reads how the previous process ended and hands that reading to the main
+    // boot (EXIT_HANDOFF), which would otherwise read the pre-step's lines. A drill's marker is read the same way.
+    const handoff = join(c.stateDir, EXIT_HANDOFF);
+    // A handoff of null (the pre-step saw a first start) stands: it is not "no handoff".
+    const handed = takeHandoff(handoff, now);
+    this.#lastExit = handed !== undefined ? handed : plannedRestart(join(c.stateDir, STATE_FILES.plannedRestart), now) ?? this.#journal.previousExit;
+    if (d.phase === 'reconcile') writeFileSync(handoff, JSON.stringify({ exit: this.#lastExit, at: now }));
+    // Restarts in the last 24 h, planned (a runner drill), deploys and unplanned, for the heartbeat and the daily summary.
+    // The pre-step is not a boot of its own: only the main start records one.
     this.#restartsFile = restartsFile(c.stateDir);
     let saved: Restart[] = [];
     try {
@@ -394,11 +422,14 @@ export class Worker {
       // A damaged count never blocks a boot: it starts again from this boot.
       d.log('Restart counts unreadable (restarts.json): started again from this boot.');
     }
-    this.#restarts = restartsAfterBoot(saved, now, this.#lastExit, c.gitSha);
-    try {
-      this.#restartsFile.write([...this.#restarts]);
-    } catch {
-      d.log('Restart counts not saved (restarts.json).');
+    this.#restarts = saved;
+    if (d.phase !== 'reconcile') {
+      this.#restarts = restartsAfterBoot(saved, now, this.#lastExit, c.gitSha);
+      try {
+        this.#restartsFile.write([...this.#restarts]);
+      } catch {
+        d.log('Restart counts not saved (restarts.json).');
+      }
     }
     const timing = watchTimingProblem(d.config.watch, d.session.policy.gates.maxQuoteAgeMs, DEFAULT_LIVE_FEED.horizonSlots * SLOT_MS);
     if (timing !== null) throw new RangeError(timing);
@@ -450,6 +481,8 @@ export class Worker {
       entry_rule: c.strategy.name, qualifying: c.strategy.qualifying, paper_edge_ppm: c.strategy.paperEdgePpm, s0_salt: d.strategy.entryTiming === 'random' ? d.strategy.entrySalt : null,
       s0_diagnostic: d.strategy.s0Diagnostic === true ? S0_DIAGNOSTIC_PARTS : null,
       sell_only: [...this.#sellOnly],
+      // RESTART-CAUSE: the unit's `--reconcile` pre-step is marked, so the daily summary counts real boots only.
+      ...(d.phase === 'reconcile' ? { phase: 'reconcile' } : {}),
     });
     if (this.#journal.repaired) this.#journal.write('journal_repair', { detail: 'torn last line removed' });
     if (this.#sellOnly.length > 0) {

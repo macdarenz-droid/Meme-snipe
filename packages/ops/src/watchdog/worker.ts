@@ -7,10 +7,6 @@ import {
   parseCommand,
   parseHeartbeat,
   planAlerts,
-  NO_RESTARTS,
-  noteRestart,
-  restartLines,
-  type RestartState,
   statusText,
   takeLease,
   sameText,
@@ -103,12 +99,7 @@ export class Watchdog {
     if (!hb) return json({ error: 'bad heartbeat' }, 400);
     const prev = await this.state.storage.get<Stored>('hb');
     if (!isNewer(prev, hb)) return json({ error: 'replayed heartbeat' }, 409);
-    const now = Date.now();
-    // RESTART-ALERT: a new boot on the same release is an unplanned restart; the next check sends the line.
-    const restarts = (await this.state.storage.get<RestartState>('restarts')) ?? NO_RESTARTS;
-    const noted = noteRestart(prev, hb, now, restarts);
-    if (noted !== restarts) await this.state.storage.put('restarts', noted);
-    await this.state.storage.put('hb', { hb, receivedAt: now } satisfies Stored);
+    await this.state.storage.put('hb', { hb, receivedAt: Date.now() } satisfies Stored);
     // The owner's chat comes only from the server's signed heartbeat (paired there with /pair).
     if (typeof hb.owner_chat_id === 'string' && /^-?\d{1,20}$/.test(hb.owner_chat_id)) await this.state.storage.put('owner_chat', hb.owner_chat_id);
     const paused = await this.state.storage.get<{ at: number }>('paused');
@@ -213,9 +204,6 @@ export class Watchdog {
     if (failed) current.push(summaryAlert(failed.reason));
     const { lines, next } = planAlerts((await s.get<Record<string, ActiveAlert>>('alerts')) ?? {}, current, now, limits);
     await s.put('alerts', next);
-    const restarts = restartLines((await s.get<RestartState>('restarts')) ?? NO_RESTARTS, now, limits);
-    await s.put('restarts', restarts.next);
-    lines.push(...restarts.lines);
     if (lines.length) await this.say(lines.join('\n'));
     return { alerts: current.map((a) => a.key), sent: lines };
   }
