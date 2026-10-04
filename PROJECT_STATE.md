@@ -12,10 +12,12 @@
 - App name: Zeroed. Logo: "Slot" (a solid zero with a Z cut into it), files in `brand/`, rules in `docs/BRAND.md`.
 
 ## Phase
-Wave D, 4 Oct 4:25 PM Melbourne. 65 PRs merged since midnight on 4 Oct (the latest in `HANDOVER.md` §4). The owner finished the server, Tailscale, APK and ruleset steps at 2:31 PM, chose SPA for G1 at 2:33 PM, authorised code-only Deploy runs at 2:45 PM, moved the GitHub account to Pro at about 3:47 PM, chose the free Helius plan for now, and emailed Triton.
-- **Server:** re-installed at pin e28788a, paired, published on the tailnet only. It runs the stub worker, so the app shows "Server error" until SWITCH-1 (after RISK-MARK #103 and WORKER-1c #99): expected about 9 PM – 1 AM (±3 h).
-- **History:** the Old Faithful archive blocks our scanner. A check every 3 hours uses our real identity, never a disguise. DATA-2 (#111, a Helius `getBlock` reader) is in review; its free pilot runs after merge. An early look (BT-2e) runs the bot's own backtest on 1–2 free practice days, about Tue 6 – Wed 7 Oct.
-- **Building:** #103/#99 merges, SWITCH-1, STATS-1f, FACTS-1f, APP-3, EXIT-1g, MEM-1, ARCHIVE-CHECK, BT-2e.
+Wave D, 4 Oct 5:20 PM Melbourne. 69 PRs merged since midnight on 4 Oct (the latest in `HANDOVER.md` §4).
+- **Server:** re-installed at pin e28788a and on the tailnet. The real worker comes with SWITCH-1 #110, after WORKER-1c #99 and WATCH-1b #113: about 9 PM – 1 AM (±3 h).
+- **Practice trades:** the merged code could make no live entry: exec-health and H15 were unwired, and regime volume and survival plus H14's creates coverage need weeks of data or uptime. WORKER-1e #117 wires H15 and paper exec-health and adds a labelled S0-only diagnostic set, which the qualifying run refuses. Practice trades are expected about Mon 5 Oct.
+- **History:** the archive blocks our scanner. DATA-2 is merged and the free Helius pilot is running (run 37181739639). ARCHIVE-CHECK checks the archive every 3 hours with our real identity. Early look on free days: about Tue 6 – Wed 7 Oct.
+- **Research:** RES-4 (cost math by size and pool, six pre-registered ideas, one SPA family) in review. RES-5 (what separates surviving tokens at buy time) building, research only. RENT-1 #114 makes the scoring refund rent as the ruling says.
+- **Owner's estimate:** under about 2% chance of proof today (judgement), first measured numbers with the early look.
 
 ## Done
 - Owner rules in `AGENTS.md` and `CLAUDE.md`; the starting brief and the research in `docs/`.
@@ -30,7 +32,7 @@ Builders run as separate sessions; a fresh reviewer session checks each PR; the 
 
 | Task | What | State | Estimate (Melbourne) |
 |---|---|---|---|
-| Merge queue | #103, #99, SWITCH-1, #107, #98, #106, #97, #109, #111; merged this afternoon: #82, #104, #108, #90, #89 | moving one at a time | about 10–15 min each plus merge checks |
+| Merge queue | #99, #113, #110, #117, #109, #114, #107, #98, #106, #115, #116 (see HANDOVER §4) | moving one at a time | about 10–15 min each plus merge checks |
 | SWITCH-1 | e2e proof that the release worker starts on the host, a pre-switch smoke check, the `"worker": "release"` flip; then Deploy (code only) | building (01VM97); merges after #99 and #103 | Sun 4 Oct about 9 PM – Mon 1 AM (±3 h) |
 | EXIT-1f #107, STATS-1f #109 | exact restored open time; G1 on the registered SPA test | in review | today |
 | BT-2 #41 | study: observedTip in live and backtest, funder cluster, funnel count | building | needs historical days |

@@ -285,6 +285,13 @@ describe('holdout mode', () => {
     const st = register(a, 'h-core');
     expect(st.registry.entries[0]).toMatchObject({ attempt: 1, alpha: 0.04, requirement: REQ, fromDay: '2026-09-20', toDay: '2026-09-20', tailEnd: '2026-09-21' });
     expect(st.registry.rule).toEqual({ windowDays: 28, tailDays: 0, ...TEST_FLOOR });
+    // STATS-1f: the registry is created with the plan and stamps G1's test from the research config; it never changes.
+    expect(st.registry.g1Test).toBe(RESEARCH_CONFIG.g1Test);
+    expect(RESEARCH_CONFIG.g1Test).toBe('spa');
+    const d = authority('g1-dsr');
+    const dsr = opts({ research: { ...RESEARCH, g1Test: 'dsr' } });
+    setHoldoutPlan(d, planOf(dsr, 1), dsr.research, TEST_FLOOR);
+    expect(readHoldoutStore(d.registryPath).registry.g1Test).toBe('dsr');
     // Without the test floor, the owner's 300 trades on 10 days hold: a smaller requirement is refused, nothing written.
     const p = authority('floor');
     setHoldoutPlan(p, planOf(o, 1), o.research);
