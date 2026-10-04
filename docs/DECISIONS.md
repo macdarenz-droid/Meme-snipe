@@ -342,6 +342,49 @@ The second reviewer, the third opinion and the supervisor reached one position o
 - **Holdout attempt rules live in core.** Once STATS-1c lands, α, the attempt index, the reasons an attempt may be spent (each proven against the store) and the required size (n_power recorded at registration, never taken from the caller) are decided in `core/src/stats/holdout.ts` only.
 - **One implementation for shared facts.** FACTS-1's graduates aggregation is exported and used by both the live producer and BT-2; the live worker evaluates gates per read stage (`only`) as the backtest does, so both record the same reject reasons for G3.
 
+### Afternoon decisions (2026-10-04, owner and supervisor)
+
+Owner decisions (the owner's words, recorded by the supervisor):
+- **G1 gates on the SPA test** (2:33 PM, "Spa"). The clamped per-trade DSR is still reported, but no longer gates. STATS-1f (#109) makes G1's test a registered choice (`g1Test`), fixed per attempt; a registration without it fails G1.
+- **A G1 test switch is a later upgrade, not now** (2:36 PM): the owner may later choose SPA or DSR in a setting. Both paths stay implemented and tested; no switch is built.
+- **Code-only Deploy runs** (2:45 PM): the supervisor may run the Deploy workflow to move the server to new code, never to send keys.
+  - The `DEPLOY_CODE` secret was deleted by the owner at 2:47 PM, because the old code had been shown in chat.
+  - A run must log "No DEPLOY_CODE secret: code update only, no keys sent." The first run, 37174740782, did.
+- **CI-2 allowed** (#104): feature branches run CI through their PR only, drafts wait, and a newer PR head cancels the older run.
+
+Supervisor rulings:
+- **Never remove a guard.** A change that drops an existing guard is reverted, even if the reviewer calls it redundant: guards are cheap and their absence is found only by the failure they prevent. Applied three times: `hardAllowsEntry` (#106), the deployer-check max-guard (#99) and the `#lifecycle` waiting line (#107).
+- **A halt raised before the restore keeps both layers:** the worker's restart ordering (#82) and the strategy's restore gate (#102). Neither replaces the other.
+- **Deployer rug checks (WORKER-1c item 1):**
+  - one cached answer per creator;
+  - a slot guard on every answer (an older answer never overwrites a newer one);
+  - at most one check in flight per creator;
+  - roll forward only;
+  - the credit budget reserved before the read.
+- **Executable marks (RISK-MARK):**
+  - Each open position is marked at the worst executable rung, with a fresh SOL price.
+  - Without a mark, the exit fallback value applies.
+  - An exception while marking an entry is caught.
+  - Of #99 and #103, whichever merges second takes the day and week boundary marks from the marked account.
+- **A restored position keeps its clock (EXIT-1f).**
+  - Its open time is the exact timestamp of its ledger open event.
+  - The slot-time bound is only a fallback.
+  - A time stop can never restart after a restart.
+- **G3 observation tail:**
+  - The tail is at least the maximum hold plus the exit ladder.
+  - Decisions are cut at the evaluation time, and outcomes are read up to the cut plus the tail.
+  - Censoring is symmetric.
+- **Observation delay re-stamps receipt time only.** `GateContext.observedTip` is required in live and in the backtest (live uses the feed tip), never backtest-only, with a test that live decisions stay byte-identical.
+- **BT-2's funder cluster comes from the funding supplement.** A missing supplement fails G2; it never passes by default.
+- **The real-worker switch waits for #82, #99 and #103,** so the dry run cannot latch the weekly limit on unmarked positions. The switch (`ops/host-config.json` `"worker": "release"`) is its own reviewed PR, followed by a code-only Deploy.
+- **`zeroed-tailscale` never calls Funnel** (OPS-1h #108). `tailscale funnel … off` first runs Funnel's capability check, which can block forever on a tailnet that never enabled Funnel.
+  - The script checks first that HTTPS certificates and the `https` capability are present.
+  - It bounds every call and never hides a prompt.
+  - It accepts only the exact serve config: TCP 443 HTTPS, one web host proxying `/` to 127.0.0.1:8788, and no Funnel.
+  - The tailnet's DNS name is kept out of the repo.
+- **Stored data:** `account.json` marks, `deployer-state.json` and `fill-budget.json` hold only the bot's own state and public market data. The supervisor approved them under the stored-data ruling.
+- **No merge without CI.** While GitHub Actions is locked (owner billing, from 3:20 PM), nothing merges, whatever local runs show. The merge rule needs green checks on the exact head.
+
 ## Order and position lifecycle (CORE-1, `packages/core/src/lifecycle`)
 
 - **2026-10-03 · A failed signature read is terminal only at `finalized`.** A failure read at `processed` or `confirmed` may come from a fork that is later dropped, and the original transaction could still land. Acting on it would allow a replacement, which could mean a second buy or an oversell. Waiting for `finalized` costs about 13 s. A success read counts from `confirmed`: booking a fill early is safe, because the books stay open until every other attempt is dead.
@@ -695,6 +738,24 @@ Built to the supervisor's revised spec and the consensus rulings that followed i
 - **2026-10-04 · Demotion power, per universe at its own cap** (−10% decay, 20 trades a day, 30 days, ρ 0 / 0.05 / 0.1):
   - U2 (cap +30%): 0.987 / 0.983 / 0.927.
   - **U1 (cap +40%): 0.713 / 0.613 / 0.523, below the 80% target.** U1 would need 40 trading days (1.0 / 0.99 / 0.93) or a −12.5% detectable decay at 30 days (0.997 / 0.987 / 0.91). Supervisor ruling (2026-10-04): the shortfall is recorded as is and nothing changes in STATS-1c. Follow-up STATS-1d: U1 runs the current window plus a 40-day window and demotes on either (more demotion is the safe direction, so the owner is not needed), reporting the combined false-demotion rate and power. Until then the risk layer's hard limits are the backstop.
+- **2026-10-04 · STATS-1e: SPA resamples short regimes merged, calibrated on the real layout** (supervisor ruling after the #62 review).
+  - **Merge rule, registered in advance (`mergeShortRegimes`):** a regime shorter than the longest expected block (7 days) merges, for resampling only, into its preceding neighbour, or into the following one when it is first. No day is dropped.
+  - **On the real practice layout:** 07-20 to 09-21, 64 days, with B2 on day 1, B3 on day 51 and B4 on day 54. The registered regimes [0,1) [1,51) [51,54) [54,64) resample as [0,54) [54,64). `spaTest` reports the regimes it used (`resampleRegimes`).
+  - **Calibration:** 300 runs per scenario at zero edge on independent seeds, all 12 scenarios. The promotion rule, which gates, passed a variant in at most 0.67% of runs (duplicates). The global test rejected in at most 4.3% (duplicates, autocorrelated), so both stay under 5%.
+  - **Before the merge:** the reviewer measured up to 7.0% global (common shock) and 1.3% for the promotion rule. Per-scenario numbers are in `stats-simulation.test.ts`, and CI repeats the first 40 runs.
+  - **Review of #96:**
+    - A deterministic test shows the bootstrap resamples within the merged regimes: with the same seeds, the registered layout gives exactly the merged layout's p-values and passing set, and not the unmerged one's (this kills mutant S1).
+    - CI pins the exact counts of the 40 seeded runs.
+    - The full 300-run calibration runs by hand in `.github/workflows/spa-calibration.yml`, which uploads its counts as an artifact for the sign-off pack.
+  - **G1:** stays on the clamped DSR until the owner signs off.
+  - **G3 wording:** the dry-run inputs are cut at the registered end for decisions, and outcomes of trades entered by then are read to the end plus the outcome tail.
+- **2026-10-04 · STATS-1d: a 40-day trailing reverse e-process beside the full-history one, for every universe** (supervisor ruling for U1; applying it to U2 too is safe, because it only adds a trigger). Measured with daily evaluation, 100 runs per cell:
+  - **Decay from the start:** the window adds nothing within 30 days, because the two detectors see the same days. U1 stays at 0.71 at ρ 0, as STATS-1c measured. This part of the shortfall remains, and the risk layer's hard limits stay its backstop.
+  - **Decay after a good stretch** (60 days at +5%, then −10%): caught within 40 days of the decay by U1 in 1.0 / 0.95 of runs, and by U2 in 1.0 / 1.0 (ρ 0 / 0.1).
+  - **Full history alone** catches that late decay in at most 0.17 of runs. After a good stretch it has spent weeks betting on a decay that did not come, and it has lost the wealth it needs. This was a hole for every universe, and the window closes it.
+  - **No false demotion** occurred during the good stretch.
+  - **False demotion at zero edge over 120 days:** U1 0 / 0.01, U2 0 / 0.21 (ρ 0 / 0.1). U2's 0.21 at ρ 0.1 comes from its +30% cap clipping the day shocks, the intended safe side: full history alone gives 0.18. The window adds at most 5 points.
+  - `DEMOTION_TRAILING_DAYS` is fixed at 40 and is not an override.
 - **2026-10-04 · STATS-1c review fixes (STATS reviewer, at 7c13f54).**
   - **G2 opens at the frozen day requirement.** It used MIN_DAYS, so a holdout frozen at any other day count could never be scored. A frozen day count under MIN_DAYS fails G2, and freezeRequirement refuses one outside a test rule.
   - **The DSR moment clamp is pinned by a gate test:** a two-point return with skewness 0.87 and kurtosis 1.76 gives 0.9509 unclamped and 0.9388 clamped, so G1 fails.
