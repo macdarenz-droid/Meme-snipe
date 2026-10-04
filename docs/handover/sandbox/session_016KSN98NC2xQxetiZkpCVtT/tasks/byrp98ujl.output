@@ -1,0 +1,6 @@
+warning: push negotiation failed; proceeding anyway with push
+      Tests  3742 passed (3742)
+   d79907c..81890aa  claude/backtest-1d -> claude/backtest-1d
+81890aa
+
+[exited with code 0]

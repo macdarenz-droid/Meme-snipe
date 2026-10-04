@@ -1,0 +1,102 @@
+2026-10-03T11:18:00.001Z open
+2026-10-03T11:18:00.082Z msg {"message":"Successfully subscribed to token creation events."}
+2026-10-03T11:18:00.104Z msg {"message":"Subscribed to 'migration' events."}
+2026-10-03T11:18:00.847Z msg {"message":"'subscribeTokenTrade' and 'subscribeAccountTrade' methods are only available when connecting with an API key funded with at least 0.02 SOL."}
+2026-10-03T11:18:04.286Z msg {"message":"'subscribeTokenTrade' and 'subscribeAccountTrade' methods are only available when connecting with an API key funded with at least 0.02 SOL."}
+2026-10-03T11:18:06.578Z msg {"message":"'subscribeTokenTrade' and 'subscribeAccountTrade' methods are only available when connecting with an API key funded with at least 0.02 SOL."}
+2026-10-03T11:18:08.158Z msg {"message":"'subscribeTokenTrade' and 'subscribeAccountTrade' methods are only available when connecting with an API key funded with at least 0.02 SOL."}
+2026-10-03T11:18:11.762Z msg {"message":"'subscribeTokenTrade' and 'subscribeAccountTrade' methods are only available when connecting with an API key funded with at least 0.02 SOL."}
+2026-10-03T11:18:11.762Z msg {"message":"'subscribeTokenTrade' and 'subscribeAccountTrade' methods are only available when connecting with an API key funded with at least 0.02 SOL."}
+2026-10-03T11:18:19.137Z msg {"message":"'subscribeTokenTrade' and 'subscribeAccountTrade' methods are only available when connecting with an API key funded with at least 0.02 SOL."}
+2026-10-03T11:18:19.436Z msg {"message":"'subscribeTokenTrade' and 'subscribeAccountTrade' methods are only available when connecting with an API key funded with at least 0.02 SOL."}
+2026-10-03T11:18:19.881Z msg {"message":"'subscribeTokenTrade' and 'subscribeAccountTrade' methods are only available when connecting with an API key funded with at least 0.02 SOL."}
+2026-10-03T11:18:19.881Z msg {"message":"'subscribeTokenTrade' and 'subscribeAccountTrade' methods are only available when connecting with an API key funded with at least 0.02 SOL."}
+2026-10-03T11:18:20.785Z msg {"message":"'subscribeTokenTrade' and 'subscribeAccountTrade' methods are only available when connecting with an API key funded with at least 0.02 SOL."}
+2026-10-03T11:18:21.712Z msg {"message":"'subscribeTokenTrade' and 'subscribeAccountTrade' methods are only available when connecting with an API key funded with at least 0.02 SOL."}
+2026-10-03T11:18:30.752Z msg {"message":"'subscribeTokenTrade' and 'subscribeAccountTrade' methods are only available when connecting with an API key funded with at least 0.02 SOL."}
+2026-10-03T11:18:31.335Z msg {"message":"'subscribeTokenTrade' and 'subscribeAccountTrade' methods are only available when connecting with an API key funded with at least 0.02 SOL."}
+2026-10-03T11:18:31.874Z msg {"message":"'subscribeTokenTrade' and 'subscribeAccountTrade' methods are only available when connecting with an API key funded with at least 0.02 SOL."}
+2026-10-03T11:18:37.582Z msg {"message":"'subscribeTokenTrade' and 'subscribeAccountTrade' methods are only available when connecting with an API key funded with at least 0.02 SOL."}
+2026-10-03T11:18:48.697Z msg {"message":"'subscribeTokenTrade' and 'subscribeAccountTrade' methods are only available when connecting with an API key funded with at least 0.02 SOL."}
+2026-10-03T11:18:52.038Z msg {"message":"'subscribeTokenTrade' and 'subscribeAccountTrade' methods are only available when connecting with an API key funded with at least 0.02 SOL."}
+2026-10-03T11:18:53.470Z msg {"message":"'subscribeTokenTrade' and 'subscribeAccountTrade' methods are only available when connecting with an API key funded with at least 0.02 SOL."}
+2026-10-03T11:18:56.074Z msg {"message":"'subscribeTokenTrade' and 'subscribeAccountTrade' methods are only available when connecting with an API key funded with at least 0.02 SOL."}
+2026-10-03T11:18:59.015Z stats new=20 mig=1 trades=0 watched=20
+2026-10-03T11:19:04.001Z msg {"message":"'subscribeTokenTrade' and 'subscribeAccountTrade' methods are only available when connecting with an API key funded with at least 0.02 SOL."}
+2026-10-03T11:19:08.513Z msg {"message":"'subscribeTokenTrade' and 'subscribeAccountTrade' methods are only available when connecting with an API key funded with at least 0.02 SOL."}
+2026-10-03T11:19:13.758Z msg {"message":"'subscribeTokenTrade' and 'subscribeAccountTrade' methods are only available when connecting with an API key funded with at least 0.02 SOL."}
+2026-10-03T11:19:17.412Z msg {"message":"'subscribeTokenTrade' and 'subscribeAccountTrade' methods are only available when connecting with an API key funded with at least 0.02 SOL."}
+2026-10-03T11:19:17.888Z msg {"message":"'subscribeTokenTrade' and 'subscribeAccountTrade' methods are only available when connecting with an API key funded with at least 0.02 SOL."}
+2026-10-03T11:19:18.250Z msg {"message":"'subscribeTokenTrade' and 'subscribeAccountTrade' methods are only available when connecting with an API key funded with at least 0.02 SOL."}
+2026-10-03T11:19:20.693Z msg {"message":"'subscribeTokenTrade' and 'subscribeAccountTrade' methods are only available when connecting with an API key funded with at least 0.02 SOL."}
+2026-10-03T11:19:20.903Z msg {"message":"'subscribeTokenTrade' and 'subscribeAccountTrade' methods are only available when connecting with an API key funded with at least 0.02 SOL."}
+2026-10-03T11:19:21.263Z msg {"message":"'subscribeTokenTrade' and 'subscribeAccountTrade' methods are only available when connecting with an API key funded with at least 0.02 SOL."}
+2026-10-03T11:19:26.628Z msg {"message":"'subscribeTokenTrade' and 'subscribeAccountTrade' methods are only available when connecting with an API key funded with at least 0.02 SOL."}
+2026-10-03T11:19:30.130Z msg {"message":"'subscribeTokenTrade' and 'subscribeAccountTrade' methods are only available when connecting with an API key funded with at least 0.02 SOL."}
+2026-10-03T11:19:32.945Z msg {"message":"'subscribeTokenTrade' and 'subscribeAccountTrade' methods are only available when connecting with an API key funded with at least 0.02 SOL."}
+2026-10-03T11:19:35.259Z msg {"message":"'subscribeTokenTrade' and 'subscribeAccountTrade' methods are only available when connecting with an API key funded with at least 0.02 SOL."}
+2026-10-03T11:19:35.259Z msg {"message":"'subscribeTokenTrade' and 'subscribeAccountTrade' methods are only available when connecting with an API key funded with at least 0.02 SOL."}
+restart 2026-10-03T11:19:43Z
+2026-10-03T11:19:48.286Z open
+2026-10-03T11:19:48.340Z msg {"message":"Successfully subscribed to token creation events."}
+2026-10-03T11:19:48.355Z msg {"message":"Subscribed to 'migration' events."}
+2026-10-03T11:20:48.015Z stats new=25 mig=1 trades=0 watched=0
+2026-10-03T11:21:48.017Z stats new=41 mig=3 trades=0 watched=0
+2026-10-03T11:22:48.019Z stats new=79 mig=6 trades=0 watched=0
+2026-10-03T11:23:48.020Z stats new=114 mig=6 trades=0 watched=0
+2026-10-03T11:24:48.020Z stats new=155 mig=6 trades=0 watched=0
+2026-10-03T11:25:48.022Z stats new=187 mig=6 trades=0 watched=0
+2026-10-03T11:26:48.025Z stats new=214 mig=7 trades=0 watched=0
+2026-10-03T11:27:48.151Z open
+2026-10-03T11:27:48.212Z msg {"message":"Successfully subscribed to token creation events."}
+2026-10-03T11:27:48.217Z msg {"message":"Subscribed to 'migration' events."}
+restart2 2026-10-03T11:27:51Z (removed RPC holder calls)
+2026-10-03T11:28:47.793Z stats new=36 mig=0 trades=0 watched=0
+2026-10-03T11:29:47.797Z stats new=59 mig=0 trades=0 watched=0
+2026-10-03T11:30:47.801Z stats new=81 mig=0 trades=0 watched=0
+2026-10-03T11:31:47.802Z stats new=127 mig=1 trades=0 watched=0
+2026-10-03T11:32:47.805Z stats new=157 mig=1 trades=0 watched=0
+2026-10-03T11:33:47.808Z stats new=183 mig=2 trades=0 watched=0
+2026-10-03T11:34:47.811Z stats new=215 mig=3 trades=0 watched=0
+2026-10-03T11:35:47.814Z stats new=238 mig=6 trades=0 watched=0
+2026-10-03T11:36:47.815Z stats new=268 mig=6 trades=0 watched=0
+2026-10-03T11:37:47.819Z stats new=287 mig=7 trades=0 watched=0
+2026-10-03T11:38:47.819Z stats new=305 mig=8 trades=0 watched=0
+2026-10-03T11:39:47.819Z stats new=353 mig=8 trades=0 watched=0
+2026-10-03T11:40:47.821Z stats new=396 mig=8 trades=0 watched=0
+2026-10-03T11:41:47.825Z stats new=422 mig=8 trades=0 watched=0
+2026-10-03T11:42:47.829Z stats new=433 mig=8 trades=0 watched=0
+2026-10-03T11:43:47.834Z stats new=450 mig=9 trades=0 watched=0
+2026-10-03T11:44:47.837Z stats new=473 mig=9 trades=0 watched=0
+2026-10-03T11:45:02.327Z close
+2026-10-03T11:45:05.615Z open
+2026-10-03T11:45:05.659Z msg {"message":"Successfully subscribed to token creation events."}
+2026-10-03T11:45:05.659Z msg {"message":"Subscribed to 'migration' events."}
+2026-10-03T11:45:47.841Z stats new=503 mig=9 trades=0 watched=0
+2026-10-03T11:46:47.843Z stats new=529 mig=9 trades=0 watched=0
+2026-10-03T11:47:47.844Z stats new=552 mig=9 trades=0 watched=0
+2026-10-03T11:48:47.846Z stats new=576 mig=9 trades=0 watched=0
+2026-10-03T11:49:47.849Z stats new=598 mig=9 trades=0 watched=0
+2026-10-03T11:50:47.853Z stats new=627 mig=11 trades=0 watched=0
+2026-10-03T11:51:47.856Z stats new=657 mig=11 trades=0 watched=0
+2026-10-03T11:52:47.857Z stats new=672 mig=12 trades=0 watched=0
+2026-10-03T11:53:47.861Z stats new=695 mig=12 trades=0 watched=0
+2026-10-03T11:54:47.865Z stats new=721 mig=12 trades=0 watched=0
+2026-10-03T11:55:47.866Z stats new=766 mig=12 trades=0 watched=0
+2026-10-03T11:56:47.868Z stats new=798 mig=14 trades=0 watched=0
+2026-10-03T11:57:47.869Z stats new=826 mig=14 trades=0 watched=0
+2026-10-03T11:58:47.871Z stats new=865 mig=15 trades=0 watched=0
+2026-10-03T11:59:47.873Z stats new=902 mig=15 trades=0 watched=0
+2026-10-03T12:00:47.873Z stats new=949 mig=15 trades=0 watched=0
+2026-10-03T12:01:47.875Z stats new=971 mig=16 trades=0 watched=0
+2026-10-03T12:02:47.875Z stats new=1001 mig=16 trades=0 watched=0
+2026-10-03T12:03:47.893Z stats new=1027 mig=16 trades=0 watched=0
+2026-10-03T12:04:47.897Z stats new=1046 mig=16 trades=0 watched=0
+2026-10-03T12:05:47.898Z stats new=1066 mig=16 trades=0 watched=0
+2026-10-03T12:06:47.900Z stats new=1093 mig=17 trades=0 watched=0
+2026-10-03T12:07:47.904Z stats new=1122 mig=19 trades=0 watched=0
+2026-10-03T12:08:47.905Z stats new=1152 mig=20 trades=0 watched=0
+2026-10-03T12:09:47.908Z stats new=1181 mig=21 trades=0 watched=0
+2026-10-03T12:10:47.909Z stats new=1211 mig=21 trades=0 watched=0
+2026-10-03T12:11:47.911Z stats new=1232 mig=21 trades=0 watched=0
+stopped 2026-10-03T12:12:35Z by analyst (time budget)
