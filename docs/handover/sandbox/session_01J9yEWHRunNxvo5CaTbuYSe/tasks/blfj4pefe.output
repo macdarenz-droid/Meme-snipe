@@ -1,0 +1,14 @@
+     × independent trades: close to the textbook n; power at n ≥ 80% and below it < 80% 148532ms
+     × intra-day correlation raises n by about the design effect; three universes raise it further 352188ms
+     × a control as good as the strategy makes the S0 comparison bind 383503ms
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 3 ⎯⎯⎯⎯⎯⎯⎯
+AssertionError: expected 789 to be less than 388.8
+Error: Test timed out in 180000ms.
+AssertionError: expected 2096 to be greater than 4016
+      Tests  3 failed | 82 passed (85)
+
+real	14m46.097s
+user	15m27.903s
+sys	0m7.310s
+
+[exited with code 0]

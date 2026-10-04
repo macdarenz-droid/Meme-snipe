@@ -1,0 +1,60 @@
+{
+ "commit": "e3b3dd8fd8ab5639e634979f8cb27c823a81efcd",
+ "dataset": {
+  "dir": "ds",
+  "manifestSha256": "f541dfe46faac61b020d6234bf5e027494118223801d22bffca69be6809bf11f",
+  "days": [
+   "2026-09-20"
+  ],
+  "complete": [
+   true
+  ]
+ },
+ "scenario": "base",
+ "seed": "s0-1",
+ "hashes": [
+  "28eb9d39fa14358d4928a4216e9c62206f53dbbaccf32cf8e65387873ab47c18",
+  "28eb9d39fa14358d4928a4216e9c62206f53dbbaccf32cf8e65387873ab47c18"
+ ],
+ "identicalReplays": true,
+ "leak": {
+  "ok": true,
+  "violations": []
+ },
+ "stats": {
+  "rows": 49501,
+  "events": 4888,
+  "crashes": 0,
+  "crash": null,
+  "illegalStates": 0,
+  "unreconciledIntents": 0,
+  "mirrorMatches": true,
+  "skippedSwaps": 0,
+  "unquotableSwaps": 0,
+  "alerts": {},
+  "elapsedMs": 252
+ },
+ "throughput": {
+  "rows": 49501,
+  "elapsedMs": [
+   252,
+   132
+  ],
+  "rowsPerSecond": 196433,
+  "days": 1,
+  "projected30DaysMinutes": 0
+ },
+ "candidates": 1,
+ "entries": 0,
+ "trades": 0,
+ "alerts": {},
+ "regimeBoundaries": [],
+ "tradesAcrossRegimeBoundary": 0,
+ "attempts": {
+  "filled": 0,
+  "failed": 1,
+  "dropped": 0,
+  "expired": 0,
+  "in_flight": 0
+ }
+}

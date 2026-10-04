@@ -96,8 +96,6 @@ export interface FillScenario {
   readonly slippagePpm: bigint;
   /** Take-profit judged on the trade's wick or on the slot's close (§11: conservative uses close). For the exit rules. */
   readonly takeProfit: 'wick' | 'close';
-  /** False: token-account rent counts as never returned (conservative). */
-  readonly rentRecovery: boolean;
   /**
    * The final sell of a token account closes it in the same transaction (atomic sell-and-close). Share of such
    * transactions whose close succeeds, ppm; a failed close fails the whole transaction (the sell rolls back, the fee is

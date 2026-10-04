@@ -1,0 +1,10 @@
+Working in /root/z/e2e
+PASS  fake GitHub and Telegram up at http://172.17.0.1:8787
+host.Dockerfile:2
+--------------------
+   1 |     # A fresh Ubuntu 24.04 with systemd as PID 1, standing in for a new Vultr server (ops/test/e2e.sh).
+   2 | >>> FROM ubuntu:24.04
+   3 |     RUN apt-get update -q && DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends \
+   4 |           systemd systemd-sysv dbus curl ca-certificates iproute2 && apt-get clean && rm -rf /var/lib/apt/lists/*
+--------------------
+ERROR: failed to build: failed to solve: ubuntu:24.04: failed to resolve source metadata for docker.io/library/ubuntu:24.04: unexpected status from HEAD request to https://registry-1.docker.io/v2/library/ubuntu/manifests/24.04: 429 Too Many Requests

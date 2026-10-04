@@ -18,7 +18,7 @@ import {
   CREATED_AT, DEV, FEE_CONTEXT, MIGRATED_AT, MINT, POOL, POOL_ADDRESS, SLOT, SOL_PRICE, SUPPLY, T, passingFacts, roundTrip,
 } from '../../core/test/gates/world.ts';
 import { EXEC_HEALTH_KEY, TX_CREATE_PREFIX, holdersKey, lpKey, migrationKey, poolKey, simKey, softKey, streamKey, xcheckKey, type FactObs } from '../../core/src/gates/index.ts';
-import { SOL_PRICE_KEY, feesKey } from '../src/engine/strategy.ts';
+import { SOL_PRICE_KEY, feesKey, type StrategyConfig } from '../src/engine/strategy.ts';
 import { type MicroUsd, microUsdToLamports } from '../../core/src/units/index.ts';
 import type { PoolState } from '../../core/src/amm/index.ts';
 import { RAW, STREAMS } from '../../core/src/facts/index.ts';
@@ -147,7 +147,7 @@ export const LANDS = { ...FILL_CONFIG.scenarios[PAPER_SCENARIO], landPpm: { pump
 /** Boots made per state folder: a test's n-th worker is `boot-<n>` whatever the process, its pid or the other tests. */
 const boots = new Map<string, number>();
 
-export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof LANDS; stateDir?: string; timers?: TestTimers; edgePpm?: bigint; http?: HttpClient; key?: string | null; config?: Record<string, string>; fetched?: string[]; found?: boolean; facts?: FactSource[]; seed?: (r: SeedRequest) => Promise<SeedResult>; seedWaitMs?: number; entry?: { timing: 'gates' | 'random'; salt: string }; sources?: (ctx: SourcesContext) => FeedSource[]; exposureRpc?: SeedRpc; ops?: WorkerDeps['ops']; universe?: 'U1' | 'U2'; cutRpc?: (ms: number) => void; seedMaxMs?: number; simulate?: (leg: SimLeg) => Promise<DryRunRecord>; worldFault?: WorkerDeps['worldFault']; watchRead?: WorkerDeps['watchRead'] | null; watchHalted?: () => boolean; schedulers?: NonNullable<WorkerDeps['schedulers']>; markedHistory?: WorkerDeps['markedHistory'] } = {}): Harness => {
+export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof LANDS; stateDir?: string; timers?: TestTimers; edgePpm?: bigint; http?: HttpClient; key?: string | null; config?: Record<string, string>; fetched?: string[]; found?: boolean; facts?: FactSource[]; seed?: (r: SeedRequest) => Promise<SeedResult>; seedWaitMs?: number; entry?: { timing: 'gates' | 'random'; salt: string; s0Diagnostic?: boolean }; sources?: (ctx: SourcesContext) => FeedSource[]; exposureRpc?: SeedRpc; ops?: WorkerDeps['ops']; universe?: 'U1' | 'U2'; cutRpc?: (ms: number) => void; seedMaxMs?: number; simulate?: (leg: SimLeg) => Promise<DryRunRecord>; worldFault?: WorkerDeps['worldFault']; watchRead?: WorkerDeps['watchRead'] | null; watchHalted?: () => boolean; schedulers?: NonNullable<WorkerDeps['schedulers']>; markedHistory?: WorkerDeps['markedHistory']; strategy?: Partial<StrategyConfig> } = {}): Harness => {
   const stateDir = o.stateDir ?? tempState();
   const timers = o.timers ?? virtualTimers(T - 16 * 86_400_000);
   const session = startSession(TRIAL_POLICY);
@@ -161,7 +161,7 @@ export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof L
     boot: `boot-${n}`,
     config: testConfig(stateDir, { WATCHDOG_URL: 'https://watchdog.example.workers.dev', ...o.config }),
     session, rugs: RUG_CONFIG,
-    strategy: { ...strategyConfig(session.policy, FILL_CONFIG, RESEARCH_CONFIG, o.edgePpm ?? 400_000n, o.entry), ...(o.universe === undefined ? {} : { universe: o.universe }) },
+    strategy: { ...strategyConfig(session.policy, FILL_CONFIG, RESEARCH_CONFIG, o.edgePpm ?? 400_000n, o.entry), ...(o.universe === undefined ? {} : { universe: o.universe }), ...o.strategy },
     scenario: o.scenario ?? LANDS, network: FILL_CONFIG.network, timers,
     sources: o.sources ?? (() => {
       order.push('sources');
@@ -329,11 +329,15 @@ export class Market {
     this.#chain = after;
   }
 
-  /** A PumpSwap swap on the passing pool, as decoded from its log line, at the passing fee terms. */
-  swap(name: 'BuyEvent' | 'SellEvent', user: string, baseAmount: bigint): void {
+  /**
+   * A PumpSwap swap on the passing pool, as decoded from its log line, at the passing fee terms; `quote` (the pool side
+   * SOL: quoteAmountIn of a buy, quoteAmountOut of a sell) only when a test gives it.
+   */
+  swap(name: 'BuyEvent' | 'SellEvent', user: string, baseAmount: bigint, quote?: bigint): void {
     const n = ++this.#swaps;
+    const q = quote === undefined ? {} : name === 'SellEvent' ? { quoteAmountOut: quote } : { quoteAmountIn: quote };
     const data = {
-      pool: POOL_ADDRESS, user, ...(name === 'SellEvent' ? { baseAmountIn: baseAmount } : { baseAmountOut: baseAmount }), timestamp: BigInt(Math.floor(this.now / 1000)),
+      pool: POOL_ADDRESS, user, ...(name === 'SellEvent' ? { baseAmountIn: baseAmount } : { baseAmountOut: baseAmount }), ...q, timestamp: BigInt(Math.floor(this.now / 1000)),
       lpFeeBasisPoints: 2n, protocolFeeBasisPoints: 93n, coinCreatorFeeBasisPoints: 30n, buybackFeeBasisPoints: 5_000n, ixName: name === 'SellEvent' ? 'sell' : 'buy_exact_quote_in_v2', baseSupply: SUPPLY,
     };
     this.fact(`logs:pump_amm:${name}:${POOL_ADDRESS}:${n}`, { event: { program: 'pump_amm', name, data }, signature: `swap-${n}` });
@@ -370,18 +374,26 @@ export const until = async (m: Market, maxMs: number, ready: () => boolean, each
 };
 
 /** Sets up 15 days of coverage, a migrated candidate and minute pool bars, then every passing fact at T. */
-export const passingMarket = async (h: Harness, o: { readonly fees?: boolean; readonly heldPoolFacts?: boolean; readonly omit?: readonly string[] } = {}): Promise<Market> => {
+export const passingMarket = async (h: Harness, o: { readonly fees?: boolean; readonly heldPoolFacts?: boolean; readonly omit?: readonly string[]; readonly coverageAt?: number } = {}): Promise<Market> => {
   const m = new Market(h, { heldPoolFacts: o.heldPoolFacts ?? false });
   m.withFees = o.fees ?? true;
   m.omit = new Set(o.omit ?? []);
   const facts = facts0();
-  // 15 days before T: the creates stream and a full trade stream start; the deployer index sees its first event.
+  // 15 days before T: the creates stream and a full trade stream start; the deployer index sees its first event. With
+  // `coverageAt` (a fresh host) the creates stream starts only then; the rug labeller's coverage stays (RUG-1c's
+  // on-demand check stands in for it live).
   m.slot();
-  for (const k of ['coverage:creates:start', 'coverage:rugs:start']) {
+  for (const k of o.coverageAt === undefined ? ['coverage:creates:start', 'coverage:rugs:start'] : ['coverage:rugs:start']) {
     const v = facts.get(k)!.value as { value: unknown };
     m.offchain(k, v.value);
   }
   await m.run(3_000);
+  if (o.coverageAt !== undefined) {
+    h.timers.set(o.coverageAt);
+    m.slot();
+    m.offchain('coverage:creates:start', (facts.get('coverage:creates:start')!.value as { value: unknown }).value);
+    await m.run(3_000);
+  }
   // 20 minutes before T: the migration (90 min before T) and a pool fact every minute, for the ATR bars.
   h.timers.set(T - 20 * 60_000);
   m.slot();

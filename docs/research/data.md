@@ -360,7 +360,7 @@ Setup:
 - Node 22, running in a US cloud container (Cloudflare `cf-ray … IAD`), behind an egress proxy.
 - Reference RPC: `api.mainnet-beta.solana.com` (Agave pubsub), commitment `processed`.
 - These are short single samples. **They show direction, not statistical proof.**
-- Scripts and raw JSON: `scratchpad/research/data-measurements/`.
+- Scripts and raw JSON: `research/supervisor/data-measurements/`.
 
 ### 7.1 PumpPortal vs standard RPC WebSocket (new tokens)
 

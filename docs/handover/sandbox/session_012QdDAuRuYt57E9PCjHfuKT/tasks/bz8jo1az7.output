@@ -1,0 +1,5 @@
+EXIT 143
+grep: packages/core/src/gates/*.ts: No such file or directory
+pwd: error retrieving current directory: getcwd: cannot access parent directories: No such file or directory
+
+[exited with code 1]

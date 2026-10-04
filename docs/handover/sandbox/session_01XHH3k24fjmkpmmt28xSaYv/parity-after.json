@@ -1,0 +1,75 @@
+{
+  "raw_records": 558,
+  "raw_failed": 227,
+  "raw_without_inner": 8,
+  "decoded_events": 322,
+  "rows_checked": 544,
+  "rows_matched": 544,
+  "rows_without_raw": 219,
+  "name_only_matches": 4,
+  "explained_unrowed": {
+    "non_universe": 0,
+    "outside_tape": 0,
+    "dropped_events": 4
+  },
+  "mismatch_count": 4,
+  "missing_row_count": 0,
+  "unchecked_columns": [
+    "jito_tip",
+    "last_in_tx",
+    "chain_curve_lamports",
+    "chain_curve_base",
+    "chain_curve_quote",
+    "chain_pool_base",
+    "chain_pool_quote",
+    "chain_pool_balances",
+    "chain_curve_balances"
+  ],
+  "mismatches": [
+    {
+      "kind": "decode",
+      "key": {
+        "slot": 452700416,
+        "tx_idx": 924
+      },
+      "signature": "5p2ZtRFpSqugeeeUYJaHhQDqXFDJksbAWzF1BUUSJgQLC14UojAMNMZva98F83RWnCDuFYJuoE5144j5QXKZLUv2",
+      "field": "innerInstructions",
+      "row": null,
+      "decoded": "null: the pump / PumpSwap events of this transaction cannot be decoded"
+    },
+    {
+      "kind": "decode",
+      "key": {
+        "slot": 452700417,
+        "tx_idx": 589
+      },
+      "signature": "4FxYTroiogbm1fyZ5TwQgHRcTLjr59KFPyig54YkqjphJ1UFRXUhQQLzQjgqXgFfo34YCagUMwR67muPK8QRCiNf",
+      "field": "innerInstructions",
+      "row": null,
+      "decoded": "null: the pump / PumpSwap events of this transaction cannot be decoded"
+    },
+    {
+      "kind": "decode",
+      "key": {
+        "slot": 452700417,
+        "tx_idx": 843
+      },
+      "signature": "3QGXwidp4fE7yn6m2H9diyuCCCs8zfDDiq5NYYJFisSoPoiBPa9L1xWGX7ScaAVsXYAFiRyoTVY9acdEZGfdoJpC",
+      "field": "innerInstructions",
+      "row": null,
+      "decoded": "null: the pump / PumpSwap events of this transaction cannot be decoded"
+    },
+    {
+      "kind": "decode",
+      "key": {
+        "slot": 452700417,
+        "tx_idx": 852
+      },
+      "signature": "Rv7bcdY92zQKaboHB5g1qjA4F7hw3SKSXWz8DD5bTqPDAuy3KHumA8bVJcqXWyDbViq4hVnKrdtX4sDdDksSgH9",
+      "field": "innerInstructions",
+      "row": null,
+      "decoded": "null: the pump / PumpSwap events of this transaction cannot be decoded"
+    }
+  ],
+  "missing_rows": []
+}
