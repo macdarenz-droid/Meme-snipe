@@ -1,14 +1,14 @@
 // The swap stream of every watched pool (WORKER-1): a logs watch on each candidate's and each open position's PumpSwap
-// pool, decoded from the log lines, named `trades:<pool>` (FACTS-1's stream name, for candles and coverage). The
+// pool, decoded from the log lines at confirmed, named `trades:<pool>` (FACTS-1's stream name, for candles and coverage). The
 // strategy reads the swaps for the pool's fee terms and EXIT-1's deployer-sell trigger. A position's pool is exit
-// traffic (P1); a candidate's is P3. Watches follow the strategy's list, re-read every `everyMs`.
+// traffic (P1); a candidate's is P3, raised in place when it becomes held. Watches follow the strategy's list, re-read every `everyMs`.
 import { P1, P3, type Timers } from '../scheduler/index.ts';
 import type { RpcStream } from '../providers/index.ts';
 
 export const tradesStream = (pool: string): string => `trades:${pool}`;
 
 export interface PoolWatchOptions {
-  readonly stream: Pick<RpcStream, 'watchLogs' | 'unwatch'>;
+  readonly stream: Pick<RpcStream, 'watchLogs' | 'unwatch' | 'setPriority'>;
   readonly timers: Timers;
   readonly pools: () => ReadonlyMap<string, { readonly mint: string; readonly held: boolean }>;
   readonly everyMs: number;
@@ -45,20 +45,29 @@ export class PoolWatch {
     this.#timer = null;
   }
 
-  /** Watches what the list holds and drops what it no longer holds; a pool that became held is re-watched at P1. */
+  /** Watches what the list holds and drops what it no longer holds; a pool that became held moves to P1 in place. */
   sync(): void {
     const want = this.#o.pools();
-    for (const [pool, w] of this.#watching) {
+    for (const [pool, w] of [...this.#watching]) {
       const now = want.get(pool);
-      if (now === undefined || now.held !== w.held) {
-        this.#o.stream.unwatch(w.id, now === undefined ? 'not watched' : 'priority changed');
+      if (now === undefined) {
+        this.#o.stream.unwatch(w.id, 'not watched');
         this.#watching.delete(pool);
+      } else if (now.held !== w.held) {
+        // Re-prioritised in place (POS-1): a re-subscribe would cut the pool's trade stream right after the entry.
+        if (this.#o.stream.setPriority(w.id, now.held ? P1 : P3)) this.#watching.set(pool, { id: w.id, held: now.held });
+        else {
+          this.#o.stream.unwatch(w.id, 'priority changed');
+          this.#watching.delete(pool);
+        }
       }
     }
     for (const [pool, { held }] of want) {
       if (this.#watching.has(pool)) continue;
       try {
-        const id = this.#o.stream.watchLogs(pool, { priority: held ? P1 : P3, decodeLogs: true, coverage: tradesStream(pool) });
+        // Confirmed (FACTS-1 STREAMS.trades): the producer builds the pool state from these swaps (POS-1) and never
+        // from processed ones, which can be rolled back.
+        const id = this.#o.stream.watchLogs(pool, { priority: held ? P1 : P3, decodeLogs: true, coverage: tradesStream(pool), commitment: 'confirmed' });
         this.#watching.set(pool, { id, held });
       } catch {
         // Refused (the provider's budget halt refuses new P3 watches): retried at the next sync.
