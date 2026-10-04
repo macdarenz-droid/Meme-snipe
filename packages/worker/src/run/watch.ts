@@ -39,7 +39,7 @@ export interface PositionWatchOptions {
   readonly read: (addresses: readonly string[], minContextSlot: bigint | null) => Promise<WatchRead>;
   /**
    * WATCH-1d: the chain head the feed last released and when, or null before the first. A snapshot is held to it: read
-   * no older than `head - maxLagSlots`, refused when it answers older while the head is live (moved within `staleMs + everyMs`).
+   * no older than `head - maxLagSlots`, refused when it answers older, live or not (a dead feed's last head is still a floor).
    */
   readonly head?: () => { readonly slot: bigint; readonly atMs: number } | null;
   /** How far a snapshot's bank may trail the live head: the policy's `maxStateSlotLag`, as for the gates' chain state. */
@@ -145,9 +145,11 @@ export class PositionWatch {
     try {
       const head = this.#o.head?.() ?? null;
       const lag = BigInt(this.#o.maxLagSlots ?? 0);
-      // Live: the head moved within a stale limit and one period (a live feed releases one each slot).
+      // The last released head bounds the bank whether or not the feed is still live: the chain never goes back, so a
+      // dead feed's head is still a proven floor (risk review of #141). Live (the head moved within a stale limit and one
+      // period) only names the case in the alert.
       const live = head !== null && this.#o.timers.now() - head.atMs < this.#o.staleMs + this.#o.everyMs;
-      const minSlot = live && head.slot > lag ? head.slot - lag : null;
+      const minSlot = head !== null && head.slot > lag ? head.slot - lag : null;
       let vaults = this.#vaults.get(pool);
       if (vaults === undefined) {
         const first = await this.#read([pool], minSlot);
@@ -158,9 +160,11 @@ export class PositionWatch {
         this.#vaults.set(pool, vaults);
       }
       const r = await this.#read(snapshotAddresses(pool, vaults[0], vaults[1], mint), minSlot);
-      // A bank older than the live head allows, or no newer than the last one taken, is not a fresh price, however
+      // A bank older than the head allows, or no newer than the last one taken, is not a fresh price, however
       // fresh its answer (audit: a lagging node answered the same bank twice, 10 minutes apart).
-      if (minSlot !== null && r.slot < minSlot) throw new Error(`the read's bank is slot ${r.slot}, ${head!.slot - r.slot} slots behind the head ${head!.slot} (at most ${lag})`);
+      if (minSlot !== null && r.slot < minSlot) throw new Error(live
+        ? `the read's bank is slot ${r.slot}, ${head!.slot - r.slot} slots behind the head ${head!.slot} (at most ${lag})`
+        : `the read's bank is slot ${r.slot}, ${head!.slot - r.slot} slots behind the last released head ${head!.slot} (at most ${lag}; the feed is silent)`);
       const last = this.#taken.get(pool);
       if (last !== undefined && r.slot <= last.slot) {
         if (r.slot < last.slot) throw new Error(`the read's bank is slot ${r.slot}, behind the last one taken (${last.slot})`);

@@ -333,5 +333,19 @@ describe('a snapshot\'s bank is held to the chain head (WATCH-1d, audit)', () =>
     expect(z.put.map((p) => p.slot)).toEqual([2_000n]);
     expect(z.alerts[0]).toBe('the read\'s bank is slot 1999, behind the last one taken (2000)');
   });
+
+  it('a dead feed\'s last released head still bounds the bank: a lagging node below it is refused, alerted, and never put (risk review)', async () => {
+    // The pool last traded at slot 4,000; the feed released head 5,000, then fell silent past staleMs + everyMs. The chain
+    // never goes back, so that head is still a proven lower bound: a node answering 4,500 is no fresh price.
+    // Released 1 s before the watch starts, so silent past staleMs + everyMs (700 ms) at every read.
+    const x = watch({ slot: () => 4_500n, head: () => ({ slot: 5_000n, atMs: -1_000 }) });
+    x.w.start();
+    await x.run(5_000);
+    x.w.stop();
+    expect(x.put).toEqual([]);
+    expect(x.asked.length).toBeGreaterThan(0);
+    expect(x.asked.every((m) => m === 4_998n)).toBe(true);
+    expect(x.alerts).toEqual(['the read\'s bank is slot 4500, 500 slots behind the last released head 5000 (at most 2; the feed is silent)']);
+  });
 });
 });
