@@ -97,6 +97,15 @@ describe('pre-registration', () => {
     expect(read('docs/research/edge.md')).toContain(sha);
   });
 
+  test('definitions fixed before data: holder growth counts owners, not token accounts; U2 flow is non-creator-user flow', () => {
+    const d = (JSON.parse(text) as { definitions: Record<string, string> }).definitions;
+    expect(d['holderGrowth']).toMatch(/distinct owners/);
+    expect(d['holderGrowth']).toMatch(/never token accounts/);
+    expect(d['holderGrowth']).toMatch(/same data coverage/);
+    expect(d['nonCreatorUserFlow']).toMatch(/creator's exact address/);
+    expect(d['nonCreatorUserFlow']).toMatch(/funded still counts/);
+  });
+
   test('ids unique, ranks 1..n, universes U1 or U2 only, windows match their universe', () => {
     const h = pre.hypotheses;
     expect(new Set(h.map((x) => x.id)).size).toBe(h.length);

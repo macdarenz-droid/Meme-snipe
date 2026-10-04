@@ -11,6 +11,12 @@
     "U1": { "stopAtrTenths": 30, "tFlatMs": 1800000, "flatMinRBps": 5000, "tMaxMs": 7200000, "partialMinShareBps": 5000, "partialAtRBps": 20000, "partialAtGainBps": 10000, "atrPeriod": 14, "atrBarMs": 300000, "trailAtrTenths": 30 },
     "U2": { "stopAtrTenths": 30, "tFlatMs": 900000, "flatMinRBps": 5000, "tMaxMs": 7200000, "partialMinShareBps": 5000, "partialAtRBps": 15000, "partialAtGainBps": 10000, "atrPeriod": 14, "atrBarMs": 60000, "trailAtrTenths": 30 }
   },
+  "definitions": {
+    "note": "Fixed before any data (external audit, 2026-10-04). BT-2's rule evaluation must follow these.",
+    "holderGrowth": "H3's holderGrowthBps: growth in the number of distinct owners (wallet owner addresses, never token accounts: several accounts of one owner count once) holding a positive balance of the mint, excluding the pool vaults, the curve account, the mayhem vault, lockers, burn addresses and program-owned accounts (H12's exclusions), counted at the start of the range and at the check from the same data coverage; if either count's coverage is incomplete the condition is unknown and fails.",
+    "nonCreatorUserFlow": "H4's net flow (U2 rules): net SOL from swaps whose user is not the creator's exact address. Limit: a wallet the creator funded still counts, because funding links are not in the data. It is not 'independent' buying.",
+    "f_indep60": "H2's buyer count: wallets that bought and did not sell in the last 60 min. Shared funders are not excluded (not in the data)."
+  },
   "hypotheses": [
     {
       "id": "H1-U1-dip-reversal",
