@@ -7,7 +7,7 @@
 // `open_intents` → seed the deployer index (SEED-1's hook) → start the live sources → trade. Nothing enters before the
 // reconcile line; a reconcile that cannot settle every intent exits 3.
 import { randomBytes } from 'node:crypto';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import type { Server } from 'node:http';
 import { join } from 'node:path';
 import type { PolicySession, RugConfig } from '../../../core/src/config/index.ts';
@@ -18,8 +18,9 @@ import type { Book, BookEvent } from '../../../core/src/lifecycle/index.ts';
 import { isTerminal, isUnresolved } from '../../../core/src/lifecycle/index.ts';
 import type { FillNetwork, FillScenario } from '../../../core/src/fills/index.ts';
 import type { MicroUsd } from '../../../core/src/units/index.ts';
-import { EXIT, LOOKUP_BOUNDS_MS, STATE_FILES, type FeedHealth, type Health, type JournalKind, type QuotaStatus } from '../../../runner/src/contract.ts';
+import { EXIT, LOOKUP_BOUNDS_MS, STATE_FILES, type FeedHealth, type Health, type JournalKind, type QuotaStatus, type RecoveredFields } from '../../../runner/src/contract.ts';
 import type { DryRunRecord } from '../dryrun/index.ts';
+import { NO_UNIVERSE, resolveUniverse, sellOnlyReason } from '../engine/strategy.ts';
 import { ACCOUNT_KEY, HALT_KEY, LiveStrategy, POOL_PREFIX, RESTORE_KEY, SEED_KEY, SEEDING, SHORTLIST, SNAPSHOT_PREFIX, SOL_PRICE_KEY, type SnapshotFact, type StrategyConfig, TRIP_PREFIX, parseSnapshotFact, snapshotKey, snapshotWins } from '../engine/strategy.ts';
 import { SLOT_MS, watchTimingProblem } from './config.ts';
 import { PositionWatch, type WatchRead } from './watch.ts';
@@ -117,6 +118,8 @@ export interface WorkerDeps {
   readonly delayProbe?: { readonly confirmed: DelayProbeOptions['confirmed']; readonly via: string; readonly everyMs: number };
   /** RUN-1c's quota (free-plan providers, credits since boot by class) and historical-lookup latency counts. */
   readonly ops?: () => { readonly quota: readonly QuotaStatus[]; readonly lookups: { readonly counts: readonly number[] } };
+  /** RUN-1d's drop-rpc drill: refuses every RPC call for `ms` (main wraps the providers' HTTP in an RpcCut). */
+  readonly cutRpc?: (ms: number) => void;
   /** RUN-1c's exposure rebuild: chain history reads (Helius) for each exposed trade's pool. */
   readonly exposureRpc?: SeedRpc;
   /** The commitment each live path uses, for the recorder manifest. */
@@ -178,6 +181,9 @@ const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object
 const entryPrice = (p: { readonly cost: bigint; readonly quantity: bigint; readonly sold: bigint }): bigint =>
   p.quantity + p.sold > 0n ? execPrice(p.cost, p.quantity + p.sold) : 0n;
 
+/** Present while the state dir began empty and no full start has journaled its `recovered` line yet. */
+const COLD_START = 'cold_start';
+
 export class Worker {
   readonly #d: WorkerDeps;
   readonly #boot: string;
@@ -220,6 +226,11 @@ export class Worker {
   #diverged: readonly string[] = [];
   #savedExits = '';
   #probe: DelayProbe | null = null;
+  #rpcDownUntil = 0;
+  /** Halt reasons for the whole process: open positions whose universe the policy lacks. */
+  readonly #sellOnly: string[] = [];
+  /** The reconcile-only process: the engine takes nothing after the reconcile. */
+  #observing = false;
   #exposedFile: ReturnType<typeof exposedFile>;
   readonly #coverageJournal = new CoverageJournal((fields) => this.#journal.write('coverage_gap', fields));
   readonly #deployerStore: DeployerStore;
@@ -255,12 +266,6 @@ export class Worker {
     const timing = watchTimingProblem(d.config.watch, d.session.policy.gates.maxQuoteAgeMs, DEFAULT_LIVE_FEED.horizonSlots * SLOT_MS);
     if (timing !== null) throw new RangeError(timing);
     const seed = `paper:${this.#boot}`;
-    this.#journal.write('start', {
-      git_sha: c.gitSha, run_id: c.runId, label: c.runLabel, recorder: c.recorder, simulation: c.simulate, mode: c.mode,
-      policy_version: d.session.versionHash, strategy: d.strategy.version, seed, pid: process.pid,
-      entry_rule: c.strategy.name, qualifying: c.strategy.qualifying, paper_edge_ppm: c.strategy.paperEdgePpm, s0_salt: d.strategy.entryTiming === 'random' ? d.strategy.entrySalt : null,
-    });
-    if (this.#journal.repaired) this.#journal.write('journal_repair', { detail: 'torn last line removed' });
 
     const recRoot = join(c.stateDir, STATE_FILES.recorder);
     mkdirSync(recRoot, { recursive: true });
@@ -269,6 +274,9 @@ export class Worker {
     const rec = this.#recorder;
     this.#probe = d.delayProbe === undefined || rec === null ? null : new DelayProbe({ timers: d.timers, confirmed: d.delayProbe.confirmed, via: d.delayProbe.via, everyMs: d.delayProbe.everyMs, record: (row, at) => rec.delay(row, at) });
 
+    // RUN-1d: no ledger at all means a cold start (host lost with no backup): what comes back comes from the chain. A
+    // paper position is not on chain, so nothing does. Marked until a full start journals its `recovered` line.
+    if (!existsSync(join(c.stateDir, Ledger.FILE))) writeFileSync(join(c.stateDir, COLD_START), new Date(now).toISOString());
     this.#ledger = openLedger(join(c.stateDir, Ledger.FILE), 'paper');
     this.#control = controlFile(c.stateDir);
     this.#ctl = this.#control.read(NO_CONTROL);
@@ -288,6 +296,27 @@ export class Worker {
       ...Object.values(stored.book.positions).filter((p) => p.status !== 'closed').map((p) => p.id as string),
       ...Object.values(stored.book.intents).filter((i) => isUnresolved(i)).map((i) => i.intent.positionId as string),
     ])].sort();
+    // A restored position whose universe the loaded policy lacks: sell-only for this process (no new entries), and the
+    // strategy flattens it through the global exit ladder (supervisor ruling on the EXIT-1b review).
+    const savedPlans = exitsFile(c.stateDir).read({});
+    for (const p of Object.values(stored.book.positions)) {
+      if (p.status === 'closed') continue;
+      const entry = stored.book.intents[p.entryIntentId];
+      const why = sellOnlyReason(p.id, resolveUniverse(savedPlans[p.id]?.plan.universe, entry?.intent.key), d.session.policy.exits.universes, d.session.versionHash);
+      if (why !== null) this.#sellOnly.push(why);
+    }
+    // The start line goes first in this boot's journal lines, with everything above known (nothing above writes one).
+    this.#journal.write('start', {
+      git_sha: c.gitSha, run_id: c.runId, label: c.runLabel, recorder: c.recorder, simulation: c.simulate, mode: c.mode,
+      policy_version: d.session.versionHash, strategy: d.strategy.version, seed, pid: process.pid,
+      entry_rule: c.strategy.name, qualifying: c.strategy.qualifying, paper_edge_ppm: c.strategy.paperEdgePpm, s0_salt: d.strategy.entryTiming === 'random' ? d.strategy.entrySalt : null,
+      sell_only: [...this.#sellOnly],
+    });
+    if (this.#journal.repaired) this.#journal.write('journal_repair', { detail: 'torn last line removed' });
+    if (this.#sellOnly.length > 0) {
+      this.#journal.write('halt', { reasons: ['sell-only: no new entries; the positions below are flattened', ...this.#sellOnly] });
+      d.log(`ALERT ${this.#sellOnly.join('; ')}`);
+    }
     this.#exposedFile = exposedFile(c.stateDir);
     const before = this.#exposedFile.read(NO_EXPOSED);
     const since = this.#journal.previousMs;
@@ -349,10 +378,13 @@ export class Worker {
     // then wrote `open_intents` 1 from the ledger's book after reporting success from the engine's). Measured after
     // the restore, not from the constructor's start: opening the ledger and reading the book takes milliseconds.
     const startAt = Math.max(this.#d.timers.now(), this.#feed.lastReceivedAt) + 1;
-    this.#fact(HALT_KEY, { halted: true, reasons: [...this.#halted] }, startAt);
+    // The saved exit plans come first, alone in their millisecond: the strategy manages positions on any market event,
+    // and on the halt fact (which sorted first by id at a tie) it built fresh plans and trackers from the fills and
+    // decided exits with them, before the saved ones arrived. The halt and the restart follow 1 ms later.
     this.#fact(RESTORE_KEY, { exits: this.#exitsFile.read({}) }, startAt);
-    if (stored.events.length > 0) this.#report({ type: 'restart' }, startAt);
-    if (this.#ctl.paused) this.#report({ type: 'pause_entries', reason: 'owner' }, startAt);
+    this.#fact(HALT_KEY, { halted: true, reasons: [...this.#halted] }, startAt + 1);
+    if (stored.events.length > 0) this.#report({ type: 'restart' }, startAt + 1);
+    if (this.#ctl.paused) this.#report({ type: 'pause_entries', reason: 'owner' }, startAt + 1);
     this.#drillToken = randomBytes(16).toString('hex');
     if (c.drills) writeFileSync(join(c.stateDir, STATE_FILES.drillToken), this.#drillToken, { mode: 0o600 });
   }
@@ -364,6 +396,7 @@ export class Worker {
   get book(): Book {
     return this.#engine.book;
   }
+
 
   /** The live Feed (sources and drills ingest here). */
   get feed(): LiveFeed {
@@ -646,7 +679,7 @@ export class Worker {
     // A position entered now could lose its price with no second path to read it (review of #87): entries stop.
     if (this.#d.watchRead === undefined || this.#d.watchHalted?.() === true) reasons.push(SECOND_PATH_UNAVAILABLE);
     if (this.#seeding) reasons.push(SEEDING);
-    reasons.push(...this.#diverged);
+    reasons.push(...this.#diverged, ...this.#sellOnly);
     const same = reasons.length === this.#halted.length && reasons.every((x, k) => x === this.#halted[k]);
     if (same) return;
     const was = this.#halted.length > 0;
@@ -707,6 +740,7 @@ export class Worker {
     const d = this.#d;
     const r = await this.reconcile();
     if (!r.ok) return r;
+    this.#journalRecovered();
     // Entries wait for the seed; this halt is released ahead of every live event, so the index waits with them.
     this.#seeding = true;
     this.#checkHalt(d.timers.now());
@@ -715,7 +749,7 @@ export class Worker {
     try {
       this.#server = await startHealthServer(d.config.health.host, d.config.health.port, {
         health: () => this.health(),
-        drill: d.config.drills ? { token: this.#drillToken, dropFeed: (feed, ms) => this.dropFeed(feed, ms) } : null,
+        drill: d.config.drills ? { token: this.#drillToken, dropFeed: (feed, ms) => this.dropFeed(feed, ms), dropRpc: (ms) => this.dropRpc(ms) } : null,
       });
     } catch (e) {
       return { ok: false, code: EXIT.crash, message: `health server: ${e instanceof Error ? e.message : 'error'}` };
@@ -771,6 +805,39 @@ export class Worker {
     }
     if (this.#stopping) return { ok: false, code: EXIT.clean, message: 'stopped during the start' };
     d.log(`Worker up: boot ${this.#boot}, release ${d.config.gitSha.slice(0, 12)}, recorder ${d.config.recorder ? 'on' : 'off'}, simulation ${d.config.simulate ? 'on' : 'off'}, ${this.#sources.length} feeds.`);
+    return { ok: true };
+  }
+
+  /**
+   * RUN-1d's `--reconcile-only` (the host-loss tabletop): cold-start on this state dir, reconcile, journal `recovered`,
+   * and serve /health with `reconciled` and `exit_capable`. It sends nothing: no entries, no exits, no heartbeat, no
+   * drills, no API. The live feeds run only so `exit_capable` is real; their events are drained unread (the engine
+   * never sees them, so nothing can be decided). It runs until stopped.
+   */
+  async observeOnly(): Promise<StartResult> {
+    const d = this.#d;
+    this.#observing = true;
+    const r = await this.reconcile();
+    if (!r.ok) return r;
+    this.#journalRecovered();
+    this.#sources = d.sources({ feed: this.#feed, timers: d.timers, pools: () => new Map() });
+    for (const s of this.#sources) this.#feeds.set(s.name, { src: s, connected: false, last: null, droppedUntil: 0 });
+    try {
+      this.#server = await startHealthServer(d.config.health.host, d.config.health.port, { health: () => this.health(), drill: null });
+    } catch (e) {
+      return { ok: false, code: EXIT.crash, message: `health server: ${e instanceof Error ? e.message : 'error'}` };
+    }
+    for (const s of this.#sources) s.start();
+    const drain = (): void => {
+      if (this.#stopping) return;
+      this.#feed.advance(d.timers.now());
+      while (this.#feed.next() !== null) {
+        // Drained unread: the reconcile-only process decides nothing.
+      }
+      this.#loop = d.timers.setTimeout(drain, d.loopMs);
+    };
+    this.#loop = d.timers.setTimeout(drain, d.loopMs);
+    d.log(`Reconcile-only up: boot ${this.#boot}, ${this.#sources.length} feeds, nothing is sent.`);
     return { ok: true };
   }
 
@@ -834,6 +901,40 @@ export class Worker {
     d.log(`Deployer index: ${result.mode} (${result.report}); ${saved.creates.length} saved creates, ${saved.coverage.length} saved coverage facts.`);
   }
 
+  /** Trades with an exit planned, requested or signed and not yet final, or a due exit waiting for its first fresh quote (EXIT-1c): what a restart must not lose (RUN-1d). */
+  pendingExits(): string[] {
+    const book = this.#engine.book;
+    const out = new Set<string>();
+    for (const p of Object.values(book.positions)) if (p.status === 'exit_requested' || p.status === 'exit_pending' || p.status === 'exit_blocked') out.add(p.id);
+    for (const i of Object.values(book.intents)) if (i.intent.purpose === 'exit' && !isTerminal(i)) out.add(i.intent.positionId);
+    // EXIT-1c: an open position whose due exit waits for its first fresh quote.
+    const waiting = this.#strategy.waitingExits();
+    for (const p of Object.values(book.positions)) if (p.status === 'open' && waiting.has(p.id)) out.add(p.id);
+    return [...out].sort();
+  }
+
+  /** Each open position with the universe it was entered under (its plan, else its entry key). */
+  #positionsWithUniverse(): { trade: string; universe: string }[] {
+    const book = this.#engine.book;
+    const saved = this.#strategy.saved();
+    return Object.values(book.positions).filter((p) => p.status !== 'closed').map((p) => {
+      const entry = book.intents[p.entryIntentId];
+      // None on record is said as such (the strategy flattens it), never guessed and never a bare 'unknown'.
+      const universe = resolveUniverse(saved[p.id]?.plan.universe, entry?.intent.key) ?? NO_UNIVERSE;
+      return { trade: p.id, universe };
+    }).sort((a, b) => (a.trade < b.trade ? -1 : 1));
+  }
+
+  /** RUN-1d: once per boot, right after the start reconcile, what was found and kept. */
+  #journalRecovered(): void {
+    const marker = join(this.#d.config.stateDir, COLD_START);
+    const cold = existsSync(marker);
+    // Through the runner's contract type: a field it renames or adds fails the worker's typecheck.
+    const fields = { source: cold ? 'chain' : 'state', pending_exits: this.pendingExits(), positions: this.#positionsWithUniverse() } satisfies RecoveredFields;
+    this.#journal.write('recovered', fields);
+    if (cold) rmSync(marker, { force: true });
+  }
+
   /**
    * RUN-1c: one `exposure` line per trade open or in flight when the previous process stopped, with the worst move of
    * its pool over the down window rebuilt from chain history; then the pending record is cleared.
@@ -858,7 +959,7 @@ export class Worker {
    * (every critical feed with a chain source) is connected, fresh and not dropped. Paper lands by the paper world.
    */
   #exitCapable(now: number): boolean {
-    if (!this.#reconciled) return false;
+    if (!this.#reconciled || this.#rpcDownUntil > now) return false;
     const chain = [...this.#feeds.values()].filter((s) => s.src.critical && s.src.sources.some((x) => x === 'helius' || x === 'alchemy'));
     return chain.length > 0 && chain.every((s) => s.connected && s.droppedUntil <= now && s.last !== null && now - s.last <= this.#d.staleFeedMs);
   }
@@ -867,6 +968,19 @@ export class Worker {
   #freshMark(pid: string): { readonly price: bigint; readonly atMs: number; readonly slot: bigint } | null {
     const m = this.#strategy.markOf(pid);
     return m === null || this.#d.timers.now() - m.atMs > 30_000 ? null : m;
+  }
+
+  /**
+   * RUN-1d's drill: every provider lost at once for `ms`. Every feed is dropped (entries halt, exit_capable is false)
+   * and every RPC call is refused; P0 and P1 requests fail rather than being shed, and pending exits stay in the book.
+   */
+  dropRpc(ms: number): boolean {
+    const now = this.#d.timers.now();
+    this.#rpcDownUntil = Math.max(this.#rpcDownUntil, now + ms);
+    this.#d.cutRpc?.(ms);
+    this.#journal.write('feed', { feed: 'all providers', connected: false, cause: 'drop-rpc drill', ms });
+    for (const name of this.#feeds.keys()) this.dropFeed(name, ms);
+    return true;
   }
 
   /** WATCH-1: the independent watch on held positions, on its own timer. */
@@ -938,19 +1052,17 @@ export class Worker {
     const saved = p === undefined ? undefined : this.#strategy.saved()[p.id];
     const mark = p === undefined ? null : this.#strategy.markOf(p.id);
     const ops = this.#d.ops?.() ?? { quota: [], lookups: { counts: LOOKUP_BOUNDS_MS.map(() => 0).concat(0) } };
-    return {
+    const universe = p === undefined ? null : (this.#positionsWithUniverse().find((x) => x.trade === p.id)?.universe ?? NO_UNIVERSE);
+    const h: Health = {
       seq: this.#beatSeq, ts: now, git_sha: this.#d.config.gitSha, policy_version: this.#d.session.versionHash,
       last_processed_slot: this.#lastSlot === null ? null : Number(this.#lastSlot), feed_ages_ms: ages,
       open_position: p === undefined ? null : {
         trade: p.id, mint: p.mint, qty: String(p.quantity), entry: String(entryPrice(p)), stop: saved === undefined ? 'unknown' : String(saved.plan.stopPrice),
         // No mark read yet: the entry, seen at time 0, which the runner reads as unmeasured (older than 30 s).
         mark: String(mark?.price ?? entryPrice(p)), mark_slot: mark === null ? 0 : Number(mark.slot), mark_ts: mark?.atMs ?? 0,
-        // The universe the position was entered under (CFG-2; RUN-1d contract); no saved plan: unknown, which fails the drill.
-        universe: saved === undefined ? 'unknown' : saved.plan.universe,
+        universe: universe ?? NO_UNIVERSE,
       },
-      // Trades with an exit planned or signed and not final (RUN-1d contract), and open ones whose due exit waits for
-      // its first fresh quote (EXIT-1c).
-      pending_exits: Object.values(this.#engine.book.positions).filter((x) => x.status === 'exit_requested' || x.status === 'exit_pending' || x.status === 'exit_blocked' || (x.status === 'open' && this.#strategy.waitingExits().has(x.id))).map((x) => x.id),
+      pending_exits: this.pendingExits(),
       unresolved_intents: this.#desk.unresolved(now, (id) => this.#intentAt.get(id) ?? null),
       signer: 'none', lease_epoch: null,
       sol_reserve: this.#account.state.walletLamports === null ? null : String(this.#account.state.walletLamports),
@@ -958,6 +1070,7 @@ export class Worker {
       rss_bytes: process.memoryUsage().rss, mode: 'paper', recorder: this.#d.config.recorder ? 'on' : 'off', simulation: this.#d.config.simulate ? 'on' : 'off',
       reconciled: this.#reconciled, exit_capable: this.#exitCapable(now), quota: ops.quota, lookups: ops.lookups, entries_halted: this.#halted.length > 0, halt_reasons: [...this.#halted], critical: [...(this.#watch?.critical ?? [])], feeds, journal_seq: this.#journal.seq, signing_key: false,
     };
+    return h;
   }
 
   /** One signed heartbeat; the reply's pause is applied both ways. */
@@ -1010,9 +1123,11 @@ export class Worker {
     if (pending.length > 0) {
       await Promise.race([Promise.allSettled(pending), new Promise<void>((r) => d.timers.setTimeout(r, 10_000))]);
     }
-    try {
-      this.step();
-    } catch {}
+    if (!this.#observing) {
+      try {
+        this.step();
+      } catch {}
+    }
     // Past this point the state files belong to the next process: a simulation answering late writes nothing.
     this.#world.stop();
     const open = Object.values(this.#engine.book.positions).filter((p) => p.status !== 'closed').map((p) => p.id);
