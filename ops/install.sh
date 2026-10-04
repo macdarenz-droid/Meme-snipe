@@ -1777,7 +1777,7 @@ install_file /usr/local/sbin/zeroed-restore 0755 <<'__ZEROED_FILE__'
 # Restores the worker's bot state from a backup (host loss): runs the restore drill on the backup first, stops the
 # worker, moves the bot state it has aside to /var/lib/zeroed-prerestore/<UTC time>/ (the run's evidence,
 # journal.jsonl and recorder/, stays where it is), puts every file of the backup in its place, gives them to the
-# worker and starts it; it reconciles first.
+# worker and starts it; it reconciles first. Without control.json in the backup, entries start paused.
 #   zeroed-restore IDENTITY_FILE [BACKUP_FILE]    (default: the newest backup)
 set -euo pipefail
 umask 077
@@ -1812,9 +1812,16 @@ while read -r _ rel; do
   cp -p -- "$work/$rel" "$SRC/$rel"
   files=$((files + 1))
 done < "$work/MANIFEST.sha256"
+# Fails closed: a backup without the owner's controls (an older backup, or one taken before any pause or latch)
+# brings the worker up paused for new entries, never with a pause or latch silently cleared. Exits keep running.
+paused=""
+if [ ! -e "$SRC/control.json" ]; then
+  printf '{"paused":true,"pausedAtMs":%s,"latches":{"killTrippedAtMs":null,"killRearmedAtMs":null,"weeklyTrippedAtMs":null,"weeklyReviewedAtMs":null,"lossReviewedAtMs":null,"sizeStepUpApproved":false}}\n' "$(($(date +%s) * 1000))" > "$SRC/control.json"
+  paused=" The backup had no control.json, so entries start paused."
+fi
 chown -R zeroed-worker:zeroed-worker "$SRC"
 systemctl start zeroed-worker.service
-echo "Restored $(basename "$backup"): $files file(s); $moved earlier item(s) kept in $aside. The worker reconciles before it trades."
+echo "Restored $(basename "$backup"): $files file(s); $moved earlier item(s) kept in $aside. The worker reconciles before it trades.$paused"
 __ZEROED_FILE__
 install_file /usr/local/sbin/zeroed-restore-drill 0755 <<'__ZEROED_FILE__'
 #!/usr/bin/env bash
