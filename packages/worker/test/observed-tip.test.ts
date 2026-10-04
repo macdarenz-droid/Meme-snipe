@@ -1,7 +1,9 @@
 // Live decisions do not move with GateContext.observedTip (supervisor ruling, BT-2): the live strategy passes its feed's
 // observed tip, the newest released chain slot, which is the clock's own slot. A recorded live session replayed through
 // the engine gives the same decisions, every gate reason included, as before the field existed: the digest below was
-// taken on the code before it (BT-2 head 0a8fca9, 16 decisions).
+// taken with Evidence judging freshness against the clock's slot alone (the rule before the field existed), on this
+// head's live strategy. When live decisions change for another reason, retake it that way (Evidence's tip forced to
+// `now.slot`), never from the code under test.
 import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -20,7 +22,7 @@ const files = (dir: string, re: RegExp): string[] =>
 const rows = <T>(paths: readonly string[], parse: (l: string) => T): T[] =>
   paths.flatMap((p) => zstdDecompressSync(readFileSync(p)).toString('utf8').split('\n').filter((l) => l !== '').map(parse));
 
-const BEFORE = '843c354d632ee60f41bd332e5d7a6d7a115a4058a3e550fa8d57993640901d71';
+const BEFORE = '677234af876820edc65d23308b6eff1d3e653383d2bab2ea46687af8342ce4e6';
 
 describe('observed tip in live', () => {
   it('a recorded live session replays to byte-identical decisions, gate reasons included', async () => {
