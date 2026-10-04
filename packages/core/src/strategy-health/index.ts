@@ -59,8 +59,9 @@ export type HealthEvent =
   | { readonly type: 'final'; readonly seq: number; readonly episodeId: string; readonly outcome: 'closed' | 'failed-entry' | 'dropped' }
   /**
    * A settlement that landed after the episode was observed (a late sell or fee, PAPER-2). It counts at once, as a
-   * correction of that episode: S moves by −lamports/entry (no κ: it is not a new episode), the state machine is
-   * re-evaluated, and the episode's recorded net follows. Under the golden rule a late loss is never dropped.
+   * correction of that episode: its return becomes (net + lamports)/entry and the lineage is recomputed from the
+   * start with it, so S, the state, the clean run and the pauses are exactly what they would be had the return been
+   * known at the time. Under the golden rule a late loss is never dropped.
    */
   | { readonly type: 'late'; readonly seq: number; readonly episodeId: string; readonly lamports: bigint };
 
@@ -85,6 +86,12 @@ export interface LineageHealth {
   /** Consecutive episodes below the watch level while requalifying. */
   readonly cleanRun: number;
   readonly pauses: number;
+  /**
+   * Every observed episode of the lineage in the order it became final, with its return and identity: a late
+   * settlement corrects one return and the lineage is recomputed from the start (STATS review B1 of #200), because the
+   * CUSUM's zero floor and the pauses between make an incremental correction wrong in both directions.
+   */
+  readonly history: readonly { readonly episodeId: string; readonly z: number; readonly identity: StrategyIdentity }[];
 }
 
 /** An episode already final: what a late settlement corrects. A dropped episode has no lineage and takes none. */
@@ -113,6 +120,8 @@ export interface HealthObservation {
   readonly s: number;
   readonly from: HealthStatus | null;
   readonly to: HealthStatus;
+  /** Corrections only: the lineage before it was recomputed with the corrected return. */
+  readonly previous?: { readonly s: number; readonly status: HealthStatus; readonly pauses: number; readonly z: number };
 }
 
 export interface HealthStep {
@@ -146,7 +155,7 @@ const checkConfig = (c: HealthConfig): void => {
 };
 
 /** The CUSUM step and the state machine for one observation z. */
-const advance = (prev: LineageHealth | undefined, identity: StrategyIdentity, z: number, c: HealthConfig): LineageHealth => {
+const advance = (prev: LineageHealth | undefined, episodeId: string, identity: StrategyIdentity, z: number, c: HealthConfig): LineageHealth => {
   const watch = c.watchFraction * c.h;
   const machine0 = prev?.machine ?? 'active';
   // After a pause the CUSUM restarts at 0 and the lineage requalifies.
@@ -165,24 +174,17 @@ const advance = (prev: LineageHealth | undefined, identity: StrategyIdentity, z:
     machine = s >= watch ? 'watch' : 'active';
   }
   const registered = c.registered.some((r) => identityKey(r) === identityKey(identity));
-  return { identity, s, machine, status: registered ? machine : 'unregistered', observations: (prev?.observations ?? 0) + 1, cleanRun, pauses };
+  return {
+    identity, s, machine, status: registered ? machine : 'unregistered', observations: (prev?.observations ?? 0) + 1, cleanRun, pauses,
+    history: [...(prev?.history ?? []), { episodeId, z, identity }],
+  };
 };
 
-/** A late settlement on a lineage: S moves by −Δz without κ, the state machine follows, no new episode is counted. */
-const correct = (prev: LineageHealth, dz: number, c: HealthConfig): LineageHealth => {
-  const watch = c.watchFraction * c.h;
-  const s = Math.max(0, prev.s - dz);
-  let { machine, cleanRun, pauses } = prev;
-  if (s >= c.h) {
-    if (machine !== 'paused') pauses++;
-    machine = 'paused';
-    cleanRun = 0;
-  } else if (machine === 'requalifying') {
-    if (s >= watch) cleanRun = 0;
-  } else if (machine !== 'paused') {
-    machine = s >= watch ? 'watch' : 'active';
-  }
-  return { ...prev, s, machine, status: prev.status === 'unregistered' ? 'unregistered' : machine, cleanRun, pauses };
+/** The lineage computed from its history alone: the exact CUSUM and state machine over these returns, in order. */
+const recompute = (history: LineageHealth['history'], c: HealthConfig): LineageHealth => {
+  let l: LineageHealth | undefined;
+  for (const h of history) l = advance(l, h.episodeId, h.identity, h.z, c);
+  return l!;
 };
 
 /**
@@ -206,11 +208,18 @@ export const reduceHealth = (state: HealthState, e: HealthEvent, config: HealthC
     if (!done) throw new RangeError(`late settlement for episode ${e.episodeId}, which is ${state.open[e.episodeId] ? 'still open: book it as a flow' : 'unknown'}`);
     if (done.lineage === null) throw new RangeError(`late settlement for episode ${e.episodeId}, which was dropped (nothing was sent): a cost is never hidden`);
     const prev = state.lineages[done.lineage]!;
-    const dz = Number(e.lamports) / Number(done.entryLamports);
-    const next = correct(prev, dz, config);
+    const netLamports = done.netLamports + e.lamports;
+    const z = Number(netLamports) / Number(done.entryLamports);
+    const j = prev.history.findIndex((h) => h.episodeId === e.episodeId);
+    if (j < 0) throw new RangeError(`episode ${e.episodeId} is not in lineage ${done.lineage}'s history`);
+    // The corrected return replaces the observed one and the lineage is recomputed from the start: exact, not ±Δz.
+    const next = recompute(prev.history.map((h, k) => (k === j ? { ...h, z } : h)), config);
     return {
-      state: { ...base, finished: { ...state.finished, [e.episodeId]: { ...done, netLamports: done.netLamports + e.lamports } }, lineages: { ...state.lineages, [done.lineage]: next } },
-      observation: { kind: 'correction', seq: e.seq, episodeId: e.episodeId, lineage: done.lineage, z: dz, s: next.s, from: prev.status, to: next.status },
+      state: { ...base, finished: { ...state.finished, [e.episodeId]: { ...done, netLamports } }, lineages: { ...state.lineages, [done.lineage]: next } },
+      observation: {
+        kind: 'correction', seq: e.seq, episodeId: e.episodeId, lineage: done.lineage, z, s: next.s, from: prev.status, to: next.status,
+        previous: { s: prev.s, status: prev.status, pauses: prev.pauses, z: prev.history[j]!.z },
+      },
       duplicate: false,
     };
   }
@@ -236,7 +245,7 @@ export const reduceHealth = (state: HealthState, e: HealthEvent, config: HealthC
   const z = Number(open.netLamports) / Number(open.entryLamports);
   const key = lineageKey(open.identity);
   const prev = state.lineages[key];
-  const next = advance(prev, open.identity, z, config);
+  const next = advance(prev, e.episodeId, open.identity, z, config);
   const done: FinishedEpisode = { lineage: key, entryLamports: open.entryLamports, netLamports: open.netLamports };
   return {
     state: { ...base, open: rest, finished: { ...state.finished, [e.episodeId]: done }, lineages: { ...state.lineages, [key]: next } },

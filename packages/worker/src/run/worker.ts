@@ -801,7 +801,7 @@ export class Worker {
     if (this.#healthOff) return;
     try {
       for (const o of this.#health.update(this.#desk.book, this.#legs(), this.#account.state.trades)) {
-        this.#journal.write('strategy_health', { observation: o.kind, lineage: o.lineage, episode: o.episodeId, z: o.z, s: o.s, from: o.from, to: o.to, display: healthDisplay(o.to) });
+        this.#journal.write('strategy_health', { observation: o.kind, lineage: o.lineage, episode: o.episodeId, z: o.z, s: o.s, from: o.from, to: o.to, ...(o.previous === undefined ? {} : { previous: o.previous, recomputed: true }), display: healthDisplay(o.to) });
       }
     } catch (e) {
       this.#healthOff = true;

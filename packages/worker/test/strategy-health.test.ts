@@ -84,6 +84,25 @@ describe('strategy health in the worker (observation only)', () => {
     expect(healthLines(off.stateDir)).toEqual([expect.objectContaining({ display: 'health: off for this run (observed only; entries not stopped)', reasons: ['monitor broken'] })]);
   });
 
+  it('parity with a failed entry: the backtest path observes the same failed-entry episode from the same book', async () => {
+    // Nothing lands: entry attempts fail (fees paid) until the intent ends unfilled.
+    const h = makeWorker({ scenario: { ...LANDS, landPpm: { pumpswap: 0n, 'pump-curve': 0n }, dropPpm: 0n } });
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    const m = await passingMarket(h, HELD);
+    await m.run(4_000, 100, () => m.pool());
+    expect(await until(m, 180_000, () => healthLines(h.stateDir).length >= 1, () => { m.slot(); m.pool(); })).toBe(true);
+    const worker = healthLines(h.stateDir).map((l) => [l['episode'], l['z'], l['s'], l['to']]);
+    const paper = Object.values((JSON.parse(readFileSync(join(h.stateDir, 'paper.json'), 'utf8'), bigints) as { attempts: Record<string, PaperAttempt> }).attempts);
+    // The backtest's stray costs: each landed failed entry attempt's fee, by its entry intent.
+    const stray = paper.filter((a) => a.purpose === 'entry' && a.outcome === 'failed').map((a) => ({ at: a.sentAtMs ?? 0, lamports: attemptFee(FILL_CONFIG.network, a.priorityFee, 'failed'), intentId: a.intentId }));
+    expect(stray.length).toBeGreaterThan(0);
+    const bt = runHealth({ book: h.worker.book, endedAt: h.timers.now() }, { trades: [], stray }, { lineageId: 'U', strategyVersionHash: 'v', universe: 'U', policyHash: 'p', executionModelHash: 'x' });
+    const failedEntries = bt.observations.filter((o) => o.z < 0);
+    expect(failedEntries.length).toBeGreaterThan(0);
+    expect(bt.observations.map((o) => [o.episodeId, o.z, o.s, o.to])).toEqual(worker);
+    await h.worker.stop();
+  });
+
   it('parity: the backtest path observes the same episodes from the same book as the worker did', async () => {
     const h = makeWorker({ scenario });
     await roundTrip(h);
@@ -124,7 +143,7 @@ describe('when the worker counts an episode as final (unit)', () => {
     expect(m.update(b, legs([]), trades).map((o) => [o.kind, o.z])).toEqual([['episode', -0.25]]);
     // PAPER-2 keeps the net at the close and books what lands later in `late` (#198).
     const later = [{ ...trades[0]!, late: [{ atMs: 200, lamports: -20_000n, usd: null }] }] as unknown as PaperTrade[];
-    expect(m.update(b, legs([]), later).map((o) => [o.kind, o.z])).toEqual([['correction', -20_000 / Number(SPEND)]]);
+    expect(m.update(b, legs([]), later).map((o) => [o.kind, o.z, o.previous?.z])).toEqual([['correction', Number(-SPEND / 4n - 20_000n) / Number(SPEND), -0.25]]);
     expect(m.update(b, legs([]), later)).toEqual([]);
     expect(m.state.finished['e1']!.netLamports).toBe(-SPEND / 4n - 20_000n);
   });

@@ -279,19 +279,39 @@ describe('episodes from the book (step 3)', () => {
 describe('late settlements after an episode was observed (PAPER-2; golden rule)', () => {
   const late = (seq: number, episodeId: string, lamports: bigint): HealthEvent => ({ type: 'late', seq, episodeId, lamports });
 
-  test('a late loss counts at once as a correction: S moves by −Δz without κ, no new episode is counted', () => {
+  test('a late settlement corrects the episode\'s return and the lineage is recomputed exactly; no new episode is counted', () => {
     const l = log().trade('a', 0.1);
     const before = run(l.events).state;
     const step = reduceHealth(before, late(99, 'a', -ENTRY / 2n), CFG);
-    expect(step.observation).toEqual({ kind: 'correction', seq: 99, episodeId: 'a', lineage: KEY, z: -0.5, s: 0.5, from: 'active', to: 'active' });
-    expect(step.state.lineages[KEY]).toMatchObject({ s: 0.5, observations: 1 });
+    // The corrected return is 0.1 − 0.5 = −0.4: S = 0.4 − κ, exactly as if it had been known at the time.
+    expect(step.observation).toMatchObject({ kind: 'correction', seq: 99, episodeId: 'a', lineage: KEY, from: 'active', to: 'active', previous: { s: 0, status: 'active', pauses: 0, z: 0.1 } });
+    expect(step.observation!.z).toBeCloseTo(-0.4, 12);
+    expect(step.observation!.s).toBeCloseTo(0.4 - HEALTH_DEFAULTS.kappa, 12);
+    expect(step.state.lineages[KEY]).toMatchObject({ observations: 1 });
     expect(step.state.finished['a']!.netLamports).toBe(before.finished['a']!.netLamports - ENTRY / 2n);
-    // A late loss can move an active lineage to watch, and a late gain back to active.
-    const w = reduceHealth(before, late(98, 'a', -4n * ENTRY), CFG).state.lineages[KEY]!;
-    expect(w).toMatchObject({ s: 4, machine: 'watch', status: 'watch' });
-    expect(reduceHealth(reduceHealth(before, late(98, 'a', -4n * ENTRY), CFG).state, late(99, 'a', 2n * ENTRY), CFG).state.lineages[KEY]).toMatchObject({ s: 2, machine: 'active' });
-    // A late gain lowers S, never below 0.
-    expect(reduceHealth(step.state, late(100, 'a', ENTRY), CFG).state.lineages[KEY]!.s).toBe(0);
+    // The same as a run that saw the corrected return from the start.
+    const direct = run(log().trade('a', -0.4).events).state.lineages[KEY]!;
+    expect(step.state.lineages[KEY]!.s).toBeCloseTo(direct.s, 12);
+  });
+
+  // STATS review B1 of #200: an incremental S − Δz is wrong both ways; the reviewer's three cases, exact values.
+  const zs = (...rs: number[]) => { const l = log(); rs.forEach((r, k) => l.trade(`e${k + 1}`, r)); return run(l.events).state; };
+  test('B1 (a): +1, +1, then a late −2 on episode 1 is (−1, +1): S 0, no false watch', () => {
+    const st = reduceHealth(zs(1, 1), late(99, 'e1', -2n * ENTRY), CFG).state.lineages[KEY]!;
+    expect(st).toMatchObject({ s: 0, machine: 'active', pauses: 0 });
+  });
+  test('B1 (b): −3, +2, −3, then a late +3 on episode 1 is (0, +2, −3): S 2.995, decay not hidden', () => {
+    const st = reduceHealth(zs(-3, 2, -3), late(99, 'e1', 3n * ENTRY), CFG).state.lineages[KEY]!;
+    expect(st.s).toBeCloseTo(2.995, 12);
+    expect(st).toMatchObject({ machine: 'active', pauses: 0 });
+  });
+  test('B1 (c): −4, +5, −1, then a late −4 on episode 1 is (−8, +5, −1): one pause, now requalifying', () => {
+    const before = zs(-4, 5, -1);
+    const step = reduceHealth(before, late(99, 'e1', -4n * ENTRY), CFG);
+    expect(step.state.lineages[KEY]).toMatchObject({ machine: 'requalifying', pauses: 1, cleanRun: 2 });
+    expect(step.state.lineages[KEY]!.s).toBeCloseTo(0.995, 12);
+    expect(step.observation).toMatchObject({ kind: 'correction', to: 'requalifying', previous: { pauses: 0 } });
+    expect(step.observation!.previous!.s).toBeCloseTo(before.lineages[KEY]!.s, 12);
   });
 
   test('a late loss can move a lineage to watch or paused, and breaks a requalifying clean run', () => {
@@ -323,7 +343,8 @@ describe('late settlements after an episode was observed (PAPER-2; golden rule)'
     const more = newEpisodeEvents(first.state, ep(-ENTRY / 4n - 15_000n));
     expect(more).toEqual([{ type: 'late', seq: first.state.lastSeq + 1, episodeId: 'a', lamports: -15_000n }]);
     const after = replayHealth(more, CFG, first.state);
-    expect(after.observations).toMatchObject([{ kind: 'correction', z: -15_000 / Number(ENTRY) }]);
+    expect(after.observations).toMatchObject([{ kind: 'correction' }]);
+    expect(after.observations[0]!.z).toBe(Number(-ENTRY / 4n - 15_000n) / Number(ENTRY));
     // Applied once: the same settled net afterwards emits nothing more.
     expect(newEpisodeEvents(after.state, ep(-ENTRY / 4n - 15_000n))).toEqual([]);
   });
