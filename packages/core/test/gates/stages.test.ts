@@ -2,8 +2,8 @@
 // complete holder scan and funders after the account reads, the simulation last; `only` evaluates one stage alone
 // (GATE-2, taken from #41 so FACTS-1f and BT-2 share one stage table).
 import { describe, expect, it } from 'vitest';
-import { evaluateHardRejects, gatesOfStages, HARD_GATES, HARD_ORDER, HARD_STAGE, type HardGate } from '../../src/gates/index.ts';
-import { contextOf, deps, passingFacts, request, session } from './world.ts';
+import { evaluateHardRejects, gatesOfStages, HARD_GATES, HARD_ORDER, HARD_STAGE, migrationKey, type HardGate } from '../../src/gates/index.ts';
+import { contextOf, deps, drop, MINT, passingFacts, request, session } from './world.ts';
 
 describe('evaluation stages', () => {
   it('partition the hard gates, each stage in evaluation order', () => {
@@ -49,5 +49,38 @@ describe('evaluating one stage (`only`)', () => {
 
   it('without `only`, every gate is evaluated, as before', () => {
     expect(all().evaluated).toEqual(HARD_ORDER.map((x) => x.gate));
+  });
+});
+
+describe('a complete verdict (`complete`)', () => {
+  const run = (o: { only?: readonly HardGate[]; stopAtFirst?: boolean }, facts = passingFacts()) =>
+    evaluateHardRejects(contextOf(facts), deps('live', session(), 'RUG-1'), request(), o);
+
+  it('a staged evaluation with no reasons is not complete: those gates passed, not the candidate', () => {
+    for (const s of [1, 2, 3, 4] as const) {
+      const r = run({ only: gatesOfStages([s]), stopAtFirst: false });
+      expect(r.reasons).toEqual([]);
+      expect(r.complete).toBe(false);
+    }
+    // Every gate listed in `only` is the whole set again.
+    expect(run({ only: HARD_GATES, stopAtFirst: false }).complete).toBe(true);
+  });
+
+  it('a full evaluation is complete, with or without stopAtFirst when nothing rejects', () => {
+    expect(run({ stopAtFirst: false })).toMatchObject({ complete: true, reasons: [] });
+    expect(run({})).toMatchObject({ complete: true, reasons: [] });
+  });
+
+  it('an early reject (stopAtFirst) is not complete, and has reasons anyway', () => {
+    const r = run({}, drop(passingFacts(), migrationKey(MINT)));
+    expect(r.reasons.length).toBeGreaterThan(0);
+    expect(r.complete).toBe(false);
+    expect(run({ stopAtFirst: false }, drop(passingFacts(), migrationKey(MINT))).complete).toBe(true);
+  });
+
+  it('a refused request (an ended session) is not complete', () => {
+    const ended = session();
+    ended.end();
+    expect(evaluateHardRejects(contextOf(passingFacts()), deps('live', ended, 'RUG-1'), request(), {})).toMatchObject({ pass: false, complete: false });
   });
 });
