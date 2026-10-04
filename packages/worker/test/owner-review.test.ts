@@ -14,7 +14,7 @@ import type { HttpRequest } from '../src/providers/index.ts';
 import { replySigned, sendHeartbeat, signReply } from '../src/run/heartbeat.ts';
 import { sign, signReply as watchdogSignReply } from '../../ops/src/watchdog/logic.ts';
 import { SOL_PRICE_KEY } from '../src/engine/strategy.ts';
-import { microUsdToLamports } from '../../core/src/units/index.ts';
+import { type MicroUsd, microUsdToLamports } from '../../core/src/units/index.ts';
 import { MINT, Market, SOL_PRICE, makeWorker, passingMarket, until } from './worker-harness.ts';
 import { markedHistory } from '../src/engine/marks.ts';
 
@@ -476,8 +476,8 @@ describe('owner commands through the heartbeat (worker harness)', () => {
     // and the very figure the owner saw in SOL (the offer's evidence).
     const notional = accountFile(h.stateDir).read(null as never).trades.find((t) => t.positionId === held()!.id)!.notional;
     expect(o?.dayLossAt).toBeGreaterThan(1_600_000n);
-    expect(o?.dayLossAt).toBeLessThan(1_600_000n + notional);
-    expect(String(microUsdToLamports(o!.dayLossAt!, SOL_PRICE, 'ceil'))).toBe(stop?.evidence['day_loss_lamports']);
+    expect(o?.dayLossAt).toBeLessThan(1_600_000n + BigInt(notional));
+    expect(String(microUsdToLamports(o!.dayLossAt!, SOL_PRICE as MicroUsd, 'ceil'))).toBe(stop?.evidence['day_loss_lamports']);
     await h.worker.stop();
   });
 });
