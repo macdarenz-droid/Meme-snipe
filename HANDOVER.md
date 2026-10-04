@@ -2,7 +2,7 @@
 
 The one file a new supervisor reads to take over the Zeroed build. It says what the supervisor does, how the work runs, where everything stands now, what comes next and what waits on the owner. It is updated in place after each merge batch, ruling batch or milestone, and not while a PR is in its final CI run (a push to the integration branch makes every queued PR re-run CI).
 
-**Last updated:** Sun 4 Oct 2026, about 9:50 PM Melbourne (AEDT), by the new account's supervisor (session_012En9L5mnYQtEz7oyp1Eryf). §0 below is the 7:45 PM account-transition handover from the first account; "New account" right after this line is what changed since.
+**Last updated:** Sun 4 Oct 2026, about 10:05 PM Melbourne (AEDT), by the new account's supervisor (session_012En9L5mnYQtEz7oyp1Eryf). §0 below is the 7:45 PM account-transition handover from the first account; "New account" right after this line is what changed since.
 
 **New account (from about 8:00 PM, 4 Oct).**
 - Supervisor: session_012En9L5mnYQtEz7oyp1Eryf. It read AGENTS.md, CLAUDE.md, this file, all 22 session notes and the supervisor log, and re-listed the open PRs (heads matched §4).
@@ -130,7 +130,7 @@ The supervisor wrote this file, `PROJECT_STATE.md`, `docs/DECISIONS.md` and `doc
 
 ## 4. Current state (4 Oct, about 7:45 PM)
 
-### New-account queue (live; updated about 9:50 PM)
+### New-account queue (live; updated about 10:05 PM)
 
 **Merge order** (serial; each merge needs ready → update branch → green `check` (and `Ops end-to-end` for ops) → contains base → change identical to the reviewed SHA):
 
@@ -145,22 +145,28 @@ The supervisor wrote this file, `PROJECT_STATE.md`, `docs/DECISIONS.md` and `doc
 | 107 | EXIT-1f | ce7c78b | PASS (first account) | MERGED e452e02 (~9:22 PM; check green on af69ce4, change identical to ce7c78b); the EXIT builder retargets #128 |
 | 128 | EXIT-1g | fa52906 | PASS (EXIT reviewer, 6/6 mutants) | stacked on #107: retarget to the integration branch and merge the base after #107 |
 | 140 | SAMPLE-QR | e62993c | PASS (run/CI reviewer) | MERGED cae4ac4 (~9:38 PM; check green on 562387c, change identical) |
-| 153 | CI-FLAKE | 7434d0e | run/CI review (5 min) | test-only port of f4e73b8: the OPS-GATE test's multi-poll success run waits up to 60 s (bash SECONDS whole-second deadline flaked PR CI about 1 run in 3); merges next, ahead of PRACTICE-ON |
+| 153 | CI-FLAKE | 7434d0e | PASS (run/CI reviewer; 0/15 failures on head vs 1/15 on base) | MERGED 433afd7 (~10:04 PM): the OPS-GATE test's multi-poll success run waits up to 60 s (bash SECONDS whole-second deadline flaked PR CI about 1 run in 3); the injected-clock fix and a spawnSync timeout ride #149 |
 | 136 | SEC-1 (audit O1) | e44829c | PASS (ops reviewer, 12/13 mutants, 1 equivalent) | after #153 and #145; conflicts with #149 (require-check WAIT_S, android test). Before the owner's keystore steps, previews keep signing with the cached key and a warning. Follow-ups after the owner's steps: an unset pin becomes an error in both scripts; gate the two secrets in YAML (hygiene) |
 | 128 | EXIT-1g (base-merged) | fa52906 → 08b5fb7 | PASS (EXIT reviewer) | retargeted to the integration branch after #107; clean base merge at 08b5fb7 |
 | 56 | RES-3b | b8f8968 | PASS (stats reviewer) | needs base merge; #120 switches to wall.ts researchWindow() when it merges base |
 | 150 | DATA-STORE (docs) | 26099c7 | PASS (data reviewer) | needs base merge |
+| 151 | APP-WORDS part 1 | 923aac3 | PASS (run/CI reviewer) | after #153 (its f4e73b8 is #153's change); next part carries N1 (drop the 24 h notice's second sentence) and N2 (DepositPanel explaining lines) |
+| 129 | STATS-1g | d89df54 | PASS (stats reviewer, 9/9 mutants; CR2/BM coverage within MC error at α/4 and α/8) | before #41; follow-up STATS-1h refuses alpha > 0.0125 in clusterWelchBounds |
+| 148 | WORKER-CRASH | e69bf8c | PASS (data reviewer, 7/7 mutants) | needs base merge |
+| 123 | WORKER-ORDER | a8e4e0b | PASS (worker/facts reviewer, ruling (a): entries line-first; 13 mutants over two rounds) | needs base merge; #133 reconciles the filled() callback after it |
+| 152 | DATA-KEEP | 48b0e29 | PASS (data reviewer; supervisor checked the workflow) | needs base merge; after merge, dispatch once and record whether a restore moves last_accessed_at |
+| 137 | OPS-1i | b39b3b0 | PASS (ops reviewer; re-pinned after #145 at a8eb6b9) | after the PRACTICE-ON Deploy; #149 re-pins after it |
 | 118 | API-1 | cd9d60f | PASS (run/CI reviewer, delta; 4638 tests) | base merged by hand at ded20fb (one strategy.ts block); run/CI delta check |
 | 124 | RISK-LATCH | 5594923 | PASS (risk reviewer, 5/7 mutants, 2 equivalent or optional) | needs base merge; #147 then needs the risk reviewer's strategy.ts delta check; #132 keeps both DECISIONS sections |
 | 147 | RISK-FAULT | 911eac6 | PASS (risk reviewer, 4/4 mutants) | after #124: base merge, keep the latchable gate plus the fault line, log a valuation fault once per episode, then a risk delta check |
-| 125 | PERSIST-2 | 8f82e5d | PASS (PERSIST reviewer, 13/13 mutants) | base merged by hand at d8db7f1 (imports in strategy.ts; RESTORE fact plus graduates seed in worker.ts); PERSIST delta check |
+| 125 | PERSIST-2 | 8f82e5d | PASS (PERSIST reviewer, 13/13 mutants) | base merged by hand at d8db7f1: PERSIST merge check PASS (change identical apart from the import union; seed still lands before the first read; 8/8 mutants) |
 | 130 | EXIT-ROUTE (M6) | 8a6a71e | PASS (worker/facts reviewer) | needs base merge |
 | 98 | TEST-3 G3 report | c1f3f45 | PASS (first account) | then the WATCH builder's G3 fold |
 | 122 | BT-TAIL | b6200d1 | PASS (BT reviewer, 4518/4518 on a local merge) | needs base merge; before #120 |
 | 131 | PERSIST-3 | 8fb5c23 | PASS (PERSIST reviewer, 12/13 mutants) | needs base merge after #125 |
-| 115 | RES-4 | 044591d (C1c, base merged) | stats PASS earlier; BT reviewer re-checks C1c parity, stats re-checks the §4 line and preregistration sha | |
+| 115 | RES-4 | debd4f7 | PASS (BT reviewer: C1c and C1d closed; stats reviewer: §4 line, preregistration sha, holderGrowth) | needs base merge |
 
-**In review or fixing:** #121 WATCH-1c (risk delta); #127 DATA-4 (PASS at 6854871; the gate-test exemption at 18094b4 is in a short data re-check; merges only after the chain ends, then ledger init with 700000); #129 STATS-1g (fixes at d89df54, stats re-review) and #120 RES-5 (stats reviewer); #132 RISK-PARTIAL (risk review);  #148 WORKER-CRASH (fixes at e69bf8c, data re-review); #142 EXIT-1h (fixes at 448a03e, full check running, then EXIT re-review); #152 DATA-KEEP (fixes at 48b0e29, data re-review); #151 APP-WORDS (run/CI reviewer); #146 CORE-TIDY (FAIL at 486ec85: the volume-linear test is weaker than the timed one; fixing); #41 BT-2 (FAIL at 9c1bc67: the study wiring of the SPA plan and capacity is untested; fixing); #133 PAPER-1 (desk.ts orphan_fill FAIL at 761e1b2: a late stop exit is not marked stopped out, and a re-trigger between abandon and late landing leaves the trade open; fixing in the desk, plus a late-buy guard that alerts and halts entries until M8); #123 WORKER-ORDER (ruling (a) done at a8e4e0b, worker/facts delta check); #149 OPS-1j (ops review after #145 and #137); #135 PNPM-CLAIMS (ops review); #137 OPS-1i (PASS at 9ea0046; conflicts with #145 on the README pin, e2e 10b2 and install.sh, so it merges the base, re-pins and gets a short ops delta check after #145); #139 WORKER-1d (small FAIL at 19d5fdd: the deployer store's prune point is not pinned by a test; fixing); #140 SAMPLE-QR (run/CI review); #141 WATCH-1d (fix at 4418faa, base re-merge pending; full risk review after #147); #41 BT-2 (audit fixes building; S2 estimand passed with conditions C1–C6).
+**In review or fixing:** #121 WATCH-1c (risk delta); #127 DATA-4 (PASS at 6854871; the gate-test exemption at 18094b4 is in a short data re-check; merges only after the chain ends, then ledger init with 700000); #120 RES-5 (fixes at d7a0c90, stats re-review); #141 WATCH-1d (green head 05b0d85 carries #121; risk full review); #132 RISK-PARTIAL (risk review);  #142 EXIT-1h (fixes at 448a03e, full check running, then EXIT re-review);  #146 CORE-TIDY (FAIL at 486ec85: the volume-linear test is weaker than the timed one; fixing); #41 BT-2 (FAIL at 9c1bc67: the study wiring of the SPA plan and capacity is untested; fixing); #133 PAPER-1 (desk.ts orphan_fill FAIL at 761e1b2: a late stop exit is not marked stopped out, and a re-trigger between abandon and late landing leaves the trade open; fixing in the desk, plus a late-buy guard that alerts and halts entries until M8);  #149 OPS-1j (ops review after #145 and #137); #135 PNPM-CLAIMS (ops review);  #139 WORKER-1d (small FAIL at 19d5fdd: the deployer store's prune point is not pinned by a test; fixing); #140 SAMPLE-QR (run/CI review); #141 WATCH-1d (fix at 4418faa, base re-merge pending; full risk review after #147); #41 BT-2 (audit fixes building; S2 estimand passed with conditions C1–C6).
 
 **New cards from the six read-audits (all assigned, §5):**
 - DATA-PUB (urgent): data-scan.yml would publish a Helius-source day (raw getBlock responses in raw.jsonl.zst) to a public release and a 14-day artifact; chained runs use the workflow on the branch, so the gate must merge before the 09-21 chain's last run (about 11:30 PM–1 AM).
