@@ -3,22 +3,33 @@
 import { describe, expect, it, vi } from 'vitest';
 import { sign, type Heartbeat } from '../src/watchdog/logic.ts';
 import { CODE_REPO, writeReports } from '../src/watchdog/reports.ts';
-import { FORBIDDEN, FORBIDDEN_KEY, SHAPE_KEYS, checkSummary, forbiddenIn, isSummary, type Summary } from '../src/watchdog/summary.ts';
+import { FORBIDDEN, FORBIDDEN_KEY, SHAPE_KEYS, checkSummary, forbiddenIn, isSummary, type Summary, type SummaryV1 } from '../src/watchdog/summary.ts';
 import { Watchdog, type DurableState, type Env } from '../src/watchdog/worker.ts';
 
 const KEY = 'test-hmac-key-0123456789abcdef';
 const MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 
 export const goodSummary = (over: Partial<Summary> = {}): Summary => ({
-  v: 1, day: '2026-10-04', final: false, generated_at: '2026-10-04T02:00:00.000Z', mode: 'paper',
+  v: 2, day: '2026-10-04', final: false, generated_at: '2026-10-04T02:00:00.000Z', mode: 'paper',
   worker: { git_sha: 'a'.repeat(40), entry_rule: 'S0', uptime_s: 3600, starts: 1, recorder: 'on' },
   alerts: [{ code: 'position_unpriced', count: 1 }], halts: [{ code: 'feed-stale', count: 2 }],
   candidates: { seen: 3, entered: 1, refused: 2, refused_by_reason: [{ gate: 'H7', code: 'top-holders', count: 2 }], refused_other: 0 },
   trades: [{ mint: MINT, opened_at: '2026-10-04T01:00:00.000Z', closed_at: '2026-10-04T01:01:00.000Z', size_usd: '3', exit_reason: 'stop', net_lamports: '-1500000', net_usd: '-0.3' }],
   trades_dropped: 0, pnl: { closed_trades: 1, net_lamports: '-1500000', net_usd: '-0.3' }, open_positions: 0,
   provider_credits: [{ provider: 'helius', used_since_boot: 1234, monthly: 1_000_000 }],
+  open: {
+    positions: [{ mint: MINT, opened_at: '2026-10-04T01:30:00.000Z', cost_lamports: '15000000', value_lamports: '12000000', marked_net_lamports: '-3000000' }],
+    marked_net_lamports: '-3000000', unquotable: 0, unlisted: 0,
+  },
+  memory: { rss_min_bytes: 180_000_000, rss_max_bytes: 320_000_000, rss_last_bytes: 320_000_000, rss_change_bytes: 140_000_000 },
   ...over,
 });
+
+/** The same day as version 1 sent it (a worker not yet updated). */
+const goodV1 = (): SummaryV1 => {
+  const { open: _o, memory: _m, ...rest } = goodSummary();
+  return { ...rest, v: 1 };
+};
 
 /** The same planted values as the worker side's test, one per forbidden kind. */
 const PLANTED = [
@@ -41,9 +52,13 @@ const STRING_FIELDS: readonly ((s: Record<string, any>, v: string) => void)[] = 
   (s, v) => (s.pnl.net_lamports = v), (s, v) => (s.pnl.net_usd = v), (s, v) => (s.provider_credits[0].provider = v),
   // A field that is not in the shape.
   (s, v) => (s.worker.host = v), (s, v) => (s.note = v), (s, v) => (s.trades[0].wallet = v),
+  // Version 2: open positions and memory.
+  (s, v) => (s.open.positions[0].mint = v), (s, v) => (s.open.positions[0].opened_at = v), (s, v) => (s.open.positions[0].cost_lamports = v),
+  (s, v) => (s.open.positions[0].value_lamports = v), (s, v) => (s.open.positions[0].marked_net_lamports = v), (s, v) => (s.open.marked_net_lamports = v),
+  (s, v) => (s.open.positions[0].wallet = v), (s, v) => (s.memory.host = v), (s, v) => (s.memory.rss_last_bytes = v),
 ];
 
-const AMOUNT_FIELDS = new Set([13, 15, 16, 17, 18]);
+const AMOUNT_FIELDS = new Set([13, 15, 16, 17, 18, 25, 26, 27, 28]);
 
 describe('the summary guards', () => {
   it('accept the exact shape and refuse a missing, extra or mistyped field', () => {
@@ -52,7 +67,21 @@ describe('the summary guards', () => {
     expect(checkSummary(JSON.stringify(missing))).toEqual({ ok: false, reason: 'not the summary shape' });
     expect(checkSummary(JSON.stringify({ ...goodSummary(), extra: 1 })).ok).toBe(false);
     expect(checkSummary(JSON.stringify(goodSummary({ open_positions: -1 }))).ok).toBe(false);
-    expect(checkSummary(JSON.stringify(goodSummary({ v: 2 as 1 }))).ok).toBe(false);
+    expect(checkSummary(JSON.stringify(goodSummary({ v: 3 as 2 }))).ok).toBe(false);
+    // Version 1 from a worker not yet updated is still taken, but never a mix of the two.
+    expect(checkSummary(JSON.stringify(goodV1())).ok).toBe(true);
+    expect(checkSummary(JSON.stringify({ ...goodV1(), v: 2 })).ok).toBe(false);
+    expect(checkSummary(JSON.stringify({ ...goodSummary(), v: 1 })).ok).toBe(false);
+    // Open positions: a value and its marked net are both known or both null; a negative count or a non-integer change fails.
+    const pos = goodSummary().open.positions[0]!;
+    const withPos = (p: object) => JSON.stringify(goodSummary({ open: { ...goodSummary().open, positions: [{ ...pos, ...p }] } }));
+    expect(checkSummary(withPos({ value_lamports: null, marked_net_lamports: null })).ok).toBe(true);
+    expect(checkSummary(withPos({ value_lamports: null })).ok).toBe(false);
+    expect(checkSummary(withPos({ value_lamports: '0', marked_net_lamports: null })).ok).toBe(false);
+    expect(checkSummary(JSON.stringify(goodSummary({ open: { ...goodSummary().open, unquotable: -1 } }))).ok).toBe(false);
+    expect(checkSummary(JSON.stringify(goodSummary({ memory: { ...goodSummary().memory, rss_change_bytes: -5 } }))).ok).toBe(true);
+    expect(checkSummary(JSON.stringify(goodSummary({ memory: { ...goodSummary().memory, rss_change_bytes: 1.5 } }))).ok).toBe(false);
+    expect(checkSummary(JSON.stringify(goodSummary({ memory: { ...goodSummary().memory, rss_last_bytes: -1 } }))).ok).toBe(false);
     expect(checkSummary('not json')).toEqual({ ok: false, reason: 'not JSON' });
     expect(checkSummary(' '.repeat(70_000))).toEqual({ ok: false, reason: 'too large' });
   });

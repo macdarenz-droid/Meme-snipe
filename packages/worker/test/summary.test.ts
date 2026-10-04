@@ -5,12 +5,12 @@ import { appendFileSync, existsSync, readFileSync, truncateSync, writeFileSync }
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { verifySignature } from '../../ops/src/watchdog/logic.ts';
-import { SUMMARY_MAX_TRADES, SUMMARY_TOP_REASONS, checkSummary } from '../../ops/src/watchdog/summary.ts';
+import { SUMMARY_MAX_TRADES, SUMMARY_TOP_REASONS, checkSummary, type Summary } from '../../ops/src/watchdog/summary.ts';
 import type { MicroUsd } from '../../core/src/units/index.ts';
 import type { HttpClient } from '../src/providers/index.ts';
 import type { PaperTrade } from '../src/run/account.ts';
 import {
-  Summarizer, buildSummary, emptySummaryState, foldLine, foldNewLines, foldText, haltCode, nextSummaryDelay, signSummary, summaryBody, type SummaryInputs,
+  Summarizer, buildSummary, emptySummaryState, foldLine, heldPositions, foldNewLines, foldText, haltCode, nextSummaryDelay, signSummary, summaryBody, type SummaryInputs,
 } from '../src/run/summary.ts';
 import { MINT, makeWorker, passingMarket, tempState } from './worker-harness.ts';
 
@@ -33,7 +33,7 @@ const trade = (o: Partial<PaperTrade> = {}): PaperTrade => ({
 });
 const inputs = (o: Partial<SummaryInputs> = {}): SummaryInputs => ({
   day: DAY, final: false, nowMs: NOON + 3_600_000, fold: undefined, gitSha: 'a'.repeat(40), entryRule: 'S0', recorder: 'on', uptimeS: 3600,
-  trades: [], openPositions: 0, solPrice: 200_000_000n as MicroUsd, credits: [{ provider: 'helius', credits_used: 1234, monthly_credits: 1_000_000 }], ...o,
+  trades: [], openPositions: 0, open: [], prevRssLast: null, solPrice: 200_000_000n as MicroUsd, credits: [{ provider: 'helius', credits_used: 1234, monthly_credits: 1_000_000 }], ...o,
 });
 
 describe('counts from the journal', () => {
@@ -216,6 +216,95 @@ describe('the summary', () => {
   });
 });
 
+describe('open positions and memory', () => {
+  it('marks open positions to their sell value; an unquotable one is counted, never read as zero', () => {
+    const s = buildSummary(inputs({ open: [
+      { mint: M1, openedAtMs: NOON, cost: 15_000_000n, value: 12_000_000n },
+      { mint: M2, openedAtMs: NOON + 1, cost: 10_000_000n, value: null },
+      { mint: M3, openedAtMs: NOON + 2, cost: 5_000_000n, value: 6_000_000n },
+    ] }));
+    expect(s.open).toEqual({
+      positions: [
+        { mint: M1, opened_at: at(NOON), cost_lamports: '15000000', value_lamports: '12000000', marked_net_lamports: '-3000000' },
+        { mint: M2, opened_at: at(NOON + 1), cost_lamports: '10000000', value_lamports: null, marked_net_lamports: null },
+        { mint: M3, opened_at: at(NOON + 2), cost_lamports: '5000000', value_lamports: '6000000', marked_net_lamports: '1000000' },
+      ],
+      marked_net_lamports: '-2000000', unquotable: 1, unlisted: 0,
+    });
+    const b = summaryBody(s);
+    expect('body' in b && checkSummary(b.body).ok).toBe(true);
+    // A mint that is not a mint address is never listed, but still counted (and still in the total if quoted).
+    const bad = buildSummary(inputs({ open: [{ mint: '203.0.113.42', openedAtMs: NOON, cost: 1n, value: 0n }] }));
+    expect(bad.open).toEqual({ positions: [], marked_net_lamports: '-1', unquotable: 0, unlisted: 1 });
+    expect(JSON.stringify(bad)).not.toContain('203.0.113.42');
+  });
+
+  it('records memory per day (lowest, highest, last) at each post, and the change from the previous day', async () => {
+    const dir = tempState();
+    const p = join(dir, 'journal.jsonl');
+    writeFileSync(p, '');
+    const posts: { day: string; memory: unknown }[] = [];
+    const http: HttpClient = async (req) => {
+      const x = JSON.parse(req.body!) as { day: string; memory: unknown };
+      posts.push({ day: x.day, memory: x.memory });
+      return { status: 200, header: () => null, text: '{"ok":true,"written":true}' };
+    };
+    let now = NOON;
+    let rss = 0;
+    const make = () => new Summarizer({ journalPath: p, stateDir: dir, http, watchdogUrl: 'https://w.test', key: 'k', now: () => now, log: () => {}, live: () => inputs(), rss: () => rss });
+    const sz = make();
+    for (const [ms, r] of [[NOON, 300], [NOON + 1_800_000, 100], [NOON + 3_600_000, 200]] as const) {
+      now = ms;
+      rss = r;
+      await sz.tick();
+    }
+    expect(posts.at(-1)).toEqual({ day: DAY, memory: { rss_min_bytes: 100, rss_max_bytes: 300, rss_last_bytes: 200, rss_change_bytes: null } });
+    // A restart keeps the samples; the next Melbourne day reports its change from the last sample of the day before.
+    now = Date.parse('2026-10-05T01:00:00.000Z');
+    rss = 500;
+    await make().tick();
+    expect(posts.at(-1)).toEqual({ day: '2026-10-05', memory: { rss_min_bytes: 500, rss_max_bytes: 500, rss_last_bytes: 500, rss_change_bytes: 300 } });
+    // The day that ended was posted final with its own samples.
+    expect(posts.map((x) => x.day)).toEqual([DAY, DAY, DAY, DAY, '2026-10-05']);
+    expect(posts[3]!.memory).toEqual({ rss_min_bytes: 100, rss_max_bytes: 300, rss_last_bytes: 200, rss_change_bytes: null });
+  });
+
+  it('takes the change from the last day that has a sample, skipping a day with journal lines only', async () => {
+    const dir = tempState();
+    const p = join(dir, 'journal.jsonl');
+    writeFileSync(p, '');
+    const posts: { day: string; memory: { rss_change_bytes: number | null } }[] = [];
+    const http: HttpClient = async (req) => {
+      posts.push(JSON.parse(req.body!) as { day: string; memory: { rss_change_bytes: number | null } });
+      return { status: 200, header: () => null, text: '{"ok":true,"written":true}' };
+    };
+    let now = NOON;
+    let rss = 100;
+    const sz = new Summarizer({ journalPath: p, stateDir: dir, http, watchdogUrl: 'https://w.test', key: 'k', now: () => now, log: () => {}, live: () => inputs(), rss: () => rss });
+    await sz.tick();
+    // The 5th has journal lines but no post (the worker was down at its posts); the 6th compares with the 4th.
+    appendFileSync(p, `${JSON.stringify(line('start', Date.parse('2026-10-05T01:00:00.000Z')))}\n`);
+    now = Date.parse('2026-10-06T01:00:00.000Z');
+    rss = 400;
+    await sz.tick();
+    expect(posts.at(-1)).toMatchObject({ day: '2026-10-06', memory: { rss_change_bytes: 300 } });
+  });
+
+  it('lists held positions only: not closed, not still opening; a quote that throws or a zero size is unquotable', () => {
+    const pos = (id: string, status: string, quantity: bigint) => ({ id, mint: M1, status, quantity, cost: 10n });
+    const held = heldPositions([pos('a', 'open', 5n), pos('b', 'opening', 0n), pos('c', 'closed', 0n), pos('d', 'exit_pending', 5n), pos('e', 'open', 0n)],
+      (p) => {
+        if (p.id === 'd') throw new RangeError('base in must be > 0');
+        return 7n;
+      }, () => NOON);
+    expect(held.map((h) => [h.openedAtMs, h.value])).toEqual([[NOON, 7n], [NOON, null], [NOON, null]]);
+  });
+
+  it('reports no memory for a day without a sample (null, not zero)', () => {
+    expect(buildSummary(inputs()).memory).toEqual({ rss_min_bytes: null, rss_max_bytes: null, rss_last_bytes: null, rss_change_bytes: null });
+  });
+});
+
 /** Values that must never reach a summary, planted in every free-text field a journal line or a trade can carry. */
 const PLANTED = [
   'AGE-SECRET-KEY-1QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ',
@@ -384,10 +473,18 @@ describe('the worker keeps trading when the summary fails', () => {
       } else {
         expect(summaries.length).toBeGreaterThanOrEqual(2);
         expect(h.logs.some((l) => l.startsWith('Summary for ') && l.includes('not accepted'))).toBe(true);
-        // The summary that was refused was valid and named the entry.
+        // The summary that was refused was valid, named the entry and marked the open position.
         const c = checkSummary(summaries.at(-1)!);
         expect(c.ok).toBe(true);
-        if (c.ok) expect(c.summary.candidates.entered).toBe(1);
+        if (c.ok) {
+          expect(c.summary.candidates.entered).toBe(1);
+          const open = (c.summary as Summary).open;
+          expect(open.positions.map((x) => x.mint)).toEqual([String(MINT)]);
+          expect(BigInt(open.positions[0]!.cost_lamports)).toBeGreaterThan(0n);
+          expect(open.positions[0]!.value_lamports).not.toBeNull();
+          expect(open.unquotable).toBe(0);
+          expect((c.summary as Summary).memory.rss_last_bytes).toBeGreaterThan(0);
+        }
       }
       expect(await h.worker.stop()).toBe(0);
       const journal = readFileSync(join(h.stateDir, 'journal.jsonl'), 'utf8');

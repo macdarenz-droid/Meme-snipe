@@ -9,8 +9,8 @@
 import { createHmac } from 'node:crypto';
 import { open, stat } from 'node:fs/promises';
 import {
-  PATTERNS, SUMMARY_MAX_BYTES, fits, SUMMARY_MAX_TRADES, SUMMARY_TOP_REASONS, SUMMARY_VERSION, checkSummary,
-  type CodeCount, type ProviderCredits, type ReasonCount, type Summary, type SummaryTrade,
+  PATTERNS, SUMMARY_MAX_BYTES, SUMMARY_MAX_OPEN, fits, SUMMARY_MAX_TRADES, SUMMARY_TOP_REASONS, SUMMARY_VERSION, checkSummary,
+  type CodeCount, type ProviderCredits, type ReasonCount, type Summary, type SummaryOpenPosition, type SummaryTrade,
 } from '../../../ops/src/watchdog/summary.ts';
 import type { MicroUsd } from '../../../core/src/units/index.ts';
 import type { HttpClient } from '../providers/index.ts';
@@ -29,6 +29,8 @@ export interface DayFold {
   halts: Record<string, number>;
   /** Per candidate mint: its last refusal (gate, code) or null, and whether it was entered. */
   cands: Record<string, { gate: string | null; code: string | null; entered: boolean }>;
+  /** The worker's resident memory sampled at each post that day (bytes); absent before the first sample. */
+  rss?: { min: number; max: number; last: number };
 }
 
 export interface SummaryState {
@@ -197,6 +199,10 @@ export interface SummaryInputs {
   readonly uptimeS: number;
   readonly trades: readonly PaperTrade[];
   readonly openPositions: number;
+  /** Each open position now: what it cost and what selling the whole size would return (null when it cannot be quoted). */
+  readonly open: readonly { readonly mint: string; readonly openedAtMs: number; readonly cost: bigint; readonly value: bigint | null }[];
+  /** The previous kept day's last memory sample, for the day-over-day change. */
+  readonly prevRssLast: number | null;
   readonly solPrice: MicroUsd | null;
   readonly credits: readonly { readonly provider: string; readonly credits_used: number; readonly monthly_credits: number | null }[];
 }
@@ -212,6 +218,53 @@ const exitReason = (t: PaperTrade): string | null => {
   if (t.closedAtMs === null) return null;
   const r = t.exitReasons?.find((x) => EXIT.has(x));
   return r ?? (t.stoppedOut ? 'stop' : 'other');
+};
+
+/** What the summary needs of a book position. */
+export interface HeldInput {
+  readonly id: string;
+  readonly mint: string;
+  readonly status: string;
+  readonly quantity: bigint;
+  readonly cost: bigint;
+}
+
+/**
+ * The held positions for the summary: every position that is neither closed nor still opening (an opening one holds
+ * nothing yet, as in the heartbeat). `quote` gives what selling the whole size returns; a quote that is missing, throws
+ * or has no size leaves the value null (unquotable), never zero.
+ */
+export const heldPositions = <P extends HeldInput>(positions: readonly P[], quote: (p: P) => bigint | null, openedAt: (id: string) => number): SummaryInputs['open'] =>
+  positions.filter((p) => p.status !== 'closed' && p.status !== 'opening').map((p) => {
+    let value: bigint | null = null;
+    try {
+      value = p.quantity > 0n ? quote(p) : null;
+    } catch {
+      value = null;
+    }
+    return { mint: p.mint, openedAtMs: openedAt(p.id), cost: p.cost, value };
+  });
+
+/**
+ * Open positions marked to their liquidation value now. A position that cannot be quoted is listed with null value and
+ * counted as unquotable; it never adds zero to the marked total (a missing price is not a price).
+ */
+const openOf = (i: SummaryInputs): Summary['open'] => {
+  const valid = i.open.filter((o) => fits(o.mint, PATTERNS.MINT));
+  const positions: SummaryOpenPosition[] = valid.slice(0, SUMMARY_MAX_OPEN).map((o) => ({
+    mint: o.mint,
+    opened_at: iso(o.openedAtMs),
+    cost_lamports: o.cost.toString(),
+    value_lamports: o.value === null ? null : o.value.toString(),
+    marked_net_lamports: o.value === null ? null : (o.value - o.cost).toString(),
+  }));
+  const quoted = i.open.filter((o) => o.value !== null);
+  return {
+    positions,
+    marked_net_lamports: quoted.reduce((a, o) => a + (o.value! - o.cost), 0n).toString(),
+    unquotable: i.open.length - quoted.length,
+    unlisted: i.open.length - positions.length,
+  };
 };
 
 /** The day's summary, in the shape the watchdog accepts. Pure. */
@@ -277,6 +330,13 @@ export const buildSummary = (i: SummaryInputs): Summary => {
     pnl: { closed_trades: closed.length, net_lamports: netL.toString(), net_usd: usdText(netU) },
     open_positions: i.openPositions,
     provider_credits: credits,
+    open: openOf(i),
+    memory: {
+      rss_min_bytes: f.rss?.min ?? null,
+      rss_max_bytes: f.rss?.max ?? null,
+      rss_last_bytes: f.rss?.last ?? null,
+      rss_change_bytes: f.rss === undefined || i.prevRssLast === null ? null : f.rss.last - i.prevRssLast,
+    },
   };
 };
 
@@ -322,7 +382,9 @@ export interface SummarizerDeps {
   readonly now: () => number;
   readonly log: (line: string) => void;
   /** What the running worker knows now: its trades, positions, price and credits. */
-  readonly live: () => Omit<SummaryInputs, 'day' | 'final' | 'nowMs' | 'fold'>;
+  readonly live: () => Omit<SummaryInputs, 'day' | 'final' | 'nowMs' | 'fold' | 'prevRssLast'>;
+  /** The worker's resident memory now; process.memoryUsage().rss (the value /health reports) unless a test swaps it. */
+  readonly rss?: () => number;
   /** The summary builder (buildSummary unless a test swaps it, to show the guard stops a bad summary before any post). */
   readonly build?: (i: SummaryInputs) => Summary;
 }
@@ -379,6 +441,12 @@ export class Summarizer {
     state.offset = r.offset;
     pruneDays(state);
     const today = melbourneDate(now);
+    // One memory sample per post, kept with the day's counts.
+    const rss = (this.#d.rss ?? (() => process.memoryUsage().rss))();
+    if (Number.isSafeInteger(rss) && rss >= 0) {
+      const day = (state.days[today] ??= emptyDay());
+      day.rss = day.rss === undefined ? { min: rss, max: rss, last: rss } : { min: Math.min(day.rss.min, rss), max: Math.max(day.rss.max, rss), last: rss };
+    }
     const last = this.#state.lastDay ?? null;
     // The day that ended is posted final until the watchdog takes it (kept while its counts are kept).
     const ended = last !== null && last < today && this.#state.days[last] !== undefined ? last : null;
@@ -403,7 +471,9 @@ export class Summarizer {
   async #post(day: string, final: boolean, now: number): Promise<boolean> {
     const { watchdogUrl: url, key } = this.#d;
     if (url === null || key === null) return false;
-    const s = (this.#d.build ?? buildSummary)({ ...this.#d.live(), day, final, nowMs: now, fold: this.#state.days[day] });
+    const prev = Object.keys(this.#state.days).filter((d) => d < day && this.#state.days[d]!.rss !== undefined).sort().at(-1);
+    const prevRssLast = prev === undefined ? null : this.#state.days[prev]!.rss!.last;
+    const s = (this.#d.build ?? buildSummary)({ ...this.#d.live(), day, final, nowMs: now, fold: this.#state.days[day], prevRssLast });
     const b = summaryBody(s);
     if ('refused' in b) {
       this.#d.log(`Summary for ${day} not sent: ${b.refused}.`);

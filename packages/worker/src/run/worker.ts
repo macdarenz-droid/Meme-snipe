@@ -39,7 +39,7 @@ import type { FactContext, FactSource } from './facts.ts';
 import { engineFeed, type EngineFeed } from './engine-feed.ts';
 import { startHealthServer } from './health.ts';
 import { type HeartbeatPosition, heartbeatBody, sendHeartbeat } from './heartbeat.ts';
-import { Summarizer, nextSummaryDelay } from './summary.ts';
+import { Summarizer, heldPositions, nextSummaryDelay } from './summary.ts';
 import { jsonText } from './json.ts';
 import { Journal } from './journal.ts';
 import { type PaperMarket, type PaperState, PaperWorld, type SimLeg } from './paper-world.ts';
@@ -1324,8 +1324,14 @@ export class Worker {
           uptimeS: (d.timers.now() - this.#started) / 1000, trades: this.#account.state.trades,
           openPositions: Object.values(this.#engine.book.positions).filter((p) => p.status !== 'closed').length,
           solPrice: this.#solPrice, credits: d.ops?.().quota ?? [],
+          open: heldPositions(Object.values(this.#engine.book.positions), (p) => {
+            const m = this.poolOf(p.mint);
+            const q = m === null ? null : poolSell(m.state, p.quantity, m.ctx);
+            return q !== null && q.ok ? (q.trade.userQuote as bigint) : null;
+          }, (id) => this.#strategy.saved()[id]?.plan.openedAtMs ?? this.#account.state.trades.find((t) => t.positionId === id)?.openedAtMs ?? d.timers.now()),
         };
       },
+      rss: () => process.memoryUsage().rss,
     });
     return this.#summary;
   }

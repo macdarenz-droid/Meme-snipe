@@ -135,6 +135,8 @@ Each day the worker sends a summary of what it did to a private GitHub repositor
 - decision counts, and refusals by reason;
 - halts and alerts by code;
 - each paper trade and the day's paper P&L;
+- each open position marked to what selling it would return now (an unquotable one is counted, never read as zero);
+- the worker's memory that day (lowest, highest, last) and its change from the day before;
 - the worker's commit and entry rule.
 
 It never holds a key, token, address, host name, chat id, wallet or personal data. The worker posts it signed to the watchdog every 30 minutes and just after Melbourne midnight. The watchdog checks it again and writes `reports/<day>.json` and `reports/latest.json`. Before every write the watchdog checks that the repository is private and is not this one. If that check or the write fails, nothing is written and Telegram gets a "Daily summary not written" alert, repeated and cleared like every watchdog alert. Trading and recording never wait on it. No new secret goes on the server, and nothing is typed at the console.
