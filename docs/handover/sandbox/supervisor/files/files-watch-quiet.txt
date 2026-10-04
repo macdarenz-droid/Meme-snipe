@@ -1,0 +1,3 @@
+packages/worker/src/run/watch.ts
+packages/worker/src/run/worker.ts
+packages/worker/test/fault-injection.test.ts

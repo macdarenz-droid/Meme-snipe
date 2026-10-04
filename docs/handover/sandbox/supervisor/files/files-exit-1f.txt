@@ -1,0 +1,7 @@
+packages/worker/src/engine/strategy.ts
+packages/worker/src/run/booked.ts
+packages/worker/src/run/settings.ts
+packages/worker/src/run/worker.ts
+packages/worker/test/booked.test.ts
+packages/worker/test/worker-flow.test.ts
+packages/worker/test/worker-recorder.test.ts

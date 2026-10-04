@@ -1,0 +1,107 @@
+
+> meme-snipe@ check /home/user/Meme-snipe
+> pnpm typecheck && pnpm test
+
+
+> meme-snipe@ typecheck /home/user/Meme-snipe
+> pnpm -r --if-present typecheck
+
+Scope: 6 of 7 workspace projects
+apps/web typecheck$ tsc -p tsconfig.json --noEmit
+packages/backtest typecheck$ tsc -p tsconfig.json --noEmit
+packages/core typecheck$ tsc -p tsconfig.json --noEmit
+packages/ops typecheck$ tsc -p tsconfig.json --noEmit
+packages/ops typecheck: Done
+packages/runner typecheck$ tsc -p tsconfig.json --noEmit
+packages/backtest typecheck: Done
+packages/worker typecheck$ tsc -p tsconfig.json --noEmit
+apps/web typecheck: Done
+packages/runner typecheck: Done
+packages/core typecheck: Done
+packages/worker typecheck: Done
+
+> meme-snipe@ test /home/user/Meme-snipe
+> vitest run
+
+
+ RUN  v5.0.3 /home/user/Meme-snipe
+
+(node:31340) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:31750) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:32281) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:32323) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ❯ |light| packages/backtest/test/dataset.test.ts (10 tests | 2 failed) 22370ms
+   ❯ command line on an on-disk dataset (2)
+     × run: report, evidence, identical replays and a passing leak test 2046ms
+   ❯ G0 in the report (BT-1c item 1) (1)
+     × a single replay and missing checks never read as a G0 pass 1576ms
+(node:32511) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+gpg: checking the trustdb
+gpg: marginals needed: 3  completes needed: 1  trust model: pgp
+gpg: depth: 0  valid:   1  signed:   0  trust: 0-, 0q, 0n, 0m, 0f, 1u
+fatal: expected 'acknowledgments', received 'packfile'
+warning: push negotiation failed; proceeding anyway with push
+(node:464) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:478) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:527) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:672) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:693) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:819) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:991) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:1012) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:1041) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:1557) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:1596) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:1684) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |light| packages/backtest/test/dataset.test.ts > command line on an on-disk dataset > run: report, evidence, identical replays and a passing leak test
+Error: Command failed: node /home/user/Meme-snipe/packages/backtest/src/cli.ts run --dataset /tmp/ds-98qp3G --sol-usd /tmp/ds-98qp3G/sol.csv --scenario base --replays 3 --out /tmp/ds-98qp3G/report.json --evidence /tmp/ds-98qp3G/evidence.json
+ ❯ packages/backtest/test/dataset.test.ts:79:20
+     77|     const ev = join(dir, 'evidence.json');
+     78|     const cli = join(import.meta.dirname, '..', 'src', 'cli.ts');
+     79|     const stdout = execFileSync('node', [cli, 'run', '--dataset', dir,…
+       |                    ^
+     80|       { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+     81|     const summary = JSON.parse(stdout.trim().split('\n').pop()!) as Re…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  |light| packages/backtest/test/dataset.test.ts > G0 in the report (BT-1c item 1) > a single replay and missing checks never read as a G0 pass
+Error: Command failed: node /home/user/Meme-snipe/packages/backtest/src/cli.ts run --dataset /tmp/ds-98qp3G --sol-usd /tmp/ds-98qp3G/sol.csv --scenario base --replays 1 --out /tmp/ds-98qp3G/g0-report.json --evidence /tmp/ds-98qp3G/g0-ev.json
+ ❯ packages/backtest/test/dataset.test.ts:185:5
+    183|     const cli = join(import.meta.dirname, '..', 'src', 'cli.ts');
+    184|     const out = join(dir, 'g0-report.json');
+    185|     execFileSync('node', [cli, 'run', '--dataset', dir, '--sol-usd', j…
+       |     ^
+    186|       { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    187|     const report = JSON.parse(readFileSync(out, 'utf8')) as { gates: {…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed | 119 passed (120)
+      Tests  2 failed | 4035 passed (4037)
+   Start at  22:42:13
+   Duration  430.66s (tests 95%, import 4%, transform 1%)
+
+ ELIFECYCLE  Test failed. See above for more details.
+ ELIFECYCLE  Command failed with exit code 1.

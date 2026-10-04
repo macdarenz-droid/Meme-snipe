@@ -1,0 +1,7 @@
+[
+ ["packages/worker/src/run/account.ts", "if (p.sold !== before || exitNet !== (t.partialNet ?? 0n)) {", "if (true) {"],
+ ["packages/worker/src/run/account.ts", "if (price === null) return (l >= 0n ? 0n : -whole) as MicroUsd;", "if (price === null) return 0n as MicroUsd;"],
+ ["packages/worker/src/run/account.ts", "pnlUsd(lamports, solPrice ?? t.openSolPrice ?? null,", "pnlUsd(lamports, solPrice,"],
+ ["packages/worker/src/run/account.ts", "-lamportsToMicroUsd((-l) as Lamports, price, 'ceil')) as MicroUsd;\n};", "-lamportsToMicroUsd((-l) as Lamports, price, 'floor')) as MicroUsd;\n};"],
+ ["packages/worker/src/run/account.ts", "(t.notional - (p.bought <= 0n ? 0n : (t.notional * sold) / p.bought))", "t.notional"]
+]

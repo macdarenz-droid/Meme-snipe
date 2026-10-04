@@ -1,0 +1,35 @@
+From 217e42246640e03d1149057c8b8259ed1a4ccad2 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 4 Oct 2026 07:03:44 +0000
+Subject: [PATCH] SWITCH-1 e2e: the worker unit must carry OOMScoreAdjust=-500;
+ its process is checked where the kernel lets root lower a score
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01VM97q6A98GgtoPKCamoiT6
+---
+ ops/test/e2e.sh | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/ops/test/e2e.sh b/ops/test/e2e.sh
+index a4a597b..0631a0a 100644
+--- a/ops/test/e2e.sh
++++ b/ops/test/e2e.sh
+@@ -543,7 +543,14 @@ wait_for 180 "the worker's start line" "docker exec $C journalctl -u zeroed-work
+ inv >"$LOGS/worker-real.txt"
+ grep -q 'Reconcile: done, open intents written.' "$LOGS/worker-real.txt" || fail "the reconcile before the start did not finish"
+ in_c "systemctl show -p ExecStartPre --value zeroed-worker" | has 'code=exited ; status=0 }' || fail "the --reconcile ExecStartPre did not exit 0"
+-[ "$(in_c "systemctl show -p OOMScoreAdjust --value zeroed-worker")" = -500 ] && in_c "grep -qx -- '-500' /proc/\$(systemctl show -p MainPID --value zeroed-worker)/oom_score_adj" || fail "the worker is not the last the kernel takes under memory pressure"
++[ "$(in_c "systemctl show -p OOMScoreAdjust --value zeroed-worker")" = -500 ] || fail "the worker is not the last the kernel takes under memory pressure"
++# The running process must carry it too, wherever the kernel lets root lower a score (some sandboxed test kernels refuse
++# any negative value, even to root: there only the unit setting can be checked, and the summary says so).
++if in_c "sh -c 'echo -1 > /proc/self/oom_score_adj'" 2>/dev/null; then
++  in_c "grep -qx -- '-500' /proc/\$(systemctl show -p MainPID --value zeroed-worker)/oom_score_adj" || fail "the worker process does not carry OOMScoreAdjust=-500"
++else
++  printf 'NOTE  this kernel refuses a negative oom_score_adj even to root: only the unit setting (-500) was checked\n' | tee -a "$LOGS/summary.txt"
++fi
+ # Keys come from the unit's systemd credentials, as boot/environment.ts reads them.
+ grep -q 'Credentials present: 3 of 3 provider keys; heartbeat key present.' "$LOGS/worker-real.txt" || fail "the worker did not read its 3 provider keys and the heartbeat key from credentials"
+ in_c "tail -n 200 /var/lib/zeroed/journal.jsonl | jq -c 'select(.kind == \"start\")' | tail -1" >"$LOGS/worker-start-record.json"
+-- 
+2.43.0
+

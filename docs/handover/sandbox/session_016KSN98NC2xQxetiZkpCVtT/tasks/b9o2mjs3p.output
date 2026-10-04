@@ -1,0 +1,5 @@
+ed0cdc0c RISK-MARK test setup waits for the entry plan before stopping (a position stopped before its plan is saved now goes to sell-only recovery, EXIT-1g)
+ Test Files  151 passed (151)
+      Tests  4514 passed (4514)
+
+[exited with code 0]

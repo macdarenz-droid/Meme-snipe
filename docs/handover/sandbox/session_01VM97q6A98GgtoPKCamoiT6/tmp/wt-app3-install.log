@@ -1,0 +1,13 @@
+Scope: all 7 workspace projects
+Lockfile is up to date, resolution step is skipped
+Progress: resolved 1, reused 0, downloaded 0, added 0
+Packages: +151
+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+Progress: resolved 151, reused 151, downloaded 0, added 151, done
+
+devDependencies:
++ @types/node 22.20.5
++ typescript 7.0.2
++ vitest 5.0.3
+
+Done in 785ms using pnpm v10.28.0
