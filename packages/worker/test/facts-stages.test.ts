@@ -10,7 +10,7 @@ import { RUG_CONFIG } from '../../core/src/config/index.ts';
 import { Engine, type LogRecord } from '../../core/src/engine/index.ts';
 import { HARD_GATES, HARD_STAGE, candlesKey, evaluateHardRejects, gatesOfStages, holdersKey, mintKey } from '../../core/src/gates/index.ts';
 import { contextOf, deps, drop, MINT, passingFacts, patch, request, session } from '../../core/test/gates/world.ts';
-import { GATE_REASONS_PREFIX, HARD_STAGE_GROUPS, LiveStrategy, NOT_EVALUATED, stagedHardRejects } from '../src/engine/strategy.ts';
+import { GATE_REASONS_PREFIX, HARD_STAGE_GROUPS, hardAllowsEntry, LiveStrategy, NOT_EVALUATED, stagedHardRejects } from '../src/engine/strategy.ts';
 import { replayRecorded, type Frame, type Release } from '../src/providers/index.ts';
 import { engineFeed } from '../src/run/engine-feed.ts';
 import { parseTyped } from '../src/run/json.ts';
@@ -134,5 +134,26 @@ describe('the live worker records staged rejects, and the recording replays to t
     const typed = (reasons: readonly string[]) => JSON.parse(reasons.find((x) => x.startsWith(GATE_REASONS_PREFIX))!.slice(GATE_REASONS_PREFIX.length)) as unknown;
     expect(replayed.map((r) => ({ event: r.eventId, reasons: r.reasons.filter((x) => !x.startsWith(GATE_REASONS_PREFIX)), gate_reasons: typed(r.reasons) })))
       .toEqual(rejects.map((l) => ({ event: l.event, reasons: l.reasons, gate_reasons: l.gate_reasons })));
+  });
+});
+
+describe('hardAllowsEntry (GATE-2\'s entry rule: complete and no reasons)', () => {
+  const full = (facts: ReturnType<typeof passingFacts>) => evaluateHardRejects(contextOf(facts), deps('live', session(), 'RUG-1'), request(), { stopAtFirst: false });
+  it('a complete evaluation with no reason allows the entry', () => {
+    expect(hardAllowsEntry(staged(passingFacts()).hard)).toBe(true);
+    expect(hardAllowsEntry(full(passingFacts()))).toBe(true);
+  });
+  it('a pass that left gates out is no entry: a staged pass only clears the gates it ran', () => {
+    const part = evaluateHardRejects(contextOf(passingFacts()), deps('live', session(), 'RUG-1'), request(), { stopAtFirst: false, only: STAGE_1 });
+    expect(part.pass).toBe(true);
+    expect(part.reasons).toEqual([]);
+    expect(hardAllowsEntry(part)).toBe(false);
+  });
+  it('a complete evaluation with a reason is no entry', () => {
+    const r = full(drop(passingFacts(), holdersKey(MINT)));
+    expect(r.complete).toBe(true);
+    expect(r.reasons.length).toBeGreaterThan(0);
+    expect(hardAllowsEntry(r)).toBe(false);
+    expect(hardAllowsEntry({ ...r, pass: true })).toBe(false);
   });
 });

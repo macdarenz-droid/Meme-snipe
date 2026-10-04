@@ -28,7 +28,7 @@ import {
   atr, checkStopDistance, decideExit, execPrice, liquidationValue, exitAttemptsOf, exitBookEvents, exitSettings, newTracker, noteAttempt,
 } from '../../../core/src/exits/index.ts';
 import {
-  type Coverage, type GateContext, type GateDeps, type GateRequest, type HardGate, type HardResult, DeployerIndex, gatesOfStages, LOG_CREATE_PREFIX, RugLabeller, TX_CREATE_PREFIX, createsCoverage, evaluateHardRejects, evaluateRegime, migrationKey, parseMigration, parsePool, poolKey,
+  type Coverage, type GateContext, type GateDeps, type GateRequest, type HardGate, type HardResult, DeployerIndex, gatesOfStages, HARD_GATES, LOG_CREATE_PREFIX, RugLabeller, TX_CREATE_PREFIX, createsCoverage, evaluateHardRejects, evaluateRegime, migrationKey, parseMigration, parsePool, poolKey,
 } from '../../../core/src/gates/index.ts';
 import { type BookEvent, type IntentState, isTerminal } from '../../../core/src/lifecycle/index.ts';
 import { type AccountHistory, type Latches, type Timed, evaluateEntry, evaluateExit } from '../../../core/src/risk/index.ts';
@@ -79,7 +79,6 @@ export const RESERVE_PREFIX = 'reserve ';
  * with a reject ends the evaluation, and the gates after it are listed as not evaluated, never as passed or failed.
  */
 export const HARD_STAGE_GROUPS: readonly (readonly HardGate[])[] = [gatesOfStages([1]), gatesOfStages([2]), gatesOfStages([3, 4])];
-const ALL_HARD = HARD_STAGE_GROUPS.flat();
 /** The part of a reject's reason naming the gates a staged evaluation did not reach (the same words as BT-2's log). */
 export const NOT_EVALUATED = 'not evaluated: ';
 
@@ -95,8 +94,11 @@ export const stagedHardRejects = (gctx: GateContext, deps: GateDeps, req: GateRe
     if (!hard.pass) return { hard: { ...hard, complete: false }, notEvaluated: HARD_STAGE_GROUPS.slice(k + 1).flat() };
   }
   const done = hard!;
-  return { hard: { ...done, complete: ALL_HARD.every((g) => done.evaluated.includes(g)) }, notEvaluated: [] };
+  return { hard: { ...done, complete: HARD_GATES.every((g) => done.evaluated.includes(g)) }, notEvaluated: [] };
 };
+
+/** GATE-2's entry rule (supervisor ruling): every hard gate evaluated and none with a reason; a staged pass alone only clears the gates it ran. */
+export const hardAllowsEntry = (hard: HardResult): boolean => hard.complete && hard.reasons.length === 0;
 
 /** Reason on a `shortlist` decision: the worker fetches the mint's confirmed create (live H9, H12–H14). */
 export const SHORTLIST = 'shortlist';
@@ -928,11 +930,12 @@ export class LiveStrategy implements Strategy {
     const spend = microUsdToLamports(notional, sol.value, 'ceil');
     const quoter = pumpSwapRoundTrip(m.pool, m.ctx);
     const { hard, notEvaluated } = stagedHardRejects(gctx, { session, mode: 'live', rugLabeller: 'RUG-1' }, { mint: cand.mint, universe: c.universe, notional, spend, roundTrip: quoter(spend) });
-    if (!hard.pass) {
+    if (!hardAllowsEntry(hard)) {
+      // Fails closed: a pass that left a gate out (groups that stop covering every hard gate) is no entry.
+      if (hard.reasons.length === 0) return this.#fail('hard rejects incomplete', [{ gate: 'worker', code: 'hard-incomplete', detail: 'not every hard gate was evaluated' }]);
       const later = notEvaluated.length > 0 ? `; ${NOT_EVALUATED}${notEvaluated.join(',')}` : '';
       return this.#fail(`hard reject ${hard.failed.join(',')}: ${hard.reasons.map((x) => `${x.gate} ${x.code} ${x.detail}`).join('; ')}${later}`, hard.reasons.map((x) => ({ gate: x.gate, code: x.code, detail: x.detail })), hard.reasons);
     }
-    // Past here every hard gate was evaluated with no reason (GATE-2's entry rule): the three groups cover them all.
     const acct = this.#account(ctx);
     if (acct === null) return this.#fail('account snapshot unknown', [{ gate: 'worker', code: 'no-account', detail: 'account snapshot unknown' }]);
     // Stop: the tighter of the ATR limit and the policy's maximum distance, from the executable price after the buy.
