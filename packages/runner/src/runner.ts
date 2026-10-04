@@ -188,6 +188,8 @@ interface RestartPending {
   /** The reply's journal_seq: journal lines after it were written between the reply and the kill. */
   killSeq?: number | null;
   inFlight?: number;
+  /** The in-flight entries' trade ids in that reply: one that landed before the kill is counted once, as a position. */
+  inFlightTrades?: readonly string[];
   /** Things the restart had to keep: positions, in-flight entries and pending exits (for host loss, the backup's). */
   keep?: number;
   /** Opened after the backup (host loss): reported, not expected back. */
@@ -374,6 +376,7 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
           p.atKill = p.killValid ? kept(h) : { pending_exits: [], positions: [] };
           p.killSeq = h?.journal_seq ?? null;
           p.inFlight = h?.unresolved_intents.count ?? 0;
+          p.inFlightTrades = h && Array.isArray(h.unresolved_intents.trades) ? [...h.unresolved_intents.trades] : [];
           p.expect = cause === 'chain-rebuild' ? null : cause === 'host-loss' ? (backup?.expect ?? { pending_exits: [], positions: [] }) : p.atKill;
           const inFlight = h?.unresolved_intents.count ?? 0;
           p.keep =
@@ -447,6 +450,23 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
         // The reply came a moment before the kill: a trade the worker closed in between (its exit line is in the
         // journal, after the reply) was not there to keep. The journal is written synchronously, so it is exact.
         const closed = p.table ? [] : closedSince(lines, p.prevBoot ?? null, p.killSeq ?? null);
+        // The mirror case: a trade opened after the reply was there at the kill, and the restart must keep it.
+        const opened = (p.table ? [] : openedSince(lines, p.prevBoot ?? null, p.killSeq ?? null)).filter((x) => !(p.atKill?.positions ?? []).some((y) => y.trade === x.trade));
+        if (opened.length) {
+          const atKill = p.atKill ?? { pending_exits: [], positions: [] };
+          p.atKill = { ...atKill, positions: [...atKill.positions, ...opened] };
+          // An entry the reply showed in flight and that landed before the kill is now a position: not also in flight.
+          const landed = opened.filter((x) => (p.inFlightTrades ?? []).includes(x.trade)).length;
+          p.inFlight = Math.max(0, (p.inFlight ?? 0) - landed);
+          if (cause === 'crash' || cause === 'reboot') {
+            p.expect = p.atKill;
+            p.keep = p.atKill.positions.length + p.atKill.pending_exits.length + (p.inFlight ?? 0);
+          }
+          p.trades = [...new Set([...(p.trades ?? []), ...opened.map((x) => x.trade)])];
+          p.midTrade = true;
+          p.open = true;
+          notes.push(`opened between the last reply and the kill (journal): ${opened.map((x) => x.trade).join(', ')}`);
+        }
         if (closed.length) {
           const atKill = withoutTrades(p.atKill ?? { pending_exits: [], positions: [] }, closed);
           p.atKill = atKill;
@@ -939,6 +959,21 @@ export const closedSince = (journal: readonly JournalLine[], boot: string | null
   boot === null || seq === null
     ? []
     : [...new Set(journal.filter((l) => l.boot === boot && l.seq > seq && l.kind === 'exit' && l['position'] === 'closed' && typeof l.trade === 'string').map((l) => l.trade!))].sort();
+
+/**
+ * Trades the boot opened after the given seq (after the reply, before the kill) and had not closed by the kill, with
+ * the universe their entry line names ('unknown' when it names none, which fails the restored-universe check).
+ */
+export const openedSince = (journal: readonly JournalLine[], boot: string | null, seq: number | null): Kept['positions'] => {
+  if (boot === null || seq === null) return [];
+  const closed = new Set(closedSince(journal, boot, seq));
+  const out = new Map<string, string>();
+  for (const l of journal) {
+    if (l.boot !== boot || l.seq <= seq || l.kind !== 'entry' || typeof l.trade !== 'string' || closed.has(l.trade)) continue;
+    out.set(l.trade, typeof l['universe'] === 'string' && l['universe'] !== '' ? l['universe'] : 'unknown');
+  }
+  return [...out].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([trade, universe]) => ({ trade, universe }));
+};
 
 /** The worker held something at the kill: a position, a pending exit or an entry in flight. */
 export const heldAtKill = (k: Kept, inFlight: number): boolean => k.positions.length + k.pending_exits.length + inFlight > 0;
