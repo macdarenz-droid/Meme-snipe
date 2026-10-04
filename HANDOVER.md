@@ -130,7 +130,8 @@ The supervisor wrote this file, `PROJECT_STATE.md`, `docs/DECISIONS.md` and `doc
 | # | Card | Reviewed SHA | Verdict (new account unless noted) | Note |
 |---|---|---|---|---|
 | 116 | CI-1b | c5aaf88 | PASS (first account) | MERGED bf62839 (~8:15 PM) |
-| 114 | RENT-1 | 10ec76a (02d5f1d) | PASS (first account) | update 2e40997 in CI; then tell res, exit (BT-3 re-run), PAPER-1 |
+| 114 | RENT-1 | 10ec76a (02d5f1d) | PASS (first account) | MERGED e5e1e78 (~8:28 PM) |
+| 121 | WATCH-1c | 26d992a | PASS (risk reviewer, 4525/4525) | needs base merge (only ops-e2e.yml and docs differ) |
 | 134 | OPS-GATE (O2) | 8c3aef3 | PASS (ops reviewer) | builder merged fff0017 at 59a8055; whichever of #134/#137 merges second re-pins install.sh; push e2e must be green before any Deploy |
 | 106 | FACTS-1f | d06ebdb | PASS (first account) | |
 | 107 | EXIT-1f | ce7c78b | PASS (first account) | then the EXIT builder retargets #128 |
