@@ -425,6 +425,29 @@ Supervisor rulings:
 - **An early look, not an AI trader** (owner idea, 4:20 PM: "an agent backtests with the bot's reasoning and never cheats"). The backtester already is that: the bot's own engine, physically blind to the future, with the leak test. An AI model acting as the trader can't be blinded the same way, isn't reproducible (pre-funding item 1), and the live bot couldn't call it. So BT-2e runs the bot's own backtest on 1–2 free practice days (U2 only, not proof, nothing frozen from it), using free credits only after the live dry run's measured first 24 h.
 - **Merge order respects the critical path.** Before merging any PR, check that its files don't overlap a critical-path PR in a merge check. Merging #90 (TEST-1) forced RISK-MARK #103 into another base merge.
 
+- **The live dry run must be able to trade (WORKER-1e, supervisor).** An audit showed the merged worker could make no live entry, even in the S0 shakedown:
+  - exec-health was never released, and is never green without owner limits;
+  - regime volume needs ≥28 published days;
+  - regime survival needs about 15 days of the graduates series;
+  - H14 creates coverage needs 14 days on a fresh host;
+  - H15 had no live sim fact.
+
+  Ruling: one `ZEROED_S0_DIAGNOSTIC` set with four named parts (regime volume, exec-health measured but not judged, H14 creates coverage, regime survival).
+  - Each part is labelled on every decision line it affects, in /health and in the runner report.
+  - The set is refused in the qualifying run, as S0 and the paper edge already are.
+  - Every other gate, limit, halt and exit stays real. H15 is simulated live at P2 (≤120 an hour) and exit flow comes from held-pool swaps.
+  - Open items: `sellRoute` (EXIT-ROUTE) before the qualifying run; the owner sets the exec-health limits before the qualifying run; PERSIST-2 saves the graduates series so restarts don't reset survival.
+- **Healthy-feed watch reads stop (WATCH-1b, (a1')).** Feed pool facts are judged by release time and WATCH-1's snapshot by read time.
+  - The steady bound stays below maxQuoteAge.
+  - One transition per facts-stop may reach 2 × release + stale + every + latency (2.7 s). An exit then waits for a fresh market (EXIT-1d) and is never priced stale.
+  - Why: receipt-age staleness read every 0.4–0.8 s on a healthy feed, about 54M CU a month against Alchemy's 30M free tier, which would end in a budget halt.
+  - WATCH-1c follows with coverage-proven freshness for quiet held pools (any non-swap transaction on the stream makes the chain stale) and a 30 s verify read against vault donations.
+- **Rent in the proof's scoring (RENT-1).** Of the two texts, the consensus line governs. The conservative scenario refunds the token-account rent per the modelled sell-and-close outcome. "No rent recovery" is a reported sensitivity line. Worst-case reservations keep full rent. No statistical threshold changes.
+- **Pre-registered ideas are one family (RES-4).** RES-4's six hypotheses run as one SPA family (k = 6) over practice days, and at most one per universe goes to the holdout. The Holm family stays at 2 (U1, U2). BT-2 refuses a freeze if the pre-registration hash differs. A later variant is a 7th trial and needs a new holdout window.
+- **Owner ideas, recorded:**
+  - "Focus on the 9% that survive" became RES-5: research only, comparing survivors with look-alike losers at buy time, using exploration days before RES-3's wall only. Nothing goes into the bot from it; the owner hears only if it beats the current ideas.
+  - "An agent backtests with the bot's reasoning" became BT-2e: the bot's own backtest on free days.
+
 ## Order and position lifecycle (CORE-1, `packages/core/src/lifecycle`)
 
 - **2026-10-03 · A failed signature read is terminal only at `finalized`.** A failure read at `processed` or `confirmed` may come from a fork that is later dropped, and the original transaction could still land. Acting on it would allow a replacement, which could mean a second buy or an oversell. Waiting for `finalized` costs about 13 s. A success read counts from `confirmed`: booking a fill early is safe, because the books stay open until every other attempt is dead.
