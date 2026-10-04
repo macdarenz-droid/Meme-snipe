@@ -67,4 +67,27 @@ describe('a risk fault is told apart from a clean account (RISK-FAULT)', () => {
     expect([l.killTrippedAtMs, l.weeklyTrippedAtMs]).toEqual([null, null]);
     await h.worker.stop();
   });
+
+  it('a valuation risk cannot make is logged once when it starts and once when it clears, and latches nothing', async () => {
+    const { h, seam } = broken();
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    const m = await passingMarket(h);
+    const starts = () => h.logs.filter((l) => l.startsWith('Risk could not value the account: ')).length;
+    const clears = () => h.logs.filter((l) => l === 'Risk can value the account again.').length;
+    await until(m, 2_000, () => false, () => { m.slot(); m.solPrice(); });
+    expect([starts(), clears()]).toEqual([0, 0]);
+    seam.broken = true;
+    await until(m, 4_000, () => false, () => { m.slot(); m.solPrice(); });
+    expect([starts(), clears()]).toEqual([1, 0]);
+    expect(h.logs.find((l) => l.startsWith('Risk could not value the account: '))).toMatch(/null/);
+    seam.broken = false;
+    await until(m, 2_000, () => false, () => { m.slot(); m.solPrice(); });
+    expect([starts(), clears()]).toEqual([1, 1]);
+    seam.broken = true;
+    await until(m, 2_000, () => false, () => { m.slot(); m.solPrice(); });
+    expect([starts(), clears()]).toEqual([2, 1]);
+    const l = controlFile(h.stateDir).read(NO_CONTROL).latches;
+    expect([l.killTrippedAtMs, l.weeklyTrippedAtMs]).toEqual([null, null]);
+    await h.worker.stop();
+  });
 });
