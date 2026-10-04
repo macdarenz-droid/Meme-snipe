@@ -27,7 +27,7 @@ import { DEFAULT_LIVE_FEED, type Frame, type HttpClient, LiveFeed, type Release,
 import type { Timers } from '../scheduler/timers.ts';
 import { PaperAccount, accountFile } from './account.ts';
 import type { WorkerConfig } from './config.ts';
-import { Desk, journaledFillKeys, openIntents } from './desk.ts';
+import { Desk, FILL_RATE_UNKNOWN, journaledFillKeys, lineRate, lineReasons, openIntents } from './desk.ts';
 import { DeployerStore, liveWatchToClose, type SavedDeployers } from './deployer-store.ts';
 import { CoverageJournal } from './coverage-journal.ts';
 import { rebuildMove } from './exposure.ts';
@@ -194,9 +194,6 @@ const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object
 
 /** Present while the state dir began empty and no full start has journaled its `recovered` line yet. */
 const COLD_START = 'cold_start';
-
-/** On a caught-up fill whose journal line holds no `sol_usd`: it was valued at the SOL price after the restart. */
-export const FILL_RATE_UNKNOWN = 'fill sol_usd unknown: valued at the price after restart';
 
 /** The `entry` and `exit` lines of a journal file (none when it is missing); torn or unreadable lines are skipped. */
 const readJournalFills = (path: string): Record<string, unknown>[] => {
@@ -419,7 +416,8 @@ export class Worker {
       },
       reserved: (r) => this.#account.reserved(r.mint, r.atMs),
       filled: (r) => {
-        this.#account.filled(r, this.#solPrice);
+        // A fill re-booked from its held journal line carries that line's rate (PAPER-1); otherwise the price now.
+        this.#account.filled(r, r.solUsd !== undefined ? r.solUsd : this.#solPrice);
         if (r.purpose === 'entry') this.#entered(r.mint, r.positionId, r.atMs);
       },
     });
@@ -706,12 +704,12 @@ export class Worker {
       if (p === undefined) continue;
       const line = this.#fillLines.filter((l) => l['kind'] === b.purpose && l['trade'] === b.positionId && (b.purpose === 'entry' || l['position'] === 'closed')).at(-1);
       const at = typeof line?.['ts'] === 'string' ? Date.parse(line['ts']) : Number.NaN;
-      const reasons = Array.isArray(line?.['reasons']) ? (line['reasons'] as unknown[]).filter((x): x is string => typeof x === 'string') : [`${b.purpose} filled (paper)`];
+      const reasons = lineReasons(line) ?? [`${b.purpose} filled (paper)`];
       // Valued at the fill's own SOL/USD rate from its line (PAPER-1). Null there means no price at booking, which the
       // live path valued as null too (the safe side); only a line without the field falls back to the price now, flagged.
-      const raw = line?.['sol_usd'];
-      const known = raw === null || (typeof raw === 'string' && /^\d+$/.test(raw));
-      const rate = known ? (raw === null ? null : (BigInt(raw as string) as MicroUsd)) : this.#solPrice;
+      const fromLine = lineRate(line);
+      const known = fromLine !== undefined;
+      const rate = known ? fromLine : this.#solPrice;
       this.#account.filled({ purpose: b.purpose, positionId: p.id, mint: String(p.mint), book, atMs: Number.isFinite(at) ? at : this.#d.timers.now(), reasons: known ? reasons : [...reasons, FILL_RATE_UNKNOWN] }, rate);
       this.#d.log(`Account caught up: the ${b.purpose} of ${p.id} was in the ledger but not in account.json (a kill between the two)${known ? '' : `; ${FILL_RATE_UNKNOWN}`}.`);
     }

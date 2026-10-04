@@ -13,8 +13,7 @@ import type { Kept } from '../../runner/src/report.ts';
 import { closedSince, recoveredState, withoutTrades } from '../../runner/src/runner.ts';
 import { type Lamports, type MicroUsd, lamportsToMicroUsd } from '../../core/src/units/index.ts';
 import { type AccountState, accountFile } from '../src/run/account.ts';
-import { fillKey, journaledFillKeys } from '../src/run/desk.ts';
-import { FILL_RATE_UNKNOWN } from '../src/run/worker.ts';
+import { FILL_RATE_UNKNOWN, fillKey, journaledFillKeys } from '../src/run/desk.ts';
 import { Market, SOL_PRICE, makeWorker, passingMarket } from './worker-harness.ts';
 
 type H = ReturnType<typeof makeWorker>;
@@ -78,6 +77,26 @@ const crashBetweenExitWrites = async (at?: 'fill-committed'): Promise<{ h: H; im
 const restart = (h: H, image: Image): H => {
   rmSync(join(image.dir, 'cold_start'), { force: true });
   return makeWorker({ stateDir: image.dir, timers: h.timers });
+};
+
+/** Enters and takes a crash image of the state dir at `point` of the entry fill's two writes. */
+const crashAtEntry = async (point: 'fill-journaled' | 'fill-committed'): Promise<{ h: H; image: { dir: string; intent: string } }> => {
+  let image: { dir: string; intent: string } | null = null;
+  let h: H | null = null;
+  h = makeWorker({
+    crashPoint: (p, intent) => {
+      if (image !== null || p !== point) return;
+      if (h!.worker.book.intents[intent as never]?.intent.purpose !== 'entry') return;
+      const dir = mkdtempSync(join(tmpdir(), 'zeroed-crash-'));
+      cpSync(h!.stateDir, dir, { recursive: true });
+      image = { dir, intent };
+    },
+  });
+  expect(await h.worker.reconcile()).toEqual({ ok: true });
+  const m = await passingMarket(h, { heldPoolFacts: true });
+  expect(await until(m, () => image !== null, 30_000, tick(m))).toBe(true);
+  await h.worker.stop();
+  return { h, image: image! };
 };
 
 describe('an exit fill is journaled before the ledger lets the position go (§12.4)', () => {
@@ -167,22 +186,8 @@ describe('an exit fill is journaled before the ledger lets the position go (§12
     await h2.worker.stop();
   });
 
-  it('a kill after the entry commit, before account.json: the restart opens the trade from the ledger and the entry line', async () => {
-    let image: { dir: string; intent: string } | null = null;
-    let h: H | null = null;
-    h = makeWorker({
-      crashPoint: (point, intent) => {
-        if (image !== null || point !== 'fill-committed' || h!.worker.book.intents[intent as never]?.intent.purpose !== 'entry') return;
-        const dir = mkdtempSync(join(tmpdir(), 'zeroed-crash-'));
-        cpSync(h!.stateDir, dir, { recursive: true });
-        image = { dir, intent };
-      },
-    });
-    expect(await h.worker.reconcile()).toEqual({ ok: true });
-    const m = await passingMarket(h, { heldPoolFacts: true });
-    expect(await until(m, () => image !== null, 30_000, tick(m))).toBe(true);
-    await h.worker.stop();
-    const img = image! as { dir: string; intent: string };
+  it('a kill after both entry writes, before account.json: the restart opens the trade from the ledger and the line, and books it once', async () => {
+    const { h, image: img } = await crashAtEntry('fill-committed');
     const line = lines(img.dir).find((l) => l.kind === 'entry' && l['intent'] === img.intent)!;
     const pid = line['trade'] as string;
     const account = () => accountFile(img.dir).read(null as unknown as AccountState);
@@ -205,6 +210,40 @@ describe('an exit fill is journaled before the ledger lets the position go (§12
     const fills = h2.worker.book.intents[img.intent as never]!.fills;
     const paid = fills.reduce((a, f) => a + f.sol + f.fees, 0n);
     expect(String(t.booked)).toBe(String(-paid));
+    expect(BigInt(String(account().walletLamports))).toBe(walletBefore - paid);
+    // Not booked twice: the world's report of the same landing finds the fill already held.
+    await m2.run(4_000, 400, tick(m2));
+    expect(h2.worker.book.intents[img.intent as never]!.fills).toHaveLength(1);
+    expect(BigInt(String(account().walletLamports))).toBe(walletBefore - paid);
+    expect(lines(img.dir).filter((l) => l.kind === 'entry' && l['intent'] === img.intent)).toHaveLength(1);
+    await h2.worker.stop();
+  });
+
+  it('a kill between the entry line and the ledger commit: the restart books the entry once from the paper world, at the line\'s rate', async () => {
+    const { h, image: img } = await crashAtEntry('fill-journaled');
+    const line = lines(img.dir).find((l) => l.kind === 'entry' && l['intent'] === img.intent)!;
+    expect(line['sol_usd']).toBe(String(SOL_PRICE));
+    const pid = line['trade'] as string;
+    const account = () => accountFile(img.dir).read(null as unknown as AccountState);
+    expect(account().trades.find((t) => t.positionId === pid)).toBeUndefined();
+    const walletBefore = BigInt(String(account().walletLamports));
+
+    rmSync(join(img.dir, 'cold_start'), { force: true });
+    const h2 = makeWorker({ stateDir: img.dir, timers: h.timers });
+    expect(await h2.worker.start()).toEqual({ ok: true });
+    const m2 = new Market(h2, { heldPoolFacts: true });
+    m2.solUsd = SOL_PRICE * 2n;
+    expect(await until(m2, () => account().trades.some((t) => t.positionId === pid), 30_000, tick(m2))).toBe(true);
+    await m2.run(4_000, 400, tick(m2));
+    const fills = h2.worker.book.intents[img.intent as never]!.fills;
+    expect(fills).toHaveLength(1);
+    expect(String(fills[0]!.tokens)).toBe(line['tokens']);
+    const t = account().trades.find((x) => x.positionId === pid)!;
+    expect(String(t.openSolPrice)).toBe(String(SOL_PRICE));
+    expect(t.openedAtMs).toBe(Date.parse(line.ts as string));
+    const reason = (line['reasons'] as string[]).find((x) => /^notional \d+$/.test(x))!;
+    expect(String(t.notional)).toBe(reason.slice('notional '.length));
+    const paid = fills.reduce((a, f) => a + f.sol + f.fees, 0n);
     expect(BigInt(String(account().walletLamports))).toBe(walletBefore - paid);
     expect(lines(img.dir).filter((l) => l.kind === 'entry' && l['intent'] === img.intent)).toHaveLength(1);
     await h2.worker.stop();
@@ -256,6 +295,6 @@ describe('fill keys', () => {
       { kind: 'decision', intent: 'i2', tokens: '5' },
       { kind: 'entry', intent: 'i3', tokens: 'x' },
     ]);
-    expect([...keys].sort()).toEqual([fillKey('i1', 10n), fillKey('i1', 5n)].sort());
+    expect([...keys.keys()].sort()).toEqual([fillKey('i1', 10n), fillKey('i1', 5n)].sort());
   });
 });

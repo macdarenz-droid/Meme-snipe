@@ -30,9 +30,12 @@ export interface DeskDeps {
   /** A reservation was stored (the account's entry record). */
   readonly reserved: (r: { readonly intentId: string; readonly mint: string; readonly amount: bigint; readonly atMs: number }) => void;
   /** A position filled or closed (the paper wallet and closed-trade records). */
-  readonly filled: (r: { readonly purpose: 'entry' | 'exit'; readonly positionId: string; readonly mint: string; readonly book: Book; readonly atMs: number; readonly reasons: readonly string[] }) => void;
-  /** Fill lines the journal already holds (`journaledFillKeys`), each skipped once when its fill is booked again. */
-  readonly journaledFills?: Set<string>;
+  readonly filled: (r: { readonly purpose: 'entry' | 'exit'; readonly positionId: string; readonly mint: string; readonly book: Book; readonly atMs: number; readonly reasons: readonly string[]; readonly solUsd?: MicroUsd | null }) => void;
+  /**
+   * Fill lines the journal already holds, by `fillKey` (`journaledFillKeys`): each is not written again when its fill
+   * is booked again, and that fill is recorded with the line's own time, reasons and `sol_usd`.
+   */
+  readonly journaledFills?: Map<string, Readonly<Record<string, unknown>>>;
   /** The SOL/USD price a fill is booked at now (null before the first price), written on its line as `sol_usd`. */
   readonly solUsd?: () => MicroUsd | null;
   /** Test seam: called right after each of a fill's two durable writes (a crash image is taken there). */
@@ -79,9 +82,26 @@ export const journalFields = (r: LogRecord): Readonly<Record<string, unknown>> |
 export const fillKey = (intentId: string, tokens: bigint): string => `${intentId}:${tokens}`;
 
 /** The `entry` and `exit` lines already in a journal, by `fillKey`: what a restart must not write again. */
-export const journaledFillKeys = (lines: readonly Readonly<Record<string, unknown>>[]): Set<string> =>
-  new Set(lines.flatMap((l) => ((l['kind'] === 'entry' || l['kind'] === 'exit') && typeof l['intent'] === 'string' && typeof l['tokens'] === 'string' && /^\d+$/.test(l['tokens'])
-    ? [fillKey(l['intent'], BigInt(l['tokens']))] : [])));
+export const journaledFillKeys = (lines: readonly Readonly<Record<string, unknown>>[]): Map<string, Readonly<Record<string, unknown>>> =>
+  new Map(lines.flatMap((l) => ((l['kind'] === 'entry' || l['kind'] === 'exit') && typeof l['intent'] === 'string' && typeof l['tokens'] === 'string' && /^\d+$/.test(l['tokens'])
+    ? [[fillKey(l['intent'], BigInt(l['tokens'])), l] as const] : [])));
+
+/** On a fill recorded from a journal line that holds no `sol_usd` (written before it existed): valued at the price now. */
+export const FILL_RATE_UNKNOWN = 'fill sol_usd unknown: valued at the price after restart';
+
+/**
+ * A fill line's SOL/USD rate (PAPER-1: each cash flow at its own rate): the price, null when there was none at booking
+ * (valued as the live path did), or undefined when the line has no `sol_usd` field (an older line).
+ */
+export const lineRate = (line: Readonly<Record<string, unknown>> | undefined): MicroUsd | null | undefined => {
+  const raw = line?.['sol_usd'];
+  if (raw === null) return null;
+  return typeof raw === 'string' && /^\d+$/.test(raw) ? (BigInt(raw) as MicroUsd) : undefined;
+};
+
+/** A journal line's `reasons` (strings only), or undefined when it has none. */
+export const lineReasons = (line: Readonly<Record<string, unknown>> | undefined): string[] | undefined =>
+  Array.isArray(line?.['reasons']) ? (line['reasons'] as unknown[]).filter((x): x is string => typeof x === 'string') : undefined;
 
 interface Fill {
   readonly purpose: 'entry' | 'exit';
@@ -91,6 +111,10 @@ interface Fill {
   readonly reasons: readonly string[];
   /** The journal line, or null when the journal already holds it. */
   readonly line: Readonly<Record<string, unknown>> | null;
+  /** The rate the fill is valued at (`lineRate`; undefined: the price now). */
+  readonly solUsd: MicroUsd | null | undefined;
+  /** The fill's time from the held line, or null to use the booking time. */
+  readonly atMs: number | null;
 }
 
 export class Desk {
@@ -180,7 +204,9 @@ export class Desk {
 
   #after(fill: Fill | null, ts: number): void {
     // The trade records first, so the account snapshot published next already holds this fill.
-    if (fill !== null) this.#d.filled({ purpose: fill.purpose, positionId: fill.positionId, mint: fill.mint, book: this.#book, atMs: ts, reasons: fill.reasons });
+    if (fill !== null) {
+      this.#d.filled({ purpose: fill.purpose, positionId: fill.positionId, mint: fill.mint, book: this.#book, atMs: fill.atMs ?? ts, reasons: fill.reasons, ...(fill.solUsd === undefined ? {} : { solUsd: fill.solUsd }) });
+    }
     this.#d.accountChanged();
     this.#d.intentsChanged(openIntents(this.#book));
   }
@@ -208,13 +234,19 @@ export class Desk {
     // reply back after a restart, with that universe (RUN-1d contract).
     const universe = purpose === 'entry' ? { universe: universeOfKey(s.intent.key) } : {};
     // `sol_usd`: the rate this fill's cash flow is valued at, so a restart that catches the account up uses it too (PAPER-1).
-    const line = { trade: pid, intent: s.intent.id, mint: s.intent.mint, tokens, sol, fees, position: p?.status ?? null, ...universe, sol_usd: this.#d.solUsd?.() ?? null, reasons };
+    const solUsd = this.#d.solUsd?.() ?? null;
+    const line = { trade: pid, intent: s.intent.id, mint: s.intent.mint, tokens, sol, fees, position: p?.status ?? null, ...universe, sol_usd: solUsd, reasons };
     const key = fillKey(s.intent.id, tokens);
-    if (this.#d.journaledFills?.has(key) === true) {
-      this.#d.journaledFills.delete(key);
-      return { purpose, intentId: s.intent.id, positionId: pid, mint: s.intent.mint, reasons, line: null };
+    const held = this.#d.journaledFills?.get(key);
+    if (held !== undefined) {
+      // Booked again after a kill that came ahead of the ledger: recorded as its line says (time, reasons, rate), once.
+      this.#d.journaledFills!.delete(key);
+      const rate = lineRate(held);
+      const why = lineReasons(held) ?? reasons;
+      const at = typeof held['ts'] === 'string' ? Date.parse(held['ts']) : Number.NaN;
+      return { purpose, intentId: s.intent.id, positionId: pid, mint: s.intent.mint, reasons: rate === undefined ? [...why, FILL_RATE_UNKNOWN] : why, line: null, solUsd: rate, atMs: Number.isFinite(at) ? at : null };
     }
-    return { purpose, intentId: s.intent.id, positionId: pid, mint: s.intent.mint, reasons, line };
+    return { purpose, intentId: s.intent.id, positionId: pid, mint: s.intent.mint, reasons, line, solUsd, atMs: null };
   }
 
   /** Writes the reservation first, then hands it to the engine; a refusal goes back as a reject. */
