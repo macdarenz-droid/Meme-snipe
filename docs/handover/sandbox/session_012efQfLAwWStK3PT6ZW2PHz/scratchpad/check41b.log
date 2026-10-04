@@ -1,0 +1,100 @@
+
+> meme-snipe@ check /tmp/claude-0/-home-user-Meme-snipe/2bf2916e-dcdc-547a-9cc9-f3ceeaba1e6f/scratchpad/bt2
+> pnpm typecheck && pnpm test
+
+
+> meme-snipe@ typecheck /tmp/claude-0/-home-user-Meme-snipe/2bf2916e-dcdc-547a-9cc9-f3ceeaba1e6f/scratchpad/bt2
+> pnpm -r --if-present typecheck
+
+Scope: 6 of 7 workspace projects
+apps/web typecheck$ tsc -p tsconfig.json --noEmit
+packages/backtest typecheck$ tsc -p tsconfig.json --noEmit
+packages/core typecheck$ tsc -p tsconfig.json --noEmit
+packages/ops typecheck$ tsc -p tsconfig.json --noEmit
+packages/ops typecheck: Done
+packages/runner typecheck$ tsc -p tsconfig.json --noEmit
+packages/runner typecheck: Done
+packages/worker typecheck$ tsc -p tsconfig.json --noEmit
+apps/web typecheck: Done
+packages/backtest typecheck: Done
+packages/core typecheck: Done
+packages/worker typecheck: Done
+
+> meme-snipe@ test /tmp/claude-0/-home-user-Meme-snipe/2bf2916e-dcdc-547a-9cc9-f3ceeaba1e6f/scratchpad/bt2
+> vitest run
+
+
+ RUN  v5.0.3 /tmp/claude-0/-home-user-Meme-snipe/2bf2916e-dcdc-547a-9cc9-f3ceeaba1e6f/scratchpad/bt2
+
+(node:16241) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:17148) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:17160) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:17212) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:17632) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:17661) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:17710) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:17777) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:17836) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+gpg: checking the trustdb
+gpg: marginals needed: 3  completes needed: 1  trust model: pgp
+gpg: depth: 0  valid:   1  signed:   0  trust: 0-, 0q, 0n, 0m, 0f, 1u
+fatal: expected 'acknowledgments', received 'packfile'
+warning: push negotiation failed; proceeding anyway with push
+(node:18723) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:18730) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:18740) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:18897) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:18904) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:19578) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:19585) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:19592) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:20176) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:20231) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:20273) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:21528) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:21752) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:21810) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:21839) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:21868) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:21903) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:21993) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:22063) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:22181) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:22188) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+ Test Files  159 passed (159)
+      Tests  4542 passed (4542)
+   Start at  07:40:32
+   Duration  1458.33s (tests 92%, import 7%)
+
+EXIT 0

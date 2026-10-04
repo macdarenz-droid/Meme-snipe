@@ -1,0 +1,85 @@
+
+> meme-snipe@ check /tmp/claude-0/-home-user-Meme-snipe/2bf2916e-dcdc-547a-9cc9-f3ceeaba1e6f/scratchpad/bt
+> pnpm typecheck && pnpm test
+
+
+> meme-snipe@ typecheck /tmp/claude-0/-home-user-Meme-snipe/2bf2916e-dcdc-547a-9cc9-f3ceeaba1e6f/scratchpad/bt
+> pnpm -r --if-present typecheck
+
+Scope: 6 of 7 workspace projects
+apps/web typecheck$ tsc -p tsconfig.json --noEmit
+packages/backtest typecheck$ tsc -p tsconfig.json --noEmit
+packages/core typecheck$ tsc -p tsconfig.json --noEmit
+packages/ops typecheck$ tsc -p tsconfig.json --noEmit
+packages/ops typecheck: Done
+packages/runner typecheck$ tsc -p tsconfig.json --noEmit
+packages/backtest typecheck: Done
+packages/worker typecheck$ tsc -p tsconfig.json --noEmit
+packages/runner typecheck: Done
+packages/core typecheck: Done
+apps/web typecheck: Done
+packages/worker typecheck: Done
+
+> meme-snipe@ test /tmp/claude-0/-home-user-Meme-snipe/2bf2916e-dcdc-547a-9cc9-f3ceeaba1e6f/scratchpad/bt
+> vitest run
+
+
+ RUN  v5.0.3 /tmp/claude-0/-home-user-Meme-snipe/2bf2916e-dcdc-547a-9cc9-f3ceeaba1e6f/scratchpad/bt
+
+(node:932) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:2231) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:2289) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+gpg: checking the trustdb
+gpg: marginals needed: 3  completes needed: 1  trust model: pgp
+gpg: depth: 0  valid:   1  signed:   0  trust: 0-, 0q, 0n, 0m, 0f, 1u
+fatal: expected 'acknowledgments', received 'packfile'
+warning: push negotiation failed; proceeding anyway with push
+(node:4137) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:4210) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:4741) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:5240) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:5378) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:5434) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+ Test Files  103 passed (103)
+      Tests  3631 passed (3631)
+   Start at  20:23:46
+   Duration  555.51s (tests 95%, import 4%, transform 1%)
+
+ts. Resolve unhandled errors to make sure your tests are not affected.
+
+⎯⎯⎯⎯⎯⎯ Unhandled Error ⎯⎯⎯⎯⎯⎯⎯
+Error: [vitest-pool]: Worker forks emitted error.
+ ❯ EventEmitter.onTaskError node_modules/.pnpm/vitest@5.0.3_@types+node@22.20.5_vite@8.3.2_@types+node@22.20.5_/node_modules/vitest/dist/chunks/index.DpLw24bj.js:11532:21
+ ❯ EventEmitter.emit node:events:519:28
+ ❯ ChildProcess.emitUnexpectedExit node_modules/.pnpm/vitest@5.0.3_@types+node@22.20.5_vite@8.3.2_@types+node@22.20.5_/node_modules/vitest/dist/chunks/index.DpLw24bj.js:11007:22
+ ❯ ChildProcess.emit node:events:519:28
+ ❯ Process.ChildProcess._handle.onexit node:internal/child_process:293:12
+
+Caused by: Error: Worker exited unexpectedly with signal SIGKILL during started state while running test file /tmp/claude-0/-home-user-Meme-snipe/2bf2916e-dcdc-547a-9cc9-f3ceeaba1e6f/scratchpad/bt/packages/backtest/test/research.test.ts
+ ❯ ChildProcess.emitUnexpectedExit node_modules/.pnpm/vitest@5.0.3_@types+node@22.20.5_vite@8.3.2_@types+node@22.20.5_/node_modules/vitest/dist/chunks/index.DpLw24bj.js:11005:33
+ ❯ ChildProcess.emit node:events:519:28
+ ❯ Process.ChildProcess._handle.onexit node:internal/child_process:293:12
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+
+
+ Test Files  102 passed (103)
+      Tests  3629 passed (3631)
+     Errors  1 error
+   Start at  20:23:37
+   Duration  540.01s (tests 93%, import 5%, transform 1%)
+
+ ELIFECYCLE  Test failed. See above for more details.
+ ELIFECYCLE  Command failed with exit code 1.
+check=1
+check=0

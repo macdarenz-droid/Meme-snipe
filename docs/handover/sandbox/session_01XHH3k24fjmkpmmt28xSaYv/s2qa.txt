@@ -1,0 +1,31 @@
+# Data quality report
+
+Dataset window 2026-10-02 to 2026-10-03 (exclusive). Generated 2026-10-03T15:08:46.830Z.
+
+## Coverage
+
+Scanned slots 452700000 to 452700449 (block times 2026-10-02T19:08:57.000Z to 2026-10-02T19:10:58.000Z). Every block's parent is the previous scanned block (0 breaks), so no block is missing in between.
+
+| Day | Whole day covered | Blocks | Warm-up | Curve trades | AMM trades |
+|---|---|---|---|---|---|
+| 2026-10-02 | partly | 446 | yes | 812 | 267 |
+
+## Decoding
+
+Decode failures: 0. Unknown events: {}. Newer layouts than the IDL: {"amm:BuyEvent":16333,"amm:SellEvent":17595,"pump:TradeEvent":8876}. Coverage gaps: [].
+
+## Reserve chain
+
+Bonding curve real reserves: 809 of 809 consecutive trade pairs rebuild exactly (100.0000%). Virtual reserves: 787 of 787 (100.0000%) on regular curves; on mayhem-mode curves, where the program re-prices virtual reserves, 0 of 22.
+PumpSwap: 267 of 267 trades start from exactly the rebuilt reserves (100.0000%); 14 liquidity, boost and pool-creation events applied.
+
+## Against recorded account balances
+
+Curves quoted in a token other than SOL: 0 trades; their quote token account equals real_quote_reserves in 0 of 0 checks and is never below it in 0 (the excess is quote tokens held by the curve outside its reserves, such as fees awaiting distribution; real reserves themselves rebuild exactly). Bonding curve token account: 27 of 27 checks equal real_token_reserves plus the reserved migration tokens exactly (100.0000%). Lamports: 808 of 808 checks keep the same rent offset as the previous check (0 of them changed exactly at an account extension) (100.0000%). Most common offsets (reserved tokens | rent): [["206900000000000|1417320",788],["206900000000000|1366520",23]].
+PumpSwap: 267 of 267 checks match both vault balances exactly (100.0000%).
+
+## Verdict
+
+PASS: no unexplained miss.
+
+Raw records: 1330; signature mismatches 0; 1323 of 1323 universe trade and failed transactions have their raw record.
