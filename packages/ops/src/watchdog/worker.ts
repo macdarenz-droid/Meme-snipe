@@ -16,6 +16,7 @@ import {
   type Lease,
   type Stored,
 } from './logic.ts';
+import { NEW_RING, candidates, isRing, promote, type Candidate, type Ring } from './keyring.ts';
 
 interface DurableStorage {
   get<T>(key: string): Promise<T | undefined>;
@@ -41,6 +42,11 @@ export interface Env {
   HEARTBEAT_HMAC_KEY?: string;
   TELEGRAM_BOT_TOKEN?: string;
   TELEGRAM_WEBHOOK_SECRET?: string;
+  /** KEY-ROTATE-SAFE slots (keyring.ts): the workflow writes the slot that is not active. */
+  HEARTBEAT_HMAC_KEY_A?: string;
+  HEARTBEAT_HMAC_KEY_B?: string;
+  TELEGRAM_WEBHOOK_SECRET_A?: string;
+  TELEGRAM_WEBHOOK_SECRET_B?: string;
   TELEGRAM_API?: string;
   CHAIN_RPC_URL?: string;
   CHAIN_TIMEOUT_MS?: string;
@@ -48,13 +54,17 @@ export interface Env {
 }
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+/** The two rotated secrets (keyring.ts). */
+const HB = 'HEARTBEAT_HMAC_KEY';
+const WH = 'TELEGRAM_WEBHOOK_SECRET';
 const WSOL = 'So11111111111111111111111111111111111111112';
 const TOKEN_PROGRAMS = ['TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'];
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const { pathname } = new URL(req.url);
-    if (req.method !== 'POST' || !['/heartbeat', '/telegram', '/lease', '/resume'].includes(pathname)) return new Response('Not found', { status: 404 });
+    const post = req.method === 'POST' && ['/heartbeat', '/telegram', '/lease', '/resume'].includes(pathname);
+    if (!post && !(req.method === 'GET' && pathname === '/slot')) return new Response('Not found', { status: 404 });
     return env.WATCHDOG.get(env.WATCHDOG.idFromName('primary')).fetch(req);
   },
   async scheduled(_event: unknown, env: Env, ctx: ExecutionContext): Promise<void> {
@@ -75,27 +85,49 @@ export class Watchdog {
   async fetch(req: Request): Promise<Response> {
     const { pathname } = new URL(req.url);
     if (pathname === '/check') return json(await this.check(Date.now()));
+    if (pathname === '/slot') return this.slots();
     const body = await req.text();
     if (pathname === '/telegram') return this.telegram(req, body);
-    // The signature covers method and path too, so a heartbeat's signature can never open /resume.
-    const t = await verifySignature(req.headers.get('x-zeroed-signature'), req.method, pathname, body, this.env.HEARTBEAT_HMAC_KEY ?? '', Math.floor(Date.now() / 1000));
-    if (t === null) return json({ error: 'bad signature' }, 401);
-    if (pathname === '/heartbeat') return this.heartbeat(body);
+    // The signature covers method and path too, so a heartbeat's signature can never open /resume. The key is the
+    // active slot's or an offered one (KEY-ROTATE-SAFE, keyring.ts); only a heartbeat promotes an offer.
+    let t: number | null = null;
+    let used: Candidate | null = null;
+    for (const c of await candidates(await this.ring(HB), this.env, HB)) {
+      t = await verifySignature(req.headers.get('x-zeroed-signature'), req.method, pathname, body, c.value, Math.floor(Date.now() / 1000));
+      if (t !== null) {
+        used = c;
+        break;
+      }
+    }
+    if (t === null || used === null) return json({ error: 'bad signature' }, 401);
+    if (pathname === '/heartbeat') return this.heartbeat(body, used);
     if (pathname === '/lease') return this.lease(body);
     if (pathname === '/resume') return this.resume(t);
     return new Response('Not found', { status: 404 });
   }
 
-  private async heartbeat(body: string): Promise<Response> {
+  private async heartbeat(body: string, used: Candidate): Promise<Response> {
     const hb = parseHeartbeat(body);
     if (!hb) return json({ error: 'bad heartbeat' }, 400);
     const prev = await this.state.storage.get<Stored>('hb');
     if (!isNewer(prev, hb)) return json({ error: 'replayed heartbeat' }, 409);
+    // The server beats with the offered key: it has the new key, so the old one is retired from now on.
+    if (!used.active) await this.state.storage.put(`ring:${HB}`, await promote(await this.ring(HB), this.env, HB, used.slot));
     await this.state.storage.put('hb', { hb, receivedAt: Date.now() } satisfies Stored);
     // The owner's chat comes only from the server's signed heartbeat (paired there with /pair).
     if (typeof hb.owner_chat_id === 'string' && /^-?\d{1,20}$/.test(hb.owner_chat_id)) await this.state.storage.put('owner_chat', hb.owner_chat_id);
     const paused = await this.state.storage.get<{ at: number }>('paused');
     return json({ ok: true, paused: Boolean(paused) });
+  }
+
+  private async ring(base: string): Promise<Ring> {
+    const r = await this.state.storage.get<unknown>(`ring:${base}`);
+    return isRing(r) ? r : NEW_RING;
+  }
+
+  /** Which slot is active per rotated secret: all the Deploy workflow needs to write the other one. Names only. */
+  private async slots(): Promise<Response> {
+    return json({ heartbeat: (await this.ring(HB)).active, webhook: (await this.ring(WH)).active });
   }
 
   private async lease(body: string): Promise<Response> {
@@ -123,8 +155,11 @@ export class Watchdog {
   }
 
   private async telegram(req: Request, body: string): Promise<Response> {
-    const secret = this.env.TELEGRAM_WEBHOOK_SECRET ?? '';
-    if (!secret || !sameText(req.headers.get('x-telegram-bot-api-secret-token') ?? '', secret)) return new Response('Unauthorized', { status: 401 });
+    const given = req.headers.get('x-telegram-bot-api-secret-token') ?? '';
+    const used = (await candidates(await this.ring(WH), this.env, WH)).find((c) => sameText(given, c.value));
+    if (!used) return new Response('Unauthorized', { status: 401 });
+    // Telegram sends the offered secret: the server set the webhook with it, so the old one is retired.
+    if (!used.active) await this.state.storage.put(`ring:${WH}`, await promote(await this.ring(WH), this.env, WH, used.slot));
     let update: unknown;
     try {
       update = JSON.parse(body);

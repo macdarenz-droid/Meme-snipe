@@ -446,3 +446,77 @@ describe('workers.dev subdomain (ops/deploy/cf-subdomain.sh) against a fake Clou
     expect(other.calls.map((c) => c.method)).toEqual(['GET']);
   });
 });
+
+describe('key rotation in the Deploy workflow (KEY-ROTATE-SAFE, ops/deploy/publish.sh)', () => {
+  /** publish.sh with a stand-in gh (pickup or not), a stand-in wrangler and a fake watchdog answering GET /slot. */
+  async function rotate(o: { slot: string | null; pickup: boolean }) {
+    const server = createServer((req, res) => {
+      const u = req.url ?? '';
+      if (u.includes('/client/v4/')) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ success: true, result: { subdomain: 'owners-pick' } }));
+      }
+      if (req.method === 'GET' && u === '/slot' && o.slot !== null) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        return res.end(o.slot);
+      }
+      res.writeHead(404);
+      res.end('Not found');
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as AddressInfo).port;
+    const dir = mkdtempSync(join(tmpdir(), 'zeroed-rotate-'));
+    const log = join(dir, 'calls.log');
+    writeFileSync(join(dir, 'wrangler'), `#!/usr/bin/env bash\nset -euo pipefail\nif [ "\${1:-}" = secret ]; then cat >/dev/null; fi\nprintf 'wrangler %s\\n' "$*" >> "${log}"\nif [ "\${1:-}" = deploy ]; then echo "Deployed https://zeroed-watchdog.owners-pick.workers.dev"; fi\n`);
+    writeFileSync(join(dir, 'gh'), `#!/usr/bin/env bash\nprintf 'gh %s\\n' "$1 \${2:-}" >> "${log}"\nif [ "$1" = api ]; then echo ${o.pickup ? 1 : 0}; fi\nexit 0\n`);
+    chmodSync(join(dir, 'wrangler'), 0o755);
+    chmodSync(join(dir, 'gh'), 0o755);
+    const child = spawn('bash', [join(root, 'ops/deploy/publish.sh')], {
+      env: {
+        PATH: `${dir}:${process.env['PATH'] ?? ''}`, GH_REPO: 'o/r', GITHUB_SHA: 'a'.repeat(40), ISSUED: '7',
+        DEPLOY_CODE: 'correct horse battery staple zebra apple', HELIUS_API_KEY: 'TESTa', ALCHEMY_API_KEY: 'TESTb', JUPITER_API_KEY: 'TESTc', TELEGRAM_BOT_TOKEN: '1:TESTd',
+        CLOUDFLARE_API_TOKEN: 'TESTcf', CLOUDFLARE_ACCOUNT_ID: 'acc', WRANGLER: join(dir, 'wrangler'), CLOUDFLARE_API_URL: `http://127.0.0.1:${port}/client/v4`,
+        WATCHDOG_PROBE_URL: `http://127.0.0.1:${port}`, SLOT_POLL_S: '0', PICKUP_TIMEOUT_S: '2', PICKUP_POLL_S: '1', PICKUP_GRACE_S: '0',
+      },
+    });
+    let out = '';
+    child.stdout.on('data', (d) => (out += d));
+    child.stderr.on('data', (d) => (out += d));
+    const status = await new Promise<number | null>((r) => child.on('close', r));
+    server.close();
+    const calls = existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n') : [];
+    rmSync(dir, { recursive: true, force: true });
+    return { status, out, calls, puts: calls.filter((c) => c.startsWith('wrangler secret put')).map((c) => c.split(' ')[3]) };
+  }
+
+  it('no pickup (a stale DEPLOY_CODE): the active heartbeat key and webhook secret are never replaced', async () => {
+    // Today's order put HEARTBEAT_HMAC_KEY and TELEGRAM_WEBHOOK_SECRET before any pickup.
+    const r = await rotate({ slot: '{"heartbeat":"legacy","webhook":"legacy"}', pickup: false });
+    expect(r.status).toBe(1);
+    expect(r.puts).toEqual(['HEARTBEAT_HMAC_KEY_A', 'TELEGRAM_BOT_TOKEN', 'TELEGRAM_WEBHOOK_SECRET_A']);
+    expect(r.out).toContain('No pickup within');
+  }, 30_000);
+
+  it('writes only the slot that is not active, whatever happens after (pickup or not)', async () => {
+    const r = await rotate({ slot: '{"heartbeat":"A","webhook":"B"}', pickup: true });
+    expect(r.status).toBe(0);
+    expect(r.puts).toEqual(['HEARTBEAT_HMAC_KEY_B', 'TELEGRAM_BOT_TOKEN', 'TELEGRAM_WEBHOOK_SECRET_A']);
+    expect(r.out).toContain('New heartbeat key in slot B and webhook secret in slot A (active: A, B)');
+  }, 30_000);
+
+  it('stops before any secret or release when the watchdog does not say which slot is active', async () => {
+    for (const slot of [null, '{"heartbeat":"C","webhook":"A"}', 'not json']) {
+      const r = await rotate({ slot, pickup: true });
+      expect(r.status, String(slot)).not.toBe(0);
+      expect(r.puts, String(slot)).toEqual([]);
+      expect(r.calls.filter((c) => c.startsWith('gh release create')), String(slot)).toEqual([]);
+      expect(r.out).toContain('nothing was rotated');
+    }
+  }, 60_000);
+
+  it('the script never writes the single-slot names', () => {
+    const s = read('ops/deploy/publish.sh').split('\n').filter((l) => !/^\s*#/.test(l)).join('\n');
+    expect(s).not.toMatch(/secret put (HEARTBEAT_HMAC_KEY|TELEGRAM_WEBHOOK_SECRET)\b(?!_)/);
+    expect(s).not.toMatch(/secret put "?(HEARTBEAT_HMAC_KEY|TELEGRAM_WEBHOOK_SECRET)"? /);
+  });
+});

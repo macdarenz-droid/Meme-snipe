@@ -9,7 +9,11 @@
 # CLOUDFLARE_ACCOUNT_ID (and WRANGLER, the locked tool from ops/watchdog/deploy) it also deploys the
 # watchdog, sets its secrets, and hands its address, a fresh heartbeat key and the webhook secret to the
 # server in the same bundle (the server sets the Telegram webhook once paired).
-# Test knobs: PICKUP_TIMEOUT_S, PICKUP_POLL_S, PICKUP_GRACE_S, TELEGRAM_API, CLOUDFLARE_API_URL.
+# Key rotation never cuts off the server (KEY-ROTATE-SAFE, packages/ops/src/watchdog/keyring.ts): the new heartbeat
+# key and webhook secret go only into the watchdog's slot that is not active (GET /slot), and the active one is never
+# touched. The watchdog switches when the server first uses the new key, so a bundle the server never opens (no pickup,
+# a stale or wrong DEPLOY_CODE) changes nothing it relies on.
+# Test knobs: PICKUP_TIMEOUT_S, PICKUP_POLL_S, PICKUP_GRACE_S, TELEGRAM_API, CLOUDFLARE_API_URL, WATCHDOG_PROBE_URL, SLOT_POLL_S.
 #
 # Never prints or stores a value: no set -x; the code, the derived identity and the plaintext only pass
 # through pipes and the process environment; only the ciphertext is ever a file.
@@ -60,13 +64,29 @@ if [ -n "${CLOUDFLARE_API_TOKEN:-}" ]; then
     printf '%s\n' "$out" | tail -n 20 >&2
     die "Watchdog deploy failed (no workers.dev address in wrangler's output; its last lines are above)."
   fi
-  printf '%s' "$HEARTBEAT_HMAC_KEY" | $WRANGLER secret put HEARTBEAT_HMAC_KEY >/dev/null
+  # The slots in use. No answer (or not the new code) stops here, before any secret or bundle changes.
+  # A new version can take a few seconds to serve everywhere, so it is asked up to 6 times, 10 s apart.
+  hb_active=""
+  wh_active=""
+  for _ in 1 2 3 4 5 6; do
+    slots="$(curl -sS -m 30 -X GET "${WATCHDOG_PROBE_URL:-$WATCHDOG_URL}/slot" 2>/dev/null || true)"
+    hb_active="$(printf '%s' "$slots" | jq -r '.heartbeat // empty' 2>/dev/null || true)"
+    wh_active="$(printf '%s' "$slots" | jq -r '.webhook // empty' 2>/dev/null || true)"
+    [[ "$hb_active" =~ ^(legacy|A|B)$ && "$wh_active" =~ ^(legacy|A|B)$ ]] && break
+    sleep "${SLOT_POLL_S:-10}"
+  done
+  [[ "$hb_active" =~ ^(legacy|A|B)$ && "$wh_active" =~ ^(legacy|A|B)$ ]] || die "The watchdog did not say which key slot is active (GET /slot); nothing was rotated."
+  other() { if [ "$1" = A ]; then echo B; else echo A; fi; }
+  hb_slot="$(other "$hb_active")"
+  wh_slot="$(other "$wh_active")"
+  printf '%s' "$HEARTBEAT_HMAC_KEY" | $WRANGLER secret put "HEARTBEAT_HMAC_KEY_$hb_slot" >/dev/null
   printf '%s' "$TELEGRAM_BOT_TOKEN" | $WRANGLER secret put TELEGRAM_BOT_TOKEN >/dev/null
-  printf '%s' "$hook_secret" | $WRANGLER secret put TELEGRAM_WEBHOOK_SECRET >/dev/null
+  printf '%s' "$hook_secret" | $WRANGLER secret put "TELEGRAM_WEBHOOK_SECRET_$wh_slot" >/dev/null
+  echo "New heartbeat key in slot $hb_slot and webhook secret in slot $wh_slot (active: $hb_active, $wh_active); the watchdog switches when the server uses them."
   # The Telegram webhook is set by the server, not here: it reads /pair through getUpdates first, which
   # Telegram refuses while a webhook is set. The secret travels to it in the encrypted bundle.
   WEBHOOK_SECRET="$hook_secret"
-  echo "Watchdog deployed at $WATCHDOG_URL; its secrets are set. The server sets the Telegram webhook once paired."
+  echo "Watchdog deployed at $WATCHDOG_URL. The server sets the Telegram webhook once paired."
 else
   echo "No CLOUDFLARE_API_TOKEN secret: the watchdog is not deployed."
 fi
