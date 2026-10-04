@@ -395,6 +395,27 @@ Supervisor rulings:
   - The full pull needs the owner's approval: Developer plan US$49, plus extra credits capped at 10M at US$5 per million, so at most US$99 that month (prices checked 4 Oct). The cap is set after measuring the live dry run's credit use on the same account, so the pull cannot starve the live feed.
   - Raw Helius responses never go into public releases until their terms are confirmed for derived files.
   - A message to Triton (lift the block, or a set rate or bucket, and permission to publish derived day files) is the owner's choice, and keeps the free route open.
+- **ARCHIVE-CHECK: one request every 3 hours (owner decision, 2026-10-04 3:55 PM Melbourne).** This replaces "no request until Triton answers". The owner has emailed Triton.
+  - `archive-check.yml` (cron `41 */3 * * *` and dispatch) runs `ci/archive-check.sh`.
+  - While a data-scan run is active or queued, the check does nothing. Otherwise it makes one range GET of 64 bytes from the runner, with the scanner's own User-Agent, read from `archive.go`.
+  - It never uses another agent, host, address, proxy, client or Triton service, because that would get around the block.
+  - No answer can stream. The body goes through `head -c 65`, which aborts the transfer, and `--max-filesize 64` also stops it. Each was tested alone against a local server that ignores the range and streams a chunked 200.
+  - Only a 206 of at most 64 bytes, with a clean curl exit, counts as served. Anything else is logged (status, bytes, curl exit, cf-ray, time), with no retry.
+  - When served, it dispatches the next 8 unpublished days: pre-holdout days 21 Sep back to 20 Jul first, then the holdout days 1 Oct back to 22 Sep. The scan keeps its own limits: one job, 80 MB/s, 40 requests/s, stop on any 429 with at least 1 h back-off.
+  - A rate or bucket from Triton replaces these limits.
+- **DATA-2 build: one decoder set, re-encoded meta (2026-10-04).**
+  - The RPC reader encodes each `getBlock` transaction as an archive Transaction node, with the meta re-encoded as the archive's protobuf. So `processBlock`, `txNode` and `processTx` are the scanner's own and there is no second decoder.
+  - Review of 1697ddd: the scanner folder's tree, which is the archive units' revision, stays 64e1335c.
+    - The RPC path lives in `research/historical/rpcscan`, which links every scanner source but `main.go`, plus copies of the IDLs that test-ci keeps byte-identical.
+    - This was chosen over a golden old-versus-new test because it leaves nothing to prove.
+  - Measured on 25 real blocks of the comparison unit: every CSV and event row matches the archive byte for byte.
+  - Requests use `maxSupportedTransactionVersion: 1`, because the RPC refuses 0 for blocks with v1 transactions.
+  - Truncated RPC logs (`"Log truncated"`) change only raw records' `logMessages`, not rows. They are reported as explained, never patched: the live bot sees the same logs.
+  - The exemption is per record, from the review. The candidate's log must equal Agave's default 10,000-byte cut of the archive's log, which keeps later messages that still fit, so the marker can sit mid-log. All other fields must be equal. A second differing column, a different row count, a one-sided column or another table's difference is never exempt.
+- **DATA-2 pilot baseline: 1 Oct 09:40–10:00 instead of an hour of 2 Oct (2026-10-04).**
+  - It is the only archive unit in today's schema (epoch 1046, 452,277,000–452,281,499, 4,496 blocks). The 2 Oct slices are schema 1, sampled at 0.25.
+  - It is committed as a digest: per-block and per-column hashes plus counters, with no rows. Publishing files derived from the archive waits on Triton.
+  - The pilot needs about 4.6k credits under its 15k stop.
 
 - **Owner decisions after 3:45 PM:**
   - GitHub Pro (the owner's spend, about 3:47 PM).
@@ -403,6 +424,29 @@ Supervisor rulings:
 - **No disguise, whoever asks.** At about 4:05 PM the owner asked us to change our identity and scrape slowly to avoid detection. The supervisor declined. It would get around a block the operator set on purpose, which breaks their terms, risks being treated as unauthorised access, and risks a permanent ban from every Triton service. The honest 3-hour check, Triton's reply and Helius remain.
 - **An early look, not an AI trader** (owner idea, 4:20 PM: "an agent backtests with the bot's reasoning and never cheats"). The backtester already is that: the bot's own engine, physically blind to the future, with the leak test. An AI model acting as the trader can't be blinded the same way, isn't reproducible (pre-funding item 1), and the live bot couldn't call it. So BT-2e runs the bot's own backtest on 1–2 free practice days (U2 only, not proof, nothing frozen from it), using free credits only after the live dry run's measured first 24 h.
 - **Merge order respects the critical path.** Before merging any PR, check that its files don't overlap a critical-path PR in a merge check. Merging #90 (TEST-1) forced RISK-MARK #103 into another base merge.
+
+- **The live dry run must be able to trade (WORKER-1e, supervisor).** An audit showed the merged worker could make no live entry, even in the S0 shakedown:
+  - exec-health was never released, and is never green without owner limits;
+  - regime volume needs ≥28 published days;
+  - regime survival needs about 15 days of the graduates series;
+  - H14 creates coverage needs 14 days on a fresh host;
+  - H15 had no live sim fact.
+
+  Ruling: one `ZEROED_S0_DIAGNOSTIC` set with four named parts (regime volume, exec-health measured but not judged, H14 creates coverage, regime survival).
+  - Each part is labelled on every decision line it affects, in /health and in the runner report.
+  - The set is refused in the qualifying run, as S0 and the paper edge already are.
+  - Every other gate, limit, halt and exit stays real. H15 is simulated live at P2 (≤120 an hour) and exit flow comes from held-pool swaps.
+  - Open items: `sellRoute` (EXIT-ROUTE) before the qualifying run; the owner sets the exec-health limits before the qualifying run; PERSIST-2 saves the graduates series so restarts don't reset survival.
+- **Healthy-feed watch reads stop (WATCH-1b, (a1')).** Feed pool facts are judged by release time and WATCH-1's snapshot by read time.
+  - The steady bound stays below maxQuoteAge.
+  - One transition per facts-stop may reach 2 × release + stale + every + latency (2.7 s). An exit then waits for a fresh market (EXIT-1d) and is never priced stale.
+  - Why: receipt-age staleness read every 0.4–0.8 s on a healthy feed, about 54M CU a month against Alchemy's 30M free tier, which would end in a budget halt.
+  - WATCH-1c follows with coverage-proven freshness for quiet held pools (any non-swap transaction on the stream makes the chain stale) and a 30 s verify read against vault donations.
+- **Rent in the proof's scoring (RENT-1).** Of the two texts, the consensus line governs. The conservative scenario refunds the token-account rent per the modelled sell-and-close outcome. "No rent recovery" is a reported sensitivity line. Worst-case reservations keep full rent. No statistical threshold changes.
+- **Pre-registered ideas are one family (RES-4).** RES-4's six hypotheses run as one SPA family (k = 6) over practice days, and at most one per universe goes to the holdout. The Holm family stays at 2 (U1, U2). BT-2 refuses a freeze if the pre-registration hash differs. A later variant is a 7th trial and needs a new holdout window.
+- **Owner ideas, recorded:**
+  - "Focus on the 9% that survive" became RES-5: research only, comparing survivors with look-alike losers at buy time, using exploration days before RES-3's wall only. Nothing goes into the bot from it; the owner hears only if it beats the current ideas.
+  - "An agent backtests with the bot's reasoning" became BT-2e: the bot's own backtest on free days.
 
 ## Order and position lifecycle (CORE-1, `packages/core/src/lifecycle`)
 
