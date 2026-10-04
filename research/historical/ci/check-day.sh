@@ -47,8 +47,10 @@ epoch=$(basename "$(dirname "$first")")
 range=$(basename "$first")
 again=$(mktemp -d)
 mkdir -p "$again/cache" && cp "$out"/cache/* "$again/cache/" 2>/dev/null || true
-# A 429 stops the rescan (exit 75) with the back-off persisted in $out: resumable, so
-# exit 75 and the next chained run redoes this phase. Any other failure is real (exit 1).
+# Archive: a 429 stops the rescan (scanner exit 75); the back-off in $out is held to at
+# least ARCHIVE_BACKOFF_S and this exits 4, not resumable (ARCHIVE-SAFE): only a later
+# served archive-check resumes. Helius: exit 75 is resumable. Any other failure is real
+# (exit 1).
 rc=0
 if [ "${SOURCE:-archive}" = helius ]; then
   # A day read over RPC is reread over RPC; the credits count toward the day's cap
@@ -59,14 +61,20 @@ if [ "${SOURCE:-archive}" = helius ]; then
     -rps "${RPC_RPS:-5}" -conc "${RPC_CONC:-4}" -max-credits $(( RPC_CREDIT_CAP - used )) -usage-out "$again/rpc-usage.json" || rc=$?
   "$here/rpc-credits.sh" add "$out" "$again/rpc-usage.json"
 else
-  phase determinism zeroed-scan unit -out "$again" -epoch "$epoch" -from-slot "${range%-*}" -to-slot "${range#*-}" -sample 0.05 -max-mbps "${MAX_MBPS:-80}" -on-429 stop -state "$out" || rc=$?
+  # shellcheck source=archive-limits.conf
+  . "$here/archive-limits.conf"
+  mb=${MAX_MBPS:-$ARCHIVE_MAX_MBPS}
+  awk -v m="$mb" -v c="$ARCHIVE_MAX_MBPS" 'BEGIN { exit !(m + 0 > 0 && m + 0 <= c + 0) }' ||
+    { echo "refused: max_mbps $mb is not in (0, $ARCHIVE_MAX_MBPS] (archive-limits.conf)" | tee -a "$summary"; exit 2; }
+  phase determinism zeroed-scan unit -out "$again" -epoch "$epoch" -from-slot "${range%-*}" -to-slot "${range#*-}" -sample 0.05 -max-mbps "$mb" -dl "$ARCHIVE_DL" -on-429 stop -state "$out" || rc=$?
 fi
 if [ "$rc" -eq 75 ] && [ "${SOURCE:-archive}" = helius ]; then
   echo "RPC rate-limit back-off ran out during the determinism rescan: stopping resumably; the next run redoes QA" | tee -a "$summary"
   exit 75
 elif [ "$rc" -eq 75 ]; then
-  echo "archive answered 429 during the determinism rescan: stopping resumably; the next run redoes QA" | tee -a "$summary"
-  exit 75
+  "$here/scan-day.sh" --hold "$out/archive-429.state" "$ARCHIVE_BACKOFF_S"
+  echo "archive answered 429 during the determinism rescan: back-off of at least $(( ARCHIVE_BACKOFF_S / 3600 )) h; the chain stops, and only a later served archive-check resumes this day" | tee -a "$summary"
+  exit 4
 elif [ "$rc" -eq 3 ] && [ "${SOURCE:-archive}" = helius ]; then
   echo "credit cap spent during the determinism rescan: stopping; not resumable" | tee -a "$summary"
   exit 3

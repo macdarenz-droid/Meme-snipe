@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
 # Scans one UTC chain day on a single polite lane (used by .github/workflows/data-scan.yml).
 #   scan-day.sh DAY OUT_DIR MAX_MBPS BUDGET   (BUDGET: minutes, or seconds as "Ns")
-# On any 429 (or 503 with Retry-After) the scanner stops (exit 75), keeps every
-# finished unit and persists the back-off end, max(1 h, largest Retry-After), in
-# $OUT/archive-429.state. This script waits until then and resumes the same lane, until
-# the day is done or the time budget runs out. The budget covers scanning and waiting:
-# the scanner is interrupted at the budget's end (units are written atomically, so a
-# unit cut off is redone later), and a back-off that does not fit is slept out as far
-# as the budget allows. Either way it exits 75: progress is kept, the workflow saves it
-# and the next chained run resumes. Any later run on the same directory sleeps out the
-# back-off first.
+# Limits come from archive-limits.conf (ARCHIVE-SAFE): MAX_MBPS above ARCHIVE_MAX_MBPS
+# is refused; ARCHIVE_PARALLEL x ARCHIVE_DL connections at most.
+# On any 429 (or 503 with Retry-After) the scanner stops (exit 75) and keeps every
+# finished unit. This script then persists a back-off of at least ARCHIVE_BACKOFF_S
+# (3 h; more if the scanner's Retry-After asks for more) in $OUT/archive-429.state and
+# exits 4: not resumable, so no chained run resumes the archive by itself; only a later
+# served archive-check dispatches the day again, and that run sleeps out what is left of
+# the back-off first. The time budget covers scanning and waiting: the scanner is
+# interrupted at the budget's end (units are written atomically, so a unit cut off is
+# redone later) and the script exits 75 (resumable: progress is kept, the workflow saves
+# it and the next chained run resumes); a restored back-off that does not fit is slept
+# out as far as the budget allows, then exit 75.
 # Every 429 and back-off is appended to $GITHUB_STEP_SUMMARY when set.
 #   scan-day.sh --merge-state SRC DST
 # copies back-off state SRC over DST when SRC's back-off ends later (or DST has none);
@@ -18,6 +21,19 @@ set -uo pipefail
 # state_end FILE: the back-off end (unix s) in a state file
 # "<unix last 429> <retry-after s> <unix until>", or nothing.
 state_end() { awk 'NF >= 3 && $3 ~ /^[0-9]+$/ {print $3; exit}' "$1" 2>/dev/null || true; }
+# hold_back FILE MIN_S: the back-off in FILE ends no sooner than now + MIN_S.
+hold_back() {
+  local now end want
+  now=$(date +%s) end=$(state_end "$1") want=$(( $(date +%s) + $2 ))
+  if [ -z "$end" ] || [ "$end" -lt "$want" ]; then
+    echo "$now $2 $want" > "$1"
+  fi
+}
+if [ "${1:-}" = --hold ]; then
+  [ $# -eq 3 ] || { echo "usage: scan-day.sh --hold FILE MIN_S" >&2; exit 2; }
+  mkdir -p "$(dirname "$2")" && hold_back "$2" "$3"
+  exit 0
+fi
 if [ "${1:-}" = --merge-state ]; then
   [ $# -eq 3 ] || { echo "usage: scan-day.sh --merge-state SRC DST" >&2; exit 2; }
   s=$(state_end "$2") d=$(state_end "$3")
@@ -28,6 +44,10 @@ if [ "${1:-}" = --merge-state ]; then
   exit 0
 fi
 day=$1 out=$2 mbps=$3 budget=$4
+# shellcheck source=archive-limits.conf
+. "$(dirname "$0")/archive-limits.conf"
+awk -v m="$mbps" -v c="$ARCHIVE_MAX_MBPS" 'BEGIN { exit !(m + 0 > 0 && m + 0 <= c + 0) }' ||
+  { echo "refused: max_mbps $mbps is not in (0, $ARCHIVE_MAX_MBPS] (archive-limits.conf)" >&2; exit 2; }
 next=$(date -u -d "$day + 1 day" +%F)
 start=$(date +%s)
 case $budget in
@@ -83,7 +103,7 @@ while true; do
   fi
   # Interrupted (SIGINT) at the budget's end; it finishes nothing new after that and
   # exits within 2 min, else it is killed (an unfinished unit is never renamed into place).
-  timeout -s INT -k 120 "$left" zeroed-scan run -out "$out" -from "$day" -to "$next" -parallel 2 -dl 6 -workers 2 \
+  timeout -s INT -k 120 "$left" zeroed-scan run -out "$out" -from "$day" -to "$next" -parallel "$ARCHIVE_PARALLEL" -dl "$ARCHIVE_DL" -workers 2 \
     -sample 0.05 -max-mbps "$mbps" -on-429 stop
   rc=$?
   if [ $(( deadline - $(date +%s) )) -le 0 ] && [ $rc -ne 0 ] && [ $rc -ne 75 ]; then
@@ -102,6 +122,7 @@ while true; do
     echo "scanner failed with exit $rc" | tee -a "$summary"
     exit $rc
   fi
-  echo "$(date -u +%FT%TZ) archive answered 429" | tee -a "$summary"
-  backoff 3600
+  hold_back "$out/archive-429.state" "$ARCHIVE_BACKOFF_S"
+  echo "$(date -u +%FT%TZ) archive answered 429: back-off until $(date -u -d "@$(state_end "$out/archive-429.state")" +%FT%TZ); the chain stops, and only a later served archive-check resumes this day" | tee -a "$summary"
+  exit 4
 done

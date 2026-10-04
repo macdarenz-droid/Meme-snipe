@@ -20,17 +20,20 @@
 #   - Any answer but a 206 of at most 64 bytes is logged (status, bytes, cf-ray, time)
 #     and the check stops until the next one. No retries. No answer can stream: the
 #     body is cut after 65 bytes, which aborts the transfer.
-#   - On success it dispatches data-scan.yml (mode scan, max_mbps 80) for the next 8
-#     unpublished days: pre-holdout days from 2026-09-21 back to 2026-07-20 first (run
+#   - On success it dispatches data-scan.yml (mode scan, max_mbps ARCHIVE_MAX_MBPS) for
+#     the next ARCHIVE_DAYS_PER_CHECK unpublished days (archive-limits.conf: 1 day, 40
+#     MB/s), and only while the scanner's request cap is at most ARCHIVE_MAX_RPS: pre-holdout days from 2026-09-21 back to 2026-07-20 first (run
 #     1's days lead), then the holdout days 2026-10-01 back to 2026-09-22. The scan
-#     keeps its own limits: one job, at most 80 MB/s and 40 requests/s, stop on any 429
-#     with a back-off of at least 1 h.
+#     keeps its own limits (archive-limits.conf): one job, any 429 stops the chain with
+#     a back-off of at least 3 h.
 #
 # Env: GH_REPO (owner/repo), REF (branch to dispatch on), GH_TOKEN for gh;
 # GH_BIN, CURL_BIN and ARCHIVE_CHECK_URL (a local fake server) are for tests only; the
 # workflow sets none of them (test-ci.sh checks).
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=archive-limits.conf
+. "$here/archive-limits.conf"
 gh=${GH_BIN:-gh}
 curl=${CURL_BIN:-curl}
 : "${GH_REPO:?}" "${REF:?}"
@@ -102,6 +105,13 @@ while [[ "$d" > 2026-07-19 ]]; do queue+=("$d"); d=$(date -u -d "$d - 1 day" +%F
 d=2026-10-01
 while [[ "$d" > 2026-09-21 ]]; do queue+=("$d"); d=$(date -u -d "$d - 1 day" +%F); done
 
+# ARCHIVE-SAFE hold: no dispatch while the scanner's request cap is above the limit.
+cap=$(sed -n 's/^var reqLimiter = newLimiter(\([0-9.]*\))$/\1/p' "${ARCHIVE_GO:-$here/../scanner/archive.go}")
+if [[ -z "$cap" ]] || ! awk -v c="$cap" -v m="$ARCHIVE_MAX_RPS" 'BEGIN { exit !(c + 0 > 0 && c + 0 <= m + 0) }'; then
+  echo "archive-check: served; held: the scanner's request cap (${cap:-not found}/s, scanner/archive.go) is above $ARCHIVE_MAX_RPS/s (archive-limits.conf); nothing dispatched" | tee -a "$summary"
+  exit 0
+fi
+
 batch=()
 for d in "${queue[@]}"; do
   # A day with a release is published (data-scan's own check judges completeness).
@@ -109,12 +119,12 @@ for d in "${queue[@]}"; do
     continue
   fi
   batch+=("$d")
-  (( ${#batch[@]} == 8 )) && break
+  (( ${#batch[@]} == ARCHIVE_DAYS_PER_CHECK )) && break
 done
 if (( ${#batch[@]} == 0 )); then
   echo "archive-check: served, and every day of the window is published; nothing to dispatch" | tee -a "$summary"
   exit 0
 fi
 days=$(IFS=,; echo "${batch[*]}")
-"$gh" workflow run data-scan.yml --repo "$GH_REPO" --ref "$REF" -f mode=scan -f days="$days" -f max_mbps=80
+"$gh" workflow run data-scan.yml --repo "$GH_REPO" --ref "$REF" -f mode=scan -f days="$days" -f max_mbps="$ARCHIVE_MAX_MBPS"
 echo "archive-check: served; dispatched data-scan for $days" | tee -a "$summary"
