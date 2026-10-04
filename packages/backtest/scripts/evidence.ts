@@ -49,6 +49,9 @@ const work = resolve(flag('work', mkdtempSync(join(tmpdir(), 'bt3-'))));
 mkdirSync(work, { recursive: true });
 const scenario = flag('scenario', 'conservative') as ScenarioName;
 if (!SCENARIO_NAMES.includes(scenario)) throw new Error(`--scenario must be one of ${SCENARIO_NAMES.join(', ')}`);
+const mode = has('no-lead-in') ? 'no-lead-in' : 'gate';
+// A labelled run's folder says so, so its files are never mistaken for gate evidence (checked before any download or run).
+if (mode === 'no-lead-in' && has('out') && !resolve(flag('out')).endsWith('-no-lead-in')) throw new Error(`--no-lead-in output must go to a folder ending in -no-lead-in, not ${resolve(flag('out'))}`);
 
 let windows: EvidenceWindow[];
 let range: string;
@@ -79,7 +82,6 @@ if (has('synthetic')) {
   range = `${from}..${to}`;
 }
 
-const mode = has('no-lead-in') ? 'no-lead-in' : 'gate';
 const evidence: Evidence = runEvidence({
   windows, mode, replays: Number(flag('replays', '10')), scenario, seed: flag('seed', 'bt3'),
   solUsd: has('synthetic') ? SOL_USD : readSeries(flag('sol-usd', join(top, 'packages/backtest/data/sol-usd-1h.csv'))),
@@ -90,8 +92,6 @@ const evidence: Evidence = runEvidence({
 const record = { ...evidence, windows: evidence.windows.map((w) => ({ ...w, dir: w.dir.startsWith(work) ? w.dir.slice(work.length + 1) : w.dir })) };
 const label = mode === 'no-lead-in' ? `${range}-no-lead-in` : range;
 const out = resolve(flag('out', join(top, 'docs/evidence/bt3', label)));
-// A labelled run's folder says so, so its files are never mistaken for gate evidence.
-if (mode === 'no-lead-in' && !out.replace(/\/+$/, '').endsWith('-no-lead-in')) throw new Error(`--no-lead-in output must go to a folder ending in -no-lead-in, not ${out}`);
 mkdirSync(out, { recursive: true });
 writeFileSync(join(out, 'evidence.json'), `${JSON.stringify(JSON.parse(canonical(record)), null, 2)}\n`);
 const line = (w: (typeof record.windows)[number]): string =>
