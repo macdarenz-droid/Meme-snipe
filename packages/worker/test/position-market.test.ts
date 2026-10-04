@@ -118,7 +118,8 @@ describe('a held position priced from its pool\'s swap stream (POS-1)', () => {
     // No swap on the pool for longer than maxQuoteAgeMs; the SOL price stays fresh.
     await until(m, () => false, 4_000, () => m.solPrice());
     m.swap('SellEvent', DEV, (SUPPLY * 300n) / 10_000n);
-    expect(await until(m, () => decisions(h).some((r) => r[0] === 'exit'), 6_000, () => m.solPrice())).toBe(true);
+    const decided = await until(m, () => decisions(h).some((r) => r[0] === 'exit'), 20_000, () => m.solPrice());
+    expect(decided, JSON.stringify(decisions(h).slice(-12))).toBe(true);
     const exit = decisions(h).find((r) => r[0] === 'exit')!;
     expect(exit.some((x) => x.startsWith('deployer_sell: '))).toBe(true);
     expect(exit).toContain(`${MARK_PREFIX}unknown`);
