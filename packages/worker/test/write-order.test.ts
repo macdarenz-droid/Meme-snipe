@@ -504,18 +504,18 @@ describe('ACCOUNT-RATE: restarts, missed fills and stale prices', () => {
     await m.run(2_000, 400, tick(m));
     const seq = h.worker.health().journal_seq;
     m.omit = new Set();
-    const at = m.now;
     await m.run(6_000, 400, tick(m));
     const after = lines(h.stateDir).filter((l) => l.seq > seq && l.kind === 'decision');
     const reasons = (l: JournalLine) => ((l.reasons ?? []) as string[]).join(' | ');
-    // On the price's own event: refused for the unvalued close, never approved.
-    const sameEvent = after.filter((l) => Date.parse(l.ts) === at);
-    expect(sameEvent.some((l) => reasons(l).includes('account unvalued'))).toBe(true);
-    expect(sameEvent.some((l) => l['action'] === 'approve_risk')).toBe(false);
+    // The first candidate judged once the price is back (on the price's own event): refused for the unvalued close,
+    // never approved; nothing approved before it.
+    const first = after.find((l) => l['action'] !== undefined)!;
+    expect(reasons(first)).toContain('account unvalued');
+    expect(after.slice(0, after.indexOf(first)).some((l) => l['action'] === 'approve_risk')).toBe(false);
     expect(trade().netPnl).not.toBeNull();
     // Once the valued snapshot is out, the next candidate is judged by risk with the loss in it (here R11 then refuses a
     // second entry in the mint the same day): no longer held back as unvalued.
-    const next = after.find((l) => Date.parse(l.ts) > at && l['action'] !== undefined)!;
+    const next = after.find((l) => l.seq > first.seq && l['action'] !== undefined)!;
     expect(reasons(next)).not.toContain('account unvalued');
     expect(next['action'] === 'approve_risk' || reasons(next).includes('risk ')).toBe(true);
     await h.worker.stop();

@@ -234,7 +234,7 @@ describe('M5: paper dollar results use the backtest report rule (each cash flow 
     expect(t.netLamports).toBe(4_000_000n);
     expect(t.netPnl).toBe(-80_000n);
 
-    const inputs = { book: book(true), legs: legs(true), attempts: legs(true).attempts, trades: account.state.trades, symbol: () => 'M', strategyVersion: 's', policyVersion: 'p', solPrice: px(80) } as unknown as ApiInputs;
+    const inputs = { book: book(true), legs: legs(true), attempts: legs(true).attempts, trades: account.state.trades, symbol: () => 'M', strategyVersion: 's', policyVersion: 'p', accountCosts: [], solPrice: px(80) } as unknown as ApiInputs;
     const [r] = views.trades(inputs) as { netUsd: string; netSol: string; tradingUsd: string; solMoveUsd: string }[];
     expect(r).toMatchObject({ netUsd: '-0.08', netSol: '0.004000000', tradingUsd: '0.32', solMoveUsd: '-0.4' });
     expect(views.stats(inputs)).toMatchObject({ netUsd: '-0.08', netSol: '0.004000000', solMoveUsd: '-0.4' });
@@ -251,7 +251,7 @@ describe('M5: paper dollar results use the backtest report rule (each cash flow 
       const base = { positionId: 'p1', mint: 'M', reasons: ['notional 2000000'] };
       account.filled({ ...base, purpose: 'entry', book: book(false), atMs: T + 1_000 }, px(100), { ...legs(false), network: rented, closedAccount: () => closes });
       account.filled({ ...base, purpose: 'exit', book: book(true), atMs: T + 2_000 }, pxOut, l);
-      const inputs = { book: book(true), legs: l, attempts: l.attempts, trades: account.state.trades, symbol: () => 'M', strategyVersion: 's', policyVersion: 'p', solPrice: pxOut } as unknown as ApiInputs;
+      const inputs = { book: book(true), legs: l, attempts: l.attempts, trades: account.state.trades, symbol: () => 'M', strategyVersion: 's', policyVersion: 'p', accountCosts: [], solPrice: pxOut } as unknown as ApiInputs;
       const [r] = views.trades(inputs) as { costs: { rentPaidUsd: string; rentReturnedUsd: string; totalUsd: string } }[];
       const kept = (views.charts(inputs) as { costsByKind: { kind: string; amountUsd: string }[] }).costsByKind.find((k) => k.kind === 'rentKeptUsd')!.amountUsd;
       return { ...r!.costs, kept, netLamports: account.state.trades[0]!.netLamports };
@@ -322,6 +322,39 @@ describe('M4: fees of an entry that never filled are an account cost, booked onc
       market: { solPrice: { value: PRICE, atMs: T }, solBalance: fact.solBalance, regime: 'unknown' },
     })!;
     expect(s.dayLoss).toBeGreaterThanOrEqual((bankroll * BigInt(TRIAL_POLICY.loss.dailyBps)) / 10_000n);
+    ledger.close();
+  });
+
+  it('the app\'s totals count them through costs() (APP-MONEY): setup and one failed entry, no trades', () => {
+    const dir = tempState();
+    const ledger = openLedger(join(dir, 'ledger.sqlite'), 'paper');
+    const account = new PaperAccount(accountFile(dir), 20_000_000n as MicroUsd, T - DAY, 2_000_000n);
+    account.price(PRICE, T - 3_600_000);
+    const a = [failedAttempt('s1', T - 60_000, 50_000n)];
+    account.settle(bookOf(a, 'reconciled'), legsOf(a), PRICE, T);
+    account.settle(bookOf(a), legsOf(a), PRICE, T);
+    const fee = attemptFee(net, 50_000n, 'failed');
+    const setup = account.state.setup!;
+    const strayUsd = lamportsToMicroUsd(fee as Lamports, PRICE, 'ceil');
+    // One list: what risk reads is what the app totals, each with its lamports. The fee is dated when booked (T), a
+    // minute after its send (ACCOUNT-RATE F3).
+    const empty = emptyBook({ maxOpenPositions: 5 });
+    expect(account.costs(empty, noLegs, PRICE, T)).toEqual([{ atMs: setup.atMs, amount: setup.cost, kind: 'wallet_setup' }, { atMs: T, amount: strayUsd, kind: 'failed_entry' }]);
+    expect(account.fact(ledger, empty, NO_LATCHES, PRICE, T, noLegs).history.costs).toEqual(account.costs(empty, noLegs, PRICE, T));
+    expect(account.costRecords(empty, noLegs, PRICE, T).map((c) => c.lamports)).toEqual([2_000_000n, fee]);
+    const h = makeWorker();
+    const base = h.worker.apiInputs();
+    void h.worker.stop();
+    const i = { ...base, nowMs: T, trades: [], accountCosts: account.costRecords(empty, noLegs, PRICE, T) } as ApiInputs;
+    const stats = views.stats(i) as { trades: number; netUsd: string; netSol: string };
+    const total = setup.cost + strayUsd;
+    expect(stats).toMatchObject({ trades: 0, netUsd: `-${total / 1_000_000n}.${String(total % 1_000_000n).padStart(6, '0').replace(/0+$/, '')}` });
+    // In SOL, the setup's and the failed entry's lamports.
+    expect(stats.netSol.startsWith('-')).toBe(true);
+    const lam = 2_000_000n + fee;
+    expect(stats.netSol).toBe(`-${lam / 1_000_000_000n}.${String(lam % 1_000_000_000n).padStart(9, '0')}`);
+    const kinds = (views.charts(i) as { costsByKind: { kind: string; amountUsd: string }[] }).costsByKind.map((c) => c.kind).sort();
+    expect(kinds).toEqual(['networkFeeUsd', 'rentKeptUsd']);
     ledger.close();
   });
 

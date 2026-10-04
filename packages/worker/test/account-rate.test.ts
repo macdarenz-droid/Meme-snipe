@@ -9,8 +9,11 @@ import type { Book } from '../../core/src/lifecycle/index.ts';
 import { NO_LATCHES, evaluateEntry, melbourneDay, riskSnapshot } from '../../core/src/risk/index.ts';
 import { type Lamports, type MicroUsd, lamportsToMicroUsd } from '../../core/src/units/index.ts';
 import { PaperAccount, type PaperLegs, accountFile } from '../src/run/account.ts';
+
+const formatSolOf = (lamports: bigint): string => { const neg = lamports < 0n; const v = neg ? -lamports : lamports; return `${neg ? '-' : ''}${v / 1_000_000_000n}.${String(v % 1_000_000_000n).padStart(9, '0')}`; };
 import type { PaperAttempt } from '../src/run/paper-world.ts';
-import { tempState } from './worker-harness.ts';
+import { makeWorker, tempState } from './worker-harness.ts';
+import { type ApiInputs, views } from '../src/run/api.ts';
 
 const HOUR = 3_600_000;
 const T = Date.UTC(2026, 9, 6, 4);
@@ -218,6 +221,38 @@ describe('ACCOUNT-RATE F1: an open trade\'s costs outside its basis', () => {
     const ledger = openLedger(join(dir, 'ledger.sqlite'), 'paper');
     expect(a.fact(ledger, late, NO_LATCHES, usd(100), T, openLegs).history.costs.filter((c) => c.kind === 'open_trade')).toEqual([]);
     ledger.close();
+  });
+
+  it('the app: an open trade\'s failed sells are network fees and its kept rent is rent, in dollars and SOL; after the close only the trade\'s own costs show them', () => {
+    const dir = tempState();
+    const a = new PaperAccount(accountFile(dir), usd(20), T - 30 * HOUR, 0n);
+    a.price(usd(100), T - 25 * HOUR);
+    a.filled({ ...base, purpose: 'entry', book: openBook, atMs: T - 20 * HOUR }, usd(100), openLegs);
+    a.settle(openBook, openLegs, usd(100), T - 2 * HOUR);
+    const h = makeWorker();
+    const apiBase = h.worker.apiInputs();
+    void h.worker.stop();
+    const inputs = (b: Book, l: PaperLegs) => ({ ...apiBase, nowMs: T, solPrice: usd(100), book: b, legs: l, attempts: l.attempts, trades: a.state.trades, accountCosts: a.costRecords(b, l, usd(100), T) }) as unknown as ApiInputs;
+    const kind = (i: ApiInputs, k: string) => (views.charts(i) as { costsByKind: { kind: string; amountUsd: string }[] }).costsByKind.find((x) => x.kind === k)?.amountUsd ?? '0';
+    const usdText = (v: bigint) => (Number(v) / 1_000_000).toString();
+    const each = realNet.signaturesPerTx * realNet.baseFeePerSignature + 500_000n;
+    const fees = 3n * lamportsToMicroUsd(each as Lamports, usd(100), 'ceil');
+    const rent = lamportsToMicroUsd(realNet.tokenAccountRent as Lamports, usd(100), 'ceil');
+    const open = inputs(openBook, openLegs);
+    expect(open.accountCosts.filter((c) => c.kind === 'open_trade').map((c) => c.part).sort()).toEqual(['fee', 'fee', 'fee', 'rent']);
+    expect(kind(open, 'networkFeeUsd')).toBe(usdText(fees));
+    expect(kind(open, 'rentKeptUsd')).toBe(usdText(rent));
+    // In SOL: their lamports are in the account's net (no trade closed yet).
+    expect((views.stats(open) as { netSol: string }).netSol).toBe(formatSolOf(-(3n * each + realNet.tokenAccountRent)));
+    // Closed: no open-trade record any more, and the costs chart is the trade's own costs, once.
+    const closedBook = { ...openBook, positions: { p1: { ...(openBook.positions as Record<string, object>)['p1'], status: 'closed', quantity: 0n, sold: 1_000_000n } }, intents: { ...openBook.intents, out2: { intent: { id: 'out2', purpose: 'exit', positionId: 'p1', mint: 'M' }, fills: [fill('out2', 'x1', 24_000_000n)], attempts: [{ signature: 'x1' }] } } } as unknown as Book;
+    const closedLegs: PaperLegs = { ...openLegs, attempts: new Map([...openLegs.attempts, ['x1', attempt('out2', 'x1', 'exit', 24_000_000n)]]) };
+    a.filled({ ...base, purpose: 'exit', book: closedBook, atMs: T - HOUR }, usd(100), closedLegs);
+    const closed = inputs(closedBook, closedLegs);
+    expect(closed.accountCosts.filter((c) => c.kind === 'open_trade')).toEqual([]);
+    const [row] = views.trades(closed) as { costs: { totalUsd: string } }[];
+    const chartTotal = (views.charts(closed) as { costsByKind: { amountUsd: string }[] }).costsByKind.reduce((x, c) => x + Math.round(Number(c.amountUsd) * 1_000_000), 0);
+    expect(chartTotal).toBe(Math.round(Number(row!.costs.totalUsd) * 1_000_000));
   });
 
   it('a closed trade\'s costs (a failed exit, rent kept) are in its net, not counted again as open-trade costs', () => {

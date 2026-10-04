@@ -172,6 +172,9 @@ const pnlUsd = (l: bigint, price: MicroUsd | null, whole: MicroUsd): MicroUsd =>
 const STOPS = new Set(['stop', 'trailing_stop', 'thesis_lost', 'liquidity']);
 const EXIT_REASONS = new Set(['stop', 'trailing_stop', 'take_profit', 'max_hold', 'thesis_lost', 'liquidity', 'emergency']);
 
+/** An account cost with its lamports; an open trade's cost also says which part it is (ACCOUNT-RATE, for the app). */
+export type CostRecord = AccountCost & { readonly lamports: bigint; readonly part?: 'fee' | 'rent' };
+
 export class PaperAccount {
   readonly #file: StateFile<AccountState>;
   readonly #s: AccountState;
@@ -488,17 +491,18 @@ export class PaperAccount {
    * yet returned, dated at the entry. They have left the paper wallet, so risk's equity and the day's and week's loss
    * count them as costs now; when the trade closes they are in its net P&L instead. A late buy's position is no paper
    * trade, and an entry that ended unfilled is a stray cost (`settle`): neither is counted here. Valued at the SOL price
-   * now (the trade's open price when none is known), rounded up.
+   * now (the trade's open price when none is known), rounded up; with their lamports and which part they are (a fee or
+   * rent) for the app's cost kinds.
    */
-  #openTradeCosts(book: Book, legs: PaperLegs, solPrice: MicroUsd | null, nowMs: number): AccountCost[] {
-    const out: AccountCost[] = [];
+  #openTradeCosts(book: Book, legs: PaperLegs, solPrice: MicroUsd | null, nowMs: number): CostRecord[] {
+    const out: CostRecord[] = [];
     for (const p of Object.values(book.positions)) {
       if (p.status === 'closed' || lateFillOf(p.id) !== null) continue;
       const t = this.#s.trades.find((x) => x.positionId === p.id);
       const px = solPrice ?? t?.openSolPrice ?? null;
       if (px === null) continue;
-      const cost = (lamports: bigint, atMs: number) => {
-        if (lamports > 0n) out.push({ atMs: Math.min(atMs, nowMs), amount: lamportsToMicroUsd(lamports as Lamports, px, 'ceil'), kind: 'open_trade' });
+      const cost = (lamports: bigint, atMs: number, part: 'fee' | 'rent') => {
+        if (lamports > 0n) out.push({ atMs: Math.min(atMs, nowMs), amount: lamportsToMicroUsd(lamports as Lamports, px, 'ceil'), lamports, kind: 'open_trade', part });
       };
       for (const i of Object.values(book.intents)) {
         // An entry's failed fees are in the open position's basis once it holds tokens (with RISK-PARTIAL's parts): here
@@ -512,14 +516,36 @@ export class PaperAccount {
           const f = feeParts(legs.network, a.priorityFee, a.outcome);
           // Dated when the account first saw it (never before its send), so a fee sent before midnight and found after
           // counts in the day it was found; not yet noted by `settle`: now.
-          cost(f.base + f.priority + f.tip, this.#s.openFeesSeen?.[att.signature] ?? Math.max(a.sentAtMs ?? t?.openedAtMs ?? nowMs, nowMs));
+          cost(f.base + f.priority + f.tip, this.#s.openFeesSeen?.[att.signature] ?? Math.max(a.sentAtMs ?? t?.openedAtMs ?? nowMs, nowMs), 'fee');
         }
       }
       if (t === undefined) continue;
       const l = paperTradeLamports(book, p.id, legs);
-      if (l !== null) cost(l.rentPaid - l.rentReturned, t.openedAtMs);
+      if (l !== null) cost(l.rentPaid - l.rentReturned, t.openedAtMs, 'rent');
     }
     return out;
+  }
+
+  /**
+   * The account's costs that are no trade's (RISK-1b `costs`), dated and in micro-dollars: the one list risk reads (in
+   * `fact`) and the app's money totals add to the trades (APP-MONEY). The wallet's setup rent is one: it lowers equity and
+   * counts toward the day's and week's loss, and it is never a trade (R8, R11, R15 and trade statistics do not see it).
+   * An open trade's costs outside its basis are others (ACCOUNT-RATE), until it closes.
+   */
+  costs(book: Book, legs: PaperLegs, solPrice: MicroUsd | null, nowMs: number): AccountCost[] {
+    return this.costRecords(book, legs, solPrice, nowMs).map(({ atMs, amount, kind }) => ({ atMs, amount, kind }));
+  }
+
+  /** The same costs with their lamports (and an open trade's part, a fee or rent), for the app's SOL totals (APP-MONEY). */
+  costRecords(book: Book, legs: PaperLegs, solPrice: MicroUsd | null, nowMs: number): CostRecord[] {
+    const su = this.#s.setup;
+    const costs: CostRecord[] = su === undefined ? [] : [{ atMs: su.atMs, amount: su.cost, lamports: su.lamports, kind: 'wallet_setup' }];
+    // Fees of entries that never filled (PAPER-1): account costs too, never trades.
+    const sf = this.#s.strayFolded;
+    if (sf !== undefined) costs.push({ atMs: sf.atMs, amount: sf.cost, lamports: sf.lamports, kind: 'failed_entry' });
+    for (const r of Object.values(this.#s.strayFees ?? {})) costs.push({ atMs: r.atMs, amount: r.cost, lamports: r.lamports, kind: 'failed_entry' });
+    costs.push(...this.#openTradeCosts(book, legs, solPrice, nowMs));
+    return costs;
   }
 
   /** The account snapshot risk reads, with the ledger's held reservations and version read in one transaction. */
@@ -529,15 +555,7 @@ export class PaperAccount {
       mint: t.mint as Mint, openedAtMs: t.openedAtMs, closedAtMs: t.closedAtMs!, notional: t.notional, netPnl: t.netPnl!, stoppedOut: t.stoppedOut,
       partials: (t.partials ?? []).map((x) => ({ atMs: x.atMs, pnl: x.pnl })),
     }));
-    // The wallet's setup rent is an account cost (RISK-1b `costs`): it lowers equity and counts toward the day's and
-    // week's loss, and it is never a trade (R8, R11, R15 and statistics do not see it).
-    const su = this.#s.setup;
-    const costs: AccountCost[] = su === undefined ? [] : [{ atMs: su.atMs, amount: su.cost, kind: 'wallet_setup' }];
-    // Fees of entries that never filled (PAPER-1): account costs too, never trades.
-    const sf = this.#s.strayFolded;
-    if (sf !== undefined) costs.push({ atMs: sf.atMs, amount: sf.cost, kind: 'failed_entry' });
-    for (const r of Object.values(this.#s.strayFees ?? {})) costs.push({ atMs: r.atMs, amount: r.cost, kind: 'failed_entry' });
-    costs.push(...this.#openTradeCosts(book, legs, solPrice, nowMs));
+    const costs = this.costs(book, legs, solPrice, nowMs);
     const openPositions = Object.values(book.positions).filter((p) => p.status !== 'closed' && p.status !== 'opening').map((p) => {
       const t = this.#s.trades.find((x) => x.positionId === p.id);
       // The basis (entry SOL and every entry attempt's fees, failed ones included: the same basis RISK-PARTIAL's parts
