@@ -131,6 +131,8 @@ export interface Health {
   readonly stub?: true;
   /** WORKER-1e: S0's diagnostic set (its parts) when the shakedown runs with it; absent otherwise. */
   readonly s0_diagnostic?: readonly string[];
+  /** PRACTICE-ON: what decides entries (`ZEROED_STRATEGY`: none, S0 or a registered strategy), as the start line's `entry_rule`. */
+  readonly entry_rule?: string;
 }
 
 export type JournalKind =
