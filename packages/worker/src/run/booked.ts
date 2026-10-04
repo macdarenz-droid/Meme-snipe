@@ -3,7 +3,8 @@
 // reconcile lines only (nothing new is saved); a booking the journal cannot place with certainty stays exact, with why.
 // The journal of a long run is large: it is streamed in chunks, every line is checked to be a whole record, and only
 // start and reconcile lines are parsed (EXIT-1g N7).
-import { closeSync, existsSync, openSync, readSync } from 'node:fs';
+import { existsSync } from 'node:fs';
+import { fileLines } from '../../../runner/src/lines.ts';
 
 export type BookedWhen = 'live' | 'reconcile' | `unplaced: ${string}`;
 
@@ -11,24 +12,7 @@ interface Line { readonly kind?: unknown; readonly boot?: unknown; readonly ts?:
 interface Boot { start: number; reconcile: number | null }
 
 /** The journal's lines, read in chunks of `chunkBytes` (never the whole file at once). */
-export function* journalLines(path: string, chunkBytes = 1 << 20): Generator<string> {
-  const fd = openSync(path, 'r');
-  try {
-    const buf = Buffer.alloc(chunkBytes);
-    let rest = '';
-    for (;;) {
-      const n = readSync(fd, buf, 0, chunkBytes, null);
-      if (n === 0) break;
-      const text = rest + buf.toString('utf8', 0, n);
-      const lines = text.split('\n');
-      rest = lines.pop()!;
-      yield* lines;
-    }
-    if (rest !== '') yield rest;
-  } finally {
-    closeSync(fd);
-  }
-}
+export const journalLines = (path: string, chunkBytes = 1 << 20): Generator<string> => fileLines(path, chunkBytes);
 
 // The journal writes JSON.stringify output, so a start or reconcile line holds this exact text, and a string value
 // cannot (its quotes are escaped).
