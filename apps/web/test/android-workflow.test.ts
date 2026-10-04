@@ -65,6 +65,13 @@ describe('android-preview workflow', () => {
     expect(run([runs({ name: 'check', status: 'completed', conclusion: 'failure', started_at: '2026-10-04T01:00:00Z', app: gha }, { name: 'check', status: 'completed', conclusion: 'success', started_at: '2026-10-04T02:00:00Z', app: gha })]).status).toBe(0);
   });
 
+  it('checks the Gradle distribution against its published SHA-256 before running it (SEC-1)', () => {
+    const props = readFileSync(fileURLToPath(new URL('../android/gradle/wrapper/gradle-wrapper.properties', import.meta.url)), 'utf8');
+    // gradle-8.14.3-all.zip, from services.gradle.org's .sha256 file and gradle.org/release-checksums.
+    expect(props).toContain('distributionUrl=https\\://services.gradle.org/distributions/gradle-8.14.3-all.zip');
+    expect(props.split('\n')).toContain('distributionSha256Sum=ed1a8d686605fd7c23bdf62c7fc7add1c5b23b2bbc3721e661934ef4a4911d7c');
+  });
+
   it('commits no keystore', () => {
     expect(readFileSync(fileURLToPath(new URL('../../../.gitignore', import.meta.url)), 'utf8')).toMatch(/\*\.keystore/);
   });
@@ -86,6 +93,9 @@ describe('android-preview workflow', () => {
     const check = releaseJob.indexOf('run: bash .github/scripts/verify-preview-cert.sh zeroed-preview.apk');
     expect(check).toBeGreaterThan(0);
     expect(check).toBeLessThan(releaseJob.indexOf('run: bash .github/scripts/publish-preview.sh'));
+    // CI's check first, then the certificate, then publish.
+    expect(releaseJob.indexOf('run: bash .github/scripts/require-check.sh')).toBeGreaterThan(0);
+    expect(releaseJob.indexOf('run: bash .github/scripts/require-check.sh')).toBeLessThan(check);
     expect(releaseJob).toContain('CERT_SHA256: ${{ vars.PREVIEW_CERT_SHA256 }}');
     const gradle = readFileSync(fileURLToPath(new URL('../android/app/build.gradle', import.meta.url)), 'utf8');
     expect(gradle).toContain("System.getenv('ZEROED_KEYSTORE_PASSWORD') ?: 'android'");
