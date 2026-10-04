@@ -309,4 +309,83 @@ export class RugLabeller {
     };
     return [{ kind: 'market', id: `${RUG_PREFIX}${l.mint}`, moment: e.moment, key: `${RUG_PREFIX}${l.mint}`, value }];
   }
+
+  /** PERSIST-1: the labeller's tables, for a restart without a re-read of every tracked launch's trades. */
+  snapshot(): RugLabellerState {
+    const byKey = <T>(xs: T[], k: (x: T) => string) => xs.sort((a, b) => (k(a) < k(b) ? -1 : k(a) > k(b) ? 1 : 0));
+    return {
+      version: this.#config.version,
+      // Arrival order is kept: the drop of old launches walks the table from the oldest.
+      launches: [...this.#launches.values()].map((l) => ({
+        mint: l.mint, creator: l.creator, sellers: [...l.sellers].sort(), createdAtMs: l.createdAtMs, pool: l.pool, supply: l.supply,
+        sold: l.sold, sales: [...l.sales].sort(), peak: l.peak, peakState: l.peakState,
+      })),
+      pools: byKey([...this.#pools], ([p]) => p),
+      labelled: [...this.#labelled].sort(),
+      unjudged: byKey([...this.#unjudged], ([m]) => m),
+    };
+  }
+
+  /**
+   * PERSIST-1: a labeller restored from `snapshot`. A state written under another rug config version is refused (its
+   * running sums were judged by other rules), as is a malformed one; the caller then discards the file.
+   */
+  static restore(config: RugConfig, s: RugLabellerState, asOf?: { readonly receivedAt: number }): RugLabeller {
+    if (s.version !== config.version) throw new RangeError(`saved labeller state is ${String(s.version)}, the config is ${config.version}`);
+    const r = new RugLabeller(config);
+    const nat = (v: unknown, what: string): bigint => {
+      if (typeof v !== 'bigint' || v < 0n) throw new RangeError(`bad ${what}`);
+      return v;
+    };
+    // The venue state at the peak (RUG-1c): it prices a later collapse's materiality, so it comes back exactly or not at all.
+    const venueState = (v: unknown): VenueState | null => {
+      if (v === null) return null;
+      if (!isObj(v) || (v['venue'] !== 'curve' && v['venue'] !== 'pool')) throw new RangeError('bad peak state');
+      return { venue: v['venue'] as Venue, quote: nat(v['quote'], 'peak quote'), base: nat(v['base'], 'peak base'), feeBps: nat(v['feeBps'], 'peak fee'), real: nat(v['real'], 'peak real') };
+    };
+    const strs = (v: unknown, what: string): string[] => {
+      if (!Array.isArray(v) || !v.every((x) => typeof x === 'string')) throw new RangeError(`bad ${what}`);
+      return v as string[];
+    };
+    if (!Array.isArray(s.launches)) throw new RangeError('bad launches');
+    for (const l of s.launches as unknown[]) {
+      if (!isObj(l) || typeof l['mint'] !== 'string' || typeof l['creator'] !== 'string' || !Number.isSafeInteger(l['createdAtMs'])) throw new RangeError('bad launch');
+      if (l['pool'] !== null && typeof l['pool'] !== 'string') throw new RangeError('bad launch pool');
+      // peakState is always written (null included): a missing key is a malformed file. A venue state is set only when
+      // a level beats the peak, so it never comes with a zero peak; a peak with a null state is real (a trade without
+      // virtual or base reserves) and is kept.
+      if (!('peakState' in l)) throw new RangeError(`launch ${l['mint']} has no peakState`);
+      if (l['peakState'] !== null && l['peak'] === 0n) throw new RangeError(`launch ${l['mint']} has a peak state without a peak`);
+      if (asOf !== undefined && (l['createdAtMs'] as number) > asOf.receivedAt) throw new RangeError(`launch ${l['mint']} is created after the saved moment`);
+      r.#launches.set(l['mint'], {
+        mint: l['mint'], creator: l['creator'], sellers: new Set(strs(l['sellers'], 'sellers')), createdAtMs: l['createdAtMs'] as number,
+        pool: l['pool'] as string | null, supply: l['supply'] === null ? null : nat(l['supply'], 'supply'), sold: nat(l['sold'], 'sold'),
+        sales: new Set(strs(l['sales'], 'sales')), peak: nat(l['peak'], 'peak'), peakState: venueState(l['peakState']),
+      });
+    }
+    if (!Array.isArray(s.pools) || !Array.isArray(s.unjudged)) throw new RangeError('bad tables');
+    for (const p of s.pools as unknown[]) {
+      if (!Array.isArray(p) || typeof p[0] !== 'string' || typeof p[1] !== 'string') throw new RangeError('bad pool row');
+      r.#pools.set(p[0], p[1]);
+    }
+    for (const m of strs(s.labelled, 'labelled')) r.#labelled.add(m);
+    for (const u of s.unjudged as unknown[]) {
+      if (!Array.isArray(u) || typeof u[0] !== 'string' || typeof u[1] !== 'string') throw new RangeError('bad unjudged row');
+      r.#unjudged.set(u[0], u[1]);
+    }
+    return r;
+  }
+}
+
+/** The labeller's saved tables (PERSIST-1): public chain data and our own labels only. */
+export interface RugLabellerState {
+  readonly version: string;
+  readonly launches: readonly {
+    readonly mint: string; readonly creator: string; readonly sellers: readonly string[]; readonly createdAtMs: number;
+    readonly pool: string | null; readonly supply: bigint | null; readonly sold: bigint; readonly sales: readonly string[]; readonly peak: bigint;
+    readonly peakState: VenueState | null;
+  }[];
+  readonly pools: readonly (readonly [string, string])[];
+  readonly labelled: readonly string[];
+  readonly unjudged: readonly (readonly [string, string])[];
 }
