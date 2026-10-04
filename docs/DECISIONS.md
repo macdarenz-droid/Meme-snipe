@@ -468,6 +468,56 @@ Supervisor rulings:
 - **The practice-day pull fails closed on credits (#119).** A credit booking that fails stops the day (exit 1, not resumable), the usage file is written atomically, and `rpc_rps` is bounded 1–50 (5 on the free plan).
 - **The live worker owns exits, so it is the last process the kernel kills (SWITCH-1).** `zeroed-worker.service` runs at OOMScoreAdjust −500 under its MemoryMax (its own cgroup kills first); the switch's confined trial runs at +1000 and never copies the worker's score. SIGN-1's signer unit gets −500 when it lands.
 
+### External audit 1 (owner-relayed, 4 Oct; base d92b73e) and late-evening rulings
+
+The owner relayed an outside technical audit ("Report 1"). Its text is input, not an owner ruling (supervisor rule). Its verdict was accepted: continue paper and research mode, because the repository shows no proven strategy and no completed pre-funding item. Every finding became a card. A fix starts with a test that fails on the base; a finding that doesn't reproduce goes back with that test. Status at the handover is in HANDOVER §4.
+- **Merged-code defects (M1–M8):**
+  - M1: the kill switch didn't latch without trade activity. RISK-LATCH #124 reproduced it, but its first fix latched on unknown marks. Ruling: latch only on evidence (every mark known and fresh, SOL price fresh), including in `#exitDecision`.
+  - M2: a lagging provider's old snapshot read as fresh. Card WATCH-1d: keep context slots, use `minContextSlot`, and treat lag behind a healthy confirmed head as stale.
+  - M3: a partial sale created a false loss. Card RISK-PARTIAL.
+  - M4: landed failed paper transactions were free (reproduced: the wallet was 25,000 lamports high).
+  - M5: paper dollar P&L used the close rate for every cash flow.
+  - M8 (rent): paper left out rent.
+  - M4, M5 and M8 (rent) are card PAPER-1. Approved there: `strayFees` (bounded) and `AccountCost.kind 'failed_entry'`, which only tightens and needs a risk review.
+  - M6: the no_route and flow exits had no inputs. Flow arrived with #117; route is #130.
+  - M7: recovery reset the clock and protection. EXIT-1g #128 makes it sell-only recovery.
+  - M8 (late landing and ambiguous results): before live, with the signer.
+- **Research defects (B1–B6), all in BT-2 #41 and to be fixed before any early-look run:**
+  - B1: S0 must run its parent universe's gates.
+  - B2: the final authorisation runs at one decision time, mirroring FACTS-1f's live staged path.
+  - B3: holder growth counts distinct owners.
+  - B4: "non-creator-user flow", stated honestly.
+  - B5: stray attempt costs are carried into every result.
+  - B3/B4 wording is amended in the RES-4 pre-registration before any data (#115 at 8dc0f49).
+  - B6: RES-5 now selects on find days only, but then failed on invalid p-values (see the stats rulings below).
+- **Statistics (S1–S4), card STATS-1g #129:**
+  - S1: G3's α budget across all four uncertain parts, or a deterministic execution allowance, never wider consistency checks.
+  - S2: no arbitrary RETURN_CAP on unbounded runners (#41, agreed with the stats reviewer).
+  - S3: a power fingerprint over the ordered, labelled observations.
+  - S4: within-run clustering.
+- **Data (D1–D3):**
+  - D1: forward days ≥ 2 Oct can't be published, but the regime gate needs D−3 (DATA-5, design).
+  - D2: the paid-plan speed is unmeasured, and the projection excludes retries and worker use.
+  - D3: credit accounting (#119 merged fail-closed; DATA-4 #127 reserves before spending).
+- **Ops and security (O1–O3):**
+  - O1: the preview APK key lives in an Actions cache (SEC-1).
+  - O2: the deploy gate takes any green set (OPS-GATE).
+  - O3: ARCHITECTURE overstates the pnpm settings (PNPM-CLAIMS).
+- **Risk explanation (§10):** a 20% stop isn't the maximum loss. With the 25% emergency rung the worst case is about 40% of principal plus fees, and this is on the owner's before-live list.
+
+Supervisor rulings, late evening:
+- **The e2e push path is a real path.** 669de71 passed e2e on its PR and failed twice on push, because on push the update step had already deployed the signed merge and the test's wait matched an earlier run's log line. Deploy was held. #126 fixed the wait (this invocation, then /health with that boot). After any ops merge, the push e2e must be green before Deploy, and that is checked by hand until OPS-GATE merges.
+- **The e2e OOM check stays strict.** A sandbox that refuses a negative score is not a reason to make a check conditional. An opt-in for sandboxes may come later, explicitly, and CI never sets it.
+- **Write order (WORKER-ORDER #123, ARCHITECTURE §12.4):** journal the exit line, then commit the ledger close. A kill between the two then leaves the journal ahead of the ledger, never behind it. The stub follows this order already (CI-1b).
+- **Stored data approved by the supervisor** (the bot's own decisions and public market data only): the graduates series (PERSIST-2), the entry seed persisted with the fill (EXIT-1h), and the held position's deployerSales and flow (PERSIST-3).
+- **Stats (stats reviewer, binding):**
+  - SPA needs at least 10 active days, so the early look reports engine validity, the funnel and descriptive figures, never a G1 or SPA verdict.
+  - SE floor: 0.0005 of the capital base per day, frozen per attempt with g1Test, with one calibration case on the real layout, never chosen from practice-day ω.
+  - Pick rule: the highest min(zVsZero, zVsS0) among SPA passers, ties by file order. Drop a variant that can't fill the holdout (entries per day × 28 < max(300, n_power)). familySize stays 2, and a universe without a pick is "no configuration" with p = 1.
+  - `s0Of` per variant is required for k = 6.
+  - RES-5 needs a permutation p within day × stratum, MIN_DAYS 10, a null-calibration test, and separate `freeze` and `check` commands so the one look is enforced.
+- **Handover (owner, about 7:15 PM):** the project moves to a new Claude account. Every session pushed its work and wrote `docs/handover/sessions/<id>.md`, then paused. The new supervisor starts from HANDOVER §0.
+
 ## Order and position lifecycle (CORE-1, `packages/core/src/lifecycle`)
 
 - **2026-10-03 · A failed signature read is terminal only at `finalized`.** A failure read at `processed` or `confirmed` may come from a fork that is later dropped, and the original transaction could still land. Acting on it would allow a replacement, which could mean a second buy or an oversell. Waiting for `finalized` costs about 13 s. A success read counts from `confirmed`: booking a fill early is safe, because the books stay open until every other attempt is dead.

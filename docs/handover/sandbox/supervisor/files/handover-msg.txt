@@ -1,0 +1,25 @@
+Supervisor, HANDOVER ORDER from the owner (all sessions, now). The owner is moving the project to a new Claude account. Everything you know and everything you've built must be in the repo, so that nothing has to be redone. Do this now and stop all other work.
+
+1. CODE. Commit and push everything on your own branch(es), unfinished work included.
+   - Mark unfinished commits "WIP: <what>, not reviewed" and say in your note what state they're in.
+   - Never push to the integration branch, and never force-push.
+   - Check that every PR you own is pushed at its latest head.
+   - Commit research data and results that aren't in the repo yet (scripts, tables, numbers, logs you rely on) next to your work. If something is too big (over about 20 MB), say where it lives (a release, an artifact, a run id) and how to regenerate it.
+2. NOTES. Write one file, `docs/handover/sessions/<your session id>.md`, on the shared branch `claude/handover-notes`:
+   - `git fetch origin`, then create the branch from origin/ccr-14987baf-i6lrsl if it doesn't exist yet, else check it out.
+   - Commit only your own file, then `git pull --rebase origin claude/handover-notes && git push origin claude/handover-notes`. Retry on a non-fast-forward. Never touch others' files.
+   - Use these sections, short but complete:
+     - Role, cards and the model you ran on.
+     - PRs and branches: number, branch, head SHA, state (merged, open, or WIP), and every review verdict with its SHA.
+     - What is done (summary, with file paths).
+     - Work in progress: the exact state, and what was left half-done.
+     - Next steps, in order, precise enough for a new session to continue without asking.
+     - Findings and research results: every number, with how it was measured and where the evidence is.
+     - Rulings and decisions you received or made.
+     - Open risks and known gaps.
+     - How to verify: commands and tests.
+     - Remaining-time estimate, with uncertainty.
+   - Reviewers also list, for every PR you reviewed: the last verdict SHA, every open finding (blocking or not), and what was in your review queue.
+3. NO secrets, keys, seed phrases, tailnet names or personal data anywhere. Treat the repo as public.
+4. When done, reply to me with "HANDOVER DONE", your notes commit SHA, and your branch and PR heads. Then STOP: start no new work, and stay idle. The owner is pausing all sessions.
+Deadline: as soon as possible, at most about 40 minutes.

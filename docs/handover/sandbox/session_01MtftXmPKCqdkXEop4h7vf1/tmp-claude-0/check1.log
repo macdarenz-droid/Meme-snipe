@@ -1,0 +1,28 @@
+
+> meme-snipe@ check /home/user/Meme-snipe
+> pnpm typecheck && pnpm test
+
+
+> meme-snipe@ typecheck /home/user/Meme-snipe
+> pnpm -r --if-present typecheck
+
+Scope: 6 of 7 workspace projects
+apps/web typecheck$ tsc -p tsconfig.json --noEmit
+packages/backtest typecheck$ tsc -p tsconfig.json --noEmit
+packages/core typecheck$ tsc -p tsconfig.json --noEmit
+packages/ops typecheck$ tsc -p tsconfig.json --noEmit
+packages/ops typecheck: Done
+packages/runner typecheck$ tsc -p tsconfig.json --noEmit
+packages/runner typecheck: Done
+packages/worker typecheck$ tsc -p tsconfig.json --noEmit
+apps/web typecheck: Done
+packages/backtest typecheck: test/pool-state.test.ts(101,89): error TS2339: Property 'quoteAmountOut' does not exist on type '(Fields<readonly [readonly ["timestamp", Codec<bigint>], readonly ["baseAmountIn", Codec<bigint>], readonly ["minQuoteAmountOut", Codec<bigint>], readonly ["userBaseTokenReserves", Codec<bigint>], ... 15 more ..., readonly [...]]> & OptionalFields<...>) | (Fields<...> & OptionalFields<...>)'.
+packages/backtest typecheck:   Property 'quoteAmountOut' does not exist on type 'Fields<readonly [readonly ["timestamp", Codec<bigint>], readonly ["baseAmountOut", Codec<bigint>], readonly ["maxQuoteAmountIn", Codec<bigint>], readonly ["userBaseTokenReserves", Codec<bigint>], ... 15 more ..., readonly [...]]> & OptionalFields<...>'.
+packages/backtest typecheck: Failed
+/home/user/Meme-snipe/packages/backtest:
+ ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL  @meme-snipe/backtest@0.1.0 typecheck: `tsc -p tsconfig.json --noEmit`
+Exit status 1
+ WARN   Local package.json exists, but node_modules missing, did you mean to install?
+ ELIFECYCLE  Command failed with exit code 1.
+ ELIFECYCLE  Command failed with exit code 1.
+EXIT 1

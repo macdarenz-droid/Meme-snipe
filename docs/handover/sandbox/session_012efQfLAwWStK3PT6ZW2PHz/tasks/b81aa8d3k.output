@@ -1,0 +1,13 @@
+ Test Files  102 passed (103)
+      Tests  3629 passed (3631)
+check=1
+ac8a1fa BT-1c: ARCHITECTURE names the remote registry branch
+PROBE base real exitPositions=147 blocked=0 exitAttempts=294 congested=90 failedExitAttempts=147 {"failed:landed failed (drawn)":90,"dropped:dropped":43,"failed:close failed":6,"failed:slippage":8,"BLK:exit ladder exhausted":6}
+PROBE base noeffect exitPositions=155 blocked=0 exitAttempts=259 congested=63 failedExitAttempts=104 {"failed:landed failed (drawn)":61,"failed:close failed":9,"dropped:dropped":31,"failed:slippage":3,"BLK:exit ladder exhausted":2}
+PROBE base always exitPositions=92 blocked=2 exitAttempts=290 congested=290 failedExitAttempts=200 {"failed:landed failed (drawn)":135,"dropped:dropped":51,"failed:close failed":3,"failed:slippage":11,"BLK:exit ladder exhausted":15}
+PROBE conservative real exitPositions=93 blocked=8 exitAttempts=334 congested=119 failedExitAttempts=249 {"failed:landed failed (drawn)":156,"dropped:dropped":35,"failed:close failed":5,"failed:slippage":52,"BLK:exit ladder exhausted":32,"dropped:provider":1}
+PROBE conservative noeffect exitPositions=110 blocked=5 exitAttempts=291 congested=101 failedExitAttempts=186 {"failed:landed failed (drawn)":103,"dropped:dropped":24,"failed:close failed":10,"failed:slippage":46,"BLK:exit ladder exhausted":20,"dropped:provider":3}
+PROBE conservative always exitPositions=47 blocked=21 exitAttempts=482 congested=482 failedExitAttempts=456 {"failed:landed failed (drawn)":304,"dropped:dropped":78,"failed:slippage":66,"dropped:provider":6,"BLK:exit ladder exhausted":84,"failed:close failed":2}
+07:43
+
+[exited with code 0]

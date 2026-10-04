@@ -1,0 +1,13 @@
+L1-kill-books-actual killed
+L2-ignore-outstanding killed
+L3-ignore-worker killed
+L4-no-locked-flag killed
+L5-lock-clobber killed
+L6-nonfinal-counts killed
+L7-day-ignore-outstanding killed
+L8-settle-no-lock killed
+L9-push-fail-ok SURVIVED
+L10-reserve-no-lock killed
+K1-ignore-scan-spend killed
+D1-no-start-marker killed
+K2-no-rescan-marker killed

@@ -1,0 +1,7 @@
+               total        used        free      shared  buff/cache   available
+Mem:              15          14           1           0           0           1
+17
+/dev/vda        252G   12G   27G  31% /
+236K	/tmp/zeroed-worker-kgxDnl
+
+[exited with code 144]

@@ -1,0 +1,5 @@
+33f29989 EXIT-1h: entry decision seeds are saved before the intent is booked, so a kill before the plan is made restores the real plan
+ Test Files  151 passed (151)
+      Tests  4515 passed (4515)
+
+[exited with code 0]

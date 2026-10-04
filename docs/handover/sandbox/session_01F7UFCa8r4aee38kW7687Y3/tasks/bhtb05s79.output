@@ -1,0 +1,25 @@
+/bin/bash: line 1: /tmp/claude-0/rl4/1.log: No such file or directory
+FAIL 1
+/bin/bash: line 1: /tmp/claude-0/rl4/2.log: No such file or directory
+FAIL 2
+/bin/bash: line 1: /tmp/claude-0/rl4/3.log: No such file or directory
+FAIL 3
+/bin/bash: line 1: /tmp/claude-0/rl4/4.log: No such file or directory
+FAIL 4
+FAIL 11
+FAIL 12
+FAIL 17
+FAIL 18
+FAIL 20
+FAIL 21
+FAIL 22
+FAIL 24
+FAIL 26
+FAIL 28
+FAIL 29
+FAIL 32
+FAIL 33
+FAIL 34
+END
+
+[exited with code 0]
