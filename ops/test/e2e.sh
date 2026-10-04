@@ -340,6 +340,10 @@ curl -s -m 2 -o /dev/null http://127.0.0.1:443/ && fail "port 443 is already in 
 (cd "$WD" && exec setsid "$ROOT/ops/watchdog/deploy/node_modules/.bin/wrangler" dev --local --ip 0.0.0.0 --port 443 --test-scheduled) >"$LOGS/wrangler-dev.log" 2>&1 &
 WD_PID=$!
 wait_for 120 "wrangler dev up" "curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:443/heartbeat | grep -q 401"
+# The local watchdog speaks plain http, which only the host's stand-in accepts (the release's worker requires an https
+# WATCHDOG_URL): the host sections run the stand-in, whatever the test release's host-config says. Section 10b2 runs
+# the release's own worker (SWITCH-1).
+in_c "jq '.worker = \"stub\"' /opt/zeroed/current/ops/host-config.json > /tmp/hc && cat /tmp/hc > /opt/zeroed/current/ops/host-config.json"
 in_c "printf 'WATCHDOG_URL=http://$GW:443\nZEROED_HEARTBEAT_MS=3000\n' > /etc/zeroed/worker.env && systemctl restart zeroed-worker"
 sched() { curl -s "http://127.0.0.1:443/__scheduled?cron=*+*+*+*+*" >/dev/null; }
 hook() { # chat text [secret]
@@ -521,9 +525,11 @@ pid0="$(in_c "systemctl show -p MainPID --value zeroed-worker")"
 in_c "/usr/local/lib/zeroed/worker-smoke '$rel'" >"$LOGS/smoke-good.txt" 2>&1 || { cat "$LOGS/smoke-good.txt"; fail "worker-smoke refused a release whose worker starts"; }
 [ "$(in_c "systemctl show -p MainPID --value zeroed-worker")" = "$pid0" ] || fail "the trial start touched the running worker"
 in_c "! ss -ltn | grep -q ':879[78] ' && ! pgrep -u zeroed-worker -f -- '$rel/packages/worker/src/main.ts'" || fail "the trial worker was left running"
-if [ "$rel" != "$orig" ]; then
-  in_c "ln -sfn '$rel' /opt/zeroed/current.new && mv -Tf /opt/zeroed/current.new /opt/zeroed/current && systemctl restart zeroed-worker"
-fi
+# The release's worker takes only an https watchdog address: the one the handoff delivered (unreachable from the test
+# server, so its heartbeats fail, which it logs and survives). Section 9b's plain-http address comes back at the end.
+wd0="$(in_c "sed -n 's/^WATCHDOG_URL=//p' /etc/zeroed/worker.env")"
+in_c "sed -i 's#^WATCHDOG_URL=.*#WATCHDOG_URL=https://zeroed-watchdog.e2e.workers.dev#' /etc/zeroed/worker.env"
+in_c "ln -sfn '$rel' /opt/zeroed/current.new && mv -Tf /opt/zeroed/current.new /opt/zeroed/current && systemctl restart zeroed-worker"
 wait_for 60 "the release's worker running" "docker exec $C systemctl is-active zeroed-worker"
 in_c "tr '\\0' ' ' < /proc/\$(systemctl show -p MainPID --value zeroed-worker)/cmdline" | has '^/usr/local/bin/node --no-warnings /opt/zeroed/current/packages/worker/src/main.ts $' || fail "zeroed-worker does not run the release's main.ts under the host's node"
 inv() { in_c "journalctl -o cat --no-pager _SYSTEMD_INVOCATION_ID=\$(systemctl show -p InvocationID --value zeroed-worker)"; }
@@ -590,6 +596,9 @@ git -C "$BARE" tag -f deploy "$signed" >/dev/null && git -C "$BARE" update-serve
 in_c "rm -rf '/opt/zeroed/releases/$signed2'"
 upd_run || fail "zeroed-update after the deploy tag came back"
 [ "$(current)" = "$rel" ] || fail "current moved after the deploy tag came back"
+# Back to the stand-in and the local watchdog for the sections that follow.
+in_c "sed -i 's#^WATCHDOG_URL=.*#WATCHDOG_URL=$wd0#' /etc/zeroed/worker.env && ln -sfn '$orig' /opt/zeroed/current.new && mv -Tf /opt/zeroed/current.new /opt/zeroed/current && systemctl restart zeroed-worker"
+wait_for 60 "the stand-in back" "docker exec $C journalctl -u zeroed-worker -o cat --no-pager -n 5 | grep -q 'Stub worker up'"
 pass "release's worker (SWITCH-1): zeroed-worker runs the release's main.ts under the host's Node 22 with no node_modules; --reconcile first (exit 0); start line and journal say paper with recorder, simulation and drills on; 3 keys read from systemd credentials and none in its output; health on 127.0.0.1:8787 and API on 127.0.0.1:8788, loopback only; without providers it runs degraded, entries halted, no restarts; a restart comes back reconciled; live is refused; zeroed-status names the worker; worker-smoke passes it beside the running worker and refuses a syntax error, a missing file and a refused config; zeroed-update keeps a green signed release whose worker cannot start off current, keeps the worker running and alerts once"
 
 # ---------- 10c. Telegram webhook: change alert, retry with back-off, notice after 5 failed tries ----------
