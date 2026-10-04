@@ -24,6 +24,7 @@ import { ASSUMPTIONS } from './budget.ts';
 import { join } from 'node:path';
 import { FactReaders, FactRpc } from './readers.ts';
 import { CHAIN_VOLUME_DIR, fileChainVolumeStore } from './volume-store.ts';
+import { DEPLOYER_CHECK_SPEND_FILE, DeployerChecks } from './deployer-checks.ts';
 import type { CandidateReason } from '../engine/strategy.ts';
 import type { FactContext, FactSource } from '../run/facts.ts';
 import type { TimerHandle } from '../scheduler/timers.ts';
@@ -261,6 +262,8 @@ export interface LiveFactsWiring {
    * the worker's state dir for verified days. Without it, live chain volume is unknown.
    */
   readonly github?: { readonly api: Scheduler; readonly downloads: Scheduler; readonly stateDir?: string };
+  /** The worker's state dir: the deployer checks keep their daily spend there across restarts. */
+  readonly stateDir?: string;
 }
 
 /** Mint-history page caps (trial values, configuration): 20 signature pages, then 3 pages and 10 transactions a funder. */
@@ -275,11 +278,13 @@ export const liveFacts = (w: LiveFactsWiring): LiveFacts => {
       rpc: new FactRpc({ url: () => heliusRpcUrl(w.secrets), http: w.http, scheduler: ctx.schedulers.helius, timeoutMs: 10_000 }),
       rugcheck: { scheduler: ctx.schedulers.rugcheck }, goplus: { scheduler: w.goplus },
       jupiter: { scheduler: ctx.schedulers.jupiter, secrets: w.secrets }, coinbase: { scheduler: w.coinbase },
-      // RUG-1c: each check's RPC goes through the Helius scheduler at P2, under the per-candidate credit cap.
-      rugCheck: {
+      // RUG-1c: each check's RPC goes through the Helius scheduler at P2, under the per-candidate and daily credit caps,
+      // cached per creator for the life of the readers.
+      deployerChecks: new DeployerChecks({
         history: rpcHistorySource(new RpcHttp({ provider: 'helius', url: () => heliusRpcUrl(w.secrets), http: w.http, scheduler: ctx.schedulers.helius, timeoutMs: 10_000 }), P2),
-        rugs: RUG_CONFIG, config: RUG_CHECK_CONFIG,
-      },
+        rugs: RUG_CONFIG, config: RUG_CHECK_CONFIG, minGapMs: 60_000 / ASSUMPTIONS.evaluationsPerMinute,
+        ...(w.stateDir === undefined ? {} : { spendFile: join(w.stateDir, DEPLOYER_CHECK_SPEND_FILE) }),
+      }),
       ...(w.github === undefined ? {} : {
         releases: {
           api: { scheduler: w.github.api }, downloads: { scheduler: w.github.downloads },

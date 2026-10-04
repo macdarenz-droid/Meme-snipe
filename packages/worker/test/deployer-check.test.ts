@@ -6,12 +6,14 @@ import { describe, expect, it } from 'vitest';
 import { recordFromRpc, type RpcTransactionBase64 } from '../../core/src/chain/index.ts';
 import { RUG_CONFIG, type RugCheckConfig } from '../../core/src/config/index.ts';
 import type { Moment } from '../../core/src/engine/index.ts';
-import { RUG_CHECK_PREFIX } from '../../core/src/gates/index.ts';
+import { RUG_CHECK_PREFIX, type RugCheckFact } from '../../core/src/gates/index.ts';
 import {
   SupplementRecorder, checkDeployer, checkFacts, rpcHistorySource, supplementSource, type RugHistorySource, type RugSupplement,
 } from '../src/providers/deployer-check.ts';
 import { RpcHttp, rpcHandler, scriptedHttp } from '../src/providers/index.ts';
-import { FactReaders, FactRpc } from '../src/facts/index.ts';
+import { DEPLOYER_CHECK_CREDITS_PER_DAY, DEPLOYER_CHECK_SPEND_FILE, DeployerChecks, FactReaders, FactRpc } from '../src/facts/index.ts';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { HELIUS_FREE, ManualTimers, P2, Scheduler } from '../src/scheduler/index.ts';
 import { blockNetwork, settle } from './helpers.ts';
 
@@ -302,7 +304,7 @@ describe('the deployer check through the live readers (WORKER-1c)', () => {
     const ingested: { key: string; value: unknown }[] = [];
     const http = async () => ({ status: 500, text: '', header: () => null }) as unknown as import('../src/providers/http.ts').HttpResponse;
     const rpc = new FactRpc({ url: () => 'x', http, scheduler: new Scheduler(HELIUS_FREE, { timers }), timeoutMs: 1_000 });
-    const readers = new FactReaders({ feed: { ingest: (_s, b) => void (b.type === 'offchain' && ingested.push({ key: b.key, value: b.value })) }, rpc, http, timers, timeoutMs: 1_000, rugCheck: { history: source, rugs: RUG_CONFIG, config: cfg } });
+    const readers = new FactReaders({ feed: { ingest: (_s, b) => void (b.type === 'offchain' && ingested.push({ key: b.key, value: b.value })) }, rpc, http, timers, timeoutMs: 1_000, deployerChecks: new DeployerChecks({ history: source, rugs: RUG_CONFIG, config: cfg, minGapMs: 60_000 }) });
     return { readers, ingested };
   };
   const req = { creator: DEV, mints: [launch(RUG)], fromMs: 0, asOf: at(lastSlot(RUG) + 1n), asOfMs: launch(RUG).createdAtMs + 200_000 };
@@ -330,5 +332,129 @@ describe('the deployer check through the live readers (WORKER-1c)', () => {
     const http = async () => ({ status: 500, text: '', header: () => null }) as unknown as import('../src/providers/http.ts').HttpResponse;
     const rpc = new FactRpc({ url: () => 'x', http, scheduler: new Scheduler(HELIUS_FREE, { timers }), timeoutMs: 1_000 });
     expect(await new FactReaders({ feed: { ingest: () => undefined }, rpc, http, timers, timeoutMs: 1_000 }).readDeployerCheck(req)).toBe(false);
+  });
+});
+
+describe('deployer checks cached per creator (WORKER-1c review: cost)', () => {
+  const MIN = 60_000;
+  /** A source that counts reads per mint (signature pages). */
+  const counted = (cases: readonly Case[]) => {
+    const f = fixtureSource(cases);
+    const pages = new Map<string, number>();
+    const source: RugHistorySource = { ...f.source, signatures: (a, b, l, m) => (pages.set(a, (pages.get(a) ?? 0) + 1), f.source.signatures(a, b, l, m)) };
+    return { source, pages, calls: f.calls };
+  };
+  const chk = (source: RugHistorySource, o: Partial<{ minGapMs: number; creditsPerDay: number; cfg: RugCheckConfig }> = {}) =>
+    new DeployerChecks({ history: source, rugs: RUG_CONFIG, config: o.cfg ?? CFG, minGapMs: o.minGapMs ?? MIN, ...(o.creditsPerDay === undefined ? {} : { creditsPerDay: o.creditsPerDay }) });
+  const reqAt = (mints: readonly ReturnType<typeof launch>[], slot: bigint, asOfMs: number) => ({ creator: DEV, mints, fromMs: 0, asOf: at(slot), asOfMs });
+  const s0 = lastSlot(CLEAN) + 1_000_000n;
+  const fin = launch(CLEAN).createdAtMs + DAY + 1;
+  const statuses = (o: { facts: readonly { key: string; value: unknown }[] }) => ((o.facts.at(-1)!.value as RugCheckFact).mints.map((m) => m.status));
+
+  it('a second candidate of the same creator makes no RPC call when every prior mint has a final answer', async () => {
+    const c = counted([CLEAN]);
+    const d = chk(c.source);
+    const first = await d.check(reqAt([launch(CLEAN)], s0, fin), 1_000);
+    expect(statuses(first)).toEqual(['clear']);
+    expect(first.covered).toBe(true);
+    const calls = c.calls();
+    // Another candidate, minutes later, at a later slot: answered from the cache, re-issued at the new slot.
+    const second = await d.check(reqAt([launch(CLEAN)], s0 + 1_000n, fin + 10 * MIN), 1_000 + 10 * MIN);
+    expect(c.calls()).toBe(calls);
+    expect(second.covered).toBe(true);
+    expect(second.read).toEqual([]);
+    expect(second.credits).toBe(0);
+    expect((second.facts.at(-1)!.value as RugCheckFact).obs.slot).toBe(s0 + 1_000n);
+  });
+
+  it('a rug label is final: never read again, and its label released only the first time', async () => {
+    const c = counted([RUG]);
+    const d = chk(c.source);
+    const r = reqAt([launch(RUG)], lastSlot(RUG) + 1n, launch(RUG).createdAtMs + 200_000);
+    const first = await d.check(r, 0);
+    expect(first.facts.filter((f) => f.key.startsWith('rug:'))).toHaveLength(1);
+    const calls = c.calls();
+    const again = await d.check({ ...r, asOf: at(lastSlot(RUG) + 50n) }, 5 * MIN);
+    expect(c.calls()).toBe(calls);
+    expect(again.facts.filter((f) => f.key.startsWith('rug:'))).toEqual([]);
+    expect(statuses(again)).toEqual(['rug']);
+  });
+
+  it('a new prior mint in the index is read, the cached ones are not', async () => {
+    const c = counted([CLEAN, RUG]);
+    const d = chk(c.source);
+    await d.check(reqAt([launch(CLEAN)], s0, fin), 0);
+    expect(c.pages.get(CLEAN.mint)).toBe(1);
+    // The deployer launched again: the index now lists RUG too. Within the gap, only the new mint is read.
+    const both = await d.check(reqAt([launch(CLEAN), launch(RUG)], s0 + 10n, fin), 1_000);
+    expect(both.read).toEqual([RUG.mint]);
+    expect(c.pages.get(CLEAN.mint)).toBe(1);
+    expect(c.pages.get(RUG.mint)).toBe(1);
+  });
+
+  it('an open answer is read again at most once per gap per creator, whichever candidate asks', async () => {
+    const c = counted([CLEAN]);
+    const d = chk(c.source);
+    const open = launch(CLEAN).createdAtMs + DAY;
+    expect(statuses(await d.check(reqAt([launch(CLEAN)], s0, open), 0))).toEqual(['open']);
+    expect(c.pages.get(CLEAN.mint)).toBe(1);
+    await d.check(reqAt([launch(CLEAN)], s0 + 10n, open), MIN - 1);
+    expect(c.pages.get(CLEAN.mint)).toBe(1);
+    await d.check(reqAt([launch(CLEAN)], s0 + 20n, fin), MIN);
+    expect(c.pages.get(CLEAN.mint)).toBe(2);
+    await d.check(reqAt([launch(CLEAN)], s0 + 30n, fin), MIN + 10);
+    // Now final (clear): never again.
+    await d.check(reqAt([launch(CLEAN)], s0 + 40n, fin), 10 * MIN);
+    expect(c.pages.get(CLEAN.mint)).toBe(2);
+  });
+
+  it('the coverage fact counts a mint only when final or read within maxLagSlots; otherwise unfetched (not covered)', async () => {
+    const c = counted([CLEAN]);
+    const d = chk(c.source, { minGapMs: 60 * MIN });
+    const open = launch(CLEAN).createdAtMs + DAY;
+    const first = await d.check(reqAt([launch(CLEAN)], s0, open), 0);
+    expect(first.covered).toBe(true);
+    // Within maxLagSlots of that read, the open answer still counts, re-issued at the new slot.
+    const near = await d.check(reqAt([launch(CLEAN)], s0 + BigInt(CFG.maxLagSlots), open), MIN);
+    expect(statuses(near)).toEqual(['open']);
+    expect(near.covered).toBe(true);
+    // Past it, and before the creator's re-read gap: not read, so listed unfetched.
+    const far = await d.check(reqAt([launch(CLEAN)], s0 + BigInt(CFG.maxLagSlots) + 1n, open), 2 * MIN);
+    expect(statuses(far)).toEqual(['unfetched']);
+    expect(far.covered).toBe(false);
+    expect((far.facts.at(-1)!.value as RugCheckFact).obs.slot).toBe(s0 + BigInt(CFG.maxLagSlots) + 1n);
+  });
+
+  it('the daily credits cap every read: past them nothing is read and the mints stay unfetched; a new UTC day starts again', async () => {
+    const c = counted([RUG]);
+    const d = chk(c.source, { creditsPerDay: 1 });
+    const r = reqAt([launch(RUG)], lastSlot(RUG) + 1n, launch(RUG).createdAtMs + 200_000);
+    const capped = await d.check(r, 0);
+    expect(capped.credits).toBeLessThanOrEqual(1);
+    expect(capped.covered).toBe(false);
+    expect(d.remaining(0)).toBe(0);
+    const calls = c.calls();
+    const spent = await d.check({ ...r, mints: [{ mint: 'Other', createdAtMs: 1 }] }, MIN);
+    expect(c.calls()).toBe(calls);
+    expect((spent.facts.at(-1)!.value as RugCheckFact).mints[0]).toMatchObject({ status: 'unfetched', detail: 'the daily deployer-check credits are spent' });
+    expect(d.remaining(DAY)).toBe(1);
+    expect(DEPLOYER_CHECK_CREDITS_PER_DAY).toBe(5_000);
+  });
+
+  it('keeps the day\'s spend across a restart; an unreadable spend file counts today as spent', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'deployer-spend-'));
+    const file = join(dir, DEPLOYER_CHECK_SPEND_FILE);
+    const r = reqAt([launch(RUG)], lastSlot(RUG) + 1n, launch(RUG).createdAtMs + 200_000);
+    const a = new DeployerChecks({ history: counted([RUG]).source, rugs: RUG_CONFIG, config: CFG, minGapMs: MIN, creditsPerDay: 1_000, spendFile: file });
+    expect(a.remaining(0)).toBe(1_000);
+    const spent = (await a.check(r, 0)).credits;
+    expect(spent).toBeGreaterThan(0);
+    const b = new DeployerChecks({ history: counted([RUG]).source, rugs: RUG_CONFIG, config: CFG, minGapMs: MIN, creditsPerDay: 1_000, spendFile: file });
+    expect(b.remaining(MIN)).toBe(1_000 - spent);
+    expect(b.remaining(DAY)).toBe(1_000);
+    writeFileSync(file, '{not json');
+    const c = new DeployerChecks({ history: counted([RUG]).source, rugs: RUG_CONFIG, config: CFG, minGapMs: MIN, creditsPerDay: 1_000, spendFile: file });
+    expect(c.remaining(MIN)).toBe(0);
+    expect(c.remaining(DAY)).toBe(1_000);
   });
 });

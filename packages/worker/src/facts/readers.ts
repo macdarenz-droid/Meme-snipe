@@ -15,8 +15,8 @@ import type { Policy } from '../../../core/src/config/policy.ts';
 import { HELIUS_RPC_CREDITS } from '../scheduler/limits.ts';
 import { VOLUME_TAG, dayName, dayNumber, sha256Hex, volumeCheckPassed, volumeRelease, volumeReleaseAssets } from './volume-hours.ts';
 import type { ChainVolumeStore, StoredVolumeDay } from './volume-store.ts';
-import type { RugCheckConfig, RugConfig } from '../../../core/src/config/rugs.ts';
-import { checkDeployer, checkFacts, type RugCheckRequest, type RugHistorySource } from '../providers/deployer-check.ts';
+import type { RugCheckRequest } from '../providers/deployer-check.ts';
+import type { DeployerChecks } from './deployer-checks.ts';
 import { P2, type Priority, type Scheduler, ScheduleRefused } from '../scheduler/scheduler.ts';
 import type { Timers } from '../scheduler/timers.ts';
 import type { FrameBody, Source } from '../providers/canonical.ts';
@@ -215,8 +215,8 @@ export interface FactReadersOptions {
   readonly coinbase?: ThirdParty;
   /** DATA-1c's volume releases: the regime's chain volume. */
   readonly releases?: ReleasesSource;
-  /** RUG-1c's on-demand deployer check: the history source (RPC through the Helius scheduler at P2) and its config. */
-  readonly rugCheck?: { readonly history: RugHistorySource; readonly rugs: RugConfig; readonly config: RugCheckConfig };
+  /** RUG-1c's on-demand deployer check, cached per creator under a daily credit cap (`DeployerChecks`). */
+  readonly deployerChecks?: DeployerChecks;
   /** Complete holder scans allowed per UTC day (default HOLDER_SCANS_PER_DAY). Reached: no scan, H12/H13 abstain. */
   readonly holderScansPerDay?: number;
   readonly token2022Filter?: Token2022Filter;
@@ -749,22 +749,22 @@ export class FactReaders {
   }
 
   /**
-   * RUG-1c: checks one deployer's prior mints on demand (`checkDeployer`, under the per-candidate credit cap) and
-   * ingests what it found: a `rug:<mint>` label per rug, then the deployer's `coverage:rugs:deployer:<creator>` fact,
-   * which H14 accepts when it lists every prior mint as rug, clear or open. True when it did (a capped or failed read
-   * leaves mints unfetched: ingested all the same, so H14 sees why it stays not covered).
+   * RUG-1c: one deployer's prior mints judged through the per-creator cache (`DeployerChecks`): only mints not yet
+   * held, and those not final once the creator's re-read gap has passed, are read from the history. Ingests any new
+   * `rug:<mint>` labels, then the creator's `coverage:rugs:deployer:<creator>` fact at the asking slot. True when that
+   * fact covers every prior mint (H14 accepts it); a fact that does not is ingested too, so H14 says why.
    */
   async readDeployerCheck(req: RugCheckRequest): Promise<boolean> {
-    const c = this.#o.rugCheck;
+    const c = this.#o.deployerChecks;
     if (c === undefined) return false;
-    let full = false;
+    let covered = false;
     const ok = await this.#guard(`deployer-check:${req.creator}`, async () => {
-      const r = await checkDeployer(c.history, c.rugs, c.config, req, this.#o.timers.now());
-      for (const f of checkFacts(r)) this.#ingest('helius', f.key, f.value);
-      full = r.fact.mints.every((m) => m.status === 'rug' || m.status === 'clear' || m.status === 'open');
-      return `${r.fact.mints.length} prior mints, ${r.labels.length} rugs${full ? '' : ', not all read'}`;
+      const r = await c.check(req, this.#o.timers.now());
+      for (const f of r.facts) this.#ingest('helius', f.key, f.value);
+      covered = r.covered;
+      return `${req.mints.length} prior mints, ${r.read.length} read, ${r.credits} credits${covered ? '' : ', not covered'}`;
     });
-    return ok && full;
+    return ok && covered;
   }
 
   /** A round-trip simulation answer (H15), from the simulation builder. Refused unless well formed. */
