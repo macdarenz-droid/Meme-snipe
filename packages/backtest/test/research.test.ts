@@ -16,7 +16,7 @@ import {
 } from '../src/research/practice.ts';
 import { createHoldoutRegistry, registerHoldout } from '../../core/src/stats/index.ts';
 import { AsOfError, FEATURE_IDS, type Features, SignalTracker } from '../src/research/tracker.ts';
-import { SOL_USD, syntheticRows, T0 } from './synthetic.ts';
+import { SOL_USD, syntheticRows, T0 } from '../src/dataset/synthetic.ts';
 
 const ROOT = join(import.meta.dirname, '..', '..', '..');
 const SRC = join(import.meta.dirname, '..', 'src', 'research');
@@ -481,7 +481,7 @@ describe('cli', () => {
     const { mkdtempSync, rmSync, writeFileSync, existsSync } = await import('node:fs');
     const { tmpdir } = await import('node:os');
     const { execFileSync, spawnSync } = await import('node:child_process');
-    const { writeDataset } = await import('./dataset-writer.ts');
+    const { writeDataset } = await import('../src/dataset/writer.ts');
     const dir = mkdtempSync(join(tmpdir(), 'res3-'));
     // The fixture moved 30 days back (21 Aug, before the committed wall) so the CLI runs on the committed window.
     const back = 30 * 86_400;

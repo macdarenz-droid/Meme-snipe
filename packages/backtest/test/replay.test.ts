@@ -89,7 +89,7 @@ describe('regime boundaries', () => {
 describe('market volume per window (BT-1c A1)', () => {
   test('a window\'s volume reads the same at its boundary and long after, so the network chain never walks over zeros', async () => {
     const { Market } = await import('../src/sim/market.ts');
-    const { syntheticRows } = await import('./synthetic.ts');
+    const { syntheticRows } = await import('../src/dataset/synthetic.ts');
     const market = new Market({ heartbeatBlocks: 1_000, discoveryLag: () => 1, active: () => false, observe: null, volumeWindowSlots: 150, hook: () => {}, hasRows: () => true, schedule: () => {} });
     const atBoundary = new Map<bigint, bigint>();
     for (const r of syntheticRows({ mints: 4, slots: 2.5 * 3600 })) {

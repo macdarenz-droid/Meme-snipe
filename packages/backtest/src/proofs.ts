@@ -38,17 +38,24 @@ function* mergeRows(a: Iterator<DatasetRow>, b: readonly DatasetRow[]): Generato
   while (k < extra.length) yield extra[k++]!;
 }
 
+/** What the separate scoring stage reads: the whole planted stream, future included (it runs after the engine). */
+export interface ScoredStream {
+  readonly rows: () => Iterator<DatasetRow>;
+  readonly events: readonly FeedEvent[];
+}
+
 /**
  * Leak test. Runs the same data twice, with and without the planted events. Fails if, before the marker's time, the
  * strategy is handed the marker (event, context, lookup or history), the log records it, or any log record differs
- * from the clean run. `labels` stands for the scored outcomes: they must carry the marker and are never given to
- * the run (the scoring stage is separate), which the test checks structurally by never passing them in.
+ * from the clean run. `score` is the separate scoring stage: the test runs it itself, after both engine runs, over the
+ * planted stream (it may read the future; the engine never receives its output), and its labels must carry the marker,
+ * so a plant that never reached the data the outcomes are scored from fails the test instead of passing it unseen
+ * (BT-WALL b: labels built by the caller with the marker already in them proved nothing).
  */
-export const leakTest = (o: RunOptions, marker: PlantedMarker, labels: unknown): ProofReport => {
+export const leakTest = (o: RunOptions, marker: PlantedMarker, score: (stream: ScoredStream) => unknown): ProofReport => {
   const violations: string[] = [];
   const early = (m: Moment) => compareMoments(m, marker.at) < 0;
   const flag = (what: string, m: Moment) => violations.push(`${what} saw the marker at ${describe(m)}, before ${describe(marker.at)}`);
-  if (!reaches(labels, marker.token)) violations.push('the labels do not carry the marker token');
   const plantedRows = marker.rows ?? [];
   if (!marker.events.some((e) => !early(e.moment) && reaches(e, marker.token)) && !plantedRows.some((r) => reaches(r, marker.token))) violations.push('no planted data carries the token');
   if (marker.events.some((e) => early(e.moment))) violations.push('a planted event is dated before the marker');
@@ -96,6 +103,10 @@ export const leakTest = (o: RunOptions, marker: PlantedMarker, labels: unknown):
   }
   // The marker must reach the strategy at or after its time, or the test proved nothing.
   if (!seenAfter) violations.push('the planted events never reached the strategy after their time; the test would not detect a leak');
+  // The scoring stage, after the engine: its labels come from the planted stream, so they carry the marker only when the
+  // plant is in the data outcomes are scored from.
+  const labels = score({ rows: () => mergeRows(o.rows(), plantedRows), events: [...(o.extraEvents ?? []), ...marker.events] });
+  if (!reaches(labels, marker.token)) violations.push('the labels scored from the planted stream do not carry the marker token');
   return { ok: violations.length === 0, violations };
 };
 

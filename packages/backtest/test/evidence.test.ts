@@ -6,9 +6,10 @@ import { afterAll, describe, expect, test, vi } from 'vitest';
 import { FILL_CONFIG, RESEARCH_CONFIG, TRIAL_POLICY } from '../../core/src/config/index.ts';
 import { replayLedgerFile } from '../../core/src/ledger/replay/index.ts';
 import { type EvidenceInput, runEvidence } from '../src/evidence.ts';
+import type { HoldoutStore } from '../src/holdout.ts';
 import { type RunOptions, type RunResult, runBacktest } from '../src/run.ts';
-import { writeDataset } from './dataset-writer.ts';
-import { SOL_USD, syntheticRows } from './synthetic.ts';
+import { writeDataset } from '../src/dataset/writer.ts';
+import { SOL_USD, syntheticRows } from '../src/dataset/synthetic.ts';
 
 vi.setConfig({ testTimeout: 300_000 });
 const top = mkdtempSync(join(tmpdir(), 'bt3-'));
@@ -24,7 +25,7 @@ const input = (over: Partial<EvidenceInput> = {}): EvidenceInput => {
   const workDir = mkdtempSync(join(top, 'work-'));
   return {
     windows: [{ dir: gateDir, release: 'data-test' }], mode: 'gate', replays: 10, scenario: 'conservative', seed: 'bt3', solUsd: SOL_USD,
-    policy: TRIAL_POLICY, fills: FILL_CONFIG, research: RESEARCH_CONFIG, commit: 'test-commit', ledgerReplay: replayLedgerFile, workDir, ...over,
+    policy: TRIAL_POLICY, fills: FILL_CONFIG, research: RESEARCH_CONFIG, commit: 'test-commit', ledgerReplay: replayLedgerFile, workDir, holdouts: null, ...over,
   };
 };
 
@@ -49,6 +50,45 @@ describe('pre-funding evidence (BT-3)', () => {
     expect(() => runEvidence(input({ windows: [{ dir: short }] }))).toThrow(/14/);
     const labelled = runEvidence(input({ windows: [{ dir: short }], mode: 'no-lead-in', replays: 2 }));
     expect(labelled).toMatchObject({ mode: 'no-lead-in', gate: false, pass: true });
+  });
+
+  test('synthetic evidence can never claim gate status (BT-3 re-run)', () => {
+    const synth = make('synthetic', { leadInDays: 14, sums: true, synthetic: true });
+    // Gate and no-lead-in modes refuse a synthetic window.
+    expect(() => runEvidence(input({ windows: [{ dir: synth }] }))).toThrow(/synthetic window is never gate evidence/);
+    expect(() => runEvidence(input({ windows: [{ dir: synth }], mode: 'no-lead-in', replays: 2 }))).toThrow(/synthetic window/);
+    // The synthetic mode runs it with the gate's checks and labels it: never gate evidence.
+    const e = runEvidence(input({ windows: [{ dir: synth, release: 'synthetic' }], mode: 'synthetic', replays: 2 }));
+    expect(e).toMatchObject({ mode: 'synthetic', gate: false, pass: true });
+    expect(e.windows[0]!.filesChecked).toBeGreaterThan(1);
+    // ...and runs synthetic windows only, with the gate's checks.
+    expect(() => runEvidence(input({ mode: 'synthetic', replays: 2 }))).toThrow(/synthetic windows only/);
+    expect(() => runEvidence(input({ windows: [{ dir: make('synthetic-short', { leadInDays: 0, sums: true, synthetic: true }) }], mode: 'synthetic', replays: 2 }))).toThrow(/14/);
+  });
+
+  test('every mode refuses a window with a holdout day, before anything runs (BT-WALL a)', () => {
+    const from = RESEARCH_CONFIG.holdout.fromDay;
+    const start = Date.parse(`${from}T00:00:00Z`) / 1000;
+    // The same synthetic market moved to start on the reserved holdout start (blocks and swaps, all at or after it).
+    const shift = start - rows[0]!.blockTime;
+    const late = make('holdout-day', { leadInDays: 14, sums: true });
+    writeDataset(late, rows.map((r) => ({ ...r, blockTime: r.blockTime + shift })), { leadInDays: 14, sums: true });
+    let ran = 0;
+    const run = (o: RunOptions) => {
+      ran++;
+      return runBacktest(o);
+    };
+    for (const mode of ['gate', 'no-lead-in'] as const) {
+      expect(() => runEvidence(input({ windows: [{ dir: late }], mode, run }))).toThrow(new RegExp(`${from} is at or after the reserved holdout start`));
+    }
+    // A day inside a registered holdout window is refused too (the registry's windows, not only the reserved start).
+    const registered = { version: 2, plan: null, registry: { entries: [{ holdoutId: 'h-test', fromDay: '2026-09-20', tailEnd: '2026-09-21' }] }, attempts: [], g1: [], runs: [] } as unknown as HoldoutStore;
+    expect(() => runEvidence(input({ holdouts: registered, run }))).toThrow(/inside holdout h-test/);
+    // A synthetic window is held to the same wall.
+    const lateSynth = make('holdout-day-synthetic', { leadInDays: 14, sums: true, synthetic: true });
+    writeDataset(lateSynth, rows.map((r) => ({ ...r, blockTime: r.blockTime + shift })), { leadInDays: 14, sums: true, synthetic: true });
+    expect(() => runEvidence(input({ windows: [{ dir: lateSynth }], mode: 'synthetic', run }))).toThrow(/reserved holdout start/);
+    expect(ran).toBe(0);
   });
 
   test('a failing ledger replay fails the evidence', () => {
