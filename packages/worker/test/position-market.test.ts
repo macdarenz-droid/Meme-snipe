@@ -231,10 +231,11 @@ describe('a held position priced from its pool\'s swap stream (POS-1)', () => {
     m.omit = new Set([poolKey(MINT)]);
     await until(m, () => false, 4_000, () => m.pool());
     // Not entered: the pool fact is past the quote age, though the carry keeps the market fresh for an exit. The
-    // gates' state lag (2 slots) refuses it first; the entry's own quote checks judge the uncarried moment too.
+    // gates' state lag (2 slots) refuses it first, in every stage-2 gate that reads the pool (FACTS-1f's staged reasons),
+    // and the later stages are not evaluated; the entry's own quote checks judge the uncarried moment too.
     expect(m.now - poolFact(h)!.fact.obs.receivedAt).toBeGreaterThan(h.session.policy.gates.maxQuoteAgeMs);
     expect(m.now - h.worker.poolOf(MINT)!.atMs).toBeLessThan(h.session.policy.gates.maxQuoteAgeMs);
-    expect(decisions(h).at(-1)!.slice(0, 1).concat(decisions(h).at(-1)![3]!.replace(/slot \d+, \d+ slots/, 'slot S, N slots'))).toEqual(['reject', 'hard reject H6: H16 stale pool read at slot S, N slots behind']);
+    expect(decisions(h).at(-1)!.slice(0, 1).concat(decisions(h).at(-1)![3]!.replace(/slot \d+, \d+ slots/g, 'slot S, N slots'))).toEqual(['reject', `hard reject H6,H8,H5,H17: ${Array(4).fill('H16 stale pool read at slot S, N slots behind').join('; ')}; not evaluated: H12,H13,H15`]);
     expect(position(h)).toBeUndefined();
     await h.worker.stop();
   });
