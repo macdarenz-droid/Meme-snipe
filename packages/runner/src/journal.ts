@@ -1,4 +1,4 @@
-// Journal completeness (RUN-1 accept: "journal completeness"). Pure: takes the file's text.
+// Journal completeness (RUN-1 accept: "journal completeness"). Pure: takes the file's text, or its lines as they are read.
 import { NEEDS_REASONS, type JournalLine } from './contract.ts';
 import { isOutcome } from './item4.ts';
 
@@ -38,20 +38,20 @@ const MAX_PROBLEMS = 50;
  * decision-type line has reasons.
  */
 export const checkJournal = (text: string, opts: { readonly allowTornTail?: boolean } = {}): JournalReport => {
+  const raw = text.split('\n');
+  if (raw[raw.length - 1] === '') raw.pop();
+  return checkJournalLines(raw, opts);
+};
+
+/**
+ * The same check over the journal's lines as they are read (GROWTH-SWEEP: a long run's journal is streamed with
+ * `fileLines`, never held whole). Each line is judged and dropped; only the counters and the open sets stay.
+ */
+export const checkJournalLines = (raw: Iterable<string>, opts: { readonly allowTornTail?: boolean } = {}): JournalReport => {
   const problems: string[] = [];
   const add = (p: string): void => {
     if (problems.length < MAX_PROBLEMS) problems.push(p);
   };
-  const raw = text.split('\n');
-  if (raw[raw.length - 1] === '') raw.pop();
-  const lines: JournalLine[] = [];
-  raw.forEach((s, i) => {
-    try {
-      lines.push(JSON.parse(s) as JournalLine);
-    } catch {
-      if (!(opts.allowTornTail === true && i === raw.length - 1)) add(`line ${i + 1}: not JSON`);
-    }
-  });
 
   const bootsSeen = new Set<string>();
   const reconciled = new Set<string>();
@@ -65,7 +65,11 @@ export const checkJournal = (text: string, opts: { readonly allowTornTail?: bool
   const diagnosed: Record<string, number> = {};
   const h15 = { lines: 0, run: 0, credits: 0 };
   const starts: StartFields[] = [];
-  for (const l of lines) {
+  let count = 0;
+  let index = 0;
+  // One line behind: a line that is not JSON is a problem unless it is the last one and a torn tail is allowed.
+  let held: { readonly text: string; readonly at: number } | null = null;
+  const judge = (l: JournalLine): void => {
     const parts = l['s0_diagnostic'];
     if (l.kind === 'h15_sim') {
       h15.lines += 1;
@@ -112,6 +116,23 @@ export const checkJournal = (text: string, opts: { readonly allowTornTail?: bool
       default:
         break;
     }
+  };
+  const take = (h: { readonly text: string; readonly at: number }, last: boolean): void => {
+    let l: JournalLine;
+    try {
+      l = JSON.parse(h.text) as JournalLine;
+    } catch {
+      if (!(opts.allowTornTail === true && last)) add(`line ${h.at}: not JSON`);
+      return;
+    }
+    count++;
+    judge(l);
+  };
+  for (const text of raw) {
+    index++;
+    if (held !== null) take(held, false);
+    held = { text, at: index };
   }
-  return { lines: lines.length, boots: bootsSeen.size, entries, exits, simulations, repairs, s0_diagnostic: diagnosed, h15_sim: h15, complete: problems.length === 0, problems, starts };
+  if (held !== null) take(held, true);
+  return { lines: count, boots: bootsSeen.size, entries, exits, simulations, repairs, s0_diagnostic: diagnosed, h15_sim: h15, complete: problems.length === 0, problems, starts };
 };
