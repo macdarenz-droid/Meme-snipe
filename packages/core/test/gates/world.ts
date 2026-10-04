@@ -205,11 +205,11 @@ export const FEE_CONTEXT: PoolFeeContext = {
 export const roundTrip = (spend = SPEND) =>
   pumpSwapRoundTrip({ baseReserve: BASE_VAULT, quoteVault: QUOTE_VAULT, virtualQuoteReserves: POOL.virtualQuoteReserves ?? 0n }, FEE_CONTEXT)(spend);
 
-/** The simulation agrees with the local model to the lamport. */
+/** The simulation agrees with the local model of its own sequence (buy, then sell at once) to the lamport. */
 const simAmounts = () => {
   const q = roundTrip();
   if (!q.ok) throw new Error(`the passing world must quote: ${q.detail}`);
-  return { paid: q.trade.paid, proceeds: q.trade.proceeds };
+  return { paid: q.trade.paid, proceeds: q.trade.immediateProceeds };
 };
 
 export const request = (over: Partial<GateRequest> = {}): GateRequest => ({ mint: MINT, universe: 'U2', notional: NOTIONAL, spend: SPEND, roundTrip: roundTrip(), ...over });
@@ -226,7 +226,7 @@ export const contextOf = (facts: Facts, now: Moment = NOW): GateContext => {
     store.record(key, value, moment, key);
   }
   clock.advanceTo(now);
-  return { now: clock.now(), lookup: (key, asOf) => store.lookup(key, asOf), history: (key, from, to) => store.history(key, from, to) };
+  return { now: clock.now(), observedTip: clock.now().slot, lookup: (key, asOf) => store.lookup(key, asOf), history: (key, from, to) => store.history(key, from, to) };
 };
 
 export const session = (over: Partial<PolicySession['policy']['gates']> = {}): PolicySession =>

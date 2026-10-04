@@ -4,7 +4,7 @@
 // (loosening needs the owner and a change to the defaults here).
 
 import { dayBlockMeanDiffInterval, dayBlockMeanInterval, DEFAULT_REPLICATES, type DayReturn } from './bootstrap.ts';
-import { describeSummary, G2_SENSITIVITY_VARIANTS, g2Rule, g2Sensitivity, MIN_DAYS, sameSummary, summarizeWalkForward, type ClusteredReturn, type G2PowerResult, type G2SensitivityVariant } from './g2rule.ts';
+import { describeSummary, G2_SENSITIVITY_VARIANTS, g2PowerInputs, g2Rule, g2Sensitivity, MIN_DAYS, summarizeWalkForward, type ClusteredReturn, type G2PowerResult, type G2SensitivityVariant } from './g2rule.ts';
 import { burnHoldout, dayFromNumber, G1_TESTS, type G1Test, holdoutReady, openHoldout, type HoldoutRegistry } from './holdout.ts';
 import { holm } from './holm.ts';
 import { clopperPearsonInterval, clopperPearsonUpper, ratesConsistent } from './binomial.ts';
@@ -135,6 +135,16 @@ const MS_PER_HOUR = MS_PER_DAY / 24;
 /** Level of the SPA test when it gates G1 (one test over the whole registry). */
 const SPA_ALPHA = 0.05;
 const COVERAGE_WINDOW = 100;
+/** One-sided 95% normal quantile: the validation power may sit at most this many standard errors below the target. */
+const N_POWER_VALIDATION_Z = 1.645;
+/**
+ * The n_power settings G2 accepts (STATS-1g review B3): a result cannot declare its own goal. Power at least 80%
+ * (owner rule 6), a design edge of at most +5 points (a smaller edge needs more trades), at least 400 simulations; the
+ * family size, α and bootstrap replicates are the registry's and the gate's own.
+ */
+const N_POWER_MIN_POWER = 0.8;
+const N_POWER_MAX_TARGET_MEAN = 0.05;
+const N_POWER_MIN_SIMULATIONS = 400;
 /**
  * Days of the trailing reverse e-process that runs beside the full-history one (STATS-1d). After a good stretch the
  * full-history process has bet against the strategy for weeks and lost wealth, so a later decay barely moves it
@@ -443,6 +453,8 @@ export interface G2Universe {
   readonly controlRuns: readonly (readonly DayReturn[])[];
   /** Walk-forward trades of the same configuration: σ̂ for the closed-form check and the reported predictive interval. */
   readonly walkForward: readonly ClusteredReturn[];
+  /** S0 on the walk-forward days, pooled over its seeds: the control n_power was simulated with. */
+  readonly walkForwardControl: readonly DayReturn[];
   /** n_power from `simulateG2Power` on the walk-forward data with the registry's family size. */
   readonly power: G2PowerResult;
   /** G1 passed for this configuration: a precondition for opening the seal (a G1 fail keeps it sealed). */
@@ -552,9 +564,33 @@ export const gateG2 = (input: G2Input, overrides?: Partial<typeof G2_DEFAULTS>):
     const missingUnits = G2_SENSITIVITY_VARIANTS.filter((x) => !u.power.units.includes(x));
     c.add(`n_power units ${u.universe}`, missingUnits.length === 0,
       `n_power simulated without ${missingUnits.join(', ') || 'none'} (need every resampling unit of the rule)`);
+    // The exact inputs (ordered, labelled walk-forward and S0 trades plus every setting), not a summary (audit S3).
     const wfNow = summarizeWalkForward(u.walkForward);
-    c.add(`n_power inputs ${u.universe}`, sameSummary(wfNow, u.power.walkForward),
-      `n_power was simulated on walk-forward ${describeSummary(u.power.walkForward)}, this universe's walk-forward is ${describeSummary(wfNow)}`);
+    const settings = u.power.settings;
+    const inputsNow = settings ? g2PowerInputs(u.walkForward, u.walkForwardControl ?? [], settings) : null;
+    c.add(`n_power inputs ${u.universe}`, inputsNow !== null && inputsNow === u.power.inputs && settings!.seed === u.power.seed,
+      inputsNow === null ? 'n_power carries no settings: its inputs cannot be checked'
+        : `n_power was simulated on walk-forward ${describeSummary(u.power.walkForward)}${inputsNow === u.power.inputs ? '' : ' with other trades, labels, control or settings'}; this universe's walk-forward is ${describeSummary(wfNow)}`);
+    // The settings are pinned to fixed or registered values, never taken from the result itself (review B3).
+    if (settings) {
+      const off = [
+        ...(settings.power >= N_POWER_MIN_POWER ? [] : [`power ${fmt(settings.power)} (need >= ${N_POWER_MIN_POWER})`]),
+        ...(settings.targetMean <= N_POWER_MAX_TARGET_MEAN ? [] : [`target mean ${fmt(settings.targetMean)} (need <= ${N_POWER_MAX_TARGET_MEAN})`]),
+        ...(settings.simulations >= N_POWER_MIN_SIMULATIONS ? [] : [`${settings.simulations} simulations (need >= ${N_POWER_MIN_SIMULATIONS})`]),
+        ...(settings.replicates >= minReplicates ? [] : [`${settings.replicates} replicates (need >= ${minReplicates})`]),
+        ...(settings.familySize === registry.familySize ? [] : [`family size ${settings.familySize} (the registry's is ${registry.familySize})`]),
+        ...(Math.abs(settings.alpha - alpha) < 1e-12 ? [] : [`α ${fmt(settings.alpha)} (the attempt's is ${fmt(alpha)})`]),
+        ...(G2_SENSITIVITY_VARIANTS.every((x) => settings.units.includes(x)) ? [] : ['not every resampling unit']),
+      ];
+      c.add(`n_power settings ${u.universe}`, off.length === 0, `n_power simulated with ${off.join(', ') || 'the required settings'}`);
+    }
+    // The chosen n confirmed on independent draws: its validation power may not sit significantly below the target.
+    const val = u.power.validation;
+    const goal = settings?.power ?? Number.NaN;
+    const confirmed = val !== undefined && val.n === u.power.nPower && val.power >= goal - N_POWER_VALIDATION_Z * val.standardError;
+    c.add(`n_power validated ${u.universe}`, confirmed, val === undefined
+      ? 'n_power has no independent validation'
+      : `n ${val.n}: power ${fmt(u.power.powerAtN)} ± ${fmt(u.power.standardError)} in the search, ${fmt(val.power)} ± ${fmt(val.standardError)} on independent draws (need >= ${fmt(goal)} − ${N_POWER_VALIDATION_Z}·SE)`);
     // A missing cluster label is missing evidence: the stricter outcome, fail, before the seal opens.
     const unclustered = u.trades.filter((t) => !t.creatorCluster || !t.funderCluster).length;
     c.add(`clusters ${u.universe}`, unclustered === 0, `${unclustered} trades without a creator or funder cluster (need 0)`);
@@ -684,8 +720,13 @@ export interface G3Input {
   readonly dryRunHours: number;
   /** Net returns of the dry-run paper trades (the candidates live kept). */
   readonly dryRunReturns: readonly number[];
-  /** The backtest holdout the dry run is compared with. */
-  readonly holdout: SampleSummary;
+  /**
+   * Creator cluster of each kept trade, aligned with dryRunReturns (decision-time facts). The veto-gap bounds are
+   * cluster-robust over these (external audit S4): trades of one creator in a 48-hour run are not assumed independent.
+   */
+  readonly dryRunClusters: readonly string[];
+  /** The backtest holdout the dry run is compared with: n, and the mean and sd of the estimand it is tagged with. */
+  readonly holdout: SampleSummary & { readonly estimand: string };
   /** The holdout's share of severe outcomes (`y_severe`: blocked, or a net return of −50% or worse). */
   readonly holdoutSevereRate: number;
   /** The agreement plan, registered before the run started. */
@@ -698,11 +739,14 @@ export interface G3Input {
    */
   readonly simulations: { readonly attempted: number; readonly succeeded: number; readonly errors: Readonly<Record<string, number>> };
   /**
-   * One-sided lower bound of the holdout's mean net return at level 1 − α/3 (VETO_COMPOSITE_LEVEL), from the day-block
+   * One-sided lower bound of the holdout's capped mean net return at level 1 − α/4 (VETO_COMPOSITE_LEVEL), from the day-block
    * bootstrap of the holdout (`dayBlockMeanInterval(trades, level, 'lower', …)`) in the scoring stage. The level is
    * checked: a 95% bound would make the composite's simultaneous coverage fall below 95%.
    */
-  readonly holdoutLower: { readonly value: number; readonly level: number };
+  readonly holdoutLower: { readonly value: number; readonly level: number; readonly estimand: string };
+  /** Holdout trades whose net return the estimand capped (rNet > MAX_RETURN_CAP), and those below RETURN_FLOOR. */
+  readonly holdoutCapped: number;
+  readonly holdoutBelowFloor: number;
   readonly candidates: { readonly dryRunCount: number; readonly dryRunHours: number; readonly backtestCount: number; readonly backtestHours: number };
   /** Rejected candidates per reason code. */
   readonly rejectMix: { readonly dryRun: Readonly<Record<string, number>>; readonly backtest: Readonly<Record<string, number>> };
@@ -710,7 +754,10 @@ export interface G3Input {
   readonly liveOnlyVetoes: { readonly vetoed: number; readonly eligible: number };
   /** The vetoed candidates scored as if entered, after the run, by the scoring stage (`scoreVetoCounterfactuals`). */
   readonly vetoCounterfactuals: VetoCounterfactuals;
-  /** Largest net return one trade can make (the bracket's take-profit; 0 < cap ≤ 3). Bounds the worst-case veto gap. */
+  /**
+   * The configured take-profit (0 < cap ≤ 3), checked. The veto gap's worst case comes from the capped estimand
+   * (MAX_RETURN_CAP − RETURN_FLOOR), not from it: a strategy without a hard ceiling can exceed its take-profit (S2, C5).
+   */
   readonly returnCap: number;
   /** |paper fill − simulated transaction amount| per simulated entry or exit, as a fraction of notional. */
   readonly fillDifferences: readonly number[];
@@ -736,6 +783,8 @@ export interface G3Registration {
 export interface VetoCounterfactuals {
   /** Net return of each scored vetoed candidate. */
   readonly returns: readonly number[];
+  /** Creator cluster of each scored return, aligned with `returns`. */
+  readonly clusters: readonly string[];
   /** Vetoed candidates whose outcome window is not fully observed yet. */
   readonly censored: number;
 }
@@ -745,24 +794,59 @@ export interface VetoCounterfactuals {
  * vetoed candidate with the same triple-barrier configuration and execution model as the kept trades, from a paper
  * entry at its decision moment, exactly as it labels a kept trade; this collects those labels. The engine never sees them.
  */
-export const scoreVetoCounterfactuals = (labels: readonly TripleBarrierLabel[]): VetoCounterfactuals => {
+export const scoreVetoCounterfactuals = (labels: readonly TripleBarrierLabel[], creatorClusters: readonly string[]): VetoCounterfactuals => {
   if (new Set(labels.map((l) => l.cfgId)).size > 1) throw new RangeError('veto counterfactuals must use one barrier configuration');
+  if (creatorClusters.length !== labels.length) throw new RangeError(`${labels.length} labels but ${creatorClusters.length} creator clusters`);
   const returns: number[] = [];
+  const clusters: string[] = [];
   let censored = 0;
-  for (const l of labels) {
+  labels.forEach((l, i) => {
     if (l.censored || l.rNet === null) censored++;
-    else returns.push(l.rNet);
-  }
-  return { returns, censored };
+    else {
+      returns.push(l.rNet);
+      clusters.push(creatorClusters[i]!);
+    }
+  });
+  return { returns, clusters, censored };
 };
 
 /**
- * The veto-bias composite is a lower-bound safety claim built from three bounds: the holdout lower bound, the veto-rate
- * upper bound and the gap bound. Each is taken at α/3 (Bonferroni), so all three hold together with probability at
- * least 95% (supervisor ruling after three reviews). Wider bounds are the stricter direction here.
+ * The retained-expectancy bound is a lower-bound safety claim built from four uncertain parts: the holdout lower bound,
+ * the veto-rate upper bound, the gap bound and the fill-error bound (the execution allowance). Each is taken at α/4
+ * (Bonferroni), so all four hold together with probability at least 95%. Before STATS-1g the fill bound was a separate
+ * 95% bound beside three α/3 parts: 3·α/3 + 0.05 = 0.10, so only 90% coverage was established (external audit S1).
+ * Wider bounds are the stricter direction here; the consistency ("agree") checks keep their own levels.
  */
-export const VETO_COMPOSITE_ALPHA = 0.05 / 3;
+export const VETO_COMPOSITE_PARTS = 4;
+export const VETO_COMPOSITE_ALPHA = 0.05 / VETO_COMPOSITE_PARTS;
+/**
+ * G3's bounded estimand (S2, external audit; supervisor and stats rulings): the net return capped at MAX_RETURN_CAP,
+ * r_c = min(rNet, 3). Every bounded G3 input (the holdout mean and lower bound, the veto gap, the agree checks) is on
+ * r_c, labelled with this tag. G1, G2 and the SPA test stay on the uncapped net return.
+ */
+export const CAPPED_ESTIMAND = 'net, capped at +300%';
+export const capReturn = (x: number): number => Math.min(x, MAX_RETURN_CAP);
+/** The tail rule's level (S2, C1): a capped share among the vetoed above the kept arm's, one-sided Fisher at α/4. */
+export const VETO_TAIL_ALPHA = 0.05 / 4;
+
+/** One-sided Fisher exact test: P(X ≥ a) for a of n1 in the first arm, b of n2 in the second, margins fixed. */
+export const fisherGreater = (a: number, n1: number, b: number, n2: number): number => {
+  const k = a + b;
+  const n = n1 + n2;
+  const logC = (x: number, y: number): number => {
+    let r = 0;
+    for (let i = 1; i <= y; i++) r += Math.log(x - y + i) - Math.log(i);
+    return r;
+  };
+  const total = logC(n, k);
+  let p = 0;
+  for (let x = a; x <= Math.min(k, n1); x++) p += Math.exp(logC(n1, x) + logC(n2, k - x) - total);
+  return Math.min(1, p);
+};
 export const VETO_COMPOSITE_LEVEL = 1 - VETO_COMPOSITE_ALPHA;
+/** The capped holdout bound's level (S2, ruling C6): the composite's own, one-sided 1 − α/4 (one constant, M1). */
+export const HOLDOUT_LOWER_ALPHA = VETO_COMPOSITE_ALPHA;
+export const HOLDOUT_LOWER_LEVEL = VETO_COMPOSITE_LEVEL;
 
 /** Level of the joint reject-mix test; an "agree" test, so it is not widened (supervisor ruling). */
 const REJECT_MIX_ALPHA = 0.05;
@@ -791,6 +875,61 @@ export const rejectMixGTest = (
   return { g, df, p: df === 0 ? 1 : incompleteGammaUpper(df / 2, Math.max(0, g) / 2) };
 };
 
+/**
+ * Cluster-robust variance of a sample mean with the Bell–McCaffrey small-sample correction (CR2; Bell & McCaffrey,
+ * Survey Methodology 28(2), 2002; Pustejovsky & Tipton, JBES 36(4), 2018), and its Bell–McCaffrey degrees of freedom
+ * (Imbens & Kolesár, REStat 98(4), 2016). For a mean the hat matrix of cluster g is J/n, so CR2 scales each cluster's
+ * residual sum by (1 − n_g/n)^−½: V = Σ_g (Σ_{i∈g} (x_i − x̄))² / (1 − n_g/n) / n². The df is (tr M)² / tr(M²) for
+ * M_gh = c_g c_h (δ_gh n_g − n_g n_h / n), c_g = (1 − n_g/n)^−½, under a working model of independent equal-variance
+ * trades: tr M = n and tr(M²) = Σ n_g² + (Σ r_g)² − Σ r_g², r_g = n_g² / (n − n_g). With equal cluster sizes the df is
+ * G − 1; with every trade its own cluster V = s²/n and the df is n − 1. One dominant creator lowers the df well below
+ * G − 1, which is what CR1 with G − 1 missed (STATS-1g review B1).
+ */
+const clusterMeanVariance = (xs: readonly number[], clusters: readonly string[]): { variance: number; df: number; clusters: number } => {
+  const n = xs.length;
+  const m = mean(xs);
+  const sums = new Map<string, { sum: number; size: number }>();
+  xs.forEach((x, i) => {
+    const c = sums.get(clusters[i]!) ?? { sum: 0, size: 0 };
+    sums.set(clusters[i]!, { sum: c.sum + (x - m), size: c.size + 1 });
+  });
+  const g = sums.size;
+  if (g < 2) return { variance: Number.NaN, df: Number.NaN, clusters: g };
+  let ss = 0;
+  let sizeSq = 0;
+  let r = 0;
+  let rSq = 0;
+  for (const { sum, size } of sums.values()) {
+    ss += (sum * sum) / (1 - size / n);
+    sizeSq += size * size;
+    const rg = (size * size) / (n - size);
+    r += rg;
+    rSq += rg * rg;
+  }
+  return { variance: ss / (n * n), df: (n * n) / (sizeSq + r * r - rSq), clusters: g };
+};
+
+/**
+ * One-sided (1 − α) cluster-robust Welch bounds on mean(a) − mean(b) (external audit S4, review B1): CR2 variances,
+ * Bell–McCaffrey df per side, combined by Satterthwaite. Equals the classic Welch bound when every observation is its
+ * own cluster.
+ */
+export const clusterWelchBounds = (
+  a: readonly number[], ca: readonly string[], b: readonly number[], cb: readonly string[], alpha = 0.05,
+): { diff: number; lower: number; upper: number; se: number; df: number; clustersA: number; clustersB: number } => {
+  if (ca.length !== a.length || cb.length !== b.length) throw new RangeError('every observation needs its cluster');
+  const diff = mean(a) - mean(b);
+  const va = clusterMeanVariance(a, ca);
+  const vb = clusterMeanVariance(b, cb);
+  if (va.clusters < 2 || vb.clusters < 2) throw new RangeError('cluster-robust bounds need at least two clusters on each side');
+  const se = Math.sqrt(va.variance + vb.variance);
+  const df = (va.variance + vb.variance) ** 2 / (va.variance ** 2 / va.df + vb.variance ** 2 / vb.df);
+  const base = { diff, se, df, clustersA: va.clusters, clustersB: vb.clusters };
+  if (!(se > 0)) return { ...base, lower: diff, upper: diff };
+  const t = studentTQuantile(1 - alpha, df);
+  return { ...base, lower: diff - t * se, upper: diff + t * se };
+};
+
 /** One-sided (1 − α) Welch bounds on mean(a) − mean(b). */
 const welchBounds = (a: readonly number[], b: readonly number[], alpha = 0.05): { diff: number; lower: number; upper: number } => {
   const diff = mean(a) - mean(b);
@@ -809,14 +948,16 @@ const welchBounds = (a: readonly number[], b: readonly number[], alpha = 0.05): 
  * ('not-proven': extend the run), never agreement. The notes say agrees, disagrees or inconclusive. It also bounds the live-only veto
  * bias (review STATS-1b): the backtest keeps trades live would veto, so the retained strategy's expectancy is the holdout
  * mean minus v·Δ, Δ the mean of vetoed candidates (scored as if entered) minus the mean of kept trades. The gate needs
- * holdoutLower − v⁺·max(0, Δ⁺) − execution allowance > 0, and v⁺·|Δ|⁺ ≤ 5 points. Each of the three components is
- * at α/3 (VETO_COMPOSITE_ALPHA): the holdout's one-sided lower bound, v⁺ the one-sided Clopper–Pearson upper bound,
- * Δ⁺ the one-sided Welch upper bound for the selection allowance and |Δ|⁺ from the two-sided Welch bounds (α/6 a
- * side) for the bias. With fewer than 10 scored vetoed or kept trades Δ is the worst case the
- * return range allows (cap − RETURN_FLOOR), never an assumed value. A failure that more run time can clear (missing,
- * censored or too few counterfactuals; a bound that fails while the point estimate passes) is "not proven": extend the
- * dry run. Kept trades within one run are treated as independent (48 h holds about two days, too few to estimate day
- * correlation); the run says so.
+ * holdoutLower − v⁺·max(0, Δ⁺) − execution allowance > 0, and v⁺·|Δ|⁺ ≤ 5 points. Each of the four components is
+ * at α/4 (VETO_COMPOSITE_ALPHA): the holdout's one-sided lower bound, v⁺ the one-sided Clopper–Pearson upper bound,
+ * Δ⁺ the one-sided Welch upper bound for the selection allowance (with |Δ|⁺ from the two-sided bounds, α/8 a side, for
+ * the bias) and the fill-error bound in the execution allowance. The gap bounds are cluster-robust by creator (external
+ * audit S4): trades of one creator are not assumed independent, and with every trade its own creator the bound is the
+ * classic Welch bound. With fewer than 10 scored vetoed or kept trades, unlabelled trades or fewer than two creators a
+ * side, Δ is the worst case the return range allows (cap − RETURN_FLOOR), never an assumed value. A failure that more
+ * run time can clear (missing, censored or too few counterfactuals; a bound that fails while the point estimate passes)
+ * is "not proven": extend the dry run. The consistency ("agree") checks still treat kept trades as independent: that
+ * makes their intervals narrower, so it can only add disagreements, never hide one.
  */
 export const gateG3 = (input: G3Input, overrides?: Partial<typeof G3_DEFAULTS>): GateResult => {
   // The registered plan tightens the defaults; overrides can only tighten the plan further.
@@ -848,14 +989,23 @@ export const gateG3 = (input: G3Input, overrides?: Partial<typeof G3_DEFAULTS>):
   c.add('parity', input.parityTestPassed, input.parityTestPassed ? 'parity passed on the recorded dry-run data' : 'parity failed on the recorded dry-run data');
 
   // Paper outcomes against the holdout's expected distribution: the mean and the severe-outcome share.
+  // The capped estimand (S2): both sides capped identically; each side's capped count is shown (report only).
+  const dryCapped = input.dryRunReturns.map(capReturn);
+  const keptCapped = input.dryRunReturns.filter((x) => x > MAX_RETURN_CAP).length;
+  metrics.keptCapped = keptCapped;
+  metrics.holdoutCapped = input.holdoutCapped;
+  const estimandOk = input.holdoutLower.estimand === CAPPED_ESTIMAND && input.holdout.estimand === CAPPED_ESTIMAND;
+  c.add('estimand', estimandOk, `holdout summary on "${input.holdout.estimand}", holdout bound on "${input.holdoutLower.estimand}" (need "${CAPPED_ESTIMAND}" for both)`);
+  const floorHits = [...input.dryRunReturns, ...input.vetoCounterfactuals.returns].filter((x) => x < RETURN_FLOOR).length + input.holdoutBelowFloor;
+  c.add('return floor', floorHits === 0, `${floorHits} returns below the floor ${RETURN_FLOOR} (dry run, vetoed, holdout; need 0: the estimand's range is [${RETURN_FLOOR}, ${MAX_RETURN_CAP}])`);
   if (m >= th.minPaperTradesForMean) {
-    const dm = mean(input.dryRunReturns);
+    const dm = mean(dryCapped);
     const pi = meanPredictiveInterval(input.holdout, m, th.meanPredictiveLevel);
     metrics.dryRunMean = dm;
     metrics.predictiveLower90 = pi.lower;
     metrics.predictiveUpper90 = pi.upper;
     c.add('mean', dm >= pi.lower && dm <= pi.upper,
-      `dry-run mean ${fmt(dm)} vs holdout ${fmt(100 * th.meanPredictiveLevel)}% predictive interval [${fmt(pi.lower)}, ${fmt(pi.upper)}] for ${m} trades`);
+      `dry-run mean ${fmt(dm)} vs holdout ${fmt(100 * th.meanPredictiveLevel)}% predictive interval [${fmt(pi.lower)}, ${fmt(pi.upper)}] for ${m} trades (${CAPPED_ESTIMAND}: dry run ${keptCapped}, holdout ${input.holdoutCapped} capped)`);
     const severe = input.dryRunReturns.filter((x) => x <= SEVERE_RETURN).length;
     const ci = clopperPearsonInterval(severe, m);
     metrics.dryRunSevereRate = severe / m;
@@ -899,13 +1049,14 @@ export const gateG3 = (input: G3Input, overrides?: Partial<typeof G3_DEFAULTS>):
       `G-test over ${g.df + 1} reasons: G ${fmt(g.g)}, df ${g.df}, p ${fmt(g.p)} (need >= ${REJECT_MIX_ALPHA})`);
   }
 
-  // Executable amounts (TEST-2's bounds: median <= 0.5 points, each <= 2 points).
+  // Executable amounts (TEST-2's bounds: median <= 0.5 points, each <= 2 points). The fill-error bound is the fourth
+  // part of the retained-expectancy composite, so it is one-sided at 1 − α/4 (VETO_COMPOSITE_ALPHA).
   let fillUpper = Infinity;
   let fillMean = Infinity;
   const abs = input.fillDifferences.map(Math.abs);
   if (abs.length > 0) {
     fillMean = mean(abs);
-    fillUpper = abs.length >= 2 ? fillMean + studentTQuantile(0.95, abs.length - 1) * sd(abs) / Math.sqrt(abs.length) : Math.max(...abs);
+    fillUpper = abs.length >= 2 ? fillMean + studentTQuantile(VETO_COMPOSITE_LEVEL, abs.length - 1) * sd(abs) / Math.sqrt(abs.length) : Math.max(...abs);
     metrics.fillDiffMedian = median(abs);
     metrics.fillDiffMax = Math.max(...abs);
   }
@@ -945,7 +1096,7 @@ export const gateG3 = (input: G3Input, overrides?: Partial<typeof G3_DEFAULTS>):
   const vUpper = clopperPearsonUpper(v.vetoed, v.eligible);
   metrics.liveOnlyVetoRate = vRate;
   metrics.liveOnlyVetoUpper95 = vUpper;
-  // The composite's own veto-rate bound, at α/3.
+  // The composite's own veto-rate bound, at α/4.
   const vComposite = clopperPearsonUpper(v.vetoed, v.eligible, VETO_COMPOSITE_ALPHA);
   metrics.vetoRateUpperComposite = vComposite;
   c.add('live-only vetoes', vRate <= th.liveOnlyVetoRateMax,
@@ -954,8 +1105,13 @@ export const gateG3 = (input: G3Input, overrides?: Partial<typeof G3_DEFAULTS>):
   // Veto bias (review STATS-1b). Every vetoed candidate must be scored as if entered, in the separate scoring stage.
   const capOk = input.returnCap > 0 && input.returnCap <= MAX_RETURN_CAP;
   c.add('return cap', capOk, `return cap ${fmt(input.returnCap)} (need in (0, ${MAX_RETURN_CAP}])`);
-  const worstGap = (capOk ? input.returnCap : MAX_RETURN_CAP) - RETURN_FLOOR;
+  // The estimand's range bounds the worst gap (S2, C5), whatever the configured take-profit.
+  const worstGap = MAX_RETURN_CAP - RETURN_FLOOR;
+  metrics.vetoWorstGap = worstGap;
   const cf = input.vetoCounterfactuals;
+  const cfCapped = cf.returns.map(capReturn);
+  const vetoedCapped = cf.returns.filter((x) => x > MAX_RETURN_CAP).length;
+  metrics.vetoedCapped = vetoedCapped;
   const scored = cf.returns.length;
   const unscored = v.vetoed - scored - cf.censored;
   if (unscored < 0) {
@@ -968,19 +1124,27 @@ export const gateG3 = (input: G3Input, overrides?: Partial<typeof G3_DEFAULTS>):
     extend.add('veto counterfactuals');
   }
   const complete = unscored === 0 && cf.censored === 0;
-  const measured = complete && scored >= th.minVetoedForGap && m >= th.minKeptForGap;
+  // Cluster labels for the cluster-robust gap: one per scored vetoed and kept trade, none empty. Missing labels fail.
+  const labelled = cf.clusters?.length === scored && input.dryRunClusters?.length === m
+    && [...cf.clusters, ...input.dryRunClusters].every((x) => typeof x === 'string' && x !== '');
+  if (!labelled) c.add('veto clusters', false, `${cf.clusters?.length ?? 0} cluster labels for ${scored} scored vetoed and ${input.dryRunClusters?.length ?? 0} for ${m} kept trades (need one non-empty creator cluster each)`);
+  const clusterCount = (xs: readonly string[] | undefined) => new Set(xs ?? []).size;
+  const enoughClusters = labelled && clusterCount(cf.clusters) >= 2 && clusterCount(input.dryRunClusters) >= 2;
+  const measured = complete && labelled && enoughClusters && scored >= th.minVetoedForGap && m >= th.minKeptForGap;
   // Δ = vetoed − kept. Unmeasured: the worst gap the return range allows, in either direction.
   let gapUpper = worstGap;
   let gapAbsUpper = worstGap;
   let gapPoint: number | null = null;
   if (measured) {
-    const one = welchBounds(cf.returns, input.dryRunReturns, VETO_COMPOSITE_ALPHA);
-    const two = welchBounds(cf.returns, input.dryRunReturns, VETO_COMPOSITE_ALPHA / 2);
+    const one = clusterWelchBounds(cfCapped, cf.clusters, dryCapped, input.dryRunClusters, VETO_COMPOSITE_ALPHA);
+    const two = clusterWelchBounds(cfCapped, cf.clusters, dryCapped, input.dryRunClusters, VETO_COMPOSITE_ALPHA / 2);
+    metrics.vetoGapClustersVetoed = one.clustersA;
+    metrics.vetoGapClustersKept = one.clustersB;
     gapPoint = one.diff;
     gapUpper = Math.min(one.upper, worstGap);
     gapAbsUpper = Math.min(Math.max(Math.abs(two.upper), Math.abs(two.lower)), worstGap);
   } else {
-    notes.push(`veto gap not measured (${scored} vetoed scored, ${m} kept; need >= ${th.minVetoedForGap} and >= ${th.minKeptForGap}, all scored): the worst case ${fmt(worstGap)} is used`);
+    notes.push(`veto gap not measured (${scored} vetoed scored, ${m} kept; need >= ${th.minVetoedForGap} and >= ${th.minKeptForGap}, all scored, labelled and on >= 2 creator clusters each): the worst case ${fmt(worstGap)} is used`);
   }
   metrics.vetoGap = gapPoint;
   metrics.vetoGapUpper = gapUpper;
@@ -989,12 +1153,18 @@ export const gateG3 = (input: G3Input, overrides?: Partial<typeof G3_DEFAULTS>):
   const biasPoint = gapPoint === null ? null : vRate * Math.abs(gapPoint);
   metrics.vetoBiasUpper = bias;
   if (!c.add('veto bias', bias <= th.vetoBiasMax,
-    `v⁺·|Δ|⁺ at α/3 = ${fmt(vComposite)} × ${fmt(gapAbsUpper)} = ${fmt(bias)}${measured ? '' : ' (worst-case gap)'} (need <= ${th.vetoBiasMax})`)
+    `v⁺·|Δ|⁺ at α/4 = ${fmt(vComposite)} × ${fmt(gapAbsUpper)} = ${fmt(bias)}${measured ? '' : ' (worst-case gap)'} (need <= ${th.vetoBiasMax})`)
     && !(biasPoint !== null && biasPoint > th.vetoBiasMax)) extend.add('veto bias');
+  // Capping can hide a difference in the tails (S2, C1): when the vetoed arm is capped more often than the kept arm
+  // (any capped vetoed trade while no kept trade is capped, or one-sided Fisher at α/4), the bias check is not proven.
+  const tailP = vetoedCapped === 0 ? 1 : fisherGreater(vetoedCapped, scored, keptCapped, m);
+  metrics.vetoTailP = tailP;
+  const tailOk = !(vetoedCapped > 0 && keptCapped === 0) && tailP >= VETO_TAIL_ALPHA;
+  if (!c.add('veto bias tail', tailOk, `capped at +300%: vetoed ${vetoedCapped} of ${scored}, kept ${keptCapped} of ${m}, one-sided Fisher p ${fmt(tailP)} (need no capped vetoed trade without a capped kept one, and p >= ${fmt(VETO_TAIL_ALPHA)})`)) extend.add('veto bias tail');
 
-  const levelOk = Math.abs(input.holdoutLower.level - VETO_COMPOSITE_LEVEL) < 1e-12;
+  const levelOk = Math.abs(input.holdoutLower.level - HOLDOUT_LOWER_LEVEL) < 1e-12;
   c.add('holdout bound level', levelOk,
-    `holdout lower bound at one-sided ${fmt(input.holdoutLower.level)} (need ${fmt(VETO_COMPOSITE_LEVEL)}, α/3 of the veto-bias composite)`);
+    `holdout lower bound at one-sided ${fmt(input.holdoutLower.level)} (need ${fmt(HOLDOUT_LOWER_LEVEL)}, α/4 of the retained-expectancy composite)`);
   const selection = vComposite * Math.max(0, gapUpper);
   const execution = 2 * fillUpper; // an entry and an exit per trade
   const retainedLower = input.holdoutLower.value - selection - execution;
