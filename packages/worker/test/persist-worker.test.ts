@@ -146,7 +146,8 @@ describe('PERSIST-1 in the worker', () => {
     expect(fileSha256(other)).not.toBe(fileSha256(unpacked));
     expect(() => replayBoot({ ...b2, savedState: other }, d)).toThrow(/the recording's copy has sha256/);
     // The copy is handed over once, and only for exactly the reference the seed names.
-    const ref = { file: PERSIST_FILE, sha256: fileSha256(copy), version: 2 };
+    // The seed's hash is the plain bytes' (the copy is packed).
+    const ref = { file: PERSIST_FILE, sha256: createHash('sha256').update(plainBytes).digest('hex'), version: 2 };
     const once = savedStateOf(b2, d);
     expect(once.savedState!(ref).index.factFor(DEV, { slot: 1n << 40n, txIndex: 0, ixIndex: 0, receivedAt: timers.now() }, 0).mints.map((x) => x.mint)).toEqual([MINT]);
     expect(() => once.savedState!(ref)).toThrow(SavedStateMissing);
