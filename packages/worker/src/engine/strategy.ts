@@ -36,7 +36,7 @@ import type { GraduatesSeed } from '../../../core/src/facts/raw.ts';
 /** PERSIST-2: the graduates series as saved (a `GraduatesSeed` without its source). */
 export type SavedGraduates = Omit<GraduatesSeed, 'source'>;
 import { type BookEvent, type IntentState, isTerminal } from '../../../core/src/lifecycle/index.ts';
-import { type AccountHistory, type Latches, type Timed, evaluateEntry, evaluateExit, maxTradeCosts, riskSnapshot } from '../../../core/src/risk/index.ts';
+import { type AccountHistory, type Latches, type Timed, dayLossLine, evaluateEntry, evaluateExit, maxTradeCosts, riskSnapshot } from '../../../core/src/risk/index.ts';
 import { latchable, type markedHistory, markSettings, riskAccount } from './marks.ts';
 import { type Bps, BPS_DENOMINATOR, type Lamports, type MicroUsd, bps, lamportsToMicroUsd, mulDiv, microUsdToLamports } from '../../../core/src/units/index.ts';
 
@@ -533,7 +533,8 @@ export class LiveStrategy implements Strategy {
       // the daily limit, no entry can pass, so the status serves the daily-loss stop instead of "Entries: On".
       if (sol !== null) {
         const policy = this.#d.session.policy;
-        const limit = mulDiv(policy.capital.bankroll, BigInt(policy.loss.dailyBps), BPS, 'floor');
+        // The same line risk applies, an owner day override included (OWNER-REVIEW /override).
+        const limit = dayLossLine(policy, risk.latches, snap.dayStartMs, now);
         const costs = maxTradeCosts(policy, { network: this.#d.config.network, rent: { ...this.#d.config.rent, oneTime: risk.oneTimeRent } }).total;
         if (snap.dayLoss + lamportsToMicroUsd(costs, sol.value, 'ceil') >= limit) codes.add('daily_loss');
       }

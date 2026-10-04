@@ -268,6 +268,8 @@ export class Worker {
   #lastSnapshot: RiskSnapshot | null = null;
   /** OWNER-REVIEW /override: risk's reason codes on that valuation (the day-level stops open then). */
   #lastCodes: readonly string[] = [];
+  /** That valuation was fully marked at a fresh SOL price (`latchable`): only then may /override be offered or applied. */
+  #lastLatchable = false;
   /** RISK-FAULT: why risk last could not value the account, while it still cannot (logged once per episode). */
   #valuationFault: string | null = null;
   /** The journal's `entry` and `exit` lines at start (WORKER-ORDER). */
@@ -929,12 +931,13 @@ export class Worker {
     if (snapshot === null) return;
     this.#lastSnapshot = snapshot;
     this.#lastCodes = exit.tripped.map((r) => r.code);
+    this.#lastLatchable = latchable(account, sol, now, policy.gates.maxQuoteAgeMs);
     const maxAge = policy.gates.maxQuoteAgeMs;
     const marked = account.openPositions.every((o) => o.mark !== null && o.markAtMs !== null && o.markAtMs <= now && now - o.markAtMs <= maxAge);
     // RISK-LATCH: an account-level trip (R9, R10) seen on this valuation is latched now, whether or not an entry or an
     // exit is being evaluated, so a breach that recovers before the next one still holds until the owner reviews it.
     // Only a fully marked valuation at a fresh SOL price latches: an unknown mark is a stand-in loss, not a breach.
-    if (latchable(account, sol, now, maxAge)) {
+    if (this.#lastLatchable) {
       const trips = exit.trips;
       if (trips.length > 0) {
         this.#d.log(`Risk tripped on the account valuation: ${[...trips].sort().join(', ')} (equity ${snapshot.equity}, NAV ${snapshot.nav ?? 'unknown'}).`);
@@ -1546,7 +1549,7 @@ export class Worker {
     const policy = this.#d.session.policy;
     const price = this.#solPrice;
     return openStops({
-      latches: this.#ctl.latches, closed: fact.history.closedTrades, loss: policy.loss, snapshot: this.#lastSnapshot, codes: this.#lastCodes,
+      latches: this.#ctl.latches, closed: fact.history.closedTrades, loss: policy.loss, snapshot: this.#lastSnapshot, codes: this.#lastCodes, latchable: this.#lastLatchable,
       toLamports: (v) => (price === null || price <= 0n || v < 0n ? null : microUsdToLamports(v as MicroUsd, price, 'ceil')),
       dailyLimit: mulDiv(policy.capital.bankroll, BigInt(policy.loss.dailyBps), 10_000n, 'floor'),
       netLamports: (fromMs, toMs) => {

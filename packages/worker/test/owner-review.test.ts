@@ -14,7 +14,9 @@ import type { HttpRequest } from '../src/providers/index.ts';
 import { replySigned, sendHeartbeat, signReply } from '../src/run/heartbeat.ts';
 import { sign, signReply as watchdogSignReply } from '../../ops/src/watchdog/logic.ts';
 import { SOL_PRICE_KEY } from '../src/engine/strategy.ts';
-import { Market, SOL_PRICE, makeWorker } from './worker-harness.ts';
+import { microUsdToLamports } from '../../core/src/units/index.ts';
+import { MINT, Market, SOL_PRICE, makeWorker, passingMarket, until } from './worker-harness.ts';
+import { markedHistory } from '../src/engine/marks.ts';
 
 /** A fresh SOL/USD price and a new slot, then one worker step (the account valuation runs on it). */
 const priced = (h: ReturnType<typeof makeWorker>, m: Market): void => {
@@ -34,7 +36,7 @@ describe('owner commands against the open stops', () => {
   const trades = [1, 2, 3, 4, 5, 6].map((i) => ({ mint: `M${i}`, openedAtMs: T - 7_200_000 + i, closedAtMs: T - 3_600_000 + i * 60_000, notional: 2_000_000n, netPnl: i === 6 ? 50_000n : -100_000n, stoppedOut: i !== 6 }) as never);
   // A stand-in sum that shows which closes it was asked for.
   const stops = (l: Latches): OpenStops =>
-    openStops({ latches: l, closed: trades, loss: LOSS, netLamports: (from, to) => BigInt(to - from), snapshot: null, codes: [], toLamports: (v) => v * 10n, dailyLimit: 1_500_000n });
+    openStops({ latches: l, closed: trades, loss: LOSS, netLamports: (from, to) => BigInt(to - from), snapshot: null, codes: [], latchable: true, toLamports: (v) => v * 10n, dailyLimit: 1_500_000n });
 
   it('names each open stop by kind and moment; a cleared one is not open', () => {
     const s = stops(latched);
@@ -84,8 +86,8 @@ describe('owner commands against the open stops', () => {
   describe('/override', () => {
     const DAY = melbourneDay(T).start;
     const snap = { dayStartMs: DAY, dayLoss: 1_600_000n, lossStreak: 2 } as unknown as RiskSnapshot;
-    const day = (codes: string[], l: Latches = NO_LATCHES, snapshot: RiskSnapshot | null = snap) =>
-      openStops({ latches: l, closed: [], loss: LOSS, netLamports: () => 0n, snapshot, codes, toLamports: (v) => v * 10n, dailyLimit: 1_500_000n });
+    const day = (codes: string[], l: Latches = NO_LATCHES, snapshot: RiskSnapshot | null = snap, latchable = true) =>
+      openStops({ latches: l, closed: [], loss: LOSS, netLamports: () => 0n, snapshot, codes, latchable, toLamports: (v) => v * 10n, dailyLimit: 1_500_000n });
     const at = (o: Partial<DayOverride>): Latches => ({ ...NO_LATCHES, dayOverride: { atMs: DAY + 1, dayStartMs: DAY, dayLossAt: null, streak: true, count: 1, ...o } });
 
     it('is open while risk shows a day-level stop, with the day loss and limit in SOL, and names the day and its overrides', () => {
@@ -97,6 +99,8 @@ describe('owner commands against the open stops', () => {
       // Not a day-level stop, or no valuation yet: nothing to override.
       expect(day(['loss_review', 'weekly_review', 'kill_switch']).override).toBeNull();
       expect(day(['daily_loss'], NO_LATCHES, null).override).toBeNull();
+      // A valuation not fully marked at a fresh SOL price is not evidence: nothing to override.
+      expect(day(['daily_loss', 'loss_cooldown'], NO_LATCHES, snap, false).override).toBeNull();
       // Yesterday's override does not count toward today's.
       expect(day(['daily_loss'], at({ dayStartMs: DAY - 86_400_000, count: 3 })).override?.trip).toBe(`override-${DAY}-0`);
       expect(day(['daily_loss'], at({ count: 1 })).override?.trip).toBe(`override-${DAY}-1`);
@@ -416,6 +420,64 @@ describe('owner commands through the heartbeat (worker harness)', () => {
     await h.worker.heartbeat();
     expect((w.sent.at(-1)!['review'] as Record<string, unknown>)['override']).toBeNull();
     expect(ownerLines(h.stateDir).map((l) => [l['command'], l['result']])).toEqual([['override', 'applied']]);
+    await h.worker.stop();
+  });
+
+  it('/override is offered and applied only on a fully marked valuation: an unknown mark\'s total-loss stand-in is not evidence', async () => {
+    // A held position whose marking the test steers (as the RISK-LATCH review does), plus a $1.60 loss closed today:
+    // R7 ($1.50) trips either way; with the mark unknown, risk counts the position as a total loss on top.
+    const seam = { lost: false, unmarked: false };
+    const mark: typeof markedHistory = (h0, held, sol, nowMs, st) => {
+      const lost = { mint: 'MintD' as never, openedAtMs: nowMs - 120_000, closedAtMs: nowMs - 60_000, notional: 3_000_000n as never, netPnl: -1_600_000n as never, stoppedOut: true };
+      const r = markedHistory(seam.lost ? { ...h0, closedTrades: [...h0.closedTrades, lost] } : h0, held, sol, nowMs, st);
+      return seam.unmarked ? { ...r, openPositions: r.openPositions.map((o) => ({ ...o, mark: null, markAtMs: null })) } : r;
+    };
+    const clock = { now: () => 0 };
+    const w = watchdog(() => clock.now());
+    const h = makeWorker({ markedHistory: mark, key: 'k', http: w.http });
+    clock.now = () => h.timers.now();
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    const m = await passingMarket(h);
+    const read = h.worker.feed.releasedThrough;
+    m.tradesStart(read - 100n);
+    m.accountsRead(read);
+    const held = () => Object.values(h.worker.book.positions).find((p) => String(p.mint) === MINT);
+    expect(await until(m, 40_000, () => held()?.status === 'open', () => { m.slot(); m.pool(); })).toBe(true);
+    const tick = (): void => {
+      m.slot();
+      m.chainSwap('buy', m.chainState.baseReserve / 1_000_000n, h.worker.feed.openSlot);
+      m.solPrice();
+    };
+    const offered = async () => {
+      await h.worker.heartbeat();
+      return (w.sent.at(-1)!['review'] as Record<string, { trip: string; evidence: Record<string, unknown> } | null>)['override'];
+    };
+    // Unmarked: R7 trips on the stand-in, but nothing is offered, and a confirm of the day's trip is stale.
+    seam.lost = true;
+    seam.unmarked = true;
+    await until(m, 2_000, () => false, tick);
+    expect(held()?.status).toBe('open');
+    expect(await offered()).toBeNull();
+    const trip = `override-${melbourneDay(h.timers.now()).start}-0`;
+    w.reply([{ id: trip, kind: 'override', trip }]);
+    await h.worker.heartbeat();
+    w.reply(undefined);
+    expect(controlFile(h.stateDir).read(NO_CONTROL).latches.dayOverride ?? null).toBeNull();
+    expect(controlFile(h.stateDir).read(NO_CONTROL).commands?.map((c) => [c.id, c.result])).toEqual([[trip, 'stale']]);
+    // The same day with fresh marks: offered, and applied with the real day loss (the $1.60 plus the position's real move).
+    seam.unmarked = false;
+    await until(m, 2_000, () => false, tick);
+    const stop = await offered();
+    expect(stop?.trip).toBe(trip);
+    w.reply([{ id: `${trip}:2`, kind: 'override', trip }]);
+    await h.worker.heartbeat();
+    const o = controlFile(h.stateDir).read(NO_CONTROL).latches.dayOverride;
+    // The real loss: the $1.60 and the position's marked move, below the total-loss stand-in ($1.60 plus its notional),
+    // and the very figure the owner saw in SOL (the offer's evidence).
+    const notional = accountFile(h.stateDir).read(null as never).trades.find((t) => t.positionId === held()!.id)!.notional;
+    expect(o?.dayLossAt).toBeGreaterThan(1_600_000n);
+    expect(o?.dayLossAt).toBeLessThan(1_600_000n + notional);
+    expect(String(microUsdToLamports(o!.dayLossAt!, SOL_PRICE, 'ceil'))).toBe(stop?.evidence['day_loss_lamports']);
     await h.worker.stop();
   });
 });

@@ -72,6 +72,11 @@ export interface StopInputs {
   readonly snapshot: RiskSnapshot | null;
   /** Risk's reason codes on that valuation (its exit check), for the day-level stops; empty before the first one. */
   readonly codes: readonly string[];
+  /**
+   * That valuation was fully marked at a fresh SOL price (marks.ts `latchable`, the RISK-LATCH evidence rule). Otherwise
+   * an unknown mark stands in as a total loss, so its day loss is not evidence: /override is neither offered nor applied.
+   */
+  readonly latchable: boolean;
   /** Micro-dollars as lamports at the current SOL price, or null without one (SOL figures until SOL-BOOKS). */
   readonly toLamports: (usd: bigint) => bigint | null;
   /** The daily loss limit (micro-dollars). */
@@ -114,7 +119,7 @@ const overrideStop = (i: StopInputs): OpenStop | null => {
   const s = i.snapshot;
   const daily = i.codes.includes('daily_loss');
   const streak = i.codes.includes('loss_cooldown') || i.codes.includes('loss_day_pause');
-  if (s === null || !DAY_CODES.some((c) => i.codes.includes(c))) return null;
+  if (s === null || !i.latchable || !DAY_CODES.some((c) => i.codes.includes(c))) return null;
   const prev = i.latches.dayOverride ?? null;
   const count = prev !== null && prev.dayStartMs === s.dayStartMs ? prev.count : 0;
   return {

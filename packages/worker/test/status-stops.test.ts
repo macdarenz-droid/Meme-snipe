@@ -62,6 +62,19 @@ describe('the strategy reads the account stops from its risk state', () => {
     expect(codes(lost(limit - costs))).toEqual(['daily_loss']);
     expect(codes(lost(limit - 1n))).toEqual(['daily_loss']);
   });
+  it('under the owner\'s day override the per-entry R7 stop uses risk\'s moved line, so the status never shows a stop risk no longer applies', () => {
+    const policy = startSession(TRIAL_POLICY).policy;
+    const config = strategyConfig(policy, FILL_CONFIG, RESEARCH_CONFIG);
+    const limit = mulDiv(policy.capital.bankroll, BigInt(policy.loss.dailyBps), BPS_DENOMINATOR, 'floor');
+    const costs = lamportsToMicroUsd(maxTradeCosts(policy, { network: config.network, rent: { ...config.rent, oneTime: 0n } }).total, PRICE, 'ceil');
+    const lost = (micro: bigint) => account({ closedTrades: [trade(DAY_START + HOUR, `-${micro / 1_000_000n}.${String(micro % 1_000_000n).padStart(6, '0')}`, { notional: usd('5') })] });
+    const o = latches({ dayOverride: { atMs: DAY_START + 2 * HOUR, dayStartMs: DAY_START, dayLossAt: limit, streak: false, count: 1 } });
+    expect(codes(lost(limit), o)).not.toContain('daily_loss');
+    expect(codes(lost(2n * limit - costs - 1n), o)).not.toContain('daily_loss');
+    expect(codes(lost(2n * limit - costs), o)).toContain('daily_loss');
+    // Yesterday's override moves nothing.
+    expect(codes(lost(limit), latches({ dayOverride: { atMs: DAY_START - 2 * HOUR, dayStartMs: DAY_START - 24 * HOUR, dayLossAt: limit, streak: false, count: 1 } }))).toContain('daily_loss');
+  });
   it('2 losses in a row: the 2 h cooldown (R8)', () => {
     expect(codes(account({ closedTrades: [small(NOW - 3 * HOUR), small(NOW - HOUR)] }))).toContain('loss_cooldown');
   });

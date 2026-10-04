@@ -45,6 +45,16 @@ export const activeOverride = (latches: Latches, dayStartMs: number, nowMs: numb
   return o !== null && o.dayStartMs === dayStartMs && o.atMs <= nowMs ? o : null;
 };
 
+/**
+ * R7's line: the day's loss at which entries stop. The daily limit, or after an owner override of a tripped R7 a further
+ * full daily limit beyond the loss at the override (DayOverride). Shared with the status (strategy #readStops).
+ */
+export const dayLossLine = (policy: Policy, latches: Latches, dayStartMs: number, nowMs: number): bigint => {
+  const limit = ofBps(policy.capital.bankroll, policy.loss.dailyBps, 'floor');
+  const o = activeOverride(latches, dayStartMs, nowMs);
+  return o === null || o.dayLossAt === null ? limit : o.dayLossAt + limit;
+};
+
 /** An R8 review that is due: the window of `trades` trades closed from `fromMs` to `toMs` holds `losses` losses. */
 export interface LossReviewTrip {
   /** The close of the loss that completed the window: the trip's moment, the same until the owner reviews it. */
@@ -317,8 +327,7 @@ const accountCheck = (input: RiskInput, nowMs: number): AccountCheck => {
 
   // R7: today's realized and marked loss against the daily trigger (costs of a new trade are added per entry). After an
   // override of a tripped R7, the trigger is a further full daily limit beyond the loss at the override.
-  const dailyLimit = ofBps(policy.capital.bankroll, policy.loss.dailyBps, 'floor');
-  const dayLine = override === null || override.dayLossAt === null ? dailyLimit : override.dayLossAt + dailyLimit;
+  const dayLine = dayLossLine(policy, latches, s.dayStartMs, nowMs);
   if (s.dayLoss >= dayLine) reasons.push(reason('daily_loss', 'daily loss trigger reached; entries resume at midnight Melbourne time'));
 
   // R8: consecutive losses. After an override of an open streak pause, only trades closed after it count.
