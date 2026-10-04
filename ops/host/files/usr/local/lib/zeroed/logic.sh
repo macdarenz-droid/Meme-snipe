@@ -74,10 +74,16 @@ evidence_index() {
 # serve_ok: reads `tailscale serve status --json` on stdin; true only when HTTPS 443 proxies to the worker API
 # on loopback and Funnel is off everywhere.
 serve_ok() {
+  # Exactly one thing published (OPS-1h review): HTTPS on 443, one host, its "/" proxied to the worker API and
+  # nothing else (no other path, port, host, TCP forward or service), and Funnel on for nothing. A serve made by hand
+  # is adopted only in this shape.
   jq -e --arg target "http://$WORKER_API_ADDR" '
-    ([(.Web // {}) | to_entries[] | select(.key | endswith(":443")) | .value.Handlers["/"].Proxy] | any(. == $target))
-    and ((.AllowFunnel // {}) | to_entries | all(.value != true))
-    and ((.TCP // {}) | to_entries | all(.value.HTTPS == true))' >/dev/null 2>&1
+    type == "object"
+    and ((keys - ["TCP", "Web", "AllowFunnel"]) == [])
+    and .TCP == {"443": {"HTTPS": true}}
+    and ((.Web // {}) | length == 1)
+    and ((.Web // {}) | to_entries[0] | (.key | endswith(":443")) and .value == {"Handlers": {"/": {"Proxy": $target}}})
+    and ((.AllowFunnel // {}) | to_entries | all(.value != true))' >/dev/null 2>&1
 }
 
 # funnel_ports: reads `tailscale serve status --json` on stdin and prints each "host:port" that Funnel makes
