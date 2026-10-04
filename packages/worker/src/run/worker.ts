@@ -40,6 +40,7 @@ import { Journal } from './journal.ts';
 import { type PaperMarket, type PaperState, PaperWorld, type SimLeg } from './paper-world.ts';
 import { Recorder, sealLeftovers } from './recorder.ts';
 import { entryPrice, openPositionsHealth } from './open-positions.ts';
+import { riskSnapshot } from '../../../core/src/risk/index.ts';
 import { type Control, NO_CONTROL, StateFile, controlFile, exitsFile, exposedFile, NO_EXPOSED } from './state.ts';
 import { parsePool } from '../../../core/src/gates/index.ts';
 import { type PoolFeeContext, poolSell } from '../../../core/src/amm/index.ts';
@@ -168,6 +169,8 @@ export class Worker {
   #lastSlot: bigint | null = null;
   #ticked: bigint | null = null;
   #solPrice: MicroUsd | null = null;
+  /** When that price was seen (its fact's `atMs`), for risk's freshness check in the account marks. */
+  #solPriceAt: number | null = null;
   #pools = new Map<string, unknown>();
   #fees = new Map<string, PoolFeeContext>();
   #createSig = new Map<string, string>();
@@ -386,6 +389,7 @@ export class Worker {
       if (p !== null) {
         const first = this.#account.state.walletLamports === null || this.#account.state.oneTimePaid !== true;
         this.#solPrice = p.price as MicroUsd;
+        this.#solPriceAt = isObj(m.value) && typeof m.value['atMs'] === 'number' ? m.value['atMs'] : m.moment.receivedAt;
         this.#account.price(this.#solPrice, m.moment.receivedAt);
         // The paper wallet exists from the first price on: risk needs its balance (R4).
         if (first && this.#account.state.walletLamports !== null && this.#reconciled) this.#publishAccount();
@@ -484,7 +488,29 @@ export class Worker {
       this.#exitsFile.write(saved);
       this.#savedExits = text;
     }
+    this.#markAccount(now);
     this.#checkHalt(now);
+  }
+
+  /**
+   * WORKER-1c: the day and week boundary marks and the NAV peak, from the figures risk would use now. When they change,
+   * the account fact is put again, so the next evaluation's day and week loss take the stricter of the realized and the
+   * marked measure and R10 sees the peak.
+   */
+  #markAccount(now: number): void {
+    if (!this.#reconciled) return;
+    const fact = this.#account.fact(this.#ledger, this.#desk.book, this.#ctl.latches, this.#solPrice, now);
+    const snapshot = riskSnapshot({
+      session: this.#d.session, mode: 'paper', clock: { now: () => ({ slot: this.#lastSlot ?? 0n, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt: now }) },
+      account: fact.history, latches: fact.latches,
+      market: { solPrice: this.#solPrice === null || this.#solPriceAt === null ? null : { value: this.#solPrice, atMs: this.#solPriceAt }, solBalance: fact.solBalance, regime: 'unknown' },
+    });
+    if (snapshot === null) return;
+    const day = this.#account.state.dayMark?.startMs;
+    if (this.#account.mark(snapshot, this.#ctl.latches.killRearmedAtMs, now)) {
+      if (day !== snapshot.dayStartMs) this.#d.log(`Account marks: equity ${snapshot.equity} at ${new Date(now).toISOString()} for the Melbourne day from ${new Date(snapshot.dayStartMs).toISOString()}.`);
+      this.#publishAccount();
+    }
   }
 
   #afterRecord(r: LogRecord): void {
