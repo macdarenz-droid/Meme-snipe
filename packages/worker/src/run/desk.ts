@@ -7,7 +7,7 @@ import type { IntentId, ReservationId } from '../../../core/src/domain/index.ts'
 import type { LogRecord } from '../../../core/src/engine/index.ts';
 import type { Ledger } from '../../../core/src/ledger/index.ts';
 import { applyBookEvent, type Book, type BookConfig, type BookEvent, isIllegal, isTerminal, isUnresolved } from '../../../core/src/lifecycle/index.ts';
-import type { Lamports } from '../../../core/src/units/index.ts';
+import type { Lamports, MicroUsd } from '../../../core/src/units/index.ts';
 import { GATE_REASONS_PREFIX, S0_DIAGNOSTIC_PREFIX, reservationOf } from '../engine/strategy.ts';
 
 /** Open intents for the host's update gate: intents not finished (`open_intents`, ops/README.md). */
@@ -33,6 +33,8 @@ export interface DeskDeps {
   readonly filled: (r: { readonly purpose: 'entry' | 'exit'; readonly positionId: string; readonly mint: string; readonly book: Book; readonly atMs: number; readonly reasons: readonly string[] }) => void;
   /** Fill lines the journal already holds (`journaledFillKeys`), each skipped once when its fill is booked again. */
   readonly journaledFills?: Set<string>;
+  /** The SOL/USD price a fill is booked at now (null before the first price), written on its line as `sol_usd`. */
+  readonly solUsd?: () => MicroUsd | null;
   /** Test seam: called right after each of a fill's two durable writes (a crash image is taken there). */
   readonly crashPoint?: (point: 'fill-journaled' | 'fill-committed', intentId: string) => void;
 }
@@ -202,7 +204,8 @@ export class Desk {
       ? ['entry filled (paper)', ...(this.#why.get(s.intent.id) ?? [])]
       : ['exit filled (paper)', ...(before.positions[pid]?.exitOwner?.reasons ?? [])];
     this.#why.delete(s.intent.id);
-    const line = { trade: pid, intent: s.intent.id, mint: s.intent.mint, tokens, sol, fees, position: p?.status ?? null, reasons };
+    // `sol_usd`: the rate this fill's cash flow is valued at, so a restart that catches the account up uses it too (PAPER-1).
+    const line = { trade: pid, intent: s.intent.id, mint: s.intent.mint, tokens, sol, fees, position: p?.status ?? null, sol_usd: this.#d.solUsd?.() ?? null, reasons };
     const key = fillKey(s.intent.id, tokens);
     if (this.#d.journaledFills?.has(key) === true) {
       this.#d.journaledFills.delete(key);

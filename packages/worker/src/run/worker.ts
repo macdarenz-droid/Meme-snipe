@@ -195,6 +195,9 @@ const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object
 /** Present while the state dir began empty and no full start has journaled its `recovered` line yet. */
 const COLD_START = 'cold_start';
 
+/** On a caught-up fill whose journal line holds no `sol_usd`: it was valued at the SOL price after the restart. */
+export const FILL_RATE_UNKNOWN = 'fill sol_usd unknown: valued at the price after restart';
+
 /** The `entry` and `exit` lines of a journal file (none when it is missing); torn or unreadable lines are skipped. */
 const readJournalFills = (path: string): Record<string, unknown>[] => {
   if (!existsSync(path)) return [];
@@ -403,6 +406,7 @@ export class Worker {
       journal: (kind, fields) => this.#journal.write(kind, fields),
       // Fill lines written before a kill that came ahead of the ledger: the restart books those fills again, once.
       journaledFills: journaledFillKeys(this.#fillLines),
+      solUsd: () => this.#solPrice,
       ...(d.crashPoint === undefined ? {} : { crashPoint: d.crashPoint }),
       report: (event) => this.#report(event),
       accountChanged: () => this.#publishAccount(),
@@ -693,7 +697,7 @@ export class Worker {
 
   /**
    * WORKER-ORDER: records the fills a kill between the ledger commit and account.json left out, from the book and the
-   * fill's own journal line (always written before the ledger since §12.4: its time and reasons), at the SOL price now.
+   * fill's own journal line (always written before the ledger since §12.4: its time, reasons and SOL/USD rate).
    */
   #catchUpAccount(): void {
     const book = this.#desk.book;
@@ -703,8 +707,13 @@ export class Worker {
       const line = this.#fillLines.filter((l) => l['kind'] === b.purpose && l['trade'] === b.positionId && (b.purpose === 'entry' || l['position'] === 'closed')).at(-1);
       const at = typeof line?.['ts'] === 'string' ? Date.parse(line['ts']) : Number.NaN;
       const reasons = Array.isArray(line?.['reasons']) ? (line['reasons'] as unknown[]).filter((x): x is string => typeof x === 'string') : [`${b.purpose} filled (paper)`];
-      this.#account.filled({ purpose: b.purpose, positionId: p.id, mint: String(p.mint), book, atMs: Number.isFinite(at) ? at : this.#d.timers.now(), reasons }, this.#solPrice);
-      this.#d.log(`Account caught up: the ${b.purpose} of ${p.id} was in the ledger but not in account.json (a kill between the two).`);
+      // Valued at the fill's own SOL/USD rate from its line (PAPER-1). Null there means no price at booking, which the
+      // live path valued as null too (the safe side); only a line without the field falls back to the price now, flagged.
+      const raw = line?.['sol_usd'];
+      const known = raw === null || (typeof raw === 'string' && /^\d+$/.test(raw));
+      const rate = known ? (raw === null ? null : (BigInt(raw as string) as MicroUsd)) : this.#solPrice;
+      this.#account.filled({ purpose: b.purpose, positionId: p.id, mint: String(p.mint), book, atMs: Number.isFinite(at) ? at : this.#d.timers.now(), reasons: known ? reasons : [...reasons, FILL_RATE_UNKNOWN] }, rate);
+      this.#d.log(`Account caught up: the ${b.purpose} of ${p.id} was in the ledger but not in account.json (a kill between the two)${known ? '' : `; ${FILL_RATE_UNKNOWN}`}.`);
     }
     this.#accountBehind = [];
     if (this.#reconciled) this.#publishAccount();

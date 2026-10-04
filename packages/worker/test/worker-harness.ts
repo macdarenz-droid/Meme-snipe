@@ -224,6 +224,8 @@ export class Market {
    * default, as live (POS-1): after entry nothing re-reads the pool, and its state moves only with `chainSwap`.
    */
   heldPoolFacts = false;
+  /** The SOL/USD price the `pool()` and `solPrice()` facts carry (micro-dollars). */
+  solUsd: bigint = SOL_PRICE;
   /** The pool's reserves as the last `accountsRead` or `chainSwap` left them. */
   #chain: PoolState | null = null;
 
@@ -268,7 +270,7 @@ export class Market {
     const base = now(poolKey(MINT)) as unknown as Record<string, unknown>;
     if (this.heldPoolFacts || !this.held()) this.fact(poolKey(MINT), { ...base, quoteVault: ((base['quoteVault'] as bigint) * quoteScalePpm) / 1_000_000n });
     if (this.withFees) this.fact(feesKey(MINT), FEE_CONTEXT);
-    this.fact(SOL_PRICE_KEY, { value: SOL_PRICE, atMs: this.now - 50 });
+    this.fact(SOL_PRICE_KEY, { value: this.solUsd, atMs: this.now - 50 });
     for (const k of [lpKey(MINT), holdersKey(MINT), softKey(MINT), xcheckKey(MINT), EXEC_HEALTH_KEY]) this.fact(k, now(k));
     // The simulation of the spend the worker will judge: q_min at the SOL price, rounded up to whole lamports.
     const spend = microUsdToLamports(TRIAL_POLICY.capital.minNotional, SOL_PRICE as MicroUsd, 'ceil');
@@ -281,7 +283,7 @@ export class Market {
 
   /** A fresh live SOL/USD price (what the price stream keeps current). */
   solPrice(): void {
-    this.fact(SOL_PRICE_KEY, { value: SOL_PRICE, atMs: this.now - 50 });
+    this.fact(SOL_PRICE_KEY, { value: this.solUsd, atMs: this.now - 50 });
   }
 
   /** A position on the passing mint is open or closing. */
