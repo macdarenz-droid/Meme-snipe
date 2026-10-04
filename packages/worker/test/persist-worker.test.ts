@@ -89,7 +89,9 @@ describe('PERSIST-1 in the worker', () => {
     const P = TRIAL_POLICY.regime;
     const items = Array.from({ length: 64 }, (_, k) => ({ mint: `Grad${k}`, migratedAtMs: m.now - 2 * 3_600_000 - k * 6 * 3_600_000, reserveAfter: k % 3 === 0 ? 1n : 100_000_000_000n }))
       .sort((a, b) => a.migratedAtMs - b.migratedAtMs);
-    m.fact(GRADUATES_KEY, { obs: { provider: 'facts', slot: null, receivedAt: m.now, quality: [] }, items });
+    // One more graduate whose +30 min mark is still ahead at the save: it is not saved.
+    const young = { mint: 'Young', migratedAtMs: m.now - 10 * 60_000, reserveAfter: 1n };
+    m.fact(GRADUATES_KEY, { obs: { provider: 'facts', slot: null, receivedAt: m.now, quality: [] }, items: [...items, young] });
     await m.run(1_000, 200, () => m.slot());
     expect(survivalCondition({ obs: { provider: 'facts', slot: null, receivedAt: m.now, quality: [] }, items }, m.now, P).ok).not.toBeNull();
     await h.worker.stop();
