@@ -117,22 +117,31 @@ func TestPauseModeWaitsAtLeastOneHour(t *testing.T) {
 
 // ARCHIVE-SAFE: a 503 without Retry-After stops the run like a 429 (no retry), and
 // the request cap is 10 per second.
-func TestPlain503StopsLikeA429(t *testing.T) {
-	dir := t.TempDir()
-	resetPoliteness(t, dir)
-	stopOn429 = true
-	var hits int
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hits++
-		w.WriteHeader(http.StatusServiceUnavailable)
-	}))
-	defer srv.Close()
-	_, err := fetchRange(context.Background(), srv.URL+"/x.car", 0, 10)
-	if !errors.Is(err, errStopped) || !stopped.Load() || hits != 1 {
-		t.Fatalf("err=%v stopped=%v hits=%d", err, stopped.Load(), hits)
-	}
-	if _, ok := readState(dir); !ok {
-		t.Fatalf("no back-off persisted after a plain 503")
+func TestPlain503And403StopLikeA429(t *testing.T) {
+	for _, code := range []int{http.StatusServiceUnavailable, http.StatusForbidden} {
+		for _, small := range []bool{false, true} {
+			dir := t.TempDir()
+			resetPoliteness(t, dir)
+			stopOn429 = true
+			var hits int
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				hits++
+				w.WriteHeader(code)
+			}))
+			var err error
+			if small {
+				_, err = fetchSmall(srv.URL + "/x")
+			} else {
+				_, err = fetchRange(context.Background(), srv.URL+"/x.car", 0, 10)
+			}
+			srv.Close()
+			if !errors.Is(err, errStopped) || !stopped.Load() || hits != 1 {
+				t.Fatalf("status %d (small %v): err=%v stopped=%v hits=%d", code, small, err, stopped.Load(), hits)
+			}
+			if _, ok := readState(dir); !ok {
+				t.Fatalf("status %d (small %v): no back-off persisted", code, small)
+			}
+		}
 	}
 }
 
