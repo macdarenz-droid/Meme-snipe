@@ -26,7 +26,7 @@ import {
 import { observedFeeContext, type ScenarioName } from '../../../core/src/fills/index.ts';
 import {
   DeployerIndex, evaluateHardRejects, evaluateRegime, type GateContext, holdersKey, parseHolders, parseSolUsd, SOL_USD_KEY, solUsdAt, TX_CREATE_PREFIX, type Universe,
-  migrationKey, parseMigration, concentration, mintAccounts, type HardResult, type HardGate, gatesOfStages, HARD_GATES,
+  migrationKey, parseMigration, concentration, mintAccounts, poolKey, parsePool, type HardResult, type HardGate, gatesOfStages, HARD_GATES,
 } from '../../../core/src/gates/index.ts';
 import { OBSERVED_TIP_KEY } from '../sim/market.ts';
 import { canOpenNewEntry, isTerminal, type IntentState } from '../../../core/src/lifecycle/index.ts';
@@ -750,13 +750,25 @@ export const u2Setup = (r: U2Rules, tape: PoolTape, spot: bigint, now: number, m
   return { ok: true, stopSpot: (recentLow * (BPS - BigInt(r.stopBelowLowBps))) / BPS };
 };
 
-/** Wallet holders now (the gates' exclusions applied), from the holders fact. */
-const walletHolders = (ctx: StrategyContext, mint: string, asOf?: Parameters<StrategyContext['lookup']>[1]): number | null => {
+/**
+ * H3's holder count as of a moment (#115 definitions.holderGrowth, audit B3): distinct wallet owners whose accounts of
+ * the mint sum to a positive balance. The pool vault (of the tape's pool, named by its pool fact), the curve, the
+ * mayhem vault, burns, lockers and program-owned accounts are not holders. Only complete coverage counts: a
+ * largest-accounts view, a quality flag, accounts that do not sum to the supply, or no pool fact for the tape's pool
+ * leave it unknown (null), and the condition then fails.
+ */
+export const walletHolders = (ctx: Pick<StrategyContext, 'lookup'>, mint: string, pool: string, asOf?: Parameters<StrategyContext['lookup']>[1]): number | null => {
   const r = ctx.lookup(holdersKey(mint), asOf);
   const h = r.ok ? parseHolders(r.value) : null;
-  if (h === null || h.obs.quality.length > 0) return null;
-  const c = concentration(h, mintAccounts(mint, null));
-  return c.classes.filter((x) => x.cls === 'wallet' || x.cls === 'unknown-program' || x.cls === 'locker').length;
+  if (h === null || h.obs.quality.length > 0 || h.coverage !== 'all') return null;
+  const pr = ctx.lookup(poolKey(mint), asOf);
+  const pf = pr.ok ? parsePool(pr.value) : null;
+  if (pf === null || pf.address !== pool) return null;
+  const c = concentration(h, mintAccounts(mint, { address: pf.address, baseVault: pf.pool.poolBaseTokenAccount }));
+  if (c.unaccounted !== 0n) return null;
+  const byOwner = new Map<string, bigint>();
+  for (const x of c.classes) if (x.cls === 'wallet') byOwner.set(x.owner, (byOwner.get(x.owner) ?? 0n) + x.amount);
+  return [...byOwner.values()].filter((v) => v > 0n).length;
 };
 
 /** U1: range breakout with volume and holder growth, on pools with a market cap of size (§3.2). */
@@ -772,10 +784,10 @@ export const u1Setup = (r: U1Rules, tape: PoolTape, spot: bigint, now: number, c
   const vol = (bs: readonly { buyQuote: bigint; sellQuote: bigint }[]) => bs.reduce((s, b) => s + b.buyQuote + b.sellQuote, 0n);
   const per = (vol(range) * BigInt(r.recentMs)) / BigInt(r.rangeMs - r.recentMs);
   if (vol(recent) * 10n < per * BigInt(r.volumeTenths)) return { ok: false, why: `volume ${vol(recent)} below ${r.volumeTenths}/10 of ${per}` };
-  const nowHolders = walletHolders(ctx, mint);
+  const nowHolders = walletHolders(ctx, mint, tape.last?.view.pool ?? '');
   const past = ctx.history(holdersKey(mint), { slot: 0n, txIndex: 0, ixIndex: 0, receivedAt: 0 });
   const thenEntry = Array.isArray(past) ? [...past].reverse().find((x) => x.moment.receivedAt <= now - r.rangeMs) : undefined;
-  const thenHolders = thenEntry === undefined ? null : walletHolders(ctx, mint, thenEntry.moment);
+  const thenHolders = thenEntry === undefined ? null : walletHolders(ctx, mint, tape.last?.view.pool ?? '', thenEntry.moment);
   if (nowHolders === null || thenHolders === null || thenHolders === 0) return { ok: false, why: 'holder growth unknown' };
   if ((nowHolders - thenHolders) * Number(BPS) < thenHolders * r.holderGrowthBps) return { ok: false, why: `holders ${thenHolders} -> ${nowHolders}` };
   const low = lowOf(tape.between(now - r.stopLowMs, now + BAR_MS));
