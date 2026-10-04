@@ -188,6 +188,8 @@ interface RestartPending {
   /** The reply's journal_seq: journal lines after it were written between the reply and the kill. */
   killSeq?: number | null;
   inFlight?: number;
+  /** The in-flight entries' trade ids in that reply: one that landed before the kill is counted once, as a position. */
+  inFlightTrades?: readonly string[];
   /** Things the restart had to keep: positions, in-flight entries and pending exits (for host loss, the backup's). */
   keep?: number;
   /** Opened after the backup (host loss): reported, not expected back. */
@@ -370,6 +372,7 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
           p.atKill = p.killValid ? kept(h) : { pending_exits: [], positions: [] };
           p.killSeq = h?.journal_seq ?? null;
           p.inFlight = h?.unresolved_intents.count ?? 0;
+          p.inFlightTrades = h && Array.isArray(h.unresolved_intents.trades) ? [...h.unresolved_intents.trades] : [];
           p.expect = cause === 'chain-rebuild' ? null : cause === 'host-loss' ? (backup?.expect ?? { pending_exits: [], positions: [] }) : p.atKill;
           const inFlight = h?.unresolved_intents.count ?? 0;
           p.keep =
@@ -448,6 +451,9 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
         if (opened.length) {
           const atKill = p.atKill ?? { pending_exits: [], positions: [] };
           p.atKill = { ...atKill, positions: [...atKill.positions, ...opened] };
+          // An entry the reply showed in flight and that landed before the kill is now a position: not also in flight.
+          const landed = opened.filter((x) => (p.inFlightTrades ?? []).includes(x.trade)).length;
+          p.inFlight = Math.max(0, (p.inFlight ?? 0) - landed);
           if (cause === 'crash' || cause === 'reboot') {
             p.expect = p.atKill;
             p.keep = p.atKill.positions.length + p.atKill.pending_exits.length + (p.inFlight ?? 0);

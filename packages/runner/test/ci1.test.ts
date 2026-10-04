@@ -120,7 +120,10 @@ describe('a trade opened between the reply and the kill (the mirror case)', () =
     expect(openedSince([line(5, 'entry', 't1')], 'b', 4)).toEqual([{ trade: 't1', universe: 'unknown' }]);
   });
 
-  it('is a trade the restart must keep, and the drill checks it (the reply still showed none)', async () => {
+  it.each([
+    ['showed none', false],
+    ['showed it as an entry in flight (counted once, not twice)', true],
+  ])('is a trade the restart must keep, and the drill checks it (the reply %s)', async (_, inFlight) => {
     const dir = mkdtempSync(join(tmpdir(), 'ci1-opened-'));
     const addr = `127.0.0.1:${await freePort()}`;
     const stateDir = join(dir, 'state');
@@ -131,7 +134,12 @@ describe('a trade opened between the reply and the kill (the mirror case)', () =
     const fetchHealth = async (a: string): Promise<Health | null> => {
       const h = await httpHealth(a);
       if (frozen && h?.boot === frozen.h.boot && Date.now() < frozen.until) return frozen.h;
-      if (frozen === null && h?.reconciled && !h.open_position) frozen = { h, until: Date.now() + 8000 };
+      if (frozen === null && h?.reconciled && !h.open_position) {
+        // The stub's first trade is `<boot>-t1`: shown in flight, it lands before the kill.
+        const shown: Health = inFlight ? { ...h, unresolved_intents: { ...h.unresolved_intents, count: 1, trades: [`${h.boot}-t1`] } } : h;
+        frozen = { h: shown, until: Date.now() + (inFlight ? 10_000 : 8000) };
+        return shown;
+      }
       return h;
     };
     const control = new LocalControl({
@@ -141,8 +149,9 @@ describe('a trade opened between the reply and the kill (the mirror case)', () =
     await runSegment({
       identity: { label: 'rehearsal', commit: 'c0ffee' }, healthAddr: addr, stateDir, evidenceDir, keepRecorded: 'copy', sampleMs: 100, recoverMs: 6000,
       log: () => {}, control, segmentEnd: Date.now() + 12_000, hostDrills: 'wipe', fetchHealth, handover: false,
-      // restart-1 falls due at 3 s; the frozen reply shows no trade, so it kills when its 3.5 s window ends.
-      newRun: { runId: 'run', targetMs: 60_000, entry: STUB_ENTRY, restarts: 3, causes: ['crash', 'crash', 'crash'], restartWindowMs: 3500, rpcDrops: 0 },
+      // restart-1 falls due at 3 s; the frozen reply shows no trade, so it kills when its 3.5 s window ends. Shown in
+      // flight, the reply reads as mid-trade: it falls due at 7 s instead, after the entry (about 5.5 s) and before the exit.
+      newRun: { runId: 'run', targetMs: inFlight ? 140_000 : 60_000, entry: STUB_ENTRY, restarts: 3, causes: ['crash', 'crash', 'crash'], restartWindowMs: 3500, rpcDrops: 0 },
     });
     const drills = JSON.parse(readFileSync(join(evidenceDir, 'drills.json'), 'utf8')) as DrillOutcome[];
     const d = drills.find((x) => x.id === 'restart-1')!;
