@@ -1,10 +1,10 @@
 {
-  "note": "RES-3 holdout wall. Days are Melbourne days. Nothing on or after wallDay = holdoutFrom - embargoDays is read. Default: wall on the B4 day (2026-09-12) until BT-2 registers the boundary in the STATS-1 registry; it may then move only to that registered boundary, never later.",
+  "note": "RES-3 holdout wall. Days are Melbourne days. Nothing on or after wallDay = holdoutFrom - embargoDays is read. The holdout is UTC days 2026-09-22 to 2026-10-01 (DECISIONS sealed-window ruling); the wall is the start of Melbourne day 2026-09-22 (2026-09-21T14:00Z), 10 h earlier. Never later.",
   "decisionFrom": "2026-08-03",
   "decisionTo": "2026-10-01",
-  "holdoutFrom": "2026-09-13",
+  "holdoutFrom": "2026-09-23",
   "embargoDays": 1,
-  "confirmedBy": null,
+  "confirmedBy": "DECISIONS sealed-window ruling @ a947f0f",
   "regimes": [
     { "label": "B2-boost", "from": "2026-07-21T14:23:00Z" },
     { "label": "B3-fee-config", "from": "2026-09-09T19:30:00Z" },
