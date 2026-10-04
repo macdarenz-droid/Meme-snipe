@@ -162,6 +162,32 @@ describe('rotation on the watchdog', () => {
     vi.unstubAllGlobals();
   });
 
+  it('an adopted webhook secret never raises the offer alert, even when the offer was seen hours before the adoption', async () => {
+    // Ops review of 2c1b2fc: Deploy writes the slots, a check runs (the offer clock starts), the server beats with the
+    // new key 2 h later; Telegram sends nothing until the owner messages the bot.
+    const H = 3_600_000;
+    const h = harness({ HEARTBEAT_HMAC_KEY: K0, TELEGRAM_WEBHOOK_SECRET: 'w0' });
+    expect(await h.beat(K0)).toBe(200);
+    h.redeploy({ HEARTBEAT_HMAC_KEY_A: K1, TELEGRAM_WEBHOOK_SECRET_A: 'w1' });
+    const t0 = Date.now();
+    const at = async (ms: number) => {
+      const st = h.mem.get('hb') as { hb: unknown; receivedAt: number };
+      h.mem.set('hb', { ...st, receivedAt: ms });
+      return h.check(ms);
+    };
+    expect((await at(t0)).alerts).toEqual([]);
+    expect(await h.beat(K1)).toBe(200);
+    // The adoption is stamped with the real clock; pretend it came 2 h after the first check.
+    const ad = h.mem.get('adopted:TELEGRAM_WEBHOOK_SECRET') as { since: number };
+    h.mem.set('adopted:TELEGRAM_WEBHOOK_SECRET', { ...ad, since: t0 + 2 * H });
+    expect((await at(t0 + 25 * H)).alerts).toEqual([]);
+    expect(await h.hook('w0')).toBe(200);
+    // Past adoption + 24 h: the new secret alone, still no alert.
+    expect((await at(t0 + 27 * H)).alerts).toEqual([]);
+    expect(await h.hook('w0')).toBe(401);
+    vi.unstubAllGlobals();
+  });
+
   it('an adopted webhook secret: the old one works until 24 h, then the new one alone, with no offer alert', async () => {
     const H = 3_600_000;
     const h = harness({ HEARTBEAT_HMAC_KEY: K0, TELEGRAM_WEBHOOK_SECRET: 'w0' });

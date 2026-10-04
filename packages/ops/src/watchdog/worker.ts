@@ -256,7 +256,7 @@ export class Watchdog {
     // KEY-ROTATE-SAFE: a new key left on offer for 24 h is a second valid key nobody uses; say so until it is used or
     // replaced.
     // An adopted webhook secret (the server switched with its key) becomes the only one after 24 h even if Telegram has
-    // not sent a request with it yet. This runs before the offer alert at the same threshold, so it never alerts.
+    // not sent a request with it yet.
     const adopted = (await s.get<Offer>(`adopted:${WH}`)) ?? null;
     const whOffer = (await candidates(await this.ring(WH), this.env, WH)).find((c) => !c.active);
     const whAdopted = adopted !== null && whOffer !== undefined && adopted.slot === whOffer.slot && adopted.hash === (await sha256(whOffer.value));
@@ -267,7 +267,9 @@ export class Watchdog {
     for (const [base, what] of [[HB, 'heartbeat key'], [WH, 'webhook secret']] as const) {
       const offer = await trackOffer((await s.get<Offer>(`offer:${base}`)) ?? null, await this.ring(base), this.env, base, now);
       await s.put(`offer:${base}`, offer);
-      if (offer !== null && now - offer.since > OFFER_ALERT_MS) {
+      // An adopted webhook secret is not an unused key: the server has it. Its offer clock may have started hours before the
+      // adoption (the first check after Deploy), so it must not alert; it switches at adoption + 24 h above.
+      if (offer !== null && !(base === WH && whAdopted) && now - offer.since > OFFER_ALERT_MS) {
         current.push({ key: `key_offer_${base}`, text: `Key offer pending: the new ${what} (slot ${offer.slot}) has not been used for ${Math.floor((now - offer.since) / 3_600_000)} h, so the server does not have it. Check DEPLOY_CODE, then run Deploy with FORCE_KEY_ROTATE=yes (ops/README.md, Watchdog).` });
       }
     }
