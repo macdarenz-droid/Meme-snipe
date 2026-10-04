@@ -76,6 +76,11 @@ export class DeployerChecks {
     }
   }
 
+  /** Creators with a check in flight (none once every check has finished: the map does not grow with creators). */
+  get inFlight(): number {
+    return this.#inflight.size;
+  }
+
   /** Credits left today. */
   remaining(nowMs: number): number {
     this.#roll(nowMs);

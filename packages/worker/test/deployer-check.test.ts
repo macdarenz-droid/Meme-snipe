@@ -532,6 +532,7 @@ describe('deployer checks cached per creator (WORKER-1c review: cost)', () => {
     expect((ra.facts.at(-1)!.value as RugCheckFact).obs.slot).toBe(lastSlot(RUG) + 1n);
     expect(statuses(ra)).toEqual(['rug']);
     expect(statuses(rb)).toEqual(['rug']);
+    expect(d.inFlight).toBe(0);
   });
 
   it('a final answer read for a later slot is not used for an earlier asking slot (no label from the future)', async () => {
