@@ -8,7 +8,7 @@ import type { LogRecord } from '../../../core/src/engine/index.ts';
 import type { Ledger } from '../../../core/src/ledger/index.ts';
 import { applyBookEvent, type Book, type BookConfig, type BookEvent, isIllegal, isTerminal, isUnresolved } from '../../../core/src/lifecycle/index.ts';
 import type { Lamports, MicroUsd } from '../../../core/src/units/index.ts';
-import { GATE_REASONS_PREFIX, S0_DIAGNOSTIC_PREFIX, reservationOf } from '../engine/strategy.ts';
+import { GATE_REASONS_PREFIX, S0_DIAGNOSTIC_PREFIX, reservationOf, universeOfKey } from '../engine/strategy.ts';
 
 /** Open intents for the host's update gate: intents not finished (`open_intents`, ops/README.md). */
 export const openIntents = (book: Book): number => Object.values(book.intents).filter((s) => !isTerminal(s)).length;
@@ -204,8 +204,11 @@ export class Desk {
       ? ['entry filled (paper)', ...(this.#why.get(s.intent.id) ?? [])]
       : ['exit filled (paper)', ...(before.positions[pid]?.exitOwner?.reasons ?? [])];
     this.#why.delete(s.intent.id);
+    // An entry names the universe it was entered under (CFG-2): the runner expects a trade opened after its last
+    // reply back after a restart, with that universe (RUN-1d contract).
+    const universe = purpose === 'entry' ? { universe: universeOfKey(s.intent.key) } : {};
     // `sol_usd`: the rate this fill's cash flow is valued at, so a restart that catches the account up uses it too (PAPER-1).
-    const line = { trade: pid, intent: s.intent.id, mint: s.intent.mint, tokens, sol, fees, position: p?.status ?? null, sol_usd: this.#d.solUsd?.() ?? null, reasons };
+    const line = { trade: pid, intent: s.intent.id, mint: s.intent.mint, tokens, sol, fees, position: p?.status ?? null, ...universe, sol_usd: this.#d.solUsd?.() ?? null, reasons };
     const key = fillKey(s.intent.id, tokens);
     if (this.#d.journaledFills?.has(key) === true) {
       this.#d.journaledFills.delete(key);
