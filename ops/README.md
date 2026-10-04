@@ -10,7 +10,7 @@ Server: Vultr High Performance, Frankfurt, 1 vCPU / 1 GB, image **Ubuntu 24.04 L
 2. **Install.** Paste this one line the same way (Clipboard → Paste), then press Enter:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/a45fc86ef6ff2456b9ee5088bf6ae0ce5565ae66/ops/install.sh -o i && echo '45827123f3797bef2fc7ae66b4ee158b6ed971b574d52b1aaefe1f28316594ea  i' | sha256sum -c && bash i
+curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/a45fc86ef6ff2456b9ee5088bf6ae0ce5565ae66/ops/install.sh -o i && echo '35bd4d07a8ca4662620ab3fc9134d2911bc72d3ad877fa4bd127acba27d3ec27  i' | sha256sum -c && bash i
 ```
 
    The line checks the file against its SHA-256 before anything runs; a changed file stops at `sha256sum -c`. After about two minutes the screen shows a **deploy code** of 6 words.
@@ -19,7 +19,7 @@ curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/a45fc86e
 
 The console screen can be left at any time (Ctrl+C); setup carries on in the background. `zeroed-status` shows where it stands and the codes again.
 
-SHA-256 of `install.sh`: `45827123f3797bef2fc7ae66b4ee158b6ed971b574d52b1aaefe1f28316594ea`
+SHA-256 of `install.sh`: `35bd4d07a8ca4662620ab3fc9134d2911bc72d3ad877fa4bd127acba27d3ec27`
 
 After any change to `ops/install.sh`, the commit in the line must move to one that holds the new file (`ops/test/e2e.sh` fails otherwise).
 
@@ -139,7 +139,7 @@ A failed webhook set is tried again after 1, 2, 4 and 8 minutes, then every 30 m
 
 ## Dry run
 
-The worker unit starts `/usr/local/lib/zeroed/worker-start`, for both the reconcile step and the run. The wrapper sets `ZEROED_MODE=paper`, `ZEROED_RECORDER=on`, `ZEROED_SIMULATE=on` and `ZEROED_DRILLS=on`, the health route for the runner on `ZEROED_HEALTH_ADDR=127.0.0.1:8787` and the worker API on `ZEROED_API_ADDR=127.0.0.1:8788`. It runs the release's own worker (`packages/worker/src/main.ts`, under the host's Node 22 with no `node_modules`) when the release's `ops/host-config.json` says `"worker": "release"`, which it does since SWITCH-1. A release without that switch, or without the file, runs the host's stand-in. Live is never set there or in any environment file, and the worker refuses any mode but paper.
+The worker unit starts `/usr/local/lib/zeroed/worker-start`, for both the reconcile step and the run. The wrapper sets `ZEROED_MODE=paper`, `ZEROED_RECORDER=on`, `ZEROED_SIMULATE=on` and `ZEROED_DRILLS=on`, the health route for the runner on `ZEROED_HEALTH_ADDR=127.0.0.1:8787` and the worker API on `ZEROED_API_ADDR=127.0.0.1:8788`. It runs the release's own worker (`packages/worker/src/main.ts`, under the host's Node 22 with no `node_modules`) when the release's `ops/host-config.json` says `"worker": "release"`, which it does since SWITCH-1. A release without that switch, or without the file, runs the host's stand-in. The release's worker also gets the S0 shakedown settings of that file's `"shakedown"` block (PRACTICE-ON): `ZEROED_STRATEGY`, `ZEROED_S0_DIAGNOSTIC`, `ZEROED_PAPER_EDGE_PPM`, `ZEROED_STANDINS` and `ZEROED_WALLET`, public values only and nothing else; a block with any other name, or a value that is not letters, digits and commas, stops the start (exit 2), and `worker-smoke` tries a new release with the same settings, so a release whose worker refuses them (S0 in a release that names a qualifying run, for one) never becomes current. Live is never set there or in any environment file, and the worker refuses any mode but paper.
 
 Evidence stays on the host in `/var/lib/zeroed-dryrun/evidence/<run id>/` (root only), written by `zeroed-dryrun@<name>`. Nothing uploads it; the way into the repository waits for the owner's decision. `zeroed-check` writes its index (id, name, label, commit, start, finished, pass, aborted reason, path) to `/var/lib/zeroed-index/evidence.json`. The worker API's `GET /health` lists it as `evidence`, and `zeroed-status` counts the runs. The restore drill for host-loss drills is `zeroed-restore-drill /etc/zeroed/age/host.key`. The reboot drill unit `zeroed-dryrun-reboot.service` arrives with RUN-1's units.
 

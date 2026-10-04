@@ -1290,6 +1290,22 @@ worker_entry() {
   fi
 }
 
+# The only worker settings a release's ops/host-config.json may give (PRACTICE-ON): the S0 shakedown's, in its
+# "shakedown" block. Mode, recorder, simulation, drills and addresses stay with worker-start; live is never one of them.
+SHAKEDOWN_NAMES='ZEROED_STRATEGY ZEROED_S0_DIAGNOSTIC ZEROED_PAPER_EDGE_PPM ZEROED_STANDINS ZEROED_WALLET'
+
+# worker_shakedown RELEASE_DIR: the release's shakedown settings, one NAME=value per line; nothing when it has no
+# "shakedown" block. Fails (jq says why on stderr) when the block is not an object, names anything outside
+# SHAKEDOWN_NAMES, or holds a value that is not a string of 1 to 400 letters, digits and commas. The worker judges each
+# value itself and refuses with exit 2 (S0 and its settings in a release with a qualifying run, among others).
+worker_shakedown() {
+  jq -r --arg names "$SHAKEDOWN_NAMES" '($names | split(" ")) as $ok | (.shakedown // {}) as $s
+    | if ($s | type) != "object" then error("the shakedown block is not an object") else $s | to_entries[]
+      | if (.key | IN($ok[]) | not) then error("\(.key) is not a shakedown setting")
+        elif (.value | type) != "string" or (.value | test("^[A-Za-z0-9,]{1,400}$") | not) then error("\(.key) is not 1 to 400 letters, digits and commas")
+        else "\(.key)=\(.value)" end end' "$1/ops/host-config.json"
+}
+
 # ssh_open: reads `nft list ruleset` on stdin; true when the live firewall lets SSH in.
 ssh_open() { grep -Eq 'tcp dport 22 .*accept'; }
 __ZEROED_FILE__
@@ -1332,6 +1348,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# The release's S0 shakedown settings, as worker-start gives them (PRACTICE-ON): a release whose worker refuses them
+# never becomes current.
+shakedown=()
+settings="$(worker_shakedown "$dir" 2>"$tmp/shakedown.err")" || { echo "its host-config shakedown settings are refused: $(tr -cd '[:print:]' <"$tmp/shakedown.err" | cut -c1-160)"; exit 1; }
+while IFS= read -r line; do [ -z "$line" ] || shakedown+=(--setenv="$line"); done <<<"$settings"
+
 # The worker unit's sandbox, limits and environment settings (unit_sandbox), applied to the trial.
 props=()
 while IFS= read -r line; do
@@ -1340,15 +1362,15 @@ done < <(unit_sandbox "$UNIT_FILE")
 [ "${#props[@]}" -gt 40 ] || { echo "the worker unit's sandbox could not be read from $UNIT_FILE"; exit 1; }
 
 # trial UNIT LOG MODE: the release's worker as a transient unit with that sandbox, the worker's environment file, the
-# RUN-1 environment (worker-start) on the trial's state directory and ports, and the memory cap. MODE "reconcile" runs
-# its --reconcile and waits for it (at most 120 s); "run" starts it and returns.
+# RUN-1 environment and shakedown settings (worker-start) on the trial's state directory and ports, and the memory cap.
+# MODE "reconcile" runs its --reconcile and waits for it (at most 120 s); "run" starts it and returns.
 trial() {
   local unit="$1" log="$2" opts=() args=()
   if [ "$3" = reconcile ]; then opts=(--wait -p RuntimeMaxSec=120); args=(--reconcile); fi
   systemd-run --quiet --unit="$unit" "${opts[@]}" "${props[@]}" \
     -p User=zeroed-worker -p Group=zeroed-worker -p MemoryMax="$SMOKE_MEMORY_MAX" -p OOMScoreAdjust=1000 -p TimeoutStopSec=30 \
     -p EnvironmentFile=-/etc/zeroed/worker.env -p WorkingDirectory="$dir" -p ReadWritePaths="$tmp" \
-    -p StandardOutput=append:"$log" -p StandardError=append:"$log" \
+    -p StandardOutput=append:"$log" -p StandardError=append:"$log" "${shakedown[@]}" \
     --setenv=NODE_ENV=production --setenv=ZEROED_MODE=paper --setenv=ZEROED_RECORDER=on --setenv=ZEROED_SIMULATE=on \
     --setenv=ZEROED_DRILLS=on --setenv=ZEROED_STATE_DIR="$tmp/state" --setenv=ZEROED_GIT_SHA="$(basename "$dir")" \
     --setenv=ZEROED_HEALTH_ADDR="$SMOKE_HEALTH_ADDR" --setenv=ZEROED_API_ADDR="$SMOKE_API_ADDR" \
@@ -1390,13 +1412,20 @@ install_file /usr/local/lib/zeroed/worker-start 0755 <<'__ZEROED_FILE__'
 # environment (ARCHITECTURE.md 12.4): paper mode, recorder and simulation on from the first minute, the drill
 # endpoint on, the health route for the runner and the worker API both on loopback only (tailscale serve
 # publishes the API to the tailnet, 17). The release's worker (WORKER-1) runs only once the release's
-# ops/host-config.json says "worker": "release"; until then the host's stand-in. Live is never set here or in
-# any environment file: the worker refuses any mode but paper.
+# ops/host-config.json says "worker": "release"; until then the host's stand-in. The release's worker also takes the
+# S0 shakedown settings of that file's "shakedown" block (PRACTICE-ON). Live is never set here or in any environment
+# file: the worker refuses any mode but paper.
 set -euo pipefail
 . /usr/local/lib/zeroed/logic.sh
+entry="$(worker_entry /opt/zeroed/current)"
+if [ "$entry" != /opt/zeroed/stub/worker.mjs ]; then
+  # The release's S0 shakedown settings (PRACTICE-ON, its host-config "shakedown" block): public values only, judged
+  # again by the worker. A block that cannot be read is refused like any refused setting (exit 2).
+  settings="$(worker_shakedown /opt/zeroed/current)" || { echo "refused: the release's host-config shakedown settings" >&2; exit 2; }
+  while IFS= read -r line; do [ -z "$line" ] || export "$line"; done <<<"$settings"
+fi
 export ZEROED_MODE=paper ZEROED_RECORDER=on ZEROED_SIMULATE=on ZEROED_DRILLS=on
 export ZEROED_HEALTH_ADDR="$WORKER_HEALTH_ADDR" ZEROED_API_ADDR="$WORKER_API_ADDR"
-entry="$(worker_entry /opt/zeroed/current)"
 if [ "$entry" != /opt/zeroed/stub/worker.mjs ]; then
   cd /opt/zeroed/current
   exec /usr/local/bin/node --no-warnings "$entry" "$@"

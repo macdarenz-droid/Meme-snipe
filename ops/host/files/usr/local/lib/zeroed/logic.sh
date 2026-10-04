@@ -114,5 +114,21 @@ worker_entry() {
   fi
 }
 
+# The only worker settings a release's ops/host-config.json may give (PRACTICE-ON): the S0 shakedown's, in its
+# "shakedown" block. Mode, recorder, simulation, drills and addresses stay with worker-start; live is never one of them.
+SHAKEDOWN_NAMES='ZEROED_STRATEGY ZEROED_S0_DIAGNOSTIC ZEROED_PAPER_EDGE_PPM ZEROED_STANDINS ZEROED_WALLET'
+
+# worker_shakedown RELEASE_DIR: the release's shakedown settings, one NAME=value per line; nothing when it has no
+# "shakedown" block. Fails (jq says why on stderr) when the block is not an object, names anything outside
+# SHAKEDOWN_NAMES, or holds a value that is not a string of 1 to 400 letters, digits and commas. The worker judges each
+# value itself and refuses with exit 2 (S0 and its settings in a release with a qualifying run, among others).
+worker_shakedown() {
+  jq -r --arg names "$SHAKEDOWN_NAMES" '($names | split(" ")) as $ok | (.shakedown // {}) as $s
+    | if ($s | type) != "object" then error("the shakedown block is not an object") else $s | to_entries[]
+      | if (.key | IN($ok[]) | not) then error("\(.key) is not a shakedown setting")
+        elif (.value | type) != "string" or (.value | test("^[A-Za-z0-9,]{1,400}$") | not) then error("\(.key) is not 1 to 400 letters, digits and commas")
+        else "\(.key)=\(.value)" end end' "$1/ops/host-config.json"
+}
+
 # ssh_open: reads `nft list ruleset` on stdin; true when the live firewall lets SSH in.
 ssh_open() { grep -Eq 'tcp dport 22 .*accept'; }
