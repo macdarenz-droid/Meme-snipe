@@ -1271,7 +1271,8 @@ export class LiveStrategy implements Strategy {
       const sol = this.#spotSol(ctx);
       const account = this.#marked(risk.history, ctx, sol, { fallback: true });
       const r = evaluateExit({ session: this.#d.session, mode: 'paper', clock: { now: () => ctx.now }, account, latches: risk.latches, market: { solPrice: sol, solBalance: this.#balance(risk, ctx), regime: 'unknown' } });
-      for (const t of r.trips) why.push(`${TRIP_PREFIX}${t}`);
+      // RISK-LATCH: only a fully marked account at a fresh SOL price latches; a fallback or unmarked one is still logged.
+      if (latchable(account, sol, ctx.now.receivedAt, this.#d.session.policy.gates.maxQuoteAgeMs)) for (const t of r.trips) why.push(`${TRIP_PREFIX}${t}`);
       const own = account.openPositions.find((o) => o.mint === mint);
       if (own !== undefined) why.push(`${MARK_PREFIX}${own.mark ?? 'unknown'}`);
       if (r.tripped.length > 0) why.push(`${TRIPPED_PREFIX}${[...new Set(r.tripped.map((x) => x.code))].sort().join(',')}`);
