@@ -413,6 +413,8 @@ export const reportMarkdown = (r: Report): string => {
         `| ${p.provider} | ${p.credits_used} | ${p.credits_by_class.join(' / ')} | ${p.projected_monthly ?? '-'} | ${p.monthly_credits === null ? 'rate only' : `${p.monthly_credits} (${p.within_free_tier ? 'fits' : 'EXCEEDED'})`} | ${p.shed[0]} / ${p.shed[1]} |`,
     ),
     '',
+    `H15 simulations: ${r.journal.h15_sim.run} run of ${r.journal.h15_sim.lines}, ${r.journal.h15_sim.credits} Helius credits (inside the helius row above).`,
+    '',
     `Historical lookups: ${r.ops.lookups.count}, median ≤ ${r.ops.lookups.p50_ms_at_most ?? '-'} ms, p95 ≤ ${r.ops.lookups.p95_ms_at_most ?? '-'} ms, ${r.ops.lookups.slower_than_last_bound} slower than the last bucket.`,
     '',
     'Projections are linear: credits used so far, scaled from the run\'s wall time to 30 days.',

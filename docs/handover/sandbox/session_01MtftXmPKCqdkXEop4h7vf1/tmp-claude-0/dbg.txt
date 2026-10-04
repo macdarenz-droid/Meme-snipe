@@ -1,0 +1,2 @@
+engine {"pos":["open"],"intents":[["entry","reconciled","kept"]]}
+desk {"pos":["open"],"intents":[["entry","reconciled","kept"]]}

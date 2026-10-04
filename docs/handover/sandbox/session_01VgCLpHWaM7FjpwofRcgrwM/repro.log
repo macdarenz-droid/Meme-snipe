@@ -1,0 +1,6 @@
+RESULT every FAIL [["restart-4","host-loss",["no backup to restore: the worker's state never held still for a copy"]]]
+RESULT tabletop FAIL [["restart-1","host-loss",["no backup to restore: the worker's state never held still for a copy"]]]
+RESULT every FAIL [["restart-4","host-loss",["no backup to restore: the worker's state never held still for a copy"]]]
+RESULT tabletop FAIL [["restart-1","host-loss",["no backup to restore: the worker's state never held still for a copy"]]]
+RESULT every FAIL [["restart-4","host-loss",["no backup to restore: the worker's state never held still for a copy"]]]
+RESULT tabletop FAIL [["restart-1","host-loss",["no backup to restore: the worker's state never held still for a copy"]]]

@@ -1,0 +1,15 @@
+const curves=[], mints=[];
+const a=new WebSocket('wss://pumpportal.fun/api/data');
+a.onopen=()=>a.send(JSON.stringify({method:'subscribeNewToken'}));
+a.onmessage=m=>{const d=JSON.parse(m.data); if(d.txType==='create'&&curves.length<20){curves.push(d.bondingCurveKey); mints.push(d.mint);} };
+await new Promise(r=>setTimeout(r,45000)); a.close();
+console.log('tokens',curves.length);
+const st={acct:{msgs:0,bytes:0},logs:{msgs:0,bytes:0}}; const perAcct={};
+const b=new WebSocket('wss://api.mainnet-beta.solana.com');
+const subMap={};
+b.onopen=()=>{let id=1; for(const c of curves) b.send(JSON.stringify({jsonrpc:'2.0',id:id++,method:'accountSubscribe',params:[c,{encoding:'base64',commitment:'processed'}]})); for(const mt of mints) b.send(JSON.stringify({jsonrpc:'2.0',id:id++,method:'logsSubscribe',params:[{mentions:[mt]},{commitment:'processed'}]}));};
+b.onmessage=m=>{const d=JSON.parse(m.data); if(d.method==='accountNotification'){st.acct.msgs++;st.acct.bytes+=m.data.length; perAcct[d.params.subscription]=(perAcct[d.params.subscription]||0)+1;} else if(d.method==='logsNotification'){st.logs.msgs++;st.logs.bytes+=m.data.length;}};
+const T=180; await new Promise(r=>setTimeout(r,T*1000)); b.close();
+const counts=Object.values(perAcct).sort((x,y)=>y-x);
+console.log(JSON.stringify({windowS:T, acct:{...st.acct, avgBytes:Math.round(st.acct.bytes/Math.max(1,st.acct.msgs)), perSec:(st.acct.msgs/T).toFixed(2), activeAccounts:counts.length, top5:counts.slice(0,5)}, logs:{...st.logs, avgBytes:Math.round(st.logs.bytes/Math.max(1,st.logs.msgs)), perSec:(st.logs.msgs/T).toFixed(2)}}));
+process.exit(0);

@@ -1,0 +1,11 @@
+reverted packages/backtest/scripts/owner-programs.ts
+reverted packages/backtest/src/dataset/owner-programs.ts
+⎯⎯⎯⎯⎯⎯ Failed Tests 13 ⎯⎯⎯⎯⎯⎯⎯
+ Test Files  2 failed (2)
+      Tests  13 failed (13)
+ Test Files  123 passed (123)
+      Tests  4096 passed (4096)
+check=0
+10:52
+
+[exited with code 0]

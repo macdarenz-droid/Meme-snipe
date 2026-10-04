@@ -1,0 +1,577 @@
+# DATA-1: historical pump.fun / PumpSwap data from the Old Faithful archive, on one
+# polite lane (supervisor ruling, 2026-10-03). See docs/research/historical-data.md.
+#
+# - Manual dispatch only. One concurrency group and max-parallel 1: days are scanned
+#   strictly one after another, in the order given, at most max_mbps (80 MB/s by default).
+# - Connections: -parallel 2 x -dl 6 means up to 12 connections to the archive at once,
+#   all under one process-wide byte limit (max_mbps) and one request limit.
+# - The scanner names itself in its User-Agent, honours Retry-After and stops at once
+#   on any 429. The job keeps every finished unit, waits at least 1 h (and always the
+#   back-off persisted in archive-429.state), then resumes on the same lane; if its time
+#   budget runs out it saves progress to the cache and fails, which stops the remaining
+#   days. Every 429 and back-off is in the summary.
+# - The back-off is shared: each scan job restores the newest `data-scan-backoff-*`
+#   cache, applies it before scanning (the later end wins), and after QA (whose
+#   determinism rescan can also hit a 429) saves it again, so the next day and the next
+#   run sleep it out too.
+# - Each finished day passes the strict QA, the decoder parity check and a determinism
+#   rescan; its own scan job then publishes release `data-day-YYYY-MM-DD` at once
+#   (ci/publish-day.sh) with that day's units tar parts, QA report, manifest, parity
+#   report and SHA256SUMS. A published day release is never replaced. The scan job has
+#   contents: write for this, but the token reaches only the publish step (env on that
+#   step alone); checkouts keep persist-credentials: false and no other step uses it.
+# - Limits: each scan job has a 300 min budget for scanning and back-off waits inside
+#   its 355 min timeout, and QA, packaging and publishing start only with 45 min left
+#   (ci/time-left.sh); a 429 in the determinism rescan also stops resumably. Each
+#   phase's duration is in the summary. A day that runs out of either saves its progress and stops
+#   resumably (exit 75), and it chains only when that save succeeded: fail-fast
+#   cancels the days queued behind it, and the `continue` job dispatches the same days again (inputs.chain counts the chained runs, at most
+#   12). Published days are skipped before any archive read, so the next run resumes
+#   that day from its cache, with no manual step. Any other failure stops the chain.
+# - Cache: one progress entry per scan job (key data-scan-DAY-RUN-ATTEMPT, a day's units:
+#   about 3.7 GB at the 2026-10-01 unit's measured rate of 52 MB per 20 min, 6.4-8.5 GB on
+#   the earlier estimate), plus a second one only when QA fails, and a few-byte back-off
+#   entry. The repository cap is 10 GB and the least recently used entry is evicted first,
+#   so one to two days' entries coexist and the entry evicted is always an older day's. A day is skipped once published, so its entry is never read
+#   again; the only entry that matters, the day in progress, is the most recently saved
+#   or restored and is never the one evicted. Days run one at a time, so no two days save
+#   at once.
+# - Each published day also gets release data-volume-DAY (DATA-1c): the regime volume
+#   per hour (SOL-quoted curve and canonical PumpSwap volume, lamports, covered hours),
+#   cross-checked exactly against the units' kept rows. mode=volume back-fills it for
+#   days already published, from their own units (ci/volume-day.sh), on its own
+#   concurrency group, so it never replaces a pending chained scan run.
+# - mode=assemble runs research/historical/ci/assemble.sh: windows of up to 3 days,
+#   with the 14 lead-in days required, one day at a time, published as release
+#   `data-<from>-<to>`.
+# - Every checkout sets persist-credentials: false; inputs reach the shell only through
+#   env variables.
+name: data-scan
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: scan (days below), assemble (dataset for from..to) or volume (back-fill data-volume-DAY of published days below)
+        required: true
+        default: scan
+        type: choice
+        options: [scan, assemble, volume]
+      days:
+        description: "scan: UTC days in scan order, comma-separated (YYYY-MM-DD,...)"
+        required: false
+        default: ""
+      from:
+        description: "assemble: first UTC day of the dataset window (windows of up to 3 days fit a runner's disk)"
+        required: false
+        default: ""
+      to:
+        description: "assemble: end UTC day, exclusive"
+        required: false
+        default: ""
+      max_mbps:
+        description: archive download cap in MB/s (at most 80 unless the operators allow more)
+        required: true
+        default: "80"
+      chain:
+        description: "scan: how many runs before this one were chained automatically (set by the workflow; leave 0)"
+        required: false
+        default: "0"
+      allow_revisions:
+        description: "assemble: scanner revisions allowed to mix, comma-separated (empty: units must share one)"
+        required: false
+        default: ""
+      source:
+        description: "scan: archive (Old Faithful) or helius (getBlock over RPC, DATA-2; needs max_credits)"
+        required: false
+        default: archive
+        type: choice
+        options: [archive, helius]
+      max_credits:
+        description: "scan with source helius: hard credit cap per day, across chained runs (1 to 1000000)"
+        required: false
+        default: "0"
+      rpc_rps:
+        description: "scan with source helius: getBlock requests a second (1 to 50; free plan measured at 5, Developer's limit 50)"
+        required: false
+        default: "5"
+
+permissions:
+  contents: read
+
+# One lane for the archive (scan) and assembly; the volume back-fill reads only our own
+# releases, so it has its own group and never replaces a pending chained scan run.
+concurrency:
+  group: ${{ inputs.mode == 'volume' && 'data-scan-volume' || 'data-scan' }}
+  cancel-in-progress: false
+
+env:
+  GO_VERSION: "1.24.7"
+  GO_SHA256: da18191ddb7db8a9339816f3e2b54bdded8047cdc2a5d67059478f8d1595c43f
+  # The 2026-10-02 program upgrade is a regime boundary (supervisor ruling): days on or
+  # after it are refused here and in ci/publish-day.sh.
+  REGIME_BOUNDARY_DAY: "2026-10-02"
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      days: ${{ steps.days.outputs.days }}
+    steps:
+      - id: days
+        env:
+          MODE: ${{ inputs.mode }}
+          DAYS: ${{ inputs.days }}
+          MAX_MBPS: ${{ inputs.max_mbps }}
+          SOURCE: ${{ inputs.source }}
+          MAX_CREDITS: ${{ inputs.max_credits }}
+          RPC_RPS: ${{ inputs.rpc_rps }}
+        run: |
+          python3 - <<'EOF' >> "$GITHUB_OUTPUT"
+          import datetime, json, os, re, sys
+          mbps = float(os.environ["MAX_MBPS"])
+          if not 0 < mbps <= 80:
+              sys.exit("max_mbps must be in (0, 80] unless the archive operators grant more")
+          if os.environ["SOURCE"] not in ("archive", "helius"):
+              sys.exit("source must be archive or helius")
+          if os.environ["SOURCE"] == "helius":
+              if os.environ["MODE"] != "scan":
+                  sys.exit("source helius is for mode scan only")
+              if not re.fullmatch(r"[0-9]+", os.environ["MAX_CREDITS"]) or not 1 <= int(os.environ["MAX_CREDITS"]) <= 1000000:
+                  sys.exit("source helius needs max_credits from 1 to 1000000 (the free plan's month)")
+              if not re.fullmatch(r"[0-9]+", os.environ["RPC_RPS"]) or not 1 <= int(os.environ["RPC_RPS"]) <= 50:
+                  sys.exit("rpc_rps must be from 1 to 50")
+          days = []
+          if os.environ["MODE"] in ("scan", "volume"):
+              for d in [x.strip() for x in os.environ["DAYS"].split(",") if x.strip()]:
+                  if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", d):
+                      sys.exit(f"bad day {d!r}")
+                  datetime.date.fromisoformat(d)
+                  if d >= os.environ["REGIME_BOUNDARY_DAY"]:
+                      sys.exit(f"{d} is on or after the regime boundary {os.environ['REGIME_BOUNDARY_DAY']}: never scanned for publication")
+                  days.append(d)
+              if not days:
+                  sys.exit(os.environ["MODE"] + " mode needs at least one day")
+          else:
+              days = ["none"]  # the scan and volume jobs are skipped; a matrix may not be empty
+          print("days=" + json.dumps(days))
+          EOF
+
+  scan:
+    needs: plan
+    if: inputs.mode == 'scan'
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    permissions:
+      contents: write # used only by the "Publish this day" step
+    strategy:
+      max-parallel: 1
+      fail-fast: true
+      matrix:
+        day: ${{ fromJSON(needs.plan.outputs.days) }}
+    steps:
+      - name: Record the job start (time budget of the QA phase)
+        run: echo "JOB_START=$(date +%s)" >> "$GITHUB_ENV"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      # A day already published and complete is skipped before any archive read. Same
+      # clean environment as the publish step (the token reaches only these two steps).
+      - name: Skip a day that is already published
+        id: published
+        shell: /usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc -eo pipefail {0}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DAY: ${{ matrix.day }}
+          BASH_ENV: ""
+          LD_PRELOAD: ""
+          LD_AUDIT: ""
+          LD_LIBRARY_PATH: ""
+        run: >-
+          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" GH_TOKEN="$GH_TOKEN"
+          GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_OUTPUT="$GITHUB_OUTPUT"
+          /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/publish-day.sh" --check "$DAY"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Install Go (pinned by version and checksum)
+        if: steps.published.outputs.complete != 'true'
+        run: |
+          curl -fsSLo go.tgz "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
+          echo "${GO_SHA256}  go.tgz" | sha256sum -c -
+          sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf go.tgz && rm go.tgz
+          echo "/usr/local/go/bin" >> "$GITHUB_PATH"
+      - name: Build scanner
+        if: steps.published.outputs.complete != 'true'
+        working-directory: research/historical/scanner
+        env:
+          SOURCE: ${{ inputs.source }}
+        run: |
+          go version
+          go test ./...
+          # The revision is the git tree of the scanner folder plus the Go version
+          # (ci/scanner-rev.sh, which also fails on any other toolchain): it changes only
+          # when the scanner or the toolchain does, so workflow-only commits keep cached
+          # units valid.
+          rev=$("$GITHUB_WORKSPACE/research/historical/ci/scanner-rev.sh")
+          go build -trimpath -ldflags "-X main.scannerRevision=$rev" -o "$RUNNER_TEMP/bin/zeroed-scan" .
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          # source helius (DATA-2): the RPC scanner reads the units, under its own
+          # revision (the scanner's tree + its own); zeroed-scan still finalizes.
+          if [ "$SOURCE" = helius ]; then
+            (cd ../rpcscan && go test ./... && rev=$("$GITHUB_WORKSPACE/research/historical/ci/rpcscan-rev.sh") &&
+              go build -trimpath -ldflags "-X main.scannerRevision=$rev" -o "$RUNNER_TEMP/bin/zeroed-rpcscan" . &&
+              echo "SCANNER_REVISION=$rev" >> "$GITHUB_ENV")
+          else
+            echo "SCANNER_REVISION=$rev" >> "$GITHUB_ENV"
+          fi
+      # Work volume: $RUNNER_TEMP/work points at /mnt/work when the runner has a second
+      # volume (a day's units are about 6.4-8.5 GB, up to about 13 GB), else it is a plain
+      # directory. The guard then checks the day's expected peak before any archive read:
+      # units at the high estimate (13 GB) + the one-day QA dataset (6 GB) + 5 GB.
+      - name: Prepare the work volume and check its free space
+        if: steps.published.outputs.complete != 'true'
+        run: |
+          if sudo mkdir -p /mnt/work 2>/dev/null && sudo chown "$USER" /mnt/work; then
+            ln -sfn /mnt/work "$RUNNER_TEMP/work"
+          else
+            mkdir -p "$RUNNER_TEMP/work"
+          fi
+          mkdir -p "$RUNNER_TEMP/work/data" "$RUNNER_TEMP/work/assets" "$RUNNER_TEMP/work/qa"
+          df -h / "$RUNNER_TEMP/work/" | tee -a "$GITHUB_STEP_SUMMARY"
+          research/historical/ci/disk-guard.sh "$RUNNER_TEMP/work/" 24000000000 "the day's scan, QA dataset and headroom"
+      - name: Restore progress for this day
+        if: steps.published.outputs.complete != 'true'
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/work/data
+          key: ${{ inputs.source == 'helius' && 'data-rpc' || 'data-scan' }}-${{ matrix.day }}-${{ github.run_id }}
+          restore-keys: ${{ inputs.source == 'helius' && 'data-rpc' || 'data-scan' }}-${{ matrix.day }}-
+      # One archive back-off shared by every day and run: the newest saved state wins.
+      - name: Restore the shared archive back-off
+        if: steps.published.outputs.complete != 'true'
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/backoff
+          key: data-scan-backoff-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.day }}
+          restore-keys: data-scan-backoff-
+      - name: Apply the shared back-off (the later end wins)
+        if: steps.published.outputs.complete != 'true'
+        run: research/historical/ci/scan-day.sh --merge-state "$RUNNER_TEMP/backoff/archive-429.state" "$RUNNER_TEMP/work/data/archive-429.state"
+      # Exit 75 (the 300 min budget ran out, or a back-off did not fit it) is resumable:
+      # progress is saved below and the `continue` job dispatches the next chained run.
+      - name: Scan (one lane, stops on 429)
+        id: scan
+        if: steps.published.outputs.complete != 'true'
+        env:
+          DAY: ${{ matrix.day }}
+          MAX_MBPS: ${{ inputs.max_mbps }}
+          SOURCE: ${{ inputs.source }}
+          MAX_CREDITS: ${{ inputs.max_credits }}
+          RPC_RPS: ${{ inputs.rpc_rps }}
+          # Only a helius day gets the key; the archive scan never sees it.
+          HELIUS_API_KEY: ${{ inputs.source == 'helius' && secrets.HELIUS_API_KEY || '' }}
+        # source helius: rpc-day.sh exits 75 like a back-off (resumable) and 3 when the
+        # day's credit cap is spent (not resumable: the chain stops).
+        run: |
+          rc=0
+          if [ "$SOURCE" = helius ]; then
+            research/historical/ci/rpc-day.sh "$DAY" "$RUNNER_TEMP/work/data" 300 "$MAX_CREDITS" || rc=$?
+          else
+            research/historical/ci/scan-day.sh "$DAY" "$RUNNER_TEMP/work/data" "$MAX_MBPS" 300 || rc=$?
+          fi
+          if [ "$rc" -eq 75 ]; then echo "resumable=true" >> "$GITHUB_OUTPUT"; fi
+          exit "$rc"
+      - name: Log the progress entry size
+        if: always() && steps.published.outcome == 'success' && steps.published.outputs.complete != 'true'
+        env:
+          DAY: ${{ matrix.day }}
+        run: |
+          echo "progress cache entry for $DAY: $(du -sb "$RUNNER_TEMP/work/data" | cut -f1) bytes (repository cap 10 GB)" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Save progress
+        id: save
+        if: always() && steps.published.outcome == 'success' && steps.published.outputs.complete != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/work/data
+          key: ${{ inputs.source == 'helius' && 'data-rpc' || 'data-scan' }}-${{ matrix.day }}-${{ github.run_id }}-${{ github.run_attempt }}
+      # QA, determinism, packaging and publishing take up to about 45 min (finalize, QA and
+      # parity of a day, one unit rescanned, about 4 GB uploaded twice). If they would not
+      # fit before the 355 min job timeout, stop resumably now instead of being cancelled:
+      # progress is saved, and the next chained run redoes this phase.
+      - name: Check the time left for QA, packaging and publishing
+        id: qatime
+        if: steps.published.outputs.complete != 'true'
+        run: |
+          rc=0
+          research/historical/ci/time-left.sh "$JOB_START" 355 45 || rc=$?
+          if [ "$rc" -eq 75 ]; then echo "resumable=true" >> "$GITHUB_OUTPUT"; fi
+          exit "$rc"
+      - name: QA and determinism
+        id: qa
+        if: steps.published.outputs.complete != 'true'
+        env:
+          DAY: ${{ matrix.day }}
+          MAX_MBPS: ${{ inputs.max_mbps }}
+          SOURCE: ${{ inputs.source }}
+          RPC_CREDIT_CAP: ${{ inputs.max_credits }}
+          RPC_RPS: ${{ inputs.rpc_rps }}
+          HELIUS_API_KEY: ${{ inputs.source == 'helius' && secrets.HELIUS_API_KEY || '' }}
+        # rc 75: the determinism rescan met a 429 (back-off persisted): resumable.
+        run: |
+          export DATASET_PARENT="$RUNNER_TEMP/work/qa"
+          rc=0
+          research/historical/ci/check-day.sh "$DAY" "$RUNNER_TEMP/work/data" "$RUNNER_TEMP/work/assets" || rc=$?
+          if [ "$rc" -eq 75 ]; then echo "resumable=true" >> "$GITHUB_OUTPUT"; fi
+          exit "$rc"
+      # The determinism rescan uses -state "$RUNNER_TEMP/work/data" and can hit a 429, which
+      # fails QA. Only then does the day's progress change after "Save progress" (the
+      # rescan itself writes to a temp dir), so it is saved again only when QA failed,
+      # instead of storing an identical ~4 GB copy of every passed day.
+      # source helius: also saved after a passed QA, so the rescan's credits stay booked
+      # in rpc-credits-used even when packaging or publishing then fails.
+      - name: Save progress after QA
+        if: always() && steps.published.outcome == 'success' && (steps.qa.outcome == 'failure' || (inputs.source == 'helius' && steps.qa.outcome != 'skipped')) && steps.published.outputs.complete != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/work/data
+          key: ${{ inputs.source == 'helius' && 'data-rpc' || 'data-scan' }}-${{ matrix.day }}-${{ github.run_id }}-${{ github.run_attempt }}-qa
+      # Chained only when this run's progress was saved; a failed save stops for review.
+      - name: Mark the day resumable for the next chained run
+        if: always() && steps.published.outcome == 'success' && steps.published.outputs.complete != 'true' && steps.save.outcome == 'success' && (steps.scan.outputs.resumable == 'true' || steps.qatime.outputs.resumable == 'true' || steps.qa.outputs.resumable == 'true')
+        env:
+          DAY: ${{ matrix.day }}
+        run: mkdir -p "$RUNNER_TEMP/resume" && echo "$DAY" > "$RUNNER_TEMP/resume/day"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always() && steps.published.outcome == 'success' && steps.published.outputs.complete != 'true' && steps.save.outcome == 'success' && (steps.scan.outputs.resumable == 'true' || steps.qatime.outputs.resumable == 'true' || steps.qa.outputs.resumable == 'true')
+        with:
+          name: resume-${{ matrix.day }}
+          path: ${{ runner.temp }}/resume
+          retention-days: 3
+      # Packaging is its own step: tar --remove-files deletes unit files as it goes, and
+      # no progress save follows it, so a failed packaging can never become the newest
+      # cache of finished-looking units with files missing.
+      - name: Package the day
+        if: steps.published.outputs.complete != 'true'
+        env:
+          DAY: ${{ matrix.day }}
+        run: research/historical/ci/package-day.sh "$DAY" "$RUNNER_TEMP/work/data" "$RUNNER_TEMP/work/assets"
+      - name: Collect the back-off for the next day and run
+        id: backoff
+        if: always() && steps.published.outcome == 'success' && steps.published.outputs.complete != 'true'
+        run: |
+          research/historical/ci/scan-day.sh --merge-state "$RUNNER_TEMP/work/data/archive-429.state" "$RUNNER_TEMP/backoff/archive-429.state"
+          if [ -f "$RUNNER_TEMP/backoff/archive-429.state" ]; then
+            echo "back-off state: $(cat "$RUNNER_TEMP/backoff/archive-429.state")"
+            echo "has=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Save the shared archive back-off
+        if: always() && steps.published.outcome == 'success' && steps.backoff.outputs.has == 'true' && steps.published.outputs.complete != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/backoff
+          key: data-scan-backoff-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.day }}
+      - name: Note the upload start
+        if: steps.published.outputs.complete != 'true'
+        run: echo "T_UPLOAD=$(date +%s)" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: steps.published.outputs.complete != 'true'
+        with:
+          name: day-${{ matrix.day }}
+          path: ${{ runner.temp }}/work/assets
+          compression-level: 0
+          retention-days: 14
+      - name: Note the publish start
+        if: steps.published.outputs.complete != 'true'
+        env:
+          DAY: ${{ matrix.day }}
+        run: |
+          now=$(date +%s)
+          echo "phase artifact upload ($DAY): $(( now - T_UPLOAD )) s" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "T_PUBLISH=$now" >> "$GITHUB_ENV"
+      - name: Publish this day
+        if: steps.published.outputs.complete != 'true'
+        # A clean environment: the shell starts without BASH_ENV/ENV and by absolute path,
+        # the script runs under env -i with a fixed PATH, so nothing an earlier step put
+        # in GITHUB_ENV, GITHUB_PATH or BASH_ENV reaches it, and no PATH lookup is used.
+        shell: /usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc -eo pipefail {0}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DAY: ${{ matrix.day }}
+          BASH_ENV: ""
+          LD_PRELOAD: ""
+          LD_AUDIT: ""
+          LD_LIBRARY_PATH: ""
+        run: >-
+          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" GH_TOKEN="$GH_TOKEN"
+          GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_SHA="$GITHUB_SHA" GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY"
+          /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/publish-day.sh" "$DAY" "$RUNNER_TEMP/work/assets"
+      - name: Log the publish duration
+        if: steps.published.outputs.complete != 'true'
+        env:
+          DAY: ${{ matrix.day }}
+        run: |
+          echo "phase publish ($DAY): $(( $(date +%s) - T_PUBLISH )) s" | tee -a "$GITHUB_STEP_SUMMARY"
+      # Regime volume per hour (DATA-1c): its own release data-volume-DAY, same clean shell.
+      - name: Publish this day's volume hours
+        if: steps.published.outputs.complete != 'true'
+        shell: /usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc -eo pipefail {0}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DAY: ${{ matrix.day }}
+          BASH_ENV: ""
+          LD_PRELOAD: ""
+          LD_AUDIT: ""
+          LD_LIBRARY_PATH: ""
+        run: >-
+          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" GH_TOKEN="$GH_TOKEN"
+          GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_SHA="$GITHUB_SHA" GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY"
+          /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/publish-volume.sh" "$DAY" "$RUNNER_TEMP/work/assets"
+
+  # Unattended chaining: when a day stopped resumably (resume-* artifact: the time budget
+  # ran out, or a back-off did not fit it), dispatch the same days again. Published days
+  # are skipped before any archive read, so the next run resumes that day from its cache.
+  # It waits in the data-scan concurrency group until this run ends, so the lane stays
+  # single. Any other failure (QA, parity, determinism, scanner error, publish) stops the
+  # chain for review. At most MAX_CHAIN chained runs.
+  continue:
+    needs: [plan, scan]
+    if: always() && inputs.mode == 'scan' && needs.scan.result == 'failure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write # read this run's artifacts, dispatch the next run
+    env:
+      MAX_CHAIN: "12"
+    steps:
+      - name: Dispatch the next run if a day stopped resumably
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          REF: ${{ github.ref_name }}
+          DAYS: ${{ inputs.days }}
+          MAX_MBPS: ${{ inputs.max_mbps }}
+          CHAIN: ${{ inputs.chain }}
+          SOURCE: ${{ inputs.source }}
+          MAX_CREDITS: ${{ inputs.max_credits }}
+          RPC_RPS: ${{ inputs.rpc_rps }}
+        run: |
+          set -euo pipefail
+          [[ "$CHAIN" =~ ^[0-9]+$ ]] || { echo "bad chain '$CHAIN'"; exit 1; }
+          resume=$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID/artifacts" --jq '[.artifacts[].name | select(startswith("resume-"))] | join(",")')
+          if [ -z "$resume" ]; then
+            echo "a day failed for a reason other than time or back-off: chain stopped for review" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          if [ "$CHAIN" -ge "$MAX_CHAIN" ]; then
+            echo "resumable stop ($resume) but $CHAIN chained runs already: chain stopped" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          next=$((CHAIN + 1))
+          gh workflow run data-scan.yml --ref "$REF" -f mode=scan -f days="$DAYS" -f max_mbps="$MAX_MBPS" -f chain="$next" -f source="$SOURCE" -f max_credits="$MAX_CREDITS" -f rpc_rps="$RPC_RPS"
+          echo "resumable stop ($resume): dispatched chained run $next of at most $MAX_CHAIN" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  # Back-fill of data-volume-DAY for days already published (DATA-1c): rebuilt from each
+  # day's own units in data-day-DAY (no archive access), cross-checked, then published.
+  volume:
+    needs: plan
+    if: inputs.mode == 'volume'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write # read data-day-DAY and create data-volume-DAY, in the two token steps only
+    strategy:
+      max-parallel: 1
+      fail-fast: false
+      matrix:
+        day: ${{ fromJSON(needs.plan.outputs.days) }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Install Go (pinned by version and checksum)
+        run: |
+          curl -fsSLo "$RUNNER_TEMP/go.tgz" "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
+          echo "${GO_SHA256}  $RUNNER_TEMP/go.tgz" | sha256sum -c -
+          sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf "$RUNNER_TEMP/go.tgz" && rm "$RUNNER_TEMP/go.tgz"
+          echo "/usr/local/go/bin" >> "$GITHUB_PATH"
+      - name: Build scanner
+        working-directory: research/historical/scanner
+        run: |
+          rev=$("$GITHUB_WORKSPACE/research/historical/ci/scanner-rev.sh")
+          go build -trimpath -ldflags "-X main.scannerRevision=$rev" -o "$RUNNER_TEMP/bin/zeroed-scan" .
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Download the day's units
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DAY: ${{ matrix.day }}
+        run: |
+          sudo mkdir -p /mnt/work && sudo chown "$USER" /mnt/work
+          research/historical/ci/disk-guard.sh /mnt/work 12000000000 "a day's units, extracted, and its one-day dataset"
+          research/historical/ci/volume-day.sh --download "$DAY" /mnt/work
+      # No token from here until publishing: extraction, finalize and node run without it.
+      - name: Rebuild the day's volume hours from its units
+        env:
+          DAY: ${{ matrix.day }}
+        run: research/historical/ci/volume-day.sh "$DAY" /mnt/work "$RUNNER_TEMP/assets"
+      - name: Publish the volume hours
+        shell: /usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc -eo pipefail {0}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DAY: ${{ matrix.day }}
+          BASH_ENV: ""
+          LD_PRELOAD: ""
+          LD_AUDIT: ""
+          LD_LIBRARY_PATH: ""
+        run: >-
+          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" GH_TOKEN="$GH_TOKEN"
+          GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_SHA="$GITHUB_SHA" GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY"
+          /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/publish-volume.sh" "$DAY" "$RUNNER_TEMP/assets"
+
+  assemble:
+    needs: plan
+    if: inputs.mode == 'assemble'
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        if: inputs.mode == 'assemble'
+        with:
+          node-version: 22
+      - name: Install Go (pinned by version and checksum)
+        if: inputs.mode == 'assemble'
+        run: |
+          curl -fsSLo "$RUNNER_TEMP/go.tgz" "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
+          echo "${GO_SHA256}  $RUNNER_TEMP/go.tgz" | sha256sum -c -
+          sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf "$RUNNER_TEMP/go.tgz" && rm "$RUNNER_TEMP/go.tgz"
+          echo "/usr/local/go/bin" >> "$GITHUB_PATH"
+      - name: Build scanner
+        if: inputs.mode == 'assemble'
+        working-directory: research/historical/scanner
+        run: |
+          rev=$("$GITHUB_WORKSPACE/research/historical/ci/scanner-rev.sh")
+          go build -trimpath -ldflags "-X main.scannerRevision=$rev" -o "$RUNNER_TEMP/bin/zeroed-scan" .
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Assemble the dataset
+        if: inputs.mode == 'assemble'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FROM: ${{ inputs.from }}
+          TO: ${{ inputs.to }}
+          ALLOW_REVISIONS: ${{ inputs.allow_revisions }}
+        run: |
+          set -euo pipefail
+          # about 4 GB per scanned day of units: work on the runner's larger /mnt volume
+          sudo mkdir -p /mnt/work && sudo chown "$USER" /mnt/work
+          df -h / /mnt
+          research/historical/ci/assemble.sh "$FROM" "$TO" /mnt/work
