@@ -5,6 +5,7 @@ import { cpSync, existsSync, readFileSync, readdirSync, rmSync, writeFileSync } 
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { replayLedgerFile } from '../../core/src/ledger/replay/index.ts';
+import { openLedgerReader } from '../../core/src/ledger/index.ts';
 import { checkJournal } from '../../runner/src/journal.ts';
 import type { LogRecord } from '../../core/src/engine/index.ts';
 import { EXEC_HEALTH_KEY, migrationKey } from '../../core/src/gates/index.ts';
@@ -595,6 +596,32 @@ describe('an exit owner never waits booked blocked for a fresh market (EXIT-1d)'
     await b.worker.stop();
   });
 
+  it('a wait whose owner is settled is over even when the saved file still has it (a kill between the ledger write and the plan save) (#100 N1)', async () => {
+    const { h, pid } = await dueAfterDowntime();
+    const d2 = await reboot(h);
+    await d2.m.run(800, 400, () => d2.m.slot());
+    d2.m.pool();
+    await d2.m.run(800, 400, () => d2.m.slot());
+    expect(await until(d2.m, 60_000, () => d2.first('exit waiting for a fresh market').length > 0, () => d2.m.slot())).toBe(true);
+    const since = d2.b.worker.strategy.waitingExits().get(pid)!;
+    // A fresh pool that refuses the sale books the owner blocked, which ends the wait.
+    expect(await until(d2.m, 10_000, () => d2.b.worker.book.positions[pid]!.status === 'exit_blocked', () => {
+      d2.m.slot();
+      d2.m.pool(0n);
+    })).toBe(true);
+    await d2.b.worker.kill();
+    // The kill lands after the ledger took the blocked booking but before the plans were saved: the file still waits.
+    const file = exitsFile(h.stateDir);
+    const saved = file.read({});
+    file.write({ ...saved, [pid]: { ...saved[pid]!, waitingSinceMs: since } });
+    const d3 = await reboot(h);
+    await d3.m.run(800, 400, () => d3.m.slot());
+    expect(d3.b.worker.book.positions[pid]!.status).toBe('exit_blocked');
+    expect(d3.b.worker.strategy.waitingExits().has(pid)).toBe(false);
+    expect(d3.b.worker.strategy.saved()[pid]!.waitingSinceMs ?? null).toBeNull();
+    await d3.b.worker.stop();
+  });
+
   it('a restart keeps the wait start: the alert comes at the first boot\'s start + blockedRetryMs, for an EXIT-1c and an EXIT-1d wait (B2, #93 N3)', async () => {
     const retry = TRIAL_POLICY.exits.blockedRetryMs;
     const alerted = (w: ReturnType<typeof makeWorker>) => views.status(w.worker.apiInputs()).flags.includes('exit-blocked');
@@ -666,6 +693,70 @@ describe('a restored position is never managed from a plan it was not entered wi
     expect(mine().some((l) => l['action'] === 'trigger_exit')).toBe(false);
     expect(h2.worker.book.positions[pid]!.status).toBe('open');
     await h2.worker.stop();
+  });
+});
+
+describe('a restart never extends a time stop (EXIT-1f)', () => {
+  it('a refused saved plan falls back to the fill at the moment the ledger booked it: the time stop due during the downtime fires at once', async () => {
+    const { h, pid } = await dueAfterDowntime();
+    // The saved plan is refused (its stop is not an amount): the position falls back to the plan from its fill.
+    const file = exitsFile(h.stateDir);
+    const saved = file.read({});
+    file.write({ ...saved, [pid]: { ...saved[pid]!, plan: { ...saved[pid]!.plan, stopPrice: 'none' as unknown as bigint } } });
+    const { b, m, first } = await reboot(h, LANDS);
+    expect(await until(m, 4_000, () => b.worker.strategy.saved()[pid] !== undefined, () => m.slot())).toBe(true);
+    expect(first('restore entry refused')).toHaveLength(1);
+    // Exact: the open time is the entry fill's booking moment in the ledger, never this boot's clock.
+    const ledger = openLedgerReader(join(h.stateDir, 'ledger.sqlite'));
+    const booked = Number(ledger.positionEvents().find((e) => e.positionId === pid && e.status === 'open')!.ts);
+    ledger.close();
+    const plan = b.worker.strategy.saved()[pid]!.plan;
+    expect(plan.openedAtMs).toBe(booked);
+    expect(plan.openedAtMs).toBeLessThanOrEqual(saved[pid]!.plan.openedAtMs);
+    expect(first('entry plan waits for the first slot')).toEqual([]);
+    m.pool();
+    expect(await until(m, 4_000, () => first('exit').length > 0, () => m.slot())).toBe(true);
+    expect((first('exit')[0]!['reasons'] as string[]).some((r) => r.startsWith('time_max'))).toBe(true);
+    await b.worker.stop();
+  });
+});
+
+describe('the fallback plan opens at the first open event (EXIT-1f review B1)', () => {
+  it('an exit attempt left unfilled reopens the position (a second open event); a refused plan still opens at the entry fill, and the time stop runs on that clock', async () => {
+    const h = makeWorker();
+    const m = await entered(h);
+    const pid = positions(h).find((p) => p.status === 'open')!.id;
+    // The price falls through the stop: the exit attempt is sent, and the worker is killed before it can land.
+    const held = new Market(h, HELD);
+    await until(held, 10_000, () => Object.values(h.worker.book.intents).some((i) => i.intent.purpose === 'exit' && (i.status === 'submitted' || i.status === 'pending')), () => {
+      held.slot();
+      held.pool(700_000n);
+    });
+    await h.worker.kill();
+    // The next boot's reconcile settles that attempt unfilled: the position is open again.
+    const b2 = await reboot(h, LANDS);
+    await b2.m.run(400, 400, () => b2.m.slot());
+    expect(b2.b.worker.book.positions[pid]!.status).toBe('open');
+    await b2.b.worker.kill();
+    const ledger = openLedgerReader(join(h.stateDir, 'ledger.sqlite'));
+    const opens = ledger.positionEvents().filter((e) => e.positionId === pid && e.status === 'open').map((e) => Number(e.ts));
+    ledger.close();
+    expect(opens.length).toBeGreaterThanOrEqual(2);
+    const [first, last] = [opens[0]!, opens[opens.length - 1]!];
+    expect(last - first).toBeGreaterThan(10_000);
+    // Refuse the saved plan, and come back 5 s past T_max counted from the entry fill (still inside it from the reopen).
+    const file = exitsFile(h.stateDir);
+    const saved = file.read({});
+    file.write({ ...saved, [pid]: { ...saved[pid]!, plan: { ...saved[pid]!.plan, stopPrice: 'none' as unknown as bigint } } });
+    h.timers.set(first + TRIAL_POLICY.exits.universes.U2.tMaxMs + 5_000);
+    const { b, m: m3, first: said } = await reboot(h, LANDS);
+    expect(await until(m3, 4_000, () => b.worker.strategy.saved()[pid] !== undefined, () => m3.slot())).toBe(true);
+    expect(said('restore entry refused')).toHaveLength(1);
+    expect(b.worker.strategy.saved()[pid]!.plan.openedAtMs).toBe(first);
+    m3.pool();
+    expect(await until(m3, 4_000, () => said('exit').length > 0, () => m3.slot())).toBe(true);
+    expect((said('exit')[0]!['reasons'] as string[]).some((r) => r.startsWith('time_max'))).toBe(true);
+    await b.worker.stop();
   });
 });
 
