@@ -6,13 +6,14 @@ import { describe, expect, it } from 'vitest';
 import { checkEnvelope } from '../../../apps/web/src/api/modes.ts';
 import { schemaFor, type Endpoint } from '../../../apps/web/src/api/schemas.ts';
 import { PATHS } from '../../../apps/web/src/api/contract.ts';
-import { COMMANDS, NOT_RUNNING, route } from '../src/run/api.ts';
+import { COMMANDS, NOT_RUNNING, route, servedReason, triggerPrice } from '../src/run/api.ts';
+import { exitsFor } from '../../core/src/config/index.ts';
 import { MINT, makeWorker, passingMarket } from './worker-harness.ts';
 
 /** Test-only (POS-1): these tests move a held position's price by re-publishing the pool fact. */
 const HELD = { heldPoolFacts: true } as const;
 
-const ENDPOINTS: Exclude<Endpoint, 'calendar'>[] = ['status', 'funnel', 'decisions', 'position', 'trades', 'charts', 'stats'];
+const ENDPOINTS: Exclude<Endpoint, 'calendar'>[] = ['status', 'funnel', 'decisions', 'position', 'trades', 'charts', 'stats', 'discovered'];
 
 describe('the app API (UI-2 contract)', () => {
   it('every endpoint of a worker with a closed paper trade and an open one passes the app\'s strict paper schema', async () => {
@@ -46,6 +47,12 @@ describe('the app API (UI-2 contract)', () => {
     expect(stats.trades).toBe(trades.length);
     const pos = bodies['position']!.data as { mint: string; exit: string } | null;
     if (pos !== null) expect(pos.mint).toBe(MINT);
+    // APP-HOME: the candidate the worker watched is listed, its pool read and its hard gates passed (it entered).
+    const discovered = bodies['discovered']!.data as { tokens: { mint: string; liquidityUsd: string | null; checks: string; checkedAt: string | null; venue: string }[] };
+    const tok = discovered.tokens.find((t) => t.mint === MINT)!;
+    expect(tok).toMatchObject({ venue: 'PumpSwap', checks: 'passed' });
+    expect(tok.liquidityUsd).not.toBeNull();
+    expect(tok.checkedAt).not.toBeNull();
     await h.worker.stop();
   });
 
@@ -68,6 +75,52 @@ describe('the app API (UI-2 contract)', () => {
     for (const path of ['/api/v1/demo/status', '/api/v1/live/nothing', '/api/v1/live/calendar', '/api/v1/live/status/2026-10', '/api/v1/paper/nothing']) expect(get(path).status, path).toBe(404);
     expect(get(PATHS.backtestReport()).body).toMatchObject({ mode: 'backtest', data: null });
     await h.worker.stop();
+  });
+
+  it('an open position\'s exit triggers are in a trader\'s words (APP-WORDS a)', async () => {
+    const h = makeWorker();
+    await h.worker.reconcile();
+    const m = await passingMarket(h, HELD);
+    await m.run(4_000, 100, () => m.pool());
+    await m.run(10_000, 400, () => { m.slot(); m.pool(); });
+    const r = route(PATHS.position('paper'), () => h.worker.apiInputs());
+    const pos = checkEnvelope(JSON.parse(JSON.stringify(r.body)), 'paper', schemaFor('position', 'paper')).data as { mint: string; exitRules: { rule: string; trigger: string }[] } | null;
+    expect(pos).not.toBeNull();
+    expect(pos!.mint).toBe(MINT);
+    for (const x of pos!.exitRules) expect(x.trigger, x.rule).toMatch(/^(Price at or below \$\d+(\.\d+)?|After \d+ min|At \+\d+(\.\d+)?R or \+\d+(\.\d+)?%)$/);
+    // Review B1: the exact values, from the trial policy's exits for the position's universe and its saved stop.
+    const inputs = h.worker.apiInputs();
+    const p = Object.values(inputs.book.positions).find((x) => x.status === 'open')!;
+    const o = inputs.open(p)!;
+    const ux = exitsFor(inputs.policy.exits, o.universe as never);
+    const trigger = (rule: string, rules = pos!.exitRules) => rules.find((x) => x.rule === rule)!.trigger;
+    expect(trigger('time-stop')).toBe(`After ${ux.tMaxMs / 60_000} min`);
+    expect(trigger('take-profit')).toBe(`At +${ux.partialAtRBps / 10_000}R or +${ux.partialAtGainBps / 100}%`);
+    expect(trigger('price-stop')).toBe(`Price at or below ${triggerPrice(o.stopPrice, inputs.solPrice)}`);
+    // A trail is its own line, from the trail price, not the stop's.
+    const trail = o.stopPrice * 3n;
+    const withTrail = (route(PATHS.position('paper'), () => ({ ...inputs, open: (q) => ({ ...inputs.open(q)!, trail }) })).body as { data: { exitRules: { rule: string; trigger: string }[] } }).data.exitRules;
+    expect(trigger('trail', withTrail)).toBe(`Price at or below ${triggerPrice(trail, inputs.solPrice)}`);
+    expect(trigger('trail', withTrail)).not.toBe(trigger('price-stop', withTrail));
+    await h.worker.stop();
+  });
+
+  it('a typed reasons line is served as whole JSON within the app\'s text limit, cut by entries (review N2)', () => {
+    const many = Array.from({ length: 40 }, (_, i) => ({ gate: `H${(i % 17) + 1}`, code: `code-${i}`, detail: 'x'.repeat(200) }));
+    const served = servedReason(`gate_reasons ${JSON.stringify(many)}`);
+    expect(served.length).toBeLessThanOrEqual(500);
+    const back = JSON.parse(served.slice('gate_reasons '.length)) as { gate: string; code: string }[];
+    expect(back.length).toBeGreaterThan(5);
+    expect(back).toEqual(many.slice(0, back.length).map(({ gate, code }) => ({ gate, code })));
+    expect(servedReason('x'.repeat(600))).toHaveLength(500);
+    expect(servedReason('short')).toBe('short');
+  });
+
+  it('an exit trigger price is dollars per token with 4 significant digits (APP-WORDS a)', () => {
+    // 666,666,667 scaled = 6.67e-4 lamports per raw unit = 666.7 lamports per token; at $150 per SOL, $0.0001.
+    expect(triggerPrice(666_666_667n, 150_000_000n as never)).toBe('$0.0001');
+    expect(triggerPrice(123_456_789_000n, 150_000_000n as never)).toBe('$0.01852');
+    expect(triggerPrice(1n, null)).toBeNull();
   });
 
   it('listens on loopback only, separate from health; GET only', async () => {
