@@ -42,9 +42,24 @@ interface Figures {
 }
 
 /** Realized equity just before `t` (events at `t` or later excluded), and the flows at or after `t` up to now. */
+/**
+ * Realized trading results in time (RISK-PARTIAL): each partial sale at its time, then the rest of a closed trade's
+ * whole result at its close. The parts of a closed trade sum to its `netPnl`.
+ */
+const realized = (a: AccountHistory): { readonly at: number; readonly amount: bigint }[] => [
+  ...a.closedTrades.flatMap((c) => {
+    const parts = c.partials ?? [];
+    return [...parts.map((x) => ({ at: x.atMs, amount: x.pnl as bigint })), { at: c.closedAtMs, amount: c.netPnl - sumBig(parts.map((x) => x.pnl)) }];
+  }),
+  ...a.openPositions.flatMap((p) => (p.partials ?? []).map((x) => ({ at: x.atMs, amount: x.pnl as bigint }))),
+];
+
+const partialTimes = (a: AccountHistory): number[] =>
+  [...a.closedTrades.flatMap((c) => c.partials ?? []), ...a.openPositions.flatMap((p) => p.partials ?? [])].map((x) => x.atMs);
+
 const realizedBefore = (a: AccountHistory, t: number): { readonly equity: bigint; readonly flowsSince: bigint } => ({
   equity: a.openingEquity + sumBig(a.flows.filter((f) => f.atMs < t).map((f) => f.amount))
-    + sumBig(a.closedTrades.filter((c) => c.closedAtMs < t).map((c) => c.netPnl))
+    + sumBig(realized(a).filter((r) => r.at < t).map((r) => r.amount))
     - sumBig(a.costs.filter((c) => c.atMs < t).map((c) => c.amount)),
   flowsSince: sumBig(a.flows.filter((f) => f.atMs >= t).map((f) => f.amount)),
 });
@@ -52,11 +67,12 @@ const realizedBefore = (a: AccountHistory, t: number): { readonly equity: bigint
 type AccountEvent = { readonly at: number; readonly kind: 'flow' | 'trade' | 'cost'; readonly amount: bigint; readonly navBefore: bigint };
 
 /**
- * Flows, closed trades and account costs in time order. At the same instant trades and costs come first, then flows:
+ * Flows, realized trade results (`realized`) and account costs in time order. At the same instant trades and costs
+ * come first, then flows:
  * they are listed first and Array.prototype.sort is stable. A cost lowers equity like a loss and never raises the mark.
  */
 const accountEvents = (a: AccountHistory): AccountEvent[] => [
-  ...a.closedTrades.map((c): AccountEvent => ({ at: c.closedAtMs, kind: 'trade', amount: c.netPnl, navBefore: 0n })),
+  ...realized(a).map((r): AccountEvent => ({ at: r.at, kind: 'trade', amount: r.amount, navBefore: 0n })),
   ...a.costs.map((c): AccountEvent => ({ at: c.atMs, kind: 'cost', amount: -c.amount, navBefore: 0n })),
   ...a.flows.map((f): AccountEvent => ({ at: f.atMs, kind: 'flow', amount: f.amount, navBefore: f.navBefore })),
 ].sort((x, y) => x.at - y.at);
@@ -132,7 +148,7 @@ const figures = (policy: Policy, a: AccountHistory, latches: Latches, nowMs: num
   const problems: RiskReason[] = [];
   const latchTimes = [latches.killTrippedAtMs, latches.killRearmedAtMs, latches.weeklyTrippedAtMs, latches.weeklyReviewedAtMs, latches.lossReviewedAtMs]
     .filter((t): t is number => t !== null);
-  const times = [a.openedAtMs, ...a.flows.map((f) => f.atMs), ...a.navMarks.map((m) => m.atMs), ...a.costs.map((c) => c.atMs), ...a.closedTrades.map((c) => c.closedAtMs), ...a.entries.map((e) => e.atMs), ...latchTimes];
+  const times = [a.openedAtMs, ...a.flows.map((f) => f.atMs), ...a.navMarks.map((m) => m.atMs), ...a.costs.map((c) => c.atMs), ...a.closedTrades.map((c) => c.closedAtMs), ...partialTimes(a), ...a.entries.map((e) => e.atMs), ...latchTimes];
   if (times.some((t) => !isTime(t) || t > nowMs)) problems.push(reason('bankroll_invalid', 'account history or a latch has an invalid or future time'));
   if (a.heldReservations < 0n) problems.push(reason('bankroll_invalid', 'held reservations are negative'));
   if (a.flows.some((f) => f.navBefore <= 0n)) problems.push(reason('bankroll_invalid', 'a deposit or withdrawal has no positive valuation'));
@@ -217,7 +233,7 @@ const accountCheck = (input: RiskInput, nowMs: number): AccountCheck => {
     : mulDiv(balance - policy.reserve.opsFloor, price, LAMPORTS_PER_SOL, 'floor') + f.snapshot.openExposure;
   // Economic NAV, only when it can be valued consistently: marks fresh, no entry in flight, and a balance read at or
   // after the account's latest change (a close or flow the balance has not seen yet would read as a loss and latch).
-  const lastChange = Math.max(account.openedAtMs, ...account.flows.map((x) => x.atMs), ...account.closedTrades.map((c) => c.closedAtMs),
+  const lastChange = Math.max(account.openedAtMs, ...account.flows.map((x) => x.atMs), ...account.closedTrades.map((c) => c.closedAtMs), ...partialTimes(account),
     ...account.costs.map((c) => c.atMs), ...account.entries.map((e) => e.atMs), ...account.openPositions.map((p) => p.openedAtMs));
   const consistent = price !== null && balance !== null && market.solBalance !== null && market.solBalance.atMs >= lastChange
     && account.unresolvedEntries.length === 0
@@ -304,8 +320,9 @@ const accountCheck = (input: RiskInput, nowMs: number): AccountCheck => {
   // Not latched: it follows the SOL price and lifts when the wallet's value is back above the line.
   if (s.walletEquity !== null && s.walletEquity <= killLine) reasons.push(reason('wallet_below_kill_line', 'the wallet\'s value at the SOL price is at or below the kill line'));
 
-  // R11 (live only): entries per day.
-  if (live) {
+  // R11: entries per day, in paper exactly as live (supervisor ruling, golden rule: paper money is real money); only the
+  // backtest's research evaluation is uncapped.
+  if (mode !== 'backtest') {
     const today = account.entries.filter((e) => e.atMs >= s.dayStartMs).length;
     if (today >= policy.positions.maxEntriesPerDay) reasons.push(reason('entries_per_day', `${today} entries today, limit ${policy.positions.maxEntriesPerDay}`));
   }
@@ -413,8 +430,8 @@ export const evaluateEntry = (input: RiskInput, request: EntryRequest): EntryDec
   const live = mode === 'live';
   const qMin = policy.capital.minNotional;
 
-  // R11 (live only): per mint, and no re-entry after a stop.
-  if (live) {
+  // R11: per mint, and no re-entry after a stop, in paper exactly as live (supervisor ruling); not in the backtest.
+  if (mode !== 'backtest') {
     const day = account.entries.filter((e) => e.mint === request.mint && e.atMs >= s.dayStartMs).length;
     if (day >= policy.positions.maxEntriesPerMintPerDay) reasons.push(reason('entries_per_mint', `${day} entries in this mint today`));
     if (account.closedTrades.some((t) => t.mint === request.mint && t.stoppedOut && nowMs < t.closedAtMs + policy.positions.reentryBlockMs)) {

@@ -87,24 +87,41 @@ export interface RiskClock {
  * A finished trade from the ledger. `notional` is the entry's notional q as decided (`EntryAllowed.notional`), costs
  * excluded, so R15 compares a new q with the last q. `netPnl` is after every fee and cost.
  */
+/**
+ * What one partial sale of a trade realized (RISK-PARTIAL): its proceeds after fees less its share of the cost basis
+ * and entry fees, counted in equity at its own time.
+ */
+export interface RealizedPart {
+  readonly atMs: number;
+  readonly pnl: MicroUsd;
+}
+
 export interface ClosedTrade {
   readonly mint: Mint;
   readonly openedAtMs: number;
   readonly closedAtMs: number;
   readonly notional: MicroUsd;
+  /** The whole trade's result: statistics (R8, win rate, loss streak) count each trade once, whole. */
   readonly netPnl: MicroUsd;
   /** Closed by a stop (price, thesis or flow): blocks re-entry on the mint for the policy's re-entry window. */
   readonly stoppedOut: boolean;
+  /**
+   * The parts of `netPnl` realized by partial sales before the close (none when absent). Equity counts each at its own
+   * time and the rest of `netPnl` at the close.
+   */
+  readonly partials?: readonly RealizedPart[];
 }
 
 /** An open position. `mark` is the executable liquidation value of the whole position, net of fees (§9), or null if unknown. */
 export interface OpenPosition {
   readonly mint: Mint;
   readonly openedAtMs: number;
-  /** Cost basis in micro-dollars, entry costs included. */
+  /** Cost basis of what is still held in micro-dollars, entry costs included (after a partial sale, its remaining share). */
   readonly notional: MicroUsd;
   readonly mark: MicroUsd | null;
   readonly markAtMs: number | null;
+  /** What partial sales of this position have realized so far (none when absent), counted in equity at their times. */
+  readonly partials?: readonly RealizedPart[];
 }
 
 /** A deposit (positive) or withdrawal (negative) of trading capital. Neither counts as profit or loss. */

@@ -243,7 +243,7 @@ Limits are written as a fraction of the bankroll B with a dollar value for the t
 | R8 | Consecutive losses | 2 → 2 h cooldown; 3 → paused for the day; 5 in any 20 → paused until reviewed | — |
 | R9 | Weekly loss trigger | 20% of week-start equity → paused for the week, review required. The week starts Monday 00:00 Melbourne time | −$4 |
 | R10 | Kill switch | E ≤ 0.7·HWM on the trading ledger, or economic NAV ≤ 0.7 of its per-unit high-water mark (SOL at the fresh price plus positions at executable marks) → entries disabled; only the owner re-arms, after a written review | ≤ $14 |
-| R11 | Entries | 3 live entries per day; 1 per mint per day; no re-entry on a stopped mint for 24 h. The backtest and paper evaluation have no cap | — |
+| R11 | Entries | 3 entries per day; 1 per mint per day; no re-entry on a stopped mint for 24 h; in paper exactly as live (supervisor ruling, 2026-10-05: paper money is real money). Only the backtest's research evaluation has no cap | — |
 | R12 | Liquidity floor | Pool liquidity ≥ max($15k, 1,000 × q); U1 also ≥ $50k | ≥ $15k |
 | R13 | Executable-depth cap | Largest q whose quoted entry + exit impact ≤ 1% at current reserves; caps scale with the pool | — |
 | R14 | Cost gate | §5.3 | ≤ 5% |
