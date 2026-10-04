@@ -96,11 +96,32 @@ export interface PaperWorldDeps {
 const SIMULATION_FIELDS = ['outcome', 'success', 'error', 'standIn', 'finalExit', 'simulatedSlot', 'quotedOut', 'simulatedOut', 'amountErrorE4', 'quoteAgeSlots', 'rentDeclared', 'rentPaid', 'balancesFrom'] as const;
 
 /** The journal fields of a simulation record (bigints stay bigints here; the journal writes them as strings). */
-export const simulationFields = (leg: SimLeg, r: DryRunRecord): Record<string, unknown> => {
+export const simulationFields = (leg: SimLeg, r: DryRunRecord, timing?: SimTiming): Record<string, unknown> => {
   const out: Record<string, unknown> = { trade: leg.trade, leg: leg.leg, intent: leg.intentId, mint: leg.mint, venue: r.venue };
   for (const k of SIMULATION_FIELDS) out[k] = r[k] ?? null;
+  if (timing !== undefined) {
+    out['sent_height'] = timing.sentHeight;
+    out['land_slot'] = timing.landSlot;
+    out['last_valid'] = timing.lastValid;
+    out['sim_done_height'] = timing.doneHeight;
+    out['sim_ms'] = timing.ms;
+  }
   return out;
 };
+
+/**
+ * AUDIT-RM3 N2: how long a paper attempt's simulation took against its drawn landing. A paper attempt lands only once
+ * simulated, so a simulation still running at `landSlot` holds the landing (a later, different fill) and one still
+ * running past `lastValid` lets the attempt expire: our own queue, not the network. The report counts both.
+ */
+export interface SimTiming {
+  readonly sentHeight: bigint;
+  readonly landSlot: bigint;
+  readonly lastValid: bigint;
+  /** The paper height when the simulation answered (null when no slot was seen). */
+  readonly doneHeight: bigint | null;
+  readonly ms: number;
+}
 
 /** The lower median (a whole number, as ExecStats needs), null when empty. */
 const lowerMedian = (xs: readonly number[]): number | null => (xs.length === 0 ? null : [...xs].sort((a, b) => a - b)[(xs.length - 1) >> 1]!);
@@ -238,7 +259,7 @@ export class PaperWorld implements EffectRunner {
       closes: exit && holding !== undefined && a.inAmount >= holding.quantity, minContextSlot: height, maxSolOut: this.#d.maxSolOut(i),
     };
     const p = sim(leg).then((r) => {
-      this.#d.journal(simulationFields(leg, r));
+      this.#d.journal(simulationFields(leg, r, { sentHeight: height, landSlot: a.landSlot, lastValid: a.lastValidBlockHeight, doneHeight: this.#height, ms: this.#d.now() - (a.sentAtMs ?? this.#d.now()) }));
       const cur = this.#attempts.get(sig);
       if (cur !== undefined) {
         cur.simulated = true;
