@@ -23,7 +23,7 @@ import type { DryRunRecord } from '../dryrun/index.ts';
 import { CANDIDATE_RESTORED, NO_UNIVERSE, type SavedGraduates, type SavedTail, resolveUniverse, sellOnlyReason } from '../engine/strategy.ts';
 import { RAW } from '../../../core/src/facts/raw.ts';
 import { GRADUATES_SEED_KEY } from '../../../core/src/facts/producer.ts';
-import { ACCOUNT_KEY, HALT_KEY, LiveStrategy, POOL_PREFIX, RESTORE_KEY, SEED_KEY, SEEDING, SHORTLIST, SNAPSHOT_PREFIX, SOL_PRICE_KEY, type SnapshotFact, type StrategyConfig, type StrategyDeps, type SavedStateRef, TRIP_PREFIX, parseSnapshotFact, snapshotKey, snapshotWins } from '../engine/strategy.ts';
+import { ACCOUNT_KEY, HALT_KEY, LiveStrategy, POOL_PREFIX, RESTORE_KEY, SEED_KEY, SEEDING, SHORTLIST, SNAPSHOT_PREFIX, SOL_PRICE_KEY, type SnapshotFact, type CarryFact, CARRY_PREFIX, type MarketChoice, chooseMarket, parseCarryFact, type StrategyConfig, type StrategyDeps, type SavedStateRef, TRIP_PREFIX, parseSnapshotFact, snapshotKey, snapshotWins } from '../engine/strategy.ts';
 import { SLOT_MS, watchTimingProblem } from './config.ts';
 import { PositionWatch, type WatchRead } from './watch.ts';
 import { DEFAULT_LIVE_FEED, type Frame, type HttpClient, LiveFeed, type Release, seqId } from '../providers/index.ts';
@@ -198,7 +198,7 @@ export interface WorkerDeps {
    * WATCH-1's second path: one getMultipleAccounts at confirmed through the quota scheduler at P1, on a provider other
    * than the live feed's (Alchemy). Without it every stale held position raises the critical alert.
    */
-  readonly watchRead?: (addresses: readonly string[]) => Promise<WatchRead>;
+  readonly watchRead?: (addresses: readonly string[], minContextSlot: bigint | null) => Promise<WatchRead>;
   /** True while the second path's provider budget is halted (its scheduler's haltShare): entries stop. */
   readonly watchHalted?: () => boolean;
 }
@@ -344,6 +344,8 @@ export class Worker {
   #ctl: Control;
   #reconciled = false;
   #lastSlot: bigint | null = null;
+  /** When `#lastSlot` was released (WATCH-1d holds a snapshot's bank to a live head). */
+  #lastSlotAt: number | null = null;
   #ticked: bigint | null = null;
   #solPrice: MicroUsd | null = null;
   /** Whether this process settled at its first SOL price after the reconcile (a stray fee needs a price; PAPER-1). */
@@ -359,6 +361,8 @@ export class Worker {
   #pools = new Map<string, unknown>();
   /** When each mint's latest pool fact was released to the engine (WATCH-1 judges a feed fact by its release). */
   readonly #poolReleasedAt = new Map<string, number>();
+  /** WATCH-1c: each mint's latest carry (its pool state proven unchanged through a slot) and when it was released. */
+  readonly #carries = new Map<string, { readonly carry: CarryFact; readonly releasedAt: number }>();
   #fees = new Map<string, PoolFeeContext>();
   /** WATCH-1's latest snapshot per held mint, as released. */
   #snapshots = new Map<string, SnapshotFact>();
@@ -566,13 +570,19 @@ export class Worker {
       file: new StateFile<PaperState>(c.stateDir, 'paper.json', (v) => (isObj(v) && isObj(v['attempts']) ? (v as unknown as PaperState) : null)),
       changed: () => this.#writeOpenIntents(),
       // A landed failure paid its fee (PAPER-1, M4): the account settles it and risk sees the new snapshot.
-      landedFailed: () => {
-        if (this.#settle()) this.#publishAccount();
+      landedFailed: (a) => {
+        // Its trade may have closed already (PAPER-2): that trade is settled again with this fee.
+        const late = this.#account.resettle(this.#desk.book, a.trade, this.#legs(), this.#d.timers.now());
+        if (this.#settle() || late) this.#publishAccount();
       },
     });
     // FACTS-1b: the engine reads through core's FactFeed (engine-feed.ts); a replay of the recording uses the same.
     this.#facts = engineFeed(this.#feed, d.session.policy, (e) => {
       if (e.key.startsWith(POOL_PREFIX)) this.#setPool(e.key.slice(POOL_PREFIX.length), e.value);
+      else if (e.key.startsWith(CARRY_PREFIX)) {
+        const carry = parseCarryFact(e.value);
+        if (carry !== null) this.#carries.set(e.key.slice(CARRY_PREFIX.length), { carry, releasedAt: d.timers.now() });
+      }
       if (e.key === GRADUATES_SEED_KEY) this.#graduatesSeed(e.value);
     });
     this.#engine = new Engine({ clock: this.#feed.clock, feed: this.#facts.feed, strategy: this.#strategy, runner: this.#world, seed, book: bookConfig });
@@ -677,6 +687,8 @@ export class Worker {
     // WORKER-ORDER: fills the ledger holds that account.json missed (a kill between the two), caught up at the first price.
     this.#accountBehind = this.#account.behind(stored.book);
     // The stored book goes back to the engine as world frames (recorded, so a replay rebuilds the same book).
+    // PAPER-2: exits' trigger reasons survive the restart (a late stop still counts as a stop).
+    this.#desk.rebuild(stored.events, bookConfig);
     for (const e of stored.events) this.#desk.written(this.#report(e));
     // The worker's own start facts are dated 1 ms after the last restored frame, so every restored event sorts before
     // them whatever the clock's resolution: the engine rebuilds the stored book before the strategy sees anything and
@@ -853,7 +865,10 @@ export class Worker {
     // The deployer index's inputs and the creates/rugs coverage, kept across restarts (SEED-1 ruling).
     if (!r.late) this.#deployerStore.keep(m);
     // A late slot notice is refused by the engine (out of order): the paper height follows only accepted ones.
-    if (m.key === 'chain:slot' && !r.late && isObj(m.value) && typeof m.value['slot'] === 'bigint' && (this.#lastSlot === null || m.value['slot'] > this.#lastSlot)) this.#lastSlot = m.value['slot'];
+    if (m.key === 'chain:slot' && !r.late && isObj(m.value) && typeof m.value['slot'] === 'bigint' && (this.#lastSlot === null || m.value['slot'] > this.#lastSlot)) {
+      this.#lastSlot = m.value['slot'];
+      this.#lastSlotAt = this.#d.timers.now();
+    }
     else if (m.key.startsWith(POOL_PREFIX)) this.#setPool(m.key.slice(POOL_PREFIX.length), m.value);
     else if (m.key.startsWith('worker:fees:')) this.#fees.set(m.key.slice('worker:fees:'.length), m.value as PoolFeeContext);
     else if (m.key.startsWith(SNAPSHOT_PREFIX)) {
@@ -1053,17 +1068,24 @@ export class Worker {
     this.#poolReleasedAt.set(mint, this.#d.timers.now());
   }
 
+  /** The mint's newest whole market by the strategy's own rule (`chooseMarket`). */
+  #choice(mint: string): MarketChoice {
+    return chooseMarket(parsePool(this.#pools.get(mint)), this.#snapshots.get(mint) ?? null, this.#carries.get(mint)?.carry ?? null);
+  }
+
   /**
    * The moment WATCH-1 judges a held mint's market by (null: no market). A pool fact from the feed counts from its
-   * release: a healthy feed releases one every slot, already up to the horizon old by design, so judging it by receipt
-   * would read the second path all the time. WATCH-1's own snapshot counts from its read, as its age bound needs.
+   * release, or from its latest carry's release while a carry proves it unchanged (WATCH-1c): a live feed releases
+   * facts already up to the horizon old by design, so judging them by receipt would read the second path all the time.
+   * WATCH-1's own snapshot counts from its read, as its age bound needs.
    */
   #watchMarketAt(mint: string): number | null {
-    const p = parsePool(this.#pools.get(mint));
-    const snap = this.#snapshots.get(mint);
-    if (snap !== undefined && snapshotWins(snap, p === null ? null : p.obs)) return snap.atMs;
-    if (this.poolOf(mint) === null) return null;
-    return this.#poolReleasedAt.get(mint) ?? null;
+    const c = this.#choice(mint);
+    if (c.kind === 'snapshot') return c.snap.atMs;
+    if (c.kind !== 'pool') return null;
+    const released = c.carried ? this.#carries.get(mint)!.releasedAt : this.#poolReleasedAt.get(mint) ?? null;
+    // A confirming snapshot counts from its read, like any snapshot.
+    return c.confirmedAtMs === null ? released : Math.max(released ?? c.confirmedAtMs, c.confirmedAtMs);
   }
 
   /**
@@ -1079,13 +1101,13 @@ export class Worker {
   }
 
   poolOf(mint: string): { readonly address: string; readonly state: PaperMarket['pool']; readonly ctx: PoolFeeContext; readonly atMs: number } | null {
-    const p = parsePool(this.#pools.get(mint));
-    const snap = this.#snapshots.get(mint);
-    if (snap !== undefined && snapshotWins(snap, p === null ? null : p.obs)) return { address: snap.pool, state: snap.state, ctx: snap.ctx, atMs: snap.atMs };
-    if (p === null || flagged(p)) return null;
+    const c = this.#choice(mint);
+    if (c.kind === 'snapshot') return { address: c.snap.pool, state: c.snap.state, ctx: c.snap.ctx, atMs: c.snap.atMs };
+    if (c.kind !== 'pool') return null;
+    const p = c.pool;
     const ctx = this.#fees.get(mint) ?? this.#strategy.observedFees(mint);
-    if (p === null || ctx === undefined) return null;
-    return { address: p.address, state: { baseReserve: p.baseVault, quoteVault: p.quoteVault, virtualQuoteReserves: p.pool.virtualQuoteReserves ?? 0n }, ctx, atMs: p.obs.receivedAt };
+    if (ctx === undefined) return null;
+    return { address: p.address, state: { baseReserve: p.baseVault, quoteVault: p.quoteVault, virtualQuoteReserves: p.pool.virtualQuoteReserves ?? 0n }, ctx, atMs: c.atMs };
   }
 
   /**
@@ -1725,7 +1747,7 @@ export class Worker {
   #positionWatch(): PositionWatch {
     const d = this.#d;
     return new PositionWatch({
-      timers: d.timers, everyMs: d.config.watch.everyMs, staleMs: d.config.watch.staleMs, latencyMs: d.config.watch.latencyMs,
+      timers: d.timers, everyMs: d.config.watch.everyMs, staleMs: d.config.watch.staleMs, latencyMs: d.config.watch.latencyMs, verifyMs: d.config.watch.verifyMs,
       held: () => {
         const book = this.#engine.book;
         const open = Object.values(book.positions).filter((p) => p.status !== 'closed' && p.quantity > 0n).map((p) => ({
@@ -1740,6 +1762,8 @@ export class Worker {
       },
       marketAt: (mint) => this.#watchMarketAt(mint),
       read: d.watchRead ?? (() => Promise.reject(new Error('no second path configured'))),
+      head: () => (this.#lastSlot === null || this.#lastSlotAt === null ? null : { slot: this.#lastSlot, atMs: this.#lastSlotAt }),
+      maxLagSlots: d.session.policy.gates.maxStateSlotLag,
       put: (snap, atMs) => this.#fact(snapshotKey(snap.mint), { pool: snap.pool, slot: snap.slot, atMs, state: snap.state, ctx: snap.ctx }),
       alert: (mint, reason) => {
         this.#journal.write('alert', { level: 'critical', code: 'position_unpriced', mint, reasons: [`no fresh price for ${mint}`, reason] });
