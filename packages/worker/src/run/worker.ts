@@ -860,7 +860,7 @@ export class Worker {
     d.log(`Deployer index: ${result.mode} (${result.report}); ${saved.creates.length} saved creates, ${saved.coverage.length} saved coverage facts.`);
   }
 
-  /** Trades with an exit planned, requested or signed and not yet final: what a restart must not lose (RUN-1d). */
+  /** Trades with an exit planned, requested or signed and not yet final, or a due exit waiting for its first fresh quote (EXIT-1c): what a restart must not lose (RUN-1d). */
   pendingExits(): string[] {
     const book = this.#engine.book;
     const out = new Set<string>();
