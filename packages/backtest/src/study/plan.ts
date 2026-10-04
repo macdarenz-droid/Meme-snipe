@@ -131,6 +131,12 @@ export const foldSummary = (trades: readonly (DayReturn & { fold: number })[], f
 const iso = (ms: number) => new Date(ms).toISOString();
 
 /**
+ * The Holm family of the holdout: U1 and U2, whatever the configuration or the pick holds (01FHfb, binding). A universe
+ * without a registered configuration is "no configuration", p = 1 in Holm, "not proven".
+ */
+export const HOLDOUT_FAMILY_SIZE = 2;
+
+/**
  * The holdout plan BT-2 registers in the one holdout registry (setHoldoutPlan): the window and cutoff (they must equal
  * the research config's), the tie salt, the ruled α schedule, the decoder boundaries inside the window and the
  * procedure in words. Only what is fixed before any data was read goes in, so the same study registers the same plan.
@@ -140,19 +146,19 @@ export const holdoutPlanOf = (c: StudyConfig, plan: StudyPlan, alpha: { readonly
   if (cutoff % DAY_MS !== 0) throw new RangeError(`the entry cutoff ${c.holdout.entryCutoff} must be a UTC midnight to be registered`);
   const tailEnd = dayStart(plan.holdout.toDay) + DAY_MS;
   const inside = c.regimes.filter((b) => !b.market && b.atMs > dayStart(plan.holdout.fromDay) && b.atMs < tailEnd);
-  const universes = c.universes.map((u) => u.universe);
   const first = (alpha.first * 100).toFixed(0);
   return {
     fromDay: plan.holdout.fromDay, entryCutoffDay: iso(cutoff).slice(0, 10), tailEndDay: iso(tailEnd).slice(0, 10),
-    familySize: universes.length, tieSalt: c.tieSalt, alpha,
+    familySize: HOLDOUT_FAMILY_SIZE, tieSalt: c.tieSalt, alpha,
+    spa: { seFloorOfBase: c.spa.seFloor, replicates: c.spa.replicates, alpha: c.spa.alpha },
     decoderBoundaries: inside.map((b) => ({ label: b.label, at: iso(b.atMs) })),
     procedure: [
       'Configurations are chosen from practice days only, then frozen and registered before any of them runs live; whoever selects them reads no live shakedown P&L before the freeze.',
       'Registering a configuration commits its attempt: at E the attempt is spent whatever happens. Halted, abandoned or short counts as a failed attempt, and the next configuration takes the next level.',
       `Entries stop at the cutoff E = ${iso(cutoff)} (UTC); the observation-only tail matures before anything is scored.`,
-      `One sealed ledger with one endpoint for ${universes.join(' and ')}: run once, opened once after the tail, never for one universe while another is pending.`,
+      `One sealed ledger with one endpoint for the universes registered (of U1 and U2): run once, opened once after the tail, never for one universe while another is pending.`,
       "A universe's seal opens only if its latest recorded G1 (practice days, all regimes pooled) passed; the registry refuses otherwise. Once G1 passed and the counts are met, opening is mandatory.",
-      `Required: n >= max(300, n_power, closed form) at family alpha ${alpha.first} (Holm across the ${universes.length} universes) on >= 10 Melbourne trade days; short means "not proven".`,
+      `Required: n >= max(300, n_power, closed form) at family alpha ${alpha.first} (Holm across the ${HOLDOUT_FAMILY_SIZE} universes U1 and U2; a universe without a configuration counts with p = 1) on >= 10 Melbourne trade days; short means "not proven".`,
       ...inside.map((b) => `${b.label} (${iso(b.atMs)}) is a decoder boundary, not a market boundary: allowed inside the window, reported before and after as a non-gating line.`),
       `Attempt k >= 2 is registered after the earlier attempts are scored or burned; its window starts on the first whole UTC day after that registration and runs 28 entry days, at family alpha ${alpha.laterBase} / 2^(k-1), same procedure, opened once.`,
     ],

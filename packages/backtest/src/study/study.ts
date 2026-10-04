@@ -18,7 +18,7 @@ import type { RunResult } from '../run.ts';
 import { replayHashes } from '../proofs.ts';
 import { type StudyConfig, configId, configTag, studyHash } from '../strategy/config.ts';
 import { g0, g1, g1NotEvaluated, g2NotProven, gateG2, type G2Short, pboMatrix, powerOf, trialOf } from './gates.ts';
-import { foldSummary, holdoutPlanOf, purge, regimeOf, studyPlan, type StudyPlan } from './plan.ts';
+import { foldSummary, HOLDOUT_FAMILY_SIZE, holdoutPlanOf, purge, regimeOf, studyPlan, type StudyPlan } from './plan.ts';
 import { attemptAlpha, g1Blocks, type HoldoutAuthority, type HoldoutStore, readHoldoutStore, recordHoldoutG1, recordHoldoutG2, recordTrials, registerAttempt, RULED_ALPHA, setHoldoutPlan, type StoredTrial } from '../holdout.ts';
 import type { Preregistration } from '../strategy/preregistration.ts';
 import { runStudy, studyRunOptions, type StudyRunOptions } from './run.ts';
@@ -219,6 +219,18 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
   const solBar = i.series.flatMap((x) => x.bars).filter((b) => b.start <= wfStart).sort((a, b) => b.start - a.start)[0];
   const capitalBase = solBar === undefined ? null : microUsdToLamports(i.policy.capital.bankroll, solPriceMicroUsd(solBar.close), 'floor');
 
+  // A run with the regime assumed on is a labelled diagnostic: its counts never feed G1, the trial registry or a
+  // holdout registration (supervisor ruling).
+  const diagnostic = i.regimeGate === 'assume-on';
+  const storeNow = (): HoldoutStore | null => (existsSync(i.holdout.registryPath) ? readHoldoutStore(i.holdout.registryPath) : null);
+  // The plan is fixed once, before any practice-day statistic is computed: the SPA settings (01FHfb's SE floor) are
+  // read from it, so no run can change them after seeing practice-day ω.
+  if (!diagnostic) setHoldoutPlan(i.holdout, holdoutPlanOf(c, plan, RULED_ALPHA, i.preregistration), i.research);
+  const frozenSpa = storeNow()?.plan?.spa;
+  const spaSettings = frozenSpa !== undefined ? { seFloor: frozenSpa.seFloorOfBase, replicates: frozenSpa.replicates, alpha: frozenSpa.alpha } : diagnostic ? c.spa : null;
+  // The attempt's α: the STATS-1c registry's schedule (attempt 1: 0.04), the same before and after registration.
+  const alpha = attemptAlpha({ alpha: RULED_ALPHA }, c.holdoutAttempt);
+
   // 1d. RES-4's family on the practice days: every hypothesis on its own deployment replay (one account, its limits),
   // S0 per universe under the same rules, one joint SPA test (k = every hypothesis), at most one pick per universe.
   const family = i.preregistration;
@@ -226,25 +238,34 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
   let familyPanel: SpaVariant[] = [];
   const familyTrials: StoredTrial[] = [];
   if (family !== undefined) {
+    const noSelection = (why: string): Selection => ({ byUniverse: Object.fromEntries(universes.map((u) => [u, null])), why: Object.fromEntries(universes.map((u) => [u, why])), spa: null });
     if (capitalBase === null || capitalBase <= 0n) {
-      selection = { byUniverse: Object.fromEntries(universes.map((u) => [u, null])), why: Object.fromEntries(universes.map((u) => [u, 'no SOL/USD price for the capital base'])), spa: null };
+      selection = noSelection('no SOL/USD price for the capital base');
+    } else if (spaSettings === null) {
+      selection = noSelection('the registered plan holds no SPA settings (SE floor): no selection');
     } else {
       const base = capitalBase;
       const universeOf = Object.fromEntries(family.hypotheses.map((h) => [h.id!, h.universe]));
+      const familyTrades: Record<string, ScoredTrade[]> = {};
       familyPanel = family.hypotheses.map((h) => {
         const hc = { ...c, universes: [h] };
         const all = scoreRunAll(runStudy({ ...wfOpts, study: hc, mode: 'deployment', seed: `${i.seed}:family:${h.id}` }), i.fills, i.funderOf);
         const trades = all.trades.filter((t) => t.tag === h.id);
+        familyTrades[h.id!] = trades;
         familyTrials.push({ ...trialOf(configId(hc, h.id!), trades), configId: configId(hc, h.id!), tag: h.id!, evaluatedOn: `deployment replay ${wfDays[0]}..${wfDays[wfDays.length - 1]}` });
         return spaVariant(h.id!, trades, calendar, base, all.uncarried.filter((x) => x.tag === h.id));
       });
       // S0's daily P&L per universe: the mean over its seeds of the same one-account replay.
       const s0Daily: Record<string, number[]> = {};
+      const s0Trades: Record<string, ScoredTrade[]> = {};
       for (const u of [...new Set(family.hypotheses.map((h) => h.universe))]) {
         const h = family.hypotheses.find((x) => x.universe === u)!;
+        s0Trades[u] = [];
         const seeds = Array.from({ length: c.s0SeedsWalkForward }, (_, k) => {
           const all = scoreRunAll(runStudy({ ...wfOpts, study: { ...c, universes: [h] }, mode: 'deployment-s0', seed: `${i.seed}:family-s0:${u}:${k}` }), i.fills, i.funderOf);
-          return spaVariant(`S0-${u}`, all.trades.filter((t) => t.tag === `S0-${u}`), calendar, base, all.uncarried.filter((x) => x.tag === `S0-${u}`)).daily;
+          const mine = all.trades.filter((t) => t.tag === `S0-${u}`);
+          s0Trades[u]!.push(...mine);
+          return spaVariant(`S0-${u}`, mine, calendar, base, all.uncarried.filter((x) => x.tag === `S0-${u}`)).daily;
         });
         s0Daily[u] = calendar.map((_, d) => seeds.reduce((a, x) => a + x[d]!, 0) / Math.max(1, seeds.length));
       }
@@ -252,7 +273,13 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
       const cut: number[] = [0];
       for (let d = 1; d < calendar.length; d++) if (regimeOf(c, Date.parse(`${calendar[d]}T00:00:00Z`)) !== regimeOf(c, Date.parse(`${calendar[d - 1]}T00:00:00Z`))) cut.push(d);
       const regimes = cut.map((from, k) => ({ from, to: cut[k + 1] ?? calendar.length }));
-      selection = selectHypotheses(familyPanel, family.hypotheses.map((h) => h.id!), universeOf, s0Daily, c.spa, regimes, seedNumber(`${i.seed}:spa`));
+      // 01FHfb's fill filter: each hypothesis's practice entries per calendar day, and the holdout requirement it would
+      // freeze at the plan's α over the Holm family of 2 (max(300, n_power, closed form)); null when it cannot be sized.
+      const capacity = Object.fromEntries(family.hypotheses.map((h) => {
+        const p = powerOf(familyTrades[h.id!]!, s0Trades[h.universe] ?? [], HOLDOUT_FAMILY_SIZE, seedNumber(`${i.seed}:family-power:${h.id}`), alpha);
+        return [h.id!, { entriesPerDay: familyTrades[h.id!]!.length / calendar.length, required: p.ok ? p.required : null }];
+      }));
+      selection = selectHypotheses(familyPanel, family.hypotheses.map((h) => h.id!), universeOf, s0Daily, spaSettings, regimes, seedNumber(`${i.seed}:spa`), capacity);
     }
   }
   // The holdout takes, per universe, only the configuration the SPA picked (all of them without a family).
@@ -273,24 +300,17 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
   const lastRegime = regimeOf(c, Date.parse(`${plan.holdout.fromDay}T00:00:00Z`));
   const sameRegime = <T extends DayReturn & { regime: string }>(xs: readonly T[]): T[] => xs.filter((t) => t.regime === lastRegime);
 
-  // A run with the regime assumed on is a labelled diagnostic: its counts never feed G1, the trial registry or a
-  // holdout registration (supervisor ruling).
-  const diagnostic = i.regimeGate === 'assume-on';
   const runTrials: StoredTrial[] = universes.map((u) => ({ ...trialOf(ids[u]!, tradesOf(u)), configId: ids[u]!, tag: tagFor[u]!, evaluatedOn: `walk-forward ${wfDays[0]}..${wfDays[wfDays.length - 1]}` }));
-  const storeNow = (): HoldoutStore | null => (existsSync(i.holdout.registryPath) ? readHoldoutStore(i.holdout.registryPath) : null);
-  // 3. The plan (fixed once) and one configuration per universe registered as this attempt before any holdout run.
+  // 3. The plan (fixed once, set above) and one configuration per universe registered as this attempt before any holdout run.
   // Registering commits the attempt: its α is spent whatever happens later.
   if (!diagnostic) {
-    setHoldoutPlan(i.holdout, holdoutPlanOf(c, plan, RULED_ALPHA, i.preregistration), i.research);
     // The experiment registry lives in the holdout registry: one log per registry, whatever the output directory.
     recordTrials(i.holdout, [...runTrials, ...familyTrials]);
   }
   const trials = diagnostic ? runTrials : storeNow()?.trials ?? [];
   const holdoutIdOf = (u: string) => `${u}-${plan.holdout.fromDay}-${plan.holdout.toDay}`;
   const registered = (u: string) => storeNow()?.registry.entries.some((e) => e.holdoutId === holdoutIdOf(u)) === true;
-  const familySize = storeNow()?.plan?.familySize ?? universes.length;
-  // The attempt's α: the STATS-1c registry's schedule (attempt 1: 0.04), the same before and after registration.
-  const alpha = attemptAlpha({ alpha: RULED_ALPHA }, c.holdoutAttempt);
+  const familySize = storeNow()?.plan?.familySize ?? HOLDOUT_FAMILY_SIZE;
   // 3b. The holdout's size requirement from the walk-forward only (σ̂ and the day structure, §14): max(300, n_power,
   // closed form) on MIN_DAYS days, with n_power's seed, frozen with the registration before any holdout count exists.
   const powerSeed = (u: string) => seedNumber(`${i.seed}:power:${u}`);

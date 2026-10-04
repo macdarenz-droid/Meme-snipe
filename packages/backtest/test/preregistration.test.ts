@@ -58,4 +58,16 @@ describe('pre-registration', () => {
     expect(holdoutPlanOf(STUDY_CONFIG, sp, RULED_ALPHA, parsePreregistration(seven, sha(seven))).details['preregistration']).not.toEqual(plan.details['preregistration']);
     expect(holdoutPlanOf(STUDY_CONFIG, sp, RULED_ALPHA).details['preregistration']).toBeUndefined();
   });
+
+  it('fixes the Holm family at 2 whatever the configuration holds (01FHfb), and freezes the SPA settings with the plan', () => {
+    const sp = studyPlan(STUDY_CONFIG, 2 * 3_600_000 + 900_000);
+    expect(holdoutPlanOf(STUDY_CONFIG, sp, RULED_ALPHA).familySize).toBe(2);
+    const oneUniverse = { ...STUDY_CONFIG, universes: STUDY_CONFIG.universes.filter((u) => u.universe === 'U2') };
+    expect(holdoutPlanOf(oneUniverse, sp, RULED_ALPHA).familySize).toBe(2);
+    // The SE floor (a share of the capital base per day), replicates and level are part of the registered plan, so a
+    // changed floor is a different plan, which the registry refuses once one is set.
+    expect(holdoutPlanOf(STUDY_CONFIG, sp, RULED_ALPHA).spa).toEqual({ seFloorOfBase: 0.0005, replicates: 2000, alpha: 0.05 });
+    const raised = { ...STUDY_CONFIG, spa: { ...STUDY_CONFIG.spa, seFloor: 0.001 } };
+    expect(holdoutPlanOf(raised, sp, RULED_ALPHA)).not.toEqual(holdoutPlanOf(STUDY_CONFIG, sp, RULED_ALPHA));
+  });
 });

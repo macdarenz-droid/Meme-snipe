@@ -118,6 +118,12 @@ export interface HoldoutPlan {
   readonly alpha: { readonly first: number; readonly laterBase: number };
   /** Decoder boundaries inside the window: reported before and after, not gating (B5). */
   readonly decoderBoundaries: readonly { readonly label: string; readonly at: string }[];
+  /**
+   * The SPA test of the practice-day selection (01FHfb, binding): ω floor as a share of the capital base per day,
+   * replicates and level, frozen with the plan for every attempt; never raised from practice-day ω. Absent on a plan
+   * that predates it: the study then makes no selection.
+   */
+  readonly spa?: { readonly seFloorOfBase: number; readonly replicates: number; readonly alpha: number };
   readonly procedure: readonly string[];
   /** Anything else the study fixes in advance (sizing estimates, study id); recorded, never read here. */
   readonly details: Readonly<Record<string, unknown>>;
