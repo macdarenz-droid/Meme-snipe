@@ -547,7 +547,8 @@ cat > "$R/zeroed-rpcscan" <<'STUB'
 # sleeps RPC_SLEEP (interruptible: SIGINT writes the usage and exits 1), exits RPC_RC.
 echo "$*" >> "$RPCLOG"
 u=; while (( $# )); do [[ $1 == -usage-out ]] && u=$2; shift; done
-w() { [[ -n "$u" ]] && printf '{\n  "credits": %s,\n  "requests": 1\n}\n' "${RPC_CREDITS:-0}" > "$u"; }
+w() { [[ -n "$u" && -z "${RPC_NOUSAGE:-}" ]] || return 0
+  if [[ -n "${RPC_USAGE_RAW:-}" ]]; then printf '%s' "$RPC_USAGE_RAW" > "$u"; else printf '{\n  "credits": %s,\n  "requests": 1\n}\n' "${RPC_CREDITS:-0}" > "$u"; fi; }
 trap 'w; exit 1' INT
 [[ -n "${RPC_SLEEP:-}" ]] && { sleep "$RPC_SLEEP" & wait $!; }
 w; exit "${RPC_RC:-0}"
@@ -573,6 +574,11 @@ rc=0; rd "$o" SCANNER_REVISION=new RPC_CREDITS=1 || rc=$?
 o="$T/rd3"; rm -rf "$o"; t0=$(date +%s); rc=0; RD_BUDGET=2s rd "$o" RPC_SLEEP=30 RPC_CREDITS=7 || rc=$?
 [[ $rc == 75 && $(cat "$o/rpc-credits-used") == 7 ]] && (( $(date +%s) - t0 < 20 )) &&
   ok "rpc-day: at the time budget the read is interrupted, its credits booked, exit 75" || no "rpc-day budget: rc=$rc $(cat "$T/out.txt")"
+o="$T/rd4"; rm -rf "$o"; rc=0; rd "$o" RPC_USAGE_RAW='{"cre' RPC_RC=75 || rc=$?
+[[ $rc != 0 && $rc != 75 ]] && grep -q "not booked" "$T/summary.md" &&
+  ok "rpc-day: credits that cannot be booked (malformed usage file) stop the day, not resumable (exit $rc, never 75)" || no "rpc-day unbooked: rc=$rc $(cat "$T/out.txt")"
+o="$T/rd5"; rm -rf "$o"; rc=0; rd "$o" RPC_CREDITS=100 RPC_RC=75 || rc=$?; rd "$o" RPC_NOUSAGE=1 RPC_RC=75 || true
+[[ $(cat "$o/rpc-credits-used") == 100 ]] && ok "rpc-day: a run that writes no usage file books nothing (the previous run's file is not counted again)" || no "rpc-day stale usage: $(cat "$o/rpc-credits-used")"
 printf '{\n  "requests": 3\n}\n' > "$T/bad-usage.json"; mkdir -p "$T/rc0"
 "$here/rpc-credits.sh" add "$T/rc0" "$T/bad-usage.json" 2>/dev/null && no "rpc-credits accepted a usage file without credits" || ok "rpc-credits: a usage file without credits fails (never drops spent credits)"
 # check-day, source helius: the determinism rescan goes over RPC within the day's cap
@@ -723,6 +729,8 @@ assert 'rpc_rps must be from 1 to 50' in plan and ins["rpc_rps"]["default"] == "
 for s in key:
     assert s["env"]["RPC_RPS"] == "${{ inputs.rpc_rps }}", s["env"]
 assert "secrets." not in str(wf["jobs"]["continue"]) and "secrets." not in str(wf["jobs"]["plan"])
+saq = next(s for s in steps if s.get("name") == "Save progress after QA")
+assert "inputs.source == 'helius'" in saq["if"] and "always()" in saq["if"], saq["if"]
 PY
 
 echo "$pass passed, $fail failed"

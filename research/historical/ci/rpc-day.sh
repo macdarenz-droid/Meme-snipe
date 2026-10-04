@@ -47,7 +47,8 @@ rm -f "$out/rpc-usage-run.json"
 timeout -s INT -k 120 "$left" zeroed-rpcscan rpc-run -out "$out" -from "$day" -to "$next" -sample 0.05 \
   -rps "${RPC_RPS:-5}" -conc "${RPC_CONC:-4}" -max-credits "$left_credits" -usage-out "$out/rpc-usage-run.json"
 rc=$?
-"$here/rpc-credits.sh" add "$out" "$out/rpc-usage-run.json"
+# Fail closed: credits spent but not booked would let the next run spend the full cap.
+"$here/rpc-credits.sh" add "$out" "$out/rpc-usage-run.json" || { echo "credits for $day not booked (usage file unreadable): stopping; not resumable" | tee -a "$summary"; exit 1; }
 used=$("$here/rpc-credits.sh" get "$out")
 echo "credits for $day: $used of $cap used ($(cat "$out/rpc-usage-run.json" 2>/dev/null | tr -d '\n ' || echo 'no usage file'))" | tee -a "$summary"
 if [ "$rc" -eq 0 ]; then

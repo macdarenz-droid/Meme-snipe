@@ -274,8 +274,15 @@ func writeUsage(path string, h *heliusClient) {
 	if path == "" {
 		return
 	}
+	// Written whole or not at all (a temp file renamed into place), so a run killed
+	// mid-write never leaves a half file that would fail the booking.
 	b, _ := json.MarshalIndent(h.usage(), "", "  ")
-	if err := os.WriteFile(path, b, 0o644); err != nil {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+		log.Printf("usage file: %v", err)
+		return
+	}
+	if err := os.Rename(tmp, path); err != nil {
 		log.Printf("usage file: %v", err)
 	}
 }

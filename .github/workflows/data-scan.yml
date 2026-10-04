@@ -329,8 +329,10 @@ jobs:
       # fails QA. Only then does the day's progress change after "Save progress" (the
       # rescan itself writes to a temp dir), so it is saved again only when QA failed,
       # instead of storing an identical ~4 GB copy of every passed day.
+      # source helius: also saved after a passed QA, so the rescan's credits stay booked
+      # in rpc-credits-used even when packaging or publishing then fails.
       - name: Save progress after QA
-        if: always() && steps.published.outcome == 'success' && steps.qa.outcome == 'failure' && steps.published.outputs.complete != 'true'
+        if: always() && steps.published.outcome == 'success' && (steps.qa.outcome == 'failure' || (inputs.source == 'helius' && steps.qa.outcome != 'skipped')) && steps.published.outputs.complete != 'true'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ runner.temp }}/work/data
