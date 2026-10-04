@@ -149,8 +149,9 @@ describe('boundary marks from the marked account (RISK-MARK)', () => {
     const { h, m } = await entered();
     const openAt = m.now;
     const before = account(h).navPeak!;
-    // The price rises 30%: the marked NAV passes the peak taken before the entry, with the position still open.
-    expect(await until(m, () => account(h).navPeak!.atMs >= openAt, 20_000, tick(m, 1_300_000n))).toBe(true);
+    // The price rises 40%: the marked NAV passes the peak taken before the entry, with the position still open. (30% no
+    // longer does since PAPER-1: the token account's rent now leaves the paper wallet at entry, as it does on chain.)
+    expect(await until(m, () => account(h).navPeak!.atMs >= openAt, 20_000, tick(m, 1_400_000n))).toBe(true);
     expect(position(h)!.status).toBe('open');
     expect(account(h).navPeak!.nav).toBeGreaterThan(before.nav);
     await h.worker.stop();
