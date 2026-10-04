@@ -16,7 +16,6 @@ import { DEV, MINT, Market, T, dueTimers, makeWorker, slotAt, tempState, virtual
 
 const emptyRpc = { getSignaturesForAddress: async () => [{ signature: 'before-the-range', slot: 0n, err: null, blockTime: 0 }], getTransaction: async () => null };
 const VIA = 'logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM';
-const ports = (n: number) => ({ ZEROED_HEALTH_ADDR: `127.0.0.1:${18860 + 2 * n}`, ZEROED_API_ADDR: `127.0.0.1:${18861 + 2 * n}` });
 const journal = (dir: string) => readFileSync(join(dir, 'journal.jsonl'), 'utf8').split('\n').filter((l) => l !== '').map((l) => JSON.parse(l) as Record<string, unknown>);
 
 const boot = async (h: ReturnType<typeof makeWorker>, before?: (m: Market) => void) => {
@@ -36,7 +35,7 @@ describe('PERSIST-1 in the worker', () => {
     const stateDir = tempState();
     const timers = virtualTimers(T);
     const seed = (r: SeedRequest) => runSeed(r, { rpc: emptyRpc, timers });
-    const h = makeWorker({ stateDir, timers, seed, config: ports(0) });
+    const h = makeWorker({ stateDir, timers, seed });
     const m = await boot(h);
     m.create();
     await m.run(1_000, 200, () => m.slot());
@@ -50,7 +49,7 @@ describe('PERSIST-1 in the worker', () => {
 
     timers.set(timers.now() + 10 * 60_000);
     const requests: SeedRequest[] = [];
-    const h2 = makeWorker({ stateDir, timers, seed: (r) => (requests.push(r), seed(r)), config: ports(1) });
+    const h2 = makeWorker({ stateDir, timers, seed: (r) => (requests.push(r), seed(r)) });
     expect(h2.logs.some((l) => l.startsWith(`Saved state restored as of slot ${asOf!.slot}`))).toBe(true);
     await boot(h2);
     // The fill starts at the saved moment and closes the restart gap the restore opened on the live creates watch.
@@ -82,7 +81,7 @@ describe('PERSIST-1 in the worker', () => {
     // Timers that fire only when the clock reaches them, so the seed's 1 h cap does not elapse at once.
     const timers = dueTimers(T);
     let release: (r: SeedResult) => void = () => undefined;
-    const h = makeWorker({ stateDir, timers, seed: () => new Promise((r) => (release = r)), seedMaxMs: 3_600_000, seedWaitMs: 1_000, config: ports(2) });
+    const h = makeWorker({ stateDir, timers, seed: () => new Promise((r) => (release = r)), seedMaxMs: 3_600_000, seedWaitMs: 1_000 });
     const m = new Market(h);
     const started = h.worker.start();
     for (let k = 0; k < 200 && !h.order.includes('start helius-ws'); k++) {
@@ -109,7 +108,7 @@ describe('PERSIST-1 in the worker', () => {
     writeFileSync(join(stateDir, PERSIST_FILE), '{"version":1,"sha256":"00","payload":"{}"}');
     const timers = virtualTimers(T);
     const requests: SeedRequest[] = [];
-    const h = makeWorker({ stateDir, timers, seed: (r) => (requests.push(r), runSeed(r, { rpc: emptyRpc, timers })), config: ports(3) });
+    const h = makeWorker({ stateDir, timers, seed: (r) => (requests.push(r), runSeed(r, { rpc: emptyRpc, timers })) });
     expect(h.logs.some((l) => /^Saved state discarded \(saved state checksum does not match\)/.test(l))).toBe(true);
     await boot(h);
     expect(requests[0]!.saved.last).toBeNull();
