@@ -2,7 +2,7 @@
 // reject mix counted once per never-entered candidate by the first typed reason of its last abstention.
 import { describe, expect, it } from 'vitest';
 import type { LogRecord } from '../../core/src/engine/index.ts';
-import { VETO_COMPOSITE_LEVEL } from '../../core/src/stats/index.ts';
+import { CAPPED_ESTIMAND, dayBlockMeanInterval, createRng, MAX_RETURN_CAP, mean, VETO_COMPOSITE_LEVEL } from '../../core/src/stats/index.ts';
 import type { ScoredTrade } from '../src/study/score.ts';
 import { holdoutSummary, rejectMixOf, RETURN_CAP, typedReason } from '../src/study/summary.ts';
 
@@ -44,5 +44,20 @@ describe('holdout summary', () => {
     expect(RETURN_CAP).toBeGreaterThan(0);
     expect(RETURN_CAP).toBeLessThanOrEqual(3);
     expect(() => holdoutSummary(trades.slice(0, 1), 1, 1, {}, 1)).toThrow(RangeError);
+  });
+
+  it('is on the capped estimand (S2): mean, sd and the lower bound on min(rNet, 3), tagged, with capped and below-floor counts', () => {
+    const t = (day: string, rNet: number) => ({ day, rNet, ySevere: rNet <= -0.5 }) as ScoredTrade;
+    const trades = Array.from({ length: 30 }, (_, k) => t(`2026-10-${String(2 + (k % 10)).padStart(2, '0')}`, k === 0 ? 9 : k === 1 ? 4 : k % 4 === 0 ? -0.5 : 0.1));
+    const s = holdoutSummary(trades, 120, 672, {}, 1, 200);
+    const capped = trades.map((x) => ({ ...x, rNet: Math.min(x.rNet, 3) }));
+    expect(s.estimand).toBe(CAPPED_ESTIMAND);
+    expect(s.holdout.mean).toBeCloseTo(mean(capped.map((x) => x.rNet)), 12);
+    expect(s.cappedCount).toBe(2);
+    expect(s.belowFloorCount).toBe(0);
+    // Its own day-block bootstrap on the capped returns, never G2's uncapped bound reused.
+    expect(s.lower.value).toBeCloseTo(dayBlockMeanInterval(capped, VETO_COMPOSITE_LEVEL, 'lower', { rng: createRng(1), replicates: 200 }).lower, 12);
+    expect(RETURN_CAP).toBe(MAX_RETURN_CAP);
+    expect(holdoutSummary([...trades, t('2026-10-03', -1.2)], 120, 672, {}, 1, 200).belowFloorCount).toBe(1);
   });
 });

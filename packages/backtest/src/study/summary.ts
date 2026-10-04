@@ -1,27 +1,34 @@
 // The holdout summary G3 reads next to the sealed holdout result (shape fixed by the G3 builder, `HoldoutSummary` in
 // packages/worker/src/research/g3.ts). Written by the scoring stage only, once a universe's seal is opened.
 import type { LogRecord } from '../../../core/src/engine/index.ts';
-import { createRng, dayBlockMeanInterval, mean, sd, VETO_COMPOSITE_LEVEL } from '../../../core/src/stats/index.ts';
+import { CAPPED_ESTIMAND, capReturn, createRng, dayBlockMeanInterval, MAX_RETURN_CAP, mean, RETURN_FLOOR, sd, VETO_COMPOSITE_LEVEL } from '../../../core/src/stats/index.ts';
 import type { ScoredTrade } from './score.ts';
 
 export interface HoldoutSummary {
+  /** The estimand of `holdout` and `lower` (S2): the net return capped at +300%. G3 refuses any other. */
+  readonly estimand: typeof CAPPED_ESTIMAND;
+  /** n, and the mean and sd of the capped net return. */
   readonly holdout: { readonly n: number; readonly mean: number; readonly sd: number };
+  /** Trades whose net return the estimand capped (rNet > 3), and those below RETURN_FLOOR (G3 fails on any). */
+  readonly cappedCount: number;
+  readonly belowFloorCount: number;
   /** Share of y_severe trades: blocked, or net at or below −50%. */
   readonly severeRate: number;
-  /** One-sided lower bound of the mean net return, day-block bootstrap, at G3's composite level. */
+  /** One-sided lower bound of the capped mean, its own day-block bootstrap, at G3's composite level (not G2's bound). */
   readonly lower: { readonly value: number; readonly level: number };
   readonly candidates: { readonly count: number; readonly hours: number };
   /** One count per never-entered candidate, keyed `gate:code` by the first typed reason of its last abstention. */
   readonly rejectMix: Readonly<Record<string, number>>;
-  /** Largest net return one trade can make (0 < cap ≤ 3). */
+  /** The estimand's cap (3): it bounds the capped returns, not the strategy's own (a winner can ride past it). */
   readonly returnCap: number;
 }
 
 /**
- * The study's exits have no structural ceiling on one trade's return (a trailing stop rides a winner until it turns or
- * T_max), so the cap is G3's own upper bound: the widest, which only widens G3's veto-bias bound (the safe side).
+ * The capped estimand's cap, one constant with core's MAX_RETURN_CAP (S2). The study's exits have no structural
+ * ceiling on one trade's return, so this is not a bound on what a trade can make: it bounds r_c = min(rNet, 3), the
+ * quantity G3's bounded checks are computed on and labelled with.
  */
-export const RETURN_CAP = 3;
+export const RETURN_CAP = MAX_RETURN_CAP;
 
 /** The typed `gate:code` of one abstention log line (the study strategy's reason kinds). */
 export const typedReason = (reasons: readonly string[]): string | null => {
@@ -67,10 +74,14 @@ export const rejectMixOf = (records: readonly LogRecord[], tag: string): Record<
 
 export const holdoutSummary = (trades: readonly ScoredTrade[], candidates: number, hours: number, rejectMix: Readonly<Record<string, number>>, seed: number, replicates?: number): HoldoutSummary => {
   if (trades.length < 2) throw new RangeError('a holdout summary needs at least two trades');
-  const r = trades.map((t) => t.rNet);
-  const lower = dayBlockMeanInterval(trades, VETO_COMPOSITE_LEVEL, 'lower', { rng: createRng(seed), ...(replicates === undefined ? {} : { replicates }) });
+  const capped = trades.map((t) => ({ ...t, rNet: capReturn(t.rNet) }));
+  const r = capped.map((t) => t.rNet);
+  const lower = dayBlockMeanInterval(capped, VETO_COMPOSITE_LEVEL, 'lower', { rng: createRng(seed), ...(replicates === undefined ? {} : { replicates }) });
   return {
+    estimand: CAPPED_ESTIMAND,
     holdout: { n: trades.length, mean: mean(r), sd: sd(r) },
+    cappedCount: trades.filter((t) => t.rNet > MAX_RETURN_CAP).length,
+    belowFloorCount: trades.filter((t) => t.rNet < RETURN_FLOOR).length,
     severeRate: trades.filter((t) => t.ySevere).length / trades.length,
     lower: { value: lower.lower, level: VETO_COMPOSITE_LEVEL },
     candidates: { count: candidates, hours },

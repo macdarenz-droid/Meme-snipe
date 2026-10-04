@@ -702,7 +702,10 @@ export interface G3Input {
    * bootstrap of the holdout (`dayBlockMeanInterval(trades, level, 'lower', …)`) in the scoring stage. The level is
    * checked: a 95% bound would make the composite's simultaneous coverage fall below 95%.
    */
-  readonly holdoutLower: { readonly value: number; readonly level: number };
+  readonly holdoutLower: { readonly value: number; readonly level: number; readonly estimand: string };
+  /** Holdout trades whose net return the estimand capped (rNet > MAX_RETURN_CAP), and those below RETURN_FLOOR. */
+  readonly holdoutCapped: number;
+  readonly holdoutBelowFloor: number;
   readonly candidates: { readonly dryRunCount: number; readonly dryRunHours: number; readonly backtestCount: number; readonly backtestHours: number };
   /** Rejected candidates per reason code. */
   readonly rejectMix: { readonly dryRun: Readonly<Record<string, number>>; readonly backtest: Readonly<Record<string, number>> };
@@ -710,7 +713,10 @@ export interface G3Input {
   readonly liveOnlyVetoes: { readonly vetoed: number; readonly eligible: number };
   /** The vetoed candidates scored as if entered, after the run, by the scoring stage (`scoreVetoCounterfactuals`). */
   readonly vetoCounterfactuals: VetoCounterfactuals;
-  /** Largest net return one trade can make (the bracket's take-profit; 0 < cap ≤ 3). Bounds the worst-case veto gap. */
+  /**
+   * The configured take-profit (0 < cap ≤ 3), checked. The veto gap's worst case comes from the capped estimand
+   * (MAX_RETURN_CAP − RETURN_FLOOR), not from it: a strategy without a hard ceiling can exceed its take-profit (S2, C5).
+   */
   readonly returnCap: number;
   /** |paper fill − simulated transaction amount| per simulated entry or exit, as a fraction of notional. */
   readonly fillDifferences: readonly number[];
@@ -762,6 +768,30 @@ export const scoreVetoCounterfactuals = (labels: readonly TripleBarrierLabel[]):
  * least 95% (supervisor ruling after three reviews). Wider bounds are the stricter direction here.
  */
 export const VETO_COMPOSITE_ALPHA = 0.05 / 3;
+/**
+ * G3's bounded estimand (S2, external audit; supervisor and stats rulings): the net return capped at MAX_RETURN_CAP,
+ * r_c = min(rNet, 3). Every bounded G3 input (the holdout mean and lower bound, the veto gap, the agree checks) is on
+ * r_c, labelled with this tag. G1, G2 and the SPA test stay on the uncapped net return.
+ */
+export const CAPPED_ESTIMAND = 'net, capped at +300%';
+export const capReturn = (x: number): number => Math.min(x, MAX_RETURN_CAP);
+/** The tail rule's level (S2, C1): a capped share among the vetoed above the kept arm's, one-sided Fisher at α/4. */
+export const VETO_TAIL_ALPHA = 0.05 / 4;
+
+/** One-sided Fisher exact test: P(X ≥ a) for a of n1 in the first arm, b of n2 in the second, margins fixed. */
+export const fisherGreater = (a: number, n1: number, b: number, n2: number): number => {
+  const k = a + b;
+  const n = n1 + n2;
+  const logC = (x: number, y: number): number => {
+    let r = 0;
+    for (let i = 1; i <= y; i++) r += Math.log(x - y + i) - Math.log(i);
+    return r;
+  };
+  const total = logC(n, k);
+  let p = 0;
+  for (let x = a; x <= Math.min(k, n1); x++) p += Math.exp(logC(n1, x) + logC(n2, k - x) - total);
+  return Math.min(1, p);
+};
 export const VETO_COMPOSITE_LEVEL = 1 - VETO_COMPOSITE_ALPHA;
 
 /** Level of the joint reject-mix test; an "agree" test, so it is not widened (supervisor ruling). */
@@ -848,14 +878,23 @@ export const gateG3 = (input: G3Input, overrides?: Partial<typeof G3_DEFAULTS>):
   c.add('parity', input.parityTestPassed, input.parityTestPassed ? 'parity passed on the recorded dry-run data' : 'parity failed on the recorded dry-run data');
 
   // Paper outcomes against the holdout's expected distribution: the mean and the severe-outcome share.
+  // The capped estimand (S2): both sides capped identically; each side's capped count is shown (report only).
+  const dryCapped = input.dryRunReturns.map(capReturn);
+  const keptCapped = input.dryRunReturns.filter((x) => x > MAX_RETURN_CAP).length;
+  metrics.keptCapped = keptCapped;
+  metrics.holdoutCapped = input.holdoutCapped;
+  const estimandOk = input.holdoutLower.estimand === CAPPED_ESTIMAND;
+  c.add('estimand', estimandOk, `holdout bound on "${input.holdoutLower.estimand}" (need "${CAPPED_ESTIMAND}")`);
+  const floorHits = [...input.dryRunReturns, ...input.vetoCounterfactuals.returns].filter((x) => x < RETURN_FLOOR).length + input.holdoutBelowFloor;
+  c.add('return floor', floorHits === 0, `${floorHits} returns below the floor ${RETURN_FLOOR} (dry run, vetoed, holdout; need 0: the estimand's range is [${RETURN_FLOOR}, ${MAX_RETURN_CAP}])`);
   if (m >= th.minPaperTradesForMean) {
-    const dm = mean(input.dryRunReturns);
+    const dm = mean(dryCapped);
     const pi = meanPredictiveInterval(input.holdout, m, th.meanPredictiveLevel);
     metrics.dryRunMean = dm;
     metrics.predictiveLower90 = pi.lower;
     metrics.predictiveUpper90 = pi.upper;
     c.add('mean', dm >= pi.lower && dm <= pi.upper,
-      `dry-run mean ${fmt(dm)} vs holdout ${fmt(100 * th.meanPredictiveLevel)}% predictive interval [${fmt(pi.lower)}, ${fmt(pi.upper)}] for ${m} trades`);
+      `dry-run mean ${fmt(dm)} vs holdout ${fmt(100 * th.meanPredictiveLevel)}% predictive interval [${fmt(pi.lower)}, ${fmt(pi.upper)}] for ${m} trades (${CAPPED_ESTIMAND}: dry run ${keptCapped}, holdout ${input.holdoutCapped} capped)`);
     const severe = input.dryRunReturns.filter((x) => x <= SEVERE_RETURN).length;
     const ci = clopperPearsonInterval(severe, m);
     metrics.dryRunSevereRate = severe / m;
@@ -954,8 +993,13 @@ export const gateG3 = (input: G3Input, overrides?: Partial<typeof G3_DEFAULTS>):
   // Veto bias (review STATS-1b). Every vetoed candidate must be scored as if entered, in the separate scoring stage.
   const capOk = input.returnCap > 0 && input.returnCap <= MAX_RETURN_CAP;
   c.add('return cap', capOk, `return cap ${fmt(input.returnCap)} (need in (0, ${MAX_RETURN_CAP}])`);
-  const worstGap = (capOk ? input.returnCap : MAX_RETURN_CAP) - RETURN_FLOOR;
+  // The estimand's range bounds the worst gap (S2, C5), whatever the configured take-profit.
+  const worstGap = MAX_RETURN_CAP - RETURN_FLOOR;
+  metrics.vetoWorstGap = worstGap;
   const cf = input.vetoCounterfactuals;
+  const cfCapped = cf.returns.map(capReturn);
+  const vetoedCapped = cf.returns.filter((x) => x > MAX_RETURN_CAP).length;
+  metrics.vetoedCapped = vetoedCapped;
   const scored = cf.returns.length;
   const unscored = v.vetoed - scored - cf.censored;
   if (unscored < 0) {
@@ -974,8 +1018,8 @@ export const gateG3 = (input: G3Input, overrides?: Partial<typeof G3_DEFAULTS>):
   let gapAbsUpper = worstGap;
   let gapPoint: number | null = null;
   if (measured) {
-    const one = welchBounds(cf.returns, input.dryRunReturns, VETO_COMPOSITE_ALPHA);
-    const two = welchBounds(cf.returns, input.dryRunReturns, VETO_COMPOSITE_ALPHA / 2);
+    const one = welchBounds(cfCapped, dryCapped, VETO_COMPOSITE_ALPHA);
+    const two = welchBounds(cfCapped, dryCapped, VETO_COMPOSITE_ALPHA / 2);
     gapPoint = one.diff;
     gapUpper = Math.min(one.upper, worstGap);
     gapAbsUpper = Math.min(Math.max(Math.abs(two.upper), Math.abs(two.lower)), worstGap);
@@ -991,6 +1035,12 @@ export const gateG3 = (input: G3Input, overrides?: Partial<typeof G3_DEFAULTS>):
   if (!c.add('veto bias', bias <= th.vetoBiasMax,
     `v⁺·|Δ|⁺ at α/3 = ${fmt(vComposite)} × ${fmt(gapAbsUpper)} = ${fmt(bias)}${measured ? '' : ' (worst-case gap)'} (need <= ${th.vetoBiasMax})`)
     && !(biasPoint !== null && biasPoint > th.vetoBiasMax)) extend.add('veto bias');
+  // Capping can hide a difference in the tails (S2, C1): when the vetoed arm is capped more often than the kept arm
+  // (any capped vetoed trade while no kept trade is capped, or one-sided Fisher at α/4), the bias check is not proven.
+  const tailP = vetoedCapped === 0 ? 1 : fisherGreater(vetoedCapped, scored, keptCapped, m);
+  metrics.vetoTailP = tailP;
+  const tailOk = !(vetoedCapped > 0 && keptCapped === 0) && tailP >= VETO_TAIL_ALPHA;
+  if (!c.add('veto bias tail', tailOk, `capped at +300%: vetoed ${vetoedCapped} of ${scored}, kept ${keptCapped} of ${m}, one-sided Fisher p ${fmt(tailP)} (need no capped vetoed trade without a capped kept one, and p >= ${fmt(VETO_TAIL_ALPHA)})`)) extend.add('veto bias tail');
 
   const levelOk = Math.abs(input.holdoutLower.level - VETO_COMPOSITE_LEVEL) < 1e-12;
   c.add('holdout bound level', levelOk,
