@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -722,4 +723,23 @@ func lens(l []string) []int {
 		out[i] = len(s)
 	}
 	return out
+}
+
+// The usage file rpc-run writes is the one ci/rpc-credits.sh books: a credit count
+// that is not read back would let the day's cap be passed.
+func TestUsageFileBooksInRpcCredits(t *testing.T) {
+	h := &heliusClient{}
+	h.Credits.Store(4242)
+	dir := t.TempDir()
+	writeUsage(filepath.Join(dir, "u.json"), h)
+	cmd := exec.Command("bash", "../ci/rpc-credits.sh", "add", dir, filepath.Join(dir, "u.json"))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("rpc-credits add: %v %s", err, out)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "rpc-credits-used")); strings.TrimSpace(string(b)) != "4242" {
+		t.Fatalf("booked %q", b)
+	}
+	if rpcExitCode(fmt.Errorf("x: %w", errCreditCap)) != 3 || rpcExitCode(fmt.Errorf("x: %w", errBackoffBudget)) != 75 || rpcExitCode(errors.New("x")) != 1 {
+		t.Fatalf("exit codes")
+	}
 }

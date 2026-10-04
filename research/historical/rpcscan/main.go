@@ -73,6 +73,7 @@ func main() {
 		workers := fs.Int("workers", 4, "block workers")
 		fs.Float64Var(&sampleRate, "sample", sampleRate, "mint sample kept in full (hash threshold)")
 		hc := heliusFlags(fs)
+		usageOut := fs.String("usage-out", "", "write the credits and requests used to FILE (JSON) on every exit")
 		fs.Parse(os.Args[2:])
 		var src blockSource
 		conc := 1
@@ -84,8 +85,8 @@ func main() {
 				log.Print(err)
 				os.Exit(2)
 			}
-			defer h.logUsage()
 			src, conc = h, hc.conc
+			defer h.logUsage()
 		}
 		if *ep != *from/432000 || *ep != *to/432000 {
 			log.Printf("refused: slots %d-%d are not in epoch %d", *from, *to, *ep)
@@ -93,12 +94,12 @@ func main() {
 		}
 		u := unitSpec{*ep, *from, *to}
 		st, err := RPCUnit(ctx, src, u.epoch, u.from, u.to, u.dir(*out), conc, *workers)
+		if h, ok := src.(*heliusClient); ok {
+			writeUsage(*usageOut, h)
+		}
 		if err != nil {
 			log.Print(err)
-			if errors.Is(err, errCreditCap) || errors.Is(err, errBackoffBudget) {
-				os.Exit(75)
-			}
-			os.Exit(1)
+			os.Exit(rpcExitCode(err))
 		}
 		log.Printf("unit done: blocks=%d skipped=%d curve=%d amm=%d other=%d pumpTx=%d failed=%d decodeFail=%d %.0fs",
 			st.Blocks, st.SkippedSlots, st.CurveTrades, st.AmmTrades, st.OtherEvents, st.PumpTxs, st.PumpTxsFailed, st.DecodeFailures, st.Seconds)
@@ -114,6 +115,7 @@ func main() {
 		newestFirst := fs.Bool("newest-first", true, "read the most recent units first")
 		fs.Float64Var(&sampleRate, "sample", sampleRate, "mint sample kept in full (hash threshold)")
 		hc := heliusFlags(fs)
+		usageOut := fs.String("usage-out", "", "write the credits and requests used to FILE (JSON) on every exit")
 		fs.Parse(os.Args[2:])
 		t0, err := time.Parse("2006-01-02", *fromDay)
 		if err != nil {
@@ -129,6 +131,7 @@ func main() {
 			os.Exit(2)
 		}
 		defer h.logUsage()
+		exit := func(code int) { writeUsage(*usageOut, h); h.logUsage(); os.Exit(code) }
 		if err := os.MkdirAll(*out, 0o755); err != nil {
 			log.Fatal(err)
 		}
@@ -140,14 +143,10 @@ func main() {
 			log.Fatalf("another run holds %s: %v", lf.Name(), err)
 		}
 		runLock = lf
-		resumable := func(err error) bool { return errors.Is(err, errCreditCap) || errors.Is(err, errBackoffBudget) }
 		units, err := planRPCUnits(ctx, h, t0.Unix(), t1.Unix())
 		if err != nil {
 			log.Print(h.scrub(err.Error()))
-			if resumable(err) {
-				os.Exit(75)
-			}
-			os.Exit(1)
+			exit(rpcExitCode(err))
 		}
 		if *newestFirst {
 			sort.Slice(units, func(i, j int) bool { return units[i].from > units[j].from })
@@ -164,16 +163,15 @@ func main() {
 			st, err := RPCUnit(ctx, h, u.epoch, u.from, u.to, u.dir(*out), hc.conc, *workers)
 			if err != nil {
 				log.Printf("unit %d %d-%d: %s", u.epoch, u.from, u.to, h.scrub(err.Error()))
-				if resumable(err) {
-					os.Exit(75) // finished units are kept; rerun later
-				}
-				os.Exit(1)
+				exit(rpcExitCode(err)) // finished units are kept
 			}
+			writeUsage(*usageOut, h) // after every unit: a hard kill loses at most one unit's count
 			eta := time.Duration(float64(time.Since(start)) / float64(i+1) * float64(len(todo)-i-1))
 			log.Printf("unit %d %d-%d ok: blocks=%d skipped=%d curve=%d amm=%d decodeFail=%d %.0fs | %d/%d, eta %s, credits %d",
 				u.epoch, u.from, u.to, st.Blocks, st.SkippedSlots, st.CurveTrades, st.AmmTrades, st.DecodeFailures, st.Seconds,
 				i+1, len(todo), eta.Round(time.Minute), h.Credits.Load())
 		}
+		writeUsage(*usageOut, h)
 	case "digest":
 		// Fingerprint a unit's rows (digest.go): the committed pilot baseline is made
 		// with this from the archive unit.
@@ -255,6 +253,37 @@ func main() {
 	default:
 		fmt.Fprintln(os.Stderr, "unknown command", os.Args[1])
 		os.Exit(2)
+	}
+}
+
+// rpcExitCode: 3 when the credit cap stopped the run (not resumable: a chained rerun
+// would only hit it again; the cap is raised by a person or the next month), 75 when
+// the rate-limit back-off budget ran out (resumable, like the archive's 429), 1 else.
+func rpcExitCode(err error) int {
+	switch {
+	case errors.Is(err, errCreditCap):
+		return 3
+	case errors.Is(err, errBackoffBudget):
+		return 75
+	}
+	return 1
+}
+
+// writeUsage writes the client's counters to path (no-op for "").
+func writeUsage(path string, h *heliusClient) {
+	if path == "" {
+		return
+	}
+	// Written whole or not at all (a temp file renamed into place), so a run killed
+	// mid-write never leaves a half file that would fail the booking.
+	b, _ := json.MarshalIndent(h.usage(), "", "  ")
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+		log.Printf("usage file: %v", err)
+		return
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		log.Printf("usage file: %v", err)
 	}
 }
 
