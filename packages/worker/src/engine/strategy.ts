@@ -332,6 +332,13 @@ export interface SavedCandidate {
   readonly bars: readonly PriceBar[];
 }
 
+/** RESTART-KEEP: a rejected candidate's pool watched after its window (REC-1), as saved. */
+export interface SavedTail {
+  readonly mint: string;
+  readonly pool: string;
+  readonly untilMs: number;
+}
+
 /** Decision naming a candidate restored from the saved state: the worker reads its migration and create again. */
 export const CANDIDATE_RESTORED = 'candidate restored';
 
@@ -639,7 +646,7 @@ export class LiveStrategy implements Strategy {
    * PERSIST-1: what a save holds, as of the latest released moment: the index (entries older than `retainFromMs`
    * left out), the labeller's tables and every coverage fact. Null before anything was released or the seed applied.
    */
-  persistable(retainFromMs: number): { readonly asOf: Moment; readonly index: DeployerIndexState; readonly labeller: RugLabellerState; readonly coverage: readonly MarketEvent[]; readonly graduates: SavedGraduates; readonly candidates: readonly SavedCandidate[] } | null {
+  persistable(retainFromMs: number): { readonly asOf: Moment; readonly index: DeployerIndexState; readonly labeller: RugLabellerState; readonly coverage: readonly MarketEvent[]; readonly graduates: SavedGraduates; readonly candidates: readonly SavedCandidate[]; readonly tails: readonly SavedTail[] } | null {
     const asOf = this.#lastMoment;
     if (asOf === null || !this.#seedApplied || this.#waiting !== null) return null;
     // PERSIST-2: the newest graduates fact released so far, with only the entries whose survival mark was reached by
@@ -648,7 +655,7 @@ export class LiveStrategy implements Strategy {
     // RESTART-KEEP: every candidate in its window, none migrated after the save moment.
     const candidates = [...this.#cands.values()].filter((c) => c.migratedAtMs <= asOf.receivedAt).sort((a, b) => (a.mint < b.mint ? -1 : a.mint > b.mint ? 1 : 0))
       .map((c): SavedCandidate => ({ mint: c.mint, pool: this.#poolOfMint.get(c.mint) ?? null, migratedAtMs: c.migratedAtMs, migrationSlot: c.migrationSlot, tries: c.tries, lastEvalMs: c.lastEvalMs, lastReason: c.lastReason, bars: (this.#bars.get(c.mint) ?? []).filter((b) => b.startMs <= asOf.receivedAt) }));
-    return { asOf, index: this.#deployers.snapshot(asOf, retainFromMs), labeller: this.#labeller.snapshot(), coverage: [...this.#coverageFacts], graduates: { asOfMs: asOf.receivedAt, items }, candidates };
+    return { asOf, index: this.#deployers.snapshot(asOf, retainFromMs), labeller: this.#labeller.snapshot(), coverage: [...this.#coverageFacts], graduates: { asOfMs: asOf.receivedAt, items }, candidates, tails: [...this.#tail].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([mint, t]) => ({ mint, pool: t.pool, untilMs: t.untilMs })) };
   }
 
   /** PERSIST-2: the newest graduates fact released (the regime's survival series), for the saved state. */
@@ -754,9 +761,29 @@ export class LiveStrategy implements Strategy {
     }
   }
 
+  /**
+   * RESTART-KEEP: REC-1's tail watches come back, so a rejected candidate's counterfactual keeps its pool watched to
+   * windowEnd + tMax across a restart (the downtime is a gap on that pool's stream, never read as covered). One that
+   * ended by the restore is dropped, as it would have been; past the cap the rest are logged `no tail`.
+   */
+  #restoreTails(v: unknown, atMs: number, out: Decision[]): void {
+    const ok = Array.isArray(v) && v.every((t) => isObj(t) && typeof t['mint'] === 'string' && t['mint'] !== '' && typeof t['pool'] === 'string' && t['pool'] !== '' && typeof t['untilMs'] === 'number' && Number.isSafeInteger(t['untilMs']));
+    if (!ok) {
+      out.push({ action: null, reasons: ['tails refused', 'malformed saved tails'] });
+      return;
+    }
+    const c = this.#d.config;
+    for (const t of v as SavedTail[]) {
+      if (t.untilMs < atMs || this.#tail.has(t.mint)) continue;
+      if (this.#tail.size >= c.maxTails) out.push({ action: null, reasons: [NO_TAIL, c.universe, t.mint, `tail cap ${c.maxTails}`] });
+      else this.#tail.set(t.mint, { pool: t.pool, untilMs: t.untilMs });
+    }
+  }
+
   #restore(v: unknown, out: Decision[], atMs: number): void {
     this.#restoreSeen = true;
     if (isObj(v) && v['candidates'] !== undefined) this.#restoreCandidates(v['candidates'], atMs, out);
+    if (isObj(v) && v['tails'] !== undefined) this.#restoreTails(v['tails'], atMs, out);
     if (isObj(v) && isObj(v['openedAt'])) {
       for (const [pid, at] of Object.entries(v['openedAt'])) if (typeof at === 'number' && Number.isFinite(at)) this.#bookedOpenAt.set(pid, at);
     }

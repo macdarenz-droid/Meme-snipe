@@ -35,12 +35,13 @@ let port = 18_700;
 const NOW = MIGRATED_AT + 30 * 60_000;
 const GOOD = { mint: MINT, pool: POOL_ADDRESS, migratedAtMs: MIGRATED_AT, migrationSlot: SLOT - 15_000n, tries: 2, lastEvalMs: NOW - 60_000, lastReason: 'H11 missing', bars: [{ startMs: NOW - 300_000, high: 2n, low: 1n, close: 2n }], signatures: { create: null, complete: null, migration: null } };
 /** The strategy alone, given a restore fact at NOW with these saved candidates. */
-const restoreInto = (candidates: unknown[]) => {
+const restoreInto = (candidates: unknown[], tails?: unknown, maxTails?: number) => {
   const session = startSession(TRIAL_POLICY);
-  const strategy = new LiveStrategy({ session, rugs: RUG_CONFIG, config: strategyConfig(session.policy, FILL_CONFIG, RESEARCH_CONFIG) });
+  const config = strategyConfig(session.policy, FILL_CONFIG, RESEARCH_CONFIG);
+  const strategy = new LiveStrategy({ session, rugs: RUG_CONFIG, config: maxTails === undefined ? config : { ...config, maxTails } });
   const moment = { slot: SLOT, txIndex: 0, ixIndex: 0, receivedAt: NOW };
   const ctx = { now: moment, book: emptyBook({ maxOpenPositions: session.policy.positions.maxOpen }), rng: { next: () => 0 }, lookup: () => ({ ok: false, reason: 'missing' }), history: () => [] } as unknown as StrategyContext;
-  const out = strategy.onMarket({ kind: 'market', id: 'restore', moment, key: RESTORE_KEY, value: { exits: {}, candidates } }, ctx);
+  const out = strategy.onMarket({ kind: 'market', id: 'restore', moment, key: RESTORE_KEY, value: { exits: {}, candidates, ...(tails === undefined ? {} : { tails }) } }, ctx);
   return { strategy, out };
 };
 const boot = async (h: H, via = VIA) => {
@@ -116,6 +117,40 @@ describe('RESTART-KEEP: a restart keeps the candidates in their window', () => {
     expect(s.strategy.candidates().get(MINT)).toEqual(expect.objectContaining({ migratedAtMs: GOOD.migratedAtMs, lastEvalMs: GOOD.lastEvalMs }));
     expect(s.strategy.watchedPools().has(POOL_ADDRESS)).toBe(true);
   });
+
+  it('restores REC-1\'s tail watches: a live one keeps its pool watched, an ended one is dropped, past the cap logged', () => {
+    const live = { mint: 'tail-a', pool: 'pool-a', untilMs: NOW + 60_000 };
+    const ended = { mint: 'tail-b', pool: 'pool-b', untilMs: NOW - 1 };
+    const s = restoreInto([], [live, ended]);
+    expect([...s.strategy.watchedPools().keys()]).toEqual(['pool-a']);
+    expect(s.strategy.tail.get('tail-a')).toEqual({ pool: 'pool-a', untilMs: NOW + 60_000 });
+    const capped = restoreInto([], [live, { ...live, mint: 'tail-c', pool: 'pool-c' }], 1);
+    expect([...capped.strategy.watchedPools().keys()]).toEqual(['pool-a']);
+    expect(capped.out).toContainEqual({ action: null, reasons: ['no tail', 'U2', 'tail-c', 'tail cap 1'] });
+    // An ended one takes no place under the cap.
+    const afterEnded = restoreInto([], [ended, live], 1);
+    expect([...afterEnded.strategy.watchedPools().keys()]).toEqual(['pool-a']);
+    expect(afterEnded.out.some((d) => d.reasons[0] === 'no tail')).toBe(false);
+    const bad = restoreInto([], [{ mint: 'tail-a', pool: '', untilMs: NOW }]);
+    expect(bad.out).toContainEqual({ action: null, reasons: ['tails refused', 'malformed saved tails'] });
+    expect(bad.strategy.watchedPools().size).toBe(0);
+  });
+
+  it('saves the tail watches with the state and a restart brings them back', async () => {
+    const { h, timers, seed } = await shortlistedAndStopped();
+    const path = join(h.stateDir, PERSIST_FILE);
+    const st = loadState(path, RUG_CONFIG);
+    if (!st.ok) throw new Error(st.reason);
+    expect(st.tails).toEqual([]);
+    const tail = { mint: 'tail-a', pool: 'pool-a', untilMs: timers.now() + 3_600_000 };
+    saveState(path, { asOf: st.asOf, index: st.index.snapshot(st.asOf), labeller: st.labeller.snapshot(), coverage: st.coverage.filter((e) => !e.id.startsWith('persist:restart:')), ...(st.graduates === null ? {} : { graduates: st.graduates }), candidates: st.candidates, tails: [tail] });
+    timers.set(timers.now() + 60_000);
+    const { h2 } = await restart(h, timers, seed);
+    expect(h2.worker.strategy.watchedPools().get('pool-a')).toEqual({ mint: 'tail-a', held: false });
+    await h2.worker.stop();
+    const again = loadState(path, RUG_CONFIG);
+    expect(again.ok && again.tails).toEqual([tail]);
+  }, 60_000);
 
   it('keeps the saved tries: the next entry intent id is past them, so a restart never repeats an intent id', async () => {
     // A fresh host 16 days before T, the coin passing every gate at T but H15 (no simulation): rejected, not entered.

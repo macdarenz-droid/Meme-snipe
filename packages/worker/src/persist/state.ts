@@ -19,7 +19,7 @@ import { compareEvents, compareMoments, type MarketEvent, type Moment } from '..
 import { DeployerIndex, RugLabeller, type DeployerIndexState, type RugLabellerState } from '../../../core/src/gates/index.ts';
 import { SEED_VIA } from '../seed/seed.ts';
 import { parseGraduatesSeed } from '../../../core/src/facts/raw.ts';
-import type { SavedCandidate, SavedGraduates } from '../engine/strategy.ts';
+import type { SavedCandidate, SavedGraduates, SavedTail } from '../engine/strategy.ts';
 
 export const STATE_VERSION = 1;
 
@@ -40,6 +40,8 @@ export interface SavedState {
    * Public chain data and the strategy's own state (supervisor approval 2026-10-04 under the stored-data ruling of 2026-10-03).
    */
   readonly candidates?: readonly SavedCandidateState[];
+  /** RESTART-KEEP: REC-1's tail watches (mint, pool, until when). Optional, so an older file still loads (with none). */
+  readonly tails?: readonly SavedTail[];
 }
 
 /** A saved candidate and the transactions to read again at a restart: its create, curve completion and migration. */
@@ -71,6 +73,8 @@ export type Restored =
     readonly graduates: SavedGraduates | null;
     /** The saved candidates (none when the file has none), for the restore fact. */
     readonly candidates: readonly SavedCandidateState[];
+    /** The saved tail watches (none when the file has none), for the restore fact. */
+    readonly tails: readonly SavedTail[];
   }
   | { readonly ok: false; readonly reason: string };
 
@@ -141,6 +145,17 @@ const candidatesProblem = (c: unknown, asOf: Moment, saving: boolean): void => {
   }
 };
 
+/** The saved tail watches must be well formed and unique per mint. Throws the first problem. */
+const tailsProblem = (t: unknown): void => {
+  if (!Array.isArray(t)) throw new RangeError('the tails are not a list');
+  const seen = new Set<string>();
+  for (const x of t) {
+    if (!isObj(x) || typeof x['mint'] !== 'string' || x['mint'] === '' || typeof x['pool'] !== 'string' || x['pool'] === '' || !Number.isSafeInteger(x['untilMs'])) throw new RangeError('a saved tail is malformed');
+    if (seen.has(x['mint'])) throw new RangeError(`tail ${x['mint']} appears twice`);
+    seen.add(x['mint']);
+  }
+};
+
 /** After `asOf` in the event order, or received later than it: either way not something the save could have known. */
 const after = (m: Moment, asOf: Moment): boolean => compareMoments(m, asOf) > 0 || m.receivedAt > asOf.receivedAt;
 
@@ -151,6 +166,7 @@ export const saveState = (path: string, s: SavedState): void => {
   if (compareMoments(s.index.asOf, s.asOf) !== 0) throw new RangeError('the index snapshot was taken at another moment');
   if (s.graduates !== undefined) graduatesProblem(s.graduates, s.asOf, true);
   if (s.candidates !== undefined) candidatesProblem(s.candidates, s.asOf, true);
+  if (s.tails !== undefined) tailsProblem(s.tails);
   const payload = JSON.stringify(s, replacer);
   writeAtomic(path, JSON.stringify({ version: STATE_VERSION, sha256: createHash('sha256').update(payload).digest('hex'), payload }));
 };
@@ -218,6 +234,7 @@ export const loadState = (path: string, rugs: RugConfig, continuing: (stream: st
     if (!isObj(s.index) || !isMoment(s.index.asOf) || compareMoments(s.index.asOf, asOf) !== 0) throw new RangeError('the index was saved at another moment');
     if (s.graduates !== undefined) graduatesProblem(s.graduates, asOf, false);
     if (s.candidates !== undefined) candidatesProblem(s.candidates, asOf, false);
+    if (s.tails !== undefined) tailsProblem(s.tails);
     const index = DeployerIndex.restore(s.index);
     const labeller = RugLabeller.restore(rugs, s.labeller, asOf);
     const coverage = [...s.coverage].sort(compareEvents);
@@ -234,7 +251,7 @@ export const loadState = (path: string, rugs: RugConfig, continuing: (stream: st
       if (continuing(w.stream, w.via)) fills.push({ stream: w.stream, via: w.via, fromSlot: asOf.slot, at: asOf, synthesized: true });
     }
     fills.sort((a, b) => (a.stream < b.stream ? -1 : a.stream > b.stream ? 1 : a.via < b.via ? -1 : a.via > b.via ? 1 : 0));
-    return { ok: true, asOf, index, labeller, coverage: [...coverage, ...restart].sort(compareEvents), fills, graduates: s.graduates ?? null, candidates: s.candidates ?? [] };
+    return { ok: true, asOf, index, labeller, coverage: [...coverage, ...restart].sort(compareEvents), fills, graduates: s.graduates ?? null, candidates: s.candidates ?? [], tails: s.tails ?? [] };
   } catch (e) {
     return { ok: false, reason: `saved state rejected: ${e instanceof Error ? e.message : String(e)}` };
   }
