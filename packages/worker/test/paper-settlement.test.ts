@@ -1,0 +1,232 @@
+// PAPER-1: paper settlement matches the historical backtest's (audit of d92b73e, items M4, M5 and M8's rent part).
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { describe, expect, it } from 'vitest';
+import { FILL_CONFIG, TRIAL_POLICY, startSession } from '../../core/src/config/index.ts';
+import { openLedger } from '../../core/src/ledger/index.ts';
+import { emptyBook } from '../../core/src/lifecycle/index.ts';
+import { NO_LATCHES, melbourneWeek, riskSnapshot } from '../../core/src/risk/index.ts';
+import { attemptFee } from '../../core/src/fills/index.ts';
+import { type Lamports, type MicroUsd, lamportsToMicroUsd, microUsdToLamports } from '../../core/src/units/index.ts';
+import type { Book } from '../../core/src/lifecycle/index.ts';
+import { PaperAccount, type PaperLegs, accountFile } from '../src/run/account.ts';
+import { type ApiInputs, views } from '../src/run/api.ts';
+import type { PaperAttempt } from '../src/run/paper-world.ts';
+import { oneTimeRent } from '../src/run/settings.ts';
+import { LANDS, SOL_PRICE, T, makeWorker, passingMarket, tempState, until } from './worker-harness.ts';
+
+const HELD = { heldPoolFacts: true } as const;
+const bigints = (_k: string, v: unknown) => (v !== null && typeof v === 'object' && '$n' in v ? BigInt((v as { $n: string }).$n) : v);
+const read = <T>(dir: string, f: string): T => JSON.parse(readFileSync(join(dir, f), 'utf8'), bigints) as T;
+const wallet = (dir: string) => read<{ walletLamports: bigint }>(dir, 'account.json').walletLamports;
+const attempts = (dir: string) => Object.values(read<{ attempts: Record<string, PaperAttempt> }>(dir, 'paper.json').attempts);
+
+describe('M4: a landed failed attempt is never free', () => {
+  it('the shared fee function charges a landed failure its base and priority fee (the audit case: 505,000)', () => {
+    expect(attemptFee(FILL_CONFIG.network, 500_000n, 'failed')).toBe(505_000n);
+  });
+
+  it('an entry whose every attempt lands failed costs the wallet each fee once, also after a restart', async () => {
+    const scenario = { ...LANDS, landPpm: { pumpswap: 0n, 'pump-curve': 0n }, dropPpm: 0n };
+    const h = makeWorker({ scenario });
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    const m = await passingMarket(h, HELD);
+    await m.run(4_000, 100, () => m.pool());
+    const failed = () => attempts(h.stateDir).filter((a) => a.outcome === 'failed');
+    expect(await until(m, 60_000, () => failed().length >= 1 && Object.values(h.worker.book.intents).every((i) => i.status === 'abandoned' || i.status === 'rejected' || i.status === 'cancelled' || i.status === 'reconciled'), () => {
+      m.slot();
+      m.pool();
+    })).toBe(true);
+    // No position ever opened.
+    expect(Object.values(h.worker.book.positions).every((p) => p.quantity === 0n)).toBe(true);
+    const fees = failed().reduce((s, a) => s + attemptFee(FILL_CONFIG.network, a.priorityFee, 'failed'), 0n);
+    expect(fees).toBeGreaterThan(0n);
+    const opening = microUsdToLamports(h.session.policy.capital.bankroll, SOL_PRICE as MicroUsd, 'floor');
+    const expected = opening - oneTimeRent(FILL_CONFIG) - fees;
+    expect(wallet(h.stateDir)).toBe(expected);
+    await h.worker.stop();
+    // A restart replays the same signatures: nothing is charged twice.
+    const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers, scenario });
+    expect(await h2.worker.reconcile()).toEqual({ ok: true });
+    expect(wallet(h.stateDir)).toBe(expected);
+    await h2.worker.stop();
+  });
+});
+
+/** Runs the passing market to an entry, then drops the price 30% so the stop sells the whole holding. */
+const roundTrip = async (h: ReturnType<typeof makeWorker>) => {
+  expect(await h.worker.reconcile()).toEqual({ ok: true });
+  const m = await passingMarket(h, HELD);
+  await m.run(4_000, 100, () => m.pool());
+  await m.run(10_000, 400, () => { m.slot(); m.pool(); });
+  expect(await until(m, 120_000, () => Object.values(h.worker.book.positions).some((p) => p.status === 'closed'), () => { m.slot(); m.pool(700_000n); })).toBe(true);
+  return m;
+};
+const closedTrade = (dir: string) => read<{ trades: { positionId: string; netLamports: bigint | null; closedAtMs: number | null }[] }>(dir, 'account.json').trades.find((t) => t.closedAtMs !== null)!;
+/** The trade's lamports from its own attempts in paper.json, without rent. */
+const flows = (dir: string, net = FILL_CONFIG.network) => {
+  let v = 0n;
+  for (const a of attempts(dir)) {
+    if (a.outcome === 'filled') v += a.purpose === 'entry' ? -a.fill!.sol : a.fill!.sol;
+    v -= attemptFee(net, a.priorityFee, a.outcome === 'filled' || a.outcome === 'failed' ? a.outcome : 'dropped');
+  }
+  return v;
+};
+
+describe('M8: paper rent follows the account-close outcome (RENT-1, shared with the backtest)', () => {
+  it('a landed sell-and-close returns the rent: the trade nets its flows and fees only', async () => {
+    const h = makeWorker({ scenario: { ...LANDS, closeSuccessPpm: 1_000_000n, dustPpm: 0n } });
+    await roundTrip(h);
+    expect(closedTrade(h.stateDir).netLamports).toBe(flows(h.stateDir));
+    expect(h.legs.filter((l) => l.leg === 'exit').every((l) => l.closes)).toBe(true);
+    await h.worker.stop();
+  });
+
+  it('a failed close fails the sell (fee paid), the sell-only retry fills and the rent stays locked', async () => {
+    const h = makeWorker({ scenario: { ...LANDS, closeSuccessPpm: 0n, dustPpm: 0n } });
+    await roundTrip(h);
+    const exits = attempts(h.stateDir).filter((a) => a.purpose === 'exit');
+    expect(exits.some((a) => a.outcome === 'failed' && a.reason === 'close failed')).toBe(true);
+    expect(exits.some((a) => a.outcome === 'filled')).toBe(true);
+    expect(closedTrade(h.stateDir).netLamports).toBe(flows(h.stateDir) - FILL_CONFIG.network.tokenAccountRent);
+    // The retry's transaction no longer closes the account.
+    expect(h.legs.filter((l) => l.leg === 'exit').at(-1)!.closes).toBe(false);
+    await h.worker.stop();
+  });
+
+  it('dust keeps the account open: the sell does not close it and the rent stays locked', async () => {
+    const h = makeWorker({ scenario: { ...LANDS, closeSuccessPpm: 1_000_000n, dustPpm: 1_000_000n } });
+    await roundTrip(h);
+    expect(h.legs.filter((l) => l.leg === 'exit').every((l) => !l.closes)).toBe(true);
+    expect(closedTrade(h.stateDir).netLamports).toBe(flows(h.stateDir) - FILL_CONFIG.network.tokenAccountRent);
+    await h.worker.stop();
+  });
+});
+
+describe('M5: paper dollar results use the backtest report rule (each cash flow at its own SOL price)', () => {
+  // The audit's case: buy for 0.02 SOL at SOL $100 ($2), sell for 0.024 SOL at SOL $80 ($1.92). No fees or rent here.
+  const net = { ...FILL_CONFIG.network, baseFeePerSignature: 0n, tip: 0n, tokenAccountRent: 0n };
+  const fill = (intentId: string, signature: string, sol: bigint) => ({ intentId, signature, slot: 1n, commitment: 'confirmed', tokens: 1_000_000n, sol, fees: 0n });
+  const attempt = (intentId: string, signature: string, purpose: 'entry' | 'exit', sol: bigint): PaperAttempt => ({
+    intentId, signature, purpose, trade: 'p1', mint: 'M', inAmount: purpose === 'entry' ? sol : 1_000_000n, quotedOut: 0n, minOut: 0n, priorityFee: 0n,
+    lastValidBlockHeight: 10n, fate: 'lands', landSlot: 1n, outcome: 'filled', reason: 'filled', landedSlot: 1n, simulated: true,
+    fill: fill(intentId, signature, sol) as PaperAttempt['fill'],
+    costs: { venueFee: 0n, creatorFee: 0n, slippage: 0n, base: 0n, priority: 0n, tip: 0n }, sentAtMs: 0,
+  });
+  const book = (closed: boolean) => ({
+    positions: { p1: { id: 'p1', mint: 'M', entryIntentId: 'in', status: closed ? 'closed' : 'open', quantity: closed ? 0n : 1_000_000n, cost: 20_000_000n } },
+    intents: {
+      in: { intent: { id: 'in', purpose: 'entry', positionId: 'p1', mint: 'M' }, fills: [fill('in', 'e1', 20_000_000n)], attempts: [{ signature: 'e1' }] },
+      ...(closed ? { out: { intent: { id: 'out', purpose: 'exit', positionId: 'p1', mint: 'M' }, fills: [fill('out', 'x1', 24_000_000n)], attempts: [{ signature: 'x1' }] } } : {}),
+    },
+  }) as unknown as Book;
+  const legs = (closed: boolean): PaperLegs => ({
+    network: net, closedAccount: () => true,
+    attempts: new Map([['e1', attempt('in', 'e1', 'entry', 20_000_000n)], ...(closed ? [['x1', attempt('out', 'x1', 'exit', 24_000_000n)] as const] : [])]),
+  });
+
+  it('the closed trade books −$0.08, not +$0.32 at the closing price; SOL +0.004; the app splits the two parts', () => {
+    const account = new PaperAccount(accountFile(tempState()), 20_000_000n as MicroUsd, 0, 0n);
+    const px = (d: number) => BigInt(d * 1_000_000) as MicroUsd;
+    account.price(px(100), 0);
+    const base = { positionId: 'p1', mint: 'M', reasons: ['notional 2000000'] };
+    account.filled({ ...base, purpose: 'entry', book: book(false), atMs: 1_000 }, px(100), legs(false));
+    account.filled({ ...base, purpose: 'exit', book: book(true), atMs: 2_000 }, px(80), legs(true));
+    const t = account.state.trades[0]!;
+    expect(t.netLamports).toBe(4_000_000n);
+    expect(t.netPnl).toBe(-80_000n);
+
+    const inputs = { book: book(true), legs: legs(true), attempts: legs(true).attempts, trades: account.state.trades, symbol: () => 'M', strategyVersion: 's', policyVersion: 'p', solPrice: px(80) } as unknown as ApiInputs;
+    const [r] = views.trades(inputs) as { netUsd: string; netSol: string; tradingUsd: string; solMoveUsd: string }[];
+    expect(r).toMatchObject({ netUsd: '-0.08', netSol: '0.004000000', tradingUsd: '0.32', solMoveUsd: '-0.4' });
+    expect(views.stats(inputs)).toMatchObject({ netUsd: '-0.08', netSol: '0.004000000', solMoveUsd: '-0.4' });
+  });
+});
+
+describe('M4: fees of an entry that never filled are an account cost, booked once and kept bounded', () => {
+  const PRICE = 150_000_000n as MicroUsd;
+  const DAY = 86_400_000;
+  const net = FILL_CONFIG.network;
+  const failedAttempt = (signature: string, sentAtMs: number, priorityFee: bigint): PaperAttempt => ({
+    intentId: `i-${signature}`, signature, purpose: 'entry', trade: `p-${signature}`, mint: 'M', inAmount: 1n, quotedOut: 1n, minOut: 1n, priorityFee,
+    lastValidBlockHeight: 10n, fate: 'fails', landSlot: 1n, outcome: 'failed', reason: 'landed failed (drawn)', landedSlot: 1n, fill: null, simulated: true, sentAtMs,
+  });
+  const bookOf = (as: readonly PaperAttempt[], status = 'abandoned') => ({
+    positions: {},
+    intents: Object.fromEntries(as.map((a) => [a.intentId, { intent: { id: a.intentId, purpose: 'entry', positionId: a.trade, mint: 'M' }, status, fills: [], attempts: [{ signature: a.signature }] }])),
+  }) as unknown as Book;
+  const legsOf = (as: readonly PaperAttempt[]): PaperLegs => ({ network: net, attempts: new Map(as.map((a) => [a.signature, a])), closedAccount: () => false });
+
+  it('a failed entry\'s fee lowers the wallet once, is a failed_entry cost, and trips the daily loss trigger when it reaches it', () => {
+    const dir = tempState();
+    const ledger = openLedger(join(dir, 'ledger.sqlite'), 'paper');
+    const bankroll = 20_000_000n as MicroUsd;
+    const account = new PaperAccount(accountFile(dir), bankroll, T - DAY, 0n);
+    account.price(PRICE, T - DAY);
+    const opening = account.state.walletLamports!;
+    // $1.50 is the trial's daily trigger (7.5% of $20): a 10,000,000-lamport priority fee at $150 is $1.50075.
+    const a = [failedAttempt('s1', T - 60_000, 10_000_000n)];
+    expect(account.settle(bookOf(a, 'reconciled'), legsOf(a), PRICE, T)).toBe(false);
+    expect(account.settle(bookOf(a), legsOf(a), PRICE, T)).toBe(true);
+    expect(account.settle(bookOf(a), legsOf(a), PRICE, T)).toBe(false);
+    const fee = attemptFee(net, 10_000_000n, 'failed');
+    expect(account.state.walletLamports).toBe(opening - fee);
+    const fact = account.fact(ledger, emptyBook({ maxOpenPositions: 5 }), NO_LATCHES, PRICE, T);
+    expect(fact.history.costs).toContainEqual({ atMs: T - 60_000, amount: lamportsToMicroUsd(fee as Lamports, PRICE, 'ceil'), kind: 'failed_entry' });
+    expect(fact.history.closedTrades).toEqual([]);
+    const s = riskSnapshot({
+      session: startSession(TRIAL_POLICY), mode: 'paper', clock: { now: () => ({ slot: 1n, txIndex: 0, ixIndex: 0, receivedAt: T }) }, account: fact.history, latches: NO_LATCHES,
+      market: { solPrice: { value: PRICE, atMs: T }, solBalance: fact.solBalance, regime: 'unknown' },
+    })!;
+    expect(s.dayLoss).toBeGreaterThanOrEqual((bankroll * BigInt(TRIAL_POLICY.loss.dailyBps)) / 10_000n);
+    ledger.close();
+  });
+
+  it('records from before the Melbourne week fold into one total; a signature seen again after the fold is not charged', () => {
+    const dir = tempState();
+    const ledger = openLedger(join(dir, 'ledger.sqlite'), 'paper');
+    const file = accountFile(dir);
+    const start = melbourneWeek(T).start;
+    const account = new PaperAccount(file, 20_000_000n as MicroUsd, start - 20 * DAY, 0n);
+    account.price(PRICE, start - 20 * DAY);
+    const opening = account.state.walletLamports!;
+    const old = [failedAttempt('a', start - 9 * DAY, 20_000n), failedAttempt('b', start - DAY, 30_000n)];
+    const recent = [failedAttempt('c', start + 1_000, 40_000n)];
+    const usdOf = (x: PaperAttempt) => lamportsToMicroUsd(attemptFee(net, x.priorityFee, 'failed') as Lamports, PRICE, 'ceil');
+    // Booked in the last days of a week: a (from the week before) folds at once, b stays a record.
+    account.settle(bookOf(old), legsOf(old), PRICE, start - 1_000);
+    expect(Object.keys(account.state.strayFees!)).toEqual(['b']);
+    expect(account.state.strayFolded).toEqual({ atMs: start - 9 * DAY, lamports: attemptFee(net, 20_000n, 'failed'), cost: usdOf(old[0]!) });
+    // In the new week: b folds into the total, c stays a record.
+    const all = [...old, ...recent];
+    account.settle(bookOf(all), legsOf(all), PRICE, start + 2_000);
+    expect(Object.keys(account.state.strayFees!)).toEqual(['c']);
+    const fees = (xs: readonly PaperAttempt[]) => xs.reduce((s, x) => s + attemptFee(net, x.priorityFee, 'failed'), 0n);
+    expect(account.state.strayFolded).toEqual({ atMs: start - DAY, lamports: fees(old), cost: usdOf(old[0]!) + usdOf(old[1]!) });
+    expect(account.state.walletLamports).toBe(opening - fees(all));
+    // A replay (the same signatures again, also after a reload) charges nothing more.
+    const reloaded = new PaperAccount(file, 20_000_000n as MicroUsd, start + 3_000, 0n);
+    expect(reloaded.settle(bookOf(all), legsOf(all), PRICE, start + 3_000)).toBe(false);
+    expect(reloaded.state.walletLamports).toBe(opening - fees(all));
+    // Equity keeps every fee: the folded total (before this week) and the record are both costs.
+    const costs = reloaded.fact(ledger, emptyBook({ maxOpenPositions: 5 }), NO_LATCHES, PRICE, start + 3_000).history.costs.filter((c) => c.kind === 'failed_entry');
+    expect(costs).toEqual([
+      { atMs: start - DAY, amount: usdOf(old[0]!) + usdOf(old[1]!), kind: 'failed_entry' },
+      { atMs: start + 1_000, amount: usdOf(recent[0]!), kind: 'failed_entry' },
+    ]);
+    ledger.close();
+  });
+
+  it('an entry still unresolved holds the fold back to before its first attempt', () => {
+    const dir = tempState();
+    const start = melbourneWeek(T).start;
+    const account = new PaperAccount(accountFile(dir), 20_000_000n as MicroUsd, start - 20 * DAY, 0n);
+    account.price(PRICE, start - 20 * DAY);
+    const done = [failedAttempt('a', start - 3 * DAY, 20_000n)];
+    const pending = failedAttempt('z', start - 5 * DAY, 20_000n);
+    const book = { positions: {}, intents: { ...bookOf(done).intents, ...bookOf([pending], 'broadcast').intents } } as unknown as Book;
+    account.settle(book, legsOf([...done, pending]), PRICE, start + 1_000);
+    expect(Object.keys(account.state.strayFees!)).toEqual(['a']);
+    expect(account.state.strayFolded).toBeUndefined();
+  });
+});

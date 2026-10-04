@@ -3,7 +3,7 @@ import { type CheckResult, type DecisionRecord, type FunnelView, MODES, type Mod
 import { MODE_LABEL, hasSample, requiredTrades } from '../api/modes.ts';
 import { Badge, Empty } from '../components/ui.tsx';
 import { shortAddress } from '../lib/format.ts';
-import { formatPriceDec, formatR, formatShare, formatUsdExact, toMicro, toneOf } from '../lib/money.ts';
+import { formatPriceDec, formatR, formatShare, formatSolExact, formatUsdExact, toMicro, toneOf } from '../lib/money.ts';
 import { CHECK_LABEL, EXIT_RULE_LABEL, FLAG_ALERT, FLAG_LABEL, RISK_LABEL, STAGE_LABEL, VENUE_LABEL } from './labels.ts';
 import { melDateTime } from './time.ts';
 
@@ -310,6 +310,8 @@ export function Stats({ stats }: { stats: StatsView }) {
   const shown = (v: string | null, f: (s: string) => string) => (enough && v !== null ? f(v) : NOT_ENOUGH);
   const items: { label: string; value: string; tone?: string }[] = [
     { label: 'Net result', value: stats.trades ? formatUsdExact(stats.netUsd, true) : '—', tone: toneOf(stats.netUsd) },
+    { label: 'Net in SOL', value: stats.trades ? formatSolExact(stats.netSol, true) : '—' },
+    { label: 'SOL price move', value: stats.trades ? formatUsdExact(stats.solMoveUsd, true) : '—', tone: toneOf(stats.solMoveUsd) },
     { label: 'Max drawdown', value: stats.trades ? formatUsdExact(stats.maxDrawdownUsd) : '—', tone: toneOf(stats.maxDrawdownUsd) },
     { label: 'Win rate', value: shown(stats.winRate, (s) => formatShare(s)) },
     { label: 'Average net', value: shown(stats.meanNetUsd, (s) => formatUsdExact(s, true)), ...(enough && stats.meanNetUsd ? { tone: toneOf(stats.meanNetUsd) } : {}) },

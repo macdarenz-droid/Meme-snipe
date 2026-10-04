@@ -2,7 +2,8 @@
 // their numbers stay in the sealed ledger (§14), and this module has no input for them.
 import type { FillConfig, Policy } from '../../core/src/config/index.ts';
 import { policyHash } from '../../core/src/config/index.ts';
-import { type Lamports, type MicroUsd, lamportsToMicroUsd, solPriceMicroUsd, toDecimalString } from '../../core/src/units/index.ts';
+import { toUsd, tradeUsd } from '../../core/src/fills/index.ts';
+import { type MicroUsd, solPriceMicroUsd, toDecimalString } from '../../core/src/units/index.ts';
 import { type OffchainSeries, usableFrom } from './dataset/offchain.ts';
 import type { BacktestReportV1, ReportDay, ReportGate, ReportGroup, ReportResult, ReportTrade } from '../../core/src/report/index.ts';
 import type { StrayCost, TradeRecord } from './trades.ts';
@@ -47,8 +48,7 @@ export const priceAt = (s: OffchainSeries, ms: number): MicroUsd => {
   return solPriceMicroUsd(best);
 };
 
-export const toUsd = (lamports: bigint, px: MicroUsd): bigint =>
-  lamports < 0n ? -lamportsToMicroUsd(-lamports as Lamports, px, 'floor') : lamportsToMicroUsd(lamports as Lamports, px, 'floor');
+export { toUsd };
 
 /** Exact decimal of a / b with `places` places, rounded down. */
 const decDiv = (a: bigint, b: bigint, places: number): string => toDecimalString((a * 10n ** BigInt(places)) / b, places);
@@ -59,31 +59,24 @@ const tokenPrice = (sol: bigint, tokens: bigint, px: MicroUsd): string => (token
 /**
  * A trade in USD, each flow at its own time (item 6 of BT-1c): the entry, the entry leg's costs and the rent at the
  * entry-time price; the proceeds, the exit leg's costs and any rent returned at the exit-time price. SOL moving in
- * between therefore shows in the trade's USD result; its SOL result is reported apart (economics.ts).
+ * between therefore shows in the trade's USD result; its SOL result is reported apart (economics.ts). The valuation is
+ * core's `tradeUsd`, which paper mode uses too (PAPER-1).
  * Approximation: every exit attempt's fees, failed ones included, use the price at the trade's close (the last sell
  * landing, or the data's end for a blocked exit), not each attempt's own time; likewise for repeated entry attempts.
  */
 const reportTrade = (t: TradeRecord, group: ReportGroup, pxIn: MicroUsd, pxOut: MicroUsd): ReportTrade => {
-  const both = (k: keyof TradeRecord['legs']['entry']) => toUsd(t.legs.entry[k], pxIn) + toUsd(t.legs.exit[k], pxOut);
-  const c = {
-    venue: both('venueFee'), creator: both('creatorFee'), priority: both('priority'), tip: both('tip'), network: both('networkBase'),
-    slippage: both('slippage'), rentPaid: toUsd(t.rentPaid, pxIn), rentReturned: toUsd(t.rentReturned, pxOut),
-  };
-  const total = c.venue + c.creator + c.priority + c.tip + c.network + c.slippage + c.rentPaid - c.rentReturned;
-  const size = toUsd(t.entrySol, pxIn);
-  const proceeds = toUsd(t.exitSol, pxOut);
-  // Venue fees and slippage are inside the entry and exit amounts; network fees and rent are paid on top.
-  const net = proceeds - size - c.network - c.priority - c.tip - c.rentPaid + c.rentReturned;
+  const v = tradeUsd(t, pxIn, pxOut);
+  const c = v.costs;
   return {
     mode: 'backtest', id: t.id, group, mint: t.mint, symbol: t.symbol || t.mint.slice(0, 6), venue: 'pumpswap',
     openedAt: iso(t.openedAt), closedAt: iso(t.closedAt), holdSeconds: Math.max(0, Math.round((t.closedAt - t.openedAt) / 1000)),
     entryPriceUsd: tokenPrice(t.entrySol, t.tokens, pxIn), exitPriceUsd: tokenPrice(t.exitSol, t.tokens, pxOut),
-    sizeUsd: usd(size), grossUsd: usd(net + total),
+    sizeUsd: usd(v.size), grossUsd: usd(v.net + v.total),
     costs: {
       venueFeeUsd: usd(c.venue), creatorFeeUsd: usd(c.creator), priorityFeeUsd: usd(c.priority), tipUsd: usd(c.tip), networkFeeUsd: usd(c.network),
-      slippageUsd: usd(c.slippage), rentPaidUsd: usd(c.rentPaid), rentReturnedUsd: usd(c.rentReturned), totalUsd: usd(total),
+      slippageUsd: usd(c.slippage), rentPaidUsd: usd(c.rentPaid), rentReturnedUsd: usd(c.rentReturned), totalUsd: usd(v.total),
     },
-    netUsd: usd(net), realizedR: null, exitReason: t.exitReason,
+    netUsd: usd(v.net), realizedR: null, exitReason: t.exitReason,
   };
 };
 

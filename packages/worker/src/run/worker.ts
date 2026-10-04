@@ -25,7 +25,7 @@ import { SLOT_MS, watchTimingProblem } from './config.ts';
 import { PositionWatch, type WatchRead } from './watch.ts';
 import { DEFAULT_LIVE_FEED, type Frame, type HttpClient, LiveFeed, type Release, seqId } from '../providers/index.ts';
 import type { Timers } from '../scheduler/timers.ts';
-import { PaperAccount, accountFile } from './account.ts';
+import { PaperAccount, type PaperLegs, accountFile } from './account.ts';
 import type { WorkerConfig } from './config.ts';
 import { Desk, openIntents } from './desk.ts';
 import { DeployerStore, liveWatchToClose, type SavedDeployers } from './deployer-store.ts';
@@ -358,6 +358,10 @@ export class Worker {
       now: () => d.timers.now(),
       file: new StateFile<PaperState>(c.stateDir, 'paper.json', (v) => (isObj(v) && isObj(v['attempts']) ? (v as unknown as PaperState) : null)),
       changed: () => this.#writeOpenIntents(),
+      // A landed failure paid its fee (PAPER-1, M4): the account settles it and risk sees the new snapshot.
+      landedFailed: () => {
+        if (this.#settle()) this.#publishAccount();
+      },
     });
     // FACTS-1b: the engine reads through core's FactFeed (engine-feed.ts); a replay of the recording uses the same.
     this.#facts = engineFeed(this.#feed, d.session.policy, (e) => {
@@ -379,7 +383,11 @@ export class Worker {
       ledger: this.#ledger, config: bookConfig, restored: stored.book,
       journal: (kind, fields) => this.#journal.write(kind, fields),
       report: (event) => this.#report(event),
-      accountChanged: () => this.#publishAccount(),
+      // An entry that ended with no fill books its failed attempts' fees here (PAPER-1, M4), before the snapshot.
+      accountChanged: () => {
+        this.#settle();
+        this.#publishAccount();
+      },
       intentsChanged: () => this.#writeOpenIntents(),
       // Entries stop for the rest of this process; exits go on. A restart rebuilds the book from the ledger.
       diverged: (reason) => {
@@ -389,7 +397,7 @@ export class Worker {
       },
       reserved: (r) => this.#account.reserved(r.mint, r.atMs),
       filled: (r) => {
-        this.#account.filled(r, this.#solPrice);
+        this.#account.filled(r, this.#solPrice, this.#legs());
         if (r.purpose === 'entry') this.#entered(r.mint, r.positionId, r.atMs);
       },
     });
@@ -498,7 +506,10 @@ export class Worker {
         this.#solPriceAt = isObj(m.value) && typeof m.value['atMs'] === 'number' ? m.value['atMs'] : m.moment.receivedAt;
         this.#account.price(this.#solPrice, m.moment.receivedAt);
         // The paper wallet exists from the first price on: risk needs its balance (R4).
-        if (first && this.#account.state.walletLamports !== null && this.#reconciled) this.#publishAccount();
+        if (first && this.#account.state.walletLamports !== null && this.#reconciled) {
+          this.#settle();
+          this.#publishAccount();
+        }
       }
     } else if (m.key === 'coverage:rugs:start') {
       const v = isObj(m.value) && isObj(m.value['value']) ? m.value['value'] : m.value;
@@ -584,6 +595,16 @@ export class Worker {
   #paperMarket(mint: string): PaperMarket | null {
     const m = this.poolOf(mint);
     return m === null ? null : { pool: m.state, ctx: m.ctx };
+  }
+
+  /** What the paper account settles a trade from: the paper world's attempts and token accounts (PAPER-1). */
+  #legs(): PaperLegs {
+    return { network: this.#d.network, attempts: this.#world.attempts, closedAccount: (sig) => this.#world.closedAccount(sig) };
+  }
+
+  /** Fees paid outside fills, each signature once (PAPER-1, M4); true when the wallet moved. */
+  #settle(): boolean {
+    return this.#account.settle(this.#desk.book, this.#legs(), this.#solPrice, this.#d.timers.now());
   }
 
   #publishAccount(): void {
@@ -761,7 +782,7 @@ export class Worker {
     return {
       nowMs: d.timers.now(), policy: d.session.policy, policyVersion: d.session.versionHash, strategyVersion: d.strategy.version,
       connected: this.#reconciled && [...this.#feeds.values()].some((f) => f.connected), halted: this.#halted, paused: this.#ctl.paused,
-      book: this.#engine.book, trades: this.#account.state.trades, attempts: this.#world.attempts, decisions: this.#rows, funnel: this.#funnel,
+      book: this.#engine.book, trades: this.#account.state.trades, attempts: this.#world.attempts, legs: this.#legs(), decisions: this.#rows, funnel: this.#funnel,
       solPrice: this.#solPrice, symbol: (mint) => this.#symbols.get(mint) ?? `${mint.slice(0, 4)}…`, waitingExits: this.#strategy.waitingExits(),
       open: (p) => {
         const saved = this.#strategy.saved()[p.id];
@@ -828,6 +849,8 @@ export class Worker {
     // The feed is drained here: the slot for SEED-1's events, ahead of the account fact below and every live event.
     this.#reserved = this.#feed.reserveSlot();
     this.#writeOpenIntents();
+    // Fees a stopped process left unsettled (an entry that ended with no fill before its sweep), each signature once.
+    this.#settle();
     this.#publishAccount();
     const positions = Object.values(this.#engine.book.positions).filter((p) => p.status !== 'closed').map((p) => p.id);
     this.#journal.write('reconcile', { ok: true, restored_events: this.#ledgerEvents(), cancelled: asked.size, open_positions: positions });

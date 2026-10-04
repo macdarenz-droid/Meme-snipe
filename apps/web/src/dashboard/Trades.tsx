@@ -2,7 +2,7 @@ import { useState, type ReactNode } from 'react';
 import type { Fill, TradeRecord } from '../api/contract.ts';
 import { Empty } from '../components/ui.tsx';
 import { formatDuration, shortAddress } from '../lib/format.ts';
-import { formatPriceDec, formatR, formatUsdExact, negUsd, toneOf } from '../lib/money.ts';
+import { formatPriceDec, formatR, formatSolExact, formatUsdExact, negUsd, toneOf } from '../lib/money.ts';
 import { EXIT_LABEL, VENUE_LABEL } from './labels.ts';
 import { Checks } from './Sections.tsx';
 import { melDateTime, melTime } from './time.ts';
@@ -132,6 +132,9 @@ export function TradeDetail({ trade }: { trade: TradeRecord }) {
           ['Gross', formatUsdExact(trade.grossUsd, true), `num ${toneOf(trade.grossUsd)}`],
           ['Costs', formatUsdExact(negUsd(c.totalUsd)), 'num'],
           ['Net', formatUsdExact(trade.netUsd, true), `num ${toneOf(trade.netUsd)}`],
+          ['Net in SOL', formatSolExact(trade.netSol, true), `num ${toneOf(trade.tradingUsd)}`],
+          ['Trading', formatUsdExact(trade.tradingUsd, true), `num ${toneOf(trade.tradingUsd)}`],
+          ['SOL price move', formatUsdExact(trade.solMoveUsd, true), `num ${toneOf(trade.solMoveUsd)}`],
           ['Planned R', trade.plannedR ? formatR(trade.plannedR) : '—', 'num'],
           ['Realized R', trade.realizedR ? formatR(trade.realizedR) : '—', 'num'],
           ['Best while open', trade.mfeR ? formatR(trade.mfeR) : '—', 'num'],

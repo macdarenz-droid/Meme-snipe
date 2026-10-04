@@ -75,6 +75,19 @@ export function formatUsdExact(s: string, signed = false): string {
   return body;
 }
 
+/** An exact SOL amount ("-0.004000000") as "−0.004 SOL"; signed adds + or −. Never rounded. */
+export function formatSolExact(s: string, signed = false): string {
+  if (!isDec(s)) throw new MoneyError(`not a decimal: ${JSON.stringify(s)}`);
+  const neg = s.startsWith('-');
+  const [whole = '0', frac = ''] = (neg ? s.slice(1) : s).split('.');
+  const f = frac.replace(/0+$/, '');
+  const zero = /^0*$/.test(whole) && f === '';
+  const body = `${group(BigInt(whole).toString())}${f ? `.${f}` : ''} SOL`;
+  if (neg && !zero) return `${MINUS}${body}`;
+  if (signed && !zero) return `+${body}`;
+  return body;
+}
+
 /** A dollar amount as a plain number for drawing and for short labels only. Never sum the result. */
 export const usdToPlot = (s: string): number => Number(toMicro(s)) / 1e6;
 
