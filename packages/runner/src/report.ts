@@ -415,6 +415,7 @@ export const reportMarkdown = (r: Report): string => {
     '',
     `H15 simulations: ${r.journal.h15_sim.run} run of ${r.journal.h15_sim.lines}, ${r.journal.h15_sim.credits} Helius credits (inside the helius row above).`,
     `Trade-gap fills: ${r.journal.trades_fill.complete} complete of ${r.journal.trades_fill.lines}, ${r.journal.trades_fill.transactions} transactions, ${r.journal.trades_fill.credits} Helius credits (inside the helius row above).`,
+    `Create lookups: ${r.journal.create_lookup.found} found of ${r.journal.create_lookup.lines}, ${r.journal.create_lookup.skipped_no_budget} skipped for want of budget, ${r.journal.create_lookup.credits} Helius credits (inside the helius row above).`,
     '',
     `Historical lookups: ${r.ops.lookups.count}, median ≤ ${r.ops.lookups.p50_ms_at_most ?? '-'} ms, p95 ≤ ${r.ops.lookups.p95_ms_at_most ?? '-'} ms, ${r.ops.lookups.slower_than_last_bound} slower than the last bucket.`,
     '',

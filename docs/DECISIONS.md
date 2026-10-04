@@ -1602,3 +1602,25 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
     - The copy or link click reaching the row; the journal without the buttons.
     - Review N1/N2: Unrealized as the rest less the whole entry; Unrealized or Costs rounded toward zero; P&L rounded on its own (in `openUsd` and in the served row).
     - The exit fee: left out; charged with nothing left; from the ladder's second rung; without the tip.
+
+## A candidate's create after a restart (CREATE-AFTER-RESTART, S0-ZERO finding 3; `worker.ts` `#createFor`, `sources.ts` `findCreate`)
+
+- **2026-10-05 · The bug.** A create seen only at processed makes no fact. The create transaction was read at confirmed on shortlist only when this process had seen the create log. So after any restart, every coin created before it and migrating after it rejected on H9 (and H12–H14) with "missing create", for the whole S0 window. These were wrongly rejected candidates, not genuine rejects.
+- **2026-10-05 · The fix, cheapest source first.** Never a pass on a guessed create.
+  - **The saved store.** `deployers.jsonl` keeps every create an earlier process saw (15 days). It does so even when PERSIST-1's state replaces it for the index. Its compacted events drop the signature field, but the event id carries it (`log:<signature>…` live, `ev:<signature>:…` fetched). At construction those signatures fill the create map, oldest first under its 200,000 cap, so the newest stay. A shortlisted mint among them is read by its signature: one call, as before.
+  - **The downtime fill.** A shortlist while the seed is built waits for it. The seeded creates are noted when it is placed, and then the waiting mints are served.
+  - **Any other.** The mint is looked up once per process: its signatures paged back to the start (1,000 a page), and its oldest successful transaction read at confirmed through the fetcher, which puts it on the feed. It is accepted only when it holds this mint's pump CreateEvent; the producer makes the create fact from it as from any fetched create. A history longer than the cap, a transaction that cannot be read, or one that is not the create leaves the create missing.
+- **2026-10-05 · Budget.**
+  - Each lookup may spend at most `CREATE_LOOKUP_CREDITS` (25: up to 24 pages and the read), and never more than the fills' daily budget has left (`FILL_CREDITS_PER_DAY`, shared with the restart fill and the trade catch-ups).
+  - The whole cap is counted before the first call and the unused part given back after, so lookups running together never overspend. With fewer than two credits left, no call is made.
+  - Each lookup is journaled as `create_lookup`: found or why not, pages, credits, latency. The run report counts lookups found, skipped for want of budget, and credits.
+- **2026-10-05 · Demand risk (golden rule).** Lookups happen only for mints in neither the store nor the downtime fill, which mostly means the first hours after a first start or after a store loss. Each costs about 2–25 credits. A `create_lookup` skipped for want of budget is a wrongly rejected candidate; the levers are the same as for the trade fills (FILL_SHARE, or the owner's Helius Developer upgrade).
+- **2026-10-05 · Evidence.** `packages/worker/test/create-after-restart.test.ts`, 15 tests:
+  - the lookup on a real mainnet create (paging, failed transactions passed over, not-create, not-found, no signature, cap, budget floor, concurrent lookups, RPC error);
+  - the Helius wiring and budget charge;
+  - the worker reading a stored create by its signature (live and fetched ids) and then entering;
+  - a lookup found, then entering, and journaled;
+  - a lookup not found, so H9 keeps refusing;
+  - a re-shortlist not looked up again;
+  - the seed's creates served after it is placed, and the lookup when the seed lacks the create.
+  - Eleven hand mutants, all caught. Among them: the old shortlist path with no lookup, the store not read, no hold while seeding, no create check, no refund, a failed transaction taken as the create, and the once-per-mint guard dropped.

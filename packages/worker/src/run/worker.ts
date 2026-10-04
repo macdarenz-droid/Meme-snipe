@@ -51,12 +51,13 @@ import { type RiskInput, evaluateExit, riskSnapshot } from '../../../core/src/ri
 import { latchable, markSettings, riskAccount } from '../engine/marks.ts';
 import type { DeployerIndexState, RugLabellerState } from '../../../core/src/gates/index.ts';
 import { loadState, saveState } from '../persist/index.ts';
+import type { CreateLookup } from './sources.ts';
 
 /** PERSIST-1's saved deployer state in the worker's state dir, and how often it is written. */
 export const PERSIST_FILE = 'deployer-state.json';
 export const PERSIST_EVERY_MS = 5 * 60_000;
 import { type Control, NO_CONTROL, StateFile, controlFile, exitsFile, seedsFile, exposedFile, NO_EXPOSED } from './state.ts';
-import { type PoolFact, S0_DIAGNOSTIC_PARTS, parsePool } from '../../../core/src/gates/index.ts';
+import { LOG_CREATE_PREFIX, type PoolFact, S0_DIAGNOSTIC_PARTS, TX_CREATE_PREFIX, parsePool } from '../../../core/src/gates/index.ts';
 import type { ExecStats } from '../../../core/src/facts/raw.ts';
 
 /** POS-1: a pool fact flagged beyond backfill or dedupe (a stale swap stream) is never priced from. */
@@ -120,6 +121,11 @@ export interface WorkerDeps {
    * mint's create (item 9: live H9, H12–H14 need the confirmed create) and for a cut trade log on a rug-covered stream.
    */
   readonly fetchTx: (signature: string, why: 'create' | 'cut-log') => Promise<boolean>;
+  /**
+   * CREATE-AFTER-RESTART: looks up a shortlisted mint's create that neither this process nor the saved store holds
+   * (sources.ts `findCreate`, under the fills' daily budget). Without it such a create waits, as before.
+   */
+  readonly findCreate?: (mint: string) => Promise<CreateLookup>;
   /**
    * SEED-1: the deployer index's seed (first start: days and RPC up to the live creates watch's first slot) or the
    * downtime fill (restart from saved state), built by `buildSeed`. `untilSlot` is null when the live watch did not
@@ -202,6 +208,8 @@ const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object
 
 /** Present while the state dir began empty and no full start has journaled its `recovered` line yet. */
 const COLD_START = 'cold_start';
+/** A saved create's id, live (`log:<signature>…`) or fetched (`ev:<signature>:…`): its transaction signature. */
+const CREATE_ID = /^(?:log|ev):([1-9A-HJ-NP-Za-km-z]{64,88})(?=[:#]|$)/;
 
 /**
  * The `entry` and `exit` lines of a journal file (none when it is missing); torn or unreadable lines are skipped. The
@@ -263,6 +271,10 @@ export class Worker {
   /** Positions open at the last step (WATCH-1 reads once when one opens). */
   #opened = new Set<string>();
   #createSig = new Map<string, string>();
+  /** Mints shortlisted while the seed is being built, with no create signature yet: the downtime fill may bring it. */
+  #createPending: string[] = [];
+  /** Mints whose create this process has looked up (once each). */
+  readonly #createLookups = new Set<string>();
   /** Watches that carry rug coverage (`coverage:rugs:start` vias): a cut log on one is a gap until its transaction is read. */
   #rugVias = new Set<string>();
   #intentAt = new Map<string, number>();
@@ -412,6 +424,8 @@ export class Worker {
     this.#engine = new Engine({ clock: this.#feed.clock, feed: this.#facts.feed, strategy: this.#strategy, runner: this.#world, seed, book: bookConfig });
     this.#deployerStore = new DeployerStore(c.stateDir);
     this.#saved = this.#deployerStore.load(now - (d.session.policy.gates.deployerRugLookbackDays + 1) * 86_400_000);
+    // CREATE-AFTER-RESTART: the creates earlier processes saw, kept in the store even when PERSIST-1's state replaces it.
+    this.#noteCreates(this.#saved.creates);
     // PERSIST-1: the saved index, labeller and coverage, when the file holds up (else a fresh start: not covered).
     // Restored through the seed fact (recorded, so a replay rebuilds the same state) before any decision; the
     // downtime fill starts at the saved moment, closing the restart gap on the live creates watch.
@@ -591,10 +605,45 @@ export class Worker {
         if (this.#symbols.size > 200_000) this.#symbols.delete(this.#symbols.keys().next().value!);
       }
     }
-    if (m.key.startsWith('logs:pump:CreateEvent:') && isObj(m.value) && typeof m.value['signature'] === 'string') {
-      this.#createSig.set(m.key.slice('logs:pump:CreateEvent:'.length), m.value['signature']);
-      if (this.#createSig.size > 200_000) this.#createSig.delete(this.#createSig.keys().next().value!);
+    if (m.key.startsWith('logs:pump:CreateEvent:') && isObj(m.value) && typeof m.value['signature'] === 'string') this.#noteCreateSig(m.key.slice('logs:pump:CreateEvent:'.length), m.value['signature']);
+  }
+
+  #noteCreateSig(mint: string, signature: string): void {
+    this.#createSig.set(mint, signature);
+    if (this.#createSig.size > 200_000) this.#createSig.delete(this.#createSig.keys().next().value!);
+  }
+
+  /**
+   * CREATE-AFTER-RESTART: each saved or seeded create's signature, so a coin created before this start is read by its
+   * signature (one call) when it is shortlisted. The store keeps creates compacted, without the signature field; the
+   * event id carries it (`log:<signature>:…` live, `ev:<signature>:…` fetched). Oldest first, so the newest stay.
+   */
+  #noteCreates(events: readonly MarketEvent[]): void {
+    for (const e of events) {
+      const mint = e.key.startsWith(LOG_CREATE_PREFIX) ? e.key.slice(LOG_CREATE_PREFIX.length) : e.key.startsWith(TX_CREATE_PREFIX) ? e.key.slice(TX_CREATE_PREFIX.length) : null;
+      const sig = isObj(e.value) && typeof e.value['signature'] === 'string' ? e.value['signature'] : CREATE_ID.exec(e.id)?.[1];
+      if (mint !== null && mint !== '' && sig !== undefined) this.#noteCreateSig(mint, sig);
     }
+  }
+
+  /**
+   * A shortlisted mint's create: read by its signature when one is known; held while the seed is built (its downtime
+   * fill may bring it); else looked up once from the mint's oldest signature. A lookup that fails leaves it missing.
+   */
+  #createFor(mint: string): void {
+    const sig = this.#createSig.get(mint);
+    if (sig !== undefined) return void this.#d.fetchTx(sig, 'create');
+    if (this.#seeding) return void this.#createPending.push(mint);
+    const find = this.#d.findCreate;
+    if (find === undefined) return this.#d.log(`Shortlisted ${mint}: its create was not seen by this process; H9 and H12-H14 wait for it.`);
+    if (this.#createLookups.has(mint)) return;
+    this.#createLookups.add(mint);
+    void find(mint).then((r) => {
+      this.#journal.write('create_lookup', { ...r });
+      this.#d.log(r.found
+        ? `Shortlisted ${mint}: its create (slot ${r.slot}) found from the mint's oldest signature, ${r.credits} credits.`
+        : `Shortlisted ${mint}: create lookup stopped (${r.stopped_by}, ${r.credits} credits); H9 and H12-H14 wait for it.`);
+    }, () => this.#d.log(`Shortlisted ${mint}: create lookup failed; H9 and H12-H14 wait for it.`));
   }
 
   /** WORKER-1e: the paper attempts' execution statistics over the last 24 h (S0's diagnostic exec-health). */
@@ -857,9 +906,7 @@ export class Worker {
     if (r.type !== 'decision') return;
     if (r.reasons[0] === SHORTLIST) {
       const mint = r.reasons[2];
-      const sig = mint === undefined ? undefined : this.#createSig.get(mint);
-      if (sig !== undefined) void this.#d.fetchTx(sig, 'create');
-      else this.#d.log(`Shortlisted ${mint ?? '?'}: its create was not seen by this process; H9 and H12-H14 wait for it.`);
+      if (mint !== undefined) this.#createFor(mint);
     }
     const trips = r.reasons.filter((x) => x.startsWith(TRIP_PREFIX)).map((x) => x.slice(TRIP_PREFIX.length));
     if (trips.length > 0) this.#latch(trips, r.at.receivedAt);
@@ -1066,6 +1113,10 @@ export class Worker {
       await this.#seedIndex(this.#reserved);
     } finally {
       this.#seeding = false;
+      // CREATE-AFTER-RESTART: the shortlists that waited for the seed, now with every saved and seeded create known.
+      const pending = this.#createPending;
+      this.#createPending = [];
+      for (const mint of pending) this.#createFor(mint);
       this.#checkHalt(d.timers.now());
     }
     if (this.#stopping) return { ok: false, code: EXIT.clean, message: 'stopped during the start' };
@@ -1164,6 +1215,7 @@ export class Worker {
       history: coverage.map((e, k) => ({ ...e, id: `${e.id}#pre${k}`, moment: { ...pos(1 + k), receivedAt: e.moment.receivedAt } })),
     });
     for (const e of [...result.creates, ...result.coverage, ...extra]) this.#deployerStore.keep(e);
+    this.#noteCreates(result.creates);
     d.log(`Deployer index: ${result.mode} (${result.report}); ${saved.creates.length} saved creates, ${saved.coverage.length} saved coverage facts.`);
   }
 

@@ -5,7 +5,7 @@
 // outside the free budgets (about 14M Helius credits a month for pump logs alone), so they are off by default and no
 // `coverage:rugs:*` start is claimed: H14 stays not covered until a paid stream (`tradeStreams`) or a backfill covers
 // trades (RUG-1's wiring rule).
-import { PUMP_AMM_PROGRAM, PUMP_PROGRAM, type TransactionRecord } from '../../../core/src/chain/index.ts';
+import { PUMP_AMM_PROGRAM, PUMP_PROGRAM, type TransactionRecord, transactionEvents } from '../../../core/src/chain/index.ts';
 import type { SocketFactory, HttpClient, Secrets } from '../providers/index.ts';
 import { CoinbaseSolPrice, alchemyRpcUrl, heliusRpcUrl, heliusWsUrl, PumpPortalSource, RpcHttp, RpcStream, TxFetcher } from '../providers/index.ts';
 import {
@@ -21,6 +21,7 @@ import { type GapFill, ingestingFill } from '../seed/fill.ts';
 import { LOOKUP_BOUNDS_MS, type QuotaStatus } from '../../../runner/src/contract.ts';
 import type { FeedSource, SourcesContext } from './worker.ts';
 import type { WatchRead } from './watch.ts';
+import { callCost, type SignatureInfo } from '../providers/solana-http.ts';
 
 /** Pump's mint authority PDA: only `create`/`create_v2` mention it (venues.md, measured). */
 export const PUMP_CREATE_AUTHORITY = 'TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM';
@@ -128,6 +129,76 @@ export const tradesFill = (o: {
   },
 });
 
+/**
+ * CREATE-AFTER-RESTART: the most one create lookup may spend: pages of the mint's signatures (1,000 each, newest first)
+ * and the create's own read. A history longer than that stays "missing create"; it is never guessed.
+ */
+export const CREATE_LOOKUP_CREDITS = 25;
+
+/** Why a create lookup stopped. Only `found` puts a create on the feed. */
+export type CreateLookupStop = 'found' | 'skipped-no-budget' | 'credit-cap' | 'no-signature' | 'not-found' | 'not-create' | 'error';
+
+/** One create lookup, as journaled (`create_lookup`). */
+export interface CreateLookup {
+  readonly mint: string;
+  readonly found: boolean;
+  readonly signature: string | null;
+  readonly slot: string | null;
+  readonly pages: number;
+  readonly credits: number;
+  readonly stopped_by: CreateLookupStop;
+  readonly latency_ms: number;
+}
+
+/**
+ * CREATE-AFTER-RESTART: a shortlisted mint whose create this process never saw (it came before the start, and the saved
+ * store does not hold it). The mint's signatures are paged back to the start: its oldest successful transaction is the
+ * one that created the mint. That transaction is read at confirmed through `fetch`, which puts it on the feed, and is
+ * accepted only when it holds the pump CreateEvent of this mint; anything else leaves the create missing. The whole
+ * cap is counted from the fills' daily budget before the first call and the unused part given back after, so lookups
+ * running together never spend past it.
+ */
+export const findCreate = async (mint: string, o: {
+  readonly rpc: { getSignaturesForAddress(address: string, opts: { readonly before?: string; readonly limit: number }, priority: typeof P2): Promise<readonly Pick<SignatureInfo, 'signature' | 'err'>[]> };
+  readonly fetch: (signature: string) => Promise<TransactionRecord | null>;
+  readonly timers: Timers;
+  readonly budget: Pick<DailyBudget, 'remaining' | 'spend' | 'refund'> | undefined;
+}): Promise<CreateLookup> => {
+  const started = o.timers.now();
+  const page = callCost('helius', 'getSignaturesForAddress');
+  const read = callCost('helius', 'getTransaction');
+  let pages = 0;
+  let used = 0;
+  const done = (stopped_by: CreateLookupStop, rec: TransactionRecord | null = null): CreateLookup => ({
+    mint, found: stopped_by === 'found', signature: rec?.signature ?? null, slot: rec === null ? null : String(rec.slot), pages, credits: used, stopped_by, latency_ms: o.timers.now() - started,
+  });
+  const cap = o.budget === undefined ? 0 : Math.min(CREATE_LOOKUP_CREDITS, o.budget.remaining(started));
+  if (cap < page + read) return done('skipped-no-budget');
+  o.budget!.spend(cap, started);
+  try {
+    let before: string | undefined;
+    let oldest: string | null = null;
+    for (;;) {
+      if (used + page + read > cap) return done('credit-cap');
+      used += page;
+      pages++;
+      const sigs = await o.rpc.getSignaturesForAddress(mint, before === undefined ? { limit: 1000 } : { before, limit: 1000 }, P2);
+      for (const x of sigs) if (x.err === null) oldest = x.signature;
+      if (sigs.length < 1000) break;
+      before = sigs.at(-1)!.signature;
+    }
+    if (oldest === null) return done('no-signature');
+    used += read;
+    const rec = await o.fetch(oldest);
+    if (rec === null) return done('not-found');
+    return transactionEvents(rec).some((e) => e.name === 'CreateEvent' && e.data.mint === mint) ? done('found', rec) : done('not-create');
+  } catch {
+    return done('error');
+  } finally {
+    o.budget!.refund(cap - used, o.timers.now());
+  }
+};
+
 export class LiveProviders {
   readonly helius: Scheduler;
   readonly alchemy: Scheduler;
@@ -230,6 +301,12 @@ export class LiveProviders {
   /** A transaction read at confirmed (P3) and put on the feed, for the delay probe; null when not found. */
   async confirmed(signature: string): Promise<TransactionRecord | null> {
     return this.#fetcher === null ? null : this.#fetcher.fetch(signature, P3);
+  }
+
+  /** CREATE-AFTER-RESTART: a shortlisted mint's create looked up from its oldest signature, under the fills' budget. */
+  async findCreate(mint: string, timers: Timers): Promise<CreateLookup> {
+    const fetcher = this.#fetcher;
+    return findCreate(mint, { rpc: this.seedRpc(), fetch: (sig) => (fetcher === null ? Promise.resolve(null) : fetcher.fetch(sig, P2)), timers, budget: this.#o.fillBudget });
   }
 
   /** A transaction at confirmed (P2), put on the feed; true when found. */
