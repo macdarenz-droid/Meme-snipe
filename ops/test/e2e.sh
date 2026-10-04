@@ -520,7 +520,7 @@ in_c "/usr/local/bin/node --version" | has -x 'v22\.[0-9]*\.[0-9]*' || fail "hos
 pid0="$(in_c "systemctl show -p MainPID --value zeroed-worker")"
 in_c "/usr/local/lib/zeroed/worker-smoke '$rel'" >"$LOGS/smoke-good.txt" 2>&1 || { cat "$LOGS/smoke-good.txt"; fail "worker-smoke refused a release whose worker starts"; }
 [ "$(in_c "systemctl show -p MainPID --value zeroed-worker")" = "$pid0" ] || fail "the trial start touched the running worker"
-in_c "! ss -ltn | grep -q ':879[78] '" || fail "the trial worker was left running"
+in_c "! ss -ltn | grep -q ':879[78] ' && ! pgrep -u zeroed-worker -f -- '$rel/packages/worker/src/main.ts'" || fail "the trial worker was left running"
 if [ "$rel" != "$orig" ]; then
   in_c "ln -sfn '$rel' /opt/zeroed/current.new && mv -Tf /opt/zeroed/current.new /opt/zeroed/current && systemctl restart zeroed-worker"
 fi

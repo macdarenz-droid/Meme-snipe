@@ -1295,6 +1295,12 @@ tmp="$(mktemp -d /var/tmp/zeroed-smoke.XXXXXX)"
 pid=""
 cleanup() {
   [ -z "$pid" ] || { kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; }
+  # The trial's node stops on its own after SIGTERM (it allows itself 25 s); wait for it, then make sure it is gone.
+  # Matched by its user and its entry path, which is the trial release's, never /opt/zeroed/current's.
+  for _ in $(seq 1 30); do pgrep -u zeroed-worker -f -- "$entry" >/dev/null || break; sleep 1; done
+  pkill -KILL -u zeroed-worker -f -- "$entry" 2>/dev/null || true
+  # Its listening sockets close a moment after it exits: leave the trial ports free for the next trial.
+  for _ in $(seq 1 30); do ss -Hltn "( sport = :${SMOKE_HEALTH_ADDR##*:} or sport = :${SMOKE_API_ADDR##*:} )" 2>/dev/null | grep -q . || break; sleep 1; done
   rm -rf "$tmp"
 }
 trap cleanup EXIT
