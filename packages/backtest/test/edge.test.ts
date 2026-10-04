@@ -6,10 +6,10 @@ import { join } from 'node:path';
 import { describe, expect, test } from 'vitest';
 import { FILL_CONFIG, RESEARCH_CONFIG, TRIAL_POLICY } from '../../core/src/config/index.ts';
 import { BRACKETS, breakEvenWinRate, costRow, rows, SETUPS, terms } from '../src/research/edge-costs.ts';
-import { replaySwap, observedFeeContext } from '../../core/src/fills/index.ts';
+import { replaySwap, observedFeeContext, withSlippage } from '../../core/src/fills/index.ts';
 import { poolBuyExactQuoteIn, poolSell } from '../../core/src/amm/index.ts';
 import { pumpSwapRoundTrip } from '../../core/src/costs/index.ts';
-import type { AmmSwapRow } from '../src/dataset/rows.ts';
+import type { AmmSwapRow, DatasetRow } from '../src/dataset/rows.ts';
 import { collectCandidates, PLAN_DRIVE, solUsdAsOf } from '../src/research/candidates.ts';
 import { PLAN_BARRIERS, scoreCandidates } from '../src/research/outcome.ts';
 import type { PracticeWindow } from '../src/research/practice.ts';
@@ -77,7 +77,7 @@ describe('cost math', () => {
     if (!sell.ok) throw new Error('fixture sell does not quote');
     const givenBack = (rt.trade.paid - rt.trade.proceeds) - (buy.trade.userQuote - sell.trade.userQuote);
     const fees = rt.trade.entryFees + rt.trade.exitFees;
-    return { still, win, c, row, givenBack, fees, tableImpact };
+    return { still, win, c, row, givenBack, fees, tableImpact, sw, st, spend, ctx, buy: buy.trade };
   };
   /** Each filled, scored candidate's loss in lamports (−r_net × entry cost), from the outcome stage under `fills`. */
   const lossesUnder = (n: number, fills: typeof FILL_CONFIG): number[] => {
@@ -124,6 +124,76 @@ describe('cost math', () => {
     expect((tableImpact - givenBack) * 10n).toBeLessThan(tableImpact);
     const expected = BigInt(row.proportional) - givenBack + fixed;
     for (const l of losses) expect(BigInt(Math.round(l))).toBe(expected);
+  }, 60_000);
+
+  // Review C1d: the two outcome-stage terms the cases above cannot see, each forced to a known value.
+  const scoreUnder = (rowsIn: readonly DatasetRow[], n: number, fills: typeof FILL_CONFIG) => {
+    const { win, c } = (fx ??= fixture());
+    const targets = Array.from({ length: n }, (_, i) => ({ id: `${c.id}#${i}`, pool: c.pool, decisionSlot: c.decisionSlot, decisionMs: c.decisionMs, solUsd: c.solUsd }));
+    return scoreCandidates(rowsIn, targets, { window: win, policy: TRIAL_POLICY, fills, scenario: 'conservative', barriers: PLAN_BARRIERS.slice(1, 2), seed: 'parity', entryMinOutBelowBps: RESEARCH_CONFIG.s0.entryMinOutBelowBps });
+  };
+  const withScenario = (o: Partial<typeof cons>): typeof FILL_CONFIG => ({ ...FILL_CONFIG, scenarios: { ...FILL_CONFIG.scenarios, conservative: { ...cons, ...o } } });
+
+  test.each([
+    { name: 'every entry fails on chain: it pays base and entry priority, no tip', dropPpm: 0n, fee: terms.entryLanded - FILL_CONFIG.network.tip },
+    { name: 'every entry is dropped: it never reaches a block and costs nothing', dropPpm: 1_000_000n, fee: 0n },
+  ])('failed entries, forced: $name', ({ dropPpm, fee }) => {
+    const out = scoreUnder((fx ??= fixture()).still, 20, withScenario({ landPpm: { ...cons.landPpm, pumpswap: 0n }, dropPpm }));
+    const { spend } = fx!;
+    expect(out.length).toBe(20);
+    for (const o of out) {
+      const l = o.labels[0]!;
+      expect(o.entryCost).toBe(0n);
+      expect(l.entryFilled).toBe(false);
+      // The labeller's r_net of an unfilled entry: −failed cost ÷ the notional it was measured against.
+      expect(l.rNet).toBe(-Number(fee) / Number(spend));
+    }
+  }, 60_000);
+
+  test('exit slippage, forced landing on a moving pool: r_net falls by the shortfall between touch and fill, scaled by slippagePpm − 1e6', () => {
+    const { still, sw, st, ctx, buy, c } = (fx ??= fixture());
+    // Entry lands decisionSlot + landing slots later on the still pool (no shortfall at entry), and the time barrier
+    // touches at the first block at or past entry + its horizon; the exit fills `landing` slots after that.
+    const landing = BigInt(Math.max(...cons.landingSlots));
+    const blocks = still.filter((r) => r.kind === 'block');
+    const entryBlock = blocks.find((r) => r.slot >= c.decisionSlot + landing)!;
+    const touch = blocks.find((r) => r.blockTime * 1000 >= entryBlock.blockTime * 1000 + PLAN_BARRIERS[1]!.horizonMs)!.slot;
+    // One real sell between the touch and the fill drops the value the exit gets.
+    const dump: AmmSwapRow = { ...sw, slot: touch + 3n, blockTime: blocks.find((r) => r.slot === touch + 3n)!.blockTime, signature: `${sw.signature}-dump`, side: 'sell', mode: 'exact-base', ixName: 'sell', amount: 20_000_000_000_000n, pre: st.trade.after };
+    if (!replaySwap(dump.pre, dump).ok) throw new Error('dump does not replay');
+    const at = still.findIndex((r) => r.kind === 'block' && r.slot === dump.slot);
+    const moving = [...still.slice(0, at), dump, ...still.slice(at)];
+    // The values at the touch and at the fill, from the core quotes: our tokens sold into the pool our buy left, then into
+    // the same pool after the dump replayed on top of our buy (the shifted pool); minus the landed exit, plus the rent back.
+    const shifted = replaySwap(buy.after, dump);
+    if (!shifted.ok) throw new Error('dump does not replay on the shifted pool');
+    const valueOn = (pool: typeof buy.after) => {
+      const q = poolSell(pool, buy.base, ctx);
+      if (!q.ok) throw new Error('no exit quote');
+      return q.trade.userQuote - terms.exitFixed + terms.rent;
+    };
+    const atTouch = valueOn(buy.after);
+    const atFill = valueOn(shifted.trade.after);
+    expect(atFill).toBeLessThan(atTouch);
+    const cost = buy.userQuote + terms.entryLanded + terms.rent;
+    const forcedLanding = { landPpm: { ...cons.landPpm, pumpswap: 1_000_000n }, closeSuccessPpm: 1_000_000n, dustPpm: 0n };
+    for (const ppm of [1_000_000n, cons.slippagePpm, 2_000_000n]) {
+      const out = scoreUnder(moving, 5, withScenario({ ...forcedLanding, slippagePpm: ppm }));
+      const lost = atFill - withSlippage(atFill, atTouch, ppm);
+      // withSlippage: the shortfall × (ppm − 1e6) / 1e6, rounded up.
+      expect(lost).toBe(((atTouch - atFill) * (ppm - 1_000_000n) + 999_999n) / 1_000_000n);
+      for (const o of out) {
+        const l = o.labels[0]!;
+        expect(o.entryCost).toBe(cost);
+        expect(l.yTb).toBe(0);
+        expect(l.touchSlot).toBe(Number(touch));
+        expect(l.exitSlot).toBe(Number(touch + landing));
+        const base = Number(atFill - cost) / Number(cost);
+        expect(l.rNet).toBe(lost === 0n ? base : base - Number(lost) / Number(cost));
+      }
+    }
+    // Conservative ×1.5: half the shortfall comes off on top of the fill.
+    expect(atFill - withSlippage(atFill, atTouch, cons.slippagePpm)).toBe((atTouch - atFill + 1n) / 2n);
   }, 60_000);
 
   test('a bigger trade has a lower hurdle on every setup; break-even win rate formula', () => {
