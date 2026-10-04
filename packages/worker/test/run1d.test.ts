@@ -11,7 +11,7 @@ import { LANDS, Market, makeWorker, passingMarket, tempState } from './worker-ha
 const lines = (dir: string) => readFileSync(join(dir, 'journal.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as JournalLine);
 const token = (dir: string) => readFileSync(join(dir, 'drill.token'), 'utf8').trim();
 
-const pending = (h: ReturnType<typeof makeWorker>): string[] => (h.worker.health() as unknown as { pending_exits: string[] }).pending_exits;
+const pending = (h: ReturnType<typeof makeWorker>): string[] => [...h.worker.health().pending_exits];
 
 const entered = async (h: ReturnType<typeof makeWorker>) => {
   expect(await h.worker.reconcile()).toEqual({ ok: true });
@@ -45,7 +45,7 @@ describe('pending exits and the recovered line', () => {
     rmSync(join(h.stateDir, 'cold_start'), { force: true });
     const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers, config: { ZEROED_HEALTH_ADDR: '127.0.0.1:18870', ZEROED_API_ADDR: '127.0.0.1:18871' } });
     expect(await h2.worker.start()).toEqual({ ok: true });
-    const recovered = lines(h.stateDir).filter((l) => l.kind === ('recovered' as JournalLine['kind']));
+    const recovered = lines(h.stateDir).filter((l) => l.kind === 'recovered');
     expect(recovered).toHaveLength(1);
     expect(recovered[0]).toMatchObject({ boot: h2.worker.boot, source: 'state', positions: [{ trade: pid, universe: 'U2' }] });
     // The restart settled the lost attempt; the position's exit is re-triggered, never dropped.
@@ -56,11 +56,11 @@ describe('pending exits and the recovered line', () => {
   it('an empty state dir is a cold start: source chain, and a paper position never comes back from the chain', async () => {
     const h = makeWorker({ config: { ZEROED_HEALTH_ADDR: '127.0.0.1:18872', ZEROED_API_ADDR: '127.0.0.1:18873' } });
     expect(await h.worker.start()).toEqual({ ok: true });
-    expect(lines(h.stateDir).find((l) => l.kind === ('recovered' as JournalLine['kind']))).toMatchObject({ source: 'chain', pending_exits: [], positions: [] });
+    expect(lines(h.stateDir).find((l) => l.kind === 'recovered')).toMatchObject({ source: 'chain', pending_exits: [], positions: [] });
     await h.worker.stop();
     const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers, config: { ZEROED_HEALTH_ADDR: '127.0.0.1:18872', ZEROED_API_ADDR: '127.0.0.1:18873' } });
     expect(await h2.worker.start()).toEqual({ ok: true });
-    expect(lines(h.stateDir).filter((l) => l.kind === ('recovered' as JournalLine['kind'])).map((l) => l['source'])).toEqual(['chain', 'state']);
+    expect(lines(h.stateDir).filter((l) => l.kind === 'recovered').map((l) => l['source'])).toEqual(['chain', 'state']);
     await h2.worker.stop();
   });
 });
@@ -99,7 +99,7 @@ describe('--reconcile-only (the host-loss tabletop)', () => {
     const health = (await (await fetch('http://127.0.0.1:18876/health')).json()) as { reconciled: boolean; exit_capable: boolean };
     expect(health.reconciled).toBe(true);
     expect(health.exit_capable).toBe(false);
-    expect(lines(dir).find((l) => l.kind === ('recovered' as JournalLine['kind']))).toMatchObject({ source: 'chain', positions: [] });
+    expect(lines(dir).find((l) => l.kind === 'recovered')).toMatchObject({ source: 'chain', positions: [] });
     // Market events arrive and are drained unread: no decision is ever taken.
     const before = lines(dir).filter((l) => l.kind === 'decision').length;
     const m = await passingMarket(h);

@@ -51,8 +51,7 @@ export class Journal {
     return this.#seq;
   }
 
-  // 'recovered' is RUN-1d's (#64), not yet in the merged contract.
-  write(kind: JournalKind | 'recovered', fields: Readonly<Record<string, unknown>> = {}): void {
+  write(kind: JournalKind, fields: Readonly<Record<string, unknown>> = {}): void {
     this.#seq += 1;
     appendFileSync(this.#path, `${redact(jsonText({ seq: this.#seq, ts: new Date(this.#now()).toISOString(), boot: this.#boot, kind, ...fields }))}\n`);
   }
