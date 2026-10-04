@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest';
 import { melbourneDay } from '../../core/src/risk/melbourne.ts';
 import { NO_LATCHES, type DayOverride, type Latches, type RiskSnapshot } from '../../core/src/risk/index.ts';
 import { accountFile } from '../src/run/account.ts';
-import { COMMAND_TTL_MS, type HandledCommand, type OpenStops, handleCommand, commandsOf, openStops, tripId, withOverrideTag } from '../src/run/owner-review.ts';
+import { COMMAND_TTL_MS, OFFER_KEEP_MS, type HandledCommand, type OpenStops, handleCommand, commandsOf, openStops, tripId, withOverrideTag } from '../src/run/owner-review.ts';
 import { controlFile, NO_CONTROL } from '../src/run/state.ts';
 import type { HttpRequest } from '../src/providers/index.ts';
 import { replySigned, sendHeartbeat, signReply } from '../src/run/heartbeat.ts';
@@ -125,7 +125,7 @@ describe('owner commands against the open stops', () => {
       expect(handleCommand({ id: 'old', kind: 'override', trip: `override-${DAY}-0`, at: T }, s, at({ count: 1 }), [], T)?.entry.result).toBe('stale');
       // The offer the owner confirmed (supervisor ruling): its day loss was 1.6; the fresh valuation's is `snap`'s 1.6.
       const s7 = day(['daily_loss']);
-      const confirm = (offered: bigint | undefined, offer: number | null = 7) =>
+      const confirm = (offered: bigint | undefined, offer: number | null = T - 1) =>
         handleCommand({ id: 'c', kind: 'override', trip: s7.override!.trip, at: T, offer }, s7, NO_LATCHES, [], T, () => offered);
       // The day got worse since the offer: not applied, `changed` (offered again with the new figures).
       expect(confirm(1_599_999n)?.entry.result).toBe('changed');
@@ -135,6 +135,9 @@ describe('owner commands against the open stops', () => {
       expect(confirm(1_700_000n)?.latches.dayOverride?.dayLossAt).toBe(1_600_000n);
       // An offer this process never made (a restart in between), or none named: stale.
       expect(confirm(undefined)?.entry.result).toBe('stale');
+      // An offer older than the kept window (its figures too old), named and not kept: `old`, not a changed trip.
+      expect(handleCommand({ id: 'o2', kind: 'override', trip: s7.override!.trip, at: T, offer: T - OFFER_KEEP_MS - 1 }, s7, NO_LATCHES, [], T, () => undefined)?.entry.result).toBe('old');
+      expect(handleCommand({ id: 'o3', kind: 'override', trip: s7.override!.trip, at: T, offer: T - OFFER_KEEP_MS }, s7, NO_LATCHES, [], T, () => undefined)?.entry.result).toBe('stale');
       expect(confirm(1_600_000n, null)?.entry.result).toBe('stale');
       // Nothing open: stale.
       expect(handleCommand({ id: 'x', kind: 'override', trip: `override-${DAY}-0`, at: T }, day([]), NO_LATCHES, [], T)?.entry.result).toBe('stale');
@@ -624,4 +627,46 @@ describe('owner commands through the heartbeat (worker harness)', () => {
     await h.worker.stop();
   });
 
+
+  it('/override offers are kept by time, not by count: a confirm 70 heartbeats later applies; one past the window is `old`', async () => {
+    const seam = { lost: false };
+    const mark: typeof markedHistory = (h0, held, sol, nowMs, st) => {
+      const lost = { mint: 'MintH' as never, openedAtMs: nowMs - 120_000, closedAtMs: nowMs - 60_000, notional: 3_000_000n as never, netPnl: -1_600_000n as never, stoppedOut: true };
+      return markedHistory(seam.lost ? { ...h0, closedTrades: [...h0.closedTrades, lost] } : h0, held, sol, nowMs, st);
+    };
+    const clock = { now: () => 0 };
+    const w = watchdog(() => clock.now());
+    const h = makeWorker({ markedHistory: mark, key: 'k', http: w.http });
+    clock.now = () => h.timers.now();
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    const m = await passingMarket(h);
+    const read = h.worker.feed.releasedThrough;
+    m.tradesStart(read - 100n);
+    m.accountsRead(read);
+    expect(await until(m, 40_000, () => Object.values(h.worker.book.positions).some((p) => p.status === 'open'), () => { m.slot(); m.pool(); })).toBe(true);
+    seam.lost = true;
+    await until(m, 2_000, () => false, () => { m.slot(); m.chainSwap('buy', m.chainState.baseReserve / 1_000_000n, h.worker.feed.openSlot); m.solPrice(); });
+    type Offer = { trip: string; evidence: Record<string, unknown> };
+    const beat = async (atMs: number): Promise<Offer> => {
+      h.timers.set(atMs);
+      await h.worker.heartbeat();
+      return (w.sent.at(-1)!['review'] as Record<string, Offer | null>)['override']!;
+    };
+    const confirm = async (o: Offer, atMs: number) => {
+      w.reply([{ id: `${o.trip}:${o.evidence['offer']}`, kind: 'override', trip: o.trip, offer: o.evidence['offer'] }]);
+      await beat(atMs);
+      w.reply(undefined);
+      return controlFile(h.stateDir).read(NO_CONTROL).commands?.at(-1)?.result;
+    };
+    const t0 = h.timers.now();
+    // Past the window (the 15-minute confirm window plus 5): the figures are too old.
+    const a = await beat(t0 + 1);
+    expect(await confirm(a, t0 + 1 + OFFER_KEEP_MS + 1_000)).toBe('old');
+    // 70 heartbeats a second apart after an offer (more than the 64 once kept), all inside the window: it applies.
+    const t1 = h.timers.now();
+    const b = await beat(t1 + 1_000);
+    for (let i = 2; i <= 71; i++) await beat(t1 + i * 1_000);
+    expect(await confirm(b, t1 + 72_000)).toBe('applied');
+    await h.worker.stop();
+  });
 });

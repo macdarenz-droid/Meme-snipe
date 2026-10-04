@@ -1597,7 +1597,8 @@ Part (b) of the approved design: `/override` resumes entries for the rest of the
 - **Which day loss the new line starts from (supervisor ruling, 4 Oct 2026, golden rule): never looser than the figures the owner confirmed.** Each `/override` offer carries a number (`offer`, its heartbeat's time), and the worker remembers each offer's day loss in memory. `/override` shows one offer; the watchdog records which, and the confirm names it, as its own command (`<trip>:<offer>`). When the worker applies it:
   - if the fresh, fully marked day loss is **higher** than the offer's (the day got worse since), the answer is `changed`: nothing is written, the next heartbeat offers the new figures, and the owner is told to look again;
   - if it is **equal or lower**, it is applied with the fresh figure, so the line is never above the offer's day loss plus the limit;
-  - a confirm of an offer the process never made (a restart in between) is `stale`.
+  - a confirm of an offer the process never made (a restart in between) is `stale`;
+  - offers are kept by time, not by count: for 20 minutes (the 15-minute confirm window plus a margin, capped at 2,048 offers), whatever the heartbeat rate. A confirm naming an offer older than that is `old`, and the owner is told "Not applied: those figures are too old. Send /override to see the current figures." (ops review of 0345f64).
   A confirm sent with no figures shown first is not queued.
 
 ## Growing files read whole (GROWTH-SWEEP, `runner/src/lines.ts`, `run/deployer-store.ts`, `run/booked.ts`, `runner/src/runner.ts`)

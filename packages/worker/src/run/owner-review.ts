@@ -21,11 +21,18 @@ export interface ReplyCommand {
   readonly offer?: number | null;
 }
 
-/** `changed`: an /override whose day loss grew after the offer the owner confirmed; it is offered again with the new figures. */
-export type OwnerResult = 'applied' | 'stale' | 'invalid' | 'expired' | 'changed';
+/**
+ * `changed`: an /override whose day loss grew after the offer the owner confirmed; it is offered again with the new
+ * figures. `old`: an /override naming an offer older than OFFER_KEEP_MS (its figures are too old to apply).
+ */
+export type OwnerResult = 'applied' | 'stale' | 'invalid' | 'expired' | 'changed' | 'old';
 
 /** A confirm counts for 15 minutes (ops ruling): a /rearm never applies days later on evidence the owner saw long before. */
 export const COMMAND_TTL_MS = 15 * 60_000;
+/** /override offers are kept this long (the confirm window plus a margin), whatever the heartbeat rate; older ones are `old`. */
+export const OFFER_KEEP_MS = COMMAND_TTL_MS + 5 * 60_000;
+/** A cap on the offers kept (a 1 s heartbeat for OFFER_KEEP_MS is 1,200). */
+export const OFFER_KEEP_MAX = 2048;
 
 /** A command handled, kept in control.json so a repeat is a no-op and its result is acknowledged. */
 export interface HandledCommand {
@@ -198,7 +205,10 @@ export const handleCommand = (
     // The owner confirmed one offer's figures (supervisor ruling, golden rule): never a looser line than those. An offer
     // this process did not make (a restart in between) is stale; a day that got worse since is `changed`, and the next
     // heartbeat offers it again with the new figures; otherwise the fresh figure (no worse) is used.
-    const was = c.offer === undefined || c.offer === null ? undefined : offered(c.offer);
+    const offer = c.offer ?? null;
+    const was = offer === null ? undefined : offered(offer);
+    // An offer older than the window is not kept: its figures are too old (not a trip that changed).
+    if (was === undefined && offer !== null && nowMs - offer > OFFER_KEEP_MS) return done('old');
     if (stop.override === undefined || stop.dayLoss === undefined || was === undefined) return done('stale');
     if (stop.dayLoss > was) return done('changed');
   }

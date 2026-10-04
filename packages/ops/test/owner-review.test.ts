@@ -146,6 +146,7 @@ describe('owner review commands: parsing', () => {
     expect(s.pending.map((p: PendingCommand) => p.kind)).toEqual(['review']);
     expect(settleAcks(s.pending, [{ id: `review-${R8_AT}`, result: 'stale' }]).lines).toEqual([`Refused: /review for review-${R8_AT} is no longer the current trip.`]);
     expect(settleAcks(s.pending, [{ id: `review-${R8_AT}`, result: 'invalid' }]).lines[0]).toContain('not understood');
+    expect(settleAcks(s.pending, [{ id: `review-${R8_AT}`, result: 'old' }]).lines).toEqual(['Not applied: those figures are too old. Send /review to see the current figures.']);
   });
 });
 

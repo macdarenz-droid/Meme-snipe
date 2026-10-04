@@ -41,7 +41,7 @@ import type { FactContext, FactSource } from './facts.ts';
 import { engineFeed, type EngineFeed } from './engine-feed.ts';
 import { startHealthServer } from './health.ts';
 import { type HeartbeatPosition, heartbeatBody, sendHeartbeat } from './heartbeat.ts';
-import { type HandledCommand, type OpenStops, ackedOf, type commandsOf, handleCommand, keepHandled, openStops, reviewBlock, withOverrideTag } from './owner-review.ts';
+import { OFFER_KEEP_MAX, OFFER_KEEP_MS, type HandledCommand, type OpenStops, ackedOf, type commandsOf, handleCommand, keepHandled, openStops, reviewBlock, withOverrideTag } from './owner-review.ts';
 import { Summarizer, nextSummaryDelay } from './summary.ts';
 import { jsonText } from './json.ts';
 import { Journal } from './journal.ts';
@@ -290,8 +290,9 @@ export class Worker {
   /** That valuation was fully marked at a fresh SOL price (`latchable`): only then may /override be offered or applied. */
   #lastLatchable = false;
   /**
-   * /override offers sent this process (number -> the day loss it showed), newest last; a restart forgets them. An
-   * offer's number is its heartbeat's time (ms), so one from before a restart never matches one made after it.
+   * /override offers sent this process (number -> the day loss it showed), newest last, kept for OFFER_KEEP_MS (capped);
+   * a restart forgets them. An offer's number is its heartbeat's time (ms), so one from before a restart never matches
+   * one made after it.
    */
   readonly #offers = new Map<number, bigint>();
   /** RISK-FAULT: why risk last could not value the account, while it still cannot (logged once per episode). */
@@ -1600,8 +1601,8 @@ export class Worker {
     if (stops?.override?.dayLoss !== undefined) {
       this.#offers.delete(offerAt);
       this.#offers.set(offerAt, stops.override.dayLoss);
-      for (const k of this.#offers.keys()) if (this.#offers.size > 64) this.#offers.delete(k);
     }
+    for (const k of this.#offers.keys()) if (offerAt - k > OFFER_KEEP_MS || this.#offers.size > OFFER_KEEP_MAX) this.#offers.delete(k);
     const owner = { review: stops === null ? null : reviewBlock(stops), acked: ackedOf(this.#ctl.commands ?? []) };
     const r = await sendHeartbeat(hb.http, url, hb.key, heartbeatBody(h, position, hb.ownerChatId, owner), this.#d.timers.now());
     if (!r.ok) {
