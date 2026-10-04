@@ -359,6 +359,46 @@ describe('matched strata', () => {
     expect(chosenOf(confounded)).toBeLessThanOrEqual(NULL_MAX_CHOSEN);
   }, 300_000);
 
+  // Creators that graduate on many days and in both strata (stats review of RES-5c at e7c7826): 40 creators at
+  // survival chance 0.1 or 0.6, 2 graduates a day each over 10 days, the stratum drawn per graduate; the creator features
+  // are fixed per creator and drawn apart from its chance. Blocks cut at the day × stratum cell break up a creator's
+  // consistent evidence and reject this null far too often.
+  const spanning = (seed: number, ages: readonly number[] = [60 * 60_000]): LabelledDecision[] => {
+    const u = rnd(seed);
+    const creators = Array.from({ length: 40 }, (_, c) => ({ cluster: `${seed}:c${c}`, q: u() < 0.5 ? 0.1 : 0.6, surv: u(), rugs: Math.floor(5 * u()) }));
+    const xs: LabelledDecision[] = [];
+    let i = 0;
+    for (const day of days.slice(0, 10)) {
+      for (const ageMs of ages) {
+        for (const c of creators) {
+          for (let k = 0; k < 2; k++) {
+            const stratum = `${ageMs}|${u() < 0.5 ? 'a' : 'b'}`;
+            const features = Object.fromEntries(SURVIVAL_FEATURES.map((f) => [f, f === 's_creator_surv' ? c.surv : f === 's_creator_rugs' ? c.rugs : u()])) as Record<SurvivalFeature, number>;
+            xs.push({ id: `${seed}:${i++}`, day, ageMs, stratum, cluster: c.cluster, features, survived: u() < c.q });
+          }
+        }
+      }
+    }
+    return xs;
+  };
+
+  test('creator features, creators spanning days and strata: each test rejects at about its level', () => {
+    // 200 null runs of the real test at B = 1,999: p < 0.05 at most 5% + 2 SE (SE = √(0.05·0.95/200)).
+    const runs = 200;
+    let rejected = 0;
+    for (let r = 0; r < runs; r++) {
+      const xs = spanning(5000 + r);
+      const v = xs.map((x) => x.features.s_creator_surv!).sort((a, b) => a - b);
+      const split = (v[v.length / 2 - 1]! + v[v.length / 2]!) / 2;
+      if (permutationTest(xs, 's_creator_surv', split, 1_999, r).p! < 0.05) rejected++;
+    }
+    expect(rejected / runs).toBeLessThanOrEqual(0.05 + 2 * Math.sqrt((0.05 * 0.95) / runs));
+  }, 300_000);
+
+  test('null calibration, creators spanning days and strata: a rule is chosen at most α of the time', () => {
+    expect(chosenOf((seed) => spanning(seed, [60, 240, 1440].map((m) => m * 60_000)))).toBeLessThanOrEqual(NULL_MAX_CHOSEN);
+  }, 600_000);
+
   test('creator features are tested on creator blocks: a creator effect on the feature is still found', () => {
     // The feature carries the creator's survival chance: a real creator-level signal must still pass.
     const u = rnd(41);
