@@ -8,7 +8,8 @@ The one file a new supervisor reads to take over the Zeroed build. It says what 
 - Supervisor: session_012En9L5mnYQtEz7oyp1Eryf. It read AGENTS.md, CLAUDE.md, this file, all 22 session notes and the supervisor log, and re-listed the open PRs (heads matched §4).
 - 24 new sessions were started at about 8:05 PM, one per card line, each from its predecessor's notes: 10 builders, 8 reviewers and 6 read-audit sessions (the owner asked for every file in the repo to be read; the audits cover all 2,015 tracked files in six slices and report findings only). The table is in §5.
 - Base CI was red on 456d58fe (push run 37190077658): `packages/runner/test/runner.test.ts:179`, the host-loss tabletop, `recovered_state: false`. The only change since the green 35d31f4e was HANDOVER.md, so it is the known stub write-order flake, which CI-1b #116 fixes (20e8d5f: the stub journals an exit before its state drops the position). #116 merged first, at about 8:15 PM (bf62839; check green on 80b50d1, change identical to the reviewed c5aaf88).
-- The first account's supervisor (session_01Bne9GqXR99gJn6D9U2mJFZ) pushed two docs commits after the handover (a8165aa, fff0017 at 7:59 PM). The owner was asked to pause it so only one supervisor acts.
+- The first account's supervisor (session_01Bne9GqXR99gJn6D9U2mJFZ) pushed two docs commits after the handover (a8165aa, fff0017 at 7:59 PM). The owner stopped it at about 8:42 PM.
+- **Online confirmed by the owner at about 8:42 PM** (the app shows Online): the server runs the release's paper worker from the 7:28 PM Deploy (7d5e203). It makes no practice trades yet: PRACTICE-ON sets the S0 shakedown.
 
 ## 0. Account transition (read this first)
 
@@ -132,7 +133,7 @@ The supervisor wrote this file, `PROJECT_STATE.md`, `docs/DECISIONS.md` and `doc
 | 116 | CI-1b | c5aaf88 | PASS (first account) | MERGED bf62839 (~8:15 PM) |
 | 114 | RENT-1 | 10ec76a (02d5f1d) | PASS (first account) | MERGED e5e1e78 (~8:28 PM) |
 | 121 | WATCH-1c | 26d992a | PASS (risk reviewer, 4525/4525) | needs base merge (only ops-e2e.yml and docs differ) |
-| 134 | OPS-GATE (O2) | 8c3aef3 | PASS (ops reviewer) | builder merged fff0017 at 59a8055; whichever of #134/#137 merges second re-pins install.sh; push e2e must be green before any Deploy |
+| 134 | OPS-GATE (O2) | 8c3aef3 | PASS (ops reviewer) | MERGED 47b6009 (~8:42 PM); its push `Ops end-to-end` must be green before any Deploy; #137 re-pins after it |
 | 106 | FACTS-1f | d06ebdb | PASS (first account) | |
 | 107 | EXIT-1f | ce7c78b | PASS (first account) | then the EXIT builder retargets #128 |
 | 125 | PERSIST-2 | 8f82e5d | PASS (PERSIST reviewer, 13/13 mutants) | |
