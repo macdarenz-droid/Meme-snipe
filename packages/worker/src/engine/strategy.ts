@@ -32,6 +32,7 @@ import {
 } from '../../../core/src/gates/index.ts';
 import { type BookEvent, type IntentState, isTerminal } from '../../../core/src/lifecycle/index.ts';
 import { type AccountHistory, type Latches, type Timed, evaluateEntry, evaluateExit } from '../../../core/src/risk/index.ts';
+import { type markedHistory, markSettings, riskAccount } from './marks.ts';
 import { type Bps, BPS_DENOMINATOR, type Lamports, type MicroUsd, bps, lamportsToMicroUsd, mulDiv, microUsdToLamports } from '../../../core/src/units/index.ts';
 
 export const ACCOUNT_KEY = 'worker:account';
@@ -115,6 +116,10 @@ export const NO_TAIL = 'no tail';
 /** Reason on a `shortlist` decision: the worker fetches the mint's confirmed create (live H9, H12–H14). */
 export const SHORTLIST = 'shortlist';
 export const TRIP_PREFIX = 'trip ';
+/** Reason on an exit decision: the entry controls tripped right now (they never block an exit), by code. */
+export const TRIPPED_PREFIX = 'risk tripped ';
+/** Reason on an exit decision: the position's mark risk judged it with, micro-dollars, or `unknown`. */
+export const MARK_PREFIX = 'risk mark ';
 
 /** The ledger's account as the worker publishes it. Marks of open positions are filled in by the strategy. */
 export interface AccountFact {
@@ -177,6 +182,8 @@ export interface StrategyDeps {
   readonly session: PolicySession;
   readonly rugs: RugConfig;
   readonly config: StrategyConfig;
+  /** Replaces marks.ts `markedHistory` (tests inject a failure; production never sets it). */
+  readonly markedHistory?: typeof markedHistory;
 }
 
 const NORMAL = { mayhemMode: false, transferFee: false, transferHook: false } as const;
@@ -1008,8 +1015,13 @@ export class LiveStrategy implements Strategy {
     const why = [...note, ...d.fired.map((t) => `${t.code}: ${t.detail}`)];
     if (risk !== null) {
       // Exits are never blocked; tripped controls are logged and latched.
-      const r = evaluateExit({ session: this.#d.session, mode: 'paper', clock: { now: () => ctx.now }, account: risk.history, latches: risk.latches, market: { solPrice: this.#spotSol(ctx), solBalance: this.#balance(risk, ctx), regime: 'unknown' } });
+      const sol = this.#spotSol(ctx);
+      const account = this.#marked(risk.history, ctx, sol, { fallback: true });
+      const r = evaluateExit({ session: this.#d.session, mode: 'paper', clock: { now: () => ctx.now }, account, latches: risk.latches, market: { solPrice: sol, solBalance: this.#balance(risk, ctx), regime: 'unknown' } });
       for (const t of r.trips) why.push(`${TRIP_PREFIX}${t}`);
+      const own = account.openPositions.find((o) => o.mint === mint);
+      if (own !== undefined) why.push(`${MARK_PREFIX}${own.mark ?? 'unknown'}`);
+      if (r.tripped.length > 0) why.push(`${TRIPPED_PREFIX}${[...new Set(r.tripped.map((x) => x.code))].sort().join(',')}`);
     }
     const id = intentId(`x${pid.slice(1)}:${exitSeq + 1}`);
     const events = exitBookEvents(pid, d, id);
@@ -1186,8 +1198,16 @@ export class LiveStrategy implements Strategy {
     const id = intentId(`en:${cand.mint}:${cand.tries}`);
     const rid = reservationId(`r:${cand.mint}:${cand.tries}`);
     const reserveLiq = effectiveQuoteReserve(m.pool);
+    // A failure while marking refuses this candidate (fail closed); it never stops the worker.
+    let account: AccountHistory;
+    try {
+      account = this.#marked(acct.history, ctx, sol, { fallback: false });
+    } catch (e) {
+      const detail = e instanceof Error ? e.message : 'error';
+      return this.#fail(`risk mark failed: ${detail}`, [{ gate: 'worker', code: 'risk-mark-failed', detail }]);
+    }
     const r = evaluateEntry(
-      { session, mode: 'paper', clock: { now: () => ctx.now }, account: this.#marked(acct.history, ctx, sol), latches: acct.latches, market: { solPrice: sol, solBalance: this.#balance(acct, ctx), regime: 'on' } },
+      { session, mode: 'paper', clock: { now: () => ctx.now }, account, latches: acct.latches, market: { solPrice: sol, solBalance: this.#balance(acct, ctx), regime: 'on' } },
       {
         intentId: id, reservationId: rid, mint: toMint(cand.mint), universe: c.universe, stopBps, edgePpm: c.edgePpm, medianTargetBps: c.medianTargetBps,
         quote: quoter, quoteAtMs: m.atMs, poolLiquidity: lamportsToMicroUsd((reserveLiq * 2n) as Lamports, sol.value, 'floor'), network: c.network, rent: { ...c.rent, oneTime: acct.oneTimeRent },
@@ -1212,16 +1232,14 @@ export class LiveStrategy implements Strategy {
     return null;
   }
 
-  /** The account with each open position's mark: its liquidation value now, or null (risk counts it as a total loss). */
-  #marked(h: AccountHistory, ctx: StrategyContext, sol: Timed<MicroUsd>): AccountHistory {
-    const openPositions = h.openPositions.map((o) => {
-      const p = Object.values(ctx.book.positions).find((x) => x.mint === o.mint && x.status !== 'closed');
-      const m = this.#market(ctx, o.mint);
-      if (p === undefined || typeof m === 'string' || p.quantity <= 0n) return o;
-      const q = poolSell(m.pool, p.quantity, m.ctx);
-      return q.ok ? { ...o, mark: lamportsToMicroUsd(q.trade.userQuote as Lamports, sol.value, 'floor'), markAtMs: m.atMs } : o;
-    });
-    return { ...h, openPositions };
+  /** The account risk judges: each open position at its executable mark now, or null when it cannot be (marks.ts). */
+  #marked(h: AccountHistory, ctx: StrategyContext, sol: Timed<MicroUsd> | null, o: { readonly fallback: boolean }): AccountHistory {
+    return riskAccount(h, (mint) => {
+      const p = Object.values(ctx.book.positions).find((x) => x.mint === mint && x.status !== 'closed');
+      if (p === undefined) return undefined;
+      const m = this.#market(ctx, mint);
+      return { quantity: p.quantity, market: typeof m === 'string' ? null : m };
+    }, sol, ctx.now.receivedAt, markSettings(this.#d.session.policy, this.#d.config.network), { ...o, ...(this.#d.markedHistory === undefined ? {} : { mark: this.#d.markedHistory }) });
   }
 }
 
