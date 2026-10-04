@@ -104,6 +104,8 @@ export class RpcStream {
   readonly #watches = new Map<number, Watch>();
   /** POOL-1: told when a watch stops delivering without its owner asking (dropped at the halt, or refused). */
   readonly #dropped: ((id: number, reason: 'halted' | 'refused') => void)[] = [];
+  /** Told when the server accepts a watch's subscription (POOL-1: a refused watch's wait starts over once served). */
+  readonly #served: ((id: number) => void)[] = [];
   #nextId = 1;
   #lastSlot: bigint | null = null;
   #gapFrom: bigint | null = null;
@@ -218,6 +220,11 @@ export class RpcStream {
     this.#dropped.push(fn);
   }
 
+  /** `fn` hears of every watch whose subscription the server accepted (on each connection). */
+  onServed(fn: (id: number) => void): void {
+    this.#served.push(fn);
+  }
+
   /**
    * Moves a logs watch to another priority in place: the subscription and its coverage go on, with no gap (POS-1: a
    * pool that becomes held keeps its trade stream). Returns false for an unknown or non-logs watch. Raising a watch is
@@ -257,6 +264,7 @@ export class RpcStream {
         for (const fn of this.#dropped) fn(id, 'refused');
       },
       onSubscribed: () => {
+        for (const fn of this.#served) fn(id);
         if (w.kind !== 'logs') return;
         w.acked = true;
         if (!w.started && w.opts.coverage !== undefined) {
