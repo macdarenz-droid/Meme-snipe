@@ -44,7 +44,7 @@ import { type PaperMarket, type PaperState, PaperWorld, type SimLeg } from './pa
 import { Recorder, sealLeftovers } from './recorder.ts';
 import { entryPrice, openPositionsHealth } from './open-positions.ts';
 import { type RiskInput, evaluateExit, riskSnapshot } from '../../../core/src/risk/index.ts';
-import { markSettings, riskAccount } from '../engine/marks.ts';
+import { latchable, markSettings, riskAccount } from '../engine/marks.ts';
 import type { DeployerIndexState, RugLabellerState } from '../../../core/src/gates/index.ts';
 import { loadState, saveState } from '../persist/index.ts';
 
@@ -683,15 +683,18 @@ export class Worker {
     };
     const snapshot = riskSnapshot(input);
     if (snapshot === null) return;
-    // RISK-LATCH: an account-level trip (R9, R10) seen on this valuation is latched now, whether or not an entry or an
-    // exit is being evaluated, so a breach that recovers before the next one still holds until the owner reviews it.
-    const trips = evaluateExit(input).trips;
-    if (trips.length > 0) {
-      this.#d.log(`Risk tripped on the account valuation: ${[...trips].sort().join(', ')} (equity ${snapshot.equity}, NAV ${snapshot.nav ?? 'unknown'}).`);
-      this.#latch(trips, now);
-    }
     const maxAge = policy.gates.maxQuoteAgeMs;
     const marked = account.openPositions.every((o) => o.mark !== null && o.markAtMs !== null && o.markAtMs <= now && now - o.markAtMs <= maxAge);
+    // RISK-LATCH: an account-level trip (R9, R10) seen on this valuation is latched now, whether or not an entry or an
+    // exit is being evaluated, so a breach that recovers before the next one still holds until the owner reviews it.
+    // Only a fully marked valuation at a fresh SOL price latches: an unknown mark is a stand-in loss, not a breach.
+    if (latchable(account, sol, now, maxAge)) {
+      const trips = evaluateExit(input).trips;
+      if (trips.length > 0) {
+        this.#d.log(`Risk tripped on the account valuation: ${[...trips].sort().join(', ')} (equity ${snapshot.equity}, NAV ${snapshot.nav ?? 'unknown'}).`);
+        this.#latch(trips, now);
+      }
+    }
     const day = this.#account.state.dayMark?.startMs;
     if (this.#account.mark(snapshot, marked, this.#ctl.latches.killRearmedAtMs, now)) {
       if (day !== this.#account.state.dayMark?.startMs) this.#d.log(`Account marks: equity ${snapshot.equity} at ${new Date(now).toISOString()} for the Melbourne day from ${new Date(snapshot.dayStartMs).toISOString()}.`);
