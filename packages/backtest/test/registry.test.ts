@@ -97,7 +97,7 @@ describe('study holdouts through the one registry', () => {
     expect(() => recordTrials(none, [t('U2')])).toThrow(/set the plan/);
     const a = fresh();
     recordTrials(a, [t('U2')]);
-    recordTrials(a, [t('U2'), t('U1')]);
+    recordTrials(a, [t('U2'), t('U1'), t('U1')]);
     expect(readHoldoutStore(a.registryPath).trials!.map((x) => x.trialId)).toEqual(['U2-c', 'U1-c']);
     // A plan that binds RES-4's family refuses a trial outside it, and keeps the log unchanged.
     const f = { registryPath: join(dir, `t${n++}.json`), codeCommit: 'c', datasetId: 'd' };

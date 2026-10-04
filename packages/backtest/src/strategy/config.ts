@@ -119,6 +119,11 @@ export interface StudyConfig {
    * is merged and pinned. The study reads only a file with this hash.
    */
   readonly preregistration: { readonly path: string; readonly sha256: string | null };
+  /**
+   * The SPA test over RES-4's family on the practice days (src/study/select.ts): ω floor as a share of the capital base
+   * per day, replicates and level. Proposed by BT-2 (no floor was registered with STATS-1c), for the stats review.
+   */
+  readonly spa: { readonly seFloor: number; readonly replicates: number; readonly alpha: number };
   /** S0 seeds for G1 (walk-forward) and G2 (holdout, §14: >= 200). */
   readonly s0SeedsWalkForward: number;
   readonly s0SeedsHoldout: number;
@@ -164,6 +169,7 @@ const VALUES: StudyConfig = {
   holdoutAttempt: 1,
   tieSalt: 'study-1-ties-2026-10-04',
   preregistration: { path: 'research/edge/preregistration.json', sha256: null },
+  spa: { seFloor: 0.0005, replicates: 2000, alpha: 0.05 },
   s0SeedsWalkForward: 20,
   s0SeedsHoldout: 200,
 };

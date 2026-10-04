@@ -195,7 +195,8 @@ export const recordTrials = (a: HoldoutAuthority, trials: readonly StoredTrial[]
     const outside = family === null ? [] : trials.filter((t) => !family.ids.includes(t.tag)).map((t) => t.tag);
     if (outside.length > 0) throw new RangeError(`trials ${outside.join(', ')} are not in the pre-registered family (${family!.ids.join(', ')}): a new variant needs a new holdout window`);
     const have = s.trials ?? [];
-    const add = trials.filter((t) => !have.some((x) => x.trialId === t.trialId));
+    // The first record of a trial id stands, whether already stored or earlier in this batch.
+    const add = trials.filter((t, k) => !have.some((x) => x.trialId === t.trialId) && trials.findIndex((x) => x.trialId === t.trialId) === k);
     const store = add.length === 0 ? s : { ...s, trials: [...have, ...add] };
     return { store, value: store };
   });

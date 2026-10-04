@@ -186,6 +186,21 @@ describe('BT-2 study', () => {
     expect(existsSync(join(dir, 'prereg.json'))).toBe(false);
   });
 
+  it('with RES-4\'s family: every hypothesis on its own replay and in the experiment registry; on 2 practice days the SPA picks none, so nothing is registered', () => {
+    const [u1, u2] = config.universes;
+    const fam = { sha256: 'f'.repeat(64), hypotheses: [{ ...u1!, id: 'H1-U1' }, { ...u2!, id: 'H4-U2' }, { ...u2!, id: 'H5-U2', medianTargetBps: u2!.medianTargetBps + 1 }] };
+    const cfg = { ...config, universes: [fam.hypotheses[0]!, fam.hypotheses[1]!] };
+    const r = runFullStudy(inputs({ config: cfg, preregistration: fam, holdout: authority('family.json'), regimeGate: 'evaluate' }));
+    expect(r.family!.panel.map((v) => v.variant)).toEqual(['H1-U1', 'H4-U2', 'H5-U2']);
+    expect(r.family!.selection).toMatchObject({ byUniverse: { U1: null, U2: null }, spa: null });
+    const reg = storeAt('family.json');
+    expect(reg.plan!.details['preregistration']).toEqual({ sha256: fam.sha256, ids: ['H1-U1', 'H4-U2', 'H5-U2'] });
+    expect(reg.trials!.map((t) => t.tag).sort()).toEqual(['H1-U1', 'H4-U2', 'H5-U2']);
+    expect(reg.attempts).toEqual([]);
+    expect(r.gates.G2.reasons.join(' ')).toMatch(/not the SPA pick for U2 \(\d+ practice days on the calendar: the SPA test needs at least 10\)/);
+    expect(() => runFullStudy(inputs({ config: cfg, preregistration: fam, holdout: authority('family.json'), regimeGate: 'evaluate', runHoldout: true }))).toThrow(/no configuration is the SPA pick/);
+  });
+
   it('a second holdout run into a new file is refused and logged; the sealed holdout is untouched', () => {
     const before = storeAt();
     expect(() => runSealedHoldout(authority(), join(dir, 'again.db'), {

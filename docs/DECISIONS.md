@@ -852,6 +852,18 @@ Supervisor rulings:
   Curve volume waits for FACTS-1d's core `parseVolumeHoursCsv` (#78) and DATA-1c's `volume-hours` assets. SOL/USD uses the existing hourly series. Until volume exists, the regime reads "unknown" and real-day counts run in the labelled assume-on mode. The synthetic CreatePoolEvent gained `pool_base_amount` and `pool_quote_amount`, as the real event carries them. Test: `test/facts.test.ts`.
 ## External review of the promotion gates (STATS-1b)
 
+- **2026-10-04 · RES-4's family through one SPA test, at most one pick per universe (supervisor ruling (b), (c); two choices for the stats review, 01FHfb).**
+  - Inputs: on the practice days every pre-registered hypothesis runs on its own deployment replay (one account, its limits), and S0 runs per universe under the same rules. Each has a daily net P&L over the fixed capital base, on the walk-forward's Melbourne calendar.
+  - The test: STATS-1c's joint SPA test runs once over all hypotheses (k = 6), each against zero and against its own universe's S0. Core `spaTest` gained an optional per-variant benchmark (`s0Of`): with every variant on one S0 the result is identical (test). S0's series is the mean of its seeds. Blocks stay within market regimes.
+  - Pick rule (proposed): per universe, among the hypotheses that pass at every block length, the highest statistic against S0, with ties broken by file order. If none passes, that universe gets no holdout configuration.
+  - Holdout set: only universes whose studied configuration is the pick register. The Holm family stays the universes (2), so α is unchanged. With no pick the holdout refuses to run.
+  - Trials: every hypothesis's replay is a trial in the experiment registry.
+  - SE floor (proposed): STATS-1c registered no SE floor, so BT-2 proposes 0.0005 of the capital base per day (`STUDY_CONFIG.spa`, with 2,000 replicates at α 0.05), to be confirmed by the stats review before any practice-day result is read.
+
+  Tests:
+  - `core/test/stats-math.test.ts` (per-variant S0);
+  - `test/select.test.ts` (pick and too few days);
+  - `test/full-study.test.ts` (family replays and trials; no pick on 2 days, so nothing registered and the holdout refused).
 - **2026-10-04 · BT-2e early look (owner request via the supervisor).** `cli.ts early` (`src/study/early.ts`) runs the same engine, gates and as-of guards on one or two practice days from DATA-2's free reader, U2 only (U1 needs a 14-day lead-in).
   - Configurations: BT-2's U2 and RES-4's U2 hypotheses, each on its own run (one configuration per universe per run), with S0 pooled over its seeds. It uses whatever lead-in the dataset holds; checks without history abstain as not covered.
   - Report per day, labelled "early look, not proof":
