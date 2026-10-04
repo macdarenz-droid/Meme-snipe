@@ -7,8 +7,8 @@ import type { ScoredTrade } from './score.ts';
 export interface HoldoutSummary {
   /** The estimand of `holdout` and `lower` (S2): the net return capped at +300%. G3 refuses any other. */
   readonly estimand: typeof CAPPED_ESTIMAND;
-  /** n, and the mean and sd of the capped net return. */
-  readonly holdout: { readonly n: number; readonly mean: number; readonly sd: number };
+  /** n, and the mean and sd of the capped net return, tagged (G3's `holdout` input as is). */
+  readonly holdout: { readonly n: number; readonly mean: number; readonly sd: number; readonly estimand: typeof CAPPED_ESTIMAND };
   /** Trades whose net return the estimand capped (rNet > 3), and those below RETURN_FLOOR (G3 fails on any). */
   readonly cappedCount: number;
   readonly belowFloorCount: number;
@@ -79,7 +79,7 @@ export const holdoutSummary = (trades: readonly ScoredTrade[], candidates: numbe
   const lower = dayBlockMeanInterval(capped, HOLDOUT_LOWER_LEVEL, 'lower', { rng: createRng(seed), ...(replicates === undefined ? {} : { replicates }) });
   return {
     estimand: CAPPED_ESTIMAND,
-    holdout: { n: trades.length, mean: mean(r), sd: sd(r) },
+    holdout: { n: trades.length, mean: mean(r), sd: sd(r), estimand: CAPPED_ESTIMAND },
     cappedCount: trades.filter((t) => t.rNet > MAX_RETURN_CAP).length,
     belowFloorCount: trades.filter((t) => t.rNet < RETURN_FLOOR).length,
     severeRate: trades.filter((t) => t.ySevere).length / trades.length,

@@ -684,8 +684,8 @@ export interface G3Input {
   readonly dryRunHours: number;
   /** Net returns of the dry-run paper trades (the candidates live kept). */
   readonly dryRunReturns: readonly number[];
-  /** The backtest holdout the dry run is compared with. */
-  readonly holdout: SampleSummary;
+  /** The backtest holdout the dry run is compared with: n, and the mean and sd of the estimand it is tagged with. */
+  readonly holdout: SampleSummary & { readonly estimand: string };
   /** The holdout's share of severe outcomes (`y_severe`: blocked, or a net return of −50% or worse). */
   readonly holdoutSevereRate: number;
   /** The agreement plan, registered before the run started. */
@@ -794,8 +794,8 @@ export const fisherGreater = (a: number, n1: number, b: number, n2: number): num
 };
 export const VETO_COMPOSITE_LEVEL = 1 - VETO_COMPOSITE_ALPHA;
 /**
- * The capped holdout bound's level (S2, ruling C6): one-sided 1 − α/4, stricter than the other components' α/3, so the
- * composite holds with at least 95% (α/3 + α/3 + α/4 < α). STATS-1g (#129) re-splits G3's α budget into quarters.
+ * The capped holdout bound's level (S2, ruling C6): one-sided 1 − α/4. Until STATS-1g (#129) merges the composite's
+ * joint coverage is not established (the fill bound is still at 95%); after it all four parts are at α/4.
  */
 export const HOLDOUT_LOWER_ALPHA = 0.05 / 4;
 export const HOLDOUT_LOWER_LEVEL = 1 - HOLDOUT_LOWER_ALPHA;
@@ -889,8 +889,8 @@ export const gateG3 = (input: G3Input, overrides?: Partial<typeof G3_DEFAULTS>):
   const keptCapped = input.dryRunReturns.filter((x) => x > MAX_RETURN_CAP).length;
   metrics.keptCapped = keptCapped;
   metrics.holdoutCapped = input.holdoutCapped;
-  const estimandOk = input.holdoutLower.estimand === CAPPED_ESTIMAND;
-  c.add('estimand', estimandOk, `holdout bound on "${input.holdoutLower.estimand}" (need "${CAPPED_ESTIMAND}")`);
+  const estimandOk = input.holdoutLower.estimand === CAPPED_ESTIMAND && input.holdout.estimand === CAPPED_ESTIMAND;
+  c.add('estimand', estimandOk, `holdout summary on "${input.holdout.estimand}", holdout bound on "${input.holdoutLower.estimand}" (need "${CAPPED_ESTIMAND}" for both)`);
   const floorHits = [...input.dryRunReturns, ...input.vetoCounterfactuals.returns].filter((x) => x < RETURN_FLOOR).length + input.holdoutBelowFloor;
   c.add('return floor', floorHits === 0, `${floorHits} returns below the floor ${RETURN_FLOOR} (dry run, vetoed, holdout; need 0: the estimand's range is [${RETURN_FLOOR}, ${MAX_RETURN_CAP}])`);
   if (m >= th.minPaperTradesForMean) {

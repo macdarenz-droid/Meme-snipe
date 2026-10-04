@@ -522,7 +522,7 @@ describe('G2 cluster sensitivity (STATS-1b)', () => {
 const dry = bracketTrades(41, 0.1, 2, 30).map((t) => t.rNet);
 const g3Pass: G3Input = {
   qualifyingRun: true, liveOnlyVetoes: { vetoed: 20, eligible: 1000 }, dryRunHours: 49, dryRunReturns: dry,
-  holdout: { n: holdout.length, mean: mean(holdout.map((t) => t.rNet)), sd: sd(holdout.map((t) => t.rNet)) },
+  holdout: { n: holdout.length, mean: mean(holdout.map((t) => t.rNet)), sd: sd(holdout.map((t) => t.rNet)), estimand: CAPPED_ESTIMAND },
   candidates: { dryRunCount: 980, dryRunHours: 49, backtestCount: 20_000, backtestHours: 1000 },
   rejectMix: { dryRun: { H8: 210, H9: 700, H11: 70 }, backtest: { H8: 4300, H9: 14_200, H11: 1500 } },
   fillDifferences: Array.from({ length: 24 }, (_, i) => [0.001, 0.002, 0.004, 0.003, 0.012, -0.002][i % 6]!), parityTestPassed: true,
@@ -621,7 +621,7 @@ describe('G3 live dry-run consistency', () => {
     const shift = -0.01 - mean(kept);
     return {
       ...g3Pass, dryRunReturns: kept.map((x) => x + shift), liveOnlyVetoes: { vetoed: 100, eligible: 1000 },
-      holdout: { n: 500, mean: 0.05, sd: 0.33 }, holdoutLower: { value: 0.02, level: HOLDOUT_LOWER_LEVEL, estimand: CAPPED_ESTIMAND }, vetoCounterfactuals: { returns: [], censored: 0 }, ...over,
+      holdout: { n: 500, mean: 0.05, sd: 0.33, estimand: CAPPED_ESTIMAND }, holdoutLower: { value: 0.02, level: HOLDOUT_LOWER_LEVEL, estimand: CAPPED_ESTIMAND }, vetoCounterfactuals: { returns: [], censored: 0 }, ...over,
     };
   };
   test('the reviewer\'s case does not pass: with no vetoed candidate scored the dry run is extended', () => {
@@ -742,6 +742,10 @@ describe('G3 live dry-run consistency', () => {
   });
 
   test('C6: the holdout bound must be the capped estimand\'s, and no return may sit below RETURN_FLOOR', () => {
+    // The holdout summary as a whole carries the tag too: its mean and sd must be the capped ones.
+    const wholeWrong = gateG3({ ...g3Pass, holdout: { ...g3Pass.holdout, estimand: 'net' } });
+    expect(wholeWrong.status).toBe('fail');
+    expect(wholeWrong.reasons.join()).toMatch(/estimand: .*holdout summary on "net"/);
     const wrong = gateG3({ ...g3Pass, holdoutLower: { ...g3Pass.holdoutLower, estimand: 'net' } });
     expect(wrong.status).toBe('fail');
     expect(wrong.reasons.join()).toMatch(/estimand: .*net, capped at \+300%/);

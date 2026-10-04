@@ -52,6 +52,7 @@ describe('holdout summary', () => {
     const s = holdoutSummary(trades, 120, 672, {}, 1, 200);
     const capped = trades.map((x) => ({ ...x, rNet: Math.min(x.rNet, 3) }));
     expect(s.estimand).toBe(CAPPED_ESTIMAND);
+    expect(s.holdout.estimand).toBe(CAPPED_ESTIMAND);
     expect(s.holdout.mean).toBeCloseTo(mean(capped.map((x) => x.rNet)), 12);
     expect(s.cappedCount).toBe(2);
     expect(s.belowFloorCount).toBe(0);
