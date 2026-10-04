@@ -1652,14 +1652,19 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
 - **2026-10-05 · The bug (found by the persist builder testing #170; blocking, golden rule).** S0-ZERO put a fill's transactions, and the live notices held back during it, off-chain at the open slot (`after`). A fill ingests them all at one receipt time, so they tie on the moment, and same-moment events are released in id order. Their ids start with the signature, so a catch-up reached the engine in signature order, and the socket's `resume` (a `coverage:` id) came before it.
   - Through the real producer on real mainnet swaps, the candles came out different from the chain-order candles (wrong open and close) even inside one minute.
   - Across minutes, a trade older than the newest candle marks them partial for good, so H11 kept refusing after every catch-up.
-- **2026-10-05 · The fix.**
-  - The feed records an `after` frame's placement as `{ at: 'offchain', slot, after: true }`. Its events take `ixIndex` 1 + the frame's seq instead of OFF_CHAIN.
-  - They sit after the slot's notice (`ixIndex` 0) and before the slot's ordinary off-chain facts (OFF_CHAIN, so the `resume` comes after), and among themselves in arrival order: the fill oldest first, then the held notices.
+- **2026-10-05 · The fix: off-chain frames keep arrival order.**
+  - The live feed records every off-chain placement as `{ at: 'offchain', slot, arrival: true }`, and such a frame's events take `ixIndex` 1 + the frame's seq instead of OFF_CHAIN. They sit after the slot's notice (`ixIndex` 0), in arrival order.
+  - Receipt times never decrease with seq, so this only changes ties that id order used to settle. A fill (oldest first), the live notices held during it, and the `resume` after them now keep the order the socket gave them.
   - Event ids are unchanged, so every reader of `ev:<signature>` ids (rug labeller, deployer index, tails, the fill's own genesis check) is untouched.
-  - The flag is recorded with the frame, so a replay rebuilds the same order. Recordings without it behave as before.
-- **2026-10-05 · Side effect, judged harmless.** An ordinary off-chain fact ingested earlier in the same open slot (the catch-up's gap-open fact, when the slot has not moved during the fill) now sorts after the fill's trades. Trades and coverage are separate keys, and H11 is read on a later evaluation.
+  - The flag is recorded with the frame, so a replay rebuilds the same order. Recordings made before it carry no flag and replay exactly as they did.
+- **2026-10-05 · Why not a lane for `after` frames only (the first version, 741ae5b).** That lane put a fill's trades ahead of every ordinary off-chain fact of their slot. On a reconnect the socket's gap-open fact sits in the same open slot as the fill, because no slot notices arrive while it is down. An evaluation at a fill trade would then see no gap, and H11 could pass on candles still being filled: fail-open. Arrival order keeps the gap first. The test `a reconnect gap opened in the same slot as its fill` fails on the lane version.
+- **2026-10-05 · What else moved (only same-millisecond ties).** The account fact the worker publishes after booking a fill used to sort before the fill's own report (`worker:account` < `world` by id), so the strategy saw the post-fill account before the fill. It now comes after the fill, and the exit plan is made on it in the fill's own step.
+  - Four EXIT-1h tests relied on the old order to stop between a fill and its plan. They now build that kill's disk state directly: the seed saved and the plan taken off. Their restart assertions are unchanged.
+  - The parity test that cut a recording short now cuts at the last live decision's event, not at a fixed 40 releases.
 - **2026-10-05 · Evidence.** `packages/worker/test/fill-order.test.ts`, through the real LiveFeed and FactProducer on the FACTS-1 fixture swaps (whose chain order differs from their signature order, checked):
   - the release order and the resume after it;
   - the candles equal to the chain-order candles, not partial, and H11 passing;
-  - the lane between the notice and the ordinary facts, in arrival order.
-  - Three tests fail before the fix. Five hand mutants are caught: the lane ignored, reversed, collapsed to one index, or moved to OFF_CHAIN, and the flag not set.
+  - arrival order after the notice, with a fact ingested before the fill staying before it;
+  - a reconnect gap in the fill's slot keeping H11 refusing at every fill trade until the resume;
+  - a pre-change frame keeping its old moment and ids.
+  - Three tests fail before the fix, and two on the first version. Five hand mutants are caught: the lane-only first version, the flag never set, the order reversed, collapsed to one index, or applied to old recordings.
