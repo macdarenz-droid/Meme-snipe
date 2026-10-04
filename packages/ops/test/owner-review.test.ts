@@ -126,6 +126,10 @@ describe('owner review commands: parsing', () => {
     expect(o).toContain('The weekly loss, the kill switch and the loss review still apply.');
     expect(o).toContain(`/override confirm override-${DAY}-1`);
     expect(stopText('override', null)).toBe('Day stop (R7, R8 streak): not tripped.');
+    // A streak alone, and the daily loss alone: each names only what tripped.
+    const only = (e: object) => stopText('override', reviewOf(hb({ review: { override: { ...OVERRIDE, evidence: { ...OVERRIDE.evidence, ...e } } } })).override);
+    expect(only({ daily: 0, streak: 3 }).split('\n')[0]).toBe('Day stop (R7, R8 streak): 3 losses in a row. Day loss 0.016 SOL (daily limit 0.015 SOL). Overrides today: 1.');
+    expect(only({ daily: 1, streak: 0 }).split('\n')[0]).toBe('Day stop (R7, R8 streak): daily loss. Day loss 0.016 SOL (daily limit 0.015 SOL). Overrides today: 1.');
   });
 
   it('queues a confirm only for the trip open for that command, one per command; acks settle each once', () => {
