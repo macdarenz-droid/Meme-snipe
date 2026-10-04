@@ -14,7 +14,7 @@ export const tradesStream = (pool: string): string => `trades:${pool}`;
 export const REFUSED_RETRY_MS = { first: 2_000, most: 60_000 } as const;
 
 export interface PoolWatchOptions {
-  readonly stream: Pick<RpcStream, 'watchLogs' | 'unwatch' | 'setPriority'> & Partial<Pick<RpcStream, 'onDropped'>>;
+  readonly stream: Pick<RpcStream, 'watchLogs' | 'unwatch' | 'setPriority'> & Partial<Pick<RpcStream, 'onDropped' | 'onServed'>>;
   readonly timers: Timers;
   readonly pools: () => ReadonlyMap<string, { readonly mint: string; readonly held: boolean }>;
   readonly everyMs: number;
@@ -31,6 +31,11 @@ export class PoolWatch {
   constructor(o: PoolWatchOptions) {
     this.#o = o;
     o.stream.onDropped?.((id, reason) => this.#dropped(id, reason));
+    // Served again: a later refusal waits the first 2 s, not the doubled wait of an earlier spell (POOL-1 review).
+    o.stream.onServed?.((id) => {
+      const pool = [...this.#watching].find(([, w]) => w.id === id)?.[0];
+      if (pool !== undefined) this.#retry.delete(pool);
+    });
   }
 
   #dropped(id: number, reason: 'halted' | 'refused'): void {

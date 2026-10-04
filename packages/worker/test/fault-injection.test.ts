@@ -23,7 +23,8 @@ import type { WatchRead } from '../src/run/watch.ts';
 import { SLOT_MS, parseConfig } from '../src/run/config.ts';
 import { DEFAULT_LIVE_FEED } from '../src/providers/live-feed.ts';
 import { SECOND_PATH_UNAVAILABLE } from '../src/run/worker.ts';
-import { parsePool, xcheckKey } from '../../core/src/gates/index.ts';
+import { gatesOfStages, parsePool, xcheckKey } from '../../core/src/gates/index.ts';
+import { NOT_EVALUATED } from '../src/engine/strategy.ts';
 
 type H = ReturnType<typeof makeWorker>;
 const journal = (dir: string) => readFileSync(join(dir, 'journal.jsonl'), 'utf8');
@@ -355,10 +356,12 @@ describe('§18: a provider rate-limits (TEST-3)', () => {
     expect(Object.values(h.worker.book.positions)).toEqual([]);
     // Not a global halt: no halt reason names the provider; the gate says which fact is missing.
     expect(h.worker.health().halt_reasons).toEqual([]);
-    // From T on (every other fact passing), each reject names only the cross-check, missing.
+    // From T on (every other fact passing), each reject names only the cross-check, missing; the cross-check is a stage-2
+    // gate, so stages 3 and 4 are named as not evaluated (FACTS-1f, BT-2's stages).
+    const later = `; ${NOT_EVALUATED}${gatesOfStages([3, 4]).join(',')}`;
     const rejects = kinds(h.stateDir, 'decision').filter((l) => l['action'] === 'reject' && Date.parse(String(l['ts'])) >= T).map((l) => (l['reasons'] as string[]).slice(3));
     expect(rejects.length).toBeGreaterThan(0);
-    for (const r of rejects) expect(r).toEqual([expect.stringMatching(/^hard reject H16: H16 missing no xcheck as of slot \d+$/)]);
+    for (const r of rejects) expect(r).toEqual([expect.stringMatching(new RegExp(`^hard reject H16: H16 missing no xcheck as of slot \\d+${later}$`))]);
     await h.worker.stop();
   }, 60_000);
 });
