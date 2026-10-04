@@ -42,7 +42,7 @@ import { Journal } from './journal.ts';
 import { type PaperMarket, type PaperState, PaperWorld, type SimLeg } from './paper-world.ts';
 import { Recorder, sealLeftovers } from './recorder.ts';
 import { type Control, NO_CONTROL, StateFile, controlFile, exitsFile, exposedFile, NO_EXPOSED } from './state.ts';
-import { parsePool } from '../../../core/src/gates/index.ts';
+import { type PoolFact, parsePool } from '../../../core/src/gates/index.ts';
 import { type PoolFeeContext, poolSell } from '../../../core/src/amm/index.ts';
 
 /** One live source the worker runs (a provider stream). Its name is a health feed name, fixed for the whole run. */
@@ -463,8 +463,19 @@ export class Worker {
     return this.#facts.released();
   }
 
-  poolOf(mint: string): { readonly address: string; readonly state: PaperMarket['pool']; readonly ctx: PoolFeeContext } | null {
+  /** The latest pool fact of a mint as released (flagged or not), for health and tests. */
+  poolFact(mint: string): unknown {
+    return this.#pools.get(mint);
+  }
+
+  /** The latest pool fact of a mint, or null when there is none or it is flagged (POS-1: stale swap stream). */
+  #usablePool(mint: string): PoolFact | null {
     const p = parsePool(this.#pools.get(mint));
+    return p === null || p.obs.quality.some((q) => q !== 'backfilled' && q !== 'deduplicated') ? null : p;
+  }
+
+  poolOf(mint: string): { readonly address: string; readonly state: PaperMarket['pool']; readonly ctx: PoolFeeContext } | null {
+    const p = this.#usablePool(mint);
     const ctx = this.#fees.get(mint) ?? this.#strategy.observedFees(mint);
     if (p === null || ctx === undefined) return null;
     return { address: p.address, state: { baseReserve: p.baseVault, quoteVault: p.quoteVault, virtualQuoteReserves: p.pool.virtualQuoteReserves ?? 0n }, ctx };
@@ -491,7 +502,7 @@ export class Worker {
   }
 
   #paperMarket(mint: string): PaperMarket | null {
-    const p = parsePool(this.#pools.get(mint));
+    const p = this.#usablePool(mint);
     const ctx = this.#fees.get(mint) ?? this.#strategy.observedFees(mint);
     if (p === null || ctx === undefined) return null;
     return { pool: { baseReserve: p.baseVault, quoteVault: p.quoteVault, virtualQuoteReserves: p.pool.virtualQuoteReserves ?? 0n }, ctx };

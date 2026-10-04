@@ -20,6 +20,10 @@ import {
 import { EXEC_HEALTH_KEY, TX_CREATE_PREFIX, holdersKey, lpKey, migrationKey, poolKey, simKey, softKey, streamKey, xcheckKey, type FactObs } from '../../core/src/gates/index.ts';
 import { SOL_PRICE_KEY, feesKey } from '../src/engine/strategy.ts';
 import { type MicroUsd, microUsdToLamports } from '../../core/src/units/index.ts';
+import type { PoolState } from '../../core/src/amm/index.ts';
+import { RAW, STREAMS } from '../../core/src/facts/index.ts';
+import { account } from '../../core/test/gates/world.ts';
+import { swapLog } from '../../core/test/facts/swaps.ts';
 
 /** Virtual time: a wait moves the clock by its length and resolves on the next turn of the event loop. */
 /** The timers a test drives: it moves the clock. */
@@ -207,9 +211,17 @@ export class Market {
   #swaps = 0;
   /** Publish the fee-context fact with each pool read (off: the strategy takes the terms of the latest swap). */
   withFees = true;
+  /**
+   * Test-only switch: keep publishing the pool fact with `pool()` while a position on the mint is held. Off by
+   * default, as live (POS-1): after entry nothing re-reads the pool, and its state moves only with `chainSwap`.
+   */
+  heldPoolFacts = false;
+  /** The pool's reserves as the last `accountsRead` or `chainSwap` left them. */
+  #chain: PoolState | null = null;
 
-  constructor(h: Harness) {
+  constructor(h: Harness, o: { readonly heldPoolFacts?: boolean } = {}) {
     this.#h = h;
+    this.heldPoolFacts = o.heldPoolFacts ?? false;
   }
 
   get now(): number {
@@ -245,7 +257,7 @@ export class Market {
       return { ...v, obs: { ...v.obs, slot: v.obs.slot === null ? null : slot, receivedAt: this.now - 50, ...over } };
     };
     const base = now(poolKey(MINT)) as unknown as Record<string, unknown>;
-    this.fact(poolKey(MINT), { ...base, quoteVault: ((base['quoteVault'] as bigint) * quoteScalePpm) / 1_000_000n });
+    if (this.heldPoolFacts || !this.held()) this.fact(poolKey(MINT), { ...base, quoteVault: ((base['quoteVault'] as bigint) * quoteScalePpm) / 1_000_000n });
     if (this.withFees) this.fact(feesKey(MINT), FEE_CONTEXT);
     this.fact(SOL_PRICE_KEY, { value: SOL_PRICE, atMs: this.now - 50 });
     for (const k of [lpKey(MINT), holdersKey(MINT), softKey(MINT), xcheckKey(MINT), EXEC_HEALTH_KEY]) this.fact(k, now(k));
@@ -256,6 +268,52 @@ export class Market {
     this.fact(simKey(MINT), { ...now(simKey(MINT)), spend, paid: q.trade.paid, proceeds: q.trade.proceeds });
     const stream = facts.get(streamKey('chain'))!.value as { obs: FactObs; gapFreeSince: bigint };
     this.fact(streamKey('chain'), { ...stream, obs: { ...stream.obs, slot, receivedAt: this.now - 50 } });
+  }
+
+  /** A position on the passing mint is open or closing. */
+  held(): boolean {
+    return Object.values(this.#h.worker.book.positions).some((p) => String(p.mint) === MINT && p.status !== 'closed');
+  }
+
+  /** The pool's trade stream starts (the confirmed logs watch on the pool, FACTS-1 STREAMS.trades), from `fromSlot`. */
+  tradesStart(fromSlot: bigint): void {
+    this.offchain(`coverage:${STREAMS.trades(POOL_ADDRESS)}:start`, { fromSlot, via: `logs:${POOL_ADDRESS}` });
+  }
+
+  /** A coverage gap on the pool's trade stream (`toSlot` null: still open). */
+  tradesGap(fromSlot: bigint, toSlot: bigint | null): void {
+    this.offchain(`coverage:${STREAMS.trades(POOL_ADDRESS)}:gap`, { fromSlot, toSlot, reason: 'disconnect', via: `logs:${POOL_ADDRESS}` });
+  }
+
+  /**
+   * A confirmed account read of the real passing pool and its vaults answered for `slot`: the producer's base. The mint
+   * account is left out, so the passing mint fact (re-published with each slot) is not replaced by one that ages.
+   */
+  accountsRead(slot: bigint): void {
+    const accounts = [POOL_ADDRESS, POOL.poolBaseTokenAccount, POOL.poolQuoteTokenAccount].map((a) => {
+      const x = account(a);
+      return { address: a, owner: x.owner, data: x.dataBase64 };
+    });
+    this.offchain(RAW.accounts(MINT), { mint: MINT, slot, commitment: 'confirmed', accounts });
+    const f = facts0().get(poolKey(MINT))!.value as { baseVault: bigint; quoteVault: bigint; pool: { virtualQuoteReserves?: bigint } };
+    this.#chain = { baseReserve: f.baseVault, quoteVault: f.quoteVault, virtualQuoteReserves: f.pool.virtualQuoteReserves ?? 0n };
+  }
+
+  /** The pool's reserves as the chain now holds them (after the last `chainSwap`). */
+  get chainState(): PoolState {
+    if (this.#chain === null) throw new Error('no accounts read yet');
+    return this.#chain;
+  }
+
+  /**
+   * A real swap on the passing pool continuing its reserves: a confirmed logs notification whose `Program data:` line is
+   * the Borsh BuyEvent/SellEvent the program logs (amounts from the exact PumpSwap math), in slot `slot`.
+   */
+  chainSwap(side: 'buy' | 'sell', base: bigint, slot: bigint): void {
+    const n = ++this.#swaps;
+    const { logs, after } = swapLog({ pool: POOL_ADDRESS, coinCreator: DEV, supply: SUPPLY, pre: this.chainState, side, base, atMs: this.now });
+    this.#h.worker.feed.ingest('helius', { type: 'logs', signature: `chainswap${n}`, slot, err: null, via: `logs:${POOL_ADDRESS}`, logs, commitment: 'confirmed' }, { receivedAt: this.now });
+    this.#chain = after;
   }
 
   /** A PumpSwap swap on the passing pool, as decoded from its log line, at the passing fee terms. */
@@ -299,8 +357,8 @@ export const until = async (m: Market, maxMs: number, ready: () => boolean, each
 };
 
 /** Sets up 15 days of coverage, a migrated candidate and minute pool bars, then every passing fact at T. */
-export const passingMarket = async (h: Harness, o: { readonly fees?: boolean } = {}): Promise<Market> => {
-  const m = new Market(h);
+export const passingMarket = async (h: Harness, o: { readonly fees?: boolean; readonly heldPoolFacts?: boolean } = {}): Promise<Market> => {
+  const m = new Market(h, { heldPoolFacts: o.heldPoolFacts ?? false });
   m.withFees = o.fees ?? true;
   const facts = facts0();
   // 15 days before T: the creates stream and a full trade stream start; the deployer index sees its first event.
