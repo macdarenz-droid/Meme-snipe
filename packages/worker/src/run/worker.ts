@@ -16,7 +16,7 @@ import { compareEvents, compareMoments, Engine, type LogRecord, type MarketEvent
 import { Ledger, openLedger } from '../../../core/src/ledger/index.ts';
 import type { Book, BookEvent } from '../../../core/src/lifecycle/index.ts';
 import { isTerminal, isUnresolved } from '../../../core/src/lifecycle/index.ts';
-import { type FillNetwork, type FillScenario, lateFillOf } from '../../../core/src/fills/index.ts';
+import { attemptFee, type FillNetwork, type FillScenario, lateFillOf } from '../../../core/src/fills/index.ts';
 import type { MicroUsd } from '../../../core/src/units/index.ts';
 import { EXIT, LOOKUP_BOUNDS_MS, STATE_FILES, type FeedHealth, type Health, type JournalKind, type QuotaStatus, type RecoveredFields } from '../../../runner/src/contract.ts';
 import type { DryRunRecord } from '../dryrun/index.ts';
@@ -45,8 +45,8 @@ import { Journal } from './journal.ts';
 import { type PaperMarket, type PaperState, PaperWorld, type SimLeg } from './paper-world.ts';
 import { Recorder, sealLeftovers } from './recorder.ts';
 import { entryPrice, openPositionsHealth } from './open-positions.ts';
-import { riskSnapshot } from '../../../core/src/risk/index.ts';
-import { markSettings, riskAccount } from '../engine/marks.ts';
+import { type RiskInput, evaluateExit, riskSnapshot } from '../../../core/src/risk/index.ts';
+import { latchable, markSettings, riskAccount } from '../engine/marks.ts';
 import type { DeployerIndexState, RugLabellerState } from '../../../core/src/gates/index.ts';
 import { loadState, saveState } from '../persist/index.ts';
 
@@ -645,6 +645,18 @@ export class Worker {
     return this.#poolReleasedAt.get(mint) ?? null;
   }
 
+  /**
+   * A mint's pool reserves as read, without the fee terms poolOf also needs (APP-TRADE): Discovered's liquidity needs
+   * only the reserves, and a new pool has no fee terms until its first swap is seen.
+   */
+  reservesOf(mint: string): PaperMarket['pool'] | null {
+    const p = parsePool(this.#pools.get(mint));
+    const snap = this.#snapshots.get(mint);
+    if (snap !== undefined && snapshotWins(snap, p === null ? null : p.obs)) return snap.state;
+    if (p === null || flagged(p)) return null;
+    return { baseReserve: p.baseVault, quoteVault: p.quoteVault, virtualQuoteReserves: p.pool.virtualQuoteReserves ?? 0n };
+  }
+
   poolOf(mint: string): { readonly address: string; readonly state: PaperMarket['pool']; readonly ctx: PoolFeeContext; readonly atMs: number } | null {
     const p = parsePool(this.#pools.get(mint));
     const snap = this.#snapshots.get(mint);
@@ -840,18 +852,44 @@ export class Worker {
       const m = this.poolOf(mint);
       return { quantity: p.quantity, market: m === null ? null : { pool: m.state, ctx: m.ctx, atMs: m.atMs } };
     }, sol, now, markSettings(policy, this.#d.strategy.network), { fallback: true, ...(this.#d.markedHistory === undefined ? {} : { mark: this.#d.markedHistory }) });
-    const snapshot = riskSnapshot({
+    const input: RiskInput = {
       session: this.#d.session, mode: 'paper', clock: { now: () => ({ slot: this.#lastSlot ?? 0n, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt: now }) },
       account, latches: fact.latches, market: { solPrice: sol, solBalance: fact.solBalance, regime: 'unknown' },
-    });
+    };
+    const snapshot = riskSnapshot(input);
     if (snapshot === null) return;
     const maxAge = policy.gates.maxQuoteAgeMs;
     const marked = account.openPositions.every((o) => o.mark !== null && o.markAtMs !== null && o.markAtMs <= now && now - o.markAtMs <= maxAge);
+    // RISK-LATCH: an account-level trip (R9, R10) seen on this valuation is latched now, whether or not an entry or an
+    // exit is being evaluated, so a breach that recovers before the next one still holds until the owner reviews it.
+    // Only a fully marked valuation at a fresh SOL price latches: an unknown mark is a stand-in loss, not a breach.
+    if (latchable(account, sol, now, maxAge)) {
+      const trips = evaluateExit(input).trips;
+      if (trips.length > 0) {
+        this.#d.log(`Risk tripped on the account valuation: ${[...trips].sort().join(', ')} (equity ${snapshot.equity}, NAV ${snapshot.nav ?? 'unknown'}).`);
+        this.#latch(trips, now);
+      }
+    }
     const day = this.#account.state.dayMark?.startMs;
     if (this.#account.mark(snapshot, marked, this.#ctl.latches.killRearmedAtMs, now)) {
       if (day !== this.#account.state.dayMark?.startMs) this.#d.log(`Account marks: equity ${snapshot.equity} at ${new Date(now).toISOString()} for the Melbourne day from ${new Date(snapshot.dayStartMs).toISOString()}.`);
       this.#publishAccount();
     }
+  }
+
+  /** Latches R10 and R9 at `at` (a latch already set keeps its moment), saves them in control.json and puts the account. */
+  #latch(trips: readonly string[], at: number): void {
+    const l = this.#ctl.latches;
+    this.#ctl = {
+      ...this.#ctl,
+      latches: {
+        ...l,
+        killTrippedAtMs: trips.includes('kill_switch') && l.killTrippedAtMs === null ? at : l.killTrippedAtMs,
+        weeklyTrippedAtMs: trips.includes('weekly_loss') && l.weeklyTrippedAtMs === null ? at : l.weeklyTrippedAtMs,
+      },
+    };
+    this.#control.write(this.#ctl);
+    this.#publishAccount();
   }
 
   #afterRecord(r: LogRecord): void {
@@ -864,20 +902,7 @@ export class Worker {
       else this.#d.log(`Shortlisted ${mint ?? '?'}: its create was not seen by this process; H9 and H12-H14 wait for it.`);
     }
     const trips = r.reasons.filter((x) => x.startsWith(TRIP_PREFIX)).map((x) => x.slice(TRIP_PREFIX.length));
-    if (trips.length > 0) {
-      const at = r.at.receivedAt;
-      const l = this.#ctl.latches;
-      this.#ctl = {
-        ...this.#ctl,
-        latches: {
-          ...l,
-          killTrippedAtMs: trips.includes('kill_switch') && l.killTrippedAtMs === null ? at : l.killTrippedAtMs,
-          weeklyTrippedAtMs: trips.includes('weekly_loss') && l.weeklyTrippedAtMs === null ? at : l.weeklyTrippedAtMs,
-        },
-      };
-      this.#control.write(this.#ctl);
-      this.#publishAccount();
-    }
+    if (trips.length > 0) this.#latch(trips, r.at.receivedAt);
     if (r.action?.type === 'propose_entry') this.#intentAt.set(r.action.intent.id, r.at.receivedAt);
     this.#view(r);
   }
@@ -928,16 +953,17 @@ export class Worker {
       exitCapable: this.#exitCapable(d.timers.now()), budgetHalted: (d.ops?.().quota ?? []).filter((q) => q.halted).map((q) => q.provider),
       alerts: [...this.#alerts], regime: this.#strategy.regime(), regimeMaxAgeMs: 2 * d.strategy.evaluateEveryMs, stops: this.#strategy.riskStops(),
       book: this.#engine.book, trades: this.#account.state.trades, attempts: this.#world.attempts, legs: this.#legs(), decisions: this.#rows, funnel: this.#funnel,
+      exitFee: attemptFee(d.network, BigInt(d.session.policy.exits.ladder.steps[0]?.priorityFeeLamports ?? 0), 'filled'),
       solPrice: this.#solPrice, symbol: (mint) => this.#symbols.get(mint) ?? `${mint.slice(0, 4)}…`, waitingExits: this.#strategy.waitingExits(),
       discovered: [...this.#strategy.candidates()].map(([mint, c]) => {
-        const m = this.poolOf(mint);
-        return { mint, symbol: this.#symbols.get(mint) ?? null, migratedAtMs: c.migratedAtMs, lastEvalMs: c.lastEvalMs, gates: c.gates, quoteReserve: m === null ? null : effectiveQuoteReserve(m.state) };
+        const r = this.reservesOf(mint);
+        return { mint, symbol: this.#symbols.get(mint) ?? null, migratedAtMs: c.migratedAtMs, lastEvalMs: c.lastEvalMs, gates: c.gates, quoteReserve: r === null ? null : effectiveQuoteReserve(r) };
       }),
       open: (p) => {
         const saved = this.#strategy.saved()[p.id];
         const m = this.poolOf(p.mint);
         const q = m === null ? null : poolSell(m.state, p.quantity, m.ctx);
-        return saved === undefined ? null : { stopPrice: saved.plan.stopPrice, trail: saved.tracker.trail, liquidation: q !== null && q.ok ? q.trade.userQuote : null, openedAtMs: saved.plan.openedAtMs, universe: saved.plan.universe };
+        return saved === undefined ? null : { stopPrice: saved.plan.stopPrice, trail: saved.tracker.trail, liquidation: q !== null && q.ok ? q.trade.userQuote : null, openedAtMs: saved.plan.openedAtMs, universe: saved.plan.universe, markedAtMs: q !== null && q.ok ? m!.atMs : null };
       },
     };
   }

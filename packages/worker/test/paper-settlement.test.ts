@@ -394,7 +394,10 @@ describe('M4: fees of an entry that never filled are an account cost, booked onc
     account.price(PRICE, start - 20 * DAY);
     const paid = failedAttempt('a', start - 3 * DAY, 20_000n);
     const dropped: PaperAttempt = { ...failedAttempt('z', start - 5 * DAY, 20_000n), outcome: 'dropped', reason: 'never reached a block (drawn)', landedSlot: null };
-    account.settle(bookOf([paid, dropped]), legsOf([paid, dropped]), null, start + 1_000);
+    // a's fee is booked a second after its send (a record is dated when booked, ACCOUNT-RATE F3); in the new week it
+    // folds, and the dropped attempt (sent earlier, cost nothing) does not hold the fold back.
+    account.settle(bookOf([paid, dropped]), legsOf([paid, dropped]), null, start - 3 * DAY + 500);
+    account.settle(bookOf([paid, dropped]), legsOf([paid, dropped]), PRICE, start - 3 * DAY + 1_000);
     account.settle(bookOf([paid, dropped]), legsOf([paid, dropped]), PRICE, start + 1_000);
     expect(account.state.strayFees).toEqual({});
     expect(account.state.strayFolded?.lamports).toBe(attemptFee(net, 20_000n, 'failed'));
