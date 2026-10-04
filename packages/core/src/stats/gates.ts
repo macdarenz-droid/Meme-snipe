@@ -5,7 +5,7 @@
 
 import { dayBlockMeanDiffInterval, dayBlockMeanInterval, DEFAULT_REPLICATES, type DayReturn } from './bootstrap.ts';
 import { describeSummary, G2_SENSITIVITY_VARIANTS, g2Rule, g2Sensitivity, MIN_DAYS, sameSummary, summarizeWalkForward, type ClusteredReturn, type G2PowerResult, type G2SensitivityVariant } from './g2rule.ts';
-import { burnHoldout, dayFromNumber, holdoutReady, openHoldout, type HoldoutRegistry } from './holdout.ts';
+import { burnHoldout, dayFromNumber, G1_TESTS, type G1Test, holdoutReady, openHoldout, type HoldoutRegistry } from './holdout.ts';
 import { holm } from './holm.ts';
 import { clopperPearsonInterval, clopperPearsonUpper, ratesConsistent } from './binomial.ts';
 import { mean, median, sd, variance } from './descriptive.ts';
@@ -250,13 +250,15 @@ export interface G1Input {
   readonly pboMatrix: Readonly<Record<string, readonly number[]>>;
   readonly pboBlocks?: number;
   /**
-   * The significance test that gates G1, fixed at registration and never changed mid-attempt (owner decision,
-   * 2026-10-04: 'spa'; RESEARCH_CONFIG.g1Test). 'spa': the joint SPA test as registered and calibrated in STATS-1e (the
-   * global test with the step-down promotion of the selected rule, both benchmarks, blocks 3/5/7 with the worst p,
-   * short regimes merged). 'dsr': the per-trade DSR over every registered trial with clamped moments. The other is
-   * always reported, never gating. A registration without it fails G1.
+   * The holdout registry, created with the plan before any G1 evaluation: its stored `g1Test` decides which
+   * significance test gates G1 (owner decision, 2026-10-04: 'spa'). 'spa': the joint SPA test as registered and
+   * calibrated in STATS-1e (the global test with the step-down promotion of the selected rule, both benchmarks, blocks
+   * 3/5/7 with the worst p, short regimes merged). 'dsr': the per-trade DSR over every registered trial with clamped
+   * moments. The other is always reported, never gating. A registry without a valid stored test fails G1 closed.
    */
-  readonly g1Test: G1Test;
+  readonly holdoutRegistry: Pick<HoldoutRegistry, 'g1Test'>;
+  /** Optional: the test the caller expects; if it differs from the stored one, G1 fails (it never chooses). */
+  readonly g1Test?: G1Test;
   /**
    * The joint SPA test's other inputs, on the calendar of `pboMatrix` (whose rows are the variants' daily net P&L over a
    * fixed capital base): S0's daily P&L, each variant's active days (counted before outcomes) and the registered SE
@@ -269,17 +271,20 @@ export interface G1Input {
   readonly replicates?: number;
 }
 
-/** The registered choice of G1's significance test (only the owner sets it, before the run). */
-export type G1Test = 'spa' | 'dsr';
-export const G1_TESTS: readonly G1Test[] = ['spa', 'dsr'];
-
 /** G1 Walk-forward (research). */
 export const gateG1 = (input: G1Input, overrides?: Partial<typeof G1_DEFAULTS>): GateResult => {
   const th = tighten('G1', G1_DEFAULTS, G1_DIR, overrides);
   const c = new Checks();
   const metrics: Record<string, number | null> = { trades: input.trades.length };
-  const test: G1Test | null = (G1_TESTS as readonly unknown[]).includes(input.g1Test) ? input.g1Test : null;
-  c.add('G1 test', test !== null, test === null ? `no registered G1 test (got ${JSON.stringify(input.g1Test)}; need one of ${G1_TESTS.join(', ')})` : `registered: ${test}`);
+  // The test comes from the stored registry, never from the caller: a missing or unknown stored test, or a caller who
+  // expects a different one, fails G1 and nothing gates.
+  const stored: unknown = input.holdoutRegistry?.g1Test;
+  const valid = (G1_TESTS as readonly unknown[]).includes(stored);
+  const agrees = input.g1Test === undefined || input.g1Test === stored;
+  const test: G1Test | null = valid && agrees ? (stored as G1Test) : null;
+  c.add('G1 test', test !== null, !valid
+    ? `the holdout registry stores no G1 test (got ${JSON.stringify(stored)}; need one of ${G1_TESTS.join(', ')})`
+    : !agrees ? `the registry stores ${String(stored)}; the caller asked for ${input.g1Test}` : `stored in the registry: ${String(stored)}`);
   c.add('scenario', input.scenario === 'conservative', `scenario "${input.scenario}" (need "conservative")`);
   c.add('pre-registration', input.rulesRegisteredBeforeHoldout,
     input.rulesRegisteredBeforeHoldout ? 'rules registered before the holdout' : 'rules not registered before the holdout was opened');

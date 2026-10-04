@@ -698,7 +698,11 @@ Built to the supervisor's revised spec and the consensus rulings that followed i
   - **The rule:** G1's significance test is the SPA rule exactly as registered and calibrated in STATS-1e: the global test plus the step-down promotion of the selected rule, both benchmarks (zero and S0), expected blocks 3, 5 and 7 with the worst p, and short regimes merged (`mergeShortRegimes`). α is unchanged at 0.05.
   - **The DSR:** the clamped per-trade DSR stays in the report as a descriptive number and no longer gates.
   - **Unchanged:** every other gate (G2's n ≥ max(300, n_power), CI above zero and cluster sensitivity; G3; the holdout registry rules).
-  - **Registration:** it records the test as a closed choice, `g1Test: 'spa' | 'dsr'`, fixed before the run and never changed mid-attempt; only the owner sets it. `RESEARCH_CONFIG.g1Test` is `spa` (research-4). A registration without a valid choice fails G1, and neither test gates without one.
+  - **Registration (review of #109, B1):** the test is a closed choice, `g1Test: 'spa' | 'dsr'`, stored in the holdout registry when it is created. That happens together with the plan, before any G1 evaluation it governs: G1 runs on the walk-forward before an attempt is registered, so an attempt entry would come too late.
+    - It is required (`createHoldoutRegistry` refuses a registry without it) and never changed.
+    - `gateG1` takes the test from the stored registry. A caller who asks for a different test fails G1, so it cannot pick the one that passes.
+    - A registry stored before this change has no test and fails G1 closed. Neither test gates without a valid stored one.
+    - The backtest stamps `RESEARCH_CONFIG.g1Test` (`spa`, research-4) when `setHoldoutPlan` creates the registry. Only the owner changes that setting.
   - **Both paths are kept and tested** (the owner may want a switch later; no UI or config switch is built now). SPA runs in its own try, so a diagnostics failure cannot skip it. Without its inputs it fails closed.
   - **Sign-off pack:** on the real 64-day layout with 300 runs per scenario across 12 scenarios, the promotion rule passed a variant in at most 0.67% of runs (the gating number) and the global test rejected in at most 4.3%. Two independent seed sets were run, and the reviewer reproduced them on two more. The full run is repeatable by hand with `.github/workflows/spa-calibration.yml`.
 - **2026-10-04 · STATS-1e: SPA resamples short regimes merged, calibrated on the real layout** (supervisor ruling after the #62 review).

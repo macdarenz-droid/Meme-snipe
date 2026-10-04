@@ -49,13 +49,14 @@ const winnerDaily = dailyOf(wf);
 const pboMatrix = matrixFor(wf);
 // S0 at −20% a day on the walk-forward calendar; every variant traded on all 40 days.
 const spaInputs = { s0Daily: dailyOf(control.map((t) => ({ ...t, ySevere: false, blocked: false }))), activeDays: Object.fromEntries(registry.map((t) => [t.trialId, 40])), seFloor: 1e-9 };
-// G1 registered on the SPA test (owner decision, 2026-10-04).
+// G1's test is the one stored in the holdout registry (created with the plan): SPA, the owner's decision of 2026-10-04.
 const g1Pass = (): G1Input => ({
   scenario: 'conservative', rulesRegisteredBeforeHoldout: true, trades: wf, control, selectedTrialId: 't19', registry,
-  pboMatrix, pboBlocks: 8, modelUsed: false, calibrationSlope: null, rng: createRng(1), replicates: 1000, g1Test: 'spa', spa: spaInputs,
+  pboMatrix, pboBlocks: 8, modelUsed: false, calibrationSlope: null, rng: createRng(1), replicates: 1000,
+  holdoutRegistry: createHoldoutRegistry(1, 'spa'), spa: spaInputs,
 });
-/** The same registration on the clamped per-trade DSR: the path the owner can still select. */
-const g1Dsr = (): G1Input => ({ ...g1Pass(), g1Test: 'dsr' });
+/** A registry that stores the clamped per-trade DSR: the path the owner can still select. */
+const g1Dsr = (): G1Input => ({ ...g1Pass(), holdoutRegistry: createHoldoutRegistry(1, 'dsr') });
 
 describe('G1 walk-forward', () => {
   test('passes a strong, spread-out edge', () => {
@@ -159,12 +160,27 @@ describe('G1 walk-forward', () => {
     const f = gateG1({ ...g1Pass(), trades: flat, pboMatrix: Object.fromEntries(registry.map((t, k) => [t.trialId, dailyOf(bracketTrades(900 + k, 0, 40, 15))])) });
     expect(f.reasons.join(' | ')).toMatch(/SPA: SPA over 20 variants .*t19 does not pass/);
   });
-  test('a registration without a valid G1 test fails G1 (STATS-1f)', () => {
-    for (const bad of [undefined, 'both', '']) {
-      const r = gateG1({ ...g1Pass(), g1Test: bad as never });
+  test('G1 takes its test from the stored registry, never from the caller (review of #109, B1)', () => {
+    // Storing a registry without a valid test is refused.
+    for (const bad of [undefined, 'both', '']) expect(() => createHoldoutRegistry(1, bad as never)).toThrow(/needs G1's test/);
+    expect(createHoldoutRegistry(1, 'spa').g1Test).toBe('spa');
+    // The stored test is what gates: SPA stored → the SPA check; DSR stored → the DSR check.
+    expect(gateG1(g1Pass()).checks.map((c) => c.name)).toEqual(expect.arrayContaining(['G1 test', 'SPA']));
+    expect(gateG1(g1Dsr()).checks.map((c) => c.name)).toEqual(expect.arrayContaining(['G1 test', 'DSR']));
+    // A caller asking for the other test fails G1, and neither test gates: it cannot pick the one that passes.
+    for (const [g1, asked] of [[g1Pass, 'dsr'], [g1Dsr, 'spa']] as const) {
+      const r = gateG1({ ...g1(), g1Test: asked });
       expect(r.passed).toBe(false);
-      expect(r.reasons[0]).toMatch(/^G1 test: no registered G1 test/);
-      // Neither test gates without a registration.
+      expect(r.reasons[0]).toMatch(new RegExp(`^G1 test: the registry stores .*; the caller asked for ${asked}`));
+      expect(r.checks.some((c) => c.name === 'SPA' || c.name === 'DSR')).toBe(false);
+    }
+    // Asking for the stored test is fine.
+    expect(gateG1({ ...g1Pass(), g1Test: 'spa' }).passed).toBe(true);
+    // A record stored before STATS-1f (no g1Test) fails G1 closed.
+    for (const old of [{}, { g1Test: undefined }, { g1Test: 'both' }]) {
+      const r = gateG1({ ...g1Pass(), holdoutRegistry: old as never });
+      expect(r.passed).toBe(false);
+      expect(r.reasons[0]).toMatch(/^G1 test: the holdout registry stores no G1 test/);
       expect(r.checks.some((c) => c.name === 'SPA' || c.name === 'DSR')).toBe(false);
     }
   });
@@ -210,7 +226,7 @@ const closedFor = (familySize: number) => nPower(sd(wf.map((t) => t.rNet)), 0.05
 const window1 = { fromDay: '2026-08-01', toDay: '2026-08-25', registeredOnDay: '2026-07-20' };
 const sealed = (familySize: number, universes: readonly string[], c = counts, required = Math.max(300, 330, closedFor(familySize)), requiredDays = 10): HoldoutRegistry => {
   // A day requirement under the floor needs a test rule (it exists only to show that G2 refuses it).
-  let reg = createHoldoutRegistry(familySize, requiredDays < 10 ? { windowDays: 28, tailDays: 1, minDays: 1 } : undefined);
+  let reg = createHoldoutRegistry(familySize, 'spa', requiredDays < 10 ? { windowDays: 28, tailDays: 1, minDays: 1 } : undefined);
   for (const u of universes) {
     reg = registerHoldout(reg, { holdoutId: `h-${u}`, universe: u, configId: `${u}-v1`, ...window1 });
     reg = freezeRequirement(reg, `h-${u}`, { requiredTrades: required, requiredDays, nPower: 300, nPowerSeed: 7 }).registry;
@@ -426,7 +442,7 @@ describe('G2 holdout (sealed, ARCHITECTURE.md §14 at 333f4ac)', () => {
   }, 120_000);
   test('a second attempt is tested at 0.005: n_power simulated at 0.04 is refused, at 0.005 it is accepted', () => {
     // Attempt 1 in July, spent; attempt 2 registered 08-02 runs 08-03..08-30 and opens from 09-01 (NOW is 09-21).
-    let reg = registerHoldout(createHoldoutRegistry(1), { holdoutId: 'h-old', universe: 'U1', configId: 'U1-v0', fromDay: '2026-07-01', toDay: '2026-07-25', registeredOnDay: '2026-06-20' });
+    let reg = registerHoldout(createHoldoutRegistry(1, 'spa'), { holdoutId: 'h-old', universe: 'U1', configId: 'U1-v0', fromDay: '2026-07-01', toDay: '2026-07-25', registeredOnDay: '2026-06-20' });
     reg = burnHoldout(reg, 'h-old', 'inspected', 'test').registry;
     reg = registerHoldout(reg, { holdoutId: 'h-U1', universe: 'U1', configId: 'U1-v1', fromDay: '2026-08-03', toDay: '2026-08-30', registeredOnDay: '2026-08-02' });
     reg = freezeRequirement(reg, 'h-U1', { requiredTrades: 600, requiredDays: 10, nPower: 300, nPowerSeed: 7 }).registry;
