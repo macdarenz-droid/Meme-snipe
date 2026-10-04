@@ -7,8 +7,8 @@
 // `open_intents` → seed the deployer index (SEED-1's hook) → start the live sources → trade. Nothing enters before the
 // reconcile line; a reconcile that cannot settle every intent exits 3.
 import { randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { placeBookingsAt } from './booked.ts';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { journalLines, placeBookingsAt } from './booked.ts';
 import type { Server } from 'node:http';
 import { join } from 'node:path';
 import type { PolicySession, RugConfig } from '../../../core/src/config/index.ts';
@@ -59,7 +59,7 @@ import type { ExecStats } from '../../../core/src/facts/raw.ts';
 
 /** POS-1: a pool fact flagged beyond backfill or dedupe (a stale swap stream) is never priced from. */
 const flagged = (p: PoolFact): boolean => p.obs.quality.some((q) => q !== 'backfilled' && q !== 'deduplicated');
-import { type PoolFeeContext, poolSell } from '../../../core/src/amm/index.ts';
+import { type PoolFeeContext, effectiveQuoteReserve, poolSell } from '../../../core/src/amm/index.ts';
 
 /** The halt reason while WATCH-1's second price path cannot serve (not configured, or its budget halted). */
 export const SECOND_PATH_UNAVAILABLE = 'second price path unavailable';
@@ -197,16 +197,23 @@ const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object
 /** Present while the state dir began empty and no full start has journaled its `recovered` line yet. */
 const COLD_START = 'cold_start';
 
-/** The `entry` and `exit` lines of a journal file (none when it is missing); torn or unreadable lines are skipped. */
-const readJournalFills = (path: string): Record<string, unknown>[] => {
+/**
+ * The `entry` and `exit` lines of a journal file (none when it is missing); torn or unreadable lines are skipped. The
+ * journal of a long run is large and this runs at every boot, so it is streamed in chunks (`journalLines`) and only
+ * fill lines are parsed: never the whole file in memory at once.
+ */
+export const readJournalFills = (path: string, chunkBytes?: number): Record<string, unknown>[] => {
   if (!existsSync(path)) return [];
-  return readFileSync(path, 'utf8').split('\n').filter((l) => l.includes('"kind":"entry"') || l.includes('"kind":"exit"')).flatMap((l) => {
+  const out: Record<string, unknown>[] = [];
+  for (const l of journalLines(path, chunkBytes)) {
+    if (!l.includes('"kind":"entry"') && !l.includes('"kind":"exit"')) continue;
     try {
-      return [JSON.parse(l) as Record<string, unknown>];
+      out.push(JSON.parse(l) as Record<string, unknown>);
     } catch {
-      return [];
+      // a torn line
     }
-  });
+  }
+  return out;
 };
 
 export class Worker {
@@ -855,6 +862,10 @@ export class Worker {
       alerts: [...this.#alerts], regime: this.#strategy.regime(), regimeMaxAgeMs: 2 * d.strategy.evaluateEveryMs, stops: this.#strategy.riskStops(),
       book: this.#engine.book, trades: this.#account.state.trades, attempts: this.#world.attempts, decisions: this.#rows, funnel: this.#funnel,
       solPrice: this.#solPrice, symbol: (mint) => this.#symbols.get(mint) ?? `${mint.slice(0, 4)}…`, waitingExits: this.#strategy.waitingExits(),
+      discovered: [...this.#strategy.candidates()].map(([mint, c]) => {
+        const m = this.poolOf(mint);
+        return { mint, symbol: this.#symbols.get(mint) ?? null, migratedAtMs: c.migratedAtMs, lastEvalMs: c.lastEvalMs, gates: c.gates, quoteReserve: m === null ? null : effectiveQuoteReserve(m.state) };
+      }),
       open: (p) => {
         const saved = this.#strategy.saved()[p.id];
         const m = this.poolOf(p.mint);
