@@ -657,11 +657,19 @@ describe('boundaries found by mutation testing', () => {
     expect(decide(one, obs(X.tMaxMs), plan(), { ...newTracker(), flatMet: true }).decision).toMatchObject({ kind: 'exit', quantity: 1n, reasons: ['max_hold'] });
   });
 
-  test('a time stop with no market or a stale one still exits, and the exit says why it has no quote', () => {
+  test('a time stop with no market or a stale one is remembered until a fresh quote (EXIT-1c), never booked blocked', () => {
     const t = { ...newTracker(), flatMet: true };
-    expect(decide(holding(), obs(X.tMaxMs, null), plan(), t).decision).toMatchObject({ kind: 'exit', value: { ok: false, reason: 'no-market', detail: 'no market state' } });
-    const stale = { atMs: 0, value: market(VAULT) };
-    expect(decide(holding(), obs(X.tMaxMs, VAULT, { market: stale }), plan(), t).decision).toMatchObject({ kind: 'exit', value: { ok: false, detail: 'market state is stale' } });
+    for (const o of [obs(X.tMaxMs, null), obs(X.tMaxMs, VAULT, { market: { atMs: 0, value: market(VAULT) } })]) {
+      const step = decide(holding(), o, plan(), t);
+      expect(step.decision).toMatchObject({ kind: 'hold', detail: 'full exit remembered: waiting for a fresh quote' });
+      expect(codes(step.decision)).toEqual(['time_max']);
+      expect(step.tracker.pendingFull).toEqual(['max_hold']);
+    }
+    // One millisecond inside the quote age is fresh: the exit goes.
+    const edge = { atMs: X.tMaxMs - S.maxQuoteAgeMs, value: market(VAULT) };
+    expect(decide(holding(), obs(X.tMaxMs, VAULT, { market: edge }), plan(), t).decision).toMatchObject({ kind: 'exit', value: { ok: true } });
+    const past = { atMs: X.tMaxMs - S.maxQuoteAgeMs - 1, value: market(VAULT) };
+    expect(decide(holding(), obs(X.tMaxMs, VAULT, { market: past }), plan(), t).decision.kind).toBe('hold');
   });
 
   test('time is measured from the entry fill, not from zero', () => {
@@ -898,16 +906,19 @@ describe('EXIT-1b item 6: when an in-flight partial resolves, the rest is reasse
     expect(d.decision.reasons).toEqual(['stop']);
     expect(d.tracker.pendingFull).toBeNull();
   });
-  test('with no quote, a trigger that fires without one still takes the remembered exit at once', () => {
+  test('with no quote, a trigger that fires without one joins the remembered exit, which goes on the first fresh quote (EXIT-1c)', () => {
     const stop = plan({ stopPrice: execPrice(V0, QTY) });
     const pending = decide(holding({ status: 'exit_pending' }), obs(NOW), stop);
     const rest = holding({ quantity: QTY / 2n, sold: QTY / 2n, exitSeq: 2 });
     const late = decideExit(S, stop, rest, pending.tracker, obs(NOW + X.tMaxMs, null));
-    expect(late.decision).toMatchObject({ kind: 'exit', partial: false, retry: false });
-    if (late.decision.kind !== 'exit') return;
-    expect(late.decision.reasons).toEqual(expect.arrayContaining(['stop', 'max_hold']));
-    expect(late.decision.value.ok).toBe(false); // booked blocked by exitBookEvents through the quote-failure path
-    expect(late.tracker.pendingFull).toBeNull();
+    expect(late.decision).toMatchObject({ kind: 'hold', detail: 'full exit remembered: waiting for a fresh quote' });
+    expect(late.tracker.pendingFull).toEqual(expect.arrayContaining(['stop', 'max_hold']));
+    const quoted = decideExit(S, stop, rest, late.tracker, obs(NOW + X.tMaxMs + 400));
+    expect(quoted.decision).toMatchObject({ kind: 'exit', partial: false, retry: false, quantity: QTY / 2n, blocked: null });
+    if (quoted.decision.kind !== 'exit') return;
+    expect(quoted.decision.reasons).toEqual(expect.arrayContaining(['stop', 'max_hold']));
+    expect(quoted.decision.value.ok).toBe(true);
+    expect(quoted.tracker.pendingFull).toBeNull();
   });
   test('a take-profit merged into an in-flight exit is not remembered as a full exit', () => {
     const pending = decide(holding({ status: 'exit_pending', pnl: tp }), obs(NOW));
@@ -972,5 +983,50 @@ describe('EXIT-1b follow-up ruling: sell before reclaiming rent; a bounded sell-
     expect(retry).toMatchObject({ kind: 'exit', retry: true, closeAccount: false });
     // Bounded: once the ladder is used, the exit is booked blocked like any other.
     expect(decide({ ...failed, exitAttempts: G.ladder.maxAttempts }, obs(NOW), stop).decision).toMatchObject({ kind: 'exit', closeAccount: false, blocked: `exit ladder used: ${G.ladder.maxAttempts} attempts on this position` });
+  });
+});
+
+describe('EXIT-1c: an exit with no quote yet waits for the first fresh quote, never booked blocked', () => {
+  const flat = { ...newTracker(), flatMet: true };
+  const toBook = (d: ExitDecision) => exitBookEvents(PID, d, intentId('ex1')).map((e) => e.type);
+  const firstQuote = (reason: string, h: Holding, t: ExitTracker, at: number, o: Partial<ExitObservation> = {}) => {
+    const after = decide(h, obs(at, VAULT, o), plan(), t);
+    expect(after.decision).toMatchObject({ kind: 'exit', partial: false, retry: false, quantity: QTY, startRung: 0, maxAttempts: G.ladder.maxAttempts, blocked: null });
+    if (after.decision.kind !== 'exit') return;
+    expect(after.decision.value.ok).toBe(true);
+    expect(after.decision.reasons).toContain(reason);
+    expect(toBook(after.decision)).toEqual(['trigger_exit']);
+    expect(after.tracker.pendingFull).toBeNull();
+  };
+  test('a time stop after downtime longer than T_max, with no market state yet: held, then fires on the first quote', () => {
+    const late = X.tMaxMs + 3_600_000;
+    const waiting = decide(holding(), obs(late, null), plan(), flat);
+    expect(waiting.decision).toMatchObject({ kind: 'hold', detail: 'full exit remembered: waiting for a fresh quote' });
+    expect(codes(waiting.decision)).toEqual(['time_max']);
+    expect(waiting.tracker.pendingFull).toEqual(['max_hold']);
+    // A stale market state is no quote either.
+    const stale = decide(holding(), obs(late + 400, VAULT, { market: { atMs: 0, value: market(VAULT) } }), plan(), waiting.tracker);
+    expect(stale.decision).toMatchObject({ kind: 'hold', detail: 'full exit remembered: waiting for a fresh quote' });
+    firstQuote('max_hold', holding(), stale.tracker, late + 800);
+  });
+  test('a deployer sale seen with no market state yet: held, then fires on the first quote even if the deployer reading is gone', () => {
+    const dev = { deployerSoldBps: { atMs: NOW, value: G.deployerSellSupplyBps + 1 } };
+    const waiting = decide(holding(), obs(NOW, null, dev));
+    expect(waiting.decision).toMatchObject({ kind: 'hold', detail: 'full exit remembered: waiting for a fresh quote' });
+    expect(waiting.tracker.pendingFull).toEqual(['thesis_lost']);
+    firstQuote('thesis_lost', holding(), waiting.tracker, NOW + 400);
+  });
+  test('a real refusal is still booked blocked: a fresh market that cannot quote the sale', () => {
+    const t1 = decide(holding(), obs(NOW)).tracker;
+    const step = decide(holding(), obs(NOW + 400, 0n), plan(), t1);
+    expect(step.decision).toMatchObject({ kind: 'exit', value: { ok: false, reason: 'no-liquidity' } });
+    expect(toBook(step.decision)).toEqual(['trigger_exit', 'exit_blocked']);
+  });
+  test('a used ladder is still booked blocked once the quote is there', () => {
+    const used = holding({ exitAttempts: G.ladder.maxAttempts });
+    const waiting = decide(used, obs(X.tMaxMs, null), plan(), flat);
+    expect(waiting.decision.kind).toBe('hold');
+    const after = decide(used, obs(X.tMaxMs + 400), plan(), waiting.tracker);
+    expect(after.decision).toMatchObject({ kind: 'exit', blocked: `exit ladder used: ${G.ladder.maxAttempts} attempts on this position` });
   });
 });
