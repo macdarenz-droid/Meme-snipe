@@ -638,7 +638,7 @@ ac() { rm -f "$A"/*.log "$A/curl.calls" "$A/curl.args"; : > "$A/summary.md"
 ua=$(sed -n 's/^const userAgent = "\(.*\)"$/\1/p' "$here/../scanner/archive.go")
 # Active runs by title (data-scan.yml's run-name): helius-only, archive, a run from before
 # run-name ("data-scan"), the volume mode, anything unexpected.
-runs() { python3 -c 'import json,sys; print(json.dumps([{"status": a.split("|")[0], "displayTitle": a.split("|")[1]} for a in sys.argv[1:]]))' "$@"; }
+runs() { python3 -c 'import json,sys; print(json.dumps([{"databaseId": 100 + i, "status": a.split("|")[0], "displayTitle": a.split("|")[1]} for i, a in enumerate(sys.argv[1:])]))' "$@"; }
 H="in_progress|data-scan scan source=helius"
 bad=""
 for set in "in_progress|data-scan scan source=archive" "queued|data-scan scan source=archive" "in_progress|data-scan" "queued|data-scan volume source=archive" \
@@ -653,11 +653,25 @@ for set in "$H" "queued|data-scan scan source=helius" "$H;queued|data-scan scan 
   IFS=';' read -ra a <<< "$set"
   ac env AC_RUNS="$(runs "${a[@]}" "completed|data-scan scan source=archive")" AC_STATUS=206
   [[ $(wc -l < "$A/curl.calls" 2>/dev/null) == 1 && ! -e "$A/dispatch.log" ]] && grep -q "served; nothing dispatched while" "$A/summary.md" || bad+=" [$set]"
-  grep -q 'gh run list --repo o/r --workflow data-scan.yml --limit 50 --json status,displayTitle' "$A/gh.log" || bad+=" [list-call]"
+  grep -q 'gh run list --repo o/r --workflow data-scan.yml --limit 50 --json databaseId,status,displayTitle' "$A/gh.log" || bad+=" [list-call]"
 done
 ac env AC_RUNS="$(runs "$H")" AC_STATUS=429
 [[ $(wc -l < "$A/curl.calls") == 1 && ! -e "$A/dispatch.log" ]] && grep -q "not served" "$A/summary.md" || bad+=" [429]"
-[[ -z "$bad" ]] && ok "archive-check: only Helius runs active or queued (title source=helius): exactly one request; served is reported but nothing is dispatched beside them" || no "archive-check helius-only:$bad"
+# helius_runs (manual dispatch): an old-title run named by id counts as Helius-only (ids
+# are 100, 101, ... in list order).
+ac env AC_RUNS="$(runs "in_progress|data-scan" "in_progress|data-scan")" AC_STATUS=206 HELIUS_RUNS=100,101
+[[ $(wc -l < "$A/curl.calls" 2>/dev/null) == 1 && ! -e "$A/dispatch.log" ]] && grep -q "served; nothing dispatched while 2" "$A/summary.md" || bad+=" [named]"
+ac env AC_RUNS="$(runs "in_progress|data-scan" "queued|data-scan scan source=archive")" AC_STATUS=206 HELIUS_RUNS=100
+[[ ! -e "$A/curl.calls" && ! -e "$A/dispatch.log" ]] && grep -q "may read the archive active or queued; no request made" "$A/summary.md" || bad+=" [named-but-archive-active]"
+ac env AC_RUNS="$(runs "in_progress|data-scan")" AC_STATUS=206 HELIUS_RUNS=999,1000
+[[ ! -e "$A/curl.calls" ]] || bad+=" [other-id]"
+ac env AC_RUNS="$(runs "in_progress|data-scan")" AC_STATUS=206 HELIUS_RUNS=10
+[[ ! -e "$A/curl.calls" ]] || bad+=" [prefix-id]"
+for v in "100;x" "100 101" "abc" "100," ",100" "1e3" '$(id)'; do
+  rc=0; ac env AC_RUNS="$(runs "in_progress|data-scan")" AC_STATUS=206 HELIUS_RUNS="$v" || rc=$?
+  [[ $rc == 1 && ! -e "$A/curl.calls" && ! -e "$A/gh.log" ]] && grep -q "helius_runs must be run ids" "$A/summary.md" || bad+=" [refuse:$v]"
+done
+[[ -z "$bad" ]] && ok "archive-check: only Helius runs active or queued (title source=helius, or an id named in helius_runs; anything else refused or blocking): exactly one request; served is reported but nothing is dispatched beside them" || no "archive-check helius-only:$bad"
 ac env AC_STATUS=429
 [[ $(wc -l < "$A/curl.calls") == 1 && ! -e "$A/dispatch.log" ]] && grep -qx -- "-A" "$A/curl.args" && grep -qxF -- "$ua" "$A/curl.args" &&
   grep -qx -- "0-63" "$A/curl.args" && grep -q "| 429 | 64 | 0 | 8abc123-SYD |" "$A/summary.md" && [[ -n "$ua" ]] &&
@@ -726,6 +740,8 @@ assert len(steps) == 2 and steps[0]["with"]["persist-credentials"] is False, ste
 assert steps[1]["run"] == "research/historical/ci/archive-check.sh" and "github.token" in steps[1]["env"]["GH_TOKEN"], steps[1]
 assert all("${{" not in st.get("run", "") for st in steps)
 assert not any(k in str(steps) for k in ("ARCHIVE_CHECK_URL", "CURL_BIN", "GH_BIN")), "test-only overrides in the workflow"
+assert set(on["workflow_dispatch"]["inputs"]) == {"helius_runs"} and on["workflow_dispatch"]["inputs"]["helius_runs"]["default"] == "", on
+assert steps[1]["env"]["HELIUS_RUNS"] == "${{ github.event_name == 'workflow_dispatch' && inputs.helius_runs || '' }}", steps[1]["env"]
 PY
 
 python3 - "$here/../../../.github/workflows/data-scan.yml" <<'PY' && ok "data-scan source helius: refused without a cap of 1 to 1000000 or outside scan mode; the key only in the scan and QA steps and only for helius; own progress cache; the chain carries source and cap" || no "data-scan helius wiring"

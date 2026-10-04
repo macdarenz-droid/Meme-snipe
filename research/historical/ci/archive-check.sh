@@ -7,7 +7,9 @@
 #     nothing (no request at all). A run counts as Helius-only (source helius, which
 #     never touches the archive) only when its title, set by data-scan.yml's run-name,
 #     is exactly "data-scan scan source=helius"; any other title (the archive source,
-#     a run dispatched before run-name existed, anything unexpected) counts as archive.
+#     a run dispatched before run-name existed, anything unexpected) counts as archive,
+#     unless its id is in HELIUS_RUNS (a manual dispatch input, digits and commas only,
+#     for Helius runs dispatched before run-name; scheduled checks never set it).
 #   - A served answer dispatches a scan only while no data-scan run at all is active or
 #     queued: one lane (data-scan's concurrency group "data-scan"), and a new dispatch
 #     must never replace a pending chained run of a Helius day.
@@ -41,14 +43,20 @@ if [[ -z "$ua" || "$ua" != zeroed-historical-scanner/* ]]; then
   exit 1
 fi
 
-titles=$("$gh" run list --repo "$GH_REPO" --workflow data-scan.yml --limit 50 --json status,displayTitle \
-  --jq '.[] | select(.status != "completed") | .displayTitle')
+named=${HELIUS_RUNS:-}
+if [[ -n "$named" && ! "$named" =~ ^[0-9]+(,[0-9]+)*$ ]]; then
+  echo "archive-check: helius_runs must be run ids separated by commas, got '$named'; no request made" | tee -a "$summary"
+  exit 1
+fi
+runs=$("$gh" run list --repo "$GH_REPO" --workflow data-scan.yml --limit 50 --json databaseId,status,displayTitle \
+  --jq '.[] | select(.status != "completed") | "\(.databaseId)\t\(.displayTitle)"')
 active=0 archive=0
-while IFS= read -r title; do
-  [[ -n "$title" ]] || continue
+while IFS=$'\t' read -r id title; do
+  [[ -n "$id" ]] || continue
   active=$(( active + 1 ))
-  [[ "$title" == "data-scan scan source=helius" ]] || archive=$(( archive + 1 ))
-done <<< "$titles"
+  if [[ "$title" == "data-scan scan source=helius" || ",$named," == *",$id,"* ]]; then continue; fi
+  archive=$(( archive + 1 ))
+done <<< "$runs"
 if (( archive > 0 )); then
   echo "archive-check $(date -u +%FT%TZ): $archive data-scan run(s) that may read the archive active or queued; no request made" | tee -a "$summary"
   exit 0
