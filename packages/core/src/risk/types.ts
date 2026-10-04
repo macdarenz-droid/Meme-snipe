@@ -110,6 +110,19 @@ export interface ClosedTrade {
    * time and the rest of `netPnl` at the close.
    */
   readonly partials?: readonly RealizedPart[];
+  /**
+   * R8-WHOLE: what landed after the close (PAPER-2's late entries), each dated when it was booked. Read only to class
+   * the trade a win or a loss as of a moment (R8, the loss streak, R15); never added to equity, which counts the money
+   * once as a `late_settlement` cost.
+   */
+  readonly late?: readonly LateEntry[];
+}
+
+/** A change to a closed trade's result booked after its close: lamports, and dollars when a SOL price was known. */
+export interface LateEntry {
+  readonly atMs: number;
+  readonly lamports: Lamports;
+  readonly pnl: MicroUsd | null;
 }
 
 /** An open position. `mark` is the executable liquidation value of the whole position, net of fees (§9), or null if unknown. */

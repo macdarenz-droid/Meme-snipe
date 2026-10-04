@@ -1699,3 +1699,27 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
 - **Backtest parity.** The engine judges a batch at its close; a backtest that supplies these reads (BT-2) puts them on its feed the same way (open, members, close at one moment), so live and the backtest decide on the same view (core `RAW.batchOpen/batchClose`, `facts/kinds.ts`). Live and the replay of its recording make the same decisions (test).
 - **Not changed.** The survival read (regime) and the insiders' mint history stay single reads with FACTS-1e's landed-read mark; neither feeds a lag-bound gate input of the candidate's decision. No gate, limit, freshness rule or cap was changed.
 - **Evidence.** `packages/worker/test/read-coherent.test.ts`: the card's harness (real LiveFacts, FactReaders and LiveStrategy on a fake RPC whose confirmed context slot is the processed tip − 1 and that answers each call one slot later, every fact otherwise passing) enters within 5 simulated minutes, at a batch's close; on the base code it never does (H16 stale mint at every landing). A batch answering three slots late still rejects (stale). Live and replay decide the same, and no evaluation happens inside an open batch. `readBatch` unit tests: one bank, nothing on the feed before the last part, the scan's order and owners, the cap. `LiveFacts` tests: what each batch reads. Hand mutants killed: no open-batch skip, close judged at the next event, close never judged, scan order check removed, unclassified owners accepted, members put on as they answer, `minContextSlot` 0, never scanning, no simulation in the batch, the close's slot taken as the newest member.
+
+## R8, the loss streak and R15 read a trade's whole result (R8-WHOLE; supervisor ruling, 5 Oct; `core/src/risk/evaluate.ts` `lossAt`)
+
+- **2026-10-05 · Why (risk review of #198 PAPER-2).** R8 (the streak's cooldown and day pause, and "5 losses in any 20"), the loss streak and R15 classed a closed trade by the close's `netPnl` only. A late fee that turned a small win into a loss was not a loss to them. Golden rule: it counts.
+- **2026-10-05 · Ruling (option 2 of three).** It only tightens, so there is no owner step.
+  - `ClosedTrade.late` carries PAPER-2's late entries: booking time, lamports, and dollars when a SOL price was known. Risk reads them only to class the trade as a win or a loss, never for equity. The money reaches equity, R7 and R9 once, as the `late_settlement` cost.
+  - **As of the decision moment.** Entries booked after it are never read. A late entry dated in the future also makes the history invalid (R1), like any future time. Replay and the backtest are unchanged: the backtest has no late landings.
+  - **Sticky.** A trade is a loss from its loss moment: the close when the close lost, else the booking of the first late entry that takes its whole result below zero. A later gain never makes it a win again; a loss is never lowered after the fact, as with equity.
+  - **R8 timing** anchors on the streak's latest loss moment. A late loss that completes a streak starts the cooldown when it is booked, and pauses the day it is booked. The close's own day, already checked, is never rewritten.
+  - **The review window** counts a trade whose close or loss moment is after the owner's review: a loss learned after a review is new evidence. "Consecutive" and the 20-trade window keep close order.
+  - **A late loss with no dollar value** (no SOL price when it was booked) makes the trade a loss from then. This is the safe side while risk reads dollars. When SOL-BOOKS (#197) moves risk to lamports, classification reads the lamports, and the gap is gone.
+  - Rejected: option 1, the whole result with no stickiness or anchors (a late gain could lift a pause, and a flip after the cooldown triggered nothing). Option 3, re-ordering trades by loss moment (it rewrites which trades are "consecutive" after the fact).
+- **2026-10-05 · Evidence.** `packages/core/test/risk/r8-whole.test.ts`: 10 tests, all failing before the change. They cover:
+  - a flip counted from its booking and not before;
+  - R15 after a flip;
+  - a flip among the 5 in 20;
+  - late gains alone, and entries with no dollar value;
+  - stickiness;
+  - the cooldown and the day pause from the flip;
+  - the review window;
+  - equity, day loss and week loss unchanged;
+  - a future entry not read.
+  `packages/worker/test/paper-settlement.test.ts`: `account.fact` carries the late entry, and a restart reads the same.
+  Hand mutants, all caught: stickiness off, the cooldown or the day pause anchored on the close, the review filter on the close only, the as-of filter off, a no-dollar late loss ignored, R15 on the close only, and the worker mapping dropped.

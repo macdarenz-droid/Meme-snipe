@@ -828,6 +828,26 @@ describe('PAPER-2: a closed trade is settled again when something lands after it
     expect(account.resettle(closedBook(), 'p1', legs, T + DAY + 1)).toBe(false);
   });
 
+  it('R8-WHOLE: risk reads the late entry on the closed trade (for win or loss only), and a restart reads the same', () => {
+    const dir = tempState();
+    const account = new PaperAccount(accountFile(dir), 20_000_000n as MicroUsd, T, 0n);
+    account.price(PX, T);
+    const entryBook = bookOf([{ id: 'p1', status: 'open', quantity: 1_000n }], [{ id: 'in', purpose: 'entry', pid: 'p1', fills: [eIn], sigs: ['e1'] }]);
+    account.filled({ ...base, purpose: 'entry', book: entryBook, atMs: T + 1 }, PX, legsOf([att('in', 'e1', 'entry', 'filled', 'p1', eIn)]));
+    account.filled({ ...base, purpose: 'exit', book: closedBook(), atMs: T + 2 }, PX, legsOf(closeLegs, ['x1']));
+    const late = att('out', 'x2', 'exit', 'failed', 'p1', null);
+    expect(account.resettle(closedBook(), 'p1', legsOf([...closeLegs, late], ['x1']), T + DAY)).toBe(true);
+    const t = account.state.trades.find((x) => x.positionId === 'p1')!;
+    const ledger = openLedger(join(tempState(), 'ledger.sqlite'), 'paper');
+    const closed = (a: PaperAccount) => a.fact(ledger, emptyBook({ maxOpenPositions: 5 }), NO_LATCHES, PX, T + DAY).history.closedTrades;
+    expect(closed(account)).toEqual([expect.objectContaining({ netPnl: t.netPnl, late: [{ atMs: T + DAY, lamports: t.late![0]!.lamports, pnl: t.late![0]!.usd }] })]);
+    // The close's own result is unchanged: equity takes the late money once, as its late_settlement cost.
+    expect(closed(account)[0]!.netPnl).toBe(t.netPnl);
+    const restarted = new PaperAccount(accountFile(dir), 20_000_000n as MicroUsd, T + DAY + 1, 0n);
+    expect(closed(restarted)).toEqual(closed(account));
+    ledger.close();
+  });
+
   it('two late losses on two Melbourne days: risk counts each exactly once on its own day, summing to the whole change', () => {
     const account = opened();
     const start = account.state.walletLamports! - account.state.trades[0]!.booked;

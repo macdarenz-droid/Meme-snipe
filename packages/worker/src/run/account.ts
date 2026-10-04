@@ -445,6 +445,8 @@ export class PaperAccount {
     const closedTrades: ClosedTrade[] = this.#s.trades.filter((t) => t.closedAtMs !== null && t.netPnl !== null).map((t) => ({
       mint: t.mint as Mint, openedAtMs: t.openedAtMs, closedAtMs: t.closedAtMs!, notional: t.notional, netPnl: t.netPnl!, stoppedOut: t.stoppedOut,
       partials: (t.partials ?? []).map((x) => ({ atMs: x.atMs, pnl: x.pnl })),
+      // R8-WHOLE: what landed after the close, for the win/loss class only (the money reaches equity as late_settlement).
+      ...(t.late === undefined || t.late.length === 0 ? {} : { late: t.late.map((x) => ({ atMs: x.atMs, lamports: x.lamports as Lamports, pnl: x.usd })) }),
     }));
     // The wallet's setup rent is an account cost (RISK-1b `costs`): it lowers equity and counts toward the day's and
     // week's loss, and it is never a trade (R8, R11, R15 and statistics do not see it).
