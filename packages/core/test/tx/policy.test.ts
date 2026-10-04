@@ -274,9 +274,43 @@ describe('deny rules', () => {
 
   test('review note: every possible creation is charged at the largest account size, never a caller figure', () => {
     expect(MAX_CREATED_ACCOUNT_BYTES).toBe(170);
-    // Every size the builders can create or top up fits under it.
-    for (const bytes of [165, 170, 137, 151, 0]) expect(bytes).toBeLessThanOrEqual(MAX_CREATED_ACCOUNT_BYTES);
+    // Every size the real builders can create or top up fits under it. Sizes are read from the builders' own rent
+    // accounting at one lamport per byte: with every other account read as existing, the extra rent charged for one
+    // missing account is (overhead + its bytes); what is charged with nothing missing is a top-up in bytes.
+    const perByte = { ...RATES, rent: { lamportsPerByte: 1n } };
+    const overhead = rentExempt(0, perByte.rent);
+    const sizes = new Set<number>();
+    const rentOf = (req: ReturnType<typeof request>, kind: Kind, existing: ReadonlySet<Address>): bigint => {
+      const r = buildTrade(req, common(goldenOf(kind), { rates: perByte, existing }), POLICY);
+      if (!r.ok) throw new Error(r.detail);
+      return r.tx.solOut.rent;
+    };
+    for (const kind of KINDS) {
+      // Closing the token account only changes sells.
+      for (const close of kind.endsWith('sell') ? [true, false] : [true]) {
+        const real = request(kind, close);
+        const { instructions } = built(kind, close);
+        const keys = [...new Set(instructions.flatMap((ix) => ix.accounts.map((m) => m.address)))];
+        // Only a writable account can be created or topped up; read-only keys are kept as existing.
+        const writable = new Set(instructions.flatMap((ix) => ix.accounts.filter((m) => m.writable).map((m) => m.address)));
+        // The real curve, and the smallest curve the builder accepts (the largest growth to the target size).
+        const reqs = real.venue === 'curve' ? [real, { ...real, market: { ...real.market, accountBytes: 0 } }] : [real];
+        for (const req of reqs) {
+          const topUp = rentOf(req, kind, new Set(keys));
+          sizes.add(Number(topUp));
+          for (const k of writable) {
+            const extra = rentOf(req, kind, new Set(keys.filter((x) => x !== k))) - topUp;
+            if (extra > 0n) sizes.add(Number(extra - overhead));
+          }
+        }
+      }
+    }
+    // Creator-vault top-up to rent-exempt (0), accumulator, curve growth, venue quote ATA, Token-2022 base ATA.
+    expect([...sizes].sort((x, y) => x - y)).toEqual([0, 137, 151, 165, 170]);
+    for (const bytes of sizes) expect(bytes).toBeLessThanOrEqual(MAX_CREATED_ACCOUNT_BYTES);
+    // The bound is tight: some builder really creates an account of the largest size.
+    expect(Math.max(...sizes)).toBe(MAX_CREATED_ACCOUNT_BYTES);
     expect('maxRentPerAccount' in ctxFor(WALLET)).toBe(false);
-  });
+  }, 30_000);
 });
 
