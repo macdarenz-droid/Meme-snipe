@@ -6,7 +6,8 @@ import { describe, expect, it } from 'vitest';
 import { checkEnvelope } from '../../../apps/web/src/api/modes.ts';
 import { schemaFor, type Endpoint } from '../../../apps/web/src/api/schemas.ts';
 import { PATHS } from '../../../apps/web/src/api/contract.ts';
-import { COMMANDS, NOT_RUNNING, route, triggerPrice } from '../src/run/api.ts';
+import { COMMANDS, NOT_RUNNING, route, servedReason, triggerPrice } from '../src/run/api.ts';
+import { exitsFor } from '../../core/src/config/index.ts';
 import { MINT, makeWorker, passingMarket } from './worker-harness.ts';
 
 /** Test-only (POS-1): these tests move a held position's price by re-publishing the pool fact. */
@@ -81,8 +82,32 @@ describe('the app API (UI-2 contract)', () => {
     expect(pos).not.toBeNull();
     expect(pos!.mint).toBe(MINT);
     for (const x of pos!.exitRules) expect(x.trigger, x.rule).toMatch(/^(Price at or below \$\d+(\.\d+)?|After \d+ min|At \+\d+(\.\d+)?R or \+\d+(\.\d+)?%)$/);
-    expect(pos!.exitRules.map((x) => x.rule)).toEqual(expect.arrayContaining(['price-stop', 'time-stop', 'take-profit']));
+    // Review B1: the exact values, from the trial policy's exits for the position's universe and its saved stop.
+    const inputs = h.worker.apiInputs();
+    const p = Object.values(inputs.book.positions).find((x) => x.status === 'open')!;
+    const o = inputs.open(p)!;
+    const ux = exitsFor(inputs.policy.exits, o.universe as never);
+    const trigger = (rule: string, rules = pos!.exitRules) => rules.find((x) => x.rule === rule)!.trigger;
+    expect(trigger('time-stop')).toBe(`After ${ux.tMaxMs / 60_000} min`);
+    expect(trigger('take-profit')).toBe(`At +${ux.partialAtRBps / 10_000}R or +${ux.partialAtGainBps / 100}%`);
+    expect(trigger('price-stop')).toBe(`Price at or below ${triggerPrice(o.stopPrice, inputs.solPrice)}`);
+    // A trail is its own line, from the trail price, not the stop's.
+    const trail = o.stopPrice * 3n;
+    const withTrail = (route(PATHS.position('paper'), () => ({ ...inputs, open: (q) => ({ ...inputs.open(q)!, trail }) })).body as { data: { exitRules: { rule: string; trigger: string }[] } }).data.exitRules;
+    expect(trigger('trail', withTrail)).toBe(`Price at or below ${triggerPrice(trail, inputs.solPrice)}`);
+    expect(trigger('trail', withTrail)).not.toBe(trigger('price-stop', withTrail));
     await h.worker.stop();
+  });
+
+  it('a typed reasons line is served as whole JSON within the app\'s text limit, cut by entries (review N2)', () => {
+    const many = Array.from({ length: 40 }, (_, i) => ({ gate: `H${(i % 17) + 1}`, code: `code-${i}`, detail: 'x'.repeat(200) }));
+    const served = servedReason(`gate_reasons ${JSON.stringify(many)}`);
+    expect(served.length).toBeLessThanOrEqual(500);
+    const back = JSON.parse(served.slice('gate_reasons '.length)) as { gate: string; code: string }[];
+    expect(back.length).toBeGreaterThan(5);
+    expect(back).toEqual(many.slice(0, back.length).map(({ gate, code }) => ({ gate, code })));
+    expect(servedReason('x'.repeat(600))).toHaveLength(500);
+    expect(servedReason('short')).toBe('short');
   });
 
   it('an exit trigger price is dollars per token with 4 significant digits (APP-WORDS a)', () => {

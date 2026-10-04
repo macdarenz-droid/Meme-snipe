@@ -54,10 +54,20 @@ describe('worker codes in words (a)', () => {
     expect(out).not.toContain('hard reject');
   });
 
-  it('an entry with no failed check is headed by its labelled reason', () => {
+  it('an entry with no failed check is headed by its labelled reason; other decisions with none say what they were', () => {
     const entered = fixtureDecisions('paper').find((x) => x.outcome === 'entered')!;
     expect(headline({ ...entered, checks: [] })).toBe('Filled (paper)');
     expect(headline({ ...entered, checks: [], reasons: ['enter', 'U1'] })).toBe('All checks passed');
+    // Review N3: a no-trade or reject with no known reason never reads "All checks passed".
+    expect(headline({ ...entered, outcome: 'no-trade', checks: [], reasons: ['no entry', 'U1'] })).toBe('No trade');
+    expect(headline({ ...entered, outcome: 'rejected', checks: [], reasons: [] })).toBe('Rejected');
+  });
+
+  it('the worker\'s unreadable typed reasons have a label (review N1); inherited object keys are no labels (N4)', () => {
+    expect(decisionReasons([`gate_reasons ${JSON.stringify([{ gate: 'worker', code: 'unreadable' }])}`])).toEqual(['Reasons unreadable']);
+    const proto = ['constructor', 'toString', '__proto__', 'hasOwnProperty'];
+    expect(decisionReasons([`gate_reasons ${JSON.stringify(proto.flatMap((code) => [{ gate: 'R7', code }, { gate: 'worker', code }, { gate: 'stop', code }]))}`])).toEqual(['Stop distance']);
+    expect(tradeReasons({ ...fixtureTrades.paper[0]!, reasons: proto })).toEqual([]);
   });
 
   it('every new label passes the copy guard; the sample trades and decisions show no raw code', () => {

@@ -189,6 +189,7 @@ export const WORKER_CODE_LABEL: Record<string, string> = {
   'size-mismatch': 'Size mismatch',
   'hard-incomplete': 'Checks incomplete',
   'no-atr': 'Not enough price bars',
+  unreadable: 'Reasons unreadable',
 };
 
 export const VENUE_LABEL: Record<Venue, string> = { 'pump-curve': 'Pump curve', pumpswap: 'PumpSwap' };

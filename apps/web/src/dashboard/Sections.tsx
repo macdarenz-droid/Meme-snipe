@@ -192,7 +192,8 @@ const OUTCOME: Record<DecisionRecord['outcome'], string> = { entered: 'Entered',
 export function headline(d: DecisionRecord): string {
   const failed = d.checks.find((c) => c.result !== 'pass');
   if (failed) return `${CHECK_LABEL[failed.check]}${failed.value ? `: ${failed.value}` : ''}${failed.limit ? ` (needs ${failed.limit})` : ''}`;
-  return decisionReasons(d.reasons)[0] ?? 'All checks passed';
+  // An entry that names no reason passed every check; a decision with no known reason says what it was (review N3).
+  return decisionReasons(d.reasons)[0] ?? (d.outcome === 'entered' ? 'All checks passed' : OUTCOME[d.outcome]);
 }
 
 const own = (m: Record<string, string>, k: unknown): string | null => (typeof k === 'string' && Object.hasOwn(m, k) ? m[k]! : null);
