@@ -35,10 +35,13 @@ export const fixtureSession: SessionView = {
   workerConnected: true,
 };
 
-/** Addresses are 44 characters, the longest a Solana address can be. */
+/**
+ * Addresses are 44 characters, the longest a Solana address can be, and never a real one: "0", "O" and "I" are not
+ * base58, so no wallet accepts them and nothing sent can reach an address nobody controls (SAMPLE-QR).
+ */
 export const fixtureWallet: WalletView = {
-  botAddress: 'FAKEbotWa11et9kQmZr7Hc2VnX4pLdT8sYwB3uJeGfNq',
-  savedWallet: 'FAKEsavedWa11etR5mKz2Qh8VcN6pXdL3sTwY9uBjEW',
+  botAddress: 'SAMPLE0BOT0WALLET000000000000000000000000000',
+  savedWallet: 'SAMPLE0SAVED0WALLET0000000000000000000000000',
   availableUsd: 23812.4,
   balanceSol: '138.456',
   solAud: '171.58',
