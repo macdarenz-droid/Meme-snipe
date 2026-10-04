@@ -52,10 +52,9 @@ describe('BT-2 study runs', () => {
     const { trades } = tradesOf(r, FILL_CONFIG);
     expect(trades).toHaveLength(1);
     expect(trades[0]!.exitReason).toBe('time-stop');
-    // BT-1c's conservative scenario keeps the token-account rent lost (rentRecovery false; the account-close outcome
-    // model is the scenario's own), so none comes back here.
-    expect(trades[0]!.rentReturned).toBe(FILL_CONFIG.scenarios.conservative.rentRecovery ? FILL_CONFIG.network.tokenAccountRent : 0n);
-    expect(FILL_CONFIG.scenarios.conservative.rentRecovery).toBe(false);
+    // RENT-1 (base): the token-account rent comes back exactly when a sell-and-close landed, in every scenario.
+    const closed = r.attempts.some((a) => a.purpose === 'exit' && a.closedAccount);
+    expect(trades[0]!.rentReturned).toBe(closed ? FILL_CONFIG.network.tokenAccountRent : 0n);
     // The exit came from EXIT-1's rules, booked under a lifecycle reason.
     expect(decisions(r.records).some((d) => /^exit (time_flat|time_max|price_stop|take_profit|negative_flow|trailing_stop|break_even|liquidity_drop)/.test(d.reasons[0]!))).toBe(true);
   });

@@ -71,7 +71,6 @@ const slippageLamports = (a: AttemptRecord): bigint => {
 export const tradesOf = (r: RunResult, fills: FillConfig): { readonly trades: TradeRecord[]; readonly stray: StrayCost[] } => {
   const net = fills.network;
   const base = net.signaturesPerTx * net.baseFeePerSignature;
-  const scenario = fills.scenarios[r.scenario];
   const byIntent = new Map<string, AttemptRecord[]>();
   for (const a of r.attempts) byIntent.set(a.intentId, [...(byIntent.get(a.intentId) ?? []), a]);
   const trades: TradeRecord[] = [];
@@ -158,7 +157,9 @@ export const tradesOf = (r: RunResult, fills: FillConfig): { readonly trades: Tr
     const firstOfEntry = !rentCharged.has(p.entryIntentId);
     rentCharged.add(p.entryIntentId);
     const rentPaid = firstOfEntry ? net.tokenAccountRent : 0n;
-    const rentReturned = firstOfEntry && scenario.rentRecovery && closedEntries.has(p.entryIntentId) ? rentPaid : 0n;
+    // RENT-1: the rent comes back exactly when a sell-and-close landed (the fill model draws it per attempt), in every
+    // scenario; the no-recovery line stays a reported sensitivity (economics), never the score.
+    const rentReturned = firstOfEntry && closedEntries.has(p.entryIntentId) ? rentPaid : 0n;
     const closedAt = blocked ? r.endedAt : Math.max(...sold.map((a) => a.landedAt ?? 0));
     trades.push({
       id: p.id, mint: p.mint, symbol: r.symbols.get(p.mint) ?? p.mint.slice(0, 6),
