@@ -1245,8 +1245,10 @@ export class LiveStrategy implements Strategy {
         status: p.status, quantity: p.quantity, sold: p.sold, costBasis: p.cost + entryFees + exitFees, realized,
         exitCost: n.signaturesPerTx * n.baseFeePerSignature + this.#d.session.policy.exits.ladder.steps[0]!.priorityFeeLamports + n.tip,
         exitSeq: p.exitSeq, exitAttempts: exitAttemptsOf(ctx.book.intents, p.id),
-        // Paper: the paper wallet's token account holds exactly our tokens, and a paper sell-and-close never fails at
-        // the close (no dust or outside transfer exists in the paper world).
+        // The engine sees only the book, so it plans a clean account. Whether a sell closes the account is settled where
+        // it lands (PAPER-1): the paper world draws dust and close failures with the backtest's model (core's
+        // TokenAccounts), a failed close fails that attempt and the retry sells from a sell-only account. Live, the
+        // signer reads the real account (a before-live item, DECISIONS).
         tokenAccountBalance: p.quantity, closeFailed: false,
       };
       const m = this.#market(ctx, p.mint);

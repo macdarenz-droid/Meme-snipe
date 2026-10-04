@@ -10,7 +10,8 @@ import type { Policy } from '../../../core/src/config/index.ts';
 import type { Book, ExitReason as BookExitReason, PositionState } from '../../../core/src/lifecycle/index.ts';
 import { melbourneDay } from '../../../core/src/risk/index.ts';
 import { type Lamports, type MicroUsd, lamportsToMicroUsd } from '../../../core/src/units/index.ts';
-import type { PaperTrade } from './account.ts';
+import { type TradeUsd, tradeUsd } from '../../../core/src/fills/index.ts';
+import { type PaperLegs, type PaperTrade, paperTradeLamports } from './account.ts';
 import type { PaperAttempt } from './paper-world.ts';
 import { SEEDING, STOPS_EVERY_MS } from '../engine/strategy.ts';
 import type { LogRecord } from '../../../core/src/engine/index.ts';
@@ -151,6 +152,8 @@ export interface ApiInputs {
   readonly book: Book;
   readonly trades: readonly PaperTrade[];
   readonly attempts: ReadonlyMap<string, PaperAttempt>;
+  /** What a trade settles from (PAPER-1): the attempts again, the network terms and which sells closed an account. */
+  readonly legs: PaperLegs;
   readonly decisions: readonly DecisionRow[];
   readonly funnel: FunnelState;
   readonly solPrice: MicroUsd | null;
@@ -438,28 +441,52 @@ export const views = {
       if (peak - cum > dd) dd = peak - cum;
     }
     const n = closed.length;
+    const netSol = closed.reduce((s, t) => s + (t.netLamports ?? 0n), 0n);
+    const solMove = closed.reduce((s, t) => {
+      const v = settledUsd(i, t);
+      return s + (v === null ? 0n : t.netPnl! - v.trading);
+    }, 0n);
     return {
-      mode: MODE, trades: n, requiredTrades: 30, netUsd: usdText(net), maxDrawdownUsd: usdText(dd),
+      mode: MODE, trades: n, requiredTrades: 30, netUsd: usdText(net), netSol: solText(netSol), solMoveUsd: usdText(solMove), maxDrawdownUsd: usdText(dd),
       winRate: n === 0 ? null : (nets.filter((x) => x > 0n).length / n).toFixed(4), meanNetUsd: n === 0 ? null : usdText(net / BigInt(n)),
       meanR: null, ci95: null,
     };
   },
 };
 
-/** One closed trade's costs in micro-dollars, by the app's cost kinds (rent is not modelled by the paper fill: 0). */
+/**
+ * One closed trade settled as the backtest settles it (PAPER-1): core's `tradeUsd` on the trade's lamports, the entry
+ * leg at the entry's SOL price and the exit leg at the close's. Null when either price was unknown (then the account
+ * booked the notional as lost, and the dollar parts are not split).
+ */
+const settledUsd = (i: ApiInputs, t: PaperTrade): TradeUsd | null => {
+  const l = paperTradeLamports(i.book, t.positionId, i.legs);
+  const pxIn = t.openSolPrice ?? null;
+  const pxOut = t.closeSolPrice ?? null;
+  return l === null || pxIn === null || pxOut === null ? null : tradeUsd(l, pxIn, pxOut);
+};
+
+/** One closed trade's costs in micro-dollars, by the app's cost kinds; rent counts only what was not returned. */
 const costsOf = (i: ApiInputs, t: PaperTrade) => {
-  const price = t.closeSolPrice ?? t.openSolPrice ?? i.solPrice;
-  const sum = (f: (c: NonNullable<PaperAttempt['costs']>) => bigint) => fillsOf(i, t.positionId).reduce((s, a) => s + (a.costs === undefined ? 0n : f(a.costs)), 0n);
+  const v = settledUsd(i, t);
+  const c = v?.costs;
   const kinds = {
-    venueFeeUsd: lamportsUsd(sum((c) => c.venueFee), price), creatorFeeUsd: lamportsUsd(sum((c) => c.creatorFee), price),
-    priorityFeeUsd: lamportsUsd(sum((c) => c.priority), price), tipUsd: lamportsUsd(sum((c) => c.tip), price),
-    networkFeeUsd: lamportsUsd(sum((c) => c.base), price), slippageUsd: lamportsUsd(sum((c) => c.slippage), price), rentKeptUsd: 0n,
+    venueFeeUsd: c?.venue ?? 0n, creatorFeeUsd: c?.creator ?? 0n, priorityFeeUsd: c?.priority ?? 0n, tipUsd: c?.tip ?? 0n,
+    networkFeeUsd: c?.network ?? 0n, slippageUsd: c?.slippage ?? 0n, rentKeptUsd: c === undefined ? 0n : c.rentPaid - c.rentReturned,
   };
-  return { kinds, total: Object.values(kinds).reduce((s, v) => s + v, 0n) };
+  return { v, kinds, total: v?.total ?? 0n };
+};
+
+/** Lamports as a SOL decimal string (9 places, exact). */
+const solText = (lamports: bigint): string => {
+  const neg = lamports < 0n;
+  const a = neg ? -lamports : lamports;
+  return `${neg ? '-' : ''}${a / LAMPORTS_PER_SOL}.${(a % LAMPORTS_PER_SOL).toString().padStart(9, '0')}`;
 };
 
 const tradeRecord = (i: ApiInputs, t: PaperTrade) => {
-  const price = t.closeSolPrice ?? t.openSolPrice ?? i.solPrice;
+  const pxIn = t.openSolPrice ?? t.closeSolPrice ?? i.solPrice;
+  const pxOut = t.closeSolPrice ?? pxIn;
   const fills = fillsOf(i, t.positionId);
   const buys = fills.filter((a) => a.purpose === 'entry');
   const sells = fills.filter((a) => a.purpose === 'exit');
@@ -467,27 +494,31 @@ const tradeRecord = (i: ApiInputs, t: PaperTrade) => {
   const tok = (xs: PaperAttempt[]) => xs.reduce((s, a) => s + (a.fill?.tokens ?? 0n), 0n);
   const c = costsOf(i, t);
   const net = t.netPnl ?? 0n;
+  // The dollar result split in two: the SOL result at the close's price, and SOL's own move over the trade.
+  const trading = c.v === null ? net : c.v.trading;
   const attemptsOf = (intent: string) => i.book.intents[intent]?.attempts.length ?? 1;
   const reason = (t.exitReasons ?? []).find((r): r is BookExitReason => r in EXIT_REASON);
   return {
     mode: MODE, id: t.positionId, mint: t.mint, symbol: i.symbol(t.mint), venue: 'pumpswap', universe: 'U2',
     strategyVersion: i.strategyVersion, policyVersion: i.policyVersion, openedAt: iso(t.openedAtMs), closedAt: iso(t.closedAtMs!),
     holdSeconds: Math.max(0, Math.round((t.closedAtMs! - t.openedAtMs) / 1000)),
-    entryPriceUsd: priceText(sol(buys), tok(buys), t.openSolPrice ?? price), exitPriceUsd: priceText(sol(sells), tok(sells), price),
+    entryPriceUsd: priceText(sol(buys), tok(buys), pxIn), exitPriceUsd: priceText(sol(sells), tok(sells), pxOut),
     sizeUsd: usdText(t.notional), grossUsd: usdText(net + c.total),
     costs: {
       venueFeeUsd: usdText(c.kinds.venueFeeUsd), creatorFeeUsd: usdText(c.kinds.creatorFeeUsd), priorityFeeUsd: usdText(c.kinds.priorityFeeUsd),
       tipUsd: usdText(c.kinds.tipUsd), networkFeeUsd: usdText(c.kinds.networkFeeUsd), slippageUsd: usdText(c.kinds.slippageUsd),
-      rentPaidUsd: '0', rentReturnedUsd: '0', totalUsd: usdText(c.total),
+      rentPaidUsd: usdText(c.v?.costs.rentPaid ?? 0n), rentReturnedUsd: usdText(c.v?.costs.rentReturned ?? 0n), totalUsd: usdText(c.total),
     },
-    netUsd: usdText(net), plannedR: null, realizedR: null, mfeR: null, maeR: null,
+    netUsd: usdText(net), netSol: solText(t.netLamports ?? 0n), tradingUsd: usdText(trading), solMoveUsd: usdText(net - trading),
+    plannedR: null, realizedR: null, mfeR: null, maeR: null,
     exitReason: reason === undefined ? 'blocked' : EXIT_REASON[reason], reasons: [...(t.exitReasons ?? [])], checks: [],
     fills: fills.map((a) => {
       const buy = a.purpose === 'entry';
       const f = a.fill!;
+      const price = buy ? pxIn : pxOut;
       // Buys: what we paid against the spend we sent, and tokens against the quote; sells: lamports against the quote.
       const quoted = buy ? a.inAmount : a.quotedOut;
-      const filled = buy ? f.sol : f.sol;
+      const filled = f.sol;
       const shortBps = buy ? (a.quotedOut > 0n ? Number(((a.quotedOut - f.tokens) * 10_000n) / a.quotedOut) : 0) : (a.quotedOut > 0n ? Number(((a.quotedOut - f.sol) * 10_000n) / a.quotedOut) : 0);
       return {
         mode: MODE, side: buy ? 'buy' : 'sell', at: iso(a.sentAtMs ?? t.openedAtMs), slot: null, signature: null,
