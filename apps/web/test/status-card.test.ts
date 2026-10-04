@@ -45,9 +45,10 @@ describe('worker card', () => {
     expect(statusRows(status(['paused', 'exit-pending'])).map((r) => r.alert)).toEqual([false, false]);
   });
 
-  it('never claims entries are on or exits are ready: the worker does not serve that yet', () => {
+  it('never claims entries are on, exits are ready or no alerts: with no proven row it renders nothing', () => {
     expect(rows([])).toEqual([]);
-    expect(text(status([]))).toBe('No alerts');
+    expect(renderToStaticMarkup(h(StatusCard, { status: status([]) }))).toBe('');
+    expect(text(status(['budget-halt']))).not.toContain('No alerts');
     for (const f of STATUS_FLAGS) expect(text(status([f]))).not.toMatch(/\bOn\b|Ready/);
   });
 

@@ -80,7 +80,8 @@ export const statusRows = (status: WorkerStatus): StatusRow[] => {
 export function StatusCard({ status }: { status: WorkerStatus }) {
   if (!status.connected) return <span className="badge badge-neutral">Worker not connected</span>;
   const rows = statusRows(status);
-  if (rows.length === 0) return <span className="muted small">No alerts</span>;
+  // No proven row: nothing. "No alerts" would claim what the flags cannot show.
+  if (rows.length === 0) return null;
   return (
     <dl className="status-list" aria-label="Worker state">
       {rows.map((r) => (
