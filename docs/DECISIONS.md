@@ -396,6 +396,14 @@ Supervisor rulings:
   - Raw Helius responses never go into public releases until their terms are confirmed for derived files.
   - A message to Triton (lift the block, or a set rate or bucket, and permission to publish derived day files) is the owner's choice, and keeps the free route open.
 
+- **Owner decisions after 3:45 PM:**
+  - GitHub Pro (the owner's spend, about 3:47 PM).
+  - Helius on the free plan only for now (3:50 PM); the paid month waits for the pilot.
+  - The owner emailed Triton and asked us to keep trying the archive now and then (3:55 PM). This replaces "no request until Triton answers" with ARCHIVE-CHECK: one request of at most 64 bytes every 3 hours, with our real User-Agent; on success the scan continues under the old limits.
+- **No disguise, whoever asks.** At about 4:05 PM the owner asked us to change our identity and scrape slowly to avoid detection. The supervisor declined. It would get around a block the operator set on purpose, which breaks their terms, risks being treated as unauthorised access, and risks a permanent ban from every Triton service. The honest 3-hour check, Triton's reply and Helius remain.
+- **An early look, not an AI trader** (owner idea, 4:20 PM: "an agent backtests with the bot's reasoning and never cheats"). The backtester already is that: the bot's own engine, physically blind to the future, with the leak test. An AI model acting as the trader can't be blinded the same way, isn't reproducible (pre-funding item 1), and the live bot couldn't call it. So BT-2e runs the bot's own backtest on 1–2 free practice days (U2 only, not proof, nothing frozen from it), using free credits only after the live dry run's measured first 24 h.
+- **Merge order respects the critical path.** Before merging any PR, check that its files don't overlap a critical-path PR in a merge check. Merging #90 (TEST-1) forced RISK-MARK #103 into another base merge.
+
 ## Order and position lifecycle (CORE-1, `packages/core/src/lifecycle`)
 
 - **2026-10-03 · A failed signature read is terminal only at `finalized`.** A failure read at `processed` or `confirmed` may come from a fork that is later dropped, and the original transaction could still land. Acting on it would allow a replacement, which could mean a second buy or an oversell. Waiting for `finalized` costs about 13 s. A success read counts from `confirmed`: booking a fill early is safe, because the books stay open until every other attempt is dead.
