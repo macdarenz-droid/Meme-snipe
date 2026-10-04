@@ -523,6 +523,36 @@ describe('an exit owner never waits booked blocked for a fresh market (EXIT-1d)'
   });
 });
 
+describe('a restored position is never managed from a plan it was not entered with (EXIT-1e)', () => {
+  it('boot 2 sees a market event before its restore fact: no "no entry plan" line, no stop from the policy-maximum plan, the saved plan kept', async () => {
+    const h = makeWorker();
+    const m = await entered(h);
+    const pid = positions(h).find((p) => p.status === 'open')!.id;
+    const before = h.worker.strategy.saved()[pid]!;
+    await h.worker.kill();
+    const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers });
+    const m2 = new Market(h2);
+    // A market event dated before the boot's restore fact (the start facts are dated 1 ms after the last restored frame).
+    m2.slot();
+    m2.pool();
+    expect(await h2.worker.reconcile()).toEqual({ ok: true });
+    await m2.run(2_000, 400, () => {
+      m2.slot();
+      m2.pool();
+    });
+    const mine = () => lines(h.stateDir).filter((l) => l['boot'] === h2.worker.boot && l['kind'] === 'decision');
+    expect(mine().filter((l) => (l['reasons'] as string[])[0] === 'no entry plan')).toEqual([]);
+    expect(mine().filter((l) => (l['reasons'] as string[])[0] === 'entry plan')).toEqual([]);
+    expect(h2.worker.strategy.saved()[pid]!.plan).toEqual(before.plan);
+    expect(h2.worker.strategy.saved()[pid]!.tracker.peak).toBe(before.tracker.peak);
+    // The wait is said once; nothing exits at an unchanged price; the position stays open and managed after the restore.
+    expect(mine().filter((l) => (l['reasons'] as string[])[0] === 'positions wait for the restore')).toHaveLength(1);
+    expect(mine().some((l) => l['action'] === 'trigger_exit')).toBe(false);
+    expect(h2.worker.book.positions[pid]!.status).toBe('open');
+    await h2.worker.stop();
+  });
+});
+
 describe('the --reconcile entry (the host unit\'s ExecStartPre)', () => {
   it('settles what a killed worker left open, writes open_intents 0 and exits 0, as a separate process', async () => {
     const h = makeWorker();

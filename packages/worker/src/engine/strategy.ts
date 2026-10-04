@@ -278,6 +278,14 @@ export class LiveStrategy implements Strategy {
 
   /** Positions whose partials were checked against the book in this process. */
   readonly #fromBook = new Set<string>();
+  /**
+   * Whether this boot's restore fact (saved plans and trackers) has been applied, refused or not. Until then no position
+   * is managed: the stored book comes back first, and the boot's other start facts (or a market event dated before the
+   * restore) must never plan a restored position from its fill under the policy-maximum stop, even for one step (EXIT-1e).
+   */
+  #restoreSeen = false;
+  /** Said once per boot when positions wait for the restore. */
+  #saidRestoreWait = false;
 
   /** The fee terms of the latest swap seen on a mint's pool (for the paper fill when no fee-context fact exists). */
   observedFees(mint: string): PoolFeeContext | undefined {
@@ -374,6 +382,7 @@ export class LiveStrategy implements Strategy {
   }
 
   #restore(v: unknown, out: Decision[]): void {
+    this.#restoreSeen = true;
     if (!isObj(v) || !isObj(v['exits'])) {
       out.push({ action: null, reasons: ['restore refused', 'malformed restore fact'] });
       return;
@@ -735,6 +744,13 @@ export class LiveStrategy implements Strategy {
         continue;
       }
       if (p.status === 'opening') continue;
+      if (!this.#restoreSeen) {
+        if (!this.#saidRestoreWait) {
+          this.#saidRestoreWait = true;
+          out.push({ action: null, reasons: ['positions wait for the restore', `${Object.values(ctx.book.positions).filter((x) => x.status !== 'closed' && x.status !== 'opening').length} open`] });
+        }
+        return;
+      }
       let saved = this.#exits.get(p.id) ?? this.#planFromFill(p.id, p.entryIntentId, ctx, out);
       if (saved === null) continue;
       const exitIntents = Object.values(ctx.book.intents).filter((i) => i.intent.purpose === 'exit' && i.intent.positionId === p.id);
