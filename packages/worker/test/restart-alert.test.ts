@@ -1,12 +1,13 @@
 // RESTART-ALERT, worker side: each heartbeat says how the previous process ended, read from the journal's last line, so
 // the watchdog can name the cause of an unplanned restart (a kill or an OOM leaves no stop line).
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { crashSite } from '../src/run/crash-site.ts';
 import { heartbeatBody } from '../src/run/heartbeat.ts';
 import { EXIT, STATE_FILES } from '../../runner/src/contract.ts';
-import { existsSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { PLANNED_RESTART_MS } from '../src/run/worker.ts';
-import { makeWorker, tempState, virtualTimers, T } from './worker-harness.ts';
+import { Market, makeWorker, tempState, virtualTimers, T } from './worker-harness.ts';
 
 describe('the previous exit, in /health and the heartbeat', () => {
   it('null on a first start; "stop: signal" after a clean stop; "stop: crash" after a caught failure; "no clean stop" after a kill', async () => {
@@ -52,3 +53,60 @@ describe('the previous exit, in /health and the heartbeat', () => {
   });
 });
 
+
+describe('where a crash happened, never what it said (RESTART-ALERT)', () => {
+  const SECRET_URL = 'https://mainnet.helius-rpc.com/?api-key=sk-live-0123456789abcdef&cluster=mainnet';
+  const secretError = (): Error => new TypeError(`fetch failed for ${SECRET_URL}`);
+  const clean = (s: string): void => {
+    expect(s).not.toMatch(/api-key|sk-live|https?:|helius-rpc|\?|fetch failed/);
+  };
+
+  it('crashSite keeps the name, the first frame in packages/ and the event kind; the message, URL and key never', () => {
+    const site = crashSite(secretError(), `logs:pump:CreateEvent:${'M'.repeat(44)}`);
+    expect(site).toMatch(/^TypeError at packages\/worker\/test\/restart-alert\.test\.ts:\d+ during logs:pump:CreateEvent$/);
+    clean(site);
+    expect(crashSite('a string with https://x/?api-key=1')).toBe('non-error at no frame in packages/');
+    const odd = new Error(SECRET_URL);
+    odd.name = `Bad ${SECRET_URL}`;
+    clean(crashSite(odd));
+  });
+
+  it('an engine step that throws: the next boot and its heartbeat name the place, not the URL or key', async () => {
+    const stateDir = tempState();
+    const timers = virtualTimers(T);
+    const h = makeWorker({ stateDir, timers, seedWaitMs: 0 });
+    const m = new Market(h);
+    const started = h.worker.start();
+    while (!h.order.includes('start helius-ws')) await new Promise<void>((r) => setImmediate(r));
+    m.slot();
+    expect(await started).toEqual({ ok: true });
+    await m.run(1_000, 200, () => m.slot());
+    vi.spyOn(h.worker, 'step').mockImplementation(() => {
+      throw secretError();
+    });
+    // The worker's own loop (not the test) calls step on its timer: the failure stops it with a crash.
+    const journal = join(stateDir, STATE_FILES.journal);
+    for (let k = 0; k < 2_000 && !readFileSync(journal, 'utf8').trimEnd().split('\n').at(-1)!.includes('"kind":"stop"'); k++) await new Promise<void>((r) => setImmediate(r));
+    expect(process.exitCode).toBe(EXIT.crash);
+    process.exitCode = 0;
+    const next = makeWorker({ stateDir, timers });
+    const health = next.worker.health();
+    expect(health.last_exit).toMatch(/^stop: crash \(TypeError at packages\/worker\/test\/restart-alert\.test\.ts:\d+ during [A-Za-z0-9_.:\/-]+\)$/);
+    const body = heartbeatBody(health, null, null);
+    clean(String(health.last_exit));
+    expect(body).not.toMatch(/api-key|sk-live|helius-rpc\.com\/\?/);
+    await next.worker.stop();
+  });
+
+  it('an uncaught exception (main\'s fatal handler): the stop line names the place, not the URL or key', async () => {
+    const stateDir = tempState();
+    const h = makeWorker({ stateDir });
+    await h.worker.reconcile();
+    h.worker.crashed(secretError());
+    await h.worker.kill();
+    const next = makeWorker({ stateDir });
+    expect(next.worker.health().last_exit).toMatch(/^stop: crash \(TypeError at packages\/worker\/test\/restart-alert\.test\.ts:\d+\)$/);
+    clean(String(next.worker.health().last_exit));
+    await next.worker.stop();
+  });
+});

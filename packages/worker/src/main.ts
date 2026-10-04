@@ -80,6 +80,8 @@ log(`Credentials present: ${environment.present.length} of 3 provider keys; hear
 
 const fatal = (e: unknown): never => {
   fail(`Worker crashed: ${e instanceof Error ? `${e.name}: ${e.message}` : 'error'}`);
+  // RESTART-ALERT: the stop line names where (never the message), for the next boot's heartbeat.
+  worker?.crashed(e);
   process.exit(EXIT.crash);
 };
 process.on('uncaughtException', fatal);

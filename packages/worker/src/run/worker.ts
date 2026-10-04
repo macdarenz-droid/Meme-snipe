@@ -41,6 +41,7 @@ import type { FactContext, FactSource } from './facts.ts';
 import { engineFeed, type EngineFeed } from './engine-feed.ts';
 import { startHealthServer } from './health.ts';
 import { type HeartbeatPosition, heartbeatBody, sendHeartbeat } from './heartbeat.ts';
+import { crashSite } from './crash-site.ts';
 import { Summarizer, nextSummaryDelay } from './summary.ts';
 import { jsonText } from './json.ts';
 import { Journal } from './journal.ts';
@@ -1236,7 +1237,7 @@ export class Worker {
       } catch (e) {
         d.log(`Engine step failed: ${e instanceof Error ? `${e.name}: ${e.message}` : 'error'}`);
         process.exitCode = EXIT.crash;
-        void this.stop(EXIT.crash);
+        void this.stop(EXIT.crash, crashSite(e, this.#engine.lastHandled));
         return;
       }
       this.#loop = d.timers.setTimeout(loop, d.loopMs);
@@ -1617,7 +1618,8 @@ export class Worker {
   }
 
   /** Clean stop: entries stop, simulations finish (bounded), journal and recorder close, the ledger closes. */
-  async stop(code: number = EXIT.clean): Promise<number> {
+  /** `crash`: where a crash happened (crash-site.ts), written on the stop line for the next boot's `last_exit`. */
+  async stop(code: number = EXIT.clean, crash?: string): Promise<number> {
     if (this.#stopping) return code;
     this.#stopping = true;
     const d = this.#d;
@@ -1642,13 +1644,24 @@ export class Worker {
     // Past this point the state files belong to the next process: a simulation answering late writes nothing.
     this.#world.stop();
     const open = Object.values(this.#engine.book.positions).filter((p) => p.status !== 'closed').map((p) => p.id);
-    this.#journal.write('stop', { open_positions: open, open_intents: openIntents(this.#desk.book), reasons: [code === EXIT.clean ? 'signal' : 'crash'] });
+    this.#journal.write('stop', { open_positions: open, open_intents: openIntents(this.#desk.book), reasons: code === EXIT.clean ? ['signal'] : crash === undefined ? ['crash'] : ['crash', crash] });
     this.#recorder?.close();
     this.#ledger.close();
     if (code === EXIT.clean) writeFileSync(join(d.config.stateDir, STATE_FILES.cleanStop), new Date(d.timers.now()).toISOString());
     await new Promise<void>((r) => (this.#server === null ? r() : this.#server.close(() => r())));
     await new Promise<void>((r) => (this.#api === null ? r() : this.#api.close(() => r())));
     return code;
+  }
+
+  /**
+   * An uncaught exception or rejection (main's fatal handler): the stop line, with where it happened, is written at once,
+   * since the process exits right after. Nothing else runs; the next boot reconciles as after any crash.
+   */
+  crashed(e: unknown): void {
+    try {
+      const open = Object.values(this.#engine.book.positions).filter((p) => p.status !== 'closed').map((p) => p.id);
+      this.#journal.write('stop', { open_positions: open, open_intents: openIntents(this.#desk.book), reasons: ['crash', crashSite(e)] });
+    } catch {}
   }
 
   /**

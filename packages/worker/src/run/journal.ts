@@ -83,8 +83,10 @@ export class Journal {
       if (good !== undefined) {
         const l = JSON.parse(good) as { seq: number; ts?: string; kind?: string; reasons?: unknown };
         this.#seq = l.seq;
-        const reason = Array.isArray(l.reasons) && typeof l.reasons[0] === 'string' ? l.reasons[0] : 'no reason';
-        this.previousExit = l.kind === 'stop' ? `stop: ${reason}` : 'no clean stop';
+        const reasons = Array.isArray(l.reasons) ? l.reasons.filter((r): r is string => typeof r === 'string') : [];
+        // A crash's stop line carries where it happened second (crash-site.ts: never the error's message).
+        const where = reasons[1] === undefined ? '' : ` (${reasons[1].slice(0, 200)})`;
+        this.previousExit = l.kind === 'stop' ? `stop: ${reasons[0] ?? 'no reason'}${where}` : 'no clean stop';
         const t = typeof l.ts === 'string' ? Date.parse(l.ts) : Number.NaN;
         this.previousMs = Number.isFinite(t) ? t : null;
       }
