@@ -465,3 +465,68 @@ func TestFinalizeRoutesDelegationsByDayWithoutTape(t *testing.T) {
 		t.Fatalf("out-of-order delegation rows accepted")
 	}
 }
+
+func TestFinalizeVolumeHoursSolQuotedCurveAndCanonicalPoolsOnly(t *testing.T) {
+	f := &fixture{t: t, out: t.TempDir()}
+	d := day("2026-09-01")
+	u := spanUnit(1, 1000, d-3600, d+86400+1800)
+	f.spanUnit(u)
+	dir := filepath.Join(f.out, "units", "1", strconv.FormatUint(u.from, 10)+"-"+strconv.FormatUint(u.to, 10))
+	const mint, pool = "8rjKP44zZewzNGx6DyF3Ck1Ub6y45pXbures2Dx3pump", "62jTpYEzdU7a8ayjgedtU7J43fqesgYRfJAi8rX7VgJS"
+	ag := func(hour int64, venue, m, p, q string, buy, sell uint64) []string {
+		return []string{strconv.FormatInt(hour, 10), venue, m, p, q, "1", "1", strconv.FormatUint(buy, 10), strconv.FormatUint(sell, 10),
+			"1", "1", "1", "2", "1", "1", "1", "1", "0", "1", "1"}
+	}
+	h := d + 5*3600
+	writeZst(t, filepath.Join(dir, "agg_hourly.csv.zst"), csvBytes(aggCols, [][]string{
+		ag(h, "curve", "SolCurveAAAA", "", "", 100, 10),                                           // SOL curve, old layout (no quote_mint)
+		ag(h, "curve", "SolCurveBBBB", "", systemProgramID, 200, 20),                              // SOL curve
+		ag(h, "curve", "UsdcCurve", "", "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", 9e9, 9e9), // quoted in another token: excluded
+		ag(h, "amm", mint, pool, wsolMint, 1000, 300),                                             // canonical pool, WSOL
+		ag(h, "amm", mint, "NotCanonicalPoolXXXXXXXXXXXXXXXXXXXXXXXXXX", wsolMint, 7e9, 7e9),      // other pool: excluded
+		ag(d-3600, "curve", "Before", "", "", 5e9, 5e9),                                           // before the day: not in it
+	}))
+	ds := t.TempDir()
+	if err := Finalize(f.out, ds, "2026-09-01", "2026-09-02", finalizeOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	var rows [][]string
+	files, _ := filepath.Glob(filepath.Join(ds, "days", "2026-09-01", "volume_hours-*.csv.zst"))
+	for _, p := range files {
+		readCSVZst(p, func(rec []string) error { rows = append(rows, append([]string{}, rec...)); return nil })
+	}
+	if len(rows) != 25 || strings.Join(rows[0], ",") != strings.Join(volumeHourCols, ",") {
+		t.Fatalf("want header + 24 hours, got %d rows (%v)", len(rows), rows[:1])
+	}
+	for i, r := range rows[1:] {
+		want := "0"
+		if i == 5 {
+			want = strconv.Itoa(110 + 220 + 1300)
+		}
+		if r[0] != strconv.FormatInt((d+int64(i)*3600)*1000, 10) || r[1] != want || r[2] != "1" {
+			t.Fatalf("hour %d: got %v, want lamports %s covered 1", i, r, want)
+		}
+	}
+	// a unit that ends mid-day: hours past the coverage are not covered
+	f2 := &fixture{t: t, out: t.TempDir()}
+	u2 := spanUnit(1, 1000, d-3600, d+10*3600)
+	f2.spanUnit(u2)
+	ds2 := t.TempDir()
+	if err := Finalize(f2.out, ds2, "2026-09-01", "2026-09-02", finalizeOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	rows = nil
+	files, _ = filepath.Glob(filepath.Join(ds2, "days", "2026-09-01", "volume_hours-*.csv.zst"))
+	for _, p := range files {
+		readCSVZst(p, func(rec []string) error { rows = append(rows, append([]string{}, rec...)); return nil })
+	}
+	for i, r := range rows[1:] {
+		want := "1"
+		if i >= 10 {
+			want = "0"
+		}
+		if r[2] != want {
+			t.Fatalf("partial coverage, hour %d: covered %s, want %s", i, r[2], want)
+		}
+	}
+}
