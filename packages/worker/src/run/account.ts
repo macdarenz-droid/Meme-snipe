@@ -276,17 +276,25 @@ export class PaperAccount {
    * bounded). Risk's day and week windows never reach them; the total keeps their effect on equity, dated at the latest
    * folded record, which only moves those costs later and so can only lower equity in between (the safe side). Every
    * attempt sent at or before that moment is in the total, so a signature seen again is never charged twice; an entry
-   * still unresolved holds the fold back to before its first attempt.
+   * still unresolved, or an ended one with a fee not yet booked (no SOL price), holds the fold back to before it.
    */
   #fold(book: Book, legs: PaperLegs, nowMs: number): boolean {
     const records = this.#s.strayFees;
     if (records === undefined) return false;
     let before = melbourneWeek(nowMs).start;
+    const folded = this.#s.strayFolded;
     for (const i of Object.values(book.intents)) {
-      if (i.intent.purpose !== 'entry' || isTerminal(i)) continue;
+      if (i.intent.purpose !== 'entry' || i.fills.length > 0) continue;
+      const ended = isTerminal(i);
       for (const att of i.attempts) {
-        const sent = legs.attempts.get(att.signature)?.sentAtMs;
-        if (sent !== undefined && sent <= before) before = sent - 1;
+        const a = legs.attempts.get(att.signature);
+        const sent = a?.sentAtMs;
+        if (a === undefined || sent === undefined || sent > before) continue;
+        // An entry still running, or an ended one whose fee is not booked yet (no SOL price then; risk review of #133):
+        // the fold stays before it, so the booking that comes later is never taken for one already folded.
+        const f = feeParts(legs.network, a.priorityFee, a.outcome);
+        const unbooked = ended && records[att.signature] === undefined && (folded === undefined || sent > folded.atMs) && f.base + f.priority + f.tip > 0n;
+        if (!ended || unbooked) before = sent - 1;
       }
     }
     const old = Object.entries(records).filter(([, r]) => r.atMs < before);
