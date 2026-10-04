@@ -1,5 +1,5 @@
-import { STATUS_FLAGS, type Mode } from './contract.ts';
-import { arr, bool, day, dec, fail, int, iso, modeIs, nullable, obj, oneOf, re, str, usd, type Check } from './schema.ts';
+import { ALERT_CODES, HALT_CODES, REGIME_REASON_CODES, STATUS_FLAGS, WAIVED_PARTS, type Mode } from './contract.ts';
+import { arr, bool, day, dec, fail, int, iso, modeIs, nullable, obj, oneOf, optional, re, str, usd, type Check } from './schema.ts';
 
 /**
  * Strict schemas for every worker endpoint, one per contract type in
@@ -8,9 +8,11 @@ import { arr, bool, day, dec, fail, int, iso, modeIs, nullable, obj, oneOf, re, 
  * decimal anywhere rejects the whole response.
  */
 
-export type Endpoint = 'status' | 'funnel' | 'decisions' | 'position' | 'calendar' | 'trades' | 'charts' | 'stats';
+export type Endpoint = 'status' | 'funnel' | 'decisions' | 'position' | 'calendar' | 'trades' | 'charts' | 'stats' | 'discovered';
 
-const MINT = re(/^[1-9A-HJ-NP-Za-km-z]{32,44}$/, 'a base58 address');
+/** A token mint as the worker serves it: base58, 32 to 44 characters. TokenActions builds links only from a mint that passes it. */
+export const MINT_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+const MINT = re(MINT_RE, 'a base58 address');
 const SIGNATURE = re(/^[1-9A-HJ-NP-Za-km-z]{64,88}$/, 'a base58 signature');
 const MONTH = re(/^\d{4}-(0[1-9]|1[0-2])$/, 'a YYYY-MM month');
 const VENUE = oneOf('pump-curve', 'pumpswap');
@@ -46,6 +48,14 @@ function build(m: Mode): Record<Endpoint, Check> {
       connected: bool,
       flags: arr(oneOf(...STATUS_FLAGS), STATUS_FLAGS.length),
       risk: arr(obj({ mode, kind: oneOf('open-exposure', 'daily-loss', 'weekly-loss', 'session-loss'), usedUsd: usd, limitUsd: nullable(usd) }), 10),
+      haltReasons: optional(arr(obj({ mode, code: oneOf(...HALT_CODES), source: nullable(str) }), 50)),
+      exitCapable: optional(bool),
+      session: optional(obj({
+        state: oneOf('running', 'paused', 'ended'), bankrollUsd: usd, entryUsd: usd, maxEntryUsd: usd, maxOpenPositions: int,
+        dailyLossLimitUsd: usd, weeklyLossLimitUsd: usd, sessionLossLimitUsd: nullable(usd), startable: bool,
+      })),
+      alerts: optional(arr(obj({ mode, code: oneOf(...ALERT_CODES), subject: str, at: iso }), 50)),
+      regime: optional(nullable(obj({ state: oneOf('on', 'off'), at: iso, current: bool, reasons: arr(obj({ mode, code: oneOf(...REGIME_REASON_CODES), input: nullable(str) }), 20), waived: arr(oneOf(...WAIVED_PARTS), 4) }))),
     }),
     funnel: obj({
       mode,
@@ -83,6 +93,10 @@ function build(m: Mode): Record<Endpoint, Check> {
         liquidationValueUsd: usd,
         unrealizedUsd: usd,
         costsSoFarUsd: usd,
+        // APP-TRADE: optional() so a worker from before them still loads.
+        pnlUsd: optional(nullable(usd)),
+        markPriceUsd: optional(nullable(dec)),
+        markedAt: optional(nullable(iso)),
         exitRules: arr(obj({ mode, rule: EXIT_RULE, trigger: str, state: oneOf('armed', 'triggered') }), 20),
         exit: oneOf('none', 'pending', 'blocked'),
         worker: oneOf('watching', 'exiting', 'reconciling'),
@@ -113,6 +127,9 @@ function build(m: Mode): Record<Endpoint, Check> {
         grossUsd: usd,
         costs,
         netUsd: usd,
+        netSol: dec,
+        tradingUsd: usd,
+        solMoveUsd: usd,
         plannedR: nullable(dec),
         realizedR: nullable(dec),
         mfeR: nullable(dec),
@@ -150,11 +167,20 @@ function build(m: Mode): Record<Endpoint, Check> {
       trades: int,
       requiredTrades: nullable(int),
       netUsd: usd,
+      netSol: dec,
+      solMoveUsd: usd,
       maxDrawdownUsd: usd,
       winRate: nullable(dec),
       meanNetUsd: nullable(usd),
       meanR: nullable(dec),
       ci95: nullable(obj({ lowUsd: usd, highUsd: usd })),
+    }),
+    discovered: obj({
+      mode,
+      tokens: arr(obj({
+        mode, mint: MINT, symbol: nullable(str), migratedAt: iso, venue: oneOf('PumpSwap'), liquidityUsd: nullable(usd),
+        checks: oneOf('passed', 'failed', 'missing'), checkedAt: nullable(iso),
+      }), 200),
     }),
   };
 }

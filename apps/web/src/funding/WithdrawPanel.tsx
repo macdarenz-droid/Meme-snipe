@@ -80,7 +80,6 @@ export function WithdrawPanel({ wallet, stepUp }: { wallet: WalletView; stepUp: 
             aria-invalid={error?.field === 'to'}
             aria-describedby={error?.field === 'to' ? ids.toErr : undefined}
           />
-          <span className="small muted">Your saved wallet is the only address Withdraw accepts.</span>
           {error?.field === 'to' && (
             <p id={ids.toErr} className="field-error" role="alert">
               {error.text}
@@ -91,7 +90,6 @@ export function WithdrawPanel({ wallet, stepUp }: { wallet: WalletView; stepUp: 
         <div className="field-block">
           <span className="field-label">Available to send</span>
           <span className="num">{max === null ? '—' : formatLamports(max)}</span>
-          <span className="small muted">Balance minus the protected reserve and the network fee.</span>
         </div>
 
         <div className="field-block">
@@ -138,7 +136,7 @@ export function WithdrawPanel({ wallet, stepUp }: { wallet: WalletView; stepUp: 
           <span className="num">
             {formatLamports(BigInt(request.lamports))} to {request.to}
           </span>
-          <span className="small muted">Not signed and not sent. Signing comes later.</span>
+          <span className="small muted">Not signed and not sent.</span>
         </div>
       )}
 
@@ -149,7 +147,7 @@ export function WithdrawPanel({ wallet, stepUp }: { wallet: WalletView; stepUp: 
       </div>
       {pending && (
         <p className="callout" role="status">
-          Change requested to <span className="address">{pending.next}</span>. It takes effect {melDateTime(pending.effectiveAt)} Melbourne time. Until then, Withdraw sends to the current wallet.
+          Change requested to <span className="address">{pending.next}</span>. It takes effect {melDateTime(pending.effectiveAt)} Melbourne time.
         </p>
       )}
       {changing ? (
@@ -169,7 +167,7 @@ export function WithdrawPanel({ wallet, stepUp }: { wallet: WalletView; stepUp: 
               aria-invalid={changeError !== null}
               aria-describedby={changeError ? ids.nextErr : undefined}
             />
-            <span className="small muted">A new address takes effect 24 hours after you confirm with your passkey. Until then, Withdraw keeps using the current one.</span>
+            <span className="small muted">A new address takes effect 24 hours after you confirm with your passkey.</span>
             {changeError && (
               <p id={ids.nextErr} className="field-error" role="alert">
                 {changeError}

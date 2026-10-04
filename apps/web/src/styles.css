@@ -861,7 +861,7 @@ input {
     min-height: 44px;
   }
   .calendar-net {
-    font-size: 10px;
+    font-size: 11px;
     letter-spacing: -0.02em;
   }
 }
@@ -1235,4 +1235,16 @@ input {
 
 .input.mono {
   font-size: 13px;
+}
+
+/* APP-TRADE 6: copy and Pump.fun buttons beside a token (44 px tap targets). */
+.token-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  vertical-align: middle;
+}
+
+.token-action {
+  margin: -10px 0;
 }

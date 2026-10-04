@@ -4,7 +4,7 @@
 // swaps see its impact (market.ts). Results come back to the engine only as feed events, never as return values.
 import type { Fill, IntentId, Signature } from '../../../core/src/domain/index.ts';
 import { type EffectRunner, type Moment, OFF_CHAIN, type Rng } from '../../../core/src/engine/index.ts';
-import { accountGetsDust, attemptFee, drawAttempt, closeSucceeds, NetworkState, providerDown, windowOf, executeBuy, executeSell, type ExecutionCosts, type FillNetwork, type FillScenario } from '../../../core/src/fills/index.ts';
+import { attemptFee, drawAttempt, NetworkState, providerDown, windowOf, executeBuy, executeSell, type ExecutionCosts, type FillNetwork, type FillScenario, TokenAccounts } from '../../../core/src/fills/index.ts';
 import type { Book, BookEvent, Effect, IntentState } from '../../../core/src/lifecycle/index.ts';
 import type { LadderStep } from '../../../core/src/config/index.ts';
 import type { RawAmount, Lamports } from '../../../core/src/units/index.ts';
@@ -65,10 +65,8 @@ export class World implements EffectRunner {
   readonly attempts = new Map<string, AttemptRecord>();
   readonly alerts = new Map<string, number>();
   readonly #exitAttempts = new Map<string, number>();
-  /** Our token balance per mint (one account per mint), from our own fills. */
-  readonly #account = new Map<string, bigint>();
-  /** Accounts that can no longer be closed in a sell (dust, an unsolicited token, a failed close): sell-only. */
-  readonly #sellOnly = new Set<string>();
+  /** Our token accounts (one per mint), from our own fills: the settlement paper mode shares (PAPER-1). */
+  readonly #accounts = new TokenAccounts();
   #seq = 0;
 
   readonly #network: NetworkState;
@@ -131,7 +129,10 @@ export class World implements EffectRunner {
     }
   }
 
-  #priorityFee(i: IntentState): bigint {
+  #priorityFee(i: IntentState, signedBytesRef?: string): bigint {
+    // The fee is part of the signed transaction: a strategy that chose its rung writes it into the bytes it signed.
+    const signed = signedBytesRef === undefined ? null : /;fee=(\d+)$/.exec(signedBytesRef);
+    if (signed !== null) return BigInt(signed[1]!);
     if (i.intent.purpose === 'entry') return this.#d.network.entryPriorityFee;
     const steps = this.#d.ladder;
     const rung = steps[Math.min(i.attempts.length - 1, steps.length - 1)];
@@ -160,7 +161,7 @@ export class World implements EffectRunner {
       this.#exitAttempts.set(position, exitRetry + 1);
     }
     const rec: AttemptRecord = {
-      intentId, signature, purpose: i.intent.purpose, mint: i.intent.mint, priorityFee: this.#priorityFee(i),
+      intentId, signature, purpose: i.intent.purpose, mint: i.intent.mint, priorityFee: this.#priorityFee(i, attempt.signedBytesRef),
       lastValidBlockHeight: attempt.lastValidBlockHeight, outcome: 'in_flight', reason: draw.fate,
       landedSlot: null, landedAt: null, fee: 0n, fill: null, costs: null, congested, forcedDrop, exitRetry, closedAccount: false,
     };
@@ -226,26 +227,16 @@ export class World implements EffectRunner {
     const t = { pool: state, fees: track.fees, baseSupply: track.baseSupply, coin: NORMAL, quotedOut: quote.quotedOut, minOut: quote.minOut, slippagePpm: scenario.slippagePpm };
     const x = rec.purpose === 'entry' ? executeBuy(t, quote.inAmount) : executeSell(t, quote.inAmount, BigInt(rec.exitRetry) * scenario.exitRetryHaircutPpm);
     if (!x.ok) return fail(x.reason);
-    const held = this.#account.get(rec.mint) ?? 0n;
-    // A sell of the whole balance closes the account in the same transaction, unless the account is sell-only. Tokens
-    // only: venue accounts and the SOL proceeds are never part of the refund.
-    const closes = rec.purpose === 'exit' && x.paid === held && !this.#sellOnly.has(rec.mint);
-    if (closes && !closeSucceeds(`${this.#d.congestionSeed}:${rec.signature}`, scenario)) {
-      // The close fails the transaction: the sell rolls back and the fee is still paid. Later sells are sell-only.
-      this.#sellOnly.add(rec.mint);
-      return fail('close failed');
-    }
+    // A sell of the whole balance closes the account in the same transaction, unless the account is sell-only; a failed
+    // close fails the transaction (the sell rolls back, the fee is still paid). Tokens only: venue accounts and the SOL
+    // proceeds are never part of the refund.
+    const acct = this.#accounts.settle({
+      purpose: rec.purpose, mint: rec.mint, tokens: rec.purpose === 'entry' ? x.out : x.paid,
+      closeSeed: `${this.#d.congestionSeed}:${rec.signature}`, dustSeed: `${this.#d.congestionSeed}:${rec.mint}:${rec.signature}`,
+    }, scenario);
+    if (!acct.ok) return fail(acct.reason);
     track.shifted.applyOurs(x.after);
-    if (rec.purpose === 'entry') {
-      // A new account may pick up dust or an unsolicited token: it can then never be closed by a sell.
-      if (held === 0n && accountGetsDust(`${this.#d.congestionSeed}:${rec.mint}:${rec.signature}`, scenario)) this.#sellOnly.add(rec.mint);
-      this.#account.set(rec.mint, held + x.out);
-    } else {
-      this.#account.set(rec.mint, held - x.paid);
-      rec.closedAccount = closes;
-      // Emptied without a close: the account stays open (its rent locked) until a later sell-and-close, never here.
-      if (closes) this.#sellOnly.delete(rec.mint);
-    }
+    if (rec.purpose === 'exit') rec.closedAccount = acct.closedAccount;
     rec.outcome = 'filled';
     rec.reason = 'filled';
     rec.costs = x.costs;

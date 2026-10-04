@@ -53,6 +53,12 @@ export interface IngestOptions {
   readonly backfilled?: boolean;
   /** An answer to our own request (e.g. `getTransaction`): placed off-chain when its own slot is already released. */
   readonly lookup?: boolean;
+  /**
+   * Placed off-chain after everything ingested so far, whatever its own slot (S0-ZERO): a fill's transactions and the
+   * live notifications held back during it go on the feed in the order they are ingested, oldest trade first, and
+   * after every off-chain fact ingested before them (FILL-ORDER: off-chain frames keep arrival order, canonical.ts).
+   */
+  readonly after?: boolean;
 }
 
 export interface LiveFeedStatus {
@@ -187,7 +193,8 @@ export class LiveFeed implements Feed {
     const cs = chainSlot(body);
     const cutoff = this.#released - BigInt(this.#opts.keepSlots);
     let place: Frame['place'];
-    if (cs === null || cs <= cutoff || (o.lookup === true && cs <= this.#released)) place = { at: 'offchain', slot: this.openSlot };
+    // FILL-ORDER: every off-chain frame in arrival order (canonical.ts `arrival`).
+    if (cs === null || cs <= cutoff || o.after === true || (o.lookup === true && cs <= this.#released)) place = { at: 'offchain', slot: this.openSlot, arrival: true };
     else place = { at: 'chain', slot: cs };
     const key = dedupKey(body);
     const duplicate = key !== null && this.#keys.has(key);

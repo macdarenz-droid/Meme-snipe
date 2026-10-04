@@ -22,18 +22,23 @@ import {
   attemptId, blockhash, entryKey, intentId, mint as toMint, positionId, reservationId, signature,
 } from '../../../core/src/domain/index.ts';
 import { type AsOfEntry, type Decision, type MarketEvent, type Moment, type Strategy, type StrategyContext, compareMoments } from '../../../core/src/engine/index.ts';
-import { observedFeeContext } from '../../../core/src/fills/index.ts';
+import { RAW } from '../../../core/src/facts/raw.ts';
+import { observedFeeContext, type SwapEvent, swapEventState } from '../../../core/src/fills/index.ts';
 import {
   type EntryPlan, type ExitDecision, type FlowMinute, type ExitSettings, type ExitTracker, type Holding, type PriceBar,
   atr, checkStopDistance, decideExit, execPrice, liquidationValue, exitAttemptsOf, exitBookEvents, exitSettings, newTracker, noteAttempt,
 } from '../../../core/src/exits/index.ts';
 import {
-  type Coverage, type DeployerIndexState, type GateContext, type GateDeps, type GateRequest, type HardGate, type HardResult, type RugLabellerState, type S0DiagnosticPart, DeployerIndex, gatesOfStages, HARD_GATES, LOG_CREATE_PREFIX, RugLabeller, TX_CREATE_PREFIX, createKey, createsCoverage, evaluateHardRejects, evaluateRegime, migrationKey, parseCreate, parseMigration, parsePool, poolKey,
+  type Coverage, type DeployerIndexState, type GateContext, type GraduatesFact, type RugLabellerState, type S0DiagnosticPart, DeployerIndex, GRADUATES_KEY, hardAllowsEntry, LOG_CREATE_PREFIX, NOT_EVALUATED, stagedHardRejects, RugLabeller, TX_CREATE_PREFIX, createKey, createsCoverage, evaluateHardRejects, evaluateRegime, migrationKey, parseCreate, parseGraduates, parseMigration, parsePool, poolKey,
 } from '../../../core/src/gates/index.ts';
+import type { GraduatesSeed } from '../../../core/src/facts/raw.ts';
 import { type BookEvent, type IntentState, isTerminal } from '../../../core/src/lifecycle/index.ts';
-import { type AccountHistory, type Latches, type Timed, evaluateEntry, evaluateExit } from '../../../core/src/risk/index.ts';
-import { type markedHistory, markSettings, riskAccount } from './marks.ts';
+import { type AccountHistory, type Latches, type Timed, evaluateEntry, evaluateExit, maxTradeCosts, riskSnapshot } from '../../../core/src/risk/index.ts';
+import { latchable, type markedHistory, markSettings, riskAccount } from './marks.ts';
 import { type Bps, BPS_DENOMINATOR, type Lamports, type MicroUsd, bps, lamportsToMicroUsd, mulDiv, microUsdToLamports } from '../../../core/src/units/index.ts';
+
+/** PERSIST-2: the graduates series as saved (a `GraduatesSeed` without its source). */
+export type SavedGraduates = Omit<GraduatesSeed, 'source'>;
 
 export const ACCOUNT_KEY = 'worker:account';
 /** Key prefixes of GATE-1's pool and migration facts. */
@@ -54,6 +59,31 @@ export const SOL_PRICE_KEY = 'worker:sol-price';
 export const SEED_KEY = 'worker:seed';
 /** The halt reason while the seed is pending: entries wait, exits and monitoring go on. */
 export const SEEDING = 'deployer index seeding';
+
+/** The latest regime evaluation as the app's status shows it: when, on or off, and each reason's code and input. */
+export interface RegimeView {
+  readonly atMs: number;
+  readonly on: boolean;
+  readonly reasons: readonly { readonly code: string; readonly input: string | null }[];
+  /** Regime parts the S0 diagnostic set did not judge (WORKER-1e): an "on" with any of these is practice only. */
+  readonly waived: readonly string[];
+}
+/**
+ * The account-level entry stops as of `atMs`: the codes of every entry control core risk reports tripped with no trade
+ * (evaluateExit's `tripped`: daily, weekly and kill-switch loss, the loss pauses, the policy session, open positions,
+ * SOL price and balance), for the app's status. `codes` is null when the account cannot be read or judged: unknown.
+ */
+export interface RiskStopsView {
+  readonly atMs: number;
+  readonly codes: readonly string[] | null;
+  /**
+   * Today's loss as R7 reads it (core riskSnapshot `dayLoss`, micro-dollars) on the same input, costs and marks
+   * included (APP-MONEY): the app's daily-loss meter. Null whenever `codes` is (the account cannot be judged).
+   */
+  readonly dayLoss: bigint | null;
+}
+/** Account stops are read again on the account's own event, else at most once per this much event time. */
+export const STOPS_EVERY_MS = 1000;
 /** A reject's typed reasons ride in its last reason as `gate_reasons <json>`; the desk journals them as `gate_reasons`. */
 export const GATE_REASONS_PREFIX = 'gate_reasons ';
 /** The S0 diagnostic parts a decision relied on ride in a reason as `s0_diagnostic <part,part>`; the desk journals them as `s0_diagnostic`. */
@@ -131,33 +161,8 @@ export const parseSnapshotFact = (v: unknown): SnapshotFact | null => {
 };
 /** Machine-read reason on `approve_risk`: the reservation request the worker sends to the ledger. */
 export const RESERVE_PREFIX = 'reserve ';
-/**
- * FACTS-1f: the hard rejects in BT-2's stages (GATE-2), so live and the backtest name the same reasons for the same
- * facts (G3 compares the reject mix): stage 1 (stream-derived), then stage 2 (account reads, cross-checks), then
- * stages 3 and 4 (holder scan and funders, simulation). Inside a stage every gate is evaluated; the first stage group
- * with a reject ends the evaluation, and the gates after it are listed as not evaluated, never as passed or failed.
- */
-export const HARD_STAGE_GROUPS: readonly (readonly HardGate[])[] = [gatesOfStages([1]), gatesOfStages([2]), gatesOfStages([3, 4])];
-/** The part of a reject's reason naming the gates a staged evaluation did not reach (the same words as BT-2's log). */
-export const NOT_EVALUATED = 'not evaluated: ';
-
-export const stagedHardRejects = (gctx: GateContext, deps: GateDeps, req: GateRequest): { readonly hard: HardResult; readonly notEvaluated: readonly HardGate[] } => {
-  let hard: HardResult | null = null;
-  for (let k = 0; k < HARD_STAGE_GROUPS.length; k++) {
-    // Every gate of the stage, as BT-2's study evaluates them (its calibration log), not only the first reject.
-    const r = evaluateHardRejects(gctx, deps, req, { stopAtFirst: false, only: HARD_STAGE_GROUPS[k]! });
-    hard = hard === null ? r : {
-      ...r, pass: hard.pass && r.pass, evaluated: [...hard.evaluated, ...r.evaluated], passed: [...hard.passed, ...r.passed],
-      failed: [...hard.failed, ...r.failed], reasons: [...hard.reasons, ...r.reasons], notes: [...hard.notes, ...r.notes],
-    };
-    if (!hard.pass) return { hard: { ...hard, complete: false }, notEvaluated: HARD_STAGE_GROUPS.slice(k + 1).flat() };
-  }
-  const done = hard!;
-  return { hard: { ...done, complete: HARD_GATES.every((g) => done.evaluated.includes(g)) }, notEvaluated: [] };
-};
-
-/** GATE-2's entry rule (supervisor ruling): every hard gate evaluated and none with a reason; a staged pass alone only clears the gates it ran. */
-export const hardAllowsEntry = (hard: HardResult): boolean => hard.complete && hard.reasons.length === 0;
+// FACTS-1f's staged hard rejects live in core (one implementation with the backtest study, BT review of #41).
+export { HARD_STAGE_GROUPS, hardAllowsEntry, NOT_EVALUATED, stagedHardRejects } from '../../../core/src/gates/index.ts';
 /** REC-1: a rejected candidate's pool not watched past its window because `maxTails` were already watched. */
 export const NO_TAIL = 'no tail';
 
@@ -168,6 +173,8 @@ export const TRIP_PREFIX = 'trip ';
 export const TRIPPED_PREFIX = 'risk tripped ';
 /** Reason on an exit decision: the position's mark risk judged it with, micro-dollars, or `unknown`. */
 export const MARK_PREFIX = 'risk mark ';
+/** Reason on an exit decision: risk could not evaluate the account (RISK-FAULT), and why; the exit still goes. */
+export const RISK_FAULT_PREFIX = 'risk fault ';
 
 /** The ledger's account as the worker publishes it. Marks of open positions are filled in by the strategy. */
 export interface AccountFact {
@@ -193,12 +200,33 @@ export interface SavedExit {
   readonly spot?: { readonly price: bigint; readonly atMs: number } | null;
   /** Since when a due full exit has waited for its first fresh quote (EXIT-1c); null or absent when none waits. */
   readonly waitingSinceMs?: number | null;
+  /**
+   * Why the position is in sell-only recovery (EXIT-1g); null or absent when it holds its own plan. Kept until the
+   * position closes: whenever it is open with no exit owner, the emergency full exit is armed again, so a recovery exit
+   * that ends unfilled, before or after a restart, never leaves the position held under the fallback plan.
+   */
+  readonly recovery?: string | null;
+  /**
+   * PERSIST-3: the position mint's deployer sales (EXIT-1's `deployer_sell`) and net flow minutes (`negative_flow`),
+   * with the dedupe ids, as of the save. Absent or malformed at a restart: the position is flattened (sell-only).
+   */
+  readonly deployerSales?: { readonly ids: readonly string[]; readonly list: readonly { readonly atMs: number; readonly amount: bigint }[] };
+  readonly flow?: { readonly minutes: readonly (readonly [number, bigint])[]; readonly ids: readonly (readonly [string, number])[] };
+  /** PERSIST-3: the mint's deployer (creator and the create's signer) and total supply, from its create; null when never seen. */
+  readonly deployer?: { readonly sellers: readonly string[]; readonly supply: bigint | null } | null;
+  /**
+   * PERSIST-3: set when a restart could not restore these inputs. Saved with the exit, so every later restart keeps the
+   * position flattened (sell-only) instead of reading the inputs written since as complete.
+   */
+  readonly inputsLost?: true;
 }
 
 export interface RestoreFact {
   readonly exits: Readonly<Record<string, SavedExit>>;
   /** Each position's entry fill moment as the ledger booked it (its first `open` event), by position (EXIT-1f). */
   readonly openedAt?: Readonly<Record<string, number>>;
+  /** Entry decisions' plan inputs by entry intent, saved before the intent was booked (EXIT-1h). */
+  readonly seeds?: Readonly<Record<string, EntrySeed>>;
   /** Where each booking sits against the boots (`live`, `reconcile`, or `unplaced: why`), from the journal (EXIT-1f N2). */
   readonly bookedWhen?: Readonly<Record<string, string>>;
 }
@@ -238,10 +266,23 @@ export interface StrategyConfig {
   readonly maxTails: number;
 }
 
+/** The saved state a seed names (WORKER-GROW): the file in the boot's recording, its sha256 over every byte, its format version. */
+export interface SavedStateRef {
+  readonly file: string;
+  readonly sha256: string;
+  readonly version: number;
+}
+
 export interface StrategyDeps {
   readonly session: PolicySession;
   readonly rugs: RugConfig;
   readonly config: StrategyConfig;
+  /**
+   * The saved index and labeller a seed names by `SavedStateRef` (WORKER-GROW): live, what the worker restored from the
+   * recording's copy; in the parity replay, read from that copy and checked against the hash. Throws when it cannot give
+   * exactly that state (the seed is then refused, as a fresh process).
+   */
+  readonly savedState?: (ref: SavedStateRef) => { readonly index: DeployerIndex; readonly labeller: RugLabeller };
   /** Replaces marks.ts `markedHistory` (tests inject a failure; production never sets it). */
   readonly markedHistory?: typeof markedHistory;
 }
@@ -282,8 +323,78 @@ interface Candidate {
   creator?: string | null;
 }
 
+/**
+ * RESTART-KEEP: a candidate as saved with the state (public chain data and the strategy's own evaluation state), so a
+ * restart inside its 60–240 min window keeps it. Gates and spend are judged again; the creator comes back with its create.
+ */
+export interface SavedCandidate {
+  readonly mint: string;
+  readonly pool: string | null;
+  readonly migratedAtMs: number;
+  readonly migrationSlot: bigint | null;
+  readonly tries: number;
+  readonly lastEvalMs: number | null;
+  readonly lastReason: string | null;
+  /** Its price bars (the entry's ATR stop needs a contiguous run of them), none started after the save. */
+  readonly bars: readonly PriceBar[];
+}
+
+/** RESTART-KEEP: one filled swap of a restored candidate's downtime: its block time, reserves before and after, and the spot after. */
+interface GapTrade {
+  readonly atMs: number;
+  readonly pre: string;
+  readonly post: string;
+  readonly price: bigint;
+}
+
+/**
+ * The trades in chain order: each one's reserves before it are the previous one's after it. Null unless that orders
+ * every trade into one run with block times that never go back (a trade missing, a duplicate state or a clock stepping
+ * back cannot be proven).
+ */
+const chainOrder = (trades: readonly GapTrade[]): GapTrade[] | null => {
+  if (trades.length === 0) return [];
+  const byPre = new Map<string, GapTrade>();
+  for (const t of trades) {
+    if (byPre.has(t.pre)) return null;
+    byPre.set(t.pre, t);
+  }
+  const posts = new Set(trades.map((t) => t.post));
+  const firsts = trades.filter((t) => !posts.has(t.pre));
+  if (firsts.length !== 1) return null;
+  const out: GapTrade[] = [];
+  for (let t: GapTrade | undefined = firsts[0]; t !== undefined; t = byPre.get(t.post)) {
+    if (out.length > 0 && t.atMs < out.at(-1)!.atMs) return null;
+    out.push(t);
+    if (out.length > trades.length) return null;
+  }
+  return out.length === trades.length ? out : null;
+};
+
+/** RESTART-KEEP: a rejected candidate's pool watched after its window (REC-1), as saved. */
+export interface SavedTail {
+  readonly mint: string;
+  readonly pool: string;
+  readonly untilMs: number;
+}
+
+/** Decision naming a candidate restored from the saved state: the worker reads its migration and create again. */
+export const CANDIDATE_RESTORED = 'candidate restored';
+
+/** A saved candidate as the strategy can take it; null when malformed. */
+const savedCandidate = (x: unknown): SavedCandidate | null => {
+  if (!isObj(x)) return null;
+  const ms = (v: unknown, nul: boolean): boolean => (nul && v === null) || (typeof v === 'number' && Number.isSafeInteger(v));
+  const ok = typeof x['mint'] === 'string' && x['mint'] !== '' && (x['pool'] === null || typeof x['pool'] === 'string') && ms(x['migratedAtMs'], false)
+    && (x['migrationSlot'] === null || (typeof x['migrationSlot'] === 'bigint' && x['migrationSlot'] >= 0n))
+    && typeof x['tries'] === 'number' && Number.isSafeInteger(x['tries']) && x['tries'] >= 0 && ms(x['lastEvalMs'], true) && (x['lastReason'] === null || typeof x['lastReason'] === 'string')
+    && Array.isArray(x['bars']) && x['bars'].every((b) => isObj(b) && ms(b['startMs'], false) && ['high', 'low', 'close'].every((k) => typeof b[k] === 'bigint' && (b[k] as bigint) > 0n));
+  return ok ? { mint: x['mint'] as string, pool: x['pool'] as string | null, migratedAtMs: x['migratedAtMs'] as number, migrationSlot: x['migrationSlot'] as bigint | null, tries: x['tries'] as number, lastEvalMs: x['lastEvalMs'] as number | null, lastReason: x['lastReason'] as string | null, bars: x['bars'] as PriceBar[] } : null;
+};
+
 /** What an entry needs once it fills: fixed at the decision, completed with the fill. */
-interface EntrySeed {
+/** An entry decision's own plan inputs, saved before its intent is booked (EXIT-1h) so a restart rebuilds its plan. */
+export interface EntrySeed {
   readonly mint: string;
   readonly universe: ExitUniverse;
   readonly notional: MicroUsd;
@@ -343,6 +454,9 @@ const runnablePlan = (p: Record<string, unknown>): boolean =>
   && ['notional', 'riskUnit', 'stopPrice', 'entryReserve'].every((k) => typeof p[k] === 'bigint')
   && (p['universe'] === undefined || typeof p['universe'] === 'string');
 
+/** A saved recovery reason the worker can act on: absent, null or a reason (EXIT-1g review B1). */
+const runnableRecovery = (r: unknown): boolean => r === undefined || r === null || typeof r === 'string';
+
 export class LiveStrategy implements Strategy {
   readonly #d: StrategyDeps;
   readonly #settings: ExitSettings;
@@ -354,6 +468,15 @@ export class LiveStrategy implements Strategy {
   #lastMoment: Moment | null = null;
   readonly #cands = new Map<string, Candidate>();
   readonly #seeds = new Map<string, EntrySeed>();
+  /** Seeds that came from the restore, not from a decision in this process: their fill's moment is not this process's. */
+  readonly #restoredSeeds = new Set<string>();
+  /** Entry intents whose saved seed the restore refused: their positions go into sell-only recovery, saying so. */
+  readonly #refusedSeeds = new Set<string>();
+
+  /** Entry decisions' plan inputs not yet made into a plan, by entry intent: saved before the intent is booked (EXIT-1h). */
+  seeds(): Record<string, EntrySeed> {
+    return Object.fromEntries(this.#seeds);
+  }
   readonly #exits = new Map<string, SavedExit>();
   readonly #bars = new Map<string, PriceBar[]>();
   /** Per exit owner: the rung its first attempt uses and how many attempts it may sign (EXIT-1's decision). */
@@ -371,9 +494,23 @@ export class LiveStrategy implements Strategy {
   saved(): Record<string, SavedExit> {
     const out: Record<string, SavedExit> = {};
     for (const [pid, s] of this.#exits) {
-      out[pid] = { ...s, bars: this.#bars.get(pid) ?? s.bars, pool: this.#poolOfMint.get(this.#mintOf(pid)) ?? s.pool ?? null, spot: this.#spot.get(pid) ?? s.spot ?? null };
+      const mint = this.#mintOf(pid);
+      out[pid] = { ...s, bars: this.#bars.get(pid) ?? s.bars, pool: this.#poolOfMint.get(mint) ?? s.pool ?? null, spot: this.#spot.get(pid) ?? s.spot ?? null, ...this.#exitInputs(mint) };
     }
     return out;
+  }
+
+  /** PERSIST-3: a mint's deployer sales and flow as saved, nothing after the latest released moment. */
+  #exitInputs(mint: string): Pick<SavedExit, 'deployerSales' | 'flow' | 'deployer'> {
+    const until = this.#lastMoment?.receivedAt ?? Number.NEGATIVE_INFINITY;
+    const sales = this.#deployerSales.get(mint);
+    const f = this.#flow.get(mint);
+    const minutes = [...(f?.minutes ?? [])].filter(([start]) => start <= until).sort((a, b) => a[0] - b[0]);
+    return {
+      deployer: this.#deployerMemo.get(mint) ?? null,
+      deployerSales: { ids: [...(sales?.ids ?? [])].sort(), list: (sales?.list ?? []).filter((x) => x.atMs <= until) },
+      flow: { minutes, ids: [...(f?.ids ?? [])].filter(([, start]) => start <= until).sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)) },
+    };
   }
 
   /** Each candidate's migration time and the typed reasons of its last evaluation (FACTS-1b stages its reads on them). */
@@ -396,6 +533,8 @@ export class LiveStrategy implements Strategy {
   #seedApplied = false;
   /** Each watched mint's PumpSwap pool, from its migration or its pool fact, and back. */
   readonly #poolOfMint = new Map<string, string>();
+  /** S0-ZERO: each candidate's migration slot, where its pool's trade coverage must start (the oldest seen). */
+  readonly #migrationSlot = new Map<string, bigint>();
   readonly #mintOfPool = new Map<string, string>();
   /** The fee terms of the latest released swap on each mint's pool (rates are per trade on chain). */
   readonly #observedFees = new Map<string, PoolFeeContext>();
@@ -405,10 +544,12 @@ export class LiveStrategy implements Strategy {
   readonly #deployerSales = new Map<string, { readonly ids: Set<string>; readonly list: { readonly atMs: number; readonly amount: bigint }[] }>();
   /**
    * WORKER-1e: one-minute net SOL flow (pool side: buys' quoteAmountIn − sells' quoteAmountOut) on each held mint's
-   * pool, from released swaps, deduplicated like the deployer's sales; EXIT-1's negative-flow trigger reads it. Kept in
-   * memory only: after a restart the run of negative minutes starts again (the trigger fires later, never earlier).
+   * pool, from released swaps, deduplicated like the deployer's sales (each id with its minute); EXIT-1's negative-flow trigger reads
+   * it. Saved with each held position's exit (PERSIST-3), every id included, so a restart continues the run of minutes.
    */
-  readonly #flow = new Map<string, { readonly ids: Set<string>; readonly minutes: Map<number, bigint> }>();
+  readonly #flow = new Map<string, { readonly ids: Map<string, number>; readonly minutes: Map<number, bigint> }>();
+  /** PERSIST-3: each held mint's deployer as last read from its create (a restart does not see the create again). */
+  readonly #deployerMemo = new Map<string, { readonly sellers: readonly string[]; readonly supply: bigint | null }>();
   /** Positions whose deployer-sell trigger could not be judged, reported once each. */
   readonly #unjudgedDeployer = new Set<string>();
   /** Each held position's last spot price, for the saved plan (the exposure rebuild's reference). */
@@ -448,6 +589,51 @@ export class LiveStrategy implements Strategy {
     return this.#displayQuotes.get(pid) ?? null;
   }
 
+  /** The latest regime evaluation (every candidate's first check), for the app's status; null before the first. */
+  #regime: RegimeView | null = null;
+
+  regime(): RegimeView | null {
+    return this.#regime;
+  }
+
+  /** The latest account stops (RiskStopsView); null before the first event. */
+  #stops: RiskStopsView | null = null;
+
+  riskStops(): RiskStopsView | null {
+    return this.#stops;
+  }
+
+  /** Reads the account stops for status. Read-only: a trip found here is not latched (entries and exits latch theirs). */
+  #readStops(e: MarketEvent, ctx: StrategyContext): void {
+    const now = ctx.now.receivedAt;
+    if (this.#stops !== null && e.key !== ACCOUNT_KEY && now - this.#stops.atMs < STOPS_EVERY_MS) return;
+    const risk = this.#account(ctx);
+    if (risk === null) return void (this.#stops = { atMs: now, codes: null, dayLoss: null });
+    try {
+      // Judged as the entry path judges it: marked with no fallback (a mark that fails refuses the entry there), and
+      // unknown when core cannot evaluate the account (riskSnapshot is null exactly when its account check throws,
+      // where evaluateExit would report nothing tripped).
+      const sol = this.#spotSol(ctx);
+      const account = this.#marked(risk.history, ctx, sol, { fallback: false });
+      const input = { session: this.#d.session, mode: 'paper' as const, clock: { now: () => ctx.now }, account, latches: risk.latches, market: { solPrice: sol, solBalance: this.#balance(risk, ctx), regime: 'unknown' as const } };
+      const snap = riskSnapshot(input);
+      if (snap === null) return void (this.#stops = { atMs: now, codes: null, dayLoss: null });
+      const r = evaluateExit(input);
+      const codes = new Set<string>(r.tripped.map((x) => x.code));
+      // R7 per entry, as evaluateEntry judges it (API-1 N2a): when today's loss plus one trade's worst-case costs reaches
+      // the daily limit, no entry can pass, so the status serves the daily-loss stop instead of "Entries: On".
+      if (sol !== null) {
+        const policy = this.#d.session.policy;
+        const limit = mulDiv(policy.capital.bankroll, BigInt(policy.loss.dailyBps), BPS, 'floor');
+        const costs = maxTradeCosts(policy, { network: this.#d.config.network, rent: { ...this.#d.config.rent, oneTime: risk.oneTimeRent } }).total;
+        if (snap.dayLoss + lamportsToMicroUsd(costs, sol.value, 'ceil') >= limit) codes.add('daily_loss');
+      }
+      this.#stops = { atMs: now, codes: [...codes].sort(), dayLoss: snap.dayLoss };
+    } catch {
+      this.#stops = { atMs: now, codes: null, dayLoss: null };
+    }
+  }
+
   /** Positions whose universe the policy lacks, being flattened (said once each). */
   readonly #flattening = new Set<string>();
 
@@ -463,6 +649,8 @@ export class LiveStrategy implements Strategy {
   readonly #bookedOpenAt = new Map<string, number>();
   /** Where each booking sits against the boots (restore fact): only a reconcile-time booking may be late (EXIT-1f N2). */
   readonly #bookedWhen = new Map<string, string>();
+  /** Why a position has no usable saved plan, from the restore (EXIT-1g): it goes into sell-only recovery. */
+  readonly #recoveryWhy = new Map<string, string>();
   /** Positions whose fallback plan waits for the first slot to date their fill (said once each). */
   readonly #planWaitsForSlot = new Set<string>();
   /** Said once per boot when positions wait for the restore. */
@@ -477,12 +665,15 @@ export class LiveStrategy implements Strategy {
    * The pools to watch for swaps (WORKER-1 subscribes `trades:<pool>`): every candidate in its window and every open
    * position, with whether a position holds it (exit traffic).
    */
-  watchedPools(): Map<string, { readonly mint: string; readonly held: boolean }> {
+  watchedPools(): Map<string, { readonly mint: string; readonly held: boolean; readonly fromSlot?: bigint }> {
     const held = new Set([...this.#exits.keys()].map((pid) => this.#mintOf(pid)));
-    const out = new Map<string, { mint: string; held: boolean }>();
+    const out = new Map<string, { mint: string; held: boolean; fromSlot?: bigint }>();
     for (const mint of this.watched()) {
       const pool = this.#poolOfMint.get(mint);
-      if (pool !== undefined) out.set(pool, { mint, held: held.has(mint) });
+      // A candidate's pool is watched from its migration (S0-ZERO): its candles are observed from the pool's creation.
+      // A held pool is already watched (an exit never waits on a catch-up).
+      const from = this.#cands.has(mint) && !held.has(mint) ? this.#migrationSlot.get(mint) : undefined;
+      if (pool !== undefined) out.set(pool, { mint, held: held.has(mint), ...(from === undefined ? {} : { fromSlot: from }) });
     }
     for (const [mint, t] of this.#tail) if (!out.has(t.pool)) out.set(t.pool, { mint, held: false });
     return out;
@@ -515,11 +706,25 @@ export class LiveStrategy implements Strategy {
    * PERSIST-1: what a save holds, as of the latest released moment: the index (entries older than `retainFromMs`
    * left out), the labeller's tables and every coverage fact. Null before anything was released or the seed applied.
    */
-  persistable(retainFromMs: number): { readonly asOf: Moment; readonly index: DeployerIndexState; readonly labeller: RugLabellerState; readonly coverage: readonly MarketEvent[] } | null {
+  persistable(retainFromMs: number): { readonly state: { readonly asOf: Moment; readonly index: DeployerIndexState; readonly labeller: RugLabellerState; readonly coverage: readonly MarketEvent[]; readonly graduates: SavedGraduates; readonly candidates: readonly SavedCandidate[]; readonly tails: readonly SavedTail[] }; readonly mintRows: Iterable<readonly [string, readonly (readonly [string, number])[]]> } | null {
     const asOf = this.#lastMoment;
     if (asOf === null || !this.#seedApplied || this.#waiting !== null) return null;
-    return { asOf, index: this.#deployers.snapshot(asOf, retainFromMs), labeller: this.#labeller.snapshot(), coverage: [...this.#coverageFacts] };
+    // PERSIST-2: the newest graduates fact released so far, with only the entries whose survival mark was reached by
+    // the save moment (the fact itself is never newer than the last released event).
+    const items = (this.#graduatesFact?.items ?? []).filter((g) => g.migratedAtMs + this.#d.session.policy.regime.survivalAfterMs <= asOf.receivedAt);
+    // RESTART-KEEP: every candidate in its window, none migrated after the save moment.
+    const candidates = [...this.#cands.values()].filter((c) => c.migratedAtMs <= asOf.receivedAt).sort((a, b) => (a.mint < b.mint ? -1 : a.mint > b.mint ? 1 : 0))
+      .map((c): SavedCandidate => ({ mint: c.mint, pool: this.#poolOfMint.get(c.mint) ?? null, migratedAtMs: c.migratedAtMs, migrationSlot: this.#migrationSlot.get(c.mint) ?? null, tries: c.tries, lastEvalMs: c.lastEvalMs, lastReason: c.lastReason, bars: (this.#bars.get(c.mint) ?? []).filter((b) => b.startMs <= asOf.receivedAt) }));
+    // WORKER-GROW: the index's mint rows are streamed into the file by the save, never built whole; the graduates ride
+    // in the payload line.
+    return {
+      state: { asOf, index: this.#deployers.snapshot(asOf, retainFromMs, { mints: false }), labeller: this.#labeller.snapshot(), coverage: [...this.#coverageFacts], graduates: { asOfMs: asOf.receivedAt, items }, candidates, tails: [...this.#tail].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([mint, t]) => ({ mint, pool: t.pool, untilMs: t.untilMs })) },
+      mintRows: this.#deployers.mintRows(retainFromMs),
+    };
   }
+
+  /** PERSIST-2: the newest graduates fact released (the regime's survival series), for the saved state. */
+  #graduatesFact: GraduatesFact | null = null;
 
   get deployers(): DeployerIndex {
     return this.#deployers;
@@ -536,8 +741,11 @@ export class LiveStrategy implements Strategy {
     // the guard keeps a save's as-of point from ever moving back if that changed (the index snapshot refuses it too).
     if (this.#lastMoment === null || compareMoments(e.moment, this.#lastMoment) > 0) this.#lastMoment = e.moment;
     if (COVERAGE_FACT.test(e.key)) this.#coverageFacts.push(e);
+    this.#gapBarsMerge(e.moment);
+    this.#gapBarsClose(e);
+    if (e.key === GRADUATES_KEY) this.#graduatesFact = parseGraduates(unwrap(e.value)) ?? this.#graduatesFact;
     this.#observe(e);
-    if (e.key === RESTORE_KEY) this.#restore(unwrap(e.value), out);
+    if (e.key === RESTORE_KEY) this.#restore(unwrap(e.value), out, e.moment.receivedAt);
     if (e.key === SEED_KEY) this.#seed(e.value, out);
     if (e.key === 'chain:slot') {
       const s = unwrap(e.value);
@@ -545,12 +753,16 @@ export class LiveStrategy implements Strategy {
     }
     this.#discover(e, ctx, out);
     this.#readLanded(e);
+    // READ-COHERENT: a batch's close is judged at once, on its own event, when every member's facts are out.
+    const closed = this.#batchLanded(e);
+    if (closed !== null) due.set(closed.mint, closed.read);
     this.#poolTrade(e, ctx);
     if (e.key === SEED_KEY || e.key === 'chain:slot' || e.key.startsWith('coverage:creates:')) {
       // H14's creates coverage over its look-back as of each slot and coverage change, for health and the restart drill.
       this.#coverage = createsCoverage(this.#history(ctx), ctx.now, ctx.now.receivedAt - this.#d.session.policy.gates.deployerRugLookbackDays * 86_400_000);
     }
-    const gctx: GateContext = { now: ctx.now, lookup: (k, a) => ctx.lookup(k, a), history: this.#history(ctx), deployers: this.#deployers };
+    // The feed releases events at their own chain slots, so the newest chain slot released is the clock's slot.
+    const gctx: GateContext = { now: ctx.now, lookup: (k, a) => ctx.lookup(k, a), history: this.#history(ctx), deployers: this.#deployers, observedTip: ctx.now.slot };
     this.#track(e, ctx);
     this.#lifecycle(ctx, out);
     this.#manage(ctx, out);
@@ -559,6 +771,7 @@ export class LiveStrategy implements Strategy {
     if (!out.some((d) => d.action !== null)) this.#entries(ctx, gctx, out, due);
     // Through `untilMs` itself: an exit at exactly the maximum hold (EXIT-1 fires at elapsed >= tMax) needs that moment.
     for (const [mint, t] of this.#tail) if (ctx.now.receivedAt > t.untilMs) this.#tail.delete(mint);
+    this.#readStops(e, ctx);
     return out;
   }
 
@@ -598,10 +811,205 @@ export class LiveStrategy implements Strategy {
     };
   }
 
-  #restore(v: unknown, out: Decision[]): void {
+  /**
+   * RESTART-KEEP: the saved candidates come back as of the restore. A list that is malformed, or holds a candidate
+   * migrated or evaluated after the restore moment (a host clock behind the save), is refused whole, never in part.
+   */
+  #restoreCandidates(v: unknown, atMs: number, out: Decision[]): void {
+    const list = Array.isArray(v) ? v.map(savedCandidate) : null;
+    const why = list === null || list.some((c) => c === null) ? 'malformed saved candidates'
+      : list.some((c) => c!.migratedAtMs > atMs || (c!.lastEvalMs ?? Number.NEGATIVE_INFINITY) > atMs || c!.bars.some((b) => b.startMs > atMs)) ? 'a saved candidate is dated after the restore' : null;
+    if (why !== null) {
+      out.push({ action: null, reasons: ['candidates refused', why] });
+      return;
+    }
+    for (const c of list as SavedCandidate[]) {
+      if (this.#cands.has(c.mint)) continue;
+      // The pool's trade coverage starts at the saved migration slot (S0-ZERO's catch-up), as for a candidate seen live.
+      this.#noteMigrationSlot(c.mint, c.migrationSlot);
+      this.#cands.set(c.mint, { mint: c.mint, migratedAtMs: c.migratedAtMs, lastEvalMs: c.lastEvalMs, lastReason: c.lastReason, lastWaived: '', tries: c.tries, gates: null, spend: null });
+      if (c.pool !== null) this.#notePool(c.mint, c.pool);
+      if (c.bars.length > 0 && !this.#bars.has(c.mint)) this.#bars.set(c.mint, [...c.bars]);
+      // The downtime's bars, from the saved last bar (or the migration) to the restore, come from the pool's filled trades.
+      const barMs = this.#d.config.barMs;
+      const fromMs = c.bars.at(-1)?.startMs ?? Math.floor(c.migratedAtMs / barMs) * barMs;
+      if (fromMs < atMs) this.#barGap.set(c.mint, { fromMs, untilMs: atMs, trades: [], seen: new Set(), broken: false, closed: null });
+      out.push({ action: null, reasons: [CANDIDATE_RESTORED, this.#d.config.universe, c.mint, `migrated at ${c.migratedAtMs}`, `tries ${c.tries}`] });
+    }
+  }
+
+  /**
+   * RESTART-KEEP: a restored candidate's price bars over the downtime, rebuilt from its pool's filled trades (S0-ZERO's
+   * catch-up from the migration releases every trade). Taken only when that catch-up closes complete (`resume`) and
+   * the trades' reserves chain into one run: after a lossy close or a broken chain the downtime's bars stay unknown
+   * and the ATR waits for a fresh contiguous run, never a guess.
+   */
+  readonly #barGap = new Map<string, { readonly fromMs: number; readonly untilMs: number; readonly trades: GapTrade[]; readonly seen: Set<string>; broken: boolean; closed: { readonly at: Moment; readonly complete: boolean } | null }>();
+
+  /** The price bars kept for a candidate (by mint) or a position (by id). */
+  barsOf(key: string): readonly PriceBar[] {
+    return this.#bars.get(key) ?? [];
+  }
+
+  /**
+   * One filled swap inside a restored candidate's downtime, sampled as a never-restarted worker samples it: the pool
+   * state right after the swap (FACTS-1's chain, `swapEventState`), at the spot formula of `#track`, in the swap's minute.
+   */
+  #gapBarTrade(mint: string, e: MarketEvent, v: Record<string, unknown>, ev: Record<string, unknown>, d: Record<string, unknown>): void {
+    const g = this.#barGap.get(mint);
+    if (g === undefined || typeof d['timestamp'] !== 'bigint') return;
+    const atMs = Number(d['timestamp']) * 1000;
+    if (atMs < g.fromMs || atMs >= g.untilMs) return;
+    // The same trade from a fetched transaction and a log line counts once.
+    const id = `${String(v['signature'] ?? e.id.split(':')[1])}:${String(d['poolBaseTokenReserves'])}:${String(d['poolQuoteTokenReserves'])}`;
+    if (g.seen.has(id)) return;
+    g.seen.add(id);
+    let r: ReturnType<typeof swapEventState>;
+    try {
+      r = swapEventState(ev as unknown as SwapEvent);
+    } catch {
+      r = { ok: false, reason: 'undecodable swap' };
+    }
+    // A swap that does not replay leaves the live chain stale too (no sample there): the downtime cannot be proven.
+    if (!r.ok || r.after.baseReserve <= 0n) {
+      g.broken = true;
+      return;
+    }
+    const price = (effectiveQuoteReserve(r.after) * PRICE_SCALE) / r.after.baseReserve;
+    if (price <= 0n) {
+      g.broken = true;
+      return;
+    }
+    const pre = `${String(d['poolBaseTokenReserves'])}/${String(d['poolQuoteTokenReserves'] as bigint + (typeof d['virtualQuoteReserves'] === 'bigint' ? d['virtualQuoteReserves'] : 0n))}`;
+    g.trades.push({ atMs, pre, post: `${r.after.baseReserve}/${effectiveQuoteReserve(r.after)}`, price });
+  }
+
+  /**
+   * The close of a restored candidate pool's catch-up: complete (`resume`) or lossy (a bounded gap). The fill's trades
+   * and its close reach the feed at one moment, where events go in id order, so the close may come first: it is noted,
+   * and the bars are merged at the first event after that moment, once every trade of the fill is in.
+   */
+  #gapBarsClose(e: MarketEvent): void {
+    const m = /^coverage:trades:(.+):(resume|gap)$/.exec(e.key);
+    if (m === null) return;
+    const mint = this.#mintOfPool.get(m[1]!);
+    const g = mint === undefined ? undefined : this.#barGap.get(mint);
+    if (g === undefined || g.closed !== null) return;
+    const v = unwrap(e.value);
+    const payload = isObj(v) && isObj(v['value']) ? v['value'] : v;
+    // The catch-up's own opening gap (toSlot null) is not its close.
+    if (m[2] === 'gap' && isObj(payload) && payload['toSlot'] === null) return;
+    g.closed = { at: e.moment, complete: m[2] === 'resume' };
+  }
+
+  /**
+   * After a catch-up's close, at a later moment: a complete one merges the downtime's bars; after a lossy one, a broken
+   * reserve chain or a swap that does not replay, they stay unknown. A minute with no trade gets no bar, as live (`#track`
+   * samples only on a pool update).
+   */
+  #gapBarsMerge(now: Moment): void {
+    for (const [mint, g] of this.#barGap) {
+      if (g.closed === null || compareMoments(now, g.closed.at) <= 0) continue;
+      this.#barGap.delete(mint);
+      if (!g.closed.complete || g.broken) continue;
+      const ordered = chainOrder(g.trades);
+      // The fill's trades do not reach the feed in chain order (one moment, ordered by id): their reserves give the order,
+      // and prove none is missing between the first and the last. A broken chain leaves the downtime unknown.
+      if (ordered === null) continue;
+      const barMs = this.#d.config.barMs;
+      const pending = new Map<number, PriceBar>();
+      for (const t of ordered) {
+        const start = Math.floor(t.atMs / barMs) * barMs;
+        const b = pending.get(start);
+        pending.set(start, b === undefined ? { startMs: start, high: t.price, low: t.price, close: t.price } : { startMs: start, high: t.price > b.high ? t.price : b.high, low: t.price < b.low ? t.price : b.low, close: t.price });
+      }
+      const bars = this.#bars.get(mint) ?? [];
+      const kept = bars.filter((b) => b.startMs < g.fromMs || b.startMs >= g.untilMs);
+      const byStart = new Map(bars.map((b) => [b.startMs, b]));
+      const merged: PriceBar[] = [];
+      for (let start = g.fromMs; start < g.untilMs; start += barMs) {
+        const p = pending.get(start);
+        const had = byStart.get(start);
+        // The saved last bar ends with the filled trades after it; a bar live samples made after the restart keeps its close.
+        const bar = p !== undefined && had !== undefined
+          ? { startMs: start, high: p.high > had.high ? p.high : had.high, low: p.low < had.low ? p.low : had.low, close: start === g.fromMs ? p.close : had.close }
+          : p ?? had;
+        if (bar !== undefined) merged.push(bar);
+      }
+      const all = [...kept, ...merged].sort((a, b) => a.startMs - b.startMs);
+      if (all.length > this.#d.config.keepBars) all.splice(0, all.length - this.#d.config.keepBars);
+      this.#bars.set(mint, all);
+    }
+  }
+
+  /**
+   * RESTART-KEEP: REC-1's tail watches come back, so a rejected candidate's counterfactual keeps its pool watched to
+   * windowEnd + tMax across a restart (the downtime is a gap on that pool's stream, never read as covered). One that
+   * ended by the restore is dropped, as it would have been; past the cap the rest are logged `no tail`.
+   */
+  #restoreTails(v: unknown, atMs: number, out: Decision[]): void {
+    const ok = Array.isArray(v) && v.every((t) => isObj(t) && typeof t['mint'] === 'string' && t['mint'] !== '' && typeof t['pool'] === 'string' && t['pool'] !== '' && typeof t['untilMs'] === 'number' && Number.isSafeInteger(t['untilMs']));
+    if (!ok) {
+      out.push({ action: null, reasons: ['tails refused', 'malformed saved tails'] });
+      return;
+    }
+    const c = this.#d.config;
+    for (const t of v as SavedTail[]) {
+      if (t.untilMs < atMs || this.#tail.has(t.mint)) continue;
+      if (this.#tail.size >= c.maxTails) out.push({ action: null, reasons: [NO_TAIL, c.universe, t.mint, `tail cap ${c.maxTails}`] });
+      else this.#tail.set(t.mint, { pool: t.pool, untilMs: t.untilMs });
+    }
+  }
+
+  /** PERSIST-3: restores a mint's deployer sales and flow from a saved exit; the reason when they cannot be. */
+  #restoreInputs(mint: string, s: Record<string, unknown>, atMs: number): string | null {
+    const ds = s['deployerSales'];
+    const fl = s['flow'];
+    const dp = s['deployer'];
+    if (ds === undefined || fl === undefined || dp === undefined) return 'not in the saved exit';
+    const deployer = dp === null ? null
+      : isObj(dp) && Array.isArray(dp['sellers']) && dp['sellers'].length > 0 && dp['sellers'].every((x) => typeof x === 'string') && (dp['supply'] === null || (typeof dp['supply'] === 'bigint' && dp['supply'] > 0n))
+        ? { sellers: dp['sellers'] as string[], supply: dp['supply'] as bigint | null } : undefined;
+    if (deployer === undefined) return 'malformed';
+    const sales = isObj(ds) && Array.isArray(ds['ids']) && ds['ids'].every((x) => typeof x === 'string') && Array.isArray(ds['list'])
+      && ds['list'].every((x) => isObj(x) && typeof x['atMs'] === 'number' && Number.isFinite(x['atMs']) && typeof x['amount'] === 'bigint' && x['amount'] >= 0n)
+      ? { ids: ds['ids'] as string[], list: ds['list'] as { atMs: number; amount: bigint }[] } : null;
+    const pair = (x: unknown, t: 'bigint' | 'number'): boolean => Array.isArray(x) && x.length === 2 && typeof x[0] === (t === 'bigint' ? 'number' : 'string') && typeof x[1] === t;
+    const flow = isObj(fl) && Array.isArray(fl['minutes']) && fl['minutes'].every((x) => pair(x, 'bigint')) && Array.isArray(fl['ids']) && fl['ids'].every((x) => pair(x, 'number'))
+      ? { minutes: fl['minutes'] as [number, bigint][], ids: fl['ids'] as [string, number][] } : null;
+    if (sales === null || flow === null) return 'malformed';
+    // As of the restore: an entry dated after it (a host clock behind the save) refuses the inputs whole, like a future
+    // seed (PERSIST-2); dropping it alone would keep its dedupe id and lose a real sale.
+    if (sales.list.some((x) => x.atMs > atMs) || flow.minutes.some(([start]) => start > atMs) || flow.ids.some(([, start]) => start > atMs)) return 'dated after the restore';
+    if (deployer !== null && !this.#deployerMemo.has(mint)) this.#deployerMemo.set(mint, deployer);
+    const s0 = this.#deployerSales.get(mint) ?? { ids: new Set<string>(), list: [] };
+    for (const id of sales.ids) s0.ids.add(id);
+    s0.list.push(...sales.list);
+    this.#deployerSales.set(mint, s0);
+    const f0 = this.#flow.get(mint) ?? { ids: new Map<string, number>(), minutes: new Map<number, bigint>() };
+    for (const [start, net] of flow.minutes) f0.minutes.set(start, (f0.minutes.get(start) ?? 0n) + net);
+    for (const [id, start] of flow.ids) f0.ids.set(id, start);
+    this.#flow.set(mint, f0);
+    return null;
+  }
+
+  #restore(v: unknown, out: Decision[], atMs: number): void {
     this.#restoreSeen = true;
+    if (isObj(v) && v['candidates'] !== undefined) this.#restoreCandidates(v['candidates'], atMs, out);
+    if (isObj(v) && v['tails'] !== undefined) this.#restoreTails(v['tails'], atMs, out);
     if (isObj(v) && isObj(v['openedAt'])) {
       for (const [pid, at] of Object.entries(v['openedAt'])) if (typeof at === 'number' && Number.isFinite(at)) this.#bookedOpenAt.set(pid, at);
+    }
+    if (isObj(v) && isObj(v['seeds'])) {
+      for (const [id, x] of Object.entries(v['seeds'])) {
+        if (isObj(x) && typeof x['mint'] === 'string' && typeof x['universe'] === 'string' && typeof x['notional'] === 'bigint' && typeof x['stopPrice'] === 'bigint' && typeof x['entryReserve'] === 'bigint') {
+          this.#seeds.set(id, x as unknown as EntrySeed);
+          this.#restoredSeeds.add(id);
+        } else {
+          out.push({ action: null, reasons: ['restore seed refused', id, 'malformed saved seed'] });
+          this.#refusedSeeds.add(id);
+        }
+      }
     }
     if (isObj(v) && isObj(v['bookedWhen'])) {
       for (const [pid, when] of Object.entries(v['bookedWhen'])) if (typeof when === 'string') this.#bookedWhen.set(pid, when);
@@ -612,23 +1020,31 @@ export class LiveStrategy implements Strategy {
     }
     let n = 0;
     for (const [pid, s] of Object.entries(v['exits'])) {
-      // A saved exit the exit rules could not run on is refused, never applied: its position falls back to the plan from
-      // its fill (the policy-maximum stop), so one bad entry neither stalls nor crashes the management of the others.
-      if (!isObj(s) || !isObj(s['plan']) || !isObj(s['tracker']) || !Array.isArray(s['bars']) || !runnablePlan(s['plan'])) {
+      // A saved exit the exit rules could not run on is refused, never applied: its position goes into sell-only recovery
+      // (EXIT-1g), so one bad entry neither stalls nor crashes the management of the others.
+      if (!isObj(s) || !isObj(s['plan']) || !isObj(s['tracker']) || !Array.isArray(s['bars']) || !runnablePlan(s['plan']) || !runnableRecovery(s['recovery'])) {
         out.push({ action: null, reasons: ['restore entry refused', pid, 'malformed saved plan'] });
+        this.#recoveryWhy.set(pid, 'saved plan refused');
         continue;
       }
-      let saved = s as unknown as SavedExit;
+      // PERSIST-3: the exit inputs come back as saved; without them (or lost at an earlier restart, the flag kept in the
+      // file) the position's deployer_sell and negative_flow exits would count from zero, so it is flattened instead.
+      const why = s['inputsLost'] !== undefined ? 'lost at an earlier restart' : this.#restoreInputs(this.#mintOf(pid), s, atMs);
+      let saved: SavedExit = why === null ? s as unknown as SavedExit : { ...(s as unknown as SavedExit), inputsLost: true };
       if (!runnableTracker(s['tracker'] as Record<string, unknown>)) {
-        // A tracker the exit rules would throw on is replaced, never applied: partials come back from the book; the peak,
-        // trail and flat target start again from now (the plan, its stop and its open time are kept).
-        out.push({ action: null, reasons: ['restore tracker refused', pid, 'malformed saved tracker; tracker reset'] });
-        saved = { ...saved, tracker: newTracker() };
+        // A tracker the exit rules would throw on is never applied. Its trail, peak and flat target cannot be recovered, and
+        // starting them again would weaken the position's protection: sell-only recovery instead (EXIT-1g).
+        out.push({ action: null, reasons: ['restore tracker refused', pid, 'malformed saved tracker; sell-only recovery'] });
+        out.push({ action: null, reasons: ['recovery exit', pid, 'saved tracker refused', 'the whole holding exits at the next fresh quote'] });
+        saved = { ...saved, tracker: { ...newTracker(), pendingFull: ['emergency'] }, recovery: 'saved tracker refused' };
       }
       this.#exits.set(pid, saved);
       this.#bars.set(pid, [...saved.bars]);
       if (typeof saved.pool === 'string') this.#notePool(this.#mintOf(pid), saved.pool);
       if (saved.spot != null) this.#spot.set(pid, saved.spot);
+      if (why !== null) {
+        out.push({ action: null, reasons: ['sell-only', pid, `exit inputs not restored (${why}); flattened through the global exit ladder`] });
+      }
       n++;
     }
     out.push({ action: null, reasons: ['restore', `${n} exit plans and trackers restored`] });
@@ -667,8 +1083,16 @@ export class LiveStrategy implements Strategy {
       // nothing), then the downtime fill and the saved rug facts.
       try {
         const st = v['state'];
-        const index = DeployerIndex.restore(st['index'] as DeployerIndexState);
-        const labeller = RugLabeller.restore(this.#d.rugs, st['labeller'] as RugLabellerState, asOf);
+        let index: DeployerIndex;
+        let labeller: RugLabeller;
+        if (isObj(st['ref'])) {
+          // WORKER-GROW: the seed names the saved file by its hash; the state itself never travels in the seed.
+          if (this.#d.savedState === undefined) throw new Error('the seed names a saved state file and nothing reads it');
+          ({ index, labeller } = this.#d.savedState(st['ref'] as unknown as SavedStateRef));
+        } else {
+          index = DeployerIndex.restore(st['index'] as DeployerIndexState);
+          labeller = RugLabeller.restore(this.#d.rugs, st['labeller'] as RugLabellerState, asOf);
+        }
         const f = index.fill(v['fill'] as MarketEvent[], asOf);
         this.#deployers = index;
         this.#labeller = labeller;
@@ -701,7 +1125,10 @@ export class LiveStrategy implements Strategy {
       // GATE-1's migration fact (a fetched, confirmed migration) also names a candidate.
       const f = parseMigration(e.value);
       const mint = e.key.slice(MIGRATION_PREFIX.length);
-      if (f !== null) this.#notePool(mint, f.pool);
+      if (f !== null) {
+        this.#notePool(mint, f.pool);
+        this.#noteMigrationSlot(mint, f.obs.slot);
+      }
       if (f !== null && !this.#cands.has(mint)) {
         this.#cands.set(mint, { mint, migratedAtMs: f.migratedAtMs, lastEvalMs: null, lastReason: null, lastWaived: '', tries: 0, gates: null, spend: null });
         out.push({ action: null, reasons: [SHORTLIST, this.#d.config.universe, mint, `migrated at ${f.migratedAtMs}`] });
@@ -715,7 +1142,11 @@ export class LiveStrategy implements Strategy {
     const d = ev['data'];
     const mint = typeof d['mint'] === 'string' ? d['mint'] : null;
     const ts = typeof d['timestamp'] === 'bigint' ? Number(d['timestamp']) * 1000 : null;
-    if (mint !== null && typeof d['pool'] === 'string') this.#notePool(mint, d['pool']);
+    if (mint !== null && typeof d['pool'] === 'string') {
+      this.#notePool(mint, d['pool']);
+      // The migration transaction's own slot (a logs sighting carries it as txSlot): the pool cannot trade before it.
+      this.#noteMigrationSlot(mint, typeof v['txSlot'] === 'bigint' ? v['txSlot'] : e.moment.slot);
+    }
     if (mint === null || this.#cands.has(mint)) return;
     // Block time of the migration when the event states it, else when it was received.
     const migratedAtMs = ts ?? ctx.now.receivedAt;
@@ -728,7 +1159,13 @@ export class LiveStrategy implements Strategy {
     if (this.watched().has(mint)) return;
     const pool = this.#poolOfMint.get(mint);
     if (pool !== undefined) this.#mintOfPool.delete(pool);
-    for (const m of [this.#poolOfMint, this.#observedFees, this.#tradeAt, this.#deployerSales]) m.delete(mint);
+    for (const m of [this.#poolOfMint, this.#observedFees, this.#tradeAt, this.#deployerSales, this.#flow, this.#deployerMemo, this.#migrationSlot, this.#swapAt]) m.delete(mint);
+  }
+
+  #noteMigrationSlot(mint: string, slot: bigint | null): void {
+    if (slot === null) return;
+    const was = this.#migrationSlot.get(mint);
+    if (was === undefined || slot < was) this.#migrationSlot.set(mint, slot);
   }
 
   #notePool(mint: string, pool: string): void {
@@ -751,7 +1188,15 @@ export class LiveStrategy implements Strategy {
     if (ev['program'] !== 'pump_amm' || (ev['name'] !== 'BuyEvent' && ev['name'] !== 'SellEvent') || !isObj(ev['data'])) return;
     const d = ev['data'];
     const mint = typeof d['pool'] === 'string' ? this.#mintOfPool.get(d['pool']) : undefined;
+    if (typeof d['timestamp'] === 'bigint') {
+      const slot = typeof v['txSlot'] === 'bigint' ? v['txSlot'] : e.moment.slot;
+      const ms = Number(d['timestamp']) * 1000;
+      if (this.#blockClock === null || slot >= this.#blockClock.slot) this.#blockClock = { slot, ms };
+      // The pool's last released swap, in any slot order: its pool update comes next (a fill's older swap included).
+      if (mint !== undefined) this.#swapAt.set(mint, { slot, ms });
+    }
     if (mint === undefined) return;
+    this.#gapBarTrade(mint, e, v, ev, d);
     this.#tradeAt.set(mint, e.moment.receivedAt);
     const n = (k: string): number | null => (typeof d[k] === 'bigint' && (d[k] as bigint) >= 0n && (d[k] as bigint) <= 10_000n ? Number(d[k]) : null);
     const lp = n('lpFeeBasisPoints');
@@ -783,12 +1228,12 @@ export class LiveStrategy implements Strategy {
     }
     const amount = name === 'BuyEvent' ? d['quoteAmountIn'] : d['quoteAmountOut'];
     if (typeof amount !== 'bigint' || amount < 0n) return;
-    const f = this.#flow.get(mint) ?? { ids: new Set<string>(), minutes: new Map<number, bigint>() };
+    const f = this.#flow.get(mint) ?? { ids: new Map<string, number>(), minutes: new Map<number, bigint>() };
     this.#flow.set(mint, f);
     const id = `${String(v['signature'] ?? e.id)}|${String(name)}|${String(d['user'])}|${String(d['baseAmountIn'] ?? d['baseAmountOut'])}|${amount}`;
     if (f.ids.has(id)) return;
-    f.ids.add(id);
     const start = Math.floor(e.moment.receivedAt / FLOW_MINUTE_MS) * FLOW_MINUTE_MS;
+    f.ids.set(id, start);
     f.minutes.set(start, (f.minutes.get(start) ?? 0n) + (name === 'BuyEvent' ? amount : -amount));
   }
 
@@ -806,9 +1251,11 @@ export class LiveStrategy implements Strategy {
       const d = isObj(v) && isObj(v['event']) && isObj(v['event']['data']) ? v['event']['data'] : null;
       if (d === null || typeof d['creator'] !== 'string') continue;
       const sellers = typeof d['user'] === 'string' && d['user'] !== d['creator'] ? [d['creator'], d['user']] : [d['creator']];
-      return { sellers, supply: typeof d['tokenTotalSupply'] === 'bigint' && d['tokenTotalSupply'] > 0n ? d['tokenTotalSupply'] : null };
+      const dep = { sellers, supply: typeof d['tokenTotalSupply'] === 'bigint' && d['tokenTotalSupply'] > 0n ? d['tokenTotalSupply'] : null };
+      if ([...this.#exits.keys()].some((pid) => this.#mintOf(pid) === mint)) this.#deployerMemo.set(mint, dep);
+      return dep;
     }
-    return null;
+    return this.#deployerMemo.get(mint) ?? null;
   }
 
   /** EXIT-1's deployer-sell observation for a position: the share of supply its deployer sold since the entry. */
@@ -864,12 +1311,21 @@ export class LiveStrategy implements Strategy {
     if (typeof m === 'string' || m.pool.baseReserve <= 0n) return;
     const price = (effectiveQuoteReserve(m.pool) * PRICE_SCALE) / m.pool.baseReserve;
     const barMs = this.#d.config.barMs;
-    const start = Math.floor(ctx.now.receivedAt / barMs) * barMs;
+    // RESTART-KEEP (run/CI ruling): bars are on block time, the one clock live, a restart's rebuild and a replay share
+    // (the backtest has only block time). A swap's pool update is at the swap's block time; any other update (an account
+    // read, a snapshot) at its slot's time from the newest block-time anchor, never past the engine clock.
+    const start = Math.floor(this.#sampleAt(e, mint, ctx.now.receivedAt) / barMs) * barMs;
     const add = (key: string): void => {
       const bars = this.#bars.get(key) ?? [];
       const last = bars[bars.length - 1];
       if (last !== undefined && last.startMs === start) {
         bars[bars.length - 1] = { startMs: start, high: price > last.high ? price : last.high, low: price < last.low ? price : last.low, close: price };
+      } else if (last !== undefined && start < last.startMs) {
+        // A sample whose slot time falls in an earlier bar (an estimate): it widens that bar, never moves a close back.
+        const i = bars.findIndex((b) => b.startMs >= start);
+        const b = bars[i]!;
+        if (b.startMs === start) bars[i] = { ...b, high: price > b.high ? price : b.high, low: price < b.low ? price : b.low };
+        else bars.splice(i, 0, { startMs: start, high: price, low: price, close: price });
       } else bars.push({ startMs: start, high: price, low: price, close: price });
       if (bars.length > this.#d.config.keepBars) bars.splice(0, bars.length - this.#d.config.keepBars);
       this.#bars.set(key, bars);
@@ -879,6 +1335,35 @@ export class LiveStrategy implements Strategy {
       add(pid);
       this.#spot.set(pid, { price, atMs: ctx.now.receivedAt });
     }
+  }
+
+  /** Solana's target slot time: a slot's time from a block-time anchor (an estimate, used only off a swap). */
+  static readonly SLOT_MS = 400;
+  /** The farthest (in slots, about 60 s) an anchor dates another slot from; past it the anchor is stale. */
+  static readonly ANCHOR_MAX_SLOTS = 150n;
+  /**
+   * The newest block-time anchor from any PumpSwap swap released: slot (the swap's own `txSlot`: a fill's trades sit
+   * at the open slot) and block time. Only an update with no swap of its own (an account read, a snapshot) is dated
+   * from it; a swap's pool update takes its own swap's time (`#swapAt`).
+   */
+  #blockClock: { slot: bigint; ms: number } | null = null;
+  /** Each watched mint's pool's last released swap: its slot and block time, which date that swap's pool update. */
+  readonly #swapAt = new Map<string, { readonly slot: bigint; readonly ms: number }>();
+
+  /** The block time a pool update belongs to (see `#track`); the engine clock when nothing dates it. */
+  #sampleAt(e: MarketEvent, mint: string, nowMs: number): number {
+    const v = unwrap(e.value);
+    const slot = isObj(v) && isObj(v['obs']) && typeof v['obs']['slot'] === 'bigint' ? v['obs']['slot'] : isObj(v) && typeof v['slot'] === 'bigint' ? v['slot'] : null;
+    // The pool's own swap at this slot: its exact block time, whatever other pools' swaps moved the anchor to.
+    const own = this.#swapAt.get(mint);
+    if (own !== undefined && slot !== null && own.slot === slot) return Math.min(own.ms, nowMs);
+    const a = this.#blockClock;
+    if (a === null || slot === null) return nowMs;
+    // A stale anchor (supervisor ruling): past ANCHOR_MAX_SLOTS the 400 ms guess drifts tens of seconds (slots run
+    // slower), enough to cross a minute; the receipt time is the better date then, as with no anchor at all.
+    const gap = slot - a.slot;
+    if ((gap < 0n ? -gap : gap) > LiveStrategy.ANCHOR_MAX_SLOTS) return nowMs;
+    return Math.min(a.ms + Number(gap) * LiveStrategy.SLOT_MS, nowMs);
   }
 
   #attempt(id: IntentId, n: number, quote: QuoteContext, height: bigint): TransactionAttempt {
@@ -913,6 +1398,20 @@ export class LiveStrategy implements Strategy {
   #lifecycle(ctx: StrategyContext, out: Decision[]): void {
     // A waiting owner that settled or was booked another way no longer waits. #manage also ends the saved wait from the
     // book on every step (which covers a restart, when this list is empty); both are kept.
+    // A seed whose entry ended without a fill is never made into a plan (EXIT-1h).
+    // A restored seed whose intent is not in the rebuilt book (the kill came before the desk booked it) never will be:
+    // dropped at the restore's first step, so the file does not grow by one per such kill (EXIT-1h review N1).
+    for (const id of this.#seeds.keys()) {
+      const e = ctx.book.intents[id];
+      if (e !== undefined && isTerminal(e) && e.fills.length === 0) {
+        this.#seeds.delete(id);
+        this.#restoredSeeds.delete(id);
+      } else if (e === undefined && this.#restoredSeeds.has(id)) {
+        this.#seeds.delete(id);
+        this.#restoredSeeds.delete(id);
+        out.push({ action: null, reasons: ['restored seed dropped', id, 'its intent never reached the book'] });
+      }
+    }
     for (const [id, pid] of this.#waitingMarket) {
       const i = ctx.book.intents[id];
       if (i === undefined || isTerminal(i) || (i.status !== 'exposure_reserved' && !(i.status === 'reconciled' && i.fills.length === 0))) {
@@ -1073,6 +1572,16 @@ export class LiveStrategy implements Strategy {
           out.push({ action: null, reasons: ['partials from the book', p.id, `${sold.length} partials, ${p.sold} sold (saved: ${t.partials}, ${t.lastSold})`] });
         }
       }
+      const recoveryWhy = saved.recovery ?? null;
+      if (recoveryWhy !== null && p.status === 'open' && saved.tracker.pendingFull === null && exitIntents.every(isTerminal)) {
+        // Sell-only recovery lasts until the position closes (EXIT-1g review B1): the recovery exit was taken (which
+        // clears the remembered full exit) and ended without selling everything, here or before a restart. The position
+        // is open with no exit owner, so the whole holding exits again at the next fresh quote, never held under the
+        // fallback plan.
+        saved = { ...saved, tracker: { ...saved.tracker, pendingFull: ['emergency'] } };
+        this.#exits.set(p.id, saved);
+        out.push({ action: null, reasons: ['recovery exit', p.id, recoveryWhy, 'the whole holding exits at the next fresh quote'] });
+      }
       const realized = exitIntents.reduce((t, i) => t + i.fills.reduce((s, f) => s + f.sol, 0n), 0n);
       const entry = ctx.book.intents[p.entryIntentId];
       const entryFees = entry === undefined ? 0n : entry.fills.reduce((t, f) => t + f.fees, 0n);
@@ -1082,8 +1591,10 @@ export class LiveStrategy implements Strategy {
         status: p.status, quantity: p.quantity, sold: p.sold, costBasis: p.cost + entryFees + exitFees, realized,
         exitCost: n.signaturesPerTx * n.baseFeePerSignature + this.#d.session.policy.exits.ladder.steps[0]!.priorityFeeLamports + n.tip,
         exitSeq: p.exitSeq, exitAttempts: exitAttemptsOf(ctx.book.intents, p.id),
-        // Paper: the paper wallet's token account holds exactly our tokens, and a paper sell-and-close never fails at
-        // the close (no dust or outside transfer exists in the paper world).
+        // The engine sees only the book, so it plans a clean account. Whether a sell closes the account is settled where
+        // it lands (PAPER-1): the paper world draws dust and close failures with the backtest's model (core's
+        // TokenAccounts), a failed close fails that attempt and the retry sells from a sell-only account. Live, the
+        // signer reads the real account (a before-live item, DECISIONS).
         tokenAccountBalance: p.quantity, closeFailed: false,
       };
       const m = this.#market(ctx, p.mint);
@@ -1095,8 +1606,10 @@ export class LiveStrategy implements Strategy {
       // A universe the loaded policy no longer has (a restart under a policy that dropped it): its own time stops and
       // partials are unknown, so the position is flattened at once through the global exit ladder (supervisor ruling).
       // Exits are never blocked: no throw, no missing decision.
-      const known = Object.hasOwn(this.#d.session.policy.exits.universes, saved.plan.universe);
-      if (!known && !this.#flattening.has(p.id)) {
+      const inPolicy = Object.hasOwn(this.#d.session.policy.exits.universes, saved.plan.universe);
+      // PERSIST-3: a position whose exit inputs did not come back is flattened the same way (reported at the restore).
+      const known = inPolicy && saved.inputsLost === undefined;
+      if (!inPolicy && !this.#flattening.has(p.id)) {
         this.#flattening.add(p.id);
         out.push({ action: null, reasons: ['universe missing', p.id, `${String(saved.plan.universe)} is not in policy ${this.#d.session.versionHash}; flattened through the global exit ladder`] });
       }
@@ -1118,7 +1631,7 @@ export class LiveStrategy implements Strategy {
       saved = { ...saved, tracker: step.tracker, bars: this.#bars.get(p.id) ?? saved.bars, waitingSinceMs };
       this.#exits.set(p.id, saved);
       for (const why of step.ignored) out.push({ action: null, reasons: ['exit input ignored', p.mint, why] });
-      this.#exitDecision(p.id, p.mint, p.exitSeq, step.decision, ctx, out, known ? [] : ['universe missing: flatten']);
+      this.#exitDecision(p.id, p.mint, p.exitSeq, step.decision, ctx, out, known ? [] : [inPolicy ? 'exit inputs lost: flatten' : 'universe missing: flatten']);
     }
   }
 
@@ -1145,10 +1658,12 @@ export class LiveStrategy implements Strategy {
       const sol = this.#spotSol(ctx);
       const account = this.#marked(risk.history, ctx, sol, { fallback: true });
       const r = evaluateExit({ session: this.#d.session, mode: 'paper', clock: { now: () => ctx.now }, account, latches: risk.latches, market: { solPrice: sol, solBalance: this.#balance(risk, ctx), regime: 'unknown' } });
-      for (const t of r.trips) why.push(`${TRIP_PREFIX}${t}`);
+      // RISK-LATCH: only a fully marked account at a fresh SOL price latches; a fallback or unmarked one is still logged.
+      if (latchable(account, sol, ctx.now.receivedAt, this.#d.session.policy.gates.maxQuoteAgeMs)) for (const t of r.trips) why.push(`${TRIP_PREFIX}${t}`);
       const own = account.openPositions.find((o) => o.mint === mint);
       if (own !== undefined) why.push(`${MARK_PREFIX}${own.mark ?? 'unknown'}`);
       if (r.tripped.length > 0) why.push(`${TRIPPED_PREFIX}${[...new Set(r.tripped.map((x) => x.code))].sort().join(',')}`);
+      if (r.fault !== null) why.push(`${RISK_FAULT_PREFIX}${r.fault}`);
     }
     const id = intentId(`x${pid.slice(1)}:${exitSeq + 1}`);
     const events = exitBookEvents(pid, d, id);
@@ -1164,6 +1679,9 @@ export class LiveStrategy implements Strategy {
   /** The entry plan of a position that just filled, from its decision seed and the fill. */
   #planFromFill(pid: PositionId, entryId: IntentId, ctx: StrategyContext, out: Decision[]): SavedExit | null {
     const seed = this.#seeds.get(entryId);
+    // A seed saved by an earlier process (EXIT-1h) rebuilds the plan, but its fill was not seen here: dated like a fill
+    // without one (the booked moment, else the slot), never at this process's clock.
+    const seen = seed !== undefined && !this.#restoredSeeds.has(entryId);
     const entry = ctx.book.intents[entryId];
     const p = ctx.book.positions[pid]!;
     // The open time: the fill's moment when this process saw it (it holds the decision seed); else the moment the ledger
@@ -1177,10 +1695,10 @@ export class LiveStrategy implements Strategy {
     const booked = this.#bookedOpenAt.get(pid);
     const when = this.#bookedWhen.get(pid);
     let fillAt = ctx.now.receivedAt;
-    if (seed === undefined && booked !== undefined && !(when === 'reconcile' && fill !== undefined)) {
+    if (!seen && booked !== undefined && !(when === 'reconcile' && fill !== undefined)) {
       fillAt = Math.min(booked, ctx.now.receivedAt);
       if (when !== undefined && when.startsWith('unplaced')) out.push({ action: null, reasons: ['open time from the booking', p.mint, when] });
-    } else if (seed === undefined && fill !== undefined) {
+    } else if (!seen && fill !== undefined) {
       if (this.#height === null) {
         if (!this.#planWaitsForSlot.has(pid)) {
           this.#planWaitsForSlot.add(pid);
@@ -1191,23 +1709,32 @@ export class LiveStrategy implements Strategy {
       const slots = this.#height > fill.slot ? this.#height - fill.slot : 0n;
       fillAt = Math.min(ctx.now.receivedAt - Number(slots) * this.#d.config.maxSlotMs, booked ?? Number.POSITIVE_INFINITY);
     }
-    if (seed === undefined || entry === undefined) {
-      // A position the strategy did not plan (none should exist): manage it with the tightest stop the policy allows.
-      out.push({ action: null, reasons: ['no entry plan', p.mint, 'position managed with the policy maximum stop'] });
+    // A position without its own plan (no decision seed in this process, and no usable saved plan) is never held under a
+    // substituted plan: its stop, trail, peak and flat target cannot be recovered, and a new holding period or a looser
+    // stop would weaken its protection. Sell-only recovery: the whole holding exits at the next fresh executable quote,
+    // on the normal ladder (EXIT-1g). The plan below only describes the position (its open time, entry price, universe).
+    const recovery = seed === undefined || entry === undefined;
+    let why: string | null = null;
+    if (recovery) {
+      why = this.#recoveryWhy.get(pid) ?? (this.#refusedSeeds.has(entryId) ? 'saved seed refused' : null) ?? (this.#restoreSeen && !this.#exits.has(pid) && this.#bookedOpenAt.has(pid) ? 'no saved plan' : 'no decision seed');
+      out.push({ action: null, reasons: ['no entry plan', p.mint, 'sell-only recovery'] });
+      out.push({ action: null, reasons: ['recovery exit', pid, why, 'the whole holding exits at the next fresh quote'] });
     }
     const cost = p.cost;
-    const entryPx = p.quantity > 0n ? (cost * PRICE_SCALE) / p.quantity : 0n;
+    // The entry price from the book: cost over the tokens bought (a partial sale since leaves the cost of the entry as is).
+    const entryPx = p.bought > 0n ? (cost * PRICE_SCALE) / p.bought : 0n;
     const stopPrice = seed?.stopPrice ?? entryPx - (entryPx * BigInt(this.#d.session.policy.loss.stopMaxBps)) / BPS;
-    const stopValue = (p.quantity * stopPrice) / PRICE_SCALE;
+    const stopValue = (p.bought * stopPrice) / PRICE_SCALE;
     const riskUnit = cost - stopValue > 0n ? cost - stopValue : 1n;
     // The universe the entry was made under: its plan, else its intent key (`entry:<mint>:<universe>.<version>.<n>`).
     const universe = seed?.universe ?? (entry === undefined ? null : universeOfKey(entry.intent.key));
     if (universe === null) out.push({ action: null, reasons: ['no entry universe', p.mint, 'no universe on record; flattened through the global exit ladder'] });
     const plan: EntryPlan = { openedAtMs: fillAt, universe: universe ?? NO_UNIVERSE, notional: seed?.notional ?? this.#d.session.policy.capital.minNotional, riskUnit, stopPrice, entryReserve: seed?.entryReserve ?? 0n };
-    const saved: SavedExit = { plan, tracker: newTracker(), bars: this.#bars.get(p.mint) ?? [] };
+    const saved: SavedExit = { plan, tracker: recovery ? { ...newTracker(), pendingFull: ['emergency'] } : newTracker(), bars: this.#bars.get(p.mint) ?? [], ...(why === null ? {} : { recovery: why }) };
     this.#bars.set(pid, [...saved.bars]);
     this.#exits.set(pid, saved);
     this.#seeds.delete(entryId);
+    this.#restoredSeeds.delete(entryId);
     out.push({ action: null, reasons: ['entry plan', p.mint, `stop ${stopPrice}`, `1R ${riskUnit} lamports`] });
     return saved;
   }
@@ -1236,6 +1763,30 @@ export class LiveStrategy implements Strategy {
     const v = unwrap(e.value);
     // Judged fresh when the mark is used (`#landedFresh`): at the read's own moment it cannot be older than that.
     this.#due.set(mint, { slot: isObj(v) && typeof v['slot'] === 'bigint' ? v['slot'] : null, receivedAt: e.moment.receivedAt });
+  }
+
+  /** Mints whose read batch is on the feed but not closed yet: never judged on part of a batch. */
+  readonly #batchOpen = new Set<string>();
+
+  /**
+   * READ-COHERENT: a coherent batch of reads (FactReaders.readBatch) is put on the feed between `RAW.batchOpen` and
+   * `RAW.batchClose`, and at one moment the open is released before its members and the close after them and after
+   * every fact they made. While open the candidate is not evaluated (`#entries`), so no decision is made on part of a
+   * batch; the close is the batch's landing, judged at its own event (not the next one, which may be
+   * a slot later), with the batch's oldest slot-judged member as its age. Recorded frames, so a replay does the same.
+   */
+  #batchLanded(e: MarketEvent): { readonly mint: string; readonly read: { readonly slot: bigint | null; readonly receivedAt: number } } | null {
+    const open = RAW.batchOpen('');
+    const close = RAW.batchClose('');
+    if (e.key.startsWith(open)) {
+      this.#batchOpen.add(e.key.slice(open.length));
+      return null;
+    }
+    if (!e.key.startsWith(close)) return null;
+    const mint = e.key.slice(close.length);
+    this.#batchOpen.delete(mint);
+    const v = unwrap(e.value);
+    return { mint, read: { slot: isObj(v) && typeof v['slot'] === 'bigint' ? v['slot'] : null, receivedAt: e.moment.receivedAt } };
   }
 
   /** A read landed for the mint and is still fresh now: a slower event after it (a quiet feed) can outlive it. */
@@ -1281,6 +1832,7 @@ export class LiveStrategy implements Strategy {
       const to = cand.migratedAtMs + c.windowToMs;
       // Backstop: `#windowEnds` has already removed it on this event; an ended window is never an entry whatever the order.
       if (now >= to) continue;
+      if (this.#batchOpen.has(cand.mint)) continue;
       if (now < from || (cand.lastEvalMs !== null && now - cand.lastEvalMs < c.evaluateEveryMs && !this.#landedFresh(due, cand.mint, ctx))) continue;
       if (c.entryTiming === 'random' && now < s0EntryAt(c.entrySalt, cand.mint, from, to)) continue;
       if (Object.values(ctx.book.positions).some((p) => p.mint === cand.mint && p.status !== 'closed')) continue;
@@ -1295,7 +1847,9 @@ export class LiveStrategy implements Strategy {
       // The S0 diagnostic parts relied on count too: the same reason with a different set is a new line.
       const key = (x: string | null) => (x === null ? null : x.replace(/\d+/g, '#'));
       const waived = this.#waived.join(',');
-      if (r !== null && (key(r) !== key(cand.lastReason) || waived !== cand.lastWaived)) out.push({ action: null, reasons: ['reject', c.universe, cand.mint, r, `${GATE_REASONS_PREFIX}${JSON.stringify(this.#lastGates)}`, ...this.#diagnostic()] });
+      // A line that carries a trip is always written: risk reports a trip only while it is not latched, so it is never
+      // swallowed as "the same reason" (after an owner's re-arm the same reject must latch again) and never repeats once latched.
+      if (r !== null && (key(r) !== key(cand.lastReason) || waived !== cand.lastWaived || this.#lastTrips.length > 0)) out.push({ action: null, reasons: ['reject', c.universe, cand.mint, r, `${GATE_REASONS_PREFIX}${JSON.stringify(this.#lastGates)}`, ...this.#lastTrips, ...this.#diagnostic()] });
       if (r !== null) {
         cand.lastReason = r;
         cand.lastWaived = waived;
@@ -1314,6 +1868,12 @@ export class LiveStrategy implements Strategy {
   /** The typed reasons of the last reject `#evaluate` returned (RUN-1c's `gate_reasons`). */
   #lastGates: readonly GateReasonLine[] = [];
 
+  /**
+   * ENTRY-TRIPS: the `trip X` reasons risk found on the last refused entry (a weekly loss or NAV kill reached while flat),
+   * each its own reason on the reject line, so the worker latches it (worker.ts reads elements that start `trip `).
+   */
+  #lastTrips: readonly string[] = [];
+
   /** The same reasons with their inputs, for the candidate (not journaled: gate_reasons keeps its shape). */
   #lastNeeds: readonly CandidateReason[] = [];
 
@@ -1328,12 +1888,14 @@ export class LiveStrategy implements Strategy {
 
   /** One candidate through regime, hard rejects and risk. Returns the reject reason, or null when it proposed an entry. */
   #evaluate(cand: Candidate, ctx: StrategyContext, gctx: GateContext, out: Decision[]): string | null {
+    this.#lastTrips = [];
     const c = this.#d.config;
     const session = this.#d.session;
     const policy = session.policy;
     const diag = c.s0Diagnostic === true ? { s0Diagnostic: true } as const : {};
     const regime = evaluateRegime(gctx, { session, mode: 'live', ...diag });
     this.#waived = [...regime.waived];
+    this.#regime = { atMs: gctx.now.receivedAt, on: regime.on, reasons: regime.reasons.map((x) => ({ code: x.code, input: x.input ?? null })), waived: [...regime.waived] };
     if (!regime.on) return this.#fail(`regime off: ${regime.reasons.map((x) => x.detail).join('; ') || 'no reason given'}`, regime.reasons.map((x) => ({ gate: 'regime', code: x.code, detail: x.detail })), regime.reasons.map((x) => ({ gate: 'regime', ...x })));
     const sol = this.#spotSol(ctx);
     if (sol === null) return this.#fail('live SOL price unknown', [{ gate: 'worker', code: 'no-sol-price', detail: 'no live SOL/USD price' }]);
@@ -1345,7 +1907,11 @@ export class LiveStrategy implements Strategy {
     const quoter = pumpSwapRoundTrip(m.pool, m.ctx);
     const { hard, notEvaluated } = stagedHardRejects(gctx, { session, mode: 'live', rugLabeller: 'RUG-1', ...diag }, { mint: cand.mint, universe: c.universe, notional, spend, roundTrip: quoter(spend) });
     // The S0 diagnostic set's H14 note, from whichever stages ran (WORKER-1e).
-    if (hard.notes.some((n) => n.code === 's0-diagnostic')) this.#waived.push('h14-creates-coverage');
+    if (hard.notes.some((n) => n.code === 's0-diagnostic')) {
+      this.#waived.push('h14-creates-coverage');
+      // Served with the regime too: the card never reads a plain "On" while any part of the set is waived (API-1 N1).
+      if (this.#regime !== null) this.#regime = { ...this.#regime, waived: [...this.#regime.waived, 'h14-creates-coverage'] };
+    }
     if (!hardAllowsEntry(hard)) {
       // Fails closed: a pass that left a gate out (groups that stop covering every hard gate) is no entry.
       if (hard.reasons.length === 0) return this.#fail('hard rejects incomplete', [{ gate: 'worker', code: 'hard-incomplete', detail: 'not every hard gate was evaluated' }]);
@@ -1369,7 +1935,8 @@ export class LiveStrategy implements Strategy {
     if (!stop.ok) return this.#fail(`stop: ${stop.reason} ${stop.detail}`, [{ gate: 'stop', code: stop.reason, detail: stop.detail }]);
     const stopBps = Number(mulDiv(distance, BPS, entryPx, 'ceil'));
     // Numbered from the book (restored at start), so a restart never reuses an intent id or key.
-    cand.tries = 1 + Object.values(ctx.book.intents).filter((i) => i.intent.purpose === 'entry' && i.intent.mint === cand.mint).length;
+    // Past every entry intent the book holds for the mint and every try saved before a restart (RESTART-KEEP): ids never repeat.
+    cand.tries = 1 + Math.max(cand.tries, Object.values(ctx.book.intents).filter((i) => i.intent.purpose === 'entry' && i.intent.mint === cand.mint).length);
     const id = intentId(`en:${cand.mint}:${cand.tries}`);
     const rid = reservationId(`r:${cand.mint}:${cand.tries}`);
     const reserveLiq = effectiveQuoteReserve(m.pool);
@@ -1381,16 +1948,27 @@ export class LiveStrategy implements Strategy {
       const detail = e instanceof Error ? e.message : 'error';
       return this.#fail(`risk mark failed: ${detail}`, [{ gate: 'worker', code: 'risk-mark-failed', detail }]);
     }
-    const r = evaluateEntry(
-      { session, mode: 'paper', clock: { now: () => ctx.now }, account, latches: acct.latches, market: { solPrice: sol, solBalance: this.#balance(acct, ctx), regime: 'on' } },
-      {
-        intentId: id, reservationId: rid, mint: toMint(cand.mint), universe: c.universe, stopBps, edgePpm: c.edgePpm, medianTargetBps: c.medianTargetBps,
-        quote: quoter, quoteAtMs: m.atMs, poolLiquidity: lamportsToMicroUsd((reserveLiq * 2n) as Lamports, sol.value, 'floor'), network: c.network, rent: { ...c.rent, oneTime: acct.oneTimeRent },
-      },
-    );
-    const trips = r.trips.map((t) => `${TRIP_PREFIX}${t}`);
+    // RISK-FAULT: risk that cannot evaluate refuses the entry (fail-closed), logged, and the step goes on.
+    let r: ReturnType<typeof evaluateEntry>;
+    try {
+      r = evaluateEntry(
+        { session, mode: 'paper', clock: { now: () => ctx.now }, account, latches: acct.latches, market: { solPrice: sol, solBalance: this.#balance(acct, ctx), regime: 'on' } },
+        {
+          intentId: id, reservationId: rid, mint: toMint(cand.mint), universe: c.universe, stopBps, edgePpm: c.edgePpm, medianTargetBps: c.medianTargetBps,
+          quote: quoter, quoteAtMs: m.atMs, poolLiquidity: lamportsToMicroUsd((reserveLiq * 2n) as Lamports, sol.value, 'floor'), network: c.network, rent: { ...c.rent, oneTime: acct.oneTimeRent },
+        },
+      );
+    } catch (e) {
+      const detail = e instanceof Error ? e.message : 'error';
+      return this.#fail(`risk fault: ${detail}`, [{ gate: 'R1', code: 'risk_fault', detail }]);
+    }
+    // RISK-LATCH: an entry latches R9/R10 only from a fully marked account at a fresh SOL price; an unknown or stale mark
+    // counts as a total loss, which refuses the entry but proves no breach. The refusal still names every trip it saw.
+    const seen = r.trips.map((t) => `${TRIP_PREFIX}${t}`);
+    const trips = latchable(account, sol, ctx.now.receivedAt, policy.gates.maxQuoteAgeMs) ? seen : [];
     if (!r.allow) {
-      return this.#fail(`risk ${r.reasons.map((x) => `${x.control} ${x.code}: ${x.detail}`).join(', ')}${trips.length > 0 ? `; ${trips.join(', ')}` : ''}`, r.reasons.map((x) => ({ gate: x.control, code: x.code, detail: x.detail })));
+      this.#lastTrips = trips;
+      return this.#fail(`risk ${r.reasons.map((x) => `${x.control} ${x.code}: ${x.detail}`).join(', ')}${seen.length > 0 ? `; ${seen.join(', ')}` : ''}`, r.reasons.map((x) => ({ gate: x.control, code: x.code, detail: x.detail })));
     }
     if (r.spendLamports !== spend) {
       return this.#fail(`risk sized ${r.spendLamports} lamports, gates judged ${spend}`, [{ gate: 'worker', code: 'size-mismatch', detail: `risk sized ${r.spendLamports}, gates judged ${spend}` }]);
