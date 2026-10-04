@@ -38,6 +38,19 @@ export interface RegimeReason {
   readonly input?: FactName;
 }
 
+/**
+ * The S0 shakedown's diagnostic set (WORKER-1e, supervisor ruling 2026-10-04): never in the qualifying run (the
+ * worker refuses it there). Each part is named on every decision it changes; every other check stays real.
+ * - `regime-volume`: the curve-volume condition is computed and logged but not judged (it needs 28 published days).
+ * - `regime-survival`: the graduate-survival condition likewise (it needs 15 days of graduates, built live).
+ * - `exec-health`: execution health is measured from paper's own attempts and logged, never judged (its limits are the owner's).
+ * - `h14-creates-coverage`: H14 judges the deployer over the creates coverage the host has, not the full look-back.
+ */
+export type S0DiagnosticPart = 'regime-volume' | 'regime-survival' | 'exec-health' | 'h14-creates-coverage';
+export const S0_DIAGNOSTIC_PARTS: readonly S0DiagnosticPart[] = ['regime-volume', 'regime-survival', 'exec-health', 'h14-creates-coverage'];
+/** The regime conditions the diagnostic set logs without judging, with the part that names each. */
+const UNJUDGED: ReadonlyMap<RegimeCondition, S0DiagnosticPart> = new Map([['volume', 'regime-volume'], ['survival', 'regime-survival']]);
+
 export interface RegimeResult {
   readonly on: boolean;
   readonly mode: Mode;
@@ -46,6 +59,8 @@ export interface RegimeResult {
   readonly reasons: readonly RegimeReason[];
   /** Live only: execution health; in the backtest it is absent (§16.3). */
   readonly execHealth: { readonly applied: boolean; readonly green: boolean | null; readonly detail: string };
+  /** The S0 diagnostic parts this result relied on (empty without the diagnostic). */
+  readonly waived: readonly S0DiagnosticPart[];
 }
 
 // ---------- Exact fractions ----------
@@ -128,21 +143,31 @@ const solChange = (s: SolUsdFact, at: number, p: Policy['regime']): ConditionRes
   return { condition: 'sol-change', ok: bpsChange > BigInt(p.solChange24hFloorBps), value: String(bpsChange), limit: String(p.solChange24hFloorBps) };
 };
 
-const check = (atMs: number, g: GraduatesFact, v: CurveVolumeFact, s: SolUsdFact, p: Policy['regime']): RegimeCheck => {
-  const conditions = [survival(g, atMs, p), volumeCondition(v, atMs, p), solChange(s, atMs, p)];
-  const ok = conditions.some((c) => c.ok === null) ? null : conditions.every((c) => c.ok === true);
+type Missing = { readonly missing: string };
+
+/** One check; with the diagnostic set volume and survival are listed but left out of `ok` (`missing`: no such fact). */
+const check = (atMs: number, g: GraduatesFact | Missing, v: CurveVolumeFact | Missing, s: SolUsdFact, p: Policy['regime'], diag: boolean): RegimeCheck => {
+  const volume = 'missing' in v ? unknown('volume', 'curve-volume', 'missing', v.missing) : volumeCondition(v, atMs, p);
+  const surv = 'missing' in g ? unknown('survival', 'graduates', 'missing', g.missing) : survival(g, atMs, p);
+  const conditions = [surv, volume, solChange(s, atMs, p)];
+  const judged = diag ? conditions.filter((c) => !UNJUDGED.has(c.condition)) : conditions;
+  const ok = judged.some((c) => c.ok === null) ? null : judged.every((c) => c.ok === true);
   return { atMs, ok, conditions };
 };
 
 export interface RegimeDeps {
   readonly session: PolicySession;
   readonly mode: Mode;
+  /** The S0 shakedown's diagnostic set (`S0DiagnosticPart`); the worker refuses it in the qualifying run. */
+  readonly s0Diagnostic?: true;
 }
 
 export const evaluateRegime = (ctx: GateContext, deps: RegimeDeps): RegimeResult => {
   const absent = { applied: false, green: null, detail: 'live only (§16.3)' } as const;
+  const diag = deps.s0Diagnostic === true;
+  const waived: S0DiagnosticPart[] = [];
   const off = (reasons: RegimeReason[], checks: RegimeCheck[] = [], execHealth: RegimeResult['execHealth'] = absent): RegimeResult =>
-    ({ on: false, mode: deps.mode, checks, reasons, execHealth });
+    ({ on: false, mode: deps.mode, checks, reasons, execHealth, waived });
   if (!deps.session.running) return off([{ code: 'policy-session-ended', detail: 'the policy session has ended' }]);
   const policy = deps.session.policy;
   const ev = new Evidence(ctx, policy);
@@ -151,26 +176,33 @@ export const evaluateRegime = (ctx: GateContext, deps: RegimeDeps): RegimeResult
   const g = ev.read('graduates', GRADUATES_KEY, parseGraduates, 'series', 'H16');
   const v = ev.read('curve-volume', CURVE_VOLUME_KEY, parseCurveVolume, 'series', 'H16');
   const s = ev.read('sol-usd', SOL_USD_KEY, parseSolUsd, 'series', 'H16');
-  const failed = [g, v, s].filter((r): r is { ok: false; reason: GateReason } => !r.ok);
+  const failed = [...(diag ? [] : [g, v]), s].filter((r): r is { ok: false; reason: GateReason } => !r.ok);
   if (failed.length > 0) return off(failed.map((r) => ({ code: 'unknown', detail: r.reason.detail, ...(r.reason.input ? { input: r.reason.input } : {}) })));
-  if (!g.ok || !v.ok || !s.ok) throw new Error('unreachable');
+  if (!s.ok) throw new Error('unreachable');
+  const volume = v.ok ? v.fact : { missing: v.reason.detail };
+  const graduates = g.ok ? g.fact : { missing: g.reason.detail };
 
   // The current check: the latest hour boundary that the SOL series has a point for and the graduate snapshot has reached.
   const solLatest = s.fact.points.reduce((m, p) => (p.tMs <= now && p.tMs > m ? p.tMs : m), Number.MIN_SAFE_INTEGER);
-  const reached = Math.min(now, g.fact.obs.receivedAt, solLatest);
+  const reached = Math.min(now, g.ok ? g.fact.obs.receivedAt : now, solLatest);
   const current = floorTo(reached, HOUR_MS);
   if (solLatest === Number.MIN_SAFE_INTEGER || now - current > HOURLY_MAX_AGE_MS) {
     return off([{ code: 'unknown', input: 'sol-usd', detail: `regime series have not reached a check within ${HOURLY_MAX_AGE_MS} ms of now` }]);
   }
 
   const checks: RegimeCheck[] = [];
-  for (let k = 0; k < policy.regime.failedChecksToDisable; k++) checks.push(check(current - k * HOUR_MS, g.fact, v.fact, s.fact, policy.regime));
+  for (let k = 0; k < policy.regime.failedChecksToDisable; k++) checks.push(check(current - k * HOUR_MS, graduates, volume, s.fact, policy.regime, diag));
+  if (diag) for (const [cond, part] of UNJUDGED) if (checks.some((c) => c.conditions.some((x) => x.condition === cond && x.ok !== true))) waived.push(part);
 
   let execHealth: RegimeResult['execHealth'] = absent;
   const reasons: RegimeReason[] = [];
   if (deps.mode === 'live') {
     const h = ev.read('exec-health', EXEC_HEALTH_KEY, parseExecHealth, 'offchain', 'H16');
-    if (!h.ok) {
+    if (diag) {
+      // Measured, not judged: logged for the owner's limits, never a reason.
+      execHealth = { applied: false, green: h.ok ? h.fact.green : null, detail: `S0 diagnostic, not judged: ${h.ok ? h.fact.detail : h.reason.detail}` };
+      waived.push('exec-health');
+    } else if (!h.ok) {
       execHealth = { applied: true, green: null, detail: h.reason.detail };
       reasons.push({ code: 'unknown', input: 'exec-health', detail: h.reason.detail });
     } else {
@@ -181,9 +213,10 @@ export const evaluateRegime = (ctx: GateContext, deps: RegimeDeps): RegimeResult
 
   const head = checks[0]!;
   if (head.ok === null) {
-    for (const c of head.conditions) if (c.ok === null) reasons.push({ code: 'unknown', input: c.input, detail: c.detail });
+    for (const c of head.conditions) if (c.ok === null && (!diag || !UNJUDGED.has(c.condition))) reasons.push({ code: 'unknown', input: c.input, detail: c.detail });
   } else if (checks.every((c) => c.ok !== true)) {
-    reasons.push({ code: 'regime-off', detail: `the last ${checks.length} checks failed: ${checks.map((c) => c.conditions.filter((x) => x.ok !== true).map((x) => x.condition).join('+')).join(', ')}` });
+    const judged = (x: ConditionResult): boolean => x.ok !== true && (!diag || !UNJUDGED.has(x.condition));
+    reasons.push({ code: 'regime-off', detail: `the last ${checks.length} checks failed: ${checks.map((c) => c.conditions.filter(judged).map((x) => x.condition).join('+')).join(', ')}` });
   }
-  return { on: reasons.length === 0, mode: deps.mode, checks, reasons, execHealth };
+  return { on: reasons.length === 0, mode: deps.mode, checks, reasons, execHealth, waived };
 };
