@@ -95,6 +95,8 @@ const crossIssues = (p: Policy, out: string[]): void => {
   need(p.costGate.maxShareOfMedianTargetBps > 0, 'costGate.maxShareOfMedianTargetBps: must be above zero');
 
   need(regime.volumePercentile >= 1 && regime.volumePercentile <= 99, 'regime.volumePercentile must be between 1 and 99');
+  need(regime.volumeLagDays >= 1, 'regime.volumeLagDays: must be at least 1 (the current UTC day is never complete)');
+  need(regime.volumeMinDays >= 1 && regime.volumeMinDays <= regime.volumeWindowDays, 'regime.volumeMinDays must be between 1 and regime.volumeWindowDays');
   need(regime.solChange24hFloorBps >= -10_000 && regime.solChange24hFloorBps <= 10_000, 'regime.solChange24hFloorBps must be between -10,000 and 10,000');
   need(regime.failedChecksToDisable >= 1, 'regime.failedChecksToDisable: must be at least 1');
 
