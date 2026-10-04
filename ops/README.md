@@ -118,6 +118,11 @@ The Deploy workflow deploys it only together with a key handoff, so the server a
 - it discovers the Worker's address from wrangler's output and sends it to the server in the encrypted bundle;
 - it sets the Worker's secrets, and sends the webhook secret to the server in the bundle. The server sets the Telegram webhook itself once paired, because Telegram refuses the `getUpdates` that `/pair` relies on while a webhook is set.
 
+**Key rotation never cuts off the server (KEY-ROTATE-SAFE).** The heartbeat key and the webhook secret each have two slots on the watchdog: `HEARTBEAT_HMAC_KEY_A` and `_B`, and `TELEGRAM_WEBHOOK_SECRET_A` and `_B`. The old single names (`HEARTBEAT_HMAC_KEY`, `TELEGRAM_WEBHOOK_SECRET`) count as a third slot, `legacy`, which a watchdog deployed before this change starts on.
+- **Which slot Deploy writes:** it asks the watchdog which slot is active (`GET /slot`, which answers only `legacy`, `A` or `B`) and writes the new value into the other slot. It never touches the active one. If the watchdog does not answer, nothing is rotated.
+- **The switch:** the watchdog accepts the active value, and the new value while it is on offer. The server's first heartbeat signed with the new key makes that slot active and refuses the old key from then on. Telegram's first request with the new webhook secret does the same for the webhook. The watchdog keeps only the active slot and hashes of the values it retired, never a key.
+- **When the server never gets the bundle** (no pickup, or a `DEPLOY_CODE` that is stale or wrong), nothing it uses changes: the server keeps beating with its key, and a later good Deploy writes over the same pending slot.
+
 To turn it on, after `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` are in GitHub (on a new server, the first setup already covers it):
 1. Paste the install line above again on the console. This updates the server's scripts and keeps everything.
 2. Run `zeroed-new-deploy-code`.

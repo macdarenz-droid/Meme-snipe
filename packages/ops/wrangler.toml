@@ -1,7 +1,7 @@
 # Zeroed watchdog: Cloudflare Worker on its free workers.dev address, cron every minute, one Durable Object
 # for the heartbeat, alerts, pause flag and lease (ARCHITECTURE.md 12, security.md 5.2).
-# Secrets (set by the Deploy workflow, never here): HEARTBEAT_HMAC_KEY, TELEGRAM_BOT_TOKEN,
-# TELEGRAM_WEBHOOK_SECRET. The owner's chat id arrives in the server's signed heartbeat.
+# Secrets (set by the Deploy workflow, never here): HEARTBEAT_HMAC_KEY_A/_B and TELEGRAM_WEBHOOK_SECRET_A/_B (two
+# slots each, src/watchdog/keyring.ts; the single names are the "legacy" slot), TELEGRAM_BOT_TOKEN. The owner's chat id arrives in the server's signed heartbeat.
 # Free plan only: Workers Free, cron triggers, SQLite-backed Durable Objects, workers.dev.
 name = "zeroed-watchdog"
 main = "src/watchdog/worker.ts"

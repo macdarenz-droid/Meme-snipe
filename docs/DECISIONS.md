@@ -97,6 +97,7 @@ One row per decision in the table; detailed module decisions follow in sections 
 | 2026-10-04 | Dataset schema 3: trade rows carry `user_token_account` and `user_token_owner`; a swap credits or debits `user_token_owner`, never `user` or the signer; an unknown owner marks the mint `unresolved` / `swap_owner_unknown` for that transaction (supervisor ruling, PR #46) | The event's `user` is whoever the program names, not who holds the tokens: a buy can land in another wallet's account, a delegate can sell the owner's tokens, and a router can sign, so crediting `user` would put balances on the wrong holder | [historical-data.md](research/historical-data.md) "Schema 3 additions" |
 | 2026-10-04 | Regime volume per hour as release `data-volume-DAY` (DATA-1c): SOL-quoted curve plus canonical WSOL PumpSwap volume, lamports, buys plus sells, `covered` only for fully scanned hours; exact cross-check against kept rows; back-fill from published units; regime reads day D−3 (supervisor rulings) | A separate release keeps every published `data-day-DAY` complete and unedited; D−3 always holds under the measured archive lag (epoch ready 0.29–0.60 d after its end, epochs about 1.34 d long) plus a 2–3 h scan | [historical-data.md](research/historical-data.md) "Regime volume per hour" |
 | 2026-10-04 | The census stays unchanged for curves whose `quote_mint` is the system program (it counts `quote_amount`, while `qa/volume.ts` re-derives from `sol_amount`); units stay byte-identical with run 1's (supervisor ruling on #77) | Changing `emitRow` would change `agg_hourly` and break unit identity across the run. On 2026-10-01 all 43,332 such rows have `quote_amount` = `sol_amount` and `virtual_quote_reserves` = `virtual_sol_reserves`. If they ever differ, the exact cross-check fails the day loudly, the safe direction (tests: scanner `TestCensusSystemProgramQuoteDivergenceReachesVolumeHours`, `volume.test.ts`) | [historical-data.md](research/historical-data.md) "Regime volume per hour" |
+| 2026-10-04 | Watchdog keys rotate through two slots and switch on the server's first use (KEY-ROTATE-SAFE) | A Deploy run with a used DEPLOY_CODE replaced the heartbeat key the server never received, cutting off heartbeats and /pause; a rotation now leaves the active key alone | "Key rotation (KEY-ROTATE-SAFE)" below, [ops/README.md](../ops/README.md) "Watchdog" |
 
 ## Supervisor rulings after the external review (2026-10-04)
 
@@ -1390,3 +1391,38 @@ Built to the supervisor's revised spec and the consensus rulings that followed i
   - `packages/ops/test/host-logic.test.ts`: `worker_shakedown`, the `worker-start` and `worker-smoke` wiring.
   - `ops/test/e2e.sh` 10b2: the release built from this commit shows S0 and the four parts in `/health`, the start line (not qualifying, the edge) and the worker's environment. The trial refuses the shakedown in a release with a qualifying run, and a block with a name outside the five.
   - Hand mutants, all caught: `ENV_NAMES` without the name; parity without the set; a fixed `entry_rule`; the wallet refusal only when qualifying; the edge one lower and one higher; a tip-account stand-in; `worker_shakedown` with no name check, a longer value limit, or shell characters allowed.
+
+## Key rotation (KEY-ROTATE-SAFE, `packages/ops/src/watchdog/keyring.ts`, `ops/deploy/publish.sh`)
+
+**The bug.** The Deploy workflow set the watchdog's new `HEARTBEAT_HMAC_KEY` before it knew the server had the key. A run while `DEPLOY_CODE` still held an already-used code went like this:
+- `publish.sh` redeployed the watchdog with a fresh key;
+- the server had wiped its code (`zeroed-pair`, `shred -u "$DEPLOY_CODE_FILE"`), so it exited before downloading and kept the old key;
+- every heartbeat then got 401, the stale-heartbeat alert fired, and `/pause` no longer reached the worker.
+
+A wrong `DEPLOY_CODE` broke it the same way, because that server downloads the bundle, fails to open it and keeps its old keys. Found by OPS-SUMMARY's builder on 4 Oct 2026; it was not live then (that night's Deploy log: "No DEPLOY_CODE secret: code update only, no keys sent.").
+
+**Rejected fixes.**
+- Rotating after the pickup alone: a download is not proof, as the wrong-code case shows.
+- Rotating after a confirmation poll: a fresh server starts its worker only after the owner's Telegram `/pair`, which can take longer than any poll window, and a timeout would drop the only key the server has.
+- Restoring the old key: impossible from the workflow, because Cloudflare secrets cannot be read back.
+
+**The design.**
+- **Slots:** each rotated secret has two slots, `<NAME>_A` and `<NAME>_B`, and the old single name counts as the `legacy` slot.
+- **What the Durable Object keeps:** the active slot and the SHA-256 of every value it retired, never a value. No key is stored in a new place.
+- **What is accepted:** the active slot's value, and the other slot's value while it is a new offer (a value whose hash was never retired).
+- **The switch:** an offer becomes active on its first real use: a valid, new heartbeat for the HMAC key, or a Telegram request for the webhook secret. A `/resume`, `/lease` or `/summary` signed with the offer is accepted but switches nothing. At the switch the old value's hash is retired, and it is refused from then on, even when written back into a slot.
+- **The workflow:**
+  - reads the active slots from the unsigned `GET /slot`, which reveals only `legacy`, `A` or `B`, and asks up to 6 times while a new version spreads;
+  - writes only the other slot, and never touches the active one;
+  - fails closed with "nothing was rotated" when the watchdog does not answer.
+- **The bundle to the server is unchanged:** the same names, and no host change.
+
+**Every case.**
+- No pickup, or a stale or wrong code: the server keeps beating with its key, and the next good Deploy writes over the same pending slot.
+- A fresh server: its first heartbeat, however late after pairing, switches to the new key.
+- Each rotation alternates A and B.
+
+**Evidence.**
+- `packages/ops/test/keyring.test.ts`: the never-received key changes nothing; first-use switch and retirement; bad or replayed beats do not switch; `GET /slot`. All fail on the code before this change.
+- `ops-files.test.ts` "key rotation in the Deploy workflow": a stand-in gh and wrangler with a fake `/slot`. With no pickup, the single-slot names are never written (this fails on the old order); only the inactive slot is written; nothing happens when `/slot` does not answer.
+- `ops/test/e2e.sh`: the rotation section writes slot A. The locked `wrangler dev` run switches on the host's real heartbeats and Telegram request, and then refuses the old key and secret.
