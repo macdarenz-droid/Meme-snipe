@@ -332,6 +332,8 @@ const POSITION: PositionRecord = {
   liquidationValueUsd: '521.384217',
   unrealizedUsd: '6.218804',
   costsSoFarUsd: '15.165413',
+  pnlUsd: '-8.946609',
+  markPriceUsd: '0.0000429815',
   exitRules: [
     { mode: 'paper', rule: 'price-stop', trigger: 'Value ≤ $425.00', state: 'armed' },
     { mode: 'paper', rule: 'take-profit', trigger: 'Half at +1.5R', state: 'armed' },

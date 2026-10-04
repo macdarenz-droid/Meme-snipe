@@ -105,6 +105,35 @@ export function formatPriceDec(s: string): string {
   return `$${v.toPrecision(3)}`;
 }
 
+/**
+ * Return on size (APP-TRADE), the one formula the open trade and closed trades use: net ÷ size in hundredths of a
+ * percent, exact, rounded half away from zero. Null when the size is not above zero.
+ */
+export function returnHundredths(netUsd: string, sizeUsd: string): bigint | null {
+  const size = toMicro(sizeUsd);
+  if (size <= 0n) return null;
+  const n = toMicro(netUsd) * 10_000n;
+  const a = n < 0n ? -n : n;
+  const q = (2n * a + size) / (2n * size);
+  return n < 0n ? -q : q;
+}
+
+/** A return, signed with 2 places: "+12.35%", "−0.40%", "0.00%"; "—" when there is none. */
+export function formatReturn(h: bigint | null): string {
+  if (h === null) return '—';
+  const a = h < 0n ? -h : h;
+  const body = `${a / 100n}.${(a % 100n).toString().padStart(2, '0')}%`;
+  return h < 0n ? `${MINUS}${body}` : h > 0n ? `+${body}` : body;
+}
+
+/** Colour follows the printed return, so 0.00% is never green or red. */
+export const toneOfReturn = (h: bigint | null): 'gain' | 'loss' | '' => (h === null || h === 0n ? '' : h > 0n ? 'gain' : 'loss');
+
+/** A token price as the exit triggers show it (worker api.ts triggerPrice): "$" and 4 significant digits. Display only. */
+export function formatPrice4(s: string): string {
+  return `$${decToPlot(s).toLocaleString('en-US', { maximumSignificantDigits: 4, useGrouping: false })}`;
+}
+
 /** R multiple, signed: "+1.52R", "−0.80R". */
 export function formatR(s: string): string {
   const v = decToPlot(s);

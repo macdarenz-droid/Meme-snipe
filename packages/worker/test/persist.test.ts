@@ -326,3 +326,43 @@ describe('PERSIST-1 daily credit budget', () => {
     expect(() => b.spend(-1, day)).toThrow(/non-negative/);
   });
 });
+
+describe('PERSIST-2: the graduates series in the saved state', () => {
+  const G = [
+    { mint: 'G1', migratedAtMs: SAVED_AT.receivedAt - 10 * DAY_MS, reserveAfter: 90_000_000_000n },
+    { mint: 'G2', migratedAtMs: SAVED_AT.receivedAt - HOUR_MS, reserveAfter: 1_000n },
+  ];
+  it('round-trips as saved, dated at the saved moment', () => {
+    const path = join(tmp(), 'state.json');
+    saveState(path, savedState({ graduates: { asOfMs: SAVED_AT.receivedAt, items: G } }));
+    const r = loadState(path, RUG_CONFIG);
+    expect(r.ok && r.graduates).toEqual({ asOfMs: SAVED_AT.receivedAt, items: G });
+  });
+
+  it('a file from before PERSIST-2 still loads, with no series', () => {
+    const path = join(tmp(), 'state.json');
+    saveState(path, savedState());
+    const r = loadState(path, RUG_CONFIG);
+    expect(r.ok).toBe(true);
+    expect(r.ok && r.graduates).toBeNull();
+  });
+
+  it('nothing after the saved moment: refused at save, and a file claiming it is discarded whole', () => {
+    const late = { asOfMs: SAVED_AT.receivedAt, items: [...G, { mint: 'G3', migratedAtMs: SAVED_AT.receivedAt + 1, reserveAfter: 1n }] };
+    expect(() => saveState(join(tmp(), 'state.json'), savedState({ graduates: late }))).toThrow(/after the snapshot moment/);
+    expect(() => saveState(join(tmp(), 'state.json'), savedState({ graduates: { asOfMs: SAVED_AT.receivedAt + 1, items: G } }))).toThrow(/not at the snapshot moment/);
+    // Written by hand past the save check (checksum and all): the load discards the whole file.
+    for (const [g, why] of [[late, /after the saved moment/], [{ asOfMs: SAVED_AT.receivedAt, items: [G[0], G[0]] }, /appears twice/], [{ asOfMs: SAVED_AT.receivedAt, items: [{ mint: 'G1' }] }, /malformed/]] as const) {
+      const path = join(tmp(), 'state.json');
+      saveState(path, savedState());
+      const outer = JSON.parse(readFileSync(path, 'utf8')) as { version: number; payload: string };
+      const inner = JSON.parse(outer.payload) as Record<string, unknown>;
+      inner['graduates'] = JSON.parse(JSON.stringify(g, (_k, v: unknown) => (typeof v === 'bigint' ? { $bigint: v.toString() } : v)));
+      const payload = JSON.stringify(inner);
+      writeFileSync(path, JSON.stringify({ version: outer.version, sha256: createHash('sha256').update(payload).digest('hex'), payload }));
+      const r = loadState(path, RUG_CONFIG);
+      expect(r.ok).toBe(false);
+      expect(!r.ok && r.reason).toMatch(why);
+    }
+  });
+});

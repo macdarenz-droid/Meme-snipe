@@ -10,7 +10,7 @@ import { type AccountHistory, evaluateEntry, evaluateExit } from '../../core/src
 import { type Lamports, type MicroUsd, bps, lamportsToMicroUsd, microUsdToLamports } from '../../core/src/units/index.ts';
 import { AMM_FEE_CONFIG, NORMAL_COIN, PUMP_GLOBAL } from '../../core/test/amm/helpers.ts';
 import { DEEP_POOL, MINT_A, MINT_B, NOW, PRICE, account, baseInput, baseRequest } from '../../core/test/risk/helpers.ts';
-import { type HeldMarket, type MarkSettings, markSettings, markedHistory, riskAccount } from '../src/engine/marks.ts';
+import { type HeldMarket, type MarkSettings, latchable, markSettings, markedHistory, riskAccount } from '../src/engine/marks.ts';
 
 const CTX: PoolFeeContext = { feeConfig: AMM_FEE_CONFIG, canonical: true, quote: 'sol', baseSupply: PUMP_GLOBAL.tokenTotalSupply, creatorFeeCharged: true, coin: NORMAL_COIN, instruction: 'v1', buybackFeeBps: bps(5_000) };
 const SETTINGS: MarkSettings = { slippageBps: 300, exitCost: 30_000n, maxAgeMs: TRIAL_POLICY.gates.maxQuoteAgeMs };
@@ -96,6 +96,30 @@ describe('the executable mark (RISK-MARK)', () => {
     expect(riskAccount(h, boom, SOL, NOW, SETTINGS, { fallback: true })).toBe(h);
     expect(() => riskAccount(h, boom, SOL, NOW, SETTINGS, { fallback: false })).toThrow('no market');
     expect(riskAccount(h, held(bought.pool), SOL, NOW, SETTINGS, { fallback: true })).toEqual(marked(bought.pool));
+  });
+});
+
+describe('when a valuation may latch R9 or R10 (RISK-LATCH review)', () => {
+  const AGE = SETTINGS.maxAgeMs;
+  const empty: AccountHistory = { ...history(), openPositions: [] };
+  it('only at a fresh SOL price with every open position marked and fresh', () => {
+    const m = marked(bought.pool);
+    expect(m.openPositions[0]!.mark).not.toBeNull();
+    expect(latchable(m, SOL, NOW, AGE)).toBe(true);
+    // Nothing held: the SOL price alone decides.
+    expect(latchable(empty, SOL, NOW, AGE)).toBe(true);
+    // No SOL price, a stale one, or one stamped after now.
+    expect(latchable(m, null, NOW, AGE)).toBe(false);
+    expect(latchable(empty, { value: PRICE, atMs: NOW - AGE - 1 }, NOW, AGE)).toBe(false);
+    expect(latchable(empty, { value: PRICE, atMs: NOW + 1 }, NOW, AGE)).toBe(false);
+    expect(latchable(empty, { value: PRICE, atMs: NOW - AGE }, NOW, AGE)).toBe(true);
+    // An open position with no mark, a stale mark, or one stamped after now.
+    const with_ = (mark: bigint | null, markAtMs: number | null) => ({ ...m, openPositions: m.openPositions.map((o) => ({ ...o, mark: mark as never, markAtMs })) });
+    expect(latchable(with_(null, null), SOL, NOW, AGE)).toBe(false);
+    expect(latchable(with_(1n, null), SOL, NOW, AGE)).toBe(false);
+    expect(latchable(with_(1n, NOW - AGE - 1), SOL, NOW, AGE)).toBe(false);
+    expect(latchable(with_(1n, NOW + 1), SOL, NOW, AGE)).toBe(false);
+    expect(latchable(with_(1n, NOW - AGE), SOL, NOW, AGE)).toBe(true);
   });
 });
 
