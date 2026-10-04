@@ -28,6 +28,34 @@ describe('dollar results value each cash flow at its own SOL price (M5)', () => 
     expect(v.net).toBe(1_600_000n - 2_000_000n - 3_000n - 2_400n - 100_000n + 80_000n);
     expect(v.trading + v.solMove).toBe(v.net);
   });
+
+  test('every term rounds against us: costs and what we pay up, what we receive and the result down (AUDIT-RM1 F5)', () => {
+    // At $123.456789 no lamport amount below is a whole number of micro-dollars.
+    const px = 123_456_789n as MicroUsd;
+    const fee = { ...NONE, networkBase: 5_001n, priority: 20_003n, tip: 5_007n, venueFee: 101n, creatorFee: 103n, slippage: 107n };
+    const t: TradeLamports = { entrySol: 20_000_013n, exitSol: 24_000_017n, legs: { entry: fee, exit: fee }, rentPaid: 1_513_841n, rentReturned: 1_513_841n };
+    const v = tradeUsd(t, px, px);
+    // Exact values in micro-dollars × 1e9 (lamports × price): the net may only be at or below the exact rational value.
+    const exact = (l: bigint) => l * px;
+    const e = (n: bigint) => n * 1_000_000_000n;
+    const exactNet = exact(t.exitSol) - exact(t.entrySol) - 2n * exact(5_001n + 20_003n + 5_007n) - exact(1_513_841n) + exact(1_513_841n);
+    expect(e(v.net) <= exactNet).toBe(true);
+    // Each term on its own side: what we pay at or above, what we receive at or below its exact value.
+    expect(e(v.size) >= exact(t.entrySol)).toBe(true);
+    expect(e(v.proceeds) <= exact(t.exitSol)).toBe(true);
+    for (const [k, l] of [['network', 5_001n], ['priority', 20_003n], ['tip', 5_007n], ['venue', 101n], ['creator', 103n], ['slippage', 107n]] as const) {
+      expect(e(v.costs[k]) >= 2n * exact(l)).toBe(true);
+      expect(e(v.costs[k]) < 2n * exact(l) + e(2n)).toBe(true);
+    }
+    expect(e(v.costs.rentPaid) >= exact(1_513_841n)).toBe(true);
+    expect(e(v.costs.rentReturned) <= exact(1_513_841n)).toBe(true);
+    expect(e(v.trading) <= exact(v.netLamports)).toBe(true);
+    // A loss in SOL terms rounds to the larger loss.
+    const loss = tradeUsd({ ...t, exitSol: 10_000_011n }, px, px);
+    expect(loss.netLamports < 0n).toBe(true);
+    expect(e(loss.trading) <= exact(loss.netLamports)).toBe(true);
+    expect(e(loss.net) <= exact(10_000_011n) - exact(t.entrySol) - 2n * exact(5_001n + 20_003n + 5_007n)).toBe(true);
+  });
 });
 
 describe('fees and rent (M4, M8)', () => {

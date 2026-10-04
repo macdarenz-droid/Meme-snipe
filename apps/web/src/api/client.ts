@@ -1,6 +1,6 @@
 import { PATHS, type DashboardApi, type Envelope, type Mode } from './contract.ts';
 import { PREVIEW } from '../lib/preview.ts';
-import { checkEnvelope, DataError } from './modes.ts';
+import { checkAnswer, DataError } from './modes.ts';
 import { defaultGetter, loadReport, type Got, type Getter } from './reportLoader.ts';
 import { reportData } from './reportSchema.ts';
 import type { Check } from './schema.ts';
@@ -20,6 +20,7 @@ export const offlineApi: DashboardApi = {
   trades: offline,
   charts: offline,
   stats: offline,
+  discovered: offline,
   backtestReport: offline,
 };
 
@@ -27,7 +28,8 @@ export const offlineApi: DashboardApi = {
 export interface Reachability {
   /** `endpoint` names the request (its path), so one failing endpoint is not hidden by others answering well. */
   reportOk(origin: string, at: string, endpoint: string): void;
-  reportBad(origin: string, at: string, endpoint: string): void;
+  /** `cause` 'update': the answer failed only on fields this app does not know (APP-COMPAT). */
+  reportBad(origin: string, at: string, endpoint: string, cause?: 'error' | 'update'): void;
   reportOffline(origin: string): void;
 }
 
@@ -55,11 +57,11 @@ export function httpApi(origin: string, get: Getter = defaultGetter, reach?: Rea
       } catch {
         throw new DataError('bad-shape', 'response is not JSON');
       }
-      const env = checkEnvelope<T>(body, mode, check);
+      const env = checkAnswer<T>(body, mode, check);
       reach?.reportOk(origin, at, endpoint);
       return env;
     } catch (e) {
-      reach?.reportBad(origin, at, endpoint);
+      reach?.reportBad(origin, at, endpoint, e instanceof DataError && e.kind === 'app-outdated' ? 'update' : 'error');
       throw e;
     }
   }
@@ -73,6 +75,7 @@ export function httpApi(origin: string, get: Getter = defaultGetter, reach?: Rea
     trades: (m) => call(PATHS.trades(m), m, schemaFor('trades', m)),
     charts: (m) => call(PATHS.charts(m), m, schemaFor('charts', m)),
     stats: (m) => call(PATHS.stats(m), m, schemaFor('stats', m)),
+    discovered: (m) => call(PATHS.discovered(m), m, schemaFor('discovered', m)),
     backtestReport: () => call(PATHS.backtestReport(), 'backtest', reportData),
   };
 }

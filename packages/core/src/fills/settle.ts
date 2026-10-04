@@ -145,9 +145,14 @@ export const tradeNet = (t: TradeLamports): bigint =>
   t.exitSol - t.entrySol - t.legs.entry.networkBase - t.legs.exit.networkBase - t.legs.entry.priority - t.legs.exit.priority
   - t.legs.entry.tip - t.legs.exit.tip - t.rentPaid + t.rentReturned;
 
-/** Signed lamports in micro-dollars, rounded toward zero. */
-export const toUsd = (lamports: bigint, px: MicroUsd): bigint =>
-  lamports < 0n ? -lamportsToMicroUsd(-lamports as Lamports, px, 'floor') : lamportsToMicroUsd(lamports as Lamports, px, 'floor');
+/**
+ * Signed lamports in micro-dollars, rounded against us (AUDIT-RM1 F5): `up` (toward +∞) for what we pay, `down` (toward
+ * −∞) for what we receive and for results, so a cost is never understated and a gain never overstated.
+ */
+export const toUsd = (lamports: bigint, px: MicroUsd, dir: 'up' | 'down'): bigint =>
+  lamports < 0n
+    ? -lamportsToMicroUsd(-lamports as Lamports, px, dir === 'up' ? 'floor' : 'ceil')
+    : lamportsToMicroUsd(lamports as Lamports, px, dir === 'up' ? 'ceil' : 'floor');
 
 export interface TradeUsd {
   /** The entry and the proceeds, micro-dollars. */
@@ -174,16 +179,16 @@ export interface TradeUsd {
  * `solMove` the remainder (`net = trading + solMove` exactly).
  */
 export const tradeUsd = (t: TradeLamports, pxIn: MicroUsd, pxOut: MicroUsd): TradeUsd => {
-  const both = (k: keyof LegCosts) => toUsd(t.legs.entry[k], pxIn) + toUsd(t.legs.exit[k], pxOut);
+  const both = (k: keyof LegCosts) => toUsd(t.legs.entry[k], pxIn, 'up') + toUsd(t.legs.exit[k], pxOut, 'up');
   const c = {
     venue: both('venueFee'), creator: both('creatorFee'), priority: both('priority'), tip: both('tip'), network: both('networkBase'),
-    slippage: both('slippage'), rentPaid: toUsd(t.rentPaid, pxIn), rentReturned: toUsd(t.rentReturned, pxOut),
+    slippage: both('slippage'), rentPaid: toUsd(t.rentPaid, pxIn, 'up'), rentReturned: toUsd(t.rentReturned, pxOut, 'down'),
   };
   const total = c.venue + c.creator + c.priority + c.tip + c.network + c.slippage + c.rentPaid - c.rentReturned;
-  const size = toUsd(t.entrySol, pxIn);
-  const proceeds = toUsd(t.exitSol, pxOut);
+  const size = toUsd(t.entrySol, pxIn, 'up');
+  const proceeds = toUsd(t.exitSol, pxOut, 'down');
   const net = proceeds - size - c.network - c.priority - c.tip - c.rentPaid + c.rentReturned;
   const netLamports = tradeNet(t);
-  const trading = toUsd(netLamports, pxOut);
+  const trading = toUsd(netLamports, pxOut, 'down');
   return { size, proceeds, costs: c, total, net, netLamports, trading, solMove: net - trading };
 };

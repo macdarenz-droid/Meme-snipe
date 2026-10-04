@@ -97,7 +97,7 @@ export const buildReport = (i: ReportInput): BacktestReportV1 => {
   for (const g of i.groups) {
     const rt = g.trades.map((t) => tradeInUsd(t, g.group, i.solUsd));
     trades.push(...rt);
-    results.push(resultExact(g.group, rt, g.stray.map((s) => ({ at: s.at, netMicro: -toUsd(s.lamports, priceAt(i.solUsd, s.at)) }))));
+    results.push(resultExact(g.group, rt, g.stray.map((s) => ({ at: s.at, netMicro: -toUsd(s.lamports, priceAt(i.solUsd, s.at), 'up') }))));
   }
   return {
     schemaVersion: 1, mode: 'backtest', part: 'research', generatedAt: i.generatedAt, runId: i.runId, codeCommit: i.codeCommit,

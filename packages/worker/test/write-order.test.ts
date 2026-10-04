@@ -188,7 +188,10 @@ describe('an exit fill is journaled before the ledger lets the position go (§12
     const atFill = net >= 0n ? lamportsToMicroUsd(net as Lamports, SOL_PRICE as MicroUsd, 'floor') : -lamportsToMicroUsd((-net) as Lamports, SOL_PRICE as MicroUsd, 'ceil');
     expect(net).not.toBe(0n);
     expect(String(t.closeSolPrice)).toBe(String(SOL_PRICE));
-    expect(String(t.netPnl)).toBe(String(atFill));
+    // Each flow rounded against us (AUDIT-RM1 F5): at or a few micro-dollars below the SOL result at the fill's rate;
+    // at the doubled rate it would be far off.
+    const off = atFill - BigInt(String(t.netPnl));
+    expect(off >= 0n && off <= 10n).toBe(true);
     await h2.worker.stop();
   });
 
@@ -284,8 +287,8 @@ describe('an exit fill is journaled before the ledger lets the position go (§12
     // the SOL result at that rate (each flow is rounded on its own).
     expect(String(t.closeSolPrice)).toBe(String(SOL_PRICE));
     const atLine = flows >= 0n ? lamportsToMicroUsd(flows as Lamports, SOL_PRICE as MicroUsd, 'floor') : -lamportsToMicroUsd((-flows) as Lamports, SOL_PRICE as MicroUsd, 'ceil');
-    const off = BigInt(String(t.netPnl)) - atLine;
-    expect(off >= -10n && off <= 10n).toBe(true);
+    const off = atLine - BigInt(String(t.netPnl));
+    expect(off >= 0n && off <= 10n).toBe(true);
     await h2.worker.stop();
   });
 
