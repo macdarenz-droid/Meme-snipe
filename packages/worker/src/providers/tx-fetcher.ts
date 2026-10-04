@@ -3,6 +3,7 @@
 // may not be readable at `confirmed` yet, so a null answer is retried a few times. A repeat ask for a signature already
 // on the feed resolves to its first arrival (never null: null means not found, and callers turn that into a rugs gap).
 import type { TransactionRecord } from '../../../core/src/chain/index.ts';
+import { decodable } from './canonical.ts';
 import type { Priority } from '../scheduler/scheduler.ts';
 import type { Timers } from '../scheduler/timers.ts';
 import type { LiveFeed } from './live-feed.ts';
@@ -29,6 +30,8 @@ export interface Fetched {
   readonly at: number;
   readonly mono: number;
   readonly again: boolean;
+  /** WORKER-CRASH: DEC-1 cannot decode it (it went on the feed as `tx:undecodable`, a fact gap). */
+  readonly undecodable?: true;
 }
 
 export class TxFetcher {
@@ -64,7 +67,7 @@ export class TxFetcher {
         try {
           const record: TransactionRecord | null = await client.getTransaction(signature, priority);
           if (record === null) continue;
-          const found: Fetched = { slot: record.slot, at: o.timers.now(), mono: (o.mono ?? (() => performance.now()))(), again: false };
+          const found: Fetched = { slot: record.slot, at: o.timers.now(), mono: (o.mono ?? (() => performance.now()))(), again: false, ...(decodable(record) ? {} : { undecodable: true as const }) };
           this.#remember(signature, found);
           o.feed.ingest(client.provider, { type: 'tx', record }, { receivedAt: found.at, lookup: true, backfilled });
           o.onLookup?.(found.at - started);
