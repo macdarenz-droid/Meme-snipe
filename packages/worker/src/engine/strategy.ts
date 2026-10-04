@@ -21,14 +21,14 @@ import {
   type IntentId, type PositionId, type QuoteContext, type TransactionAttempt,
   attemptId, blockhash, entryKey, intentId, mint as toMint, positionId, reservationId, signature,
 } from '../../../core/src/domain/index.ts';
-import { type AsOfEntry, type Decision, type MarketEvent, type Strategy, type StrategyContext, compareMoments } from '../../../core/src/engine/index.ts';
+import { type AsOfEntry, type Decision, type MarketEvent, type Moment, type Strategy, type StrategyContext, compareMoments } from '../../../core/src/engine/index.ts';
 import { observedFeeContext } from '../../../core/src/fills/index.ts';
 import {
   type EntryPlan, type ExitDecision, type ExitSettings, type ExitTracker, type Holding, type PriceBar,
   atr, checkStopDistance, decideExit, execPrice, liquidationValue, exitAttemptsOf, exitBookEvents, exitSettings, newTracker, noteAttempt,
 } from '../../../core/src/exits/index.ts';
 import {
-  type Coverage, type GateContext, DeployerIndex, LOG_CREATE_PREFIX, RugLabeller, TX_CREATE_PREFIX, type PoolFact, carryKey, createsCoverage, evaluateHardRejects, evaluateRegime, migrationKey, parseMigration, parsePool, poolKey,
+  type Coverage, type DeployerIndexState, type GateContext, type RugLabellerState, DeployerIndex, LOG_CREATE_PREFIX, RugLabeller, TX_CREATE_PREFIX, type PoolFact, carryKey, createKey, createsCoverage, evaluateHardRejects, evaluateRegime, migrationKey, parseCreate, parseMigration, parsePool, poolKey,
 } from '../../../core/src/gates/index.ts';
 import { type BookEvent, type IntentState, isTerminal } from '../../../core/src/lifecycle/index.ts';
 import { type AccountHistory, type Latches, type Timed, evaluateEntry, evaluateExit } from '../../../core/src/risk/index.ts';
@@ -41,6 +41,8 @@ export const POOL_PREFIX = poolKey('');
 export const CARRY_PREFIX = carryKey('');
 export const MIGRATION_PREFIX = migrationKey('');
 export const RESTORE_KEY = 'worker:restore';
+/** A coverage fact PERSIST-1 keeps: `coverage:<stream>:start|gap|resume` (never a deployer check's own key). */
+const COVERAGE_FACT = /^coverage:.+:(start|gap|resume)$/;
 /** `{ value, atMs }`: the live SOL/USD price in micro-dollars (risk needs one younger than maxQuoteAgeMs). */
 export const SOL_PRICE_KEY = 'worker:sol-price';
 /**
@@ -67,6 +69,9 @@ export interface CandidateReason {
   readonly gate: string;
   readonly code: string;
   readonly input?: string;
+  /** The gate an evidence reason is needed by (H16 `neededBy`), and its detail: FACTS-1b and RUG-1c read them. */
+  readonly neededBy?: string;
+  readonly detail?: string;
 }
 
 /** `{ halted, reasons }`: entries stop while a critical feed is down or stale (§18); exits and monitoring go on. */
@@ -254,6 +259,8 @@ interface Candidate {
   tries: number;
   /** The reasons of the last evaluation (null before the first, empty after a pass). */
   gates: readonly CandidateReason[] | null;
+  /** The mint's creator, from its released create (null until it is seen): RUG-1c checks this deployer. */
+  creator?: string | null;
 }
 
 /** What an entry needs once it fills: fixed at the decision, completed with the fill. */
@@ -309,8 +316,12 @@ const runnablePlan = (p: Record<string, unknown>): boolean =>
 export class LiveStrategy implements Strategy {
   readonly #d: StrategyDeps;
   readonly #settings: ExitSettings;
-  readonly #deployers = new DeployerIndex();
-  readonly #labeller: RugLabeller;
+  #deployers = new DeployerIndex();
+  #labeller: RugLabeller;
+  /** Every released `coverage:<stream>:start|gap|resume` fact, the seed's coverage history included (PERSIST-1 saves them). */
+  readonly #coverageFacts: MarketEvent[] = [];
+  /** The latest moment released to the strategy: a save's as-of point (nothing the index has seen is after it). */
+  #lastMoment: Moment | null = null;
   readonly #cands = new Map<string, Candidate>();
   readonly #seeds = new Map<string, EntrySeed>();
   readonly #exits = new Map<string, SavedExit>();
@@ -336,8 +347,8 @@ export class LiveStrategy implements Strategy {
   }
 
   /** Each candidate's migration time and the typed reasons of its last evaluation (FACTS-1b stages its reads on them). */
-  candidates(): ReadonlyMap<string, { readonly migratedAtMs: number; readonly lastEvalMs: number | null; readonly gates: readonly CandidateReason[] | null }> {
-    return new Map([...this.#cands].map(([m, c]) => [m, { migratedAtMs: c.migratedAtMs, lastEvalMs: c.lastEvalMs, gates: c.gates }]));
+  candidates(): ReadonlyMap<string, { readonly migratedAtMs: number; readonly lastEvalMs: number | null; readonly gates: readonly CandidateReason[] | null; readonly creator: string | null }> {
+    return new Map([...this.#cands].map(([m, c]) => [m, { migratedAtMs: c.migratedAtMs, lastEvalMs: c.lastEvalMs, gates: c.gates, creator: c.creator ?? null }]));
   }
 
   /** Mints that need live facts: candidates in their window and every position not closed. */
@@ -367,8 +378,8 @@ export class LiveStrategy implements Strategy {
   /** Each held position's last spot price, for the saved plan (the exposure rebuild's reference). */
   readonly #spot = new Map<string, { readonly price: bigint; readonly atMs: number }>();
 
-  /** Each held position's latest mark (executable price, PRICE_SCALE) with when it was read. */
-  readonly #marks = new Map<string, { readonly price: bigint; readonly atMs: number; readonly slot: bigint }>();
+  /** Each held position's latest display quote (sale price per token, PRICE_SCALE) with when it was read; never risk's mark. */
+  readonly #displayQuotes = new Map<string, { readonly price: bigint; readonly atMs: number; readonly slot: bigint }>();
 
   /**
    * Exit owners said to be waiting for a fresh market in this process (EXIT-1d), by intent, with their position. The wait
@@ -392,8 +403,13 @@ export class LiveStrategy implements Strategy {
     if (since !== (saved.waitingSinceMs ?? null)) this.#exits.set(pid, { ...saved, waitingSinceMs: since });
   }
 
-  markOf(pid: string): { readonly price: bigint; readonly atMs: number; readonly slot: bigint } | null {
-    return this.#marks.get(pid) ?? null;
+  /**
+   * A held position's display quote per token (PRICE_SCALE) and when it was read: the whole holding sold into the pool
+   * at its last read, venue fees and price impact included, network fees, slippage allowance and landing not. Display
+   * only (/health and the heartbeat): risk's mark is marks.ts's executable mark, never this (review N3).
+   */
+  displayQuoteOf(pid: string): { readonly price: bigint; readonly atMs: number; readonly slot: bigint } | null {
+    return this.#displayQuotes.get(pid) ?? null;
   }
 
   /** Positions whose universe the policy lacks, being flattened (said once each). */
@@ -448,6 +464,21 @@ export class LiveStrategy implements Strategy {
     return this.#coverage;
   }
 
+  /** True once the seed (or the restore) was applied: before it the index's state is not the process's to save. */
+  get seedApplied(): boolean {
+    return this.#seedApplied;
+  }
+
+  /**
+   * PERSIST-1: what a save holds, as of the latest released moment: the index (entries older than `retainFromMs`
+   * left out), the labeller's tables and every coverage fact. Null before anything was released or the seed applied.
+   */
+  persistable(retainFromMs: number): { readonly asOf: Moment; readonly index: DeployerIndexState; readonly labeller: RugLabellerState; readonly coverage: readonly MarketEvent[] } | null {
+    const asOf = this.#lastMoment;
+    if (asOf === null || !this.#seedApplied || this.#waiting !== null) return null;
+    return { asOf, index: this.#deployers.snapshot(asOf, retainFromMs), labeller: this.#labeller.snapshot(), coverage: [...this.#coverageFacts] };
+  }
+
   get deployers(): DeployerIndex {
     return this.#deployers;
   }
@@ -459,6 +490,10 @@ export class LiveStrategy implements Strategy {
     const due = this.#due;
     this.#due = new Map();
     if (e.key === HALT_KEY) this.#seedWait(unwrap(e.value));
+    // The latest released moment: events come in order (the engine refuses a late one before the strategy sees it), and
+    // the guard keeps a save's as-of point from ever moving back if that changed (the index snapshot refuses it too).
+    if (this.#lastMoment === null || compareMoments(e.moment, this.#lastMoment) > 0) this.#lastMoment = e.moment;
+    if (COVERAGE_FACT.test(e.key)) this.#coverageFacts.push(e);
     this.#observe(e);
     if (e.key === RESTORE_KEY) this.#restore(unwrap(e.value), out);
     if (e.key === SEED_KEY) this.#seed(e.value, out);
@@ -569,9 +604,28 @@ export class LiveStrategy implements Strategy {
       const list = this.#seedHistory.get(h.key) ?? [];
       list.push(Object.freeze({ moment: h.moment, value: h.value, source: h.id }));
       this.#seedHistory.set(h.key, list);
+      if (COVERAGE_FACT.test(h.key)) this.#coverageFacts.push(h);
     }
     for (const list of this.#seedHistory.values()) list.sort((a, b) => compareMoments(a.moment, b.moment));
     const asOf = v['asOf'] as unknown as MarketEvent['moment'];
+    if (isObj(v['state'])) {
+      // PERSIST-1: the saved index and labeller (checked by the worker when it loaded them; checked again here, all or
+      // nothing), then the downtime fill and the saved rug facts.
+      try {
+        const st = v['state'];
+        const index = DeployerIndex.restore(st['index'] as DeployerIndexState);
+        const labeller = RugLabeller.restore(this.#d.rugs, st['labeller'] as RugLabellerState, asOf);
+        const f = index.fill(v['fill'] as MarketEvent[], asOf);
+        this.#deployers = index;
+        this.#labeller = labeller;
+        for (const r of v['rugs'] as MarketEvent[]) this.#deployers.observe(r);
+        out.push({ action: null, reasons: ['seed', `saved state restored, ${f.creates} filled, ${(v['rugs'] as unknown[]).length} rug facts`] });
+      } catch (err) {
+        // Refused in full: as a fresh process, the index starts at its first live event (H14 not covered for a look-back).
+        out.push({ action: null, reasons: ['seed refused', `saved state: ${err instanceof Error ? err.message : 'error'}`] });
+      }
+      return;
+    }
     try {
       const s = this.#deployers.seed(v['creates'] as MarketEvent[], v['coverage'] as MarketEvent[], asOf);
       const f = this.#deployers.fill(v['fill'] as MarketEvent[], asOf);
@@ -904,7 +958,7 @@ export class LiveStrategy implements Strategy {
     for (const p of Object.values(ctx.book.positions)) {
       if (p.status === 'closed') {
         if (this.#exits.delete(p.id)) this.#forget(p.mint);
-        this.#marks.delete(p.id);
+        this.#displayQuotes.delete(p.id);
         this.#spot.delete(p.id);
         this.#bars.delete(p.id);
         this.#unjudgedDeployer.delete(p.id);
@@ -958,9 +1012,9 @@ export class LiveStrategy implements Strategy {
       };
       const m = this.#market(ctx, p.mint);
       if (typeof m !== 'string' && p.quantity > 0n) {
-        // The mark: the executable sale value of the whole holding as a price (the stop's unit), at the market's read.
+        // The display quote: the sale value of the whole holding as a price, at the market's read (not risk's mark).
         const liq = liquidationValue({ venue: 'pumpswap', pool: m.pool, ctx: m.ctx }, p.quantity);
-        if (liq.ok) this.#marks.set(p.id, { price: execPrice(liq.value, p.quantity), atMs: m.atMs, slot: ctx.now.slot });
+        if (liq.ok) this.#displayQuotes.set(p.id, { price: execPrice(liq.value, p.quantity), atMs: m.atMs, slot: ctx.now.slot });
       }
       // A universe the loaded policy no longer has (a restart under a policy that dropped it): its own time stops and
       // partials are unknown, so the position is flattened at once through the global exit ladder (supervisor ruling).
@@ -1126,6 +1180,9 @@ export class LiveStrategy implements Strategy {
       if (Object.values(ctx.book.positions).some((p) => p.mint === cand.mint && p.status !== 'closed')) continue;
       if (Object.values(ctx.book.intents).some((i) => i.intent.mint === cand.mint && !isTerminal(i))) continue;
       cand.lastEvalMs = now;
+      const created = ctx.lookup(createKey(cand.mint));
+      const cf = created.ok ? parseCreate(created.value) : null;
+      if (cf !== null) cand.creator = cf.creator;
       const r = this.#evaluate(cand, ctx, gctx, out);
       cand.gates = r === null ? [] : this.#lastNeeds;
       // A reject is logged when its reason changes (numbers aside), so a long wait does not fill the journal.
@@ -1144,7 +1201,10 @@ export class LiveStrategy implements Strategy {
 
   #fail(text: string, gates: readonly GateReasonLine[], needs: readonly CandidateReason[] = gates): string {
     this.#lastGates = gates;
-    this.#lastNeeds = needs.map((x) => ({ gate: x.gate, code: x.code, ...(x.input === undefined ? {} : { input: x.input }) }));
+    this.#lastNeeds = needs.map((x) => ({
+      gate: x.gate, code: x.code, ...(x.input === undefined ? {} : { input: x.input }), ...(x.neededBy === undefined ? {} : { neededBy: x.neededBy }),
+      ...(x.detail === undefined ? {} : { detail: x.detail }),
+    }));
     return text;
   }
 
