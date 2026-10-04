@@ -387,8 +387,19 @@ export class Worker {
     this.#lastExit = plannedRestart(join(c.stateDir, STATE_FILES.plannedRestart), now) ?? this.#journal.previousExit;
     // RESTART-ALERT: restarts in the last 24 h, planned (a runner drill) or not, for the heartbeat and the daily summary.
     this.#restartsFile = restartsFile(c.stateDir);
-    this.#restarts = restartsAfterBoot(this.#restartsFile.read([]), now, this.#lastExit);
-    this.#restartsFile.write([...this.#restarts]);
+    let saved: Restart[] = [];
+    try {
+      saved = this.#restartsFile.read([]);
+    } catch {
+      // A damaged count never blocks a boot: it starts again from this boot.
+      d.log('Restart counts unreadable (restarts.json): started again from this boot.');
+    }
+    this.#restarts = restartsAfterBoot(saved, now, this.#lastExit, c.gitSha);
+    try {
+      this.#restartsFile.write([...this.#restarts]);
+    } catch {
+      d.log('Restart counts not saved (restarts.json).');
+    }
     const timing = watchTimingProblem(d.config.watch, d.session.policy.gates.maxQuoteAgeMs, DEFAULT_LIVE_FEED.horizonSlots * SLOT_MS);
     if (timing !== null) throw new RangeError(timing);
     const seed = `paper:${this.#boot}`;
@@ -1659,11 +1670,11 @@ export class Worker {
     return code;
   }
 
-  /** Restarts in the 24 h before `now`, planned (a runner drill's marker) and not. */
-  #restartCounts(now: number): { readonly planned: number; readonly unplanned: number } {
+  /** Restarts in the 24 h before `now`: planned (a runner drill's marker), deploys (a new release) and unplanned. */
+  #restartCounts(now: number): { readonly planned: number; readonly deploy: number; readonly unplanned: number } {
     const recent = this.#restarts.filter((r) => r.at <= now && now - r.at < 86_400_000);
-    const planned = recent.filter((r) => r.planned).length;
-    return { planned, unplanned: recent.length - planned };
+    const n = (k: Restart['kind']): number => recent.filter((r) => r.kind === k).length;
+    return { planned: n('planned'), deploy: n('deploy'), unplanned: n('unplanned') };
   }
 
   /**

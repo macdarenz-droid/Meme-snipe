@@ -115,8 +115,8 @@ export interface Health {
   readonly rss_bytes: number;
   /** How the previous process ended (RESTART-ALERT): `stop: <reason>`, `no clean stop`, or null on a first start. */
   readonly last_exit?: string | null;
-  /** Restarts in the last 24 h (RESTART-ALERT): `planned` by a runner drill, `unplanned` every other one. */
-  readonly restarts_24h?: { readonly planned: number; readonly unplanned: number };
+  /** Restarts in the last 24 h (RESTART-ALERT): `planned` by a runner drill, `deploy` onto a new release, `unplanned` every other one. */
+  readonly restarts_24h?: { readonly planned: number; readonly deploy: number; readonly unplanned: number };
   readonly mode: 'paper';
   readonly recorder: 'on' | 'off';
   readonly simulation: 'on' | 'off';

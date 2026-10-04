@@ -97,19 +97,33 @@ export const NO_EXPOSED: Exposed = { trades: [], fromMs: 0 };
 export const exposedFile = (dir: string) =>
   new StateFile<Exposed>(dir, 'exposure.json', (v) => (isObj(v) && Array.isArray(v['trades']) && typeof v['fromMs'] === 'number' ? (v as unknown as Exposed) : null));
 
-/** RESTART-ALERT: each restart in the last 24 h (when the boot started, and whether the runner planned it). */
+/**
+ * RESTART-ALERT: each boot in the last 24 h, with its release and how it followed the previous process: `first` (no
+ * earlier process), `planned` (a runner drill's marker), `deploy` (the previous boot ran another release) or
+ * `unplanned` (any other restart on the same release, or one with no earlier record to compare).
+ */
+export type RestartKind = 'first' | 'planned' | 'deploy' | 'unplanned';
 export interface Restart {
   readonly at: number;
-  readonly planned: boolean;
+  readonly kind: RestartKind;
+  readonly git_sha: string;
 }
+const RESTART_KINDS: readonly string[] = ['first', 'planned', 'deploy', 'unplanned'];
 export const restartsFile = (dir: string) =>
-  new StateFile<Restart[]>(dir, 'restarts.json', (v) => (Array.isArray(v) && v.every((r) => isObj(r) && typeof r['at'] === 'number' && typeof r['planned'] === 'boolean') ? (v as Restart[]) : null));
+  new StateFile<Restart[]>(dir, 'restarts.json', (v) => (Array.isArray(v) && v.every((r) => isObj(r) && typeof r['at'] === 'number' && typeof r['kind'] === 'string' && RESTART_KINDS.includes(r['kind']) && typeof r['git_sha'] === 'string') ? (v as Restart[]) : null));
 
-/** The restarts kept: the last 24 h before `nowMs`, plus this boot's when it follows an earlier process. */
-export const restartsAfterBoot = (saved: readonly Restart[], nowMs: number, lastExit: string | null): Restart[] => [
-  ...saved.filter((r) => r.at <= nowMs && nowMs - r.at < 86_400_000),
-  ...(lastExit === null ? [] : [{ at: nowMs, planned: lastExit.startsWith('planned: ') }]),
-];
+/** The most boots `restarts.json` keeps: a crash loop of a day at systemd's pace stays a small file. */
+export const RESTARTS_MAX = 1_000;
+
+/**
+ * The boots kept after this one: the last 24 h before `nowMs` plus this boot, at most RESTARTS_MAX (newest kept). This
+ * boot's kind compares its release with the newest saved boot's.
+ */
+export const restartsAfterBoot = (saved: readonly Restart[], nowMs: number, lastExit: string | null, gitSha: string): Restart[] => {
+  const prev = saved[saved.length - 1];
+  const kind: RestartKind = lastExit === null ? 'first' : lastExit.startsWith('planned: ') ? 'planned' : prev !== undefined && prev.git_sha !== gitSha ? 'deploy' : 'unplanned';
+  return [...saved.filter((r) => r.at <= nowMs && nowMs - r.at < 86_400_000), { at: nowMs, kind, git_sha: gitSha }].slice(-RESTARTS_MAX);
+};
 
 /** Entry decisions' plan inputs by entry intent, saved before the intent is booked (EXIT-1h). */
 export const seedsFile = (dir: string) =>

@@ -4,17 +4,21 @@
 
 const NAME = /^[A-Za-z][A-Za-z0-9_]{0,39}$/;
 const FRAME = /packages\/[A-Za-z0-9_.\/-]+\.[cm]?[jt]s:\d+/;
-/** A key segment that names a mint, a signature or an address is left out: the kind is enough. */
-const ID = /^[1-9A-HJ-NP-Za-km-z]{32,}$/;
 
-/** The kind of an engine event from its key (`logs:pump:CreateEvent:<mint>` → `logs:pump:CreateEvent`), at most 3 parts. */
+/**
+ * The kind of an engine event from its key (`logs:pump:CreateEvent:<mint>` → `logs:pump:CreateEvent`), at most 3 parts.
+ * A segment over 24 characters is left out: mints, signatures and addresses are 32 or more, and the kind is enough.
+ */
 export const eventKind = (key: string): string =>
-  key.split(':').filter((s) => s !== '' && s.length <= 24 && !ID.test(s) && /^[A-Za-z0-9_.\/-]+$/.test(s)).slice(0, 3).join(':') || 'unnamed';
+  key.split(':').filter((s) => s !== '' && s.length <= 24 && /^[A-Za-z0-9_.\/-]+$/.test(s)).slice(0, 3).join(':') || 'unnamed';
 
 export const crashSite = (e: unknown, during?: string | null): string => {
   const name = e instanceof Error && NAME.test(e.name) ? e.name : e instanceof Error ? 'Error' : 'non-error';
   const stack = e instanceof Error && typeof e.stack === 'string' ? e.stack : '';
-  // The stack's first line is "<name>: <message>": only the frames after it are searched.
-  const frame = stack.split('\n').slice(1).map((l) => FRAME.exec(l)?.[0]).find((f) => f !== undefined) ?? 'no frame in packages/';
+  // The stack starts with "<name>: <message>", and a message can span lines and imitate frames: that head is cut off
+  // exactly, and only V8 frame lines ("    at …") after it are searched.
+  const head = e instanceof Error ? (e.message === '' ? String(e.name) : `${String(e.name)}: ${e.message}`) : '';
+  const frames = stack.startsWith(head) ? stack.slice(head.length) : '';
+  const frame = frames.split('\n').slice(1).filter((l) => /^\s+at /.test(l)).map((l) => FRAME.exec(l)?.[0]).find((f) => f !== undefined) ?? 'no frame in packages/';
   return `${name} at ${frame}${during ? ` during ${eventKind(during)}` : ''}`;
 };

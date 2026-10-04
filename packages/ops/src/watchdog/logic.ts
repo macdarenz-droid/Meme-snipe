@@ -27,7 +27,7 @@ export interface Heartbeat {
   rss_bytes?: number;
   last_exit?: string | null;
   /** Restarts in the last 24 h, planned (runner drills) and not. */
-  restarts_24h?: { planned: number; unplanned: number };
+  restarts_24h?: { planned: number; deploy: number; unplanned: number };
 }
 
 export interface Stored {
@@ -205,7 +205,8 @@ export function noteRestart(prev: Stored | undefined, hb: Heartbeat, now: number
   if (typeof hb.last_exit === 'string' && hb.last_exit.startsWith('planned: ')) return st;
   const event: RestartEvent = {
     at: now, boot: hb.boot, git_sha: hb.git_sha,
-    cause: typeof hb.last_exit === 'string' && hb.last_exit !== '' ? hb.last_exit : 'cause not reported',
+    // Capped here too: the cause goes to Telegram, whatever a heartbeat carries.
+    cause: typeof hb.last_exit === 'string' && hb.last_exit !== '' ? hb.last_exit.slice(0, 300) : 'cause not reported',
     prevUptimeS: num(prev.hb.uptime_s) ? prev.hb.uptime_s : null,
     prevRssBytes: num(prev.hb.rss_bytes) ? prev.hb.rss_bytes : null,
   };

@@ -56,6 +56,11 @@ describe('unplanned restarts (logic)', () => {
     expect(restartLines(st, T0 + 13 * 30_000 + 300_000, L).lines).toEqual([expect.stringMatching(/12 restarts in the last hour\.$/)]);
   });
 
+  it('a long cause is cut to 300 characters before it can reach Telegram', () => {
+    const st = noteRestart(stored(hb()), hb({ boot: 'b2', last_exit: `stop: crash (${'x'.repeat(1_000)})` }), T0, NO_RESTARTS);
+    expect(st.events[0]!.cause).toHaveLength(300);
+  });
+
   it('restarts older than an hour drop out of the count', () => {
     let st = noteRestart(stored(hb()), hb({ boot: 'b2', last_exit: 'stop: crash' }), T0, NO_RESTARTS);
     st = restartLines(st, T0, L).next;
