@@ -2,6 +2,8 @@
 //
 //   node packages/backtest/src/study/cli.ts day   --dataset <dir> --sol-usd <file> [--days d1,d2] [--seeds 5] [--replays 10] [--out <dir>]
 //   node packages/backtest/src/study/cli.ts trial --dataset <dir> --sol-usd <file> [--seeds 5] [--out <dir>]
+//   node packages/backtest/src/study/cli.ts early --dataset <dir> --sol-usd <file> --days 2026-09-21[,2026-09-20] [--seeds 5]
+//     [--preregistration <file> --preregistration-sha256 <hex>]   (BT-2e: U2 only, "early look, not proof")
 //   node packages/backtest/src/study/cli.ts study --dataset <dir> --sol-usd <file> [--run-holdout] [--replays 10] [--out <dir>]
 //   (each takes [--insiders <dir>], the insider-funding supplement (worker scripts/funding-backfill.ts) for H13 and
 //   G2's funder cluster, and
@@ -39,6 +41,7 @@ import { countsOf, devFunderOf, rejectMix, scoreRun, tagOf } from './score.ts';
 import { assertPractice, toPartTrade, type TrialPart } from './trial.ts';
 import { tradesOf } from '../trades.ts';
 import { runFullStudy, studyLeak } from './study.ts';
+import { EARLY_LABEL, earlyDay } from './early.ts';
 import { gitRegistryVcs } from '../registry-git.ts';
 import { type FunnelSummary } from './funnel.ts';
 import { holdoutDaysOf, windowDays } from './plan.ts';
@@ -227,6 +230,39 @@ if (command === 'day' || command === 'trial') {
     writeFileSync(join(out, `trial-part-${days[0]}-${days[days.length - 1]}.json`), json(part));
   }
   console.log(json({ runId, validityOnly, stats: r.stats, identical: engine.identicalReplays, leak: leak.ok, ledgerReplay: replayCheck.ok, facts: r.facts?.counts ?? null }));
+} else if (command === 'early') {
+  // BT-2e, an early look (owner request): U2 configurations (BT-2's and RES-4's U2 hypotheses) each on its own, with S0,
+  // per practice day. Never a holdout day; nothing is written to the holdout registry.
+  const days = flag('days').split(',').sort();
+  const practice = new Set(windowDays(STUDY_CONFIG).filter((d) => !holdout.has(d)));
+  for (const d of days) {
+    if (holdout.has(d)) throw new Error(`${d} is a holdout day: the early look never reads one`);
+    if (!practice.has(d)) throw new Error(`${d} is not a practice day`);
+    if (!complete.includes(d)) throw new Error(`${d} is not a complete day in the dataset`);
+  }
+  // RES-4's family: the pinned file, or for this look only a given file with its expected sha256 (never a freeze).
+  const root = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8', cwd: import.meta.dirname }).trim();
+  const pin = STUDY_CONFIG.preregistration;
+  const family = has('preregistration') ? loadPreregistration(flag('preregistration'), flag('preregistration-sha256'))
+    : pin.sha256 === null ? null : loadPreregistration(join(root, pin.path), pin.sha256);
+  const configs = [...STUDY_CONFIG.universes, ...(family?.hypotheses ?? [])].filter((u) => u.universe === 'U2');
+  const ids = (c: (typeof configs)[number]) => configId({ ...STUDY_CONFIG, universes: [c] }, c.id ?? c.universe);
+  const tail = exitsFor(TRIAL_POLICY.exits, 'U2').tMaxMs + RESEARCH_CONFIG.s0.endMarginMs;
+  const reports = days.map((d) => {
+    const from = day0(d);
+    const end = Math.min(from + dayMs, manifest.coverage.last_block_time === undefined ? from + dayMs : manifest.coverage.last_block_time * 1000);
+    const firstRow = [...byDay.keys()].sort().filter((x) => x <= d)[0]!;
+    return earlyDay(d, configs, STUDY_CONFIG, {
+      rows: rowsOf(firstRow, d), series: [solUsd], seed: `bt2e:${d}`, scenario: 'conservative', policy: TRIAL_POLICY, fills: FILL_CONFIG, research: RESEARCH_CONFIG,
+      windowEnd: end, entriesFrom: from, entriesTo: end - tail, sampleRate, regimeBoundaries: regimeBoundariesOf(manifest),
+      ...(manifest.coverage_gaps === undefined ? {} : { coverageGaps: manifest.coverage_gaps }),
+      ...(insiders === undefined ? {} : { insiders }), ...(poolAccounts === undefined ? {} : { poolAccounts }), delegatesComplete: has('delegates-complete'), volumeHours,
+      holders: holdersFor(firstRow, d), ...(has('regime-assumed-on') ? { regime: 'assume-on' as const } : {}), ...(tradesFromMs === undefined ? {} : { tradesFromMs }),
+    }, ids, Number(flag('seeds', '5')), FILL_CONFIG);
+  });
+  const runId = `early-${days[0]}-${days[days.length - 1]}-${commit.slice(0, 8)}`;
+  writeFileSync(join(out, `${runId}.json`), json({ kind: `BT-2e ${EARLY_LABEL}`, runId, ...common, preregistration: family === null ? null : { sha256: family.sha256, ids: family.hypotheses.map((h) => h.id) }, days: reports }));
+  console.log(json({ runId, label: EARLY_LABEL, days: reports.map((r) => ({ day: r.day, trades: Object.fromEntries(r.variants.map((v) => [v.tag, v.stats.trades])), s0: r.s0.stats.trades })) }));
 } else if (command === 'study') {
   const first = [...byDay.keys()].sort()[0]!;
   if (has('registry')) throw new Error(`the holdout registry path is fixed by the research config (${RESEARCH_CONFIG.holdout.registryPath})`);
@@ -252,5 +288,5 @@ if (command === 'day' || command === 'trial') {
   writeFileSync(join(out, `${runId}.json`), json({ kind: 'BT-2 study', runId, ...common, ...report }));
   console.log(json({ runId, G0: report.gates.G0.status, G1: Object.fromEntries(Object.entries(report.gates.G1).map(([u, g]) => [u, g.status])), G2: report.gates.G2.status }));
 } else {
-  throw new Error('usage: cli.ts day|trial|study --dataset <dir> --sol-usd <file> ...');
+  throw new Error('usage: cli.ts day|trial|early|study --dataset <dir> --sol-usd <file> ...');
 }

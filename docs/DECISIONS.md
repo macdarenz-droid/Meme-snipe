@@ -775,6 +775,17 @@ Supervisor rulings:
   Curve volume waits for FACTS-1d's core `parseVolumeHoursCsv` (#78) and DATA-1c's `volume-hours` assets. SOL/USD uses the existing hourly series. Until volume exists, the regime reads "unknown" and real-day counts run in the labelled assume-on mode. The synthetic CreatePoolEvent gained `pool_base_amount` and `pool_quote_amount`, as the real event carries them. Test: `test/facts.test.ts`.
 ## External review of the promotion gates (STATS-1b)
 
+- **2026-10-04 · BT-2e early look (owner request via the supervisor).** `cli.ts early` (`src/study/early.ts`) runs the same engine, gates and as-of guards on one or two practice days from DATA-2's free reader, U2 only (U1 needs a 14-day lead-in).
+  - Configurations: BT-2's U2 and RES-4's U2 hypotheses, each on its own run (one configuration per universe per run), with S0 pooled over its seeds. It uses whatever lead-in the dataset holds; checks without history abstain as not covered.
+  - Report per day, labelled "early look, not proof":
+    - the funnel gate by gate;
+    - trades per day (no daily cap in backtest);
+    - win rate with its Clopper-Pearson 95% interval;
+    - mean net after costs with a 95% trade-bootstrap interval (stated as ignoring clustering, so the true interval is wider; one or two days allow no day-block interval);
+    - median net, profit factor, worst trade and longest losing streak.
+  - Limits: holdout days and days outside the window are refused, and so is an incomplete day. Nothing is written to the holdout registry: no plan, attempt, trial or G1 record. These days count again in the study.
+
+  Tests: `test/early.test.ts`, covering the figures, two U2 configurations run on their own with S0, and the command on an on-disk dataset (report written, holdout day refused).
 - **2026-10-04 · RES-4's family in BT-2: hypotheses by id, bound by hash, one experiment registry (supervisor ruling, from the RES-4 #115 review).**
   - (a) Configurations per hypothesis. A configuration may carry its hypothesis id (`H4-U2-reclaim`). The id is its tag on positions, decisions, the funnel, trials and its configuration id; without an id the universe is the tag, so existing ids are unchanged. Gates still run per universe and S0 stays one per universe. Checks come per universe, so a run holds one configuration per universe: hypotheses of one universe run one at a time, and two in one run are refused. Feature rules take any number of conditions, all required.
   - (d) Pre-registration. `src/strategy/preregistration.ts` reads `research/edge/preregistration.json` in BT-2's shape. It is strict (known features, exact decimal thresholds, integer amounts as strings, unique ids, a window of the hypothesis's own universe) and only with the sha256 pinned in the study configuration. Until #115 merges the pin is null and nothing is read.
