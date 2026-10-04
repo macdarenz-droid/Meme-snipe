@@ -30,8 +30,14 @@ export function ModeTag({ mode }: { mode: Mode }) {
   );
 }
 
+/**
+ * A worker that answers with connected false has no market feed connected (api.ts: reconciled and any feed up; its API
+ * starts only after the reconcile), so it reads "Feeds down", never "Worker not connected" (APP-WIRE, supervisor ruling).
+ */
+export const NOT_CONNECTED = 'Feeds down';
+
 export function StatusFlags({ status }: { status: WorkerStatus }) {
-  if (!status.connected) return <span className="badge badge-neutral">Worker not connected</span>;
+  if (!status.connected) return <span className="badge badge-neutral">{NOT_CONNECTED}</span>;
   if (status.flags.length === 0) return <span className="muted small">No alerts</span>;
   return (
     <ul className="dash-flags" aria-label="Worker state">
@@ -105,7 +111,7 @@ export const statusRows = (status: WorkerStatus): StatusRow[] => {
 };
 
 export function StatusCard({ status }: { status: WorkerStatus }) {
-  if (!status.connected) return <span className="badge badge-neutral">Worker not connected</span>;
+  if (!status.connected) return <span className="badge badge-neutral">{NOT_CONNECTED}</span>;
   const rows = statusRows(status);
   // No proven row: nothing. "No alerts" would claim what the flags cannot show.
   if (rows.length === 0) return null;
