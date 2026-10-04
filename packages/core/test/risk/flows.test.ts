@@ -152,7 +152,7 @@ describe('RISK-1b edges (mutation)', () => {
     const closed = [trade(THIS_WEEK + 2 * HOUR, '-2', { notional: usd('5') })];
     const input = baseInput({ account: account({ closedTrades: closed, flows: [flow(THIS_WEEK + HOUR, neg(usd('9.999999')))] }) });
     const d = evaluateExit(input);
-    expect(d.tripped.map((r) => r.code)).toContain('weekly_loss');
+    expect(d.trips).toContain('weekly_loss');
     expect(evaluateEntry(input, baseRequest()).snapshot?.weekBase).toBe(usd('10.000001'));
   });
   test('after a deposit the dollar count can be the tighter room', () => {
@@ -234,7 +234,7 @@ describe('withdrawals: queued while anything is open, never into the reserve', (
   });
 });
 
-describe('daily and weekly boundaries: the realized-boundary loss (kept) and the marked-boundary change (reported)', () => {
+describe('daily and weekly boundaries: the stricter of the realized-boundary loss and the marked-boundary loss (WORKER-1c)', () => {
   test('an open loss already counted yesterday is counted again today by the realized boundary, not by the marked one', () => {
     // The position was opened yesterday and was already $1 down at midnight (marked equity $19 then). It has not moved.
     const open = { mint: MINT_B, openedAtMs: DAY_START - 5 * HOUR, notional: usd('5'), mark: usd('4'), markAtMs: NOW - 100 };
@@ -251,6 +251,35 @@ describe('daily and weekly boundaries: the realized-boundary loss (kept) and the
     expect(d.snapshot?.dayChangeMarked).toBe(neg(usd('0.5')));
     expect(d.snapshot?.weekChangeMarked).toBeNull();
   });
+  test('a marked-boundary loss past the daily limit stops entries where the realized one would not', () => {
+    // Today: one $0.25 loss, so the realized-boundary loss is $0.25 (limit $1.50, with room for this entry's costs).
+    // The day-start valuation was $21.30, so the marked loss is $1.55.
+    const base = { closedTrades: [trade(DAY_START + HOUR, '-0.25')] };
+    const realizedOnly = evaluateEntry(baseInput({ account: account(base) }), baseRequest());
+    expect(realizedOnly.snapshot?.dayLoss).toBe(usd('0.25'));
+    expect(realizedOnly.reasons.map((r) => r.code)).not.toContain('daily_loss');
+    const marked = evaluateEntry(baseInput({ account: account({ ...base, markedAtDayStart: usd('21.3') }) }), baseRequest());
+    expect(marked.snapshot?.dayLoss).toBe(usd('1.55'));
+    expect(marked.allow).toBe(false);
+    expect(marked.reasons.map((r) => r.code)).toContain('daily_loss');
+  });
+  test('a marked-boundary loss past the weekly limit trips the weekly latch where the realized one would not', () => {
+    // Week loss from realized equity $0.25 (limit $4 = 20% of $20); the week-start valuation was $24: marked loss $4.25.
+    const base = { closedTrades: [trade(DAY_START + HOUR, '-0.25')] };
+    expect(evaluateEntry(baseInput({ account: account(base) }), baseRequest()).reasons.map((r) => r.code)).not.toContain('weekly_loss');
+    const d = evaluateEntry(baseInput({ account: account({ ...base, markedAtWeekStart: usd('24') }) }), baseRequest());
+    expect(d.snapshot?.weekLoss).toBe(usd('4.25'));
+    expect(d.reasons.map((r) => r.code)).toContain('weekly_loss');
+    expect(d.trips).toContain('weekly_loss');
+  });
+  test('a boundary not recorded uses the realized loss only, never zero; a smaller marked loss never lowers it', () => {
+    const base = { closedTrades: [trade(DAY_START + HOUR, '-1')] };
+    const none = evaluateEntry(baseInput({ account: account({ ...base, markedAtDayStart: null, markedAtWeekStart: null }) }), baseRequest());
+    expect(none.snapshot).toMatchObject({ dayLoss: usd('1'), weekLoss: usd('1'), dayChangeMarked: null, weekChangeMarked: null });
+    // A marked gain since the boundary: the realized loss stays.
+    const gain = evaluateEntry(baseInput({ account: account({ ...base, markedAtDayStart: usd('18'), markedAtWeekStart: usd('18') }) }), baseRequest());
+    expect(gain.snapshot).toMatchObject({ dayLoss: usd('1'), weekLoss: usd('1'), dayChangeMarked: usd('1'), weekChangeMarked: usd('1') });
+  });
   test('neither boundary figure ever blocks a protective exit', () => {
     // Both figures far past the daily and weekly limits, with a position open: exits are always allowed.
     const open = { mint: MINT_B, openedAtMs: DAY_START - 5 * HOUR, notional: usd('5'), mark: usd('0'), markAtMs: NOW - 100 };
@@ -260,7 +289,8 @@ describe('daily and weekly boundaries: the realized-boundary loss (kept) and the
     expect(e.allow).toBe(true);
     expect(e.tripped.map((r) => r.code)).toEqual(expect.arrayContaining(['daily_loss', 'weekly_loss']));
     const d = evaluateEntry(input, baseRequest());
-    expect(d.snapshot?.dayLoss).toBe(usd('9'));
+    // The marked boundary shows the bigger loss here (14 against 9 from realized equity): the stricter one counts.
+    expect(d.snapshot?.dayLoss).toBe(usd('14'));
     expect(d.snapshot?.dayChangeMarked).toBe(neg(usd('14')));
     // Malformed boundary inputs cannot block one either.
     expect(evaluateExit(baseInput({ account: account({ markedAtDayStart: neg(usd('1000')), markedAtWeekStart: usd('1000000') }) })).allow).toBe(true);

@@ -12,11 +12,13 @@
 - App name: Zeroed. Logo: "Slot" (a solid zero with a Z cut into it), files in `brand/`, rules in `docs/BRAND.md`.
 
 ## Phase
-Wave D, 4 Oct 3:30 PM Melbourne. 60 PRs merged since midnight on 4 Oct (the latest are listed in `HANDOVER.md` §4; all are in the git history). The owner finished the server, Tailscale, APK and ruleset steps at 2:31 PM, chose SPA for G1 at 2:33 PM, and authorised code-only Deploy runs at 2:45 PM.
-- **Blocker:** GitHub has locked the owner's account after declined GitHub Pro payments (3:15–3:23 PM, and again from 3:37 PM), so no Actions job runs. The owner has the steps: go back to Free, or pay by PayPal.
-- **Server:** re-installed at pin e28788a, paired, published on the tailnet only. It runs the stub worker, so the app shows "Server error" until the real-worker switch (after WORKER-1b #82, WORKER-1c #99 and RISK-MARK #103).
-- **History:** the Old Faithful archive blocks our scanner (since 8:43 AM), so scan run 1 published nothing. The survey ranked Helius whole blocks first: a free pilot, then at most US$99 with the owner's approval. Triton's written OK for Old Faithful is second.
-- **Building:** EXIT-1f, STATS-1f (G1 on SPA), the BT-2 study, the G3 report fold, WORKER-1d, SWITCH-1, API-1, MEM-1 and the merge queue in `HANDOVER.md` §4.
+Wave D, 4 Oct about 7:45 PM Melbourne. The project is being handed to a new Claude account (owner, about 7:15 PM). Every first-account session pushed its work and wrote its notes to `docs/handover/sessions/`, then paused. Start from `HANDOVER.md` §0. 76 PRs merged since midnight on 4 Oct.
+- **Server:** code-only Deploy run 37189025276 moved the deploy tag to 7d5e203 (SWITCH-1, WORKER-1e, the e2e fix) at about 7:28 PM. The push e2e on that commit is green. The server switches to the real paper worker within about 5 min. Online is still to be confirmed by the owner (app or Telegram /status).
+- **Practice trades:** WORKER-1e #117 is merged, so the S0 shakedown with the labelled diagnostic set starts once the real worker runs. Practice P&L stays rough until PAPER-1 (audit M4, M5, M8) merges.
+- **External audit (Report 1):** real defects were found in paper accounting, latches, stale snapshots, recovery, research and statistics. Every finding is a card (HANDOVER §4; DECISIONS "External audit 1"). The verdict stands: paper and research mode only.
+- **History:** Helius free only (about 2–3 practice days a month alongside the live worker). 09-21 is downloading (run 37185822426, about 14 h). The proof needs about 50 practice days plus 28 holdout days, which is impossible on free alone; the paid month (about US$94) waits for the owner's decision after seeing a finished product.
+- **Research:** RES-4 (cost math; break-even 4.4–5.0% at $2 and 2.2–3.1% at $20 per trade, as scored) is in review. RES-5's selection failed calibration and is being fixed. An early look on free days reports descriptive numbers only (SPA needs at least 10 days).
+- **Owner's estimate:** under about 2% chance of proof today (judgement). No deposit before all six pre-funding items pass.
 
 ## Done
 - Owner rules in `AGENTS.md` and `CLAUDE.md`; the starting brief and the research in `docs/`.
@@ -31,11 +33,11 @@ Builders run as separate sessions; a fresh reviewer session checks each PR; the 
 
 | Task | What | State | Estimate (Melbourne) |
 |---|---|---|---|
-| Merge queue | #104, #108, #99, #103, #90, #106, #98, #89, #97 (all passed review); WORKER-1b #82 merged 3:41 PM | held by the GitHub lock | about 10–15 min each once Actions runs |
-| SWITCH-1 | e2e proof that the release worker starts on the host, a pre-switch smoke check, the `"worker": "release"` flip; then Deploy (code only) | building (01VM97); merges after #99 and #103 | Sun 4 Oct about 9 PM – Mon 1 AM (±3 h) |
-| EXIT-1f #107, STATS-1f #109 | exact restored open time; G1 on the registered SPA test | in review | today |
-| BT-2 #41 | study: observedTip in live and backtest, funder cluster, funnel count | building | needs historical days |
-| Historical data | DATA-2: Helius `getBlock` reader and free pilot, then the full pull (19 Jul – 3 Oct) | archive blocked; the pilot waits for Actions | days about Fri 9 – Sun 11 Oct (±1–2 days) if the pilot runs Mon and the owner approves |
+| Merge queue | #114, #116, #118 (delta), #106, #107, #98, #123, then the audit-fix PRs (see HANDOVER §4) | moving one at a time | about 10 min each plus reviews |
+| Online | deployed (7d5e203, run 37189025276); the owner confirms Online | waiting for the owner's check | now |
+| Audit fixes | PAPER-1, RISK-LATCH #124, RISK-PARTIAL, WATCH-1c #121 / 1d, EXIT-1g #128 / 1h, PERSIST-2 #125 / 3, EXIT-ROUTE #130, WORKER-ORDER #123, STATS-1g #129, OPS-GATE, PNPM-CLAIMS, SEC-1, DATA-4 #127, DATA-5 | building or in review | about 2–3 days (±1) |
+| BT-2 #41 | audit B1–B5 and S2, then RES-4 (b)/(c) under the stats rulings; early-look runner ready | building and in review | early look about Tue 6 – Wed 7 Oct |
+| Historical data | 09-21 free day running; DATA-4 ledger after it | free plan only (owner) | 09-21 about Mon 8 AM; more days as credits allow |
 
 ## Follow-ups
 - Android: cover a stop between the two asset renames, the "fixed name plus .prev" state, and a failed final delete (APP-1b review notes).
@@ -64,7 +66,7 @@ Builders run as separate sessions; a fresh reviewer session checks each PR; the 
 ## Owner setup
 - Hosting approved by the owner (2026-10-03): about US$6/month, Vultr High Performance in Frankfurt; Hetzner as backup.
 - API keys are in GitHub repository secrets and verified: `HELIUS_API_KEY`, `ALCHEMY_API_KEY`, `JUPITER_API_KEY`, `TELEGRAM_BOT_TOKEN` (bot @Zeroed_alerts_bot). Never in chat or in the repo.
-- Vultr: server `zeroed` running (vhp-1c-1gb, Frankfurt, Ubuntu 24.04.5, no backups, US$6/month), created 2026-10-03. Set up on 2026-10-04: keys stored (4), Telegram paired, signer active. Re-installed by the owner at pin e28788a (OPS-1g) on 4 Oct, with Tailscale (HTTPS on, `tailscale serve` to the tailnet only) and the holdout-registry ruleset, all done at 2:31 PM. Host code changes arrive through code-only Deploy runs (the supervisor may run them; `DEPLOY_CODE` stays deleted) and the server's update gate. The app shows "Server error" until the real worker runs.
+- Vultr: server `zeroed` running (vhp-1c-1gb, Frankfurt, Ubuntu 24.04.5, no backups, US$6/month), created 2026-10-03. Tailscale key expiry disabled for it by the owner (4 Oct, about 4:27 PM). Set up on 2026-10-04: keys stored (4), Telegram paired, signer active. Re-installed by the owner at pin e28788a (OPS-1g) on 4 Oct, with Tailscale (HTTPS on, `tailscale serve` to the tailnet only) and the holdout-registry ruleset, all done at 2:31 PM. Host code changes arrive through code-only Deploy runs (the supervisor may run them; `DEPLOY_CODE` stays deleted) and the server's update gate. The app shows "Server error" until the real worker runs.
 - Cloudflare: Account API token (Edit Cloudflare Workers template, 1-year expiry) is in GitHub secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`, verified active from CI. Renew before 2027-10-03.
 - Domain: none, and none will be bought (owner rule in CLAUDE.md). Watchdog on the free `workers.dev` address; live dashboard access later through Tailscale's free personal plan.
 - Telegram bot display name: change with /setname in BotFather (optional).

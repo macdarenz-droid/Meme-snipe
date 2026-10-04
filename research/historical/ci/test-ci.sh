@@ -475,6 +475,38 @@ day_up = next(i for i, st in enumerate(steps) if st.get("with", {}).get("name") 
 assert order("Note the upload start") < day_up < order("Note the publish start") < order("Publish this day") < order("Log the publish duration")
 PY
 
+# ---- rpcscan: the scanner's own sources through symlinks; the IDLs byte-identical ----
+rs="$here/../rpcscan"; sc="$here/../scanner"; bad=""
+for f in $(cd "$sc" && git ls-files '*.go' | grep -v '_test.go$' | grep -v '^main.go$') go.mod go.sum; do
+  [[ -L "$rs/$f" && "$(readlink "$rs/$f")" == "../scanner/$f" ]] || bad+=" $f"
+done
+for f in "$rs"/*.go; do
+  b=$(basename "$f"); [[ -L "$f" ]] && { [[ -e "$sc/$b" && "$b" != main.go && "$b" != *_test.go ]] || bad+=" stray-link:$b"; }
+done
+for f in $(cd "$sc/idl" && ls); do cmp -s "$sc/idl/$f" "$rs/idl/$f" || bad+=" idl/$f"; done
+[[ -z "$bad" ]] && ok "rpcscan: every scanner source but main.go is a symlink to ../scanner (no copied decoder), and the embedded IDLs equal the scanner's" || no "rpcscan links:$bad"
+
+# ---- data-helius-pilot.yml: dispatch only, a hard credit stop, the key in one step, only the report out ----
+python3 - "$here/../../../.github/workflows/data-helius-pilot.yml" <<'PY' && ok "helius pilot workflow: dispatch only, read-only token, credit stop checked first (at most 15000), HELIUS_API_KEY only in the pilot step's env, inputs only through env, only the report uploaded" || no "helius pilot workflow structure"
+import sys, yaml
+wf = yaml.safe_load(open(sys.argv[1]))
+assert list(wf[True].keys()) == ["workflow_dispatch"], wf[True]
+assert wf["permissions"] == {"contents": "read"}, wf["permissions"]
+steps = wf["jobs"]["pilot"]["steps"]
+assert steps[0]["name"] == "Check the credit stop" and "MAX_CREDITS > 15000" in steps[0]["run"], steps[0]
+for st in steps:
+    if "checkout" in st.get("uses", ""):
+        assert st["with"]["persist-credentials"] is False, st
+    assert "${{" not in st.get("run", ""), st  # inputs and secrets reach the shell only through env
+sec = [st for st in steps if "secrets." in str(st)]
+assert len(sec) == 1 and sec[0]["env"] == {"HELIUS_API_KEY": "${{ secrets.HELIUS_API_KEY }}", "MAX_CREDITS": "${{ inputs.max_credits }}"}, sec
+r = sec[0]["run"]
+assert "zeroed-rpcscan pilot" in r and '-max-credits "$MAX_CREDITS"' in r and "-sample 0.05" in r and "HELIUS_API_KEY" not in r, r
+up = [st for st in steps if "upload-artifact" in st.get("uses", "")]
+assert len(up) == 1 and up[0]["with"]["path"].endswith("/report/pilot-report.json"), up
+assert "github.token" not in open(sys.argv[1]).read()
+PY
+
 # ---- check-day.sh: phase durations; a 429 in the determinism rescan is resumable (75) ----
 C="$T/cdbin"; mkdir -p "$C"
 cat > "$C/zeroed-scan" <<'STUB'
@@ -507,6 +539,64 @@ for p in finalize qa parity volume determinism; do grep -q "^phase $p (2026-09-2
 rc=0; cdrun b 1 || rc=$?
 [[ $rc == 1 ]] && grep -q "determinism rescan failed (scanner exit 1)" "$T/summary.md" && ok "check-day: any other rescan failure exits 1 (not resumable)" || no "check-day rescan failure: rc=$rc"
 
+# ---- rpc-day.sh / rpc-credits.sh / check-day.sh (source helius): one credit total per day across runs ----
+R="$T/rpcbin"; mkdir -p "$R"
+cat > "$R/zeroed-rpcscan" <<'STUB'
+#!/usr/bin/env bash
+# rpc-run / rpc-unit stand-in: logs its arguments, writes RPC_CREDITS into -usage-out,
+# sleeps RPC_SLEEP (interruptible: SIGINT writes the usage and exits 1), exits RPC_RC.
+echo "$*" >> "$RPCLOG"
+u=; while (( $# )); do [[ $1 == -usage-out ]] && u=$2; shift; done
+w() { [[ -n "$u" && -z "${RPC_NOUSAGE:-}" ]] || return 0
+  if [[ -n "${RPC_USAGE_RAW:-}" ]]; then printf '%s' "$RPC_USAGE_RAW" > "$u"; else printf '{\n  "credits": %s,\n  "requests": 1\n}\n' "${RPC_CREDITS:-0}" > "$u"; fi; }
+trap 'w; exit 1' INT
+[[ -n "${RPC_SLEEP:-}" ]] && { sleep "$RPC_SLEEP" & wait $!; }
+w; exit "${RPC_RC:-0}"
+STUB
+chmod +x "$R/zeroed-rpcscan"
+rd() { local o=$1; shift; : > "$T/summary.md"; env RPCLOG="$T/rpc.log" PATH="$R:$PATH" GITHUB_STEP_SUMMARY="$T/summary.md" "$@" \
+  bash "$here/rpc-day.sh" 2026-09-21 "$o" "${RD_BUDGET:-5}" 1000 > "$T/out.txt" 2>&1; }
+o="$T/rd1"; rm -rf "$o" "$T/rpc.log"
+rc=0; rd "$o" RPC_CREDITS=100 RPC_RC=75 || rc=$?
+[[ $rc == 75 && $(cat "$o/rpc-credits-used") == 100 ]] && grep -q -- "-max-credits 1000 " "$T/rpc.log" && grep -q -- "-from 2026-09-21 -to 2026-09-22 " "$T/rpc.log" &&
+  ok "rpc-day: a back-off stop exits 75 (resumable) and books the run's credits" || no "rpc-day 75: rc=$rc $(cat "$T/out.txt")"
+rc=0; rd "$o" RPC_CREDITS=50 RPC_RC=0 || rc=$?
+[[ $rc == 0 && $(cat "$o/rpc-credits-used") == 150 ]] && grep -q -- "-max-credits 900 " "$T/rpc.log" &&
+  ok "rpc-day: the next chained run may spend only what is left of the day's cap (900 of 1000), and the total adds up" || no "rpc-day resume: rc=$rc $(cat "$T/rpc.log")"
+rc=0; rd "$o" RPC_CREDITS=850 RPC_RC=3 || rc=$?
+[[ $rc == 3 && $(cat "$o/rpc-credits-used") == 1000 ]] && grep -q "credit cap 1000 spent while reading" "$T/summary.md" &&
+  ok "rpc-day: the cap spent mid-run exits 3 (not resumable) with the credits booked" || no "rpc-day cap: rc=$rc"
+n=$(wc -l < "$T/rpc.log"); rc=0; rd "$o" || rc=$?
+[[ $rc == 3 && $(wc -l < "$T/rpc.log") == "$n" ]] && ok "rpc-day: with the cap spent, no request is made (exit 3)" || no "rpc-day spent: rc=$rc"
+o="$T/rd2"; rm -rf "$o"; mkdir -p "$o/units/1046/1-2"; echo '{"scanner_revision": "old"}' > "$o/units/1046/1-2/stats.json"
+rc=0; rd "$o" SCANNER_REVISION=new RPC_CREDITS=1 || rc=$?
+[[ $rc == 0 && ! -e "$o/units/1046/1-2" ]] && ok "rpc-day: units of another revision are reread" || no "rpc-day revision"
+o="$T/rd3"; rm -rf "$o"; t0=$(date +%s); rc=0; RD_BUDGET=2s rd "$o" RPC_SLEEP=30 RPC_CREDITS=7 || rc=$?
+[[ $rc == 75 && $(cat "$o/rpc-credits-used") == 7 ]] && (( $(date +%s) - t0 < 20 )) &&
+  ok "rpc-day: at the time budget the read is interrupted, its credits booked, exit 75" || no "rpc-day budget: rc=$rc $(cat "$T/out.txt")"
+o="$T/rd4"; rm -rf "$o"; rc=0; rd "$o" RPC_USAGE_RAW='{"cre' RPC_RC=75 || rc=$?
+[[ $rc != 0 && $rc != 75 ]] && grep -q "not booked" "$T/summary.md" &&
+  ok "rpc-day: credits that cannot be booked (malformed usage file) stop the day, not resumable (exit $rc, never 75)" || no "rpc-day unbooked: rc=$rc $(cat "$T/out.txt")"
+o="$T/rd5"; rm -rf "$o"; rc=0; rd "$o" RPC_CREDITS=100 RPC_RC=75 || rc=$?; rd "$o" RPC_NOUSAGE=1 RPC_RC=75 || true
+[[ $(cat "$o/rpc-credits-used") == 100 ]] && ok "rpc-day: a run that writes no usage file books nothing (the previous run's file is not counted again)" || no "rpc-day stale usage: $(cat "$o/rpc-credits-used")"
+printf '{\n  "requests": 3\n}\n' > "$T/bad-usage.json"; mkdir -p "$T/rc0"
+"$here/rpc-credits.sh" add "$T/rc0" "$T/bad-usage.json" 2>/dev/null && no "rpc-credits accepted a usage file without credits" || ok "rpc-credits: a usage file without credits fails (never drops spent credits)"
+# check-day, source helius: the determinism rescan goes over RPC within the day's cap
+cdh() {
+  local o="$T/cdh-$1"; rm -rf "$o"; mkdir -p "$o/units/1046/1-2" "$T/cd-ds"; echo x > "$o/units/1046/1-2/blocks.csv.zst"
+  [[ -n "${2:-}" ]] && echo "$2" > "$o/rpc-credits-used"
+  : > "$T/summary.md"; rm -f "$T/rpc.log"
+  env SOURCE=helius RPC_CREDIT_CAP=500 RPCLOG="$T/rpc.log" FAKE_AVAIL=999000000000 DATASET_PARENT="$T/cd-ds" PATH="$R:$C:$PATH" GITHUB_STEP_SUMMARY="$T/summary.md" "${@:3}" \
+    bash "$here/check-day.sh" 2026-09-20 "$o" "$T/cdh-assets-$1" > "$T/out.txt" 2>&1
+}
+rc=0; cdh a 200 RPC_CREDITS=40 RESCAN_RC=1 || rc=$?
+[[ $(cat "$T/cdh-a/rpc-credits-used") == 240 ]] && grep -q -- "rpc-unit .*-epoch 1046 -from-slot 1 -to-slot 2 .*-max-credits 300 " "$T/rpc.log" &&
+  ok "check-day (helius): the determinism rescan is an RPC rpc-unit within what is left of the cap, its credits booked" || no "check-day helius rescan: rc=$rc $(cat "$T/rpc.log" 2>/dev/null) $(tail -3 "$T/out.txt")"
+rc=0; cdh b 500 || rc=$?
+[[ $rc == 3 && ! -s "$T/rpc.log" ]] && ok "check-day (helius): with the cap spent, no rescan request and exit 3" || no "check-day helius cap: rc=$rc"
+rc=0; cdh c 0 RPC_RC=75 || rc=$?
+[[ $rc == 75 ]] && grep -q "RPC rate-limit back-off ran out during the determinism rescan" "$T/summary.md" && ok "check-day (helius): an RPC back-off stop in the rescan is resumable (75)" || no "check-day helius 75: rc=$rc"
+
 # ---- time-left.sh: a phase starts only when it fits before the job timeout ----
 now=$(date +%s); : > "$T/summary.md"
 GITHUB_STEP_SUMMARY="$T/summary.md" bash "$here/time-left.sh" $((now - 300 * 60)) 355 45 >/dev/null && ok "time-left: 55 min left, 45 needed: the phase runs" || no "time-left enough"
@@ -520,6 +610,177 @@ dg=$(FAKE_AVAIL=24000000000 bash "$here/disk-guard.sh" "$T" 24000000000 "the sca
   ok "disk-guard: passes at exactly the needed free space and logs it" || no "disk-guard pass: $dg"
 dg=$(FAKE_AVAIL=23999999999 bash "$here/disk-guard.sh" "$T" 24000000000 "the scan" 2>&1) && no "disk-guard passed one byte short" ||
   { [[ "$dg" == *"not enough disk"*"the scan"* ]] && ok "disk-guard: fails one byte short with a clear message" || no "disk-guard message: $dg"; }
+
+# ---- archive-check.sh: one request with the scanner's agent; dispatch only on success, never while a scan runs ----
+A="$T/ac"; mkdir -p "$A/bin"
+cat > "$A/bin/gh" <<'SH'
+#!/usr/bin/env bash
+echo "gh $*" >> "$AC/gh.log"
+case "$1 $2" in
+  "run list") echo "${AC_ACTIVE:-0}" ;;
+  "api repos/"*) day=${2##*data-day-}; grep -qx "$day" "$AC/published" 2>/dev/null ;;
+  "workflow run") echo "$*" >> "$AC/dispatch.log" ;;
+esac
+SH
+cat > "$A/bin/curl" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "$AC/curl.args"; echo x >> "$AC/curl.calls"
+hdr=; while (( $# )); do [[ $1 == -D ]] && hdr=$2; shift; done
+[[ "$AC_STATUS" == 000 ]] && exit 7
+printf 'HTTP/2 %s\r\ncf-ray: 8abc123-SYD\r\n\r\n' "$AC_STATUS" > "$hdr"
+head -c "${AC_BYTES:-64}" /dev/zero
+exit "${AC_EXIT:-0}"
+SH
+chmod +x "$A/bin/"*
+ac() { rm -f "$A"/*.log "$A/curl.calls" "$A/curl.args"; : > "$A/summary.md"
+  AC="$A" GH_BIN="$A/bin/gh" CURL_BIN="$A/bin/curl" GH_REPO=o/r REF=main GITHUB_STEP_SUMMARY="$A/summary.md" "$@" bash "$here/archive-check.sh" > "$A/out.txt" 2>&1; }
+ua=$(sed -n 's/^const userAgent = "\(.*\)"$/\1/p' "$here/../scanner/archive.go")
+ac env AC_ACTIVE=1 AC_STATUS=206
+[[ ! -e "$A/curl.calls" && ! -e "$A/dispatch.log" ]] && grep -q "active or queued" "$A/summary.md" &&
+  ok "archive-check: a scan run active or queued means no request and no dispatch" || no "archive-check active no-op"
+ac env AC_STATUS=429
+[[ $(wc -l < "$A/curl.calls") == 1 && ! -e "$A/dispatch.log" ]] && grep -qx -- "-A" "$A/curl.args" && grep -qxF -- "$ua" "$A/curl.args" &&
+  grep -qx -- "0-63" "$A/curl.args" && grep -q "| 429 | 64 | 0 | 8abc123-SYD |" "$A/summary.md" && [[ -n "$ua" ]] &&
+  ok "archive-check: a 429 makes exactly one 64-byte request with the scanner's agent, logs status and cf-ray, dispatches nothing" || no "archive-check 429"
+printf '2026-09-21\n2026-09-19\n' > "$A/published"
+ac env AC_STATUS=206
+[[ $(wc -l < "$A/curl.calls") == 1 && $(wc -l < "$A/dispatch.log") == 1 ]] &&
+  grep -q -- "data-scan.yml --repo o/r --ref main -f mode=scan -f days=2026-09-20,2026-09-18,2026-09-17,2026-09-16,2026-09-15,2026-09-14,2026-09-13,2026-09-12 -f max_mbps=80" "$A/dispatch.log" &&
+  ok "archive-check: a 206 dispatches once, the next 8 unpublished pre-holdout days at 80 MB/s" || no "archive-check 206 dispatch: $(cat "$A/dispatch.log" 2>/dev/null)"
+d=2026-09-21; : > "$A/published"; while [[ "$d" > 2026-07-19 ]]; do echo "$d" >> "$A/published"; d=$(date -u -d "$d - 1 day" +%F); done
+ac env AC_STATUS=206
+grep -q -- "-f days=2026-10-01,2026-09-30,2026-09-29,2026-09-28,2026-09-27,2026-09-26,2026-09-25,2026-09-24 " "$A/dispatch.log" &&
+  ok "archive-check: holdout days only after every pre-holdout day is published" || no "archive-check holdout order: $(cat "$A/dispatch.log" 2>/dev/null)"
+ac env AC_STATUS=206 AC_BYTES=65
+[[ ! -e "$A/dispatch.log" ]] && ok "archive-check: a 206 of more than 64 bytes is not served" || no "archive-check oversized 206"
+ac env AC_STATUS=206 AC_EXIT=18
+[[ ! -e "$A/dispatch.log" ]] && grep -q "| 206 | 64 | 18 |" "$A/summary.md" && ok "archive-check: a 206 whose transfer failed (curl exit kept across the pipe) is not served" || no "archive-check 206 with curl error: $(cat "$A/summary.md")"
+ac env AC_STATUS=200
+[[ ! -e "$A/dispatch.log" ]] && ok "archive-check: a 200 is not served, whatever its size" || no "archive-check 200"
+ac env AC_STATUS=000
+[[ $(wc -l < "$A/curl.calls") == 1 && ! -e "$A/dispatch.log" ]] && ok "archive-check: a network failure dispatches nothing" || no "archive-check failure"
+
+# A real curl against a local server: one that ignores the range and streams a chunked
+# 200 forever, one that answers 206 with 64 bytes. The stream is cut at 65 bytes within
+# seconds and nothing is dispatched; the honest 206 dispatches.
+cat > "$A/srv.py" <<'PY'
+import http.server, sys, time
+class H(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+    def do_GET(self):
+        if self.path == "/stream":
+            self.send_response(200); self.send_header("Transfer-Encoding", "chunked"); self.end_headers()
+            try:
+                while True:
+                    self.wfile.write(b"4000\r\n" + b"x" * 0x4000 + b"\r\n"); self.wfile.flush(); time.sleep(0.01)
+            except (BrokenPipeError, ConnectionResetError):
+                return
+        self.send_response(206); self.send_header("Content-Length", "64"); self.send_header("cf-ray", "ok-1"); self.end_headers()
+        self.wfile.write(b"y" * 64)
+    def log_message(self, *a): pass
+s = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+print(s.server_port, flush=True); s.serve_forever()
+PY
+python3 "$A/srv.py" > "$A/port" & srv=$!
+for _ in $(seq 50); do [[ -s "$A/port" ]] && break; sleep 0.1; done
+port=$(cat "$A/port"); : > "$A/published"
+t0=$(date +%s)
+ac env -u CURL_BIN CURL_BIN=curl NO_PROXY=127.0.0.1 no_proxy=127.0.0.1 ARCHIVE_CHECK_URL="http://127.0.0.1:$port/stream"
+t1=$(date +%s)
+row=$(grep "^| 20" "$A/summary.md" | tail -1); IFS='|' read -r _ _ st by ex _ <<< "$row"
+[[ ! -e "$A/dispatch.log" ]] && (( t1 - t0 < 10 )) && (( ${st// /} == 200 && ${by// /} <= 65 && ${ex// /} != 0 )) &&
+  ok "archive-check: a server ignoring the range and streaming a chunked 200 is cut (${by// /} bytes, curl exit ${ex// /}) in $((t1 - t0)) s, nothing dispatched" || no "archive-check streaming: $row"
+ac env -u CURL_BIN CURL_BIN=curl NO_PROXY=127.0.0.1 no_proxy=127.0.0.1 ARCHIVE_CHECK_URL="http://127.0.0.1:$port/ok"
+[[ $(wc -l < "$A/dispatch.log" 2>/dev/null) == 1 ]] && grep -q "| 206 | 64 | 0 | ok-1 |" "$A/summary.md" &&
+  ok "archive-check: a real 206 of 64 bytes dispatches once" || no "archive-check real 206: $(cat "$A/summary.md")"
+kill $srv 2>/dev/null; wait $srv 2>/dev/null
+
+python3 - "$here/../../../.github/workflows/archive-check.yml" <<'PY' && ok "archive-check workflow: every 3 hours plus dispatch, one job of one script step, token only there, no inputs in the shell, credentials not persisted" || no "archive-check workflow structure"
+import sys, yaml
+wf = yaml.safe_load(open(sys.argv[1]))
+on = wf[True]
+assert set(on) == {"schedule", "workflow_dispatch"} and on["schedule"] == [{"cron": "41 */3 * * *"}], on
+assert wf["permissions"] == {"contents": "read", "actions": "write"}, wf["permissions"]
+steps = wf["jobs"]["check"]["steps"]
+assert len(steps) == 2 and steps[0]["with"]["persist-credentials"] is False, steps
+assert steps[1]["run"] == "research/historical/ci/archive-check.sh" and "github.token" in steps[1]["env"]["GH_TOKEN"], steps[1]
+assert all("${{" not in st.get("run", "") for st in steps)
+assert not any(k in str(steps) for k in ("ARCHIVE_CHECK_URL", "CURL_BIN", "GH_BIN")), "test-only overrides in the workflow"
+PY
+
+python3 - "$here/../../../.github/workflows/data-scan.yml" <<'PY' && ok "data-scan source helius: refused without a cap of 1 to 1000000 or outside scan mode; the key only in the scan and QA steps and only for helius; own progress cache; the chain carries source and cap" || no "data-scan helius wiring"
+import sys, yaml
+wf = yaml.safe_load(open(sys.argv[1]))
+ins = wf[True]["workflow_dispatch"]["inputs"]
+assert ins["source"]["options"] == ["archive", "helius"] and ins["source"]["default"] == "archive", ins["source"]
+plan = wf["jobs"]["plan"]["steps"][0]["run"]
+assert 'source helius needs max_credits from 1 to 1000000' in plan and 'source helius is for mode scan only' in plan
+steps = wf["jobs"]["scan"]["steps"]
+key = [s for s in steps if "HELIUS_API_KEY" in str(s)]
+assert [s.get("id") for s in key] == ["scan", "qa"], [s.get("name") for s in key]
+for s in key:
+    assert s["env"]["HELIUS_API_KEY"] == "${{ inputs.source == 'helius' && secrets.HELIUS_API_KEY || '' }}", s["env"]
+assert "rpc-day.sh" in steps[[s.get("id") for s in steps].index("scan")]["run"]
+caches = [s for s in steps if "actions/cache" in s.get("uses", "") and "work/data" in s["with"]["path"]]
+assert caches and all(s["with"]["key"].startswith("${{ inputs.source == 'helius' && 'data-rpc' || 'data-scan' }}-") for s in caches), caches
+r = wf["jobs"]["continue"]["steps"][0]["run"]
+assert '-f source="$SOURCE" -f max_credits="$MAX_CREDITS" -f rpc_rps="$RPC_RPS"' in r, r
+assert 'rpc_rps must be from 1 to 50' in plan and ins["rpc_rps"]["default"] == "5"
+for s in key:
+    assert s["env"]["RPC_RPS"] == "${{ inputs.rpc_rps }}", s["env"]
+assert "secrets." not in str(wf["jobs"]["continue"]) and "secrets." not in str(wf["jobs"]["plan"])
+saq = next(s for s in steps if s.get("name") == "Save progress after QA")
+assert "inputs.source == 'helius'" in saq["if"] and "always()" in saq["if"], saq["if"]
+PY
+
+# ---- DATA-PUB: a day read over RPC (source helius) is never published or uploaded ----
+python3 - "$here/../../../.github/workflows/data-scan.yml" <<'PY' && ok "data-scan source helius: no day artifact, no data-day or data-volume publish; the packaged assets go only to the actions cache (data-rpc-assets-DAY-*)" || no "data-scan helius publish gate"
+import sys, yaml
+steps = yaml.safe_load(open(sys.argv[1]))["jobs"]["scan"]["steps"]
+for s in steps:
+    run, uses, cond = s.get("run", ""), s.get("uses", ""), s.get("if", "")
+    outward = ("upload-artifact" in uses and s["with"]["name"] != "resume-${{ matrix.day }}") or ("github.token" in str(s) and "--check" not in run)
+    if outward:
+        assert "inputs.source != 'helius'" in cond, (s.get("name") or uses, cond)
+pub = [s for s in steps if 'publish-day.sh" "$DAY"' in s.get("run", "") or "publish-volume.sh" in s.get("run", "")]
+assert len(pub) == 2 and all("inputs.source != 'helius'" in s["if"] for s in pub), pub
+keep = [s for s in steps if "actions/cache/save" in s.get("uses", "") and "work/assets" in s["with"]["path"]]
+assert len(keep) == 1 and keep[0]["with"]["key"].startswith("data-rpc-assets-${{ matrix.day }}-"), keep
+assert "inputs.source == 'helius'" in keep[0]["if"] and "steps.published.outputs.complete != 'true'" in keep[0]["if"], keep[0]["if"]
+names = [s.get("name") for s in steps]
+assert names.index(keep[0]["name"]) > names.index("Package the day")
+PY
+export GH_BIN="$T/bin/gh"
+rp="$T/rpcpub"; rm -rf "$rp"; mkdir -p "$rp"; d=2026-09-28
+for f in units-$d.tar.part00 events-$d.tar qa-$d.md qa-$d.json parity-$d.json; do echo "$f" > "$rp/$f"; done
+printf '{\n  "units": [\n    {\n      "root_cid": "rpc:getBlock"\n    }\n  ]\n}\n' > "$rp/manifest-$d.json"
+(cd "$rp" && sha256sum units-* events-* qa-* manifest-* parity-* > SHA256SUMS-$d)
+rm -rf "$T/rel/data-day-$d"; : > "$T/created.log"
+out=$(bash "$here/publish-day.sh" $d "$rp" 2>&1) && no "publish-day published a day read over RPC" ||
+  { [[ "$out" == *"read over RPC"* && ! -e "$T/rel/data-day-$d" && ! -s "$T/created.log" ]] && ok "publish-day: a day whose manifest lists an RPC unit (root_cid rpc:getBlock) is refused before any gh call" || no "publish-day rpc: $out"; }
+rv="$T/rpcvol"; rm -rf "$rv"; mkdir -p "$rv"; vrows > "$rv/volume-hours-2026-09-30.csv"; echo '{"mismatches": [], "problems": []}' > "$rv/volume-check-2026-09-30.json"
+cp "$rp/manifest-$d.json" "$rv/manifest-2026-09-30.json"; rm -rf "$T/rel/data-volume-2026-09-30"
+out=$(bash "$here/publish-volume.sh" 2026-09-30 "$rv" 2>&1) && no "publish-volume published a day read over RPC" ||
+  { [[ "$out" == *"read over RPC"* && ! -e "$T/rel/data-volume-2026-09-30" && ! -s "$T/created.log" ]] && ok "publish-volume: a day whose manifest lists an RPC unit is refused before any gh call" || no "publish-volume rpc: $out"; }
+rm -f "$rv/manifest-2026-09-30.json"
+bash "$here/publish-volume.sh" 2026-09-30 "$rv" >/dev/null && [[ -e "$T/rel/data-volume-2026-09-30" ]] && ok "publish-volume: the same files without an RPC manifest still publish (control)" || no "publish-volume control"
+unset GH_BIN
+
+# The plan job's own validation, run as written in data-scan.yml.
+python3 - "$here/../../../.github/workflows/data-scan.yml" > "$T/plan.py" <<'PY'
+import sys, yaml
+run = yaml.safe_load(open(sys.argv[1]))["jobs"]["plan"]["steps"][0]["run"]
+print(run.split("<<'EOF' >> \"$GITHUB_OUTPUT\"\n", 1)[1].rsplit("\nEOF", 1)[0])
+PY
+plan() { env MODE=scan DAYS=2026-09-21 MAX_MBPS=80 SOURCE=helius MAX_CREDITS=260000 RPC_RPS=5 REGIME_BOUNDARY_DAY=2026-10-02 "$@" python3 "$T/plan.py" > "$T/plan.out" 2>&1; }
+bad=""
+plan || bad+=" valid-refused"
+for v in 0 51 5.5 ""; do plan RPC_RPS="$v" && bad+=" rps=$v"; done
+for v in 0 1000001 ""; do plan MAX_CREDITS="$v" && bad+=" credits=$v"; done
+plan MODE=volume && bad+=" helius-volume"
+plan SOURCE=other && bad+=" source=other"
+plan SOURCE=archive MAX_CREDITS=0 RPC_RPS=0 || bad+=" archive-refused"
+[[ -z "$bad" ]] && ok "data-scan plan: refuses rpc_rps 0, 51, 5.5 and empty, a cap outside 1..1000000, helius outside scan, an unknown source; accepts the free day and archive scans" || no "data-scan plan validation:$bad"
 
 echo "$pass passed, $fail failed"
 (( fail == 0 ))

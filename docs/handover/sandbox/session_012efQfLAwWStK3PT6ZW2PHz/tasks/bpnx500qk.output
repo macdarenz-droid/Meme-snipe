@@ -1,0 +1,16 @@
+base-research:       Tests  10 passed | 21 skipped (31)
+base-run-rent:       Tests  6 passed | 43 skipped (49)
+O1-always-rent: ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+      Tests  1 failed | 9 passed | 21 skipped (31)
+O2-no-failfee: ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+      Tests  1 failed | 9 passed | 21 skipped (31)
+O3-ignore-dust: ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+      Tests  1 failed | 9 passed | 21 skipped (31)
+O4-scenario-seed: ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+      Tests  1 failed | 9 passed | 21 skipped (31)
+T1-always-rent: ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 3 ⎯⎯⎯⎯⎯⎯⎯
+      Tests  3 failed | 3 passed | 43 skipped (49)
+T2-twice:       Tests  6 passed | 43 skipped (49)
+DONE 17:11
+
+[exited with code 0]

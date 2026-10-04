@@ -62,8 +62,26 @@ const failed = (leg: SimLeg, error: string): DryRunRecord => ({
   simulatedSlot: null, unitsConsumed: null, logsTail: [],
 });
 
+/**
+ * The chain inputs of a PumpSwap build, read at or after `slot`: the pool, the mint and its token program, PumpSwap's
+ * GlobalConfig and the rent rate. A string says what could not be read; it is never a guess.
+ */
+export const readPoolMarket = async (rpc: DryRunRpc, poolAddress: string, mintAddress: string, slot: bigint, lamportsPerSignature: bigint) => {
+  const read = await rpc.getMultipleAccounts([poolAddress, mintAddress, PUMP_AMM_GLOBAL_CONFIG, RENT_SYSVAR], slot, P2);
+  const [poolAcc, mintAcc, configAcc, rentAcc] = read.accounts;
+  if (poolAcc == null || mintAcc == null || configAcc == null || rentAcc == null) return 'pool, mint, GlobalConfig or Rent account missing on chain';
+  const rate = rentRateOf(rentAcc.data);
+  if (rate === null) return 'Rent sysvar unreadable';
+  const pool = decodePool(poolAcc.data).value;
+  const globalConfig = decodeGlobalConfig(configAcc.data).value;
+  const market = { pool: toAddress(poolAddress), state: pool, accountBytes: poolAcc.data.length, baseTokenProgram: toAddress(mintAcc.owner), globalConfig };
+  const mint = decodeMint(mintAcc.data, toAddress(mintAcc.owner));
+  const rates = { rent: { lamportsPerByte: rate }, lamportsPerSignature: lamportsPerSignature as Lamports };
+  return { market, mint, rates };
+};
+
 /** A deterministic choice per leg, so a replay builds the same bytes. */
-const choiceOf = (id: string): number => [...id].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7);
+export const choiceOf = (id: string): number => [...id].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7);
 
 export const liveSimulator = (o: LiveSimOptions) => async (leg: SimLeg): Promise<DryRunRecord> => {
   if (o.wallet === null) return failed(leg, 'no bot wallet address (ZEROED_WALLET): the real build has no fee payer');
@@ -71,16 +89,9 @@ export const liveSimulator = (o: LiveSimOptions) => async (leg: SimLeg): Promise
   const m = o.poolOf(leg.mint);
   if (m === null) return failed(leg, 'pool state unknown');
   try {
-    const read = await o.rpc.getMultipleAccounts([m.address, leg.mint, PUMP_AMM_GLOBAL_CONFIG, RENT_SYSVAR], leg.minContextSlot, P2);
-    const [poolAcc, mintAcc, configAcc, rentAcc] = read.accounts;
-    if (poolAcc == null || mintAcc == null || configAcc == null || rentAcc == null) return failed(leg, 'pool, mint, GlobalConfig or Rent account missing on chain');
-    const rate = rentRateOf(rentAcc.data);
-    if (rate === null) return failed(leg, 'Rent sysvar unreadable');
-    const pool = decodePool(poolAcc.data).value;
-    const globalConfig = decodeGlobalConfig(configAcc.data).value;
-    const market = { pool: toAddress(m.address), state: pool, accountBytes: poolAcc.data.length, baseTokenProgram: toAddress(mintAcc.owner), globalConfig };
-    const mint = decodeMint(mintAcc.data, toAddress(mintAcc.owner));
-    const rates = { rent: { lamportsPerByte: rate }, lamportsPerSignature: o.lamportsPerSignature as Lamports };
+    const chain = await readPoolMarket(o.rpc, m.address, leg.mint, leg.minContextSlot, o.lamportsPerSignature);
+    if (typeof chain === 'string') return failed(leg, chain);
+    const { market, mint, rates } = chain;
     const request = leg.side === 'buy'
       ? (() => {
         const q = poolBuyExactQuoteIn(m.state, leg.inAmount, m.ctx);

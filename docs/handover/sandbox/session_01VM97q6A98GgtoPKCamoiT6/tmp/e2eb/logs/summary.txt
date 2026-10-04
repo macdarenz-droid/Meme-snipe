@@ -1,0 +1,18 @@
+PASS  fake GitHub and Telegram up at http://172.17.0.1:8787
+PASS  derive-key known answer: the pinned recipient opens with the derived identity in real age
+PASS  README line: 235 ASCII characters, pinned to a45fc86ef6ff which holds install.sh with the same SHA-256; checked in the container
+PASS  install: 6-word EFF deploy code shown (root-only 0400 on disk), signer up, worker waiting, timers on, inbound policy drop with no SSH, unattended upgrades on
+PASS  wrong code: the server downloaded the bundle, could not open it, stored nothing, kept its code and says to check DEPLOY_CODE
+PASS  handoff (with the watchdog, as on a fresh server): 4 keys plus the heartbeat key and webhook secret stored encrypted (0600 root), no webhook set before pairing, deploy code wiped (single use), release 'handoff' deleted, pairing code shown, worker waits for pairing
+PASS  replay: a second Deploy with the used code is never opened (server has no code left); keys unchanged
+PASS  pairing: a group's /pair is ignored (private chats only); a stranger's wrong /pair invalidated the code (one try), the old code then failed, a new console code paired the owner chat (stored encrypted), 'Paired' sent, the server then set the watchdog webhook itself, later messages ignored, worker reconciled and runs
+PASS  hardening: signer no network (only lo, AF_UNIX, IPAddressDeny, MDWE, jitless), worker sandboxed, worker uid limited to 443/53 out, signer socket only for the worker group
+PASS  rotation: a new console code and a re-run of Deploy replaced all 4 keys, registered a workers.dev subdomain (none existed), deployed the watchdog (secrets, webhook) and gave the server its address and the same new heartbeat key; worker reconciled and restarted, owner told; a bundle with an older run number is refused
+PASS  update: waits on failed and pending checks and on open intents; deploys the green GitHub-signed merge 3f14e0f87801 with reconcile first; refuses unsigned 9f7ad71cf1b3
+PASS  backup: hourly timer, zeroed-20261004T074253Z.tar.age encrypted; restore drill PASS into a scratch directory, FAIL on a tampered file
+PASS  off-server backup: off and nothing sent until approved (ops/host-config.json); 6-word backup code shown once (only its public half kept); once on, a silent Telegram document to the owner chat that opens with the words alone and not with the host key
+PASS  watchdog (locked wrangler dev, miniflare): signed heartbeats from the host teach it the owner chat; quiet while fresh; /pause and /status only from the owner chat and the right webhook secret; worker applied pause and later the resume; /resume refused over Telegram; stale alert once, cleared on return; resume only from the host
+PASS  drills: restart and kill -9 both brought the worker back with reconcile first (4 -> 6 reconciles)
+PASS  update gate: no deploy while a named dry run has no report (after a reboot drill) or while a zeroed-dryrun@ unit is active; deploys once both end
+PASS  install.sh --update through zeroed-update: failing host files keep the old release and the worker (one alert, cleared later); an installer that fails after writing files (bad firewall) is rolled back to byte-identical host files, units and ruleset; RUN-1 units from the release installed (tick timer on, template off), SSH kept open or closed as it was, no code shown; worker started by the wrapper in paper with recorder, simulation and drills on, health on 127.0.0.1:8787 and API on 127.0.0.1:8788, the stand-in until the release switches to its own worker; worker API on loopback only lists the evidence kept on the host
+FAIL  the drill endpoint is not on

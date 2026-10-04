@@ -131,9 +131,10 @@ jobs:
     needs: build
     if: github.ref == 'refs/heads/ccr-14987baf-i6lrsl' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
     permissions:
       contents: write
+      checks: read
     concurrency:
       group: android-preview-release
       cancel-in-progress: false
@@ -160,6 +161,11 @@ jobs:
             echo "current=false" >> "$GITHUB_OUTPUT"
             echo "::notice::$INTEGRATION_BRANCH moved to $head; a newer run publishes the release."
           fi
+
+      # Only a commit whose CI `check` passed reaches the phone (OPS-GATE).
+      - name: Require CI's check on this commit
+        if: steps.newest.outputs.current == 'true'
+        run: bash .github/scripts/require-check.sh
 
       - name: Move the preview tag, write the notes, replace the single asset
         if: steps.newest.outputs.current == 'true'

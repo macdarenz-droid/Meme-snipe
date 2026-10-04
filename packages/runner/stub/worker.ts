@@ -219,7 +219,7 @@ const tick = (): void => {
       state.position = { trade, openedAt: now, universe: 'U2' };
       state.intent = null;
       saveState(state);
-      journal('entry', { trade, reasons: ['stub: synthetic setup'] });
+      journal('entry', { trade, position: 'open', universe: 'U2', reasons: ['stub: synthetic setup'] });
     }
   } else if (state.position && !state.position.exitPlanned && phase >= cycleMs * 0.4 && phase < cycleMs * 0.6) {
     state.position.exitPlanned = true;
@@ -229,12 +229,23 @@ const tick = (): void => {
     state.intent = { trade, leg: 'exit' };
     saveState(state);
     if (simulationOn) journal('simulation', { trade, leg: 'exit', ...stubSimulation() });
+    // The exit is journaled before the state lets the position go (an entry the other way round): a kill between the
+    // two leaves a state holding more than the journal says, never less, so what the runner reads from the journal is
+    // always there to recover (RUN-1d contract).
+    journal('exit', { trade, position: 'closed', reasons: ['stub: hold time reached'] });
+    stall(exitGapMs);
     state.position = null;
     state.intent = null;
     saveState(state);
-    journal('exit', { trade, position: 'closed', reasons: ['stub: hold time reached'] });
   }
 };
+
+// Test hook: the process stalls between the two writes of an exit (journal line, then state) (a descheduled process under load), so a kill can
+// land between them.
+const exitGapMs = Number(env['ZEROED_STUB_EXIT_GAP_MS'] ?? 0);
+function stall(ms: number): void {
+  if (ms > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
 
 let rpcDownUntil = 0;
 const dropFeed = (name: string, ms: number): void => {
@@ -281,6 +292,7 @@ const health = (): Health => {
     last_processed_slot: slot,
     feed_ages_ms: ages,
     open_position: state.position ? { trade: state.position.trade, mint: 'stub', qty: '1', entry: '1', stop: '0.9', mark: '1', mark_slot: slot, mark_ts: now, universe: state.position.universe } : null,
+    open_positions: state.position ? [{ trade: state.position.trade, mint: 'stub', qty: '1', entry: '1', stop: '0.9', mark: '1', mark_slot: slot, mark_ts: now, universe: state.position.universe }] : [],
     unresolved_intents: { count: state.intent ? 1 : 0, oldest_age_s: state.intent ? 0 : null, trades: state.intent ? [state.intent.trade] : [] },
     signer: 'none',
     lease_epoch: null,

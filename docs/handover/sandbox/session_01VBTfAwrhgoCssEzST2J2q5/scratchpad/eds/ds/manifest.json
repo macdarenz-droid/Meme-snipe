@@ -1,0 +1,82 @@
+{
+ "schema": 3,
+ "window": {
+  "from": "2026-09-19",
+  "to_exclusive": "2026-09-20"
+ },
+ "coverage": {
+  "first_slot": 409784000,
+  "last_slot": 410042000,
+  "first_block_time": 1789776000,
+  "last_block_time": 1789879200
+ },
+ "days": [
+  {
+   "day": "2026-09-19",
+   "blocks_expected": 24,
+   "blocks_scanned": 24,
+   "complete": true,
+   "warm_up": false,
+   "rows": {
+    "amm_trades": 0
+   },
+   "files": [
+    {
+     "path": "days/2026-09-19/amm_trades-000.csv.zst",
+     "bytes": 310,
+     "sha256": "1ace587059385918e345940db6c4ab65513b1cc10e9474d4eeabf722560e4820",
+     "rows": 0
+    },
+    {
+     "path": "days/2026-09-19/blocks-000.csv.zst",
+     "bytes": 256,
+     "sha256": "818084d70640b010fff9d9b6059ec7bb629cca8986c0bb3dc9ba5255abbfbd79",
+     "rows": 24
+    },
+    {
+     "path": "days/2026-09-19/events-000.jsonl.zst",
+     "bytes": 9,
+     "sha256": "6fb8543883dafcc2ed0934866b8b3f775231f5b0933add08bf502e9e84944cbd",
+     "rows": 0
+    }
+   ]
+  },
+  {
+   "day": "2026-09-20",
+   "blocks_expected": 4062,
+   "blocks_scanned": 4062,
+   "complete": true,
+   "warm_up": false,
+   "rows": {
+    "amm_trades": 3899
+   },
+   "files": [
+    {
+     "path": "days/2026-09-20/amm_trades-000.csv.zst",
+     "bytes": 461602,
+     "sha256": "733a3ac144d24cdcf6dce46f4b661da47ac5d29614024910ebbe1ef58aa120a7",
+     "rows": 3899
+    },
+    {
+     "path": "days/2026-09-20/curve_trades-000.csv.zst",
+     "bytes": 13831,
+     "sha256": "3b5a99239399d8cda865e979a662a854b970e3c5f9b08dadce151641edff365f",
+     "rows": 100
+    },
+    {
+     "path": "days/2026-09-20/blocks-000.csv.zst",
+     "bytes": 16290,
+     "sha256": "17c041d5083e356dc99161266efc72e4ce199b96deb78d54b336b36fa65d2460",
+     "rows": 4062
+    },
+    {
+     "path": "days/2026-09-20/events-000.jsonl.zst",
+     "bytes": 880,
+     "sha256": "276fb8104747430a336bd0f20a32160187fae10ae7ab53abb6270f2436f7edfd",
+     "rows": 4
+    }
+   ]
+  }
+ ],
+ "mints_files": []
+}

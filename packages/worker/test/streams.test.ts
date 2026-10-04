@@ -428,16 +428,43 @@ describe('RPC stream', () => {
         r.watch.sync();
         const waits: number[] = [];
         for (let k = 0; k < 7; k++) {
-            r.answer(false);
+          r.answer(false);
           const asked = r.asked();
           let waited = 0;
-          while (r.asked() === asked) {
+          // Bounded: a watch never asked again fails the assertion below instead of looping forever.
+          while (r.asked() === asked && waited < 120_000) {
             r.second();
             waited += 1_000;
           }
           waits.push(waited);
         }
         expect(waits).toEqual([2_000, 4_000, 8_000, 16_000, 32_000, 60_000, 60_000]);
+      });
+
+      it('a watch served again starts over: a refusal hours later waits 2 s, not the doubled wait of before', async () => {
+        const r = await refusing();
+        r.watch.sync();
+        r.answer(false);
+        r.second();
+        r.second();
+        expect(r.asked()).toBe(2);
+        r.answer(false); // second refusal: the next wait is 4 s
+        for (let k = 0; k < 4; k++) r.second();
+        expect(r.asked()).toBe(3);
+        r.answer(true); // served: the wait is forgotten
+        await settle();
+        // Hours later the server refuses it again (a reconnect re-subscribes it and the server says no).
+        for (let k = 0; k < 10; k++) r.second();
+        r.t.hub.last.drop();
+        r.t.timers.advance(5_000);
+        r.t.hub.last.open();
+        const latest = r.t.hub.last.requests().filter((q) => q.method === 'logsSubscribe' && JSON.stringify(q.params).includes(HELD)).at(-1)!;
+        r.t.hub.last.push({ jsonrpc: '2.0', id: latest.id, error: { code: -32602 } });
+        const asked = r.asked();
+        r.second();
+        expect(r.asked()).toBe(asked);
+        r.second();
+        expect(r.asked()).toBe(asked + 1);
       });
 
       it('a pool that leaves the list and comes back is asked again at once (its wait is forgotten)', async () => {
@@ -555,6 +582,9 @@ describe('RPC stream', () => {
       t.scheduler.meter(1_000);
       t.hub.last.push(slotNote(100, 606)); // any traffic runs the budget check
       expect(t.scheduler.halted).toBe(true);
+      expect(facts(t.feed, t.timers, 'coverage:creates:gap')).toEqual([]);
+      // Raised to P1 while halted: kept (review N7).
+      expect(t.stream.setPriority(2, P1)).toBe(true);
       expect(facts(t.feed, t.timers, 'coverage:creates:gap')).toEqual([]);
       expect(t.stream.setPriority(2, P3)).toBe(true);
       expect(facts(t.feed, t.timers, 'coverage:creates:gap')).toEqual([{ fromSlot: 603n, toSlot: null, reason: 'halted', via: VIA }]);

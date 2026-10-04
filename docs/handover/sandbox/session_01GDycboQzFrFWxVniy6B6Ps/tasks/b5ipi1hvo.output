@@ -1,0 +1,3 @@
+    for (const r of rejects) expect(r).toEqual([expect.stringMatching(new RegExp(`^hard reject H16: H16 missing no xcheck as of slot \\d+${later}$`))]);
+
+[killed]

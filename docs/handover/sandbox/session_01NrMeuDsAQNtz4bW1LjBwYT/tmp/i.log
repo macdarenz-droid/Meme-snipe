@@ -1,0 +1,23 @@
+Scope: all 7 workspace projects
+Lockfile is up to date, resolution step is skipped
+Progress: resolved 1, reused 0, downloaded 0, added 0
+Packages: +151
+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+   ╭─────────────────────────────────────────╮
+   │                                         │
+   │   Update available! 10.28.0 → 12.9.1.   │
+   │   Changelog: https://pnpm.io/v/12.9.1   │
+   │    To update, run: pnpm add -g pnpm     │
+   │                                         │
+   ╰─────────────────────────────────────────╯
+
+Progress: resolved 151, reused 0, downloaded 116, added 98
+Progress: resolved 151, reused 0, downloaded 151, added 151, done
+
+devDependencies:
++ @types/node 22.20.5
++ typescript 7.0.2
++ vitest 5.0.3
+
+Done in 2.5s using pnpm v10.28.0

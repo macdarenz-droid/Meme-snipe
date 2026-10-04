@@ -1,0 +1,548 @@
+{
+ "title": "How Zeroed works",
+ "subtitle": "Paper mode only. How market data becomes a paper trade, and what must be proven before any deposit. Status at Sun 4 Oct 2026, 4:45 PM Melbourne.",
+ "lanes": [
+  {
+   "id": "market-data",
+   "title": "Market data",
+   "blurb": "Where the bot's information comes from. Free plans only, and every call is counted against a budget.",
+   "rows": [
+    [
+     "quota"
+    ],
+    [
+     "helius-stream",
+     "sol-price"
+    ],
+    [
+     "alchemy",
+     "cross-checks"
+    ]
+   ]
+  },
+  {
+   "id": "bot-on-server",
+   "title": "Bot on the server",
+   "blurb": "The real worker's loop, paper mode only, top to bottom in the order things happen. Today the server still runs a stand-in; this loop starts there after the switch.",
+   "rows": [
+    [
+     "feed"
+    ],
+    [
+     "candidate",
+     "regime",
+     "not-live"
+    ],
+    [
+     "gates",
+     "risk",
+     "halts"
+    ],
+    [
+     "entry",
+     "sim"
+    ],
+    [
+     "pricing",
+     "exits"
+    ],
+    [
+     "store",
+     "api"
+    ]
+   ]
+  },
+  {
+   "id": "phone-alerts",
+   "title": "Your phone and alerts",
+   "blurb": "A read-only view on your phone over a private link, plus alerts and a pause command in Telegram.",
+   "rows": [
+    [
+     "tailscale",
+     "watchdog"
+    ],
+    [
+     "app",
+     "telegram"
+    ]
+   ]
+  },
+  {
+   "id": "proof",
+   "title": "Proof before any deposit",
+   "blurb": "Six proofs, all required, before the app asks for money. Left to right in the order they happen.",
+   "rows": [
+    [
+     "history",
+     "replay",
+     "blind",
+     "practice",
+     "rules",
+     "g1",
+     "holdout",
+     "dry-run",
+     "six-proofs",
+     "funding"
+    ]
+   ]
+  }
+ ],
+ "nodes": [
+  {
+   "id": "helius-stream",
+   "label": "Helius live stream",
+   "detail": "Live chain feed: slot ticks, new tokens, moves to PumpSwap, swaps on watched pools. Losing it stops entries.",
+   "kind": "source",
+   "source": "packages/worker/src/run/sources.ts; packages/worker/src/run/pool-watch.ts"
+  },
+  {
+   "id": "sol-price",
+   "label": "SOL price (Coinbase)",
+   "detail": "Critical feed. Without a fresh SOL price, every entry is refused.",
+   "kind": "source",
+   "source": "packages/worker/src/run/sources.ts; packages/worker/src/scheduler/limits.ts; packages/worker/src/engine/strategy.ts (#evaluate, 'live SOL price unknown')"
+  },
+  {
+   "id": "alchemy",
+   "label": "Alchemy backup reads",
+   "detail": "Backup for fetching transactions and second price path for open trades. No live stream: Alchemy refused it.",
+   "kind": "source",
+   "source": "packages/worker/src/run/sources.ts; packages/worker/src/run/watch.ts"
+  },
+  {
+   "id": "cross-checks",
+   "label": "Token lists, cross-checks",
+   "detail": "PumpPortal new tokens (not critical); RugCheck, GoPlus, Jupiter cross-checks; GitHub volume files (none yet).",
+   "kind": "source",
+   "source": "packages/worker/src/run/sources.ts; packages/worker/src/facts/readers.ts; packages/worker/src/main.ts; GitHub REST releases list for macdarenz-droid/Meme-snipe (only tag 'preview', checked 4 Oct); HANDOVER.md \u00a710"
+  },
+  {
+   "id": "quota",
+   "label": "Free-plan budget",
+   "detail": "Each provider's calls rationed. Exits served first, discovery dropped first. At 70% of monthly credits, only exits pass.",
+   "kind": "safety",
+   "source": "packages/worker/src/scheduler/scheduler.ts; packages/worker/src/scheduler/limits.ts; packages/worker/src/run/sources.ts"
+  },
+  {
+   "id": "feed",
+   "label": "Live feed",
+   "detail": "Keeps the first copy of each event, waits about two slots, then passes them on in order.",
+   "kind": "step",
+   "source": "packages/worker/src/providers/live-feed.ts; packages/worker/src/run/sources.ts; docs/DECISIONS.md (FACTS-1b)"
+  },
+  {
+   "id": "candidate",
+   "label": "New candidate",
+   "detail": "A token confirmed as moved to PumpSwap. Entry allowed 60 to 240 minutes after the move.",
+   "kind": "step",
+   "source": "packages/worker/src/engine/strategy.ts; packages/core/src/config/research.ts; packages/worker/src/run/settings.ts"
+  },
+  {
+   "id": "regime",
+   "label": "Market conditions",
+   "detail": "Graduates surviving, pump volume, SOL not down 8%+ in 24 h, own trading healthy. Unknown: no entry.",
+   "kind": "check",
+   "source": "packages/core/src/gates/regime.ts (live mode reads exec-health, lines 171-178); packages/worker/src/engine/strategy.ts (#evaluate, mode 'live'); docs/ARCHITECTURE.md \u00a76.4"
+  },
+  {
+   "id": "not-live",
+   "label": "Not live yet",
+   "detail": "Real worker running, execution health, pump volume, H14 rug checks, H15 simulation, exit sell route, money flow.",
+   "kind": "planned",
+   "source": "docs/DECISIONS.md (FACTS-1b 'Not wired'; FACTS-1d volume under 28 days is unknown); packages/core/src/gates/regime.ts:171-178; packages/core/src/facts/producer.ts (#health, no owner limits); packages/core/src/gates/hard.ts (H14 not-covered, H15 'sim' fact); packages/worker/src/providers/deployer-check.ts (only re-exported); packages/worker/src/engine/strategy.ts:922 (sellRoute: null, flow: []); packages/core/src/exits/rules.ts (no_route, negative_flow); GitHub releases (no data-* release); HANDOVER.md \u00a73, \u00a74, \u00a710"
+  },
+  {
+   "id": "gates",
+   "label": "Safety checks H1-H17",
+   "detail": "Token and pool rules, timing and price path, holders and deployer, sellable now. Any fail: no entry.",
+   "kind": "check",
+   "source": "packages/core/src/gates/hard.ts; docs/ARCHITECTURE.md \u00a77.1"
+  },
+  {
+   "id": "risk",
+   "label": "Cost and size check",
+   "detail": "Round trip cost at most 5%, expected net gain above zero, stop within 20%, bankroll and loss limits.",
+   "kind": "check",
+   "source": "packages/core/src/risk/evaluate.ts; packages/core/src/risk/types.ts; packages/core/src/config/policy.ts (costGate maxRoundTripBps 500); packages/worker/src/engine/strategy.ts; packages/worker/src/run/settings.ts (edgePpm 0: no edge proven); docs/ARCHITECTURE.md \u00a78"
+  },
+  {
+   "id": "halts",
+   "label": "Entry halts",
+   "detail": "Entries stop if key feeds go quiet, Alchemy backup is down, you pause, or books disagree. Exits continue.",
+   "kind": "safety",
+   "source": "packages/worker/src/run/worker.ts (#checkHalt; SECOND_PATH_UNAVAILABLE, lines 53-54, 679-680); packages/worker/src/engine/strategy.ts (#entries); packages/worker/src/main.ts (staleFeedMs 10000; watchHalted from providers.alchemy.halted)"
+  },
+  {
+   "id": "entry",
+   "label": "Paper entry",
+   "detail": "Money is reserved in the ledger first, then a pretend buy fills on cautious rules. Nothing is sent.",
+   "kind": "step",
+   "source": "packages/worker/src/run/desk.ts; packages/worker/src/run/paper-world.ts; packages/worker/src/run/settings.ts"
+  },
+  {
+   "id": "sim",
+   "label": "Mainnet simulation",
+   "detail": "Real buy or sell transaction built and simulated on mainnet, never sent. Paper fill waits for the answer.",
+   "kind": "step",
+   "source": "packages/worker/src/dryrun/simulate.ts; packages/worker/src/run/live-sim.ts; packages/worker/src/run/paper-world.ts; ops/host/files/usr/local/lib/zeroed/worker-start (ZEROED_SIMULATE=on)"
+  },
+  {
+   "id": "pricing",
+   "label": "Open trade pricing",
+   "detail": "Priced from its own pool's trades; if over half a second old, Alchemy reads the pool.",
+   "kind": "step",
+   "source": "packages/worker/src/run/watch.ts; packages/worker/src/run/worker.ts; packages/worker/src/run/config.ts (ZEROED_WATCH_STALE_MS default 500; watchTimingProblem); packages/core/src/config/policy.ts (maxQuoteAgeMs 2000); ops/host/files/usr/local/lib/zeroed/worker-start (no ZEROED_WATCH_* set)"
+  },
+  {
+   "id": "exits",
+   "label": "Exit rules",
+   "detail": "Stop, trailing stop, take profit, time limits, deployer selling, liquidity drop. Up to 5 sell tries, rising fees.",
+   "kind": "step",
+   "source": "packages/core/src/exits/rules.ts; packages/core/src/config/policy.ts; packages/worker/src/engine/strategy.ts; docs/ARCHITECTURE.md \u00a79"
+  },
+  {
+   "id": "store",
+   "label": "Ledger, journal, recorder",
+   "detail": "Ledger of every trade event, journal of every decision with reasons, recorder of every raw input.",
+   "kind": "store",
+   "source": "packages/worker/src/run/desk.ts; packages/worker/src/run/journal.ts; packages/worker/src/run/recorder.ts; docs/ARCHITECTURE.md \u00a712.4"
+  },
+  {
+   "id": "api",
+   "label": "Health and phone API",
+   "detail": "Read-only data for your phone, local health check, and a signed heartbeat to the watchdog.",
+   "kind": "screen",
+   "source": "packages/worker/src/run/api.ts; packages/worker/src/run/heartbeat.ts; packages/worker/src/run/worker.ts; HANDOVER.md \u00a79"
+  },
+  {
+   "id": "tailscale",
+   "label": "Private link (Tailscale)",
+   "detail": "Read API on your private network only, over HTTPS. Public access off, checked each minute; alerts to Telegram.",
+   "kind": "safety",
+   "source": "ops/host/files/usr/local/sbin/zeroed-tailscale; ops/host/files/usr/local/sbin/zeroed-check (lines 10-11, 26 funnel-on, 68 key-mismatch, 94 webhook-changed); ops/host/files/etc/systemd/system/zeroed-check.timer; ops/host/files/usr/local/lib/zeroed/logic.sh (serve_ok, funnel_ports)"
+  },
+  {
+   "id": "watchdog",
+   "label": "Cloudflare watchdog",
+   "detail": "Checks each minute: heartbeat silent 90 s, bot behind, stop hit, no sell try 60 s. Cannot sell.",
+   "kind": "check",
+   "source": "packages/ops/wrangler.toml (HEARTBEAT_MAX_AGE_S 90, SLOT_LAG_MAX 150, INTENT_MAX_AGE_S 90, STOP_NO_EXIT_S 60); packages/ops/src/watchdog/logic.ts (evaluate); ops/README.md (Watchdog); docs/ARCHITECTURE.md \u00a712.5"
+  },
+  {
+   "id": "app",
+   "label": "Android app",
+   "detail": "Home, Snipe, Wallet tabs; reads only, every 10 s. Deposit hidden until proofs pass; withdraw off for now.",
+   "kind": "screen",
+   "source": "apps/web/src/lib/route.ts; apps/web/src/api/poll.ts; apps/web/src/api/server.ts; apps/web/src/funding/DepositPanel.tsx; apps/web/src/screens/Wallet.tsx; apps/web/src/funding/stepUp.ts"
+  },
+  {
+   "id": "telegram",
+   "label": "Telegram alerts",
+   "detail": "Alerts only to your paired chat. /pause stops new entries; /status reports. Only the console clears a pause.",
+   "kind": "step",
+   "source": "ops/README.md (Telegram pairing, Watchdog); packages/ops/src/watchdog/logic.ts; packages/ops/src/watchdog/worker.ts; ops/host/files/usr/local/sbin/zeroed-check"
+  },
+  {
+   "id": "history",
+   "label": "History download",
+   "detail": "Archive has blocked our scanner since 4 Oct. Helius free test next; paid pull needs your OK.",
+   "kind": "source",
+   "source": "HANDOVER.md \u00a74, \u00a76, \u00a77; docs/DECISIONS.md (Afternoon decisions 2026-10-04; DATA-2 ruling); PROJECT_STATE.md (History line); docs/research/historical-data.md"
+  },
+  {
+   "id": "replay",
+   "label": "Backtest replay",
+   "detail": "Same engine core as live, fed in time order. Today random picks only; strategy study adds checks, exits.",
+   "kind": "step",
+   "source": "packages/backtest/src/run.ts (new S0(config)); packages/backtest/src/strategy/s0.ts (header: hard rejects not yet, time stop exits); packages/backtest/src/sim/replay.ts; docs/ARCHITECTURE.md \u00a716.1, \u00a716.2, \u00a720; HANDOVER.md \u00a74 (BT-2 #41 draft)"
+  },
+  {
+   "id": "blind",
+   "label": "Blind tests",
+   "detail": "Planted future marker must stay unseen; 10 replays must match. Live-to-backtest match test awaits merge.",
+   "kind": "check",
+   "source": "packages/backtest/src/proofs.ts; packages/backtest/src/cli.ts (line 189 parityTestPassed: false); docs/ARCHITECTURE.md \u00a715, \u00a716.1; HANDOVER.md \u00a74"
+  },
+  {
+   "id": "practice",
+   "label": "Practice days",
+   "detail": "Research stops at 11 Sep (21 Sep after a pending change). Results are scored apart from the engine.",
+   "kind": "step",
+   "source": "research/signals/window.json (holdoutFrom 2026-09-13, embargoDays 1); packages/backtest/src/research/practice.ts (wallDay); docs/DECISIONS.md (wall at 2026-09-21T14:00Z); HANDOVER.md \u00a74 (RES-3b #56 draft); packages/core/src/gates/rug-labeller.ts; packages/core/src/stats/labeller.ts; docs/DECISIONS.md (STATS-1e)"
+  },
+  {
+   "id": "rules",
+   "label": "Rules fixed first",
+   "detail": "One frozen setup per market group. Every variant ever tried is counted. Real strategy study still a draft.",
+   "kind": "planned",
+   "source": "docs/ARCHITECTURE.md \u00a713.1, \u00a713.2, \u00a714; packages/backtest/src/strategy/ (only s0.ts today); HANDOVER.md \u00a74"
+  },
+  {
+   "id": "g1",
+   "label": "Practice test (G1)",
+   "detail": "Profit after costs above zero and beats random picks. Luck test: SPA, your pick, change in review.",
+   "kind": "check",
+   "source": "packages/core/src/stats/gates.ts (gateG1); packages/core/src/stats/spa.ts; packages/core/src/config/research.ts (g1EdgeTest); docs/DECISIONS.md (Afternoon decisions); HANDOVER.md \u00a74"
+  },
+  {
+   "id": "holdout",
+   "label": "Sealed holdout (G2)",
+   "detail": "Entries 22 Sep\u201319 Oct, scored once after 21 Oct. Needs 300+ trades with 95% range above zero.",
+   "kind": "check",
+   "source": "packages/core/src/config/research.ts (holdout fromDay 2026-09-22, entryCutoffDay 2026-10-20, tailEndDay 2026-10-21); packages/core/src/stats/holdout.ts; packages/backtest/src/holdout.ts; docs/ARCHITECTURE.md \u00a714; HANDOVER.md \u00a76"
+  },
+  {
+   "id": "dry-run",
+   "label": "Live dry run (G3)",
+   "detail": "Real worker on live data, paper only, 48 h minimum, restart drills. Must match the backtest.",
+   "kind": "planned",
+   "source": "docs/ARCHITECTURE.md \u00a714 (G3 row), \u00a715; docs/DECISIONS.md (Qualifying-run length); HANDOVER.md \u00a74, \u00a76, \u00a79"
+  },
+  {
+   "id": "six-proofs",
+   "label": "Six proofs",
+   "detail": "Replay x10 identical, 30+ day backtest, 48 h live run, 95% simulations pass, fault drills, proven strategy.",
+   "kind": "check",
+   "source": "docs/ARCHITECTURE.md \u00a715; CLAUDE.md (No deposit before proof)"
+  },
+  {
+   "id": "funding",
+   "label": "You decide funding",
+   "detail": "Only you fund, set limits, go live. No signer yet; 30+ live $2 trades first. Late Oct earliest.",
+   "kind": "owner",
+   "source": "docs/ARCHITECTURE.md \u00a714 (order: backtest, dry run, $2 live canary), \u00a715; packages/core/src/stats/gates.ts (G4_DEFAULTS minTrades 30); packages/core/src/config/policy.ts (minNotional $2); ops/host/files/opt/zeroed/stub/signer.mjs (holds no key, 'not-ready'); AGENTS.md (Only the owner; packages/signer owner approves); HANDOVER.md \u00a76"
+  }
+ ],
+ "edges": [
+  {
+   "from": "helius-stream",
+   "to": "feed",
+   "label": "slots, logs, swaps"
+  },
+  {
+   "from": "sol-price",
+   "to": "feed",
+   "label": "SOL price"
+  },
+  {
+   "from": "cross-checks",
+   "to": "feed",
+   "label": "tokens, check results"
+  },
+  {
+   "from": "alchemy",
+   "to": "pricing",
+   "label": "second price path"
+  },
+  {
+   "from": "alchemy",
+   "to": "halts",
+   "label": "down or no credits"
+  },
+  {
+   "from": "feed",
+   "to": "candidate",
+   "label": "confirmed move"
+  },
+  {
+   "from": "feed",
+   "to": "store",
+   "label": "every input recorded"
+  },
+  {
+   "from": "candidate",
+   "to": "regime",
+   "label": "each evaluation"
+  },
+  {
+   "from": "not-live",
+   "to": "regime",
+   "label": "keeps it off"
+  },
+  {
+   "from": "not-live",
+   "to": "gates",
+   "label": "H14, H15 reject"
+  },
+  {
+   "from": "regime",
+   "to": "gates",
+   "label": "if conditions OK"
+  },
+  {
+   "from": "gates",
+   "to": "risk",
+   "label": "if all pass"
+  },
+  {
+   "from": "risk",
+   "to": "entry",
+   "label": "reserve, then buy"
+  },
+  {
+   "from": "halts",
+   "to": "entry",
+   "label": "blocks new entries only"
+  },
+  {
+   "from": "entry",
+   "to": "sim",
+   "label": "buy simulated"
+  },
+  {
+   "from": "entry",
+   "to": "pricing",
+   "label": "trade opens"
+  },
+  {
+   "from": "entry",
+   "to": "store",
+   "label": "booked in ledger"
+  },
+  {
+   "from": "pricing",
+   "to": "exits",
+   "label": "fresh price"
+  },
+  {
+   "from": "exits",
+   "to": "sim",
+   "label": "sell simulated"
+  },
+  {
+   "from": "exits",
+   "to": "store",
+   "label": "exit booked"
+  },
+  {
+   "from": "store",
+   "to": "api",
+   "label": "state for phone"
+  },
+  {
+   "from": "api",
+   "to": "tailscale",
+   "label": "read API"
+  },
+  {
+   "from": "api",
+   "to": "watchdog",
+   "label": "signed heartbeat"
+  },
+  {
+   "from": "tailscale",
+   "to": "app",
+   "label": "HTTPS, private"
+  },
+  {
+   "from": "tailscale",
+   "to": "telegram",
+   "label": "server alerts"
+  },
+  {
+   "from": "watchdog",
+   "to": "telegram",
+   "label": "alerts; /pause, /status"
+  },
+  {
+   "from": "watchdog",
+   "to": "halts",
+   "label": "pause flag"
+  },
+  {
+   "from": "history",
+   "to": "replay",
+   "label": "day files, in order"
+  },
+  {
+   "from": "replay",
+   "to": "blind",
+   "label": "checked for peeking"
+  },
+  {
+   "from": "store",
+   "to": "blind",
+   "label": "live run replayed"
+  },
+  {
+   "from": "replay",
+   "to": "practice",
+   "label": "practice-day runs"
+  },
+  {
+   "from": "practice",
+   "to": "rules",
+   "label": "choose and freeze"
+  },
+  {
+   "from": "rules",
+   "to": "g1",
+   "label": "tested"
+  },
+  {
+   "from": "g1",
+   "to": "practice",
+   "label": "fail: rework, counted"
+  },
+  {
+   "from": "g1",
+   "to": "holdout",
+   "label": "pass: locked in"
+  },
+  {
+   "from": "replay",
+   "to": "six-proofs",
+   "label": "proof 2: 30+ days"
+  },
+  {
+   "from": "blind",
+   "to": "six-proofs",
+   "label": "proofs 1, 2"
+  },
+  {
+   "from": "holdout",
+   "to": "six-proofs",
+   "label": "proof 6"
+  },
+  {
+   "from": "dry-run",
+   "to": "six-proofs",
+   "label": "proofs 3, 4, 5"
+  },
+  {
+   "from": "six-proofs",
+   "to": "funding",
+   "label": "all six pass"
+  }
+ ],
+ "callouts": [
+  {
+   "title": "Paper only",
+   "text": "The bot holds no signing key, and the worker has no way to send a transaction; any mode other than paper stops it at start. Each paper entry and exit is built as a real transaction and simulated on mainnet, never sent. Today nothing can enter, even on paper and in a practice run: the market-conditions check stays off, and checks H14 and H15 reject until their inputs are wired. After that, until research proves an edge, the cost check refuses every entry, so only a practice run trades on paper."
+  },
+  {
+   "title": "Exits never wait",
+   "text": "Halts, your /pause and loss limits stop new entries only. Exits are always allowed, are served first from the call budget, and still run at 70% of the monthly credits. A sell is retried up to 5 times with fees rising from 0.00002 to 0.0005 SOL; after that the bot marks 'exit blocked' and keeps watching."
+  },
+  {
+   "title": "Loss limits",
+   "text": "Each trade's stop sits at most 20% below the price after the buy. These stop new entries; open trades can still exit: daily loss of 7.5% of the bankroll (until midnight Melbourne), 2 losses in a row (2 h), 3 in a row (rest of the day), weekly loss of 20% (until the week ends and you review), 5 losses in 20 trades (until you review), kill switch at 70% of the peak (until you re-arm). If the heartbeat is over 90 s old, the watchdog alerts you, but it cannot sell: while the bot is down, an open trade has no working stop. Restart drills measure that gap."
+  },
+  {
+   "title": "What only you do",
+   "text": "Fund the bot wallet and move money, switch paper to live, set the live risk limits, re-arm the kill switch, review a weekly-loss or 5-in-20 pause, clear a /pause at the server console (zeroed-resume), add or rotate API and wallet keys, approve paid services (such as the Helius full pull, at most US$99), approve personal data or data sent to a third party, and loosen any proof threshold. No code or agent does these. Keys live in GitHub secrets and in locked files on the server, never in the repo or in chat."
+  },
+  {
+   "title": "Blind to the future",
+   "text": "The backtest runs the same engine core as live; only the data feed and clock change. Today it replays random picks only; the live checks and exit rules join it with the strategy study (in progress). A simulated clock releases each transaction in chain order, so later data is out of reach, and results are scored in a separate stage the engine never loads. Proof: a planted future marker must stay unseen, and 10 replays must give identical logs."
+  }
+ ],
+ "today": [
+  "Server: a stand-in runs now. The real worker (paper only) is expected tonight, about 9 PM to 1 AM, give or take 3 hours. It will log every decision, but practice trades need the pieces marked \"Not live yet\".",
+  "GitHub: on Pro since 3:47 PM. The billing lock (3:15 to 3:42 PM) has cleared.",
+  "History: the archive has blocked our download since 8:43 AM. Free Helius test Monday; an early look on 1 to 2 free days about Tue 6 to Wed 7 Oct. The full history needs your OK (at most US$99) or Triton's.",
+  "Holdout: entries 22 Sep to 19 Oct (UTC; cutoff 20 Oct), kept sealed; scored 23 to 24 Oct at the earliest.",
+  "Money: no deposit before all 6 proofs pass. Funding is late October at the earliest."
+ ],
+ "stamp": "Checked against the code on Sun 4 Oct 2026, 4:45 PM Melbourne"
+}

@@ -475,6 +475,8 @@ StateDirectory=zeroed
 StateDirectoryMode=0700
 UMask=0077
 MemoryMax=800M
+# The worker owns exits: under memory pressure the kernel takes anything else first (worker-smoke's trial is +1000).
+OOMScoreAdjust=-500
 TasksMax=256
 LimitCORE=0
 # Hardening (ARCHITECTURE.md 12.1). MemoryDenyWriteExecute is off here only: V8's JIT needs it.
@@ -1181,6 +1183,11 @@ WEBHOOK_MAX_TRIES=5        # the owner is told after this many failed tries in a
 WORKER_API_ADDR=127.0.0.1:8788 # the worker API, loopback only; tailscale serve publishes it to the tailnet
 WORKER_HEALTH_ADDR=127.0.0.1:8787 # the worker's health route for the runner (RUN-1's default), never published
 TABLETOP_API_ADDR=127.0.0.1:8789 # reserved for RUN-1d's zeroed-worker-tabletop (never published)
+SMOKE_HEALTH_ADDR=127.0.0.1:8797 # worker-smoke's trial start of a new release (never published)
+SMOKE_API_ADDR=127.0.0.1:8798
+SMOKE_MEMORY_MAX=280M # the trial's memory cap: the host has 1 GB and the live worker (up to 800M) keeps running
+SMOKE_HOLD_S=30 # after its first health answer, the trial worker must still run and answer this long
+SWITCH_HOLD_S=30 # after a switch, the new worker must run this long with no restart and health answering
 RELEASE_UNIT_RE='^zeroed-(dryrun[a-z0-9-]*@?|worker-tabletop)\.(service|timer)$' # units taken from the release
 
 # backoff_s TRIES: seconds to wait after TRIES failed tries in a row (1 min, doubling, at most 30 min).
@@ -1248,10 +1255,24 @@ evidence_index() {
 # serve_ok: reads `tailscale serve status --json` on stdin; true only when HTTPS 443 proxies to the worker API
 # on loopback and Funnel is off everywhere.
 serve_ok() {
+  # Exactly one thing published (OPS-1h review): HTTPS on 443, one host, its "/" proxied to the worker API and
+  # nothing else (no other path, port, host, TCP forward or service), and Funnel on for nothing. A serve made by hand
+  # is adopted only in this shape.
   jq -e --arg target "http://$WORKER_API_ADDR" '
-    ([(.Web // {}) | to_entries[] | select(.key | endswith(":443")) | .value.Handlers["/"].Proxy] | any(. == $target))
-    and ((.AllowFunnel // {}) | to_entries | all(.value != true))
-    and ((.TCP // {}) | to_entries | all(.value.HTTPS == true))' >/dev/null 2>&1
+    type == "object"
+    and ((keys - ["TCP", "Web", "AllowFunnel"]) == [])
+    and .TCP == {"443": {"HTTPS": true}}
+    and ((.Web // {}) | length == 1)
+    and ((.Web // {}) | to_entries[0] | (.key | endswith(":443")) and .value == {"Handlers": {"/": {"Proxy": $target}}})
+    and ((.AllowFunnel // {}) | to_entries | all(.value != true))' >/dev/null 2>&1
+}
+
+# unit_sandbox UNIT_FILE: the unit's [Service] settings that make its sandbox, limits and environment, one per line, for
+# worker-smoke's trial: everything except its identity and groups, credentials, state directory, restarts, start and
+# stop commands, its memory limit and its OOM score (the trial sets its own user, cap, OOM score and stop timeout).
+unit_sandbox() {
+  sed -n '/^\[Service\]/,/^\[/p' "$1" | grep -E '^[A-Z][A-Za-z]*=' |
+    grep -Ev '^(Type|User|Group|SupplementaryGroups|Environment|EnvironmentFile|ExecStart|ExecStartPre|ExecStop|Restart|RestartSec|TimeoutStopSec|LoadCredential|LoadCredentialEncrypted|ImportCredential|SetCredential|StateDirectory|StateDirectoryMode|MemoryMax|OOMScoreAdjust)=' || true
 }
 
 # funnel_ports: reads `tailscale serve status --json` on stdin and prints each "host:port" that Funnel makes
@@ -1271,6 +1292,136 @@ worker_entry() {
 
 # ssh_open: reads `nft list ruleset` on stdin; true when the live firewall lets SSH in.
 ssh_open() { grep -Eq 'tcp dport 22 .*accept'; }
+
+# ---------- Deploy gate (OPS-GATE): what "green" means, shared by the server (zeroed-update) and the Deploy
+# workflow (ops/deploy/tag.sh), so the two always agree. ----------
+# Only GitHub Actions' own check runs count; the Deploy job's run (zeroed-deploy) never does.
+DEPLOY_CHECK_APP=github-actions
+DEPLOY_SELF_JOB=zeroed-deploy
+# The paths whose change runs the ops end-to-end (.github/workflows/ops-e2e.yml `paths`; a test keeps them equal).
+E2E_PATHS=(ops packages/ops .github/workflows/deploy.yml .github/workflows/ops-e2e.yml)
+
+# commit_verdict NAME: reads a commit's check-runs reply (GitHub API) on stdin and prints one line, "green" or
+# "red|pending|none: <why>". Green needs a successful run named NAME from GitHub Actions on that commit, every
+# other GitHub Actions run finished and none failed. A run from another app, or an all-skipped set, never makes
+# it green; a listing GitHub cut short (more runs than returned) is "none".
+commit_verdict() {
+  jq -r --arg name "$1" --arg app "$DEPLOY_CHECK_APP" --arg self "$DEPLOY_SELF_JOB" '
+    [(.check_runs // [])[] | select((.app.slug // "") == $app and .name != $self)] as $r
+    | ([$r[] | select(.name == $name)] | sort_by(.completed_at // .started_at // "") | last) as $n
+    | if (.total_count // 0) > ((.check_runs // []) | length) then "none: more check runs than GitHub listed"
+      elif any($r[]; .status != "completed") then "pending: \([$r[] | select(.status != "completed") | .name] | unique | join(", ")) still running"
+      elif any($r[]; (.conclusion // "") as $c | ($c != "success" and $c != "neutral" and $c != "skipped")) then "red: \([$r[] | select(.conclusion != "success" and .conclusion != "neutral" and .conclusion != "skipped") | .name] | unique | join(", ")) failed"
+      elif $n == null then "none: no \($name) run from GitHub Actions"
+      elif $n.conclusion != "success" then "red: \($name) was \($n.conclusion), not success"
+      else "green" end' 2>/dev/null || echo "none: unreadable check runs"
+}
+
+# e2e_commit REPO REF: the newest commit on REF's first-parent history (at most 500 back) whose change to its
+# first parent touches E2E_PATHS: the commit whose ops end-to-end decides whether REF may deploy. Prints nothing
+# when none is found.
+e2e_commit() {
+  local c
+  for c in $(git -C "$1" rev-list --first-parent --max-count=500 "$2"); do
+    if git -C "$1" rev-parse --verify --quiet "$c^1" >/dev/null; then
+      git -C "$1" diff --quiet "$c^1" "$c" -- "${E2E_PATHS[@]}" || { printf '%s\n' "$c"; return 0; }
+    elif [ -n "$(git -C "$1" ls-tree -r --name-only "$c" -- "${E2E_PATHS[@]}")" ]; then
+      printf '%s\n' "$c"
+      return 0
+    fi
+  done
+}
+__ZEROED_FILE__
+install_file /usr/local/lib/zeroed/worker-smoke 0755 <<'__ZEROED_FILE__'
+#!/usr/bin/env bash
+# worker-smoke RELEASE_DIR: can this release's own worker start and stay up? zeroed-update runs it before it switches to
+# a new release (SWITCH-1), so a release whose worker cannot start never becomes current and the running worker is
+# never stopped for it. The trial runs beside the running worker and touches none of its state or ports:
+#   - as transient systemd units under the worker unit's own sandbox: every hardening, limit and environment setting of
+#     zeroed-worker.service is read from the installed unit and applied, with the worker's user, its environment file,
+#     memory capped at SMOKE_MEMORY_MAX and the first to go under memory pressure (OOMScoreAdjust=1000), since the host
+#     has 1 GB and the live worker keeps running;
+#   - no credentials (provider keys are not needed to start; a worker without providers runs degraded, entries halted),
+#     a scratch state directory as the only writable path, health and API on the SMOKE_* loopback ports;
+#   - --reconcile (the unit's ExecStartPre) must exit 0; then the worker must answer its health route in paper mode
+#     within 90 s, and still be running and answering after a further SMOKE_HOLD_S. It is then stopped.
+# Prints one line saying why when it fails; exit 0 when the worker starts and stays up, 1 when it does not. A release
+# still on the host's stand-in has no worker of its own to try and passes.
+set -euo pipefail
+. /usr/local/lib/zeroed/logic.sh
+dir="${1:?usage: worker-smoke RELEASE_DIR}"
+entry="$(worker_entry "$dir")"
+[ "$entry" != /opt/zeroed/stub/worker.mjs ] || exit 0
+
+UNIT_FILE=/etc/systemd/system/zeroed-worker.service
+TRIAL=zeroed-worker-smoke
+# A trial left by an earlier run that was cut off is cleared first (the unit names are fixed).
+systemctl stop "$TRIAL.service" "$TRIAL-reconcile.service" >/dev/null 2>&1 || true
+systemctl reset-failed "$TRIAL.service" "$TRIAL-reconcile.service" >/dev/null 2>&1 || true
+install -d -m 0711 -o root -g root /var/lib/zeroed-smoke
+tmp="$(mktemp -d /var/lib/zeroed-smoke/run.XXXXXX)"
+chown zeroed-worker:zeroed-worker "$tmp"
+install -d -m 0700 -o zeroed-worker -g zeroed-worker "$tmp/state"
+cleanup() {
+  systemctl stop "$TRIAL.service" "$TRIAL-reconcile.service" >/dev/null 2>&1 || true
+  systemctl reset-failed "$TRIAL.service" "$TRIAL-reconcile.service" >/dev/null 2>&1 || true
+  # Its listening sockets close a moment after it exits: leave the trial ports free for the next trial.
+  for _ in $(seq 1 30); do ss -Hltn "( sport = :${SMOKE_HEALTH_ADDR##*:} or sport = :${SMOKE_API_ADDR##*:} )" 2>/dev/null | grep -q . || break; sleep 1; done
+  rm -rf "$tmp"
+}
+trap cleanup EXIT
+
+# The worker unit's sandbox, limits and environment settings (unit_sandbox), applied to the trial.
+props=()
+while IFS= read -r line; do
+  props+=(-p "$line")
+done < <(unit_sandbox "$UNIT_FILE")
+[ "${#props[@]}" -gt 40 ] || { echo "the worker unit's sandbox could not be read from $UNIT_FILE"; exit 1; }
+
+# trial UNIT LOG MODE: the release's worker as a transient unit with that sandbox, the worker's environment file, the
+# RUN-1 environment (worker-start) on the trial's state directory and ports, and the memory cap. MODE "reconcile" runs
+# its --reconcile and waits for it (at most 120 s); "run" starts it and returns.
+trial() {
+  local unit="$1" log="$2" opts=() args=()
+  if [ "$3" = reconcile ]; then opts=(--wait -p RuntimeMaxSec=120); args=(--reconcile); fi
+  systemd-run --quiet --unit="$unit" "${opts[@]}" "${props[@]}" \
+    -p User=zeroed-worker -p Group=zeroed-worker -p MemoryMax="$SMOKE_MEMORY_MAX" -p OOMScoreAdjust=1000 -p TimeoutStopSec=30 \
+    -p EnvironmentFile=-/etc/zeroed/worker.env -p WorkingDirectory="$dir" -p ReadWritePaths="$tmp" \
+    -p StandardOutput=append:"$log" -p StandardError=append:"$log" \
+    --setenv=NODE_ENV=production --setenv=ZEROED_MODE=paper --setenv=ZEROED_RECORDER=on --setenv=ZEROED_SIMULATE=on \
+    --setenv=ZEROED_DRILLS=on --setenv=ZEROED_STATE_DIR="$tmp/state" --setenv=ZEROED_GIT_SHA="$(basename "$dir")" \
+    --setenv=ZEROED_HEALTH_ADDR="$SMOKE_HEALTH_ADDR" --setenv=ZEROED_API_ADDR="$SMOKE_API_ADDR" \
+    /usr/local/bin/node --no-warnings "$entry" "${args[@]}"
+}
+# why LOG: the line that says what went wrong (an error or a refusal), else the last line; one line, printable.
+why() {
+  { grep -m1 -E '(^|[^A-Za-z])([A-Za-z]*Error|refused)([^A-Za-z]|$)' "$1" || tail -n 1 "$1"; } 2>/dev/null | tr -cd '[:print:]' | cut -c1-200
+}
+status() { systemctl show -p ExecMainStatus --value "$1.service" 2>/dev/null || echo '?'; }
+healthy() { curl -fsS -m 2 "http://$SMOKE_HEALTH_ADDR/health" 2>/dev/null | jq -e '.mode == "paper"' >/dev/null 2>&1; }
+
+: >"$tmp/reconcile.log"
+if ! trial "$TRIAL-reconcile" "$tmp/reconcile.log" reconcile >"$tmp/systemd-run.log" 2>&1; then
+  [ -s "$tmp/reconcile.log" ] || cp "$tmp/systemd-run.log" "$tmp/reconcile.log"
+  echo "its reconcile exited $(status "$TRIAL-reconcile"): $(why "$tmp/reconcile.log")"
+  exit 1
+fi
+: >"$tmp/start.log"
+trial "$TRIAL" "$tmp/start.log" run >"$tmp/systemd-run.log" 2>&1 || { echo "it could not be started: $(why "$tmp/systemd-run.log")"; exit 1; }
+up=0
+for _ in $(seq 1 90); do
+  systemctl is-active --quiet "$TRIAL.service" || { echo "it exited $(status "$TRIAL"): $(why "$tmp/start.log")"; exit 1; }
+  if healthy; then up=1; break; fi
+  sleep 1
+done
+[ "$up" = 1 ] || { echo "its health route did not answer within 90 s: $(why "$tmp/start.log")"; exit 1; }
+# Answering once is not staying up: it must still run and answer after the hold.
+for _ in $(seq 1 "$SMOKE_HOLD_S"); do
+  systemctl is-active --quiet "$TRIAL.service" || { echo "it exited $(status "$TRIAL") within ${SMOKE_HOLD_S} s of answering: $(why "$tmp/start.log")"; exit 1; }
+  sleep 1
+done
+healthy || { echo "its health route stopped answering within ${SMOKE_HOLD_S} s: $(why "$tmp/start.log")"; exit 1; }
+exit 0
 __ZEROED_FILE__
 install_file /usr/local/lib/zeroed/worker-start 0755 <<'__ZEROED_FILE__'
 #!/usr/bin/env bash
@@ -1411,12 +1562,29 @@ lock
 install -d -m 0755 "$(dirname "$EVIDENCE_INDEX")"
 (umask 022; evidence_index "$EVIDENCE_ROOT" > "$EVIDENCE_INDEX.new" 2>/dev/null && mv -f "$EVIDENCE_INDEX.new" "$EVIDENCE_INDEX") || rm -f "$EVIDENCE_INDEX.new"
 
-# 0. Funnel: the worker API must stay on the tailnet. Funnel on for any port is an alert, and it is turned off.
+# 0. Funnel: the worker API must stay on the tailnet. Funnel on for any port is an alert, and it is turned off. Each
+# tailscale call is bounded, so the minute check never hangs on it.
 if command -v tailscale >/dev/null 2>&1; then
-  public="$(tailscale serve status --json 2>/dev/null | funnel_ports)"
+  public="$(timeout 30 tailscale serve status --json 2>/dev/null | funnel_ports)"
   if [ -n "$public" ]; then
     alert funnel-on "ALERT Zeroed host: Tailscale Funnel was on ($(printf '%s' "$public" | tr '\n' ' ')), which makes the worker API public. Turning it off."
-    for hp in $public; do tailscale funnel --https="${hp##*:}" off >/dev/null 2>&1 || log "Could not turn Funnel off for $hp."; done
+    off=1
+    for hp in $public; do timeout 30 tailscale funnel --https="${hp##*:}" off >/dev/null 2>&1 || off=0; done
+    if [ "$off" = 0 ]; then
+      # Funnel could not be turned off (an error or no answer in time): take the whole serve config down, so the API
+      # never stays public with only an alert. zeroed-tailscale publishes it again.
+      if timeout 30 tailscale serve reset >/dev/null 2>&1; then
+        rm -f "$STATE_DIR/live_view"
+        msg="ALERT Zeroed host: Tailscale Funnel could not be turned off, so the live view was taken down. Run zeroed-tailscale to publish it again."
+        log "$msg"
+        notify "$msg" || log "Could not send that alert to Telegram."
+      else
+        # Neither worked: the API may still be public, which needs the owner.
+        msg="ALERT Zeroed host: Tailscale Funnel could not be turned off and the live view could not be taken down, so the worker API may be public. Run zeroed-tailscale --off on the server console."
+        log "$msg"
+        notify "$msg" || log "Could not send that alert to Telegram."
+      fi
+    fi
   else
     alert_clear funnel-on "CLEARED Zeroed host: Tailscale Funnel is off."
   fi
@@ -1731,7 +1899,16 @@ fi
 if [ -e "$STATE_DIR/webhook_tries" ]; then
   log "Webhook:   not set ($(cat "$STATE_DIR/webhook_tries") failed tries; retrying)"
 fi
-log "Worker:    $(systemctl is-active zeroed-worker.service 2>/dev/null || true)"
+# Which worker runs: the release's own (SWITCH-1) or the host's stand-in, from the running process itself.
+wpid="$(systemctl show -p MainPID --value zeroed-worker.service 2>/dev/null || echo 0)"
+wkind=""
+if [ "${wpid:-0}" != 0 ] && [ -r "/proc/$wpid/cmdline" ]; then
+  case "$(tr '\0' ' ' < "/proc/$wpid/cmdline")" in
+    *packages/worker/src/main.ts*) wkind=" (the release's worker, $(basename "$(readlink -f /opt/zeroed/current)" | cut -c1-12))" ;;
+    *stub/worker.mjs*) wkind=" (the host's stand-in)" ;;
+  esac
+fi
+log "Worker:    $(systemctl is-active zeroed-worker.service 2>/dev/null || true)$wkind"
 log "Signer:    $(systemctl is-active zeroed-signer.service 2>/dev/null || true)"
 log "Release:   $(cut -c1-12 "$STATE_DIR/deployed" 2>/dev/null || echo 'none yet')"
 run="$(qualifying_run "$EVIDENCE_ROOT" "$(systemctl list-units 'zeroed-dryrun@*' --state=active,activating --plain --no-legend 2>/dev/null || true)")"
@@ -1747,15 +1924,31 @@ install_file /usr/local/sbin/zeroed-tailscale 0755 <<'__ZEROED_FILE__'
 # API (loopback 127.0.0.1:8788) to the tailnet only, over HTTPS, with Funnel off. No public port opens.
 #   zeroed-tailscale         set up (again): safe to repeat
 #   zeroed-tailscale --off   stop publishing the worker API (Tailscale stays installed)
-# The login link is shown here and sent to the paired Telegram chat, so it can be opened on the phone.
+# The login link is shown here and sent to the paired Telegram chat, so it can be opened on the phone. So is anything
+# the owner must turn on in the Tailscale admin console first (MagicDNS, HTTPS Certificates): every tailscale call is
+# bounded in time and nothing it asks the owner to do is hidden.
 set -euo pipefail
 umask 022
 . /usr/local/lib/zeroed/common.sh
 TS_FPR=2596A99EAAB33821893C0A79458CA832957F5868
 KEYRING=/usr/share/keyrings/tailscale-archive-keyring.gpg
+TS_WAIT="${ZEROED_TS_WAIT:-60}"
+TS_DNS_PAGE=https://login.tailscale.com/admin/dns
+
+# Every tailscale call runs under a time limit, so a step waiting on something the owner cannot see ends with a
+# "Stopped:" line instead of a silent hang. The login runs the binary itself: it has its own --timeout=15m and runs in
+# the background, where it must stay one process the script can kill.
+tailscale() {
+  local rc=0
+  timeout "$TS_WAIT" "$(type -P tailscale)" "$@" || rc=$?
+  if [ "$rc" = 124 ]; then
+    log "Stopped: 'tailscale ${1:-}' did not finish within ${TS_WAIT}s." >&2
+  fi
+  return "$rc"
+}
 
 if [ "${1:-}" = --off ]; then
-  command -v tailscale >/dev/null || { log "Tailscale is not installed; nothing to turn off."; exit 0; }
+  type -P tailscale >/dev/null || { log "Tailscale is not installed; nothing to turn off."; exit 0; }
   tailscale serve reset
   rm -f "$STATE_DIR/live_view"
   log "Live view off: the worker API is no longer published to the tailnet."
@@ -1763,7 +1956,7 @@ if [ "${1:-}" = --off ]; then
 fi
 [ $# = 0 ] || { log "Usage: zeroed-tailscale [--off]"; exit 2; }
 
-if ! command -v tailscale >/dev/null; then
+if ! type -P tailscale >/dev/null; then
   log "Installing Tailscale from pkgs.tailscale.com"
   got="$(gpg --show-keys --with-colons /etc/zeroed/tailscale-archive.asc 2>/dev/null | awk -F: '$1 == "fpr" { print $10; exit }')"
   [ "$got" = "$TS_FPR" ] || { log "Stopped: the Tailscale signing key does not match its pinned fingerprint."; exit 1; }
@@ -1782,7 +1975,7 @@ if [ "$(state)" != Running ]; then
   out="$(mktemp)"
   trap 'rm -f "$out"; [ -z "${up_pid:-}" ] || kill "$up_pid" 2>/dev/null || true' EXIT
   # No Tailscale SSH, no routes or DNS taken from the tailnet: the server only offers the one HTTPS page.
-  tailscale up --hostname=zeroed --ssh=false --accept-routes=false --accept-dns=false --timeout=15m >"$out" 2>&1 &
+  command tailscale up --hostname=zeroed --ssh=false --accept-routes=false --accept-dns=false --timeout=15m >"$out" 2>&1 &
   up_pid=$!
   url=""
   for _ in $(seq 1 60); do
@@ -1802,12 +1995,40 @@ fi
 
 # The intended target is checked before anything is published: the worker API on loopback, nothing else.
 [[ "$WORKER_API_ADDR" =~ ^127\.0\.0\.1:[0-9]{1,5}$ ]] || { log "Stopped: the worker API address is not loopback."; exit 1; }
-tailscale funnel --https=443 off >/dev/null 2>&1 || true
-tailscale serve --bg --https=443 "http://$WORKER_API_ADDR" >/dev/null
-if ! tailscale serve status --json | serve_ok; then
-  # Anything else than exactly that (another target, another port, Funnel on) is taken down at once.
+
+# tailscale serve needs MagicDNS and HTTPS Certificates on the tailnet. Without them it prints a link to turn HTTPS on
+# and waits for the owner (its "https" node capability); so both are checked first and named here. A serve the owner
+# set up by hand is fine: serving the same target again changes nothing, and the checks below still run.
+st="$(tailscale status --json)" || { log "Stopped: could not read Tailscale's status."; exit 1; }
+need=()
+jq -e '.CurrentTailnet.MagicDNSEnabled == true' <<<"$st" >/dev/null || need+=("MagicDNS")
+jq -e '((.Self.CapMap // {}) | has("https")) and ((.CertDomains // []) | length > 0)' <<<"$st" >/dev/null || need+=("HTTPS Certificates")
+if [ "${#need[@]}" -gt 0 ]; then
+  what="${need[0]}${need[1]:+ and ${need[1]}}"
+  msg="the live view needs $what on your tailnet. Open $TS_DNS_PAGE, turn on $what, then run zeroed-tailscale again."
+  log "Stopped: $msg"
+  notify "Zeroed host: $msg" && log "(This was also sent to your Telegram chat.)" || true
+  exit 1
+fi
+
+# No funnel command here, not even to turn Funnel off: that command first waits for the tailnet's Funnel capability,
+# and the wait never ends on a tailnet without Funnel. serve --https=443 itself clears Funnel for that port, and the
+# check below confirms it is off.
+served="$(mktemp)"
+trap 'rm -f "$served" "${out:-}"' EXIT
+if ! tailscale serve --bg --https=443 "http://$WORKER_API_ADDR" >"$served" 2>&1; then
+  # Whatever tailscale printed (an error, or a link to act on) is shown, never dropped.
+  cat "$served"
   tailscale serve reset >/dev/null 2>&1 || true
-  tailscale funnel --https=443 off >/dev/null 2>&1 || true
+  rm -f "$STATE_DIR/live_view"
+  log "Stopped: tailscale serve did not finish. Nothing is published."
+  exit 1
+fi
+if ! tailscale serve status --json | serve_ok; then
+  cat "$served"
+  # Anything else than exactly that (another target, another port, Funnel on) is taken down at once.
+  # serve reset clears the whole serve config, Funnel included.
+  tailscale serve reset >/dev/null 2>&1 || true
   rm -f "$STATE_DIR/live_view"
   log "Stopped: tailscale serve did not publish only the worker API with Funnel off, so it was turned off again. Nothing is published."
   exit 1
@@ -1909,7 +2130,9 @@ install_file /usr/local/sbin/zeroed-update 0755 <<'__ZEROED_FILE__'
 # Code updates by the same pull path: fetch the "deploy" tag and accept its commit only if
 #  1. GitHub signed it (the merge-commit key pinned at install, i.e. a pull-request merge),
 #  2. it is on the integration branch,
-#  3. every check run on it finished green (public GitHub API), and
+#  3. its checks are green (public GitHub API; logic.sh deploy gate): GitHub Actions' `check` passed on it and no
+#     other GitHub Actions run failed, and the ops end-to-end (`e2e`) passed on the newest commit at or before it
+#     that touched the e2e paths, and
 #  4. no qualifying dry run is active (its unit, or an unfinished named run in the evidence), and
 #  5. the worker reports no open intent (it writes /var/lib/zeroed/open_intents after each reconcile).
 # Then apply the new release's host files (install.sh --update: scripts, units, RUN-1's units), and only once
@@ -1946,6 +2169,8 @@ apply_host() {
 
 active_run() { qualifying_run "$EVIDENCE_ROOT" "$(systemctl list-units 'zeroed-dryrun@*' --state=active,activating --plain --no-legend 2>/dev/null || true)"; }
 [ "$commit" != "$current" ] || exit 0
+# A release that was switched to and rolled back (its worker did not stay up) is not tried again; a newer deploy is.
+[ "$commit" != "$(cat "$STATE_DIR/failed_release" 2>/dev/null || true)" ] || exit 0
 
 # GitHub signs every merge it makes with its web-flow key; nothing else is accepted.
 status="$(GNUPGHOME=/etc/zeroed/gnupg git -C "$REPO_DIR" verify-commit --raw "$commit" 2>&1 || true)"
@@ -1961,17 +2186,20 @@ if ! git -C "$REPO_DIR" merge-base --is-ancestor "$commit" "refs/remotes/origin/
   exit 1
 fi
 
-runs="$(curl -fsS -m 30 -H 'Accept: application/vnd.github+json' \
-  "$ZEROED_API_URL/repos/$ZEROED_REPO/commits/$commit/check-runs?per_page=100" || true)"
-# The Deploy job's own check run (job name zeroed-deploy) is left out: it says nothing about the code.
-verdict="$(printf '%s' "$runs" | jq -r '[(.check_runs // [])[] | select(.name != "zeroed-deploy")] as $r
-  | if (.total_count // 0) > ((.check_runs // []) | length) then "none"
-    elif ($r | length) == 0 then "none"
-    elif any($r[]; .status != "completed") then "pending"
-    elif all($r[]; .conclusion == "success" or .conclusion == "neutral" or .conclusion == "skipped") then "green"
-    else "red" end' 2>/dev/null || echo none)"
+check_runs() { curl -fsS -m 30 -H 'Accept: application/vnd.github+json' "$ZEROED_API_URL/repos/$ZEROED_REPO/commits/$1/check-runs?per_page=100" || true; }
+# The same gate as the Deploy workflow (ops/deploy/tag.sh): named runs from GitHub Actions, never "any green run".
+verdict="$(check_runs "$commit" | commit_verdict check)"
+if [ "$verdict" = green ]; then
+  e2e="$(e2e_commit "$REPO_DIR" "$commit")"
+  if [ -z "$e2e" ]; then
+    verdict="none: no commit at or before it touched the ops end-to-end paths"
+  else
+    v="$(check_runs "$e2e" | commit_verdict e2e)"
+    [ "$v" = green ] || verdict="${v%%:*}: the ops end-to-end of ${e2e:0:12}: ${v#*: }"
+  fi
+fi
 if [ "$verdict" != green ]; then
-  log "Waiting on ${commit:0:12}: its checks are ${verdict/none/not reported yet}."
+  log "Waiting on ${commit:0:12}: its checks are $verdict."
   exit 0
 fi
 
@@ -1996,8 +2224,17 @@ if [ ! -d "$dest" ]; then
   git -C "$REPO_DIR" archive "$commit" | tar -x -C "$dest.new" --no-same-owner
   mv "$dest.new" "$dest"
 fi
+# The release's own worker must start before anything changes (SWITCH-1): a trial start beside the running worker
+# (worker-smoke). If it cannot start, nothing switches, the running worker is untouched, and the owner gets one alert.
+if ! why="$(/usr/local/lib/zeroed/worker-smoke "$dest" 2>&1)"; then
+  log "The worker of ${commit:0:12} did not start in a trial ($why); still on the old release, trying again next run."
+  alert worker-smoke "ALERT Zeroed host: the worker of ${commit:0:12} did not start in a trial ($why), so the server stays on the release it runs. It tries again every 5 minutes."
+  exit 1
+fi
+alert_clear worker-smoke "CLEARED Zeroed host: the worker of ${commit:0:12} starts."
 # Host files first: on failure nothing switches and the worker keeps running the release it has.
 apply_host "$commit" "$dest" || exit 1
+prev="$(readlink -f /opt/zeroed/current 2>/dev/null || true)"
 ln -sfn "$dest" /opt/zeroed/current.new
 mv -Tf /opt/zeroed/current.new /opt/zeroed/current
 printf '%s\n' "$commit" > "$STATE_DIR/deployed"
@@ -2009,10 +2246,61 @@ else
   systemctl disable --now zeroed-backup-offsite.timer >/dev/null 2>&1 || true
 fi
 
-# Restart with reconcile first (ExecStartPre). Before pairing the worker is not started at all.
+# answers: the worker's health route says paper. The release's worker serves it on WORKER_HEALTH_ADDR; the host's
+# stand-in on the API address.
+answers() {
+  local a
+  for a in "$WORKER_HEALTH_ADDR" "$WORKER_API_ADDR"; do
+    curl -fsS -m 2 "http://$a/health" 2>/dev/null | jq -e '.mode == "paper"' >/dev/null 2>&1 && return 0
+  done
+  return 1
+}
+
+# holds: the restarted worker answers its health route in paper within 60 s, then runs SWITCH_HOLD_S more with no
+# restart and still answering. Prints why when it does not.
+holds() {
+  local up=0 n0
+  for _ in $(seq 1 60); do
+    if systemctl is-active --quiet zeroed-worker.service && answers; then up=1; break; fi
+    sleep 1
+  done
+  [ "$up" = 1 ] || { echo "its health route did not answer within 60 s"; return 1; }
+  n0="$(systemctl show -p NRestarts --value zeroed-worker.service)"
+  sleep "$SWITCH_HOLD_S"
+  systemctl is-active --quiet zeroed-worker.service && [ "$(systemctl show -p NRestarts --value zeroed-worker.service)" = "$n0" ] ||
+    { echo "it stopped or restarted within ${SWITCH_HOLD_S} s of answering"; return 1; }
+  answers || { echo "its health route stopped answering within ${SWITCH_HOLD_S} s"; return 1; }
+}
+
+# rollback WHY: the new release's worker did not stay up. Back to the release that ran before (its host files too),
+# its commit as deployed, its worker restarted; the new commit is not tried again; one alert.
+rollback() {
+  local why="$1"
+  if [ -z "$prev" ] || [ ! -d "$prev" ] || [ "$prev" = "$dest" ]; then
+    alert worker-switch "ALERT Zeroed host: the worker of ${commit:0:12} did not stay up after the switch ($why), and there is no earlier release to go back to."
+    exit 1
+  fi
+  printf '%s\n' "$commit" > "$STATE_DIR/failed_release"
+  ln -sfn "$prev" /opt/zeroed/current.new
+  mv -Tf /opt/zeroed/current.new /opt/zeroed/current
+  printf '%s\n' "$current" > "$STATE_DIR/deployed"
+  apply_host "${current:-$(basename "$prev")}" "$prev" || true
+  systemctl reset-failed zeroed-worker.service >/dev/null 2>&1 || true
+  systemctl restart zeroed-worker.service || true
+  log "The worker of ${commit:0:12} did not stay up after the switch ($why); back on $(basename "$prev" | cut -c1-12)."
+  alert worker-switch "ALERT Zeroed host: the worker of ${commit:0:12} did not stay up after the switch ($why), so the server went back to $(basename "$prev" | cut -c1-12). ${commit:0:12} is not tried again; a newer deploy is."
+  exit 1
+}
+
+# Restart with reconcile first (ExecStartPre). Before pairing the worker is not started at all. After a restart the
+# new worker must stay up, or the server goes back to the release it ran (SWITCH-1).
 worker="not started (no keys yet)"
 if [ -s "$CRED_DIR/helius_api_key" ]; then
-  if systemctl restart zeroed-worker.service; then worker=restarted; else worker="failed to start"; fi
+  systemctl reset-failed zeroed-worker.service >/dev/null 2>&1 || true
+  systemctl restart zeroed-worker.service || rollback "it failed to start"
+  if ! why="$(holds)"; then rollback "$why"; fi
+  worker="restarted and up"
+  alert_clear worker-switch "CLEARED Zeroed host: the worker of ${commit:0:12} is up."
 fi
 log "Deployed ${commit:0:12}. Worker: $worker."
 notify "Zeroed host: deployed ${commit:0:12}. Worker $worker." || true

@@ -20,9 +20,11 @@ import { FEE_CONTEXT } from '../../core/test/gates/world.ts';
 import { PUMP_AMM_GLOBAL_CONFIG, fromBase64 } from '../../core/src/chain/index.ts';
 import { PUMP_AMM_FEE_CONFIG, type ReadAccount, decodeSnapshot } from '../src/run/snapshot.ts';
 import type { WatchRead } from '../src/run/watch.ts';
-import { parseConfig } from '../src/run/config.ts';
+import { SLOT_MS, parseConfig } from '../src/run/config.ts';
+import { DEFAULT_LIVE_FEED } from '../src/providers/live-feed.ts';
 import { SECOND_PATH_UNAVAILABLE } from '../src/run/worker.ts';
-import { parsePool, xcheckKey } from '../../core/src/gates/index.ts';
+import { gatesOfStages, parsePool, xcheckKey } from '../../core/src/gates/index.ts';
+import { NOT_EVALUATED } from '../src/engine/strategy.ts';
 
 type H = ReturnType<typeof makeWorker>;
 const journal = (dir: string) => readFileSync(join(dir, 'journal.jsonl'), 'utf8');
@@ -354,10 +356,12 @@ describe('§18: a provider rate-limits (TEST-3)', () => {
     expect(Object.values(h.worker.book.positions)).toEqual([]);
     // Not a global halt: no halt reason names the provider; the gate says which fact is missing.
     expect(h.worker.health().halt_reasons).toEqual([]);
-    // From T on (every other fact passing), each reject names only the cross-check, missing.
+    // From T on (every other fact passing), each reject names only the cross-check, missing; the cross-check is a stage-2
+    // gate, so stages 3 and 4 are named as not evaluated (FACTS-1f, BT-2's stages).
+    const later = `; ${NOT_EVALUATED}${gatesOfStages([3, 4]).join(',')}`;
     const rejects = kinds(h.stateDir, 'decision').filter((l) => l['action'] === 'reject' && Date.parse(String(l['ts'])) >= T).map((l) => (l['reasons'] as string[]).slice(3));
     expect(rejects.length).toBeGreaterThan(0);
-    for (const r of rejects) expect(r).toEqual([expect.stringMatching(/^hard reject H16: H16 missing no xcheck as of slot \d+$/)]);
+    for (const r of rejects) expect(r).toEqual([expect.stringMatching(new RegExp(`^hard reject H16: H16 missing no xcheck as of slot \\d+${later}$`))]);
     await h.worker.stop();
   }, 60_000);
 });
@@ -377,7 +381,8 @@ const scaledRead = (h: H, scalePpm: () => bigint, calls: string[][], latencyMs =
     new DataView(data.buffer, data.byteOffset, data.byteLength).setBigUint64(64, (QUOTE_VAULT * scalePpm()) / 1_000_000n, true);
     return { owner: acc.owner, data };
   });
-  return { slot: h.worker.feed.releasedThrough + 5n, accounts };
+  // A confirmed read's context slot: behind the tip, so a later pool fact from the feed is newer.
+  return { slot: h.worker.feed.releasedThrough, accounts };
 };
 
 describe('§18: the feed dies for 5 minutes with a position open and the pool falls 40% (WATCH-1)', () => {
@@ -397,13 +402,19 @@ describe('§18: the feed dies for 5 minutes with a position open and the pool fa
     // The entry in flight and the open were watched already (risk review B1): the vault layout was learned then.
     expect(calls[0]).toEqual([POOL_ADDRESS]);
     const before = calls.length;
+    // A held minute on a healthy feed: no read at all (the CU projection at the defaults: one read at the open, 20 CU,
+    // and nothing after it while the pool's facts keep coming).
+    await m.run(60_000, 100, tick(m));
+    expect(calls.length).toBe(before);
     // Swaps on the pool give the strategy observed fee terms of its own, before the feed dies.
     for (let k = 0; k < 3; k++) {
       m.swap('BuyEvent', `buyer${k}`, 1_000_000n);
-      await m.run(400, 400, tick(m));
+      await m.run(400, 100, tick(m));
     }
     const observed = h.worker.strategy.observedFees(MINT);
     expect(observed).toBeDefined();
+    // While the feed is alive the watch reads nothing: each slot releases a new pool fact.
+    expect(calls.length).toBe(before);
     // The feed dies: no slot, no pool fact, nothing. The pool falls 40% on chain.
     scale = 600_000n;
     const deadAt = m.now;
@@ -476,6 +487,37 @@ describe('§18: the feed dies for 5 minutes with a position open and the pool fa
     await h.worker.stop();
   }, 60_000);
 
+  it('a flagged pool fact is no market: the watch reads on its next look, never waiting out the stale limit as for a fresh release', async () => {
+    const readAt: number[] = [];
+    const feeds = [scriptedSource('helius-ws', true, ['helius'])];
+    let h!: H;
+    h = makeWorker({ timers: dueTimers(T - 16 * 86_400_000), sources: () => feeds, watchRead: (a) => {
+      readAt.push(h.timers.now());
+      return scaledRead(h, () => 1_000_000n, [])(a);
+    }, config: { ZEROED_HEALTH_ADDR: '127.0.0.1:18916', ZEROED_API_ADDR: '127.0.0.1:18917' } });
+    const m = new Market(h);
+    await boot(h, m, feeds);
+    // The pool's facts keep coming while held (a trading pool), so the watch has nothing to read.
+    const pm = await passingMarket(h, { heldPoolFacts: true });
+    const readSlot = h.worker.feed.releasedThrough;
+    pm.tradesStart(readSlot - 100n);
+    pm.accountsRead(readSlot);
+    await until(m, () => Object.values(h.worker.book.positions).some((p) => p.status === 'open'), 30_000, tick(pm), 100);
+    await m.run(3_000, 100, tick(pm));
+    const quiet = readAt.length;
+    await m.run(2_000, 100, tick(pm));
+    expect(readAt.length).toBe(quiet);
+    // The swap stream gaps: POS-1 re-releases the pool fact flagged, and no fresh one follows.
+    pm.heldPoolFacts = false;
+    pm.tradesGap(h.worker.feed.openSlot, null);
+    await until(m, () => (parsePool(h.worker.poolFact(MINT))?.obs.quality ?? []).includes('partial'), 4_000, () => m.slot(), 100);
+    const flaggedAt = m.now;
+    await until(m, () => readAt.length > quiet, 2_000, () => m.slot(), 100);
+    const w = (parseConfig({ ZEROED_STATE_DIR: '/x', ZEROED_MODE: 'paper' }, () => null) as { config: { watch: { staleMs: number; everyMs: number } } }).config.watch;
+    expect(readAt[quiet]! - flaggedAt).toBeLessThanOrEqual(w.everyMs);
+    await h.worker.stop();
+  }, 60_000);
+
   it('a held position whose swap stream gapped (POS-1 flags its pool fact) with no swap after: the snapshot alone sees a 30% drop, and the stop fires within the stale limit, one period and a step', async () => {
     let scale = 1_000_000n;
     const calls: string[][] = [];
@@ -543,7 +585,18 @@ describe('§18: the feed dies for 5 minutes with a position open and the pool fa
       if (entries().some((i) => live.has(i.status))) ages.push(m.now - h.worker.poolOf(MINT)!.atMs);
     }, 100);
     expect(ages.length).toBeGreaterThan(5);
-    expect(Math.max(...ages)).toBeLessThan(TRIAL_POLICY.gates.maxQuoteAgeMs);
+    // The pool's facts stop when the entry is sent (a quiet pool): once, the last feed fact (up to one release old) ages
+    // until the first snapshot lands, at most release + stale + every + latency + release; from then on the snapshots
+    // keep it under the quote age.
+    const w = (parseConfig({ ZEROED_STATE_DIR: '/x', ZEROED_MODE: 'paper' }, () => null) as { config: { watch: { staleMs: number; everyMs: number; latencyMs: number } } }).config.watch;
+    const release = DEFAULT_LIVE_FEED.horizonSlots * SLOT_MS;
+    expect(Math.max(...ages)).toBeLessThanOrEqual(release + w.staleMs + w.everyMs + w.latencyMs + release);
+    // The quiet pool is read before its last fact passes the quote age.
+    const factAt = parsePool(h.worker.poolFact(MINT))!.obs.receivedAt;
+    expect(at.find((t) => t > factAt)! - factAt).toBeLessThan(TRIAL_POLICY.gates.maxQuoteAgeMs);
+    const peak = ages.indexOf(Math.max(...ages));
+    expect(ages.slice(peak + 1).length).toBeGreaterThan(3);
+    expect(Math.max(...ages.slice(peak + 1))).toBeLessThan(TRIAL_POLICY.gates.maxQuoteAgeMs);
     expect(calls.length).toBeGreaterThan(0);
     // Settled unfilled: no read starts after it.
     const settledAt = m.now;

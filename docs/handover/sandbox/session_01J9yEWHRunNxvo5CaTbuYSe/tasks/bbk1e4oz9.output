@@ -1,0 +1,6 @@
+     × entries stop at the cutoff while the run keeps observing (final holdout form) 12ms
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+RangeError: holdout h-cut: window and registration day must be YYYY-MM-DD days, the window in order
+      Tests  1 failed | 44 passed (45)
+
+[exited with code 0]

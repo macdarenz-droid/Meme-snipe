@@ -1,0 +1,16 @@
+import fs from 'fs';
+const DUR=180000; const pp={}, ls={}; let lsBytes=0, lsMsgs=0, ppBytes=0;
+const a=new WebSocket('wss://pumpportal.fun/api/data');
+a.onopen=()=>{a.send(JSON.stringify({method:'subscribeNewToken'}));a.send(JSON.stringify({method:'subscribeMigration'}));};
+a.onmessage=m=>{ppBytes+=m.data.length; const d=JSON.parse(m.data); if(d.signature&&!pp[d.signature]) pp[d.signature]={t:Date.now(),type:d.txType};};
+const b=new WebSocket('wss://api.mainnet-beta.solana.com');
+b.onopen=()=>{b.send(JSON.stringify({jsonrpc:'2.0',id:1,method:'logsSubscribe',params:[{mentions:['6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P']},{commitment:'processed'}]}));};
+b.onmessage=m=>{lsBytes+=m.data.length; lsMsgs++; const d=JSON.parse(m.data); const v=d.params?.result?.value; if(!v) return; if(!ls[v.signature]) ls[v.signature]={t:Date.now(),create:v.logs.some(l=>/Instruction: Create/.test(l)), migrate:v.logs.some(l=>/Instruction: Migrate/.test(l))};};
+b.onerror=e=>console.log('b err',e.message); a.onerror=e=>console.log('a err',e.message);
+setTimeout(()=>{a.close();b.close();
+ const both=Object.keys(pp).filter(s=>ls[s]); const d=both.map(s=>(pp[s].t-ls[s].t)/1000).sort((x,y)=>x-y);
+ const q=p=>d[Math.floor(p*(d.length-1))];
+ const lsCreates=Object.values(ls).filter(x=>x.create).length;
+ console.log(JSON.stringify({durS:DUR/1000, ppEvents:Object.keys(pp).length, ppTypes:Object.values(pp).reduce((a,o)=>(a[o.type]=(a[o.type]||0)+1,a),{}), lsMsgs, lsUniqueSigs:Object.keys(ls).length, lsCreates, lsMB:(lsBytes/1e6).toFixed(1), ppKB:(ppBytes/1e3).toFixed(1), matched:both.length, ppMinusLs_s:{min:d[0],p10:q(.1),p50:q(.5),p90:q(.9),max:d.at(-1)}, ppOnly:Object.keys(pp).filter(s=>!ls[s]).length, lsCreateOnly:Object.entries(ls).filter(([s,v])=>v.create&&!pp[s]).length}));
+ fs.writeFileSync('cmp.json',JSON.stringify({pp,lsSample:Object.fromEntries(Object.entries(ls).filter(([s,v])=>v.create||v.migrate))}));
+ process.exit(0);},DUR);
