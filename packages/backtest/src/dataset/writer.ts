@@ -1,4 +1,5 @@
-// Writes rows in DATA-1's on-disk layout (schema 3): manifest.json and days/<day>/<table>-000.<csv|jsonl>.zst.
+// Writes rows in DATA-1's on-disk layout (schema 3): manifest.json and days/<day>/<table>-000.<csv|jsonl>.zst. The
+// manifest always says `synthetic: true` (no opt-out): a window written here is never gate evidence (BT-WALL W1).
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -30,8 +31,6 @@ export const writeDataset = (dir: string, rows: readonly DatasetRow[], extra: {
   readonly leadInDays?: number;
   /** Write SHA256SUMS over every file, the manifest included (as a release does). */
   readonly sums?: boolean;
-  /** Marks the window synthetic in its manifest (`synthetic: true`): never gate evidence (BT-3). */
-  readonly synthetic?: boolean;
 } = {}): void => {
   const byDay = new Map<string, DatasetRow[]>();
   for (const r of rows) byDay.set(day(r.blockTime), [...(byDay.get(day(r.blockTime)) ?? []), r]);
@@ -77,7 +76,8 @@ export const writeDataset = (dir: string, rows: readonly DatasetRow[], extra: {
   const first = rows[0]!;
   const last = rows[rows.length - 1]!;
   writeFileSync(join(dir, 'manifest.json'), JSON.stringify({
-    schema: 3, ...(extra.synthetic === true ? { synthetic: true } : {}), window: { from: days[0]!.day, to_exclusive: new Date(Date.parse(`${days[days.length - 1]!.day}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10), ...(extra.leadInDays === undefined ? {} : { lead_in_days: extra.leadInDays }) },
+    // Everything this writer makes is synthetic, always marked so (BT-WALL W1): never gate evidence.
+    schema: 3, synthetic: true, window: { from: days[0]!.day, to_exclusive: new Date(Date.parse(`${days[days.length - 1]!.day}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10), ...(extra.leadInDays === undefined ? {} : { lead_in_days: extra.leadInDays }) },
     coverage: { first_slot: Number(first.slot), last_slot: Number(last.slot), first_block_time: first.blockTime, last_block_time: last.blockTime },
     days,
     mints_files: mintsFiles,

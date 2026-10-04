@@ -37,6 +37,9 @@ export interface EvidenceWindow {
 
 export type EvidenceMode = 'gate' | 'no-lead-in' | 'synthetic';
 
+/** An assembled window release's tag (DATA-1 mode=assemble): gate evidence comes from one of these only (BT-WALL W1). */
+export const RELEASE_TAG = /^data-\d{4}-\d{2}-\d{2}-\d{4}-\d{2}-\d{2}$/;
+
 /** Whether a window's manifest marks it synthetic (written by the synthetic evidence run, never by a release). */
 export const isSynthetic = (manifest: { readonly [key: string]: unknown }): boolean => manifest['synthetic'] === true;
 
@@ -107,6 +110,9 @@ export const runEvidence = (input: EvidenceInput): Evidence => {
   for (const w of input.windows) {
     const manifest = loadManifest(w.dir);
     if (input.mode === 'synthetic' && !isSynthetic(manifest)) throw new RangeError(`${w.dir}: the synthetic mode runs synthetic windows only`);
+    if (input.mode === 'gate' && !RELEASE_TAG.test(w.release ?? '')) {
+      throw new RangeError(`${w.dir}: gate evidence comes from an assembled window release (data-FROM-TO), not ${w.release === undefined ? 'a local folder' : w.release}`);
+    }
     if (input.mode !== 'synthetic' && isSynthetic(manifest)) throw new RangeError(`${w.dir}: a synthetic window is never ${input.mode} evidence (use the synthetic mode)`);
     // Throws on any holdout day: research and evidence runs never read one.
     researchDays(manifest.days.map((d) => d.day), input.research, input.holdouts, true);

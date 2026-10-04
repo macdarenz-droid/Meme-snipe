@@ -3,7 +3,8 @@
 // unreconciled intents, and the ledger replay (LEDGER-REPLAY), then writes evidence.json and summary.md.
 //
 //   node packages/backtest/scripts/evidence.ts --fetch 2026-09-08..2026-09-21 [--out docs/evidence/bt3/<range>]
-//   node packages/backtest/scripts/evidence.ts --dataset <window dir> [--dataset ...] [--out ...]
+//   node packages/backtest/scripts/evidence.ts --dataset <window dir> --release data-FROM-TO [--out ...]
+//   node packages/backtest/scripts/evidence.ts --dataset <window dir> [--dataset ...] --no-lead-in [--out ...]
 //   node packages/backtest/scripts/evidence.ts --synthetic [--out docs/evidence/bt3/synthetic]
 //   --fetch and --dataset need --sol-usd <hourly SOL/USD csv> (scripts/fetch-sol-usd.ts writes one; none is in the repo)
 //   options: [--no-lead-in] [--replays 10] [--scenario conservative] [--seed bt3] [--work <dir>]
@@ -16,7 +17,7 @@
 // or after the reserved holdout start, or inside a registered holdout, is refused before any download or run.
 // The run refuses a working tree with changes outside docs/evidence, so the recorded commit is the code that ran.
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { FILL_CONFIG, RESEARCH_CONFIG, TRIAL_POLICY } from '../../core/src/config/index.ts';
@@ -24,7 +25,7 @@ import { canonical } from '../../core/src/engine/log.ts';
 import { SCENARIO_NAMES, type ScenarioName } from '../../core/src/fills/index.ts';
 import { replayLedgerFile } from '../../core/src/ledger/replay/index.ts';
 import { readSeries } from '../src/dataset/offchain.ts';
-import { type Evidence, type EvidenceMode, type EvidenceWindow, runEvidence } from '../src/evidence.ts';
+import { type Evidence, type EvidenceMode, type EvidenceWindow, RELEASE_TAG, runEvidence } from '../src/evidence.ts';
 import { readHoldoutStore } from '../src/holdout.ts';
 import { gitRegistryVcs } from '../src/registry-git.ts';
 import { writeDataset } from '../src/dataset/writer.ts';
@@ -42,6 +43,29 @@ const flag = (name: string, fallback?: string): string => {
 const all = (name: string): string[] => args.flatMap((a, i) => (a === `--${name}` && args[i + 1] !== undefined ? [args[i + 1]!] : []));
 const git = (...a: string[]): string => execFileSync('git', a, { encoding: 'utf8' }).trim();
 
+// Argument checks first: a refused run touches nothing (no git, registry or download).
+const modes = ['fetch', 'dataset', 'synthetic'].filter(has);
+if (modes.length !== 1) throw new Error('give exactly one of --fetch FROM..TO, --dataset DIR or --synthetic');
+if (has('synthetic') && has('no-lead-in')) throw new Error('--synthetic and --no-lead-in are separate labelled modes; give one');
+const mode: EvidenceMode = has('synthetic') ? 'synthetic' : has('no-lead-in') ? 'no-lead-in' : 'gate';
+const fetchRange = (() => {
+  if (!has('fetch')) return null;
+  const m = /^(\d{4}-\d{2}-\d{2})\.\.(\d{4}-\d{2}-\d{2})$/.exec(flag('fetch'));
+  if (!m) throw new Error('--fetch takes FROM..TO (YYYY-MM-DD..YYYY-MM-DD, both inclusive)');
+  const [, from, to] = m as unknown as [string, string, string];
+  // Never downloads a window reaching the holdout (runEvidence refuses its days again, registered windows included).
+  if (to >= RESEARCH_CONFIG.holdout.fromDay) throw new Error(`--fetch ${from}..${to} reaches the reserved holdout start ${RESEARCH_CONFIG.holdout.fromDay}; evidence runs never read holdout days`);
+  return { from, to };
+})();
+// A local folder is gate evidence only as a named release whose published SHA256SUMS it matches (BT-WALL W1).
+if (has('release') && !has('dataset')) throw new Error('--release names the release a --dataset folder came from');
+if (has('dataset') && mode === 'gate') {
+  if (!has('release')) throw new Error('a --dataset folder is gate evidence only with --release data-FROM-TO (checked against its SHA256SUMS); use --no-lead-in for a labelled check');
+  if (all('dataset').length !== 1) throw new Error('--release names one --dataset folder');
+  if (!RELEASE_TAG.test(flag('release'))) throw new Error(`--release must be an assembled window release (data-FROM-TO), not ${flag('release')}`);
+}
+if (has('sol-usd') && has('synthetic')) throw new Error('--synthetic uses its own SOL/USD series');
+
 const top = git('rev-parse', '--show-toplevel');
 // The registry belongs to the code's own repository, never the working directory's (the study CLI's rule).
 const registryRoot = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8', cwd: import.meta.dirname }).trim();
@@ -51,14 +75,10 @@ const dirty = execFileSync('git', ['status', '--porcelain'], { encoding: 'utf8' 
 if (dirty.length > 0) throw new Error(`commit the code first; the evidence records the commit it ran on:\n${dirty.join('\n')}`);
 const commit = git('rev-parse', 'HEAD');
 
-const modes = ['fetch', 'dataset', 'synthetic'].filter(has);
-if (modes.length !== 1) throw new Error('give exactly one of --fetch FROM..TO, --dataset DIR or --synthetic');
 const work = resolve(flag('work', mkdtempSync(join(tmpdir(), 'bt3-'))));
 mkdirSync(work, { recursive: true });
 const scenario = flag('scenario', 'conservative') as ScenarioName;
 if (!SCENARIO_NAMES.includes(scenario)) throw new Error(`--scenario must be one of ${SCENARIO_NAMES.join(', ')}`);
-if (has('synthetic') && has('no-lead-in')) throw new Error('--synthetic and --no-lead-in are separate labelled modes; give one');
-const mode: EvidenceMode = has('synthetic') ? 'synthetic' : has('no-lead-in') ? 'no-lead-in' : 'gate';
 // The shared holdout registry, synced from its remote branch before anything is read or downloaded (H1).
 const registryVcs = gitRegistryVcs({
   root: registryRoot, relPath: RESEARCH_CONFIG.holdout.registryPath, remote: RESEARCH_CONFIG.holdout.registryRemote,
@@ -74,18 +94,24 @@ let windows: EvidenceWindow[];
 let range: string;
 if (has('synthetic')) {
   const dir = join(work, 'synthetic');
-  writeDataset(dir, syntheticRows({ mints: 5, slots: 2.5 * 3600 * 24 }), { leadInDays: 14, sums: true, synthetic: true });
+  writeDataset(dir, syntheticRows({ mints: 5, slots: 2.5 * 3600 * 24 }), { leadInDays: 14, sums: true });
   windows = [{ dir, release: 'synthetic' }];
   range = 'synthetic';
 } else if (has('dataset')) {
-  windows = all('dataset').map((d) => ({ dir: resolve(d) }));
+  if (has('release')) {
+    // The folder must be that release: its SHA256SUMS byte for byte the release's published one (runEvidence then
+    // checks every file it reads against it).
+    const dir = resolve(flag('dataset'));
+    const sums = join(work, 'published-sums');
+    execFileSync('gh', ['release', 'download', flag('release'), '--repo', REPO, '--pattern', 'SHA256SUMS', '--dir', sums], { stdio: 'inherit' });
+    if (!existsSync(join(dir, 'SHA256SUMS')) || !readFileSync(join(dir, 'SHA256SUMS')).equals(readFileSync(join(sums, 'SHA256SUMS')))) {
+      throw new Error(`${dir}: SHA256SUMS is not release ${flag('release')}'s`);
+    }
+    windows = [{ dir, release: flag('release') }];
+  } else windows = all('dataset').map((d) => ({ dir: resolve(d) }));
   range = 'local';
 } else {
-  const m = /^(\d{4}-\d{2}-\d{2})\.\.(\d{4}-\d{2}-\d{2})$/.exec(flag('fetch'));
-  if (!m) throw new Error('--fetch takes FROM..TO (YYYY-MM-DD..YYYY-MM-DD, both inclusive)');
-  const [, from, to] = m as unknown as [string, string, string];
-  // Never downloads a window reaching the holdout (runEvidence refuses its days again, registered windows included).
-  if (to >= RESEARCH_CONFIG.holdout.fromDay) throw new Error(`--fetch ${from}..${to} reaches the reserved holdout start ${RESEARCH_CONFIG.holdout.fromDay}; evidence runs never read holdout days`);
+  const { from, to } = fetchRange!;
   // REST, not GraphQL: the release listing through gh api.
   const tags = execFileSync('gh', ['api', '--paginate', `repos/${REPO}/releases`, '--jq', '.[].tag_name'], { encoding: 'utf8' })
     .split('\n').filter((t) => {
