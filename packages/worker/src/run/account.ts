@@ -223,16 +223,56 @@ export class PaperAccount {
     const l = this.#book(t, r.book, legs);
     if (t !== undefined && l !== null && p !== undefined && (p.status === 'closed' || r.closes === true) && t.closedAtMs === null) {
       t.closedAtMs = r.atMs;
-      t.netLamports = tradeNet(l);
-      // Each cash flow at its own SOL price, as the backtest report values a trade (core's `tradeUsd`): the entry leg at
-      // the entry's price, the exit leg at the close's. An unknown price: a total loss of the notional (the safe side).
-      const pxIn = t.openSolPrice ?? null;
-      t.netPnl = solPrice === null || pxIn === null ? (-t.notional as MicroUsd) : (tradeUsd(l, pxIn, solPrice).net as MicroUsd);
-      t.stoppedOut = r.reasons.some((x) => STOPS.has(x));
       t.closeSolPrice = solPrice;
+      this.#value(t, l);
+      t.stoppedOut = r.reasons.some((x) => STOPS.has(x));
       t.exitReasons = r.reasons.filter((x) => EXIT_REASONS.has(x));
     }
+    // A sale booked late can change trades already closed: its own (a late sell) and its entry's others (a sell that
+    // closed the shared account returns the rent to the entry's first trade).
+    if (p !== undefined) this.#resettleClosed(r.book, p.entryIntentId, legs);
     this.#file.write(this.#s);
+  }
+
+  /**
+   * Re-settles the closed trades of the entry `positionId` belongs to, after something landed late (PAPER-2): a fee of
+   * an attempt that landed after its trade closed, or a sale or account close booked after it. The wallet moves by the
+   * change, and the trade's net is valued again at its own open and close prices. True when anything moved.
+   */
+  resettle(book: Book, positionId: string, legs: PaperLegs): boolean {
+    const p = book.positions[positionId];
+    if (p === undefined) return false;
+    const moved = this.#resettleClosed(book, p.entryIntentId, legs);
+    if (moved) this.#file.write(this.#s);
+    return moved;
+  }
+
+  #resettleClosed(book: Book, entryIntentId: string, legs: PaperLegs): boolean {
+    let moved = false;
+    for (const t of this.#s.trades) {
+      if (t.closedAtMs === null || book.positions[t.positionId]?.entryIntentId !== entryIntentId) continue;
+      const before = t.booked;
+      const l = this.#book(t, book, legs);
+      if (l === null) continue;
+      // The wallet may have moved already (`filled` books its own position first); the trade's results follow it here.
+      if (t.booked !== before) moved = true;
+      if (tradeNet(l) === t.netLamports) continue;
+      this.#value(t, l);
+      moved = true;
+    }
+    return moved;
+  }
+
+  /**
+   * A closed trade's results: each cash flow at its own SOL price, as the backtest report values a trade (core's
+   * `tradeUsd`): the entry leg at the entry's price, the exit leg at the close's. An unknown price: a total loss of the
+   * notional (the safe side).
+   */
+  #value(t: PaperTrade, l: TradeLamports): void {
+    t.netLamports = tradeNet(l);
+    const pxIn = t.openSolPrice ?? null;
+    const pxOut = t.closeSolPrice ?? null;
+    t.netPnl = pxOut === null || pxIn === null ? (-t.notional as MicroUsd) : (tradeUsd(l, pxIn, pxOut).net as MicroUsd);
   }
 
   /**

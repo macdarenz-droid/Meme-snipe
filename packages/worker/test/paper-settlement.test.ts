@@ -704,3 +704,154 @@ describe('PAPER-2: late landings across a restart', () => {
     await h2.worker.stop();
   });
 });
+
+describe('PAPER-2: a closed trade is settled again when something lands after it closed', () => {
+  const NET = FILL_CONFIG.network;
+  const PX = 100_000_000n as MicroUsd;
+  const fillOf = (intentId: string, signature: string, tokens: bigint, sol: bigint) => ({ intentId, signature, slot: 1n, commitment: 'confirmed', tokens, sol, fees: 0n });
+  const att = (intentId: string, signature: string, purpose: 'entry' | 'exit', outcome: 'filled' | 'failed', trade: string, f: ReturnType<typeof fillOf> | null): PaperAttempt => ({
+    intentId, signature, purpose, trade, mint: 'M', inAmount: 0n, quotedOut: 0n, minOut: 0n, priorityFee: 10_000n,
+    lastValidBlockHeight: 10n, fate: outcome === 'filled' ? 'lands' : 'fails', landSlot: 1n, outcome, reason: outcome, landedSlot: 1n, simulated: true,
+    fill: f as PaperAttempt['fill'], sentAtMs: 0,
+    ...(outcome === 'filled' ? { costs: { venueFee: 0n, creatorFee: 0n, slippage: 0n, base: 0n, priority: 0n, tip: 0n } } : {}),
+  });
+  type Pos = { id: string; status: string; quantity: bigint };
+  const bookOf = (positions: Pos[], intents: { id: string; purpose: 'entry' | 'exit'; pid: string; fills: ReturnType<typeof fillOf>[]; sigs: string[] }[]) => ({
+    positions: Object.fromEntries(positions.map((p) => [p.id, { id: p.id, mint: 'M', entryIntentId: 'in', status: p.status, quantity: p.quantity, cost: 20_000_000n }])),
+    intents: Object.fromEntries(intents.map((i) => [i.id, { intent: { id: i.id, purpose: i.purpose, positionId: i.pid, mint: 'M' }, status: 'reconciled', fills: i.fills, attempts: i.sigs.map((signature) => ({ signature })) }])),
+    orphans: {},
+  }) as unknown as Book;
+  const legsOf = (as: PaperAttempt[], closes: string[] = []): PaperLegs => ({ network: NET, attempts: new Map(as.map((a) => [a.signature, a])), closedAccount: (s) => closes.includes(s) });
+  const base = { positionId: 'p1', mint: 'M', reasons: ['notional 2000000', 'stop'] };
+  const eIn = fillOf('in', 'e1', 1_000n, 20_000_000n);
+  const eOut = fillOf('out', 'x1', 1_000n, 30_000_000n);
+  const opened = () => {
+    const account = new PaperAccount(accountFile(tempState()), 20_000_000n as MicroUsd, T, 0n);
+    account.price(PX, T);
+    const entryBook = bookOf([{ id: 'p1', status: 'open', quantity: 1_000n }], [{ id: 'in', purpose: 'entry', pid: 'p1', fills: [eIn], sigs: ['e1'] }]);
+    account.filled({ ...base, purpose: 'entry', book: entryBook, atMs: T + 1 }, PX, legsOf([att('in', 'e1', 'entry', 'filled', 'p1', eIn)]));
+    return account;
+  };
+  const closedBook = (extra: { id: string; purpose: 'entry' | 'exit'; pid: string; fills: ReturnType<typeof fillOf>[]; sigs: string[] }[] = []) => bookOf(
+    [{ id: 'p1', status: 'closed', quantity: 0n }],
+    [{ id: 'in', purpose: 'entry', pid: 'p1', fills: [eIn], sigs: ['e1'] }, { id: 'out', purpose: 'exit', pid: 'p1', fills: [eOut], sigs: ['x1'] }, ...extra],
+  );
+  const closeLegs = [att('in', 'e1', 'entry', 'filled', 'p1', eIn), att('out', 'x1', 'exit', 'filled', 'p1', eOut)];
+  const check = (account: PaperAccount) => {
+    const t = account.state.trades.find((x) => x.positionId === 'p1')!;
+    // The wallet always holds the opening balance plus the trade's settled net.
+    expect(account.state.walletLamports).toBe(account.state.trades.reduce((w, x) => w + x.booked, opening(account)));
+    expect(t.booked).toBe(t.netLamports);
+    return t;
+  };
+  let opening = (_a: PaperAccount): bigint => 0n;
+
+  it('a failed sell that lands after the close: its fee is charged to the trade, the wallet and the result (item 2)', () => {
+    const account = opened();
+    const start = account.state.walletLamports! - account.state.trades[0]!.booked;
+    opening = () => start;
+    account.filled({ ...base, purpose: 'exit', book: closedBook(), atMs: T + 2 }, PX, legsOf(closeLegs, ['x1']));
+    const before = { ...check(account) };
+    const late = att('out', 'x2', 'exit', 'failed', 'p1', null);
+    const fee = attemptFee(NET, late.priorityFee, 'failed');
+    expect(account.resettle(closedBook(), 'p1', legsOf([...closeLegs, late], ['x1']))).toBe(true);
+    const t = check(account);
+    expect(t.netLamports).toBe(before.netLamports! - fee);
+    expect(t.netPnl).toBe(before.netPnl! - lamportsToMicroUsd(fee as Lamports, PX, 'ceil'));
+    expect(t.closedAtMs).toBe(before.closedAtMs);
+    // Nothing more lands: nothing moves.
+    expect(account.resettle(closedBook(), 'p1', legsOf([...closeLegs, late], ['x1']))).toBe(false);
+  });
+
+  it('a sale booked after the close: the trade\'s net follows the wallet (item 3)', () => {
+    const account = opened();
+    const start = account.state.walletLamports! - account.state.trades[0]!.booked;
+    opening = () => start;
+    account.filled({ ...base, purpose: 'exit', book: closedBook(), atMs: T + 2 }, PX, legsOf(closeLegs, ['x1']));
+    const before = { ...check(account) };
+    const lateFill = fillOf('late', 'x3', 400n, 5_000_000n);
+    const book = closedBook([{ id: 'late', purpose: 'exit', pid: 'p1', fills: [lateFill], sigs: ['x3'] }]);
+    account.filled({ ...base, purpose: 'exit', book, atMs: T + 3 }, PX, legsOf([...closeLegs, att('late', 'x3', 'exit', 'filled', 'p1', lateFill)], ['x1']));
+    const t = check(account);
+    expect(t.netLamports).toBe(before.netLamports! + 5_000_000n - attemptFee(NET, 10_000n, 'filled'));
+    expect(t.closedAtMs).toBe(before.closedAtMs);
+  });
+
+  it('a sibling\'s sell closes the shared account after the main trade closed: the rent comes back to the main trade (item 4)', () => {
+    const account = opened();
+    const start = account.state.walletLamports! - account.state.trades[0]!.booked;
+    opening = () => start;
+    // The entry's late buy (p1.o2, LEDGER-1b) shares the account; the main trade sells first and does not close it.
+    const lateBuy = fillOf('in', 'e2', 500n, 9_000_000n);
+    const sibSell = fillOf('sib', 'y1', 500n, 10_000_000n);
+    const positions = (sib: string, q: bigint) => [{ id: 'p1', status: 'closed', quantity: 0n }, { id: 'p1.o2', status: sib, quantity: q }];
+    const intents = (sold: boolean) => [
+      { id: 'in', purpose: 'entry' as const, pid: 'p1', fills: [eIn, lateBuy], sigs: ['e1', 'e2'] },
+      { id: 'out', purpose: 'exit' as const, pid: 'p1', fills: [eOut], sigs: ['x1'] },
+      ...(sold ? [{ id: 'sib', purpose: 'exit' as const, pid: 'p1.o2', fills: [sibSell], sigs: ['y1'] }] : []),
+    ];
+    const legs1 = [...closeLegs, att('in', 'e2', 'entry', 'filled', 'p1.o2', lateBuy)];
+    account.filled({ ...base, purpose: 'exit', book: bookOf(positions('open', 500n), intents(false)), atMs: T + 2 }, PX, legsOf(legs1));
+    const before = { ...check(account) };
+    expect(before.closedAtMs).not.toBeNull();
+    // The sibling's sell closes the account: the rent the main trade paid is back.
+    account.filled({ positionId: 'p1.o2', mint: 'M', reasons: ['exit filled (paper)'], purpose: 'exit', book: bookOf(positions('closed', 0n), intents(true)), atMs: T + 3 }, PX,
+      legsOf([...legs1, att('sib', 'y1', 'exit', 'filled', 'p1.o2', sibSell)], ['y1']));
+    const t = check(account);
+    expect(t.netLamports).toBe(before.netLamports! + NET.tokenAccountRent);
+    expect(account.state.trades.map((x) => x.positionId)).toEqual(['p1']);
+  });
+});
+
+describe('PAPER-2: a failed sell landing after its trade closed', () => {
+  it('its fee is charged to the closed trade as it lands (landedFailed re-settles it)', async () => {
+    const h = makeWorker({ scenario: { ...LANDS, closeSuccessPpm: 1_000_000n, dustPpm: 0n } });
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    const m = await passingMarket(h, HELD);
+    const open = () => Object.values(h.worker.book.positions).find((p) => p.status === 'open' && p.quantity > 0n);
+    expect(await until(m, 60_000, () => open() !== undefined, () => { m.slot(); m.pool(); })).toBe(true);
+    const p = open()!;
+    const q = p.quantity;
+    await h.worker.stop();
+    // A new process in which every attempt lands failed, 30 slots after it is sent (time for X1's sale to close the trade).
+    const scenario = { ...LANDS, landPpm: { pumpswap: 0n, 'pump-curve': 0n }, dropPpm: 0n, closeSuccessPpm: 1_000_000n, dustPpm: 0n, landingSlots: [30], landingTail: { ...LANDS.landingTail, ppm: 0n } };
+    const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers, scenario });
+    expect(await h2.worker.reconcile()).toEqual({ ok: true });
+    const m2 = await passingMarket(h2, HELD);
+    const height = BigInt(h2.worker.health().last_processed_slot!);
+    const X1 = 'x-late-1' as IntentId;
+    const X2 = 'x-late-2' as IntentId;
+    const sellQuote = { ...quote, inAmount: q, quotedOut: 1n, minOut: 1n, quotedAtSlot: height };
+    const a1 = { ...fxAttempt(X1, 91, height + 150n), quote: sellQuote };
+    const world = (events: BookEvent[]) => { for (const event of events) h2.worker.feed.ingest('worker', { type: 'world', event }, { receivedAt: m2.now }); };
+    // X1 is given up by the book at once (never in the paper world); X2 is triggered and goes out.
+    world([
+      { type: 'trigger_exit', positionId: p.id, reasons: ['stop'], intentId: X1, quantity: raw(q) },
+      on(X1, { type: 'prepare', quote: sellQuote }), on(X1, { type: 'sign', attempt: a1 }), on(X1, { type: 'submit' }),
+      on(X1, { type: 'status', signature: a1.signature, result: 'not_found', commitment: null, blockHeight: height + 151n, searchedHistory: true }),
+      on(X1, { type: 'reconcile', fills: [], blockHeight: height + 151n }), on(X1, { type: 'abandon' }),
+      { type: 'trigger_exit', positionId: p.id, reasons: ['max_hold'], intentId: X2, quantity: raw(q) },
+    ]);
+    const x2 = () => attempts(h.stateDir).find((a) => a.intentId === X2);
+    expect(await until(m2, 10_000, () => x2() !== undefined, () => m2.slot())).toBe(true);
+    expect(x2()!.outcome).toBe('in_flight');
+    // X1's sale is found while X2 is in flight: the trade closes.
+    world([
+      on(X1, { type: 'status', signature: a1.signature, result: 'succeeded', commitment: 'finalized', blockHeight: height + 152n, searchedHistory: true }),
+      { type: 'orphan_fill', fill: { intentId: X1, signature: a1.signature, slot: height + 1n, commitment: 'confirmed', tokens: q, sol: 30_000_000n, fees: 0n } as Fill },
+    ]);
+    const trade = () => read<{ trades: { positionId: string; closedAtMs: number | null; netLamports: bigint | null; booked: bigint }[] }>(h.stateDir, 'account.json').trades.find((t) => t.positionId === p.id)!;
+    expect(await until(m2, 10_000, () => trade().closedAtMs !== null, () => m2.slot())).toBe(true);
+    const closed = trade().netLamports!;
+    // Attempts still in flight at the close (X2's, with X1's own if the paper world took it) land failed after it.
+    const pending = attempts(h.stateDir).filter((a) => a.trade === p.id && a.outcome === 'in_flight').map((a) => a.signature);
+    expect(pending).toContain(x2()!.signature);
+    const now = () => attempts(h.stateDir).filter((a) => pending.includes(a.signature));
+    expect(await until(m2, 30_000, () => now().every((a) => a.outcome === 'failed'), () => m2.slot())).toBe(true);
+    const fees = now().reduce((t, a) => t + attemptFee(FILL_CONFIG.network, a.priorityFee, 'failed'), 0n);
+    // Their fees are the closed trade's too: its net, and the wallet through it.
+    expect(trade().netLamports).toBe(closed - fees);
+    expect(trade().booked).toBe(closed - fees);
+    await h2.worker.stop();
+  });
+});
