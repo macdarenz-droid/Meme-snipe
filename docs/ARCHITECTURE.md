@@ -373,7 +373,7 @@ No secret ever passes through chat, the repo, logs, analytics or a model prompt,
 
 ### 12.3 Supply chain
 
-Exact pins and a frozen lockfile; pnpm `minimumReleaseAge: 10080` (7 days), `trustPolicy: no-downgrade`, no dependency build scripts, `blockExoticSubdeps: true` (all set explicitly: on pnpm 10 `blockExoticSubdeps` defaults to false and `minimumReleaseAge` to 0; [security.md](research/security.md) Fact-check F9); per-uid egress allowlist for the worker; no keypair files at default paths ([security.md](research/security.md) §3.3). The Dec 2024 web3.js backdoor targeted bots holding keys; that is why the signer has no dependencies.
+Exact pins and a frozen lockfile; pnpm `minimumReleaseAge: 10080` (7 days), `trustPolicy: no-downgrade`, no dependency build scripts, `blockExoticSubdeps: true` (all set explicitly in `pnpm-workspace.yaml`, build scripts off by `ignore-scripts=true` in `.npmrc`, each proven by an offline install in `packages/ops/test/supply-chain.test.ts`: on pnpm 10 `blockExoticSubdeps` defaults to false, `minimumReleaseAge` to 0 and `trustPolicy` to off; [security.md](research/security.md) Fact-check F9); per-uid egress allowlist for the worker; no keypair files at default paths ([security.md](research/security.md) §3.3). The Dec 2024 web3.js backdoor targeted bots holding keys; that is why the signer has no dependencies.
 
 ### 12.4 Worker process contract
 

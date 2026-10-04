@@ -1,3 +1,11 @@
 packages:
   - packages/*
   - apps/*
+
+# Supply-chain settings (docs/ARCHITECTURE.md, Security): pnpm 10 leaves all three off by default.
+# A version must be 7 days old before it is resolved; a version with weaker publish evidence
+# (trusted publisher, provenance) than an earlier one is refused; dependencies of dependencies
+# may not come from an exotic source such as git. Dependency build scripts stay off (.npmrc).
+minimumReleaseAge: 10080
+trustPolicy: no-downgrade
+blockExoticSubdeps: true
