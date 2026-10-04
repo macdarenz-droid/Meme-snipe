@@ -522,15 +522,18 @@ fi
 # No node_modules: the worker runs on Node 22's type stripping with no runtime dependency.
 in_c "find '$rel' -name node_modules | grep -q ." && fail "the release carries node_modules"
 in_c "/usr/local/bin/node --version" | has -x 'v22\.[0-9]*\.[0-9]*' || fail "host node is not Node 22"
+# The release's worker takes only an https watchdog address: the one the handoff delivered (unreachable from the test
+# server, so its heartbeats fail, which it logs and survives). The trial reads the same environment file. Section 9b's
+# plain-http address comes back at the end.
+wd0="$(in_c "sed -n 's/^WATCHDOG_URL=//p' /etc/zeroed/worker.env")"
+in_c "sed -i 's#^WATCHDOG_URL=.*#WATCHDOG_URL=https://zeroed-watchdog.e2e.workers.dev#' /etc/zeroed/worker.env"
 # A trial start beside the running worker (zeroed-update runs it before switching): this release's worker starts.
 pid0="$(in_c "systemctl show -p MainPID --value zeroed-worker")"
 in_c "/usr/local/lib/zeroed/worker-smoke '$rel'" >"$LOGS/smoke-good.txt" 2>&1 || { cat "$LOGS/smoke-good.txt"; fail "worker-smoke refused a release whose worker starts"; }
 [ "$(in_c "systemctl show -p MainPID --value zeroed-worker")" = "$pid0" ] || fail "the trial start touched the running worker"
 in_c "! ss -ltn | grep -q ':879[78] ' && ! pgrep -u zeroed-worker -f -- '$rel/packages/worker/src/main.ts'" || fail "the trial worker was left running"
-# The release's worker takes only an https watchdog address: the one the handoff delivered (unreachable from the test
-# server, so its heartbeats fail, which it logs and survives). Section 9b's plain-http address comes back at the end.
-wd0="$(in_c "sed -n 's/^WATCHDOG_URL=//p' /etc/zeroed/worker.env")"
-in_c "sed -i 's#^WATCHDOG_URL=.*#WATCHDOG_URL=https://zeroed-watchdog.e2e.workers.dev#' /etc/zeroed/worker.env"
+in_c "! systemctl list-units --all --plain --no-legend 'zeroed-worker-smoke*' | grep -q ." || fail "the trial left a unit behind"
+in_c "journalctl -o cat --no-pager -u zeroed-worker-smoke.service | tail -20" >"$LOGS/smoke-unit.txt"
 wrestart "ln -sfn '$rel' /opt/zeroed/current.new && mv -Tf /opt/zeroed/current.new /opt/zeroed/current"
 wait_for 60 "the release's worker running" "docker exec $C systemctl is-active zeroed-worker"
 in_c "tr '\\0' ' ' < /proc/\$(systemctl show -p MainPID --value zeroed-worker)/cmdline" | has '^/usr/local/bin/node --no-warnings /opt/zeroed/current/packages/worker/src/main.ts $' || fail "zeroed-worker does not run the release's main.ts under the host's node"
@@ -577,12 +580,14 @@ broken() { # NAME: a copy of this release with the switch on, to break
 broken smoke-syntax && in_c "printf 'const = ;\n' >> /opt/zeroed/releases/smoke-syntax/packages/worker/src/run/api.ts"
 broken smoke-missing && in_c "rm /opt/zeroed/releases/smoke-missing/packages/worker/src/run/config.ts"
 broken smoke-config && in_c "echo '{not json' > /opt/zeroed/releases/smoke-config/packages/runner/qualifying-run.json"
-for b in smoke-syntax smoke-missing smoke-config; do
+# A worker that answers, then dies 15 s later: the trial's hold catches it.
+broken smoke-dies && in_c "sed -i '1i if (!process.argv.includes(\"--reconcile\")) setTimeout(() => process.exit(1), 15_000);' /opt/zeroed/releases/smoke-dies/packages/worker/src/main.ts"
+for b in smoke-syntax smoke-missing smoke-config smoke-dies; do
   rc=0; in_c "/usr/local/lib/zeroed/worker-smoke /opt/zeroed/releases/$b" >"$LOGS/$b.txt" 2>&1 || rc=$?
   [ "$rc" = 1 ] && [ "$(wc -l < "$LOGS/$b.txt")" = 1 ] || { cat "$LOGS/$b.txt"; fail "worker-smoke passed a broken release ($b, exit $rc)"; }
 done
-grep -q 'exited 1' "$LOGS/smoke-syntax.txt" && grep -q 'exited 1' "$LOGS/smoke-missing.txt" && grep -q 'exited 2' "$LOGS/smoke-config.txt" || fail "worker-smoke reasons: $(cat "$LOGS"/smoke-*.txt)"
-in_c "rm -rf /opt/zeroed/releases/smoke-missing /opt/zeroed/releases/smoke-config && mv /opt/zeroed/releases/smoke-syntax '/opt/zeroed/releases/$signed2'"
+grep -q 'exited 1' "$LOGS/smoke-syntax.txt" && grep -q 'exited 1' "$LOGS/smoke-missing.txt" && grep -q 'exited 2' "$LOGS/smoke-config.txt" && grep -q 'exited 1 within 30 s of answering' "$LOGS/smoke-dies.txt" || fail "worker-smoke reasons: $(cat "$LOGS"/smoke-*.txt)"
+in_c "rm -rf /opt/zeroed/releases/smoke-missing /opt/zeroed/releases/smoke-config /opt/zeroed/releases/smoke-dies && mv /opt/zeroed/releases/smoke-syntax '/opt/zeroed/releases/$signed2'"
 # Through zeroed-update: a green, GitHub-signed release with that broken worker stays undeployed; one alert.
 pid0="$(in_c "systemctl show -p MainPID --value zeroed-worker")"
 n0="$(wc -l < "$STATE/telegram.jsonl")"
@@ -594,6 +599,23 @@ upd_run && fail "zeroed-update deployed a release whose worker does not start"
 in_c "cat /var/lib/zeroed-host/deployed" | has -x "$signed" || fail "the deployed record moved"
 upd_run && fail "zeroed-update deployed a release whose worker does not start (second run)"
 [ "$(tail -n +"$((n0 + 1))" "$STATE/telegram.jsonl" | grep -c "did not start in a trial")" = 1 ] || fail "not exactly one alert for a release whose worker does not start"
+# A release whose worker passes the trial but dies under the unit (here: only once it has its credentials) is switched
+# to, does not stay up, and the server goes back to the release it ran: current, deployed record, worker; one alert;
+# that commit is not tried again.
+in_c "rm -rf '/opt/zeroed/releases/$signed2'"
+broken "$signed2" && in_c "sed -i '1i if (process.env.CREDENTIALS_DIRECTORY \&\& !process.argv.includes(\"--reconcile\")) setTimeout(() => process.exit(1), 15_000);' '/opt/zeroed/releases/$signed2/packages/worker/src/main.ts'"
+in_c "/usr/local/lib/zeroed/worker-smoke '/opt/zeroed/releases/$signed2'" >"$LOGS/smoke-unit-dies.txt" 2>&1 || { cat "$LOGS/smoke-unit-dies.txt"; fail "the trial refused a worker that dies only under the unit"; }
+n0="$(wc -l < "$STATE/telegram.jsonl")"
+in_c "systemctl reset-failed zeroed-worker"
+upd_run && fail "zeroed-update reported success for a release whose worker did not stay up"
+[ "$(current)" = "$rel" ] || fail "current did not go back to the release that ran"
+in_c "cat /var/lib/zeroed-host/deployed" | has -x "$signed" || fail "the deployed record did not go back"
+in_c "cat /var/lib/zeroed-host/failed_release" | has -x "$signed2" || fail "the failed release is not recorded"
+wait_for 90 "the old release's worker back" "docker exec $C curl -fsS -m 2 http://127.0.0.1:8787/health | jq -e '.git_sha == \"$relname\"' >/dev/null"
+[ "$(tail -n +"$((n0 + 1))" "$STATE/telegram.jsonl" | grep -c "did not stay up after the switch")" = 1 ] || fail "not exactly one alert for a worker that did not stay up"
+pid0="$(in_c "systemctl show -p MainPID --value zeroed-worker")"
+upd_run || fail "zeroed-update on a release it already rolled back"
+[ "$(current)" = "$rel" ] && [ "$(in_c "systemctl show -p MainPID --value zeroed-worker")" = "$pid0" ] || fail "a rolled-back release was tried again"
 git -C "$BARE" tag -f deploy "$signed" >/dev/null && git -C "$BARE" update-server-info
 in_c "rm -rf '/opt/zeroed/releases/$signed2'"
 upd_run || fail "zeroed-update after the deploy tag came back"
@@ -601,7 +623,7 @@ upd_run || fail "zeroed-update after the deploy tag came back"
 # Back to the stand-in and the local watchdog for the sections that follow.
 wrestart "sed -i 's#^WATCHDOG_URL=.*#WATCHDOG_URL=$wd0#' /etc/zeroed/worker.env && ln -sfn '$orig' /opt/zeroed/current.new && mv -Tf /opt/zeroed/current.new /opt/zeroed/current"
 wait_for 60 "the stand-in back" "docker exec $C journalctl -u zeroed-worker -o cat --no-pager -n 5 | grep -q 'Stub worker up'"
-pass "release's worker (SWITCH-1): zeroed-worker runs the release's main.ts under the host's Node 22 with no node_modules; --reconcile first (exit 0); start line and journal say paper with recorder, simulation and drills on; 3 keys read from systemd credentials and none in its output; health on 127.0.0.1:8787 and API on 127.0.0.1:8788, loopback only; without providers it runs degraded, entries halted, no restarts; a restart comes back reconciled; live is refused; zeroed-status names the worker; worker-smoke passes it beside the running worker and refuses a syntax error, a missing file and a refused config; zeroed-update keeps a green signed release whose worker cannot start off current, keeps the worker running and alerts once"
+pass "release's worker (SWITCH-1): zeroed-worker runs the release's main.ts under the host's Node 22 with no node_modules; --reconcile first (exit 0); start line and journal say paper with recorder, simulation and drills on; 3 keys read from systemd credentials and none in its output; health on 127.0.0.1:8787 and API on 127.0.0.1:8788, loopback only; without providers it runs degraded, entries halted, no restarts; a restart comes back reconciled; live is refused; zeroed-status names the worker; worker-smoke passes it beside the running worker in the unit's sandbox and memory cap, and refuses a syntax error, a missing file, a refused config and a worker that dies after answering; zeroed-update keeps a green signed release whose worker cannot start off current, keeps the worker running and alerts once; a release whose worker passes the trial but dies under the unit is rolled back (current, deployed record, worker), alerted once and not tried again"
 
 # ---------- 10c. Telegram webhook: change alert, retry with back-off, notice after 5 failed tries ----------
 in_c "systemctl stop zeroed-check.timer" # the --update runs above switched it back on
