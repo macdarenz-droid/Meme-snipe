@@ -1,0 +1,41 @@
+
+ RUN  v5.0.3 /home/user/Meme-snipe
+
+(node:18340) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ❯ |heavy| packages/backtest/test/full-study.test.ts (9 tests | 1 failed) 1265976ms
+   ❯ BT-2 study (9)
+     × with RES-4's family: every hypothesis on its own replay and in the experiment registry; on 2 practice days the SPA picks none, so nothing is registered 198469ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |heavy| packages/backtest/test/full-study.test.ts > BT-2 study > with RES-4's family: every hypothesis on its own replay and in the experiment registry; on 2 practice days the SPA picks none, so nothing is registered
+AssertionError: expected [ 'H1-U1', 'H1-U1', 'H4-U2', …(2) ] to deeply equal [ 'H1-U1', 'H4-U2', 'H5-U2' ]
+
+- Expected
++ Received
+
+  [
+    "H1-U1",
++   "H1-U1",
++   "H4-U2",
+    "H4-U2",
+    "H5-U2",
+  ]
+
+ ❯ packages/backtest/test/full-study.test.ts:198:50
+    196|     const reg = storeAt('family.json');
+    197|     expect(reg.plan!.details['preregistration']).toEqual({ sha256: fam…
+    198|     expect(reg.trials!.map((t) => t.tag).sort()).toEqual(['H1-U1', 'H4…
+       |                                                  ^
+    199|     expect(reg.attempts).toEqual([]);
+    200|     expect(r.gates.G2.reasons.join(' ')).toMatch(/not the SPA pick for…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 8 passed (9)
+   Start at  07:24:45
+   Duration  1429.15s (tests 89%, import 11%)
+

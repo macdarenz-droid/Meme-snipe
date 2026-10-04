@@ -1,0 +1,118 @@
+
+> meme-snipe@ check /home/user/Meme-snipe
+> pnpm typecheck && pnpm test
+
+
+> meme-snipe@ typecheck /home/user/Meme-snipe
+> pnpm -r --if-present typecheck
+
+Scope: 6 of 7 workspace projects
+apps/web typecheck$ tsc -p tsconfig.json --noEmit
+packages/backtest typecheck$ tsc -p tsconfig.json --noEmit
+packages/core typecheck$ tsc -p tsconfig.json --noEmit
+packages/ops typecheck$ tsc -p tsconfig.json --noEmit
+packages/ops typecheck: Done
+packages/runner typecheck$ tsc -p tsconfig.json --noEmit
+packages/backtest typecheck: Done
+packages/worker typecheck$ tsc -p tsconfig.json --noEmit
+packages/runner typecheck: Done
+apps/web typecheck: Done
+packages/core typecheck: Done
+packages/worker typecheck: Done
+
+> meme-snipe@ test /home/user/Meme-snipe
+> vitest run
+
+
+ RUN  v5.0.3 /home/user/Meme-snipe
+
+(node:5379) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:5486) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:5520) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:5596) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:5653) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+gpg: directory '/root/.gnupg' created
+gpg: keybox '/root/.gnupg/pubring.kbx' created
+gpg: /root/.gnupg/trustdb.gpg: trustdb created
+gpg: checking the trustdb
+gpg: marginals needed: 3  completes needed: 1  trust model: pgp
+gpg: depth: 0  valid:   1  signed:   0  trust: 0-, 0q, 0n, 0m, 0f, 1u
+fatal: expected 'acknowledgments', received 'packfile'
+warning: push negotiation failed; proceeding anyway with push
+ ❯ |light| packages/core/test/config/no-money-literals.test.ts (37 tests | 1 failed) 312ms
+   ❯ CFG-1 item 5: no money literals in code outside config/ (37)
+     × packages/core/src holds none outside config/ except the allow-listed protocol constants 209ms
+(node:6238) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ❯ |light| packages/core/test/ledger/labels.test.ts (8 tests | 1 failed) 815ms
+   ❯ labels are out of the engine's reach (8)
+     × outside the ledger and the stats stage, nothing reaches the scoring store, ledger internals or node:sqlite 597ms
+(node:7032) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:7136) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:7299) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |light| packages/core/test/config/no-money-literals.test.ts > CFG-1 item 5: no money literals in code outside config/ > packages/core/src holds none outside config/ except the allow-listed protocol constants
+AssertionError: expected [ Array(1) ] to deeply equal []
+
+- Expected
++ Received
+
+- []
++ [
++   "gates/holders.ts:63 number 200_000 is 1,000 or more",
++ ]
+
+ ❯ packages/core/test/config/no-money-literals.test.ts:162:19
+    160|         .filter((f) => !isAllowed(rel(file), f))
+    161|         .map((f) => `${rel(file)}:${f.line} ${f.why}`));
+    162|     expect(found).toEqual([]);
+       |                   ^
+    163|   });
+    164|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  |light| packages/core/test/ledger/labels.test.ts > labels are out of the engine's reach > outside the ledger and the stats stage, nothing reaches the scoring store, ledger internals or node:sqlite
+AssertionError: expected [ …(5) ] to deeply equal []
+
+- Expected
++ Received
+
+- []
++ [
++   "packages/backtest/src/study/cli.ts (a string naming sqlite)",
++   "packages/backtest/src/study/cli.ts -> packages/backtest/src/study/study.ts (a string naming sqlite)",
++   "packages/backtest/src/study/cli.ts -> packages/backtest/src/study/study.ts -> packages/core/src/ledger/replay/index.ts (outcome store or ledger internal)",
++   "packages/backtest/src/study/study.ts (a string naming sqlite)",
++   "packages/backtest/src/study/study.ts -> packages/core/src/ledger/replay/index.ts (outcome store or ledger internal)",
++ ]
+
+ ❯ packages/core/test/ledger/labels.test.ts:109:36
+    107|
+    108|   it('outside the ledger and the stats stage, nothing reaches the scor…
+    109|     expect(importViolations(REPO)).toEqual([]);
+       |                                    ^
+    110|   });
+    111|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  2 failed | 92 passed (94)
+      Tests  2 failed | 3246 passed (3248)
+   Start at  18:03:47
+   Duration  385.65s (tests 88%, import 10%, transform 1%)
+
+ ELIFECYCLE  Test failed. See above for more details.
+ ELIFECYCLE  Command failed with exit code 1.
+EXIT 1

@@ -31,6 +31,40 @@ describe('android-preview workflow', () => {
     expect(script).toContain('gh release upload preview "$NEXT"');
   });
 
+  it('publishes only after CI check passed on the exact commit (OPS-GATE)', () => {
+    const require = releaseJob.indexOf('run: bash .github/scripts/require-check.sh');
+    expect(require).toBeGreaterThan(0);
+    expect(require).toBeLessThan(releaseJob.indexOf('run: bash .github/scripts/publish-preview.sh'));
+    expect(releaseJob).toContain('checks: read');
+    const script = fileURLToPath(new URL('../../../.github/scripts/require-check.sh', import.meta.url));
+    // A gh stand-in serving each call the next listing from a queue; the script must ask about GITHUB_SHA only.
+    const run = (listings: object[]) => {
+      const dir = mkdtempSync(join(tmpdir(), 'zeroed-require-'));
+      listings.forEach((l, i) => writeFileSync(join(dir, `l${i}`), JSON.stringify(l)));
+      writeFileSync(join(dir, 'gh'), `#!/usr/bin/env bash\necho "$*" >> "${dir}/calls"\nn=$(wc -l < "${dir}/calls"); cat "${dir}/l$((n - 1))" 2>/dev/null || cat "${dir}/l${listings.length - 1}"\n`);
+      chmodSync(join(dir, 'gh'), 0o755);
+      const r = spawnSync('bash', [script], { encoding: 'utf8', env: { ...process.env, PATH: `${dir}:${process.env['PATH']}`, GH_REPO: 'o/r', GITHUB_SHA: 'a'.repeat(40), WAIT_S: '1', POLL_S: '0.2' } });
+      const calls = readFileSync(join(dir, 'calls'), 'utf8');
+      rmSync(dir, { recursive: true, force: true });
+      return { status: r.status, out: r.stdout, calls };
+    };
+    const runs = (...r: object[]) => ({ total_count: r.length, check_runs: r });
+    const gha = { slug: 'github-actions' };
+    const ok = run([runs(), runs({ name: 'check', status: 'in_progress', conclusion: null, app: gha }), runs({ name: 'check', status: 'completed', conclusion: 'success', app: gha })]);
+    expect(ok.status, ok.out).toBe(0);
+    expect(ok.calls).toContain(`repos/o/r/commits/${'a'.repeat(40)}/check-runs`);
+    for (const bad of [
+      runs({ name: 'check', status: 'completed', conclusion: 'failure', app: gha }),
+      runs({ name: 'check', status: 'completed', conclusion: 'skipped', app: gha }),
+      runs({ name: 'check', status: 'completed', conclusion: 'success', app: { slug: 'some-bot' } }),
+      runs({ name: 'build', status: 'completed', conclusion: 'success', app: gha }),
+      runs({ name: 'check', status: 'in_progress', conclusion: null, app: gha }),
+      runs(),
+    ]) expect(run([bad]).status).toBe(1);
+    // A re-run counts: the newest run of check decides.
+    expect(run([runs({ name: 'check', status: 'completed', conclusion: 'failure', started_at: '2026-10-04T01:00:00Z', app: gha }, { name: 'check', status: 'completed', conclusion: 'success', started_at: '2026-10-04T02:00:00Z', app: gha })]).status).toBe(0);
+  });
+
   it('commits no keystore', () => {
     expect(readFileSync(fileURLToPath(new URL('../../../.gitignore', import.meta.url)), 'utf8')).toMatch(/\*\.keystore/);
   });

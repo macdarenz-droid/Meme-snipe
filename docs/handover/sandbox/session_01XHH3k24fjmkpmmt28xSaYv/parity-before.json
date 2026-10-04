@@ -1,0 +1,30 @@
+{
+  "raw_records": 558,
+  "raw_failed": 227,
+  "raw_without_inner": 8,
+  "decoded_events": 322,
+  "rows_checked": 318,
+  "rows_matched": 318,
+  "rows_without_raw": 219,
+  "name_only_matches": 4,
+  "explained_unrowed": {
+    "non_universe": 0,
+    "outside_tape": 0,
+    "other_events": 4
+  },
+  "mismatch_count": 0,
+  "missing_row_count": 0,
+  "unchecked_columns": [
+    "jito_tip",
+    "last_in_tx",
+    "chain_curve_lamports",
+    "chain_curve_base",
+    "chain_curve_quote",
+    "chain_pool_base",
+    "chain_pool_quote",
+    "chain_pool_balances",
+    "chain_curve_balances"
+  ],
+  "mismatches": [],
+  "missing_rows": []
+}

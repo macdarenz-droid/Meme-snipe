@@ -1,0 +1,9 @@
+warning: push negotiation failed; proceeding anyway with push
+ ❯ |light| packages/worker/test/worker-recorder.test.ts (4 tests | 2 failed) 756ms
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+ FAIL  |light| packages/worker/test/worker-recorder.test.ts > the market recorder > replaying the recorded frames in their release order through the same engine and strategy reproduces the live decisions
+ FAIL  |light| packages/worker/test/worker-recorder.test.ts > the market recorder > across a restart: boot 2's recorded frames (the restored book and exit plans among them) replay to its own decisions
+Everything up-to-date
+681338f
+
+[exited with code 0]

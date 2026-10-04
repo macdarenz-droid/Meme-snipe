@@ -1,0 +1,17 @@
+    109|     expect(importViolations(REPO)).toEqual([]);
+       |                                    ^
+    110|   });
+    111|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed | 90 passed (91)
+      Tests  1 failed | 3186 passed (3187)
+   Start at  17:51:40
+   Duration  236.73s (tests 93%, import 5%, transform 1%, setup 1%)
+
+ ELIFECYCLE  Test failed. See above for more details.
+ ELIFECYCLE  Command failed with exit code 1.
+
+[exited with code 0]

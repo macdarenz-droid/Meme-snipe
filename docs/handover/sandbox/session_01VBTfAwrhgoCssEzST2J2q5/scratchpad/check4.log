@@ -1,0 +1,199 @@
+
+> meme-snipe@ check /home/user/Meme-snipe
+> pnpm typecheck && pnpm test
+
+
+> meme-snipe@ typecheck /home/user/Meme-snipe
+> pnpm -r --if-present typecheck
+
+Scope: 6 of 7 workspace projects
+apps/web typecheck$ tsc -p tsconfig.json --noEmit
+packages/backtest typecheck$ tsc -p tsconfig.json --noEmit
+packages/core typecheck$ tsc -p tsconfig.json --noEmit
+packages/ops typecheck$ tsc -p tsconfig.json --noEmit
+packages/ops typecheck: Done
+packages/runner typecheck$ tsc -p tsconfig.json --noEmit
+packages/runner typecheck: Done
+packages/worker typecheck$ tsc -p tsconfig.json --noEmit
+packages/backtest typecheck: Done
+apps/web typecheck: Done
+packages/core typecheck: Done
+packages/worker typecheck: Done
+
+> meme-snipe@ test /home/user/Meme-snipe
+> vitest run
+
+
+ RUN  v5.0.3 /home/user/Meme-snipe
+
+(node:19299) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ❯ |heavy| packages/backtest/test/research.test.ts (29 tests | 1 failed) 100307ms
+   ❯ outcome stage (7)
+     × on a still pool the round trip equals the computed cost to 1e-9: fees both ways, rent, network, failed exits 60ms
+(node:19370) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ❯ |heavy| packages/backtest/test/full-study.test.ts (6 tests | 2 failed) 285865ms
+   ❯ BT-2 study (6)
+     × runs the walk-forward cleanly through the real engine and scores it outside 13ms
+     × registers one configuration per universe before any holdout run, and G1 is not proven on 2 days 7ms
+(node:19468) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ❯ |heavy| packages/backtest/test/study.test.ts (15 tests | 4 failed) 85243ms
+   ❯ BT-2 study runs (15)
+     × enters a U2 setup through every gate, RISK-1 and EXIT-1, with a clean book 12ms
+     × deployment replay: one position at a time; a simultaneous second setup is a rejected opportunity 7535ms
+     × ablation: a candidate blocked only by H9 is entered on paper under its own tag; one passing every gate is not 4884ms
+     × charges the fees in force at each trade's slot (a fee change before the entry is paid, never today's fees) 4860ms
+(node:19522) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:19569) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+gpg: checking the trustdb
+gpg: marginals needed: 3  completes needed: 1  trust model: pgp
+gpg: depth: 0  valid:   1  signed:   0  trust: 0-, 0q, 0n, 0m, 0f, 1u
+fatal: expected 'acknowledgments', received 'packfile'
+warning: push negotiation failed; proceeding anyway with push
+(node:20249) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:20771) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:21193) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:21200) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:21242) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:21342) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 7 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |heavy| packages/backtest/test/full-study.test.ts > BT-2 study > runs the walk-forward cleanly through the real engine and scores it outside
+AssertionError: expected 0 to be greater than 0
+ ❯ packages/backtest/test/full-study.test.ts:54:45
+     52|     // Every walk-forward trade opened and closed inside the walk-forw…
+     53|     for (const t of first.walkForward.trades) expect(t.closedAt).toBeL…
+     54|     expect(first.walkForward.trades.length).toBeGreaterThan(0);
+       |                                             ^
+     55|     // The deployment replay ran on the same days, at the real size, c…
+     56|     expect(first.deployment.stats).toMatchObject({ crashes: 0, illegal…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/7]⎯
+
+ FAIL  |heavy| packages/backtest/test/full-study.test.ts > BT-2 study > registers one configuration per universe before any holdout run, and G1 is not proven on 2 days
+AssertionError: expected [ 'U1 all regimes (pooled)', …(3) ] to deeply equal ArrayContaining{…}
+
+- Expected
++ Received
+
+- ArrayContaining [
++ [
+    "U1 all regimes (pooled)",
++   "U1 all regimes (pooled), sensitivity: no rent recovery",
+    "U2 all regimes (pooled)",
+-   "U2 regime B4",
++   "U2 all regimes (pooled), sensitivity: no rent recovery",
+  ]
+
+ ❯ packages/backtest/test/full-study.test.ts:75:41
+     73|     expect(reg.trials.map((t) => t.trialId).sort()).toEqual([configId(…
+     74|     // Reported per regime (here every trade is after B4) and pooled u…
+     75|     expect(Object.keys(first.gates.G1)).toEqual(expect.arrayContaining…
+       |                                         ^
+     76|     for (const k of Object.keys(first.gates.G1)) expect(k).toMatch(/^U…
+     77|     for (const g of Object.values(first.gates.G1)) expect(g.status).to…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/7]⎯
+
+ FAIL  |heavy| packages/backtest/test/research.test.ts > outcome stage > on a still pool the round trip equals the computed cost to 1e-9: fees both ways, rent, network, failed exits
+AssertionError: expected 0.08313003493697538 to be less than 1e-9
+ ❯ packages/backtest/test/research.test.ts:208:45
+    206|       const failed = BigInt(b2.blocked ? b2.nExitAttempts : b2.nExitAt…
+    207|       const expected = Number(value - cost - failed) / Number(cost);
+    208|       expect(Math.abs(b2.rNet! - expected)).toBeLessThan(1e-9);
+       |                                             ^
+    209|       expect(b2.rNet!).toBeLessThan(-0.10);
+    210|       expect(b2.rNet!).toBeGreaterThan(-0.14);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/7]⎯
+
+ FAIL  |heavy| packages/backtest/test/study.test.ts > BT-2 study runs > enters a U2 setup through every gate, RISK-1 and EXIT-1, with a clean book
+AssertionError: expected [] to have a length of 1 but got +0
+
+- Expected
++ Received
+
+- 1
++ 0
+
+ ❯ packages/backtest/test/study.test.ts:40:20
+     38|     expect(r.stats).toMatchObject({ crashes: 0, illegalStates: 0, unre…
+     39|     const enters = decisions(r.records).filter((d) => d.reasons[0] ===…
+     40|     expect(enters).toHaveLength(1);
+       |                    ^
+     41|     expect(enters[0]!.reasons[1]).toBe('U2');
+     42|     const { trades } = tradesOf(r, FILL_CONFIG);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/7]⎯
+
+ FAIL  |heavy| packages/backtest/test/study.test.ts > BT-2 study runs > deployment replay: one position at a time; a simultaneous second setup is a rejected opportunity
+AssertionError: expected [] to have a length of 2 but got +0
+
+- Expected
++ Received
+
+- 2
++ 0
+
+ ❯ packages/backtest/test/study.test.ts:105:80
+    103|     const two = [SETUP, { ...SETUP, label: 'b', creator: 'b' }];
+    104|     const broad = run(two);
+    105|     expect(decisions(broad.r.records).filter((d) => d.reasons[0] === '…
+       |                                                                                ^
+    106|     let stats: import('../src/strategy/study.ts').DeploymentStats | nu…
+    107|     const dep = run(two, { mode: 'deployment', onStrategy: (x) => { st…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/7]⎯
+
+ FAIL  |heavy| packages/backtest/test/study.test.ts > BT-2 study runs > ablation: a candidate blocked only by H9 is entered on paper under its own tag; one passing every gate is not
+AssertionError: expected +0 to be 1 // Object.is equality
+
+- Expected
++ Received
+
+- 1
++ 0
+
+ ❯ packages/backtest/test/study.test.ts:122:27
+    120|     const blocked = run([{ ...SETUP, graduateAfter: 4 * MIN }], { abla…
+    121|     const enters = decisions(blocked.r.records).filter((d) => d.reason…
+    122|     expect(enters.length).toBe(1);
+       |                           ^
+    123|     expect(enters[0]!.reasons[1]).toBe('U2-noH9');
+    124|     expect(decisions(blocked.r.records).some((d) => d.reasons[0] === '…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/7]⎯
+
+ FAIL  |heavy| packages/backtest/test/study.test.ts > BT-2 study runs > charges the fees in force at each trade's slot (a fee change before the entry is paid, never today's fees)
+TypeError: Cannot read properties of undefined (reading 'venueFee')
+ ❯ rate packages/backtest/test/study.test.ts:138:49
+    136|     const after = tradesOf(changed.r, FILL_CONFIG).trades[0]!;
+    137|     // Venue fees are LP + protocol on both legs: 25 bps before the ch…
+    138|     const rate = (t: typeof before) => Number(t.venueFee) / Number(t.e…
+       |                                                 ^
+    139|     expect(rate(before)).toBeGreaterThan(0.002);
+    140|     expect(rate(before)).toBeLessThan(0.003);
+ ❯ packages/backtest/test/study.test.ts:139:12
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/7]⎯
+
+
+ Test Files  3 failed | 101 passed (104)
+      Tests  7 failed | 3433 passed (3440)
+   Start at  19:38:09
+   Duration  560.09s (tests 90%, import 9%, transform 1%)
+
+ ELIFECYCLE  Test failed. See above for more details.
+ ELIFECYCLE  Command failed with exit code 1.
+exit 1

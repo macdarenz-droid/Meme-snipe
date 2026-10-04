@@ -1,0 +1,6 @@
+      Tests  3947 passed (3947)
+ FAIL  |light| packages/worker/test/facts-source.test.ts > the strategy keeps each candidate's last reasons with their inputs (what the source reads from) > null before the first evaluation, then the typed reasons of the last one with the inputs evidence names
+ FAIL  |light| packages/core/test/config/no-money-literals.test.ts > CFG-1 item 5: no money literals in code outside config/ > packages/core/src holds none outside config/ except the allow-listed protocol constants
+      Tests  3 failed | 3937 passed (3940)
+
+[exited with code 0]

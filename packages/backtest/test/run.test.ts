@@ -11,6 +11,7 @@ import { gitRegistryVcs } from '../src/registry-git.ts';
 import { holdoutReady, registerHoldout } from '../../core/src/stats/index.ts';
 import { leakTest, replayHashes, shiftTest } from '../src/proofs.ts';
 import { buildReport } from '../src/report.ts';
+import { economics } from '../src/economics.ts';
 import { runBacktest, type RunOptions } from '../src/run.ts';
 import { burstSweep, ladderCongestion } from '../src/stress.ts';
 import { tradesOf } from '../src/trades.ts';
@@ -753,7 +754,7 @@ describe('observation delay (BT-1c item 3 and delay ruling)', () => {
 
 describe('rent follows the account-close outcome (BT-1c rent ruling)', () => {
   const withClose = (closeSuccessPpm: bigint, dustPpm = 0n): typeof FILL_CONFIG => ({
-    ...FILL_CONFIG, scenarios: { ...FILL_CONFIG.scenarios, base: { ...FILL_CONFIG.scenarios.base, rentRecovery: true, closeSuccessPpm, dustPpm } },
+    ...FILL_CONFIG, scenarios: { ...FILL_CONFIG.scenarios, base: { ...FILL_CONFIG.scenarios.base, closeSuccessPpm, dustPpm } },
   });
 
   test('a failed close rolls back the sell and charges the fee; the sell-only fallback leaves the rent locked', () => {
@@ -798,6 +799,37 @@ describe('rent follows the account-close outcome (BT-1c rent ruling)', () => {
     const d = runBacktest(opts({ fills: dusty }));
     expect(d.attempts.some((a) => a.closedAccount)).toBe(false);
     for (const t of tradesOf(d, dusty).trades) expect(t.rentReturned).toBe(0n);
+  });
+});
+
+describe('the scored scenario refunds rent per the close outcome (RENT-1)', () => {
+  const cons = (closeSuccessPpm: bigint, dustPpm = 0n): typeof FILL_CONFIG => ({
+    ...FILL_CONFIG, scenarios: { ...FILL_CONFIG.scenarios, conservative: { ...FILL_CONFIG.scenarios.conservative, closeSuccessPpm, dustPpm } },
+  });
+  const run = (f: typeof FILL_CONFIG) => {
+    const r = runBacktest(opts({ fills: f, scenario: 'conservative' }));
+    return { r, trades: tradesOf(r, f).trades.filter((t) => t.exitReason === 'time-stop') };
+  };
+  test('a conservative trade whose sell-and-close lands gets its rent back', () => {
+    const { r, trades } = run(cons(1_000_000n));
+    expect(r.attempts.some((a) => a.closedAccount)).toBe(true);
+    expect(trades.some((t) => t.rentReturned === FILL_CONFIG.network.tokenAccountRent)).toBe(true);
+  });
+  test('a failed close or dust in the account keeps it locked', () => {
+    for (const f of [cons(0n), cons(1_000_000n, 1_000_000n)]) {
+      const { trades } = run(f);
+      expect(trades.length).toBeGreaterThan(0);
+      for (const t of trades) expect(t.rentReturned).toBe(0n);
+    }
+  });
+  test('the no-recovery line still reports the full rent drag beside the score', () => {
+    const f = cons(1_000_000n);
+    const r = runBacktest(opts({ fills: f, scenario: 'conservative' }));
+    const { trades, stray } = tradesOf(r, f);
+    const refunded = trades.filter((t) => t.rentReturned > 0n);
+    expect(refunded.length).toBeGreaterThan(0);
+    const e = economics({ trades, stray, entryDecisions: trades.length, solUsd: SOL_USD, window: { from: T0, to: T0 + 6 * 3_600_000 }, policy: TRIAL_POLICY, research: RESEARCH });
+    expect(e.usd.allInNoRentRecoveryMicro).toBeLessThan(e.usd.allInMicro);
   });
 });
 

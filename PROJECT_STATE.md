@@ -12,12 +12,13 @@
 - App name: Zeroed. Logo: "Slot" (a solid zero with a Z cut into it), files in `brand/`, rules in `docs/BRAND.md`.
 
 ## Phase
-Wave D, 4 Oct 6:05 PM Melbourne. 72 PRs merged since midnight on 4 Oct (the latest in `HANDOVER.md` §4).
-- **Server:** re-installed at pin e28788a and on the tailnet (key expiry off). WORKER-1c #99 and WATCH-1b #113 merged (5:51 and 6:05 PM); the real worker comes with SWITCH-1 #110, then a code-only Deploy: about 7–9 PM (could slip to about midnight if a check fails).
-- **Practice trades:** WORKER-1e #117 (passed both reviews, a last small push in progress) wires H15 and paper exec-health and adds the labelled S0-only diagnostic set, which the qualifying run refuses. Pulled forward at the owner's request (6:01 PM, quality unchanged): tonight about 10 PM – 1 AM, else Mon morning.
-- **History:** the Helius free pilot passed (parity on every table). The owner chose free only, one day per about 14 h, and no spend before a finished product. #119 (the practice-day pull with a fail-closed credit cap) is merging; 09-21 starts tonight. ARCHIVE-CHECK keeps asking the archive every 3 hours. Early look on free days: about Tue 6 – Wed 7 Oct.
-- **Research:** RES-4 cost math fixed (break-even 4.4–5.0% at $2, 2.2–3.1% at $20 per trade, as scored); it now takes RENT-1's rent model. RES-5 Phase A (survivors vs look-alike losers at buy time, research only) is up; Phase B runs on the free days.
-- **Owner's estimate:** under about 2% chance of proof today (judgement), first measured numbers with the early look. The pre-funding gate is unchanged: no deposit before all six items pass.
+Wave D, 4 Oct about 7:45 PM Melbourne. The project is being handed to a new Claude account (owner, about 7:15 PM). Every first-account session pushed its work and wrote its notes to `docs/handover/sessions/`, then paused. Start from `HANDOVER.md` §0. 76 PRs merged since midnight on 4 Oct.
+- **Server:** code-only Deploy run 37189025276 moved the deploy tag to 7d5e203 (SWITCH-1, WORKER-1e, the e2e fix) at about 7:28 PM. The push e2e on that commit is green. The server switches to the real paper worker within about 5 min. Online is still to be confirmed by the owner (app or Telegram /status).
+- **Practice trades:** WORKER-1e #117 is merged, so the S0 shakedown with the labelled diagnostic set starts once the real worker runs. Practice P&L stays rough until PAPER-1 (audit M4, M5, M8) merges.
+- **External audit (Report 1):** real defects were found in paper accounting, latches, stale snapshots, recovery, research and statistics. Every finding is a card (HANDOVER §4; DECISIONS "External audit 1"). The verdict stands: paper and research mode only.
+- **History:** Helius free only (about 2–3 practice days a month alongside the live worker). 09-21 is downloading (run 37185822426, about 14 h). The proof needs about 50 practice days plus 28 holdout days, which is impossible on free alone; the paid month (about US$94) waits for the owner's decision after seeing a finished product.
+- **Research:** RES-4 (cost math; break-even 4.4–5.0% at $2 and 2.2–3.1% at $20 per trade, as scored) is in review. RES-5's selection failed calibration and is being fixed. An early look on free days reports descriptive numbers only (SPA needs at least 10 days).
+- **Owner's estimate:** under about 2% chance of proof today (judgement). No deposit before all six pre-funding items pass.
 
 ## Done
 - Owner rules in `AGENTS.md` and `CLAUDE.md`; the starting brief and the research in `docs/`.
@@ -32,12 +33,11 @@ Builders run as separate sessions; a fresh reviewer session checks each PR; the 
 
 | Task | What | State | Estimate (Melbourne) |
 |---|---|---|---|
-| Merge queue | #110, #119, #114, #117, #106, #116, #107, #98, #118, #115 (see HANDOVER §4) | moving one at a time | about 10 min each plus merge checks |
-| SWITCH-1 #110 | the release worker on the host, pre-switch smoke check, OOM priority; then Deploy (code only) | passed review (692862e); merging next | Sun 4 Oct about 7–9 PM |
-| WORKER-1e #117 | live H15 sim, paper exec-health, S0 diagnostic set | passed both reviews; last small push (about 6:20 PM), then a quick check and a second Deploy | practice trades tonight about 10 PM – 1 AM, else Mon morning |
-| API-1 #118 | app status says why entries are off | review FAIL → fixing (risk stops on the card) | after #110 |
-| BT-2 #41 | study: RES-4's six ideas as one SPA family, BT-2e runner | building | early look about Tue 6 – Wed 7 Oct |
-| Historical data | #119 free practice days; ARCHIVE-CHECK | free plan only (owner) | 09-21 tonight, then one day per ~14 h; all days not scheduled (owner: finished product first) |
+| Merge queue | #114, #116, #118 (delta), #106, #107, #98, #123, then the audit-fix PRs (see HANDOVER §4) | moving one at a time | about 10 min each plus reviews |
+| Online | deployed (7d5e203, run 37189025276); the owner confirms Online | waiting for the owner's check | now |
+| Audit fixes | PAPER-1, RISK-LATCH #124, RISK-PARTIAL, WATCH-1c #121 / 1d, EXIT-1g #128 / 1h, PERSIST-2 #125 / 3, EXIT-ROUTE #130, WORKER-ORDER #123, STATS-1g #129, OPS-GATE, PNPM-CLAIMS, SEC-1, DATA-4 #127, DATA-5 | building or in review | about 2–3 days (±1) |
+| BT-2 #41 | audit B1–B5 and S2, then RES-4 (b)/(c) under the stats rulings; early-look runner ready | building and in review | early look about Tue 6 – Wed 7 Oct |
+| Historical data | 09-21 free day running; DATA-4 ledger after it | free plan only (owner) | 09-21 about Mon 8 AM; more days as credits allow |
 
 ## Follow-ups
 - Android: cover a stop between the two asset renames, the "fixed name plus .prev" state, and a failed final delete (APP-1b review notes).

@@ -1,0 +1,15 @@
+<svg width="512" height="512" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="m8" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1B1F26"/><stop offset="1" stop-color="#0B0D10"/></linearGradient>
+    <radialGradient id="m10" cx="0.5" cy="0" r="0.9"><stop offset="0" stop-color="#FFFFFF" stop-opacity="0.10"/><stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/></radialGradient>
+    <linearGradient id="m9" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#FFFFFF"/><stop offset="1" stop-color="#B9C0CA"/></linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="115" fill="url(#m8)"/>
+  <rect width="512" height="512" rx="115" fill="url(#m10)"/>
+  <rect x="1.5" y="1.5" width="509" height="509" rx="113.5" fill="none" stroke="#FFFFFF" stroke-opacity="0.09" stroke-width="3"/>
+  <g transform="translate(256 256) scale(0.62) translate(-256 -256)">
+  <defs><mask id="m11" maskUnits="userSpaceOnUse" x="0" y="0" width="512" height="512">
+    <rect width="512" height="512" fill="black"/><circle cx="256" cy="256" r="208" fill="white"/><rect x="0" y="238" width="512" height="36" fill="black"/><rect x="238" y="0" width="36" height="512" fill="black"/>
+  </mask></defs>
+  <rect width="512" height="512" fill="url(#m9)" mask="url(#m11)"/><circle cx="256" cy="256" r="30" fill="url(#m9)"/></g>
+</svg>
