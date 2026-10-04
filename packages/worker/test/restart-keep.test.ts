@@ -141,7 +141,11 @@ describe('RESTART-KEEP: a restart keeps the candidates in their window', () => {
     const SAVE = at(5, 25);
     // One in the saved last bar's minute after the save, two in one minute, a quiet minute (no trade, so no bar live),
     // and one in the restart's own minute before the restart.
-    const DOWN = [at(5, 45), at(7, 5), at(7, 35), at(8, 5), at(10, 5), at(13, 10)];
+    // A trade at block time 11:59.8 is received at 12:00.3: live, restart and replay must all put it in minute 11.
+    const EDGE = { block: at(11, 59.8), recv: at(12, 0.3) };
+    const DOWN = [at(5, 45), at(7, 5), at(7, 35), at(8, 5), at(10, 5), EDGE.block, at(13, 10)];
+    /** When each trade reaches the live worker: at its block time, but the edge trade half a second into the next minute. */
+    const recvAt = (block: number) => (block === EDGE.block ? EDGE.recv : block);
     const RESTART = at(13, 30);
     const READ = at(13, 40);
     const tick = async (t: ReturnType<typeof dueTimers>) => {
@@ -191,7 +195,7 @@ describe('RESTART-KEEP: a restart keeps the candidates in their window', () => {
       w.m.accountsRead(w.h.worker.feed.releasedThrough);
       const trades = script(w.m.chainState);
       for (const x of trades.slice(0, BEFORE.length)) {
-        await until(w.t, w.m, x.at);
+        await until(w.t, w.m, recvAt(x.at));
         live(w.h, x, w.h.worker.feed.openSlot);
       }
       await until(w.t, w.m, SAVE);
@@ -202,7 +206,7 @@ describe('RESTART-KEEP: a restart keeps the candidates in their window', () => {
       // A: never restarted, every trade live.
       const a = await before();
       for (const x of a.trades.slice(BEFORE.length)) {
-        await until(a.t, a.m, x.at);
+        await until(a.t, a.m, recvAt(x.at));
         live(a.h, x, a.h.worker.feed.openSlot);
       }
       // An account read in the restart's minute: a live sample after the downtime's last trade, in both.
@@ -252,6 +256,9 @@ describe('RESTART-KEEP: a restart keeps the candidates in their window', () => {
       expect(a.length).toBeGreaterThan(BEFORE.length);
       // The quiet minute has no bar in either.
       expect(a.some((x) => x.startMs === at(9, 0))).toBe(false);
+      // The late-received edge trade is in its block time's minute live, and so in the rebuild: no bar at 12.
+      expect(a.some((x) => x.startMs === at(11, 0))).toBe(true);
+      expect(a.some((x) => x.startMs === at(12, 0))).toBe(false);
       expect(b).toEqual(a);
       const ux = exitsFor(TRIAL_POLICY.exits, 'U2');
       expect(atr(b, ux.atrPeriod, ux.atrBarMs, RESTART + 30_000)).toBe(atr(a, ux.atrPeriod, ux.atrBarMs, RESTART + 30_000));

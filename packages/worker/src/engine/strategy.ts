@@ -1108,6 +1108,11 @@ export class LiveStrategy implements Strategy {
     if (ev['program'] !== 'pump_amm' || (ev['name'] !== 'BuyEvent' && ev['name'] !== 'SellEvent') || !isObj(ev['data'])) return;
     const d = ev['data'];
     const mint = typeof d['pool'] === 'string' ? this.#mintOfPool.get(d['pool']) : undefined;
+    if (typeof d['timestamp'] === 'bigint') {
+      const slot = typeof v['txSlot'] === 'bigint' ? v['txSlot'] : e.moment.slot;
+      const ms = Number(d['timestamp']) * 1000;
+      if (this.#blockClock === null || slot >= this.#blockClock.slot) this.#blockClock = { slot, ms };
+    }
     if (mint === undefined) return;
     this.#gapBarTrade(mint, e, v, ev, d);
     this.#tradeAt.set(mint, e.moment.receivedAt);
@@ -1222,12 +1227,21 @@ export class LiveStrategy implements Strategy {
     if (typeof m === 'string' || m.pool.baseReserve <= 0n) return;
     const price = (effectiveQuoteReserve(m.pool) * PRICE_SCALE) / m.pool.baseReserve;
     const barMs = this.#d.config.barMs;
-    const start = Math.floor(ctx.now.receivedAt / barMs) * barMs;
+    // RESTART-KEEP (run/CI ruling): bars are on block time, the one clock live, a restart's rebuild and a replay share
+    // (the backtest has only block time). A swap's pool update is at the swap's block time; any other update (an account
+    // read, a snapshot) at its slot's time from the newest block-time anchor, never past the engine clock.
+    const start = Math.floor(this.#sampleAt(e, ctx.now.receivedAt) / barMs) * barMs;
     const add = (key: string): void => {
       const bars = this.#bars.get(key) ?? [];
       const last = bars[bars.length - 1];
       if (last !== undefined && last.startMs === start) {
         bars[bars.length - 1] = { startMs: start, high: price > last.high ? price : last.high, low: price < last.low ? price : last.low, close: price };
+      } else if (last !== undefined && start < last.startMs) {
+        // A sample whose slot time falls in an earlier bar (an estimate): it widens that bar, never moves a close back.
+        const i = bars.findIndex((b) => b.startMs >= start);
+        const b = bars[i]!;
+        if (b.startMs === start) bars[i] = { ...b, high: price > b.high ? price : b.high, low: price < b.low ? price : b.low };
+        else bars.splice(i, 0, { startMs: start, high: price, low: price, close: price });
       } else bars.push({ startMs: start, high: price, low: price, close: price });
       if (bars.length > this.#d.config.keepBars) bars.splice(0, bars.length - this.#d.config.keepBars);
       this.#bars.set(key, bars);
@@ -1237,6 +1251,23 @@ export class LiveStrategy implements Strategy {
       add(pid);
       this.#spot.set(pid, { price, atMs: ctx.now.receivedAt });
     }
+  }
+
+  /** Solana's target slot time: a slot's time from a block-time anchor (an estimate, used only off a swap). */
+  static readonly SLOT_MS = 400;
+  /**
+   * The newest block-time anchor from any PumpSwap swap released: slot and block time. A swap's own pool update comes
+   * right after it at the same moment, so it is dated by its own swap.
+   */
+  #blockClock: { slot: bigint; ms: number } | null = null;
+
+  /** The block time a pool update belongs to (see `#track`); the engine clock when nothing dates it. */
+  #sampleAt(e: MarketEvent, nowMs: number): number {
+    const v = unwrap(e.value);
+    const slot = isObj(v) && isObj(v['obs']) && typeof v['obs']['slot'] === 'bigint' ? v['obs']['slot'] : isObj(v) && typeof v['slot'] === 'bigint' ? v['slot'] : null;
+    const a = this.#blockClock;
+    if (a === null || slot === null) return nowMs;
+    return Math.min(a.ms + Number(slot - a.slot) * LiveStrategy.SLOT_MS, nowMs);
   }
 
   #attempt(id: IntentId, n: number, quote: QuoteContext, height: bigint): TransactionAttempt {
