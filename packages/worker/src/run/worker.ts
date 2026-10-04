@@ -150,7 +150,7 @@ export interface WorkerDeps {
    * WATCH-1's second path: one getMultipleAccounts at confirmed through the quota scheduler at P1, on a provider other
    * than the live feed's (Alchemy). Without it every stale held position raises the critical alert.
    */
-  readonly watchRead?: (addresses: readonly string[]) => Promise<WatchRead>;
+  readonly watchRead?: (addresses: readonly string[], minContextSlot: bigint | null) => Promise<WatchRead>;
   /** True while the second path's provider budget is halted (its scheduler's haltShare): entries stop. */
   readonly watchHalted?: () => boolean;
 }
@@ -209,6 +209,8 @@ export class Worker {
   #ctl: Control;
   #reconciled = false;
   #lastSlot: bigint | null = null;
+  /** When `#lastSlot` was released (WATCH-1d holds a snapshot's bank to a live head). */
+  #lastSlotAt: number | null = null;
   #ticked: bigint | null = null;
   #solPrice: MicroUsd | null = null;
   /** When that price was seen (its fact's `atMs`), for risk's freshness check in the account marks. */
@@ -487,7 +489,10 @@ export class Worker {
     // The deployer index's inputs and the creates/rugs coverage, kept across restarts (SEED-1 ruling).
     if (!r.late) this.#deployerStore.keep(m);
     // A late slot notice is refused by the engine (out of order): the paper height follows only accepted ones.
-    if (m.key === 'chain:slot' && !r.late && isObj(m.value) && typeof m.value['slot'] === 'bigint' && (this.#lastSlot === null || m.value['slot'] > this.#lastSlot)) this.#lastSlot = m.value['slot'];
+    if (m.key === 'chain:slot' && !r.late && isObj(m.value) && typeof m.value['slot'] === 'bigint' && (this.#lastSlot === null || m.value['slot'] > this.#lastSlot)) {
+      this.#lastSlot = m.value['slot'];
+      this.#lastSlotAt = this.#d.timers.now();
+    }
     else if (m.key.startsWith(POOL_PREFIX)) this.#setPool(m.key.slice(POOL_PREFIX.length), m.value);
     else if (m.key.startsWith('worker:fees:')) this.#fees.set(m.key.slice('worker:fees:'.length), m.value as PoolFeeContext);
     else if (m.key.startsWith(SNAPSHOT_PREFIX)) {
@@ -557,7 +562,9 @@ export class Worker {
     const c = this.#choice(mint);
     if (c.kind === 'snapshot') return c.snap.atMs;
     if (c.kind !== 'pool') return null;
-    return c.carried ? this.#carries.get(mint)!.releasedAt : this.#poolReleasedAt.get(mint) ?? null;
+    const released = c.carried ? this.#carries.get(mint)!.releasedAt : this.#poolReleasedAt.get(mint) ?? null;
+    // A confirming snapshot counts from its read, like any snapshot.
+    return c.confirmedAtMs === null ? released : Math.max(released ?? c.confirmedAtMs, c.confirmedAtMs);
   }
 
   poolOf(mint: string): { readonly address: string; readonly state: PaperMarket['pool']; readonly ctx: PoolFeeContext; readonly atMs: number } | null {
@@ -1131,6 +1138,8 @@ export class Worker {
       },
       marketAt: (mint) => this.#watchMarketAt(mint),
       read: d.watchRead ?? (() => Promise.reject(new Error('no second path configured'))),
+      head: () => (this.#lastSlot === null || this.#lastSlotAt === null ? null : { slot: this.#lastSlot, atMs: this.#lastSlotAt }),
+      maxLagSlots: d.session.policy.gates.maxStateSlotLag,
       put: (snap, atMs) => this.#fact(snapshotKey(snap.mint), { pool: snap.pool, slot: snap.slot, atMs, state: snap.state, ctx: snap.ctx }),
       alert: (mint, reason) => {
         this.#journal.write('alert', { level: 'critical', code: 'position_unpriced', mint, reasons: [`no fresh price for ${mint}`, reason] });

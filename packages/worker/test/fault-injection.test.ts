@@ -12,7 +12,7 @@ import { FACT_READS_KEY, FactRpc, liveFacts } from '../src/facts/index.ts';
 import type { FactSource } from '../src/run/facts.ts';
 import { ProviderError, rpcHandler, type Secrets, type Source, scriptedHttp } from '../src/providers/index.ts';
 import { ALCHEMY_FREE, COINBASE_PUBLIC, GOPLUS_FREE, HELIUS_FREE, JUPITER_FREE, P1, P3, RUGCHECK_FREE, Scheduler, type SchedulerSpec } from '../src/scheduler/index.ts';
-import { LANDS, MINT, Market, POOL_ADDRESS, T, dueTimers, makeWorker, passingMarket, scriptedSource, tempState } from './worker-harness.ts';
+import { LANDS, MINT, Market, POOL_ADDRESS, T, dueTimers, makeWorker, passingMarket, scriptedSource, slotAt, tempState } from './worker-harness.ts';
 import { POOL, QUOTE_VAULT, account } from '../../core/test/gates/world.ts';
 import { poolSell } from '../../core/src/amm/index.ts';
 import { withSlippage } from '../../core/src/fills/index.ts';
@@ -378,8 +378,9 @@ const scaledRead = (h: H, scalePpm: () => bigint, calls: string[][], latencyMs =
     new DataView(data.buffer, data.byteOffset, data.byteLength).setBigUint64(64, (QUOTE_VAULT * scalePpm()) / 1_000_000n, true);
     return { owner: acc.owner, data };
   });
-  // A confirmed read's context slot: behind the tip, so a later pool fact from the feed is newer.
-  return { slot: h.worker.feed.releasedThrough, accounts };
+  // A confirmed read's context slot: the chain's, two slots behind its tip (the chain moves on whether or not the feed
+  // does), so a later pool fact from the feed is newer.
+  return { slot: slotAt(h.timers.now()) - 2n, accounts };
 };
 
 describe('§18: the feed dies for 5 minutes with a position open and the pool falls 40% (WATCH-1)', () => {
@@ -489,12 +490,12 @@ describe('§18: the feed dies for 5 minutes with a position open and the pool fa
   /** WATCH-1c: a position open on a pool kept by POS-1's chain (its trade stream and one account read), quiet after. */
   const quietHeld = async (port: number) => {
     const readAt: number[] = [];
-    const o = { scale: 1_000_000n };
+    const o = { scale: 1_000_000n, lagSlots: 0n };
     const feeds = [scriptedSource('helius-ws', true, ['helius'])];
     let h!: H;
     h = makeWorker({ timers: dueTimers(T - 16 * 86_400_000), sources: () => feeds, watchRead: (a) => {
       readAt.push(h.timers.now());
-      return scaledRead(h, () => o.scale, [])(a);
+      return scaledRead(h, () => o.scale, [])(a).then((r) => ({ ...r, slot: r.slot - o.lagSlots }));
     }, config: { ZEROED_HEALTH_ADDR: `127.0.0.1:${port}`, ZEROED_API_ADDR: `127.0.0.1:${port + 1}` } });
     const m = new Market(h);
     await boot(h, m, feeds);
@@ -537,6 +538,16 @@ describe('§18: the feed dies for 5 minutes with a position open and the pool fa
     expect(mine().find((l) => l['action'] === 'trigger_exit')!['reasons']).toEqual(expect.arrayContaining([expect.stringMatching(/^price_stop/)]));
     await h.worker.stop();
   }, 120_000);
+
+  it('a node that answers from a bank far behind the live head is refused and alerted, never taken as a fresh price (WATCH-1d, audit)', async () => {
+    const { h, m, readAt, o, w } = await quietHeld(18922);
+    o.lagSlots = 20n;
+    const quiet = readAt.length;
+    await until(m, () => h.worker.health().critical.length > 0, w.verifyMs + 5_000, () => m.slot(), 400);
+    expect(readAt.length).toBeGreaterThan(quiet);
+    expect(h.worker.health().critical).toEqual([expect.stringMatching(new RegExp(`^${MINT}: no fresh price \\(the read's bank is slot \\d+, 1\\d slots behind the head \\d+ \\(at most 2\\)\\)$`))]);
+    await h.worker.stop();
+  }, 60_000);
 
   it('a quiet held pool whose stream gaps loses its proof: the watch reads on its next look (WATCH-1c)', async () => {
     const { h, m, pm, readAt, w } = await quietHeld(18920);

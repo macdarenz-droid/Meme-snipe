@@ -1229,6 +1229,23 @@ Built to the supervisor's revised spec and the consensus rulings that followed i
     - a carry of other reserves accepted;
     - no verify read;
     - the watch judging a carried market by the pool fact's release.
+- **2026-10-04 · A snapshot's bank is held to the chain head (WATCH-1d, external audit).**
+  - **The defect.** The audit reproduced it on d92b73e and 12ae9f5. A node answered from the same bank twice, 10 minutes apart. Both answers were taken as fresh, because the read asked for no minimum bank, nothing compared the bank with the chain's progress, and the snapshot was dated by its receipt.
+  - **The fix.**
+    - The read sets `minContextSlot` to the live head minus `maxStateSlotLag`. A node behind that refuses instead of answering.
+    - A bank older than that while the head is live is refused, with the alert.
+    - The bound is the policy's `maxStateSlotLag` (2 slots, about 0.53–0.8 s at the measured 267 ms mean and the 400 ms guard figure; docs/RESEARCH.md "Slot time"). That is the same lag the gates accept for chain-state evidence, so a snapshot is held to the rule every pool read already meets.
+    - The head is the feed's last released slot notice. It counts as live while it moved within `staleMs + everyMs`.
+    - With no live head (the feed is dead, which is when the watch matters most), the bank must still move. The same bank again is not new, so it is not put and the market keeps its first read's age; once that stands for `staleMs` it is refused and alerted. A bank that goes back is refused.
+  - **Snapshots confirm, never chase.** A snapshot newer than the pool fact that reads the very same reserves confirms the fact: the pool fact stays the market, as fresh as that read, and the watch counts it from the read. A confirmed bank sits a slot or two ahead of the feed's facts, so without this a verify read handed the market to the snapshot, and the watch then chased each newer bank with a read every ~0.6 s on a healthy, trading pool.
+    - This was found once the harness's scripted read answered at the chain's own slot (two behind its tip) instead of the feed's released slot.
+  - **Tests.**
+    - The audit's case: the same bank for 10 minutes on a dead feed is put once, never again, and alerted. It failed before.
+    - A lagging node (10 slots behind) beside a live head is asked for a minimum bank, refused, and alerted. Within the bound it is taken.
+    - A bank going back is refused.
+    - On the worker: a node 19 slots behind the live head raises the critical alert, with the head and the bound in the reason.
+    - The healthy trading minute keeps its 2 verify reads.
+  - **Mutants.** 7 of 7 killed: no lag check, no `minContextSlot`, a repeat that refreshes, a repeat that never alerts, a bank going back accepted, no head wired, a confirming snapshot taking the market.
 - **On POS-1's merge (agreed with its builder):**
   - poolOf null, or a pool fact flagged `partial`, reads at once.
   - The flag is checked only when the pool fact is the newest whole market, so a newer snapshot still wins.

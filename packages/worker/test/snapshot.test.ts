@@ -138,8 +138,10 @@ describe('the second path (LiveProviders.watchRead)', () => {
     const timers = new ManualTimers(0);
     const http = scriptedHttp(rpcHandler((method) => (method === 'getMultipleAccounts' ? { context: { slot: F.slot }, value: F.accounts.map((a) => (a.dataBase64 === null ? null : { owner: a.owner, lamports: 1, data: [a.dataBase64, 'base64'], executable: false, rentEpoch: 0 })) } : undefined)));
     const providers = new LiveProviders({ tradeStreams: false, secrets: testSecrets, http, factory: new FakeSocketHub().factory, credits: new CreditBook(tempState(), timers) });
-    const r = await providers.watchRead()(F.accounts.map((a) => a.address));
+    const r = await providers.watchRead()(F.accounts.map((a) => a.address), BigInt(F.slot) - 2n);
     expect(r.slot).toBe(BigInt(F.slot));
+    // WATCH-1d: the read names the oldest bank it accepts, so a lagging node refuses rather than answer from it.
+    expect((JSON.parse(http.calls[0]!.body ?? '{}') as { params: [unknown, { minContextSlot?: number; commitment: string }] }).params[1]).toEqual({ encoding: 'base64', commitment: 'confirmed', minContextSlot: F.slot - 2 });
     expect(decodeSnapshot(F.mint, F.pool, r.slot, r.accounts)).toMatchObject({ ok: true });
     expect(http.calls).toHaveLength(1);
     expect(new URL(http.calls[0]!.url).host).toMatch(/alchemy/);
@@ -154,7 +156,8 @@ describe('the second path (LiveProviders.watchRead)', () => {
     // The month's budget at its halt share: every other class is refused, the exit's price read still goes.
     providers.alchemy.resetBudget(ALCHEMY_FREE.budget!.monthlyCredits * ALCHEMY_FREE.budget!.haltShare);
     expect(providers.alchemy.halted).toBe(true);
-    const again = await providers.watchRead()(F.accounts.map((a) => a.address));
+    const again = await providers.watchRead()(F.accounts.map((a) => a.address), null);
+    expect((JSON.parse(http.calls[1]!.body ?? '{}') as { params: [unknown, Record<string, unknown>] }).params[1]).toEqual({ encoding: 'base64', commitment: 'confirmed' });
     expect(again.slot).toBe(BigInt(F.slot));
     expect(providers.alchemy.status().granted).toEqual([2, 0, 0, 0]);
   });
@@ -233,16 +236,16 @@ describe('the watch\'s read latency (review of #87)', () => {
     const state = { baseReserve: pool.baseVault, quoteVault: pool.quoteVault, virtualQuoteReserves: pool.pool.virtualQuoteReserves ?? 0n };
     const slot = pool.obs.slot ?? 0n;
     const carry = (o: Partial<CarryFact> = {}): CarryFact => ({ pool: pool.address, slot: slot + 3n, state, obs: { receivedAt: pool.obs.receivedAt + 1_200 }, ...o });
-    expect(chooseMarket(pool, null, carry())).toEqual({ kind: 'pool', pool, atMs: pool.obs.receivedAt + 1_200, carried: true });
+    expect(chooseMarket(pool, null, carry())).toEqual({ kind: 'pool', pool, atMs: pool.obs.receivedAt + 1_200, carried: true, confirmedAtMs: null });
     // Other reserves (a carry of a state the pool fact is not), another pool, an older carry: the pool fact's own moment.
     for (const c of [carry({ state: { ...state, quoteVault: state.quoteVault + 1n } }), carry({ pool: 'x' }), carry({ obs: { receivedAt: pool.obs.receivedAt - 1 } })]) {
-      expect(chooseMarket(pool, null, c)).toEqual({ kind: 'pool', pool, atMs: pool.obs.receivedAt, carried: false });
+      expect(chooseMarket(pool, null, c)).toEqual({ kind: 'pool', pool, atMs: pool.obs.receivedAt, carried: false, confirmedAtMs: null });
     }
     // A flagged fact is never carried.
     const flagged = parsePool({ ...(raw as object), obs: { ...pool.obs, quality: ['partial'] } })!;
     expect(chooseMarket(flagged, null, carry())).toEqual({ kind: 'flagged', pool: flagged });
     // A carry from before the pool fact's slot proves nothing about it, whatever its receipt time.
-    expect(chooseMarket(pool, null, carry({ slot: slot - 1n }))).toEqual({ kind: 'pool', pool, atMs: pool.obs.receivedAt, carried: false });
+    expect(chooseMarket(pool, null, carry({ slot: slot - 1n }))).toEqual({ kind: 'pool', pool, atMs: pool.obs.receivedAt, carried: false, confirmedAtMs: null });
     // A flagged fact's carry never outranks a snapshot newer than the fact itself.
     const between: SnapshotFact = { pool: pool.address, slot: slot + 1n, atMs: pool.obs.receivedAt + 500, state, ctx: {} as SnapshotFact['ctx'] };
     expect(chooseMarket(flagged, between, carry())).toEqual({ kind: 'snapshot', snap: between });
@@ -251,4 +254,84 @@ describe('the watch\'s read latency (review of #87)', () => {
     expect(chooseMarket(pool, snap(state.quoteVault), carry())).toMatchObject({ kind: 'pool', carried: true });
     expect(chooseMarket(pool, snap(state.quoteVault - 1n), carry())).toMatchObject({ kind: 'snapshot' });
   });
+
+describe('a snapshot\'s bank is held to the chain head (WATCH-1d, audit)', () => {
+  /** A watch over one held pool whose market is always due for a read; `slot` is the bank the node answers from. */
+  const watch = (o: { slot: () => bigint; head: () => { slot: bigint; atMs: number } | null }) => {
+    const timers = new ManualTimers(0);
+    const put: { slot: bigint; atMs: number }[] = [];
+    const alerts: string[] = [];
+    const asked: (bigint | null)[] = [];
+    const accounts = read();
+    const w = new PositionWatch({
+      timers, everyMs: 200, staleMs: 500, latencyMs: 400, maxLagSlots: 2,
+      held: () => [{ mint: F.mint, pool: F.pool }], marketAt: () => (put.length === 0 ? null : put.at(-1)!.atMs),
+      read: (addresses, min) => {
+        asked.push(min);
+        return Promise.resolve({ slot: o.slot(), accounts: addresses.length === 1 ? [accounts[0]!] : accounts });
+      },
+      head: o.head, put: (s, atMs) => void put.push({ slot: s.slot, atMs }), alert: (_m, why) => void alerts.push(why), cleared: () => void alerts.push('cleared'),
+    });
+    const run = async (ms: number) => {
+      for (let t = 0; t < ms; t += 100) {
+        timers.advance(100);
+        for (let k = 0; k < 3; k++) await new Promise<void>((r) => setImmediate(r));
+      }
+    };
+    return { timers, w, put, alerts, asked, run };
+  };
+
+  it('the same bank twice, 10 minutes apart, is not a fresh price: refused once it has stood for the stale limit, and alerted', async () => {
+    // The audit's case: a node answers from one bank whatever the time; the feed is dead, so there is no live head.
+    const x = watch({ slot: () => 1_000n, head: () => null });
+    x.w.start();
+    await x.run(1_000);
+    expect(x.put.map((p) => p.slot)).toEqual([1_000n]);
+    const first = x.put[0]!.atMs;
+    await x.run(600_000);
+    x.w.stop();
+    // Never put again: the market stays as old as that first read, and the alert names the bank.
+    expect(x.put).toEqual([{ slot: 1_000n, atMs: first }]);
+    expect(x.alerts[0]).toMatch(/^the read's bank is still slot 1000, first read \d+ ms ago$/);
+    expect(x.alerts.filter((a) => a === 'cleared')).toEqual([]);
+  });
+
+  it('a lagging node beside a live head: asked for no bank older than the head allows, refused when it answers older, alerted', async () => {
+    let head = 5_000n;
+    let at = 0;
+    const x = watch({ slot: () => head - 10n, head: () => ({ slot: head, atMs: at }) });
+    x.w.start();
+    for (let k = 0; k < 20; k++) {
+      head += 1n;
+      at = x.timers.now();
+      await x.run(400);
+    }
+    x.w.stop();
+    expect(x.put).toEqual([]);
+    expect(x.asked.length).toBeGreaterThan(0);
+    expect(x.asked.every((m) => m !== null)).toBe(true);
+    expect(x.alerts[0]).toMatch(/^the read's bank is slot \d+, 10 slots behind the head \d+ \(at most 2\)$/);
+    // Within the bound it is taken, and the alert clears.
+    const y = watch({ slot: () => head - 2n, head: () => ({ slot: head, atMs: at }) });
+    y.w.start();
+    for (let k = 0; k < 5; k++) {
+      head += 1n;
+      at = y.timers.now();
+      await y.run(400);
+    }
+    y.w.stop();
+    expect(y.put.length).toBeGreaterThan(0);
+    expect(y.asked.at(-1)).toBe(head - 2n);
+    // A bank that goes back is refused.
+    let s = 2_000n;
+    const z = watch({ slot: () => s, head: () => null });
+    z.w.start();
+    await z.run(600);
+    s = 1_999n;
+    await z.run(2_000);
+    z.w.stop();
+    expect(z.put.map((p) => p.slot)).toEqual([2_000n]);
+    expect(z.alerts[0]).toBe('the read\'s bank is slot 1999, behind the last one taken (2000)');
+  });
+});
 });

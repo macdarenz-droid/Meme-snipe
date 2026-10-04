@@ -138,7 +138,7 @@ const isFlagged = (p: PoolFact): boolean => p.obs.quality.some((q) => q !== 'bac
  */
 export type MarketChoice =
   | { readonly kind: 'snapshot'; readonly snap: SnapshotFact }
-  | { readonly kind: 'pool'; readonly pool: PoolFact; readonly atMs: number; readonly carried: boolean }
+  | { readonly kind: 'pool'; readonly pool: PoolFact; readonly atMs: number; readonly carried: boolean; readonly confirmedAtMs: number | null }
   | { readonly kind: 'flagged'; readonly pool: PoolFact }
   | { readonly kind: 'none' };
 
@@ -147,10 +147,16 @@ export const chooseMarket = (pool: PoolFact | null, snap: SnapshotFact | null, c
   const carried = pool !== null && carry !== null && !isFlagged(pool) && !disagrees && carry.pool === pool.address && sameReserves(carry.state, pool)
     && carry.obs.receivedAt > pool.obs.receivedAt && (pool.obs.slot === null || carry.slot >= pool.obs.slot);
   const at = pool === null ? null : carried ? { slot: carry!.slot, receivedAt: carry!.obs.receivedAt } : pool.obs;
-  if (snap !== null && snapshotWins(snap, at)) return { kind: 'snapshot', snap };
+  if (snap !== null && snapshotWins(snap, at)) {
+    // A newer snapshot that reads the very reserves of an unflagged pool fact confirms it (WATCH-1d): the pool fact stays
+    // the market, as fresh as that read. Otherwise a confirmed bank a slot ahead of the feed would take the market over
+    // after every verify read, and the watch would chase it read after read.
+    if (pool !== null && !isFlagged(pool) && sameReserves(snap.state, pool)) return { kind: 'pool', pool, atMs: Math.max(at!.receivedAt, snap.atMs), carried, confirmedAtMs: snap.atMs };
+    return { kind: 'snapshot', snap };
+  }
   if (pool === null) return { kind: 'none' };
   if (isFlagged(pool)) return { kind: 'flagged', pool };
-  return { kind: 'pool', pool, atMs: at!.receivedAt, carried };
+  return { kind: 'pool', pool, atMs: at!.receivedAt, carried, confirmedAtMs: null };
 };
 
 /** Machine-read reason on `approve_risk`: the reservation request the worker sends to the ledger. */
