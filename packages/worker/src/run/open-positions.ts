@@ -33,3 +33,14 @@ export const openPositionsHealth = (positions: readonly PositionState[], s: Posi
       };
     });
 };
+
+/**
+ * ALERT-EXIT B1: the critical line for every position whose exit is booked blocked, for the heartbeat's `critical` list
+ * (the watchdog pushes each to the owner). Read from the book's state, so a line stays up while the exit is blocked
+ * (its retries waiting or used) and goes when an exit owns it again or it closes. The part before " (" names the alert;
+ * the reason follows in brackets.
+ */
+export const exitCritical = (positions: readonly PositionState[]): string[] =>
+  positions.filter((p) => p.status === 'exit_blocked')
+    .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+    .map((p) => `${p.mint}: exit blocked, position ${p.id} (${p.blockedReason ?? 'no reason recorded'})`);

@@ -1,6 +1,8 @@
 // Watchdog logic with no Cloudflare APIs, so it runs and is tested in plain Node. worker.ts wires it to the
 // Worker cron, the Durable Object storage and Telegram.
 
+export interface HeartbeatPosition { mint: string; qty: number; entry: number; stop: number; mark: number | null; last_exit_attempt_ts: number | null }
+
 /** What the worker reports every 15–30 s (security.md 5.2). Fields the stub cannot know yet are null. */
 export interface Heartbeat {
   seq: number;
@@ -12,7 +14,9 @@ export interface Heartbeat {
   wallet?: string | null;
   last_processed_slot: number | null;
   feed_ages_ms: Record<string, number>;
-  open_position: { mint: string; qty: number; entry: number; stop: number; mark: number | null; last_exit_attempt_ts: number | null } | null;
+  open_position: HeartbeatPosition | null;
+  /** Every open position (ALERT-EXIT N3); `open_position` is its first entry, kept for older senders. */
+  open_positions?: HeartbeatPosition[];
   unresolved_intents: { count: number; oldest_age_s: number | null };
   signer: string;
   lease_epoch: number | null;
@@ -20,7 +24,10 @@ export interface Heartbeat {
   paused: boolean;
   /** The Telegram chat the server paired with (/pair); the watchdog learns it only from signed heartbeats. */
   owner_chat_id?: string | null;
-  /** Critical alerts the worker raised (WATCH-1: a held position with no fresh price), one line each. */
+  /**
+   * Critical alerts up in the worker, one line each (WATCH-1: a held position with no fresh price; ALERT-EXIT: an exit
+   * booked blocked). The part before " (" names the alert; a reason may follow in brackets.
+   */
   critical?: string[];
 }
 
@@ -133,6 +140,18 @@ export function limitsFrom(env: Record<string, unknown>): Limits {
   };
 }
 
+/** The heartbeat's open positions: `open_positions` when sent, else `open_position` alone (an older sender). */
+export function openPositions(hb: Heartbeat): HeartbeatPosition[] {
+  const list = Array.isArray(hb.open_positions) ? hb.open_positions : hb.open_position ? [hb.open_position] : [];
+  return list.filter((p): p is HeartbeatPosition => typeof p === 'object' && p !== null && typeof p.mint === 'string');
+}
+
+/** A critical line's name: the text before its bracketed reason. */
+export const criticalName = (line: string): string => {
+  const i = line.indexOf(' (');
+  return i < 0 ? line : line.slice(0, i);
+};
+
 /** The independent checks (security.md 5.2). Nothing is checked before the first heartbeat ever arrives. */
 export function evaluate(s: Stored | undefined, now: number, l: Limits, chain: ChainView): Alert[] {
   if (!s) return [];
@@ -144,17 +163,21 @@ export function evaluate(s: Stored | undefined, now: number, l: Limits, chain: C
     const lag = chain.slot - hb.last_processed_slot;
     if (lag > l.slotLagMax) out.push({ key: 'slot_lag', text: `Worker is ${lag} slots behind the chain (limit ${l.slotLagMax}).` });
   }
+  const open = openPositions(hb);
   if (chain.heldMints) {
-    const reported = hb.open_position?.mint ?? null;
+    const reported = [...new Set(open.map((p) => p.mint))];
     const held = chain.heldMints;
-    if (reported && !held.includes(reported)) out.push({ key: 'position', text: `Worker reports an open position in ${reported}, but the wallet holds none on chain.` });
-    const extra = held.filter((m) => m !== reported);
-    if (extra.length) out.push({ key: 'position_unreported', text: `Wallet holds ${extra.join(', ')} on chain, but the worker reports ${reported ? 'only ' + reported : 'no position'}.` });
+    for (const m of reported) {
+      if (!held.includes(m)) out.push({ key: `position:${m}`, text: `Worker reports an open position in ${m}, but the wallet holds none on chain.` });
+    }
+    const extra = held.filter((m) => !reported.includes(m));
+    if (extra.length) out.push({ key: 'position_unreported', text: `Wallet holds ${extra.join(', ')} on chain, but the worker reports ${reported.length ? 'only ' + reported.join(', ') : 'no position'}.` });
   }
-  const p = hb.open_position;
-  if (p && num(p.mark) && p.mark < p.stop) {
+  // Every open position's stop (N3): raising maxOpen never leaves one unwatched.
+  for (const p of open) {
+    if (!(num(p.mark) && num(p.stop) && p.mark < p.stop)) continue;
     const since = num(p.last_exit_attempt_ts) ? Math.round((now - p.last_exit_attempt_ts) / 1000) : null;
-    if (since === null || since > l.stopNoExitS) out.push({ key: 'stop', text: `${p.mint} is below its stop with no exit attempt in the last ${l.stopNoExitS} s.` });
+    if (since === null || since > l.stopNoExitS) out.push({ key: `stop:${p.mint}`, text: `${p.mint} is below its stop with no exit attempt in the last ${l.stopNoExitS} s.` });
   }
   const oldest = hb.unresolved_intents.oldest_age_s;
   if (hb.unresolved_intents.count > 0 && num(oldest) && oldest > l.intentMaxAgeS) {
@@ -163,7 +186,9 @@ export function evaluate(s: Stored | undefined, now: number, l: Limits, chain: C
   if (num(hb.sol_reserve) && hb.sol_reserve < l.solReserveFloor) out.push({ key: 'reserve', text: `SOL reserve ${hb.sol_reserve} is below the floor ${l.solReserveFloor}.` });
   if (hb.signer === 'unreachable' || hb.signer === 'timeout') out.push({ key: 'signer', text: `Worker cannot reach the signer (${hb.signer}).` });
   const critical = Array.isArray(hb.critical) ? hb.critical.filter((c): c is string => typeof c === 'string' && c !== '') : [];
-  if (critical.length > 0) out.push({ key: 'worker_critical', text: `Worker critical: ${critical.join('; ')}.` });
+  // One alert per line (ALERT-EXIT B1), keyed by its name without the bracketed reason: a new alert is pushed at once,
+  // never folded into one already up (which would wait for its repeat).
+  for (const c of [...new Set(critical)]) out.push({ key: `worker_critical:${criticalName(c)}`, text: `Worker critical: ${c}.` });
   return out;
 }
 
@@ -215,7 +240,8 @@ export function statusText(s: Stored | undefined, now: number, paused: { at: num
     const { hb } = s;
     lines.push(`Heartbeat: ${Math.round((now - s.receivedAt) / 1000)} s ago (seq ${hb.seq}).`);
     lines.push(`Release: ${hb.git_sha.slice(0, 12)}, policy ${hb.policy_version}${hb.stub ? ' (stub worker)' : ''}.`);
-    lines.push(`Position: ${hb.open_position ? `${hb.open_position.mint}, stop ${hb.open_position.stop}` : 'none'}.`);
+    const open = openPositions(hb);
+    lines.push(`Position${open.length > 1 ? 's' : ''}: ${open.length ? open.map((p) => `${p.mint}, stop ${p.stop}`).join('; ') : 'none'}.`);
     lines.push(`Unresolved intents: ${hb.unresolved_intents.count}.`);
     lines.push(`Signer: ${hb.signer}.`);
     lines.push(`SOL reserve: ${hb.sol_reserve ?? 'unknown'}.`);

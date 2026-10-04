@@ -38,12 +38,12 @@ import { type AlertSeen, type ApiInputs, type DecisionRow, checkOf, collectAlert
 import type { FactContext, FactSource } from './facts.ts';
 import { engineFeed, type EngineFeed } from './engine-feed.ts';
 import { startHealthServer } from './health.ts';
-import { type HeartbeatPosition, heartbeatBody, sendHeartbeat } from './heartbeat.ts';
+import { heartbeatBody, heartbeatPositions, sendHeartbeat } from './heartbeat.ts';
 import { jsonText } from './json.ts';
 import { Journal } from './journal.ts';
 import { type PaperMarket, type PaperState, PaperWorld, type SimLeg } from './paper-world.ts';
 import { Recorder, sealLeftovers } from './recorder.ts';
-import { entryPrice, openPositionsHealth } from './open-positions.ts';
+import { exitCritical, openPositionsHealth } from './open-positions.ts';
 import { riskSnapshot } from '../../../core/src/risk/index.ts';
 import { markSettings, riskAccount } from '../engine/marks.ts';
 import type { DeployerIndexState, RugLabellerState } from '../../../core/src/gates/index.ts';
@@ -1279,7 +1279,7 @@ export class Worker {
       sol_reserve: this.#account.state.walletLamports === null ? null : String(this.#account.state.walletLamports),
       paused: this.#ctl.paused, boot: this.#boot, pid: process.pid, uptime_s: Math.round((now - this.#started) / 1000),
       rss_bytes: process.memoryUsage().rss, mode: 'paper', recorder: this.#d.config.recorder ? 'on' : 'off', simulation: this.#d.config.simulate ? 'on' : 'off',
-      reconciled: this.#reconciled, exit_capable: this.#exitCapable(now), quota: ops.quota, lookups: ops.lookups, entries_halted: this.#halted.length > 0, halt_reasons: [...this.#halted], critical: [...(this.#watch?.critical ?? [])], feeds, journal_seq: this.#journal.seq, signing_key: false,
+      reconciled: this.#reconciled, exit_capable: this.#exitCapable(now), quota: ops.quota, lookups: ops.lookups, entries_halted: this.#halted.length > 0, halt_reasons: [...this.#halted], critical: [...(this.#watch?.critical ?? []), ...exitCritical(Object.values(this.#engine.book.positions))], feeds, journal_seq: this.#journal.seq, signing_key: false,
       entry_rule: this.#d.config.strategy.name,
       ...(this.#d.strategy.s0Diagnostic === true ? { s0_diagnostic: S0_DIAGNOSTIC_PARTS } : {}),
     };
@@ -1293,18 +1293,17 @@ export class Worker {
     this.#beatSeq++;
     if (url === null || hb.key === null) return;
     const h = this.health();
-    const p = Object.values(this.#engine.book.positions).find((x) => x.status !== 'closed' && x.status !== 'opening');
-    const saved = p === undefined ? undefined : this.#strategy.saved()[p.id];
-    const mark = p === undefined ? null : this.#freshDisplayQuote(p.id);
-    const lastExit = p === undefined ? null : Math.max(...Object.values(this.#engine.book.intents).filter((i) => i.intent.positionId === p.id && i.intent.purpose === 'exit').map((i) => this.#intentAt.get(i.intent.id) ?? 0), 0);
-    const position: HeartbeatPosition | null = p === undefined ? null : {
-      // Unknown is null, never 0 (a 0 stop or mark reads as a price to the watchdog). Entry, stop and mark share one unit:
-      // an executable price (PRICE_SCALE lamports per token).
-      mint: p.mint, qty: Number(p.quantity), entry: Number(entryPrice(p)), stop: saved === undefined ? (null as unknown as number) : Number(saved.plan.stopPrice),
-      mark: mark === null ? null : Number(mark.price),
-      last_exit_attempt_ts: lastExit === 0 ? null : lastExit,
-    };
-    const r = await sendHeartbeat(hb.http, url, hb.key, heartbeatBody(h, position, hb.ownerChatId), this.#d.timers.now());
+    // Every open position, in /health's order (oldest first), so the watchdog checks each one's stop (ALERT-EXIT N3).
+    const saved = this.#strategy.saved();
+    const positions = heartbeatPositions(h, this.#engine.book.positions, {
+      stop: (id) => saved[id]?.plan.stopPrice ?? null,
+      mark: (id) => this.#freshDisplayQuote(id)?.price ?? null,
+      lastExitAt: (id) => {
+        const at = Math.max(...Object.values(this.#engine.book.intents).filter((i) => i.intent.positionId === id && i.intent.purpose === 'exit').map((i) => this.#intentAt.get(i.intent.id) ?? 0), 0);
+        return at === 0 ? null : at;
+      },
+    });
+    const r = await sendHeartbeat(hb.http, url, hb.key, heartbeatBody(h, positions, hb.ownerChatId), this.#d.timers.now());
     if (!r.ok) {
       this.#d.log(`Heartbeat not accepted: ${r.reason}.`);
       return;

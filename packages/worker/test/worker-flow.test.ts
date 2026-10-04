@@ -11,7 +11,8 @@ import { checkJournal } from '../../runner/src/journal.ts';
 import type { LogRecord } from '../../core/src/engine/index.ts';
 import { EXEC_HEALTH_KEY, migrationKey } from '../../core/src/gates/index.ts';
 import { passingFacts } from '../../core/test/gates/world.ts';
-import { parseHeartbeat } from '../../ops/src/watchdog/logic.ts';
+import { evaluate, limitsFrom, parseHeartbeat } from '../../ops/src/watchdog/logic.ts';
+import { heartbeatBody } from '../src/run/heartbeat.ts';
 import { HALT_KEY, SEEDING, s0EntryAt, universeOfKey } from '../src/engine/strategy.ts';
 import { FILL_CONFIG, PRICE_SCALE, TRIAL_POLICY } from '../../core/src/config/index.ts';
 import type { SavedExit } from '../src/engine/strategy.ts';
@@ -583,6 +584,26 @@ describe('an exit owner never waits booked blocked for a fresh market (EXIT-1d)'
     expect(first('exit waiting for a fresh market')).toEqual([]);
     expect(b.worker.book.positions[pid]!.status).toBe('exit_blocked');
     expect(b.worker.strategy.waitingExits().has(pid)).toBe(false);
+    await b.worker.stop();
+  });
+
+  it('a blocked exit reaches the owner: the heartbeat\'s critical list names it and the watchdog pushes it, with no mark to fire the stop check (ALERT-EXIT B1)', async () => {
+    const { h, pid } = await dueAfterDowntime();
+    const { b, m: m2 } = await reboot(h);
+    await m2.run(800, 400, () => m2.slot());
+    m2.pool();
+    await m2.run(800, 400, () => m2.slot());
+    // A drained pool: the sale cannot be quoted, so the exit is booked blocked and the position has no mark.
+    expect(await until(m2, 60_000, () => b.worker.book.positions[pid]!.status === 'exit_blocked', () => {
+      m2.slot();
+      m2.pool(0n);
+    })).toBe(true);
+    const reason = b.worker.book.positions[pid]!.blockedReason!;
+    expect(reason.startsWith('no quote: ')).toBe(true);
+    const hb = parseHeartbeat(heartbeatBody(b.worker.health(), [], null))!;
+    expect(hb.critical).toEqual([`${MINT}: exit blocked, position ${pid} (${reason})`]);
+    const alerts = evaluate({ hb, receivedAt: m2.now }, m2.now, limitsFrom({}), { slot: null, heldMints: null });
+    expect(alerts).toEqual([{ key: `worker_critical:${MINT}: exit blocked, position ${pid}`, text: `Worker critical: ${MINT}: exit blocked, position ${pid} (${reason}).` }]);
     await b.worker.stop();
   });
 

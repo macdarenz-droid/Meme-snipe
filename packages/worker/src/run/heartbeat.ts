@@ -5,9 +5,11 @@
 import { createHmac } from 'node:crypto';
 import type { Health } from '../../../runner/src/contract.ts';
 import type { HttpClient } from '../providers/index.ts';
+import type { PositionState } from '../../../core/src/lifecycle/index.ts';
 import { jsonText } from './json.ts';
+import { entryPrice } from './open-positions.ts';
 
-/** The watchdog's `open_position` (numbers, plus the mark and the last exit attempt). */
+/** One of the watchdog's `open_positions` (numbers, plus the mark and the last exit attempt). */
 export interface HeartbeatPosition {
   readonly mint: string;
   readonly qty: number;
@@ -17,10 +19,37 @@ export interface HeartbeatPosition {
   readonly last_exit_attempt_ts: number | null;
 }
 
-export const heartbeatBody = (h: Health, position: HeartbeatPosition | null, ownerChatId: string | null): string => {
+/** What the heartbeat needs per position, besides the book's state. */
+export interface HeartbeatSources {
+  /** The saved exit plan's stop; null without a saved plan (sent as null, never 0). */
+  readonly stop: (id: string) => bigint | null;
+  /** A mark fresh enough to show (30 s); null otherwise. */
+  readonly mark: (id: string) => bigint | null;
+  /** When the latest exit attempt was sent; null when none was. */
+  readonly lastExitAt: (id: string) => number | null;
+}
+
+/**
+ * The watchdog's positions (ALERT-EXIT N3): every one of /health's open positions (oldest first), so the
+ * watchdog checks each one's stop. Unknown is null, never 0 (a 0 stop or mark reads as a price to the watchdog). Entry,
+ * stop and mark share one unit: an executable price (PRICE_SCALE lamports per token).
+ */
+export const heartbeatPositions = (h: Pick<Health, 'open_positions'>, book: Readonly<Record<string, PositionState>>, s: HeartbeatSources): HeartbeatPosition[] =>
+  h.open_positions.map((o) => {
+    const p = book[o.trade]!;
+    const stop = s.stop(p.id);
+    const mark = s.mark(p.id);
+    return {
+      mint: p.mint, qty: Number(p.quantity), entry: Number(entryPrice(p)), stop: stop === null ? (null as unknown as number) : Number(stop),
+      mark: mark === null ? null : Number(mark), last_exit_attempt_ts: s.lastExitAt(p.id),
+    };
+  });
+
+/** `positions`: every open position, oldest first (ALERT-EXIT N3); `open_position` is the first, kept for older readers. */
+export const heartbeatBody = (h: Health, positions: readonly HeartbeatPosition[], ownerChatId: string | null): string => {
   const feedAges: Record<string, number> = {};
   for (const [k, v] of Object.entries(h.feed_ages_ms)) if (v !== null) feedAges[k] = v;
-  return jsonText({ ...h, feed_ages_ms: feedAges, open_position: position, owner_chat_id: ownerChatId });
+  return jsonText({ ...h, feed_ages_ms: feedAges, open_position: positions[0] ?? null, open_positions: positions, owner_chat_id: ownerChatId });
 };
 
 export const signHeartbeat = (key: string, t: number, body: string): string =>

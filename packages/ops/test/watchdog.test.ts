@@ -82,16 +82,33 @@ describe('checks', () => {
 
   it('flags on-chain position mismatches both ways', () => {
     const pos = { mint: 'MintA', qty: 1, entry: 1, stop: 0.5, mark: 1, last_exit_attempt_ts: null };
-    expect(evaluate(stored(hb({ open_position: pos })), T0, L, { slot: null, heldMints: [] }).map((a) => a.key)).toEqual(['position']);
+    expect(evaluate(stored(hb({ open_position: pos })), T0, L, { slot: null, heldMints: [] }).map((a) => a.key)).toEqual(['position:MintA']);
     expect(evaluate(stored(hb()), T0, L, { slot: null, heldMints: ['MintB'] }).map((a) => a.key)).toEqual(['position_unreported']);
     expect(evaluate(stored(hb({ open_position: pos })), T0, L, { slot: null, heldMints: ['MintA'] })).toEqual([]);
   });
 
   it('flags a breached stop with no exit attempt in 60 s', () => {
     const pos = (last: number | null) => ({ mint: 'MintA', qty: 1, entry: 1, stop: 0.5, mark: 0.4, last_exit_attempt_ts: last });
-    expect(evaluate(stored(hb({ open_position: pos(null) })), T0, L, noChain).map((a) => a.key)).toEqual(['stop']);
+    expect(evaluate(stored(hb({ open_position: pos(null) })), T0, L, noChain).map((a) => a.key)).toEqual(['stop:MintA']);
     expect(evaluate(stored(hb({ open_position: pos(T0 - 30_000) })), T0, L, noChain)).toEqual([]);
-    expect(evaluate(stored(hb({ open_position: pos(T0 - 61_000) })), T0, L, noChain).map((a) => a.key)).toEqual(['stop']);
+    expect(evaluate(stored(hb({ open_position: pos(T0 - 61_000) })), T0, L, noChain).map((a) => a.key)).toEqual(['stop:MintA']);
+  });
+
+  it('checks the stop of every open position, not only the first (ALERT-EXIT N3)', () => {
+    const a = { mint: 'MintA', qty: 1, entry: 1, stop: 0.5, mark: 0.9, last_exit_attempt_ts: null };
+    const b = { mint: 'MintB', qty: 1, entry: 1, stop: 0.5, mark: 0.4, last_exit_attempt_ts: null };
+    // The second position is below its stop; the first is fine.
+    expect(evaluate(stored(hb({ open_position: a, open_positions: [a, b] })), T0, L, noChain)).toEqual([
+      { key: 'stop:MintB', text: 'MintB is below its stop with no exit attempt in the last 60 s.' },
+    ]);
+    // Both below: one alert each.
+    expect(evaluate(stored(hb({ open_position: a, open_positions: [{ ...a, mark: 0.4 }, b] })), T0, L, noChain).map((x) => x.key)).toEqual(['stop:MintA', 'stop:MintB']);
+    // Every reported mint is matched against the wallet.
+    expect(evaluate(stored(hb({ open_position: a, open_positions: [a, { ...b, mark: 1 }] })), T0, L, { slot: null, heldMints: ['MintA'] }).map((x) => x.key)).toEqual(['position:MintB']);
+    expect(evaluate(stored(hb({ open_position: a, open_positions: [a, { ...b, mark: 1 }] })), T0, L, { slot: null, heldMints: ['MintA', 'MintB'] })).toEqual([]);
+    // An older sender without the list: its one position still counts.
+    expect(evaluate(stored(hb({ open_position: { ...a, mark: 0.4 } })), T0, L, noChain).map((x) => x.key)).toEqual(['stop:MintA']);
+    expect(statusText(stored(hb({ open_position: a, open_positions: [a, b] })), T0, null, {}, null)).toContain('Positions: MintA, stop 0.5; MintB, stop 0.5.');
   });
 
   it('flags old unresolved intents, a low reserve and an unreachable signer', () => {
@@ -103,9 +120,23 @@ describe('checks', () => {
 describe('alert dedupe and escalation', () => {
   it('flags the worker\'s own critical alerts (WATCH-1), and nothing for an empty or missing list', () => {
     const a = evaluate(stored(hb({ critical: ['MintA: no fresh price (timeout)'] })), T0, L, noChain);
-    expect(a).toEqual([{ key: 'worker_critical', text: 'Worker critical: MintA: no fresh price (timeout).' }]);
+    expect(a).toEqual([{ key: 'worker_critical:MintA: no fresh price', text: 'Worker critical: MintA: no fresh price (timeout).' }]);
     expect(evaluate(stored(hb({ critical: [] })), T0, L, noChain)).toEqual([]);
     expect(evaluate(stored(hb()), T0, L, noChain)).toEqual([]);
+  });
+
+  it('one alert per critical line, so a new one is pushed at once while another is up (ALERT-EXIT B1)', () => {
+    const watch = 'MintA: no fresh price (timeout)';
+    const blocked = 'MintB: exit blocked, position p:MintB:1 (no quote: no-liquidity)';
+    const first = planAlerts({}, evaluate(stored(hb({ critical: [watch] })), T0, L, noChain), T0, L);
+    expect(first.lines).toEqual([`ALERT Worker critical: ${watch}.`]);
+    // A minute later an exit is blocked: it is sent now, not at the first alert's repeat.
+    const second = planAlerts(first.next, evaluate(stored(hb({ critical: [watch, blocked] })), T0 + 60_000, L, noChain), T0 + 60_000, L);
+    expect(second.lines).toEqual([`ALERT Worker critical: ${blocked}.`]);
+    // A changed reason is the same alert: no new push, the text follows.
+    const third = planAlerts(second.next, evaluate(stored(hb({ critical: ['MintA: no fresh price (HTTP 429)', blocked] })), T0 + 90_000, L, noChain), T0 + 90_000, L);
+    expect(third.lines).toEqual([]);
+    expect(third.next['worker_critical:MintA: no fresh price']!.text).toBe('Worker critical: MintA: no fresh price (HTTP 429).');
   });
 
   it('sends once, repeats every 5 min in the first hour, then hourly, and always sends a cleared line', () => {
