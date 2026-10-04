@@ -1411,12 +1411,13 @@ lock
 install -d -m 0755 "$(dirname "$EVIDENCE_INDEX")"
 (umask 022; evidence_index "$EVIDENCE_ROOT" > "$EVIDENCE_INDEX.new" 2>/dev/null && mv -f "$EVIDENCE_INDEX.new" "$EVIDENCE_INDEX") || rm -f "$EVIDENCE_INDEX.new"
 
-# 0. Funnel: the worker API must stay on the tailnet. Funnel on for any port is an alert, and it is turned off.
+# 0. Funnel: the worker API must stay on the tailnet. Funnel on for any port is an alert, and it is turned off. Each
+# tailscale call is bounded, so the minute check never hangs on it.
 if command -v tailscale >/dev/null 2>&1; then
-  public="$(tailscale serve status --json 2>/dev/null | funnel_ports)"
+  public="$(timeout 30 tailscale serve status --json 2>/dev/null | funnel_ports)"
   if [ -n "$public" ]; then
     alert funnel-on "ALERT Zeroed host: Tailscale Funnel was on ($(printf '%s' "$public" | tr '\n' ' ')), which makes the worker API public. Turning it off."
-    for hp in $public; do tailscale funnel --https="${hp##*:}" off >/dev/null 2>&1 || log "Could not turn Funnel off for $hp."; done
+    for hp in $public; do timeout 30 tailscale funnel --https="${hp##*:}" off >/dev/null 2>&1 || log "Could not turn Funnel off for $hp."; done
   else
     alert_clear funnel-on "CLEARED Zeroed host: Tailscale Funnel is off."
   fi
@@ -1820,7 +1821,8 @@ fi
 [[ "$WORKER_API_ADDR" =~ ^127\.0\.0\.1:[0-9]{1,5}$ ]] || { log "Stopped: the worker API address is not loopback."; exit 1; }
 
 # tailscale serve needs MagicDNS and HTTPS Certificates on the tailnet. Without them it prints a link to turn HTTPS on
-# and waits for the owner (its "https" node capability); so both are checked first and named here.
+# and waits for the owner (its "https" node capability); so both are checked first and named here. A serve the owner
+# set up by hand is fine: serving the same target again changes nothing, and the checks below still run.
 st="$(tailscale status --json)" || { log "Stopped: could not read Tailscale's status."; exit 1; }
 need=()
 jq -e '.CurrentTailnet.MagicDNSEnabled == true' <<<"$st" >/dev/null || need+=("MagicDNS")
@@ -1830,10 +1832,12 @@ if [ "${#need[@]}" -gt 0 ]; then
   msg="the live view needs $what on your tailnet. Open $TS_DNS_PAGE, turn on $what, then run zeroed-tailscale again."
   log "Stopped: $msg"
   notify "Zeroed host: $msg" && log "(This was also sent to your Telegram chat.)" || true
-  exit 3
+  exit 1
 fi
 
-tailscale funnel --https=443 off >/dev/null 2>&1 || true
+# No funnel command here, not even to turn Funnel off: that command first waits for the tailnet's Funnel capability,
+# and the wait never ends on a tailnet without Funnel. serve --https=443 itself clears Funnel for that port, and the
+# check below confirms it is off.
 served="$(mktemp)"
 trap 'rm -f "$served" "${out:-}"' EXIT
 if ! tailscale serve --bg --https=443 "http://$WORKER_API_ADDR" >"$served" 2>&1; then
@@ -1847,8 +1851,8 @@ fi
 if ! tailscale serve status --json | serve_ok; then
   cat "$served"
   # Anything else than exactly that (another target, another port, Funnel on) is taken down at once.
+  # serve reset clears the whole serve config, Funnel included.
   tailscale serve reset >/dev/null 2>&1 || true
-  tailscale funnel --https=443 off >/dev/null 2>&1 || true
   rm -f "$STATE_DIR/live_view"
   log "Stopped: tailscale serve did not publish only the worker API with Funnel off, so it was turned off again. Nothing is published."
   exit 1

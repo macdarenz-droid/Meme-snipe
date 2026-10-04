@@ -36,6 +36,12 @@ case "$1 ${2:-}" in
   "serve reset")
     rm -f "$S/serve.json" ;;
   "funnel --https="*)
+    # The funnel command waits for the tailnet's Funnel capability first, even for "off" (cli serve_v2.go,
+    # verifyFunnelEnabled). Funnel is never enabled for this tailnet unless the test switched it on in serve.json.
+    if ! jq -e '[(.AllowFunnel // {})[]] | any' "$S/serve.json" >/dev/null 2>&1; then
+      printf '\nFunnel is not enabled on your tailnet.\nTo enable, visit:\n\n         https://login.tailscale.com/f/funnel?node=e2e\n\n'
+      sleep 3600; exit 0
+    fi
     # "off" drops that port from AllowFunnel, as tailscaled does (the test turns Funnel on by editing serve.json).
     port="${2#--https=}"
     if [ "${3:-}" = off ] && [ -e "$S/serve.json" ]; then

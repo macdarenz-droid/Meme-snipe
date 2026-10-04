@@ -609,7 +609,9 @@ in_c "touch /var/lib/tailscale-stub/approve"
 wait "$TS_PID" || { cat "$LOGS/console/tailscale.txt"; fail "zeroed-tailscale"; }
 grep -q 'Live view: https://zeroed.tail-e2e.ts.net (your tailnet only, HTTPS, Funnel off).' "$LOGS/console/tailscale.txt" || fail "live view address"
 in_c "cat /var/lib/tailscale-stub/calls" >"$LOGS/tailscale-calls.txt"
-grep -qx 'up --hostname=zeroed --ssh=false --accept-routes=false --accept-dns=false --timeout=15m' "$LOGS/tailscale-calls.txt" && grep -qx 'funnel --https=443 off' "$LOGS/tailscale-calls.txt" && grep -qx 'serve --bg --https=443 http://127.0.0.1:8788' "$LOGS/tailscale-calls.txt" || fail "tailscale calls"
+grep -qx 'up --hostname=zeroed --ssh=false --accept-routes=false --accept-dns=false --timeout=15m' "$LOGS/tailscale-calls.txt" && grep -qx 'serve --bg --https=443 http://127.0.0.1:8788' "$LOGS/tailscale-calls.txt" || fail "tailscale calls"
+# OPS-1h: no funnel command (it would wait forever for a Funnel capability this tailnet does not have).
+! grep -q '^funnel' "$LOGS/tailscale-calls.txt" || fail "zeroed-tailscale ran a funnel command"
 in_c "zeroed-status" | has 'Live view: https://zeroed.tail-e2e.ts.net' || fail "status after the live view"
 in_c "zeroed-tailscale" | has 'Live view: https://zeroed' || fail "zeroed-tailscale is not safe to repeat"
 # Funnel switched on by someone: alert, turned off, then cleared; installs run the same check.
@@ -634,18 +636,18 @@ in_c "! test -e /var/lib/tailscale-stub/serve.json" || fail "bad serve left publ
 in_c "rm -f /var/lib/tailscale-stub/bad-serve"
 in_c "zeroed-status" | has 'Live view: off' || fail "status after a refused serve"
 # OPS-1h: a tailnet without HTTPS Certificates (or MagicDNS) is named with where to turn it on, on the console and in
-# the chat, and the script ends at once (exit 3); it never reaches the serve that would wait unseen for the owner.
+# the chat, and the script ends at once (exit 1); it never reaches the serve that would wait unseen for the owner.
 in_c "touch /var/lib/tailscale-stub/no-https"
 n0="$(wc -l < "$STATE/telegram.jsonl")"
 rc=0; timeout 60 docker exec "$C" bash -c "zeroed-tailscale" >"$LOGS/console/tailscale-no-https.txt" 2>&1 || rc=$?
-[ "$rc" = 3 ] || { cat "$LOGS/console/tailscale-no-https.txt"; fail "zeroed-tailscale without HTTPS: exit $rc, expected 3 (124 = it hung)"; }
+[ "$rc" = 1 ] || { cat "$LOGS/console/tailscale-no-https.txt"; fail "zeroed-tailscale without HTTPS: exit $rc, expected 1 (124 = it hung)"; }
 grep -qx 'Stopped: the live view needs HTTPS Certificates on your tailnet. Open https://login.tailscale.com/admin/dns, turn on HTTPS Certificates, then run zeroed-tailscale again.' "$LOGS/console/tailscale-no-https.txt" || fail "HTTPS step not named"
 tail -n +"$((n0 + 1))" "$STATE/telegram.jsonl" | grep -q "\"chat_id\":\"$T_CHAT2\",\"text\":\"Zeroed host: the live view needs HTTPS Certificates on your tailnet." || fail "HTTPS step not sent to the paired chat"
 in_c "tail -1 /var/lib/tailscale-stub/calls" | grep -qx 'status --json' || fail "zeroed-tailscale called tailscale after finding HTTPS off"
 in_c "! test -e /var/lib/tailscale-stub/serve.json && ! test -e /var/lib/zeroed-host/live_view" || fail "published without HTTPS"
 in_c "touch /var/lib/tailscale-stub/no-magicdns"
 rc=0; timeout 60 docker exec "$C" bash -c "zeroed-tailscale" >"$LOGS/console/tailscale-no-dns.txt" 2>&1 || rc=$?
-[ "$rc" = 3 ] && grep -q '^Stopped: the live view needs MagicDNS and HTTPS Certificates on your tailnet. Open https://login.tailscale.com/admin/dns' "$LOGS/console/tailscale-no-dns.txt" || fail "MagicDNS step not named (exit $rc)"
+[ "$rc" = 1 ] && grep -q '^Stopped: the live view needs MagicDNS and HTTPS Certificates on your tailnet. Open https://login.tailscale.com/admin/dns' "$LOGS/console/tailscale-no-dns.txt" || fail "MagicDNS step not named (exit $rc)"
 in_c "rm -f /var/lib/tailscale-stub/no-https /var/lib/tailscale-stub/no-magicdns"
 # A tailscale call that never answers ends with a Stopped line within its limit, and whatever it printed is shown.
 in_c "touch /var/lib/tailscale-stub/serve-hang"
@@ -655,8 +657,15 @@ grep -qx "Stopped: 'tailscale serve' did not finish within 5s." "$LOGS/console/t
 in_c "! test -e /var/lib/tailscale-stub/serve.json && ! test -e /var/lib/zeroed-host/live_view" || fail "published after a hanging serve"
 in_c "rm -f /var/lib/tailscale-stub/serve-hang"
 in_c "zeroed-tailscale" | has 'Live view: https://zeroed' || fail "zeroed-tailscale after HTTPS was turned on"
+in_c "test -s /var/lib/zeroed-host/live_view" || fail "live view state not written"
+# A serve the owner set up by hand (no live_view state file): running zeroed-tailscale again takes it over cleanly.
+in_c "zeroed-tailscale --off" >/dev/null
+in_c "tailscale serve --bg --https=443 http://127.0.0.1:8788 && ! test -e /var/lib/zeroed-host/live_view"
+rc=0; timeout 60 docker exec "$C" bash -c "zeroed-tailscale" >"$LOGS/console/tailscale-over-hand.txt" 2>&1 || rc=$?
+[ "$rc" = 0 ] && grep -q 'Live view: https://zeroed.tail-e2e.ts.net' "$LOGS/console/tailscale-over-hand.txt" || { cat "$LOGS/console/tailscale-over-hand.txt"; fail "zeroed-tailscale over a hand-made serve (exit $rc)"; }
+in_c "grep -qx zeroed.tail-e2e.ts.net /var/lib/zeroed-host/live_view" || fail "live view state not written over a hand-made serve"
 in_c "zeroed-tailscale --off" | has 'Live view off' || fail "zeroed-tailscale --off (after OPS-1h)"
-pass "live view: opt-in zeroed-tailscale shows the login link on the console and sends it to the paired chat, joins as zeroed (no Tailscale SSH), Funnel off, serves HTTPS 443 to 127.0.0.1:8788 only, safe to repeat, --off stops it, a serve that is not exactly the worker API is taken down by the script; a tailnet without HTTPS Certificates or MagicDNS is named with where to turn it on (console and chat, exit 3, no hang), and a tailscale call that hangs ends with a Stopped line within its limit; Funnel switched on is alerted and turned off by the minute check and by an install; the firewall admits only tailnet HTTPS"
+pass "live view: opt-in zeroed-tailscale shows the login link on the console and sends it to the paired chat, joins as zeroed (no Tailscale SSH), Funnel off, serves HTTPS 443 to 127.0.0.1:8788 only, safe to repeat, --off stops it, a serve that is not exactly the worker API is taken down by the script; a tailnet without HTTPS Certificates or MagicDNS is named with where to turn it on (console and chat, exit 1, no hang), no funnel command is run (it waits forever without Funnel), a hand-made serve is taken over, and a tailscale call that hangs ends with a Stopped line within its limit; Funnel switched on is alerted and turned off by the minute check and by an install; the firewall admits only tailnet HTTPS"
 
 # ---------- 11. Secret scan ----------
 in_c "journalctl --no-pager -o cat" >"$LOGS/container-journal.txt"

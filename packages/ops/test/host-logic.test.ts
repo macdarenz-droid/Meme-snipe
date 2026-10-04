@@ -285,7 +285,9 @@ describe('live view (tailscale serve)', () => {
     expect(ports({ AllowFunnel: { 'zeroed.tail1.ts.net:443': false } })).toBe('');
     expect(ports({ AllowFunnel: { 'zeroed.tail1.ts.net:443': true, 'zeroed.tail1.ts.net:8443': true } })).toBe('zeroed.tail1.ts.net:443\nzeroed.tail1.ts.net:8443');
     const check = read('ops/host/files/usr/local/sbin/zeroed-check');
-    expect(check).toContain('public="$(tailscale serve status --json 2>/dev/null | funnel_ports)"');
+    // OPS-1h: both calls are bounded, so the minute check never hangs on tailscale.
+    expect(check).toContain('public="$(timeout 30 tailscale serve status --json 2>/dev/null | funnel_ports)"');
+    expect(check).toContain('timeout 30 tailscale funnel --https="${hp##*:}" off');
     expect(check).toContain('alert funnel-on "ALERT');
     expect(check).toContain('tailscale funnel --https="${hp##*:}" off');
     expect(check).toContain('alert_clear funnel-on "CLEARED');
@@ -308,8 +310,17 @@ describe('live view (tailscale serve)', () => {
     const fail = ts.slice(ts.indexOf('if ! tailscale serve status --json | serve_ok; then'));
     expect(fail.indexOf('tailscale serve reset')).toBeGreaterThan(0);
     expect(fail.indexOf('tailscale serve reset')).toBeLessThan(fail.indexOf('exit 1'));
-    expect(fail.slice(0, fail.indexOf('exit 1'))).toContain('tailscale funnel --https=443 off');
     expect(fail.slice(0, fail.indexOf('exit 1'))).not.toContain('Run zeroed-tailscale --off');
+    // OPS-1h: no funnel command at all (it waits forever for the Funnel capability, even for "off"); serve --https=443
+    // clears Funnel for its port and serve reset clears it everywhere, and the serve_ok check confirms Funnel is off.
+    expect(ts).not.toMatch(/tailscale funnel/);
+    // HTTPS Certificates and MagicDNS are checked before serving, every tailscale call is bounded, and serve's output
+    // (an error or a link the owner must open) is kept and shown, never sent to /dev/null.
+    expect(ts.indexOf("has(\"https\")")).toBeGreaterThan(0);
+    expect(ts.indexOf("has(\"https\")")).toBeLessThan(ts.indexOf('tailscale serve --bg'));
+    expect(ts).toContain('timeout "$TS_WAIT" "$(type -P tailscale)" "$@"');
+    expect(ts).toContain('tailscale serve --bg --https=443 "http://$WORKER_API_ADDR" >"$served" 2>&1');
+    expect(ts).not.toMatch(/tailscale serve --bg[^\n]*\/dev\/null/);
   });
 
   it("Tailscale's own repository is in the unattended-upgrades origins", () => {
@@ -327,7 +338,6 @@ describe('live view (tailscale serve)', () => {
     const fpr = '2596A99EAAB33821893C0A79458CA832957F5868';
     expect(ts).toContain(`TS_FPR=${fpr}`);
     expect(ts.indexOf('[ "$got" = "$TS_FPR" ]')).toBeLessThan(ts.indexOf('apt-get'));
-    expect(ts).toContain('tailscale funnel --https=443 off');
     expect(ts).toContain('--ssh=false');
     const keys = spawnSync('gpg', ['--show-keys', '--with-colons', join(root, 'ops/host/files/etc/zeroed/tailscale-archive.asc')], { encoding: 'utf8' }).stdout;
     expect(keys.split('\n').filter((l) => l.startsWith('fpr:'))[0]).toBe(`fpr:::::::::${fpr}:`);

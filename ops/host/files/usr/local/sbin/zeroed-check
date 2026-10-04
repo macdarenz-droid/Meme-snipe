@@ -18,12 +18,13 @@ lock
 install -d -m 0755 "$(dirname "$EVIDENCE_INDEX")"
 (umask 022; evidence_index "$EVIDENCE_ROOT" > "$EVIDENCE_INDEX.new" 2>/dev/null && mv -f "$EVIDENCE_INDEX.new" "$EVIDENCE_INDEX") || rm -f "$EVIDENCE_INDEX.new"
 
-# 0. Funnel: the worker API must stay on the tailnet. Funnel on for any port is an alert, and it is turned off.
+# 0. Funnel: the worker API must stay on the tailnet. Funnel on for any port is an alert, and it is turned off. Each
+# tailscale call is bounded, so the minute check never hangs on it.
 if command -v tailscale >/dev/null 2>&1; then
-  public="$(tailscale serve status --json 2>/dev/null | funnel_ports)"
+  public="$(timeout 30 tailscale serve status --json 2>/dev/null | funnel_ports)"
   if [ -n "$public" ]; then
     alert funnel-on "ALERT Zeroed host: Tailscale Funnel was on ($(printf '%s' "$public" | tr '\n' ' ')), which makes the worker API public. Turning it off."
-    for hp in $public; do tailscale funnel --https="${hp##*:}" off >/dev/null 2>&1 || log "Could not turn Funnel off for $hp."; done
+    for hp in $public; do timeout 30 tailscale funnel --https="${hp##*:}" off >/dev/null 2>&1 || log "Could not turn Funnel off for $hp."; done
   else
     alert_clear funnel-on "CLEARED Zeroed host: Tailscale Funnel is off."
   fi
