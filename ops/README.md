@@ -108,6 +108,7 @@ Checks:
 - unresolved intents past blockhash expiry;
 - SOL reserve below the floor;
 - signer unreachable;
+- a new heartbeat key or webhook secret on offer for more than 24 h ("Key offer pending");
 - daily summary not written (below).
 
 Alerts go to Telegram once, repeat every 5 minutes during the first hour and hourly after that, and always send a "cleared" line. Chain lookups are bounded (5 s), so a hung RPC never delays the heartbeat check.
@@ -118,6 +119,18 @@ The Deploy workflow deploys it only together with a key handoff, so the server a
 - wrangler 4.141.0 from `ops/watchdog/deploy`, locked by its `package-lock.json`, installed with `npm ci --ignore-scripts`;
 - it discovers the Worker's address from wrangler's output and sends it to the server in the encrypted bundle;
 - it sets the Worker's secrets, and sends the webhook secret to the server in the bundle. The server sets the Telegram webhook itself once paired, because Telegram refuses the `getUpdates` that `/pair` relies on while a webhook is set.
+
+**Key rotation never cuts off the server (KEY-ROTATE-SAFE).** The heartbeat key and the webhook secret each have two slots on the watchdog: `HEARTBEAT_HMAC_KEY_A` and `_B`, and `TELEGRAM_WEBHOOK_SECRET_A` and `_B`. The old single names (`HEARTBEAT_HMAC_KEY`, `TELEGRAM_WEBHOOK_SECRET`) count as a third slot, `legacy`, which a watchdog deployed before this change starts on.
+- **Which slot Deploy writes:** it asks the watchdog which slot is active (`GET /slot`, which answers only `legacy`, `A` or `B`) and writes the new value into the other slot. It never touches the active one. If the watchdog does not answer, nothing is rotated.
+- **The switch:** the watchdog accepts the active value, and the new value while it is on offer. The server's first heartbeat signed with the new key makes that slot active and refuses the old key from then on. Telegram's first request with the new webhook secret does the same for the webhook. The watchdog keeps only the active slot and hashes of the values it retired, never a key.
+- **When the server never gets the bundle** (no pickup, or a `DEPLOY_CODE` that is stale or wrong), nothing it uses changes: the server keeps beating with its key, and a later good Deploy writes over the same pending slot. A new key left unused for 24 hours raises the alert "Key offer pending", so a second valid key never sits unseen. It clears when the server uses the key or a forced Deploy replaces it.
+- **While an offer is pending, Deploy does not rotate again.** The server may already hold the offered key: a fresh server waiting for `/pair`, or a run it picked up but has not restarted for yet. Replacing that key would cut the server off. So the run says "Key rotation refused: an offer is still waiting for the server; nothing rotated" as a warning in the log and in the run's summary. It still hands over the API keys, without watchdog keys, so the server keeps the ones it has, and the code update still lands.
+- **The webhook secret is adopted with the key.** It comes in the same bundle, so the server's first heartbeat with the new key marks the new secret adopted: it is no longer pending and raises no offer alert. The old secret keeps working until Telegram's first request with the new one, or 24 hours, so a `/pause` sent during the switch is never refused.
+
+**To rotate anyway** (only when the alert says the server never got the key, for example after a wrong `DEPLOY_CODE`):
+1. In GitHub, open Settings → Secrets and variables → Actions → **Variables** → **New repository variable**. Name `FORCE_KEY_ROTATE`, value `yes`.
+2. Put a fresh deploy code in `DEPLOY_CODE` (`zeroed-new-deploy-code` on the console), then run Actions → **Deploy**.
+3. Delete the `FORCE_KEY_ROTATE` variable straight after the run. Left set, it lets the next Deploy replace a key the server may already hold.
 
 To turn it on, after `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` are in GitHub (on a new server, the first setup already covers it):
 1. Paste the install line above again on the console. This updates the server's scripts and keeps everything.
