@@ -694,6 +694,24 @@ Built to the supervisor's revised spec and the consensus rulings that followed i
 - **2026-10-04 · Demotion power, per universe at its own cap** (−10% decay, 20 trades a day, 30 days, ρ 0 / 0.05 / 0.1):
   - U2 (cap +30%): 0.987 / 0.983 / 0.927.
   - **U1 (cap +40%): 0.713 / 0.613 / 0.523, below the 80% target.** U1 would need 40 trading days (1.0 / 0.99 / 0.93) or a −12.5% detectable decay at 30 days (0.997 / 0.987 / 0.91). Supervisor ruling (2026-10-04): the shortfall is recorded as is and nothing changes in STATS-1c. Follow-up STATS-1d: U1 runs the current window plus a 40-day window and demotes on either (more demotion is the safe direction, so the owner is not needed), reporting the combined false-demotion rate and power. Until then the risk layer's hard limits are the backstop.
+- **2026-10-04 · STATS-1e: SPA resamples short regimes merged, calibrated on the real layout** (supervisor ruling after the #62 review).
+  - **Merge rule, registered in advance (`mergeShortRegimes`):** a regime shorter than the longest expected block (7 days) merges, for resampling only, into its preceding neighbour, or into the following one when it is first. No day is dropped.
+  - **On the real practice layout:** 07-20 to 09-21, 64 days, with B2 on day 1, B3 on day 51 and B4 on day 54. The registered regimes [0,1) [1,51) [51,54) [54,64) resample as [0,54) [54,64). `spaTest` reports the regimes it used (`resampleRegimes`).
+  - **Calibration:** 300 runs per scenario at zero edge on independent seeds, all 12 scenarios. The promotion rule, which gates, passed a variant in at most 0.67% of runs (duplicates). The global test rejected in at most 4.3% (duplicates, autocorrelated), so both stay under 5%.
+  - **Before the merge:** the reviewer measured up to 7.0% global (common shock) and 1.3% for the promotion rule. Per-scenario numbers are in `stats-simulation.test.ts`, and CI repeats the first 40 runs.
+  - **Review of #96:**
+    - A deterministic test shows the bootstrap resamples within the merged regimes: with the same seeds, the registered layout gives exactly the merged layout's p-values and passing set, and not the unmerged one's (this kills mutant S1).
+    - CI pins the exact counts of the 40 seeded runs.
+    - The full 300-run calibration runs by hand in `.github/workflows/spa-calibration.yml`, which uploads its counts as an artifact for the sign-off pack.
+  - **G1:** stays on the clamped DSR until the owner signs off.
+  - **G3 wording:** the dry-run inputs are cut at the registered end for decisions, and outcomes of trades entered by then are read to the end plus the outcome tail.
+- **2026-10-04 · STATS-1d: a 40-day trailing reverse e-process beside the full-history one, for every universe** (supervisor ruling for U1; applying it to U2 too is safe, because it only adds a trigger). Measured with daily evaluation, 100 runs per cell:
+  - **Decay from the start:** the window adds nothing within 30 days, because the two detectors see the same days. U1 stays at 0.71 at ρ 0, as STATS-1c measured. This part of the shortfall remains, and the risk layer's hard limits stay its backstop.
+  - **Decay after a good stretch** (60 days at +5%, then −10%): caught within 40 days of the decay by U1 in 1.0 / 0.95 of runs, and by U2 in 1.0 / 1.0 (ρ 0 / 0.1).
+  - **Full history alone** catches that late decay in at most 0.17 of runs. After a good stretch it has spent weeks betting on a decay that did not come, and it has lost the wealth it needs. This was a hole for every universe, and the window closes it.
+  - **No false demotion** occurred during the good stretch.
+  - **False demotion at zero edge over 120 days:** U1 0 / 0.01, U2 0 / 0.21 (ρ 0 / 0.1). U2's 0.21 at ρ 0.1 comes from its +30% cap clipping the day shocks, the intended safe side: full history alone gives 0.18. The window adds at most 5 points.
+  - `DEMOTION_TRAILING_DAYS` is fixed at 40 and is not an override.
 - **2026-10-04 · STATS-1c review fixes (STATS reviewer, at 7c13f54).**
   - **G2 opens at the frozen day requirement.** It used MIN_DAYS, so a holdout frozen at any other day count could never be scored. A frozen day count under MIN_DAYS fails G2, and freezeRequirement refuses one outside a test rule.
   - **The DSR moment clamp is pinned by a gate test:** a two-point return with skewness 0.87 and kurtosis 1.76 gives 0.9509 unclamped and 0.9388 clamped, so G1 fails.

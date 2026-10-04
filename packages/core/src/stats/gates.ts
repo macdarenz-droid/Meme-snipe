@@ -135,6 +135,13 @@ const MS_PER_HOUR = MS_PER_DAY / 24;
 /** Level of the SPA test when it gates G1 (one test over the whole registry). */
 const SPA_ALPHA = 0.05;
 const COVERAGE_WINDOW = 100;
+/**
+ * Days of the trailing reverse e-process that runs beside the full-history one (STATS-1d). After a good stretch the
+ * full-history process has bet against the strategy for weeks and lost wealth, so a later decay barely moves it
+ * (U1, −10% after 60 days at +5%: caught within 40 days in under 1% of runs); a process restarted on the last 40 days
+ * catches it. Demotion fires on either. Fixed, not an override: it only adds a trigger.
+ */
+export const DEMOTION_TRAILING_DAYS = 40;
 /** How far the judged dry-run data may end from G3's registered end (inputs are cut at it). */
 export const G3_END_TOLERANCE_MS = MS_PER_HOUR / 60;
 
@@ -647,7 +654,11 @@ export const gateG2 = (input: G2Input, overrides?: Partial<typeof G2_DEFAULTS>):
 export interface G3Input {
   /** The run is the single qualifying dry run (on the VPS, same commit; ARCHITECTURE.md §15), not a rehearsal. */
   readonly qualifyingRun: boolean;
-  /** Hours from dryRunStartMs to the registered end: every input below is cut at registration.evaluateAtMs. */
+  /**
+   * Hours from dryRunStartMs to the registered end. Decisions (candidates, entries, rejects, simulations) are cut at
+   * registration.evaluateAtMs; outcomes of trades entered by then are read up to evaluateAtMs plus the outcome tail
+   * (the G3 report tool's outcomeTailMs), so every judged trade can finish.
+   */
   readonly dryRunHours: number;
   /** Net returns of the dry-run paper trades (the candidates live kept). */
   readonly dryRunReturns: readonly number[];
@@ -1092,6 +1103,14 @@ export const evaluateDemotion = (input: DemotionInput, overrides?: Partial<typeo
     const rev = reverseEProcess(input.returns, { cap: input.returnCap, threshold: th.reverseWealth });
     metrics.reverseWealthMax = rev.maxWealth;
     c.add('reverse e-process', rev.maxWealth < th.reverseWealth, `max reverse wealth ${fmt(rev.maxWealth)} (demote at >= ${th.reverseWealth})`);
+    // The same detector restarted on the last DEMOTION_TRAILING_DAYS trading days (days with returns).
+    const days = [...new Set(input.returns.map((t) => t.day))];
+    const from = days[Math.max(0, days.length - DEMOTION_TRAILING_DAYS)];
+    const recent = from === undefined ? [] : input.returns.filter((t) => t.day >= from);
+    const trail = reverseEProcess(recent, { cap: input.returnCap, threshold: th.reverseWealth });
+    metrics.trailingReverseWealthMax = trail.maxWealth;
+    c.add(`reverse e-process (last ${DEMOTION_TRAILING_DAYS} days)`, trail.maxWealth < th.reverseWealth,
+      `max reverse wealth over the last ${Math.min(days.length, DEMOTION_TRAILING_DAYS)} trading days ${fmt(trail.maxWealth)} (demote at >= ${th.reverseWealth})`);
   }
   c.add('drift', !input.driftAlarm, input.driftAlarm ? 'drift alarm on calibration or log loss' : 'no drift alarm');
   if (input.coverage && input.coverage.covered.length >= COVERAGE_WINDOW) {
