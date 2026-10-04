@@ -22,7 +22,7 @@ Cards, in order:
 | #105 CI-1 | see PR | (merged) | closed | see PR |
 | #112 MEM-1 | see PR | (merged) | closed | see PR |
 | #116 CI-1b | claude/ci-1b | c5aaf88 | open, CI green on c5aaf88 | reviewer recheck asked for wording only (§12.4 write-order text as the supervisor ruled); supervisor merges |
-| #134 OPS-GATE | claude/ops-gate | 8c3aef3 | open draft; e2e was red on ec0d3e4, fix pushed in 8c3aef3, CI not yet seen | not reviewed (reviewer 01Ty8L) |
+| #134 OPS-GATE | claude/ops-gate | 8c3aef3 | open draft; e2e was red on ec0d3e4, fix 8c3aef3 made e2e green (run 37189806877); `check` skipped while draft | not reviewed (reviewer 01Ty8L) |
 | #135 PNPM-CLAIMS | claude/pnpm-claims | 3fc13c3 | open draft; diff approved by supervisor | not reviewed |
 | #136 SEC-1 | claude/sec-1 | 6280ae5 | open draft, **WIP** | not reviewed |
 
@@ -50,7 +50,7 @@ Cards, in order:
 ## Work in progress
 - **#134**:
   - CI run 37188909082 (e2e) failed at "deployed with a failed check". Cause: the newest signed merge (7d5e203, the #126 merge) touched ops, so it is its own e2e commit. e2e.sh pre-marked it green, and the update timer deployed it before the gate cases ran.
-  - Fix 8c3aef3: don't pre-mark a test commit that is its own e2e commit. Pushed; its CI result is not seen yet.
+  - Fix 8c3aef3: don't pre-mark a test commit that is its own e2e commit. Pushed; e2e green on 8c3aef3 (run 37189806877).
 - **#135**:
   - 231dc8b's new test was red under `pnpm check`. pnpm passes its settings to child processes as npm_config_* variables, so the "without the settings" installs saw them too.
   - Fix 3fc13c3 drops those variables in the test. `pnpm test packages/ops/test/supply-chain.test.ts`: 4/4 pass.
