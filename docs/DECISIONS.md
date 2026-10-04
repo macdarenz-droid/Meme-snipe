@@ -937,6 +937,11 @@ Built to the supervisor's revised spec and the consensus rulings that followed i
 - **2026-10-04 · Demotion power, per universe at its own cap** (−10% decay, 20 trades a day, 30 days, ρ 0 / 0.05 / 0.1):
   - U2 (cap +30%): 0.987 / 0.983 / 0.927.
   - **U1 (cap +40%): 0.713 / 0.613 / 0.523, below the 80% target.** U1 would need 40 trading days (1.0 / 0.99 / 0.93) or a −12.5% detectable decay at 30 days (0.997 / 0.987 / 0.91). Supervisor ruling (2026-10-04): the shortfall is recorded as is and nothing changes in STATS-1c. Follow-up STATS-1d: U1 runs the current window plus a 40-day window and demotes on either (more demotion is the safe direction, so the owner is not needed), reporting the combined false-demotion rate and power. Until then the risk layer's hard limits are the backstop.
+- **2026-10-05 · STRATEGY-HEALTH-OBS: calibration rule registered before the first run** (builder, under the supervisor's card; observation only, no entry behaviour, limit or stop changes).
+  - Candidate monitor beside R8: CUSUM on episode net returns, S_i = max(0, S_{i−1} − z_i − κ), κ = 0.005, alarm at S_i ≥ h.
+  - h is the smallest value on the grid 0.05, 0.10, …, 4.00 whose alarm rate within 100 episodes is ≤ 5% for every in-control model (risk.md §1.6's S2 and S3 net of v = 3.5%, and 10% at +100% / 90% at −5%), on seed 810 (20,000 paths, `SeedSequence.spawn(12)` streams).
+  - Validation on seed 281011: each in-control alarm rate ≤ 5% + 2·SE (≈ 5.31%). A miss is reported as a failed calibration, never re-tuned on the validation seed.
+  - Stress and change scenarios are reported, not tuned on. All results are synthetic.
 - **2026-10-04 · STATS-1g: external audit of core stats (S1, S3, S4); each item was reproduced before it was fixed.**
   - **S1, the G3 retained-expectancy budget.**
     - The bound subtracted four uncertain parts: the holdout lower bound, v⁺ and Δ⁺ at α/3 each, plus a 95% fill-error bound. The union bound is 3·(0.05/3) + 0.05 = 0.10, so only 90% joint coverage was established.
