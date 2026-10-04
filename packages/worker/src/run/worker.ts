@@ -29,6 +29,8 @@ import { PositionWatch, type WatchRead } from './watch.ts';
 import { DEFAULT_LIVE_FEED, type Frame, type HttpClient, LiveFeed, type Release, seqId } from '../providers/index.ts';
 import type { Timers } from '../scheduler/timers.ts';
 import { PaperAccount, type PaperLegs, accountFile } from './account.ts';
+import { HealthMonitor, entryOrigin, healthDisplay, strategyHealthFile } from './strategy-health.ts';
+import { HEALTH_DEFAULTS } from '../../../core/src/strategy-health/index.ts';
 import type { WorkerConfig } from './config.ts';
 import { Desk, FILL_RATE_UNKNOWN, journaledFillKeys, lineRate, lineReasons, openIntents } from './desk.ts';
 import { DeployerStore, liveWatchToClose, type SavedDeployers } from './deployer-store.ts';
@@ -246,6 +248,8 @@ export class Worker {
   readonly #seedsFile: ReturnType<typeof seedsFile>;
   #savedSeeds = '';
   readonly #account: PaperAccount;
+  readonly #health: HealthMonitor;
+  #healthOff = false;
   readonly #feed: LiveFeed;
   readonly #facts: EngineFeed;
   readonly #strategy: LiveStrategy;
@@ -360,6 +364,12 @@ export class Worker {
     this.#exitsFile = exitsFile(c.stateDir);
     this.#seedsFile = seedsFile(c.stateDir);
     this.#account = new PaperAccount(accountFile(c.stateDir), d.session.policy.capital.bankroll, now, d.strategy.rent.oneTime);
+    // Strategy health, observation only (STRATEGY-HEALTH-OBS): no strategy is registered yet, so every lineage reports
+    // "unregistered"; nothing in entries, exits or risk reads it.
+    this.#health = new HealthMonitor(strategyHealthFile(c.stateDir), { ...HEALTH_DEFAULTS, registered: [] }, (i) => {
+      const o = entryOrigin(i);
+      return { lineageId: o.universe, strategyVersionHash: o.version, universe: o.universe, venue: i.intent.venue, policyHash: d.session.versionHash, executionModelHash: `paper:${d.strategy.version}`, mode: 'paper' };
+    });
 
     this.#feed = new LiveFeed({
       ...DEFAULT_LIVE_FEED,
@@ -782,6 +792,21 @@ export class Worker {
 
   #publishAccount(): void {
     this.#fact(ACCOUNT_KEY, this.#account.fact(this.#ledger, this.#desk.book, this.#ctl.latches, this.#solPrice, this.#d.timers.now()));
+    this.#observeHealth();
+  }
+
+  /** Episodes that became final, observed and journaled beside the decisions; read by nothing (STRATEGY-HEALTH-OBS). */
+  #observeHealth(): void {
+    // Observation must never stop trading: a failure turns the monitor off for this process, said once in the journal.
+    if (this.#healthOff) return;
+    try {
+      for (const o of this.#health.update(this.#desk.book, this.#legs(), this.#account.state.trades)) {
+        this.#journal.write('strategy_health', { lineage: o.lineage, episode: o.episodeId, z: o.z, s: o.s, from: o.from, to: o.to, display: healthDisplay(o.to) });
+      }
+    } catch (e) {
+      this.#healthOff = true;
+      this.#journal.write('strategy_health', { display: 'health: off for this run (observed only; entries not stopped)', reasons: [e instanceof Error ? e.message : 'error'] });
+    }
   }
 
   #writeOpenIntents(): void {

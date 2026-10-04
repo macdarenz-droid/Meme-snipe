@@ -218,3 +218,18 @@ export const healthStateFromJson = (json: string): HealthState =>
   JSON.parse(json, (_k, v: unknown) =>
     v !== null && typeof v === 'object' && '$bigint' in v && typeof (v as { $bigint: unknown }).$bigint === 'string'
       ? BigInt((v as { $bigint: string }).$bigint) : v) as HealthState;
+
+/**
+ * Drops the fingerprints that can no longer matter (STRATEGY-HEALTH-OBS review): those older than every open
+ * episode's entry. `finished` stays, one key per episode, so a final episode is never observed twice. After compaction
+ * a re-delivery older than the kept fingerprints is refused as out of order rather than silently ignored.
+ */
+export const compactHealthState = (s: HealthState): HealthState => {
+  const open = Object.values(s.open).map((e) => e.entrySeq);
+  const from = open.length === 0 ? s.lastSeq + 1 : Math.min(...open);
+  const seen: Record<number, string> = {};
+  for (const [k, v] of Object.entries(s.seen)) if (Number(k) >= from) seen[Number(k)] = v;
+  return { ...s, seen };
+};
+
+export * from './episodes.ts';

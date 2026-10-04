@@ -16,11 +16,12 @@
 // The holdout command refuses anything not authorised and prints only the sealed ledger's hash and the per-universe
 // candidate and entry counts. The registry lives on the research config's remote branch (registry-git.ts), with a
 // local copy at a fixed path in the code's own repository; the command refuses to run from another repository.
+import { runHealth } from './strategy-health.ts';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { FILL_CONFIG, RESEARCH_CONFIG, TRIAL_POLICY } from '../../core/src/config/index.ts';
+import { FILL_CONFIG, RESEARCH_CONFIG, TRIAL_POLICY, policyHash } from '../../core/src/config/index.ts';
 import { OFF_CHAIN } from '../../core/src/engine/index.ts';
 import { gateG0 } from '../../core/src/stats/index.ts';
 import { DELAY_PROFILE_NAMES, type DelayProfileName, SCENARIO_NAMES, type ScenarioName } from '../../core/src/fills/index.ts';
@@ -227,6 +228,8 @@ if (command === 'holdout-plan' || command === 'holdout-register' || command === 
     attemptsForcedDrop: { provider: first.attempts.filter((a) => a.forcedDrop === 'provider').length, burst: first.attempts.filter((a) => a.forcedDrop === 'burst').length },
     // Blocked exits when the whole ladder fell inside congestion (feeds y_severe).
     ladderCongestion: ladderCongestion(first),
+    // Strategy health, observation only (STRATEGY-HEALTH-OBS): the same reducer as the worker; nothing reads it.
+    health: runHealth(first, { trades, stray }, { lineageId: 'S0', strategyVersionHash: RESEARCH_CONFIG.version, universe: 'U2', policyHash: policyHash(TRIAL_POLICY), executionModelHash: `${FILL_CONFIG.version}:${scenario}` }),
     // Expectancy and survival against burst frequency (opt-in: 12 more runs).
     burstSweep: args.includes('--burst-sweep') ? burstSweep(base, { perDay: [0, 2, 8, 24], durationsMs: [10_000, 30_000, 60_000] }, { from, to }) : 'not run (--burst-sweep)',
     exitRetries: first.attempts.filter((a) => a.exitRetry > 0).length,

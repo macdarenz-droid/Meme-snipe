@@ -1,7 +1,8 @@
 // STRATEGY-HEALTH-OBS acceptance (docs/DECISIONS.md, registered before the reducer was written). Observation only.
 import { describe, expect, test } from 'vitest';
+import type { Book } from '../src/lifecycle/index.ts';
 import {
-  HEALTH_DEFAULTS, healthStateFromJson, healthStateToJson, initialHealthState, lineageKey, reduceHealth, replayHealth,
+  HEALTH_DEFAULTS, compactHealthState, finalEpisodes, newEpisodeEvents, type EpisodeSources, healthStateFromJson, healthStateToJson, initialHealthState, lineageKey, reduceHealth, replayHealth,
   type HealthConfig, type HealthEvent, type StrategyIdentity,
 } from '../src/strategy-health/index.ts';
 
@@ -219,5 +220,58 @@ describe('strategy health reducer (observation only)', () => {
     const st = run(l.events).state.lineages[KEY]!;
     expect(st.machine).toBe('requalifying');
     expect(st.cleanRun).toBeLessThan(19);
+  });
+});
+
+describe('episodes from the book (step 3)', () => {
+  // A minimal book: finalEpisodes reads only intents (purpose, id, spend, venue, status, fills) and positions.
+  const intent = (id: string, status: string, fills: number, purpose: 'entry' | 'exit' = 'entry', positionId = `p-${id}`) => ({
+    intent: { id, purpose, venue: 'pumpswap', spend: ENTRY, positionId, key: `entry:M:U1.v1.0` }, status, fills: Array.from({ length: fills }, (_, k) => ({ signature: `${id}-f${k}` })), attempts: [],
+  });
+  const position = (id: string, entryIntentId: string, status = 'closed') => ({ id, entryIntentId, status });
+  const book = (intents: ReturnType<typeof intent>[], positions: ReturnType<typeof position>[]) =>
+    ({ intents: Object.fromEntries(intents.map((i) => [i.intent.id, i])), positions: Object.fromEntries(positions.map((p) => [p.id, p])) }) as unknown as Book;
+  const src = (nets: Record<string, [bigint, number] | null>, stray: Record<string, [bigint, number]> = {}): EpisodeSources => ({
+    identityOf: () => ID,
+    positionNet: (id) => (nets[id] ? { net: nets[id]![0], atMs: nets[id]![1] } : null),
+    strayFees: (id) => (stray[id] ? { lamports: stray[id]![0], atMs: stray[id]![1] } : { lamports: 0n, atMs: 0 }),
+  });
+
+  test('late-fill positions and partial exits of one entry are one episode, final when every position is settled', () => {
+    const b = book([intent('e1', 'reconciled', 2)], [position('p1', 'e1'), position('p1.o2', 'e1')]);
+    expect(finalEpisodes(b, src({ p1: [-ENTRY / 2n, 50], 'p1.o2': null }))).toEqual([]);
+    expect(finalEpisodes(b, src({ p1: [-ENTRY / 2n, 50], 'p1.o2': [ENTRY / 10n, 70] }))).toEqual([
+      { episodeId: 'e1', identity: ID, entryLamports: ENTRY, flows: [-ENTRY / 2n, ENTRY / 10n], outcome: 'closed', atMs: 70 },
+    ]);
+  });
+
+  test('an entry with no fill is final only when terminal: a failed entry if it paid fees, else dropped', () => {
+    const b = book([intent('f', 'abandoned', 0), intent('d', 'cancelled', 0), intent('r', 'failed', 0), intent('x', 'reconciled', 0)], [position('pf', 'f')]);
+    const eps = finalEpisodes(b, src({}, { f: [15_000n, 30] }));
+    // 'failed' and an unfilled 'reconciled' may still be retried within the intent: not final.
+    expect(eps.map((e) => [e.episodeId, e.outcome, e.flows])).toEqual([['d', 'dropped', []], ['f', 'failed-entry', [-15_000n]]]);
+  });
+
+  test('episodes come in the order they became final; newEpisodeEvents numbers on and skips what the state has', () => {
+    const b = book([intent('a', 'reconciled', 1), intent('b', 'reconciled', 1), intent('ex', 'reconciled', 1, 'exit', 'pa')], [position('pa', 'a'), position('pb', 'b')]);
+    const eps = finalEpisodes(b, src({ pa: [1n, 90], pb: [2n, 40] }));
+    expect(eps.map((e) => e.episodeId)).toEqual(['b', 'a']);
+    const first = replayHealth(newEpisodeEvents(initialHealthState(), eps.slice(0, 1)), CFG);
+    const rest = newEpisodeEvents(first.state, eps);
+    expect(rest.map((e) => [e.type, e.seq, e.episodeId])).toEqual([['entry', 3, 'a'], ['flow', 4, 'a'], ['final', 5, 'a']]);
+    expect(replayHealth(rest, CFG, first.state).observations.map((o) => o.episodeId)).toEqual(['a']);
+  });
+
+  test('compaction keeps only the fingerprints of open episodes; finished episodes stay known', () => {
+    const l = log().trade('a', 0.1).entry('b').flow('b', -ENTRY);
+    const st = run(l.events).state;
+    const c = compactHealthState(st);
+    expect(Object.keys(c.seen).map(Number)).toEqual([4, 5]);
+    expect(c.finished['a']).toBe(true);
+    // The open episode carries on from the compacted state exactly as from the full one.
+    const more = [{ type: 'flow', seq: 6, episodeId: 'b', lamports: ENTRY / 2n }, { type: 'final', seq: 7, episodeId: 'b', outcome: 'closed' }] as const;
+    expect(replayHealth(more, CFG, c).observations).toEqual(replayHealth(more, CFG, st).observations);
+    // A re-delivery of a compacted-away event is refused as out of order rather than silently ignored.
+    expect(() => reduceHealth(c, l.events[0]!, CFG)).toThrow(/durable-sequence order/);
   });
 });
