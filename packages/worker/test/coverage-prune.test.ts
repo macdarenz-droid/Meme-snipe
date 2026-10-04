@@ -2,13 +2,13 @@
 // before it, and any gap still open), and a restart no longer stacks `#pre<k>` on the ids of the facts it re-seeds.
 // Fifty restarts two days apart keep the saved state and the deployer store bounded, every restart gap inside the
 // look-back is kept, and each boot still replays to its own decisions.
-import { readFileSync, statSync } from 'node:fs';
+import { cpSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { RUG_CONFIG } from '../../core/src/config/rugs.ts';
 import type { MarketEvent, Moment } from '../../core/src/engine/index.ts';
 import { type History, createsCoverage, pruneCoverage } from '../../core/src/gates/index.ts';
-import { liveWatchToClose } from '../src/run/deployer-store.ts';
+import { DeployerStore, liveWatchToClose } from '../src/run/deployer-store.ts';
 import { replayLedgerFile } from '../../core/src/ledger/replay/index.ts';
 import { loadState } from '../src/persist/index.ts';
 import { checkSession } from '../src/run/parity.ts';
@@ -39,11 +39,13 @@ describe('WORKER-1d: coverage pruning across restarts', () => {
     let h = makeWorker({ stateDir, timers, seed });
     const lookback = (h.session.policy.gates.deployerRugLookbackDays + 1) * DAY;
     const boots: string[] = [];
+    const bootAt: number[] = [];
     for (let k = 0; k < 50; k++) {
       if (k > 0) {
         timers.set(timers.now() + 2 * DAY);
         h = makeWorker({ stateDir, timers, seed });
       }
+      bootAt.push(timers.now());
       await boot(h);
       boots.push(h.worker.boot);
       await h.worker.stop();
@@ -64,14 +66,43 @@ describe('WORKER-1d: coverage pruning across restarts', () => {
     const v = (e: { value: unknown }) => (e.value as { value: Record<string, unknown> }).value;
     const restartGaps = saved.coverage.filter((e) => e.key === 'coverage:creates:gap' && v(e)['reason'] === 'restart' && e.moment.receivedAt >= retain);
     const restartsInside = Math.floor(lookback / (2 * DAY));
-    expect(restartGaps.length).toBeGreaterThanOrEqual(restartsInside);
+    expect(restartGaps).toHaveLength(bootAt.filter((t, k) => k > 0 && t >= retain).length);
     // The start that says the watch ran from before the look-back is kept.
     expect(saved.coverage.some((e) => e.key === 'coverage:creates:start' && v(e)['via'] === VIA && e.moment.receivedAt < retain)).toBe(true);
+    // The deployer store (what seeds H14 when the state file is missing or discarded) is cut at the same point.
+    const fromStore = new DeployerStore(stateDir).load(retain).coverage;
+    expect(fromStore.filter((e) => /#pre\d+#pre/.test(e.id))).toEqual([]);
+    // Exactly one downtime gap and one live start per boot inside the look-back: none lost to a later cut.
+    const inside = bootAt.filter((t, k) => k > 0 && t >= retain).length;
+    expect(inside).toBeGreaterThanOrEqual(restartsInside);
+    expect(fromStore.filter((e) => e.key === 'coverage:creates:gap' && v(e)['reason'] === 'worker down; no downtime fill' && e.moment.receivedAt >= retain)).toHaveLength(inside);
+    expect(fromStore.filter((e) => e.key === 'coverage:creates:start' && v(e)['via'] === VIA && e.moment.receivedAt >= retain)).toHaveLength(inside);
+    expect(fromStore.some((e) => e.key === 'coverage:creates:start' && v(e)['via'] === VIA && e.moment.receivedAt < retain)).toBe(true);
     // A replay rebuilds each boot's decisions.
     const r = checkSession(stateDir, { session: h.session, rugs: RUG_CONFIG, strategy: h.worker.strategyConfig }, replayLedgerFile, 1);
     expect(r.boots.map((b) => b.boot)).toEqual(boots);
     for (const b of r.boots) expect(b.divergence, b.boot).toBeNull();
     expect(r.ok).toBe(true);
+
+    // One more boot, then 16 days with no gap, so every lossy restart ages out of the look-back: H14 reads covered,
+    // from the start kept from before the look-back. A boot on a copy with the state file removed (seeded from the
+    // store alone, the downtime filled) keeps that verdict.
+    timers.set(timers.now() + 2 * DAY);
+    h = makeWorker({ stateDir, timers, seed });
+    const m = await boot(h);
+    await m.run(16 * DAY, 3_600_000, () => m.slot());
+    const live = h.worker.strategy.coverage;
+    expect(live?.covered, JSON.stringify(live)).toBe(true);
+    await h.worker.stop();
+    const dir = tempState();
+    cpSync(stateDir, dir, { recursive: true });
+    rmSync(join(dir, PERSIST_FILE));
+    const h3 = makeWorker({ stateDir: dir, timers, seed: async () => ({ mode: 'fill' as const, creates: [], coverage: [], report: 'test' }) });
+    expect(h3.logs.some((l) => l.startsWith('Saved state restored'))).toBe(false);
+    await boot(h3);
+    const seeded = h3.worker.strategy.coverage;
+    expect(seeded?.covered, JSON.stringify(seeded)).toBe(true);
+    await h3.worker.kill();
   }, 600_000);
 });
 
@@ -158,8 +189,15 @@ describe('pruneCoverage', () => {
       f('t1', 5, 'coverage:creates:start', { fromSlot: 5n, via: 'B' }),
       f('o1', 6, 'coverage:creates:gap', { fromSlot: 6n, toSlot: null, via: 'B' }),
       f('u1', 7, 'coverage:creates:gap', { fromSlot: 7n }),
+      // Gaps settled before the retain point, by a resume (C) and by the bounded report of the same gap (D): dropped.
+      f('c1', 8, 'coverage:creates:start', { fromSlot: 8n, via: 'C' }),
+      f('c2', 8, 'coverage:creates:gap', { fromSlot: 8n, toSlot: null, via: 'C' }),
+      f('c3', 9, 'coverage:creates:resume', { fromSlot: 8n, via: 'C' }),
+      f('d1', 8, 'coverage:creates:start', { fromSlot: 8n, via: 'D' }),
+      f('d2', 8, 'coverage:creates:gap', { fromSlot: 8n, toSlot: null, via: 'D' }),
+      f('d3', 9, 'coverage:creates:gap', { fromSlot: 8n, toSlot: 9n, via: 'D' }),
       f('n1', 20, 'coverage:creates:gap', { fromSlot: 20n, toSlot: 21n, via: 'A' }),
     ];
-    expect(pruneCoverage(facts, 10).map((e) => e.id)).toEqual(['s2', 't1', 'o1', 'u1', 'n1']);
+    expect(pruneCoverage(facts, 10).map((e) => e.id)).toEqual(['s2', 't1', 'o1', 'u1', 'c1', 'd1', 'n1']);
   });
 });
