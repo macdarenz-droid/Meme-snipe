@@ -27,3 +27,12 @@ export class RpcCut {
     };
   }
 }
+
+/**
+ * The process's HTTP clients. Every provider read goes through the cut: the providers' RPC, the dry-run simulator and
+ * the fact readers (Helius, RugCheck, GoPlus, Jupiter, Coinbase, GitHub). Only the heartbeat to the watchdog is not a
+ * provider and stays up. The facts' client was the raw one, so a drop-rpc drill left their reads working.
+ */
+export const liveHttp = (cut: RpcCut, base: HttpClient): { readonly providers: HttpClient; readonly facts: HttpClient; readonly heartbeat: HttpClient } => ({
+  providers: cut.http(base), facts: cut.http(base), heartbeat: base,
+});

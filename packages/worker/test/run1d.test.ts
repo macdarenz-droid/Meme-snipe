@@ -8,8 +8,10 @@ import { emptyBook } from '../../core/src/lifecycle/index.ts';
 import type { Lamports } from '../../core/src/units/index.ts';
 import type { JournalLine } from '../../runner/src/contract.ts';
 import { resolveUniverse, sellOnlyReason } from '../src/engine/strategy.ts';
+import { RpcCut, liveHttp } from '../src/run/rpc-cut.ts';
+import type { HttpClient } from '../src/providers/index.ts';
 import { exitsFile } from '../src/run/state.ts';
-import { LANDS, Market, T, makeWorker, passingMarket, tempState } from './worker-harness.ts';
+import { LANDS, Market, T, makeWorker, passingMarket, tempState, virtualTimers } from './worker-harness.ts';
 
 /** Test-only (POS-1): these tests move a held position's price by re-publishing the pool fact. */
 const HELD = { heldPoolFacts: true } as const;
@@ -249,3 +251,35 @@ describe('a restored position whose universe the loaded policy lacks (EXIT-1b re
     expect(sellOnlyReason('p:1', 'U2', universes, 'h')).toBeNull();
   });
 });
+
+describe('the drop-rpc drill cuts every provider read, the fact readers included (RUN-1d review)', () => {
+  it('during the cut the providers and the fact readers fail as a network error; the heartbeat stays up', async () => {
+    const timers = virtualTimers(T);
+    const cut = new RpcCut(timers);
+    const calls: string[] = [];
+    const base: HttpClient = async (req) => {
+      calls.push(req.url);
+      return { status: 200, header: () => null, text: '{}' };
+    };
+    const http = liveHttp(cut, base);
+    const req = (url: string) => ({ method: 'GET' as const, url, headers: {}, timeoutMs: 1_000 });
+    cut.cut(60_000);
+    for (const client of [http.providers, http.facts]) {
+      await expect(client(req('https://api.rugcheck.xyz/v1/tokens/x/report'))).rejects.toMatchObject({ kind: 'network' });
+    }
+    await http.heartbeat(req('https://watchdog.example.workers.dev/beat'));
+    expect(calls).toEqual(['https://watchdog.example.workers.dev/beat']);
+    timers.set(T + 60_000);
+    await http.facts(req('https://api.rugcheck.xyz/v1/tokens/x/report'));
+    expect(calls).toHaveLength(2);
+  });
+
+  it('the worker process hands the fact readers the cut client, never the raw one', () => {
+    const main = readFileSync(join(import.meta.dirname, '..', 'src', 'main.ts'), 'utf8');
+    expect(main).toMatch(/liveFacts\(\{[^)]*http: http\.facts/);
+    // The raw client goes only into the process's clients, which cut every provider read.
+    expect(main.match(/fetchHttp/g)?.length).toBe(2);
+    expect(main).toContain('liveHttp(rpcCut, fetchHttp)');
+  });
+});
+

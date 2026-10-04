@@ -15,7 +15,7 @@ import { liveSimulator, provisionalCalibration } from './run/live-sim.ts';
 import { PAPER_SCENARIO, strategyConfig } from './run/settings.ts';
 import { CreditBook, FEED_COMMITMENTS, LiveProviders, PUMP_CREATE_AUTHORITY } from './run/sources.ts';
 import { redact, setSecretValues } from './run/redact.ts';
-import { RpcCut } from './run/rpc-cut.ts';
+import { RpcCut, liveHttp } from './run/rpc-cut.ts';
 import { runSeed } from './run/seed-start.ts';
 import { Worker } from './run/worker.ts';
 
@@ -38,7 +38,8 @@ const timers = systemTimers();
 const session = startSession(TRIAL_POLICY);
 const credits = new CreditBook(config.stateDir, timers);
 const rpcCut = new RpcCut(timers);
-const providerHttp = rpcCut.http(fetchHttp);
+const http = liveHttp(rpcCut, fetchHttp);
+const providerHttp = http.providers;
 const providers = new LiveProviders({ tradeStreams: false, secrets: environment.secrets, http: providerHttp, factory: globalSocketFactory, credits });
 const policy = session.policy;
 const rpc = new DryRunRpc({ url: () => heliusRpcUrl(environment.secrets), http: providerHttp, scheduler: providers.helius, timeoutMs: 10_000 });
@@ -73,12 +74,12 @@ try {
     ops: () => providers.ops(),
     cutRpc: (ms) => rpcCut.cut(ms),
     // FACTS-1b: FACTS-1's readers on the worker's Feed; core's producer makes the gate facts from what they read.
-    facts: [liveFacts({ policy, secrets: environment.secrets, http: fetchHttp, goplus: credits.scheduler(GOPLUS_FREE), coinbase: credits.scheduler(COINBASE_PUBLIC), github: { api: credits.scheduler(GITHUB_RELEASES), downloads: credits.scheduler(GITHUB_DOWNLOADS), stateDir: config.stateDir } })],
+    facts: [liveFacts({ policy, secrets: environment.secrets, http: http.facts, goplus: credits.scheduler(GOPLUS_FREE), coinbase: credits.scheduler(COINBASE_PUBLIC), github: { api: credits.scheduler(GITHUB_RELEASES), downloads: credits.scheduler(GITHUB_DOWNLOADS), stateDir: config.stateDir } })],
     schedulers: { helius: providers.helius, alchemy: providers.alchemy, jupiter: providers.jupiter, rugcheck: providers.rugcheck },
     exposureRpc: providers.seedRpc(),
     delayProbe: { confirmed: (sig) => providers.confirmed(sig), via: `logs:${PUMP_CREATE_AUTHORITY}`, everyMs: 60_000 },
     commitments: FEED_COMMITMENTS,
-    heartbeat: { http: fetchHttp, key: environment.host.heartbeat_hmac_key, ownerChatId: environment.host.telegram_chat_id },
+    heartbeat: { http: http.heartbeat, key: environment.host.heartbeat_hmac_key, ownerChatId: environment.host.telegram_chat_id },
     reconcileTimeoutMs: 60_000, loopMs: 100, staleFeedMs: 10_000, log,
   });
 } catch (e) {
