@@ -660,11 +660,16 @@ export class FactProjector {
       for (const stream of ['creates', 'rugs']) out.push(this.#fact(`cov:${stream}:gap:${g.fromSlot}`, m, coverageKeys(stream).gap, { via: PROVIDER, fromSlot: g.fromSlot, toSlot: g.toSlot }));
     }
     const sol = this.#o.solUsd;
+    let solMoved = false;
     while (this.#solAt < sol.length && sol[this.#solAt]!.at <= atMs) {
       const b = sol[this.#solAt++]!.bar;
       this.#solPoints.push({ tMs: b.start + 3_600_000, price: solPriceMicroUsd(b.close) });
       if (this.#solPoints.length > this.#o.solUsdPoints) this.#solPoints.shift();
+      solMoved = true;
     }
+    // Each new close is released as it becomes usable, as live's price stream is, not only with a candidate's facts:
+    // the books (closes, marks) then never read a price older than the series makes it (paper is real money).
+    if (solMoved) out.push(this.#fact(`sol:${slot}`, m, SOL_USD_KEY, { obs: { provider: 'sol-usd', slot: null, receivedAt: m.receivedAt, quality: [] }, points: this.#solPoints.map((p) => ({ ...p })) }));
     // Reads asked at earlier checks that have landed by now: the facts as of now, then the landing.
     while (this.#reads.length > 0 && this.#reads[0]!.atMs <= atMs) {
       const r = this.#reads.shift()!;

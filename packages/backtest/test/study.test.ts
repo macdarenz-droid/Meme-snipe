@@ -5,6 +5,7 @@ import type { LogRecord } from '../../core/src/engine/index.ts';
 import { runStudy, type StudyRunOptions } from '../src/study/run.ts';
 import { STUDY_CONFIG, configId } from '../src/strategy/config.ts';
 import { tradesOf } from '../src/trades.ts';
+import { SOL_USD_BOOKS_STALE_MS, SOL_USD_MAX_AGE_MS } from '../src/strategy/study.ts';
 import { devFunderOf, NO_CLUSTER, scoreRun } from '../src/study/score.ts';
 import { mintHashFraction } from '../src/sim/facts.ts';
 import { key, type MintPlan, studyWorld, W0, WSLOT0 } from './study-world.ts';
@@ -249,6 +250,39 @@ describe('BT-2 study runs', () => {
     const nav = s.navMarks[0]!.nav;
     expect(nav).toBeLessThanOrEqual(TRIAL_POLICY.capital.bankroll - cost);
     expect(nav).toBeGreaterThanOrEqual(TRIAL_POLICY.capital.bankroll - cost - 1n);
+  });
+
+  // Paper is real money: a close or mark priced at a SOL/USD close older than 2 h (plus its delivery) is still booked,
+  // never dropped, and only counted as a stale conversion; its lamports are exact either way (BT review S1 of b1b9fdb).
+  it('deployment replay: a SOL/USD series that stops before a close still books it, lamports identical, and counts the stale conversions', () => {
+    // The setup started 6 minutes later (900 slots): its entry is within 2 h of its price's stamp (1.81 h), its close is
+    // not (2.06 h).
+    const LATE: MintPlan = { ...SETUP, createSlot: SETUP.createSlot + 900 };
+    const dep = (series: typeof sol) => {
+      let st: import('../src/strategy/study.ts').StudyStrategy | null = null;
+      const r = run([LATE], { mode: 'deployment', series: [series], onStrategy: (x) => { st = x; } });
+      return { r, d: (st as unknown as import('../src/strategy/study.ts').StudyStrategy).deployment, trades: tradesOf(r.r, FILL_CONFIG).trades };
+    };
+    const current = dep(sol);
+    expect(current.trades).toHaveLength(1);
+    const t = current.trades[0]!;
+    // Stop the series right after the close the entry was priced at (each close is stamped at its bar's end and usable an
+    // hour later): the entry sees the same price, the close comes more than 2 h after that stamp.
+    const lastStamp = Math.floor((t.openedAt - 3_600_000) / 3_600_000) * 3_600_000;
+    expect(t.openedAt - lastStamp).toBeLessThanOrEqual(SOL_USD_MAX_AGE_MS);
+    expect(t.closedAt - lastStamp).toBeGreaterThan(SOL_USD_BOOKS_STALE_MS);
+    const stopped = dep({ ...sol, bars: sol.bars.filter((b) => b.start + 3_600_000 <= lastStamp) });
+    // (1) The close is booked: the same closed and trade counts as with a current series.
+    expect(stopped.d.closed).toBe(current.d.closed);
+    expect(stopped.d.closed).toBe(1);
+    expect(stopped.trades).toHaveLength(current.trades.length);
+    // (2) Lamports are byte-identical, per trade and in total.
+    const lam = (xs: typeof current.trades) => xs.map((x) => [x.id, x.entrySol, x.exitSol, x.net].map(String));
+    expect(lam(stopped.trades)).toEqual(lam(current.trades));
+    // (3) Stale conversions are counted only when the series stopped.
+    expect([current.d.staleSolUsdCloses, current.d.staleSolUsdMarks]).toEqual([0, 0]);
+    expect(stopped.d.staleSolUsdCloses).toBeGreaterThan(0);
+    expect(stopped.d.staleSolUsdMarks).toBeGreaterThan(0);
   });
 
   it('deployment replay: S0 runs under the same one-position rule, under its own tags', () => {

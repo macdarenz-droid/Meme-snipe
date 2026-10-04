@@ -89,7 +89,7 @@ export interface DeploymentStats {
   maxDrawdownUsd: bigint;
   closed: number;
   /**
-   * Closes and marks valued in dollars at a SOL/USD close older than SOL_USD_MAX_AGE_MS (the series stopped). They are
+   * Closes and marks valued in dollars at a SOL/USD close older than SOL_USD_BOOKS_STALE_MS (the series stopped). They are
    * still booked (a loss is never dropped); their lamports are exact, only the dollar conversion may be off.
    */
   staleSolUsdCloses: number;
@@ -735,12 +735,18 @@ export class StudyStrategy implements Strategy {
  * old price. Exits and the books keep the latest price (refusing it there would drop a loss from the account).
  */
 export const SOL_USD_MAX_AGE_MS = 2 * 3_600_000;
-/** The SOL/USD price the books use (closes, marks): the latest close however old, flagged stale past the entry bound. */
+/**
+ * The age past which the books flag a SOL/USD conversion as stale: the entry bound plus the close's delivery (the
+ * feed's release and the observation delay, at most the stress profile's 16 slots, 2 s and a 60 s blackout: under
+ * 2 minutes), so a series that never stops flags nothing. It only counts; the entry bound stays 2 hours.
+ */
+export const SOL_USD_BOOKS_STALE_MS = SOL_USD_MAX_AGE_MS + 2 * 60_000;
+/** The SOL/USD price the books use (closes, marks): the latest close however old, flagged stale past SOL_USD_BOOKS_STALE_MS. */
 export const solUsdForBooks = (ctx: Pick<StrategyContext, 'lookup'>, now: number): { readonly tMs: number; readonly price: bigint; readonly stale: boolean } | null => {
   const r = ctx.lookup(SOL_USD_KEY);
   const sol = r.ok ? parseSolUsd(r.value) : null;
   const pt = sol === null ? null : solUsdAt(sol, now);
-  return pt === null ? null : { ...pt, stale: now - pt.tMs > SOL_USD_MAX_AGE_MS };
+  return pt === null ? null : { ...pt, stale: now - pt.tMs > SOL_USD_BOOKS_STALE_MS };
 };
 const solForEntry = (ctx: StrategyContext, now: number): { readonly tMs: number; readonly price: bigint } | 'stale' | null => {
   const r = ctx.lookup(SOL_USD_KEY);
