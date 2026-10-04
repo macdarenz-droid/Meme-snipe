@@ -12,7 +12,7 @@ import { accountFile } from '../src/run/account.ts';
 import { controlFile, NO_CONTROL } from '../src/run/state.ts';
 import { rmSync } from 'node:fs';
 import { HELD_PREFIX } from '../src/run/worker.ts';
-import { killLatchHolds, weeklyLatchHolds } from '../../core/src/risk/index.ts';
+import { killLatchHolds, melbourneWeek, weeklyLatchHolds } from '../../core/src/risk/index.ts';
 import { MINT, Market, SOL_PRICE, T, makeWorker, passingMarket, tempState, until, virtualTimers } from './worker-harness.ts';
 
 type H = ReturnType<typeof makeWorker>;
@@ -238,6 +238,38 @@ describe('a trip after an owner re-arm or review latches again (RISK-LATCH-2)', 
     await m2.run(2_000, 400, () => priced(h2, m2, 1_000_000n));
     expect(latches(h2).weeklyTrippedAtMs).toBe(at);
     await h2.worker.stop();
+  });
+});
+
+describe('carry-forward: a loss still reached after the owner\'s review latches again (RISK-LATCH-2)', () => {
+  it('R9 tripped last week and reviewed this week; this week\'s loss, booked before the review, still reaches the line: latched again', async () => {
+    const timers = virtualTimers(T - 16 * 86_400_000);
+    const stateDir = tempState();
+    const now = timers.now();
+    const week = melbourneWeek(now);
+    // The loss closes early this week; the owner reviews after it (and after last week's trip ended with its week).
+    const closedAt = Math.min(week.start + 3_600_000, now - 120_000);
+    const reviewedAt = closedAt + 60_000;
+    const h0 = makeWorker({ stateDir, timers });
+    expect(await h0.worker.reconcile()).toEqual({ ok: true });
+    const m0 = new Market(h0);
+    await m0.run(2_000, 400, () => priced(h0, m0, 1_000_000n));
+    await h0.worker.stop();
+    const file = accountFile(stateDir);
+    const a = file.read(null as never);
+    const lost = 30_000_000n;
+    file.write({ ...a, walletLamports: a.walletLamports! - lost, trades: [{ positionId: 'p:x:1', mint: 'MintX', openedAtMs: closedAt - 60_000, notional: 5_000_000n, closedAtMs: closedAt, netLamports: -lost, netPnl: -4_500_000n, stoppedOut: true, booked: -lost }] } as never);
+    controlFile(stateDir).write({ ...NO_CONTROL, latches: { ...NO_CONTROL.latches, weeklyTrippedAtMs: week.start - 86_400_000, weeklyReviewedAtMs: reviewedAt } });
+    const h = makeWorker({ stateDir, timers });
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    expect(weeklyLatchHolds(latches(h), timers.now())).toBe(false);
+    const m = new Market(h);
+    await m.run(4_000, 400, () => priced(h, m, 1_000_000n));
+    const at = latches(h).weeklyTrippedAtMs!;
+    expect(at).toBeGreaterThan(reviewedAt);
+    expect(weeklyLatchHolds(latches(h), m.now)).toBe(true);
+    expect(h.logs.some((l) => l.startsWith('Risk tripped on the account valuation: ') && l.includes('weekly_loss'))).toBe(true);
+    await h.worker.stop();
   });
 });
 
