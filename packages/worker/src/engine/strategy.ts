@@ -28,8 +28,12 @@ import {
   atr, checkStopDistance, decideExit, execPrice, liquidationValue, exitAttemptsOf, exitBookEvents, exitSettings, newTracker, noteAttempt,
 } from '../../../core/src/exits/index.ts';
 import {
-  type Coverage, type DeployerIndexState, type GateContext, type GateDeps, type GateRequest, type HardGate, type HardResult, type RugLabellerState, type S0DiagnosticPart, DeployerIndex, gatesOfStages, HARD_GATES, LOG_CREATE_PREFIX, RugLabeller, TX_CREATE_PREFIX, createKey, createsCoverage, evaluateHardRejects, evaluateRegime, migrationKey, parseCreate, parseMigration, parsePool, poolKey,
+  type Coverage, type DeployerIndexState, type GateContext, type GateDeps, type GateRequest, type GraduatesFact, type HardGate, type HardResult, type RugLabellerState, type S0DiagnosticPart, DeployerIndex, GRADUATES_KEY, gatesOfStages, HARD_GATES, LOG_CREATE_PREFIX, RugLabeller, TX_CREATE_PREFIX, createKey, createsCoverage, evaluateHardRejects, evaluateRegime, migrationKey, parseCreate, parseGraduates, parseMigration, parsePool, poolKey,
 } from '../../../core/src/gates/index.ts';
+import type { GraduatesSeed } from '../../../core/src/facts/raw.ts';
+
+/** PERSIST-2: the graduates series as saved (a `GraduatesSeed` without its source). */
+export type SavedGraduates = Omit<GraduatesSeed, 'source'>;
 import { type BookEvent, type IntentState, isTerminal } from '../../../core/src/lifecycle/index.ts';
 import { type AccountHistory, type Latches, type Timed, evaluateEntry, evaluateExit, maxTradeCosts, riskSnapshot } from '../../../core/src/risk/index.ts';
 import { latchable, type markedHistory, markSettings, riskAccount } from './marks.ts';
@@ -437,6 +441,8 @@ export class LiveStrategy implements Strategy {
   #seedApplied = false;
   /** Each watched mint's PumpSwap pool, from its migration or its pool fact, and back. */
   readonly #poolOfMint = new Map<string, string>();
+  /** S0-ZERO: each candidate's migration slot, where its pool's trade coverage must start (the oldest seen). */
+  readonly #migrationSlot = new Map<string, bigint>();
   readonly #mintOfPool = new Map<string, string>();
   /** The fee terms of the latest released swap on each mint's pool (rates are per trade on chain). */
   readonly #observedFees = new Map<string, PoolFeeContext>();
@@ -565,12 +571,15 @@ export class LiveStrategy implements Strategy {
    * The pools to watch for swaps (WORKER-1 subscribes `trades:<pool>`): every candidate in its window and every open
    * position, with whether a position holds it (exit traffic).
    */
-  watchedPools(): Map<string, { readonly mint: string; readonly held: boolean }> {
+  watchedPools(): Map<string, { readonly mint: string; readonly held: boolean; readonly fromSlot?: bigint }> {
     const held = new Set([...this.#exits.keys()].map((pid) => this.#mintOf(pid)));
-    const out = new Map<string, { mint: string; held: boolean }>();
+    const out = new Map<string, { mint: string; held: boolean; fromSlot?: bigint }>();
     for (const mint of this.watched()) {
       const pool = this.#poolOfMint.get(mint);
-      if (pool !== undefined) out.set(pool, { mint, held: held.has(mint) });
+      // A candidate's pool is watched from its migration (S0-ZERO): its candles are observed from the pool's creation.
+      // A held pool is already watched (an exit never waits on a catch-up).
+      const from = this.#cands.has(mint) && !held.has(mint) ? this.#migrationSlot.get(mint) : undefined;
+      if (pool !== undefined) out.set(pool, { mint, held: held.has(mint), ...(from === undefined ? {} : { fromSlot: from }) });
     }
     for (const [mint, t] of this.#tail) if (!out.has(t.pool)) out.set(t.pool, { mint, held: false });
     return out;
@@ -603,11 +612,17 @@ export class LiveStrategy implements Strategy {
    * PERSIST-1: what a save holds, as of the latest released moment: the index (entries older than `retainFromMs`
    * left out), the labeller's tables and every coverage fact. Null before anything was released or the seed applied.
    */
-  persistable(retainFromMs: number): { readonly asOf: Moment; readonly index: DeployerIndexState; readonly labeller: RugLabellerState; readonly coverage: readonly MarketEvent[] } | null {
+  persistable(retainFromMs: number): { readonly asOf: Moment; readonly index: DeployerIndexState; readonly labeller: RugLabellerState; readonly coverage: readonly MarketEvent[]; readonly graduates: SavedGraduates } | null {
     const asOf = this.#lastMoment;
     if (asOf === null || !this.#seedApplied || this.#waiting !== null) return null;
-    return { asOf, index: this.#deployers.snapshot(asOf, retainFromMs), labeller: this.#labeller.snapshot(), coverage: [...this.#coverageFacts] };
+    // PERSIST-2: the newest graduates fact released so far, with only the entries whose survival mark was reached by
+    // the save moment (the fact itself is never newer than the last released event).
+    const items = (this.#graduatesFact?.items ?? []).filter((g) => g.migratedAtMs + this.#d.session.policy.regime.survivalAfterMs <= asOf.receivedAt);
+    return { asOf, index: this.#deployers.snapshot(asOf, retainFromMs), labeller: this.#labeller.snapshot(), coverage: [...this.#coverageFacts], graduates: { asOfMs: asOf.receivedAt, items } };
   }
+
+  /** PERSIST-2: the newest graduates fact released (the regime's survival series), for the saved state. */
+  #graduatesFact: GraduatesFact | null = null;
 
   get deployers(): DeployerIndex {
     return this.#deployers;
@@ -624,6 +639,7 @@ export class LiveStrategy implements Strategy {
     // the guard keeps a save's as-of point from ever moving back if that changed (the index snapshot refuses it too).
     if (this.#lastMoment === null || compareMoments(e.moment, this.#lastMoment) > 0) this.#lastMoment = e.moment;
     if (COVERAGE_FACT.test(e.key)) this.#coverageFacts.push(e);
+    if (e.key === GRADUATES_KEY) this.#graduatesFact = parseGraduates(unwrap(e.value)) ?? this.#graduatesFact;
     this.#observe(e);
     if (e.key === RESTORE_KEY) this.#restore(unwrap(e.value), out);
     if (e.key === SEED_KEY) this.#seed(e.value, out);
@@ -803,7 +819,10 @@ export class LiveStrategy implements Strategy {
       // GATE-1's migration fact (a fetched, confirmed migration) also names a candidate.
       const f = parseMigration(e.value);
       const mint = e.key.slice(MIGRATION_PREFIX.length);
-      if (f !== null) this.#notePool(mint, f.pool);
+      if (f !== null) {
+        this.#notePool(mint, f.pool);
+        this.#noteMigrationSlot(mint, f.obs.slot);
+      }
       if (f !== null && !this.#cands.has(mint)) {
         this.#cands.set(mint, { mint, migratedAtMs: f.migratedAtMs, lastEvalMs: null, lastReason: null, lastWaived: '', tries: 0, gates: null, spend: null });
         out.push({ action: null, reasons: [SHORTLIST, this.#d.config.universe, mint, `migrated at ${f.migratedAtMs}`] });
@@ -817,7 +836,11 @@ export class LiveStrategy implements Strategy {
     const d = ev['data'];
     const mint = typeof d['mint'] === 'string' ? d['mint'] : null;
     const ts = typeof d['timestamp'] === 'bigint' ? Number(d['timestamp']) * 1000 : null;
-    if (mint !== null && typeof d['pool'] === 'string') this.#notePool(mint, d['pool']);
+    if (mint !== null && typeof d['pool'] === 'string') {
+      this.#notePool(mint, d['pool']);
+      // The migration transaction's own slot (a logs sighting carries it as txSlot): the pool cannot trade before it.
+      this.#noteMigrationSlot(mint, typeof v['txSlot'] === 'bigint' ? v['txSlot'] : e.moment.slot);
+    }
     if (mint === null || this.#cands.has(mint)) return;
     // Block time of the migration when the event states it, else when it was received.
     const migratedAtMs = ts ?? ctx.now.receivedAt;
@@ -830,7 +853,13 @@ export class LiveStrategy implements Strategy {
     if (this.watched().has(mint)) return;
     const pool = this.#poolOfMint.get(mint);
     if (pool !== undefined) this.#mintOfPool.delete(pool);
-    for (const m of [this.#poolOfMint, this.#observedFees, this.#tradeAt, this.#deployerSales]) m.delete(mint);
+    for (const m of [this.#poolOfMint, this.#observedFees, this.#tradeAt, this.#deployerSales, this.#migrationSlot]) m.delete(mint);
+  }
+
+  #noteMigrationSlot(mint: string, slot: bigint | null): void {
+    if (slot === null) return;
+    const was = this.#migrationSlot.get(mint);
+    if (was === undefined || slot < was) this.#migrationSlot.set(mint, slot);
   }
 
   #notePool(mint: string, pool: string): void {
