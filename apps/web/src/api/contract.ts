@@ -88,10 +88,38 @@ export interface RiskMeter extends Moded {
   limitUsd: Usd | null;
 }
 
+/** Why entries are off (API-1); `other` is a reason this app does not name. */
+export const HALT_CODES = ['starting', 'feed-stale', 'feed-disconnected', 'feed-dropped', 'paused', 'seeding', 'divergence', 'budget', 'other'] as const;
+export type HaltCode = (typeof HALT_CODES)[number];
+
+/** The engine's alert codes (AlertCode in the core lifecycle types). */
+export const ALERT_CODES = [
+  'cancel_after_broadcast',
+  'status_balance_mismatch',
+  'late_landing',
+  'unbooked_landing',
+  'double_fill',
+  'oversold',
+  'orphan_cleared',
+  'exit_blocked',
+  'restart_recovery',
+] as const;
+export type AlertCode = (typeof ALERT_CODES)[number];
+
+export const REGIME_REASON_CODES = ['regime-off', 'unknown', 'exec-health', 'policy-session-ended'] as const;
+export type RegimeReasonCode = (typeof REGIME_REASON_CODES)[number];
+
 export interface WorkerStatus extends Moded {
   connected: boolean;
   flags: StatusFlag[];
   risk: RiskMeter[];
+  /** API-1. Absent from a worker that does not serve them: the app then shows nothing for them. */
+  haltReasons?: (Moded & { code: HaltCode; source: string | null })[];
+  exitCapable?: boolean;
+  /** Critical alerts since the worker started. */
+  alerts?: (Moded & { code: AlertCode; subject: string; at: Iso })[];
+  /** The latest regime evaluation; null before the first candidate. */
+  regime?: { state: 'on' | 'off'; at: Iso; reasons: (Moded & { code: RegimeReasonCode; input: string | null })[] } | null;
 }
 
 // Funnel ---------------------------------------------------------------

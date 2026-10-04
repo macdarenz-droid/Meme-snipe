@@ -31,7 +31,7 @@ import { CoverageJournal } from './coverage-journal.ts';
 import { rebuildMove } from './exposure.ts';
 import type { SeedRpc } from '../seed/rpc.ts';
 import { DelayProbe, type DelayProbeOptions } from './delay-probe.ts';
-import { type ApiInputs, type DecisionRow, checkOf, melbourneDate, stageOf, startApiServer } from './api.ts';
+import { type AlertSeen, type ApiInputs, type DecisionRow, checkOf, collectAlerts, melbourneDate, stageOf, startApiServer } from './api.ts';
 import type { FactContext, FactSource } from './facts.ts';
 import { engineFeed, type EngineFeed } from './engine-feed.ts';
 import { startHealthServer } from './health.ts';
@@ -190,6 +190,8 @@ export class Worker {
   #seeding = false;
   /** A ledger/book divergence: a halt reason for the rest of the process. */
   #diverged: readonly string[] = [];
+  /** Critical alerts the engine raised since boot (code and subject, first time seen), newest last; memory only. */
+  #alerts: AlertSeen[] = [];
   #savedExits = '';
   #probe: DelayProbe | null = null;
   #exposedFile: ReturnType<typeof exposedFile>;
@@ -504,6 +506,7 @@ export class Worker {
   }
 
   #afterRecord(r: LogRecord): void {
+    collectAlerts(this.#alerts, r);
     if (r.type !== 'decision') return;
     if (r.reasons[0] === SHORTLIST) {
       const mint = r.reasons[2];
@@ -573,6 +576,8 @@ export class Worker {
     return {
       nowMs: d.timers.now(), policy: d.session.policy, policyVersion: d.session.versionHash, strategyVersion: d.strategy.version,
       connected: this.#reconciled && [...this.#feeds.values()].some((f) => f.connected), halted: this.#halted, paused: this.#ctl.paused,
+      exitCapable: this.#exitCapable(d.timers.now()), budgetHalted: (d.ops?.().quota ?? []).filter((q) => q.halted).map((q) => q.provider),
+      alerts: [...this.#alerts], regime: this.#strategy.regime(),
       book: this.#engine.book, trades: this.#account.state.trades, attempts: this.#world.attempts, decisions: this.#rows, funnel: this.#funnel,
       solPrice: this.#solPrice, symbol: (mint) => this.#symbols.get(mint) ?? `${mint.slice(0, 4)}…`,
       open: (p) => {

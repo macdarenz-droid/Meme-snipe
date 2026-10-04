@@ -1,4 +1,4 @@
-import type { Check, CostKind, ExitReason, ExitRule, FunnelStage, RiskMeter, StatusFlag, Universe, Venue } from '../api/contract.ts';
+import type { AlertCode, Check, CostKind, HaltCode, RegimeReasonCode, ExitReason, ExitRule, FunnelStage, RiskMeter, StatusFlag, Universe, Venue } from '../api/contract.ts';
 
 export const CHECK_LABEL: Record<Check, string> = {
   H1: 'Token program',
@@ -36,6 +36,43 @@ export const FLAG_LABEL: Record<StatusFlag, string> = {
   'low-fee-reserve': 'Low fee reserve',
   paused: 'Paused',
   'regime-off': 'Regime off',
+};
+
+/** Why entries are off, after "Off:" (API-1); `other` has no label, so it adds no reason. */
+export const HALT_LABEL: Record<Exclude<HaltCode, 'other'>, string> = {
+  starting: 'starting',
+  'feed-stale': 'stale data',
+  'feed-disconnected': 'feed down',
+  'feed-dropped': 'feed drill',
+  paused: 'paused',
+  seeding: 'seeding',
+  divergence: 'ledger mismatch',
+  budget: 'request budget',
+};
+
+export const ALERT_LABEL: Record<AlertCode, string> = {
+  cancel_after_broadcast: 'Cancel after send',
+  status_balance_mismatch: 'Balance mismatch',
+  late_landing: 'Late landing',
+  unbooked_landing: 'Unbooked landing',
+  double_fill: 'Double fill',
+  oversold: 'Oversold',
+  orphan_cleared: 'Orphan cleared',
+  exit_blocked: 'Exit blocked',
+  restart_recovery: 'Restart recovery',
+};
+
+/** A regime reason after "Off:"; an `unknown` reason names its missing input instead. */
+export const REGIME_REASON_LABEL: Record<Exclude<RegimeReasonCode, 'unknown'>, string> = {
+  'regime-off': 'checks failed',
+  'exec-health': 'execution health',
+  'policy-session-ended': 'session ended',
+};
+export const REGIME_INPUT_LABEL: Record<string, string> = {
+  'curve-volume': 'volume unknown',
+  'sol-usd': 'SOL price unknown',
+  graduates: 'graduates unknown',
+  'exec-health': 'execution health unknown',
 };
 
 /** Flags that need the owner's eye are drawn in the loss colour; the rest stay neutral. */

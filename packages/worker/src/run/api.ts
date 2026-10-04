@@ -12,6 +12,8 @@ import { melbourneDay } from '../../../core/src/risk/index.ts';
 import { type Lamports, type MicroUsd, lamportsToMicroUsd } from '../../../core/src/units/index.ts';
 import type { PaperTrade } from './account.ts';
 import type { PaperAttempt } from './paper-world.ts';
+import { SEEDING } from '../engine/strategy.ts';
+import type { LogRecord } from '../../../core/src/engine/index.ts';
 
 const MODE = 'paper' as const;
 const LAMPORTS_PER_SOL = 1_000_000_000n;
@@ -91,6 +93,14 @@ export interface ApiInputs {
   readonly connected: boolean;
   readonly halted: readonly string[];
   readonly paused: boolean;
+  /** /health's exit_capable: an exit could be sent now (paper: simulated). */
+  readonly exitCapable: boolean;
+  /** Providers whose request budget is spent (the scheduler refuses all but P0). */
+  readonly budgetHalted: readonly string[];
+  /** Critical engine alerts since boot. */
+  readonly alerts: readonly { readonly code: string; readonly subject: string; readonly atMs: number }[];
+  /** The latest regime evaluation; null before the first candidate. */
+  readonly regime: { readonly atMs: number; readonly on: boolean; readonly reasons: readonly { readonly code: string; readonly input: string | null }[] } | null;
   readonly book: Book;
   readonly trades: readonly PaperTrade[];
   readonly attempts: ReadonlyMap<string, PaperAttempt>;
@@ -104,6 +114,31 @@ export interface ApiInputs {
 
 const fillsOf = (i: ApiInputs, pid: string): PaperAttempt[] =>
   [...i.attempts.values()].filter((a) => a.trade === pid && a.outcome === 'filled' && a.fill !== null).sort((a, b) => (a.sentAtMs ?? 0) - (b.sentAtMs ?? 0));
+
+/** The most critical alerts the app's status lists: a bounded memory, not a log (the engine log holds them all). */
+export const MAX_ALERTS = 50;
+export interface AlertSeen { readonly code: string; readonly subject: string; readonly atMs: number }
+
+/** Adds a record's critical alerts to `alerts` (first sighting of each code and subject), keeping the newest MAX_ALERTS. */
+export const collectAlerts = (alerts: AlertSeen[], r: LogRecord): void => {
+  if (r.type !== 'decision' && r.type !== 'world') return;
+  for (const { effect: e } of r.effects) {
+    if (e.type !== 'alert' || e.level !== 'critical' || alerts.some((a) => a.code === e.code && a.subject === e.subject)) continue;
+    alerts.push({ code: e.code, subject: e.subject, atMs: r.at.receivedAt });
+  }
+  if (alerts.length > MAX_ALERTS) alerts.splice(0, alerts.length - MAX_ALERTS);
+};
+
+/** A halt reason as the app names it, and the feed or provider it is about. Text this does not know is 'other'. */
+export const haltOf = (reason: string): { readonly code: string; readonly source: string | null } => {
+  const feed = /^feed (\S+) (stale|disconnected|dropped by drill)$/.exec(reason);
+  if (feed !== null) return { code: feed[2] === 'stale' ? 'feed-stale' : feed[2] === 'disconnected' ? 'feed-disconnected' : 'feed-dropped', source: feed[1]! };
+  if (reason === 'starting') return { code: 'starting', source: null };
+  if (reason === 'owner pause (watchdog)') return { code: 'paused', source: null };
+  if (reason === SEEDING) return { code: 'seeding', source: null };
+  if (reason.startsWith('ledger and book diverged')) return { code: 'divergence', source: null };
+  return { code: 'other', source: null };
+};
 
 export const views = {
   status: (i: ApiInputs) => {
@@ -125,6 +160,10 @@ export const views = {
     const bankroll = i.policy.capital.bankroll as bigint;
     return {
       mode: MODE, connected: i.connected, flags: [...flags],
+      haltReasons: [...i.halted.map(haltOf), ...i.budgetHalted.map((p) => ({ code: 'budget', source: p }))].map((h) => ({ mode: MODE, ...h })),
+      exitCapable: i.exitCapable,
+      alerts: i.alerts.map((a) => ({ mode: MODE, code: a.code, subject: a.subject, at: iso(a.atMs) })),
+      regime: i.regime === null ? null : { state: i.regime.on ? 'on' : 'off', at: iso(i.regime.atMs), reasons: i.regime.reasons.map((r) => ({ mode: MODE, code: r.code, input: r.input })) },
       risk: [
         { mode: MODE, kind: 'open-exposure', usedUsd: usdText(open), limitUsd: null },
         { mode: MODE, kind: 'daily-loss', usedUsd: usdText(lossToday), limitUsd: usdText((bankroll * BigInt(i.policy.loss.dailyBps)) / 10_000n) },

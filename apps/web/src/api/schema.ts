@@ -64,6 +64,11 @@ export const arr =
     if (v.length > max) fail(p, `more than ${max} items`);
     v.forEach((x, i) => c(x, `${p}[${i}]`));
   };
+const OPTIONAL = Symbol('optional');
+/** A field that may be absent (a worker older than the field); when present it must pass `c`. */
+export const optional = (c: Check): Check => Object.assign((v: unknown, p: string) => c(v, p), { [OPTIONAL]: true });
+const isOptional = (c: Check): boolean => (c as Check & { [OPTIONAL]?: boolean })[OPTIONAL] === true;
+
 export const obj =
   (shape: Record<string, Check>): Check =>
   (v, p) => {
@@ -72,7 +77,10 @@ export const obj =
     // Own keys only: `in` would also match Object.prototype names such as constructor or toString.
     for (const k of Object.keys(o)) if (!Object.hasOwn(shape, k)) fail(`${p}.${k}`, 'unknown field');
     for (const [k, c] of Object.entries(shape)) {
-      if (!Object.hasOwn(o, k)) fail(`${p}.${k}`, 'missing');
+      if (!Object.hasOwn(o, k)) {
+        if (isOptional(c)) continue;
+        fail(`${p}.${k}`, 'missing');
+      }
       c(o[k], `${p}.${k}`);
     }
   };
