@@ -18,6 +18,23 @@ blockNetwork();
 
 const HELD = { heldPoolFacts: true } as const;
 
+/**
+ * RISK-LATCH (#124) latches R9/R10 from the worker's account valuation at the end of every step, which comes before a
+ * candidate is first judged. To pin the entry path's own latching, this marking seam shows that valuation one open
+ * position with no mark (never latchable) and leaves the strategy's marking as given. `valuations` counts the calls it
+ * changed, so a renamed frame fails the test instead of passing it vacuously.
+ */
+const entryPath = (inner: typeof markedHistory = markedHistory) => {
+  const seen = { valuations: 0 };
+  const mark: typeof markedHistory = (h, held, sol, nowMs, st) => {
+    const r = inner(h, held, sol, nowMs, st);
+    if (!(new Error().stack ?? '').includes('#markAccount')) return r;
+    seen.valuations++;
+    return { ...r, openPositions: [...r.openPositions, { mint: 'Unmarked' as never, openedAtMs: nowMs, notional: 0n as MicroUsd, mark: null, markAtMs: null }] };
+  };
+  return { mark, seen };
+};
+
 /** A paper account whose recorded week-start or NAV peak puts it past a stop while it holds nothing. */
 const seeded = (over: Record<string, unknown>): string => {
   const dir = tempState();
@@ -46,7 +63,9 @@ describe('a stop reached on the entry path while flat is latched', () => {
     const closedAt = T - 2 * 3_600_000;
     expect(closedAt).toBeGreaterThanOrEqual(melbourneWeek(T).start);
     const dir = seeded({ trades: [{ positionId: 'p:old:1', mint: 'OldMint1111111111111111111111111111111111111', openedAtMs: closedAt - 600_000, notional: usd('5'), closedAtMs: closedAt, netLamports: -33_000_000n, netPnl: -usd('5'), stoppedOut: true, booked: -33_000_000n }] });
-    const { h, lines, latches } = await run(dir);
+    const e = entryPath();
+    const { h, lines, latches } = await run(dir, e.mark);
+    expect(e.seen.valuations).toBeGreaterThan(0);
     const rejects = lines.filter((l) => l.kind === 'decision' && l.reasons?.[0] === 'reject');
     expect(rejects.some((l) => l.reasons!.includes('trip weekly_loss')), JSON.stringify(lines.filter((l) => l.kind === 'decision').map((l) => l.reasons?.slice(0, 4)))).toBe(true);
     expect(Object.values(h.worker.book.positions)).toEqual([]);
@@ -55,7 +74,9 @@ describe('a stop reached on the entry path while flat is latched', () => {
 
   it('NAV kill: the reject carries `trip kill_switch` as its own reason, and the kill latch is set', async () => {
     const dir = seeded({ navPeak: { atMs: T - 3_600_000, nav: usd('40') } });
-    const { h, lines, latches } = await run(dir);
+    const e = entryPath();
+    const { h, lines, latches } = await run(dir, e.mark);
+    expect(e.seen.valuations).toBeGreaterThan(0);
     const rejects = lines.filter((l) => l.kind === 'decision' && l.reasons?.[0] === 'reject');
     expect(rejects.some((l) => l.reasons!.includes('trip kill_switch'))).toBe(true);
     expect(Object.values(h.worker.book.positions)).toEqual([]);
@@ -82,12 +103,14 @@ describe('an entry-path trip latches only from a fully marked account', () => {
   const rejects = (lines: { kind: string; reasons?: string[] }[]) => lines.filter((l) => l.kind === 'decision' && l.reasons?.[0] === 'reject').map((l) => l.reasons!);
   const maxAge = makeWorker().session.policy.gates.maxQuoteAgeMs;
 
-  it('(a) a flat account with a booked weekly loss, refused at entry, latches R9 (fully marked: nothing held)', async () => {
+  it('(a) a flat account with a booked weekly loss, refused at entry, is latched R9 (fully marked: nothing held)', async () => {
     const closedAt = T - 2 * 3_600_000;
     const dir = seeded({ trades: [{ positionId: 'p:old:1', mint: 'OldMint1111111111111111111111111111111111111', openedAtMs: closedAt - 600_000, notional: usd('5'), closedAtMs: closedAt, netLamports: -33_000_000n, netPnl: -usd('5'), stoppedOut: true, booked: -33_000_000n }] });
+    // The whole worker: since RISK-LATCH the account valuation latches it before the candidate is judged, so the
+    // reject reads R9's review reason; the entry path's own latching is pinned in the tests above and in (c).
     const { lines, latches } = await run(dir);
-    expect(rejects(lines).some((r) => r.includes('trip weekly_loss'))).toBe(true);
     expect(typeof latches['weeklyTrippedAtMs']).toBe('number');
+    expect(rejects(lines).some((r) => r.some((x) => x.startsWith('risk ') && x.includes('weekly_review')))).toBe(true);
   });
 
   for (const mode of ['unmarked', 'stale'] as const) {
@@ -105,9 +128,9 @@ describe('an entry-path trip latches only from a fully marked account', () => {
 
   it('(d) the same candidate refused first on a stale mark, then on a fresh one: the second reject is written with `trip weekly_loss` and R9 latches', async () => {
     const seam = { mode: 'stale' as Seam };
-    const mark: typeof markedHistory = (...a) => steered(seam.mode, maxAge)(...a);
+    const e = entryPath((...a) => steered(seam.mode, maxAge)(...a));
     const stateDir = tempState();
-    const h = makeWorker({ stateDir, markedHistory: mark });
+    const h = makeWorker({ stateDir, markedHistory: e.mark });
     expect(await h.worker.reconcile()).toEqual({ ok: true });
     const m = await passingMarket(h, HELD);
     const tick = () => {
@@ -125,10 +148,13 @@ describe('an entry-path trip latches only from a fully marked account', () => {
     const after = rejects(readFileSync(join(stateDir, 'journal.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as { kind: string; reasons?: string[] })).slice(before.length);
     expect(after.some((r) => r.includes('trip weekly_loss') && r[2] === before.at(-1)![2])).toBe(true);
     expect(typeof latched()).toBe('number');
+    expect(e.seen.valuations).toBeGreaterThan(0);
   });
 
   it('(c) the same position with a fresh mark showing a real fall: `trip weekly_loss` on the reject, and R9 latched', async () => {
-    const { lines, latches } = await run(tempState(), steered('dip', maxAge));
+    const e = entryPath(steered('dip', maxAge));
+    const { lines, latches } = await run(tempState(), e.mark);
+    expect(e.seen.valuations).toBeGreaterThan(0);
     expect(rejects(lines).some((r) => r.includes('trip weekly_loss'))).toBe(true);
     expect(typeof latches['weeklyTrippedAtMs']).toBe('number');
     expect(latches['killTrippedAtMs'] ?? null).toBeNull();
