@@ -6,7 +6,7 @@
 // (POOL-1): after a halt as soon as the stream takes P3 watches again, after a refusal with a growing wait (2 s
 // doubling to 60 s).
 import { P1, P3, type Timers } from '../scheduler/index.ts';
-import type { RpcStream } from '../providers/index.ts';
+import type { RpcStream, WatchOptions } from '../providers/index.ts';
 
 export const tradesStream = (pool: string): string => `trades:${pool}`;
 
@@ -16,8 +16,14 @@ export const REFUSED_RETRY_MS = { first: 2_000, most: 60_000 } as const;
 export interface PoolWatchOptions {
   readonly stream: Pick<RpcStream, 'watchLogs' | 'unwatch' | 'setPriority'> & Partial<Pick<RpcStream, 'onDropped' | 'onServed'>>;
   readonly timers: Timers;
-  readonly pools: () => ReadonlyMap<string, { readonly mint: string; readonly held: boolean }>;
+  /** `fromSlot`: a candidate's migration slot, where its trade coverage must start (S0-ZERO); none for held pools. */
+  readonly pools: () => ReadonlyMap<string, { readonly mint: string; readonly held: boolean; readonly fromSlot?: bigint }>;
   readonly everyMs: number;
+  /**
+   * FILL-2's in-run fill (`ingestingFill`) for the pool watches: closes a candidate's catch-up gap from its migration
+   * and any reconnect gap. Without it those gaps close as lossy, so H5 and H11 reject that pool.
+   */
+  readonly fill?: WatchOptions['fill'];
 }
 
 export class PoolWatch {
@@ -91,14 +97,18 @@ export class PoolWatch {
       }
     }
     for (const pool of this.#retry.keys()) if (!want.has(pool)) this.#retry.delete(pool);
-    for (const [pool, { held }] of want) {
+    for (const [pool, { held, fromSlot }] of want) {
       if (this.#watching.has(pool)) continue;
       const retry = this.#retry.get(pool);
       if (retry !== undefined && this.#o.timers.now() < retry.at) continue;
       try {
         // Confirmed (FACTS-1 STREAMS.trades): the producer builds the pool state from these swaps (POS-1) and never
         // from processed ones, which can be rolled back.
-        const id = this.#o.stream.watchLogs(pool, { priority: held ? P1 : P3, decodeLogs: true, coverage: tradesStream(pool), commitment: 'confirmed' });
+        // A candidate's coverage starts at its migration (S0-ZERO): its candles are observed from the pool's creation.
+        const id = this.#o.stream.watchLogs(pool, {
+          priority: held ? P1 : P3, decodeLogs: true, coverage: tradesStream(pool), commitment: 'confirmed',
+          ...(this.#o.fill === undefined ? {} : { fill: this.#o.fill }), ...(fromSlot === undefined || held ? {} : { coverFrom: fromSlot }),
+        });
         this.#watching.set(pool, { id, held });
       } catch {
         // Refused (the provider's budget halt refuses new P3 watches): retried at the next sync.
