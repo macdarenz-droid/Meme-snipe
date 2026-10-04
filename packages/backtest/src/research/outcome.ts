@@ -51,52 +51,7 @@ export interface OutcomeOptions {
   readonly seed: string;
   /** Least accepted entry output below the decision quote (research config `s0.entryMinOutBelowBps`). */
   readonly entryMinOutBelowBps: number;
-  /**
-   * How token-account rent is scored. 'scenario' (default): the scenario's `rentRecovery` flag, all or nothing.
-   * 'rent-1' (DECISIONS "Rent"): per trade, seeded draws decide whether the atomic sell-and-close lands
-   * (`closeSuccessPpm`) and whether dust stays (`dustPpm`): the rent comes back only when the close lands with no
-   * dust; a close that fails without dust also pays one failed exit attempt.
-   */
-  readonly rentModel?: 'scenario' | 'rent-1';
 }
-
-/** The constants the outcome stage scores a trade with; RES-4's cost math (edge-costs.ts) uses the same ones. */
-export interface ScoringTerms {
-  readonly base: bigint;
-  /** Base, priority and tip of the landed entry. */
-  readonly entryLanded: bigint;
-  /** Base, rung-1 priority and tip of the landed exit. */
-  readonly exitFixed: bigint;
-  /** One failed exit attempt: base and the third rung's priority (conservative bound). */
-  readonly failedExit: bigint;
-  /** Chance an exit attempt fails although the position is sellable (1 − PumpSwap land rate); every failure pays. */
-  readonly failProbability: number;
-  readonly maxAttempts: number;
-  readonly latencySlots: number;
-  readonly rent: bigint;
-  readonly closeSuccess: number;
-  readonly dust: number;
-}
-
-export const scoringTerms = (fills: FillConfig, policy: Policy, scenario: ScenarioName): ScoringTerms => {
-  const scen = fills.scenarios[scenario];
-  const net = fills.network;
-  const ladder = policy.exits.ladder;
-  const base = net.signaturesPerTx * net.baseFeePerSignature;
-  return {
-    base, entryLanded: base + net.entryPriorityFee + net.tip, exitFixed: base + ladder.steps[0]!.priorityFeeLamports + net.tip,
-    failedExit: base + ladder.steps[Math.min(2, ladder.steps.length - 1)]!.priorityFeeLamports,
-    failProbability: 1 - Number(scen.landPpm.pumpswap) / 1e6, maxAttempts: ladder.maxAttempts, latencySlots: Math.max(...scen.landingSlots),
-    rent: net.tokenAccountRent, closeSuccess: Number(scen.closeSuccessPpm) / 1e6, dust: Number(scen.dustPpm) / 1e6,
-  };
-};
-
-/** Expected failed exit attempts on the ladder: Σ_{k=1..max} f^k (the k-th failure needs k failures in a row). */
-export const expectedFailedExits = (t: ScoringTerms): number => {
-  let e = 0;
-  for (let k = 1; k <= t.maxAttempts; k++) e += t.failProbability ** k;
-  return e;
-};
 
 export interface Outcome {
   readonly id: string;
@@ -133,10 +88,14 @@ export const scoreCandidates = (rows: Iterable<DatasetRow>, targets: readonly Sc
   const scen = o.fills.scenarios[o.scenario];
   const net = o.fills.network;
   const ladder = o.policy.exits.ladder;
-  const terms = scoringTerms(o.fills, o.policy, o.scenario);
-  const { base, exitFixed, failedExit, failProbability, rent } = terms;
-  const landing = BigInt(terms.latencySlots);
-  const latency = terms.latencySlots;
+  const landing = BigInt(Math.max(...scen.landingSlots));
+  const latency = Math.max(...scen.landingSlots);
+  const base = net.signaturesPerTx * net.baseFeePerSignature;
+  const exitFixed = base + ladder.steps[0]!.priorityFeeLamports + net.tip;
+  // One cost for every failed exit attempt: the third rung's priority fee, above the first two (conservative bound).
+  const failedExit = base + ladder.steps[Math.min(2, ladder.steps.length - 1)]!.priorityFeeLamports;
+  const failProbability = 1 - Number(scen.landPpm.pumpswap) / 1e6;
+  const rent = net.tokenAccountRent;
   const maxHorizon = Math.max(...o.barriers.map((b) => b.horizonMs));
   // Time after the horizon for the exit ladder, at 1 s per slot: conservative, since slots run ~0.27–0.4 s (more slots fit).
   const tail = (ladder.maxAttempts + 1) * latency * 1000;
@@ -161,20 +120,12 @@ export const scoreCandidates = (rows: Iterable<DatasetRow>, targets: readonly Sc
   const realState = new Map<string, ShiftedPool>();
   const out = new Map<string, Outcome>();
 
-  const rentOf = (p: Pending): { readonly back: boolean; readonly failedClose: boolean } => {
-    if (o.rentModel !== 'rent-1') return { back: scen.rentRecovery, failedClose: false };
-    const rng = createRng(seedOf(`${o.seed}:${p.t.id}:rent`));
-    const close = rng.next() < terms.closeSuccess;
-    const dust = rng.next() < terms.dust;
-    return { back: close && !dust, failedClose: !close && !dust };
-  };
   const value = (p: Pending): bigint | null => {
     const s = p.shifted!.state;
     if (s === null || p.fees === null) return null;
     const q = poolSell(s, p.tokens, observedFeeContext(p.fees, p.baseSupply, NORMAL));
     if (!q.ok) return null;
-    const r = rentOf(p);
-    const v = q.trade.userQuote - exitFixed + (r.back ? rent : 0n) - (r.failedClose ? failedExit : 0n);
+    const v = q.trade.userQuote - exitFixed + (scen.rentRecovery ? rent : 0n);
     return v > 0n ? v : 0n;
   };
   const point = (p: Pending, slot: bigint): void => {
