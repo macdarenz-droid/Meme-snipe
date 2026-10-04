@@ -7,19 +7,19 @@
 // A mutant whose run fails on a syntax or transform error is reported as `error`, not as killed.
 import { spawn } from 'node:child_process';
 import { cpSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { tmpdir } from 'node:os';
 import { mkdtempSync } from 'node:fs';
 
 const REPO = new URL('../../..', import.meta.url).pathname.replace(/\/$/, '');
-const SP = mkdtempSync(join(tmpdir(), 'mutate-'));
 const DIR = process.argv[2] ?? 'packages/core/src/exits';
 const TESTS = process.argv[3] ?? 'packages/core/test/exits';
 const WORKERS = Number(process.env.WORKERS ?? 4);
 const only = process.argv[4] ?? null;
 
 /** Code ranges outside comments, strings and templates. */
-const codeMask = (src) => {
+export const codeMask = (src) => {
   const mask = new Uint8Array(src.length);
   let i = 0;
   while (i < src.length) {
@@ -45,7 +45,7 @@ const codeMask = (src) => {
 
 const lineOf = (src, pos) => src.slice(0, pos).split('\n').length;
 
-const mutantsOf = (file, src) => {
+export const mutantsOf = (file, src) => {
   const mask = codeMask(src);
   const out = [];
   const isCode = (a, b) => { for (let k = a; k < b; k++) if (!mask[k]) return false; return true; };
@@ -81,8 +81,12 @@ const mutantsOf = (file, src) => {
     add(m.index, m.index + 1, '', 'remove !');
   }
   for (const m of src.matchAll(/\bif \(/g)) {
+    // The same mask as every other operator: an `if (` in a comment or string is not code, and a parenthesis in a
+    // string inside the condition does not count towards its end.
+    if (!isCode(m.index, m.index + m[0].length)) continue;
     let d = 1; let k = m.index + m[0].length;
-    while (d > 0 && k < src.length) { if (src[k] === '(') d++; else if (src[k] === ')') d--; k++; }
+    while (d > 0 && k < src.length) { if (mask[k] && src[k] === '(') d++; else if (mask[k] && src[k] === ')') d--; k++; }
+    if (d > 0) continue;
     const a = m.index + m[0].length; const b = k - 1;
     out.push({ file, start: a, end: b, rep: 'true', op: 'if→true', line: lineOf(src, a), orig: src.slice(a, b) });
     out.push({ file, start: a, end: b, rep: 'false', op: 'if→false', line: lineOf(src, a), orig: src.slice(a, b) });
@@ -90,6 +94,8 @@ const mutantsOf = (file, src) => {
   return out;
 };
 
+const main = async () => {
+const SP = mkdtempSync(join(tmpdir(), 'mutate-'));
 const files = readdirSync(join(REPO, DIR)).filter((f) => f.endsWith('.ts')).map((f) => join(DIR, f));
 let mutants = files.flatMap((f) => mutantsOf(f, readFileSync(join(REPO, f), 'utf8')));
 if (only) mutants = mutants.filter((m) => m.file.endsWith(only));
@@ -139,3 +145,6 @@ rmSync(work, { recursive: true, force: true });
 for (const r of by('survived')) console.log(`SURVIVED ${r.file}:${r.line} ${r.op}  [${r.orig}] → [${r.rep}]`);
 for (const r of by('error')) console.log(`ERROR ${r.file}:${r.line} ${r.op}`);
 console.log(`total ${results.length} killed ${by('killed').length} survived ${by('survived').length} error ${by('error').length}`);
+};
+
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) await main();
