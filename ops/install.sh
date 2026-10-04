@@ -1336,19 +1336,20 @@ while IFS= read -r line; do
 done < <(unit_sandbox "$UNIT_FILE")
 [ "${#props[@]}" -gt 40 ] || { echo "the worker unit's sandbox could not be read from $UNIT_FILE"; exit 1; }
 
-# trial UNIT LOG ARGS...: the release's worker as a transient unit with that sandbox, the worker's environment file,
-# the RUN-1 environment (worker-start) on the trial's state directory and ports, and the memory cap.
+# trial UNIT LOG MODE: the release's worker as a transient unit with that sandbox, the worker's environment file, the
+# RUN-1 environment (worker-start) on the trial's state directory and ports, and the memory cap. MODE "reconcile" runs
+# its --reconcile and waits for it (at most 120 s); "run" starts it and returns.
 trial() {
-  local unit="$1" log="$2"
-  shift 2
-  systemd-run --quiet --unit="$unit" "${props[@]}" \
+  local unit="$1" log="$2" opts=() args=()
+  if [ "$3" = reconcile ]; then opts=(--wait -p RuntimeMaxSec=120); args=(--reconcile); fi
+  systemd-run --quiet --unit="$unit" "${opts[@]}" "${props[@]}" \
     -p User=zeroed-worker -p Group=zeroed-worker -p MemoryMax="$SMOKE_MEMORY_MAX" -p TimeoutStopSec=30 \
     -p EnvironmentFile=-/etc/zeroed/worker.env -p WorkingDirectory="$dir" -p ReadWritePaths="$tmp" \
     -p StandardOutput=append:"$log" -p StandardError=append:"$log" \
     --setenv=NODE_ENV=production --setenv=ZEROED_MODE=paper --setenv=ZEROED_RECORDER=on --setenv=ZEROED_SIMULATE=on \
     --setenv=ZEROED_DRILLS=on --setenv=ZEROED_STATE_DIR="$tmp/state" --setenv=ZEROED_GIT_SHA="$(basename "$dir")" \
     --setenv=ZEROED_HEALTH_ADDR="$SMOKE_HEALTH_ADDR" --setenv=ZEROED_API_ADDR="$SMOKE_API_ADDR" \
-    "$@" /usr/local/bin/node --no-warnings "$entry"
+    /usr/local/bin/node --no-warnings "$entry" "${args[@]}"
 }
 # why LOG: the line that says what went wrong (an error or a refusal), else the last line; one line, printable.
 why() {
@@ -1358,12 +1359,13 @@ status() { systemctl show -p ExecMainStatus --value "$1.service" 2>/dev/null || 
 healthy() { curl -fsS -m 2 "http://$SMOKE_HEALTH_ADDR/health" 2>/dev/null | jq -e '.mode == "paper"' >/dev/null 2>&1; }
 
 : >"$tmp/reconcile.log"
-if ! trial "$TRIAL-reconcile" "$tmp/reconcile.log" --wait -p RuntimeMaxSec=120 --reconcile >/dev/null 2>&1; then
+if ! trial "$TRIAL-reconcile" "$tmp/reconcile.log" reconcile >"$tmp/systemd-run.log" 2>&1; then
+  [ -s "$tmp/reconcile.log" ] || cp "$tmp/systemd-run.log" "$tmp/reconcile.log"
   echo "its reconcile exited $(status "$TRIAL-reconcile"): $(why "$tmp/reconcile.log")"
   exit 1
 fi
 : >"$tmp/start.log"
-trial "$TRIAL" "$tmp/start.log" >/dev/null 2>&1 || { echo "it could not be started: $(why "$tmp/start.log")"; exit 1; }
+trial "$TRIAL" "$tmp/start.log" run >"$tmp/systemd-run.log" 2>&1 || { echo "it could not be started: $(why "$tmp/systemd-run.log")"; exit 1; }
 up=0
 for _ in $(seq 1 90); do
   systemctl is-active --quiet "$TRIAL.service" || { echo "it exited $(status "$TRIAL"): $(why "$tmp/start.log")"; exit 1; }

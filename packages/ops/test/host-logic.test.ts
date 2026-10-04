@@ -260,11 +260,13 @@ describe('worker start and API address', () => {
     expect(s).toContain('--setenv=ZEROED_MODE=paper');
     expect(s).not.toMatch(/ZEROED_MODE=(?!paper )/);
     expect(s).not.toMatch(/CREDENTIALS_DIRECTORY|credstore|LoadCredential/);
-    expect(s).toContain('--wait -p RuntimeMaxSec=120 --reconcile');
+    expect(s).toContain('if [ "$3" = reconcile ]; then opts=(--wait -p RuntimeMaxSec=120); args=(--reconcile); fi');
+    // The worker's own arguments go after the program, never among systemd-run's options.
+    expect(s).toContain('/usr/local/bin/node --no-warnings "$entry" "${args[@]}"');
     // Review #110: a transient unit under the worker unit's sandbox, capped in memory, the worker's environment file,
     // the scratch directory its only writable path; and it must stay up for a hold after its first answer.
     expect(sh('echo "$SMOKE_MEMORY_MAX $SMOKE_HOLD_S $SWITCH_HOLD_S"').out).toBe('280M 30 30');
-    expect(s).toMatch(/systemd-run --quiet --unit="\$unit" "\$\{props\[@\]\}" \\\n\s+-p User=zeroed-worker -p Group=zeroed-worker -p MemoryMax="\$SMOKE_MEMORY_MAX"/);
+    expect(s).toMatch(/systemd-run --quiet --unit="\$unit" "\$\{opts\[@\]\}" "\$\{props\[@\]\}" \\\n\s+-p User=zeroed-worker -p Group=zeroed-worker -p MemoryMax="\$SMOKE_MEMORY_MAX"/);
     expect(s).toContain('-p EnvironmentFile=-/etc/zeroed/worker.env -p WorkingDirectory="$dir" -p ReadWritePaths="$tmp"');
     expect(s).toContain('done < <(unit_sandbox "$UNIT_FILE")');
     expect(s).toContain('for _ in $(seq 1 "$SMOKE_HOLD_S"); do');
