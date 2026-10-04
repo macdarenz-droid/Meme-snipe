@@ -642,7 +642,7 @@ describe('a restored position is never managed from a plan it was not entered wi
     const before = h.worker.strategy.saved()[pid]!;
     await h.worker.kill();
     const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers });
-    const m2 = new Market(h2);
+    const m2 = new Market(h2, HELD);
     // A market event dated before the boot's restore fact (the start facts are dated 1 ms after the last restored frame).
     m2.slot();
     m2.pool();
