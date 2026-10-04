@@ -6,7 +6,7 @@
 // `coverage:rugs:*` start is claimed: H14 stays not covered until a paid stream (`tradeStreams`) or a backfill covers
 // trades (RUG-1's wiring rule).
 import { PUMP_AMM_PROGRAM, PUMP_PROGRAM, type TransactionRecord, transactionEvents } from '../../../core/src/chain/index.ts';
-import type { SocketFactory, HttpClient, Secrets } from '../providers/index.ts';
+import type { Fetched, SocketFactory, HttpClient, Secrets } from '../providers/index.ts';
 import { CoinbaseSolPrice, alchemyRpcUrl, heliusRpcUrl, heliusWsUrl, PumpPortalSource, RpcHttp, RpcStream, TxFetcher } from '../providers/index.ts';
 import {
   ALCHEMY_FREE, HELIUS_FREE, HELIUS_WS_CREDITS_PER_BYTE, HELIUS_WS_CREDITS_PER_CONNECTION, JUPITER_FREE, P0, P1, P2, P3,
@@ -308,7 +308,7 @@ export class LiveProviders {
   }
 
   /** A transaction read at confirmed (P3) and put on the feed, for the delay probe; null when not found. */
-  async confirmed(signature: string): Promise<TransactionRecord | null> {
+  async confirmed(signature: string): Promise<Fetched | null> {
     return this.#fetcher === null ? null : this.#fetcher.fetch(signature, P3);
   }
 
