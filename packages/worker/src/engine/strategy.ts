@@ -225,6 +225,8 @@ interface Candidate {
   gates: readonly CandidateReason[] | null;
   /** The entry spend the last evaluation sized (lamports): what H15's simulation must be run at. */
   spend: bigint | null;
+  /** The S0 diagnostic parts the last reject relied on (part of the reject line's dedupe key). */
+  lastWaived: string;
 }
 
 /** What an entry needs once it fills: fixed at the decision, completed with the fill. */
@@ -572,7 +574,7 @@ export class LiveStrategy implements Strategy {
       const mint = e.key.slice(MIGRATION_PREFIX.length);
       if (f !== null) this.#notePool(mint, f.pool);
       if (f !== null && !this.#cands.has(mint)) {
-        this.#cands.set(mint, { mint, migratedAtMs: f.migratedAtMs, lastEvalMs: null, lastReason: null, tries: 0, gates: null, spend: null });
+        this.#cands.set(mint, { mint, migratedAtMs: f.migratedAtMs, lastEvalMs: null, lastReason: null, lastWaived: '', tries: 0, gates: null, spend: null });
         out.push({ action: null, reasons: [SHORTLIST, this.#d.config.universe, mint, `migrated at ${f.migratedAtMs}`] });
       }
       return;
@@ -588,7 +590,7 @@ export class LiveStrategy implements Strategy {
     if (mint === null || this.#cands.has(mint)) return;
     // Block time of the migration when the event states it, else when it was received.
     const migratedAtMs = ts ?? ctx.now.receivedAt;
-    this.#cands.set(mint, { mint, migratedAtMs, lastEvalMs: null, lastReason: null, tries: 0, gates: null, spend: null });
+    this.#cands.set(mint, { mint, migratedAtMs, lastEvalMs: null, lastReason: null, lastWaived: '', tries: 0, gates: null, spend: null });
     out.push({ action: null, reasons: [SHORTLIST, this.#d.config.universe, mint, `migrated at ${migratedAtMs}`] });
   }
 
@@ -661,11 +663,14 @@ export class LiveStrategy implements Strategy {
     f.minutes.set(start, (f.minutes.get(start) ?? 0n) + (name === 'BuyEvent' ? amount : -amount));
   }
 
-  /** The held mint's flow minutes up to now, oldest first (EXIT-1 `ExitObservation.flow`). */
-  #flowOf(mint: string, nowMs: number): FlowMinute[] {
+  /**
+   * The held mint's flow minutes, oldest first (EXIT-1 `ExitObservation.flow`). The still-open minute is included:
+   * EXIT-1 counts only buckets finished by now, so it is judged once it closes.
+   */
+  #flowOf(mint: string): FlowMinute[] {
     const f = this.#flow.get(mint);
     if (f === undefined) return [];
-    return [...f.minutes].filter(([s]) => s + FLOW_MINUTE_MS <= nowMs).sort((a, b) => a[0] - b[0]).map(([startMs, net]) => ({ startMs, net }));
+    return [...f.minutes].sort((a, b) => a[0] - b[0]).map(([startMs, net]) => ({ startMs, net }));
   }
 
   /** The deployer of a mint (creator and the create's signer) and its total supply, from the released create. */
@@ -972,7 +977,7 @@ export class LiveStrategy implements Strategy {
       const step = decideExit(known ? this.#settings : this.#flatten(saved.plan.universe), saved.plan, holding, saved.tracker, {
         nowMs: ctx.now.receivedAt, slotClose: true,
         market: typeof m === 'string' ? null : { atMs: m.atMs, value: { venue: 'pumpswap', pool: m.pool, ctx: m.ctx } },
-        deployerSoldBps: this.#deployerSold(p.id, p.mint, saved.plan.openedAtMs, ctx, out), sellRoute: null, flow: this.#flowOf(p.mint, ctx.now.receivedAt), bars: this.#bars.get(p.id) ?? saved.bars,
+        deployerSoldBps: this.#deployerSold(p.id, p.mint, saved.plan.openedAtMs, ctx, out), sellRoute: null, flow: this.#flowOf(p.mint), bars: this.#bars.get(p.id) ?? saved.bars,
       });
       // A due full exit with no quote yet is held, remembered in the tracker (EXIT-1c): said once, and kept visible as
       // pending (and as an alert once it has waited the blocked-retry time) until the first fresh quote takes it.
@@ -1128,9 +1133,14 @@ export class LiveStrategy implements Strategy {
       const r = this.#evaluate(cand, ctx, gctx, out);
       cand.gates = r === null ? [] : this.#lastNeeds;
       // A reject is logged when its reason changes (numbers aside), so a long wait does not fill the journal.
+      // The S0 diagnostic parts relied on count too: the same reason with a different set is a new line.
       const key = (x: string | null) => (x === null ? null : x.replace(/\d+/g, '#'));
-      if (r !== null && key(r) !== key(cand.lastReason)) out.push({ action: null, reasons: ['reject', c.universe, cand.mint, r, `${GATE_REASONS_PREFIX}${JSON.stringify(this.#lastGates)}`, ...this.#diagnostic()] });
-      if (r !== null) cand.lastReason = r;
+      const waived = this.#waived.join(',');
+      if (r !== null && (key(r) !== key(cand.lastReason) || waived !== cand.lastWaived)) out.push({ action: null, reasons: ['reject', c.universe, cand.mint, r, `${GATE_REASONS_PREFIX}${JSON.stringify(this.#lastGates)}`, ...this.#diagnostic()] });
+      if (r !== null) {
+        cand.lastReason = r;
+        cand.lastWaived = waived;
+      }
       if (out.some((d) => d.action !== null)) return;
     }
   }
@@ -1225,7 +1235,7 @@ export class LiveStrategy implements Strategy {
     const base = [c.universe, cand.mint];
     out.push({ action: { type: 'propose_entry', intent: { id, key: entryKey(tm, `${c.universe}.${c.version}.${cand.tries}`), purpose: 'entry', side: 'buy', mint: tm, venue: 'pumpswap', positionId: pid, spend: spend as Lamports } }, reasons: ['enter', ...base, `notional ${r.notional}`, `stop ${stopBps} bps`, ...this.#diagnostic()] });
     out.push({ action: { type: 'intent', intentId: id, event: { type: 'mark_eligible' } }, reasons: ['gates passed', ...base, `H1-H16 pass (${hard.passed.length} gates)`, ...this.#diagnostic()] });
-    out.push({ action: { type: 'intent', intentId: id, event: { type: 'approve_risk' } }, reasons: ['risk approved', ...base, `${RESERVE_PREFIX}${JSON.stringify(request)}`, ...trips] });
+    out.push({ action: { type: 'intent', intentId: id, event: { type: 'approve_risk' } }, reasons: ['risk approved', ...base, `${RESERVE_PREFIX}${JSON.stringify(request)}`, ...trips, ...this.#diagnostic()] });
     return null;
   }
 

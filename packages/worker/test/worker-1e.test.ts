@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { CURVE_VOLUME_KEY, EXEC_HEALTH_KEY, GRADUATES_KEY, S0_DIAGNOSTIC_PARTS, simKey } from '../../core/src/gates/index.ts';
 import { RAW } from '../../core/src/facts/index.ts';
-import { roundTrip } from '../../core/test/gates/world.ts';
+import { passingFacts, roundTrip } from '../../core/test/gates/world.ts';
 import { lamports } from '../../core/src/units/index.ts';
 import { LiveFacts, type LiveReaders } from '../src/facts/index.ts';
 import { checkJournal } from '../../runner/src/journal.ts';
@@ -93,7 +93,7 @@ describe('the S0 shakedown on live-like facts', () => {
     const enter = all.find((l) => l['kind'] === 'decision' && l['action'] === 'enter')!;
     expect(enter['s0_diagnostic']).toEqual(['regime-volume', 'regime-survival', 'exec-health', 'h14-creates-coverage']);
     expect(all.find((l) => l['kind'] === 'decision' && l['action'] === 'mark_eligible')!['s0_diagnostic']).toEqual(enter['s0_diagnostic']);
-    expect(all.find((l) => l['kind'] === 'decision' && l['action'] === 'approve_risk')!['s0_diagnostic']).toBeUndefined();
+    expect(all.find((l) => l['kind'] === 'decision' && l['action'] === 'approve_risk')!['s0_diagnostic']).toEqual(enter['s0_diagnostic']);
     // Every part on every line it changed (the entry's two lines and the rejects before it), counted for the report.
     const n = report.s0_diagnostic['exec-health']!;
     expect(n).toBeGreaterThanOrEqual(2);
@@ -109,6 +109,32 @@ describe('the S0 shakedown on live-like facts', () => {
     expect(start['s0_diagnostic']).toEqual(S0_DIAGNOSTIC_PARTS);
     expect(h.worker.health().s0_diagnostic).toEqual(S0_DIAGNOSTIC_PARTS);
     expect(entryRule(report.starts, 'S0', ['S0']).problems).toContainEqual(expect.stringContaining('S0 diagnostic'));
+  });
+});
+
+describe('a reject line under the set', () => {
+  it('is written again when only the parts it relied on change', async () => {
+    const h = makeWorker({ entry: { timing: 'random', salt: early, s0Diagnostic: true }, config: { ZEROED_HEALTH_ADDR: '127.0.0.1:18984', ZEROED_API_ADDR: '127.0.0.1:18985' } });
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    // No simulation ever: the candidate keeps rejecting on H15 with the same reason.
+    const m = await passingMarket(h, { ...HELD, omit: [CURVE_VOLUME_KEY, GRADUATES_KEY, EXEC_HEALTH_KEY, simKey(MINT)], coverageAt: T - 2 * DAY });
+    await m.run(4_000, 400, () => {
+      m.slot();
+      m.pool();
+    });
+    // The curve-volume series arrives: the same reject no longer relies on regime-volume.
+    m.omit = new Set([GRADUATES_KEY, EXEC_HEALTH_KEY, simKey(MINT)]);
+    m.fact(CURVE_VOLUME_KEY, passingFacts().get(CURVE_VOLUME_KEY)!.value);
+    await m.run(4_000, 400, () => {
+      m.slot();
+      m.pool();
+    });
+    await h.worker.stop();
+    const h15 = lines(h.stateDir).filter((l) => l['action'] === 'reject' && String((l['reasons'] as string[])[3]).includes('H15'));
+    expect(h15.map((l) => l['s0_diagnostic'])).toEqual([
+      ['regime-volume', 'regime-survival', 'exec-health', 'h14-creates-coverage'],
+      ['regime-survival', 'exec-health', 'h14-creates-coverage'],
+    ]);
   });
 });
 
@@ -153,6 +179,40 @@ describe('EXIT-1 negative flow from the held pool\'s swaps', () => {
     });
     expect(exitReasons(h.stateDir).some((r) => r.startsWith('negative_flow'))).toBe(true);
     expect(h.worker.book.positions[id]!.status).not.toBe('open');
+    await h.worker.stop();
+  });
+
+  it('a big sale in the still-open minute counts only once that minute closes', async () => {
+    const { h, m, id } = await held();
+    // Four whole minutes of net selling, then the fifth opens with a large sale.
+    const minuteStart = Math.floor(m.now / 60_000) * 60_000;
+    let k = 0;
+    await m.run(minuteStart + 5 * 60_000 - m.now, 400, () => {
+      m.slot();
+      m.pool();
+      m.swap('SellEvent', `seller${k}`, 1_000_000n, 200_000_000n);
+      m.swap('BuyEvent', `buyer${k++}`, 1_000_000n, 100_000_000n);
+    });
+    const fifth = minuteStart + 5 * 60_000;
+    let sold = false;
+    // Inside the fifth minute: one big sale at its start, then quiet; the run of five is not complete until it closes.
+    await m.run(fifth + 59_000 - m.now, 400, () => {
+      m.slot();
+      m.pool();
+      if (!sold && m.now >= fifth) {
+        m.swap('SellEvent', 'whale', 1_000_000n, 5_000_000_000n);
+        sold = true;
+      }
+    });
+    const fired = () => exitReasons(h.stateDir).some((r) => r.startsWith('negative_flow'));
+    expect(sold).toBe(true);
+    expect(fired()).toBe(false);
+    expect(h.worker.book.positions[id]!.status).toBe('open');
+    await m.run(3_000, 400, () => {
+      m.slot();
+      m.pool();
+    });
+    expect(fired()).toBe(true);
     await h.worker.stop();
   });
 
