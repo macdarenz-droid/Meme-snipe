@@ -260,6 +260,29 @@ describe('the reservation goes through the ledger with the snapshot\'s account v
     expect(diverged[0]).toMatch(/^ledger refused intent/);
     ledger.close();
   });
+  it('a restored event the engine refuses is a divergence; a late world answer it refuses is not', () => {
+    const ledger = openLedger(join(tempState(), 'ledger.sqlite'), 'paper');
+    const diverged: string[] = [];
+    const journal: Record<string, unknown>[] = [];
+    const desk = new Desk({
+      ledger, config: { maxOpenPositions: 5 }, restored: emptyBook({ maxOpenPositions: 5 }),
+      journal: (_kind, f) => void journal.push(f), report: () => 'world#unused',
+      accountChanged: () => undefined, intentsChanged: () => undefined, reserved: () => undefined, filled: () => undefined,
+      diverged: (r) => void diverged.push(r),
+    });
+    const refused = (eventId: string) => ({ type: 'world', seq: 1, at, eventId, event: { type: 'intent', intentId: intentId('x'), event: { type: 'prepare' } }, result: 'illegal', reason: 'prepare needs reserved exposure (from cancelled)', effects: [] }) as unknown as LogRecord;
+    // The ledger already holds this one (the restore marked it): the engine refusing it leaves the two books apart.
+    desk.written('world#restored');
+    desk.consume([refused('world#restored')]);
+    expect(diverged).toEqual(['world event intent refused: prepare needs reserved exposure (from cancelled)']);
+    // A paper answer for an intent the engine already finished: refused, journaled, and the books still agree.
+    desk.consume([refused('world#late')]);
+    expect(diverged).toHaveLength(1);
+    expect(journal.filter((f) => f['action'] === 'world_refused').map((f) => f['event'])).toEqual(['world#restored', 'world#late']);
+    expect(desk.illegal).toBe(2);
+    ledger.close();
+  });
+
   /** Another account change between the snapshot and the reservation: a reservation stored by someone else. */
   const changeAccount = (ledger: ReturnType<typeof openLedger>) => {
     const m = toMint(MINT);

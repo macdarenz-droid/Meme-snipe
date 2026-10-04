@@ -64,6 +64,12 @@ export interface SourcesContext {
 
 export interface WorkerDeps {
   readonly config: WorkerConfig;
+  /**
+   * The boot id; default `<start time base36>-<pid>`. It names the recorder folder and seeds the paper world's fill
+   * draws (`paper:<boot>`), so tests pin it: with the pid in it, whether a drawn landing tail or drop happens depended
+   * on the test process's pid.
+   */
+  readonly boot?: string;
   readonly session: PolicySession;
   readonly rugs: RugConfig;
   readonly strategy: StrategyConfig;
@@ -214,7 +220,7 @@ export class Worker {
     const now = d.timers.now();
     this.#started = now;
     this.#funnel.fromMs = now;
-    this.#boot = `${now.toString(36)}-${process.pid}`;
+    this.#boot = d.boot ?? `${now.toString(36)}-${process.pid}`;
     mkdirSync(c.stateDir, { recursive: true });
     this.#journal = new Journal(join(c.stateDir, STATE_FILES.journal), this.#boot, () => d.timers.now());
     rmSync(join(c.stateDir, STATE_FILES.cleanStop), { force: true });
@@ -304,10 +310,16 @@ export class Worker {
     });
     // The stored book goes back to the engine as world frames (recorded, so a replay rebuilds the same book).
     for (const e of stored.events) this.#desk.written(this.#report(e));
-    this.#fact(HALT_KEY, { halted: true, reasons: [...this.#halted] });
-    this.#fact(RESTORE_KEY, { exits: this.#exitsFile.read({}) });
-    if (stored.events.length > 0) this.#report({ type: 'restart' });
-    if (this.#ctl.paused) this.#report({ type: 'pause_entries', reason: 'owner' });
+    // The worker's own start facts are dated 1 ms after the last restored frame, so every restored event sorts before
+    // them whatever the clock's resolution: the engine rebuilds the stored book before the strategy sees anything and
+    // decides on an intent the ledger already carried further (which left the two books disagreeing; `--reconcile`
+    // then wrote `open_intents` 1 from the ledger's book after reporting success from the engine's). Measured after
+    // the restore, not from the constructor's start: opening the ledger and reading the book takes milliseconds.
+    const startAt = Math.max(this.#d.timers.now(), this.#feed.lastReceivedAt) + 1;
+    this.#fact(HALT_KEY, { halted: true, reasons: [...this.#halted] }, startAt);
+    this.#fact(RESTORE_KEY, { exits: this.#exitsFile.read({}) }, startAt);
+    if (stored.events.length > 0) this.#report({ type: 'restart' }, startAt);
+    if (this.#ctl.paused) this.#report({ type: 'pause_entries', reason: 'owner' }, startAt);
     this.#drillToken = randomBytes(16).toString('hex');
     if (c.drills) writeFileSync(join(c.stateDir, STATE_FILES.drillToken), this.#drillToken, { mode: 0o600 });
   }
@@ -342,13 +354,13 @@ export class Worker {
   }
 
   /** Puts a world event on the feed; returns its event id. */
-  #report(event: BookEvent): string {
-    const f = this.#feed.ingest('worker', { type: 'world', event }, { receivedAt: this.#d.timers.now() });
+  #report(event: BookEvent, atMs: number = this.#d.timers.now()): string {
+    const f = this.#feed.ingest('worker', { type: 'world', event }, { receivedAt: atMs });
     return `world#${seqId(f.seq)}`;
   }
 
-  #fact(key: string, value: unknown): void {
-    this.#feed.ingest('worker', { type: 'fact', key, value }, { receivedAt: this.#d.timers.now() });
+  #fact(key: string, value: unknown, atMs: number = this.#d.timers.now()): void {
+    this.#feed.ingest('worker', { type: 'fact', key, value }, { receivedAt: atMs });
   }
 
   #onFrame(f: Frame): void {
@@ -909,6 +921,8 @@ export class Worker {
     try {
       this.step();
     } catch {}
+    // Past this point the state files belong to the next process: a simulation answering late writes nothing.
+    this.#world.stop();
     const open = Object.values(this.#engine.book.positions).filter((p) => p.status !== 'closed').map((p) => p.id);
     this.#journal.write('stop', { open_positions: open, open_intents: openIntents(this.#desk.book), reasons: [code === EXIT.clean ? 'signal' : 'crash'] });
     this.#recorder?.close();
@@ -926,6 +940,7 @@ export class Worker {
    */
   async kill(): Promise<void> {
     this.#stopping = true;
+    this.#world.stop();
     if (this.#loop !== null) this.#d.timers.clearTimeout(this.#loop);
     if (this.#beat !== null) this.#d.timers.clearTimeout(this.#beat);
     for (const s of this.#sources) s.stop();
