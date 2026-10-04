@@ -119,20 +119,22 @@ export const pruneDays = (s: SummaryState): void => {
 };
 
 /**
- * Reads the whole lines of `path` after `offset`, in chunks, without blocking the event loop on one large read. Returns
- * the parsed lines and the offset after the last whole line; a torn last line is left for the next read. A file now
- * shorter than the offset (replaced) reads from the start.
+ * Hands each whole line of `path` after `offset` to `onLine`, one chunk at a time, and never holds more than one chunk
+ * (and one torn line) in memory: a long journal read from the start (the first run on a host, or a lost summary.json)
+ * stays small. `onChunk` gets the offset after each chunk's last whole line, so the caller's offset advances as it
+ * goes. A torn last line is left for the next read. A file now shorter than the offset (replaced) reads from the start.
  */
-export const readNewLines = async (path: string, offset: number, chunk = 1 << 20): Promise<{ lines: unknown[]; offset: number; reset: boolean }> => {
+export const foldNewLines = async (
+  path: string, offset: number, onLine: (text: string) => void, onChunk: (offset: number) => void = () => {}, chunk = 1 << 20,
+): Promise<{ offset: number; reset: boolean }> => {
   let size: number;
   try {
     size = (await stat(path)).size;
   } catch {
-    return { lines: [], offset, reset: false };
+    return { offset, reset: false };
   }
   const reset = size < offset;
   let pos = reset ? 0 : offset;
-  const lines: unknown[] = [];
   const fh = await open(path, 'r');
   try {
     let carry = Buffer.alloc(0);
@@ -141,27 +143,47 @@ export const readNewLines = async (path: string, offset: number, chunk = 1 << 20
       const b = Buffer.alloc(n);
       const { bytesRead } = await fh.read(b, 0, n, pos + carry.length);
       if (bytesRead === 0) break;
-      const buf = Buffer.concat([carry, b.subarray(0, bytesRead)]);
+      const buf = carry.length === 0 ? b.subarray(0, bytesRead) : Buffer.concat([carry, b.subarray(0, bytesRead)]);
       const last = buf.lastIndexOf(0x0a);
       if (last === -1) {
         carry = buf;
         continue;
       }
-      for (const text of buf.subarray(0, last).toString('utf8').split('\n')) {
-        try {
-          lines.push(JSON.parse(text));
-        } catch {
-          // A line that does not parse is skipped, never fatal.
-        }
+      let start = 0;
+      while (start <= last) {
+        const end = buf.indexOf(0x0a, start);
+        onLine(buf.toString('utf8', start, end));
+        start = end + 1;
       }
       pos += last + 1;
-      carry = buf.subarray(last + 1);
+      carry = Buffer.from(buf.subarray(last + 1));
+      onChunk(pos);
     }
   } finally {
     await fh.close();
   }
-  return { lines, offset: pos, reset };
+  return { offset: pos, reset };
 };
+
+/** The ts of a journal line from its first bytes (the journal writes seq, then ts), without parsing the line. */
+const TS = /^\{"seq":\d+,"ts":"([^"]+)"/;
+
+/**
+ * Folds one journal line's text, skipping lines older than `cutoffIso` before any JSON.parse (an old line costs a
+ * prefix match only). Unreadable lines are skipped, never fatal.
+ */
+export const foldText = (s: SummaryState, text: string, cutoffIso: string): void => {
+  const ts = TS.exec(text.slice(0, 80))?.[1];
+  if (ts !== undefined && ts < cutoffIso) return;
+  try {
+    foldLine(s, JSON.parse(text));
+  } catch {
+    // Not a whole JSON line: skipped.
+  }
+};
+
+/** Lines before this many days ago are not folded (KEEP_DAYS Melbourne days fit inside it). */
+const FOLD_DAYS_MS = (KEEP_DAYS + 1) * 86_400_000;
 
 export interface SummaryInputs {
   readonly day: string;
@@ -301,6 +323,8 @@ export interface SummarizerDeps {
   readonly log: (line: string) => void;
   /** What the running worker knows now: its trades, positions, price and credits. */
   readonly live: () => Omit<SummaryInputs, 'day' | 'final' | 'nowMs' | 'fold'>;
+  /** The summary builder (buildSummary unless a test swaps it, to show the guard stops a bad summary before any post). */
+  readonly build?: (i: SummaryInputs) => Summary;
 }
 
 /**
@@ -343,12 +367,17 @@ export class Summarizer {
   }
 
   async #tick(): Promise<void> {
-    const r = await readNewLines(this.#d.journalPath, this.#state.offset);
-    if (r.reset) this.#state = { ...emptySummaryState(), lastDay: this.#state.lastDay ?? null };
-    for (const l of r.lines) foldLine(this.#state, l);
-    this.#state.offset = r.offset;
-    pruneDays(this.#state);
     const now = this.#d.now();
+    const cutoff = new Date(now - FOLD_DAYS_MS).toISOString();
+    const size = await stat(this.#d.journalPath).then((x) => x.size, () => null);
+    // A journal shorter than the offset was replaced: count again from its start.
+    if (size !== null && size < this.#state.offset) this.#state = { ...emptySummaryState(), lastDay: this.#state.lastDay ?? null };
+    const state = this.#state;
+    const r = await foldNewLines(this.#d.journalPath, state.offset, (text) => foldText(state, text, cutoff), (offset) => {
+      state.offset = offset;
+    });
+    state.offset = r.offset;
+    pruneDays(state);
     const today = melbourneDate(now);
     const last = this.#state.lastDay ?? null;
     // The day that ended is posted final until the watchdog takes it (kept while its counts are kept).
@@ -374,7 +403,7 @@ export class Summarizer {
   async #post(day: string, final: boolean, now: number): Promise<boolean> {
     const { watchdogUrl: url, key } = this.#d;
     if (url === null || key === null) return false;
-    const s = buildSummary({ ...this.#d.live(), day, final, nowMs: now, fold: this.#state.days[day] });
+    const s = (this.#d.build ?? buildSummary)({ ...this.#d.live(), day, final, nowMs: now, fold: this.#state.days[day] });
     const b = summaryBody(s);
     if ('refused' in b) {
       this.#d.log(`Summary for ${day} not sent: ${b.refused}.`);

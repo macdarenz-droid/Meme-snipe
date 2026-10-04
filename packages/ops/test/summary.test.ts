@@ -232,6 +232,22 @@ describe('/summary on the watchdog', () => {
     vi.unstubAllGlobals();
   });
 
+  it('a token without DATA_REPO alerts; with neither set, a stored failure is cleared and nothing alerts', async () => {
+    const h = harness({ REPORTS_TOKEN: 'tok' });
+    const t = Math.floor(Date.now() / 1000);
+    expect(await (await h.signed('/summary', JSON.stringify(goodSummary()), t)).json()).toEqual({ ok: true, written: false });
+    expect((await h.dob.check(Date.now())).sent).toEqual(['ALERT Daily summary not written: DATA_REPO is not set.']);
+    vi.unstubAllGlobals();
+    // The setup removed: the next summary clears the stored failure, and the alert clears with it.
+    const off = harness({});
+    for (const [k, v] of h.mem) off.mem.set(k, v);
+    expect(await (await off.signed('/summary', JSON.stringify(goodSummary()), t + 1)).json()).toEqual({ ok: true, written: false });
+    expect(off.mem.get('summary_failure')).toBeNull();
+    expect((await off.dob.check(Date.now())).sent).toEqual(['CLEARED Daily summary not written: DATA_REPO is not set.']);
+    expect((await off.dob.check(Date.now())).sent).toEqual([]);
+    vi.unstubAllGlobals();
+  });
+
   it('latest.json moves only forward: a late final for an earlier day writes only its own file', async () => {
     const h = harness(ENV);
     const t = Math.floor(Date.now() / 1000);

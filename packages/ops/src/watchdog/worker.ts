@@ -122,7 +122,11 @@ export class Watchdog {
     await this.state.storage.put('last_summary_t', t);
     // Not set up yet (neither the repository nor the token): nothing to write and nothing to alert. One of the two
     // without the other is a broken setup and alerts below.
-    if (!this.env.DATA_REPO && !this.env.REPORTS_TOKEN) return json({ ok: true, written: false });
+    if (!this.env.DATA_REPO && !this.env.REPORTS_TOKEN) {
+      // A failure stored before the setup was removed must not keep alerting.
+      await this.state.storage.put('summary_failure', null);
+      return json({ ok: true, written: false });
+    }
     // latest.json only moves forward: a late final for yesterday never replaces today's.
     const latestDay = (await this.state.storage.get<string>('summary_latest_day')) ?? '';
     const env = { DATA_REPO: this.env.DATA_REPO, REPORTS_TOKEN: this.env.REPORTS_TOKEN, GITHUB_API: this.env.GITHUB_API };

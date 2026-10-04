@@ -36,6 +36,7 @@ jobs:
           persist-credentials: false
 
       - name: Move the deploy tag
+        id: tag
         env:
           INTEGRATION_BRANCH: ccr-14987baf-i6lrsl
         run: bash ops/deploy/tag.sh
@@ -53,6 +54,7 @@ jobs:
           node-version: 22
 
       - name: Install the locked watchdog tooling (no install scripts run)
+        id: tooling
         if: ${{ !cancelled() }}
         working-directory: ops/watchdog/deploy
         run: npm ci --ignore-scripts --no-audit --no-fund
@@ -74,14 +76,15 @@ jobs:
       # OPS-SUMMARY: the watchdog's code and its one reports secret. No DEPLOY_CODE needed, and it never touches
       # the heartbeat key or any other secret (ops/deploy/reports.sh). Runs after the handoff, so a handoff's
       # watchdog deploy also ends with DATA_REPO set.
+      # Only after the tag moved and the locked tooling installed: the watchdog comes from the tagged commit.
       - name: Set up the daily summary
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.tag.outcome == 'success' && steps.tooling.outcome == 'success' }}
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           DATA_STORE_TOKEN: ${{ secrets.DATA_STORE_TOKEN }}
           DATA_REPO: ${{ vars.DATA_REPO }}
-          WRANGLER: ops/watchdog/deploy/node_modules/.bin/wrangler --config packages/ops/wrangler.toml
+          WRANGLER: ops/watchdog/deploy/node_modules/.bin/wrangler
         run: bash ops/deploy/reports.sh
 
       - name: Remove the handoff release

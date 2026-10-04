@@ -10,7 +10,7 @@ import type { MicroUsd } from '../../core/src/units/index.ts';
 import type { HttpClient } from '../src/providers/index.ts';
 import type { PaperTrade } from '../src/run/account.ts';
 import {
-  Summarizer, buildSummary, emptySummaryState, foldLine, haltCode, nextSummaryDelay, readNewLines, signSummary, summaryBody, type SummaryInputs,
+  Summarizer, buildSummary, emptySummaryState, foldLine, foldNewLines, foldText, haltCode, nextSummaryDelay, signSummary, summaryBody, type SummaryInputs,
 } from '../src/run/summary.ts';
 import { MINT, makeWorker, passingMarket, tempState } from './worker-harness.ts';
 
@@ -94,19 +94,65 @@ describe('counts from the journal', () => {
 });
 
 describe('reading the journal', () => {
-  it('reads only whole lines, keeps the offset at a line end, resumes there and restarts on a shorter file', async () => {
+  it('hands over only whole lines, keeps the offset at a line end, resumes there and restarts on a shorter file', async () => {
     const p = join(tempState(), 'journal.jsonl');
     writeFileSync(p, `${JSON.stringify({ a: 1 })}\n${JSON.stringify({ a: 2 })}\n{"a":3`);
-    const r1 = await readNewLines(p, 0, 7);
-    expect(r1.lines).toEqual([{ a: 1 }, { a: 2 }]);
+    const read = async (offset: number, chunk?: number) => {
+      const lines: string[] = [];
+      const r = await foldNewLines(p, offset, (l) => void lines.push(l), () => {}, chunk);
+      return { ...r, lines };
+    };
+    const r1 = await read(0, 7);
+    expect(r1.lines).toEqual(['{"a":1}', '{"a":2}']);
     expect(r1.offset).toBe(16);
     appendFileSync(p, '}\n{"a":4}\n');
-    const r2 = await readNewLines(p, r1.offset);
-    expect(r2.lines).toEqual([{ a: 3 }, { a: 4 }]);
+    const r2 = await read(r1.offset);
+    expect(r2.lines).toEqual(['{"a":3}', '{"a":4}']);
     truncateSync(p, 8);
-    const r3 = await readNewLines(p, r2.offset);
-    expect(r3).toMatchObject({ reset: true, lines: [{ a: 1 }], offset: 8 });
-    expect(await readNewLines(join(tempState(), 'none'), 5)).toEqual({ lines: [], offset: 5, reset: false });
+    expect(await read(r2.offset)).toEqual({ reset: true, lines: ['{"a":1}'], offset: 8 });
+    expect(await foldNewLines(join(tempState(), 'none'), 5, () => {})).toEqual({ offset: 5, reset: false });
+  });
+
+  it('streams a long journal chunk by chunk (lines go out before the file is read to its end)', async () => {
+    const p = join(tempState(), 'journal.jsonl');
+    const n = 20_000;
+    writeFileSync(p, Array.from({ length: n }, (_, k) => `${JSON.stringify(line('decision', NOON + k, { reasons: ['shortlist', 'U2', M1, 'x'] }))}\n`).join(''));
+    const events: string[] = [];
+    let lines = 0;
+    const r = await foldNewLines(p, 0, () => {
+      lines += 1;
+      if (lines === 1 || lines === n) events.push(`line ${lines}`);
+    }, (o) => void events.push(`chunk ${o}`), 64 * 1024);
+    expect(lines).toBe(n);
+    // The first chunk's offset is reported after its lines and long before the last line: nothing accumulates.
+    const firstChunk = events.findIndex((e) => e.startsWith('chunk'));
+    expect(events[0]).toBe('line 1');
+    expect(firstChunk).toBe(1);
+    expect(events.indexOf(`line ${n}`)).toBeGreaterThan(firstChunk);
+    expect(r.offset).toBe(readFileSync(p).length);
+  });
+
+  it('skips lines older than the kept days before parsing them', () => {
+    const s = emptySummaryState();
+    const cutoff = new Date(NOON - 4 * 86_400_000).toISOString();
+    foldText(s, JSON.stringify(line('start', NOON - 10 * 86_400_000)), cutoff);
+    // An old line is not even parsed: a broken one after its prefix changes nothing and does not throw.
+    foldText(s, `{"seq":9,"ts":"${new Date(NOON - 10 * 86_400_000).toISOString()}","kind":"start",broken`, cutoff);
+    foldText(s, JSON.stringify(line('start', NOON)), cutoff);
+    foldText(s, 'not json', cutoff);
+    expect(Object.keys(s.days)).toEqual([DAY]);
+    expect(s.days[DAY]!.starts).toBe(1);
+  });
+
+  it('the Summarizer folds the host\'s whole journal from offset 0 but keeps only the recent days', async () => {
+    const dir = tempState();
+    const p = join(dir, 'journal.jsonl');
+    const old = Array.from({ length: 5_000 }, (_, k) => `${JSON.stringify(line('start', NOON - 20 * 86_400_000 + k))}\n`).join('');
+    writeFileSync(p, `${old}${JSON.stringify(line('start', NOON))}\n`);
+    const sz = new Summarizer({ journalPath: p, stateDir: dir, http: (async () => ({ status: 200, header: () => null, text: '{"ok":true,"written":true}' })) as HttpClient, watchdogUrl: 'https://w.test', key: 'k', now: () => NOON, log: () => {}, live: () => inputs() });
+    await sz.tick();
+    expect(Object.keys(sz.state.days)).toEqual([DAY]);
+    expect(sz.state.offset).toBe(readFileSync(p).length);
   });
 
   it('a restart neither loses nor double-counts a line (the offset is saved with the counts)', async () => {
@@ -209,6 +255,56 @@ describe('secrets never reach a summary (worker side)', () => {
   });
 });
 
+describe('the worker-side guard', () => {
+  it('refuses a summary carrying a forbidden value, and nothing is posted', async () => {
+    const bad = { ...buildSummary(inputs()), alerts: [{ code: 'f3b1c2d4-1111-4222-8333-944455556666', count: 1 }] };
+    expect(summaryBody(bad)).toEqual({ refused: 'forbidden pattern: uuid key' });
+    expect(summaryBody({ ...bad, alerts: [{ code: 'Not A Code', count: 1 }] })).toEqual({ refused: 'not the summary shape' });
+    const dir = tempState();
+    const calls: string[] = [];
+    const logs: string[] = [];
+    const sz = new Summarizer({
+      journalPath: join(dir, 'journal.jsonl'), stateDir: dir, http: (async (req) => (calls.push(req.url), { status: 200, header: () => null, text: '{}' })) as HttpClient,
+      watchdogUrl: 'https://w.test', key: 'k', now: () => NOON, log: (l) => void logs.push(l), live: () => inputs(), build: () => bad,
+    });
+    await sz.tick();
+    expect(calls).toEqual([]);
+    expect(logs).toEqual([`Summary for ${DAY} not sent: forbidden pattern: uuid key.`]);
+  });
+});
+
+describe('a summary that throws', () => {
+  it('is caught and logged: tick resolves (journal path a directory, or the worker\'s state unreadable)', async () => {
+    const dir = tempState();
+    const logs: string[] = [];
+    const deps = { stateDir: dir, http: (async () => ({ status: 200, header: () => null, text: '{}' })) as HttpClient, watchdogUrl: 'https://w.test', key: 'k', now: () => NOON, log: (l: string) => void logs.push(l), live: () => inputs() };
+    await expect(new Summarizer({ ...deps, journalPath: dir }).tick()).resolves.toBeUndefined();
+    await expect(new Summarizer({ ...deps, journalPath: join(dir, 'j'), live: () => { throw new Error('boom'); } }).tick()).resolves.toBeUndefined();
+    expect(logs).toEqual(['Summary skipped: Error.', 'Summary skipped: Error.']);
+  });
+
+  it('in a running worker: logged, the next post still comes, and the worker keeps running', async () => {
+    const posts: string[] = [];
+    let faults = 2;
+    const http: HttpClient = async (req) => {
+      if (req.url.endsWith('/summary')) posts.push(req.body!);
+      return { status: 200, header: () => null, text: JSON.stringify({ ok: true, paused: false, written: true }) };
+    };
+    const h = makeWorker({ key: 'k', http, summaryFault: () => {
+      if (faults > 0) {
+        faults -= 1;
+        throw new Error('state unreadable');
+      }
+    } });
+    expect(await h.worker.start()).toEqual({ ok: true });
+    for (let k = 0; k < 200 && posts.length < 2; k++) await new Promise((r) => setTimeout(r, 5));
+    expect(h.logs.filter((l) => l === 'Summary skipped: Error.')).toHaveLength(2);
+    expect(posts.length).toBeGreaterThanOrEqual(2);
+    expect(h.worker.health().reconciled).toBe(true);
+    expect(await h.worker.stop()).toBe(0);
+  });
+});
+
 describe('the post', () => {
   it('is signed for /summary only: the watchdog accepts it there and refuses it as a heartbeat', async () => {
     const body = '{"x":1}';
@@ -258,7 +354,7 @@ describe('the post', () => {
 });
 
 describe('the worker keeps trading when the summary fails', () => {
-  for (const failure of ['unreachable', '401'] as const) {
+  for (const failure of ['unreachable', '401', 'throws'] as const) {
     it(`with the watchdog ${failure}: entries, journal and the position go on, and the stop is clean`, async () => {
       const summaries: string[] = [];
       const http: HttpClient = async (req) => {
@@ -269,7 +365,7 @@ describe('the worker keeps trading when the summary fails', () => {
         }
         return { status: 200, header: () => null, text: JSON.stringify({ ok: true, paused: false }) };
       };
-      const h = makeWorker({ key: 'k', http });
+      const h = makeWorker({ key: 'k', http, ...(failure === 'throws' ? { summaryFault: () => { throw new Error('boom'); } } : {}) });
       expect(await h.worker.reconcile()).toEqual({ ok: true });
       const m = await passingMarket(h, { heldPoolFacts: true });
       await m.run(4_000, 100, () => m.pool());
@@ -280,14 +376,19 @@ describe('the worker keeps trading when the summary fails', () => {
         m.pool();
       });
       await h.worker.summaryNow();
-      expect(summaries.length).toBeGreaterThanOrEqual(2);
       expect(h.worker.health().journal_seq).toBeGreaterThan(seqBefore);
       expect(Object.values(h.worker.apiInputs().book.positions).some((p) => String(p.mint) === String(MINT) && p.status === 'open')).toBe(true);
-      expect(h.logs.some((l) => l.startsWith('Summary for ') && l.includes('not accepted'))).toBe(true);
-      // The summary that was refused was valid and named the entry.
-      const c = checkSummary(summaries.at(-1)!);
-      expect(c.ok).toBe(true);
-      if (c.ok) expect(c.summary.candidates.entered).toBe(1);
+      if (failure === 'throws') {
+        expect(summaries).toEqual([]);
+        expect(h.logs.filter((l) => l === 'Summary skipped: Error.')).toHaveLength(2);
+      } else {
+        expect(summaries.length).toBeGreaterThanOrEqual(2);
+        expect(h.logs.some((l) => l.startsWith('Summary for ') && l.includes('not accepted'))).toBe(true);
+        // The summary that was refused was valid and named the entry.
+        const c = checkSummary(summaries.at(-1)!);
+        expect(c.ok).toBe(true);
+        if (c.ok) expect(c.summary.candidates.entered).toBe(1);
+      }
       expect(await h.worker.stop()).toBe(0);
       const journal = readFileSync(join(h.stateDir, 'journal.jsonl'), 'utf8');
       expect(journal).toContain('"kind":"stop"');

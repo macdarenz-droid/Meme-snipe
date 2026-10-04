@@ -154,7 +154,7 @@ Owner steps, once:
 
 If DATA-STORE's steps are already done, only steps 4 and 5 remain. When the token expires, the watchdog alerts "Daily summary not written: repository check HTTP 401". To fix it, make a new token as in step 2, replace `DATA_STORE_TOKEN`, and run Deploy.
 
-The Deploy step (`ops/deploy/reports.sh`) runs only when `CLOUDFLARE_API_TOKEN` and `DATA_STORE_TOKEN` exist. It deploys the watchdog's code with `DATA_REPO` and sets one secret, `REPORTS_TOKEN`, from stdin. It never touches the heartbeat key or any other secret, which a deploy keeps. It also refuses this repository's own name.
+The Deploy step (`ops/deploy/reports.sh`) runs only when `CLOUDFLARE_API_TOKEN` and `DATA_STORE_TOKEN` exist, and only after the deploy tag moved. It deploys the watchdog's code from the commit the deploy tag names (the one the server runs), with `DATA_REPO`, and sets one secret, `REPORTS_TOKEN`, from stdin. It never touches the heartbeat key or any other secret, which a deploy keeps. It also refuses this repository's own name.
 
 ## Host checks
 

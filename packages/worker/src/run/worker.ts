@@ -153,6 +153,8 @@ export interface WorkerDeps {
    * the feed. Null loses it (an API call that timed out after the send); another event replaces it. Tests only.
    */
   readonly worldFault?: (event: BookEvent) => BookEvent | null;
+  /** OPS-SUMMARY's fault seam: called before each summary reads the worker's state; a throw fails that summary. Tests only. */
+  readonly summaryFault?: () => void;
   /**
    * WATCH-1's second path: one getMultipleAccounts at confirmed through the quota scheduler at P1, on a provider other
    * than the live feed's (Alchemy). Without it every stale held position raises the critical alert.
@@ -1253,12 +1255,15 @@ export class Worker {
     this.#summary ??= new Summarizer({
       journalPath: join(d.config.stateDir, STATE_FILES.journal), stateDir: d.config.stateDir, http: d.heartbeat.http,
       watchdogUrl: url, key, now: () => d.timers.now(), log: d.log,
-      live: () => ({
-        gitSha: d.config.gitSha, entryRule: d.config.strategy.name, recorder: d.config.recorder ? 'on' : 'off',
-        uptimeS: (d.timers.now() - this.#started) / 1000, trades: this.#account.state.trades,
-        openPositions: Object.values(this.#engine.book.positions).filter((p) => p.status !== 'closed').length,
-        solPrice: this.#solPrice, credits: d.ops?.().quota ?? [],
-      }),
+      live: () => {
+        d.summaryFault?.();
+        return {
+          gitSha: d.config.gitSha, entryRule: d.config.strategy.name, recorder: d.config.recorder ? 'on' : 'off',
+          uptimeS: (d.timers.now() - this.#started) / 1000, trades: this.#account.state.trades,
+          openPositions: Object.values(this.#engine.book.positions).filter((p) => p.status !== 'closed').length,
+          solPrice: this.#solPrice, credits: d.ops?.().quota ?? [],
+        };
+      },
     });
     return this.#summary;
   }
