@@ -169,7 +169,8 @@ const stubSimulation = (): Record<string, unknown> => ({
   amountErrorE4: 100, quoteAgeSlots: '2', rentDeclared: '0', rentPaid: '0', balancesFrom: 'simulation',
 });
 
-let tradeTimer = 0;
+// Test hook: open the first trade on the first tick instead of after one cycle.
+let tradeTimer = env['ZEROED_STUB_OPEN_AT_START'] === '1' ? cycleMs - tickMs : 0;
 let exitCapableJournaled = false;
 const tick = (): void => {
   const now = Date.now();
