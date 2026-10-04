@@ -7,7 +7,8 @@
 // `open_intents` → seed the deployer index (SEED-1's hook) → start the live sources → trade. Nothing enters before the
 // reconcile line; a reconcile that cannot settle every intent exits 3.
 import { randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { placeBookings } from './booked.ts';
 import type { Server } from 'node:http';
 import { join } from 'node:path';
 import type { PolicySession, RugConfig } from '../../../core/src/config/index.ts';
@@ -410,10 +411,17 @@ export class Worker {
     // then wrote `open_intents` 1 from the ledger's book after reporting success from the engine's). Measured after
     // the restore, not from the constructor's start: opening the ledger and reading the book takes milliseconds.
     const startAt = Math.max(this.#d.timers.now(), this.#feed.lastReceivedAt) + 1;
+    // Each position's entry fill moment, as the ledger booked it (its first `open` event): the exact open time of a
+    // position whose saved plan is missing or refused (EXIT-1f).
+    const openedAt: Record<string, number> = {};
+    for (const e of this.#ledger.positionEvents()) if (e.status === 'open' && openedAt[e.positionId] === undefined) openedAt[e.positionId] = Number(e.ts);
+    // Where each booking sits against the boots (live, or at a reconcile), from the journal's earlier lines (EXIT-1f N2).
+    const journalPath = join(c.stateDir, STATE_FILES.journal);
+    const bookedWhen = placeBookings(existsSync(journalPath) ? readFileSync(journalPath, 'utf8') : null, openedAt);
     // The saved exit plans come first, alone in their millisecond: the strategy manages positions on any market event,
     // and on the halt fact (which sorted first by id at a tie) it built fresh plans and trackers from the fills and
     // decided exits with them, before the saved ones arrived. The halt and the restart follow 1 ms later.
-    this.#fact(RESTORE_KEY, { exits: this.#exitsFile.read({}) }, startAt);
+    this.#fact(RESTORE_KEY, { exits: this.#exitsFile.read({}), openedAt, bookedWhen }, startAt);
     // PERSIST-2: the saved graduates series goes to the producer as a raw read (recorded, so a replay rebuilds it), so
     // the regime's survival check keeps its 15 days across a restart.
     if (graduates !== null) this.#feed.ingest('worker', { type: 'offchain', key: RAW.graduatesSeed, value: { source: 'persist', ...graduates } }, { receivedAt: startAt });
