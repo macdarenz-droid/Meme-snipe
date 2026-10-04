@@ -10,10 +10,12 @@ import {
   candlesKey, createKey, holdersKey, insidersKey, lpKey, migrationKey, mintKey, poolKey, streamKey, xcheckKey, SOL_USD_KEY, GRADUATES_KEY,
 } from '../../core/src/gates/index.ts';
 import { CONFIG } from '../../core/test/fixtures.ts';
-import { FIX, MINT, OPTIONS, POOL, RECORDS, chainTx } from '../../core/test/facts/helpers.ts';
+import { FIX, FactWorld, MINT, OPTIONS, POOL, RECORDS, chainTx, offchain } from '../../core/test/facts/helpers.ts';
 import { recordFromRaw, type RawLine } from '../../backtest/src/dataset/parity.ts';
 import { DEFAULT_LIVE_FEED, frameEvents, LiveFeed, replayRecorded, type Frame, type FrameBody, type Release, type Source } from '../src/providers/index.ts';
 import { blockNetwork } from './helpers.ts';
+import { parsePool } from '../../core/src/gates/index.ts';
+import { swapLog } from '../../core/test/facts/swaps.ts';
 
 blockNetwork();
 
@@ -132,5 +134,67 @@ describe('fact parity', () => {
     const rawRun = live(script(fromRaw));
     expect(factEvents(rawRun.seen)).toEqual(factEvents(run.seen));
     expect(rawRun.engine.logHash()).toBe(run.engine.logHash());
+  });
+});
+
+describe('pool state from the swap stream, live and replayed (POS-1)', () => {
+  // The recorded coin, then confirmed swap log lines on its pool continuing the read's reserves: a clean run, a gap
+  // in the stream, a re-base after it, and a swap that does not chain (one in between was never seen).
+  const arrivals = (() => {
+    const out = script(RECORDS.map((r) => r.rec));
+    const read = out.find((a) => a.body.type === 'offchain' && a.body.key === RAW.accounts(MINT))!;
+    const readSlot = (read.body as { value: { slot: bigint } }).value.slot;
+    const end = out.at(-1)!.at;
+    // The read's reserves, as the producer decodes them.
+    const p = parsePool(new FactWorld().push(offchain(RAW.accounts(MINT), { ...FIX.accountsRead, slot: readSlot }, readSlot, end)).last(poolKey(MINT)))!;
+    let pre = { baseReserve: p.baseVault, quoteVault: p.quoteVault, virtualQuoteReserves: p.pool.virtualQuoteReserves ?? 0n };
+    let slot = readSlot + 2n;
+    let at = end;
+    let n = 0;
+    const swapAt = (side: 'buy' | 'sell', base: bigint, skip = false): void => {
+      slot++;
+      at += 400;
+      out.push({ at, source: 'helius', body: { type: 'slot', slot, parent: slot - 1n, root: slot - 32n } });
+      const s = swapLog({ pool: POOL, coinCreator: FIX.meta.creator, supply: 1_000_000_000_000_000n, pre, side, base, atMs: at });
+      if (!skip) out.push({ at: at + 50, source: 'helius', body: { type: 'logs', signature: `pos1swap${n++}`, slot, err: null, via: `logs:${POOL}`, logs: s.logs, commitment: 'confirmed' } });
+      pre = s.after;
+    };
+    swapAt('buy', pre.baseReserve / 1_000n);
+    swapAt('sell', pre.baseReserve / 2_000n);
+    out.push({ at: at + 100, source: 'worker', body: { type: 'offchain', key: `coverage:${STREAMS.trades(POOL)}:gap`, value: { fromSlot: slot + 1n, toSlot: slot + 2n, reason: 'disconnect', via: `logs:${POOL}` } } });
+    slot += 2n;
+    swapAt('buy', pre.baseReserve / 500n);
+    swapAt('sell', pre.baseReserve / 700n);
+    swapAt('buy', pre.baseReserve / 300n, true);
+    swapAt('sell', pre.baseReserve / 900n);
+    out.push({ at: at + 400, source: 'helius', body: { type: 'slot', slot: slot + 1n, parent: slot, root: slot - 31n } });
+    out.push({ at: at + 800, source: 'helius', body: { type: 'slot', slot: slot + 2n, parent: slot + 1n, root: slot - 30n } });
+    return out;
+  })();
+  const run = live(arrivals);
+  const pools = (events: readonly FeedEvent[]) => factEvents(events).filter((e) => (e as MarketEvent).key === poolKey(MINT)) as MarketEvent[];
+
+  it('the live path releases the pool after each swap, stale across the gap and after the swap that does not chain', () => {
+    const facts = pools(run.seen).map((e) => parsePool(e.value)!);
+    const fromSwaps = facts.filter((f) => f.obs.provider === 'helius' && f.obs.slot !== null);
+    // read, 2 clean swaps, the gap (flagged), the re-base swap and the next (clean), then the mismatch (flagged).
+    expect(facts.map((f) => f.obs.quality.join(','))).toEqual(['', '', '', 'partial', '', '', 'partial']);
+    expect(fromSwaps.length).toBeGreaterThanOrEqual(5);
+    expect((pools(run.seen).at(-1)!.value as { stale: string }).stale).toMatch(/^reserves mismatch/);
+    expect(run.engine.records.filter((r) => r.type === 'fault')).toEqual([]);
+  });
+
+  it('the recorded replay and the backtest re-sort give the same pool facts, event by event, and the same log', () => {
+    const r = replayRecorded(run.frames, run.releases);
+    const b = through(r.clock, r.feed);
+    b.engine.drain();
+    expect(pools(b.seen)).toEqual(pools(run.seen));
+    expect(factEvents(b.seen)).toEqual(factEvents(run.seen));
+    expect(b.engine.logHash()).toBe(run.engine.logHash());
+    const s = createReplay(frameEvents(run.frames));
+    const c = through(s.clock, s.feed);
+    runToEnd(s, c.engine);
+    expect(pools(c.seen)).toEqual(pools(run.seen));
+    expect(c.engine.logHash()).toBe(run.engine.logHash());
   });
 });
