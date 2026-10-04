@@ -34,6 +34,8 @@ export interface WriteOptions {
   readonly raw?: readonly string[];
   /** Extra manifest fields (rules, upgrade marks, window lead-in). */
   readonly manifest?: Readonly<Record<string, unknown>>;
+  /** DATA-1c volume-hours CSV text by day (`days/DAY/volume_hours-000.csv.zst`). */
+  readonly volumeHours?: Readonly<Record<string, string>>;
   /** The manifest's schema (default 3, the only one the reader accepts; another value tests the refusal). */
   readonly schema?: number;
 }
@@ -76,6 +78,8 @@ export const writeDataset = (dir: string, rows: readonly DatasetRow[], extra: Wr
     put('amm_trades-000.csv.zst', csv(AMM_COLS, amm), amm.length);
     if (curve.length > 0) put('curve_trades-000.csv.zst', csv(CURVE_COLS, curve), curve.length);
     put('blocks-000.csv.zst', csv(BLOCK_COLS, blocks), blocks.length);
+    const vh = extra.volumeHours?.[d];
+    if (vh !== undefined) put('volume_hours-000.csv.zst', vh, 24);
     const rawLines = rawByDay.get(d) ?? [];
     if (rawLines.length > 0) put('raw-000.jsonl.zst', rawLines.join('\n') + '\n', rawLines.length);
     put('events-000.jsonl.zst', events.join('\n') + (events.length ? '\n' : ''), events.length);

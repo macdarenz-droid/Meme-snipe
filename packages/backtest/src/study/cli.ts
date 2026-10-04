@@ -6,6 +6,7 @@
 //   (each takes [--insiders <file>], a funding supplement: { mint: { knownAtMs, funded, devCluster } }, and
 //   [--pool-accounts <file>], H17's pool record: { pool: { knownAtMs, accountBytes, isCashbackCoin, coinCreator } }, and
 //   [--delegates-complete] only for a dataset that keeps every approval-changing transaction on tracked token accounts;
+//   [--volume-hours <dir>] DATA-1c's volume-hours-DAY.csv assets for the regime's volume (dataset files are read too);
 //   [--regime-assumed-on] a labelled diagnostic while the regime gate's inputs are not produced; refused with --run-holdout)
 //
 // `day` runs the strategies and S0 through the whole engine on the selected days and writes the engine evidence:
@@ -17,10 +18,11 @@
 // `study` runs the full protocol (walk-forward, G1, the holdout once when asked, G2, G0) on the whole window.
 // Every file carries the commit and the dataset hash; no report holds an outcome of a sealed holdout.
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { exitsFor, FILL_CONFIG, RESEARCH_CONFIG, TRIAL_POLICY } from '../../../core/src/config/index.ts';
-import { loadDay, loadManifest, manifestHash, type ManifestDay, regimeBoundariesOf, verifySums } from '../dataset/dataset.ts';
+import { loadDay, loadManifest, loadVolumeHours, manifestHash, type ManifestDay, regimeBoundariesOf, verifySums } from '../dataset/dataset.ts';
+import { parseVolumeHoursCsv, type VolumeHour } from '../../../core/src/facts/index.ts';
 import { readSeries } from '../dataset/offchain.ts';
 import type { DatasetRow } from '../dataset/rows.ts';
 import { replayHashes } from '../proofs.ts';
@@ -61,6 +63,15 @@ const insiders = has('insiders')
     return (mint: string) => m[mint] ?? null;
   })()
   : undefined;
+// Regime volume hours (DATA-1c): the dataset's `volume_hours` files, plus `--volume-hours <dir>` of release assets
+// `volume-hours-YYYY-MM-DD.csv`; both through core's parser. A malformed day is refused whole (unknown, never zero).
+const volumeHours: VolumeHour[] = [
+  ...manifest.days.flatMap((d) => loadVolumeHours(dataset, d)),
+  ...(has('volume-hours') ? readdirSync(flag('volume-hours')).filter((f) => /^volume-hours-\d{4}-\d{2}-\d{2}\.csv$/.test(f)).flatMap((f) => {
+    const day = f.slice('volume-hours-'.length, -'.csv'.length);
+    return parseVolumeHoursCsv(readFileSync(join(flag('volume-hours'), f), 'utf8'), Date.parse(`${day}T00:00:00Z`) / 86_400_000) ?? [];
+  }) : []),
+];
 // H17's pool-account record (DATA-1, ARCHITECTURE §16): { pool: { knownAtMs, accountBytes, isCashbackCoin, coinCreator } }.
 const poolAccounts = has('pool-accounts')
   ? (() => {
@@ -146,7 +157,7 @@ if (command === 'day' || command === 'trial') {
     // Entries off on a holdout day: the run proves the engine on real data without trading the holdout.
     entriesTo: validityOnly ? from : last - Math.max(...STUDY_CONFIG.universes.map((u) => exitsFor(TRIAL_POLICY.exits, u.universe).tMaxMs)) - RESEARCH_CONFIG.s0.endMarginMs,
     sampleRate, regimeBoundaries: regimeBoundariesOf(manifest), ...(manifest.coverage_gaps === undefined ? {} : { coverageGaps: manifest.coverage_gaps }),
-    ...(insiders === undefined ? {} : { insiders }), ...(poolAccounts === undefined ? {} : { poolAccounts }), delegatesComplete: has('delegates-complete'), ...(has('regime-assumed-on') ? { regime: 'assume-on' as const } : {}), ...(tradesFromMs === undefined ? {} : { tradesFromMs }),
+    ...(insiders === undefined ? {} : { insiders }), ...(poolAccounts === undefined ? {} : { poolAccounts }), delegatesComplete: has('delegates-complete'), volumeHours, ...(has('regime-assumed-on') ? { regime: 'assume-on' as const } : {}), ...(tradesFromMs === undefined ? {} : { tradesFromMs }),
   };
   const t0 = clock();
   // The strategy object is made when the run starts; its funnel is read after the run.
@@ -198,7 +209,7 @@ if (command === 'day' || command === 'trial') {
   const report = runFullStudy({
     config: STUDY_CONFIG, policy: TRIAL_POLICY, fills: FILL_CONFIG, research: RESEARCH_CONFIG, availableDays: complete, rows: rowsOf, firstDay: first,
     series: [solUsd], sampleRate, ...(manifest.coverage_gaps === undefined ? {} : { coverageGaps: manifest.coverage_gaps }),
-    ...(insiders === undefined ? {} : { insiders }), ...(poolAccounts === undefined ? {} : { poolAccounts }), delegatesComplete: has('delegates-complete'), ...(has('regime-assumed-on') ? { regimeGate: 'assume-on' as const } : {}), registryPath: flag('registry'), outDir: out, seed: 'bt2', replays: Number(flag('replays', '10')),
+    ...(insiders === undefined ? {} : { insiders }), ...(poolAccounts === undefined ? {} : { poolAccounts }), delegatesComplete: has('delegates-complete'), volumeHours, ...(has('regime-assumed-on') ? { regimeGate: 'assume-on' as const } : {}), registryPath: flag('registry'), outDir: out, seed: 'bt2', replays: Number(flag('replays', '10')),
     runHoldout: has('run-holdout'), startedAt: new Date().toISOString(), regimeBoundaries: regimeBoundariesOf(manifest), ledgerReplay,
   });
   const days = windowDays(STUDY_CONFIG);

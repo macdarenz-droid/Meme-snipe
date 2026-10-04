@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, test, vi } from 'vitest';
 import { createHash } from 'node:crypto';
-import { loadCoverage, loadDay, loadManifest, loadMovements, regimeBoundariesOf, SUPPORTED_SCHEMA, tableOf, verifySums } from '../src/dataset/dataset.ts';
+import { loadCoverage, loadDay, loadManifest, loadMovements, loadVolumeHours, regimeBoundariesOf, SUPPORTED_SCHEMA, tableOf, verifySums } from '../src/dataset/dataset.ts';
 import type { CoverageRow, MovementRow } from '../src/dataset/rows.ts';
 import { readSeries, usableFrom } from '../src/dataset/offchain.ts';
 import { writeDataset } from './dataset-writer.ts';
@@ -67,6 +67,26 @@ describe('DATA-1 reader', () => {
       expect(back[0]!.kind === 'raw' && back[0]!.ops.some((o) => o.op === 'init-mint')).toBe(true);
     } finally {
       rmSync(d2, { recursive: true, force: true });
+    }
+  });
+
+  test('volume hours are read through the core parser; a malformed day is refused whole', () => {
+    const dv = mkdtempSync(join(tmpdir(), 'dsv-'));
+    try {
+      const first = rows.slice(0, 3);
+      const day = new Date(first[0]!.blockTime * 1000).toISOString().slice(0, 10);
+      const n = Date.parse(`${day}T00:00:00Z`) / 86_400_000;
+      const csvOf = (bad: boolean) => ['hour_start_ms,lamports,covered', ...Array.from({ length: 24 }, (_, i) => `${n * 86_400_000 + i * 3_600_000},${bad && i === 5 ? '-1' : 1_000 + i},1`)].join('\n') + '\n';
+      writeDataset(dv, first, { volumeHours: { [day]: csvOf(false) } });
+      const m = loadManifest(dv);
+      const hours = loadVolumeHours(dv, m.days[0]!);
+      expect(hours).toHaveLength(24);
+      expect(hours[3]).toEqual({ hourStartMs: n * 86_400_000 + 3 * 3_600_000, lamports: 1_003n, covered: true });
+      rmSync(dv, { recursive: true, force: true });
+      writeDataset(dv, first, { volumeHours: { [day]: csvOf(true) } });
+      expect(loadVolumeHours(dv, loadManifest(dv).days[0]!)).toEqual([]);
+    } finally {
+      rmSync(dv, { recursive: true, force: true });
     }
   });
 

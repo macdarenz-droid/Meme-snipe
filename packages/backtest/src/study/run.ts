@@ -35,6 +35,8 @@ export interface StudyRunOptions extends Omit<RunOptions, 'strategy' | 'facts' |
   /** FACTS-1 staging: read latency and the live read caps (defaults READ_LATENCY and READ_LIMITS, never kinder than live). */
   readonly readLatency?: ReadLatency;
   readonly readLimits?: ReadLimits;
+  /** The regime's chain-volume hours (DATA-1c), for FACTS-1's curve-volume fact. */
+  readonly volumeHours?: ConstructorParameters<typeof FactProjector>[0]['volumeHours'];
   /** When trade rows begin (an assembled window's first day); see FactOptions.tradesFromMs. */
   readonly tradesFromMs?: number;
 }
@@ -75,6 +77,7 @@ export const studyRunOptions = (o: StudyRunOptions): RunOptions => {
       readLatency: o.readLatency ?? READ_LATENCY,
       // Graduate survival for the regime gate, from FACTS-1's producer sized by the locked policy.
       survival: producerOptions(o.policy),
+      ...(o.volumeHours === undefined ? {} : { volumeHours: o.volumeHours }),
       ...(o.tradesFromMs === undefined ? {} : { tradesFromMs: o.tradesFromMs }),
     }),
     // A fresh locked session per run: the policy cannot change while it runs (R15).

@@ -6,7 +6,7 @@ import { isCanonicalPool, type Pool, TOKEN_2022_PROGRAM, toAddress } from '../..
 import type { FeedEvent, MarketEvent } from '../../core/src/engine/index.ts';
 import {
   coverageKeys, createKey, holdersKey, insidersKey, lpKey, migrationKey, mintKey, parseCandles, parseCreate, parseHolders, parseInsiders, parseLp,
-  GRADUATES_KEY, parseGraduates, parseMigration, parseMint, parsePool, parseSolUsd, poolKey, RUG_UNJUDGED_PREFIX, SOL_USD_KEY, TX_CREATE_PREFIX, candlesKey,
+  CURVE_VOLUME_KEY, GRADUATES_KEY, parseGraduates, parseMigration, parseMint, parsePool, parseSolUsd, poolKey, RUG_UNJUDGED_PREFIX, SOL_USD_KEY, TX_CREATE_PREFIX, candlesKey,
 } from '../../core/src/gates/index.ts';
 import { seriesReleases } from '../src/dataset/offchain.ts';
 import { FactProjector, type FactOptions, LANDED_PREFIX, mintHashFraction, tieHash } from '../src/sim/facts.ts';
@@ -21,10 +21,10 @@ const U2 = { universe: 'U2', fromMs: 60 * 60_000, toMs: 70 * 60_000, everyMs: 5 
 
 const solUsd = { ...SOL_USD, bars: SOL_USD.bars.map((b, k) => ({ ...b, start: W0 - 6 * 3_600_000 + k * 3_600_000 })) };
 
-const replay = (plans: readonly MintPlan[], slots: number, sampleRate: number | null = 1, tradesFromMs?: number, tieSalt = 'test-salt', poolAccounts?: FactOptions['poolAccounts'], delegatesComplete = true, readLatency?: FactOptions['readLatency'], survival?: FactOptions['survival']) => {
+const replay = (plans: readonly MintPlan[], slots: number, sampleRate: number | null = 1, tradesFromMs?: number, tieSalt = 'test-salt', poolAccounts?: FactOptions['poolAccounts'], delegatesComplete = true, readLatency?: FactOptions['readLatency'], survival?: FactOptions['survival'], volumeHours?: FactOptions['volumeHours']) => {
   const { rows, mints } = studyWorld({ mints: plans, slots });
   const facts = new FactProjector({
-    sampleRate, rugs: RUG_CONFIG, windows: [U2], solUsd: seriesReleases(solUsd), solUsdPoints: 30, candlesHead: 10, candlesTail: 360, tieSalt, delegatesComplete, ...(readLatency === undefined ? {} : { readLatency }), ...(survival === undefined ? {} : { survival }),
+    sampleRate, rugs: RUG_CONFIG, windows: [U2], solUsd: seriesReleases(solUsd), solUsdPoints: 30, candlesHead: 10, candlesTail: 360, tieSalt, delegatesComplete, ...(readLatency === undefined ? {} : { readLatency }), ...(survival === undefined ? {} : { survival }), ...(volumeHours === undefined ? {} : { volumeHours }),
     ...(tradesFromMs === undefined ? {} : { tradesFromMs }), ...(poolAccounts === undefined ? {} : { poolAccounts }),
   });
   const market = new Market({ heartbeatBlocks: 1_000_000, discoveryLag: () => 1, active: () => false, observe: null, volumeWindowSlots: 150, hook: () => {}, hasRows: () => true, schedule: () => {}, facts });
@@ -187,6 +187,19 @@ describe('fact projector', () => {
     expect(grads[0]!.moment.receivedAt).toBeGreaterThanOrEqual(g.items[0]!.migratedAtMs + TRIAL_POLICY.regime.survivalAfterMs);
     // Without the producer nothing is released: the regime then reads graduates as unknown.
     expect(replay([PLAN], SLOTS).events.some((e) => e.key === GRADUATES_KEY)).toBe(false);
+  });
+
+  it('releases the regime\'s curve volume from FACTS-1\'s producer: whole covered days only, each hour once it has ended', () => {
+    const d0 = Math.floor((W0 - 2 * 86_400_000) / 86_400_000);
+    const hours = (day: number, uncovered = -1) => Array.from({ length: 24 }, (_, i) => ({ hourStartMs: day * 86_400_000 + i * 3_600_000, lamports: 1_000n, covered: i !== uncovered }));
+    const vh = [...hours(d0), ...hours(d0 + 1, 7)];
+    const r = replay([PLAN], SLOTS, 1, undefined, 'test-salt', undefined, true, undefined, producerOptions(TRIAL_POLICY), vh);
+    const cv = r.events.filter((e) => e.key === CURVE_VOLUME_KEY);
+    expect(cv.length).toBeGreaterThan(0);
+    // The covered day is complete; the day with an uncovered hour is unknown, never a smaller volume.
+    expect((cv.at(-1)!.value as { days: unknown[] }).days).toEqual([{ day: d0, volumeLamports: 24_000n }]);
+    // Released only after the day's last hour had ended.
+    expect(cv[0]!.moment.receivedAt).toBeGreaterThanOrEqual((d0 + 1) * 86_400_000);
   });
 
   it('flags holders and the mint partial after a missed token movement', () => {

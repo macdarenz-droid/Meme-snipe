@@ -5,6 +5,7 @@
 //   4. the sealed holdout, run once (recorded first; a second run burns it), size-checked from its counts;
 //   5. G2: opened only when every check on the counts passes, else "not proven yet" with the seals closed;
 //   6. G0 from the engine proofs and the ledger replay check.
+import { writeFileSync } from 'node:fs';
 import { exitsFor, type FillConfig, type Policy, type ResearchConfig } from '../../../core/src/config/index.ts';
 import { OFF_CHAIN } from '../../../core/src/engine/index.ts';
 import { createRng, type DayReturn, type GateResult, MIN_DAYS } from '../../../core/src/stats/index.ts';
@@ -20,6 +21,7 @@ import { g1Blocks, loadOrCreate, readStudyRegistry, recordG1, recordTrial, regis
 import { runStudy, studyRunOptions, type StudyRunOptions } from './run.ts';
 import { type FunnelSummary } from './funnel.ts';
 import { type SpaPanel, spaPanel } from './spa.ts';
+import { holdoutSummary } from './summary.ts';
 import { melbourneDay } from '../report.ts';
 import { microUsdToLamports, solPriceMicroUsd } from '../../../core/src/units/index.ts';
 import { openSealed, runSealedHoldout, sealedReady } from './sealed.ts';
@@ -47,6 +49,7 @@ export interface StudyInputs {
   readonly delegatesComplete?: boolean;
   /** The regime gate as live (default), or assumed on (a labelled diagnostic; the holdout refuses to run then). */
   readonly regimeGate?: 'evaluate' | 'assume-on';
+  readonly volumeHours?: StudyRunOptions['volumeHours'];
   readonly registryPath: string;
   /** Where the walk-forward and holdout ledgers go (new files). */
   readonly outDir: string;
@@ -160,6 +163,7 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
     ...(i.poolAccounts === undefined ? {} : { poolAccounts: i.poolAccounts }),
     ...(i.delegatesComplete === undefined ? {} : { delegatesComplete: i.delegatesComplete }),
     ...(i.regimeGate === undefined ? {} : { regime: i.regimeGate }),
+    ...(i.volumeHours === undefined ? {} : { volumeHours: i.volumeHours }),
     ...(i.regimeBoundaries === undefined ? {} : { regimeBoundaries: i.regimeBoundaries }),
   });
 
@@ -279,6 +283,14 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
     }, { familyAlpha: attemptAlpha(c.holdoutAttempt) });
     reg = { ...reg, holdouts: r.registry };
     writeStudyRegistry(i.registryPath, reg);
+    // G3's holdout summary, one file per opened universe, next to the sealed result.
+    const hours = (plan.holdout.entriesTo - plan.holdout.entriesFrom) / 3_600_000;
+    for (const u of ready) {
+      const trades = open.outcomes.strategy[u] ?? [];
+      if (trades.length < 2) continue;
+      const summary = holdoutSummary(trades, entryOf(u)?.counts?.candidates ?? 0, hours, open.outcomes.rejectMix[u] ?? {}, seedNumber(`${i.seed}:summary:${u}`));
+      writeFileSync(`${i.outDir}/holdout-summary-${u}.json`, `${JSON.stringify(summary, null, 1)}\n`);
+    }
     // Sensitivity on the opened holdout (already scored above, so no further look): the mean with rent never returned.
     const sens = ready.map((u) => {
       const xs = (open.outcomes.strategy[u] ?? []).map((t) => t.rNetNoRent);

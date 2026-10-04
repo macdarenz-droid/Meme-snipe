@@ -727,6 +727,16 @@ The second reviewer, the third opinion and the supervisor reached one position o
   Curve volume waits for FACTS-1d's core `parseVolumeHoursCsv` (#78) and DATA-1c's `volume-hours` assets. SOL/USD uses the existing hourly series. Until volume exists, the regime reads "unknown" and real-day counts run in the labelled assume-on mode. The synthetic CreatePoolEvent gained `pool_base_amount` and `pool_quote_amount`, as the real event carries them. Test: `test/facts.test.ts`.
 ## External review of the promotion gates (STATS-1b)
 
+- **2026-10-04 · Regime volume in the backtest, through FACTS-1's producer.** Volume hours come from the dataset's `days/DAY/volume_hours-NNN.csv.zst` files (`loadVolumeHours`), plus DATA-1c's `volume-hours-DAY.csv` release assets (CLI `--volume-hours <dir>`). Both are parsed by core's `parseVolumeHoursCsv`, the live reader's parser; a malformed day is refused whole. Each hour reaches a FACTS-1 producer as the live reader's `read:chain-volume-hour` answer once the hour has ended, and the producer's curve-volume fact is released. Complete covered days only; an uncovered hour leaves its day unknown. The regime's window rule (expanding from 2026-07-20, at least 28 days, day D−3) is FACTS-1d's, in regime.ts. Tests: `test/dataset.test.ts`, `test/facts.test.ts`.
+- **2026-10-04 · G3's holdout summary** (`src/study/summary.ts`; shape from the G3 builder's `HoldoutSummary`). When a universe's seal is opened, the scoring stage writes `holdout-summary-<U>.json` next to the sealed result:
+  - n, mean and sd of net return;
+  - the severe share (blocked, or net at or below −50%);
+  - the day-block one-sided lower bound at `VETO_COMPOSITE_LEVEL`;
+  - candidates and the holdout's entry hours;
+  - the reject mix;
+  - `returnCap`.
+
+  The reject mix is sealed with the outcomes: one count per never-entered candidate, keyed by the typed `gate:code` of its last abstention (H-gates and R-controls as logged, `regime:<code>`, `stop:<reason>`, `setup:no-setup`, `worker:market-data|book-busy|no-quote|not-evaluated`). `returnCap` is 3, G3's upper bound, because the study's exits put no structural ceiling on one trade (a trailing stop rides a winner). The widest cap only widens G3's bias bound. Test: `test/summary.test.ts`.
 - **2026-10-04 · Base merge with BT-1d, BT-1c and STATS-1b.**
   - Schema 3 is the only dataset schema. Raw records ride in it (the writer and reader keep them), and trade rows carry `lp_fee`, `quote_amount_lp_adjusted` and `extra_hex` beside BT-1d's `user_token_account`/`user_token_owner`.
   - Rent follows BT-1c's account-close outcome model: the conservative scenario keeps `rentRecovery: false`, which supersedes fills-2.

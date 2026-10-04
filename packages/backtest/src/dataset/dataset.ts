@@ -6,6 +6,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { isAbsolute, join, resolve, sep } from 'node:path';
 import { zstdDecompressSync } from 'node:zlib';
 import { readRaw } from './raw.ts';
+import { parseVolumeHoursCsv, type VolumeHour } from '../../../core/src/facts/index.ts';
 import { type CoverageRow, type DatasetRow, type MovementRow, compareRows, readAmm, readBlocks, readCoverage, readCurve, readEvents, readMovements } from './rows.ts';
 
 export interface ManifestFile {
@@ -77,6 +78,23 @@ export const loadMovements = (dir: string, day: ManifestDay, options: LoadOption
   const out: MovementRow[] = [];
   for (const f of day.files) if (tableOf(f.path) === 'movements') readMovements(readVerified(dir, day.day, f, options), out);
   return out.sort((a, b) => (a.slot !== b.slot ? (a.slot < b.slot ? -1 : 1) : a.txIdx - b.txIdx || a.outerIx - b.outerIx || (a.innerIx ?? -1) - (b.innerIx ?? -1)));
+};
+
+/**
+ * One day's regime volume hours (DATA-1c `days/DAY/volume_hours-NNN.csv.zst`), parsed by core's
+ * `parseVolumeHoursCsv` (the same parser as the live reader). A malformed file refuses the whole day (no rows: unknown,
+ * never zero); a day without the file has no rows.
+ */
+export const loadVolumeHours = (dir: string, day: ManifestDay, options: LoadOptions = {}): VolumeHour[] => {
+  const dayNumber = Date.parse(`${day.day}T00:00:00Z`) / 86_400_000;
+  const out: VolumeHour[] = [];
+  for (const f of day.files) {
+    if (tableOf(f.path) !== 'volume_hours') continue;
+    const rows = parseVolumeHoursCsv(readVerified(dir, day.day, f, options), dayNumber);
+    if (rows === null) return [];
+    out.push(...rows);
+  }
+  return out;
 };
 
 /**

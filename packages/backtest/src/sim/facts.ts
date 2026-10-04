@@ -13,7 +13,7 @@ import {
 } from '../../../core/src/chain/index.ts';
 import type { FeedEvent, MarketEvent, Moment } from '../../../core/src/engine/index.ts';
 import {
-  type Candle, type FactObs, type HolderAccount, type Price, GRADUATES_KEY, parseGraduates, RUG_UNJUDGED_PREFIX, RugLabeller, SOL_USD_KEY, TX_CREATE_PREFIX, candlesKey, coverageKeys,
+  type Candle, type FactObs, type HolderAccount, type Price, CURVE_VOLUME_KEY, GRADUATES_KEY, parseGraduates, RUG_UNJUDGED_PREFIX, RugLabeller, SOL_USD_KEY, TX_CREATE_PREFIX, candlesKey, coverageKeys,
   createKey, holdersKey, insidersKey, lpKey, migrationKey, mintKey, poolKey,
 } from '../../../core/src/gates/index.ts';
 import type { RugConfig } from '../../../core/src/config/index.ts';
@@ -24,7 +24,7 @@ import type { RawRow } from '../dataset/raw.ts';
 import type { AmmSwapRow, CurveTradeRow, DatasetRow, EventRow } from '../dataset/rows.ts';
 import type { PoolView } from './market.ts';
 import { SignalTracker } from '../research/tracker.ts';
-import { FactProducer, graduatesFact, type ProducerOptions } from '../../../core/src/facts/index.ts';
+import { FactProducer, graduatesFact, type ProducerOptions, RAW, type VolumeHour } from '../../../core/src/facts/index.ts';
 import { landings, type ReadLatency } from '../study/reads.ts';
 
 export const ATA_PROGRAM = toAddress('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL');
@@ -115,6 +115,12 @@ export interface FactOptions {
    * its survival mark, and the slot notices; only its graduates fact is released. Off when absent.
    */
   readonly survival?: ProducerOptions;
+  /**
+   * The regime's chain-volume hours (DATA-1c, parsed by core's `parseVolumeHoursCsv`), any order. Each is handed to a
+   * FACTS-1 producer (options `survival`) as the live reader's `read:chain-volume-hour` answer once its hour has ended,
+   * and the producer's curve-volume fact is released: one rule, live and backtest.
+   */
+  readonly volumeHours?: readonly VolumeHour[];
   readonly poolAccounts?: (pool: string) => { readonly knownAtMs: number; readonly accountBytes: number; readonly isCashbackCoin: boolean; readonly coinCreator: string } | null;
   readonly insiders?: (mint: string) => { readonly knownAtMs: number; readonly funded: readonly string[]; readonly devCluster: readonly string[] } | null;
   /**
@@ -208,6 +214,9 @@ export class FactProjector {
   readonly #survivalPools = new Map<string, string>();
   readonly #graduateItems: { mint: string; migratedAtMs: number; reserveAfter: bigint }[] = [];
   #survivalSeq = 0;
+  #volumeProducer: FactProducer | null = null;
+  #volumeQueue: VolumeHour[] = [];
+  #volumeAt = 0;
   /** Stage-2/3 reads in flight, oldest landing first (one latency for all, so arrival order is ask order). */
   readonly #reads: { atMs: number; mint: string; universe: string; n: number; stage: 2 | 3 }[] = [];
   #readSeq = 0;
@@ -217,6 +226,10 @@ export class FactProjector {
   constructor(o: FactOptions) {
     this.#o = o;
     this.#labeller = new RugLabeller(o.rugs);
+    if (o.volumeHours !== undefined && o.survival !== undefined) {
+      this.#volumeProducer = new FactProducer(o.survival);
+      this.#volumeQueue = [...o.volumeHours].sort((a, b) => a.hourStartMs - b.hourStartMs);
+    }
     // SOL/USD for the tracker: the latest hourly close usable at the moment asked (the same points the gates see).
     this.#tracker = o.features === true ? new SignalTracker({
       solUsd: (ms) => {
@@ -283,7 +296,19 @@ export class FactProjector {
         break;
     }
     if (this.#o.survival !== undefined) this.#feedSurvival(row, m, out);
+    if (this.#volumeProducer !== null && row.kind === 'block') this.#feedVolume(m, out);
     return out;
+  }
+
+  /** Volume hours whose hour has ended by now, as the live reader's answers; the producer's curve-volume fact is released. */
+  #feedVolume(m: Moment, out: FeedEvent[]): void {
+    const p = this.#volumeProducer!;
+    while (this.#volumeAt < this.#volumeQueue.length && this.#volumeQueue[this.#volumeAt]!.hourStartMs + 3_600_000 <= m.receivedAt) {
+      const h = this.#volumeQueue[this.#volumeAt++]!;
+      const seq = this.#survivalSeq++;
+      const e: MarketEvent = { kind: 'market', id: `vh:${seq}`, moment: m, key: RAW.volumeHour, value: { value: h, source: PROVIDER, backfilled: false, seq } };
+      for (const w of p.observe(e)) if (w.key === CURVE_VOLUME_KEY) out.push(this.#fact(`cv:${m.slot}:${seq}`, m, CURVE_VOLUME_KEY, w.value));
+    }
   }
 
   /**

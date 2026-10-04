@@ -9,6 +9,7 @@ import { holdoutReady, type HoldoutCounts, MIN_DAYS } from '../../../core/src/st
 import { beginHoldoutRun, failHoldoutRun, g1Blocks, readStudyRegistry, sealHoldoutRun, type StudyRegistry, writeStudyRegistry } from './registry.ts';
 import { runStudy, type StudyRunOptions } from './run.ts';
 import { countsOf, scoreRun, type ScoredTrade } from './score.ts';
+import { rejectMixOf } from './summary.ts';
 
 export interface SealedTargets {
   /** Per universe: its registered holdout and configuration. */
@@ -26,6 +27,8 @@ interface Outcomes {
   readonly strategy: Readonly<Record<string, readonly ScoredTrade[]>>;
   /** S0 trades per seed, per universe; empty when no universe had enough entries to be scored. */
   readonly s0: readonly Readonly<Record<string, readonly ScoredTrade[]>>[];
+  /** Per universe: never-entered candidates by the typed reason of their last abstention (G3's reject mix). */
+  readonly rejectMix: Readonly<Record<string, Readonly<Record<string, number>>>>;
 }
 
 const sha = (b: Buffer | string) => createHash('sha256').update(b).digest('hex');
@@ -76,7 +79,7 @@ export const runSealedHoldout = (
       return byTag(scoreRun(x, fills), tags.map((t) => `S0-${t}`));
     })
     : [];
-  const outcomes: Outcomes = { strategy: byTag(scoreRun(r, fills), tags), s0 };
+  const outcomes: Outcomes = { strategy: byTag(scoreRun(r, fills), tags), s0, rejectMix: Object.fromEntries(tags.map((t) => [t, rejectMixOf(r.records, t)])) };
   writeFileSync(outcomesPath, `${JSON.stringify(outcomes)}\n`);
   chmodSync(outcomesPath, 0o400);
   chmodSync(ledgerPath, 0o400);
