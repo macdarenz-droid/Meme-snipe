@@ -1764,7 +1764,7 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - **Not rebuilt.** An account read inside the downtime cannot be rebuilt (none happens on a timer for candidates).
   - **Not exact, named.** After a restart the anchor is empty until the first swap is released, so a read before it takes its receipt time. Block times are whole seconds, so an estimate from an anchor can be up to 1 s early.
 - **2026-10-05 · Found while testing, for #166 (S0-ZERO); fixed in the base by FILL-ORDER.** A fill's transactions placed `after` reached the engine at one moment in id order, not chain order. FILL-ORDER now keeps their chain order; the rebuild still orders the downtime's trades by their reserve chain, so it does not depend on arrival order either way.
-- **2026-10-05 · Evidence.** `packages/worker/test/restart-keep.test.ts`, 39 tests:
+- **2026-10-05 · Evidence.** `packages/worker/test/restart-keep.test.ts`, 40 tests:
   - the saved shape;
   - a restart restores the candidate, reads its migration and create again, and evaluates it once its window opens;
   - the strategy refuses lists dated after the restore or malformed;
@@ -1782,6 +1782,7 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
     - after a lossy close, a swap that does not replay, or a fill missing a trade, the downtime has no bars;
   - discarded files: a candidate dated after the saved moment, named twice or malformed, a tail list malformed or naming a mint twice;
   - saveState refuses a candidate migrated, evaluated or with a bar after the snapshot moment, or named twice, and the old file stays whole (a bad save would make the next load discard the index and coverage);
+  - a v1 file (before G4b) is checked the same way on load;
   - an older file loads.
 
   Hand mutants, each killed: 55 across the strategy, worker and state (no save, no restore, tries from the book only, each dated-after and malformed check, bars or tries not restored, the migration signature not noted, restored transactions not read, no create lookup at restore, no downtime read, saved signatures not reseeded, no load check, no duplicate check, no curve read, records not ingested, credits not counted; tails not saved, not restored, not in the restore fact, ended kept, no cap, malformed accepted; the migration slot not given to the catch-up; bars: a quiet minute filled flat, no dedupe, no merge, a lossy close merged, a refused swap ignored, arrival order kept, the chain not checked, the merge at the close's own moment, the opening gap taken as the close, no downtime marked, the restart minute's live close or the saved bar's close not kept, the price before the trade; no save-side candidate check; no load-side tail check; the rebuild's minute one second late (R9); live bars on receipt time; the estimate not capped at now; no earlier-bar branch; the earlier bar's close moved; the anchor on the moment slot; no stale bound; every anchor stale; the pool's own swap not used; 450 ms a slot; the anchor in any order; the bound at 151 or taken at 150; the pool's own swap kept forward only). One equivalent mutant: taking trades from before the downtime only adds back prices the saved bars already hold.

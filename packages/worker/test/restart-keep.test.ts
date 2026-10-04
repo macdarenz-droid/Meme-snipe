@@ -652,6 +652,25 @@ describe('RESTART-KEEP: a restart keeps the candidates in their window', () => {
     expect(r.ok ? '' : r.reason).toMatch(why);
   }, 60_000);
 
+  it('a v1 file (written before G4b) is checked the same way: a candidate dated after its saved moment discards it', async () => {
+    const { h } = await shortlistedAndStopped();
+    const path = join(h.stateDir, PERSIST_FILE);
+    const lines = readFileSync(path, 'utf8').split('\n').filter((l) => l !== '');
+    const inner = JSON.parse(lines[1]!) as Record<string, unknown> & { index: { mints: unknown[] }; asOf: { receivedAt: number }; candidates: Record<string, unknown>[] };
+    inner.index.mints = lines.slice(2, -1).map((l) => JSON.parse(l) as unknown);
+    const write = (candidates: unknown[]) => {
+      const payload = JSON.stringify({ ...inner, candidates });
+      writeFileSync(path, JSON.stringify({ version: 1, sha256: createHash('sha256').update(payload).digest('hex'), payload }));
+    };
+    write(inner.candidates);
+    const ok = loadState(path, RUG_CONFIG);
+    expect(ok.ok && ok.version).toBe(1);
+    expect(ok.ok && ok.candidates.map((c) => c.mint)).toEqual([MINT]);
+    write([{ ...inner.candidates[0], migratedAtMs: inner.asOf.receivedAt + 1 }]);
+    const r = loadState(path, RUG_CONFIG);
+    expect(r.ok ? '' : r.reason).toMatch(/candidate .* is dated after the saved moment/);
+  }, 60_000);
+
   it('a file without candidates (written before RESTART-KEEP) still loads, with none', async () => {
     const { h } = await shortlistedAndStopped();
     const path = join(h.stateDir, PERSIST_FILE);
