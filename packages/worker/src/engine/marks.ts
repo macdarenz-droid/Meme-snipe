@@ -50,9 +50,10 @@ export const markedHistory = (h: AccountHistory, held: (mint: string) => HeldMar
 /**
  * RISK-LATCH: whether a valuation may latch R9 or R10. Only when the SOL price is fresh and every open position has a
  * fresh mark: risk counts an unknown mark as a total loss, a stand-in for refusing entries, never proof of a breach.
+ * A negative mark is unknown to risk (core's valuation rule), so it never latches either.
  */
 export const latchable = (h: AccountHistory, sol: Timed<MicroUsd> | null, nowMs: number, maxAgeMs: number): boolean =>
-  sol !== null && fresh(sol.atMs, nowMs, maxAgeMs) && h.openPositions.every((o) => o.mark !== null && o.markAtMs !== null && fresh(o.markAtMs, nowMs, maxAgeMs));
+  sol !== null && fresh(sol.atMs, nowMs, maxAgeMs) && h.openPositions.every((o) => o.mark !== null && o.mark >= 0n && o.markAtMs !== null && fresh(o.markAtMs, nowMs, maxAgeMs));
 
 /**
  * The account risk judges, for entries and exits alike. On an exit (`fallback`), any failure while marking gives the
