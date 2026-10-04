@@ -272,7 +272,7 @@ const rows = <T>(dir: string, re: RegExp, parse: (l: string) => T): T[] =>
 // ---------- FactReaders.readBatch on its own ----------
 
 /** A chain answering at once, each method at its own context slot; `hold` keeps the scan's answer until released. */
-const batchRig = (o: { readonly bankSlot?: bigint; readonly scanSlot?: bigint; readonly extraPda?: boolean; readonly hold?: boolean; readonly scansPerDay?: number } = {}) => {
+const batchRig = (o: { readonly bankSlot?: bigint; readonly scanSlot?: bigint; readonly extraPda?: boolean; readonly hold?: boolean; readonly scansPerDay?: number; readonly movedOwner?: boolean } = {}) => {
   const timers = new ManualTimers(T);
   const frames: { key: string; value: unknown; receivedAt: number }[] = [];
   const seen: { method: string; params: unknown[] }[] = [];
@@ -301,8 +301,16 @@ const batchRig = (o: { readonly bankSlot?: bigint; readonly scanSlot?: bigint; r
       const t = holderData.get(address);
       return t === undefined ? null : { owner: MINT_ACCOUNT.owner, data: b64(t), lamports: 1, executable: false };
     };
+    // The final bank (it starts with the mint): with `movedOwner`, the top wallet's account has a new owner since discovery.
+    const moved = (address: string): unknown => {
+      const top = HOLDERS.find((a) => a.owner === W(0))!;
+      return address === top.address ? { owner: MINT_ACCOUNT.owner, data: b64(tokenAccountData(MINT as Address, W('new-owner') as Address, top.amount)), lamports: 1, executable: false } : acc(address);
+    };
     switch (body.method) {
-      case 'getMultipleAccounts': return rpcResult(bankSlot, (body.params[0] as string[]).map(acc));
+      case 'getMultipleAccounts': {
+        const list = body.params[0] as string[];
+        return rpcResult(bankSlot, list.map(o.movedOwner === true && list[0] === MINT ? moved : acc));
+      }
       case 'getTokenLargestAccounts': {
         const top = [...HOLDERS].sort((a, b) => (a.amount > b.amount ? -1 : a.amount < b.amount ? 1 : 0)).slice(0, 20);
         return rpcResult(bankSlot - 1n, top.map((a) => ({ address: a.address, amount: String(a.amount), decimals: 6, uiAmountString: '0' })));
@@ -404,6 +412,13 @@ describe('FactReaders.readBatch', () => {
     const all = parseHoldersAllRead(r.frames.find((f) => f.key === RAW.holdersAll(MINT))!.value)!;
     expect(all.ownerPrograms).toContainEqual({ owner: r.PDA, program: PAMM });
     expect(completeHolders(all)).not.toBeNull();
+  });
+
+  it('a listed account whose owner at the bank was not classified in it is refused (owners and balances at one slot)', async () => {
+    const r = batchRig({ movedOwner: true });
+    expect(await r.run({ holders: 'largest', spend: null, xcheck: false })).toEqual({ accounts: true, holders: false });
+    expect(keysOf(r.frames)).not.toContain(RAW.holders(MINT));
+    expect(r.readers.outcomes.find((x) => x.read === `holders:${MINT}`)!.detail).toContain(W('new-owner'));
   });
 
   it('nothing reaches the feed before the last part has answered', async () => {
