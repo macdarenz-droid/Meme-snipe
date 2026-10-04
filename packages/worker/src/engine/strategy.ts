@@ -675,11 +675,14 @@ export class LiveStrategy implements Strategy {
 
   /** Entry intents that resolved without a fill end; exit owners that did get a new attempt or are booked blocked. */
   #lifecycle(ctx: StrategyContext, out: Decision[]): void {
-    // A waiting owner that settled or was booked another way is no longer said to wait (its saved wait start is ended by
-    // #manage, from the book).
-    for (const id of this.#waitingMarket.keys()) {
+    // A waiting owner that settled or was booked another way no longer waits. #manage also ends the saved wait from the
+    // book on every step (which covers a restart, when this list is empty); both are kept.
+    for (const [id, pid] of this.#waitingMarket) {
       const i = ctx.book.intents[id];
-      if (i === undefined || isTerminal(i) || (i.status !== 'exposure_reserved' && !(i.status === 'reconciled' && i.fills.length === 0))) this.#waitingMarket.delete(id);
+      if (i === undefined || isTerminal(i) || (i.status !== 'exposure_reserved' && !(i.status === 'reconciled' && i.fills.length === 0))) {
+        this.#waitingMarket.delete(id);
+        if (ctx.book.positions[pid]?.status !== 'open') this.#setWaiting(pid, null);
+      }
     }
     for (const i of Object.values(ctx.book.intents)) {
       if (isTerminal(i)) continue;
