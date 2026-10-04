@@ -1,11 +1,12 @@
-import type { ReactNode } from 'react';
-import { type CheckResult, type DecisionRecord, type FunnelView, MODES, type Mode, type PositionRecord, type RiskMeter, type StatsView, type StatusFlag, type WorkerStatus } from '../api/contract.ts';
+import { type ReactNode, useEffect, useState } from 'react';
+import { type CheckResult, type DecisionRecord, type FunnelView, MODES, STALE_AFTER_SECONDS, type Mode, type PositionRecord, type RiskMeter, type StatsView, type StatusFlag, type WorkerStatus } from '../api/contract.ts';
 import { MODE_LABEL, hasSample, requiredTrades } from '../api/modes.ts';
+import { TokenActions } from '../components/TokenActions.tsx';
 import { Badge, Empty } from '../components/ui.tsx';
-import { shortAddress } from '../lib/format.ts';
-import { formatPriceDec, formatR, formatShare, formatUsdExact, toMicro, toneOf } from '../lib/money.ts';
+import { formatDuration, shortAddress } from '../lib/format.ts';
+import { formatPrice4, formatPriceDec, formatR, formatReturn, formatShare, formatSolExact, formatUsdExact, returnHundredths, toMicro, toneOf, toneOfReturn } from '../lib/money.ts';
 import { ALERT_LABEL, CHECK_LABEL, EXIT_RULE_LABEL, FLAG_ALERT, FLAG_LABEL, HALT_LABEL, REGIME_INPUT_LABEL, REGIME_REASON_LABEL, RISK_CODE_LABEL, RISK_LABEL, STAGE_LABEL, VENUE_LABEL, WAIVED_LABEL, WORKER_CODE_LABEL } from './labels.ts';
-import { melDateTime } from './time.ts';
+import { ago, melDateTime } from './time.ts';
 
 export const NOT_ENOUGH = 'Not enough trades';
 
@@ -30,8 +31,14 @@ export function ModeTag({ mode }: { mode: Mode }) {
   );
 }
 
+/**
+ * A worker that answers with connected false has no market feed connected (api.ts: reconciled and any feed up; its API
+ * starts only after the reconcile), so it reads "Feeds down", never "Worker not connected" (APP-WIRE, supervisor ruling).
+ */
+export const NOT_CONNECTED = 'Feeds down';
+
 export function StatusFlags({ status }: { status: WorkerStatus }) {
-  if (!status.connected) return <span className="badge badge-neutral">Worker not connected</span>;
+  if (!status.connected) return <span className="badge badge-neutral">{NOT_CONNECTED}</span>;
   if (status.flags.length === 0) return <span className="muted small">No alerts</span>;
   return (
     <ul className="dash-flags" aria-label="Worker state">
@@ -105,7 +112,7 @@ export const statusRows = (status: WorkerStatus): StatusRow[] => {
 };
 
 export function StatusCard({ status }: { status: WorkerStatus }) {
-  if (!status.connected) return <span className="badge badge-neutral">Worker not connected</span>;
+  if (!status.connected) return <span className="badge badge-neutral">{NOT_CONNECTED}</span>;
   const rows = statusRows(status);
   // No proven row: nothing. "No alerts" would claim what the flags cannot show.
   if (rows.length === 0) return null;
@@ -248,6 +255,7 @@ export function Journal({ decisions, onOpen }: { decisions: DecisionRecord[]; on
             </span>
             <span className="mono muted small">{melDateTime(d.at)}</span>
           </button>
+          <TokenActions mint={d.mint} />
         </li>
       ))}
     </ul>
@@ -293,7 +301,7 @@ export function DecisionDetail({ decision }: { decision: DecisionRecord }) {
         <div>
           <dt>Token</dt>
           <dd>
-            <strong>{decision.symbol}</strong> <span className="mono muted">{shortAddress(decision.mint)}</span>
+            <strong>{decision.symbol}</strong> <span className="mono muted">{shortAddress(decision.mint)}</span> <TokenActions mint={decision.mint} />
           </dd>
         </div>
         <div>
@@ -330,16 +338,54 @@ export function DecisionDetail({ decision }: { decision: DecisionRecord }) {
 const EXIT_STATE: Record<PositionRecord['exit'], string> = { none: 'Watching', pending: 'Exit pending', blocked: 'Exit blocked' };
 const WORKER_STATE: Record<PositionRecord['worker'], string> = { watching: 'Watching', exiting: 'Exiting', reconciling: 'Reconciling' };
 
-export function OpenPosition({ position }: { position: PositionRecord }) {
+/** The open trade's clock: re-reads the time every second, so Running and the mark's age stay true on screen. */
+export const RUNNING_TICK_MS = 1_000;
+
+function useNow(fixed: number | undefined): number {
+  const [tick, setTick] = useState(() => Date.now());
+  useEffect(() => {
+    if (fixed !== undefined) return;
+    const timer = setInterval(() => setTick(Date.now()), RUNNING_TICK_MS);
+    return () => clearInterval(timer);
+  }, [fixed]);
+  return fixed ?? tick;
+}
+
+/** Time since the server's openedAt (APP-TRADE), never the phone's own start. */
+export const runningSeconds = (openedAt: string, now: number): number => Math.max(0, Math.floor((now - Date.parse(openedAt)) / 1000));
+
+/** The mark is stale past the app's stale rule for any answer (STALE_AFTER_SECONDS). */
+export const markStale = (markedAt: string, now: number): boolean => now - Date.parse(markedAt) > STALE_AFTER_SECONDS * 1000;
+
+function PriceNow({ position, now }: { position: PositionRecord; now: number }) {
+  const { markPriceUsd: mark, markedAt } = position;
+  if (mark == null) return <>—</>;
+  if (markedAt == null) return <>{formatPrice4(mark)}</>;
+  const stale = markStale(markedAt, now);
+  return (
+    <>
+      <span className={stale ? 'loss' : ''}>{formatPrice4(mark)}</span> <span className={stale ? 'loss small' : 'muted small'}>{ago(markedAt, now)}</span>
+    </>
+  );
+}
+
+export function OpenPosition({ position, now: fixed }: { position: PositionRecord; now?: number }) {
+  const now = useNow(fixed);
+  const pnl = position.pnlUsd ?? null;
+  const ret = pnl === null ? null : returnHundredths(pnl, position.sizeUsd);
   const rows: [string, ReactNode, string?][] = [
-    ['Token', <><strong>{position.symbol}</strong> <span className="mono muted">{shortAddress(position.mint)}</span></>],
+    ['Token', <><strong>{position.symbol}</strong> <span className="mono muted">{shortAddress(position.mint)}</span> <TokenActions mint={position.mint} /></>],
     ['Venue', VENUE_LABEL[position.venue]],
     ['Opened', <span className="mono">{melDateTime(position.openedAt)}</span>],
+    ['Running', formatDuration(runningSeconds(position.openedAt, now)), 'num'],
     ['Entry price', formatPriceDec(position.entryPriceUsd), 'num'],
+    ['Price now', <PriceNow position={position} now={now} />, 'num'],
     ['Size', formatUsdExact(position.sizeUsd), 'num'],
     ['Liquidation value', formatUsdExact(position.liquidationValueUsd), 'num'],
     ['Unrealized', formatUsdExact(position.unrealizedUsd, true), `num ${toneOf(position.unrealizedUsd)}`],
     ['Costs so far', formatUsdExact(position.costsSoFarUsd), 'num'],
+    ['P&L', pnl === null ? '—' : formatUsdExact(pnl, true), `num ${pnl === null ? '' : toneOf(pnl)}`],
+    ['Return', formatReturn(ret), `num ${toneOfReturn(ret)}`],
     ['Worker', WORKER_STATE[position.worker]],
   ];
   return (
@@ -375,6 +421,8 @@ export function Stats({ stats }: { stats: StatsView }) {
   const shown = (v: string | null, f: (s: string) => string) => (enough && v !== null ? f(v) : NOT_ENOUGH);
   const items: { label: string; value: string; tone?: string }[] = [
     { label: 'Net result', value: stats.trades ? formatUsdExact(stats.netUsd, true) : '—', tone: toneOf(stats.netUsd) },
+    { label: 'Net in SOL', value: stats.trades ? formatSolExact(stats.netSol, true) : '—' },
+    { label: 'SOL price move', value: stats.trades ? formatUsdExact(stats.solMoveUsd, true) : '—', tone: toneOf(stats.solMoveUsd) },
     { label: 'Max drawdown', value: stats.trades ? formatUsdExact(stats.maxDrawdownUsd) : '—', tone: toneOf(stats.maxDrawdownUsd) },
     { label: 'Win rate', value: shown(stats.winRate, (s) => formatShare(s)) },
     { label: 'Average net', value: shown(stats.meanNetUsd, (s) => formatUsdExact(s, true)), ...(enough && stats.meanNetUsd ? { tone: toneOf(stats.meanNetUsd) } : {}) },

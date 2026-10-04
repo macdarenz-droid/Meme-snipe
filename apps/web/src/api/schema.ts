@@ -2,7 +2,11 @@ import { isDec, isUsd } from '../lib/money.ts';
 import type { Mode } from './contract.ts';
 
 export class DataError extends Error {
-  readonly kind: 'mixed-modes' | 'bad-money' | 'bad-shape';
+  /**
+   * `unknown-field`: an object carries a field this app does not know (a worker newer than the app); `app-outdated`: a
+   * refusal whose only problem is such fields (APP-COMPAT). Both are refusals: the data is never used.
+   */
+  readonly kind: 'mixed-modes' | 'bad-money' | 'bad-shape' | 'unknown-field' | 'app-outdated';
   constructor(kind: DataError['kind'], message: string) {
     super(message);
     this.kind = kind;
@@ -69,13 +73,32 @@ const OPTIONAL = Symbol('optional');
 export const optional = (c: Check): Check => Object.assign((v: unknown, p: string) => c(v, p), { [OPTIONAL]: true });
 const isOptional = (c: Check): boolean => (c as Check & { [OPTIONAL]?: boolean })[OPTIONAL] === true;
 
+/** Set only while `onlyUnknownFields` re-checks a refused answer; never while data is accepted. */
+let unknownAllowed = false;
+
+/**
+ * Whether a refusal was caused by unknown fields alone (APP-COMPAT): re-runs `check` with unknown fields skipped and
+ * reports whether everything else passes. It only classifies; the answer stays refused and is never used.
+ */
+export function onlyUnknownFields(check: () => void): boolean {
+  unknownAllowed = true;
+  try {
+    check();
+    return true;
+  } catch {
+    return false;
+  } finally {
+    unknownAllowed = false;
+  }
+}
+
 export const obj =
   (shape: Record<string, Check>): Check =>
   (v, p) => {
     if (!v || typeof v !== 'object' || Array.isArray(v)) return fail(p, 'expected an object');
     const o = v as Record<string, unknown>;
     // Own keys only: `in` would also match Object.prototype names such as constructor or toString.
-    for (const k of Object.keys(o)) if (!Object.hasOwn(shape, k)) fail(`${p}.${k}`, 'unknown field');
+    if (!unknownAllowed) for (const k of Object.keys(o)) if (!Object.hasOwn(shape, k)) fail(`${p}.${k}`, 'unknown field', 'unknown-field');
     for (const [k, c] of Object.entries(shape)) {
       if (!Object.hasOwn(o, k)) {
         if (isOptional(c)) continue;
