@@ -16,6 +16,11 @@ export interface FactKind {
   readonly from: string;
 }
 
+/**
+ * READ-COHERENT: live, a candidate's `live-read` and `live-only-veto` inputs below (mint, pool, LP, holders, sim,
+ * xcheck) arrive as one batch between RAW.batchOpen and RAW.batchClose at one moment, and the decision is made at the
+ * close on that batch alone. A backtest that supplies them must emit them the same way, or it judges a view live never has.
+ */
 export const FACT_KINDS: readonly FactKind[] = [
   { key: 'gates/create:', gates: ['H9', 'H12', 'H13', 'H14'], source: 'historical', from: 'CreateEvent of a fetched transaction' },
   { key: 'gates/migration:', gates: ['H7', 'H8', 'H9', 'H10', 'H11'], source: 'historical', from: 'CompleteEvent, CompletePumpAmmMigrationEvent and its CreatePoolEvent' },

@@ -88,6 +88,21 @@ export interface GapFill {
   };
 }
 
+/**
+ * S0-ZERO: the address's history ended inside the gap, and its oldest transaction is the one that created this pool
+ * (PumpSwap's CreatePoolEvent for it, first of everything read): nothing can have traded on the pool before it, so the
+ * history end is the pool's own start, not missing history. A candidate's catch-up from its migration ends this way.
+ */
+const opensPool = (events: readonly MarketEvent[], records: readonly TransactionRecord[], pool: string): boolean => {
+  const oldest = records[0];
+  if (oldest === undefined) return false;
+  return events.some((e) => {
+    if (!e.id.startsWith(`ev:${oldest.signature}:`)) return false;
+    const ev = (e.value as { event?: { name?: unknown; data?: { pool?: unknown } } } | null)?.event;
+    return ev?.name === 'CreatePoolEvent' && ev.data?.pool === pool;
+  });
+};
+
 /** The close of the saved open gap, dated just before the restarted watch's start (SEED-1's liveStart rule). */
 const closeFact = (gap: TradeGap, live: Moment, complete: boolean, n: number): MarketEvent => {
   let moment: Moment = { slot: live.slot, txIndex: live.txIndex, ixIndex: live.ixIndex, receivedAt: Math.min(gap.fromMs, live.receivedAt - 1) };
@@ -143,7 +158,8 @@ export const fillTradeGaps = async (o: FillOptions): Promise<{ readonly fills: r
     // delivers only from untilSlot, so the fill keeps everything before it.
     const read = r === null ? [] : [...r.creates].sort(compareEvents);
     const events = read.filter((e) => compareMoments(e.moment, o.asOf) <= 0 && e.moment.receivedAt <= o.asOf.receivedAt);
-    const complete = stoppedBy === 'empty' || (r !== null && r.stoppedBy === 'done' && r.gaps.length === 0 && events.length === read.length);
+    const complete = stoppedBy === 'empty' || (r !== null && events.length === read.length && (
+      (r.stoppedBy === 'done' && r.gaps.length === 0) || (r.stoppedBy === 'history-end' && r.gaps.length === 1 && opensPool(read, r.records, gap.pool))));
     fills.push({
       gap, complete, events, records: r?.records ?? [],
       // A close that would land after asOf (close.at exactly at it) is not made: the gap stays open (fail safe).
@@ -160,7 +176,7 @@ export const fillTradeGaps = async (o: FillOptions): Promise<{ readonly fills: r
 /**
  * The in-run fill for FEED-1's `WatchOptions.fill`: fills the reconnect gap fromSlot..toSlot (inclusive: the live
  * feed drops duplicates by signature) and ingests every transaction read into the live feed as a backfilled `tx`
- * frame, which places what is already released after it. Answers true only for a complete fill; an unknown gap start,
+ * frame, placed after everything ingested so far, oldest first. Answers true only for a complete fill; an unknown gap start,
  * a partial fill or no budget answers false, and the socket then closes the gap as lossy.
  */
 export const ingestingFill = (o: {
@@ -182,7 +198,9 @@ export const ingestingFill = (o: {
     gaps: [{ pool: gap.address, stream: o.streamOf(gap.address), kind: o.kindOf(gap.address), fromSlot: gap.fromSlot, fromMs: now, untilSlot: gap.toSlot + 1n, close: { via: `logs:${gap.address}`, fromSlot: gap.fromSlot } }],
   });
   const f = fills[0]!;
-  for (const record of f.records) o.feed.ingest(o.provider, { type: 'tx', record }, { receivedAt: o.timers.now(), backfilled: true, lookup: true });
+  // After everything ingested so far, oldest first (S0-ZERO): a recent transaction is not placed at its own slot ahead of
+  // older ones that land after the released point, so the pool's trades reach the feed in order.
+  for (const record of f.records) o.feed.ingest(o.provider, { type: 'tx', record }, { receivedAt: o.timers.now(), backfilled: true, lookup: true, after: true });
   o.onReport?.(f);
   return f.complete;
 };

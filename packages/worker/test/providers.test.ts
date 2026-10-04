@@ -225,10 +225,13 @@ describe('fault injection hooks', () => {
     await settle();
     timers.advance(400);
     await settle(40);
-    expect(await p).toEqual(recordOf(t));
-    expect(await again).toEqual(recordOf(t));
+    expect(await p).toMatchObject({ slot: recordOf(t).slot, at: 400, again: false });
+    expect(await again).toBe(await p);
     expect(frames.map((f) => [f.source, f.body.type])).toEqual([['alchemy', 'tx']]);
-    expect(await fetcher.fetch(t.signature, P0)).toBeNull(); // already ingested
+    expect((frames[0]!.body as { record: unknown }).record).toEqual(recordOf(t));
+    // Already ingested: found again (never null, which reads as not found), and not read or ingested twice.
+    expect(await fetcher.fetch(t.signature, P0)).toEqual({ ...(await p)!, again: true });
+    expect(frames).toHaveLength(1);
   });
 
   it('a halted scheduler refuses non-exit reads with ScheduleRefused', async () => {

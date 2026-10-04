@@ -39,6 +39,13 @@ export interface Item4 {
   readonly stand_ins: number;
   readonly median_quote_age_slots: number | null;
   readonly worst: DryRunReport['worst'];
+  /**
+   * AUDIT-RM3 N2: the paper attempts' simulation time against their drawn landing (lines that carry it). A paper attempt
+   * lands only once simulated: `held_landing` counts simulations still running at the drawn landing slot (the fill came
+   * later than drawn), `expired_by_simulation` those still running past the blockhash (the attempt expired in our own
+   * queue). Both should be zero; neither is a network fact.
+   */
+  readonly latency: { readonly timed: number; readonly median_ms: number | null; readonly median_slots: number | null; readonly held_landing: number; readonly expired_by_simulation: number };
   /** All three bounds met. */
   readonly bounds_pass: boolean;
   /** Item 4 passes: the run counts and the bounds are met. */
@@ -103,6 +110,34 @@ export const toRecord = (l: JournalLine): DryRunRecord => {
   };
 };
 
+const lowerMedian = (xs: readonly number[]): number | null => (xs.length === 0 ? null : [...xs].sort((a, b) => a - b)[(xs.length - 1) >> 1]!);
+
+/** N2: the simulation-time fields of `simulation` lines (paper-world `SimTiming`), summed. */
+export const simulationLatency = (journal: readonly JournalLine[]): Item4['latency'] => {
+  let timed = 0;
+  let held = 0;
+  let expired = 0;
+  const ms: number[] = [];
+  const slots: number[] = [];
+  for (const l of journal) {
+    if (l.kind !== 'simulation') continue;
+    const sent = bigOrNull(l['sent_height']);
+    const land = bigOrNull(l['land_slot']);
+    const last = bigOrNull(l['last_valid']);
+    const done = bigOrNull(l['sim_done_height']);
+    const t = l['sim_ms'];
+    if (sent === null || land === null || last === null || typeof t !== 'number' || !Number.isFinite(t)) continue;
+    timed += 1;
+    ms.push(t);
+    if (done !== null) {
+      slots.push(Number(done - sent));
+      if (done > land) held += 1;
+      if (done > last) expired += 1;
+    }
+  }
+  return { timed, median_ms: lowerMedian(ms), median_slots: lowerMedian(slots), held_landing: held, expired_by_simulation: expired };
+};
+
 export const item4 = (journal: readonly JournalLine[], label: Label, stub: boolean): Item4 => {
   // Every simulation line is scored: a bad line counts as a failed trade, so it can never leave the denominator.
   const records = journal.filter((l) => l.kind === 'simulation').map(toRecord);
@@ -125,6 +160,7 @@ export const item4 = (journal: readonly JournalLine[], label: Label, stub: boole
     stand_ins: records.filter((x) => x.standIn !== null).length,
     median_quote_age_slots: r.medianQuoteAgeSlots,
     worst: r.worst,
+    latency: simulationLatency(journal),
     bounds_pass: r.pass,
     pass: counts && r.pass,
   };

@@ -51,7 +51,7 @@ const servedWith = (patch: Record<string, unknown>) => {
 const meter = (s: ReturnType<typeof servedWith>['status']) => s.risk.find((r) => r.kind === 'daily-loss');
 
 describe('money totals count the account\'s costs (APP-MONEY)', () => {
-  const SETUP = { atMs: DAY_START + HOUR, amount: 1_234_567n, kind: 'wallet_setup' };
+  const SETUP = { atMs: DAY_START + HOUR, amount: 1_234_567n, lamports: 8_230_447n, kind: 'wallet_setup' };
 
   it('an account with its setup cost and no trades: net, drawdown, the curve and the day all read −setup', () => {
     const s = servedWith({ accountCosts: [SETUP] });
@@ -103,7 +103,7 @@ describe('the daily-loss meter is R7\'s figure (APP-MONEY)', () => {
   it('counts a cost booked today with no trade', () => {
     const { stops } = judged(account({ costs: [{ atMs: DAY_START + HOUR, amount: usd('0.3'), kind: 'wallet_setup' }] }));
     expect(stops.dayLoss).toBe(usd('0.3'));
-    expect(meter(servedWith({ stops, accountCosts: [{ atMs: DAY_START + HOUR, amount: usd('0.3'), kind: 'wallet_setup' }] }).status)).toMatchObject({ usedUsd: '0.3' });
+    expect(meter(servedWith({ stops, accountCosts: [{ atMs: DAY_START + HOUR, amount: usd('0.3'), lamports: 2_000_000n, kind: 'wallet_setup' }] }).status)).toMatchObject({ usedUsd: '0.3' });
   });
 
   it('a gain today offsets a loss, as R7 counts it: the old sum of losing trades read more', () => {
@@ -117,7 +117,7 @@ describe('the daily-loss meter is R7\'s figure (APP-MONEY)', () => {
     const t = { positionId: 'p1', mint: 'm', openedAtMs: DAY_START + HOUR, closedAtMs: NOW - 500, notional: 2_000_000n, netLamports: 0n, netPnl: -500_000n, stoppedOut: false, booked: 0n, openSolPrice: null };
     const read = { atMs: NOW - 1_000, codes: [] as string[], dayLoss: 100_000n };
     expect(meter(servedWith({ stops: read, trades: [t] }).status)).toMatchObject({ usedUsd: '0.5' });
-    expect(meter(servedWith({ stops: read, accountCosts: [{ atMs: NOW - 500, amount: 700_000n, kind: 'wallet_setup' }] }).status)).toMatchObject({ usedUsd: '0.7' });
+    expect(meter(servedWith({ stops: read, accountCosts: [{ atMs: NOW - 500, amount: 700_000n, lamports: 4_666_667n, kind: 'wallet_setup' }] }).status)).toMatchObject({ usedUsd: '0.7' });
     // R7's own figure when it is the higher (marked losses only it can see).
     expect(meter(servedWith({ stops: { ...read, dayLoss: 900_000n }, trades: [t] }).status)).toMatchObject({ usedUsd: '0.9' });
   });
@@ -145,6 +145,17 @@ describe('partial sales count at their own time, as core risk counts them (risk 
     expect(s.stats).toMatchObject({ trades: 1, netUsd: '-0.2', maxDrawdownUsd: '0.5' });
     // Both days are in the same month (helpers: 6 and 7 October, Melbourne).
     expect(s.calendar.days.map((d) => [d.netUsd, d.trades])).toEqual([['0.3', 0], ['-0.5', 1]]);
+  });
+
+  it('splits the day exactly as core risk does (RISK-PARTIAL in the base): R7\'s figure and the app\'s realised one agree', () => {
+    // The same trade for core: its partial yesterday, its whole net −0.2 at today's close.
+    const core = account({ closedTrades: [{ ...trade(DAY_START + HOUR, '-0.2'), partials: [{ atMs: DAY_START - HOUR, pnl: 300_000n as never }] }] });
+    const { stops, core: snap } = judged(core);
+    expect(snap.dayLoss).toBe(usd('0.5'));
+    expect(stops.dayLoss).toBe(snap.dayLoss);
+    // The app from the paper account's record of it: its own realised figure (a read of 0 before the close) and R7's agree.
+    expect(meter(servedWith({ trades: [t], stops: { atMs: NOW, codes: [] as string[], dayLoss: 0n } }).status)).toMatchObject({ usedUsd: '0.5' });
+    expect(meter(servedWith({ trades: [t], stops }).status)).toMatchObject({ usedUsd: '0.5' });
   });
 
   it('an open trade\'s partial is realised already: it counts in net and on its day', () => {

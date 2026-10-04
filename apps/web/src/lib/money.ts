@@ -75,6 +75,19 @@ export function formatUsdExact(s: string, signed = false): string {
   return body;
 }
 
+/** An exact SOL amount ("-0.004000000") as "−0.004 SOL"; signed adds + or −. Never rounded. */
+export function formatSolExact(s: string, signed = false): string {
+  if (!isDec(s)) throw new MoneyError(`not a decimal: ${JSON.stringify(s)}`);
+  const neg = s.startsWith('-');
+  const [whole = '0', frac = ''] = (neg ? s.slice(1) : s).split('.');
+  const f = frac.replace(/0+$/, '');
+  const zero = /^0*$/.test(whole) && f === '';
+  const body = `${group(BigInt(whole).toString())}${f ? `.${f}` : ''} SOL`;
+  if (neg && !zero) return `${MINUS}${body}`;
+  if (signed && !zero) return `+${body}`;
+  return body;
+}
+
 /** A dollar amount as a plain number for drawing and for short labels only. Never sum the result. */
 export const usdToPlot = (s: string): number => Number(toMicro(s)) / 1e6;
 
@@ -90,6 +103,35 @@ export function formatPriceDec(s: string): string {
   if (v === 0) return formatUsdExact('0');
   if (Math.abs(v) >= 0.01) return `$${v.toFixed(4)}`;
   return `$${v.toPrecision(3)}`;
+}
+
+/**
+ * Return on size (APP-TRADE), the one formula the open trade and closed trades use: net ÷ size in hundredths of a
+ * percent, exact, rounded half away from zero. Null when the size is not above zero.
+ */
+export function returnHundredths(netUsd: string, sizeUsd: string): bigint | null {
+  const size = toMicro(sizeUsd);
+  if (size <= 0n) return null;
+  const n = toMicro(netUsd) * 10_000n;
+  const a = n < 0n ? -n : n;
+  const q = (2n * a + size) / (2n * size);
+  return n < 0n ? -q : q;
+}
+
+/** A return, signed with 2 places: "+12.35%", "−0.40%", "0.00%"; "—" when there is none. */
+export function formatReturn(h: bigint | null): string {
+  if (h === null) return '—';
+  const a = h < 0n ? -h : h;
+  const body = `${a / 100n}.${(a % 100n).toString().padStart(2, '0')}%`;
+  return h < 0n ? `${MINUS}${body}` : h > 0n ? `+${body}` : body;
+}
+
+/** Colour follows the printed return, so 0.00% is never green or red. */
+export const toneOfReturn = (h: bigint | null): 'gain' | 'loss' | '' => (h === null || h === 0n ? '' : h > 0n ? 'gain' : 'loss');
+
+/** A token price as the exit triggers show it (worker api.ts triggerPrice): "$" and 4 significant digits. Display only. */
+export function formatPrice4(s: string): string {
+  return `$${decToPlot(s).toLocaleString('en-US', { maximumSignificantDigits: 4, useGrouping: false })}`;
 }
 
 /** R multiple, signed: "+1.52R", "−0.80R". */
