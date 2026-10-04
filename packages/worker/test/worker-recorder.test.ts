@@ -15,6 +15,9 @@ import { engineFeed } from '../src/run/engine-feed.ts';
 import { parseTyped } from '../src/run/json.ts';
 import { Market, makeWorker, passingMarket } from './worker-harness.ts';
 
+/** Test-only (POS-1): these tests move a held position's price by re-publishing the pool fact. */
+const HELD = { heldPoolFacts: true } as const;
+
 const ROOT = join(import.meta.dirname, '..', '..', '..');
 const files = (dir: string, re: RegExp): string[] =>
   readdirSync(join(dir, 'days')).sort().flatMap((d) => readdirSync(join(dir, 'days', d)).filter((f) => re.test(f)).sort().map((f) => join(dir, 'days', d, f)));
@@ -28,7 +31,7 @@ describe('the market recorder', () => {
   it('writes DATA-1\'s layout from the first minute, sealed with a schema-2 manifest that DATA-1\'s QA reads', async () => {
     const h = makeWorker();
     await h.worker.reconcile();
-    const m = await passingMarket(h);
+    const m = await passingMarket(h, HELD);
     // One fetched transaction: a schema-2 raw record (DEC-1's shape).
     h.worker.feed.ingest('helius', { type: 'tx', record: recordFromRpc(TX.signature, TX, null) }, { receivedAt: h.timers.now(), lookup: true });
     await m.run(2_000, 200, () => m.pool());
@@ -61,7 +64,7 @@ describe('the market recorder', () => {
   it('a kill leaves plain files that the next start cuts at the last whole line and seals', async () => {
     const h = makeWorker();
     await h.worker.reconcile();
-    const m = await passingMarket(h);
+    const m = await passingMarket(h, HELD);
     await m.run(1_000, 200, () => m.pool());
     const dir = join(h.stateDir, 'recorder', h.worker.boot);
     await h.worker.kill();
@@ -78,7 +81,7 @@ describe('the market recorder', () => {
   it('replaying the recorded frames in their release order through the same engine and strategy reproduces the live decisions', async () => {
     const h = makeWorker();
     await h.worker.reconcile();
-    const m = await passingMarket(h);
+    const m = await passingMarket(h, HELD);
     await m.run(4_000, 100, () => m.pool());
     await m.run(10_000, 400, () => {
       m.slot();
@@ -112,7 +115,7 @@ describe('the market recorder', () => {
   it('across a restart: boot 2\'s recorded frames (the restored book and exit plans among them) replay to its own decisions', async () => {
     const h = makeWorker();
     await h.worker.reconcile();
-    const m = await passingMarket(h);
+    const m = await passingMarket(h, HELD);
     await m.run(4_000, 100, () => m.pool());
     await m.run(10_000, 400, () => {
       m.slot();
@@ -122,7 +125,7 @@ describe('the market recorder', () => {
     await h.worker.kill();
     const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers });
     expect(await h2.worker.reconcile()).toEqual({ ok: true });
-    const m2 = new Market(h2);
+    const m2 = new Market(h2, HELD);
     await m2.run(8_000, 400, () => {
       m2.slot();
       m2.pool(700_000n);

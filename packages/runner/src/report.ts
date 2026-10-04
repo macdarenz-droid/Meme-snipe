@@ -334,7 +334,9 @@ export const recoveryByCause = (meta: RunMeta, drills: readonly DrillOutcome[]):
       planned,
       drills: ds.length,
       passed: ds.filter((d) => d.pass && d.skipped !== true).length,
-      exercised: ds.filter((d) => d.pass && d.skipped !== true && (d.keep ?? 0) > 0).length,
+      // On a VPS run a host loss counts only when its restore was compared with the live worker at the backup;
+      // a self-reported one is listed, labelled, and retried, but proves nothing.
+      exercised: ds.filter((d) => d.pass && d.skipped !== true && (d.keep ?? 0) > 0 && (c !== 'host-loss' || meta.label !== 'vps' || d.compared === true)).length,
       mid_trade: ds.filter((d) => d.midTrade === true).length,
       off_run: ds.filter((d) => d.off_run === true).length,
       skipped: ds.filter((d) => d.skipped === true).length,

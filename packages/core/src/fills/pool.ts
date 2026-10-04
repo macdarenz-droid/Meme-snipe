@@ -4,7 +4,8 @@
 // the pool differs by a delta; every later real swap is replayed on the shifted state with its own input, so later
 // traders get the prices our trade left, and the delta is what remains after their trade.
 import { type CoinFlags, type FeeSplit, type PoolFeeContext, type PoolState, type PoolTrade, type Quote, poolBuyExactBase, poolBuyExactQuoteIn, poolSell } from '../amm/index.ts';
-import type { Bps } from '../units/index.ts';
+import type { PumpEventData } from '../chain/index.ts';
+import { type Bps, bps } from '../units/index.ts';
 
 /** The fee terms a real swap paid, read from its event (rates are per trade on chain, so nothing is assumed). */
 export interface ObservedFees {
@@ -25,6 +26,35 @@ export interface RealSwap {
   readonly fees: ObservedFees;
   readonly baseSupply: bigint;
 }
+
+/**
+ * One PumpSwap swap as its BuyEvent/SellEvent logs it, whether decoded live or read from a dataset row: the single
+ * mapping to the replay's input. `ixName` is the event's own field ('' when it logs none: SellEvent has no such field,
+ * so a sell replays as v1; only where fees land differs, never the price, and the next swap's pre-trade reserves
+ * report the real split).
+ */
+export interface LoggedSwap {
+  readonly side: 'buy' | 'sell';
+  readonly ixName: string;
+  readonly baseAmount: bigint;
+  /** quote_amount_in / quote_amount_out as logged (on buy_exact_quote_in, the spend limit). */
+  readonly quoteAmount: bigint;
+  readonly pre: PoolState;
+  readonly fees: { readonly lp: Bps; readonly protocol: Bps; readonly creator: Bps; readonly buyback: Bps };
+  readonly baseSupply: bigint;
+}
+
+export const realSwap = (s: LoggedSwap): RealSwap => {
+  const mode = s.side === 'buy' && s.ixName.includes('exact_quote_in') ? 'exact-quote-in' : 'exact-base';
+  return {
+    side: s.side, mode,
+    // buy_exact_quote_in logs its spend limit in quote_amount_in (CORE-2 golden test).
+    amount: mode === 'exact-quote-in' ? s.quoteAmount : s.baseAmount,
+    pre: s.pre,
+    fees: { split: { lp: s.fees.lp, protocol: s.fees.protocol, creator: s.fees.creator }, buybackFeeBps: s.fees.buyback, instruction: s.ixName.endsWith('_v2') ? 'v2' : 'v1' },
+    baseSupply: s.baseSupply,
+  };
+};
 
 const ZERO_FEES: FeeSplit = { lp: 0 as Bps, protocol: 0 as Bps, creator: 0 as Bps };
 
@@ -129,3 +159,55 @@ export class ShiftedPool {
     this.#delta = minus(after, this.#real);
   }
 }
+
+export type SwapEvent = Extract<PumpEventData, { name: 'BuyEvent' | 'SellEvent' }>;
+
+export type SwapEventState =
+  | { readonly ok: true; readonly swap: RealSwap; readonly trade: PoolTrade; readonly after: PoolState }
+  | { readonly ok: false; readonly reason: string };
+
+/**
+ * The pool right after a decoded PumpSwap swap (POS-1): the backtest's own replay (`replaySwap`, what `ShiftedPool`
+ * runs) on the event's pre-trade reserves, accepted only when it reproduces every amount the event logged. Anything
+ * that does not reproduce is refused, never adjusted: the caller then has no pool state from this swap.
+ */
+export const swapEventState = (ev: SwapEvent): SwapEventState => {
+  const d = ev.data;
+  const buy = ev.name === 'BuyEvent';
+  let fees: LoggedSwap['fees'];
+  try {
+    fees = {
+      lp: bps(Number(d.lpFeeBasisPoints)), protocol: bps(Number(d.protocolFeeBasisPoints)),
+      creator: bps(Number(d.coinCreatorFeeBasisPoints ?? 0n)), buyback: bps(Number(d.buybackFeeBasisPoints ?? 0n)),
+    };
+  } catch {
+    return { ok: false, reason: 'fee rate out of range' };
+  }
+  const swap = realSwap({
+    side: buy ? 'buy' : 'sell',
+    ixName: buy ? (ev.data.ixName ?? '') : '',
+    baseAmount: buy ? ev.data.baseAmountOut : ev.data.baseAmountIn,
+    quoteAmount: buy ? ev.data.quoteAmountIn : ev.data.quoteAmountOut,
+    pre: { baseReserve: d.poolBaseTokenReserves, quoteVault: d.poolQuoteTokenReserves, virtualQuoteReserves: d.virtualQuoteReserves ?? 0n },
+    fees,
+    baseSupply: d.baseSupply ?? 0n,
+  });
+  const r = replaySwap(swap.pre, swap);
+  if (!r.ok) return { ok: false, reason: `swap does not replay: ${r.reason}` };
+  const t = r.trade;
+  const differs: string[] = [];
+  const same = (name: string, ours: bigint, logged: bigint): void => {
+    if (ours !== logged) differs.push(`${name} ${ours} != ${logged}`);
+  };
+  same('base', t.base, buy ? ev.data.baseAmountOut : ev.data.baseAmountIn);
+  same('lp fee', t.lpFee, d.lpFee);
+  same('protocol fee', t.protocolFee, d.protocolFee);
+  same('creator fee', t.creatorFee, d.coinCreatorFee ?? 0n);
+  same('buyback fee', t.buybackFee, d.buybackFee ?? 0n);
+  if (ev.name === 'BuyEvent') {
+    same('quote with lp fee', t.quote + t.lpFee, ev.data.quoteAmountInWithLpFee);
+    if (swap.mode === 'exact-base') same('quote', t.quote, ev.data.quoteAmountIn);
+  } else same('quote', t.quote, ev.data.quoteAmountOut);
+  if (differs.length > 0) return { ok: false, reason: `swap does not reproduce its event: ${differs.join(', ')}` };
+  return { ok: true, swap, trade: t, after: t.after };
+};
