@@ -14,6 +14,7 @@ import { HALT_KEY, SEEDING, s0EntryAt, universeOfKey } from '../src/engine/strat
 import { FILL_CONFIG, TRIAL_POLICY } from '../../core/src/config/index.ts';
 import { type MicroUsd, microUsdToLamports } from '../../core/src/units/index.ts';
 import { oneTimeRent } from '../src/run/settings.ts';
+import { views } from '../src/run/api.ts';
 import { runSeed } from '../src/run/seed-start.ts';
 import { exitsFile } from '../src/run/state.ts';
 import type { SignatureInfo } from '../src/providers/solana-http.ts';
@@ -433,10 +434,24 @@ describe('exits never wait at a restart (EXIT-1c)', () => {
     expect(await h2.worker.reconcile()).toEqual({ ok: true });
     const m2 = new Market(h2);
     const mine = () => lines(h.stateDir).filter((l) => l['boot'] === h2.worker.boot && l['kind'] === 'decision');
-    // Slots only, no pool read: the exit waits, open, with nothing booked blocked.
+    // Slots only, no pool read: the exit waits, open, with nothing booked blocked, and it is visible: said once in the
+    // log, pending in the status flags, the position view and the heartbeat's pending exits.
     await m2.run(4_000, 400, () => m2.slot());
     expect(h2.worker.book.positions[pid]!.status).toBe('open');
     expect(mine().some((l) => l['action'] === 'exit_blocked')).toBe(false);
+    const said = () => mine().filter((l) => (l['reasons'] as string[])[0] === 'exit waiting for a fresh quote');
+    expect(said()).toHaveLength(1);
+    expect(said()[0]!['reasons']).toContain('max_hold');
+    expect(h2.worker.health().pending_exits).toEqual([pid]);
+    expect(views.status(h2.worker.apiInputs()).flags).toContain('exit-pending');
+    expect(views.status(h2.worker.apiInputs()).flags).not.toContain('exit-blocked');
+    expect(views.position(h2.worker.apiInputs())).toMatchObject({ exit: 'pending' });
+    // Once it has waited the blocked-retry time, it is also an alert; still nothing booked blocked, still said once.
+    await m2.run(TRIAL_POLICY.exits.blockedRetryMs, 400, () => m2.slot());
+    expect(views.status(h2.worker.apiInputs()).flags).toEqual(expect.arrayContaining(['exit-pending', 'exit-blocked']));
+    expect(h2.worker.book.positions[pid]!.status).toBe('open');
+    expect(mine().some((l) => l['action'] === 'exit_blocked')).toBe(false);
+    expect(said()).toHaveLength(1);
     // The first pool read: the exit goes at once on the ladder's first rung and sells the whole holding.
     const at = m2.now;
     m2.pool();
@@ -452,6 +467,8 @@ describe('exits never wait at a restart (EXIT-1c)', () => {
     });
     expect(h2.worker.book.positions[pid]).toMatchObject({ status: 'closed', sold: qty });
     expect(mine().some((l) => l['action'] === 'exit_blocked')).toBe(false);
+    expect(h2.worker.health().pending_exits).toEqual([]);
+    expect(views.status(h2.worker.apiInputs()).flags).not.toContain('exit-pending');
     await h2.worker.stop();
     expect(replayLedgerFile(join(h.stateDir, 'ledger.sqlite'))).toMatchObject({ ok: true });
   });

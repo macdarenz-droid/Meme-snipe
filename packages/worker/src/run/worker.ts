@@ -562,7 +562,7 @@ export class Worker {
       nowMs: d.timers.now(), policy: d.session.policy, policyVersion: d.session.versionHash, strategyVersion: d.strategy.version,
       connected: this.#reconciled && [...this.#feeds.values()].some((f) => f.connected), halted: this.#halted, paused: this.#ctl.paused,
       book: this.#engine.book, trades: this.#account.state.trades, attempts: this.#world.attempts, decisions: this.#rows, funnel: this.#funnel,
-      solPrice: this.#solPrice, symbol: (mint) => this.#symbols.get(mint) ?? `${mint.slice(0, 4)}…`,
+      solPrice: this.#solPrice, symbol: (mint) => this.#symbols.get(mint) ?? `${mint.slice(0, 4)}…`, waitingExits: this.#strategy.waitingExits(),
       open: (p) => {
         const saved = this.#strategy.saved()[p.id];
         const m = this.poolOf(p.mint);
@@ -845,8 +845,9 @@ export class Worker {
         // The universe the position was entered under (CFG-2; RUN-1d contract); no saved plan: unknown, which fails the drill.
         universe: saved === undefined ? 'unknown' : saved.plan.universe,
       },
-      // Trades with an exit planned or signed and not final (RUN-1d contract).
-      pending_exits: Object.values(this.#engine.book.positions).filter((x) => x.status === 'exit_requested' || x.status === 'exit_pending' || x.status === 'exit_blocked').map((x) => x.id),
+      // Trades with an exit planned or signed and not final (RUN-1d contract), and open ones whose due exit waits for
+      // its first fresh quote (EXIT-1c).
+      pending_exits: Object.values(this.#engine.book.positions).filter((x) => x.status === 'exit_requested' || x.status === 'exit_pending' || x.status === 'exit_blocked' || (x.status === 'open' && this.#strategy.waitingExits().has(x.id))).map((x) => x.id),
       unresolved_intents: this.#desk.unresolved(now, (id) => this.#intentAt.get(id) ?? null),
       signer: 'none', lease_epoch: null,
       sol_reserve: this.#account.state.walletLamports === null ? null : String(this.#account.state.walletLamports),
