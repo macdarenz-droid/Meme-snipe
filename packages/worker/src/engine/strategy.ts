@@ -193,6 +193,8 @@ export const TRIP_PREFIX = 'trip ';
 export const TRIPPED_PREFIX = 'risk tripped ';
 /** Reason on an exit decision: the position's mark risk judged it with, micro-dollars, or `unknown`. */
 export const MARK_PREFIX = 'risk mark ';
+/** Reason on an exit decision: risk could not evaluate the account (RISK-FAULT), and why; the exit still goes. */
+export const RISK_FAULT_PREFIX = 'risk fault ';
 
 /** The ledger's account as the worker publishes it. Marks of open positions are filled in by the strategy. */
 export interface AccountFact {
@@ -1241,8 +1243,10 @@ export class LiveStrategy implements Strategy {
         status: p.status, quantity: p.quantity, sold: p.sold, costBasis: p.cost + entryFees + exitFees, realized,
         exitCost: n.signaturesPerTx * n.baseFeePerSignature + this.#d.session.policy.exits.ladder.steps[0]!.priorityFeeLamports + n.tip,
         exitSeq: p.exitSeq, exitAttempts: exitAttemptsOf(ctx.book.intents, p.id),
-        // Paper: the paper wallet's token account holds exactly our tokens, and a paper sell-and-close never fails at
-        // the close (no dust or outside transfer exists in the paper world).
+        // The engine sees only the book, so it plans a clean account. Whether a sell closes the account is settled where
+        // it lands (PAPER-1): the paper world draws dust and close failures with the backtest's model (core's
+        // TokenAccounts), a failed close fails that attempt and the retry sells from a sell-only account. Live, the
+        // signer reads the real account (a before-live item, DECISIONS).
         tokenAccountBalance: p.quantity, closeFailed: false,
       };
       const m = this.#market(ctx, p.mint);
@@ -1309,6 +1313,7 @@ export class LiveStrategy implements Strategy {
       const own = account.openPositions.find((o) => o.mint === mint);
       if (own !== undefined) why.push(`${MARK_PREFIX}${own.mark ?? 'unknown'}`);
       if (r.tripped.length > 0) why.push(`${TRIPPED_PREFIX}${[...new Set(r.tripped.map((x) => x.code))].sort().join(',')}`);
+      if (r.fault !== null) why.push(`${RISK_FAULT_PREFIX}${r.fault}`);
     }
     const id = intentId(`x${pid.slice(1)}:${exitSeq + 1}`);
     const events = exitBookEvents(pid, d, id);
@@ -1592,13 +1597,20 @@ export class LiveStrategy implements Strategy {
       const detail = e instanceof Error ? e.message : 'error';
       return this.#fail(`risk mark failed: ${detail}`, [{ gate: 'worker', code: 'risk-mark-failed', detail }]);
     }
-    const r = evaluateEntry(
-      { session, mode: 'paper', clock: { now: () => ctx.now }, account, latches: acct.latches, market: { solPrice: sol, solBalance: this.#balance(acct, ctx), regime: 'on' } },
-      {
-        intentId: id, reservationId: rid, mint: toMint(cand.mint), universe: c.universe, stopBps, edgePpm: c.edgePpm, medianTargetBps: c.medianTargetBps,
-        quote: quoter, quoteAtMs: m.atMs, poolLiquidity: lamportsToMicroUsd((reserveLiq * 2n) as Lamports, sol.value, 'floor'), network: c.network, rent: { ...c.rent, oneTime: acct.oneTimeRent },
-      },
-    );
+    // RISK-FAULT: risk that cannot evaluate refuses the entry (fail-closed), logged, and the step goes on.
+    let r: ReturnType<typeof evaluateEntry>;
+    try {
+      r = evaluateEntry(
+        { session, mode: 'paper', clock: { now: () => ctx.now }, account, latches: acct.latches, market: { solPrice: sol, solBalance: this.#balance(acct, ctx), regime: 'on' } },
+        {
+          intentId: id, reservationId: rid, mint: toMint(cand.mint), universe: c.universe, stopBps, edgePpm: c.edgePpm, medianTargetBps: c.medianTargetBps,
+          quote: quoter, quoteAtMs: m.atMs, poolLiquidity: lamportsToMicroUsd((reserveLiq * 2n) as Lamports, sol.value, 'floor'), network: c.network, rent: { ...c.rent, oneTime: acct.oneTimeRent },
+        },
+      );
+    } catch (e) {
+      const detail = e instanceof Error ? e.message : 'error';
+      return this.#fail(`risk fault: ${detail}`, [{ gate: 'R1', code: 'risk_fault', detail }]);
+    }
     // RISK-LATCH: an entry latches R9/R10 only from a fully marked account at a fresh SOL price; an unknown or stale mark
     // counts as a total loss, which refuses the entry but proves no breach. The refusal still names every trip it saw.
     const seen = r.trips.map((t) => `${TRIP_PREFIX}${t}`);
