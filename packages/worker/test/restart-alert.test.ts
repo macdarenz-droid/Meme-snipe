@@ -10,7 +10,7 @@ import { heartbeatBody } from '../src/run/heartbeat.ts';
 import { EXIT, STATE_FILES } from '../../runner/src/contract.ts';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { PLANNED_RESTART_MS } from '../src/run/worker.ts';
+import { EXIT_HANDOFF, PLANNED_RESTART_MS, takeHandoff } from '../src/run/worker.ts';
 import { Market, makeWorker, tempState, virtualTimers, T } from './worker-harness.ts';
 
 describe('the previous exit, in /health and the heartbeat', () => {
@@ -230,6 +230,37 @@ describe('the unit\'s --reconcile pre-step (RESTART-CAUSE)', () => {
     expect(second.worker.health().restarts_24h).toEqual({ planned: 0, deploy: 0, unplanned: 1 });
     expect(existsSync(join(stateDir, 'last_exit.json'))).toBe(false);
     await second.worker.stop();
+  });
+
+  it('the handoff is believed for 10 minutes only: a stale or future one is ignored and removed (review of #209)', async () => {
+    const dir = tempState();
+    const path = join(dir, EXIT_HANDOFF);
+    const now = 1_000_000_000;
+    const put = (at: number, exit: string | null = 'stop: crash') => writeFileSync(path, JSON.stringify({ exit, at }));
+    put(now - PLANNED_RESTART_MS + 1);
+    expect(takeHandoff(path, now)).toBe('stop: crash');
+    put(now - PLANNED_RESTART_MS + 1, null);
+    expect(takeHandoff(path, now)).toBeNull();
+    for (const at of [now - PLANNED_RESTART_MS, now + 1]) {
+      put(at);
+      expect(takeHandoff(path, now), String(at)).toBeUndefined();
+      expect(existsSync(path)).toBe(false);
+    }
+    expect(takeHandoff(path, now)).toBeUndefined();
+    // At boot: a pre-step's handoff older than the bound is not the main boot's reading of the previous exit.
+    const stateDir = tempState();
+    const timers = virtualTimers(T);
+    const a = makeWorker({ stateDir, timers });
+    await a.worker.reconcile();
+    a.worker.crashed(new RangeError('boom'));
+    await a.worker.kill();
+    const pre = makeWorker({ stateDir, timers, phase: 'reconcile' });
+    expect(await pre.worker.reconcileOnly()).toEqual({ ok: true });
+    timers.set(timers.now() + PLANNED_RESTART_MS);
+    const b = makeWorker({ stateDir, timers });
+    expect(b.worker.health().last_exit).not.toMatch(/^stop: crash/);
+    expect(existsSync(join(stateDir, EXIT_HANDOFF))).toBe(false);
+    await b.worker.stop();
   });
 
   it('a drill\'s marker survives the pre-step: the main boot reports it as planned', async () => {
