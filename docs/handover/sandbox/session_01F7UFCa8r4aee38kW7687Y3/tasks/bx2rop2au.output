@@ -1,0 +1,30 @@
+      Tests  1 passed | 23 skipped (24)
+No stash entries found.
+/bin/bash: line 1: /tmp/claude-0/rl5/1.log: No such file or directory
+FAIL 1
+/bin/bash: line 1: /tmp/claude-0/rl5/2.log: No such file or directory
+FAIL 2
+/bin/bash: line 1: /tmp/claude-0/rl5/3.log: No such file or directory
+FAIL 3
+/bin/bash: line 1: /tmp/claude-0/rl5/4.log: No such file or directory
+FAIL 4
+/bin/bash: line 1: /tmp/claude-0/rl5/5.log: No such file or directory
+FAIL 5
+FAIL 7
+FAIL 13
+FAIL 15
+FAIL 17
+FAIL 20
+FAIL 22
+FAIL 23
+FAIL 27
+FAIL 29
+FAIL 32
+FAIL 33
+FAIL 36
+      Tests  3835 passed (3835)
+END
+
+[exited with code 0]
+
+[exited with code 0]

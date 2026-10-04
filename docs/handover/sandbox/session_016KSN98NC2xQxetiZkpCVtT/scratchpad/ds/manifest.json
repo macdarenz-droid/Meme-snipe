@@ -1,0 +1,45 @@
+{
+ "schema": 1,
+ "window": {
+  "from": "2026-09-20",
+  "to_exclusive": "2026-09-20"
+ },
+ "coverage": {
+  "first_slot": 400000000,
+  "last_slot": 400044999,
+  "first_block_time": 1789862400,
+  "last_block_time": 1789880399
+ },
+ "days": [
+  {
+   "day": "2026-09-20",
+   "blocks_expected": 45000,
+   "blocks_scanned": 45000,
+   "complete": true,
+   "warm_up": false,
+   "rows": {
+    "amm_trades": 4497
+   },
+   "files": [
+    {
+     "path": "days/2026-09-20/amm_trades-000.csv.zst",
+     "bytes": 625022,
+     "sha256": "cb7b634c9474d2970dffe9ac67e266a9d51c099bc43e14145943d18024831aae",
+     "rows": 4497
+    },
+    {
+     "path": "days/2026-09-20/blocks-000.csv.zst",
+     "bytes": 82966,
+     "sha256": "2482bd5b12d565f2eb68b4d4f3b264b8fdbf8f73f984aa97fb669f28148de6f9",
+     "rows": 45000
+    },
+    {
+     "path": "days/2026-09-20/events-000.jsonl.zst",
+     "bytes": 719,
+     "sha256": "e9000a026d531512010fbcead22e1e1b6664b4c398a217bb888784d5fe17ba73",
+     "rows": 4
+    }
+   ]
+  }
+ ]
+}

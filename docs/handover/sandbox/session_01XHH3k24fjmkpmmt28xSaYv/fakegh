@@ -1,0 +1,2 @@
+#!/bin/sh
+echo "HTTP 503 stub" >&2; exit 1

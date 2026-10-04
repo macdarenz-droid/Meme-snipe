@@ -1,0 +1,37 @@
+0 KILLED evaluate.ts dayChange === null ? 0n : -dayChange
+1 KILLED evaluate.ts weekChange === null ? 0n : -weekChange
+2 KILLED evaluate.ts const dayChange = a.markedAtDayStart === null ? null : equit
+3 KILLED evaluate.ts const weekChange = a.markedAtWeekStart === null ? null : equ
+4 KILLED account.ts if (this.#s.dayMark?.startMs !== s.dayStartMs) {
+5 KILLED account.ts if (this.#s.weekMark?.startMs !== s.weekStartMs) {
+6 KILLED account.ts const stale = peak !== undefined && rearmAtMs !== null && pe
+7 KILLED account.ts (peak === undefined || stale || s.nav > peak.nav)
+8 KILLED account.ts s.nav !== null && s.nav > 0n && 
+9 KILLED account.ts     if (changed) this.#file.write(this.#s); 
+10 KILLED account.ts this.#s.dayMark.startMs === melbourneDay(nowMs).start ? this
+11 KILLED account.ts this.#s.weekMark.startMs === melbourneWeek(nowMs).start ? th
+12 SURVIVED account.ts this.#s.navPeak === undefined || this.#s.navPeak.atMs > nowM
+13 KILLED account.ts navMarks: this.#s.navPeak === undefined || this.#s.navPeak.a
+14 KILLED worker.ts     this.#markAccount(now); 
+15 KILLED worker.ts     if (!this.#reconciled) return;     const fact
+16 SURVIVED worker.ts       this.#publishAccount();     }   }    #afterRecord
+17 KILLED open-positions.ts x.status !== 'closed' && x.status !== 'opening'
+18 KILLED open-positions.ts at(a.id) - at(b.id) || 
+19 KILLED open-positions.ts plan === null ? 'unknown' : plan.universe
+20 SURVIVED worker.ts       open_positions: positions,
+21 KILLED runner.ts Array.isArray(h.open_positions) ? h.open_positions : 
+22 KILLED runner.ts openPositions(h).every((p) => knownUniverse(p.universe));
+23 KILLED runner.ts openPositions(h).every((p) => id(p.trade))
+24 KILLED source.ts g.neededBy === 'H14' && 
+25 KILLED source.ts g.detail?.startsWith(DEPLOYER_CHECK_DETAIL) === true
+26 KILLED source.ts g.code === 'not-covered' && g.neededBy
+27 KILLED source.ts .filter((m) => m.mint !== mint && m.createdAtMs >= fromMs)
+28 KILLED source.ts .filter((m) => m.mint !== mint && m.createdAtMs >= fromMs)
+29 KILLED source.ts if (ctx === null || tip === null || creator === null ||
+30 KILLED source.ts if (ctx === null || tip === null || creator === null ||
+31 SURVIVED source.ts     deployerCheck: { lookbackMs: w.policy.gates.deployerRugL
+32 KILLED readers.ts full = r.fact.mints.every((m) => m.status === 'rug' || m.sta
+33 KILLED readers.ts       for (const f of checkFacts(r)) this.#ingest('helius', 
+34 KILLED strategy.ts       if (cf !== null) cand.creator = cf.creator; 
+35 KILLED strategy.ts ...(x.neededBy === undefined ? {} : { neededBy: x.neededBy }
+36 SURVIVED worker.ts         priorMints: (creator, nowMs) =>

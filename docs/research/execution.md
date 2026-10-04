@@ -298,7 +298,7 @@ From [Fee structure](https://solana.com/docs/core/fees/fee-structure):
 Failure detail:
 - On pump, 142 of 153 failures were `{"InstructionError":[1,{"Custom":13}]}`. These are cheap failures (median 4.3k CU, 233 lamports priority) from third-party bot programs, not the pump program. Only 7 were pump `6042 BuySlippageBelowMinTokensOut`.
 - PumpSwap failures were mostly slippage (`6040 BuySlippageBelowMinBaseAmountOut` ×19) and wrapper errors.
-- Sample script: `scratchpad/kitprobe/sample2.py`; public RPC `getSignaturesForAddress` + `getTransaction`.
+- Sample script: `research/supervisor/kitprobe/sample2.py`; public RPC `getSignaturesForAddress` + `getTransaction`.
 
 ### 4.3 Senders compared (cost per transaction at $119.37/SOL)
 
