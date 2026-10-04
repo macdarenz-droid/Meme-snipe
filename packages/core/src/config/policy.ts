@@ -112,6 +112,8 @@ export interface Policy {
     readonly survivalReserveFloor: Lamports;
     readonly survivalAfterMs: number;
     readonly survivalMedianDays: number;
+    /** Fewest graduates a survival day (the recent 24 h and each median day) must hold; fewer is unknown (REGIME-MIN). */
+    readonly survivalMinGraduates: number;
     readonly volumePercentile: number;
     /** Cap on the expanding volume window, in days. */
     readonly volumeWindowDays: number;
@@ -208,6 +210,9 @@ const TRIAL_VALUES: Policy = {
     survivalReserveFloor: sol('30'),
     survivalAfterMs: 30 * MINUTE,
     survivalMedianDays: 14,
+    // Measured: 718 migrations in 11.97 h on 2026-10-01/02 (43–77 an hour, about 1,400 a day; research/empirical).
+    // At 100 a share's standard error is at most 0.05; 30 would leave 0.09, too wide against a 14-day median.
+    survivalMinGraduates: 100,
     volumePercentile: 25,
     volumeWindowDays: 365,
     volumeLagDays: 3,

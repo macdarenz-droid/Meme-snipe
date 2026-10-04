@@ -85,9 +85,10 @@ describe('PERSIST-1 in the worker', () => {
     const seed = (r: SeedRequest) => runSeed(r, { rpc: emptyRpc, timers });
     const h = makeWorker({ stateDir, timers, seed });
     const m = await boot(h);
-    // 16 days of graduates, one every 6 hours, the newest well past its +30 min mark.
+    // About 16 days of graduates, one every 13 min (110 or 111 a day, above the policy's survivalMinGraduates of 100),
+    // the newest well past its +30 min mark.
     const P = TRIAL_POLICY.regime;
-    const items = Array.from({ length: 64 }, (_, k) => ({ mint: `Grad${k}`, migratedAtMs: m.now - 2 * 3_600_000 - k * 6 * 3_600_000, reserveAfter: k % 3 === 0 ? 1n : 100_000_000_000n }))
+    const items = Array.from({ length: 16 * 110 }, (_, k) => ({ mint: `Grad${k}`, migratedAtMs: m.now - 2 * 3_600_000 - k * 13 * 60_000, reserveAfter: k % 3 === 0 ? 1n : 100_000_000_000n }))
       .sort((a, b) => a.migratedAtMs - b.migratedAtMs);
     // One more graduate whose +30 min mark is still ahead at the save: it is not saved.
     const young = { mint: 'Young', migratedAtMs: m.now - 10 * 60_000, reserveAfter: 1n };

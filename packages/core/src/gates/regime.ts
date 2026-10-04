@@ -87,20 +87,23 @@ const median = (xs: readonly Frac[]): Frac => {
 
 const unknown = (condition: RegimeCondition, input: FactName, code: EvidenceCode, detail: string): ConditionResult => ({ condition, ok: null, code, input, detail });
 
-/** Survival share of graduates whose +30 min mark falls in the 24 h before `at`, against the median of the 14 days before. */
+/**
+ * Survival share of graduates whose +30 min mark falls in the 24 h before `at`, against the median of the 14 days before.
+ * A day with fewer than survivalMinGraduates graduates is unknown, never a pass (REGIME-MIN): its share is too noisy.
+ */
 export const survivalCondition = (g: GraduatesFact, at: number, p: Policy['regime']): ConditionResult => {
   const known = g.items.filter((i) => i.migratedAtMs + p.survivalAfterMs <= at);
-  const share = (from: number, to: number): Frac | null => {
+  const share = (from: number, to: number): Frac | number => {
     const inWindow = known.filter((i) => i.migratedAtMs + p.survivalAfterMs > from && i.migratedAtMs + p.survivalAfterMs <= to);
-    if (inWindow.length === 0) return null;
+    if (inWindow.length < p.survivalMinGraduates) return inWindow.length;
     return { n: BigInt(inWindow.filter((i) => i.reserveAfter > p.survivalReserveFloor).length), d: BigInt(inWindow.length) };
   };
   const recent = share(at - DAY_MS, at);
-  if (recent === null) return unknown('survival', 'graduates', 'not-covered', `no graduate reached +${p.survivalAfterMs} ms in the 24 h before ${at}`);
+  if (typeof recent === 'number') return unknown('survival', 'graduates', 'not-covered', `${recent} graduates reached +${p.survivalAfterMs} ms in the 24 h before ${at}; ${p.survivalMinGraduates} needed`);
   const days: Frac[] = [];
   for (let k = 1; k <= p.survivalMedianDays; k++) {
     const s = share(at - (k + 1) * DAY_MS, at - k * DAY_MS);
-    if (s === null) return unknown('survival', 'graduates', 'not-covered', `no graduates in day -${k} before ${at}`);
+    if (typeof s === 'number') return unknown('survival', 'graduates', 'not-covered', `${s} graduates in day -${k} before ${at}; ${p.survivalMinGraduates} needed`);
     days.push(s);
   }
   const m = median(days);
