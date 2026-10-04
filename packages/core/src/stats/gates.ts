@@ -879,11 +879,13 @@ const clusterMeanVariance = (xs: readonly number[], clusters: readonly string[])
 /**
  * One-sided (1 − α) cluster-robust Welch bounds on mean(a) − mean(b) (external audit S4, review B1): CR2 variances,
  * Bell–McCaffrey df per side, combined by Satterthwaite. Equals the classic Welch bound when every observation is its
- * own cluster.
+ * own cluster. α must be in (0, α/4] (VETO_COMPOSITE_ALPHA): with one dominant creator the bound holds its level at
+ * α/4 and α/8 but over-rejects at 0.05 (6.4–7.2%, STATS-1g), so a wider level is refused rather than defaulted (STATS-1h).
  */
 export const clusterWelchBounds = (
-  a: readonly number[], ca: readonly string[], b: readonly number[], cb: readonly string[], alpha = 0.05,
+  a: readonly number[], ca: readonly string[], b: readonly number[], cb: readonly string[], alpha: number,
 ): { diff: number; lower: number; upper: number; se: number; df: number; clustersA: number; clustersB: number } => {
+  if (!(alpha > 0 && alpha <= VETO_COMPOSITE_ALPHA)) throw new RangeError(`cluster-robust bounds hold their level only for α in (0, ${VETO_COMPOSITE_ALPHA}]; got ${alpha}`);
   if (ca.length !== a.length || cb.length !== b.length) throw new RangeError('every observation needs its cluster');
   const diff = mean(a) - mean(b);
   const va = clusterMeanVariance(a, ca);

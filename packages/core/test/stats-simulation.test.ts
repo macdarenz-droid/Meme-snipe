@@ -406,7 +406,8 @@ describe('block-bootstrap Sharpe (STATS-1c)', () => {
 // share a shock (ICC 0.5, true gap 0). The classic one-sided Welch upper bound misses the true gap far more often than
 // its level; the cluster-robust bound G3 uses (CR2 with Bell–McCaffrey df, STATS-1g review B1) holds it, also when one
 // creator makes half the trades, where CR1 with G − 1 df did not. Bounds are the level plus two Monte Carlo standard
-// errors. Measured at 2,000 runs, 20 equal creators a side: classic 17.5%, cluster-robust 4.45% at 0.05. Measured at
+// errors. Measured at 2,000 runs, 20 equal creators a side: classic 17.5%, cluster-robust 4.45% at 0.05 (STATS-1g);
+// at α/4 classic 9.6%, cluster-robust 0.8%. clusterWelchBounds refuses α above α/4 since STATS-1h. Measured at
 // 4,000 runs and α/4 = 0.0125 (one creator at 50%): G 10 of 50 trades, CR1 5.35%, CR2 1.23%; G 20 of 100, CR1 8.38%,
 // CR2 1.43%; equal sizes, both 1.02% (G 10) and 1.07% (G 20). At α/8 (the two-sided gap's side): CR2 0.50% and 0.63%.
 describe('cluster-robust veto gap (STATS-1g, audit S4)', () => {
@@ -451,10 +452,10 @@ describe('cluster-robust veto gap (STATS-1g, audit S4)', () => {
       const a = side(rng, 'v', equal);
       const b = side(rng, 'k', equal);
       // Every trade its own creator: the classic Welch bound (independence assumed).
-      if (clusterWelchBounds(a.xs, a.xs.map((_, i) => `a${i}`), b.xs, b.xs.map((_, i) => `b${i}`), 0.05).upper < 0) iidMiss++;
+      if (clusterWelchBounds(a.xs, a.xs.map((_, i) => `a${i}`), b.xs, b.xs.map((_, i) => `b${i}`), VETO_COMPOSITE_ALPHA).upper < 0) iidMiss++;
     }
-    expect(iidMiss / RUNS).toBeGreaterThan(0.12);
-    expect(missRate(equal, 0.05, RUNS, 400_000)).toBeLessThanOrEqual(bound(0.05, RUNS));
+    // Nearly eight times its level (9.6%); the cluster-robust bound 0.8%.
+    expect(iidMiss / RUNS).toBeGreaterThan(0.06);
     expect(missRate(equal, VETO_COMPOSITE_ALPHA, RUNS, 400_000)).toBeLessThanOrEqual(bound(VETO_COMPOSITE_ALPHA, RUNS));
   });
   test('one creator with half the trades: the bound holds α/4 and α/8, with 10 and 20 creators (review B1)', () => {

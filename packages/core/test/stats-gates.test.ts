@@ -885,18 +885,30 @@ describe('G3 live dry-run consistency', () => {
     // b = 0, 2, 4 on creators p, q, r: mean 2, sums −2, 0, 2, sizes 1 of 3: (4/(2/3) + 0 + 4/(2/3))/9 = 4/3 = 32/24,
     // df: r_g = 1/2 each, 9 / (3 + 9/4 − 3/4) = 2 (one trade a creator: n − 1).
     // Satterthwaite: (Va + Vb)² / (Va²/1.8 + Vb²/2) = 77² / (45²/1.8 + 32²/2) = 5929/1637 with Va = 45/24, Vb = 32/24.
-    const r = clusterWelchBounds([1, 2, 3, 6], ['x', 'x', 'y', 'z'], [0, 2, 4], ['p', 'q', 'r'], 0.05);
+    const r = clusterWelchBounds([1, 2, 3, 6], ['x', 'x', 'y', 'z'], [0, 2, 4], ['p', 'q', 'r'], VETO_COMPOSITE_ALPHA);
     const df = 5929 / 1637;
     expect(r.diff).toBe(1);
     expect(r.se ** 2).toBeCloseTo(77 / 24, 12);
     expect(r.df).toBeCloseTo(df, 12);
     expect(r.df).toBeCloseTo(3.62187, 5);
-    expect(r.upper).toBeCloseTo(1 + studentTQuantile(0.95, df) * Math.sqrt(77 / 24), 12);
-    expect(r.lower).toBeCloseTo(1 - studentTQuantile(0.95, df) * Math.sqrt(77 / 24), 12);
+    expect(r.upper).toBeCloseTo(1 + studentTQuantile(1 - VETO_COMPOSITE_ALPHA, df) * Math.sqrt(77 / 24), 12);
+    expect(r.lower).toBeCloseTo(1 - studentTQuantile(1 - VETO_COMPOSITE_ALPHA, df) * Math.sqrt(77 / 24), 12);
     // Every observation its own cluster: the Welch variance s²/n and df n − 1 a side.
-    const own = clusterWelchBounds([1, 2, 3, 6], ['a', 'b', 'c', 'd'], [0, 0, 3, 5], ['e', 'f', 'g', 'h']);
+    const own = clusterWelchBounds([1, 2, 3, 6], ['a', 'b', 'c', 'd'], [0, 0, 3, 5], ['e', 'f', 'g', 'h'], VETO_COMPOSITE_ALPHA);
     expect(own.se ** 2).toBeCloseTo(variance([1, 2, 3, 6]) / 4 + variance([0, 0, 3, 5]) / 4, 12);
     expect(own.df).toBeCloseTo((7 / 6 + 1.5) ** 2 / ((7 / 6) ** 2 / 3 + 1.5 ** 2 / 3), 12);
+  });
+  test('the cluster-robust bound refuses α above α/4, where a dominant creator breaks its coverage (STATS-1h)', () => {
+    const args = [[1, 2, 3, 6], ['x', 'x', 'y', 'z'], [0, 2, 4], ['p', 'q', 'r']] as const;
+    for (const alpha of [0.05, 0.025, VETO_COMPOSITE_ALPHA + 1e-9, 0, -0.01, Number.NaN]) {
+      expect(() => clusterWelchBounds(...args, alpha)).toThrow(/hold their level only for α in \(0, 0\.0125\]/);
+    }
+    // α/4 (one-sided gap bound) and α/8 (a side of the two-sided bound) work; the narrower level gives the wider bound.
+    const q = clusterWelchBounds(...args, VETO_COMPOSITE_ALPHA);
+    const e = clusterWelchBounds(...args, VETO_COMPOSITE_ALPHA / 2);
+    expect(q.upper).toBeCloseTo(1 + studentTQuantile(1 - VETO_COMPOSITE_ALPHA, 5929 / 1637) * Math.sqrt(77 / 24), 12);
+    expect(e.upper).toBeGreaterThan(q.upper);
+    expect(e.lower).toBeLessThan(q.lower);
   });
   test('counterfactual scoring takes the outcome-stage labels of the vetoed candidates and counts censored ones', () => {
     const label = (rNet: number | null, censored = false): TripleBarrierLabel => ({
