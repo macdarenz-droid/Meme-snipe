@@ -250,13 +250,16 @@ export class Watchdog {
 
   /**
    * Sends lines to the owner in messages Telegram accepts (at most 4,096 characters, split on line boundaries), in
-   * order, stopping at the first that is not accepted. Returns how many lines were delivered whole.
+   * order, stopping at the first that is not accepted. Returns how many lines were delivered whole (all of them when
+   * there is no channel to send to).
    */
   private async say(text: string | readonly string[]): Promise<number> {
     const lines = typeof text === 'string' ? [text] : text;
     const token = this.env.TELEGRAM_BOT_TOKEN;
     const chat = await this.state.storage.get<string>('owner_chat');
-    if (!token || !chat) return 0;
+    // No channel yet (no bot token, or no paired chat): there is nowhere to deliver, so nothing is held back for a retry,
+    // as before pairing. A refused or failed send is what is retried.
+    if (!token || !chat) return lines.length;
     const base = this.env.TELEGRAM_API ?? 'https://api.telegram.org';
     const { texts, ends } = chunkLines(lines);
     let delivered = 0;
