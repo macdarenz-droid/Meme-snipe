@@ -235,10 +235,30 @@ export const isSummary = (x: unknown): x is Summary | SummaryV1 => {
       str(o['marked_net_lamports'], PATTERNS.LAMPORTS) && count(o['unquotable']) && count(o['unlisted']))) return false;
     if (!(exact(m, ['rss_min_bytes', 'rss_max_bytes', 'rss_last_bytes', 'rss_change_bytes']) && countOrNull(m['rss_min_bytes']) &&
       countOrNull(m['rss_max_bytes']) && countOrNull(m['rss_last_bytes']) && (m['rss_change_bytes'] === null || int(m['rss_change_bytes'])))) return false;
+    if (!consistent(o as Summary['open'], m as Summary['memory'], hl as Summary['headline'])) return false;
     const { headline: _h, open: _o, memory: _m, ...rest } = x;
     return isCommon({ ...rest, v: 1 });
   }
   return isCommon(x);
+};
+
+/**
+ * Version 2's figures agree with each other (golden rule: a report that contradicts itself is refused, not stored):
+ * with every position listed, the marked total is the sum of the listed marked nets and `unquotable` is the number of
+ * null values (with some unlisted, at least that many); the headline's open marked net is the same total in SOL; memory
+ * is all known or all unknown, and lowest ≤ last ≤ highest.
+ */
+const consistent = (o: Summary['open'], m: Summary['memory'], hl: Summary['headline']): boolean => {
+  const nulls = o.positions.filter((p) => p.value_lamports === null).length;
+  if (o.unlisted === 0) {
+    const sum = o.positions.reduce((a, p) => a + (p.marked_net_lamports === null ? 0n : BigInt(p.marked_net_lamports)), 0n);
+    if (sum !== BigInt(o.marked_net_lamports) || o.unquotable !== nulls) return false;
+  } else if (o.unquotable < nulls) return false;
+  if (hl.open_marked_net_sol !== solText(BigInt(o.marked_net_lamports))) return false;
+  const known = [m.rss_min_bytes, m.rss_max_bytes, m.rss_last_bytes].filter((v) => v !== null).length;
+  if (known !== 0 && known !== 3) return false;
+  if (known === 3 && !(m.rss_min_bytes! <= m.rss_last_bytes! && m.rss_last_bytes! <= m.rss_max_bytes!)) return false;
+  return true;
 };
 
 /** The fields both versions share, checked as version 1. */

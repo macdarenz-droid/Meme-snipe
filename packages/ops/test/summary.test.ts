@@ -78,13 +78,39 @@ describe('the summary guards', () => {
     // Open positions: a value and its marked net are both known or both null; a negative count or a non-integer change fails.
     const pos = goodSummary().open.positions[0]!;
     const withPos = (p: object) => JSON.stringify(goodSummary({ open: { ...goodSummary().open, positions: [{ ...pos, ...p }] } }));
-    expect(checkSummary(withPos({ value_lamports: null, marked_net_lamports: null })).ok).toBe(true);
+    // An unquotable position: its marked net leaves the total and it is counted (the headline follows the total).
+    const nullPos = JSON.stringify(goodSummary({
+      headline: { ...goodSummary().headline, open_marked_net_sol: '0' },
+      open: { positions: [{ ...pos, value_lamports: null, marked_net_lamports: null }], marked_net_lamports: '0', unquotable: 1, unlisted: 0 },
+    }));
+    expect(checkSummary(nullPos).ok).toBe(true);
+    // The figures must agree with each other: total vs listed nets, unquotable vs null values, headline vs total.
+    expect(checkSummary(withPos({ value_lamports: null, marked_net_lamports: null })).ok).toBe(false);
+    // A total that disagrees with the listed nets, even when the headline agrees with the total.
+    expect(checkSummary(JSON.stringify(goodSummary({ headline: { ...goodSummary().headline, open_marked_net_sol: '-0.002999999' }, open: { ...goodSummary().open, marked_net_lamports: '-2999999' } }))).ok).toBe(false);
+    expect(checkSummary(JSON.stringify(goodSummary({ open: { ...goodSummary().open, unquotable: 1 } }))).ok).toBe(false);
+    expect(checkSummary(JSON.stringify(goodSummary({ headline: { ...goodSummary().headline, open_marked_net_sol: '-0.004' } }))).ok).toBe(false);
+    // With some unlisted, the total may hold more than the listed nets, but unquotable is never below the listed nulls.
+    expect(checkSummary(JSON.stringify(goodSummary({ open: { ...goodSummary().open, marked_net_lamports: '-3000000', unlisted: 2, unquotable: 1 } }))).ok).toBe(true);
+    expect(checkSummary(JSON.stringify(goodSummary({
+      headline: { ...goodSummary().headline, open_marked_net_sol: '0' },
+      open: { positions: [{ ...pos, value_lamports: null, marked_net_lamports: null }], marked_net_lamports: '0', unquotable: 0, unlisted: 3 },
+    }))).ok).toBe(false);
     expect(checkSummary(withPos({ value_lamports: null })).ok).toBe(false);
     expect(checkSummary(withPos({ value_lamports: '0', marked_net_lamports: null })).ok).toBe(false);
     expect(checkSummary(JSON.stringify(goodSummary({ open: { ...goodSummary().open, unquotable: -1 } }))).ok).toBe(false);
     expect(checkSummary(JSON.stringify(goodSummary({ memory: { ...goodSummary().memory, rss_change_bytes: -5 } }))).ok).toBe(true);
     expect(checkSummary(JSON.stringify(goodSummary({ memory: { ...goodSummary().memory, rss_change_bytes: 1.5 } }))).ok).toBe(false);
-    expect(checkSummary(JSON.stringify(goodSummary({ memory: { ...goodSummary().memory, rss_last_bytes: -1 } }))).ok).toBe(false);
+    // rss counts are non-negative integers, all known or all unknown, and lowest <= last <= highest.
+    const mem = (m: object) => JSON.stringify(goodSummary({ memory: { ...goodSummary().memory, ...m } }));
+    for (const k of ['rss_min_bytes', 'rss_max_bytes', 'rss_last_bytes']) {
+      for (const bad of [-1, 1.5, '1']) expect(checkSummary(mem({ [k]: bad })).ok, `${k}=${JSON.stringify(bad)}`).toBe(false);
+    }
+    expect(checkSummary(mem({ rss_min_bytes: null, rss_max_bytes: null, rss_last_bytes: null, rss_change_bytes: null })).ok).toBe(true);
+    expect(checkSummary(mem({ rss_min_bytes: null })).ok).toBe(false);
+    expect(checkSummary(mem({ rss_min_bytes: 400_000_000 })).ok).toBe(false);
+    expect(checkSummary(mem({ rss_last_bytes: 400_000_000 })).ok).toBe(false);
+    expect(checkSummary(mem({ rss_last_bytes: 100_000_000 })).ok).toBe(false);
     expect(checkSummary('not json')).toEqual({ ok: false, reason: 'not JSON' });
     expect(checkSummary(' '.repeat(70_000))).toEqual({ ok: false, reason: 'too large' });
   });
