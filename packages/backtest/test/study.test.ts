@@ -237,19 +237,18 @@ describe('BT-2 study runs', () => {
     expect(s.peakEquityUsd).toBeGreaterThan(0n);
   });
 
-  it('deployment replay books the wallet setup rent as live does: equity starts at bankroll minus the rent', () => {
+  it('deployment replay books the wallet setup rent as live does: equity starts at bankroll minus the rent, in lamports', () => {
     let st: import('../src/strategy/study.ts').StudyStrategy | null = null;
     run([SETUP], { mode: 'deployment', onStrategy: (x) => { st = x; } });
     const s = st as unknown as import('../src/strategy/study.ts').StudyStrategy;
     const rent = oneTimeRent(FILL_CONFIG);
     expect(rent).toBeGreaterThan(0n);
-    // SOL/USD is 120.00 all day: the rent in micro-dollars, rounded up.
-    const cost = (rent * 120_000_000n + 999_999_999n) / 1_000_000_000n;
-    expect(s.walletSetup).toEqual({ atMs: W0, amount: cost, kind: 'wallet_setup' });
-    // NAV values the wallet in lamports and back (floor both ways): at most one micro-dollar below bankroll − rent.
-    const nav = s.navMarks[0]!.nav;
-    expect(nav).toBeLessThanOrEqual(TRIAL_POLICY.capital.bankroll - cost);
-    expect(nav).toBeGreaterThanOrEqual(TRIAL_POLICY.capital.bankroll - cost - 1n);
+    // SOL-BOOKS: the rent is booked in lamports, exact.
+    expect(s.walletSetup).toEqual({ atMs: W0, amount: rent, kind: 'wallet_setup' });
+    // SOL/USD is 120.00 all day, the opening price: bankroll B in lamports (floor) plus the operations floor, minus the
+    // rent. NAV is the whole wallet in lamports, so no conversion slack.
+    const opening = (TRIAL_POLICY.capital.bankroll * 1_000_000_000n) / 120_000_000n + TRIAL_POLICY.reserve.opsFloor;
+    expect(s.navMarks[0]!.nav).toBe(opening - rent);
   });
 
   // Paper is real money: a close or mark priced at a SOL/USD close older than 2 h (plus its delivery) is still booked,
