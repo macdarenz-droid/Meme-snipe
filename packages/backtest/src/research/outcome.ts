@@ -11,7 +11,7 @@ import type { CoinFlags } from '../../../core/src/amm/index.ts';
 import { poolBuyExactQuoteIn, poolSell } from '../../../core/src/amm/index.ts';
 import type { FillConfig, Policy } from '../../../core/src/config/index.ts';
 import { createRng as engineRng } from '../../../core/src/engine/index.ts';
-import { type ObservedFees, type ScenarioName, ShiftedPool, drawAttempt, executeBuy, observedFeeContext, withSlippage } from '../../../core/src/fills/index.ts';
+import { type ObservedFees, type ScenarioName, ShiftedPool, accountGetsDust, closeSucceeds, drawAttempt, executeBuy, observedFeeContext, withSlippage } from '../../../core/src/fills/index.ts';
 import { createRng, labelTripleBarrier, type TripleBarrierLabel, type ValuePoint } from '../../../core/src/stats/index.ts';
 import { BPS_DENOMINATOR, mulDiv } from '../../../core/src/units/index.ts';
 import type { AmmSwapRow, DatasetRow } from '../dataset/rows.ts';
@@ -80,6 +80,9 @@ interface Pending {
   vertical: (bigint | null)[];
   fees: ObservedFees | null;
   baseSupply: bigint;
+  /** Dust in the token account (never closable) and whether the final sell-and-close lands (RENT-1). */
+  dust: boolean;
+  closes: boolean;
 }
 
 const seedOf = (s: string): number => Number.parseInt(createHash('sha256').update(s).digest('hex').slice(0, 12), 16);
@@ -108,7 +111,7 @@ export const scoreCandidates = (rows: Iterable<DatasetRow>, targets: readonly Sc
   for (const t of targets) {
     const p: Pending = {
       t, phase: 'quote', quotedOut: 0n, entrySlot: t.decisionSlot + landing, entryMs: 0, shifted: null, tokens: 0n, cost: 0n, failedEntry: 0n,
-      filled: false, noQuote: false, path: [], vertical: o.barriers.map(() => null), fees: null, baseSupply: 0n,
+      filled: false, noQuote: false, path: [], vertical: o.barriers.map(() => null), fees: null, baseSupply: 0n, dust: false, closes: false,
     };
     all.push(p);
     const list = byPool.get(t.pool) ?? [];
@@ -125,7 +128,10 @@ export const scoreCandidates = (rows: Iterable<DatasetRow>, targets: readonly Sc
     if (s === null || p.fees === null) return null;
     const q = poolSell(s, p.tokens, observedFeeContext(p.fees, p.baseSupply, NORMAL));
     if (!q.ok) return null;
-    const v = q.trade.userQuote - exitFixed + (scen.rentRecovery ? rent : 0n);
+    // RENT-1: the final sell closes the token account in the same transaction. Its rent comes back only when that close
+    // lands; dust in the account keeps it open (rent locked), and a failed close fails the sell (one failed attempt's fee)
+    // before a sell-only retry that leaves the rent locked.
+    const v = q.trade.userQuote - exitFixed + (p.closes ? rent : 0n) - (!p.dust && !p.closes ? failedExit : 0n);
     return v > 0n ? v : 0n;
   };
   const point = (p: Pending, slot: bigint): void => {
@@ -230,6 +236,10 @@ export const scoreCandidates = (rows: Iterable<DatasetRow>, targets: readonly Sc
         p.fees = sw.fees;
         p.baseSupply = sw.baseSupply;
         p.tokens = ex.out;
+        // The account's close outcome, drawn once per candidate and independent of the scenario (common random numbers):
+        // dust picked up at entry, then whether the final sell-and-close lands.
+        p.dust = accountGetsDust(`${o.seed}:${p.t.id}`, scen);
+        p.closes = !p.dust && closeSucceeds(`${o.seed}:${p.t.id}`, scen);
         p.cost = ex.paid + failFee + net.tip + rent;
         p.filled = true;
         p.phase = 'hold';
