@@ -15,7 +15,9 @@ import {
 import type { Timers } from '../scheduler/timers.ts';
 import { type Credits, creditMonth, creditsFile } from './state.ts';
 import { SOL_PRICE_KEY } from '../engine/strategy.ts';
-import { PoolWatch } from './pool-watch.ts';
+import { PoolWatch, tradesStream } from './pool-watch.ts';
+import type { DailyBudget } from '../persist/index.ts';
+import { type GapFill, ingestingFill } from '../seed/fill.ts';
 import { LOOKUP_BOUNDS_MS, type QuotaStatus } from '../../../runner/src/contract.ts';
 import type { FeedSource, SourcesContext } from './worker.ts';
 import type { WatchRead } from './watch.ts';
@@ -89,7 +91,42 @@ export interface LiveProviderOptions {
   readonly http: HttpClient;
   readonly factory: SocketFactory;
   readonly credits: CreditBook;
+  /**
+   * The fills' daily credit budget (FILL-2, shared with the restart fill; S0-ZERO): the pool watches' in-run fills spend
+   * from it, each at most `TRADES_FILL_CREDITS`. Without it no in-run fill is made, so those gaps close as lossy.
+   */
+  readonly fillBudget?: DailyBudget;
 }
+
+/** S0-ZERO: credits one in-run fill of a pool's trade gap may spend (a candidate's catch-up from its migration is a few transactions). */
+export const TRADES_FILL_CREDITS = 500;
+
+/**
+ * S0-ZERO: FILL-2's in-run fill for the pool watches (a candidate's catch-up from its migration, any reconnect gap).
+ * Each fill may spend at most `TRADES_FILL_CREDITS` and never more than the daily budget has left (none left: no call,
+ * the gap stays lossy); what it spent is booked to the budget, on top of the provider's own credit metering, and the
+ * fill is journaled as `trades_fill` so the shakedown measures its size and credits.
+ */
+export const tradesFill = (o: {
+  readonly feed: Parameters<typeof ingestingFill>[0]['feed'];
+  readonly rpc: Parameters<typeof ingestingFill>[0]['rpc'];
+  readonly timers: Timers;
+  readonly budget: Pick<DailyBudget, 'remaining' | 'spend'>;
+  readonly pools: SourcesContext['pools'];
+  readonly journal?: NonNullable<SourcesContext['journal']>;
+}) => ingestingFill({
+  feed: o.feed, rpc: o.rpc, timers: o.timers, provider: 'helius',
+  creditCap: () => Math.min(TRADES_FILL_CREDITS, o.budget.remaining(o.timers.now())),
+  streamOf: tradesStream,
+  kindOf: (address) => (o.pools().get(address)?.held === true ? 'position' : 'candidate'),
+  onReport: (f: GapFill) => {
+    o.budget.spend(f.report.creditsUsed, o.timers.now());
+    o.journal?.('trades_fill', {
+      pool: f.gap.pool, mint: o.pools().get(f.gap.pool)?.mint ?? null, kind: f.gap.kind, from_slot: f.gap.fromSlot, until_slot: f.gap.untilSlot,
+      complete: f.complete, transactions: f.records.length, credits: f.report.creditsUsed, calls: f.report.calls, stopped_by: f.report.stoppedBy, latency_ms: f.report.latencyMs,
+    });
+  },
+});
 
 export class LiveProviders {
   readonly helius: Scheduler;
@@ -152,7 +189,9 @@ export class LiveProviders {
     }
     // No Alchemy socket: on mainnet (rehearsal 37142749019) it refused slotSubscribe and logsSubscribe (-32601) and only
     // idled out every 30 s, each reconnect costing a 100-signature backfill. Alchemy stays the fetcher's second RPC.
-    const pools = new PoolWatch({ stream: helius, timers, pools: ctx.pools, everyMs: 2_000 });
+    const budget = o.fillBudget;
+    const fill = budget === undefined ? undefined : tradesFill({ feed, rpc: hRpc, timers, budget, pools: ctx.pools, ...(ctx.journal === undefined ? {} : { journal: ctx.journal }) });
+    const pools = new PoolWatch({ stream: helius, timers, pools: ctx.pools, everyMs: 2_000, ...(fill === undefined ? {} : { fill }) });
     const pumpportal = new PumpPortalSource({ factory: o.factory, timers, feed, fetcher, migrationFetch: P3 });
     const sol = new CoinbaseSolPrice({ factory: o.factory, timers, feed, key: SOL_PRICE_KEY });
     return [

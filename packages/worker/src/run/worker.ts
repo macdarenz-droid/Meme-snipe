@@ -20,7 +20,9 @@ import { attemptFee, type FillNetwork, type FillScenario } from '../../../core/s
 import type { MicroUsd } from '../../../core/src/units/index.ts';
 import { EXIT, LOOKUP_BOUNDS_MS, STATE_FILES, type FeedHealth, type Health, type JournalKind, type QuotaStatus, type RecoveredFields } from '../../../runner/src/contract.ts';
 import type { DryRunRecord } from '../dryrun/index.ts';
-import { NO_UNIVERSE, resolveUniverse, sellOnlyReason } from '../engine/strategy.ts';
+import { NO_UNIVERSE, type SavedGraduates, resolveUniverse, sellOnlyReason } from '../engine/strategy.ts';
+import { RAW } from '../../../core/src/facts/raw.ts';
+import { GRADUATES_SEED_KEY } from '../../../core/src/facts/producer.ts';
 import { ACCOUNT_KEY, HALT_KEY, LiveStrategy, POOL_PREFIX, RESTORE_KEY, SEED_KEY, SEEDING, SHORTLIST, SNAPSHOT_PREFIX, SOL_PRICE_KEY, type SnapshotFact, type StrategyConfig, type StrategyDeps, TRIP_PREFIX, parseSnapshotFact, snapshotKey, snapshotWins } from '../engine/strategy.ts';
 import { SLOT_MS, watchTimingProblem } from './config.ts';
 import { PositionWatch, type WatchRead } from './watch.ts';
@@ -45,8 +47,8 @@ import { Journal } from './journal.ts';
 import { type PaperMarket, type PaperState, PaperWorld, type SimLeg } from './paper-world.ts';
 import { Recorder, sealLeftovers } from './recorder.ts';
 import { entryPrice, openPositionsHealth } from './open-positions.ts';
-import { riskSnapshot } from '../../../core/src/risk/index.ts';
-import { markSettings, riskAccount } from '../engine/marks.ts';
+import { type RiskInput, evaluateExit, riskSnapshot } from '../../../core/src/risk/index.ts';
+import { latchable, markSettings, riskAccount } from '../engine/marks.ts';
 import type { DeployerIndexState, RugLabellerState } from '../../../core/src/gates/index.ts';
 import { loadState, saveState } from '../persist/index.ts';
 
@@ -84,7 +86,9 @@ export interface SourcesContext {
   readonly feed: LiveFeed;
   readonly timers: Timers;
   /** The pools to watch for swaps: candidates' and open positions' (the strategy's `watchedPools`). */
-  readonly pools: () => ReadonlyMap<string, { readonly mint: string; readonly held: boolean }>;
+  readonly pools: () => ReadonlyMap<string, { readonly mint: string; readonly held: boolean; readonly fromSlot?: bigint }>;
+  /** Writes a journal line (S0-ZERO: each in-run fill of a pool's trade gap, `trades_fill`). */
+  readonly journal?: (kind: 'trades_fill', fields: Readonly<Record<string, unknown>>) => void;
 }
 
 export interface WorkerDeps {
@@ -245,6 +249,8 @@ export class Worker {
   #solPrice: MicroUsd | null = null;
   /** When that price was seen (its fact's `atMs`), for risk's freshness check in the account marks. */
   #solPriceAt: number | null = null;
+  /** RISK-FAULT: why risk last could not value the account, while it still cannot (logged once per episode). */
+  #valuationFault: string | null = null;
   /** The journal's `entry` and `exit` lines at start (WORKER-ORDER). */
   readonly #fillLines: Record<string, unknown>[];
   /** Fills the ledger holds and account.json does not, recorded once a SOL price is known. */
@@ -403,6 +409,7 @@ export class Worker {
     // FACTS-1b: the engine reads through core's FactFeed (engine-feed.ts); a replay of the recording uses the same.
     this.#facts = engineFeed(this.#feed, d.session.policy, (e) => {
       if (e.key.startsWith(POOL_PREFIX)) this.#setPool(e.key.slice(POOL_PREFIX.length), e.value);
+      if (e.key === GRADUATES_SEED_KEY) this.#graduatesSeed(e.value);
     });
     this.#engine = new Engine({ clock: this.#feed.clock, feed: this.#facts.feed, strategy: this.#strategy, runner: this.#world, seed, book: bookConfig });
     this.#deployerStore = new DeployerStore(c.stateDir);
@@ -411,7 +418,9 @@ export class Worker {
     // Restored through the seed fact (recorded, so a replay rebuilds the same state) before any decision; the
     // downtime fill starts at the saved moment, closing the restart gap on the live creates watch.
     const restored = loadState(join(c.stateDir, PERSIST_FILE), d.rugs);
+    let graduates: SavedGraduates | null = null;
     if (restored.ok) {
+      graduates = restored.graduates;
       this.#restored = { asOf: restored.asOf, index: restored.index.snapshot(restored.asOf), labeller: restored.labeller.snapshot() };
       this.#saved = { creates: [], rugs: [], coverage: restored.coverage, last: { slot: restored.asOf.slot, ms: restored.asOf.receivedAt } };
       d.log(`Saved state restored as of slot ${restored.asOf.slot}; ${restored.coverage.length} coverage facts, ${restored.fills.length} gaps to fill.`);
@@ -460,6 +469,9 @@ export class Worker {
     // and on the halt fact (which sorted first by id at a tie) it built fresh plans and trackers from the fills and
     // decided exits with them, before the saved ones arrived. The halt and the restart follow 1 ms later.
     this.#fact(RESTORE_KEY, { exits: this.#exitsFile.read({}), openedAt, bookedWhen, seeds: this.#seedsFile.read({}) }, startAt);
+    // PERSIST-2: the saved graduates series goes to the producer as a raw read (recorded, so a replay rebuilds it), so
+    // the regime's survival check keeps its 15 days across a restart.
+    if (graduates !== null) this.#feed.ingest('worker', { type: 'offchain', key: RAW.graduatesSeed, value: { source: 'persist', ...graduates } }, { receivedAt: startAt });
     this.#fact(HALT_KEY, { halted: true, reasons: [...this.#halted] }, startAt + 1);
     if (stored.events.length > 0) this.#report({ type: 'restart' }, startAt + 1);
     if (this.#ctl.paused) this.#report({ type: 'pause_entries', reason: 'owner' }, startAt + 1);
@@ -501,6 +513,19 @@ export class Worker {
   #report(event: BookEvent, atMs: number = this.#d.timers.now()): string {
     const f = this.#feed.ingest('worker', { type: 'world', event }, { receivedAt: atMs });
     return `world#${seqId(f.seq)}`;
+  }
+
+  /** PERSIST-2: the last graduates seed's outcome, for /health. */
+  #seedOutcome: NonNullable<Health['graduates_seed']> | null = null;
+
+  /** PERSIST-2: a seed taken or refused is journaled and shown in /health; a refusal leaves survival unknown, so it is logged too. */
+  #graduatesSeed(v: unknown): void {
+    if (typeof v !== 'object' || v === null) return;
+    const o = v as Record<string, unknown>;
+    const out = { source: typeof o['source'] === 'string' ? o['source'] : null, accepted: o['accepted'] === true, added: typeof o['added'] === 'number' ? o['added'] : 0, reason: typeof o['reason'] === 'string' ? o['reason'] : null };
+    this.#seedOutcome = out;
+    this.#journal.write('graduates_seed', out);
+    if (!out.accepted) this.#d.log(`ALERT graduates seed refused: ${out.reason ?? 'no reason given'}; regime survival stays unknown until the series rebuilds.`);
   }
 
   #fact(key: string, value: unknown, atMs: number = this.#d.timers.now()): void {
@@ -789,18 +814,49 @@ export class Worker {
       const m = this.poolOf(mint);
       return { quantity: p.quantity, market: m === null ? null : { pool: m.state, ctx: m.ctx, atMs: m.atMs } };
     }, sol, now, markSettings(policy, this.#d.strategy.network), { fallback: true, ...(this.#d.markedHistory === undefined ? {} : { mark: this.#d.markedHistory }) });
-    const snapshot = riskSnapshot({
+    const input: RiskInput = {
       session: this.#d.session, mode: 'paper', clock: { now: () => ({ slot: this.#lastSlot ?? 0n, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt: now }) },
       account, latches: fact.latches, market: { solPrice: sol, solBalance: fact.solBalance, regime: 'unknown' },
-    });
+    };
+    // RISK-FAULT: a valuation risk cannot make is said once when it starts and once when it clears, never silent.
+    const exit = evaluateExit(input);
+    if (exit.fault !== null && this.#valuationFault === null) this.#d.log(`Risk could not value the account: ${exit.fault}. Nothing is latched from it until it can.`);
+    if (exit.fault === null && this.#valuationFault !== null) this.#d.log('Risk can value the account again.');
+    this.#valuationFault = exit.fault;
+    const snapshot = riskSnapshot(input);
     if (snapshot === null) return;
     const maxAge = policy.gates.maxQuoteAgeMs;
     const marked = account.openPositions.every((o) => o.mark !== null && o.markAtMs !== null && o.markAtMs <= now && now - o.markAtMs <= maxAge);
+    // RISK-LATCH: an account-level trip (R9, R10) seen on this valuation is latched now, whether or not an entry or an
+    // exit is being evaluated, so a breach that recovers before the next one still holds until the owner reviews it.
+    // Only a fully marked valuation at a fresh SOL price latches: an unknown mark is a stand-in loss, not a breach.
+    if (latchable(account, sol, now, maxAge)) {
+      const trips = exit.trips;
+      if (trips.length > 0) {
+        this.#d.log(`Risk tripped on the account valuation: ${[...trips].sort().join(', ')} (equity ${snapshot.equity}, NAV ${snapshot.nav ?? 'unknown'}).`);
+        this.#latch(trips, now);
+      }
+    }
     const day = this.#account.state.dayMark?.startMs;
     if (this.#account.mark(snapshot, marked, this.#ctl.latches.killRearmedAtMs, now)) {
       if (day !== this.#account.state.dayMark?.startMs) this.#d.log(`Account marks: equity ${snapshot.equity} at ${new Date(now).toISOString()} for the Melbourne day from ${new Date(snapshot.dayStartMs).toISOString()}.`);
       this.#publishAccount();
     }
+  }
+
+  /** Latches R10 and R9 at `at` (a latch already set keeps its moment), saves them in control.json and puts the account. */
+  #latch(trips: readonly string[], at: number): void {
+    const l = this.#ctl.latches;
+    this.#ctl = {
+      ...this.#ctl,
+      latches: {
+        ...l,
+        killTrippedAtMs: trips.includes('kill_switch') && l.killTrippedAtMs === null ? at : l.killTrippedAtMs,
+        weeklyTrippedAtMs: trips.includes('weekly_loss') && l.weeklyTrippedAtMs === null ? at : l.weeklyTrippedAtMs,
+      },
+    };
+    this.#control.write(this.#ctl);
+    this.#publishAccount();
   }
 
   #afterRecord(r: LogRecord): void {
@@ -813,20 +869,7 @@ export class Worker {
       else this.#d.log(`Shortlisted ${mint ?? '?'}: its create was not seen by this process; H9 and H12-H14 wait for it.`);
     }
     const trips = r.reasons.filter((x) => x.startsWith(TRIP_PREFIX)).map((x) => x.slice(TRIP_PREFIX.length));
-    if (trips.length > 0) {
-      const at = r.at.receivedAt;
-      const l = this.#ctl.latches;
-      this.#ctl = {
-        ...this.#ctl,
-        latches: {
-          ...l,
-          killTrippedAtMs: trips.includes('kill_switch') && l.killTrippedAtMs === null ? at : l.killTrippedAtMs,
-          weeklyTrippedAtMs: trips.includes('weekly_loss') && l.weeklyTrippedAtMs === null ? at : l.weeklyTrippedAtMs,
-        },
-      };
-      this.#control.write(this.#ctl);
-      this.#publishAccount();
-    }
+    if (trips.length > 0) this.#latch(trips, r.at.receivedAt);
     if (r.action?.type === 'propose_entry') this.#intentAt.set(r.action.intent.id, r.at.receivedAt);
     this.#view(r);
   }
@@ -971,7 +1014,7 @@ export class Worker {
     // Entries wait for the seed; this halt is released ahead of every live event, so the index waits with them.
     this.#seeding = true;
     this.#checkHalt(d.timers.now());
-    this.#sources = d.sources({ feed: this.#feed, timers: d.timers, pools: () => this.#strategy.watchedPools() });
+    this.#sources = d.sources({ feed: this.#feed, timers: d.timers, pools: () => this.#strategy.watchedPools(), journal: (kind, fields) => this.#journal.write(kind, fields) });
     for (const s of this.#sources) this.#feeds.set(s.name, { src: s, connected: false, last: null, droppedUntil: 0 });
     try {
       this.#server = await startHealthServer(d.config.health.host, d.config.health.port, {
@@ -1301,6 +1344,7 @@ export class Worker {
       reconciled: this.#reconciled, exit_capable: this.#exitCapable(now), quota: ops.quota, lookups: ops.lookups, entries_halted: this.#halted.length > 0, halt_reasons: [...this.#halted], critical: [...(this.#watch?.critical ?? [])], feeds, journal_seq: this.#journal.seq, signing_key: false,
       entry_rule: this.#d.config.strategy.name,
       ...(this.#d.strategy.s0Diagnostic === true ? { s0_diagnostic: S0_DIAGNOSTIC_PARTS } : {}),
+      ...(this.#seedOutcome === null ? {} : { graduates_seed: this.#seedOutcome }),
     };
     return h;
   }
