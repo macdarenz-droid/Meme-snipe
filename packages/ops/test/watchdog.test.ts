@@ -1,6 +1,6 @@
 import { createHmac } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
-import { evaluate, isNewer, limitsFrom, parseCommand, parseHeartbeat, planAlerts, sign, statusText, takeLease, verifySignature, type Heartbeat, type Stored } from '../src/watchdog/logic.ts';
+import { MAX_LISTED, chunkLines, evaluate, isNewer, limitsFrom, parseCommand, parseHeartbeat, planAlerts, sign, statusText, takeLease, unsent, verifySignature, type Heartbeat, type Stored } from '../src/watchdog/logic.ts';
 import worker, { Watchdog, type DurableState, type Env } from '../src/watchdog/worker.ts';
 
 const KEY = 'test-hmac-key-0123456789abcdef';
@@ -109,6 +109,24 @@ describe('checks', () => {
     // An older sender without the list: its one position still counts.
     expect(evaluate(stored(hb({ open_position: { ...a, mark: 0.4 } })), T0, L, noChain).map((x) => x.key)).toEqual(['stop:MintA']);
     expect(statusText(stored(hb({ open_position: a, open_positions: [a, b] })), T0, null, {}, null)).toContain('Positions: MintA, stop 0.5; MintB, stop 0.5.');
+  });
+
+  it(`reads at most ${MAX_LISTED} open positions and critical lines, and says what it cut`, () => {
+    const p = (i: number) => ({ mint: `M${i}`, qty: 1, entry: 1, stop: 0.5, mark: 1, last_exit_attempt_ts: null });
+    const big = parseHeartbeat(JSON.stringify(hb({ open_positions: Array.from({ length: 70 }, (_, i) => p(i)), critical: Array.from({ length: 80 }, (_, i) => `c${i}`) })))!;
+    expect(big.open_positions).toHaveLength(MAX_LISTED);
+    expect(big.critical).toHaveLength(MAX_LISTED);
+    expect(big.critical!.slice(-2)).toEqual([`70 open positions reported, only the first ${MAX_LISTED} are checked`, `18 more critical alerts (see the app)`]);
+    expect(big.critical![61]).toBe('c61');
+    const small = parseHeartbeat(JSON.stringify(hb({ open_positions: [p(1)], critical: ['c'] })))!;
+    expect(small.critical).toEqual(['c']);
+    expect(small.open_positions).toHaveLength(1);
+  });
+
+  it('chunks lines on their boundaries, and cuts only a line longer than a message', () => {
+    expect(chunkLines(['a', 'b', 'c'], 3)).toEqual({ texts: ['a\nb', 'c'], ends: [2, 3] });
+    expect(chunkLines(['abcdefg', 'h'], 3)).toEqual({ texts: ['abc', 'def', 'g', 'h'], ends: [0, 0, 1, 2] });
+    expect(chunkLines([], 3)).toEqual({ texts: [], ends: [] });
   });
 
   it('flags old unresolved intents, a low reserve and an unreachable signer', () => {
@@ -284,6 +302,72 @@ describe('Durable Object', () => {
     const r = await h.dob.check(Date.now());
     expect(r.sent).toEqual([expect.stringMatching(/^ALERT No heartbeat/)]);
     expect(h.sent.at(-1)?.text).toMatch(/^ALERT No heartbeat/);
+    vi.unstubAllGlobals();
+  });
+
+  // ALERT-EXIT review (ops, blocking): Telegram refuses a message over 4,096 characters, and a send that fails must
+  // never leave its lines marked sent.
+  const incident = (n: number) => Array.from({ length: n }, (_, i) => `Mint${String(i).padStart(2, '0')}${'x'.repeat(150)}: exit blocked, position p${i} (no quote: no-liquidity)`);
+
+  it('a batch over 4,096 characters goes out as several messages on line boundaries, every line once', async () => {
+    const h = harness({ CHAIN_RPC_URL: '' });
+    const critical = incident(30);
+    await h.signed('/heartbeat', JSON.stringify(hb({ seq: 1, owner_chat_id: '42', critical })));
+    const r = await h.dob.check(Date.now());
+    expect(r.sent).toHaveLength(30);
+    expect(h.sent.length).toBeGreaterThan(1);
+    expect(h.sent.every((m) => m.text.length <= 4096)).toBe(true);
+    expect(h.sent.flatMap((m) => m.text.split('\n'))).toEqual(critical.map((c) => `ALERT Worker critical: ${c}.`));
+    expect((await h.dob.check(Date.now())).sent).toEqual([]);
+    vi.unstubAllGlobals();
+  });
+
+  it('a failed send leaves its lines unsent, and the next check sends them; lines already delivered are not repeated', async () => {
+    const h = harness({ CHAIN_RPC_URL: '' });
+    const critical = incident(30);
+    await h.signed('/heartbeat', JSON.stringify(hb({ seq: 1, owner_chat_id: '42', critical })));
+    // Telegram accepts the first message and refuses the next (a 429 or a 400).
+    let accepted = 1;
+    const texts: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (_u: string | URL | Request, init?: RequestInit) => {
+      const text = (JSON.parse(String(init?.body)) as { text: string }).text;
+      if (accepted-- <= 0) return new Response('{"ok":false}', { status: 429 });
+      texts.push(text);
+      return new Response('{"ok":true}');
+    }));
+    const first = await h.dob.check(Date.now());
+    expect(first.sent.length).toBeGreaterThan(0);
+    expect(first.sent.length).toBeLessThan(30);
+    // Telegram is back: the rest goes out, nothing twice.
+    accepted = 100;
+    const second = await h.dob.check(Date.now());
+    expect([...first.sent, ...second.sent]).toEqual(critical.map((c) => `ALERT Worker critical: ${c}.`));
+    expect(texts.flatMap((t) => t.split('\n'))).toEqual(critical.map((c) => `ALERT Worker critical: ${c}.`));
+    expect((await h.dob.check(Date.now())).sent).toEqual([]);
+    vi.unstubAllGlobals();
+  });
+
+  it('a cleared line that fails to send is sent on the next check; a refused repeat stays due', () => {
+    const a = [{ key: 'k', text: 'Thing.' }];
+    const up = planAlerts({}, a, T0, L).next;
+    const clear = planAlerts(up, [], T0 + 60_000, L);
+    expect(clear.lines).toEqual(['CLEARED Thing.']);
+    const kept = unsent(up, clear, 0);
+    expect(planAlerts(kept, [], T0 + 120_000, L).lines).toEqual(['CLEARED Thing.']);
+    const still = planAlerts(up, a, T0 + 300_000, L);
+    expect(still.lines).toEqual(['STILL Thing. (since 5 min)']);
+    expect(planAlerts(unsent(up, still, 0), a, T0 + 360_000, L).lines).toEqual(['STILL Thing. (since 6 min)']);
+  });
+
+  it('old alert keys are dropped once with no cleared line; their alerts come back under the new keys', async () => {
+    const h = harness({ CHAIN_RPC_URL: '' });
+    const pos = { mint: 'MintA', qty: 1, entry: 1, stop: 0.5, mark: 0.4, last_exit_attempt_ts: null };
+    await h.signed('/heartbeat', JSON.stringify(hb({ seq: 1, owner_chat_id: '42', open_position: pos })));
+    const old = { since: Date.now() - 60_000, lastSent: Date.now() - 60_000 };
+    h.mem.set('alerts', { stop: { text: 'MintA is below its stop.', ...old }, position: { text: 'p', ...old }, worker_critical: { text: 'w', ...old } });
+    const r = await h.dob.check(Date.now());
+    expect(r.sent).toEqual(['ALERT MintA is below its stop with no exit attempt in the last 60 s.']);
+    expect(Object.keys(h.mem.get('alerts') as object)).toEqual(['stop:MintA']);
     vi.unstubAllGlobals();
   });
 

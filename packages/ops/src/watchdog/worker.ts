@@ -7,6 +7,9 @@ import {
   parseCommand,
   parseHeartbeat,
   planAlerts,
+  chunkLines,
+  unsent,
+  withoutLegacyKeys,
   statusText,
   takeLease,
   sameText,
@@ -202,10 +205,12 @@ export class Watchdog {
     const current = evaluate(stored, now, limits, chain);
     const failed = await s.get<{ reason: string; at: number }>('summary_failure');
     if (failed) current.push(summaryAlert(failed.reason));
-    const { lines, next } = planAlerts((await s.get<Record<string, ActiveAlert>>('alerts')) ?? {}, current, now, limits);
-    await s.put('alerts', next);
-    if (lines.length) await this.say(lines.join('\n'));
-    return { alerts: current.map((a) => a.key), sent: lines };
+    const active = withoutLegacyKeys((await s.get<Record<string, ActiveAlert>>('alerts')) ?? {});
+    const plan = planAlerts(active, current, now, limits);
+    // Only what reached the owner is marked sent; the rest is planned again on the next check.
+    const delivered = plan.lines.length ? await this.say(plan.lines) : 0;
+    await s.put('alerts', unsent(active, plan, delivered));
+    return { alerts: current.map((a) => a.key), sent: plan.lines.slice(0, delivered) };
   }
 
   /** Slot and wallet holdings from a different RPC than the worker uses. Failures leave the check out. */
@@ -243,18 +248,32 @@ export class Watchdog {
     return { slot, heldMints };
   }
 
-  private async say(text: string): Promise<void> {
+  /**
+   * Sends lines to the owner in messages Telegram accepts (at most 4,096 characters, split on line boundaries), in
+   * order, stopping at the first that is not accepted. Returns how many lines were delivered whole.
+   */
+  private async say(text: string | readonly string[]): Promise<number> {
+    const lines = typeof text === 'string' ? [text] : text;
     const token = this.env.TELEGRAM_BOT_TOKEN;
     const chat = await this.state.storage.get<string>('owner_chat');
-    if (!token || !chat) return;
+    if (!token || !chat) return 0;
     const base = this.env.TELEGRAM_API ?? 'https://api.telegram.org';
-    try {
-      await fetch(`${base}/bot${token}/sendMessage`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ chat_id: chat, text, disable_web_page_preview: true }),
-        signal: AbortSignal.timeout(5000),
-      });
-    } catch {}
+    const { texts, ends } = chunkLines(lines);
+    let delivered = 0;
+    for (let i = 0; i < texts.length; i++) {
+      try {
+        const res = await fetch(`${base}/bot${token}/sendMessage`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ chat_id: chat, text: texts[i], disable_web_page_preview: true }),
+          signal: AbortSignal.timeout(5000),
+        });
+        if (!res.ok) return delivered;
+      } catch {
+        return delivered;
+      }
+      delivered = ends[i]!;
+    }
+    return delivered;
   }
 }

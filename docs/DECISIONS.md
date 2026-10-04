@@ -1310,6 +1310,32 @@ Built to the supervisor's revised spec and the consensus rulings that followed i
   - The watchdog checks each position's stop and matches every reported mint against the wallet. An older sender without the list still counts its one position.
   - Alert keys are per mint (`stop:<mint>`, `position:<mint>`), so a second position's breach is pushed at once. The key does not change when the position count does.
   - Tests: two positions, the second below its stop, alert on the second. Both below, two alerts. The wallet holds one of two, alert on the other. The status line names every position. These failed before.
+- **2026-10-05 · What the watchdog sends is never lost (ops review of #178, blocking).**
+  - **The defect.** Telegram refuses a message over 4,096 characters. The watchdog sent each check's lines as one unchecked message, after marking them sent. So a large incident (about 30 per-position lines) was lost silently, and so was any message Telegram refused (a 429 or a 400).
+  - **The fix.**
+    - `say` splits the lines into messages of at most 4,096 characters, on line boundaries. A longer line is cut into pieces of its own.
+    - The messages are sent in order, and each reply is checked. Sending stops at the first refused message.
+    - Only the lines delivered whole are marked sent (`unsent`). On the next check, a new alert not delivered is sent again, a repeat not delivered stays due, and a cleared line not delivered is sent again.
+  - **Also, under the golden rule.**
+    - The old keys `stop`, `position` and `worker_critical` are dropped once, with no misleading cleared line; their alerts come back under the new keys.
+    - A heartbeat is read with at most 64 open positions and 64 critical lines. What is cut is named in a critical line of its own, never dropped silently.
+  - **Tests.**
+    - 30 long lines go out as several messages, each at most 4,096 characters, every line once.
+    - Telegram refusing the second message: the rest goes out on the next check, nothing twice.
+    - A refused cleared line or repeat is planned again.
+    - The old keys are dropped, and the alert returns under its new key.
+    - The caps.
+    - The DO tests failed on the old sender.
+  - **Mutants.** 9 of 9 killed:
+    - the reply unchecked;
+    - every line marked sent;
+    - no size limit;
+    - no key migration;
+    - a new alert kept as sent;
+    - a cleared alert dropped;
+    - no position cap;
+    - a silent critical cap;
+    - a cut line counted as delivered.
 - **Mutants.** 9 of 9 killed:
   - no exit lines in /health;
   - the wrong status;
