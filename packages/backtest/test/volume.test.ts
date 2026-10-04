@@ -8,8 +8,9 @@ const POOL = '62jTpYEzdU7a8ayjgedtU7J43fqesgYRfJAi8rX7VgJS';
 const OTHER_POOL = 'GVhfB8GTUrFiRE2JX5MZ6rk621kSc6aCXr54kpNYitYz';
 const DAY = '2026-09-01';
 const T0 = Date.parse(`${DAY}T00:00:00Z`) / 1000;
+/** The volume_hours CSV of DAY as the scanner writes it (header + 24 rows). */
 const hourRows = (lamports: Record<number, string>, covered = '1') =>
-  Array.from({ length: 24 }, (_, i) => ({ hour_start_ms: String((T0 + i * 3600) * 1000), lamports: lamports[i] ?? '0', covered }));
+  ['hour_start_ms,lamports,covered', ...Array.from({ length: 24 }, (_, i) => `${(T0 + i * 3600) * 1000},${lamports[i] ?? '0'},${covered}`)].join('\n') + '\n';
 
 describe('volume hours', () => {
   it('recognises the canonical WSOL pool of a real migration and nothing else', () => {
@@ -36,14 +37,19 @@ describe('volume hours', () => {
     expect(ok).toMatchObject({ hours: 24, hours_covered: 24, hours_matched: 24, lamports_total: '1123' });
   });
 
-  it('fails a differing hour, a missing hour, a bad covered value and an uncovered hour on a complete day', () => {
+  it('fails a differing hour, a file the core parser refuses, and an uncovered hour on a complete day', () => {
     const sums = new Map([[T0 + 5 * 3600, 1123n]]);
     const off = compareVolumeHours(DAY, hourRows({ 5: '1122' }), sums, false);
     expect(off.mismatches).toEqual([{ hour_start_ms: String((T0 + 5 * 3600) * 1000), volume_hours: '1122', rederived: '1123' }]);
-    expect(volumeFailed(compareVolumeHours(DAY, hourRows({ 5: '1123' }).slice(0, 23), sums, false))).toBe(true);
-    const bad = hourRows({ 5: '1123' });
-    bad[3] = { ...bad[3]!, covered: 'yes' };
-    expect(compareVolumeHours(DAY, bad, sums, false).problems).toEqual(['row 3: covered "yes"']);
+    const refused = (csv: string) => compareVolumeHours(DAY, csv, sums, false).problems;
+    const ok = hourRows({ 5: '1123' });
+    const lines = ok.trimEnd().split('\n');
+    expect(refused(lines.slice(0, 24).join('\n'))).toHaveLength(1); // 23 hours
+    expect(refused(ok.replace(',0,1\n', ',0,yes\n'))).toHaveLength(1); // covered not 0/1
+    expect(refused(ok.replace('hour_start_ms,', 'hour,'))).toHaveLength(1); // header
+    expect(refused([lines[0], lines[2], lines[1], ...lines.slice(3)].join('\n'))).toHaveLength(1); // hours out of order
+    expect(refused(ok.replace(/\n\d+,1123,1/, `\n${(T0 + 5 * 3600) * 1000},18446744073709551616,1`))).toHaveLength(1); // above u64
+    expect(volumeFailed(compareVolumeHours(DAY, lines.slice(0, 24).join('\n'), sums, false))).toBe(true);
     expect(compareVolumeHours(DAY, hourRows({ 5: '1123' }, '0'), sums, true).problems).toHaveLength(24);
     expect(volumeFailed(compareVolumeHours(DAY, hourRows({ 5: '1123' }, '0'), sums, false))).toBe(false);
   });
