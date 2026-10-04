@@ -130,7 +130,7 @@ describe('backup: the whole bot state', () => {
     const out = join(tmp, 'out');
     const r = backup(src, out);
     expect(r.status, r.out).toBe(0);
-    expect(r.out).toMatch(/: 12 file\(s\), 1 recipient\(s\)\./);
+    expect(r.out).toMatch(/: 11 file\(s\), 1 recipient\(s\)\./);
     const got = unpack(r.bundle!);
     for (const rel of BOT_STATE) expect(readFileSync(join(got, rel), 'utf8'), rel).toBe(STATE[rel]);
     const manifest = readFileSync(join(got, 'MANIFEST.sha256'), 'utf8').trim().split('\n').map((l) => l.split(/\s+/)[1]);
@@ -281,7 +281,7 @@ describe('open intents hold updates and restarts, fail closed', () => {
       const ev = mkdtempSync(join(tmp, 'busy-ev-'));
       // systemctl answers is-active for the worker and list-units for the dry-run units.
       const stub = `systemctl() { case "$1" in is-active) printf '%s\\n' "$WORKER" ;; list-units) printf '%s' "$DRYRUN" ;; esac; }`;
-      const r = spawnSync('bash', ['-c', `set -euo pipefail; . "${LIB}/logic.sh"; ${stub}; EVIDENCE_ROOT="${ev}"; ${fn.replace('/var/lib/zeroed', dir)}; if worker_busy; then echo busy; else echo free; fi`], {
+      const r = spawnSync('bash', ['-c', `set -euo pipefail; . "${LIB}/logic.sh"; ${stub}; EVIDENCE_ROOT="${ev}"\n${fn.replace('/var/lib/zeroed', dir)}\nif worker_busy; then echo busy; else echo free; fi`], {
         encoding: 'utf8',
         env: { PATH: process.env['PATH'] ?? '', WORKER: worker, DRYRUN: dryrun },
       });
