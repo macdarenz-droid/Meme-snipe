@@ -194,8 +194,20 @@ export const eventsOfFrame = (f: Frame, ranks: ReadonlyMap<string, number>): Fee
     }
     case 'tx': {
       const r = b.record;
-      // Only DEC-1's decoder reads transaction bytes (FEED-1 card: never a second decoder).
-      return transactionEvents(r).map((e): FeedEvent => {
+      // Only DEC-1's decoder reads transaction bytes (FEED-1 card: never a second decoder). A transaction it cannot
+      // decode is a fact gap, never a crash: one `tx:undecodable` event, and no `ev:` event, so a cut log it was
+      // fetched for stays a hole (the deployer index clears a hole only on an `ev:` event).
+      let decoded: ReturnType<typeof transactionEvents>;
+      try {
+        decoded = transactionEvents(r);
+      } catch (e) {
+        return [{
+          kind: 'market', id: `txerr:${r.signature}${sfx}`,
+          moment: chain ? { slot: f.place.slot, txIndex: txIndexOf(r.signature), ixIndex: 0, receivedAt: f.receivedAt } : off,
+          key: 'tx:undecodable', value: { signature: r.signature, txSlot: r.slot, error: e instanceof Error ? e.message : 'undecodable', ...meta(f) },
+        }];
+      }
+      return decoded.map((e): FeedEvent => {
         const subject = e.name === 'other' ? e.program : ('mint' in e.data ? e.data.mint : 'pool' in e.data ? e.data.pool : e.program);
         return {
           kind: 'market', id: `ev:${r.signature}:${pad(e.outerIx)}:${pad(e.innerIx)}${sfx}`,
@@ -218,6 +230,16 @@ export const eventsOfFrame = (f: Frame, ranks: ReadonlyMap<string, number>): Fee
       return [{ kind: 'market', id: `${b.key}${sfx}`, moment: off, key: b.key, value: b.value }];
     case 'world':
       return [{ kind: 'world', id: `world${sfx}`, moment: off, event: b.event }];
+  }
+};
+
+/** True when DEC-1's decoder reads the transaction: a fetched transaction it cannot decode is not a read one. */
+export const decodable = (r: TransactionRecord): boolean => {
+  try {
+    transactionEvents(r);
+    return true;
+  } catch {
+    return false;
   }
 };
 
