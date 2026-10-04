@@ -906,6 +906,30 @@ describe('the entry decision survives a kill before its plan is made (EXIT-1h)',
     expect(seedsFile(h.stateDir).read({})[p.entryIntentId]).toBeUndefined();
     await b.worker.stop();
   });
+  it('the same kill with its saved seed lost: neither plan nor seed comes back, so sell-only recovery exits the whole holding (EXIT-1g review N3)', async () => {
+    const h = makeWorker();
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    const m = await passingMarket(h, HELD);
+    expect(await until(m, 30_000, () => positions(h).some((p) => p.status === 'open'), () => {
+      m.slot();
+      m.pool();
+    })).toBe(true);
+    const p = positions(h).find((x) => x.status === 'open')!;
+    expect(exitsFile(h.stateDir).read({})[p.id]).toBeUndefined();
+    await h.worker.kill();
+    const seeds = seedsFile(h.stateDir);
+    seeds.write(Object.fromEntries(Object.entries(seeds.read({})).filter(([k]) => k !== String(p.entryIntentId))));
+    const { b, m: m2, first, mine } = await reboot(h, LANDS);
+    expect(await until(m2, 4_000, () => b.worker.strategy.saved()[p.id] !== undefined, () => m2.slot())).toBe(true);
+    // The restart has no saved plan for the booked position and no seed to make one from.
+    expect(first('recovery exit').map((l) => l['reasons'])).toEqual([['recovery exit', p.id, 'no saved plan', 'the whole holding exits at the next fresh quote']]);
+    expect(b.worker.strategy.saved()[p.id]!.recovery).toBe('no saved plan');
+    // At an unchanged price the whole holding exits at the first fresh quote, on the ladder's first rung.
+    m2.pool();
+    expect(await until(m2, 4_000, () => mine().some((l) => l['action'] === 'trigger_exit') && first('prepare exit').length > 0, () => m2.slot())).toBe(true);
+    expect(first('prepare exit')[0]!['reasons']).toContain('rung 0');
+    await b.worker.stop();
+  });
 });
 
 describe('the --reconcile entry (the host unit\'s ExecStartPre)', () => {
