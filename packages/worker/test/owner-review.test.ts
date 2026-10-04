@@ -36,7 +36,7 @@ describe('owner commands against the open stops', () => {
   const trades = [1, 2, 3, 4, 5, 6].map((i) => ({ mint: `M${i}`, openedAtMs: T - 7_200_000 + i, closedAtMs: T - 3_600_000 + i * 60_000, notional: 2_000_000n, netPnl: i === 6 ? 50_000n : -100_000n, stoppedOut: i !== 6 }) as never);
   // A stand-in sum that shows which closes it was asked for.
   const stops = (l: Latches): OpenStops =>
-    openStops({ latches: l, closed: trades, loss: LOSS, netLamports: (from, to) => BigInt(to - from), snapshot: null, codes: [], latchable: true, toLamports: (v) => v * 10n, dayLine: 1_500_000n });
+    openStops({ latches: l, closed: trades, loss: LOSS, netLamports: (from, to) => BigInt(to - from), snapshot: null, codes: [], latchable: true, toLamports: (v) => v * 10n, dayLine: 1_500_000n, offer: 7 });
 
   it('names each open stop by kind and moment; a cleared one is not open', () => {
     const s = stops(latched);
@@ -87,13 +87,13 @@ describe('owner commands against the open stops', () => {
     const DAY = melbourneDay(T).start;
     const snap = { dayStartMs: DAY, dayLoss: 1_600_000n, lossStreak: 2 } as unknown as RiskSnapshot;
     const day = (codes: string[], l: Latches = NO_LATCHES, snapshot: RiskSnapshot | null = snap, latchable = true) =>
-      openStops({ latches: l, closed: [], loss: LOSS, netLamports: () => 0n, snapshot, codes, latchable, toLamports: (v) => v * 10n, dayLine: 1_500_000n });
+      openStops({ latches: l, closed: [], loss: LOSS, netLamports: () => 0n, snapshot, codes, latchable, toLamports: (v) => v * 10n, dayLine: 1_500_000n, offer: 7 });
     const at = (o: Partial<DayOverride>): Latches => ({ ...NO_LATCHES, dayOverride: { atMs: DAY + 1, dayStartMs: DAY, dayLossAt: null, streak: true, count: 1, ...o } });
 
     it('is open while risk shows a day-level stop, with the day loss and limit in SOL, and names the day and its overrides', () => {
       const s = day(['daily_loss', 'loss_cooldown', 'entries_per_day']).override;
       expect(s?.trip).toBe(`override-${DAY}-0`);
-      expect(s?.evidence).toEqual({ daily: 1, streak: 2, day_loss_lamports: '16000000', day_line_lamports: '15000000', overrides: 0, day_ends_ms: melbourneDay(T).end });
+      expect(s?.evidence).toEqual({ daily: 1, streak: 2, day_loss_lamports: '16000000', day_line_lamports: '15000000', overrides: 0, day_ends_ms: melbourneDay(T).end, offer: 7 });
       expect(day(['loss_day_pause']).override?.evidence).toMatchObject({ daily: 0, streak: 2 });
       expect(day(['daily_loss']).override?.evidence).toMatchObject({ daily: 1, streak: 0 });
       // Not a day-level stop, or no valuation yet: nothing to override.
@@ -109,7 +109,7 @@ describe('owner commands against the open stops', () => {
     it('applies only what was tripped: R7 from the loss at the override, the streak if a streak pause was open', () => {
       const apply = (codes: string[], l: Latches = NO_LATCHES) => {
         const s = day(codes, l);
-        return handleCommand({ id: 'o', kind: 'override', trip: s.override!.trip, at: T }, s, l, [], T);
+        return handleCommand({ id: 'o', kind: 'override', trip: s.override!.trip, at: T, offer: 7 }, s, l, [], T, (k) => (k === 7 ? s.override!.dayLoss : undefined));
       };
       expect(apply(['daily_loss'])?.latches.dayOverride).toEqual({ atMs: T, dayStartMs: DAY, dayLossAt: 1_600_000n, streak: false, count: 1, firstAtMs: T });
       expect(apply(['loss_cooldown'])?.latches.dayOverride).toEqual({ atMs: T, dayStartMs: DAY, dayLossAt: null, streak: true, count: 1, firstAtMs: T });
@@ -123,6 +123,19 @@ describe('owner commands against the open stops', () => {
       // An earlier override's confirm (count 0) after one was applied (count 1) is stale.
       const s = day(['daily_loss'], at({ count: 1 }));
       expect(handleCommand({ id: 'old', kind: 'override', trip: `override-${DAY}-0`, at: T }, s, at({ count: 1 }), [], T)?.entry.result).toBe('stale');
+      // The offer the owner confirmed (supervisor ruling): its day loss was 1.6; the fresh valuation's is `snap`'s 1.6.
+      const s7 = day(['daily_loss']);
+      const confirm = (offered: bigint | undefined, offer: number | null = 7) =>
+        handleCommand({ id: 'c', kind: 'override', trip: s7.override!.trip, at: T, offer }, s7, NO_LATCHES, [], T, () => offered);
+      // The day got worse since the offer: not applied, `changed` (offered again with the new figures).
+      expect(confirm(1_599_999n)?.entry.result).toBe('changed');
+      expect(confirm(1_599_999n)?.latches).toBe(NO_LATCHES);
+      // No worse: applied with the fresh figure, even when the offer showed more.
+      expect(confirm(1_600_000n)?.latches.dayOverride?.dayLossAt).toBe(1_600_000n);
+      expect(confirm(1_700_000n)?.latches.dayOverride?.dayLossAt).toBe(1_600_000n);
+      // An offer this process never made (a restart in between), or none named: stale.
+      expect(confirm(undefined)?.entry.result).toBe('stale');
+      expect(confirm(1_600_000n, null)?.entry.result).toBe('stale');
       // Nothing open: stale.
       expect(handleCommand({ id: 'x', kind: 'override', trip: `override-${DAY}-0`, at: T }, day([]), NO_LATCHES, [], T)?.entry.result).toBe('stale');
     });
@@ -149,7 +162,7 @@ describe('owner commands against the open stops', () => {
     expect(commandsOf(undefined)).toEqual([]);
     expect(commandsOf('x')).toEqual([]);
     expect(commandsOf([null, 1, { id: 'bad id!', kind: 'rearm', trip: 'rearm-1' }, { id: 'a', kind: 'rearm' }, { id: 'b', kind: 'rearm', trip: 'rearm-1', at: 5 }, { id: 'c', kind: 'rearm', trip: 'rearm-1', at: 1.5 }]))
-      .toEqual([{ id: 'b', kind: 'rearm', trip: 'rearm-1', at: 5 }, { id: 'c', kind: 'rearm', trip: 'rearm-1', at: null }]);
+      .toEqual([{ id: 'b', kind: 'rearm', trip: 'rearm-1', at: 5, offer: null }, { id: 'c', kind: 'rearm', trip: 'rearm-1', at: null, offer: null }]);
     expect(commandsOf(Array.from({ length: 20 }, (_, i) => ({ id: `c${i}`, kind: 'rearm', trip: 'rearm-1' })))).toHaveLength(8);
   });
 });
@@ -363,7 +376,7 @@ describe('owner commands through the heartbeat (worker harness)', () => {
     const text = JSON.stringify({ ok: true, paused: false, commands: [{ id: 'a', kind: 'rearm', trip: 'rearm-1', at: 1 }] });
     const beat = (sign: (v1: string) => string | null) =>
       sendHeartbeat(async (req) => ({ status: 200, header: () => sign(/v1=([0-9a-f]{64})$/.exec(req.headers!['x-zeroed-signature']!)![1]!), text }), 'https://w.test', 'k', '{}', 1_800_000_000_000);
-    expect(await beat((v1) => `t=1800000000,v1=${signReply('k', 1_800_000_000, v1, text)}`)).toEqual({ ok: true, paused: false, signed: true, commands: [{ id: 'a', kind: 'rearm', trip: 'rearm-1', at: 1 }] });
+    expect(await beat((v1) => `t=1800000000,v1=${signReply('k', 1_800_000_000, v1, text)}`)).toEqual({ ok: true, paused: false, signed: true, commands: [{ id: 'a', kind: 'rearm', trip: 'rearm-1', at: 1, offer: null }] });
     expect(await beat(() => null)).toEqual({ ok: true, paused: false, signed: false, commands: [] });
     expect(await beat((v1) => `t=1800000000,v1=${signReply('x', 1_800_000_000, v1, text)}`)).toEqual({ ok: true, paused: false, signed: false, commands: [] });
   });
@@ -421,7 +434,7 @@ describe('owner commands through the heartbeat (worker harness)', () => {
     const dayStart = melbourneDay(timers.now()).start;
     expect(stop?.trip).toBe(`override-${dayStart}-0`);
     expect(stop?.evidence).toMatchObject({ daily: 1, streak: 2, overrides: 0 });
-    w.reply([{ id: stop!.trip, kind: 'override', trip: stop!.trip }]);
+    w.reply([{ id: `${stop!.trip}:${stop!.evidence['offer']}`, kind: 'override', trip: stop!.trip, offer: stop!.evidence['offer'] }]);
     await h.worker.heartbeat();
     const applied = controlFile(h.stateDir).read(NO_CONTROL).latches.dayOverride;
     expect(applied).toMatchObject({ dayStartMs: dayStart, streak: true, count: 1 });
@@ -472,7 +485,7 @@ describe('owner commands through the heartbeat (worker harness)', () => {
     expect(held()?.status).toBe('open');
     expect(await offered()).toBeNull();
     const trip = `override-${melbourneDay(h.timers.now()).start}-0`;
-    w.reply([{ id: trip, kind: 'override', trip }]);
+    w.reply([{ id: trip, kind: 'override', trip, offer: 1 }]);
     await h.worker.heartbeat();
     w.reply(undefined);
     expect(controlFile(h.stateDir).read(NO_CONTROL).latches.dayOverride ?? null).toBeNull();
@@ -482,7 +495,7 @@ describe('owner commands through the heartbeat (worker harness)', () => {
     await until(m, 2_000, () => false, tick);
     const stop = await offered();
     expect(stop?.trip).toBe(trip);
-    w.reply([{ id: `${trip}:2`, kind: 'override', trip }]);
+    w.reply([{ id: `${trip}:2`, kind: 'override', trip, offer: stop!.evidence['offer'] }]);
     await h.worker.heartbeat();
     const o = controlFile(h.stateDir).read(NO_CONTROL).latches.dayOverride;
     // The real loss: the $1.60 and the position's marked move, below the total-loss stand-in ($1.60 plus its notional),
@@ -534,4 +547,81 @@ describe('owner commands through the heartbeat (worker harness)', () => {
     // With it in force from the start of that day: tagged.
     expect((await enter(o(day + 1))).entry['override']).toBe(true);
   });
+
+  it('/override applies the figures the owner confirmed or better: worse since the offer is `changed` and offered again; a restart makes it stale', async () => {
+    // A held position, fully marked, and steered losses closed today: $1.60, and a further $0.40 when `more` is set.
+    const seam = { lost: false, more: false };
+    const mark: typeof markedHistory = (h0, held, sol, nowMs, st) => {
+      const t = (mint: string, net: bigint, at: number) => ({ mint: mint as never, openedAtMs: at - 60_000, closedAtMs: at, notional: 3_000_000n as never, netPnl: net as never, stoppedOut: true });
+      const extra = [...(seam.lost ? [t('MintF', -1_600_000n, nowMs - 60_000)] : []), ...(seam.more ? [t('MintG', -400_000n, nowMs - 50_000)] : [])];
+      return markedHistory({ ...h0, closedTrades: [...h0.closedTrades, ...extra] }, held, sol, nowMs, st);
+    };
+    const clock = { now: () => 0 };
+    const w = watchdog(() => clock.now());
+    let h = makeWorker({ markedHistory: mark, key: 'k', http: w.http });
+    clock.now = () => h.timers.now();
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    let m = await passingMarket(h);
+    const read = h.worker.feed.releasedThrough;
+    m.tradesStart(read - 100n);
+    m.accountsRead(read);
+    expect(await until(m, 40_000, () => Object.values(h.worker.book.positions).some((p) => p.status === 'open'), () => { m.slot(); m.pool(); })).toBe(true);
+    const tick = (): void => {
+      m.slot();
+      m.chainSwap('buy', m.chainState.baseReserve / 1_000_000n, h.worker.feed.openSlot);
+      m.solPrice();
+    };
+    type Offer = { trip: string; evidence: Record<string, unknown> };
+    const loss = (o: Offer) => BigInt(String(o.evidence['day_loss_lamports']));
+    const offer = async (): Promise<Offer> => {
+      w.reply(undefined);
+      await until(m, 2_000, () => false, tick);
+      await h.worker.heartbeat();
+      return (w.sent.at(-1)!['review'] as Record<string, Offer | null>)['override']!;
+    };
+    const confirm = async (o: Offer) => {
+      w.reply([{ id: `${o.trip}:${o.evidence['offer']}`, kind: 'override', trip: o.trip, offer: o.evidence['offer'] }]);
+      await h.worker.heartbeat();
+      w.reply(undefined);
+      return controlFile(h.stateDir).read(NO_CONTROL);
+    };
+    // Worse after the offer: the owner saw about $1.60, the day is now $0.40 worse: `changed`, nothing written.
+    seam.lost = true;
+    const a = await offer();
+    seam.more = true;
+    await until(m, 2_000, () => false, tick);
+    let ctl = await confirm(a);
+    expect(ctl.commands?.at(-1)?.result).toBe('changed');
+    expect(ctl.latches.dayOverride ?? null).toBeNull();
+    // Offered again (same trip) with the new figure.
+    const b = await offer();
+    expect(b.trip).toBe(a.trip);
+    expect(loss(b)).toBeGreaterThan(loss(a));
+    // A restart between that offer and its confirm: the new process never made it, so the confirm is stale.
+    await h.worker.stop();
+    h = makeWorker({ markedHistory: mark, key: 'k', http: w.http, stateDir: h.stateDir, timers: h.timers });
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    m = new Market(h, { heldPoolFacts: true });
+    await until(m, 2_000, () => false, () => { m.slot(); m.pool(); m.solPrice(); });
+    ctl = await confirm(b);
+    expect(ctl.commands?.at(-1)?.result).toBe('stale');
+    expect(ctl.latches.dayOverride ?? null).toBeNull();
+    // Offered by the new process; the day then gets better before the confirm, which applies with the fresh, lower
+    // figure: never a looser line than the one the owner saw.
+    const c = await (async () => {
+      w.reply(undefined);
+      await until(m, 2_000, () => false, () => { m.slot(); m.pool(); m.solPrice(); });
+      await h.worker.heartbeat();
+      return (w.sent.at(-1)!['review'] as Record<string, Offer | null>)['override']!;
+    })();
+    expect(c.trip).toBe(a.trip);
+    seam.more = false;
+    await until(m, 2_000, () => false, () => { m.slot(); m.pool(); m.solPrice(); });
+    ctl = await confirm(c);
+    expect(ctl.commands?.at(-1)?.result).toBe('applied');
+    const applied = microUsdToLamports(ctl.latches.dayOverride!.dayLossAt!, SOL_PRICE as MicroUsd, 'ceil');
+    expect(applied).toBeLessThan(loss(c));
+    await h.worker.stop();
+  });
+
 });

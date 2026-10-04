@@ -17,9 +17,12 @@ export interface ReplyCommand {
   readonly kind: string;
   readonly trip: string;
   readonly at: number | null;
+  /** /override: the offer the owner confirmed (its evidence's `offer`), or null. */
+  readonly offer?: number | null;
 }
 
-export type OwnerResult = 'applied' | 'stale' | 'invalid' | 'expired';
+/** `changed`: an /override whose day loss grew after the offer the owner confirmed; it is offered again with the new figures. */
+export type OwnerResult = 'applied' | 'stale' | 'invalid' | 'expired' | 'changed';
 
 /** A confirm counts for 15 minutes (ops ruling): a /rearm never applies days later on evidence the owner saw long before. */
 export const COMMAND_TTL_MS = 15 * 60_000;
@@ -48,6 +51,8 @@ export interface OpenStop {
   readonly evidence: Evidence;
   /** /override only: the override an applied confirm writes (its `atMs` set when applied). */
   readonly override?: Omit<DayOverride, 'atMs'>;
+  /** /override only: the day's loss on this valuation (micro-dollars), compared with the offer the owner confirmed. */
+  readonly dayLoss?: bigint;
 }
 
 export type OpenStops = Readonly<Record<OwnerKind, OpenStop | null>>;
@@ -81,6 +86,8 @@ export interface StopInputs {
   readonly toLamports: (usd: bigint) => bigint | null;
   /** R7's line in force on that valuation's day (core dayLossLine: the limit, or beyond an override), micro-dollars. */
   readonly dayLine: bigint;
+  /** /override: this offer's number (its heartbeat's time), shown in its evidence; the owner's confirm names it. */
+  readonly offer: number;
 }
 
 const lamports = (v: bigint | null): string | null => (v === null ? null : v.toString());
@@ -127,7 +134,9 @@ const overrideStop = (i: StopInputs): OpenStop | null => {
     evidence: {
       daily: daily ? 1 : 0, streak: streak ? s.lossStreak : 0, day_loss_lamports: lamports(i.toLamports(s.dayLoss)),
       day_line_lamports: lamports(i.toLamports(i.dayLine)), overrides: count, day_ends_ms: s.dayStartMs + melbourneDayLength(s.dayStartMs),
+      offer: i.offer,
     },
+    dayLoss: s.dayLoss,
     override: { dayStartMs: s.dayStartMs, dayLossAt: daily ? s.dayLoss : null, streak, count: count + 1, ...(count > 0 && prev !== null ? { firstAtMs: prev.firstAtMs ?? prev.atMs } : {}) },
   };
 };
@@ -153,7 +162,8 @@ export const commandsOf = (raw: unknown): ReplyCommand[] => {
     if (typeof c !== 'object' || c === null) continue;
     const { id, kind, trip, at } = c as Record<string, unknown>;
     if (typeof id !== 'string' || !ID.test(id) || typeof kind !== 'string' || typeof trip !== 'string') continue;
-    out.push({ id, kind: kind.slice(0, 16), trip: trip.slice(0, 40), at: typeof at === 'number' && Number.isSafeInteger(at) ? at : null });
+    const offer = (c as Record<string, unknown>)['offer'];
+    out.push({ id, kind: kind.slice(0, 16), trip: trip.slice(0, 40), at: typeof at === 'number' && Number.isSafeInteger(at) ? at : null, offer: typeof offer === 'number' && Number.isSafeInteger(offer) ? offer : null });
   }
   return out;
 };
@@ -175,6 +185,7 @@ const reviewed = (l: Latches, kind: OwnerKind, atMs: number, stop: OpenStop): La
  */
 export const handleCommand = (
   c: ReplyCommand, stops: OpenStops, latches: Latches, handled: readonly HandledCommand[], nowMs: number,
+  offered: (offer: number) => bigint | undefined = () => undefined,
 ): { readonly latches: Latches; readonly entry: HandledCommand } | null => {
   if (handled.some((h) => h.id === c.id)) return null;
   const done = (result: OwnerResult, l: Latches = latches) => ({ latches: l, entry: { id: c.id, kind: c.kind, trip: c.trip, result, atMs: nowMs } });
@@ -183,7 +194,14 @@ export const handleCommand = (
   if (Math.abs(nowMs - c.at) > COMMAND_TTL_MS) return done('expired');
   const stop = stops[c.kind];
   if (stop === null || stop.trip !== c.trip || nowMs <= stop.atMs) return done('stale');
-  if (c.kind === 'override' && stop.override === undefined) return done('stale');
+  if (c.kind === 'override') {
+    // The owner confirmed one offer's figures (supervisor ruling, golden rule): never a looser line than those. An offer
+    // this process did not make (a restart in between) is stale; a day that got worse since is `changed`, and the next
+    // heartbeat offers it again with the new figures; otherwise the fresh figure (no worse) is used.
+    const was = c.offer === undefined || c.offer === null ? undefined : offered(c.offer);
+    if (stop.override === undefined || stop.dayLoss === undefined || was === undefined) return done('stale');
+    if (stop.dayLoss > was) return done('changed');
+  }
   return done('applied', reviewed(latches, c.kind, nowMs, stop));
 };
 

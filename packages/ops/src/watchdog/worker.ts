@@ -151,7 +151,7 @@ export class Watchdog {
     const pending = fresh.pending.map((p) => ({ ...p, sent: true }));
     if (pending.length > 0 || lines.length > 0) await this.state.storage.put('owner_cmds', pending);
     if (lines.length > 0) await this.say(lines.join('\n'));
-    const commands = pending.map(({ id, kind, trip, at }) => ({ id, kind, trip, at }));
+    const commands = pending.map(({ id, kind, trip, at, offer }) => ({ id, kind, trip, at, ...(offer === undefined ? {} : { offer }) }));
     // The reply is signed with the key that verified this heartbeat, bound to its signature (logic.ts signReply).
     const text = JSON.stringify({ ok: true, paused: Boolean(paused), ...(commands.length > 0 ? { commands } : {}) });
     const t = Math.floor(now / 1000);
@@ -272,10 +272,18 @@ export class Watchdog {
   private async ownerCommand(kind: OwnerKind, trip: string | null): Promise<void> {
     const review = reviewOf((await this.state.storage.get<Stored>('hb'))?.hb);
     if (trip === null) {
+      // /override: remember which offer's figures the owner was shown; the confirm names that offer.
+      const offer = review.override?.evidence['offer'];
+      if (kind === 'override') await this.state.storage.put('shown:override', review.override === null || typeof offer !== 'number' ? null : { trip: review.override.trip, offer });
       await this.say(stopText(kind, review[kind]));
       return;
     }
-    const q = queueConfirm((await this.state.storage.get<PendingCommand[]>('owner_cmds')) ?? [], review, kind, trip, Date.now());
+    const shown = kind === 'override' ? ((await this.state.storage.get<{ trip: string; offer: number }>('shown:override')) ?? null) : null;
+    if (kind === 'override' && shown?.trip !== trip) {
+      await this.say(`Not queued: send /override first to see the figures for ${trip}.`);
+      return;
+    }
+    const q = queueConfirm((await this.state.storage.get<PendingCommand[]>('owner_cmds')) ?? [], review, kind, trip, Date.now(), shown?.offer);
     if (!q.queued) {
       await this.say(`Not queued: ${trip} is not the current trip. Send /${kind} to see the current one.`);
       return;

@@ -267,12 +267,14 @@ export interface PendingCommand {
   at: number;
   /** Sent in a heartbeat reply at least once: from then on only the worker's acknowledgement settles it. */
   sent?: boolean;
+  /** /override: the offer whose figures the owner saw (its evidence's `offer`). */
+  offer?: number;
 }
 
 /** A confirm counts for 15 minutes: a /rearm never applies days later on evidence the owner saw long before. */
 export const COMMAND_TTL_MS = 15 * 60_000;
 
-export type AckResult = 'applied' | 'stale' | 'invalid' | 'expired';
+export type AckResult = 'applied' | 'stale' | 'invalid' | 'expired' | 'changed';
 
 /** The heartbeat's review block, checked field by field (signed, but never trusted blindly). Anything malformed reads as none. */
 export function reviewOf(hb: Heartbeat | undefined): Review {
@@ -298,7 +300,7 @@ export function reviewOf(hb: Heartbeat | undefined): Review {
 export function ackedOf(hb: Heartbeat): { id: string; result: AckResult }[] {
   if (!Array.isArray(hb.acked)) return [];
   return hb.acked.filter((a): a is { id: string; result: AckResult } =>
-    typeof a === 'object' && a !== null && typeof (a as { id?: unknown }).id === 'string' && ['applied', 'stale', 'invalid', 'expired'].includes((a as { result?: unknown }).result as string));
+    typeof a === 'object' && a !== null && typeof (a as { id?: unknown }).id === 'string' && ['applied', 'stale', 'invalid', 'expired', 'changed'].includes((a as { result?: unknown }).result as string));
 }
 
 /** Lamports (a decimal string) as SOL, exact: up to 9 decimals, trailing zeros dropped. */
@@ -357,9 +359,12 @@ export function stopText(kind: OwnerKind, stop: ReportedStop | null): string {
  * A confirm: queued only when the trip is the one the worker reports open now for that command. Pending holds at most
  * one command per kind (a new confirm replaces the old one).
  */
-export function queueConfirm(pending: readonly PendingCommand[], review: Review, kind: OwnerKind, trip: string, now: number): { queued: boolean; pending: PendingCommand[] } {
+export function queueConfirm(pending: readonly PendingCommand[], review: Review, kind: OwnerKind, trip: string, now: number, offer?: number): { queued: boolean; pending: PendingCommand[] } {
   if (review[kind]?.trip !== trip) return { queued: false, pending: [...pending] };
-  return { queued: true, pending: [...pending.filter((p) => p.kind !== kind), { id: trip, kind, trip, at: now }] };
+  // An /override confirm names the offer the owner saw, and is its own command: a second confirm of the same trip after
+  // new figures is a new command, never a repeat the worker would skip.
+  const cmd: PendingCommand = offer === undefined ? { id: trip, kind, trip, at: now } : { id: `${trip}:${offer}`, kind, trip, at: now, offer };
+  return { queued: true, pending: [...pending.filter((p) => p.kind !== kind), cmd] };
 }
 
 /** Pending commands after a heartbeat's acknowledgements, and one line per command acknowledged. */
@@ -376,6 +381,7 @@ export function settleAcks(pending: readonly PendingCommand[], acked: readonly {
       a.result === 'applied' ? `Applied: /${p.kind} for ${p.trip}.`
         : a.result === 'stale' ? `Refused: /${p.kind} for ${p.trip} is no longer the current trip.`
           : a.result === 'expired' ? `Expired: /${p.kind} for ${p.trip} reached the worker more than 15 minutes after the confirm. Send it again.`
+            : a.result === 'changed' ? `Not applied: the day's loss grew after the figures you confirmed for ${p.trip}. Send /${p.kind} to see the new figures.`
             : `Refused: /${p.kind} for ${p.trip} was not understood.`,
     );
   }

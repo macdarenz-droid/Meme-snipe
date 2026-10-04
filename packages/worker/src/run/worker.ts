@@ -289,6 +289,11 @@ export class Worker {
   #lastCodes: readonly string[] = [];
   /** That valuation was fully marked at a fresh SOL price (`latchable`): only then may /override be offered or applied. */
   #lastLatchable = false;
+  /**
+   * /override offers sent this process (number -> the day loss it showed), newest last; a restart forgets them. An
+   * offer's number is its heartbeat's time (ms), so one from before a restart never matches one made after it.
+   */
+  readonly #offers = new Map<number, bigint>();
   /** RISK-FAULT: why risk last could not value the account, while it still cannot (logged once per episode). */
   #valuationFault: string | null = null;
   /** The journal's `entry` and `exit` lines at start (WORKER-ORDER). */
@@ -1589,7 +1594,14 @@ export class Worker {
       mark: mark === null ? null : Number(mark.price),
       last_exit_attempt_ts: lastExit === 0 ? null : lastExit,
     };
-    const stops = this.#ownerStops(this.#d.timers.now());
+    const offerAt = this.#d.timers.now();
+    const stops = this.#ownerStops(offerAt);
+    // The /override offer this heartbeat carries is remembered with its day loss, for the confirm that names it.
+    if (stops?.override?.dayLoss !== undefined) {
+      this.#offers.delete(offerAt);
+      this.#offers.set(offerAt, stops.override.dayLoss);
+      for (const k of this.#offers.keys()) if (this.#offers.size > 64) this.#offers.delete(k);
+    }
     const owner = { review: stops === null ? null : reviewBlock(stops), acked: ackedOf(this.#ctl.commands ?? []) };
     const r = await sendHeartbeat(hb.http, url, hb.key, heartbeatBody(h, position, hb.ownerChatId, owner), this.#d.timers.now());
     if (!r.ok) {
@@ -1616,7 +1628,7 @@ export class Worker {
     return openStops({
       latches: this.#ctl.latches, closed: fact.history.closedTrades, loss: policy.loss, snapshot: this.#lastSnapshot, codes: this.#lastCodes, latchable: this.#lastLatchable,
       toLamports: (v) => (price === null || price <= 0n || v < 0n ? null : microUsdToLamports(v as MicroUsd, price, 'ceil')),
-      dayLine: dayLossLine(policy, this.#ctl.latches, this.#lastSnapshot?.dayStartMs ?? 0, now),
+      dayLine: dayLossLine(policy, this.#ctl.latches, this.#lastSnapshot?.dayStartMs ?? 0, now), offer: now,
       netLamports: (fromMs, toMs) => {
         let net = 0n;
         for (const t of trades) {
@@ -1644,7 +1656,7 @@ export class Worker {
     let handled = this.#ctl.commands ?? [];
     const done: HandledCommand[] = [];
     for (const c of commands) {
-      const r = handleCommand(c, stops, latches, handled, now);
+      const r = handleCommand(c, stops, latches, handled, now, (offer) => this.#offers.get(offer));
       if (r === null) continue;
       latches = r.latches;
       handled = keepHandled(handled, r.entry);

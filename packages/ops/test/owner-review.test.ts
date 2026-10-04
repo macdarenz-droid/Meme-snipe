@@ -21,7 +21,7 @@ const REVIEW = {
   weekly: null,
 };
 const DAY = 1_799_938_800_000;
-const OVERRIDE = { trip: `override-${DAY}-1`, evidence: { daily: 1, streak: 2, day_loss_lamports: '16000000', day_line_lamports: '15000000', overrides: 1, day_ends_ms: DAY + 86_400_000 } };
+const OVERRIDE = { trip: `override-${DAY}-1`, evidence: { daily: 1, streak: 2, day_loss_lamports: '16000000', day_line_lamports: '15000000', overrides: 1, day_ends_ms: DAY + 86_400_000, offer: 3 } };
 const upd = (text: string, chat = 42) => JSON.stringify({ message: { chat: { id: chat }, text } });
 
 function harness(mem = new Map<string, unknown>(), extraEnv: Partial<Env> = {}) {
@@ -200,13 +200,26 @@ describe('owner review commands: the Durable Object', () => {
   it('/override shows the day stop and queues its confirm like the others', async () => {
     const h = harness();
     await h.beat({ review: { ...REVIEW, override: OVERRIDE } });
+    // A confirm with no figures shown first is not queued: the worker must know which offer the owner saw.
+    await h.tg(`/override confirm override-${DAY}-1`);
+    expect(h.sent.at(-1)).toBe(`Not queued: send /override first to see the figures for override-${DAY}-1.`);
     await h.tg('/override');
     expect(h.sent.at(-1)).toContain(`/override confirm override-${DAY}-1`);
     await h.tg(`/override confirm override-${DAY}-0`);
     expect(h.sent.at(-1)).toContain('Not queued');
     await h.tg(`/override confirm override-${DAY}-1`);
     expect(h.sent.at(-1)).toContain('Queued');
-    expect((await h.beat({ review: { ...REVIEW, override: OVERRIDE } })).commands?.map((c) => c.trip)).toEqual([`override-${DAY}-1`]);
+    // It names the offer shown, and is its own command (a re-confirm after new figures is not a repeat).
+    expect((await h.beat({ review: { ...REVIEW, override: OVERRIDE } })).commands).toEqual([{ id: `override-${DAY}-1:3`, kind: 'override', trip: `override-${DAY}-1`, at: expect.any(Number), offer: 3 }]);
+    // The day got worse since: the worker answers `changed` and the owner is told to look again.
+    await h.beat({ review: { ...REVIEW, override: OVERRIDE }, acked: [{ id: `override-${DAY}-1:3`, result: 'changed' }] });
+    expect(h.sent.at(-1)).toBe(`Not applied: the day's loss grew after the figures you confirmed for override-${DAY}-1. Send /override to see the new figures.`);
+    // New figures shown (offer 4): the confirm is a new command.
+    await h.tg('/override');
+    await h.beat({ review: { ...REVIEW, override: { ...OVERRIDE, evidence: { ...OVERRIDE.evidence, offer: 4 } } } });
+    await h.tg('/override');
+    await h.tg(`/override confirm override-${DAY}-1`);
+    expect((await h.beat({ review: { ...REVIEW, override: OVERRIDE } })).commands?.map((c) => c.id)).toEqual([`override-${DAY}-1:4`]);
   });
 
   it('a stale acknowledgement tells the owner the trip was refused', async () => {
