@@ -33,6 +33,8 @@ StateDirectory=zeroed
 StateDirectoryMode=0700
 UMask=0077
 MemoryMax=800M
+# The worker owns exits: under memory pressure the kernel takes anything else first (worker-smoke's trial is +1000).
+OOMScoreAdjust=-500
 TasksMax=256
 LimitCORE=0
 # Hardening (ARCHITECTURE.md 12.1). MemoryDenyWriteExecute is off here only: V8's JIT needs it.
