@@ -1396,6 +1396,39 @@ Built to the supervisor's revised spec and the consensus rulings that followed i
 - **2026-10-04 · The account valuation (after RISK-LATCH, #124).** `#markAccount` runs `evaluateExit` on every valuation and uses its trips to latch. A fault there has no trips, so it latches nothing, and it is no longer silent: the worker logs `Risk could not value the account: <why>` once when an episode starts and `Risk can value the account again.` once when it clears. The state is held in memory, so a restart during a fault logs it again. Tests (`worker/test/risk-fault.test.ts`): a healthy valuation logs nothing; a broken one logs one start over many steps; a recovery logs one clear; a second break logs a second start; and nothing is latched. It fails with no log. Mutants killed: no log; a log on every valuation; no clear line; the state never updated; the state never cleared.
 - **2026-10-04 · Tests.** `core/test/risk/controls.test.ts`: a clean account gives `fault: null`. A broken clock, a broken account, a thrown non-`Error`, and an `Error` whose message getter throws each give a fault, the single `risk_fault` reason and no trips. `worker/test/risk-fault.test.ts`, through the real worker with the `markedHistory` seam making the account unreadable to risk: the entry is refused with `risk fault: `, with no `Engine step failed`, and enters once risk can evaluate again. The stop's exit still closes the position, with `risk_fault` as its only tripped code, a `risk fault` reason, no `trip` line and no latch. All of these fail on the base (the entry test with the uncaught `TypeError`). Mutants killed: the catch returning the old clean result; the `risk_fault` reason dropped; `fault` null on the catch; a non-null `fault` on the clean path; the guard around the fault text removed; the message ignored; the strategy's entry catch removed; the exit's fault line dropped.
 
+## The books in SOL (SOL-BOOKS, `packages/core/src/risk/**`, `packages/worker/src/run/account.ts`, `packages/worker/src/engine/marks.ts`, `packages/worker/src/engine/strategy.ts`)
+
+- **2026-10-05 · Owner decision.** Profit and every limit are counted in SOL, not dollars: "whatever the SOL price is, I don't care; as long as the quantity of SOL keeps increasing". This replaces the F3 options of AUDIT-RM2: the operations floor counts on both sides, because NAV and wallet equity now take the whole wallet, as opening equity does.
+- **2026-10-05 · Core risk.** Every amount in `AccountHistory`, `RiskSnapshot`, the size caps, the loss figures and the reservation is in lamports.
+  - `AccountHistory.openingSolPrice` is the SOL/USD price fixed at session start. At it, B (rounded down), q_min (up), q_max (down) and the liquidity floors (up) are converted once, so no limit or range widens.
+  - The snapshot carries `bankroll`, `dailyLimit` (`dailyBps` of B) and `weeklyLimit` (the tighter weekly line), as named to the app builder.
+  - `MarketInputs` has no SOL price, and the codes `sol_price_unknown` and `sol_price_stale` are gone.
+  - `economicNav(balance, positions)` is the wallet's SOL plus the marks.
+  - Sizing runs `feasibleSize` at a price where its micro-units are lamports (exact, with no rounding of its own).
+  - With no valid opening price the history is refused (R1), and R9 and R10 hand back no trip. Every figure is then zero, which proves no breach.
+  - No limit's bps changed. Each limit in SOL is its dollar limit at the opening price, never looser (tested at four prices).
+- **2026-10-05 · Worker.**
+  - The mark is the executable SOL, and `latchable` and `markedHistory` take no SOL price.
+  - `account.json` keeps `openingSolPrice`, fixed at the first price, with `books: 'sol'`.
+  - Trade results and partial sales are lamports (`netLamports`, each part's `lamports`), and risk reads those. The no-price paths of RISK-PARTIAL are gone, and `netPnl` is a display figure (null without a price).
+  - The entry's spend is q_min at the opening price, as risk sizes it.
+  - The entry seed keeps its dollar notional (the SOL spent, at the opening price), which core exits compare with q_min in dollars.
+- **2026-10-05 · Existing state (deploy).** An `account.json` from before has no `books`. At the next SOL price after deploy, that price becomes its opening price. Its day and week marks and NAV peak, which were in micro-dollars, are converted once, rounded up. Its trade sizes are converted once, rounded down. Its trade results are already in lamports. Until that first price, risk has no opening price, refuses entries (R1) and latches nothing.
+- **2026-10-05 · Tests changed, and why.**
+  - Core risk tests now write amounts as dollars at a $100 opening price, which are exact lamports. Rounding tests moved to lamport granularity.
+  - Tests of a live SOL/USD price became their SOL meaning:
+    - the stale or zero price → a stale balance, or a zero opening price;
+    - "a fall in SOL" → the wallet short of its SOL;
+    - "figures in SOL as well" → the new snapshot fields.
+  - Worker tests that relied on a SOL price fall breaching NAV became:
+    - "SOL at −40% and +40% with no trade trips nothing, and NAV stays at its high-water mark" (the owner's test);
+    - "a booked loss past the kill line latches R10".
+  - A sizing test's edge (5% instead of 6%) moved, because q_min is now 20,000,000 lamports.
+- **2026-10-05 · Mutants killed (16).**
+  - Core: B rounded up, q_min rounded down, q_max rounded up, the floors rounded down, NAV less the operations floor, the no-bankroll guard dropped, the opening-price check dropped.
+  - Worker conversion of an old file: the NAV peak rounded down, sizes rounded up, no conversion at all.
+  - Worker figures: the opening price following the live price, opening equity rounded up, closed P&L read from dollars, the setup cost read from dollars, the held notional halved, `latchable` ignoring the marks.
+
 ## Live/replay parity (TEST-1, `packages/worker/src/run/parity.ts`, `packages/worker/scripts/parity.ts`)
 
 - **What is compared.** Each recorded boot of a worker state folder is replayed in its recorded release order through the backtest's engine path: core's `Engine` on `replayRecorded`, core's `FactFeed` (`engineFeed`) and the same `LiveStrategy`, seeded with the boot's journaled seed. Every engine record is turned into a journal line by the same function the live desk uses (`journalFields`, moved out of `Desk` unchanged), encoded as the journal encodes (`jsonText`, `redact`). The live journal's `decision` lines of that boot, with `seq`, `ts` and `boot` dropped, must equal the replay's lines byte for byte. Each boot is replayed N times (10 by default); every replay must equal the first. The first differing line is reported with its index, its event and both texts. The session's ledger is replayed by core's `replayLedgerFile`, handed in by the caller (the CLI, the tests), since worker source never imports ledger internals (core's import guard); a missing or failing ledger fails the session, and so does a folder with no recorded boot.

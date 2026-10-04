@@ -428,9 +428,27 @@ describe('price and costs', () => {
   const withOpening = (value: bigint) => baseInput({ account: { ...account(), openingSolPrice: value as never } });
   test('a zero opening SOL price is refused without dividing by it, and latches nothing', () => {
     expect(codes(evaluateEntry(withOpening(0n), baseRequest()))).toContain('bankroll_invalid');
-    // No SOL bankroll: every figure is zero and every line reads as reached, which proves no breach.
-    expect(evaluateEntry(withOpening(0n), baseRequest()).trips).toEqual([]);
-    expect(evaluateExit(withOpening(0n)).trips).toEqual([]);
+    // No SOL bankroll (the worker's history before its first price: no opening price, no opening equity): every figure
+    // is zero and every line reads as reached, which proves no breach.
+    const none = baseInput({ account: { ...account(), openingSolPrice: 0n as never, openingEquity: 0n as Lamports } });
+    expect(codes(evaluateEntry(none, baseRequest()))).toEqual(expect.arrayContaining(['bankroll_invalid', 'kill_switch']));
+    expect(evaluateEntry(none, baseRequest()).trips).toEqual([]);
+    expect(evaluateExit(none).trips).toEqual([]);
+  });
+  test('q_max and the liquidity floors convert at the opening price the tighter way (SOL-BOOKS)', () => {
+    // At $119.46 neither $2.50 nor $15,000 is a whole number of lamports, so the rounding shows.
+    const price = solPriceMicroUsd('119.46');
+    const at = (patch: Parameters<typeof baseInput>[0] = {}) => baseInput({ ...patch, account: { ...account(), openingSolPrice: price } });
+    const session = startSession({ ...TRIAL_POLICY, capital: { ...TRIAL_POLICY.capital, maxNotional: dollars('2.5') } });
+    const cap = microUsdToLamports(dollars('2.5'), price, 'floor');
+    expect(cap).not.toBe(microUsdToLamports(dollars('2.5'), price, 'ceil'));
+    const d = evaluateEntry(at({ session, latches: latches({ sizeStepUpApproved: true }) }), baseRequest()) as EntryAllowed;
+    expect(d.caps.find((c) => c.name === 'maximum notional')?.notional).toBe(cap);
+    // The R12 floor rounded up: a pool one lamport under it is refused, one at it passes.
+    const floor = microUsdToLamports(TRIAL_POLICY.liquidity.floorUsd, price, 'ceil');
+    expect(floor).not.toBe(microUsdToLamports(TRIAL_POLICY.liquidity.floorUsd, price, 'floor'));
+    expect(codes(evaluateEntry(at(), baseRequest({ poolLiquidity: (floor - 1n) as Lamports })))).toContain('liquidity_floor');
+    expect(codes(evaluateEntry(at(), baseRequest({ poolLiquidity: floor as Lamports })))).not.toContain('liquidity_floor');
   });
   test('a one-micro-dollar opening price is a price (the trade then fails on cash, not on the price)', () => {
     const c = codes(evaluateEntry(withOpening(1n), baseRequest()));

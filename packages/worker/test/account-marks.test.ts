@@ -136,7 +136,7 @@ describe('SOL-BOOKS: an account.json from before is converted once at the openin
       openedAtMs: T - 30 * 24 * HOUR, openingEquity: usd(20), walletLamports: 133_000_000n, oneTimePaid: true, entries: [],
       dayMark: { startMs: melbourneDay(T).start, atMs: T, equity: usd(19.5) as never },
       weekMark: { startMs: melbourneWeek(T).start, atMs: T, equity: usd(19.5) as never },
-      navPeak: { atMs: T, nav: usd(17.000001) as never },
+      navPeak: { atMs: T, nav: usd(17.000003) as never },
       trades: [{ positionId: 'p:x:1', mint: 'MintX', openedAtMs: T - 2 * HOUR, notional: usd(2) as never, closedAtMs: T - HOUR, netLamports: -1_000n, netPnl: usd(-0.15), stoppedOut: true, booked: -1_000n }],
     });
     const a = new PaperAccount(file, usd(20), T, 0n);
@@ -144,22 +144,24 @@ describe('SOL-BOOKS: an account.json from before is converted once at the openin
     const ledger = openLedger(join(dir, 'ledger.sqlite'), 'paper');
     expect(a.fact(ledger, emptyBook({ maxOpenPositions: 5 }), NO_LATCHES, T).history.openingSolPrice).toBe(0n);
     a.price(usd(150), T);
-    // $150: $19.50 is 130,000,000 lamports exactly; $17.000001 is 113,333,340 rounded up; $2 is 13,333,333 rounded down.
+    // $150: $19.50 is 130,000,000 lamports exactly; $17.000003 is 113,333,353.3, rounded up; $2 is 13,333,333.3, down.
     expect(a.state).toMatchObject({ openingSolPrice: usd(150), books: 'sol', walletLamports: 133_000_000n });
     expect(a.state.dayMark!.equity).toBe(130_000_000n);
     expect(a.state.weekMark!.equity).toBe(130_000_000n);
-    expect(a.state.navPeak!.nav).toBe(113_333_340n);
+    expect(a.state.navPeak!.nav).toBe(113_333_354n);
     expect(a.state.trades[0]!.notional).toBe(13_333_333n);
     // A later price changes nothing, and a restart does not convert again.
     a.price(usd(90), T + HOUR);
     const b = new PaperAccount(file, usd(20), T + 2 * HOUR, 0n);
     b.price(usd(300), T + 2 * HOUR);
     expect(b.state).toMatchObject({ openingSolPrice: usd(150), books: 'sol' });
-    expect(b.state.navPeak!.nav).toBe(113_333_340n);
+    expect(b.state.navPeak!.nav).toBe(113_333_354n);
     expect(b.state.trades[0]!.notional).toBe(13_333_333n);
     // Risk reads the lamports: the closed trade's result is its netLamports.
     const h = b.fact(ledger, emptyBook({ maxOpenPositions: 5 }), NO_LATCHES, T + 2 * HOUR).history;
     expect(h.openingSolPrice).toBe(usd(150));
+    // B in lamports at the opening price, rounded down ($20 at $150 is 133,333,333.3).
+    expect(h.openingEquity).toBe(133_333_333n);
     expect(h.closedTrades[0]).toMatchObject({ netPnl: -1_000n, notional: 13_333_333n });
     ledger.close();
   });
