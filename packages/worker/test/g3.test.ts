@@ -45,7 +45,9 @@ const HOLDOUT: HoldoutSummary = {
   holdout: { n: 400, mean: 0.02, sd: 0.3 }, severeRate: 0.05, lower: { value: 0.004, level: VETO_COMPOSITE_LEVEL },
   candidates: { count: 2_000, hours: 24 * 28 }, rejectMix: { 'regime:unknown': 900, 'H16:missing': 600, 'stop:no-atr': 300 }, returnCap: 0.5,
 };
-const REGISTRATION = { registeredAtMs: T - 30 * 86_400_000, thresholds: {}, expectedSimulationErrors: [] };
+/** The plan registered before the run, judged at `evaluateAtMs` (the session's last line unless a test says otherwise). */
+const lastMs = (h: H) => Date.parse(String((JSON.parse(readFileSync(join(h.stateDir, 'journal.jsonl'), 'utf8').trim().split('\n').at(-1)!) as { ts: string }).ts));
+const reg = (h: H, evaluateAtMs = lastMs(h)) => ({ registeredAtMs: T - 30 * 86_400_000, thresholds: {}, expectedSimulationErrors: [], evaluateAtMs });
 
 /** Every file under `dir` with its SHA-256. */
 const tree = (dir: string): Record<string, string> => {
@@ -95,7 +97,7 @@ describe('G3: live-only vetoes and their counterfactual trades (TEST-3)', () => 
     expect(run.vetoes.map((v) => [v.mint, v.reasons])).toEqual([[MINT, [{ gate: 'H16', code: 'xcheck-disagree', input: 'xcheck' }]]]);
     const before = tree(h.stateDir);
     const out = join(tempState(), 'g3');
-    const report = await g3Report({ stateDir: h.stateDir, holdout: HOLDOUT, registration: REGISTRATION, parityPassed: true, out, scenario: LANDS });
+    const report = await g3Report({ stateDir: h.stateDir, holdout: HOLDOUT, registration: reg(h), parityPassed: true, out, scenario: LANDS });
     expect(tree(h.stateDir)).toEqual(before);
     // The counterfactual: entered once the cross-check is not applied, stopped out when the pool fell 30%.
     expect(report.counterfactuals).toHaveLength(1);
@@ -115,7 +117,7 @@ describe('G3: live-only vetoes and their counterfactual trades (TEST-3)', () => 
     const file = readFileSync(join(out, 'counterfactuals.jsonl'), 'utf8');
     expect(file.trim().split('\n').map((l) => (parseTyped(l) as { mint: string }).mint)).toEqual([MINT]);
     const again = join(tempState(), 'g3');
-    await g3Report({ stateDir: h.stateDir, holdout: HOLDOUT, registration: REGISTRATION, parityPassed: true, out: again, scenario: LANDS });
+    await g3Report({ stateDir: h.stateDir, holdout: HOLDOUT, registration: reg(h), parityPassed: true, out: again, scenario: LANDS });
     expect(readFileSync(join(again, 'counterfactuals.jsonl'), 'utf8')).toBe(file);
     // G3 on it: one eligible candidate, vetoed; the gap is the worst case (fewer than 10 of each): not a pass.
     const r = report.result;
@@ -152,12 +154,40 @@ describe('G3: live-only vetoes and their counterfactual trades (TEST-3)', () => 
     expect(Math.abs(cf.r! - live.r)).toBeLessThan(0.02);
   }, 60_000);
 
+  it('every input is cut at the registered evaluation time, and a run that ended before it is not proven (STATS-1c)', async () => {
+    const h = await session(true);
+    const full = await g3Report({ stateDir: h.stateDir, holdout: HOLDOUT, registration: reg(h), parityPassed: true, out: join(tempState(), 'g3'), scenario: LANDS });
+    const entered = full.counterfactuals[0]!.enteredAtMs!;
+    // Judged 2 s after the counterfactual's entry: the recording after it is not seen, so the trade is censored.
+    const cutAt = entered + 2_000;
+    const cut = await g3Report({ stateDir: h.stateDir, holdout: HOLDOUT, registration: reg(h, cutAt), parityPassed: true, out: join(tempState(), 'g3'), scenario: LANDS });
+    expect(cut.counterfactuals[0]).toMatchObject({ entered: true, censored: true, r: null });
+    expect(cut.result.metrics['dryRunHours']).toBeCloseTo((cutAt - readRun(h.stateDir).startMs) / 3_600_000, 9);
+    expect(cut.result.checks.find((c) => c.name === 'veto counterfactuals')!.detail).toMatch(/1 censored/);
+    // A cut before the veto: nothing vetoed yet.
+    expect(readRun(h.stateDir, full.counterfactuals[0]!.vetoAtMs - 1).vetoes).toEqual([]);
+    // The run ended more than a minute before the evaluation time: not proven, nothing scored.
+    const out = join(tempState(), 'g3');
+    const early = await g3Report({ stateDir: h.stateDir, holdout: HOLDOUT, registration: reg(h, lastMs(h) + 61_000), parityPassed: true, out, scenario: LANDS });
+    expect(early.result).toMatchObject({ status: 'not-proven', checks: [{ name: 'evaluation time', passed: false }] });
+    expect(early.counterfactuals).toEqual([]);
+    expect(readFileSync(join(out, 'counterfactuals.jsonl'), 'utf8')).toBe('');
+    // Within the minute's slack it is judged.
+    const onTime = await g3Report({ stateDir: h.stateDir, holdout: HOLDOUT, registration: reg(h, lastMs(h) + 59_000), parityPassed: true, out: join(tempState(), 'g3'), scenario: LANDS });
+    expect(onTime.result.checks.some((c) => c.name === 'evaluation time')).toBe(false);
+    // A kept trade closed after the evaluation time is not judged.
+    const k = await session(false);
+    const exitMs = (parseTyped(readFileSync(join(k.stateDir, 'account.json'), 'utf8')) as { trades: { closedAtMs: number }[] }).trades[0]!.closedAtMs;
+    expect(readRun(k.stateDir, exitMs - 1).kept).toEqual([]);
+    expect(readRun(k.stateDir, exitMs).kept).toHaveLength(1);
+  }, 120_000);
+
   it('a veto counts only when the strategy would have entered without the live-only checks', async () => {
     // No edge: without the cross-check the gates pass, and risk still refuses the entry.
     const h = await session(true, 0n);
     expect(readRun(h.stateDir).vetoes).toHaveLength(1);
     const out = join(tempState(), 'g3');
-    const report = await g3Report({ stateDir: h.stateDir, holdout: HOLDOUT, registration: REGISTRATION, parityPassed: true, out, scenario: LANDS });
+    const report = await g3Report({ stateDir: h.stateDir, holdout: HOLDOUT, registration: reg(h), parityPassed: true, out, scenario: LANDS });
     expect(report.counterfactuals.map((c) => c.entered)).toEqual([false]);
     const g3 = parseTyped(readFileSync(join(out, 'g3.json'), 'utf8')) as { vetoes: unknown };
     expect(g3.vetoes).toEqual({ classified: 1, vetoed: 0, eligible: 0, notEnteredWithoutThem: [MINT] });
@@ -189,7 +219,7 @@ describe('G3: live-only vetoes and their counterfactual trades (TEST-3)', () => 
     const h = await session(true);
     const dir = tempState();
     writeFileSync(join(dir, 'holdout.json'), JSON.stringify(HOLDOUT));
-    writeFileSync(join(dir, 'registration.json'), JSON.stringify(REGISTRATION));
+    writeFileSync(join(dir, 'registration.json'), JSON.stringify(reg(h)));
     writeFileSync(join(dir, 'parity.json'), JSON.stringify({ ok: true }));
     const before = tree(h.stateDir);
     const r = spawnSync(process.execPath, ['--no-warnings', 'packages/worker/scripts/g3.ts', '--state', h.stateDir, '--holdout', join(dir, 'holdout.json'), '--registration', join(dir, 'registration.json'), '--parity', join(dir, 'parity.json'), '--out', join(dir, 'out')], { cwd: join(import.meta.dirname, '..', '..', '..'), encoding: 'utf8', timeout: 60_000 });
@@ -208,7 +238,7 @@ describe('G3: live-only vetoes and their counterfactual trades (TEST-3)', () => 
 
   it('the decision log is byte-identical with counterfactual scoring on and off', async () => {
     const scored = await session(true);
-    await g3Report({ stateDir: scored.stateDir, holdout: HOLDOUT, registration: REGISTRATION, parityPassed: true, out: join(tempState(), 'g3'), scenario: LANDS });
+    await g3Report({ stateDir: scored.stateDir, holdout: HOLDOUT, registration: reg(scored), parityPassed: true, out: join(tempState(), 'g3'), scenario: LANDS });
     const plain = await session(true);
     expect(decisionLog(scored)).toEqual(decisionLog(plain));
     expect(decisionLog(scored).length).toBeGreaterThanOrEqual(3);

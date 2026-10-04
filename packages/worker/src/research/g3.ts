@@ -100,13 +100,17 @@ export const classify = (decisions: readonly Line[], entered: ReadonlySet<string
   return { vetoes: [...vetoes.values()], rejectMix };
 };
 
-/** Everything G3 needs from the run itself, read without writing. */
-export const readRun = (stateDir: string): RunFacts => {
-  const lines = linesOf(stateDir);
+/**
+ * Everything G3 needs from the run itself, read without writing, as of `cutMs`: journal lines, trades (closed by
+ * then), candidates, vetoes and simulations after it do not count (STATS-1c: the judged data ends at `evaluateAtMs`).
+ */
+export const readRun = (stateDir: string, cutMs = Number.POSITIVE_INFINITY): RunFacts => {
+  const lines = linesOf(stateDir).filter((l) => Date.parse(l.ts) <= cutMs);
   const starts = lines.filter((l) => l.kind === 'start');
   if (starts.length === 0) throw new Error('the journal has no start line');
   const startMs = Date.parse(starts[0]!.ts);
-  const endMs = Date.parse(lines.at(-1)!.ts);
+  // Judged up to the evaluation time (the report checks the run reached it), else to the run's last line.
+  const endMs = Number.isFinite(cutMs) ? cutMs : Date.parse(lines.at(-1)!.ts);
   const decisions = lines.filter((l) => l.kind === 'decision');
   const reasonsOf = (l: Line) => (Array.isArray(l['reasons']) ? (l['reasons'] as string[]) : []);
   const shortlisted = new Set(decisions.filter((l) => reasonsOf(l)[0] === SHORTLIST).map((l) => reasonsOf(l)[2]!).filter((m) => m !== undefined));
@@ -121,7 +125,7 @@ export const readRun = (stateDir: string): RunFacts => {
   let kept: { mint: string; trade: string; r: number }[];
   try {
     const book = ledger.storedBookEvents({ maxOpenPositions: Number.MAX_SAFE_INTEGER }).book;
-    kept = account.trades.filter((t) => t.closedAtMs !== null && t.netLamports !== null).map((t) => {
+    kept = account.trades.filter((t) => t.closedAtMs !== null && t.closedAtMs <= cutMs && t.netLamports !== null).map((t) => {
       const p = book.positions[t.positionId as never];
       const e = p === undefined ? undefined : book.intents[p.entryIntentId];
       const cost = e === undefined ? 0n : e.fills.reduce((s, f) => s + f.sol + f.fees, 0n);
@@ -159,10 +163,16 @@ export const runStrategy = (start: Line): { readonly session: PolicySession; rea
   return { session, strategy };
 };
 
+/** The registration as G3 reads it: the plan, and the moment the judged data ends (STATS-1c). */
+export type G3RegistrationFile = G3Registration & { readonly evaluateAtMs: number };
+
+/** How far the run's last line may fall short of `evaluateAtMs` and still count as having reached it. */
+export const EVALUATE_SLACK_MS = 60_000;
+
 export interface G3ReportOptions {
   readonly stateDir: string;
   readonly holdout: HoldoutSummary;
-  readonly registration: G3Registration;
+  readonly registration: G3RegistrationFile;
   /** TEST-1's parity result on this run's recorded data; absent counts as failed. */
   readonly parityPassed: boolean;
   readonly out: string;
@@ -177,9 +187,22 @@ export interface G3Report {
 
 /** Scores the vetoed candidates offline and runs G3; writes `<out>/counterfactuals.jsonl` and `<out>/g3.json`. */
 export const g3Report = async (o: G3ReportOptions): Promise<G3Report> => {
-  const run = readRun(o.stateDir);
+  const cut = o.registration.evaluateAtMs;
+  if (!Number.isSafeInteger(cut)) throw new Error('the registration has no evaluateAtMs: the judged data has no end');
+  if (!existsSync(o.out)) mkdirSync(o.out, { recursive: true });
+  // A run that ended before the evaluation time is not judged: not proven, extend (or finish) the run.
+  const lastMs = Date.parse(linesOf(o.stateDir).at(-1)!.ts);
+  if (lastMs < cut - EVALUATE_SLACK_MS) {
+    const detail = `the run's last line is at ${new Date(lastMs).toISOString()}, before the registered evaluation time ${new Date(cut).toISOString()} (less ${EVALUATE_SLACK_MS / 1000} s)`;
+    const result: GateResult = { gate: 'G3', passed: false, status: 'not-proven', reasons: [detail], checks: [{ name: 'evaluation time', passed: false, detail }], metrics: {}, notes: ['inconclusive: extend the dry run'] };
+    writeFileSync(join(o.out, 'counterfactuals.jsonl'), '');
+    writeFileSync(join(o.out, 'g3.json'), `${typedText({ run: { stateDir: o.stateDir, lastMs, evaluateAtMs: cut }, registration: o.registration, result })}\n`);
+    return { result, counterfactuals: [] };
+  }
+  const run = readRun(o.stateDir, cut);
   const { session, strategy } = runStrategy(run.start);
-  const frames = readRecording(o.stateDir).flatMap((b) => b.frames);
+  // The counterfactuals see the recording up to the evaluation time only: a position open then is censored.
+  const frames = readRecording(o.stateDir).flatMap((b) => b.frames).filter((f) => f.receivedAt <= cut);
   const runId = createHash('sha256').update(`${run.start.boot}:${run.start.ts}`).digest('hex').slice(0, 16);
   const counterfactuals: G3Report['counterfactuals'][number][] = [];
   for (const v of run.vetoes) {
@@ -204,10 +227,9 @@ export const g3Report = async (o: G3ReportOptions): Promise<G3Report> => {
     vetoCounterfactuals: { returns: vetoed.filter((c) => c.r !== null).map((c) => c.r!), censored: vetoed.filter((c) => c.censored).length },
     returnCap: o.holdout.returnCap, fillDifferences: run.fillDifferences, parityTestPassed: o.parityPassed,
   });
-  if (!existsSync(o.out)) mkdirSync(o.out, { recursive: true });
   writeFileSync(join(o.out, 'counterfactuals.jsonl'), counterfactuals.map((c) => typedText(c)).join('\n') + (counterfactuals.length > 0 ? '\n' : ''));
   writeFileSync(join(o.out, 'g3.json'), `${typedText({
-    run: { stateDir: o.stateDir, startMs: run.startMs, endMs: run.endMs, hours: run.hours, qualifying: run.qualifying, candidates: run.candidates, entered: run.entered, kept: run.kept, rejectMix: run.rejectMix, simulations: run.simulations },
+    run: { stateDir: o.stateDir, evaluateAtMs: cut, startMs: run.startMs, endMs: run.endMs, hours: run.hours, qualifying: run.qualifying, candidates: run.candidates, entered: run.entered, kept: run.kept, rejectMix: run.rejectMix, simulations: run.simulations },
     vetoes: { classified: run.vetoes.length, vetoed: vetoed.length, eligible: run.entered.length + vetoed.length, notEnteredWithoutThem: counterfactuals.filter((c) => !c.entered).map((c) => c.mint) },
     holdout: o.holdout, registration: o.registration, parityPassed: o.parityPassed, compositeLevel: VETO_COMPOSITE_LEVEL, result,
   })}\n`);

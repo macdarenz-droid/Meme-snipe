@@ -889,5 +889,8 @@ The second reviewer, the third opinion and the supervisor reached one position o
 - **Inputs from elsewhere:**
   - `holdout.json` is BT-2's `HoldoutSummary`: SampleSummary, severe rate, the one-sided lower bound at VETO_COMPOSITE_LEVEL, candidates and hours, the reject mix counted as above, and the return cap. BT-2 writes it with the sealed holdout result.
   - `parity.json` is TEST-1's result on this run's recording.
+- **The judged data ends at `evaluateAtMs`** (supervisor, for STATS-1c #62). The registration file carries it, and every input is cut there: journal lines, trades closed by then, candidates, vetoes, simulations, the hours (start to `evaluateAtMs`), and the recording the counterfactuals see. A counterfactual position open at that moment is censored.
+  - A run whose last line is more than a minute (`EVALUATE_SLACK_MS`) before it is not judged: G3 is "not proven", with an "evaluation time" check, and nothing is scored.
+  - Tested both ways and inside the slack. 6 of 6 mutants on the cut fail the tests.
 - **Cost.** One full replay of the recording per vetoed candidate, offline: about 48 h of frames each. It runs after the run and touches no quota.
 - **Limit.** Until POS-1 lands, a vetoed mint's pool state after the veto comes only from what the run recorded: pool facts and, with WATCH-1, snapshots for held positions. A candidate whose path the recording does not carry is censored (not proven), never guessed.
