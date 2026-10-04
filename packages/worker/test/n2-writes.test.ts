@@ -37,7 +37,9 @@ describe('atomicWrite', () => {
     const p = join(dir, 'f.json');
     writeFileSync(p, 'old good content');
     expect(() => atomicWrite(p, 'new content that does not fit', stops(5))).toThrow(/short write: 5 of 29 bytes/);
+    expect(readdirSync(dir)).toEqual(['f.json']); // the temp is removed by the failing call itself
     expect(() => atomicWrite(p, 'new content that does not fit', lies)).toThrow(/f\.json\.tmp holds 15 bytes, 29 were written/);
+    expect(readdirSync(dir)).toEqual(['f.json']); // the temp is removed by the failing call itself
     expect(readFileSync(p, 'utf8')).toBe('old good content');
     expect(readdirSync(dir)).toEqual(['f.json']);
   });
@@ -60,7 +62,9 @@ describe('the deployer state save', () => {
     const p = join(dir, 'deployer-state.json');
     writeFileSync(p, 'the previous good save');
     expect(() => saveState(p, state(), stops(40))).toThrow(/short write/);
+    expect(readdirSync(dir)).toEqual(['deployer-state.json']); // the temp is removed by the failing call itself
     expect(() => saveState(p, state(), lies)).toThrow(/holds \d+ bytes, \d+ were written/);
+    expect(readdirSync(dir)).toEqual(['deployer-state.json']); // the temp is removed by the failing call itself
     expect(readFileSync(p, 'utf8')).toBe('the previous good save');
     expect(readdirSync(dir)).toEqual(['deployer-state.json']);
     saveState(p, state(), oneByte);
@@ -78,7 +82,9 @@ describe('the deployer store rewrite', () => {
     const path = join(dir, 'deployers.jsonl');
     writeFileSync(path, lines);
     expect(() => new DeployerStore(dir, stops(100)).load(0)).toThrow(/short write/);
+    expect(readdirSync(dir)).toEqual(['deployers.jsonl']); // the temp is removed by the failing call itself
     expect(() => new DeployerStore(dir, lies).load(0)).toThrow(/deployers\.jsonl\.tmp holds \d+ bytes, \d+ were written/);
+    expect(readdirSync(dir)).toEqual(['deployers.jsonl']); // the temp is removed by the failing call itself
     expect(readFileSync(path, 'utf8')).toBe(lines);
     expect(readdirSync(dir)).toEqual(['deployers.jsonl']);
     expect(new DeployerStore(dir, oneByte).load(0).creates).toHaveLength(20);
