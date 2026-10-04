@@ -478,6 +478,51 @@ describe('exits never wait at a restart (EXIT-1c)', () => {
   });
 });
 
+describe('an exit owner never waits booked blocked for a fresh market (EXIT-1d)', () => {
+  it('an attempt that fails while the pool state goes stale: the replacement waits for the first fresh market, visibly, then goes on the next rung', async () => {
+    const h = makeWorker();
+    const m = await entered(h);
+    const pid = positions(h).find((p) => p.status === 'open')!.id;
+    await h.worker.kill();
+    // Every exit attempt of the second boot lands failed (none dropped), and the time stop is due at once.
+    h.timers.set(m.now + TRIAL_POLICY.exits.universes.U2.tMaxMs + 60_000);
+    const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers, scenario: { ...LANDS, landPpm: { pumpswap: 0n, 'pump-curve': 0n }, dropPpm: 0n } });
+    expect(await h2.worker.reconcile()).toEqual({ ok: true });
+    const m2 = new Market(h2);
+    const mine = () => lines(h.stateDir).filter((l) => l['boot'] === h2.worker.boot && l['kind'] === 'decision');
+    const first = (r: string) => mine().filter((l) => (l['reasons'] as string[])[0] === r);
+    await m2.run(800, 400, () => m2.slot());
+    m2.pool();
+    // The first attempt goes; then slots only, so the pool state is stale when the attempt resolves failed.
+    await m2.run(800, 400, () => m2.slot());
+    expect(first('submit exit (paper)')).toHaveLength(1);
+    const failed = await until(m2, 60_000, () => first('exit waiting for a fresh market').length > 0, () => m2.slot());
+    expect(failed).toBe(true);
+    expect(first('exit waiting for a fresh market')[0]!['reasons']).toContain('pool state is stale');
+    expect(mine().some((l) => l['action'] === 'exit_blocked')).toBe(false);
+    expect(h2.worker.book.positions[pid]!.status).not.toBe('exit_blocked');
+    expect(h2.worker.health().pending_exits).toEqual([pid]);
+    expect(views.status(h2.worker.apiInputs()).flags).toContain('exit-pending');
+    expect(views.status(h2.worker.apiInputs()).flags).not.toContain('exit-blocked');
+    // After the blocked-retry time of waiting it is also an alert; still said once, still not booked blocked.
+    await m2.run(TRIAL_POLICY.exits.blockedRetryMs, 400, () => m2.slot());
+    expect(views.status(h2.worker.apiInputs()).flags).toEqual(expect.arrayContaining(['exit-pending', 'exit-blocked']));
+    expect(first('exit waiting for a fresh market')).toHaveLength(1);
+    expect(mine().some((l) => l['action'] === 'exit_blocked')).toBe(false);
+    // The first fresh market: attempt 2 goes at once, one rung up.
+    const at = m2.now;
+    m2.pool();
+    expect(await until(m2, 4_000, () => first('exit attempt 2').length > 0, () => m2.slot())).toBe(true);
+    const second = first('exit attempt 2');
+    expect(Date.parse(second[0]!['ts'] as string) - at).toBeLessThanOrEqual(400);
+    expect(second).toHaveLength(1);
+    expect(second[0]!['reasons']).toContain('rung 1');
+    expect(mine().some((l) => l['action'] === 'exit_blocked')).toBe(false);
+    await h2.worker.stop();
+    expect(replayLedgerFile(join(h.stateDir, 'ledger.sqlite'))).toMatchObject({ ok: true });
+  });
+});
+
 describe('the --reconcile entry (the host unit\'s ExecStartPre)', () => {
   it('settles what a killed worker left open, writes open_intents 0 and exits 0, as a separate process', async () => {
     const h = makeWorker();

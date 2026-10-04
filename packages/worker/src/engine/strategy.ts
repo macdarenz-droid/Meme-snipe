@@ -192,6 +192,9 @@ export const universeOfKey = (key: string): ExitUniverse | null => {
   return (EXIT_UNIVERSES as readonly string[]).includes(u) ? (u as ExitUniverse) : null;
 };
 
+/** A sell quote the pool refused: the one #sellQuote failure that is a real refusal, not missing market data. */
+const NO_QUOTE = 'no quote: ';
+
 export class LiveStrategy implements Strategy {
   readonly #d: StrategyDeps;
   readonly #settings: ExitSettings;
@@ -256,9 +259,17 @@ export class LiveStrategy implements Strategy {
   /** Each held position's latest mark (executable price, PRICE_SCALE) with when it was read. */
   readonly #marks = new Map<string, { readonly price: bigint; readonly atMs: number; readonly slot: bigint }>();
 
-  /** Open positions whose due full exit waits for its first fresh quote, with the moment it started waiting (EXIT-1c). */
+  /** Exit owners waiting for a fresh market before their next attempt (EXIT-1d), by intent; in memory only. */
+  readonly #waitingMarket = new Map<string, { readonly pid: string; readonly sinceMs: number }>();
+
+  /**
+   * Positions whose exit waits for a fresh quote, with the moment it started waiting: a due full exit not yet owned
+   * (EXIT-1c, saved with the plan) or an exit owner's next attempt (EXIT-1d, counted from this process's start).
+   */
   waitingExits(): ReadonlyMap<string, number> {
-    return new Map([...this.#exits].flatMap(([pid, s]) => (s.waitingSinceMs == null ? [] : [[pid, s.waitingSinceMs] as const])));
+    const out = new Map([...this.#exits].flatMap(([pid, s]) => (s.waitingSinceMs == null ? [] : [[pid, s.waitingSinceMs] as const])));
+    for (const w of this.#waitingMarket.values()) out.set(w.pid, Math.min(out.get(w.pid) ?? w.sinceMs, w.sinceMs));
+    return out;
   }
 
   markOf(pid: string): { readonly price: bigint; readonly atMs: number; readonly slot: bigint } | null {
@@ -604,6 +615,11 @@ export class LiveStrategy implements Strategy {
 
   /** Entry intents that resolved without a fill end; exit owners that did get a new attempt or are booked blocked. */
   #lifecycle(ctx: StrategyContext, out: Decision[]): void {
+    // A waiting owner that settled or was booked another way no longer waits.
+    for (const id of this.#waitingMarket.keys()) {
+      const i = ctx.book.intents[id];
+      if (i === undefined || isTerminal(i) || (i.status !== 'exposure_reserved' && !(i.status === 'reconciled' && i.fills.length === 0))) this.#waitingMarket.delete(id);
+    }
     for (const i of Object.values(ctx.book.intents)) {
       if (isTerminal(i)) continue;
       const mint = i.intent.mint;
@@ -645,7 +661,7 @@ export class LiveStrategy implements Strategy {
     if (typeof m === 'string') return m;
     if (ctx.now.receivedAt - m.atMs > this.#d.session.policy.gates.maxQuoteAgeMs) return 'pool state is stale';
     const q = poolSell(m.pool, tokens, m.ctx);
-    if (!q.ok) return `no quote: ${q.reason}`;
+    if (!q.ok) return `${NO_QUOTE}${q.reason}`;
     const step = this.#d.session.policy.exits.ladder.steps[rung]!;
     const below = BigInt(step.minOutBelowTriggerBps);
     return {
@@ -666,6 +682,17 @@ export class LiveStrategy implements Strategy {
     const rung = Math.min(signed === 0 && owner !== undefined ? owner.startRung : Math.max(lastRung === null ? 0 : lastRung + 1, used), last);
     const height = this.#height;
     const q = height === null ? 'no slot height yet' : this.#sellQuote(ctx, mint, quantity, rung);
+    if (typeof q === 'string' && height !== null && !q.startsWith(NO_QUOTE)) {
+      // No fresh market state yet (unknown, malformed, no fee terms, or stale) is timing, not a refusal: the owner waits
+      // for the first fresh market, said once and kept visible (EXIT-1d). Booked blocked, it would wait out the
+      // blocked-retry time and go as a single last-rung retry. Blocked stays for a market that refuses the sale.
+      if (!this.#waitingMarket.has(id)) {
+        this.#waitingMarket.set(id, { pid, sinceMs: ctx.now.receivedAt });
+        out.push({ action: null, reasons: ['exit waiting for a fresh market', mint, q] });
+      }
+      return;
+    }
+    this.#waitingMarket.delete(id);
     if (typeof q === 'string' || height === null) {
       out.push({ action: { type: 'exit_blocked', positionId: pid, reason: String(q) }, reasons: ['exit blocked', mint, String(q)] });
       return;
