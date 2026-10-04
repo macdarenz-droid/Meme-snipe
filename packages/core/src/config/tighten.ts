@@ -59,6 +59,8 @@ export const POLICY_RULES: RuleTree<Policy> = {
     survivalMedianDays: 'locked',
     volumePercentile: 'min',
     volumeWindowDays: 'locked',
+    volumeLagDays: 'locked',
+    volumeMinDays: 'locked',
     solChange24hFloorBps: 'min',
     failedChecksToDisable: 'max',
   },
