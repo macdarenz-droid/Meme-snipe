@@ -70,8 +70,43 @@ export interface CandidateReason {
 /** `{ halted, reasons }`: entries stop while a critical feed is down or stale (§18); exits and monitoring go on. */
 export const HALT_KEY = 'worker:halt';
 export const feesKey = (mint: string): string => `worker:fees:${mint}`;
+/**
+ * `{ pool, slot, atMs, state, ctx }`: WATCH-1's coherent snapshot of a held position's pool (run/snapshot.ts), read by
+ * a second path when the feed's pool state went stale. When newer than the pool fact, it is the whole market: its
+ * reserves and its fee context together, never mixed with the feed's.
+ */
+export const SNAPSHOT_PREFIX = 'worker:snapshot:';
+export const snapshotKey = (mint: string): string => `${SNAPSHOT_PREFIX}${mint}`;
+
+export interface SnapshotFact {
+  readonly pool: string;
+  readonly slot: bigint;
+  readonly atMs: number;
+  readonly state: PoolState;
+  readonly ctx: PoolFeeContext;
+}
+
+/**
+ * Whether a snapshot is newer than the pool fact (null: none). By slot when both carry one (the chain's own order),
+ * the receipt time only breaking a tie or standing in when the pool fact has no slot.
+ */
+export const snapshotWins = (snap: SnapshotFact, pool: { readonly slot: bigint | null; readonly receivedAt: number } | null): boolean => {
+  if (pool === null) return true;
+  if (pool.slot !== null && snap.slot !== pool.slot) return snap.slot > pool.slot;
+  return snap.atMs > pool.receivedAt;
+};
+
+export const parseSnapshotFact = (v: unknown): SnapshotFact | null => {
+  if (!isObj(v) || typeof v['pool'] !== 'string' || typeof v['slot'] !== 'bigint' || typeof v['atMs'] !== 'number' || !isObj(v['state']) || !isObj(v['ctx'])) return null;
+  const st = v['state'];
+  if (typeof st['baseReserve'] !== 'bigint' || typeof st['quoteVault'] !== 'bigint' || typeof st['virtualQuoteReserves'] !== 'bigint') return null;
+  return v as unknown as SnapshotFact;
+};
 /** Machine-read reason on `approve_risk`: the reservation request the worker sends to the ledger. */
 export const RESERVE_PREFIX = 'reserve ';
+/** REC-1: a rejected candidate's pool not watched past its window because `maxTails` were already watched. */
+export const NO_TAIL = 'no tail';
+
 /** Reason on a `shortlist` decision: the worker fetches the mint's confirmed create (live H9, H12–H14). */
 export const SHORTLIST = 'shortlist';
 export const TRIP_PREFIX = 'trip ';
@@ -98,6 +133,8 @@ export interface SavedExit {
   /** The position's pool and its last spot price (PRICE_SCALE): the exposure rebuild after a kill reads them. */
   readonly pool?: string | null;
   readonly spot?: { readonly price: bigint; readonly atMs: number } | null;
+  /** Since when a due full exit has waited for its first fresh quote (EXIT-1c); null or absent when none waits. */
+  readonly waitingSinceMs?: number | null;
 }
 
 export interface RestoreFact {
@@ -127,6 +164,8 @@ export interface StrategyConfig {
   readonly barMs: number;
   /** Bars kept per mint. */
   readonly keepBars: number;
+  /** REC-1: rejected candidates' pools watched past their window at once; one more is logged `no tail` (`tail cap`). */
+  readonly maxTails: number;
 }
 
 export interface StrategyDeps {
@@ -184,11 +223,36 @@ export const s0EntryAt = (salt: string, mint: string, from: number, to: number):
 };
 
 /** The universe in an entry intent key's decision id (`entry:<mint>:<universe>.<rest>`), or null for an older key. */
+/** The plan universe of a position with none on record (no saved plan universe, no universe in its entry key). */
+export const NO_UNIVERSE = 'none on record' as ExitUniverse;
+
 export const universeOfKey = (key: string): ExitUniverse | null => {
   const local = key.split(':')[2] ?? '';
   const u = local.split('.')[0] ?? '';
   return (EXIT_UNIVERSES as readonly string[]).includes(u) ? (u as ExitUniverse) : null;
 };
+
+/** A position's universe: its saved plan's, else its entry key's; null when neither has one. */
+export const resolveUniverse = (saved: string | undefined, entryKey: string | undefined): string | null =>
+  saved ?? (entryKey === undefined ? null : universeOfKey(entryKey));
+
+/**
+ * Why a restored position puts the process in sell-only (no new entries; it is flattened through the global exit
+ * ladder): its universe is not in the loaded policy, or none is on record (unknown means no entry). Null: neither.
+ */
+export const sellOnlyReason = (pid: string, universe: string | null, universes: Readonly<Record<string, unknown>>, policyVersion: string): string | null =>
+  universe === null ? `sell-only: no universe on record for ${pid}`
+    : Object.hasOwn(universes, universe) ? null
+      : `sell-only: policy ${policyVersion} lacks universe ${universe} of ${pid}`;
+
+/** A sell quote the pool refused: the one #sellQuote failure that is a real refusal, not missing market data. */
+const NO_QUOTE = 'no quote: ';
+
+/** A saved entry plan the exit rules can run on: every amount a bigint, the open time a number (EXIT-1e). */
+const runnablePlan = (p: Record<string, unknown>): boolean =>
+  typeof p['openedAtMs'] === 'number' && Number.isFinite(p['openedAtMs'])
+  && ['notional', 'riskUnit', 'stopPrice', 'entryReserve'].every((k) => typeof p[k] === 'bigint')
+  && (p['universe'] === undefined || typeof p['universe'] === 'string');
 
 export class LiveStrategy implements Strategy {
   readonly #d: StrategyDeps;
@@ -254,12 +318,45 @@ export class LiveStrategy implements Strategy {
   /** Each held position's latest mark (executable price, PRICE_SCALE) with when it was read. */
   readonly #marks = new Map<string, { readonly price: bigint; readonly atMs: number; readonly slot: bigint }>();
 
+  /**
+   * Exit owners said to be waiting for a fresh market in this process (EXIT-1d), by intent, with their position. The wait
+   * start itself is the position's saved `waitingSinceMs`, so a restart keeps it.
+   */
+  readonly #waitingMarket = new Map<string, string>();
+
+  /**
+   * Positions whose exit waits for a fresh quote, with the moment it started waiting (saved with the plan, so a restart
+   * keeps it): a due full exit not yet owned (EXIT-1c) or an exit owner's next attempt (EXIT-1d).
+   */
+  waitingExits(): ReadonlyMap<string, number> {
+    return new Map([...this.#exits].flatMap(([pid, s]) => (s.waitingSinceMs == null ? [] : [[pid, s.waitingSinceMs] as const])));
+  }
+
+  /** Starts (keeping an earlier start) or ends a position's wait for a fresh quote. */
+  #setWaiting(pid: string, nowMs: number | null): void {
+    const saved = this.#exits.get(pid);
+    if (saved === undefined) return;
+    const since = nowMs === null ? null : (saved.waitingSinceMs ?? nowMs);
+    if (since !== (saved.waitingSinceMs ?? null)) this.#exits.set(pid, { ...saved, waitingSinceMs: since });
+  }
+
   markOf(pid: string): { readonly price: bigint; readonly atMs: number; readonly slot: bigint } | null {
     return this.#marks.get(pid) ?? null;
   }
 
+  /** Positions whose universe the policy lacks, being flattened (said once each). */
+  readonly #flattening = new Set<string>();
+
   /** Positions whose partials were checked against the book in this process. */
   readonly #fromBook = new Set<string>();
+  /**
+   * Whether this boot's restore fact (saved plans and trackers) has been applied, refused or not. Until then no position
+   * is managed: the stored book comes back first, and the boot's other start facts (or a market event dated before the
+   * restore) must never plan a restored position from its fill under the policy-maximum stop, even for one step (EXIT-1e).
+   */
+  #restoreSeen = false;
+  /** Said once per boot when positions wait for the restore. */
+  #saidRestoreWait = false;
 
   /** The fee terms of the latest swap seen on a mint's pool (for the paper fill when no fee-context fact exists). */
   observedFees(mint: string): PoolFeeContext | undefined {
@@ -277,7 +374,21 @@ export class LiveStrategy implements Strategy {
       const pool = this.#poolOfMint.get(mint);
       if (pool !== undefined) out.set(pool, { mint, held: held.has(mint) });
     }
+    for (const [mint, t] of this.#tail) if (!out.has(t.pool)) out.set(t.pool, { mint, held: false });
     return out;
+  }
+
+  /**
+   * REC-1 (supervisor ruling): the pool of a candidate that was evaluated and rejected stays watched after its window,
+   * until the window end plus its universe's maximum hold, so the recording holds every swap a counterfactual entry at
+   * any moment of the window would need (G3's scorer). At P3 like any candidate (held: false): the budget halt sheds it
+   * first and the stream records the gap. Kept through `untilMs`, pruned at the first event after it.
+   */
+  readonly #tail = new Map<string, { readonly pool: string; readonly untilMs: number }>();
+
+  /** The rejected candidates' pools still watched past their window, by mint (REC-1). */
+  get tail(): ReadonlyMap<string, { readonly pool: string; readonly untilMs: number }> {
+    return this.#tail;
   }
 
   /** H14's creates coverage as of the last slot, coverage fact or seed released; null before any. */
@@ -315,7 +426,10 @@ export class LiveStrategy implements Strategy {
     this.#lifecycle(ctx, out);
     this.#manage(ctx, out);
     // At most one entry step per call, and only while nothing else acted: ctx.book is the book before these decisions.
+    this.#windowEnds(ctx.now.receivedAt, out);
     if (!out.some((d) => d.action !== null)) this.#entries(ctx, gctx, out, due);
+    // Through `untilMs` itself: an exit at exactly the maximum hold (EXIT-1 fires at elapsed >= tMax) needs that moment.
+    for (const [mint, t] of this.#tail) if (ctx.now.receivedAt > t.untilMs) this.#tail.delete(mint);
     return out;
   }
 
@@ -356,13 +470,19 @@ export class LiveStrategy implements Strategy {
   }
 
   #restore(v: unknown, out: Decision[]): void {
+    this.#restoreSeen = true;
     if (!isObj(v) || !isObj(v['exits'])) {
       out.push({ action: null, reasons: ['restore refused', 'malformed restore fact'] });
       return;
     }
     let n = 0;
     for (const [pid, s] of Object.entries(v['exits'])) {
-      if (!isObj(s) || !isObj(s['plan']) || !isObj(s['tracker']) || !Array.isArray(s['bars'])) continue;
+      // A saved exit the exit rules could not run on is refused, never applied: its position falls back to the plan from
+      // its fill (the policy-maximum stop), so one bad entry neither stalls nor crashes the management of the others.
+      if (!isObj(s) || !isObj(s['plan']) || !isObj(s['tracker']) || !Array.isArray(s['bars']) || !runnablePlan(s['plan'])) {
+        out.push({ action: null, reasons: ['restore entry refused', pid, 'malformed saved plan'] });
+        continue;
+      }
       const saved = s as unknown as SavedExit;
       this.#exits.set(pid, saved);
       this.#bars.set(pid, [...saved.bars]);
@@ -526,9 +646,19 @@ export class LiveStrategy implements Strategy {
   /** The pool market of a mint as of now: the gate pool fact and the fee context. */
   #market(ctx: StrategyContext, mint: string): Market | string {
     const p = ctx.lookup(poolKey(mint));
+    const sr = ctx.lookup(snapshotKey(mint));
+    const snap = sr.ok ? parseSnapshotFact(unwrap(sr.value)) : null;
+    const pool = p.ok ? parsePool(p.value) : null;
+    // WATCH-1: a snapshot newer than the pool fact is the market, reserves and fee context alike.
+    if (snap !== null && snapshotWins(snap, pool === null ? null : pool.obs)) {
+      this.#notePool(mint, snap.pool);
+      return { pool: snap.state, ctx: snap.ctx, atMs: snap.atMs, address: snap.pool };
+    }
     if (!p.ok) return 'pool state unknown';
-    const pool = parsePool(p.value);
     if (pool === null) return 'pool state malformed';
+    // A flagged pool fact (POS-1: the swap stream lost continuity) is never priced from, whatever its age.
+    const flags = pool.obs.quality.filter((q) => q !== 'backfilled' && q !== 'deduplicated');
+    if (flags.length > 0) return `pool state flagged ${flags.join(', ')}${typeof (p.value as { stale?: unknown }).stale === 'string' ? ` (${(p.value as { stale: string }).stale})` : ''}`;
     this.#notePool(mint, pool.address);
     // A fee-context fact when one is published, else the terms of the latest swap seen on the pool.
     const f = ctx.lookup(feesKey(mint));
@@ -542,8 +672,9 @@ export class LiveStrategy implements Strategy {
 
   /** Price bars per mint: the spot price (effective quote per base, PRICE_SCALE) at each pool update. */
   #track(e: MarketEvent, ctx: StrategyContext): void {
-    if (!e.key.startsWith(POOL_PREFIX)) return;
-    const mint = e.key.slice(POOL_PREFIX.length);
+    const prefix = e.key.startsWith(POOL_PREFIX) ? POOL_PREFIX : e.key.startsWith(SNAPSHOT_PREFIX) ? SNAPSHOT_PREFIX : null;
+    if (prefix === null) return;
+    const mint = e.key.slice(prefix.length);
     const held = [...this.#exits.keys()].filter((pid) => this.#mintOf(pid) === mint);
     if (!this.#cands.has(mint) && held.length === 0) return;
     const m = this.#market(ctx, mint);
@@ -597,6 +728,14 @@ export class LiveStrategy implements Strategy {
 
   /** Entry intents that resolved without a fill end; exit owners that did get a new attempt or are booked blocked. */
   #lifecycle(ctx: StrategyContext, out: Decision[]): void {
+    // A waiting owner that settled or was booked another way no longer waits.
+    for (const [id, pid] of this.#waitingMarket) {
+      const i = ctx.book.intents[id];
+      if (i === undefined || isTerminal(i) || (i.status !== 'exposure_reserved' && !(i.status === 'reconciled' && i.fills.length === 0))) {
+        this.#waitingMarket.delete(id);
+        if (ctx.book.positions[pid]?.status !== 'open') this.#setWaiting(pid, null);
+      }
+    }
     for (const i of Object.values(ctx.book.intents)) {
       if (isTerminal(i)) continue;
       const mint = i.intent.mint;
@@ -638,7 +777,7 @@ export class LiveStrategy implements Strategy {
     if (typeof m === 'string') return m;
     if (ctx.now.receivedAt - m.atMs > this.#d.session.policy.gates.maxQuoteAgeMs) return 'pool state is stale';
     const q = poolSell(m.pool, tokens, m.ctx);
-    if (!q.ok) return `no quote: ${q.reason}`;
+    if (!q.ok) return `${NO_QUOTE}${q.reason}`;
     const step = this.#d.session.policy.exits.ladder.steps[rung]!;
     const below = BigInt(step.minOutBelowTriggerBps);
     return {
@@ -659,11 +798,28 @@ export class LiveStrategy implements Strategy {
     const rung = Math.min(signed === 0 && owner !== undefined ? owner.startRung : Math.max(lastRung === null ? 0 : lastRung + 1, used), last);
     const height = this.#height;
     const q = height === null ? 'no slot height yet' : this.#sellQuote(ctx, mint, quantity, rung);
+    if (typeof q === 'string' && !q.startsWith(NO_QUOTE)) {
+      // No slot yet (a restart's reconcile runs before the feeds start) or no fresh market state (unknown, malformed, no
+      // fee terms, or stale) is timing, not a refusal: the owner waits for the first fresh market, said once and kept
+      // visible (EXIT-1d; the no-slot case is also TEST-3's, #83). Booked blocked, it would wait out the blocked-retry
+      // time and go as a single last-rung retry. Blocked stays for a market that refuses the sale.
+      if (!this.#waitingMarket.has(id)) {
+        this.#waitingMarket.set(id, pid);
+        out.push({ action: null, reasons: ['exit waiting for a fresh market', mint, q] });
+      }
+      this.#setWaiting(pid, ctx.now.receivedAt);
+      return;
+    }
+    // Sent or booked blocked below: the wait, of this owner or of the due exit it carries (EXIT-1c), is over.
+    this.#waitingMarket.delete(id);
+    this.#setWaiting(pid, null);
     if (typeof q === 'string' || height === null) {
       out.push({ action: { type: 'exit_blocked', positionId: pid, reason: String(q) }, reasons: ['exit blocked', mint, String(q)] });
       return;
     }
-    if (saved !== undefined) this.#exits.set(pid, { ...saved, tracker: noteAttempt(saved.tracker, rung) });
+    // Read again: the wait was just cleared on this same saved exit.
+    const now = this.#exits.get(pid);
+    if (now !== undefined) this.#exits.set(pid, { ...now, tracker: noteAttempt(now.tracker, rung) });
     const attempt = this.#attempt(id, signed + 1, q, height);
     if (signed === 0) {
       out.push({ action: { type: 'intent', intentId: id, event: { type: 'prepare', quote: q } }, reasons: ['prepare exit', mint, `rung ${rung}`] });
@@ -701,6 +857,13 @@ export class LiveStrategy implements Strategy {
         continue;
       }
       if (p.status === 'opening') continue;
+      if (!this.#restoreSeen) {
+        if (!this.#saidRestoreWait) {
+          this.#saidRestoreWait = true;
+          out.push({ action: null, reasons: ['positions wait for the restore', `${Object.values(ctx.book.positions).filter((x) => x.status !== 'closed' && x.status !== 'opening').length} open`] });
+        }
+        return;
+      }
       let saved = this.#exits.get(p.id) ?? this.#planFromFill(p.id, p.entryIntentId, ctx, out);
       if (saved === null) continue;
       const exitIntents = Object.values(ctx.book.intents).filter((i) => i.intent.purpose === 'exit' && i.intent.positionId === p.id);
@@ -708,9 +871,10 @@ export class LiveStrategy implements Strategy {
         // A plan saved before universes were stored: its universe from the entry's intent key, never a default.
         const entry = ctx.book.intents[p.entryIntentId];
         const u = entry === undefined ? null : universeOfKey(entry.intent.key);
-        saved = { ...saved, plan: { ...saved.plan, universe: u ?? this.#d.config.universe } };
+        // None on record: unknown is never guessed. The position is flattened like one whose universe the policy lacks.
+        saved = { ...saved, plan: { ...saved.plan, universe: u ?? NO_UNIVERSE } };
         this.#exits.set(p.id, saved);
-        out.push({ action: null, reasons: ['plan universe restored', p.id, u === null ? `no universe on record; ${this.#d.config.universe}, the only universe this worker trades` : u] });
+        out.push({ action: null, reasons: ['plan universe restored', p.id, u === null ? 'no universe on record; flattened through the global exit ladder' : u] });
       }
       if (!this.#fromBook.has(p.id)) {
         // Once per position per process (after a restart): partials come from the book, not the saved file. Each exit
@@ -744,25 +908,50 @@ export class LiveStrategy implements Strategy {
         const liq = liquidationValue({ venue: 'pumpswap', pool: m.pool, ctx: m.ctx }, p.quantity);
         if (liq.ok) this.#marks.set(p.id, { price: execPrice(liq.value, p.quantity), atMs: m.atMs, slot: ctx.now.slot });
       }
-      const step = decideExit(this.#settings, saved.plan, holding, saved.tracker, {
+      // A universe the loaded policy no longer has (a restart under a policy that dropped it): its own time stops and
+      // partials are unknown, so the position is flattened at once through the global exit ladder (supervisor ruling).
+      // Exits are never blocked: no throw, no missing decision.
+      const known = Object.hasOwn(this.#d.session.policy.exits.universes, saved.plan.universe);
+      if (!known && !this.#flattening.has(p.id)) {
+        this.#flattening.add(p.id);
+        out.push({ action: null, reasons: ['universe missing', p.id, `${String(saved.plan.universe)} is not in policy ${this.#d.session.versionHash}; flattened through the global exit ladder`] });
+      }
+      const step = decideExit(known ? this.#settings : this.#flatten(saved.plan.universe), saved.plan, holding, saved.tracker, {
         nowMs: ctx.now.receivedAt, slotClose: true,
         market: typeof m === 'string' ? null : { atMs: m.atMs, value: { venue: 'pumpswap', pool: m.pool, ctx: m.ctx } },
         deployerSoldBps: this.#deployerSold(p.id, p.mint, saved.plan.openedAtMs, ctx, out), sellRoute: null, flow: [], bars: this.#bars.get(p.id) ?? saved.bars,
       });
-      saved = { ...saved, tracker: step.tracker, bars: this.#bars.get(p.id) ?? saved.bars };
+      // A due full exit with no quote yet is held, remembered in the tracker (EXIT-1c): said once, and kept visible as
+      // pending (and as an alert once it has waited the blocked-retry time) until the first fresh quote takes it.
+      // Only an open position's wait is decided here; an exit owner's wait (EXIT-1d) is #sendExit's.
+      const waiting = p.status === 'open' && step.tracker.pendingFull !== null;
+      if (waiting && saved.waitingSinceMs == null) out.push({ action: null, reasons: ['exit waiting for a fresh quote', p.mint, step.tracker.pendingFull!.join(', ')] });
+      const waitingSinceMs = p.status !== 'open' ? (saved.waitingSinceMs ?? null) : waiting ? (saved.waitingSinceMs ?? ctx.now.receivedAt) : null;
+      saved = { ...saved, tracker: step.tracker, bars: this.#bars.get(p.id) ?? saved.bars, waitingSinceMs };
       this.#exits.set(p.id, saved);
       for (const why of step.ignored) out.push({ action: null, reasons: ['exit input ignored', p.mint, why] });
-      this.#exitDecision(p.id, p.mint, p.exitSeq, step.decision, ctx, out);
+      this.#exitDecision(p.id, p.mint, p.exitSeq, step.decision, ctx, out, known ? [] : ['universe missing: flatten']);
     }
   }
 
-  #exitDecision(pid: PositionId, mint: string, exitSeq: number, d: ExitDecision, ctx: StrategyContext, out: Decision[]): void {
+  /**
+   * Exit settings for a universe the policy lacks: the global ladder and limits, with that universe's block set to
+   * flatten (time stops at 0, so the whole position goes at once; no partial or trail is ever taken).
+   */
+  #flatten(universe: string): ExitSettings {
+    const s = this.#settings;
+    const base = Object.values(s.exits.universes)[0]!;
+    const flat = { ...base, tFlatMs: 0, tMaxMs: 0, partialAtRBps: Number.MAX_SAFE_INTEGER, partialAtGainBps: Number.MAX_SAFE_INTEGER };
+    return { ...s, exits: { ...s.exits, universes: { ...s.exits.universes, [universe]: flat } } };
+  }
+
+  #exitDecision(pid: PositionId, mint: string, exitSeq: number, d: ExitDecision, ctx: StrategyContext, out: Decision[], note: readonly string[] = []): void {
     if (d.kind === 'hold') return;
     // A merge that adds no new reason to the exit owner changes nothing: not logged, not stored.
     const owner = ctx.book.positions[pid]?.exitOwner;
     if (d.kind === 'merge' && owner != null && d.reasons.every((x) => owner.reasons.includes(x))) return;
     const risk = this.#account(ctx);
-    const why = d.fired.map((t) => `${t.code}: ${t.detail}`);
+    const why = [...note, ...d.fired.map((t) => `${t.code}: ${t.detail}`)];
     if (risk !== null) {
       // Exits are never blocked; tripped controls are logged and latched.
       const r = evaluateExit({ session: this.#d.session, mode: 'paper', clock: { now: () => ctx.now }, account: risk.history, latches: risk.latches, market: { solPrice: this.#spotSol(ctx), solBalance: this.#balance(risk, ctx), regime: 'unknown' } });
@@ -796,8 +985,8 @@ export class LiveStrategy implements Strategy {
     const riskUnit = cost - stopValue > 0n ? cost - stopValue : 1n;
     // The universe the entry was made under: its plan, else its intent key (`entry:<mint>:<universe>.<version>.<n>`).
     const universe = seed?.universe ?? (entry === undefined ? null : universeOfKey(entry.intent.key));
-    if (universe === null) out.push({ action: null, reasons: ['no entry universe', p.mint, `managed with ${this.#d.config.universe}'s exits, the only universe this worker trades`] });
-    const plan: EntryPlan = { openedAtMs: fillAt, universe: universe ?? this.#d.config.universe, notional: seed?.notional ?? this.#d.session.policy.capital.minNotional, riskUnit, stopPrice, entryReserve: seed?.entryReserve ?? 0n };
+    if (universe === null) out.push({ action: null, reasons: ['no entry universe', p.mint, 'no universe on record; flattened through the global exit ladder'] });
+    const plan: EntryPlan = { openedAtMs: fillAt, universe: universe ?? NO_UNIVERSE, notional: seed?.notional ?? this.#d.session.policy.capital.minNotional, riskUnit, stopPrice, entryReserve: seed?.entryReserve ?? 0n };
     const saved: SavedExit = { plan, tracker: newTracker(), bars: this.#bars.get(p.mint) ?? [] };
     this.#bars.set(pid, [...saved.bars]);
     this.#exits.set(pid, saved);
@@ -838,6 +1027,29 @@ export class LiveStrategy implements Strategy {
     return read !== undefined && this.#fresh(read, ctx.now);
   }
 
+  /**
+   * Candidates whose window has ended leave, on every event: also while entries are halted (a feed down, a pause,
+   * seeding, sell-only, a divergence), so a rejected candidate's tail starts at its window end and never late (REC-1
+   * review). Evaluated and rejected: its pool stays watched until windowEnd + tMax, or is logged `no tail` at the cap.
+   */
+  #windowEnds(now: number, out: Decision[]): void {
+    const c = this.#d.config;
+    for (const cand of [...this.#cands.values()]) {
+      const to = cand.migratedAtMs + c.windowToMs;
+      if (now < to) continue;
+      const pool = this.#poolOfMint.get(cand.mint);
+      if (cand.lastReason !== null && pool !== undefined) {
+        // At the cap the pool is not watched: logged, so G3 censors that coin with the reason, never imputes it.
+        if (this.#tail.size >= c.maxTails) out.push({ action: null, reasons: [NO_TAIL, c.universe, cand.mint, `tail cap ${c.maxTails}`] });
+        else this.#tail.set(cand.mint, { pool, untilMs: to + exitsFor(this.#d.session.policy.exits, c.universe).tMaxMs });
+      }
+      this.#cands.delete(cand.mint);
+      this.#bars.delete(cand.mint);
+      this.#forget(cand.mint);
+      out.push({ action: null, reasons: ['no entry', c.universe, cand.mint, cand.lastReason === null ? 'window ended' : `window ended; last reason: ${cand.lastReason}`] });
+    }
+  }
+
   #entries(ctx: StrategyContext, gctx: GateContext, out: Decision[], due: ReadonlyMap<string, { readonly slot: bigint | null; readonly receivedAt: number }>): void {
     const now = ctx.now.receivedAt;
     const c = this.#d.config;
@@ -850,13 +1062,6 @@ export class LiveStrategy implements Strategy {
     for (const cand of this.#cands.values()) {
       const from = cand.migratedAtMs + c.windowFromMs;
       const to = cand.migratedAtMs + c.windowToMs;
-      if (now >= to) {
-        this.#cands.delete(cand.mint);
-        this.#bars.delete(cand.mint);
-        this.#forget(cand.mint);
-        out.push({ action: null, reasons: ['no entry', c.universe, cand.mint, cand.lastReason === null ? 'window ended' : `window ended; last reason: ${cand.lastReason}`] });
-        continue;
-      }
       if (now < from || (cand.lastEvalMs !== null && now - cand.lastEvalMs < c.evaluateEveryMs && !this.#landedFresh(due, cand.mint, ctx))) continue;
       if (c.entryTiming === 'random' && now < s0EntryAt(c.entrySalt, cand.mint, from, to)) continue;
       if (Object.values(ctx.book.positions).some((p) => p.mint === cand.mint && p.status !== 'closed')) continue;

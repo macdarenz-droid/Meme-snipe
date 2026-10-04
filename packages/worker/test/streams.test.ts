@@ -8,6 +8,7 @@ import {
 } from '../src/providers/index.ts';
 import { HELIUS_FREE, ManualTimers, P0, P1, P2, P3, Scheduler } from '../src/scheduler/index.ts';
 import { blockNetwork, recordOf, settle, tx } from './helpers.ts';
+import { PoolWatch, REFUSED_RETRY_MS } from '../src/run/pool-watch.ts';
 
 blockNetwork();
 
@@ -259,6 +260,213 @@ describe('RPC stream', () => {
       return { ...t, reopen, drop: () => t.hub.last.drop() };
     };
 
+    it('REC-1: at the budget halt a rejected candidate\'s tail pool (P3) is shed first, with an open gap recorded; an open position\'s pool (P1) stays', async () => {
+      const TAIL = MINT_AUTH;
+      const HELD = PUMP_AMM_GLOBAL_CONFIG;
+      const t = setup(() => [], { used: 699_990 });
+      t.stream.watchSlots(P1);
+      // What the strategy hands the pool watch: the tail pool (not held, P3) and a held pool (P1).
+      const pools = new Map([[TAIL, { mint: 'tail-mint', held: false }], [HELD, { mint: 'held-mint', held: true }]]);
+      const watch = new PoolWatch({ stream: t.stream, timers: t.timers, pools: () => pools, everyMs: 2_000 });
+      watch.sync();
+      t.stream.start();
+      t.hub.last.open();
+      const [slotSub] = ack(t.hub);
+      t.hub.last.push(slotNote(slotSub!, 600));
+      await settle();
+      expect(facts(t.feed, t.timers, `coverage:trades:${TAIL}:start`)).toHaveLength(1);
+      t.hub.last.push('x'.repeat(500_000)); // 10 credits: the month crosses 70%
+      expect(t.scheduler.halted).toBe(true);
+      expect(facts(t.feed, t.timers, `coverage:trades:${TAIL}:gap`)).toEqual([expect.objectContaining({ toSlot: null, reason: 'halted', via: `logs:${TAIL}` })]);
+      expect(facts(t.feed, t.timers, `coverage:trades:${HELD}:gap`)).toEqual([]);
+      // The held pool's watch is still live: a swap on it is recorded, while the tail's gap stays open (unknown).
+      expect(t.hub.last.requests().filter((r) => r.method === 'logsUnsubscribe')).toHaveLength(1);
+    });
+
+    describe('POOL-1: a pool watch the stream drops by itself is watched again', () => {
+      const CAND = MINT_AUTH;
+      const HELD = PUMP_AMM_GLOBAL_CONFIG;
+      /** Coverage facts of one pool's stream, in release order, as [kind, value]. */
+      const coverage = (feed: LiveFeed, timers: ManualTimers, pool: string): [string, Record<string, unknown>][] => {
+        feed.advance(timers.now() + 60_000);
+        const out: [string, Record<string, unknown>][] = [];
+        for (let e = feed.next(); e; e = feed.next()) {
+          if (e.kind === 'market' && e.key.startsWith(`coverage:trades:${pool}:`)) out.push([e.key.slice(`coverage:trades:${pool}:`.length), (e.value as { value: Record<string, unknown> }).value]);
+        }
+        return out;
+      };
+      const subscribedTo = (hub: FakeSocketHub, pool: string) => hub.last.requests().filter((r) => r.method === 'logsSubscribe' && JSON.stringify(r.params).includes(pool));
+
+      it('after the halt lifts, the candidate pool (P3) is watched again and its coverage starts again after the halted gap', async () => {
+        const t = setup(() => [], { used: 699_990 });
+        t.stream.watchSlots(P1);
+        const pools = new Map([[CAND, { mint: 'cand', held: false }], [HELD, { mint: 'held', held: true }]]);
+        const watch = new PoolWatch({ stream: t.stream, timers: t.timers, pools: () => pools, everyMs: 2_000 });
+        watch.sync();
+        t.stream.start();
+        t.hub.last.open();
+        const [slotSub] = ack(t.hub);
+        t.hub.last.push(slotNote(slotSub!, 600));
+        await settle();
+        t.hub.last.push('x'.repeat(500_000)); // the month crosses 70%: P2–P3 watches dropped
+        expect(t.scheduler.halted).toBe(true);
+        expect(watch.watching.has(CAND)).toBe(false);
+        expect(watch.watching.has(HELD)).toBe(true);
+        // While halted a new P3 watch is refused by the stream at once: no request is sent.
+        const before = subscribedTo(t.hub, CAND).length;
+        watch.sync();
+        expect(subscribedTo(t.hub, CAND)).toHaveLength(before);
+        // A new month: the budget resets, the next sync watches the pool again.
+        t.scheduler.resetBudget(0);
+        watch.sync();
+        expect(watch.watching.has(CAND)).toBe(true);
+        expect(subscribedTo(t.hub, CAND)).toHaveLength(before + 1);
+        const reqs = t.hub.last.requests().length;
+        t.hub.last.requests().slice(reqs - 1).forEach((r) => t.hub.last.push({ jsonrpc: '2.0', id: r.id, result: 900 }));
+        t.hub.last.push(slotNote(slotSub!, 640));
+        await settle();
+        const c = coverage(t.feed, t.timers, CAND);
+        expect(c.map(([k]) => k)).toEqual(['start', 'gap', 'start']);
+        expect(c[1]![1]).toMatchObject({ toSlot: null, reason: 'halted' });
+        expect(BigInt(c[2]![1]['fromSlot'] as bigint)).toBeGreaterThanOrEqual(BigInt(c[1]![1]['fromSlot'] as bigint));
+      });
+
+      it('a held pool lowered to P3 while halted is dropped, forgotten, and watched again after the halt lifts', async () => {
+        const t = setup(() => [], { used: 699_990 });
+        t.stream.watchSlots(P1);
+        const pools = new Map([[HELD, { mint: 'held', held: true }]]);
+        const watch = new PoolWatch({ stream: t.stream, timers: t.timers, pools: () => pools, everyMs: 2_000 });
+        watch.sync();
+        t.stream.start();
+        t.hub.last.open();
+        const [slotSub] = ack(t.hub);
+        t.hub.last.push(slotNote(slotSub!, 600));
+        await settle();
+        t.hub.last.push('x'.repeat(500_000)); // halted: the held pool (P1) keeps its watch
+        expect(t.scheduler.halted).toBe(true);
+        expect(watch.watching.has(HELD)).toBe(true);
+        // The position closes: the pool is a candidate's again (P3), which the halt does not keep.
+        pools.set(HELD, { mint: 'held', held: false });
+        watch.sync();
+        expect(watch.watching.has(HELD)).toBe(false);
+        const asked = subscribedTo(t.hub, HELD).length;
+        t.scheduler.resetBudget(0);
+        watch.sync();
+        expect(watch.watching.get(HELD)).toMatchObject({ held: false });
+        expect(subscribedTo(t.hub, HELD)).toHaveLength(asked + 1);
+      });
+
+      it('a held pool (P1) whose watch the server refuses is asked again after 2 s, then after a doubling wait', async () => {
+        const t = setup(() => []);
+        t.stream.watchSlots(P1);
+        const pools = new Map([[HELD, { mint: 'held', held: true }]]);
+        const watch = new PoolWatch({ stream: t.stream, timers: t.timers, pools: () => pools, everyMs: 2_000 });
+        t.stream.start();
+        t.hub.last.open();
+        const [slotSub] = ack(t.hub);
+        t.hub.last.push(slotNote(slotSub!, 700));
+        const refuseLast = () => {
+          const r = subscribedTo(t.hub, HELD).at(-1)!;
+          t.hub.last.push({ jsonrpc: '2.0', id: r.id, error: { code: -32602, message: 'too many subscriptions' } });
+        };
+        watch.sync();
+        expect(subscribedTo(t.hub, HELD)).toHaveLength(1);
+        refuseLast();
+        expect(watch.watching.has(HELD)).toBe(false);
+        t.timers.advance(1_999);
+        watch.sync();
+        expect(subscribedTo(t.hub, HELD)).toHaveLength(1);
+        t.timers.advance(1);
+        watch.sync();
+        expect(subscribedTo(t.hub, HELD)).toHaveLength(2);
+        // Refused again: the next wait is 4 s.
+        refuseLast();
+        t.timers.advance(3_999);
+        watch.sync();
+        expect(subscribedTo(t.hub, HELD)).toHaveLength(2);
+        t.timers.advance(1);
+        watch.sync();
+        expect(subscribedTo(t.hub, HELD)).toHaveLength(3);
+        // Served this time: watched, at P1, with coverage started again after the refused gap.
+        const r = subscribedTo(t.hub, HELD).at(-1)!;
+        t.hub.last.push({ jsonrpc: '2.0', id: r.id, result: 901 });
+        t.hub.last.push(slotNote(slotSub!, 720));
+        await settle();
+        expect(watch.watching.get(HELD)).toMatchObject({ held: true });
+        const c = coverage(t.feed, t.timers, HELD);
+        expect(c.map(([k, v]) => (k === 'gap' ? `gap ${String(v['reason'])}` : k))).toEqual(['gap refused', 'gap refused', 'start']);
+      });
+
+      /** A held pool watched on an open connection, with a way to refuse or serve its newest subscribe. */
+      const refusing = async () => {
+        const t = setup(() => []);
+        t.stream.watchSlots(P1);
+        const pools = new Map([[HELD, { mint: 'held', held: true }]]);
+        const watch = new PoolWatch({ stream: t.stream, timers: t.timers, pools: () => pools, everyMs: 2_000 });
+        t.stream.start();
+        t.hub.last.open();
+        const [slotSub] = ack(t.hub);
+        t.hub.last.push(slotNote(slotSub!, 700));
+        await settle();
+        const answer = (ok: boolean) => {
+          const r = subscribedTo(t.hub, HELD).at(-1)!;
+          t.hub.last.push(ok ? { jsonrpc: '2.0', id: r.id, result: 950 } : { jsonrpc: '2.0', id: r.id, error: { code: -32602 } });
+        };
+        let slot = 700;
+        /** One second on, with a slot notice so the stream is not idle (it reconnects after 30 s of silence). */
+        const second = () => {
+          t.timers.advance(1_000);
+          t.hub.last.push(slotNote(slotSub!, ++slot));
+          watch.sync();
+        };
+        return { t, pools, watch, answer, second, asked: () => subscribedTo(t.hub, HELD).length };
+      };
+
+      it('the wait doubles to 60 s and no further', async () => {
+        expect(REFUSED_RETRY_MS).toEqual({ first: 2_000, most: 60_000 });
+        const r = await refusing();
+        r.watch.sync();
+        const waits: number[] = [];
+        for (let k = 0; k < 7; k++) {
+            r.answer(false);
+          const asked = r.asked();
+          let waited = 0;
+          while (r.asked() === asked) {
+            r.second();
+            waited += 1_000;
+          }
+          waits.push(waited);
+        }
+        expect(waits).toEqual([2_000, 4_000, 8_000, 16_000, 32_000, 60_000, 60_000]);
+      });
+
+      it('a pool that leaves the list and comes back is asked again at once (its wait is forgotten)', async () => {
+        const r = await refusing();
+        r.watch.sync();
+        r.answer(false);
+        r.pools.delete(HELD);
+        r.watch.sync();
+        r.pools.set(HELD, { mint: 'held', held: true });
+        r.watch.sync();
+        expect(r.asked()).toBe(2);
+      });
+
+      it('a refused watch is dropped from the stream, so a reconnect subscribes the pool once, not twice', async () => {
+        const r = await refusing();
+        r.watch.sync();
+        r.answer(false);
+        r.t.timers.advance(2_000);
+        r.watch.sync();
+        r.answer(true);
+        await settle();
+        r.t.hub.last.drop();
+        r.t.timers.advance(10_000);
+        r.t.hub.last.open();
+        const fresh = r.t.hub.last.requests().filter((q) => q.method === 'logsSubscribe' && JSON.stringify(q.params).includes(HELD));
+        expect(fresh).toHaveLength(1);
+      });
+    });
+
     it('starts at the first slot; a reconnect gap runs from the watch\'s own last log slot to a slot seen live after the resubscribe', async () => {
       const t = run(() => [{ signature: tx('pump CreateEvent').signature, slot: 604, err: null }]);
       t.drop();
@@ -337,6 +545,20 @@ describe('RPC stream', () => {
         t.hub.last.push(slotNote(slotSub!, 621));
         expect(facts(t.feed, t.timers, 'coverage:creates:gap')).toEqual([{ fromSlot: 603n, toSlot: 620n, reason: 'disconnect', via: VIA }]);
       }
+    });
+
+    it('a watch raised to P1 in place keeps its coverage (no gap, no new start) and survives the halt; lowered while halted, it is dropped', async () => {
+      const t = run(() => [], { used: 699_000 });
+      // The logs watch is the second one run() adds (the slot watch is first).
+      expect(t.stream.setPriority(2, P1)).toBe(true);
+      expect(t.stream.setPriority(1, P1)).toBe(false);
+      t.scheduler.meter(1_000);
+      t.hub.last.push(slotNote(100, 606)); // any traffic runs the budget check
+      expect(t.scheduler.halted).toBe(true);
+      expect(facts(t.feed, t.timers, 'coverage:creates:gap')).toEqual([]);
+      expect(t.stream.setPriority(2, P3)).toBe(true);
+      expect(facts(t.feed, t.timers, 'coverage:creates:gap')).toEqual([{ fromSlot: 603n, toSlot: null, reason: 'halted', via: VIA }]);
+      expect(t.stream.setPriority(2, P1)).toBe(false);
     });
 
     it('a watch dropped at the 70% halt leaves an open-ended gap; after resetBudget it can watch again and starts anew', async () => {

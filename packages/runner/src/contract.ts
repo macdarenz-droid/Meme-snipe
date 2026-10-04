@@ -118,6 +118,8 @@ export interface Health {
   readonly lookups: { readonly counts: readonly number[] };
   readonly entries_halted: boolean;
   readonly halt_reasons: readonly string[];
+  /** Critical alerts up now (WATCH-1: a held position with no fresh price), one line each; empty when none. */
+  readonly critical: readonly string[];
   readonly feeds: Readonly<Record<string, FeedHealth>>;
   readonly journal_seq: number;
   /** Always false in a dry run: no signing key exists. */
@@ -131,6 +133,8 @@ export type JournalKind =
   | 'coverage_gap'
   /** After a restart with an open position: the worst price move over the down window, rebuilt from chain history. */
   | 'exposure'
+  /** A critical alert raised or cleared (WATCH-1: `level` critical or cleared, `code`, `mint`). */
+  | 'alert'
   /**
    * Written once per boot right after the start reconcile: what the worker found and kept. `source`: 'state' (its
    * own files) or 'chain' (no state: rebuilt from wallet balances and pending signatures by address);
@@ -142,6 +146,16 @@ export type JournalKind =
    * before /health first reports `exit_capable: true` in that boot.
    */
   | 'exit_capable';
+
+/**
+ * The fields of a `recovered` line, typed so the worker writes what the runner reads (no cast can hide drift). A
+ * first boot on an empty state dir (the tabletop's chain rebuild, or a genuinely new host) reports source 'chain'.
+ */
+export interface RecoveredFields {
+  readonly source: 'state' | 'chain';
+  readonly pending_exits: readonly string[];
+  readonly positions: readonly { readonly trade: string; readonly universe: string }[];
+}
 
 /** One line of journal.jsonl. Written with a synchronous append per line, so a crash can tear only the last line. */
 export interface JournalLine {
