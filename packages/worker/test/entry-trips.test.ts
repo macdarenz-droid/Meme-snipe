@@ -4,7 +4,9 @@
 import { describe, expect, it } from 'vitest';
 import { usd } from '../../core/src/config/amounts.ts';
 import { melbourneWeek } from '../../core/src/risk/melbourne.ts';
+import type { MicroUsd } from '../../core/src/units/index.ts';
 import { simulationLatency } from '../../runner/src/item4.ts';
+import { markedHistory } from '../src/engine/marks.ts';
 import { accountFile } from '../src/run/account.ts';
 import { controlFile } from '../src/run/state.ts';
 import { blockNetwork } from './helpers.ts';
@@ -24,8 +26,8 @@ const seeded = (over: Record<string, unknown>): string => {
   return dir;
 };
 
-const run = async (stateDir: string) => {
-  const h = makeWorker({ stateDir });
+const run = async (stateDir: string, mark?: typeof markedHistory) => {
+  const h = makeWorker({ stateDir, ...(mark === undefined ? {} : { markedHistory: mark }) });
   expect(await h.worker.reconcile()).toEqual({ ok: true });
   const m = await passingMarket(h, HELD);
   await m.run(10_000, 400, () => {
@@ -58,6 +60,54 @@ describe('a stop reached on the entry path while flat is latched', () => {
     expect(rejects.some((l) => l.reasons!.includes('trip kill_switch'))).toBe(true);
     expect(Object.values(h.worker.book.positions)).toEqual([]);
     expect(typeof latches['killTrippedAtMs']).toBe('number');
+  });
+});
+
+// Risk review of 75145cd: risk counts an open position with an unknown or stale mark as a total loss, a stand-in that
+// refuses the entry but proves no breach. A latch lasts the week (R9) or until re-armed (R10), so the entry path emits
+// `trip ` reasons only from a fully marked account at a fresh SOL price (marks.ts `latchable`, RISK-LATCH).
+describe('an entry-path trip latches only from a fully marked account', () => {
+  type Seam = 'unmarked' | 'stale' | 'dip';
+  /**
+   * Marking that adds a held $3 position (cost) and a $2.01 loss closed an hour ago: a total loss of the position
+   * crosses the $4 weekly line (20% of $20); the account stays above the $14 kill line either way. The position's mark
+   * is null, a micro-dollar older than maxQuoteAgeMs, or a fresh micro-dollar (a real fall).
+   */
+  const steered = (mode: Seam, maxAgeMs: number): typeof markedHistory => (h0, held, sol, nowMs, st) => {
+    const lost = { mint: 'MintX' as never, openedAtMs: nowMs - 7_200_000, closedAtMs: nowMs - 3_600_000, notional: 3_000_000n as MicroUsd, netPnl: -2_010_000n as MicroUsd, stoppedOut: true };
+    const r = markedHistory({ ...h0, closedTrades: [...h0.closedTrades, lost] }, held, sol, nowMs, st);
+    const mark = mode === 'unmarked' ? { mark: null, markAtMs: null } : mode === 'stale' ? { mark: 1n as MicroUsd, markAtMs: nowMs - maxAgeMs - 1 } : { mark: 1n as MicroUsd, markAtMs: nowMs };
+    return { ...r, openPositions: [...r.openPositions, { mint: 'MintY' as never, openedAtMs: nowMs - 600_000, notional: 3_000_000n as MicroUsd, ...mark }] };
+  };
+  const rejects = (lines: { kind: string; reasons?: string[] }[]) => lines.filter((l) => l.kind === 'decision' && l.reasons?.[0] === 'reject').map((l) => l.reasons!);
+  const maxAge = makeWorker().session.policy.gates.maxQuoteAgeMs;
+
+  it('(a) a flat account with a booked weekly loss, refused at entry, latches R9 (fully marked: nothing held)', async () => {
+    const closedAt = T - 2 * 3_600_000;
+    const dir = seeded({ trades: [{ positionId: 'p:old:1', mint: 'OldMint1111111111111111111111111111111111111', openedAtMs: closedAt - 600_000, notional: usd('5'), closedAtMs: closedAt, netLamports: -33_000_000n, netPnl: -usd('5'), stoppedOut: true, booked: -33_000_000n }] });
+    const { lines, latches } = await run(dir);
+    expect(rejects(lines).some((r) => r.includes('trip weekly_loss'))).toBe(true);
+    expect(typeof latches['weeklyTrippedAtMs']).toBe('number');
+  });
+
+  for (const mode of ['unmarked', 'stale'] as const) {
+    it(`(b) a held position with ${mode === 'unmarked' ? 'no' : 'a stale'} mark, whose stand-in crosses the weekly line: no trip reason, no latch`, async () => {
+      const { lines, latches } = await run(tempState(), steered(mode, maxAge));
+      const rs = rejects(lines);
+      // Risk saw the stand-in cross the line: the refusal names the trip in its text...
+      expect(rs.some((r) => r.some((x) => x.startsWith('risk ') && x.includes('trip weekly_loss'))), JSON.stringify(rs.map((r) => r.slice(0, 4)))).toBe(true);
+      // ...but no reason the worker latches from, and no latch.
+      expect(rs.some((r) => r.some((x) => x.startsWith('trip ')))).toBe(false);
+      expect(latches['weeklyTrippedAtMs'] ?? null).toBeNull();
+      expect(latches['killTrippedAtMs'] ?? null).toBeNull();
+    });
+  }
+
+  it('(c) the same position with a fresh mark showing a real fall: `trip weekly_loss` on the reject, and R9 latched', async () => {
+    const { lines, latches } = await run(tempState(), steered('dip', maxAge));
+    expect(rejects(lines).some((r) => r.includes('trip weekly_loss'))).toBe(true);
+    expect(typeof latches['weeklyTrippedAtMs']).toBe('number');
+    expect(latches['killTrippedAtMs'] ?? null).toBeNull();
   });
 });
 
