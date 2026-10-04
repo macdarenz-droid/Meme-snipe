@@ -157,6 +157,71 @@ describe('pool state from the swap stream (POS-1)', () => {
     expect(facts(none).at(-1)!.obs.quality).toEqual(['partial']);
   });
 
+  it('a late swap older than the newest one applied never re-bases after a gap: no clean old price', () => {
+    const { world, state } = base();
+    const s1 = swap('buy', state, 1_000_000n, READ_SLOT + 2n);
+    const s2 = swap('buy', s1.after, 1_000_000n, READ_SLOT + 10n);
+    world.push(s1.event, s2.event);
+    // A bounded gap reported late, then a swap from before the newest one (slot +7, delivered late): its pre-trade
+    // reserves are an old state, and must not be released as current.
+    world.push(coverage(STREAM, 'gap', { fromSlot: READ_SLOT + 4n, toSlot: READ_SLOT + 5n, reason: 'disconnect', via: `logs:${POOL}` }, READ_SLOT + 11n, at(READ_SLOT + 11n)));
+    world.push(swap('sell', s1.after, 500_000n, READ_SLOT + 7n, { arrives: READ_SLOT + 12n }).event);
+    expect(facts(world).at(-1)!.obs.quality).toEqual(['partial']);
+    // The next swap after the gap and after the newest one re-bases.
+    const s3 = swap('sell', s2.after, 500_000n, READ_SLOT + 13n);
+    world.push(s3.event);
+    expect(facts(world).at(-1)!).toMatchObject({ obs: { quality: [], slot: READ_SLOT + 13n }, baseVault: s3.after.baseReserve });
+  });
+
+  it('the same swap delivered twice (log line and fetched transaction) is applied once and stays clean', () => {
+    const { world, state } = base();
+    const s1 = swap('buy', state, 1_000_000n, READ_SLOT + 2n);
+    const again = { ...s1.event, id: `${s1.event.id}:again`, moment: { ...s1.event.moment, txIndex: s1.event.moment.txIndex + 1 } };
+    world.push(s1.event, again);
+    const f = facts(world);
+    expect(f).toHaveLength(2);
+    expect(f.at(-1)!).toMatchObject({ obs: { quality: [] }, baseVault: s1.after.baseReserve });
+  });
+
+  it('a second delivery of an applied swap that arrives after newer ones is ignored, not taken as a mismatch', () => {
+    const { world, state } = base();
+    const s1 = swap('buy', state, 1_000_000n, READ_SLOT + 2n);
+    const s2 = swap('sell', s1.after, 500_000n, READ_SLOT + 4n);
+    const late = { ...s1.event, id: `${s1.event.id}:fetched`, moment: { ...s1.event.moment, slot: READ_SLOT + 5n, receivedAt: at(READ_SLOT + 5n) } };
+    world.push(s1.event, s2.event, late);
+    expect(facts(world).at(-1)!).toMatchObject({ obs: { quality: [], slot: READ_SLOT + 4n }, baseVault: s2.after.baseReserve });
+  });
+
+  it('a swap whose base reserve alone, or effective quote alone, does not chain marks the state stale', () => {
+    for (const pre of [(p: PoolState) => ({ ...p, baseReserve: p.baseReserve + 1n }), (p: PoolState) => ({ ...p, quoteVault: p.quoteVault + 1n })]) {
+      const { world, state } = base();
+      world.push(swap('buy', pre(state), 1_000_000n, READ_SLOT + 2n).event);
+      expect((world.last(poolKey(MINT)) as { stale: string }).stale).toMatch(/^reserves mismatch/);
+    }
+  });
+
+  it('a pool that leaves the watch list drops its chain: its last state is flagged and later swaps make nothing', () => {
+    const { world, state } = base();
+    const s1 = swap('buy', state, 1_000_000n, READ_SLOT + 2n);
+    world.push(s1.event, coverage(STREAM, 'gap', { fromSlot: READ_SLOT + 3n, toSlot: null, reason: 'not watched', via: `logs:${POOL}` }, READ_SLOT + 3n, at(READ_SLOT + 3n)));
+    expect(facts(world).at(-1)!.obs.quality).toEqual(['partial']);
+    const n = facts(world).length;
+    world.push(coverage(STREAM, 'start', { fromSlot: READ_SLOT + 5n, via: `logs:${POOL}` }, READ_SLOT + 5n, at(READ_SLOT + 5n)), swap('buy', s1.after, 1_000n, READ_SLOT + 6n).event);
+    expect(facts(world)).toHaveLength(n);
+  });
+
+  it('the read\'s base is its fact\'s slot (the oldest account it was built from), not the read\'s own', () => {
+    const { world, state } = base();
+    // A later read that answers only the pool account: the vaults are still those of the first read.
+    const poolOnly = { ...FIX.accountsRead, slot: READ_SLOT + 5n, accounts: FIX.accountsRead.accounts.filter((a) => a.address === POOL) };
+    world.push(offchain(RAW.accounts(MINT), poolOnly, READ_SLOT + 5n, at(READ_SLOT + 5n), 'helius'));
+    expect(facts(world).at(-1)!.obs.slot).toBe(READ_SLOT);
+    // A swap at slot +3, after the vaults' read: not in that state, so it moves it.
+    const s1 = swap('buy', state, 1_000_000n, READ_SLOT + 3n, { arrives: READ_SLOT + 6n });
+    world.push(s1.event);
+    expect(facts(world).at(-1)!).toMatchObject({ obs: { quality: [], slot: READ_SLOT + 3n }, baseVault: s1.after.baseReserve });
+  });
+
   it('a read older than the swaps already applied is not released over them', () => {
     const { world, state } = base();
     const s1 = swap('buy', state, 1_000_000n, READ_SLOT + 4n);

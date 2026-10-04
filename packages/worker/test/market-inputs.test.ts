@@ -61,7 +61,7 @@ describe('SOL/USD from the Coinbase ticker', () => {
 });
 
 describe('the swap stream of each watched pool', () => {
-  const fake = () => {
+  const fake = (inPlace = true) => {
     const calls: string[] = [];
     let next = 1;
     const stream = {
@@ -70,11 +70,15 @@ describe('the swap stream of each watched pool', () => {
         return next++;
       },
       unwatch: (id: number, reason?: string) => void calls.push(`unwatch ${id} ${reason}`),
+      setPriority: (id: number, p: number) => {
+        calls.push(`priority ${id} P${p}`);
+        return inPlace;
+      },
     };
     return { calls, stream };
   };
 
-  it('follows the list at confirmed (POS-1: the pool state is built from these swaps): a candidate at P3, a held pool at P1, dropped pools unwatched', () => {
+  it('follows the list at confirmed (POS-1: the pool state is built from these swaps): a candidate at P3, raised to P1 in place when held, dropped pools unwatched', () => {
     const { calls, stream } = fake();
     let list = new Map([['poolA', { mint: 'mA', held: false }]]);
     const w = new PoolWatch({ stream, timers: new ManualTimers(0), pools: () => list, everyMs: 2_000 });
@@ -82,10 +86,24 @@ describe('the swap stream of each watched pool', () => {
     expect(calls).toEqual([`watch poolA P${P3} true trades:poolA confirmed`]);
     list = new Map([['poolA', { mint: 'mA', held: true }], ['poolB', { mint: 'mB', held: false }]]);
     w.sync();
-    expect(calls.slice(1)).toEqual(['unwatch 1 priority changed', `watch poolA P${P1} true trades:poolA confirmed`, `watch poolB P${P3} true trades:poolB confirmed`]);
+    // No re-subscribe: the trade stream (and its coverage) goes on through the entry.
+    expect(calls.slice(1)).toEqual([`priority 1 P${P1}`, `watch poolB P${P3} true trades:poolB confirmed`]);
+    list = new Map([['poolA', { mint: 'mA', held: false }], ['poolB', { mint: 'mB', held: false }]]);
+    w.sync();
+    expect(calls.slice(3)).toEqual([`priority 1 P${P3}`]);
     list = new Map();
     w.sync();
-    expect(calls.slice(4)).toEqual(['unwatch 2 not watched', 'unwatch 3 not watched']);
+    expect(calls.slice(4)).toEqual(['unwatch 1 not watched', 'unwatch 2 not watched']);
+  });
+
+  it('a watch the stream cannot re-prioritise is re-subscribed at the new priority', () => {
+    const { calls, stream } = fake(false);
+    let list = new Map([['poolA', { mint: 'mA', held: false }]]);
+    const w = new PoolWatch({ stream, timers: new ManualTimers(0), pools: () => list, everyMs: 2_000 });
+    w.sync();
+    list = new Map([['poolA', { mint: 'mA', held: true }]]);
+    w.sync();
+    expect(calls.slice(1)).toEqual([`priority 1 P${P1}`, 'unwatch 1 priority changed', `watch poolA P${P1} true trades:poolA confirmed`]);
   });
 
   it('a refused watch (the budget halt) is retried at the next sync', () => {

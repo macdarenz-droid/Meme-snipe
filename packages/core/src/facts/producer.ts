@@ -319,6 +319,7 @@ interface PoolChain {
   readonly readSlot: bigint;
   /** Why the state is stale, while it is; a gap clears once a swap re-bases it, anything else needs a read. */
   stale: { readonly reason: string; readonly kind: 'gap' | 'mismatch' } | null;
+  /** Swaps seen at `lastSlot` (a delivery twice, from a log line and a fetched transaction, counts once); older slots are refused anyway. */
   readonly seen: Set<string>;
 }
 
@@ -902,7 +903,7 @@ export class FactProducer {
           baseVault: base.amount,
           quoteVault: quote.amount,
         };
-        this.#chainRead(r.mint, r.slot, fact, put);
+        this.#chainRead(r.mint, fact, put);
         this.#readReserve(address, quote.amount + (pool.virtualQuoteReserves ?? 0n), at);
       }
       const lp = this.#accounts.get(pool.lpMint);
@@ -932,7 +933,9 @@ export class FactProducer {
    * answered for an older slot than the swaps applied since): that read's pool fact is then left out, never released
    * over a newer one.
    */
-  #chainRead(mint: string, slot: bigint, fact: PoolFact & { readonly accountBytes: number }, put: (k: string, v: unknown) => void): void {
+  #chainRead(mint: string, fact: PoolFact & { readonly accountBytes: number }, put: (k: string, v: unknown) => void): void {
+    // The fact's slot: the oldest of the accounts it was built from, so a swap after it is never taken as already in it.
+    const slot = fact.obs.slot ?? 0n;
     const c = this.#chains.get(fact.address);
     if (c !== undefined && c.lastSlot > slot) return;
     this.#chains.set(fact.address, {
@@ -960,10 +963,19 @@ export class FactProducer {
     put(poolKey(c.mint), this.#chainFact(c, obs, c.state, reason));
   }
 
-  /** A gap or hole in a pool's trade stream makes its chain stale at once. */
+  /** A gap or hole in a pool's trade stream makes its chain stale at once; a pool no longer watched drops its chain. */
   #chainCoverage(stream: string, e: MarketEvent, put: (k: string, v: unknown) => void): void {
     if (!stream.startsWith('trades:')) return;
-    const c = this.#chains.get(stream.slice('trades:'.length));
+    const pool = stream.slice('trades:'.length);
+    // WORKER-1's PoolWatch unwatches a pool that left its list with reason 'not watched': nothing will read its state.
+    const v = unwrap(e.value);
+    if (e.key.endsWith(':gap') && isObj(v) && v['toSlot'] === null && v['reason'] === 'not watched') {
+      const gone = this.#chains.get(pool);
+      this.#chains.delete(pool);
+      if (gone !== undefined && gone.stale === null) put(poolKey(gone.mint), this.#chainFact(gone, { provider: 'facts', slot: e.moment.slot, receivedAt: e.moment.receivedAt, quality: [], commitment: 'confirmed' }, gone.state, 'swap stream gap'));
+      return;
+    }
+    const c = this.#chains.get(pool);
     if (c === undefined || c.stale !== null || this.#tradesCovered(stream.slice('trades:'.length), c.coveredFrom)) return;
     this.#stale(c, 'gap', 'swap stream gap', { provider: 'facts', slot: e.moment.slot, receivedAt: e.moment.receivedAt, quality: [], commitment: 'confirmed' }, put);
   }
@@ -982,7 +994,11 @@ export class FactProducer {
     if (c.seen.has(id)) return;
     c.seen.add(id);
     const older = seen.slot < c.lastSlot;
-    if (seen.slot > c.lastSlot) c.lastSlot = seen.slot;
+    if (seen.slot > c.lastSlot) {
+      c.lastSlot = seen.slot;
+      c.seen.clear();
+      c.seen.add(id);
+    }
     const obs: FactObs = { provider: seen.provider, slot: seen.slot, receivedAt: seen.receivedAt, quality: quality(seen.backfilled), commitment: seen.commitment };
     if (c.stale?.kind === 'mismatch') return;
     if (c.stale !== null) {

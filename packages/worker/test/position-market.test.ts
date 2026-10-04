@@ -68,6 +68,16 @@ describe('a held position priced from its pool\'s swap stream (POS-1)', () => {
     await h.worker.stop();
   });
 
+  it('an exit decided about 2 s after entry is priced and filled, never booked blocked', async () => {
+    const { h, m } = await entered();
+    const pid = position(h)!.id;
+    await until(m, () => false, 2_000, ticks(h, m));
+    m.chainSwap('sell', (m.chainState.baseReserve * 20n) / 100n, h.worker.feed.openSlot);
+    expect(await until(m, () => h.worker.book.positions[pid]!.status === 'closed', 20_000, ticks(h, m))).toBe(true);
+    expect(decisions(h).some((r) => r[0] === 'exit blocked')).toBe(false);
+    await h.worker.stop();
+  });
+
   it('take-profit then the trail fire from swaps alone', async () => {
     const { h, m } = await entered();
     const pid = position(h)!.id;
