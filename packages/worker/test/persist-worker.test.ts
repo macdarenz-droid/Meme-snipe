@@ -9,7 +9,8 @@ import { parseTyped } from '../src/run/json.ts';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { RUG_CONFIG } from '../../core/src/config/rugs.ts';
-import { DailyBudget, loadState } from '../src/persist/index.ts';
+import { DailyBudget, fileSha256, loadState } from '../src/persist/index.ts';
+import { SavedStateMissing, checkBoot, loadSession, replayBoot } from '../src/run/parity.ts';
 import { FILL_BUDGET_FILE, FILL_CREDITS_PER_DAY, SEED_CREDIT_CAP, runSeed } from '../src/run/seed-start.ts';
 import { PERSIST_EVERY_MS, PERSIST_FILE, type SeedRequest, type SeedResult } from '../src/run/worker.ts';
 import { DEV, MINT, Market, T, dueTimers, makeWorker, slotAt, tempState, virtualTimers } from './worker-harness.ts';
@@ -45,6 +46,7 @@ describe('PERSIST-1 in the worker', () => {
     expect(existsSync(file)).toBe(true);
     const saved = loadState(file, RUG_CONFIG);
     expect(saved.ok).toBe(true);
+    const savedBytes = readFileSync(file);
     const asOf = saved.ok ? saved.asOf : null;
 
     timers.set(timers.now() + 10 * 60_000);
@@ -58,7 +60,7 @@ describe('PERSIST-1 in the worker', () => {
     // The index came back from the file (no create was seen by this process), and the restore is the seed decision.
     expect(h2.worker.strategy.deployers.factFor(DEV, { slot: 1n << 40n, txIndex: 0, ixIndex: 0, receivedAt: timers.now() }, 0).mints.map((x) => x.mint)).toEqual([MINT]);
     // The labeller's tables came back as saved (this process saw no launch of its own).
-    expect(h2.worker.strategy.persistable(0)?.labeller).toEqual(saved.ok ? saved.labeller.snapshot() : null);
+    expect(h2.worker.strategy.persistable(0)?.state.labeller).toEqual(saved.ok ? saved.labeller.snapshot() : null);
     const seeds = journal(stateDir).filter((l) => l['boot'] === h2.worker.boot && l['kind'] === 'decision' && /^seed/.test(((l['reasons'] as string[]) ?? [])[0] ?? ''));
     expect(seeds.map((l) => (l['reasons'] as string[]).slice(0, 2))).toEqual([['seed', expect.stringMatching(/^saved state restored/)]]);
     await h2.worker.stop();
@@ -68,13 +70,76 @@ describe('PERSIST-1 in the worker', () => {
     const cov = second.ok ? second.coverage.map((e) => ({ key: e.key, v: (e.value as { value: Record<string, unknown> }).value })) : [];
     expect(cov.filter((c) => c.key === 'coverage:creates:start' && c.v['via'] === VIA).length).toBeGreaterThanOrEqual(2);
     expect(cov).toContainEqual({ key: 'coverage:creates:gap', v: expect.objectContaining({ reason: 'restart', via: VIA, fromSlot: asOf!.slot }) });
-    // Replay parity: the restored state travels in the recorded seed fact, so a replay of this boot rebuilds it.
-    const dir = join(stateDir, 'recorder', h2.worker.boot, 'days');
+    // Replay parity (WORKER-GROW): the recorded seed names the saved file by the sha256 of its bytes; the boot's recording
+    // holds that copy (listed in its manifest), byte for byte the file this boot restored from.
+    const rec = join(stateDir, 'recorder', h2.worker.boot);
+    const dir = join(rec, 'days');
     const frames = readdirSync(dir).flatMap((d) => readdirSync(join(dir, d)).filter((f) => /^frames-/.test(f)).map((f) => zstdDecompressSync(readFileSync(join(dir, d, f))).toString('utf8')))
       .join('\n').split('\n').filter((l) => l !== '').map((l) => parseTyped(l) as Frame);
     const seedFrame = frames.find((f) => f.body.type === 'fact' && f.body.key === SEED_KEY);
-    expect((seedFrame?.body as { value: { state?: { index: unknown; labeller: unknown } } }).value.state).toEqual({ index: saved.ok ? saved.index.snapshot(saved.asOf) : null, labeller: saved.ok ? saved.labeller.snapshot() : null });
+    const copy = join(rec, PERSIST_FILE);
+    const ref = { file: PERSIST_FILE, sha256: fileSha256(copy), version: 2 };
+    expect((seedFrame?.body as { value: { state?: unknown } }).value.state).toEqual({ ref });
+    expect(readFileSync(copy).equals(savedBytes)).toBe(true);
+    const manifest = JSON.parse(readFileSync(join(rec, 'manifest.json'), 'utf8')) as { attachments: unknown[] };
+    expect(manifest.attachments).toEqual([{ file: PERSIST_FILE, sha256: ref.sha256, bytes: savedBytes.length }]);
   }, 60_000);
+
+  it('the parity replay restores a restarted boot from its recording\'s copy and reproduces its decisions; it refuses loudly without exactly that copy (WORKER-GROW)', async () => {
+    const stateDir = tempState();
+    const timers = virtualTimers(T);
+    const seed = (r: SeedRequest) => runSeed(r, { rpc: emptyRpc, timers });
+    const h = makeWorker({ stateDir, timers, seed });
+    const m = await boot(h);
+    m.create();
+    await m.run(1_000, 200, () => m.slot());
+    await h.worker.stop();
+    timers.set(timers.now() + 10 * 60_000);
+    const h2 = makeWorker({ stateDir, timers, seed });
+    const m2 = await boot(h2);
+    await m2.run(1_000, 200, () => m2.slot());
+    await h2.worker.stop();
+    const b2 = loadSession(stateDir).find((b) => b.boot === h2.worker.boot)!;
+    const copy = join(stateDir, 'recorder', h2.worker.boot, PERSIST_FILE);
+    expect(b2.savedState).toBe(copy);
+    expect(b2.live.some((l) => l.includes('saved state restored'))).toBe(true);
+    const d = { session: h2.session, rugs: RUG_CONFIG, strategy: h2.worker.strategyConfig };
+    // From the copy: the same decision lines as live, every replay.
+    const r = checkBoot(b2, d, 3);
+    expect(r).toMatchObject({ missing: null, deterministic: true, divergence: null });
+    expect(replayBoot(b2, d)).toEqual(b2.live);
+    // No copy, one byte changed, or another well-formed saved state (its own checksum holds; only the seed's hash
+    // tells): refused before anything is replayed, never an empty or other state.
+    expect(() => replayBoot({ ...b2, savedState: null }, d)).toThrow(SavedStateMissing);
+    expect(() => replayBoot({ ...b2, savedState: null }, d)).toThrow(/the recording has no copy of it; nothing is replayed/);
+    const altered = join(tempState(), PERSIST_FILE);
+    const bytes = readFileSync(copy);
+    bytes[bytes.length - 10] = bytes[bytes.length - 10] === 0x30 ? 0x31 : 0x30;
+    writeFileSync(altered, bytes);
+    expect(() => replayBoot({ ...b2, savedState: altered }, d)).toThrow(/the recording's copy has sha256/);
+    const other = join(stateDir, PERSIST_FILE);
+    expect(loadState(other, RUG_CONFIG).ok).toBe(true);
+    expect(fileSha256(other)).not.toBe(fileSha256(copy));
+    expect(() => replayBoot({ ...b2, savedState: other }, d)).toThrow(/the recording's copy has sha256/);
+  }, 60_000);
+
+  it('the restored state is handed to the seed that names it, by file, sha256 and version, and only once (WORKER-GROW)', async () => {
+    const stateDir = tempState();
+    const timers = virtualTimers(T);
+    const h = makeWorker({ stateDir, timers, seed: (r: SeedRequest) => runSeed(r, { rpc: emptyRpc, timers }) });
+    const m = await boot(h);
+    m.create();
+    await m.run(1_000, 200, () => m.slot());
+    await h.worker.stop();
+    const h2 = makeWorker({ stateDir, timers });
+    const ref = { file: PERSIST_FILE, sha256: fileSha256(join(stateDir, 'recorder', h2.worker.boot, PERSIST_FILE)), version: 2 };
+    for (const bad of [{ ...ref, sha256: '0'.repeat(64) }, { ...ref, file: 'other.json' }, { ...ref, version: 1 }]) {
+      expect(() => h2.worker.savedStateFor(bad)).toThrow(/not the one this process restored/);
+    }
+    expect(h2.worker.savedStateFor(ref).index.factFor(DEV, { slot: 1n << 40n, txIndex: 0, ixIndex: 0, receivedAt: timers.now() }, 0).mints.map((x) => x.mint)).toEqual([MINT]);
+    expect(() => h2.worker.savedStateFor(ref)).toThrow(/not the one this process restored/);
+    await h2.worker.stop();
+  });
 
   it('saves every PERSIST_EVERY_MS once the seed is applied, and never before it', async () => {
     const stateDir = tempState();

@@ -1430,3 +1430,28 @@ Built to the supervisor's revised spec and the consensus rulings that followed i
 - **2026-10-04 · The deployer store loads by streaming.** `deployers.jsonl` gains about 64k create lines a day and is trimmed only at a start, to the look-back plus a day (about 15 days, about a million lines). `load` read it whole, split it and rewrote it from one joined string. Measured on 300,000 lines (168 MB, about 4.7 days of creates): peak RSS 1,036 MB before, over the unit's MemoryMax of 800M, so a restart after about four to five days of running would be killed at boot; 432 MB after. Streaming does not bound the parsed events the index seed keeps: at that rate about 8–9 days of creates still reach 800 MB. Bounding them is WORKER-GROW's (card 4).
 - **2026-10-04 · The runner streams the worker's journal.** The end-of-run report checks the journal with `checkJournalLines` over `fileLines`, the same check as `checkJournal` (pinned: a line that is not JSON is a problem unless it is the last one and a torn tail is allowed). It parses the journal once, where it used to read it whole three times. `readLines` streams. `reconciledFirst` and `entriesBetween` scan without building an array. `closedSince`, `journalTimes`, `item4`, `coverageGaps`, `rejections` and `withChainMoves` still take parsed arrays, which grow with the journal: bounding those needs journal rotation (card 4).
 - **Evidence.** `packages/worker/test/growth-sweep.test.ts`: the UTF-8 test fails on the base `journalLines`; the guard fails on the base deployer store and runner; hand mutants G1–G7 are killed.
+
+## Bounded boot and saves (WORKER-GROW G4b, `persist/state.ts`, `run/deployer-store.ts`, `run/worker.ts`, `run/parity.ts`, `run/recorder.ts`, core `DeployerIndex`)
+
+- **2026-10-05 · Supervisor ruling on the structure ((a) and (b), approved).** The stored-data rule holds: public chain data and our own labels only, the same data as today. So the supervisor approves it.
+- **(a) `deployer-state.json` version 2 is streamed.** The file is written as:
+  - a format line;
+  - the payload with the index's mint rows left out;
+  - one line per creator's mint row (`DeployerIndex.mintRows`);
+  - a last line with the sha256 of every line between the first and the last, and their count.
+  The save writes the rows as it reads them from the index, with every write checked (#159 review N2, `writeAll`), then fsync and rename; a failure leaves the old file whole. The load restores the index row by row and accepts it only if the last line matches; anything less discards the file. A version 1 file (the payload as a string inside one object) is still read, so a deploy keeps the saved coverage. Test: the last line's hash equals the hash of those lines read whole; version 1 and version 2 of the same state restore the same.
+- **(b) The seed names the saved file; it never carries it.**
+  - The worker copies `deployer-state.json` into the boot's recording folder, restores from that copy, and the seed fact carries `{ file, sha256 over every byte, version }`. The recording's manifest lists the copy (`attachments`: file, sha256, size), and a leftover boot's manifest keeps it.
+  - Live, the strategy gets the restored index and labeller from the worker (`savedStateFor`): once, and only for exactly that file, hash and version.
+  - The parity replay reads the copy, checks its sha256 against the seed's, restores it, and checks the version. A missing, unreadable, refused or other copy throws `SavedStateMissing` before anything is replayed; it never falls back to an empty or other state.
+  - A recording made before this change (the state inside the seed) still replays from the seed.
+- **Also in G4b:**
+  - a start whose saved index restores keeps the deployer store's creates in the file only;
+  - with no saved index, the seed is capped at `MAX_SEED_CREATES` (200,000, about three days of creates). Past it, the seed is refused whole, so H14 is not covered until the look-back passes (fail safe);
+  - checked writes (#159 N2) in `atomicWrite`, the state save and the store rewrite.
+- **Measured** (a real worker boot, `reconcile`, on 1,000,000 saved creates and a 1,000,000-mint saved index, the full 15-day size): peak RSS 1,629 MB on #159 alone; 1,085 MB with the first G4b changes; **544 MB with (a) and (b)**. `loadState` alone: 588 MB for a version 1 file, 275 MB for version 2. At 200,000 creates (about three days) a boot peaked at 365 MB before (a) and (b). The recording copy is 66 MB per boot at 1M mints and about 16 MB at three days. G4c's rotation covers these copies. The remaining boot cost is mostly streaming `deployers.jsonl` itself (194 MB peak at 1M).
+- **Tests.**
+  - `persist.test.ts`: version 2 cut anywhere, an extra line, a cut format line; version 1 equals version 2; the trailer hash.
+  - `persist-worker.test.ts`: the seed carries the reference; the copy is byte for byte the file restored from and is listed in the manifest; the parity replay reproduces the restarted boot's decisions from the copy and refuses with no copy, one byte changed, or another well-formed state; the handoff by file, hash and version, once.
+  - `growth-sweep.test.ts`: the store without creates, the seed cap, the worker's cap wiring, short writes.
+  - Hand mutants P1–P6 are killed: hash check skipped, copy re-serialized, no handoff, handoff accepting any hash, a missing copy tolerated, handoff given twice.

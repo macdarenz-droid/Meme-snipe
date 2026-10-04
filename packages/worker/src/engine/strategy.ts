@@ -266,10 +266,23 @@ export interface StrategyConfig {
   readonly maxTails: number;
 }
 
+/** The saved state a seed names (WORKER-GROW): the file in the boot's recording, its sha256 over every byte, its format version. */
+export interface SavedStateRef {
+  readonly file: string;
+  readonly sha256: string;
+  readonly version: number;
+}
+
 export interface StrategyDeps {
   readonly session: PolicySession;
   readonly rugs: RugConfig;
   readonly config: StrategyConfig;
+  /**
+   * The saved index and labeller a seed names by `SavedStateRef` (WORKER-GROW): live, what the worker restored from the
+   * recording's copy; in the parity replay, read from that copy and checked against the hash. Throws when it cannot give
+   * exactly that state (the seed is then refused, as a fresh process).
+   */
+  readonly savedState?: (ref: SavedStateRef) => { readonly index: DeployerIndex; readonly labeller: RugLabeller };
   /** Replaces marks.ts `markedHistory` (tests inject a failure; production never sets it). */
   readonly markedHistory?: typeof markedHistory;
 }
@@ -603,10 +616,14 @@ export class LiveStrategy implements Strategy {
    * PERSIST-1: what a save holds, as of the latest released moment: the index (entries older than `retainFromMs`
    * left out), the labeller's tables and every coverage fact. Null before anything was released or the seed applied.
    */
-  persistable(retainFromMs: number): { readonly asOf: Moment; readonly index: DeployerIndexState; readonly labeller: RugLabellerState; readonly coverage: readonly MarketEvent[] } | null {
+  persistable(retainFromMs: number): { readonly state: { readonly asOf: Moment; readonly index: DeployerIndexState; readonly labeller: RugLabellerState; readonly coverage: readonly MarketEvent[] }; readonly mintRows: Iterable<readonly [string, readonly (readonly [string, number])[]]> } | null {
     const asOf = this.#lastMoment;
     if (asOf === null || !this.#seedApplied || this.#waiting !== null) return null;
-    return { asOf, index: this.#deployers.snapshot(asOf, retainFromMs), labeller: this.#labeller.snapshot(), coverage: [...this.#coverageFacts] };
+    // WORKER-GROW: the index's mint rows are streamed into the file by the save, never built whole.
+    return {
+      state: { asOf, index: this.#deployers.snapshot(asOf, retainFromMs, { mints: false }), labeller: this.#labeller.snapshot(), coverage: [...this.#coverageFacts] },
+      mintRows: this.#deployers.mintRows(retainFromMs),
+    };
   }
 
   get deployers(): DeployerIndex {
@@ -769,8 +786,16 @@ export class LiveStrategy implements Strategy {
       // nothing), then the downtime fill and the saved rug facts.
       try {
         const st = v['state'];
-        const index = DeployerIndex.restore(st['index'] as DeployerIndexState);
-        const labeller = RugLabeller.restore(this.#d.rugs, st['labeller'] as RugLabellerState, asOf);
+        let index: DeployerIndex;
+        let labeller: RugLabeller;
+        if (isObj(st['ref'])) {
+          // WORKER-GROW: the seed names the saved file by its hash; the state itself never travels in the seed.
+          if (this.#d.savedState === undefined) throw new Error('the seed names a saved state file and nothing reads it');
+          ({ index, labeller } = this.#d.savedState(st['ref'] as unknown as SavedStateRef));
+        } else {
+          index = DeployerIndex.restore(st['index'] as DeployerIndexState);
+          labeller = RugLabeller.restore(this.#d.rugs, st['labeller'] as RugLabellerState, asOf);
+        }
         const f = index.fill(v['fill'] as MarketEvent[], asOf);
         this.#deployers = index;
         this.#labeller = labeller;
