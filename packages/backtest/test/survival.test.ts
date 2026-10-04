@@ -8,7 +8,7 @@ import { PLAN_BARRIERS, scoreCandidates } from '../src/research/outcome.ts';
 import { HoldoutWallError, type PracticeWindow } from '../src/research/practice.ts';
 import { collectSurvival, SURVIVAL_FEATURES, type SurvivalFeature } from '../src/research/survival.ts';
 import { dayBootstrap, featureTests, type LabelledDecision, mhRiskDifference, splitDays, tradeMeasures, wilson } from '../src/research/survival-analysis.ts';
-import { passesFeatures, passesSurvival, survivalRule } from '../src/research/survival-compare.ts';
+import { freezeRule, passesFeatures, passesSurvival } from '../src/research/survival-compare.ts';
 import { LabelTimeError, SURVIVAL_RULE, survivalLabel } from '../src/research/survival-label.ts';
 import { labelDecisions } from '../src/research/survival-outcome.ts';
 import type { Features } from '../src/research/tracker.ts';
@@ -210,9 +210,38 @@ describe('matched strata', () => {
     expect(planted.filter((x) => x.heldUp).map((x) => x.feature)).toEqual(['s_net60']);
     const noise = featureTests(synth(0, 2), 400, 3);
     expect(noise.filter((x) => x.heldUp).length).toBe(0);
-    // The rule built from what held up points the way the find-days pointed.
-    expect(survivalRule(planted)).toEqual([{ f: 's_net60', dir: 'gt', t: planted.find((x) => x.feature === 's_net60')!.split }]);
-    expect(survivalRule(noise)).toEqual([]);
+  });
+
+  test('the survival rule is chosen and frozen on the find-days alone; a planted signal is found, noise gives none', () => {
+    const data = synth(0.3, 1);
+    const rule = freezeRule(data, 400, 5);
+    const { find } = splitDays(data.map((x) => x.day));
+    const findMedian = (() => {
+      const v = data.filter((x) => find.includes(x.day)).map((x) => x.features.s_net60!).sort((a, b) => a - b);
+      return (v[v.length / 2 - 1]! + v[v.length / 2]!) / 2;
+    })();
+    expect(rule.ageMs).toBe(60 * 60_000);
+    expect(rule.conds).toEqual([{ f: 's_net60', dir: 'gt', t: findMedian }]);
+    expect(rule.hash).toMatch(/^[0-9a-f]{64}$/);
+    expect(rule.trials).toBe(SURVIVAL_FEATURES.length);
+    expect(freezeRule(synth(0, 2), 400, 5).conds).toEqual([]);
+  });
+
+  test('no check-day value reaches selection: a check-only signal is never chosen, and a planted check-day marker leaves the frozen rule identical', () => {
+    const { check } = splitDays(days);
+    const C = new Set(check);
+    // Signal only on the check-days, in s_top10: selection must not see it.
+    const u = rnd(9);
+    const checkOnly = synth(0, 4).map((x) => {
+      if (!C.has(x.day)) return x;
+      const v = u();
+      return { ...x, features: { ...x.features, s_top10: v }, survived: v > 0.5 };
+    });
+    expect(freezeRule(checkOnly, 400, 5).conds).toEqual([]);
+    // A marker on every check-day decision (impossible values, flipped labels) changes nothing in the frozen rule.
+    const base = synth(0.3, 1);
+    const marked = base.map((x) => (C.has(x.day) ? { ...x, survived: !x.survived, features: Object.fromEntries(SURVIVAL_FEATURES.map((k) => [k, 999])) as Record<SurvivalFeature, number> } : x));
+    expect(freezeRule(marked, 400, 5)).toEqual(freezeRule(base, 400, 5));
   });
 
   test('day-block bootstrap needs at least two days', () => {
@@ -231,11 +260,14 @@ describe('comparison measures', () => {
   });
 
   test('rule predicates: survival conditions and RES-4 feature conditions; unknown values fail', () => {
-    const d = { features: Object.fromEntries(SURVIVAL_FEATURES.map((k) => [k, k === 's_net60' ? 0.3 : null])) as Record<SurvivalFeature, number | null> };
-    expect(passesSurvival([{ f: 's_net60', dir: 'gt', t: 0.2 }], d)).toBe(true);
-    expect(passesSurvival([{ f: 's_net60', dir: 'le', t: 0.2 }], d)).toBe(false);
-    expect(passesSurvival([{ f: 's_top10', dir: 'le', t: 1 }], d)).toBe(false);
-    expect(passesSurvival([], d)).toBe(false);
+    const d = { ageMs: 60 * 60_000, features: Object.fromEntries(SURVIVAL_FEATURES.map((k) => [k, k === 's_net60' ? 0.3 : null])) as Record<SurvivalFeature, number | null> };
+    const at = (conds: { f: SurvivalFeature; dir: 'gt' | 'le'; t: number }[], ageMs = 60 * 60_000) => ({ ageMs, conds });
+    expect(passesSurvival(at([{ f: 's_net60', dir: 'gt', t: 0.2 }]), d)).toBe(true);
+    expect(passesSurvival(at([{ f: 's_net60', dir: 'le', t: 0.2 }]), d)).toBe(false);
+    expect(passesSurvival(at([{ f: 's_top10', dir: 'le', t: 1 }]), d)).toBe(false);
+    expect(passesSurvival(at([]), d)).toBe(false);
+    // The rule holds only at the age it was chosen for.
+    expect(passesSurvival(at([{ f: 's_net60', dir: 'gt', t: 0.2 }], 240 * 60_000), d)).toBe(false);
     const f = { f_dd: -0.5, f_ret60: null } as unknown as Features;
     expect(passesFeatures([{ f: 'f_dd', dir: 'le', t: '-0.35' }], f)).toBe(true);
     expect(passesFeatures([{ f: 'f_dd', dir: 'le', t: '-0.35' }, { f: 'f_ret60', dir: 'ge', t: '-0.03' }], f)).toBe(false);

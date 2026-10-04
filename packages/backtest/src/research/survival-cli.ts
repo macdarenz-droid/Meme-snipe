@@ -13,7 +13,7 @@ import { PLAN_BARRIERS, scoreCandidates } from './outcome.ts';
 import { assertReadable, loadWindow, readableDays, resolveWindow, type StudyRegistry, wallDay } from './practice.ts';
 import { collectSurvival, type SurvivalDecision } from './survival.ts';
 import { featureTests, type LabelledDecision, splitDays } from './survival-analysis.ts';
-import { compareRules, type FeatureCond, passesFeatures, passesSurvival, survivalRule } from './survival-compare.ts';
+import { compareRules, type FeatureCond, freezeRule, passesFeatures, passesSurvival } from './survival-compare.ts';
 import { labelDecisions } from './survival-outcome.ts';
 
 const ROOT = join(import.meta.dirname, '..', '..', '..', '..');
@@ -49,6 +49,9 @@ const labelled: (LabelledDecision & { readonly d: SurvivalDecision })[] = drive.
   const l = labels.get(d.id);
   return l === null || l === undefined ? [] : [{ id: d.id, day: d.day, ageMs: d.ageMs, stratum: d.stratum, features: d.features, survived: l.survived, d }];
 });
+// The rule is chosen and frozen on the find-days alone; its hash is fixed before any check-day trade is scored.
+const rule = freezeRule(labelled, replicates, 17);
+// Descriptive find/check report of every feature (not used to choose the rule).
 const tests = featureTests(labelled, replicates, 11);
 
 // Comparison on the check-days, at the decision points, eligible decisions only.
@@ -59,7 +62,6 @@ const scored = new Map(scoreCandidates(rows(), eligible.map(({ id, pool, decisio
   window, policy: TRIAL_POLICY, fills: FILL_CONFIG, scenario: 'conservative', barriers: PLAN_BARRIERS.slice(0, 2), seed, entryMinOutBelowBps: RESEARCH_CONFIG.s0.entryMinOutBelowBps,
 }).map((o) => [o.id, o]));
 const pre = JSON.parse(readFileSync(join(ROOT, 'research', 'edge', 'preregistration.json'), 'utf8')) as { hypotheses: { id: string; universe: 'U1' | 'U2'; rules: { kind: string; conds?: FeatureCond[] } }[] };
-const rule = survivalRule(tests);
 const tradesOf = (pick: (d: SurvivalDecision) => boolean, barrier: number) => eligible.filter(pick).flatMap((d) => {
   const o = scored.get(d.id);
   const l = o?.labels[barrier];
@@ -69,7 +71,7 @@ const comparison = PLAN_BARRIERS.slice(0, 2).map((b, i) => {
   const s0 = tradesOf(() => true, i);
   const rules = [
     { rule: 'S0 (every eligible decision)', trades: s0 },
-    { rule: `survival rule: ${rule.length === 0 ? 'none held up' : rule.map((c) => `${c.f} ${c.dir === 'gt' ? '>' : '<='} ${c.t}`).join(' & ')}`, trades: rule.length === 0 ? [] : tradesOf((d) => passesSurvival(rule, d), i) },
+    { rule: `survival rule: ${rule.conds.length === 0 ? 'none passed on the find-days' : `${rule.ageMs! / 60_000} min, ${rule.conds.map((c) => `${c.f} ${c.dir === 'gt' ? '>' : '<='} ${c.t}`).join(' & ')}`} (sha256 ${rule.hash.slice(0, 12)})`, trades: rule.conds.length === 0 ? [] : tradesOf((d) => passesSurvival(rule, d), i) },
     ...pre.hypotheses.filter((h) => h.rules.kind === 'features').map((h) => ({ rule: h.id, trades: tradesOf((d) => d.eligibleAs === h.universe && passesFeatures(h.rules.conds!, d.f), i) })),
   ];
   return { barrier: b.cfgId, results: compareRules(rules, s0, { seed: 13, replicates }) };
@@ -80,7 +82,7 @@ const result = {
   task: 'RES-5', label: 'exploration, not proof', dataset: `sha256:${manifestHash(dataset)}`, wall: wallDay(window), days: days.map((d) => d.day),
   decisions: drive.decisions.length, labelled: labelled.length, censored: drive.decisions.length - labelled.length, labelPastWall: drive.labelPastWall,
   survivalRate: labelled.length === 0 ? null : labelled.filter((x) => x.survived).length / labelled.length,
-  trials: { featureTests: tests.length, rules: 1 + pre.hypotheses.filter((h) => h.rules.kind === 'features').length },
+  trials: { featureTests: tests.length, ruleSelectionTests: rule.trials, rules: 1 + pre.hypotheses.filter((h) => h.rules.kind === 'features').length },
   tests, survivalRule: rule, comparison,
 };
 writeFileSync(join(out, 'results.json'), JSON.stringify(result, (_, v) => (typeof v === 'bigint' ? v.toString() : v), 2));

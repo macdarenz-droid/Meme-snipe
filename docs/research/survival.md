@@ -60,7 +60,7 @@ Each is computed from rows released before the decision, at ages 60 min, 240 min
 ## 5. Comparison with what we have
 
 On the check-days, with one exit for every rule (STATS-1's triple barrier through `outcome.ts`: B2, 120-min time stop; B1, +50% / −20% / 120 min as a second line), conservative fills, and rent per RENT-1 as `outcome.ts` scores it (#114: seeded dust and close draws per candidate; the rent comes back when the sell-and-close lands with no dust, 90% × 95% = 85.5%, and a close that fails without dust pays one more failed exit). RES-5 does not change `outcome.ts`:
-- **Survival-filtered rule:** at the decision age, enter only graduates whose held-up features (at most two, chosen on the find-days) point to survival; U2 hard-reject proxies applied as in RES-3.
+- **Survival-filtered rule, chosen and frozen on the find-days alone** (`selectSurvivalRule`): every feature at every age is tested on the find-days (median split, matched difference, day-block p), Holm across all 45; the age of the strongest passing test is kept with at most two passing features at that age, each pointing the way its find-day difference points. The rule's sha256 is recorded before any check-day trade is scored, and the rule is then evaluated once on the untouched check-days. A test plants a check-only signal and a check-day marker and fails if either reaches selection. The check-day "held up" report in §3 is description only and never feeds the rule. RES-3's base filters apply as for every rule.
 - **RES-4's H1, H2, H5, H6** (feature rules) and **S0** (every eligible candidate). H3 and H4 use BT-2's own rule kinds, which this harness does not evaluate; they come from BT-2's runs.
 - Measures: entries, win rate, mean and median net return, profit factor (gross wins ÷ gross losses), each with a day-block 95% interval; the paired difference against S0 and against the best RES-4 rule on the same days.
 
@@ -90,6 +90,8 @@ node packages/backtest/src/research/survival-cli.ts --dataset <DATA dir> --sol-u
   - The comparison (§5) runs at the study's own decision points: U2 rules (H5, S0's U2 part) at 60 and 240 min, U1 rules (H1, H2, H6, S0's U1 part) at 24 h, on decisions that pass RES-3's base filters for that universe. BT-2 checks every minute (U2) or 5 minutes (U1), so its numbers will differ; this is a like-for-like comparison among rules, not BT-2's backtest.
   - The market survival rate leaves out the graduate's own label.
   - Found on the 10-second-slot test market: the outcome stage waited for the exit ladder in wall-clock seconds, so trades there were wrongly censored. The fix is its own PR (BT-TAIL, #122), since `outcome.ts` is what the proof scores from; RES-5 changes nothing in it.
+
+- 2026-10-04, before any data was read (external audit): the survival rule was chosen by check-day p-values and then scored on the same check-days (selection leakage). It is now chosen on the find-days alone, frozen with a hash, and scored once on the check-days; the find-day selection runs its own 45 counted tests.
 
 ## 9. Results
 
