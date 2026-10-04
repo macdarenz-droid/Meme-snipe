@@ -2,7 +2,10 @@ import type { BacktestReport, Envelope } from './contract.ts';
 import { DataError } from './modes.ts';
 import { parseReport } from './reportSchema.ts';
 
-/** The newest report, published by the backtest workflow as a release asset. */
+/**
+ * Where the newest report is read: the `latest-report.json` asset of the `backtest` release. No workflow publishes it
+ * yet, so this answers 404 and the app shows "No backtest yet" (loadReport).
+ */
 export const REPORT_URL = 'https://github.com/macdarenz-droid/Meme-snipe/releases/download/backtest/latest-report.json';
 
 /** What a getter returns: an HTTP status and, for 200, the body as text. */
