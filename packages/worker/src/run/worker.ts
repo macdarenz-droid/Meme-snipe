@@ -7,8 +7,8 @@
 // `open_intents` → seed the deployer index (SEED-1's hook) → start the live sources → trade. Nothing enters before the
 // reconcile line; a reconcile that cannot settle every intent exits 3.
 import { randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { placeBookings } from './booked.ts';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { placeBookingsAt } from './booked.ts';
 import type { Server } from 'node:http';
 import { join } from 'node:path';
 import type { PolicySession, RugConfig } from '../../../core/src/config/index.ts';
@@ -385,7 +385,7 @@ export class Worker {
     for (const e of this.#ledger.positionEvents()) if (e.status === 'open' && openedAt[e.positionId] === undefined) openedAt[e.positionId] = Number(e.ts);
     // Where each booking sits against the boots (live, or at a reconcile), from the journal's earlier lines (EXIT-1f N2).
     const journalPath = join(c.stateDir, STATE_FILES.journal);
-    const bookedWhen = placeBookings(existsSync(journalPath) ? readFileSync(journalPath, 'utf8') : null, openedAt);
+    const bookedWhen = placeBookingsAt(journalPath, openedAt);
     // The saved exit plans come first, alone in their millisecond: the strategy manages positions on any market event,
     // and on the halt fact (which sorted first by id at a tie) it built fresh plans and trackers from the fills and
     // decided exits with them, before the saved ones arrived. The halt and the restart follow 1 ms later.
