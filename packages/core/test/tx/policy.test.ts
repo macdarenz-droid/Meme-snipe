@@ -311,6 +311,6 @@ describe('deny rules', () => {
     // The bound is tight: some builder really creates an account of the largest size.
     expect(Math.max(...sizes)).toBe(MAX_CREATED_ACCOUNT_BYTES);
     expect('maxRentPerAccount' in ctxFor(WALLET)).toBe(false);
-  }, 30_000);
+  });
 });
 
