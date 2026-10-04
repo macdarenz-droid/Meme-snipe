@@ -18,7 +18,7 @@ RES-3: which as-of signals separate positive from negative net return in U1 and 
 - Fees: curve 1.25% per side; canonical PumpSwap 1.25% below 420 SOL market cap, 1.20% to 1,470 SOL, down to 0.30% at 98,240 SOL; non-canonical 0.30%. Graduation is at ~411 SOL (~$49k).
 - 2026 changes: Token-2022 mints (`create_v2`), USDC-quoted coins, BOOST (17.6 SOL buy-and-burn in the first 5 min after migration), mayhem mode, holder rewards, signed negative `virtual_quote_reserves` from 2026-09-30.
 - Allowlist PumpSwap canonical SOL pools first; curve paper only; LaunchLab and Meteora only after per-pool fee decoding.
-- Regime gate inputs: own launch and graduation counts, graduate survival, DefiLlama volume, SOL trend.
+- Regime gate inputs: own launch and graduation counts, graduate survival, volume (from the chain since DefiLlama was dropped; DECISIONS "Regime volume from the chain"), SOL trend.
 
 ## Data feeds ([data.md](research/data.md))
 - Helius Free: 1M credits, 10 RPS, WebSockets metered (2 credits per 0.1 MB, ~50 GB/month), 5 connections, no `transactionSubscribe`. Jupiter free key: 1 RPS shared by quotes, Tokens and Price; `/execute` 50 RPS separate.
@@ -56,18 +56,20 @@ RES-3: which as-of signals separate positive from negative net return in U1 and 
 ## Security and hosting ([security.md](research/security.md))
 - Local Ed25519 signer with zero npm dependencies, no network, encrypted systemd credential; default-deny policy that never trusts lookup-table addresses in user positions.
 - Supply chain is the likeliest key loss (2024 web3.js backdoor targeted bots): exact pins, 7-day release age, no build scripts.
-- Frankfurt VPS ~$6/month; SQLite WAL instead of Postgres; Cloudflare cron watchdog and Durable Object heartbeat (free); Tunnel + Access + passkey step-up.
+- Frankfurt VPS ~$6/month; SQLite WAL instead of Postgres; Cloudflare cron watchdog and Durable Object heartbeat (free); live view through `tailscale serve` (no domain, no tunnel; `CLAUDE.md`) + passkey step-up.
 
 ## Funding from Australia ([funding.md](research/funding.md))
 - Stripe's onramp is US/EU only. Use an Australian exchange: Independent Reserve (about A$0.27 in fees on A$20) or Kraken (free AUD withdrawals, 0.005 SOL withdrawal fee).
 - In-app widgets (Banxa, MoonPay, Transak) need a registered business. Deposit shows the bot address; Withdraw sends only to the owner's saved wallet.
 - Every swap is a CGT event; keep records for 5 years.
 
+## Copy trading ([copytrading.md](research/copytrading.md))
+- RES-2 (PR #4): copying whale or smart-money wallets is not a usable entry signal (about −11% a trade, 0 of 120 variants positive), so U3 does not enter the backtest.
+
 ## Brand ([brand.md](research/brand.md))
 - Premium marks are one solid idea carried by negative space, one colour first, depth only on the app icon. Led to the "Slot" mark (`docs/BRAND.md`).
 
 ## Still open
-- RES-2 whale copy-trading study: results pending.
 - Every report now ends with an independent "Fact-check" section (59 claims confirmed, 11 contradicted). The corrections are applied in `docs/ARCHITECTURE.md` and listed below.
 
 ## Fact-check corrections (2026-10-03)
