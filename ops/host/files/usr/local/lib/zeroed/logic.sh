@@ -114,5 +114,60 @@ worker_entry() {
   fi
 }
 
+# The only worker settings a release's ops/host-config.json may give (PRACTICE-ON): the S0 shakedown's, in its
+# "shakedown" block. Mode, recorder, simulation, drills and addresses stay with worker-start; live is never one of them.
+SHAKEDOWN_NAMES='ZEROED_STRATEGY ZEROED_S0_DIAGNOSTIC ZEROED_PAPER_EDGE_PPM ZEROED_STANDINS ZEROED_WALLET'
+
+# worker_shakedown RELEASE_DIR: the release's shakedown settings, one NAME=value per line; nothing when it has no
+# "shakedown" block. Fails (jq says why on stderr) when the block is not an object, names anything outside
+# SHAKEDOWN_NAMES, or holds a value that is not a string of 1 to 400 letters, digits and commas. The worker judges each
+# value itself and refuses with exit 2 (S0 and its settings in a release with a qualifying run, among others).
+worker_shakedown() {
+  jq -r --arg names "$SHAKEDOWN_NAMES" '($names | split(" ")) as $ok | (.shakedown // {}) as $s
+    | if ($s | type) != "object" then error("the shakedown block is not an object") else $s | to_entries[]
+      | if (.key | IN($ok[]) | not) then error("\(.key) is not a shakedown setting")
+        elif (.value | type) != "string" or (.value | test("\\A[A-Za-z0-9,]{1,400}\\z") | not) then error("\(.key) is not 1 to 400 letters, digits and commas")
+        else "\(.key)=\(.value)" end end' "$1/ops/host-config.json"
+}
+
 # ssh_open: reads `nft list ruleset` on stdin; true when the live firewall lets SSH in.
 ssh_open() { grep -Eq 'tcp dport 22 .*accept'; }
+
+# ---------- Deploy gate (OPS-GATE): what "green" means, shared by the server (zeroed-update) and the Deploy
+# workflow (ops/deploy/tag.sh), so the two always agree. ----------
+# Only GitHub Actions' own check runs count; the Deploy job's run (zeroed-deploy) never does.
+DEPLOY_CHECK_APP=github-actions
+DEPLOY_SELF_JOB=zeroed-deploy
+# The paths whose change runs the ops end-to-end (.github/workflows/ops-e2e.yml `paths`; a test keeps them equal).
+E2E_PATHS=(ops packages/ops .github/workflows/deploy.yml .github/workflows/ops-e2e.yml)
+
+# commit_verdict NAME: reads a commit's check-runs reply (GitHub API) on stdin and prints one line, "green" or
+# "red|pending|none: <why>". Green needs a successful run named NAME from GitHub Actions on that commit, every
+# other GitHub Actions run finished and none failed. A run from another app, or an all-skipped set, never makes
+# it green; a listing GitHub cut short (more runs than returned) is "none".
+commit_verdict() {
+  jq -r --arg name "$1" --arg app "$DEPLOY_CHECK_APP" --arg self "$DEPLOY_SELF_JOB" '
+    [(.check_runs // [])[] | select((.app.slug // "") == $app and .name != $self)] as $r
+    | ([$r[] | select(.name == $name)] | sort_by(.completed_at // .started_at // "") | last) as $n
+    | if (.total_count // 0) > ((.check_runs // []) | length) then "none: more check runs than GitHub listed"
+      elif any($r[]; .status != "completed") then "pending: \([$r[] | select(.status != "completed") | .name] | unique | join(", ")) still running"
+      elif any($r[]; (.conclusion // "") as $c | ($c != "success" and $c != "neutral" and $c != "skipped")) then "red: \([$r[] | select(.conclusion != "success" and .conclusion != "neutral" and .conclusion != "skipped") | .name] | unique | join(", ")) failed"
+      elif $n == null then "none: no \($name) run from GitHub Actions"
+      elif $n.conclusion != "success" then "red: \($name) was \($n.conclusion), not success"
+      else "green" end' 2>/dev/null || echo "none: unreadable check runs"
+}
+
+# e2e_commit REPO REF: the newest commit on REF's first-parent history (at most 500 back) whose change to its
+# first parent touches E2E_PATHS: the commit whose ops end-to-end decides whether REF may deploy. Prints nothing
+# when none is found.
+e2e_commit() {
+  local c
+  for c in $(git -C "$1" rev-list --first-parent --max-count=500 "$2"); do
+    if git -C "$1" rev-parse --verify --quiet "$c^1" >/dev/null; then
+      git -C "$1" diff --quiet "$c^1" "$c" -- "${E2E_PATHS[@]}" || { printf '%s\n' "$c"; return 0; }
+    elif [ -n "$(git -C "$1" ls-tree -r --name-only "$c" -- "${E2E_PATHS[@]}")" ]; then
+      printf '%s\n' "$c"
+      return 0
+    fi
+  done
+}

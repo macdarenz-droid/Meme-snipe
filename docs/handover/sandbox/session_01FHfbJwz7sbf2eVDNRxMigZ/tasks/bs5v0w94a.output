@@ -1,0 +1,23 @@
+  const synth = (effect: number, seed: number): LabelledDecision[] => {
+    const u = rnd(seed);
+    const xs: LabelledDecision[] = [];
+    let i = 0;
+    for (const day of days) {
+      for (let k = 0; k < 80; k++) {
+        const stratum = u() < 0.5 ? 'a' : 'b';
+        const f = u();
+        const p = (stratum === 'a' ? 0.15 : 0.05) + (f > 0.5 ? effect : 0);
+        xs.push(mk(day, stratum, f, u() < p, i++));
+      }
+    }
+    return xs;
+  };
+
+  test('a planted survival feature holds up on the check-days after Holm over every test; noise does not', () => {
+    const planted = featureTests(synth(0.3, 1), 400, 3);
+    expect(planted.length).toBe(SURVIVAL_FEATURES.length);
+    expect(planted.find((x) => x.feature === 's_net60')!.heldUp).toBe(true);
+    expect(planted.filter((x) => x.heldUp).map((x) => x.feature)).toEqual(['s_net60']);
+      Tests  1 passed (1)
+
+[exited with code 0]

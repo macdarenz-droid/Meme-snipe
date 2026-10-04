@@ -61,6 +61,12 @@ fi
 d=$1 assets=$2
 [[ "$d" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || { echo "bad day $d"; exit 1; }
 [[ "$d" < "$REGIME_BOUNDARY_DAY" ]] || { echo "refused: $d is on or after the regime boundary $REGIME_BOUNDARY_DAY"; exit 1; }
+# DATA-PUB: a day read over RPC (source helius) is never published. Its units carry raw
+# getBlock responses, which may not leave the actions cache; the manifest names each
+# unit's source, and an RPC unit's root_cid is "rpc:getBlock" (rpcscan/rpcunit.go).
+if grep -Eq '"root_cid": *"rpc:' "$assets/manifest-$d.json" 2>/dev/null; then
+  echo "refused: manifest-$d.json lists units read over RPC (raw provider responses are never published)"; exit 1
+fi
 summary=${GITHUB_STEP_SUMMARY:-/dev/null}
 cd "$assets"
 sums="SHA256SUMS-$d"

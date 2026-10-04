@@ -1,0 +1,20 @@
+raw-only: SURVIVED
+rows-eq: SURVIVED
+cols-missing: SURVIVED
+one-col: SURVIVED
+is-logmsgs: SURVIVED
+rawdiff: killed
+nologs: SURVIVED
+cut-nonempty: SURVIVED
+logs-eq-cut: killed
+ge-to-gt: killed
+prefix-cut: killed
+count-dropped: killed
+limit-9999: SURVIVED
+limit-10001: SURVIVED
+cr-nil: SURVIVED
+seen: SURVIVED
+no-records: SURVIVED
+full-eq: killed
+
+[exited with code 0]

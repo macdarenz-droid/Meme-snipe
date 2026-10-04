@@ -1,0 +1,4 @@
+ERR,
+POSITIONS,0,INTENTS,0
+LOGS,[]
+STATUS,{"seq":0,"ts":1791039599800,"git_sha":"testsha","policy_version":"ed2a9e91d7c9d85633f19ec923b8dd28857e25041dc2e0da8671868359182932","last_processed_slot":452956850,"feed_ages_ms":{},"open_position":null,"pending_exits":[],"unresolved_intents":{"count":0,"oldest_age_s":null,"trades":[]},"signer":"non

@@ -1,0 +1,9 @@
+0
+1
+e38f56b Merge remote-tracking branch 'origin/ccr-14987baf-i6lrsl' into claude/facts-1f
+exit 1
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+ FAIL  |light| packages/worker/test/fault-injection.test.ts > §18: a provider rate-limits (TEST-3) > entries stop through the gates, not a global halt: a candidate whose fact can only come from a refused read is rejected for that fact and never entered
+      Tests  1 failed | 4394 passed (4395)
+
+[exited with code 0]

@@ -12,12 +12,13 @@
 - App name: Zeroed. Logo: "Slot" (a solid zero with a Z cut into it), files in `brand/`, rules in `docs/BRAND.md`.
 
 ## Phase
-Wave D, 4 Oct 6:05 PM Melbourne. 72 PRs merged since midnight on 4 Oct (the latest in `HANDOVER.md` §4).
-- **Server:** re-installed at pin e28788a and on the tailnet (key expiry off). WORKER-1c #99 and WATCH-1b #113 merged (5:51 and 6:05 PM); the real worker comes with SWITCH-1 #110, then a code-only Deploy: about 7–9 PM (could slip to about midnight if a check fails).
-- **Practice trades:** WORKER-1e #117 (passed both reviews, a last small push in progress) wires H15 and paper exec-health and adds the labelled S0-only diagnostic set, which the qualifying run refuses. Pulled forward at the owner's request (6:01 PM, quality unchanged): tonight about 10 PM – 1 AM, else Mon morning.
-- **History:** the Helius free pilot passed (parity on every table). The owner chose free only, one day per about 14 h, and no spend before a finished product. #119 (the practice-day pull with a fail-closed credit cap) is merging; 09-21 starts tonight. ARCHIVE-CHECK keeps asking the archive every 3 hours. Early look on free days: about Tue 6 – Wed 7 Oct.
-- **Research:** RES-4 cost math fixed (break-even 4.4–5.0% at $2, 2.2–3.1% at $20 per trade, as scored); it now takes RENT-1's rent model. RES-5 Phase A (survivors vs look-alike losers at buy time, research only) is up; Phase B runs on the free days.
-- **Owner's estimate:** under about 2% chance of proof today (judgement), first measured numbers with the early look. The pre-funding gate is unchanged: no deposit before all six items pass.
+Wave D, 4 Oct about 7:45 PM Melbourne. The project is being handed to a new Claude account (owner, about 7:15 PM). Every first-account session pushed its work and wrote its notes to `docs/handover/sessions/`, then paused. Start from `HANDOVER.md` §0. 76 PRs merged since midnight on 4 Oct.
+- **Server:** code-only Deploy run 37189025276 moved the deploy tag to 7d5e203 (SWITCH-1, WORKER-1e, the e2e fix) at about 7:28 PM. The push e2e on that commit is green. The server switches to the real paper worker within about 5 min. Online is still to be confirmed by the owner (app or Telegram /status).
+- **Practice trades:** WORKER-1e #117 is merged, so the S0 shakedown with the labelled diagnostic set starts once the real worker runs. Practice P&L stays rough until PAPER-1 (audit M4, M5, M8) merges.
+- **External audit (Report 1):** real defects were found in paper accounting, latches, stale snapshots, recovery, research and statistics. Every finding is a card (HANDOVER §4; DECISIONS "External audit 1"). The verdict stands: paper and research mode only.
+- **History:** Helius free only (about 2–3 practice days a month alongside the live worker). 09-21 is downloading (run 37185822426, about 14 h). The proof needs about 50 practice days plus 28 holdout days, which is impossible on free alone; the paid month (about US$94) waits for the owner's decision after seeing a finished product.
+- **Research:** RES-4 (cost math; break-even 4.4–5.0% at $2 and 2.2–3.1% at $20 per trade, as scored) is in review. RES-5's selection failed calibration and is being fixed. An early look on free days reports descriptive numbers only (SPA needs at least 10 days).
+- **Owner's estimate:** under about 2% chance of proof today (judgement). No deposit before all six pre-funding items pass.
 
 ## Done
 - Owner rules in `AGENTS.md` and `CLAUDE.md`; the starting brief and the research in `docs/`.
@@ -28,16 +29,17 @@ Wave D, 4 Oct 6:05 PM Melbourne. 72 PRs merged since midnight on 4 Oct (the late
 - All four API keys checked from CI: they work.
 
 ## Board
-Builders run as separate sessions; a fresh reviewer session checks each PR; the supervisor merges into `ccr-14987baf-i6lrsl` when review passed and CI is green on a head with the latest base. The merge queue, open cards and sessions are in `HANDOVER.md` §4–5 (one place, kept current).
+Core plan, Mon 5 Oct about 8:22 AM (owner: "focus ... assign workers that will make the core of the bot done and production level"). Builders run as separate sessions, a fresh reviewer checks each PR, and the supervisor merges one at a time into `ccr-14987baf-i6lrsl` (CI about 24 min per merge, the bottleneck). Details and session ids: `HANDOVER.md`.
 
-| Task | What | State | Estimate (Melbourne) |
-|---|---|---|---|
-| Merge queue | #110, #119, #114, #117, #106, #116, #107, #98, #118, #115 (see HANDOVER §4) | moving one at a time | about 10 min each plus merge checks |
-| SWITCH-1 #110 | the release worker on the host, pre-switch smoke check, OOM priority; then Deploy (code only) | passed review (692862e); merging next | Sun 4 Oct about 7–9 PM |
-| WORKER-1e #117 | live H15 sim, paper exec-health, S0 diagnostic set | passed both reviews; last small push (about 6:20 PM), then a quick check and a second Deploy | practice trades tonight about 10 PM – 1 AM, else Mon morning |
-| API-1 #118 | app status says why entries are off | review FAIL → fixing (risk stops on the card) | after #110 |
-| BT-2 #41 | study: RES-4's six ideas as one SPA family, BT-2e runner | building | early look about Tue 6 – Wed 7 Oct |
-| Historical data | #119 free practice days; ARCHIVE-CHECK | free plan only (owner) | 09-21 tonight, then one day per ~14 h; all days not scheduled (owner: finished product first) |
+| Stream | What it gives the bot | PRs (merge order) | Builder | Reviewers |
+|---|---|---|---|---|
+| 1 Stays up | no crash loop (about 38 restarts since midnight, so no coin gets judged); memory and disk safe; backups | #148, #209, then the crash fix; #164, #202 → #207, #139, #172, #187, #204, #192, #196; #137 → #149, BACKUP-STATE, DISK-GUARD | WORKER-HARDEN; ops builder 2 | worker/facts, persist, ops |
+| 2 Judges coins right | entry gates and the simulation use the real trade size; regime inputs trustworthy | #189, #177, #138 | READ-COHERENT; data builder | EXIT, persist, stats |
+| 3 Right money | paper P&L exact in SOL (fees, rent, late fills, loss streaks) | #198 → #203, #168, #201, #197, #186 | PAPER, practice-on, API/APP (#201 only) | risk, worker/facts, run/CI |
+| 4 Exits work | a restart keeps the exit's evidence and resends a lost exit; the sell route is checked | #176, #171, #130, #141 | EXIT; persist builder; WATCH builder | EXIT, persist, risk |
+| 5 Strategy proof | what the bot may trade, proven on history | #154, #160, #98, #122, #115, #191, #127, #152 | BT, RES, STATS, data builders | BT, stats, data |
+
+Waiting (outside the core): Telegram alerts and controls (#161, #178, #190, #199), app changes (#167, #181, #182), summaries and observability (#174, #194, #200, #175, #211, #210), drills (#193, needed later for the qualifying run), CI-SHARD (#206, blocked by the safety check), docs and supply chain (#143, #146, #135, #136), paid history storage (#150, owner decision).
 
 ## Follow-ups
 - Android: cover a stop between the two asset renames, the "fixed name plus .prev" state, and a failed final delete (APP-1b review notes).
@@ -62,6 +64,24 @@ Builders run as separate sessions; a fresh reviewer session checks each PR; the 
 - RUN-1b: a negative quoteAgeSlots passes the decimal check (display only).
 - TX-1 → SIGN-1: maxSolOut needs about 1.5M lamports of PumpSwap headroom; the policy charges Token-2022 ATAs at 170 bytes.
 - Repo tidy-up: branch `claude/ledger-replay-schema-v1` duplicates PR #23's 611a4bb; the safety check refused its deletion, so the owner may delete it.
+
+## Last part (before funding)
+Owner, Mon 5 Oct about 5:07 AM (three marked screenshots): "These are future updates, when all task is done. When we reach production area and I'm about to put money. To be done in last part." Built after every other task, before the owner funds the bot; not started earlier.
+- **Stats tab.** The bottom tab "Samples" (the preview-only sample-data screen) becomes "Stats": every visual on real data (stats, charts, diagrams). The sample-data screen leaves the app.
+- **Settings screen** (new). It holds:
+  - the Server card (address, status, last update, access, Change and Remove), also kept on Snipe;
+  - the theme choice (Paper or Silent Black), which leaves Home.
+- **Header.** The "Paper" chip beside the logo reads "Zeroed".
+- **Paper and backtest removal** (owner, Mon 5 Oct about 5:15 AM: "when the app is ready we gonna remove all paper based features in ui. Even all paper, backtest logics. In the future. NOT NOW. ONLY WHEN THE APP IS READY. Removal of those treat as high risk and be very careful ... before removal of these items, i need it to be architectured properly").
+  - When: only after the owner says the app is ready, which is after the six pre-funding items pass (they need paper and the backtest).
+  - What: every paper feature in the app, and the paper and backtest code.
+  - The risk: live trading runs on the same engine, quotes, risk, fills and exits code that paper and the backtest use (only the feed and the clock differ). Deleting by name ("paper", "backtest") could delete code that live money depends on.
+  - Before any removal, an architecture plan in `docs/ARCHITECTURE.md` is written and reviewed:
+    - every module mapped as paper-only, backtest-only or shared with live, with its callers;
+    - the order of removal in small PRs.
+  - Each removal PR proves live is unchanged: recorded live data replays to identical decisions and transactions before and after, every live-path test still passes unchanged, and the risk reviewer and a fresh reviewer pass it.
+  - Shared code is never deleted or changed as part of the removal.
+  - The "Paper" theme is a theme name, not paper trading. It stays, and moves to Settings with Silent Black.
 
 ## Owner setup
 - Hosting approved by the owner (2026-10-03): about US$6/month, Vultr High Performance in Frankfurt; Hetzner as backup.
