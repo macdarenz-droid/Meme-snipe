@@ -62,6 +62,8 @@ export const parseConfig = (
   env: Readonly<Record<string, string | undefined>>, release: () => string | null,
   /** The qualifying run's name (packages/runner/qualifying-run.json): null when none is asked for. */
   qualifyingRun: string | null | typeof UNREADABLE = null,
+  /** `--reconcile-only`: no API is served, so its address is not checked against the health port. */
+  o: { readonly reconcileOnly?: boolean } = {},
 ): Parsed => {
   const refuse = (message: string): Parsed => ({ ok: false, code: EXIT.config, message });
   const stateDir = env['STATE_DIRECTORY'] ?? env['ZEROED_STATE_DIR'];
@@ -83,7 +85,7 @@ export const parseConfig = (
   const apiAddr = env['ZEROED_API_ADDR'] ?? '127.0.0.1:8788';
   if (!isLoopback(apiAddr)) return refuse('refused: the API address must be loopback (OPS publishes it to the tailnet)');
   const api = hostPort(apiAddr);
-  if (api === null || apiAddr === addr) return refuse('refused: the API port is out of range or the same as the health port');
+  if (api === null || (apiAddr === addr && o.reconcileOnly !== true)) return refuse('refused: the API port is out of range or the same as the health port');
   const beat = env['ZEROED_HEARTBEAT_MS'] === undefined ? 20_000 : Number(env['ZEROED_HEARTBEAT_MS']);
   if (!Number.isSafeInteger(beat) || beat < 1_000) return refuse('refused: ZEROED_HEARTBEAT_MS must be a whole number of at least 1000');
   const watchEvery = env['ZEROED_WATCH_EVERY_MS'] === undefined ? 200 : Number(env['ZEROED_WATCH_EVERY_MS']);

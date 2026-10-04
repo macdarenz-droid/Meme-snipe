@@ -342,6 +342,60 @@ The second reviewer, the third opinion and the supervisor reached one position o
 - **Holdout attempt rules live in core.** Once STATS-1c lands, α, the attempt index, the reasons an attempt may be spent (each proven against the store) and the required size (n_power recorded at registration, never taken from the caller) are decided in `core/src/stats/holdout.ts` only.
 - **One implementation for shared facts.** FACTS-1's graduates aggregation is exported and used by both the live producer and BT-2; the live worker evaluates gates per read stage (`only`) as the backtest does, so both record the same reject reasons for G3.
 
+### Afternoon decisions (2026-10-04, owner and supervisor)
+
+Owner decisions (the owner's words, recorded by the supervisor):
+- **G1 gates on the SPA test** (2:33 PM, "Spa"). The clamped per-trade DSR is still reported, but no longer gates. STATS-1f (#109) makes G1's test a registered choice (`g1Test`), fixed per attempt; a registration without it fails G1.
+- **A G1 test switch is a later upgrade, not now** (2:36 PM): the owner may later choose SPA or DSR in a setting. Both paths stay implemented and tested; no switch is built.
+- **Code-only Deploy runs** (2:45 PM): the supervisor may run the Deploy workflow to move the server to new code, never to send keys.
+  - The `DEPLOY_CODE` secret was deleted by the owner at 2:47 PM, because the old code had been shown in chat.
+  - A run must log "No DEPLOY_CODE secret: code update only, no keys sent." The first run, 37174740782, did.
+- **CI-2 allowed** (#104): feature branches run CI through their PR only, drafts wait, and a newer PR head cancels the older run.
+
+Supervisor rulings:
+- **Never remove a guard.** A change that drops an existing guard is reverted, even if the reviewer calls it redundant: guards are cheap and their absence is found only by the failure they prevent. Applied three times: `hardAllowsEntry` (#106), the deployer-check max-guard (#99) and the `#lifecycle` waiting line (#107).
+- **A halt raised before the restore keeps both layers:** the worker's restart ordering (#82) and the strategy's restore gate (#102). Neither replaces the other.
+- **Deployer rug checks (WORKER-1c item 1):**
+  - one cached answer per creator;
+  - a slot guard on every answer (an older answer never overwrites a newer one);
+  - at most one check in flight per creator;
+  - roll forward only;
+  - the credit budget reserved before the read.
+- **Executable marks (RISK-MARK):**
+  - Each open position is marked at the worst executable rung, with a fresh SOL price.
+  - Without a mark, the exit fallback value applies.
+  - An exception while marking an entry is caught.
+  - Of #99 and #103, whichever merges second takes the day and week boundary marks from the marked account.
+- **A restored position keeps its clock (EXIT-1f).**
+  - Its open time is the exact timestamp of its ledger open event.
+  - The slot-time bound is only a fallback.
+  - A time stop can never restart after a restart.
+- **G3 observation tail:**
+  - The tail is at least the maximum hold plus the exit ladder.
+  - Decisions are cut at the evaluation time, and outcomes are read up to the cut plus the tail.
+  - Censoring is symmetric.
+- **Observation delay re-stamps receipt time only.** `GateContext.observedTip` is required in live and in the backtest (live uses the feed tip), never backtest-only, with a test that live decisions stay byte-identical.
+- **BT-2's funder cluster comes from the funding supplement.** A missing supplement fails G2; it never passes by default.
+- **The real-worker switch waits for #82, #99 and #103,** so the dry run cannot latch the weekly limit on unmarked positions. The switch (`ops/host-config.json` `"worker": "release"`) is its own reviewed PR, followed by a code-only Deploy.
+- **`zeroed-tailscale` never calls Funnel** (OPS-1h #108). `tailscale funnel … off` first runs Funnel's capability check, which can block forever on a tailnet that never enabled Funnel.
+  - The script checks first that HTTPS certificates and the `https` capability are present.
+  - It bounds every call and never hides a prompt.
+  - It accepts only the exact serve config: TCP 443 HTTPS, one web host proxying `/` to 127.0.0.1:8788, and no Funnel.
+  - The tailnet's DNS name is kept out of the repo.
+- **Stored data:** `account.json` marks, `deployer-state.json` and `fill-budget.json` hold only the bot's own state and public market data. The supervisor approved them under the stored-data ruling.
+- **No merge without CI.** If GitHub Actions is locked, nothing merges, whatever local runs show; the merge rule needs green checks on the exact head. On 4 Oct the owner's declined GitHub Pro payments locked the account from 3:15 to 3:23 PM and again from 3:37 PM.
+- **The archive's block is respected.**
+  - Old Faithful has answered 429 to our scanner's User-Agent since 8:43 AM. At 3:19 PM a 60-byte request with curl's default agent still got data. So the block targets our scanner, and only Triton can lift it.
+  - Triton's terms bar getting around a block (a changed name, address or tool) and bar a blocked user from seeking other Triton access without Triton's OK. So no request goes to Old Faithful from any runner, session or container until Triton answers.
+  - The data-source survey's own diagnostic requests (four requests of at most 60 bytes, 3:19–3:31 PM) were the last. They broke the morning rule "no archive access from development containers", and will not be repeated.
+  - Chained scan run 37171679398 is stopped, so it no longer retries against the block.
+- **History source: Helius whole blocks, after a free pilot (DATA-2).**
+  - The survey ranked: (1) Helius `getBlock` over 19 Jul – 3 Oct with our own pump.fun and PumpSwap filter. Whole blocks also catch the trades that reach the programs only through lookup tables. (2) Old Faithful with Triton's written OK. (3) QuickNode, about 3.5 times Helius's cost.
+  - Before any spend, a pilot uses about 13k of the free plan's 1M credits. It reads blocks at both ends of the window and one hour of 2 Oct, and compares every decoded row with our Old Faithful slice of that day. The comparison is on decoded rows, not raw bytes.
+  - The full pull needs the owner's approval: Developer plan US$49, plus extra credits capped at 10M at US$5 per million, so at most US$99 that month (prices checked 4 Oct). The cap is set after measuring the live dry run's credit use on the same account, so the pull cannot starve the live feed.
+  - Raw Helius responses never go into public releases until their terms are confirmed for derived files.
+  - A message to Triton (lift the block, or a set rate or bucket, and permission to publish derived day files) is the owner's choice, and keeps the free route open.
+
 ## Order and position lifecycle (CORE-1, `packages/core/src/lifecycle`)
 
 - **2026-10-03 · A failed signature read is terminal only at `finalized`.** A failure read at `processed` or `confirmed` may come from a fork that is later dropped, and the original transaction could still land. Acting on it would allow a replacement, which could mean a second buy or an oversell. Waiting for `finalized` costs about 13 s. A success read counts from `confirmed`: booking a fill early is safe, because the books stay open until every other attempt is dead.
@@ -421,6 +475,19 @@ The second reviewer, the third opinion and the supervisor reached one position o
   - The e2e proves the release's worker on the host image: Node 22 type stripping with no node_modules, reconcile first, keys from systemd credentials and absent from its output, loopback health and API, degraded without providers (the test server reaches none), clean restart, live refused. It also proves a green signed release with a broken worker stays undeployed.
   - Provider URLs cannot be pointed at the fake services without a worker change, so "unreachable providers" is the tested case.
   - The worker API does not serve the README contract's `GET /health` `evidence` list (the stand-in did). `zeroed-status` still counts the evidence from the index; serving it from the API is left to an API card.
+- **2026-10-04 · Live view setup never waits unseen (OPS-1h).** This came from real use: after a successful Tailscale login, `zeroed-tailscale` sat silent. The cause is in Tailscale's CLI source (v1.104, `cmd/tailscale/cli` serve_v2.go and serve_legacy.go, `enableFeatureInteractive`):
+  - `tailscale serve --https` needs the node capability `https`. Without it, serve prints a link to turn HTTPS on and blocks until it is on.
+  - `tailscale funnel … off` checks the `https` and `funnel` capabilities first, even to turn Funnel off. On a tailnet without Funnel it blocks forever.
+  - The script hid both outputs in /dev/null.
+
+  The fix:
+  - No funnel command in `zeroed-tailscale`. `serve --https=443` already clears Funnel for its port (`applyFunnel(false)`), `serve reset` clears it everywhere, and the existing check still confirms Funnel is off.
+  - Before serving, the script checks `tailscale status --json`: it needs `CurrentTailnet.MagicDNSEnabled`, the `https` key in `Self.CapMap`, and non-empty `CertDomains`. Whatever is missing is named with the admin console's DNS page (Tailscale's documented place for both) on the console and in the paired Telegram chat, and the script exits 1.
+  - Every tailscale call runs under `timeout` (`ZEROED_TS_WAIT`, default 60 s) and ends with a `Stopped:` line. The login is the exception: it keeps its own `--timeout=15m` and runs the binary directly, so the background process stays killable. `zeroed-check` bounds its two tailscale calls at 30 s.
+  - serve's output is kept and shown when it fails.
+  - A serve the owner made by hand is taken over by running `zeroed-tailscale` again, but only in exactly the published shape. Review B1 made `serve_ok` exact: TCP is only `{"443":{"HTTPS":true}}`, there is one Web host on :443 whose handlers are only `{"/":{"Proxy":"http://127.0.0.1:8788"}}`, no Funnel, and no Services or Foreground. Anything more (an extra path, port, host or TCP forward) is reset, and nothing stays published.
+  - `zeroed-check`: if turning Funnel off fails or times out, it runs `serve reset`, removes `live_view`, and alerts the owner. The API never stays public with only an alert.
+  - The e2e stand-in models both capability waits.
 - **2026-10-04 · Exits per universe (CFG-2, schema version 3).** `policy.exits.universes` holds one block for each universe in use (U1, U2). S0 reads the block of the universe it controls for (U2 today). Code selects a block by the position's universe through `exitsFor`, which throws on any universe without a block; there is no default block. `EntryPlan.universe` carries the universe into `decideExit`, and `checkStopDistance` takes it as an argument.
   - **Per universe:** `tFlatMs`, `flatMinRBps`, `tMaxMs`, `partialMinShareBps`, `partialAtRBps`, `partialAtGainBps`, `atrPeriod`, `atrBarMs`, `stopAtrTenths`, and `trailAtrTenths`.
   - **Global:** the ladder (`steps`, `maxAttempts`, `maxFeePerAttempt`), `maxExitTxAtMinNotional`, `maxExitTxAboveDoubleMin`, `blockedRetryMs` and `blockedRetryAttempts`. These feed the cost reservation (`risk/evaluate.ts` reads the ladder and `blockedRetryAttempts`) and the fee reserve, so a reservation in R stays exact and does not depend on the universe. R9's thesis, flow, liquidity and quote stops also stay global: `deployerSellSupplyBps`, `negativeFlowMinutes`, `liquidityDropBps` and `reverseQuoteFailures`. This means no universe's baseline can weaken an R9 stop without a risk review (CFG-2 review). If U1 needs S2's range-return invalidation, that is a new exit trigger for a later card, not a change to R9. `deployerSellSupplyBps` stays equal to the rug label's `creatorDump.supplyBps` (`config/rugs.ts`).
@@ -701,6 +768,24 @@ Built to the supervisor's revised spec and the consensus rulings that followed i
 - **2026-10-04 · Demotion power, per universe at its own cap** (−10% decay, 20 trades a day, 30 days, ρ 0 / 0.05 / 0.1):
   - U2 (cap +30%): 0.987 / 0.983 / 0.927.
   - **U1 (cap +40%): 0.713 / 0.613 / 0.523, below the 80% target.** U1 would need 40 trading days (1.0 / 0.99 / 0.93) or a −12.5% detectable decay at 30 days (0.997 / 0.987 / 0.91). Supervisor ruling (2026-10-04): the shortfall is recorded as is and nothing changes in STATS-1c. Follow-up STATS-1d: U1 runs the current window plus a 40-day window and demotes on either (more demotion is the safe direction, so the owner is not needed), reporting the combined false-demotion rate and power. Until then the risk layer's hard limits are the backstop.
+- **2026-10-04 · STATS-1e: SPA resamples short regimes merged, calibrated on the real layout** (supervisor ruling after the #62 review).
+  - **Merge rule, registered in advance (`mergeShortRegimes`):** a regime shorter than the longest expected block (7 days) merges, for resampling only, into its preceding neighbour, or into the following one when it is first. No day is dropped.
+  - **On the real practice layout:** 07-20 to 09-21, 64 days, with B2 on day 1, B3 on day 51 and B4 on day 54. The registered regimes [0,1) [1,51) [51,54) [54,64) resample as [0,54) [54,64). `spaTest` reports the regimes it used (`resampleRegimes`).
+  - **Calibration:** 300 runs per scenario at zero edge on independent seeds, all 12 scenarios. The promotion rule, which gates, passed a variant in at most 0.67% of runs (duplicates). The global test rejected in at most 4.3% (duplicates, autocorrelated), so both stay under 5%.
+  - **Before the merge:** the reviewer measured up to 7.0% global (common shock) and 1.3% for the promotion rule. Per-scenario numbers are in `stats-simulation.test.ts`, and CI repeats the first 40 runs.
+  - **Review of #96:**
+    - A deterministic test shows the bootstrap resamples within the merged regimes: with the same seeds, the registered layout gives exactly the merged layout's p-values and passing set, and not the unmerged one's (this kills mutant S1).
+    - CI pins the exact counts of the 40 seeded runs.
+    - The full 300-run calibration runs by hand in `.github/workflows/spa-calibration.yml`, which uploads its counts as an artifact for the sign-off pack.
+  - **G1:** stays on the clamped DSR until the owner signs off.
+  - **G3 wording:** the dry-run inputs are cut at the registered end for decisions, and outcomes of trades entered by then are read to the end plus the outcome tail.
+- **2026-10-04 · STATS-1d: a 40-day trailing reverse e-process beside the full-history one, for every universe** (supervisor ruling for U1; applying it to U2 too is safe, because it only adds a trigger). Measured with daily evaluation, 100 runs per cell:
+  - **Decay from the start:** the window adds nothing within 30 days, because the two detectors see the same days. U1 stays at 0.71 at ρ 0, as STATS-1c measured. This part of the shortfall remains, and the risk layer's hard limits stay its backstop.
+  - **Decay after a good stretch** (60 days at +5%, then −10%): caught within 40 days of the decay by U1 in 1.0 / 0.95 of runs, and by U2 in 1.0 / 1.0 (ρ 0 / 0.1).
+  - **Full history alone** catches that late decay in at most 0.17 of runs. After a good stretch it has spent weeks betting on a decay that did not come, and it has lost the wealth it needs. This was a hole for every universe, and the window closes it.
+  - **No false demotion** occurred during the good stretch.
+  - **False demotion at zero edge over 120 days:** U1 0 / 0.01, U2 0 / 0.21 (ρ 0 / 0.1). U2's 0.21 at ρ 0.1 comes from its +30% cap clipping the day shocks, the intended safe side: full history alone gives 0.18. The window adds at most 5 points.
+  - `DEMOTION_TRAILING_DAYS` is fixed at 40 and is not an override.
 - **2026-10-04 · STATS-1c review fixes (STATS reviewer, at 7c13f54).**
   - **G2 opens at the frozen day requirement.** It used MIN_DAYS, so a holdout frozen at any other day count could never be scored. A frozen day count under MIN_DAYS fails G2, and freezeRequirement refuses one outside a test rule.
   - **The DSR moment clamp is pinned by a gate test:** a two-point return with skewness 0.87 and kurtosis 1.76 gives 0.9509 unclamped and 0.9388 clamped, so G1 fails.
@@ -806,6 +891,26 @@ Built to the supervisor's revised spec and the consensus rulings that followed i
   - **Redactions in recorded files are listed.** Each redaction is named, with its count, in the manifest's `coverage_gaps`, so a replay difference there is explained.
   - **Simulation lines carry `finalExit`, `simulatedSlot` and `standIn`** in full, null when unknown.
   - **The rehearsal workflow runs S0 with a paper-only edge of 400,000 ppm.** The supervisor approved this as a `.github` change. It lets trades open, so the restart drills can run mid-trade.
+- **2026-10-04 · RUN-1d contract (WORKER-1b).**
+  - `pending_exits`: every trade whose position is exit-requested, pending or blocked, or that has an exit intent not yet final.
+  - `open_position.universe`: from the plan, else the entry key.
+  - `recovered` is journaled once per full start, after the reconcile. Its source is `chain` when the state dir began with no ledger (marked by `cold_start` until a full start journals it), else `state`. It lists `pending_exits` and each open position with its universe. A genuine first boot therefore reports `recovered` with source `chain` and nothing kept. A position with no universe on record is listed as `none on record` (the runner counts it as missing, and the worker starts sell-only and flattens it). A boot whose ledger cannot be opened stops before its `start` line (the ledger opens first), so the journal has no line for that boot; the error is in the process log and the exit code.
+  - `POST /drill/drop-rpc {ms}` (same token and codes as drop-feed) does three things:
+    - drops every feed;
+    - refuses every provider RPC through `RpcCut` (a network error, never a shed);
+    - makes `exit_capable` false until the cut ends.
+  - `--reconcile-only` does the following:
+    - reconciles on its own state dir and journals `recovered`;
+    - serves only `/health`: no API, drills, heartbeat, seed or fact producers;
+    - drains the live feeds unread, so `exit_capable` is real while nothing is decided;
+    - runs until SIGTERM.
+  - The contract types arrive with #64. Until then the two health fields ride on top of `Health`, and `recovered` widens the journal kind.
+- **2026-10-04 · A restored position whose universe the policy lacks (EXIT-1b review, supervisor ruling).** Exits are never blocked, so the worker still starts, as follows:
+  - it runs sell-only for the whole process: an entry halt reason per such position, journaled and logged as an alert;
+  - the reasons are listed in the start line's `sell_only`;
+  - the strategy flattens the position through the global exit ladder: that universe's exit block is replaced by one with zero time stops and no take-profit, so the whole position goes at once;
+  - the exit's decision line carries `universe missing: flatten`.
+  Before this, `exitsFor` threw and the position got no exit decision.
 - **2026-10-04 · Rehearsal 37148935094 (S0): the first start no longer reads 14 days of creates over RPC.** That read spent about 4,000 Helius credits in the first minutes; at roughly 64,000 creates a day, a full look-back is far beyond the free month. It also held the start, so the loop and every exit waited. A partial read leaves H14 not covered anyway.
   - A first start now seeds from day releases only. There are none on the host yet, so the look-back is a gap until the live watch has run through it.
   - Restarts still fill the downtime over RPC.
@@ -818,6 +923,7 @@ Built to the supervisor's revised spec and the consensus rulings that followed i
   - Tests: an exit during a seed that never answers, before `seedMaxMs` (fails when the loop waits for the seed); a restart whose fill misses the cap is not covered across the downtime and stops its RPC; the restart drill's seed is taken in full, never refused (fails without the held-back events); no call after an abort.
 - **2026-10-04 · A restart rebuilds the stored book before it decides, and a killed process writes no state file (root cause of the one-off `--reconcile` failure).** The worker's own start facts (`worker:halt`, `worker:restore`) are dated 1 ms after the stored book's world frames, so every restored event sorts before them whatever the clock's resolution.
   - The failure: all those frames are placed in the same off-chain slot, so a tie on receipt time was broken by id, and `worker:halt` sorts before `world#…` ("work" < "worl"). The strategy then saw an intent the ledger had already carried to sent, cancelled it ("no slot height yet"), and the engine refused the restored `prepare`, `sign` and `submit` that followed. The two books ended apart: `--reconcile` reported success from the engine's and wrote `open_intents` 1 from the ledger's. It reproduced about once in 50 runs of the test under full-suite load, never alone.
+  - The saved exit plans come before the halt fact (1 ms apart). With both dated after the restored frames at one instant, the halt sorted first by id; the strategy manages positions on any market event, so on the halt it built a fresh plan and tracker from the fill and could exit on them (a tracker that had met its flat target got the flat time stop) before the saved plans arrived. Test: a restored tracker past its flat deadline with `flatMet` keeps its position (fails with the halt first).
   - A refused world event the ledger already holds is now a divergence: entries halt until a restart, with a journal line, instead of the books quietly differing.
   - A paper simulation can answer after the worker was killed or stopped. `PaperWorld.stop()` ends its state writes, so a dead process never writes `paper.json` or `open_intents` over what the next one (the host unit's ExecStartPre) wrote.
   - Tests: the restored events are released before the halt fact on a tying clock (8 of them came after it before the fix); a simulation answering after a kill leaves both files as the successor wrote them.

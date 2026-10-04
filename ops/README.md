@@ -10,7 +10,7 @@ Server: Vultr High Performance, Frankfurt, 1 vCPU / 1 GB, image **Ubuntu 24.04 L
 2. **Install.** Paste this one line the same way (Clipboard → Paste), then press Enter:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/93dd739e2673e1bb62c2f2d904ba3aa9b0edd074/ops/install.sh -o i && echo '12b08acdac2f84c3e703e00a55a2c2c56c2557f3865637a2053d2276d66362d9  i' | sha256sum -c && bash i
+curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/82d8f81c6f926ce37750acfee6b6850c07c3aa75/ops/install.sh -o i && echo 'a146fb3a70f978d9d1d0bae01e2d643b9ef2ff30de90b84db031cd7f92a8159b  i' | sha256sum -c && bash i
 ```
 
    The line checks the file against its SHA-256 before anything runs; a changed file stops at `sha256sum -c`. After about two minutes the screen shows a **deploy code** of 6 words.
@@ -19,7 +19,7 @@ curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/93dd739e
 
 The console screen can be left at any time (Ctrl+C); setup carries on in the background. `zeroed-status` shows where it stands and the codes again.
 
-SHA-256 of `install.sh`: `12b08acdac2f84c3e703e00a55a2c2c56c2557f3865637a2053d2276d66362d9`
+SHA-256 of `install.sh`: `a146fb3a70f978d9d1d0bae01e2d643b9ef2ff30de90b84db031cd7f92a8159b`
 
 After any change to `ops/install.sh`, the commit in the line must move to one that holds the new file (`ops/test/e2e.sh` fails otherwise).
 
@@ -158,9 +158,11 @@ The worker API listens on 127.0.0.1:8788 only. `zeroed-tailscale` publishes it t
 
 Owner steps, once:
 1. Make a free Tailscale account at tailscale.com and install the Tailscale app on your phone. Log in to the app with that account.
-2. In the Tailscale admin console: **DNS** → turn on **MagicDNS** and **HTTPS Certificates**.
+2. In the Tailscale admin console, open **DNS** (https://login.tailscale.com/admin/dns). Turn on **MagicDNS**, then under **HTTPS Certificates** select **Enable HTTPS**.
 3. On the server console, run `zeroed-tailscale`. It installs Tailscale (its package key is checked against a pinned fingerprint), then shows a login link. The link is also sent to your Telegram chat.
 4. Open the link on your phone and log in with the same account. The console then shows `Live view: https://zeroed.….ts.net`.
+
+If step 2 was skipped, the console shows `Stopped: the live view needs MagicDNS and HTTPS Certificates on your tailnet …` (or only the one that is missing) and the same line goes to your Telegram chat. Turn it on as in step 2, then run `zeroed-tailscale` again; the login is kept. A Tailscale command that does not answer within 60 seconds stops the script with a `Stopped:` line instead of leaving it waiting.
 
 The command is safe to run again. It checks that the target is the loopback worker API before publishing, and after publishing it checks that Tailscale serves exactly that, with Funnel off. Anything else is taken down at once and nothing stays published. `zeroed-tailscale --off` stops publishing the API and leaves Tailscale installed. Tailscale updates come from its own repository through unattended-upgrades, like Ubuntu's security updates, with no automatic reboot.
 
