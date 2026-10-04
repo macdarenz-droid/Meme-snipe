@@ -21,6 +21,7 @@ const at = (ms: number) => new Date(ms).toISOString();
 const M1 = 'So11111111111111111111111111111111111111112';
 const M2 = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 const M3 = 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB';
+const M4 = 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263';
 
 const line = (kind: string, ms: number, f: Record<string, unknown> = {}) => ({ seq: 1, ts: at(ms), boot: 'b', kind, ...f });
 const reject = (ms: number, mint: string, gate: string, code: string) =>
@@ -54,6 +55,9 @@ describe('counts from the journal', () => {
       line('decision', NOON + 12, { reasons: ['enter', 'U2', M3, 'notional 3'] }),
       line('entry', NOON + 13, { mint: M3, trade: 'p1', reasons: ['entry filled (paper)'] }),
       line('entry', NOON + 14, { mint: M3, trade: 'p1', reasons: ['entry filled (paper)'] }),
+      // Refused first, entered later: entered, not refused.
+      reject(NOON + 14, M4, 'H5', 'low-liquidity'),
+      line('entry', NOON + 14, { mint: M4, trade: 'p2', reasons: ['entry filled (paper)'] }),
       line('start', NOON + 15, { git_sha: 'c'.repeat(40), entry_rule: 'S0', recorder: true }),
       line('halt', NOON + 16, { reasons: ['starting'] }),
     ];
@@ -66,7 +70,7 @@ describe('counts from the journal', () => {
     // starting twice (one per boot), feed-stale twice (it ended at the resume), the pause once.
     expect(d.halts).toEqual({ starting: 2, 'feed-stale': 2, 'owner-pause': 1 });
     const sum = buildSummary(inputs({ fold: d }));
-    expect(sum.candidates).toEqual({ seen: 3, entered: 1, refused: 2, refused_by_reason: [{ gate: 'H7', code: 'top-holders', count: 2 }], refused_other: 0 });
+    expect(sum.candidates).toEqual({ seen: 4, entered: 2, refused: 2, refused_by_reason: [{ gate: 'H7', code: 'top-holders', count: 2 }], refused_other: 0 });
   });
 
   it('puts each line in its Melbourne day (AEDT midnight is 13:00 UTC)', () => {
@@ -289,4 +293,24 @@ describe('the worker keeps trading when the summary fails', () => {
       expect(journal).toContain('"kind":"stop"');
     });
   }
+});
+
+describe('the summary timer', () => {
+  it('posts again after each post while the worker runs, and stops with it', async () => {
+    const posts: string[] = [];
+    const http: HttpClient = async (req) => {
+      if (req.url.endsWith('/summary')) posts.push(req.body!);
+      return { status: 200, header: () => null, text: JSON.stringify({ ok: true, paused: false, written: true }) };
+    };
+    const h = makeWorker({ key: 'k', http });
+    expect(await h.worker.start()).toEqual({ ok: true });
+    for (let k = 0; k < 200 && posts.length < 3; k++) await new Promise((r) => setTimeout(r, 5));
+    expect(posts.length).toBeGreaterThanOrEqual(3);
+    await h.worker.stop();
+    // A post already in flight may finish; nothing starts after that.
+    await new Promise((r) => setTimeout(r, 50));
+    const after = posts.length;
+    await new Promise((r) => setTimeout(r, 100));
+    expect(posts.length).toBe(after);
+  });
 });

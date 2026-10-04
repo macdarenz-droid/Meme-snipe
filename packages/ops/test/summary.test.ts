@@ -144,6 +144,8 @@ describe('the reports repository (fail closed)', () => {
         expect(r.reason).not.toContain('tok');
       }
       expect(g.calls.filter((c) => c.method !== 'GET' || c.url.includes('/contents/')), String(reason)).toEqual([]);
+      // This code repository by name, unset or malformed: refused before any request, the token never sent.
+      if (env.DATA_REPO === undefined || env.DATA_REPO.toLowerCase() === CODE_REPO.toLowerCase() || env.DATA_REPO.includes(':')) expect(g.calls, String(reason)).toEqual([]);
     }
     // A repository that does not answer is a failure too, with no write.
     const r = await writeReports(ENV, '2026-10-04', '{}', async () => Promise.reject(new TypeError('down')));
