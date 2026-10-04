@@ -1,0 +1,16 @@
+     × independent trades: close to the textbook n; power at n ≥ 80% and below it < 80% 164325ms
+     × intra-day correlation raises n by about the design effect; three universes raise it further 392214ms
+     × n_power includes the creator and funder cluster units: concentrated creators raise it 154740ms
+     × a control as good as the strategy makes the S0 comparison bind 510023ms
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 4 ⎯⎯⎯⎯⎯⎯⎯
+Error: Test timed out in 120000ms.
+Error: Test timed out in 180000ms.
+AssertionError: expected 429 to be greater than 529.1999999999999
+Error: Test timed out in 240000ms.
+      Tests  4 failed | 8 skipped (12)
+
+real	20m23.027s
+user	20m12.587s
+sys	0m7.563s
+
+[exited with code 0]

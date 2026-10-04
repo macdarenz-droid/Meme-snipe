@@ -1,0 +1,346 @@
+diff --git a/packages/core/src/config/fills.ts b/packages/core/src/config/fills.ts
+index dea463a..800ae62 100644
+--- a/packages/core/src/config/fills.ts
++++ b/packages/core/src/config/fills.ts
+@@ -1,7 +1,23 @@
+-// Paper fill model parameters (docs/ARCHITECTURE.md §11), one versioned object like the policy. These are model
+-// defaults until our own landing and latency data exist ("Measured during paper mode", §21); the dry run replaces them.
+-// Promotion uses the conservative scenario only.
+-import type { FillNetwork, FillScenario, ScenarioName } from '../fills/index.ts';
++// Paper fill model parameters (docs/ARCHITECTURE.md §11), one versioned object like the policy. Promotion uses the
++// conservative scenario only.
++//
++// Assumptions are harsh and documented until measurements justify a change (supervisor ruling after external review,
++// DECISIONS "Backtest review fixes (BT-1c)"). Source and status of each:
++//
++// | Assumption                         | Source                                         | Status      | Refined from                            |
++// |------------------------------------|------------------------------------------------|-------------|-----------------------------------------|
++// | landPpm (base 0.66 / 0.49)         | §11 defaults (landing of pump trades)          | assumption  | observed-chain landing of comparable    |
++// |   conservative 0.1 lower           | supervisor margin                              | assumption  | transactions in DATA-1, then the        |
++// | landingSlots, landingTail          | §11 p50/p90 latency; tail is a stress margin   | assumption  | owner-authorised canary. The dry run    |
++// | congestion (network, pool,         | stress budget; no measured congestion data     | assumption  | sends nothing, so it cannot refine      |
++// |   provider failures)               |                                                | assumption  | landing: these stay as set through it   |
++// | dropPpm                            | stress margin                                  | assumption  |                                         |
++// | exitRetryHaircutPpm                | proxy for sellers ahead of us                  | assumption  | exit fills of the canary                |
++// | closeSuccessPpm, dustPpm           | none measured                                  | assumption  | TEST-2 mainnet simulations (close rate) |
++// | delays.measured                    | today's base values (2 slots + 200 ms)         | unmeasured  | the worker recorder on the VPS          |
++// | delays.adverse, delays.stress      | ruling values (2+6 slots + 1 s, 4+12 + 2 s)    | stress      | kept as stress budgets                  |
++// | slippagePpm, takeProfit, rent flag | §11                                            | §11 rule    |                                         |
++import type { DelayProfile, DelayProfileName, FillNetwork, FillScenario, ScenarioName } from '../fills/index.ts';
+ import { lamports } from '../units/index.ts';
+ import { deepFreeze } from './freeze.ts';
+ 
+@@ -11,6 +27,7 @@ export interface FillConfig {
+   readonly provisional: boolean;
+   readonly network: FillNetwork;
+   readonly scenarios: Readonly<Record<ScenarioName, FillScenario>>;
++  readonly delays: Readonly<Record<DelayProfileName, DelayProfile>>;
+ }
+ 
+ // Landing defaults from §11 (0.66 PumpSwap, 0.49 curve), in ppm, for the base case. The conservative and optimistic
+@@ -20,6 +37,8 @@ const LAND_LOW = { pumpswap: 560_000n, 'pump-curve': 400_000n } as const;
+ const LAND_HIGH = { pumpswap: 760_000n, 'pump-curve': 590_000n } as const;
+ // Congestion windows of 150 slots (about one minute, one blockhash lifetime).
+ const WINDOW = 150;
++// The network chain restarts from its stationary share every 4,096 windows (about a week of slots).
++const SEGMENT = 4_096;
+ 
+ const VALUES: FillConfig = {
+   version: 'fills-2',
+@@ -35,45 +54,57 @@ const VALUES: FillConfig = {
+     // Token-2022 pump ATA, 170 bytes at 5,080 lamports/byte (§5.1); the larger of the two account kinds.
+     tokenAccountRent: lamports(1_513_840n),
+   },
+-  // Every value below is provisional (BT-1c item 4) until the dry run measures landing, drops and latency:
++  // What each stress field does (sources and status in the table at the top):
+   // - dropPpm: share of misses that never reach a block (cost nothing, resolve only at expiry).
+   // - landingTail: a few attempts land much later (leader skips, forwarding loss); some then expire.
+-  // - congestion: correlated bursts in which landing falls and latency rises for every attempt at once.
++  // - congestion: a persistent shared network state and per-pool contention driven by the pool's recent volume, in
++  //   which landing falls and latency rises for every attempt at once; provider failures drop attempts on top.
+   // - exitRetryHaircutPpm: each repeated exit on a position gets that much less, as other sellers drain the pool.
+-  // Observation delay (provisional until FEED-1 and the recorder measure it): every swap, lifecycle event and regime
+-  // change reaches the engine `observationSlots` after its own slot plus `receiptMs`. Confirmed commitment trails the
+-  // processed tip by about 1-2 slots; the conservative case adds a slot and half a second of receipt and decoding.
++  // - closeSuccessPpm, dustPpm: the atomic sell-and-close outcome that decides whether rent comes back.
+   scenarios: {
+     // Slots are about 0.3 s. Discovery: two free feeds, p50 within a second or two (§6.1, data.md §7).
+     base: {
+       name: 'base', landPpm: LAND, dropPpm: 300_000n,
+       landingTail: { ppm: 30_000n, slots: [15, 30, 60] },
+-      congestion: { windowSlots: WINDOW, burstPpm: 80_000n, landFactorPpm: 600_000n, extraLandingSlots: 8 },
++      congestion: { windowSlots: WINDOW, segmentWindows: SEGMENT, network: { enterPpm: 30_000n, stayPpm: 600_000n }, pool: { enterPpmPerSol: 5_000n, maxEnterPpm: 200_000n, stayPpm: 600_000n }, providerFailPpm: 5_000n, landFactorPpm: 600_000n, extraLandingSlots: 8 },
+       exitRetryHaircutPpm: 25_000n,
+-      observationSlots: 2, receiptMs: 200,
++      delay: 'measured',
+       discoverySlots: [2, 3, 4, 5, 8], landingSlots: [1, 2, 2, 3, 4],
+       confirmSlots: 2, finalizeSlots: 32, slippagePpm: 1_000_000n, takeProfit: 'wick', rentRecovery: true,
++      closeSuccessPpm: 950_000n, dustPpm: 20_000n,
+     },
+     // p90 latency (a Jupiter-recent fallback is about 5 s), slippage x1.5, close-based take-profit, no rent recovery.
+     conservative: {
+       name: 'conservative', landPpm: LAND_LOW, dropPpm: 200_000n,
+       landingTail: { ppm: 50_000n, slots: [30, 60, 120] },
+-      congestion: { windowSlots: WINDOW, burstPpm: 150_000n, landFactorPpm: 400_000n, extraLandingSlots: 20 },
++      congestion: { windowSlots: WINDOW, segmentWindows: SEGMENT, network: { enterPpm: 60_000n, stayPpm: 750_000n }, pool: { enterPpmPerSol: 10_000n, maxEnterPpm: 400_000n, stayPpm: 750_000n }, providerFailPpm: 20_000n, landFactorPpm: 400_000n, extraLandingSlots: 20 },
+       exitRetryHaircutPpm: 50_000n,
+-      observationSlots: 3, receiptMs: 500,
++      delay: 'adverse',
+       discoverySlots: [17], landingSlots: [6],
+       confirmSlots: 2, finalizeSlots: 32, slippagePpm: 1_500_000n, takeProfit: 'close', rentRecovery: false,
++      closeSuccessPpm: 900_000n, dustPpm: 50_000n,
+     },
+     optimistic: {
+       name: 'optimistic', landPpm: LAND_HIGH, dropPpm: 400_000n,
+       landingTail: { ppm: 10_000n, slots: [8, 15] },
+-      congestion: { windowSlots: WINDOW, burstPpm: 30_000n, landFactorPpm: 800_000n, extraLandingSlots: 2 },
++      congestion: { windowSlots: WINDOW, segmentWindows: SEGMENT, network: { enterPpm: 10_000n, stayPpm: 500_000n }, pool: { enterPpmPerSol: 2_000n, maxEnterPpm: 100_000n, stayPpm: 500_000n }, providerFailPpm: 1_000n, landFactorPpm: 800_000n, extraLandingSlots: 2 },
+       exitRetryHaircutPpm: 10_000n,
+-      observationSlots: 1, receiptMs: 50,
++      delay: 'measured',
+       discoverySlots: [1, 2], landingSlots: [1],
+       confirmSlots: 2, finalizeSlots: 32, slippagePpm: 1_000_000n, takeProfit: 'wick', rentRecovery: true,
++      closeSuccessPpm: 990_000n, dustPpm: 5_000n,
+     },
+   },
++  // Observation delay (supervisor ruling after external review, DECISIONS "Follow-up rulings"): event → processed,
++  // processed → confirmed (charged when the decision path waits for confirmed), provider → worker.
++  delays: {
++    // Source: none yet. Today's base values (2 slots + 200 ms) until the worker's recorder measures processed and
++    // confirmed arrival on the VPS; then this profile takes the measured values. Status: unmeasured.
++    measured: { status: 'unmeasured', eventToProcessedSlots: 1, processedToConfirmedSlots: 1, providerMs: 200, blackouts: [] },
++    // Stress budgets, not measured percentiles (ruling values). Promotion's conservative scenario uses `adverse`.
++    adverse: { status: 'stress-budget', eventToProcessedSlots: 2, processedToConfirmedSlots: 6, providerMs: 1_000, blackouts: [] },
++    stress: { status: 'stress-budget', eventToProcessedSlots: 4, processedToConfirmedSlots: 12, providerMs: 2_000, blackouts: [{ durationMs: 30_000 }, { durationMs: 60_000 }] },
++  },
+ };
+ 
+ export const FILL_CONFIG: FillConfig = deepFreeze(VALUES);
+diff --git a/packages/core/src/config/research.ts b/packages/core/src/config/research.ts
+index 0d4ec36..0c33065 100644
+--- a/packages/core/src/config/research.ts
++++ b/packages/core/src/config/research.ts
+@@ -23,10 +23,20 @@ export interface ResearchConfig {
+   };
+   /** Blocks between heartbeat slot events while no intent is in flight. */
+   readonly heartbeatBlocks: number;
++  /**
++   * The commitment the decision path waits for. 'confirmed' charges the processed → confirmed delay too (the harsher
++   * choice until WORKER-1 settles the live path).
++   */
++  readonly decisionCommitment: 'processed' | 'confirmed';
+   /** Running costs charged against results, apart from the bankroll and per-trade costs. */
+   readonly operating: {
+     /** The Frankfurt VPS the owner approved (DECISIONS.md 2026-10-03, about US$6/month). */
+     readonly hostingUsdPerMonth: MicroUsd;
++    /**
++     * Bankrolls the operating-cost line is also shown at (the owner intends US$100-200 after the proof). A projection
++     * only: the policy's limits stay what the owner set.
++     */
++    readonly projectionBankrolls: readonly MicroUsd[];
+   };
+ }
+ 
+@@ -34,7 +44,8 @@ const VALUES: ResearchConfig = {
+   version: 'research-2',
+   s0: { u2WindowFromMs: 60 * MINUTE, u2WindowToMs: 240 * MINUTE, entryMinOutBelowBps: 300, blockedRetryMs: 10 * MINUTE, blockedRetries: 3, endMarginMs: 30 * MINUTE },
+   heartbeatBlocks: 150,
+-  operating: { hostingUsdPerMonth: usd('6') },
++  decisionCommitment: 'confirmed',
++  operating: { hostingUsdPerMonth: usd('6'), projectionBankrolls: [usd('20'), usd('100'), usd('200')] },
+ };
+ 
+ export const RESEARCH_CONFIG: ResearchConfig = deepFreeze(VALUES);
+diff --git a/packages/core/src/fills/model.ts b/packages/core/src/fills/model.ts
+index 53bccc9..888cbdb 100644
+--- a/packages/core/src/fills/model.ts
++++ b/packages/core/src/fills/model.ts
+@@ -5,23 +5,36 @@ import { type CoinFlags, type NoQuoteReason, type PoolState, poolBuyExactQuoteIn
+ import { PPM } from '../costs/index.ts';
+ import type { Venue } from '../domain/index.ts';
+ import { createRng, type Rng } from '../engine/index.ts';
+-import { BPS_DENOMINATOR, mulDiv } from '../units/index.ts';
++import { BPS_DENOMINATOR, LAMPORTS_PER_SOL, mulDiv } from '../units/index.ts';
+ import { type ObservedFees, observedFeeContext } from './pool.ts';
+ 
+ export type ScenarioName = 'base' | 'conservative' | 'optimistic';
+ export const SCENARIO_NAMES: readonly ScenarioName[] = ['base', 'conservative', 'optimistic'];
+ 
+ /**
+- * Correlated failures: the chain is congested in some windows of slots, and every attempt broadcast in such a window
+- * lands less often and later. Whether a window is congested is one draw per window from the run's seed.
++ * Correlated failures over windows of slots (supervisor ruling after external review):
++ * - one persistent network state shared by every attempt: a two-state chain over windows (enter, stay);
++ * - per pool, contention whose entry probability follows the pool's own volume in the previous, complete window
++ *   (causal), and which persists while it holds;
++ * - provider failures on top: in a window where the send path is down, attempts never reach a block.
++ * An attempt broadcast while the network or its pool is congested lands less often and later.
+  */
+ export interface Congestion {
+   readonly windowSlots: number;
+-  /** Share of windows that are congested, ppm. */
+-  readonly burstPpm: bigint;
+-  /** Landing share in a burst, as a share of the scenario's landPpm (ppm). */
++  /** The network chain restarts from its stationary share every this many windows (order-independent answers). */
++  readonly segmentWindows: number;
++  readonly network: { readonly enterPpm: bigint; readonly stayPpm: bigint };
++  readonly pool: {
++    /** Entry probability per SOL of the pool's volume in the previous window, ppm, up to maxEnterPpm. */
++    readonly enterPpmPerSol: bigint;
++    readonly maxEnterPpm: bigint;
++    readonly stayPpm: bigint;
++  };
++  /** Share of windows in which the send path is down, ppm. */
++  readonly providerFailPpm: bigint;
++  /** Landing share in a congested window, as a share of the scenario's landPpm (ppm). */
+   readonly landFactorPpm: bigint;
+-  /** Slots added to the landing latency in a burst. */
++  /** Slots added to the landing latency in a congested window. */
+   readonly extraLandingSlots: number;
+ }
+ 
+@@ -31,6 +44,26 @@ export interface LandingTail {
+   readonly slots: readonly number[];
+ }
+ 
++export type DelayProfileName = 'measured' | 'adverse' | 'stress';
++export const DELAY_PROFILE_NAMES: readonly DelayProfileName[] = ['measured', 'adverse', 'stress'];
++
++/**
++ * How late an on-chain observation (a swap's pool state, a lifecycle event, a regime change) reaches the worker, in
++ * three parts. Slots are converted to time with the replay's real slot times.
++ */
++export interface DelayProfile {
++  /** 'unmeasured' until the worker's recorder measures it; 'stress-budget' for a deliberate stress value; 'measured'. */
++  readonly status: 'unmeasured' | 'stress-budget' | 'measured';
++  /** Event slot to processed-commitment availability at the provider. */
++  readonly eventToProcessedSlots: number;
++  /** Processed to confirmed; charged only when the decision path waits for confirmed. */
++  readonly processedToConfirmedSlots: number;
++  /** Provider to worker: network and decoding, ms. */
++  readonly providerMs: number;
++  /** Feed blackouts per UTC day (deterministic times from the run seed); the backlog arrives when each ends. */
++  readonly blackouts: readonly { readonly durationMs: number }[];
++}
++
+ export interface FillScenario {
+   readonly name: ScenarioName;
+   /** Share of attempts that land and execute, in ppm, per venue (§11 defaults until our own data exist). */
+@@ -40,13 +73,8 @@ export interface FillScenario {
+    * block height and cost nothing. The rest land as failed transactions and pay the base and priority fees.
+    */
+   readonly dropPpm: bigint;
+-  /**
+-   * Commitment delay of every on-chain observation (a swap's pool state, a lifecycle event, a regime change): slots
+-   * after the transaction's own slot before the bot's feed reports it at the commitment it trades on.
+-   */
+-  readonly observationSlots: number;
+-  /** Receipt delay on top of that: network and decoding time, ms. */
+-  readonly receiptMs: number;
++  /** The observation delay profile this scenario uses (FillConfig.delays). */
++  readonly delay: DelayProfileName;
+   /** Feed lag before the engine learns of a token, in slots; one value is drawn uniformly per token. */
+   readonly discoverySlots: readonly number[];
+   /** Slots from broadcast to landing; one value is drawn uniformly per attempt. */
+@@ -68,6 +96,15 @@ export interface FillScenario {
+   readonly takeProfit: 'wick' | 'close';
+   /** False: token-account rent counts as never returned (conservative). */
+   readonly rentRecovery: boolean;
++  /**
++   * The final sell of a token account closes it in the same transaction (atomic sell-and-close). Share of such
++   * transactions whose close succeeds, ppm; a failed close fails the whole transaction (the sell rolls back, the fee is
++   * charged) and the account falls back to sell-only, so its rent stays locked. TEST-2's measured close-success rate
++   * replaces this once it exists.
++   */
++  readonly closeSuccessPpm: bigint;
++  /** Share of token accounts left with dust or an unsolicited token, ppm: they cannot be closed, the rent stays locked. */
++  readonly dustPpm: bigint;
+ }
+ 
+ /** Network terms of one attempt. Rent and the escalation ladder are separate (config, policy). */
+@@ -103,13 +140,67 @@ export interface AttemptDraw {
+   readonly fate: AttemptFate;
+ }
+ 
+-/** True when the window holding `slot` is congested: one draw per window from `seed`, shared by every attempt in it. */
+-export const congestedAt = (seed: string, slot: bigint, s: FillScenario): boolean => {
+-  const c = s.congestion;
+-  if (!Number.isSafeInteger(c.windowSlots) || c.windowSlots < 1) throw new RangeError('congestion windowSlots must be >= 1');
+-  return ppmDraw(createRng(`${seed}:congestion:${slot / BigInt(c.windowSlots)}`)) < c.burstPpm;
++/** The congestion window holding `slot`. */
++export const windowOf = (slot: bigint, s: FillScenario): bigint => {
++  const n = s.congestion.windowSlots;
++  if (!Number.isSafeInteger(n) || n < 1) throw new RangeError('congestion windowSlots must be >= 1');
++  return slot / BigInt(n);
++};
++
++const draw = (seed: string): bigint => ppmDraw(createRng(seed));
++
++/**
++ * The shared network state, window by window: a two-state chain from the seed, so a burst lasts 1 / (1 - stay)
++ * windows on average. The chain restarts from its stationary share every `segmentWindows` windows (config),
++ * which makes each window's state independent of the order windows are asked in.
++ */
++export class NetworkState {
++  readonly #seed: string;
++  readonly #s: FillScenario;
++  readonly #segments = new Map<bigint, boolean[]>();
++
++  constructor(seed: string, s: FillScenario) {
++    this.#seed = seed;
++    this.#s = s;
++  }
++
++  congested(win: bigint): boolean {
++    const n = this.#s.congestion.segmentWindows;
++    if (!Number.isSafeInteger(n) || n < 1) throw new RangeError('congestion segmentWindows must be >= 1');
++    const SEGMENT = BigInt(n);
++    const seg = win / SEGMENT;
++    let states = this.#segments.get(seg);
++    if (states === undefined) {
++      states = [];
++      this.#segments.set(seg, states);
++    }
++    const { enterPpm, stayPpm } = this.#s.congestion.network;
++    const leave = PPM - stayPpm;
++    const stationary = enterPpm + leave === 0n ? 0n : mulDiv(enterPpm, PPM, enterPpm + leave, 'floor');
++    const k = Number(win - seg * SEGMENT);
++    while (states.length <= k) {
++      const w = seg * SEGMENT + BigInt(states.length);
++      const u = draw(`${this.#seed}:network:${w}`);
++      states.push(states.length === 0 ? u < stationary : u < (states[states.length - 1]! ? stayPpm : enterPpm));
++    }
++    return states[k]!;
++  }
++}
++
++/** Pool contention's entry probability from the pool's volume in the previous window (lamports), ppm. */
++export const poolEnterPpm = (s: FillScenario, volumeLamports: bigint): bigint => {
++  const p = s.congestion.pool;
++  const v = mulDiv(volumeLamports < 0n ? 0n : volumeLamports, p.enterPpmPerSol, LAMPORTS_PER_SOL, 'floor');
++  return v > p.maxEnterPpm ? p.maxEnterPpm : v;
+ };
+ 
++/** Whether `pool` is contended in `window`: it stays with stayPpm when it was in the window before, else enters by volume. */
++export const poolContended = (seed: string, pool: string, win: bigint, before: boolean, volumeLamports: bigint, s: FillScenario): boolean =>
++  draw(`${seed}:pool:${pool}:${win}`) < (before ? s.congestion.pool.stayPpm : poolEnterPpm(s, volumeLamports));
++
++/** Whether the send path is down in `window`. */
++export const providerDown = (seed: string, win: bigint, s: FillScenario): boolean => draw(`${seed}:provider:${win}`) < s.congestion.providerFailPpm;
++
+ /**
+  * One attempt's latency and fate. Always four draws in the same order (regular latency, tail decision, tail latency,
+  * fate), so later draws never depend on an outcome or on congestion.
+@@ -129,6 +220,12 @@ export const drawAttempt = (rng: Rng, s: FillScenario, venue: Venue, congested =
+   return { landingSlots, fate: u - land < dropped ? 'dropped' : 'fails' };
+ };
+ 
++/** One account-close draw (always taken for a landed final sell, so later draws never depend on the outcome). */
++export const drawCloseSucceeds = (rng: Rng, s: FillScenario): boolean => ppmDraw(rng) < s.closeSuccessPpm;
++
++/** Whether a new token account ends up with dust or an unsolicited token, from a seed per account. */
++export const accountGetsDust = (seed: string, s: FillScenario): boolean => ppmDraw(createRng(`${seed}:dust`)) < s.dustPpm;
++
+ /** Lamports an attempt costs: a landed success pays base, priority and tip; a landed failure base and priority; a dropped one nothing. */
+ export const attemptFee = (net: FillNetwork, priorityFee: bigint, fate: 'filled' | 'failed' | 'dropped'): bigint => {
+   const base = net.signaturesPerTx * net.baseFeePerSignature;

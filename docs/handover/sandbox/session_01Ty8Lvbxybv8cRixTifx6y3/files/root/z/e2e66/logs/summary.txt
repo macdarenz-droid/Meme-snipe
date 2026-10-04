@@ -1,0 +1,4 @@
+PASS  fake GitHub and Telegram up at http://172.17.0.1:8787
+PASS  derive-key known answer: the pinned recipient opens with the derived identity in real age
+PASS  README line: 235 ASCII characters, pinned to 3232c2e7f99c which holds install.sh with the same SHA-256; checked in the container
+FAIL  install

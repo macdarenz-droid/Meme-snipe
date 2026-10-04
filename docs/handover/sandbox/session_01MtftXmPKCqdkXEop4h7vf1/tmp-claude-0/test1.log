@@ -1,0 +1,352 @@
+
+> meme-snipe@ test /home/user/Meme-snipe
+> vitest run
+
+
+ RUN  v5.0.3 /home/user/Meme-snipe
+
+(node:4406) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:5518) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:5548) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ❯ |light| packages/worker/test/worker-flow.test.ts (22 tests | 11 failed) 11875ms
+   ❯ a paper trade end to end (3)
+     × enters through gates, risk and a ledger reservation, simulates each leg first, and exits on the stop 285ms
+     × an attempt that lands failed is abandoned and its reservation released 146ms
+   ❯ the swap stream of a watched pool (review of f679188, items 3 and 9) (3)
+     × with no fee-context fact, the terms of the latest swap on the pool price the entry 261ms
+     × the deployer selling more than the policy share of supply after the entry exits the position 166ms
+     × a deployer-sell trigger that cannot be judged is said once, never silent 166ms
+   ❯ the heartbeat's open position (review of f679188: unknown is null, never 0) (1)
+     × sends entry, stop and a fresh mark in one price unit, and no mark once it is older than 30 s 157ms
+   ❯ entry halts fail closed (review of f679188, items 5 and 6) (2)
+     × a ledger/book divergence halts entries for the rest of the process; exits go on 160ms
+   ❯ restart drill mid-trade (EXIT-1 restore acceptance) (4)
+     × a kill with a runner open restores the same plan, trail, peak, flatMet and partials, and reconciles before any entry 136ms
+     × partials come from the book after a restart, whatever the saved file says 134ms
+     × a restored position keeps the universe it was entered under (saved plan, else its intent key), never the worker's (CFG-2) 131ms
+   ❯ exits never wait for the seed (review of 9fdf837) (1)
+     × a restart with an open position and a seed that never answers: the stop exits during the wait, before seedMaxMs; entries halt 128ms
+(node:5576) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:5624) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+gpg: checking the trustdb
+gpg: marginals needed: 3  completes needed: 1  trust model: pgp
+gpg: depth: 0  valid:   1  signed:   0  trust: 0-, 0q, 0n, 0m, 0f, 1u
+fatal: expected 'acknowledgments', received 'packfile'
+warning: push negotiation failed; proceeding anyway with push
+(node:6069) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:6106) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:6194) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:6441) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:6462) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ❯ |light| packages/worker/test/worker-recorder.test.ts (4 tests | 2 failed) 845ms
+   ❯ the market recorder (4)
+     × replaying the recorded frames in their release order through the same engine and strategy reproduces the live decisions 208ms
+     × across a restart: boot 2's recorded frames (the restored book and exit plans among them) replay to its own decisions 225ms
+(node:6478) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:6485) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ❯ |light| packages/worker/test/run1c.test.ts (5 tests | 1 failed) 604ms
+   ❯ exposure lines (3)
+     × a kill with a position open: the next start journals one exposure line for it, from the last line before the kill 356ms
+(node:7140) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ❯ |light| packages/worker/test/position-market.test.ts (5 tests | 1 failed) 1067ms
+   ❯ a held position priced from its pool's swap stream (POS-1) (5)
+     × take-profit then the trail fire from swaps alone 233ms
+(node:7208) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ❯ |light| packages/worker/test/worker-api.test.ts (4 tests | 1 failed) 501ms
+   ❯ the app API (UI-2 contract) (4)
+     × every endpoint of a worker with a closed paper trade and an open one passes the app's strict paper schema 367ms
+(node:7222) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:7314) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:7467) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:7481) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+⎯⎯⎯⎯⎯⎯ Failed Tests 16 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |light| packages/worker/test/position-market.test.ts > a held position priced from its pool's swap stream (POS-1) > take-profit then the trail fire from swaps alone
+AssertionError: expected false to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ ❯ packages/worker/test/position-market.test.ts:77:108
+     75|     // A seller takes it back down under the trail: the runner closes …
+     76|     m.chainSwap('sell', (m.chainState.baseReserve * 12n) / 100n, h.wor…
+     77|     expect(await until(m, () => h.worker.book.positions[pid]!.status =…
+       |                                                                                                            ^
+     78|     expect(decisions(h).some((r) => r[0] === 'exit' && r.some((x) => x…
+     79|     await h.worker.stop();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/16]⎯
+
+ FAIL  |light| packages/worker/test/run1c.test.ts > exposure lines > a kill with a position open: the next start journals one exposure line for it, from the last line before the kill
+AssertionError: expected [ { seq: 23, …(10) } ] to deeply equal [ ObjectContaining{…} ]
+
+- Expected
++ Received
+
+  [
+    {
++     "boot": "musis0y0-6485",
++     "detail": "no price saved before the kill",
+      "from_ts": "2026-10-03T15:00:09.400Z",
++     "kind": "exposure",
+      "pool": "9KBF3KqYErfs1NXRK35gb4J8wnAD2i9ePZAzcwn7yhFT",
++     "seq": 23,
+      "swaps": 0,
++     "to_ts": "2026-10-03T15:01:19.800Z",
+      "trade": "p:HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust:1",
+-     "worst_move_bps": 0,
++     "ts": "2026-10-03T15:01:19.800Z",
++     "worst_move_bps": null,
+    },
+  ]
+
+ ❯ packages/worker/test/run1c.test.ts:100:22
+     98|     await new Market(h2).run(1_000, 200);
+     99|     const exposure = lines(h.stateDir).filter((l) => l.kind === 'expos…
+    100|     expect(exposure).toEqual([expect.objectContaining({ trade: pid, fr…
+       |                      ^
+    101|     expect(reads).toEqual([exposure[0]!['pool']]);
+    102|     expect(checkJournal(readFileSync(join(h.stateDir, 'journal.jsonl')…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/16]⎯
+
+ FAIL  |light| packages/worker/test/worker-api.test.ts > the app API (UI-2 contract) > every endpoint of a worker with a closed paper trade and an open one passes the app's strict paper schema
+AssertionError: expected 0 to be greater than or equal to 1
+ ❯ packages/worker/test/worker-api.test.ts:36:27
+     34|
+     35|     const trades = bodies['trades']!.data as { mint: string; exitReaso…
+     36|     expect(trades.length).toBeGreaterThanOrEqual(1);
+       |                           ^
+     37|     expect(trades[0]).toMatchObject({ mint: MINT, exitReason: 'price-s…
+     38|     expect(trades[0]!.fills.map((f) => f.side)).toEqual(['buy', 'sell'…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/16]⎯
+
+ FAIL  |light| packages/worker/test/worker-flow.test.ts > a paper trade end to end > enters through gates, risk and a ledger reservation, simulates each leg first, and exits on the stop
+AssertionError: expected undefined to be 'HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bL…' // Object.is equality
+
+- Expected:
+"HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust"
+
++ Received:
+undefined
+
+ ❯ packages/worker/test/worker-flow.test.ts:47:24
+     45|     const m = await entered(h);
+     46|     const open = positions(h).find((p) => p.status === 'open');
+     47|     expect(open?.mint).toBe(MINT);
+       |                        ^
+     48|     // The price falls 30%: the price stop fires and the paper exit la…
+     49|     await m.run(6_000, 400, () => {
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/16]⎯
+
+ FAIL  |light| packages/worker/test/worker-flow.test.ts > a paper trade end to end > an attempt that lands failed is abandoned and its reservation released
+AssertionError: expected 0 to be greater than or equal to 1
+ ❯ packages/worker/test/worker-flow.test.ts:97:30
+     95|     expect(positions(h).every((p) => p.quantity === 0n && p.status !==…
+     96|     const abandoned = kinds(h.stateDir, 'decision').filter((d) => d['a…
+     97|     expect(abandoned.length).toBeGreaterThanOrEqual(1);
+       |                              ^
+     98|     await h.worker.stop();
+     99|     expect(replayLedgerFile(join(h.stateDir, 'ledger.sqlite'))).toMatc…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/16]⎯
+
+ FAIL  |light| packages/worker/test/worker-flow.test.ts > the swap stream of a watched pool (review of f679188, items 3 and 9) > with no fee-context fact, the terms of the latest swap on the pool price the entry
+AssertionError: expected false to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ ❯ packages/worker/test/worker-flow.test.ts:153:94
+    151|       m.pool();
+    152|     });
+    153|     expect(positions(h).some((p) => String(p.mint) === String(MINT) &&…
+       |                                                                                              ^
+    154|     // The pool is watched for swaps while the position is open (exit …
+    155|     expect([...h.worker.strategy.watchedPools()]).toEqual([[POOL_ADDRE…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/16]⎯
+
+ FAIL  |light| packages/worker/test/worker-flow.test.ts > the swap stream of a watched pool (review of f679188, items 3 and 9) > the deployer selling more than the policy share of supply after the entry exits the position
+AssertionError: expected undefined to be defined
+ ❯ packages/worker/test/worker-flow.test.ts:172:18
+    170|     });
+    171|     const open = positions(h).find((p) => p.status === 'open')!;
+    172|     expect(open).toBeDefined();
+       |                  ^
+    173|     // Someone else selling, and the deployer selling up to the limit,…
+    174|     m.swap('SellEvent', 'someone-else', SUPPLY / 10n);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/16]⎯
+
+ FAIL  |light| packages/worker/test/worker-flow.test.ts > the swap stream of a watched pool (review of f679188, items 3 and 9) > a deployer-sell trigger that cannot be judged is said once, never silent
+AssertionError: expected [] to have a length of 1 but got +0
+
+- Expected
++ Received
+
+- 1
++ 0
+
+ ❯ packages/worker/test/worker-flow.test.ts:195:23
+    193|     await entered(h);
+    194|     const notJudged = kinds(h.stateDir, 'decision').filter((d) => (d['…
+    195|     expect(notJudged).toHaveLength(1);
+       |                       ^
+    196|     expect(notJudged[0]!['reasons']).toEqual(expect.arrayContaining(['…
+    197|     await h.worker.stop();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[8/16]⎯
+
+ FAIL  |light| packages/worker/test/worker-flow.test.ts > the heartbeat's open position (review of f679188: unknown is null, never 0) > sends entry, stop and a fresh mark in one price unit, and no mark once it is older than 30 s
+TypeError: Cannot read properties of null (reading 'mint')
+ ❯ packages/worker/test/worker-flow.test.ts:234:14
+    232|     const hb = parseHeartbeat(sent.at(-1)!.body!)!;
+    233|     const p = hb.open_position!;
+    234|     expect(p.mint).toBe(MINT);
+       |              ^
+    235|     expect(p.stop).toBeGreaterThan(0);
+    236|     expect(p.stop).toBeLessThan(p.entry);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[9/16]⎯
+
+ FAIL  |light| packages/worker/test/worker-flow.test.ts > entry halts fail closed (review of f679188, items 5 and 6) > a ledger/book divergence halts entries for the rest of the process; exits go on
+TypeError: Cannot read properties of undefined (reading 'id')
+ ❯ packages/worker/test/worker-flow.test.ts:290:41
+    288|       m.pool(700_000n);
+    289|     });
+    290|     expect(h.worker.book.positions[open.id]!.status).toBe('closed');
+       |                                         ^
+    291|     expect(h.worker.health().halt_reasons).toContain('ledger and book …
+    292|     await h.worker.stop();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[10/16]⎯
+
+ FAIL  |light| packages/worker/test/worker-flow.test.ts > restart drill mid-trade (EXIT-1 restore acceptance) > a kill with a runner open restores the same plan, trail, peak, flatMet and partials, and reconciles before any entry
+TypeError: Cannot read properties of undefined (reading 'id')
+ ❯ packages/worker/test/worker-flow.test.ts:300:62
+    298|     const h = makeWorker();
+    299|     const m = await entered(h);
+    300|     const pid = positions(h).find((p) => p.status === 'open')!.id;
+       |                                                              ^
+    301|     // +15%: past 1.5R, so the first partial sells half; the runner's …
+    302|     await m.run(8_000, 400, () => {
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[11/16]⎯
+
+ FAIL  |light| packages/worker/test/worker-flow.test.ts > restart drill mid-trade (EXIT-1 restore acceptance) > partials come from the book after a restart, whatever the saved file says
+TypeError: Cannot read properties of undefined (reading 'id')
+ ❯ packages/worker/test/worker-flow.test.ts:344:62
+    342|     const h = makeWorker();
+    343|     const m = await entered(h);
+    344|     const pid = positions(h).find((p) => p.status === 'open')!.id;
+       |                                                              ^
+    345|     await m.run(8_000, 400, () => {
+    346|       m.slot();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[12/16]⎯
+
+ FAIL  |light| packages/worker/test/worker-flow.test.ts > restart drill mid-trade (EXIT-1 restore acceptance) > a restored position keeps the universe it was entered under (saved plan, else its intent key), never the worker's (CFG-2)
+TypeError: Cannot read properties of undefined (reading 'id')
+ ❯ packages/worker/test/worker-flow.test.ts:367:62
+    365|     const h = makeWorker();
+    366|     await entered(h);
+    367|     const pid = positions(h).find((p) => p.status === 'open')!.id;
+       |                                                              ^
+    368|     expect(h.worker.strategy.saved()[pid]!.plan.universe).toBe('U2');
+    369|     expect(String(h.worker.book.intents[h.worker.book.positions[pid]!.…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[13/16]⎯
+
+ FAIL  |light| packages/worker/test/worker-flow.test.ts > exits never wait for the seed (review of 9fdf837) > a restart with an open position and a seed that never answers: the stop exits during the wait, before seedMaxMs; entries halt
+AssertionError: expected false to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ ❯ packages/worker/test/worker-flow.test.ts:549:85
+    547|       m.pool();
+    548|     });
+    549|     expect(Object.values(h.worker.book.positions).some((p) => p.status…
+       |                                                                                     ^
+    550|     await h.worker.kill();
+    551|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[14/16]⎯
+
+ FAIL  |light| packages/worker/test/worker-recorder.test.ts > the market recorder > replaying the recorded frames in their release order through the same engine and strategy reproduces the live decisions
+AssertionError: expected false to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ ❯ packages/worker/test/worker-recorder.test.ts:96:69
+     94|       .map((l) => ({ event: l['event'], reasons: l['reasons'], result:…
+     95|     expect(live.some((d) => (d.reasons as string[])[0] === 'enter')).t…
+     96|     expect(live.some((d) => (d.reasons as string[])[0] === 'exit')).to…
+       |                                                                     ^
+     97|
+     98|     const dir = join(h.stateDir, 'recorder', h.worker.boot);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[15/16]⎯
+
+ FAIL  |light| packages/worker/test/worker-recorder.test.ts > the market recorder > across a restart: boot 2's recorded frames (the restored book and exit plans among them) replay to its own decisions
+AssertionError: expected false to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ ❯ packages/worker/test/worker-recorder.test.ts:135:69
+    133|       .map((l) => ({ event: l['event'], reasons: l['reasons'], result:…
+    134|     expect(live.some((d) => (d.reasons as string[])[0] === 'restore'))…
+    135|     expect(live.some((d) => (d.reasons as string[])[0] === 'exit')).to…
+       |                                                                     ^
+    136|
+    137|     const dir = join(h.stateDir, 'recorder', h2.worker.boot);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[16/16]⎯
+
+
+ Test Files  5 failed | 117 passed (122)
+      Tests  16 failed | 4012 passed (4028)
+   Start at  23:35:58
+   Duration  464.35s (tests 95%, import 4%, transform 1%)
+
+ ELIFECYCLE  Test failed. See above for more details.
+EXIT 1

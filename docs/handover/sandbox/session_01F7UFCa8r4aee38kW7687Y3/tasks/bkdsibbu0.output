@@ -1,0 +1,5 @@
+74d5b57 WORKER-1: live market inputs: Coinbase SOL/USD ticker, a swap stream per watched pool (fee terms and EXIT-1's deployer-sell trigger), scripted-socket test to a judged candidate
+ Test Files  98 passed (98)
+      Tests  3327 passed (3327)
+
+[exited with code 0]

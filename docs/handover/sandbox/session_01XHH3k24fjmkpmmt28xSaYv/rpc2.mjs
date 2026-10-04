@@ -1,0 +1,9 @@
+async function call(url,method,params){const r=await fetch(url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method,params})});const t=await r.text();let j;try{j=JSON.parse(t)}catch{j={raw:t.slice(0,200)}};return {s:r.status,h:Object.fromEntries([...r.headers].filter(([k])=>/ratelimit-method|retry/.test(k))),j};}
+const U='https://api.mainnet-beta.solana.com';
+let r=await call(U,'getFirstAvailableBlock',[]);console.log('mainnet firstAvail',JSON.stringify(r.j));
+const T=['2xujT76G4y2CiaBQQcfJNr2rQtjdwwLivei2gf1TTP8N4s6atpwQcrnRSiiyc5CrjKHWKXVdEjPWD67ASpwttsSs','5rsad8wPc7uhXjnirARHWryJJwSDtXVTQPebySvbYbscNFVmEz7tYXrJqoD8ZCdFCyvabpfSNN4YeW86LpTp2PBE'];
+for(const s of T){r=await call(U,'getTransaction',[s,{maxSupportedTransactionVersion:1,encoding:'json'}]);console.log('getTransaction',s.slice(0,8),r.s,r.j.result?('ok slot '+r.j.result.slot+' bt '+new Date(r.j.result.blockTime*1000).toISOString()+' innerIx '+(r.j.result.meta.innerInstructions||[]).length+' logs '+(r.j.result.meta.logMessages||[]).length):JSON.stringify(r.j).slice(0,200),r.h['x-ratelimit-method-limit']);}
+// deeper: 90, 180 days
+for(const d of [90,180,365]){const slot=452944793-Math.round(d*86400/0.4*0.77);r=await call(U,'getBlock',[slot,{maxSupportedTransactionVersion:0,transactionDetails:'none',rewards:false}]);console.log(d,'d slot',slot,r.j.result?new Date(r.j.result.blockTime*1000).toISOString():JSON.stringify(r.j.error||r.j).slice(0,200),r.h['x-ratelimit-method-limit']);}
+const P='https://solana-rpc.publicnode.com';
+for(const [m,p] of [['getFirstAvailableBlock',[]],['getBlockTime',[452651140]],['getBlock',[439984793,{maxSupportedTransactionVersion:0,transactionDetails:'none',rewards:false}]]]){r=await call(P,m,p);console.log('publicnode',m,r.s,JSON.stringify(r.j).slice(0,250));}
