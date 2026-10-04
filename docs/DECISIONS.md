@@ -398,8 +398,9 @@ Supervisor rulings:
 - **ARCHIVE-CHECK: one request every 3 hours (owner decision, 2026-10-04 3:55 PM Melbourne).** This replaces "no request until Triton answers". The owner has emailed Triton.
   - `archive-check.yml` (cron `41 */3 * * *` and dispatch) runs `ci/archive-check.sh`.
   - While a data-scan run is active or queued, the check does nothing. Otherwise it makes one range GET of 64 bytes from the runner, with the scanner's own User-Agent, read from `archive.go`.
-  - It never uses another agent, host, address, proxy, client or Triton service, because that would get around the block. `--max-filesize 64` keeps a server that ignores the range from streaming the file.
-  - Any answer but 206 (or a 200 of at most 64 bytes) is logged (status, cf-ray, time), with no retry.
+  - It never uses another agent, host, address, proxy, client or Triton service, because that would get around the block.
+  - No answer can stream. The body goes through `head -c 65`, which aborts the transfer, and `--max-filesize 64` also stops it. Each was tested alone against a local server that ignores the range and streams a chunked 200.
+  - Only a 206 of at most 64 bytes, with a clean curl exit, counts as served. Anything else is logged (status, bytes, curl exit, cf-ray, time), with no retry.
   - When served, it dispatches the next 8 unpublished days: pre-holdout days 21 Sep back to 20 Jul first, then the holdout days 1 Oct back to 22 Sep. The scan keeps its own limits: one job, 80 MB/s, 40 requests/s, stop on any 429 with at least 1 h back-off.
   - A rate or bucket from Triton replaces these limits.
 - **DATA-2 build: one decoder set, re-encoded meta (2026-10-04).**

@@ -12,6 +12,7 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/csv"
 	"encoding/hex"
 	"encoding/json"
@@ -73,11 +74,14 @@ func agaveLogCut(logs []string, limit int) []string {
 	return out
 }
 
+// hashLines hashes lines with each one length-prefixed, so no split of the same bytes
+// into lines (a newline inside a log message) hashes alike.
 func hashLines(lines []string) string {
 	h := sha256.New()
+	var n [binary.MaxVarintLen64]byte
 	for _, l := range lines {
+		h.Write(n[:binary.PutUvarint(n[:], uint64(len(l)))])
 		io.WriteString(h, l)
-		h.Write([]byte{'\n'})
 	}
 	return shortHash(h.Sum(nil))
 }

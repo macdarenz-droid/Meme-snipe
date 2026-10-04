@@ -568,8 +568,10 @@ cat > "$A/bin/curl" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$@" > "$AC/curl.args"; echo x >> "$AC/curl.calls"
 hdr=; while (( $# )); do [[ $1 == -D ]] && hdr=$2; shift; done
+[[ "$AC_STATUS" == 000 ]] && exit 7
 printf 'HTTP/2 %s\r\ncf-ray: 8abc123-SYD\r\n\r\n' "$AC_STATUS" > "$hdr"
-printf '%s' "$AC_STATUS"
+head -c "${AC_BYTES:-64}" /dev/zero
+exit "${AC_EXIT:-0}"
 SH
 chmod +x "$A/bin/"*
 ac() { rm -f "$A"/*.log "$A/curl.calls" "$A/curl.args"; : > "$A/summary.md"
@@ -580,7 +582,7 @@ ac env AC_ACTIVE=1 AC_STATUS=206
   ok "archive-check: a scan run active or queued means no request and no dispatch" || no "archive-check active no-op"
 ac env AC_STATUS=429
 [[ $(wc -l < "$A/curl.calls") == 1 && ! -e "$A/dispatch.log" ]] && grep -qx -- "-A" "$A/curl.args" && grep -qxF -- "$ua" "$A/curl.args" &&
-  grep -qx -- "0-63" "$A/curl.args" && grep -q "| 429 | 0 | 8abc123-SYD |" "$A/summary.md" && [[ -n "$ua" ]] &&
+  grep -qx -- "0-63" "$A/curl.args" && grep -q "| 429 | 64 | 0 | 8abc123-SYD |" "$A/summary.md" && [[ -n "$ua" ]] &&
   ok "archive-check: a 429 makes exactly one 64-byte request with the scanner's agent, logs status and cf-ray, dispatches nothing" || no "archive-check 429"
 printf '2026-09-21\n2026-09-19\n' > "$A/published"
 ac env AC_STATUS=206
@@ -591,8 +593,49 @@ d=2026-09-21; : > "$A/published"; while [[ "$d" > 2026-07-19 ]]; do echo "$d" >>
 ac env AC_STATUS=206
 grep -q -- "-f days=2026-10-01,2026-09-30,2026-09-29,2026-09-28,2026-09-27,2026-09-26,2026-09-25,2026-09-24 " "$A/dispatch.log" &&
   ok "archive-check: holdout days only after every pre-holdout day is published" || no "archive-check holdout order: $(cat "$A/dispatch.log" 2>/dev/null)"
+ac env AC_STATUS=206 AC_BYTES=65
+[[ ! -e "$A/dispatch.log" ]] && ok "archive-check: a 206 of more than 64 bytes is not served" || no "archive-check oversized 206"
+ac env AC_STATUS=206 AC_EXIT=18
+[[ ! -e "$A/dispatch.log" ]] && grep -q "| 206 | 64 | 18 |" "$A/summary.md" && ok "archive-check: a 206 whose transfer failed (curl exit kept across the pipe) is not served" || no "archive-check 206 with curl error: $(cat "$A/summary.md")"
+ac env AC_STATUS=200
+[[ ! -e "$A/dispatch.log" ]] && ok "archive-check: a 200 is not served, whatever its size" || no "archive-check 200"
 ac env AC_STATUS=000
 [[ $(wc -l < "$A/curl.calls") == 1 && ! -e "$A/dispatch.log" ]] && ok "archive-check: a network failure dispatches nothing" || no "archive-check failure"
+
+# A real curl against a local server: one that ignores the range and streams a chunked
+# 200 forever, one that answers 206 with 64 bytes. The stream is cut at 65 bytes within
+# seconds and nothing is dispatched; the honest 206 dispatches.
+cat > "$A/srv.py" <<'PY'
+import http.server, sys, time
+class H(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+    def do_GET(self):
+        if self.path == "/stream":
+            self.send_response(200); self.send_header("Transfer-Encoding", "chunked"); self.end_headers()
+            try:
+                while True:
+                    self.wfile.write(b"4000\r\n" + b"x" * 0x4000 + b"\r\n"); self.wfile.flush(); time.sleep(0.01)
+            except (BrokenPipeError, ConnectionResetError):
+                return
+        self.send_response(206); self.send_header("Content-Length", "64"); self.send_header("cf-ray", "ok-1"); self.end_headers()
+        self.wfile.write(b"y" * 64)
+    def log_message(self, *a): pass
+s = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+print(s.server_port, flush=True); s.serve_forever()
+PY
+python3 "$A/srv.py" > "$A/port" & srv=$!
+for _ in $(seq 50); do [[ -s "$A/port" ]] && break; sleep 0.1; done
+port=$(cat "$A/port"); : > "$A/published"
+t0=$(date +%s)
+ac env -u CURL_BIN CURL_BIN=curl NO_PROXY=127.0.0.1 no_proxy=127.0.0.1 ARCHIVE_CHECK_URL="http://127.0.0.1:$port/stream"
+t1=$(date +%s)
+row=$(grep "^| 20" "$A/summary.md" | tail -1); IFS='|' read -r _ _ st by ex _ <<< "$row"
+[[ ! -e "$A/dispatch.log" ]] && (( t1 - t0 < 10 )) && (( ${st// /} == 200 && ${by// /} <= 65 && ${ex// /} != 0 )) &&
+  ok "archive-check: a server ignoring the range and streaming a chunked 200 is cut (${by// /} bytes, curl exit ${ex// /}) in $((t1 - t0)) s, nothing dispatched" || no "archive-check streaming: $row"
+ac env -u CURL_BIN CURL_BIN=curl NO_PROXY=127.0.0.1 no_proxy=127.0.0.1 ARCHIVE_CHECK_URL="http://127.0.0.1:$port/ok"
+[[ $(wc -l < "$A/dispatch.log" 2>/dev/null) == 1 ]] && grep -q "| 206 | 64 | 0 | ok-1 |" "$A/summary.md" &&
+  ok "archive-check: a real 206 of 64 bytes dispatches once" || no "archive-check real 206: $(cat "$A/summary.md")"
+kill $srv 2>/dev/null; wait $srv 2>/dev/null
 
 python3 - "$here/../../../.github/workflows/archive-check.yml" <<'PY' && ok "archive-check workflow: every 3 hours plus dispatch, one job of one script step, token only there, no inputs in the shell, credentials not persisted" || no "archive-check workflow structure"
 import sys, yaml
@@ -604,6 +647,7 @@ steps = wf["jobs"]["check"]["steps"]
 assert len(steps) == 2 and steps[0]["with"]["persist-credentials"] is False, steps
 assert steps[1]["run"] == "research/historical/ci/archive-check.sh" and "github.token" in steps[1]["env"]["GH_TOKEN"], steps[1]
 assert all("${{" not in st.get("run", "") for st in steps)
+assert not any(k in str(steps) for k in ("ARCHIVE_CHECK_URL", "CURL_BIN", "GH_BIN")), "test-only overrides in the workflow"
 PY
 
 echo "$pass passed, $fail failed"

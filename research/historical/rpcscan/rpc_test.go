@@ -157,6 +157,13 @@ func TestArchiveTxNodeReadsBackThroughTxNode(t *testing.T) {
 	}
 }
 
+// Length-prefixed lines: the same bytes split differently never hash alike.
+func TestHashLinesSplitsDiffer(t *testing.T) {
+	if hashLines([]string{"ab", "c"}) == hashLines([]string{"a", "bc"}) || hashLines([]string{"a\nb"}) == hashLines([]string{"a", "b"}) {
+		t.Fatalf("different line splits hash alike")
+	}
+}
+
 // Real blocks of the comparison unit, as the public mainnet RPC returned them
 // (getBlock, base64, full, maxSupportedTransactionVersion 1), give exactly the
 // archive's rows: every table's per-block digest equals the committed baseline's
@@ -682,20 +689,23 @@ func mustPKpub(s string) solana.PublicKey { return solana.MustPublicKeyFromBase5
 // kept): a message reaching the limit is dropped, the first drop writes "Log
 // truncated" once, later messages that still fit are kept.
 func TestAgaveLogCut(t *testing.T) {
+	if logLimitBytes != 10000 {
+		t.Fatalf("Agave's default log limit is 10,000 bytes, not %d", logLimitBytes)
+	}
 	line := func(n int) string { return strings.Repeat("x", n) }
 	logs := []string{line(9796), line(210), line(50), line(75), line(100), line(1)}
-	got := agaveLogCut(logs, 10000)
+	got := agaveLogCut(logs, logLimitBytes)
 	want := []string{line(9796), logTruncated, line(50), line(75), line(1)}
 	if fmt.Sprint(len(got)) != fmt.Sprint(len(want)) || jsonEq(got, want) == false {
 		t.Fatalf("cut %v", lens(got))
 	}
-	// Reaching the limit exactly is past it: 9,999 + 1 is dropped.
-	if got := agaveLogCut([]string{line(9999), line(1)}, 10000); !jsonEq(got, []string{line(9999), logTruncated}) {
+	// Reaching the limit exactly is past it: limit-1 bytes, then 1 more, is dropped.
+	if got := agaveLogCut([]string{line(logLimitBytes - 1), line(1)}, logLimitBytes); !jsonEq(got, []string{line(logLimitBytes - 1), logTruncated}) {
 		t.Fatalf("boundary %v", lens(got))
 	}
 	// A log within the limit is unchanged.
 	short := []string{"a", "b"}
-	if got := agaveLogCut(short, 10000); !jsonEq(got, short) {
+	if got := agaveLogCut(short, logLimitBytes); !jsonEq(got, short) {
 		t.Fatalf("short %v", got)
 	}
 }

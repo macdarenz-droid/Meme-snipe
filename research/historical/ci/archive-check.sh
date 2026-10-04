@@ -8,8 +8,9 @@
 #     User-Agent (read from scanner/archive.go), from the runner. Never another agent,
 #     host, address, proxy or client: that would be getting around the block, which
 #     Triton's terms bar.
-#   - Any answer but 206 (or a 200 of at most 64 bytes) is logged (status, cf-ray, time)
-#     and the check stops until the next one. No retries.
+#   - Any answer but a 206 of at most 64 bytes is logged (status, bytes, cf-ray, time)
+#     and the check stops until the next one. No retries. No answer can stream: the
+#     body is cut after 65 bytes, which aborts the transfer.
 #   - On success it dispatches data-scan.yml (mode scan, max_mbps 80) for the next 8
 #     unpublished days: pre-holdout days from 2026-09-21 back to 2026-07-20 first (run
 #     1's days lead), then the holdout days 2026-10-01 back to 2026-09-22. The scan
@@ -17,7 +18,8 @@
 #     with a back-off of at least 1 h.
 #
 # Env: GH_REPO (owner/repo), REF (branch to dispatch on), GH_TOKEN for gh;
-# GH_BIN and CURL_BIN override the tools (tests).
+# GH_BIN, CURL_BIN and ARCHIVE_CHECK_URL (a local fake server) are for tests only; the
+# workflow sets none of them (test-ci.sh checks).
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 gh=${GH_BIN:-gh}
@@ -40,21 +42,31 @@ if [[ "$active" != "0" ]]; then
 fi
 
 hdr=$(mktemp)
-trap 'rm -f "$hdr"' EXIT
-rc=0
-# -r 0-63 asks for 64 bytes; --max-filesize refuses any body the server announces as
-# larger (a server ignoring the range), so a 200 never streams the file.
-code=$("$curl" -sS -o /dev/null -D "$hdr" -w '%{http_code}' --max-time 30 --max-filesize 64 \
-  -A "$ua" -r 0-63 "$url") || rc=$?
+body=$(mktemp)
+trap 'rm -f "$hdr" "$body"' EXIT
+# -r 0-63 asks for 64 bytes. Whatever the server sends (a 200 ignoring the range, a
+# chunked stream with no length), the body goes through `head -c 65`, which exits
+# after 65 bytes and so aborts curl's transfer; --max-filesize also refuses an
+# announced larger body, and --limit-rate keeps curl's reads small. Only a 206 of at
+# most 64 bytes counts as served.
+rcf=$(mktemp)
+trap 'rm -f "$hdr" "$body" "$rcf"' EXIT
+# The left side of a pipe runs in a subshell, so curl's exit code goes through a file.
+{ rc=0; "$curl" -sS -D "$hdr" -o - --max-time 30 --max-filesize 64 --limit-rate 2k \
+    -A "$ua" -r 0-63 "${ARCHIVE_CHECK_URL:-$url}" || rc=$?; echo "$rc" > "$rcf"; } | head -c 65 > "$body" || true
+rc=$(cat "$rcf")
+[[ -n "$rc" ]] || rc=141 # killed by the pipe closing: the body ran past 65 bytes
+code=$(tr -d '\r' < "$hdr" | awk '/^HTTP\//{c=$2} END{print c}')
+got=$(wc -c < "$body")
 ray=$(tr -d '\r' < "$hdr" | sed -n 's/^[Cc][Ff]-[Rr][Aa][Yy]: *//p' | tail -1)
 now=$(date -u +%FT%TZ)
 {
-  echo "| time (UTC) | status | curl exit | cf-ray |"
-  echo "|---|---|---|---|"
-  echo "| $now | ${code:-none} | $rc | ${ray:-none} |"
+  echo "| time (UTC) | status | bytes | curl exit | cf-ray |"
+  echo "|---|---|---|---|---|"
+  echo "| $now | ${code:-none} | $got | $rc | ${ray:-none} |"
 } >> "$summary"
-echo "archive-check $now: status ${code:-none}, curl exit $rc, cf-ray ${ray:-none}"
-if ! [[ "$code" == 206 && $rc == 0 ]] && ! [[ "$code" == 200 && $rc == 0 ]]; then
+echo "archive-check $now: status ${code:-none}, $got bytes, curl exit $rc, cf-ray ${ray:-none}"
+if ! [[ "$code" == 206 && $rc == 0 && $got -le 64 ]]; then
   echo "archive-check: not served; nothing dispatched until the next check" | tee -a "$summary"
   exit 0
 fi
