@@ -8,55 +8,51 @@ What could work: buying dips in tokens that survived their first day and still h
 
 What is unlikely: anything in the first hour after a token moves to PumpSwap, copying wallets, and most fresh-launch setups. Our data and others' show most are planned dumps.
 
-Costs on PumpSwap: a $2 trade must gain about 3.7–4.4% just to break even; at $20 that falls to 2.2–3.0%.
+Costs on PumpSwap: a $2 trade must gain about 4.4–5.0% just to break even; at $20 that falls to 2.2–3.1%.
 
 On practice days the study picks at most one idea per type, then tests it once on days no rule saw. Fresh-launch ideas probably cannot reach the 300 trades needed by 20 Oct, so they may end "not proven".
 
 ## 1. Cost math per setup
 
-How the proof scores a trade (conservative scenario, `FILL_CONFIG` fills-2): exact CORE-2 quotes on mainnet fee configs (`packages/core/test/amm/fixtures/fee-configs.json`), at the real size; both legs' venue fees and price impact; base fee, priority fee (20,000 lamports, ladder rung 1) and the 5,000-lamport tip on each landed leg; failed attempts that land and pay (conservative: 56% land on PumpSwap, 40% on the curve, 20% of misses never reach a block); token-account rent (1,513,840 lamports) refunded only when the atomic sell-and-close lands (DECISIONS "Rent", RENT-1): 90% close success × 95% no dust = 85.5%, so 14.5% of the rent is lost on average. SOL at $119.26. Reproduce: `node --no-warnings packages/backtest/src/research/edge-costs.ts` (writes `research/edge/costs.json`; `packages/backtest/test/edge.test.ts` checks the file matches the code).
+How the outcome stage scores a trade (conservative scenario, `FILL_CONFIG` fills-2): exact CORE-2 quotes on mainnet fee configs (`research/edge/snapshot/fee-configs.json`, shared with CORE-2's tests), at the real size; both legs' venue fees and price impact; base fee, priority fee (20,000 lamports) and the 5,000-lamport tip on each landed leg; no failed entries on a filled trade; failed exit attempts on the ladder, each failing with 1 − 56% = 44% and paying base + the third rung's priority (155,000 lamports), expected 0.77 failures; token-account rent (1,513,840 lamports) refunded only when the atomic sell-and-close lands with no dust (DECISIONS "Rent", RENT-1): 90% × 95% = 85.5%, so 14.5% of the rent is lost on average, and a close that fails without dust (9.5%) pays one more failed attempt. SOL at $119.26. Reproduce: `node --no-warnings packages/backtest/src/research/edge-costs.ts` (writes `research/edge/costs.json`; `packages/backtest/test/edge.test.ts` checks the file matches the code).
 
 Not in the table, but charged by the backtest on top: the price moving against us while an order lands (6 slots at p90, and ×1.5 on any shortfall against the quote), and repeated exits getting 5% less each time (`exitRetryHaircutPpm`). These are not fixed costs; every 1% of adverse move adds 1% to the hurdle.
 
-Conservative scenario: land pump-curve 40%, pumpswap 56%; 20% of misses never land; rent back with probability 85.5%. SOL $119.26.
+Conservative scenario, PumpSwap: an exit attempt fails 44% of the time and each failure pays 155,000 lamports (0.7728 expected); rent back 85.5%; a close that fails without dust pays one more failed attempt. SOL $119.26.
 
 | Setup | Size | Fee/side | Fees+impact (both legs) | Fixed (lamports) | Fixed % | Break-even move | Break-even, no rent back |
 |---|---|---|---|---|---|---|---|
-| pump curve (fresh) | $2 | 1.25% | 2.58% | 339,507 | 2.02% | **4.60%** | 12.32% |
-| pump curve (fresh) | $5 | 1.25% | 2.74% | 339,507 | 0.81% | **3.55%** | 6.63% |
-| pump curve (fresh) | $20 | 1.25% | 3.53% | 339,507 | 0.20% | **3.74%** | 4.51% |
-| young PumpSwap (at migration, ~411 SOL cap) | $2 | 1.25% | 2.51% | 310,935 | 1.85% | **4.36%** | 12.08% |
-| young PumpSwap (at migration, ~411 SOL cap) | $5 | 1.25% | 2.56% | 310,935 | 0.74% | **3.31%** | 6.39% |
-| young PumpSwap (at migration, ~411 SOL cap) | $20 | 1.25% | 2.85% | 310,935 | 0.19% | **3.03%** | 3.80% |
-| U1 survivor ($50k quote, ~9995 SOL cap) | $2 | 0.95% | 1.89% | 310,935 | 1.85% | **3.74%** | 11.46% |
-| U1 survivor ($50k quote, ~9995 SOL cap) | $5 | 0.95% | 1.90% | 310,935 | 0.74% | **2.64%** | 5.73% |
-| U1 survivor ($50k quote, ~9995 SOL cap) | $20 | 0.95% | 1.96% | 310,935 | 0.19% | **2.15%** | 2.92% |
-| U1 survivor at the 1.15% tier (upper bound) | $2 | 1.15% | 2.28% | 310,935 | 1.85% | **4.14%** | 11.85% |
-| U1 survivor at the 1.15% tier (upper bound) | $5 | 1.15% | 2.29% | 310,935 | 0.74% | **3.03%** | 6.12% |
-| U1 survivor at the 1.15% tier (upper bound) | $20 | 1.15% | 2.35% | 310,935 | 0.19% | **2.54%** | 3.31% |
+| young PumpSwap (at migration, ~411 SOL cap) | $2 | 1.25% | 2.51% | 414,009 | 2.47% | **4.98%** | 12.69% |
+| young PumpSwap (at migration, ~411 SOL cap) | $5 | 1.25% | 2.56% | 414,009 | 0.99% | **3.55%** | 6.64% |
+| young PumpSwap (at migration, ~411 SOL cap) | $20 | 1.25% | 2.85% | 414,009 | 0.25% | **3.09%** | 3.87% |
+| U1 survivor ($50k quote, ~9995 SOL cap) | $2 | 0.95% | 1.89% | 414,009 | 2.47% | **4.36%** | 12.08% |
+| U1 survivor ($50k quote, ~9995 SOL cap) | $5 | 0.95% | 1.90% | 414,009 | 0.99% | **2.89%** | 5.98% |
+| U1 survivor ($50k quote, ~9995 SOL cap) | $20 | 0.95% | 1.96% | 414,009 | 0.25% | **2.21%** | 2.98% |
+| U1 survivor at the 1.15% tier (upper bound) | $2 | 1.15% | 2.28% | 414,009 | 2.47% | **4.75%** | 12.47% |
+| U1 survivor at the 1.15% tier (upper bound) | $5 | 1.15% | 2.29% | 414,009 | 0.99% | **3.28%** | 6.37% |
+| U1 survivor at the 1.15% tier (upper bound) | $20 | 1.15% | 2.35% | 414,009 | 0.25% | **2.60%** | 3.37% |
 
 | Setup | Size | +10/−5 | +20/−10 | +30/−15 | +50/−20 |
 |---|---|---|---|---|---|
-| curve | $2 | 64.0% | 48.7% | 43.6% | 35.1% |
-| curve | $5 | 57.0% | 45.2% | 41.2% | 33.6% |
-| curve | $20 | 58.2% | 45.8% | 41.6% | 33.9% |
-| young | $2 | 62.4% | 47.9% | 43.0% | 34.8% |
-| young | $5 | 55.4% | 44.4% | 40.7% | 33.3% |
-| young | $20 | 53.6% | 43.4% | 40.1% | 32.9% |
-| u1 | $2 | 58.3% | 45.8% | 41.7% | 33.9% |
-| u1 | $5 | 51.0% | 42.1% | 39.2% | 32.3% |
-| u1 | $20 | 47.6% | 40.5% | 38.1% | 31.6% |
-| u1-1.15 | $2 | 60.9% | 47.1% | 42.5% | 34.5% |
-| u1-1.15 | $5 | 53.6% | 43.4% | 40.1% | 32.9% |
-| u1-1.15 | $20 | 50.2% | 41.8% | 39.0% | 32.2% |
+| young | $2 | 66.5% | 49.9% | 44.4% | 35.7% |
+| young | $5 | 57.0% | 45.2% | 41.2% | 33.6% |
+| young | $20 | 54.0% | 43.6% | 40.2% | 33.0% |
+| u1 | $2 | 62.4% | 47.9% | 43.0% | 34.8% |
+| u1 | $5 | 52.6% | 43.0% | 39.8% | 32.7% |
+| u1 | $20 | 48.0% | 40.7% | 38.2% | 31.7% |
+| u1-1.15 | $2 | 65.0% | 49.2% | 43.9% | 35.4% |
+| u1-1.15 | $5 | 55.2% | 44.3% | 40.6% | 33.3% |
+| u1-1.15 | $20 | 50.7% | 42.0% | 39.1% | 32.3% |
+
+As the outcome stage scores a trade (`outcome.ts`, the same constants through `scoringTerms`); the backtest's congestion, landing-tail and ladder costs are higher. A parity test checks that the outcome stage's mean loss on a still pool equals this cost math. The pump curve is not in the table: the proof's fills land on PumpSwap only, and the curve is paper-only research (§3.1); on the curve, fees are the same 1.25% per side but landing is worse (40% conservative).
 
 The second table is the break-even win rate of a bracket exit (+W / −L gross), cost included: p = (L + c) / (W + L).
 
 What this means:
 - **Rent decides small trades.** At $2, losing the rent when the close fails (14.5% of the time) costs 1.3% of the trade on average; never getting it back would cost 9.0%. RENT-1's sell-and-close is worth more than any signal at this size.
-- **Larger trades halve the hurdle.** From $2 to $20 the U1 break-even falls from 3.74% to 2.15%, and young PumpSwap from 4.36% to 3.03%. That is information for the owner's later decision on limits; it changes nothing now.
-- **Cheaper venues.** Our transaction builders (TX-1) support only the pump curve and canonical PumpSwap pools. Non-canonical PumpSwap pools (0.30%) are refused by H5 because their liquidity can be withdrawn; Raydium and others have no builder. So **no cheaper venue is available**; U1's lower tier (0.95% at the $50k floor, falling with market cap) is the cheapest route we have.
-- **The proof's bar is higher than break-even.** §14 sizes the proof for a +5% net edge (the smallest worth trading), so a hypothesis needs roughly **break-even + 5% gross per trade**: about 8.7–9.1% on U1 and 9.4% on U2 at $2.
+- **Larger trades halve the hurdle.** From $2 to $20 the U1 break-even falls from 4.36% to 2.21%, and young PumpSwap from 4.98% to 3.09%. That is information for the owner's later decision on limits; it changes nothing now.
+- **Cheaper venues.** Our transaction builders (TX-1) support only the pump curve (paper-only) and canonical PumpSwap pools. Non-canonical PumpSwap pools (0.30%) are refused by H5 because their liquidity can be withdrawn; Raydium and others have no builder. So **no cheaper venue is available**; U1's lower tier (0.95% at the $50k floor, falling with market cap) is the cheapest route we have.
+- **The proof's bar is higher than break-even.** §14 sizes the proof for a +5% net edge (the smallest worth trading), so a hypothesis needs roughly **break-even + 5% gross per trade**: about 9.4–9.8% on U1 and 10.0% on U2 at $2.
 - **Count matters as much as edge.** The holdout is entries in [09-22, 10-20), 28 days, and needs n ≥ max(300, n_power): **at least about 11 entries a day** per universe.
 
 ## 2. Ranked hypotheses
@@ -67,7 +63,7 @@ Candidate counts are estimates, not measurements (grade D): graduations are abou
 
 | Rank | Hypothesis | Mechanism | Prior evidence | Entries a day (est.) | Needed edge ($2) | Exit | Holdout can reach 300? |
 |---|---|---|---|---|---|---|---|
-| 1 | **H1 U1 dip-reversal**: a survivor ≥ 35% below its high since migration, the last hour no longer falling, a higher low, quote vault down ≤ 10% in 60 min (it also falls on ordinary sells, not only on liquidity pulls), wash share ≤ 60% | Small, illiquid coins revert after sharp falls; a token that survived the dump window with deep liquidity has buyers who defend it | Reversal in small/illiquid coins, distance from the recent high predicts more reversal (Fičura 2023, t = −7.31 / −9.03, B); illiquid losers revert (Begušić & Kostanjčar, B); our own data: strength after migration predicts worse outcomes, weakness less bad (empirical.md Q2, own data) | 3–30 | > 3.74% to break even; ~8.7% gross to prove +5% | U1 policy exits: stop 3 × ATR(14, 5-min) and a hard stop 15% below entry, half off at +2R, flat exit 30 min, T_max 120 min | Possibly |
+| 1 | **H1 U1 dip-reversal**: a survivor ≥ 35% below its high since migration, the last hour no longer falling, a higher low, quote vault down ≤ 10% in 60 min (it also falls on ordinary sells, not only on liquidity pulls), wash share ≤ 60% | Small, illiquid coins revert after sharp falls; a token that survived the dump window with deep liquidity has buyers who defend it | Reversal in small/illiquid coins, distance from the recent high predicts more reversal (Fičura 2023, t = −7.31 / −9.03, B); illiquid losers revert (Begušić & Kostanjčar, B); our own data: strength after migration predicts worse outcomes, weakness less bad (empirical.md Q2, own data) | 3–30 | > 4.98% to break even; ~10.0% gross to prove +5% | U1 policy exits: stop 3 × ATR(14, 5-min) and a hard stop 15% below entry, half off at +2R, flat exit 30 min, T_max 120 min | Possibly |
 | 2 | **H2 U1 quiet accumulation**: net SOL inflow ≥ 1% of the reserve in 60 min from ≥ 8 buy-only wallets, wash share ≤ 40%, not chased (≤ +10% in 60 min), low turnover | Steady buying by distinct wallets without wash or chase is demand the price has not priced yet | Reversal in small coins is tied to low volume (Fičura, B); raw buyer counts are inflated by sniper rings, so only buy-only wallets count (Kamat 2607.02795, repo); no direct evidence for forward returns (gap, signals.md §9.3) | 2–20 | as H1 | as H1 | Possibly |
 | 3 | **H3 U1 range breakout** (risk.md S2; BT-2's U1 placeholder): price above its 6 h range high, 15-min volume ≥ 2× the range average, holders +5%, cap ≥ 1,470 SOL | Breakouts with volume and new holders attract followers | Momentum holds only in large, liquid coins (Liu, Tsyvinski & Wu, J. Finance 2022, B; Begušić, B); for coins this small the evidence points the other way (signals.md §9.3). Kept because the plan names it and BT-2 registered it | 1–10 | as H1 | as H1 (BT-2's structure stop: 1% below the 60-min low) | Unlikely |
 | 4 | **H4 U2 reclaim with our hard rejects** (risk.md S1; BT-2's U2 placeholder): ≥ 30% flush since migration, a higher low ≥ 5% above it, VWAP reclaimed, net flow > 0, every GATE-1 reject passed | Graduates that survive the first hour and reclaim their average price may carry real demand | MELT (A): concentration and fast launches mark dumps; our hard rejects remove them (H9 instant graduations: median −97% at +1 h vs −66%, empirical.md Q2). No study measures returns after 60 min (signals.md §9, gap) | 1–4 (DECISIONS funnel estimate, ±3×) | > 4.36% to break even; ~9.4% gross to prove +5% | U2 policy exits: stop 3 × ATR(14, 1-min), half off at +1.5R, flat exit 15 min, T_max 120 min | No (≤ 112 in 28 days) |
