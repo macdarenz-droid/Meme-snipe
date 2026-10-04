@@ -1,6 +1,7 @@
 import { type ReactNode, useEffect, useState } from 'react';
 import { type CheckResult, type DecisionRecord, type FunnelView, MODES, STALE_AFTER_SECONDS, type Mode, type PositionRecord, type RiskMeter, type StatsView, type StatusFlag, type WorkerStatus } from '../api/contract.ts';
 import { MODE_LABEL, hasSample, requiredTrades } from '../api/modes.ts';
+import { TokenActions } from '../components/TokenActions.tsx';
 import { Badge, Empty } from '../components/ui.tsx';
 import { formatDuration, shortAddress } from '../lib/format.ts';
 import { formatPrice4, formatPriceDec, formatR, formatReturn, formatShare, formatUsdExact, returnHundredths, toMicro, toneOf, toneOfReturn } from '../lib/money.ts';
@@ -248,6 +249,7 @@ export function Journal({ decisions, onOpen }: { decisions: DecisionRecord[]; on
             </span>
             <span className="mono muted small">{melDateTime(d.at)}</span>
           </button>
+          <TokenActions mint={d.mint} />
         </li>
       ))}
     </ul>
@@ -293,7 +295,7 @@ export function DecisionDetail({ decision }: { decision: DecisionRecord }) {
         <div>
           <dt>Token</dt>
           <dd>
-            <strong>{decision.symbol}</strong> <span className="mono muted">{shortAddress(decision.mint)}</span>
+            <strong>{decision.symbol}</strong> <span className="mono muted">{shortAddress(decision.mint)}</span> <TokenActions mint={decision.mint} />
           </dd>
         </div>
         <div>
@@ -366,7 +368,7 @@ export function OpenPosition({ position, now: fixed }: { position: PositionRecor
   const pnl = position.pnlUsd ?? null;
   const ret = pnl === null ? null : returnHundredths(pnl, position.sizeUsd);
   const rows: [string, ReactNode, string?][] = [
-    ['Token', <><strong>{position.symbol}</strong> <span className="mono muted">{shortAddress(position.mint)}</span></>],
+    ['Token', <><strong>{position.symbol}</strong> <span className="mono muted">{shortAddress(position.mint)}</span> <TokenActions mint={position.mint} /></>],
     ['Venue', VENUE_LABEL[position.venue]],
     ['Opened', <span className="mono">{melDateTime(position.openedAt)}</span>],
     ['Running', formatDuration(runningSeconds(position.openedAt, now)), 'num'],

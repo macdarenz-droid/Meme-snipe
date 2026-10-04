@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from 'react';
 import type { Fill, TradeRecord } from '../api/contract.ts';
+import { TokenActions } from '../components/TokenActions.tsx';
 import { Empty } from '../components/ui.tsx';
 import { formatDuration, shortAddress } from '../lib/format.ts';
 import { formatPriceDec, formatR, formatReturn, formatUsdExact, negUsd, returnHundredths, toneOf, toneOfReturn } from '../lib/money.ts';
@@ -48,6 +49,7 @@ export function TradeTable<T extends TradeRow>({ trades, onSelect }: { trades: T
                       <span className="mono muted">{shortAddress(t.mint)}</span>
                     </span>
                   )}
+                  <TokenActions mint={t.mint} />
                 </td>
                 <td className={`num ${toneOf(t.netUsd)}`}>{formatUsdExact(t.netUsd, true)}</td>
                 <td className={`num ${toneOfReturn(returnHundredths(t.netUsd, t.sizeUsd))}`}>{formatReturn(returnHundredths(t.netUsd, t.sizeUsd))}</td>
@@ -127,7 +129,7 @@ export function TradeDetail({ trade }: { trade: TradeRecord }) {
     <div className="detail">
       <Rows
         rows={[
-          ['Token', <><strong>{trade.symbol}</strong> <span className="mono muted">{shortAddress(trade.mint)}</span></>],
+          ['Token', <><strong>{trade.symbol}</strong> <span className="mono muted">{shortAddress(trade.mint)}</span> <TokenActions mint={trade.mint} /></>],
           ['Venue', `${VENUE_LABEL[trade.venue]} · ${trade.universe}`],
           ['Strategy', <span className="mono">{trade.strategyVersion}</span>],
           ['Policy', <span className="mono">{trade.policyVersion}</span>],

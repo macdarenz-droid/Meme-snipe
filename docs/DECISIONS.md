@@ -1448,6 +1448,19 @@ Built to the supervisor's revised spec and the consensus rulings that followed i
 - **2026-10-05 · Discovered.**
   - "Volume 24h" and "Holders" are removed. The worker has no 24-hour volume for tokens minutes old, and its holder read is the largest accounts, not a count. A column that is always "—" says nothing.
   - Liquidity was "—" until the pool's first swap was seen. It came from `poolOf`, which also needs the pool's fee terms (from a fees fact or the latest swap). It now reads only the reserves (`reservesOf`). The owner's 1m19s token fits this cause; the phone's data can't be replayed, so that is not proven.
+- **2026-10-05 · Copy address and Open in Pump.fun** (`components/TokenActions.tsx`). They show on Home's Discovered rows, the open trade, the trades list and detail, and the journal rows and detail.
+  - Copy writes the full mint. It uses the Clipboard API, else the copy command on a hidden field. It says "Copied" only when one of them reports success, else "Copy failed".
+  - The Pump.fun link is `https://pump.fun/coin/<mint>`, built only when the mint passes the API's `MINT_RE` (base58, 32–44 characters). A malformed mint shows no buttons.
+  - Clicks stop at the buttons, and the buttons sit beside a row's own button, never inside it.
+  - No plugin was added. Capacitor's Android webview already hands any navigation off the app's own host to the phone (the browser, or the Pump.fun app if it claims the link), as with the Solscan links.
+  - On-phone behaviour (the clipboard in the webview and the hand-off) needs a real-device check.
 - **2026-10-05 · Evidence.**
-  - `apps/web/test/app-trade.test.ts` and `packages/worker/test/app-trade-api.test.ts`: 15 tests, all failing before.
-  - Hand mutants, all caught: Return on gross; Running from the mark's time; Running from the phone's clock; P&L without fees; P&L without exit proceeds; Return truncated; stale at exactly 15 s; Discovered back on `poolOf`; the mark at the entry price; losses rounded toward zero.
+  - `apps/web/test/app-trade.test.ts` and `packages/worker/test/app-trade-api.test.ts`: 19 tests, all failing before.
+  - Hand mutants, all caught:
+    - Return on gross; Return truncated.
+    - Running from the mark's time; Running from the phone's clock.
+    - P&L without fees; P&L without exit proceeds; losses rounded toward zero.
+    - Stale at exactly 15 s; the mark at the entry price.
+    - Discovered back on `poolOf`.
+    - The link without the mint check; copying the short address; a false "Copied" (twice: the click and the copy-command fallback).
+    - The copy or link click reaching the row; the journal without the buttons.

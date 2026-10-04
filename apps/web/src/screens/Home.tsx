@@ -4,6 +4,7 @@ import { connection, useConnection } from '../api/connection.ts';
 import type { DashboardApi, DiscoveredView } from '../api/contract.ts';
 import { schemaFor } from '../api/schemas.ts';
 import { useEndpoint, type Loaded } from '../api/useEndpoint.ts';
+import { TokenActions } from '../components/TokenActions.tsx';
 import { Empty, Section } from '../components/ui.tsx';
 import { Load, OfflineContext } from '../dashboard/State.tsx';
 import { formatDuration, formatUsd, shortAddress } from '../lib/format.ts';
@@ -47,6 +48,7 @@ export function TokenTable({ rows }: { rows: TokenRowView[] }) {
                   {r.symbol !== null && <span className="token-symbol">{r.symbol}</span>}
                   <span className="mono muted">{shortAddress(r.mint)}</span>
                   {r.promoted && <span className="badge badge-neutral">Promoted</span>}
+                  <TokenActions mint={r.mint} />
                 </span>
               </td>
               <td className="num">{formatDuration(r.ageSeconds)}</td>

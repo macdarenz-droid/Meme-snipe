@@ -10,7 +10,9 @@ import { arr, bool, day, dec, fail, int, iso, modeIs, nullable, obj, oneOf, opti
 
 export type Endpoint = 'status' | 'funnel' | 'decisions' | 'position' | 'calendar' | 'trades' | 'charts' | 'stats' | 'discovered';
 
-const MINT = re(/^[1-9A-HJ-NP-Za-km-z]{32,44}$/, 'a base58 address');
+/** A token mint as the worker serves it: base58, 32 to 44 characters. TokenActions builds links only from a mint that passes it. */
+export const MINT_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+const MINT = re(MINT_RE, 'a base58 address');
 const SIGNATURE = re(/^[1-9A-HJ-NP-Za-km-z]{64,88}$/, 'a base58 signature');
 const MONTH = re(/^\d{4}-(0[1-9]|1[0-2])$/, 'a YYYY-MM month');
 const VENUE = oneOf('pump-curve', 'pumpswap');

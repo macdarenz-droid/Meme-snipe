@@ -4,7 +4,7 @@
 import { readFileSync } from 'node:fs';
 import { createElement as h } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { PositionRecord } from '../src/api/contract.ts';
 import { schemaFor } from '../src/api/schemas.ts';
 import { settle } from '../src/api/useEndpoint.ts';
@@ -13,6 +13,9 @@ import { OpenPosition, RUNNING_TICK_MS, markStale, runningSeconds } from '../src
 import { TradeDetail, TradeTable } from '../src/dashboard/Trades.tsx';
 import { formatPrice4, formatReturn, returnHundredths, toneOfReturn } from '../src/lib/money.ts';
 import { TokenTable } from '../src/screens/Home.tsx';
+import { TokenActions, copyClick, copyText, pumpFunUrl, stopRow } from '../src/components/TokenActions.tsx';
+import { fixtureDecisions } from '../src/dev/dashboardFixtures.ts';
+import { DecisionDetail, Journal } from '../src/dashboard/Sections.tsx';
 import { findBanned } from './banned-copy.ts';
 
 const text = (s: string) => s.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
@@ -131,5 +134,80 @@ describe('Home Discovered (APP-TRADE 5)', () => {
     expect(html).not.toMatch(/Volume 24h|Holders/);
     const src = readFileSync(new URL('../src/screens/Home.tsx', import.meta.url), 'utf8');
     expect(src).not.toMatch(/volume24hUsd|holders|topHolderShare/);
+  });
+});
+
+describe('copy address and open in Pump.fun (APP-TRADE 6)', () => {
+  const MINT = 'So11111111111111111111111111111111111111112';
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('the Pump.fun link is built only from a mint that passes the mint check; anything else gets no button', () => {
+    expect(pumpFunUrl(MINT)).toBe(`https://pump.fun/coin/${MINT}`);
+    for (const bad of ['', 'abc', `${MINT}0`, 'So1111111111111111111111111111111O', 'So11111111111111111111111111111111111111l12', `${MINT.slice(0, 40)}/x`, 'javascript:alert(1)', `https://evil.example/${MINT}`, ` ${MINT}`, 'x'.repeat(45)]) {
+      expect(pumpFunUrl(bad), bad).toBeNull();
+      expect(renderToStaticMarkup(h(TokenActions, { mint: bad })), bad).toBe('');
+    }
+    const html = renderToStaticMarkup(h(TokenActions, { mint: MINT }));
+    expect(html).toContain(`href="https://pump.fun/coin/${MINT}"`);
+    expect(html).toContain('target="_blank"');
+    expect(html).toContain('rel="noopener noreferrer"');
+    expect(html).toContain('aria-label="Copy address"');
+    expect(html).toContain('aria-label="Open in Pump.fun"');
+    expect((html.match(/class="icon-button token-action"/g) ?? []).length).toBe(2);
+  });
+
+  it('copy writes the full mint, says "Copied" only on success and "Copy failed" otherwise, and never reaches the row', async () => {
+    const wrote: string[] = [];
+    const results: boolean[] = [];
+    let stopped = 0;
+    const ev = { stopPropagation: () => void stopped++ };
+    await copyClick(MINT, async (t) => (wrote.push(t), true), (ok) => results.push(ok))(ev);
+    await copyClick(MINT, async () => false, (ok) => results.push(ok))(ev);
+    expect(wrote).toEqual([MINT]);
+    expect(results).toEqual([true, false]);
+    stopRow(ev);
+    expect(stopped).toBe(3);
+  });
+
+  it('copyText: the Clipboard API, else the copy command; false when both fail', async () => {
+    const written: string[] = [];
+    vi.stubGlobal('navigator', { clipboard: { writeText: async (t: string) => void written.push(t) } });
+    expect(await copyText(MINT)).toBe(true);
+    expect(written).toEqual([MINT]);
+    // Blocked API (a webview): the copy command on a hidden field with the full mint.
+    vi.stubGlobal('navigator', { clipboard: { writeText: async () => { throw new Error('blocked'); } } });
+    const fields: { value: string }[] = [];
+    const doc = (ok: boolean) => ({
+      createElement: () => { const f = { value: '', style: {}, setAttribute() {}, select() {}, remove() {} }; fields.push(f); return f; },
+      body: { appendChild() {} },
+      execCommand: (c: string) => c === 'copy' && ok,
+    }) as unknown as Document;
+    expect(await copyText(MINT, doc(true))).toBe(true);
+    expect(fields.at(-1)!.value).toBe(MINT);
+    expect(await copyText(MINT, doc(false))).toBe(false);
+    vi.stubGlobal('navigator', {});
+    expect(await copyText(MINT, { createElement: () => { throw new Error('no document'); } } as unknown as Document)).toBe(false);
+  });
+
+  it('every place a token shows has both buttons, outside any row button (no row-tap conflict)', () => {
+    const mint = fixturePosition.mint;
+    const places: [string, string][] = [
+      ['open trade', card(base)],
+      ['trades list', renderToStaticMarkup(h(TradeTable, { trades: [fixtureTrades.paper[0]!], onSelect: () => undefined }))],
+      ['trade detail', renderToStaticMarkup(h(TradeDetail, { trade: fixtureTrades.paper[0]! }))],
+      ['journal', renderToStaticMarkup(h(Journal, { decisions: fixtureDecisions('paper').slice(0, 1), onOpen: () => undefined }))],
+      ['decision detail', renderToStaticMarkup(h(DecisionDetail, { decision: fixtureDecisions('paper')[0]! }))],
+      ['home', renderToStaticMarkup(h(TokenTable, { rows: [{ mint, symbol: 'X', ageSeconds: 1, venue: 'PumpSwap', liquidityUsd: null, security: 'passed', promoted: false, dataAgeSeconds: null }] }))],
+    ];
+    for (const [where, html] of places) {
+      expect(html, where).toContain('aria-label="Copy address"');
+      expect(html, where).toContain('aria-label="Open in Pump.fun"');
+      // No button or link inside another button: every token-actions block starts after any open row button closed.
+      for (const at of [...html.matchAll(/<span class="token-actions">/g)].map((m) => m.index!)) {
+        const before = html.slice(0, at);
+        expect((before.match(/<button/g) ?? []).length, where).toBe((before.match(/<\/button>/g) ?? []).length);
+      }
+      expect(findBanned(text(html)), where).toEqual([]);
+    }
   });
 });
