@@ -11,7 +11,8 @@ import { shortAddress } from '../src/lib/format.ts';
 import { DiscoveredBody } from '../src/screens/Home.tsx';
 import { SessionCard } from '../src/screens/Snipe.tsx';
 import { sessionView, shellSession } from '../src/shell/Status.tsx';
-import { checksOf, route } from '../../../packages/worker/src/run/api.ts';
+import { type ApiInputs, type DiscoveredInput, checksOf, route } from '../../../packages/worker/src/run/api.ts';
+import { PATHS } from '../src/api/contract.ts';
 import { MINT, makeWorker, passingMarket } from '../../../packages/worker/test/worker-harness.ts';
 
 const text = (s: string) => s.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
@@ -45,6 +46,39 @@ describe('the app against the real worker (APP-HOME)', () => {
       expect(settle(mode, schemaFor('discovered', mode), { ok: true, value: await api.discovered(mode) }, now)).toEqual({ state: 'not-running' });
       expect(shellSession(settle(mode, schemaFor('status', mode), { ok: true, value: await api.status(mode) }, now), { state: 'online' }).label).toBe('Not running');
     }
+    await w.worker.stop();
+  });
+
+  it('the served values DECISIONS promises (review B1): liquidity, order, the cap, the weekly limit and the session state', async () => {
+    const w = makeWorker();
+    await w.worker.reconcile();
+    const base = w.worker.apiInputs();
+    // Distinct base58 mints: each digit of the index as a letter.
+    const MINTS = Array.from({ length: 201 }, (_, i) => `Mint${[...String(i).padStart(3, '0')].map((d) => 'ABCDEFGHJK'[Number(d)]).join('')}${'x'.repeat(36)}`);
+    const cand = (i: number, extra: Partial<DiscoveredInput> = {}): DiscoveredInput => ({ mint: MINTS[i]!, symbol: null, migratedAtMs: 1_000 * (i + 1), lastEvalMs: null, gates: null, quoteReserve: null, ...extra });
+    const served = (over: Partial<ApiInputs>, path = PATHS.discovered('paper')) => (route(path, () => ({ ...base, ...over })).body as { data: never }).data;
+    // U6: both sides of the pool at the SOL price: 2 x 50 SOL at $150 = $15,000.
+    const one = served({ solPrice: 150_000_000n as never, discovered: [cand(0, { quoteReserve: 50_000_000_000n })] }) as { tokens: { liquidityUsd: string | null }[] };
+    expect(one.tokens[0]!.liquidityUsd).toBe('15000');
+    expect((served({ solPrice: null, discovered: [cand(0, { quoteReserve: 50_000_000_000n })] }) as typeof one).tokens[0]!.liquidityUsd).toBeNull();
+    // U7: newest migration first.
+    const two = served({ discovered: [cand(0), cand(1)] }) as { tokens: { mint: string }[] };
+    expect(two.tokens.map((t) => t.mint)).toEqual([MINTS[1], MINTS[0]]);
+    // U10: 201 candidates give 200, the newest kept.
+    const many = served({ discovered: MINTS.map((_, i) => cand(i)) }) as { tokens: { mint: string }[] };
+    expect(many.tokens).toHaveLength(200);
+    expect(many.tokens[0]!.mint).toBe(MINTS[200]);
+    expect(many.tokens.map((t) => t.mint)).not.toContain(MINTS[0]);
+    // U8: the trial policy's weekly limit, bankroll x weeklyBps / 10,000, apart from the daily one.
+    const status = (over: Partial<ApiInputs>) => (served(over, PATHS.status('paper')) as { session: { state: string; dailyLossLimitUsd: string; weeklyLossLimitUsd: string } }).session;
+    const p = base.policy;
+    expect(status({}).weeklyLossLimitUsd).toBe(String((Number(p.capital.bankroll) * p.loss.weeklyBps) / 10_000 / 1e6));
+    expect(status({}).weeklyLossLimitUsd).not.toBe(status({}).dailyLossLimitUsd);
+    // U9: paused when the owner paused; ended with a session-ended halt; running otherwise.
+    const fresh = { atMs: base.nowMs, codes: [] as string[] };
+    expect(status({ stops: fresh }).state).toBe('running');
+    expect(status({ stops: fresh, paused: true }).state).toBe('paused');
+    expect(status({ stops: { atMs: base.nowMs, codes: ['session_not_running'] } }).state).toBe('ended');
     await w.worker.stop();
   });
 

@@ -70,16 +70,26 @@ describe('Snipe: Session card', () => {
     expect(t).toContain('Open positions 1');
     expect(t).toContain('Daily loss $1.00');
     expect(t).toContain('Weekly loss $3.00');
-    expect(t).toContain('Session loss Not set');
+    // A limit the policy does not have reads "None" (review N2).
+    expect(t).toContain('Session loss None');
+    expect(t).not.toContain('Not set');
     expect(t).not.toMatch(/Start paper session|Worker not connected|Not started/);
     expect(findBanned(t)).toEqual([]);
   });
 
-  it('paused and ended read as such; a worker that accepts a start, and is not running, gets the button', () => {
+  it('paused and ended read as such; the start button needs a worker that accepts a start and a start to send', () => {
     expect(card(ready({ ...running, flags: ['paused'], session: { ...session, state: 'paused' } }))).toContain('Session Paused');
-    const startable = card(ready({ ...running, haltReasons: [{ mode: 'paper', code: 'session-ended', source: null }], session: { ...session, state: 'ended', startable: true } }));
-    expect(startable).toContain('Session Ended');
-    expect(startable).toContain('Start paper session');
+    const ended = ready({ ...running, haltReasons: [{ mode: 'paper', code: 'session-ended', source: null }], session: { ...session, state: 'ended', startable: true } });
+    expect(card(ended)).toContain('Session Ended');
+    // Review N1: startable but no start handler, so no dead button.
+    expect(card(ended)).not.toContain('Start paper session');
+    const withStart = text(renderToStaticMarkup(h(SessionCard, { session: sessionView(ended), label: 'Ended', onStart: () => undefined })));
+    expect(withStart).toContain('Start paper session');
+    // A handler alone is not enough: the worker must accept a start, and a running session never shows it.
+    const notStartable = ready({ ...running, session: { ...session, state: 'ended' } });
+    expect(text(renderToStaticMarkup(h(SessionCard, { session: sessionView(notStartable), label: 'Ended', onStart: () => undefined })))).not.toContain('Start paper session');
+    const runningStartable = ready({ ...running, session: { ...session, startable: true } });
+    expect(text(renderToStaticMarkup(h(SessionCard, { session: sessionView(runningStartable), label: 'Running', onStart: () => undefined })))).not.toContain('Start paper session');
   });
 
   it('no status: the reason, values "Not set", and no start button', () => {

@@ -13,10 +13,13 @@ import { ServerCard } from './Server.tsx';
 import { EMPTY_SESSION, type SessionView } from './types.ts';
 
 const NOT_SET = 'Not set';
+/** A limit the worker's policy does not have (review N2): "None", never "Not set", which reads as missing setup. */
+const NONE = 'None';
 
-const usd = (v: number | null) => (v === null ? NOT_SET : formatUsd(v));
-
-export function SessionCard({ session, label = sessionLabel(session) }: { session: SessionView; label?: string }) {
+export function SessionCard({ session, label = sessionLabel(session), onStart }: { session: SessionView; label?: string; onStart?: () => void }) {
+  // A served session states every limit; one it leaves null is a limit its policy does not have. Without one, a value
+  // is expected but missing.
+  const usd = (v: number | null) => (v !== null ? formatUsd(v) : session.workerConnected ? NONE : NOT_SET);
   const rows: [string, string][] = [
     ['Mode', session.mode === 'live' ? 'Live' : 'Paper'],
     ['Bankroll', usd(session.bankrollUsd)],
@@ -32,14 +35,14 @@ export function SessionCard({ session, label = sessionLabel(session) }: { sessio
         {rows.map(([k, v]) => (
           <div key={k}>
             <dt>{k}</dt>
-            <dd className={`num ${v === NOT_SET ? 'muted' : ''}`}>{v}</dd>
+            <dd className={`num ${v === NOT_SET || v === NONE ? 'muted' : ''}`}>{v}</dd>
           </div>
         ))}
       </dl>
-      {/* Only a worker that accepts a start from the app gets the button; one that runs its own session never does (APP-HOME). */}
-      {session.startable && session.state !== 'running' && (
+      {/* Only a worker that accepts a start from the app, with a start the app can send, gets the button: never a dead one (APP-HOME). */}
+      {session.startable && onStart !== undefined && session.state !== 'running' && (
         <div className="actions">
-          <button type="button" className="button button-primary">
+          <button type="button" className="button button-primary" onClick={onStart}>
             Start paper session
           </button>
         </div>
