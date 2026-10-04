@@ -7,10 +7,10 @@
 // `open_intents` → seed the deployer index (SEED-1's hook) → start the live sources → trade. Nothing enters before the
 // reconcile line; a reconcile that cannot settle every intent exits 3.
 import { randomBytes } from 'node:crypto';
-import { copyFileSync, existsSync, mkdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { journalLines, placeBookingsAt } from './booked.ts';
 import type { Server } from 'node:http';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import type { PolicySession, RugConfig } from '../../../core/src/config/index.ts';
 import { compareEvents, compareMoments, Engine, type LogRecord, type MarketEvent, type Moment, OFF_CHAIN } from '../../../core/src/engine/index.ts';
 import { Ledger, openLedger } from '../../../core/src/ledger/index.ts';
@@ -29,7 +29,7 @@ import { PositionWatch, type WatchRead } from './watch.ts';
 import { DEFAULT_LIVE_FEED, type Frame, type HttpClient, LiveFeed, type Release, seqId } from '../providers/index.ts';
 import type { Timers } from '../scheduler/timers.ts';
 import { PaperAccount, type PaperLegs, accountFile } from './account.ts';
-import { HealthMonitor, entryOrigin, healthDisplay, strategyHealthFile } from './strategy-health.ts';
+import { HEALTH_OFF, HealthMonitor, entryOrigin, healthDisplay, strategyHealthFile } from './strategy-health.ts';
 import { HEALTH_DEFAULTS } from '../../../core/src/strategy-health/index.ts';
 import type { WorkerConfig } from './config.ts';
 import { Desk, FILL_RATE_UNKNOWN, journaledFillKeys, lineRate, lineReasons, openIntents } from './desk.ts';
@@ -267,8 +267,10 @@ export class Worker {
   readonly #seedsFile: ReturnType<typeof seedsFile>;
   #savedSeeds = '';
   readonly #account: PaperAccount;
-  readonly #health: HealthMonitor;
+  readonly #health: HealthMonitor | null;
   #healthOff = false;
+  /** Why the monitor could not start (an unreadable health.json, moved aside), journaled after the start line. */
+  #healthStartError: string | null = null;
   readonly #feed: LiveFeed;
   readonly #facts: EngineFeed;
   readonly #strategy: LiveStrategy;
@@ -387,10 +389,28 @@ export class Worker {
     this.#account = new PaperAccount(accountFile(c.stateDir), d.session.policy.capital.bankroll, now, d.strategy.rent.oneTime);
     // Strategy health, observation only (STRATEGY-HEALTH-OBS): no strategy is registered yet, so every lineage reports
     // "unregistered"; nothing in entries, exits or risk reads it.
-    this.#health = new HealthMonitor(strategyHealthFile(c.stateDir), { ...HEALTH_DEFAULTS, registered: [] }, (i) => {
-      const o = entryOrigin(i);
-      return { lineageId: o.universe, strategyVersionHash: o.version, universe: o.universe, venue: i.intent.venue, policyHash: d.session.versionHash, executionModelHash: `paper:${d.strategy.version}`, mode: 'paper' };
-    });
+    // A health.json that cannot be read (a torn write, a schema change) never stops the start: the monitor is off for
+    // this run, the file is moved aside for inspection (never overwritten), and one line says so (risk review of #200).
+    const healthFile = strategyHealthFile(c.stateDir);
+    let health: HealthMonitor | null = null;
+    try {
+      health = new HealthMonitor(healthFile, { ...HEALTH_DEFAULTS, registered: [] }, (i) => {
+        const o = entryOrigin(i);
+        return { lineageId: o.universe, strategyVersionHash: o.version, universe: o.universe, venue: i.intent.venue, policyHash: d.session.versionHash, executionModelHash: `paper:${d.strategy.version}`, mode: 'paper' };
+      });
+    } catch (e) {
+      // No monitor (null) is the monitor off for this run.
+      const aside = `${healthFile.path}.unreadable-${now}`;
+      let moved = '';
+      try {
+        renameSync(healthFile.path, aside);
+        moved = `; moved aside to ${basename(aside)}`;
+      } catch {
+        moved = '; could not be moved aside';
+      }
+      this.#healthStartError = `${e instanceof Error ? e.message : 'error'}${moved}`;
+    }
+    this.#health = health;
 
     this.#feed = new LiveFeed({
       ...DEFAULT_LIVE_FEED,
@@ -423,6 +443,7 @@ export class Worker {
       sell_only: [...this.#sellOnly],
     });
     if (this.#journal.repaired) this.#journal.write('journal_repair', { detail: 'torn last line removed' });
+    if (this.#healthStartError !== null) this.#journal.write('strategy_health', { display: HEALTH_OFF, reasons: [this.#healthStartError] });
     if (this.#sellOnly.length > 0) {
       this.#journal.write('halt', { reasons: ['sell-only: no new entries; the positions below are flattened', ...this.#sellOnly] });
       d.log(`ALERT ${this.#sellOnly.join('; ')}`);
@@ -861,14 +882,14 @@ export class Worker {
   /** Episodes that became final, observed and journaled beside the decisions; read by nothing (STRATEGY-HEALTH-OBS). */
   #observeHealth(): void {
     // Observation must never stop trading: a failure turns the monitor off for this process, said once in the journal.
-    if (this.#healthOff) return;
+    if (this.#healthOff || this.#health === null) return;
     try {
       for (const o of this.#health.update(this.#desk.book, this.#legs(), this.#account.state.trades)) {
         this.#journal.write('strategy_health', { observation: o.kind, lineage: o.lineage, episode: o.episodeId, z: o.z, s: o.s, from: o.from, to: o.to, ...(o.previous === undefined ? {} : { previous: o.previous, recomputed: true }), display: healthDisplay(o.to) });
       }
     } catch (e) {
       this.#healthOff = true;
-      this.#journal.write('strategy_health', { display: 'health: off for this run (observed only; entries not stopped)', reasons: [e instanceof Error ? e.message : 'error'] });
+      this.#journal.write('strategy_health', { display: HEALTH_OFF, reasons: [e instanceof Error ? e.message : 'error'] });
     }
   }
 

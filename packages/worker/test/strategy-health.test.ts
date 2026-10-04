@@ -1,7 +1,7 @@
 // STRATEGY-HEALTH-OBS step 3 in the worker: observation only. An episode is observed once it is final, journaled as a
 // `strategy_health` line marked "observed; entries not stopped", saved so a restart neither repeats nor loses it, and the
 // worker's other journal lines are byte-identical with the monitor on or off.
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { FILL_CONFIG } from '../../core/src/config/index.ts';
@@ -53,6 +53,24 @@ describe('strategy health in the worker (observation only)', () => {
     expect(FILL_CONFIG.network.tokenAccountRent).toBeGreaterThan(0n);
     await h.worker.stop();
   });
+
+  for (const [what, text] of [['torn', '{"lastSeq":3,"open":{'], ['another shape', '{"version":2,"episodes":[]}']] as const) {
+    it(`an unreadable health.json (${what}) never stops the worker: it boots, trades and exits, with the monitor off (risk review of #200)`, async () => {
+      const dir = tempState();
+      writeFileSync(join(dir, 'health.json'), text);
+      const h = makeWorker({ stateDir: dir, scenario });
+      await roundTrip(h);
+      // One line says the monitor is off, with the reason; no observation is made in this run.
+      expect(healthLines(dir)).toEqual([expect.objectContaining({ display: 'health: off for this run (observed only; entries not stopped)', reasons: [expect.stringMatching(/moved aside to health\.json\.unreadable-\d+$/)] })]);
+      // The bad file is kept for inspection, not overwritten, and no new state is written in this run.
+      const aside = readdirSync(dir).filter((f) => f.startsWith('health.json.unreadable-'));
+      expect(aside).toHaveLength(1);
+      expect(readFileSync(join(dir, aside[0]!), 'utf8')).toBe(text);
+      expect(existsSync(join(dir, 'health.json'))).toBe(false);
+      expect(Object.values(h.worker.book.positions).some((p) => p.status === 'closed')).toBe(true);
+      await h.worker.stop();
+    });
+  }
 
   it('a restart neither repeats nor loses an observation', async () => {
     const h = makeWorker({ scenario });

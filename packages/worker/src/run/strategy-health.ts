@@ -22,6 +22,9 @@ export const strategyHealthFile = (dir: string) =>
  */
 export const healthDisplay = (status: HealthObservation['to']): string => `health: ${status} (observed; entries not stopped)`;
 
+/** The one line said when the monitor is off for a run (it failed, or its saved state could not be read). */
+export const HEALTH_OFF = 'health: off for this run (observed only; entries not stopped)';
+
 /** The universe and strategy version of an entry, from its key `entry:<mint>:<universe>.<version>.<n>`. */
 export const entryOrigin = (i: IntentState): { readonly universe: string; readonly version: string } => {
   const local = String(i.intent.key).split(':').slice(2).join(':');
