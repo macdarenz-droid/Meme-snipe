@@ -28,7 +28,7 @@ import {
   atr, checkStopDistance, decideExit, execPrice, liquidationValue, exitAttemptsOf, exitBookEvents, exitSettings, newTracker, noteAttempt,
 } from '../../../core/src/exits/index.ts';
 import {
-  type Coverage, type DeployerIndexState, type GateContext, type RugLabellerState, type S0DiagnosticPart, DeployerIndex, LOG_CREATE_PREFIX, RugLabeller, TX_CREATE_PREFIX, createKey, createsCoverage, evaluateHardRejects, evaluateRegime, migrationKey, parseCreate, parseMigration, parsePool, poolKey, pruneCoverage,
+  type Coverage, type DeployerIndexState, type GateContext, type GateDeps, type GateRequest, type HardGate, type HardResult, type RugLabellerState, type S0DiagnosticPart, DeployerIndex, gatesOfStages, HARD_GATES, LOG_CREATE_PREFIX, RugLabeller, TX_CREATE_PREFIX, createKey, createsCoverage, evaluateHardRejects, evaluateRegime, migrationKey, parseCreate, parseMigration, parsePool, poolKey, pruneCoverage,
 } from '../../../core/src/gates/index.ts';
 import { type BookEvent, type IntentState, isTerminal } from '../../../core/src/lifecycle/index.ts';
 import { type AccountHistory, type Latches, type Timed, evaluateEntry, evaluateExit } from '../../../core/src/risk/index.ts';
@@ -131,6 +131,33 @@ export const parseSnapshotFact = (v: unknown): SnapshotFact | null => {
 };
 /** Machine-read reason on `approve_risk`: the reservation request the worker sends to the ledger. */
 export const RESERVE_PREFIX = 'reserve ';
+/**
+ * FACTS-1f: the hard rejects in BT-2's stages (GATE-2), so live and the backtest name the same reasons for the same
+ * facts (G3 compares the reject mix): stage 1 (stream-derived), then stage 2 (account reads, cross-checks), then
+ * stages 3 and 4 (holder scan and funders, simulation). Inside a stage every gate is evaluated; the first stage group
+ * with a reject ends the evaluation, and the gates after it are listed as not evaluated, never as passed or failed.
+ */
+export const HARD_STAGE_GROUPS: readonly (readonly HardGate[])[] = [gatesOfStages([1]), gatesOfStages([2]), gatesOfStages([3, 4])];
+/** The part of a reject's reason naming the gates a staged evaluation did not reach (the same words as BT-2's log). */
+export const NOT_EVALUATED = 'not evaluated: ';
+
+export const stagedHardRejects = (gctx: GateContext, deps: GateDeps, req: GateRequest): { readonly hard: HardResult; readonly notEvaluated: readonly HardGate[] } => {
+  let hard: HardResult | null = null;
+  for (let k = 0; k < HARD_STAGE_GROUPS.length; k++) {
+    // Every gate of the stage, as BT-2's study evaluates them (its calibration log), not only the first reject.
+    const r = evaluateHardRejects(gctx, deps, req, { stopAtFirst: false, only: HARD_STAGE_GROUPS[k]! });
+    hard = hard === null ? r : {
+      ...r, pass: hard.pass && r.pass, evaluated: [...hard.evaluated, ...r.evaluated], passed: [...hard.passed, ...r.passed],
+      failed: [...hard.failed, ...r.failed], reasons: [...hard.reasons, ...r.reasons], notes: [...hard.notes, ...r.notes],
+    };
+    if (!hard.pass) return { hard: { ...hard, complete: false }, notEvaluated: HARD_STAGE_GROUPS.slice(k + 1).flat() };
+  }
+  const done = hard!;
+  return { hard: { ...done, complete: HARD_GATES.every((g) => done.evaluated.includes(g)) }, notEvaluated: [] };
+};
+
+/** GATE-2's entry rule (supervisor ruling): every hard gate evaluated and none with a reason; a staged pass alone only clears the gates it ran. */
+export const hardAllowsEntry = (hard: HardResult): boolean => hard.complete && hard.reasons.length === 0;
 /** REC-1: a rejected candidate's pool not watched past its window because `maxTails` were already watched. */
 export const NO_TAIL = 'no tail';
 
@@ -170,6 +197,10 @@ export interface SavedExit {
 
 export interface RestoreFact {
   readonly exits: Readonly<Record<string, SavedExit>>;
+  /** Each position's entry fill moment as the ledger booked it (its first `open` event), by position (EXIT-1f). */
+  readonly openedAt?: Readonly<Record<string, number>>;
+  /** Where each booking sits against the boots (`live`, `reconcile`, or `unplaced: why`), from the journal (EXIT-1f N2). */
+  readonly bookedWhen?: Readonly<Record<string, string>>;
 }
 
 /** Strategy settings that are not owner limits. The trading rules stay provisional until BT-2 registers U2's. */
@@ -194,6 +225,12 @@ export interface StrategyConfig {
   /** A candidate is evaluated at most once per this many ms. */
   readonly evaluateEveryMs: number;
   /** Width of the price bars kept per mint (the policy's ATR bar). */
+  /**
+   * An upper bound on mainnet's mean slot time, used only to date a fill the strategy did not see (a restart whose saved
+   * plan is missing or refused) from its slot: the larger the bound, the earlier the open time, so a restart can never
+   * extend a time stop (EXIT-1f).
+   */
+  readonly maxSlotMs: number;
   readonly barMs: number;
   /** Bars kept per mint. */
   readonly keepBars: number;
@@ -290,6 +327,17 @@ export const sellOnlyReason = (pid: string, universe: string | null, universes: 
 const NO_QUOTE = 'no quote: ';
 
 /** A saved entry plan the exit rules can run on: every amount a bigint, the open time a number (EXIT-1e). */
+/** A saved exit tracker the exit rules can run on: every field of its type (EXIT-1f). */
+const runnableTracker = (t: Record<string, unknown>): boolean => {
+  const big = (k: string, nullable: boolean) => typeof t[k] === 'bigint' || (nullable && t[k] === null);
+  const num = (k: string, nullable: boolean) => (typeof t[k] === 'number' && Number.isFinite(t[k])) || (nullable && t[k] === null);
+  const pending = t['pendingFull'];
+  return big('peak', true) && big('trail', true) && big('lastSold', false)
+    && num('partials', false) && num('partialSeq', true) && num('lastRung', true) && num('quoteFailures', false) && num('lastQuoteAtMs', true)
+    && num('blockedAtMs', true) && num('blockedRetries', false) && typeof t['flatMet'] === 'boolean'
+    && (pending === null || (Array.isArray(pending) && pending.every((r) => typeof r === 'string')));
+};
+
 const runnablePlan = (p: Record<string, unknown>): boolean =>
   typeof p['openedAtMs'] === 'number' && Number.isFinite(p['openedAtMs'])
   && ['notional', 'riskUnit', 'stopPrice', 'entryReserve'].every((k) => typeof p[k] === 'bigint')
@@ -411,6 +459,12 @@ export class LiveStrategy implements Strategy {
    * restore) must never plan a restored position from its fill under the policy-maximum stop, even for one step (EXIT-1e).
    */
   #restoreSeen = false;
+  /** Entry fill moments the ledger booked, from the restore fact: a fallback plan's exact open time (EXIT-1f). */
+  readonly #bookedOpenAt = new Map<string, number>();
+  /** Where each booking sits against the boots (restore fact): only a reconcile-time booking may be late (EXIT-1f N2). */
+  readonly #bookedWhen = new Map<string, string>();
+  /** Positions whose fallback plan waits for the first slot to date their fill (said once each). */
+  readonly #planWaitsForSlot = new Set<string>();
   /** Said once per boot when positions wait for the restore. */
   #saidRestoreWait = false;
 
@@ -547,6 +601,12 @@ export class LiveStrategy implements Strategy {
 
   #restore(v: unknown, out: Decision[]): void {
     this.#restoreSeen = true;
+    if (isObj(v) && isObj(v['openedAt'])) {
+      for (const [pid, at] of Object.entries(v['openedAt'])) if (typeof at === 'number' && Number.isFinite(at)) this.#bookedOpenAt.set(pid, at);
+    }
+    if (isObj(v) && isObj(v['bookedWhen'])) {
+      for (const [pid, when] of Object.entries(v['bookedWhen'])) if (typeof when === 'string') this.#bookedWhen.set(pid, when);
+    }
     if (!isObj(v) || !isObj(v['exits'])) {
       out.push({ action: null, reasons: ['restore refused', 'malformed restore fact'] });
       return;
@@ -559,7 +619,13 @@ export class LiveStrategy implements Strategy {
         out.push({ action: null, reasons: ['restore entry refused', pid, 'malformed saved plan'] });
         continue;
       }
-      const saved = s as unknown as SavedExit;
+      let saved = s as unknown as SavedExit;
+      if (!runnableTracker(s['tracker'] as Record<string, unknown>)) {
+        // A tracker the exit rules would throw on is replaced, never applied: partials come back from the book; the peak,
+        // trail and flat target start again from now (the plan, its stop and its open time are kept).
+        out.push({ action: null, reasons: ['restore tracker refused', pid, 'malformed saved tracker; tracker reset'] });
+        saved = { ...saved, tracker: newTracker() };
+      }
       this.#exits.set(pid, saved);
       this.#bars.set(pid, [...saved.bars]);
       if (typeof saved.pool === 'string') this.#notePool(this.#mintOf(pid), saved.pool);
@@ -846,7 +912,8 @@ export class LiveStrategy implements Strategy {
 
   /** Entry intents that resolved without a fill end; exit owners that did get a new attempt or are booked blocked. */
   #lifecycle(ctx: StrategyContext, out: Decision[]): void {
-    // A waiting owner that settled or was booked another way no longer waits.
+    // A waiting owner that settled or was booked another way no longer waits. #manage also ends the saved wait from the
+    // book on every step (which covers a restart, when this list is empty); both are kept.
     for (const [id, pid] of this.#waitingMarket) {
       const i = ctx.book.intents[id];
       if (i === undefined || isTerminal(i) || (i.status !== 'exposure_reserved' && !(i.status === 'reconciled' && i.fills.length === 0))) {
@@ -1044,7 +1111,11 @@ export class LiveStrategy implements Strategy {
       // Only an open position's wait is decided here; an exit owner's wait (EXIT-1d) is #sendExit's.
       const waiting = p.status === 'open' && step.tracker.pendingFull !== null;
       if (waiting && saved.waitingSinceMs == null) out.push({ action: null, reasons: ['exit waiting for a fresh quote', p.mint, step.tracker.pendingFull!.join(', ')] });
-      const waitingSinceMs = p.status !== 'open' ? (saved.waitingSinceMs ?? null) : waiting ? (saved.waitingSinceMs ?? ctx.now.receivedAt) : null;
+      // A position being exited keeps its wait only while one of its exit owners can still be waiting for a market (not
+      // yet sent, or resolved without a fill); booked blocked, run out of budget, cancelled or settled, the wait is over.
+      // Read from the book on every step, so a restart (which forgets which owners were said to wait) agrees.
+      const ownerMayWait = exitIntents.some((i) => !isTerminal(i) && (i.status === 'exposure_reserved' || (i.status === 'reconciled' && i.fills.length === 0)));
+      const waitingSinceMs = p.status !== 'open' ? (ownerMayWait ? (saved.waitingSinceMs ?? null) : null) : waiting ? (saved.waitingSinceMs ?? ctx.now.receivedAt) : null;
       saved = { ...saved, tracker: step.tracker, bars: this.#bars.get(p.id) ?? saved.bars, waitingSinceMs };
       this.#exits.set(p.id, saved);
       for (const why of step.ignored) out.push({ action: null, reasons: ['exit input ignored', p.mint, why] });
@@ -1096,11 +1167,35 @@ export class LiveStrategy implements Strategy {
     const seed = this.#seeds.get(entryId);
     const entry = ctx.book.intents[entryId];
     const p = ctx.book.positions[pid]!;
+    // The open time: the fill's moment when this process saw it (it holds the decision seed); else the moment the ledger
+    // booked it (exact, from the restore fact); else, with neither, the fill dated from its slot with an upper bound on
+    // the slot time. A restart never restarts T_flat or T_max (EXIT-1f). Until the first slot is seen the slot dating
+    // cannot be made, and nothing could be sent either: the plan waits for it.
+    // A fill booked during a boot's reconcile may have landed earlier (found by a status read after downtime): it opens
+    // at the earlier of its booking and its slot dating. A live booking is the fill's own moment and stays exact; one the
+    // journal could not place stays exact too, and says why (EXIT-1f N2).
+    const fill = entry?.fills[0];
+    const booked = this.#bookedOpenAt.get(pid);
+    const when = this.#bookedWhen.get(pid);
+    let fillAt = ctx.now.receivedAt;
+    if (seed === undefined && booked !== undefined && !(when === 'reconcile' && fill !== undefined)) {
+      fillAt = Math.min(booked, ctx.now.receivedAt);
+      if (when !== undefined && when.startsWith('unplaced')) out.push({ action: null, reasons: ['open time from the booking', p.mint, when] });
+    } else if (seed === undefined && fill !== undefined) {
+      if (this.#height === null) {
+        if (!this.#planWaitsForSlot.has(pid)) {
+          this.#planWaitsForSlot.add(pid);
+          out.push({ action: null, reasons: ['entry plan waits for the first slot', p.mint, 'the fill is dated from its slot'] });
+        }
+        return null;
+      }
+      const slots = this.#height > fill.slot ? this.#height - fill.slot : 0n;
+      fillAt = Math.min(ctx.now.receivedAt - Number(slots) * this.#d.config.maxSlotMs, booked ?? Number.POSITIVE_INFINITY);
+    }
     if (seed === undefined || entry === undefined) {
       // A position the strategy did not plan (none should exist): manage it with the tightest stop the policy allows.
       out.push({ action: null, reasons: ['no entry plan', p.mint, 'position managed with the policy maximum stop'] });
     }
-    const fillAt = ctx.now.receivedAt;
     const cost = p.cost;
     const entryPx = p.quantity > 0n ? (cost * PRICE_SCALE) / p.quantity : 0n;
     const stopPrice = seed?.stopPrice ?? entryPx - (entryPx * BigInt(this.#d.session.policy.loss.stopMaxBps)) / BPS;
@@ -1185,6 +1280,8 @@ export class LiveStrategy implements Strategy {
     for (const cand of this.#cands.values()) {
       const from = cand.migratedAtMs + c.windowFromMs;
       const to = cand.migratedAtMs + c.windowToMs;
+      // Backstop: `#windowEnds` has already removed it on this event; an ended window is never an entry whatever the order.
+      if (now >= to) continue;
       if (now < from || (cand.lastEvalMs !== null && now - cand.lastEvalMs < c.evaluateEveryMs && !this.#landedFresh(due, cand.mint, ctx))) continue;
       if (c.entryTiming === 'random' && now < s0EntryAt(c.entrySalt, cand.mint, from, to)) continue;
       if (Object.values(ctx.book.positions).some((p) => p.mint === cand.mint && p.status !== 'closed')) continue;
@@ -1247,9 +1344,15 @@ export class LiveStrategy implements Strategy {
     const spend = microUsdToLamports(notional, sol.value, 'ceil');
     cand.spend = spend;
     const quoter = pumpSwapRoundTrip(m.pool, m.ctx);
-    const hard = evaluateHardRejects(gctx, { session, mode: 'live', rugLabeller: 'RUG-1', ...diag }, { mint: cand.mint, universe: c.universe, notional, spend, roundTrip: quoter(spend) });
+    const { hard, notEvaluated } = stagedHardRejects(gctx, { session, mode: 'live', rugLabeller: 'RUG-1', ...diag }, { mint: cand.mint, universe: c.universe, notional, spend, roundTrip: quoter(spend) });
+    // The S0 diagnostic set's H14 note, from whichever stages ran (WORKER-1e).
     if (hard.notes.some((n) => n.code === 's0-diagnostic')) this.#waived.push('h14-creates-coverage');
-    if (!hard.pass) return this.#fail(`hard reject ${hard.failed.join(',')}: ${hard.reasons.map((x) => `${x.gate} ${x.code} ${x.detail}`).join('; ')}`, hard.reasons.map((x) => ({ gate: x.gate, code: x.code, detail: x.detail })), hard.reasons);
+    if (!hardAllowsEntry(hard)) {
+      // Fails closed: a pass that left a gate out (groups that stop covering every hard gate) is no entry.
+      if (hard.reasons.length === 0) return this.#fail('hard rejects incomplete', [{ gate: 'worker', code: 'hard-incomplete', detail: 'not every hard gate was evaluated' }]);
+      const later = notEvaluated.length > 0 ? `; ${NOT_EVALUATED}${notEvaluated.join(',')}` : '';
+      return this.#fail(`hard reject ${hard.failed.join(',')}: ${hard.reasons.map((x) => `${x.gate} ${x.code} ${x.detail}`).join('; ')}${later}`, hard.reasons.map((x) => ({ gate: x.gate, code: x.code, detail: x.detail })), hard.reasons);
+    }
     const acct = this.#account(ctx);
     if (acct === null) return this.#fail('account snapshot unknown', [{ gate: 'worker', code: 'no-account', detail: 'account snapshot unknown' }]);
     // Stop: the tighter of the ATR limit and the policy's maximum distance, from the executable price after the buy.
