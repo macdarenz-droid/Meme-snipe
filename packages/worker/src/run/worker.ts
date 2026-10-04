@@ -1323,7 +1323,7 @@ export class Worker {
           gitSha: d.config.gitSha, entryRule: d.config.strategy.name, recorder: d.config.recorder ? 'on' : 'off',
           uptimeS: (d.timers.now() - this.#started) / 1000, trades: this.#account.state.trades,
           openPositions: Object.values(this.#engine.book.positions).filter((p) => p.status !== 'closed').length,
-          solPrice: this.#solPrice, credits: d.ops?.().quota ?? [],
+          solPrice: this.#solPrice, credits: d.ops?.().quota ?? [], walletLamports: this.#account.state.walletLamports,
           open: heldPositions(Object.values(this.#engine.book.positions), (p) => {
             const m = this.poolOf(p.mint);
             const q = m === null ? null : poolSell(m.state, p.quantity, m.ctx);

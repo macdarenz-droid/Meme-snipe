@@ -17,6 +17,7 @@ export const goodSummary = (over: Partial<Summary> = {}): Summary => ({
   trades: [{ mint: MINT, opened_at: '2026-10-04T01:00:00.000Z', closed_at: '2026-10-04T01:01:00.000Z', size_usd: '3', exit_reason: 'stop', net_lamports: '-1500000', net_usd: '-0.3' }],
   trades_dropped: 0, pnl: { closed_trades: 1, net_lamports: '-1500000', net_usd: '-0.3' }, open_positions: 0,
   provider_credits: [{ provider: 'helius', used_since_boot: 1234, monthly: 1_000_000 }],
+  headline: { balance_sol: '2', equity_sol: '2.012', day_net_sol: '-0.0015', open_marked_net_sol: '-0.003', day_change_sol: '-0.0045' },
   open: {
     positions: [{ mint: MINT, opened_at: '2026-10-04T01:30:00.000Z', cost_lamports: '15000000', value_lamports: '12000000', marked_net_lamports: '-3000000' }],
     marked_net_lamports: '-3000000', unquotable: 0, unlisted: 0,
@@ -27,7 +28,7 @@ export const goodSummary = (over: Partial<Summary> = {}): Summary => ({
 
 /** The same day as version 1 sent it (a worker not yet updated). */
 const goodV1 = (): SummaryV1 => {
-  const { open: _o, memory: _m, ...rest } = goodSummary();
+  const { headline: _h, open: _o, memory: _m, ...rest } = goodSummary();
   return { ...rest, v: 1 };
 };
 
@@ -52,13 +53,15 @@ const STRING_FIELDS: readonly ((s: Record<string, any>, v: string) => void)[] = 
   (s, v) => (s.pnl.net_lamports = v), (s, v) => (s.pnl.net_usd = v), (s, v) => (s.provider_credits[0].provider = v),
   // A field that is not in the shape.
   (s, v) => (s.worker.host = v), (s, v) => (s.note = v), (s, v) => (s.trades[0].wallet = v),
-  // Version 2: open positions and memory.
+  // Version 2: the SOL headline, open positions and memory.
+  (s, v) => (s.headline.balance_sol = v), (s, v) => (s.headline.equity_sol = v), (s, v) => (s.headline.day_net_sol = v),
+  (s, v) => (s.headline.open_marked_net_sol = v), (s, v) => (s.headline.day_change_sol = v), (s, v) => (s.headline.usd = v),
   (s, v) => (s.open.positions[0].mint = v), (s, v) => (s.open.positions[0].opened_at = v), (s, v) => (s.open.positions[0].cost_lamports = v),
   (s, v) => (s.open.positions[0].value_lamports = v), (s, v) => (s.open.positions[0].marked_net_lamports = v), (s, v) => (s.open.marked_net_lamports = v),
   (s, v) => (s.open.positions[0].wallet = v), (s, v) => (s.memory.host = v), (s, v) => (s.memory.rss_last_bytes = v),
 ];
 
-const AMOUNT_FIELDS = new Set([13, 15, 16, 17, 18, 25, 26, 27, 28]);
+const AMOUNT_FIELDS = new Set([13, 15, 16, 17, 18, 23, 24, 25, 26, 27, 31, 32, 33, 34]);
 
 describe('the summary guards', () => {
   it('accept the exact shape and refuse a missing, extra or mistyped field', () => {

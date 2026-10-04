@@ -50,6 +50,22 @@ export interface SummaryOpenPosition {
 }
 export interface Summary extends Omit<SummaryV1, 'v'> {
   readonly v: 2;
+  /**
+   * The owner's measure (CLAUDE.md, 2026-10-05): profit is counted in SOL, never dollars; dollar fields elsewhere are
+   * secondary. Equity is the paper wallet plus what selling every open position would return now; it is null while a
+   * position cannot be quoted or before the wallet has a SOL amount, never a guess.
+   */
+  readonly headline: {
+    /** The paper wallet's SOL balance (never its address). */
+    readonly balance_sol: string | null;
+    readonly equity_sol: string | null;
+    /** Trades closed this day. */
+    readonly day_net_sol: string;
+    /** Open positions, quotable ones only (see open.unquotable). */
+    readonly open_marked_net_sol: string;
+    /** This day's last equity minus the last equity of the previous day that has one; null without both. */
+    readonly day_change_sol: string | null;
+  };
   /** Open paper positions marked to their liquidation value now. An unquotable one is counted, never read as zero. */
   readonly open: {
     readonly positions: readonly SummaryOpenPosition[];
@@ -120,6 +136,8 @@ export const PATTERNS = {
   GATE: /^(?=[0-9]*[A-Za-z])[A-Za-z0-9]{1,16}$/,
   MINT: /^[1-9A-HJ-NP-Za-km-z]{32,44}$/,
   LAMPORTS: /^-?\d{1,20}$/,
+  /** SOL as an exact decimal (lamports / 1e9, trailing zeros dropped). */
+  SOL: /^-?\d{1,11}(\.\d{1,9})?$/,
   USD: /^-?\d{1,15}(\.\d{1,6})?$/,
 } as const;
 
@@ -155,6 +173,14 @@ export const forbiddenIn = (text: string): string | null => {
 /** A value fits a field: it matches the field's pattern and holds no forbidden pattern. The worker keeps only these. */
 export const fits = (v: unknown, re: RegExp): v is string => typeof v === 'string' && re.test(v) && forbiddenIn(v) === null;
 
+/** Lamports as an exact SOL decimal string. */
+export const solText = (lamports: bigint): string => {
+  const neg = lamports < 0n;
+  const a = neg ? -lamports : lamports;
+  const frac = (a % 1_000_000_000n).toString().padStart(9, '0').replace(/0+$/, '');
+  return `${neg ? '-' : ''}${a / 1_000_000_000n}${frac === '' ? '' : `.${frac}`}`;
+};
+
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 const exact = (v: unknown, keys: readonly string[]): v is Record<string, unknown> =>
   isObj(v) && Object.keys(v).length === keys.length && keys.every((k) => Object.hasOwn(v, k));
@@ -184,6 +210,7 @@ export const SHAPE_KEYS: readonly string[] = [
   'provider', 'used_since_boot', 'monthly',
   'open', 'memory', 'positions', 'cost_lamports', 'value_lamports', 'marked_net_lamports', 'unquotable', 'unlisted',
   'rss_min_bytes', 'rss_max_bytes', 'rss_last_bytes', 'rss_change_bytes',
+  'headline', 'balance_sol', 'equity_sol', 'day_net_sol', 'open_marked_net_sol', 'day_change_sol',
 ];
 
 const V1_KEYS = SHAPE_KEYS.slice(0, 14);
@@ -197,14 +224,18 @@ const openPosition = (x: unknown) =>
 /** True only for a value of exactly the summary's shape (version 2, or version 1 from a worker not yet updated). */
 export const isSummary = (x: unknown): x is Summary | SummaryV1 => {
   if (isObj(x) && x['v'] === 2) {
-    if (!exact(x, [...V1_KEYS, 'open', 'memory'])) return false;
+    if (!exact(x, [...V1_KEYS, 'headline', 'open', 'memory'])) return false;
+    const hl = x['headline'];
+    if (!(exact(hl, ['balance_sol', 'equity_sol', 'day_net_sol', 'open_marked_net_sol', 'day_change_sol']) && strOrNull(hl['balance_sol'], PATTERNS.SOL) &&
+      strOrNull(hl['equity_sol'], PATTERNS.SOL) && str(hl['day_net_sol'], PATTERNS.SOL) && str(hl['open_marked_net_sol'], PATTERNS.SOL) &&
+      strOrNull(hl['day_change_sol'], PATTERNS.SOL))) return false;
     const o = x['open'];
     const m = x['memory'];
     if (!(exact(o, ['positions', 'marked_net_lamports', 'unquotable', 'unlisted']) && list(o['positions'], SUMMARY_MAX_OPEN, openPosition) &&
       str(o['marked_net_lamports'], PATTERNS.LAMPORTS) && count(o['unquotable']) && count(o['unlisted']))) return false;
     if (!(exact(m, ['rss_min_bytes', 'rss_max_bytes', 'rss_last_bytes', 'rss_change_bytes']) && countOrNull(m['rss_min_bytes']) &&
       countOrNull(m['rss_max_bytes']) && countOrNull(m['rss_last_bytes']) && (m['rss_change_bytes'] === null || int(m['rss_change_bytes'])))) return false;
-    const { open: _o, memory: _m, ...rest } = x;
+    const { headline: _h, open: _o, memory: _m, ...rest } = x;
     return isCommon({ ...rest, v: 1 });
   }
   return isCommon(x);

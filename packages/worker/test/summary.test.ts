@@ -33,7 +33,7 @@ const trade = (o: Partial<PaperTrade> = {}): PaperTrade => ({
 });
 const inputs = (o: Partial<SummaryInputs> = {}): SummaryInputs => ({
   day: DAY, final: false, nowMs: NOON + 3_600_000, fold: undefined, gitSha: 'a'.repeat(40), entryRule: 'S0', recorder: 'on', uptimeS: 3600,
-  trades: [], openPositions: 0, open: [], prevRssLast: null, solPrice: 200_000_000n as MicroUsd, credits: [{ provider: 'helius', credits_used: 1234, monthly_credits: 1_000_000 }], ...o,
+  trades: [], openPositions: 0, open: [], prevRssLast: null, prevEquityLast: null, walletLamports: null, solPrice: 200_000_000n as MicroUsd, credits: [{ provider: 'helius', credits_used: 1234, monthly_credits: 1_000_000 }], ...o,
 });
 
 describe('counts from the journal', () => {
@@ -298,6 +298,43 @@ describe('open positions and memory', () => {
         return 7n;
       }, () => NOON);
     expect(held.map((h) => [h.openedAtMs, h.value])).toEqual([[NOON, 7n], [NOON, null], [NOON, null]]);
+  });
+
+  it('leads with SOL: wallet, equity (wallet + open values), day net, open marked net, and the change from the day before', async () => {
+    // Equity is unknown while a position cannot be quoted, never a guess.
+    const quoted = buildSummary(inputs({ walletLamports: 2_000_000_000n, open: [{ mint: M1, openedAtMs: NOON, cost: 150_000_000n, value: 120_000_000n }] }));
+    expect(quoted.headline).toEqual({ balance_sol: '2', equity_sol: '2.12', day_net_sol: '0', open_marked_net_sol: '-0.03', day_change_sol: null });
+    const unq = buildSummary(inputs({ walletLamports: 2_000_000_000n, open: [{ mint: M1, openedAtMs: NOON, cost: 1n, value: null }] }));
+    expect(unq.headline.equity_sol).toBeNull();
+    expect(buildSummary(inputs()).headline.balance_sol).toBeNull();
+    // Closed trades: day net in SOL from lamports, whatever SOL/USD did.
+    expect(buildSummary(inputs({ trades: [trade()] })).headline.day_net_sol).toBe('-0.0015');
+    // Day change: last equity today minus the last equity of the previous day that has one.
+    const dir = tempState();
+    const p = join(dir, 'journal.jsonl');
+    writeFileSync(p, '');
+    const posts: { day: string; headline: { equity_sol: string | null; day_change_sol: string | null } }[] = [];
+    const http: HttpClient = async (req) => {
+      posts.push(JSON.parse(req.body!) as (typeof posts)[number]);
+      return { status: 200, header: () => null, text: '{"ok":true,"written":true}' };
+    };
+    let now = NOON;
+    let wallet: bigint | null = 2_000_000_000n;
+    let value: bigint | null = 100_000_000n;
+    const sz = new Summarizer({ journalPath: p, stateDir: dir, http, watchdogUrl: 'https://w.test', key: 'k', now: () => now, log: () => {},
+      live: () => inputs({ walletLamports: wallet, open: [{ mint: M1, openedAtMs: NOON, cost: 150_000_000n, value }] }), rss: () => 1 });
+    await sz.tick();
+    expect(posts.at(-1)!.headline).toMatchObject({ equity_sol: '2.1', day_change_sol: null });
+    // Next day: first post unquotable (no sample, no change), then quotable again.
+    now = Date.parse('2026-10-05T01:00:00.000Z');
+    value = null;
+    await sz.tick();
+    expect(posts.at(-1)!.headline).toMatchObject({ equity_sol: null, day_change_sol: null });
+    now += 1_800_000;
+    value = 50_000_000n;
+    wallet = 2_010_000_000n;
+    await sz.tick();
+    expect(posts.at(-1)!.headline).toMatchObject({ equity_sol: '2.06', day_change_sol: '-0.04' });
   });
 
   it('reports no memory for a day without a sample (null, not zero)', () => {

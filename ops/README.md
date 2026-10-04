@@ -134,6 +134,7 @@ A failed webhook set is tried again after 1, 2, 4 and 8 minutes, then every 30 m
 Each day the worker sends a summary of what it did to a private GitHub repository the supervisor can read. It covers:
 - decision counts, and refusals by reason;
 - halts and alerts by code;
+- in SOL first: the paper balance, equity, the day's net, the open positions' marked net and the day's change;
 - each paper trade and the day's paper P&L;
 - each open position marked to what selling it would return now (an unquotable one is counted, never read as zero);
 - the worker's memory that day (lowest, highest, last) and its change from the day before;

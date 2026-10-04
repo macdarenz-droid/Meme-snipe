@@ -9,7 +9,7 @@
 import { createHmac } from 'node:crypto';
 import { open, stat } from 'node:fs/promises';
 import {
-  PATTERNS, SUMMARY_MAX_BYTES, SUMMARY_MAX_OPEN, fits, SUMMARY_MAX_TRADES, SUMMARY_TOP_REASONS, SUMMARY_VERSION, checkSummary,
+  PATTERNS, SUMMARY_MAX_BYTES, SUMMARY_MAX_OPEN, fits, solText, SUMMARY_MAX_TRADES, SUMMARY_TOP_REASONS, SUMMARY_VERSION, checkSummary,
   type CodeCount, type ProviderCredits, type ReasonCount, type Summary, type SummaryOpenPosition, type SummaryTrade,
 } from '../../../ops/src/watchdog/summary.ts';
 import type { MicroUsd } from '../../../core/src/units/index.ts';
@@ -31,6 +31,8 @@ export interface DayFold {
   cands: Record<string, { gate: string | null; code: string | null; entered: boolean }>;
   /** The worker's resident memory sampled at each post that day (bytes); absent before the first sample. */
   rss?: { min: number; max: number; last: number };
+  /** Equity in lamports (wallet + every open position's value) at the day's last post where every position was quotable. */
+  equityLast?: string;
 }
 
 export interface SummaryState {
@@ -203,6 +205,10 @@ export interface SummaryInputs {
   readonly open: readonly { readonly mint: string; readonly openedAtMs: number; readonly cost: bigint; readonly value: bigint | null }[];
   /** The previous kept day's last memory sample, for the day-over-day change. */
   readonly prevRssLast: number | null;
+  /** The previous kept day's last equity (lamports), for the day's change in SOL. */
+  readonly prevEquityLast: bigint | null;
+  /** The paper wallet now (lamports; null before it has a SOL amount). */
+  readonly walletLamports: bigint | null;
   readonly solPrice: MicroUsd | null;
   readonly credits: readonly { readonly provider: string; readonly credits_used: number; readonly monthly_credits: number | null }[];
 }
@@ -264,6 +270,24 @@ const openOf = (i: SummaryInputs): Summary['open'] => {
     marked_net_lamports: quoted.reduce((a, o) => a + (o.value! - o.cost), 0n).toString(),
     unquotable: i.open.length - quoted.length,
     unlisted: i.open.length - positions.length,
+  };
+};
+
+/** Equity now in lamports: the wallet plus every open position's value; null when the wallet or any value is unknown. */
+export const equityOf = (walletLamports: bigint | null, open: SummaryInputs['open']): bigint | null =>
+  walletLamports === null || open.some((o) => o.value === null) ? null : open.reduce((a, o) => a + o.value!, walletLamports);
+
+/** The SOL headline (owner, 2026-10-05: profit is counted in SOL). */
+const headlineOf = (i: SummaryInputs, dayNetLamports: bigint): Summary['headline'] => {
+  const equity = equityOf(i.walletLamports, i.open);
+  const last = i.fold?.equityLast === undefined ? null : BigInt(i.fold.equityLast);
+  return {
+    balance_sol: i.walletLamports === null ? null : solText(i.walletLamports),
+    // The day's own last equity for a final post (the day has ended); now otherwise.
+    equity_sol: i.final ? (last === null ? null : solText(last)) : equity === null ? null : solText(equity),
+    day_net_sol: solText(dayNetLamports),
+    open_marked_net_sol: solText(i.open.filter((o) => o.value !== null).reduce((a, o) => a + (o.value! - o.cost), 0n)),
+    day_change_sol: last === null || i.prevEquityLast === null ? null : solText(last - i.prevEquityLast),
   };
 };
 
@@ -330,6 +354,7 @@ export const buildSummary = (i: SummaryInputs): Summary => {
     pnl: { closed_trades: closed.length, net_lamports: netL.toString(), net_usd: usdText(netU) },
     open_positions: i.openPositions,
     provider_credits: credits,
+    headline: headlineOf(i, netL),
     open: openOf(i),
     memory: {
       rss_min_bytes: f.rss?.min ?? null,
@@ -382,7 +407,7 @@ export interface SummarizerDeps {
   readonly now: () => number;
   readonly log: (line: string) => void;
   /** What the running worker knows now: its trades, positions, price and credits. */
-  readonly live: () => Omit<SummaryInputs, 'day' | 'final' | 'nowMs' | 'fold' | 'prevRssLast'>;
+  readonly live: () => Omit<SummaryInputs, 'day' | 'final' | 'nowMs' | 'fold' | 'prevRssLast' | 'prevEquityLast'>;
   /** The worker's resident memory now; process.memoryUsage().rss (the value /health reports) unless a test swaps it. */
   readonly rss?: () => number;
   /** The summary builder (buildSummary unless a test swaps it, to show the guard stops a bad summary before any post). */
@@ -441,6 +466,10 @@ export class Summarizer {
     state.offset = r.offset;
     pruneDays(state);
     const today = melbourneDate(now);
+    // One equity sample per post, when every position is quotable (an unknown value is never guessed).
+    const live = this.#d.live();
+    const eq = equityOf(live.walletLamports, live.open);
+    if (eq !== null) (state.days[today] ??= emptyDay()).equityLast = eq.toString();
     // One memory sample per post, kept with the day's counts.
     const rss = (this.#d.rss ?? (() => process.memoryUsage().rss))();
     if (Number.isSafeInteger(rss) && rss >= 0) {
@@ -473,7 +502,9 @@ export class Summarizer {
     if (url === null || key === null) return false;
     const prev = Object.keys(this.#state.days).filter((d) => d < day && this.#state.days[d]!.rss !== undefined).sort().at(-1);
     const prevRssLast = prev === undefined ? null : this.#state.days[prev]!.rss!.last;
-    const s = (this.#d.build ?? buildSummary)({ ...this.#d.live(), day, final, nowMs: now, fold: this.#state.days[day], prevRssLast });
+    const prevEq = Object.keys(this.#state.days).filter((d) => d < day && this.#state.days[d]!.equityLast !== undefined).sort().at(-1);
+    const prevEquityLast = prevEq === undefined ? null : BigInt(this.#state.days[prevEq]!.equityLast!);
+    const s = (this.#d.build ?? buildSummary)({ ...this.#d.live(), day, final, nowMs: now, fold: this.#state.days[day], prevRssLast, prevEquityLast });
     const b = summaryBody(s);
     if ('refused' in b) {
       this.#d.log(`Summary for ${day} not sent: ${b.refused}.`);
