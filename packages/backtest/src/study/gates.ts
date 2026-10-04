@@ -39,6 +39,9 @@ export const g1NotEvaluated = (why: string): GateResult => ({ gate: 'G1', passed
 
 export const g0 = (input: G0Input): GateResult => gateG0(input);
 
+/** Bootstrap replicates in each simulated G2: G2's own minimum at the strictest Holm level, ceil(20 / (α/m)). */
+export const g2PowerReplicates = (familySize: number, alpha: number): number => Math.ceil(20 / (alpha / familySize));
+
 /** n_power for a universe from its walk-forward, or why it cannot be sized (then the holdout cannot be proven). */
 /**
  * The holdout's size requirement at the attempt's family α: max(300, n_power simulated at α/m, closed form at α/m),
@@ -49,7 +52,8 @@ export const powerOf = (walkForward: readonly ClusteredReturn[], control: readon
   if (walkForward.length < 2 || days < 2) return { ok: false, why: `walk-forward has ${walkForward.length} trades on ${days} days: too few to size the holdout` };
   if (control.length === 0) return { ok: false, why: 'no S0 trades on the walk-forward days' };
   try {
-    const power = simulateG2Power({ walkForward, control, seed, familySize, alpha });
+    // G2 accepts only an n_power simulated with at least 20 / (α/m) bootstrap replicates (STATS-1g's pinned settings).
+    const power = simulateG2Power({ walkForward, control, seed, familySize, alpha, replicates: g2PowerReplicates(familySize, alpha) });
     const wf = walkForward.map((t) => t.rNet);
     const closed = sd(wf) > 0 ? nPower(sd(wf), 0.05, { alpha: alpha / familySize }) : 0;
     return { ok: true, power, required: Math.max(G2_DEFAULTS.minTradesFloor, power.nPower, closed) };

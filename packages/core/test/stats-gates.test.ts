@@ -2,9 +2,9 @@
 import { describe, expect, test } from 'vitest';
 import {
   createRng, deflatedSharpe, deflatedSharpeDaily, spaTest, DEMOTION_TRAILING_DAYS, evaluateDemotion, G2_SENSITIVITY_VARIANTS, G3_DEFAULTS, rejectMixGTest, studentTQuantile, variance, gateG0, gateG1, gateG2, gateG3, gateG4, gateG5, mean, sd, sharpeRatio,
-  burnHoldout, createHoldoutRegistry, freezeRequirement, nPower, registerHoldout, summarizeWalkForward, type WalkForwardSummary, sealHoldout, type DemotionInput, type HoldoutRegistry, type G0Input, type G1Input, type G2Input, type G2PowerResult, type G2Universe,
+  burnHoldout, createHoldoutRegistry, freezeRequirement, g2PowerInputs, type G2PowerSettings, type ClusteredReturn, type DayReturn, nPower, registerHoldout, summarizeWalkForward, type WalkForwardSummary, sealHoldout, type DemotionInput, type HoldoutRegistry, type G0Input, type G1Input, type G2Input, type G2PowerResult, type G2Universe,
   type G3Input, type G4Input, type G5Input, type TradeOutcome, type HoldoutTrade, type TripleBarrierLabel,
-  clopperPearsonUpper, evaluateRevalidation, VETO_COMPOSITE_LEVEL, VETO_COMPOSITE_ALPHA, g2Sensitivity, RETURN_FLOOR, scoreVetoCounterfactuals,
+  clopperPearsonUpper, evaluateRevalidation, VETO_COMPOSITE_LEVEL, VETO_COMPOSITE_ALPHA, VETO_COMPOSITE_PARTS, clusterWelchBounds, g2Sensitivity, RETURN_FLOOR, scoreVetoCounterfactuals,
   type RevalidationInput, G1_TESTS, G2_DEFAULTS, MIN_DAYS, REQUIREMENT_FLOOR, CAPPED_ESTIMAND, MAX_RETURN_CAP, fisherGreater, VETO_TAIL_ALPHA, HOLDOUT_LOWER_LEVEL,
 } from '../src/stats/index.ts';
 import { EXIT_UNIVERSES, KNOWN_PLATFORM_CHANGES, RESEARCH_CONFIG, TRIAL_POLICY } from '../src/config/index.ts';
@@ -218,8 +218,20 @@ const withClusters = (ts: readonly TradeOutcome[]): HoldoutTrade[] =>
 const holdout = withClusters(bracketTrades(31, 0.1, 25, 20));
 const counts = { candidates: 2000, entries: 500, entryDays: 25 };
 const controlRuns = Array.from({ length: 200 }, (_, k) => bracketTrades(1000 + k, -0.2, 25, 2).map(({ day, rNet }) => ({ day, rNet })));
-type PowerSpec = Omit<G2PowerResult, 'walkForward'> & { readonly walkForward?: WalkForwardSummary };
+/**
+ * A hand-made n_power result. Unless the test says otherwise it was simulated on the universe's own walk-forward and
+ * S0 (`simulatedOn`) with the registry's settings, and validated on independent draws at power 0.8 ± 0.02.
+ */
+type PowerSpec = Omit<G2PowerResult, 'walkForward' | 'inputs' | 'settings' | 'standardError' | 'validation'> & {
+  readonly walkForward?: WalkForwardSummary;
+  readonly simulatedOn?: { readonly walkForward: readonly ClusteredReturn[]; readonly control: readonly DayReturn[] };
+  readonly settings?: G2PowerSettings;
+  readonly validation?: G2PowerResult['validation'];
+};
 const power = (nPower: number, familySize = 1): PowerSpec => ({ nPower, powerAtN: 0.8, level: 0.04 / familySize, evaluations: [], units: G2_SENSITIVITY_VARIANTS, seed: 7 });
+const settingsOf = (p: PowerSpec, familySize: number): G2PowerSettings => ({
+  targetMean: 0.05, familySize, alpha: 0.04, power: 0.8, simulations: 400, replicates: Math.ceil(20 / (0.04 / familySize)), maxTrades: 50_000, units: p.units, seed: p.seed,
+});
 // The closed-form n for the walk-forward σ̂ (≈ 0.33) at a family's level; the frozen requirement is at least it.
 const closedFor = (familySize: number) => nPower(sd(wf.map((t) => t.rNet)), 0.05, { alpha: 0.04 / familySize });
 // Attempt 1 window: entries 08-01..08-25, one tail day: opens from 08-27 (NOW is 2026-09-21).
@@ -237,10 +249,18 @@ const sealed = (familySize: number, universes: readonly string[], c = counts, re
 /** A universe whose n_power result fingerprints its own walk-forward unless the test says otherwise. */
 const u = (name: string, over: Partial<Omit<G2Universe, 'power'>> & { readonly power?: PowerSpec } = {}, familySize = 1): G2Universe => {
   const walkForward = over.walkForward ?? wfClustered;
+  const walkForwardControl = over.walkForwardControl ?? control;
   const p = over.power ?? power(330, familySize);
+  const on = p.simulatedOn ?? { walkForward, control: walkForwardControl };
+  const settings = p.settings ?? settingsOf(p, familySize);
+  const { simulatedOn: _on, ...rest } = p;
   return {
     universe: name, configId: `${name}-v1`, holdoutId: `h-${name}`, ledgerHash: `hash-${name}`, trades: holdout, controlRuns, g1Passed: true, ...over,
-    walkForward, power: { ...p, walkForward: p.walkForward ?? summarizeWalkForward(walkForward) },
+    walkForward, walkForwardControl,
+    power: {
+      ...rest, walkForward: p.walkForward ?? summarizeWalkForward(on.walkForward), settings, inputs: g2PowerInputs(on.walkForward, on.control, settings),
+      standardError: 0.02, validation: p.validation ?? { n: p.nPower, power: 0.8, standardError: 0.02 },
+    },
   };
 };
 const wfClustered = wf.map(({ day, rNet }, i) => ({ day, rNet, creatorCluster: `c${i % 211}`, funderCluster: `f${i % 157}` }));
@@ -389,11 +409,77 @@ describe('G2 holdout (sealed, ARCHITECTURE.md §14 at 333f4ac)', () => {
     expect(fwer([['U1'], ['U2'], ['U3']], 2_000_000)).toBeLessThanOrEqual(FWER_BOUND);
   }, 600_000);
   test('n_power must come from this universe\'s walk-forward', () => {
-    const other = wf.map(({ day, rNet }) => ({ day, rNet: rNet + 0.01 }));
-    const r = gateG2(g2Pass({ universes: [u('U1', { power: { ...power(330), walkForward: summarizeWalkForward(other) } })] }));
+    const other = wfClustered.map((t) => ({ ...t, rNet: t.rNet + 0.01 }));
+    const r = gateG2(g2Pass({ universes: [u('U1', { power: { ...power(330), simulatedOn: { walkForward: other, control } } })] }));
     expect(r.status).toBe('fail');
-    expect(r.reasons.join()).toMatch(/n_power inputs U1: n_power was simulated on walk-forward/);
+    expect(r.reasons.join()).toMatch(/n_power inputs U1: n_power was simulated on walk-forward .* with other trades, labels, control or settings/);
     expect(r.registry.entries[0]!.seal).toBe('sealed');
+  });
+  test('the n_power fingerprint is the exact labelled inputs: one common creator is not independent creators (external audit S3)', () => {
+    // The audit's counterexample: the same returns, days, mean and SD; only the creator labels differ.
+    const independent = wf.map(({ day, rNet }, i) => ({ day, rNet, creatorCluster: `c${i}`, funderCluster: `f${i}` }));
+    const common = wf.map(({ day, rNet }, i) => ({ day, rNet, creatorCluster: 'c0', funderCluster: `f${i}` }));
+    expect(summarizeWalkForward(independent)).toEqual(summarizeWalkForward(common));
+    const st = settingsOf(power(330), 1);
+    expect(g2PowerInputs(independent, control, st)).not.toBe(g2PowerInputs(common, control, st));
+    // Order, the control and every setting count too.
+    expect(g2PowerInputs([...independent].reverse(), control, st)).not.toBe(g2PowerInputs(independent, control, st));
+    expect(g2PowerInputs(independent, control.slice(1), st)).not.toBe(g2PowerInputs(independent, control, st));
+    expect(g2PowerInputs(independent, control, { ...st, simulations: 401 })).not.toBe(g2PowerInputs(independent, control, st));
+    // n_power simulated under independent creators does not pass for a walk-forward from one creator.
+    const r = gateG2(g2Pass({ universes: [u('U1', { walkForward: common, power: { ...power(330), simulatedOn: { walkForward: independent, control } } })] }));
+    expect(r.status).toBe('fail');
+    expect(r.reasons.join()).toMatch(/n_power inputs U1: .*with other trades, labels, control or settings/);
+    // A result without settings cannot be checked and fails.
+    const bare = u('U1');
+    const { settings: _s, ...noSettings } = bare.power;
+    expect(gateG2(g2Pass({ universes: [{ ...bare, power: noSettings as never }] })).reasons.join()).toMatch(/n_power carries no settings/);
+  });
+  test('the chosen n is validated on independent draws, with its Monte Carlo error reported (external audit S3)', () => {
+    const ok = gateG2(g2Pass());
+    expect(ok.checks.find((x) => x.name === 'n_power validated U1')).toMatchObject({ passed: true, detail: expect.stringMatching(/power 0\.8 ± 0\.02 in the search, 0\.8 ± 0\.02 on independent draws/) });
+    // 0.8 − 1.645 × 0.02 = 0.7671: 0.77 is within Monte Carlo error, 0.76 is not; a validation at another n fails.
+    expect(gateG2(g2Pass({ universes: [u('U1', { power: { ...power(330), validation: { n: 330, power: 0.77, standardError: 0.02 } } })] })).checks.find((x) => x.name === 'n_power validated U1')!.passed).toBe(true);
+    const low = gateG2(g2Pass({ universes: [u('U1', { power: { ...power(330), validation: { n: 330, power: 0.76, standardError: 0.02 } } })] }));
+    expect(low.status).toBe('fail');
+    expect(low.reasons.join()).toMatch(/n_power validated U1: n 330: .*0\.76 ± 0\.02 on independent draws/);
+    expect(gateG2(g2Pass({ universes: [u('U1', { power: { ...power(330), validation: { n: 300, power: 0.9, standardError: 0.02 } } })] })).status).toBe('fail');
+  });
+  test('n_power settings are pinned, not taken from the result: each self-declared goal fails (review B3)', () => {
+    const base = settingsOf(power(330), 1);
+    expect(gateG2(g2Pass()).checks.find((x) => x.name === 'n_power settings U1')).toMatchObject({ passed: true });
+    // A consistent result (its inputs fingerprint matches) that declared an easier goal for itself.
+    const cases: [Partial<G2PowerSettings>, RegExp][] = [
+      [{ power: 0.5 }, /power 0\.5 \(need >= 0\.8\)/],
+      [{ power: 0.79 }, /power 0\.79 \(need >= 0\.8\)/],
+      [{ targetMean: 0.2 }, /target mean 0\.2 \(need <= 0\.05\)/],
+      [{ targetMean: 0.051 }, /target mean 0\.051 \(need <= 0\.05\)/],
+      [{ simulations: 100 }, /100 simulations \(need >= 400\)/],
+      [{ simulations: 399 }, /399 simulations \(need >= 400\)/],
+      [{ replicates: 499 }, /499 replicates \(need >= 500\)/],
+      [{ familySize: 2 }, /family size 2 \(the registry's is 1\)/],
+      [{ alpha: 0.05 }, /α 0\.05 \(the attempt's is 0\.04\)/],
+      [{ units: ['days-1', 'days-2', 'days-3', 'creator'] }, /not every resampling unit/],
+    ];
+    for (const [over, why] of cases) {
+      const r = gateG2(g2Pass({ universes: [u('U1', { power: { ...power(330), settings: { ...base, ...over } } })] }));
+      expect(r.checks.find((x) => x.name === 'n_power inputs U1')!.passed).toBe(true);
+      expect(r.status).toBe('fail');
+      expect(r.reasons.join()).toMatch(new RegExp(`n_power settings U1: n_power simulated with ${why.source}`));
+      expect(r.registry.entries[0]!.seal).toBe('sealed');
+    }
+    // Stricter settings pass: more power, a smaller edge, more simulations and replicates.
+    const strict = gateG2(g2Pass({ universes: [u('U1', { power: { ...power(330), settings: { ...base, power: 0.9, targetMean: 0.03, simulations: 1000, replicates: 2000 } } })] }));
+    expect(strict.checks.find((x) => x.name === 'n_power settings U1')!.passed).toBe(true);
+    // A family of 3 at 0.04/3 needs 20 / (0.04/3) = 1,500 replicates.
+    const fam3 = gateG2(g2Pass({ registry: sealed(3, ['U1'], counts520), universes: [u('U1', { power: { ...power(330, 3), settings: { ...settingsOf(power(330, 3), 3), replicates: 1499 } } }, 3)] }));
+    expect(fam3.reasons.join()).toMatch(/n_power settings U1: n_power simulated with 1499 replicates \(need >= 1500\)/);
+  });
+  test('the settings\' seed must be the result\'s seed (the frozen one), even when the fingerprint matches', () => {
+    const r = gateG2(g2Pass({ universes: [u('U1', { power: { ...power(330), settings: { ...settingsOf(power(330), 1), seed: 8 } } })] }));
+    expect(r.status).toBe('fail');
+    expect(r.checks.find((x) => x.name === 'n_power seed U1')!.passed).toBe(true);
+    expect(r.checks.find((x) => x.name === 'n_power inputs U1')!.passed).toBe(false);
   });
   test('n_power simulated without every resampling unit is refused before the seal opens', () => {
     const r = gateG2(g2Pass({ universes: [u('U1', { power: { ...power(330), units: ['days-1'] } })] }));
@@ -520,8 +606,12 @@ describe('G2 cluster sensitivity (STATS-1b)', () => {
 });
 
 const dry = bracketTrades(41, 0.1, 2, 30).map((t) => t.rNet);
+/** Kept trades with their creator clusters (each its own creator unless given), for the cluster-robust veto gap. */
+const keptOf = (xs: readonly number[], clusters: readonly string[] = xs.map((_, i) => `k${i}`)) => ({ dryRunReturns: xs, dryRunClusters: clusters });
+/** Scored vetoed candidates with their creator clusters (each its own creator unless given). */
+const cfOf = (returns: readonly number[], censored = 0, clusters: readonly string[] = returns.map((_, i) => `v${i}`)) => ({ returns, clusters, censored });
 const g3Pass: G3Input = {
-  qualifyingRun: true, liveOnlyVetoes: { vetoed: 20, eligible: 1000 }, dryRunHours: 49, dryRunReturns: dry,
+  qualifyingRun: true, liveOnlyVetoes: { vetoed: 20, eligible: 1000 }, dryRunHours: 49, ...keptOf(dry),
   holdout: { n: holdout.length, mean: mean(holdout.map((t) => t.rNet)), sd: sd(holdout.map((t) => t.rNet)), estimand: CAPPED_ESTIMAND },
   candidates: { dryRunCount: 980, dryRunHours: 49, backtestCount: 20_000, backtestHours: 1000 },
   rejectMix: { dryRun: { H8: 210, H9: 700, H11: 70 }, backtest: { H8: 4300, H9: 14_200, H11: 1500 } },
@@ -531,7 +621,7 @@ const g3Pass: G3Input = {
   dryRunStartMs: NOW - DAY,
   simulations: { attempted: 120, succeeded: 118, errors: { BlockhashNotFound: 2 } },
   // The 20 vetoed candidates scored as if entered, like the kept trades; the holdout's lower bound from G2.
-  vetoCounterfactuals: { returns: bracketTrades(42, 0.1, 1, 20).map((t) => t.rNet), censored: 0 },
+  vetoCounterfactuals: cfOf(bracketTrades(42, 0.1, 1, 20).map((t) => t.rNet)),
   holdoutLower: { value: 0.06, level: HOLDOUT_LOWER_LEVEL, estimand: CAPPED_ESTIMAND }, holdoutCapped: 0, holdoutBelowFloor: 0, returnCap: 0.3,
 };
 
@@ -552,15 +642,15 @@ describe('G3 live dry-run consistency', () => {
     expect(failed).toEqual(expect.arrayContaining(['duration', 'candidate rate', 'reject mix H8', 'reject mix H9', 'fills']));
   });
   test('a dry-run mean outside the holdout predictive interval fails', () => {
-    const r = gateG3({ ...g3Pass, dryRunReturns: dry.map((x) => x - 0.3) });
+    const r = gateG3({ ...g3Pass, ...keptOf(dry.map((x) => x - 0.3)) });
     expect(r.reasons.some((x) => x.startsWith('mean'))).toBe(true);
   });
   test('fewer than 30 paper trades is inconclusive, never agreement (supervisor ruling after external review)', () => {
-    const few = gateG3({ ...g3Pass, dryRunReturns: dry.slice(0, 29) });
+    const few = gateG3({ ...g3Pass, ...keptOf(dry.slice(0, 29)) });
     expect(few).toMatchObject({ passed: false, status: 'not-proven' });
     expect(few.reasons.join()).toMatch(/paper outcomes: 29 paper trades \(need >= 30\): inconclusive, extend the dry run/);
     expect(few.notes).toContain('inconclusive: extend the dry run');
-    expect(gateG3({ ...g3Pass, dryRunReturns: [] }).status).toBe('not-proven');
+    expect(gateG3({ ...g3Pass, ...keptOf([]) }).status).toBe('not-proven');
   });
   // Pre-registered agreement (STATS-1b item 3): agree, disagree and inconclusive for each comparison.
   test('agrees: every comparison inside its registered tolerance with enough evidence', () => {
@@ -578,7 +668,7 @@ describe('G3 live dry-run consistency', () => {
     expect(gateG3({ ...g3Pass, fillDifferences: [...g3Pass.fillDifferences, 0.03] }).reasons.join()).toMatch(/largest \|paper − simulated\| 0.03/);
     // A small fill sample with one fill off by more than 2 points already disagrees.
     expect(gateG3({ ...g3Pass, fillDifferences: [0.001, 0.025] }).status).toBe('fail');
-    const severe = gateG3({ ...g3Pass, dryRunReturns: dry.map((x, i) => (i % 3 === 0 ? -0.9 : x)), holdout: { ...g3Pass.holdout, sd: 2 } });
+    const severe = gateG3({ ...g3Pass, ...keptOf(dry.map((x, i) => (i % 3 === 0 ? -0.9 : x))), holdout: { ...g3Pass.holdout, sd: 2 } });
     expect(severe.reasons.join()).toMatch(/severe share/);
     expect(severe.status).toBe('fail');
   });
@@ -620,8 +710,8 @@ describe('G3 live dry-run consistency', () => {
     const kept = bracketTrades(43, -0.01, 1, 20).map((t) => t.rNet);
     const shift = -0.01 - mean(kept);
     return {
-      ...g3Pass, dryRunReturns: kept.map((x) => x + shift), liveOnlyVetoes: { vetoed: 100, eligible: 1000 },
-      holdout: { n: 500, mean: 0.05, sd: 0.33, estimand: CAPPED_ESTIMAND }, holdoutLower: { value: 0.02, level: HOLDOUT_LOWER_LEVEL, estimand: CAPPED_ESTIMAND }, vetoCounterfactuals: { returns: [], censored: 0 }, ...over,
+      ...g3Pass, ...keptOf(kept.map((x) => x + shift)), liveOnlyVetoes: { vetoed: 100, eligible: 1000 },
+      holdout: { n: 500, mean: 0.05, sd: 0.33, estimand: CAPPED_ESTIMAND }, holdoutLower: { value: 0.02, level: HOLDOUT_LOWER_LEVEL, estimand: CAPPED_ESTIMAND }, vetoCounterfactuals: cfOf([]), ...over,
     };
   };
   test('the reviewer\'s case does not pass: with no vetoed candidate scored the dry run is extended', () => {
@@ -633,7 +723,7 @@ describe('G3 live dry-run consistency', () => {
   test('the reviewer\'s case with every veto scored: the measured gap and its uncertainty push the retained lower bound below 0', () => {
     const raw = bracketTrades(44, 0.05, 1, 100).map((t) => t.rNet);
     const cf = raw.map((x) => x + 0.05 - mean(raw)); // vetoed candidates at the holdout's +5%, kept trades at −1%
-    const r = gateG3(reviewerCase({ vetoCounterfactuals: { returns: cf, censored: 0 } }));
+    const r = gateG3(reviewerCase({ vetoCounterfactuals: cfOf(cf) }));
     expect(r.passed).toBe(false);
     expect(r.status).toBe('not-proven');
     expect(r.metrics.vetoGap!).toBeCloseTo(0.06, 12);
@@ -643,7 +733,7 @@ describe('G3 live dry-run consistency', () => {
   test('vetoed candidates far better than kept trades fail outright: the point estimate is already below 0', () => {
     const cf = bracketTrades(45, 0.2, 1, 100).map((t) => t.rNet + 0.3);
     const kept = bracketTrades(46, -0.2, 1, 40).map((t) => t.rNet);
-    const r = gateG3({ ...g3Pass, dryRunReturns: kept, liveOnlyVetoes: { vetoed: 100, eligible: 1000 }, vetoCounterfactuals: { returns: cf, censored: 0 } });
+    const r = gateG3({ ...g3Pass, ...keptOf(kept), liveOnlyVetoes: { vetoed: 100, eligible: 1000 }, vetoCounterfactuals: cfOf(cf) });
     expect(r.status).toBe('fail');
     expect(r.reasons.join()).toMatch(/veto bias/);
   });
@@ -658,20 +748,20 @@ describe('G3 live dry-run consistency', () => {
     expect(r.metrics.retainedLower!).toBeGreaterThan(0);
   });
   test('with fewer than 10 vetoed or kept trades the gap is the worst case the return range allows, never an assumption', () => {
-    const r = gateG3({ ...g3Pass, liveOnlyVetoes: { vetoed: 3, eligible: 1000 }, vetoCounterfactuals: { returns: [0.1, 0.2, -0.1], censored: 0 } });
+    const r = gateG3({ ...g3Pass, liveOnlyVetoes: { vetoed: 3, eligible: 1000 }, vetoCounterfactuals: cfOf([0.1, 0.2, -0.1]) });
     // The estimand's worst case (S2 ruling C5): 3 − RETURN_FLOOR = 4.1, whatever take-profit is configured.
     expect(r.metrics.vetoGapUpper).toBeCloseTo(MAX_RETURN_CAP - RETURN_FLOOR, 12);
     // 3 of 1,000: the rate bound is small enough that even the worst gap keeps the retained bound above 0.
     expect(r.passed).toBe(true);
-    const many = gateG3({ ...g3Pass, liveOnlyVetoes: { vetoed: 60, eligible: 1000 }, vetoCounterfactuals: { returns: Array(60).fill(0.1), censored: 0 }, dryRunReturns: dry.slice(0, 8) });
+    const many = gateG3({ ...g3Pass, liveOnlyVetoes: { vetoed: 60, eligible: 1000 }, vetoCounterfactuals: cfOf(Array(60).fill(0.1)), ...keptOf(dry.slice(0, 8)) });
     expect(many.metrics.vetoGapUpper).toBeCloseTo(MAX_RETURN_CAP - RETURN_FLOOR, 12);
     expect(many.status).toBe('not-proven');
   });
   test('an unscored or censored vetoed candidate is missing evidence; a count that does not add up fails', () => {
-    const censored = gateG3({ ...g3Pass, vetoCounterfactuals: { returns: g3Pass.vetoCounterfactuals.returns.slice(1), censored: 1 } });
+    const censored = gateG3({ ...g3Pass, vetoCounterfactuals: cfOf(g3Pass.vetoCounterfactuals.returns.slice(1), 1) });
     expect(censored.status).toBe('not-proven');
     expect(censored.reasons.join()).toMatch(/1 censored: wait for their windows to close/);
-    const extra = gateG3({ ...g3Pass, vetoCounterfactuals: { returns: [...g3Pass.vetoCounterfactuals.returns, 0.1], censored: 0 } });
+    const extra = gateG3({ ...g3Pass, vetoCounterfactuals: cfOf([...g3Pass.vetoCounterfactuals.returns, 0.1]) });
     expect(extra.status).toBe('fail');
     expect(() => gateG3({ ...g3Pass, returnCap: 5 })).not.toThrow();
     expect(gateG3({ ...g3Pass, returnCap: 5 }).reasons.join()).toMatch(/^return cap/);
@@ -685,20 +775,27 @@ describe('G3 live dry-run consistency', () => {
     const d = mean(a) - mean(b);
     return { lower: d - half, upper: d + half };
   };
-  test('each composite component is computed at α/3 (veto rate, gap one-sided and two-sided) and the holdout bound at α/4', () => {
-    expect(VETO_COMPOSITE_ALPHA).toBeCloseTo(0.05 / 3, 15);
+  test('each of the four composite components is computed at α/4: veto rate, gap, holdout bound and fill error (external audit S1)', () => {
+    // Union bound: before, three parts at α/3 plus a 95% fill bound gave 3·(0.05/3) + 0.05 = 0.10, only 90% joint coverage.
+    expect(VETO_COMPOSITE_PARTS).toBe(4);
+    expect(VETO_COMPOSITE_ALPHA).toBeCloseTo(0.05 / 4, 15);
+    expect(VETO_COMPOSITE_PARTS * VETO_COMPOSITE_ALPHA).toBeCloseTo(0.05, 15);
     const r = gateG3(g3Pass);
-    expect(r.metrics.vetoRateUpperComposite).toBeCloseTo(clopperPearsonUpper(20, 1000, 0.05 / 3), 12);
+    expect(r.metrics.vetoRateUpperComposite).toBeCloseTo(clopperPearsonUpper(20, 1000, 0.05 / 4), 12);
     const cf = g3Pass.vetoCounterfactuals.returns;
-    expect(r.metrics.vetoGapUpper).toBeCloseTo(welch(cf, dry, 0.05 / 3).upper, 12);
-    const two = welch(cf, dry, 0.05 / 6);
+    // Every trade its own creator: the cluster-robust bound is the classic Welch bound.
+    expect(r.metrics.vetoGapUpper).toBeCloseTo(welch(cf, dry, 0.05 / 4).upper, 12);
+    const two = welch(cf, dry, 0.05 / 8);
     expect(r.metrics.vetoGapAbsUpper).toBeCloseTo(Math.max(Math.abs(two.upper), Math.abs(two.lower)), 12);
+    // The fill-error bound in the execution allowance is the fourth part, one-sided at 1 − α/4 (it was 95%).
+    const abs = g3Pass.fillDifferences.map(Math.abs);
+    const fillUpper = mean(abs) + studentTQuantile(1 - 0.05 / 4, abs.length - 1) * sd(abs) / Math.sqrt(abs.length);
+    expect(r.metrics.executionAllowance).toBeCloseTo(2 * fillUpper, 12);
     const at95 = gateG3({ ...g3Pass, holdoutLower: { value: 0.06, level: 0.95, estimand: CAPPED_ESTIMAND } });
     expect(at95.status).toBe('fail');
     expect(at95.reasons.join()).toMatch(/holdout bound level: .*need 0.9875/);
-    // S2 ruling C6: the capped holdout bound is at 1 − α/4; one at the other components' 1 − α/3 is refused.
-    expect(HOLDOUT_LOWER_LEVEL).toBeCloseTo(1 - 0.05 / 4, 15);
-    expect(gateG3({ ...g3Pass, holdoutLower: { ...g3Pass.holdoutLower, level: VETO_COMPOSITE_LEVEL } }).reasons.join()).toMatch(/holdout bound level/);
+    // S2 ruling C6 with M1: the capped holdout bound's level is the composite's own, one constant.
+    expect(HOLDOUT_LOWER_LEVEL).toBe(VETO_COMPOSITE_LEVEL);
   });
   // Mutant S3 (the |Δ| bound replaced by its point estimate) must fail this test: only Δ's uncertainty pushes the bias
   // above 5 points. Vetoed candidates are 40 points worse than kept trades, so the selection allowance is 0.
@@ -708,7 +805,7 @@ describe('G3 live dry-run consistency', () => {
     const raw = Array.from({ length: 100 }, (_, i) => (i % 2 === 0 ? -0.8 : 0.8));
     const cf = raw.map((x) => x - mean(raw) + keptMean - 0.4);
     expect(Math.min(...cf)).toBeGreaterThanOrEqual(RETURN_FLOOR);
-    const r = gateG3({ ...g3Pass, liveOnlyVetoes: { vetoed: 100, eligible: 1000 }, vetoCounterfactuals: { returns: cf, censored: 0 } });
+    const r = gateG3({ ...g3Pass, liveOnlyVetoes: { vetoed: 100, eligible: 1000 }, vetoCounterfactuals: cfOf(cf) });
     const point = 0.1 * Math.abs(r.metrics.vetoGap!);
     expect(point).toBeLessThanOrEqual(0.05);
     expect(r.metrics.vetoRateUpperComposite! * Math.abs(r.metrics.vetoGap!)).toBeLessThanOrEqual(0.05);
@@ -734,7 +831,7 @@ describe('G3 live dry-run consistency', () => {
   // r_c = min(rNet, 3), "net, capped at +300%"; both sides of every comparison are capped identically.
   test('C5: a vetoed trade at +500% with a 0.3 take-profit never gives a gap above the stated worst case 3 − RETURN_FLOOR', () => {
     const cf = Array(12).fill(5) as number[];
-    const r = gateG3({ ...g3Pass, liveOnlyVetoes: { vetoed: 12, eligible: 1000 }, vetoCounterfactuals: { returns: cf, censored: 0 } });
+    const r = gateG3({ ...g3Pass, liveOnlyVetoes: { vetoed: 12, eligible: 1000 }, vetoCounterfactuals: cfOf(cf) });
     expect(r.metrics.vetoWorstGap).toBeCloseTo(MAX_RETURN_CAP - RETURN_FLOOR, 12);
     expect(r.metrics.vetoGap!).toBeCloseTo(3 - mean(dry.map((x) => Math.min(x, 3))), 12);
     expect(r.metrics.vetoGap!).toBeLessThanOrEqual(r.metrics.vetoWorstGap!);
@@ -750,8 +847,8 @@ describe('G3 live dry-run consistency', () => {
     expect(wrong.status).toBe('fail');
     expect(wrong.reasons.join()).toMatch(/estimand: .*net, capped at \+300%/);
     expect(gateG3({ ...g3Pass, holdoutBelowFloor: 1 }).reasons.join()).toMatch(/return floor/);
-    expect(gateG3({ ...g3Pass, dryRunReturns: [...dry.slice(1), -1.2] }).reasons.join()).toMatch(/return floor/);
-    expect(gateG3({ ...g3Pass, vetoCounterfactuals: { returns: [...g3Pass.vetoCounterfactuals.returns.slice(1), -1.5], censored: 0 } }).reasons.join()).toMatch(/return floor/);
+    expect(gateG3({ ...g3Pass, ...keptOf([...dry.slice(1), -1.2]) }).reasons.join()).toMatch(/return floor/);
+    expect(gateG3({ ...g3Pass, vetoCounterfactuals: cfOf([...g3Pass.vetoCounterfactuals.returns.slice(1), -1.5]) }).reasons.join()).toMatch(/return floor/);
   });
 
   test('C1: capped counts are reported per arm and for the holdout; a capped tail only among the vetoed is "not proven", never a pass', () => {
@@ -759,16 +856,16 @@ describe('G3 live dry-run consistency', () => {
     expect(base.passed).toBe(true);
     expect([base.metrics.keptCapped, base.metrics.vetoedCapped, base.metrics.holdoutCapped]).toEqual([0, 0, 4]);
     const cf = [...g3Pass.vetoCounterfactuals.returns.slice(1), 4];
-    const tail = gateG3({ ...g3Pass, vetoCounterfactuals: { returns: cf, censored: 0 } });
+    const tail = gateG3({ ...g3Pass, vetoCounterfactuals: cfOf(cf) });
     expect(tail.metrics.vetoedCapped).toBe(1);
     expect(tail.status).toBe('not-proven');
     expect(tail.reasons.map((x) => x.split(':')[0])).toEqual(['veto bias tail']);
     // Kept trades capped too, at a like share: the tail rule is satisfied.
-    const both = gateG3({ ...g3Pass, vetoCounterfactuals: { returns: cf, censored: 0 }, dryRunReturns: [...dry.slice(2), 4, 4] });
+    const both = gateG3({ ...g3Pass, vetoCounterfactuals: cfOf(cf), ...keptOf([...dry.slice(2), 4, 4]) });
     expect(both.checks.find((x) => x.name === 'veto bias tail')!.passed).toBe(true);
     // Both arms capped, but the vetoed far more often (10 of 20 against 1 of 30): one-sided Fisher below α/4.
     const heavy = [...g3Pass.vetoCounterfactuals.returns.slice(10), ...Array(10).fill(4)] as number[];
-    const skew = gateG3({ ...g3Pass, vetoCounterfactuals: { returns: heavy, censored: 0 }, dryRunReturns: [...dry.slice(1), 4] });
+    const skew = gateG3({ ...g3Pass, vetoCounterfactuals: cfOf(heavy), ...keptOf([...dry.slice(1), 4]) });
     expect(skew.metrics.vetoTailP!).toBeLessThan(VETO_TAIL_ALPHA);
     expect(skew.checks.find((x) => x.name === 'veto bias tail')!.passed).toBe(false);
     expect(skew.passed).toBe(false);
@@ -779,7 +876,7 @@ describe('G3 live dry-run consistency', () => {
 
   test('C2: the agree checks compare capped means; each side\'s capped count is shown', () => {
     // One dry-run trade at +5,000%: uncapped it would move the mean by about 1.7 points per trade.
-    const r = gateG3({ ...g3Pass, dryRunReturns: [...dry.slice(1), 50] });
+    const r = gateG3({ ...g3Pass, ...keptOf([...dry.slice(1), 50]) });
     expect(r.metrics.dryRunMean).toBeCloseTo(mean([...dry.slice(1), 3]), 12);
     expect(r.checks.find((x) => x.name === 'mean')!.detail).toMatch(/capped at \+300%: dry run 1, holdout 0/);
   });
@@ -820,13 +917,54 @@ describe('G3 live dry-run consistency', () => {
     expect(() => gateG3(g3Pass, { retainedLowerMin: -0.01 })).toThrow(/only be tightened/);
     expect(gateG3(g3Pass, { retainedLowerMin: 0.2 }).passed).toBe(false);
   });
+  test('the veto gap is cluster-robust by creator: shared creators widen it, missing labels fail (external audit S4)', () => {
+    const cf = g3Pass.vetoCounterfactuals.returns;
+    const base = gateG3(g3Pass);
+    // The same kept trades from 3 creators instead of 60, each creator's trades alike (low, middle and high returns):
+    // the gap bounds widen, because their shared component is no longer assumed away.
+    const order = dry.map((_, i) => i).sort((i, j) => dry[i]! - dry[j]!);
+    const fewCreators = dry.map(() => '');
+    order.forEach((i, pos) => { fewCreators[i] = `k${Math.floor((3 * pos) / dry.length)}`; });
+    const clustered = gateG3({ ...g3Pass, ...keptOf(dry, fewCreators) });
+    expect(clustered.metrics.vetoGapClustersKept).toBe(3);
+    expect(clustered.metrics.vetoGapUpper!).toBeGreaterThan(base.metrics.vetoGapUpper!);
+    expect(clustered.metrics.vetoGapUpper).toBeCloseTo(clusterWelchBounds(cf, cf.map((_, i) => `v${i}`), dry, fewCreators, VETO_COMPOSITE_ALPHA).upper, 12);
+    // Missing or misaligned labels fail; one creator a side leaves the gap unmeasured (worst case).
+    const unlabelled = gateG3({ ...g3Pass, dryRunClusters: dry.slice(1).map((_, i) => `k${i}`) });
+    expect(unlabelled.reasons.join(' | ')).toMatch(/veto clusters: .* for 60 kept trades \(need one non-empty creator cluster each\)/);
+    expect(gateG3({ ...g3Pass, ...keptOf(dry, dry.map(() => '')) }).reasons.join()).toMatch(/veto clusters/);
+    const oneCreator = gateG3({ ...g3Pass, ...keptOf(dry, dry.map(() => 'same')) });
+    expect(oneCreator.metrics.vetoGap).toBeNull();
+    expect(oneCreator.notes.join()).toMatch(/on >= 2 creator clusters each\): the worst case/);
+  });
+  test('the cluster-robust gap bound by hand: CR2 variance and Bell–McCaffrey df on 3 creators a side (review B4)', () => {
+    // a = 1, 2, 3, 6 on creators x, x, y, z: mean 3, residual sums x −3, y 0, z 3, sizes 2, 1, 1 of 4.
+    // CR2: (9/(1 − 2/4) + 0/(1 − 1/4) + 9/(1 − 1/4)) / 4² = 30/16 = 1.875 (CR1 would give 3/2 · 18/16 = 1.6875).
+    // df: r_g = n_g²/(n − n_g) = 2, 1/3, 1/3; 4² / (Σn_g² + (Σr)² − Σr²) = 16 / (6 + 64/9 − 38/9) = 1.8 (G − 1 would be 2).
+    // b = 0, 2, 4 on creators p, q, r: mean 2, sums −2, 0, 2, sizes 1 of 3: (4/(2/3) + 0 + 4/(2/3))/9 = 4/3 = 32/24,
+    // df: r_g = 1/2 each, 9 / (3 + 9/4 − 3/4) = 2 (one trade a creator: n − 1).
+    // Satterthwaite: (Va + Vb)² / (Va²/1.8 + Vb²/2) = 77² / (45²/1.8 + 32²/2) = 5929/1637 with Va = 45/24, Vb = 32/24.
+    const r = clusterWelchBounds([1, 2, 3, 6], ['x', 'x', 'y', 'z'], [0, 2, 4], ['p', 'q', 'r'], 0.05);
+    const df = 5929 / 1637;
+    expect(r.diff).toBe(1);
+    expect(r.se ** 2).toBeCloseTo(77 / 24, 12);
+    expect(r.df).toBeCloseTo(df, 12);
+    expect(r.df).toBeCloseTo(3.62187, 5);
+    expect(r.upper).toBeCloseTo(1 + studentTQuantile(0.95, df) * Math.sqrt(77 / 24), 12);
+    expect(r.lower).toBeCloseTo(1 - studentTQuantile(0.95, df) * Math.sqrt(77 / 24), 12);
+    // Every observation its own cluster: the Welch variance s²/n and df n − 1 a side.
+    const own = clusterWelchBounds([1, 2, 3, 6], ['a', 'b', 'c', 'd'], [0, 0, 3, 5], ['e', 'f', 'g', 'h']);
+    expect(own.se ** 2).toBeCloseTo(variance([1, 2, 3, 6]) / 4 + variance([0, 0, 3, 5]) / 4, 12);
+    expect(own.df).toBeCloseTo((7 / 6 + 1.5) ** 2 / ((7 / 6) ** 2 / 3 + 1.5 ** 2 / 3), 12);
+  });
   test('counterfactual scoring takes the outcome-stage labels of the vetoed candidates and counts censored ones', () => {
     const label = (rNet: number | null, censored = false): TripleBarrierLabel => ({
       cfgId: 'tp30_sl15', entryFilled: rNet !== null, yTb: null, rNet, touchSlot: null, exitSlot: null, mfe: null, mae: null,
       blocked: false, nExitAttempts: 1, yMeta: null, ySevere: null, censored,
     });
-    expect(scoreVetoCounterfactuals([label(0.27), label(-0.18), label(null, true)])).toEqual({ returns: [0.27, -0.18], censored: 1 });
-    expect(() => scoreVetoCounterfactuals([label(0.27), { ...label(0.1), cfgId: 'other' }])).toThrow(/one barrier configuration/);
+    expect(scoreVetoCounterfactuals([label(0.27), label(-0.18), label(null, true)], ['c1', 'c2', 'c3'])).toEqual({ returns: [0.27, -0.18], clusters: ['c1', 'c2'], censored: 1 });
+    expect(() => scoreVetoCounterfactuals([label(0.27), { ...label(0.1), cfgId: 'other' }], ['c1', 'c2'])).toThrow(/one barrier configuration/);
+    expect(() => scoreVetoCounterfactuals([label(0.27)], [])).toThrow(/1 labels but 0 creator clusters/);
   });
 });
 

@@ -403,7 +403,7 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
       scenario: 'conservative', registry: store!.registry, nowMs: Date.parse(i.startedAt), rng: createRng(seedNumber(`${i.seed}:g2`)),
       universes: ready.map((u) => ({
         universe: u, configId: ids[u]!, holdoutId: holdoutIdOf(u), ledgerHash: open.sealHash, trades: open.outcomes.strategy[u] ?? [],
-        controlRuns: open.outcomes.s0.map((s) => s[`S0-${u}`] ?? []), g1Passed: g1Passed(u), walkForward: sameRegime(tradesOf(u)), power: (power[u] as { power: Parameters<typeof gateG2>[0]['universes'][number]['power'] }).power,
+        controlRuns: open.outcomes.s0.map((s) => s[`S0-${u}`] ?? []), g1Passed: g1Passed(u), walkForward: sameRegime(tradesOf(u)), walkForwardControl: sameRegime(controlOf(u)), power: (power[u] as { power: Parameters<typeof gateG2>[0]['universes'][number]['power'] }).power,
       })),
     }, { familyAlpha: alpha });
     store = recordHoldoutG2(i.holdout, r.registry);

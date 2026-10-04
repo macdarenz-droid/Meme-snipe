@@ -4,7 +4,7 @@ import { MODE_LABEL, hasSample, requiredTrades } from '../api/modes.ts';
 import { Badge, Empty } from '../components/ui.tsx';
 import { shortAddress } from '../lib/format.ts';
 import { formatPriceDec, formatR, formatShare, formatUsdExact, toMicro, toneOf } from '../lib/money.ts';
-import { CHECK_LABEL, EXIT_RULE_LABEL, FLAG_ALERT, FLAG_LABEL, RISK_LABEL, STAGE_LABEL, VENUE_LABEL } from './labels.ts';
+import { ALERT_LABEL, CHECK_LABEL, EXIT_RULE_LABEL, FLAG_ALERT, FLAG_LABEL, HALT_LABEL, REGIME_INPUT_LABEL, REGIME_REASON_LABEL, RISK_LABEL, STAGE_LABEL, VENUE_LABEL, WAIVED_LABEL } from './labels.ts';
 import { melDateTime } from './time.ts';
 
 export const NOT_ENOUGH = 'Not enough trades';
@@ -51,28 +51,55 @@ const ENTRY_OFF: readonly (readonly [StatusFlag, string])[] = [
   ['regime-off', 'regime'],
   ['waiting-for-evidence', 'no evidence'],
 ];
-const ALERTS: readonly StatusFlag[] = ['unknown-tx-result', 'low-fee-reserve', 'rate-limited'];
+const ALERT_FLAGS: readonly StatusFlag[] = ['unknown-tx-result', 'low-fee-reserve', 'rate-limited'];
+
+const label = <K extends string>(labels: Readonly<Record<K, string>>, k: unknown): string | null =>
+  typeof k === 'string' && Object.hasOwn(labels, k) ? labels[k as K] : null;
+const unique = (xs: readonly (string | null)[]): string[] => [...new Set(xs.filter((x): x is string => x !== null))];
+const list = <T,>(v: unknown): readonly T[] | null => (Array.isArray(v) ? (v as T[]) : null);
 
 export interface StatusRow {
-  readonly label: 'Entries' | 'Candidates' | 'Exits' | 'Alerts';
+  readonly label: 'Entries' | 'Regime' | 'Candidates' | 'Exits' | 'Alerts';
   readonly value: string;
   readonly alert: boolean;
 }
 
 /**
- * The worker card's rows, from the status flags the worker serves. A row appears only when a flag proves it: the
- * status endpoint does not carry halt reasons, exit readiness or the regime's reason yet (docs/DECISIONS.md, APP-3),
- * so "Entries: On" or "Exits: Ready" is never shown. Unknown flags add nothing.
+ * The worker card's rows. A row appears only when a served field proves it: the flags, and (API-1) the halt reasons,
+ * exit readiness, critical alerts and the latest regime evaluation. A field the worker does not serve, or a value
+ * this app does not know, adds nothing. "Entries: On" needs the halt reasons empty, the regime on and no stopping flag.
  */
 export const statusRows = (status: WorkerStatus): StatusRow[] => {
-  const has = new Set<string>(Array.isArray(status.flags) ? status.flags : []);
+  const has = new Set<string>(list<string>(status.flags) ?? []);
+  const halts = list<{ code?: unknown }>(status.haltReasons);
+  const regime = status.regime !== null && typeof status.regime === 'object' && (status.regime.state === 'on' || status.regime.state === 'off') ? status.regime : null;
   const rows: StatusRow[] = [];
-  const off = ENTRY_OFF.filter(([f]) => has.has(f)).map(([, why]) => why);
-  if (off.length > 0) rows.push({ label: 'Entries', value: `Off: ${off.join(', ')}`, alert: false });
+  const waived = regime === null ? null : list<unknown>(regime.waived);
+
+  const off = unique([...ENTRY_OFF.filter(([f]) => has.has(f)).map(([, why]) => why), ...(halts ?? []).map((h) => label(HALT_LABEL, h.code))]);
+  if (off.length > 0 || (halts !== null && halts.length > 0)) rows.push({ label: 'Entries', value: off.length > 0 ? `Off: ${off.join(', ')}` : 'Off', alert: false });
+  // On only with every stop served and none active (the account's risk stops are among the halts), and a regime
+  // evaluation that is on and current (at most two candidate evaluation steps old: the worker's regimeMaxAgeMs).
+  // Any part the S0 diagnostic set did not judge makes the regime's "on" practice only: never a plain "On".
+  else if (halts !== null && regime?.state === 'on' && regime.current === true && waived !== null) rows.push({ label: 'Entries', value: waived.length > 0 ? 'On (practice)' : 'On', alert: false });
+
+  if (regime !== null && regime.current !== true) rows.push({ label: 'Regime', value: 'Not checked lately', alert: false });
+  else if (regime !== null && regime.state === 'on' && waived === null) rows.push({ label: 'Regime', value: 'Unknown', alert: false });
+  else if (regime !== null && regime.state === 'on' && waived !== null && waived.length > 0) {
+    const parts = unique(waived.map((w) => label(WAIVED_LABEL, w) ?? null));
+    rows.push({ label: 'Regime', value: parts.length > 0 ? `On (practice: ${parts.join(', ')} not judged)` : 'On (practice)', alert: false });
+  } else if (regime !== null) {
+    const why = unique((list<{ code?: unknown; input?: unknown }>(regime.reasons) ?? []).map((r) => (r.code === 'unknown' ? (label(REGIME_INPUT_LABEL, r.input) ?? null) : label(REGIME_REASON_LABEL, r.code))));
+    rows.push({ label: 'Regime', value: regime.state === 'on' ? 'On' : why.length > 0 ? `Off: ${why.join(', ')}` : 'Off', alert: false });
+  }
   if (has.has('no-eligible-candidate')) rows.push({ label: 'Candidates', value: 'None yet', alert: false });
+
   if (has.has('exit-blocked')) rows.push({ label: 'Exits', value: 'Blocked', alert: true });
   else if (has.has('exit-pending')) rows.push({ label: 'Exits', value: 'Pending', alert: false });
-  const alerts = ALERTS.filter((f) => has.has(f)).map((f) => FLAG_LABEL[f]);
+  else if (status.exitCapable === true) rows.push({ label: 'Exits', value: 'Ready', alert: false });
+  else if (status.exitCapable === false) rows.push({ label: 'Exits', value: 'Not ready', alert: true });
+
+  const alerts = unique([...ALERT_FLAGS.filter((f) => has.has(f)).map((f) => FLAG_LABEL[f]), ...(list<{ code?: unknown }>(status.alerts) ?? []).map((a) => label(ALERT_LABEL, a.code))]);
   if (alerts.length > 0) rows.push({ label: 'Alerts', value: alerts.join(', '), alert: true });
   return rows;
 };
