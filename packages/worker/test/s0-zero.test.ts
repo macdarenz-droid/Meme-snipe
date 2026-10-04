@@ -8,7 +8,7 @@ import { startSession, TRIAL_POLICY } from '../../core/src/config/index.ts';
 import { OFF_CHAIN, type Moment } from '../../core/src/engine/index.ts';
 import { Evidence, candlesKey, migrationKey, parseCandles, parseMigration } from '../../core/src/gates/index.ts';
 import { MINT as MINT_H, POOL_ADDRESS, passingFacts } from '../../core/test/gates/world.ts';
-import { makeWorker, passingMarket } from './worker-harness.ts';
+import { makeWorker, passingMarket, tempState } from './worker-harness.ts';
 import { FactWorld, MINT, POOL, RECORDS, atOf, chainTx, coverage, slotNotice, txEvents } from '../../core/test/facts/helpers.ts';
 import { checkJournal } from '../../runner/src/journal.ts';
 import {
@@ -16,10 +16,12 @@ import {
 } from '../src/providers/index.ts';
 import type { SignatureInfo } from '../src/providers/solana-http.ts';
 import { HELIUS_FREE, ManualTimers, P1, P3, Scheduler, type Timers } from '../src/scheduler/index.ts';
+import { CAPPED_READ_CREDITS_PER_DAY, FILL_CREDITS_PER_DAY } from '../src/run/seed-start.ts';
 import { fillTradeGaps, type SeedRpc } from '../src/seed/index.ts';
 import { PoolWatch } from '../src/run/pool-watch.ts';
-import { TRADES_FILL_CREDITS, tradesFill } from '../src/run/sources.ts';
-import { blockNetwork, recordOf, settle, TXS } from './helpers.ts';
+import { CreditBook, LiveProviders, TRADES_FILL_CREDITS, tradesFill } from '../src/run/sources.ts';
+import type { DailyBudget } from '../src/persist/index.ts';
+import { blockNetwork, recordOf, settle, testSecrets, tx, TXS } from './helpers.ts';
 
 blockNetwork();
 
@@ -322,6 +324,19 @@ describe('FILL-2 proves a catch-up complete when the pool\'s history starts at i
     expect(fills[0]!.records[0]!.signature).toBe(migrate.signature);
   });
 
+  it('a transaction in the range that cannot be read keeps it incomplete, even when the history ends at the creation', async () => {
+    const broken = swaps[0]!.signature;
+    const rpc: SeedRpc = { ...rpcOf(history([migrate, ...swaps])), getTransaction: async (sg) => (sg === broken ? null : RECORDS.find((r) => r.rec.signature === sg)?.rec ?? null) };
+    const { fills } = await fillTradeGaps({
+      rpc, timers: { now: () => 1_791_100_000_000, setTimeout: (fn) => { queueMicrotask(fn); return { id: 0 }; }, clearTimeout: () => {} }, provider: 'helius', creditCap: 10_000,
+      asOf: { slot: until + 10n, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt: 1_791_100_000_000 },
+      gaps: [{ pool: POOL, stream: `trades:${POOL}`, kind: 'candidate', fromSlot: migrate.slot, fromMs: 0, untilSlot: until, close: { via: `logs:${POOL}`, fromSlot: migrate.slot } }],
+    });
+    expect(fills[0]!.report.stoppedBy).toBe('history-end');
+    expect(fills[0]!.records[0]!.signature).toBe(migrate.signature);
+    expect(fills[0]!.complete).toBe(false);
+  });
+
   it('the history ends at anything else, or at another pool\'s creation: incomplete', async () => {
     expect((await run(history(swaps))).fills[0]!.complete).toBe(false);
     expect((await run(history([migrate, ...swaps]), 'Hyg1u7HjBpmne8MLZsKoVBB31nm276xy4E6dzGcaYni')).fills[0]!.complete).toBe(false);
@@ -400,5 +415,86 @@ describe('the strategy hands each candidate\'s migration slot to the pool watch'
     expect(listed).toMatchObject({ mint: MINT_H, held: false });
     expect(listed!.fromSlot).toBe(mig.obs.slot);
     await h.worker.stop();
+  });
+
+  it('a mint sighted twice keeps the earliest slot: a later sighting of its migration does not move it', async () => {
+    const h = makeWorker();
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    const m = await passingMarket(h, { heldPoolFacts: true });
+    const raw = passingFacts().get(migrationKey(MINT_H))!.value as { obs: { slot: bigint } };
+    const first = raw.obs.slot;
+    // The same migration seen again, observed at a later slot (a refetch, or a second provider's copy).
+    m.fact(migrationKey(MINT_H), { ...raw, obs: { ...raw.obs, slot: first + 100n } });
+    await m.run(4_000, 400, () => {
+      m.slot();
+      m.pool();
+    });
+    expect(h.worker.strategy.watchedPools().get(POOL_ADDRESS)!.fromSlot).toBe(first);
+    await h.worker.stop();
+  });
+});
+
+describe('the live providers wire the fill into the pool watches (the original bug: no fill was ever wired)', () => {
+  const mig = tx('migration CreatePoolEvent');
+  const record = recordOf(mig);
+  const poolOf = transactionEvents(record).find((e) => e.name === 'CreatePoolEvent')!;
+  const pool = (poolOf.data as { pool: string }).pool;
+  const run = async (withBudget: boolean) => {
+    const timers = new ManualTimers(Number(record.blockTime) * 1000 + 5_000);
+    const hub = new FakeSocketHub();
+    const http = scriptedHttp(rpcHandler((m) => (m === 'getTransaction' ? mig.base64 : m === 'getSignaturesForAddress' ? [{ signature: mig.signature, slot: Number(record.slot), err: null, blockTime: Number(record.blockTime) }] : undefined)));
+    const stateDir = tempState();
+    let spent = 0;
+    const providers = new LiveProviders({
+      tradeStreams: false, secrets: testSecrets, http, factory: hub.factory, credits: new CreditBook(stateDir, timers),
+      ...(withBudget ? { fillBudget: { remaining: () => 20_000 - spent, spend: (c: number) => { spent += c; } } as unknown as DailyBudget } : {}),
+    });
+    const frames: Frame[] = [];
+    const feed = new LiveFeed({ ...DEFAULT_LIVE_FEED, horizonSlots: 0, onFrame: (f) => frames.push(f) });
+    const lines: unknown[] = [];
+    const sources = providers.feeds({ feed, timers, pools: () => new Map([[pool, { mint: 'MintM', held: false, fromSlot: record.slot }]]), journal: (_k, f) => lines.push(f) });
+    sources.find((s) => s.name === 'helius-ws')!.start();
+    const hel = hub.sockets.find((s) => s.url.includes('helius'))!;
+    hel.open();
+    await settle(20);
+    const subs = new Map<string, number>();
+    hel.requests().forEach((r, k) => {
+      if (typeof r.method === 'string' && r.method.endsWith('Subscribe') && r.id !== undefined) {
+        hel.push({ jsonrpc: '2.0', id: r.id, result: 700 + k });
+        subs.set(r.method === 'slotSubscribe' ? 'slot' : JSON.stringify(r.params), 700 + k);
+      }
+    });
+    await settle(20);
+    hel.push({ jsonrpc: '2.0', method: 'slotNotification', params: { subscription: subs.get('slot'), result: { slot: Number(record.slot) + 5, parent: 0, root: 0 } } });
+    for (let k = 0; k < 20; k++) await settle(20);
+    const cov = frames.filter((f) => f.body.type === 'offchain' && f.body.key.startsWith(`coverage:trades:${pool}:`)).map((f) => (f.body as { key: string }).key.split(':').at(-1));
+    sources.find((s) => s.name === 'helius-ws')!.stop();
+    return { cov, lines, spent };
+  };
+
+  it('with the fill budget: the catch-up from the migration closes with a resume, journaled and booked', async () => {
+    const r = await run(true);
+    expect(r.cov).toEqual(['start', 'gap', 'resume']);
+    expect(r.lines).toHaveLength(1);
+    expect(r.lines[0]).toMatchObject({ pool, complete: true, transactions: 1 });
+    expect(r.spent).toBeGreaterThan(0);
+  });
+
+  it('without a fill budget: no fill, the catch-up closes lossy and H11 keeps rejecting', async () => {
+    const r = await run(false);
+    expect(r.cov).toEqual(['start', 'gap', 'gap']);
+    expect(r.lines).toEqual([]);
+  });
+});
+
+describe('the daily fill budget is derived from the Helius plan, not fixed', () => {
+  it('fills plus the capped recurring reads stay inside the non-exit allowance of a 31-day month, with room left', () => {
+    const allowance = HELIUS_FREE.budget!.monthlyCredits * HELIUS_FREE.budget!.haltShare;
+    expect(allowance).toBe(700_000);
+    expect(CAPPED_READ_CREDITS_PER_DAY).toBe(120 * 24 * 2 + 1_440 + 1_440);
+    expect(FILL_CREDITS_PER_DAY).toBe(6_970);
+    expect(31 * (CAPPED_READ_CREDITS_PER_DAY + FILL_CREDITS_PER_DAY)).toBeLessThan(allowance);
+    // Half of what is left stays for the uncapped reads (socket bytes, migration fetches, fact reads).
+    expect(allowance - 31 * (CAPPED_READ_CREDITS_PER_DAY + FILL_CREDITS_PER_DAY)).toBeGreaterThanOrEqual(31 * FILL_CREDITS_PER_DAY);
   });
 });

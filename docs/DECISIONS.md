@@ -1132,7 +1132,7 @@ Built to the supervisor's revised spec and the consensus rulings that followed i
   - **Restore.** The restored index and labeller travel inside the recorded `worker:seed` fact (`state`), and the strategy restores them from that fact. So a replay of the recording rebuilds the same state; the strategy never reads the file itself. Live events wait for the seed as before, so the index is whole before any decision.
   - **Downtime fill.** The fill starts at the saved moment, and its `close` is the restart gap `loadState` opened on the live creates watch, so one fill closes it. The rug half stays not covered after a restart until the deployer checks (item 4) cover each creator.
   - **Saves.** A save holds the index (entries older than the look-back plus a day left out), the labeller's tables and every coverage fact, the restored history included, as of the latest released moment. It is written every 5 minutes and at a clean stop. It is refused until the seed (or the restore) is applied, so an unseeded index never replaces a good file; a crash keeps the last periodic save.
-  - **Fill budget.** The fill's credits come from PERSIST-1's `DailyBudget`: 20,000 a UTC day in `fill-budget.json`. A restart's fill reserves its cap first and gives back the unused part after, so a reboot loop stops there.
+  - **Fill budget.** The fill's credits come from PERSIST-1's `DailyBudget`: 20,000 a UTC day in `fill-budget.json` (since S0-ZERO derived from the Helius plan, 6,970 a day; see "Candidate trade coverage from the migration"). A restart's fill reserves its cap first and gives back the unused part after, so a reboot loop stops there.
   - **Fix in `DailyBudget`.** The day now rolls only forward, and a file dated later than today keeps its spend. Before, a clock stepped back gave a fresh budget, the same flaw the review found in the deployer checks.
   - **Rename.** `strategy.markOf` is renamed `displayQuoteOf` (review N3), so it is never read as risk's mark (RISK-MARK's executable mark). It is a display value only (/health and the heartbeat): the whole holding's sale quote at the pool's last read, venue fees and price impact included, network fees, the exit slippage allowance and landing not. Not called a spot price, because it is not one (spot is the pool's marginal price before impact).
 - **2026-10-04 · Every open position in `/health`.** `open_positions` lists each position that is not closed and not still opening, oldest first (by the account's open time, then id), each in `open_position`'s shape (`run/open-positions.ts`). `open_position` stays as the first entry, so the watchdog and older readers keep working. The runner reads the whole list where it counts positions: the kept positions at a restart, the exposed trades, trade-id completeness and the kill reply's universe check. Moving the watchdog's heartbeat onto the list is a follow-up.
@@ -1450,9 +1450,26 @@ Built to the supervisor's revised spec and the consensus rulings that followed i
   - Nothing can trade on a pool before its creation, so the end of its history there is its start, not missing history.
   - Any other history end (including another pool's creation) stays incomplete.
 - **2026-10-05 · Budget (supervisor conditions).**
-  - Each in-run fill may spend at most `TRADES_FILL_CREDITS` (500), and never more than FILL-2's daily fill budget has left (`fill-budget.json`, 20,000 a day, now one shared instance for the restart fill and the in-run fills). With nothing left there is no call at all, and the gap stays lossy.
+  - Each in-run fill may spend at most `TRADES_FILL_CREDITS` (500), and never more than FILL-2's daily fill budget has left (`fill-budget.json`, now derived from the plan: 6,970 a day, below; one shared instance for the restart fill and the in-run fills). With nothing left there is no call at all, and the gap stays lossy.
   - What a fill spent is booked to that budget, on top of the Helius scheduler's own metering of each call (candidates at P3, open positions at P2).
   - Each fill is journaled as `trades_fill` (pool, mint, kind, slots, complete, transactions, credits, calls, why it stopped, latency). The runner report prints "Trade-gap fills: C complete of N, T transactions, X Helius credits", so the shakedown measures the 1,000–5,000 credits a day estimate.
+- **2026-10-05 · The daily fill budget is derived from the plan (review of #166, item 4; replaces WORKER-1c's fixed 20,000).** The figures are the code's own:
+  - Helius Free is 1,000,000 credits a month, and the scheduler halts non-exit calls at 70%, so 700,000 is the non-exit allowance (`HELIUS_FREE.budget`).
+  - The code caps three recurring reads, 8,640 credits a day at most (`CAPPED_READ_CREDITS_PER_DAY`):
+    - H15: `SIM_READS_PER_HOUR` 120, each one market read and one simulate, so 5,760;
+    - the stand-in's funding check: at most once a minute, so 1,440;
+    - the delay probe: once a minute, so 1,440.
+  - Over a 31-day month that is 267,840, leaving 432,160 for everything else. The old 20,000 a day (620,000 a month) could not fit even with no other reads.
+  - The fills now get `FILL_SHARE` 0.5 of that remainder: `FILL_CREDITS_PER_DAY` = (700,000 − 31 × 8,640) × 0.5 / 31 = 6,970 a day. The other half stays for the reads the code does not cap: socket bytes, migration fetches, fact reads.
+  - The 0.5 is provisional. The supervisor sets it from the shakedown's quota report (credits by class).
+  - Whatever is left in the fill budget, the scheduler's 70% halt still refuses non-exit calls.
+  - Test: `s0-zero.test.ts` checks 31 × (8,640 + fills) stays under 700,000 with at least the fills' share left over.
+- **2026-10-05 · Risk: the catch-ups may need more than the fill budget (golden rule: count it as real).**
+  - A catch-up costs one signature page plus one credit per transaction between the migration and the subscribe.
+  - Graduations: about 1,290 a day by RESEARCH.md (49.7k launches × 2.6%), about 17 an hour (about 410 a day) as the host saw on 5 Oct at about 12:30 AM.
+  - With about 5–15 transactions each, that is about 2,500–20,600 credits a day, against 6,970 shared with the restart fills. The low end fits and the high end does not.
+  - A catch-up the budget cannot pay is skipped (`trades_fill` `stopped_by: skipped-no-budget`). H11 then rejects that candidate: a wrongly rejected trade.
+  - The first shakedown hours measure both numbers from the `trades_fill` lines. If skips appear, the choices are a larger `FILL_SHARE`, catch-ups only for candidates no cheaper final gate has already rejected, or Helius Developer. That last is a paid service and the owner's call (ARCHITECTURE: "only when logs show it is needed").
 - **2026-10-05 · Known gaps (separate card, PERSIST builder).** Candidates are still forgotten at a restart, and a coin created before the process started still misses its create (H9, H12–H14).
   - S0 judges a candidate 60–240 min after its migration, so until that card lands every deploy restart costs the shakedown up to 4 h of candidates.
 - **2026-10-05 · Evidence.** `packages/worker/test/s0-zero.test.ts`:
