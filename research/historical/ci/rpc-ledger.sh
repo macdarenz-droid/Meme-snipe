@@ -12,7 +12,7 @@
 #       same figure as the worker's own Helius halt, which counts only the worker's use:
 #       until that halt is configurable (WORKER-CREDITS), it is fixed at 70% of the free
 #       plan's 1,000,000 (packages/worker/src/scheduler/limits.ts), so init refuses any
-#       WORKER_BUDGET below 700000, and prints the figure the worker's halt must be.
+#       WORKER_BUDGET other than 700000, and prints the figure the worker's halt must be.
 #   rpc-ledger.sh reserve ID DAY DAY_CAP RUN_BUDGET OUT_FILE
 #       books min(RUN_BUDGET, what is left of DAY_CAP for DAY, what is left of the
 #       period after the worker's share) as outstanding under ID and writes the amount to
@@ -128,8 +128,8 @@ if rest:
         days[d] = int(n)
 limit, worker = int(limit), int(worker)
 WORKER_HALT = 700000  # the worker's current hard halt (supervisor ruling 2026-10-04); lower only once WORKER-CREDITS makes it a setting
-if worker < WORKER_HALT:
-    print(f"rpc-ledger: worker_budget {worker} is below the worker's own halt of {WORKER_HALT}: the two must be the same figure, or history and the worker together can pass the month's credits", file=sys.stderr); sys.exit(1)
+if worker != WORKER_HALT:
+    print(f"rpc-ledger: worker_budget {worker} is not the worker's own halt of {WORKER_HALT}: the two must be the same figure, or history and the worker together can pass the month's credits", file=sys.stderr); sys.exit(1)
 assert 0 < limit and 0 <= worker < limit and used >= 0 and sum(days.values()) <= used, "bad init values"
 json.dump({"period": period, "limit": limit, "worker_budget": worker, "used": used, "days": days,
            "outstanding": [], "settled": []}, open(out, "w"), indent=1, sort_keys=True)
@@ -212,7 +212,10 @@ PY
     "$py" -c 'import json,sys; l=json.load(open(sys.argv[1])); print(json.dumps({k: l[k] for k in ("period","limit","worker_budget","used","days","outstanding")}, indent=1))' "$tmp/ledger.json"
     ;;
   unlock)
-    "$gh" release download "$tag" --dir "$tmp" --pattern ledger.lock >/dev/null 2>&1 || true
+    if ! "$gh" release download "$tag" --dir "$tmp" --pattern ledger.lock >/dev/null 2>"$tmp/err"; then
+      echo "rpc-ledger: cannot read ledger.lock ($(head -c 200 "$tmp/err")): not removing it" >&2
+      exit 1
+    fi
     if [ -s "$tmp/ledger.lock" ]; then
       at=$(awk '{print $2}' "$tmp/ledger.lock"); at=$(date -u -d "$at" +%s 2>/dev/null || echo 0)
       age=$(( $(date -u +%s) - at ))

@@ -419,7 +419,7 @@ Supervisor rulings:
 - **DATA-4: Helius credits are reserved in one account-wide ledger before they are spent (2026-10-04).**
   - The per-day total in the day's progress was booked after each unit, so a run killed mid-unit could forget credits it had spent, and nothing counted the pilot or the live worker against the same month.
   - Now every helius job reserves its budget durably (release `helius-ledger`) before any request and settles the actual spend after. A spend without a final usage file books the whole reservation, so a kill over-books, never under-books. A missing or unreadable ledger, or a lock it cannot take, fails closed.
-  - The live worker cannot write to the ledger, so its budgeted share (H15 about 8.6k a day plus the 150k catch-up cap, at most its 700k halt) is held back from every reservation.
+  - The live worker cannot write to the ledger, so its share is held back from every reservation. That share must equal the worker's own Helius halt, which counts only the worker's use (supervisor ruling, 2026-10-04): until WORKER-CREDITS makes the halt a setting, both are exactly 700k, and init refuses any other figure.
   - Chosen over a cache-based ledger (a cache can be evicted or restored stale) and over a repo file (commits from CI would touch a branch). A release asset outlives runs and caches, and its upload refuses a duplicate name, which gives the lock.
 - **DATA-2 pilot baseline: 1 Oct 09:40–10:00 instead of an hour of 2 Oct (2026-10-04).**
   - It is the only archive unit in today's schema (epoch 1046, 452,277,000–452,281,499, 4,496 blocks). The 2 Oct slices are schema 1, sampled at 0.25.

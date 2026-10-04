@@ -13,8 +13,8 @@ name: helius-ledger
 #     worker_budget  the live worker's share, held back from every reservation (the
 #                    worker spends on the same account but does not write here). It
 #                    must be the same figure as the worker's own Helius halt; until that
-#                    halt is a setting (WORKER-CREDITS) it is 700000, and init refuses
-#                    less and prints the figure the worker's halt must be set to
+#                    halt is a setting (WORKER-CREDITS) it is exactly 700000: init
+#                    refuses any other figure and prints the one the worker's halt must be
 #     used           credits already used this period (from the Helius dashboard) by
 #                    everything but the worker's share, so nothing spent before the
 #                    ledger is forgotten
@@ -77,6 +77,9 @@ jobs:
           if [ "$ACTION" = init ]; then
             [[ "$PERIOD" =~ ^[0-9A-Za-z._-]+$ && "$LIMIT" =~ ^[0-9]+$ && "$WORKER_BUDGET" =~ ^[0-9]+$ && "$USED" =~ ^[0-9]+$ ]] ||
               { echo "init needs period, limit, worker_budget and used (whole numbers)"; exit 1; }
+            # The worker's own halt is 700000 until WORKER-CREDITS makes it a setting; the
+            # ledger's worker share must be the same figure (rpc-ledger.sh refuses it too).
+            [ "$WORKER_BUDGET" = 700000 ] || { echo "worker_budget must be 700000, the worker's own Helius halt"; exit 1; }
             args=(init "$PERIOD" "$LIMIT" "$WORKER_BUDGET" "$USED")
             IFS=, read -ra pairs <<< "$DAYS"
             for kv in "${pairs[@]}"; do

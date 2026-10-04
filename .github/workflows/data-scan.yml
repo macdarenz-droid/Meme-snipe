@@ -280,7 +280,7 @@ jobs:
         run: |
           # Spend evidence restored from an earlier run's cache was settled by that run.
           /usr/bin/rm -f "$RUNNER_TEMP"/work/data/rpc-started-* "$RUNNER_TEMP"/work/data/rpc-usage-*.json
-          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" GH_TOKEN="$GH_TOKEN" GITHUB_REPOSITORY="$GITHUB_REPOSITORY" \
+          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" GH_TOKEN="$GH_TOKEN" GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY" \
             /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/rpc-ledger.sh" \
             reserve "$RID" "$DAY" "$MAX_CREDITS" "$MAX_CREDITS" "$RUNNER_TEMP/rpc-reservation"
       # Exit 75 (the 300 min budget ran out, or a back-off did not fit it) is resumable:
@@ -366,7 +366,7 @@ jobs:
       # reservation. If this step never runs (a lost runner), the reservation stays
       # booked: the ledger over-books, never under-books.
       - name: Settle Helius credits
-        if: always() && steps.published.outcome == 'success' && steps.published.outputs.complete != 'true' && steps.reserve.outcome == 'success'
+        if: always() && steps.published.outcome == 'success' && steps.published.outputs.complete != 'true' && steps.reserve.outcome != 'skipped'
         env:
           RID: ${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.day }}
           GH_TOKEN: ${{ github.token }}
@@ -376,7 +376,7 @@ jobs:
           LD_LIBRARY_PATH: ""
         shell: /usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc -eo pipefail {0}
         run: >-
-          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" GH_TOKEN="$GH_TOKEN" GITHUB_REPOSITORY="$GITHUB_REPOSITORY"
+          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" GH_TOKEN="$GH_TOKEN" GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY"
           /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/rpc-ledger.sh"
           settle "$RID" "$RUNNER_TEMP/work/data"
       # Chained only when this run's progress was saved; a failed save stops for review.

@@ -81,7 +81,7 @@ jobs:
           LD_AUDIT: ""
           LD_LIBRARY_PATH: ""
         run: >-
-          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" GH_TOKEN="$GH_TOKEN" GITHUB_REPOSITORY="$GITHUB_REPOSITORY"
+          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" GH_TOKEN="$GH_TOKEN" GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY"
           /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/rpc-ledger.sh"
           reserve "$RID" "$RID" "$MAX_CREDITS" "$MAX_CREDITS" "$RUNNER_TEMP/rpc-reservation"
       - name: Pilot (free plan, hard credit stop)
@@ -101,7 +101,7 @@ jobs:
       # The report is written after the last request, so its usage is final; with no
       # report (a killed run) the whole reservation is booked.
       - name: Settle Helius credits
-        if: always() && steps.reserve.outcome == 'success'
+        if: always() && steps.reserve.outcome != 'skipped'
         shell: /usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc -eo pipefail {0}
         env:
           RID: pilot-${{ github.run_id }}-${{ github.run_attempt }}
@@ -118,7 +118,7 @@ jobs:
           u["final"] = True
           json.dump(u, open(sys.argv[2], "w"))
           EOF
-          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" GH_TOKEN="$GH_TOKEN" GITHUB_REPOSITORY="$GITHUB_REPOSITORY" \
+          /usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" GH_TOKEN="$GH_TOKEN" GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY" \
             /usr/bin/bash --noprofile --norc "$GITHUB_WORKSPACE/research/historical/ci/rpc-ledger.sh" settle "$RID" "$RUNNER_TEMP/ledger"
       - name: Summarise the report
         if: always()
