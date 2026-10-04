@@ -4,7 +4,7 @@ import { parseServer, SERVER_ERROR_TEXT, type ServerError } from '../api/server.
 import { Badge, Dot, Section } from '../components/ui.tsx';
 import { melDateTime } from '../dashboard/time.ts';
 
-const STATE_LABEL: Record<Connection['state'], string> = { none: 'Not set', connecting: 'Connecting', online: 'Online', error: 'Server error', offline: 'Offline' };
+const STATE_LABEL: Record<Connection['state'], string> = { none: 'Not set', connecting: 'Connecting', online: 'Online', error: 'Server error', update: 'App update needed', offline: 'Offline' };
 
 export const PLACEHOLDER = 'https://zeroed.example.ts.net';
 
@@ -14,7 +14,7 @@ export function connectionLabel(c: Connection): string {
   return `${STATE_LABEL[c.state]} · ${c.lastOk ? `last update ${melDateTime(c.lastOk)}` : 'no update yet'}`;
 }
 
-export const connectionDot = (c: Connection): 'on' | 'off' | 'warn' => (c.state === 'online' ? 'on' : c.state === 'offline' || c.state === 'error' ? 'warn' : 'off');
+export const connectionDot = (c: Connection): 'on' | 'off' | 'warn' => (c.state === 'online' ? 'on' : c.state === 'offline' || c.state === 'error' || c.state === 'update' ? 'warn' : 'off');
 
 export function ServerForm({ initial = '', onSave, onCancel }: { initial?: string; onSave: (origin: string) => void; onCancel?: () => void }) {
   const [text, setText] = useState(initial);
@@ -109,7 +109,7 @@ export function ServerView({ c, onChange, onRemove }: { c: Connection; onChange:
           <dt>Last update</dt>
           <dd className="num">{c.lastOk ? melDateTime(c.lastOk) : '—'}</dd>
         </div>
-        {c.state === 'error' && c.lastAnswer && (
+        {(c.state === 'error' || c.state === 'update') && c.lastAnswer && (
           <div>
             <dt>Last answer</dt>
             <dd className="num">{melDateTime(c.lastAnswer)}</dd>

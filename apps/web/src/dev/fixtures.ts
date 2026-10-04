@@ -15,9 +15,6 @@ export const fixtureTokens: TokenRowView[] = Array.from({ length: 8 }, (_, i) =>
   ageSeconds: 90 + i * 410,
   venue: i % 2 ? 'PumpSwap' : 'Pump curve',
   liquidityUsd: 4000 + i * 2300,
-  volume24hUsd: 12000 + i * 5100,
-  holders: 120 + i * 37,
-  topHolderShare: 0.08 + i * 0.02,
   security: i === 3 ? 'failed' : i === 5 ? 'missing' : 'passed',
   promoted: i === 2,
   dataAgeSeconds: 2 + i * 3,
@@ -31,8 +28,10 @@ export const fixtureSession: SessionView = {
   maxEntryUsd: MAX_ENTRY,
   maxOpenPositions: 3,
   dailyLossLimitUsd: 500,
+  weeklyLossLimitUsd: 750,
   sessionLossLimitUsd: 1000,
   workerConnected: true,
+  startable: false,
 };
 
 /**

@@ -145,14 +145,48 @@ export const summarizeWalkForward = (wf: readonly DayReturn[]): WalkForwardSumma
   return { n: xs.length, days: new Set(wf.map((t) => t.day)).size, mean: xs.length ? mean(xs) : Number.NaN, sd: xs.length > 1 ? sd(xs) : Number.NaN };
 };
 
-export const sameSummary = (a: WalkForwardSummary, b: WalkForwardSummary): boolean =>
-  a.n === b.n && a.days === b.days && Object.is(a.mean, b.mean) && Object.is(a.sd, b.sd);
-
 export const describeSummary = (s: WalkForwardSummary): string => `(${s.n} trades, ${s.days} days, mean ${s.mean}, sd ${s.sd})`;
 
+/** Every setting that changes the n_power simulation's result. */
+export interface G2PowerSettings {
+  readonly targetMean: number;
+  readonly familySize: number;
+  readonly alpha: number;
+  readonly power: number;
+  readonly simulations: number;
+  readonly replicates: number;
+  readonly maxTrades: number;
+  readonly units: readonly G2SensitivityVariant[];
+  readonly seed: number;
+}
+
+/**
+ * The exact fingerprint of an n_power simulation's inputs (external audit S3): the ordered, labelled walk-forward
+ * trades (day, net return, creator and funder cluster), the ordered S0 control trades and every setting, in one
+ * canonical string. A summary (n, days, mean, SD) cannot tell the same returns under independent creators from the same
+ * returns under one creator; this can. It is the inputs themselves rather than a hash of them (the stats module imports
+ * no crypto), so two fingerprints are equal exactly when the inputs are.
+ */
+export const g2PowerInputs = (walkForward: readonly ClusteredReturn[], control: readonly DayReturn[], settings: G2PowerSettings): string =>
+  JSON.stringify({
+    walkForward: walkForward.map((t) => [t.day, t.rNet, t.creatorCluster ?? null, t.funderCluster ?? null]),
+    control: control.map((t) => [t.day, t.rNet]),
+    settings: { ...settings, units: [...settings.units] },
+  });
+
 export interface G2PowerResult {
-  /** The walk-forward data the simulation ran on. */
+  /** The walk-forward data the simulation ran on (for messages; G2 checks `inputs`). */
   readonly walkForward: WalkForwardSummary;
+  /** Exact fingerprint of the simulation's inputs (`g2PowerInputs`). */
+  readonly inputs: string;
+  readonly settings: G2PowerSettings;
+  /** Monte Carlo standard error of powerAtN: √(p(1 − p)/simulations). */
+  readonly standardError: number;
+  /**
+   * An independent check of the chosen n (external audit S3): the full rule simulated again at nPower on a seed stream
+   * the search never used, with its Monte Carlo standard error.
+   */
+  readonly validation: { readonly n: number; readonly power: number; readonly standardError: number };
   /** Smallest n found with simulated power ≥ the target. */
   readonly nPower: number;
   readonly powerAtN: number;
@@ -261,11 +295,8 @@ const fullRulePasses = (
   return true;
 };
 
-/**
- * n_power by simulation of the exact G2 rule, cluster sensitivity included (review of STATS-1b: the largest p over
- * 1-, 2- and 3-day blocks and creator and funder clusters). The holdout must hold max(300, nPower) trades.
- */
-export const simulateG2Power = (opts: G2PowerOptions): G2PowerResult => {
+/** Checked settings and the per-stream power simulation shared by the search, the validation and their re-checks. */
+const prepareG2Power = (opts: G2PowerOptions) => {
   const target = opts.targetMean ?? 0.05;
   const universes = opts.familySize;
   const alpha = opts.alpha ?? 0.05;
@@ -276,6 +307,8 @@ export const simulateG2Power = (opts: G2PowerOptions): G2PowerResult => {
   const units = [...new Set(['days-1' as const, ...(opts.units ?? G2_SENSITIVITY_VARIANTS)])];
   if (!Number.isInteger(universes) || universes < 1 || universes > 3) throw new RangeError('familySize must be 1, 2 or 3');
   if (!Number.isInteger(sims) || sims < 100) throw new RangeError('simulations must be an integer >= 100');
+  // Search streams use seed·STRIDE + n and the validation stream seed·STRIDE + STRIDE − 1 − n: disjoint while n < STRIDE / 2.
+  if (!Number.isInteger(maxTrades) || maxTrades < 1 || maxTrades >= SEED_STRIDE / 2) throw new RangeError(`maxTrades must be an integer in 1..${Math.floor(SEED_STRIDE / 2) - 1}`);
   if (opts.walkForward.length < 2 || opts.control.length === 0) throw new RangeError('need walk-forward trades and S0 control trades');
   const days = byDay(opts.walkForward, opts.control);
   const multiCreator = multiDay(opts.walkForward, 'creatorCluster');
@@ -284,6 +317,31 @@ export const simulateG2Power = (opts: G2PowerOptions): G2PowerResult => {
   const wf = opts.walkForward.map((t) => t.rNet);
   const shift = target - mean(wf);
   const level = alpha / universes;
+  const simulatePower = (n: number, rng: ReturnType<typeof createRng>): number => {
+    let pass = 0;
+    for (let s = 0; s < sims; s++) {
+      const h = simulateHoldout(days, n, shift, rng, multiCreator, multiFunder);
+      // The gate needs MIN_DAYS days; a holdout on fewer days is "not proven", which counts as not passing.
+      if (h.days >= MIN_DAYS && fullRulePasses(h.a, h.b, level, { rng, replicates }, units)) pass++;
+    }
+    return pass / sims;
+  };
+  return { target, universes, alpha, goal, sims, replicates, maxTrades, units, wf, level, simulatePower };
+};
+
+/**
+ * Power of the full G2 rule at n on one random stream (`createRng(stream)`): the step simulateG2Power runs for each
+ * candidate n (stream seed·STRIDE + n) and for the independent validation (stream seed·STRIDE + STRIDE − 1 − n).
+ */
+export const simulateG2PowerOnStream = (opts: G2PowerOptions, n: number, stream: number): number =>
+  prepareG2Power(opts).simulatePower(n, createRng(stream));
+
+/**
+ * n_power by simulation of the exact G2 rule, cluster sensitivity included (review of STATS-1b: the largest p over
+ * 1-, 2- and 3-day blocks and creator and funder clusters). The holdout must hold max(300, nPower) trades.
+ */
+export const simulateG2Power = (opts: G2PowerOptions): G2PowerResult => {
+  const { target, universes, alpha, goal, sims, replicates, maxTrades, units, wf, level, simulatePower } = prepareG2Power(opts);
   const evaluations: { n: number; power: number }[] = [];
   const cache = new Map<number, number>();
 
@@ -291,14 +349,7 @@ export const simulateG2Power = (opts: G2PowerOptions): G2PowerResult => {
     const hit = cache.get(n);
     if (hit !== undefined) return hit;
     // Each n gets its own stream derived from the seed, so the result does not depend on search order.
-    const rng = createRng(opts.seed * SEED_STRIDE + n);
-    let pass = 0;
-    for (let s = 0; s < sims; s++) {
-      const h = simulateHoldout(days, n, shift, rng, multiCreator, multiFunder);
-      // The gate needs MIN_DAYS days; a holdout on fewer days is "not proven", which counts as not passing.
-      if (h.days >= MIN_DAYS && fullRulePasses(h.a, h.b, level, { rng, replicates }, units)) pass++;
-    }
-    const pw = pass / sims;
+    const pw = simulatePower(n, createRng(opts.seed * SEED_STRIDE + n));
     cache.set(n, pw);
     evaluations.push({ n, power: pw });
     return pw;
@@ -334,7 +385,15 @@ export const simulateG2Power = (opts: G2PowerOptions): G2PowerResult => {
     if (powerAt(mid) >= goal) hi = mid;
     else lo = mid;
   }
-  return { nPower: hi, powerAtN: powerAt(hi), level, evaluations, walkForward: summarizeWalkForward(opts.walkForward), units, seed: opts.seed };
+  const se = (p: number) => Math.sqrt((p * (1 - p)) / sims);
+  // The independent check: a stream no search step used (search streams are seed·STRIDE + n with n ≤ maxTrades).
+  const validationPower = simulatePower(hi, createRng(opts.seed * SEED_STRIDE + (SEED_STRIDE - 1 - hi)));
+  const settings: G2PowerSettings = { targetMean: target, familySize: universes, alpha, power: goal, simulations: sims, replicates, maxTrades, units, seed: opts.seed };
+  return {
+    nPower: hi, powerAtN: powerAt(hi), level, evaluations, walkForward: summarizeWalkForward(opts.walkForward), units, seed: opts.seed,
+    inputs: g2PowerInputs(opts.walkForward, opts.control, settings), settings, standardError: se(powerAt(hi)),
+    validation: { n: hi, power: validationPower, standardError: se(validationPower) },
+  };
 };
 
 export interface HoldoutPlan {

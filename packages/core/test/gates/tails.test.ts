@@ -23,7 +23,7 @@ const contextWith = (rows: readonly Row[], base: Facts = passingFacts()): GateCo
     store.record(k, v, m, `${k}@${m.slot}`);
   }
   clock.advanceTo(NOW);
-  return { now: NOW, lookup: (k, a) => store.lookup(k, a), history: (k, f, t) => store.history(k, f, t) };
+  return { now: NOW, observedTip: NOW.slot, lookup: (k, a) => store.lookup(k, a), history: (k, f, t) => store.history(k, f, t) };
 };
 const h5 = (rows: readonly Row[], base?: Facts): readonly GateReason[] =>
   evaluateHardRejects(contextWith(rows, base), deps('live'), request(), { stopAtFirst: false }).reasons.filter((r) => r.gate === 'H5' || r.neededBy === 'H5');

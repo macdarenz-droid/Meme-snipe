@@ -253,7 +253,7 @@ describe('live Feed', () => {
     feed.ingest('helius', { type: 'slot', slot: 1_000n, parent: null, root: null }, { receivedAt: 1 });
     feed.advance(1);
     const old = feed.ingest('helius', { type: 'seen', signature: tx('pump TradeEvent').signature, slot: 900n, err: null, via: 'logs:x', detail: null }, { receivedAt: 2 });
-    expect(old.place).toEqual({ at: 'offchain', slot: 1_001n });
+    expect(old.place).toEqual({ at: 'offchain', slot: 1_001n, arrival: true });
     const recent = feed.ingest('helius', { type: 'seen', signature: tx('pump TradeEvent', 1).signature, slot: 995n, err: null, via: 'logs:x', detail: null }, { receivedAt: 3 });
     expect(recent.place).toEqual({ at: 'chain', slot: 995n });
   });

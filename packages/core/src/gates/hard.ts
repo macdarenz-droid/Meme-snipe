@@ -569,8 +569,10 @@ const h15 = (env: Env): Outcome => {
   if (!s.ok) return fromRead(s);
   if (s.fact.spend !== env.req.spend) return { reasons: [{ gate: 'H16', code: 'inconsistent', input: 'sim', neededBy: 'H15', detail: `simulated ${s.fact.spend}, request spends ${env.req.spend}` }] };
   if (!s.fact.ok) return reject('H15', 'sim-failed', `round-trip simulation failed: ${s.fact.error ?? 'no error given'}`, { input: 'sim' });
+  // Like with like: the simulation buys and sells at once, so its loss is compared with the model of that same
+  // sequence (the sell on the reserves the buy left), never with the planned exit, whose impacts would hide a charge.
   const simLoss = s.fact.paid - s.fact.proceeds;
-  const modelled = q.trade.paid - q.trade.proceeds + ROUND_TRIP_ROUNDING_LAMPORTS;
+  const modelled = q.trade.paid - q.trade.immediateProceeds + ROUND_TRIP_ROUNDING_LAMPORTS;
   return simLoss > modelled
     ? reject('H15', 'sim-loss', `simulated round trip lost ${simLoss} lamports, the model allows ${modelled}`, { input: 'sim', value: String(simLoss), limit: String(modelled) })
     : PASS;

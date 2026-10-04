@@ -153,6 +153,7 @@ export class FactWorld {
   ctx(now?: Moment): GateContext {
     if (now !== undefined) this.clock.advanceTo(now);
     const store = this.store;
-    return { now: this.clock.now(), lookup: (k, at) => store.lookup(k, at), history: (k, f, t) => store.history(k, f, t) };
+    const at = this.clock.now();
+    return { now: at, observedTip: at.slot, lookup: (k, a) => store.lookup(k, a), history: (k, f, t) => store.history(k, f, t) };
   }
 }

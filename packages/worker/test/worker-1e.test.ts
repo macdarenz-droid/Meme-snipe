@@ -14,6 +14,7 @@ import { entryRule } from '../../runner/src/quota.ts';
 import { closedFlow, s0EntryAt } from '../src/engine/strategy.ts';
 import { MIGRATED_AT, MINT, POOL_ADDRESS, T, dueTimers, makeWorker, passingMarket, testConfig, tempState } from './worker-harness.ts';
 import { parseConfig } from '../src/run/config.ts';
+import { route } from '../src/run/api.ts';
 
 const DAY = 86_400_000;
 const HELD = { heldPoolFacts: true } as const;
@@ -35,7 +36,7 @@ const simulating = (asked: [string, bigint][]) => new LiveFacts({
         asked.push([mint, spend]);
         const q = roundTrip(lamports(spend));
         if (!q.ok) return false;
-        const read = { mint, slot: ctx.tip() ?? 0n, spend, ok: true, paid: q.trade.paid, proceeds: q.trade.proceeds, error: null };
+        const read = { mint, slot: ctx.tip() ?? 0n, spend, ok: true, paid: q.trade.paid, proceeds: q.trade.immediateProceeds, error: null };
         ctx.ingest.ingest('helius', { type: 'offchain', key: RAW.sim(mint), value: read }, { receivedAt: ctx.timers.now() });
         return true;
       },
@@ -47,6 +48,9 @@ const simulating = (asked: [string, bigint][]) => new LiveFacts({
 });
 
 /** The S0 shakedown on live-like facts: no curve volume, no graduates series, no exec-health fact, creates coverage from 2 days ago, H15 simulated live. */
+/** The regime parts the served status says were not judged (API-1: the card's "practice" marker). */
+const servedWaived = (h: Awaited<ReturnType<typeof shakedown>>) => (route('/api/v1/paper/status', () => h.worker.apiInputs()).body as { data: { regime: { waived: string[] } | null } }).data.regime?.waived;
+
 const shakedown = async (diag: boolean, asked: [string, bigint][] = []) => {
   const h = makeWorker({ timers: dueTimers(T - 16 * DAY), entry: { timing: 'random', salt: early, s0Diagnostic: diag }, facts: [simulating(asked)], config: { ZEROED_HEALTH_ADDR: '127.0.0.1:18980', ZEROED_API_ADDR: '127.0.0.1:18981' } });
   // Started, so the fact source runs; the critical feed is up, so entries are not halted.
@@ -76,6 +80,8 @@ describe('the S0 shakedown on live-like facts', () => {
     const rejects = lines(h.stateDir).filter((l) => l['kind'] === 'decision' && l['action'] === 'reject');
     expect(rejects.length).toBeGreaterThan(0);
     expect(rejects.every((l) => l['s0_diagnostic'] === undefined)).toBe(true);
+    // The status serves a regime judged in full: nothing waived.
+    expect(servedWaived(h)).toEqual([]);
   });
 
   it('with the set it enters, simulates every entry, and names each part it relied on', async () => {
@@ -109,6 +115,9 @@ describe('the S0 shakedown on live-like facts', () => {
     expect(start['s0_diagnostic']).toEqual(S0_DIAGNOSTIC_PARTS);
     expect(h.worker.health().s0_diagnostic).toEqual(S0_DIAGNOSTIC_PARTS);
     expect(entryRule(report.starts, 'S0', ['S0']).problems).toContainEqual(expect.stringContaining('S0 diagnostic'));
+    // The status serves every part the set waived, H14's creates coverage included (API-1 B1, N1): the card shows
+    // "On (practice)", never a plain "On".
+    expect(servedWaived(h)).toEqual(['regime-volume', 'regime-survival', 'exec-health', 'h14-creates-coverage']);
   });
 });
 
