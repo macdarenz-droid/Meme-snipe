@@ -373,3 +373,52 @@ export const createsCoverage = (history: History, now: Moment, windowStartMs: nu
   if (l !== null && l.at >= windowStartMs) return { covered: false, detail: `${l.detail}, reported at ${l.at}, inside the window from ${windowStartMs}` };
   return { covered: true, fromMs: l === null ? firstStart : l.at };
 };
+
+/**
+ * WORKER-1d: coverage facts (in release order) cut to what still matters for every window that starts at or after
+ * `retainFromMs`, so a saved coverage history stops growing with time and restarts. Facts received at or after that
+ * point are all kept. Of the older ones, per stream and `via`: the latest `start` (what says the stream ran from before
+ * the window), and, when that watch still has an open gap at the retain point, every fact on it since that start (so
+ * the gap and the watch's state read exactly as before). Unreadable facts are kept (they hold coverage open). For any
+ * window start at or after `retainFromMs`, `createsCoverage` gives the same verdict on the result; only a `fromMs`
+ * earlier than the retain point can move (still at or before it), and the index never claims coverage from before its
+ * own retained start.
+ */
+export const pruneCoverage = <E extends Pick<MarketEvent, 'key' | 'moment' | 'value'>>(facts: readonly E[], retainFromMs: number): E[] => {
+  const keep = new Set<number>();
+  /** `${stream}|${via}` → the index of the latest start, and the indexes of every fact since it. */
+  const watches = new Map<string, { start: number | null; since: number[]; open: Set<string> }>();
+  facts.forEach((e, i) => {
+    if (e.moment.receivedAt >= retainFromMs) {
+      keep.add(i);
+      return;
+    }
+    const m = /^coverage:(.+):(start|gap|resume)$/.exec(e.key);
+    const v = payload(e.value);
+    const via = v !== null && typeof v['via'] === 'string' ? v['via'] : null;
+    const from = v === null ? undefined : v['fromSlot'];
+    const to = v === null ? undefined : v['toSlot'];
+    if (m === null || v === null || via === null || !(from === null || typeof from === 'bigint') || (m[2] === 'gap' && !(to === null || typeof to === 'bigint'))) {
+      keep.add(i);
+      return;
+    }
+    const key = `${m[1]}|${via}`;
+    const w = watches.get(key) ?? { start: null, since: [], open: new Set<string>() };
+    watches.set(key, w);
+    const id = String(from);
+    if (m[2] === 'start') {
+      w.start = i;
+      w.since = [];
+      w.open.clear();
+      return;
+    }
+    w.since.push(i);
+    if (m[2] === 'gap' && to === null) w.open.add(id);
+    else w.open.delete(id);
+  });
+  for (const w of watches.values()) {
+    if (w.start !== null) keep.add(w.start);
+    if (w.open.size > 0) for (const i of w.since) keep.add(i);
+  }
+  return facts.filter((_, i) => keep.has(i));
+};

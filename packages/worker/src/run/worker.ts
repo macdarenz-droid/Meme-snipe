@@ -1013,7 +1013,8 @@ export class Worker {
       coverage: order(coverage.filter((e) => e.key.startsWith('coverage:creates:') && compareMoments(e.moment, asOf) <= 0)),
       fill: order(result.mode === 'fill' ? result.creates : []),
       rugs: order(saved.rugs), asOf,
-      history: coverage.map((e, k) => ({ ...e, id: `${e.id}#pre${k}`, moment: { ...pos(1 + k), receivedAt: e.moment.receivedAt } })),
+      // WORKER-1d: a saved fact already carries an earlier boot's `#pre<k>`; it is replaced, not stacked, so ids stay short.
+      history: coverage.map((e, k) => ({ ...e, id: `${e.id.replace(/(#pre\d+)+$/, '')}#pre${k}`, moment: { ...pos(1 + k), receivedAt: e.moment.receivedAt } })),
     });
     for (const e of [...result.creates, ...result.coverage, ...extra]) this.#deployerStore.keep(e);
     d.log(`Deployer index: ${result.mode} (${result.report}); ${saved.creates.length} saved creates, ${saved.coverage.length} saved coverage facts.`);

@@ -5,7 +5,7 @@
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { MarketEvent } from '../../../core/src/engine/index.ts';
-import { LOG_CREATE_PREFIX, RUG_PREFIX, RUG_UNJUDGED_PREFIX, TX_CREATE_PREFIX } from '../../../core/src/gates/index.ts';
+import { LOG_CREATE_PREFIX, RUG_PREFIX, RUG_UNJUDGED_PREFIX, TX_CREATE_PREFIX, pruneCoverage } from '../../../core/src/gates/index.ts';
 import { parseTyped, typedText } from './json.ts';
 import { atomicWrite } from './state.ts';
 
@@ -49,12 +49,12 @@ export class DeployerStore {
 
   /**
    * The saved events received at or after `fromMs`, in release order, with the file rewritten to just those (a torn
-   * last line from a kill is dropped). Coverage facts are all kept: a start older than the window is what says the
-   * stream has run since before it.
+   * last line from a kill is dropped). Older coverage facts are cut by `pruneCoverage` (WORKER-1d), not dropped: a
+   * start older than the window is what says the stream has run since before it, and an open gap stays open.
    */
   load(fromMs: number): SavedDeployers {
     if (!existsSync(this.#path)) return { creates: [], rugs: [], coverage: [], last: null };
-    const kept: MarketEvent[] = [];
+    let kept: MarketEvent[] = [];
     for (const line of readFileSync(this.#path, 'utf8').split('\n')) {
       if (line === '') continue;
       let e: MarketEvent;
@@ -65,6 +65,8 @@ export class DeployerStore {
       }
       if (isCoverage(e.key) || e.moment.receivedAt >= fromMs) kept.push(e);
     }
+    const coverage = new Set(pruneCoverage(kept.filter((e) => isCoverage(e.key)), fromMs));
+    kept = kept.filter((e) => !isCoverage(e.key) || coverage.has(e));
     atomicWrite(this.#path, kept.map((e) => `${typedText(e)}\n`).join(''));
     let last: { slot: bigint; ms: number } | null = null;
     for (const e of kept) if (last === null || e.moment.slot > last.slot) last = { slot: e.moment.slot, ms: e.moment.receivedAt };
