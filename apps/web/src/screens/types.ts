@@ -26,8 +26,11 @@ export interface SessionView {
   maxEntryUsd: number | null;
   maxOpenPositions: number | null;
   dailyLossLimitUsd: number | null;
+  weeklyLossLimitUsd: number | null;
   sessionLossLimitUsd: number | null;
   workerConnected: boolean;
+  /** Whether the worker accepts a session start from the app; false when it runs its own session (APP-HOME). */
+  startable: boolean;
 }
 
 export interface WalletView {
@@ -56,8 +59,10 @@ export const EMPTY_SESSION: SessionView = {
   maxEntryUsd: null,
   maxOpenPositions: null,
   dailyLossLimitUsd: null,
+  weeklyLossLimitUsd: null,
   sessionLossLimitUsd: null,
   workerConnected: false,
+  startable: false,
 };
 
 export const EMPTY_WALLET: WalletView = {

@@ -4,7 +4,8 @@ import type { Connection } from '../api/connection.ts';
 import type { WorkerStatus } from '../api/contract.ts';
 import type { Loaded } from '../api/useEndpoint.ts';
 import { connectionDot, connectionLabel } from '../screens/Server.tsx';
-import type { SessionView } from '../screens/types.ts';
+import { usdToPlot } from '../lib/money.ts';
+import { EMPTY_SESSION, type SessionView } from '../screens/types.ts';
 
 const SESSION_STATE: Record<SessionView['state'], string> = { 'not-started': 'Not started', running: 'Running', paused: 'Paused', ended: 'Ended' };
 
@@ -35,6 +36,20 @@ export function shellSession(status: Loaded<WorkerStatus>, conn: Pick<Connection
   if (status.state === 'not-running') return { label: 'Not running', on: false };
   if (status.state === 'loading') return { label: 'Connecting', on: false };
   return { label: status.reason === 'offline' ? 'Offline' : 'Unknown', on: false };
+}
+
+/**
+ * The Session card's values from the paper worker's status (APP-HOME): its state and its policy's limits. Without a
+ * served session, the empty session: every value "Not set" and no start button.
+ */
+export function sessionView(status: Loaded<WorkerStatus>): SessionView {
+  if (status.state !== 'ready' || status.data.session === undefined) return EMPTY_SESSION;
+  const s = status.data.session;
+  return {
+    mode: 'paper', state: s.state, bankrollUsd: usdToPlot(s.bankrollUsd), entryUsd: usdToPlot(s.entryUsd), maxEntryUsd: usdToPlot(s.maxEntryUsd),
+    maxOpenPositions: s.maxOpenPositions, dailyLossLimitUsd: usdToPlot(s.dailyLossLimitUsd), weeklyLossLimitUsd: usdToPlot(s.weeklyLossLimitUsd),
+    sessionLossLimitUsd: s.sessionLossLimitUsd === null ? null : usdToPlot(s.sessionLossLimitUsd), workerConnected: true, startable: s.startable,
+  };
 }
 
 /** Mode, session and the server connection, in the desktop rail. */

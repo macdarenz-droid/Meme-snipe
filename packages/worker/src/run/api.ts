@@ -233,6 +233,14 @@ export const views = {
         { mode: MODE, kind: 'open-exposure', usedUsd: usdText(open), limitUsd: null },
         { mode: MODE, kind: 'daily-loss', usedUsd: usdText(lossToday), limitUsd: usdText(dailyLimit) },
       ],
+      // The session this worker runs (APP-HOME): it starts its own paper session on the policy it loaded, so the app
+      // never offers to start one (startable: false). Limits come from that policy; it has no session loss limit.
+      session: {
+        state: i.paused ? 'paused' : halts.some((h) => h.code === 'session-ended') ? 'ended' : 'running',
+        bankrollUsd: usdText(bankroll), entryUsd: usdText(i.policy.capital.minNotional), maxEntryUsd: usdText(i.policy.capital.maxNotional),
+        maxOpenPositions: i.policy.positions.maxOpen, dailyLossLimitUsd: usdText(dailyLimit),
+        weeklyLossLimitUsd: usdText((bankroll * BigInt(i.policy.loss.weeklyBps)) / 10_000n), sessionLossLimitUsd: null, startable: false,
+      },
     };
   },
 

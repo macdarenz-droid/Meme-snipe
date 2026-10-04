@@ -10,7 +10,8 @@ import { settle, type Loaded } from '../src/api/useEndpoint.ts';
 import { fixtureDiscovered } from '../src/dev/dashboardFixtures.ts';
 import { shortAddress } from '../src/lib/format.ts';
 import { DiscoveredBody, rowsOf } from '../src/screens/Home.tsx';
-import { shellSession } from '../src/shell/Status.tsx';
+import { SessionCard } from '../src/screens/Snipe.tsx';
+import { sessionView, shellSession } from '../src/shell/Status.tsx';
 import { findBanned } from './banned-copy.ts';
 
 const AT = '2026-10-04T11:30:00.000Z';
@@ -45,11 +46,49 @@ describe('the shell session line', () => {
     }
   });
 
-  it('the shell reads the session from the worker, not the empty placeholder', () => {
+  it('the shell and the Snipe screen read the session from the worker, not the empty placeholder', () => {
     const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
-    expect(app).toContain('const session = useShellSession(conn);');
-    expect(app).not.toContain('sessionLabel(EMPTY_SESSION)');
-    expect(app).toContain('state={session}');
+    expect(app).toContain('const paper = usePaperSession(conn);');
+    expect(app).not.toMatch(/sessionLabel\(EMPTY_SESSION\)|session=\{EMPTY_SESSION\}|modeLabel\(EMPTY_SESSION\)/);
+    expect(app).toContain('<StatusList session={paper.view} state={paper.line} conn={conn} />');
+    expect(app).toContain('<Snipe session={paper.view} sessionState={paper.line.label} />');
+  });
+});
+
+describe('Snipe: Session card', () => {
+  const session = { state: 'running' as const, bankrollUsd: '20', entryUsd: '2', maxEntryUsd: '5', maxOpenPositions: 1, dailyLossLimitUsd: '1', weeklyLossLimitUsd: '3', sessionLossLimitUsd: null, startable: false };
+  const card = (status: Loaded<WorkerStatus>, conn: { state: 'none' | 'online' | 'offline' } = online) =>
+    text(renderToStaticMarkup(h(SessionCard, { session: sessionView(status), label: shellSession(status, conn).label })));
+
+  it('a running paper worker: Running, the policy\'s real limits, and no start button', () => {
+    const v = sessionView(ready({ ...running, session }));
+    expect(v).toMatchObject({ state: 'running', bankrollUsd: 20, entryUsd: 2, maxEntryUsd: 5, maxOpenPositions: 1, dailyLossLimitUsd: 1, weeklyLossLimitUsd: 3, sessionLossLimitUsd: null, startable: false, workerConnected: true });
+    const t = card(ready({ ...running, session }));
+    expect(t).toContain('Session Running');
+    expect(t).toContain('Bankroll $20.00');
+    expect(t).toContain('Entry $2.00, max $5.00');
+    expect(t).toContain('Open positions 1');
+    expect(t).toContain('Daily loss $1.00');
+    expect(t).toContain('Weekly loss $3.00');
+    expect(t).toContain('Session loss Not set');
+    expect(t).not.toMatch(/Start paper session|Worker not connected|Not started/);
+    expect(findBanned(t)).toEqual([]);
+  });
+
+  it('paused and ended read as such; a worker that accepts a start, and is not running, gets the button', () => {
+    expect(card(ready({ ...running, flags: ['paused'], session: { ...session, state: 'paused' } }))).toContain('Session Paused');
+    const startable = card(ready({ ...running, haltReasons: [{ mode: 'paper', code: 'session-ended', source: null }], session: { ...session, state: 'ended', startable: true } }));
+    expect(startable).toContain('Session Ended');
+    expect(startable).toContain('Start paper session');
+  });
+
+  it('no status: the reason, values "Not set", and no start button', () => {
+    for (const [status, conn, label] of [[{ state: 'loading' }, 'none', 'No server'], [{ state: 'error', reason: 'offline' }, 'offline', 'Offline'], [{ state: 'not-running' }, 'online', 'Not running']] as const) {
+      const t = card(status as Loaded<WorkerStatus>, { state: conn });
+      expect(t).toContain(`Session ${label}`);
+      expect(t).toContain('Bankroll Not set');
+      expect(t).not.toMatch(/Start paper session|Not started/);
+    }
   });
 });
 

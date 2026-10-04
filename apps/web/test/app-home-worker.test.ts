@@ -9,7 +9,8 @@ import { schemaFor } from '../src/api/schemas.ts';
 import { settle } from '../src/api/useEndpoint.ts';
 import { shortAddress } from '../src/lib/format.ts';
 import { DiscoveredBody } from '../src/screens/Home.tsx';
-import { shellSession } from '../src/shell/Status.tsx';
+import { SessionCard } from '../src/screens/Snipe.tsx';
+import { sessionView, shellSession } from '../src/shell/Status.tsx';
 import { checksOf, route } from '../../../packages/worker/src/run/api.ts';
 import { MINT, makeWorker, passingMarket } from '../../../packages/worker/test/worker-harness.ts';
 
@@ -28,6 +29,12 @@ describe('the app against the real worker (APP-HOME)', () => {
     const now = w.timers.now();
     const status = settle<WorkerStatus>('paper', schemaFor('status', 'paper'), { ok: true, value: await api.status('paper') }, now);
     expect(shellSession(status, { state: 'online' })).toEqual({ label: 'Running', on: true });
+    // The Session card: the worker's own session on its policy's limits, with no start button.
+    expect(status.state === 'ready' && status.data.session).toMatchObject({ state: 'running', startable: false, sessionLossLimitUsd: null });
+    const card = text(renderToStaticMarkup(h(SessionCard, { session: sessionView(status), label: shellSession(status, { state: 'online' }).label })));
+    expect(card).toContain('Session Running');
+    expect(card).not.toMatch(/Start paper session|Worker not connected|Not started/);
+    expect(card).toMatch(/Bankroll \$[\d,]+\.\d\d/);
     const discovered = settle<DiscoveredView>('paper', schemaFor('discovered', 'paper'), { ok: true, value: await api.discovered('paper') }, now);
     expect(discovered.state).toBe('ready');
     const out = text(renderToStaticMarkup(h(DiscoveredBody, { loaded: discovered })));
