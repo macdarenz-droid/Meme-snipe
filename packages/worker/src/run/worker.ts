@@ -493,8 +493,10 @@ export class Worker {
       file: new StateFile<PaperState>(c.stateDir, 'paper.json', (v) => (isObj(v) && isObj(v['attempts']) ? (v as unknown as PaperState) : null)),
       changed: () => this.#writeOpenIntents(),
       // A landed failure paid its fee (PAPER-1, M4): the account settles it and risk sees the new snapshot.
-      landedFailed: () => {
-        if (this.#settle(null)) this.#publishAccount();
+      landedFailed: (a) => {
+        // Its trade may have closed already (PAPER-2): that trade is settled again with this fee.
+        const late = this.#account.resettle(this.#desk.book, a.trade, this.#legs(), this.#d.timers.now());
+        if (this.#settle(null) || late) this.#publishAccount();
       },
     });
     // FACTS-1b: the engine reads through core's FactFeed (engine-feed.ts); a replay of the recording uses the same.
@@ -607,6 +609,8 @@ export class Worker {
     // WORKER-ORDER: fills the ledger holds that account.json missed (a kill between the two), caught up at the first price.
     this.#accountBehind = this.#account.behind(stored.book);
     // The stored book goes back to the engine as world frames (recorded, so a replay rebuilds the same book).
+    // PAPER-2: exits' trigger reasons survive the restart (a late stop still counts as a stop).
+    this.#desk.rebuild(stored.events, bookConfig);
     for (const e of stored.events) this.#desk.written(this.#report(e));
     // The worker's own start facts are dated 1 ms after the last restored frame, so every restored event sorts before
     // them whatever the clock's resolution: the engine rebuilds the stored book before the strategy sees anything and
