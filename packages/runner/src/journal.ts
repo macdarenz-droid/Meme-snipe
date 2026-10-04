@@ -9,6 +9,10 @@ export interface JournalReport {
   readonly exits: number;
   readonly simulations: number;
   readonly repairs: number;
+  /** WORKER-1e: decision lines that relied on S0's diagnostic set, by part (`s0_diagnostic`). */
+  readonly s0_diagnostic: Readonly<Record<string, number>>;
+  /** WORKER-1e: H15's simulations (`h15_sim` lines): how many, how many ran, and the Helius credits they spent. */
+  readonly h15_sim: { readonly lines: number; readonly run: number; readonly credits: number };
   readonly complete: boolean;
   readonly problems: readonly string[];
   /** Each boot's entry rule as its `start` line states it (WORKER-1: entry_rule, paper_edge_ppm, qualifying, s0_salt). */
@@ -21,6 +25,8 @@ export interface StartFields {
   readonly paper_edge_ppm: unknown;
   readonly qualifying: unknown;
   readonly s0_salt: unknown;
+  /** WORKER-1e: S0's diagnostic set (its parts), or null. */
+  readonly s0_diagnostic: unknown;
 }
 
 const MAX_PROBLEMS = 50;
@@ -56,9 +62,18 @@ export const checkJournal = (text: string, opts: { readonly allowTornTail?: bool
   let exits = 0;
   let simulations = 0;
   let repairs = 0;
+  const diagnosed: Record<string, number> = {};
+  const h15 = { lines: 0, run: 0, credits: 0 };
   const starts: StartFields[] = [];
   for (const l of lines) {
-    if (l.kind === 'start') starts.push({ boot: l.boot, entry_rule: l['entry_rule'], paper_edge_ppm: l['paper_edge_ppm'], qualifying: l['qualifying'], s0_salt: l['s0_salt'] });
+    const parts = l['s0_diagnostic'];
+    if (l.kind === 'h15_sim') {
+      h15.lines += 1;
+      if (l['outcome'] !== 'not-run') h15.run += 1;
+      if (typeof l['credits'] === 'number' && Number.isFinite(l['credits'])) h15.credits += l['credits'];
+    }
+    if (l.kind === 'decision' && Array.isArray(parts)) for (const p of parts) diagnosed[String(p)] = (diagnosed[String(p)] ?? 0) + 1;
+    if (l.kind === 'start') starts.push({ boot: l.boot, entry_rule: l['entry_rule'], paper_edge_ppm: l['paper_edge_ppm'], qualifying: l['qualifying'], s0_salt: l['s0_salt'], s0_diagnostic: l['s0_diagnostic'] ?? null });
     if (l.seq !== expect) add(`seq ${l.seq} where ${expect} expected`);
     expect = l.seq + 1;
     if (typeof l.ts !== 'string' || Number.isNaN(Date.parse(l.ts))) add(`seq ${l.seq}: bad ts`);
@@ -98,5 +113,5 @@ export const checkJournal = (text: string, opts: { readonly allowTornTail?: bool
         break;
     }
   }
-  return { lines: lines.length, boots: bootsSeen.size, entries, exits, simulations, repairs, complete: problems.length === 0, problems, starts };
+  return { lines: lines.length, boots: bootsSeen.size, entries, exits, simulations, repairs, s0_diagnostic: diagnosed, h15_sim: h15, complete: problems.length === 0, problems, starts };
 };
