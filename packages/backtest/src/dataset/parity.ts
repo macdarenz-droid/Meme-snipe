@@ -1,4 +1,4 @@
-// Decoder parity for the historical dataset (docs/research/historical-data.md, schema 2). CLI:
+// Decoder parity for the historical dataset (docs/research/historical-data.md, schema 3). CLI:
 //
 //   node --no-warnings research/historical/qa/parity.ts <dataset-dir>
 //
