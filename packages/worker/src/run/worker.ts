@@ -448,6 +448,8 @@ export class Worker {
     // WORKER-ORDER: fills the ledger holds that account.json missed (a kill between the two), caught up at the first price.
     this.#accountBehind = this.#account.behind(stored.book);
     // The stored book goes back to the engine as world frames (recorded, so a replay rebuilds the same book).
+    // PAPER-2: exits' trigger reasons survive the restart (a late stop still counts as a stop).
+    this.#desk.rebuild(stored.events, bookConfig);
     for (const e of stored.events) this.#desk.written(this.#report(e));
     // The worker's own start facts are dated 1 ms after the last restored frame, so every restored event sorts before
     // them whatever the clock's resolution: the engine rebuilds the stored book before the strategy sees anything and

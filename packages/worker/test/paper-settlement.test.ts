@@ -422,7 +422,10 @@ describe('a late-landing sell reaches the paper account (risk review of #133)', 
     let seq = 0;
     const feed = (events: readonly BookEvent[]) => {
       const at = { slot: 1n, txIndex: OFF_CHAIN, ixIndex: 0, receivedAt: T + seq };
-      desk.consume(events.map((event) => ({ type: 'world', seq: seq++, at, eventId: `w${seq}`, event, result: 'applied', effects: [] }) as unknown as LogRecord));
+      // A proposal is the engine's decision (its reasons are kept for the entry line); the rest are world events.
+      desk.consume(events.map((event) => (event.type === 'propose_entry'
+        ? { type: 'decision', seq: seq++, at, eventId: `d${seq}`, inputs: [], action: event, reasons: ['enter', 'notional 2000000'], result: 'applied', effects: [] }
+        : { type: 'world', seq: seq++, at, eventId: `w${seq}`, event, result: 'applied', effects: [] }) as unknown as LogRecord));
       expect(desk.illegal + desk.ledgerRefusals).toBe(0);
     };
     return { desk, account, filled, late, feed, close: () => ledger.close() };
@@ -465,6 +468,64 @@ describe('a late-landing sell reaches the paper account (risk review of #133)', 
     expect(trade(d.account)).toEqual(CLOSED_STOP);
     expect(d.account.state.trades[0]!.closedAtMs).toBe(closedAt);
     expect(d.filled.filter((f) => f.purpose === 'exit')).toHaveLength(1);
+    d.close();
+  });
+
+  it('a restart between the exit ending and its late sell: the sell still counts as a stop (reasons from the ledger)', () => {
+    const dir = tempState();
+    const ledgerFile = join(dir, 'ledger.sqlite');
+    const config = { maxOpenPositions: 5 };
+    const account = new PaperAccount(accountFile(tempState()), 20_000_000n as MicroUsd, T, 0n);
+    account.price(PX, T);
+    const deps = (ledger: ReturnType<typeof openLedger>, restored: Book) => ({
+      ledger, config, restored,
+      journal: () => undefined, report: () => 'world#unused', accountChanged: () => undefined, intentsChanged: () => undefined,
+      reserved: () => undefined, diverged: () => undefined, lateBuy: () => undefined,
+      filled: (r: Parameters<ConstructorParameters<typeof Desk>[0]['filled']>[0]) => account.filled(r, PX, legs),
+    });
+    let seq = 0;
+    const feed = (desk: Desk, events: readonly BookEvent[]) => {
+      const at = { slot: 1n, txIndex: OFF_CHAIN, ixIndex: 0, receivedAt: T + seq };
+      desk.consume(events.map((event) => ({ type: 'world', seq: seq++, at, eventId: `w${seq}`, event, result: 'applied', effects: [] }) as unknown as LogRecord));
+      expect(desk.illegal + desk.ledgerRefusals).toBe(0);
+    };
+    const l1 = openLedger(ledgerFile, 'backtest');
+    feed(new Desk(deps(l1, emptyBook(config))), [...ENTRY, ...exitEndsUnseen(X1, 11, ['stop'])]);
+    l1.close();
+    // A new process: the desk starts from the ledger's book and rebuilds the kept reasons from its events.
+    const l2 = openLedger(ledgerFile, 'backtest');
+    const stored = l2.storedBookEvents(config);
+    const desk = new Desk(deps(l2, stored.book));
+    desk.rebuild(stored.events, config);
+    feed(desk, LATE_SELL);
+    expect(trade(account)).toEqual(CLOSED_STOP);
+    l2.close();
+  });
+
+  it('kept reasons stay bounded: over many trades, an ended entry\'s and an emptied position\'s exits are dropped', () => {
+    const d = deskWithAccount();
+    for (let n = 1; n <= 20; n++) {
+      const e = `e${n}` as IntentId;
+      const pid = positionId(`p${n}`);
+      const xa = `xa${n}` as IntentId;
+      const xb = `xb${n}` as IntentId;
+      d.feed([
+        // An entry that never fills and is abandoned.
+        ...entryToSubmitted(100 + n, 1_000n),
+        status(`e${100 + n}` as IntentId, 100 + n, 'not_found', 1_001n), on(`e${100 + n}` as IntentId, { type: 'reconcile', fills: [], blockHeight: 1_001n }), on(`e${100 + n}` as IntentId, { type: 'abandon' }),
+        // A trade: bought, one exit ends unseen, the next sells everything.
+        ...entryToSubmitted(n, 1_000n), status(e, n, 'succeeded', 900n), on(e, { type: 'reconcile', fills: [fx(e, n, 1_000n)], blockHeight: 900n }),
+        { type: 'trigger_exit', positionId: pid, reasons: ['stop'], intentId: xa, quantity: raw(1_000n) },
+        on(xa, { type: 'prepare', quote }), on(xa, { type: 'sign', attempt: fxAttempt(xa, 1000 + n, 2_500n) }), on(xa, { type: 'submit' }),
+        status(xa, 1000 + n, 'not_found', 2_501n), on(xa, { type: 'reconcile', fills: [], blockHeight: 2_501n }), on(xa, { type: 'abandon' }),
+        { type: 'trigger_exit', positionId: pid, reasons: ['stop'], intentId: xb, quantity: raw(1_000n) },
+        on(xb, { type: 'prepare', quote }), on(xb, { type: 'sign', attempt: fxAttempt(xb, 2000 + n, 2_500n) }), on(xb, { type: 'submit' }),
+        status(xb, 2000 + n, 'succeeded', 2_400n), on(xb, { type: 'reconcile', fills: [fx(xb, 2000 + n, 1_000n, 30_000_000n)], blockHeight: 2_400n }),
+      ]);
+      expect(d.desk.book.positions[pid]?.status).toBe('closed');
+      // While a position holds tokens its ended exit is kept (a late sale may still be booked); none is left here.
+      expect(d.desk.keptReasons).toBe(0);
+    }
     d.close();
   });
 
@@ -585,5 +646,61 @@ describe('PAPER-2: a sell never goes beyond what is held', () => {
     expect(r.journal.includes('"oversold"')).toBe(false);
     expect(closedTrade(r.h.stateDir).netLamports).toBe(flows(r.h.stateDir));
     await r.h.worker.stop();
+  });
+});
+
+describe('PAPER-2: late landings across a restart', () => {
+  it('a paper sell in flight at a restart never lands (reachability); a late sale booked after the restart still counts as a stop', async () => {
+    const scenario = { ...LANDS, closeSuccessPpm: 1_000_000n, dustPpm: 0n };
+    const h = makeWorker({ scenario });
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    const m = await passingMarket(h, HELD);
+    const open = () => Object.values(h.worker.book.positions).find((p) => p.status === 'open' && p.quantity > 0n);
+    expect(await until(m, 60_000, () => open() !== undefined, () => { m.slot(); m.pool(); })).toBe(true);
+    const p = open()!;
+    const q = p.quantity;
+    const height = BigInt(h.worker.health().last_processed_slot!);
+    const X1 = 'x-late-1' as IntentId;
+    const sellQuote = { ...quote, inAmount: q, quotedOut: 1n, minOut: 1n, quotedAtSlot: height };
+    const a1 = { ...fxAttempt(X1, 91, height + 150n), quote: sellQuote };
+    const world = (hh: typeof h, at: number, events: BookEvent[]) => {
+      for (const event of events) hh.worker.feed.ingest('worker', { type: 'world', event }, { receivedAt: at });
+    };
+    // X1 is sent (the paper world takes it in flight) and the book gives it up at once; the process stops before it lands.
+    world(h, m.now, [
+      { type: 'trigger_exit', positionId: p.id, reasons: ['stop'], intentId: X1, quantity: raw(q) },
+      on(X1, { type: 'prepare', quote: sellQuote }), on(X1, { type: 'sign', attempt: a1 }), on(X1, { type: 'submit' }),
+    ]);
+    const sent = () => attempts(h.stateDir).find((a) => a.signature === a1.signature);
+    expect(await until(m, 5_000, () => sent() !== undefined, () => m.slot())).toBe(true);
+    expect(sent()?.outcome).toBe('in_flight');
+    world(h, m.now, [
+      on(X1, { type: 'status', signature: a1.signature, result: 'not_found', commitment: null, blockHeight: height + 151n, searchedHistory: true }),
+      on(X1, { type: 'reconcile', fills: [], blockHeight: height + 151n }),
+      on(X1, { type: 'abandon' }),
+    ]);
+    expect(await until(m, 5_000, () => h.worker.book.intents[X1]?.status === 'abandoned', () => m.slot())).toBe(true);
+    expect(sent()?.outcome).toBe('in_flight');
+    await h.worker.stop();
+
+    const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers, scenario });
+    expect(await h2.worker.reconcile()).toEqual({ ok: true });
+    const m2 = new Market(h2, HELD);
+    await m2.run(8_000, 400, () => { m2.slot(); m2.solPrice(); });
+    // Paper attempts die with their process: X1 never lands, the position still holds everything.
+    expect(attempts(h.stateDir).find((a) => a.signature === a1.signature)).toMatchObject({ outcome: 'expired', reason: 'lost in a restart (paper attempts die with the process)' });
+    expect(h2.worker.book.positions[p.id]?.quantity).toBe(q);
+    // A late sale reported now (as a live chain could): the trade closes with the stop it was sold for.
+    world(h2, m2.now, [
+      on(X1, { type: 'status', signature: a1.signature, result: 'succeeded', commitment: 'finalized', blockHeight: height + 160n, searchedHistory: true }),
+      { type: 'orphan_fill', fill: { intentId: X1, signature: a1.signature, slot: height + 1n, commitment: 'confirmed', tokens: q, sol: 30_000_000n, fees: 0n } as Fill },
+    ]);
+    await m2.run(2_000, 400, () => { m2.slot(); m2.solPrice(); });
+    expect(h2.worker.book.positions[p.id]?.quantity).toBe(0n);
+    const t = read<{ trades: { positionId: string; closedAtMs: number | null; stoppedOut: boolean; exitReasons?: string[] }[] }>(h.stateDir, 'account.json').trades.find((x) => x.positionId === p.id)!;
+    expect(t.closedAtMs).not.toBeNull();
+    expect(t.stoppedOut).toBe(true);
+    expect(t.exitReasons).toEqual(['stop']);
+    await h2.worker.stop();
   });
 });
