@@ -427,3 +427,32 @@ describe('DSR: the paper example and clamped moments (STATS-1c, ruling C)', () =
     }
   });
 });
+
+describe('SPA with a benchmark per variant (BT-2, RES-4)', () => {
+  const rng = createRng(11);
+  const T = 40;
+  const s0u1 = Array.from({ length: T }, () => nextNormal(rng) * 0.01);
+  const s0u2 = Array.from({ length: T }, () => nextNormal(rng) * 0.01 - 0.02);
+  const v = { u1: Array.from({ length: T }, () => nextNormal(rng) * 0.01 + 0.005), u2: Array.from({ length: T }, () => nextNormal(rng) * 0.01 - 0.01) };
+  const reg: SpaRegistration = { seFloor: 1e-6, studentisation: SPA_STUDENTISATION };
+  const run = (extra: { s0Of?: Record<string, number[]> }) => spaTest({ variants: v, s0: s0u1, activeDays: { u1: T, u2: T }, registration: reg, ...extra }, { rng: createRng(5), replicates: 400, alpha: 0.05 });
+
+  test('gives exactly the shared-S0 result when every variant\'s own S0 is that S0', () => {
+    expect(run({ s0Of: { u1: s0u1, u2: s0u1 } })).toEqual(run({}));
+  });
+
+  test('compares each variant with its own universe\'s S0, and leaves its test against zero unchanged', () => {
+    const shared = run({});
+    const own = run({ s0Of: { u2: s0u2 } });
+    const z = (r: ReturnType<typeof run>, id: string) => r.variants.find((x) => x.id === id)!;
+    expect(z(own, 'u1')).toMatchObject({ zVsZero: z(shared, 'u1').zVsZero, zVsS0: z(shared, 'u1').zVsS0 });
+    expect(z(own, 'u2').zVsZero).toBe(z(shared, 'u2').zVsZero);
+    // u2 loses less than its own S0 (−0.01 vs −0.02 a day): its statistic against S0 rises.
+    expect(z(own, 'u2').zVsS0).toBeGreaterThan(z(shared, 'u2').zVsS0);
+  });
+
+  test('refuses a benchmark for an unknown variant or off the calendar', () => {
+    expect(() => run({ s0Of: { nope: s0u1 } })).toThrow(/not a variant/);
+    expect(() => run({ s0Of: { u2: s0u2.slice(1) } })).toThrow(/one calendar/);
+  });
+});
