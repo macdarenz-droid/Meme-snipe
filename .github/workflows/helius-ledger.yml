@@ -11,9 +11,10 @@ name: helius-ledger
 #     period         a label for the plan's month (the reset date is on the Helius dashboard)
 #     limit          the plan's credits for the month (free plan: 1000000)
 #     worker_budget  the live worker's share, held back from every reservation (the
-#                    worker spends on the same account but does not write here): its
-#                    budget for the rest of the period, H15's about 8600 a day plus the
-#                    creates catch-up cap of 150000, never above its 700000 halt
+#                    worker spends on the same account but does not write here). It
+#                    must be the same figure as the worker's own Helius halt; until that
+#                    halt is a setting (WORKER-CREDITS) it is 700000, and init refuses
+#                    less and prints the figure the worker's halt must be set to
 #     used           credits already used this period (from the Helius dashboard) by
 #                    everything but the worker's share, so nothing spent before the
 #                    ledger is forgotten
