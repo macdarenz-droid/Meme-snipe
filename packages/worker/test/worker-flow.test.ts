@@ -972,12 +972,21 @@ describe('the entry decision survives a kill before its plan is made (EXIT-1h)',
     // ledger never booked.
     const file = exitsFile(h.stateDir);
     const saved = file.read({});
-    const orphan = 'p:OrphanMint1111111111111111111111111111111:1';
-    file.write({ ...saved, [orphan]: { ...saved[pid]! } });
+    const orphanMint = 'OrphanMint1111111111111111111111111111111';
+    const orphanPool = 'OrphanPool111111111111111111111111111111';
+    const orphan = `p:${orphanMint}:1`;
+    file.write({ ...saved, [orphan]: { ...saved[pid]!, pool: orphanPool } });
     const { b, m: m2, first } = await reboot(h, LANDS);
     await m2.run(800, 400, () => m2.slot());
     expect(first('restored exit dropped').map((l) => l['reasons'])).toEqual([['restored exit dropped', orphan, 'its position never reached the book']]);
     expect(Object.keys(b.worker.strategy.saved())).toEqual([pid]);
+    // Nothing of the orphan is kept: its pool is not watched, and a swap on that pool no longer reaches its mint.
+    expect([...b.worker.strategy.watchedPools().keys()]).not.toContain(orphanPool);
+    m2.fact(`logs:pump_amm:SellEvent:${orphanPool}:1`, { event: { program: 'pump_amm', name: 'SellEvent', data: {
+      pool: orphanPool, user: 'someone', baseAmountIn: 1_000n, quoteAmountOut: 1_000n, timestamp: 0n, lpFeeBasisPoints: 2n, protocolFeeBasisPoints: 93n,
+      coinCreatorFeeBasisPoints: 30n, buybackFeeBasisPoints: 0n, ixName: 'sell', baseSupply: 1_000_000n } }, signature: 'orphan-swap-1' });
+    await m2.run(800, 400, () => m2.slot());
+    expect(b.worker.strategy.observedFees(orphanMint)).toBeUndefined();
     expect(Object.keys(exitsFile(h.stateDir).read({}))).toEqual([pid]);
     // The booked position keeps its own plan.
     expect(b.worker.strategy.saved()[pid]!.plan).toEqual(saved[pid]!.plan);
