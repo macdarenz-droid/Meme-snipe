@@ -5,12 +5,13 @@ import {
   burnHoldout, createHoldoutRegistry, freezeRequirement, nPower, registerHoldout, summarizeWalkForward, type WalkForwardSummary, sealHoldout, type DemotionInput, type HoldoutRegistry, type G0Input, type G1Input, type G2Input, type G2PowerResult, type G2Universe,
   type G3Input, type G4Input, type G5Input, type TradeOutcome, type HoldoutTrade, type TripleBarrierLabel,
   clopperPearsonUpper, evaluateRevalidation, VETO_COMPOSITE_LEVEL, VETO_COMPOSITE_ALPHA, g2Sensitivity, RETURN_FLOOR, scoreVetoCounterfactuals,
-  type RevalidationInput,
+  type RevalidationInput, G2_DEFAULTS, MIN_DAYS, REQUIREMENT_FLOOR,
 } from '../src/stats/index.ts';
 import { EXIT_UNIVERSES, KNOWN_PLATFORM_CHANGES, RESEARCH_CONFIG, TRIAL_POLICY } from '../src/config/index.ts';
 import { bracketTrades, dayKey, type DayTrade } from './stats-fixtures.ts';
 
 const DAY = 86_400_000;
+const HOUR = DAY / 24;
 const NOW = 1_790_000_000_000;
 
 const g0Pass: G0Input = {
@@ -79,6 +80,17 @@ describe('G1 walk-forward', () => {
     const blocky = wf.map((t, i) => ({ ...t, blocked: i % 20 === 0 })); // 30 of 600: upper bound about 6.8%
     const rb = gateG1({ ...g1Pass(), trades: blocky });
     expect(rb.reasons.join(" | ")).toContain("blocked exits");
+  });
+  test('the DSR gate clamps the moments: positive skew and thin tails cannot carry a pass (review STATS-1c)', () => {
+    // A two-point return (+32.5% in 3 of 10 trades, −10% otherwise): skewness 0.87, kurtosis 1.76. Unclamped, both
+    // flatter the PSR to 0.9509; clamped to skewness 0 and kurtosis 3, it is 0.9388, under 0.95.
+    const twoPoint = Array.from({ length: 600 }, (_, i) => ({ day: dayKey(Math.floor(i / 15)), rNet: i % 10 < 3 ? 0.325 : -0.1, ySevere: false, blocked: false }));
+    const returns = twoPoint.map((t) => t.rNet);
+    expect(deflatedSharpe(returns, registry).dsr).toBeGreaterThanOrEqual(0.95);
+    expect(deflatedSharpe(returns, registry, { clamp: true }).dsr).toBeLessThan(0.95);
+    const r = gateG1({ ...g1Pass(), trades: twoPoint, pboMatrix: matrixFor(twoPoint) });
+    expect(r.metrics.dsr!).toBeCloseTo(deflatedSharpe(returns, registry, { clamp: true }).dsr, 12);
+    expect(r.reasons.join(' | ')).toMatch(/DSR: deflated Sharpe 0\.93\d* over 20 trials, moments clamped/);
   });
   test('the PBO matrix must hold exactly the registry trials, the selected one included', () => {
     const { t3: _a, t4: _b, ...subset } = pboMatrix;
@@ -171,11 +183,12 @@ const power = (nPower: number, familySize = 1): PowerSpec => ({ nPower, powerAtN
 const closedFor = (familySize: number) => nPower(sd(wf.map((t) => t.rNet)), 0.05, { alpha: 0.04 / familySize });
 // Attempt 1 window: entries 08-01..08-25, one tail day: opens from 08-27 (NOW is 2026-09-21).
 const window1 = { fromDay: '2026-08-01', toDay: '2026-08-25', registeredOnDay: '2026-07-20' };
-const sealed = (familySize: number, universes: readonly string[], c = counts, required = Math.max(300, 330, closedFor(familySize))): HoldoutRegistry => {
-  let reg = createHoldoutRegistry(familySize);
+const sealed = (familySize: number, universes: readonly string[], c = counts, required = Math.max(300, 330, closedFor(familySize)), requiredDays = 10): HoldoutRegistry => {
+  // A day requirement under the floor needs a test rule (it exists only to show that G2 refuses it).
+  let reg = createHoldoutRegistry(familySize, requiredDays < 10 ? { windowDays: 28, tailDays: 1, minDays: 1 } : undefined);
   for (const u of universes) {
     reg = registerHoldout(reg, { holdoutId: `h-${u}`, universe: u, configId: `${u}-v1`, ...window1 });
-    reg = freezeRequirement(reg, `h-${u}`, { requiredTrades: required, requiredDays: 10, nPower: 300, nPowerSeed: 7 }).registry;
+    reg = freezeRequirement(reg, `h-${u}`, { requiredTrades: required, requiredDays, nPower: 300, nPowerSeed: 7 }).registry;
     reg = sealHoldout(reg, `h-${u}`, { configId: `${u}-v1`, ledgerHash: `hash-${u}`, counts: c }).registry;
   }
   return reg;
@@ -228,6 +241,20 @@ describe('G2 holdout (sealed, ARCHITECTURE.md §14 at 333f4ac)', () => {
     expect(gateG2(g2Pass({ registry: hash.registry })).reasons[0]).toMatch(/burned \(hash-mismatch\)/);
     expect(gateG2(g2Pass({ universes: [u('U1', { configId: 'U1-v2' })] })).registry.entries[0]!.burnReason).toBe('reconfigured');
     expect(gateG2(g2Pass({ universes: [u('U1', { trades: holdout.slice(1) })] })).registry.entries[0]!.burnReason).toBe('count-mismatch');
+  });
+  test('the frozen day requirement is the one the seal opens at: 21 days frozen, 25 present, passes; 26 frozen is short (review STATS-1c)', () => {
+    const r21 = gateG2(g2Pass({ registry: sealed(1, ['U1'], counts, undefined, 21) }));
+    expect(r21.reasons).toEqual([]);
+    expect(r21.status).toBe('pass');
+    expect(r21.registry.entries[0]).toMatchObject({ seal: 'opened', burnReason: 'scored' });
+    const r26 = gateG2(g2Pass({ registry: sealed(1, ['U1'], counts, undefined, 26) }));
+    expect(r26.status).toBe('not-proven');
+    expect(r26.reasons.join()).toMatch(/on >= 26 days/);
+    // A day requirement under MIN_DAYS (only a test rule can freeze one) fails.
+    const r9 = gateG2(g2Pass({ registry: sealed(1, ['U1'], counts, undefined, 9) }));
+    expect(r9.status).toBe('fail');
+    expect(r9.reasons.join()).toMatch(/requirement days U1: frozen 9 entry days \(need >= 10\)/);
+    expect(REQUIREMENT_FLOOR).toEqual({ minTrades: G2_DEFAULTS.minTradesFloor, minDays: MIN_DAYS });
   });
   test('size comes from the sealed counts against the frozen requirement; short at the cutoff is "not proven" and spends the attempt', () => {
     const r = gateG2(g2Pass({ registry: sealed(1, ['U1'], counts, 600), universes: [u('U1', { power: power(600) })] }));
@@ -459,7 +486,7 @@ const g3Pass: G3Input = {
   rejectMix: { dryRun: { H8: 210, H9: 700, H11: 70 }, backtest: { H8: 4300, H9: 14_200, H11: 1500 } },
   fillDifferences: Array.from({ length: 24 }, (_, i) => [0.001, 0.002, 0.004, 0.003, 0.012, -0.002][i % 6]!), parityTestPassed: true,
   holdoutSevereRate: holdout.filter((t) => t.ySevere).length / holdout.length,
-  registration: { registeredAtMs: NOW - 2 * DAY, evaluateAtMs: NOW - DAY + 2 * DAY, thresholds: {}, expectedSimulationErrors: ['BlockhashNotFound'] },
+  registration: { registeredAtMs: NOW - 2 * DAY, evaluateAtMs: NOW - DAY + 49 * HOUR, thresholds: {}, expectedSimulationErrors: ['BlockhashNotFound'] },
   dryRunStartMs: NOW - DAY,
   simulations: { attempted: 120, succeeded: 118, errors: { BlockhashNotFound: 2 } },
   // The 20 vetoed candidates scored as if entered, like the kept trades; the holdout's lower bound from G2.
@@ -679,7 +706,12 @@ describe('G3 live dry-run consistency', () => {
     expect(early.reasons.join()).toMatch(/registered end: /);
     const tooShort = gateG3({ ...g3Pass, registration: reg(g3Pass.dryRunStartMs + DAY) });
     expect(tooShort.status).toBe('fail');
-    expect(gateG3({ ...g3Pass, dryRunHours: 24 * 10 + 1, registration: reg(g3Pass.dryRunStartMs + 10 * DAY) }).checks.find((c) => c.name === 'registered end')!.passed).toBe(true);
+    expect(gateG3({ ...g3Pass, dryRunHours: 24 * 10, registration: reg(g3Pass.dryRunStartMs + 10 * DAY) }).checks.find((c) => c.name === 'registered end')!.passed).toBe(true);
+    // Nor later (review STATS-1c): a run that kept going past its registered end, uncut, fails; within a minute is fine.
+    const late = gateG3({ ...g3Pass, dryRunHours: 24 * 10 + 1, registration: reg(g3Pass.dryRunStartMs + 10 * DAY) });
+    expect(late.status).toBe('fail');
+    expect(late.reasons.join()).toMatch(/registered end: .*cut at it/);
+    expect(gateG3({ ...g3Pass, dryRunHours: 24 * 10 + 0.5 / 60, registration: reg(g3Pass.dryRunStartMs + 10 * DAY) }).checks.find((c) => c.name === 'registered end')!.passed).toBe(true);
   });
   test('the new G3 thresholds tighten but never loosen', () => {
     expect(() => gateG3(g3Pass, { minVetoedForGap: 5 })).toThrow(/only be tightened/);

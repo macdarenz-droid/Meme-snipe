@@ -223,17 +223,17 @@ describe('other interval checks', () => {
 describe('joint SPA test calibration (STATS-1c)', () => {
   const T = 50;
   const runs = process.env.SPA_FULL_CALIBRATION ? 300 : 40;
-  const run = (name: string, edge: number, reps: number) => {
+  const run = (name: string, edge: number, reps: number, days = T, seedBase = 77_000, bootBase = 5_000_000) => {
     let global = 0;
     let pass = 0;
     for (let r = 0; r < reps; r++) {
-      const rng = createRng(77_000 + r * 13 + name.length);
-      const v = SPA_SCENARIOS[name]!(rng, edge, T);
-      const s0 = Array.from({ length: T }, () => nextNormal(rng));
+      const rng = createRng(seedBase + r * 13 + name.length);
+      const v = SPA_SCENARIOS[name]!(rng, edge, days);
+      const s0 = Array.from({ length: days }, () => nextNormal(rng));
       const activeDays = Object.fromEntries(Object.entries(v).map(([k, s]) => [k, s.filter((x) => x !== 0).length]));
-      const regimes = name === 'regimeShift' ? [{ from: 0, to: 20 }, { from: 20, to: 35 }, { from: 35, to: 50 }] : [];
+      const regimes = name === 'regimeShift' ? [{ from: 0, to: 20 }, { from: 20, to: 35 }, { from: 35, to: days }] : [];
       const res = spaTest({ variants: v, s0, activeDays, registration: { seFloor: 1e-6, studentisation: SPA_STUDENTISATION, regimes } },
-        { rng: createRng(5_000_000 + r), replicates: 400, alpha: ALPHA });
+        { rng: createRng(bootBase + r), replicates: 400, alpha: ALPHA });
       if (res.pValue < ALPHA) global++;
       if (res.passing.length > 0) pass++;
     }
@@ -242,6 +242,18 @@ describe('joint SPA test calibration (STATS-1c)', () => {
   test('at zero edge neither the global test nor the promotion rule exceeds α, in any scenario', () => {
     for (const name of Object.keys(SPA_SCENARIOS)) {
       const r = run(name, 0, runs);
+      expect(r.global, name).toBeLessThanOrEqual(ALPHA);
+      expect(r.pass, name).toBeLessThanOrEqual(ALPHA);
+    }
+  }, 900_000);
+  // For the owner's SPA sign-off: one more calibration at the registry's real T, the 64 practice days 2026-07-20 ..
+  // 09-21 that G1 reads, on seeds independent of the run above (data from 91_000, bootstrap from 9_100_000).
+  // Measured (300 runs each; global, a variant passes): independent 0.01, 0 · duplicates 0.017, 0 · mixture 0.013, 0 ·
+  // heavy tails 0, 0 · common shock 0.03, 0 · idle days 0.003, 0 · unequal lengths 0.013, 0 · autocorrelated 0.02, 0.003
+  // · sparse 0.017, 0 · regime shift 0.023, 0 · unequal volatility 0.013, 0 · rule grid 0.03, 0.
+  test('at the registry\'s real T (64 practice days), on independent seeds, neither rate exceeds α in any scenario', () => {
+    for (const name of Object.keys(SPA_SCENARIOS)) {
+      const r = run(name, 0, runs, 64, 91_000, 9_100_000);
       expect(r.global, name).toBeLessThanOrEqual(ALPHA);
       expect(r.pass, name).toBeLessThanOrEqual(ALPHA);
     }
