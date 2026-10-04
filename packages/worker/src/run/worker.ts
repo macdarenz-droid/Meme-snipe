@@ -48,7 +48,7 @@ import { entryPrice, openPositionsHealth } from './open-positions.ts';
 import { riskSnapshot } from '../../../core/src/risk/index.ts';
 import { markSettings, riskAccount } from '../engine/marks.ts';
 import type { DeployerIndex, DeployerIndexState, RugLabeller, RugLabellerState } from '../../../core/src/gates/index.ts';
-import { PERSIST_FILE, fileSha256, loadState, saveState } from '../persist/index.ts';
+import { PERSIST_FILE, fileSha256, loadState, packFile, saveState } from '../persist/index.ts';
 
 /** PERSIST-1's saved deployer state in the worker's state dir, and how often it is written. */
 export { PERSIST_FILE } from '../persist/index.ts';
@@ -298,6 +298,8 @@ export class Worker {
   #restored: { readonly asOf: Moment; readonly ref: SavedStateRef } | null = null;
   /** The restored index and labeller, given once to the strategy when it applies the seed that names them. */
   #handoff: { readonly ref: SavedStateRef; readonly index: DeployerIndex; readonly labeller: RugLabeller } | null = null;
+  /** G4c: the recording's plain saved-state copy this boot restored from, packed at start. */
+  #unpacked: { readonly path: string; readonly sha256: string; readonly bytes: number } | null = null;
   #lastSaveMs = 0;
   #saveRefused = false;
   #beatSeq = 0;
@@ -438,7 +440,11 @@ export class Worker {
     if (this.#saved.refused !== undefined) d.log(`Deployer store not seeded (${this.#saved.refused}): H14 is not covered until the look-back passes.`);
     if (restored.ok) {
       const ref: SavedStateRef = { file: PERSIST_FILE, sha256: fileSha256(loadFrom), version: restored.version };
-      if (loadFrom !== statePath) this.#recorder?.attach(PERSIST_FILE, ref.sha256, statSync(loadFrom).size);
+      if (loadFrom !== statePath) {
+        const bytes = statSync(loadFrom).size;
+        this.#recorder?.attach(PERSIST_FILE, ref.sha256, bytes);
+        this.#unpacked = { path: loadFrom, sha256: ref.sha256, bytes };
+      }
       this.#restored = { asOf: restored.asOf, ref };
       this.#handoff = { ref, index: restored.index, labeller: restored.labeller };
       this.#saved = { creates: [], rugs: [], coverage: restored.coverage, last: { slot: restored.asOf.slot, ms: restored.asOf.receivedAt } };
@@ -533,6 +539,23 @@ export class Worker {
 
   #fact(key: string, value: unknown, atMs: number = this.#d.timers.now()): void {
     this.#feed.ingest('worker', { type: 'fact', key, value }, { receivedAt: atMs });
+  }
+
+  /**
+   * G4c: the recording's saved-state copy is packed (about a ninth of its size) once the restore has read it; the seed's
+   * sha256 stays that of the plain bytes, which the packed file is checked to decompress to. A failure keeps the plain
+   * copy (the boot stays replayable) and is logged.
+   */
+  async #packCopy(): Promise<void> {
+    const c = this.#unpacked;
+    if (c === null) return;
+    this.#unpacked = null;
+    try {
+      const p = await packFile(c.path, { sha256: c.sha256, bytes: c.bytes });
+      this.#recorder?.packed(PERSIST_FILE, p.packed, p.content);
+    } catch (e) {
+      this.#d.log(`Recorder: the saved-state copy was kept unpacked (${e instanceof Error ? e.message : 'error'}).`);
+    }
   }
 
   /** The strategy's `savedState`: the restored index and labeller, once, only for the seed that names exactly them. */
@@ -990,6 +1013,7 @@ export class Worker {
     const d = this.#d;
     const r = await this.reconcile();
     if (!r.ok) return r;
+    await this.#packCopy();
     this.#journalRecovered();
     // Entries wait for the seed; this halt is released ahead of every live event, so the index waits with them.
     this.#seeding = true;
@@ -1071,6 +1095,7 @@ export class Worker {
     this.#observing = true;
     const r = await this.reconcile();
     if (!r.ok) return r;
+    await this.#packCopy();
     this.#journalRecovered();
     this.#sources = d.sources({ feed: this.#feed, timers: d.timers, pools: () => new Map() });
     for (const s of this.#sources) this.#feeds.set(s.name, { src: s, connected: false, last: null, droppedUntil: 0 });

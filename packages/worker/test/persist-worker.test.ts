@@ -2,7 +2,8 @@
 // rug labeller and the coverage facts; the next start restores them through the recorded seed fact before any
 // decision, tops up the downtime from the saved moment, and never saves before the seed is applied.
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { zstdDecompressSync } from 'node:zlib';
+import { zstdCompressSync, zstdDecompressSync } from 'node:zlib';
+import { createHash } from 'node:crypto';
 import { SEED_KEY } from '../src/engine/strategy.ts';
 import type { Frame } from '../src/providers/index.ts';
 import { parseTyped } from '../src/run/json.ts';
@@ -77,12 +78,18 @@ describe('PERSIST-1 in the worker', () => {
     const frames = readdirSync(dir).flatMap((d) => readdirSync(join(dir, d)).filter((f) => /^frames-/.test(f)).map((f) => zstdDecompressSync(readFileSync(join(dir, d, f))).toString('utf8')))
       .join('\n').split('\n').filter((l) => l !== '').map((l) => parseTyped(l) as Frame);
     const seedFrame = frames.find((f) => f.body.type === 'fact' && f.body.key === SEED_KEY);
+    // G4c: the copy is packed once the restore read it; it decompresses to exactly those bytes, whose sha256 the seed names.
     const copy = join(rec, PERSIST_FILE);
-    const ref = { file: PERSIST_FILE, sha256: fileSha256(copy), version: 2 };
+    expect(existsSync(copy)).toBe(false);
+    const packed = readFileSync(`${copy}.zst`);
+    expect(zstdDecompressSync(packed).equals(savedBytes)).toBe(true);
+    const ref = { file: PERSIST_FILE, sha256: createHash('sha256').update(savedBytes).digest('hex'), version: 2 };
     expect((seedFrame?.body as { value: { state?: unknown } }).value.state).toEqual({ ref });
-    expect(readFileSync(copy).equals(savedBytes)).toBe(true);
     const manifest = JSON.parse(readFileSync(join(rec, 'manifest.json'), 'utf8')) as { attachments: unknown[] };
-    expect(manifest.attachments).toEqual([{ file: PERSIST_FILE, sha256: ref.sha256, bytes: savedBytes.length }]);
+    expect(manifest.attachments).toEqual([{
+      file: `${PERSIST_FILE}.zst`, sha256: createHash('sha256').update(packed).digest('hex'), bytes: packed.length,
+      content: { encoding: 'zstd', sha256: ref.sha256, bytes: savedBytes.length },
+    }]);
   }, 60_000);
 
   it('the parity replay restores a restarted boot from its recording\'s copy and reproduces its decisions; it refuses loudly without exactly that copy (WORKER-GROW)', async () => {
@@ -100,7 +107,7 @@ describe('PERSIST-1 in the worker', () => {
     await m2.run(1_000, 200, () => m2.slot());
     await h2.worker.stop();
     const b2 = loadSession(stateDir).find((b) => b.boot === h2.worker.boot)!;
-    const copy = join(stateDir, 'recorder', h2.worker.boot, PERSIST_FILE);
+    const copy = join(stateDir, 'recorder', h2.worker.boot, `${PERSIST_FILE}.zst`);
     expect(b2.savedState).toBe(copy);
     expect(b2.live.some((l) => l.includes('saved state restored'))).toBe(true);
     const d = { session: h2.session, rugs: RUG_CONFIG, strategy: h2.worker.strategyConfig };
@@ -112,14 +119,28 @@ describe('PERSIST-1 in the worker', () => {
     // tells): refused before anything is replayed, never an empty or other state.
     expect(() => replayBoot({ ...b2, savedState: null }, d)).toThrow(SavedStateMissing);
     expect(() => replayBoot({ ...b2, savedState: null }, d)).toThrow(/the recording has no copy of it; nothing is replayed/);
+    const plainBytes = zstdDecompressSync(readFileSync(copy));
     const altered = join(tempState(), PERSIST_FILE);
-    const bytes = readFileSync(copy);
+    const bytes = Buffer.from(plainBytes);
     bytes[bytes.length - 10] = bytes[bytes.length - 10] === 0x30 ? 0x31 : 0x30;
     writeFileSync(altered, bytes);
     expect(() => replayBoot({ ...b2, savedState: altered }, d)).toThrow(/the recording's copy has sha256/);
+    // The same change inside a packed copy, and a packed copy that does not decompress: refused too.
+    const alteredPacked = join(tempState(), `${PERSIST_FILE}.zst`);
+    writeFileSync(alteredPacked, zstdCompressSync(bytes));
+    expect(() => replayBoot({ ...b2, savedState: alteredPacked }, d)).toThrow(/the recording's copy has sha256/);
+    const torn = join(tempState(), `${PERSIST_FILE}.zst`);
+    writeFileSync(torn, readFileSync(copy).subarray(0, 40));
+    // (Node's zstd may return a cut file's partial output without an error; the plain bytes' hash refuses it either way.)
+    expect(() => replayBoot({ ...b2, savedState: torn }, d)).toThrow(SavedStateMissing);
+    expect(() => replayBoot({ ...b2, savedState: torn }, d)).toThrow(/(unreadable|has sha256).*nothing is replayed/);
+    // The plain copy (a pack that failed) replays the same.
+    const unpacked = join(tempState(), PERSIST_FILE);
+    writeFileSync(unpacked, plainBytes);
+    expect(replayBoot({ ...b2, savedState: unpacked }, d)).toEqual(b2.live);
     const other = join(stateDir, PERSIST_FILE);
     expect(loadState(other, RUG_CONFIG).ok).toBe(true);
-    expect(fileSha256(other)).not.toBe(fileSha256(copy));
+    expect(fileSha256(other)).not.toBe(fileSha256(unpacked));
     expect(() => replayBoot({ ...b2, savedState: other }, d)).toThrow(/the recording's copy has sha256/);
   }, 60_000);
 
