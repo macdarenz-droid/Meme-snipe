@@ -10,6 +10,8 @@ import { markedHistory } from '../src/engine/marks.ts';
 import { SOL_PRICE_KEY, TRIPPED_PREFIX, TRIP_PREFIX } from '../src/engine/strategy.ts';
 import { accountFile } from '../src/run/account.ts';
 import { controlFile, NO_CONTROL } from '../src/run/state.ts';
+import { rmSync } from 'node:fs';
+import { HELD_PREFIX } from '../src/run/worker.ts';
 import { killLatchHolds, weeklyLatchHolds } from '../../core/src/risk/index.ts';
 import { MINT, Market, SOL_PRICE, T, makeWorker, passingMarket, tempState, until, virtualTimers } from './worker-harness.ts';
 
@@ -236,5 +238,95 @@ describe('a trip after an owner re-arm or review latches again (RISK-LATCH-2)', 
     await m2.run(2_000, 400, () => priced(h2, m2, 1_000_000n));
     expect(latches(h2).weeklyTrippedAtMs).toBe(at);
     await h2.worker.stop();
+  });
+});
+
+// RISK-LATCH-2 (AUDIT-RM2 F4): a restore or cold start without the state that holds the latches and loss figures
+// started from nothing (no control.json: no latch). Such a boot now holds entries (exits run) until the owner confirms.
+describe('a boot that lost its latches or account holds entries until the owner confirms (RISK-LATCH-2)', () => {
+  const held = (h: H) => (h.worker.health().halt_reasons as readonly string[]).filter((x) => x.startsWith(HELD_PREFIX));
+  /** A run whose NAV breach latched the kill switch, stopped. */
+  const latchedRun = async () => {
+    const h = makeWorker();
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    const m = new Market(h);
+    await m.run(4_000, 400, () => priced(h, m, 1_000_000n));
+    await m.run(4_000, 400, () => priced(h, m, 440_000n));
+    expect(latches(h).killTrippedAtMs).not.toBeNull();
+    await h.worker.stop();
+    return h;
+  };
+
+  it('a host-loss restore whose backup lacks control.json holds entries, and the owner\'s pause then resume clears it', async () => {
+    const h = await latchedRun();
+    rmSync(controlFile(h.stateDir).path);
+    const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers });
+    expect(await h2.worker.reconcile()).toEqual({ ok: true });
+    const m = new Market(h2);
+    await m.run(2_000, 400, () => priced(h2, m, 1_000_000n));
+    // The kill latch is gone with the file; the hold stops entries instead, and is saved for the next start.
+    expect(latches(h2).killTrippedAtMs).toBeNull();
+    expect(held(h2)).toEqual([expect.stringContaining('control.json')]);
+    expect(controlFile(h2.stateDir).read(NO_CONTROL).held).not.toBeNull();
+    await h2.worker.stop();
+    // A pause that began before the hold (as saved) does not confirm it when lifted; a pause after it, then a resume, does.
+    const ctl = controlFile(h.stateDir).read(NO_CONTROL);
+    controlFile(h.stateDir).write({ ...ctl, paused: true, pausedAtMs: ctl.held!.atMs - 1 });
+    const h3 = makeWorker({ stateDir: h.stateDir, timers: h.timers });
+    expect(await h3.worker.reconcile()).toEqual({ ok: true });
+    const m3 = new Market(h3);
+    await m3.run(1_200, 400, () => priced(h3, m3, 1_000_000n));
+    expect(held(h3)).toHaveLength(1);
+    h3.worker.applyPause(false);
+    await m3.run(800, 400, () => priced(h3, m3, 1_000_000n));
+    expect(held(h3)).toHaveLength(1);
+    h3.worker.applyPause(true);
+    h3.worker.applyPause(false);
+    await m3.run(800, 400, () => priced(h3, m3, 1_000_000n));
+    expect(held(h3)).toEqual([]);
+    expect(controlFile(h3.stateDir).read(NO_CONTROL).held).toBeNull();
+    await h3.worker.stop();
+  });
+
+  it('a restore without account.json, or a cold start with no ledger, holds entries too', async () => {
+    for (const gone of ['account.json', 'ledger'] as const) {
+      const h = await latchedRun();
+      if (gone === 'account.json') rmSync(accountFile(h.stateDir).path);
+      else for (const f of ['ledger.sqlite', 'ledger.sqlite-wal', 'ledger.sqlite-shm', 'control.json', 'account.json']) rmSync(`${h.stateDir}/${f}`, { force: true });
+      const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers });
+      expect(await h2.worker.reconcile()).toEqual({ ok: true });
+      const m = new Market(h2);
+      await m.run(1_200, 400, () => priced(h2, m, 1_000_000n));
+      expect(held(h2), gone).toHaveLength(1);
+      await h2.worker.stop();
+    }
+  });
+
+  it('a restore with every file holds nothing and keeps the kill latch; a first start on an empty folder holds nothing', async () => {
+    const h = await latchedRun();
+    const at = latches(h).killTrippedAtMs;
+    const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers });
+    expect(await h2.worker.reconcile()).toEqual({ ok: true });
+    const m = new Market(h2);
+    await m.run(1_200, 400, () => priced(h2, m, 1_000_000n));
+    expect(held(h2)).toEqual([]);
+    expect(latches(h2).killTrippedAtMs).toBe(at);
+    await h2.worker.stop();
+    const fresh = makeWorker();
+    expect(await fresh.worker.reconcile()).toEqual({ ok: true });
+    const m2 = new Market(fresh);
+    await m2.run(1_200, 400, () => priced(fresh, m2, 1_000_000n));
+    expect(held(fresh)).toEqual([]);
+    await fresh.worker.stop();
+    // A plain restart of a run that never latched, and one stopped before any SOL price: nothing was lost.
+    const quiet = makeWorker();
+    expect(await quiet.worker.reconcile()).toEqual({ ok: true });
+    await quiet.worker.stop();
+    const again = makeWorker({ stateDir: quiet.stateDir, timers: quiet.timers });
+    expect(await again.worker.reconcile()).toEqual({ ok: true });
+    const m3 = new Market(again);
+    await m3.run(1_200, 400, () => priced(again, m3, 1_000_000n));
+    expect(held(again)).toEqual([]);
+    await again.worker.stop();
   });
 });

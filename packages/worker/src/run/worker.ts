@@ -7,7 +7,7 @@
 // `open_intents` → seed the deployer index (SEED-1's hook) → start the live sources → trade. Nothing enters before the
 // reconcile line; a reconcile that cannot settle every intent exits 3.
 import { randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import type { Server } from 'node:http';
 import { join } from 'node:path';
 import type { PolicySession, RugConfig } from '../../../core/src/config/index.ts';
@@ -192,6 +192,8 @@ const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object
 
 /** Present while the state dir began empty and no full start has journaled its `recovered` line yet. */
 const COLD_START = 'cold_start';
+/** Halt reason while entries are held for the owner's confirmation of restored state (RISK-LATCH-2, F4). */
+export const HELD_PREFIX = 'restored state unconfirmed: ';
 
 export class Worker {
   readonly #d: WorkerDeps;
@@ -278,7 +280,13 @@ export class Worker {
     this.#funnel.fromMs = now;
     this.#boot = d.boot ?? `${now.toString(36)}-${process.pid}`;
     mkdirSync(c.stateDir, { recursive: true });
-    this.#journal = new Journal(join(c.stateDir, STATE_FILES.journal), this.#boot, () => d.timers.now());
+    // RISK-LATCH-2 (F4): a journal from earlier runs with the latches, the account or the ledger gone (a host-loss
+    // restore whose backup lacks them, or a cold start) means the latches and loss figures restart from nothing.
+    const journalPath = join(c.stateDir, STATE_FILES.journal);
+    const earlier = existsSync(journalPath) && statSync(journalPath).size > 0;
+    const gone = ([['control.json', controlFile(c.stateDir).path], ['account.json', accountFile(c.stateDir).path], ['the ledger', join(c.stateDir, Ledger.FILE)]] as const)
+      .filter(([, path]) => !existsSync(path)).map(([name]) => name);
+    this.#journal = new Journal(journalPath, this.#boot, () => d.timers.now());
     rmSync(join(c.stateDir, STATE_FILES.cleanStop), { force: true });
     const timing = watchTimingProblem(d.config.watch, d.session.policy.gates.maxQuoteAgeMs, DEFAULT_LIVE_FEED.horizonSlots * SLOT_MS);
     if (timing !== null) throw new RangeError(timing);
@@ -297,6 +305,13 @@ export class Worker {
     this.#ledger = openLedger(join(c.stateDir, Ledger.FILE), 'paper');
     this.#control = controlFile(c.stateDir);
     this.#ctl = this.#control.read(NO_CONTROL);
+    if (earlier && gone.length > 0 && this.#ctl.held == null) {
+      const reason = `state from earlier runs is missing (${gone.join(', ')}): latches and loss figures may have restarted`;
+      this.#ctl = { ...this.#ctl, held: { atMs: now, reason } };
+      d.log(`Entries held until the owner confirms (pause, then resume, on the watchdog): ${reason}. Exits keep running.`);
+    }
+    // Written at every start, so a later boot that finds it missing knows it was lost.
+    this.#control.write(this.#ctl);
     this.#exitsFile = exitsFile(c.stateDir);
     this.#account = new PaperAccount(accountFile(c.stateDir), d.session.policy.capital.bankroll, now, d.strategy.rent.oneTime);
 
@@ -807,6 +822,7 @@ export class Worker {
       else if (s.last === null || now - s.last > this.#d.staleFeedMs) reasons.push(`feed ${s.src.name} stale`);
     }
     if (this.#ctl.paused) reasons.push('owner pause (watchdog)');
+    if (this.#ctl.held != null) reasons.push(`${HELD_PREFIX}${this.#ctl.held.reason}`);
     // A position entered now could lose its price with no second path to read it (review of #87): entries stop.
     if (this.#d.watchRead === undefined || this.#d.watchHalted?.() === true) reasons.push(SECOND_PATH_UNAVAILABLE);
     if (this.#seeding) reasons.push(SEEDING);
@@ -1236,10 +1252,14 @@ export class Worker {
   /** The watchdog's flag, both ways: true stops new entries (exits go on), false allows them again. */
   applyPause(paused: boolean): void {
     if (paused === this.#ctl.paused) return;
-    this.#ctl = { ...this.#ctl, paused, pausedAtMs: paused ? this.#d.timers.now() : null };
+    // RISK-LATCH-2 (F4): a resume whose pause began at or after the hold is the owner's confirmation; it clears the hold.
+    const held = this.#ctl.held ?? null;
+    const confirms = !paused && held !== null && this.#ctl.pausedAtMs !== null && this.#ctl.pausedAtMs >= held.atMs;
+    this.#ctl = { ...this.#ctl, paused, pausedAtMs: paused ? this.#d.timers.now() : null, ...(confirms ? { held: null } : {}) };
     this.#control.write(this.#ctl);
     this.#report(paused ? { type: 'pause_entries', reason: 'owner' } : { type: 'resume_entries', reason: 'owner' });
     this.#d.log(paused ? 'Entries paused by the owner (watchdog). Exits keep running.' : 'Entries allowed again (pause cleared).');
+    if (confirms) this.#d.log('The owner confirmed the restored state: the hold on entries is cleared.');
   }
 
   /** Clean stop: entries stop, simulations finish (bounded), journal and recorder close, the ledger closes. */
