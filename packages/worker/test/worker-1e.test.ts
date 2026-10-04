@@ -36,7 +36,7 @@ const simulating = (asked: [string, bigint][]) => new LiveFacts({
         asked.push([mint, spend]);
         const q = roundTrip(lamports(spend));
         if (!q.ok) return false;
-        const read = { mint, slot: ctx.tip() ?? 0n, spend, ok: true, paid: q.trade.paid, proceeds: q.trade.proceeds, error: null };
+        const read = { mint, slot: ctx.tip() ?? 0n, spend, ok: true, paid: q.trade.paid, proceeds: q.trade.immediateProceeds, error: null };
         ctx.ingest.ingest('helius', { type: 'offchain', key: RAW.sim(mint), value: read }, { receivedAt: ctx.timers.now() });
         return true;
       },
