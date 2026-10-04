@@ -193,6 +193,12 @@ export interface SavedExit {
   readonly spot?: { readonly price: bigint; readonly atMs: number } | null;
   /** Since when a due full exit has waited for its first fresh quote (EXIT-1c); null or absent when none waits. */
   readonly waitingSinceMs?: number | null;
+  /**
+   * Why the position is in sell-only recovery (EXIT-1g); null or absent when it holds its own plan. Kept until the
+   * position closes: whenever it is open with no exit owner, the emergency full exit is armed again, so a recovery exit
+   * that ends unfilled, before or after a restart, never leaves the position held under the fallback plan.
+   */
+  readonly recovery?: string | null;
 }
 
 export interface RestoreFact {
@@ -343,6 +349,9 @@ const runnablePlan = (p: Record<string, unknown>): boolean =>
   && ['notional', 'riskUnit', 'stopPrice', 'entryReserve'].every((k) => typeof p[k] === 'bigint')
   && (p['universe'] === undefined || typeof p['universe'] === 'string');
 
+/** A saved recovery reason the worker can act on: absent, null or a reason (EXIT-1g review B1). */
+const runnableRecovery = (r: unknown): boolean => r === undefined || r === null || typeof r === 'string';
+
 export class LiveStrategy implements Strategy {
   readonly #d: StrategyDeps;
   readonly #settings: ExitSettings;
@@ -463,6 +472,8 @@ export class LiveStrategy implements Strategy {
   readonly #bookedOpenAt = new Map<string, number>();
   /** Where each booking sits against the boots (restore fact): only a reconcile-time booking may be late (EXIT-1f N2). */
   readonly #bookedWhen = new Map<string, string>();
+  /** Why a position has no usable saved plan, from the restore (EXIT-1g): it goes into sell-only recovery. */
+  readonly #recoveryWhy = new Map<string, string>();
   /** Positions whose fallback plan waits for the first slot to date their fill (said once each). */
   readonly #planWaitsForSlot = new Set<string>();
   /** Said once per boot when positions wait for the restore. */
@@ -612,18 +623,20 @@ export class LiveStrategy implements Strategy {
     }
     let n = 0;
     for (const [pid, s] of Object.entries(v['exits'])) {
-      // A saved exit the exit rules could not run on is refused, never applied: its position falls back to the plan from
-      // its fill (the policy-maximum stop), so one bad entry neither stalls nor crashes the management of the others.
-      if (!isObj(s) || !isObj(s['plan']) || !isObj(s['tracker']) || !Array.isArray(s['bars']) || !runnablePlan(s['plan'])) {
+      // A saved exit the exit rules could not run on is refused, never applied: its position goes into sell-only recovery
+      // (EXIT-1g), so one bad entry neither stalls nor crashes the management of the others.
+      if (!isObj(s) || !isObj(s['plan']) || !isObj(s['tracker']) || !Array.isArray(s['bars']) || !runnablePlan(s['plan']) || !runnableRecovery(s['recovery'])) {
         out.push({ action: null, reasons: ['restore entry refused', pid, 'malformed saved plan'] });
+        this.#recoveryWhy.set(pid, 'saved plan refused');
         continue;
       }
       let saved = s as unknown as SavedExit;
       if (!runnableTracker(s['tracker'] as Record<string, unknown>)) {
-        // A tracker the exit rules would throw on is replaced, never applied: partials come back from the book; the peak,
-        // trail and flat target start again from now (the plan, its stop and its open time are kept).
-        out.push({ action: null, reasons: ['restore tracker refused', pid, 'malformed saved tracker; tracker reset'] });
-        saved = { ...saved, tracker: newTracker() };
+        // A tracker the exit rules would throw on is never applied. Its trail, peak and flat target cannot be recovered, and
+        // starting them again would weaken the position's protection: sell-only recovery instead (EXIT-1g).
+        out.push({ action: null, reasons: ['restore tracker refused', pid, 'malformed saved tracker; sell-only recovery'] });
+        out.push({ action: null, reasons: ['recovery exit', pid, 'saved tracker refused', 'the whole holding exits at the next fresh quote'] });
+        saved = { ...saved, tracker: { ...newTracker(), pendingFull: ['emergency'] }, recovery: 'saved tracker refused' };
       }
       this.#exits.set(pid, saved);
       this.#bars.set(pid, [...saved.bars]);
@@ -1073,6 +1086,16 @@ export class LiveStrategy implements Strategy {
           out.push({ action: null, reasons: ['partials from the book', p.id, `${sold.length} partials, ${p.sold} sold (saved: ${t.partials}, ${t.lastSold})`] });
         }
       }
+      const recoveryWhy = saved.recovery ?? null;
+      if (recoveryWhy !== null && p.status === 'open' && saved.tracker.pendingFull === null && exitIntents.every(isTerminal)) {
+        // Sell-only recovery lasts until the position closes (EXIT-1g review B1): the recovery exit was taken (which
+        // clears the remembered full exit) and ended without selling everything, here or before a restart. The position
+        // is open with no exit owner, so the whole holding exits again at the next fresh quote, never held under the
+        // fallback plan.
+        saved = { ...saved, tracker: { ...saved.tracker, pendingFull: ['emergency'] } };
+        this.#exits.set(p.id, saved);
+        out.push({ action: null, reasons: ['recovery exit', p.id, recoveryWhy, 'the whole holding exits at the next fresh quote'] });
+      }
       const realized = exitIntents.reduce((t, i) => t + i.fills.reduce((s, f) => s + f.sol, 0n), 0n);
       const entry = ctx.book.intents[p.entryIntentId];
       const entryFees = entry === undefined ? 0n : entry.fills.reduce((t, f) => t + f.fees, 0n);
@@ -1191,20 +1214,28 @@ export class LiveStrategy implements Strategy {
       const slots = this.#height > fill.slot ? this.#height - fill.slot : 0n;
       fillAt = Math.min(ctx.now.receivedAt - Number(slots) * this.#d.config.maxSlotMs, booked ?? Number.POSITIVE_INFINITY);
     }
-    if (seed === undefined || entry === undefined) {
-      // A position the strategy did not plan (none should exist): manage it with the tightest stop the policy allows.
-      out.push({ action: null, reasons: ['no entry plan', p.mint, 'position managed with the policy maximum stop'] });
+    // A position without its own plan (no decision seed in this process, and no usable saved plan) is never held under a
+    // substituted plan: its stop, trail, peak and flat target cannot be recovered, and a new holding period or a looser
+    // stop would weaken its protection. Sell-only recovery: the whole holding exits at the next fresh executable quote,
+    // on the normal ladder (EXIT-1g). The plan below only describes the position (its open time, entry price, universe).
+    const recovery = seed === undefined || entry === undefined;
+    let why: string | null = null;
+    if (recovery) {
+      why = this.#recoveryWhy.get(pid) ?? (this.#restoreSeen && !this.#exits.has(pid) && this.#bookedOpenAt.has(pid) ? 'no saved plan' : 'no decision seed');
+      out.push({ action: null, reasons: ['no entry plan', p.mint, 'sell-only recovery'] });
+      out.push({ action: null, reasons: ['recovery exit', pid, why, 'the whole holding exits at the next fresh quote'] });
     }
     const cost = p.cost;
-    const entryPx = p.quantity > 0n ? (cost * PRICE_SCALE) / p.quantity : 0n;
+    // The entry price from the book: cost over the tokens bought (a partial sale since leaves the cost of the entry as is).
+    const entryPx = p.bought > 0n ? (cost * PRICE_SCALE) / p.bought : 0n;
     const stopPrice = seed?.stopPrice ?? entryPx - (entryPx * BigInt(this.#d.session.policy.loss.stopMaxBps)) / BPS;
-    const stopValue = (p.quantity * stopPrice) / PRICE_SCALE;
+    const stopValue = (p.bought * stopPrice) / PRICE_SCALE;
     const riskUnit = cost - stopValue > 0n ? cost - stopValue : 1n;
     // The universe the entry was made under: its plan, else its intent key (`entry:<mint>:<universe>.<version>.<n>`).
     const universe = seed?.universe ?? (entry === undefined ? null : universeOfKey(entry.intent.key));
     if (universe === null) out.push({ action: null, reasons: ['no entry universe', p.mint, 'no universe on record; flattened through the global exit ladder'] });
     const plan: EntryPlan = { openedAtMs: fillAt, universe: universe ?? NO_UNIVERSE, notional: seed?.notional ?? this.#d.session.policy.capital.minNotional, riskUnit, stopPrice, entryReserve: seed?.entryReserve ?? 0n };
-    const saved: SavedExit = { plan, tracker: newTracker(), bars: this.#bars.get(p.mint) ?? [] };
+    const saved: SavedExit = { plan, tracker: recovery ? { ...newTracker(), pendingFull: ['emergency'] } : newTracker(), bars: this.#bars.get(p.mint) ?? [], ...(why === null ? {} : { recovery: why }) };
     this.#bars.set(pid, [...saved.bars]);
     this.#exits.set(pid, saved);
     this.#seeds.delete(entryId);
