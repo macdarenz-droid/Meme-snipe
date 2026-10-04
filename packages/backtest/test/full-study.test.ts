@@ -60,7 +60,7 @@ describe('BT-2 study', () => {
     expect(first.walkForward.s0Seeds).toBe(2);
     expect(first.regimeGate).toBe('assumed on (diagnostic)');
     expect(first.plan.walkForward.days).toEqual(['2026-09-20', '2026-09-21']);
-    expect(first.plan.holdout).toMatchObject({ fromDay: '2026-09-22', toDay: '2026-09-22' });
+    expect(first.plan.holdout).toMatchObject({ fromDay: '2026-09-22', toDay: '2026-09-23' });
     // Every walk-forward trade opened and closed inside the walk-forward days.
     for (const t of first.walkForward.trades) expect(t.closedAt).toBeLessThan(Date.parse('2026-09-22T00:00:00Z'));
     expect(first.walkForward.trades.length).toBeGreaterThan(0);
