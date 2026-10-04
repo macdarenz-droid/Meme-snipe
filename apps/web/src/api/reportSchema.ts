@@ -1,5 +1,5 @@
 import type { BacktestReport } from './contract.ts';
-import { arr, bool, day, dec, fail, int, iso, modeIs, nullable, obj, oneOf, re, str, usd, type Check } from './schema.ts';
+import { arr, bool, day, dec, fail, int, iso, lamports, modeIs, nullable, obj, oneOf, re, str, usd, type Check } from './schema.ts';
 
 /**
  * Strict check of a backtest report file (schema version 1, packages/core/src/report).
@@ -23,6 +23,18 @@ const costs = obj({
   rentPaidUsd: usd,
   rentReturnedUsd: usd,
   totalUsd: usd,
+});
+
+const costsLamports = obj({
+  venueFeeLamports: lamports,
+  creatorFeeLamports: lamports,
+  priorityFeeLamports: lamports,
+  tipLamports: lamports,
+  networkFeeLamports: lamports,
+  slippageLamports: lamports,
+  rentPaidLamports: lamports,
+  rentReturnedLamports: lamports,
+  totalLamports: lamports,
 });
 
 const report = obj({
@@ -56,9 +68,13 @@ const report = obj({
       netUsd: usd,
       maxDrawdownUsd: usd,
       meanNetUsd: nullable(usd),
+      netLamports: lamports,
+      maxDrawdownLamports: lamports,
+      meanNetLamports: nullable(lamports),
+      meanReturn: nullable(dec),
       ci95: nullable(obj({ lowUsd: usd, highUsd: usd })),
-      equity: arr(obj({ mode, at: iso, cumNetUsd: usd })),
-      days: arr(obj({ mode, date: day, netUsd: usd, trades: int }), 5000),
+      equity: arr(obj({ mode, at: iso, cumNetUsd: usd, cumNetLamports: lamports })),
+      days: arr(obj({ mode, date: day, netUsd: usd, netLamports: lamports, trades: int }), 5000),
     }),
     4,
   ),
@@ -79,6 +95,11 @@ const report = obj({
       grossUsd: usd,
       costs,
       netUsd: usd,
+      sizeLamports: lamports,
+      grossLamports: lamports,
+      costsLamports,
+      netLamports: lamports,
+      netReturn: dec,
       realizedR: nullable(dec),
       exitReason: EXIT,
     }),

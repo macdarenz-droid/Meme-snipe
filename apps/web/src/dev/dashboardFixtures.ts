@@ -329,23 +329,39 @@ const POSITION: PositionRecord = {
   worker: 'watching',
 };
 
+/** The fixture's lamports for a dollar amount, at a flat US$150 per SOL (the report carries both, BT-SOL). */
+const FIXTURE_SOL_MICRO_USD = 150_000_000n;
+const lamportsOf = (amount: string): bigint => (toMicro(amount) * 1_000_000_000n) / FIXTURE_SOL_MICRO_USD;
+const fixed9 = (v: bigint): string => {
+  const neg = v < 0n;
+  const a = (neg ? -v : v).toString().padStart(10, '0');
+  return `${neg ? '-' : ''}${a.slice(0, -9)}.${a.slice(-9)}`;
+};
+
 /** One result block per group, from that group's trades in close order. */
-function reportResult(group: ReportGroup, ts: { closedAt: string; netUsd: string }[]): ReportResult {
+function reportResult(group: ReportGroup, ts: { closedAt: string; netUsd: string; sizeUsd: string }[]): ReportResult {
   const sorted = [...ts].sort((x, y) => x.closedAt.localeCompare(y.closedAt));
   let cum = 0n;
   let peak = 0n;
   let dd = 0n;
+  let cumL = 0n;
+  let peakL = 0n;
+  let ddL = 0n;
   const equity = sorted.map((t) => {
     cum += toMicro(t.netUsd);
     peak = cum > peak ? cum : peak;
     dd = cum - peak < dd ? cum - peak : dd;
-    return { mode: 'backtest' as const, at: t.closedAt, cumNetUsd: fromMicro(cum) };
+    cumL += lamportsOf(t.netUsd);
+    peakL = cumL > peakL ? cumL : peakL;
+    ddL = peakL - cumL > ddL ? peakL - cumL : ddL;
+    return { mode: 'backtest' as const, at: t.closedAt, cumNetUsd: fromMicro(cum), cumNetLamports: cumL.toString() };
   });
-  const by = new Map<string, { net: bigint; n: number }>();
+  const by = new Map<string, { net: bigint; lamports: bigint; n: number }>();
   for (const t of sorted) {
-    const d = by.get(dayOf(t.closedAt)) ?? { net: 0n, n: 0 };
-    by.set(dayOf(t.closedAt), { net: d.net + toMicro(t.netUsd), n: d.n + 1 });
+    const d = by.get(dayOf(t.closedAt)) ?? { net: 0n, lamports: 0n, n: 0 };
+    by.set(dayOf(t.closedAt), { net: d.net + toMicro(t.netUsd), lamports: d.lamports + lamportsOf(t.netUsd), n: d.n + 1 });
   }
+  const returns = sorted.map((t) => (lamportsOf(t.sizeUsd) > 0n ? (lamportsOf(t.netUsd) * 1_000_000_000n) / lamportsOf(t.sizeUsd) : 0n));
   const n = sorted.length;
   const mean = n ? fromMicro(cum / BigInt(n)) : null;
   return {
@@ -356,9 +372,13 @@ function reportResult(group: ReportGroup, ts: { closedAt: string; netUsd: string
     netUsd: fromMicro(cum),
     maxDrawdownUsd: fromMicro(dd),
     meanNetUsd: mean,
+    netLamports: cumL.toString(),
+    maxDrawdownLamports: ddL.toString(),
+    meanNetLamports: n ? (cumL / BigInt(n)).toString() : null,
+    meanReturn: n ? fixed9(returns.reduce((a, x) => a + x, 0n) / BigInt(n)) : null,
     ci95: mean ? { lowUsd: subUsd(mean, '4.1'), highUsd: addUsd(mean, '4.1') } : null,
     equity,
-    days: [...by].map(([date, d]) => ({ mode: 'backtest' as const, date, netUsd: fromMicro(d.net), trades: d.n })),
+    days: [...by].map(([date, d]) => ({ mode: 'backtest' as const, date, netUsd: fromMicro(d.net), netLamports: d.lamports.toString(), trades: d.n })),
   };
 }
 
@@ -380,6 +400,17 @@ const reportTrade = (t: TradeRecord, group: ReportGroup): ReportTrade => ({
   grossUsd: t.grossUsd,
   costs: t.costs,
   netUsd: t.netUsd,
+  sizeLamports: lamportsOf(t.sizeUsd).toString(),
+  grossLamports: lamportsOf(t.grossUsd).toString(),
+  costsLamports: {
+    venueFeeLamports: lamportsOf(t.costs.venueFeeUsd).toString(), creatorFeeLamports: lamportsOf(t.costs.creatorFeeUsd).toString(),
+    priorityFeeLamports: lamportsOf(t.costs.priorityFeeUsd).toString(), tipLamports: lamportsOf(t.costs.tipUsd).toString(),
+    networkFeeLamports: lamportsOf(t.costs.networkFeeUsd).toString(), slippageLamports: lamportsOf(t.costs.slippageUsd).toString(),
+    rentPaidLamports: lamportsOf(t.costs.rentPaidUsd).toString(), rentReturnedLamports: lamportsOf(t.costs.rentReturnedUsd).toString(),
+    totalLamports: lamportsOf(t.costs.totalUsd).toString(),
+  },
+  netLamports: lamportsOf(t.netUsd).toString(),
+  netReturn: fixed9(lamportsOf(t.sizeUsd) > 0n ? (lamportsOf(t.netUsd) * 1_000_000_000n) / lamportsOf(t.sizeUsd) : 0n),
   realizedR: t.realizedR,
   exitReason: t.exitReason,
 });

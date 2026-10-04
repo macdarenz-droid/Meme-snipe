@@ -33,6 +33,10 @@ export const bool: Check = (v, p) => {
 export const usd: Check = (v, p) => {
   if (!isUsd(v)) fail(p, 'expected an exact dollar amount as text', 'bad-money');
 };
+/** Lamports: an exact integer as text, "-180000000" (no leading zeros, no fraction). */
+export const lamports: Check = (v, p) => {
+  if (typeof v !== 'string' || !/^-?(0|[1-9]\d*)$/.test(v) || v === '-0') fail(p, 'expected an exact lamport amount as text', 'bad-money');
+};
 export const dec: Check = (v, p) => {
   if (!isDec(v)) fail(p, 'expected an exact decimal as text', 'bad-money');
 };

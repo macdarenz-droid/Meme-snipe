@@ -83,7 +83,41 @@ const reportTrade = (t: TradeRecord, group: ReportGroup, pxIn: MicroUsd, pxOut: 
       venueFeeUsd: usd(c.venue), creatorFeeUsd: usd(c.creator), priorityFeeUsd: usd(c.priority), tipUsd: usd(c.tip), networkFeeUsd: usd(c.network),
       slippageUsd: usd(c.slippage), rentPaidUsd: usd(c.rentPaid), rentReturnedUsd: usd(c.rentReturned), totalUsd: usd(total),
     },
-    netUsd: usd(net), realizedR: null, exitReason: t.exitReason,
+    netUsd: usd(net), ...tradeLamports(t), realizedR: null, exitReason: t.exitReason,
+  };
+};
+
+/** Returns on lamports to 9 places, rounded toward zero (BigInt division). */
+const RETURN_PLACES = 9;
+const scaledRatio = (num: bigint, den: bigint): bigint => (num * 10n ** BigInt(RETURN_PLACES)) / den;
+/** A value scaled by 10^places as an exact decimal with exactly `places` places: 180000000n, 9 → "0.180000000". */
+const fixed = (v: bigint, places: number): string => {
+  const neg = v < 0n;
+  const a = (neg ? -v : v).toString().padStart(places + 1, '0');
+  return `${neg ? '-' : ''}${a.slice(0, a.length - places)}.${a.slice(a.length - places)}`;
+};
+const ratio = (num: bigint, den: bigint): string => fixed(scaledRatio(num, den), RETURN_PLACES);
+
+/**
+ * The trade's exact lamport figures (BT-SOL: profit is counted in SOL). Each cost kind is both legs' sum; net is the
+ * trade record's own (exit SOL − entry SOL − network fees, priority, tip and rent paid + rent returned), gross is net
+ * plus every cost, and the return is net ÷ entry lamports.
+ */
+const tradeLamports = (t: TradeRecord): Pick<ReportTrade, 'sizeLamports' | 'grossLamports' | 'costsLamports' | 'netLamports' | 'netReturn'> => {
+  const both = (k: keyof TradeRecord['legs']['entry']) => t.legs.entry[k] + t.legs.exit[k];
+  const c = {
+    venue: both('venueFee'), creator: both('creatorFee'), priority: both('priority'), tip: both('tip'), network: both('networkBase'),
+    slippage: both('slippage'), rentPaid: t.rentPaid, rentReturned: t.rentReturned,
+  };
+  const total = c.venue + c.creator + c.priority + c.tip + c.network + c.slippage + c.rentPaid - c.rentReturned;
+  return {
+    sizeLamports: t.entrySol.toString(), grossLamports: (t.net + total).toString(), netLamports: t.net.toString(),
+    costsLamports: {
+      venueFeeLamports: c.venue.toString(), creatorFeeLamports: c.creator.toString(), priorityFeeLamports: c.priority.toString(), tipLamports: c.tip.toString(),
+      networkFeeLamports: c.network.toString(), slippageLamports: c.slippage.toString(), rentPaidLamports: c.rentPaid.toString(),
+      rentReturnedLamports: c.rentReturned.toString(), totalLamports: total.toString(),
+    },
+    netReturn: t.entrySol > 0n ? ratio(t.net, t.entrySol) : fixed(0n, RETURN_PLACES),
   };
 };
 
@@ -104,7 +138,7 @@ export const buildReport = (i: ReportInput): BacktestReportV1 => {
   for (const g of i.groups) {
     const rt = g.trades.map((t) => tradeInUsd(t, g.group, i.solUsd));
     trades.push(...rt);
-    results.push(resultExact(g.group, rt, g.stray.map((s) => ({ at: s.at, netMicro: -toUsd(s.lamports, priceAt(i.solUsd, s.at)) }))));
+    results.push(resultExact(g.group, rt, g.stray.map((s) => ({ at: s.at, netMicro: -toUsd(s.lamports, priceAt(i.solUsd, s.at)), netLamports: -s.lamports }))));
   }
   return {
     schemaVersion: 1, mode: 'backtest', part: 'research', generatedAt: i.generatedAt, runId: i.runId, codeCommit: i.codeCommit,
@@ -115,30 +149,43 @@ export const buildReport = (i: ReportInput): BacktestReportV1 => {
   };
 };
 
-/** Results with every sum in exact micro-dollars. */
-const resultExact = (group: ReportGroup, trades: readonly ReportTrade[], stray: readonly { at: number; netMicro: bigint }[]): ReportResult => {
+/** Results with every sum exact: micro-dollars and lamports, side by side. */
+const resultExact = (group: ReportGroup, trades: readonly ReportTrade[], stray: readonly { at: number; netMicro: bigint; netLamports: bigint }[]): ReportResult => {
   const events = [
-    ...trades.map((t) => ({ at: Date.parse(t.closedAt), net: micro(t.netUsd), trade: true })),
-    ...stray.map((s) => ({ at: s.at, net: s.netMicro, trade: false })),
+    ...trades.map((t) => ({ at: Date.parse(t.closedAt), net: micro(t.netUsd), lamports: BigInt(t.netLamports), trade: true })),
+    ...stray.map((s) => ({ at: s.at, net: s.netMicro, lamports: s.netLamports, trade: false })),
   ].sort((a, b) => a.at - b.at);
   let cum = 0n;
   let peak = 0n;
   let dd = 0n;
+  let cumL = 0n;
+  let peakL = 0n;
+  let ddL = 0n;
   const equity: ReportResult['equity'] = [];
-  const days = new Map<string, { net: bigint; trades: number }>();
+  const days = new Map<string, { net: bigint; lamports: bigint; trades: number }>();
   for (const e of events) {
     cum += e.net;
     if (cum > peak) peak = cum;
     if (peak - cum > dd) dd = peak - cum;
-    equity.push({ mode: 'backtest', at: iso(e.at), cumNetUsd: usd(cum) });
+    cumL += e.lamports;
+    if (cumL > peakL) peakL = cumL;
+    if (peakL - cumL > ddL) ddL = peakL - cumL;
+    equity.push({ mode: 'backtest', at: iso(e.at), cumNetUsd: usd(cum), cumNetLamports: cumL.toString() });
     const d = melbourneDay(e.at);
-    const cur = days.get(d) ?? { net: 0n, trades: 0 };
-    days.set(d, { net: cur.net + e.net, trades: cur.trades + (e.trade ? 1 : 0) });
+    const cur = days.get(d) ?? { net: 0n, lamports: 0n, trades: 0 };
+    days.set(d, { net: cur.net + e.net, lamports: cur.lamports + e.lamports, trades: cur.trades + (e.trade ? 1 : 0) });
   }
   const tradeNet = trades.reduce((t, x) => t + micro(x.netUsd), 0n);
+  const tradeNetL = trades.reduce((t, x) => t + BigInt(x.netLamports), 0n);
+  // The mean of the per-trade returns, from each exact ratio at 9 places (rounded toward zero, as each ratio is).
+  const returnSum = trades.reduce((t, x) => t + (BigInt(x.sizeLamports) > 0n ? scaledRatio(BigInt(x.netLamports), BigInt(x.sizeLamports)) : 0n), 0n);
   return {
     mode: 'backtest', group, ci95: null, trades: trades.length, wins: trades.filter((t) => micro(t.netUsd) > 0n).length, netUsd: usd(cum), maxDrawdownUsd: usd(dd),
-    meanNetUsd: trades.length === 0 ? null : usd(tradeNet / BigInt(trades.length)), equity,
-    days: [...days.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1)).map(([date, v]): ReportDay => ({ mode: 'backtest', date, netUsd: usd(v.net), trades: v.trades })),
+    meanNetUsd: trades.length === 0 ? null : usd(tradeNet / BigInt(trades.length)),
+    netLamports: cumL.toString(), maxDrawdownLamports: ddL.toString(),
+    meanNetLamports: trades.length === 0 ? null : (tradeNetL / BigInt(trades.length)).toString(),
+    meanReturn: trades.length === 0 ? null : fixed(returnSum / BigInt(trades.length), RETURN_PLACES),
+    equity,
+    days: [...days.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1)).map(([date, v]): ReportDay => ({ mode: 'backtest', date, netUsd: usd(v.net), netLamports: v.lamports.toString(), trades: v.trades })),
   };
 };

@@ -18,6 +18,9 @@ export const EARLY_LABEL = 'early look, not proof';
 export interface TradeStats {
   readonly trades: number;
   readonly tradesPerDay: number;
+  /** Total and mean net in lamports, exact (BT-SOL: profit is counted in SOL); the mean is null without a trade. */
+  readonly netLamports: string;
+  readonly meanNetLamports: string | null;
   readonly winRate: number | null;
   /** Net return per trade after every cost (r_net). */
   readonly meanNet: number | null;
@@ -32,7 +35,8 @@ export interface TradeStats {
 /** The early look's trade figures. */
 export const tradeStats = (trades: readonly ScoredTrade[], days: number): TradeStats => {
   const r = [...trades].sort((a, b) => a.closedAt - b.closedAt || (a.mint < b.mint ? -1 : 1)).map((t) => t.rNet);
-  if (r.length === 0) return { trades: 0, tradesPerDay: 0, winRate: null, meanNet: null, medianNet: null, profitFactor: null, worstNet: null, longestLosingStreak: 0 };
+  if (r.length === 0) return { trades: 0, tradesPerDay: 0, netLamports: '0', meanNetLamports: null, winRate: null, meanNet: null, medianNet: null, profitFactor: null, worstNet: null, longestLosingStreak: 0 };
+  const lamports = trades.reduce((a, t) => a + BigInt(t.net), 0n);
   const wins = r.filter((x) => x > 0);
   const losses = r.filter((x) => x < 0);
   let streak = 0;
@@ -43,7 +47,7 @@ export const tradeStats = (trades: readonly ScoredTrade[], days: number): TradeS
   }
   const lossSum = -losses.reduce((a, b) => a + b, 0);
   return {
-    trades: r.length, tradesPerDay: r.length / days, winRate: wins.length / r.length,
+    trades: r.length, tradesPerDay: r.length / days, netLamports: lamports.toString(), meanNetLamports: (lamports / BigInt(r.length)).toString(), winRate: wins.length / r.length,
     meanNet: mean(r), medianNet: median(r), profitFactor: lossSum > 0 ? wins.reduce((a, b) => a + b, 0) / lossSum : null,
     worstNet: Math.min(...r), longestLosingStreak: longest,
   };

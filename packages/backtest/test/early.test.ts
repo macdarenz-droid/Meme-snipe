@@ -22,14 +22,16 @@ const sol = { ...SOL_USD, bars: Array.from({ length: 24 * 20 }, (_, k) => ({ sta
 
 describe('early look', () => {
   it('gives plain trade figures: win rate, mean and median net, profit factor, worst trade, longest losing streak; no interval', () => {
-    const t = (rNet: number, closedAt: number) => ({ rNet, closedAt, mint: `m${closedAt}` }) as ScoredTrade;
+    // Each trade 1 SOL in; its net in lamports matches its return (BT-SOL: the SOL figures are exact).
+    const t = (rNet: number, closedAt: number) => ({ rNet, closedAt, mint: `m${closedAt}`, net: String(Math.round(rNet * 1e9)), entrySol: '1000000000' }) as ScoredTrade;
     const s = tradeStats([t(0.2, 1), t(-0.1, 2), t(-0.3, 3), t(0.4, 4), t(-0.05, 5)], 1);
+    expect([s.netLamports, s.meanNetLamports]).toEqual(['150000000', '30000000']);
     expect(s).toMatchObject({ trades: 5, tradesPerDay: 5, winRate: 0.4, worstNet: -0.3, longestLosingStreak: 2 });
     expect(s.meanNet).toBeCloseTo(0.03, 12);
     expect(s.medianNet).toBeCloseTo(-0.05, 12);
     expect(s.profitFactor).toBeCloseTo(0.6 / 0.45, 12);
-    expect(Object.keys(s).sort()).toEqual(['longestLosingStreak', 'meanNet', 'medianNet', 'profitFactor', 'tradesPerDay', 'trades', 'winRate', 'worstNet'].sort());
-    expect(tradeStats([], 2)).toMatchObject({ trades: 0, winRate: null, meanNet: null, longestLosingStreak: 0 });
+    expect(Object.keys(s).sort()).toEqual(['longestLosingStreak', 'meanNet', 'meanNetLamports', 'medianNet', 'netLamports', 'profitFactor', 'tradesPerDay', 'trades', 'winRate', 'worstNet'].sort());
+    expect(tradeStats([], 2)).toMatchObject({ trades: 0, winRate: null, meanNet: null, longestLosingStreak: 0, netLamports: '0', meanNetLamports: null });
     expect(tradeStats([t(0.1, 1)], 1)).toMatchObject({ profitFactor: null });
   });
 
