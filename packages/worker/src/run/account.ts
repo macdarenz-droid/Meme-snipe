@@ -87,12 +87,22 @@ export interface PaperTrade {
   /** The book's exit reasons of the closing exit. */
   exitReasons?: readonly string[];
   /**
+   * ACCOUNT-RATE: the legs booked while no SOL price was known, valued at the first price at or after their fill
+   * (`priceLate`) instead of a fill-time rate. Absent when every leg had its own rate.
+   */
+  pricedLate?: readonly ('open' | 'close')[];
+  /**
    * RISK-PARTIAL: each partial sale's realized result (proceeds after its fees less its share of the basis), and the
    * tokens and net exit lamports those parts cover. Absent in files from before (no partial booked).
    */
   partials?: { readonly atMs: number; readonly lamports: bigint }[];
   partialSold?: bigint;
   partialNet?: bigint;
+  /**
+   * ACCOUNT-RATE: the failed exit attempts (signatures) whose fees a partial sale has realized (in `partialNet`): not
+   * counted again as open-trade costs. Absent before any part.
+   */
+  partialFailedExits?: readonly string[];
 }
 
 export interface AccountState {
@@ -123,11 +133,16 @@ export interface AccountState {
   /** The highest economic NAV seen since the last kill-switch re-arm (R10's NAV high-water mark reads it), in lamports. */
   navPeak?: { readonly atMs: number; readonly nav: Lamports };
   /**
-   * Fees of entries that never filled (the backtest's stray costs, PAPER-1), by signature: when the attempt was sent,
-   * lamports (what risk counts, SOL-BOOKS), and micro-dollars at the SOL price when it was booked (rounded up, for
-   * display). Supervisor-approved stored data.
+   * Fees of entries that never filled (the backtest's stray costs, PAPER-1), by signature: when booked (never before the
+   * send, ACCOUNT-RATE F3), lamports (what risk counts, SOL-BOOKS), and micro-dollars at the SOL price when it was booked
+   * (rounded up, for display). Supervisor-approved stored data.
    */
   strayFees?: Record<string, StrayFee>;
+  /**
+   * ACCOUNT-RATE F1: when the account first saw each failed attempt of a trade still open (`settle`), by signature:
+   * its open-trade cost is dated max(sent, first seen), and a restart keeps that date. Dropped once the trade closes.
+   */
+  openFeesSeen?: Record<string, number>;
   /** Stray fees from before the current Melbourne week, folded into one total: every attempt sent at or before `atMs`. */
   strayFolded?: StrayFee;
 }
@@ -165,6 +180,10 @@ const usdOf = (l: bigint, price: MicroUsd): MicroUsd =>
 
 const STOPS = new Set(['stop', 'trailing_stop', 'thesis_lost', 'liquidity']);
 const EXIT_REASONS = new Set(['stop', 'trailing_stop', 'take_profit', 'max_hold', 'thesis_lost', 'liquidity', 'emergency']);
+
+/** An account cost with its lamports; an open trade's cost also says which part it is (ACCOUNT-RATE, for the app). */
+/** An account cost for the app: risk's lamports (`amount`, = `lamports`) and its dollar value for display (`usd`). */
+export type CostRecord = AccountCost & { readonly lamports: bigint; readonly usd: MicroUsd; readonly part?: 'fee' | 'rent' };
 
 export class PaperAccount {
   readonly #file: StateFile<AccountState>;
@@ -290,20 +309,59 @@ export class PaperAccount {
         (t.partials ??= []).push({ atMs: r.atMs, lamports });
         t.partialSold = p.sold;
         t.partialNet = exitNet;
+        // Every failed sell known now is in that net (the paper legs count each attempt's fee), so realized with the part.
+        t.partialFailedExits = Object.values(r.book.intents).filter((i) => i.intent.positionId === p.id && i.intent.purpose === 'exit')
+          .flatMap((i) => i.attempts.map((a) => a.signature as string)).filter((sig) => legs.attempts.get(sig)?.outcome === 'failed');
       }
     }
     if (t !== undefined && l !== null && p !== undefined && (p.status === 'closed' || r.closes === true) && t.closedAtMs === null) {
       t.closedAtMs = r.atMs;
       t.netLamports = tradeNet(l);
-      // Risk counts `netLamports` (SOL-BOOKS). The dollar figure is for display only: each cash flow at its own SOL price,
-      // as the backtest report values a trade (core's `tradeUsd`); null without both prices.
-      const pxIn = t.openSolPrice ?? null;
-      t.netPnl = solPrice === null || pxIn === null ? null : (tradeUsd(l, pxIn, solPrice).net as MicroUsd);
       t.stoppedOut = r.reasons.some((x) => STOPS.has(x));
-      t.closeSolPrice = solPrice;
       t.exitReasons = r.reasons.filter((x) => EXIT_REASONS.has(x));
+      // Each cash flow at its own SOL price, as the backtest report values a trade (core's `tradeUsd`): the entry leg at
+      // the entry's price, the exit leg at the close's. A close booked with no price known stays unvalued (netPnl null)
+      // until `priceLate` values it at the first price after it (ACCOUNT-RATE): never a made-up loss or gain.
+      t.closeSolPrice = solPrice;
+      if (solPrice !== null) this.#value(t, l, solPrice);
     }
     this.#file.write(this.#s);
+  }
+
+  /** A closed trade's dollar P&L from its legs, at its open price (set at the close's when the open had none). */
+  #value(t: PaperTrade, l: TradeLamports, closePrice: MicroUsd): void {
+    if (t.openSolPrice === null || t.openSolPrice === undefined) {
+      t.openSolPrice = closePrice;
+      t.pricedLate = [...(t.pricedLate ?? []), 'open'];
+    }
+    t.netPnl = tradeUsd(l, t.openSolPrice, closePrice).net as MicroUsd;
+  }
+
+  /**
+   * ACCOUNT-RATE: legs booked while no SOL price was known (a fill reconciled at start, or caught up from a line with
+   * `sol_usd` null) are valued at the first price at or after their fill, flagged in `pricedLate`. Risk refuses every
+   * entry while it has no SOL price, so no entry is judged on an unvalued trade. True when anything changed.
+   */
+  priceLate(book: Book, legs: PaperLegs, solPrice: MicroUsd | null, nowMs: number): boolean {
+    if (solPrice === null || solPrice <= 0n) return false;
+    let changed = false;
+    for (const t of this.#s.trades) {
+      if ((t.openSolPrice === null || t.openSolPrice === undefined) && nowMs >= t.openedAtMs && t.closedAtMs === null) {
+        t.openSolPrice = solPrice;
+        t.pricedLate = [...(t.pricedLate ?? []), 'open'];
+        changed = true;
+      }
+      if (t.closedAtMs !== null && t.netPnl === null && nowMs >= t.closedAtMs) {
+        const l = paperTradeLamports(book, t.positionId, legs);
+        if (l === null) continue;
+        t.closeSolPrice = solPrice;
+        this.#value(t, l, solPrice);
+        t.pricedLate = [...(t.pricedLate ?? []), 'close'];
+        changed = true;
+      }
+    }
+    if (changed) this.#file.write(this.#s);
+    return changed;
   }
 
   /**
@@ -313,6 +371,7 @@ export class PaperAccount {
    */
   settle(book: Book, legs: PaperLegs, solPrice: MicroUsd | null, nowMs: number): boolean {
     let moved = false;
+    const seen = this.#noteOpenFees(book, legs, nowMs);
     for (const t of this.#s.trades) {
       if (t.closedAtMs !== null) continue;
       const before = t.booked;
@@ -320,26 +379,73 @@ export class PaperAccount {
       moved ||= t.booked !== before;
     }
     if (solPrice !== null && this.#s.walletLamports !== null) {
-      const folded = this.#s.strayFolded;
-      for (const i of Object.values(book.intents)) {
-        if (i.intent.purpose !== 'entry' || !isTerminal(i) || i.fills.length > 0) continue;
-        for (const att of i.attempts) {
-          const a = legs.attempts.get(att.signature);
-          if (a === undefined) continue;
-          const f = feeParts(legs.network, a.priorityFee, a.outcome);
-          const lamports = f.base + f.priority + f.tip;
-          // Paper attempts carry their send time; one from an older file without it counts as sent when the account opened.
-          const atMs = a.sentAtMs ?? this.#s.openedAtMs;
-          if (lamports === 0n || this.#s.strayFees?.[a.signature] !== undefined || (folded !== undefined && atMs <= folded.atMs)) continue;
-          (this.#s.strayFees ??= {})[a.signature] = { atMs, lamports, cost: lamportsToMicroUsd(lamports as Lamports, solPrice, 'ceil') };
-          this.#s.walletLamports -= lamports;
-          moved = true;
-        }
+      for (const { signature, atMs, lamports } of this.#unbookedStrays(book, legs)) {
+        // Dated when booked if that is later than its send (ACCOUNT-RATE F3): a fee found after midnight counts in the day it
+        // is booked, never only in a day already past. Booking is never before the send, so the fold's rule still holds.
+        (this.#s.strayFees ??= {})[signature] = { atMs: Math.max(atMs, nowMs), lamports, cost: lamportsToMicroUsd(lamports as Lamports, solPrice, 'ceil') };
+        this.#s.walletLamports -= lamports;
+        moved = true;
       }
     }
     const folded = this.#fold(book, legs, nowMs);
-    if (moved || folded) this.#file.write(this.#s);
+    if (moved || folded || seen) this.#file.write(this.#s);
     return moved;
+  }
+
+  /**
+   * Fees of entries that ended with no fill and are not booked yet (nor folded): what `settle` books as stray costs once
+   * a fresh SOL price is known. Each with its send time (an older file's attempt without one: when the account opened).
+   */
+  #unbookedStrays(book: Book, legs: PaperLegs): { readonly signature: string; readonly atMs: number; readonly lamports: bigint }[] {
+    const out: { signature: string; atMs: number; lamports: bigint }[] = [];
+    const folded = this.#s.strayFolded;
+    for (const i of Object.values(book.intents)) {
+      if (i.intent.purpose !== 'entry' || !isTerminal(i) || i.fills.length > 0) continue;
+      for (const att of i.attempts) {
+        const a = legs.attempts.get(att.signature);
+        if (a === undefined) continue;
+        const f = feeParts(legs.network, a.priorityFee, a.outcome);
+        const lamports = f.base + f.priority + f.tip;
+        const atMs = a.sentAtMs ?? this.#s.openedAtMs;
+        if (lamports === 0n || this.#s.strayFees?.[a.signature] !== undefined || (folded !== undefined && atMs <= folded.atMs)) continue;
+        out.push({ signature: a.signature, atMs, lamports });
+      }
+    }
+    return out;
+  }
+
+  /**
+   * ACCOUNT-RATE F1: notes when each failed attempt of an open trade was first seen (max of its send and now), and drops
+   * the notes of trades no longer open. True when the notes changed.
+   */
+  #noteOpenFees(book: Book, legs: PaperLegs, nowMs: number): boolean {
+    const now = new Set<string>();
+    let changed = false;
+    const notes = this.#s.openFeesSeen ?? {};
+    for (const p of Object.values(book.positions)) {
+      if (p.status === 'closed' || lateFillOf(p.id) !== null) continue;
+      const t = this.#s.trades.find((x) => x.positionId === p.id);
+      for (const i of Object.values(book.intents)) {
+        if (i.intent.positionId !== p.id || (i.intent.purpose === 'entry' && isTerminal(i) && i.fills.length === 0)) continue;
+        for (const att of i.attempts) {
+          const a = legs.attempts.get(att.signature);
+          if (a === undefined || a.outcome !== 'failed') continue;
+          now.add(att.signature);
+          if (notes[att.signature] === undefined) {
+            notes[att.signature] = Math.max(a.sentAtMs ?? t?.openedAtMs ?? nowMs, nowMs);
+            changed = true;
+          }
+        }
+      }
+    }
+    for (const sig of Object.keys(notes)) {
+      if (!now.has(sig)) {
+        delete notes[sig];
+        changed = true;
+      }
+    }
+    if (changed) this.#s.openFeesSeen = notes;
+    return changed;
   }
 
   /**
@@ -410,29 +516,76 @@ export class PaperAccount {
   }
 
   /**
+   * ACCOUNT-RATE F1: what each open trade has already paid outside its basis (risk's open-position notional is the entry
+   * SOL and every entry attempt's fees, less the share partial sales realized): every failed exit attempt's fees, an
+   * opening entry's failed fees (not an open position yet), each dated when first seen, and the token-account rent not
+   * yet returned, dated at the entry. They have left the paper wallet, so risk's equity and the day's and week's loss
+   * count them as costs now; when the trade closes they are in its net P&L instead. A late buy's position is no paper
+   * trade, and an entry that ended unfilled is a stray cost (`settle`): neither is counted here. Valued at the SOL price
+   * now (the trade's open price when none is known), rounded up; with their lamports and which part they are (a fee or
+   * rent) for the app's cost kinds.
+   */
+  #openTradeCosts(book: Book, legs: PaperLegs, solPrice: MicroUsd | null, nowMs: number): CostRecord[] {
+    const out: CostRecord[] = [];
+    for (const p of Object.values(book.positions)) {
+      if (p.status === 'closed' || lateFillOf(p.id) !== null) continue;
+      const t = this.#s.trades.find((x) => x.positionId === p.id);
+      // SOL-BOOKS: risk counts the lamports, whatever the price; the dollar value is display only (0 with no price at all).
+      const px = solPrice ?? t?.openSolPrice ?? null;
+      const cost = (lamports: bigint, atMs: number, part: 'fee' | 'rent') => {
+        if (lamports > 0n) out.push({ atMs: Math.min(atMs, nowMs), amount: lamports as Lamports, lamports, usd: px === null ? (0n as MicroUsd) : lamportsToMicroUsd(lamports as Lamports, px, 'ceil'), kind: 'open_trade', part });
+      };
+      for (const i of Object.values(book.intents)) {
+        // An entry's failed fees are in the open position's basis once it holds tokens (with RISK-PARTIAL's parts): here
+        // only while it is still opening (not yet an open position risk values), so each fee counts once.
+        if (i.intent.positionId !== p.id || (i.intent.purpose === 'entry' && ((isTerminal(i) && i.fills.length === 0) || p.status !== 'opening'))) continue;
+        for (const att of i.attempts) {
+          const a = legs.attempts.get(att.signature);
+          if (a === undefined || a.outcome !== 'failed') continue;
+          // A failed sell a partial sale has already realized (its fee is in that part): counted once, there.
+          if (t?.partialFailedExits?.includes(att.signature) === true) continue;
+          const f = feeParts(legs.network, a.priorityFee, a.outcome);
+          // Dated when the account first saw it (never before its send), so a fee sent before midnight and found after
+          // counts in the day it was found; not yet noted by `settle`: now.
+          cost(f.base + f.priority + f.tip, this.#s.openFeesSeen?.[att.signature] ?? Math.max(a.sentAtMs ?? t?.openedAtMs ?? nowMs, nowMs), 'fee');
+        }
+      }
+      if (t === undefined) continue;
+      const l = paperTradeLamports(book, p.id, legs);
+      if (l !== null) cost(l.rentPaid - l.rentReturned, t.openedAtMs, 'rent');
+    }
+    return out;
+  }
+
+  /**
    * The account's costs that are no trade's (RISK-1b `costs`), dated and in micro-dollars: the one list risk reads (in
    * `fact`) and the app's money totals add to the trades (APP-MONEY). The wallet's setup rent is one: it lowers equity and
    * counts toward the day's and week's loss, and it is never a trade (R8, R11, R15 and trade statistics do not see it).
+   * An open trade's costs outside its basis are others (ACCOUNT-RATE), until it closes.
    */
   /** The account costs risk counts, in lamports (SOL-BOOKS). */
-  costs(): AccountCost[] {
-    return this.costRecords().map(({ atMs, amount, kind }) => ({ atMs, amount, kind }));
+  costs(book: Book, legs: PaperLegs, nowMs: number): AccountCost[] {
+    return this.costRecords(book, legs, null, nowMs).map(({ atMs, amount, kind }) => ({ atMs, amount, kind }));
   }
 
-  /** The same costs with their dollar value at booking (`usd`, display only), for the app's totals (APP-MONEY). */
-  costRecords(): (AccountCost & { readonly lamports: bigint; readonly usd: MicroUsd })[] {
+  /**
+   * The same costs with their dollar value (`usd`, display only: at booking for the setup and stray fees, at `solPrice`
+   * or the trade's open price for an open trade's) and an open trade's part (a fee or rent), for the app (APP-MONEY).
+   */
+  costRecords(book: Book, legs: PaperLegs, solPrice: MicroUsd | null, nowMs: number): CostRecord[] {
     const su = this.#s.setup;
     const lam = (v: bigint): Lamports => v as Lamports;
-    const costs: (AccountCost & { readonly lamports: bigint; readonly usd: MicroUsd })[] = su === undefined ? [] : [{ atMs: su.atMs, amount: lam(su.lamports), lamports: su.lamports, usd: su.cost, kind: 'wallet_setup' }];
+    const costs: CostRecord[] = su === undefined ? [] : [{ atMs: su.atMs, amount: lam(su.lamports), lamports: su.lamports, usd: su.cost, kind: 'wallet_setup' }];
     // Fees of entries that never filled (PAPER-1): account costs too, never trades.
     const sf = this.#s.strayFolded;
     if (sf !== undefined) costs.push({ atMs: sf.atMs, amount: lam(sf.lamports), lamports: sf.lamports, usd: sf.cost, kind: 'failed_entry' });
     for (const r of Object.values(this.#s.strayFees ?? {})) costs.push({ atMs: r.atMs, amount: lam(r.lamports), lamports: r.lamports, usd: r.cost, kind: 'failed_entry' });
+    costs.push(...this.#openTradeCosts(book, legs, solPrice, nowMs));
     return costs;
   }
 
   /** The account snapshot risk reads, with the ledger's held reservations and version read in one transaction. */
-  fact(ledger: Ledger, book: Book, latches: Latches, nowMs: number): AccountFact {
+  fact(ledger: Ledger, book: Book, latches: Latches, nowMs: number, legs: PaperLegs): AccountFact {
     const { version, value: held } = ledger.withSnapshot(() => ledger.heldExposure());
     // SOL-BOOKS: every amount in lamports. Before the opening SOL price the history has none (0), which risk refuses (R1).
     const openingSolPrice = this.#s.openingSolPrice ?? (0n as MicroUsd);
@@ -440,14 +593,17 @@ export class PaperAccount {
       mint: t.mint as Mint, openedAtMs: t.openedAtMs, closedAtMs: t.closedAtMs!, notional: t.notional, netPnl: t.netLamports! as Lamports, stoppedOut: t.stoppedOut,
       partials: (t.partials ?? []).map((x) => ({ atMs: x.atMs, pnl: x.lamports as Lamports })),
     }));
-    const costs = this.costs();
+    const costs = this.costs(book, legs, nowMs);
     const openPositions = Object.values(book.positions).filter((p) => p.status !== 'closed' && p.status !== 'opening').map((p) => {
       const t = this.#s.trades.find((x) => x.positionId === p.id);
-      const fees = Object.values(book.intents).filter((i) => i.intent.positionId === p.id && i.intent.purpose === 'entry').reduce((s, i) => s + i.fills.reduce((a, f) => a + f.fees, 0n), 0n);
-      // What is still held carries the basis less the share its partial sales realized (RISK-PARTIAL). Tokens gone
-      // without a booked sale keep their basis here, so their loss shows in the mark.
+      // The basis (entry SOL and every entry attempt's fees, failed ones included: the same basis RISK-PARTIAL's parts
+      // take, from the paper legs), less the share its partial sales realized, so each fee counts once across the parts
+      // and what is still held (ACCOUNT-RATE). Tokens gone without a booked sale keep their basis here, so their loss shows
+      // in the mark. Without the legs (no trade record): the tokens' cost and the entry fills' fees.
+      const l = paperTradeLamports(book, p.id, legs);
+      const fillFees = Object.values(book.intents).filter((i) => i.intent.positionId === p.id && i.intent.purpose === 'entry').reduce((s, i) => s + i.fills.reduce((a, f) => a + f.fees, 0n), 0n);
+      const full = l === null ? p.cost + fillFees : l.entrySol + l.legs.entry.networkBase + l.legs.entry.priority + l.legs.entry.tip;
       const sold = t?.partialSold ?? 0n;
-      const full = p.cost + fees;
       const basis = (full - soldBasis(full, p.bought, sold)) as Lamports;
       return {
         mint: p.mint, openedAtMs: t?.openedAtMs ?? nowMs, notional: basis, mark: null, markAtMs: null,
@@ -469,6 +625,9 @@ export class PaperAccount {
     return {
       history, latches, solBalance: this.#s.walletLamports === null ? null : { value: this.#s.walletLamports as Lamports, atMs: nowMs }, paper: true,
       oneTimeRent: this.#s.oneTimePaid === true ? 0n : this.#oneTimeRent,
+      // A stray fee is out of `costs` until a fresh price books it: risk is told, and refuses entries until it is in.
+      // SOL-BOOKS: a close is in `closedTrades` by its lamports at once; only its dollar figure (display) waits for a price.
+      unvalued: this.#unbookedStrays(book, legs).length,
     };
   }
 }

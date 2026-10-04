@@ -22,7 +22,8 @@ export interface DeskDeps {
   /** Puts a world event on the live Feed; returns its event id. */
   readonly report: (event: BookEvent) => string;
   /** The ledger's account changed: publish a fresh snapshot. */
-  readonly accountChanged: () => void;
+  /** The account changed at a book event of this moment (its stray fees are judged fresh against it). */
+  readonly accountChanged: (atMs: number) => void;
   /** The set of open intents may have changed. */
   readonly intentsChanged: (open: number) => void;
   /** The ledger refused an event the engine applied: the book and the ledger no longer agree. */
@@ -42,7 +43,7 @@ export interface DeskDeps {
    */
   readonly journaledFills?: Map<string, Readonly<Record<string, unknown>>>;
   /** The SOL/USD price a fill is booked at now (null before the first price), written on its line as `sol_usd`. */
-  readonly solUsd?: () => MicroUsd | null;
+  readonly solUsd?: (atMs: number) => MicroUsd | null;
   /** Test seam: called right after each of a fill's two durable writes (a crash image is taken there). */
   readonly crashPoint?: (point: 'fill-journaled' | 'fill-committed', intentId: string) => void;
 }
@@ -202,7 +203,7 @@ export class Desk {
     // must never leave a position closed in the ledger with no `exit` line, which a restart check reads as lost. The
     // other way round, the restart books the same fill again from the world and the line is not written twice.
     const step = applyBookEvent(before, event);
-    const fill = isIllegal(step) ? null : this.#fill(before, step.state, event);
+    const fill = isIllegal(step) ? null : this.#fill(before, step.state, event, ts);
     if (fill !== null && fill.line !== null) {
       this.#d.journal(fill.purpose, fill.line);
       this.#d.crashPoint?.('fill-journaled', fill.intentId);
@@ -233,7 +234,7 @@ export class Desk {
     if (fill !== null) {
       this.#d.filled({ purpose: fill.purpose, positionId: fill.positionId, mint: fill.mint, book: this.#book, atMs: fill.atMs ?? ts, reasons: fill.reasons, ...(fill.solUsd === undefined ? {} : { solUsd: fill.solUsd }), ...(fill.closes ? { closes: true as const } : {}) });
     }
-    this.#d.accountChanged();
+    this.#d.accountChanged(ts);
     this.#d.intentsChanged(openIntents(this.#book));
   }
 
@@ -244,7 +245,7 @@ export class Desk {
    * not a paper trade: `#write` hands it to `lateBuy` instead (DECISIONS, PAPER-1). RISK-PARTIAL: a late sell that
    * leaves tokens held books its part when it lands.
    */
-  #fill(before: Book, after: Book, event: BookEvent): Fill | null {
+  #fill(before: Book, after: Book, event: BookEvent, ts: number): Fill | null {
     const id = event.type === 'intent' && event.event.type === 'reconcile' ? event.intentId
       : event.type === 'orphan_fill' && after.intents[event.fill.intentId]?.intent.purpose === 'exit' ? event.fill.intentId : null;
     if (id === null) return null;
@@ -271,7 +272,7 @@ export class Desk {
     // reply back after a restart, with that universe (RUN-1d contract).
     const universe = purpose === 'entry' ? { universe: universeOfKey(s.intent.key) } : {};
     // `sol_usd`: the rate this fill's cash flow is valued at, so a restart that catches the account up uses it too (PAPER-1).
-    const solUsd = this.#d.solUsd?.() ?? null;
+    const solUsd = this.#d.solUsd?.(ts) ?? null;
     const line = { trade: pid, intent: s.intent.id, mint: s.intent.mint, tokens, sol, fees, position: p?.status ?? null, ...universe, sol_usd: solUsd, reasons };
     const key = fillKey(s.intent.id, tokens);
     const held = this.#d.journaledFills?.get(key);

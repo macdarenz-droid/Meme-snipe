@@ -81,12 +81,16 @@ describe('money totals count the account\'s costs (APP-MONEY)', () => {
     await m.run(4_000, 100, () => m.pool());
     await m.run(10_000, 400, () => { m.slot(); m.pool(); });
     const i = h.worker.apiInputs();
-    expect(i.accountCosts.length).toBe(1);
+    // The wallet's setup, and while a trade is open its costs outside the basis (ACCOUNT-RATE: here the token-account
+    // rent not yet returned), each as risk reads them.
     expect(i.accountCosts[0]!.kind).toBe('wallet_setup');
     expect(i.accountCosts[0]!.usd > 0n).toBe(true);
+    const open = Object.values(h.worker.book.positions).some((p) => p.status !== 'closed');
+    expect(i.accountCosts.slice(1).every((c) => c.kind === 'open_trade')).toBe(true);
+    expect(i.accountCosts.length > 1).toBe(open);
     const stats = checkEnvelope(JSON.parse(JSON.stringify(route('/api/v1/paper/stats', () => i).body)), 'paper', schemaFor('stats', 'paper')).data as { netUsd: string };
     const tradeNet = i.trades.filter((t) => t.closedAtMs !== null).reduce((s, t) => s + (t.netPnl ?? 0n), 0n);
-    expect(stats.netUsd).toBe(usdText(tradeNet - i.accountCosts[0]!.usd));
+    expect(stats.netUsd).toBe(usdText(tradeNet - i.accountCosts.reduce((s, c) => s + c.usd, 0n)));
     await h.worker.stop();
   });
 });

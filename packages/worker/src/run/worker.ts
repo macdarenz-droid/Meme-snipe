@@ -290,9 +290,9 @@ export class Worker {
   #reconciled = false;
   #lastSlot: bigint | null = null;
   #ticked: bigint | null = null;
+  /** The account was published at a fresh SOL price in this process (the wallet's first balance for risk). */
+  #pricedOnce = false;
   #solPrice: MicroUsd | null = null;
-  /** Whether this process settled at its first SOL price after the reconcile (a stray fee needs a price; PAPER-1). */
-  #pricedSettle = false;
   /** When that price was seen (its fact's `atMs`), for risk's freshness check in the account marks. */
   #solPriceAt: number | null = null;
   /** RISK-FAULT: why risk last could not value the account, while it still cannot (logged once per episode). */
@@ -466,7 +466,7 @@ export class Worker {
       changed: () => this.#writeOpenIntents(),
       // A landed failure paid its fee (PAPER-1, M4): the account settles it and risk sees the new snapshot.
       landedFailed: () => {
-        if (this.#settle()) this.#publishAccount();
+        if (this.#settle(null)) this.#publishAccount();
       },
     });
     // FACTS-1b: the engine reads through core's FactFeed (engine-feed.ts); a replay of the recording uses the same.
@@ -543,12 +543,12 @@ export class Worker {
       journal: (kind, fields) => this.#journal.write(kind, fields),
       // Fill lines written before a kill that came ahead of the ledger: the restart books those fills again, once.
       journaledFills: journaledFillKeys(this.#fillLines),
-      solUsd: () => this.#solPrice,
+      solUsd: (atMs) => this.#bookingPrice(atMs),
       ...(d.crashPoint === undefined ? {} : { crashPoint: d.crashPoint }),
       report: (event) => this.#report(event),
       // An entry that ended with no fill books its failed attempts' fees here (PAPER-1, M4), before the snapshot.
-      accountChanged: () => {
-        this.#settle();
+      accountChanged: (atMs) => {
+        this.#settle(atMs);
         this.#publishAccount();
       },
       intentsChanged: () => this.#writeOpenIntents(),
@@ -566,8 +566,11 @@ export class Worker {
       },
       reserved: (r) => this.#account.reserved(r.mint, r.atMs),
       filled: (r) => {
-        // A fill re-booked from its held journal line carries that line's rate (PAPER-1); otherwise the price now.
-        this.#account.filled(r, r.solUsd !== undefined ? r.solUsd : this.#solPrice, this.#legs());
+        // A fill re-booked from its held journal line carries that line's rate (PAPER-1); otherwise the price now. A leg
+        // with no rate (none known at its fill) is valued at the first price after it (ACCOUNT-RATE), now if one is known.
+        this.#account.filled(r, r.solUsd !== undefined ? r.solUsd : this.#bookingPrice(r.atMs), this.#legs());
+        this.#account.priceLate(this.#desk.book, this.#legs(), this.#bookingPrice(r.atMs), this.#d.timers.now());
+        if (r.reasons.includes(FILL_RATE_UNKNOWN)) this.#unpriced(r.positionId, r.purpose);
         if (r.purpose === 'entry') this.#entered(r.mint, r.positionId, r.atMs);
       },
     });
@@ -604,6 +607,11 @@ export class Worker {
 
   get boot(): string {
     return this.#boot;
+  }
+
+  /** The paper legs the account settles from (attempts, network, closed accounts): what an account fact reads. */
+  get legs(): PaperLegs {
+    return this.#legs();
   }
 
   get book(): Book {
@@ -704,17 +712,24 @@ export class Worker {
     else if (m.key === SOL_PRICE_KEY) {
       const p = isObj(m.value) && typeof m.value['value'] === 'bigint' && m.value['value'] > 0n ? { price: m.value['value'] } : null;
       if (p !== null) {
+        // Whether bookings had a fresh price just before this one (ACCOUNT-RATE F2: a stale price is none).
+        const at = m.moment.receivedAt;
+        const wasFresh = this.#bookingPrice(at) !== null;
         this.#solPrice = p.price as MicroUsd;
         this.#solPriceAt = isObj(m.value) && typeof m.value['atMs'] === 'number' ? m.value['atMs'] : m.moment.receivedAt;
         this.#account.price(this.#solPrice, m.moment.receivedAt);
-        if (this.#accountBehind.length > 0) this.#catchUpAccount();
-        // The paper wallet exists from the first price on: risk needs its balance (R4). Every process settles once at its
-        // first price after the reconcile: fees of entries that ended unfilled while no price was known (in that
-        // reconcile, a restart's) are booked here, not at some later book event.
-        if (!this.#pricedSettle && this.#account.state.walletLamports !== null && this.#reconciled) {
-          this.#pricedSettle = true;
-          this.#settle();
-          this.#publishAccount();
+        if (this.#accountBehind.length > 0) this.#catchUpAccount(at);
+        // ACCOUNT-RATE: legs booked before any price (a start reconcile) are valued here, before risk sees the account.
+        if (this.#account.priceLate(this.#desk.book, this.#legs(), this.#solPrice, m.moment.receivedAt) && this.#reconciled) this.#publishAccount();
+        // The paper wallet exists from the first price on: risk needs its balance (R4). Stray fees are booked only with a
+        // fresh price, so the account settles whenever the price turns fresh (the first fresh price of a process, or the
+        // first after a stale stretch): fees of entries that ended unfilled while no fresh price was known (in a restart's
+        // reconcile, or while the feed was quiet) are booked here, not at some later book event. Until then the account
+        // fact counts them as unvalued and no entry is judged.
+        if (this.#bookingPrice(at) !== null && !wasFresh && this.#account.state.walletLamports !== null && this.#reconciled) {
+          // Published at the first fresh price of the process (risk needs the wallet), after that only when fees moved.
+          if (this.#settle(at) || !this.#pricedOnce) this.#publishAccount();
+          this.#pricedOnce = true;
         }
       }
     } else if (m.key === 'coverage:rugs:start') {
@@ -959,13 +974,26 @@ export class Worker {
     return { network: this.#d.network, attempts: this.#world.attempts, closedAccount: (sig) => this.#world.closedAccount(sig) };
   }
 
+  /**
+   * ACCOUNT-RATE F2: the SOL/USD price a fill, a close or a stray fee booked at `atMs` (the booking event's moment) takes:
+   * the latest price while it is no older than risk's freshness limit (`maxQuoteAgeMs`) at that moment, else none.
+   * Judged against the event's own moment, as risk judges against `ctx.now`: the feed releases events after their receipt
+   * and not in receipt order across sources, so neither the wall clock nor the latest release is the booking's time. A
+   * leg booked with none is valued at the first price after it (`priceLate`): a stale price is never a rate.
+   */
+  #bookingPrice(atMs: number): MicroUsd | null {
+    if (this.#solPrice === null || this.#solPriceAt === null) return null;
+    return atMs - this.#solPriceAt <= this.#d.session.policy.gates.maxQuoteAgeMs ? this.#solPrice : null;
+  }
+
   /** Fees paid outside fills, each signature once (PAPER-1, M4); true when the wallet moved. */
-  #settle(): boolean {
-    return this.#account.settle(this.#desk.book, this.#legs(), this.#solPrice, this.#d.timers.now());
+  /** Settles the paper account; stray fees are booked only with a price fresh at `atMs` (null: none, they wait). */
+  #settle(atMs: number | null): boolean {
+    return this.#account.settle(this.#desk.book, this.#legs(), atMs === null ? null : this.#bookingPrice(atMs), this.#d.timers.now());
   }
 
   #publishAccount(): void {
-    this.#fact(ACCOUNT_KEY, this.#account.fact(this.#ledger, this.#desk.book, this.#ctl.latches, this.#d.timers.now()));
+    this.#fact(ACCOUNT_KEY, this.#account.fact(this.#ledger, this.#desk.book, this.#ctl.latches, this.#d.timers.now(), this.#legs()));
   }
 
   #writeOpenIntents(): void {
@@ -1053,10 +1081,18 @@ export class Worker {
   }
 
   /**
+   * ACCOUNT-RATE: a fill from a journal line written before lines carried `sol_usd` was valued at the price after the
+   * restart, not its own. One `unpriced_fill` alert line each, which the run report counts.
+   */
+  #unpriced(positionId: string, purpose: 'entry' | 'exit'): void {
+    this.#journal.write('alert', { level: 'warning', code: 'unpriced_fill', trade: positionId, purpose, reasons: [FILL_RATE_UNKNOWN] });
+  }
+
+  /**
    * WORKER-ORDER: records the fills a kill between the ledger commit and account.json left out, from the book and the
    * fill's own journal line (always written before the ledger since §12.4: its time, reasons and SOL/USD rate).
    */
-  #catchUpAccount(): void {
+  #catchUpAccount(atMs: number): void {
     const book = this.#desk.book;
     for (const b of this.#accountBehind) {
       const p = book.positions[b.positionId];
@@ -1068,9 +1104,10 @@ export class Worker {
       // live path valued as null too (the safe side); only a line without the field falls back to the price now, flagged.
       const fromLine = lineRate(line);
       const known = fromLine !== undefined;
-      const rate = known ? fromLine : this.#solPrice;
+      const rate = known ? fromLine : this.#bookingPrice(atMs);
       this.#account.filled({ purpose: b.purpose, positionId: p.id, mint: String(p.mint), book, atMs: Number.isFinite(at) ? at : this.#d.timers.now(), reasons: known ? reasons : [...reasons, FILL_RATE_UNKNOWN] }, rate, this.#legs());
       this.#d.log(`Account caught up: the ${b.purpose} of ${p.id} was in the ledger but not in account.json (a kill between the two)${known ? '' : `; ${FILL_RATE_UNKNOWN}`}.`);
+      if (!known) this.#unpriced(p.id, b.purpose);
     }
     this.#accountBehind = [];
     if (this.#reconciled) this.#publishAccount();
@@ -1086,7 +1123,7 @@ export class Worker {
    */
   #markAccount(now: number): void {
     if (!this.#reconciled) return;
-    const fact = this.#account.fact(this.#ledger, this.#desk.book, this.#ctl.latches, now);
+    const fact = this.#account.fact(this.#ledger, this.#desk.book, this.#ctl.latches, now, this.#legs());
     const policy = this.#d.session.policy;
     const held = Object.values(this.#engine.book.positions).filter((p) => p.status !== 'closed');
     const account = riskAccount(fact.history, (mint) => {
@@ -1199,7 +1236,7 @@ export class Worker {
       connected: this.#reconciled && [...this.#feeds.values()].some((f) => f.connected), halted: this.#halted, paused: this.#ctl.paused,
       exitCapable: this.#exitCapable(d.timers.now()), budgetHalted: (d.ops?.().quota ?? []).filter((q) => q.halted).map((q) => q.provider),
       alerts: [...this.#alerts], regime: this.#strategy.regime(), regimeMaxAgeMs: 2 * d.strategy.evaluateEveryMs, stops: this.#strategy.riskStops(),
-      book: this.#engine.book, trades: this.#account.state.trades, accountCosts: this.#account.costRecords(), attempts: this.#world.attempts, legs: this.#legs(), decisions: this.#rows, funnel: this.#funnel,
+      book: this.#engine.book, trades: this.#account.state.trades, accountCosts: this.#account.costRecords(this.#desk.book, this.#legs(), this.#solPrice, d.timers.now()), attempts: this.#world.attempts, legs: this.#legs(), decisions: this.#rows, funnel: this.#funnel,
       exitFee: attemptFee(d.network, BigInt(d.session.policy.exits.ladder.steps[0]?.priorityFeeLamports ?? 0), 'filled'),
       solPrice: this.#solPrice, symbol: (mint) => this.#symbols.get(mint) ?? `${mint.slice(0, 4)}…`, waitingExits: this.#strategy.waitingExits(),
       discovered: [...this.#strategy.candidates()].map(([mint, c]) => {
@@ -1274,7 +1311,7 @@ export class Worker {
     this.#writeOpenIntents();
     // A guard: it re-books open trades from the restored book. No SOL price is known yet in a new process, so stray fees
     // wait for the first price (above).
-    this.#settle();
+    this.#settle(null);
     this.#publishAccount();
     const positions = Object.values(this.#engine.book.positions).filter((p) => p.status !== 'closed').map((p) => p.id);
     this.#journal.write('reconcile', { ok: true, restored_events: this.#ledgerEvents(), cancelled: asked.size, open_positions: positions });

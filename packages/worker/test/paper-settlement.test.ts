@@ -20,7 +20,7 @@ import { LATE_BUY } from '../src/run/worker.ts';
 import { type ApiInputs, views } from '../src/run/api.ts';
 import type { PaperAttempt } from '../src/run/paper-world.ts';
 import { oneTimeRent } from '../src/run/settings.ts';
-import { LANDS, Market, SOL_PRICE, T, makeWorker, passingMarket, tempState, until } from './worker-harness.ts';
+import { LANDS, Market, SOL_PRICE, T, makeWorker, passingMarket, tempState, until, noLegs } from './worker-harness.ts';
 
 const HELD = { heldPoolFacts: true } as const;
 const bigints = (_k: string, v: unknown) => (v !== null && typeof v === 'object' && '$n' in v ? BigInt((v as { $n: string }).$n) : v);
@@ -313,9 +313,9 @@ describe('M4: fees of an entry that never filled are an account cost, booked onc
     expect(account.settle(bookOf(a), legsOf(a), PRICE, T)).toBe(false);
     const fee = attemptFee(net, 10_000_000n, 'failed');
     expect(account.state.walletLamports).toBe(opening - fee);
-    const fact = account.fact(ledger, emptyBook({ maxOpenPositions: 5 }), NO_LATCHES, T);
-    // SOL-BOOKS: risk counts the fee in lamports.
-    expect(fact.history.costs).toContainEqual({ atMs: T - 60_000, amount: fee, kind: 'failed_entry' });
+    const fact = account.fact(ledger, emptyBook({ maxOpenPositions: 5 }), NO_LATCHES, T, noLegs);
+    // Sent a minute before it was booked: dated when booked (ACCOUNT-RATE F3). SOL-BOOKS: risk counts it in lamports.
+    expect(fact.history.costs).toContainEqual({ atMs: T, amount: fee, kind: 'failed_entry' });
     expect(fact.history.closedTrades).toEqual([]);
     const s = riskSnapshot({
       session: startSession(TRIAL_POLICY), mode: 'paper', clock: { now: () => ({ slot: 1n, txIndex: 0, ixIndex: 0, receivedAt: T }) }, account: fact.history, latches: NO_LATCHES,
@@ -336,16 +336,17 @@ describe('M4: fees of an entry that never filled are an account cost, booked onc
     const fee = attemptFee(net, 50_000n, 'failed');
     const setup = account.state.setup!;
     const strayUsd = lamportsToMicroUsd(fee as Lamports, PRICE, 'ceil');
-    // One list: what risk reads is what the app totals, each with its lamports.
-    // Risk reads lamports (SOL-BOOKS); the app's records carry the dollar value at booking as well.
-    expect(account.costs()).toEqual([{ atMs: setup.atMs, amount: setup.lamports, kind: 'wallet_setup' }, { atMs: T - 60_000, amount: fee, kind: 'failed_entry' }]);
-    expect(account.costRecords().map((c) => c.usd)).toEqual([setup.cost, strayUsd]);
-    expect(account.fact(ledger, emptyBook({ maxOpenPositions: 5 }), NO_LATCHES, T).history.costs).toEqual(account.costs());
-    expect(account.costRecords().map((c) => c.lamports)).toEqual([2_000_000n, fee]);
+    // One list: what risk reads is what the app totals, each with its lamports. The fee is dated when booked (T), a
+    // minute after its send (ACCOUNT-RATE F3). Risk reads lamports (SOL-BOOKS); the app's records carry dollars as well.
+    const empty = emptyBook({ maxOpenPositions: 5 });
+    expect(account.costs(empty, noLegs, T)).toEqual([{ atMs: setup.atMs, amount: setup.lamports, kind: 'wallet_setup' }, { atMs: T, amount: fee, kind: 'failed_entry' }]);
+    expect(account.costRecords(empty, noLegs, PRICE, T).map((c) => c.usd)).toEqual([setup.cost, strayUsd]);
+    expect(account.fact(ledger, empty, NO_LATCHES, T, noLegs).history.costs).toEqual(account.costs(empty, noLegs, T));
+    expect(account.costRecords(empty, noLegs, PRICE, T).map((c) => c.lamports)).toEqual([2_000_000n, fee]);
     const h = makeWorker();
     const base = h.worker.apiInputs();
     void h.worker.stop();
-    const i = { ...base, nowMs: T, trades: [], accountCosts: account.costRecords() } as ApiInputs;
+    const i = { ...base, nowMs: T, trades: [], accountCosts: account.costRecords(empty, noLegs, PRICE, T) } as ApiInputs;
     const stats = views.stats(i) as { trades: number; netUsd: string; netSol: string };
     const total = setup.cost + strayUsd;
     expect(stats).toMatchObject({ trades: 0, netUsd: `-${total / 1_000_000n}.${String(total % 1_000_000n).padStart(6, '0').replace(/0+$/, '')}` });
@@ -369,26 +370,28 @@ describe('M4: fees of an entry that never filled are an account cost, booked onc
     const old = [failedAttempt('a', start - 9 * DAY, 20_000n), failedAttempt('b', start - DAY, 30_000n)];
     const recent = [failedAttempt('c', start + 1_000, 40_000n)];
     const usdOf = (x: PaperAttempt) => lamportsToMicroUsd(attemptFee(net, x.priorityFee, 'failed') as Lamports, PRICE, 'ceil');
-    // Booked in the last days of a week: a (from the week before) folds at once, b stays a record.
-    account.settle(bookOf(old), legsOf(old), PRICE, start - 1_000);
+    // Each booked a second after it was sent (a record is dated when booked, ACCOUNT-RATE F3). In the last days of a
+    // week: a (from the week before) folds at once, b stays a record.
+    account.settle(bookOf([old[0]!]), legsOf([old[0]!]), PRICE, start - 9 * DAY + 1_000);
+    account.settle(bookOf(old), legsOf(old), PRICE, start - DAY + 1_000);
     expect(Object.keys(account.state.strayFees!)).toEqual(['b']);
-    expect(account.state.strayFolded).toEqual({ atMs: start - 9 * DAY, lamports: attemptFee(net, 20_000n, 'failed'), cost: usdOf(old[0]!) });
+    expect(account.state.strayFolded).toEqual({ atMs: start - 9 * DAY + 1_000, lamports: attemptFee(net, 20_000n, 'failed'), cost: usdOf(old[0]!) });
     // In the new week: b folds into the total, c stays a record.
     const all = [...old, ...recent];
-    account.settle(bookOf(all), legsOf(all), PRICE, start + 2_000);
+    account.settle(bookOf(all), legsOf(all), PRICE, start + 1_000);
     expect(Object.keys(account.state.strayFees!)).toEqual(['c']);
     const fees = (xs: readonly PaperAttempt[]) => xs.reduce((s, x) => s + attemptFee(net, x.priorityFee, 'failed'), 0n);
-    expect(account.state.strayFolded).toEqual({ atMs: start - DAY, lamports: fees(old), cost: usdOf(old[0]!) + usdOf(old[1]!) });
+    expect(account.state.strayFolded).toEqual({ atMs: start - DAY + 1_000, lamports: fees(old), cost: usdOf(old[0]!) + usdOf(old[1]!) });
     expect(account.state.walletLamports).toBe(opening - fees(all));
     // A replay (the same signatures again, also after a reload) charges nothing more.
     const reloaded = new PaperAccount(file, 20_000_000n as MicroUsd, start + 3_000, 0n);
     expect(reloaded.settle(bookOf(all), legsOf(all), PRICE, start + 3_000)).toBe(false);
     expect(reloaded.state.walletLamports).toBe(opening - fees(all));
     // Equity keeps every fee: the folded total (before this week) and the record are both costs.
-    const costs = reloaded.fact(ledger, emptyBook({ maxOpenPositions: 5 }), NO_LATCHES, start + 3_000).history.costs.filter((c) => c.kind === 'failed_entry');
+    const costs = reloaded.fact(ledger, emptyBook({ maxOpenPositions: 5 }), NO_LATCHES, start + 3_000, noLegs).history.costs.filter((c) => c.kind === 'failed_entry');
     expect(costs).toEqual([
       // SOL-BOOKS: in lamports.
-      { atMs: start - DAY, amount: fees(old), kind: 'failed_entry' },
+      { atMs: start - DAY + 1_000, amount: fees(old), kind: 'failed_entry' },
       { atMs: start + 1_000, amount: fees(recent), kind: 'failed_entry' },
     ]);
     ledger.close();
@@ -426,7 +429,10 @@ describe('M4: fees of an entry that never filled are an account cost, booked onc
     account.price(PRICE, start - 20 * DAY);
     const paid = failedAttempt('a', start - 3 * DAY, 20_000n);
     const dropped: PaperAttempt = { ...failedAttempt('z', start - 5 * DAY, 20_000n), outcome: 'dropped', reason: 'never reached a block (drawn)', landedSlot: null };
-    account.settle(bookOf([paid, dropped]), legsOf([paid, dropped]), null, start + 1_000);
+    // a's fee is booked a second after its send (a record is dated when booked, ACCOUNT-RATE F3); in the new week it
+    // folds, and the dropped attempt (sent earlier, cost nothing) does not hold the fold back.
+    account.settle(bookOf([paid, dropped]), legsOf([paid, dropped]), null, start - 3 * DAY + 500);
+    account.settle(bookOf([paid, dropped]), legsOf([paid, dropped]), PRICE, start - 3 * DAY + 1_000);
     account.settle(bookOf([paid, dropped]), legsOf([paid, dropped]), PRICE, start + 1_000);
     expect(account.state.strayFees).toEqual({});
     expect(account.state.strayFolded?.lamports).toBe(attemptFee(net, 20_000n, 'failed'));

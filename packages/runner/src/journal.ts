@@ -13,6 +13,11 @@ export interface JournalReport {
   readonly s0_diagnostic: Readonly<Record<string, number>>;
   /** WORKER-1e: H15's simulations (`h15_sim` lines): how many, how many ran, and the Helius credits they spent. */
   readonly h15_sim: { readonly lines: number; readonly run: number; readonly credits: number };
+  /**
+   * ACCOUNT-RATE: fills valued at the SOL price after a restart instead of their own, because their journal line was
+   * written before lines carried `sol_usd` (`alert` lines with code `unpriced_fill`), as `trade|purpose`.
+   */
+  readonly unpriced_fills: readonly string[];
   /** S0-ZERO: the pool watches' in-run fills (`trades_fill` lines): how many, how many complete, transactions read and Helius credits. */
   readonly trades_fill: { readonly lines: number; readonly complete: number; readonly transactions: number; readonly credits: number };
   /** CREATE-AFTER-RESTART: the create lookups (`create_lookup` lines): how many, how many found, skipped for want of budget, and Helius credits. */
@@ -68,6 +73,7 @@ export const checkJournalLines = (raw: Iterable<string>, opts: { readonly allowT
   let repairs = 0;
   const diagnosed: Record<string, number> = {};
   const h15 = { lines: 0, run: 0, credits: 0 };
+  const unpriced: string[] = [];
   const fills = { lines: 0, complete: 0, transactions: 0, credits: 0 };
   const lookups = { lines: 0, found: 0, skipped_no_budget: 0, credits: 0 };
   const starts: StartFields[] = [];
@@ -82,6 +88,7 @@ export const checkJournalLines = (raw: Iterable<string>, opts: { readonly allowT
       if (l['outcome'] !== 'not-run') h15.run += 1;
       if (typeof l['credits'] === 'number' && Number.isFinite(l['credits'])) h15.credits += l['credits'];
     }
+    if (l.kind === 'alert' && l['code'] === 'unpriced_fill') unpriced.push(`${String(l.trade)}|${String(l['purpose'])}`);
     if (l.kind === 'trades_fill') {
       fills.lines += 1;
       if (l['complete'] === true) fills.complete += 1;
@@ -152,5 +159,5 @@ export const checkJournalLines = (raw: Iterable<string>, opts: { readonly allowT
     held = { text, at: index };
   }
   if (held !== null) take(held, true);
-  return { lines: count, boots: bootsSeen.size, entries, exits, simulations, repairs, s0_diagnostic: diagnosed, h15_sim: h15, trades_fill: fills, create_lookup: lookups, complete: problems.length === 0, problems, starts };
+  return { lines: count, boots: bootsSeen.size, entries, exits, simulations, repairs, s0_diagnostic: diagnosed, h15_sim: h15, unpriced_fills: unpriced, trades_fill: fills, create_lookup: lookups, complete: problems.length === 0, problems, starts };
 };

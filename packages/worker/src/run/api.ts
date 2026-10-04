@@ -165,8 +165,8 @@ export interface ApiInputs {
   readonly book: Book;
   readonly trades: readonly PaperTrade[];
   /** The account's costs that are no trade's (account.ts `costs`, the list risk reads): dated, micro-dollars. */
-  /** `usd` is the cost in micro-dollars at booking (display); `lamports` what risk counts. */
-  readonly accountCosts: readonly { readonly atMs: number; readonly usd: bigint; readonly lamports: bigint; readonly kind: string }[];
+  /** `usd` is the cost in micro-dollars (display); `lamports` what risk counts; an open trade's `part`, a fee or rent. */
+  readonly accountCosts: readonly { readonly atMs: number; readonly usd: bigint; readonly lamports: bigint; readonly kind: string; readonly part?: 'fee' | 'rent' }[];
   readonly attempts: ReadonlyMap<string, PaperAttempt>;
   /** What a trade settles from (PAPER-1): the attempts again, the network terms and which sells closed an account. */
   readonly legs: PaperLegs;
@@ -320,12 +320,16 @@ export const moneyEvents = (i: ApiInputs): MoneyEvent[] => {
     const net = tradeNetUsd(i, t);
     if (t.closedAtMs !== null && net !== null) out.push({ kind: 'close', atMs: t.closedAtMs, net: net - parts.reduce((s, p) => s + p.pnl, 0n), trade: t });
   }
-  for (const c of i.accountCosts) out.push({ kind: 'cost', atMs: c.atMs, net: -c.usd, costKind: c.kind });
+  for (const c of i.accountCosts) out.push({ kind: 'cost', atMs: c.atMs, net: -c.usd, costKind: c.part === undefined ? c.kind : `${c.kind}:${c.part}` });
   return out.sort((x, y) => x.atMs - y.atMs);
 };
 
-/** An account cost under the app's cost kinds: the wallet's setup rent is rent kept; a failed entry's fees are network fees. */
-const ACCOUNT_COST_KIND: Readonly<Record<string, string>> = { wallet_setup: 'rentKeptUsd', failed_entry: 'networkFeeUsd' };
+/**
+ * An account cost under the app's cost kinds: the wallet's setup rent is rent kept; a failed entry's fees are network
+ * fees; an open trade's failed fees are network fees and its rent not yet returned is rent kept (ACCOUNT-RATE, until
+ * the trade closes and its own costs show them).
+ */
+const ACCOUNT_COST_KIND: Readonly<Record<string, string>> = { wallet_setup: 'rentKeptUsd', failed_entry: 'networkFeeUsd', 'open_trade:fee': 'networkFeeUsd', 'open_trade:rent': 'rentKeptUsd' };
 
 export const views = {
   status: (i: ApiInputs) => {

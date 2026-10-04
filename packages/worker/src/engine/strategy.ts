@@ -190,6 +190,12 @@ export interface AccountFact {
   readonly paper: boolean;
   /** Rent of the one-time accounts this wallet still lacks (0 once its setup made them): risk's `rent.oneTime`. */
   readonly oneTimeRent: bigint;
+  /**
+   * ACCOUNT-RATE (risk ruling): closed trades not yet valued in dollars, and stray fees not yet booked (both wait for a
+   * fresh SOL price). Their loss is not in `history` yet, so no entry is judged until a snapshot with none is released.
+   * Absent in older recordings: 0.
+   */
+  readonly unvalued?: number;
 }
 
 /** Exit state of one position, saved after every step so a restart resumes the same stop and trail. */
@@ -1917,6 +1923,11 @@ export class LiveStrategy implements Strategy {
       if (hard.reasons.length === 0) return this.#fail('hard rejects incomplete', [{ gate: 'worker', code: 'hard-incomplete', detail: 'not every hard gate was evaluated' }]);
       const later = notEvaluated.length > 0 ? `; ${NOT_EVALUATED}${notEvaluated.join(',')}` : '';
       return this.#fail(`hard reject ${hard.failed.join(',')}: ${hard.reasons.map((x) => `${x.gate} ${x.code} ${x.detail}`).join('; ')}${later}`, hard.reasons.map((x) => ({ gate: x.gate, code: x.code, detail: x.detail })), hard.reasons);
+    }
+    // ACCOUNT-RATE: a stray fee not yet booked (it waits for a SOL price) is not in the account's costs; no entry until it is.
+    if ((acct.unvalued ?? 0) > 0) {
+      const detail = `${acct.unvalued} fee(s) not yet booked; waiting for a snapshot with them in`;
+      return this.#fail(`account unvalued: ${detail}`, [{ gate: 'worker', code: 'account-unvalued', detail }]);
     }
     // Stop: the tighter of the ATR limit and the policy's maximum distance, from the executable price after the buy.
     const rt = quoter(spend);

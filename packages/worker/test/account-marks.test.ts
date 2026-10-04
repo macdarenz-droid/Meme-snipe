@@ -9,7 +9,7 @@ import { emptyBook } from '../../core/src/lifecycle/index.ts';
 import { NO_LATCHES, evaluateEntry, melbourneDay, melbourneWeek, riskSnapshot } from '../../core/src/risk/index.ts';
 import type { Lamports, MicroUsd } from '../../core/src/units/index.ts';
 import { PaperAccount, accountFile } from '../src/run/account.ts';
-import { makeWorker, tempState } from './worker-harness.ts';
+import { makeWorker, tempState, noLegs } from './worker-harness.ts';
 
 const HOUR = 3_600_000;
 // 2026-10-06 15:00 Melbourne (AEDT, UTC+11): a Tuesday.
@@ -87,14 +87,14 @@ describe('PaperAccount marks', () => {
     const a = new PaperAccount(accountFile(dir), usd(20), T - 10 * HOUR, 0n);
     a.mark(snap(T, 19.5, 20.5), true, null, T);
     const book = emptyBook({ maxOpenPositions: 5 });
-    const today = a.fact(ledger, book, NO_LATCHES, T + HOUR).history;
+    const today = a.fact(ledger, book, NO_LATCHES, T + HOUR, noLegs).history;
     expect(today).toMatchObject({ markedAtDayStart: sol(19.5), markedAtWeekStart: sol(19.5), navMarks: [{ atMs: T, nav: sol(20.5) }] });
-    const tomorrow = a.fact(ledger, book, NO_LATCHES, melbourneDay(T).end + HOUR).history;
+    const tomorrow = a.fact(ledger, book, NO_LATCHES, melbourneDay(T).end + HOUR, noLegs).history;
     expect(tomorrow.markedAtDayStart).toBeNull();
     expect(tomorrow.markedAtWeekStart).toBe(sol(19.5));
     // A peak taken after the moment asked about is not handed over.
-    expect(a.fact(ledger, book, NO_LATCHES, T - 1).history.navMarks).toEqual([]);
-    const nextWeek = a.fact(ledger, book, NO_LATCHES, melbourneWeek(T).end + HOUR).history;
+    expect(a.fact(ledger, book, NO_LATCHES, T - 1, noLegs).history.navMarks).toEqual([]);
+    const nextWeek = a.fact(ledger, book, NO_LATCHES, melbourneWeek(T).end + HOUR, noLegs).history;
     expect(nextWeek.markedAtWeekStart).toBeNull();
     ledger.close();
   });
@@ -110,7 +110,7 @@ describe('PaperAccount marks', () => {
     file.write({ ...a.state, trades: [{ positionId: 'p:x:1', mint: 'MintX', openedAtMs: T - 2 * HOUR, notional: sol(2), closedAtMs: T - HOUR, netLamports: -sol(0.25), netPnl: usd(-0.25), stoppedOut: true, booked: -sol(0.25) }] });
     const b = new PaperAccount(file, usd(20), T, 0n);
     b.mark({ ...snap(T, 21.3, null) }, true, null, T - 30 * 60_000);
-    const fact = b.fact(ledger, emptyBook({ maxOpenPositions: 5 }), NO_LATCHES, T);
+    const fact = b.fact(ledger, emptyBook({ maxOpenPositions: 5 }), NO_LATCHES, T, noLegs);
     const input = {
       session: startSession(TRIAL_POLICY), mode: 'paper' as const, clock: { now: () => ({ slot: 1n, txIndex: 0, ixIndex: 0, receivedAt: T }) },
       account: fact.history, latches: NO_LATCHES, market: { solBalance: fact.solBalance, regime: 'unknown' as const },
@@ -142,7 +142,7 @@ describe('SOL-BOOKS: an account.json from before is converted once at the openin
     const a = new PaperAccount(file, usd(20), T, 0n);
     // Before the first price there is no opening price: the history says so, and risk refuses (R1) without latching.
     const ledger = openLedger(join(dir, 'ledger.sqlite'), 'paper');
-    expect(a.fact(ledger, emptyBook({ maxOpenPositions: 5 }), NO_LATCHES, T).history.openingSolPrice).toBe(0n);
+    expect(a.fact(ledger, emptyBook({ maxOpenPositions: 5 }), NO_LATCHES, T, noLegs).history.openingSolPrice).toBe(0n);
     a.price(usd(150), T);
     // $150: $19.50 is 130,000,000 lamports exactly; $17.000003 is 113,333,353.3, rounded up; $2 is 13,333,333.3, down.
     expect(a.state).toMatchObject({ openingSolPrice: usd(150), books: 'sol', walletLamports: 133_000_000n });
@@ -158,7 +158,7 @@ describe('SOL-BOOKS: an account.json from before is converted once at the openin
     expect(b.state.navPeak!.nav).toBe(113_333_354n);
     expect(b.state.trades[0]!.notional).toBe(13_333_333n);
     // Risk reads the lamports: the closed trade's result is its netLamports.
-    const h = b.fact(ledger, emptyBook({ maxOpenPositions: 5 }), NO_LATCHES, T + 2 * HOUR).history;
+    const h = b.fact(ledger, emptyBook({ maxOpenPositions: 5 }), NO_LATCHES, T + 2 * HOUR, noLegs).history;
     expect(h.openingSolPrice).toBe(usd(150));
     // B in lamports at the opening price, rounded down ($20 at $150 is 133,333,333.3).
     expect(h.openingEquity).toBe(133_333_333n);
