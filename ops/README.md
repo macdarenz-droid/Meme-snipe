@@ -10,7 +10,7 @@ Server: Vultr High Performance, Frankfurt, 1 vCPU / 1 GB, image **Ubuntu 24.04 L
 2. **Install.** Paste this one line the same way (Clipboard → Paste), then press Enter:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/750cb57eb3880fb83017f2c9f0eb8b7a54929163/ops/install.sh -o i && echo 'a7e2f869f98fb5913cd6511069f9246b1006a16dea87a267069d17bdac8b8596  i' | sha256sum -c && bash i
+curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/157a78dd78d4368d66697e10eb8fa08340f4520d/ops/install.sh -o i && echo 'a7e2f869f98fb5913cd6511069f9246b1006a16dea87a267069d17bdac8b8596  i' | sha256sum -c && bash i
 ```
 
    The line checks the file against its SHA-256 before anything runs; a changed file stops at `sha256sum -c`. After about two minutes the screen shows a **deploy code** of 6 words.
