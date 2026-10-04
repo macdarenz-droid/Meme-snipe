@@ -1710,6 +1710,7 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - **R8 timing** anchors on the streak's latest loss moment. A late loss that completes a streak starts the cooldown when it is booked, and pauses the day it is booked. The close's own day, already checked, is never rewritten.
   - **The review window** counts a trade whose close or loss moment is after the owner's review: a loss learned after a review is new evidence. "Consecutive" and the 20-trade window keep close order.
   - **A late loss with no dollar value** (no SOL price when it was booked) makes the trade a loss from then. This is the safe side while risk reads dollars. When SOL-BOOKS (#197) moves risk to lamports, classification reads the lamports, and the gap is gone.
+  - **The app's win rate can differ from R8, by design.** The app counts a trade's whole result now (`tradePnl`), not sticky. A trade that went below zero on a late loss and back above it on a late gain is a win in the app and a loss to R8. R8 is the safe side; the app shows the money.
   - Rejected: option 1, the whole result with no stickiness or anchors (a late gain could lift a pause, and a flip after the cooldown triggered nothing). Option 3, re-ordering trades by loss moment (it rewrites which trades are "consecutive" after the fact).
 - **2026-10-05 · Evidence.** `packages/core/test/risk/r8-whole.test.ts`: 10 tests, all failing before the change. They cover:
   - a flip counted from its booking and not before;
@@ -1717,9 +1718,10 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - a flip among the 5 in 20;
   - late gains alone, and entries with no dollar value;
   - stickiness;
+  - close order kept, in the 20-trade window and in the streak (stats review);
   - the cooldown and the day pause from the flip;
   - the review window;
   - equity, day loss and week loss unchanged;
   - a future entry not read.
   `packages/worker/test/paper-settlement.test.ts`: `account.fact` carries the late entry, and a restart reads the same.
-  Hand mutants, all caught: stickiness off, the cooldown or the day pause anchored on the close, the review filter on the close only, the as-of filter off, a no-dollar late loss ignored, R15 on the close only, and the worker mapping dropped.
+  Hand mutants, all caught: stickiness off, the cooldown or the day pause anchored on the close, the review filter on the close only, the window or the streak ordered by loss moment (option 3), the as-of filter off, a no-dollar late loss ignored, R15 on the close only, and the worker mapping dropped.

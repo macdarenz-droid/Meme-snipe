@@ -96,6 +96,31 @@ describe('the review window', () => {
   });
 });
 
+describe('close order is kept: a late flip does not move a trade (option 3 rejected)', () => {
+  test('the 20-trade window: an early trade flipped after later losses stays at its close', () => {
+    // 21 trades in close order: the first a win flipped by a fee booked after every close, four plain losses last.
+    const closed = Array.from({ length: 21 }, (_, i) => trade(LAST_WEEK - (21 - i) * HOUR, i >= 17 ? '-0.1' : '0.1'));
+    closed[0] = withLate(closed[0]!, fee(LAST_WEEK + HOUR));
+    // In close order no 20 consecutive trades hold 5 losses (4 each way); moved to its loss moment it would make 5.
+    expect(codes(evaluateEntry(at(NOW, closed), req(NOW)))).not.toContain('loss_review');
+    // The same five losses inside 20 trades in close order do pause.
+    const inside = closed.map((t, i) => (i === 1 ? withLate(t, fee(LAST_WEEK + HOUR)) : i === 0 ? { ...t, late: [] } : t));
+    expect(codes(evaluateEntry(at(NOW, inside), req(NOW)))).toContain('loss_review');
+  });
+
+  test('the streak: a late flip on an older trade does not join a trailing streak a later win broke', () => {
+    const closed = [
+      withLate(trade(DAY_START + HOUR, '0.1'), fee(NOW - 30 * 60_000)),
+      trade(DAY_START + 2 * HOUR, '0.1'),
+      trade(DAY_START + 3 * HOUR, '-0.1'),
+      trade(DAY_START + 4 * HOUR, '-0.1'),
+    ];
+    expect(streak(NOW, closed)).toBe(2);
+    // Three in a row today would pause the day; two do not.
+    expect(codes(evaluateEntry(at(NOW, closed), req(NOW)))).not.toContain('loss_day_pause');
+  });
+});
+
 describe('the money is counted once', () => {
   test('equity, the day\'s and the week\'s loss are the same with the late entries on the trade', () => {
     const t = trade(NOW - 3 * HOUR, '0.1');
