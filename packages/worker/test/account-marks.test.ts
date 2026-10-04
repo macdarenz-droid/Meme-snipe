@@ -78,6 +78,8 @@ describe('PaperAccount marks', () => {
     const tomorrow = a.fact(ledger, book, NO_LATCHES, usd(150), melbourneDay(T).end + HOUR).history;
     expect(tomorrow.markedAtDayStart).toBeNull();
     expect(tomorrow.markedAtWeekStart).toBe(usd(19.5));
+    // A peak taken after the moment asked about is not handed over.
+    expect(a.fact(ledger, book, NO_LATCHES, usd(150), T - 1).history.navMarks).toEqual([]);
     const nextWeek = a.fact(ledger, book, NO_LATCHES, usd(150), melbourneWeek(T).end + HOUR).history;
     expect(nextWeek.markedAtWeekStart).toBeNull();
     ledger.close();

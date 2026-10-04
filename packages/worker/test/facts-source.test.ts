@@ -15,7 +15,7 @@ import { OFF_CHAIN } from '../../core/src/engine/index.ts';
 import type { RugCheckRequest } from '../src/providers/index.ts';
 import { FEE_CONTEXT } from '../../core/test/gates/world.ts';
 import { FIX } from '../../core/test/facts/helpers.ts';
-import { feesKey, type CandidateReason } from '../src/engine/strategy.ts';
+import { ACCOUNT_KEY, feesKey, type CandidateReason } from '../src/engine/strategy.ts';
 import { CHAIN_VOLUME_ALERT_KEY, FACT_READS_KEY, LiveFacts, liveFacts, readsFor, type LiveReaders, type MintHistoryOptions } from '../src/facts/index.ts';
 import { replayRecorded, type Frame, type HttpRequest, type HttpResponse, type Release, type Secrets } from '../src/providers/index.ts';
 import { engineFeed } from '../src/run/engine-feed.ts';
@@ -331,6 +331,22 @@ const rows = <T>(dir: string, re: RegExp, parse: (l: string) => T): T[] =>
     .flatMap((f) => zstdDecompressSync(readFileSync(join(dir, 'days', d, f))).toString('utf8').split('\n').filter((l) => l !== '').map(parse)));
 
 describe('the worker reads through core\'s FactFeed (FACTS-1b)', () => {
+  it('hands fact sources the deployer index\'s prior mints (RUG-1c) and puts the account marks on the feed (WORKER-1c)', async () => {
+    let ctx: FactContext | null = null;
+    const h = makeWorker({ config: ports(0), facts: [{ name: 'capture', start: (c) => void (ctx = c), stop: () => undefined }] });
+    expect(await h.worker.start()).toEqual({ ok: true });
+    const c = ctx as unknown as FactContext;
+    expect(typeof c.priorMints).toBe('function');
+    expect(c.priorMints!('NoSuchCreator', c.sink.now())).toEqual([]);
+    h.worker.step();
+    await h.worker.stop();
+    // The account fact recorded after the first step carries this day's and week's marks.
+    const dir = join(h.stateDir, 'recorder', h.worker.boot);
+    const frames = rows(dir, /^frames-/, (l) => parseTyped(l) as Frame);
+    const accounts = frames.filter((f) => f.body.type === 'fact' && f.body.key === ACCOUNT_KEY).map((f) => (f.body as { value: { history: { markedAtDayStart: unknown; markedAtWeekStart: unknown } } }).value.history);
+    expect(accounts.some((a) => typeof a.markedAtDayStart === 'bigint' && typeof a.markedAtWeekStart === 'bigint')).toBe(true);
+  });
+
   it('a raw account read on the live Feed becomes the gate facts, and the recording replays to the same facts', async () => {
     let ctx: FactContext | null = null;
     const h = makeWorker({ config: ports(0), facts: [{ name: 'capture', start: (c) => void (ctx = c), stop: () => undefined }] });
@@ -484,6 +500,38 @@ describe('liveFacts: the production source', () => {
     expect(Date.parse(u.searchParams.get('end')!) - Date.parse(u.searchParams.get('start')!)).toBe(hours * 3_600_000);
     expect(frames.length).toBeGreaterThan(0);
     expect(frames.every((f) => f.key === RAW.solUsd)).toBe(true);
+  });
+
+  it('checks a candidate\'s deployer over Helius RPC when H14\'s rug half is not covered (RUG-1c wiring)', async () => {
+    const timers = new ManualTimers(T0);
+    const methods: { method: string; address: unknown }[] = [];
+    const http = async (req: HttpRequest): Promise<HttpResponse> => {
+      if (req.body !== undefined) {
+        const b = JSON.parse(req.body) as { method: string; params: unknown[] };
+        methods.push({ method: b.method, address: b.params[0] });
+        return { status: 200, text: JSON.stringify({ jsonrpc: '2.0', id: 1, result: [] }), header: () => null } as unknown as HttpResponse;
+      }
+      return { status: 404, text: '', header: () => null } as unknown as HttpResponse;
+    };
+    const sched = (spec: SchedulerSpec) => new Scheduler(spec, { timers });
+    const rugHalf: CandidateReason = { gate: 'H16', code: 'not-covered', input: 'coverage', neededBy: 'H14', detail: `${RUG_LABELS_UNAVAILABLE}: x; deployer check: y` };
+    const ingested: string[] = [];
+    const ctx = {
+      sink: { fact: () => undefined, now: () => timers.now() }, timers, watched: () => new Set<string>(), tip: () => 1_000n,
+      candidates: () => new Map([['CAND', { migratedAtMs: T0, lastEvalMs: T0, gates: [rugHalf], creator: 'DEV' }]]),
+      priorMints: () => [{ mint: 'PriorMint1111111111111111111111111111111111', createdAtMs: T0 - 3_600_000 }],
+      schedulers: { helius: sched(HELIUS_FREE), alchemy: sched(ALCHEMY_FREE), jupiter: sched(JUPITER_FREE), rugcheck: sched(RUGCHECK_FREE) },
+      ingest: { ingest: (_s: unknown, body: { key: string }) => void ingested.push(body.key) },
+    } as unknown as FactContext;
+    const src = liveFacts({ policy: TRIAL_POLICY, secrets: { get: () => 'k' } as unknown as Secrets, http, goplus: sched(GOPLUS_FREE), coinbase: sched(COINBASE_PUBLIC) });
+    src.start(ctx);
+    for (let k = 0; k < 200 && !ingested.includes('coverage:rugs:deployer:DEV'); k++) {
+      await new Promise<void>((r) => setImmediate(r));
+      timers.advance(100);
+    }
+    src.stop();
+    expect(methods).toContainEqual({ method: 'getSignaturesForAddress', address: 'PriorMint1111111111111111111111111111111111' });
+    expect(ingested).toContain('coverage:rugs:deployer:DEV');
   });
 
   it('with GitHub wired, lists releases through the API, downloads from github.com from the window\'s first day (lag plus cap), keeps verified days in the state dir and alerts on a changed release', async () => {
