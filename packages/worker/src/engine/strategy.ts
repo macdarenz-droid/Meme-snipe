@@ -141,6 +141,8 @@ export const TRIP_PREFIX = 'trip ';
 export const TRIPPED_PREFIX = 'risk tripped ';
 /** Reason on an exit decision: the position's mark risk judged it with, micro-dollars, or `unknown`. */
 export const MARK_PREFIX = 'risk mark ';
+/** Reason on an exit decision: risk could not evaluate the account (RISK-FAULT), and why; the exit still goes. */
+export const RISK_FAULT_PREFIX = 'risk fault ';
 
 /** The ledger's account as the worker publishes it. Marks of open positions are filled in by the strategy. */
 export interface AccountFact {
@@ -1078,6 +1080,7 @@ export class LiveStrategy implements Strategy {
       const own = account.openPositions.find((o) => o.mint === mint);
       if (own !== undefined) why.push(`${MARK_PREFIX}${own.mark ?? 'unknown'}`);
       if (r.tripped.length > 0) why.push(`${TRIPPED_PREFIX}${[...new Set(r.tripped.map((x) => x.code))].sort().join(',')}`);
+      if (r.fault !== null) why.push(`${RISK_FAULT_PREFIX}${r.fault}`);
     }
     const id = intentId(`x${pid.slice(1)}:${exitSeq + 1}`);
     const events = exitBookEvents(pid, d, id);
@@ -1278,13 +1281,20 @@ export class LiveStrategy implements Strategy {
       const detail = e instanceof Error ? e.message : 'error';
       return this.#fail(`risk mark failed: ${detail}`, [{ gate: 'worker', code: 'risk-mark-failed', detail }]);
     }
-    const r = evaluateEntry(
-      { session, mode: 'paper', clock: { now: () => ctx.now }, account, latches: acct.latches, market: { solPrice: sol, solBalance: this.#balance(acct, ctx), regime: 'on' } },
-      {
-        intentId: id, reservationId: rid, mint: toMint(cand.mint), universe: c.universe, stopBps, edgePpm: c.edgePpm, medianTargetBps: c.medianTargetBps,
-        quote: quoter, quoteAtMs: m.atMs, poolLiquidity: lamportsToMicroUsd((reserveLiq * 2n) as Lamports, sol.value, 'floor'), network: c.network, rent: { ...c.rent, oneTime: acct.oneTimeRent },
-      },
-    );
+    // RISK-FAULT: risk that cannot evaluate refuses the entry (fail-closed), logged, and the step goes on.
+    let r: ReturnType<typeof evaluateEntry>;
+    try {
+      r = evaluateEntry(
+        { session, mode: 'paper', clock: { now: () => ctx.now }, account, latches: acct.latches, market: { solPrice: sol, solBalance: this.#balance(acct, ctx), regime: 'on' } },
+        {
+          intentId: id, reservationId: rid, mint: toMint(cand.mint), universe: c.universe, stopBps, edgePpm: c.edgePpm, medianTargetBps: c.medianTargetBps,
+          quote: quoter, quoteAtMs: m.atMs, poolLiquidity: lamportsToMicroUsd((reserveLiq * 2n) as Lamports, sol.value, 'floor'), network: c.network, rent: { ...c.rent, oneTime: acct.oneTimeRent },
+        },
+      );
+    } catch (e) {
+      const detail = e instanceof Error ? e.message : 'error';
+      return this.#fail(`risk fault: ${detail}`, [{ gate: 'R1', code: 'risk_fault', detail }]);
+    }
     const trips = r.trips.map((t) => `${TRIP_PREFIX}${t}`);
     if (!r.allow) {
       return this.#fail(`risk ${r.reasons.map((x) => `${x.control} ${x.code}: ${x.detail}`).join(', ')}${trips.length > 0 ? `; ${trips.join(', ')}` : ''}`, r.reasons.map((x) => ({ gate: x.control, code: x.code, detail: x.detail })));
