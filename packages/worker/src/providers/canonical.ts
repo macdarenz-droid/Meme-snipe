@@ -75,9 +75,11 @@ export interface Frame {
    * Where the frame sits on the timeline, fixed by the live Feed at receipt and recorded:
    * `chain` places it at its own slot and in-slot position; `offchain` places it after everything else in
    * `slot` (the open slot at receipt), which is how a fact with no slot, or a lookup answered after its own slot
-   * was released, enters the timeline without reaching back into the past.
+   * was released, enters the timeline without reaching back into the past. An off-chain frame placed `after`
+   * (FILL-ORDER: a fill's transactions and the live notices held back during it) keeps its arrival order: it sits
+   * after the slot's notice and before the slot's ordinary off-chain facts, ordered by `seq`.
    */
-  readonly place: { readonly at: 'chain' | 'offchain'; readonly slot: bigint };
+  readonly place: { readonly at: 'chain' | 'offchain'; readonly slot: bigint; readonly after?: true };
   /** A later copy of a fact already received (see `dedupKey`). Recorded, never released. */
   readonly duplicate: boolean;
   readonly body: FrameBody;
@@ -138,7 +140,9 @@ const meta = (f: Frame) => ({ source: f.source, backfilled: f.backfilled, seq: f
 
 /** The events of one frame. `ranks` must already hold the frame's signature when it is chain-placed. */
 export const eventsOfFrame = (f: Frame, ranks: ReadonlyMap<string, number>): FeedEvent[] => {
-  const off: Moment = { slot: f.place.slot, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt: f.receivedAt };
+  // FILL-ORDER: same-moment events are released in id order, and ids start with the signature; a frame placed `after`
+  // therefore takes its arrival order in `ixIndex` (1 + seq: after the slot notice's 0, before OFF_CHAIN).
+  const off: Moment = { slot: f.place.slot, txIndex: OFF_CHAIN, ixIndex: f.place.after === true ? 1 + f.seq : OFF_CHAIN, receivedAt: f.receivedAt };
   const chain = f.place.at === 'chain';
   // Off-chain placement can repeat a fact whose dedup key was already forgotten (older than keepSlots), so its
   // ids carry the frame's seq: event ids stay unique for the whole run, as the replay requires.

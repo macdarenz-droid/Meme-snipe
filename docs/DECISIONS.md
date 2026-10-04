@@ -1646,3 +1646,20 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
 - **Backtest parity.** The engine judges a batch at its close; a backtest that supplies these reads (BT-2) puts them on its feed the same way (open, members, close at one moment), so live and the backtest decide on the same view (core `RAW.batchOpen/batchClose`, `facts/kinds.ts`). Live and the replay of its recording make the same decisions (test).
 - **Not changed.** The survival read (regime) and the insiders' mint history stay single reads with FACTS-1e's landed-read mark; neither feeds a lag-bound gate input of the candidate's decision. No gate, limit, freshness rule or cap was changed.
 - **Evidence.** `packages/worker/test/read-coherent.test.ts`: the card's harness (real LiveFacts, FactReaders and LiveStrategy on a fake RPC whose confirmed context slot is the processed tip − 1 and that answers each call one slot later, every fact otherwise passing) enters within 5 simulated minutes, at a batch's close; on the base code it never does (H16 stale mint at every landing). A batch answering three slots late still rejects (stale). Live and replay decide the same, and no evaluation happens inside an open batch. `readBatch` unit tests: one bank, nothing on the feed before the last part, the scan's order and owners, the cap. `LiveFacts` tests: what each batch reads. Hand mutants killed: no open-batch skip, close judged at the next event, close never judged, scan order check removed, unclassified owners accepted, members put on as they answer, `minContextSlot` 0, never scanning, no simulation in the batch, the close's slot taken as the newest member.
+
+## A fill's transactions keep chain order on the feed (FILL-ORDER; `live-feed.ts` `after`, `canonical.ts` off-chain moment)
+
+- **2026-10-05 · The bug (found by the persist builder testing #170; blocking, golden rule).** S0-ZERO put a fill's transactions, and the live notices held back during it, off-chain at the open slot (`after`). A fill ingests them all at one receipt time, so they tie on the moment, and same-moment events are released in id order. Their ids start with the signature, so a catch-up reached the engine in signature order, and the socket's `resume` (a `coverage:` id) came before it.
+  - Through the real producer on real mainnet swaps, the candles came out different from the chain-order candles (wrong open and close) even inside one minute.
+  - Across minutes, a trade older than the newest candle marks them partial for good, so H11 kept refusing after every catch-up.
+- **2026-10-05 · The fix.**
+  - The feed records an `after` frame's placement as `{ at: 'offchain', slot, after: true }`. Its events take `ixIndex` 1 + the frame's seq instead of OFF_CHAIN.
+  - They sit after the slot's notice (`ixIndex` 0) and before the slot's ordinary off-chain facts (OFF_CHAIN, so the `resume` comes after), and among themselves in arrival order: the fill oldest first, then the held notices.
+  - Event ids are unchanged, so every reader of `ev:<signature>` ids (rug labeller, deployer index, tails, the fill's own genesis check) is untouched.
+  - The flag is recorded with the frame, so a replay rebuilds the same order. Recordings without it behave as before.
+- **2026-10-05 · Side effect, judged harmless.** An ordinary off-chain fact ingested earlier in the same open slot (the catch-up's gap-open fact, when the slot has not moved during the fill) now sorts after the fill's trades. Trades and coverage are separate keys, and H11 is read on a later evaluation.
+- **2026-10-05 · Evidence.** `packages/worker/test/fill-order.test.ts`, through the real LiveFeed and FactProducer on the FACTS-1 fixture swaps (whose chain order differs from their signature order, checked):
+  - the release order and the resume after it;
+  - the candles equal to the chain-order candles, not partial, and H11 passing;
+  - the lane between the notice and the ordinary facts, in arrival order.
+  - Three tests fail before the fix. Five hand mutants are caught: the lane ignored, reversed, collapsed to one index, or moved to OFF_CHAIN, and the flag not set.
