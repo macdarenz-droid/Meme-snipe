@@ -39,7 +39,7 @@ const LAND_HIGH = { pumpswap: 760_000n, 'pump-curve': 590_000n } as const;
 const WINDOW = 150;
 
 const VALUES: FillConfig = {
-  version: 'fills-2',
+  version: 'fills-3',
   provisional: true,
   network: {
     signaturesPerTx: 1n,
@@ -69,10 +69,11 @@ const VALUES: FillConfig = {
       exitRetryHaircutPpm: 25_000n,
       delay: 'measured',
       discoverySlots: [2, 3, 4, 5, 8], landingSlots: [1, 2, 2, 3, 4],
-      confirmSlots: 2, finalizeSlots: 32, slippagePpm: 1_000_000n, takeProfit: 'wick', rentRecovery: true,
+      confirmSlots: 2, finalizeSlots: 32, slippagePpm: 1_000_000n, takeProfit: 'wick',
       closeSuccessPpm: 950_000n, dustPpm: 20_000n,
     },
-    // p90 latency (a Jupiter-recent fallback is about 5 s), slippage x1.5, close-based take-profit, no rent recovery.
+    // p90 latency (a Jupiter-recent fallback is about 5 s), slippage x1.5, close-based take-profit; the rent comes back per
+    // its own close outcome, like every scenario (RENT-1: the no-recovery line is a reported sensitivity, not a scenario).
     conservative: {
       name: 'conservative', landPpm: LAND_LOW, dropPpm: 200_000n,
       landingTail: { ppm: 50_000n, slots: [30, 60, 120] },
@@ -80,7 +81,7 @@ const VALUES: FillConfig = {
       exitRetryHaircutPpm: 50_000n,
       delay: 'adverse',
       discoverySlots: [17], landingSlots: [6],
-      confirmSlots: 2, finalizeSlots: 32, slippagePpm: 1_500_000n, takeProfit: 'close', rentRecovery: false,
+      confirmSlots: 2, finalizeSlots: 32, slippagePpm: 1_500_000n, takeProfit: 'close',
       closeSuccessPpm: 900_000n, dustPpm: 50_000n,
     },
     optimistic: {
@@ -90,7 +91,7 @@ const VALUES: FillConfig = {
       exitRetryHaircutPpm: 10_000n,
       delay: 'measured',
       discoverySlots: [1, 2], landingSlots: [1],
-      confirmSlots: 2, finalizeSlots: 32, slippagePpm: 1_000_000n, takeProfit: 'wick', rentRecovery: true,
+      confirmSlots: 2, finalizeSlots: 32, slippagePpm: 1_000_000n, takeProfit: 'wick',
       closeSuccessPpm: 990_000n, dustPpm: 5_000n,
     },
   },
