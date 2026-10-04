@@ -543,6 +543,7 @@ wait_for 180 "the worker's start line" "docker exec $C journalctl -u zeroed-work
 inv >"$LOGS/worker-real.txt"
 grep -q 'Reconcile: done, open intents written.' "$LOGS/worker-real.txt" || fail "the reconcile before the start did not finish"
 in_c "systemctl show -p ExecStartPre --value zeroed-worker" | has 'code=exited ; status=0 }' || fail "the --reconcile ExecStartPre did not exit 0"
+[ "$(in_c "systemctl show -p OOMScoreAdjust --value zeroed-worker")" = -500 ] && in_c "grep -qx -- '-500' /proc/\$(systemctl show -p MainPID --value zeroed-worker)/oom_score_adj" || fail "the worker is not the last the kernel takes under memory pressure"
 # Keys come from the unit's systemd credentials, as boot/environment.ts reads them.
 grep -q 'Credentials present: 3 of 3 provider keys; heartbeat key present.' "$LOGS/worker-real.txt" || fail "the worker did not read its 3 provider keys and the heartbeat key from credentials"
 in_c "tail -n 200 /var/lib/zeroed/journal.jsonl | jq -c 'select(.kind == \"start\")' | tail -1" >"$LOGS/worker-start-record.json"

@@ -275,7 +275,10 @@ describe('worker start and API address', () => {
     // Every hardening and limit line of the unit reaches the trial; nothing that would give it identity, keys or state.
     for (const l of unit.slice(unit.indexOf('# Hardening'), unit.indexOf('[Install]')).split('\n').filter((x) => /^[A-Z]/.test(x))) expect(sandbox, l).toContain(l);
     for (const k of ['UMask=0077', 'TasksMax=256', 'LimitCORE=0', 'NoNewPrivileges=yes', 'ProtectSystem=strict', 'PrivateTmp=yes', 'CapabilityBoundingSet=']) expect(sandbox).toContain(k);
-    for (const l of sandbox) expect(l).not.toMatch(/^(User|Group|SupplementaryGroups|LoadCredential|LoadCredentialEncrypted|ImportCredential|StateDirectory|MemoryMax|ExecStart|ExecStartPre|Restart|EnvironmentFile)=/);
+    for (const l of sandbox) expect(l).not.toMatch(/^(User|Group|SupplementaryGroups|LoadCredential|LoadCredentialEncrypted|ImportCredential|StateDirectory|MemoryMax|OOMScoreAdjust|ExecStart|ExecStartPre|Restart|EnvironmentFile)=/);
+    // Under memory pressure the kernel takes the trial first and the live worker (which owns exits) last.
+    expect(unit).toMatch(/^OOMScoreAdjust=-500$/m);
+    expect(s).toContain('-p OOMScoreAdjust=1000');
     expect(sandbox.length).toBeGreaterThan(25);
     // After the switch: the new worker must stay up, else back to the release that ran, not tried again, one alert.
     const after = upd.slice(upd.indexOf('ln -sfn "$dest" /opt/zeroed/current.new'));
