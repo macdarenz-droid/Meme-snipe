@@ -60,6 +60,13 @@ export const GATE_REASONS_PREFIX = 'gate_reasons ';
 export const S0_DIAGNOSTIC_PREFIX = 's0_diagnostic ';
 /** EXIT-1's flow bucket. */
 const FLOW_MINUTE_MS = 60_000;
+
+/**
+ * The one-minute flow buckets finished by `nowMs`, oldest first. The still-open minute is left out here, and EXIT-1
+ * leaves it out again (`negativeRun`): two guards, so neither refactor alone lets a minute count before it closes.
+ */
+export const closedFlow = (minutes: ReadonlyMap<number, bigint>, nowMs: number): FlowMinute[] =>
+  [...minutes].filter(([s]) => s + FLOW_MINUTE_MS <= nowMs).sort((a, b) => a[0] - b[0]).map(([startMs, net]) => ({ startMs, net }));
 export interface GateReasonLine {
   /** H1–H16, `regime`, a risk control (R1–R14), `stop`, or `worker` (an input the worker lacks). */
   readonly gate: string;
@@ -719,14 +726,10 @@ export class LiveStrategy implements Strategy {
     f.minutes.set(start, (f.minutes.get(start) ?? 0n) + (name === 'BuyEvent' ? amount : -amount));
   }
 
-  /**
-   * The held mint's flow minutes, oldest first (EXIT-1 `ExitObservation.flow`). The still-open minute is included:
-   * EXIT-1 counts only buckets finished by now, so it is judged once it closes.
-   */
-  #flowOf(mint: string): FlowMinute[] {
+  /** The held mint's finished flow minutes, oldest first (EXIT-1 `ExitObservation.flow`). */
+  #flowOf(mint: string, nowMs: number): FlowMinute[] {
     const f = this.#flow.get(mint);
-    if (f === undefined) return [];
-    return [...f.minutes].sort((a, b) => a[0] - b[0]).map(([startMs, net]) => ({ startMs, net }));
+    return f === undefined ? [] : closedFlow(f.minutes, nowMs);
   }
 
   /** The deployer of a mint (creator and the create's signer) and its total supply, from the released create. */
@@ -1033,7 +1036,7 @@ export class LiveStrategy implements Strategy {
       const step = decideExit(known ? this.#settings : this.#flatten(saved.plan.universe), saved.plan, holding, saved.tracker, {
         nowMs: ctx.now.receivedAt, slotClose: true,
         market: typeof m === 'string' ? null : { atMs: m.atMs, value: { venue: 'pumpswap', pool: m.pool, ctx: m.ctx } },
-        deployerSoldBps: this.#deployerSold(p.id, p.mint, saved.plan.openedAtMs, ctx, out), sellRoute: null, flow: this.#flowOf(p.mint), bars: this.#bars.get(p.id) ?? saved.bars,
+        deployerSoldBps: this.#deployerSold(p.id, p.mint, saved.plan.openedAtMs, ctx, out), sellRoute: null, flow: this.#flowOf(p.mint, ctx.now.receivedAt), bars: this.#bars.get(p.id) ?? saved.bars,
       });
       // A due full exit with no quote yet is held, remembered in the tracker (EXIT-1c): said once, and kept visible as
       // pending (and as an alert once it has waited the blocked-retry time) until the first fresh quote takes it.

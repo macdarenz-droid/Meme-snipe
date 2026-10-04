@@ -11,7 +11,7 @@ import { lamports } from '../../core/src/units/index.ts';
 import { LiveFacts, type LiveReaders } from '../src/facts/index.ts';
 import { checkJournal } from '../../runner/src/journal.ts';
 import { entryRule } from '../../runner/src/quota.ts';
-import { s0EntryAt } from '../src/engine/strategy.ts';
+import { closedFlow, s0EntryAt } from '../src/engine/strategy.ts';
 import { MIGRATED_AT, MINT, POOL_ADDRESS, T, dueTimers, makeWorker, passingMarket, testConfig, tempState } from './worker-harness.ts';
 import { parseConfig } from '../src/run/config.ts';
 
@@ -180,6 +180,12 @@ describe('EXIT-1 negative flow from the held pool\'s swaps', () => {
     expect(exitReasons(h.stateDir).some((r) => r.startsWith('negative_flow'))).toBe(true);
     expect(h.worker.book.positions[id]!.status).not.toBe('open');
     await h.worker.stop();
+  });
+
+  it('the strategy passes only finished minutes, oldest first', () => {
+    const m = new Map<number, bigint>([[120_000, -5n], [0, -1n], [60_000, 2n]]);
+    expect(closedFlow(m, 179_999)).toEqual([{ startMs: 0, net: -1n }, { startMs: 60_000, net: 2n }]);
+    expect(closedFlow(m, 180_000)).toEqual([{ startMs: 0, net: -1n }, { startMs: 60_000, net: 2n }, { startMs: 120_000, net: -5n }]);
   });
 
   it('a big sale in the still-open minute counts only once that minute closes', async () => {
