@@ -43,7 +43,6 @@ fi
 
 hdr=$(mktemp)
 body=$(mktemp)
-trap 'rm -f "$hdr" "$body"' EXIT
 # -r 0-63 asks for 64 bytes. Whatever the server sends (a 200 ignoring the range, a
 # chunked stream with no length), the body goes through `head -c 65`, which exits
 # after 65 bytes and so aborts curl's transfer; --max-filesize also refuses an

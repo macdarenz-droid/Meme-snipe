@@ -412,6 +412,10 @@ Supervisor rulings:
   - Requests use `maxSupportedTransactionVersion: 1`, because the RPC refuses 0 for blocks with v1 transactions.
   - Truncated RPC logs (`"Log truncated"`) change only raw records' `logMessages`, not rows. They are reported as explained, never patched: the live bot sees the same logs.
   - The exemption is per record, from the review. The candidate's log must equal Agave's default 10,000-byte cut of the archive's log, which keeps later messages that still fit, so the marker can sit mid-log. All other fields must be equal. A second differing column, a different row count, a one-sided column or another table's difference is never exempt.
+- **BT-2e practice days go through data-scan.yml, not a copy of it (2026-10-04).**
+  - A `source: helius` input with a per-day `max_credits` cap reuses the day job: QA, parity, determinism, packaging and publishing. The day files are published exactly as the pipeline does now.
+  - The cap holds across chained runs through a running total in the day's progress. A spent cap is not resumable, so it never loops.
+  - The live dry run has priority on the shared 1M free credits. The supervisor sets the cap from the dry run's measured first 24 h.
 - **DATA-2 pilot baseline: 1 Oct 09:40–10:00 instead of an hour of 2 Oct (2026-10-04).**
   - It is the only archive unit in today's schema (epoch 1046, 452,277,000–452,281,499, 4,496 blocks). The 2 Oct slices are schema 1, sampled at 0.25.
   - It is committed as a digest: per-block and per-column hashes plus counters, with no rows. Publishing files derived from the archive waits on Triton.
