@@ -122,6 +122,8 @@ The integration branch is ccr-14987baf-i6lrsl, not main. Never push to main.
 - Never deploy while push e2e is red on the newest ops-touching commit.
 - Expect Telegram "deployed <sha>", then a summary about 3 min after the worker starts.
 
+**After the takeover prompt (8:29 AM):** #209 step 2 pushed at 6d7ce423 (base merged; restarts/exits/crash_sites in the summary; EVENT tightened so host:port can't pass; file/line may both be null; 14/14 mutants). Full check running; then worker/runner to the facts reviewer and summary.ts to the ops reviewer. WORKER-HARDEN can't see the host, so the crash site shows only after #209 deploys.
+
 **Never:** commit secrets; enable live trading; raise a limit; push to main; rewrite someone else's branch; skip or loosen a test; work around a denial; put a model id in a repo file; record the tailnet address.
 
 
