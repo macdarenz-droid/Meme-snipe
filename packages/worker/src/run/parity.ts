@@ -21,7 +21,8 @@ import { redact } from './redact.ts';
 
 /**
  * Journal `decision` lines that no engine record makes, so a replay cannot rebuild them: refused API commands and
- * ledger refusals (a ledger write failing after the engine applied the event). Counted in the report, never compared.
+ * ledger refusals (a ledger write failing after the engine applied the event). Counted in the report, never compared;
+ * a ledger refusal fails the session (it is a live divergence), a refused command does not.
  */
 export const NOT_REPLAYED: readonly string[] = ['command_refused', 'ledger_refused'];
 
@@ -36,6 +37,8 @@ const replayLine = (r: LogRecord): string | null => {
 
 export interface BootInput {
   readonly boot: string;
+  /** Why this boot cannot be replayed at all (it has decisions but no recording or no seed), or null. */
+  readonly missing: 'no recording' | 'no seed' | null;
   readonly seed: string;
   readonly frames: readonly Frame[];
   readonly releases: readonly Release[];
@@ -58,6 +61,7 @@ export interface Divergence {
 
 export interface BootReport {
   readonly boot: string;
+  readonly missing: 'no recording' | 'no seed' | null;
   readonly decisions: number;
   readonly replays: number;
   /** Every replay gave the same lines. */
@@ -117,10 +121,14 @@ export const firstDivergence = (live: readonly string[], replay: readonly string
 
 /** Replays a boot `replays` times; it passes when every replay is identical to the first and to live. */
 export const checkBoot = (b: BootInput, d: ParityDeps, replays: number, replay: typeof replayBoot = replayBoot): BootReport => {
+  if (b.missing !== null) {
+    // Nothing was replayed: no replay disagreed (vacuously deterministic), and `missing` alone fails the session.
+    return { boot: b.boot, missing: b.missing, decisions: b.live.length, replays: 0, deterministic: true, divergence: null, excluded: b.excluded, redactions: b.redactions };
+  }
   const first = replay(b, d);
   let deterministic = true;
   for (let k = 1; k < replays; k++) if (firstDivergence(first, replay(b, d)) !== null) deterministic = false;
-  return { boot: b.boot, decisions: b.live.length, replays, deterministic, divergence: firstDivergence(b.live, first), excluded: b.excluded, redactions: b.redactions };
+  return { boot: b.boot, missing: null, decisions: b.live.length, replays, deterministic, divergence: firstDivergence(b.live, first), excluded: b.excluded, redactions: b.redactions };
 };
 
 const rows = <T>(dir: string, re: RegExp, parse: (l: string) => T): T[] => {
@@ -151,9 +159,8 @@ export const loadSession = (stateDir: string): BootInput[] => {
   const out: BootInput[] = [];
   for (const line of journal) {
     const j = JSON.parse(line) as { kind: string; boot: string; seed?: string };
-    if (j.kind !== 'start' || j.seed === undefined) continue;
+    if (j.kind !== 'start') continue;
     const dir = join(recRoot, j.boot);
-    if (!existsSync(dir)) continue;
     const live: string[] = [];
     const excluded: Record<string, number> = {};
     for (const l of journal) {
@@ -162,8 +169,11 @@ export const loadSession = (stateDir: string): BootInput[] => {
       if (r.action !== undefined && NOT_REPLAYED.includes(r.action)) excluded[r.action] = (excluded[r.action] ?? 0) + 1;
       else live.push(normalise(l));
     }
+    // A boot that decided nothing (a reconcile-only run) has nothing to compare; one that did must be replayable.
+    if (live.length === 0 && Object.keys(excluded).length === 0) continue;
+    const missing = j.seed === undefined ? 'no seed' : !existsSync(dir) ? 'no recording' : null;
     out.push({
-      boot: j.boot, seed: j.seed, live, excluded, redactions: redactionsOf(dir),
+      boot: j.boot, missing, seed: j.seed ?? '', live, excluded, redactions: missing === 'no recording' ? 0 : redactionsOf(dir),
       frames: rows(dir, /^frames-.*\.jsonl(\.zst)?$/, (l) => parseTyped(l) as Frame),
       releases: rows(dir, /^releases-.*\.jsonl(\.zst)?$/, (l) => JSON.parse(l) as Release),
     });
@@ -176,6 +186,9 @@ export const checkSession = <L extends LedgerVerdict>(stateDir: string, d: Parit
   const boots = loadSession(stateDir).map((b) => checkBoot(b, d, replays));
   const ledgerPath = join(stateDir, Ledger.FILE);
   const ledger = existsSync(ledgerPath) ? ledgerCheck(ledgerPath) : null;
-  const ok = boots.length > 0 && boots.every((b) => b.deterministic && b.divergence === null) && ledger !== null && ledger.ok;
+  // Parity evidence only from unaltered, complete inputs: every deciding boot replayable, nothing redacted, and no
+  // ledger refusal (a live engine/ledger divergence) in the journal.
+  const ok = boots.length > 0 && ledger !== null && ledger.ok
+    && boots.every((b) => b.missing === null && b.deterministic && b.divergence === null && b.redactions === 0 && (b.excluded['ledger_refused'] ?? 0) === 0);
   return { ok, boots, ledger };
 };

@@ -188,11 +188,11 @@ describe('TEST-1 parity harness', () => {
     expect(r.divergence).toBeNull();
   });
 
-  it('a folder with no recorded boot is not parity: there is nothing to compare', async () => {
+  it('a folder with no recording at all is not parity: its deciding boot is reported with no recording', async () => {
     const h = await session();
     rmSync(join(h.stateDir, STATE_FILES.recorder), { recursive: true });
     const r = checkSession(h.stateDir, deps(h), replayLedgerFile, 1);
-    expect(r.boots).toEqual([]);
+    expect(r.boots.map((b) => b.missing)).toEqual(['no recording']);
     expect(r.ledger).toMatchObject({ ok: true });
     expect(r.ok).toBe(false);
   });
@@ -227,6 +227,78 @@ describe('TEST-1 parity harness', () => {
     }
     const clean = await session();
     expect(checkSession(clean.stateDir, deps(clean), replayLedgerFile, 1).boots[0]!.redactions).toBe(0);
+  });
+
+  /** A two-boot session across a kill, for the per-boot checks. */
+  const twoBoots = async (): Promise<{ h: Harness; h2: Harness }> => {
+    const h = makeWorker();
+    await h.worker.reconcile();
+    const m = await passingMarket(h);
+    await m.run(4_000, 100, () => m.pool());
+    await h.worker.kill();
+    const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers });
+    await h2.worker.reconcile();
+    const m2 = new (m.constructor as new (x: Harness) => typeof m)(h2);
+    await m2.run(4_000, 400, () => {
+      m2.slot();
+      m2.pool();
+    });
+    await h2.worker.stop();
+    return { h, h2 };
+  };
+
+  it('a boot with decisions but no recording fails the session, named as such (review probe: first boot\'s folder deleted)', async () => {
+    const { h, h2 } = await twoBoots();
+    expect(checkSession(h.stateDir, deps(h2), replayLedgerFile, 1).ok).toBe(true);
+    rmSync(join(h.stateDir, STATE_FILES.recorder, h.worker.boot), { recursive: true });
+    const r = checkSession(h.stateDir, deps(h2), replayLedgerFile, 1);
+    expect(r.boots.map((b) => [b.boot, b.missing])).toEqual([[h.worker.boot, 'no recording'], [h2.worker.boot, null]]);
+    expect(r.ok).toBe(false);
+  });
+
+  it('a boot with decisions but no seed in its start line fails the session, named as such', async () => {
+    const h = await session();
+    const lines = readFileSync(journalPath(h), 'utf8').split('\n');
+    const at = lines.findIndex((l) => l.includes('"kind":"start"'));
+    lines[at] = lines[at]!.replace(/"seed":"[^"]*",/, '');
+    writeFileSync(journalPath(h), lines.join('\n'));
+    const r = checkSession(h.stateDir, deps(h), replayLedgerFile, 1);
+    expect(r.boots[0]!.missing).toBe('no seed');
+    expect(r.ok).toBe(false);
+  });
+
+  it('any redaction fails the session, even when the decisions still match: altered inputs are not parity evidence', async () => {
+    const h = await session();
+    const manifest = join(h.stateDir, STATE_FILES.recorder, h.worker.boot, 'manifest.json');
+    const m = JSON.parse(readFileSync(manifest, 'utf8')) as { coverage_gaps: unknown[] };
+    m.coverage_gaps.push({ reason: 'values redacted as credentials; a replay of this file differs there', file: 'days/x/frames-000.jsonl.zst', redactions: 1 });
+    writeFileSync(manifest, JSON.stringify(m));
+    const r = checkSession(h.stateDir, deps(h), replayLedgerFile, 1);
+    expect(r.boots[0]!.redactions).toBe(1);
+    expect(r.boots[0]!.divergence).toBeNull();
+    expect(r.ok).toBe(false);
+  });
+
+  it('a ledger refusal in the journal fails the session (a live engine/ledger divergence); a refused command does not', async () => {
+    const h = await session();
+    const lines = readFileSync(journalPath(h), 'utf8').split('\n');
+    const boot = (JSON.parse(lines[0]!) as { boot: string }).boot;
+    lines.splice(5, 0, JSON.stringify({ seq: 998, ts: '2026-10-03T00:00:00.000Z', boot, kind: 'decision', action: 'ledger_refused', reasons: ['ledger refused fill: planted'] }));
+    writeFileSync(journalPath(h), lines.join('\n'));
+    const r = checkSession(h.stateDir, deps(h), replayLedgerFile, 1);
+    expect(r.boots[0]!.excluded).toEqual({ ledger_refused: 1 });
+    expect(r.boots[0]!.divergence).toBeNull();
+    expect(r.ok).toBe(false);
+  });
+
+  it('a boot that decided nothing (a reconcile-only run) needs no recording', async () => {
+    const h = await session();
+    const lines = readFileSync(journalPath(h), 'utf8').split('\n').filter((l) => l !== '');
+    lines.push(JSON.stringify({ seq: 1, ts: '2026-10-04T00:00:00.000Z', boot: 'reconcile-1', kind: 'start', seed: 'paper:reconcile-1' }));
+    writeFileSync(journalPath(h), `${lines.join('\n')}\n`);
+    const r = checkSession(h.stateDir, deps(h), replayLedgerFile, 1);
+    expect(r.boots.map((b) => b.boot)).toEqual([h.worker.boot]);
+    expect(r.ok).toBe(true);
   });
 
   it('normalise drops only seq, ts and boot', () => {
