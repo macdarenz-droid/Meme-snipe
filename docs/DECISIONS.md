@@ -843,6 +843,22 @@ Built to the supervisor's revised spec and the consensus rulings that followed i
 - **2026-10-04 · Demotion power, per universe at its own cap** (−10% decay, 20 trades a day, 30 days, ρ 0 / 0.05 / 0.1):
   - U2 (cap +30%): 0.987 / 0.983 / 0.927.
   - **U1 (cap +40%): 0.713 / 0.613 / 0.523, below the 80% target.** U1 would need 40 trading days (1.0 / 0.99 / 0.93) or a −12.5% detectable decay at 30 days (0.997 / 0.987 / 0.91). Supervisor ruling (2026-10-04): the shortfall is recorded as is and nothing changes in STATS-1c. Follow-up STATS-1d: U1 runs the current window plus a 40-day window and demotes on either (more demotion is the safe direction, so the owner is not needed), reporting the combined false-demotion rate and power. Until then the risk layer's hard limits are the backstop.
+- **2026-10-04 · STATS-1g: external audit of core stats (S1, S3, S4); each item was reproduced before it was fixed.**
+  - **S1, the G3 retained-expectancy budget.**
+    - The bound subtracted four uncertain parts: the holdout lower bound, v⁺ and Δ⁺ at α/3 each, plus a 95% fill-error bound. The union bound is 3·(0.05/3) + 0.05 = 0.10, so only 90% joint coverage was established.
+    - All four parts are now taken at α/4 (`VETO_COMPOSITE_PARTS` = 4, `VETO_COMPOSITE_ALPHA` = 0.0125, the holdout bound at 0.9875, the two-sided |Δ|⁺ at α/8 a side). Together they hold with at least 95%.
+    - The consistency ("agree") intervals keep their own levels.
+  - **S3, the n_power fingerprint.**
+    - G2 compared only n, days, mean and SD, so the same returns under independent creators and under one creator matched (the audit's counterexample, now a test).
+    - The fingerprint is now the exact canonical inputs (`g2PowerInputs`): the ordered, labelled walk-forward trades, the walk-forward S0 control and every simulation setting. It is the inputs themselves rather than a hash, because the stats module imports no crypto, and equal fingerprints mean equal inputs. G2 rebuilds it from the universe's own walk-forward and control (`walkForwardControl`, new).
+    - The chosen n is validated independently. `simulateG2Power` re-simulates the full rule at nPower on a seed stream no search step used, and reports the Monte Carlo standard error √(p(1 − p)/simulations) of both powers.
+    - G2 fails when the validation sits more than 1.645 standard errors below the target power, or validates another n.
+  - **S4, independence in G3.**
+    - The veto-gap bounds are now cluster-robust by creator (CR1 variance, Satterthwaite df with G − 1 per side, `clusterWelchBounds`). Kept trades and scored vetoed candidates carry their creator clusters (`dryRunClusters`, `VetoCounterfactuals.clusters`).
+    - Missing or misaligned labels fail. Fewer than two creators a side leaves the gap unmeasured, so the worst case applies.
+    - With every trade its own creator, the bound equals the classic Welch bound.
+    - Cost of the old assumption, measured over 2,000 runs (creator-shared shocks with ICC 0.5, 5 trades per creator, 20 creators a side, true gap 0): the classic one-sided 95% bound missed in 17.5% of runs, the cluster-robust bound in 4.45%.
+    - The agree checks still assume independence. That narrows their intervals, so it can only add disagreements.
 - **2026-10-04 · STATS-1f: G1 gates on the SPA test (owner decision, 14:33 Melbourne: "Spa").**
   - **The rule:** G1's significance test is the SPA rule exactly as registered and calibrated in STATS-1e: the global test plus the step-down promotion of the selected rule, both benchmarks (zero and S0), expected blocks 3, 5 and 7 with the worst p, and short regimes merged (`mergeShortRegimes`). α is unchanged at 0.05.
   - **The DSR:** the clamped per-trade DSR stays in the report as a descriptive number and no longer gates.

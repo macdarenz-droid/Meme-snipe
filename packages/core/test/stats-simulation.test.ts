@@ -4,7 +4,7 @@ import { appendFileSync } from 'node:fs';
 import { describe, expect, test } from 'vitest';
 import {
   bettingEProcess, clopperPearsonUpper, createRng, dayBlockMeanInterval, deflatedSharpe, deflatedSharpeDaily, designEffect, expectedMaxSharpe, mean,
-  gateG3, meanPredictiveInterval, sharpeBootstrap, median, MIN_DAYS, nextNormal, nPower, reverseEProcess, sd, sharpeRatio, SPA_STUDENTISATION, spaTest, type G3Input, type Rng,
+  gateG3, meanPredictiveInterval, sharpeBootstrap, median, MIN_DAYS, nextNormal, nPower, reverseEProcess, sd, sharpeRatio, SPA_STUDENTISATION, spaTest, type G3Input, type Rng, VETO_COMPOSITE_LEVEL, clusterWelchBounds,
 } from '../src/stats/index.ts';
 import { bracketDraw, bracketSd, bracketTakeProfitShare, bracketTrades, dayKey, SPA_SCENARIOS } from './stats-fixtures.ts';
 
@@ -322,15 +322,15 @@ describe('G3 power at 48 h, 7 days and 10 days (STATS-1b, STATS-1c)', () => {
     const f = hours / 48;
     return {
       qualifyingRun: true, liveOnlyVetoes: { vetoed: Math.round(20 * f), eligible: Math.round(1000 * f) }, dryRunHours: hours,
-      dryRunReturns: bracketTrades(41, holdoutMean, Math.round(2 * f), 30).map((t) => t.rNet),
+      ...(() => { const xs = bracketTrades(41, holdoutMean, Math.round(2 * f), 30).map((t) => t.rNet); return { dryRunReturns: xs, dryRunClusters: xs.map((_, i) => `k${i}`) }; })(),
       holdout: { n: 500, mean: holdoutMean, sd: bracketSd(holdoutMean) }, holdoutSevereRate: 0.075,
-      holdoutLower: { value: 0.06, level: 1 - 0.05 / 3 },
+      holdoutLower: { value: 0.06, level: VETO_COMPOSITE_LEVEL },
       candidates: { dryRunCount: Math.round(960 * f), dryRunHours: hours, backtestCount: 20_000, backtestHours: 1000 },
       rejectMix: { dryRun: { H8: Math.round(210 * f), H9: Math.round(700 * f), H11: Math.round(70 * f) }, backtest: bt },
       fillDifferences: Array.from({ length: Math.round(120 * f) }, (_, i) => 0.003 + 0.001 * Math.sin(i)), parityTestPassed: true,
       registration: { registeredAtMs: 0, evaluateAtMs: 1 + hours * HOUR, thresholds: {}, expectedSimulationErrors: [] }, dryRunStartMs: 1,
       simulations: { attempted: Math.round(120 * f), succeeded: Math.round(120 * f), errors: {} },
-      vetoCounterfactuals: { returns: bracketTrades(42, holdoutMean, 1, Math.round(20 * f)).map((t) => t.rNet), censored: 0 }, returnCap: 0.3,
+      vetoCounterfactuals: (() => { const xs = bracketTrades(42, holdoutMean, 1, Math.round(20 * f)).map((t) => t.rNet); return { returns: xs, clusters: xs.map((_, i) => `v${i}`), censored: 0 }; })(), returnCap: 0.3,
     };
   };
   const powerAt = (hours: number) => {
@@ -345,7 +345,7 @@ describe('G3 power at 48 h, 7 days and 10 days (STATS-1b, STATS-1c)', () => {
     return {
       rate: caughtAt(1, (rng) => ({ candidates: { ...base.candidates, dryRunCount: poisson(rng, 480 * f) } }), /^candidate rate$/),
       mix: caughtAt(2, (rng) => ({ rejectMix: { dryRun: multinomial(rng, Math.round(980 * f), { H8: 2 * btShare.H8, H9: btShare.H9 - btShare.H8 / 2, H11: btShare.H11 - btShare.H8 / 2 }), backtest: bt } }), /^reject mix/),
-      meanShift: caughtAt(3, (rng) => ({ dryRunReturns: Array.from({ length: Math.round(60 * f) }, () => bracketDraw(rng, holdoutMean - 0.05)) }), /^mean$/),
+      meanShift: caughtAt(3, (rng) => { const xs = Array.from({ length: Math.round(60 * f) }, () => bracketDraw(rng, holdoutMean - 0.05)); return { dryRunReturns: xs, dryRunClusters: xs.map((_, i) => `k${i}`) }; }, /^mean$/),
       fill: caughtAt(4, (rng) => ({ fillDifferences: Array.from({ length: Math.round(120 * f) }, () => Math.abs(0.0075 / 0.6745 * nextNormal(rng))) }), /^fills$/),
     };
   };
@@ -400,4 +400,40 @@ describe('block-bootstrap Sharpe (STATS-1c)', () => {
     }
     expect(rej / 400).toBeLessThanOrEqual(ALPHA + 2 * Math.sqrt((ALPHA * (1 - ALPHA)) / 400));
   }, SLOW);
+});
+
+// External audit S4: G3's veto-gap bound assumed kept and vetoed trades independent within a run. Trades of one creator
+// share a shock (ICC 0.5, 5 trades per creator, 20 creators a side, true gap 0). The classic one-sided 95% Welch upper
+// bound misses the true gap far more often than 5%; the cluster-robust bound G3 now uses stays near 5%. Measured (2000
+// runs): classic 17.5%, cluster-robust 4.45%.
+describe('cluster-robust veto gap (STATS-1g, audit S4)', () => {
+  const side = (rng: Rng, prefix: string) => {
+    const xs: number[] = [];
+    const cs: string[] = [];
+    for (let g = 0; g < 20; g++) {
+      const shock = nextNormal(rng);
+      for (let i = 0; i < 5; i++) {
+        xs.push(shock + nextNormal(rng));
+        cs.push(`${prefix}${g}`);
+      }
+    }
+    return { xs, cs };
+  };
+  test('with creator-shared shocks the classic bound under-covers; the cluster-robust bound holds its level', () => {
+    const RUNS = 2000;
+    let iidMiss = 0;
+    let crMiss = 0;
+    for (let r = 0; r < RUNS; r++) {
+      const rng = createRng(400_000 + r);
+      const a = side(rng, 'v');
+      const b = side(rng, 'k');
+      // Every trade its own creator: the classic Welch bound (independence assumed).
+      const iid = clusterWelchBounds(a.xs, a.xs.map((_, i) => `a${i}`), b.xs, b.xs.map((_, i) => `b${i}`), 0.05);
+      const cr = clusterWelchBounds(a.xs, a.cs, b.xs, b.cs, 0.05);
+      if (iid.upper < 0) iidMiss++;
+      if (cr.upper < 0) crMiss++;
+    }
+    expect(iidMiss / RUNS).toBeGreaterThan(0.12);
+    expect(crMiss / RUNS).toBeLessThan(0.08);
+  });
 });
