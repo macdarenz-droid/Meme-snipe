@@ -634,6 +634,18 @@ Supervisor rulings, late evening:
   - New endpoint `GET /api/v1/<mode>/discovered`: the strategy's candidates (the tokens it watches), at most 200, newest migration first. Each has its mint, its symbol once read (else null), its migration time, venue, pool liquidity (twice the quote reserve at the SOL price; null until both are read), and the last evaluation's token checks with their time. Checks: `failed` on a hard gate (H1–H15, H17); `missing` before an evaluation or when evidence (H16), the regime or the worker's inputs stopped it first; `passed` otherwise. Only public market data and the bot's own checks, so no new kind of stored or sent personal data; it is computed on request, and nothing is written.
   - Home lists those tokens. Columns the worker does not serve (volume, holders, top holder) show "—". Zero candidates read "No tokens discovered", with no claim about the feed. No answer shows the offline state or "Not running".
   - Snipe's Session card (the owner's screenshots at 10:42 PM: "Not started", every limit "Not set", and "Start paper session — Worker not connected" while the S0 worker ran). The paper status now carries `session`: its state (running, paused, ended) and the loaded policy's bankroll, entry and maximum entry, open positions, and daily and weekly loss limits. The trial policy has no session loss limit, so that value is null and shows "Not set". `startable` is false because the worker starts its own paper session (main.ts `startSession`), so the card offers no start button; it would appear only for a worker that reports it can accept a start. The shell and the card read the same status, polled once.
+- **2026-10-05 · A newer worker reads "App update needed" (APP-COMPAT).** From real use: the owner's APK from before API-1 showed "Server error" when the worker added status fields, because the strict schema refuses unknown fields.
+  - Every check stays strict. An answer with a field the app does not know is still refused and never shown.
+  - The refusal's cause is now told apart. When the schema refuses an unknown field, the app re-checks the same answer once with unknown fields skipped (`onlyUnknownFields`, classification only; the answer stays refused). If nothing else fails, the refusal is `app-outdated`:
+    - the connection reads "App update needed" on the Server card and the shell line;
+    - the section reads "App update needed".
+  - Any other refusal stays "Server error": a missing field, a bad value (also next to a new field), or an HTTP error. A real error on any endpoint outranks "App update needed", and both expire after `BAD_ANSWER_TTL_MS` as before.
+  - The other direction was already handled: fields added later are `optional()`, so an older worker still loads. A test pins this.
+- **2026-10-04 · App wiring (APP-WIRE).** After APP-HOME wired the shell, Home and the Session card:
+  - One test runs the app's own client against the real worker's `route()` for every endpoint in all three modes (`app-wire.test.ts`). Paper passes the strict schemas; live and backtest answer "Not running"; the backtest report is empty; no path falls through to a 404.
+  - The Pause control stays disabled. The app sends no commands, and pausing is the watchdog's signed `/pause`, sent from Telegram. Its hidden note reads "Telegram /pause" instead of "Worker not connected", and it reads "Paused" while the worker reports the owner's pause.
+  - A worker that answers with `connected: false` reads "Feeds down", not "Worker not connected" (supervisor ruling). In api.ts, `connected` means reconciled and at least one market feed up, and the API starts only after the reconcile, so for any answer it means no market feed is connected.
+  - Wallet stays as it is. A paper worker has no signing key and no bot wallet, so "Not created", "—" and "No transactions" are true. Paper's simulated balance is not shown there, because it is not a wallet.
 - **2026-10-04 · Live view setup never waits unseen (OPS-1h).** This came from real use: after a successful Tailscale login, `zeroed-tailscale` sat silent. The cause is in Tailscale's CLI source (v1.104, `cmd/tailscale/cli` serve_v2.go and serve_legacy.go, `enableFeatureInteractive`):
   - `tailscale serve --https` needs the node capability `https`. Without it, serve prints a link to turn HTTPS on and blocks until it is on.
   - `tailscale funnel … off` checks the `https` and `funnel` capabilities first, even to turn Funnel off. On a tailnet without Funnel it blocks forever.
@@ -1496,3 +1508,46 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
 - **2026-10-04 · The deployer store loads by streaming.** `deployers.jsonl` gains about 64k create lines a day and is trimmed only at a start, to the look-back plus a day (about 15 days, about a million lines). `load` read it whole, split it and rewrote it from one joined string. Measured on 300,000 lines (168 MB, about 4.7 days of creates): peak RSS 1,036 MB before, over the unit's MemoryMax of 800M, so a restart after about four to five days of running would be killed at boot; 432 MB after. Streaming does not bound the parsed events the index seed keeps: at that rate about 8–9 days of creates still reach 800 MB. Bounding them is WORKER-GROW's (card 4).
 - **2026-10-04 · The runner streams the worker's journal.** The end-of-run report checks the journal with `checkJournalLines` over `fileLines`, the same check as `checkJournal` (pinned: a line that is not JSON is a problem unless it is the last one and a torn tail is allowed). It parses the journal once, where it used to read it whole three times. `readLines` streams. `reconciledFirst` and `entriesBetween` scan without building an array. `closedSince`, `journalTimes`, `item4`, `coverageGaps`, `rejections` and `withChainMoves` still take parsed arrays, which grow with the journal: bounding those needs journal rotation (card 4).
 - **Evidence.** `packages/worker/test/growth-sweep.test.ts`: the UTF-8 test fails on the base `journalLines`; the guard fails on the base deployer store and runner; hand mutants G1–G7 are killed.
+
+## Open trade as a live trade (APP-TRADE, `run/api.ts` `openPnl`, `lib/money.ts` `returnHundredths`, `dashboard/Sections.tsx` `OpenPosition`)
+- **2026-10-05 · The P&L has one definition: net if closed now.** `openPnl` (worker) works in exact lamports. It is:
+  - the rest's liquidation quote (net of the pool's fees),
+  - less the close's own network fee (`exitFee`: base + the exit ladder's first priority fee + tip, the paper fill's charge for a filled exit attempt; supervisor ruling under the paper-as-real rule),
+  - plus what exits already sold for,
+  - less what the entry paid and every network fee paid so far.
+  - With nothing left there is no close to pay for. It then equals the closed trade's net in `account.ts` (test on a real closed trade).
+  - "Unrealized" is its gross (before the fees already paid, after the close's fee), "Costs so far" the fees actually paid, and "P&L" its net.
+  - Before this, Unrealized left out a partial exit's proceeds (review N1 pins it after a real partial).
+  - In dollars (`openUsd`, review N2), Unrealized and Costs so far round on the safe side, like a closed trade's net: gains down, losses and costs up.
+  - P&L is their exact difference, so P&L = Unrealized − Costs so far to the micro-dollar. On screen each row is rounded to the cent on its own.
+  - P&L is null without a SOL price, and a rest that cannot be quoted counts as worth nothing.
+- **2026-10-05 · Return has one formula.** It is net ÷ size, exact on micro-dollars, rounded half away from zero to 0.01%.
+  - The open trade uses the P&L. Closed trades (list and detail) use Net ÷ Size.
+  - It is never computed on gross. It is toned by the printed value.
+- **2026-10-05 · Price now.** It is the rest's executable price (liquidation quote per token held), the price the stops judge. It uses the triggers' "$" and 4 significant digits.
+  - `markedAt` is when its pool was read. Past the app's stale rule (15 s) both turn the loss colour.
+  - "Running" counts from the server's `openedAt`, re-read every second, never from the phone.
+- **2026-10-05 · No margin row.** The bot buys outright (spot swaps on the pool, no borrowing, no leverage), so the size is the whole amount at risk, and a margin row would only repeat Size.
+- **2026-10-05 · Older workers.** `pnlUsd`, `markPriceUsd` and `markedAt` are `optional()` in the app's schema, so a worker without them loads and shows "—".
+  - An app older than these fields refuses them. After APP-COMPAT (#162) it reads "App update needed".
+- **2026-10-05 · Discovered.**
+  - "Volume 24h" and "Holders" are removed. The worker has no 24-hour volume for tokens minutes old, and its holder read is the largest accounts, not a count. A column that is always "—" says nothing.
+  - Liquidity was "—" until the pool's first swap was seen. It came from `poolOf`, which also needs the pool's fee terms (from a fees fact or the latest swap). It now reads only the reserves (`reservesOf`). The owner's 1m19s token fits this cause; the phone's data can't be replayed, so that is not proven.
+- **2026-10-05 · Copy address and Open in Pump.fun** (`components/TokenActions.tsx`). They show on Home's Discovered rows, the open trade, the trades list and detail, and the journal rows and detail.
+  - Copy writes the full mint. It uses the Clipboard API, else the copy command on a hidden field. It says "Copied" only when one of them reports success, else "Copy failed".
+  - The Pump.fun link is `https://pump.fun/coin/<mint>`, built only when the mint passes the API's `MINT_RE` (base58, 32–44 characters). A malformed mint shows no buttons.
+  - Clicks stop at the buttons, and the buttons sit beside a row's own button, never inside it.
+  - No plugin was added. Capacitor's Android webview already hands any navigation off the app's own host to the phone (the browser, or the Pump.fun app if it claims the link), as with the Solscan links.
+  - On-phone behaviour (the clipboard in the webview and the hand-off) needs a real-device check.
+- **2026-10-05 · Evidence.**
+  - `apps/web/test/app-trade.test.ts` and `packages/worker/test/app-trade-api.test.ts`: 21 tests, all failing before except N1's partial-exit pin. That one passes on the change it pins and fails when the change is reverted.
+  - Hand mutants, all caught:
+    - Return on gross; Return truncated.
+    - Running from the mark's time; Running from the phone's clock.
+    - P&L without fees; P&L without exit proceeds; losses rounded toward zero.
+    - Stale at exactly 15 s; the mark at the entry price.
+    - Discovered back on `poolOf`.
+    - The link without the mint check; copying the short address; a false "Copied" (twice: the click and the copy-command fallback).
+    - The copy or link click reaching the row; the journal without the buttons.
+    - Review N1/N2: Unrealized as the rest less the whole entry; Unrealized or Costs rounded toward zero; P&L rounded on its own (in `openUsd` and in the served row).
+    - The exit fee: left out; charged with nothing left; from the ladder's second rung; without the tip.

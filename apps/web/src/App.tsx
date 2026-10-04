@@ -103,7 +103,7 @@ export function App() {
             </ul>
             <div className="rail-foot">
               <StatusList session={paper.view} state={paper.line} conn={conn} />
-              <PauseButton />
+              <PauseButton paused={paper.view.state === 'paused'} />
               <ThemeSwitch />
             </div>
           </nav>
@@ -112,7 +112,7 @@ export function App() {
             <Mark size={22} />
             <span className="badge badge-neutral">{modeLabel(paper.view)}</span>
             {screen === 'fixtures' && <SampleMarker />}
-            <PauseButton compact />
+            <PauseButton compact paused={paper.view.state === 'paused'} />
             <span className="mobile-status muted small">
               {paper.line.label} · {dataLabel(conn)}
             </span>

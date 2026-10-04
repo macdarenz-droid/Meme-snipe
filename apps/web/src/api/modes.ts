@@ -1,6 +1,6 @@
 import { addUsd } from '../lib/money.ts';
 import { MIN_TRADES, MODES, type Envelope, type Mode, type Moded, type StatsView } from './contract.ts';
-import { DataError, fail, iso, obj, oneOf, str, type Check } from './schema.ts';
+import { DataError, fail, iso, obj, onlyUnknownFields, oneOf, str, type Check } from './schema.ts';
 
 export { DataError };
 
@@ -28,6 +28,21 @@ export function checkEnvelope<T>(raw: unknown, mode: Mode, data: Check): Envelop
   obj({ mode: oneOf(mode), asOf: iso, data })(raw, '$');
   walk(raw, mode, '$', false);
   return raw as Envelope<T>;
+}
+
+/**
+ * checkEnvelope, with the cause of a refusal told apart (APP-COMPAT): when the only problem is fields this app does not
+ * know (the worker is newer), it throws DataError('app-outdated'); any other refusal is thrown as it is.
+ */
+export function checkAnswer<T>(raw: unknown, mode: Mode, data: Check): Envelope<T> {
+  try {
+    return checkEnvelope<T>(raw, mode, data);
+  } catch (e) {
+    if (e instanceof DataError && e.kind === 'unknown-field' && onlyUnknownFields(() => checkEnvelope(raw, mode, data))) {
+      throw new DataError('app-outdated', `${e.message} (the worker is newer than this app)`);
+    }
+    throw e;
+  }
 }
 
 /** Second line of defence, independent of the schemas: no record of another mode, and none without a mode, inside any list. */

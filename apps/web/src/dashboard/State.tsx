@@ -9,6 +9,7 @@ const ERROR_TEXT: Record<Extract<Loaded<unknown>, { state: 'error' }>['reason'],
   offline: { title: 'Offline' },
   'mixed-modes': { title: 'Data from another mode', detail: 'Not shown.' },
   'bad-data': { title: 'Data failed checks', detail: 'Not shown.' },
+  'update-needed': { title: 'App update needed', detail: 'Not shown.' },
   failed: { title: 'Could not load' },
 };
 
