@@ -6,7 +6,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import { STUB_ENTRY, type Health, type JournalKind, type RecoveredFields } from '../src/contract.ts';
-import { LocalControl, snapshotState, type Tabletop } from '../src/control.ts';
+import { LocalControl, type Tabletop } from '../src/control.ts';
+import { HostLike } from './host-like.ts';
 import { checkJournal } from '../src/journal.ts';
 import { item4 } from '../src/item4.ts';
 import { makePlan } from '../src/plan.ts';
@@ -55,26 +56,6 @@ describe('a. host loss counts only when compared (VPS)', () => {
   });
 });
 
-// The host's tabletop with a stand-in for the hourly backup; the backup time is given from the n-th tabletop on.
-class HostLike extends LocalControl {
-  readonly backupDir: string;
-  readonly liveDir: string;
-  readonly namedFrom: number;
-  calls = 0;
-  constructor(o: ConstructorParameters<typeof LocalControl>[0], backupDir: string, namedFrom: number) {
-    super(o);
-    this.backupDir = backupDir;
-    this.liveDir = o.stateDir!;
-    this.namedFrom = namedFrom;
-  }
-  override async tabletop(o: { readonly restore: boolean; readonly restoreFrom?: string }): Promise<Tabletop> {
-    this.calls += 1;
-    snapshotState(this.liveDir, this.backupDir);
-    const t = await super.tabletop({ restore: o.restore, restoreFrom: this.backupDir });
-    return this.calls >= this.namedFrom ? { ...t, backup: { name: `zeroed-stand-in-${this.calls}.tar.age`, at: Date.now() - 50 } } : t;
-  }
-}
-
 describe('a. a self-reported host loss retries after the next backup', () => {
   const run = async (namedFrom: number) => {
     const dir = mkdtempSync(join(tmpdir(), 'run1f-'));
@@ -84,7 +65,7 @@ describe('a. a self-reported host loss retries after the next backup', () => {
     const control = new HostLike({
       entry: STUB_ENTRY, cwd: root, logPath: join(evidenceDir, 'logs', 'w.log'), stateDir, restartDelayMs: 200,
       env: { PATH: process.env['PATH'] ?? '', ZEROED_STATE_DIR: stateDir, ZEROED_MODE: 'paper', ZEROED_RECORDER: 'on', ZEROED_SIMULATE: 'on', ZEROED_DRILLS: 'on', ZEROED_HEALTH_ADDR: addr, ZEROED_GIT_SHA: 'c0ffee', ZEROED_STUB_TICK_MS: '50', ZEROED_STUB_CYCLE_MS: '60000', ZEROED_STUB_OPEN_AT_START: '1' },
-    }, join(dir, 'backup'), namedFrom);
+    }, { backupDir: join(dir, 'backup'), evidenceDir, namedFrom, sampleMs: 100, windowMs: 300 });
     const res = await runSegment({
       identity: { label: 'vps', commit: 'c0ffee' }, healthAddr: addr, stateDir, evidenceDir, keepRecorded: 'copy', sampleMs: 100, log: () => {}, handover: false,
       control, recoverMs: 6000, segmentEnd: Number.POSITIVE_INFINITY, hostDrills: 'tabletop', offsiteBackup: true, backupWindowMs: 300, hostRetryAfterMs: 1500,
@@ -164,7 +145,7 @@ describe('a. the retry file is kept until its try is recorded', () => {
     expect(drills(t.evidenceDir).some((d) => d.id === 'restart-1-retry-1')).toBe(false);
     expect(existsSync(t.file)).toBe(true);
     // The next try is set far off, so this segment ends with only this try run.
-    await runSegment({ ...t.common, control: new HostLike(t.opts, join(t.dir, 'backup'), 1), recoverMs: 6000, hostRetryAfterMs: 600_000, segmentEnd: Date.now() + 6000 });
+    await runSegment({ ...t.common, control: new HostLike(t.opts, { backupDir: join(t.dir, 'backup'), evidenceDir: t.evidenceDir, namedFrom: 1, sampleMs: 100, windowMs: 300 }), recoverMs: 6000, hostRetryAfterMs: 600_000, segmentEnd: Date.now() + 6000 });
     // Run once and recorded. Straight after a restart the samples cannot cover the backup's window, so this try
     // self-reports too: its own file is gone and the next try's has taken its place.
     expect(drills(t.evidenceDir).filter((d) => d.id === 'restart-1-retry-1')).toMatchObject([{ cause: 'host-loss', compared: false }]);
@@ -175,7 +156,7 @@ describe('a. the retry file is kept until its try is recorded', () => {
     const t = await setup();
     const done: DrillOutcome = { id: 'restart-1-retry-1', kind: 'restart', cause: 'host-loss', plannedAt: 0, at: Date.now() - 5000, pass: true, keep: 1, compared: true, notes: ['recorded before the runner stopped'] };
     writeFileSync(join(t.evidenceDir, 'drills.json'), JSON.stringify([done]));
-    const control = new HostLike(t.opts, join(t.dir, 'backup'), 1);
+    const control = new HostLike(t.opts, { backupDir: join(t.dir, 'backup'), evidenceDir: t.evidenceDir, namedFrom: 1, sampleMs: 100, windowMs: 300 });
     await runSegment({ ...t.common, control, recoverMs: 6000, segmentEnd: Date.now() + 1500 });
     expect(existsSync(t.file)).toBe(false);
     expect(control.calls).toBe(0);
