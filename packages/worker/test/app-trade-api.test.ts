@@ -4,7 +4,8 @@ import { describe, expect, it } from 'vitest';
 import { checkEnvelope } from '../../../apps/web/src/api/modes.ts';
 import { schemaFor } from '../../../apps/web/src/api/schemas.ts';
 import { PATHS } from '../../../apps/web/src/api/contract.ts';
-import { openPnl, pnlMicroUsd, priceText, route, usdText } from '../src/run/api.ts';
+import { openPnl, openUsd, pnlMicroUsd, priceText, route, usdText } from '../src/run/api.ts';
+import { toMicro } from '../../../apps/web/src/lib/money.ts';
 import type { PaperAttempt } from '../src/run/paper-world.ts';
 import type { MicroUsd } from '../../core/src/units/index.ts';
 import { MINT, makeWorker, passingMarket } from './worker-harness.ts';
@@ -27,6 +28,19 @@ describe('the open trade\'s P&L (APP-TRADE)', () => {
     expect(openPnl(null, [fill('entry', 10n, 1n), failed])).toEqual({ gross: -10n, fees: 1n, net: -11n });
     // Big sizes stay exact (no floats).
     expect(openPnl(10n ** 18n + 1n, [fill('entry', 10n ** 18n, 3n)]).net).toBe(-2n);
+  });
+
+  it('the three rows round one way and P&L is their exact difference: a loss at a cent boundary (review N2)', () => {
+    const price = 150_000_000n as MicroUsd; // $150 per SOL: a lamport is 0.15 micro-dollars
+    // Gross −33,334 lamports is −$0.0050001; fees 33,333 lamports are $0.00499995.
+    const usd = openUsd({ gross: -33_334n, fees: 33_333n, net: -66_667n }, price);
+    expect(usd).toEqual({ unrealized: -5_001n, costs: 5_000n, pnl: -10_001n });
+    // Rounded toward zero, the rows would be −$0.005000 and $0.004999, and P&L −$0.010001 would not be their difference.
+    expect(usd.pnl).toBe(usd.unrealized - usd.costs);
+    // A lamport each way: Unrealized −$0.000001, Costs $0.000001, so P&L −$0.000002 (rounding the net alone gives −$0.000001).
+    expect(openUsd({ gross: -1n, fees: 1n, net: -2n }, price)).toEqual({ unrealized: -1n, costs: 1n, pnl: -2n });
+    // A gain rounds down; costs round up.
+    expect(openUsd({ gross: 33_334n, fees: 1n, net: 33_333n }, price)).toEqual({ unrealized: 5_000n, costs: 1n, pnl: 4_999n });
   });
 
   it('in dollars rounds like a closed trade: gains down, losses up', () => {
@@ -52,8 +66,15 @@ describe('the open trade\'s P&L (APP-TRADE)', () => {
     const fills = [...inputs.attempts.values()].filter((a) => a.trade === p.id && a.outcome === 'filled');
     const fees = fills.reduce((s, a) => s + a.fill!.fees, 0n);
     expect(fees).toBeGreaterThan(0n);
-    const net = o.liquidation! - p.cost - fees;
-    expect(pos!['pnlUsd']).toBe(usdText(pnlMicroUsd(net, inputs.solPrice!)));
+    const gross = o.liquidation! - p.cost;
+    expect(pos!['unrealizedUsd']).toBe(usdText(pnlMicroUsd(gross, inputs.solPrice!)));
+    expect(pos!['costsSoFarUsd']).toBe(usdText(-pnlMicroUsd(-fees, inputs.solPrice!)));
+    // P&L = Unrealized − Costs so far, exactly (review N2), at SOL prices that leave fractions of a micro-dollar.
+    expect(toMicro(pos!['pnlUsd']!)).toBe(toMicro(pos!['unrealizedUsd']!) - toMicro(pos!['costsSoFarUsd']!));
+    for (const solPrice of [150_000_001n, 123_456_789n, 7n, 1_000_003n] as MicroUsd[]) {
+      const at = (route(PATHS.position('paper'), () => ({ ...inputs, solPrice })).body as { data: Record<string, string> }).data;
+      expect(toMicro(at['pnlUsd']!), String(solPrice)).toBe(toMicro(at['unrealizedUsd']!) - toMicro(at['costsSoFarUsd']!));
+    }
     expect(pos!['markPriceUsd']).toBe(priceText(o.liquidation!, p.quantity, inputs.solPrice));
     expect(pos!['markedAt']).toBe(new Date(h.worker.poolOf(MINT)!.atMs).toISOString());
     expect(o.markedAtMs).toBe(h.worker.poolOf(MINT)!.atMs);
@@ -72,6 +93,32 @@ describe('the open trade\'s P&L (APP-TRADE)', () => {
     const closedFills = [...after.attempts.values()].filter((a) => a.trade === closed.positionId && a.outcome === 'filled');
     expect(closedFills.map((a) => a.purpose)).toEqual(['entry', 'exit']);
     expect(openPnl(0n, closedFills).net).toBe(closed.netLamports);
+    await h.worker.stop();
+  });
+});
+
+describe('Unrealized after a partial exit (APP-TRADE, review N1)', () => {
+  it('counts what the partial sold for: openPnl\'s gross, not the rest\'s value less the whole entry', async () => {
+    const h = makeWorker();
+    await h.worker.reconcile();
+    const m = await passingMarket(h, HELD);
+    await m.run(4_000, 100, () => m.pool());
+    await m.run(10_000, 400, () => { m.slot(); m.pool(); });
+    // +15%: past 1.5R, so the first partial sells half and the rest stays open.
+    await m.run(8_000, 400, () => { m.slot(); m.pool(1_150_000n); });
+    const inputs = h.worker.apiInputs();
+    const p = Object.values(inputs.book.positions).find((x) => x.status === 'open')!;
+    expect(p.sold > 0n && p.quantity > 0n).toBe(true);
+    const fills = [...inputs.attempts.values()].filter((a) => a.trade === p.id && a.outcome === 'filled');
+    expect(fills.map((a) => a.purpose)).toEqual(['entry', 'exit']);
+    const liq = inputs.open(p)!.liquidation!;
+    const pos = checkEnvelope(JSON.parse(JSON.stringify(route(PATHS.position('paper'), () => inputs).body)), 'paper', schemaFor('position', 'paper')).data as Record<string, string>;
+    const gross = openPnl(liq, fills).gross;
+    expect(gross).toBe(liq + fills[1]!.fill!.sol - p.cost);
+    expect(pos['unrealizedUsd']).toBe(usdText(pnlMicroUsd(gross, inputs.solPrice!)));
+    // The old rows (the rest's value less the whole entry) read a large loss here; the served one does not.
+    expect(pos['unrealizedUsd']).not.toBe(usdText(pnlMicroUsd(liq - p.cost, inputs.solPrice!)));
+    expect(toMicro(pos['pnlUsd']!)).toBe(toMicro(pos['unrealizedUsd']!) - toMicro(pos['costsSoFarUsd']!));
     await h.worker.stop();
   });
 });

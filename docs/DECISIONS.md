@@ -1433,9 +1433,11 @@ Built to the supervisor's revised spec and the consensus rulings that followed i
 
 ## Open trade as a live trade (APP-TRADE, `run/api.ts` `openPnl`, `lib/money.ts` `returnHundredths`, `dashboard/Sections.tsx` `OpenPosition`)
 - **2026-10-05 · The P&L has one definition.** `openPnl` (worker) is the rest's liquidation quote (net of the pool's fees), plus what exits already sold for, less what the entry paid and every network fee paid so far. It is in exact lamports. Once nothing is left it equals the closed trade's net in `account.ts` (test on a real closed trade).
-  - "Unrealized" is its gross (before network fees), "Costs so far" its fees, and "P&L" its net. So P&L = Unrealized − Costs so far.
-  - Before this, Unrealized left out a partial exit's proceeds.
-  - P&L is converted to dollars like a closed trade's net: gains rounded down, losses up. It is null without a SOL price, and a rest that cannot be quoted counts as worth nothing.
+  - "Unrealized" is its gross (before network fees), "Costs so far" its fees, and "P&L" its net.
+  - Before this, Unrealized left out a partial exit's proceeds (review N1 pins it after a real partial).
+  - In dollars (`openUsd`, review N2), Unrealized and Costs so far round on the safe side, like a closed trade's net: gains down, losses and costs up.
+  - P&L is their exact difference, so P&L = Unrealized − Costs so far to the micro-dollar. On screen each row is rounded to the cent on its own.
+  - P&L is null without a SOL price, and a rest that cannot be quoted counts as worth nothing.
 - **2026-10-05 · Return has one formula.** It is net ÷ size, exact on micro-dollars, rounded half away from zero to 0.01%.
   - The open trade uses the P&L. Closed trades (list and detail) use Net ÷ Size.
   - It is never computed on gross. It is toned by the printed value.
@@ -1455,7 +1457,7 @@ Built to the supervisor's revised spec and the consensus rulings that followed i
   - No plugin was added. Capacitor's Android webview already hands any navigation off the app's own host to the phone (the browser, or the Pump.fun app if it claims the link), as with the Solscan links.
   - On-phone behaviour (the clipboard in the webview and the hand-off) needs a real-device check.
 - **2026-10-05 · Evidence.**
-  - `apps/web/test/app-trade.test.ts` and `packages/worker/test/app-trade-api.test.ts`: 19 tests, all failing before.
+  - `apps/web/test/app-trade.test.ts` and `packages/worker/test/app-trade-api.test.ts`: 21 tests, all failing before except N1's partial-exit pin. That one passes on the change it pins and fails when the change is reverted.
   - Hand mutants, all caught:
     - Return on gross; Return truncated.
     - Running from the mark's time; Running from the phone's clock.
@@ -1464,3 +1466,4 @@ Built to the supervisor's revised spec and the consensus rulings that followed i
     - Discovered back on `poolOf`.
     - The link without the mint check; copying the short address; a false "Copied" (twice: the click and the copy-command fallback).
     - The copy or link click reaching the row; the journal without the buttons.
+    - Review N1/N2: Unrealized as the rest less the whole entry; Unrealized or Costs rounded toward zero; P&L rounded on its own (in `openUsd` and in the served row).

@@ -210,6 +210,16 @@ export const openPnl = (liquidation: bigint | null, fills: readonly PaperAttempt
 export const pnlMicroUsd = (l: bigint, price: MicroUsd): bigint =>
   l >= 0n ? lamportsToMicroUsd(l as Lamports, price, 'floor') : -lamportsToMicroUsd((-l) as Lamports, price, 'ceil');
 
+/**
+ * The open P&L's three rows in micro-dollars, one rounding for all (review N2): each on the safe side like a closed
+ * trade's net (gains down, losses and costs up), and P&L their exact difference, so P&L = Unrealized − Costs so far.
+ */
+export const openUsd = (pnl: ReturnType<typeof openPnl>, price: MicroUsd): { readonly unrealized: bigint; readonly costs: bigint; readonly pnl: bigint } => {
+  const unrealized = pnlMicroUsd(pnl.gross, price);
+  const costs = -pnlMicroUsd(-pnl.fees, price);
+  return { unrealized, costs, pnl: unrealized - costs };
+};
+
 const fillsOf = (i: ApiInputs, pid: string): PaperAttempt[] =>
   [...i.attempts.values()].filter((a) => a.trade === pid && a.outcome === 'filled' && a.fill !== null).sort((a, b) => (a.sentAtMs ?? 0) - (b.sentAtMs ?? 0));
 
@@ -333,6 +343,7 @@ export const views = {
     const o = i.open(p);
     const liq = o?.liquidation ?? null;
     const pnl = openPnl(liq, fillsOf(i, p.id));
+    const usd = i.solPrice === null ? { unrealized: 0n, costs: 0n } : openUsd(pnl, i.solPrice);
     // The mark: our rest's executable price now (the liquidation quote per token held), the price the stops judge.
     const mark = liq === null || p.quantity <= 0n || i.solPrice === null ? null : priceText(liq, p.quantity, i.solPrice);
     const exit = p.status === 'exit_blocked' ? 'blocked' : p.status === 'open' && !i.waitingExits.has(p.id) ? 'none' : 'pending';
@@ -343,8 +354,8 @@ export const views = {
     return {
       mode: MODE, id: p.id, mint: p.mint, symbol: i.symbol(p.mint), venue: 'pumpswap', openedAt: iso(o?.openedAtMs ?? i.nowMs),
       entryPriceUsd: priceText(p.cost, p.bought, i.solPrice), sizeUsd: usdText(lamportsUsd(p.cost, i.solPrice)),
-      liquidationValueUsd: usdText(lamportsUsd(liq ?? 0n, i.solPrice)), unrealizedUsd: usdText(lamportsUsd(pnl.gross, i.solPrice)),
-      costsSoFarUsd: usdText(lamportsUsd(pnl.fees, i.solPrice)), pnlUsd: i.solPrice === null ? null : usdText(pnlMicroUsd(pnl.net, i.solPrice)),
+      liquidationValueUsd: usdText(lamportsUsd(liq ?? 0n, i.solPrice)), unrealizedUsd: usdText(usd.unrealized),
+      costsSoFarUsd: usdText(usd.costs), pnlUsd: i.solPrice === null ? null : usdText(usd.unrealized - usd.costs),
       markPriceUsd: mark, markedAt: mark === null || o?.markedAtMs == null ? null : iso(o.markedAtMs),
       exitRules: [
         { mode: MODE, rule: 'price-stop', trigger: atOrBelow(o?.stopPrice, i.solPrice), state: p.exitOwner?.reasons.includes('stop') ? 'triggered' : 'armed' },
