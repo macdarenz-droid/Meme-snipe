@@ -475,6 +475,8 @@ StateDirectory=zeroed
 StateDirectoryMode=0700
 UMask=0077
 MemoryMax=800M
+# The worker owns exits: under memory pressure the kernel takes anything else first (worker-smoke's trial is +1000).
+OOMScoreAdjust=-500
 TasksMax=256
 LimitCORE=0
 # Hardening (ARCHITECTURE.md 12.1). MemoryDenyWriteExecute is off here only: V8's JIT needs it.
@@ -1181,6 +1183,11 @@ WEBHOOK_MAX_TRIES=5        # the owner is told after this many failed tries in a
 WORKER_API_ADDR=127.0.0.1:8788 # the worker API, loopback only; tailscale serve publishes it to the tailnet
 WORKER_HEALTH_ADDR=127.0.0.1:8787 # the worker's health route for the runner (RUN-1's default), never published
 TABLETOP_API_ADDR=127.0.0.1:8789 # reserved for RUN-1d's zeroed-worker-tabletop (never published)
+SMOKE_HEALTH_ADDR=127.0.0.1:8797 # worker-smoke's trial start of a new release (never published)
+SMOKE_API_ADDR=127.0.0.1:8798
+SMOKE_MEMORY_MAX=280M # the trial's memory cap: the host has 1 GB and the live worker (up to 800M) keeps running
+SMOKE_HOLD_S=30 # after its first health answer, the trial worker must still run and answer this long
+SWITCH_HOLD_S=30 # after a switch, the new worker must run this long with no restart and health answering
 RELEASE_UNIT_RE='^zeroed-(dryrun[a-z0-9-]*@?|worker-tabletop)\.(service|timer)$' # units taken from the release
 
 # backoff_s TRIES: seconds to wait after TRIES failed tries in a row (1 min, doubling, at most 30 min).
@@ -1260,6 +1267,14 @@ serve_ok() {
     and ((.AllowFunnel // {}) | to_entries | all(.value != true))' >/dev/null 2>&1
 }
 
+# unit_sandbox UNIT_FILE: the unit's [Service] settings that make its sandbox, limits and environment, one per line, for
+# worker-smoke's trial: everything except its identity and groups, credentials, state directory, restarts, start and
+# stop commands, its memory limit and its OOM score (the trial sets its own user, cap, OOM score and stop timeout).
+unit_sandbox() {
+  sed -n '/^\[Service\]/,/^\[/p' "$1" | grep -E '^[A-Z][A-Za-z]*=' |
+    grep -Ev '^(Type|User|Group|SupplementaryGroups|Environment|EnvironmentFile|ExecStart|ExecStartPre|ExecStop|Restart|RestartSec|TimeoutStopSec|LoadCredential|LoadCredentialEncrypted|ImportCredential|SetCredential|StateDirectory|StateDirectoryMode|MemoryMax|OOMScoreAdjust)=' || true
+}
+
 # funnel_ports: reads `tailscale serve status --json` on stdin and prints each "host:port" that Funnel makes
 # public (none on a correct host: the app cannot tell a public Funnel address from a tailnet one).
 funnel_ports() { jq -r '(.AllowFunnel // {}) | to_entries[] | select(.value == true) | .key' 2>/dev/null || true; }
@@ -1277,6 +1292,97 @@ worker_entry() {
 
 # ssh_open: reads `nft list ruleset` on stdin; true when the live firewall lets SSH in.
 ssh_open() { grep -Eq 'tcp dport 22 .*accept'; }
+__ZEROED_FILE__
+install_file /usr/local/lib/zeroed/worker-smoke 0755 <<'__ZEROED_FILE__'
+#!/usr/bin/env bash
+# worker-smoke RELEASE_DIR: can this release's own worker start and stay up? zeroed-update runs it before it switches to
+# a new release (SWITCH-1), so a release whose worker cannot start never becomes current and the running worker is
+# never stopped for it. The trial runs beside the running worker and touches none of its state or ports:
+#   - as transient systemd units under the worker unit's own sandbox: every hardening, limit and environment setting of
+#     zeroed-worker.service is read from the installed unit and applied, with the worker's user, its environment file,
+#     memory capped at SMOKE_MEMORY_MAX and the first to go under memory pressure (OOMScoreAdjust=1000), since the host
+#     has 1 GB and the live worker keeps running;
+#   - no credentials (provider keys are not needed to start; a worker without providers runs degraded, entries halted),
+#     a scratch state directory as the only writable path, health and API on the SMOKE_* loopback ports;
+#   - --reconcile (the unit's ExecStartPre) must exit 0; then the worker must answer its health route in paper mode
+#     within 90 s, and still be running and answering after a further SMOKE_HOLD_S. It is then stopped.
+# Prints one line saying why when it fails; exit 0 when the worker starts and stays up, 1 when it does not. A release
+# still on the host's stand-in has no worker of its own to try and passes.
+set -euo pipefail
+. /usr/local/lib/zeroed/logic.sh
+dir="${1:?usage: worker-smoke RELEASE_DIR}"
+entry="$(worker_entry "$dir")"
+[ "$entry" != /opt/zeroed/stub/worker.mjs ] || exit 0
+
+UNIT_FILE=/etc/systemd/system/zeroed-worker.service
+TRIAL=zeroed-worker-smoke
+# A trial left by an earlier run that was cut off is cleared first (the unit names are fixed).
+systemctl stop "$TRIAL.service" "$TRIAL-reconcile.service" >/dev/null 2>&1 || true
+systemctl reset-failed "$TRIAL.service" "$TRIAL-reconcile.service" >/dev/null 2>&1 || true
+install -d -m 0711 -o root -g root /var/lib/zeroed-smoke
+tmp="$(mktemp -d /var/lib/zeroed-smoke/run.XXXXXX)"
+chown zeroed-worker:zeroed-worker "$tmp"
+install -d -m 0700 -o zeroed-worker -g zeroed-worker "$tmp/state"
+cleanup() {
+  systemctl stop "$TRIAL.service" "$TRIAL-reconcile.service" >/dev/null 2>&1 || true
+  systemctl reset-failed "$TRIAL.service" "$TRIAL-reconcile.service" >/dev/null 2>&1 || true
+  # Its listening sockets close a moment after it exits: leave the trial ports free for the next trial.
+  for _ in $(seq 1 30); do ss -Hltn "( sport = :${SMOKE_HEALTH_ADDR##*:} or sport = :${SMOKE_API_ADDR##*:} )" 2>/dev/null | grep -q . || break; sleep 1; done
+  rm -rf "$tmp"
+}
+trap cleanup EXIT
+
+# The worker unit's sandbox, limits and environment settings (unit_sandbox), applied to the trial.
+props=()
+while IFS= read -r line; do
+  props+=(-p "$line")
+done < <(unit_sandbox "$UNIT_FILE")
+[ "${#props[@]}" -gt 40 ] || { echo "the worker unit's sandbox could not be read from $UNIT_FILE"; exit 1; }
+
+# trial UNIT LOG MODE: the release's worker as a transient unit with that sandbox, the worker's environment file, the
+# RUN-1 environment (worker-start) on the trial's state directory and ports, and the memory cap. MODE "reconcile" runs
+# its --reconcile and waits for it (at most 120 s); "run" starts it and returns.
+trial() {
+  local unit="$1" log="$2" opts=() args=()
+  if [ "$3" = reconcile ]; then opts=(--wait -p RuntimeMaxSec=120); args=(--reconcile); fi
+  systemd-run --quiet --unit="$unit" "${opts[@]}" "${props[@]}" \
+    -p User=zeroed-worker -p Group=zeroed-worker -p MemoryMax="$SMOKE_MEMORY_MAX" -p OOMScoreAdjust=1000 -p TimeoutStopSec=30 \
+    -p EnvironmentFile=-/etc/zeroed/worker.env -p WorkingDirectory="$dir" -p ReadWritePaths="$tmp" \
+    -p StandardOutput=append:"$log" -p StandardError=append:"$log" \
+    --setenv=NODE_ENV=production --setenv=ZEROED_MODE=paper --setenv=ZEROED_RECORDER=on --setenv=ZEROED_SIMULATE=on \
+    --setenv=ZEROED_DRILLS=on --setenv=ZEROED_STATE_DIR="$tmp/state" --setenv=ZEROED_GIT_SHA="$(basename "$dir")" \
+    --setenv=ZEROED_HEALTH_ADDR="$SMOKE_HEALTH_ADDR" --setenv=ZEROED_API_ADDR="$SMOKE_API_ADDR" \
+    /usr/local/bin/node --no-warnings "$entry" "${args[@]}"
+}
+# why LOG: the line that says what went wrong (an error or a refusal), else the last line; one line, printable.
+why() {
+  { grep -m1 -E '(^|[^A-Za-z])([A-Za-z]*Error|refused)([^A-Za-z]|$)' "$1" || tail -n 1 "$1"; } 2>/dev/null | tr -cd '[:print:]' | cut -c1-200
+}
+status() { systemctl show -p ExecMainStatus --value "$1.service" 2>/dev/null || echo '?'; }
+healthy() { curl -fsS -m 2 "http://$SMOKE_HEALTH_ADDR/health" 2>/dev/null | jq -e '.mode == "paper"' >/dev/null 2>&1; }
+
+: >"$tmp/reconcile.log"
+if ! trial "$TRIAL-reconcile" "$tmp/reconcile.log" reconcile >"$tmp/systemd-run.log" 2>&1; then
+  [ -s "$tmp/reconcile.log" ] || cp "$tmp/systemd-run.log" "$tmp/reconcile.log"
+  echo "its reconcile exited $(status "$TRIAL-reconcile"): $(why "$tmp/reconcile.log")"
+  exit 1
+fi
+: >"$tmp/start.log"
+trial "$TRIAL" "$tmp/start.log" run >"$tmp/systemd-run.log" 2>&1 || { echo "it could not be started: $(why "$tmp/systemd-run.log")"; exit 1; }
+up=0
+for _ in $(seq 1 90); do
+  systemctl is-active --quiet "$TRIAL.service" || { echo "it exited $(status "$TRIAL"): $(why "$tmp/start.log")"; exit 1; }
+  if healthy; then up=1; break; fi
+  sleep 1
+done
+[ "$up" = 1 ] || { echo "its health route did not answer within 90 s: $(why "$tmp/start.log")"; exit 1; }
+# Answering once is not staying up: it must still run and answer after the hold.
+for _ in $(seq 1 "$SMOKE_HOLD_S"); do
+  systemctl is-active --quiet "$TRIAL.service" || { echo "it exited $(status "$TRIAL") within ${SMOKE_HOLD_S} s of answering: $(why "$tmp/start.log")"; exit 1; }
+  sleep 1
+done
+healthy || { echo "its health route stopped answering within ${SMOKE_HOLD_S} s: $(why "$tmp/start.log")"; exit 1; }
+exit 0
 __ZEROED_FILE__
 install_file /usr/local/lib/zeroed/worker-start 0755 <<'__ZEROED_FILE__'
 #!/usr/bin/env bash
@@ -1434,7 +1540,10 @@ if command -v tailscale >/dev/null 2>&1; then
         log "$msg"
         notify "$msg" || log "Could not send that alert to Telegram."
       else
-        log "Could not turn Funnel off or take the live view down."
+        # Neither worked: the API may still be public, which needs the owner.
+        msg="ALERT Zeroed host: Tailscale Funnel could not be turned off and the live view could not be taken down, so the worker API may be public. Run zeroed-tailscale --off on the server console."
+        log "$msg"
+        notify "$msg" || log "Could not send that alert to Telegram."
       fi
     fi
   else
@@ -1751,7 +1860,16 @@ fi
 if [ -e "$STATE_DIR/webhook_tries" ]; then
   log "Webhook:   not set ($(cat "$STATE_DIR/webhook_tries") failed tries; retrying)"
 fi
-log "Worker:    $(systemctl is-active zeroed-worker.service 2>/dev/null || true)"
+# Which worker runs: the release's own (SWITCH-1) or the host's stand-in, from the running process itself.
+wpid="$(systemctl show -p MainPID --value zeroed-worker.service 2>/dev/null || echo 0)"
+wkind=""
+if [ "${wpid:-0}" != 0 ] && [ -r "/proc/$wpid/cmdline" ]; then
+  case "$(tr '\0' ' ' < "/proc/$wpid/cmdline")" in
+    *packages/worker/src/main.ts*) wkind=" (the release's worker, $(basename "$(readlink -f /opt/zeroed/current)" | cut -c1-12))" ;;
+    *stub/worker.mjs*) wkind=" (the host's stand-in)" ;;
+  esac
+fi
+log "Worker:    $(systemctl is-active zeroed-worker.service 2>/dev/null || true)$wkind"
 log "Signer:    $(systemctl is-active zeroed-signer.service 2>/dev/null || true)"
 log "Release:   $(cut -c1-12 "$STATE_DIR/deployed" 2>/dev/null || echo 'none yet')"
 run="$(qualifying_run "$EVIDENCE_ROOT" "$(systemctl list-units 'zeroed-dryrun@*' --state=active,activating --plain --no-legend 2>/dev/null || true)")"
@@ -2010,6 +2128,8 @@ apply_host() {
 
 active_run() { qualifying_run "$EVIDENCE_ROOT" "$(systemctl list-units 'zeroed-dryrun@*' --state=active,activating --plain --no-legend 2>/dev/null || true)"; }
 [ "$commit" != "$current" ] || exit 0
+# A release that was switched to and rolled back (its worker did not stay up) is not tried again; a newer deploy is.
+[ "$commit" != "$(cat "$STATE_DIR/failed_release" 2>/dev/null || true)" ] || exit 0
 
 # GitHub signs every merge it makes with its web-flow key; nothing else is accepted.
 status="$(GNUPGHOME=/etc/zeroed/gnupg git -C "$REPO_DIR" verify-commit --raw "$commit" 2>&1 || true)"
@@ -2060,8 +2180,17 @@ if [ ! -d "$dest" ]; then
   git -C "$REPO_DIR" archive "$commit" | tar -x -C "$dest.new" --no-same-owner
   mv "$dest.new" "$dest"
 fi
+# The release's own worker must start before anything changes (SWITCH-1): a trial start beside the running worker
+# (worker-smoke). If it cannot start, nothing switches, the running worker is untouched, and the owner gets one alert.
+if ! why="$(/usr/local/lib/zeroed/worker-smoke "$dest" 2>&1)"; then
+  log "The worker of ${commit:0:12} did not start in a trial ($why); still on the old release, trying again next run."
+  alert worker-smoke "ALERT Zeroed host: the worker of ${commit:0:12} did not start in a trial ($why), so the server stays on the release it runs. It tries again every 5 minutes."
+  exit 1
+fi
+alert_clear worker-smoke "CLEARED Zeroed host: the worker of ${commit:0:12} starts."
 # Host files first: on failure nothing switches and the worker keeps running the release it has.
 apply_host "$commit" "$dest" || exit 1
+prev="$(readlink -f /opt/zeroed/current 2>/dev/null || true)"
 ln -sfn "$dest" /opt/zeroed/current.new
 mv -Tf /opt/zeroed/current.new /opt/zeroed/current
 printf '%s\n' "$commit" > "$STATE_DIR/deployed"
@@ -2073,10 +2202,61 @@ else
   systemctl disable --now zeroed-backup-offsite.timer >/dev/null 2>&1 || true
 fi
 
-# Restart with reconcile first (ExecStartPre). Before pairing the worker is not started at all.
+# answers: the worker's health route says paper. The release's worker serves it on WORKER_HEALTH_ADDR; the host's
+# stand-in on the API address.
+answers() {
+  local a
+  for a in "$WORKER_HEALTH_ADDR" "$WORKER_API_ADDR"; do
+    curl -fsS -m 2 "http://$a/health" 2>/dev/null | jq -e '.mode == "paper"' >/dev/null 2>&1 && return 0
+  done
+  return 1
+}
+
+# holds: the restarted worker answers its health route in paper within 60 s, then runs SWITCH_HOLD_S more with no
+# restart and still answering. Prints why when it does not.
+holds() {
+  local up=0 n0
+  for _ in $(seq 1 60); do
+    if systemctl is-active --quiet zeroed-worker.service && answers; then up=1; break; fi
+    sleep 1
+  done
+  [ "$up" = 1 ] || { echo "its health route did not answer within 60 s"; return 1; }
+  n0="$(systemctl show -p NRestarts --value zeroed-worker.service)"
+  sleep "$SWITCH_HOLD_S"
+  systemctl is-active --quiet zeroed-worker.service && [ "$(systemctl show -p NRestarts --value zeroed-worker.service)" = "$n0" ] ||
+    { echo "it stopped or restarted within ${SWITCH_HOLD_S} s of answering"; return 1; }
+  answers || { echo "its health route stopped answering within ${SWITCH_HOLD_S} s"; return 1; }
+}
+
+# rollback WHY: the new release's worker did not stay up. Back to the release that ran before (its host files too),
+# its commit as deployed, its worker restarted; the new commit is not tried again; one alert.
+rollback() {
+  local why="$1"
+  if [ -z "$prev" ] || [ ! -d "$prev" ] || [ "$prev" = "$dest" ]; then
+    alert worker-switch "ALERT Zeroed host: the worker of ${commit:0:12} did not stay up after the switch ($why), and there is no earlier release to go back to."
+    exit 1
+  fi
+  printf '%s\n' "$commit" > "$STATE_DIR/failed_release"
+  ln -sfn "$prev" /opt/zeroed/current.new
+  mv -Tf /opt/zeroed/current.new /opt/zeroed/current
+  printf '%s\n' "$current" > "$STATE_DIR/deployed"
+  apply_host "${current:-$(basename "$prev")}" "$prev" || true
+  systemctl reset-failed zeroed-worker.service >/dev/null 2>&1 || true
+  systemctl restart zeroed-worker.service || true
+  log "The worker of ${commit:0:12} did not stay up after the switch ($why); back on $(basename "$prev" | cut -c1-12)."
+  alert worker-switch "ALERT Zeroed host: the worker of ${commit:0:12} did not stay up after the switch ($why), so the server went back to $(basename "$prev" | cut -c1-12). ${commit:0:12} is not tried again; a newer deploy is."
+  exit 1
+}
+
+# Restart with reconcile first (ExecStartPre). Before pairing the worker is not started at all. After a restart the
+# new worker must stay up, or the server goes back to the release it ran (SWITCH-1).
 worker="not started (no keys yet)"
 if [ -s "$CRED_DIR/helius_api_key" ]; then
-  if systemctl restart zeroed-worker.service; then worker=restarted; else worker="failed to start"; fi
+  systemctl reset-failed zeroed-worker.service >/dev/null 2>&1 || true
+  systemctl restart zeroed-worker.service || rollback "it failed to start"
+  if ! why="$(holds)"; then rollback "$why"; fi
+  worker="restarted and up"
+  alert_clear worker-switch "CLEARED Zeroed host: the worker of ${commit:0:12} is up."
 fi
 log "Deployed ${commit:0:12}. Worker: $worker."
 notify "Zeroed host: deployed ${commit:0:12}. Worker $worker." || true

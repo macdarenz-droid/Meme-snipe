@@ -1,4 +1,4 @@
 {
   "offsite_backup": false,
-  "worker": "stub"
+  "worker": "release"
 }
