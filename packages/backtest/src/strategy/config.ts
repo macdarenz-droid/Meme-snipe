@@ -122,7 +122,8 @@ export interface StudyConfig {
   readonly preregistration: { readonly path: string; readonly sha256: string | null };
   /**
    * The SPA test over RES-4's family on the practice days (src/study/select.ts): ω floor as a share of the capital base
-   * per day, replicates and level. Proposed by BT-2 (no floor was registered with STATS-1c), for the stats review.
+   * per day, replicates and level. The floor 0.0005 is the stats reviewer's binding ruling (01FHfb, 2026-10-04); these
+   * values are written into the registered holdout plan and read back from it, never changed from practice-day ω.
    */
   readonly spa: { readonly seFloor: number; readonly replicates: number; readonly alpha: number };
   /** S0 seeds for G1 (walk-forward) and G2 (holdout, §14: >= 200). */
