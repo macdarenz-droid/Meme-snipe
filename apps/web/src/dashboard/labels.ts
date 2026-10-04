@@ -122,6 +122,76 @@ export const EXIT_LABEL: Record<ExitReason, string> = {
   blocked: 'Exit blocked',
 };
 
+/**
+ * A trade's reasons as the worker serves them, the book's exit codes (core lifecycle BookExitReason), in the exit
+ * labels above (APP-WORDS a). A code this app does not know has no label and is not shown: never a raw code on screen.
+ */
+export const TRADE_REASON_LABEL: Record<string, string> = {
+  stop: EXIT_LABEL['price-stop'],
+  trailing_stop: EXIT_LABEL.trail,
+  take_profit: EXIT_LABEL['take-profit'],
+  max_hold: EXIT_LABEL['time-stop'],
+  thesis_lost: EXIT_LABEL['thesis-stop'],
+  liquidity: EXIT_LABEL['liquidity-drop'],
+  emergency: 'Emergency exit',
+};
+
+/** Core risk's entry codes (RiskCode) in words, for a decision's reasons (APP-WORDS a). */
+export const RISK_CODE_LABEL: Record<string, string> = {
+  bankroll_invalid: 'Bankroll invalid',
+  sol_price_unknown: 'SOL price unknown',
+  sol_price_stale: 'SOL price stale',
+  mark_unknown: 'Position value unknown',
+  mark_stale: 'Position value stale',
+  size_below_minimum: 'Size below minimum',
+  max_open_positions: 'Open trade limit',
+  balance_unknown: 'Balance unknown',
+  balance_stale: 'Balance stale',
+  ops_reserve: 'SOL reserve',
+  stop_invalid: 'Stop invalid',
+  stop_too_wide: 'Stop too wide',
+  planned_risk: 'Risk per trade',
+  full_loss_kill_line: 'Kill line room',
+  full_loss_week: 'Weekly loss room',
+  daily_loss: 'Daily loss',
+  loss_cooldown: 'Loss cooldown',
+  loss_day_pause: 'Losses today',
+  loss_review: 'Loss review',
+  weekly_loss: 'Weekly loss',
+  weekly_review: 'Weekly review',
+  kill_switch: 'Kill switch',
+  wallet_below_kill_line: 'Wallet below kill line',
+  entries_per_day: 'Entries today',
+  entries_per_mint: 'Entries in this token',
+  reentry_after_stop: 'Re-entry after stop',
+  liquidity_unknown: 'Liquidity unknown',
+  liquidity_floor: 'Liquidity floor',
+  quote_stale: 'Quote stale',
+  quote_failed: 'Quote failed',
+  depth_cap: 'Pool depth',
+  cost_gate: 'Costs',
+  median_target_invalid: 'Target invalid',
+  expected_net_not_positive: 'Expected net not positive',
+  session_not_running: 'Session ended',
+  add_to_position: 'Already holding',
+  size_after_loss: 'Size after a loss',
+  regime_off: 'Market regime off',
+  regime_unknown: 'Market regime unknown',
+};
+
+/** The worker's own reasons for a decision (gate `worker`, and the stop's), in words. */
+export const WORKER_CODE_LABEL: Record<string, string> = {
+  'no-sol-price': 'SOL price unknown',
+  'no-market': 'No pool data',
+  'no-account': 'Account unknown',
+  'no-round-trip': 'No quote',
+  'risk-mark-failed': 'Position value unknown',
+  'size-mismatch': 'Size mismatch',
+  'hard-incomplete': 'Checks incomplete',
+  'no-atr': 'Not enough price bars',
+  unreadable: 'Reasons unreadable',
+};
+
 export const VENUE_LABEL: Record<Venue, string> = { 'pump-curve': 'Pump curve', pumpswap: 'PumpSwap' };
 
 export const UNIVERSES: Universe[] = ['U1', 'U2', 'U3'];
