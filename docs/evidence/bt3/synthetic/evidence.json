@@ -1,13 +1,13 @@
 {
-  "commit": "0d1e535e0bd9189c65e260058f008ef2d22ab919",
+  "commit": "315de05ffe9a131747bab44dd44f9201086de4e5",
   "configs": {
-    "fills": "fills-2",
+    "fills": "fills-3",
     "policy": "trial",
-    "research": "research-2"
+    "research": "research-4"
   },
-  "gate": true,
+  "gate": false,
   "kind": "pre-funding gate items 1 and 2",
-  "mode": "gate",
+  "mode": "synthetic",
   "pass": true,
   "replays": 10,
   "scenario": "conservative",
@@ -36,16 +36,16 @@
       ],
       "dir": "synthetic",
       "elapsedMs": [
-        1533,
-        1275,
-        1449,
-        1458,
-        1200,
-        1371,
-        1470,
-        1057,
-        1314,
-        1385
+        2349,
+        1921,
+        2303,
+        2560,
+        2026,
+        2363,
+        2781,
+        1913,
+        2378,
+        2380
       ],
       "filesChecked": 4,
       "hashes": [
@@ -74,12 +74,12 @@
         "failure": null,
         "ok": true
       },
-      "manifestSha256": "08c301b664f8cd7c89b631805471ec56eb1de8f6c2daff6ae02588b8aaa4adf2",
+      "manifestSha256": "ad9f1474875981e2130e988ae8acd2818fe3c488d11d5e8960817ba78f5844d0",
       "mirrorMatches": true,
       "pass": true,
       "release": "synthetic",
       "scannerRevisions": [],
-      "sha256sumsSha256": "31d45eba25428b3cca8f908fd31847ccf6e09eb33abc996cd7ca3ac07e213da2",
+      "sha256sumsSha256": "11c39c905ada2f89cf7489c6206db7f96fd73872bac303ce198f5e51dc07e376",
       "unreconciledIntents": 0,
       "window": {
         "from": "2026-09-20",

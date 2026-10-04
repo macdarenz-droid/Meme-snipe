@@ -1,11 +1,11 @@
 # BT-3 evidence: synthetic
 
-Pre-funding gate items 1 and 2. Gate mode: windows assembled with their 14 lead-in days and checked against SHA256SUMS.
+Pre-funding gate items 1 and 2. Synthetic mode: a gate-shaped synthetic window that proves the run itself; never gate evidence.
 
 - Result: **pass**
-- Commit: `0d1e535e0bd9189c65e260058f008ef2d22ab919`
+- Commit: `315de05ffe9a131747bab44dd44f9201086de4e5`
 - Replays per window: 10; scenario conservative; seed bt3
-- Configs: fills fills-2, research research-2, policy trial
+- Configs: fills fills-3, research research-4, policy trial
 - Scanner revisions: none recorded
 
 | Window | Release | Lead-in days | Decision-log hash | Crashes | Illegal | Unreconciled | Ledger replay | Decisions | Result |
