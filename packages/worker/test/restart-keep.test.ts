@@ -6,20 +6,27 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { RUG_CONFIG } from '../../core/src/config/rugs.ts';
-import { FILL_CONFIG, RESEARCH_CONFIG, TRIAL_POLICY, startSession } from '../../core/src/config/index.ts';
+import { FILL_CONFIG, RESEARCH_CONFIG, TRIAL_POLICY, exitsFor, startSession } from '../../core/src/config/index.ts';
 import type { StrategyContext } from '../../core/src/engine/index.ts';
 import { emptyBook } from '../../core/src/lifecycle/index.ts';
 import { LiveStrategy, RESTORE_KEY } from '../src/engine/strategy.ts';
 import { strategyConfig } from '../src/run/settings.ts';
 import { migrationKey, rugCheckKey, simKey } from '../../core/src/gates/index.ts';
-import { passingFacts } from '../../core/test/gates/world.ts';
+import { STREAMS } from '../../core/src/facts/index.ts';
+import { atr } from '../../core/src/exits/index.ts';
+import type { PoolState } from '../../core/src/amm/index.ts';
+import { swapLog } from '../../core/test/facts/swaps.ts';
+import { encode } from '../../core/test/chain/encode.ts';
+import { BuyEventLayout, SellEventLayout, toBase64 } from '../../core/src/chain/index.ts';
+import { feesKey } from '../src/engine/strategy.ts';
+import { FEE_CONTEXT, passingFacts } from '../../core/test/gates/world.ts';
 import { chainTx } from '../../core/test/facts/helpers.ts';
 import { transactionEvents } from '../../core/src/chain/index.ts';
 import { loadState, saveState } from '../src/persist/index.ts';
 import { runSeed } from '../src/run/seed-start.ts';
 import { CREATE_WALK_PAGES, PERSIST_FILE, type SeedRequest } from '../src/run/worker.ts';
 import { PUMP_MIGRATION_AUTHORITY } from '../src/run/sources.ts';
-import { DEV, MIGRATED_AT, MINT, Market, dueTimers, passingMarket, POOL_ADDRESS, SLOT, T, makeWorker, slotAt, tempState, virtualTimers } from './worker-harness.ts';
+import { DEV, MIGRATED_AT, MINT, Market, SUPPLY, dueTimers, passingMarket, POOL_ADDRESS, SLOT, T, makeWorker, slotAt, tempState, virtualTimers } from './worker-harness.ts';
 
 const emptyRpc = { getSignaturesForAddress: async () => [{ signature: 'before-the-range', slot: 0n, err: null, blockTime: 0 }], getTransaction: async () => null };
 const VIA = 'logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM';
@@ -49,15 +56,6 @@ const restoreInto = (candidates: unknown[], tails?: unknown, maxTails?: number, 
   return { strategy, out, feed };
 };
 const MIN = 60_000;
-/** A PumpSwap buy on the candidate's pool at `ms`, before-trade reserves base/quote (FEED-1's log event shape). */
-const buy = (ms: number, base: bigint, quote: bigint, sig: string) => [`logs:pump_amm:BuyEvent:${POOL_ADDRESS}`, {
-  event: { program: 'pump_amm', name: 'BuyEvent', data: { pool: POOL_ADDRESS, user: 'u', timestamp: BigInt(Math.floor(ms / 1000)), poolBaseTokenReserves: base, poolQuoteTokenReserves: quote, baseAmountOut: base / 100n, quoteAmountInWithLpFee: quote / 99n, quoteAmountIn: quote / 99n, virtualQuoteReserves: 0n } },
-  signature: sig,
-}] as const;
-const close = (kind: 'resume' | 'gap', toSlot: bigint | null = null) => [`coverage:trades:${POOL_ADDRESS}:${kind}`, { value: { fromSlot: SLOT - 15_000n, ...(kind === 'gap' ? { toSlot, reason: 'catch-up' } : {}), via: `logs:${POOL_ADDRESS}` }, source: 'worker' }] as const;
-const SAVED_BAR = { startMs: NOW - 5 * MIN, high: 2n, low: 1n, close: 2n };
-/** Restored 20 minutes after the save: four 5-minute periods of downtime after the saved bar's. */
-const downtime = () => restoreInto([{ ...GOOD, bars: [SAVED_BAR] }], undefined, undefined, NOW + 20 * MIN);
 const boot = async (h: H, via = VIA) => {
   const m = new Market(h);
   const started = h.worker.start();
@@ -135,49 +133,171 @@ describe('RESTART-KEEP: a restart keeps the candidates in their window', () => {
     expect(s.strategy.watchedPools().get(POOL_ADDRESS)).toEqual({ mint: MINT, held: false, fromSlot: GOOD.migrationSlot });
   });
 
-  it('rebuilds the downtime\'s bars from the pool\'s filled trades once the catch-up closes complete (a quiet period flat at the last price)', () => {
-    const w = downtime();
-    const t1 = buy(NOW + 1 * MIN, 1_000_000n, 2_000_000n, 'f1');
-    const t2 = buy(NOW + 11 * MIN, 1_000_000n, 3_000_000n, 'f2');
-    w.feed(t1[0], t1[1]);
-    w.feed(t2[0], t2[1]);
-    // A trade dated before the saved bar's period and one after the restore are not the downtime's.
-    const early = buy(NOW - 10 * MIN, 1_000_000n, 9_000_000n, 'f0');
-    w.feed(early[0], early[1]);
-    // The catch-up's opening gap is not its close; nothing merges yet.
-    w.feed(...close('gap'));
-    expect(w.strategy.barsOf(MINT).map((b) => b.startMs)).toEqual([SAVED_BAR.startMs]);
-    w.feed(...close('resume'));
-    const bars = w.strategy.barsOf(MINT);
-    const BAR = strategyConfig(startSession(TRIAL_POLICY).policy, FILL_CONFIG, RESEARCH_CONFIG).barMs;
-    // Every period from the saved bar's to the restore's: contiguous, as the ATR needs.
-    expect(bars.map((b) => b.startMs)).toEqual(Array.from({ length: (25 * MIN) / BAR }, (_, i) => SAVED_BAR.startMs + i * BAR));
-    const at = (ms: number) => bars.find((x) => x.startMs === Math.floor(ms / BAR) * BAR)!;
-    // A trade's period holds its prices before and after; a quiet period is flat at the last close before it.
-    const p1 = at(NOW + 1 * MIN);
-    expect(p1.high > p1.low).toBe(true);
-    expect(at(NOW - 1 * MIN)).toEqual({ startMs: Math.floor((NOW - MIN) / BAR) * BAR, high: SAVED_BAR.close, low: SAVED_BAR.close, close: SAVED_BAR.close });
-    const quiet = at(NOW + 6 * MIN);
-    expect([quiet.high, quiet.low, quiet.close]).toEqual([p1.close, p1.close, p1.close]);
-    expect(at(NOW + 19 * MIN).close).toBe(at(NOW + 11 * MIN).close);
-    expect(at(NOW + 11 * MIN).close > p1.close).toBe(true);
-    expect(bars[0]).toEqual(SAVED_BAR);
-  });
+  describe('the downtime\'s bars, rebuilt from the catch-up, equal a never-restarted worker\'s (parity)', () => {
+    const START = MIGRATED_AT + 20 * MIN;
+    /** Real PumpSwap swaps on the candidate's pool, at fixed moments: minutes 0..4 before the save, then the downtime. */
+    const at = (m: number, sec: number) => START + m * MIN + sec * 1_000;
+    const BEFORE = [0, 1, 2, 3, 4].map((m) => at(m + 1, 5));
+    const SAVE = at(5, 25);
+    // One in the saved last bar's minute after the save, two in one minute, a quiet minute (no trade, so no bar live),
+    // and one in the restart's own minute before the restart.
+    const DOWN = [at(5, 45), at(7, 5), at(7, 35), at(8, 5), at(10, 5), at(13, 10)];
+    const RESTART = at(13, 30);
+    const READ = at(13, 40);
+    const tick = async (t: ReturnType<typeof dueTimers>) => {
+      t.set(t.now() + 100);
+      for (let k = 0; k < 4; k++) await new Promise<void>((r) => setImmediate(r));
+    };
+    const until = async (t: ReturnType<typeof dueTimers>, m: Market, ms: number) => {
+      while (t.now() < ms) {
+        m.slot();
+        await tick(t);
+      }
+    };
+    const start = async (stateDir?: string) => {
+      const t = dueTimers(START);
+      const h = makeWorker({ ...(stateDir === undefined ? {} : { stateDir }), timers: t, seed: (r) => runSeed(r, { rpc: emptyRpc, timers: t }), config: { ZEROED_HEALTH_ADDR: `127.0.0.1:${port++}`, ZEROED_API_ADDR: `127.0.0.1:${port++}` } });
+      void h.worker.start();
+      for (let k = 0; k < 600 && !h.order.includes('start helius-ws'); k++) await tick(t);
+      const m = new Market(h);
+      m.slot();
+      m.offchain('coverage:creates:start', { fromSlot: slotAt(m.now), via: VIA });
+      for (let k = 0; k < 30; k++) await tick(t);
+      return { h, t, m };
+    };
+    type Trade = { readonly sig: string; readonly logs: string[]; readonly at: number; readonly data: Record<string, unknown>; readonly side: 'buy' | 'sell' };
+    /** The scripted trades, each continuing the pool's reserves from the account read. */
+    const script = (pre0: PoolState): Trade[] => {
+      let pre = pre0;
+      return [...BEFORE, ...DOWN].map((at, i) => {
+        const side = i % 3 === 2 ? 'sell' : 'buy';
+        const { logs, after, data } = swapLog({ pool: POOL_ADDRESS, coinCreator: DEV, supply: SUPPLY, pre, side, base: pre.baseReserve / 500n, atMs: at });
+        pre = after;
+        // Signatures that sort against chain order: at one moment the feed releases a fill's trades in id order.
+        return { sig: `pt${1000 - i}`, logs, at, data, side };
+      });
+    };
+    /** A trade's log on the feed: confirmed (the pool watch), or with `processed` the other commitment's copy (a new frame). */
+    const live = (h: H, x: Trade, slot: bigint, o: { backfilled?: boolean; processed?: boolean } = {}) =>
+      h.worker.feed.ingest('helius', { type: 'logs', signature: x.sig, slot, err: null, via: `logs:${POOL_ADDRESS}`, logs: x.logs, ...(o.processed === true ? {} : { commitment: 'confirmed' as const }) }, { receivedAt: h.timers.now(), ...(o.backfilled === true ? { backfilled: true, lookup: true, after: true } : {}) });
+    /** Shortlisted from its migration, the pool's trade stream started and one account read, then the trades before the save. */
+    const before = async () => {
+      const w = await start();
+      w.m.fact(`logs:pump:CompletePumpAmmMigrationEvent:${MINT}`, { event: { program: 'pump', name: 'CompletePumpAmmMigrationEvent', data: { mint: MINT, pool: POOL_ADDRESS, timestamp: BigInt(Math.floor(MIGRATED_AT / 1000)) } }, signature: MIG_SIG, txSlot: SLOT - 15_000n });
+      w.m.fact(migrationKey(MINT), passingFacts().get(migrationKey(MINT))!.value);
+      w.m.fact(feesKey(MINT), FEE_CONTEXT);
+      w.m.tradesStart(w.h.worker.feed.releasedThrough - 100n);
+      await until(w.t, w.m, START + 20_000);
+      w.m.accountsRead(w.h.worker.feed.releasedThrough);
+      const trades = script(w.m.chainState);
+      for (const x of trades.slice(0, BEFORE.length)) {
+        await until(w.t, w.m, x.at);
+        live(w.h, x, w.h.worker.feed.openSlot);
+      }
+      await until(w.t, w.m, SAVE);
+      return { ...w, trades };
+    };
 
-  it.each([
-    ['a lossy close (a bounded gap)', (w: ReturnType<typeof downtime>) => w.feed(...close('gap', SLOT))],
-    ['trades out of order', (w: ReturnType<typeof downtime>) => {
-      const late = buy(NOW + 2 * MIN, 1_000_000n, 2_500_000n, 'f3');
-      w.feed(late[0], late[1]);
-      w.feed(...close('resume'));
-    }],
-  ])('after %s the downtime\'s bars stay unknown: only the saved bar, never a guess', (_, end) => {
-    const w = downtime();
-    const t = buy(NOW + 11 * MIN, 1_000_000n, 3_000_000n, 'f2');
-    w.feed(t[0], t[1]);
-    end(w);
-    w.feed(...close('resume'));
-    expect(w.strategy.barsOf(MINT)).toEqual([SAVED_BAR]);
+    const parity = async (catchUp: (h: H, m: Market, down: readonly Trade[]) => void) => {
+      // A: never restarted, every trade live.
+      const a = await before();
+      for (const x of a.trades.slice(BEFORE.length)) {
+        await until(a.t, a.m, x.at);
+        live(a.h, x, a.h.worker.feed.openSlot);
+      }
+      // An account read in the restart's minute: a live sample after the downtime's last trade, in both.
+      await until(a.t, a.m, READ);
+      a.m.accountsRead(a.h.worker.feed.releasedThrough);
+      await until(a.t, a.m, RESTART + 50_000);
+      // B: saved and stopped after the trades before the save; restarted after the downtime; its catch-up releases them.
+      const b = await before();
+      await b.h.worker.stop();
+      const t2 = dueTimers(RESTART);
+      const h2 = makeWorker({ stateDir: b.h.stateDir, timers: t2, seed: (r) => runSeed(r, { rpc: emptyRpc, timers: t2 }), config: { ZEROED_HEALTH_ADDR: `127.0.0.1:${port++}`, ZEROED_API_ADDR: `127.0.0.1:${port++}` } });
+      void h2.worker.start();
+      for (let k = 0; k < 600 && !h2.order.includes('start helius-ws'); k++) await tick(t2);
+      const m2 = new Market(h2);
+      m2.slot();
+      m2.offchain('coverage:creates:start', { fromSlot: slotAt(m2.now), via: VIA });
+      // The read comes first here (the catch-up is slower): the rebuilt bar of that minute keeps the read's close.
+      m2.fact(feesKey(MINT), FEE_CONTEXT);
+      await until(t2, m2, READ);
+      m2.accountsRead(h2.worker.feed.releasedThrough);
+      await until(t2, m2, READ + 2_000);
+      // The catch-up opens its gap on the pool's trade stream, releases the downtime's trades, then closes.
+      m2.offchain(`coverage:${STREAMS.trades(POOL_ADDRESS)}:gap`, { fromSlot: SLOT - 15_000n, toSlot: null, reason: 'catch-up', via: `logs:${POOL_ADDRESS}` });
+      // The catch-up reads the pool from its migration: every trade, those before the save too.
+      catchUp(h2, m2, b.trades);
+      await until(t2, m2, RESTART + 50_000);
+      const out = { a: a.h.worker.strategy.barsOf(MINT), b: h2.worker.strategy.barsOf(MINT) };
+      await a.h.worker.stop();
+      await h2.worker.stop();
+      return out;
+    };
+    const K = BEFORE.length;
+    /** A trade's log with one amount off by a lamport: it no longer replays (`swapEventState`), as a corrupt read would. */
+    const corrupt = (x: Trade): Trade => {
+      const l = x.side === 'buy' ? BuyEventLayout : SellEventLayout;
+      const data = { ...x.data, ...(x.side === 'buy' ? { quoteAmountIn: (x.data['quoteAmountIn'] as bigint) + 1n } : { quoteAmountOut: (x.data['quoteAmountOut'] as bigint) + 1n }) };
+      const bytes = Uint8Array.from([...l.discriminator, ...encode([...l.base, ...l.added] as unknown as readonly (readonly [string, { idl: unknown }])[], data)]);
+      return { ...x, logs: [x.logs[0]!, `Program data: ${toBase64(bytes)}`, x.logs[2]!] };
+    };
+    const resume = (m: Market) => m.offchain(`coverage:${STREAMS.trades(POOL_ADDRESS)}:resume`, { fromSlot: SLOT - 15_000n, via: `logs:${POOL_ADDRESS}` });
+
+    it('a complete catch-up gives the same bars, bar for bar, quiet minutes and all (so the same ATR)', async () => {
+      const { a, b } = await parity((h, m, down) => {
+        for (const x of down) live(h, x, h.worker.feed.openSlot, { backfilled: true });
+        resume(m);
+      });
+      expect(a.length).toBeGreaterThan(BEFORE.length);
+      // The quiet minute has no bar in either.
+      expect(a.some((x) => x.startMs === at(9, 0))).toBe(false);
+      expect(b).toEqual(a);
+      const ux = exitsFor(TRIAL_POLICY.exits, 'U2');
+      expect(atr(b, ux.atrPeriod, ux.atrBarMs, RESTART + 30_000)).toBe(atr(a, ux.atrPeriod, ux.atrBarMs, RESTART + 30_000));
+    }, 120_000);
+
+    it('trades arriving in any order (one moment, ordered by id) are put back in chain order: the same bars', async () => {
+      const { a, b } = await parity((h, m, down) => {
+        for (const x of [...down].reverse()) live(h, x, h.worker.feed.openSlot, { backfilled: true });
+        resume(m);
+      });
+      expect(b).toEqual(a);
+    }, 120_000);
+
+    it('the same trade from a confirmed and a processed log, after a newer trade in its minute, counts once (the close stays)', async () => {
+      const { a, b } = await parity((h, m, down) => {
+        for (const x of down) live(h, x, h.worker.feed.openSlot, { backfilled: true });
+        // DOWN[1] again, after DOWN[2] in the same minute, as the other commitment's copy: a new frame, the same trade.
+        live(h, down[K + 1]!, h.worker.feed.openSlot, { backfilled: true, processed: true });
+        resume(m);
+      });
+      expect(b).toEqual(a);
+    }, 120_000);
+
+    it.each([
+      ['a lossy close', (h: H, m: Market, down: readonly Trade[]) => {
+        for (const x of down) live(h, x, h.worker.feed.openSlot, { backfilled: true });
+        m.offchain(`coverage:${STREAMS.trades(POOL_ADDRESS)}:gap`, { fromSlot: SLOT - 15_000n, toSlot: SLOT, reason: 'catch-up', via: `logs:${POOL_ADDRESS}` });
+        resume(m);
+      }],
+      // The last one: without it the rest still chain, so only the refusal keeps the downtime unknown.
+      ['a trade that does not replay', (h: H, m: Market, down: readonly Trade[]) => {
+        for (const [i, x] of down.entries()) live(h, i === down.length - 1 ? corrupt(x) : x, h.worker.feed.openSlot, { backfilled: true });
+        resume(m);
+      }],
+      ['a fill missing one trade (the reserves no longer chain)', (h: H, m: Market, down: readonly Trade[]) => {
+        for (const x of down.filter((_, i) => i !== K + 2)) live(h, x, h.worker.feed.openSlot, { backfilled: true });
+        resume(m);
+      }],
+    ])('after %s the downtime has no bars: only the bars saved before it, never a guess', async (_, catchUp) => {
+      const { a, b } = await parity(catchUp);
+      // The saved bars, and the live read's own bar after the restart; nothing in the downtime between them.
+      const saved = a.filter((x) => x.startMs < Math.floor(SAVE / MIN) * MIN);
+      expect(b.slice(0, saved.length)).toEqual(saved);
+      expect(b.filter((x) => x.startMs > Math.floor(SAVE / MIN) * MIN && x.startMs < Math.floor(RESTART / MIN) * MIN)).toEqual([]);
+      expect(b.length).toBeLessThan(a.length);
+    }, 120_000);
   });
 
   it('restores REC-1\'s tail watches: a live one keeps its pool watched, an ended one is dropped, past the cap logged', () => {

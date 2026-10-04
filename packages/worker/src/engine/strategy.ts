@@ -22,7 +22,7 @@ import {
   attemptId, blockhash, entryKey, intentId, mint as toMint, positionId, reservationId, signature,
 } from '../../../core/src/domain/index.ts';
 import { type AsOfEntry, type Decision, type MarketEvent, type Moment, type Strategy, type StrategyContext, compareMoments } from '../../../core/src/engine/index.ts';
-import { observedFeeContext } from '../../../core/src/fills/index.ts';
+import { observedFeeContext, type SwapEvent, swapEventState } from '../../../core/src/fills/index.ts';
 import {
   type EntryPlan, type ExitDecision, type FlowMinute, type ExitSettings, type ExitTracker, type Holding, type PriceBar,
   atr, checkStopDistance, decideExit, execPrice, liquidationValue, exitAttemptsOf, exitBookEvents, exitSettings, newTracker, noteAttempt,
@@ -329,6 +329,38 @@ export interface SavedCandidate {
   /** Its price bars (the entry's ATR stop needs a contiguous run of them), none started after the save. */
   readonly bars: readonly PriceBar[];
 }
+
+/** RESTART-KEEP: one filled swap of a restored candidate's downtime: its block time, reserves before and after, and the spot after. */
+interface GapTrade {
+  readonly atMs: number;
+  readonly pre: string;
+  readonly post: string;
+  readonly price: bigint;
+}
+
+/**
+ * The trades in chain order: each one's reserves before it are the previous one's after it. Null unless that orders
+ * every trade into one run with block times that never go back (a trade missing, a duplicate state or a clock stepping
+ * back cannot be proven).
+ */
+const chainOrder = (trades: readonly GapTrade[]): GapTrade[] | null => {
+  if (trades.length === 0) return [];
+  const byPre = new Map<string, GapTrade>();
+  for (const t of trades) {
+    if (byPre.has(t.pre)) return null;
+    byPre.set(t.pre, t);
+  }
+  const posts = new Set(trades.map((t) => t.post));
+  const firsts = trades.filter((t) => !posts.has(t.pre));
+  if (firsts.length !== 1) return null;
+  const out: GapTrade[] = [];
+  for (let t: GapTrade | undefined = firsts[0]; t !== undefined; t = byPre.get(t.post)) {
+    if (out.length > 0 && t.atMs < out.at(-1)!.atMs) return null;
+    out.push(t);
+    if (out.length > trades.length) return null;
+  }
+  return out.length === trades.length ? out : null;
+};
 
 /** RESTART-KEEP: a rejected candidate's pool watched after its window (REC-1), as saved. */
 export interface SavedTail {
@@ -679,6 +711,7 @@ export class LiveStrategy implements Strategy {
     // the guard keeps a save's as-of point from ever moving back if that changed (the index snapshot refuses it too).
     if (this.#lastMoment === null || compareMoments(e.moment, this.#lastMoment) > 0) this.#lastMoment = e.moment;
     if (COVERAGE_FACT.test(e.key)) this.#coverageFacts.push(e);
+    this.#gapBarsMerge(e.moment);
     this.#gapBarsClose(e);
     if (e.key === GRADUATES_KEY) this.#graduatesFact = parseGraduates(unwrap(e.value)) ?? this.#graduatesFact;
     this.#observe(e);
@@ -766,104 +799,113 @@ export class LiveStrategy implements Strategy {
       // The downtime's bars, from the saved last bar (or the migration) to the restore, come from the pool's filled trades.
       const barMs = this.#d.config.barMs;
       const fromMs = c.bars.at(-1)?.startMs ?? Math.floor(c.migratedAtMs / barMs) * barMs;
-      if (fromMs < atMs) this.#barGap.set(c.mint, { fromMs, untilMs: atMs, pending: new Map(), seen: new Set(), broken: false });
+      if (fromMs < atMs) this.#barGap.set(c.mint, { fromMs, untilMs: atMs, trades: [], seen: new Set(), broken: false, closed: null });
       out.push({ action: null, reasons: [CANDIDATE_RESTORED, this.#d.config.universe, c.mint, `migrated at ${c.migratedAtMs}`, `tries ${c.tries}`] });
     }
   }
 
   /**
    * RESTART-KEEP: a restored candidate's price bars over the downtime, rebuilt from its pool's filled trades (S0-ZERO's
-   * catch-up from the migration releases every trade, oldest first). Taken only when that catch-up closes complete
-   * (`resume`): after a lossy close, or trades out of order, the downtime's bars stay unknown and the ATR waits for a
-   * fresh contiguous run, never a guess.
+   * catch-up from the migration releases every trade). Taken only when that catch-up closes complete (`resume`) and
+   * the trades' reserves chain into one run: after a lossy close or a broken chain the downtime's bars stay unknown
+   * and the ATR waits for a fresh contiguous run, never a guess.
    */
-  readonly #barGap = new Map<string, { readonly fromMs: number; readonly untilMs: number; readonly pending: Map<number, PriceBar>; readonly seen: Set<string>; broken: boolean }>();
+  readonly #barGap = new Map<string, { readonly fromMs: number; readonly untilMs: number; readonly trades: GapTrade[]; readonly seen: Set<string>; broken: boolean; closed: { readonly at: Moment; readonly complete: boolean } | null }>();
 
   /** The price bars kept for a candidate (by mint) or a position (by id). */
   barsOf(key: string): readonly PriceBar[] {
     return this.#bars.get(key) ?? [];
   }
 
-  /** One filled (or live) swap inside a restored candidate's downtime: its prices before and after, as the producer's candles. */
-  #gapBarTrade(mint: string, e: MarketEvent, v: Record<string, unknown>, name: unknown, d: Record<string, unknown>): void {
+  /**
+   * One filled swap inside a restored candidate's downtime, sampled as a never-restarted worker samples it: the pool
+   * state right after the swap (FACTS-1's chain, `swapEventState`), at the spot formula of `#track`, in the swap's minute.
+   */
+  #gapBarTrade(mint: string, e: MarketEvent, v: Record<string, unknown>, ev: Record<string, unknown>, d: Record<string, unknown>): void {
     const g = this.#barGap.get(mint);
     if (g === undefined || typeof d['timestamp'] !== 'bigint') return;
     const atMs = Number(d['timestamp']) * 1000;
     if (atMs < g.fromMs || atMs >= g.untilMs) return;
-    const big = (k: string): bigint | null => (typeof d[k] === 'bigint' ? d[k] as bigint : null);
-    const base = big('poolBaseTokenReserves');
-    const quote = big('poolQuoteTokenReserves');
-    const virtual = big('virtualQuoteReserves') ?? 0n;
-    const moved = name === 'BuyEvent' ? [big('baseAmountOut'), big('quoteAmountInWithLpFee')] : [big('baseAmountIn'), big('quoteAmountOutWithoutLpFee')];
-    if (base === null || quote === null || moved[0] === null || moved[1] === null) {
-      g.broken = true;
-      return;
-    }
     // The same trade from a fetched transaction and a log line counts once.
-    const id = `${String(v['signature'] ?? e.id.split(':')[1])}:${base}:${quote}`;
+    const id = `${String(v['signature'] ?? e.id.split(':')[1])}:${String(d['poolBaseTokenReserves'])}:${String(d['poolQuoteTokenReserves'])}`;
     if (g.seen.has(id)) return;
     g.seen.add(id);
-    // Reserves in Buy/SellEvent are before the trade; after it the base moves by the base amount and the quote by the
-    // lp-adjusted amount (FACTS-1's candles, docs/research/historical-data.md).
-    const after = name === 'BuyEvent' ? { base: base - moved[0]!, quote: quote + moved[1]! } : { base: base + moved[0]!, quote: quote - moved[1]! };
-    if (base <= 0n || after.base <= 0n) {
+    let r: ReturnType<typeof swapEventState>;
+    try {
+      r = swapEventState(ev as unknown as SwapEvent);
+    } catch {
+      r = { ok: false, reason: 'undecodable swap' };
+    }
+    // A swap that does not replay leaves the live chain stale too (no sample there): the downtime cannot be proven.
+    if (!r.ok || r.after.baseReserve <= 0n) {
       g.broken = true;
       return;
     }
-    const pre = ((quote + virtual) * PRICE_SCALE) / base;
-    const post = ((after.quote + virtual) * PRICE_SCALE) / after.base;
-    const barMs = this.#d.config.barMs;
-    const start = Math.floor(atMs / barMs) * barMs;
-    const newest = Math.max(Number.NEGATIVE_INFINITY, ...g.pending.keys());
-    if (start < newest || pre <= 0n || post <= 0n) {
-      // Out of order (an on-chain clock stepping back) or no price: the rebuilt bars could not be proven.
+    const price = (effectiveQuoteReserve(r.after) * PRICE_SCALE) / r.after.baseReserve;
+    if (price <= 0n) {
       g.broken = true;
       return;
     }
-    const b = g.pending.get(start);
-    const hi = pre > post ? pre : post;
-    const lo = pre < post ? pre : post;
-    g.pending.set(start, b === undefined ? { startMs: start, high: hi, low: lo, close: post } : { startMs: start, high: hi > b.high ? hi : b.high, low: lo < b.low ? lo : b.low, close: post });
+    const pre = `${String(d['poolBaseTokenReserves'])}/${String(d['poolQuoteTokenReserves'] as bigint + (typeof d['virtualQuoteReserves'] === 'bigint' ? d['virtualQuoteReserves'] : 0n))}`;
+    g.trades.push({ atMs, pre, post: `${r.after.baseReserve}/${effectiveQuoteReserve(r.after)}`, price });
   }
 
   /**
-   * The close of a restored candidate pool's catch-up: complete (`resume`) merges the downtime's bars; a bounded (lossy)
-   * gap drops them. A period with no trade in a complete fill is flat at the last price (nothing traded in it).
+   * The close of a restored candidate pool's catch-up: complete (`resume`) or lossy (a bounded gap). The fill's trades
+   * and its close reach the feed at one moment, where events go in id order, so the close may come first: it is noted,
+   * and the bars are merged at the first event after that moment, once every trade of the fill is in.
    */
   #gapBarsClose(e: MarketEvent): void {
     const m = /^coverage:trades:(.+):(resume|gap)$/.exec(e.key);
     if (m === null) return;
     const mint = this.#mintOfPool.get(m[1]!);
     const g = mint === undefined ? undefined : this.#barGap.get(mint);
-    if (mint === undefined || g === undefined) return;
+    if (g === undefined || g.closed !== null) return;
     const v = unwrap(e.value);
     const payload = isObj(v) && isObj(v['value']) ? v['value'] : v;
     // The catch-up's own opening gap (toSlot null) is not its close.
     if (m[2] === 'gap' && isObj(payload) && payload['toSlot'] === null) return;
-    this.#barGap.delete(mint);
-    if (m[2] !== 'resume' || g.broken) return;
-    const barMs = this.#d.config.barMs;
-    const bars = this.#bars.get(mint) ?? [];
-    const kept = bars.filter((b) => b.startMs < g.fromMs || b.startMs >= g.untilMs);
-    const byStart = new Map(bars.map((b) => [b.startMs, b]));
-    const merged: PriceBar[] = [];
-    let carry: bigint | null = null;
-    for (let start = g.fromMs; start < g.untilMs; start += barMs) {
-      const p = g.pending.get(start);
-      const had = byStart.get(start);
-      let bar: PriceBar | null;
-      if (p !== undefined && had !== undefined) {
-        // The saved last bar ends with the filled trades after it; a bar live samples made after the restart keeps its close.
-        bar = { startMs: start, high: p.high > had.high ? p.high : had.high, low: p.low < had.low ? p.low : had.low, close: start === g.fromMs ? p.close : had.close };
-      } else bar = p ?? had ?? (carry === null ? null : { startMs: start, high: carry, low: carry, close: carry });
-      if (bar !== null) {
-        merged.push(bar);
-        carry = bar.close;
+    g.closed = { at: e.moment, complete: m[2] === 'resume' };
+  }
+
+  /**
+   * After a catch-up's close, at a later moment: a complete one merges the downtime's bars; after a lossy one, a broken
+   * reserve chain or a swap that does not replay, they stay unknown. A minute with no trade gets no bar, as live (`#track`
+   * samples only on a pool update).
+   */
+  #gapBarsMerge(now: Moment): void {
+    for (const [mint, g] of this.#barGap) {
+      if (g.closed === null || compareMoments(now, g.closed.at) <= 0) continue;
+      this.#barGap.delete(mint);
+      if (!g.closed.complete || g.broken) continue;
+      const ordered = chainOrder(g.trades);
+      // The fill's trades do not reach the feed in chain order (one moment, ordered by id): their reserves give the order,
+      // and prove none is missing between the first and the last. A broken chain leaves the downtime unknown.
+      if (ordered === null) continue;
+      const barMs = this.#d.config.barMs;
+      const pending = new Map<number, PriceBar>();
+      for (const t of ordered) {
+        const start = Math.floor(t.atMs / barMs) * barMs;
+        const b = pending.get(start);
+        pending.set(start, b === undefined ? { startMs: start, high: t.price, low: t.price, close: t.price } : { startMs: start, high: t.price > b.high ? t.price : b.high, low: t.price < b.low ? t.price : b.low, close: t.price });
       }
+      const bars = this.#bars.get(mint) ?? [];
+      const kept = bars.filter((b) => b.startMs < g.fromMs || b.startMs >= g.untilMs);
+      const byStart = new Map(bars.map((b) => [b.startMs, b]));
+      const merged: PriceBar[] = [];
+      for (let start = g.fromMs; start < g.untilMs; start += barMs) {
+        const p = pending.get(start);
+        const had = byStart.get(start);
+        // The saved last bar ends with the filled trades after it; a bar live samples made after the restart keeps its close.
+        const bar = p !== undefined && had !== undefined
+          ? { startMs: start, high: p.high > had.high ? p.high : had.high, low: p.low < had.low ? p.low : had.low, close: start === g.fromMs ? p.close : had.close }
+          : p ?? had;
+        if (bar !== undefined) merged.push(bar);
+      }
+      const all = [...kept, ...merged].sort((a, b) => a.startMs - b.startMs);
+      if (all.length > this.#d.config.keepBars) all.splice(0, all.length - this.#d.config.keepBars);
+      this.#bars.set(mint, all);
     }
-    const all = [...kept, ...merged].sort((a, b) => a.startMs - b.startMs);
-    if (all.length > this.#d.config.keepBars) all.splice(0, all.length - this.#d.config.keepBars);
-    this.#bars.set(mint, all);
   }
 
   /**
@@ -1067,7 +1109,7 @@ export class LiveStrategy implements Strategy {
     const d = ev['data'];
     const mint = typeof d['pool'] === 'string' ? this.#mintOfPool.get(d['pool']) : undefined;
     if (mint === undefined) return;
-    this.#gapBarTrade(mint, e, v, ev['name'], d);
+    this.#gapBarTrade(mint, e, v, ev, d);
     this.#tradeAt.set(mint, e.moment.receivedAt);
     const n = (k: string): number | null => (typeof d[k] === 'bigint' && (d[k] as bigint) >= 0n && (d[k] as bigint) <= 10_000n ? Number(d[k]) : null);
     const lp = n('lpFeeBasisPoints');
