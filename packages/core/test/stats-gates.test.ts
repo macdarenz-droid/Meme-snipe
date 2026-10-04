@@ -1,7 +1,7 @@
 // Every gate has a passing and a failing fixture; thresholds can be tightened but never loosened.
 import { describe, expect, test } from 'vitest';
 import {
-  createRng, evaluateDemotion, G2_SENSITIVITY_VARIANTS, G3_DEFAULTS, rejectMixGTest, studentTQuantile, variance, gateG0, gateG1, gateG2, gateG3, gateG4, gateG5, mean, sd, sharpeRatio,
+  createRng, evaluateDemotion, foldWorkerReasons, G2_SENSITIVITY_VARIANTS, G3_DEFAULTS, rejectMixGTest, studentTQuantile, variance, gateG0, gateG1, gateG2, gateG3, gateG4, gateG5, mean, sd, sharpeRatio,
   createHoldoutRegistry, nPower, registerHoldout, summarizeWalkForward, type WalkForwardSummary, sealHoldout, type DemotionInput, type HoldoutRegistry, type G0Input, type G1Input, type G2Input, type G2PowerResult, type G2Universe,
   type G3Input, type G4Input, type G5Input, type TradeOutcome, type HoldoutTrade, type TripleBarrierLabel,
   clopperPearsonUpper, evaluateRevalidation, VETO_COMPOSITE_LEVEL, VETO_COMPOSITE_ALPHA, g2Sensitivity, RETURN_FLOOR, scoreVetoCounterfactuals,
@@ -564,6 +564,31 @@ describe('G3 live dry-run consistency', () => {
     expect(doubled.status).toBe('fail');
     expect(doubled.reasons.join(' | ')).toMatch(/reject mix joint: G-test over 3 reasons/);
     expect(rejectMixGTest({ a: 5, b: 1 }, { a: 10 }).p).toBe(0);
+  });
+  test('the worker\'s own reject codes are compared as one reason (live and replay name them differently); every other reason still counts', () => {
+    // Same mix, but the worker's 70 rejects carry live codes on one side and replay codes on the other.
+    const bt = { H8: 4300, H9: 14_200, 'worker:market-data': 900, 'worker:not-evaluated': 600 };
+    const live = { H8: 210, H9: 700, 'worker:no-market': 50, 'worker:no-sol-price': 20 };
+    const same = gateG3({ ...g3Pass, rejectMix: { dryRun: live, backtest: bt } });
+    expect(same.checks.filter((c) => c.name.startsWith('reject mix')).map((c) => [c.name, c.passed])).toEqual([
+      ['reject mix H8', true], ['reject mix H9', true], ['reject mix worker', true], ['reject mix joint', true],
+    ]);
+    expect(same.checks.find((c) => c.name === 'reject mix joint')!.detail).toMatch(/^G-test over 3 reasons/);
+    // The codes and the worker share of each side stay in the report.
+    expect(same.metrics.workerShareDryRun).toBeCloseTo(70 / 980, 12);
+    expect(same.metrics.workerShareBacktest).toBeCloseTo(1500 / 20_000, 12);
+    expect(same.notes).toContain('worker rejects, compared as one reason: dry run 0.071429 (worker:no-market 50, worker:no-sol-price 20), backtest 0.075 (worker:market-data 900, worker:not-evaluated 600)');
+    // A real difference outside the worker still fails: the dry run doubles H8.
+    const shifted = gateG3({ ...g3Pass, rejectMix: { dryRun: { ...live, H8: 420, H9: 490 }, backtest: bt } });
+    expect(shifted.status).toBe('fail');
+    expect(shifted.reasons.join(' | ')).toMatch(/reject mix joint: G-test over 3 reasons/);
+    expect(shifted.reasons.join(' | ')).toMatch(/reject mix H8:/);
+    // A worker share that really differs fails too, folded or not.
+    const busy = gateG3({ ...g3Pass, rejectMix: { dryRun: { ...live, 'worker:no-market': 400 }, backtest: bt } });
+    expect(busy.reasons.join(' | ')).toMatch(/reject mix worker:/);
+    // Only the worker's codes fold: a gate's codes stay apart.
+    expect(foldWorkerReasons({ 'H11:stale': 1, 'H11:missing': 2, 'regime:unknown': 3, 'worker:no-quote': 4, 'worker:book-busy': 5, untyped: 6 }))
+      .toEqual({ 'H11:stale': 1, 'H11:missing': 2, 'regime:unknown': 3, worker: 9, untyped: 6 });
   });
   test('consistency levels stay at their registered values: 95% per-reason intervals, an explicit 90% predictive interval', () => {
     expect(G3_DEFAULTS.meanPredictiveLevel).toBe(0.9);

@@ -643,6 +643,20 @@ export const rejectMixGTest = (
   return { g, df, p: df === 0 ? 1 : incompleteGammaUpper(df / 2, Math.max(0, g) / 2) };
 };
 
+/**
+ * The reject mix as G3 compares it: every `worker:<code>` reason folded into one `worker`. The worker's own misses
+ * (market data, quotes, the read budget) are named by what the live worker and the backtest replay can each run out
+ * of, which differ by design, so code by code they would differ for no trading reason. Other reasons pass unchanged.
+ */
+export const foldWorkerReasons = (mix: Readonly<Record<string, number>>): Record<string, number> => {
+  const out: Record<string, number> = {};
+  for (const [r, n] of Object.entries(mix)) {
+    const k = r.startsWith('worker:') ? 'worker' : r;
+    out[k] = (out[k] ?? 0) + n;
+  }
+  return out;
+};
+
 /** One-sided (1 − α) Welch bounds on mean(a) − mean(b). */
 const welchBounds = (a: readonly number[], b: readonly number[], alpha = 0.05): { diff: number; lower: number; upper: number } => {
   const diff = mean(a) - mean(b);
@@ -725,16 +739,23 @@ export const gateG3 = (input: G3Input, overrides?: Partial<typeof G3_DEFAULTS>):
   } else if (dryTotal < th.minRejectsForMix) {
     short('reject mix', `${dryTotal} dry-run rejects (need >= ${th.minRejectsForMix})`);
   } else {
-    const reasons = [...new Set([...Object.keys(input.rejectMix.dryRun), ...Object.keys(input.rejectMix.backtest)])].sort();
+    const dry = foldWorkerReasons(input.rejectMix.dryRun);
+    const bt = foldWorkerReasons(input.rejectMix.backtest);
+    // The worker's codes stay visible: each side's per-code counts and its total worker share.
+    const workerCodes = (mix: Readonly<Record<string, number>>): string => Object.entries(mix).filter(([r]) => r.startsWith('worker:')).sort(([a], [b]) => (a < b ? -1 : 1)).map(([r, n]) => `${r} ${n}`).join(', ') || 'none';
+    metrics.workerShareDryRun = (dry['worker'] ?? 0) / dryTotal;
+    metrics.workerShareBacktest = (bt['worker'] ?? 0) / btTotal;
+    notes.push(`worker rejects, compared as one reason: dry run ${fmt(metrics.workerShareDryRun)} (${workerCodes(input.rejectMix.dryRun)}), backtest ${fmt(metrics.workerShareBacktest)} (${workerCodes(input.rejectMix.backtest)})`);
+    const reasons = [...new Set([...Object.keys(dry), ...Object.keys(bt)])].sort();
     for (const r of reasons) {
-      const kDry = input.rejectMix.dryRun[r] ?? 0;
-      const share = (input.rejectMix.backtest[r] ?? 0) / btTotal;
+      const kDry = dry[r] ?? 0;
+      const share = (bt[r] ?? 0) / btTotal;
       const ci = clopperPearsonInterval(kDry, dryTotal);
       c.add(`reject mix ${r}`, share >= ci.lower && share <= ci.upper,
         `dry run ${kDry}/${dryTotal}, 95% interval [${fmt(ci.lower)}, ${fmt(ci.upper)}] vs backtest share ${fmt(share)}`);
     }
     // One joint test of the whole reason distribution beside the per-reason intervals; failing either disagrees.
-    const g = rejectMixGTest(input.rejectMix.dryRun, input.rejectMix.backtest);
+    const g = rejectMixGTest(dry, bt);
     metrics.rejectMixG = g.g;
     metrics.rejectMixP = g.p;
     c.add('reject mix joint', g.p >= REJECT_MIX_ALPHA,
