@@ -2,7 +2,7 @@
 
 The one file a new supervisor reads to take over the Zeroed build. It says what the supervisor does, how the work runs, where everything stands now, what comes next and what waits on the owner. It is updated in place after each merge batch, ruling batch or milestone, and not while a PR is in its final CI run (a push to the integration branch makes every queued PR re-run CI).
 
-**Last updated:** Sun 4 Oct 2026, about 11:32 PM Melbourne (AEDT), by the new account's supervisor (session_012En9L5mnYQtEz7oyp1Eryf). §0 below is the 7:45 PM account-transition handover from the first account; "New account" right after this line is what changed since.
+**Last updated:** Sun 4 Oct 2026, about 11:42 PM Melbourne (AEDT), by the new account's supervisor (session_012En9L5mnYQtEz7oyp1Eryf). §0 below is the 7:45 PM account-transition handover from the first account; "New account" right after this line is what changed since.
 
 **New account (from about 8:00 PM, 4 Oct).**
 - Supervisor: session_012En9L5mnYQtEz7oyp1Eryf. It read AGENTS.md, CLAUDE.md, this file, all 22 session notes and the supervisor log, and re-listed the open PRs (heads matched §4).
@@ -138,7 +138,7 @@ The supervisor wrote this file, `PROJECT_STATE.md`, `docs/DECISIONS.md` and `doc
 
 ## 4. Current state (4 Oct, about 7:45 PM)
 
-### New-account queue (live; updated about 11:32 PM)
+### New-account queue (live; updated about 11:42 PM)
 
 **Merge order** (serial; each merge needs ready → update branch → green `check` (and `Ops end-to-end` for ops) → contains base → change identical to the reviewed SHA). For a stacked or re-based PR whose diff comparison is noisy, the identity check is `git merge-tree --write-tree <base> <reviewed SHA>` giving the same tree as the CI-tested head:
 
@@ -164,16 +164,16 @@ The supervisor wrote this file, `PROJECT_STATE.md`, `docs/DECISIONS.md` and `doc
 | 123 | WORKER-ORDER | a8e4e0b → a7ac102 (readFileSync import restored after the #118/#128/#142 merge) | PASS (worker/facts reviewer, ruling (a): entries line-first; 13 mutants over two rounds) | MERGED 16555b5 (~11:05 PM; check green on a7ac102; worker/facts PASS at e03a45a plus the one-line import fix) |
 | 152 | DATA-KEEP | 48b0e29 | PASS (data reviewer; supervisor checked the workflow) | needs base merge; after merge, dispatch once and record whether a restore moves last_accessed_at |
 | 137 | OPS-1i | b39b3b0 | PASS (ops reviewer; re-pinned after #145 at a8eb6b9) | after the PRACTICE-ON Deploy; #149 re-pins after it |
-| 120 | RES-5 | d7a0c90 | PASS (stats reviewer: day-confounded null calibration, frozen-rule CLI, wall.ts) | after #56 (it carries #56's 53cb188) |
+| 120 | RES-5 | d7a0c90 | PASS (stats reviewer: day-confounded null calibration, frozen-rule CLI, wall.ts) | MERGED 581fd2a (~11:41 PM; tree identical to merge-tree of d7a0c90 with the base) |
 | 139 | WORKER-1d | c940763 | PASS (worker/facts reviewer, clean full check 4585/4585) | needs base merge |
 | 142 | EXIT-1h | 448a03e | PASS (EXIT reviewer, 5/5 mutants) | MERGED 7e9270c (~10:31 PM; tree identical to merge-tree of 448a03e with the base) |
 | 146 | CORE-TIDY | 7172643 | PASS (run/CI reviewer) | needs base merge; follow-up pins the read count against a copying parse (mutant F4) |
 | 141 | WATCH-1d (+ #121 WATCH-1c) | 05b0d85 | PASS (risk reviewer, 11/11 mutants; #121's import union and carry mutants re-checked) | needs base merge (a risk delta check only if the merge touches watch.ts, strategy.ts or the carry/snapshot code); then close #121 as merged via #141 |
 | 133 | PAPER-1 | 3e3e1b3 | PASS (worker/facts: restart settle and the rest; run/CI: desk orphan_fill, late-buy guard, late-sell close) | after #123: the builder merges the base and carries #123's solUsd with its own legs; does not wait for #132 |
 | 154 | BT-WALL (+ BT-3 labelling) | 5e979e4 | FAIL (BT reviewer, W1: a synthetic dataset written without the flag reaches gate true through --dataset) | fixing: the writer always flags synthetic, and gate mode needs a fetched release |
-| 155 | OPS-SUMMARY | 07112fd | ops PASS; worker/facts FAIL (the first journal read can OOM, the worker guard and the tick catch-all are untested); fixing, plus the deploy step deploying from the deploy-tag commit and only after the tag step succeeded; the supervisor checked the deploy.yml step (runs reports.sh only when CLOUDFLARE_API_TOKEN and DATA_STORE_TOKEN exist; one secret via stdin; DATA_REPO as a var, re-added after any handoff deploy) | owner steps (private repo zeroed-data, fine-grained token, secret DATA_STORE_TOKEN, var DATA_REPO, Claude app access, run Deploy) go to the owner after merge |
+| 155 | OPS-SUMMARY | 07112fd → 17e4e50 | ops PASS at 17e4e50 (deploys the watchdog from refs/tags/deploy, only after the tag and tooling steps succeed); worker/facts re-review of the streamed fold, guard and tick tests running; the supervisor checked the deploy.yml step (runs reports.sh only when CLOUDFLARE_API_TOKEN and DATA_STORE_TOKEN exist; one secret via stdin; DATA_REPO as a var, re-added after any handoff deploy) | owner steps (private repo zeroed-data, fine-grained token, secret DATA_STORE_TOKEN, var DATA_REPO, Claude app access, run Deploy) go to the owner after merge |
 | 159 | GROWTH-SWEEP | ad4228c (+ base merge) | worker/facts review | streams deployers.jsonl at boot (1,036 → 432 MB peak on 4.7 days), booked.ts UTF-8 chunk boundary, runner whole-journal reads; front of the queue |
-| 156 | WORKER-ORDER-FIX | aba701b | worker/facts review (first in queue) | the #123 fix-forward (readJournalFills streams via journalLines); lifts the Deploy hold when merged |
+| 156 | WORKER-ORDER-FIX | aba701b | PASS (worker/facts, 2/3 mutants; chunk boundaries proven in journalLines itself) | the #123 fix-forward (readJournalFills streams via journalLines); lifts the Deploy hold when merged |
 | 157 | APP-HOME | 7d8281a | FAIL (run/CI: five served values untested — liquidity, order, weekly loss, ended state, the 200 cap); fixing, plus Start button only with a handler and "None" for a limit the policy lacks | wires Home Discovered (/discovered), the shell state and the Snipe Session card to the worker; then a new APK for the owner |
 | 118 | API-1 | cd9d60f → ded20fb | PASS (run/CI reviewer; hand merge of one strategy.ts block checked, 3/3 mutants, 4678 tests) | MERGED bfb2384 (~10:44 PM; check and e2e green on 88ee313, tree identical to merge-tree of ded20fb with the base); a code-only Deploy follows once its push CI is green |
 | 124 | RISK-LATCH | 5594923 | PASS (risk reviewer, 5/7 mutants, 2 equivalent or optional) | needs base merge; #147 then needs the risk reviewer's strategy.ts delta check; #132 keeps both DECISIONS sections |
