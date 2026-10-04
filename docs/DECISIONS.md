@@ -942,6 +942,7 @@ Built to the supervisor's revised spec and the consensus rulings that followed i
   - h is the smallest value on the grid 0.05, 0.10, …, 4.00 whose alarm rate within 100 episodes is ≤ 5% for every in-control model (risk.md §1.6's S2 and S3 net of v = 3.5%, and 10% at +100% / 90% at −5%), on seed 810 (20,000 paths, `SeedSequence.spawn(12)` streams).
   - Validation on seed 281011: each in-control alarm rate ≤ 5% + 2·SE (≈ 5.31%). A miss is reported as a failed calibration, never re-tuned on the validation seed.
   - Stress and change scenarios are reported, not tuned on. All results are synthetic.
+  - Amendment (training seed only, before the validation seed was run): the grid to 4.00 held no h; S2 net's 95th percentile of the path maximum is 7.05 (median 3.37). The grid is extended to 12.00 with the same rule. That an S2-like marginal strategy needs h ≈ 7 is itself a finding: on raw fat-tailed returns a 5% false-alarm CUSUM tolerates about seven full losses beyond drift.
 - **2026-10-04 · STATS-1g: external audit of core stats (S1, S3, S4); each item was reproduced before it was fixed.**
   - **S1, the G3 retained-expectancy budget.**
     - The bound subtracted four uncertain parts: the holdout lower bound, v⁺ and Δ⁺ at α/3 each, plus a 95% fill-error bound. The union bound is 3·(0.05/3) + 0.05 = 0.10, so only 90% joint coverage was established.
