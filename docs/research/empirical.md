@@ -301,7 +301,7 @@ All results are net of base costs for a $2 trade. The top 12 by mean are shown b
 
 ## Audit
 
-Independent review, 2026-10-03, by a sceptical reviewer. I recomputed the numbers with my own code (`scratchpad/audit/recompute.py`, numpy, different bootstrap seed and 4,000 resamples). I also ran two perturbation runs: `scratchpad/audit/analyze_allin.py`, which puts back all 43 excluded tokens, and `scratchpad/audit/mig1m_bias.py`, which puts back the runners dropped at mig+1m.
+Independent review, 2026-10-03, by a sceptical reviewer. I recomputed the numbers with my own code (`research/supervisor/audit/recompute.py`, numpy, different bootstrap seed and 4,000 resamples). I also ran two perturbation runs: `research/supervisor/audit/analyze_allin.py`, which puts back all 43 excluded tokens, and `research/supervisor/audit/mig1m_bias.py`, which puts back the runners dropped at mig+1m.
 
 **Verdict in one line:** the main conclusion holds. No tested rule has positive net expectancy, and nothing I changed flips any sign. Several specific numbers and method claims are weaker than stated, and they are listed below.
 

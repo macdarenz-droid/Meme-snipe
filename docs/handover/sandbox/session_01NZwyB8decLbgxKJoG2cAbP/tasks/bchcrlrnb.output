@@ -1,0 +1,12 @@
+caught: save before seed
+caught: no save at clean stop
+caught: state not in seed fact
+caught: labeller not restored
+caught: no reserve
+caught: no refund
+caught: cap ignores remaining
+caught: no periodic save
+caught: live coverage not kept
+caught: seed history coverage not kept
+
+[exited with code 0]

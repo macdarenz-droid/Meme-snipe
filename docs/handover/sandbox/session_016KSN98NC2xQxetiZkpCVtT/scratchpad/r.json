@@ -1,0 +1,110 @@
+{
+ "schemaVersion": 1,
+ "mode": "backtest",
+ "part": "research",
+ "generatedAt": "2026-10-03T14:57:08.336Z",
+ "runId": "f541dfe46faa-base-s0-1",
+ "codeCommit": "e3b3dd8fd8ab5639e634979f8cb27c823a81efcd",
+ "policyHash": "sha256:c026db59662bc95ae7ad8039ad6f3459d440bbe4f34e423176ece65a8b9b9730",
+ "dataset": {
+  "id": "sha256:f541dfe46faac61b020d6234bf5e027494118223801d22bffca69be6809bf11f",
+  "from": "2026-09-20T00:00:00.000Z",
+  "to": "2026-09-20T04:59:59.000Z"
+ },
+ "engine": {
+  "replays": 2,
+  "identicalReplays": true,
+  "crashes": 0,
+  "illegalStates": 0,
+  "unreconciledIntents": 0
+ },
+ "candidates": 1,
+ "entries": 0,
+ "gates": [
+  {
+   "mode": "backtest",
+   "gate": "G0",
+   "state": "pass",
+   "checks": [
+    {
+     "mode": "backtest",
+     "label": "Replays with identical decision logs",
+     "value": "2 runs, 1 hash",
+     "limit": "all identical",
+     "pass": true
+    },
+    {
+     "mode": "backtest",
+     "label": "Leak test (planted future marker)",
+     "value": "passed",
+     "limit": "passes",
+     "pass": true
+    },
+    {
+     "mode": "backtest",
+     "label": "Crashes",
+     "value": "0",
+     "limit": "0",
+     "pass": true
+    },
+    {
+     "mode": "backtest",
+     "label": "Illegal states",
+     "value": "0",
+     "limit": "0",
+     "pass": true
+    },
+    {
+     "mode": "backtest",
+     "label": "Unreconciled intents",
+     "value": "0",
+     "limit": "0",
+     "pass": true
+    }
+   ]
+  },
+  {
+   "mode": "backtest",
+   "gate": "G1",
+   "state": "not-run",
+   "checks": [
+    {
+     "mode": "backtest",
+     "label": "S0 exits",
+     "value": "time stop only (until EXIT-1)",
+     "limit": "research run",
+     "pass": true
+    }
+   ]
+  }
+ ],
+ "folds": [],
+ "results": [
+  {
+   "mode": "backtest",
+   "group": "S0",
+   "ci95": null,
+   "trades": 0,
+   "wins": 0,
+   "netUsd": "-0.003",
+   "maxDrawdownUsd": "0.003",
+   "meanNetUsd": null,
+   "equity": [
+    {
+     "mode": "backtest",
+     "at": "2026-09-20T01:57:28.000Z",
+     "cumNetUsd": "-0.003"
+    }
+   ],
+   "days": [
+    {
+     "mode": "backtest",
+     "date": "2026-09-20",
+     "netUsd": "-0.003",
+     "trades": 0
+    }
+   ]
+  }
+ ],
+ "trades": []
+}
