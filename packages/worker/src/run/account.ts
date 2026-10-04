@@ -95,6 +95,11 @@ export interface PaperTrade {
   partials?: { readonly atMs: number; readonly lamports: bigint; readonly pnl: MicroUsd }[];
   partialSold?: bigint;
   partialNet?: bigint;
+  /**
+   * ACCOUNT-RATE: the failed exit attempts (signatures) whose fees a partial sale has realized (in `partialNet`): not
+   * counted again as open-trade costs. Absent before any part.
+   */
+  partialFailedExits?: readonly string[];
 }
 
 export interface AccountState {
@@ -270,6 +275,9 @@ export class PaperAccount {
         (t.partials ??= []).push({ atMs: r.atMs, lamports, pnl: pnlUsd(lamports, solPrice ?? t.openSolPrice ?? null, lostShare as MicroUsd) });
         t.partialSold = p.sold;
         t.partialNet = exitNet;
+        // Every failed sell known now is in that net (the paper legs count each attempt's fee), so realized with the part.
+        t.partialFailedExits = Object.values(r.book.intents).filter((i) => i.intent.positionId === p.id && i.intent.purpose === 'exit')
+          .flatMap((i) => i.attempts.map((a) => a.signature as string)).filter((sig) => legs.attempts.get(sig)?.outcome === 'failed');
       }
     }
     if (t !== undefined && l !== null && p !== undefined && (p.status === 'closed' || r.closes === true) && t.closedAtMs === null) {
@@ -499,6 +507,8 @@ export class PaperAccount {
         for (const att of i.attempts) {
           const a = legs.attempts.get(att.signature);
           if (a === undefined || a.outcome !== 'failed') continue;
+          // A failed sell a partial sale has already realized (its fee is in that part): counted once, there.
+          if (t?.partialFailedExits?.includes(att.signature) === true) continue;
           const f = feeParts(legs.network, a.priorityFee, a.outcome);
           // Dated when the account first saw it (never before its send), so a fee sent before midnight and found after
           // counts in the day it was found; not yet noted by `settle`: now.

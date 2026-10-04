@@ -330,5 +330,60 @@ describe('ACCOUNT-RATE with RISK-PARTIAL: each entry fee counts once', () => {
     expect(fact.history.costs.filter((c) => c.kind === 'open_trade').map((c) => c.amount)).toEqual([lamportsToMicroUsd(net.tokenAccountRent as Lamports, PX, 'ceil')]);
     ledger.close();
   });
+
+  it('a failed sell before a partial sale is realized in that part and counted once; a failed sell after it is an open-trade cost, once', () => {
+    const net = FILL_CONFIG.network;
+    const PX = 123_456_789n as MicroUsd;
+    const fee = (priority: bigint, outcome: 'filled' | 'failed') => net.signaturesPerTx * net.baseFeePerSignature + priority + (outcome === 'filled' ? net.tip : 0n);
+    const at = (intentId: string, signature: string, purpose: 'entry' | 'exit', sol: bigint, priorityFee: bigint, outcome: 'filled' | 'failed', sentAtMs: number): PaperAttempt => ({
+      ...attempt(intentId, signature, purpose, sol), priorityFee, outcome, reason: outcome, fill: outcome === 'failed' ? null : attempt(intentId, signature, purpose, sol).fill, sentAtMs,
+    });
+    const e1 = at('in', 'e1', 'entry', 20_000_000n, 0n, 'filled', T - 3 * HOUR);
+    const f1 = at('out0', 'f1', 'exit', 0n, 500_000n, 'failed', T - 2 * HOUR);
+    const x1 = at('out1', 'x1', 'exit', 9_000_000n, 0n, 'filled', T - 2 * HOUR + 60_000);
+    const f2 = at('out2', 'f2', 'exit', 0n, 700_000n, 'failed', T - HOUR);
+    const entryFill = { ...fill('in', 'e1', 20_000_000n), fees: fee(0n, 'filled') };
+    const exitIntent = (id: string, sig: string, fills: object[]) => ({ intent: { id, purpose: 'exit', positionId: 'p1', mint: 'M' }, status: 'reconciled', fills, attempts: [{ signature: sig }] });
+    const bookAt = (stage: 0 | 1 | 2) => ({
+      positions: { p1: { id: 'p1', mint: 'M', entryIntentId: 'in', status: 'open', quantity: stage === 0 ? 1_000_000n : 500_000n, bought: 1_000_000n, sold: stage === 0 ? 0n : 500_000n, cost: 20_000_000n } },
+      intents: {
+        in: { intent: { id: 'in', purpose: 'entry', positionId: 'p1', mint: 'M' }, status: 'reconciled', fills: [entryFill], attempts: [{ signature: 'e1' }] },
+        out0: exitIntent('out0', 'f1', []),
+        ...(stage >= 1 ? { out1: exitIntent('out1', 'x1', [{ ...fill('out1', 'x1', 9_000_000n), tokens: 500_000n, fees: fee(0n, 'filled') }]) } : {}),
+        ...(stage >= 2 ? { out2: exitIntent('out2', 'f2', []) } : {}),
+      },
+    }) as unknown as Book;
+    const legsAt = (stage: 0 | 1 | 2): PaperLegs => ({ network: net, closedAccount: () => false, attempts: new Map([['e1', e1], ['f1', f1], ...(stage >= 1 ? [['x1', x1] as const] : []), ...(stage >= 2 ? [['f2', f2] as const] : [])]) });
+    const dir = tempState();
+    const a = new PaperAccount(accountFile(dir), usd(20), T - 30 * HOUR, 0n);
+    a.price(PX, T - 30 * HOUR);
+    a.filled({ ...base, purpose: 'entry', book: bookAt(0), atMs: T - 3 * HOUR }, PX, legsAt(0));
+    a.settle(bookAt(0), legsAt(0), PX, T - 2 * HOUR);
+    a.filled({ ...base, purpose: 'exit', book: bookAt(1), atMs: T - 2 * HOUR + 60_000, reasons: ['partial exit'] }, PX, legsAt(1));
+    const ledger = openLedger(join(dir, 'ledger.sqlite'), 'paper');
+    const rentUsd = lamportsToMicroUsd(net.tokenAccountRent as Lamports, PX, 'ceil');
+    const openCosts = (stage: 1 | 2) => a.fact(ledger, bookAt(stage), NO_LATCHES, PX, T, legsAt(stage)).history.costs.filter((c) => c.kind === 'open_trade').map((c) => c.amount);
+    const dayLoss = (stage: 1 | 2) => {
+      const fact = a.fact(ledger, bookAt(stage), NO_LATCHES, PX, T, legsAt(stage));
+      const marked = { ...fact.history, openPositions: fact.history.openPositions.map((x) => ({ ...x, mark: x.notional, markAtMs: T })) };
+      return riskSnapshot({
+        session: startSession(TRIAL_POLICY), mode: 'paper' as const, clock: { now: () => ({ slot: 1n, txIndex: 0, ixIndex: 0, receivedAt: T }) },
+        account: marked, latches: NO_LATCHES, market: { solPrice: { value: PX, atMs: T }, solBalance: fact.solBalance, regime: 'unknown' as const },
+      })!.dayLoss;
+    };
+    // F is in the part: its realized result subtracts F, and F is no open-trade cost.
+    const part = a.state.trades[0]!.partials![0]!;
+    const soldShare = (20_000_000n + fee(0n, 'filled')) - ((20_000_000n + fee(0n, 'filled')) * 500_000n + 1_000_000n - 1n) / 1_000_000n;
+    expect(part.lamports).toBe(9_000_000n - fee(0n, 'filled') - fee(500_000n, 'failed') - soldShare);
+    expect(openCosts(1)).toEqual([rentUsd]);
+    // Risk's day loss: the part's realized loss (F inside it) and the rent, nothing more (the remainder marked at its basis).
+    expect(dayLoss(1)).toBe(-part.pnl + rentUsd);
+    // A second failed sell after the part: an open-trade cost, once.
+    a.settle(bookAt(2), legsAt(2), PX, T - HOUR);
+    const f2Usd = lamportsToMicroUsd(fee(700_000n, 'failed') as Lamports, PX, 'ceil');
+    expect(openCosts(2).sort()).toEqual([f2Usd, rentUsd].sort());
+    expect(dayLoss(2)).toBe(-part.pnl + rentUsd + f2Usd);
+    ledger.close();
+  });
 });
 
