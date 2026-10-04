@@ -16,7 +16,7 @@ import {
   type Lease,
   type Stored,
 } from './logic.ts';
-import { NEW_RING, candidates, isRing, promote, type Candidate, type Ring } from './keyring.ts';
+import { NEW_RING, OFFER_ALERT_MS, candidates, isRing, promote, trackOffer, type Candidate, type Offer, type Ring } from './keyring.ts';
 
 interface DurableStorage {
   get<T>(key: string): Promise<T | undefined>;
@@ -193,6 +193,15 @@ export class Watchdog {
     const limitMs = Number(this.env.CHAIN_TIMEOUT_MS ?? 5000);
     const chain = stored ? await Promise.race([this.chain(stored.hb.wallet ?? null, limitMs).catch(() => none), new Promise<ChainView>((r) => setTimeout(() => r(none), limitMs))]) : none;
     const current = evaluate(stored, now, limits, chain);
+    // KEY-ROTATE-SAFE: a new key left on offer for 24 h is a second valid key nobody uses; say so until it is used or
+    // replaced.
+    for (const [base, what] of [[HB, 'heartbeat key'], [WH, 'webhook secret']] as const) {
+      const offer = await trackOffer((await s.get<Offer>(`offer:${base}`)) ?? null, await this.ring(base), this.env, base, now);
+      await s.put(`offer:${base}`, offer);
+      if (offer !== null && now - offer.since > OFFER_ALERT_MS) {
+        current.push({ key: `key_offer_${base}`, text: `Key offer pending: the new ${what} (slot ${offer.slot}) has not been used for ${Math.floor((now - offer.since) / 3_600_000)} h, so the server does not have it. Check DEPLOY_CODE and run Deploy again.` });
+      }
+    }
     const { lines, next } = planAlerts((await s.get<Record<string, ActiveAlert>>('alerts')) ?? {}, current, now, limits);
     await s.put('alerts', next);
     if (lines.length) await this.say(lines.join('\n'));

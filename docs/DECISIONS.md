@@ -1415,6 +1415,7 @@ A wrong `DEPLOY_CODE` broke it the same way, because that server downloads the b
   - reads the active slots from the unsigned `GET /slot`, which reveals only `legacy`, `A` or `B`, and asks up to 6 times while a new version spreads;
   - writes only the other slot, and never touches the active one;
   - fails closed with "nothing was rotated" when the watchdog does not answer.
+- **A stale offer alerts:** an offer left unused for more than 24 h raises the watchdog alert "Key offer pending" (supervisor condition), so it cannot sit unseen as a second valid key. The alert goes through `planAlerts` and clears when the offer is used or replaced; a replaced offer gets its own 24 h.
 - **The bundle to the server is unchanged:** the same names, and no host change.
 
 **Every case.**
@@ -1423,6 +1424,6 @@ A wrong `DEPLOY_CODE` broke it the same way, because that server downloads the b
 - Each rotation alternates A and B.
 
 **Evidence.**
-- `packages/ops/test/keyring.test.ts`: the never-received key changes nothing; first-use switch and retirement; bad or replayed beats do not switch; `GET /slot`. All fail on the code before this change.
+- `packages/ops/test/keyring.test.ts`: the never-received key changes nothing; first-use switch and retirement; bad or replayed beats do not switch; `GET /slot`; the 24 h offer alert, raised and then cleared by replacement and by use. All fail on the code before this change.
 - `ops-files.test.ts` "key rotation in the Deploy workflow": a stand-in gh and wrangler with a fake `/slot`. With no pickup, the single-slot names are never written (this fails on the old order); only the inactive slot is written; nothing happens when `/slot` does not answer.
 - `ops/test/e2e.sh`: the rotation section writes slot A. The locked `wrangler dev` run switches on the host's real heartbeats and Telegram request, and then refuses the old key and secret.

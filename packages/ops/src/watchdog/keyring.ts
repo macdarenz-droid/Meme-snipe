@@ -64,3 +64,21 @@ export const promote = async (ring: Ring, env: Record<string, unknown>, base: st
   const retired = typeof old === 'string' && old !== '' ? [...ring.retired, await sha256(old)] : [...ring.retired];
   return { active: slot, retired: retired.slice(-MAX_RETIRED) };
 };
+
+/** When the value now on offer in a slot was first seen: reset when the offer changes or goes. */
+export interface Offer {
+  readonly slot: Slot;
+  readonly hash: string;
+  readonly since: number;
+}
+
+/** An offer left unused this long is an alert: the server did not get the new key. */
+export const OFFER_ALERT_MS = 24 * 3_600_000;
+
+/** The offer record after a look at the slots now: kept while the same value is on offer, else new or none. */
+export const trackOffer = async (prev: Offer | null, ring: Ring, env: Record<string, unknown>, base: string, now: number): Promise<Offer | null> => {
+  const offer = (await candidates(ring, env, base)).find((c) => !c.active);
+  if (offer === undefined) return null;
+  const hash = await sha256(offer.value);
+  return prev !== null && prev.slot === offer.slot && prev.hash === hash ? prev : { slot: offer.slot, hash, since: now };
+};

@@ -69,7 +69,7 @@ function harness(env: Partial<Env>) {
     e = { ...e, ...over };
     dob = new Watchdog(state, e);
   };
-  return { mem, beat, raw, last: () => lastBody, resume, hook, slot, redeploy };
+  return { mem, beat, raw, last: () => lastBody, resume, hook, slot, redeploy, check: (now: number) => dob.check(now) };
 }
 
 describe('rotation on the watchdog', () => {
@@ -113,6 +113,35 @@ describe('rotation on the watchdog', () => {
     expect(await h.beat(K0)).toBe(401);
     // The ring holds hashes only, never a key.
     expect(JSON.stringify([...h.mem.entries()])).not.toMatch(new RegExp([K0, K1, K2].join('|')));
+    vi.unstubAllGlobals();
+  });
+
+  it('an offer unused for 24 h alerts as "key offer pending", and clears when it is used or replaced', async () => {
+    const H = 3_600_000;
+    const h = harness({ HEARTBEAT_HMAC_KEY: K0 });
+    expect(await h.beat(K0)).toBe(200);
+    const t0 = Date.now();
+    expect((await h.check(t0)).alerts).toEqual([]);
+    h.redeploy({ HEARTBEAT_HMAC_KEY_A: K1 });
+    // The heartbeat itself stays fresh in these checks: only the offer can alert.
+    const at = async (ms: number) => {
+      const st = h.mem.get('hb') as { hb: unknown; receivedAt: number };
+      h.mem.set('hb', { ...st, receivedAt: ms });
+      return h.check(ms);
+    };
+    expect((await at(t0)).alerts).toEqual([]);
+    expect((await at(t0 + 23 * H)).alerts).toEqual([]);
+    const late = await at(t0 + 25 * H);
+    expect(late.alerts).toEqual(['key_offer_HEARTBEAT_HMAC_KEY']);
+    expect(late.sent).toEqual([expect.stringMatching(/^ALERT Key offer pending: the new heartbeat key \(slot A\) has not been used for 25 h/)]);
+    // Replaced by a new Deploy: a new offer, its own 24 h.
+    h.redeploy({ HEARTBEAT_HMAC_KEY_A: K2 });
+    expect((await at(t0 + 26 * H)).sent).toEqual([expect.stringMatching(/^CLEARED Key offer pending/)]);
+    expect((await at(t0 + 49 * H)).alerts).toEqual([]);
+    expect((await at(t0 + 51 * H)).alerts).toEqual(['key_offer_HEARTBEAT_HMAC_KEY']);
+    // Used: the server beats with it, the offer is gone and the alert clears.
+    expect(await h.beat(K2)).toBe(200);
+    expect((await at(t0 + 52 * H)).sent).toEqual([expect.stringMatching(/^CLEARED Key offer pending/)]);
     vi.unstubAllGlobals();
   });
 
