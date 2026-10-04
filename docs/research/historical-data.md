@@ -300,6 +300,12 @@ Old Faithful refuses our scanner (see `docs/DECISIONS.md`, "The archive's block 
   - **Holdout condition:** 1 Oct lies inside the sealed holdout window. The comparison is a data-integrity check only, the same kind scan QA runs on every day. No gate, strategy, label or outcome metric is computed on it, and diagnosing a mismatch looks at row fields only.
 
   Only the report leaves the runner. The units are deleted once digested, and no raw Helius response is stored.
+- **Practice days over RPC (BT-2e).** `data-scan.yml` with `source: helius` and `max_credits` reads a day with `ci/rpc-day.sh` instead of the archive.
+  - The rest of the day job is unchanged: QA, parity, the determinism rescan (over RPC, `check-day.sh`), packaging and the publish step.
+  - `max_credits` (1 to 1,000,000) caps the whole day across chained runs. Each run and the rescan add their credits to `rpc-credits-used` in the day's progress, and each run may spend only what is left.
+  - A spent cap stops the chain (exit 3). A rate-limit back-off or the time budget stops it resumably (exit 75).
+  - The key reaches only the scan and QA steps, and only for helius. Progress is cached under `data-rpc-DAY`, apart from archive progress.
+  - Measured by the pilot: about 250k credits a day (plus up to about 18k for the planner's margin units), about 14 h of reading at the free plan's 5 blocks/s, so about 3 chained runs.
 - **Measured before the pilot** (public mainnet RPC, 25 blocks of the comparison unit, including the busiest pump blocks and the first block of each event kind):
   - every blocks, curve, amm, failed, movements and events row is byte-identical to the archive's;
   - 114 of 118 raw records are byte-identical.
