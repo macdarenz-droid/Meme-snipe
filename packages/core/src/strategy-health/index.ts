@@ -56,7 +56,13 @@ export const HEALTH_DEFAULTS = { kappa: 0.005, h: 7.1, watchFraction: 0.5, requa
 export type HealthEvent =
   | { readonly type: 'entry'; readonly seq: number; readonly episodeId: string; readonly identity: StrategyIdentity; readonly entryLamports: bigint }
   | { readonly type: 'flow'; readonly seq: number; readonly episodeId: string; readonly lamports: bigint }
-  | { readonly type: 'final'; readonly seq: number; readonly episodeId: string; readonly outcome: 'closed' | 'failed-entry' | 'dropped' };
+  | { readonly type: 'final'; readonly seq: number; readonly episodeId: string; readonly outcome: 'closed' | 'failed-entry' | 'dropped' }
+  /**
+   * A settlement that landed after the episode was observed (a late sell or fee, PAPER-2). It counts at once, as a
+   * correction of that episode: S moves by −lamports/entry (no κ: it is not a new episode), the state machine is
+   * re-evaluated, and the episode's recorded net follows. Under the golden rule a late loss is never dropped.
+   */
+  | { readonly type: 'late'; readonly seq: number; readonly episodeId: string; readonly lamports: bigint };
 
 export interface OpenEpisode {
   readonly identity: StrategyIdentity;
@@ -81,16 +87,25 @@ export interface LineageHealth {
   readonly pauses: number;
 }
 
+/** An episode already final: what a late settlement corrects. A dropped episode has no lineage and takes none. */
+export interface FinishedEpisode {
+  readonly lineage: string | null;
+  readonly entryLamports: bigint;
+  readonly netLamports: bigint;
+}
+
 export interface HealthState {
   readonly lastSeq: number;
   readonly open: Readonly<Record<string, OpenEpisode>>;
-  readonly finished: Readonly<Record<string, true>>;
+  readonly finished: Readonly<Record<string, FinishedEpisode>>;
   /** Fingerprint of every applied event by sequence: a re-delivered event is ignored, a conflicting one refused. */
   readonly seen: Readonly<Record<number, string>>;
   readonly lineages: Readonly<Record<string, LineageHealth>>;
 }
 
 export interface HealthObservation {
+  /** 'episode' when an episode became final; 'correction' when a late settlement corrected one already observed. */
+  readonly kind: 'episode' | 'correction';
   readonly seq: number;
   readonly episodeId: string;
   readonly lineage: string;
@@ -120,6 +135,7 @@ const fingerprint = (e: HealthEvent): string => {
     case 'entry': return JSON.stringify(['entry', e.episodeId, identityKey(e.identity), e.entryLamports.toString()]);
     case 'flow': return JSON.stringify(['flow', e.episodeId, e.lamports.toString()]);
     case 'final': return JSON.stringify(['final', e.episodeId, e.outcome]);
+    case 'late': return JSON.stringify(['late', e.episodeId, e.lamports.toString()]);
   }
 };
 
@@ -152,6 +168,23 @@ const advance = (prev: LineageHealth | undefined, identity: StrategyIdentity, z:
   return { identity, s, machine, status: registered ? machine : 'unregistered', observations: (prev?.observations ?? 0) + 1, cleanRun, pauses };
 };
 
+/** A late settlement on a lineage: S moves by −Δz without κ, the state machine follows, no new episode is counted. */
+const correct = (prev: LineageHealth, dz: number, c: HealthConfig): LineageHealth => {
+  const watch = c.watchFraction * c.h;
+  const s = Math.max(0, prev.s - dz);
+  let { machine, cleanRun, pauses } = prev;
+  if (s >= c.h) {
+    if (machine !== 'paused') pauses++;
+    machine = 'paused';
+    cleanRun = 0;
+  } else if (machine === 'requalifying') {
+    if (s >= watch) cleanRun = 0;
+  } else if (machine !== 'paused') {
+    machine = s >= watch ? 'watch' : 'active';
+  }
+  return { ...prev, s, machine, status: prev.status === 'unregistered' ? 'unregistered' : machine, cleanRun, pauses };
+};
+
 /**
  * Applies one event. Pure and deterministic: the same events give the same states, observations and transitions,
  * whether in the worker or the backtest, and across a restart from any saved state (`healthStateToJson`).
@@ -168,6 +201,19 @@ export const reduceHealth = (state: HealthState, e: HealthEvent, config: HealthC
       : `health event seq ${e.seq} conflicts with the event already applied at that sequence`);
   }
   const base = { ...state, lastSeq: e.seq, seen: { ...state.seen, [e.seq]: fp } };
+  if (e.type === 'late') {
+    const done = state.finished[e.episodeId];
+    if (!done) throw new RangeError(`late settlement for episode ${e.episodeId}, which is ${state.open[e.episodeId] ? 'still open: book it as a flow' : 'unknown'}`);
+    if (done.lineage === null) throw new RangeError(`late settlement for episode ${e.episodeId}, which was dropped (nothing was sent): a cost is never hidden`);
+    const prev = state.lineages[done.lineage]!;
+    const dz = Number(e.lamports) / Number(done.entryLamports);
+    const next = correct(prev, dz, config);
+    return {
+      state: { ...base, finished: { ...state.finished, [e.episodeId]: { ...done, netLamports: done.netLamports + e.lamports } }, lineages: { ...state.lineages, [done.lineage]: next } },
+      observation: { kind: 'correction', seq: e.seq, episodeId: e.episodeId, lineage: done.lineage, z: dz, s: next.s, from: prev.status, to: next.status },
+      duplicate: false,
+    };
+  }
   const open = state.open[e.episodeId];
   if (e.type === 'entry') {
     if (open || state.finished[e.episodeId]) throw new RangeError(`episode ${e.episodeId} already has an entry`);
@@ -181,19 +227,20 @@ export const reduceHealth = (state: HealthState, e: HealthEvent, config: HealthC
     return { state: { ...base, open: { ...state.open, [e.episodeId]: ep } }, observation: null, duplicate: false };
   }
   const { [e.episodeId]: _done, ...rest } = state.open;
-  const closed = { ...base, open: rest, finished: { ...state.finished, [e.episodeId]: true as const } };
   if (e.outcome === 'dropped') {
     if (open.flows > 0) throw new RangeError(`episode ${e.episodeId} is dropped but carried ${open.flows} flows (net ${open.netLamports}): a cost is never hidden`);
-    return { state: closed, observation: null, duplicate: false };
+    const dropped: FinishedEpisode = { lineage: null, entryLamports: open.entryLamports, netLamports: 0n };
+    return { state: { ...base, open: rest, finished: { ...state.finished, [e.episodeId]: dropped } }, observation: null, duplicate: false };
   }
   // Not clipped: a blocked exit that also paid failed-attempt fees is below −100%, and counts as such.
   const z = Number(open.netLamports) / Number(open.entryLamports);
   const key = lineageKey(open.identity);
   const prev = state.lineages[key];
   const next = advance(prev, open.identity, z, config);
+  const done: FinishedEpisode = { lineage: key, entryLamports: open.entryLamports, netLamports: open.netLamports };
   return {
-    state: { ...closed, lineages: { ...state.lineages, [key]: next } },
-    observation: { seq: e.seq, episodeId: e.episodeId, lineage: key, z, s: next.s, from: prev?.status ?? null, to: next.status },
+    state: { ...base, open: rest, finished: { ...state.finished, [e.episodeId]: done }, lineages: { ...state.lineages, [key]: next } },
+    observation: { kind: 'episode', seq: e.seq, episodeId: e.episodeId, lineage: key, z, s: next.s, from: prev?.status ?? null, to: next.status },
     duplicate: false,
   };
 };

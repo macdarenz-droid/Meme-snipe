@@ -47,7 +47,7 @@ describe('strategy health in the worker (observation only)', () => {
     expect(lines).toHaveLength(1);
     const entry = Object.values(h.worker.book.intents).find((i) => i.intent.purpose === 'entry')!;
     const net = closedTrade(h.stateDir).netLamports!;
-    expect(lines[0]).toMatchObject({ episode: entry.intent.id, z: Number(net) / Number(entry.intent.purpose === 'entry' ? entry.intent.spend : 0n), from: null, to: 'unregistered', display: 'health: unregistered (observed; entries not stopped)' });
+    expect(lines[0]).toMatchObject({ observation: 'episode', episode: entry.intent.id, z: Number(net) / Number(entry.intent.purpose === 'entry' ? entry.intent.spend : 0n), from: null, to: 'unregistered', display: 'health: unregistered (observed; entries not stopped)' });
     expect(lines[0]!['lineage']).toMatch(/^paper\|U[12]$/);
     expect(Math.sign(Number(lines[0]!['z']))).toBe(Math.sign(Number(net)));
     expect(FILL_CONFIG.network.tokenAccountRent).toBeGreaterThan(0n);
@@ -116,6 +116,16 @@ describe('when the worker counts an episode as final (unit)', () => {
     const b = book('closed', [intent('e1', 'entry', 'reconciled', 1), intent('x1', 'exit', 'reconciled', 1)]);
     expect(m.update(b, legs([att('s1', 'x1', 'in_flight')]), trades)).toEqual([]);
     expect(m.update(b, legs([att('s1', 'x1', 'failed')]), trades).map((o) => o.z)).toEqual([-0.25]);
+  });
+
+  it('a late settlement after the episode was observed counts at once as a correction (PAPER-2)', () => {
+    const m = monitor();
+    const b = book('closed', [intent('e1', 'entry', 'reconciled', 1)]);
+    expect(m.update(b, legs([]), trades).map((o) => [o.kind, o.z])).toEqual([['episode', -0.25]]);
+    const later = [{ ...trades[0]!, netLamports: -SPEND / 4n - 20_000n }] as unknown as PaperTrade[];
+    expect(m.update(b, legs([]), later).map((o) => [o.kind, o.z])).toEqual([['correction', -20_000 / Number(SPEND)]]);
+    expect(m.update(b, legs([]), later)).toEqual([]);
+    expect(m.state.finished['e1']!.netLamports).toBe(-SPEND / 4n - 20_000n);
   });
 
   it('a trade the account closed while the book still holds the position is not final', () => {

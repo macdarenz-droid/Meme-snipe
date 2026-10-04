@@ -56,13 +56,21 @@ export const finalEpisodes = (book: Book, src: EpisodeSources): FinalEpisode[] =
 
 /**
  * Events for the final episodes the state has not seen yet, numbered on from the state's last sequence. Each episode
- * is emitted whole (entry, flows, final), so the state never holds a half-built episode from this path.
+ * is emitted whole (entry, flows, final), so the state never holds a half-built episode from this path. An episode
+ * already observed whose settled net has changed since (a late sell or fee, PAPER-2) gets a `late` event for the
+ * difference, so a late loss counts at once.
  */
 export const newEpisodeEvents = (state: HealthState, episodes: readonly FinalEpisode[]): HealthEvent[] => {
   let seq = state.lastSeq;
   const out: HealthEvent[] = [];
   for (const e of episodes) {
-    if (state.finished[e.episodeId] || state.open[e.episodeId]) continue;
+    const done = state.finished[e.episodeId];
+    if (done) {
+      const net = e.flows.reduce((t, f) => t + f, 0n);
+      if (done.lineage !== null && net !== done.netLamports) out.push({ type: 'late', seq: ++seq, episodeId: e.episodeId, lamports: net - done.netLamports });
+      continue;
+    }
+    if (state.open[e.episodeId]) continue;
     out.push({ type: 'entry', seq: ++seq, episodeId: e.episodeId, identity: e.identity, entryLamports: e.entryLamports });
     for (const f of e.flows) out.push({ type: 'flow', seq: ++seq, episodeId: e.episodeId, lamports: f });
     out.push({ type: 'final', seq: ++seq, episodeId: e.episodeId, outcome: e.outcome });

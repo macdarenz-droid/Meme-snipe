@@ -165,7 +165,7 @@ describe('strategy health reducer (observation only)', () => {
     const r = run(log().entry('d').final('d', 'dropped').events);
     expect(r.observations).toEqual([]);
     expect(r.state.lineages[KEY]).toBeUndefined();
-    expect(r.state.finished['d']).toBe(true);
+    expect(r.state.finished['d']).toEqual({ lineage: null, entryLamports: ENTRY, netLamports: 0n });
     expect(() => run(log().entry('d').flow('d', -5_000n).final('d', 'dropped').events)).toThrow(/a cost is never hidden/);
   });
 
@@ -267,11 +267,64 @@ describe('episodes from the book (step 3)', () => {
     const st = run(l.events).state;
     const c = compactHealthState(st);
     expect(Object.keys(c.seen).map(Number)).toEqual([4, 5]);
-    expect(c.finished['a']).toBe(true);
+    expect(c.finished['a']).toMatchObject({ lineage: KEY, entryLamports: ENTRY });
     // The open episode carries on from the compacted state exactly as from the full one.
     const more = [{ type: 'flow', seq: 6, episodeId: 'b', lamports: ENTRY / 2n }, { type: 'final', seq: 7, episodeId: 'b', outcome: 'closed' }] as const;
     expect(replayHealth(more, CFG, c).observations).toEqual(replayHealth(more, CFG, st).observations);
     // A re-delivery of a compacted-away event is refused as out of order rather than silently ignored.
     expect(() => reduceHealth(c, l.events[0]!, CFG)).toThrow(/durable-sequence order/);
+  });
+});
+
+describe('late settlements after an episode was observed (PAPER-2; golden rule)', () => {
+  const late = (seq: number, episodeId: string, lamports: bigint): HealthEvent => ({ type: 'late', seq, episodeId, lamports });
+
+  test('a late loss counts at once as a correction: S moves by −Δz without κ, no new episode is counted', () => {
+    const l = log().trade('a', 0.1);
+    const before = run(l.events).state;
+    const step = reduceHealth(before, late(99, 'a', -ENTRY / 2n), CFG);
+    expect(step.observation).toEqual({ kind: 'correction', seq: 99, episodeId: 'a', lineage: KEY, z: -0.5, s: 0.5, from: 'active', to: 'active' });
+    expect(step.state.lineages[KEY]).toMatchObject({ s: 0.5, observations: 1 });
+    expect(step.state.finished['a']!.netLamports).toBe(before.finished['a']!.netLamports - ENTRY / 2n);
+    // A late loss can move an active lineage to watch, and a late gain back to active.
+    const w = reduceHealth(before, late(98, 'a', -4n * ENTRY), CFG).state.lineages[KEY]!;
+    expect(w).toMatchObject({ s: 4, machine: 'watch', status: 'watch' });
+    expect(reduceHealth(reduceHealth(before, late(98, 'a', -4n * ENTRY), CFG).state, late(99, 'a', 2n * ENTRY), CFG).state.lineages[KEY]).toMatchObject({ s: 2, machine: 'active' });
+    // A late gain lowers S, never below 0.
+    expect(reduceHealth(step.state, late(100, 'a', ENTRY), CFG).state.lineages[KEY]!.s).toBe(0);
+  });
+
+  test('a late loss can move a lineage to watch or paused, and breaks a requalifying clean run', () => {
+    const l = log();
+    for (let i = 0; i < 7; i++) l.trade(`e${i}`, -0.95); // S 6.615: watch
+    const w = run(l.events).state;
+    expect(w.lineages[KEY]!.machine).toBe('watch');
+    const p = reduceHealth(w, late(99, 'e0', -ENTRY / 2n), CFG).state.lineages[KEY]!;
+    expect(p).toMatchObject({ machine: 'paused', pauses: 1, status: 'paused' });
+    const q = log();
+    for (let i = 0; i < 8; i++) q.trade(`e${i}`, -0.95);
+    for (let i = 0; i < 5; i++) q.trade(`c${i}`, 0.05);
+    const r = run(q.events).state;
+    expect(r.lineages[KEY]).toMatchObject({ machine: 'requalifying', cleanRun: 5 });
+    expect(reduceHealth(r, late(99, 'c4', -4n * ENTRY), CFG).state.lineages[KEY]).toMatchObject({ machine: 'requalifying', cleanRun: 0 });
+  });
+
+  test('a late settlement on an open, dropped or unknown episode is refused', () => {
+    const st = run(log().entry('o').entry('d').final('d', 'dropped').events).state;
+    expect(() => reduceHealth(st, late(99, 'o', -1n), CFG)).toThrow(/still open: book it as a flow/);
+    expect(() => reduceHealth(st, late(99, 'd', -1n), CFG)).toThrow(/was dropped/);
+    expect(() => reduceHealth(st, late(99, 'zz', -1n), CFG)).toThrow(/which is unknown/);
+  });
+
+  test('newEpisodeEvents emits a late event exactly when an observed episode\'s settled net changed', () => {
+    const ep = (net: bigint) => [{ episodeId: 'a', identity: ID, entryLamports: ENTRY, flows: [net], outcome: 'closed' as const, atMs: 1 }];
+    const first = replayHealth(newEpisodeEvents(initialHealthState(), ep(-ENTRY / 4n)), CFG);
+    expect(newEpisodeEvents(first.state, ep(-ENTRY / 4n))).toEqual([]);
+    const more = newEpisodeEvents(first.state, ep(-ENTRY / 4n - 15_000n));
+    expect(more).toEqual([{ type: 'late', seq: first.state.lastSeq + 1, episodeId: 'a', lamports: -15_000n }]);
+    const after = replayHealth(more, CFG, first.state);
+    expect(after.observations).toMatchObject([{ kind: 'correction', z: -15_000 / Number(ENTRY) }]);
+    // Applied once: the same settled net afterwards emits nothing more.
+    expect(newEpisodeEvents(after.state, ep(-ENTRY / 4n - 15_000n))).toEqual([]);
   });
 });
