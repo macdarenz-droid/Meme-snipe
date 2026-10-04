@@ -750,13 +750,17 @@ export class LiveStrategy implements Strategy {
   }
 
   /** The pool market of a mint as of now: the gate pool fact and the fee context. */
-  #market(ctx: StrategyContext, mint: string): Market | string {
+  /**
+   * `carry: false` for entries (risk review of #121): a candidate gets no verify read, so a carry would let a silent
+   * stream stall or a vault transfer date its quote without bound; an entry judges the pool fact's own moment.
+   */
+  #market(ctx: StrategyContext, mint: string, o: { readonly carry: boolean } = { carry: true }): Market | string {
     const p = ctx.lookup(poolKey(mint));
     const sr = ctx.lookup(snapshotKey(mint));
     const snap = sr.ok ? parseSnapshotFact(unwrap(sr.value)) : null;
     const pool = p.ok ? parsePool(p.value) : null;
     const cr = ctx.lookup(carryKey(mint));
-    const choice = chooseMarket(pool, snap, cr.ok ? parseCarryFact(unwrap(cr.value)) : null);
+    const choice = chooseMarket(pool, snap, o.carry && cr.ok ? parseCarryFact(unwrap(cr.value)) : null);
     // WATCH-1: a snapshot newer than the pool fact (carried or not) is the market, reserves and fee context alike.
     if (choice.kind === 'snapshot') {
       this.#notePool(mint, choice.snap.pool);
@@ -863,7 +867,7 @@ export class LiveStrategy implements Strategy {
     const cancel = (why: string) => out.push({ action: { type: 'intent', intentId: id, event: { type: 'cancel' } }, reasons: ['entry cancelled', mint, why] });
     if (i.intent.purpose !== 'entry') return;
     if (this.#height === null) return void cancel('no slot height yet');
-    const m = this.#market(ctx, mint);
+    const m = this.#market(ctx, mint, { carry: false });
     if (typeof m === 'string') return void cancel(m);
     if (ctx.now.receivedAt - m.atMs > this.#d.session.policy.gates.maxQuoteAgeMs) return void cancel('pool state is stale');
     const q = poolBuyExactQuoteIn(m.pool, i.intent.spend, m.ctx);
@@ -1217,7 +1221,7 @@ export class LiveStrategy implements Strategy {
     if (!regime.on) return this.#fail(`regime off: ${regime.reasons.map((x) => x.detail).join('; ') || 'no reason given'}`, regime.reasons.map((x) => ({ gate: 'regime', code: x.code, detail: x.detail })), regime.reasons.map((x) => ({ gate: 'regime', ...x })));
     const sol = this.#spotSol(ctx);
     if (sol === null) return this.#fail('live SOL price unknown', [{ gate: 'worker', code: 'no-sol-price', detail: 'no live SOL/USD price' }]);
-    const m = this.#market(ctx, cand.mint);
+    const m = this.#market(ctx, cand.mint, { carry: false });
     if (typeof m === 'string') return this.#fail(m, [{ gate: 'worker', code: 'no-market', detail: m }]);
     const notional = policy.capital.minNotional;
     const spend = microUsdToLamports(notional, sol.value, 'ceil');

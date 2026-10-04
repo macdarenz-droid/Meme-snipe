@@ -241,6 +241,11 @@ describe('the watch\'s read latency (review of #87)', () => {
     // A flagged fact is never carried.
     const flagged = parsePool({ ...(raw as object), obs: { ...pool.obs, quality: ['partial'] } })!;
     expect(chooseMarket(flagged, null, carry())).toEqual({ kind: 'flagged', pool: flagged });
+    // A carry from before the pool fact's slot proves nothing about it, whatever its receipt time.
+    expect(chooseMarket(pool, null, carry({ slot: slot - 1n }))).toEqual({ kind: 'pool', pool, atMs: pool.obs.receivedAt, carried: false });
+    // A flagged fact's carry never outranks a snapshot newer than the fact itself.
+    const between: SnapshotFact = { pool: pool.address, slot: slot + 1n, atMs: pool.obs.receivedAt + 500, state, ctx: {} as SnapshotFact['ctx'] };
+    expect(chooseMarket(flagged, between, carry())).toEqual({ kind: 'snapshot', snap: between });
     // A snapshot newer than the pool fact: agreeing, the carry still outranks it; disagreeing, the snapshot is the market.
     const snap = (q: bigint): SnapshotFact => ({ pool: pool.address, slot: slot + 1n, atMs: pool.obs.receivedAt + 500, state: { ...state, quoteVault: q }, ctx: {} as SnapshotFact['ctx'] });
     expect(chooseMarket(pool, snap(state.quoteVault), carry())).toMatchObject({ kind: 'pool', carried: true });

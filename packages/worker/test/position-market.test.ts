@@ -5,7 +5,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { parsePool, poolKey } from '../../core/src/gates/index.ts';
+import { parsePool, poolKey, xcheckKey } from '../../core/src/gates/index.ts';
 import { FEE_CONTEXT } from '../../core/test/gates/world.ts';
 import { executableMark } from '../../core/src/exits/index.ts';
 import { type Lamports, type MicroUsd, lamportsToMicroUsd } from '../../core/src/units/index.ts';
@@ -212,6 +212,30 @@ describe('a held position priced from its pool\'s swap stream (POS-1)', () => {
     m.pool();
     await until(m, () => false, 800);
     expect(poolFact(h)!.fact.obs.receivedAt).toBeGreaterThan(last);
+    await h.worker.stop();
+  });
+
+  it('a carry never dates an entry: a quiet candidate pool past the quote age is not entered, though its carry keeps it fresh for an exit (WATCH-1c risk review)', async () => {
+    // A second path that never answers: only the feed's pool fact and the producer's carry can date the market.
+    const h = makeWorker({ watchRead: () => new Promise(() => undefined) });
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    // Held back by a missing cross-check while its pool goes quiet: the pool fact stops, the chain's carry does not.
+    const m = await passingMarket(h, { omit: [xcheckKey(MINT)] });
+    const readSlot = h.worker.feed.releasedThrough;
+    m.tradesStart(readSlot - 100n);
+    m.accountsRead(readSlot);
+    await until(m, () => false, 1_200, () => m.pool());
+    m.omit = new Set([xcheckKey(MINT), poolKey(MINT)]);
+    await until(m, () => false, 2_800, () => m.pool());
+    // The cross-check arrives: everything passes but the pool state's age (the carry keeps it fresh for an exit).
+    m.omit = new Set([poolKey(MINT)]);
+    await until(m, () => false, 4_000, () => m.pool());
+    // Not entered: the pool fact is past the quote age, though the carry keeps the market fresh for an exit. The
+    // gates' state lag (2 slots) refuses it first; the entry's own quote checks judge the uncarried moment too.
+    expect(m.now - poolFact(h)!.fact.obs.receivedAt).toBeGreaterThan(h.session.policy.gates.maxQuoteAgeMs);
+    expect(m.now - h.worker.poolOf(MINT)!.atMs).toBeLessThan(h.session.policy.gates.maxQuoteAgeMs);
+    expect(decisions(h).at(-1)!.slice(0, 1).concat(decisions(h).at(-1)![3]!.replace(/slot \d+, \d+ slots/, 'slot S, N slots'))).toEqual(['reject', 'hard reject H6: H16 stale pool read at slot S, N slots behind']);
+    expect(position(h)).toBeUndefined();
     await h.worker.stop();
   });
 });
