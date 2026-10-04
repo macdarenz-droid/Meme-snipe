@@ -9,6 +9,7 @@ import { SUMMARY_MAX_TRADES, SUMMARY_TOP_REASONS, checkSummary, type Summary } f
 import type { MicroUsd } from '../../core/src/units/index.ts';
 import type { HttpClient } from '../src/providers/index.ts';
 import type { PaperTrade } from '../src/run/account.ts';
+import { fillsOf, openPnl } from '../src/run/api.ts';
 import {
   Summarizer, buildSummary, emptySummaryState, foldLine, heldPositions, foldNewLines, foldText, haltCode, nextSummaryDelay, signSummary, summaryBody, type SummaryInputs,
 } from '../src/run/summary.ts';
@@ -291,13 +292,16 @@ describe('open positions and memory', () => {
   });
 
   it('lists held positions only: not closed, not still opening; a quote that throws or a zero size is unquotable', () => {
-    const pos = (id: string, status: string, quantity: bigint) => ({ id, mint: M1, status, quantity, cost: 10n });
+    const pos = (id: string, status: string, quantity: bigint) => ({ id, mint: M1, status, quantity });
+    // The app's openPnl shape: net = liquidation - fee - 10 (entry SOL and fees paid).
+    const pnl = (p: { quantity: bigint }, liq: bigint | null) => ({ net: (liq ?? 0n) - (p.quantity > 0n ? 2n : 0n) - 10n });
     const held = heldPositions([pos('a', 'open', 5n), pos('b', 'opening', 0n), pos('c', 'closed', 0n), pos('d', 'exit_pending', 5n), pos('e', 'open', 0n)],
       (p) => {
         if (p.id === 'd') throw new RangeError('base in must be > 0');
         return 7n;
-      }, () => NOON);
-    expect(held.map((h) => [h.openedAtMs, h.value])).toEqual([[NOON, 7n], [NOON, null], [NOON, null]]);
+      }, pnl, 2n, () => NOON);
+    // The value is the quote less the close's fee (7 - 2); the cost makes value - cost the app's net (5 - 10 = 7 - 2 - 10).
+    expect(held.map((h) => [h.openedAtMs, h.value, h.cost])).toEqual([[NOON, 5n, 10n], [NOON, null, 10n], [NOON, null, 10n]]);
   });
 
   it('leads with SOL: wallet, equity (wallet + open values), day net, open marked net, and the change from the day before', async () => {
@@ -335,6 +339,26 @@ describe('open positions and memory', () => {
     wallet = 2_010_000_000n;
     await sz.tick();
     expect(posts.at(-1)!.headline).toMatchObject({ equity_sol: '2.06', day_change_sol: '-0.04' });
+  });
+
+  it('the ended day\'s final post shows that day\'s last equity, not the equity after midnight', async () => {
+    const dir = tempState();
+    const p = join(dir, 'journal.jsonl');
+    writeFileSync(p, '');
+    const posts: { day: string; final: boolean; headline: { equity_sol: string | null } }[] = [];
+    const http: HttpClient = async (req) => {
+      posts.push(JSON.parse(req.body!) as (typeof posts)[number]);
+      return { status: 200, header: () => null, text: '{"ok":true,"written":true}' };
+    };
+    let now = NOON;
+    let wallet = 2_000_000_000n;
+    const sz = new Summarizer({ journalPath: p, stateDir: dir, http, watchdogUrl: 'https://w.test', key: 'k', now: () => now, log: () => {},
+      live: () => inputs({ walletLamports: wallet }), rss: () => 1 });
+    await sz.tick();
+    now = Date.parse('2026-10-05T01:00:00.000Z');
+    wallet = 2_500_000_000n;
+    await sz.tick();
+    expect(posts.slice(-2).map((x) => [x.day, x.final, x.headline.equity_sol])).toEqual([[DAY, true, '2'], ['2026-10-05', false, '2.5']]);
   });
 
   it('reports no memory for a day without a sample (null, not zero)', () => {
@@ -518,7 +542,13 @@ describe('the worker keeps trading when the summary fails', () => {
           const open = (c.summary as Summary).open;
           expect(open.positions.map((x) => x.mint)).toEqual([String(MINT)]);
           expect(BigInt(open.positions[0]!.cost_lamports)).toBeGreaterThan(0n);
-          expect(open.positions[0]!.value_lamports).not.toBeNull();
+          // Pinned to the app's "net if closed now" (openPnl, #165): the value is the liquidation quote less the close's
+          // network fee, and the marked net is the app's net, at the same market (nothing moved since the post).
+          const ai = h.worker.apiInputs();
+          const p = Object.values(ai.book.positions).find((x) => String(x.mint) === String(MINT) && x.status === 'open')!;
+          const liq = ai.open(p)!.liquidation!;
+          expect(open.positions[0]!.value_lamports).toBe((liq - ai.exitFee).toString());
+          expect(open.positions[0]!.marked_net_lamports).toBe(openPnl(liq, fillsOf(ai, p.id), ai.exitFee).net.toString());
           expect(open.unquotable).toBe(0);
           expect((c.summary as Summary).memory.rss_last_bytes).toBeGreaterThan(0);
         }

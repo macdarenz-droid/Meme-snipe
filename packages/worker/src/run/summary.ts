@@ -232,23 +232,34 @@ export interface HeldInput {
   readonly mint: string;
   readonly status: string;
   readonly quantity: bigint;
-  readonly cost: bigint;
 }
 
 /**
  * The held positions for the summary: every position that is neither closed nor still opening (an opening one holds
- * nothing yet, as in the heartbeat). `quote` gives what selling the whole size returns; a quote that is missing, throws
- * or has no size leaves the value null (unquotable), never zero.
+ * nothing yet, as in the heartbeat), valued as the app's "net if closed now" (api.ts `openPnl`, #165). `pnl` gives,
+ * for a liquidation quote (or null), what the position nets if closed now; `liquidation` gives the sell quote of the
+ * whole size after the pool's fees. The position's value is the quote less the close's network fee, and its cost is
+ * what makes value − cost equal that net (entry SOL and every fee paid, less what earlier exits returned). A quote
+ * that is missing, throws or has no size leaves the value null (unquotable), never zero.
  */
-export const heldPositions = <P extends HeldInput>(positions: readonly P[], quote: (p: P) => bigint | null, openedAt: (id: string) => number): SummaryInputs['open'] =>
+export const heldPositions = <P extends HeldInput>(
+  positions: readonly P[],
+  liquidation: (p: P) => bigint | null,
+  pnl: (p: P, liquidation: bigint | null) => { readonly net: bigint },
+  exitFee: bigint,
+  openedAt: (id: string) => number,
+): SummaryInputs['open'] =>
   positions.filter((p) => p.status !== 'closed' && p.status !== 'opening').map((p) => {
-    let value: bigint | null = null;
+    let liq: bigint | null = null;
     try {
-      value = p.quantity > 0n ? quote(p) : null;
+      liq = p.quantity > 0n ? liquidation(p) : null;
     } catch {
-      value = null;
+      liq = null;
     }
-    return { mint: p.mint, openedAtMs: openedAt(p.id), cost: p.cost, value };
+    const fee = p.quantity > 0n ? exitFee : 0n;
+    // With the quote at 0 (worth nothing), the net is exactly −cost: that gives the cost whether or not it is quoted.
+    const cost = -pnl(p, 0n).net - fee;
+    return { mint: p.mint, openedAtMs: openedAt(p.id), cost, value: liq === null ? null : liq - fee };
   });
 
 /**

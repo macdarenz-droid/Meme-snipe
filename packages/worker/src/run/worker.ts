@@ -17,6 +17,7 @@ import { Ledger, openLedger } from '../../../core/src/ledger/index.ts';
 import type { Book, BookEvent } from '../../../core/src/lifecycle/index.ts';
 import { isTerminal, isUnresolved } from '../../../core/src/lifecycle/index.ts';
 import { attemptFee, type FillNetwork, type FillScenario } from '../../../core/src/fills/index.ts';
+import { liquidationValue } from '../../../core/src/exits/index.ts';
 import type { MicroUsd } from '../../../core/src/units/index.ts';
 import { EXIT, LOOKUP_BOUNDS_MS, STATE_FILES, type FeedHealth, type Health, type JournalKind, type QuotaStatus, type RecoveredFields } from '../../../runner/src/contract.ts';
 import type { DryRunRecord } from '../dryrun/index.ts';
@@ -34,7 +35,7 @@ import { CoverageJournal } from './coverage-journal.ts';
 import { rebuildMove } from './exposure.ts';
 import type { SeedRpc } from '../seed/rpc.ts';
 import { DelayProbe, type DelayProbeOptions } from './delay-probe.ts';
-import { type AlertSeen, type ApiInputs, type DecisionRow, checkOf, collectAlerts, melbourneDate, stageOf, startApiServer } from './api.ts';
+import { type AlertSeen, type ApiInputs, type DecisionRow, checkOf, collectAlerts, fillsOf, melbourneDate, openPnl, stageOf, startApiServer } from './api.ts';
 import type { FactContext, FactSource } from './facts.ts';
 import { engineFeed, type EngineFeed } from './engine-feed.ts';
 import { startHealthServer } from './health.ts';
@@ -1332,16 +1333,22 @@ export class Worker {
       watchdogUrl: url, key, now: () => d.timers.now(), log: d.log,
       live: () => {
         d.summaryFault?.();
+        // The close's network fee, as the app's position view counts it (apiInputs().exitFee).
+        const exitFee = attemptFee(d.network, BigInt(d.session.policy.exits.ladder.steps[0]?.priorityFeeLamports ?? 0), 'filled');
         return {
           gitSha: d.config.gitSha, entryRule: d.config.strategy.name, recorder: d.config.recorder ? 'on' : 'off',
           uptimeS: (d.timers.now() - this.#started) / 1000, trades: this.#account.state.trades,
           openPositions: Object.values(this.#engine.book.positions).filter((p) => p.status !== 'closed').length,
           solPrice: this.#solPrice, credits: d.ops?.().quota ?? [], walletLamports: this.#account.state.walletLamports,
+          // Valued as the app's "net if closed now" (openPnl): the quote less the close's network fee (golden rule:
+          // the owner's report never overstates equity).
           open: heldPositions(Object.values(this.#engine.book.positions), (p) => {
             const m = this.poolOf(p.mint);
-            const q = m === null ? null : poolSell(m.state, p.quantity, m.ctx);
-            return q !== null && q.ok ? (q.trade.userQuote as bigint) : null;
-          }, (id) => this.#strategy.saved()[id]?.plan.openedAtMs ?? this.#account.state.trades.find((t) => t.positionId === id)?.openedAtMs ?? d.timers.now()),
+            const q = m === null ? null : liquidationValue({ venue: 'pumpswap', pool: m.state, ctx: m.ctx }, p.quantity);
+            return q !== null && q.ok ? q.value : null;
+          }, (p, liq) => openPnl(liq, fillsOf({ attempts: this.#world.attempts }, p.id), p.quantity > 0n ? exitFee : 0n),
+          exitFee,
+          (id) => this.#strategy.saved()[id]?.plan.openedAtMs ?? this.#account.state.trades.find((t) => t.positionId === id)?.openedAtMs ?? d.timers.now()),
         };
       },
       rss: () => process.memoryUsage().rss,

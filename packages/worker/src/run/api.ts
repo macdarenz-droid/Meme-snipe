@@ -225,7 +225,7 @@ export const openUsd = (pnl: ReturnType<typeof openPnl>, price: MicroUsd): { rea
   return { unrealized, costs, pnl: unrealized - costs };
 };
 
-const fillsOf = (i: ApiInputs, pid: string): PaperAttempt[] =>
+export const fillsOf = (i: Pick<ApiInputs, 'attempts'>, pid: string): PaperAttempt[] =>
   [...i.attempts.values()].filter((a) => a.trade === pid && a.outcome === 'filled' && a.fill !== null).sort((a, b) => (a.sentAtMs ?? 0) - (b.sentAtMs ?? 0));
 
 /** The most critical alerts the app's status lists: a bounded memory, not a log (the engine log holds them all). */
