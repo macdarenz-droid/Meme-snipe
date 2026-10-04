@@ -53,6 +53,12 @@ describe('Withdraw', () => {
     expect(text(h(WithdrawPanel, { wallet: fixtureWallet, stepUp: approvingStepUp }))).toContain('Change saved wallet');
   });
 
+  it('labels and data only: no line explaining the rules (AGENTS.md UI copy); the 24 h notice stays (§19 asks for it)', () => {
+    const t = text(h(WithdrawPanel, { wallet: fixtureWallet, stepUp: approvingStepUp }));
+    for (const gone of ['the only address Withdraw accepts', 'Balance minus the protected reserve', 'Signing comes later']) expect(t).not.toContain(gone);
+    expect(readFileSync(new URL('../src/funding/WithdrawPanel.tsx', import.meta.url), 'utf8')).toContain('A new address takes effect 24 hours after you confirm with your passkey.');
+  });
+
   it('shows a dash for the amount available when the balance is unknown', () => {
     expect(text(h(WithdrawPanel, { wallet: EMPTY_WALLET, stepUp: approvingStepUp }))).toContain('Available to send —');
   });
