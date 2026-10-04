@@ -1,9 +1,10 @@
 import { useState, type ReactNode } from 'react';
 import type { Fill, TradeRecord } from '../api/contract.ts';
+import { TokenActions } from '../components/TokenActions.tsx';
 import { Empty } from '../components/ui.tsx';
 import { formatDuration, shortAddress } from '../lib/format.ts';
-import { formatPriceDec, formatR, formatUsdExact, negUsd, toneOf } from '../lib/money.ts';
-import { EXIT_LABEL, VENUE_LABEL } from './labels.ts';
+import { formatPriceDec, formatR, formatReturn, formatUsdExact, negUsd, returnHundredths, toneOf, toneOfReturn } from '../lib/money.ts';
+import { EXIT_LABEL, TRADE_REASON_LABEL, VENUE_LABEL } from './labels.ts';
 import { Checks } from './Sections.tsx';
 import { melDateTime, melTime } from './time.ts';
 
@@ -24,6 +25,7 @@ export function TradeTable<T extends TradeRow>({ trades, onSelect }: { trades: T
             <tr>
               <th scope="col">Token</th>
               <th scope="col" className="num">Net</th>
+              <th scope="col" className="num">Return</th>
               <th scope="col" className="num">R</th>
               <th scope="col" className="num">Size</th>
               <th scope="col" className="num">Costs</th>
@@ -47,8 +49,10 @@ export function TradeTable<T extends TradeRow>({ trades, onSelect }: { trades: T
                       <span className="mono muted">{shortAddress(t.mint)}</span>
                     </span>
                   )}
+                  <TokenActions mint={t.mint} />
                 </td>
                 <td className={`num ${toneOf(t.netUsd)}`}>{formatUsdExact(t.netUsd, true)}</td>
+                <td className={`num ${toneOfReturn(returnHundredths(t.netUsd, t.sizeUsd))}`}>{formatReturn(returnHundredths(t.netUsd, t.sizeUsd))}</td>
                 <td className="num">{t.realizedR ? formatR(t.realizedR) : '—'}</td>
                 <td className="num">{formatUsdExact(t.sizeUsd)}</td>
                 <td className="num">{formatUsdExact(t.costs.totalUsd)}</td>
@@ -112,6 +116,11 @@ function FillRow({ f }: { f: Fill }) {
   );
 }
 
+/** A trade's reasons in words, each once; a code this app does not know is left out (APP-WORDS a). */
+export function tradeReasons(t: TradeRecord): string[] {
+  return [...new Set(t.reasons.flatMap((r) => (Object.hasOwn(TRADE_REASON_LABEL, r) ? [TRADE_REASON_LABEL[r]!] : [])))];
+}
+
 /** Every detail of one trade: entry and exit, fills, fees split, rent, slippage, reasons and signatures. */
 export function TradeDetail({ trade }: { trade: TradeRecord }) {
   const c = trade.costs;
@@ -120,7 +129,7 @@ export function TradeDetail({ trade }: { trade: TradeRecord }) {
     <div className="detail">
       <Rows
         rows={[
-          ['Token', <><strong>{trade.symbol}</strong> <span className="mono muted">{shortAddress(trade.mint)}</span></>],
+          ['Token', <><strong>{trade.symbol}</strong> <span className="mono muted">{shortAddress(trade.mint)}</span> <TokenActions mint={trade.mint} /></>],
           ['Venue', `${VENUE_LABEL[trade.venue]} · ${trade.universe}`],
           ['Strategy', <span className="mono">{trade.strategyVersion}</span>],
           ['Policy', <span className="mono">{trade.policyVersion}</span>],
@@ -132,6 +141,7 @@ export function TradeDetail({ trade }: { trade: TradeRecord }) {
           ['Gross', formatUsdExact(trade.grossUsd, true), `num ${toneOf(trade.grossUsd)}`],
           ['Costs', formatUsdExact(negUsd(c.totalUsd)), 'num'],
           ['Net', formatUsdExact(trade.netUsd, true), `num ${toneOf(trade.netUsd)}`],
+          ['Return', formatReturn(returnHundredths(trade.netUsd, trade.sizeUsd)), `num ${toneOfReturn(returnHundredths(trade.netUsd, trade.sizeUsd))}`],
           ['Planned R', trade.plannedR ? formatR(trade.plannedR) : '—', 'num'],
           ['Realized R', trade.realizedR ? formatR(trade.realizedR) : '—', 'num'],
           ['Best while open', trade.mfeR ? formatR(trade.mfeR) : '—', 'num'],
@@ -174,12 +184,16 @@ export function TradeDetail({ trade }: { trade: TradeRecord }) {
           </tbody>
         </table>
       </div>
-      <h3>Reasons</h3>
-      <ul className="dash-reasons">
-        {trade.reasons.map((r) => (
-          <li key={r}>{r}</li>
-        ))}
-      </ul>
+      {tradeReasons(trade).length > 0 && (
+        <>
+          <h3>Reasons</h3>
+          <ul className="dash-reasons">
+            {tradeReasons(trade).map((r) => (
+              <li key={r}>{r}</li>
+            ))}
+          </ul>
+        </>
+      )}
       <h3>Checks at entry</h3>
       <div className="table-wrap">
         <Checks checks={trade.checks} />

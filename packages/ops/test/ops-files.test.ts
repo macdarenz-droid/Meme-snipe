@@ -1,6 +1,6 @@
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createHash, createPrivateKey, createPublicKey } from 'node:crypto';
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -204,7 +204,14 @@ describe('deploy code', () => {
 
 describe('off-server backup gate', () => {
   it('ships off: the flag is false, the installer does not enable the timer, and the sender checks the flag first', () => {
-    expect(JSON.parse(read('ops/host-config.json'))).toEqual({ offsite_backup: false, worker: 'release' });
+    expect(JSON.parse(read('ops/host-config.json'))).toEqual({
+      offsite_backup: false, worker: 'release',
+      // PRACTICE-ON: the S0 shakedown (packages/worker/test/practice-on.test.ts checks each value).
+      shakedown: {
+        ZEROED_STRATEGY: 'S0', ZEROED_S0_DIAGNOSTIC: 'on', ZEROED_PAPER_EDGE_PPM: '178092',
+        ZEROED_STANDINS: 'CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM', ZEROED_WALLET: 'FdmNGWTvFJfkioV6jPg6HCC1ng3T5vGo4fBKAgX3vTTf',
+      },
+    });
     expect(read('ops/host/install-main.sh')).not.toMatch(/enable[^\n]*zeroed-backup-offsite/);
     const send = read('ops/host/files/usr/local/sbin/zeroed-backup-offsite');
     expect(send.indexOf("jq -r '.offsite_backup == true'")).toBeGreaterThan(0);
@@ -274,40 +281,35 @@ describe('systemd units (ARCHITECTURE.md 12.1)', () => {
 });
 
 describe('deploy tag (ops/deploy/tag.sh) on a fixture repository', () => {
-  it('skips an unsigned tip, a red and a pending signed merge, logs why, and tags the newest green signed merge', () => {
+  type Run = { name: string; status?: string; conclusion?: string | null; app?: string };
+  // A fixture repository of GitHub-signed (or unsigned) commits and a gh stand-in serving each commit's check runs.
+  const fixture = (build: (commit: (msg: string, signed: boolean, file?: string) => string) => { tip: string; checks: Record<string, Run[]> }) => {
     const dir = mkdtempSync(join(tmpdir(), 'zeroed-tag-'));
-    try {
-      const gnupg = join(dir, 'gnupg');
-      mkdirSync(gnupg, { mode: 0o700 });
-      const env = { ...process.env, GNUPGHOME: gnupg, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@x', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@x' };
-      const sh = (cmd: string, cwd = dir) => execFileSync('bash', ['-c', cmd], { cwd, env, encoding: 'utf8' }).trim();
-      sh("gpg --batch --passphrase '' --quick-gen-key 'Fixture <f@x>' ed25519 sign never 2>/dev/null");
-      const fpr = sh("gpg --batch --with-colons --fingerprint | awk -F: '$1 == \"fpr\" { print $10; exit }'");
-      sh(`gpg --batch --armor --export ${fpr} > key.asc`);
-      sh('git init -q --bare origin.git && git init -q -b int work');
-      const work = join(dir, 'work');
-      const commit = (msg: string, signed: boolean) => {
-        sh(`echo ${msg} >> f && git add f && git -c gpg.format=openpgp -c gpg.program=gpg -c user.signingkey=${fpr} commit -q ${signed ? '-S' : '--no-gpg-sign'} -m ${msg} && git rev-parse HEAD`, work);
-        return sh('git rev-parse HEAD', work);
-      };
-      const old = commit('green-older', true);
-      const green = commit('green', true);
-      const red = commit('red', true);
-      const pending = commit('pending', true);
-      const tip = commit('board', false);
-      sh('git remote add origin ../origin.git && git push -q origin int', work);
-      // gh stand-in: check runs per sha from files, the deploy ref missing, writes recorded.
-      const state = join(dir, 'state');
-      mkdirSync(join(state, 'checks'), { recursive: true });
-      const runs = (conclusion: string | null, status = 'completed') => JSON.stringify({ total_count: 2, check_runs: [{ name: 'check', status: 'completed', conclusion: 'success' }, { name: 'e2e', status, conclusion }, { name: 'zeroed-deploy', status: 'in_progress', conclusion: null }] });
-      writeFileSync(join(state, 'checks', old), runs('success'));
-      writeFileSync(join(state, 'checks', green), runs('success'));
-      writeFileSync(join(state, 'checks', red), runs('failure'));
-      writeFileSync(join(state, 'checks', pending), runs(null, 'in_progress'));
-      writeFileSync(join(state, 'checks', tip), runs('success'));
-      writeFileSync(
-        join(dir, 'gh'),
-        `#!/usr/bin/env bash
+    const gnupg = join(dir, 'gnupg');
+    mkdirSync(gnupg, { mode: 0o700 });
+    const env = { ...process.env, GNUPGHOME: gnupg, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@x', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@x' };
+    const sh = (cmd: string, cwd = dir) => execFileSync('bash', ['-c', cmd], { cwd, env, encoding: 'utf8' }).trim();
+    sh("gpg --batch --passphrase '' --quick-gen-key 'Fixture <f@x>' ed25519 sign never 2>/dev/null");
+    const fpr = sh("gpg --batch --with-colons --fingerprint | awk -F: '$1 == \"fpr\" { print $10; exit }'");
+    sh(`gpg --batch --armor --export ${fpr} > key.asc`);
+    sh('git init -q --bare origin.git && git init -q -b int work');
+    const work = join(dir, 'work');
+    const commit = (msg: string, signed: boolean, file = 'f') => {
+      sh(`mkdir -p $(dirname ${file}) && echo ${msg} >> ${file} && git add ${file} && git -c gpg.format=openpgp -c gpg.program=gpg -c user.signingkey=${fpr} commit -q ${signed ? '-S' : '--no-gpg-sign'} -m ${msg}`, work);
+      return sh('git rev-parse HEAD', work);
+    };
+    const { tip, checks } = build(commit);
+    sh('git remote add origin ../origin.git && git push -q origin int', work);
+    const state = join(dir, 'state');
+    mkdirSync(join(state, 'checks'), { recursive: true });
+    for (const [sha, runs] of Object.entries(checks)) {
+      // A running Deploy job is always listed: it never counts.
+      const all = [...runs, { name: 'zeroed-deploy', status: 'in_progress', conclusion: null }];
+      writeFileSync(join(state, 'checks', sha), JSON.stringify({ total_count: all.length, check_runs: all.map((r) => ({ status: 'completed', ...r, app: { slug: r.app ?? 'github-actions' } })) }));
+    }
+    writeFileSync(
+      join(dir, 'gh'),
+      `#!/usr/bin/env bash
 echo "$*" >> "${state}/calls"
 case "$2" in
   repos/o/r/commits/*/check-runs*) s="\${2#repos/o/r/commits/}"; s="\${s%%/*}"; cat "${state}/checks/$s" 2>/dev/null || echo '{"total_count":0,"check_runs":[]}' ;;
@@ -315,23 +317,71 @@ case "$2" in
 esac
 exit 0
 `,
-      );
-      chmodSync(join(dir, 'gh'), 0o755);
-      const r = spawnSync('bash', [join(root, 'ops/deploy/tag.sh')], {
-        cwd: work,
-        encoding: 'utf8',
-        env: { ...env, PATH: `${dir}:${process.env['PATH']}`, GH_REPO: 'o/r', GITHUB_SHA: tip, INTEGRATION_BRANCH: 'int', SIGNING_KEY_FILE: join(dir, 'key.asc'), SIGNING_FPR: fpr },
-      });
-      expect(r.status, r.stderr).toBe(0);
-      expect(r.stdout).toContain(`Skipped ${tip.slice(0, 12)}: not signed by GitHub`);
-      expect(r.stdout).toContain(`Skipped ${pending.slice(0, 12)}: checks still running.`);
-      expect(r.stdout).toContain(`Skipped ${red.slice(0, 12)}: a check failed.`);
-      expect(r.stdout).toContain(`Tag deploy -> ${green.slice(0, 12)}.`);
-      expect(readFileSync(join(state, 'calls'), 'utf8')).toContain(`api -X POST repos/o/r/git/refs -f ref=refs/tags/deploy -f sha=${green}`);
-      expect(r.stdout).not.toContain(old.slice(0, 12));
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    );
+    chmodSync(join(dir, 'gh'), 0o755);
+    const r = spawnSync('bash', [join(root, 'ops/deploy/tag.sh')], {
+      cwd: work,
+      encoding: 'utf8',
+      env: { ...env, PATH: `${dir}:${process.env['PATH']}`, GH_REPO: 'o/r', GITHUB_SHA: tip, INTEGRATION_BRANCH: 'int', SIGNING_KEY_FILE: join(dir, 'key.asc'), SIGNING_FPR: fpr },
+    });
+    const calls = existsSync(join(state, 'calls')) ? readFileSync(join(state, 'calls'), 'utf8') : '';
+    rmSync(dir, { recursive: true, force: true });
+    return { ...r, calls };
+  };
+  const ok: Run[] = [{ name: 'check', conclusion: 'success' }, { name: 'e2e', conclusion: 'success' }];
+
+  it('skips an unsigned tip, a red and a pending signed merge, logs why, and tags the newest green signed merge', () => {
+    let ids: Record<string, string> = {};
+    const r = fixture((commit) => {
+      // The ops change whose end-to-end decides the later merges (logic.sh e2e_commit).
+      ids = { old: commit('green-older', true, 'ops/x'), green: commit('green', true), red: commit('red', true), pending: commit('pending', true), tip: commit('board', false) };
+      return {
+        tip: ids['tip']!,
+        checks: {
+          [ids['old']!]: ok, [ids['green']!]: ok, [ids['tip']!]: ok,
+          [ids['red']!]: [{ name: 'check', conclusion: 'success' }, { name: 'e2e', conclusion: 'failure' }],
+          [ids['pending']!]: [{ name: 'check', conclusion: 'success' }, { name: 'e2e', status: 'in_progress', conclusion: null }],
+        },
+      };
+    });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stdout).toContain(`Skipped ${ids['tip']!.slice(0, 12)}: not signed by GitHub`);
+    expect(r.stdout).toContain(`Skipped ${ids['pending']!.slice(0, 12)}: checks still running (e2e still running).`);
+    expect(r.stdout).toContain(`Skipped ${ids['red']!.slice(0, 12)}: a check failed (e2e failed).`);
+    expect(r.stdout).toContain(`Tag deploy -> ${ids['green']!.slice(0, 12)}.`);
+    expect(r.calls).toContain(`api -X POST repos/o/r/git/refs -f ref=refs/tags/deploy -f sha=${ids['green']}`);
+    expect(r.stdout).not.toContain(ids['old']!.slice(0, 12));
+  }, 60_000);
+
+  it('refuses green-looking merges the gate does not cover: a red ops end-to-end earlier, a lone other run, an all-skipped set (OPS-GATE)', () => {
+    let ids: Record<string, string> = {};
+    const r = fixture((commit) => {
+      ids = {
+        // The ops change's end-to-end failed (669de71 on 2026-10-04): later merges that leave ops alone run none.
+        ops: commit('ops-red', true, 'ops/x'),
+        app: commit('app', true),
+        lone: commit('lone', true),
+        skipped: commit('skipped', true),
+        other: commit('other-app', true),
+      };
+      return {
+        tip: ids['other']!,
+        checks: {
+          [ids['ops']!]: [{ name: 'check', conclusion: 'success' }, { name: 'e2e', conclusion: 'failure' }],
+          [ids['app']!]: [{ name: 'check', conclusion: 'success' }],
+          [ids['lone']!]: [{ name: 'historical-data', conclusion: 'success' }],
+          [ids['skipped']!]: [{ name: 'check', conclusion: 'skipped' }, { name: 'historical-data', conclusion: 'skipped' }],
+          [ids['other']!]: [{ name: 'check', conclusion: 'success', app: 'some-bot' }],
+        },
+      };
+    });
+    expect(r.status).not.toBe(0);
+    expect(r.stdout).toContain(`Skipped ${ids['other']!.slice(0, 12)}: no check runs reported (no check run from GitHub Actions).`);
+    expect(r.stdout).toContain(`Skipped ${ids['skipped']!.slice(0, 12)}: a check failed (check was skipped, not success).`);
+    expect(r.stdout).toContain(`Skipped ${ids['lone']!.slice(0, 12)}: no check runs reported (no check run from GitHub Actions).`);
+    expect(r.stdout).toContain(`Skipped ${ids['app']!.slice(0, 12)}: a check failed (the ops end-to-end of ${ids['ops']!.slice(0, 12)}: e2e failed).`);
+    expect(r.stderr).toContain('Not deployable');
+    expect(r.calls).not.toContain('refs/tags/deploy -f sha=');
   }, 60_000);
 });
 
@@ -394,5 +444,138 @@ describe('workers.dev subdomain (ops/deploy/cf-subdomain.sh) against a fake Clou
     const other = await run({ status: 404, body: { success: false, errors: [{ code: 7003, message: 'Could not route' }] } });
     expect(other.status).not.toBe(0);
     expect(other.calls.map((c) => c.method)).toEqual(['GET']);
+  });
+});
+
+describe('daily summary deploy step (OPS-SUMMARY, ops/deploy/reports.sh)', () => {
+  /** The workflow step's env block, as name -> source expression. */
+  const stepEnv = (name: string): Record<string, string> => {
+    const wf = read('.github/workflows/deploy.yml').split('\n');
+    const start = wf.findIndex((l) => l.trim() === `- name: ${name}`);
+    expect(start, name).toBeGreaterThan(0);
+    const env: Record<string, string> = {};
+    let inEnv = false;
+    for (const l of wf.slice(start + 1)) {
+      if (/^\s{6}- /.test(l)) break;
+      if (/^\s{8}env:\s*$/.test(l)) inEnv = true;
+      else if (/^\s{8}\S/.test(l)) inEnv = false;
+      else if (inEnv) {
+        const m = /^\s{10}([A-Z_]+): (.*)$/.exec(l);
+        if (m) env[m[1]!] = m[2]!;
+      }
+    }
+    return env;
+  };
+
+  it('runs only after the tag step and the tooling succeeded', () => {
+    const wf = read('.github/workflows/deploy.yml');
+    const step = wf.slice(wf.indexOf('- name: Set up the daily summary'));
+    expect(/^\s+if: (.*)$/m.exec(step)?.[1]).toBe("${{ !cancelled() && steps.tag.outcome == 'success' && steps.tooling.outcome == 'success' }}");
+    expect(wf).toMatch(/- name: Move the deploy tag\n\s+id: tag\n/);
+    expect(wf).toMatch(/- name: Install the locked watchdog tooling[^\n]*\n\s+id: tooling\n/);
+  });
+
+  it('the step gets exactly these secrets and the DATA_REPO variable, and DATA_STORE_TOKEN reaches no other step', () => {
+    const env = stepEnv('Set up the daily summary');
+    const secrets = Object.values(env).flatMap((v) => [...v.matchAll(/secrets\.([A-Z_]+)/g)].map((m) => m[1])).sort();
+    expect(secrets).toEqual(['CLOUDFLARE_ACCOUNT_ID', 'CLOUDFLARE_API_TOKEN', 'DATA_STORE_TOKEN']);
+    expect(env['DATA_REPO']).toBe('${{ vars.DATA_REPO }}');
+    const wf = read('.github/workflows/deploy.yml');
+    expect(wf.match(/secrets\.DATA_STORE_TOKEN/g)).toHaveLength(1);
+    expect(wf).toContain('run: bash ops/deploy/reports.sh');
+    // The script names no other secret to set, and never the heartbeat key.
+    const s = read('ops/deploy/reports.sh').split('\n').filter((l) => !/^\s*#/.test(l)).join('\n');
+    expect([...s.matchAll(/secret put (\S+)/g)].map((m) => m[1])).toEqual(['REPORTS_TOKEN']);
+    expect(s).not.toMatch(/HEARTBEAT_HMAC_KEY|TELEGRAM|DEPLOY_CODE|secret (delete|bulk|list)|--secrets-file/);
+  });
+
+  /**
+   * reports.sh against a fake Cloudflare API, a stand-in wrangler and a small repository whose deploy tag is one commit
+   * behind its tip: the stand-in logs which wrangler.toml it got (the tagged commit's says "tagged").
+   */
+  async function deploy(env: Record<string, string>, o: { tag?: boolean } = {}) {
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ success: true, result: { subdomain: 'owners-pick' } }));
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as AddressInfo).port;
+    const dir = mkdtempSync(join(tmpdir(), 'zeroed-reports-'));
+    const repo = join(dir, 'repo');
+    const git = (...a: string[]) => execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', ...a], { stdio: 'pipe' });
+    mkdirSync(join(repo, 'packages/ops'), { recursive: true });
+    execFileSync('git', ['init', '-q', repo]);
+    writeFileSync(join(repo, 'packages/ops/wrangler.toml'), 'tagged\n');
+    git('add', '-A');
+    git('commit', '-q', '-m', 'tagged');
+    if (o.tag !== false) git('tag', 'deploy');
+    writeFileSync(join(repo, 'packages/ops/wrangler.toml'), 'tip\n');
+    git('commit', '-q', '-am', 'tip');
+    const log = join(dir, 'calls.log');
+    // A stand-in wrangler: records the config's content, the other arguments and what it read on stdin.
+    writeFileSync(join(dir, 'wrangler'), `#!/usr/bin/env bash\nset -euo pipefail\n[ "$1" = --config ] || exit 9\ncfg="$(cat "$2")"\nshift 2\nin=""\nif [ "\${1:-}" = secret ]; then in="$(cat)"; fi\nprintf 'CONFIG %s ARGS %s | STDIN %s\\n' "$cfg" "$*" "$in" >> "${log}"\nif [ "\${1:-}" = deploy ]; then echo "Deployed https://zeroed-watchdog.owners-pick.workers.dev"; fi\n`);
+    chmodSync(join(dir, 'wrangler'), 0o755);
+    const child = spawn('bash', [join(root, 'ops/deploy/reports.sh')], {
+      env: { PATH: process.env['PATH'] ?? '', CLOUDFLARE_API_URL: `http://127.0.0.1:${port}/client/v4`, WRANGLER: join(dir, 'wrangler'), GITHUB_REPOSITORY: 'macdarenz-droid/Meme-snipe', REPO_ROOT: repo, SKIP_TAG_FETCH: '1', ...env },
+    });
+    let out = '';
+    child.stdout.on('data', (d) => (out += d));
+    child.stderr.on('data', (d) => (out += d));
+    const status = await new Promise<number | null>((r) => child.on('close', r));
+    server.close();
+    const calls = existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n') : [];
+    const worktrees = execFileSync('git', ['-C', repo, 'worktree', 'list'], { encoding: 'utf8' }).trim().split('\n').length;
+    rmSync(dir, { recursive: true, force: true });
+    return { status, out, calls, worktrees };
+  }
+  const TOKEN = 'github_pat_TESTtoken0123456789abcdefghij';
+  const FULL = { CLOUDFLARE_API_TOKEN: 'TESTcf', CLOUDFLARE_ACCOUNT_ID: 'acc', DATA_STORE_TOKEN: TOKEN, DATA_REPO: 'macdarenz-droid/zeroed-data' };
+
+  it('deploys the code with DATA_REPO and sets only REPORTS_TOKEN, the token on stdin and in no output', async () => {
+    const r = await deploy(FULL);
+    expect(r.status).toBe(0);
+    // From the deploy tag's commit, not the tip; the temporary worktree is removed afterwards.
+    expect(r.calls).toEqual([
+      'CONFIG tagged ARGS deploy --var DATA_REPO:macdarenz-droid/zeroed-data | STDIN ',
+      `CONFIG tagged ARGS secret put REPORTS_TOKEN | STDIN ${TOKEN}`,
+    ]);
+    expect(r.worktrees).toBe(1);
+    expect(r.calls.filter((c) => c.split(' | STDIN')[0]!.includes(TOKEN))).toEqual([]);
+    expect(r.out).not.toContain(TOKEN);
+    expect(r.out).toContain('Its other secrets are unchanged.');
+  });
+
+  it('changes nothing without the Cloudflare token or DATA_STORE_TOKEN', async () => {
+    for (const drop of ['CLOUDFLARE_API_TOKEN', 'DATA_STORE_TOKEN']) {
+      const env: Record<string, string> = { ...FULL };
+      delete env[drop];
+      const r = await deploy(env);
+      expect(r.status, drop).toBe(0);
+      expect(r.calls, drop).toEqual([]);
+      expect(r.out).toContain('the daily summary is not set up');
+    }
+  });
+
+  it('refuses a token that is not a GitHub token, and deploys nothing without a deploy tag', async () => {
+    for (const bad of ['has space 0123456789abcdefghij', 'short_tok', 'github_pat_ok0123456789abcdef;rm -rf /']) {
+      const r = await deploy({ ...FULL, DATA_STORE_TOKEN: bad });
+      expect(r.status, bad).not.toBe(0);
+      expect(r.calls, bad).toEqual([]);
+      expect(r.out).toContain('DATA_STORE_TOKEN has characters a GitHub token does not have.');
+      expect(r.out).not.toContain(bad);
+    }
+    const none = await deploy(FULL, { tag: false });
+    expect(none.status).not.toBe(0);
+    expect(none.calls).toEqual([]);
+    expect(none.out).toContain('No deploy tag');
+  });
+
+  it('refuses this public repository (any case), a missing or malformed DATA_REPO, before any call', async () => {
+    for (const repo of ['macdarenz-droid/Meme-snipe', 'MACDARENZ-DROID/MEME-SNIPE', '', 'https://github.com/x/y', 'zeroed-data']) {
+      const r = await deploy({ ...FULL, DATA_REPO: repo });
+      expect(r.status, repo).not.toBe(0);
+      expect(r.calls, repo).toEqual([]);
+      expect(r.out).not.toContain(TOKEN);
+    }
   });
 });

@@ -43,9 +43,14 @@ describe('dashboard source rules', () => {
     }
   });
 
-  it('dashboard text sizes stay readable', () => {
-    const css = readFileSync(join(src, 'dashboard/dashboard.css'), 'utf8');
-    const sizes = [...css.matchAll(/font-size:\s*(\d+)px/g)].map((m) => Number(m[1]));
-    expect(Math.min(...sizes)).toBeGreaterThanOrEqual(11);
+  it('text sizes stay readable in every stylesheet, phone widths included', () => {
+    for (const f of ['dashboard/dashboard.css', 'styles.css']) {
+      const css = readFileSync(join(src, f), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+      // Every font-size is in whole px, so none escapes the check; and the check is never empty.
+      const all = [...css.matchAll(/font-size:\s*([^;}]+)/g)].map((m) => m[1]!.trim());
+      expect(all.length, f).toBeGreaterThan(0);
+      for (const v of all) expect(v, `${f}: font-size ${v}`).toMatch(/^\d+px$/);
+      expect(Math.min(...all.map((v) => parseInt(v, 10))), f).toBeGreaterThanOrEqual(11);
+    }
   });
 });

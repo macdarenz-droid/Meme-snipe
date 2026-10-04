@@ -733,6 +733,39 @@ saq = next(s for s in steps if s.get("name") == "Save progress after QA")
 assert "inputs.source == 'helius'" in saq["if"] and "always()" in saq["if"], saq["if"]
 PY
 
+# ---- DATA-PUB: a day read over RPC (source helius) is never published or uploaded ----
+python3 - "$here/../../../.github/workflows/data-scan.yml" <<'PY' && ok "data-scan source helius: no day artifact, no data-day or data-volume publish; the packaged assets go only to the actions cache (data-rpc-assets-DAY-*)" || no "data-scan helius publish gate"
+import sys, yaml
+steps = yaml.safe_load(open(sys.argv[1]))["jobs"]["scan"]["steps"]
+for s in steps:
+    run, uses, cond = s.get("run", ""), s.get("uses", ""), s.get("if", "")
+    outward = ("upload-artifact" in uses and s["with"]["name"] != "resume-${{ matrix.day }}") or ("github.token" in str(s) and "--check" not in run)
+    if outward:
+        assert "inputs.source != 'helius'" in cond, (s.get("name") or uses, cond)
+pub = [s for s in steps if 'publish-day.sh" "$DAY"' in s.get("run", "") or "publish-volume.sh" in s.get("run", "")]
+assert len(pub) == 2 and all("inputs.source != 'helius'" in s["if"] for s in pub), pub
+keep = [s for s in steps if "actions/cache/save" in s.get("uses", "") and "work/assets" in s["with"]["path"]]
+assert len(keep) == 1 and keep[0]["with"]["key"].startswith("data-rpc-assets-${{ matrix.day }}-"), keep
+assert "inputs.source == 'helius'" in keep[0]["if"] and "steps.published.outputs.complete != 'true'" in keep[0]["if"], keep[0]["if"]
+names = [s.get("name") for s in steps]
+assert names.index(keep[0]["name"]) > names.index("Package the day")
+PY
+export GH_BIN="$T/bin/gh"
+rp="$T/rpcpub"; rm -rf "$rp"; mkdir -p "$rp"; d=2026-09-28
+for f in units-$d.tar.part00 events-$d.tar qa-$d.md qa-$d.json parity-$d.json; do echo "$f" > "$rp/$f"; done
+printf '{\n  "units": [\n    {\n      "root_cid": "rpc:getBlock"\n    }\n  ]\n}\n' > "$rp/manifest-$d.json"
+(cd "$rp" && sha256sum units-* events-* qa-* manifest-* parity-* > SHA256SUMS-$d)
+rm -rf "$T/rel/data-day-$d"; : > "$T/created.log"
+out=$(bash "$here/publish-day.sh" $d "$rp" 2>&1) && no "publish-day published a day read over RPC" ||
+  { [[ "$out" == *"read over RPC"* && ! -e "$T/rel/data-day-$d" && ! -s "$T/created.log" ]] && ok "publish-day: a day whose manifest lists an RPC unit (root_cid rpc:getBlock) is refused before any gh call" || no "publish-day rpc: $out"; }
+rv="$T/rpcvol"; rm -rf "$rv"; mkdir -p "$rv"; vrows > "$rv/volume-hours-2026-09-30.csv"; echo '{"mismatches": [], "problems": []}' > "$rv/volume-check-2026-09-30.json"
+cp "$rp/manifest-$d.json" "$rv/manifest-2026-09-30.json"; rm -rf "$T/rel/data-volume-2026-09-30"
+out=$(bash "$here/publish-volume.sh" 2026-09-30 "$rv" 2>&1) && no "publish-volume published a day read over RPC" ||
+  { [[ "$out" == *"read over RPC"* && ! -e "$T/rel/data-volume-2026-09-30" && ! -s "$T/created.log" ]] && ok "publish-volume: a day whose manifest lists an RPC unit is refused before any gh call" || no "publish-volume rpc: $out"; }
+rm -f "$rv/manifest-2026-09-30.json"
+bash "$here/publish-volume.sh" 2026-09-30 "$rv" >/dev/null && [[ -e "$T/rel/data-volume-2026-09-30" ]] && ok "publish-volume: the same files without an RPC manifest still publish (control)" || no "publish-volume control"
+unset GH_BIN
+
 # The plan job's own validation, run as written in data-scan.yml.
 python3 - "$here/../../../.github/workflows/data-scan.yml" > "$T/plan.py" <<'PY'
 import sys, yaml
