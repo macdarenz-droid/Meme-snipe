@@ -1,6 +1,8 @@
 import { useId } from 'react';
 import { Dot } from '../components/ui.tsx';
 import type { Connection } from '../api/connection.ts';
+import type { WorkerStatus } from '../api/contract.ts';
+import type { Loaded } from '../api/useEndpoint.ts';
 import { connectionDot, connectionLabel } from '../screens/Server.tsx';
 import type { SessionView } from '../screens/types.ts';
 
@@ -12,8 +14,31 @@ export const dataLabel = (c: Connection) => connectionLabel(c);
 
 export const modeLabel = (s: SessionView) => (s.mode === 'live' ? 'Live' : 'Paper');
 
+/** The shell's session line: what the worker's status says, or why there is no status (APP-HOME). */
+export interface ShellSession {
+  label: string;
+  on: boolean;
+}
+
+/**
+ * From the paper worker's status: Running, Paused (the owner's pause) or Ended (the policy session ended). With no
+ * status the reason shows instead, never a state the worker did not report: no server saved, connecting, offline,
+ * a mode the server does not run, or an answer that failed the checks.
+ */
+export function shellSession(status: Loaded<WorkerStatus>, conn: Pick<Connection, 'state'>): ShellSession {
+  if (conn.state === 'none') return { label: 'No server', on: false };
+  if (status.state === 'ready') {
+    if (status.data.flags.includes('paused')) return { label: 'Paused', on: false };
+    if (status.data.haltReasons?.some((h) => h.code === 'session-ended')) return { label: 'Ended', on: false };
+    return { label: 'Running', on: true };
+  }
+  if (status.state === 'not-running') return { label: 'Not running', on: false };
+  if (status.state === 'loading') return { label: 'Connecting', on: false };
+  return { label: status.reason === 'offline' ? 'Offline' : 'Unknown', on: false };
+}
+
 /** Mode, session and the server connection, in the desktop rail. */
-export function StatusList({ session, conn }: { session: SessionView; conn: Connection }) {
+export function StatusList({ session, state, conn }: { session: SessionView; state: ShellSession; conn: Connection }) {
   return (
     <dl className="status-list">
       <div>
@@ -25,7 +50,7 @@ export function StatusList({ session, conn }: { session: SessionView; conn: Conn
       <div>
         <dt>Session</dt>
         <dd>
-          <Dot state={session.state === 'running' ? 'on' : 'off'} /> {sessionLabel(session)}
+          <Dot state={state.on ? 'on' : 'off'} /> {state.label}
         </dd>
       </div>
       <div>

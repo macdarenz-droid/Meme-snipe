@@ -1,6 +1,10 @@
 import { AnimatePresence, MotionConfig, motion } from 'motion/react';
-import { lazy, Suspense, useEffect, type ReactNode } from 'react';
-import { useConnection } from './api/connection.ts';
+import { lazy, Suspense, useEffect, useMemo, type ReactNode } from 'react';
+import { apiFor } from './api/client.ts';
+import { connection, useConnection, type Connection } from './api/connection.ts';
+import type { WorkerStatus } from './api/contract.ts';
+import { schemaFor } from './api/schemas.ts';
+import { useEndpoint } from './api/useEndpoint.ts';
 import { SampleMarker } from './components/Sample.tsx';
 import { DESKTOP, useMedia } from './lib/media.ts';
 import { page } from './lib/motion.ts';
@@ -12,7 +16,7 @@ import { Wallet } from './screens/Wallet.tsx';
 import { NavIcon } from './shell/icons.tsx';
 import { Lockup, Mark } from './shell/Logo.tsx';
 import { EMPTY_SESSION } from './screens/types.ts';
-import { dataLabel, modeLabel, PauseButton, sessionLabel, StatusList } from './shell/Status.tsx';
+import { dataLabel, modeLabel, PauseButton, shellSession, StatusList, type ShellSession } from './shell/Status.tsx';
 import { ThemeSwitch } from './shell/ThemeSwitch.tsx';
 
 // Dev and preview builds only: SAMPLES is a build-time constant, false in a normal production build, so the import is dropped.
@@ -33,6 +37,13 @@ function screenFor(s: Screen): ReactNode {
   return <Home />;
 }
 
+/** The paper worker's status for the shell's session line (the only mode a worker runs today). */
+export function useShellSession(conn: Connection): ShellSession {
+  const api = useMemo(() => apiFor(conn.origin, connection()), [conn.origin]);
+  const status = useEndpoint<WorkerStatus>('paper', `status|${conn.origin ?? 'none'}`, schemaFor('status', 'paper'), () => api.status('paper'));
+  return shellSession(status, conn);
+}
+
 function isTyping(e: KeyboardEvent): boolean {
   const t = e.target as HTMLElement | null;
   return !!t && (t.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName));
@@ -42,6 +53,7 @@ export function App() {
   const [screen, go] = useRoute();
   const desktop = useMedia(DESKTOP);
   const conn = useConnection();
+  const session = useShellSession(conn);
 
   useEffect(() => {
     document.title = `${TITLES[screen]} · Zeroed`;
@@ -84,7 +96,7 @@ export function App() {
               ))}
             </ul>
             <div className="rail-foot">
-              <StatusList session={EMPTY_SESSION} conn={conn} />
+              <StatusList session={EMPTY_SESSION} state={session} conn={conn} />
               <PauseButton />
               <ThemeSwitch />
             </div>
@@ -96,7 +108,7 @@ export function App() {
             {screen === 'fixtures' && <SampleMarker />}
             <PauseButton compact />
             <span className="mobile-status muted small">
-              {sessionLabel(EMPTY_SESSION)} · {dataLabel(conn)}
+              {session.label} · {dataLabel(conn)}
             </span>
           </header>
         )}

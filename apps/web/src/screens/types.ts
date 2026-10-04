@@ -1,16 +1,16 @@
-/** Rows for the discovered-token table, filled by the worker API later. */
+/** Rows for the discovered-token table. Null is a value the worker does not serve or has not read yet: shown as "—". */
 export interface TokenRowView {
   mint: string;
-  symbol: string;
+  symbol: string | null;
   ageSeconds: number;
   venue: string;
-  liquidityUsd: number;
-  volume24hUsd: number;
-  holders: number;
-  topHolderShare: number;
+  liquidityUsd: number | null;
+  volume24hUsd: number | null;
+  holders: number | null;
+  topHolderShare: number | null;
   security: 'passed' | 'failed' | 'missing';
   promoted: boolean;
-  dataAgeSeconds: number;
+  dataAgeSeconds: number | null;
 }
 
 /**

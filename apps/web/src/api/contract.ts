@@ -134,6 +134,26 @@ export interface WorkerStatus extends Moded {
   regime?: { state: 'on' | 'off'; at: Iso; /** At most two candidate evaluation steps old as of asOf. */ current: boolean; reasons: (Moded & { code: RegimeReasonCode; input: string | null })[]; /** Not judged (S0 diagnostic): an "on" with any is practice only. */ waived: WaivedPart[] } | null;
 }
 
+// Discovered -----------------------------------------------------------
+
+/** One token the bot is watching (APP-HOME): public market data and the bot's own checks only. */
+export interface DiscoveredToken extends Moded {
+  mint: string;
+  /** Null until the token's symbol is read. */
+  symbol: string | null;
+  migratedAt: Iso;
+  venue: 'PumpSwap';
+  /** Both sides of the pool at its price; null until the pool and the SOL price are read. */
+  liquidityUsd: Usd | null;
+  /** The last evaluation's token checks (the hard gates): missing before one or while evidence is missing. */
+  checks: 'passed' | 'failed' | 'missing';
+  checkedAt: Iso | null;
+}
+
+export interface DiscoveredView extends Moded {
+  tokens: DiscoveredToken[];
+}
+
 // Funnel ---------------------------------------------------------------
 
 export type FunnelStage = 'seen' | 'hard-rejects' | 'costs' | 'risk' | 'entered';
@@ -296,6 +316,7 @@ export interface DashboardApi {
   trades(mode: Mode): Promise<Envelope<TradeRecord[]>>;
   charts(mode: Mode): Promise<Envelope<ChartsView>>;
   stats(mode: Mode): Promise<Envelope<StatsView>>;
+  discovered(mode: Mode): Promise<Envelope<DiscoveredView>>;
   /** The newest backtest report file; null before the first one. */
   backtestReport(): Promise<Envelope<BacktestReport | null>>;
 }
@@ -310,5 +331,6 @@ export const PATHS = {
   trades: (m: Mode) => `/api/v1/${m}/trades`,
   charts: (m: Mode) => `/api/v1/${m}/charts`,
   stats: (m: Mode) => `/api/v1/${m}/stats`,
+  discovered: (m: Mode) => `/api/v1/${m}/discovered`,
   backtestReport: () => '/api/v1/backtest/report',
 } as const;

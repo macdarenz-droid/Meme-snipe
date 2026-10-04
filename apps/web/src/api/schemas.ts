@@ -8,7 +8,7 @@ import { arr, bool, day, dec, fail, int, iso, modeIs, nullable, obj, oneOf, opti
  * decimal anywhere rejects the whole response.
  */
 
-export type Endpoint = 'status' | 'funnel' | 'decisions' | 'position' | 'calendar' | 'trades' | 'charts' | 'stats';
+export type Endpoint = 'status' | 'funnel' | 'decisions' | 'position' | 'calendar' | 'trades' | 'charts' | 'stats' | 'discovered';
 
 const MINT = re(/^[1-9A-HJ-NP-Za-km-z]{32,44}$/, 'a base58 address');
 const SIGNATURE = re(/^[1-9A-HJ-NP-Za-km-z]{64,88}$/, 'a base58 signature');
@@ -159,6 +159,13 @@ function build(m: Mode): Record<Endpoint, Check> {
       meanNetUsd: nullable(usd),
       meanR: nullable(dec),
       ci95: nullable(obj({ lowUsd: usd, highUsd: usd })),
+    }),
+    discovered: obj({
+      mode,
+      tokens: arr(obj({
+        mode, mint: MINT, symbol: nullable(str), migratedAt: iso, venue: oneOf('PumpSwap'), liquidityUsd: nullable(usd),
+        checks: oneOf('passed', 'failed', 'missing'), checkedAt: nullable(iso),
+      }), 200),
     }),
   };
 }
