@@ -52,12 +52,12 @@ export const lossReviewTrip = (closed: readonly ClosedTrade[], reviewedAtMs: num
   const since = [...closed].sort(byClose).filter((t) => reviewedAtMs === null || t.closedAtMs > reviewedAtMs);
   const size = loss.reviewWindowTrades;
   for (let i = 0; i < Math.max(1, since.length - size + 1); i++) {
-    const window = since.slice(i, i + size);
-    const losses = window.filter(isLoss);
+    const span = since.slice(i, i + size);
+    const losses = span.filter(isLoss);
     if (losses.length >= loss.reviewLosses) {
-      const completing = losses[loss.reviewLosses - 1] ?? window.at(-1);
+      const completing = losses[loss.reviewLosses - 1] ?? span.at(-1);
       const none = reviewedAtMs ?? 0;
-      return { atMs: completing?.closedAtMs ?? none, fromMs: window[0]?.closedAtMs ?? none, toMs: window.at(-1)?.closedAtMs ?? none, trades: window.length, losses: losses.length };
+      return { atMs: completing?.closedAtMs ?? none, fromMs: span[0]?.closedAtMs ?? none, toMs: span.at(-1)?.closedAtMs ?? none, trades: span.length, losses: losses.length };
     }
   }
   return null;
