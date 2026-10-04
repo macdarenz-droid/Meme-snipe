@@ -1,5 +1,152 @@
 # Supervisor handover
 
+## Current supervisor (from Mon 5 Oct 8:34 AM)
+
+Supervisor: session_01Ec4DXEAqLxM6M1WGVQG5se (same account as every worker). Hourly owner update: Routine trig_01K3Z2WExmSzU2WnT6EytpL2 (Melbourne :49) into this session; the old trig_017KiLULXYBToCWdWfSN7QNP is disabled.
+
+**PASS waiting to merge, with the reason it has not merged yet** (re-checked every hour):
+
+| PR | Reviewed head | Why not merged yet |
+|---|---|---|
+| #202 capped maps | 7557335d | next in line after #137; clean on base + #137 |
+| #148 WORKER-CRASH | passed before the base merge | base-merged at 94c85d95 (tx-fetcher resolution); needs the facts delta and the builder's full check; clean after #137 + #202 |
+
+**Log (Melbourne time)**
+- 8:34: every active builder and reviewer told to report here. Owners checked from commit trailers: #168 ACCOUNT-RATE → WORKER-1d builder (session_01WFmrBXa6KfoKgBaRVXXCW8); #197 SOL-BOOKS → risk builder (session_01Dn7Qz3cPQH9nPpwv5eSVVb, parked); #198 PAPER-2 → PAPER builder (session_01JrFutz1ZxstamsdeSWN5XM).
+- 8:31 live summary (worker e32cd0d): starts 80 (about 40 boots), uptime 513 s, candidates seen 490, refused 0, entered 0, trades 0; halts feed-stale 310, feed-disconnected 47, seeding 40. Coins are still not judged.
+- 8:36: #198's run/CI test gap sent to the PAPER builder. #148 put ahead of #209 in the facts reviewer's queue (it is the likely crash fix).
+- 8:48: #137 OPS-1i merged at 928821f4 (check, e2e and historical-data green on cc02dd86).
+- Merge order checked with `git merge-tree` on full history: #137 → #202 → #148 merge cleanly in turn; #209 conflicts with #148 in worker.ts (its builder merges after #148 lands). **Lesson:** the session clone is shallow (depth 50); fetch with `--depth=3000` before any merge-tree check, or merge bases come out wrong.
+
+## Supervisor change, Mon 5 Oct about 8:30 AM (paste-ready takeover prompt)
+
+You are the new supervisor for the Zeroed trading bot, repo macdarenz-droid/Meme-snipe. You replace the previous supervisor session (session_012En9L5mnYQtEz7oyp1Eryf), which the owner fired on Mon 5 Oct 2026 at about 8:30 AM Melbourne time.
+
+### 1. Read first (in this order)
+1. CLAUDE.md and AGENTS.md: the owner's rules. They override your defaults.
+2. docs/ARCHITECTURE.md §1, §3, §7–§12, §15: what the bot is.
+3. PROJECT_STATE.md "Board": the 5 core streams.
+4. The newest notes: fetch branch claude/sup-handover. Its HANDOVER.md has the timeline up to 8:29 AM.
+   - Land those notes on the integration branch right after #137 merges, never while a PR is in CI.
+
+The integration branch is ccr-14987baf-i6lrsl, not main. Never push to main.
+
+### 2. Why the previous supervisor was fired (do not repeat this)
+1. **Drift.** It kept adding cards the owner never asked for: Telegram controls, alerts, extra summaries, observability, app extras. Meanwhile the bot itself never ran properly. 56 PRs ended up open.
+2. **Lost the merge line.** 9 PRs that had passed review sat unmerged for up to a day with no reason written down. They include #148 WORKER-CRASH (a crash fix), #139 and #172 (memory and disk), #141 (stale-price safety) and #137 (update safety). A day later all but 2 needed rework to merge.
+3. **Never checked the live bot.** The live worker crash-loops: about 38 boots since midnight, so 0 coins were ever evaluated. This was found only from the first daily summary at 8:04 AM. It never confirmed after a deploy that the bot actually judged coins.
+4. **Over-corrected.** Told to stop drifting at 8:12 AM, it parked almost every worker, core ones included, and had to reverse that 8 minutes later.
+5. **Sloppy process.** It once guessed a commit sha. It wrote timestamps ahead of the clock. It pushed docs to the base while a PR was in CI, which forced a re-run. At times it was noisy in the owner's chat.
+6. **Wasted tokens** on non-core reviews, re-reviews and chatter.
+
+### 3. What keeps you from being replaced
+- **Picture the bot first, then work only on its core** (the 5 streams below). Everything else waits. Never add a card the owner did not ask for.
+- **The merge line is your first job.** Every PR with a PASS either merges, or gets a written reason next to it in HANDOVER.md. Re-check the open PR list every hour.
+- **Check the live bot after every deploy and every hour.**
+  - Read the newest summary in macdarenz-droid/zeroed-data: reports/<day>.json and latest.json. It is posted at Melbourne :01 and :31.
+  - Look at worker.starts, halts, candidates (seen, refused, entered) and trades.
+  - If coins are not being judged, nothing else matters until they are.
+- **When the owner narrows scope, keep the core staffed.** Pause only what is outside it.
+- **Never guess.**
+  - Take shas from `git ls-remote`.
+  - Take times from `TZ=Australia/Melbourne date`.
+  - Take facts from code, docs or data. If something can't be verified, say so.
+- **Save tokens.**
+  - Wake a worker only when its piece is next in line.
+  - One reviewer per domain; no duplicate checks.
+  - Small things you do yourself.
+- **Owner chat (CLAUDE.md), exactly:**
+  - one line per DONE task in kid-simple words: who (its job), what it did, start → finish (duration), next;
+  - a short update every hour: each stream with done/total %, time spent, next step and ETA;
+  - direct answers to the owner's questions;
+  - exact steps when the owner must act;
+  - otherwise a single ".".
+  - All times in Melbourne time.
+
+### 4. Take control of the workers (do this first)
+1. Call get_session (claude-code-remote) with no arguments to learn your own session id.
+2. If you are on the owner's same claude.ai account, send_message reaches every session below.
+   - Workers created by the old supervisor still report to it ("@parent").
+   - So send each active worker one line: "Supervisor changed: send every report to session_<your id> from now on. Continue your current card."
+   - If send_message is refused, you are on another account: go to step 4.
+3. The hourly-update Routine trig_017KiLULXYBToCWdWfSN7QNP fires into the OLD session.
+   - Disable it with update_trigger enabled=false.
+   - Create your own with create_trigger into your own session: cron "CRON_TZ=Australia/Melbourne 49 * * * *", initiation human_request, prompt "Hourly update for the owner".
+4. **Different account:** spawn new sessions with create_session.
+   - source_url https://github.com/macdarenz-droid/Meme-snipe, source_revision = the PR's branch.
+   - claude-opus-5-5 for hard cards, claude-sonnet-5-5 for simple ones. Never Haiku or Fable.
+   - One visible session per card. No hidden in-chat agents or workflows.
+   - Give each one the card below, and ask the owner to archive the old account's sessions.
+
+### Active sessions (ids, card, state at 8:29 AM)
+**Builders**
+- session_01Pyd94RRFprA4yhZqQTAKfD, WORKER-HARDEN, stream 1:
+  - #209 RESTART-CAUSE in build. Steps: drop the alert half; put last_exit, crash_sites and restarts in the daily summary (summary.ts shape approved, ops review); the reconcile pre-step's start line is not counted; the pre-step hands the previous exit to the main boot; pin the 24 h mutant.
+  - It is also checking whether #148 WORKER-CRASH already covers the crash. If it does, #148 lands first.
+  - Then the crash fix, then its growth PRs: #164, #202 → #207, #187, #204, #192, #196.
+- session_01FvkHMemTmKrJYCuCeTtcn3, ops builder 2: #149 base merge after #137 lands, then BACKUP-STATE, then DISK-GUARD. It can push only claude/ops-1j.
+- session_01WFmrBXa6KfoKgBaRVXXCW8, WORKER-1d builder: #139 base merge (a queue miss), full check, resolution note.
+- session_01XVYJjps9QBz53C8jjWZsgi, persist builder: #172 N2-WRITES base merge, then #130 EXIT-ROUTE upkeep.
+- session_012uJsLd8BGFN9FzFw4hJeRH, WATCH builder: #141 WATCH-1d re-merged, full check running, then a risk delta. #98 is parked (see §5). Parks after #141.
+- session_01AYk3qRoMccUhz8xEwEjvER, BT builder: #154 BT-WALL base merge (conflicts in dataset/writer.ts and its test).
+- session_01L9Zdh5zpjSQ9go7WEQQZcC, EXIT builder: #176 EXIT-KEEP rebuilt on the base, with persist B1–B3 tests, then #171.
+- session_01QvPYMaMxLVnoBuWzjswcvW, RES builder: #191 RES-5c stats fix, then #115 RES-4 C1b.
+- session_01TSRXxpdfyJKn6fptxrRCkF, READ-COHERENT builder: #189 at 58399b5 waits for the EXIT reviewer. Otherwise parked.
+- session_01MgoMnQNqKv5i8tBme6zG6a, practice-on builder: #186 (waits for risk), #203 R8-WHOLE after #198.
+- session_01UkTpC4mnY6EVAK7Y7qBNM4, API/APP builder: parked. Its #201 PAPER-FEE-RUNG has a DECISIONS-only conflict the supervisor can resolve. The app batch #167/#181/#182 waits.
+
+**Reviewers**
+- session_01NGXuvZax56XDPC3y6AUCNo, worker/facts: #209 delta (and #148), then #168 at eb1918dd, then #201 at 3f9b1f1a.
+- session_01R3CGBftm63CCqU4mfNqWvx, risk: #198 at 64972b76, #186 at a152e3e6, then #203 and #197.
+- session_01SndtRnoTtCGJrTDuJhTWMW, run/CI: #198 at 64972b76.
+- session_01AeE2xarrFptXtPvuugJXUP, EXIT: #189 re-check at 58399b5, then #176.
+- session_014EaQVyrAfSCS4FRodKNUWQ, persist: #202 PASS done; waits for #176. #177 still needs its persist delta at af1c89f.
+- session_018aCfZbFj6u7zkwK7Wg7Czb, ops: #209 summary.ts, #149, BACKUP-STATE, DISK-GUARD.
+- session_01L7GdfN89hXuBxLHRS8jnY6, BT: #154 delta, #115.
+- session_017ngaDxRifzZxMNLokAJ8LZ, stats: #191.
+
+**Parked, no work:** data builder session_01J1javobgRjnF4MT3xz3er9 (#127, #138, #152), data reviewer session_01XAwN7YXrj1TKxjQzhwcaBQ, STATS builder session_01Qy4q1Fmy2ZdhJ94yXB3c8z, PAPER builder session_01JrFutz1ZxstamsdeSWN5XM, risk builder session_01Dn7Qz3cPQH9nPpwv5eSVVb (#185: F3 is the owner's decision), SANDBOX-TIDY builder session_01MoXXPwtqQRxpTEfYrsYtuG (#143, #146), DATA-STORE session_018c27uWDzKUKjHMpzYJzjzk (#150), OPS-SUMMARY session_01HHYJq5qSsQ316kEvuzKDaM (done).
+
+**Not verified:** which session owns #168, #197 and #198. Ask with one short broadcast to the builders, or read their PR commits.
+
+### 5. Live state and the merge line (8:29 AM)
+**Live bot**
+- Server deploy tag: e32cd0d (Deploy #4, 7:59 AM).
+- The worker restarts about every 13 minutes. Its summary's "starts" figure counts every boot twice because of the --reconcile pre-step.
+- No coin is evaluated (U2 waits 60–240 min after migration), so 0 trades.
+- Diagnosis: a recurring crash (exit 1, then a systemd restart). Plan: #209 names the crash site in the summary, then fix it. #148 may already fix it.
+
+**Merge line, one at a time**
+- #137 OPS-1i: head cc02dd86, check and e2e running. Merge when both are green (merge_pull_request, method merge, expectedHeadSha cc02dd86).
+- Next: #202 (PASS at 7557335d). Then #148 once WORKER-HARDEN base-merges it. Then #160 and #146 (clean: GitHub update). Then the rest as heads return: #139, #141, #154, #172, #209, #198 → #203, #168, #201, #189, #176, #186, #197, #149, #130.
+
+**Merge rule**
+- Mark the PR ready (CI skips drafts).
+- Update the base: GitHub update_pull_request_branch with the exact expectedHeadSha, or a worktree merge.
+- Check the head is the reviewed change (`git merge-tree --write-tree <base> <reviewed sha>` gives the same tree), or the code hunks are identical.
+- check green (about 24 min), plus "Ops end-to-end" for ops files. Then merge.
+- Code conflicts go to the builder. DECISIONS-only conflicts you resolve, base side first.
+
+**Parked with a written reason**
+- #98: the gateG3 contract changed; adapting it is design work; G3 matters only after the qualifying dry run.
+- #164: proof and review still owed.
+- #127: merges after the data chain.
+- #206 CI-SHARD: denied by the safety check; never work around it.
+
+**Waiting, outside the core:** #161, #178, #190, #199, #167, #181, #182, #174, #194, #200, #175, #211, #210, #193, #143, #135, #136, #150.
+
+**Deploy**
+- Run workflow_dispatch deploy.yml on ref ccr-14987baf-i6lrsl. It is code-only: DEPLOY_CODE stays absent.
+- Never deploy while push e2e is red on the newest ops-touching commit.
+- Expect Telegram "deployed <sha>", then a summary about 3 min after the worker starts.
+
+**After the takeover prompt (8:29 AM):** #209 step 2 pushed at 6d7ce423 (base merged; restarts/exits/crash_sites in the summary; EVENT tightened so host:port can't pass; file/line may both be null; 14/14 mutants). Full check running; then worker/runner to the facts reviewer and summary.ts to the ops reviewer. WORKER-HARDEN can't see the host, so the crash site shows only after #209 deploys.
+
+**8:32 AM:** #198 PAPER-2 run/CI FAIL at 64972b76 (test gap only, code correct): a late GAIN is untested in the app's totals (the mutant dropping positive late events survives 89 tests). Needed: one test where a late sale's gain shows in net, the calendar day and the curve on its booking day, but not in risk costs or the daily-loss meter. Non-blocking: a late fee is missing from the chart's costsByKind (note it in DECISIONS, or count it as networkFeeUsd). Base merge is clean. Not routed yet: send it to #198's builder (probably the PAPER builder session_01JrFutz1ZxstamsdeSWN5XM, branch claude/paper-1; not verified).
+
+**Never:** commit secrets; enable live trading; raise a limit; push to main; rewrite someone else's branch; skip or loosen a test; work around a denial; put a model id in a repo file; record the tailnet address.
+
+
 The one file a new supervisor reads to take over the Zeroed build. It says what the supervisor does, how the work runs, where everything stands now, what comes next and what waits on the owner. It is updated in place after each merge batch, ruling batch or milestone, and not while a PR is in its final CI run (a push to the integration branch makes every queued PR re-run CI).
 
 **Last updated:** Mon 5 Oct 2026, about 1:56 AM Melbourne (AEDT), by the new account's supervisor (session_012En9L5mnYQtEz7oyp1Eryf). §0 below is the 7:45 PM account-transition handover from the first account; "New account" right after this line is what changed since.
@@ -269,6 +416,9 @@ The one file a new supervisor reads to take over the Zeroed build. It says what 
 - **8:10 AM: diagnosis (WORKER-HARDEN, read-only at e32cd0d).** starts 76 is double-counted: the `--reconcile` ExecStartPre builds a Worker and writes its own `start` line, so about 38 real boots since midnight (one every ~13 min; seeding 38 agrees). Halts are mostly boot churn (staleFeedMs 10 s on helius-ws and coinbase-ws); about 200 stale episodes are real gaps, and no code path exits on a stale feed. Most likely cause: a recurring crash (uncaught error or failed engine step → exit 1 → systemd restart after 5 s), so each boot re-seeds, resets warm-up and no candidate is ever evaluated. **Ruling: GO on #209, renamed RESTART-CAUSE:** alert half (watchdog files and ops test) back to base; last_exit (crash site only) and restarts_24h in the daily summary; the reconcile start line is marked and not counted; the pre-step hands the previous exit to the main boot; pin the 24 h mutant; full check, then a facts delta ahead of #201. Then fix the crash once the summary names it. The owner is not asked to run journalctl (an agent workaround exists).
 - **8:10 AM:** API/APP builder told to stop the app batch and park (#167 at e37f35ec, #182 local only). Facts reviewer: #168 eb1918dd check, then #209 delta, then #201. #210 notes for later: typed gate_reasons/s0_diagnostic drop survives all 62 decision tests; the `written` hook is unguarded (a throw makes Journal.write throw after the line is on disk); 7/9 mutants.
 - **8:12 AM owner: stop drift.** Only WORKER-HARDEN (RESTART-CAUSE, then the crash fix) and the facts reviewer (its deltas) work. READ-COHERENT builder stopped; facts reviewer's #168/#201 checks stopped. Every other session stays parked and every other PR waits until the bot stays up and evaluates coins. Supervisor wakes only on their messages and the hourly update.
+- **8:20 AM owner: staff the core** (CLAUDE.md; board in PROJECT_STATE). Streams: stays up, judges coins right, right money, exits work, strategy proof. Reviewers re-queued (facts #209 → #168, #201; risk #198 → #186 → #203, #197; run/CI #198; EXIT #189 → #176; persist #202 → #176). Builders: WORKER-HARDEN (#148 check, #209, crash fix, growth PRs), EXIT builder (#176, #171), RES (#191, #115), ops builder 2 (#149, BACKUP-STATE, DISK-GUARD). #137 updated by GitHub (cc02dd86), check + e2e running.
+- **8:24 AM: why passed PRs never merged (owner asked).** Checked HANDOVER and DECISIONS: no blocking reason for #148 WORKER-CRASH, #139 WORKER-1d, #172 N2-WRITES, #141 WATCH-1d, #98 TEST-3 G3, #154 BT-WALL, #160 STATS-1h, #146 CORE-TIDY, #137 OPS-1i. They fell off the merge line while the supervisor chased newer work (a supervisor miss). Real reasons: #164 G4a (proof and worker/facts review still owed), #177 (persist delta of af1c89f pending), #127 DATA-4 (merges only after the data chain ends, by ruling). Now base-merged by builders (code conflicts after a day of other merges): #148 WORKER-HARDEN, #139 WORKER-1d builder, #141 and #98 WATCH builder, #154 BT builder, #172 and #130 persist builder; clean ones (#160, #146) by GitHub update. **Lesson:** never push docs to the base while a PR is in CI (8:22 docs push forced #137 to re-update); docs go in right after each merge.
+- **8:27 AM:** #202 persist delta PASS at 7557335d (same oldest-first eviction; 5269) → merge line after #137 (non-blocking pin: a duplicate completion log keeps the first-seen signature → with #207). #98 TEST-3 G3 parked with a reason: base STATS-1g/BT-2 changed the gateG3 contract (estimand, clusters, dryRunClusters, holdoutCapped, holdoutBelowFloor), so adapting it is design work; G3 is judged only after the qualifying dry run, which needs a registered strategy first. #141 re-merged by the WATCH builder (union resolutions), full check running.
 - **4:53 AM:** #170 EXIT-scope OK at 7f3b8cd (only the entry stop and the post-partial trail read position bars; samples never bucket later than before; the trail ratchets; negative_flow still on receipt time; residual: a stale block-time anchor can shift an account-read sample a minute earlier, changing the ATR value slightly, not trigger timing).
 - **4:54 AM:** #189 merged base d66a2e0 at 80ba780 (worker-harness seams kept; 5024). Asked whether the B2 probe-fault test is in; if not, one more commit, then EXIT re-check.
 - **Owner, 12:26 AM: the new APK works** ("Running · Online", Home lists a discovered token). **Owner ask, about 12:30 AM:** see paper/live traded coins with P&L, running time, % return (ROE) and margin, like normal live trade info. Today the Snipe tab has an Open trade card (entry price, size, liquidation value, unrealized $, costs, exit rules) and a closed-trades list ($, R, size, costs, held, exit); missing: price now, % return, a running timer, % on closed trades. Card APP-TRADE sent to the API/APP builder (after #162 APP-COMPAT merges). Margin is not added: the bot buys outright (spot, no leverage), so size is the full amount at risk. Owner, 12:31 AM: copy a token's address and open it in Pump.fun; added to APP-TRADE as item 6 (full mint to the clipboard; https://pump.fun/coin/<mint> opened outside the webview, built only from a mint that passes the MINT check). Also carded: Home's Volume 24h and Holders columns are hard-coded null (always "—"), and Liquidity read "—" on a 1m19s-old token.
