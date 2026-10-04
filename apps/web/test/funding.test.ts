@@ -11,9 +11,9 @@ import {
   requestSavedWalletChange,
   type WithdrawInput,
 } from '../src/funding/withdraw.ts';
-import { fixtureWallet } from '../src/dev/fixtures.ts';
 
-const SAVED = fixtureWallet.savedWallet!;
+// Real-shaped addresses for the rules; sample data never holds one (SAMPLE-QR, samples.test.ts).
+const SAVED = '9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM';
 const OTHER = '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU';
 const base: WithdrawInput = { to: SAVED, amount: '1', savedWallet: SAVED, balanceSol: '10', reserveSol: '0.75' };
 const NOW = new Date('2026-10-03T14:00:00Z');
