@@ -3,7 +3,7 @@
 // counterfactuals are scored or not.
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, cpSync, existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { EXEC_HEALTH_KEY, xcheckKey } from '../../core/src/gates/index.ts';
@@ -210,6 +210,20 @@ describe('G3: live-only vetoes and their counterfactual trades (TEST-3)', () => 
     expect(restarted.censoredReason).toMatch(/^the path crosses the end of a boot at .*: the pool's stream is not covered past a boot's last frame$/);
     expect(await withBoot(clean.enteredAtMs! - 1_000)).toMatchObject({ censored: false, r: clean.r });
     expect(await withBoot(clean.closedAtMs! + 1)).toMatchObject({ censored: false, r: clean.r });
+    // REC-1's tail cap: the run stopped watching the pool while the position was open.
+    const unwatched = (t: number) => scoreCounterfactual({ mint: MINT, frames, session: s2, rugs: RUG_CONFIG, strategy, scenario: LANDS, network: FILL_CONFIG.network, seed: 'gap', unwatchedFromMs: t });
+    const capped = await unwatched(clean.enteredAtMs! + 1_000);
+    expect(capped).toMatchObject({ censored: true, r: null });
+    expect(capped.censoredReason).toMatch(/^tail cap: the run stopped watching the pool at /);
+    expect(await unwatched(clean.closedAtMs! + 1)).toMatchObject({ censored: false, r: clean.r });
+    // The run's "no tail" decision is where that time comes from: the report reads it and censors the trade.
+    const copy = tempState();
+    cpSync(h.stateDir, copy, { recursive: true });
+    const at = new Date(clean.enteredAtMs! + 1_000).toISOString();
+    appendFileSync(join(copy, 'journal.jsonl'), `${JSON.stringify({ seq: 999_999, ts: at, boot: 'b', kind: 'decision', action: 'none', reasons: ['no tail', 'U2', MINT, 'tail cap 3'] })}\n`);
+    expect(readRun(copy).noTail).toEqual({ [MINT]: Date.parse(at) });
+    const rep = await g3Report({ stateDir: copy, holdout: HOLDOUT, registration: reg(h), parityPassed: true, out: join(tempState(), 'g3'), scenario: LANDS });
+    expect(rep.counterfactuals[0]!.censoredReason).toMatch(/^tail cap/);
   }, 120_000);
 
   it('a run that restarted while the counterfactual position was open: the report censors it at the boot\'s end', async () => {

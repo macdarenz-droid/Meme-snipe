@@ -64,6 +64,8 @@ export interface RunFacts {
   readonly candidates: number;
   readonly rejectMix: Readonly<Record<string, number>>;
   readonly vetoes: readonly Veto[];
+  /** Mints whose pool the run stopped watching at its window end (REC-1 "no tail" at the tail cap), and when. */
+  readonly noTail: Readonly<Record<string, number>>;
   readonly simulations: { readonly attempted: number; readonly succeeded: number; readonly errors: Readonly<Record<string, number>> };
   readonly fillDifferences: readonly number[];
   readonly start: Line;
@@ -116,6 +118,11 @@ export const readRun = (stateDir: string, cutMs = Number.POSITIVE_INFINITY): Run
   const shortlisted = new Set(decisions.filter((l) => reasonsOf(l)[0] === SHORTLIST).map((l) => reasonsOf(l)[2]!).filter((m) => m !== undefined));
   const entered = new Set(decisions.filter((l) => l['action'] === 'enter').map((l) => reasonsOf(l)[2]!).filter((m) => m !== undefined));
   const { vetoes, rejectMix } = classify(decisions, entered);
+  const noTail: Record<string, number> = {};
+  for (const l of decisions) {
+    const r = reasonsOf(l);
+    if (r[0] === 'no tail' && r[2] !== undefined && noTail[r[2]] === undefined) noTail[r[2]] = Date.parse(l.ts);
+  }
   // Kept trades: the account's closed trades, over their entry cost from the ledger.
   const account = parseTyped(readFileSync(join(stateDir, 'account.json'), 'utf8')) as { trades: { positionId: string; mint: string; closedAtMs: number | null; netLamports: bigint | null }[] };
   // A copy: even a read-only SQLite open can leave -shm/-wal files beside the database, and the run's files never change.
@@ -144,7 +151,7 @@ export const readRun = (stateDir: string, cutMs = Number.POSITIVE_INFINITY): Run
   return {
     startMs, endMs, hours: (endMs - startMs) / 3_600_000,
     qualifying: starts.every((s) => s['qualifying'] === true) && new Set(starts.map((s) => s['git_sha'])).size === 1,
-    kept, entered: [...entered].sort(), candidates: shortlisted.size, rejectMix, vetoes,
+    kept, entered: [...entered].sort(), candidates: shortlisted.size, rejectMix, vetoes, noTail,
     simulations: { attempted: sims.length, succeeded: sims.filter((s) => s['success'] === true).length, errors },
     fillDifferences, start: starts[0]!,
   };
@@ -209,7 +216,7 @@ export const g3Report = async (o: G3ReportOptions): Promise<G3Report> => {
   const counterfactuals: G3Report['counterfactuals'][number][] = [];
   for (const v of run.vetoes) {
     const t = await scoreCounterfactual({
-      mint: v.mint, frames, session, rugs: RUG_CONFIG, strategy, scenario: o.scenario ?? FILL_CONFIG.scenarios[PAPER_SCENARIO], network: FILL_CONFIG.network, seed: `g3:${runId}:${v.mint}`, bootEnds,
+      mint: v.mint, frames, session, rugs: RUG_CONFIG, strategy, scenario: o.scenario ?? FILL_CONFIG.scenarios[PAPER_SCENARIO], network: FILL_CONFIG.network, seed: `g3:${runId}:${v.mint}`, bootEnds, ...(run.noTail[v.mint] === undefined ? {} : { unwatchedFromMs: run.noTail[v.mint] }),
     });
     // A scoring that refused an event, held another mint or ran another seed is not this candidate's trade.
     if (t.check.refused > 0 || t.check.otherPositions > 0 || t.check.paperSeed !== `g3:${runId}:${v.mint}`) {

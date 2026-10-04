@@ -35,6 +35,8 @@ export interface CounterfactualInput {
    * stream's coverage ends there (REC-1): a path across one is censored.
    */
   readonly bootEnds?: readonly number[];
+  /** When the run stopped watching this mint's pool (REC-1: a "no tail" decision at the tail cap); past it, unknown. */
+  readonly unwatchedFromMs?: number;
 }
 
 export interface CounterfactualTrade {
@@ -180,7 +182,10 @@ export const scoreCounterfactual = async (o: CounterfactualInput): Promise<Count
     const toMs = closed ? trade!.closedAtMs! : Number.POSITIVE_INFINITY;
     const fromMs = trade?.openedAtMs ?? null;
     const restart = fromMs === null ? undefined : (o.bootEnds ?? []).find((t) => t >= fromMs && t < toMs);
-    const crossed = restart !== undefined
+    const unwatched = o.unwatchedFromMs !== undefined && fromMs !== null && o.unwatchedFromMs < toMs;
+    const crossed = unwatched
+      ? `tail cap: the run stopped watching the pool at ${new Date(o.unwatchedFromMs!).toISOString()}, before the position closed`
+      : restart !== undefined
       ? `the path crosses the end of a boot at ${new Date(restart).toISOString()}: the pool's stream is not covered past a boot's last frame`
       : gapCrossed(o.frames, poolAddress, fromMs, toMs);
     if (crossed !== null) {
