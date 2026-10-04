@@ -131,6 +131,11 @@ describe('the rule set (engineRetention, retentionFor)', () => {
     }
     for (const k of ['chain:slot', 'seen:logs:X', 'gates/sol-usd', 'worker:halt', 'logs:truncated:logs:X', 'gates/stream:chain']) expect(r.rule(k), k).toEqual({ horizonMs: HOUR, dropStale: false });
   });
+  it('a one-shot key (only observed as released, never looked up) goes after an hour, whatever its family', () => {
+    const o = retentionFor(TRIAL_POLICY, 240 * 60_000, ['worker:seed']);
+    expect(o.rule('worker:seed')).toEqual({ horizonMs: HOUR, dropStale: true });
+    expect(r.rule('worker:seed')).toEqual({ horizonMs: HOUR, dropStale: false });
+  });
   it('the per-object horizon covers the candidate window plus the longest hold, and the trade horizon the look-back', () => {
     const long = engineRetention({ lookbackDays: 30, candidateWindowMs: 20 * HOUR, maxHoldMs: 6 * HOUR });
     expect(long.rule(createKey('M'))).toEqual({ horizonMs: 27 * HOUR, dropStale: true });
@@ -144,8 +149,8 @@ describe('one rule set for live, the parity replay and the backtest (guard)', ()
     const { readFileSync } = await import('node:fs');
     const { join } = await import('node:path');
     const src = (p: string) => readFileSync(join(import.meta.dirname, '..', '..', p), 'utf8');
-    expect(src('worker/src/run/worker.ts')).toContain('retention: retentionFor(d.session.policy, d.strategy.windowToMs)');
-    expect(src('worker/src/run/parity.ts')).toContain('retention: retentionFor(d.session.policy, d.strategy.windowToMs)');
+    expect(src('worker/src/run/worker.ts')).toContain('retention: retentionFor(d.session.policy, d.strategy.windowToMs, [SEED_KEY])');
+    expect(src('worker/src/run/parity.ts')).toContain('retention: retentionFor(d.session.policy, d.strategy.windowToMs, [SEED_KEY])');
     expect(src('backtest/src/run.ts')).toContain('retention: retentionFor(o.policy, config.windowToMs)');
   });
 });

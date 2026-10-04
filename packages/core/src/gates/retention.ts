@@ -41,22 +41,25 @@ export interface RetentionInputs {
  * - raw create events: the newest entry kept (see `RAW_CREATE`);
  * - per-object keys: a day, or the candidate window plus the longest hold plus an hour if longer, then gone (a coin
  *   that migrates later has its create fetched again at its shortlist; a missing fact rejects, never passes);
- * - everything else: the newest entry plus an hour of history (read by lookup only).
+ * - everything else: the newest entry plus an hour of history (read by lookup only);
+ * - `oneShot` keys (a caller's facts that are only observed as they are released, never looked up, such as the
+ *   worker's seed with the whole saved deployer index): an hour, then gone.
  */
-export const engineRetention = (i: RetentionInputs): Retention => {
+export const engineRetention = (i: RetentionInputs, oneShot: readonly string[] = []): Retention => {
   for (const [k, v] of Object.entries(i)) if (!(Number.isSafeInteger(v) && v > 0)) throw new RangeError(`retention: ${k} must be a positive whole number`);
+  const once = new Set(oneShot);
   const trade: RetentionRule = { horizonMs: (i.lookbackDays + 1) * DAY, dropStale: true };
   const perObject: RetentionRule = { horizonMs: Math.max(DAY, i.candidateWindowMs + i.maxHoldMs + HOUR), dropStale: true };
   const rest: RetentionRule = { horizonMs: HOUR, dropStale: false };
   return {
     everyMs: HOUR,
-    rule: (key) => (key.startsWith('coverage:') ? 'all' : TRADE.test(key) ? trade : RAW_CREATE.test(key) ? rest : PER_OBJECT.test(key) ? perObject : rest),
+    rule: (key) => (key.startsWith('coverage:') ? 'all' : once.has(key) ? { horizonMs: HOUR, dropStale: true } : TRADE.test(key) ? trade : RAW_CREATE.test(key) ? rest : PER_OBJECT.test(key) ? perObject : rest),
   };
 };
 
 /** The rule set from the policy (look-back, the longest hold over every exit universe) and the strategy's window. */
-export const retentionFor = (policy: Policy, candidateWindowMs: number): Retention => engineRetention({
+export const retentionFor = (policy: Policy, candidateWindowMs: number, oneShot: readonly string[] = []): Retention => engineRetention({
   lookbackDays: policy.gates.deployerRugLookbackDays,
   candidateWindowMs,
   maxHoldMs: Math.max(...EXIT_UNIVERSES.map((u) => policy.exits.universes[u].tMaxMs)),
-});
+}, oneShot);
