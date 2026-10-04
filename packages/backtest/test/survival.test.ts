@@ -14,7 +14,7 @@ import { LabelTimeError, SURVIVAL_RULE, survivalLabel } from '../src/research/su
 import { labelDecisions } from '../src/research/survival-outcome.ts';
 import type { Features } from '../src/research/tracker.ts';
 import { S_T0, SURV_SOL_USD, survivalRows } from './survival-fixture.ts';
-import { SOL_USD, syntheticRows, T0 } from './synthetic.ts';
+import { SOL_USD, syntheticRows, T0 } from '../src/dataset/synthetic.ts';
 
 const SRC = join(import.meta.dirname, '..', 'src', 'research');
 const W: PracticeWindow = { decisionFrom: '2026-09-01', decisionTo: '2026-10-01', holdoutFrom: '2026-09-23', embargoDays: 1, confirmedBy: 'test' };
@@ -359,7 +359,7 @@ describe('cli', () => {
     const { cpSync, existsSync, mkdtempSync, rmSync, writeFileSync } = await import('node:fs');
     const { tmpdir } = await import('node:os');
     const { execFileSync, spawnSync } = await import('node:child_process');
-    const { writeDataset } = await import('./dataset-writer.ts');
+    const { writeDataset } = await import('../src/dataset/writer.ts');
     // The CLI writes to fixed paths in its own repository, so it runs from a copy of the sources in a scratch git repo.
     const REPO = join(import.meta.dirname, '..', '..', '..');
     const dir = mkdtempSync(join(tmpdir(), 'res5-'));
