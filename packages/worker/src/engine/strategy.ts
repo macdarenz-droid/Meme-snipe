@@ -333,8 +333,8 @@ export class LiveStrategy implements Strategy {
   /** Each held position's last spot price, for the saved plan (the exposure rebuild's reference). */
   readonly #spot = new Map<string, { readonly price: bigint; readonly atMs: number }>();
 
-  /** Each held position's latest mark (executable price, PRICE_SCALE) with when it was read. */
-  readonly #marks = new Map<string, { readonly price: bigint; readonly atMs: number; readonly slot: bigint }>();
+  /** Each held position's latest display quote (sale price per token, PRICE_SCALE) with when it was read; never risk's mark. */
+  readonly #displayQuotes = new Map<string, { readonly price: bigint; readonly atMs: number; readonly slot: bigint }>();
 
   /**
    * Exit owners said to be waiting for a fresh market in this process (EXIT-1d), by intent, with their position. The wait
@@ -359,12 +359,12 @@ export class LiveStrategy implements Strategy {
   }
 
   /**
-   * A held position's latest sale quote per token (PRICE_SCALE) and when it was read: the whole holding sold into the
-   * pool at its last read, venue fees and price impact included, network fees and landing not (WORKER-1c: named apart
-   * from the account mark risk reads, RISK-MARK, so the two are not confused). For /health and the exit tracker.
+   * A held position's display quote per token (PRICE_SCALE) and when it was read: the whole holding sold into the pool
+   * at its last read, venue fees and price impact included, network fees, slippage allowance and landing not. Display
+   * only (/health and the heartbeat): risk's mark is marks.ts's executable mark, never this (review N3).
    */
-  saleQuoteOf(pid: string): { readonly price: bigint; readonly atMs: number; readonly slot: bigint } | null {
-    return this.#marks.get(pid) ?? null;
+  displayQuoteOf(pid: string): { readonly price: bigint; readonly atMs: number; readonly slot: bigint } | null {
+    return this.#displayQuotes.get(pid) ?? null;
   }
 
   /** Positions whose universe the policy lacks, being flattened (said once each). */
@@ -911,7 +911,7 @@ export class LiveStrategy implements Strategy {
     for (const p of Object.values(ctx.book.positions)) {
       if (p.status === 'closed') {
         if (this.#exits.delete(p.id)) this.#forget(p.mint);
-        this.#marks.delete(p.id);
+        this.#displayQuotes.delete(p.id);
         this.#spot.delete(p.id);
         this.#bars.delete(p.id);
         this.#unjudgedDeployer.delete(p.id);
@@ -965,9 +965,9 @@ export class LiveStrategy implements Strategy {
       };
       const m = this.#market(ctx, p.mint);
       if (typeof m !== 'string' && p.quantity > 0n) {
-        // The mark: the executable sale value of the whole holding as a price (the stop's unit), at the market's read.
+        // The display quote: the sale value of the whole holding as a price, at the market's read (not risk's mark).
         const liq = liquidationValue({ venue: 'pumpswap', pool: m.pool, ctx: m.ctx }, p.quantity);
-        if (liq.ok) this.#marks.set(p.id, { price: execPrice(liq.value, p.quantity), atMs: m.atMs, slot: ctx.now.slot });
+        if (liq.ok) this.#displayQuotes.set(p.id, { price: execPrice(liq.value, p.quantity), atMs: m.atMs, slot: ctx.now.slot });
       }
       // A universe the loaded policy no longer has (a restart under a policy that dropped it): its own time stops and
       // partials are unknown, so the position is flattened at once through the global exit ladder (supervisor ruling).

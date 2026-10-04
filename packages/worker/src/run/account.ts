@@ -105,19 +105,21 @@ export class PaperAccount {
   }
 
   /**
-   * Records the boundary marks and the NAV peak from the figures risk would use now (WORKER-1c). A day or week mark is
-   * taken once, at the first look at or after its boundary. The NAV peak only rises, and restarts after a re-arm (R10
-   * restarts its high-water mark there). With no deposits or withdrawals in paper, keeping the peak alone gives R10
-   * the same high-water mark as keeping every observation. True when anything changed (the account fact must be put
-   * again).
+   * Records the boundary marks and the NAV peak from the figures risk would use now, on the marked account (WORKER-1c,
+   * RISK-MARK). A day or week mark is taken once, at the first look at or after its boundary when every open position
+   * has a fresh mark (`marked`; none open counts): an unmarked position is a total loss to equity, and recording that
+   * would show a phantom gain once it is marked again. The NAV peak only rises, and restarts after a re-arm (R10
+   * restarts its high-water mark there); risk gives a NAV only when every mark is fresh. With no deposits or
+   * withdrawals in paper, keeping the peak alone gives R10 the same high-water mark as keeping every observation. True
+   * when anything changed (the account fact must be put again).
    */
-  mark(s: Pick<RiskSnapshot, 'dayStartMs' | 'weekStartMs' | 'equity' | 'nav'>, rearmAtMs: number | null, nowMs: number): boolean {
+  mark(s: Pick<RiskSnapshot, 'dayStartMs' | 'weekStartMs' | 'equity' | 'nav'>, marked: boolean, rearmAtMs: number | null, nowMs: number): boolean {
     let changed = false;
-    if (this.#s.dayMark?.startMs !== s.dayStartMs) {
+    if (marked && this.#s.dayMark?.startMs !== s.dayStartMs) {
       this.#s.dayMark = { startMs: s.dayStartMs, atMs: nowMs, equity: s.equity };
       changed = true;
     }
-    if (this.#s.weekMark?.startMs !== s.weekStartMs) {
+    if (marked && this.#s.weekMark?.startMs !== s.weekStartMs) {
       this.#s.weekMark = { startMs: s.weekStartMs, atMs: nowMs, equity: s.equity };
       changed = true;
     }

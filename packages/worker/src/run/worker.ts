@@ -44,6 +44,7 @@ import { type PaperMarket, type PaperState, PaperWorld, type SimLeg } from './pa
 import { Recorder, sealLeftovers } from './recorder.ts';
 import { entryPrice, openPositionsHealth } from './open-positions.ts';
 import { riskSnapshot } from '../../../core/src/risk/index.ts';
+import { markSettings, riskAccount } from '../engine/marks.ts';
 import type { DeployerIndexState, RugLabellerState } from '../../../core/src/gates/index.ts';
 import { loadState, saveState } from '../persist/index.ts';
 
@@ -637,22 +638,35 @@ export class Worker {
   }
 
   /**
-   * WORKER-1c: the day and week boundary marks and the NAV peak, from the figures risk would use now. When they change,
-   * the account fact is put again, so the next evaluation's day and week loss take the stricter of the realized and the
-   * marked measure and R10 sees the peak.
+   * WORKER-1c: the day and week boundary marks and the NAV peak, from the figures risk would use now on the marked
+   * account (RISK-MARK: each open position at its executable mark from its newest market under rule M, valued at the
+   * live SOL price; the same `riskAccount` path the strategy's exits use, falling back to the unmarked account on a
+   * failure). A boundary is recorded only when every open position has a fresh mark; otherwise the next look takes it.
+   * When they change, the account fact is put again, so the next evaluation's day and week loss take the stricter of
+   * the realized and the marked measure and R10 sees the peak.
    */
   #markAccount(now: number): void {
     if (!this.#reconciled) return;
     const fact = this.#account.fact(this.#ledger, this.#desk.book, this.#ctl.latches, this.#solPrice, now);
+    const sol = this.#solPrice === null || this.#solPriceAt === null ? null : { value: this.#solPrice, atMs: this.#solPriceAt };
+    const policy = this.#d.session.policy;
+    const held = Object.values(this.#engine.book.positions).filter((p) => p.status !== 'closed');
+    const account = riskAccount(fact.history, (mint) => {
+      const p = held.find((x) => x.mint === mint);
+      if (p === undefined) return undefined;
+      const m = this.poolOf(mint);
+      return { quantity: p.quantity, market: m === null ? null : { pool: m.state, ctx: m.ctx, atMs: m.atMs } };
+    }, sol, now, markSettings(policy, this.#d.strategy.network), { fallback: true, ...(this.#d.markedHistory === undefined ? {} : { mark: this.#d.markedHistory }) });
     const snapshot = riskSnapshot({
       session: this.#d.session, mode: 'paper', clock: { now: () => ({ slot: this.#lastSlot ?? 0n, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt: now }) },
-      account: fact.history, latches: fact.latches,
-      market: { solPrice: this.#solPrice === null || this.#solPriceAt === null ? null : { value: this.#solPrice, atMs: this.#solPriceAt }, solBalance: fact.solBalance, regime: 'unknown' },
+      account, latches: fact.latches, market: { solPrice: sol, solBalance: fact.solBalance, regime: 'unknown' },
     });
     if (snapshot === null) return;
+    const maxAge = policy.gates.maxQuoteAgeMs;
+    const marked = account.openPositions.every((o) => o.mark !== null && o.markAtMs !== null && o.markAtMs <= now && now - o.markAtMs <= maxAge);
     const day = this.#account.state.dayMark?.startMs;
-    if (this.#account.mark(snapshot, this.#ctl.latches.killRearmedAtMs, now)) {
-      if (day !== snapshot.dayStartMs) this.#d.log(`Account marks: equity ${snapshot.equity} at ${new Date(now).toISOString()} for the Melbourne day from ${new Date(snapshot.dayStartMs).toISOString()}.`);
+    if (this.#account.mark(snapshot, marked, this.#ctl.latches.killRearmedAtMs, now)) {
+      if (day !== this.#account.state.dayMark?.startMs) this.#d.log(`Account marks: equity ${snapshot.equity} at ${new Date(now).toISOString()} for the Melbourne day from ${new Date(snapshot.dayStartMs).toISOString()}.`);
       this.#publishAccount();
     }
   }
@@ -1040,8 +1054,8 @@ export class Worker {
   }
 
   /** A position's mark when read within the last 30 s (RUN-1c's MARK_MAX_AGE_MS); an older one is no price. */
-  #freshMark(pid: string): { readonly price: bigint; readonly atMs: number; readonly slot: bigint } | null {
-    const m = this.#strategy.saleQuoteOf(pid);
+  #freshDisplayQuote(pid: string): { readonly price: bigint; readonly atMs: number; readonly slot: bigint } | null {
+    const m = this.#strategy.displayQuoteOf(pid);
     return m === null || this.#d.timers.now() - m.atMs > 30_000 ? null : m;
   }
 
@@ -1129,7 +1143,7 @@ export class Worker {
       openedAt: (id) => this.#account.state.trades.find((t) => t.positionId === id)?.openedAtMs ?? null,
       plan: (id) => savedPlans[id]?.plan ?? null,
       universe: (id) => universes.get(id) ?? NO_UNIVERSE,
-      mark: (id) => this.#strategy.saleQuoteOf(id),
+      mark: (id) => this.#strategy.displayQuoteOf(id),
     });
     const ops = this.#d.ops?.() ?? { quota: [], lookups: { counts: LOOKUP_BOUNDS_MS.map(() => 0).concat(0) } };
     const h: Health = {
@@ -1157,7 +1171,7 @@ export class Worker {
     const h = this.health();
     const p = Object.values(this.#engine.book.positions).find((x) => x.status !== 'closed' && x.status !== 'opening');
     const saved = p === undefined ? undefined : this.#strategy.saved()[p.id];
-    const mark = p === undefined ? null : this.#freshMark(p.id);
+    const mark = p === undefined ? null : this.#freshDisplayQuote(p.id);
     const lastExit = p === undefined ? null : Math.max(...Object.values(this.#engine.book.intents).filter((i) => i.intent.positionId === p.id && i.intent.purpose === 'exit').map((i) => this.#intentAt.get(i.intent.id) ?? 0), 0);
     const position: HeartbeatPosition | null = p === undefined ? null : {
       // Unknown is null, never 0 (a 0 stop or mark reads as a price to the watchdog). Entry, stop and mark share one unit:
