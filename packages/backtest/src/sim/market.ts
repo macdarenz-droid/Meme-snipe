@@ -275,6 +275,9 @@ export class Market {
     const out = this.#row(row);
     const own = this.#now.length === 0 ? out : [...out, ...this.#now];
     const facts = this.#opts.facts;
+    // The projector's facts and checks are released at chain time, not through the observation delay: delayed events
+    // are re-stamped at their release slot, which would put every chain-state fact past maxStateSlotLag (raised with
+    // the supervisor, DECISIONS).
     return facts === undefined ? own : [...own, ...facts.observe(row, rowMoment(row), this.blockHeight)];
   }
 

@@ -56,5 +56,7 @@ describe('feature rule', () => {
     expect(featureSetup(rule, { features: { f_net15: 1, f_age: 91 } }, 1_000n)).toMatchObject({ ok: false, why: 'f_age 91 > 90' });
     expect(featureSetup(rule, { features: { f_net15: null, f_age: 1 } }, 1_000n)).toMatchObject({ ok: false, why: 'f_net15 unknown' });
     expect(featureSetup(rule, null, 1_000n)).toMatchObject({ ok: false });
+    // Rounded up: a stop at the policy's widest distance is never past it (1,001 × 0.8 = 800.8 → 801, 199.9 bps short of 20%).
+    expect(featureSetup(rule, { features: { f_net15: 1, f_age: 1 } }, 1_001n)).toEqual({ ok: true, stopSpot: 801n });
   });
 });

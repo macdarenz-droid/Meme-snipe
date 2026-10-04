@@ -24,10 +24,12 @@ const SETUP: MintPlan = { label: 'a', createSlot: 10, graduateAfter: 20 * MIN, m
 const SLOTS = 10 + 20 * MIN + 260 * MIN;
 const sol = { ...SOL_USD, bars: Array.from({ length: 24 * 20 }, (_, k) => ({ start: W0 - 16 * 86_400_000 + k * 3_600_000, close: '120.00' })) };
 
+// Seed 'e2': its entry draws land under BT-1c's conservative fill model (with 'e' a provider-outage window drops the
+// one entry; the mechanics under test need it to land).
 const run = (plans: readonly MintPlan[], over: Partial<StudyRunOptions> = {}) => {
   const { rows, mints } = studyWorld({ leadInDays: 15, slots: SLOTS, mints: plans });
   const r = runStudy({
-    rows: () => rows[Symbol.iterator](), series: [sol], seed: 'e', scenario: 'conservative', policy: TRIAL_POLICY, fills: FILL_CONFIG, research: RESEARCH_CONFIG,
+    rows: () => rows[Symbol.iterator](), series: [sol], seed: 'e2', scenario: 'conservative', policy: TRIAL_POLICY, fills: FILL_CONFIG, research: RESEARCH_CONFIG,
     windowEnd: W0 + 12 * 3_600_000, study: STUDY_CONFIG, mode: 'strategy', entriesFrom: W0, entriesTo: W0 + 10 * 3_600_000, sampleRate: 1,
     // No regime inputs in the synthetic world: runs assume it on (labelled diagnostic) unless a test evaluates it.
     insiders: () => ({ knownAtMs: 0, funded: [], devCluster: [] }), poolAccounts: POOL_ACCOUNTS, delegatesComplete: true, regime: 'assume-on', ...over,
@@ -48,9 +50,11 @@ describe('BT-2 study runs', () => {
     expect(enters[0]!.reasons[1]).toBe('U2');
     const { trades } = tradesOf(r, FILL_CONFIG);
     expect(trades).toHaveLength(1);
-    // fills-2: the final sell landed, so the conservative scenario returns the token-account rent with it.
     expect(trades[0]!.exitReason).toBe('time-stop');
-    expect(trades[0]!.rentReturned).toBe(FILL_CONFIG.network.tokenAccountRent);
+    // BT-1c's conservative scenario keeps the token-account rent lost (rentRecovery false; the account-close outcome
+    // model is the scenario's own), so none comes back here.
+    expect(trades[0]!.rentReturned).toBe(FILL_CONFIG.scenarios.conservative.rentRecovery ? FILL_CONFIG.network.tokenAccountRent : 0n);
+    expect(FILL_CONFIG.scenarios.conservative.rentRecovery).toBe(false);
     // The exit came from EXIT-1's rules, booked under a lifecycle reason.
     expect(decisions(r.records).some((d) => /^exit (time_flat|time_max|price_stop|take_profit|negative_flow|trailing_stop|break_even|liquidity_drop)/.test(d.reasons[0]!))).toBe(true);
   });
@@ -156,7 +160,8 @@ describe('BT-2 study runs', () => {
     const broad = run(two);
     expect(decisions(broad.r.records).filter((d) => d.reasons[0] === 'enter')).toHaveLength(2);
     let stats: import('../src/strategy/study.ts').DeploymentStats | null = null;
-    const dep = run(two, { mode: 'deployment', onStrategy: (x) => { stats = x.deployment; } });
+    // Seed 'd3': the first deployment entry lands, so the second setup meets a busy book.
+    const dep = run(two, { mode: 'deployment', seed: 'd3', onStrategy: (x) => { stats = x.deployment; } });
     expect(dep.r.stats).toMatchObject({ crashes: 0, illegalStates: 0, unreconciledIntents: 0 });
     const enters = decisions(dep.r.records).filter((d) => d.reasons[0] === 'enter');
     expect(enters.length).toBeGreaterThanOrEqual(1);
@@ -185,19 +190,19 @@ describe('BT-2 study runs', () => {
 
   it('deployment replay: S0 runs under the same one-position rule, under its own tags', () => {
     const four = ['a', 'b', 'c', 'd'].map((label) => ({ ...SETUP, label, creator: label }));
-    let bound = false;
+    let busy = 0;
     for (const seed of ['d0', 'd1', 'd2', 'd3']) {
       const overlap = (ts: readonly { openedAt: number; closedAt: number }[]) => ts.some((t, i) => i > 0 && t.openedAt < ts[i - 1]!.closedAt);
-      const research = tradesOf(run(four, { mode: 's0', seed }).r, FILL_CONFIG).trades;
-      const dep = run(four, { mode: 'deployment-s0', seed });
+      let stats: import('../src/strategy/study.ts').DeploymentStats | null = null;
+      const dep = run(four, { mode: 'deployment-s0', seed, onStrategy: (x) => { stats = x.deployment; } });
       expect(dep.r.stats).toMatchObject({ crashes: 0, illegalStates: 0, unreconciledIntents: 0 });
       const trades = tradesOf(dep.r, FILL_CONFIG).trades;
       expect(trades.every((t) => t.id.startsWith('p:S0-U'))).toBe(true);
       expect(overlap(trades)).toBe(false);
-      if (overlap(research)) bound = true;
+      busy += (stats as unknown as import('../src/strategy/study.ts').DeploymentStats).rejected['R3:book busy'] ?? 0;
     }
-    // On at least one seed the research S0 held two at once, so the rule was binding there.
-    expect(bound).toBe(true);
+    // The rule was binding: S0 checks were refused while its one position was open.
+    expect(busy).toBeGreaterThan(0);
   });
 
   it('a RES-3 feature rule enters when its conditions hold on the as-of features, and never when one fails', () => {

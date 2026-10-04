@@ -777,7 +777,9 @@ const mergeGates = (a: HardResult, b: HardResult): HardResult => ({
 });
 
 const fixedStop = (stopBelowBps: number, spot: bigint): { ok: true; stopSpot: bigint } | { ok: false; why: string } => {
-  const stop = (spot * (BPS - BigInt(stopBelowBps))) / BPS;
+  // Rounded up, so the stop is never further than `stopBelowBps` below the spot (a barrier at the policy's widest stop
+  // stays inside it).
+  const stop = (spot * (BPS - BigInt(stopBelowBps)) + BPS - 1n) / BPS;
   return stop > 0n && stop < spot ? { ok: true, stopSpot: stop } : { ok: false, why: 'no room for the stop below the price' };
 };
 

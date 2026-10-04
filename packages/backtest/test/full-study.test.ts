@@ -32,6 +32,8 @@ const sol = { ...SOL_USD, bars: Array.from({ length: 24 * 20 }, (_, k) => ({ sta
 const config = { ...STUDY_CONFIG, frozen: true, window: { decisionFrom: '2026-09-20', decisionTo: '2026-09-22', leadInDays: 14 }, folds: 2, holdout: { fromDay: '2026-09-22', entryCutoff: '2026-09-22T21:00:00Z', tailDays: 0 }, s0SeedsWalkForward: 2, s0SeedsHoldout: 2 };
 const decisionDays = ['2026-09-20', '2026-09-21', '2026-09-22'];
 
+// Seed 'study3': under BT-1c's conservative fill model its walk-forward entries land (with 'study' and 'study2' the
+// draws drop or fail every entry, leaving no trade to score).
 const inputs = (over: Partial<StudyInputs> = {}): StudyInputs => ({
   config, policy: TRIAL_POLICY, fills: FILL_CONFIG, research: RESEARCH_CONFIG, availableDays: decisionDays,
   rows: (from, to) => () => rows.filter((r) => dayOf(r) >= from && dayOf(r) <= to)[Symbol.iterator](),
@@ -39,7 +41,7 @@ const inputs = (over: Partial<StudyInputs> = {}): StudyInputs => ({
   // The synthetic world produces no regime inputs: the walk-forward runs as a labelled diagnostic, the holdout as live.
   regimeGate: 'assume-on',
   registryPath: join(dir, 'registry.json'), outDir: dir,
-  ledgerReplay: (p) => { const r = replayLedgerFile(p); return { ok: r.ok, detail: JSON.stringify(r) }; }, seed: 'study', replays: 2, runHoldout: false, startedAt: '2026-10-04T00:00:00Z', ...over,
+  ledgerReplay: (p) => { const r = replayLedgerFile(p); return { ok: r.ok, detail: JSON.stringify(r) }; }, seed: 'study3', replays: 2, runHoldout: false, startedAt: '2026-10-04T00:00:00Z', ...over,
 });
 
 describe('BT-2 study', () => {
