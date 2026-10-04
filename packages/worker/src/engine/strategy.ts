@@ -23,7 +23,7 @@ import {
 } from '../../../core/src/domain/index.ts';
 import { type AsOfEntry, type Decision, type MarketEvent, type Moment, type Strategy, type StrategyContext, compareMoments } from '../../../core/src/engine/index.ts';
 import { RAW } from '../../../core/src/facts/raw.ts';
-import { observedFeeContext } from '../../../core/src/fills/index.ts';
+import { observedFeeContext, type SwapEvent, swapEventState } from '../../../core/src/fills/index.ts';
 import {
   type EntryPlan, type ExitDecision, type FlowMinute, type ExitSettings, type ExitTracker, type Holding, type PriceBar,
   atr, checkStopDistance, decideExit, execPrice, liquidationValue, exitAttemptsOf, exitBookEvents, exitSettings, newTracker, noteAttempt,
@@ -322,6 +322,75 @@ interface Candidate {
   /** The mint's creator, from its released create (null until it is seen): RUG-1c checks this deployer. */
   creator?: string | null;
 }
+
+/**
+ * RESTART-KEEP: a candidate as saved with the state (public chain data and the strategy's own evaluation state), so a
+ * restart inside its 60–240 min window keeps it. Gates and spend are judged again; the creator comes back with its create.
+ */
+export interface SavedCandidate {
+  readonly mint: string;
+  readonly pool: string | null;
+  readonly migratedAtMs: number;
+  readonly migrationSlot: bigint | null;
+  readonly tries: number;
+  readonly lastEvalMs: number | null;
+  readonly lastReason: string | null;
+  /** Its price bars (the entry's ATR stop needs a contiguous run of them), none started after the save. */
+  readonly bars: readonly PriceBar[];
+}
+
+/** RESTART-KEEP: one filled swap of a restored candidate's downtime: its block time, reserves before and after, and the spot after. */
+interface GapTrade {
+  readonly atMs: number;
+  readonly pre: string;
+  readonly post: string;
+  readonly price: bigint;
+}
+
+/**
+ * The trades in chain order: each one's reserves before it are the previous one's after it. Null unless that orders
+ * every trade into one run with block times that never go back (a trade missing, a duplicate state or a clock stepping
+ * back cannot be proven).
+ */
+const chainOrder = (trades: readonly GapTrade[]): GapTrade[] | null => {
+  if (trades.length === 0) return [];
+  const byPre = new Map<string, GapTrade>();
+  for (const t of trades) {
+    if (byPre.has(t.pre)) return null;
+    byPre.set(t.pre, t);
+  }
+  const posts = new Set(trades.map((t) => t.post));
+  const firsts = trades.filter((t) => !posts.has(t.pre));
+  if (firsts.length !== 1) return null;
+  const out: GapTrade[] = [];
+  for (let t: GapTrade | undefined = firsts[0]; t !== undefined; t = byPre.get(t.post)) {
+    if (out.length > 0 && t.atMs < out.at(-1)!.atMs) return null;
+    out.push(t);
+    if (out.length > trades.length) return null;
+  }
+  return out.length === trades.length ? out : null;
+};
+
+/** RESTART-KEEP: a rejected candidate's pool watched after its window (REC-1), as saved. */
+export interface SavedTail {
+  readonly mint: string;
+  readonly pool: string;
+  readonly untilMs: number;
+}
+
+/** Decision naming a candidate restored from the saved state: the worker reads its migration and create again. */
+export const CANDIDATE_RESTORED = 'candidate restored';
+
+/** A saved candidate as the strategy can take it; null when malformed. */
+const savedCandidate = (x: unknown): SavedCandidate | null => {
+  if (!isObj(x)) return null;
+  const ms = (v: unknown, nul: boolean): boolean => (nul && v === null) || (typeof v === 'number' && Number.isSafeInteger(v));
+  const ok = typeof x['mint'] === 'string' && x['mint'] !== '' && (x['pool'] === null || typeof x['pool'] === 'string') && ms(x['migratedAtMs'], false)
+    && (x['migrationSlot'] === null || (typeof x['migrationSlot'] === 'bigint' && x['migrationSlot'] >= 0n))
+    && typeof x['tries'] === 'number' && Number.isSafeInteger(x['tries']) && x['tries'] >= 0 && ms(x['lastEvalMs'], true) && (x['lastReason'] === null || typeof x['lastReason'] === 'string')
+    && Array.isArray(x['bars']) && x['bars'].every((b) => isObj(b) && ms(b['startMs'], false) && ['high', 'low', 'close'].every((k) => typeof b[k] === 'bigint' && (b[k] as bigint) > 0n));
+  return ok ? { mint: x['mint'] as string, pool: x['pool'] as string | null, migratedAtMs: x['migratedAtMs'] as number, migrationSlot: x['migrationSlot'] as bigint | null, tries: x['tries'] as number, lastEvalMs: x['lastEvalMs'] as number | null, lastReason: x['lastReason'] as string | null, bars: x['bars'] as PriceBar[] } : null;
+};
 
 /** What an entry needs once it fills: fixed at the decision, completed with the fill. */
 /** An entry decision's own plan inputs, saved before its intent is booked (EXIT-1h) so a restart rebuilds its plan. */
@@ -637,16 +706,19 @@ export class LiveStrategy implements Strategy {
    * PERSIST-1: what a save holds, as of the latest released moment: the index (entries older than `retainFromMs`
    * left out), the labeller's tables and every coverage fact. Null before anything was released or the seed applied.
    */
-  persistable(retainFromMs: number): { readonly state: { readonly asOf: Moment; readonly index: DeployerIndexState; readonly labeller: RugLabellerState; readonly coverage: readonly MarketEvent[]; readonly graduates: SavedGraduates }; readonly mintRows: Iterable<readonly [string, readonly (readonly [string, number])[]]> } | null {
+  persistable(retainFromMs: number): { readonly state: { readonly asOf: Moment; readonly index: DeployerIndexState; readonly labeller: RugLabellerState; readonly coverage: readonly MarketEvent[]; readonly graduates: SavedGraduates; readonly candidates: readonly SavedCandidate[]; readonly tails: readonly SavedTail[] }; readonly mintRows: Iterable<readonly [string, readonly (readonly [string, number])[]]> } | null {
     const asOf = this.#lastMoment;
     if (asOf === null || !this.#seedApplied || this.#waiting !== null) return null;
     // PERSIST-2: the newest graduates fact released so far, with only the entries whose survival mark was reached by
     // the save moment (the fact itself is never newer than the last released event).
     const items = (this.#graduatesFact?.items ?? []).filter((g) => g.migratedAtMs + this.#d.session.policy.regime.survivalAfterMs <= asOf.receivedAt);
+    // RESTART-KEEP: every candidate in its window, none migrated after the save moment.
+    const candidates = [...this.#cands.values()].filter((c) => c.migratedAtMs <= asOf.receivedAt).sort((a, b) => (a.mint < b.mint ? -1 : a.mint > b.mint ? 1 : 0))
+      .map((c): SavedCandidate => ({ mint: c.mint, pool: this.#poolOfMint.get(c.mint) ?? null, migratedAtMs: c.migratedAtMs, migrationSlot: this.#migrationSlot.get(c.mint) ?? null, tries: c.tries, lastEvalMs: c.lastEvalMs, lastReason: c.lastReason, bars: (this.#bars.get(c.mint) ?? []).filter((b) => b.startMs <= asOf.receivedAt) }));
     // WORKER-GROW: the index's mint rows are streamed into the file by the save, never built whole; the graduates ride
     // in the payload line.
     return {
-      state: { asOf, index: this.#deployers.snapshot(asOf, retainFromMs, { mints: false }), labeller: this.#labeller.snapshot(), coverage: [...this.#coverageFacts], graduates: { asOfMs: asOf.receivedAt, items } },
+      state: { asOf, index: this.#deployers.snapshot(asOf, retainFromMs, { mints: false }), labeller: this.#labeller.snapshot(), coverage: [...this.#coverageFacts], graduates: { asOfMs: asOf.receivedAt, items }, candidates, tails: [...this.#tail].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([mint, t]) => ({ mint, pool: t.pool, untilMs: t.untilMs })) },
       mintRows: this.#deployers.mintRows(retainFromMs),
     };
   }
@@ -669,6 +741,8 @@ export class LiveStrategy implements Strategy {
     // the guard keeps a save's as-of point from ever moving back if that changed (the index snapshot refuses it too).
     if (this.#lastMoment === null || compareMoments(e.moment, this.#lastMoment) > 0) this.#lastMoment = e.moment;
     if (COVERAGE_FACT.test(e.key)) this.#coverageFacts.push(e);
+    this.#gapBarsMerge(e.moment);
+    this.#gapBarsClose(e);
     if (e.key === GRADUATES_KEY) this.#graduatesFact = parseGraduates(unwrap(e.value)) ?? this.#graduatesFact;
     this.#observe(e);
     if (e.key === RESTORE_KEY) this.#restore(unwrap(e.value), out, e.moment.receivedAt);
@@ -737,6 +811,156 @@ export class LiveStrategy implements Strategy {
     };
   }
 
+  /**
+   * RESTART-KEEP: the saved candidates come back as of the restore. A list that is malformed, or holds a candidate
+   * migrated or evaluated after the restore moment (a host clock behind the save), is refused whole, never in part.
+   */
+  #restoreCandidates(v: unknown, atMs: number, out: Decision[]): void {
+    const list = Array.isArray(v) ? v.map(savedCandidate) : null;
+    const why = list === null || list.some((c) => c === null) ? 'malformed saved candidates'
+      : list.some((c) => c!.migratedAtMs > atMs || (c!.lastEvalMs ?? Number.NEGATIVE_INFINITY) > atMs || c!.bars.some((b) => b.startMs > atMs)) ? 'a saved candidate is dated after the restore' : null;
+    if (why !== null) {
+      out.push({ action: null, reasons: ['candidates refused', why] });
+      return;
+    }
+    for (const c of list as SavedCandidate[]) {
+      if (this.#cands.has(c.mint)) continue;
+      // The pool's trade coverage starts at the saved migration slot (S0-ZERO's catch-up), as for a candidate seen live.
+      this.#noteMigrationSlot(c.mint, c.migrationSlot);
+      this.#cands.set(c.mint, { mint: c.mint, migratedAtMs: c.migratedAtMs, lastEvalMs: c.lastEvalMs, lastReason: c.lastReason, lastWaived: '', tries: c.tries, gates: null, spend: null });
+      if (c.pool !== null) this.#notePool(c.mint, c.pool);
+      if (c.bars.length > 0 && !this.#bars.has(c.mint)) this.#bars.set(c.mint, [...c.bars]);
+      // The downtime's bars, from the saved last bar (or the migration) to the restore, come from the pool's filled trades.
+      const barMs = this.#d.config.barMs;
+      const fromMs = c.bars.at(-1)?.startMs ?? Math.floor(c.migratedAtMs / barMs) * barMs;
+      if (fromMs < atMs) this.#barGap.set(c.mint, { fromMs, untilMs: atMs, trades: [], seen: new Set(), broken: false, closed: null });
+      out.push({ action: null, reasons: [CANDIDATE_RESTORED, this.#d.config.universe, c.mint, `migrated at ${c.migratedAtMs}`, `tries ${c.tries}`] });
+    }
+  }
+
+  /**
+   * RESTART-KEEP: a restored candidate's price bars over the downtime, rebuilt from its pool's filled trades (S0-ZERO's
+   * catch-up from the migration releases every trade). Taken only when that catch-up closes complete (`resume`) and
+   * the trades' reserves chain into one run: after a lossy close or a broken chain the downtime's bars stay unknown
+   * and the ATR waits for a fresh contiguous run, never a guess.
+   */
+  readonly #barGap = new Map<string, { readonly fromMs: number; readonly untilMs: number; readonly trades: GapTrade[]; readonly seen: Set<string>; broken: boolean; closed: { readonly at: Moment; readonly complete: boolean } | null }>();
+
+  /** The price bars kept for a candidate (by mint) or a position (by id). */
+  barsOf(key: string): readonly PriceBar[] {
+    return this.#bars.get(key) ?? [];
+  }
+
+  /**
+   * One filled swap inside a restored candidate's downtime, sampled as a never-restarted worker samples it: the pool
+   * state right after the swap (FACTS-1's chain, `swapEventState`), at the spot formula of `#track`, in the swap's minute.
+   */
+  #gapBarTrade(mint: string, e: MarketEvent, v: Record<string, unknown>, ev: Record<string, unknown>, d: Record<string, unknown>): void {
+    const g = this.#barGap.get(mint);
+    if (g === undefined || typeof d['timestamp'] !== 'bigint') return;
+    const atMs = Number(d['timestamp']) * 1000;
+    if (atMs < g.fromMs || atMs >= g.untilMs) return;
+    // The same trade from a fetched transaction and a log line counts once.
+    const id = `${String(v['signature'] ?? e.id.split(':')[1])}:${String(d['poolBaseTokenReserves'])}:${String(d['poolQuoteTokenReserves'])}`;
+    if (g.seen.has(id)) return;
+    g.seen.add(id);
+    let r: ReturnType<typeof swapEventState>;
+    try {
+      r = swapEventState(ev as unknown as SwapEvent);
+    } catch {
+      r = { ok: false, reason: 'undecodable swap' };
+    }
+    // A swap that does not replay leaves the live chain stale too (no sample there): the downtime cannot be proven.
+    if (!r.ok || r.after.baseReserve <= 0n) {
+      g.broken = true;
+      return;
+    }
+    const price = (effectiveQuoteReserve(r.after) * PRICE_SCALE) / r.after.baseReserve;
+    if (price <= 0n) {
+      g.broken = true;
+      return;
+    }
+    const pre = `${String(d['poolBaseTokenReserves'])}/${String(d['poolQuoteTokenReserves'] as bigint + (typeof d['virtualQuoteReserves'] === 'bigint' ? d['virtualQuoteReserves'] : 0n))}`;
+    g.trades.push({ atMs, pre, post: `${r.after.baseReserve}/${effectiveQuoteReserve(r.after)}`, price });
+  }
+
+  /**
+   * The close of a restored candidate pool's catch-up: complete (`resume`) or lossy (a bounded gap). The fill's trades
+   * and its close reach the feed at one moment, where events go in id order, so the close may come first: it is noted,
+   * and the bars are merged at the first event after that moment, once every trade of the fill is in.
+   */
+  #gapBarsClose(e: MarketEvent): void {
+    const m = /^coverage:trades:(.+):(resume|gap)$/.exec(e.key);
+    if (m === null) return;
+    const mint = this.#mintOfPool.get(m[1]!);
+    const g = mint === undefined ? undefined : this.#barGap.get(mint);
+    if (g === undefined || g.closed !== null) return;
+    const v = unwrap(e.value);
+    const payload = isObj(v) && isObj(v['value']) ? v['value'] : v;
+    // The catch-up's own opening gap (toSlot null) is not its close.
+    if (m[2] === 'gap' && isObj(payload) && payload['toSlot'] === null) return;
+    g.closed = { at: e.moment, complete: m[2] === 'resume' };
+  }
+
+  /**
+   * After a catch-up's close, at a later moment: a complete one merges the downtime's bars; after a lossy one, a broken
+   * reserve chain or a swap that does not replay, they stay unknown. A minute with no trade gets no bar, as live (`#track`
+   * samples only on a pool update).
+   */
+  #gapBarsMerge(now: Moment): void {
+    for (const [mint, g] of this.#barGap) {
+      if (g.closed === null || compareMoments(now, g.closed.at) <= 0) continue;
+      this.#barGap.delete(mint);
+      if (!g.closed.complete || g.broken) continue;
+      const ordered = chainOrder(g.trades);
+      // The fill's trades do not reach the feed in chain order (one moment, ordered by id): their reserves give the order,
+      // and prove none is missing between the first and the last. A broken chain leaves the downtime unknown.
+      if (ordered === null) continue;
+      const barMs = this.#d.config.barMs;
+      const pending = new Map<number, PriceBar>();
+      for (const t of ordered) {
+        const start = Math.floor(t.atMs / barMs) * barMs;
+        const b = pending.get(start);
+        pending.set(start, b === undefined ? { startMs: start, high: t.price, low: t.price, close: t.price } : { startMs: start, high: t.price > b.high ? t.price : b.high, low: t.price < b.low ? t.price : b.low, close: t.price });
+      }
+      const bars = this.#bars.get(mint) ?? [];
+      const kept = bars.filter((b) => b.startMs < g.fromMs || b.startMs >= g.untilMs);
+      const byStart = new Map(bars.map((b) => [b.startMs, b]));
+      const merged: PriceBar[] = [];
+      for (let start = g.fromMs; start < g.untilMs; start += barMs) {
+        const p = pending.get(start);
+        const had = byStart.get(start);
+        // The saved last bar ends with the filled trades after it; a bar live samples made after the restart keeps its close.
+        const bar = p !== undefined && had !== undefined
+          ? { startMs: start, high: p.high > had.high ? p.high : had.high, low: p.low < had.low ? p.low : had.low, close: start === g.fromMs ? p.close : had.close }
+          : p ?? had;
+        if (bar !== undefined) merged.push(bar);
+      }
+      const all = [...kept, ...merged].sort((a, b) => a.startMs - b.startMs);
+      if (all.length > this.#d.config.keepBars) all.splice(0, all.length - this.#d.config.keepBars);
+      this.#bars.set(mint, all);
+    }
+  }
+
+  /**
+   * RESTART-KEEP: REC-1's tail watches come back, so a rejected candidate's counterfactual keeps its pool watched to
+   * windowEnd + tMax across a restart (the downtime is a gap on that pool's stream, never read as covered). One that
+   * ended by the restore is dropped, as it would have been; past the cap the rest are logged `no tail`.
+   */
+  #restoreTails(v: unknown, atMs: number, out: Decision[]): void {
+    const ok = Array.isArray(v) && v.every((t) => isObj(t) && typeof t['mint'] === 'string' && t['mint'] !== '' && typeof t['pool'] === 'string' && t['pool'] !== '' && typeof t['untilMs'] === 'number' && Number.isSafeInteger(t['untilMs']));
+    if (!ok) {
+      out.push({ action: null, reasons: ['tails refused', 'malformed saved tails'] });
+      return;
+    }
+    const c = this.#d.config;
+    for (const t of v as SavedTail[]) {
+      if (t.untilMs < atMs || this.#tail.has(t.mint)) continue;
+      if (this.#tail.size >= c.maxTails) out.push({ action: null, reasons: [NO_TAIL, c.universe, t.mint, `tail cap ${c.maxTails}`] });
+      else this.#tail.set(t.mint, { pool: t.pool, untilMs: t.untilMs });
+    }
+  }
+
   /** PERSIST-3: restores a mint's deployer sales and flow from a saved exit; the reason when they cannot be. */
   #restoreInputs(mint: string, s: Record<string, unknown>, atMs: number): string | null {
     const ds = s['deployerSales'];
@@ -771,6 +995,8 @@ export class LiveStrategy implements Strategy {
 
   #restore(v: unknown, out: Decision[], atMs: number): void {
     this.#restoreSeen = true;
+    if (isObj(v) && v['candidates'] !== undefined) this.#restoreCandidates(v['candidates'], atMs, out);
+    if (isObj(v) && v['tails'] !== undefined) this.#restoreTails(v['tails'], atMs, out);
     if (isObj(v) && isObj(v['openedAt'])) {
       for (const [pid, at] of Object.entries(v['openedAt'])) if (typeof at === 'number' && Number.isFinite(at)) this.#bookedOpenAt.set(pid, at);
     }
@@ -933,7 +1159,7 @@ export class LiveStrategy implements Strategy {
     if (this.watched().has(mint)) return;
     const pool = this.#poolOfMint.get(mint);
     if (pool !== undefined) this.#mintOfPool.delete(pool);
-    for (const m of [this.#poolOfMint, this.#observedFees, this.#tradeAt, this.#deployerSales, this.#flow, this.#deployerMemo, this.#migrationSlot]) m.delete(mint);
+    for (const m of [this.#poolOfMint, this.#observedFees, this.#tradeAt, this.#deployerSales, this.#flow, this.#deployerMemo, this.#migrationSlot, this.#swapAt]) m.delete(mint);
   }
 
   #noteMigrationSlot(mint: string, slot: bigint | null): void {
@@ -962,7 +1188,15 @@ export class LiveStrategy implements Strategy {
     if (ev['program'] !== 'pump_amm' || (ev['name'] !== 'BuyEvent' && ev['name'] !== 'SellEvent') || !isObj(ev['data'])) return;
     const d = ev['data'];
     const mint = typeof d['pool'] === 'string' ? this.#mintOfPool.get(d['pool']) : undefined;
+    if (typeof d['timestamp'] === 'bigint') {
+      const slot = typeof v['txSlot'] === 'bigint' ? v['txSlot'] : e.moment.slot;
+      const ms = Number(d['timestamp']) * 1000;
+      if (this.#blockClock === null || slot >= this.#blockClock.slot) this.#blockClock = { slot, ms };
+      // The pool's last released swap, in any slot order: its pool update comes next (a fill's older swap included).
+      if (mint !== undefined) this.#swapAt.set(mint, { slot, ms });
+    }
     if (mint === undefined) return;
+    this.#gapBarTrade(mint, e, v, ev, d);
     this.#tradeAt.set(mint, e.moment.receivedAt);
     const n = (k: string): number | null => (typeof d[k] === 'bigint' && (d[k] as bigint) >= 0n && (d[k] as bigint) <= 10_000n ? Number(d[k]) : null);
     const lp = n('lpFeeBasisPoints');
@@ -1077,12 +1311,21 @@ export class LiveStrategy implements Strategy {
     if (typeof m === 'string' || m.pool.baseReserve <= 0n) return;
     const price = (effectiveQuoteReserve(m.pool) * PRICE_SCALE) / m.pool.baseReserve;
     const barMs = this.#d.config.barMs;
-    const start = Math.floor(ctx.now.receivedAt / barMs) * barMs;
+    // RESTART-KEEP (run/CI ruling): bars are on block time, the one clock live, a restart's rebuild and a replay share
+    // (the backtest has only block time). A swap's pool update is at the swap's block time; any other update (an account
+    // read, a snapshot) at its slot's time from the newest block-time anchor, never past the engine clock.
+    const start = Math.floor(this.#sampleAt(e, mint, ctx.now.receivedAt) / barMs) * barMs;
     const add = (key: string): void => {
       const bars = this.#bars.get(key) ?? [];
       const last = bars[bars.length - 1];
       if (last !== undefined && last.startMs === start) {
         bars[bars.length - 1] = { startMs: start, high: price > last.high ? price : last.high, low: price < last.low ? price : last.low, close: price };
+      } else if (last !== undefined && start < last.startMs) {
+        // A sample whose slot time falls in an earlier bar (an estimate): it widens that bar, never moves a close back.
+        const i = bars.findIndex((b) => b.startMs >= start);
+        const b = bars[i]!;
+        if (b.startMs === start) bars[i] = { ...b, high: price > b.high ? price : b.high, low: price < b.low ? price : b.low };
+        else bars.splice(i, 0, { startMs: start, high: price, low: price, close: price });
       } else bars.push({ startMs: start, high: price, low: price, close: price });
       if (bars.length > this.#d.config.keepBars) bars.splice(0, bars.length - this.#d.config.keepBars);
       this.#bars.set(key, bars);
@@ -1092,6 +1335,35 @@ export class LiveStrategy implements Strategy {
       add(pid);
       this.#spot.set(pid, { price, atMs: ctx.now.receivedAt });
     }
+  }
+
+  /** Solana's target slot time: a slot's time from a block-time anchor (an estimate, used only off a swap). */
+  static readonly SLOT_MS = 400;
+  /** The farthest (in slots, about 60 s) an anchor dates another slot from; past it the anchor is stale. */
+  static readonly ANCHOR_MAX_SLOTS = 150n;
+  /**
+   * The newest block-time anchor from any PumpSwap swap released: slot (the swap's own `txSlot`: a fill's trades sit
+   * at the open slot) and block time. Only an update with no swap of its own (an account read, a snapshot) is dated
+   * from it; a swap's pool update takes its own swap's time (`#swapAt`).
+   */
+  #blockClock: { slot: bigint; ms: number } | null = null;
+  /** Each watched mint's pool's last released swap: its slot and block time, which date that swap's pool update. */
+  readonly #swapAt = new Map<string, { readonly slot: bigint; readonly ms: number }>();
+
+  /** The block time a pool update belongs to (see `#track`); the engine clock when nothing dates it. */
+  #sampleAt(e: MarketEvent, mint: string, nowMs: number): number {
+    const v = unwrap(e.value);
+    const slot = isObj(v) && isObj(v['obs']) && typeof v['obs']['slot'] === 'bigint' ? v['obs']['slot'] : isObj(v) && typeof v['slot'] === 'bigint' ? v['slot'] : null;
+    // The pool's own swap at this slot: its exact block time, whatever other pools' swaps moved the anchor to.
+    const own = this.#swapAt.get(mint);
+    if (own !== undefined && slot !== null && own.slot === slot) return Math.min(own.ms, nowMs);
+    const a = this.#blockClock;
+    if (a === null || slot === null) return nowMs;
+    // A stale anchor (supervisor ruling): past ANCHOR_MAX_SLOTS the 400 ms guess drifts tens of seconds (slots run
+    // slower), enough to cross a minute; the receipt time is the better date then, as with no anchor at all.
+    const gap = slot - a.slot;
+    if ((gap < 0n ? -gap : gap) > LiveStrategy.ANCHOR_MAX_SLOTS) return nowMs;
+    return Math.min(a.ms + Number(gap) * LiveStrategy.SLOT_MS, nowMs);
   }
 
   #attempt(id: IntentId, n: number, quote: QuoteContext, height: bigint): TransactionAttempt {
@@ -1672,7 +1944,8 @@ export class LiveStrategy implements Strategy {
     if (!stop.ok) return this.#fail(`stop: ${stop.reason} ${stop.detail}`, [{ gate: 'stop', code: stop.reason, detail: stop.detail }]);
     const stopBps = Number(mulDiv(distance, BPS, entryPx, 'ceil'));
     // Numbered from the book (restored at start), so a restart never reuses an intent id or key.
-    cand.tries = 1 + Object.values(ctx.book.intents).filter((i) => i.intent.purpose === 'entry' && i.intent.mint === cand.mint).length;
+    // Past every entry intent the book holds for the mint and every try saved before a restart (RESTART-KEEP): ids never repeat.
+    cand.tries = 1 + Math.max(cand.tries, Object.values(ctx.book.intents).filter((i) => i.intent.purpose === 'entry' && i.intent.mint === cand.mint).length);
     const id = intentId(`en:${cand.mint}:${cand.tries}`);
     const rid = reservationId(`r:${cand.mint}:${cand.tries}`);
     const reserveLiq = effectiveQuoteReserve(m.pool);
