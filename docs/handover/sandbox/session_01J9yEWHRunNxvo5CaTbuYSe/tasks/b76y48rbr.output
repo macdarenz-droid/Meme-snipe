@@ -1,0 +1,18 @@
+α 0.0025 D 10 ρ 0.05: upper tail 0.00071, lower tail 0.00058, nominal 0.00125, MC SE 0.00023 (24000 runs, 8000 replicates)
+α 0.0025 D 10 ρ 0.1: upper tail 0.00083, lower tail 0.00058, nominal 0.00125, MC SE 0.00023 (24000 runs, 8000 replicates)
+α 0.0025 D 15 ρ 0.05: upper tail 0.00104, lower tail 0.00058, nominal 0.00125, MC SE 0.00023 (24000 runs, 8000 replicates)
+α 0.0025 D 15 ρ 0.1: upper tail 0.00108, lower tail 0.00096, nominal 0.00125, MC SE 0.00023 (24000 runs, 8000 replicates)
+α 0.0025 D 20 ρ 0.05: upper tail 0.00092, lower tail 0.00063, nominal 0.00125, MC SE 0.00023 (24000 runs, 8000 replicates)
+α 0.0025 D 20 ρ 0.1: upper tail 0.00088, lower tail 0.00079, nominal 0.00125, MC SE 0.00023 (24000 runs, 8000 replicates)
+α 0.0025 D 30 ρ 0.05: upper tail 0.00079, lower tail 0.00083, nominal 0.00125, MC SE 0.00023 (24000 runs, 8000 replicates)
+α 0.0025 D 30 ρ 0.1: upper tail 0.00104, lower tail 0.00092, nominal 0.00125, MC SE 0.00023 (24000 runs, 8000 replicates)
+α 0.005 D 10 ρ 0.05: upper tail 0.00194, lower tail 0.00144, nominal 0.0025, MC SE 0.00039 (16000 runs, 4000 replicates)
+α 0.005 D 10 ρ 0.1: upper tail 0.00175, lower tail 0.00162, nominal 0.0025, MC SE 0.00039 (16000 runs, 4000 replicates)
+α 0.005 D 15 ρ 0.05: upper tail 0.00250, lower tail 0.00119, nominal 0.0025, MC SE 0.00039 (16000 runs, 4000 replicates)
+α 0.005 D 15 ρ 0.1: upper tail 0.00237, lower tail 0.00181, nominal 0.0025, MC SE 0.00039 (16000 runs, 4000 replicates)
+α 0.005 D 20 ρ 0.05: upper tail 0.00175, lower tail 0.00125, nominal 0.0025, MC SE 0.00039 (16000 runs, 4000 replicates)
+α 0.005 D 20 ρ 0.1: upper tail 0.00200, lower tail 0.00206, nominal 0.0025, MC SE 0.00039 (16000 runs, 4000 replicates)
+α 0.005 D 30 ρ 0.05: upper tail 0.00187, lower tail 0.00206, nominal 0.0025, MC SE 0.00039 (16000 runs, 4000 replicates)
+α 0.005 D 30 ρ 0.1: upper tail 0.00144, lower tail 0.00181, nominal 0.0025, MC SE 0.00039 (16000 runs, 4000 replicates)
+
+[exited with code 0]

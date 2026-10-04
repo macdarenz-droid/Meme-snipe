@@ -1,0 +1,2 @@
+[["submit exit ",2],["no setup no higher low: 361018332 vs flush 370157488",1],["no entry stop too-wide: distance 851971900 above 2000 bps",1],["no entry stop beyond-atr: distance 229286812 above 30 tenths of ATR 63",1],["enter notional 2000000",1],["eligible ",1],["risk approved ",1],["reserve ",1],["prepare ",1],["sign ",1],["submit ",1],["exit time_flat ",1],["prepare exit rung 0",1],["sign exit ",1],["exit attempt 2 rung 1",1],["reject H8:below-liquidity-floor",1],["reject H11:chase-at-5m",1]]
+1

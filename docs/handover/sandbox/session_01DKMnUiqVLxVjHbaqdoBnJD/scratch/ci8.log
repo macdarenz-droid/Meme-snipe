@@ -1,0 +1,63 @@
+ok   assemble runs end to end
+ok   downloads exactly the 14 lead-in and 2 window days
+ok   no day before the lead-in is read
+ok   lead-in units hold only events, stats and blocks
+ok   window units are complete
+ok   unit crossing midnight: same files kept, window-only files moved in
+ok   midnight unit: stats.json copies differing in seconds/finished_at merge, first copy kept
+ok   per-day parts and temp dirs deleted
+ok   finalize gets -part-mb 1900 -lead-in-days 14, no -allow-revisions
+ok   strict QA with --live 60
+ok   release data-FROM-TO holds flat day files, manifest, mints, QA, parity, valid SHA256SUMS
+ok   release files were moved, not copied
+ok   window over 3 days refused (default)
+ok   MAX_WINDOW_DAYS is honoured
+ok   reversed window refused
+ok   existing dataset release refused
+ok   missing lead-in day fails before any download
+ok   free-space guard (3x tar + 10 GB)
+ok   corrupt window part fails the checksum
+ok   corrupt lead-in events asset fails the checksum
+ok   lead-in days download only the events asset (a lead-in day with no tar parts still assembles)
+ok   midnight unit with a different scanner_revision fails
+ok   malformed ALLOW_REVISIONS refused
+ok   ALLOW_REVISIONS passed as -allow-revisions
+ok   scan-day honours an existing back-off: waits until its end (120 s) before the first scan
+ok   after scanner exit 75 the wait is >= 3600 s (3600 s), then the same lane resumes
+ok   429 log goes to the summary and is kept
+ok   a back-off that does not fit the budget sleeps what the budget allows (3300 s of 3600 left), then exits 75 without scanning
+ok   the scan is interrupted at the budget's end and exits 75 (resumable) in 2 s
+ok   a spent budget exits 75 before scanning
+ok   merge-state: a later back-off end replaces an earlier one
+ok   merge-state: an earlier end never replaces a later one
+ok   merge-state: a missing source is a no-op, a missing destination is created
+ok   merge_unit: equal files pass, new files moved, source removed
+ok   merge_unit fails on a hash mismatch
+ok   merge_unit moves a new unit in
+ok   merge_unit: stats.json differing only in seconds keeps the first copy
+ok   merge_unit fails on a stats.json identity mismatch (blocks)
+ok   finalize_guard passes at exactly 2 x units + 10 GB
+ok   finalize_guard fails one byte under 2 x units + 10 GB
+ok   day_list: 14 lead-in days + window
+ok   more than 990 assets refused
+ok   scan-day: cached units of another revision or with no scanner_revision are dropped and rescanned, the rest kept
+ok   publish-day: release data-day-DAY created with parts, QA, manifest, parity and sums
+ok   publish-day: a complete release is accepted unchanged although the rerun's QA files differ in size
+ok   publish-day --check: a published, complete day is reported (the scan job then skips it before any read)
+ok   publish-day --check: an unpublished day is scanned
+ok   publish-day: a draft release is refused and not touched
+ok   publish-day: an asset not fully uploaded is refused
+ok   publish-day: a release missing a part (count from its own SHA256SUMS) fails and is not touched
+ok   publish-day --check: an incomplete release fails the job
+ok   publish-day --check: a gh error other than 'release not found' fails, never reads as absent
+ok   publish-day: a checksum mismatch publishes nothing
+ok   publish-day: a missing parity report publishes nothing
+ok   publish-day: a file not listed in SHA256SUMS publishes nothing
+ok   publish-day: 2026-10-02 and later refused before any gh call
+ok   scanner-rev: a toolchain-only change gives a new revision (a802636c1e1b091a5d0c600ea39571562d3fdb74-go1.24.7 vs ...-go1.24.8)
+ok   scanner-rev: a toolchain other than go$GO_VERSION fails the build
+ok   workflow: every step after the published check (scan, QA, publish) is skipped for a complete day; token only in the check and publish steps, both in a clean shell; a resumable stop chains the next run, bounded
+ok   disk-guard: passes at exactly the needed free space and logs it
+ok   disk-guard: fails one byte short with a clear message
+61 passed, 0 failed
+ci=0

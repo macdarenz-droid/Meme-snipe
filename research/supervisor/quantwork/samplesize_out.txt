@@ -1,0 +1,61 @@
+== Per-trade distributions ==
+bracket mu=+0.00 p_TP=0.487 sd=0.320 win%=0.522 p1=-1.00
+bracket mu=+0.02 p_TP=0.532 sd=0.323 win%=0.566 p1=-1.00
+bracket mu=+0.05 p_TP=0.599 sd=0.323 win%=0.634 p1=-1.00
+bracket mu=+0.10 p_TP=0.710 sd=0.320 win%=0.745 p1=-1.00
+runner  mu=+0.00 scale=0.214 sd=0.819 win%=0.361 p99=1.50 max=258.2 kurt=33904.2
+runner  mu=+0.02 scale=0.237 sd=0.779 win%=0.359 p99=1.68 max=148.9 kurt=6318.5
+runner  mu=+0.05 scale=0.270 sd=1.005 win%=0.359 p99=1.94 max=294.0 kurt=25009.7
+runner  mu=+0.10 scale=0.327 sd=1.504 win%=0.359 p99=2.36 max=725.4 kurt=136130.1
+
+== Fixed-n required: one-sided alpha=0.05, power=0.80, n=((z.95+z.80)*sd/mu)^2 ==
+bracket mu=+0.02 sd=0.323 n_power80=1,614  n_for_95CI_halfwidth_mu/2=4,011
+bracket mu=+0.05 sd=0.323 n_power80=258  n_for_95CI_halfwidth_mu/2=642
+bracket mu=+0.10 sd=0.320 n_power80=63  n_for_95CI_halfwidth_mu/2=157
+runner mu=+0.02 sd=0.779 n_power80=9,378  n_for_95CI_halfwidth_mu/2=23,309
+runner mu=+0.05 sd=1.005 n_power80=2,498  n_for_95CI_halfwidth_mu/2=6,210
+runner mu=+0.10 sd=1.504 n_power80=1,398  n_for_95CI_halfwidth_mu/2=3,474
+
+== Coverage of nominal 95% intervals for the mean (5000 reps) ==
+bracket mu=+0.05 n=30: t-interval coverage=0.932 bootstrap-percentile coverage=0.915
+bracket mu=+0.05 n=100: t-interval coverage=0.942 bootstrap-percentile coverage=0.935
+bracket mu=+0.05 n=300: t-interval coverage=0.946 bootstrap-percentile coverage=0.935
+runner mu=+0.05 n=30: t-interval coverage=0.887 bootstrap-percentile coverage=0.866
+runner mu=+0.05 n=100: t-interval coverage=0.839 bootstrap-percentile coverage=0.837
+runner mu=+0.05 n=300: t-interval coverage=0.802 bootstrap-percentile coverage=0.808
+
+== Sequential betting e-process, H0: mean<=0, alpha=0.05, cap at 3000 trades (1000 reps) ==
+bracket mu=+0.00: reject-rate=0.036 median_stop=162 p90_stop=828
+bracket mu=+0.02: reject-rate=0.672 median_stop=1383 p90_stop=2658
+bracket mu=+0.05: reject-rate=1.000 median_stop=282 p90_stop=802
+bracket mu=+0.10: reject-rate=1.000 median_stop=87 p90_stop=187
+runner mu=+0.00: reject-rate=0.004 median_stop=68 p90_stop=80
+runner mu=+0.02: reject-rate=0.011 median_stop=67 p90_stop=693
+runner mu=+0.05: reject-rate=0.135 median_stop=990 p90_stop=2478
+runner mu=+0.10: reject-rate=0.989 median_stop=772 p90_stop=1768
+bracket mu=-0.05: reject-rate=0.000
+
+== Rule-of-three / Clopper-Pearson upper bounds for rare events (blocked exits, failed fills) ==
+n=30 events=0: one-sided 95% upper bound=0.0950
+n=100 events=0: one-sided 95% upper bound=0.0295
+n=100 events=1: one-sided 95% upper bound=0.0466
+n=300 events=0: one-sided 95% upper bound=0.0099
+n=300 events=3: one-sided 95% upper bound=0.0256
+n=500 events=5: one-sided 95% upper bound=0.0209
+
+== Expected max per-trade Sharpe under the null (Bailey & Lopez de Prado 2014, Eq.1) ==
+n_trades=100 N_trials=10: E[max SR_hat | true SR=0] ~= 0.157 per trade
+n_trades=100 N_trials=72: E[max SR_hat | true SR=0] ~= 0.241 per trade
+n_trades=100 N_trials=500: E[max SR_hat | true SR=0] ~= 0.305 per trade
+n_trades=300 N_trials=10: E[max SR_hat | true SR=0] ~= 0.091 per trade
+n_trades=300 N_trials=72: E[max SR_hat | true SR=0] ~= 0.139 per trade
+n_trades=300 N_trials=500: E[max SR_hat | true SR=0] ~= 0.176 per trade
+n_trades=1000 N_trials=10: E[max SR_hat | true SR=0] ~= 0.050 per trade
+n_trades=1000 N_trials=72: E[max SR_hat | true SR=0] ~= 0.076 per trade
+n_trades=1000 N_trials=500: E[max SR_hat | true SR=0] ~= 0.097 per trade
+
+== Probabilistic Sharpe Ratio example ==
+bracket mu=+0.05 n=100: SR=0.275 skew=-1.56 kurt=5.2 PSR(SR*=0)=0.987
+bracket mu=+0.05 n=300: SR=0.272 skew=-1.75 kurt=6.1 PSR(SR*=0)=1.000
+runner mu=+0.05 n=100: SR=0.174 skew=2.65 kurt=12.4 PSR(SR*=0)=0.986
+runner mu=+0.05 n=300: SR=0.040 skew=1.52 kurt=8.1 PSR(SR*=0)=0.764

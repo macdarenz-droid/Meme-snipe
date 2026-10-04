@@ -208,7 +208,7 @@ export class SignalTracker {
   // ---------- as-of reads ----------
 
   /** The last trade at or before `ms`, or the trade dropped just before the kept window. */
-  #tradeAsOf(p: PoolInfo, ms: number): TradePoint | null {
+  tradeAsOf(p: PoolInfo, ms: number): TradePoint | null {
     let lo = 0;
     let hi = p.trades.length;
     while (lo < hi) {
@@ -222,13 +222,14 @@ export class SignalTracker {
 
   /** Price as of `ms`: the last trade's, or the migration price between migration and the first trade. */
   priceAsOf(p: PoolInfo, ms: number): number | null {
-    const t = this.#tradeAsOf(p, ms);
+    const t = this.tradeAsOf(p, ms);
     if (t !== null) return t.price;
     if (p.before !== null) return null;
     return p.migratedAtMs !== null && ms >= p.migratedAtMs ? p.migrationPrice : null;
   }
 
-  #window(p: PoolInfo, fromMs: number, toMs: number): TradePoint[] {
+  /** Trades in (fromMs, toMs] still kept (the last 130 min). */
+  window(p: PoolInfo, fromMs: number, toMs: number): TradePoint[] {
     return p.trades.filter((t) => t.ms > fromMs && t.ms <= toMs);
   }
 
@@ -246,7 +247,7 @@ export class SignalTracker {
       const open = this.priceAsOf(p, m);
       if (open === null) continue;
       let high = open;
-      for (const t of this.#window(p, m, Math.min(m + MIN, nowMs))) if (t.price > high) high = t.price;
+      for (const t of this.window(p, m, Math.min(m + MIN, nowMs))) if (t.price > high) high = t.price;
       worst = Math.max(worst, high / open - 1);
     }
     return worst;
@@ -261,8 +262,8 @@ export class SignalTracker {
     const m = this.mints.get(p.mint) ?? null;
     const q = p.state === null ? null : sol(p.state.quoteVault + p.state.virtualQuoteReserves);
     const price = this.priceAsOf(p, nowMs);
-    const w15 = this.#window(p, nowMs - 15 * MIN, nowMs);
-    const w60 = this.#window(p, nowMs - 60 * MIN, nowMs);
+    const w15 = this.window(p, nowMs - 15 * MIN, nowMs);
+    const w60 = this.window(p, nowMs - 60 * MIN, nowMs);
     const flow = (w: readonly TradePoint[]) => {
       let b = 0;
       let s = 0;
@@ -295,7 +296,7 @@ export class SignalTracker {
     const lowIn = (from: number, to: number): number | null => {
       const open = this.priceAsOf(p, from);
       let low = open ?? Infinity;
-      for (const t of this.#window(p, from, to)) if (t.price < low) low = t.price;
+      for (const t of this.window(p, from, to)) if (t.price < low) low = t.price;
       return low === Infinity ? null : low;
     };
     const lowRecent = lowIn(nowMs - 30 * MIN, nowMs);
@@ -312,7 +313,7 @@ export class SignalTracker {
       const mu = r.reduce((a, b) => a + b, 0) / r.length;
       vol = Math.sqrt(r.reduce((a, b) => a + (b - mu) ** 2, 0) / (r.length - 1));
     }
-    const q60 = this.#tradeAsOf(p, nowMs - 60 * MIN);
+    const q60 = this.tradeAsOf(p, nowMs - 60 * MIN);
     let top10: number | null = null;
     let devnet: number | null = null;
     let bundle: number | null = null;

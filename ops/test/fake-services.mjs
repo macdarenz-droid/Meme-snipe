@@ -48,13 +48,15 @@ createServer(async (req, res) => {
     return send(200, JSON.stringify({ tag_name: m[1], author: { login: meta.author }, assets: [{ name: 'bundle.age', download_count: meta.download_count }] }));
   }
   if ((m = /^\/repos\/[^/]+\/[^/]+\/commits\/([0-9a-f]{40})\/check-runs$/.exec(p))) {
-    // $STATE/checks/<sha> holds "success", "failure" or "pending"; no file means no check runs.
+    // $STATE/checks/<sha> holds e2e's "success", "failure" or "pending" (check passes); no file means no check runs.
     const f = join(STATE, 'checks', m[1]);
     if (!existsSync(f)) return send(200, JSON.stringify({ total_count: 0, check_runs: [] }));
     const c = readFileSync(f, 'utf8').trim();
     const run = c === 'pending' ? { status: 'in_progress', conclusion: null } : { status: 'completed', conclusion: c };
     // A running Deploy job (zeroed-deploy) is always listed: the server must leave it out.
-    return send(200, JSON.stringify({ total_count: 3, check_runs: [{ name: 'check', status: 'completed', conclusion: 'success' }, { name: 'e2e', ...run }, { name: 'zeroed-deploy', status: 'in_progress', conclusion: null }] }));
+    // Every run is GitHub Actions' (the server counts no other app's).
+    const app = { slug: 'github-actions' };
+    return send(200, JSON.stringify({ total_count: 3, check_runs: [{ name: 'check', status: 'completed', conclusion: 'success', app }, { name: 'e2e', ...run, app }, { name: 'zeroed-deploy', status: 'in_progress', conclusion: null, app }] }));
   }
   if ((m = /^\/bot([^/]+)\/getUpdates$/.exec(p))) {
     // Messages the test "sends to the bot": one JSON object per line in $STATE/updates.jsonl.

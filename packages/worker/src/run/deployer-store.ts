@@ -2,12 +2,12 @@
 // (creates, rug labels, unjudged mints) and every creates and rugs coverage fact, appended as it is released, so a
 // restart re-seeds the index and puts the coverage history back into the engine instead of blanking H14 for a whole
 // look-back. Public chain data only. Kept for the look-back plus a day; older lines are dropped at each start.
-import { appendFileSync, existsSync, readFileSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, fsyncSync, openSync, renameSync, writeSync } from 'node:fs';
+import { fileLines } from '../../../runner/src/lines.ts';
 import { join } from 'node:path';
 import type { MarketEvent } from '../../../core/src/engine/index.ts';
 import { LOG_CREATE_PREFIX, RUG_PREFIX, RUG_UNJUDGED_PREFIX, TX_CREATE_PREFIX } from '../../../core/src/gates/index.ts';
 import { parseTyped, typedText } from './json.ts';
-import { atomicWrite } from './state.ts';
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
@@ -55,17 +55,39 @@ export class DeployerStore {
   load(fromMs: number): SavedDeployers {
     if (!existsSync(this.#path)) return { creates: [], rugs: [], coverage: [], last: null };
     const kept: MarketEvent[] = [];
-    for (const line of readFileSync(this.#path, 'utf8').split('\n')) {
-      if (line === '') continue;
-      let e: MarketEvent;
-      try {
-        e = parseTyped(line) as MarketEvent;
-      } catch {
-        continue;
+    // Streamed in chunks and rewritten in 1 MiB batches (GROWTH-SWEEP): 15 days of creates is about a million lines, too big
+    // to hold as one string and its split beside the parsed events under the worker's MemoryMax.
+    const tmp = `${this.#path}.tmp`;
+    const fd = openSync(tmp, 'w', 0o600);
+    let out: string[] = [];
+    let outBytes = 0;
+    const flush = (): void => {
+      if (out.length > 0) writeSync(fd, out.join(''));
+      out = [];
+      outBytes = 0;
+    };
+    try {
+      for (const line of fileLines(this.#path)) {
+        if (line === '') continue;
+        let e: MarketEvent;
+        try {
+          e = parseTyped(line) as MarketEvent;
+        } catch {
+          continue;
+        }
+        if (!isCoverage(e.key) && e.moment.receivedAt < fromMs) continue;
+        kept.push(e);
+        const text = `${typedText(e)}\n`;
+        out.push(text);
+        outBytes += text.length;
+        if (outBytes >= 1 << 20) flush();
       }
-      if (isCoverage(e.key) || e.moment.receivedAt >= fromMs) kept.push(e);
+      flush();
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
     }
-    atomicWrite(this.#path, kept.map((e) => `${typedText(e)}\n`).join(''));
+    renameSync(tmp, this.#path);
     let last: { slot: bigint; ms: number } | null = null;
     for (const e of kept) if (last === null || e.moment.slot > last.slot) last = { slot: e.moment.slot, ms: e.moment.receivedAt };
     return { creates: kept.filter((e) => isCreate(e.key)), rugs: kept.filter((e) => isRugFact(e.key)), coverage: kept.filter((e) => isCoverage(e.key)), last };

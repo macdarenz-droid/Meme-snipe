@@ -7,8 +7,8 @@ import type { IntentId, ReservationId } from '../../../core/src/domain/index.ts'
 import type { LogRecord } from '../../../core/src/engine/index.ts';
 import type { Ledger } from '../../../core/src/ledger/index.ts';
 import { applyBookEvent, type Book, type BookConfig, type BookEvent, isIllegal, isTerminal, isUnresolved } from '../../../core/src/lifecycle/index.ts';
-import type { Lamports } from '../../../core/src/units/index.ts';
-import { GATE_REASONS_PREFIX, reservationOf } from '../engine/strategy.ts';
+import type { Lamports, MicroUsd } from '../../../core/src/units/index.ts';
+import { GATE_REASONS_PREFIX, S0_DIAGNOSTIC_PREFIX, reservationOf, universeOfKey } from '../engine/strategy.ts';
 
 /** Open intents for the host's update gate: intents not finished (`open_intents`, ops/README.md). */
 export const openIntents = (book: Book): number => Object.values(book.intents).filter((s) => !isTerminal(s)).length;
@@ -30,7 +30,16 @@ export interface DeskDeps {
   /** A reservation was stored (the account's entry record). */
   readonly reserved: (r: { readonly intentId: string; readonly mint: string; readonly amount: bigint; readonly atMs: number }) => void;
   /** A position filled or closed (the paper wallet and closed-trade records). */
-  readonly filled: (r: { readonly purpose: 'entry' | 'exit'; readonly positionId: string; readonly mint: string; readonly book: Book; readonly atMs: number; readonly reasons: readonly string[] }) => void;
+  readonly filled: (r: { readonly purpose: 'entry' | 'exit'; readonly positionId: string; readonly mint: string; readonly book: Book; readonly atMs: number; readonly reasons: readonly string[]; readonly solUsd?: MicroUsd | null }) => void;
+  /**
+   * Fill lines the journal already holds, by `fillKey` (`journaledFillKeys`): each is not written again when its fill
+   * is booked again, and that fill is recorded with the line's own time, reasons and `sol_usd`.
+   */
+  readonly journaledFills?: Map<string, Readonly<Record<string, unknown>>>;
+  /** The SOL/USD price a fill is booked at now (null before the first price), written on its line as `sol_usd`. */
+  readonly solUsd?: () => MicroUsd | null;
+  /** Test seam: called right after each of a fill's two durable writes (a crash image is taken there). */
+  readonly crashPoint?: (point: 'fill-journaled' | 'fill-committed', intentId: string) => void;
 }
 
 /**
@@ -44,7 +53,9 @@ export const journalFields = (r: LogRecord): Readonly<Record<string, unknown>> |
     const action = r.action;
     // A candidate's reject carries its typed reasons (RUN-1c `gate_reasons`); an entry is `enter` (the runner's name).
     const typed = r.reasons.find((x) => x.startsWith(GATE_REASONS_PREFIX));
-    const reasons = r.reasons.filter((x) => x !== typed);
+    // WORKER-1e: the S0 diagnostic parts the decision relied on, named on its line.
+    const diag = r.reasons.find((x) => x.startsWith(S0_DIAGNOSTIC_PREFIX));
+    const reasons = r.reasons.filter((x) => x !== typed && x !== diag);
     const reject = action === null && reasons[0] === 'reject';
     let gateReasons: unknown = null;
     if (typed !== undefined) {
@@ -60,11 +71,51 @@ export const journalFields = (r: LogRecord): Readonly<Record<string, unknown>> |
       result: r.result, ...(r.reason === undefined ? {} : { refused: r.reason }), event: r.eventId,
       reasons: reasons.length > 0 ? reasons : ['no reason given'],
       ...(reject ? { gate_reasons: gateReasons ?? [] } : {}),
+      ...(diag === undefined ? {} : { s0_diagnostic: diag.slice(S0_DIAGNOSTIC_PREFIX.length).split(',') }),
     };
   }
   // A world event the engine refused; an applied one is not a decision line.
   return r.result === 'illegal' ? { action: 'world_refused', event: r.eventId, reasons: [`world event ${r.event.type} refused: ${r.reason ?? ''}`] } : null;
 };
+
+/** The key of a fill line: its intent and the tokens it booked in all (a later partial fill is a new line). */
+export const fillKey = (intentId: string, tokens: bigint): string => `${intentId}:${tokens}`;
+
+/** The `entry` and `exit` lines already in a journal, by `fillKey`: what a restart must not write again. */
+export const journaledFillKeys = (lines: readonly Readonly<Record<string, unknown>>[]): Map<string, Readonly<Record<string, unknown>>> =>
+  new Map(lines.flatMap((l) => ((l['kind'] === 'entry' || l['kind'] === 'exit') && typeof l['intent'] === 'string' && typeof l['tokens'] === 'string' && /^\d+$/.test(l['tokens'])
+    ? [[fillKey(l['intent'], BigInt(l['tokens'])), l] as const] : [])));
+
+/** On a fill recorded from a journal line that holds no `sol_usd` (written before it existed): valued at the price now. */
+export const FILL_RATE_UNKNOWN = 'fill sol_usd unknown: valued at the price after restart';
+
+/**
+ * A fill line's SOL/USD rate (PAPER-1: each cash flow at its own rate): the price, null when there was none at booking
+ * (valued as the live path did), or undefined when the line has no `sol_usd` field (an older line).
+ */
+export const lineRate = (line: Readonly<Record<string, unknown>> | undefined): MicroUsd | null | undefined => {
+  const raw = line?.['sol_usd'];
+  if (raw === null) return null;
+  return typeof raw === 'string' && /^\d+$/.test(raw) ? (BigInt(raw) as MicroUsd) : undefined;
+};
+
+/** A journal line's `reasons` (strings only), or undefined when it has none. */
+export const lineReasons = (line: Readonly<Record<string, unknown>> | undefined): string[] | undefined =>
+  Array.isArray(line?.['reasons']) ? (line['reasons'] as unknown[]).filter((x): x is string => typeof x === 'string') : undefined;
+
+interface Fill {
+  readonly purpose: 'entry' | 'exit';
+  readonly intentId: string;
+  readonly positionId: string;
+  readonly mint: string;
+  readonly reasons: readonly string[];
+  /** The journal line, or null when the journal already holds it. */
+  readonly line: Readonly<Record<string, unknown>> | null;
+  /** The rate the fill is valued at (`lineRate`; undefined: the price now). */
+  readonly solUsd: MicroUsd | null | undefined;
+  /** The fill's time from the held line, or null to use the booking time. */
+  readonly atMs: number | null;
+}
 
 export class Desk {
   readonly #d: DeskDeps;
@@ -127,6 +178,15 @@ export class Desk {
 
   #write(event: BookEvent, ts: number): void {
     const before = this.#book;
+    // A fill is journaled before the ledger lets the position go (ARCHITECTURE §12.4): a kill between the two writes
+    // must never leave a position closed in the ledger with no `exit` line, which a restart check reads as lost. The
+    // other way round, the restart books the same fill again from the world and the line is not written twice.
+    const step = applyBookEvent(before, event);
+    const fill = isIllegal(step) ? null : this.#fill(before, step.state, event);
+    if (fill !== null && fill.line !== null) {
+      this.#d.journal(fill.purpose, fill.line);
+      this.#d.crashPoint?.('fill-journaled', fill.intentId);
+    }
     try {
       this.#book = this.#d.ledger.recordBookEvent(before, event, { ts, limits: { maxHeld: (2n ** 62n) as Lamports, maxCount: Number.MAX_SAFE_INTEGER } }).book;
     } catch (e) {
@@ -135,29 +195,34 @@ export class Desk {
       const reason = `ledger refused ${event.type}: ${e instanceof Error ? e.message : String(e)}`;
       this.#d.journal('decision', { action: 'ledger_refused', reasons: [reason] });
       this.#d.diverged(reason);
-      const step = applyBookEvent(before, event);
       if (!isIllegal(step)) this.#book = step.state;
       return;
     }
-    this.#after(before, event, ts);
+    if (fill !== null) this.#d.crashPoint?.('fill-committed', fill.intentId);
+    this.#after(fill, ts);
   }
 
-  #after(before: Book, event: BookEvent, ts: number): void {
+  #after(fill: Fill | null, ts: number): void {
     // The trade records first, so the account snapshot published next already holds this fill.
-    this.#fills(before, event, ts);
+    if (fill !== null) {
+      this.#d.filled({ purpose: fill.purpose, positionId: fill.positionId, mint: fill.mint, book: this.#book, atMs: fill.atMs ?? ts, reasons: fill.reasons, ...(fill.solUsd === undefined ? {} : { solUsd: fill.solUsd }) });
+    }
     this.#d.accountChanged();
     this.#d.intentsChanged(openIntents(this.#book));
   }
 
-  /** A reconcile that booked fills: the `entry` or `exit` line (after its `simulation` line) and the trade record. */
-  #fills(before: Book, event: BookEvent, ts: number): void {
-    if (event.type !== 'intent' || event.event.type !== 'reconcile') return;
-    const s = this.#book.intents[event.intentId];
+  /**
+   * A reconcile that books fills: its `entry` or `exit` line (after its `simulation` line), or null. A line the journal
+   * already holds for the same intent and amount (written before a kill that came ahead of the ledger) is not repeated.
+   */
+  #fill(before: Book, after: Book, event: BookEvent): Fill | null {
+    if (event.type !== 'intent' || event.event.type !== 'reconcile') return null;
+    const s = after.intents[event.intentId];
     const was = before.intents[event.intentId];
-    if (s === undefined || s.fills.length === 0 || (was !== undefined && was.fills.length === s.fills.length)) return;
+    if (s === undefined || s.fills.length === 0 || (was !== undefined && was.fills.length === s.fills.length)) return null;
     const purpose = s.intent.purpose;
     const pid = s.intent.positionId;
-    const p = this.#book.positions[pid];
+    const p = after.positions[pid];
     const tokens = s.fills.reduce((t, f) => t + f.tokens, 0n);
     const sol = s.fills.reduce((t, f) => t + f.sol, 0n);
     const fees = s.fills.reduce((t, f) => t + f.fees, 0n);
@@ -165,8 +230,23 @@ export class Desk {
       ? ['entry filled (paper)', ...(this.#why.get(s.intent.id) ?? [])]
       : ['exit filled (paper)', ...(before.positions[pid]?.exitOwner?.reasons ?? [])];
     this.#why.delete(s.intent.id);
-    this.#d.journal(purpose, { trade: pid, intent: s.intent.id, mint: s.intent.mint, tokens, sol, fees, position: p?.status ?? null, reasons });
-    this.#d.filled({ purpose, positionId: pid, mint: s.intent.mint, book: this.#book, atMs: ts, reasons });
+    // An entry names the universe it was entered under (CFG-2): the runner expects a trade opened after its last
+    // reply back after a restart, with that universe (RUN-1d contract).
+    const universe = purpose === 'entry' ? { universe: universeOfKey(s.intent.key) } : {};
+    // `sol_usd`: the rate this fill's cash flow is valued at, so a restart that catches the account up uses it too (PAPER-1).
+    const solUsd = this.#d.solUsd?.() ?? null;
+    const line = { trade: pid, intent: s.intent.id, mint: s.intent.mint, tokens, sol, fees, position: p?.status ?? null, ...universe, sol_usd: solUsd, reasons };
+    const key = fillKey(s.intent.id, tokens);
+    const held = this.#d.journaledFills?.get(key);
+    if (held !== undefined) {
+      // Booked again after a kill that came ahead of the ledger: recorded as its line says (time, reasons, rate), once.
+      this.#d.journaledFills!.delete(key);
+      const rate = lineRate(held);
+      const why = lineReasons(held) ?? reasons;
+      const at = typeof held['ts'] === 'string' ? Date.parse(held['ts']) : Number.NaN;
+      return { purpose, intentId: s.intent.id, positionId: pid, mint: s.intent.mint, reasons: rate === undefined ? [...why, FILL_RATE_UNKNOWN] : why, line: null, solUsd: rate, atMs: Number.isFinite(at) ? at : null };
+    }
+    return { purpose, intentId: s.intent.id, positionId: pid, mint: s.intent.mint, reasons, line, solUsd, atMs: null };
   }
 
   /** Writes the reservation first, then hands it to the engine; a refusal goes back as a reject. */
@@ -189,7 +269,7 @@ export class Desk {
     }
     const mint = before.intents[intentId]?.intent.mint ?? '';
     this.#d.reserved({ intentId, mint, amount: req.amount, atMs: ts });
-    this.#after(before, event, ts);
+    this.#after(null, ts);
     this.#written.add(this.#d.report(event));
   }
 

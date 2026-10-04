@@ -1,0 +1,107 @@
+
+> meme-snipe@ check /tmp/claude-0/w1b
+> pnpm typecheck && pnpm test
+
+
+> meme-snipe@ typecheck /tmp/claude-0/w1b
+> pnpm -r --if-present typecheck
+
+Scope: 6 of 7 workspace projects
+apps/web typecheck$ tsc -p tsconfig.json --noEmit
+packages/backtest typecheck$ tsc -p tsconfig.json --noEmit
+packages/core typecheck$ tsc -p tsconfig.json --noEmit
+packages/ops typecheck$ tsc -p tsconfig.json --noEmit
+packages/ops typecheck: Done
+packages/runner typecheck$ tsc -p tsconfig.json --noEmit
+packages/backtest typecheck: Done
+packages/worker typecheck$ tsc -p tsconfig.json --noEmit
+packages/runner typecheck: Done
+apps/web typecheck: Done
+packages/core typecheck: Done
+packages/worker typecheck: Done
+
+> meme-snipe@ test /tmp/claude-0/w1b
+> vitest run
+
+
+ RUN  v5.0.3 /tmp/claude-0/w1b
+
+(node:898) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:1340) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:1408) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:1443) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:1489) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+gpg: checking the trustdb
+gpg: marginals needed: 3  completes needed: 1  trust model: pgp
+gpg: depth: 0  valid:   1  signed:   0  trust: 0-, 0q, 0n, 0m, 0f, 1u
+fatal: expected 'acknowledgments', received 'packfile'
+warning: push negotiation failed; proceeding anyway with push
+(node:1948) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:2015) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:2242) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:2263) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:2277) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:2284) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:2291) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ❯ |light| packages/worker/test/run1d.test.ts (5 tests | 2 failed) 572ms
+   ❯ pending exits and the recovered line (2)
+     × an exit that cannot land stays pending in health, survives a kill and is listed in the next boot recovered line 249ms
+   ❯ a restored position whose universe the loaded policy lacks (EXIT-1b review) (1)
+     × starts sell-only, says why on the start line, and flattens the position through the global exit ladder 149ms
+(node:2941) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:2997) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:3087) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:3242) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:3255) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |light| packages/worker/test/run1d.test.ts > pending exits and the recovered line > an exit that cannot land stays pending in health, survives a kill and is listed in the next boot recovered line
+TypeError: Cannot read properties of undefined (reading 'id')
+ ❯ packages/worker/test/run1d.test.ts:30:88
+     28|     const h = makeWorker({ scenario: { ...LANDS, landPpm: { pumpswap: …
+     29|     const m = await entered(h);
+     30|     const pid = Object.values(h.worker.book.positions).find((p) => p.s…
+       |                                                                                        ^
+     31|     expect(pending(h)).toEqual([]);
+     32|     expect((h.worker.health().open_position as unknown as { universe: …
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  |light| packages/worker/test/run1d.test.ts > a restored position whose universe the loaded policy lacks (EXIT-1b review) > starts sell-only, says why on the start line, and flattens the position through the global exit ladder
+TypeError: Cannot read properties of undefined (reading 'id')
+ ❯ packages/worker/test/run1d.test.ts:117:88
+    115|     const h = makeWorker();
+    116|     await entered(h);
+    117|     const pid = Object.values(h.worker.book.positions).find((p) => p.s…
+       |                                                                                        ^
+    118|     await h.worker.kill();
+    119|     // The position was entered under a universe this release's policy…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed | 113 passed (114)
+      Tests  2 failed | 3833 passed (3835)
+   Start at  22:48:12
+   Duration  317.57s (tests 95%, import 4%, transform 1%)
+
+ ELIFECYCLE  Test failed. See above for more details.
+ ELIFECYCLE  Command failed with exit code 1.

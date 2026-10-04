@@ -1,0 +1,6 @@
+docs/evidence/bt3/synthetic/evidence.json
+packages/backtest/scripts/evidence.ts
+packages/backtest/src/dataset/dataset.ts
+packages/backtest/src/evidence.ts
+packages/backtest/test/dataset-writer.ts
+packages/backtest/test/evidence.test.ts

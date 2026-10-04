@@ -10,7 +10,7 @@ Server: Vultr High Performance, Frankfurt, 1 vCPU / 1 GB, image **Ubuntu 24.04 L
 2. **Install.** Paste this one line the same way (Clipboard → Paste), then press Enter:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/a45fc86ef6ff2456b9ee5088bf6ae0ce5565ae66/ops/install.sh -o i && echo '45827123f3797bef2fc7ae66b4ee158b6ed971b574d52b1aaefe1f28316594ea  i' | sha256sum -c && bash i
+curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/aa852f66d0ae846801d508e00abf6b06399d2804/ops/install.sh -o i && echo '50cc46f11c384551e4653bb3f6d0c686dc13529844ce60a315460d6af63ce151  i' | sha256sum -c && bash i
 ```
 
    The line checks the file against its SHA-256 before anything runs; a changed file stops at `sha256sum -c`. After about two minutes the screen shows a **deploy code** of 6 words.
@@ -19,7 +19,7 @@ curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/a45fc86e
 
 The console screen can be left at any time (Ctrl+C); setup carries on in the background. `zeroed-status` shows where it stands and the codes again.
 
-SHA-256 of `install.sh`: `45827123f3797bef2fc7ae66b4ee158b6ed971b574d52b1aaefe1f28316594ea`
+SHA-256 of `install.sh`: `50cc46f11c384551e4653bb3f6d0c686dc13529844ce60a315460d6af63ce151`
 
 After any change to `ops/install.sh`, the commit in the line must move to one that holds the new file (`ops/test/e2e.sh` fails otherwise).
 
@@ -65,7 +65,8 @@ Run `zeroed-new-deploy-code` on the console and put the new 6 words in `DEPLOY_C
 Every Deploy run also moves the tag `deploy` to the newest commit on `ccr-14987baf-i6lrsl` that GitHub signed, which is a pull-request merge (`ops/deploy/tag.sh`). Every 5 minutes the server (`zeroed-update`) switches to it only when all of these hold:
 - the commit carries GitHub's merge signature (fingerprint `968479A1AFF927E37D1A566BB5690EEEBB952194`, pinned at install);
 - it is on the branch;
-- every check run on it finished green (public API);
+- GitHub Actions' `check` passed on it, and every other GitHub Actions run on it finished green (public API; runs from other apps do not count, and none at all means wait);
+- `e2e` passed on the newest commit at or before it that changed the ops end-to-end paths (`ops/`, `packages/ops/`, the Deploy and ops e2e workflows), since a merge that leaves ops alone runs no e2e of its own;
 - no qualifying dry run is active: no `zeroed-dryrun@…` unit is running, and no named run in the evidence directory is missing its `report.json` (this covers the minutes after a reboot drill before the runner resumes);
 - the worker reports no open intent (`/var/lib/zeroed/open_intents`).
 
@@ -139,7 +140,7 @@ A failed webhook set is tried again after 1, 2, 4 and 8 minutes, then every 30 m
 
 ## Dry run
 
-The worker unit starts `/usr/local/lib/zeroed/worker-start`, for both the reconcile step and the run. The wrapper sets `ZEROED_MODE=paper`, `ZEROED_RECORDER=on`, `ZEROED_SIMULATE=on` and `ZEROED_DRILLS=on`, the health route for the runner on `ZEROED_HEALTH_ADDR=127.0.0.1:8787` and the worker API on `ZEROED_API_ADDR=127.0.0.1:8788`. It runs the release's own worker (`packages/worker/src/main.ts`, under the host's Node 22 with no `node_modules`) when the release's `ops/host-config.json` says `"worker": "release"`, which it does since SWITCH-1. A release without that switch, or without the file, runs the host's stand-in. Live is never set there or in any environment file, and the worker refuses any mode but paper.
+The worker unit starts `/usr/local/lib/zeroed/worker-start`, for both the reconcile step and the run. The wrapper sets `ZEROED_MODE=paper`, `ZEROED_RECORDER=on`, `ZEROED_SIMULATE=on` and `ZEROED_DRILLS=on`, the health route for the runner on `ZEROED_HEALTH_ADDR=127.0.0.1:8787` and the worker API on `ZEROED_API_ADDR=127.0.0.1:8788`. It runs the release's own worker (`packages/worker/src/main.ts`, under the host's Node 22 with no `node_modules`) when the release's `ops/host-config.json` says `"worker": "release"`, which it does since SWITCH-1. A release without that switch, or without the file, runs the host's stand-in. The release's worker also gets the S0 shakedown settings of that file's `"shakedown"` block (PRACTICE-ON): `ZEROED_STRATEGY`, `ZEROED_S0_DIAGNOSTIC`, `ZEROED_PAPER_EDGE_PPM`, `ZEROED_STANDINS` and `ZEROED_WALLET`, public values only and nothing else; a block with any other name, or a value that is not letters, digits and commas, stops the start (exit 2), and `worker-smoke` tries a new release with the same settings, so a release whose worker refuses them (S0 in a release that names a qualifying run, for one) never becomes current. **Rule (supervisor, 2026-10-04): the commit that adds `packages/runner/qualifying-run.json` must remove the `"shakedown"` block.** If it does not, `worker-smoke` refuses that release and the host stays on the release before it, the safe side. Live is never set there or in any environment file, and the worker refuses any mode but paper.
 
 Evidence stays on the host in `/var/lib/zeroed-dryrun/evidence/<run id>/` (root only), written by `zeroed-dryrun@<name>`. Nothing uploads it; the way into the repository waits for the owner's decision. `zeroed-check` writes its index (id, name, label, commit, start, finished, pass, aborted reason, path) to `/var/lib/zeroed-index/evidence.json`. The worker API's `GET /health` lists it as `evidence`, and `zeroed-status` counts the runs. The restore drill for host-loss drills is `zeroed-restore-drill /etc/zeroed/age/host.key`. The reboot drill unit `zeroed-dryrun-reboot.service` arrives with RUN-1's units.
 
@@ -170,7 +171,7 @@ A server installed from an earlier line (before this fix) has its webhook off af
 
 ## Worker contract (for WORKER-1)
 
-- Serve the API on `ZEROED_API_ADDR` (`127.0.0.1:8788` on the host, loopback only; the health route for the runner stays on `ZEROED_HEALTH_ADDR`, `127.0.0.1:8787`). The API's `GET /health` includes `evidence`: the array in `/var/lib/zeroed-index/evidence.json`, or `[]` when that file is missing.
+- Serve the API on `ZEROED_API_ADDR` (`127.0.0.1:8788` on the host, loopback only; the health route for the runner stays on `ZEROED_HEALTH_ADDR`, `127.0.0.1:8787`). The API serves the app's paths (`/api/v1/<mode>/…`, ARCHITECTURE.md §12.4); a mode the worker does not run answers with `data: null` and a reason, and the app shows "Not running". Dry-run evidence stays in `/var/lib/zeroed-index/evidence.json`, which `zeroed-status` reads.
 - Write the number of open intents to `$STATE_DIRECTORY/open_intents` after every reconcile and intent change. The server only updates code while it reads `0`.
 - Send the heartbeat fields in `packages/ops/src/watchdog/logic.ts` (`Heartbeat`), including `owner_chat_id` from the `telegram_chat_id` credential, signed over `t\nPOST\n/heartbeat\nbody`.
 - Apply the watchdog's `paused` reply both ways: pause stops new entries, never exits; `false` allows entries again. The state and the log must agree.

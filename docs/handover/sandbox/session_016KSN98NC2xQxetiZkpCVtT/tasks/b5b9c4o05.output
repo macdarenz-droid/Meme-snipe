@@ -1,0 +1,4 @@
+b664679 BT-3: the clean-tree check reads git status untrimmed (a leading status space was lost on the first line)
+no-lead-in output must go to a folder ending in -no-lead-in, not ${out}
+
+[exited with code 0]

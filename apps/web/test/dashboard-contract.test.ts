@@ -17,6 +17,7 @@ const CALLS: Record<Endpoint, Call> = {
   trades: (a, m) => a.trades(m),
   charts: (a, m) => a.charts(m),
   stats: (a, m) => a.stats(m),
+  discovered: (a, m) => a.discovered(m),
 };
 
 const NOW = Date.parse('2026-10-03T00:00:00Z');

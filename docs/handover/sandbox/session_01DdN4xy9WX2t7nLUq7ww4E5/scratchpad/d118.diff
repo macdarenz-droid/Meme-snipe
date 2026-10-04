@@ -1,0 +1,265 @@
+commit 8fd00fbfbf299dafcfdbb77f5cc10e3d8d871fcb
+Author: Claude <noreply@anthropic.com>
+Date:   Sun Oct 4 06:52:42 2026 +0000
+
+    API-1 review: risk stops served as halt reasons, Entries On only with none and a current regime; paper notRunning refused; ARCHITECTURE note on Exits Ready
+    
+    - The strategy reads core risk's tripped entry controls (evaluateExit, read only) on the account event and once per
+      second; status serves them as halt codes, risk-unknown when not known; the daily-loss meter at its limit too.
+    - regime.current: at most two candidate evaluation steps (2 x maxQuoteAgeMs) old; card shows Not checked lately.
+    - checkEnvelope refuses notRunning for paper (bad-shape).
+    
+    Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+    Claude-Session: https://claude.ai/code/session_01VM97q6A98GgtoPKCamoiT6
+
+diff --git a/apps/web/src/api/contract.ts b/apps/web/src/api/contract.ts
+index 7a5f291e..d1ab9faf 100644
+--- a/apps/web/src/api/contract.ts
++++ b/apps/web/src/api/contract.ts
+@@ -91,7 +91,13 @@ export interface RiskMeter extends Moded {
+ }
+ 
+ /** Why entries are off (API-1); `other` is a reason this app does not name. */
+-export const HALT_CODES = ['starting', 'feed-stale', 'feed-disconnected', 'feed-dropped', 'paused', 'seeding', 'divergence', 'budget', 'other'] as const;
++export const HALT_CODES = [
++  'starting', 'feed-stale', 'feed-disconnected', 'feed-dropped', 'paused', 'seeding', 'divergence', 'budget',
++  // The account's risk stops (core risk's tripped entry controls); 'risk' is any other, its code the source.
++  'daily-loss', 'weekly-loss', 'weekly-review', 'kill-switch', 'wallet-below-kill-line', 'loss-cooldown', 'loss-day-pause',
++  'loss-review', 'session-ended', 'max-open-positions', 'risk', 'risk-unknown',
++  'other',
++] as const;
+ export type HaltCode = (typeof HALT_CODES)[number];
+ 
+ /** The engine's alert codes (AlertCode in the core lifecycle types). */
+@@ -121,7 +127,7 @@ export interface WorkerStatus extends Moded {
+   /** Critical alerts since the worker started. */
+   alerts?: (Moded & { code: AlertCode; subject: string; at: Iso })[];
+   /** The latest regime evaluation; null before the first candidate. */
+-  regime?: { state: 'on' | 'off'; at: Iso; reasons: (Moded & { code: RegimeReasonCode; input: string | null })[] } | null;
++  regime?: { state: 'on' | 'off'; at: Iso; /** At most two candidate evaluation steps old as of asOf. */ current: boolean; reasons: (Moded & { code: RegimeReasonCode; input: string | null })[] } | null;
+ }
+ 
+ // Funnel ---------------------------------------------------------------
+diff --git a/apps/web/src/api/modes.ts b/apps/web/src/api/modes.ts
+index 5b3bfcb4..967a5cd6 100644
+--- a/apps/web/src/api/modes.ts
++++ b/apps/web/src/api/modes.ts
+@@ -1,6 +1,6 @@
+ import { addUsd } from '../lib/money.ts';
+ import { MIN_TRADES, MODES, type Envelope, type Mode, type Moded, type StatsView } from './contract.ts';
+-import { DataError, iso, obj, oneOf, str, type Check } from './schema.ts';
++import { DataError, fail, iso, obj, oneOf, str, type Check } from './schema.ts';
+ 
+ export { DataError };
+ 
+@@ -19,7 +19,9 @@ export function checkEnvelope<T>(raw: unknown, mode: Mode, data: Check): Envelop
+     throw new DataError('mixed-modes', `response is ${raw.mode}, expected ${mode}`);
+   }
+   // A server that does not run this mode answers its paths with no data and the reason (API-1): exactly that shape.
++  // Paper is the mode every server runs: a paper answer that says otherwise is bad data, never "Not running".
+   if (raw && typeof raw === 'object' && Object.hasOwn(raw, 'notRunning')) {
++    if (mode === 'paper') fail('$.notRunning', 'paper always runs');
+     obj({ mode: oneOf(mode), asOf: iso, data: oneOf(null), notRunning: str })(raw, '$');
+     return raw as Envelope<T>;
+   }
+diff --git a/apps/web/src/api/schemas.ts b/apps/web/src/api/schemas.ts
+index fcf923ed..3a26c547 100644
+--- a/apps/web/src/api/schemas.ts
++++ b/apps/web/src/api/schemas.ts
+@@ -49,7 +49,7 @@ function build(m: Mode): Record<Endpoint, Check> {
+       haltReasons: optional(arr(obj({ mode, code: oneOf(...HALT_CODES), source: nullable(str) }), 50)),
+       exitCapable: optional(bool),
+       alerts: optional(arr(obj({ mode, code: oneOf(...ALERT_CODES), subject: str, at: iso }), 50)),
+-      regime: optional(nullable(obj({ state: oneOf('on', 'off'), at: iso, reasons: arr(obj({ mode, code: oneOf(...REGIME_REASON_CODES), input: nullable(str) }), 20) }))),
++      regime: optional(nullable(obj({ state: oneOf('on', 'off'), at: iso, current: bool, reasons: arr(obj({ mode, code: oneOf(...REGIME_REASON_CODES), input: nullable(str) }), 20) }))),
+     }),
+     funnel: obj({
+       mode,
+diff --git a/apps/web/src/dashboard/Sections.tsx b/apps/web/src/dashboard/Sections.tsx
+index bfef4bcd..5edc4a90 100644
+--- a/apps/web/src/dashboard/Sections.tsx
++++ b/apps/web/src/dashboard/Sections.tsx
+@@ -77,9 +77,12 @@ export const statusRows = (status: WorkerStatus): StatusRow[] => {
+ 
+   const off = unique([...ENTRY_OFF.filter(([f]) => has.has(f)).map(([, why]) => why), ...(halts ?? []).map((h) => label(HALT_LABEL, h.code))]);
+   if (off.length > 0 || (halts !== null && halts.length > 0)) rows.push({ label: 'Entries', value: off.length > 0 ? `Off: ${off.join(', ')}` : 'Off', alert: false });
+-  else if (halts !== null && regime?.state === 'on') rows.push({ label: 'Entries', value: 'On', alert: false });
++  // On only with every stop served and none active (the account's risk stops are among the halts), and a regime
++  // evaluation that is on and current (at most two candidate evaluation steps old: the worker's regimeMaxAgeMs).
++  else if (halts !== null && regime?.state === 'on' && regime.current === true) rows.push({ label: 'Entries', value: 'On', alert: false });
+ 
+-  if (regime !== null) {
++  if (regime !== null && regime.current !== true) rows.push({ label: 'Regime', value: 'Not checked lately', alert: false });
++  else if (regime !== null) {
+     const why = unique((list<{ code?: unknown; input?: unknown }>(regime.reasons) ?? []).map((r) => (r.code === 'unknown' ? (label(REGIME_INPUT_LABEL, r.input) ?? null) : label(REGIME_REASON_LABEL, r.code))));
+     rows.push({ label: 'Regime', value: regime.state === 'on' ? 'On' : why.length > 0 ? `Off: ${why.join(', ')}` : 'Off', alert: false });
+   }
+diff --git a/apps/web/src/dashboard/labels.ts b/apps/web/src/dashboard/labels.ts
+index a0575319..4996171d 100644
+--- a/apps/web/src/dashboard/labels.ts
++++ b/apps/web/src/dashboard/labels.ts
+@@ -48,6 +48,18 @@ export const HALT_LABEL: Record<Exclude<HaltCode, 'other'>, string> = {
+   seeding: 'seeding',
+   divergence: 'ledger mismatch',
+   budget: 'request budget',
++  'daily-loss': 'daily loss',
++  'weekly-loss': 'weekly loss',
++  'weekly-review': 'weekly review',
++  'kill-switch': 'kill switch',
++  'wallet-below-kill-line': 'wallet below kill line',
++  'loss-cooldown': 'loss cooldown',
++  'loss-day-pause': 'losses today',
++  'loss-review': 'loss review',
++  'session-ended': 'session ended',
++  'max-open-positions': 'open trade limit',
++  risk: 'risk limit',
++  'risk-unknown': 'risk unknown',
+ };
+ 
+ export const ALERT_LABEL: Record<AlertCode, string> = {
+diff --git a/packages/worker/src/engine/strategy.ts b/packages/worker/src/engine/strategy.ts
+index 4b251205..21a74255 100644
+--- a/packages/worker/src/engine/strategy.ts
++++ b/packages/worker/src/engine/strategy.ts
+@@ -59,6 +59,17 @@ export interface RegimeView {
+   readonly on: boolean;
+   readonly reasons: readonly { readonly code: string; readonly input: string | null }[];
+ }
++/**
++ * The account-level entry stops as of `atMs`: the codes of every entry control core risk reports tripped with no trade
++ * (evaluateExit's `tripped`: daily, weekly and kill-switch loss, the loss pauses, the policy session, open positions,
++ * SOL price and balance), for the app's status. `codes` is null when the account cannot be read or judged: unknown.
++ */
++export interface RiskStopsView {
++  readonly atMs: number;
++  readonly codes: readonly string[] | null;
++}
++/** Account stops are read again on the account's own event, else at most once per this much event time. */
++export const STOPS_EVERY_MS = 1000;
+ /** A reject's typed reasons ride in its last reason as `gate_reasons <json>`; the desk journals them as `gate_reasons`. */
+ export const GATE_REASONS_PREFIX = 'gate_reasons ';
+ export interface GateReasonLine {
+@@ -365,6 +376,29 @@ export class LiveStrategy implements Strategy {
+     return this.#regime;
+   }
+ 
++  /** The latest account stops (RiskStopsView); null before the first event. */
++  #stops: RiskStopsView | null = null;
++
++  riskStops(): RiskStopsView | null {
++    return this.#stops;
++  }
++
++  /** Reads the account stops for status. Read-only: a trip found here is not latched (entries and exits latch theirs). */
++  #readStops(e: MarketEvent, ctx: StrategyContext): void {
++    const now = ctx.now.receivedAt;
++    if (this.#stops !== null && e.key !== ACCOUNT_KEY && now - this.#stops.atMs < STOPS_EVERY_MS) return;
++    const risk = this.#account(ctx);
++    if (risk === null) return void (this.#stops = { atMs: now, codes: null });
++    try {
++      const sol = this.#spotSol(ctx);
++      const account = this.#marked(risk.history, ctx, sol, { fallback: true });
++      const r = evaluateExit({ session: this.#d.session, mode: 'paper', clock: { now: () => ctx.now }, account, latches: risk.latches, market: { solPrice: sol, solBalance: this.#balance(risk, ctx), regime: 'unknown' } });
++      this.#stops = { atMs: now, codes: [...new Set(r.tripped.map((x) => x.code))].sort() };
++    } catch {
++      this.#stops = { atMs: now, codes: null };
++    }
++  }
++
+   /** Positions whose universe the policy lacks, being flattened (said once each). */
+   readonly #flattening = new Set<string>();
+ 
+@@ -451,6 +485,7 @@ export class LiveStrategy implements Strategy {
+     if (!out.some((d) => d.action !== null)) this.#entries(ctx, gctx, out, due);
+     // Through `untilMs` itself: an exit at exactly the maximum hold (EXIT-1 fires at elapsed >= tMax) needs that moment.
+     for (const [mint, t] of this.#tail) if (ctx.now.receivedAt > t.untilMs) this.#tail.delete(mint);
++    this.#readStops(e, ctx);
+     return out;
+   }
+ 
+diff --git a/packages/worker/src/run/api.ts b/packages/worker/src/run/api.ts
+index cb5a7b42..17211ec5 100644
+--- a/packages/worker/src/run/api.ts
++++ b/packages/worker/src/run/api.ts
+@@ -12,7 +12,7 @@ import { melbourneDay } from '../../../core/src/risk/index.ts';
+ import { type Lamports, type MicroUsd, lamportsToMicroUsd } from '../../../core/src/units/index.ts';
+ import type { PaperTrade } from './account.ts';
+ import type { PaperAttempt } from './paper-world.ts';
+-import { SEEDING } from '../engine/strategy.ts';
++import { SEEDING, STOPS_EVERY_MS } from '../engine/strategy.ts';
+ import type { LogRecord } from '../../../core/src/engine/index.ts';
+ 
+ const MODE = 'paper' as const;
+@@ -101,6 +101,14 @@ export interface ApiInputs {
+   readonly alerts: readonly { readonly code: string; readonly subject: string; readonly atMs: number }[];
+   /** The latest regime evaluation; null before the first candidate. */
+   readonly regime: { readonly atMs: number; readonly on: boolean; readonly reasons: readonly { readonly code: string; readonly input: string | null }[] } | null;
++  /**
++   * How old a regime evaluation may be and still count as current: two of the strategy's candidate evaluation steps
++   * (`evaluateEveryMs`, settings.ts: the policy's maxQuoteAgeMs). While any candidate is in its window the regime is
++   * evaluated at least once per step; the second step allows for the gap to the next event.
++   */
++  readonly regimeMaxAgeMs: number;
++  /** The account's entry stops (strategy RiskStopsView); null before the first event. */
++  readonly stops: { readonly atMs: number; readonly codes: readonly string[] | null } | null;
+   readonly book: Book;
+   readonly trades: readonly PaperTrade[];
+   readonly attempts: ReadonlyMap<string, PaperAttempt>;
+@@ -142,6 +150,21 @@ export const haltOf = (reason: string): { readonly code: string; readonly source
+   return { code: 'other', source: null };
+ };
+ 
++/** Account stops older than this are unknown: they are read at least once per STOPS_EVERY_MS of event time. */
++export const STOPS_MAX_AGE_MS = 5 * STOPS_EVERY_MS;
++/** The core risk codes the app names one by one; any other tripped entry control is 'risk', with its code as source. */
++const STOP_HALT: Readonly<Record<string, string>> = {
++  daily_loss: 'daily-loss', weekly_loss: 'weekly-loss', weekly_review: 'weekly-review', kill_switch: 'kill-switch',
++  wallet_below_kill_line: 'wallet-below-kill-line', loss_cooldown: 'loss-cooldown', loss_day_pause: 'loss-day-pause',
++  loss_review: 'loss-review', session_not_running: 'session-ended', max_open_positions: 'max-open-positions',
++};
++
++/** The account stops as halts: each tripped control, or 'risk-unknown' when they are not known as of now. */
++export const stopHalts = (stops: ApiInputs['stops'], nowMs: number): { readonly code: string; readonly source: string | null }[] => {
++  if (stops === null || stops.codes === null || nowMs - stops.atMs > STOPS_MAX_AGE_MS) return [{ code: 'risk-unknown', source: null }];
++  return stops.codes.map((c) => (STOP_HALT[c] !== undefined ? { code: STOP_HALT[c], source: null } : { code: 'risk', source: c }));
++};
++
+ export const views = {
+   status: (i: ApiInputs) => {
+     const flags = new Set<string>();
+@@ -166,15 +189,19 @@ export const views = {
+     const lossToday = i.trades.filter((t) => t.closedAtMs !== null && t.closedAtMs >= day.start && (t.netPnl ?? 0n) < 0n).reduce((s, t) => s - (t.netPnl ?? 0n), 0n);
+     const open = Object.values(i.book.positions).filter((p) => p.status !== 'closed').reduce((s, p) => s + lamportsUsd(p.cost, i.solPrice), 0n);
+     const bankroll = i.policy.capital.bankroll as bigint;
++    const dailyLimit = (bankroll * BigInt(i.policy.loss.dailyBps)) / 10_000n;
++    const halts = [...i.halted.map(haltOf), ...i.budgetHalted.map((p) => ({ code: 'budget', source: p })), ...stopHalts(i.stops, i.nowMs)];
++    // The meter below and core risk count today's loss from the same trades; either at its limit stops entries.
++    if (lossToday >= dailyLimit && !halts.some((h) => h.code === 'daily-loss')) halts.push({ code: 'daily-loss', source: null });
+     return {
+       mode: MODE, connected: i.connected, flags: [...flags],
+-      haltReasons: [...i.halted.map(haltOf), ...i.budgetHalted.map((p) => ({ code: 'budget', source: p }))].map((h) => ({ mode: MODE, ...h })),
++      haltReasons: halts.map((h) => ({ mode: MODE, ...h })),
+       exitCapable: i.exitCapable,
+       alerts: i.alerts.map((a) => ({ mode: MODE, code: a.code, subject: a.subject, at: iso(a.atMs) })),
+-      regime: i.regime === null ? null : { state: i.regime.on ? 'on' : 'off', at: iso(i.regime.atMs), reasons: i.regime.reasons.map((r) => ({ mode: MODE, code: r.code, input: r.input })) },
++      regime: i.regime === null ? null : { state: i.regime.on ? 'on' : 'off', at: iso(i.regime.atMs), current: i.nowMs - i.regime.atMs <= i.regimeMaxAgeMs, reasons: i.regime.reasons.map((r) => ({ mode: MODE, code: r.code, input: r.input })) },
+       risk: [
+         { mode: MODE, kind: 'open-exposure', usedUsd: usdText(open), limitUsd: null },
+-        { mode: MODE, kind: 'daily-loss', usedUsd: usdText(lossToday), limitUsd: usdText((bankroll * BigInt(i.policy.loss.dailyBps)) / 10_000n) },
++        { mode: MODE, kind: 'daily-loss', usedUsd: usdText(lossToday), limitUsd: usdText(dailyLimit) },
+       ],
+     };
+   },
+diff --git a/packages/worker/src/run/worker.ts b/packages/worker/src/run/worker.ts
+index de7fadda..ad69d07f 100644
+--- a/packages/worker/src/run/worker.ts
++++ b/packages/worker/src/run/worker.ts
+@@ -660,7 +660,7 @@ export class Worker {
+       nowMs: d.timers.now(), policy: d.session.policy, policyVersion: d.session.versionHash, strategyVersion: d.strategy.version,
+       connected: this.#reconciled && [...this.#feeds.values()].some((f) => f.connected), halted: this.#halted, paused: this.#ctl.paused,
+       exitCapable: this.#exitCapable(d.timers.now()), budgetHalted: (d.ops?.().quota ?? []).filter((q) => q.halted).map((q) => q.provider),
+-      alerts: [...this.#alerts], regime: this.#strategy.regime(),
++      alerts: [...this.#alerts], regime: this.#strategy.regime(), regimeMaxAgeMs: 2 * d.strategy.evaluateEveryMs, stops: this.#strategy.riskStops(),
+       book: this.#engine.book, trades: this.#account.state.trades, attempts: this.#world.attempts, decisions: this.#rows, funnel: this.#funnel,
+       solPrice: this.#solPrice, symbol: (mint) => this.#symbols.get(mint) ?? `${mint.slice(0, 4)}…`, waitingExits: this.#strategy.waitingExits(),
+       open: (p) => {
