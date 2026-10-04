@@ -73,7 +73,13 @@ export interface HardOptions {
 }
 
 export interface HardResult {
+  /** No gate that was evaluated rejected. With `only` or an early reject that is not the whole verdict: see `complete`. */
   readonly pass: boolean;
+  /**
+   * Every hard gate was evaluated: none left out by `only`, none skipped by a `stopAtFirst` early reject. An entry
+   * needs `complete && reasons.length === 0`; a staged result without reasons only says that those gates passed.
+   */
+  readonly complete: boolean;
   readonly mode: Mode;
   readonly mint: string;
   /** Gates evaluated, in order. */
@@ -639,7 +645,7 @@ export const evaluateHardRejects = (ctx: GateContext, deps: GateDeps, req: GateR
   const stopAtFirst = options.stopAtFirst ?? true;
   const base = { mode: deps.mode, mint: String(req.mint) };
   const fail = (code: RejectCode, detail: string): HardResult =>
-    ({ ...base, pass: false, evaluated: [], passed: [], failed: ['H16'], reasons: [{ gate: 'H16', code, detail }], notes: [] });
+    ({ ...base, pass: false, complete: false, evaluated: [], passed: [], failed: ['H16'], reasons: [{ gate: 'H16', code, detail }], notes: [] });
   if (!deps.session.running) return fail('policy-session-ended', 'the policy session has ended; start a new session');
   const problem = requestProblem(req);
   if (problem !== null) return fail('bad-request', problem);
@@ -662,6 +668,6 @@ export const evaluateHardRejects = (ctx: GateContext, deps: GateDeps, req: GateR
     reasons.push(...out.reasons);
     if (stopAtFirst) break;
   }
-  return { ...base, pass: reasons.length === 0, evaluated, passed, failed, reasons, notes };
+  return { ...base, pass: reasons.length === 0, complete: evaluated.length === STEPS.length, evaluated, passed, failed, reasons, notes };
 };
 

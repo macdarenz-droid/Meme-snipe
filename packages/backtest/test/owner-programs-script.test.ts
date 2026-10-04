@@ -9,11 +9,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
-import { decodeBase58, encodeBase58, isOnCurve } from '../../core/src/chain/index.ts';
+import { decodeBase58, encodeBase58, isOnCurve, pumpPoolAuthority, type Address } from '../../core/src/chain/index.ts';
 import { bps } from '../../core/src/units/index.ts';
 import { manifestHash } from '../src/dataset/dataset.ts';
 import { readOwnerPrograms, OWNER_PROGRAMS_FILE, OWNER_PROGRAMS_MANIFEST } from '../src/dataset/owner-programs.ts';
-import type { AmmSwapRow, MovementRow } from '../src/dataset/rows.ts';
+import type { AmmSwapRow, EventRow, MovementRow } from '../src/dataset/rows.ts';
 import { writeDataset } from './dataset-writer.ts';
 
 const SCRIPT = fileURLToPath(new URL('../scripts/owner-programs.ts', import.meta.url));
@@ -117,6 +117,24 @@ describe('owners', () => {
     const bad = await run(['owners', '--dataset', flat]);
     expect(bad.code).toBe(1);
     expect(bad.err).toMatch(/sha256 .* does not match SHA256SUMS/);
+  });
+
+  test("lists a CreatePoolEvent's off-curve creator, which the holder book credits; not pump's pool authority or a wallet", async () => {
+    const pool = (k: number, creator: string, mintKey: 'mint' | 'base_mint', mint: string): EventRow => ({
+      kind: 'event', slot: BigInt(3000 + k), blockTime: T0 + 200 + k, txIdx: 3, evIdx: 0, signature: `p${k}`, program: 'pump_amm', event: 'CreatePoolEvent',
+      fields: { [mintKey]: mint, pool: raw(`pool${k}`), creator, base_amount_in: '1', pool_base_amount: '1', user_base_token_account: raw(`ub${k}`) },
+    });
+    const m2 = raw('mint2');
+    const creators = join(tmp, 'creators');
+    writeDataset(creators, [
+      pool(0, PDAS[5]!, 'base_mint', raw('mint')), pool(1, pda('creator-pda'), 'base_mint', m2),
+      pool(2, pumpPoolAuthority(m2 as Address), 'base_mint', m2), pool(3, wallet('creator-wallet'), 'base_mint', m2), pool(4, '', 'base_mint', m2),
+      { ...pool(5, pda('other-event'), 'base_mint', m2), event: 'CreateEvent' },
+    ]);
+    expect(isOnCurve(decodeBase58(pumpPoolAuthority(m2 as Address)))).toBe(false);
+    const r = await run(['owners', '--dataset', creators]);
+    expect(r.code, r.err).toBe(0);
+    expect(r.out.trim().split('\n')).toEqual([PDAS[5]!, pda('creator-pda')].sort());
   });
 });
 

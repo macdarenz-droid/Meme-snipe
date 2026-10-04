@@ -26,7 +26,7 @@ import {
 import { observedFeeContext, type ScenarioName } from '../../../core/src/fills/index.ts';
 import {
   DeployerIndex, evaluateHardRejects, evaluateRegime, type GateContext, holdersKey, parseHolders, parseSolUsd, SOL_USD_KEY, solUsdAt, TX_CREATE_PREFIX, type Universe,
-  migrationKey, parseMigration, concentration, mintAccounts, type HardResult, type HardGate, gatesOfStages,
+  migrationKey, parseMigration, concentration, mintAccounts, type HardResult, type HardGate, gatesOfStages, HARD_GATES,
 } from '../../../core/src/gates/index.ts';
 import { canOpenNewEntry, isTerminal, type IntentState } from '../../../core/src/lifecycle/index.ts';
 import { economicNav, evaluateEntry, NO_LATCHES, type NavMark, type AccountCost, type AccountHistory, type ClosedTrade, type EntryAllowed, type EntryRecord, type Latches, type OpenPosition, type Trip } from '../../../core/src/risk/index.ts';
@@ -440,6 +440,8 @@ export class StudyStrategy implements Strategy {
     }
     this.#pending.delete(key);
     if (!gates.pass && !ablated) return void (this.funnel.gates(tag, mint, gates), say('reject', ...gateCodes(gates)));
+    // An entry needs a complete evaluation with no reasons (GATE-2): a gate left out is never a pass.
+    if (!gates.complete) return void (stop('not evaluated', 'not covered'), say('not evaluated', `gates not evaluated: ${HARD_GATES.filter((g) => !gates.evaluated.includes(g)).join(',')}`));
     // An ablation run enters only what the filter blocks: everything else is the main run's.
     if (this.#o.ablate !== undefined && gates.pass) return;
     if (ablated) say('ablation', ...gateCodes(gates));
@@ -771,10 +773,14 @@ const STAGE_2 = gatesOfStages([2]);
 const STAGES_3_4 = gatesOfStages([3, 4]);
 
 /** Two partial gate results as one (stages evaluated so far). */
-const mergeGates = (a: HardResult, b: HardResult): HardResult => ({
-  ...b, pass: a.pass && b.pass, evaluated: [...a.evaluated, ...b.evaluated], passed: [...a.passed, ...b.passed],
-  failed: [...a.failed, ...b.failed], reasons: [...a.reasons, ...b.reasons], notes: [...a.notes, ...b.notes],
-});
+/** Two staged evaluations as one: complete only when together they evaluated every hard gate (GATE-2). */
+export const mergeGates = (a: HardResult, b: HardResult): HardResult => {
+  const evaluated = [...a.evaluated, ...b.evaluated];
+  return {
+    ...b, pass: a.pass && b.pass, complete: HARD_GATES.every((g) => evaluated.includes(g)), evaluated, passed: [...a.passed, ...b.passed],
+    failed: [...a.failed, ...b.failed], reasons: [...a.reasons, ...b.reasons], notes: [...a.notes, ...b.notes],
+  };
+};
 
 const fixedStop = (stopBelowBps: number, spot: bigint): { ok: true; stopSpot: bigint } | { ok: false; why: string } => {
   // Rounded up, so the stop is never further than `stopBelowBps` below the spot (a barrier at the policy's widest stop
