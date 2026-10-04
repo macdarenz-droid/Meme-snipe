@@ -8,7 +8,8 @@ The one file a new supervisor reads to take over the Zeroed build. It says what 
 - Supervisor: session_012En9L5mnYQtEz7oyp1Eryf. It read AGENTS.md, CLAUDE.md, this file, all 22 session notes and the supervisor log, and re-listed the open PRs (heads matched §4).
 - 24 new sessions were started at about 8:05 PM, one per card line, each from its predecessor's notes: 10 builders, 8 reviewers and 6 read-audit sessions (the owner asked for every file in the repo to be read; the audits cover all 2,015 tracked files in six slices and report findings only). The table is in §5.
 - Base CI was red on 456d58fe (push run 37190077658): `packages/runner/test/runner.test.ts:179`, the host-loss tabletop, `recovered_state: false`. The only change since the green 35d31f4e was HANDOVER.md, so it is the known stub write-order flake, which CI-1b #116 fixes (20e8d5f: the stub journals an exit before its state drops the position). #116 merged first, at about 8:15 PM (bf62839; check green on 80b50d1, change identical to the reviewed c5aaf88).
-- The first account's supervisor (session_01Bne9GqXR99gJn6D9U2mJFZ) pushed two docs commits after the handover (a8165aa, fff0017 at 7:59 PM). The owner was asked to pause it so only one supervisor acts.
+- The first account's supervisor (session_01Bne9GqXR99gJn6D9U2mJFZ) pushed two docs commits after the handover (a8165aa, fff0017 at 7:59 PM). The owner stopped it at about 8:42 PM.
+- **Online confirmed by the owner at about 8:42 PM** (the app shows Online): the server runs the release's paper worker from the 7:28 PM Deploy (7d5e203). It makes no practice trades yet: PRACTICE-ON sets the S0 shakedown.
 
 ## 0. Account transition (read this first)
 
@@ -33,7 +34,7 @@ The supervisor wrote this file, `PROJECT_STATE.md`, `docs/DECISIONS.md` and `doc
 - **Kept out of the public repo on purpose** (each listed in the manifests with a source or regenerate command): secrets, third-party pages, papers and clones, raw provider data (Helius terms), raw GeckoTerminal OHLCV, node_modules and worktrees.
 
 **What keeps running with nobody watching:**
-- **Server** (Vultr `zeroed`, Frankfurt): still on the pinned install with the stand-in (stub) worker. The real worker arrives only with a code-only Deploy after the e2e fix (#126) is merged and green on its merge commit. See "First steps" below.
+- **Server** (Vultr `zeroed`, Frankfurt): the code-only Deploy at about 7:28 PM tagged 7d5e203, which runs the release's own worker in paper mode (SWITCH-1; `ops/host-config.json` has `"worker": "release"`). Whether the switch succeeded is confirmed only by the owner's Online check. See "First steps" below.
 - **GitHub Actions:**
   - The free-day Helius pull for 2026-09-21 is running: `data-scan.yml` run 37185822426, dispatched 07:27 UTC, about 14 h, chained runs. It books credits per run and caps at 270,000.
   - ARCHIVE-CHECK runs every 3 h on a cron and makes one ≤64-byte request with our real User-Agent. It no-ops while a data-scan runs.
@@ -114,7 +115,7 @@ The supervisor wrote this file, `PROJECT_STATE.md`, `docs/DECISIONS.md` and `doc
   - The `DEPLOY_CODE` secret stays absent: the owner deleted it at 2:47 PM because the old code had been shown in chat. Never reuse that code.
   - A run must log "No DEPLOY_CODE secret: code update only, no keys sent." (first run 37174740782 did).
   - Deploy moves the `deploy` tag to the newest GitHub-signed merge commit. Every 5 min, `zeroed-update` on the server switches to it if CI on that commit is green, no dry run is active and no intents are open.
-  - The real worker also needs `ops/host-config.json` `"worker": "release"` (it is `"stub"` now), which goes in its own reviewed PR.
+  - The real worker needs `ops/host-config.json` `"worker": "release"`; SWITCH-1 #110 set it (merged 669de71).
 - **After merging anything under `ops/**`:** the push run of `Ops end-to-end` on the merge commit must be green before Deploy. The PR run tests a different path from the push run (on push, the update step already deploys the signed merge). On 4 Oct, 669de71 passed on its PR and failed twice on push; #126 fixed the test's wait. Until OPS-GATE merges, the deploy gate would accept a later commit that ran no e2e at all, so check it by hand.
 - **Data downloads** run on GitHub Actions (`data-scan.yml`), not in a session:
   - Dispatch inputs: `mode=scan`, `days=<UTC days, newest first, comma-separated>`, `max_mbps=80`. `assemble` builds a dataset window.
@@ -122,6 +123,37 @@ The supervisor wrote this file, `PROJECT_STATE.md`, `docs/DECISIONS.md` and `doc
   - Each finished UTC day is published as a release tagged `data-day-YYYY-MM-DD`.
 
 ## 4. Current state (4 Oct, about 7:45 PM)
+
+### New-account queue (live; updated about 8:30 PM)
+
+**Merge order** (serial; each merge needs ready → update branch → green `check` (and `Ops end-to-end` for ops) → contains base → change identical to the reviewed SHA):
+
+| # | Card | Reviewed SHA | Verdict (new account unless noted) | Note |
+|---|---|---|---|---|
+| 116 | CI-1b | c5aaf88 | PASS (first account) | MERGED bf62839 (~8:15 PM) |
+| 114 | RENT-1 | 10ec76a (02d5f1d) | PASS (first account) | MERGED e5e1e78 (~8:28 PM) |
+| 121 | WATCH-1c | 26d992a | PASS (risk reviewer, 4525/4525) | needs base merge (only ops-e2e.yml and docs differ) |
+| 134 | OPS-GATE (O2) | 8c3aef3 | PASS (ops reviewer) | MERGED 47b6009 (~8:42 PM); its push `Ops end-to-end` must be green before any Deploy; #137 re-pins after it |
+| 106 | FACTS-1f | d06ebdb | PASS (first account) | |
+| 107 | EXIT-1f | ce7c78b | PASS (first account) | then the EXIT builder retargets #128 |
+| 125 | PERSIST-2 | 8f82e5d | PASS (PERSIST reviewer, 13/13 mutants) | |
+| 130 | EXIT-ROUTE (M6) | 8a6a71e | PASS (worker/facts reviewer) | needs base merge |
+| 98 | TEST-3 G3 report | c1f3f45 | PASS (first account) | then the WATCH builder's G3 fold |
+| 122 | BT-TAIL | b6200d1 | PASS (BT reviewer, 4518/4518 on a local merge) | needs base merge; before #120 |
+| 115 | RES-4 | dc728ad | stats PASS; BT reviewer re-review of C1b pending | stacked on #114 |
+
+**In review or fixing:** #118 API-1 (base merge running, then run/CI delta); #121 WATCH-1c (risk delta); #123 WORKER-ORDER (fixed at b677fb5, worker/facts re-review); #124 RISK-LATCH (fixing); #127 DATA-4 (fixing, after DATA-PUB); #128 EXIT-1g (FAIL B1: recovery not durable once its exit is taken; fixing); #129 STATS-1g and #120 RES-5 (stats reviewer); #131 PERSIST-3 (FAIL B1–B3; fixing); #132 RISK-PARTIAL and #133 PAPER-1 (risk and worker reviews); #135 PNPM-CLAIMS (ops review); #137 OPS-1i (pin re-pin after #134); #139 WORKER-1d (worker/facts review); #140 SAMPLE-QR (run/CI review); #141 WATCH-1d (risk review); #41 BT-2 (audit fixes building; S2 estimand passed with conditions C1–C6).
+
+**New cards from the six read-audits (all assigned, §5):**
+- DATA-PUB (urgent): data-scan.yml would publish a Helius-source day (raw getBlock responses in raw.jsonl.zst) to a public release and a 14-day artifact; chained runs use the workflow on the branch, so the gate must merge before the 09-21 chain's last run (about 11:30 PM–1 AM).
+- PRACTICE-ON (top priority): as deployed, the paper worker makes no practice trades (ZEROED_STRATEGY defaults to none, ZEROED_STANDINS and ZEROED_WALLET unset, ZEROED_S0_DIAGNOSTIC dropped by ENV_NAMES); the earlier "practice trades start once the real worker runs" was wrong and the owner was told.
+- WORKER-HARDEN: crash paths (canonical.ts 'tx' decode, ENOSPC loop, DelayProbe), stuck exits invisible to the watchdog, holder-scan cap lost on restart, credit-halt vs ledger, unbounded growth (recorder, journal, deployers.jsonl, AsOfStore, FactProducer maps, DeployerIndex).
+- OPS-1j: backups miss the worker's JSON state (control.json pause and latches, credits, exits, account); update gate skips the open-intents check when the worker isn't active; deploy.yml key handoff on `!cancelled()`.
+- SAMPLE-QR, APP-WIRE (app screens never wired to the worker), APP-WORDS (raw reason codes on screen; copy guard gaps; tests that cannot fail), screenshots.
+- BT-WALL: evidence path has no holdout wall; the leak test's labels check can never fire; publish-report delete-then-upload; synthetic BT-3 evidence labelled gate.
+- DATA-5 now also covers holdout day files 10-02..10-19 (nothing can fetch them today).
+- SANDBOX-TIDY: blocked by the environment's safety check ("Modify Shared Resources") on `git rm`; not worked around; waits on the owner. DOCS-ALIGN and CORE-TIDY are being built.
+
 
 **Base:** `ccr-14987baf-i6lrsl` at 7d5e203 (#126, deployed to the server), plus the handover docs commits. 76 PRs merged since midnight on 4 Oct. This evening: DATA-2 #111, MEM-1 #112, STATS-1f #109, WORKER-1c #99 (5:51 PM), WATCH-1b #113 (6:02 PM), SWITCH-1 #110 (6:15 PM), BT-2e data path #119 (6:27 PM), WORKER-1e #117 (6:42 PM), E2E-DRILL #126 (about 7:30 PM).
 
@@ -361,7 +393,7 @@ Times count from when the new supervisor resumes (R).
 - **Server:** Vultr, Frankfurt, `zeroed`, Ubuntu 24.04, US$6/month, re-installed at pin e28788a on 4 Oct.
   - Paired with the Telegram bot @Zeroed_alerts_bot.
   - The worker API binds to loopback 127.0.0.1:8788 and is published on the tailnet by `tailscale serve`. Health is on :8787.
-  - It runs the stub worker until the switch PR.
+  - Since the 7d5e203 deploy it runs the release's worker (paper), unless zeroed-update kept or rolled back to the old release on a failed check (an alert goes to Telegram).
 - **Keys:** GitHub secrets only: `HELIUS_API_KEY`, `ALCHEMY_API_KEY`, `JUPITER_API_KEY`, `TELEGRAM_BOT_TOKEN`, `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`. `DEPLOY_CODE` is deliberately absent. Never in the repo or in chat.
 - **Watchdog:** Cloudflare Workers, free plan, `workers.dev`. No custom domain.
 - **App:** Android preview APK at the fixed `preview` release link (see `PROJECT_STATE.md`).

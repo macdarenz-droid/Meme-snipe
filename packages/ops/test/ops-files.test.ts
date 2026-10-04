@@ -1,6 +1,6 @@
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createHash, createPrivateKey, createPublicKey } from 'node:crypto';
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -281,40 +281,35 @@ describe('systemd units (ARCHITECTURE.md 12.1)', () => {
 });
 
 describe('deploy tag (ops/deploy/tag.sh) on a fixture repository', () => {
-  it('skips an unsigned tip, a red and a pending signed merge, logs why, and tags the newest green signed merge', () => {
+  type Run = { name: string; status?: string; conclusion?: string | null; app?: string };
+  // A fixture repository of GitHub-signed (or unsigned) commits and a gh stand-in serving each commit's check runs.
+  const fixture = (build: (commit: (msg: string, signed: boolean, file?: string) => string) => { tip: string; checks: Record<string, Run[]> }) => {
     const dir = mkdtempSync(join(tmpdir(), 'zeroed-tag-'));
-    try {
-      const gnupg = join(dir, 'gnupg');
-      mkdirSync(gnupg, { mode: 0o700 });
-      const env = { ...process.env, GNUPGHOME: gnupg, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@x', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@x' };
-      const sh = (cmd: string, cwd = dir) => execFileSync('bash', ['-c', cmd], { cwd, env, encoding: 'utf8' }).trim();
-      sh("gpg --batch --passphrase '' --quick-gen-key 'Fixture <f@x>' ed25519 sign never 2>/dev/null");
-      const fpr = sh("gpg --batch --with-colons --fingerprint | awk -F: '$1 == \"fpr\" { print $10; exit }'");
-      sh(`gpg --batch --armor --export ${fpr} > key.asc`);
-      sh('git init -q --bare origin.git && git init -q -b int work');
-      const work = join(dir, 'work');
-      const commit = (msg: string, signed: boolean) => {
-        sh(`echo ${msg} >> f && git add f && git -c gpg.format=openpgp -c gpg.program=gpg -c user.signingkey=${fpr} commit -q ${signed ? '-S' : '--no-gpg-sign'} -m ${msg} && git rev-parse HEAD`, work);
-        return sh('git rev-parse HEAD', work);
-      };
-      const old = commit('green-older', true);
-      const green = commit('green', true);
-      const red = commit('red', true);
-      const pending = commit('pending', true);
-      const tip = commit('board', false);
-      sh('git remote add origin ../origin.git && git push -q origin int', work);
-      // gh stand-in: check runs per sha from files, the deploy ref missing, writes recorded.
-      const state = join(dir, 'state');
-      mkdirSync(join(state, 'checks'), { recursive: true });
-      const runs = (conclusion: string | null, status = 'completed') => JSON.stringify({ total_count: 2, check_runs: [{ name: 'check', status: 'completed', conclusion: 'success' }, { name: 'e2e', status, conclusion }, { name: 'zeroed-deploy', status: 'in_progress', conclusion: null }] });
-      writeFileSync(join(state, 'checks', old), runs('success'));
-      writeFileSync(join(state, 'checks', green), runs('success'));
-      writeFileSync(join(state, 'checks', red), runs('failure'));
-      writeFileSync(join(state, 'checks', pending), runs(null, 'in_progress'));
-      writeFileSync(join(state, 'checks', tip), runs('success'));
-      writeFileSync(
-        join(dir, 'gh'),
-        `#!/usr/bin/env bash
+    const gnupg = join(dir, 'gnupg');
+    mkdirSync(gnupg, { mode: 0o700 });
+    const env = { ...process.env, GNUPGHOME: gnupg, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@x', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@x' };
+    const sh = (cmd: string, cwd = dir) => execFileSync('bash', ['-c', cmd], { cwd, env, encoding: 'utf8' }).trim();
+    sh("gpg --batch --passphrase '' --quick-gen-key 'Fixture <f@x>' ed25519 sign never 2>/dev/null");
+    const fpr = sh("gpg --batch --with-colons --fingerprint | awk -F: '$1 == \"fpr\" { print $10; exit }'");
+    sh(`gpg --batch --armor --export ${fpr} > key.asc`);
+    sh('git init -q --bare origin.git && git init -q -b int work');
+    const work = join(dir, 'work');
+    const commit = (msg: string, signed: boolean, file = 'f') => {
+      sh(`mkdir -p $(dirname ${file}) && echo ${msg} >> ${file} && git add ${file} && git -c gpg.format=openpgp -c gpg.program=gpg -c user.signingkey=${fpr} commit -q ${signed ? '-S' : '--no-gpg-sign'} -m ${msg}`, work);
+      return sh('git rev-parse HEAD', work);
+    };
+    const { tip, checks } = build(commit);
+    sh('git remote add origin ../origin.git && git push -q origin int', work);
+    const state = join(dir, 'state');
+    mkdirSync(join(state, 'checks'), { recursive: true });
+    for (const [sha, runs] of Object.entries(checks)) {
+      // A running Deploy job is always listed: it never counts.
+      const all = [...runs, { name: 'zeroed-deploy', status: 'in_progress', conclusion: null }];
+      writeFileSync(join(state, 'checks', sha), JSON.stringify({ total_count: all.length, check_runs: all.map((r) => ({ status: 'completed', ...r, app: { slug: r.app ?? 'github-actions' } })) }));
+    }
+    writeFileSync(
+      join(dir, 'gh'),
+      `#!/usr/bin/env bash
 echo "$*" >> "${state}/calls"
 case "$2" in
   repos/o/r/commits/*/check-runs*) s="\${2#repos/o/r/commits/}"; s="\${s%%/*}"; cat "${state}/checks/$s" 2>/dev/null || echo '{"total_count":0,"check_runs":[]}' ;;
@@ -322,23 +317,71 @@ case "$2" in
 esac
 exit 0
 `,
-      );
-      chmodSync(join(dir, 'gh'), 0o755);
-      const r = spawnSync('bash', [join(root, 'ops/deploy/tag.sh')], {
-        cwd: work,
-        encoding: 'utf8',
-        env: { ...env, PATH: `${dir}:${process.env['PATH']}`, GH_REPO: 'o/r', GITHUB_SHA: tip, INTEGRATION_BRANCH: 'int', SIGNING_KEY_FILE: join(dir, 'key.asc'), SIGNING_FPR: fpr },
-      });
-      expect(r.status, r.stderr).toBe(0);
-      expect(r.stdout).toContain(`Skipped ${tip.slice(0, 12)}: not signed by GitHub`);
-      expect(r.stdout).toContain(`Skipped ${pending.slice(0, 12)}: checks still running.`);
-      expect(r.stdout).toContain(`Skipped ${red.slice(0, 12)}: a check failed.`);
-      expect(r.stdout).toContain(`Tag deploy -> ${green.slice(0, 12)}.`);
-      expect(readFileSync(join(state, 'calls'), 'utf8')).toContain(`api -X POST repos/o/r/git/refs -f ref=refs/tags/deploy -f sha=${green}`);
-      expect(r.stdout).not.toContain(old.slice(0, 12));
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    );
+    chmodSync(join(dir, 'gh'), 0o755);
+    const r = spawnSync('bash', [join(root, 'ops/deploy/tag.sh')], {
+      cwd: work,
+      encoding: 'utf8',
+      env: { ...env, PATH: `${dir}:${process.env['PATH']}`, GH_REPO: 'o/r', GITHUB_SHA: tip, INTEGRATION_BRANCH: 'int', SIGNING_KEY_FILE: join(dir, 'key.asc'), SIGNING_FPR: fpr },
+    });
+    const calls = existsSync(join(state, 'calls')) ? readFileSync(join(state, 'calls'), 'utf8') : '';
+    rmSync(dir, { recursive: true, force: true });
+    return { ...r, calls };
+  };
+  const ok: Run[] = [{ name: 'check', conclusion: 'success' }, { name: 'e2e', conclusion: 'success' }];
+
+  it('skips an unsigned tip, a red and a pending signed merge, logs why, and tags the newest green signed merge', () => {
+    let ids: Record<string, string> = {};
+    const r = fixture((commit) => {
+      // The ops change whose end-to-end decides the later merges (logic.sh e2e_commit).
+      ids = { old: commit('green-older', true, 'ops/x'), green: commit('green', true), red: commit('red', true), pending: commit('pending', true), tip: commit('board', false) };
+      return {
+        tip: ids['tip']!,
+        checks: {
+          [ids['old']!]: ok, [ids['green']!]: ok, [ids['tip']!]: ok,
+          [ids['red']!]: [{ name: 'check', conclusion: 'success' }, { name: 'e2e', conclusion: 'failure' }],
+          [ids['pending']!]: [{ name: 'check', conclusion: 'success' }, { name: 'e2e', status: 'in_progress', conclusion: null }],
+        },
+      };
+    });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stdout).toContain(`Skipped ${ids['tip']!.slice(0, 12)}: not signed by GitHub`);
+    expect(r.stdout).toContain(`Skipped ${ids['pending']!.slice(0, 12)}: checks still running (e2e still running).`);
+    expect(r.stdout).toContain(`Skipped ${ids['red']!.slice(0, 12)}: a check failed (e2e failed).`);
+    expect(r.stdout).toContain(`Tag deploy -> ${ids['green']!.slice(0, 12)}.`);
+    expect(r.calls).toContain(`api -X POST repos/o/r/git/refs -f ref=refs/tags/deploy -f sha=${ids['green']}`);
+    expect(r.stdout).not.toContain(ids['old']!.slice(0, 12));
+  }, 60_000);
+
+  it('refuses green-looking merges the gate does not cover: a red ops end-to-end earlier, a lone other run, an all-skipped set (OPS-GATE)', () => {
+    let ids: Record<string, string> = {};
+    const r = fixture((commit) => {
+      ids = {
+        // The ops change's end-to-end failed (669de71 on 2026-10-04): later merges that leave ops alone run none.
+        ops: commit('ops-red', true, 'ops/x'),
+        app: commit('app', true),
+        lone: commit('lone', true),
+        skipped: commit('skipped', true),
+        other: commit('other-app', true),
+      };
+      return {
+        tip: ids['other']!,
+        checks: {
+          [ids['ops']!]: [{ name: 'check', conclusion: 'success' }, { name: 'e2e', conclusion: 'failure' }],
+          [ids['app']!]: [{ name: 'check', conclusion: 'success' }],
+          [ids['lone']!]: [{ name: 'historical-data', conclusion: 'success' }],
+          [ids['skipped']!]: [{ name: 'check', conclusion: 'skipped' }, { name: 'historical-data', conclusion: 'skipped' }],
+          [ids['other']!]: [{ name: 'check', conclusion: 'success', app: 'some-bot' }],
+        },
+      };
+    });
+    expect(r.status).not.toBe(0);
+    expect(r.stdout).toContain(`Skipped ${ids['other']!.slice(0, 12)}: no check runs reported (no check run from GitHub Actions).`);
+    expect(r.stdout).toContain(`Skipped ${ids['skipped']!.slice(0, 12)}: a check failed (check was skipped, not success).`);
+    expect(r.stdout).toContain(`Skipped ${ids['lone']!.slice(0, 12)}: no check runs reported (no check run from GitHub Actions).`);
+    expect(r.stdout).toContain(`Skipped ${ids['app']!.slice(0, 12)}: a check failed (the ops end-to-end of ${ids['ops']!.slice(0, 12)}: e2e failed).`);
+    expect(r.stderr).toContain('Not deployable');
+    expect(r.calls).not.toContain('refs/tags/deploy -f sha=');
   }, 60_000);
 });
 

@@ -304,7 +304,7 @@ Position lifecycle: `opening → open → exit requested → exit pending → op
 - rent comes back only when the atomic sell-and-close lands (a failed close rolls the sell back and still pays the fee; dust keeps the account open);
 - every on-chain observation (swap, lifecycle event, regime change) reaches the engine after event → processed, processed → confirmed and provider → worker delays, at the replay's real slot times (profiles measured, adverse 2 + 6 slots + 1 s, stress 4 + 12 slots + 2 s with 30 s and 60 s blackouts);
 - blocked exits recorded as `blocked`, valued at the end of the escalation ladder or 0;
-- three scenarios: base, conservative (slippage × 1.5, p90 latency, close-based take-profit, no rent recovery) and optimistic. **Promotion uses conservative only.** The wick-versus-close choice alone moved one rule from −20.5% to +0.5% per trade.
+- three scenarios: base, conservative (slippage × 1.5, p90 latency, close-based take-profit, rent back per the modelled sell-and-close outcome; the no-recovery line is a reported sensitivity) and optimistic. **Promotion uses conservative only.** The wick-versus-close choice alone moved one rule from −20.5% to +0.5% per trade.
 - An audit sample logs a real Jupiter quote at the simulated fill moment to keep the model honest.
 
 ## 12. System, hosting and security
