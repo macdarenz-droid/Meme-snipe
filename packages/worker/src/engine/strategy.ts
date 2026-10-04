@@ -277,7 +277,21 @@ export class LiveStrategy implements Strategy {
       const pool = this.#poolOfMint.get(mint);
       if (pool !== undefined) out.set(pool, { mint, held: held.has(mint) });
     }
+    for (const [mint, t] of this.#tail) if (!out.has(t.pool)) out.set(t.pool, { mint, held: false });
     return out;
+  }
+
+  /**
+   * REC-1 (supervisor ruling): the pool of a candidate that was evaluated and rejected stays watched after its window,
+   * until the window end plus its universe's maximum hold, so the recording holds every swap a counterfactual entry at
+   * any moment of the window would need (G3's scorer). At P3 like any candidate (held: false): the budget halt sheds it
+   * first and the stream records the gap. Kept through `untilMs`, pruned at the first event after it.
+   */
+  readonly #tail = new Map<string, { readonly pool: string; readonly untilMs: number }>();
+
+  /** The rejected candidates' pools still watched past their window, by mint (REC-1). */
+  get tail(): ReadonlyMap<string, { readonly pool: string; readonly untilMs: number }> {
+    return this.#tail;
   }
 
   /** H14's creates coverage as of the last slot, coverage fact or seed released; null before any. */
@@ -316,6 +330,8 @@ export class LiveStrategy implements Strategy {
     this.#manage(ctx, out);
     // At most one entry step per call, and only while nothing else acted: ctx.book is the book before these decisions.
     if (!out.some((d) => d.action !== null)) this.#entries(ctx, gctx, out, due);
+    // Through `untilMs` itself: an exit at exactly the maximum hold (EXIT-1 fires at elapsed >= tMax) needs that moment.
+    for (const [mint, t] of this.#tail) if (ctx.now.receivedAt > t.untilMs) this.#tail.delete(mint);
     return out;
   }
 
@@ -851,6 +867,8 @@ export class LiveStrategy implements Strategy {
       const from = cand.migratedAtMs + c.windowFromMs;
       const to = cand.migratedAtMs + c.windowToMs;
       if (now >= to) {
+        const pool = this.#poolOfMint.get(cand.mint);
+        if (cand.lastReason !== null && pool !== undefined) this.#tail.set(cand.mint, { pool, untilMs: to + exitsFor(this.#d.session.policy.exits, c.universe).tMaxMs });
         this.#cands.delete(cand.mint);
         this.#bars.delete(cand.mint);
         this.#forget(cand.mint);
