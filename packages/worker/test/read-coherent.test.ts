@@ -12,8 +12,8 @@ import { Engine, type LogRecord, type MarketEvent, type Strategy } from '../../c
 import { holdersKey, lpKey, mintKey, simKey, xcheckKey, type FactObs } from '../../core/src/gates/index.ts';
 import { TRIAL_POLICY } from '../../core/src/config/index.ts';
 import { microUsdToLamports, type MicroUsd } from '../../core/src/units/index.ts';
-import { lamports } from '../../core/src/units/index.ts';
-import { ACC, BASE_VAULT, W, account, holderAccounts, passingFacts, roundTrip } from '../../core/test/gates/world.ts';
+import { ACC, BASE_VAULT, FEE_CONTEXT, QUOTE_VAULT, W, account, holderAccounts, passingFacts } from '../../core/test/gates/world.ts';
+import { poolBuyExactQuoteIn, poolSell } from '../../core/src/amm/index.ts';
 import { FACT_READS_KEY, FactReaders, FactRpc, HELIUS_CALLS_PER_EVALUATION, HOLDER_SCANS_PER_DAY, LiveFacts, type BatchRequest, type BatchResult, type LiveReaders, type SimFn } from '../src/facts/index.ts';
 import { LiveStrategy, type CandidateReason } from '../src/engine/strategy.ts';
 import { replayRecorded, type Frame, type Release } from '../src/providers/index.ts';
@@ -136,14 +136,26 @@ export const fakeChain = (h: Harness, slotsPerCall = 1): FakeChain => {
   return { http, calls };
 };
 
+/**
+ * What an honest simulation reports at `spend` on the passing pool: the buy, then the sale of its tokens at once on the
+ * pool the buy left (the sequence the simulation runs), modelled exactly; null when the pool cannot be quoted.
+ */
+const simulated = (spend: bigint): { paid: bigint; proceeds: bigint } | null => {
+  const state = { baseReserve: BASE_VAULT, quoteVault: QUOTE_VAULT, virtualQuoteReserves: POOL.virtualQuoteReserves ?? 0n };
+  const b = poolBuyExactQuoteIn(state, spend, FEE_CONTEXT);
+  if (!b.ok) return null;
+  const x = poolSell(b.trade.after, b.trade.base, FEE_CONTEXT);
+  return x.ok ? { paid: b.trade.userQuote, proceeds: x.trade.userQuote } : null;
+};
+
 /** H15's simulation (the worker's SimFn): one RPC call, answered one slot later, at the candidate's spend on the passing pool. */
 const simOf = (ctx: FactContext, slotsPerCall = 1): SimFn => (mint, spend, ingest) =>
   new Promise((ok) => {
     const slot = (ctx.tip() ?? 1n) - 1n;
     ctx.timers.setTimeout(() => {
-      const q = roundTrip(lamports(spend));
-      if (!q.ok) return ok(false);
-      ingest({ mint, slot, spend, ok: true, paid: q.trade.paid, proceeds: q.trade.proceeds, error: null });
+      const q = simulated(spend);
+      if (q === null) return ok(false);
+      ingest({ mint, slot, spend, ok: true, ...q, error: null });
       ok(true);
     }, SLOT_MS * slotsPerCall);
   });
@@ -335,9 +347,9 @@ const batchRig = (o: { readonly bankSlot?: bigint; readonly scanSlot?: bigint; r
     ...(o.scansPerDay === undefined ? {} : { holderScansPerDay: o.scansPerDay }),
   });
   readers.simulate = async (mint, spend, ingest) => {
-    const q = roundTrip(lamports(spend));
-    if (!q.ok) return false;
-    ingest({ mint, slot: bankSlot, spend, ok: true, paid: q.trade.paid, proceeds: q.trade.proceeds, error: null });
+    const q = simulated(spend);
+    if (q === null) return false;
+    ingest({ mint, slot: bankSlot, spend, ok: true, ...q, error: null });
     return true;
   };
   const run = async (req: BatchRequest): Promise<BatchResult> => {
@@ -570,7 +582,7 @@ describe('LiveStrategy: a batch is judged at its close', () => {
     };
     m.omit = new Set();
     m.offchain(RAW.batchOpen(MINT), { mint: MINT, members: READ_FACTS });
-    for (const k of READ_FACTS) m.fact(k, k === simKey(MINT) ? { ...obsAt(passing.get(k)!.value), spend: SPEND_AT_PRICE } : obsAt(passing.get(k)!.value));
+    for (const k of READ_FACTS) m.fact(k, k === simKey(MINT) ? { ...obsAt(passing.get(k)!.value), spend: SPEND_AT_PRICE, ...simulated(SPEND_AT_PRICE)! } : obsAt(passing.get(k)!.value));
     m.offchain(RAW.batchClose(MINT), { mint: MINT, slot: at, members: READ_FACTS });
     m.omit = new Set(READ_FACTS);
     await m.run(2_000, 400, () => m.slot());
