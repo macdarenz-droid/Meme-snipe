@@ -593,6 +593,32 @@ describe('an exit owner never waits booked blocked for a fresh market (EXIT-1d)'
     await b.worker.stop();
   });
 
+  it('a wait whose owner is settled is over even when the saved file still has it (a kill between the ledger write and the plan save) (#100 N1)', async () => {
+    const { h, pid } = await dueAfterDowntime();
+    const d2 = await reboot(h);
+    await d2.m.run(800, 400, () => d2.m.slot());
+    d2.m.pool();
+    await d2.m.run(800, 400, () => d2.m.slot());
+    expect(await until(d2.m, 60_000, () => d2.first('exit waiting for a fresh market').length > 0, () => d2.m.slot())).toBe(true);
+    const since = d2.b.worker.strategy.waitingExits().get(pid)!;
+    // A fresh pool that refuses the sale books the owner blocked, which ends the wait.
+    expect(await until(d2.m, 10_000, () => d2.b.worker.book.positions[pid]!.status === 'exit_blocked', () => {
+      d2.m.slot();
+      d2.m.pool(0n);
+    })).toBe(true);
+    await d2.b.worker.kill();
+    // The kill lands after the ledger took the blocked booking but before the plans were saved: the file still waits.
+    const file = exitsFile(h.stateDir);
+    const saved = file.read({});
+    file.write({ ...saved, [pid]: { ...saved[pid]!, waitingSinceMs: since } });
+    const d3 = await reboot(h);
+    await d3.m.run(800, 400, () => d3.m.slot());
+    expect(d3.b.worker.book.positions[pid]!.status).toBe('exit_blocked');
+    expect(d3.b.worker.strategy.waitingExits().has(pid)).toBe(false);
+    expect(d3.b.worker.strategy.saved()[pid]!.waitingSinceMs ?? null).toBeNull();
+    await d3.b.worker.stop();
+  });
+
   it('a restart keeps the wait start: the alert comes at the first boot\'s start + blockedRetryMs, for an EXIT-1c and an EXIT-1d wait (B2, #93 N3)', async () => {
     const retry = TRIAL_POLICY.exits.blockedRetryMs;
     const alerted = (w: ReturnType<typeof makeWorker>) => views.status(w.worker.apiInputs()).flags.includes('exit-blocked');

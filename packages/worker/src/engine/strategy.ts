@@ -647,13 +647,11 @@ export class LiveStrategy implements Strategy {
 
   /** Entry intents that resolved without a fill end; exit owners that did get a new attempt or are booked blocked. */
   #lifecycle(ctx: StrategyContext, out: Decision[]): void {
-    // A waiting owner that settled or was booked another way no longer waits.
-    for (const [id, pid] of this.#waitingMarket) {
+    // A waiting owner that settled or was booked another way is no longer said to wait (its saved wait start is ended by
+    // #manage, from the book).
+    for (const id of this.#waitingMarket.keys()) {
       const i = ctx.book.intents[id];
-      if (i === undefined || isTerminal(i) || (i.status !== 'exposure_reserved' && !(i.status === 'reconciled' && i.fills.length === 0))) {
-        this.#waitingMarket.delete(id);
-        if (ctx.book.positions[pid]?.status !== 'open') this.#setWaiting(pid, null);
-      }
+      if (i === undefined || isTerminal(i) || (i.status !== 'exposure_reserved' && !(i.status === 'reconciled' && i.fills.length === 0))) this.#waitingMarket.delete(id);
     }
     for (const i of Object.values(ctx.book.intents)) {
       if (isTerminal(i)) continue;
@@ -836,7 +834,11 @@ export class LiveStrategy implements Strategy {
       // Only an open position's wait is decided here; an exit owner's wait (EXIT-1d) is #sendExit's.
       const waiting = p.status === 'open' && step.tracker.pendingFull !== null;
       if (waiting && saved.waitingSinceMs == null) out.push({ action: null, reasons: ['exit waiting for a fresh quote', p.mint, step.tracker.pendingFull!.join(', ')] });
-      const waitingSinceMs = p.status !== 'open' ? (saved.waitingSinceMs ?? null) : waiting ? (saved.waitingSinceMs ?? ctx.now.receivedAt) : null;
+      // A position being exited keeps its wait only while one of its exit owners can still be waiting for a market (not
+      // yet sent, or resolved without a fill); booked blocked, run out of budget, cancelled or settled, the wait is over.
+      // Read from the book on every step, so a restart (which forgets which owners were said to wait) agrees.
+      const ownerMayWait = exitIntents.some((i) => !isTerminal(i) && (i.status === 'exposure_reserved' || (i.status === 'reconciled' && i.fills.length === 0)));
+      const waitingSinceMs = p.status !== 'open' ? (ownerMayWait ? (saved.waitingSinceMs ?? null) : null) : waiting ? (saved.waitingSinceMs ?? ctx.now.receivedAt) : null;
       saved = { ...saved, tracker: step.tracker, bars: this.#bars.get(p.id) ?? saved.bars, waitingSinceMs };
       this.#exits.set(p.id, saved);
       for (const why of step.ignored) out.push({ action: null, reasons: ['exit input ignored', p.mint, why] });
