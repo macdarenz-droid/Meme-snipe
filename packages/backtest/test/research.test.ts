@@ -475,3 +475,12 @@ describe('cli', () => {
     // Writing the zstd fixture takes ~25 s of the time (measured 26 s on this container).
   }, 150_000);
 });
+
+// MEM-1: the file's peak memory, so a regression fails here instead of getting the test runner killed. Every test file
+// runs in its own fork, so maxRSS is this file's alone. Measured 2026-10-04: about 0.55 GB (5.6 GB before the shared
+// Melbourne-day formatter); the bound leaves about 2x headroom.
+const PEAK_RSS_BOUND_MB = 1024;
+test('the whole file stays under its memory bound', () => {
+  const peakMb = process.resourceUsage().maxRSS / 1024;
+  expect(peakMb).toBeLessThan(PEAK_RSS_BOUND_MB);
+});
