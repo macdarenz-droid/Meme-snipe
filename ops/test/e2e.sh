@@ -321,6 +321,13 @@ git -C "$BARE" tag -f deploy "$signed" >/dev/null && git -C "$BARE" update-serve
 pass "update: waits on failed and pending checks, on a red ops end-to-end at ${e2e_signed:0:12} and on open intents; deploys the green GitHub-signed merge ${signed:0:12} with reconcile first; refuses unsigned ${unsigned:0:12}"
 
 # ---------- 9. Backup and restore drill ----------
+# §8's update applied the signed release's own host files. On a pull request that release is the base's merge, so
+# its zeroed-backup and restore scripts are the base's, not this branch's: put this branch's host files back first,
+# as the merge of this branch would, so §9 tests what the branch ships (on push they are the same files).
+in_c "ZEROED_NO_WAIT=1 bash /root/i --update" >"$LOGS/console/update-branch-files-9.txt" 2>&1 || { cat "$LOGS/console/update-branch-files-9.txt"; fail "install --update before the backup drill (this branch's host files)"; }
+for f in sbin/zeroed-backup sbin/zeroed-restore sbin/zeroed-restore-drill lib/zeroed/logic.sh; do
+  docker exec -i "$C" cmp -s "/usr/local/$f" - <"$ROOT/ops/host/files/usr/local/$f" || fail "test setup: this branch's $f not in place"
+done
 # A JSON state file as the real worker keeps beside the ledger (exit plans): the backup must hold it (OPS-1j).
 EXITS="{\"e2e\":\"$(rnd 8)\"}"
 in_c "printf '%s\n' '$EXITS' > /var/lib/zeroed/exits.json && chown zeroed-worker: /var/lib/zeroed/exits.json"

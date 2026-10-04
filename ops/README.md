@@ -10,7 +10,7 @@ Server: Vultr High Performance, Frankfurt, 1 vCPU / 1 GB, image **Ubuntu 24.04 L
 2. **Install.** Paste this one line the same way (Clipboard → Paste), then press Enter:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/bab8dea6d4138e0130120cf568ce435ec7029349/ops/install.sh -o i && echo '2d0142fd03886351f4270bc409bfce0ae256905c87e432c86eb87ada71bc3d42  i' | sha256sum -c && bash i
+curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/bab8dea6d4138e0130120cf568ce435ec7029349/ops/install.sh -o i && echo 'bde06a7f907d38e3d42a5586f4e964b99d64a8a865898c0266ae50431bf793a8  i' | sha256sum -c && bash i
 ```
 
    The line checks the file against its SHA-256 before anything runs; a changed file stops at `sha256sum -c`. After about two minutes the screen shows a **deploy code** of 6 words.
@@ -19,7 +19,7 @@ curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/bab8dea6
 
 The console screen can be left at any time (Ctrl+C); setup carries on in the background. `zeroed-status` shows where it stands and the codes again.
 
-SHA-256 of `install.sh`: `2d0142fd03886351f4270bc409bfce0ae256905c87e432c86eb87ada71bc3d42`
+SHA-256 of `install.sh`: `bde06a7f907d38e3d42a5586f4e964b99d64a8a865898c0266ae50431bf793a8`
 
 After any change to `ops/install.sh`, the commit in the line must move to one that holds the new file (`ops/test/e2e.sh` fails otherwise).
 
@@ -68,13 +68,13 @@ Every Deploy run also moves the tag `deploy` to the newest commit on `ccr-14987b
 - GitHub Actions' `check` passed on it, and every other GitHub Actions run on it finished green (public API; runs from other apps do not count, and none at all means wait);
 - `e2e` passed on the newest commit at or before it that changed the ops end-to-end paths (`ops/`, `packages/ops/`, the Deploy and ops e2e workflows), since a merge that leaves ops alone runs no e2e of its own;
 - no qualifying dry run is active: no `zeroed-dryrun@…` unit is running, and no named run in the evidence directory is missing its `report.json` (this covers the minutes after a reboot drill before the runner resumes);
-- the worker reports no open intent (`/var/lib/zeroed/open_intents`).
+- the worker reports no open intent: `/var/lib/zeroed/open_intents` reads exactly `0`, whether the worker is running, starting or stopped. A missing or unreadable count holds, except on a new server with no worker state at all. Limit: a worker that never comes back (a release that crash-loops with intents open) leaves its last count, so every code update holds, the fixing one included; recovery is from the server console.
 
 First it tries the new release's worker (`/usr/local/lib/zeroed/worker-smoke`). The trial runs beside the running worker as transient units, under the worker unit's own sandbox and environment file. It has a scratch state directory as its only writable path, its own loopback ports (127.0.0.1:8797 and 8798), and memory capped at 280M. Its `--reconcile` must exit 0. It must then answer its health route in paper mode within 90 seconds, and still be running and answering 30 seconds later. If it does not (a file that does not strip or load, a missing file, a refused config, a worker that dies), nothing changes: current stays, the running worker keeps running, and one Telegram alert says why. It is tried again every 5 minutes. After the switch, the new worker must answer within 60 seconds and then run 30 seconds without a restart. If it does not, the server goes back to the release it ran: current, the deployed record, its host files and its worker. That commit is not tried again (a newer deploy is), and one alert says why. Then it runs the new release's own installer as `install.sh --update`, so changes to host scripts and units arrive with the code; the install line is pasted only once. Only when that succeeds does it switch and restart the worker. The update is all or nothing: it keeps each host file it changes (the Node link included) and notes each unit it stops. If any step fails, it puts every file back, removes new ones, reloads systemd, restarts what was running and re-applies the old firewall. An update cut off half-way is rolled back by the next one first. Packages apt added stay installed. A failure keeps the running release and worker as they are, alerts once, and is tried again every 5 minutes under the same gates. An update keeps SSH exactly as the running firewall has it, makes no code and shows nothing on the console. It also installs RUN-1's units from the release (`packages/runner/systemd/zeroed-dryrun*` and `zeroed-worker-tabletop.service`, the host-loss tabletop worker on 127.0.0.1:8789, which is never published), enables only `zeroed-dryrun-tick.timer`, and removes units a newer release dropped. The worker reconciles before every start. Residual risk: write access to the repository is the ability to deploy; the signer (SIGN-1) is the separate guard on funds.
 
 ## Backups
 
-Every hour `zeroed-backup` copies each SQLite file under `/var/lib/zeroed` with SQLite's online backup and checks it. It writes a SHA-256 manifest and encrypts the bundle with age to the host key and, once set, to the owner's backup code. The newest 72 stay in `/var/backups/zeroed`.
+Every hour `zeroed-backup` copies the worker's whole bot state under `/var/lib/zeroed`: SQLite files with SQLite's online backup, checked, and every other state file as it is (JSON state must parse). Left out: the run's evidence (`journal.jsonl`, `recorder/`), the running worker's markers about itself (`drill.token`, `open_intents`, `clean_stop`), files mid-write (`*.tmp`) and SQLite side files. It writes a SHA-256 manifest and encrypts the bundle with age to the host key and, once set, to the owner's backup code. The newest 72 stay in `/var/backups/zeroed`.
 
 **Off-server copy (free, no R2): off until the owner approves.** Sending backups to Telegram is sending data to a third party, which needs the owner's approval (CLAUDE.md). The timer is installed but disabled, and `zeroed-backup-offsite` refuses to send while `ops/host-config.json` says `"offsite_backup": false` (the default). Switching it on is a reviewed commit that sets it to `true`; the next code update (`zeroed-update`) applies it.
 
@@ -83,6 +83,8 @@ Once on: run `zeroed-backup-code` once at the console. It shows a 6-word backup 
 To open a copy anywhere with Node and age: `node derive-key.mjs --backup` (type the 6 words, press Enter) `> id.txt`, then `age -d -i id.txt zeroed-….tar.age | tar -x`.
 
 `zeroed-restore-drill /etc/zeroed/age/host.key` (or the identity made from the words) restores the newest backup into a scratch directory. It prints PASS once the manifest, the integrity check and the tables all match, and never touches the live files.
+
+`zeroed-restore /etc/zeroed/age/host.key [BACKUP]` puts a backup back after a host loss: it runs the drill first and restores nothing if it fails, stops the worker, moves the current state aside to `/var/lib/zeroed-prerestore/<time>/` (the evidence stays), copies the backup's files in and starts the worker, which reconciles before it trades. A backup without `control.json` comes back with entries paused.
 
 To restore for real:
 1. `systemctl stop zeroed-worker`

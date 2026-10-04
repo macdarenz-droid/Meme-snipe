@@ -69,12 +69,13 @@ const STATE: Record<string, string> = {
   'chain-volume/2026-10-03.json': '{"sol":1}\n',
   'open_intents': '0\n',
   'cold_start': '2026-10-04T00:00:00.000Z',
+  'clean_stop': '2026-10-04T00:00:00.000Z',
   'account.json.tmp': '{"half',
   'journal.jsonl': '{"seq":1}\n',
   'recorder/units/1/1-2/stats.json': '{}\n',
   'drill.token': 'secret-per-boot',
 };
-const BOT_STATE = ['account.json', 'chain-volume/2026-10-03.json', 'cold_start', 'control.json', 'credits.json', 'deployer-state.json', 'deployers.jsonl', 'exits.json', 'exposure.json', 'fill-budget.json', 'ledger.sqlite', 'open_intents'];
+const BOT_STATE = ['account.json', 'chain-volume/2026-10-03.json', 'cold_start', 'control.json', 'credits.json', 'deployer-state.json', 'deployers.jsonl', 'exits.json', 'exposure.json', 'fill-budget.json', 'ledger.sqlite'];
 
 const stateDir = (name: string, files: Record<string, string> = STATE): string => {
   const dir = join(tmp, name);
@@ -106,7 +107,7 @@ const unpack = (bundle: string): string => {
 };
 
 describe('backup: the whole bot state', () => {
-  it('lists every bot-state file and leaves out the evidence, the drill token, files mid-write and SQLite side files', () => {
+  it('lists every bot-state file and leaves out the evidence, the runtime markers, files mid-write and SQLite side files', () => {
     const dir = stateDir('list');
     expect(logic(`backup_files "${dir}"`).out.split('\n')).toEqual(BOT_STATE);
   });
@@ -118,6 +119,10 @@ describe('backup: the whole bot state', () => {
     expect(body).toContain(`! -path ./${STATE_FILES.journal}`);
     expect(body).toContain(`! -path './${STATE_FILES.recorder}/*'`);
     expect(body).toContain(`! -path ./${STATE_FILES.drillToken}`);
+    // The running worker's markers about itself: never restored onto a worker that has not reconciled yet.
+    expect(body).toContain(`! -path ./${STATE_FILES.openIntents}`);
+    expect(body).toContain(`! -path ./${STATE_FILES.cleanStop}`);
+    expect(Object.keys(STATE_FILES).sort()).toEqual(['cleanStop', 'drillToken', 'journal', 'openIntents', 'recorder']);
   });
 
   it("backs up the worker's JSON state byte for byte beside the ledger, with a manifest of every file", () => {
@@ -159,7 +164,7 @@ describe('restore drill and restore', () => {
     const r = run('zeroed-restore-drill', [id, made.bundle!], { ZEROED_BACKUP_SRC: src, ZEROED_BACKUP_OUT: out });
     expect(r.status, r.out).toBe(0);
     expect(r.out).toContain('PASS: ');
-    expect(r.out).toContain('12 file(s) restored to a scratch directory and verified.');
+    expect(r.out).toContain('11 file(s) restored to a scratch directory and verified.');
     for (const rel of ['account.json', 'exits.json', 'deployer-state.json', 'fill-budget.json', 'credits.json', 'control.json']) expect(r.out, rel).toContain(`  ${rel}: `);
   });
 
@@ -187,11 +192,32 @@ describe('restore drill and restore', () => {
     for (const rel of BOT_STATE) expect(readFileSync(join(live, rel), 'utf8'), rel).toBe(STATE[rel]);
     expect(readdirSync(live)).not.toContain('stray.json');
     expect(readdirSync(live)).not.toContain('MANIFEST.sha256');
+    // The old worker's markers went aside with the rest and none came from the backup: updates hold until the
+    // restored worker reconciles and writes its own count.
+    expect(readdirSync(live)).not.toContain('open_intents');
+    expect(readdirSync(live)).not.toContain('clean_stop');
+    expect(logic(`if intents_hold inactive "${live}"; then echo hold; else echo go; fi`).out).toBe('hold');
     expect(readFileSync(join(live, 'journal.jsonl'), 'utf8')).toBe('{"seq":1}\n{"seq":2}\n');
     expect(readFileSync(join(live, 'recorder/units/1/1-2/stats.json'), 'utf8')).toBe('{}\n');
     const [kept] = readdirSync(aside);
     expect(readFileSync(join(aside, kept!, 'account.json'), 'utf8')).toBe('{"newer":true}\n');
     expect(readFileSync(calls, 'utf8')).toBe(`systemctl stop zeroed-worker.service\nchown -R zeroed-worker:zeroed-worker ${live}\nsystemctl start zeroed-worker.service\n`);
+  });
+
+  it('restores nothing and leaves the worker alone when the backup fails the restore drill', () => {
+    const live = join(tmp, 'restore-refused');
+    cpSync(src, live, { recursive: true });
+    writeFileSync(join(live, 'account.json'), '{"newer":true}\n');
+    const drill = join(tmp, 'failing-drill');
+    writeFileSync(drill, `#!/usr/bin/env bash\necho "drill $*" >> "${calls}"\nexit 1\n`);
+    chmodSync(drill, 0o755);
+    writeFileSync(calls, '');
+    const r = run('zeroed-restore', [id, made.bundle!], { ZEROED_BACKUP_SRC: live, ZEROED_BACKUP_OUT: out, ZEROED_RESTORE_ASIDE: join(tmp, 'aside-refused'), ZEROED_RESTORE_DRILL: drill });
+    expect(r.status).toBe(1);
+    expect(r.out).toContain('The backup failed the restore drill; nothing restored.');
+    expect(readFileSync(calls, 'utf8')).toBe(`drill ${id} ${made.bundle!}\n`);
+    expect(readFileSync(join(live, 'account.json'), 'utf8')).toBe('{"newer":true}\n');
+    expect(existsSync(join(tmp, 'aside-refused'))).toBe(false);
   });
 
   it('a backup without control.json restores with entries paused, in the form the worker reads', () => {
@@ -243,6 +269,32 @@ describe('open intents hold updates and restarts, fail closed', () => {
 
   it('a new host with no worker state at all does not hold', () => {
     expect(hold('inactive', {})).toBe('go');
+  });
+
+  it("common.sh's worker_busy, run in bash: a qualifying dry run or open intents make the worker busy", () => {
+    const common = read('ops/host/files/usr/local/lib/zeroed/common.sh');
+    const fn = common.slice(common.indexOf('worker_busy() {'), common.indexOf('keys_stored()'));
+    expect(fn.split('/var/lib/zeroed').length).toBe(2);
+    const busy = (worker: string, dryrun: string, files: Record<string, string>) => {
+      const dir = mkdtempSync(join(tmp, 'busy-'));
+      for (const [rel, body] of Object.entries(files)) writeFileSync(join(dir, rel), body);
+      const ev = mkdtempSync(join(tmp, 'busy-ev-'));
+      // systemctl answers is-active for the worker and list-units for the dry-run units.
+      const stub = `systemctl() { case "$1" in is-active) printf '%s\\n' "$WORKER" ;; list-units) printf '%s' "$DRYRUN" ;; esac; }`;
+      const r = spawnSync('bash', ['-c', `set -euo pipefail; . "${LIB}/logic.sh"; ${stub}; EVIDENCE_ROOT="${ev}"; ${fn.replace('/var/lib/zeroed', dir)}; if worker_busy; then echo busy; else echo free; fi`], {
+        encoding: 'utf8',
+        env: { PATH: process.env['PATH'] ?? '', WORKER: worker, DRYRUN: dryrun },
+      });
+      expect(r.status, r.stderr).toBe(0);
+      return r.stdout.trim();
+    };
+    const unit = 'zeroed-dryrun@q1.service loaded active running Zeroed dry run q1\n';
+    expect(busy('active', '', { open_intents: '0\n', 'ledger.sqlite': 'x' })).toBe('free');
+    expect(busy('inactive', '', {})).toBe('free');
+    expect(busy('active', '', { open_intents: '2\n', 'ledger.sqlite': 'x' })).toBe('busy');
+    expect(busy('activating', '', { 'ledger.sqlite': 'x' })).toBe('busy');
+    expect(busy('failed', '', { open_intents: 'garbage', 'ledger.sqlite': 'x' })).toBe('busy');
+    expect(busy('active', unit, { open_intents: '0\n', 'ledger.sqlite': 'x' })).toBe('busy');
   });
 
   it('the update gate and the safe-restart check both use it, whatever the worker state', () => {
