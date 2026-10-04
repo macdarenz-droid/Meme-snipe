@@ -9,13 +9,13 @@
 // evidence.
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, relative, resolve } from 'node:path';
 import type { FillConfig, Policy, ResearchConfig } from '../../core/src/config/index.ts';
 import type { ScenarioName } from '../../core/src/fills/index.ts';
-import { loadDay, loadManifest, manifestHash, regimeBoundariesOf, verifySums } from './dataset/dataset.ts';
+import { dayFilesRead, loadDay, loadManifest, locate, manifestHash, regimeBoundariesOf, sumsListed, verifySums } from './dataset/dataset.ts';
 import type { OffchainSeries } from './dataset/offchain.ts';
 import type { DatasetRow } from './dataset/rows.ts';
-import { runBacktest, type RunOptions } from './run.ts';
+import { runBacktest, type RunOptions, type RunResult } from './run.ts';
 
 /** The lead-in every gate window needs (DATA-1: finalize -lead-in-days 14). */
 export const GATE_LEAD_IN_DAYS = 14;
@@ -44,6 +44,8 @@ export interface EvidenceInput {
   readonly ledgerReplay: LedgerReplay;
   /** Where the run writes its ledger files. */
   readonly workDir: string;
+  /** The engine run (tests stub it to pin each pass term); defaults to runBacktest. */
+  readonly run?: (o: RunOptions) => RunResult;
 }
 
 export interface WindowEvidence {
@@ -92,6 +94,14 @@ export const runEvidence = (input: EvidenceInput): Evidence => {
     const filesChecked = verifySums(w.dir);
     if (input.mode === 'gate' && filesChecked === 0) throw new RangeError(`${w.dir}: gate evidence needs the release's SHA256SUMS`);
     const manifest = loadManifest(w.dir);
+    if (input.mode === 'gate') {
+      // Everything the replay reads must be covered by the release's SHA256SUMS: the manifest and every day file loadDay
+      // opens. The manifest's own digests are not enough, because the manifest is only as good as its listing.
+      const listed = sumsListed(w.dir);
+      const unlisted = [join(w.dir, 'manifest.json'), ...manifest.days.flatMap((d) => dayFilesRead(d).map((f) => locate(w.dir, d.day, f.path)))]
+        .filter((p) => !listed.has(resolve(p)));
+      if (unlisted.length > 0) throw new RangeError(`${w.dir}: SHA256SUMS does not list ${unlisted.map((p) => relative(w.dir, p)).join(', ')}`);
+    }
     const leadInDays = Number((manifest.window as { lead_in_days?: number }).lead_in_days ?? 0);
     if (input.mode === 'gate' && leadInDays < GATE_LEAD_IN_DAYS) {
       throw new RangeError(`${w.dir}: assembled with ${leadInDays} lead-in days; gate evidence needs ${GATE_LEAD_IN_DAYS} (use the labelled no-lead-in mode for a determinism-only check)`);
@@ -111,11 +121,12 @@ export const runEvidence = (input: EvidenceInput): Evidence => {
     };
     const ledgerPath = join(input.workDir, `window-${k}.db`);
     if (existsSync(ledgerPath)) throw new RangeError(`${ledgerPath} exists: each evidence run writes a new ledger`);
-    const first = runBacktest({ ...base, ledgerPath });
+    const run = input.run ?? runBacktest;
+    const first = run({ ...base, ledgerPath });
     const hashes = [first.logHash];
     const elapsedMs = [first.stats.elapsedMs];
     for (let r = 1; r < input.replays; r++) {
-      const again = runBacktest(base);
+      const again = run(base);
       hashes.push(again.logHash);
       elapsedMs.push(again.stats.elapsedMs);
     }

@@ -1,11 +1,12 @@
 // BT-3: the pre-funding evidence run (gate items 1 and 2) on a synthetic schema-3 window.
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, test, vi } from 'vitest';
 import { FILL_CONFIG, RESEARCH_CONFIG, TRIAL_POLICY } from '../../core/src/config/index.ts';
 import { replayLedgerFile } from '../../core/src/ledger/replay/index.ts';
 import { type EvidenceInput, runEvidence } from '../src/evidence.ts';
+import { type RunOptions, type RunResult, runBacktest } from '../src/run.ts';
 import { writeDataset } from './dataset-writer.ts';
 import { SOL_USD, syntheticRows } from './synthetic.ts';
 
@@ -54,5 +55,42 @@ describe('pre-funding evidence (BT-3)', () => {
     const bad = runEvidence(input({ replays: 2, ledgerReplay: () => ({ ok: false, failure: 'diverged' }) }));
     expect(bad.pass).toBe(false);
     expect(bad.windows[0]!.ledgerReplay).toMatchObject({ ok: false, failure: 'diverged' });
+  });
+
+  describe('every pass term is required (stubbed runs)', () => {
+    let cached: RunResult | undefined;
+    // Without the ledger: the stubbed runs never write one (the ledger replay is stubbed too).
+    const real = ({ ledgerPath: _ledger, ...o }: RunOptions): RunResult => (cached ??= runBacktest(o));
+    const ok = () => ({ ok: true });
+    const stubbed = (change: (r: RunResult, call: number) => RunResult) => {
+      let call = 0;
+      return runEvidence(input({ replays: 3, ledgerReplay: ok, run: (o) => change(real(o), call++) }));
+    };
+    test('the unchanged stub passes, so each failure below is its term alone', () => {
+      expect(stubbed((r) => r)).toMatchObject({ pass: true, windows: [{ pass: true }] });
+    });
+    const terms: [string, (r: RunResult, call: number) => RunResult][] = [
+      ['a crash', (r) => ({ ...r, stats: { ...r.stats, crashes: 1 } })],
+      ['an illegal state', (r) => ({ ...r, stats: { ...r.stats, illegalStates: 1 } })],
+      ['an unreconciled intent', (r) => ({ ...r, stats: { ...r.stats, unreconciledIntents: 1 } })],
+      ['a mirror book that differs', (r) => ({ ...r, stats: { ...r.stats, mirrorMatches: false } })],
+      ['a replay whose hash differs', (r, call) => (call === 2 ? { ...r, logHash: 'f'.repeat(64) } : r)],
+    ];
+    for (const [name, change] of terms) {
+      test(`${name} fails the window and the evidence`, () => {
+        const e = stubbed(change);
+        expect(e.pass).toBe(false);
+        expect(e.windows[0]!.pass).toBe(false);
+      });
+    }
+  });
+
+  test('gate mode refuses a day file SHA256SUMS does not list', () => {
+    const d = make('unlisted', { leadInDays: 14, sums: true });
+    const sums = join(d, 'SHA256SUMS');
+    const kept = readFileSync(sums, 'utf8').split('\n').filter((l) => !/amm_trades/.test(l)).join('\n');
+    writeFileSync(sums, kept);
+    expect(() => runEvidence(input({ windows: [{ dir: d }] }))).toThrow(/SHA256SUMS does not list .*amm_trades/);
+    expect(runEvidence(input({ windows: [{ dir: d }], mode: 'no-lead-in', replays: 2 }))).toMatchObject({ gate: false, pass: true });
   });
 });

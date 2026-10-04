@@ -89,6 +89,8 @@ const evidence: Evidence = runEvidence({
 const record = { ...evidence, windows: evidence.windows.map((w) => ({ ...w, dir: w.dir.startsWith(work) ? w.dir.slice(work.length + 1) : w.dir })) };
 const label = mode === 'no-lead-in' ? `${range}-no-lead-in` : range;
 const out = resolve(flag('out', join(top, 'docs/evidence/bt3', label)));
+// A labelled run's folder says so, so its files are never mistaken for gate evidence.
+if (mode === 'no-lead-in' && !out.replace(/\/+$/, '').endsWith('-no-lead-in')) throw new Error(`--no-lead-in output must go to a folder ending in -no-lead-in, not ${out}`);
 mkdirSync(out, { recursive: true });
 writeFileSync(join(out, 'evidence.json'), `${JSON.stringify(JSON.parse(canonical(record)), null, 2)}\n`);
 const line = (w: (typeof record.windows)[number]): string =>
