@@ -17,6 +17,8 @@ export interface WorkerConfig {
   readonly gitSha: string;
   readonly watchdogUrl: string | null;
   readonly heartbeatMs: number;
+  /** OPS-SUMMARY: how often the daily summary is posted to the watchdog (ZEROED_SUMMARY_MS, default 30 minutes). */
+  readonly summaryMs: number;
   /**
    * WATCH-1: how often the position watch looks, and how old a held position's market may get before a snapshot is read
    * through the second path (ZEROED_WATCH_EVERY_MS, ZEROED_WATCH_STALE_MS).
@@ -103,6 +105,8 @@ export const parseConfig = (
   if (api === null || (apiAddr === addr && o.reconcileOnly !== true)) return refuse('refused: the API port is out of range or the same as the health port');
   const beat = env['ZEROED_HEARTBEAT_MS'] === undefined ? 20_000 : Number(env['ZEROED_HEARTBEAT_MS']);
   if (!Number.isSafeInteger(beat) || beat < 1_000) return refuse('refused: ZEROED_HEARTBEAT_MS must be a whole number of at least 1000');
+  const summaryMs = env['ZEROED_SUMMARY_MS'] === undefined ? 1_800_000 : Number(env['ZEROED_SUMMARY_MS']);
+  if (!Number.isSafeInteger(summaryMs) || summaryMs < 1_000 || summaryMs > 86_400_000) return refuse('refused: ZEROED_SUMMARY_MS must be a whole number from 1000 to 86400000');
   const watchEvery = env['ZEROED_WATCH_EVERY_MS'] === undefined ? 200 : Number(env['ZEROED_WATCH_EVERY_MS']);
   if (!Number.isSafeInteger(watchEvery) || watchEvery < 100) return refuse('refused: ZEROED_WATCH_EVERY_MS must be a whole number of at least 100');
   const watchStale = env['ZEROED_WATCH_STALE_MS'] === undefined ? 500 : Number(env['ZEROED_WATCH_STALE_MS']);
@@ -148,7 +152,7 @@ export const parseConfig = (
       runId: env['ZEROED_RUN_ID'] ?? null, runLabel: env['ZEROED_RUN_LABEL'] ?? null,
       gitSha: env['ZEROED_GIT_SHA'] ?? release() ?? 'unknown',
       watchdogUrl: watchdog === '' ? null : watchdog.replace(/\/$/, ''),
-      heartbeatMs: beat, watch: { everyMs: watchEvery, staleMs: watchStale, latencyMs: watchLatency }, wallet, standIns,
+      heartbeatMs: beat, summaryMs, watch: { everyMs: watchEvery, staleMs: watchStale, latencyMs: watchLatency }, wallet, standIns,
       strategy: { name, paperEdgePpm, qualifying, s0Diagnostic },
     },
   };
