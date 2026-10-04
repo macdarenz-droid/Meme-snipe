@@ -141,6 +141,20 @@ describe('M5: paper dollar results use the backtest report rule (each cash flow 
     expect(r).toMatchObject({ netUsd: '-0.08', netSol: '0.004000000', tradingUsd: '0.32', solMoveUsd: '-0.4' });
     expect(views.stats(inputs)).toMatchObject({ netUsd: '-0.08', netSol: '0.004000000', solMoveUsd: '-0.4' });
   });
+
+  it('a sell that landed but is not yet in the book moves nothing: the position still holds those tokens', () => {
+    const account = new PaperAccount(accountFile(tempState()), 20_000_000n as MicroUsd, 0, 0n);
+    account.price(100_000_000n as MicroUsd, 0);
+    const base = { positionId: 'p1', mint: 'M', reasons: ['notional 2000000'] };
+    const fees = (l: PaperLegs): PaperLegs => ({ ...l, network: FILL_CONFIG.network });
+    account.filled({ ...base, purpose: 'entry', book: book(false), atMs: 1_000 }, 100_000_000n as MicroUsd, fees(legs(false)));
+    const after = account.state.walletLamports;
+    // The paper world landed the sell (legs(true) holds its filled attempt); the book has not reconciled it.
+    const b = book(false) as unknown as { intents: Record<string, unknown> };
+    const pending = { ...b, intents: { ...b.intents, out: { intent: { id: 'out', purpose: 'exit', positionId: 'p1', mint: 'M' }, fills: [], attempts: [{ signature: 'x1' }] } } } as unknown as Book;
+    expect(account.settle(pending, fees(legs(true)), 100_000_000n as MicroUsd, 1_500)).toBe(false);
+    expect(account.state.walletLamports).toBe(after);
+  });
 });
 
 describe('M4: fees of an entry that never filled are an account cost, booked once and kept bounded', () => {
