@@ -147,7 +147,7 @@ export const LANDS = { ...FILL_CONFIG.scenarios[PAPER_SCENARIO], landPpm: { pump
 /** Boots made per state folder: a test's n-th worker is `boot-<n>` whatever the process, its pid or the other tests. */
 const boots = new Map<string, number>();
 
-export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof LANDS; stateDir?: string; timers?: TestTimers; edgePpm?: bigint; http?: HttpClient; key?: string | null; config?: Record<string, string>; fetched?: string[]; found?: boolean; facts?: FactSource[]; seed?: (r: SeedRequest) => Promise<SeedResult>; seedWaitMs?: number; entry?: { timing: 'gates' | 'random'; salt: string; s0Diagnostic?: boolean }; sources?: (ctx: SourcesContext) => FeedSource[]; exposureRpc?: SeedRpc; ops?: WorkerDeps['ops']; universe?: 'U1' | 'U2'; cutRpc?: (ms: number) => void; seedMaxMs?: number; simulate?: (leg: SimLeg) => Promise<DryRunRecord>; worldFault?: WorkerDeps['worldFault']; watchRead?: WorkerDeps['watchRead'] | null; watchHalted?: () => boolean; schedulers?: NonNullable<WorkerDeps['schedulers']>; markedHistory?: WorkerDeps['markedHistory']; strategy?: Partial<StrategyConfig>; crashPoint?: WorkerDeps['crashPoint'] } = {}): Harness => {
+export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof LANDS; stateDir?: string; timers?: TestTimers; edgePpm?: bigint; http?: HttpClient; key?: string | null; config?: Record<string, string>; fetched?: string[]; found?: boolean; facts?: FactSource[]; seed?: (r: SeedRequest) => Promise<SeedResult>; seedWaitMs?: number; entry?: { timing: 'gates' | 'random'; salt: string; s0Diagnostic?: boolean }; sources?: (ctx: SourcesContext) => FeedSource[]; exposureRpc?: SeedRpc; ops?: WorkerDeps['ops']; universe?: 'U1' | 'U2'; cutRpc?: (ms: number) => void; seedMaxMs?: number; simulate?: (leg: SimLeg) => Promise<DryRunRecord>; worldFault?: WorkerDeps['worldFault']; watchRead?: WorkerDeps['watchRead'] | null; watchHalted?: () => boolean; schedulers?: NonNullable<WorkerDeps['schedulers']>; markedHistory?: WorkerDeps['markedHistory']; strategy?: Partial<StrategyConfig>; crashPoint?: WorkerDeps['crashPoint']; restartReads?: WorkerDeps['restartReads']; fetchedWhy?: [string, string][] } = {}): Harness => {
   const stateDir = o.stateDir ?? tempState();
   const timers = o.timers ?? virtualTimers(T - 16 * 86_400_000);
   const session = startSession(TRIAL_POLICY);
@@ -177,8 +177,9 @@ export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof L
       return made;
     }),
     simulate: o.simulate ?? okSimulation(legs),
-    fetchTx: async (sig) => {
+    fetchTx: async (sig, why) => {
       o.fetched?.push(sig);
+      o.fetchedWhy?.push([sig, why]);
       return o.found ?? false;
     },
     seed: async (r) => {
@@ -189,6 +190,7 @@ export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof L
     ...(o.seedMaxMs === undefined ? {} : { seedMaxMs: o.seedMaxMs }),
     ...(o.cutRpc === undefined ? {} : { cutRpc: o.cutRpc }),
     ...(o.exposureRpc === undefined ? {} : { exposureRpc: o.exposureRpc }),
+    ...(o.restartReads === undefined ? {} : { restartReads: o.restartReads }),
     ...(o.ops === undefined ? {} : { ops: o.ops }),
     ...(o.markedHistory === undefined ? {} : { markedHistory: o.markedHistory }),
     heartbeat: { http: o.http ?? noHttp, key: o.key === undefined ? null : o.key, ownerChatId: '42' },

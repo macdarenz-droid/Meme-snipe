@@ -19,7 +19,7 @@ import { compareEvents, compareMoments, type MarketEvent, type Moment } from '..
 import { DeployerIndex, RugLabeller, type DeployerIndexState, type RugLabellerState } from '../../../core/src/gates/index.ts';
 import { SEED_VIA } from '../seed/seed.ts';
 import { parseGraduatesSeed } from '../../../core/src/facts/raw.ts';
-import type { SavedGraduates } from '../engine/strategy.ts';
+import type { SavedCandidate, SavedGraduates } from '../engine/strategy.ts';
 
 export const STATE_VERSION = 1;
 
@@ -34,6 +34,17 @@ export interface SavedState {
    * a file written before it still loads (with no series); when present it must hold up or the whole file is discarded.
    */
   readonly graduates?: SavedGraduates;
+  /**
+   * RESTART-KEEP: the candidates in their window as of the save, with the signatures of the transactions their gate
+   * facts came from (null when this process did not see one). Optional, so an older file still loads (with none).
+   * Public chain data and the strategy's own state (supervisor approval 2026-10-04 under the stored-data ruling of 2026-10-03).
+   */
+  readonly candidates?: readonly SavedCandidateState[];
+}
+
+/** A saved candidate and the transactions to read again at a restart: its create, curve completion and migration. */
+export interface SavedCandidateState extends SavedCandidate {
+  readonly signatures: { readonly create: string | null; readonly complete: string | null; readonly migration: string | null };
 }
 
 /** One open gap the restart must fill and close: pass `via`, `fromSlot` and `at` as the fill's `close`. */
@@ -58,6 +69,8 @@ export type Restored =
     readonly fills: readonly RestartFill[];
     /** The saved graduates series (null when the file has none): release it as `read:graduates-seed` before any decision. */
     readonly graduates: SavedGraduates | null;
+    /** The saved candidates (none when the file has none), for the restore fact. */
+    readonly candidates: readonly SavedCandidateState[];
   }
   | { readonly ok: false; readonly reason: string };
 
@@ -104,6 +117,30 @@ const graduatesProblem = (g: unknown, asOf: Moment, saving: boolean): void => {
   }
 };
 
+const sig = (v: unknown): boolean => v === null || (typeof v === 'string' && v !== '');
+
+/**
+ * The saved candidates must be well formed, unique per mint, and none migrated or evaluated after the saved moment.
+ * Throws the first problem (the strategy checks them again against its restore moment).
+ */
+const candidatesProblem = (c: unknown, asOf: Moment, saving: boolean): void => {
+  if (!Array.isArray(c)) throw new RangeError('the candidates are not a list');
+  const seen = new Set<string>();
+  for (const x of c) {
+    const ms = (v: unknown, nul: boolean): boolean => (nul && v === null) || (typeof v === 'number' && Number.isSafeInteger(v));
+    if (!isObj(x) || typeof x['mint'] !== 'string' || x['mint'] === '' || !sig(x['pool']) || !ms(x['migratedAtMs'], false) || !ms(x['lastEvalMs'], true)
+      || !(x['migrationSlot'] === null || (typeof x['migrationSlot'] === 'bigint' && x['migrationSlot'] >= 0n)) || !Number.isSafeInteger(x['tries']) || (x['tries'] as number) < 0
+      || !(x['lastReason'] === null || typeof x['lastReason'] === 'string') || !Array.isArray(x['bars'])
+      || !x['bars'].every((b) => isObj(b) && ms(b['startMs'], false) && ['high', 'low', 'close'].every((k) => typeof b[k] === 'bigint' && (b[k] as bigint) > 0n)) || !isObj(x['signatures']) || !['create', 'complete', 'migration'].every((k) => sig((x['signatures'] as Obj)[k]))) {
+      throw new RangeError('a saved candidate is malformed');
+    }
+    const at = saving ? 'snapshot' : 'saved';
+    if ((x['migratedAtMs'] as number) > asOf.receivedAt || ((x['lastEvalMs'] as number | null) ?? Number.NEGATIVE_INFINITY) > asOf.receivedAt || (x['bars'] as { startMs: number }[]).some((b) => b.startMs > asOf.receivedAt)) throw new RangeError(`candidate ${x['mint']} is dated after the ${at} moment`);
+    if (seen.has(x['mint'])) throw new RangeError(`candidate ${x['mint']} appears twice`);
+    seen.add(x['mint']);
+  }
+};
+
 /** After `asOf` in the event order, or received later than it: either way not something the save could have known. */
 const after = (m: Moment, asOf: Moment): boolean => compareMoments(m, asOf) > 0 || m.receivedAt > asOf.receivedAt;
 
@@ -113,6 +150,7 @@ export const saveState = (path: string, s: SavedState): void => {
   }
   if (compareMoments(s.index.asOf, s.asOf) !== 0) throw new RangeError('the index snapshot was taken at another moment');
   if (s.graduates !== undefined) graduatesProblem(s.graduates, s.asOf, true);
+  if (s.candidates !== undefined) candidatesProblem(s.candidates, s.asOf, true);
   const payload = JSON.stringify(s, replacer);
   writeAtomic(path, JSON.stringify({ version: STATE_VERSION, sha256: createHash('sha256').update(payload).digest('hex'), payload }));
 };
@@ -179,6 +217,7 @@ export const loadState = (path: string, rugs: RugConfig, continuing: (stream: st
     }
     if (!isObj(s.index) || !isMoment(s.index.asOf) || compareMoments(s.index.asOf, asOf) !== 0) throw new RangeError('the index was saved at another moment');
     if (s.graduates !== undefined) graduatesProblem(s.graduates, asOf, false);
+    if (s.candidates !== undefined) candidatesProblem(s.candidates, asOf, false);
     const index = DeployerIndex.restore(s.index);
     const labeller = RugLabeller.restore(rugs, s.labeller, asOf);
     const coverage = [...s.coverage].sort(compareEvents);
@@ -195,7 +234,7 @@ export const loadState = (path: string, rugs: RugConfig, continuing: (stream: st
       if (continuing(w.stream, w.via)) fills.push({ stream: w.stream, via: w.via, fromSlot: asOf.slot, at: asOf, synthesized: true });
     }
     fills.sort((a, b) => (a.stream < b.stream ? -1 : a.stream > b.stream ? 1 : a.via < b.via ? -1 : a.via > b.via ? 1 : 0));
-    return { ok: true, asOf, index, labeller, coverage: [...coverage, ...restart].sort(compareEvents), fills, graduates: s.graduates ?? null };
+    return { ok: true, asOf, index, labeller, coverage: [...coverage, ...restart].sort(compareEvents), fills, graduates: s.graduates ?? null, candidates: s.candidates ?? [] };
   } catch (e) {
     return { ok: false, reason: `saved state rejected: ${e instanceof Error ? e.message : String(e)}` };
   }

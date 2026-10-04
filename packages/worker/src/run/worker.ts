@@ -20,7 +20,7 @@ import type { FillNetwork, FillScenario } from '../../../core/src/fills/index.ts
 import type { MicroUsd } from '../../../core/src/units/index.ts';
 import { EXIT, LOOKUP_BOUNDS_MS, STATE_FILES, type FeedHealth, type Health, type JournalKind, type QuotaStatus, type RecoveredFields } from '../../../runner/src/contract.ts';
 import type { DryRunRecord } from '../dryrun/index.ts';
-import { NO_UNIVERSE, type SavedGraduates, resolveUniverse, sellOnlyReason } from '../engine/strategy.ts';
+import { CANDIDATE_RESTORED, NO_UNIVERSE, type SavedGraduates, resolveUniverse, sellOnlyReason } from '../engine/strategy.ts';
 import { RAW } from '../../../core/src/facts/raw.ts';
 import { GRADUATES_SEED_KEY } from '../../../core/src/facts/producer.ts';
 import { ACCOUNT_KEY, HALT_KEY, LiveStrategy, POOL_PREFIX, RESTORE_KEY, SEED_KEY, SEEDING, SHORTLIST, SNAPSHOT_PREFIX, SOL_PRICE_KEY, type SnapshotFact, type StrategyConfig, type StrategyDeps, TRIP_PREFIX, parseSnapshotFact, snapshotKey, snapshotWins } from '../engine/strategy.ts';
@@ -34,7 +34,11 @@ import { Desk, FILL_RATE_UNKNOWN, journaledFillKeys, lineRate, lineReasons, open
 import { DeployerStore, liveWatchToClose, type SavedDeployers } from './deployer-store.ts';
 import { CoverageJournal } from './coverage-journal.ts';
 import { rebuildMove } from './exposure.ts';
-import type { SeedRpc } from '../seed/rpc.ts';
+import { backfillAddress, SIGNATURE_PAGE, type SeedRpc } from '../seed/rpc.ts';
+import { transactionEvents } from '../../../core/src/chain/index.ts';
+import { P2, P3 } from '../scheduler/scheduler.ts';
+import { callCost } from '../providers/solana-http.ts';
+import { PUMP_MIGRATION_AUTHORITY } from './sources.ts';
 import { DelayProbe, type DelayProbeOptions } from './delay-probe.ts';
 import { type AlertSeen, type ApiInputs, type DecisionRow, checkOf, collectAlerts, melbourneDate, stageOf, startApiServer } from './api.ts';
 import type { FactContext, FactSource } from './facts.ts';
@@ -49,10 +53,15 @@ import { entryPrice, openPositionsHealth } from './open-positions.ts';
 import { riskSnapshot } from '../../../core/src/risk/index.ts';
 import { markSettings, riskAccount } from '../engine/marks.ts';
 import type { DeployerIndexState, RugLabellerState } from '../../../core/src/gates/index.ts';
-import { loadState, saveState } from '../persist/index.ts';
+import { loadState, saveState, type SavedCandidateState } from '../persist/index.ts';
 
 /** PERSIST-1's saved deployer state in the worker's state dir, and how often it is written. */
 export const PERSIST_FILE = 'deployer-state.json';
+/** RESTART-KEEP: signature pages a create lookup may read (1,000 each), and the downtime migrations' credit cap. */
+export const CREATE_WALK_PAGES = 10;
+export const DOWNTIME_CREDIT_CAP = 3_000;
+/** RESTART-KEEP: transactions read before a migration to find its curve's completion. */
+const COMPLETION_READS = 5;
 export const PERSIST_EVERY_MS = 5 * 60_000;
 import { type Control, NO_CONTROL, StateFile, controlFile, exitsFile, seedsFile, exposedFile, NO_EXPOSED } from './state.ts';
 import { type PoolFact, S0_DIAGNOSTIC_PARTS, parsePool } from '../../../core/src/gates/index.ts';
@@ -116,7 +125,13 @@ export interface WorkerDeps {
    * Fetches a transaction at confirmed and puts it on the feed; resolves true when it was found. Used for a shortlisted
    * mint's create (item 9: live H9, H12–H14 need the confirmed create) and for a cut trade log on a rug-covered stream.
    */
-  readonly fetchTx: (signature: string, why: 'create' | 'cut-log') => Promise<boolean>;
+  readonly fetchTx: (signature: string, why: 'create' | 'cut-log' | 'restore') => Promise<boolean>;
+  /**
+   * RESTART-KEEP: signature reads on SEED-1's RPC, charged to the fill budget: the migrations of a restart's downtime,
+   * and the create of a candidate this process did not see (its mint's oldest transaction). Without it neither is read:
+   * the miss is logged and the gates that need the create reject.
+   */
+  readonly restartReads?: { readonly rpc: SeedRpc; readonly budget: { remaining(nowMs: number): number; spend(credits: number, nowMs: number): void; refund(credits: number, nowMs: number): void } };
   /**
    * SEED-1: the deployer index's seed (first start: days and RPC up to the live creates watch's first slot) or the
    * downtime fill (restart from saved state), built by `buildSeed`. `untilSlot` is null when the live watch did not
@@ -258,6 +273,18 @@ export class Worker {
   /** Positions open at the last step (WATCH-1 reads once when one opens). */
   #opened = new Set<string>();
   #createSig = new Map<string, string>();
+  /** RESTART-KEEP: each mint's curve completion and migration transactions, as seen (logs or fetched). */
+  readonly #completeSig = new Map<string, string>();
+  readonly #migrationSig = new Map<string, string>();
+  /** RESTART-KEEP: the saved state's slot (the downtime's migrations are looked up after it); null on a fresh start. */
+  #downtimeFrom: bigint | null = null;
+  /** RESTART-KEEP: restored candidates whose transactions wait for the sources to start. */
+  readonly #restoredMints: string[] = [];
+  /** RESTART-KEEP: budget-charged reads asked before the seed was placed, run once it is. */
+  readonly #afterSeed: (() => Promise<void>)[] = [];
+  #seeded = false;
+  /** RESTART-KEEP: mints whose create is being looked up (one walk each per process). */
+  readonly #walked = new Set<string>();
   /** Watches that carry rug coverage (`coverage:rugs:start` vias): a cut log on one is a gap until its transaction is read. */
   #rugVias = new Set<string>();
   #intentAt = new Map<string, number>();
@@ -410,8 +437,19 @@ export class Worker {
     // downtime fill starts at the saved moment, closing the restart gap on the live creates watch.
     const restored = loadState(join(c.stateDir, PERSIST_FILE), d.rugs);
     let graduates: SavedGraduates | null = null;
+    let candidates: readonly SavedCandidateState[] = [];
     if (restored.ok) {
       graduates = restored.graduates;
+      // RESTART-KEEP: the saved candidates go back to the strategy with the restore fact; their transactions are read
+      // again once the sources are up, and the migrations of the downtime are looked up from the saved slot.
+      candidates = restored.candidates;
+      this.#downtimeFrom = restored.asOf.slot;
+      for (const c of candidates) {
+        for (const [k, map] of [['create', this.#createSig], ['complete', this.#completeSig], ['migration', this.#migrationSig]] as const) {
+          const sig = c.signatures[k];
+          if (sig !== null && !map.has(c.mint)) map.set(c.mint, sig);
+        }
+      }
       this.#restored = { asOf: restored.asOf, index: restored.index.snapshot(restored.asOf), labeller: restored.labeller.snapshot() };
       this.#saved = { creates: [], rugs: [], coverage: restored.coverage, last: { slot: restored.asOf.slot, ms: restored.asOf.receivedAt } };
       d.log(`Saved state restored as of slot ${restored.asOf.slot}; ${restored.coverage.length} coverage facts, ${restored.fills.length} gaps to fill.`);
@@ -459,7 +497,7 @@ export class Worker {
     // The saved exit plans come first, alone in their millisecond: the strategy manages positions on any market event,
     // and on the halt fact (which sorted first by id at a tie) it built fresh plans and trackers from the fills and
     // decided exits with them, before the saved ones arrived. The halt and the restart follow 1 ms later.
-    this.#fact(RESTORE_KEY, { exits: this.#exitsFile.read({}), openedAt, bookedWhen, seeds: this.#seedsFile.read({}) }, startAt);
+    this.#fact(RESTORE_KEY, { exits: this.#exitsFile.read({}), openedAt, bookedWhen, seeds: this.#seedsFile.read({}), candidates }, startAt);
     // PERSIST-2: the saved graduates series goes to the producer as a raw read (recorded, so a replay rebuilds it), so
     // the regime's survival check keeps its 15 days across a restart.
     if (graduates !== null) this.#feed.ingest('worker', { type: 'offchain', key: RAW.graduatesSeed, value: { source: 'persist', ...graduates } }, { receivedAt: startAt });
@@ -588,6 +626,148 @@ export class Worker {
       this.#createSig.set(m.key.slice('logs:pump:CreateEvent:'.length), m.value['signature']);
       if (this.#createSig.size > 200_000) this.#createSig.delete(this.#createSig.keys().next().value!);
     }
+    this.#noteSignature(m);
+  }
+
+  #whenSeeded(f: () => Promise<void>): void {
+    if (this.#seeded) void f();
+    else this.#afterSeed.push(f);
+  }
+
+  /** RESTART-KEEP: each restored candidate's migration, curve completion and create, read again at confirmed. */
+  #readRestored(): void {
+    for (const mint of this.#restoredMints.splice(0)) {
+      const sigs = [this.#migrationSig.get(mint), this.#completeSig.get(mint)];
+      for (const sig of sigs) if (sig !== undefined) void this.#d.fetchTx(sig, 'restore');
+      const create = this.#createSig.get(mint);
+      if (create !== undefined) void this.#d.fetchTx(create, 'create');
+      else if (this.#d.restartReads !== undefined) void this.#findCreate(mint);
+      else this.#d.log(`Restored candidate ${mint}: its create was not seen; H9 and H12-H14 wait for it.`);
+      if (sigs[0] === undefined) this.#d.log(`Restored candidate ${mint}: its migration was not seen; H9 waits for it.`);
+    }
+  }
+
+  /**
+   * RESTART-KEEP: a candidate's create when this process did not see it (created before this start): the oldest
+   * transaction of its mint, read back at most CREATE_WALK_PAGES signature pages, charged to the fill budget, then
+   * fetched at confirmed (the producer takes it only if it is the mint's CreateEvent). A miss is logged; the gates
+   * that need the create (H9, H12-H14) then reject.
+   */
+  async #findCreate(mint: string): Promise<void> {
+    const rr = this.#d.restartReads;
+    if (rr === undefined || this.#walked.has(mint)) return;
+    this.#walked.add(mint);
+    const cost = callCost('helius', 'getSignaturesForAddress');
+    const reserve = CREATE_WALK_PAGES * cost;
+    const now = this.#d.timers.now();
+    if (rr.budget.remaining(now) < reserve) {
+      this.#d.log(`Create of ${mint} not looked up: the fill budget is spent; H9 and H12-H14 reject it.`);
+      return;
+    }
+    rr.budget.spend(reserve, now);
+    let used = 0;
+    let oldest: string | null = null;
+    let before: string | undefined;
+    let why: string | null = `history longer than ${CREATE_WALK_PAGES} signature pages`;
+    try {
+      for (let page = 0; page < CREATE_WALK_PAGES; page++) {
+        used += cost;
+        const sigs = await rr.rpc.getSignaturesForAddress(mint, before === undefined ? { limit: SIGNATURE_PAGE } : { before, limit: SIGNATURE_PAGE }, P3);
+        for (const x of sigs) if (x.err === null) oldest = x.signature;
+        if (sigs.length < SIGNATURE_PAGE) {
+          why = oldest === null ? 'no successful transaction' : null;
+          break;
+        }
+        before = sigs.at(-1)!.signature;
+      }
+    } catch (e) {
+      why = `signature read failed: ${e instanceof Error ? e.message : 'error'}`;
+    } finally {
+      rr.budget.refund(reserve - used, this.#d.timers.now());
+    }
+    if (why !== null || oldest === null) {
+      this.#d.log(`Create of ${mint} not found (${why ?? 'none'}); H9 and H12-H14 reject it.`);
+      return;
+    }
+    if (!this.#createSig.has(mint)) this.#createSig.set(mint, oldest);
+    this.#d.log(`Create of ${mint} looked up: ${oldest} (${used} credits).`);
+    void this.#d.fetchTx(oldest, 'create');
+  }
+
+  /**
+   * RESTART-KEEP: the migrations of the downtime, from the migration authority's signatures after the saved slot up
+   * to the head seen now (the live watch, started before, covers the rest; the feed drops what both read). Each
+   * transaction goes on the feed at confirmed, as the live watch's fetch would put it, so the producer and the strategy
+   * find those candidates as they would live. A curve completion in its own transaction is read from the curve.
+   * Charged to the fill budget; a partial read is logged and the coins it missed are not candidates.
+   */
+  async #downtimeMigrations(): Promise<void> {
+    const rr = this.#d.restartReads;
+    const from = this.#downtimeFrom;
+    if (rr === undefined || from === null) return;
+    for (let i = 0; this.#lastSlot === null && i < 100 && !this.#stopping; i++) await new Promise<void>((r) => this.#d.timers.setTimeout(r, 200));
+    const until = this.#lastSlot;
+    if (until === null || until <= from) {
+      this.#d.log(`Downtime migrations not read: ${until === null ? 'no slot seen' : 'no downtime'}.`);
+      return;
+    }
+    const now = this.#d.timers.now();
+    const cap = Math.min(DOWNTIME_CREDIT_CAP, rr.budget.remaining(now));
+    rr.budget.spend(cap, now);
+    let used = 0;
+    try {
+      const res = await backfillAddress({ rpc: rr.rpc, timers: this.#d.timers, afterSlot: from, untilSlot: until, creditCap: cap, provider: 'helius', address: PUMP_MIGRATION_AUTHORITY, priority: P2, accept: () => [] });
+      used = res.creditsUsed;
+      let migrations = 0;
+      for (const record of res.records) {
+        this.#feed.ingest('helius', { type: 'tx', record }, { receivedAt: this.#d.timers.now(), backfilled: true, lookup: true });
+        const evs = transactionEvents(record);
+        const m = evs.find((e) => e.name === 'CompletePumpAmmMigrationEvent');
+        if (m === undefined) continue;
+        migrations++;
+        if (!evs.some((e) => e.name === 'CompleteEvent') && 'bondingCurve' in m.data) used += await this.#readCompletion(rr, String(m.data.bondingCurve), record.signature, cap - used);
+      }
+      this.#d.log(`Downtime migrations: ${migrations} from slot ${from + 1n} to ${until}, ${used} credits, ${res.stoppedBy}${res.gaps.length > 0 ? `, ${res.gaps.length} unread` : ''}.`);
+    } finally {
+      rr.budget.refund(Math.max(0, cap - used), this.#d.timers.now());
+    }
+  }
+
+  /** The curve's completing transaction just before its migration (after it nothing trades on the curve): 1 page. */
+  async #readCompletion(rr: NonNullable<WorkerDeps['restartReads']>, curve: string, migration: string, credits: number): Promise<number> {
+    const cost = callCost('helius', 'getSignaturesForAddress');
+    if (credits < cost + COMPLETION_READS * callCost('helius', 'getTransaction')) return 0;
+    let used = cost;
+    try {
+      const sigs = await rr.rpc.getSignaturesForAddress(curve, { before: migration, limit: COMPLETION_READS }, P2);
+      for (const x of sigs) {
+        if (x.err !== null) continue;
+        used += callCost('helius', 'getTransaction');
+        const record = await rr.rpc.getTransaction(x.signature, P2);
+        if (record === null) continue;
+        this.#feed.ingest('helius', { type: 'tx', record }, { receivedAt: this.#d.timers.now(), backfilled: true, lookup: true });
+        if (transactionEvents(record).some((e) => e.name === 'CompleteEvent')) break;
+      }
+    } catch (e) {
+      this.#d.log(`Curve completion of ${curve} not read: ${e instanceof Error ? e.message : 'error'}.`);
+    }
+    return used;
+  }
+
+  /**
+   * RESTART-KEEP: the transactions a candidate's gate facts come from (its curve completion and its migration, from a
+   * log or a fetched transaction; a fetched create too), so the saved state can name them for a restart to read again.
+   */
+  #noteSignature(m: MarketEvent): void {
+    const tx = /^ev:([^:]+):/.exec(m.id);
+    const at = /^(?:logs:)?pump:(CreateEvent|CompleteEvent|CompletePumpAmmMigrationEvent):(.+)$/.exec(m.key);
+    if (at === null) return;
+    const sig = tx !== null && !m.key.startsWith('logs:') ? tx[1]! : isObj(m.value) && typeof m.value['signature'] === 'string' ? m.value['signature'] : null;
+    if (sig === null) return;
+    const map = at[1] === 'CreateEvent' ? this.#createSig : at[1] === 'CompleteEvent' ? this.#completeSig : this.#migrationSig;
+    if (map === this.#createSig && m.key.startsWith('logs:')) return;
+    if (!map.has(at[2]!)) map.set(at[2]!, sig);
+    if (map.size > 200_000) map.delete(map.keys().next().value!);
   }
 
   /** WORKER-1e: the paper attempts' execution statistics over the last 24 h (S0's diagnostic exec-health). */
@@ -741,7 +921,9 @@ export class Worker {
       return false;
     }
     try {
-      saveState(join(this.#d.config.stateDir, PERSIST_FILE), state);
+      // RESTART-KEEP: each candidate with the transactions a restart reads again for its gate facts.
+      const candidates = state.candidates.map((c) => ({ ...c, signatures: { create: this.#createSig.get(c.mint) ?? null, complete: this.#completeSig.get(c.mint) ?? null, migration: this.#migrationSig.get(c.mint) ?? null } }));
+      saveState(join(this.#d.config.stateDir, PERSIST_FILE), { ...state, candidates });
       return true;
     } catch (e) {
       this.#d.log(`Saved state not written: ${e instanceof Error ? e.message : 'error'}.`);
@@ -814,8 +996,10 @@ export class Worker {
       const mint = r.reasons[2];
       const sig = mint === undefined ? undefined : this.#createSig.get(mint);
       if (sig !== undefined) void this.#d.fetchTx(sig, 'create');
+      else if (mint !== undefined && this.#d.restartReads !== undefined) this.#whenSeeded(() => this.#findCreate(mint));
       else this.#d.log(`Shortlisted ${mint ?? '?'}: its create was not seen by this process; H9 and H12-H14 wait for it.`);
     }
+    if (r.reasons[0] === CANDIDATE_RESTORED && r.reasons[2] !== undefined) this.#restoredMints.push(r.reasons[2]);
     const trips = r.reasons.filter((x) => x.startsWith(TRIP_PREFIX)).map((x) => x.slice(TRIP_PREFIX.length));
     if (trips.length > 0) {
       const at = r.at.receivedAt;
@@ -1034,6 +1218,11 @@ export class Worker {
       this.#seeding = false;
       this.#checkHalt(d.timers.now());
     }
+    // RESTART-KEEP: after the seed (whose fill reserves the shared budget while it runs), in the background.
+    this.#seeded = true;
+    for (const f of this.#afterSeed.splice(0)) void f();
+    this.#readRestored();
+    void this.#downtimeMigrations().catch((e: unknown) => d.log(`Downtime migrations not read: ${e instanceof Error ? e.message : 'error'}.`));
     if (this.#stopping) return { ok: false, code: EXIT.clean, message: 'stopped during the start' };
     d.log(`Worker up: boot ${this.#boot}, release ${d.config.gitSha.slice(0, 12)}, recorder ${d.config.recorder ? 'on' : 'off'}, simulation ${d.config.simulate ? 'on' : 'off'}, ${this.#sources.length} feeds.`);
     return { ok: true };

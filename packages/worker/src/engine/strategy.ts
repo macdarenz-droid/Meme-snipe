@@ -301,6 +301,8 @@ interface Market {
 interface Candidate {
   readonly mint: string;
   readonly migratedAtMs: number;
+  /** The migration's slot (its fact's, or the event's transaction slot); null when not known. */
+  readonly migrationSlot: bigint | null;
   lastEvalMs: number | null;
   lastReason: string | null;
   tries: number;
@@ -313,6 +315,36 @@ interface Candidate {
   /** The mint's creator, from its released create (null until it is seen): RUG-1c checks this deployer. */
   creator?: string | null;
 }
+
+/**
+ * RESTART-KEEP: a candidate as saved with the state (public chain data and the strategy's own evaluation state), so a
+ * restart inside its 60–240 min window keeps it. Gates and spend are judged again; the creator comes back with its create.
+ */
+export interface SavedCandidate {
+  readonly mint: string;
+  readonly pool: string | null;
+  readonly migratedAtMs: number;
+  readonly migrationSlot: bigint | null;
+  readonly tries: number;
+  readonly lastEvalMs: number | null;
+  readonly lastReason: string | null;
+  /** Its price bars (the entry's ATR stop needs a contiguous run of them), none started after the save. */
+  readonly bars: readonly PriceBar[];
+}
+
+/** Decision naming a candidate restored from the saved state: the worker reads its migration and create again. */
+export const CANDIDATE_RESTORED = 'candidate restored';
+
+/** A saved candidate as the strategy can take it; null when malformed. */
+const savedCandidate = (x: unknown): SavedCandidate | null => {
+  if (!isObj(x)) return null;
+  const ms = (v: unknown, nul: boolean): boolean => (nul && v === null) || (typeof v === 'number' && Number.isSafeInteger(v));
+  const ok = typeof x['mint'] === 'string' && x['mint'] !== '' && (x['pool'] === null || typeof x['pool'] === 'string') && ms(x['migratedAtMs'], false)
+    && (x['migrationSlot'] === null || (typeof x['migrationSlot'] === 'bigint' && x['migrationSlot'] >= 0n))
+    && typeof x['tries'] === 'number' && Number.isSafeInteger(x['tries']) && x['tries'] >= 0 && ms(x['lastEvalMs'], true) && (x['lastReason'] === null || typeof x['lastReason'] === 'string')
+    && Array.isArray(x['bars']) && x['bars'].every((b) => isObj(b) && ms(b['startMs'], false) && ['high', 'low', 'close'].every((k) => typeof b[k] === 'bigint' && (b[k] as bigint) > 0n));
+  return ok ? { mint: x['mint'] as string, pool: x['pool'] as string | null, migratedAtMs: x['migratedAtMs'] as number, migrationSlot: x['migrationSlot'] as bigint | null, tries: x['tries'] as number, lastEvalMs: x['lastEvalMs'] as number | null, lastReason: x['lastReason'] as string | null, bars: x['bars'] as PriceBar[] } : null;
+};
 
 /** What an entry needs once it fills: fixed at the decision, completed with the fill. */
 /** An entry decision's own plan inputs, saved before its intent is booked (EXIT-1h) so a restart rebuilds its plan. */
@@ -607,13 +639,16 @@ export class LiveStrategy implements Strategy {
    * PERSIST-1: what a save holds, as of the latest released moment: the index (entries older than `retainFromMs`
    * left out), the labeller's tables and every coverage fact. Null before anything was released or the seed applied.
    */
-  persistable(retainFromMs: number): { readonly asOf: Moment; readonly index: DeployerIndexState; readonly labeller: RugLabellerState; readonly coverage: readonly MarketEvent[]; readonly graduates: SavedGraduates } | null {
+  persistable(retainFromMs: number): { readonly asOf: Moment; readonly index: DeployerIndexState; readonly labeller: RugLabellerState; readonly coverage: readonly MarketEvent[]; readonly graduates: SavedGraduates; readonly candidates: readonly SavedCandidate[] } | null {
     const asOf = this.#lastMoment;
     if (asOf === null || !this.#seedApplied || this.#waiting !== null) return null;
     // PERSIST-2: the newest graduates fact released so far, with only the entries whose survival mark was reached by
     // the save moment (the fact itself is never newer than the last released event).
     const items = (this.#graduatesFact?.items ?? []).filter((g) => g.migratedAtMs + this.#d.session.policy.regime.survivalAfterMs <= asOf.receivedAt);
-    return { asOf, index: this.#deployers.snapshot(asOf, retainFromMs), labeller: this.#labeller.snapshot(), coverage: [...this.#coverageFacts], graduates: { asOfMs: asOf.receivedAt, items } };
+    // RESTART-KEEP: every candidate in its window, none migrated after the save moment.
+    const candidates = [...this.#cands.values()].filter((c) => c.migratedAtMs <= asOf.receivedAt).sort((a, b) => (a.mint < b.mint ? -1 : a.mint > b.mint ? 1 : 0))
+      .map((c): SavedCandidate => ({ mint: c.mint, pool: this.#poolOfMint.get(c.mint) ?? null, migratedAtMs: c.migratedAtMs, migrationSlot: c.migrationSlot, tries: c.tries, lastEvalMs: c.lastEvalMs, lastReason: c.lastReason, bars: (this.#bars.get(c.mint) ?? []).filter((b) => b.startMs <= asOf.receivedAt) }));
+    return { asOf, index: this.#deployers.snapshot(asOf, retainFromMs), labeller: this.#labeller.snapshot(), coverage: [...this.#coverageFacts], graduates: { asOfMs: asOf.receivedAt, items }, candidates };
   }
 
   /** PERSIST-2: the newest graduates fact released (the regime's survival series), for the saved state. */
@@ -636,7 +671,7 @@ export class LiveStrategy implements Strategy {
     if (COVERAGE_FACT.test(e.key)) this.#coverageFacts.push(e);
     if (e.key === GRADUATES_KEY) this.#graduatesFact = parseGraduates(unwrap(e.value)) ?? this.#graduatesFact;
     this.#observe(e);
-    if (e.key === RESTORE_KEY) this.#restore(unwrap(e.value), out);
+    if (e.key === RESTORE_KEY) this.#restore(unwrap(e.value), out, e.moment.receivedAt);
     if (e.key === SEED_KEY) this.#seed(e.value, out);
     if (e.key === 'chain:slot') {
       const s = unwrap(e.value);
@@ -698,8 +733,30 @@ export class LiveStrategy implements Strategy {
     };
   }
 
-  #restore(v: unknown, out: Decision[]): void {
+  /**
+   * RESTART-KEEP: the saved candidates come back as of the restore. A list that is malformed, or holds a candidate
+   * migrated or evaluated after the restore moment (a host clock behind the save), is refused whole, never in part.
+   */
+  #restoreCandidates(v: unknown, atMs: number, out: Decision[]): void {
+    const list = Array.isArray(v) ? v.map(savedCandidate) : null;
+    const why = list === null || list.some((c) => c === null) ? 'malformed saved candidates'
+      : list.some((c) => c!.migratedAtMs > atMs || (c!.lastEvalMs ?? Number.NEGATIVE_INFINITY) > atMs || c!.bars.some((b) => b.startMs > atMs)) ? 'a saved candidate is dated after the restore' : null;
+    if (why !== null) {
+      out.push({ action: null, reasons: ['candidates refused', why] });
+      return;
+    }
+    for (const c of list as SavedCandidate[]) {
+      if (this.#cands.has(c.mint)) continue;
+      this.#cands.set(c.mint, { mint: c.mint, migratedAtMs: c.migratedAtMs, migrationSlot: c.migrationSlot, lastEvalMs: c.lastEvalMs, lastReason: c.lastReason, lastWaived: '', tries: c.tries, gates: null, spend: null });
+      if (c.pool !== null) this.#notePool(c.mint, c.pool);
+      if (c.bars.length > 0 && !this.#bars.has(c.mint)) this.#bars.set(c.mint, [...c.bars]);
+      out.push({ action: null, reasons: [CANDIDATE_RESTORED, this.#d.config.universe, c.mint, `migrated at ${c.migratedAtMs}`, `tries ${c.tries}`] });
+    }
+  }
+
+  #restore(v: unknown, out: Decision[], atMs: number): void {
     this.#restoreSeen = true;
+    if (isObj(v) && v['candidates'] !== undefined) this.#restoreCandidates(v['candidates'], atMs, out);
     if (isObj(v) && isObj(v['openedAt'])) {
       for (const [pid, at] of Object.entries(v['openedAt'])) if (typeof at === 'number' && Number.isFinite(at)) this.#bookedOpenAt.set(pid, at);
     }
@@ -816,7 +873,7 @@ export class LiveStrategy implements Strategy {
       const mint = e.key.slice(MIGRATION_PREFIX.length);
       if (f !== null) this.#notePool(mint, f.pool);
       if (f !== null && !this.#cands.has(mint)) {
-        this.#cands.set(mint, { mint, migratedAtMs: f.migratedAtMs, lastEvalMs: null, lastReason: null, lastWaived: '', tries: 0, gates: null, spend: null });
+        this.#cands.set(mint, { mint, migratedAtMs: f.migratedAtMs, migrationSlot: f.obs.slot, lastEvalMs: null, lastReason: null, lastWaived: '', tries: 0, gates: null, spend: null });
         out.push({ action: null, reasons: [SHORTLIST, this.#d.config.universe, mint, `migrated at ${f.migratedAtMs}`] });
       }
       return;
@@ -832,7 +889,7 @@ export class LiveStrategy implements Strategy {
     if (mint === null || this.#cands.has(mint)) return;
     // Block time of the migration when the event states it, else when it was received.
     const migratedAtMs = ts ?? ctx.now.receivedAt;
-    this.#cands.set(mint, { mint, migratedAtMs, lastEvalMs: null, lastReason: null, lastWaived: '', tries: 0, gates: null, spend: null });
+    this.#cands.set(mint, { mint, migratedAtMs, migrationSlot: typeof v['txSlot'] === 'bigint' ? v['txSlot'] : null, lastEvalMs: null, lastReason: null, lastWaived: '', tries: 0, gates: null, spend: null });
     out.push({ action: null, reasons: [SHORTLIST, this.#d.config.universe, mint, `migrated at ${migratedAtMs}`] });
   }
 
@@ -1523,7 +1580,8 @@ export class LiveStrategy implements Strategy {
     if (!stop.ok) return this.#fail(`stop: ${stop.reason} ${stop.detail}`, [{ gate: 'stop', code: stop.reason, detail: stop.detail }]);
     const stopBps = Number(mulDiv(distance, BPS, entryPx, 'ceil'));
     // Numbered from the book (restored at start), so a restart never reuses an intent id or key.
-    cand.tries = 1 + Object.values(ctx.book.intents).filter((i) => i.intent.purpose === 'entry' && i.intent.mint === cand.mint).length;
+    // Past every entry intent the book holds for the mint and every try saved before a restart (RESTART-KEEP): ids never repeat.
+    cand.tries = 1 + Math.max(cand.tries, Object.values(ctx.book.intents).filter((i) => i.intent.purpose === 'entry' && i.intent.mint === cand.mint).length);
     const id = intentId(`en:${cand.mint}:${cand.tries}`);
     const rid = reservationId(`r:${cand.mint}:${cand.tries}`);
     const reserveLiq = effectiveQuoteReserve(m.pool);

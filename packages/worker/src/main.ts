@@ -83,6 +83,8 @@ const fatal = (e: unknown): never => {
 process.on('uncaughtException', fatal);
 process.on('unhandledRejection', fatal);
 
+// One budget object for every fill-budget reader in this process, so their spends never overwrite each other's file.
+const fillBudget = DailyBudget.load(join(config.stateDir, FILL_BUDGET_FILE), FILL_CREDITS_PER_DAY, timers.now());
 try {
   worker = new Worker({
     config, session, rugs: RUG_CONFIG, strategy: strategyConfig(policy, FILL_CONFIG, RESEARCH_CONFIG, config.strategy.paperEdgePpm ?? 0n, config.strategy.name === 'S0' ? { timing: 'random', salt: config.runId ?? 'S0', s0Diagnostic: config.strategy.s0Diagnostic } : { timing: 'gates', salt: '' }),
@@ -90,7 +92,9 @@ try {
     sources: (ctx) => providers.feeds(ctx),
     simulate,
     fetchTx: (sig) => providers.fetchTx(sig),
-    seed: (r) => runSeed(r, { rpc: providers.seedRpc(), timers, budget: DailyBudget.load(join(config.stateDir, FILL_BUDGET_FILE), FILL_CREDITS_PER_DAY, timers.now()) }),
+    seed: (r) => runSeed(r, { rpc: providers.seedRpc(), timers, budget: fillBudget }),
+    // RESTART-KEEP: the downtime's migrations and unseen creates, on the same RPC and the same daily fill budget.
+    restartReads: { rpc: providers.seedRpc(), budget: fillBudget },
     seedWaitMs: 30_000,
     seedMaxMs: 90_000,
     ops: () => providers.ops(),
