@@ -78,13 +78,19 @@ export function StatusList({ session, state, conn }: { session: SessionView; sta
   );
 }
 
-export function PauseButton({ compact = false }: { compact?: boolean }) {
+/**
+ * Pausing is the watchdog's signed request, sent with Telegram's /pause (ARCHITECTURE §12); the app sends no
+ * commands, so the button stays disabled and names where pausing happens (APP-WIRE). It reads "Paused" while the
+ * worker reports the owner's pause, never "Worker not connected" for a worker that answers.
+ */
+export function PauseButton({ compact = false, paused = false }: { compact?: boolean; paused?: boolean }) {
   const noteId = useId();
+  const label = paused ? 'Paused' : compact ? 'Pause' : 'Pause new entries';
   return (
-    <button type="button" className={compact ? 'button' : 'button button-block'} disabled aria-label={compact ? 'Pause new entries' : undefined} aria-describedby={noteId}>
-      {compact ? 'Pause' : 'Pause new entries'}
+    <button type="button" className={compact ? 'button' : 'button button-block'} disabled aria-label={compact && !paused ? 'Pause new entries' : undefined} aria-describedby={noteId}>
+      {label}
       <span id={noteId} className="sr-only">
-        Worker not connected
+        Telegram /pause
       </span>
     </button>
   );
