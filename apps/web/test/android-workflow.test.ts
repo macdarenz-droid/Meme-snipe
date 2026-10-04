@@ -38,29 +38,52 @@ describe('android-preview workflow', () => {
     expect(releaseJob).toContain('checks: read');
     const script = fileURLToPath(new URL('../../../.github/scripts/require-check.sh', import.meta.url));
     // A gh stand-in serving each call the next listing from a queue; the script must ask about GITHUB_SHA only.
-    const run = (listings: object[]) => {
+    // A stand-in `sleep` advances the script's test clock (CLOCK_FILE) instead of waiting: no wall clock decides.
+    const run = (listings: object[], clock = '0') => {
       const dir = mkdtempSync(join(tmpdir(), 'zeroed-require-'));
       listings.forEach((l, i) => writeFileSync(join(dir, `l${i}`), JSON.stringify(l)));
       writeFileSync(join(dir, 'gh'), `#!/usr/bin/env bash\necho "$*" >> "${dir}/calls"\nn=$(wc -l < "${dir}/calls"); cat "${dir}/l$((n - 1))" 2>/dev/null || cat "${dir}/l${listings.length - 1}"\n`);
+      writeFileSync(join(dir, 'sleep'), `#!/usr/bin/env bash\necho $(( $(cat "${dir}/clock") + $1 )) > "${dir}/clock"\n`);
+      writeFileSync(join(dir, 'clock'), clock);
       chmodSync(join(dir, 'gh'), 0o755);
-      const r = spawnSync('bash', [script], { encoding: 'utf8', env: { ...process.env, PATH: `${dir}:${process.env['PATH']}`, GH_REPO: 'o/r', GITHUB_SHA: 'a'.repeat(40), WAIT_S: '1', POLL_S: '0.2' } });
-      const calls = readFileSync(join(dir, 'calls'), 'utf8');
+      chmodSync(join(dir, 'sleep'), 0o755);
+      // The kill timeout only turns a script that never stops (no deadline) into a failure; no outcome depends on it.
+      const r = spawnSync('bash', [script], { encoding: 'utf8', timeout: 20_000, env: { ...process.env, PATH: `${dir}:${process.env['PATH']}`, GH_REPO: 'o/r', GITHUB_SHA: 'a'.repeat(40), WAIT_S: '60', POLL_S: '20', CLOCK_FILE: join(dir, 'clock') } });
+      let calls = '';
+      try {
+        calls = readFileSync(join(dir, 'calls'), 'utf8');
+      } catch {}
       rmSync(dir, { recursive: true, force: true });
-      return { status: r.status, out: r.stdout, calls };
+      return { status: r.status, out: r.stdout + r.stderr, calls };
     };
     const runs = (...r: object[]) => ({ total_count: r.length, check_runs: r });
     const gha = { slug: 'github-actions' };
     const ok = run([runs(), runs({ name: 'check', status: 'in_progress', conclusion: null, app: gha }), runs({ name: 'check', status: 'completed', conclusion: 'success', app: gha })]);
     expect(ok.status, ok.out).toBe(0);
     expect(ok.calls).toContain(`repos/o/r/commits/${'a'.repeat(40)}/check-runs`);
+    const red = runs({ name: 'check', status: 'completed', conclusion: 'failure', app: gha });
+    const pending = runs({ name: 'check', status: 'in_progress', conclusion: null, app: gha });
     for (const bad of [
-      runs({ name: 'check', status: 'completed', conclusion: 'failure', app: gha }),
+      red,
       runs({ name: 'check', status: 'completed', conclusion: 'skipped', app: gha }),
       runs({ name: 'check', status: 'completed', conclusion: 'success', app: { slug: 'some-bot' } }),
       runs({ name: 'build', status: 'completed', conclusion: 'success', app: gha }),
-      runs({ name: 'check', status: 'in_progress', conclusion: null, app: gha }),
+      pending,
       runs(),
     ]) expect(run([bad]).status).toBe(1);
+    // Still pending at the deadline: polls at 0, 20, 40 and 60 s, then gives up.
+    const late = run([pending]);
+    expect(late.calls.trim().split('\n')).toHaveLength(4);
+    expect(late.out).toContain(`::error::check on ${'a'.repeat(12)} is pending after 60 s`);
+    // The test clock moves timing only: whatever it starts at, red, pending and missing still fail, and a clock
+    // that is not whole seconds stops the script before it can publish.
+    for (const clock of ['0', '999999999']) for (const bad of [red, pending, runs()]) expect(run([bad], clock).status, clock).toBe(1);
+    for (const clock of ['', '-5', '1.5', '08', 'x', '1e3', '0\n1']) {
+      const r = run([runs({ name: 'check', status: 'completed', conclusion: 'success', app: gha })], clock);
+      expect(r.status, JSON.stringify(clock)).toBe(1);
+      expect(r.out).toContain('::error::CLOCK_FILE does not hold whole seconds.');
+      expect(r.calls).toBe('');
+    }
     // The default wait ends with ~4 min to spare before the release job's timeout, so the job reports why it stopped.
     const waits = [...readFileSync(script, 'utf8').matchAll(/\$\{WAIT_S:-(\d+)\}/g)].map((m) => Number(m[1]));
     const timeout = Number(/timeout-minutes: (\d+)/.exec(releaseJob)?.[1]);
