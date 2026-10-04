@@ -13,6 +13,11 @@ export interface JournalReport {
   readonly s0_diagnostic: Readonly<Record<string, number>>;
   /** WORKER-1e: H15's simulations (`h15_sim` lines): how many, how many ran, and the Helius credits they spent. */
   readonly h15_sim: { readonly lines: number; readonly run: number; readonly credits: number };
+  /**
+   * ACCOUNT-RATE: fills valued at the SOL price after a restart instead of their own, because their journal line was
+   * written before lines carried `sol_usd` (`alert` lines with code `unpriced_fill`), as `trade|purpose`.
+   */
+  readonly unpriced_fills: readonly string[];
   readonly complete: boolean;
   readonly problems: readonly string[];
   /** Each boot's entry rule as its `start` line states it (WORKER-1: entry_rule, paper_edge_ppm, qualifying, s0_salt). */
@@ -64,6 +69,7 @@ export const checkJournal = (text: string, opts: { readonly allowTornTail?: bool
   let repairs = 0;
   const diagnosed: Record<string, number> = {};
   const h15 = { lines: 0, run: 0, credits: 0 };
+  const unpriced: string[] = [];
   const starts: StartFields[] = [];
   for (const l of lines) {
     const parts = l['s0_diagnostic'];
@@ -72,6 +78,7 @@ export const checkJournal = (text: string, opts: { readonly allowTornTail?: bool
       if (l['outcome'] !== 'not-run') h15.run += 1;
       if (typeof l['credits'] === 'number' && Number.isFinite(l['credits'])) h15.credits += l['credits'];
     }
+    if (l.kind === 'alert' && l['code'] === 'unpriced_fill') unpriced.push(`${String(l.trade)}|${String(l['purpose'])}`);
     if (l.kind === 'decision' && Array.isArray(parts)) for (const p of parts) diagnosed[String(p)] = (diagnosed[String(p)] ?? 0) + 1;
     if (l.kind === 'start') starts.push({ boot: l.boot, entry_rule: l['entry_rule'], paper_edge_ppm: l['paper_edge_ppm'], qualifying: l['qualifying'], s0_salt: l['s0_salt'], s0_diagnostic: l['s0_diagnostic'] ?? null });
     if (l.seq !== expect) add(`seq ${l.seq} where ${expect} expected`);
@@ -113,5 +120,5 @@ export const checkJournal = (text: string, opts: { readonly allowTornTail?: bool
         break;
     }
   }
-  return { lines: lines.length, boots: bootsSeen.size, entries, exits, simulations, repairs, s0_diagnostic: diagnosed, h15_sim: h15, complete: problems.length === 0, problems, starts };
+  return { lines: lines.length, boots: bootsSeen.size, entries, exits, simulations, repairs, s0_diagnostic: diagnosed, h15_sim: h15, unpriced_fills: unpriced, complete: problems.length === 0, problems, starts };
 };

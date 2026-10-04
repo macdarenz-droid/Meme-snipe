@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { Health, JournalLine } from '../../runner/src/contract.ts';
 import type { Kept } from '../../runner/src/report.ts';
+import { checkJournal } from '../../runner/src/journal.ts';
 import { closedSince, recoveredState, withoutTrades } from '../../runner/src/runner.ts';
 import { type Lamports, type MicroUsd, lamportsToMicroUsd } from '../../core/src/units/index.ts';
 import { type AccountState, accountFile } from '../src/run/account.ts';
@@ -287,7 +288,7 @@ describe('an exit fill is journaled before the ledger lets the position go (§12
     await h2.worker.stop();
   });
 
-  it('a line with sol_usd null (no price at booking) is valued as the live path did; a line without the field falls back to the price now', async () => {
+  it('a line with sol_usd null (no price at booking) is valued at the first price after it, flagged; a line without the field falls back to the price now, with an unpriced_fill alert', async () => {
     const { h, image } = await crashBetweenExitWrites('fill-committed');
     await h.worker.stop();
     const pid = image.reply.open_positions[0]!.trade;
@@ -314,13 +315,22 @@ describe('an exit fill is journaled before the ledger lets the position go (§12
       await h2.worker.stop();
       return { t: trade()!, logs: h2.logs };
     };
-    const nul = await caughtUp(withLine((l) => { l['sol_usd'] = null; }));
-    expect(nul.t.closeSolPrice ?? null).toBeNull();
-    expect(String(nul.t.netPnl)).toBe(String(-BigInt(String(nul.t.notional))));
+    const nulDir = withLine((l) => { l['sol_usd'] = null; });
+    const nul = await caughtUp(nulDir);
+    // ACCOUNT-RATE: never a made-up loss of the notional; the first price after the fill (the restart's) values it.
+    expect(String(nul.t.closeSolPrice)).toBe(String(SOL_PRICE * 2n));
+    expect(nul.t.pricedLate).toEqual(['close']);
+    expect(String(nul.t.netPnl)).not.toBe(String(-BigInt(String(nul.t.notional))));
     expect(nul.logs.some((l) => l.includes(FILL_RATE_UNKNOWN))).toBe(false);
-    const absent = await caughtUp(withLine((l) => { delete l['sol_usd']; }));
+    expect(lines(nulDir).filter((l) => l.kind === 'alert' && l['code'] === 'unpriced_fill')).toEqual([]);
+    const absentDir = withLine((l) => { delete l['sol_usd']; });
+    const absent = await caughtUp(absentDir);
     expect(String(absent.t.closeSolPrice)).toBe(String(SOL_PRICE * 2n));
     expect(absent.logs.some((l) => l.includes(FILL_RATE_UNKNOWN))).toBe(true);
+    // The run report counts it.
+    const alerts = lines(absentDir).filter((l) => l.kind === 'alert' && l['code'] === 'unpriced_fill');
+    expect(alerts.map((l) => [l.trade, l['purpose']])).toEqual([[pid, 'exit']]);
+    expect(checkJournal(readFileSync(join(absentDir, 'journal.jsonl'), 'utf8')).unpriced_fills).toEqual([`${pid}|exit`]);
   });
 });
 
@@ -336,3 +346,108 @@ describe('fill keys', () => {
     expect([...keys.keys()].sort()).toEqual([fillKey('i1', 10n), fillKey('i1', 5n)].sort());
   });
 });
+
+describe('ACCOUNT-RATE: a missed partial exit', () => {
+  it('a kill after a partial exit\'s ledger commit, before account.json: the restart\'s reconcile books the proceeds into the wallet once', async () => {
+    let image: { dir: string; pid: string } | null = null;
+    let h: H | null = null;
+    h = makeWorker({
+      crashPoint: (point, intent) => {
+        if (image !== null || point !== 'fill-committed') return;
+        const s = h!.worker.book.intents[intent as never];
+        const p = s === undefined ? undefined : h!.worker.book.positions[s.intent.positionId];
+        if (s?.intent.purpose !== 'exit' || p?.status !== 'open') return;
+        const dir = mkdtempSync(join(tmpdir(), 'zeroed-crash-'));
+        cpSync(h!.stateDir, dir, { recursive: true });
+        image = { dir, pid: p.id };
+      },
+    });
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    const m = await passingMarket(h, { heldPoolFacts: true });
+    expect(await until(m, () => Object.values(h!.worker.book.positions).some((p) => p.status === 'open'), 30_000, tick(m))).toBe(true);
+    // +15%: past 1.5R, so the first partial sells half and the position stays open.
+    expect(await until(m, () => image !== null, 30_000, tick(m, 1_150_000n))).toBe(true);
+    // The first process's own account after that fill: what the restart must reach.
+    await m.run(400, 400, tick(m, 1_150_000n));
+    const img = image! as { dir: string; pid: string };
+    const want = accountFile(h.stateDir).read(null as unknown as AccountState).trades.find((t) => t.positionId === img.pid)!;
+    await h.worker.stop();
+    const account = () => accountFile(img.dir).read(null as unknown as AccountState);
+    const atKill = account();
+    const tKill = atKill.trades.find((t) => t.positionId === img.pid)!;
+    // The image: the ledger holds the partial, the account does not.
+    expect(BigInt(String(tKill.booked))).not.toBe(BigInt(String(want.booked)));
+    const gap = BigInt(String(want.booked)) - BigInt(String(tKill.booked));
+    expect(gap > 0n).toBe(true);
+
+    rmSync(join(img.dir, 'cold_start'), { force: true });
+    const h2 = makeWorker({ stateDir: img.dir, timers: h.timers });
+    expect(await h2.worker.reconcile()).toEqual({ ok: true });
+    const t2 = account().trades.find((t) => t.positionId === img.pid)!;
+    expect(BigInt(String(t2.booked))).toBe(BigInt(String(want.booked)));
+    expect(BigInt(String(account().walletLamports))).toBe(BigInt(String(atKill.walletLamports)) + gap);
+    // Once: another settle moves nothing.
+    const m2 = new Market(h2, { heldPoolFacts: true });
+    await m2.run(2_000, 400, tick(m2, 1_150_000n));
+    expect(BigInt(String(account().trades.find((t) => t.positionId === img.pid)!.booked))).toBe(BigInt(String(want.booked)));
+    await h2.worker.stop();
+  });
+
+  it('an exit the world landed before the kill, booked by the restart before any SOL price: valued at the first price after it, never as a loss of the notional', async () => {
+    const { h, image } = await crashBetweenExitWrites();
+    await h.worker.stop();
+    const pid = image.reply.open_positions[0]!.trade;
+    // A kill before the desk wrote anything for the landing: drop the exit line, so the restart books a new fill.
+    const path = join(image.dir, 'journal.jsonl');
+    writeFileSync(path, readFileSync(path, 'utf8').split('\n').filter((t) => !(t.includes('"kind":"exit"') && t.includes(`"intent":"${image.intent}"`))).join('\n'));
+    const h2 = restart(h, image);
+    expect(await h2.worker.start()).toEqual({ ok: true });
+    const m2 = new Market(h2, { heldPoolFacts: true });
+    m2.solUsd = SOL_PRICE * 2n;
+    const trade = () => accountFile(image.dir).read(null as unknown as AccountState).trades.find((x) => x.positionId === pid);
+    expect(await until(m2, () => trade()?.netPnl != null, 10_000, tick(m2, 700_000n))).toBe(true);
+    const line = lines(image.dir).find((l) => l.kind === 'exit' && l['intent'] === image.intent)!;
+    // Booked with no price known (the reconcile's), so its line has none.
+    expect(line['sol_usd']).toBeNull();
+    const t = trade()!;
+    expect(t.pricedLate).toEqual(['close']);
+    expect(String(t.closeSolPrice)).toBe(String(SOL_PRICE * 2n));
+    expect(String(t.netPnl)).not.toBe(String(-BigInt(String(t.notional))));
+    await h2.worker.stop();
+  });
+
+  it('a fill re-booked from a held line with no rate (booked at the start reconcile, before any price): valued at the first price after it (sol_usd null), or flagged unpriced (no field)', async () => {
+    const { h, image } = await crashBetweenExitWrites();
+    await h.worker.stop();
+    const pid = image.reply.open_positions[0]!.trade;
+    const run = async (edit: (l: Record<string, unknown>) => void) => {
+      const dir = mkdtempSync(join(tmpdir(), 'zeroed-crash-'));
+      cpSync(image.dir, dir, { recursive: true });
+      const path = join(dir, 'journal.jsonl');
+      writeFileSync(path, readFileSync(path, 'utf8').split('\n').map((t) => {
+        if (t === '' || !t.includes('"kind":"exit"') || !t.includes(`"intent":"${image.intent}"`)) return t;
+        const l = JSON.parse(t) as Record<string, unknown>;
+        edit(l);
+        return JSON.stringify(l);
+      }).join('\n'));
+      const h2 = restart(h, { ...image, dir });
+      expect(await h2.worker.start()).toEqual({ ok: true });
+      const m2 = new Market(h2, { heldPoolFacts: true });
+      m2.solUsd = SOL_PRICE * 2n;
+      const trade = () => accountFile(dir).read(null as unknown as AccountState).trades.find((x) => x.positionId === pid);
+      expect(await until(m2, () => trade()?.netPnl != null, 30_000, tick(m2, 700_000n))).toBe(true);
+      const t = trade()!;
+      await h2.worker.stop();
+      return { t, alerts: lines(dir).filter((l) => l.kind === 'alert' && l['code'] === 'unpriced_fill') };
+    };
+    const nul = await run((l) => { l['sol_usd'] = null; });
+    expect(String(nul.t.closeSolPrice)).toBe(String(SOL_PRICE * 2n));
+    expect(nul.t.pricedLate).toEqual(['close']);
+    expect(String(nul.t.netPnl)).not.toBe(String(-BigInt(String(nul.t.notional))));
+    expect(nul.alerts).toEqual([]);
+    const absent = await run((l) => { delete l['sol_usd']; });
+    expect(String(absent.t.closeSolPrice)).toBe(String(SOL_PRICE * 2n));
+    expect(absent.alerts.map((l) => [l.trade, l['purpose']])).toEqual([[pid, 'exit']]);
+  });
+});
+

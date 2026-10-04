@@ -440,8 +440,11 @@ export class Worker {
       },
       reserved: (r) => this.#account.reserved(r.mint, r.atMs),
       filled: (r) => {
-        // A fill re-booked from its held journal line carries that line's rate (PAPER-1); otherwise the price now.
+        // A fill re-booked from its held journal line carries that line's rate (PAPER-1); otherwise the price now. A leg
+        // with no rate (none known at its fill) is valued at the first price after it (ACCOUNT-RATE), now if one is known.
         this.#account.filled(r, r.solUsd !== undefined ? r.solUsd : this.#solPrice, this.#legs());
+        this.#account.priceLate(this.#desk.book, this.#legs(), this.#solPrice, this.#d.timers.now());
+        if (r.reasons.includes(FILL_RATE_UNKNOWN)) this.#unpriced(r.positionId, r.purpose);
         if (r.purpose === 'entry') this.#entered(r.mint, r.positionId, r.atMs);
       },
     });
@@ -558,6 +561,8 @@ export class Worker {
         this.#solPriceAt = isObj(m.value) && typeof m.value['atMs'] === 'number' ? m.value['atMs'] : m.moment.receivedAt;
         this.#account.price(this.#solPrice, m.moment.receivedAt);
         if (this.#accountBehind.length > 0) this.#catchUpAccount();
+        // ACCOUNT-RATE: legs booked before any price (a start reconcile) are valued here, before risk sees the account.
+        if (this.#account.priceLate(this.#desk.book, this.#legs(), this.#solPrice, m.moment.receivedAt) && this.#reconciled) this.#publishAccount();
         // The paper wallet exists from the first price on: risk needs its balance (R4). Every process settles once at its
         // first price after the reconcile: fees of entries that ended unfilled while no price was known (in that
         // reconcile, a restart's) are booked here, not at some later book event.
@@ -755,6 +760,14 @@ export class Worker {
   }
 
   /**
+   * ACCOUNT-RATE: a fill from a journal line written before lines carried `sol_usd` was valued at the price after the
+   * restart, not its own. One `unpriced_fill` alert line each, which the run report counts.
+   */
+  #unpriced(positionId: string, purpose: 'entry' | 'exit'): void {
+    this.#journal.write('alert', { level: 'warning', code: 'unpriced_fill', trade: positionId, purpose, reasons: [FILL_RATE_UNKNOWN] });
+  }
+
+  /**
    * WORKER-ORDER: records the fills a kill between the ledger commit and account.json left out, from the book and the
    * fill's own journal line (always written before the ledger since §12.4: its time, reasons and SOL/USD rate).
    */
@@ -773,6 +786,7 @@ export class Worker {
       const rate = known ? fromLine : this.#solPrice;
       this.#account.filled({ purpose: b.purpose, positionId: p.id, mint: String(p.mint), book, atMs: Number.isFinite(at) ? at : this.#d.timers.now(), reasons: known ? reasons : [...reasons, FILL_RATE_UNKNOWN] }, rate, this.#legs());
       this.#d.log(`Account caught up: the ${b.purpose} of ${p.id} was in the ledger but not in account.json (a kill between the two)${known ? '' : `; ${FILL_RATE_UNKNOWN}`}.`);
+      if (!known) this.#unpriced(p.id, b.purpose);
     }
     this.#accountBehind = [];
     if (this.#reconciled) this.#publishAccount();

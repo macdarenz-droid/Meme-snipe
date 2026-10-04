@@ -83,6 +83,11 @@ export interface PaperTrade {
   closeSolPrice?: MicroUsd | null;
   /** The book's exit reasons of the closing exit. */
   exitReasons?: readonly string[];
+  /**
+   * ACCOUNT-RATE: the legs booked while no SOL price was known, valued at the first price at or after their fill
+   * (`priceLate`) instead of a fill-time rate. Absent when every leg had its own rate.
+   */
+  pricedLate?: readonly ('open' | 'close')[];
 }
 
 export interface AccountState {
@@ -224,15 +229,51 @@ export class PaperAccount {
     if (t !== undefined && l !== null && p !== undefined && (p.status === 'closed' || r.closes === true) && t.closedAtMs === null) {
       t.closedAtMs = r.atMs;
       t.netLamports = tradeNet(l);
-      // Each cash flow at its own SOL price, as the backtest report values a trade (core's `tradeUsd`): the entry leg at
-      // the entry's price, the exit leg at the close's. An unknown price: a total loss of the notional (the safe side).
-      const pxIn = t.openSolPrice ?? null;
-      t.netPnl = solPrice === null || pxIn === null ? (-t.notional as MicroUsd) : (tradeUsd(l, pxIn, solPrice).net as MicroUsd);
       t.stoppedOut = r.reasons.some((x) => STOPS.has(x));
-      t.closeSolPrice = solPrice;
       t.exitReasons = r.reasons.filter((x) => EXIT_REASONS.has(x));
+      // Each cash flow at its own SOL price, as the backtest report values a trade (core's `tradeUsd`): the entry leg at
+      // the entry's price, the exit leg at the close's. A close booked with no price known stays unvalued (netPnl null)
+      // until `priceLate` values it at the first price after it (ACCOUNT-RATE): never a made-up loss or gain.
+      t.closeSolPrice = solPrice;
+      if (solPrice !== null) this.#value(t, l, solPrice);
     }
     this.#file.write(this.#s);
+  }
+
+  /** A closed trade's dollar P&L from its legs, at its open price (set at the close's when the open had none). */
+  #value(t: PaperTrade, l: TradeLamports, closePrice: MicroUsd): void {
+    if (t.openSolPrice === null || t.openSolPrice === undefined) {
+      t.openSolPrice = closePrice;
+      t.pricedLate = [...(t.pricedLate ?? []), 'open'];
+    }
+    t.netPnl = tradeUsd(l, t.openSolPrice, closePrice).net as MicroUsd;
+  }
+
+  /**
+   * ACCOUNT-RATE: legs booked while no SOL price was known (a fill reconciled at start, or caught up from a line with
+   * `sol_usd` null) are valued at the first price at or after their fill, flagged in `pricedLate`. Risk refuses every
+   * entry while it has no SOL price, so no entry is judged on an unvalued trade. True when anything changed.
+   */
+  priceLate(book: Book, legs: PaperLegs, solPrice: MicroUsd | null, nowMs: number): boolean {
+    if (solPrice === null || solPrice <= 0n) return false;
+    let changed = false;
+    for (const t of this.#s.trades) {
+      if ((t.openSolPrice === null || t.openSolPrice === undefined) && nowMs >= t.openedAtMs && t.closedAtMs === null) {
+        t.openSolPrice = solPrice;
+        t.pricedLate = [...(t.pricedLate ?? []), 'open'];
+        changed = true;
+      }
+      if (t.closedAtMs !== null && t.netPnl === null && nowMs >= t.closedAtMs) {
+        const l = paperTradeLamports(book, t.positionId, legs);
+        if (l === null) continue;
+        t.closeSolPrice = solPrice;
+        this.#value(t, l, solPrice);
+        t.pricedLate = [...(t.pricedLate ?? []), 'close'];
+        changed = true;
+      }
+    }
+    if (changed) this.#file.write(this.#s);
+    return changed;
   }
 
   /**
