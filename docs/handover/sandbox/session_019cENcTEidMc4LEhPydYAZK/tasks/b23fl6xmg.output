@@ -1,0 +1,17 @@
+- **2026-10-04 · The marks come from the marked account (RISK-MARK follow-up, risk review spec).** 
+  - A day or week boundary is recorded only when every open position has a fresh, non-null mark (non
+  - The NAV peak comes from risk's `nav` only, which is non-null only when every mark is fresh, so i
+  - Note on the two measures: risk counts no unrealized gain (a mark is capped at its notional), so 
+  - Tests (`boundary-marks.test.ts`, each failing before): a boundary with an open position records 
+- **2026-10-04 · The deployer check runs live (RUG-1c wiring).** When a candidate's last reasons in
+
+M  docs/DECISIONS.md
+M  packages/worker/src/run/account.ts
+M  packages/worker/src/run/desk.ts
+M  packages/worker/src/run/worker.ts
+M  packages/worker/test/worker-harness.ts
+A  packages/worker/test/write-order.test.ts
+ Test Files  151 passed (151)
+      Tests  4495 passed (4495)
+
+[exited with code 0]

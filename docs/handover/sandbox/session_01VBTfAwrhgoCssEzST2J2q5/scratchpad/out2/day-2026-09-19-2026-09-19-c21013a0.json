@@ -1,0 +1,170 @@
+{
+ "kind": "BT-2 day run",
+ "runId": "day-2026-09-19-2026-09-19-c21013a0",
+ "commit": "c21013a039a4b1839bfd45ca2fdc539f89ae58a5",
+ "dirty": true,
+ "dataset": {
+  "dir": "/tmp/claude-0/-home-user-Meme-snipe/406edd36-7a5c-567a-b0c4-521cf6e925a4/scratchpad/ds",
+  "id": "sha256:cc92b1c44cdf77782bb2a23e4de60c45b714aaa9c0f7aa6591f0462bbfdb8fe5",
+  "schema": 2,
+  "sampleRate": 1,
+  "sumsChecked": 0,
+  "days": [
+   {
+    "day": "2026-09-05",
+    "complete": true,
+    "warmUp": false
+   },
+   {
+    "day": "2026-09-06",
+    "complete": true,
+    "warmUp": false
+   },
+   {
+    "day": "2026-09-07",
+    "complete": true,
+    "warmUp": false
+   },
+   {
+    "day": "2026-09-08",
+    "complete": true,
+    "warmUp": false
+   },
+   {
+    "day": "2026-09-09",
+    "complete": true,
+    "warmUp": false
+   },
+   {
+    "day": "2026-09-10",
+    "complete": true,
+    "warmUp": false
+   },
+   {
+    "day": "2026-09-11",
+    "complete": true,
+    "warmUp": false
+   },
+   {
+    "day": "2026-09-12",
+    "complete": true,
+    "warmUp": false
+   },
+   {
+    "day": "2026-09-13",
+    "complete": true,
+    "warmUp": false
+   },
+   {
+    "day": "2026-09-14",
+    "complete": true,
+    "warmUp": false
+   },
+   {
+    "day": "2026-09-15",
+    "complete": true,
+    "warmUp": false
+   },
+   {
+    "day": "2026-09-16",
+    "complete": true,
+    "warmUp": false
+   },
+   {
+    "day": "2026-09-17",
+    "complete": true,
+    "warmUp": false
+   },
+   {
+    "day": "2026-09-18",
+    "complete": true,
+    "warmUp": false
+   },
+   {
+    "day": "2026-09-19",
+    "complete": true,
+    "warmUp": false
+   },
+   {
+    "day": "2026-09-20",
+    "complete": true,
+    "warmUp": false
+   }
+  ]
+ },
+ "policy": "trial",
+ "fills": "fills-2",
+ "research": "research-1",
+ "studyHash": "598712214817738747524850167f8257e56ae299c9c0048e272c85f8ddd6b18c",
+ "configIds": {
+  "U1": "U1-6260ee833360fdb5",
+  "U2": "U2-484a7d1c3fb959a3"
+ },
+ "scenario": "conservative",
+ "notes": [
+  "Live-only vetoes (§16.3) are absent in the backtest: H15 simulateTransaction, H16 third-party cross-checks, Jupiter routes and fees, execution health. The bias in mean net is at most the veto share v times the gap between vetoed and kept trades; G3 caps v at 10%, which bounds it at 5 points.",
+  "H13 needs the deployer-funded wallets and the dev cluster, which DATA-1 does not record: without a funding source every candidate is rejected (H16 not-covered).",
+  "The dataset keeps trades for a hash sample of mints only; a deployer with a mint outside the sample in the look-back is not judged on prior rugs (H14 not covered).",
+  "Practice days end at 2026-09-22; holdout days run to the entry cutoff 2026-10-20T00:00:00Z plus 1 observation day(s) and are never practice days."
+ ],
+ "days": [
+  "2026-09-19"
+ ],
+ "entriesWindow": {
+  "from": "2026-09-19T00:00:00.000Z",
+  "to": "2026-09-19T21:30:00.000Z"
+ },
+ "engine": {
+  "stats": {
+   "rows": 360,
+   "events": 364,
+   "crashes": 0,
+   "crash": null,
+   "illegalStates": 0,
+   "unreconciledIntents": 0,
+   "mirrorMatches": true,
+   "skippedSwaps": 0,
+   "unquotableSwaps": 0,
+   "alerts": {},
+   "elapsedMs": 62
+  },
+  "runMs": 62,
+  "rowsPerSecond": 5806,
+  "replays": 2,
+  "identicalReplays": true,
+  "leak": {
+   "ok": true,
+   "violations": []
+  },
+  "ledgerReplay": {
+   "ok": true,
+   "detail": "ok backtest /tmp/claude-0/-home-user-Meme-snipe/406edd36-7a5c-567a-b0c4-521cf6e925a4/scratchpad/out2/day-2026-09-19-2026-09-19-c21013a0.db {\"events\":0,\"intentRows\":0,\"intents\":0,\"positionRows\":0,\"positions\":0}"
+  }
+ },
+ "facts": {
+  "creates": 0,
+  "sampledCreates": 0,
+  "unjudged": 0,
+  "labels": 0,
+  "checks": 0,
+  "holderProblems": 0,
+  "undecodableRaw": 0
+ },
+ "counts": {},
+ "funnel": {},
+ "rejectMix": {},
+ "s0": [
+  {
+   "seed": "bt2-day:s0:0",
+   "stats": {
+    "crashes": 0,
+    "illegalStates": 0,
+    "unreconciledIntents": 0
+   },
+   "counts": {},
+   "trades": []
+  }
+ ],
+ "trades": [],
+ "regimeBoundariesPassed": []
+}

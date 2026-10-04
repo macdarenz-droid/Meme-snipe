@@ -16,7 +16,7 @@ export const PAPER_SCENARIO = 'conservative';
  */
 export const strategyConfig = (
   policy: Policy, fills: FillConfig, research: ResearchConfig, edgePpm: bigint = 0n,
-  entry: { readonly timing: 'gates' | 'random'; readonly salt: string } = { timing: 'gates', salt: '' },
+  entry: { readonly timing: 'gates' | 'random'; readonly salt: string; readonly s0Diagnostic?: boolean } = { timing: 'gates', salt: '' },
 ): StrategyConfig => {
   const net = fills.network;
   const s: FillScenario = fills.scenarios[PAPER_SCENARIO];
@@ -27,6 +27,7 @@ export const strategyConfig = (
     universe: 'U2',
     entryTiming: entry.timing,
     entrySalt: entry.salt,
+    s0Diagnostic: entry.timing === 'random' && entry.s0Diagnostic === true,
     windowFromMs: research.s0.u2WindowFromMs,
     windowToMs: research.s0.u2WindowToMs,
     entryMinOutBelowBps: research.s0.entryMinOutBelowBps,

@@ -1,0 +1,13 @@
+      Tests  158 passed (158)
+[R1 caller overrides registry] ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+      Tests  1 failed | 157 passed (158)
+[R2 mismatch ignored] ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+      Tests  1 failed | 157 passed (158)
+[R3 create without test] ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+      Tests  1 failed | 157 passed (158)
+[R4 stamp fixed dsr] ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+      Tests  1 failed | 157 passed (158)
+[R5 old registry defaults dsr] ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+      Tests  1 failed | 157 passed (158)
+
+[exited with code 0]

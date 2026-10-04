@@ -52,6 +52,8 @@ describe('a paper trade end to end', () => {
     const m = await entered(h);
     const open = positions(h).find((p) => p.status === 'open');
     expect(open?.mint).toBe(MINT);
+    // The entry line names its universe: the runner holds a trade opened after its last reply to it (CI-1b).
+    expect(kinds(h.stateDir, 'entry').map((l) => l['universe'])).toEqual(['U2']);
     // The price falls 30%: the price stop fires and the paper exit lands.
     await m.run(6_000, 400, () => {
       m.slot();

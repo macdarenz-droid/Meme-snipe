@@ -1,0 +1,24 @@
+// RES-5 #120 null simulation (reviewer, 2026-10-04). Copy to packages/backtest/test/zz-sim.test.ts at 8a7856e and run
+// `npx vitest run packages/backtest/test/zz-sim.test.ts`; results append to /tmp/claude-0/sim/out.txt. Delete afterwards.
+import { test } from 'vitest';
+import { appendFileSync } from 'node:fs';
+import { freezeRule } from '../src/research/survival-compare.ts';
+import { SURVIVAL_FEATURES } from '../src/research/survival.ts';
+import type { LabelledDecision } from '../src/research/survival-analysis.ts';
+const rnd = (seed: number) => { let s = seed >>> 0; return () => { s = (Math.imul(s ^ (s >>> 15), 0x2c1b3c6d) + 0x9e3779b9) >>> 0; return s / 4294967296; }; };
+const synth = (nDays: number, seed: number): LabelledDecision[] => {
+  const u = rnd(seed); const xs: LabelledDecision[] = []; let i = 0;
+  for (let d = 0; d < nDays; d++) { const day = `2026-09-${String(d + 1).padStart(2, '0')}`;
+    for (let k = 0; k < 80; k++) for (const ageMs of [3600000, 14400000, 86400000]) {
+      const features = Object.fromEntries(SURVIVAL_FEATURES.map((f) => [f, u()])) as never;
+      xs.push({ id: `${i++}`, day, ageMs, stratum: u() < 0.5 ? 'a' : 'b', features, survived: u() < 0.3 });
+    } }
+  return xs;
+};
+test('null', () => {
+  for (const nDays of [3, 4, 6, 15]) {
+    let hits = 0; const runs = 20;
+    for (let s = 1; s <= runs; s++) if (freezeRule(synth(nDays, s * 7919), 2000, 17).conds.length > 0) hits++;
+    appendFileSync('/tmp/claude-0/sim/out.txt', `days=${nDays} find=${Math.ceil(2*nDays/3)} null rules: ${hits}/${runs}\n`);
+  }
+}, 1800000);

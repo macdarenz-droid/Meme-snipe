@@ -1,0 +1,12 @@
+      Tests  132 passed (132)
+[S1 merge unused]       Tests  132 passed (132)
+[S2 merge into following] ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+      Tests  1 failed | 131 passed (132)
+[S3 merge threshold 3] ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+      Tests  1 failed | 131 passed (132)
+[D1 trailing off] ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+      Tests  2 failed | 130 passed (132)
+[D2 window 400] ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+      Tests  2 failed | 130 passed (132)
+
+[exited with code 0]

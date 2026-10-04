@@ -1,0 +1,17 @@
+
+> meme-snipe@ typecheck /home/user/Meme-snipe
+> pnpm -r --if-present typecheck
+
+Scope: 6 of 7 workspace projects
+apps/web typecheck$ tsc -p tsconfig.json --noEmit
+packages/backtest typecheck$ tsc -p tsconfig.json --noEmit
+packages/core typecheck$ tsc -p tsconfig.json --noEmit
+packages/ops typecheck$ tsc -p tsconfig.json --noEmit
+packages/ops typecheck: Done
+packages/runner typecheck$ tsc -p tsconfig.json --noEmit
+packages/backtest typecheck: Done
+packages/worker typecheck$ tsc -p tsconfig.json --noEmit
+packages/runner typecheck: Done
+apps/web typecheck: Done
+packages/core typecheck: Done
+packages/worker typecheck: Done

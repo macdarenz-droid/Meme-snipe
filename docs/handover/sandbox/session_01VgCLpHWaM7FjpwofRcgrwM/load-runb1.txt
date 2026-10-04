@@ -1,0 +1,9 @@
+
+ RUN  v5.0.3 /home/user/Meme-snipe/packages/runner
+
+
+ Test Files  1 passed (1)
+      Tests  14 passed (14)
+   Start at  01:44:54
+   Duration  95.29s (tests 99%, transform 1%)
+

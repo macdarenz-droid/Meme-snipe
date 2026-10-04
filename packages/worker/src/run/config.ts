@@ -31,7 +31,7 @@ export interface WorkerConfig {
    * random-entry control (same gates, risk and exits, entry moment drawn in the window) for the non-qualifying
    * shakedown (supervisor ruling 2026-10-04). A qualifying run takes a strategy BT-2 registers.
    */
-  readonly strategy: { readonly name: string; readonly paperEdgePpm: bigint | null; readonly qualifying: boolean };
+  readonly strategy: { readonly name: string; readonly paperEdgePpm: bigint | null; readonly qualifying: boolean; readonly s0Diagnostic: boolean };
 }
 
 /**
@@ -121,6 +121,13 @@ export const parseConfig = (
     if (!/^[1-9][0-9]{0,6}$/.test(edgeText) || BigInt(edgeText) > 1_000_000n) return refuse('refused: ZEROED_PAPER_EDGE_PPM must be a whole number from 1 to 1000000');
     paperEdgePpm = BigInt(edgeText);
   }
+  // WORKER-1e: S0's diagnostic set (core regime.ts `S0DiagnosticPart`), only for the shakedown and never in a release
+  // that names a qualifying run, whatever the run id.
+  const diagText = env['ZEROED_S0_DIAGNOSTIC'];
+  if (diagText !== undefined && diagText !== 'on') return refuse('refused: ZEROED_S0_DIAGNOSTIC must be on or unset');
+  const s0Diagnostic = diagText === 'on';
+  if (s0Diagnostic && name !== 'S0') return refuse('refused: ZEROED_S0_DIAGNOSTIC is only for the S0 shakedown');
+  if (s0Diagnostic && (qualifying || qualifyingRun !== null)) return refuse('refused: ZEROED_S0_DIAGNOSTIC is never used in a release with a qualifying run');
   const watchdog = env['WATCHDOG_URL'] ?? '';
   if (watchdog !== '' && !/^https:\/\/[^\s/]+(\/[^\s]*)?$/.test(watchdog)) return refuse('refused: WATCHDOG_URL must be an https URL');
   return {
@@ -133,7 +140,7 @@ export const parseConfig = (
       gitSha: env['ZEROED_GIT_SHA'] ?? release() ?? 'unknown',
       watchdogUrl: watchdog === '' ? null : watchdog.replace(/\/$/, ''),
       heartbeatMs: beat, watch: { everyMs: watchEvery, staleMs: watchStale, latencyMs: watchLatency }, wallet, standIns,
-      strategy: { name, paperEdgePpm, qualifying },
+      strategy: { name, paperEdgePpm, qualifying, s0Diagnostic },
     },
   };
 };
