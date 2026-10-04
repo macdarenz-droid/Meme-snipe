@@ -7,7 +7,8 @@ import { FILL_CONFIG, RESEARCH_CONFIG, RUG_CONFIG, TRIAL_POLICY, startSession } 
 import { EXIT } from '../../runner/src/contract.ts';
 import { DryRunRpc } from './dryrun/index.ts';
 import { liveFacts } from './facts/index.ts';
-import { COINBASE_PUBLIC, GITHUB_DOWNLOADS, GITHUB_RELEASES, GOPLUS_FREE } from './scheduler/index.ts';
+import { COINBASE_PUBLIC, GITHUB_DOWNLOADS, GITHUB_RELEASES, GOPLUS_FREE, P2 } from './scheduler/index.ts';
+import { toAddress } from '../../core/src/chain/index.ts';
 import { DEFAULT_LIVE_FEED, fetchHttp, globalSocketFactory, heliusRpcUrl } from './providers/index.ts';
 import { systemTimers } from './scheduler/index.ts';
 import { SLOT_MS, parseConfig, watchTimingProblem } from './run/config.ts';
@@ -15,8 +16,12 @@ import { liveSimulator, provisionalCalibration } from './run/live-sim.ts';
 import { PAPER_SCENARIO, strategyConfig } from './run/settings.ts';
 import { CreditBook, FEED_COMMITMENTS, LiveProviders, PUMP_CREATE_AUTHORITY } from './run/sources.ts';
 import { redact, setSecretValues } from './run/redact.ts';
+import { join } from 'node:path';
+import { DailyBudget } from './persist/index.ts';
 import { RpcCut, liveHttp } from './run/rpc-cut.ts';
-import { runSeed } from './run/seed-start.ts';
+import { FILL_BUDGET_FILE, FILL_CREDITS_PER_DAY, runSeed } from './run/seed-start.ts';
+import { SIM_READS_PER_HOUR, simReader } from './run/sim-read.ts';
+import { RoundTripSimulator } from './sim/index.ts';
 import { Worker } from './run/worker.ts';
 
 const environment = readEnvironment();
@@ -49,13 +54,25 @@ if (timing !== null) {
 }
 const rpc = new DryRunRpc({ url: () => heliusRpcUrl(environment.secrets), http: providerHttp, scheduler: providers.helius, timeoutMs: 10_000 });
 let worker: Worker | null = null;
+const calibration = provisionalCalibration(new URL('../../core/test/tx/fixtures/golden.json', import.meta.url).pathname);
+const maxSlippageBps = Math.max(RESEARCH_CONFIG.s0.entryMinOutBelowBps, ...policy.exits.ladder.steps.map((s) => s.minOutBelowTriggerBps));
 const simulate = liveSimulator({
-  rpc, wallet: config.wallet, standIns: config.standIns,
-  calibration: provisionalCalibration(new URL('../../core/test/tx/fixtures/golden.json', import.meta.url).pathname),
+  rpc, wallet: config.wallet, standIns: config.standIns, calibration,
   poolOf: (mint) => worker?.poolOf(mint) ?? null,
-  maxSlippageBps: Math.max(RESEARCH_CONFIG.s0.entryMinOutBelowBps, ...policy.exits.ladder.steps.map((s) => s.minOutBelowTriggerBps)),
+  maxSlippageBps,
   maxPriorityFee: policy.exits.ladder.maxFeePerAttempt, tip: FILL_CONFIG.network.tip, maxTip: FILL_CONFIG.network.tip * 2n,
   lamportsPerSignature: FILL_CONFIG.network.baseFeePerSignature,
+});
+// H15 (WORKER-1e): SIM-1's round trip of each candidate that asks for it, from the first stand-in (P2, never sent).
+const standIn = config.standIns[0] ?? null;
+const roundTrip = standIn === null ? null : new RoundTripSimulator({ rpc, priority: P2, standIn: toAddress(standIn), standInCheckMs: 60_000, now: () => timers.now() });
+const h15 = roundTrip === null ? undefined : (ctx: { readonly tip: () => bigint | null }) => simReader({
+  rpc, simulator: roundTrip, wallet: standIn, calibration,
+  poolOf: (mint) => worker?.poolOf(mint) ?? null, head: ctx.tip, maxSlippageBps,
+  priorityFee: policy.exits.ladder.steps[0]!.priorityFeeLamports, maxPriorityFee: policy.exits.ladder.maxFeePerAttempt,
+  tip: FILL_CONFIG.network.tip, maxTip: FILL_CONFIG.network.tip * 2n, lamportsPerSignature: FILL_CONFIG.network.baseFeePerSignature,
+  now: () => timers.now(), perHour: SIM_READS_PER_HOUR,
+  record: (r) => worker?.journal.write('h15_sim', { ...r }),
 });
 log(`Credentials present: ${environment.present.length} of 3 provider keys; heartbeat key ${environment.host.heartbeat_hmac_key === null ? 'absent' : 'present'}.`);
 
@@ -68,18 +85,18 @@ process.on('unhandledRejection', fatal);
 
 try {
   worker = new Worker({
-    config, session, rugs: RUG_CONFIG, strategy: strategyConfig(policy, FILL_CONFIG, RESEARCH_CONFIG, config.strategy.paperEdgePpm ?? 0n, config.strategy.name === 'S0' ? { timing: 'random', salt: config.runId ?? 'S0' } : { timing: 'gates', salt: '' }),
+    config, session, rugs: RUG_CONFIG, strategy: strategyConfig(policy, FILL_CONFIG, RESEARCH_CONFIG, config.strategy.paperEdgePpm ?? 0n, config.strategy.name === 'S0' ? { timing: 'random', salt: config.runId ?? 'S0', s0Diagnostic: config.strategy.s0Diagnostic } : { timing: 'gates', salt: '' }),
     scenario: FILL_CONFIG.scenarios[PAPER_SCENARIO], network: FILL_CONFIG.network, timers,
     sources: (ctx) => providers.feeds(ctx),
     simulate,
     fetchTx: (sig) => providers.fetchTx(sig),
-    seed: (r) => runSeed(r, { rpc: providers.seedRpc(), timers }),
+    seed: (r) => runSeed(r, { rpc: providers.seedRpc(), timers, budget: DailyBudget.load(join(config.stateDir, FILL_BUDGET_FILE), FILL_CREDITS_PER_DAY, timers.now()) }),
     seedWaitMs: 30_000,
     seedMaxMs: 90_000,
     ops: () => providers.ops(),
     cutRpc: (ms) => rpcCut.cut(ms),
     // FACTS-1b: FACTS-1's readers on the worker's Feed; core's producer makes the gate facts from what they read.
-    facts: [liveFacts({ policy, secrets: environment.secrets, http: http.facts, goplus: credits.scheduler(GOPLUS_FREE), coinbase: credits.scheduler(COINBASE_PUBLIC), github: { api: credits.scheduler(GITHUB_RELEASES), downloads: credits.scheduler(GITHUB_DOWNLOADS), stateDir: config.stateDir } })],
+    facts: [liveFacts({ policy, secrets: environment.secrets, http: http.facts, goplus: credits.scheduler(GOPLUS_FREE), coinbase: credits.scheduler(COINBASE_PUBLIC), github: { api: credits.scheduler(GITHUB_RELEASES), downloads: credits.scheduler(GITHUB_DOWNLOADS), stateDir: config.stateDir }, stateDir: config.stateDir, ...(h15 === undefined ? {} : { sim: h15 }), ...(config.strategy.s0Diagnostic ? { execStats: () => worker?.execStats() ?? null } : {}) })],
     schedulers: { helius: providers.helius, alchemy: providers.alchemy, jupiter: providers.jupiter, rugcheck: providers.rugcheck },
     exposureRpc: providers.seedRpc(),
     watchRead: providers.watchRead(),

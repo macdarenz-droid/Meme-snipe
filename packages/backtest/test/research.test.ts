@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { isMainThread } from 'node:worker_threads';
 import { describe, expect, test } from 'vitest';
 import { FILL_CONFIG, RESEARCH_CONFIG, TRIAL_POLICY } from '../../core/src/config/index.ts';
 import type { ManifestDay } from '../src/dataset/dataset.ts';
@@ -536,7 +537,16 @@ describe('cli', () => {
 // runs in its own fork, so maxRSS is this file's alone. Measured 2026-10-04: about 0.55 GB (5.6 GB before the shared
 // Melbourne-day formatter); the bound leaves about 2x headroom.
 const PEAK_RSS_BOUND_MB = 1024;
-test('the whole file stays under its memory bound', () => {
+test('the whole file stays under its memory bound', async () => {
+  // maxRSS is the process's peak: it is this file's only while the file has a process of its own (a fork, isolated).
+  // In a worker thread, or a fork shared with other files (`isolate: false`), it would be the whole pool's number.
+  expect(isMainThread).toBe(true);
+  // The root config is outside this package's TypeScript root: imported by path, its shape checked here.
+  const config = ((await import(join(ROOT, 'vitest.config.ts'))) as { default: { test?: { pool?: string; isolate?: boolean; projects?: unknown[] } } }).default;
+  const heavy = (config.test?.projects as { test?: { name?: string; include?: string[]; pool?: string; isolate?: boolean } }[]).find((x) => x.test?.include?.includes('packages/backtest/test/research.test.ts'));
+  expect(heavy?.test).toBeDefined();
+  expect(heavy!.test!.pool ?? config.test?.pool ?? 'forks').toBe('forks');
+  expect(heavy!.test!.isolate ?? config.test?.isolate ?? true).toBe(true);
   const peakMb = process.resourceUsage().maxRSS / 1024;
   expect(peakMb).toBeLessThan(PEAK_RSS_BOUND_MB);
 });

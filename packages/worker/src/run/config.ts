@@ -31,19 +31,26 @@ export interface WorkerConfig {
    * random-entry control (same gates, risk and exits, entry moment drawn in the window) for the non-qualifying
    * shakedown (supervisor ruling 2026-10-04). A qualifying run takes a strategy BT-2 registers.
    */
-  readonly strategy: { readonly name: string; readonly paperEdgePpm: bigint | null; readonly qualifying: boolean };
+  readonly strategy: { readonly name: string; readonly paperEdgePpm: bigint | null; readonly qualifying: boolean; readonly s0Diagnostic: boolean };
 }
 
 /**
- * WATCH-1 keeps a held position's market younger than the policy's quote age: a market is read again once it is
- * `staleMs` old, seen at most one period late, its answer used only within `latencyMs`, and released by the feed within
- * `releaseMs` (its horizon while slots arrive). So the oldest a market can be when an exit is judged is
- * staleMs + everyMs + latencyMs + releaseMs, which must stay below `maxQuoteAgeMs` (exits treat an older market as no
- * quote). Null when the timing holds; else why not (the entry exits 2, the worker refuses to build).
+ * WATCH-1's two quote-age bounds (DECISIONS "Released-fact freshness", supervisor ruling (a1')). A feed pool fact is
+ * judged from its release, the watch's own snapshot from its read, each read used only within `latencyMs` and released
+ * by the feed within `releaseMs` (its horizon while slots arrive).
+ * - Steady (a quiet pool kept on snapshots): staleMs + everyMs + latencyMs + releaseMs must stay below `maxQuoteAgeMs`.
+ * - Transition (a pool's feed facts stop: the last one may already be one release old): releaseMs + staleMs + everyMs +
+ *   latencyMs + releaseMs must stay within `maxQuoteAgeMs` + one release; for that window an exit waits for a fresh
+ *   market (EXIT-1d). With integer settings the steady bound implies this one; both are checked so neither can drift.
+ * Null when both hold; else why not (the entry exits 2, the worker refuses to build).
  */
-export const watchTimingProblem = (w: WorkerConfig['watch'], maxQuoteAgeMs: number, releaseMs: number): string | null =>
-  w.staleMs + w.everyMs + w.latencyMs + releaseMs < maxQuoteAgeMs ? null
-    : `refused: ZEROED_WATCH_STALE_MS + ZEROED_WATCH_EVERY_MS + ZEROED_WATCH_LATENCY_MS + the feed's release (${w.staleMs} + ${w.everyMs} + ${w.latencyMs} + ${releaseMs}) must stay below the policy's quote age of ${maxQuoteAgeMs} ms`;
+export const watchTimingProblem = (w: WorkerConfig['watch'], maxQuoteAgeMs: number, releaseMs: number): string | null => {
+  const steady = w.staleMs + w.everyMs + w.latencyMs + releaseMs;
+  if (!(steady < maxQuoteAgeMs)) return `refused: ZEROED_WATCH_STALE_MS + ZEROED_WATCH_EVERY_MS + ZEROED_WATCH_LATENCY_MS + the feed's release (${w.staleMs} + ${w.everyMs} + ${w.latencyMs} + ${releaseMs}) must stay below the policy's quote age of ${maxQuoteAgeMs} ms`;
+  const transition = releaseMs + steady;
+  if (!(transition <= maxQuoteAgeMs + releaseMs)) return `refused: at a feed's stop the market can reach ${transition} ms (release + stale + every + latency + release), beyond the policy's quote age of ${maxQuoteAgeMs} ms plus one release (${releaseMs} ms)`;
+  return null;
+};
 
 /** Solana's target slot time; the feed releases an off-chain fact once its horizon of slots has passed. */
 export const SLOT_MS = 400;
@@ -114,6 +121,13 @@ export const parseConfig = (
     if (!/^[1-9][0-9]{0,6}$/.test(edgeText) || BigInt(edgeText) > 1_000_000n) return refuse('refused: ZEROED_PAPER_EDGE_PPM must be a whole number from 1 to 1000000');
     paperEdgePpm = BigInt(edgeText);
   }
+  // WORKER-1e: S0's diagnostic set (core regime.ts `S0DiagnosticPart`), only for the shakedown and never in a release
+  // that names a qualifying run, whatever the run id.
+  const diagText = env['ZEROED_S0_DIAGNOSTIC'];
+  if (diagText !== undefined && diagText !== 'on') return refuse('refused: ZEROED_S0_DIAGNOSTIC must be on or unset');
+  const s0Diagnostic = diagText === 'on';
+  if (s0Diagnostic && name !== 'S0') return refuse('refused: ZEROED_S0_DIAGNOSTIC is only for the S0 shakedown');
+  if (s0Diagnostic && (qualifying || qualifyingRun !== null)) return refuse('refused: ZEROED_S0_DIAGNOSTIC is never used in a release with a qualifying run');
   const watchdog = env['WATCHDOG_URL'] ?? '';
   if (watchdog !== '' && !/^https:\/\/[^\s/]+(\/[^\s]*)?$/.test(watchdog)) return refuse('refused: WATCHDOG_URL must be an https URL');
   return {
@@ -126,7 +140,7 @@ export const parseConfig = (
       gitSha: env['ZEROED_GIT_SHA'] ?? release() ?? 'unknown',
       watchdogUrl: watchdog === '' ? null : watchdog.replace(/\/$/, ''),
       heartbeatMs: beat, watch: { everyMs: watchEvery, staleMs: watchStale, latencyMs: watchLatency }, wallet, standIns,
-      strategy: { name, paperEdgePpm, qualifying },
+      strategy: { name, paperEdgePpm, qualifying, s0Diagnostic },
     },
   };
 };

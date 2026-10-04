@@ -1,0 +1,9 @@
+E1-use-now:  ❯ |light| packages/core/test/gates/hard.test.ts (105 tests | 1 failed) 7188ms ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯  Test Files  1 failed | 13 passed (14) 
+E2-no-clamp:  ❯ |light| packages/core/test/gates/hard.test.ts (105 tests | 1 failed) 7283ms ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯  Test Files  1 failed | 12 passed (13) 
+E3-stream-now:  ❯ |light| packages/core/test/gates/hard.test.ts (105 tests | 1 failed) 7098ms ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯  Test Files  1 failed | 12 passed (13) 
+F1-ignore-complete:  ❯ |heavy| packages/backtest/test/study.test.ts (24 tests | 1 failed) 212409ms ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯  Test Files  1 failed | 2 passed (3) 
+F2-any-wallet:  ❯ |heavy| packages/backtest/test/study.test.ts (24 tests | 1 failed) 227676ms ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯  Test Files  1 failed | 2 passed (3) 
+R1-register-unsized:  ❯ |heavy| packages/backtest/test/full-study.test.ts (7 tests | 3 failed) 435513ms ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 3 ⎯⎯⎯⎯⎯⎯⎯  Test Files  1 failed | 2 passed (3) 
+M1-tip-batch-max:  ❯ |light| packages/backtest/test/replay.test.ts (9 tests | 1 failed) 285ms ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯  Test Files  1 failed | 2 passed (3) 
+W1-live-tip-plus:       Tests  1 passed (1) 
+DONE 18:39

@@ -1,0 +1,174 @@
+time="2026-10-04T04:37:40.350980836Z" level=info msg="Starting up"
+time="2026-10-04T04:37:40.353843021Z" level=info msg="containerd not running, starting managed containerd"
+time="2026-10-04T04:37:40.356122248Z" level=info msg="started new containerd process" address=/var/run/docker/containerd/containerd.sock module=libcontainerd pid=7702
+time="2026-10-04T04:37:40.461259322Z" level=info msg="starting containerd" revision=11ce9d5f3c68c941867e82890e93e815c1304f1b version=v2.2.6
+time="2026-10-04T04:37:40.478347828Z" level=warning msg="Configuration migrated from version 2, use `containerd config migrate` to avoid migration" t="5.559µs"
+time="2026-10-04T04:37:40.478445620Z" level=info msg="loading plugin" id=io.containerd.content.v1.content type=io.containerd.content.v1
+time="2026-10-04T04:37:40.479104189Z" level=info msg="loading plugin" id=io.containerd.image-verifier.v1.bindir type=io.containerd.image-verifier.v1
+time="2026-10-04T04:37:40.479490555Z" level=info msg="loading plugin" id=io.containerd.internal.v1.opt type=io.containerd.internal.v1
+time="2026-10-04T04:37:40.479693013Z" level=info msg="loading plugin" id=io.containerd.warning.v1.deprecations type=io.containerd.warning.v1
+time="2026-10-04T04:37:40.479710818Z" level=info msg="loading plugin" id=io.containerd.mount-handler.v1.erofs type=io.containerd.mount-handler.v1
+time="2026-10-04T04:37:40.479749950Z" level=info msg="loading plugin" id=io.containerd.snapshotter.v1.blockfile type=io.containerd.snapshotter.v1
+time="2026-10-04T04:37:40.479863030Z" level=info msg="skip loading plugin" error="no scratch file generator: skip plugin" id=io.containerd.snapshotter.v1.blockfile type=io.containerd.snapshotter.v1
+time="2026-10-04T04:37:40.479876371Z" level=info msg="loading plugin" id=io.containerd.snapshotter.v1.btrfs type=io.containerd.snapshotter.v1
+time="2026-10-04T04:37:40.480135075Z" level=info msg="skip loading plugin" error="path /var/lib/docker/containerd/daemon/io.containerd.snapshotter.v1.btrfs (ext4) must be a btrfs filesystem to be used with the btrfs snapshotter: skip plugin" id=io.containerd.snapshotter.v1.btrfs type=io.containerd.snapshotter.v1
+time="2026-10-04T04:37:40.480148777Z" level=info msg="loading plugin" id=io.containerd.snapshotter.v1.devmapper type=io.containerd.snapshotter.v1
+time="2026-10-04T04:37:40.480156859Z" level=info msg="skip loading plugin" error="devmapper not configured: skip plugin" id=io.containerd.snapshotter.v1.devmapper type=io.containerd.snapshotter.v1
+time="2026-10-04T04:37:40.480163213Z" level=info msg="loading plugin" id=io.containerd.snapshotter.v1.erofs type=io.containerd.snapshotter.v1
+time="2026-10-04T04:37:40.480406526Z" level=info msg="loading plugin" id=io.containerd.snapshotter.v1.native type=io.containerd.snapshotter.v1
+time="2026-10-04T04:37:40.480651095Z" level=info msg="loading plugin" id=io.containerd.snapshotter.v1.overlayfs type=io.containerd.snapshotter.v1
+time="2026-10-04T04:37:40.480980228Z" level=info msg="loading plugin" id=io.containerd.snapshotter.v1.zfs type=io.containerd.snapshotter.v1
+time="2026-10-04T04:37:40.481014218Z" level=info msg="skip loading plugin" error="lstat /var/lib/docker/containerd/daemon/io.containerd.snapshotter.v1.zfs: no such file or directory: skip plugin" id=io.containerd.snapshotter.v1.zfs type=io.containerd.snapshotter.v1
+time="2026-10-04T04:37:40.481027094Z" level=info msg="loading plugin" id=io.containerd.event.v1.exchange type=io.containerd.event.v1
+time="2026-10-04T04:37:40.481455396Z" level=info msg="loading plugin" id=io.containerd.monitor.task.v1.cgroups type=io.containerd.monitor.task.v1
+time="2026-10-04T04:37:40.482956134Z" level=info msg="loading plugin" id=io.containerd.metadata.v1.bolt type=io.containerd.metadata.v1
+time="2026-10-04T04:37:40.483007168Z" level=info msg="metadata content store policy set" policy=shared
+time="2026-10-04T04:37:40.488630518Z" level=info msg="loading plugin" id=io.containerd.gc.v1.scheduler type=io.containerd.gc.v1
+time="2026-10-04T04:37:40.488687390Z" level=info msg="loading plugin" id=io.containerd.nri.v1.nri type=io.containerd.nri.v1
+time="2026-10-04T04:37:40.488735102Z" level=info msg="built-in NRI default validator is disabled"
+time="2026-10-04T04:37:40.488746798Z" level=info msg="runtime interface created"
+time="2026-10-04T04:37:40.488750872Z" level=info msg="created NRI interface"
+time="2026-10-04T04:37:40.488803965Z" level=info msg="loading plugin" id=io.containerd.differ.v1.erofs type=io.containerd.differ.v1
+time="2026-10-04T04:37:40.489061646Z" level=info msg="skip loading plugin" error="failed to check mkfs.erofs availability: failed to run mkfs.erofs --help: exec: \"mkfs.erofs\": executable file not found in $PATH: skip plugin" id=io.containerd.differ.v1.erofs type=io.containerd.differ.v1
+time="2026-10-04T04:37:40.489077034Z" level=info msg="loading plugin" id=io.containerd.mount-manager.v1.bolt type=io.containerd.mount-manager.v1
+time="2026-10-04T04:37:40.489535376Z" level=info msg="loading plugin" id=io.containerd.differ.v1.walking type=io.containerd.differ.v1
+time="2026-10-04T04:37:40.489615280Z" level=info msg="loading plugin" id=io.containerd.lease.v1.manager type=io.containerd.lease.v1
+time="2026-10-04T04:37:40.489630806Z" level=info msg="loading plugin" id=io.containerd.service.v1.containers-service type=io.containerd.service.v1
+time="2026-10-04T04:37:40.489642735Z" level=info msg="loading plugin" id=io.containerd.service.v1.content-service type=io.containerd.service.v1
+time="2026-10-04T04:37:40.489655036Z" level=info msg="loading plugin" id=io.containerd.service.v1.diff-service type=io.containerd.service.v1
+time="2026-10-04T04:37:40.489678038Z" level=info msg="loading plugin" id=io.containerd.service.v1.images-service type=io.containerd.service.v1
+time="2026-10-04T04:37:40.489689521Z" level=info msg="loading plugin" id=io.containerd.service.v1.introspection-service type=io.containerd.service.v1
+time="2026-10-04T04:37:40.489697360Z" level=info msg="loading plugin" id=io.containerd.service.v1.namespaces-service type=io.containerd.service.v1
+time="2026-10-04T04:37:40.489711364Z" level=info msg="loading plugin" id=io.containerd.service.v1.snapshots-service type=io.containerd.service.v1
+time="2026-10-04T04:37:40.489719822Z" level=info msg="loading plugin" id=io.containerd.shim.v1.manager type=io.containerd.shim.v1
+time="2026-10-04T04:37:40.489728550Z" level=info msg="loading plugin" id=io.containerd.runtime.v2.task type=io.containerd.runtime.v2
+time="2026-10-04T04:37:40.490337384Z" level=info msg="loading plugin" id=io.containerd.service.v1.tasks-service type=io.containerd.service.v1
+time="2026-10-04T04:37:40.490422876Z" level=info msg="loading plugin" id=io.containerd.grpc.v1.containers type=io.containerd.grpc.v1
+time="2026-10-04T04:37:40.490441966Z" level=info msg="loading plugin" id=io.containerd.grpc.v1.content type=io.containerd.grpc.v1
+time="2026-10-04T04:37:40.490467468Z" level=info msg="loading plugin" id=io.containerd.grpc.v1.diff type=io.containerd.grpc.v1
+time="2026-10-04T04:37:40.490488192Z" level=info msg="loading plugin" id=io.containerd.grpc.v1.events type=io.containerd.grpc.v1
+time="2026-10-04T04:37:40.490504647Z" level=info msg="loading plugin" id=io.containerd.grpc.v1.images type=io.containerd.grpc.v1
+time="2026-10-04T04:37:40.490521722Z" level=info msg="loading plugin" id=io.containerd.grpc.v1.introspection type=io.containerd.grpc.v1
+time="2026-10-04T04:37:40.490535570Z" level=info msg="loading plugin" id=io.containerd.grpc.v1.leases type=io.containerd.grpc.v1
+time="2026-10-04T04:37:40.490554410Z" level=info msg="loading plugin" id=io.containerd.grpc.v1.mounts type=io.containerd.grpc.v1
+time="2026-10-04T04:37:40.490576094Z" level=info msg="loading plugin" id=io.containerd.grpc.v1.namespaces type=io.containerd.grpc.v1
+time="2026-10-04T04:37:40.490597374Z" level=info msg="loading plugin" id=io.containerd.sandbox.store.v1.local type=io.containerd.sandbox.store.v1
+time="2026-10-04T04:37:40.490611831Z" level=info msg="loading plugin" id=io.containerd.transfer.v1.local type=io.containerd.transfer.v1
+time="2026-10-04T04:37:40.490656374Z" level=info msg="loading plugin" id=io.containerd.cri.v1.images type=io.containerd.cri.v1
+time="2026-10-04T04:37:40.490775467Z" level=info msg="Get image filesystem path \"/var/lib/docker/containerd/daemon/io.containerd.snapshotter.v1.overlayfs\" for snapshotter \"overlayfs\""
+time="2026-10-04T04:37:40.490795410Z" level=info msg="Start snapshots syncer"
+time="2026-10-04T04:37:40.491123488Z" level=info msg="loading plugin" id=io.containerd.cri.v1.runtime type=io.containerd.cri.v1
+time="2026-10-04T04:37:40.491375895Z" level=info msg="starting cri plugin" config="{\"containerd\":{\"defaultRuntimeName\":\"runc\",\"runtimes\":{\"runc\":{\"runtimeType\":\"io.containerd.runc.v2\",\"runtimePath\":\"\",\"PodAnnotations\":null,\"ContainerAnnotations\":null,\"options\":{\"BinaryName\":\"\",\"CriuImagePath\":\"\",\"CriuWorkPath\":\"\",\"IoGid\":0,\"IoUid\":0,\"NoNewKeyring\":false,\"Root\":\"\",\"ShimCgroup\":\"\",\"SystemdCgroup\":false},\"privileged_without_host_devices\":false,\"privileged_without_host_devices_all_devices_allowed\":false,\"cgroupWritable\":false,\"baseRuntimeSpec\":\"\",\"cniConfDir\":\"\",\"cniMaxConfNum\":0,\"snapshotter\":\"\",\"sandboxer\":\"podsandbox\",\"io_type\":\"\"}},\"ignoreBlockIONotEnabledErrors\":false,\"ignoreRdtNotEnabledErrors\":false},\"cni\":{\"binDir\":\"\",\"binDirs\":[\"/opt/cni/bin\"],\"confDir\":\"/etc/cni/net.d\",\"maxConfNum\":1,\"setupSerially\":false,\"confTemplate\":\"\",\"ipPref\":\"\",\"useInternalLoopback\":false},\"enableSelinux\":false,\"selinuxCategoryRange\":1024,\"maxContainerLogLineSize\":16384,\"disableApparmor\":false,\"restrictOOMScoreAdj\":false,\"disableProcMount\":false,\"unsetSeccompProfile\":\"\",\"tolerateMissingHugetlbController\":true,\"disableHugetlbController\":true,\"device_ownership_from_security_context\":false,\"ignoreImageDefinedVolumes\":false,\"netnsMountsUnderStateDir\":false,\"enableUnprivilegedPorts\":true,\"enableUnprivilegedICMP\":true,\"enableCDI\":true,\"cdiSpecDirs\":[\"/etc/cdi\",\"/var/run/cdi\"],\"drainExecSyncIOTimeout\":\"0s\",\"ignoreDeprecationWarnings\":null,\"containerdRootDir\":\"/var/lib/docker/containerd/daemon\",\"containerdEndpoint\":\"/var/run/docker/containerd/containerd.sock\",\"rootDir\":\"/var/lib/docker/containerd/daemon/io.containerd.grpc.v1.cri\",\"stateDir\":\"/var/run/docker/containerd/daemon/io.containerd.grpc.v1.cri\"}"
+time="2026-10-04T04:37:40.491435121Z" level=info msg="loading plugin" id=io.containerd.podsandbox.controller.v1.podsandbox type=io.containerd.podsandbox.controller.v1
+time="2026-10-04T04:37:40.491864899Z" level=info msg="loading plugin" id=io.containerd.sandbox.controller.v1.shim type=io.containerd.sandbox.controller.v1
+time="2026-10-04T04:37:40.491981709Z" level=info msg="loading plugin" id=io.containerd.grpc.v1.sandbox-controllers type=io.containerd.grpc.v1
+time="2026-10-04T04:37:40.492005568Z" level=info msg="loading plugin" id=io.containerd.grpc.v1.sandboxes type=io.containerd.grpc.v1
+time="2026-10-04T04:37:40.492014786Z" level=info msg="loading plugin" id=io.containerd.grpc.v1.snapshots type=io.containerd.grpc.v1
+time="2026-10-04T04:37:40.492022307Z" level=info msg="loading plugin" id=io.containerd.streaming.v1.manager type=io.containerd.streaming.v1
+time="2026-10-04T04:37:40.492031226Z" level=info msg="loading plugin" id=io.containerd.grpc.v1.streaming type=io.containerd.grpc.v1
+time="2026-10-04T04:37:40.492039193Z" level=info msg="loading plugin" id=io.containerd.grpc.v1.tasks type=io.containerd.grpc.v1
+time="2026-10-04T04:37:40.492047788Z" level=info msg="loading plugin" id=io.containerd.grpc.v1.transfer type=io.containerd.grpc.v1
+time="2026-10-04T04:37:40.492059495Z" level=info msg="loading plugin" id=io.containerd.grpc.v1.version type=io.containerd.grpc.v1
+time="2026-10-04T04:37:40.492110162Z" level=info msg="loading plugin" id=io.containerd.monitor.container.v1.restart type=io.containerd.monitor.container.v1
+time="2026-10-04T04:37:40.492481875Z" level=info msg="loading plugin" id=io.containerd.tracing.processor.v1.otlp type=io.containerd.tracing.processor.v1
+time="2026-10-04T04:37:40.492499366Z" level=info msg="skip loading plugin" error="skip plugin: tracing endpoint not configured" id=io.containerd.tracing.processor.v1.otlp type=io.containerd.tracing.processor.v1
+time="2026-10-04T04:37:40.492510933Z" level=info msg="loading plugin" id=io.containerd.internal.v1.tracing type=io.containerd.internal.v1
+time="2026-10-04T04:37:40.492517954Z" level=info msg="skip loading plugin" error="skip plugin: tracing endpoint not configured" id=io.containerd.internal.v1.tracing type=io.containerd.internal.v1
+time="2026-10-04T04:37:40.492524344Z" level=info msg="loading plugin" id=io.containerd.ttrpc.v1.otelttrpc type=io.containerd.ttrpc.v1
+time="2026-10-04T04:37:40.492532796Z" level=info msg="loading plugin" id=io.containerd.grpc.v1.healthcheck type=io.containerd.grpc.v1
+time="2026-10-04T04:37:40.493413502Z" level=info msg=serving... address=/var/run/docker/containerd/containerd-debug.sock
+time="2026-10-04T04:37:40.493487788Z" level=info msg=serving... address=/var/run/docker/containerd/containerd.sock.ttrpc
+time="2026-10-04T04:37:40.493529182Z" level=info msg=serving... address=/var/run/docker/containerd/containerd.sock
+time="2026-10-04T04:37:40.493598696Z" level=info msg="containerd successfully booted in 0.034690s"
+time="2026-10-04T04:37:40.502263392Z" level=info msg="OTEL tracing is not configured, using no-op tracer provider"
+time="2026-10-04T04:37:40.502641841Z" level=info msg="CDI directory does not exist, skipping" dir=/etc/cdi
+time="2026-10-04T04:37:40.502659802Z" level=info msg="CDI directory does not exist, skipping" dir=/var/run/cdi
+time="2026-10-04T04:37:40.544683969Z" level=info msg="Creating a containerd client" address=/var/run/docker/containerd/containerd.sock timeout=1m0s
+time="2026-10-04T04:37:40.552524226Z" level=info msg="Loading containers: start."
+time="2026-10-04T04:37:40.552778593Z" level=info msg="NRI is disabled"
+time="2026-10-04T04:37:40.552790293Z" level=info msg="Starting daemon with containerd snapshotter integration enabled"
+time="2026-10-04T04:37:40.557216880Z" level=info msg="Restoring containers: start."
+time="2026-10-04T04:37:40.598633489Z" level=info msg="Deleting nftables IPv4 rules" error="running nft: /dev/stdin:1:17-30: Error: Could not process rule: No such file or directory\ndelete table ip docker-bridges\n                ^^^^^^^^^^^^^^\n exit status 1"
+time="2026-10-04T04:37:40.630565530Z" level=info msg="Deleting nftables IPv6 rules" error="running nft: /dev/stdin:1:18-31: Error: Could not process rule: No such file or directory\ndelete table ip6 docker-bridges\n                 ^^^^^^^^^^^^^^\n exit status 1"
+time="2026-10-04T04:37:40.850346268Z" level=info msg="failed to read ipv6 net.ipv6.conf.<bridge>.accept_ra" bridge=docker0 syspath=/proc/sys/net/ipv6/conf/docker0/accept_ra
+time="2026-10-04T04:37:40.850395142Z" level=info msg="failed to read ipv6 net.ipv6.conf.<bridge>.accept_ra" bridge=docker0 syspath=/proc/sys/net/ipv6/conf/docker0/accept_ra
+time="2026-10-04T04:37:41.032261409Z" level=info msg="failed to read ipv6 net.ipv6.conf.<bridge>.accept_ra" bridge=docker0 syspath=/proc/sys/net/ipv6/conf/docker0/accept_ra
+time="2026-10-04T04:37:41.070658276Z" level=info msg="Loading containers: done."
+time="2026-10-04T04:37:41.083312570Z" level=warning msg="WARNING: Support for cgroup v1 is deprecated and planned to be removed by no later than May 2029 (https://github.com/moby/moby/issues/51111)"
+time="2026-10-04T04:37:41.083352061Z" level=info msg="Docker daemon" commit=3d80467 containerd-snapshotter=true storage-driver=overlayfs version=29.6.2
+time="2026-10-04T04:37:41.083674843Z" level=info msg="Initializing buildkit"
+time="2026-10-04T04:37:41.218037266Z" level=info msg="Completed buildkit initialization"
+time="2026-10-04T04:37:41.225729037Z" level=info msg="Daemon has completed initialization"
+time="2026-10-04T04:37:41.225819526Z" level=info msg="API listen on /var/run/docker.sock"
+time="2026-10-04T04:37:52.200030811Z" level=info msg="connecting to shim 119f054d5ad7139d783feb05c74d6cd1da72495e016215703259609a13d7f8e1" address="unix:///run/containerd/s/7ca3665a4d3a07781ae2189f67ce29571a1a6d5e9f873ded92435010d6976b82" namespace=moby protocol=ttrpc version=3
+time="2026-10-04T04:37:52.300072322Z" level=info msg="sbJoin: gwep4 ''->'3ed6c4bdb334', gwep6 ''->''" eid=3ed6c4bdb334 ep=zeroed-e2e net=bridge nid=2c873af0d75c
+time="2026-10-04T04:45:25.082899555Z" level=info msg="shim disconnected" id=119f054d5ad7139d783feb05c74d6cd1da72495e016215703259609a13d7f8e1 namespace=moby
+time="2026-10-04T04:45:25.082960424Z" level=info msg="cleaning up after shim disconnected" id=119f054d5ad7139d783feb05c74d6cd1da72495e016215703259609a13d7f8e1 namespace=moby
+time="2026-10-04T04:45:25.082967370Z" level=info msg="cleaning up dead shim" id=119f054d5ad7139d783feb05c74d6cd1da72495e016215703259609a13d7f8e1 namespace=moby
+time="2026-10-04T04:45:25.083837785Z" level=info msg="received task-delete event from containerd" container=119f054d5ad7139d783feb05c74d6cd1da72495e016215703259609a13d7f8e1 module=libcontainerd namespace=moby topic=/tasks/delete type="*events.TaskDelete"
+time="2026-10-04T04:45:33.897200747Z" level=info msg="connecting to shim ecbf96cd5f3806d9dc67f422a4191a991ac2fc497c78aabc94b656a688bb8b1b" address="unix:///run/containerd/s/e0aadd6dba5e8f7cd6d3c51184acaed6f1d4c2f08118fc8884ae5ddaa9bb3131" namespace=moby protocol=ttrpc version=3
+time="2026-10-04T04:45:33.967928620Z" level=info msg="sbJoin: gwep4 ''->'31797d35b03d', gwep6 ''->''" eid=31797d35b03d ep=zeroed-e2e net=bridge nid=2c873af0d75c
+time="2026-10-04T04:53:30.036922583Z" level=info msg="shim disconnected" id=ecbf96cd5f3806d9dc67f422a4191a991ac2fc497c78aabc94b656a688bb8b1b namespace=moby
+time="2026-10-04T04:53:30.036976435Z" level=info msg="cleaning up after shim disconnected" id=ecbf96cd5f3806d9dc67f422a4191a991ac2fc497c78aabc94b656a688bb8b1b namespace=moby
+time="2026-10-04T04:53:30.036990606Z" level=info msg="cleaning up dead shim" id=ecbf96cd5f3806d9dc67f422a4191a991ac2fc497c78aabc94b656a688bb8b1b namespace=moby
+time="2026-10-04T04:53:30.037167029Z" level=info msg="received task-delete event from containerd" container=ecbf96cd5f3806d9dc67f422a4191a991ac2fc497c78aabc94b656a688bb8b1b module=libcontainerd namespace=moby topic=/tasks/delete type="*events.TaskDelete"
+time="2026-10-04T04:53:42.633060861Z" level=info msg="connecting to shim fe9bdaeedc53028ca93f297b4b44c245067085984017ae853f0cffd6009a390a" address="unix:///run/containerd/s/94f0d975714933fa2b05e4948543b576aaac3fe85c474664a8a96b6c00c9adf0" namespace=moby protocol=ttrpc version=3
+time="2026-10-04T04:53:42.716106741Z" level=info msg="sbJoin: gwep4 ''->'b1fb853c07e5', gwep6 ''->''" eid=b1fb853c07e5 ep=zeroed-e2e net=bridge nid=2c873af0d75c
+time="2026-10-04T05:01:19.491502379Z" level=info msg="received task-delete event from containerd" container=fe9bdaeedc53028ca93f297b4b44c245067085984017ae853f0cffd6009a390a module=libcontainerd namespace=moby topic=/tasks/delete type="*events.TaskDelete"
+time="2026-10-04T05:01:19.491949290Z" level=info msg="shim disconnected" id=fe9bdaeedc53028ca93f297b4b44c245067085984017ae853f0cffd6009a390a namespace=moby
+time="2026-10-04T05:01:19.492054163Z" level=info msg="cleaning up after shim disconnected" id=fe9bdaeedc53028ca93f297b4b44c245067085984017ae853f0cffd6009a390a namespace=moby
+time="2026-10-04T05:01:19.492072071Z" level=info msg="cleaning up dead shim" id=fe9bdaeedc53028ca93f297b4b44c245067085984017ae853f0cffd6009a390a namespace=moby
+time="2026-10-04T05:01:31.862074691Z" level=info msg="connecting to shim 8836b3e83838ef720b04694fec6f39699d8b0820af04cd5c14a40fdfdcc15bef" address="unix:///run/containerd/s/9ce9cb2a004f8da75eb6da635c6895ce6986ba11768a345eb2f099260370421c" namespace=moby protocol=ttrpc version=3
+time="2026-10-04T05:01:31.917910530Z" level=info msg="sbJoin: gwep4 ''->'9ff0a12fb930', gwep6 ''->''" eid=9ff0a12fb930 ep=zeroed-e2e net=bridge nid=2c873af0d75c
+time="2026-10-04T05:09:33.488824096Z" level=info msg="received task-delete event from containerd" container=8836b3e83838ef720b04694fec6f39699d8b0820af04cd5c14a40fdfdcc15bef module=libcontainerd namespace=moby topic=/tasks/delete type="*events.TaskDelete"
+time="2026-10-04T05:09:33.489474436Z" level=info msg="shim disconnected" id=8836b3e83838ef720b04694fec6f39699d8b0820af04cd5c14a40fdfdcc15bef namespace=moby
+time="2026-10-04T05:09:33.490352974Z" level=info msg="cleaning up after shim disconnected" id=8836b3e83838ef720b04694fec6f39699d8b0820af04cd5c14a40fdfdcc15bef namespace=moby
+time="2026-10-04T05:09:33.490385906Z" level=info msg="cleaning up dead shim" id=8836b3e83838ef720b04694fec6f39699d8b0820af04cd5c14a40fdfdcc15bef namespace=moby
+time="2026-10-04T05:09:45.793197676Z" level=info msg="connecting to shim 67b7d8b83ed4923ad1d528be2f3b744ddfd580f6f528f3d6b6c76dca63e86930" address="unix:///run/containerd/s/60b059a91bcf4859f7b82b339fd871167ddb94b67e497246be9d8993668afcf8" namespace=moby protocol=ttrpc version=3
+time="2026-10-04T05:09:45.864769690Z" level=info msg="sbJoin: gwep4 ''->'6ec45c724d72', gwep6 ''->''" eid=6ec45c724d72 ep=zeroed-e2e net=bridge nid=2c873af0d75c
+time="2026-10-04T05:23:09.774978688Z" level=info msg="shim disconnected" id=67b7d8b83ed4923ad1d528be2f3b744ddfd580f6f528f3d6b6c76dca63e86930 namespace=moby
+time="2026-10-04T05:23:09.775028446Z" level=info msg="cleaning up after shim disconnected" id=67b7d8b83ed4923ad1d528be2f3b744ddfd580f6f528f3d6b6c76dca63e86930 namespace=moby
+time="2026-10-04T05:23:09.775035216Z" level=info msg="cleaning up dead shim" id=67b7d8b83ed4923ad1d528be2f3b744ddfd580f6f528f3d6b6c76dca63e86930 namespace=moby
+time="2026-10-04T05:23:09.775439909Z" level=info msg="received task-delete event from containerd" container=67b7d8b83ed4923ad1d528be2f3b744ddfd580f6f528f3d6b6c76dca63e86930 module=libcontainerd namespace=moby topic=/tasks/delete type="*events.TaskDelete"
+time="2026-10-04T05:23:22.900905694Z" level=info msg="connecting to shim b930007769507ccb744d572be7405cf712d2dcddc3ba9911593a722d71097a0c" address="unix:///run/containerd/s/18c5f43b3e6b286463cc1ee3fc78da65cbd8fd67d3054ea591ef49860207e04a" namespace=moby protocol=ttrpc version=3
+time="2026-10-04T05:23:22.980871280Z" level=info msg="sbJoin: gwep4 ''->'0d4dd0f399fd', gwep6 ''->''" eid=0d4dd0f399fd ep=zeroed-e2e net=bridge nid=2c873af0d75c
+time="2026-10-04T05:31:55.118340854Z" level=info msg="shim disconnected" id=b930007769507ccb744d572be7405cf712d2dcddc3ba9911593a722d71097a0c namespace=moby
+time="2026-10-04T05:31:55.118390552Z" level=info msg="cleaning up after shim disconnected" id=b930007769507ccb744d572be7405cf712d2dcddc3ba9911593a722d71097a0c namespace=moby
+time="2026-10-04T05:31:55.118397319Z" level=info msg="cleaning up dead shim" id=b930007769507ccb744d572be7405cf712d2dcddc3ba9911593a722d71097a0c namespace=moby
+time="2026-10-04T05:31:55.118640179Z" level=info msg="received task-delete event from containerd" container=b930007769507ccb744d572be7405cf712d2dcddc3ba9911593a722d71097a0c module=libcontainerd namespace=moby topic=/tasks/delete type="*events.TaskDelete"
+time="2026-10-04T05:51:11.280318036Z" level=info msg="connecting to shim 117a31390fa0e506058dd1412b891963e6deab5e3a2df148ac6c7e122b688e17" address="unix:///run/containerd/s/e3eb920a9209dfa7e36b1a878e5cffcb2c9b268e771bbbe0b684f58058e434de" namespace=moby protocol=ttrpc version=3
+time="2026-10-04T05:51:11.347534272Z" level=info msg="sbJoin: gwep4 ''->'5fab6046384c', gwep6 ''->''" eid=5fab6046384c ep=zeroed-e2e net=bridge nid=2c873af0d75c
+time="2026-10-04T06:00:20.222961920Z" level=info msg="received task-delete event from containerd" container=117a31390fa0e506058dd1412b891963e6deab5e3a2df148ac6c7e122b688e17 module=libcontainerd namespace=moby topic=/tasks/delete type="*events.TaskDelete"
+time="2026-10-04T06:00:20.223534456Z" level=info msg="shim disconnected" id=117a31390fa0e506058dd1412b891963e6deab5e3a2df148ac6c7e122b688e17 namespace=moby
+time="2026-10-04T06:00:20.223599011Z" level=info msg="cleaning up after shim disconnected" id=117a31390fa0e506058dd1412b891963e6deab5e3a2df148ac6c7e122b688e17 namespace=moby
+time="2026-10-04T06:00:20.223613180Z" level=info msg="cleaning up dead shim" id=117a31390fa0e506058dd1412b891963e6deab5e3a2df148ac6c7e122b688e17 namespace=moby
+time="2026-10-04T06:00:33.517265397Z" level=info msg="connecting to shim 25b53461b330a1104291b6128c11b8ea7f422462a2662fc08f3096841b8e15de" address="unix:///run/containerd/s/6fb792255c79d6d6ef7c288ca1dba6c26e14ba2cbb189cb12106fe24ea94cd2c" namespace=moby protocol=ttrpc version=3
+time="2026-10-04T06:00:33.572517569Z" level=info msg="sbJoin: gwep4 ''->'1318ccdc3a24', gwep6 ''->''" eid=1318ccdc3a24 ep=zeroed-e2e net=bridge nid=2c873af0d75c
+time="2026-10-04T06:17:31.808218068Z" level=info msg="received task-delete event from containerd" container=25b53461b330a1104291b6128c11b8ea7f422462a2662fc08f3096841b8e15de module=libcontainerd namespace=moby topic=/tasks/delete type="*events.TaskDelete"
+time="2026-10-04T06:17:31.808540726Z" level=info msg="shim disconnected" id=25b53461b330a1104291b6128c11b8ea7f422462a2662fc08f3096841b8e15de namespace=moby
+time="2026-10-04T06:17:31.808590542Z" level=info msg="cleaning up after shim disconnected" id=25b53461b330a1104291b6128c11b8ea7f422462a2662fc08f3096841b8e15de namespace=moby
+time="2026-10-04T06:17:31.808597869Z" level=info msg="cleaning up dead shim" id=25b53461b330a1104291b6128c11b8ea7f422462a2662fc08f3096841b8e15de namespace=moby
+time="2026-10-04T06:33:35.088428500Z" level=info msg="connecting to shim f3003b89ccf6cd7a81d60070f3c05061a581fbac17b452ea1d8fb47d73bf0672" address="unix:///run/containerd/s/bbc0a8e6eac6b11472e1d178f8b6dee32c04594ef9333eaddc2e42699dc76303" namespace=moby protocol=ttrpc version=3
+time="2026-10-04T06:33:35.153983811Z" level=info msg="sbJoin: gwep4 ''->'eed6a067fc25', gwep6 ''->''" eid=eed6a067fc25 ep=zeroed-e2e net=bridge nid=2c873af0d75c
+time="2026-10-04T06:33:43.586312915Z" level=info msg="received task-delete event from containerd" container=f3003b89ccf6cd7a81d60070f3c05061a581fbac17b452ea1d8fb47d73bf0672 module=libcontainerd namespace=moby topic=/tasks/delete type="*events.TaskDelete"
+time="2026-10-04T06:33:43.586747298Z" level=info msg="shim disconnected" id=f3003b89ccf6cd7a81d60070f3c05061a581fbac17b452ea1d8fb47d73bf0672 namespace=moby
+time="2026-10-04T06:33:43.586790413Z" level=info msg="cleaning up after shim disconnected" id=f3003b89ccf6cd7a81d60070f3c05061a581fbac17b452ea1d8fb47d73bf0672 namespace=moby
+time="2026-10-04T06:33:43.586797507Z" level=info msg="cleaning up dead shim" id=f3003b89ccf6cd7a81d60070f3c05061a581fbac17b452ea1d8fb47d73bf0672 namespace=moby
+time="2026-10-04T06:34:21.954656606Z" level=info msg="connecting to shim 23806a56e62f3180acdf78c26fe7f8a86abb72429633089f81601616b372b418" address="unix:///run/containerd/s/6c4e52238d5800a33fd7c18a3769359a1384d523c3cabf1fc812f89350b2c0e1" namespace=moby protocol=ttrpc version=3
+time="2026-10-04T06:34:22.030662547Z" level=info msg="sbJoin: gwep4 ''->'d88ecfb6376e', gwep6 ''->''" eid=d88ecfb6376e ep=zeroed-e2e net=bridge nid=2c873af0d75c
+time="2026-10-04T06:42:23.276785392Z" level=info msg="received task-delete event from containerd" container=23806a56e62f3180acdf78c26fe7f8a86abb72429633089f81601616b372b418 module=libcontainerd namespace=moby topic=/tasks/delete type="*events.TaskDelete"
+time="2026-10-04T06:42:23.277037947Z" level=info msg="shim disconnected" id=23806a56e62f3180acdf78c26fe7f8a86abb72429633089f81601616b372b418 namespace=moby
+time="2026-10-04T06:42:23.277106188Z" level=info msg="cleaning up after shim disconnected" id=23806a56e62f3180acdf78c26fe7f8a86abb72429633089f81601616b372b418 namespace=moby
+time="2026-10-04T06:42:23.277119495Z" level=info msg="cleaning up dead shim" id=23806a56e62f3180acdf78c26fe7f8a86abb72429633089f81601616b372b418 namespace=moby
+time="2026-10-04T06:43:01.557231622Z" level=info msg="connecting to shim 8a5860ee8baf48c12ed78b6799814cd2976fa2980dd3c96bc543e3a3e2782f96" address="unix:///run/containerd/s/89bbd0f8701cd6dd45751f648edf772f39aa29d18a21b4fa912f9302cfc82496" namespace=moby protocol=ttrpc version=3
+time="2026-10-04T06:43:01.629638308Z" level=info msg="sbJoin: gwep4 ''->'7f0fe514b49d', gwep6 ''->''" eid=7f0fe514b49d ep=zeroed-e2e net=bridge nid=2c873af0d75c
+time="2026-10-04T06:51:37.031834230Z" level=info msg="shim disconnected" id=8a5860ee8baf48c12ed78b6799814cd2976fa2980dd3c96bc543e3a3e2782f96 namespace=moby
+time="2026-10-04T06:51:37.031882385Z" level=info msg="cleaning up after shim disconnected" id=8a5860ee8baf48c12ed78b6799814cd2976fa2980dd3c96bc543e3a3e2782f96 namespace=moby
+time="2026-10-04T06:51:37.031899718Z" level=info msg="cleaning up dead shim" id=8a5860ee8baf48c12ed78b6799814cd2976fa2980dd3c96bc543e3a3e2782f96 namespace=moby
+time="2026-10-04T06:51:37.032025916Z" level=info msg="received task-delete event from containerd" container=8a5860ee8baf48c12ed78b6799814cd2976fa2980dd3c96bc543e3a3e2782f96 module=libcontainerd namespace=moby topic=/tasks/delete type="*events.TaskDelete"
+time="2026-10-04T06:51:49.194205616Z" level=info msg="connecting to shim d77cfc522e42269ad0eb45fec3839c3b6314abd879152c3e54f58cf4288ae758" address="unix:///run/containerd/s/3fa77f2ec4a876858968e892508f3234542a1557ce839a9a95f1de0098c29ffe" namespace=moby protocol=ttrpc version=3
+time="2026-10-04T06:51:49.249176263Z" level=info msg="sbJoin: gwep4 ''->'2095f3e7fb8c', gwep6 ''->''" eid=2095f3e7fb8c ep=zeroed-e2e net=bridge nid=2c873af0d75c
+time="2026-10-04T07:03:36.183676846Z" level=info msg="received task-delete event from containerd" container=d77cfc522e42269ad0eb45fec3839c3b6314abd879152c3e54f58cf4288ae758 module=libcontainerd namespace=moby topic=/tasks/delete type="*events.TaskDelete"
+time="2026-10-04T07:03:36.184322057Z" level=info msg="shim disconnected" id=d77cfc522e42269ad0eb45fec3839c3b6314abd879152c3e54f58cf4288ae758 namespace=moby
+time="2026-10-04T07:03:36.184372026Z" level=info msg="cleaning up after shim disconnected" id=d77cfc522e42269ad0eb45fec3839c3b6314abd879152c3e54f58cf4288ae758 namespace=moby
+time="2026-10-04T07:03:36.184379394Z" level=info msg="cleaning up dead shim" id=d77cfc522e42269ad0eb45fec3839c3b6314abd879152c3e54f58cf4288ae758 namespace=moby

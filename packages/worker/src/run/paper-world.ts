@@ -12,6 +12,7 @@ import { createRng, type EffectRunner, type Moment } from '../../../core/src/eng
 import { attemptFee, drawAttempt, type FillNetwork, type FillScenario, withSlippage } from '../../../core/src/fills/index.ts';
 import type { Book, BookEvent, Effect, IntentState } from '../../../core/src/lifecycle/index.ts';
 import type { Lamports, RawAmount } from '../../../core/src/units/index.ts';
+import type { ExecStats } from '../../../core/src/facts/raw.ts';
 import type { DryRunRecord } from '../dryrun/index.ts';
 import type { StateFile } from './state.ts';
 
@@ -101,6 +102,9 @@ export const simulationFields = (leg: SimLeg, r: DryRunRecord): Record<string, u
   return out;
 };
 
+/** The lower median (a whole number, as ExecStats needs), null when empty. */
+const lowerMedian = (xs: readonly number[]): number | null => (xs.length === 0 ? null : [...xs].sort((a, b) => a - b)[(xs.length - 1) >> 1]!);
+
 export class PaperWorld implements EffectRunner {
   readonly #d: PaperWorldDeps;
   readonly #attempts: Map<string, PaperAttempt>;
@@ -109,6 +113,8 @@ export class PaperWorld implements EffectRunner {
   readonly pending = new Map<string, Promise<void>>();
   /** The process is going: state files belong to its successor from here on, so nothing more is written. */
   #stopped = false;
+  /** The paper height each attempt was sent at, this process only (not saved: an older attempt has no landing delay). */
+  readonly #sentHeight = new Map<string, bigint>();
 
   constructor(d: PaperWorldDeps) {
     this.#d = d;
@@ -137,6 +143,27 @@ export class PaperWorld implements EffectRunner {
 
   get attempts(): ReadonlyMap<string, PaperAttempt> {
     return this.#attempts;
+  }
+
+  /**
+   * WORKER-1e: execution statistics of the settled paper attempts sent in the `windowMs` up to `now` (the S0
+   * diagnostic's exec-health: measured from paper's own draws, never judged). Attempts lost in a restart are a process
+   * event, not an execution result, and are left out. Landing delay counts from the paper height at send.
+   */
+  execStats(now: number, windowMs: number): ExecStats {
+    const settled = [...this.#attempts.values()].filter((a) => a.outcome !== 'in_flight' && !(a.outcome === 'expired' && a.reason.startsWith('lost'))
+      && a.sentAtMs !== undefined && a.sentAtMs > now - windowMs && a.sentAtMs <= now);
+    const landing = settled.flatMap((a) => {
+      const sent = this.#sentHeight.get(a.signature);
+      return a.landedSlot !== null && sent !== undefined ? [Number(a.landedSlot - sent)] : [];
+    });
+    const quoteError = settled.flatMap((a) => {
+      if (a.fill === null || a.quotedOut <= 0n) return [];
+      const got: bigint = a.purpose === 'entry' ? a.fill.tokens : a.fill.sol;
+      const diff = got > a.quotedOut ? got - a.quotedOut : a.quotedOut - got;
+      return [Number((diff * 10_000n) / a.quotedOut)];
+    });
+    return { attempts: settled.length, failed: settled.filter((a) => a.outcome !== 'filled').length, landingSlotsP50: lowerMedian(landing), quoteErrorBpsP50: lowerMedian(quoteError) };
   }
 
   get height(): bigint | null {
@@ -199,6 +226,7 @@ export class PaperWorld implements EffectRunner {
       outcome: 'in_flight', reason: draw.fate, landedSlot: null, fill: null, simulated: this.#d.simulate === null, sentAtMs: this.#d.now(),
     };
     this.#attempts.set(sig, a);
+    this.#sentHeight.set(sig, height);
     this.#save();
     this.#d.report({ type: 'intent', intentId, event: { type: 'send_accepted' } });
     const sim = this.#d.simulate;
