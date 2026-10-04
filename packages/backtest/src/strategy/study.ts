@@ -33,7 +33,7 @@ import { canOpenNewEntry, isTerminal, type IntentState } from '../../../core/src
 import { economicNav, evaluateEntry, NO_LATCHES, type NavMark, type AccountCost, type AccountHistory, type ClosedTrade, type EntryAllowed, type EntryRecord, type Latches, type OpenPosition, type Trip } from '../../../core/src/risk/index.ts';
 import { type Bps, BPS_DENOMINATOR, type Lamports, LAMPORTS_PER_SOL, type MicroUsd, lamportsToMicroUsd, microUsdToLamports, mulDiv } from '../../../core/src/units/index.ts';
 import type { PoolView } from '../sim/market.ts';
-import type { FeatureRules, StudyConfig, U1Rules, U2Rules, UniverseConfig } from './config.ts';
+import { configTag, type FeatureRules, type StudyConfig, type U1Rules, type U2Rules, type UniverseConfig } from './config.ts';
 import { featuresKey, LANDED_PREFIX } from '../sim/facts.ts';
 import type { ReadLimits } from '../study/reads.ts';
 import { oneTimeRent } from '../../../worker/src/run/settings.ts';
@@ -162,6 +162,10 @@ export class StudyStrategy implements Strategy {
     this.#deploy = o.mode === 'deployment' || o.mode === 'deployment-s0';
     const net = o.fills.network;
     this.#settings = exitSettings(o.session.policy, o.fills.scenarios[o.scenario].takeProfit === 'close' ? 'close' : 'wick', net);
+    // One configuration per universe in a run: checks come per universe (the projector's windows), so several
+    // hypotheses of one universe run one at a time, each under its own tag.
+    const seen = o.config.universes.map((u) => u.universe);
+    if (new Set(seen).size !== seen.length) throw new RangeError(`one configuration per universe in a run (got ${o.config.universes.map(configTag).join(', ')})`);
     this.#universes = new Map(o.config.universes.map((u) => [u.universe, u]));
   }
 
@@ -354,7 +358,7 @@ export class StudyStrategy implements Strategy {
     const u = this.#universes.get(universe);
     if (u === undefined) return;
     const now = ctx.now.receivedAt;
-    const tag = this.#s0 ? `S0-${u.universe}` : this.#o.ablate !== undefined ? `${u.universe}-no${this.#o.ablate.join('')}` : u.universe;
+    const tag = this.#s0 ? `S0-${u.universe}` : this.#o.ablate !== undefined ? `${configTag(u)}-no${this.#o.ablate.join('')}` : configTag(u);
     const key = `${tag}|${mint}`;
     let c = this.#candidates.get(key);
     if (c === undefined) {
@@ -417,7 +421,7 @@ export class StudyStrategy implements Strategy {
     const u = this.#universes.get(universe);
     if (u === undefined) return;
     const now = ctx.now.receivedAt;
-    const tag = this.#s0 ? `S0-${u.universe}` : this.#o.ablate !== undefined ? `${u.universe}-no${this.#o.ablate.join('')}` : u.universe;
+    const tag = this.#s0 ? `S0-${u.universe}` : this.#o.ablate !== undefined ? `${configTag(u)}-no${this.#o.ablate.join('')}` : configTag(u);
     const key = `${tag}|${mint}`;
     const c = this.#candidates.get(key);
     const p = this.#pending.get(key);

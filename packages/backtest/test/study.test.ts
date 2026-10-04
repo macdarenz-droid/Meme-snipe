@@ -88,6 +88,18 @@ describe('BT-2 study runs', () => {
     expect(opened(delayed)).toBeGreaterThan(opened(recorded));
   });
 
+  it('runs a hypothesis under its id: positions, decisions and the configuration id carry it; one configuration per universe per run', () => {
+    const study = { ...STUDY_CONFIG, universes: STUDY_CONFIG.universes.map((u) => (u.universe === 'U2' ? { ...u, id: 'H4-U2-reclaim' } : u)) };
+    const { r } = run([SETUP], { study });
+    const enters = decisions(r.records).filter((d) => d.reasons[0] === 'enter');
+    expect(enters.map((d) => d.reasons[1])).toEqual(['H4-U2-reclaim']);
+    expect(tradesOf(r, FILL_CONFIG).trades.map((t) => t.id.split(':')[1])).toEqual(['H4-U2-reclaim']);
+    expect(configId(study, 'H4-U2-reclaim')).toMatch(/^H4-U2-reclaim-/);
+    // The same universe twice in one run is refused: hypotheses of one universe run one at a time.
+    const u2 = STUDY_CONFIG.universes.find((u) => u.universe === 'U2')!;
+    expect(() => run([SETUP], { study: { ...STUDY_CONFIG, universes: [{ ...u2, id: 'a' }, { ...u2, id: 'b' }] } })).toThrow(/one configuration per universe in a run/);
+  });
+
   it('replays to the same decision log', () => {
     expect(run([SETUP]).r.logHash).toBe(base.r.logHash);
   });

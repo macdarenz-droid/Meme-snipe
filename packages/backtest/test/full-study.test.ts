@@ -9,7 +9,6 @@ import type { DatasetRow } from '../src/dataset/rows.ts';
 import { STUDY_CONFIG, configId } from '../src/strategy/config.ts';
 import { replayLedgerFile } from '../../core/src/ledger/replay/index.ts';
 import { readHoldoutStore, registerAttempt } from '../src/holdout.ts';
-import { readTrialLog } from '../src/study/trials.ts';
 import { runSealedHoldout } from '../src/study/sealed.ts';
 import { runFullStudy, type StudyInputs } from '../src/study/study.ts';
 import { type MintPlan, studyWorld, W0 } from './study-world.ts';
@@ -46,7 +45,7 @@ const inputs = (over: Partial<StudyInputs> = {}): StudyInputs => ({
   firstDay: '2026-09-05', series: [sol], sampleRate: 1, insiders: () => ({ knownAtMs: 0, funded: [], devCluster: [] }), poolAccounts: POOL_ACCOUNTS, delegatesComplete: true, holders: () => ({ ownerPrograms }),
   // The synthetic world produces no regime inputs: the walk-forward runs as a labelled diagnostic, the holdout as live.
   regimeGate: 'assume-on',
-  holdout: authority(), trialsPath: join(dir, 'trials.json'), outDir: dir,
+  holdout: authority(), outDir: dir,
   ledgerReplay: (p) => { const r = replayLedgerFile(p); return { ok: r.ok, detail: JSON.stringify(r) }; }, seed: 'study3', replays: 2, runHoldout: false, startedAt: '2026-10-04T00:00:00Z', ...over,
 });
 
@@ -86,7 +85,6 @@ describe('BT-2 study', () => {
 
   it('a diagnostic run (regime assumed on) registers nothing, records no trial or G1, and reports G1 as descriptive only', () => {
     expect(existsSync(join(dir, 'registry.json'))).toBe(false);
-    expect(readTrialLog(join(dir, 'trials.json')).trials).toEqual([]);
     expect(first.holdoutStore).toBeNull();
     for (const g of Object.values(first.gates.G1)) {
       expect(g).toMatchObject({ passed: false, status: 'not-proven' });
@@ -116,7 +114,8 @@ describe('BT-2 study', () => {
     expect(reg.g1.map((g) => [g.holdoutId, g.passed])).toEqual([[`U1-${HOLD}`, false], [`U2-${HOLD}`, false]]);
     // The frozen requirement is the one reported.
     expect(again.holdout.required).toEqual({ U1: 300, U2: 300 });
-    expect(readTrialLog(join(dir, 'trials.json')).trials.map((t) => t.trialId).sort()).toEqual([configId(config, 'U1'), configId(config, 'U2')].sort());
+    // The experiment registry is in the holdout registry (one log per registry, whatever the output directory).
+    expect(reg.trials!.map((t) => [t.trialId, t.tag]).sort()).toEqual([[configId(config, 'U1'), 'U1'], [configId(config, 'U2'), 'U2']]);
     // Reported per regime (here every trade is after B4) and pooled under its own label (the diagnostic run has the
     // trades); 2 days are too few.
     expect(Object.keys(first.gates.G1)).toEqual(expect.arrayContaining(['U1 all regimes (pooled)', 'U2 all regimes (pooled)', 'U2 regime B4']));
@@ -170,6 +169,12 @@ describe('BT-2 study', () => {
     expect(() => runFullStudy(inputs({ config: { ...config, frozen: false }, holdout: authority('unfrozen.json'), runHoldout: true, regimeGate: 'evaluate' }))).toThrow(/not frozen/);
     // A diagnostic run with the regime assumed on never runs the holdout.
     expect(() => runFullStudy(inputs({ holdout: authority('registry-diag.json'), runHoldout: true }))).toThrow(/regime gate is assumed on/);
+  });
+
+  it('studies only pre-registered hypotheses: a configuration outside the family is refused before anything runs', () => {
+    const family = { sha256: 'x', hypotheses: [{ ...config.universes[1]!, id: 'H4-U2-reclaim' }] };
+    expect(() => runFullStudy(inputs({ preregistration: family, holdout: authority('prereg.json') }))).toThrow(/U1, U2 are not pre-registered hypotheses/);
+    expect(existsSync(join(dir, 'prereg.json'))).toBe(false);
   });
 
   it('a second holdout run into a new file is refused and logged; the sealed holdout is untouched', () => {

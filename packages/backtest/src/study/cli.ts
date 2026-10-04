@@ -2,7 +2,7 @@
 //
 //   node packages/backtest/src/study/cli.ts day   --dataset <dir> --sol-usd <file> [--days d1,d2] [--seeds 5] [--replays 10] [--out <dir>]
 //   node packages/backtest/src/study/cli.ts trial --dataset <dir> --sol-usd <file> [--seeds 5] [--out <dir>]
-//   node packages/backtest/src/study/cli.ts study --dataset <dir> --sol-usd <file> [--trials <file>] [--run-holdout] [--replays 10] [--out <dir>]
+//   node packages/backtest/src/study/cli.ts study --dataset <dir> --sol-usd <file> [--run-holdout] [--replays 10] [--out <dir>]
 //   (each takes [--insiders <dir>], the insider-funding supplement (worker scripts/funding-backfill.ts) for H13 and
 //   G2's funder cluster, and
 //   [--pool-accounts <file>], H17's pool record: { pool: { knownAtMs, accountBytes, isCashbackCoin, coinCreator } }, and
@@ -20,7 +20,7 @@
 // `study` runs the full protocol (walk-forward, G1, the holdout once when asked, G2, G0) on the whole window.
 // Every file carries the commit and the dataset hash; no report holds an outcome of a sealed holdout. `study` writes
 // the plan, attempts, G1 records and runs through the one holdout registry (research config path, kept on its remote
-// branch); `--trials` is the experiment registry (default <out>/trials.json).
+// branch), its experiment registry included; RES-4's pre-registered family is read when the study configuration pins it.
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -28,6 +28,7 @@ import { exitsFor, FILL_CONFIG, RESEARCH_CONFIG, TRIAL_POLICY } from '../../../c
 import { loadCoverage, loadDay, loadManifest, loadMovements, loadVolumeHours, manifestHash, type ManifestDay, regimeBoundariesOf, verifySums } from '../dataset/dataset.ts';
 import { parseVolumeHoursCsv, type VolumeHour } from '../../../core/src/facts/index.ts';
 import { readOwnerPrograms } from '../dataset/owner-programs.ts';
+import { loadPreregistration } from '../strategy/preregistration.ts';
 import { readSupplement } from '../../../worker/src/facts/supplement.ts';
 import { readSeries } from '../dataset/offchain.ts';
 import type { DatasetRow } from '../dataset/rows.ts';
@@ -236,11 +237,14 @@ if (command === 'day' || command === 'trial') {
   const vcs = gitRegistryVcs({ root, relPath: h.registryPath, remote: h.registryRemote, branch: h.registryBranch, fileName: 'registry.json', repo: h.registryRepo });
   vcs.check();
   mkdirSync(dirname(join(root, h.registryPath)), { recursive: true });
+  // RES-4's family, only once pinned in the study configuration; the file must carry exactly that hash.
+  const pin = STUDY_CONFIG.preregistration;
+  const preregistration = pin.sha256 === null ? undefined : loadPreregistration(join(root, pin.path), pin.sha256);
   const holdout = { registryPath: join(root, h.registryPath), codeCommit: dirty ? `${commit}+dirty` : commit, datasetId, vcs };
   const report = runFullStudy({
     config: STUDY_CONFIG, policy: TRIAL_POLICY, fills: FILL_CONFIG, research: RESEARCH_CONFIG, availableDays: complete, rows: rowsOf, firstDay: first,
     series: [solUsd], sampleRate, ...(manifest.coverage_gaps === undefined ? {} : { coverageGaps: manifest.coverage_gaps }),
-    ...(insiders === undefined ? {} : { insiders }), funderOf, ...(poolAccounts === undefined ? {} : { poolAccounts }), delegatesComplete: has('delegates-complete'), volumeHours, holders: holdersFor, ...(has('regime-assumed-on') ? { regimeGate: 'assume-on' as const } : {}), holdout, trialsPath: flag('trials', join(out, 'trials.json')), outDir: out, seed: 'bt2', replays: Number(flag('replays', '10')),
+    ...(insiders === undefined ? {} : { insiders }), funderOf, ...(poolAccounts === undefined ? {} : { poolAccounts }), delegatesComplete: has('delegates-complete'), volumeHours, holders: holdersFor, ...(has('regime-assumed-on') ? { regimeGate: 'assume-on' as const } : {}), holdout, ...(preregistration === undefined ? {} : { preregistration }), outDir: out, seed: 'bt2', replays: Number(flag('replays', '10')),
     runHoldout: has('run-holdout'), startedAt: new Date().toISOString(), regimeBoundaries: regimeBoundariesOf(manifest), ledgerReplay,
   });
   const days = windowDays(STUDY_CONFIG);

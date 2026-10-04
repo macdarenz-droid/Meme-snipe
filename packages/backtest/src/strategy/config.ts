@@ -44,7 +44,8 @@ export interface U1Rules {
 }
 
 /**
- * A RES-3 handoff rule (research/signals/handoff.json): one or two conditions `feature >= t` / `feature <= t` over the
+ * A feature rule (RES-3's handoff, RES-4's pre-registered hypotheses): conditions `feature >= t` / `feature <= t`, all of
+ * them required (RES-4 registers five or six), over the
  * as-of tracker features (src/research/tracker.ts), mapped one to one. Thresholds are kept as the exact decimal text
  * handed over, so the configuration hash never depends on float formatting. A feature that is unknown at the check
  * fails the condition. The stop is a fixed distance below the entry spot (the handed-over barrier's stop loss).
@@ -56,6 +57,11 @@ export interface FeatureRules {
 }
 
 export interface UniverseConfig {
+  /**
+   * The hypothesis id (RES-4: `H4-U2-reclaim`), when several configurations share a universe: it tags the positions,
+   * the funnel, the trial and the configuration id. Absent, the universe is the tag.
+   */
+  readonly id?: string;
   readonly universe: 'U1' | 'U2';
   readonly window: CheckWindow;
   readonly rules: U1Rules | U2Rules | FeatureRules;
@@ -108,6 +114,11 @@ export interface StudyConfig {
   readonly holdoutAttempt: number;
   /** Salt of the hash that breaks true ties between simultaneous signals, fixed before any replay. */
   readonly tieSalt: string;
+  /**
+   * RES-4's pre-registered family: its file (repository-relative) and the sha256 it is bound by; null until the family
+   * is merged and pinned. The study reads only a file with this hash.
+   */
+  readonly preregistration: { readonly path: string; readonly sha256: string | null };
   /** S0 seeds for G1 (walk-forward) and G2 (holdout, §14: >= 200). */
   readonly s0SeedsWalkForward: number;
   readonly s0SeedsHoldout: number;
@@ -152,6 +163,7 @@ const VALUES: StudyConfig = {
   holdout: { fromDay: '2026-09-22', entryCutoff: '2026-10-20T00:00:00Z', tailDays: 1 },
   holdoutAttempt: 1,
   tieSalt: 'study-1-ties-2026-10-04',
+  preregistration: { path: 'research/edge/preregistration.json', sha256: null },
   s0SeedsWalkForward: 20,
   s0SeedsHoldout: 200,
 };
@@ -167,11 +179,15 @@ const freeze = <T>(v: T): T => {
 export const STUDY_CONFIG: StudyConfig = freeze(structuredClone(VALUES));
 
 /** The configuration id of a universe: sha256 of its canonical content and the shared study values. */
-export const configId = (c: StudyConfig, universe: string): string => {
-  const u = c.universes.find((x) => x.universe === universe);
-  if (u === undefined) throw new RangeError(`no configuration for ${universe}`);
+/** A configuration's tag: its hypothesis id, else its universe. */
+export const configTag = (u: UniverseConfig): string => u.id ?? u.universe;
+
+/** The configuration id of the configuration tagged `tag` (its hypothesis id, else its universe). */
+export const configId = (c: StudyConfig, tag: string): string => {
+  const u = c.universes.find((x) => configTag(x) === tag);
+  if (u === undefined) throw new RangeError(`no configuration for ${tag}`);
   const { universes: _, ...shared } = c;
-  return `${universe}-${createHash('sha256').update(canonical({ shared, universe: u })).digest('hex').slice(0, 16)}`;
+  return `${tag}-${createHash('sha256').update(canonical({ shared, universe: u })).digest('hex').slice(0, 16)}`;
 };
 
 /** The study's hash, recorded with every report. */

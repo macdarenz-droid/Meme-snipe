@@ -5,6 +5,7 @@
 import { DAY_MS } from '../../../core/src/config/index.ts';
 import type { DayReturn } from '../../../core/src/stats/index.ts';
 import type { HoldoutPlan } from '../holdout.ts';
+import type { Preregistration } from '../strategy/preregistration.ts';
 import type { StudyConfig } from '../strategy/config.ts';
 
 export interface Fold {
@@ -134,7 +135,7 @@ const iso = (ms: number) => new Date(ms).toISOString();
  * the research config's), the tie salt, the ruled α schedule, the decoder boundaries inside the window and the
  * procedure in words. Only what is fixed before any data was read goes in, so the same study registers the same plan.
  */
-export const holdoutPlanOf = (c: StudyConfig, plan: StudyPlan, alpha: { readonly first: number; readonly laterBase: number }): HoldoutPlan => {
+export const holdoutPlanOf = (c: StudyConfig, plan: StudyPlan, alpha: { readonly first: number; readonly laterBase: number }, family?: Preregistration): HoldoutPlan => {
   const cutoff = Date.parse(c.holdout.entryCutoff);
   if (cutoff % DAY_MS !== 0) throw new RangeError(`the entry cutoff ${c.holdout.entryCutoff} must be a UTC midnight to be registered`);
   const tailEnd = dayStart(plan.holdout.toDay) + DAY_MS;
@@ -156,6 +157,8 @@ export const holdoutPlanOf = (c: StudyConfig, plan: StudyPlan, alpha: { readonly
       `Attempt k >= 2 is registered after the earlier attempts are scored or burned; its window starts on the first whole UTC day after that registration and runs 28 entry days, at family alpha ${alpha.laterBase} / 2^(k-1), same procedure, opened once.`,
     ],
     details: {
+      // RES-4's family, bound to this window: a changed file or an added hypothesis is a different plan, refused once set.
+      ...(family === undefined ? {} : { preregistration: { sha256: family.sha256, ids: family.hypotheses.map((h) => h.id!) } }),
       study: 'study-1', practice: { fromDay: plan.walkForward.days[0], toDay: plan.walkForward.days[plan.walkForward.days.length - 1] },
       entriesFrom: iso(plan.holdout.entriesFrom), embargoMs: c.embargoMs, after: c.holdoutAfter,
       sizing: {

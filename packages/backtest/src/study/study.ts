@@ -9,18 +9,18 @@ import { createHash } from 'node:crypto';
 import { existsSync, writeFileSync } from 'node:fs';
 import { encodeBase58 } from '../../../core/src/chain/base58.ts';
 import { exitsFor, type FillConfig, type Policy, type ResearchConfig } from '../../../core/src/config/index.ts';
-import { OFF_CHAIN } from '../../../core/src/engine/index.ts';
+import { canonical, OFF_CHAIN } from '../../../core/src/engine/index.ts';
 import { createRng, type DayReturn, type GateResult, MIN_DAYS } from '../../../core/src/stats/index.ts';
 import type { OffchainSeries } from '../dataset/offchain.ts';
 import type { DatasetRow } from '../dataset/rows.ts';
 import { leakTest, type ProofReport, shiftTest } from '../proofs.ts';
 import type { RunResult } from '../run.ts';
 import { replayHashes } from '../proofs.ts';
-import { type StudyConfig, configId, studyHash } from '../strategy/config.ts';
+import { type StudyConfig, configId, configTag, studyHash } from '../strategy/config.ts';
 import { g0, g1, g2NotProven, gateG2, type G2Short, pboMatrix, powerOf, trialOf } from './gates.ts';
 import { foldSummary, holdoutPlanOf, purge, regimeOf, studyPlan, type StudyPlan } from './plan.ts';
-import { attemptAlpha, g1Blocks, type HoldoutAuthority, type HoldoutStore, readHoldoutStore, recordHoldoutG1, recordHoldoutG2, registerAttempt, RULED_ALPHA, setHoldoutPlan } from '../holdout.ts';
-import { loadTrialLog, recordTrial, type TrialLog, writeTrialLog } from './trials.ts';
+import { attemptAlpha, g1Blocks, type HoldoutAuthority, type HoldoutStore, readHoldoutStore, recordHoldoutG1, recordHoldoutG2, recordTrials, registerAttempt, RULED_ALPHA, setHoldoutPlan, type StoredTrial } from '../holdout.ts';
+import type { Preregistration } from '../strategy/preregistration.ts';
 import { runStudy, studyRunOptions, type StudyRunOptions } from './run.ts';
 import { type FunnelSummary } from './funnel.ts';
 import { type SpaPanel, spaPanel } from './spa.ts';
@@ -59,8 +59,11 @@ export interface StudyInputs {
   readonly holders?: (from: string, to: string) => StudyRunOptions['holders'];
   /** The one holdout registry (plan, attempts, G1 records, runs) and what a holdout is bound to. */
   readonly holdout: HoldoutAuthority;
-  /** The experiment registry: every trial evaluated, kept across runs. */
-  readonly trialsPath: string;
+  /**
+   * RES-4's pre-registered family, read with its sha256 checked: every configuration studied must be one of its
+   * hypotheses, the plan records its hash and ids, and the experiment registry refuses a trial outside it.
+   */
+  readonly preregistration?: Preregistration;
   /** Where the walk-forward and holdout ledgers go (new files). */
   readonly outDir: string;
   readonly seed: string;
@@ -140,7 +143,8 @@ export interface StudyReport {
   readonly proofs: { readonly replayHashes: readonly string[]; readonly leak: ProofReport; readonly shift: ProofReport };
   /** The holdout registry after the run (null when nothing was written to it: a diagnostic run before any plan). */
   readonly holdoutStore: HoldoutStore | null;
-  readonly trials: TrialLog;
+  /** The experiment registry after the run (this run's trials alone in a diagnostic run, which records none). */
+  readonly trials: readonly StoredTrial[];
   /** How the regime gate ran: 'evaluated' as live, or 'assumed on (diagnostic)'. */
   readonly regimeGate: 'evaluated' | 'assumed on (diagnostic)';
 }
@@ -164,7 +168,15 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
   if (absent.length > 0) throw new RangeError(`the dataset lacks ${absent.length} days the study needs (first ${absent[0]}); the study runs on whole windows only`);
   const regime = (ms: number) => regimeOf(c, ms);
   const universes = UNIVERSES(c);
-  const ids = Object.fromEntries(universes.map((u) => [u, configId(c, u)]));
+  // Each universe's configuration is tagged by its hypothesis id, else its universe (positions, funnel, trials).
+  const tagFor: Record<string, string> = Object.fromEntries(c.universes.map((x) => [x.universe, configTag(x)]));
+  const ids = Object.fromEntries(universes.map((u) => [u, configId(c, tagFor[u]!)]));
+  const idOfTag: Record<string, string> = Object.fromEntries(universes.map((u) => [tagFor[u]!, ids[u]!]));
+  // Every configuration studied is one of the pre-registered hypotheses, exactly (a changed threshold is a new trial).
+  if (i.preregistration !== undefined) {
+    const off = c.universes.filter((x) => !i.preregistration!.hypotheses.some((h) => canonical(h) === canonical(x))).map(configTag);
+    if (off.length > 0) throw new RangeError(`configurations ${off.join(', ')} are not pre-registered hypotheses: a new variant needs a new holdout window`);
+  }
   const wfDays = plan.walkForward.days;
   const wfEnd = Date.parse(`${wfDays[wfDays.length - 1]}T00:00:00Z`) + 86_400_000;
   const base = (from: string, to: string, end: number, entriesFrom: number, entriesTo: number): Omit<StudyRunOptions, 'mode'> => ({
@@ -204,8 +216,8 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
   // 2. Scoring stage.
   const scored = purge(scoreRun(wf, i.fills, i.funderOf), plan, c.embargoMs, regime);
   const s0Scored = s0.map((r) => purge(scoreRun(r, i.fills, i.funderOf), plan, c.embargoMs, regime).kept);
-  const tradesOf = (tag: string) => scored.kept.filter((t) => t.tag === tag);
-  const controlOf = (tag: string) => s0Scored.flatMap((xs) => xs.filter((t) => t.tag === `S0-${tag}`));
+  const tradesOf = (u: string) => scored.kept.filter((t) => t.tag === tagFor[u]);
+  const controlOf = (u: string) => s0Scored.flatMap((xs) => xs.filter((t) => t.tag === `S0-${u}`));
   // n_power sizes a holdout that lies after the last boundary: σ̂ comes from the walk-forward of that same regime.
   const lastRegime = regimeOf(c, Date.parse(`${plan.holdout.fromDay}T00:00:00Z`));
   const sameRegime = <T extends DayReturn & { regime: string }>(xs: readonly T[]): T[] => xs.filter((t) => t.regime === lastRegime);
@@ -213,13 +225,16 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
   // A run with the regime assumed on is a labelled diagnostic: its counts never feed G1, the trial registry or a
   // holdout registration (supervisor ruling).
   const diagnostic = i.regimeGate === 'assume-on';
-  let trials = loadTrialLog(i.trialsPath);
-  if (!diagnostic) for (const u of universes) trials = recordTrial(trials, { ...trialOf(ids[u]!, tradesOf(u)), configId: ids[u]!, evaluatedOn: `walk-forward ${wfDays[0]}..${wfDays[wfDays.length - 1]}` });
-  writeTrialLog(i.trialsPath, trials);
+  const runTrials: StoredTrial[] = universes.map((u) => ({ ...trialOf(ids[u]!, tradesOf(u)), configId: ids[u]!, tag: tagFor[u]!, evaluatedOn: `walk-forward ${wfDays[0]}..${wfDays[wfDays.length - 1]}` }));
   const storeNow = (): HoldoutStore | null => (existsSync(i.holdout.registryPath) ? readHoldoutStore(i.holdout.registryPath) : null);
   // 3. The plan (fixed once) and one configuration per universe registered as this attempt before any holdout run.
   // Registering commits the attempt: its α is spent whatever happens later.
-  if (!diagnostic) setHoldoutPlan(i.holdout, holdoutPlanOf(c, plan, RULED_ALPHA), i.research);
+  if (!diagnostic) {
+    setHoldoutPlan(i.holdout, holdoutPlanOf(c, plan, RULED_ALPHA, i.preregistration), i.research);
+    // The experiment registry lives in the holdout registry: one log per registry, whatever the output directory.
+    recordTrials(i.holdout, runTrials);
+  }
+  const trials = diagnostic ? runTrials : storeNow()?.trials ?? [];
   const holdoutIdOf = (u: string) => `${u}-${plan.holdout.fromDay}-${plan.holdout.toDay}`;
   const registered = (u: string) => storeNow()?.registry.entries.some((e) => e.holdoutId === holdoutIdOf(u)) === true;
   const familySize = storeNow()?.plan?.familySize ?? universes.length;
@@ -244,7 +259,7 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
   const attempt = store?.attempts.find((x) => x.index === c.holdoutAttempt);
   if (attempt !== undefined && attempt.alpha !== alpha) throw new RangeError(`holdout attempt ${c.holdoutAttempt} spends α ${attempt.alpha}, the schedule says ${alpha}`);
 
-  const matrix = pboMatrix(Object.fromEntries(trials.trials.map((t) => [t.trialId, scored.kept.filter((x) => ids[x.tag] === t.trialId)])), wfDays.map((d) => d));
+  const matrix = pboMatrix(Object.fromEntries(trials.map((t) => [t.trialId, scored.kept.filter((x) => idOfTag[x.tag] === t.trialId)])), wfDays.map((d) => d));
   // G1 per universe and regime (§6.5: never pooled silently); the pooled figure is reported under its own label.
   const regimes = [...new Set(scored.kept.map((t) => t.regime))].sort();
   const G1: Record<string, GateResult> = {};
@@ -253,15 +268,15 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
     const before = e !== undefined && e.seal !== 'opened' && e.configId === ids[u];
     for (const g of [...regimes, 'pooled']) {
       const pick = <T extends { regime: string }>(xs: readonly T[]) => (g === 'pooled' ? xs : xs.filter((t) => t.regime === g));
-      G1[`${u} ${g === 'pooled' ? 'all regimes (pooled)' : `regime ${g}`}`] = g1({ universe: u, configId: ids[u]!, trades: pick(tradesOf(u)), control: pick(controlOf(u)) }, trials.trials, matrix, seedNumber(`${i.seed}:g1:${u}:${g}`), before);
+      G1[`${u} ${g === 'pooled' ? 'all regimes (pooled)' : `regime ${g}`}`] = g1({ universe: u, configId: ids[u]!, trades: pick(tradesOf(u)), control: pick(controlOf(u)) }, trials, matrix, seedNumber(`${i.seed}:g1:${u}:${g}`), before);
     }
     // Sensitivity, reported and never gating: the same trades with the token-account rent never returned (fills-2 note).
     const noRent = <T extends { rNetNoRent: number }>(xs: readonly T[]) => xs.map((t) => ({ ...t, rNet: t.rNetNoRent }));
-    G1[`${u} all regimes (pooled), sensitivity: no rent recovery`] = g1({ universe: u, configId: ids[u]!, trades: noRent(tradesOf(u)), control: noRent(controlOf(u)) }, trials.trials, matrix, seedNumber(`${i.seed}:g1:${u}:norent`), before);
+    G1[`${u} all regimes (pooled), sensitivity: no rent recovery`] = g1({ universe: u, configId: ids[u]!, trades: noRent(tradesOf(u)), control: noRent(controlOf(u)) }, trials, matrix, seedNumber(`${i.seed}:g1:${u}:norent`), before);
     // Coverage exclusions on the pooled line: candidates abstained for missing evidence, count and share (not rejects).
-    const ex = research[u]?.coverageExclusions;
+    const ex = research[tagFor[u]!]?.coverageExclusions;
     const pooled = G1[`${u} all regimes (pooled)`]!;
-    G1[`${u} all regimes (pooled)`] = { ...pooled, notes: [...pooled.notes, `coverage exclusions: ${ex?.mints ?? 0} of ${research[u]?.mints ?? 0} mints${ex?.share == null ? '' : ` (${(ex.share * 100).toFixed(1)}%)`}, abstained for missing evidence, not rejects`] };
+    G1[`${u} all regimes (pooled)`] = { ...pooled, notes: [...pooled.notes, `coverage exclusions: ${ex?.mints ?? 0} of ${research[tagFor[u]!]?.mints ?? 0} mints${ex?.share == null ? '' : ` (${(ex.share * 100).toFixed(1)}%)`}, abstained for missing evidence, not rejects`] };
   }
   if (diagnostic) {
     for (const [k, r] of Object.entries(G1)) {
@@ -281,7 +296,7 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
     const holdEnd = Date.parse(`${plan.holdout.toDay}T00:00:00Z`) + 86_400_000;
     const leadFrom = dayBefore(plan.holdout.fromDay, 14) < i.firstDay ? i.firstDay : dayBefore(plan.holdout.fromDay, 14);
     sealed = runSealedHoldout(i.holdout, holdLedger, base(leadFrom, plan.holdout.toDay, holdEnd, plan.holdout.entriesFrom, plan.holdout.entriesTo), {
-      byUniverse: universes.map((u) => ({ universe: u, holdoutId: holdoutIdOf(u), configId: ids[u]! })),
+      byUniverse: universes.map((u) => ({ universe: u, tag: tagFor[u]!, holdoutId: holdoutIdOf(u), configId: ids[u]! })),
       required: Object.fromEntries(universes.map((u) => [u, required[u] ?? Number.POSITIVE_INFINITY])),
       window: { fromDay: plan.holdout.fromDay, toDay: plan.holdout.toDay },
       ...(i.funderOf === undefined ? {} : { funderOf: i.funderOf }),
@@ -375,7 +390,7 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
       const blocked = purge(scoreRun(run, i.fills, i.funderOf), plan, c.embargoMs, regime).kept;
       const byUniverse: Record<string, Record<string, { blocked: number; meanNet: number | null; lossesAvoided: number; profitsExcluded: number; p5: number | null }>> = {};
       for (const u of universes) {
-        const mine = blocked.filter((t) => t.tag === `${u}-no${gates.join('')}`);
+        const mine = blocked.filter((t) => t.tag === `${tagFor[u]}-no${gates.join('')}`);
         byUniverse[u] = {};
         for (const g of [...new Set(mine.map((t) => t.regime))].sort()) {
           const xs = mine.filter((t) => t.regime === g).map((t) => t.rNet).sort((a, b) => a - b);
@@ -399,7 +414,7 @@ export const runFullStudy = (i: StudyInputs): StudyReport => {
       const base = solBar === undefined ? null : microUsdToLamports(i.policy.capital.bankroll, solPriceMicroUsd(solBar.close), 'floor');
       const s0Scored = depS0.map((r, k) => ({ k, trades: scoreRun(r, i.fills, i.funderOf) }));
       const spa = base === null || base <= 0n ? null : spaPanel([
-        ...universes.map((u) => ({ variant: u, trades: tr.filter((t) => t.tag === u) })),
+        ...universes.map((u) => ({ variant: tagFor[u]!, trades: tr.filter((t) => t.tag === tagFor[u]) })),
         ...s0Scored.flatMap(({ k, trades }) => universes.map((u) => ({ variant: `S0-${u} seed ${k}`, trades: trades.filter((t) => t.tag === `S0-${u}`) }))),
       ], calendar, base);
       return {

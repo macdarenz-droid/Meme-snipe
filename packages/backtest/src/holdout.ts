@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { refuseSymlink } from './registry-git.ts';
 import { canonical } from '../../core/src/engine/index.ts';
+import type { TrialRecord } from '../../core/src/stats/index.ts';
 import {
   ATTEMPT_ALPHA, attemptAlpha as registryAlpha, burnHoldout, createHoldoutRegistry, freezeRequirement, type FrozenRequirement, type HoldoutCounts, type HoldoutEntry,
   type HoldoutRegistry, nextAttemptIndex, openHoldout, registerHoldout, sealHoldout, SPEND_REASONS, spendHoldout, type SpendReason,
@@ -167,7 +168,37 @@ export interface HoldoutStore {
   readonly g1: readonly G1Record[];
   /** Every run attempt: refused, started, failed, sealed. */
   readonly runs: readonly HoldoutRunRecord[];
+  /**
+   * The experiment registry (every trial evaluated, kept with the registry it belongs to: one log per registry, pushed
+   * with it). Absent in stores written before it.
+   */
+  readonly trials?: readonly StoredTrial[];
 }
+
+/** One evaluated trial: its configuration, tag (hypothesis id or universe) and what it was evaluated on. */
+export type StoredTrial = TrialRecord & { readonly configId: string; readonly tag: string; readonly evaluatedOn: string };
+
+/** The pre-registered family a plan binds (RES-4): the file's sha256 and its hypothesis ids, in `details.preregistration`. */
+export const planFamily = (plan: HoldoutPlan | null): { readonly sha256: string; readonly ids: readonly string[] } | null => {
+  const f = plan?.details['preregistration'] as { sha256?: unknown; ids?: unknown } | undefined;
+  return f !== undefined && typeof f.sha256 === 'string' && Array.isArray(f.ids) ? { sha256: f.sha256, ids: f.ids as string[] } : null;
+};
+
+/**
+ * Appends trials not yet in the registry's experiment log (by trial id). With a pre-registered family in the plan, a
+ * trial tagged outside it is refused: a variant added later is a new trial that needs a new holdout window.
+ */
+export const recordTrials = (a: HoldoutAuthority, trials: readonly StoredTrial[]): HoldoutStore =>
+  mutate(a, `Experiment registry: ${trials.length} trials`, (s) => {
+    if (s === null || s.plan === null) throw new RangeError('no holdout plan: set the plan before recording trials');
+    const family = planFamily(s.plan);
+    const outside = family === null ? [] : trials.filter((t) => !family.ids.includes(t.tag)).map((t) => t.tag);
+    if (outside.length > 0) throw new RangeError(`trials ${outside.join(', ')} are not in the pre-registered family (${family!.ids.join(', ')}): a new variant needs a new holdout window`);
+    const have = s.trials ?? [];
+    const add = trials.filter((t) => !have.some((x) => x.trialId === t.trialId));
+    const store = add.length === 0 ? s : { ...s, trials: [...have, ...add] };
+    return { store, value: store };
+  });
 
 /**
  * The ruled error budget (DECISIONS "Follow-up rulings", holdout): attempt 1 at family α 0.04, attempt k ≥ 2 at

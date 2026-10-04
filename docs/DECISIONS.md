@@ -775,6 +775,14 @@ Supervisor rulings:
   Curve volume waits for FACTS-1d's core `parseVolumeHoursCsv` (#78) and DATA-1c's `volume-hours` assets. SOL/USD uses the existing hourly series. Until volume exists, the regime reads "unknown" and real-day counts run in the labelled assume-on mode. The synthetic CreatePoolEvent gained `pool_base_amount` and `pool_quote_amount`, as the real event carries them. Test: `test/facts.test.ts`.
 ## External review of the promotion gates (STATS-1b)
 
+- **2026-10-04 · RES-4's family in BT-2: hypotheses by id, bound by hash, one experiment registry (supervisor ruling, from the RES-4 #115 review).**
+  - (a) Configurations per hypothesis. A configuration may carry its hypothesis id (`H4-U2-reclaim`). The id is its tag on positions, decisions, the funnel, trials and its configuration id; without an id the universe is the tag, so existing ids are unchanged. Gates still run per universe and S0 stays one per universe. Checks come per universe, so a run holds one configuration per universe: hypotheses of one universe run one at a time, and two in one run are refused. Feature rules take any number of conditions, all required.
+  - (d) Pre-registration. `src/strategy/preregistration.ts` reads `research/edge/preregistration.json` in BT-2's shape. It is strict (known features, exact decimal thresholds, integer amounts as strings, unique ids, a window of the hypothesis's own universe) and only with the sha256 pinned in the study configuration. Until #115 merges the pin is null and nothing is read.
+    - The holdout plan records the hash and the ids. A changed file or an added hypothesis is a different plan, which the registry refuses once set, so a 7th trial needs a new window.
+    - The study refuses any configuration that is not exactly one of the hypotheses.
+  - (e) One experiment registry. The trial log is now a section of the holdout registry (`trials`, written by `recordTrials`): one log per registry, pushed with it, whatever `--out` says. `--trials` is gone. With a family in the plan, a trial tagged outside it is refused and the log is left unchanged.
+
+  Tests: `test/preregistration.test.ts`, `test/registry.test.ts` (experiment registry), `test/study.test.ts` (a hypothesis under its id; two per universe refused) and `test/full-study.test.ts` (outside the family refused before anything runs; trials in the registry).
 - **2026-10-04 · BT-2 on STATS-1c's registry (#62).** The study now takes the attempt's α from the core registry's schedule.
   - Sizing first: it computes the holdout's size requirement before registering. That is max(300, n_power, closed form) on MIN_DAYS days, with n_power's seed, all from the walk-forward of the holdout's regime.
   - Registration: attempt 1 is registered with that requirement frozen in, before any holdout count exists.

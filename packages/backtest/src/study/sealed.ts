@@ -14,7 +14,8 @@ import { rejectMixOf } from './summary.ts';
 
 export interface SealedTargets {
   /** Per universe: its registered holdout and configuration. */
-  readonly byUniverse: readonly { readonly universe: string; readonly holdoutId: string; readonly configId: string }[];
+  /** Per universe: its registered holdout and configuration, and the configuration's tag (hypothesis id, else universe). */
+  readonly byUniverse: readonly { readonly universe: string; readonly tag?: string; readonly holdoutId: string; readonly configId: string }[];
   /** Trades each universe needs before its seal may open (max(300, n_power)); S0 runs only when one is ready. */
   readonly required: Readonly<Record<string, number>>;
   /** The registered window, first and last UTC day (the data runs on to its last day; rows after it stop the run). */
@@ -75,8 +76,9 @@ export const runSealedHoldout = (
       if (r.stats.crash !== null) throw new Error(`crashed: ${r.stats.crash}`);
       if (r.stats.illegalStates !== 0 || r.stats.unreconciledIntents !== 0) throw new Error('illegal states or unreconciled intents');
       const all = countsOf(r);
-      const counts: Record<string, HoldoutCounts> = Object.fromEntries(targets.byUniverse.map((u) => [u.universe, all[u.universe] ?? { candidates: 0, entries: 0, entryDays: 0 }]));
+      const counts: Record<string, HoldoutCounts> = Object.fromEntries(targets.byUniverse.map((u) => [u.universe, all[u.tag ?? u.universe] ?? { candidates: 0, entries: 0, entryDays: 0 }]));
       const tags = targets.byUniverse.map((u) => u.universe);
+      const tagOfU = new Map(targets.byUniverse.map((u) => [u.universe, u.tag ?? u.universe]));
       // S0 is needed only by a universe that can be scored; the decision reads the counts alone.
       const ready = targets.byUniverse.some((u) => counts[u.universe]!.entries >= (targets.required[u.universe] ?? Infinity) && counts[u.universe]!.entryDays >= MIN_DAYS);
       const s0 = ready
@@ -86,7 +88,8 @@ export const runSealedHoldout = (
           return byTag(scoreRun(x, fills, targets.funderOf), tags.map((tg) => `S0-${tg}`));
         })
         : [];
-      const outcomes: Outcomes = { strategy: byTag(scoreRun(r, fills, targets.funderOf), tags), s0, rejectMix: Object.fromEntries(tags.map((tg) => [tg, rejectMixOf(r.records, tg)])) };
+      const scored = scoreRun(r, fills, targets.funderOf);
+      const outcomes: Outcomes = { strategy: Object.fromEntries(tags.map((u) => [u, scored.filter((x) => x.tag === tagOfU.get(u))])), s0, rejectMix: Object.fromEntries(tags.map((u) => [u, rejectMixOf(r.records, tagOfU.get(u)!)])) };
       writeFileSync(outcomesPath, `${JSON.stringify(outcomes)}\n`);
       lock();
       return { ledgerHash: sealHashOf(ledgerPath, outcomesPath), counts };

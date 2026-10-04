@@ -8,10 +8,9 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { RESEARCH_CONFIG } from '../../core/src/config/index.ts';
 import { burnHoldout, openHoldout } from '../../core/src/stats/index.ts';
 import {
-  type HoldoutPlan, readHoldoutStore, recordHoldoutG1, recordHoldoutG2, registerAttempt, RULED_ALPHA, sealThroughStore, setHoldoutPlan,
+  type HoldoutPlan, readHoldoutStore, recordHoldoutG1, recordHoldoutG2, recordTrials, registerAttempt, RULED_ALPHA, sealThroughStore, setHoldoutPlan,
 } from '../src/holdout.ts';
 import { openSealed } from '../src/study/sealed.ts';
-import { loadTrialLog, readTrialLog, recordTrial, writeTrialLog } from '../src/study/trials.ts';
 
 const dir = mkdtempSync(join(tmpdir(), 'reg-'));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -92,12 +91,21 @@ describe('study holdouts through the one registry', () => {
     expect(() => openSealed('/nonexistent/h.db', readHoldoutStore(a.registryPath), ['U1-h'])).toThrow(/stays closed: U1-h's latest G1 did not pass/);
   });
 
-  it('keeps one experiment-registry entry per trial and survives a write and read', () => {
-    const t = { trialId: 'x', configId: 'x', evaluatedOn: 'wf', sharpe: 0.1, n: 10, skew: 0, kurt: 3 } as unknown as Parameters<typeof recordTrial>[1];
-    const log = recordTrial(recordTrial(loadTrialLog(join(dir, 'none.json')), t), t);
-    expect(log.trials).toHaveLength(1);
-    const p = join(dir, 'trials.json');
-    writeTrialLog(p, log);
-    expect(readTrialLog(p)).toEqual(log);
+  it('keeps the experiment registry in the holdout registry: one entry per trial, a plan first, and only the pre-registered family', () => {
+    const t = (tag: string, trialId = `${tag}-c`) => ({ trialId, configId: trialId, tag, evaluatedOn: 'wf', sharpe: 0.1, nTrades: 10 });
+    const none = { registryPath: join(dir, `t${n++}.json`), codeCommit: 'c', datasetId: 'd' };
+    expect(() => recordTrials(none, [t('U2')])).toThrow(/set the plan/);
+    const a = fresh();
+    recordTrials(a, [t('U2')]);
+    recordTrials(a, [t('U2'), t('U1')]);
+    expect(readHoldoutStore(a.registryPath).trials!.map((x) => x.trialId)).toEqual(['U2-c', 'U1-c']);
+    // A plan that binds RES-4's family refuses a trial outside it, and keeps the log unchanged.
+    const f = { registryPath: join(dir, `t${n++}.json`), codeCommit: 'c', datasetId: 'd' };
+    setHoldoutPlan(f, { ...plan, details: { preregistration: { sha256: 'abc', ids: ['H4-U2-reclaim', 'H5-U2-exhausted-dump'] } } }, RESEARCH_CONFIG);
+    recordTrials(f, [t('H4-U2-reclaim')]);
+    expect(() => recordTrials(f, [t('H5-U2-exhausted-dump'), t('H7-U2-new')])).toThrow(/H7-U2-new are not in the pre-registered family/);
+    expect(readHoldoutStore(f.registryPath).trials!.map((x) => x.tag)).toEqual(['H4-U2-reclaim']);
+    // The family is fixed with the plan: a seventh hypothesis is a different plan, refused on this window.
+    expect(() => setHoldoutPlan(f, { ...plan, details: { preregistration: { sha256: 'abd', ids: ['H4-U2-reclaim', 'H5-U2-exhausted-dump', 'H7-U2-new'] } } }, RESEARCH_CONFIG)).toThrow(/fixed once set/);
   });
 });
