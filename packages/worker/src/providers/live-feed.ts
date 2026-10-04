@@ -162,6 +162,11 @@ export class LiveFeed implements Feed {
     return this.#tip;
   }
 
+  /** The latest receipt time stamped so far (receipt times never decrease); -Infinity before the first frame. */
+  get lastReceivedAt(): number {
+    return this.#lastReceivedAt;
+  }
+
   get releasedThrough(): bigint {
     return this.#released;
   }

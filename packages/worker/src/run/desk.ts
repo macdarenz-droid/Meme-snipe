@@ -117,6 +117,8 @@ export class Desk {
     // A world event: written unless the ledger already holds it.
     if (r.result === 'illegal') {
       this.illegal++;
+      // One the ledger already holds: the engine and the ledger no longer agree, so entries stop until a restart.
+      if (this.#written.has(r.eventId)) this.#d.diverged(`world event ${r.event.type} refused: ${r.reason ?? ''}`);
       return;
     }
     if (this.#written.delete(r.eventId)) return;

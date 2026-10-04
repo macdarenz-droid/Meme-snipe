@@ -529,6 +529,9 @@ export class LiveStrategy implements Strategy {
     if (!p.ok) return 'pool state unknown';
     const pool = parsePool(p.value);
     if (pool === null) return 'pool state malformed';
+    // A flagged pool fact (POS-1: the swap stream lost continuity) is never priced from, whatever its age.
+    const flags = pool.obs.quality.filter((q) => q !== 'backfilled' && q !== 'deduplicated');
+    if (flags.length > 0) return `pool state flagged ${flags.join(', ')}${typeof (p.value as { stale?: unknown }).stale === 'string' ? ` (${(p.value as { stale: string }).stale})` : ''}`;
     this.#notePool(mint, pool.address);
     // A fee-context fact when one is published, else the terms of the latest swap seen on the pool.
     const f = ctx.lookup(feesKey(mint));

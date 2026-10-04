@@ -9,7 +9,10 @@ import { replayLedgerFile } from '../../core/src/ledger/replay/index.ts';
 import { STATE_FILES } from '../../runner/src/contract.ts';
 import { checkBoot, checkSession, firstDivergence, loadSession, normalise, replayBoot, type ParityDeps } from '../src/run/parity.ts';
 import { blockNetwork } from './helpers.ts';
-import { MINT, makeWorker, passingMarket, type Harness } from './worker-harness.ts';
+import { MINT, Market, makeWorker, passingMarket, type Harness } from './worker-harness.ts';
+
+/** Test-only (POS-1): a held position's price moves with the re-published pool fact. */
+const HELD = { heldPoolFacts: true } as const;
 import { setSecretValues } from '../src/run/redact.ts';
 
 blockNetwork();
@@ -20,7 +23,7 @@ const ROOT = join(import.meta.dirname, '..', '..', '..');
 const session = async (o: { readonly edgePpm?: bigint } = {}): Promise<Harness> => {
   const h = makeWorker(o.edgePpm === undefined ? {} : { edgePpm: o.edgePpm });
   await h.worker.reconcile();
-  const m = await passingMarket(h);
+  const m = await passingMarket(h, HELD);
   await m.run(4_000, 100, () => m.pool());
   await m.run(10_000, 400, () => {
     m.slot();
@@ -100,12 +103,12 @@ describe('TEST-1 parity harness', () => {
   it('across a restart each boot replays to its own decisions', async () => {
     const h = makeWorker();
     await h.worker.reconcile();
-    const m = await passingMarket(h);
+    const m = await passingMarket(h, HELD);
     await m.run(4_000, 100, () => m.pool());
     await h.worker.kill();
     const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers });
     await h2.worker.reconcile();
-    const m2 = new (m.constructor as new (x: Harness) => typeof m)(h2);
+    const m2 = new Market(h2, HELD);
     await m2.run(4_000, 400, () => {
       m2.slot();
       m2.pool();
@@ -171,7 +174,7 @@ describe('TEST-1 parity harness', () => {
   it('a killed session (recorder files still plain, a torn last line) replays from its whole lines', async () => {
     const h = makeWorker();
     await h.worker.reconcile();
-    const m = await passingMarket(h);
+    const m = await passingMarket(h, HELD);
     await m.run(4_000, 100, () => m.pool());
     await h.worker.kill();
     const b = loadSession(h.stateDir)[0]!;
@@ -233,12 +236,12 @@ describe('TEST-1 parity harness', () => {
   const twoBoots = async (): Promise<{ h: Harness; h2: Harness }> => {
     const h = makeWorker();
     await h.worker.reconcile();
-    const m = await passingMarket(h);
+    const m = await passingMarket(h, HELD);
     await m.run(4_000, 100, () => m.pool());
     await h.worker.kill();
     const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers });
     await h2.worker.reconcile();
-    const m2 = new (m.constructor as new (x: Harness) => typeof m)(h2);
+    const m2 = new Market(h2, HELD);
     await m2.run(4_000, 400, () => {
       m2.slot();
       m2.pool();
