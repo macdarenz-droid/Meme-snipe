@@ -317,7 +317,11 @@ export class Worker {
     // the restore, not from the constructor's start: opening the ledger and reading the book takes milliseconds.
     const startAt = Math.max(this.#d.timers.now(), this.#feed.lastReceivedAt) + 1;
     this.#fact(HALT_KEY, { halted: true, reasons: [...this.#halted] }, startAt);
-    this.#fact(RESTORE_KEY, { exits: this.#exitsFile.read({}) }, startAt);
+    // Each position's entry fill moment, as the ledger booked it (its first `open` event): the exact open time of a
+    // position whose saved plan is missing or refused (EXIT-1f).
+    const openedAt: Record<string, number> = {};
+    for (const e of this.#ledger.positionEvents()) if (e.status === 'open' && openedAt[e.positionId] === undefined) openedAt[e.positionId] = Number(e.ts);
+    this.#fact(RESTORE_KEY, { exits: this.#exitsFile.read({}), openedAt }, startAt);
     if (stored.events.length > 0) this.#report({ type: 'restart' }, startAt);
     if (this.#ctl.paused) this.#report({ type: 'pause_entries', reason: 'owner' }, startAt);
     this.#drillToken = randomBytes(16).toString('hex');

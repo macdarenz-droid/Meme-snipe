@@ -104,6 +104,8 @@ export interface SavedExit {
 
 export interface RestoreFact {
   readonly exits: Readonly<Record<string, SavedExit>>;
+  /** Each position's entry fill moment as the ledger booked it (its first `open` event), by position (EXIT-1f). */
+  readonly openedAt?: Readonly<Record<string, number>>;
 }
 
 /** Strategy settings that are not owner limits. The trading rules stay provisional until BT-2 registers U2's. */
@@ -316,6 +318,8 @@ export class LiveStrategy implements Strategy {
    * restore) must never plan a restored position from its fill under the policy-maximum stop, even for one step (EXIT-1e).
    */
   #restoreSeen = false;
+  /** Entry fill moments the ledger booked, from the restore fact: a fallback plan's exact open time (EXIT-1f). */
+  readonly #bookedOpenAt = new Map<string, number>();
   /** Positions whose fallback plan waits for the first slot to date their fill (said once each). */
   readonly #planWaitsForSlot = new Set<string>();
   /** Said once per boot when positions wait for the restore. */
@@ -417,6 +421,9 @@ export class LiveStrategy implements Strategy {
 
   #restore(v: unknown, out: Decision[]): void {
     this.#restoreSeen = true;
+    if (isObj(v) && isObj(v['openedAt'])) {
+      for (const [pid, at] of Object.entries(v['openedAt'])) if (typeof at === 'number' && Number.isFinite(at)) this.#bookedOpenAt.set(pid, at);
+    }
     if (!isObj(v) || !isObj(v['exits'])) {
       out.push({ action: null, reasons: ['restore refused', 'malformed restore fact'] });
       return;
@@ -905,12 +912,15 @@ export class LiveStrategy implements Strategy {
     const seed = this.#seeds.get(entryId);
     const entry = ctx.book.intents[entryId];
     const p = ctx.book.positions[pid]!;
-    // The open time: the fill's moment when this process saw it (it holds the decision seed); otherwise the fill is dated
-    // from its slot with an upper bound on the slot time, so a restart never restarts T_flat or T_max (EXIT-1f). Until
-    // the first slot is seen nothing can be dated, and nothing could be sent either: the plan waits for it.
+    // The open time: the fill's moment when this process saw it (it holds the decision seed); else the moment the ledger
+    // booked it (exact, from the restore fact); else, with neither, the fill dated from its slot with an upper bound on
+    // the slot time. A restart never restarts T_flat or T_max (EXIT-1f). Until the first slot is seen the slot dating
+    // cannot be made, and nothing could be sent either: the plan waits for it.
     const fill = entry?.fills[0];
+    const booked = this.#bookedOpenAt.get(pid);
     let fillAt = ctx.now.receivedAt;
-    if (seed === undefined && fill !== undefined) {
+    if (seed === undefined && booked !== undefined) fillAt = Math.min(booked, ctx.now.receivedAt);
+    else if (seed === undefined && fill !== undefined) {
       if (this.#height === null) {
         if (!this.#planWaitsForSlot.has(pid)) {
           this.#planWaitsForSlot.add(pid);

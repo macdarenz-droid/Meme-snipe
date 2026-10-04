@@ -5,6 +5,7 @@ import { cpSync, existsSync, readFileSync, readdirSync, rmSync, writeFileSync } 
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { replayLedgerFile } from '../../core/src/ledger/replay/index.ts';
+import { openLedgerReader } from '../../core/src/ledger/index.ts';
 import { checkJournal } from '../../runner/src/journal.ts';
 import type { LogRecord } from '../../core/src/engine/index.ts';
 import { EXEC_HEALTH_KEY, migrationKey } from '../../core/src/gates/index.ts';
@@ -691,7 +692,7 @@ describe('a restored position is never managed from a plan it was not entered wi
 });
 
 describe('a restart never extends a time stop (EXIT-1f)', () => {
-  it('a refused saved plan falls back to the fill dated from its slot: the time stop due during the downtime fires at once', async () => {
+  it('a refused saved plan falls back to the fill at the moment the ledger booked it: the time stop due during the downtime fires at once', async () => {
     const { h, pid } = await dueAfterDowntime();
     // The saved plan is refused (its stop is not an amount): the position falls back to the plan from its fill.
     const file = exitsFile(h.stateDir);
@@ -700,11 +701,14 @@ describe('a restart never extends a time stop (EXIT-1f)', () => {
     const { b, m, first } = await reboot(h, LANDS);
     expect(await until(m, 4_000, () => b.worker.strategy.saved()[pid] !== undefined, () => m.slot())).toBe(true);
     expect(first('restore entry refused')).toHaveLength(1);
-    expect(first('entry plan waits for the first slot')).toHaveLength(1);
-    // The fallback plan's open time is at or before the real fill, so the hold is already past T_max.
+    // Exact: the open time is the entry fill's booking moment in the ledger, never this boot's clock.
+    const ledger = openLedgerReader(join(h.stateDir, 'ledger.sqlite'));
+    const booked = Number(ledger.positionEvents().find((e) => e.positionId === pid && e.status === 'open')!.ts);
+    ledger.close();
     const plan = b.worker.strategy.saved()[pid]!.plan;
+    expect(plan.openedAtMs).toBe(booked);
     expect(plan.openedAtMs).toBeLessThanOrEqual(saved[pid]!.plan.openedAtMs);
-    expect(m.now - plan.openedAtMs).toBeGreaterThanOrEqual(TRIAL_POLICY.exits.universes.U2.tMaxMs);
+    expect(first('entry plan waits for the first slot')).toEqual([]);
     m.pool();
     expect(await until(m, 4_000, () => first('exit').length > 0, () => m.slot())).toBe(true);
     expect((first('exit')[0]!['reasons'] as string[]).some((r) => r.startsWith('time_max'))).toBe(true);

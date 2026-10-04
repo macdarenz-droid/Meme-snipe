@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { zstdDecompressSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
 import { recordFromRpc, type RpcTransactionBase64 } from '../../core/src/chain/index.ts';
-import { RUG_CONFIG } from '../../core/src/config/index.ts';
+import { RUG_CONFIG, TRIAL_POLICY } from '../../core/src/config/index.ts';
 import { Engine, type LogRecord, type Strategy } from '../../core/src/engine/index.ts';
 import { GATE_REASONS_PREFIX, LiveStrategy, RESTORE_KEY } from '../src/engine/strategy.ts';
 import { replayRecorded, type Frame, type Release } from '../src/providers/index.ts';
@@ -260,5 +260,48 @@ describe('a restore the strategy cannot use never stalls exits (EXIT-1e review B
     expect(got.find((x) => x[0] === 'restore')).toContain('1 exit plans and trackers restored');
     expect(got.some((x) => x[0] === 'no entry plan')).toBe(false);
     expect(at('exit')).toBeGreaterThan(at('restore tracker refused'));
+  });
+
+  it('without the booked fill moment, a refused plan dates the fill from its slot: a time stop due during the downtime still fires (EXIT-1f)', async () => {
+    const h = makeWorker();
+    await h.worker.reconcile();
+    const m = await passingMarket(h, HELD);
+    await m.run(4_000, 100, () => m.pool());
+    await m.run(10_000, 400, () => {
+      m.slot();
+      m.pool();
+    });
+    await h.worker.kill();
+    h.timers.set(m.now + TRIAL_POLICY.exits.universes.U2.tMaxMs + 60_000);
+    const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers });
+    expect(await h2.worker.reconcile()).toEqual({ ok: true });
+    const m2 = new Market(h2, HELD);
+    await m2.run(1_200, 400, () => m2.slot());
+    await m2.run(4_000, 400, () => {
+      m2.slot();
+      m2.pool();
+    });
+    await h2.worker.stop();
+    const dir = join(h.stateDir, 'recorder', h2.worker.boot);
+    const frames = rows(files(dir, /^frames-/), (l) => parseTyped(l) as Frame).map((f) => {
+      const b = f.body as { type: string; key?: string; value?: unknown };
+      if (b.type !== 'fact' || b.key !== RESTORE_KEY) return f;
+      // The saved plan refused and no booked moment: only the slot can date the fill.
+      const exits = (b.value as { exits: Record<string, { plan: Record<string, unknown> }> }).exits;
+      return { ...f, body: { ...b, value: { exits: Object.fromEntries(Object.entries(exits).map(([pid, s]) => [pid, { ...s, plan: { ...s.plan, stopPrice: 'none' } }])) } } } as Frame;
+    });
+    const releases = rows(files(dir, /^releases-/), (l) => JSON.parse(l) as Release);
+    const start = readFileSync(join(h.stateDir, 'journal.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as { kind: string; boot: string; seed: string })
+      .find((l) => l.kind === 'start' && l.boot === h2.worker.boot)!;
+    const { clock, feed } = replayRecorded(frames, releases);
+    const strategy = new LiveStrategy({ session: h2.session, rugs: RUG_CONFIG, config: h2.worker.strategyConfig });
+    const engine = new Engine({ clock, feed: engineFeed(feed, h2.session.policy).feed, strategy, runner: { run: () => undefined }, seed: start.seed, book: { maxOpenPositions: h2.session.policy.positions.maxOpen } });
+    engine.drain();
+    const got = (engine.records as readonly LogRecord[]).flatMap((r) => (r.type === 'decision' ? [r.reasons as string[]] : []));
+    expect(got.some((x) => x[0] === 'restore entry refused')).toBe(true);
+    expect(got.some((x) => x[0] === 'entry plan waits for the first slot')).toBe(true);
+    const exit = got.find((x) => x[0] === 'exit');
+    expect(exit).toBeDefined();
+    expect(exit!.some((r) => r.startsWith('time_max'))).toBe(true);
   });
 });
