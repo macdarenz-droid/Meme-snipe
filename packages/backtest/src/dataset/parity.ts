@@ -28,6 +28,8 @@
 //      InitializeAccount2 or InitializeAccount3 that opened the account in this transaction, for mints ending in "pump"
 //      and for mints with a decoded pump or PumpSwap event in that transaction. A failed transaction has none. Movement rows of transactions
 //      without a raw record are counted (movements_without_raw).
+//      Delegation rows (scanner delegations.go: Approve, ApproveChecked, Revoke, SetAuthority AccountOwner and
+//      CloseAccount, outside pump and PumpSwap, same mints) are re-derived and compared the same way.
 // A raw record the decoder refuses is a mismatch. The CLI prints the summary, writes <dataset-dir>/qa/parity.json and
 // exits 1 on any mismatch or missing row.
 import { createHash } from 'node:crypto';
@@ -432,7 +434,7 @@ export interface Key {
 }
 
 export interface Mismatch {
-  readonly kind: RowKind | 'decode' | 'movement';
+  readonly kind: RowKind | 'decode' | 'movement' | 'delegation';
   readonly key: Key | { readonly slot: number; readonly tx_idx: number };
   readonly signature: string;
   readonly field: string;
@@ -481,6 +483,10 @@ export interface ParitySummary {
   movements_matched: number;
   /** Movement rows whose transaction has no raw record (raw records exist only for the hash sample, creates and migrations). */
   movements_without_raw: number;
+  /** Delegation rows of transactions with a raw record, each compared with the re-derived delegations. */
+  delegations_checked: number;
+  delegations_matched: number;
+  delegations_without_raw: number;
   scope: string;
   mismatches: Mismatch[];
   missing_rows: MissingRow[];
@@ -497,6 +503,7 @@ export class ParityChecker {
   private readonly swapIx = loadSwapUserPositions();
   private rows = new Map<string, Row[]>();
   private moves = new Map<string, MovementRow[]>();
+  private delegs = new Map<string, MovementRow[]>();
   readonly s: ParitySummary = {
     raw_records: 0,
     raw_failed: 0,
@@ -514,7 +521,10 @@ export class ParityChecker {
     movements_checked: 0,
     movements_matched: 0,
     movements_without_raw: 0,
-    scope: 'rows of mints with h < raw_sample_rate, and every CreateEvent and migration row; movement rows of transactions with a raw record',
+    delegations_checked: 0,
+    delegations_matched: 0,
+    delegations_without_raw: 0,
+    scope: 'rows of mints with h < raw_sample_rate, and every CreateEvent and migration row; movement and delegation rows of transactions with a raw record',
     mismatches: [],
     missing_rows: [],
   };
@@ -562,6 +572,15 @@ export class ParityChecker {
     else this.moves.set(k, [m]);
   }
 
+  /** Adds one delegations row of the batch (delegations-NNN.csv.zst). */
+  addDelegation(v: Record<string, string>): void {
+    const m = movementRow(v);
+    const k = txKey(m.slot, m.txIdx);
+    const list = this.delegs.get(k);
+    if (list) list.push(m);
+    else this.delegs.set(k, [m]);
+  }
+
   private mismatch(m: Mismatch): void {
     this.s.mismatch_count++;
     if (this.s.mismatches.length < LIST_LIMIT) this.s.mismatches.push(m);
@@ -581,6 +600,9 @@ export class ParityChecker {
     const moveRows = this.moves.get(k) ?? [];
     this.moves.delete(k);
     this.s.movements_checked += moveRows.length;
+    const delegRows = this.delegs.get(k) ?? [];
+    this.delegs.delete(k);
+    this.s.delegations_checked += delegRows.length;
     const txRef = { slot: line.slot, tx_idx: line.txIndex };
     const failed = line.err !== null && line.err !== undefined;
     if (failed) this.s.raw_failed++;
@@ -609,6 +631,7 @@ export class ParityChecker {
 
     // Rule 4: movement rows equal the movements re-derived from the record.
     this.compareMovements(line, moveRows, failed ? [] : deriveMovements(ctx, events, this.idl));
+    this.compareRows(line, 'delegation', DELEGATION_COLUMNS, delegRows, failed ? [] : deriveDelegations(ctx, events, this.idl), () => this.s.delegations_matched++);
 
     // Failed rows: one per failed transaction, equal to its record.
     const rows: Row[] = [];
@@ -717,6 +740,39 @@ export class ParityChecker {
     this.rows = new Map();
     for (const list of this.moves.values()) this.s.movements_without_raw += list.length;
     this.moves = new Map();
+    for (const list of this.delegs.values()) this.s.delegations_without_raw += list.length;
+    this.delegs = new Map();
+  }
+
+  /** Same rows in every column (rule 4, for a table keyed by instruction position like movements). */
+  private compareRows(line: RawLine, kind: 'delegation', cols: readonly string[], rows: readonly MovementRow[], derived: readonly MovementRow[], matched: () => void): void {
+    const text = (m: MovementRow) => cols.map((c) => m.values[c] ?? '').join(',');
+    const byPos = new Map<string, { rows: MovementRow[]; derived: MovementRow[] }>();
+    const at = (m: MovementRow) => {
+      const p = `${m.values.outer_ix}:${m.values.inner_ix}`;
+      let e = byPos.get(p);
+      if (!e) byPos.set(p, (e = { rows: [], derived: [] }));
+      return e;
+    };
+    for (const m of rows) at(m).rows.push(m);
+    for (const m of derived) at(m).derived.push(m);
+    for (const { rows: rs, derived: ds } of byPos.values()) {
+      const ref = rs[0] ?? ds[0]!;
+      const key: Key = { slot: line.slot, tx_idx: line.txIndex, outer_ix: Number(ref.values.outer_ix), inner_ix: ref.values.inner_ix === '' ? -1 : Number(ref.values.inner_ix) };
+      // exact matches first; what is left is paired in order (row vs re-derived), then unpaired
+      const left = ds.map(text);
+      const unmatched: string[] = [];
+      for (const r of rs) {
+        const i = left.indexOf(text(r));
+        if (i >= 0) {
+          left.splice(i, 1);
+          matched();
+        } else unmatched.push(text(r));
+      }
+      for (let i = 0; i < Math.max(unmatched.length, left.length); i++) {
+        this.mismatch({ kind, key, signature: line.signature, field: `(${kind} row)`, row: unmatched[i] ?? null, decoded: left[i] ?? 'none' });
+      }
+    }
   }
 
   /** Rule 4: same rows in every column; rows at one instruction position are compared column by column. */
@@ -980,6 +1036,76 @@ export const deriveMovements = (ctx: Ctx, events: readonly LocatedEvent[], idl: 
   return out;
 };
 
+export const DELEGATION_COLUMNS = ['slot', 'block_time', 'tx_idx', 'outer_ix', 'inner_ix', 'mint', 'kind', 'account', 'owner', 'authority', 'amount'] as const;
+
+/**
+ * The delegation rows of a successful raw record (scanner delegations.go): SPL Token / Token-2022 Approve (4: account 0,
+ * delegate 1), ApproveChecked (13: account 0, mint 1, delegate 2), Revoke (5: account 0) and SetAuthority (6) of type
+ * AccountOwner (2) or CloseAccount (3) on account 0, with no pump or PumpSwap instruction among their callers, for the
+ * mints of deriveMovements. Mint and owner of the account: the token balances (post over pre), else the
+ * InitializeAccount* that opened it (mint is its account 1); no row without a mint.
+ */
+export const deriveDelegations = (ctx: Ctx, events: readonly LocatedEvent[], idl: ReadonlyMap<string, IdlEvent>): MovementRow[] => {
+  const { line, rec, tx, keys } = ctx;
+  const active = eventMintSet(ctx, events, idl);
+  const want = (m: string) => m.endsWith('pump') || active.has(m);
+  const bal = new Map<number, { mint: string; owner: string }>();
+  for (const b of line.meta.preTokenBalances ?? []) bal.set(b.accountIndex, { mint: b.mint, owner: b.owner ?? '' });
+  for (const b of line.meta.postTokenBalances ?? []) bal.set(b.accountIndex, { mint: b.mint, owner: b.owner ?? '' });
+  const temp = tempOwners(ctx);
+  const groups = new Map((rec.innerInstructions ?? []).map((g) => [g.index, g.instructions]));
+  const initMint = new Map<number, string>();
+  tx.instructions.forEach((top, gi) => {
+    for (const ix of [top, ...(groups.get(gi) ?? [])]) {
+      const p = keys[ix.programIdIndex];
+      if ((p === TOKEN_PROGRAM || p === TOKEN_2022_PROGRAM) && (ix.data[0] === 1 || ix.data[0] === 16 || ix.data[0] === 18) && ix.accounts.length > 1) initMint.set(ix.accounts[0]!, keys[ix.accounts[1]!] ?? '');
+    }
+  });
+  const out: MovementRow[] = [];
+  tx.instructions.forEach((top, gi) => {
+    const seq = [{ programIdIndex: top.programIdIndex, accounts: top.accounts, data: top.data, height: 1 }];
+    for (const ix of groups.get(gi) ?? []) seq.push({ programIdIndex: ix.programIdIndex, accounts: ix.accounts, data: ix.data, height: ix.stackHeight || 2 });
+    const callers: string[] = [];
+    seq.forEach((ix, k) => {
+      const h = k === 0 ? 1 : ix.height;
+      if (h - 1 < callers.length) callers.length = h - 1;
+      const inSwap = callers.some((p) => p === PUMP_PROGRAM || p === PUMP_AMM_PROGRAM);
+      const program = keys[ix.programIdIndex] ?? '';
+      callers.push(program);
+      if (inSwap || (program !== TOKEN_PROGRAM && program !== TOKEN_2022_PROGRAM) || ix.data.length === 0) return;
+      const d = ix.data;
+      let kind = '';
+      let mintPos = -1;
+      let delegatePos = -1;
+      if (d[0] === 4 && d.length >= 9) [kind, delegatePos] = ['approve', 1];
+      else if (d[0] === 13 && d.length >= 10) [kind, mintPos, delegatePos] = ['approve_checked', 1, 2];
+      else if (d[0] === 5) kind = 'revoke';
+      else if (d[0] === 6 && d.length >= 3 && (d[1] === 2 || d[1] === 3) && (d[2] === 0 || d.length >= 35)) kind = d[1] === 2 ? 'set_owner' : 'set_close_authority';
+      if (kind === '' || ix.accounts.length === 0 || Math.max(mintPos, delegatePos) >= ix.accounts.length) return;
+      const a = ix.accounts[0]!;
+      const mint = mintPos >= 0 ? (keys[ix.accounts[mintPos]!] ?? '') : (bal.get(a)?.mint ?? initMint.get(a) ?? '');
+      if (mint === '' || !want(mint)) return;
+      let authority = '';
+      let amount = '';
+      if (kind === 'approve' || kind === 'approve_checked') {
+        authority = keys[ix.accounts[delegatePos]!] ?? '';
+        let v = 0n;
+        for (let i = 8; i >= 1; i--) v = (v << 8n) | BigInt(d[i]!);
+        amount = String(v);
+      } else if (kind !== 'revoke' && d[2] === 1) authority = encodeBase58(d.subarray(3, 35));
+      out.push({
+        slot: line.slot,
+        txIdx: line.txIndex,
+        values: {
+          slot: String(line.slot), block_time: str(line.blockTime), tx_idx: String(line.txIndex), outer_ix: String(gi), inner_ix: k === 0 ? '' : String(k - 1),
+          mint, kind, account: keys[a] ?? '', owner: bal.get(a)?.owner ?? temp.get(a) ?? '', authority, amount,
+        },
+      });
+    });
+  });
+  return out;
+};
+
 export interface Ctx {
   readonly line: RawLine;
   readonly rec: TransactionRecord;
@@ -1139,6 +1265,7 @@ export const runParity = async (dir: string): Promise<ParitySummary> => {
     for (const f of filesWith(d, 'failed')) for (const v of csvObjects(zstText(f))) checker.addRow(failedRow(v));
     for (const f of filesWith(d, 'events')) for await (const l of zstLines(f)) checker.addRow(eventRow(JSON.parse(l) as Record<string, unknown>));
     for (const f of filesWith(d, 'movements')) for (const v of csvObjects(zstText(f))) checker.addMovement(v);
+    for (const f of filesWith(d, 'delegations')) for (const v of csvObjects(zstText(f))) checker.addDelegation(v);
     for (const f of filesWith(d, 'raw')) for await (const l of zstLines(f)) checker.checkRaw(JSON.parse(l) as RawLine);
     checker.endBatch();
   }

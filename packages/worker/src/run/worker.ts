@@ -33,6 +33,7 @@ import type { SeedRpc } from '../seed/rpc.ts';
 import { DelayProbe, type DelayProbeOptions } from './delay-probe.ts';
 import { type ApiInputs, type DecisionRow, checkOf, melbourneDate, stageOf, startApiServer } from './api.ts';
 import type { FactContext, FactSource } from './facts.ts';
+import { engineFeed, type EngineFeed } from './engine-feed.ts';
 import { startHealthServer } from './health.ts';
 import { type HeartbeatPosition, heartbeatBody, sendHeartbeat } from './heartbeat.ts';
 import { jsonText } from './json.ts';
@@ -159,6 +160,7 @@ export class Worker {
   readonly #exitsFile: ReturnType<typeof exitsFile>;
   readonly #account: PaperAccount;
   readonly #feed: LiveFeed;
+  readonly #facts: EngineFeed;
   readonly #strategy: LiveStrategy;
   readonly #engine: Engine;
   readonly #world: PaperWorld;
@@ -275,7 +277,11 @@ export class Worker {
       file: new StateFile<PaperState>(c.stateDir, 'paper.json', (v) => (isObj(v) && isObj(v['attempts']) ? (v as unknown as PaperState) : null)),
       changed: () => this.#writeOpenIntents(),
     });
-    this.#engine = new Engine({ clock: this.#feed.clock, feed: this.#feed, strategy: this.#strategy, runner: this.#world, seed, book: bookConfig });
+    // FACTS-1b: the engine reads through core's FactFeed (engine-feed.ts); a replay of the recording uses the same.
+    this.#facts = engineFeed(this.#feed, d.session.policy, (e) => {
+      if (e.key.startsWith(POOL_PREFIX)) this.#pools.set(e.key.slice(POOL_PREFIX.length), e.value);
+    });
+    this.#engine = new Engine({ clock: this.#feed.clock, feed: this.#facts.feed, strategy: this.#strategy, runner: this.#world, seed, book: bookConfig });
     this.#deployerStore = new DeployerStore(c.stateDir);
     this.#saved = this.#deployerStore.load(now - (d.session.policy.gates.deployerRugLookbackDays + 1) * 86_400_000);
     this.#desk = new Desk({
@@ -407,6 +413,11 @@ export class Worker {
   }
 
   /** The latest pool fact of a mint, with its fee context: what the paper fill and the dry-run build use. */
+  /** Gate facts core's producer has released to the engine so far (FACTS-1b). */
+  get factsReleased(): number {
+    return this.#facts.released();
+  }
+
   poolOf(mint: string): { readonly address: string; readonly state: PaperMarket['pool']; readonly ctx: PoolFeeContext } | null {
     const p = parsePool(this.#pools.get(mint));
     const ctx = this.#fees.get(mint) ?? this.#strategy.observedFees(mint);
@@ -663,6 +674,7 @@ export class Worker {
       const ctx: FactContext = {
         sink: { fact: (key, value) => this.#fact(key, value), now: () => d.timers.now() },
         timers: d.timers, schedulers: d.schedulers, watched: () => this.#strategy.watched(),
+        ingest: this.#feed, candidates: () => this.#strategy.candidates(), tip: () => this.#feed.tip,
       };
       for (const f of d.facts) f.start(ctx);
     }
@@ -830,7 +842,11 @@ export class Worker {
         trade: p.id, mint: p.mint, qty: String(p.quantity), entry: String(entryPrice(p)), stop: saved === undefined ? 'unknown' : String(saved.plan.stopPrice),
         // No mark read yet: the entry, seen at time 0, which the runner reads as unmeasured (older than 30 s).
         mark: String(mark?.price ?? entryPrice(p)), mark_slot: mark === null ? 0 : Number(mark.slot), mark_ts: mark?.atMs ?? 0,
+        // The universe the position was entered under (CFG-2; RUN-1d contract); no saved plan: unknown, which fails the drill.
+        universe: saved === undefined ? 'unknown' : saved.plan.universe,
       },
+      // Trades with an exit planned or signed and not final (RUN-1d contract).
+      pending_exits: Object.values(this.#engine.book.positions).filter((x) => x.status === 'exit_requested' || x.status === 'exit_pending' || x.status === 'exit_blocked').map((x) => x.id),
       unresolved_intents: this.#desk.unresolved(now, (id) => this.#intentAt.get(id) ?? null),
       signer: 'none', lease_epoch: null,
       sol_reserve: this.#account.state.walletLamports === null ? null : String(this.#account.state.walletLamports),

@@ -36,12 +36,17 @@ export const createOf = (v: unknown): { readonly mint: string; readonly creator:
   return Number.isSafeInteger(createdAtMs) ? { mint: d['mint'], creator: d['creator'], createdAtMs } : null;
 };
 
+interface Known {
+  readonly at: Moment;
+  readonly kind: string | null;
+}
+
 /** The deployer index: mints and rug labels per creator, from released events only. */
 export class DeployerIndex {
   readonly #mints = new Map<string, Map<string, number>>();
   /** Rug labels and unjudged mints per creator, each at the moment it became known (compared in full with now). */
-  readonly #rugs = new Map<string, Map<string, Moment>>();
-  readonly #unjudged = new Map<string, Map<string, Moment>>();
+  readonly #rugs = new Map<string, Map<string, Known>>();
+  readonly #unjudged = new Map<string, Map<string, Known>>();
   /** Watches that carry the creates stream (the `via` of every `coverage:creates:start`). */
   readonly #createVias = new Set<string>();
   /** Log reads that may have lost a create, by signature: when seen and on which watch. Cleared by the fetched transaction. */
@@ -64,8 +69,9 @@ export class DeployerIndex {
     if (into !== null) {
       const r = payload(e.value);
       if (r === null || typeof r['creator'] !== 'string' || typeof r['mint'] !== 'string') return;
-      const m = into.get(r['creator']) ?? new Map<string, Moment>();
-      if (!m.has(r['mint'])) m.set(r['mint'], e.moment);
+      const m = into.get(r['creator']) ?? new Map<string, Known>();
+      // The rule that made a label is its kind (what was observed); a label without one is kept without a kind.
+      if (!m.has(r['mint'])) m.set(r['mint'], { at: e.moment, kind: typeof r['rule'] === 'string' ? r['rule'] : null });
       into.set(r['creator'], m);
     }
   }
@@ -176,8 +182,8 @@ export class DeployerIndex {
     const own = this.#first === null || this.#first.receivedAt > now.receivedAt ? Number.MAX_SAFE_INTEGER : this.#first.receivedAt;
     coverageFromMs = Math.max(coverageFromMs, own);
     const sorted = <V>(m: Map<string, V> | undefined) => [...(m ?? new Map<string, V>())].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-    const known = (m: Map<string, Moment> | undefined) =>
-      sorted(m).filter(([, at]) => compareMoments(at, now) <= 0).map(([mint, at]) => ({ mint, knownAtMs: at.receivedAt }));
+    const known = (m: Map<string, Known> | undefined) =>
+      sorted(m).filter(([, k]) => compareMoments(k.at, now) <= 0).map(([mint, k]) => ({ mint, knownAtMs: k.at.receivedAt, ...(k.kind === null ? {} : { kind: k.kind }) }));
     return {
       obs: { provider: 'deployer-index', slot: now.slot, receivedAt: now.receivedAt, quality: [], commitment: 'confirmed' },
       coverageFromMs,
