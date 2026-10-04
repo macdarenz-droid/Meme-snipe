@@ -8,6 +8,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PUMP_AMM_GLOBAL_CONFIG, PUMP_AMM_PROGRAM, decodePool, feeConfigAddress, fromBase64, pumpPoolAuthority, recordFromRpc, toAddress, transactionEvents, type RpcTransactionBase64 } from '../../../core/src/chain/index.ts';
 import { casesHash } from './fixture-hash.ts';
+import { redactRpc } from '../../../core/test/redact-rpc.ts';
 
 const RPC = process.env['SOLANA_RPC'] ?? 'https://api.mainnet-beta.solana.com';
 const OUT = join(dirname(fileURLToPath(import.meta.url)), 'watch-snapshot.json');
@@ -72,7 +73,7 @@ for (let attempt = 0; attempt < 10; attempt++) {
     accounts: addresses.map((address, i) => ({ address, owner: read.value[i]?.owner ?? null, dataBase64: read.value[i]?.data[0] ?? null })),
     next: { signature: next.signature, slot: next.tx.slot, blockTime: next.tx.blockTime, transaction: next.tx.transaction, meta: next.tx.meta },
   };
-  writeFileSync(OUT, `${JSON.stringify({ meta: { rpc: RPC.replace(/api-key=[^&]+/, 'api-key=…'), fetchedAt: new Date().toISOString(), sha256: casesHash(payload) }, ...payload }, null, 1)}\n`);
+  writeFileSync(OUT, `${JSON.stringify({ meta: { rpc: redactRpc(RPC), fetchedAt: new Date().toISOString(), sha256: casesHash(payload) }, ...payload }, null, 1)}\n`);
   console.log(`wrote ${pool} at slot ${slot}, next swap ${next.signature} at slot ${next.tx.slot}`);
   process.exit(0);
 }

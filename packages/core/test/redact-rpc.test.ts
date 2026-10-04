@@ -1,5 +1,6 @@
-// A keyed RPC address never reaches a committed fixture: the redaction helper masks every place a key can sit, every
-// core fixture fetch script records its RPC through it, and no committed fixture file holds a keyed address.
+// A keyed RPC address never reaches a committed fixture or report: the redaction helper masks every place a key can sit,
+// every fetch or report script in any package that reads SOLANA_RPC records it through the helper, and no committed
+// fixture file holds a keyed address.
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { describe, expect, test } from 'vitest';
@@ -51,13 +52,22 @@ describe('RPC redaction for fixtures', () => {
     ]) expect(KEYED.some((re) => re.test(`"rpc": "${keyed}"`)), keyed).toBe(true);
   });
 
-  test('every core fixture fetch script records its RPC through the helper', () => {
-    const scripts = walk(TEST).filter((p) => /\/fixtures\/fetch-[^/]+\.ts$/.test(p));
-    expect(scripts.length).toBeGreaterThanOrEqual(5);
+  test('every script in any package that reads SOLANA_RPC records it through the helper', () => {
+    // Core's five fixture fetches, worker's three fixture fetches and its rug-validate report, and any added later.
+    const scripts = readdirSync(PACKAGES)
+      .flatMap((pkg) => ['test', 'scripts'].map((d) => join(PACKAGES, pkg, d)))
+      .filter((d) => { try { return statSync(d).isDirectory(); } catch { return false; } })
+      .flatMap(walk)
+      .filter((p) => /\.(?:ts|mjs)$/.test(p) && p !== join(TEST, 'redact-rpc.test.ts'))
+      .filter((p) => /process\.env\[['"]SOLANA_RPC['"]\]/.test(readFileSync(p, 'utf8')));
+    expect(scripts.map((p) => relative(PACKAGES, p)).sort()).toEqual(expect.arrayContaining([
+      'core/test/amm/fixtures/fetch-golden.ts', 'core/test/chain/fixtures/fetch-fixtures.ts', 'core/test/facts/fixtures/fetch-facts.ts',
+      'core/test/gates/fixtures/fetch-holders.ts', 'core/test/tx/fixtures/fetch-golden.ts', 'worker/scripts/rug-validate.ts',
+      'worker/test/fixtures/fetch-rug-fixtures.ts', 'worker/test/fixtures/fetch-rug-miss-fixtures.ts', 'worker/test/fixtures/fetch-watch-fixture.ts',
+    ]));
     for (const p of scripts) {
       const src = readFileSync(p, 'utf8');
-      if (!/process\.env\[['"]SOLANA_RPC['"]\]/.test(src)) continue;
-      const name = relative(TEST, p);
+      const name = relative(PACKAGES, p);
       expect(src, name).toMatch(/\bredactRpc\(RPC\)/);
       // The raw address is only ever passed to fetch, never written: no `rpc: RPC`, `source: RPC` or own regex.
       expect(src, name).not.toMatch(/\b(?:rpc|source)\s*:\s*RPC\b/);
