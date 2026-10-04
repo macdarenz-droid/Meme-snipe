@@ -6,8 +6,12 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { parsePool, poolKey } from '../../core/src/gates/index.ts';
-import { TRIPPED_PREFIX } from '../src/engine/strategy.ts';
-import { MINT, type Market, makeWorker, passingMarket } from './worker-harness.ts';
+import { FEE_CONTEXT } from '../../core/test/gates/world.ts';
+import { executableMark } from '../../core/src/exits/index.ts';
+import { type Lamports, type MicroUsd, lamportsToMicroUsd } from '../../core/src/units/index.ts';
+import { markSettings } from '../src/engine/marks.ts';
+import { MARK_PREFIX, TRIPPED_PREFIX } from '../src/engine/strategy.ts';
+import { DEV, MINT, Market, SOL_PRICE, SUPPLY, makeWorker, passingMarket } from './worker-harness.ts';
 
 type H = ReturnType<typeof makeWorker>;
 const lines = (h: H) => readFileSync(join(h.stateDir, 'journal.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>);
@@ -19,7 +23,10 @@ const poolFact = (h: H) => {
 };
 
 /** An active pool: a small buy every slot, so the state the exit is sent and filled on stays fresh. */
-const ticks = (h: H, m: Market) => (): void => m.chainSwap('buy', m.chainState.baseReserve / 1_000_000n, h.worker.feed.openSlot);
+const ticks = (h: H, m: Market) => (): void => {
+  m.chainSwap('buy', m.chainState.baseReserve / 1_000_000n, h.worker.feed.openSlot);
+  m.solPrice();
+};
 
 /** Runs slot by slot (400 ms) until `done` or `maxMs` of virtual time; bounded, never a fixed window. */
 const until = async (m: Market, done: () => boolean, maxMs: number, each?: () => void): Promise<boolean> => {
@@ -34,9 +41,13 @@ const until = async (m: Market, done: () => boolean, maxMs: number, each?: () =>
 };
 
 /** The passing market, the pool's trade stream and one account read, then the entry (pool facts only until it fills). */
-const entered = async (o: { reads?: boolean } = {}): Promise<{ h: H; m: Market; readSlot: bigint }> => {
+const entered = async (o: { reads?: boolean; create?: boolean } = {}): Promise<{ h: H; m: Market; readSlot: bigint }> => {
   const h = makeWorker();
   expect(await h.worker.reconcile()).toEqual({ ok: true });
+  if (o.create === true) {
+    new Market(h).create();
+    h.worker.step();
+  }
   const m = await passingMarket(h);
   const readSlot = h.worker.feed.releasedThrough;
   m.tradesStart(readSlot - 100n);
@@ -79,19 +90,40 @@ describe('a held position priced from its pool\'s swap stream (POS-1)', () => {
     await h.worker.stop();
   });
 
-  it('risk judges the exit with the position marked from the swap-derived market (RISK-MARK): no unknown or stale mark', async () => {
+  it('risk judges the exit with the position at its executable mark from the swap-derived market (RISK-MARK)', async () => {
     const { h, m } = await entered();
     const pid = position(h)!.id;
     // The account snapshot that risk reads holds the open position once the fill's snapshot is released.
     await until(m, () => false, 2_000, ticks(h, m));
+    const quantity = h.worker.book.positions[pid]!.quantity;
     m.chainSwap('sell', (m.chainState.baseReserve * 20n) / 100n, h.worker.feed.openSlot);
+    // The exit is decided on this swap's pool: the mark is the whole holding sold into it, at the ruled settings.
+    const pool = m.chainState;
     expect(await until(m, () => h.worker.book.positions[pid]!.status === 'closed', 20_000, ticks(h, m))).toBe(true);
     const exit = decisions(h).find((r) => r[0] === 'exit')!;
+    const v = executableMark({ venue: 'pumpswap', pool, ctx: FEE_CONTEXT }, quantity, markSettings(h.session.policy, h.worker.strategyConfig.network));
+    if (!v.ok) throw new Error('no mark');
+    expect(exit).toContain(`${MARK_PREFIX}${lamportsToMicroUsd(v.value as Lamports, SOL_PRICE as MicroUsd, 'floor')}`);
     const tripped = exit.find((x) => x.startsWith(TRIPPED_PREFIX))?.slice(TRIPPED_PREFIX.length).split(',') ?? [];
     // The position itself still counts against maxOpen; its value is known and fresh.
     expect(tripped).toContain('max_open_positions');
     expect(tripped).not.toContain('mark_unknown');
     expect(tripped).not.toContain('mark_stale');
+    await h.worker.stop();
+  });
+
+  it('a market older than maxQuoteAgeMs leaves the mark unknown: a deployer-sell exit is judged with mark_unknown', async () => {
+    const { h, m } = await entered({ create: true });
+    const pid = position(h)!.id;
+    // No swap on the pool for longer than maxQuoteAgeMs; the SOL price stays fresh.
+    await until(m, () => false, 4_000, () => m.solPrice());
+    m.swap('SellEvent', DEV, (SUPPLY * 300n) / 10_000n);
+    expect(await until(m, () => decisions(h).some((r) => r[0] === 'exit'), 6_000, () => m.solPrice())).toBe(true);
+    const exit = decisions(h).find((r) => r[0] === 'exit')!;
+    expect(exit.some((x) => x.startsWith('deployer_sell: '))).toBe(true);
+    expect(exit).toContain(`${MARK_PREFIX}unknown`);
+    expect(exit.find((x) => x.startsWith(TRIPPED_PREFIX))?.split(',').some((c) => c.endsWith('mark_unknown'))).toBe(true);
+    expect(h.worker.book.positions[pid]!.status).not.toBe('open');
     await h.worker.stop();
   });
 

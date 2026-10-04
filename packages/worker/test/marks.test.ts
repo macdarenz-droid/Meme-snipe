@@ -10,7 +10,7 @@ import { type AccountHistory, evaluateEntry, evaluateExit } from '../../core/src
 import { type Lamports, type MicroUsd, bps, lamportsToMicroUsd, microUsdToLamports } from '../../core/src/units/index.ts';
 import { AMM_FEE_CONFIG, NORMAL_COIN, PUMP_GLOBAL } from '../../core/test/amm/helpers.ts';
 import { DEEP_POOL, MINT_A, MINT_B, NOW, PRICE, account, baseInput, baseRequest } from '../../core/test/risk/helpers.ts';
-import { type HeldMarket, type MarkSettings, markedHistory } from '../src/engine/marks.ts';
+import { type HeldMarket, type MarkSettings, markSettings, markedHistory, riskAccount } from '../src/engine/marks.ts';
 
 const CTX: PoolFeeContext = { feeConfig: AMM_FEE_CONFIG, canonical: true, quote: 'sol', baseSupply: PUMP_GLOBAL.tokenTotalSupply, creatorFeeCharged: true, coin: NORMAL_COIN, instruction: 'v1', buybackFeeBps: bps(5_000) };
 const SETTINGS: MarkSettings = { slippageBps: 300, exitCost: 30_000n, maxAgeMs: TRIAL_POLICY.gates.maxQuoteAgeMs };
@@ -66,12 +66,36 @@ describe('the executable mark (RISK-MARK)', () => {
       marked(bought.pool, NOW + 1),
       markedHistory(history(), held(bought.pool), null, NOW, SETTINGS),
       markedHistory(history(), held(bought.pool), { value: 0n as MicroUsd, atMs: NOW }, NOW, SETTINGS),
+      // A stale or future-dated SOL price (risk's freshness rule) values nothing.
+      markedHistory(history(), held(bought.pool), { value: PRICE, atMs: NOW - SETTINGS.maxAgeMs - 1 }, NOW, SETTINGS),
+      markedHistory(history(), held(bought.pool), { value: PRICE, atMs: NOW + 1 }, NOW, SETTINGS),
       markedHistory(history(), () => undefined, SOL, NOW, SETTINGS),
       markedHistory(history(), () => ({ quantity: 0n, market: { pool: bought.pool, ctx: CTX, atMs: NOW } }), SOL, NOW, SETTINGS),
     ];
     for (const h of nulls) expect(h.openPositions[0]).toMatchObject({ mark: null, markAtMs: null });
     // Exactly maxAgeMs old is still fresh.
     expect(marked(bought.pool, NOW - SETTINGS.maxAgeMs).openPositions[0]!.mark).not.toBeNull();
+    expect(markedHistory(history(), held(bought.pool), { value: PRICE, atMs: NOW - SETTINGS.maxAgeMs }, NOW, SETTINGS).openPositions[0]!.mark).not.toBeNull();
+  });
+
+  it('is valued at the ladder\'s worst accepted slippage and that rung\'s network cost (ruling N1)', () => {
+    const last = TRIAL_POLICY.exits.ladder.steps.at(-1)!;
+    const n = { signaturesPerTx: 2n, baseFeePerSignature: 5_000n, tip: 7_000n };
+    expect(markSettings(startSession(TRIAL_POLICY).policy, n)).toEqual({
+      slippageBps: last.minOutBelowTriggerBps, exitCost: 2n * 5_000n + last.priorityFeeLamports + 7_000n, maxAgeMs: TRIAL_POLICY.gates.maxQuoteAgeMs,
+    });
+    // The last rung is the worst: no rung accepts more slippage.
+    expect(TRIAL_POLICY.exits.ladder.steps.every((x) => x.minOutBelowTriggerBps <= last.minOutBelowTriggerBps)).toBe(true);
+  });
+
+  it('on an exit, a failure while marking gives back the unmarked account; on an entry it is not swallowed', () => {
+    const boom = (): HeldMarket => {
+      throw new Error('no market');
+    };
+    const h = history();
+    expect(riskAccount(h, boom, SOL, NOW, SETTINGS, { fallback: true })).toBe(h);
+    expect(() => riskAccount(h, boom, SOL, NOW, SETTINGS, { fallback: false })).toThrow('no market');
+    expect(riskAccount(h, held(bought.pool), SOL, NOW, SETTINGS, { fallback: true })).toEqual(marked(bought.pool));
   });
 });
 

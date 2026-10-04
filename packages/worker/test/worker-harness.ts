@@ -269,6 +269,11 @@ export class Market {
     this.fact(streamKey('chain'), { ...stream, obs: { ...stream.obs, slot, receivedAt: this.now - 50 } });
   }
 
+  /** A fresh live SOL/USD price (what the price stream keeps current). */
+  solPrice(): void {
+    this.fact(SOL_PRICE_KEY, { value: SOL_PRICE, atMs: this.now - 50 });
+  }
+
   /** A position on the passing mint is open or closing. */
   held(): boolean {
     return Object.values(this.#h.worker.book.positions).some((p) => String(p.mint) === MINT && p.status !== 'closed');
