@@ -22,7 +22,9 @@ const files = (dir: string, re: RegExp): string[] =>
 const rows = <T>(paths: readonly string[], parse: (l: string) => T): T[] =>
   paths.flatMap((p) => zstdDecompressSync(readFileSync(p)).toString('utf8').split('\n').filter((l) => l !== '').map(parse));
 
-const BEFORE = '677234af876820edc65d23308b6eff1d3e653383d2bab2ea46687af8342ce4e6';
+// Retaken after merging base fff0017 (79c8e9d), whose WORKER-1e #117 (5087bd49) changed live decisions: the merged code
+// with Evidence's tip forced to `now.slot` gives this digest, the same as the code under test.
+const BEFORE = 'f57cddd0f1ed5f27dd58bc03ff70cc7d42f8cf933a7460d28ceb0028ed1f2002';
 
 describe('observed tip in live', () => {
   it('a recorded live session replays to byte-identical decisions, gate reasons included', async () => {
