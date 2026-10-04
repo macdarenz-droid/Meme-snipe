@@ -9,7 +9,8 @@ import { usd } from '../../core/src/config/amounts.ts';
 import { createKey, poolKey } from '../../core/src/gates/index.ts';
 import type { LogRecord } from '../../core/src/engine/index.ts';
 import { rejections } from '../../runner/src/quota.ts';
-import { GATE_REASONS_PREFIX, REJECT_STAGES, STAGE_PREFIX } from '../src/engine/strategy.ts';
+import { GATE_REASONS_PREFIX, REJECT_STAGES, SOL_PRICE_KEY, STAGE_PREFIX, WORKER_REJECT_STAGES, rejectStage } from '../src/engine/strategy.ts';
+import { markedHistory } from '../src/engine/marks.ts';
 import { accountFile } from '../src/run/account.ts';
 import { journalFields } from '../src/run/desk.ts';
 import { emptySummaryState, foldLine } from '../src/run/summary.ts';
@@ -97,6 +98,53 @@ describe('the stage that refused, and the fact each reason is about', () => {
     }
     // The runner counts by gate and code, as before.
     expect(Object.keys(rejections(rejects as never).by_reason)).toEqual(expect.arrayContaining(['H16:missing']));
+  });
+});
+
+describe('every refusal site\'s stage comes from its own reason (review of af16fed)', () => {
+  it('the table: each worker code, the regime, the stop and the risk controls name their stage; a hard gate names none', () => {
+    expect(Object.fromEntries(Object.keys(WORKER_REJECT_STAGES).map((code) => [code, rejectStage({ gate: 'worker', code })]))).toEqual({
+      'no-sol-price': 'inputs', 'no-market': 'inputs', 'hard-incomplete': 'hard-incomplete',
+      'no-account': 'sizing', 'no-round-trip': 'sizing', 'risk-mark-failed': 'risk', 'size-mismatch': 'risk',
+    });
+    expect(rejectStage({ gate: 'regime', code: 'unknown' })).toBe('regime');
+    expect(rejectStage({ gate: 'stop', code: 'no-atr' })).toBe('sizing');
+    expect(rejectStage({ gate: 'stop', code: 'too-tight' })).toBe('sizing');
+    expect(rejectStage({ gate: 'R1', code: 'risk_fault' })).toBe('risk');
+    expect(rejectStage({ gate: 'R14', code: 'x' })).toBe('risk');
+    // The hard gates give their stage group themselves; an unknown worker code names none (journaled as `inputs`).
+    expect(rejectStage({ gate: 'H9', code: 'too-young' })).toBeNull();
+    expect(rejectStage({ gate: 'H16', code: 'missing' })).toBeNull();
+    expect(rejectStage({ gate: 'worker', code: 'not-a-code' })).toBeNull();
+  });
+
+  const runWith = async (o: { omit?: readonly string[]; markedHistory?: typeof markedHistory }) => {
+    const stateDir = tempState();
+    const h = makeWorker({ stateDir, ...(o.markedHistory === undefined ? {} : { markedHistory: o.markedHistory }) });
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    const m = await passingMarket(h, { heldPoolFacts: true, omit: o.omit ?? [] });
+    await m.run(8_000, 400, () => {
+      m.slot();
+      m.pool();
+    });
+    await h.worker.stop();
+    return rejectsOf(stateDir);
+  };
+  const only = (rejects: Line[], code: string) => rejects.find((l) => l.gate_reasons?.[0]?.['code'] === code);
+
+  it('no live SOL price: stage inputs', async () => {
+    const r = only(await runWith({ omit: [SOL_PRICE_KEY] }), 'no-sol-price');
+    expect(r?.stage).toBe('inputs');
+  });
+
+  it('marking the account fails: stage risk', async () => {
+    const r = only(await runWith({ markedHistory: () => { throw new Error('mark broke'); } }), 'risk-mark-failed');
+    expect(r?.stage).toBe('risk');
+  });
+
+  it('risk cannot evaluate the account (a fault): stage risk', async () => {
+    const r = only(await runWith({ markedHistory: (h0, held, sol, now, st) => ({ ...markedHistory(h0, held, sol, now, st), openingEquity: 'broken' as never }) }), 'risk_fault');
+    expect(r?.stage).toBe('risk');
   });
 });
 

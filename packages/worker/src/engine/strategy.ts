@@ -114,6 +114,27 @@ export const REJECT_STAGES: readonly RejectStage[] = ['regime', 'inputs', 'hard-
 export const STAGE_PREFIX = 'stage ';
 const HARD_STAGES: readonly RejectStage[] = ['hard-1', 'hard-2', 'hard-3-4'];
 
+/** The worker's own refusal codes (gate `worker`) and the stage each is made at. A new code must be added here to compile. */
+export const WORKER_REJECT_STAGES = {
+  'no-sol-price': 'inputs', 'no-market': 'inputs', 'hard-incomplete': 'hard-incomplete',
+  'no-account': 'sizing', 'no-round-trip': 'sizing', 'risk-mark-failed': 'risk', 'size-mismatch': 'risk',
+} as const satisfies Record<string, RejectStage>;
+export type WorkerRejectCode = keyof typeof WORKER_REJECT_STAGES;
+
+/**
+ * SUMMARY-FUNNEL: the stage of a refusal made outside the hard gates, from its first reason, so no call site states its
+ * own: the regime's, the stop's (sizing), a risk control's (R1–R14), or the worker's own code by the table above. The
+ * hard gates give their stage group themselves (`#fail`'s last argument).
+ */
+export const rejectStage = (first: { readonly gate: string; readonly code: string }): RejectStage | null => {
+  if (first.gate === 'regime') return 'regime';
+  if (first.gate === 'stop') return 'sizing';
+  if (/^R\d+$/.test(first.gate)) return 'risk';
+  if (first.gate === 'worker' && Object.hasOwn(WORKER_REJECT_STAGES, first.code)) return WORKER_REJECT_STAGES[first.code as WorkerRejectCode];
+  return null;
+};
+const workerLine = (code: WorkerRejectCode, detail: string): GateReasonLine => ({ gate: 'worker', code, detail });
+
 /** A gate reason as journaled: its input and the gate that needed it, when it has them. */
 const reasonLine = (x: { readonly gate: string; readonly code: string; readonly detail: string; readonly input?: FactName; readonly neededBy?: HardGate }): GateReasonLine =>
   ({ gate: x.gate, code: x.code, detail: x.detail, ...(x.input === undefined ? {} : { input: x.input }), ...(x.neededBy === undefined ? {} : { needed_by: x.neededBy }) });
@@ -1546,8 +1567,10 @@ export class LiveStrategy implements Strategy {
   /** The same reasons with their inputs, for the candidate (not journaled: gate_reasons keeps its shape). */
   #lastNeeds: readonly CandidateReason[] = [];
 
-  #fail(stage: RejectStage, text: string, gates: readonly GateReasonLine[], needs: readonly CandidateReason[] = gates): string {
-    this.#lastStage = stage;
+  #fail(text: string, gates: readonly GateReasonLine[], needs: readonly CandidateReason[] = gates, hardStage?: RejectStage): string {
+    // A refusal whose stage cannot be named (no reason, or a code outside the table) is journaled as made before the
+    // hard gates: the funnel never counts it as having passed a stage it may not have reached.
+    this.#lastStage = hardStage ?? (gates[0] === undefined ? null : rejectStage(gates[0])) ?? 'inputs';
     this.#lastGates = gates;
     this.#lastNeeds = needs.map((x) => ({
       gate: x.gate, code: x.code, ...(x.input === undefined ? {} : { input: x.input }), ...(x.neededBy === undefined ? {} : { neededBy: x.neededBy }),
@@ -1566,11 +1589,11 @@ export class LiveStrategy implements Strategy {
     const regime = evaluateRegime(gctx, { session, mode: 'live', ...diag });
     this.#waived = [...regime.waived];
     this.#regime = { atMs: gctx.now.receivedAt, on: regime.on, reasons: regime.reasons.map((x) => ({ code: x.code, input: x.input ?? null })), waived: [...regime.waived] };
-    if (!regime.on) return this.#fail('regime', `regime off: ${regime.reasons.map((x) => x.detail).join('; ') || 'no reason given'}`, regime.reasons.map((x) => reasonLine({ gate: 'regime', ...x })), regime.reasons.map((x) => ({ gate: 'regime', ...x })));
+    if (!regime.on) return this.#fail(`regime off: ${regime.reasons.map((x) => x.detail).join('; ') || 'no reason given'}`, regime.reasons.map((x) => reasonLine({ gate: 'regime', ...x })), regime.reasons.map((x) => ({ gate: 'regime', ...x })), 'regime');
     const sol = this.#spotSol(ctx);
-    if (sol === null) return this.#fail('inputs', 'live SOL price unknown', [{ gate: 'worker', code: 'no-sol-price', detail: 'no live SOL/USD price' }]);
+    if (sol === null) return this.#fail('live SOL price unknown', [workerLine('no-sol-price', 'no live SOL/USD price')]);
     const m = this.#market(ctx, cand.mint);
-    if (typeof m === 'string') return this.#fail('inputs', m, [{ gate: 'worker', code: 'no-market', detail: m }]);
+    if (typeof m === 'string') return this.#fail(m, [workerLine('no-market', m)]);
     const notional = policy.capital.minNotional;
     const spend = microUsdToLamports(notional, sol.value, 'ceil');
     cand.spend = spend;
@@ -1584,27 +1607,27 @@ export class LiveStrategy implements Strategy {
     }
     if (!hardAllowsEntry(hard)) {
       // Fails closed: a pass that left a gate out (groups that stop covering every hard gate) is no entry.
-      if (hard.reasons.length === 0) return this.#fail('hard-incomplete', 'hard rejects incomplete', [{ gate: 'worker', code: 'hard-incomplete', detail: 'not every hard gate was evaluated' }]);
+      if (hard.reasons.length === 0) return this.#fail('hard rejects incomplete', [workerLine('hard-incomplete', 'not every hard gate was evaluated')]);
       const later = notEvaluated.length > 0 ? `; ${NOT_EVALUATED}${notEvaluated.join(',')}` : '';
       // The stage group that refused: the groups after it are the ones not evaluated.
       const group = HARD_STAGE_GROUPS.length - 1 - HARD_STAGE_GROUPS.filter((g) => g.every((x) => notEvaluated.includes(x))).length;
-      return this.#fail(HARD_STAGES[group]!, `hard reject ${hard.failed.join(',')}: ${hard.reasons.map((x) => `${x.gate} ${x.code} ${x.detail}`).join('; ')}${later}`, hard.reasons.map(reasonLine), hard.reasons);
+      return this.#fail(`hard reject ${hard.failed.join(',')}: ${hard.reasons.map((x) => `${x.gate} ${x.code} ${x.detail}`).join('; ')}${later}`, hard.reasons.map(reasonLine), hard.reasons, HARD_STAGES[group]!);
     }
     const acct = this.#account(ctx);
-    if (acct === null) return this.#fail('sizing', 'account snapshot unknown', [{ gate: 'worker', code: 'no-account', detail: 'account snapshot unknown' }]);
+    if (acct === null) return this.#fail('account snapshot unknown', [workerLine('no-account', 'account snapshot unknown')]);
     // Stop: the tighter of the ATR limit and the policy's maximum distance, from the executable price after the buy.
     const rt = quoter(spend);
-    if (!rt.ok) return this.#fail('sizing', `no round trip: ${rt.reason}`, [{ gate: 'worker', code: 'no-round-trip', detail: rt.reason }]);
+    if (!rt.ok) return this.#fail(`no round trip: ${rt.reason}`, [workerLine('no-round-trip', rt.reason)]);
     const entryPx = execPrice(rt.trade.proceeds, rt.trade.tokens);
     const ux = exitsFor(policy.exits, c.universe);
     const range = atr(this.#bars.get(cand.mint) ?? [], ux.atrPeriod, ux.atrBarMs, ctx.now.receivedAt);
-    if (range === null) return this.#fail('sizing', 'stop: not enough price bars for the ATR', [{ gate: 'stop', code: 'no-atr', detail: 'not enough price bars for the ATR' }]);
+    if (range === null) return this.#fail('stop: not enough price bars for the ATR', [{ gate: 'stop', code: 'no-atr', detail: 'not enough price bars for the ATR' }]);
     const byAtr = (BigInt(ux.stopAtrTenths) * range) / 10n;
     const byMax = (entryPx * BigInt(policy.loss.stopMaxBps)) / BPS;
     const distance = byAtr < byMax ? byAtr : byMax;
     const stopPrice = entryPx - distance;
     const stop = checkStopDistance(policy, c.universe, entryPx, stopPrice, range);
-    if (!stop.ok) return this.#fail('sizing', `stop: ${stop.reason} ${stop.detail}`, [{ gate: 'stop', code: stop.reason, detail: stop.detail }]);
+    if (!stop.ok) return this.#fail(`stop: ${stop.reason} ${stop.detail}`, [{ gate: 'stop', code: stop.reason, detail: stop.detail }]);
     const stopBps = Number(mulDiv(distance, BPS, entryPx, 'ceil'));
     // Numbered from the book (restored at start), so a restart never reuses an intent id or key.
     cand.tries = 1 + Object.values(ctx.book.intents).filter((i) => i.intent.purpose === 'entry' && i.intent.mint === cand.mint).length;
@@ -1617,7 +1640,7 @@ export class LiveStrategy implements Strategy {
       account = this.#marked(acct.history, ctx, sol, { fallback: false });
     } catch (e) {
       const detail = e instanceof Error ? e.message : 'error';
-      return this.#fail('risk', `risk mark failed: ${detail}`, [{ gate: 'worker', code: 'risk-mark-failed', detail }]);
+      return this.#fail(`risk mark failed: ${detail}`, [workerLine('risk-mark-failed', detail)]);
     }
     // RISK-FAULT: risk that cannot evaluate refuses the entry (fail-closed), logged, and the step goes on.
     let r: ReturnType<typeof evaluateEntry>;
@@ -1631,7 +1654,7 @@ export class LiveStrategy implements Strategy {
       );
     } catch (e) {
       const detail = e instanceof Error ? e.message : 'error';
-      return this.#fail('risk', `risk fault: ${detail}`, [{ gate: 'R1', code: 'risk_fault', detail }]);
+      return this.#fail(`risk fault: ${detail}`, [{ gate: 'R1', code: 'risk_fault', detail }]);
     }
     // RISK-LATCH: an entry latches R9/R10 only from a fully marked account at a fresh SOL price; an unknown or stale mark
     // counts as a total loss, which refuses the entry but proves no breach. The refusal still names every trip it saw.
@@ -1639,10 +1662,10 @@ export class LiveStrategy implements Strategy {
     const trips = latchable(account, sol, ctx.now.receivedAt, policy.gates.maxQuoteAgeMs) ? seen : [];
     if (!r.allow) {
       this.#lastTrips = trips;
-      return this.#fail('risk', `risk ${r.reasons.map((x) => `${x.control} ${x.code}: ${x.detail}`).join(', ')}${seen.length > 0 ? `; ${seen.join(', ')}` : ''}`, r.reasons.map((x) => ({ gate: x.control, code: x.code, detail: x.detail })));
+      return this.#fail(`risk ${r.reasons.map((x) => `${x.control} ${x.code}: ${x.detail}`).join(', ')}${seen.length > 0 ? `; ${seen.join(', ')}` : ''}`, r.reasons.map((x) => ({ gate: x.control, code: x.code, detail: x.detail })));
     }
     if (r.spendLamports !== spend) {
-      return this.#fail('risk', `risk sized ${r.spendLamports} lamports, gates judged ${spend}`, [{ gate: 'worker', code: 'size-mismatch', detail: `risk sized ${r.spendLamports}, gates judged ${spend}` }]);
+      return this.#fail(`risk sized ${r.spendLamports} lamports, gates judged ${spend}`, [workerLine('size-mismatch', `risk sized ${r.spendLamports}, gates judged ${spend}`)]);
     }
     const pid = positionId(`p:${cand.mint}:${cand.tries}`);
     const tm = toMint(cand.mint);
