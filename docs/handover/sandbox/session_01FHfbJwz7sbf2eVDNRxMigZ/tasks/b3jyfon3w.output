@@ -1,0 +1,11 @@
+      Tests  1 failed | 84 passed (85)
+[M11 one benchmark enough] ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+      Tests  2 failed | 125 passed (127)
+[M12 seal without frozen req] ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+      Tests  1 failed | 146 passed (147)
+[M13 attempt-2 length free] ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+      Tests  1 failed | 146 passed (147)
+
+[exited with code 0]
+
+[exited with code 0]

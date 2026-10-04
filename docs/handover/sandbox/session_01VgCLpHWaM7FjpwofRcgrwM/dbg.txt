@@ -1,0 +1,195 @@
+
+ RUN  v5.0.3 /home/user/Meme-snipe
+
+(node:16431) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+stderr | packages/worker/test/worker-flow.test.ts > a paper trade end to end > enters through gates, risk and a ledger reservation, simulates each leg first, and exits on the stop
+DEBUGX [{"seq":1,"ts":"2026-09-17T15:00:00.000Z","boot":"mu5notc0-16431","kind":"start","git_sha":"testsha","run_id":null,"label":null,"recorder":true,"simulation":true,"mode":"paper","policy_version":"d40c40357e952500561a50e4d827aed3a82576dcb1e5a56e2abc73a17caee9d5","strategy":"paper-u2-0.research-2.fills-2","seed":"paper:mu5notc0-16431","pid":16431,"entry_rule":"none","qualifying":false,"paper_edge_ppm":null,"s0_salt":null},{"seq":2,"ts":"2026-09-17T15:00:02.000Z","boot":"mu5notc0-16431","kind":"decision","action":"none","intent":null,"result":"abstained","event":"worker:restore#000000000001","reasons":["restore","0 exit plans and trackers restored"]},{"seq":3,"ts":"2026-09-17T15:00:02.000Z","boot":"mu5notc0-16431","kind":"reconcile","ok":true,"restored_events":0,"cancelled":0,"open_positions":[]},{"seq":4,"ts":"2026-09-17T15:00:02.000Z","boot":"mu5notc0-16431","kind":"resume","reasons":["all critical feeds fresh, no pause"]},{"seq":5,"ts":"2026-10-03T14:40:02.000Z","boot":"mu5notc0-16431","kind":"decision","action":"none","intent":null,"result":"abstained","event":"gates/migration:HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust#000000000008","reasons":["shortlist","U2","HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust","migrated at 1791034200000"]},{"seq":6,"ts":"2026-10-03T14:40:02.000Z","boot":"mu5notc0-16431","kind":"decision","action":"reject","intent":null,"result":"abstained","event":"gates/migration:HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust#000000000008","reasons":["reject","U2","HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust","regime off: no graduates as of slot 452954000; no curve-volume as of slot 452954000; no sol-usd as of slot 452954000"],"gate_reasons":[{"gate":"regime","code":"unknown","detail":"no graduates as of slot 452954000"},{"gate":"regime","code":"unknown","detail":"no curve-volume as of slot 452954000"},{"gate":"regime","code":"unknown","detail":"no sol-usd as of slot 452954000"}]},{"seq":7,"ts":"2026-10-03T15:00:01.800Z","boot":"mu5notc0-16431","kind":"decision","action":"enter","intent":"en:HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust:1","result":"applied","event":"gates/exec-health#000000000463","reasons":["enter","U2","HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust","notional 2000000","stop 72 bps"]},{"seq":8,"ts":"2026-10-03T15:00:01.800Z","boot":"mu5notc0-16431","kind":"decision","action":"mark_eligible","intent":"en:HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust:1","result":"applied","event":"gates/exec-health#000000000463","reasons":["gates passed","U2","HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust","H1-H16 pass (17 gates)"]},{"seq":9,"ts":"2026-10-03T15:00:01.800Z","boot":"mu5notc0-16431","kind":"decision","action":"approve_risk","intent":"en:HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust:1","result":"applied","event":"gates/exec-health#000000000463","reasons":["risk approved","U2","HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust","reserve {\"reservationId\":\"r:HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust:1\",\"intentId\":\"en:HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust:1\",\"amount\":\"19996817\",\"maxHeld\":\"23397420\",\"maxCount\":1,\"accountVersion\":\"0\"}"]},{"seq":10,"ts":"2026-10-03T15:00:01.900Z","boot":"mu5notc0-16431","kind":"decision","action":"prepare","intent":"en:HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust:1","result":"applied","event":"gates/exec-health#000000000478","reasons":["prepare entry","HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust"]},{"seq":11,"ts":"2026-10-03T15:00:01.900Z","boot":"mu5notc0-16431","kind":"decision","action":"sign","intent":"en:HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust:1","result":"applied","event":"gates/exec-health#000000000478","reasons":["sign entry (paper)","HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust"]},{"seq":12,"ts":"2026-10-03T15:00:01.900Z","boot":"mu5notc0-16431","kind":"decision","action":"submit","intent":"en:HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust:1","result":"applied","event":"gates/exec-health#000000000478","reasons":["submit entry (paper)","HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust"]},{"seq":13,"ts":"2026-10-03T15:00:02.000Z","boot":"mu5notc0-16431","kind":"simulation","trade":"p:HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust:1","leg":"entry","intent":"en:HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust:1","mint":"HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust","venue":"pool","outcome":"simulated","success":true,"error":null,"standIn":null,"finalExit":false,"simulatedSlot":"452957000","quotedOut":"4215914599","simulatedOut":"4215914599","amountErrorE4":0,"quoteAgeSlots":"0","rentDeclared":"0","rentPaid":"0","balancesFrom":"simulation"}]
+
+ ❯ |light| packages/worker/test/worker-flow.test.ts (22 tests | 11 failed) 11817ms
+   ❯ a paper trade end to end (3)
+     × enters through gates, risk and a ledger reservation, simulates each leg first, and exits on the stop 321ms
+     × an attempt that lands failed is abandoned and its reservation released 190ms
+   ❯ the swap stream of a watched pool (review of f679188, items 3 and 9) (3)
+     × with no fee-context fact, the terms of the latest swap on the pool price the entry 319ms
+     × the deployer selling more than the policy share of supply after the entry exits the position 146ms
+     × a deployer-sell trigger that cannot be judged is said once, never silent 128ms
+   ❯ the heartbeat's open position (review of f679188: unknown is null, never 0) (1)
+     × sends entry, stop and a fresh mark in one price unit, and no mark once it is older than 30 s 127ms
+   ❯ entry halts fail closed (review of f679188, items 5 and 6) (2)
+     × a ledger/book divergence halts entries for the rest of the process; exits go on 152ms
+   ❯ restart drill mid-trade (EXIT-1 restore acceptance) (4)
+     × a kill with a runner open restores the same plan, trail, peak, flatMet and partials, and reconciles before any entry 199ms
+     × partials come from the book after a restart, whatever the saved file says 119ms
+     × a restored position keeps the universe it was entered under (saved plan, else its intent key), never the worker's (CFG-2) 134ms
+   ❯ exits never wait for the seed (review of 9fdf837) (1)
+     × a restart with an open position and a seed that never answers: the stop exits during the wait, before seedMaxMs; entries halt 122ms
+
+⎯⎯⎯⎯⎯⎯ Failed Tests 11 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |light| packages/worker/test/worker-flow.test.ts > a paper trade end to end > enters through gates, risk and a ledger reservation, simulates each leg first, and exits on the stop
+AssertionError: expected undefined to be 'HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bL…' // Object.is equality
+
+- Expected:
+"HAcEqEVru6dRbe1grLFTPBxjxGgjn1tVpR7bLgYXdust"
+
++ Received:
+undefined
+
+ ❯ packages/worker/test/worker-flow.test.ts:48:24
+     46|     const open = positions(h).find((p) => p.status === 'open');
+     47|     if (open === undefined) console.error('DEBUGX', JSON.stringify(lin…
+     48|     expect(open?.mint).toBe(MINT);
+       |                        ^
+     49|     // The price falls 30%: the price stop fires and the paper exit la…
+     50|     await m.run(6_000, 400, () => {
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/11]⎯
+
+ FAIL  |light| packages/worker/test/worker-flow.test.ts > a paper trade end to end > an attempt that lands failed is abandoned and its reservation released
+AssertionError: expected 0 to be greater than or equal to 1
+ ❯ packages/worker/test/worker-flow.test.ts:98:30
+     96|     expect(positions(h).every((p) => p.quantity === 0n && p.status !==…
+     97|     const abandoned = kinds(h.stateDir, 'decision').filter((d) => d['a…
+     98|     expect(abandoned.length).toBeGreaterThanOrEqual(1);
+       |                              ^
+     99|     await h.worker.stop();
+    100|     expect(replayLedgerFile(join(h.stateDir, 'ledger.sqlite'))).toMatc…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/11]⎯
+
+ FAIL  |light| packages/worker/test/worker-flow.test.ts > the swap stream of a watched pool (review of f679188, items 3 and 9) > with no fee-context fact, the terms of the latest swap on the pool price the entry
+AssertionError: expected false to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ ❯ packages/worker/test/worker-flow.test.ts:154:94
+    152|       m.pool();
+    153|     });
+    154|     expect(positions(h).some((p) => String(p.mint) === String(MINT) &&…
+       |                                                                                              ^
+    155|     // The pool is watched for swaps while the position is open (exit …
+    156|     expect([...h.worker.strategy.watchedPools()]).toEqual([[POOL_ADDRE…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/11]⎯
+
+ FAIL  |light| packages/worker/test/worker-flow.test.ts > the swap stream of a watched pool (review of f679188, items 3 and 9) > the deployer selling more than the policy share of supply after the entry exits the position
+AssertionError: expected undefined to be defined
+ ❯ packages/worker/test/worker-flow.test.ts:173:18
+    171|     });
+    172|     const open = positions(h).find((p) => p.status === 'open')!;
+    173|     expect(open).toBeDefined();
+       |                  ^
+    174|     // Someone else selling, and the deployer selling up to the limit,…
+    175|     m.swap('SellEvent', 'someone-else', SUPPLY / 10n);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/11]⎯
+
+ FAIL  |light| packages/worker/test/worker-flow.test.ts > the swap stream of a watched pool (review of f679188, items 3 and 9) > a deployer-sell trigger that cannot be judged is said once, never silent
+AssertionError: expected [] to have a length of 1 but got +0
+
+- Expected
++ Received
+
+- 1
++ 0
+
+ ❯ packages/worker/test/worker-flow.test.ts:196:23
+    194|     await entered(h);
+    195|     const notJudged = kinds(h.stateDir, 'decision').filter((d) => (d['…
+    196|     expect(notJudged).toHaveLength(1);
+       |                       ^
+    197|     expect(notJudged[0]!['reasons']).toEqual(expect.arrayContaining(['…
+    198|     await h.worker.stop();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/11]⎯
+
+ FAIL  |light| packages/worker/test/worker-flow.test.ts > the heartbeat's open position (review of f679188: unknown is null, never 0) > sends entry, stop and a fresh mark in one price unit, and no mark once it is older than 30 s
+TypeError: Cannot read properties of null (reading 'mint')
+ ❯ packages/worker/test/worker-flow.test.ts:235:14
+    233|     const hb = parseHeartbeat(sent.at(-1)!.body!)!;
+    234|     const p = hb.open_position!;
+    235|     expect(p.mint).toBe(MINT);
+       |              ^
+    236|     expect(p.stop).toBeGreaterThan(0);
+    237|     expect(p.stop).toBeLessThan(p.entry);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/11]⎯
+
+ FAIL  |light| packages/worker/test/worker-flow.test.ts > entry halts fail closed (review of f679188, items 5 and 6) > a ledger/book divergence halts entries for the rest of the process; exits go on
+TypeError: Cannot read properties of undefined (reading 'id')
+ ❯ packages/worker/test/worker-flow.test.ts:291:41
+    289|       m.pool(700_000n);
+    290|     });
+    291|     expect(h.worker.book.positions[open.id]!.status).toBe('closed');
+       |                                         ^
+    292|     expect(h.worker.health().halt_reasons).toContain('ledger and book …
+    293|     await h.worker.stop();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/11]⎯
+
+ FAIL  |light| packages/worker/test/worker-flow.test.ts > restart drill mid-trade (EXIT-1 restore acceptance) > a kill with a runner open restores the same plan, trail, peak, flatMet and partials, and reconciles before any entry
+TypeError: Cannot read properties of undefined (reading 'id')
+ ❯ packages/worker/test/worker-flow.test.ts:301:62
+    299|     const h = makeWorker();
+    300|     const m = await entered(h);
+    301|     const pid = positions(h).find((p) => p.status === 'open')!.id;
+       |                                                              ^
+    302|     // +15%: past 1.5R, so the first partial sells half; the runner's …
+    303|     await m.run(8_000, 400, () => {
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[8/11]⎯
+
+ FAIL  |light| packages/worker/test/worker-flow.test.ts > restart drill mid-trade (EXIT-1 restore acceptance) > partials come from the book after a restart, whatever the saved file says
+TypeError: Cannot read properties of undefined (reading 'id')
+ ❯ packages/worker/test/worker-flow.test.ts:345:62
+    343|     const h = makeWorker();
+    344|     const m = await entered(h);
+    345|     const pid = positions(h).find((p) => p.status === 'open')!.id;
+       |                                                              ^
+    346|     await m.run(8_000, 400, () => {
+    347|       m.slot();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[9/11]⎯
+
+ FAIL  |light| packages/worker/test/worker-flow.test.ts > restart drill mid-trade (EXIT-1 restore acceptance) > a restored position keeps the universe it was entered under (saved plan, else its intent key), never the worker's (CFG-2)
+TypeError: Cannot read properties of undefined (reading 'id')
+ ❯ packages/worker/test/worker-flow.test.ts:368:62
+    366|     const h = makeWorker();
+    367|     await entered(h);
+    368|     const pid = positions(h).find((p) => p.status === 'open')!.id;
+       |                                                              ^
+    369|     expect(h.worker.strategy.saved()[pid]!.plan.universe).toBe('U2');
+    370|     expect(String(h.worker.book.intents[h.worker.book.positions[pid]!.…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[10/11]⎯
+
+ FAIL  |light| packages/worker/test/worker-flow.test.ts > exits never wait for the seed (review of 9fdf837) > a restart with an open position and a seed that never answers: the stop exits during the wait, before seedMaxMs; entries halt
+AssertionError: expected false to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ ❯ packages/worker/test/worker-flow.test.ts:550:85
+    548|       m.pool();
+    549|     });
+    550|     expect(Object.values(h.worker.book.positions).some((p) => p.status…
+       |                                                                                     ^
+    551|     await h.worker.kill();
+    552|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[11/11]⎯
+
+
+ Test Files  1 failed | 8 passed (9)
+      Tests  11 failed | 192 passed (203)
+   Start at  22:04:54
+   Duration  90.06s (tests 98%, transform 1%)
+

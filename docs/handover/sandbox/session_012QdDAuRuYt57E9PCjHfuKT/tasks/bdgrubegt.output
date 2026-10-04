@@ -1,0 +1,10 @@
+
+[exited with code 144]
+ 1: 0xe40d24 node::OOMErrorHandler(char const*, v8::OOMDetails const&) [/opt/node22/bin/node]
+⎯⎯⎯⎯⎯⎯ Unhandled Errors ⎯⎯⎯⎯⎯⎯
+⎯⎯⎯⎯⎯⎯ Unhandled Error ⎯⎯⎯⎯⎯⎯⎯
+Error: [vitest-pool]: Worker forks emitted error.
+ ❯ EventEmitter.onTaskError node_modules/.pnpm/vitest@5.0.3_@types+node@22.20.5_vite@8.3.2_@types+node@22.20.5_/node_modules/vitest/dist/chunks/index.DpLw24bj.js:11532:21
+Caused by: Error: Worker exited unexpectedly with signal SIGABRT during started state while running test file /tmp/claude-0/p2/packages/worker/test/streams.test.ts
+      Tests   (21)
+     Errors  1 error
