@@ -417,7 +417,7 @@ export class Worker {
       journal: (kind, fields) => this.#journal.write(kind, fields),
       // Fill lines written before a kill that came ahead of the ledger: the restart books those fills again, once.
       journaledFills: journaledFillKeys(this.#fillLines),
-      solUsd: () => this.#solPrice,
+      solUsd: () => this.#bookingPrice(),
       ...(d.crashPoint === undefined ? {} : { crashPoint: d.crashPoint }),
       report: (event) => this.#report(event),
       // An entry that ended with no fill books its failed attempts' fees here (PAPER-1, M4), before the snapshot.
@@ -442,8 +442,8 @@ export class Worker {
       filled: (r) => {
         // A fill re-booked from its held journal line carries that line's rate (PAPER-1); otherwise the price now. A leg
         // with no rate (none known at its fill) is valued at the first price after it (ACCOUNT-RATE), now if one is known.
-        this.#account.filled(r, r.solUsd !== undefined ? r.solUsd : this.#solPrice, this.#legs());
-        this.#account.priceLate(this.#desk.book, this.#legs(), this.#solPrice, this.#d.timers.now());
+        this.#account.filled(r, r.solUsd !== undefined ? r.solUsd : this.#bookingPrice(), this.#legs());
+        this.#account.priceLate(this.#desk.book, this.#legs(), this.#bookingPrice(), this.#d.timers.now());
         if (r.reasons.includes(FILL_RATE_UNKNOWN)) this.#unpriced(r.positionId, r.purpose);
         if (r.purpose === 'entry') this.#entered(r.mint, r.positionId, r.atMs);
       },
@@ -668,13 +668,23 @@ export class Worker {
     return { network: this.#d.network, attempts: this.#world.attempts, closedAccount: (sig) => this.#world.closedAccount(sig) };
   }
 
+  /**
+   * ACCOUNT-RATE F2: the SOL/USD price a fill, a close or a stray fee is booked at: the latest price while it is no older
+   * than risk's freshness limit (`maxQuoteAgeMs`), else none. A leg booked with none is valued at the first price after
+   * it (`priceLate`), as when no price was ever seen: a stale price is never a fill's rate.
+   */
+  #bookingPrice(): MicroUsd | null {
+    if (this.#solPrice === null || this.#solPriceAt === null) return null;
+    return this.#d.timers.now() - this.#solPriceAt <= this.#d.session.policy.gates.maxQuoteAgeMs ? this.#solPrice : null;
+  }
+
   /** Fees paid outside fills, each signature once (PAPER-1, M4); true when the wallet moved. */
   #settle(): boolean {
-    return this.#account.settle(this.#desk.book, this.#legs(), this.#solPrice, this.#d.timers.now());
+    return this.#account.settle(this.#desk.book, this.#legs(), this.#bookingPrice(), this.#d.timers.now());
   }
 
   #publishAccount(): void {
-    this.#fact(ACCOUNT_KEY, this.#account.fact(this.#ledger, this.#desk.book, this.#ctl.latches, this.#solPrice, this.#d.timers.now()));
+    this.#fact(ACCOUNT_KEY, this.#account.fact(this.#ledger, this.#desk.book, this.#ctl.latches, this.#solPrice, this.#d.timers.now(), this.#legs()));
   }
 
   #writeOpenIntents(): void {
@@ -783,7 +793,7 @@ export class Worker {
       // live path valued as null too (the safe side); only a line without the field falls back to the price now, flagged.
       const fromLine = lineRate(line);
       const known = fromLine !== undefined;
-      const rate = known ? fromLine : this.#solPrice;
+      const rate = known ? fromLine : this.#bookingPrice();
       this.#account.filled({ purpose: b.purpose, positionId: p.id, mint: String(p.mint), book, atMs: Number.isFinite(at) ? at : this.#d.timers.now(), reasons: known ? reasons : [...reasons, FILL_RATE_UNKNOWN] }, rate, this.#legs());
       this.#d.log(`Account caught up: the ${b.purpose} of ${p.id} was in the ledger but not in account.json (a kill between the two)${known ? '' : `; ${FILL_RATE_UNKNOWN}`}.`);
       if (!known) this.#unpriced(p.id, b.purpose);
@@ -802,7 +812,7 @@ export class Worker {
    */
   #markAccount(now: number): void {
     if (!this.#reconciled) return;
-    const fact = this.#account.fact(this.#ledger, this.#desk.book, this.#ctl.latches, this.#solPrice, now);
+    const fact = this.#account.fact(this.#ledger, this.#desk.book, this.#ctl.latches, this.#solPrice, now, this.#legs());
     const sol = this.#solPrice === null || this.#solPriceAt === null ? null : { value: this.#solPrice, atMs: this.#solPriceAt };
     const policy = this.#d.session.policy;
     const held = Object.values(this.#engine.book.positions).filter((p) => p.status !== 'closed');

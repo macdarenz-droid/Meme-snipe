@@ -18,6 +18,7 @@ import { FILL_RATE_UNKNOWN, fillKey, journaledFillKeys } from '../src/run/desk.t
 import { FILL_CONFIG } from '../../core/src/config/index.ts';
 import { attemptFee } from '../../core/src/fills/index.ts';
 import type { PaperAttempt } from '../src/run/paper-world.ts';
+import { SOL_PRICE_KEY } from '../src/engine/strategy.ts';
 import { LANDS, Market, SOL_PRICE, makeWorker, passingMarket } from './worker-harness.ts';
 
 type H = ReturnType<typeof makeWorker>;
@@ -347,7 +348,7 @@ describe('fill keys', () => {
   });
 });
 
-describe('ACCOUNT-RATE: a missed partial exit', () => {
+describe('ACCOUNT-RATE: restarts, missed fills and stale prices', () => {
   it('a kill after a partial exit\'s ledger commit, before account.json: the restart\'s reconcile books the proceeds into the wallet once', async () => {
     let image: { dir: string; pid: string } | null = null;
     let h: H | null = null;
@@ -448,6 +449,32 @@ describe('ACCOUNT-RATE: a missed partial exit', () => {
     const absent = await run((l) => { delete l['sol_usd']; });
     expect(String(absent.t.closeSolPrice)).toBe(String(SOL_PRICE * 2n));
     expect(absent.alerts.map((l) => [l.trade, l['purpose']])).toEqual([[pid, 'exit']]);
+  });
+
+  it('F2: an exit booked when the SOL price is 10 × maxQuoteAgeMs old is not valued at that stale price, but at the first fresh price after it', async () => {
+    const h = makeWorker();
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    const m = await passingMarket(h, { heldPoolFacts: true });
+    const open = () => Object.values(h.worker.book.positions).find((p) => p.status === 'open');
+    expect(await until(m, () => open() !== undefined, 30_000, tick(m))).toBe(true);
+    const pid = open()!.id;
+    // The price feed goes quiet: the last price ages past ten times the freshness limit.
+    m.omit = new Set([SOL_PRICE_KEY]);
+    const maxAge = h.session.policy.gates.maxQuoteAgeMs;
+    await m.run(10 * maxAge + 400, 400, tick(m));
+    expect(await until(m, () => h.worker.book.positions[pid]?.status === 'closed', 30_000, tick(m, 700_000n))).toBe(true);
+    const trade = () => accountFile(h.stateDir).read(null as unknown as AccountState).trades.find((x) => x.positionId === pid)!;
+    const line = lines(h.stateDir).find((l) => l.kind === 'exit' && l['trade'] === pid && l['position'] === 'closed')!;
+    expect(line['sol_usd']).toBeNull();
+    expect(trade().closedAtMs).not.toBeNull();
+    expect(trade().netPnl).toBeNull();
+    // A fresh price again, at a new level: it values the close.
+    m.omit = new Set();
+    m.solUsd = SOL_PRICE * 2n;
+    expect(await until(m, () => trade().netPnl != null, 5_000, tick(m, 700_000n))).toBe(true);
+    expect(String(trade().closeSolPrice)).toBe(String(SOL_PRICE * 2n));
+    expect(trade().pricedLate).toEqual(['close']);
+    await h.worker.stop();
   });
 });
 

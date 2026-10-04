@@ -9,7 +9,7 @@ import { emptyBook } from '../../core/src/lifecycle/index.ts';
 import { NO_LATCHES, evaluateEntry, melbourneDay, melbourneWeek, riskSnapshot } from '../../core/src/risk/index.ts';
 import type { MicroUsd } from '../../core/src/units/index.ts';
 import { PaperAccount, accountFile } from '../src/run/account.ts';
-import { makeWorker, tempState } from './worker-harness.ts';
+import { makeWorker, tempState, noLegs } from './worker-harness.ts';
 
 const HOUR = 3_600_000;
 // 2026-10-06 15:00 Melbourne (AEDT, UTC+11): a Tuesday.
@@ -85,14 +85,14 @@ describe('PaperAccount marks', () => {
     const a = new PaperAccount(accountFile(dir), usd(20), T - 10 * HOUR, 0n);
     a.mark(snap(T, 19.5, 20.5), true, null, T);
     const book = emptyBook({ maxOpenPositions: 5 });
-    const today = a.fact(ledger, book, NO_LATCHES, usd(150), T + HOUR).history;
+    const today = a.fact(ledger, book, NO_LATCHES, usd(150), T + HOUR, noLegs).history;
     expect(today).toMatchObject({ markedAtDayStart: usd(19.5), markedAtWeekStart: usd(19.5), navMarks: [{ atMs: T, nav: usd(20.5) }] });
-    const tomorrow = a.fact(ledger, book, NO_LATCHES, usd(150), melbourneDay(T).end + HOUR).history;
+    const tomorrow = a.fact(ledger, book, NO_LATCHES, usd(150), melbourneDay(T).end + HOUR, noLegs).history;
     expect(tomorrow.markedAtDayStart).toBeNull();
     expect(tomorrow.markedAtWeekStart).toBe(usd(19.5));
     // A peak taken after the moment asked about is not handed over.
-    expect(a.fact(ledger, book, NO_LATCHES, usd(150), T - 1).history.navMarks).toEqual([]);
-    const nextWeek = a.fact(ledger, book, NO_LATCHES, usd(150), melbourneWeek(T).end + HOUR).history;
+    expect(a.fact(ledger, book, NO_LATCHES, usd(150), T - 1, noLegs).history.navMarks).toEqual([]);
+    const nextWeek = a.fact(ledger, book, NO_LATCHES, usd(150), melbourneWeek(T).end + HOUR, noLegs).history;
     expect(nextWeek.markedAtWeekStart).toBeNull();
     ledger.close();
   });
@@ -107,7 +107,7 @@ describe('PaperAccount marks', () => {
     file.write({ ...a.state, trades: [{ positionId: 'p:x:1', mint: 'MintX', openedAtMs: T - 2 * HOUR, notional: usd(2), closedAtMs: T - HOUR, netLamports: -1_000n, netPnl: usd(-0.25), stoppedOut: true, booked: -1_000n }] });
     const b = new PaperAccount(file, usd(20), T, 0n);
     b.mark({ ...snap(T, 21.3, null) }, true, null, T - 30 * 60_000);
-    const fact = b.fact(ledger, emptyBook({ maxOpenPositions: 5 }), NO_LATCHES, usd(150), T);
+    const fact = b.fact(ledger, emptyBook({ maxOpenPositions: 5 }), NO_LATCHES, usd(150), T, noLegs);
     const input = {
       session: startSession(TRIAL_POLICY), mode: 'paper' as const, clock: { now: () => ({ slot: 1n, txIndex: 0, ixIndex: 0, receivedAt: T }) },
       account: fact.history, latches: NO_LATCHES, market: { solPrice: { value: usd(150), atMs: T }, solBalance: fact.solBalance, regime: 'unknown' as const },

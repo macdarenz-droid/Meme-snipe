@@ -301,7 +301,9 @@ export class PaperAccount {
           // Paper attempts carry their send time; one from an older file without it counts as sent when the account opened.
           const atMs = a.sentAtMs ?? this.#s.openedAtMs;
           if (lamports === 0n || this.#s.strayFees?.[a.signature] !== undefined || (folded !== undefined && atMs <= folded.atMs)) continue;
-          (this.#s.strayFees ??= {})[a.signature] = { atMs, lamports, cost: lamportsToMicroUsd(lamports as Lamports, solPrice, 'ceil') };
+          // Dated when booked if that is later than its send (ACCOUNT-RATE F3): a fee found after midnight counts in the day it
+          // is booked, never only in a day already past. Booking is never before the send, so the fold's rule still holds.
+          (this.#s.strayFees ??= {})[a.signature] = { atMs: Math.max(atMs, nowMs), lamports, cost: lamportsToMicroUsd(lamports as Lamports, solPrice, 'ceil') };
           this.#s.walletLamports -= lamports;
           moved = true;
         }
@@ -371,8 +373,42 @@ export class PaperAccount {
     return out;
   }
 
+  /**
+   * ACCOUNT-RATE F1: what each open trade has already paid outside its basis (risk's open-position notional is the
+   * tokens' cost plus the fills' fees): every failed attempt's fees, dated when it was sent, and the token-account rent
+   * not yet returned, dated at the entry. They have left the paper wallet, so risk's equity and the day's and week's loss
+   * count them as costs now; when the trade closes they are in its net P&L instead. A late buy's position is no paper
+   * trade, and an entry that ended unfilled is a stray cost (`settle`): neither is counted here. Valued at the SOL price
+   * now (the trade's open price when none is known), rounded up.
+   */
+  #openTradeCosts(book: Book, legs: PaperLegs, solPrice: MicroUsd | null, nowMs: number): AccountCost[] {
+    const out: AccountCost[] = [];
+    for (const p of Object.values(book.positions)) {
+      if (p.status === 'closed' || lateFillOf(p.id) !== null) continue;
+      const t = this.#s.trades.find((x) => x.positionId === p.id);
+      const px = solPrice ?? t?.openSolPrice ?? null;
+      if (px === null) continue;
+      const cost = (lamports: bigint, atMs: number) => {
+        if (lamports > 0n) out.push({ atMs: Math.min(atMs, nowMs), amount: lamportsToMicroUsd(lamports as Lamports, px, 'ceil'), kind: 'open_trade' });
+      };
+      for (const i of Object.values(book.intents)) {
+        if (i.intent.positionId !== p.id || (i.intent.purpose === 'entry' && isTerminal(i) && i.fills.length === 0)) continue;
+        for (const att of i.attempts) {
+          const a = legs.attempts.get(att.signature);
+          if (a === undefined || a.outcome !== 'failed') continue;
+          const f = feeParts(legs.network, a.priorityFee, a.outcome);
+          cost(f.base + f.priority + f.tip, a.sentAtMs ?? t?.openedAtMs ?? nowMs);
+        }
+      }
+      if (t === undefined) continue;
+      const l = paperTradeLamports(book, p.id, legs);
+      if (l !== null) cost(l.rentPaid - l.rentReturned, t.openedAtMs);
+    }
+    return out;
+  }
+
   /** The account snapshot risk reads, with the ledger's held reservations and version read in one transaction. */
-  fact(ledger: Ledger, book: Book, latches: Latches, solPrice: MicroUsd | null, nowMs: number): AccountFact {
+  fact(ledger: Ledger, book: Book, latches: Latches, solPrice: MicroUsd | null, nowMs: number, legs: PaperLegs): AccountFact {
     const { version, value: held } = ledger.withSnapshot(() => ledger.heldExposure());
     const closedTrades: ClosedTrade[] = this.#s.trades.filter((t) => t.closedAtMs !== null && t.netPnl !== null).map((t) => ({
       mint: t.mint as Mint, openedAtMs: t.openedAtMs, closedAtMs: t.closedAtMs!, notional: t.notional, netPnl: t.netPnl!, stoppedOut: t.stoppedOut,
@@ -385,6 +421,7 @@ export class PaperAccount {
     const sf = this.#s.strayFolded;
     if (sf !== undefined) costs.push({ atMs: sf.atMs, amount: sf.cost, kind: 'failed_entry' });
     for (const r of Object.values(this.#s.strayFees ?? {})) costs.push({ atMs: r.atMs, amount: r.cost, kind: 'failed_entry' });
+    costs.push(...this.#openTradeCosts(book, legs, solPrice, nowMs));
     const openPositions = Object.values(book.positions).filter((p) => p.status !== 'closed' && p.status !== 'opening').map((p) => {
       const t = this.#s.trades.find((x) => x.positionId === p.id);
       const fees = Object.values(book.intents).filter((i) => i.intent.positionId === p.id).reduce((s, i) => s + i.fills.reduce((a, f) => a + f.fees, 0n), 0n);

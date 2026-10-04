@@ -1,3 +1,4 @@
+import type { PaperLegs } from '../src/run/account.ts';
 // A worker on virtual time with a scripted market, for the WORKER-1 tests. No network: the sources are scripted, the
 // simulation is a stub that records each leg, and time moves only when a wait asks for it.
 import { mkdtempSync } from 'node:fs';
@@ -419,3 +420,6 @@ export const passingMarket = async (h: Harness, o: { readonly fees?: boolean; re
 };
 
 export { CREATED_AT, DEV, MIGRATED_AT, MINT, POOL, POOL_ADDRESS, SLOT, SOL_PRICE, SUPPLY, T };
+
+/** Paper legs with no attempts (an account fact for a book with no trades of its own). */
+export const noLegs: PaperLegs = { network: FILL_CONFIG.network, closedAccount: () => false, attempts: new Map() };

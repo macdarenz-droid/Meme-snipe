@@ -122,12 +122,14 @@ export interface CashFlow {
 /**
  * A cost of the account itself, not of a trade. `amount` is what was paid (zero or more). `failed_entry`: the fees of
  * an entry that never filled (the backtest's stray costs, PAPER-1): it lowers equity and counts toward the day's and
- * week's loss like any cost, and is never a trade (R8, R11, R15 and statistics do not see it).
+ * week's loss like any cost, and is never a trade (R8, R11, R15 and statistics do not see it). `open_trade`: what an
+ * open trade has already paid outside its basis (a failed attempt's fees, token-account rent not yet returned), dated
+ * when paid (ACCOUNT-RATE F1); it moves into the trade's net P&L when the trade closes.
  */
 export interface AccountCost {
   readonly atMs: number;
   readonly amount: MicroUsd;
-  readonly kind: 'wallet_setup' | 'failed_entry';
+  readonly kind: 'wallet_setup' | 'failed_entry' | 'open_trade';
 }
 
 /** An economic NAV (`economicNav`) the worker observed and recorded; the NAV high-water mark is the peak of these. */

@@ -28,7 +28,7 @@ import type { FactContext } from '../src/run/facts.ts';
 import { Journal, lastLines } from '../src/run/journal.ts';
 import { redact, setSecretValues } from '../src/run/redact.ts';
 import { CreditBook } from '../src/run/sources.ts';
-import { MINT, T, Market, makeWorker, slotAt, tempState, virtualTimers } from './worker-harness.ts';
+import { MINT, T, Market, makeWorker, slotAt, tempState, virtualTimers, noLegs } from './worker-harness.ts';
 
 const lines = (dir: string) => readFileSync(join(dir, 'journal.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>);
 const ROOT = join(import.meta.dirname, '..', '..', '..');
@@ -576,7 +576,7 @@ describe('the paper wallet\'s setup rent is an account cost (risk review of #48,
     account.price(price, T - 1_000);
     const opening = microUsdToLamports(bankroll, price, 'floor');
     expect(account.state.walletLamports).toBe(opening - rent);
-    const fact = account.fact(ledger, emptyBook({ maxOpenPositions: 5 }), NO_LATCHES, price, T);
+    const fact = account.fact(ledger, emptyBook({ maxOpenPositions: 5 }), NO_LATCHES, price, T, noLegs);
     const cost = lamportsToMicroUsd(rent as Lamports, price, 'ceil');
     expect(fact.history.costs).toEqual([{ atMs: T - 1_000, amount: cost, kind: 'wallet_setup' }]);
     expect(fact.history.closedTrades).toEqual([]);
@@ -584,7 +584,7 @@ describe('the paper wallet\'s setup rent is an account cost (risk review of #48,
     // Paid once: a later price does not charge it again.
     account.price(160_000_000n as MicroUsd, T);
     expect(account.state.walletLamports).toBe(opening - rent);
-    expect(account.fact(ledger, emptyBook({ maxOpenPositions: 5 }), NO_LATCHES, price, T).history.costs).toHaveLength(1);
+    expect(account.fact(ledger, emptyBook({ maxOpenPositions: 5 }), NO_LATCHES, price, T, noLegs).history.costs).toHaveLength(1);
     ledger.close();
   });
 
@@ -597,7 +597,7 @@ describe('the paper wallet\'s setup rent is an account cost (risk review of #48,
     // One closed losing trade, as the paper fills would book it.
     file.write({ ...account.state, trades: [{ positionId: 'p:x:1', mint: MINT, openedAtMs: T - 600_000, notional: 2_000_000n as MicroUsd, closedAtMs: T - 60_000, netLamports: -100_000n, netPnl: -15_000n as MicroUsd, stoppedOut: true, booked: -100_000n }] });
     const reloaded = new PaperAccount(file, bankroll, T, rent);
-    const fact = reloaded.fact(ledger, emptyBook({ maxOpenPositions: 5 }), NO_LATCHES, price, T);
+    const fact = reloaded.fact(ledger, emptyBook({ maxOpenPositions: 5 }), NO_LATCHES, price, T, noLegs);
     expect(fact.history.closedTrades).toHaveLength(1);
     const session = startSession(TRIAL_POLICY);
     const r = evaluateExit({

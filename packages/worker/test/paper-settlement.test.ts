@@ -20,7 +20,7 @@ import { LATE_BUY } from '../src/run/worker.ts';
 import { type ApiInputs, views } from '../src/run/api.ts';
 import type { PaperAttempt } from '../src/run/paper-world.ts';
 import { oneTimeRent } from '../src/run/settings.ts';
-import { LANDS, Market, SOL_PRICE, T, makeWorker, passingMarket, tempState, until } from './worker-harness.ts';
+import { LANDS, Market, SOL_PRICE, T, makeWorker, passingMarket, tempState, until, noLegs } from './worker-harness.ts';
 
 const HELD = { heldPoolFacts: true } as const;
 const bigints = (_k: string, v: unknown) => (v !== null && typeof v === 'object' && '$n' in v ? BigInt((v as { $n: string }).$n) : v);
@@ -313,8 +313,9 @@ describe('M4: fees of an entry that never filled are an account cost, booked onc
     expect(account.settle(bookOf(a), legsOf(a), PRICE, T)).toBe(false);
     const fee = attemptFee(net, 10_000_000n, 'failed');
     expect(account.state.walletLamports).toBe(opening - fee);
-    const fact = account.fact(ledger, emptyBook({ maxOpenPositions: 5 }), NO_LATCHES, PRICE, T);
-    expect(fact.history.costs).toContainEqual({ atMs: T - 60_000, amount: lamportsToMicroUsd(fee as Lamports, PRICE, 'ceil'), kind: 'failed_entry' });
+    const fact = account.fact(ledger, emptyBook({ maxOpenPositions: 5 }), NO_LATCHES, PRICE, T, noLegs);
+    // Sent a minute before it was booked: dated when booked (ACCOUNT-RATE F3).
+    expect(fact.history.costs).toContainEqual({ atMs: T, amount: lamportsToMicroUsd(fee as Lamports, PRICE, 'ceil'), kind: 'failed_entry' });
     expect(fact.history.closedTrades).toEqual([]);
     const s = riskSnapshot({
       session: startSession(TRIAL_POLICY), mode: 'paper', clock: { now: () => ({ slot: 1n, txIndex: 0, ixIndex: 0, receivedAt: T }) }, account: fact.history, latches: NO_LATCHES,
@@ -335,25 +336,27 @@ describe('M4: fees of an entry that never filled are an account cost, booked onc
     const old = [failedAttempt('a', start - 9 * DAY, 20_000n), failedAttempt('b', start - DAY, 30_000n)];
     const recent = [failedAttempt('c', start + 1_000, 40_000n)];
     const usdOf = (x: PaperAttempt) => lamportsToMicroUsd(attemptFee(net, x.priorityFee, 'failed') as Lamports, PRICE, 'ceil');
-    // Booked in the last days of a week: a (from the week before) folds at once, b stays a record.
-    account.settle(bookOf(old), legsOf(old), PRICE, start - 1_000);
+    // Each booked a second after it was sent (a record is dated when booked, ACCOUNT-RATE F3). In the last days of a
+    // week: a (from the week before) folds at once, b stays a record.
+    account.settle(bookOf([old[0]!]), legsOf([old[0]!]), PRICE, start - 9 * DAY + 1_000);
+    account.settle(bookOf(old), legsOf(old), PRICE, start - DAY + 1_000);
     expect(Object.keys(account.state.strayFees!)).toEqual(['b']);
-    expect(account.state.strayFolded).toEqual({ atMs: start - 9 * DAY, lamports: attemptFee(net, 20_000n, 'failed'), cost: usdOf(old[0]!) });
+    expect(account.state.strayFolded).toEqual({ atMs: start - 9 * DAY + 1_000, lamports: attemptFee(net, 20_000n, 'failed'), cost: usdOf(old[0]!) });
     // In the new week: b folds into the total, c stays a record.
     const all = [...old, ...recent];
-    account.settle(bookOf(all), legsOf(all), PRICE, start + 2_000);
+    account.settle(bookOf(all), legsOf(all), PRICE, start + 1_000);
     expect(Object.keys(account.state.strayFees!)).toEqual(['c']);
     const fees = (xs: readonly PaperAttempt[]) => xs.reduce((s, x) => s + attemptFee(net, x.priorityFee, 'failed'), 0n);
-    expect(account.state.strayFolded).toEqual({ atMs: start - DAY, lamports: fees(old), cost: usdOf(old[0]!) + usdOf(old[1]!) });
+    expect(account.state.strayFolded).toEqual({ atMs: start - DAY + 1_000, lamports: fees(old), cost: usdOf(old[0]!) + usdOf(old[1]!) });
     expect(account.state.walletLamports).toBe(opening - fees(all));
     // A replay (the same signatures again, also after a reload) charges nothing more.
     const reloaded = new PaperAccount(file, 20_000_000n as MicroUsd, start + 3_000, 0n);
     expect(reloaded.settle(bookOf(all), legsOf(all), PRICE, start + 3_000)).toBe(false);
     expect(reloaded.state.walletLamports).toBe(opening - fees(all));
     // Equity keeps every fee: the folded total (before this week) and the record are both costs.
-    const costs = reloaded.fact(ledger, emptyBook({ maxOpenPositions: 5 }), NO_LATCHES, PRICE, start + 3_000).history.costs.filter((c) => c.kind === 'failed_entry');
+    const costs = reloaded.fact(ledger, emptyBook({ maxOpenPositions: 5 }), NO_LATCHES, PRICE, start + 3_000, noLegs).history.costs.filter((c) => c.kind === 'failed_entry');
     expect(costs).toEqual([
-      { atMs: start - DAY, amount: usdOf(old[0]!) + usdOf(old[1]!), kind: 'failed_entry' },
+      { atMs: start - DAY + 1_000, amount: usdOf(old[0]!) + usdOf(old[1]!), kind: 'failed_entry' },
       { atMs: start + 1_000, amount: usdOf(recent[0]!), kind: 'failed_entry' },
     ]);
     ledger.close();

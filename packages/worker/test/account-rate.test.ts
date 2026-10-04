@@ -6,8 +6,8 @@ import { describe, expect, it } from 'vitest';
 import { FILL_CONFIG, TRIAL_POLICY, startSession } from '../../core/src/config/index.ts';
 import { openLedger } from '../../core/src/ledger/index.ts';
 import type { Book } from '../../core/src/lifecycle/index.ts';
-import { NO_LATCHES, evaluateEntry, riskSnapshot } from '../../core/src/risk/index.ts';
-import type { MicroUsd } from '../../core/src/units/index.ts';
+import { NO_LATCHES, evaluateEntry, melbourneDay, riskSnapshot } from '../../core/src/risk/index.ts';
+import { type Lamports, type MicroUsd, lamportsToMicroUsd } from '../../core/src/units/index.ts';
 import { PaperAccount, type PaperLegs, accountFile } from '../src/run/account.ts';
 import type { PaperAttempt } from '../src/run/paper-world.ts';
 import { tempState } from './worker-harness.ts';
@@ -60,7 +60,7 @@ describe('ACCOUNT-RATE: a leg booked with no SOL price', () => {
     expect(a.priceLate(book(true), legs(true), usd(100), T)).toBe(false);
 
     const ledger = openLedger(join(dir, 'ledger.sqlite'), 'paper');
-    const fact = new PaperAccount(file, usd(20), T, 0n).fact(ledger, book(true), NO_LATCHES, usd(100), T);
+    const fact = new PaperAccount(file, usd(20), T, 0n).fact(ledger, book(true), NO_LATCHES, usd(100), T, legs(true));
     const input = {
       session: startSession(TRIAL_POLICY), mode: 'paper' as const, clock: { now: () => ({ slot: 1n, txIndex: 0, ixIndex: 0, receivedAt: T }) },
       account: fact.history, latches: NO_LATCHES, market: { solPrice: { value: usd(100), atMs: T }, solBalance: fact.solBalance, regime: 'unknown' as const },
@@ -104,3 +104,134 @@ describe('ACCOUNT-RATE: a leg booked with no SOL price', () => {
     expect(a.state.trades[0]!.pricedLate).toEqual(['open', 'close']);
   });
 });
+
+describe('ACCOUNT-RATE F1: an open trade\'s costs outside its basis', () => {
+  // The real network: base fee and token-account rent. An open trade (entry filled yesterday) with three exit attempts
+  // that landed and failed today at 500,000 lamports priority each.
+  const realNet = FILL_CONFIG.network;
+  // A price at which rounding matters ($123.456789).
+  const PX = 123_456_789n as MicroUsd;
+  const failed = (signature: string, sentAtMs: number): PaperAttempt => ({ ...attempt('out', signature, 'exit', 0n), priorityFee: 500_000n, outcome: 'failed', reason: 'failed', fill: null, sentAtMs });
+  const sigs = ['f1', 'f2', 'f3'];
+  const openBook = {
+    positions: { p1: { id: 'p1', mint: 'M', entryIntentId: 'in', status: 'open', quantity: 1_000_000n, cost: 20_000_000n } },
+    intents: {
+      in: { intent: { id: 'in', purpose: 'entry', positionId: 'p1', mint: 'M' }, fills: [fill('in', 'e1', 20_000_000n)], attempts: [{ signature: 'e1' }] },
+      out: { intent: { id: 'out', purpose: 'exit', positionId: 'p1', mint: 'M' }, fills: [], attempts: sigs.map((signature) => ({ signature })) },
+    },
+  } as unknown as Book;
+  const openLegs: PaperLegs = {
+    network: realNet, closedAccount: () => false,
+    attempts: new Map([['e1', { ...attempt('in', 'e1', 'entry', 20_000_000n), sentAtMs: T - 20 * HOUR }], ...sigs.map((x, k) => [x, failed(x, T - 3 * HOUR + k * 60_000)] as const)]),
+  };
+
+  it('three landed-failed exit attempts at 500k priority count in today\'s day loss while the trade is open, rounded up; the rent counts from the entry', () => {
+    const dir = tempState();
+    const a = new PaperAccount(accountFile(dir), usd(20), T - 30 * HOUR, 0n);
+    a.price(usd(100), T - 25 * HOUR);
+    a.filled({ ...base, purpose: 'entry', book: openBook, atMs: T - 20 * HOUR }, usd(100), openLegs);
+    a.settle(openBook, openLegs, usd(100), T);
+    const ledger = openLedger(join(dir, 'ledger.sqlite'), 'paper');
+    const fact = a.fact(ledger, openBook, NO_LATCHES, PX, T, openLegs);
+    const each = realNet.signaturesPerTx * realNet.baseFeePerSignature + 500_000n;
+    // Each failed attempt dated when sent (today), rounded up on its own; the rent at the entry (yesterday).
+    const eachUsd = lamportsToMicroUsd(each as Lamports, PX, 'ceil');
+    expect(eachUsd).toBeGreaterThan(lamportsToMicroUsd(each as Lamports, PX, 'floor'));
+    const feesUsd = 3n * eachUsd;
+    const rentUsd = lamportsToMicroUsd(realNet.tokenAccountRent as Lamports, PX, 'ceil');
+    expect(fact.history.costs.filter((c) => c.kind === 'open_trade')).toEqual([
+      ...sigs.map((_, k) => ({ atMs: T - 3 * HOUR + k * 60_000, amount: eachUsd, kind: 'open_trade' })),
+      { atMs: T - 20 * HOUR, amount: rentUsd, kind: 'open_trade' },
+    ]);
+    // The position marked at its basis (no price move): only these costs make the day's and week's loss.
+    const marked = { ...fact.history, openPositions: fact.history.openPositions.map((x) => ({ ...x, mark: x.notional, markAtMs: T })) };
+    const input = {
+      session: startSession(TRIAL_POLICY), mode: 'paper' as const, clock: { now: () => ({ slot: 1n, txIndex: 0, ixIndex: 0, receivedAt: T }) },
+      account: marked, latches: NO_LATCHES, market: { solPrice: { value: PX, atMs: T }, solBalance: fact.solBalance, regime: 'unknown' as const },
+    };
+    const snap = riskSnapshot(input)!;
+    const sameDay = melbourneDay(T).start <= T - 20 * HOUR;
+    expect(snap.dayLoss).toBeGreaterThanOrEqual(feesUsd + (sameDay ? rentUsd : 0n));
+    expect(snap.weekLoss).toBeGreaterThanOrEqual(feesUsd);
+    ledger.close();
+  });
+
+  it('a failed entry attempt counts once: an open-trade cost while the entry may still be retried, a stray cost once it is abandoned', () => {
+    const dir = tempState();
+    const a = new PaperAccount(accountFile(dir), usd(20), T - 30 * HOUR, 0n);
+    a.price(usd(100), T - 25 * HOUR);
+    const att: PaperAttempt = { ...failed('s', T - HOUR), intentId: 'in', purpose: 'entry' };
+    const l: PaperLegs = { network: realNet, closedAccount: () => false, attempts: new Map([['s', att]]) };
+    const at = (intent: string, position: string) => ({
+      positions: { p1: { id: 'p1', mint: 'M', entryIntentId: 'in', status: position, quantity: 0n, cost: 0n } },
+      intents: { in: { intent: { id: 'in', purpose: 'entry', positionId: 'p1', mint: 'M' }, status: intent, fills: [], attempts: [{ signature: 's' }] } },
+    }) as unknown as Book;
+    const ledger = openLedger(join(dir, 'ledger.sqlite'), 'paper');
+    const kinds = (b: Book) => a.fact(ledger, b, NO_LATCHES, usd(100), T, l).history.costs.map((c) => c.kind).filter((k) => k !== 'wallet_setup');
+    // Reconciled with no fill: it may still be replaced, so not a stray yet; its fee has left the wallet all the same.
+    const retry = at('reconciled', 'opening');
+    expect(a.settle(retry, l, usd(100), T)).toBe(false);
+    expect(kinds(retry)).toEqual(['open_trade']);
+    // Abandoned: the position closes unfilled and the fee is a stray cost instead.
+    const done = at('abandoned', 'closed');
+    expect(a.settle(done, l, usd(100), T)).toBe(true);
+    expect(kinds(done)).toEqual(['failed_entry']);
+    ledger.close();
+  });
+
+  it('a late buy\'s position (no paper trade; it halts entries) adds no open-trade costs', () => {
+    const dir = tempState();
+    const a = new PaperAccount(accountFile(dir), usd(20), T - 30 * HOUR, 0n);
+    a.price(usd(100), T - 25 * HOUR);
+    const late = {
+      positions: { 'p1.o1': { id: 'p1.o1', mint: 'M', entryIntentId: 'in', status: 'open', quantity: 1_000_000n, cost: 20_000_000n } },
+      intents: { out: { intent: { id: 'out', purpose: 'exit', positionId: 'p1.o1', mint: 'M' }, fills: [], attempts: [{ signature: 'f1' }] } },
+    } as unknown as Book;
+    const ledger = openLedger(join(dir, 'ledger.sqlite'), 'paper');
+    expect(a.fact(ledger, late, NO_LATCHES, usd(100), T, openLegs).history.costs.filter((c) => c.kind === 'open_trade')).toEqual([]);
+    ledger.close();
+  });
+
+  it('a closed trade\'s costs (a failed exit, rent kept) are in its net, not counted again as open-trade costs', () => {
+    const dir = tempState();
+    const a = new PaperAccount(accountFile(dir), usd(20), T - 30 * HOUR, 0n);
+    a.price(usd(100), T - 25 * HOUR);
+    const closedBook = { ...openBook, positions: { p1: { ...(openBook.positions as Record<string, object>)['p1'], status: 'closed', quantity: 0n } }, intents: { ...openBook.intents, out2: { intent: { id: 'out2', purpose: 'exit', positionId: 'p1', mint: 'M' }, fills: [fill('out2', 'x1', 24_000_000n)], attempts: [{ signature: 'x1' }] } } } as unknown as Book;
+    const closedLegs: PaperLegs = { ...openLegs, attempts: new Map([...openLegs.attempts, ['x1', attempt('out2', 'x1', 'exit', 24_000_000n)]]) };
+    a.filled({ ...base, purpose: 'entry', book: openBook, atMs: T - 20 * HOUR }, usd(100), openLegs);
+    const ledger = openLedger(join(dir, 'ledger.sqlite'), 'paper');
+    // While open, the failed fees and rent are open-trade costs.
+    expect(a.fact(ledger, openBook, NO_LATCHES, usd(100), T - HOUR, openLegs).history.costs.filter((c) => c.kind === 'open_trade').length).toBeGreaterThan(0);
+    a.filled({ ...base, purpose: 'exit', book: closedBook, atMs: T - HOUR }, usd(100), closedLegs);
+    expect(a.state.trades[0]!.closedAtMs).toBe(T - HOUR);
+    expect(a.fact(ledger, closedBook, NO_LATCHES, usd(100), T, closedLegs).history.costs.filter((c) => c.kind === 'open_trade')).toEqual([]);
+    ledger.close();
+  });
+});
+
+describe('ACCOUNT-RATE F3: a stray fee booked after midnight', () => {
+  it('a failed entry sent before the Melbourne day start but booked today is dated when booked, so it counts in today\'s day loss', () => {
+    const dir = tempState();
+    const day = melbourneDay(T);
+    const a = new PaperAccount(accountFile(dir), usd(20), day.start - 30 * HOUR, 0n);
+    a.price(usd(100), day.start - 30 * HOUR);
+    const sent = day.start - HOUR;
+    const att: PaperAttempt = { ...attempt('i-s', 's', 'entry', 1n), trade: 'p-s', priorityFee: 10_000_000n, outcome: 'failed', reason: 'failed', fill: null, sentAtMs: sent };
+    const stray = { positions: {}, intents: { 'i-s': { intent: { id: 'i-s', purpose: 'entry', positionId: 'p-s', mint: 'M' }, status: 'abandoned', fills: [], attempts: [{ signature: 's' }] } } } as unknown as Book;
+    const sLegs: PaperLegs = { network: FILL_CONFIG.network, attempts: new Map([['s', att]]), closedAccount: () => false };
+    // Booked today: the entry was found ended (a restart's reconcile, or a late status read) after midnight.
+    expect(a.settle(stray, sLegs, usd(100), T)).toBe(true);
+    const fee = FILL_CONFIG.network.signaturesPerTx * FILL_CONFIG.network.baseFeePerSignature + 10_000_000n;
+    const feeUsd = lamportsToMicroUsd(fee as Lamports, usd(100), 'ceil');
+    const ledger = openLedger(join(dir, 'ledger.sqlite'), 'paper');
+    const fact = a.fact(ledger, stray, NO_LATCHES, usd(100), T, sLegs);
+    expect(fact.history.costs.filter((c) => c.kind === 'failed_entry')).toEqual([{ atMs: T, amount: feeUsd, kind: 'failed_entry' }]);
+    const input = {
+      session: startSession(TRIAL_POLICY), mode: 'paper' as const, clock: { now: () => ({ slot: 1n, txIndex: 0, ixIndex: 0, receivedAt: T }) },
+      account: fact.history, latches: NO_LATCHES, market: { solPrice: { value: usd(100), atMs: T }, solBalance: fact.solBalance, regime: 'unknown' as const },
+    };
+    expect(riskSnapshot(input)!.dayLoss).toBeGreaterThanOrEqual(feeUsd);
+    ledger.close();
+  });
+});
+
