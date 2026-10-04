@@ -133,6 +133,8 @@ export interface Health {
   readonly s0_diagnostic?: readonly string[];
   /** PERSIST-2: the last graduates seed this boot (`accepted` false with its reason when refused); absent before any. */
   readonly graduates_seed?: { readonly source: string | null; readonly accepted: boolean; readonly added: number; readonly reason: string | null };
+  /** PRACTICE-ON: what decides entries (`ZEROED_STRATEGY`: none, S0 or a registered strategy), as the start line's `entry_rule`. */
+  readonly entry_rule?: string;
 }
 
 export type JournalKind =
