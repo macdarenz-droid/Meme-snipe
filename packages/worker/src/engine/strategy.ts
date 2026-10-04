@@ -28,7 +28,7 @@ import {
   atr, checkStopDistance, decideExit, execPrice, liquidationValue, exitAttemptsOf, exitBookEvents, exitSettings, newTracker, noteAttempt,
 } from '../../../core/src/exits/index.ts';
 import {
-  type Coverage, type GateContext, DeployerIndex, LOG_CREATE_PREFIX, RugLabeller, TX_CREATE_PREFIX, createsCoverage, evaluateHardRejects, evaluateRegime, migrationKey, parseMigration, parsePool, poolKey,
+  type Coverage, type GateContext, DeployerIndex, LOG_CREATE_PREFIX, RugLabeller, TX_CREATE_PREFIX, type PoolFact, carryKey, createsCoverage, evaluateHardRejects, evaluateRegime, migrationKey, parseMigration, parsePool, poolKey,
 } from '../../../core/src/gates/index.ts';
 import { type BookEvent, type IntentState, isTerminal } from '../../../core/src/lifecycle/index.ts';
 import { type AccountHistory, type Latches, type Timed, evaluateEntry, evaluateExit } from '../../../core/src/risk/index.ts';
@@ -38,6 +38,7 @@ import { type Bps, BPS_DENOMINATOR, type Lamports, type MicroUsd, bps, lamportsT
 export const ACCOUNT_KEY = 'worker:account';
 /** Key prefixes of GATE-1's pool and migration facts. */
 export const POOL_PREFIX = poolKey('');
+export const CARRY_PREFIX = carryKey('');
 export const MIGRATION_PREFIX = migrationKey('');
 export const RESTORE_KEY = 'worker:restore';
 /** `{ value, atMs }`: the live SOL/USD price in micro-dollars (risk needs one younger than maxQuoteAgeMs). */
@@ -103,6 +104,50 @@ export const parseSnapshotFact = (v: unknown): SnapshotFact | null => {
   if (typeof st['baseReserve'] !== 'bigint' || typeof st['quoteVault'] !== 'bigint' || typeof st['virtualQuoteReserves'] !== 'bigint') return null;
   return v as unknown as SnapshotFact;
 };
+/** WATCH-1c: the producer's proof that a pool's chain state is unchanged through `slot` (core gates `carryKey`). */
+export interface CarryFact {
+  readonly pool: string;
+  readonly slot: bigint;
+  readonly state: PoolState;
+  readonly obs: { readonly receivedAt: number };
+}
+
+export const parseCarryFact = (v: unknown): CarryFact | null => {
+  if (!isObj(v) || typeof v['pool'] !== 'string' || typeof v['slot'] !== 'bigint' || !isObj(v['state']) || !isObj(v['obs']) || typeof v['obs']['receivedAt'] !== 'number') return null;
+  const st = v['state'];
+  if (typeof st['baseReserve'] !== 'bigint' || typeof st['quoteVault'] !== 'bigint' || typeof st['virtualQuoteReserves'] !== 'bigint') return null;
+  return v as unknown as CarryFact;
+};
+
+const sameReserves = (a: PoolState, p: PoolFact): boolean =>
+  a.baseReserve === p.baseVault && a.quoteVault === p.quoteVault && a.virtualQuoteReserves === (p.pool.virtualQuoteReserves ?? 0n);
+
+const isFlagged = (p: PoolFact): boolean => p.obs.quality.some((q) => q !== 'backfilled' && q !== 'deduplicated');
+
+/**
+ * A mint's newest whole market, as the strategy and the worker both price it (merge rule M, WATCH-1c):
+ * - the pool fact moves to its carry's moment when the carry proves the same reserves unchanged since (never for a
+ *   flagged fact, and never past a newer snapshot that disagrees with it: the chain then missed something);
+ * - WATCH-1's snapshot when newer than that;
+ * - else the pool fact, unless POS-1 flagged it.
+ */
+export type MarketChoice =
+  | { readonly kind: 'snapshot'; readonly snap: SnapshotFact }
+  | { readonly kind: 'pool'; readonly pool: PoolFact; readonly atMs: number; readonly carried: boolean }
+  | { readonly kind: 'flagged'; readonly pool: PoolFact }
+  | { readonly kind: 'none' };
+
+export const chooseMarket = (pool: PoolFact | null, snap: SnapshotFact | null, carry: CarryFact | null): MarketChoice => {
+  const disagrees = pool !== null && snap !== null && snapshotWins(snap, pool.obs) && !sameReserves(snap.state, pool);
+  const carried = pool !== null && carry !== null && !isFlagged(pool) && !disagrees && carry.pool === pool.address && sameReserves(carry.state, pool)
+    && carry.obs.receivedAt > pool.obs.receivedAt && (pool.obs.slot === null || carry.slot >= pool.obs.slot);
+  const at = pool === null ? null : carried ? { slot: carry!.slot, receivedAt: carry!.obs.receivedAt } : pool.obs;
+  if (snap !== null && snapshotWins(snap, at)) return { kind: 'snapshot', snap };
+  if (pool === null) return { kind: 'none' };
+  if (isFlagged(pool)) return { kind: 'flagged', pool };
+  return { kind: 'pool', pool, atMs: at!.receivedAt, carried };
+};
+
 /** Machine-read reason on `approve_risk`: the reservation request the worker sends to the ledger. */
 export const RESERVE_PREFIX = 'reserve ';
 /** REC-1: a rejected candidate's pool not watched past its window because `maxTails` were already watched. */
@@ -656,16 +701,18 @@ export class LiveStrategy implements Strategy {
     const sr = ctx.lookup(snapshotKey(mint));
     const snap = sr.ok ? parseSnapshotFact(unwrap(sr.value)) : null;
     const pool = p.ok ? parsePool(p.value) : null;
-    // WATCH-1: a snapshot newer than the pool fact is the market, reserves and fee context alike.
-    if (snap !== null && snapshotWins(snap, pool === null ? null : pool.obs)) {
-      this.#notePool(mint, snap.pool);
-      return { pool: snap.state, ctx: snap.ctx, atMs: snap.atMs, address: snap.pool };
+    const cr = ctx.lookup(carryKey(mint));
+    const choice = chooseMarket(pool, snap, cr.ok ? parseCarryFact(unwrap(cr.value)) : null);
+    // WATCH-1: a snapshot newer than the pool fact (carried or not) is the market, reserves and fee context alike.
+    if (choice.kind === 'snapshot') {
+      this.#notePool(mint, choice.snap.pool);
+      return { pool: choice.snap.state, ctx: choice.snap.ctx, atMs: choice.snap.atMs, address: choice.snap.pool };
     }
     if (!p.ok) return 'pool state unknown';
     if (pool === null) return 'pool state malformed';
     // A flagged pool fact (POS-1: the swap stream lost continuity) is never priced from, whatever its age.
     const flags = pool.obs.quality.filter((q) => q !== 'backfilled' && q !== 'deduplicated');
-    if (flags.length > 0) return `pool state flagged ${flags.join(', ')}${typeof (p.value as { stale?: unknown }).stale === 'string' ? ` (${(p.value as { stale: string }).stale})` : ''}`;
+    if (choice.kind === 'flagged') return `pool state flagged ${flags.join(', ')}${typeof (p.value as { stale?: unknown }).stale === 'string' ? ` (${(p.value as { stale: string }).stale})` : ''}`;
     this.#notePool(mint, pool.address);
     // A fee-context fact when one is published, else the terms of the latest swap seen on the pool.
     const f = ctx.lookup(feesKey(mint));
@@ -673,7 +720,7 @@ export class LiveStrategy implements Strategy {
     if (fees === undefined) return 'fee context unknown';
     return {
       pool: { baseReserve: pool.baseVault, quoteVault: pool.quoteVault, virtualQuoteReserves: pool.pool.virtualQuoteReserves ?? 0n },
-      ctx: fees, atMs: pool.obs.receivedAt, address: pool.address,
+      ctx: fees, atMs: choice.kind === 'pool' ? choice.atMs : pool.obs.receivedAt, address: pool.address,
     };
   }
 

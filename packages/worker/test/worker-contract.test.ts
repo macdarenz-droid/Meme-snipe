@@ -65,8 +65,11 @@ describe('config and exit codes (§12.4)', () => {
       const p = parseConfig({ ...base, ...env }, () => null);
       return p.ok ? p.config.watch : null;
     };
-    expect(watch({})).toEqual({ everyMs: 200, staleMs: 500, latencyMs: 400 });
-    expect(watch({ ZEROED_WATCH_EVERY_MS: '300', ZEROED_WATCH_STALE_MS: '300', ZEROED_WATCH_LATENCY_MS: '100' })).toEqual({ everyMs: 300, staleMs: 300, latencyMs: 100 });
+    expect(watch({})).toEqual({ everyMs: 200, staleMs: 500, latencyMs: 400, verifyMs: 30_000 });
+    expect(watch({ ZEROED_WATCH_EVERY_MS: '300', ZEROED_WATCH_STALE_MS: '300', ZEROED_WATCH_LATENCY_MS: '100', ZEROED_WATCH_VERIFY_MS: '300' })).toEqual({ everyMs: 300, staleMs: 300, latencyMs: 100, verifyMs: 300 });
+    // WATCH-1c: the verify period is never shorter than the stale limit.
+    expect(watch({ ZEROED_WATCH_VERIFY_MS: '499' })).toBeNull();
+    expect(watch({ ZEROED_WATCH_VERIFY_MS: 'x' })).toBeNull();
     // Tied to the policy (review of #87): the oldest a watched market can be must stay below the quote age.
     const policyAge = TRIAL_POLICY.gates.maxQuoteAgeMs;
     const release = DEFAULT_LIVE_FEED.horizonSlots * SLOT_MS;

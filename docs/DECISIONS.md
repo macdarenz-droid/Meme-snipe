@@ -1098,6 +1098,29 @@ Built to the supervisor's revised spec and the consensus rulings that followed i
   - Quote-age arithmetic at the defaults (stale 500, every 200, latency 400, release = 2 slots × 400 = 800, maxQuoteAge 2000). Steady on snapshots: stale + every + latency + release = 1900 < 2000, the start-up guard as it was. At the moment a pool's facts stop (feed death, or a held pool going quiet after its last swap), the last feed fact may already be one release old: the first snapshot lands by release + stale + every + latency + release = 2700 ms after that fact's receipt. For at most 0.7 s per such transition the market is past the quote age; an exit then waits for a fresh market (EXIT-1d) and is never sent stale or blind. Releasing the snapshot without the feed's horizon would close it (1900), but needs a new release rule in the feed and its replay; not done.
   - Tests that failed before: a healthy held minute and the swaps before the feed dies make no read (the risk review's pin; 298 reads before); the quiet pool is read before its last fact passes the quote age, peaks within the transition bound and stays under the quote age once snapshots arrive; a flagged fact is read within one period. The dead-feed bound holds. The harness's read now answers at a slot behind the tip, as a confirmed read does (it answered 5 slots ahead, so a snapshot outranked every later pool fact).
   - Mutants: receipt age instead of release (killed), the release time set once per mint (killed), a flagged fact's release counted as fresh (killed). Judging a winning snapshot by the pool fact's release instead of its read is equivalent at the defaults (both always stale once released) and is left documented.
+- **2026-10-04 · Coverage-proven freshness (WATCH-1c, supervisor card).** A quiet held pool cost about 0.36 M CU per 120-minute hold (a read every ~0.4 s). Now:
+  - **The carry.** With every slot notice, POS-1's producer releases `carryKey(mint)` `{ pool, slot, state }` for each chain whose trade stream has covered every slot since its base with no gap and no hole, and that is not stale. Its claim: the reserves are unchanged through that slot. A slot's transactions are released before its notice (the notice sorts last in its slot). It is derived and never recorded, so a replay re-releases it identically: tested on the live path, the recorded replay and the backtest re-sort.
+  - **Where it counts.** `chooseMarket` is shared by the strategy's `#market` and the worker's `poolOf`. It moves the pool fact to its carry's moment only when the carry names the same pool and the same reserves and is newer. It never does this for a flagged fact, and never past a newer snapshot that disagrees with the pool fact (the chain then missed something, and the snapshot is the market). The watch judges a carried market by the carry's release. Gates and price bars do not read the carry, so candidates and the backtest are unchanged.
+  - **What else stops it (fail closed).**
+    - A confirmed PumpSwap event on the pool's own stream that is not a swap: a deposit, a withdrawal, a buyback, an admin or fee instruction, or anything DEC-1 cannot name. It makes the chain stale until the next swap re-bases it.
+    - So does a swap released behind a newer one, unless it is a repeat of one already applied.
+    - Gaps, cut logs and lost streams work as before.
+  - **What the stream cannot see.** A transfer straight into or out of a pool vault mentions no pool account. A slow verify read covers it: one snapshot per held pool every `ZEROED_WATCH_VERIFY_MS` (default 30 s, never shorter than `staleMs`). A verify read that disagrees with the proven state makes the snapshot the market, and normal reads follow until a swap re-bases the chain. Tested: the vault reads 30% lower with no event, and the stop goes out within verify + period + 2 s.
+  - **Cost at the defaults.** A quiet or trading held pool on a healthy feed costs 1 read at the open plus 1 per 30 s: 20 CU each, about 4.8 k CU per 120-minute hold (it was about 0.36 M). Tested: 20 reads in ten quiet minutes, where there had been about 1,500. A gap is read on the next look.
+  - **Residual risk.** A logs subscription that stalls silently (no gap reported) while slot notices keep coming would keep carrying for up to one verify period. The verify read bounds that at 30 s.
+  - **Slot time.** The guard's release time stays 2 slots × 400 ms. Measured mainnet p99 of one-minute mean slot times is 278 ms (docs/RESEARCH.md "Slot time"). Single slots are to be measured from the dry run's recorded slot receipts. Both bounds are unchanged at the defaults: steady 1900 < 2000, transition 2700 ≤ 2800.
+  - **Mutants.** 12 of 12 killed:
+    - no carry;
+    - carry without coverage;
+    - carry while stale;
+    - a non-swap event not staled;
+    - an out-of-order swap ignored;
+    - a repeat taken as a miss;
+    - the strategy ignoring the carry;
+    - a disagreeing snapshot ignored;
+    - a carry of other reserves accepted;
+    - no verify read;
+    - the watch judging a carried market by the pool fact's release.
 - **On POS-1's merge (agreed with its builder):**
   - poolOf null, or a pool fact flagged `partial`, reads at once.
   - The flag is checked only when the pool fact is the newest whole market, so a newer snapshot still wins.

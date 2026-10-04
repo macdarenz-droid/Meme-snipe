@@ -18,6 +18,11 @@ export interface PositionWatchOptions {
   readonly everyMs: number;
   /** A held position's market older than this is read again (config: ZEROED_WATCH_STALE_MS). */
   readonly staleMs: number;
+  /**
+   * A held market proven fresh is still read this often (WATCH-1c): the stream's proof cannot see a transfer straight
+   * into a pool vault. Absent: no such reads.
+   */
+  readonly verifyMs?: number;
   /** An answer later than this is not used: it would already be too old to quote (config: ZEROED_WATCH_LATENCY_MS). */
   readonly latencyMs: number;
   /**
@@ -44,6 +49,8 @@ export class PositionWatch {
   #timer: TimerHandle | null = null;
   #running = false;
   readonly #inFlight = new Set<string>();
+  /** When each held mint was last read (or first seen held): the verify period counts from it. */
+  readonly #lastRead = new Map<string, number>();
   /** Vault addresses by pool, learned from the pool account (the coherent read needs them up front). */
   readonly #vaults = new Map<string, readonly [string, string]>();
   /** Mints whose critical alert is up, with its reason. */
@@ -95,10 +102,13 @@ export class PositionWatch {
     const mints = new Set(held.map((h) => h.mint));
     // A position that closed takes its alert with it.
     for (const mint of [...this.#alerts.keys()]) if (!mints.has(mint)) this.#clear(mint);
+    for (const mint of [...this.#lastRead.keys()]) if (!mints.has(mint)) this.#lastRead.delete(mint);
     for (const { mint, pool } of held) {
+      if (!this.#lastRead.has(mint)) this.#lastRead.set(mint, now);
       if (this.#inFlight.has(mint)) continue;
       const at = this.#o.marketAt(mint);
-      if (at !== null && now - at < this.#o.staleMs) continue;
+      const verify = this.#o.verifyMs !== undefined && now - this.#lastRead.get(mint)! >= this.#o.verifyMs;
+      if (at !== null && now - at < this.#o.staleMs && !verify) continue;
       if (pool === null) {
         this.#raise(mint, 'no pool known for the position');
         continue;
@@ -122,6 +132,7 @@ export class PositionWatch {
 
   async #snapshot(mint: string, pool: string): Promise<void> {
     this.reads++;
+    this.#lastRead.set(mint, this.#o.timers.now());
     try {
       let vaults = this.#vaults.get(pool);
       if (vaults === undefined) {

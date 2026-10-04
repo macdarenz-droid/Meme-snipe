@@ -21,7 +21,7 @@ import type { MicroUsd } from '../../../core/src/units/index.ts';
 import { EXIT, LOOKUP_BOUNDS_MS, STATE_FILES, type FeedHealth, type Health, type JournalKind, type QuotaStatus, type RecoveredFields } from '../../../runner/src/contract.ts';
 import type { DryRunRecord } from '../dryrun/index.ts';
 import { NO_UNIVERSE, resolveUniverse, sellOnlyReason } from '../engine/strategy.ts';
-import { ACCOUNT_KEY, HALT_KEY, LiveStrategy, POOL_PREFIX, RESTORE_KEY, SEED_KEY, SEEDING, SHORTLIST, SNAPSHOT_PREFIX, SOL_PRICE_KEY, type SnapshotFact, type StrategyConfig, type StrategyDeps, TRIP_PREFIX, parseSnapshotFact, snapshotKey, snapshotWins } from '../engine/strategy.ts';
+import { ACCOUNT_KEY, HALT_KEY, LiveStrategy, POOL_PREFIX, RESTORE_KEY, SEED_KEY, SEEDING, SHORTLIST, SNAPSHOT_PREFIX, SOL_PRICE_KEY, type SnapshotFact, type CarryFact, CARRY_PREFIX, type MarketChoice, chooseMarket, parseCarryFact, type StrategyConfig, type StrategyDeps, TRIP_PREFIX, parseSnapshotFact, snapshotKey, snapshotWins } from '../engine/strategy.ts';
 import { SLOT_MS, watchTimingProblem } from './config.ts';
 import { PositionWatch, type WatchRead } from './watch.ts';
 import { DEFAULT_LIVE_FEED, type Frame, type HttpClient, LiveFeed, type Release, seqId } from '../providers/index.ts';
@@ -44,10 +44,8 @@ import { Journal } from './journal.ts';
 import { type PaperMarket, type PaperState, PaperWorld, type SimLeg } from './paper-world.ts';
 import { Recorder, sealLeftovers } from './recorder.ts';
 import { type Control, NO_CONTROL, StateFile, controlFile, exitsFile, exposedFile, NO_EXPOSED } from './state.ts';
-import { type PoolFact, parsePool } from '../../../core/src/gates/index.ts';
+import { parsePool } from '../../../core/src/gates/index.ts';
 
-/** POS-1: a pool fact flagged beyond backfill or dedupe (a stale swap stream) is never priced from. */
-const flagged = (p: PoolFact): boolean => p.obs.quality.some((q) => q !== 'backfilled' && q !== 'deduplicated');
 import { type PoolFeeContext, poolSell } from '../../../core/src/amm/index.ts';
 
 /** The halt reason while WATCH-1's second price path cannot serve (not configured, or its budget halted). */
@@ -212,6 +210,8 @@ export class Worker {
   #pools = new Map<string, unknown>();
   /** When each mint's latest pool fact was released to the engine (WATCH-1 judges a feed fact by its release). */
   readonly #poolReleasedAt = new Map<string, number>();
+  /** WATCH-1c: each mint's latest carry (its pool state proven unchanged through a slot) and when it was released. */
+  readonly #carries = new Map<string, { readonly carry: CarryFact; readonly releasedAt: number }>();
   #fees = new Map<string, PoolFeeContext>();
   /** WATCH-1's latest snapshot per held mint, as released. */
   #snapshots = new Map<string, SnapshotFact>();
@@ -352,6 +352,10 @@ export class Worker {
     // FACTS-1b: the engine reads through core's FactFeed (engine-feed.ts); a replay of the recording uses the same.
     this.#facts = engineFeed(this.#feed, d.session.policy, (e) => {
       if (e.key.startsWith(POOL_PREFIX)) this.#setPool(e.key.slice(POOL_PREFIX.length), e.value);
+      else if (e.key.startsWith(CARRY_PREFIX)) {
+        const carry = parseCarryFact(e.value);
+        if (carry !== null) this.#carries.set(e.key.slice(CARRY_PREFIX.length), { carry, releasedAt: d.timers.now() });
+      }
     });
     this.#engine = new Engine({ clock: this.#feed.clock, feed: this.#facts.feed, strategy: this.#strategy, runner: this.#world, seed, book: bookConfig });
     this.#deployerStore = new DeployerStore(c.stateDir);
@@ -518,27 +522,32 @@ export class Worker {
     this.#poolReleasedAt.set(mint, this.#d.timers.now());
   }
 
+  /** The mint's newest whole market by the strategy's own rule (`chooseMarket`). */
+  #choice(mint: string): MarketChoice {
+    return chooseMarket(parsePool(this.#pools.get(mint)), this.#snapshots.get(mint) ?? null, this.#carries.get(mint)?.carry ?? null);
+  }
+
   /**
    * The moment WATCH-1 judges a held mint's market by (null: no market). A pool fact from the feed counts from its
-   * release: a healthy feed releases one every slot, already up to the horizon old by design, so judging it by receipt
-   * would read the second path all the time. WATCH-1's own snapshot counts from its read, as its age bound needs.
+   * release, or from its latest carry's release while a carry proves it unchanged (WATCH-1c): a live feed releases
+   * facts already up to the horizon old by design, so judging them by receipt would read the second path all the time.
+   * WATCH-1's own snapshot counts from its read, as its age bound needs.
    */
   #watchMarketAt(mint: string): number | null {
-    const p = parsePool(this.#pools.get(mint));
-    const snap = this.#snapshots.get(mint);
-    if (snap !== undefined && snapshotWins(snap, p === null ? null : p.obs)) return snap.atMs;
-    if (this.poolOf(mint) === null) return null;
-    return this.#poolReleasedAt.get(mint) ?? null;
+    const c = this.#choice(mint);
+    if (c.kind === 'snapshot') return c.snap.atMs;
+    if (c.kind !== 'pool') return null;
+    return c.carried ? this.#carries.get(mint)!.releasedAt : this.#poolReleasedAt.get(mint) ?? null;
   }
 
   poolOf(mint: string): { readonly address: string; readonly state: PaperMarket['pool']; readonly ctx: PoolFeeContext; readonly atMs: number } | null {
-    const p = parsePool(this.#pools.get(mint));
-    const snap = this.#snapshots.get(mint);
-    if (snap !== undefined && snapshotWins(snap, p === null ? null : p.obs)) return { address: snap.pool, state: snap.state, ctx: snap.ctx, atMs: snap.atMs };
-    if (p === null || flagged(p)) return null;
+    const c = this.#choice(mint);
+    if (c.kind === 'snapshot') return { address: c.snap.pool, state: c.snap.state, ctx: c.snap.ctx, atMs: c.snap.atMs };
+    if (c.kind !== 'pool') return null;
+    const p = c.pool;
     const ctx = this.#fees.get(mint) ?? this.#strategy.observedFees(mint);
-    if (p === null || ctx === undefined) return null;
-    return { address: p.address, state: { baseReserve: p.baseVault, quoteVault: p.quoteVault, virtualQuoteReserves: p.pool.virtualQuoteReserves ?? 0n }, ctx, atMs: p.obs.receivedAt };
+    if (ctx === undefined) return null;
+    return { address: p.address, state: { baseReserve: p.baseVault, quoteVault: p.quoteVault, virtualQuoteReserves: p.pool.virtualQuoteReserves ?? 0n }, ctx, atMs: c.atMs };
   }
 
   /**
@@ -1020,7 +1029,7 @@ export class Worker {
   #positionWatch(): PositionWatch {
     const d = this.#d;
     return new PositionWatch({
-      timers: d.timers, everyMs: d.config.watch.everyMs, staleMs: d.config.watch.staleMs, latencyMs: d.config.watch.latencyMs,
+      timers: d.timers, everyMs: d.config.watch.everyMs, staleMs: d.config.watch.staleMs, latencyMs: d.config.watch.latencyMs, verifyMs: d.config.watch.verifyMs,
       held: () => {
         const book = this.#engine.book;
         const open = Object.values(book.positions).filter((p) => p.status !== 'closed' && p.quantity > 0n).map((p) => ({

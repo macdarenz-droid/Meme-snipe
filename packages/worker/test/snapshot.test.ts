@@ -8,7 +8,10 @@ import { poolBuyExactBase, poolSell } from '../../core/src/amm/index.ts';
 import { type Address, decodeAddressBytes, decodeMint, decodePool, fromBase64, recordFromRpc, transactionEvents, type RpcTransactionBase64 } from '../../core/src/chain/index.ts';
 import { CHAIN_ACCOUNTS as CHAIN } from '../../core/test/gates/world.ts';
 import { decodeSnapshot, type ReadAccount, snapshotAddresses } from '../src/run/snapshot.ts';
-import { type SnapshotFact, snapshotWins } from '../src/engine/strategy.ts';
+import { type CarryFact, type SnapshotFact, chooseMarket, snapshotWins } from '../src/engine/strategy.ts';
+import { parsePool } from '../../core/src/gates/index.ts';
+import { MINT as WORLD_MINT, passingFacts } from '../../core/test/gates/world.ts';
+import { poolKey } from '../../core/src/gates/index.ts';
 import { PositionWatch } from '../src/run/watch.ts';
 import { FakeSocketHub, rpcHandler, scriptedHttp } from '../src/providers/index.ts';
 import { ALCHEMY_FREE, ManualTimers } from '../src/scheduler/index.ts';
@@ -221,5 +224,26 @@ describe('the watch\'s read latency (review of #87)', () => {
     w.opened(F.mint, F.pool);
     for (let k = 0; k < 5; k++) await new Promise<void>((r) => setImmediate(r));
     expect(reads).toHaveLength(2);
+  });
+
+  it('chooseMarket: a carry moves the pool fact to its moment only for the same reserves, never a flagged fact, never past a newer disagreeing snapshot (WATCH-1c)', () => {
+    const facts = passingFacts();
+    const raw = facts.get(poolKey(WORLD_MINT))!.value;
+    const pool = parsePool(raw)!;
+    const state = { baseReserve: pool.baseVault, quoteVault: pool.quoteVault, virtualQuoteReserves: pool.pool.virtualQuoteReserves ?? 0n };
+    const slot = pool.obs.slot ?? 0n;
+    const carry = (o: Partial<CarryFact> = {}): CarryFact => ({ pool: pool.address, slot: slot + 3n, state, obs: { receivedAt: pool.obs.receivedAt + 1_200 }, ...o });
+    expect(chooseMarket(pool, null, carry())).toEqual({ kind: 'pool', pool, atMs: pool.obs.receivedAt + 1_200, carried: true });
+    // Other reserves (a carry of a state the pool fact is not), another pool, an older carry: the pool fact's own moment.
+    for (const c of [carry({ state: { ...state, quoteVault: state.quoteVault + 1n } }), carry({ pool: 'x' }), carry({ obs: { receivedAt: pool.obs.receivedAt - 1 } })]) {
+      expect(chooseMarket(pool, null, c)).toEqual({ kind: 'pool', pool, atMs: pool.obs.receivedAt, carried: false });
+    }
+    // A flagged fact is never carried.
+    const flagged = parsePool({ ...(raw as object), obs: { ...pool.obs, quality: ['partial'] } })!;
+    expect(chooseMarket(flagged, null, carry())).toEqual({ kind: 'flagged', pool: flagged });
+    // A snapshot newer than the pool fact: agreeing, the carry still outranks it; disagreeing, the snapshot is the market.
+    const snap = (q: bigint): SnapshotFact => ({ pool: pool.address, slot: slot + 1n, atMs: pool.obs.receivedAt + 500, state: { ...state, quoteVault: q }, ctx: {} as SnapshotFact['ctx'] });
+    expect(chooseMarket(pool, snap(state.quoteVault), carry())).toMatchObject({ kind: 'pool', carried: true });
+    expect(chooseMarket(pool, snap(state.quoteVault - 1n), carry())).toMatchObject({ kind: 'snapshot' });
   });
 });
