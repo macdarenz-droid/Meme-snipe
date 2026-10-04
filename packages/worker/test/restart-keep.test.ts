@@ -35,15 +35,29 @@ let port = 18_700;
 const NOW = MIGRATED_AT + 30 * 60_000;
 const GOOD = { mint: MINT, pool: POOL_ADDRESS, migratedAtMs: MIGRATED_AT, migrationSlot: SLOT - 15_000n, tries: 2, lastEvalMs: NOW - 60_000, lastReason: 'H11 missing', bars: [{ startMs: NOW - 300_000, high: 2n, low: 1n, close: 2n }], signatures: { create: null, complete: null, migration: null } };
 /** The strategy alone, given a restore fact at NOW with these saved candidates. */
-const restoreInto = (candidates: unknown[], tails?: unknown, maxTails?: number) => {
+const restoreInto = (candidates: unknown[], tails?: unknown, maxTails?: number, at = NOW) => {
   const session = startSession(TRIAL_POLICY);
   const config = strategyConfig(session.policy, FILL_CONFIG, RESEARCH_CONFIG);
   const strategy = new LiveStrategy({ session, rugs: RUG_CONFIG, config: maxTails === undefined ? config : { ...config, maxTails } });
-  const moment = { slot: SLOT, txIndex: 0, ixIndex: 0, receivedAt: NOW };
+  const moment = { slot: SLOT, txIndex: 0, ixIndex: 0, receivedAt: at };
+  const ctxAt = (ms: number) => ({ now: { ...moment, receivedAt: ms }, book: emptyBook({ maxOpenPositions: session.policy.positions.maxOpen }), rng: { next: () => 0 }, lookup: () => ({ ok: false, reason: 'missing' }), history: () => [] } as unknown as StrategyContext);
+  let seq = 0;
+  /** A later event into the same strategy. */
+  const feed = (key: string, value: unknown, ms = at + 60_000) => strategy.onMarket({ kind: 'market', id: `e${seq++}`, moment: { ...moment, receivedAt: ms }, key, value }, ctxAt(ms));
   const ctx = { now: moment, book: emptyBook({ maxOpenPositions: session.policy.positions.maxOpen }), rng: { next: () => 0 }, lookup: () => ({ ok: false, reason: 'missing' }), history: () => [] } as unknown as StrategyContext;
   const out = strategy.onMarket({ kind: 'market', id: 'restore', moment, key: RESTORE_KEY, value: { exits: {}, candidates, ...(tails === undefined ? {} : { tails }) } }, ctx);
-  return { strategy, out };
+  return { strategy, out, feed };
 };
+const MIN = 60_000;
+/** A PumpSwap buy on the candidate's pool at `ms`, before-trade reserves base/quote (FEED-1's log event shape). */
+const buy = (ms: number, base: bigint, quote: bigint, sig: string) => [`logs:pump_amm:BuyEvent:${POOL_ADDRESS}`, {
+  event: { program: 'pump_amm', name: 'BuyEvent', data: { pool: POOL_ADDRESS, user: 'u', timestamp: BigInt(Math.floor(ms / 1000)), poolBaseTokenReserves: base, poolQuoteTokenReserves: quote, baseAmountOut: base / 100n, quoteAmountInWithLpFee: quote / 99n, quoteAmountIn: quote / 99n, virtualQuoteReserves: 0n } },
+  signature: sig,
+}] as const;
+const close = (kind: 'resume' | 'gap', toSlot: bigint | null = null) => [`coverage:trades:${POOL_ADDRESS}:${kind}`, { value: { fromSlot: SLOT - 15_000n, ...(kind === 'gap' ? { toSlot, reason: 'catch-up' } : {}), via: `logs:${POOL_ADDRESS}` }, source: 'worker' }] as const;
+const SAVED_BAR = { startMs: NOW - 5 * MIN, high: 2n, low: 1n, close: 2n };
+/** Restored 20 minutes after the save: four 5-minute periods of downtime after the saved bar's. */
+const downtime = () => restoreInto([{ ...GOOD, bars: [SAVED_BAR] }], undefined, undefined, NOW + 20 * MIN);
 const boot = async (h: H, via = VIA) => {
   const m = new Market(h);
   const started = h.worker.start();
@@ -119,6 +133,51 @@ describe('RESTART-KEEP: a restart keeps the candidates in their window', () => {
     expect(s.strategy.candidates().get(MINT)).toEqual(expect.objectContaining({ migratedAtMs: GOOD.migratedAtMs, lastEvalMs: GOOD.lastEvalMs }));
     // S0-ZERO's catch-up starts the pool's trade coverage at the saved migration slot.
     expect(s.strategy.watchedPools().get(POOL_ADDRESS)).toEqual({ mint: MINT, held: false, fromSlot: GOOD.migrationSlot });
+  });
+
+  it('rebuilds the downtime\'s bars from the pool\'s filled trades once the catch-up closes complete (a quiet period flat at the last price)', () => {
+    const w = downtime();
+    const t1 = buy(NOW + 1 * MIN, 1_000_000n, 2_000_000n, 'f1');
+    const t2 = buy(NOW + 11 * MIN, 1_000_000n, 3_000_000n, 'f2');
+    w.feed(t1[0], t1[1]);
+    w.feed(t2[0], t2[1]);
+    // A trade dated before the saved bar's period and one after the restore are not the downtime's.
+    const early = buy(NOW - 10 * MIN, 1_000_000n, 9_000_000n, 'f0');
+    w.feed(early[0], early[1]);
+    // The catch-up's opening gap is not its close; nothing merges yet.
+    w.feed(...close('gap'));
+    expect(w.strategy.barsOf(MINT).map((b) => b.startMs)).toEqual([SAVED_BAR.startMs]);
+    w.feed(...close('resume'));
+    const bars = w.strategy.barsOf(MINT);
+    const BAR = strategyConfig(startSession(TRIAL_POLICY).policy, FILL_CONFIG, RESEARCH_CONFIG).barMs;
+    // Every period from the saved bar's to the restore's: contiguous, as the ATR needs.
+    expect(bars.map((b) => b.startMs)).toEqual(Array.from({ length: (25 * MIN) / BAR }, (_, i) => SAVED_BAR.startMs + i * BAR));
+    const at = (ms: number) => bars.find((x) => x.startMs === Math.floor(ms / BAR) * BAR)!;
+    // A trade's period holds its prices before and after; a quiet period is flat at the last close before it.
+    const p1 = at(NOW + 1 * MIN);
+    expect(p1.high > p1.low).toBe(true);
+    expect(at(NOW - 1 * MIN)).toEqual({ startMs: Math.floor((NOW - MIN) / BAR) * BAR, high: SAVED_BAR.close, low: SAVED_BAR.close, close: SAVED_BAR.close });
+    const quiet = at(NOW + 6 * MIN);
+    expect([quiet.high, quiet.low, quiet.close]).toEqual([p1.close, p1.close, p1.close]);
+    expect(at(NOW + 19 * MIN).close).toBe(at(NOW + 11 * MIN).close);
+    expect(at(NOW + 11 * MIN).close > p1.close).toBe(true);
+    expect(bars[0]).toEqual(SAVED_BAR);
+  });
+
+  it.each([
+    ['a lossy close (a bounded gap)', (w: ReturnType<typeof downtime>) => w.feed(...close('gap', SLOT))],
+    ['trades out of order', (w: ReturnType<typeof downtime>) => {
+      const late = buy(NOW + 2 * MIN, 1_000_000n, 2_500_000n, 'f3');
+      w.feed(late[0], late[1]);
+      w.feed(...close('resume'));
+    }],
+  ])('after %s the downtime\'s bars stay unknown: only the saved bar, never a guess', (_, end) => {
+    const w = downtime();
+    const t = buy(NOW + 11 * MIN, 1_000_000n, 3_000_000n, 'f2');
+    w.feed(t[0], t[1]);
+    end(w);
+    w.feed(...close('resume'));
+    expect(w.strategy.barsOf(MINT)).toEqual([SAVED_BAR]);
   });
 
   it('restores REC-1\'s tail watches: a live one keeps its pool watched, an ended one is dropped, past the cap logged', () => {

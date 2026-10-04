@@ -1436,7 +1436,7 @@ Built to the supervisor's revised spec and the consensus rulings that followed i
 - **2026-10-04 · What a restart still resets** (in memory only; each named so the qualifying run's restart drills cannot blank a gate silently):
   - Creates coverage (H14): continuous only when the downtime fill completes within 90 s; otherwise a lossy gap restarts the 14 days (PERSIST-1, WORKER-1e).
   - Graduates whose survival mark falls inside the downtime (`producer.#pending`): never measured, so those days hold fewer samples.
-  - Candidates (`strategy.#cands`) and REC-1's tail watches (`strategy.#tail`): kept since RESTART-KEEP (below), with the candidates' price bars. Still reset: the pool trade state the gates read, until S0-ZERO's fill from the migration slot covers the pool.
+  - Candidates (`strategy.#cands`) and REC-1's tail watches (`strategy.#tail`): kept since RESTART-KEEP (below), with the candidates' price bars. The pool's trade state comes back through S0-ZERO's catch-up from the saved migration slot.
   - Candles and pool trade state (`producer.#books`, `#reserves`, `#chains`, `#streams`): rebuilt from live events; pool trade streams get a restart gap and FILL-2's top-up; until it closes, H5/H11 and held pool facts are flagged.
   - Insider and funder reads (`producer.#funders`, `#walletMints`, `#insidersSeen`): read again on demand (one mint-history read per candidate).
   - SOL/USD (`producer.#sol`): re-read at start over the kept window (27 h), so the regime's SOL change is known within one read.
@@ -1616,10 +1616,13 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - **Intent ids.** An entry's try number is past both the book's entry intents for the mint and the saved `tries`, so a restart never repeats an intent id.
   - **One budget object.** `main.ts` loads the fill budget once and shares it between the seed and these reads, so one never overwrites the other's spend.
 - **2026-10-05 · Full B rejected.** Rediscovering 240 min of migrations on every start would pay for coins the saved list already holds, and busy pools' fills hit the 10,000-signature page cap. A covers the candidates held at the save; B over the downtime covers only what migrated while the worker was down.
-- **2026-10-05 · Left to S0-ZERO (1), not built here.** The FILL-2 wiring (`WatchOptions.fill` for first-subscribe and reconnect or restart gaps) is S0-ZERO's. Today `fillTradeGaps` and `ingestingFill` are called only by tests. Until that lands, a restored candidate's pool trade stream starts at the restart and H11 rejects it: no gate is loosened. The saved `migrationSlot` is what that fill starts from.
-- **2026-10-05 · Still reset (named for the restart drills).**
-  - The ATR stop needs 14 contiguous 5-minute bars. The bars are saved, but a downtime that spans a bar boundary breaks the run, so the entry waits up to 70 min of fresh bars, inside the 60–240 min window. Rebuilding bars from the filled trades would close this; not built (follow-up).
-- **2026-10-05 · Evidence.** `packages/worker/test/restart-keep.test.ts`, 19 tests:
+- **2026-10-05 · The pool's trades from the migration (with S0-ZERO, #166).** The restore puts each candidate's saved migration slot into S0-ZERO's `#migrationSlot`, so the restored pool is watched with `coverFrom` at its migration. Its catch-up fill then reads the pool from its creation, which H11 needs; without the saved slot every restored candidate would reject as H16 `gap` (S0-ZERO builder's finding). The candidate's own copy of the slot is gone; the map is what is saved.
+- **2026-10-05 · The downtime's price bars, from the filled trades (supervisor ruling: blocking).** The entry's ATR stop needs a contiguous run of 14 bars (U2: 1-minute bars, so 14 minutes). The saved bars end at the save, so after a restart the run broke and the entry waited 14 fresh minutes, inside the 60–240 min window. (An earlier note here said 70 minutes; that was U1's 5-minute bars, not S0's U2.)
+  - The restore marks each candidate's downtime, from its saved last bar's period (or its migration) to the restore.
+  - The catch-up releases the pool's trades oldest first. Each one inside the downtime adds its prices before and after it to its period's bar, computed as FACTS-1's candles do: the event's reserves before the trade, the reserves after it from the amounts, the virtual quote included, deduplicated.
+  - When the catch-up closes complete (`resume`), the rebuilt bars are merged in. A period with no trade is flat at the last close before it, because a complete fill shows that nothing traded in it. The saved last bar takes the trades after the save; a bar made by live samples after the restart keeps its own close.
+  - After a lossy close (a bounded gap), trades out of order, or a trade without its reserves, the downtime's bars stay unknown. The ATR then waits for a fresh run; a bar is never guessed.
+- **2026-10-05 · Evidence.** `packages/worker/test/restart-keep.test.ts`, 22 tests:
   - the saved shape;
   - a restart restores the candidate, reads its migration and create again, and evaluates it once its window opens;
   - the strategy refuses lists dated after the restore or malformed;
@@ -1629,7 +1632,9 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - the downtime read asks the migration authority from the saved slot;
   - a mainnet migration during the downtime is read with its curve completion and shortlisted;
   - tail watches restored (a live one watched, an ended one dropped without taking a place under the cap, the cap logged, a malformed list refused) and saved again after a restart;
+  - a restored pool is watched from its saved migration slot (strategy and worker);
+  - the downtime's bars rebuilt from filled trades on a complete close, contiguous, with quiet periods flat; none after a lossy close or trades out of order;
   - discarded files;
   - an older file loads.
 
-  Hand mutants, each killed: 27 across the strategy, worker and state (no save, no restore, tries from the book only, each dated-after and malformed check, bars or tries not restored, the migration signature not noted, restored transactions not read, the lookup taking the newest signature, one page over the cap, no refund, no lookup at restore, no downtime read, saved signatures not reseeded, no load check, no duplicate check, no curve read, records not ingested, credits not counted; tails not saved, not restored, not in the restore fact, ended kept, no cap, malformed accepted).
+  Hand mutants, each killed: 37 across the strategy, worker and state (no save, no restore, tries from the book only, each dated-after and malformed check, bars or tries not restored, the migration signature not noted, restored transactions not read, the lookup taking the newest signature, one page over the cap, no refund, no lookup at restore, no downtime read, saved signatures not reseeded, no load check, no duplicate check, no curve read, records not ingested, credits not counted; tails not saved, not restored, not in the restore fact, ended kept, no cap, malformed accepted; the migration slot not given to the catch-up; bars: no merge, a lossy close merged, broken ignored, the opening gap taken as the close, no flat period, out of order accepted, a trade before the downtime taken, no downtime marked, the before-trade price ignored).
