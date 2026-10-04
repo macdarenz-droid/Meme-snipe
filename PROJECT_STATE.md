@@ -18,7 +18,7 @@ Wave D, 4 Oct about 7:45 PM Melbourne. The project is being handed to a new Clau
 - **External audit (Report 1):** real defects were found in paper accounting, latches, stale snapshots, recovery, research and statistics. Every finding is a card (HANDOVER §4; DECISIONS "External audit 1"). The verdict stands: paper and research mode only.
 - **History:** Helius free only (about 2–3 practice days a month alongside the live worker). 09-21 is downloading (run 37185822426, about 14 h). The proof needs about 50 practice days plus 28 holdout days, which is impossible on free alone; the paid month (about US$94) waits for the owner's decision after seeing a finished product.
 - **Research:** RES-4 (cost math; break-even 4.4–5.0% at $2 and 2.2–3.1% at $20 per trade, as scored) is in review. RES-5's selection failed calibration and is being fixed. An early look on free days reports descriptive numbers only (SPA needs at least 10 days).
-- **Owner's estimate:** under about 2% chance of proof today (judgement). No deposit before all six pre-funding items pass.
+- **Supervisor's estimate (given to the owner):** under about 2% chance of proof today (judgement). No deposit before all six pre-funding items pass.
 
 ## Done
 - Owner rules in `AGENTS.md` and `CLAUDE.md`; the starting brief and the research in `docs/`.
@@ -37,7 +37,7 @@ Builders run as separate sessions; a fresh reviewer session checks each PR; the 
 | Online | deployed (7d5e203, run 37189025276); the owner confirms Online | waiting for the owner's check | now |
 | Audit fixes | PAPER-1, RISK-LATCH #124, RISK-PARTIAL, WATCH-1c #121 / 1d, EXIT-1g #128 / 1h, PERSIST-2 #125 / 3, EXIT-ROUTE #130, WORKER-ORDER #123, STATS-1g #129, OPS-GATE, PNPM-CLAIMS, SEC-1, DATA-4 #127, DATA-5 | building or in review | about 2–3 days (±1) |
 | BT-2 #41 | audit B1–B5 and S2, then RES-4 (b)/(c) under the stats rulings; early-look runner ready | building and in review | early look about Tue 6 – Wed 7 Oct |
-| Historical data | 09-21 free day running; DATA-4 ledger after it | free plan only (owner) | 09-21 about Mon 8 AM; more days as credits allow |
+| Historical data | 09-21 free day running; DATA-4 ledger after it | free plan only (owner); about 2–3 free practice days a month alongside the live worker | 09-21 about Mon 8 AM; more days as credits allow |
 
 ## Follow-ups
 - Android: cover a stop between the two asset renames, the "fixed name plus .prev" state, and a failed final delete (APP-1b review notes).
@@ -52,7 +52,7 @@ Builders run as separate sessions; a fresh reviewer session checks each PR; the 
 - WORKER-1 restart drill: rebuild the exit attempt budget from the book, and restore trail, peak, flatMet and partials (save per step or replay as-of); a reset trail is a looser stop (EXIT-1 review). Store the universe with the position at entry, so a restored position rebuilds its EntryPlan without a default (CFG-2 review).
 - OPS-1d: install RUN-1's zeroed-dryrun units and runner flags through code updates, hold deploys during a qualifying run, and give the VPS evidence a path into the repo.
 - Runbook (RUN-1/WORKER-1): a v1 ledger must be opened once by a writer (migrates to 2) before `ledger:replay` or `openReader`.
-- Data: the owner declined asking Triton for a faster download (4 Oct); the scan stays at 80 MB/s on one lane. Since then the archive refused all requests for 5 h; if that continues, the owner is asked to request bucket access or limits (about access, not speed).
+- Data: the owner first declined asking Triton for a faster download (about 3:50 AM, 4 Oct), then emailed Triton at 3:55 PM after the archive started refusing our scanner. ARCHIVE-CHECK asks once every 3 hours (one 64-byte request, our real User-Agent) and resumes the scan at 80 MB/s on one lane if served. Triton's OK is still needed to publish derived day files.
 - Owner, before live (RISK-1): worst-case cost per trade C ≈ $0.79 after EXIT-1's retry budget; $5 entries stay blocked until week-start equity reaches $29; new entries stop at about 84% of the peak; the daily and weekly loss count an open loss again each day (stricter; switching to marked boundaries needs the owner's yes).
 - Owner, before live (third opinion): R8 "5 losses in any 20" pauses 79–97% of simulated paths within 8–11 trades, good strategy or bad; choose keep, or a threshold calibrated on practice data and validated separately (never the holdout). With C at about 40% of a $2 trade, one loss of about $0.70 ends the day.
 - Live regime volume: resolved without a paid service. Live reads our own published day assets with a D−3 lag (FACTS-1d, DATA-1c).
@@ -61,12 +61,25 @@ Builders run as separate sessions; a fresh reviewer session checks each PR; the 
 - Workflows: pinned actions target Node 20 and run forced on Node 24; re-pin when workflows are next touched (supervisor, `.github`).
 - RUN-1b: a negative quoteAgeSlots passes the decimal check (display only).
 - TX-1 → SIGN-1: maxSolOut needs about 1.5M lamports of PumpSwap headroom; the policy charges Token-2022 ATAs at 170 bytes.
+- Holdout days 10-02 to 10-19 have no download path yet: `data-scan.yml` and `publish-day.sh` refuse days from 10-02 (B5), and ARCHIVE-CHECK stops at 10-01; no card covers it (DATA-5 covers volume only).
+- Timing: the qualifying run needs 14 days of continuous creates coverage (about 18 Oct from a 4 Oct start; DECISIONS "Creates coverage across restarts"); from about 15 Oct a full H14 look-back can't be seeded on the free plan (SEED-1 cost).
+- BT-3: re-run the synthetic evidence (`docs/evidence/bt3/synthetic/`) on fills-3 code after #114 merges.
+- EXIT-1h: after WORKER-ORDER #123 merges, add a crash-image test that the entry seed is on disk before the fill's ledger commit.
+- Worker: #131's first deploy flattens a position held across it (its saved exit predates the new fields).
+- Data: AUD/USD series for AUD reporting; a day-file loader for the graduates seed (a fresh host needs about 15 days for survival); a minimum of graduates per day for the survival median (30 proposed, not built).
+- BT-2: the 09-21 funnel count and the funding-backfill credit estimate (report, don't run the backfill); RES-3's `--registry` takes the store's `registry` section; pin the registry read by `readHoldoutStore` at G1's call site; refuse a freeze on a pre-registration hash mismatch; a new `--out` starts an empty trial log.
+- Stats: reword `G3Input.dryRunHours`; the B5 before/after report card keeps the report file and its hash in the repo; hash the G3 registration into the worker's run journal at start.
+- Watch: a guard on a measured p99 slot time (278 ms measured, 400 ms kept); option a2 (snapshot outside the feed horizon) only if the dry run shows the 0.7 s window matters.
+- Host: measure the real worker's RSS in the first dry-run hours and tune `SMOKE_MEMORY_MAX` (280M); the worker API's `/health` has no `evidence` list (an API card).
+- API-1: the per-entry daily-loss room can refuse every candidate while the card reads "Entries: On"; "Exits: Ready" needs its own live condition.
+- Ledger: an orphan fill on an abandoned entry would double count its failed fees (can't happen in paper; not guarded).
+- Tests: the runner tabletop test ("host loss and chain rebuild") failed once under full-suite load; watch it.
 - Repo tidy-up: branch `claude/ledger-replay-schema-v1` duplicates PR #23's 611a4bb; the safety check refused its deletion, so the owner may delete it.
 
 ## Owner setup
 - Hosting approved by the owner (2026-10-03): about US$6/month, Vultr High Performance in Frankfurt; Hetzner as backup.
 - API keys are in GitHub repository secrets and verified: `HELIUS_API_KEY`, `ALCHEMY_API_KEY`, `JUPITER_API_KEY`, `TELEGRAM_BOT_TOKEN` (bot @Zeroed_alerts_bot). Never in chat or in the repo.
-- Vultr: server `zeroed` running (vhp-1c-1gb, Frankfurt, Ubuntu 24.04.5, no backups, US$6/month), created 2026-10-03. Tailscale key expiry disabled for it by the owner (4 Oct, about 4:27 PM). Set up on 2026-10-04: keys stored (4), Telegram paired, signer active. Re-installed by the owner at pin e28788a (OPS-1g) on 4 Oct, with Tailscale (HTTPS on, `tailscale serve` to the tailnet only) and the holdout-registry ruleset, all done at 2:31 PM. Host code changes arrive through code-only Deploy runs (the supervisor may run them; `DEPLOY_CODE` stays deleted) and the server's update gate. The app shows "Server error" until the real worker runs.
+- Vultr: server `zeroed` running (vhp-1c-1gb, Frankfurt, Ubuntu 24.04.5, no backups, US$6/month), created 2026-10-03. Tailscale key expiry disabled for it by the owner (4 Oct, about 4:27 PM). Set up on 2026-10-04: keys stored (4), Telegram paired, signer active. Re-installed by the owner at pin e28788a (OPS-1g) on 4 Oct, with Tailscale (HTTPS on, `tailscale serve` to the tailnet only) and the holdout-registry ruleset, all done at 2:31 PM. Host code changes arrive through code-only Deploy runs (the supervisor may run them; `DEPLOY_CODE` stays deleted) and the server's update gate. `ops/host-config.json` says `"worker": "release"` since SWITCH-1, so the host runs the release's own worker after a code-only Deploy; the app shows "Server error" until it runs.
 - Cloudflare: Account API token (Edit Cloudflare Workers template, 1-year expiry) is in GitHub secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`, verified active from CI. Renew before 2027-10-03.
 - Domain: none, and none will be bought (owner rule in CLAUDE.md). Watchdog on the free `workers.dev` address; live dashboard access later through Tailscale's free personal plan.
 - Telegram bot display name: change with /setname in BotFather (optional).
