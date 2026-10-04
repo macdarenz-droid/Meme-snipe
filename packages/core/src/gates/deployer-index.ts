@@ -36,7 +36,8 @@ export const createOf = (v: unknown): { readonly mint: string; readonly creator:
   return Number.isSafeInteger(createdAtMs) ? { mint: d['mint'], creator: d['creator'], createdAtMs } : null;
 };
 
-interface Known {
+/** A label as the index holds it: when it became known, and the rule that made it (null when the label named none). */
+export interface Known {
   readonly at: Moment;
   readonly kind: string | null;
 }
@@ -212,7 +213,7 @@ export class DeployerIndex {
     const first = this.#first === null ? null : this.#first.receivedAt >= retainFromMs ? this.#first : { ...this.#first, receivedAt: retainFromMs };
     return {
       asOf, first, last: this.#last, seeded: this.#seeded,
-      mints: keep(this.#mints, (t) => t), rugs: keep(this.#rugs, (m) => m.receivedAt), unjudged: keep(this.#unjudged, (m) => m.receivedAt),
+      mints: keep(this.#mints, (t) => t), rugs: keep(this.#rugs, (k) => k.at.receivedAt), unjudged: keep(this.#unjudged, (k) => k.at.receivedAt),
       createVias: [...this.#createVias].sort(),
       lost: [...this.#lost].filter(([, l]) => l.atMs >= retainFromMs).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
     };
@@ -249,8 +250,16 @@ export class DeployerIndex {
       return v as number;
     };
     pairs(s.mints, idx.#mints, ms, (t) => t);
-    pairs(s.rugs, idx.#rugs, (v) => moment(v)!, (m) => m.receivedAt);
-    pairs(s.unjudged, idx.#unjudged, (v) => moment(v)!, (m) => m.receivedAt);
+    // A label keeps its kind exactly: a string, or null for a label that named no rule (RUG-1c).
+    const known = (v: unknown): Known => {
+      if (typeof v !== 'object' || v === null) throw new RangeError('bad label');
+      const o = v as Record<string, unknown>;
+      const at = moment(o['at']);
+      if (at === null || (o['kind'] !== null && typeof o['kind'] !== 'string')) throw new RangeError('bad label');
+      return { at, kind: o['kind'] as string | null };
+    };
+    pairs(s.rugs, idx.#rugs, known, (k) => k.at.receivedAt);
+    pairs(s.unjudged, idx.#unjudged, known, (k) => k.at.receivedAt);
     if (!Array.isArray(s.createVias) || !s.createVias.every((v) => typeof v === 'string')) throw new RangeError('bad vias');
     for (const v of s.createVias) idx.#createVias.add(v);
     if (!Array.isArray(s.lost)) throw new RangeError('bad lost table');
@@ -279,8 +288,8 @@ export interface DeployerIndexState {
   readonly last: Moment | null;
   readonly seeded: boolean;
   readonly mints: readonly (readonly [string, readonly (readonly [string, number])[]])[];
-  readonly rugs: readonly (readonly [string, readonly (readonly [string, Moment])[]])[];
-  readonly unjudged: readonly (readonly [string, readonly (readonly [string, Moment])[]])[];
+  readonly rugs: readonly (readonly [string, readonly (readonly [string, Known])[]])[];
+  readonly unjudged: readonly (readonly [string, readonly (readonly [string, Known])[]])[];
   readonly createVias: readonly string[];
   readonly lost: readonly (readonly [string, { readonly atMs: number; readonly via: string }])[];
 }

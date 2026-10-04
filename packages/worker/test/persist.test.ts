@@ -198,6 +198,44 @@ describe('PERSIST-1 review: a restore never claims coverage it did not have', ()
   });
 });
 
+describe('PERSIST-1: label kinds survive save and restore (RUG-1c)', () => {
+  it('each rug label kind, a label without one, and an unjudged mint come back exactly', () => {
+    const { index, labeller } = liveProcess();
+    const at = (k: number) => off(452_920_000n + BigInt(k), SAVED_AT.receivedAt - 60 * 60_000 + k);
+    index.observe({ kind: 'market', id: 'rug:R1', key: 'rug:R1', moment: at(1), value: { mint: 'R1', creator: 'Dev1', rule: 'creator-dump', atMs: 1, slot: 1n, version: 'rugs-1', detail: 'x' } });
+    index.observe({ kind: 'market', id: 'rug:R2', key: 'rug:R2', moment: at(2), value: { mint: 'R2', creator: 'Dev1', rule: 'collapse', atMs: 2, slot: 2n, version: 'rugs-1', detail: 'y' } });
+    index.observe({ kind: 'market', id: 'rug:R3', key: 'rug:R3', moment: at(3), value: { mint: 'R3', creator: 'Dev1' } });
+    const before = index.factFor('Dev1', NOW, 0);
+    expect(before.rugs.map((r) => [r.mint, r.kind])).toEqual([['R1', 'creator-dump'], ['R2', 'collapse'], ['R3', undefined]]);
+    expect(before.unjudged?.map((u) => u.mint)).toEqual(['M2']);
+    const path = join(tmp(), 'state.json');
+    saveState(path, { asOf: SAVED_AT, index: index.snapshot(SAVED_AT), labeller: labeller.snapshot(), coverage: COVERAGE });
+    const r = loadState(path, RUG_CONFIG);
+    if (!r.ok) throw new Error(r.reason);
+    expect(r.index.factFor('Dev1', NOW, 0)).toEqual(before);
+    expect(r.index.snapshot(SAVED_AT)).toEqual(index.snapshot(SAVED_AT));
+    // A kind that is not a string is refused, so the file is discarded.
+    const s = index.snapshot(SAVED_AT);
+    const bad = { ...s, rugs: s.rugs.map(([c, xs]) => [c, xs.map(([m, k]) => [m, { ...k, kind: 7 }])]) } as unknown as typeof s;
+    expect(() => DeployerIndex.restore(bad)).toThrow();
+  });
+
+  it('the labeller\'s peak venue state survives save and restore exactly; a bad one discards the file', () => {
+    const { labeller } = liveProcess();
+    const st = labeller.snapshot();
+    const peakState = { venue: 'pool' as const, quote: 85_000_000_000n, base: 206_900_000_000_000n, feeBps: 30n, real: 84_000_000_000n };
+    const withPeak = { ...st, launches: st.launches.map((l, k) => (k === 0 ? { ...l, peak: 85_000_000_000n, peakState } : l)) };
+    const path = join(tmp(), 'state.json');
+    saveState(path, savedState({ labeller: withPeak }));
+    const r = loadState(path, RUG_CONFIG);
+    if (!r.ok) throw new Error(r.reason);
+    expect(r.labeller.snapshot()).toEqual(withPeak);
+    expect(r.labeller.snapshot().launches[0]!.peakState).toEqual(peakState);
+    expect(() => RugLabeller.restore(RUG_CONFIG, { ...withPeak, launches: withPeak.launches.map((l) => ({ ...l, peakState: { ...peakState, venue: 'dex' as never } })) }, SAVED_AT)).toThrow(/peak state/);
+    expect(() => RugLabeller.restore(RUG_CONFIG, { ...withPeak, launches: withPeak.launches.map((l) => ({ ...l, peakState: { ...peakState, quote: -1n } })) }, SAVED_AT)).toThrow(/peak quote/);
+  });
+});
+
 describe('PERSIST-1 discards a bad file whole', () => {
   const rewrite = (path: string, edit: (payload: Record<string, unknown>) => void) => {
     const outer = JSON.parse(readFileSync(path, 'utf8')) as { version: number; sha256: string; payload: string };
@@ -220,7 +258,7 @@ describe('PERSIST-1 discards a bad file whole', () => {
     const version = fresh();
     writeFileSync(version, readFileSync(version, 'utf8').replace(`"version":${STATE_VERSION}`, '"version":99'));
     expect(loadState(version, RUG_CONFIG)).toMatchObject({ ok: false, reason: expect.stringContaining('version 99') });
-    expect(loadState(fresh(), { ...RUG_CONFIG, version: 'rugs-2' })).toMatchObject({ ok: false, reason: expect.stringContaining('rugs-2') });
+    expect(loadState(fresh(), { ...RUG_CONFIG, version: `${RUG_CONFIG.version}-next` })).toMatchObject({ ok: false, reason: expect.stringContaining(`${RUG_CONFIG.version}-next`) });
   });
 
   it('a well-formed file that claims anything after its moment is discarded', () => {

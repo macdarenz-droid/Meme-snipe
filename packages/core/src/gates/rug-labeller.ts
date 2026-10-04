@@ -318,7 +318,7 @@ export class RugLabeller {
       // Arrival order is kept: the drop of old launches walks the table from the oldest.
       launches: [...this.#launches.values()].map((l) => ({
         mint: l.mint, creator: l.creator, sellers: [...l.sellers].sort(), createdAtMs: l.createdAtMs, pool: l.pool, supply: l.supply,
-        sold: l.sold, sales: [...l.sales].sort(), peak: l.peak,
+        sold: l.sold, sales: [...l.sales].sort(), peak: l.peak, peakState: l.peakState,
       })),
       pools: byKey([...this.#pools], ([p]) => p),
       labelled: [...this.#labelled].sort(),
@@ -337,6 +337,12 @@ export class RugLabeller {
       if (typeof v !== 'bigint' || v < 0n) throw new RangeError(`bad ${what}`);
       return v;
     };
+    // The venue state at the peak (RUG-1c): it prices a later collapse's materiality, so it comes back exactly or not at all.
+    const venueState = (v: unknown): VenueState | null => {
+      if (v === null || v === undefined) return null;
+      if (!isObj(v) || (v['venue'] !== 'curve' && v['venue'] !== 'pool')) throw new RangeError('bad peak state');
+      return { venue: v['venue'] as Venue, quote: nat(v['quote'], 'peak quote'), base: nat(v['base'], 'peak base'), feeBps: nat(v['feeBps'], 'peak fee'), real: nat(v['real'], 'peak real') };
+    };
     const strs = (v: unknown, what: string): string[] => {
       if (!Array.isArray(v) || !v.every((x) => typeof x === 'string')) throw new RangeError(`bad ${what}`);
       return v as string[];
@@ -349,7 +355,7 @@ export class RugLabeller {
       r.#launches.set(l['mint'], {
         mint: l['mint'], creator: l['creator'], sellers: new Set(strs(l['sellers'], 'sellers')), createdAtMs: l['createdAtMs'] as number,
         pool: l['pool'] as string | null, supply: l['supply'] === null ? null : nat(l['supply'], 'supply'), sold: nat(l['sold'], 'sold'),
-        sales: new Set(strs(l['sales'], 'sales')), peak: nat(l['peak'], 'peak'),
+        sales: new Set(strs(l['sales'], 'sales')), peak: nat(l['peak'], 'peak'), peakState: venueState(l['peakState']),
       });
     }
     if (!Array.isArray(s.pools) || !Array.isArray(s.unjudged)) throw new RangeError('bad tables');
@@ -372,6 +378,7 @@ export interface RugLabellerState {
   readonly launches: readonly {
     readonly mint: string; readonly creator: string; readonly sellers: readonly string[]; readonly createdAtMs: number;
     readonly pool: string | null; readonly supply: bigint | null; readonly sold: bigint; readonly sales: readonly string[]; readonly peak: bigint;
+    readonly peakState: VenueState | null;
   }[];
   readonly pools: readonly (readonly [string, string])[];
   readonly labelled: readonly string[];
