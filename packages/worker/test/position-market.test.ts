@@ -264,4 +264,35 @@ describe('a held position priced from its pool\'s swap stream (POS-1)', () => {
     expect(position(h)).toBeUndefined();
     await h.worker.stop();
   });
+
+  it('an entry evaluated on a quote nearly at the age limit is cancelled at the send once it is past it, though a carry is present (WATCH-1c risk review)', async () => {
+    const h = makeWorker({ watchRead: () => new Promise(() => undefined) });
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    const m = await passingMarket(h, { omit: [xcheckKey(MINT)] });
+    const readSlot = h.worker.feed.releasedThrough;
+    m.tradesStart(readSlot - 100n);
+    m.accountsRead(readSlot);
+    // From now every pool fact is current by slot but carries one receipt time: the pool's state as of then.
+    // The pool fact carries the chain read's reserves, the state its carry proves unchanged.
+    const raw = h.worker.poolFact(MINT) as { obs: Record<string, unknown>; pool: Record<string, unknown> };
+    const cs = m.chainState;
+    const template = { ...raw, baseVault: cs.baseReserve, quoteVault: cs.quoteVault, pool: { ...raw.pool, virtualQuoteReserves: cs.virtualQuoteReserves } };
+    const at = m.now;
+    // Held back by a missing cross-check for the first second.
+    const hold = 600;
+    const tick = () => {
+      const omit = m.now - at < hold ? [xcheckKey(MINT)] : [];
+      m.omit = new Set([poolKey(MINT), ...omit]);
+      m.pool();
+      m.omit = new Set(omit);
+      m.fact(poolKey(MINT), { ...template, obs: { ...template.obs, slot: h.worker.feed.openSlot - 1n, receivedAt: at } });
+    };
+    await until(m, () => decisions(h).some((r) => r[0] === 'entry cancelled' || r[0] === 'submit entry (paper)' || r[3]?.startsWith('risk R13') === true), 20_000, tick);
+    // Evaluated and approved on that quote while it was within the age limit; by the send, a decision later, it is past
+    // it: cancelled, though the chain's carry keeps the market fresh (a carried send would have gone out).
+    expect(decisions(h).slice(-3).map((r) => r[0])).toEqual(['gates passed', 'risk approved', 'entry cancelled']);
+    expect(decisions(h).at(-1)![2]).toBe('pool state is stale');
+    expect(position(h)?.status ?? 'none').not.toBe('open');
+    await h.worker.stop();
+  });
 });
