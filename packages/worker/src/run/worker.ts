@@ -7,7 +7,7 @@
 // `open_intents` → seed the deployer index (SEED-1's hook) → start the live sources → trade. Nothing enters before the
 // reconcile line; a reconcile that cannot settle every intent exits 3.
 import { randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { journalLines, placeBookingsAt } from './booked.ts';
 import type { Server } from 'node:http';
 import { join } from 'node:path';
@@ -16,19 +16,19 @@ import { compareEvents, compareMoments, Engine, type LogRecord, type MarketEvent
 import { Ledger, openLedger } from '../../../core/src/ledger/index.ts';
 import type { Book, BookEvent } from '../../../core/src/lifecycle/index.ts';
 import { isTerminal, isUnresolved } from '../../../core/src/lifecycle/index.ts';
-import { attemptFee, type FillNetwork, type FillScenario } from '../../../core/src/fills/index.ts';
-import type { MicroUsd } from '../../../core/src/units/index.ts';
+import { attemptFee, type FillNetwork, type FillScenario, lateFillOf } from '../../../core/src/fills/index.ts';
+import { type MicroUsd, microUsdToLamports, mulDiv } from '../../../core/src/units/index.ts';
 import { EXIT, LOOKUP_BOUNDS_MS, STATE_FILES, type FeedHealth, type Health, type JournalKind, type QuotaStatus, type RecoveredFields } from '../../../runner/src/contract.ts';
 import type { DryRunRecord } from '../dryrun/index.ts';
 import { NO_UNIVERSE, type SavedGraduates, resolveUniverse, sellOnlyReason } from '../engine/strategy.ts';
 import { RAW } from '../../../core/src/facts/raw.ts';
 import { GRADUATES_SEED_KEY } from '../../../core/src/facts/producer.ts';
-import { ACCOUNT_KEY, HALT_KEY, LiveStrategy, POOL_PREFIX, RESTORE_KEY, SEED_KEY, SEEDING, SHORTLIST, SNAPSHOT_PREFIX, SOL_PRICE_KEY, type SnapshotFact, type StrategyConfig, type StrategyDeps, TRIP_PREFIX, parseSnapshotFact, snapshotKey, snapshotWins } from '../engine/strategy.ts';
+import { ACCOUNT_KEY, HALT_KEY, LiveStrategy, POOL_PREFIX, RESTORE_KEY, SEED_KEY, SEEDING, SHORTLIST, SNAPSHOT_PREFIX, SOL_PRICE_KEY, type SnapshotFact, type StrategyConfig, type StrategyDeps, type SavedStateRef, TRIP_PREFIX, parseSnapshotFact, snapshotKey, snapshotWins } from '../engine/strategy.ts';
 import { SLOT_MS, watchTimingProblem } from './config.ts';
 import { PositionWatch, type WatchRead } from './watch.ts';
 import { DEFAULT_LIVE_FEED, type Frame, type HttpClient, LiveFeed, type Release, seqId } from '../providers/index.ts';
 import type { Timers } from '../scheduler/timers.ts';
-import { PaperAccount, accountFile } from './account.ts';
+import { PaperAccount, type PaperLegs, accountFile } from './account.ts';
 import type { WorkerConfig } from './config.ts';
 import { Desk, FILL_RATE_UNKNOWN, journaledFillKeys, lineRate, lineReasons, openIntents } from './desk.ts';
 import { DeployerStore, liveWatchToClose, type SavedDeployers } from './deployer-store.ts';
@@ -41,29 +41,32 @@ import type { FactContext, FactSource } from './facts.ts';
 import { engineFeed, type EngineFeed } from './engine-feed.ts';
 import { startHealthServer } from './health.ts';
 import { type HeartbeatPosition, heartbeatBody, sendHeartbeat } from './heartbeat.ts';
-import { type HandledCommand, type OpenStops, ackedOf, type commandsOf, handleCommand, keepHandled, openStops, reviewBlock } from './owner-review.ts';
+import { OFFER_KEEP_MAX, OFFER_KEEP_MS, type HandledCommand, type OpenStops, ackedOf, type commandsOf, handleCommand, keepHandled, openStops, reviewBlock, withOverrideTag } from './owner-review.ts';
 import { Summarizer, nextSummaryDelay } from './summary.ts';
 import { jsonText } from './json.ts';
 import { Journal } from './journal.ts';
 import { type PaperMarket, type PaperState, PaperWorld, type SimLeg } from './paper-world.ts';
 import { Recorder, sealLeftovers } from './recorder.ts';
 import { entryPrice, openPositionsHealth } from './open-positions.ts';
-import { type RiskInput, type RiskSnapshot, evaluateExit, riskSnapshot } from '../../../core/src/risk/index.ts';
+import { type RiskInput, type RiskSnapshot, dayLossLine, evaluateExit, riskSnapshot } from '../../../core/src/risk/index.ts';
 import { latchable, markSettings, riskAccount } from '../engine/marks.ts';
-import type { DeployerIndexState, RugLabellerState } from '../../../core/src/gates/index.ts';
-import { loadState, saveState } from '../persist/index.ts';
+import type { DeployerIndex, DeployerIndexState, RugLabeller, RugLabellerState } from '../../../core/src/gates/index.ts';
+import { PERSIST_FILE, fileSha256, loadState, saveState } from '../persist/index.ts';
+import type { CreateLookup } from './sources.ts';
 
 /** PERSIST-1's saved deployer state in the worker's state dir, and how often it is written. */
-export const PERSIST_FILE = 'deployer-state.json';
+export { PERSIST_FILE } from '../persist/index.ts';
 export const PERSIST_EVERY_MS = 5 * 60_000;
 import { type Control, NO_CONTROL, StateFile, controlFile, exitsFile, seedsFile, exposedFile, NO_EXPOSED } from './state.ts';
-import { type PoolFact, S0_DIAGNOSTIC_PARTS, parsePool } from '../../../core/src/gates/index.ts';
+import { LOG_CREATE_PREFIX, type PoolFact, S0_DIAGNOSTIC_PARTS, TX_CREATE_PREFIX, parsePool } from '../../../core/src/gates/index.ts';
 import type { ExecStats } from '../../../core/src/facts/raw.ts';
 
 /** POS-1: a pool fact flagged beyond backfill or dedupe (a stale swap stream) is never priced from. */
 const flagged = (p: PoolFact): boolean => p.obs.quality.some((q) => q !== 'backfilled' && q !== 'deduplicated');
 import { type PoolFeeContext, effectiveQuoteReserve, poolSell } from '../../../core/src/amm/index.ts';
 
+/** The halt reason while the book holds a late buy's position, which paper does not settle yet (risk ruling on #133). */
+export const LATE_BUY = 'late buy not settled by paper; entries off';
 /** The halt reason while WATCH-1's second price path cannot serve (not configured, or its budget halted). */
 export const SECOND_PATH_UNAVAILABLE = 'second price path unavailable';
 /** The window the paper execution statistics cover (WORKER-1e). */
@@ -122,6 +125,11 @@ export interface WorkerDeps {
    */
   readonly fetchTx: (signature: string, why: 'create' | 'cut-log') => Promise<boolean>;
   /**
+   * CREATE-AFTER-RESTART: looks up a shortlisted mint's create that neither this process nor the saved store holds
+   * (sources.ts `findCreate`, under the fills' daily budget). Without it such a create waits, as before.
+   */
+  readonly findCreate?: (mint: string) => Promise<CreateLookup>;
+  /**
    * SEED-1: the deployer index's seed (first start: days and RPC up to the live creates watch's first slot) or the
    * downtime fill (restart from saved state), built by `buildSeed`. `untilSlot` is null when the live watch did not
    * start in time; the worker then marks the downtime as a gap itself.
@@ -134,6 +142,10 @@ export interface WorkerDeps {
    * every exit, waits for the seed (rehearsal 37148935094: a slow seed held the start for minutes).
    */
   readonly seedMaxMs?: number;
+  /** The most create signatures kept (default `CREATE_SIGS_MAX`; a test passes a small one). */
+  readonly createSigsMax?: number;
+  /** The seed cap when no saved index restores (default `MAX_SEED_CREATES`; a test passes a small one). */
+  readonly maxSeedCreates?: number;
   /** BT-1c's delay samples (the recorder's `delays` table): the confirmed read and the sampled processed watch. */
   readonly delayProbe?: { readonly confirmed: DelayProbeOptions['confirmed']; readonly via: string; readonly everyMs: number };
   /** RUN-1c's quota (free-plan providers, credits since boot by class) and historical-lookup latency counts. */
@@ -200,9 +212,28 @@ interface FeedState {
 }
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+/**
+ * The most saved creates a start seeds the index with when no saved index restores (WORKER-GROW): about three days of
+ * creates, which a boot holds well under MemoryMax (measured: docs/DECISIONS.md, WORKER-GROW G4b). Past it the seed is refused whole.
+ */
+export const MAX_SEED_CREATES = 200_000;
 
 /** Present while the state dir began empty and no full start has journaled its `recovered` line yet. */
 const COLD_START = 'cold_start';
+/** CREATE-AFTER-RESTART: the wait before the one retry of a create lookup stopped by a transient error. */
+export const CREATE_RETRY_MS = 60_000;
+/** A saved create's id, live (`log:<signature>…`) or fetched (`ev:<signature>:…`): its transaction signature. */
+const CREATE_ID = /^(?:log|ev):([1-9A-HJ-NP-Za-km-z]{64,88})(?=[:#]|$)/;
+
+/** The most create signatures a process keeps (CREATE-AFTER-RESTART), oldest forgotten first. */
+export const CREATE_SIGS_MAX = 200_000;
+
+/** A create event's mint and signature (the field, else the id), or null when it is not a create or names neither. */
+const createSigOf = (e: MarketEvent): readonly [string, string] | null => {
+  const mint = e.key.startsWith(LOG_CREATE_PREFIX) ? e.key.slice(LOG_CREATE_PREFIX.length) : e.key.startsWith(TX_CREATE_PREFIX) ? e.key.slice(TX_CREATE_PREFIX.length) : null;
+  const sig = isObj(e.value) && typeof e.value['signature'] === 'string' ? e.value['signature'] : CREATE_ID.exec(e.id)?.[1];
+  return mint !== null && mint !== '' && sig !== undefined ? [mint, sig] : null;
+};
 
 /**
  * The `entry` and `exit` lines of a journal file (none when it is missing); torn or unreadable lines are skipped. The
@@ -248,10 +279,22 @@ export class Worker {
   #lastSlot: bigint | null = null;
   #ticked: bigint | null = null;
   #solPrice: MicroUsd | null = null;
+  /** Whether this process settled at its first SOL price after the reconcile (a stray fee needs a price; PAPER-1). */
+  #pricedSettle = false;
   /** When that price was seen (its fact's `atMs`), for risk's freshness check in the account marks. */
   #solPriceAt: number | null = null;
   /** OWNER-REVIEW: the latest account valuation, for the SOL evidence of the owner's stops. */
   #lastSnapshot: RiskSnapshot | null = null;
+  /** OWNER-REVIEW /override: risk's reason codes on that valuation (the day-level stops open then). */
+  #lastCodes: readonly string[] = [];
+  /** That valuation was fully marked at a fresh SOL price (`latchable`): only then may /override be offered or applied. */
+  #lastLatchable = false;
+  /**
+   * /override offers sent this process (number -> the day loss it showed), newest last, kept for OFFER_KEEP_MS (capped);
+   * a restart forgets them. An offer's number is its heartbeat's time (ms), so one from before a restart never matches
+   * one made after it.
+   */
+  readonly #offers = new Map<number, bigint>();
   /** RISK-FAULT: why risk last could not value the account, while it still cannot (logged once per episode). */
   #valuationFault: string | null = null;
   /** The journal's `entry` and `exit` lines at start (WORKER-ORDER). */
@@ -268,6 +311,10 @@ export class Worker {
   /** Positions open at the last step (WATCH-1 reads once when one opens). */
   #opened = new Set<string>();
   #createSig = new Map<string, string>();
+  /** Mints shortlisted while the seed is being built, with no create signature yet: the downtime fill may bring it. */
+  #createPending: string[] = [];
+  /** Mints whose create this process has looked up (once each). */
+  readonly #createLookups = new Set<string>();
   /** Watches that carry rug coverage (`coverage:rugs:start` vias): a cut log on one is a gap until its transaction is read. */
   #rugVias = new Set<string>();
   #intentAt = new Map<string, number>();
@@ -297,7 +344,9 @@ export class Worker {
   /** The empty slot the reconcile reserved for SEED-1's events (see `#seedIndex`). */
   #reserved: bigint | null = null;
   /** PERSIST-1: the saved index and labeller this process restores (null on a fresh start). */
-  #restored: { readonly asOf: Moment; readonly index: DeployerIndexState; readonly labeller: RugLabellerState } | null = null;
+  #restored: { readonly asOf: Moment; readonly ref: SavedStateRef } | null = null;
+  /** The restored index and labeller, given once to the strategy when it applies the seed that names them. */
+  #handoff: { readonly ref: SavedStateRef; readonly index: DeployerIndex; readonly labeller: RugLabeller } | null = null;
   #lastSaveMs = 0;
   #saveRefused = false;
   #beatSeq = 0;
@@ -351,7 +400,7 @@ export class Worker {
       onFrame: (f) => this.#onFrame(f),
       onRelease: (e, r) => this.#onRelease(e, r),
     });
-    this.#strategy = new LiveStrategy({ session: d.session, rugs: d.rugs, config: d.strategy, ...(d.markedHistory === undefined ? {} : { markedHistory: d.markedHistory }) });
+    this.#strategy = new LiveStrategy({ session: d.session, rugs: d.rugs, config: d.strategy, savedState: (ref) => this.savedStateFor(ref), ...(d.markedHistory === undefined ? {} : { markedHistory: d.markedHistory }) });
     const bookConfig = { maxOpenPositions: d.session.policy.positions.maxOpen };
     const stored = this.#ledger.storedBookEvents(bookConfig);
     // RUN-1c: trades open or in flight when the previous process stopped writing, kept until a full start journals them.
@@ -408,6 +457,10 @@ export class Worker {
       now: () => d.timers.now(),
       file: new StateFile<PaperState>(c.stateDir, 'paper.json', (v) => (isObj(v) && isObj(v['attempts']) ? (v as unknown as PaperState) : null)),
       changed: () => this.#writeOpenIntents(),
+      // A landed failure paid its fee (PAPER-1, M4): the account settles it and risk sees the new snapshot.
+      landedFailed: () => {
+        if (this.#settle()) this.#publishAccount();
+      },
     });
     // FACTS-1b: the engine reads through core's FactFeed (engine-feed.ts); a replay of the recording uses the same.
     this.#facts = engineFeed(this.#feed, d.session.policy, (e) => {
@@ -416,27 +469,69 @@ export class Worker {
     });
     this.#engine = new Engine({ clock: this.#feed.clock, feed: this.#facts.feed, strategy: this.#strategy, runner: this.#world, seed, book: bookConfig });
     this.#deployerStore = new DeployerStore(c.stateDir);
-    this.#saved = this.#deployerStore.load(now - (d.session.policy.gates.deployerRugLookbackDays + 1) * 86_400_000);
+    const storeFrom = now - (d.session.policy.gates.deployerRugLookbackDays + 1) * 86_400_000;
     // PERSIST-1: the saved index, labeller and coverage, when the file holds up (else a fresh start: not covered).
     // Restored through the seed fact (recorded, so a replay rebuilds the same state) before any decision; the
     // downtime fill starts at the saved moment, closing the restart gap on the live creates watch.
-    const restored = loadState(join(c.stateDir, PERSIST_FILE), d.rugs);
+    // WORKER-GROW: the boot's recording keeps a byte copy of the saved state, and the restore reads that copy; the seed
+    // names it by the sha256 of those bytes, so the parity replay restores exactly what this boot restored.
+    const statePath = join(c.stateDir, PERSIST_FILE);
+    let loadFrom = statePath;
+    if (this.#recorder !== null && existsSync(statePath)) {
+      const copy = join(this.#recorder.dir, PERSIST_FILE);
+      try {
+        copyFileSync(statePath, copy);
+        loadFrom = copy;
+      } catch (e) {
+        d.log(`Recorder: the saved state was not copied (${e instanceof Error ? e.message : 'error'}); restored from the state dir, and this boot cannot be replayed.`);
+      }
+    }
+    const restored = loadState(loadFrom, d.rugs);
+    // WORKER-GROW: the store is trimmed either way; its creates are held in memory only when they seed the index.
+    // CREATE-AFTER-RESTART: the creates earlier processes saw are noted (mint and signature) as the store streams, even
+    // when PERSIST-1's state replaces them for the index and they stay in the file only.
+    // Only the newest CREATE_SIGS_MAX are kept, in a ring while the store streams, then noted once: noting a million
+    // creates one by one into the capped map cost 360 MB and 75 s more at boot (measured, 1M creates).
+    const sigsMax = d.createSigsMax ?? CREATE_SIGS_MAX;
+    const ring: (readonly [string, string])[] = [];
+    let seen = 0;
+    const noteCreate = (e: MarketEvent): void => {
+      const p = createSigOf(e);
+      if (p === null) return;
+      ring[seen % sigsMax] = p;
+      seen++;
+    };
+    this.#saved = this.#deployerStore.load(storeFrom, restored.ok ? { keepCreates: false, onCreate: noteCreate } : { maxCreates: d.maxSeedCreates ?? MAX_SEED_CREATES, onCreate: noteCreate });
+    for (let i = Math.max(0, seen - sigsMax); i < seen; i++) {
+      const [mint, sig] = ring[i % sigsMax]!;
+      this.#noteCreateSig(mint, sig);
+    }
+    ring.length = 0;
+    if (this.#saved.refused !== undefined) d.log(`Deployer store not seeded (${this.#saved.refused}): H14 is not covered until the look-back passes.`);
     let graduates: SavedGraduates | null = null;
     if (restored.ok) {
       graduates = restored.graduates;
-      this.#restored = { asOf: restored.asOf, index: restored.index.snapshot(restored.asOf), labeller: restored.labeller.snapshot() };
+      const ref: SavedStateRef = { file: PERSIST_FILE, sha256: fileSha256(loadFrom), version: restored.version };
+      if (loadFrom !== statePath) this.#recorder?.attach(PERSIST_FILE, ref.sha256, statSync(loadFrom).size);
+      this.#restored = { asOf: restored.asOf, ref };
+      this.#handoff = { ref, index: restored.index, labeller: restored.labeller };
       this.#saved = { creates: [], rugs: [], coverage: restored.coverage, last: { slot: restored.asOf.slot, ms: restored.asOf.receivedAt } };
       d.log(`Saved state restored as of slot ${restored.asOf.slot}; ${restored.coverage.length} coverage facts, ${restored.fills.length} gaps to fill.`);
     } else if (restored.reason !== 'no saved state') d.log(`Saved state discarded (${restored.reason}): starting as a fresh process.`);
     this.#desk = new Desk({
       ledger: this.#ledger, config: bookConfig, restored: stored.book,
-      journal: (kind, fields) => this.#journal.write(kind, fields),
+      // OWNER-REVIEW /override: an entry made while the owner's day override holds says so in its line.
+      journal: (kind, fields) => this.#journal.write(kind, withOverrideTag(kind, fields, this.#ctl.latches, kind === 'entry' ? (this.#intentAt.get(String(fields['intent'])) ?? null) : null)),
       // Fill lines written before a kill that came ahead of the ledger: the restart books those fills again, once.
       journaledFills: journaledFillKeys(this.#fillLines),
       solUsd: () => this.#solPrice,
       ...(d.crashPoint === undefined ? {} : { crashPoint: d.crashPoint }),
       report: (event) => this.#report(event),
-      accountChanged: () => this.#publishAccount(),
+      // An entry that ended with no fill books its failed attempts' fees here (PAPER-1, M4), before the snapshot.
+      accountChanged: () => {
+        this.#settle();
+        this.#publishAccount();
+      },
       intentsChanged: () => this.#writeOpenIntents(),
       // Entries stop for the rest of this process; exits go on. A restart rebuilds the book from the ledger.
       diverged: (reason) => {
@@ -444,10 +539,16 @@ export class Worker {
         this.#diverged = ['ledger and book diverged'];
         this.#checkHalt(this.#d.timers.now());
       },
+      // A late buy's position is not settled by paper yet (risk ruling on #133): one alert, and entries stay off while
+      // the book holds such a position (#checkHalt reads the book, so a restart keeps the halt). Exits go on.
+      lateBuy: (r) => {
+        this.#journal.write('alert', { level: 'critical', code: 'late_buy', trade: r.positionId, intent: r.intentId, mint: r.mint, signature: r.signature, reasons: [LATE_BUY] });
+        this.#checkHalt(this.#d.timers.now());
+      },
       reserved: (r) => this.#account.reserved(r.mint, r.atMs),
       filled: (r) => {
         // A fill re-booked from its held journal line carries that line's rate (PAPER-1); otherwise the price now.
-        this.#account.filled(r, r.solUsd !== undefined ? r.solUsd : this.#solPrice);
+        this.#account.filled(r, r.solUsd !== undefined ? r.solUsd : this.#solPrice, this.#legs());
         if (r.purpose === 'entry') this.#entered(r.mint, r.positionId, r.atMs);
       },
     });
@@ -535,6 +636,14 @@ export class Worker {
     this.#feed.ingest('worker', { type: 'fact', key, value }, { receivedAt: atMs });
   }
 
+  /** The strategy's `savedState`: the restored index and labeller, once, only for the seed that names exactly them. */
+  savedStateFor(ref: SavedStateRef): { readonly index: DeployerIndex; readonly labeller: RugLabeller } {
+    const h = this.#handoff;
+    if (h === null || h.ref.file !== ref.file || h.ref.sha256 !== ref.sha256 || h.ref.version !== ref.version) throw new Error('the saved state the seed names is not the one this process restored');
+    this.#handoff = null;
+    return h;
+  }
+
   #onFrame(f: Frame): void {
     this.#recorder?.frame(f);
     this.#probe?.frame(f);
@@ -576,13 +685,18 @@ export class Worker {
     else if (m.key === SOL_PRICE_KEY) {
       const p = isObj(m.value) && typeof m.value['value'] === 'bigint' && m.value['value'] > 0n ? { price: m.value['value'] } : null;
       if (p !== null) {
-        const first = this.#account.state.walletLamports === null || this.#account.state.oneTimePaid !== true;
         this.#solPrice = p.price as MicroUsd;
         this.#solPriceAt = isObj(m.value) && typeof m.value['atMs'] === 'number' ? m.value['atMs'] : m.moment.receivedAt;
         this.#account.price(this.#solPrice, m.moment.receivedAt);
         if (this.#accountBehind.length > 0) this.#catchUpAccount();
-        // The paper wallet exists from the first price on: risk needs its balance (R4).
-        if (first && this.#account.state.walletLamports !== null && this.#reconciled) this.#publishAccount();
+        // The paper wallet exists from the first price on: risk needs its balance (R4). Every process settles once at its
+        // first price after the reconcile: fees of entries that ended unfilled while no price was known (in that
+        // reconcile, a restart's) are booked here, not at some later book event.
+        if (!this.#pricedSettle && this.#account.state.walletLamports !== null && this.#reconciled) {
+          this.#pricedSettle = true;
+          this.#settle();
+          this.#publishAccount();
+        }
       }
     } else if (m.key === 'coverage:rugs:start') {
       const v = isObj(m.value) && isObj(m.value['value']) ? m.value['value'] : m.value;
@@ -596,10 +710,56 @@ export class Worker {
         if (this.#symbols.size > 200_000) this.#symbols.delete(this.#symbols.keys().next().value!);
       }
     }
-    if (m.key.startsWith('logs:pump:CreateEvent:') && isObj(m.value) && typeof m.value['signature'] === 'string') {
-      this.#createSig.set(m.key.slice('logs:pump:CreateEvent:'.length), m.value['signature']);
-      if (this.#createSig.size > 200_000) this.#createSig.delete(this.#createSig.keys().next().value!);
+    if (m.key.startsWith('logs:pump:CreateEvent:') && isObj(m.value) && typeof m.value['signature'] === 'string') this.#noteCreateSig(m.key.slice('logs:pump:CreateEvent:'.length), m.value['signature']);
+  }
+
+  #noteCreateSig(mint: string, signature: string): void {
+    this.#createSig.set(mint, signature);
+    if (this.#createSig.size > (this.#d.createSigsMax ?? CREATE_SIGS_MAX)) this.#createSig.delete(this.#createSig.keys().next().value!);
+  }
+
+  /**
+   * CREATE-AFTER-RESTART: each saved or seeded create's signature, so a coin created before this start is read by its
+   * signature (one call) when it is shortlisted. The store keeps creates compacted, without the signature field; the
+   * event id carries it (`log:<signature>:…` live, `ev:<signature>:…` fetched). Oldest first, so the newest stay.
+   */
+  #noteCreates(events: readonly MarketEvent[]): void {
+    for (const e of events) {
+      const p = createSigOf(e);
+      if (p !== null) this.#noteCreateSig(p[0], p[1]);
     }
+  }
+
+  /**
+   * A shortlisted mint's create: read by its signature when one is known; held while the seed is built (its downtime
+   * fill may bring it); else looked up once from the mint's oldest signature. A lookup that fails leaves it missing.
+   */
+  #createFor(mint: string): void {
+    const sig = this.#createSig.get(mint);
+    if (sig !== undefined) return void this.#d.fetchTx(sig, 'create');
+    if (this.#seeding) return void this.#createPending.push(mint);
+    const find = this.#d.findCreate;
+    if (find === undefined) return this.#d.log(`Shortlisted ${mint}: its create was not seen by this process; H9 and H12-H14 wait for it.`);
+    if (this.#createLookups.has(mint)) return;
+    this.#createLookups.add(mint);
+    this.#lookupCreate(find, mint, 1);
+  }
+
+  /**
+   * One create lookup, journaled. A lookup stopped by a transient error (a rate limit, a timeout) is tried once more
+   * after CREATE_RETRY_MS, within the same budget; a mint whose history answered (not the create, no signature, the
+   * cap) is never retried: that answer stands.
+   */
+  #lookupCreate(find: NonNullable<WorkerDeps['findCreate']>, mint: string, attempt: 1 | 2): void {
+    const failed = (): CreateLookup => ({ mint, found: false, signature: null, slot: null, pages: 0, credits: 0, stopped_by: 'error', latency_ms: 0 });
+    void find(mint).catch(failed).then((r) => {
+      this.#journal.write('create_lookup', { ...r, attempt });
+      const retry = r.stopped_by === 'error' && attempt === 1 && !this.#stopping;
+      this.#d.log(r.found
+        ? `Shortlisted ${mint}: its create (slot ${r.slot}) found from the mint's oldest signature, ${r.credits} credits.`
+        : `Shortlisted ${mint}: create lookup stopped (${r.stopped_by}, ${r.credits} credits)${retry ? '; trying once more in a minute' : ''}; H9 and H12-H14 wait for it.`);
+      if (retry) this.#d.timers.setTimeout(() => (this.#stopping ? undefined : this.#lookupCreate(find, mint, 2)), CREATE_RETRY_MS);
+    });
   }
 
   /** WORKER-1e: the paper attempts' execution statistics over the last 24 h (S0's diagnostic exec-health). */
@@ -687,6 +847,16 @@ export class Worker {
     return m === null ? null : { pool: m.state, ctx: m.ctx };
   }
 
+  /** What the paper account settles a trade from: the paper world's attempts and token accounts (PAPER-1). */
+  #legs(): PaperLegs {
+    return { network: this.#d.network, attempts: this.#world.attempts, closedAccount: (sig) => this.#world.closedAccount(sig) };
+  }
+
+  /** Fees paid outside fills, each signature once (PAPER-1, M4); true when the wallet moved. */
+  #settle(): boolean {
+    return this.#account.settle(this.#desk.book, this.#legs(), this.#solPrice, this.#d.timers.now());
+  }
+
   #publishAccount(): void {
     this.#fact(ACCOUNT_KEY, this.#account.fact(this.#ledger, this.#desk.book, this.#ctl.latches, this.#solPrice, this.#d.timers.now()));
   }
@@ -765,7 +935,7 @@ export class Worker {
       return false;
     }
     try {
-      saveState(join(this.#d.config.stateDir, PERSIST_FILE), state);
+      saveState(join(this.#d.config.stateDir, PERSIST_FILE), state.state, { mintRows: state.mintRows });
       return true;
     } catch (e) {
       this.#d.log(`Saved state not written: ${e instanceof Error ? e.message : 'error'}.`);
@@ -790,7 +960,7 @@ export class Worker {
       const fromLine = lineRate(line);
       const known = fromLine !== undefined;
       const rate = known ? fromLine : this.#solPrice;
-      this.#account.filled({ purpose: b.purpose, positionId: p.id, mint: String(p.mint), book, atMs: Number.isFinite(at) ? at : this.#d.timers.now(), reasons: known ? reasons : [...reasons, FILL_RATE_UNKNOWN] }, rate);
+      this.#account.filled({ purpose: b.purpose, positionId: p.id, mint: String(p.mint), book, atMs: Number.isFinite(at) ? at : this.#d.timers.now(), reasons: known ? reasons : [...reasons, FILL_RATE_UNKNOWN] }, rate, this.#legs());
       this.#d.log(`Account caught up: the ${b.purpose} of ${p.id} was in the ledger but not in account.json (a kill between the two)${known ? '' : `; ${FILL_RATE_UNKNOWN}`}.`);
     }
     this.#accountBehind = [];
@@ -829,12 +999,14 @@ export class Worker {
     const snapshot = riskSnapshot(input);
     if (snapshot === null) return;
     this.#lastSnapshot = snapshot;
+    this.#lastCodes = exit.tripped.map((r) => r.code);
+    this.#lastLatchable = latchable(account, sol, now, policy.gates.maxQuoteAgeMs);
     const maxAge = policy.gates.maxQuoteAgeMs;
     const marked = account.openPositions.every((o) => o.mark !== null && o.markAtMs !== null && o.markAtMs <= now && now - o.markAtMs <= maxAge);
     // RISK-LATCH: an account-level trip (R9, R10) seen on this valuation is latched now, whether or not an entry or an
     // exit is being evaluated, so a breach that recovers before the next one still holds until the owner reviews it.
     // Only a fully marked valuation at a fresh SOL price latches: an unknown mark is a stand-in loss, not a breach.
-    if (latchable(account, sol, now, maxAge)) {
+    if (this.#lastLatchable) {
       const trips = exit.trips;
       if (trips.length > 0) {
         this.#d.log(`Risk tripped on the account valuation: ${[...trips].sort().join(', ')} (equity ${snapshot.equity}, NAV ${snapshot.nav ?? 'unknown'}).`);
@@ -868,9 +1040,7 @@ export class Worker {
     if (r.type !== 'decision') return;
     if (r.reasons[0] === SHORTLIST) {
       const mint = r.reasons[2];
-      const sig = mint === undefined ? undefined : this.#createSig.get(mint);
-      if (sig !== undefined) void this.#d.fetchTx(sig, 'create');
-      else this.#d.log(`Shortlisted ${mint ?? '?'}: its create was not seen by this process; H9 and H12-H14 wait for it.`);
+      if (mint !== undefined) this.#createFor(mint);
     }
     const trips = r.reasons.filter((x) => x.startsWith(TRIP_PREFIX)).map((x) => x.slice(TRIP_PREFIX.length));
     if (trips.length > 0) this.#latch(trips, r.at.receivedAt);
@@ -923,7 +1093,7 @@ export class Worker {
       connected: this.#reconciled && [...this.#feeds.values()].some((f) => f.connected), halted: this.#halted, paused: this.#ctl.paused,
       exitCapable: this.#exitCapable(d.timers.now()), budgetHalted: (d.ops?.().quota ?? []).filter((q) => q.halted).map((q) => q.provider),
       alerts: [...this.#alerts], regime: this.#strategy.regime(), regimeMaxAgeMs: 2 * d.strategy.evaluateEveryMs, stops: this.#strategy.riskStops(),
-      book: this.#engine.book, trades: this.#account.state.trades, attempts: this.#world.attempts, decisions: this.#rows, funnel: this.#funnel,
+      book: this.#engine.book, trades: this.#account.state.trades, attempts: this.#world.attempts, legs: this.#legs(), decisions: this.#rows, funnel: this.#funnel,
       exitFee: attemptFee(d.network, BigInt(d.session.policy.exits.ladder.steps[0]?.priorityFeeLamports ?? 0), 'filled'),
       solPrice: this.#solPrice, symbol: (mint) => this.#symbols.get(mint) ?? `${mint.slice(0, 4)}…`, waitingExits: this.#strategy.waitingExits(),
       discovered: [...this.#strategy.candidates()].map(([mint, c]) => {
@@ -953,6 +1123,7 @@ export class Worker {
     // A position entered now could lose its price with no second path to read it (review of #87): entries stop.
     if (this.#d.watchRead === undefined || this.#d.watchHalted?.() === true) reasons.push(SECOND_PATH_UNAVAILABLE);
     if (this.#seeding) reasons.push(SEEDING);
+    if (Object.keys(this.#desk.book.positions).some((id) => lateFillOf(id) !== null)) reasons.push(LATE_BUY);
     reasons.push(...this.#diverged, ...this.#sellOnly);
     const same = reasons.length === this.#halted.length && reasons.every((x, k) => x === this.#halted[k]);
     if (same) return;
@@ -995,6 +1166,9 @@ export class Worker {
     // The feed is drained here: the slot for SEED-1's events, ahead of the account fact below and every live event.
     this.#reserved = this.#feed.reserveSlot();
     this.#writeOpenIntents();
+    // A guard: it re-books open trades from the restored book. No SOL price is known yet in a new process, so stray fees
+    // wait for the first price (above).
+    this.#settle();
     this.#publishAccount();
     const positions = Object.values(this.#engine.book.positions).filter((p) => p.status !== 'closed').map((p) => p.id);
     this.#journal.write('reconcile', { ok: true, restored_events: this.#ledgerEvents(), cancelled: asked.size, open_positions: positions });
@@ -1077,6 +1251,10 @@ export class Worker {
       await this.#seedIndex(this.#reserved);
     } finally {
       this.#seeding = false;
+      // CREATE-AFTER-RESTART: the shortlists that waited for the seed, now with every saved and seeded create known.
+      const pending = this.#createPending;
+      this.#createPending = [];
+      for (const mint of pending) this.#createFor(mint);
       this.#checkHalt(d.timers.now());
     }
     if (this.#stopping) return { ok: false, code: EXIT.clean, message: 'stopped during the start' };
@@ -1167,14 +1345,17 @@ export class Worker {
     if (reserved === null) d.log('Deployer index: no coverage seeded (no free slot ahead of the live events); H14 not covered until the look-back passes.');
     const pos = (k: number): Moment => ({ slot: reserved ?? 0n, txIndex: 0, ixIndex: k, receivedAt: now });
     this.#fact(SEED_KEY, {
-      ...(this.#restored === null ? {} : { state: { index: this.#restored.index, labeller: this.#restored.labeller } }),
+      ...(this.#restored === null ? {} : { state: { ref: this.#restored.ref } }),
       creates: order(result.mode === 'fill' ? saved.creates : [...saved.creates, ...result.creates]),
       coverage: order(coverage.filter((e) => e.key.startsWith('coverage:creates:') && compareMoments(e.moment, asOf) <= 0)),
       fill: order(result.mode === 'fill' ? result.creates : []),
       rugs: order(saved.rugs), asOf,
       history: coverage.map((e, k) => ({ ...e, id: `${e.id}#pre${k}`, moment: { ...pos(1 + k), receivedAt: e.moment.receivedAt } })),
     });
+    // The restored index is in the seed now (and the strategy's index): this copy is released (WORKER-GROW).
+    this.#restored = null;
     for (const e of [...result.creates, ...result.coverage, ...extra]) this.#deployerStore.keep(e);
+    this.#noteCreates(result.creates);
     d.log(`Deployer index: ${result.mode} (${result.report}); ${saved.creates.length} saved creates, ${saved.coverage.length} saved coverage facts.`);
   }
 
@@ -1414,7 +1595,14 @@ export class Worker {
       mark: mark === null ? null : Number(mark.price),
       last_exit_attempt_ts: lastExit === 0 ? null : lastExit,
     };
-    const stops = this.#ownerStops(this.#d.timers.now());
+    const offerAt = this.#d.timers.now();
+    const stops = this.#ownerStops(offerAt);
+    // The /override offer this heartbeat carries is remembered with its day loss, for the confirm that names it.
+    if (stops?.override?.dayLoss !== undefined) {
+      this.#offers.delete(offerAt);
+      this.#offers.set(offerAt, stops.override.dayLoss);
+    }
+    for (const k of this.#offers.keys()) if (offerAt - k > OFFER_KEEP_MS || this.#offers.size > OFFER_KEEP_MAX) this.#offers.delete(k);
     const owner = { review: stops === null ? null : reviewBlock(stops), acked: ackedOf(this.#ctl.commands ?? []) };
     const r = await sendHeartbeat(hb.http, url, hb.key, heartbeatBody(h, position, hb.ownerChatId, owner), this.#d.timers.now());
     if (!r.ok) {
@@ -1436,8 +1624,12 @@ export class Worker {
     if (!this.#reconciled) return null;
     const fact = this.#account.fact(this.#ledger, this.#desk.book, this.#ctl.latches, this.#solPrice, now);
     const trades = this.#account.state.trades;
+    const policy = this.#d.session.policy;
+    const price = this.#solPrice;
     return openStops({
-      latches: this.#ctl.latches, closed: fact.history.closedTrades, loss: this.#d.session.policy.loss, snapshot: this.#lastSnapshot,
+      latches: this.#ctl.latches, closed: fact.history.closedTrades, loss: policy.loss, snapshot: this.#lastSnapshot, codes: this.#lastCodes, latchable: this.#lastLatchable,
+      toLamports: (v) => (price === null || price <= 0n || v < 0n ? null : microUsdToLamports(v as MicroUsd, price, 'ceil')),
+      dayLine: dayLossLine(policy, this.#ctl.latches, this.#lastSnapshot?.dayStartMs ?? 0, now), offer: now,
       netLamports: (fromMs, toMs) => {
         let net = 0n;
         for (const t of trades) {
@@ -1465,7 +1657,7 @@ export class Worker {
     let handled = this.#ctl.commands ?? [];
     const done: HandledCommand[] = [];
     for (const c of commands) {
-      const r = handleCommand(c, stops, latches, handled, now);
+      const r = handleCommand(c, stops, latches, handled, now, (offer) => this.#offers.get(offer));
       if (r === null) continue;
       latches = r.latches;
       handled = keepHandled(handled, r.entry);

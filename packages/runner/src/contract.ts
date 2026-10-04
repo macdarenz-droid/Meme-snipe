@@ -160,6 +160,8 @@ export type JournalKind =
   | 'h15_sim'
   /** S0-ZERO: one in-run fill of a watched pool's trade gap (a candidate's catch-up from its migration, a reconnect): size, credits, complete. */
   | 'trades_fill'
+  /** CREATE-AFTER-RESTART: a shortlisted mint's create looked up from its oldest signature (found or why not, pages, credits). */
+  | 'create_lookup'
   /** PERSIST-2: a graduates seed taken or refused (`source`, `accepted`, `added`, `reason`). */
   | 'graduates_seed'
   /**

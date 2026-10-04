@@ -13,7 +13,10 @@ import { OFF_CHAIN, type LogRecord } from '../../core/src/engine/index.ts';
 import { type BookEvent, emptyBook } from '../../core/src/lifecycle/index.ts';
 import { raw } from '../../core/src/units/index.ts';
 import { attempt as fxAttempt, entryToSubmitted, fill as fx, on, quote, sig } from '../../core/test/fixtures.ts';
-import { PaperAccount, accountFile } from '../src/run/account.ts';
+import { FILL_CONFIG } from '../../core/src/config/index.ts';
+import type { FillNetwork } from '../../core/src/fills/index.ts';
+import { PaperAccount, type PaperLegs, accountFile } from '../src/run/account.ts';
+import type { PaperAttempt } from '../src/run/paper-world.ts';
 import { Desk } from '../src/run/desk.ts';
 import { tempState } from './worker-harness.ts';
 
@@ -28,12 +31,28 @@ const PID = 'p:MintX:1';
 type Fill = { sol: bigint; fees: bigint };
 /** The book as `filled` and `fact` read it: the position and its intents' fills. */
 const book = (p: { quantity: bigint; sold: bigint; status: 'open' | 'closed'; bought?: bigint }, entry: Fill[], exits: Fill[][]): Book => ({
-  positions: { [PID]: { id: PID, mint: 'MintX', status: p.status, quantity: p.quantity, bought: p.bought ?? 1_000n, sold: p.sold, cost: entry.reduce((s, f) => s + f.sol, 0n) } },
+  positions: { [PID]: { id: PID, mint: 'MintX', entryIntentId: 'e', status: p.status, quantity: p.quantity, bought: p.bought ?? 1_000n, sold: p.sold, cost: entry.reduce((s, f) => s + f.sol, 0n) } },
   intents: Object.fromEntries([
-    ['e', { intent: { positionId: PID, purpose: 'entry', mint: 'MintX' }, fills: entry.map((f) => ({ ...f, tokens: 1_000n })), status: 'reconciled' }],
-    ...exits.map((x, i) => [`x${i}`, { intent: { positionId: PID, purpose: 'exit', mint: 'MintX' }, fills: x.map((f) => ({ ...f, tokens: 500n })), status: 'reconciled' }]),
+    ['e', { intent: { id: 'e', positionId: PID, purpose: 'entry', mint: 'MintX' }, fills: entry.map((f, k) => ({ ...f, tokens: 1_000n, intentId: 'e', signature: `e.${k}` })), attempts: entry.map((_, k) => ({ signature: `e.${k}` })), status: 'reconciled' }],
+    ...exits.map((x, i) => [`x${i}`, { intent: { id: `x${i}`, positionId: PID, purpose: 'exit', mint: 'MintX' }, fills: x.map((f, k) => ({ ...f, tokens: 500n, intentId: `x${i}`, signature: `x${i}.${k}` })), attempts: x.map((_, k) => ({ signature: `x${i}.${k}` })), status: 'reconciled' }]),
   ]),
+  orphans: {},
 }) as unknown as Book;
+
+/**
+ * The paper legs of that book (PAPER-1 settles from them): one landed attempt per fill, its fee the fill's (priority
+ * only; no base fee, tip or rent here), so the book's fees are exactly what the account charges.
+ */
+const NET: FillNetwork = { ...FILL_CONFIG.network, baseFeePerSignature: 0n, tip: 0n, tokenAccountRent: 0n };
+const legsOf = (b: Book): PaperLegs => ({
+  network: NET, closedAccount: () => false,
+  attempts: new Map(Object.values(b.intents).flatMap((i) => i.fills.map((f) => [f.signature as string, {
+    intentId: i.intent.id, signature: f.signature, purpose: i.intent.purpose, trade: PID, mint: 'MintX', inAmount: 0n, quotedOut: 0n, minOut: 0n,
+    priorityFee: f.fees, lastValidBlockHeight: 10n, fate: 'lands', landSlot: 1n, outcome: 'filled', reason: 'filled', landedSlot: 1n, simulated: true,
+    fill: f, costs: { venueFee: 0n, creatorFee: 0n, slippage: 0n, base: 0n, priority: 0n, tip: 0n }, sentAtMs: 0,
+  } as unknown as PaperAttempt] as const))),
+});
+const filled = (a: PaperAccount, r: Parameters<PaperAccount['filled']>[0], px: MicroUsd | null) : void => a.filled(r, px, legsOf(r.book));
 
 const setup = () => {
   const dir = tempState();
@@ -59,9 +78,9 @@ describe('partial sales (RISK-PARTIAL)', () => {
   it('the audit example: buy $5, sell half for $3, the rest marked at $3: equity $20.50, no daily loss', () => {
     const { ledger, a } = setup();
     const t0 = T - HOUR;
-    a.filled({ purpose: 'entry', positionId: PID, mint: 'MintX', book: book({ quantity: 1_000n, sold: 0n, status: 'open' }, entryFill, []), atMs: t0, reasons: ['notional 5000000'] }, SOL);
+    filled(a, { purpose: 'entry', positionId: PID, mint: 'MintX', book: book({ quantity: 1_000n, sold: 0n, status: 'open' }, entryFill, []), atMs: t0, reasons: ['notional 5000000'] }, SOL);
     const half = book({ quantity: 500n, sold: 500n, status: 'open' }, entryFill, [[{ sol: lam(3), fees: 0n }]]);
-    a.filled({ purpose: 'exit', positionId: PID, mint: 'MintX', book: half, atMs: t0 + 60_000, reasons: ['partial exit', 'take_profit'] }, SOL);
+    filled(a, { purpose: 'exit', positionId: PID, mint: 'MintX', book: half, atMs: t0 + 60_000, reasons: ['partial exit', 'take_profit'] }, SOL);
     expect(a.state.walletLamports).toBe(lam(18));
     const { history, snap } = risk(a, ledger, half, T, 3);
     // The rest carries half the basis; the sold half's $0.50 gain is realized now.
@@ -76,10 +95,10 @@ describe('partial sales (RISK-PARTIAL)', () => {
 
   it('a losing partial is realized at once: it counts toward the day loss before the trade closes', () => {
     const { ledger, a } = setup();
-    a.filled({ purpose: 'entry', positionId: PID, mint: 'MintX', book: book({ quantity: 1_000n, sold: 0n, status: 'open' }, entryFill, []), atMs: T - HOUR, reasons: ['notional 5000000'] }, SOL);
+    filled(a, { purpose: 'entry', positionId: PID, mint: 'MintX', book: book({ quantity: 1_000n, sold: 0n, status: 'open' }, entryFill, []), atMs: T - HOUR, reasons: ['notional 5000000'] }, SOL);
     // Half sold for $2 with $0.10 of exit fees: the sold half lost $0.60.
     const half = book({ quantity: 500n, sold: 500n, status: 'open' }, entryFill, [[{ sol: lam(2), fees: lam(0.1) }]]);
-    a.filled({ purpose: 'exit', positionId: PID, mint: 'MintX', book: half, atMs: T - HOUR / 2, reasons: ['partial exit'] }, SOL);
+    filled(a, { purpose: 'exit', positionId: PID, mint: 'MintX', book: half, atMs: T - HOUR / 2, reasons: ['partial exit'] }, SOL);
     // The rest marked at its basis: no marked loss; the realized $0.60 is the whole loss.
     const { snap } = risk(a, ledger, half, T, 2.5);
     expect(snap.equity).toBe(usd(19.4));
@@ -90,12 +109,12 @@ describe('partial sales (RISK-PARTIAL)', () => {
   it('the close books one whole trade; a partial before the day boundary stays in the day it was realized', () => {
     const { ledger, a } = setup();
     const day = melbourneDay(T).start;
-    a.filled({ purpose: 'entry', positionId: PID, mint: 'MintX', book: book({ quantity: 1_000n, sold: 0n, status: 'open' }, entryFill, []), atMs: day - 2 * HOUR, reasons: ['notional 5000000'] }, SOL);
+    filled(a, { purpose: 'entry', positionId: PID, mint: 'MintX', book: book({ quantity: 1_000n, sold: 0n, status: 'open' }, entryFill, []), atMs: day - 2 * HOUR, reasons: ['notional 5000000'] }, SOL);
     // Yesterday: half sold for $3 (+$0.50). Today: the rest sold for $2 (-$0.50). The whole trade: $0.
     const s1 = [{ sol: lam(3), fees: 0n }];
-    a.filled({ purpose: 'exit', positionId: PID, mint: 'MintX', book: book({ quantity: 500n, sold: 500n, status: 'open' }, entryFill, [s1]), atMs: day - HOUR, reasons: ['partial exit'] }, SOL);
+    filled(a, { purpose: 'exit', positionId: PID, mint: 'MintX', book: book({ quantity: 500n, sold: 500n, status: 'open' }, entryFill, [s1]), atMs: day - HOUR, reasons: ['partial exit'] }, SOL);
     const closed = book({ quantity: 0n, sold: 1_000n, status: 'closed' }, entryFill, [s1, [{ sol: lam(2), fees: 0n }]]);
-    a.filled({ purpose: 'exit', positionId: PID, mint: 'MintX', book: closed, atMs: T - HOUR, reasons: ['stop'] }, SOL);
+    filled(a, { purpose: 'exit', positionId: PID, mint: 'MintX', book: closed, atMs: T - HOUR, reasons: ['stop'] }, SOL);
     const { history, snap } = risk(a, ledger, closed, T, null);
     expect(history.closedTrades).toHaveLength(1);
     expect(history.closedTrades[0]).toMatchObject({ netPnl: 0n, notional: usd(5), stoppedOut: true });
@@ -109,12 +128,12 @@ describe('partial sales (RISK-PARTIAL)', () => {
     const { ledger, a } = setup();
     // $5 plus $0.10 of entry fees: a basis of $5.10.
     const entry = [{ sol: lam(5), fees: lam(0.1) }];
-    a.filled({ purpose: 'entry', positionId: PID, mint: 'MintX', book: book({ quantity: 1_000n, sold: 0n, status: 'open' }, entry, []), atMs: T - 3 * HOUR, reasons: ['notional 5000000'] }, SOL);
+    filled(a, { purpose: 'entry', positionId: PID, mint: 'MintX', book: book({ quantity: 1_000n, sold: 0n, status: 'open' }, entry, []), atMs: T - 3 * HOUR, reasons: ['notional 5000000'] }, SOL);
     // A quarter for $2 (its share $1.275: +$0.725), then another quarter for $1 (-$0.275).
     const s1 = [{ sol: lam(2), fees: 0n }];
-    a.filled({ purpose: 'exit', positionId: PID, mint: 'MintX', book: book({ quantity: 750n, sold: 250n, status: 'open' }, entry, [s1]), atMs: T - 2 * HOUR, reasons: ['partial exit'] }, SOL);
+    filled(a, { purpose: 'exit', positionId: PID, mint: 'MintX', book: book({ quantity: 750n, sold: 250n, status: 'open' }, entry, [s1]), atMs: T - 2 * HOUR, reasons: ['partial exit'] }, SOL);
     const second = book({ quantity: 500n, sold: 500n, status: 'open' }, entry, [s1, [{ sol: lam(1), fees: 0n }]]);
-    a.filled({ purpose: 'exit', positionId: PID, mint: 'MintX', book: second, atMs: T - HOUR, reasons: ['partial exit'] }, SOL);
+    filled(a, { purpose: 'exit', positionId: PID, mint: 'MintX', book: second, atMs: T - HOUR, reasons: ['partial exit'] }, SOL);
     expect(a.state.trades[0]!.partials!.map((x) => x.pnl)).toEqual([usd(0.725), -usd(0.275)]);
     const { history } = risk(a, ledger, second, T, 2.55);
     expect(history.openPositions[0]!.notional).toBe(usd(2.55));
@@ -124,8 +143,8 @@ describe('partial sales (RISK-PARTIAL)', () => {
   it('what is still held keeps its share of the basis rounded up', () => {
     const { ledger, a } = setup();
     const entry = [{ sol: 100n, fees: 0n }];
-    a.filled({ purpose: 'entry', positionId: PID, mint: 'MintX', book: book({ quantity: 3n, sold: 0n, status: 'open', bought: 3n }, entry, []), atMs: T - HOUR, reasons: ['notional 1'] }, SOL);
-    a.filled({ purpose: 'exit', positionId: PID, mint: 'MintX', book: book({ quantity: 2n, sold: 1n, status: 'open', bought: 3n }, entry, [[{ sol: 50n, fees: 0n }]]), atMs: T - HOUR / 2, reasons: ['partial exit'] }, SOL);
+    filled(a, { purpose: 'entry', positionId: PID, mint: 'MintX', book: book({ quantity: 3n, sold: 0n, status: 'open', bought: 3n }, entry, []), atMs: T - HOUR, reasons: ['notional 1'] }, SOL);
+    filled(a, { purpose: 'exit', positionId: PID, mint: 'MintX', book: book({ quantity: 2n, sold: 1n, status: 'open', bought: 3n }, entry, [[{ sol: 50n, fees: 0n }]]), atMs: T - HOUR / 2, reasons: ['partial exit'] }, SOL);
     // Two thirds of 100 lamports stay held as 67; the sold third carries 33 and realized 17.
     expect(a.state.trades[0]!.partials![0]!.lamports).toBe(17n);
     ledger.close();
@@ -134,11 +153,11 @@ describe('partial sales (RISK-PARTIAL)', () => {
   it('a fill booked again adds no part; a loss rounds up to the next micro-dollar', () => {
     const { ledger, a } = setup();
     const entry = [{ sol: 100n, fees: 0n }];
-    a.filled({ purpose: 'entry', positionId: PID, mint: 'MintX', book: book({ quantity: 2n, sold: 0n, status: 'open', bought: 2n }, entry, []), atMs: T - HOUR, reasons: ['notional 1'] }, SOL);
+    filled(a, { purpose: 'entry', positionId: PID, mint: 'MintX', book: book({ quantity: 2n, sold: 0n, status: 'open', bought: 2n }, entry, []), atMs: T - HOUR, reasons: ['notional 1'] }, SOL);
     // Half for 49 lamports: one lamport lost, $0.0000001, booked as -1 micro-dollar.
     const half = book({ quantity: 1n, sold: 1n, status: 'open', bought: 2n }, entry, [[{ sol: 49n, fees: 0n }]]);
-    a.filled({ purpose: 'exit', positionId: PID, mint: 'MintX', book: half, atMs: T - HOUR / 2, reasons: ['partial exit'] }, SOL);
-    a.filled({ purpose: 'exit', positionId: PID, mint: 'MintX', book: half, atMs: T - HOUR / 4, reasons: ['partial exit'] }, SOL);
+    filled(a, { purpose: 'exit', positionId: PID, mint: 'MintX', book: half, atMs: T - HOUR / 2, reasons: ['partial exit'] }, SOL);
+    filled(a, { purpose: 'exit', positionId: PID, mint: 'MintX', book: half, atMs: T - HOUR / 4, reasons: ['partial exit'] }, SOL);
     expect(a.state.trades[0]!.partials).toEqual([{ atMs: T - HOUR / 2, lamports: -1n, pnl: -1n }]);
     ledger.close();
   });
@@ -147,17 +166,17 @@ describe('partial sales (RISK-PARTIAL)', () => {
     const half = book({ quantity: 500n, sold: 500n, status: 'open' }, entryFill, [[{ sol: lam(3), fees: 0n }]]);
     const open = book({ quantity: 1_000n, sold: 0n, status: 'open' }, entryFill, []);
     const x = setup();
-    x.a.filled({ purpose: 'entry', positionId: PID, mint: 'MintX', book: open, atMs: T - HOUR, reasons: ['notional 5000000'] }, SOL);
-    x.a.filled({ purpose: 'exit', positionId: PID, mint: 'MintX', book: half, atMs: T - HOUR / 2, reasons: ['partial exit'] }, null);
+    filled(x.a, { purpose: 'entry', positionId: PID, mint: 'MintX', book: open, atMs: T - HOUR, reasons: ['notional 5000000'] }, SOL);
+    filled(x.a, { purpose: 'exit', positionId: PID, mint: 'MintX', book: half, atMs: T - HOUR / 2, reasons: ['partial exit'] }, null);
     expect(x.a.state.trades[0]!.partials![0]!.pnl).toBe(usd(0.5));
     // With no price the rest keeps its share of the dollar notional.
     expect(x.a.fact(x.ledger, half, NO_LATCHES, null, T).history.openPositions[0]!.notional).toBe(usd(2.5));
     x.ledger.close();
     const y = setup();
-    y.a.filled({ purpose: 'entry', positionId: PID, mint: 'MintX', book: open, atMs: T - HOUR, reasons: ['notional 5000000'] }, null);
-    y.a.filled({ purpose: 'exit', positionId: PID, mint: 'MintX', book: half, atMs: T - HOUR / 2, reasons: ['partial exit'] }, null);
+    filled(y.a, { purpose: 'entry', positionId: PID, mint: 'MintX', book: open, atMs: T - HOUR, reasons: ['notional 5000000'] }, null);
+    filled(y.a, { purpose: 'exit', positionId: PID, mint: 'MintX', book: half, atMs: T - HOUR / 2, reasons: ['partial exit'] }, null);
     const lost = book({ quantity: 250n, sold: 750n, status: 'open' }, entryFill, [[{ sol: lam(3), fees: 0n }], [{ sol: lam(0.5), fees: 0n }]]);
-    y.a.filled({ purpose: 'exit', positionId: PID, mint: 'MintX', book: lost, atMs: T - HOUR / 4, reasons: ['partial exit'] }, null);
+    filled(y.a, { purpose: 'exit', positionId: PID, mint: 'MintX', book: lost, atMs: T - HOUR / 4, reasons: ['partial exit'] }, null);
     expect(y.a.state.trades[0]!.partials!.map((p) => p.pnl)).toEqual([0n, -usd(1.25)]);
     y.ledger.close();
   });
@@ -166,19 +185,36 @@ describe('partial sales (RISK-PARTIAL)', () => {
     const { ledger, a } = setup();
     // $5 of SOL and $0.20 of entry fees; then half sold for $1 with no SOL price known at the fill or the open.
     const fees = [{ sol: lam(5), fees: lam(0.2) }];
-    a.filled({ purpose: 'entry', positionId: PID, mint: 'MintX', book: book({ quantity: 1_000n, sold: 0n, status: 'open' }, fees, []), atMs: T - HOUR, reasons: ['notional 5000000'] }, null);
-    a.filled({ purpose: 'exit', positionId: PID, mint: 'MintX', book: book({ quantity: 500n, sold: 500n, status: 'open' }, fees, [[{ sol: lam(1), fees: 0n }]]), atMs: T - HOUR / 2, reasons: ['partial exit'] }, null);
+    filled(a, { purpose: 'entry', positionId: PID, mint: 'MintX', book: book({ quantity: 1_000n, sold: 0n, status: 'open' }, fees, []), atMs: T - HOUR, reasons: ['notional 5000000'] }, null);
+    filled(a, { purpose: 'exit', positionId: PID, mint: 'MintX', book: book({ quantity: 500n, sold: 500n, status: 'open' }, fees, [[{ sol: lam(1), fees: 0n }]]), atMs: T - HOUR / 2, reasons: ['partial exit'] }, null);
     const pnl = a.state.trades[0]!.partials![0]!.pnl;
     expect(pnl <= -(usd(5) + usd(0.2)) / 2n).toBe(true);
     expect(pnl).toBe(-usd(2.6));
     // Rounded up: a third sold, $5.20 / 3 is $1.733333..., so $1.733334.
     const b = setup();
     const third = [{ sol: lam(5), fees: lam(0.2) }];
-    b.a.filled({ purpose: 'entry', positionId: PID, mint: 'MintX', book: book({ quantity: 999n, sold: 0n, status: 'open', bought: 999n }, third, []), atMs: T - HOUR, reasons: ['notional 5000000'] }, null);
-    b.a.filled({ purpose: 'exit', positionId: PID, mint: 'MintX', book: book({ quantity: 666n, sold: 333n, status: 'open', bought: 999n }, third, [[{ sol: lam(0.1), fees: 0n }]]), atMs: T - HOUR / 2, reasons: ['partial exit'] }, null);
+    filled(b.a, { purpose: 'entry', positionId: PID, mint: 'MintX', book: book({ quantity: 999n, sold: 0n, status: 'open', bought: 999n }, third, []), atMs: T - HOUR, reasons: ['notional 5000000'] }, null);
+    filled(b.a, { purpose: 'exit', positionId: PID, mint: 'MintX', book: book({ quantity: 666n, sold: 333n, status: 'open', bought: 999n }, third, [[{ sol: lam(0.1), fees: 0n }]]), atMs: T - HOUR / 2, reasons: ['partial exit'] }, null);
     expect(b.a.state.trades[0]!.partials![0]!.pnl).toBe(-1_733_334n);
     ledger.close();
     b.ledger.close();
+  });
+});
+
+describe('a partial sale settles as paper does (merge of #132 into PAPER-1)', () => {
+  it('a failed sell before the partial: its fee is part of what the partial realized, as the close would count it', () => {
+    const { ledger, a } = setup();
+    const open = book({ quantity: 1_000n, sold: 0n, status: 'open' }, entryFill, []);
+    filled(a, { purpose: 'entry', positionId: PID, mint: 'MintX', book: open, atMs: T - HOUR, reasons: ['notional 5000000'] }, SOL);
+    // Half sold for $3; before it, an attempt of the same exit landed failed and paid 1,000,000 lamports ($0.10).
+    const half = book({ quantity: 500n, sold: 500n, status: 'open' }, entryFill, [[{ sol: lam(3), fees: 0n }]]);
+    const legs = legsOf(half);
+    const failed = { ...[...legs.attempts.values()].find((x) => x.purpose === 'exit')!, signature: 'x0.failed', outcome: 'failed', reason: 'landed failed (drawn)', fill: null, priorityFee: lam(0.1) } as PaperAttempt;
+    a.filled({ purpose: 'exit', positionId: PID, mint: 'MintX', book: half, atMs: T - HOUR / 2, reasons: ['partial exit'] }, SOL, { ...legs, attempts: new Map([...legs.attempts, [failed.signature, failed]]) });
+    // $3 − $2.50 of basis − $0.10 of the failed attempt: +$0.40, not +$0.50.
+    expect(a.state.trades[0]!.partials!.map((x) => x.pnl)).toEqual([usd(0.4)]);
+    expect(a.state.walletLamports).toBe(lam(20) - lam(5) + lam(3) - lam(0.1));
+    ledger.close();
   });
 });
 
@@ -190,7 +226,7 @@ describe('a late-landing sell after a partial books its part when it lands (risk
     const desk = new Desk({
       ledger, config: { maxOpenPositions: 5 }, restored: emptyBook({ maxOpenPositions: 5 }),
       journal: () => undefined, report: () => 'world#unused', accountChanged: () => undefined, intentsChanged: () => undefined,
-      reserved: () => undefined, diverged: () => undefined, filled: (r) => a.filled(r, SOL),
+      reserved: () => undefined, diverged: () => undefined, lateBuy: () => undefined, filled: (r) => filled(a, r, SOL),
     });
     const E1 = 'e1' as IntentId;
     const P = positionId('p1');
@@ -253,7 +289,7 @@ describe('a late-landing sell after a partial books its part when it lands (risk
     const desk = new Desk({
       ledger, config: { maxOpenPositions: 5 }, restored: emptyBook({ maxOpenPositions: 5 }),
       journal: () => undefined, report: () => 'world#unused', accountChanged: () => undefined, intentsChanged: () => undefined,
-      reserved: () => undefined, diverged: () => undefined, filled: (r) => void filled.push(`${r.purpose} ${r.positionId}`),
+      reserved: () => undefined, diverged: () => undefined, lateBuy: () => undefined, filled: (r) => void filled.push(`${r.purpose} ${r.positionId}`),
     });
     const E1 = 'e1' as IntentId;
     const events: BookEvent[] = [

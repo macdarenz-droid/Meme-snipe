@@ -216,8 +216,8 @@ export function planAlerts(active: Record<string, ActiveAlert>, current: Alert[]
   return { lines, next };
 }
 
-export type OwnerKind = 'review' | 'rearm' | 'weekly';
-export const OWNER_KINDS: readonly OwnerKind[] = ['review', 'rearm', 'weekly'];
+export type OwnerKind = 'review' | 'rearm' | 'weekly' | 'override';
+export const OWNER_KINDS: readonly OwnerKind[] = ['review', 'rearm', 'weekly', 'override'];
 const isOwnerKind = (k: unknown): k is OwnerKind => typeof k === 'string' && (OWNER_KINDS as readonly string[]).includes(k);
 
 /** The owner's message text, only from the owner's chat; null for anything else. */
@@ -248,7 +248,7 @@ export function confirmedTrip(update: unknown, ownerChatId: string): string | nu
 
 // ---------- OWNER-REVIEW ----------
 
-const TRIP = /^(review|rearm|weekly)-\d{1,16}$/;
+const TRIP = /^((review|rearm|weekly)-\d{1,16}|override-\d{1,16}-\d{1,4})$/;
 const EVIDENCE_KEY = /^[a-z_]{1,24}$/;
 
 /** A stop the worker reported, with its evidence (counts, moments in ms, lamports as decimal strings). */
@@ -267,16 +267,18 @@ export interface PendingCommand {
   at: number;
   /** Sent in a heartbeat reply at least once: from then on only the worker's acknowledgement settles it. */
   sent?: boolean;
+  /** /override: the offer whose figures the owner saw (its evidence's `offer`). */
+  offer?: number;
 }
 
 /** A confirm counts for 15 minutes: a /rearm never applies days later on evidence the owner saw long before. */
 export const COMMAND_TTL_MS = 15 * 60_000;
 
-export type AckResult = 'applied' | 'stale' | 'invalid' | 'expired';
+export type AckResult = 'applied' | 'stale' | 'invalid' | 'expired' | 'changed' | 'old';
 
 /** The heartbeat's review block, checked field by field (signed, but never trusted blindly). Anything malformed reads as none. */
 export function reviewOf(hb: Heartbeat | undefined): Review {
-  const out: Review = { review: null, rearm: null, weekly: null };
+  const out: Review = { review: null, rearm: null, weekly: null, override: null };
   const r = hb?.review;
   if (typeof r !== 'object' || r === null) return out;
   for (const kind of OWNER_KINDS) {
@@ -298,7 +300,7 @@ export function reviewOf(hb: Heartbeat | undefined): Review {
 export function ackedOf(hb: Heartbeat): { id: string; result: AckResult }[] {
   if (!Array.isArray(hb.acked)) return [];
   return hb.acked.filter((a): a is { id: string; result: AckResult } =>
-    typeof a === 'object' && a !== null && typeof (a as { id?: unknown }).id === 'string' && ['applied', 'stale', 'invalid', 'expired'].includes((a as { result?: unknown }).result as string));
+    typeof a === 'object' && a !== null && typeof (a as { id?: unknown }).id === 'string' && ['applied', 'stale', 'invalid', 'expired', 'changed', 'old'].includes((a as { result?: unknown }).result as string));
 }
 
 /** Lamports (a decimal string) as SOL, exact: up to 9 decimals, trailing zeros dropped. */
@@ -317,7 +319,7 @@ export function melbourneText(ms: string | number | null | undefined): string {
   return `${new Intl.DateTimeFormat('en-AU', { timeZone: 'Australia/Melbourne', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(ms))} Melbourne`;
 }
 
-const NAMES: Record<OwnerKind, string> = { review: 'Loss review (R8)', rearm: 'Kill switch (R10)', weekly: 'Weekly loss (R9)' };
+const NAMES: Record<OwnerKind, string> = { review: 'Loss review (R8)', rearm: 'Kill switch (R10)', weekly: 'Weekly loss (R9)', override: 'Day stop (R7, R8 streak)' };
 
 /** What /review, /rearm or /weekly answers: the stop's evidence in SOL and the exact confirm line, or that none is open. */
 export function stopText(kind: OwnerKind, stop: ReportedStop | null): string {
@@ -338,6 +340,14 @@ export function stopText(kind: OwnerKind, stop: ReportedStop | null): string {
       `Re-arming also restarts the peak. To re-arm, send: ${confirm}`,
     ].join('\n');
   }
+  if (kind === 'override') {
+    const stops = [e['daily'] === 1 ? 'daily loss' : null, typeof e['streak'] === 'number' && e['streak'] > 0 ? `${e['streak']} losses in a row` : null].filter((x) => x !== null);
+    return [
+      `${NAMES.override}: ${stops.join(' and ') || 'tripped'}. Day loss ${solText(e['day_loss_lamports'])} (stop line ${solText(e['day_line_lamports'])}). Overrides today: ${e['overrides'] ?? '?'}.`,
+      `Overriding resumes entries until midnight (${melbourneText(e['day_ends_ms'])}). Another full daily limit of loss, or a new losing streak, stops them again. The weekly loss, the kill switch and the loss review still apply.`,
+      `To override, send: ${confirm}`,
+    ].join('\n');
+  }
   return [
     `${NAMES.weekly}: tripped ${melbourneText(e['tripped_ms'])}. Equity ${solText(e['equity_lamports'])}.`,
     `Entries stay paused until the week ends (${melbourneText(e['week_ends_ms'])}) and you have reviewed it.`,
@@ -349,9 +359,12 @@ export function stopText(kind: OwnerKind, stop: ReportedStop | null): string {
  * A confirm: queued only when the trip is the one the worker reports open now for that command. Pending holds at most
  * one command per kind (a new confirm replaces the old one).
  */
-export function queueConfirm(pending: readonly PendingCommand[], review: Review, kind: OwnerKind, trip: string, now: number): { queued: boolean; pending: PendingCommand[] } {
+export function queueConfirm(pending: readonly PendingCommand[], review: Review, kind: OwnerKind, trip: string, now: number, offer?: number): { queued: boolean; pending: PendingCommand[] } {
   if (review[kind]?.trip !== trip) return { queued: false, pending: [...pending] };
-  return { queued: true, pending: [...pending.filter((p) => p.kind !== kind), { id: trip, kind, trip, at: now }] };
+  // An /override confirm names the offer the owner saw, and is its own command: a second confirm of the same trip after
+  // new figures is a new command, never a repeat the worker would skip.
+  const cmd: PendingCommand = offer === undefined ? { id: trip, kind, trip, at: now } : { id: `${trip}:${offer}`, kind, trip, at: now, offer };
+  return { queued: true, pending: [...pending.filter((p) => p.kind !== kind), cmd] };
 }
 
 /** Pending commands after a heartbeat's acknowledgements, and one line per command acknowledged. */
@@ -368,6 +381,8 @@ export function settleAcks(pending: readonly PendingCommand[], acked: readonly {
       a.result === 'applied' ? `Applied: /${p.kind} for ${p.trip}.`
         : a.result === 'stale' ? `Refused: /${p.kind} for ${p.trip} is no longer the current trip.`
           : a.result === 'expired' ? `Expired: /${p.kind} for ${p.trip} reached the worker more than 15 minutes after the confirm. Send it again.`
+            : a.result === 'changed' ? `Not applied: the day's loss grew after the figures you confirmed for ${p.trip}. Send /${p.kind} to see the new figures.`
+              : a.result === 'old' ? `Not applied: those figures are too old. Send /${p.kind} to see the current figures.`
             : `Refused: /${p.kind} for ${p.trip} was not understood.`,
     );
   }

@@ -9,7 +9,7 @@ import {
 import { melbourneDay, melbourneWeek } from './melbourne.ts';
 import type { ReservationRequest } from './reservation.ts';
 import {
-  CODE_CONTROL, type AccountHistory, type ClosedTrade, type EntryDecision, type EntryRequest, type ExitDecision,
+  CODE_CONTROL, type AccountHistory, type ClosedTrade, type DayOverride, type EntryDecision, type EntryRequest, type ExitDecision,
   type Latches, type NavMark, type OpenPosition, type RiskCode, type RiskInput, type RiskReason, type RiskSnapshot, type SizeCapEntry, type Trip,
   type WithdrawalDecision, type WithdrawalRequest,
 } from './types.ts';
@@ -31,6 +31,29 @@ const fresh = (atMs: number, nowMs: number, maxAgeMs: number): boolean => isTime
 
 const byClose = (a: ClosedTrade, b: ClosedTrade): number => a.closedAtMs - b.closedAtMs;
 const isLoss = (t: ClosedTrade): boolean => t.netPnl < 0n;
+
+/** Losses in a row at the end of `trades` (in closing order). */
+const lossStreakOf = (trades: readonly ClosedTrade[]): number => {
+  let n = 0;
+  for (let i = trades.length - 1; i >= 0 && isLoss(trades[i] as ClosedTrade); i--) n++;
+  return n;
+};
+
+/** The owner's day override in force now: given on this Melbourne day (`dayStartMs`) and not in the future. */
+export const activeOverride = (latches: Latches, dayStartMs: number, nowMs: number): DayOverride | null => {
+  const o = latches.dayOverride ?? null;
+  return o !== null && o.dayStartMs === dayStartMs && o.atMs <= nowMs ? o : null;
+};
+
+/**
+ * R7's line: the day's loss at which entries stop. The daily limit, or after an owner override of a tripped R7 a further
+ * full daily limit beyond the loss at the override (DayOverride). Shared with the status (strategy #readStops).
+ */
+export const dayLossLine = (policy: Policy, latches: Latches, dayStartMs: number, nowMs: number): bigint => {
+  const limit = ofBps(policy.capital.bankroll, policy.loss.dailyBps, 'floor');
+  const o = activeOverride(latches, dayStartMs, nowMs);
+  return o === null || o.dayLossAt === null ? limit : o.dayLossAt + limit;
+};
 
 /** An R8 review that is due: the window of `trades` trades closed from `fromMs` to `toMs` holds `losses` losses. */
 export interface LossReviewTrip {
@@ -219,8 +242,7 @@ const figures = (policy: Policy, a: AccountHistory, latches: Latches, nowMs: num
   const base = weekBase(a, week.start, atWeek.equity);
 
   const trades = [...a.closedTrades].sort(byClose);
-  let lossStreak = 0;
-  for (let i = trades.length - 1; i >= 0 && isLoss(trades[i] as ClosedTrade); i--) lossStreak++;
+  const lossStreak = lossStreakOf(trades);
 
   if (equity <= 0n || atWeek.equity <= 0n) problems.push(reason('bankroll_invalid', 'equity is not positive'));
   return {
@@ -248,7 +270,8 @@ interface AccountCheck {
   readonly trips: readonly Trip[];
   readonly killRoom: bigint;
   readonly weekRoom: bigint;
-  readonly dailyLimit: bigint;
+  /** The day's loss at which R7 stops entries: the daily limit, or beyond an owner override (DayOverride). */
+  readonly dayLine: bigint;
 }
 
 const accountCheck = (input: RiskInput, nowMs: number): AccountCheck => {
@@ -299,17 +322,22 @@ const accountCheck = (input: RiskInput, nowMs: number): AccountCheck => {
   else if (!fresh(market.solBalance.atMs, nowMs, policy.gates.maxQuoteAgeMs)) reasons.push(reason('balance_stale', 'SOL balance is stale'));
   else if (market.solBalance.value < policy.reserve.opsFloor) reasons.push(reason('ops_reserve', 'SOL balance is below the operations floor'));
 
-  // R7: today's realized and marked loss against the daily trigger (costs of a new trade are added per entry).
-  const dailyLimit = ofBps(policy.capital.bankroll, policy.loss.dailyBps, 'floor');
-  if (s.dayLoss >= dailyLimit) reasons.push(reason('daily_loss', 'daily loss trigger reached; entries resume at midnight Melbourne time'));
+  // The owner's override of today's day-level stops (OWNER-REVIEW /override), only on the Melbourne day it was given.
+  const override = activeOverride(latches, s.dayStartMs, nowMs);
 
-  // R8: consecutive losses.
+  // R7: today's realized and marked loss against the daily trigger (costs of a new trade are added per entry). After an
+  // override of a tripped R7, the trigger is a further full daily limit beyond the loss at the override.
+  const dayLine = dayLossLine(policy, latches, s.dayStartMs, nowMs);
+  if (s.dayLoss >= dayLine) reasons.push(reason('daily_loss', 'daily loss trigger reached; entries resume at midnight Melbourne time'));
+
+  // R8: consecutive losses. After an override of an open streak pause, only trades closed after it count.
+  const streak = override?.streak === true ? lossStreakOf(f.trades.filter((t) => t.closedAtMs > override.atMs)) : s.lossStreak;
   const last = f.trades.at(-1);
-  if (last && s.lossStreak >= policy.loss.cooldownAfterLosses && nowMs < last.closedAtMs + policy.loss.cooldownMs) {
-    reasons.push(reason('loss_cooldown', `${s.lossStreak} losses in a row; cooling down`));
+  if (last && streak >= policy.loss.cooldownAfterLosses && nowMs < last.closedAtMs + policy.loss.cooldownMs) {
+    reasons.push(reason('loss_cooldown', `${streak} losses in a row; cooling down`));
   }
-  if (last && s.lossStreak >= policy.loss.pauseDayAfterLosses && last.closedAtMs >= s.dayStartMs) {
-    reasons.push(reason('loss_day_pause', `${s.lossStreak} losses in a row; paused for the day`));
+  if (last && streak >= policy.loss.pauseDayAfterLosses && last.closedAtMs >= s.dayStartMs) {
+    reasons.push(reason('loss_day_pause', `${streak} losses in a row; paused for the day`));
   }
   const review = lossReviewTrip(f.trades, latches.lossReviewedAtMs, policy.loss);
   if (review !== null) reasons.push(reason('loss_review', `${review.losses} losses in ${policy.loss.reviewWindowTrades} trades; paused until reviewed`));
@@ -362,7 +390,7 @@ const accountCheck = (input: RiskInput, nowMs: number): AccountCheck => {
   const weekRoom = minBig(minBig(weekLimit - s.weekLoss, weekBaseLimit - s.weekBaseLoss), ofBps(s.capital, policy.loss.weeklyBps, 'floor'));
   // What the kill switch still allows (before what is open or reserved): the tighter of the two measures.
   const killRoom = s.nav === null || navKillLine === null ? s.capital - killLine : minBig(s.capital - killLine, s.nav - navKillLine);
-  return { figures: { ...f, snapshot: s }, reasons, trips, killRoom, weekRoom, dailyLimit };
+  return { figures: { ...f, snapshot: s }, reasons, trips, killRoom, weekRoom, dayLine };
 };
 
 /** The Melbourne rules refuse a non-integer or pre-2008 instant, so a bad clock throws before any figure is used. */
@@ -500,7 +528,7 @@ export const evaluateEntry = (input: RiskInput, request: EntryRequest): EntryDec
   const committed = s.openExposure + openCount * ladderUsd;
 
   // R7 per entry: L_day + C must stay below the daily trigger.
-  if (s.dayLoss < check.dailyLimit && s.dayLoss + cMaxUsd >= check.dailyLimit) {
+  if (s.dayLoss < check.dayLine && s.dayLoss + cMaxUsd >= check.dayLine) {
     reasons.push(reason('daily_loss', 'the costs of this trade would reach the daily loss trigger'));
   }
 

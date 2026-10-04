@@ -4,12 +4,12 @@
 // the review moment into the latches (control.json) only on a match, and acknowledges the result in its next heartbeat
 // (`acked`). Each command clears only its own stop; a command applied once is never applied again.
 import type { Policy } from '../../../core/src/config/index.ts';
-import type { ClosedTrade, Latches, RiskSnapshot } from '../../../core/src/risk/index.ts';
+import type { ClosedTrade, DayOverride, Latches, RiskSnapshot } from '../../../core/src/risk/index.ts';
 import { lossReviewTrip } from '../../../core/src/risk/index.ts';
-import { melbourneWeek } from '../../../core/src/risk/melbourne.ts';
+import { melbourneDay, melbourneWeek } from '../../../core/src/risk/melbourne.ts';
 
-export type OwnerKind = 'review' | 'rearm' | 'weekly';
-export const OWNER_KINDS: readonly OwnerKind[] = ['review', 'rearm', 'weekly'];
+export type OwnerKind = 'review' | 'rearm' | 'weekly' | 'override';
+export const OWNER_KINDS: readonly OwnerKind[] = ['review', 'rearm', 'weekly', 'override'];
 
 /** A command from the watchdog: its id, what it clears, the trip the owner confirmed, and when (watchdog time). */
 export interface ReplyCommand {
@@ -17,12 +17,22 @@ export interface ReplyCommand {
   readonly kind: string;
   readonly trip: string;
   readonly at: number | null;
+  /** /override: the offer the owner confirmed (its evidence's `offer`), or null. */
+  readonly offer?: number | null;
 }
 
-export type OwnerResult = 'applied' | 'stale' | 'invalid' | 'expired';
+/**
+ * `changed`: an /override whose day loss grew after the offer the owner confirmed; it is offered again with the new
+ * figures. `old`: an /override naming an offer older than OFFER_KEEP_MS (its figures are too old to apply).
+ */
+export type OwnerResult = 'applied' | 'stale' | 'invalid' | 'expired' | 'changed' | 'old';
 
 /** A confirm counts for 15 minutes (ops ruling): a /rearm never applies days later on evidence the owner saw long before. */
 export const COMMAND_TTL_MS = 15 * 60_000;
+/** /override offers are kept this long (the confirm window plus a margin), whatever the heartbeat rate; older ones are `old`. */
+export const OFFER_KEEP_MS = COMMAND_TTL_MS + 5 * 60_000;
+/** A cap on the offers kept (a 1 s heartbeat for OFFER_KEEP_MS is 1,200). */
+export const OFFER_KEEP_MAX = 2048;
 
 /** A command handled, kept in control.json so a repeat is a no-op and its result is acknowledged. */
 export interface HandledCommand {
@@ -46,14 +56,23 @@ export interface OpenStop {
   /** The trip's moment: the review written must be strictly later. */
   readonly atMs: number;
   readonly evidence: Evidence;
+  /** /override only: the override an applied confirm writes (its `atMs` set when applied). */
+  readonly override?: Omit<DayOverride, 'atMs'>;
+  /** /override only: the day's loss on this valuation (micro-dollars), compared with the offer the owner confirmed. */
+  readonly dayLoss?: bigint;
 }
 
 export type OpenStops = Readonly<Record<OwnerKind, OpenStop | null>>;
 
 export const tripId = (kind: OwnerKind, atMs: number): string => `${kind}-${atMs}`;
+/** /override's trip: the Melbourne day and how many overrides it already had, so a confirm fits one override only. */
+export const overrideTrip = (dayStartMs: number, count: number): string => `override-${dayStartMs}-${count}`;
 
 const ID = /^[A-Za-z0-9:_-]{1,64}$/;
-const TRIP = /^(review|rearm|weekly)-\d{1,16}$/;
+const TRIP = /^((review|rearm|weekly)-\d{1,16}|override-\d{1,16}-\d{1,4})$/;
+
+/** Risk's day-level stops the owner can override (R7, and R8's streak pauses; never the R8 review). */
+const DAY_CODES = ['daily_loss', 'loss_cooldown', 'loss_day_pause'] as const;
 
 export interface StopInputs {
   readonly latches: Latches;
@@ -63,6 +82,19 @@ export interface StopInputs {
   readonly netLamports: (fromMs: number, toMs: number) => bigint | null;
   /** The latest valuation, for the SOL figures; null before the first one. */
   readonly snapshot: RiskSnapshot | null;
+  /** Risk's reason codes on that valuation (its exit check), for the day-level stops; empty before the first one. */
+  readonly codes: readonly string[];
+  /**
+   * That valuation was fully marked at a fresh SOL price (marks.ts `latchable`, the RISK-LATCH evidence rule). Otherwise
+   * an unknown mark stands in as a total loss, so its day loss is not evidence: /override is neither offered nor applied.
+   */
+  readonly latchable: boolean;
+  /** Micro-dollars as lamports at the current SOL price, or null without one (SOL figures until SOL-BOOKS). */
+  readonly toLamports: (usd: bigint) => bigint | null;
+  /** R7's line in force on that valuation's day (core dayLossLine: the limit, or beyond an override), micro-dollars. */
+  readonly dayLine: bigint;
+  /** /override: this offer's number (its heartbeat's time), shown in its evidence; the owner's confirm names it. */
+  readonly offer: number;
 }
 
 const lamports = (v: bigint | null): string | null => (v === null ? null : v.toString());
@@ -92,15 +124,38 @@ export const openStops = (i: StopInputs): OpenStops => {
       trip: tripId('weekly', l.weeklyTrippedAtMs), atMs: l.weeklyTrippedAtMs,
       evidence: { tripped_ms: l.weeklyTrippedAtMs, week_ends_ms: melbourneWeek(l.weeklyTrippedAtMs).end, equity_lamports: lamports(s?.equitySol ?? null) },
     },
+    override: overrideStop(i),
   };
 };
 
+/** /override: open while risk's last valuation shows a day-level stop on today's Melbourne day. */
+const overrideStop = (i: StopInputs): OpenStop | null => {
+  const s = i.snapshot;
+  const daily = i.codes.includes('daily_loss');
+  const streak = i.codes.includes('loss_cooldown') || i.codes.includes('loss_day_pause');
+  if (s === null || !i.latchable || !DAY_CODES.some((c) => i.codes.includes(c))) return null;
+  const prev = i.latches.dayOverride ?? null;
+  const count = prev !== null && prev.dayStartMs === s.dayStartMs ? prev.count : 0;
+  return {
+    trip: overrideTrip(s.dayStartMs, count), atMs: s.dayStartMs,
+    evidence: {
+      daily: daily ? 1 : 0, streak: streak ? s.lossStreak : 0, day_loss_lamports: lamports(i.toLamports(s.dayLoss)),
+      day_line_lamports: lamports(i.toLamports(i.dayLine)), overrides: count, day_ends_ms: s.dayStartMs + melbourneDayLength(s.dayStartMs),
+      offer: i.offer,
+    },
+    dayLoss: s.dayLoss,
+    override: { dayStartMs: s.dayStartMs, dayLossAt: daily ? s.dayLoss : null, streak, count: count + 1, ...(count > 0 && prev !== null ? { firstAtMs: prev.firstAtMs ?? prev.atMs } : {}) },
+  };
+};
+
+/** The length of the Melbourne day starting at `dayStartMs` (23, 24 or 25 hours across daylight saving). */
+const melbourneDayLength = (dayStartMs: number): number => melbourneDay(dayStartMs).end - dayStartMs;
+
 /** The heartbeat's `review` block: the open stops by kind, null when none is open. */
-export const reviewBlock = (stops: OpenStops): Record<OwnerKind, { readonly trip: string; readonly evidence: Evidence } | null> => ({
-  review: stops.review === null ? null : { trip: stops.review.trip, evidence: stops.review.evidence },
-  rearm: stops.rearm === null ? null : { trip: stops.rearm.trip, evidence: stops.rearm.evidence },
-  weekly: stops.weekly === null ? null : { trip: stops.weekly.trip, evidence: stops.weekly.evidence },
-});
+export const reviewBlock = (stops: OpenStops): Record<OwnerKind, { readonly trip: string; readonly evidence: Evidence } | null> => {
+  const out = (s: OpenStop | null) => (s === null ? null : { trip: s.trip, evidence: s.evidence });
+  return { review: out(stops.review), rearm: out(stops.rearm), weekly: out(stops.weekly), override: out(stops.override) };
+};
 
 /**
  * The commands in a heartbeat reply. Signed by nobody (it is the watchdog's answer), so every field is checked: an
@@ -114,16 +169,20 @@ export const commandsOf = (raw: unknown): ReplyCommand[] => {
     if (typeof c !== 'object' || c === null) continue;
     const { id, kind, trip, at } = c as Record<string, unknown>;
     if (typeof id !== 'string' || !ID.test(id) || typeof kind !== 'string' || typeof trip !== 'string') continue;
-    out.push({ id, kind: kind.slice(0, 16), trip: trip.slice(0, 40), at: typeof at === 'number' && Number.isSafeInteger(at) ? at : null });
+    const offer = (c as Record<string, unknown>)['offer'];
+    out.push({ id, kind: kind.slice(0, 16), trip: trip.slice(0, 40), at: typeof at === 'number' && Number.isSafeInteger(at) ? at : null, offer: typeof offer === 'number' && Number.isSafeInteger(offer) ? offer : null });
   }
   return out;
 };
 
 const isKind = (k: string): k is OwnerKind => (OWNER_KINDS as readonly string[]).includes(k);
 
-/** The latches with `kind`'s review moment written: only its own field. */
-const reviewed = (l: Latches, kind: OwnerKind, atMs: number): Latches =>
-  kind === 'review' ? { ...l, lossReviewedAtMs: atMs } : kind === 'rearm' ? { ...l, killRearmedAtMs: atMs } : { ...l, weeklyReviewedAtMs: atMs };
+/** The latches with `kind`'s review moment written: only its own field (for /override, the day override). */
+const reviewed = (l: Latches, kind: OwnerKind, atMs: number, stop: OpenStop): Latches =>
+  kind === 'review' ? { ...l, lossReviewedAtMs: atMs }
+    : kind === 'rearm' ? { ...l, killRearmedAtMs: atMs }
+      : kind === 'weekly' ? { ...l, weeklyReviewedAtMs: atMs }
+        : stop.override === undefined ? l : { ...l, dayOverride: { firstAtMs: atMs, ...stop.override, atMs } };
 
 /**
  * One command against the open stops. Applied only when it was confirmed within COMMAND_TTL_MS, its kind's stop is open,
@@ -133,6 +192,7 @@ const reviewed = (l: Latches, kind: OwnerKind, atMs: number): Latches =>
  */
 export const handleCommand = (
   c: ReplyCommand, stops: OpenStops, latches: Latches, handled: readonly HandledCommand[], nowMs: number,
+  offered: (offer: number) => bigint | undefined = () => undefined,
 ): { readonly latches: Latches; readonly entry: HandledCommand } | null => {
   if (handled.some((h) => h.id === c.id)) return null;
   const done = (result: OwnerResult, l: Latches = latches) => ({ latches: l, entry: { id: c.id, kind: c.kind, trip: c.trip, result, atMs: nowMs } });
@@ -141,7 +201,29 @@ export const handleCommand = (
   if (Math.abs(nowMs - c.at) > COMMAND_TTL_MS) return done('expired');
   const stop = stops[c.kind];
   if (stop === null || stop.trip !== c.trip || nowMs <= stop.atMs) return done('stale');
-  return done('applied', reviewed(latches, c.kind, nowMs));
+  if (c.kind === 'override') {
+    // The owner confirmed one offer's figures (supervisor ruling, golden rule): never a looser line than those. An offer
+    // this process did not make (a restart in between) is stale; a day that got worse since is `changed`, and the next
+    // heartbeat offers it again with the new figures; otherwise the fresh figure (no worse) is used.
+    const offer = c.offer ?? null;
+    const was = offer === null ? undefined : offered(offer);
+    // An offer older than the window is not kept: its figures are too old (not a trip that changed).
+    if (was === undefined && offer !== null && nowMs - offer > OFFER_KEEP_MS) return done('old');
+    if (stop.override === undefined || stop.dayLoss === undefined || was === undefined) return done('stale');
+    if (stop.dayLoss > was) return done('changed');
+  }
+  return done('applied', reviewed(latches, c.kind, nowMs, stop));
+};
+
+/**
+ * A journal line's fields: an `entry` decided while an owner day override held says so. Judged at the entry intent's
+ * decision moment, not at the fill: an entry decided before the override and filled after it is not tagged. The day's
+ * first override counts (a later one on the same day replaces it in the latches). Unknown decision moment: not tagged.
+ */
+export const withOverrideTag = (kind: string, fields: Readonly<Record<string, unknown>>, latches: Latches, decidedAtMs: number | null): Readonly<Record<string, unknown>> => {
+  const o = latches.dayOverride ?? null;
+  if (kind !== 'entry' || decidedAtMs === null || o === null || melbourneDay(decidedAtMs).start !== o.dayStartMs) return fields;
+  return decidedAtMs >= (o.firstAtMs ?? o.atMs) ? { ...fields, override: true } : fields;
 };
 
 /** The handled list with `entry` added, newest last, capped. */
