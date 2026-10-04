@@ -36,7 +36,8 @@ export const createOf = (v: unknown): { readonly mint: string; readonly creator:
   return Number.isSafeInteger(createdAtMs) ? { mint: d['mint'], creator: d['creator'], createdAtMs } : null;
 };
 
-interface Known {
+/** A label as the index holds it: when it became known, and the rule that made it (null when the label named none). */
+export interface Known {
   readonly at: Moment;
   readonly kind: string | null;
 }
@@ -197,6 +198,100 @@ export class DeployerIndex {
   get last(): Moment | null {
     return this.#last;
   }
+
+  /**
+   * PERSIST-1: the index as of `asOf` (at or after the last event observed), for a restart without a re-fetch.
+   * Entries older than `retainFromMs` are left out, and the index's own start moves up to it, so the restored index
+   * never claims to have watched what it no longer holds.
+   */
+  snapshot(asOf: Moment, retainFromMs = Number.MIN_SAFE_INTEGER): DeployerIndexState {
+    if (this.#last !== null && compareMoments(this.#last, asOf) > 0) throw new RangeError('the index has observed events after the snapshot moment');
+    const keep = <V>(m: Map<string, Map<string, V>>, ms: (v: V) => number) =>
+      [...m].map(([creator, inner]) => [creator, [...inner].filter(([, v]) => ms(v) >= retainFromMs)] as const)
+        .filter(([, inner]) => inner.length > 0)
+        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    const first = this.#first === null ? null : this.#first.receivedAt >= retainFromMs ? this.#first : { ...this.#first, receivedAt: retainFromMs };
+    return {
+      asOf, first, last: this.#last, seeded: this.#seeded,
+      mints: keep(this.#mints, (t) => t), rugs: keep(this.#rugs, (k) => k.at.receivedAt), unjudged: keep(this.#unjudged, (k) => k.at.receivedAt),
+      createVias: [...this.#createVias].sort(),
+      lost: [...this.#lost].filter(([, l]) => l.atMs >= retainFromMs).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+    };
+  }
+
+  /** PERSIST-1: an index restored from `snapshot`. A malformed state throws; the caller then discards the file. */
+  static restore(s: DeployerIndexState): DeployerIndex {
+    const idx = new DeployerIndex();
+    const moment = (m: unknown): Moment | null => {
+      if (m === null) return null;
+      if (typeof m !== 'object' || m === null) throw new RangeError('bad moment');
+      const o = m as Record<string, unknown>;
+      if (typeof o['slot'] !== 'bigint' || !Number.isSafeInteger(o['txIndex']) || !Number.isSafeInteger(o['ixIndex']) || !Number.isSafeInteger(o['receivedAt'])) throw new RangeError('bad moment');
+      return { slot: o['slot'], txIndex: o['txIndex'] as number, ixIndex: o['ixIndex'] as number, receivedAt: o['receivedAt'] as number };
+    };
+    const asOf = moment(s.asOf);
+    if (asOf === null) throw new RangeError('a snapshot needs its as-of moment');
+    const pairs = <V>(rows: unknown, into: Map<string, Map<string, V>>, value: (v: unknown) => V, ms: (v: V) => number) => {
+      if (!Array.isArray(rows)) throw new RangeError('bad table');
+      for (const row of rows as unknown[]) {
+        if (!Array.isArray(row) || typeof row[0] !== 'string' || !Array.isArray(row[1])) throw new RangeError('bad row');
+        const m = new Map<string, V>();
+        for (const e of row[1] as unknown[]) {
+          if (!Array.isArray(e) || typeof e[0] !== 'string') throw new RangeError('bad entry');
+          const v = value(e[1]);
+          if (ms(v) > asOf.receivedAt) throw new RangeError('an entry is dated after the snapshot moment');
+          m.set(e[0], v);
+        }
+        into.set(row[0], m);
+      }
+    };
+    const ms = (v: unknown): number => {
+      if (!Number.isSafeInteger(v)) throw new RangeError('bad time');
+      return v as number;
+    };
+    pairs(s.mints, idx.#mints, ms, (t) => t);
+    // A label keeps its kind exactly: a string, or null for a label that named no rule (RUG-1c).
+    const known = (v: unknown): Known => {
+      if (typeof v !== 'object' || v === null) throw new RangeError('bad label');
+      const o = v as Record<string, unknown>;
+      const at = moment(o['at']);
+      if (at === null || (o['kind'] !== null && typeof o['kind'] !== 'string')) throw new RangeError('bad label');
+      return { at, kind: o['kind'] as string | null };
+    };
+    pairs(s.rugs, idx.#rugs, known, (k) => k.at.receivedAt);
+    pairs(s.unjudged, idx.#unjudged, known, (k) => k.at.receivedAt);
+    if (!Array.isArray(s.createVias) || !s.createVias.every((v) => typeof v === 'string')) throw new RangeError('bad vias');
+    for (const v of s.createVias) idx.#createVias.add(v);
+    if (!Array.isArray(s.lost)) throw new RangeError('bad lost table');
+    for (const row of s.lost as unknown[]) {
+      if (!Array.isArray(row) || typeof row[0] !== 'string' || typeof row[1] !== 'object' || row[1] === null) throw new RangeError('bad lost row');
+      const l = row[1] as Record<string, unknown>;
+      if (typeof l['via'] !== 'string') throw new RangeError('bad lost row');
+      idx.#lost.set(row[0], { atMs: ms(l['atMs']), via: l['via'] });
+    }
+    idx.#first = moment(s.first);
+    idx.#last = moment(s.last);
+    // After the as-of moment by event order or by receipt time: either way not something the snapshot could know.
+    for (const m of [idx.#first, idx.#last]) {
+      if (m !== null && (compareMoments(m, asOf) > 0 || m.receivedAt > asOf.receivedAt)) throw new RangeError('the snapshot claims a moment after its as-of moment');
+    }
+    if (typeof s.seeded !== 'boolean') throw new RangeError('bad seeded flag');
+    idx.#seeded = s.seeded;
+    return idx;
+  }
+}
+
+/** A deployer index saved by `snapshot` (PERSIST-1). Only public chain data and our own labels. */
+export interface DeployerIndexState {
+  readonly asOf: Moment;
+  readonly first: Moment | null;
+  readonly last: Moment | null;
+  readonly seeded: boolean;
+  readonly mints: readonly (readonly [string, readonly (readonly [string, number])[]])[];
+  readonly rugs: readonly (readonly [string, readonly (readonly [string, Known])[]])[];
+  readonly unjudged: readonly (readonly [string, readonly (readonly [string, Known])[]])[];
+  readonly createVias: readonly string[];
+  readonly lost: readonly (readonly [string, { readonly atMs: number; readonly via: string }])[];
 }
 
 export type History = (key: string, from: Moment, to?: Moment) => readonly AsOfEntry[] | { readonly ok: false; readonly reason: 'future' };
