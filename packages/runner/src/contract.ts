@@ -147,6 +147,16 @@ export type JournalKind =
    */
   | 'exit_capable';
 
+/**
+ * The fields of a `recovered` line, typed so the worker writes what the runner reads (no cast can hide drift). A
+ * first boot on an empty state dir (the tabletop's chain rebuild, or a genuinely new host) reports source 'chain'.
+ */
+export interface RecoveredFields {
+  readonly source: 'state' | 'chain';
+  readonly pending_exits: readonly string[];
+  readonly positions: readonly { readonly trade: string; readonly universe: string }[];
+}
+
 /** One line of journal.jsonl. Written with a synchronous append per line, so a crash can tear only the last line. */
 export interface JournalLine {
   readonly seq: number;

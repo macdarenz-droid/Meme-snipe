@@ -20,9 +20,16 @@ import {
 import { EXEC_HEALTH_KEY, TX_CREATE_PREFIX, holdersKey, lpKey, migrationKey, poolKey, simKey, softKey, streamKey, xcheckKey, type FactObs } from '../../core/src/gates/index.ts';
 import { SOL_PRICE_KEY, feesKey } from '../src/engine/strategy.ts';
 import { type MicroUsd, microUsdToLamports } from '../../core/src/units/index.ts';
+import type { PoolState } from '../../core/src/amm/index.ts';
+import { RAW, STREAMS } from '../../core/src/facts/index.ts';
+import { account } from '../../core/test/gates/world.ts';
+import { swapLog } from '../../core/test/facts/swaps.ts';
 
 /** Virtual time: a wait moves the clock by its length and resolves on the next turn of the event loop. */
-export const virtualTimers = (start: number): Timers & { set(ms: number): void } => {
+/** The timers a test drives: it moves the clock. */
+export type TestTimers = Timers & { set(ms: number): void };
+
+export const virtualTimers = (start: number): TestTimers => {
   let now = start;
   let next = 1;
   const cancelled = new Set<number>();
@@ -48,7 +55,7 @@ export const virtualTimers = (start: number): Timers & { set(ms: number): void }
  * Timers that fire only once the virtual clock reaches them (the test moves it with `set`): for a wait, such as the
  * seed's cap, that must not elapse at its first turn as `virtualTimers` lets it.
  */
-export const dueTimers = (start: number): Timers & { set(ms: number): void } => {
+export const dueTimers = (start: number): TestTimers => {
   let now = start;
   let next = 1;
   const due = new Map<number, { readonly at: number; readonly fn: () => void }>();
@@ -76,8 +83,25 @@ export const dueTimers = (start: number): Timers & { set(ms: number): void } => 
 
 export const tempState = (): string => mkdtempSync(join(tmpdir(), 'zeroed-worker-'));
 
+/**
+ * Default health and API ports, distinct per test worker process and per worker made in it: test files run in
+ * parallel processes, and a fixed default (the health port 18790, the API's live 8788) let two of them bind the same
+ * address, failing one start. 21000 and up, clear of the fixed 18xxx ports some tests name.
+ */
+let made = 0;
+const defaultPorts = (): { readonly health: number; readonly api: number } => {
+  const pool = Number(process.env['VITEST_POOL_ID'] ?? '1') % 40;
+  const k = made++ % 100;
+  const health = 21_000 + pool * 200 + k * 2;
+  return { health, api: health + 1 };
+};
+
 export const testConfig = (stateDir: string, over: Record<string, string> = {}): WorkerConfig => {
-  const p = parseConfig({ ZEROED_STATE_DIR: stateDir, ZEROED_MODE: 'paper', ZEROED_RECORDER: 'on', ZEROED_SIMULATE: 'on', ZEROED_DRILLS: 'on', ZEROED_HEALTH_ADDR: '127.0.0.1:18790', ZEROED_GIT_SHA: 'testsha', ...over }, () => null);
+  const ports = defaultPorts();
+  const p = parseConfig({
+    ZEROED_STATE_DIR: stateDir, ZEROED_MODE: 'paper', ZEROED_RECORDER: 'on', ZEROED_SIMULATE: 'on', ZEROED_DRILLS: 'on',
+    ZEROED_HEALTH_ADDR: `127.0.0.1:${ports.health}`, ZEROED_API_ADDR: `127.0.0.1:${ports.api}`, ZEROED_GIT_SHA: 'testsha', ...over,
+  }, () => null);
   if (!p.ok) throw new Error(p.message);
   return p.config;
 };
@@ -107,19 +131,23 @@ export interface Harness {
   /** The scripted sources, once start() built them; and the start order (seed hook, sources built, each start). */
   readonly sources: ReturnType<typeof scriptedSource>[];
   readonly order: string[];
-  readonly timers: ReturnType<typeof virtualTimers>;
+  readonly timers: TestTimers;
   readonly legs: SimLeg[];
   readonly logs: string[];
   readonly stateDir: string;
   readonly session: PolicySession;
 }
 
-/** The conservative paper scenario, with every attempt landing unless a test asks otherwise. */
-// Every attempt lands, and in its regular landing window: the paper draw is seeded by the boot id, which holds the
-// process id, so a landing-tail draw would make a test's outcome depend on the test process's pid.
+/**
+ * The conservative paper scenario, with every attempt landing, in its regular landing window, unless a test asks
+ * otherwise (RUN-1d). The draws are the same in every process anyway: the boot is pinned (`boot-<n>`).
+ */
 export const LANDS = { ...FILL_CONFIG.scenarios[PAPER_SCENARIO], landPpm: { pumpswap: 1_000_000n, 'pump-curve': 1_000_000n }, landingTail: { ...FILL_CONFIG.scenarios[PAPER_SCENARIO].landingTail, ppm: 0n } };
 
-export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof LANDS; stateDir?: string; timers?: ReturnType<typeof virtualTimers>; edgePpm?: bigint; http?: HttpClient; key?: string | null; config?: Record<string, string>; fetched?: string[]; found?: boolean; facts?: FactSource[]; seed?: (r: SeedRequest) => Promise<SeedResult>; seedWaitMs?: number; entry?: { timing: 'gates' | 'random'; salt: string }; sources?: (ctx: SourcesContext) => FeedSource[]; exposureRpc?: SeedRpc; ops?: WorkerDeps['ops']; universe?: 'U1' | 'U2'; seedMaxMs?: number; worldFault?: WorkerDeps['worldFault']; watchRead?: WorkerDeps['watchRead'] | null; watchHalted?: () => boolean; schedulers?: NonNullable<WorkerDeps['schedulers']> } = {}): Harness => {
+/** Boots made per state folder: a test's n-th worker is `boot-<n>` whatever the process, its pid or the other tests. */
+const boots = new Map<string, number>();
+
+export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof LANDS; stateDir?: string; timers?: TestTimers; edgePpm?: bigint; http?: HttpClient; key?: string | null; config?: Record<string, string>; fetched?: string[]; found?: boolean; facts?: FactSource[]; seed?: (r: SeedRequest) => Promise<SeedResult>; seedWaitMs?: number; entry?: { timing: 'gates' | 'random'; salt: string }; sources?: (ctx: SourcesContext) => FeedSource[]; exposureRpc?: SeedRpc; ops?: WorkerDeps['ops']; universe?: 'U1' | 'U2'; seedMaxMs?: number; simulate?: (leg: SimLeg) => Promise<DryRunRecord>; worldFault?: WorkerDeps['worldFault']; watchRead?: WorkerDeps['watchRead'] | null; watchHalted?: () => boolean; schedulers?: NonNullable<WorkerDeps['schedulers']> } = {}): Harness => {
   const stateDir = o.stateDir ?? tempState();
   const timers = o.timers ?? virtualTimers(T - 16 * 86_400_000);
   const session = startSession(TRIAL_POLICY);
@@ -127,7 +155,10 @@ export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof L
   const logs: string[] = [];
   const sources: ReturnType<typeof scriptedSource>[] = [];
   const order: string[] = [];
+  const n = boots.get(stateDir) ?? 0;
+  boots.set(stateDir, n + 1);
   const worker = new Worker({
+    boot: `boot-${n}`,
     config: testConfig(stateDir, { WATCHDOG_URL: 'https://watchdog.example.workers.dev', ...o.config }),
     session, rugs: RUG_CONFIG,
     strategy: { ...strategyConfig(session.policy, FILL_CONFIG, RESEARCH_CONFIG, o.edgePpm ?? 400_000n, o.entry), ...(o.universe === undefined ? {} : { universe: o.universe }) },
@@ -145,7 +176,7 @@ export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof L
       sources.push(...made);
       return made;
     }),
-    simulate: okSimulation(legs),
+    simulate: o.simulate ?? okSimulation(legs),
     fetchTx: async (sig) => {
       o.fetched?.push(sig);
       return o.found ?? false;
@@ -185,9 +216,17 @@ export class Market {
   withFees = true;
   /** Fact keys never published (a fact a fault keeps from being read). */
   omit: ReadonlySet<string> = new Set();
+  /**
+   * Test-only switch: keep publishing the pool fact with `pool()` while a position on the mint is held. Off by
+   * default, as live (POS-1): after entry nothing re-reads the pool, and its state moves only with `chainSwap`.
+   */
+  heldPoolFacts = false;
+  /** The pool's reserves as the last `accountsRead` or `chainSwap` left them. */
+  #chain: PoolState | null = null;
 
-  constructor(h: Harness) {
+  constructor(h: Harness, o: { readonly heldPoolFacts?: boolean } = {}) {
     this.#h = h;
+    this.heldPoolFacts = o.heldPoolFacts ?? false;
   }
 
   get now(): number {
@@ -224,7 +263,7 @@ export class Market {
       return { ...v, obs: { ...v.obs, slot: v.obs.slot === null ? null : slot, receivedAt: this.now - 50, ...over } };
     };
     const base = now(poolKey(MINT)) as unknown as Record<string, unknown>;
-    this.fact(poolKey(MINT), { ...base, quoteVault: ((base['quoteVault'] as bigint) * quoteScalePpm) / 1_000_000n });
+    if (this.heldPoolFacts || !this.held()) this.fact(poolKey(MINT), { ...base, quoteVault: ((base['quoteVault'] as bigint) * quoteScalePpm) / 1_000_000n });
     if (this.withFees) this.fact(feesKey(MINT), FEE_CONTEXT);
     this.fact(SOL_PRICE_KEY, { value: SOL_PRICE, atMs: this.now - 50 });
     for (const k of [lpKey(MINT), holdersKey(MINT), softKey(MINT), xcheckKey(MINT), EXEC_HEALTH_KEY]) this.fact(k, now(k));
@@ -235,6 +274,52 @@ export class Market {
     this.fact(simKey(MINT), { ...now(simKey(MINT)), spend, paid: q.trade.paid, proceeds: q.trade.proceeds });
     const stream = facts.get(streamKey('chain'))!.value as { obs: FactObs; gapFreeSince: bigint };
     this.fact(streamKey('chain'), { ...stream, obs: { ...stream.obs, slot, receivedAt: this.now - 50 } });
+  }
+
+  /** A position on the passing mint is open or closing. */
+  held(): boolean {
+    return Object.values(this.#h.worker.book.positions).some((p) => String(p.mint) === MINT && p.status !== 'closed');
+  }
+
+  /** The pool's trade stream starts (the confirmed logs watch on the pool, FACTS-1 STREAMS.trades), from `fromSlot`. */
+  tradesStart(fromSlot: bigint): void {
+    this.offchain(`coverage:${STREAMS.trades(POOL_ADDRESS)}:start`, { fromSlot, via: `logs:${POOL_ADDRESS}` });
+  }
+
+  /** A coverage gap on the pool's trade stream (`toSlot` null: still open). */
+  tradesGap(fromSlot: bigint, toSlot: bigint | null): void {
+    this.offchain(`coverage:${STREAMS.trades(POOL_ADDRESS)}:gap`, { fromSlot, toSlot, reason: 'disconnect', via: `logs:${POOL_ADDRESS}` });
+  }
+
+  /**
+   * A confirmed account read of the real passing pool and its vaults answered for `slot`: the producer's base. The mint
+   * account is left out, so the passing mint fact (re-published with each slot) is not replaced by one that ages.
+   */
+  accountsRead(slot: bigint): void {
+    const accounts = [POOL_ADDRESS, POOL.poolBaseTokenAccount, POOL.poolQuoteTokenAccount].map((a) => {
+      const x = account(a);
+      return { address: a, owner: x.owner, data: x.dataBase64 };
+    });
+    this.offchain(RAW.accounts(MINT), { mint: MINT, slot, commitment: 'confirmed', accounts });
+    const f = facts0().get(poolKey(MINT))!.value as { baseVault: bigint; quoteVault: bigint; pool: { virtualQuoteReserves?: bigint } };
+    this.#chain = { baseReserve: f.baseVault, quoteVault: f.quoteVault, virtualQuoteReserves: f.pool.virtualQuoteReserves ?? 0n };
+  }
+
+  /** The pool's reserves as the chain now holds them (after the last `chainSwap`). */
+  get chainState(): PoolState {
+    if (this.#chain === null) throw new Error('no accounts read yet');
+    return this.#chain;
+  }
+
+  /**
+   * A real swap on the passing pool continuing its reserves: a confirmed logs notification whose `Program data:` line is
+   * the Borsh BuyEvent/SellEvent the program logs (amounts from the exact PumpSwap math), in slot `slot`.
+   */
+  chainSwap(side: 'buy' | 'sell', base: bigint, slot: bigint): void {
+    const n = ++this.#swaps;
+    const { logs, after } = swapLog({ pool: POOL_ADDRESS, coinCreator: DEV, supply: SUPPLY, pre: this.chainState, side, base, atMs: this.now });
+    this.#h.worker.feed.ingest('helius', { type: 'logs', signature: `chainswap${n}`, slot, err: null, via: `logs:${POOL_ADDRESS}`, logs, commitment: 'confirmed' }, { receivedAt: this.now });
+    this.#chain = after;
   }
 
   /** A PumpSwap swap on the passing pool, as decoded from its log line, at the passing fee terms. */
@@ -266,9 +351,20 @@ export class Market {
   }
 }
 
+/**
+ * Runs market time in slices until `ready` holds, up to `maxMs`; returns whether it held. Paper effects land through
+ * timers, so a busy machine moves when one lands inside the virtual timeline, never whether it lands: an assertion on
+ * an effect waits for it instead of assuming a fixed window.
+ */
+export const until = async (m: Market, maxMs: number, ready: () => boolean, each?: () => void): Promise<boolean> => {
+  const end = m.now + maxMs;
+  while (!ready() && m.now < end) await m.run(400, 400, each);
+  return ready();
+};
+
 /** Sets up 15 days of coverage, a migrated candidate and minute pool bars, then every passing fact at T. */
-export const passingMarket = async (h: Harness, o: { readonly fees?: boolean; readonly omit?: readonly string[] } = {}): Promise<Market> => {
-  const m = new Market(h);
+export const passingMarket = async (h: Harness, o: { readonly fees?: boolean; readonly heldPoolFacts?: boolean; readonly omit?: readonly string[] } = {}): Promise<Market> => {
+  const m = new Market(h, { heldPoolFacts: o.heldPoolFacts ?? false });
   m.withFees = o.fees ?? true;
   m.omit = new Set(o.omit ?? []);
   const facts = facts0();
