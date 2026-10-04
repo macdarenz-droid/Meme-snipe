@@ -75,9 +75,12 @@ export interface Frame {
    * Where the frame sits on the timeline, fixed by the live Feed at receipt and recorded:
    * `chain` places it at its own slot and in-slot position; `offchain` places it after everything else in
    * `slot` (the open slot at receipt), which is how a fact with no slot, or a lookup answered after its own slot
-   * was released, enters the timeline without reaching back into the past.
+   * was released, enters the timeline without reaching back into the past. `arrival` (FILL-ORDER, set by the live
+   * Feed on every off-chain placement since) keeps the slot's off-chain frames in arrival order (`seq`) after its
+   * notice: a fill's transactions, ingested oldest first at one receipt time, would otherwise take id (signature)
+   * order. Recordings made before it carry no `arrival` and replay as they did.
    */
-  readonly place: { readonly at: 'chain' | 'offchain'; readonly slot: bigint };
+  readonly place: { readonly at: 'chain' | 'offchain'; readonly slot: bigint; readonly arrival?: true };
   /** A later copy of a fact already received (see `dedupKey`). Recorded, never released. */
   readonly duplicate: boolean;
   readonly body: FrameBody;
@@ -138,7 +141,10 @@ const meta = (f: Frame) => ({ source: f.source, backfilled: f.backfilled, seq: f
 
 /** The events of one frame. `ranks` must already hold the frame's signature when it is chain-placed. */
 export const eventsOfFrame = (f: Frame, ranks: ReadonlyMap<string, number>): FeedEvent[] => {
-  const off: Moment = { slot: f.place.slot, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt: f.receivedAt };
+  // FILL-ORDER: same-moment events are released in id order, and ids start with the signature; an `arrival` frame
+  // therefore takes its arrival order in `ixIndex` (1 + seq, after the slot notice's 0). Receipt times never decrease
+  // with seq, so this only settles ties that id order settled before.
+  const off: Moment = { slot: f.place.slot, txIndex: OFF_CHAIN, ixIndex: f.place.arrival === true ? 1 + f.seq : OFF_CHAIN, receivedAt: f.receivedAt };
   const chain = f.place.at === 'chain';
   // Off-chain placement can repeat a fact whose dedup key was already forgotten (older than keepSlots), so its
   // ids carry the frame's seq: event ids stay unique for the whole run, as the replay requires.

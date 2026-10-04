@@ -30,13 +30,19 @@ import { ChainVolumeDays } from './volume.ts';
 import type { VolumeHour } from './raw.ts';
 import { BPS_DENOMINATOR } from '../units/index.ts';
 import {
-  RAW, decimalToMicro, parseAccountsRead, parseVolumeHour, parseExecStats, parseFunderRead, parseGoPlusRead, parseHoldersRead,
+  RAW, decimalToMicro, parseAccountsRead, parseVolumeHour, parseExecStats, parseGraduatesSeed, parseFunderRead, parseGoPlusRead, parseHoldersRead,
   parseHoldersAllRead, parseJupiterAuditRead, parseRugCheckRead, parseSimRead, parseSolUsdBar, type AccountsRead, type FunderRead,
   type HoldersAllRead, unwrap,
 } from './raw.ts';
 
 /** Holder facts not formed, and scans that fell back after a refused mint-only scan, per UTC day and reason (the coverage report reads it; it never feeds a gate). */
 export const HOLDER_ABSTENTIONS_KEY = 'facts/abstentions:holders';
+
+/**
+ * PERSIST-2: the outcome of each graduates seed, `{ source, atMs, accepted, added, reason }` (no gate reads it; the
+ * worker journals it and shows it in /health, so a restart that leaves survival unknown is visible).
+ */
+export const GRADUATES_SEED_KEY = 'facts/graduates-seed';
 
 export interface FactWrite {
   readonly key: string;
@@ -787,6 +793,10 @@ export class FactProducer {
       if (r === null || at < r.hourStartMs + HOUR_MS) return;
       // Linear in rows: a new fact only when the complete days change (a whole window loads at once after a restart).
       if (this.#volume.add(r)) put(CURVE_VOLUME_KEY, { obs: { provider, slot: null, receivedAt: at, quality: [] }, days: this.#volume.days() });
+    } else if (key === RAW.graduatesSeed) {
+      const r = parseGraduatesSeed(v);
+      if (r === null) put(GRADUATES_SEED_KEY, { source: null, atMs: at, accepted: false, added: 0, reason: 'malformed seed' });
+      else put(GRADUATES_SEED_KEY, { source: r.source, atMs: at, ...this.#seedGraduates(r, at) });
     } else if (key === RAW.exec) {
       const r = parseExecStats(v);
       if (r === null) return;
@@ -1039,8 +1049,38 @@ export class FactProducer {
 
   #resolve(p: Pending, reserveAfter: bigint): void {
     this.#pending.delete(p.pool);
+    // What this process measured replaces a seeded entry for the same mint.
+    const i = this.#graduates.findIndex((g) => g.mint === p.mint);
+    if (i >= 0) this.#graduates.splice(i, 1);
     this.#graduates.push({ mint: p.mint, migratedAtMs: p.migratedAtMs, reserveAfter });
     this.#graduatesChanged = true;
+  }
+
+  /**
+   * PERSIST-2: graduates known before this process. As-of honest: a seed dated after the moment it is released is
+   * refused whole, and an entry counts only when its survival mark was reached by the seed's own as-of moment. A mint
+   * the series already holds keeps its entry (a live measurement or an earlier seed); one that disagrees with it
+   * refuses the whole seed, since two sources that differ on one graduate cannot both be trusted for the others.
+   */
+  #seedGraduates(r: NonNullable<ReturnType<typeof parseGraduatesSeed>>, at: number): { accepted: boolean; added: number; reason: string | null } {
+    if (r.asOfMs > at) return { accepted: false, added: 0, reason: `dated ${r.asOfMs}, after its release at ${at}` };
+    const have = new Map(this.#graduates.map((g) => [g.mint, g]));
+    const add: GraduatesFact['items'][number][] = [];
+    for (const i of r.items) {
+      if (i.migratedAtMs + this.#o.survivalAfterMs > r.asOfMs) continue;
+      const h = have.get(i.mint);
+      if (h !== undefined) {
+        if (h.migratedAtMs !== i.migratedAtMs || h.reserveAfter !== i.reserveAfter) return { accepted: false, added: 0, reason: `disagrees with the series on ${i.mint}` };
+        continue;
+      }
+      have.set(i.mint, i);
+      add.push({ mint: i.mint, migratedAtMs: i.migratedAtMs, reserveAfter: i.reserveAfter });
+    }
+    if (add.length > 0) {
+      this.#graduates.push(...add);
+      this.#graduatesChanged = true;
+    }
+    return { accepted: true, added: add.length, reason: null };
   }
 
   #survival(e: MarketEvent, put: (k: string, v: unknown) => void): void {
@@ -1060,12 +1100,26 @@ export class FactProducer {
   #flushGraduates(e: MarketEvent, put: (k: string, v: unknown) => void): void {
     if (!this.#graduatesChanged) return;
     this.#graduatesChanged = false;
-    const now = e.moment.receivedAt;
-    const keepFrom = now - this.#o.graduatesKeepMs;
-    for (let i = this.#graduates.length - 1; i >= 0; i--) if (this.#graduates[i]!.migratedAtMs < keepFrom) this.#graduates.splice(i, 1);
-    put(GRADUATES_KEY, {
-      obs: { provider: 'facts', slot: null, receivedAt: now, quality: [] },
-      items: [...this.#graduates].sort((a, b) => a.migratedAtMs - b.migratedAtMs || (a.mint < b.mint ? -1 : a.mint > b.mint ? 1 : 0)),
-    });
+    const g = graduatesFact(this.#graduates, e.moment.receivedAt, this.#o.graduatesKeepMs);
+    this.#graduates.splice(0, this.#graduates.length, ...g.kept);
+    put(GRADUATES_KEY, g.value);
   }
 }
+
+type GraduateItem = GraduatesFact['items'][number];
+
+/**
+ * The graduates fact as of `nowMs` (one implementation for the live producer and the backtest, supervisor ruling):
+ * items that migrated within `keepMs` are kept, in their given order; the fact lists them by migration time, then mint.
+ */
+export const graduatesFact = (items: readonly GraduateItem[], nowMs: number, keepMs: number): { readonly kept: GraduateItem[]; readonly value: GraduatesFact } => {
+  const keepFrom = nowMs - keepMs;
+  const kept = items.filter((x) => x.migratedAtMs >= keepFrom);
+  return {
+    kept,
+    value: {
+      obs: { provider: 'facts', slot: null, receivedAt: nowMs, quality: [] },
+      items: [...kept].sort((a, b) => a.migratedAtMs - b.migratedAtMs || (a.mint < b.mint ? -1 : a.mint > b.mint ? 1 : 0)),
+    },
+  };
+};
