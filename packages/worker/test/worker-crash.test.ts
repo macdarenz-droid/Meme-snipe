@@ -2,7 +2,9 @@
 // (a) a transaction DEC-1 cannot decode is a fact gap, never a crash; (b) a crash of the engine loop exits with the crash
 // code, also during the seed; (c) a recorder that cannot write (ENOSPC) halts entries and alerts, without a crash loop,
 // and exits go on; (d) a delay sample that cannot be recorded never stops the probe.
+import { spawn } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:net';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EXIT } from '../../runner/src/contract.ts';
@@ -23,6 +25,9 @@ const kinds = (dir: string, kind: string) => lines(dir).filter((l) => l['kind'] 
 const MIG = tx('migration CreatePoolEvent');
 const GOOD = recordOf(MIG);
 const BAD = { ...GOOD, innerInstructions: null };
+
+/** What a write to a full disk throws. */
+const enospc = () => Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' });
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -122,6 +127,43 @@ describe('(b) a crash of the engine loop exits with the crash code', () => {
     expect(await h.worker.stopped).toBe(EXIT.crash);
   });
 
+  it('a stop that throws half way (a full disk at the stop line) ends as a crash, even a signal\'s clean stop (review B2)', async () => {
+    const h = makeWorker();
+    await h.worker.reconcile();
+    const write = h.worker.journal.write.bind(h.worker.journal);
+    vi.spyOn(h.worker.journal, 'write').mockImplementation(((kind: string, fields: Record<string, unknown>) => {
+      if (kind === 'stop') throw enospc();
+      return write(kind as never, fields);
+    }) as never);
+    expect(await h.worker.stop(EXIT.clean)).toBe(EXIT.crash);
+    expect(await h.worker.stopped).toBe(EXIT.crash);
+    expect(h.logs.some((l) => l.startsWith('Stop failed: Error: ENOSPC'))).toBe(true);
+  });
+
+  it('the entry, as a process: a refused start (the health port is taken) exits with the start\'s code 1, never 0 (review B2)', async () => {
+    const busy = createServer();
+    await new Promise<void>((r) => busy.listen(18786, '127.0.0.1', r));
+    try {
+      const r = await new Promise<{ status: number | null; stderr: string }>((resolve) => {
+        const child = spawn(process.execPath, ['--no-warnings', 'packages/worker/src/main.ts'], {
+          cwd: join(import.meta.dirname, '..', '..', '..'),
+          env: { PATH: process.env['PATH'] ?? '', ZEROED_STATE_DIR: tempState(), ZEROED_MODE: 'paper', ZEROED_HEALTH_ADDR: '127.0.0.1:18786', ZEROED_API_ADDR: '127.0.0.1:18789' },
+        });
+        let stderr = '';
+        child.stderr.on('data', (d: Buffer) => void (stderr += d.toString()));
+        const kill = setTimeout(() => child.kill('SIGKILL'), 60_000);
+        child.on('exit', (status) => {
+          clearTimeout(kill);
+          resolve({ status, stderr });
+        });
+      });
+      expect(r.stderr).toContain('health server: listen EADDRINUSE');
+      expect(r.status).toBe(EXIT.crash);
+    } finally {
+      busy.close();
+    }
+  }, 70_000);
+
   it('the entry exits on every stop of the worker, with its code (nothing is left lingering after a loop crash)', () => {
     const src = readFileSync(join(import.meta.dirname, '..', 'src', 'main.ts'), 'utf8');
     expect(src).toMatch(/w\.stopped\.then\(\(code\) => \{\s*credits\.flush\(\);\s*process\.exit\(code\);/);
@@ -130,7 +172,6 @@ describe('(b) a crash of the engine loop exits with the crash code', () => {
 });
 
 describe('(c) a recorder that cannot write: entries halt, the alert goes up, no crash, exits go on', () => {
-  const enospc = () => Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' });
 
   it('a throw from the recorder inside the feed\'s ingest is caught; the worker halts entries, alerts and still exits a held position', async () => {
     const h = makeWorker();
@@ -168,6 +209,66 @@ describe('(c) a recorder that cannot write: entries halt, the alert goes up, no 
     expect(h.worker.book.positions[open.id]!.status).toBe('closed');
     expect(h.worker.health().halt_reasons).toContain(reason);
     expect(await h.worker.stop()).toBe(EXIT.clean);
+  });
+
+  /**
+   * The entering market, one step at a time (what `Market.run` does), with `before(k)` run ahead of step k's facts and
+   * `arm(k)` between the facts and the step. Returns the first step whose journal has an `enter` decision, or null.
+   */
+  const drive = async (o: { readonly before?: (k: number) => void; readonly arm?: (k: number) => void } = {}) => {
+    const h = makeWorker();
+    await h.worker.reconcile();
+    const m = await passingMarket(h, { heldPoolFacts: true });
+    let entered: number | null = null;
+    const plan = [...Array<number>(40).fill(100), ...Array<number>(25).fill(400)];
+    for (let k = 0; k < plan.length; k++) {
+      o.before?.(k);
+      if (plan[k] === 400) m.slot();
+      m.pool();
+      o.arm?.(k);
+      h.worker.step();
+      h.timers.set(h.timers.now() + plan[k]!);
+      await new Promise<void>((r) => setImmediate(r));
+      if (entered === null && kinds(h.stateDir, 'decision').some((l) => l['action'] === 'enter')) entered = k;
+    }
+    // Long enough for an approved entry to land, as the control's does.
+    await m.run(8_000, 400, () => {
+      m.slot();
+      m.pool();
+    });
+    return { h, entered };
+  };
+
+  /** The control run's entering step, found once. */
+  let control: Promise<number> | null = null;
+  const enteringStep = (): Promise<number> => (control ??= (async () => {
+    const run = await drive();
+    expect(run.entered).not.toBeNull();
+    expect(kinds(run.h.stateDir, 'entry')).toHaveLength(1);
+    await run.h.worker.stop();
+    return run.entered!;
+  })());
+
+  it.each([
+    { name: 'a release fails in the entering step (inside feed.advance)', offset: 0, where: 'release' as const },
+    { name: 'a frame fails at an ingest just before the entering step', offset: 0, where: 'frame' as const },
+    { name: 'a release fails in the step before the entering step', offset: -1, where: 'release' as const },
+  ])('no entry decided at or after the fault proceeds: $name (review B1)', async ({ offset, where }) => {
+    const at = (await enteringStep()) + offset;
+    let armed = false;
+    const original = Recorder.prototype[where] as (this: Recorder, ...a: unknown[]) => void;
+    vi.spyOn(Recorder.prototype, where).mockImplementation(function (this: Recorder, ...args: unknown[]) {
+      if (armed) throw enospc();
+      original.call(this, ...args);
+    } as never);
+    // `frame` fails on the facts ingested ahead of the step; `release` fails inside the step itself.
+    const run = await drive(where === 'frame' ? { before: (n) => void (armed ||= n === at) } : { arm: (n) => void (armed ||= n === at) });
+    expect(run.h.worker.health().halt_reasons).toContain('recorder failed (ENOSPC): recording stopped, entries off until a restart');
+    expect(kinds(run.h.stateDir, 'entry')).toEqual([]);
+    expect(Object.values(run.h.worker.book.positions).filter((p) => p.status !== 'closed')).toEqual([]);
+    expect(run.h.worker.book.reserved).toBe(0n);
+    expect(kinds(run.h.stateDir, 'decision').filter((l) => l['action'] === 'entry_refused').map((l) => l['reasons'])).toEqual([['entries halted: recorder failed (ENOSPC): recording stopped, entries off until a restart', 'no exposure reserved']]);
+    await run.h.worker.stop();
   });
 
   it('a flush that fails in a step (the buffered lines meet the full disk) is the same fault, not a loop crash', async () => {

@@ -109,8 +109,14 @@ describe('the app API (UI-2 contract)', () => {
     expect(result).toEqual({ ok: true });
     const post = (c: string) => fetch(`http://127.0.0.1:18785/api/v1/commands/${c}`, { method: 'POST' });
     for (let k = 0; k < 50; k++) expect((await post('pause')).status).toBe(403);
-    // The next minute: the count of the rest comes first, and a command name is cut to 32 characters on its line.
+    // Inside the minute the heartbeat writes no count; once the minute is over it does, though no refusal follows.
+    await h.worker.heartbeat();
+    const count = () => readFileSync(join(h.stateDir, 'journal.jsonl'), 'utf8').split('\n').filter((l) => l.includes('more commands refused')).length;
+    expect(count()).toBe(0);
     h.timers.set(h.timers.now() + 60_000);
+    await h.worker.heartbeat();
+    expect(count()).toBe(1);
+    // The next refusal starts a new minute; a command name is cut to 32 characters on its line.
     expect((await post('x'.repeat(5_000))).status).toBe(404);
     await h.worker.stop();
     const refused = readFileSync(join(h.stateDir, 'journal.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>)

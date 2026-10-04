@@ -31,6 +31,12 @@ export interface DeskDeps {
   readonly reserved: (r: { readonly intentId: string; readonly mint: string; readonly amount: bigint; readonly atMs: number }) => void;
   /** A position filled or closed (the paper wallet and closed-trade records). */
   readonly filled: (r: { readonly purpose: 'entry' | 'exit'; readonly positionId: string; readonly mint: string; readonly book: Book; readonly atMs: number; readonly reasons: readonly string[] }) => void;
+  /**
+   * A reason no entry may reserve exposure right now, or null. Checked at the reservation, the step where an approved
+   * entry becomes exposure: a fault found inside a step reaches the engine as a halt fact only later, so an entry decided
+   * at or after the fault is refused here (exits never reserve, so they are not affected).
+   */
+  readonly entriesBlocked?: () => string | null;
 }
 
 /**
@@ -181,6 +187,11 @@ export class Desk {
     const reject = (why: string): void => {
       this.#d.report({ type: 'intent', intentId, event: { type: 'reject', reason: why } });
     };
+    const blocked = this.#d.entriesBlocked?.() ?? null;
+    if (blocked !== null) {
+      this.#d.journal('decision', { action: 'entry_refused', intent: intentId, reasons: [`entries halted: ${blocked}`, 'no exposure reserved'] });
+      return reject(`entries halted: ${blocked}`);
+    }
     if (req === null || req.intentId !== intentId) return reject('reservation request missing from the risk decision');
     const event: BookEvent = {
       type: 'intent', intentId,

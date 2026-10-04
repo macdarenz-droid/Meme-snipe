@@ -418,6 +418,8 @@ export class Worker {
         this.#checkHalt(this.#d.timers.now());
       },
       reserved: (r) => this.#account.reserved(r.mint, r.atMs),
+      // The recorder fault refuses entries from the moment it is found, ahead of its halt fact (WORKER-CRASH review B1).
+      entriesBlocked: () => this.#recorderFault,
       filled: (r) => {
         this.#account.filled(r, this.#solPrice);
         if (r.purpose === 'entry') this.#entered(r.mint, r.positionId, r.atMs);
@@ -490,10 +492,9 @@ export class Worker {
     const now = this.#d.timers.now();
     const r = this.#refusals;
     if (now - r.since >= 60_000) {
-      if (r.dropped > 0) this.#journal.write('decision', { action: 'command_refused', reasons: [`${r.dropped} more commands refused`, `not journaled one by one (over ${COMMAND_LINES_PER_MINUTE} a minute)`] });
+      this.#countRefusals();
       r.since = now;
       r.written = 0;
-      r.dropped = 0;
     }
     if (r.written >= COMMAND_LINES_PER_MINUTE) {
       r.dropped++;
@@ -501,6 +502,14 @@ export class Worker {
     }
     r.written++;
     this.#journal.write('decision', { action: 'command_refused', reasons: [`command ${command.slice(0, 32)} refused`, auth === null ? 'unknown command' : `needs ${auth}`] });
+  }
+
+  /** The refusals counted but not journaled, on one line; also at the heartbeat once the minute is over (a flood that stopped). */
+  #countRefusals(): void {
+    const r = this.#refusals;
+    if (r.dropped === 0) return;
+    this.#journal.write('decision', { action: 'command_refused', reasons: [`${r.dropped} more commands refused`, `not journaled one by one (over ${COMMAND_LINES_PER_MINUTE} a minute)`] });
+    r.dropped = 0;
   }
 
   /** Every recorder write goes through here: a throw (ENOSPC) is the recorder's fault, never the caller's crash. */
@@ -1272,6 +1281,7 @@ export class Worker {
     const hb = this.#d.heartbeat;
     const url = this.#d.config.watchdogUrl;
     this.#beatSeq++;
+    if (this.#d.timers.now() - this.#refusals.since >= 60_000) this.#countRefusals();
     if (url === null || hb.key === null) return;
     const h = this.health();
     const p = Object.values(this.#engine.book.positions).find((x) => x.status !== 'closed' && x.status !== 'opening');
