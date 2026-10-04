@@ -363,6 +363,22 @@ describe('H11 on the live path: migration, a late subscribe, then trades', () =>
     expect(!r.ok && r.reason).toMatchObject({ gate: 'H16', code: 'gap', input: 'stream' });
   });
 
+  it('a reconnect gap after the catch-up: filled in full H11 passes again; a lossy fill keeps it rejecting', () => {
+    for (const filled of [true, false]) {
+      const drop = swaps.at(-2)!.slot;
+      const w = live().push(
+        slotNotice(head, at - 40),
+        coverage(stream, 'resume', { fromSlot: migrate.slot, toSlot: migrate.slot + 1n, via: `logs:${POOL}` }, head, at - 30),
+        coverage(stream, 'gap', { fromSlot: drop, toSlot: null, reason: 'disconnect', via: `logs:${POOL}` }, head, at - 20),
+      );
+      expect(h11(w, head, at).ok).toBe(false); // open while the fill runs
+      w.push(slotNotice(head + 1n, at + 1), coverage(stream, filled ? 'resume' : 'gap', { fromSlot: drop, toSlot: head, ...(filled ? {} : { reason: 'disconnect' }), via: `logs:${POOL}` }, head + 1n, at + 2));
+      const r = h11(w, head + 1n, at + 3);
+      if (filled) expect(r.ok).toBe(true);
+      else expect(!r.ok && r.reason).toMatchObject({ gate: 'H16', code: 'gap', input: 'stream' });
+    }
+  });
+
   it('coverage that starts at the first live slot, as before S0-ZERO, never passes: H16 gap', () => {
     const w = new FactWorld().push(
       ...txEvents(create), ...txEvents(complete), ...txEvents(migrate),
