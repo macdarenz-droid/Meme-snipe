@@ -2,7 +2,7 @@
 // reject mix counted once per never-entered candidate by the first typed reason of its last abstention.
 import { describe, expect, it } from 'vitest';
 import type { LogRecord } from '../../core/src/engine/index.ts';
-import { CAPPED_ESTIMAND, dayBlockMeanInterval, createRng, MAX_RETURN_CAP, mean, VETO_COMPOSITE_LEVEL } from '../../core/src/stats/index.ts';
+import { CAPPED_ESTIMAND, dayBlockMeanInterval, createRng, HOLDOUT_LOWER_LEVEL, MAX_RETURN_CAP, mean } from '../../core/src/stats/index.ts';
 import type { ScoredTrade } from '../src/study/score.ts';
 import { holdoutSummary, rejectMixOf, RETURN_CAP, typedReason } from '../src/study/summary.ts';
 
@@ -38,7 +38,7 @@ describe('holdout summary', () => {
     expect(s.holdout.n).toBe(30);
     expect(s.holdout.mean).toBeCloseTo((6 * -0.6 + 24 * 0.1) / 30, 12);
     expect(s.severeRate).toBeCloseTo(0.2, 12);
-    expect(s.lower.level).toBe(VETO_COMPOSITE_LEVEL);
+    expect(s.lower.level).toBe(HOLDOUT_LOWER_LEVEL);
     expect(s.lower.value).toBeLessThan(s.holdout.mean);
     expect(s).toMatchObject({ candidates: { count: 120, hours: 672 }, rejectMix: { 'H11:stale': 7 }, returnCap: RETURN_CAP });
     expect(RETURN_CAP).toBeGreaterThan(0);
@@ -56,7 +56,7 @@ describe('holdout summary', () => {
     expect(s.cappedCount).toBe(2);
     expect(s.belowFloorCount).toBe(0);
     // Its own day-block bootstrap on the capped returns, never G2's uncapped bound reused.
-    expect(s.lower.value).toBeCloseTo(dayBlockMeanInterval(capped, VETO_COMPOSITE_LEVEL, 'lower', { rng: createRng(1), replicates: 200 }).lower, 12);
+    expect(s.lower.value).toBeCloseTo(dayBlockMeanInterval(capped, HOLDOUT_LOWER_LEVEL, 'lower', { rng: createRng(1), replicates: 200 }).lower, 12);
     expect(RETURN_CAP).toBe(MAX_RETURN_CAP);
     expect(holdoutSummary([...trades, t('2026-10-03', -1.2)], 120, 672, {}, 1, 200).belowFloorCount).toBe(1);
   });

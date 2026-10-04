@@ -698,7 +698,7 @@ export interface G3Input {
    */
   readonly simulations: { readonly attempted: number; readonly succeeded: number; readonly errors: Readonly<Record<string, number>> };
   /**
-   * One-sided lower bound of the holdout's mean net return at level 1 − α/3 (VETO_COMPOSITE_LEVEL), from the day-block
+   * One-sided lower bound of the holdout's capped mean net return at level 1 − α/4 (HOLDOUT_LOWER_LEVEL), from the day-block
    * bootstrap of the holdout (`dayBlockMeanInterval(trades, level, 'lower', …)`) in the scoring stage. The level is
    * checked: a 95% bound would make the composite's simultaneous coverage fall below 95%.
    */
@@ -793,6 +793,12 @@ export const fisherGreater = (a: number, n1: number, b: number, n2: number): num
   return Math.min(1, p);
 };
 export const VETO_COMPOSITE_LEVEL = 1 - VETO_COMPOSITE_ALPHA;
+/**
+ * The capped holdout bound's level (S2, ruling C6): one-sided 1 − α/4, stricter than the other components' α/3, so the
+ * composite holds with at least 95% (α/3 + α/3 + α/4 < α). STATS-1g (#129) re-splits G3's α budget into quarters.
+ */
+export const HOLDOUT_LOWER_ALPHA = 0.05 / 4;
+export const HOLDOUT_LOWER_LEVEL = 1 - HOLDOUT_LOWER_ALPHA;
 
 /** Level of the joint reject-mix test; an "agree" test, so it is not widened (supervisor ruling). */
 const REJECT_MIX_ALPHA = 0.05;
@@ -1042,9 +1048,9 @@ export const gateG3 = (input: G3Input, overrides?: Partial<typeof G3_DEFAULTS>):
   const tailOk = !(vetoedCapped > 0 && keptCapped === 0) && tailP >= VETO_TAIL_ALPHA;
   if (!c.add('veto bias tail', tailOk, `capped at +300%: vetoed ${vetoedCapped} of ${scored}, kept ${keptCapped} of ${m}, one-sided Fisher p ${fmt(tailP)} (need no capped vetoed trade without a capped kept one, and p >= ${fmt(VETO_TAIL_ALPHA)})`)) extend.add('veto bias tail');
 
-  const levelOk = Math.abs(input.holdoutLower.level - VETO_COMPOSITE_LEVEL) < 1e-12;
+  const levelOk = Math.abs(input.holdoutLower.level - HOLDOUT_LOWER_LEVEL) < 1e-12;
   c.add('holdout bound level', levelOk,
-    `holdout lower bound at one-sided ${fmt(input.holdoutLower.level)} (need ${fmt(VETO_COMPOSITE_LEVEL)}, α/3 of the veto-bias composite)`);
+    `holdout lower bound at one-sided ${fmt(input.holdoutLower.level)} (need ${fmt(HOLDOUT_LOWER_LEVEL)}, α/4 for the capped holdout bound of the veto-bias composite)`);
   const selection = vComposite * Math.max(0, gapUpper);
   const execution = 2 * fillUpper; // an entry and an exit per trade
   const retainedLower = input.holdoutLower.value - selection - execution;

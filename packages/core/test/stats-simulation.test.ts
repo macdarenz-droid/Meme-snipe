@@ -324,7 +324,7 @@ describe('G3 power at 48 h, 7 days and 10 days (STATS-1b, STATS-1c)', () => {
       qualifyingRun: true, liveOnlyVetoes: { vetoed: Math.round(20 * f), eligible: Math.round(1000 * f) }, dryRunHours: hours,
       dryRunReturns: bracketTrades(41, holdoutMean, Math.round(2 * f), 30).map((t) => t.rNet),
       holdout: { n: 500, mean: holdoutMean, sd: bracketSd(holdoutMean) }, holdoutSevereRate: 0.075,
-      holdoutLower: { value: 0.06, level: 1 - 0.05 / 3, estimand: CAPPED_ESTIMAND }, holdoutCapped: 0, holdoutBelowFloor: 0,
+      holdoutLower: { value: 0.06, level: 1 - 0.05 / 4, estimand: CAPPED_ESTIMAND }, holdoutCapped: 0, holdoutBelowFloor: 0,
       candidates: { dryRunCount: Math.round(960 * f), dryRunHours: hours, backtestCount: 20_000, backtestHours: 1000 },
       rejectMix: { dryRun: { H8: Math.round(210 * f), H9: Math.round(700 * f), H11: Math.round(70 * f) }, backtest: bt },
       fillDifferences: Array.from({ length: Math.round(120 * f) }, (_, i) => 0.003 + 0.001 * Math.sin(i)), parityTestPassed: true,

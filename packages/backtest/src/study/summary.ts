@@ -1,7 +1,7 @@
 // The holdout summary G3 reads next to the sealed holdout result (shape fixed by the G3 builder, `HoldoutSummary` in
 // packages/worker/src/research/g3.ts). Written by the scoring stage only, once a universe's seal is opened.
 import type { LogRecord } from '../../../core/src/engine/index.ts';
-import { CAPPED_ESTIMAND, capReturn, createRng, dayBlockMeanInterval, MAX_RETURN_CAP, mean, RETURN_FLOOR, sd, VETO_COMPOSITE_LEVEL } from '../../../core/src/stats/index.ts';
+import { CAPPED_ESTIMAND, capReturn, createRng, dayBlockMeanInterval, MAX_RETURN_CAP, mean, RETURN_FLOOR, sd, HOLDOUT_LOWER_LEVEL } from '../../../core/src/stats/index.ts';
 import type { ScoredTrade } from './score.ts';
 
 export interface HoldoutSummary {
@@ -14,7 +14,7 @@ export interface HoldoutSummary {
   readonly belowFloorCount: number;
   /** Share of y_severe trades: blocked, or net at or below −50%. */
   readonly severeRate: number;
-  /** One-sided lower bound of the capped mean, its own day-block bootstrap, at G3's composite level (not G2's bound). */
+  /** One-sided lower bound of the capped mean, its own day-block bootstrap, at 1 − α/4 (not G2's bound). */
   readonly lower: { readonly value: number; readonly level: number };
   readonly candidates: { readonly count: number; readonly hours: number };
   /** One count per never-entered candidate, keyed `gate:code` by the first typed reason of its last abstention. */
@@ -76,14 +76,14 @@ export const holdoutSummary = (trades: readonly ScoredTrade[], candidates: numbe
   if (trades.length < 2) throw new RangeError('a holdout summary needs at least two trades');
   const capped = trades.map((t) => ({ ...t, rNet: capReturn(t.rNet) }));
   const r = capped.map((t) => t.rNet);
-  const lower = dayBlockMeanInterval(capped, VETO_COMPOSITE_LEVEL, 'lower', { rng: createRng(seed), ...(replicates === undefined ? {} : { replicates }) });
+  const lower = dayBlockMeanInterval(capped, HOLDOUT_LOWER_LEVEL, 'lower', { rng: createRng(seed), ...(replicates === undefined ? {} : { replicates }) });
   return {
     estimand: CAPPED_ESTIMAND,
     holdout: { n: trades.length, mean: mean(r), sd: sd(r) },
     cappedCount: trades.filter((t) => t.rNet > MAX_RETURN_CAP).length,
     belowFloorCount: trades.filter((t) => t.rNet < RETURN_FLOOR).length,
     severeRate: trades.filter((t) => t.ySevere).length / trades.length,
-    lower: { value: lower.lower, level: VETO_COMPOSITE_LEVEL },
+    lower: { value: lower.lower, level: HOLDOUT_LOWER_LEVEL },
     candidates: { count: candidates, hours },
     rejectMix,
     returnCap: RETURN_CAP,

@@ -5,7 +5,7 @@ import {
   burnHoldout, createHoldoutRegistry, freezeRequirement, nPower, registerHoldout, summarizeWalkForward, type WalkForwardSummary, sealHoldout, type DemotionInput, type HoldoutRegistry, type G0Input, type G1Input, type G2Input, type G2PowerResult, type G2Universe,
   type G3Input, type G4Input, type G5Input, type TradeOutcome, type HoldoutTrade, type TripleBarrierLabel,
   clopperPearsonUpper, evaluateRevalidation, VETO_COMPOSITE_LEVEL, VETO_COMPOSITE_ALPHA, g2Sensitivity, RETURN_FLOOR, scoreVetoCounterfactuals,
-  type RevalidationInput, G1_TESTS, G2_DEFAULTS, MIN_DAYS, REQUIREMENT_FLOOR, CAPPED_ESTIMAND, MAX_RETURN_CAP, fisherGreater, VETO_TAIL_ALPHA,
+  type RevalidationInput, G1_TESTS, G2_DEFAULTS, MIN_DAYS, REQUIREMENT_FLOOR, CAPPED_ESTIMAND, MAX_RETURN_CAP, fisherGreater, VETO_TAIL_ALPHA, HOLDOUT_LOWER_LEVEL,
 } from '../src/stats/index.ts';
 import { EXIT_UNIVERSES, KNOWN_PLATFORM_CHANGES, RESEARCH_CONFIG, TRIAL_POLICY } from '../src/config/index.ts';
 import { bracketTrades, dayKey, type DayTrade } from './stats-fixtures.ts';
@@ -532,7 +532,7 @@ const g3Pass: G3Input = {
   simulations: { attempted: 120, succeeded: 118, errors: { BlockhashNotFound: 2 } },
   // The 20 vetoed candidates scored as if entered, like the kept trades; the holdout's lower bound from G2.
   vetoCounterfactuals: { returns: bracketTrades(42, 0.1, 1, 20).map((t) => t.rNet), censored: 0 },
-  holdoutLower: { value: 0.06, level: VETO_COMPOSITE_LEVEL, estimand: CAPPED_ESTIMAND }, holdoutCapped: 0, holdoutBelowFloor: 0, returnCap: 0.3,
+  holdoutLower: { value: 0.06, level: HOLDOUT_LOWER_LEVEL, estimand: CAPPED_ESTIMAND }, holdoutCapped: 0, holdoutBelowFloor: 0, returnCap: 0.3,
 };
 
 describe('G3 live dry-run consistency', () => {
@@ -621,7 +621,7 @@ describe('G3 live dry-run consistency', () => {
     const shift = -0.01 - mean(kept);
     return {
       ...g3Pass, dryRunReturns: kept.map((x) => x + shift), liveOnlyVetoes: { vetoed: 100, eligible: 1000 },
-      holdout: { n: 500, mean: 0.05, sd: 0.33 }, holdoutLower: { value: 0.02, level: VETO_COMPOSITE_LEVEL, estimand: CAPPED_ESTIMAND }, vetoCounterfactuals: { returns: [], censored: 0 }, ...over,
+      holdout: { n: 500, mean: 0.05, sd: 0.33 }, holdoutLower: { value: 0.02, level: HOLDOUT_LOWER_LEVEL, estimand: CAPPED_ESTIMAND }, vetoCounterfactuals: { returns: [], censored: 0 }, ...over,
     };
   };
   test('the reviewer\'s case does not pass: with no vetoed candidate scored the dry run is extended', () => {
@@ -685,7 +685,7 @@ describe('G3 live dry-run consistency', () => {
     const d = mean(a) - mean(b);
     return { lower: d - half, upper: d + half };
   };
-  test('each composite component is computed at α/3: veto rate, gap (one-sided and two-sided) and the holdout bound', () => {
+  test('each composite component is computed at α/3 (veto rate, gap one-sided and two-sided) and the holdout bound at α/4', () => {
     expect(VETO_COMPOSITE_ALPHA).toBeCloseTo(0.05 / 3, 15);
     const r = gateG3(g3Pass);
     expect(r.metrics.vetoRateUpperComposite).toBeCloseTo(clopperPearsonUpper(20, 1000, 0.05 / 3), 12);
@@ -695,7 +695,10 @@ describe('G3 live dry-run consistency', () => {
     expect(r.metrics.vetoGapAbsUpper).toBeCloseTo(Math.max(Math.abs(two.upper), Math.abs(two.lower)), 12);
     const at95 = gateG3({ ...g3Pass, holdoutLower: { value: 0.06, level: 0.95, estimand: CAPPED_ESTIMAND } });
     expect(at95.status).toBe('fail');
-    expect(at95.reasons.join()).toMatch(/holdout bound level: .*need 0.983333/);
+    expect(at95.reasons.join()).toMatch(/holdout bound level: .*need 0.9875/);
+    // S2 ruling C6: the capped holdout bound is at 1 − α/4; one at the other components' 1 − α/3 is refused.
+    expect(HOLDOUT_LOWER_LEVEL).toBeCloseTo(1 - 0.05 / 4, 15);
+    expect(gateG3({ ...g3Pass, holdoutLower: { ...g3Pass.holdoutLower, level: VETO_COMPOSITE_LEVEL } }).reasons.join()).toMatch(/holdout bound level/);
   });
   // Mutant S3 (the |Δ| bound replaced by its point estimate) must fail this test: only Δ's uncertainty pushes the bias
   // above 5 points. Vetoed candidates are 40 points worse than kept trades, so the selection allowance is 0.
@@ -721,7 +724,7 @@ describe('G3 live dry-run consistency', () => {
     const sel = base.metrics.selectionAllowance!;
     const exec = base.metrics.executionAllowance!;
     expect(exec).toBeGreaterThan(0);
-    const r = gateG3({ ...g3Pass, holdoutLower: { value: sel + exec / 2, level: VETO_COMPOSITE_LEVEL, estimand: CAPPED_ESTIMAND } });
+    const r = gateG3({ ...g3Pass, holdoutLower: { value: sel + exec / 2, level: HOLDOUT_LOWER_LEVEL, estimand: CAPPED_ESTIMAND } });
     expect(r.metrics.retainedLower!).toBeLessThanOrEqual(0);
     expect(r.metrics.retainedLower! + exec).toBeGreaterThan(0);
     expect(r.passed).toBe(false);
