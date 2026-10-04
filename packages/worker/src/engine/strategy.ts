@@ -58,6 +58,25 @@ export const SEEDING = 'deployer index seeding';
 export const GATE_REASONS_PREFIX = 'gate_reasons ';
 /** The S0 diagnostic parts a decision relied on ride in a reason as `s0_diagnostic <part,part>`; the desk journals them as `s0_diagnostic`. */
 export const S0_DIAGNOSTIC_PREFIX = 's0_diagnostic ';
+/** No-quote reasons that mean the held pool cannot take the position's full sale: the route is lost. */
+const ROUTE_LOST: ReadonlySet<string> = new Set(['no-liquidity', 'exceeds-reserves', 'zero-output', 'unsupported-coin']);
+
+/**
+ * EXIT-ROUTE: EXIT-1's sell route for a held position, from what the quote path proves. A fresh market that quotes
+ * the full position through the venue's own math is a route (`ok`); one that refuses it for a market reason (no
+ * usable reserves, more than the vault holds, nothing left after fees, a coin the venue math does not price) is a
+ * lost route (`missing`). Anything else is unknown (null): no market, a stale or flagged one, unread protocol
+ * parameters. Unknown is never `ok`; EXIT-1 then fires nothing on the route, and its stale-quote and
+ * quote-failure rules apply. An aggregator route (Jupiter `NO_ROUTES_FOUND`) is not read: the bot only sells on
+ * the held pool.
+ */
+export const sellRouteOf = (m: Market | string, quantity: bigint, nowMs: number, maxAgeMs: number): { readonly atMs: number; readonly value: 'ok' | 'missing' } | null => {
+  if (typeof m === 'string' || quantity <= 0n || nowMs - m.atMs > maxAgeMs || m.atMs > nowMs) return null;
+  const q = poolSell(m.pool, quantity, m.ctx);
+  if (q.ok) return { atMs: m.atMs, value: 'ok' };
+  return ROUTE_LOST.has(q.reason) ? { atMs: m.atMs, value: 'missing' } : null;
+};
+
 /** EXIT-1's flow bucket. */
 const FLOW_MINUTE_MS = 60_000;
 
@@ -222,7 +241,7 @@ const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object
 /** FEED-1 wraps off-chain values as `{ value, source, ... }`; worker facts arrive unwrapped. */
 const unwrap = (v: unknown): unknown => (isObj(v) && 'value' in v && 'source' in v ? v['value'] : v);
 
-interface Market {
+export interface Market {
   readonly pool: PoolState;
   readonly ctx: PoolFeeContext;
   readonly atMs: number;
@@ -1036,7 +1055,7 @@ export class LiveStrategy implements Strategy {
       const step = decideExit(known ? this.#settings : this.#flatten(saved.plan.universe), saved.plan, holding, saved.tracker, {
         nowMs: ctx.now.receivedAt, slotClose: true,
         market: typeof m === 'string' ? null : { atMs: m.atMs, value: { venue: 'pumpswap', pool: m.pool, ctx: m.ctx } },
-        deployerSoldBps: this.#deployerSold(p.id, p.mint, saved.plan.openedAtMs, ctx, out), sellRoute: null, flow: this.#flowOf(p.mint, ctx.now.receivedAt), bars: this.#bars.get(p.id) ?? saved.bars,
+        deployerSoldBps: this.#deployerSold(p.id, p.mint, saved.plan.openedAtMs, ctx, out), sellRoute: sellRouteOf(m, holding.quantity, ctx.now.receivedAt, this.#d.session.policy.gates.maxQuoteAgeMs), flow: this.#flowOf(p.mint, ctx.now.receivedAt), bars: this.#bars.get(p.id) ?? saved.bars,
       });
       // A due full exit with no quote yet is held, remembered in the tracker (EXIT-1c): said once, and kept visible as
       // pending (and as an alert once it has waited the blocked-retry time) until the first fresh quote takes it.
