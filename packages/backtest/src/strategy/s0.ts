@@ -69,6 +69,8 @@ export class S0 implements Strategy {
   readonly #plans = new Map<string, Plan>();
   readonly #live = new Set<IntentId>();
   readonly #held = new Map<string, Held>();
+  /** Per held mint: the priority fee each exit attempt was planned at, by signature (PAPER-FEE-RUNG). */
+  readonly #exitFees = new Map<string, Map<string, bigint>>();
   /** Keys of height-less events already reported, so the log notes each once. */
   readonly #warned = new Set<string>();
 
@@ -123,6 +125,22 @@ export class S0 implements Strategy {
       id: attemptId(a), intentId: id, signedBytesRef: `paper:${a}`, signature: paperSignature(a), blockhash: paperBlockhash(a),
       lastValidBlockHeight: height + this.#c.blockhashValidBlocks, quote,
     };
+  }
+
+  /** An exit attempt at `rung`, its planned fee kept for the fill (PAPER-FEE-RUNG). */
+  #exitAttempt(mint: string, id: IntentId, n: number, quote: QuoteContext, height: bigint, rung: LadderStep): TransactionAttempt {
+    const a = this.#attempt(id, n, quote, height);
+    this.#exitFees.set(mint, (this.#exitFees.get(mint) ?? new Map<string, bigint>()).set(a.signature, rung.priorityFeeLamports));
+    return a;
+  }
+
+  /** The priority fee an exit attempt this strategy signed was planned at, or null. */
+  exitFee(signature: string): bigint | null {
+    for (const fees of this.#exitFees.values()) {
+      const fee = fees.get(signature);
+      if (fee !== undefined) return fee;
+    }
+    return null;
   }
 
   #entries(e: MarketEvent, ctx: StrategyContext, out: Decision[]): void {
@@ -206,6 +224,7 @@ export class S0 implements Strategy {
       if (p === undefined) continue;
       if (p.status === 'closed') {
         this.#held.delete(h.mint);
+        this.#exitFees.delete(h.mint);
         continue;
       }
       if (p.status === 'open' && h.openedAt === null) h.openedAt = now;
@@ -227,7 +246,7 @@ export class S0 implements Strategy {
       }
       this.#live.add(id);
       out.push({ action: { type: 'intent', intentId: id, event: { type: 'prepare', quote: q } }, reasons: ['prepare exit', h.mint] });
-      out.push({ action: { type: 'intent', intentId: id, event: { type: 'sign', attempt: this.#attempt(id, 1, q, height) } }, reasons: ['sign exit', h.mint] });
+      out.push({ action: { type: 'intent', intentId: id, event: { type: 'sign', attempt: this.#exitAttempt(h.mint, id, 1, q, height, rung) } }, reasons: ['sign exit', h.mint] });
       out.push({ action: { type: 'intent', intentId: id, event: { type: 'submit' } }, reasons: ['submit exit', h.mint] });
     }
   }
@@ -263,7 +282,7 @@ export class S0 implements Strategy {
         out.push({ action: { type: 'exit_blocked', positionId: i.intent.positionId, reason: q }, reasons: ['exit blocked', mint, q] });
         continue;
       }
-      out.push({ action: { type: 'intent', intentId: id, event: { type: 'sign_replacement', attempt: this.#attempt(id, n, q, height), blockHeight: height } }, reasons: [`exit attempt ${n}`, mint] });
+      out.push({ action: { type: 'intent', intentId: id, event: { type: 'sign_replacement', attempt: this.#exitAttempt(mint, id, n, q, height, rung), blockHeight: height } }, reasons: [`exit attempt ${n}`, mint] });
       out.push({ action: { type: 'intent', intentId: id, event: { type: 'submit' } }, reasons: ['submit exit', mint] });
     }
   }

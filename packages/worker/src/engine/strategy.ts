@@ -406,6 +406,8 @@ export class LiveStrategy implements Strategy {
   readonly #bars = new Map<string, PriceBar[]>();
   /** Per exit owner: the rung its first attempt uses and how many attempts it may sign (EXIT-1's decision). */
   readonly #owners = new Map<string, { readonly startRung: number; readonly maxAttempts: number }>();
+  /** Per open position: the priority fee each exit attempt was planned at, by signature (PAPER-FEE-RUNG). */
+  readonly #exitFees = new Map<string, Map<string, bigint>>();
   #height: bigint | null = null;
 
   constructor(deps: StrategyDeps) {
@@ -413,6 +415,18 @@ export class LiveStrategy implements Strategy {
     this.#labeller = new RugLabeller(deps.rugs);
     const n = deps.config.network;
     this.#settings = exitSettings(deps.session.policy, deps.config.takeProfitOn, { signaturesPerTx: n.signaturesPerTx, baseFeePerSignature: n.baseFeePerSignature, tip: n.tip });
+  }
+
+  /**
+   * The priority fee `#sendExit` planned for exit attempt `signature`: its rung's fee, the one the transaction carries. The
+   * paper fill charges it (PAPER-FEE-RUNG). Null for an attempt this process did not sign (one signed before a restart).
+   */
+  exitFee(signature: string): bigint | null {
+    for (const fees of this.#exitFees.values()) {
+      const fee = fees.get(signature);
+      if (fee !== undefined) return fee;
+    }
+    return null;
   }
 
   /** Exit state to save after each step (the worker writes it before the next event). */
@@ -1156,6 +1170,8 @@ export class LiveStrategy implements Strategy {
     const now = this.#exits.get(pid);
     if (now !== undefined) this.#exits.set(pid, { ...now, tracker: noteAttempt(now.tracker, rung) });
     const attempt = this.#attempt(id, signed + 1, q, height);
+    const fees = this.#exitFees.get(pid) ?? new Map<string, bigint>();
+    this.#exitFees.set(pid, fees.set(attempt.signature, steps[rung]!.priorityFeeLamports));
     if (signed === 0) {
       out.push({ action: { type: 'intent', intentId: id, event: { type: 'prepare', quote: q } }, reasons: ['prepare exit', mint, `rung ${rung}`] });
       out.push({ action: { type: 'intent', intentId: id, event: { type: 'sign', attempt } }, reasons: ['sign exit (paper)', mint] });
@@ -1185,6 +1201,7 @@ export class LiveStrategy implements Strategy {
     for (const p of Object.values(ctx.book.positions)) {
       if (p.status === 'closed') {
         if (this.#exits.delete(p.id)) this.#forget(p.mint);
+        this.#exitFees.delete(p.id);
         this.#displayQuotes.delete(p.id);
         this.#spot.delete(p.id);
         this.#bars.delete(p.id);

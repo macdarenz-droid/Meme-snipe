@@ -39,6 +39,11 @@ export interface AttemptRecord {
   closedAccount: boolean;
 }
 
+/** A strategy that says which priority fee it planned for each exit attempt it signed. */
+export interface PlannedFees {
+  exitFee(signature: string): bigint | null;
+}
+
 export interface WorldDeps {
   readonly replay: StreamReplay<unknown>;
   readonly market: Market;
@@ -51,6 +56,8 @@ export interface WorldDeps {
   readonly scenario: FillScenario;
   readonly network: FillNetwork;
   readonly ladder: readonly LadderStep[];
+  /** The priority fee the strategy planned for an exit attempt (its rung's), or null when unknown (PAPER-FEE-RUNG). */
+  readonly exitFee: (signature: Signature) => bigint | null;
   /** Pool of a mint (from the discovery the strategy entered on). */
   readonly poolOf: (mint: string) => string | undefined;
   /** Called once per attempt when its outcome is settled (filled, failed, dropped or expired). */
@@ -129,12 +136,14 @@ export class World implements EffectRunner {
     }
   }
 
-  #priorityFee(i: IntentState): bigint {
+  /**
+   * An exit pays the fee its plan put on the transaction (PAPER-FEE-RUNG), never one re-derived from the intent's attempt
+   * count. A strategy that plans none: the highest rung's fee, so a cost is never under-counted.
+   */
+  #priorityFee(i: IntentState, signature: Signature): bigint {
     if (i.intent.purpose === 'entry') return this.#d.network.entryPriorityFee;
-    const steps = this.#d.ladder;
-    const rung = steps[Math.min(i.attempts.length - 1, steps.length - 1)];
-    if (rung === undefined) throw new RangeError('the exit ladder is empty');
-    return rung.priorityFeeLamports;
+    if (this.#d.ladder.length === 0) throw new RangeError('the exit ladder is empty');
+    return this.#d.exitFee(signature) ?? this.#d.ladder.reduce((m, s) => (s.priorityFeeLamports > m ? s.priorityFeeLamports : m), 0n);
   }
 
   #broadcast(intentId: IntentId, signature: Signature, now: Moment): void {
@@ -158,7 +167,7 @@ export class World implements EffectRunner {
       this.#exitAttempts.set(position, exitRetry + 1);
     }
     const rec: AttemptRecord = {
-      intentId, signature, purpose: i.intent.purpose, mint: i.intent.mint, priorityFee: this.#priorityFee(i),
+      intentId, signature, purpose: i.intent.purpose, mint: i.intent.mint, priorityFee: this.#priorityFee(i, signature),
       lastValidBlockHeight: attempt.lastValidBlockHeight, outcome: 'in_flight', reason: draw.fate,
       landedSlot: null, landedAt: null, fee: 0n, fill: null, costs: null, congested, forcedDrop, exitRetry, closedAccount: false,
     };

@@ -12,7 +12,7 @@ import { type OffchainSeries, seriesReleases } from './dataset/offchain.ts';
 import { type Discovery, Market, rowMoment } from './sim/market.ts';
 import { type StreamSource, StreamReplay } from './sim/replay.ts';
 import { LedgerSink } from './sim/sink.ts';
-import { type AttemptRecord, World } from './sim/world.ts';
+import { type AttemptRecord, type PlannedFees, World } from './sim/world.ts';
 import { S0, type S0Config } from './strategy/s0.ts';
 
 export interface RunOptions {
@@ -163,6 +163,7 @@ export const runBacktest = (o: RunOptions): RunResult => {
   const world = new World({
     replay: replay as StreamReplay<unknown>, market, book, rng: createRng(`${o.seed}:world`), congestionSeed: `${o.seed}:world`, failureBursts: o.failureBursts, scenario, network: net,
     ladder: o.policy.exits.ladder.steps,
+    exitFee: (sig) => (strategy as Partial<PlannedFees>).exitFee?.(sig) ?? null,
     poolOf: (mint) => discoveries.get(mint)?.pool,
     onSettled: (a) => sink!.fees(a, net.signaturesPerTx * net.baseFeePerSignature, net.tip, replay!.clock.now().receivedAt),
   });

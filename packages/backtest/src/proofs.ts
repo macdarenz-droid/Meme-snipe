@@ -4,6 +4,7 @@
 import { canonical, compareMoments, type FeedEvent, type LogRecord, type Moment, reaches, type Strategy, type StrategyContext } from '../../core/src/engine/index.ts';
 import { compareRows, type DatasetRow } from './dataset/rows.ts';
 import { rowMoment } from './sim/market.ts';
+import type { PlannedFees } from './sim/world.ts';
 import { type RunOptions, runBacktest } from './run.ts';
 import { S0 } from './strategy/s0.ts';
 
@@ -56,7 +57,9 @@ export const leakTest = (o: RunOptions, marker: PlantedMarker, labels: unknown):
   if (reaches(o, marker.token)) violations.push('the run options already carry the marker');
 
   let seenAfter = false;
-  const watch = (s: Strategy): Strategy => ({
+  // The wrapped strategy's planned exit fees go through too (PAPER-FEE-RUNG): the two runs settle alike.
+  const watch = (s: Strategy & Partial<PlannedFees>): Strategy & Partial<PlannedFees> => ({
+    exitFee: (sig) => s.exitFee?.(sig) ?? null,
     onMarket: (event, ctx) => {
       if (!early(ctx.now)) {
         if (reaches(event, marker.token)) seenAfter = true;

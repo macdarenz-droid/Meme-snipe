@@ -1690,3 +1690,28 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
 - **Backtest parity.** The engine judges a batch at its close; a backtest that supplies these reads (BT-2) puts them on its feed the same way (open, members, close at one moment), so live and the backtest decide on the same view (core `RAW.batchOpen/batchClose`, `facts/kinds.ts`). Live and the replay of its recording make the same decisions (test).
 - **Not changed.** The survival read (regime) and the insiders' mint history stay single reads with FACTS-1e's landed-read mark; neither feeds a lag-bound gate input of the candidate's decision. No gate, limit, freshness rule or cap was changed.
 - **Evidence.** `packages/worker/test/read-coherent.test.ts`: the card's harness (real LiveFacts, FactReaders and LiveStrategy on a fake RPC whose confirmed context slot is the processed tip − 1 and that answers each call one slot later, every fact otherwise passing) enters within 5 simulated minutes, at a batch's close; on the base code it never does (H16 stale mint at every landing). A batch answering three slots late still rejects (stale). Live and replay decide the same, and no evaluation happens inside an open batch. `readBatch` unit tests: one bank, nothing on the feed before the last part, the scan's order and owners, the cap. `LiveFacts` tests: what each batch reads. Hand mutants killed: no open-batch skip, close judged at the next event, close never judged, scan order check removed, unclassified owners accepted, members put on as they answer, `minContextSlot` 0, never scanning, no simulation in the batch, the close's slot taken as the newest member.
+
+## The fee a paper exit pays (PAPER-FEE-RUNG, `run/paper-world.ts`, `engine/strategy.ts` `exitFee`, backtest `sim/world.ts`, `strategy/s0.ts`)
+- **2026-10-05 · The problem.** The paper world charged an exit attempt `ladderFees[this intent's attempts − 1]`. The strategy's rung climbs across the position's exit intents (core `nextExitRung`: after a partial, the next exit starts one rung up), so a full exit after a partial paid rung 0's fee while its plan was rung 1's. The trade's costs were under-counted, so its net was over-stated. The dry-run simulation of that leg carried the same wrong fee.
+- **2026-10-05 · The fix.** When `#sendExit` signs an attempt, it keeps the rung's fee by signature (`exitFee`; dropped when the position closes). The paper world charges that fee, and the simulated leg carries it too.
+  - Unknown fee (an attempt signed before a restart, broadcast after it): the highest rung's fee. A cost is never under-counted.
+  - Entries keep the network's entry priority fee.
+- **2026-10-05 · The backtest.** `World` re-derived the fee the same way. S0 climbs within an intent only, so its fees matched, but any other strategy would be charged wrongly.
+  - The world now asks the strategy (`PlannedFees.exitFee`); S0 keeps its planned fees.
+  - A strategy that plans none pays the highest rung's fee.
+  - The leak test's wrapper passes the planned fees through, so its two runs settle alike.
+- **2026-10-05 · Evidence.**
+  - `packages/worker/test/paper-fee-rung.test.ts`: 3 tests, all failing before. They cover:
+    - a partial at rung 0, then the stop's exit at rung 1, with its fill charged that fee;
+    - an unknown plan pays the highest rung's fee;
+    - planned fees are forgotten at the close.
+  - `packages/backtest/test/fee-rung.test.ts`: 3 tests, all failing before. They cover:
+    - S0's exits pay the fee S0 planned, and their charges follow;
+    - a planner's third rung is charged although the attempt count gives rung 0;
+    - no planner means the highest rung's fee.
+  - Hand mutants: 7 of 8 caught. Caught:
+    - the paper fallback at 0, or the old re-derivation;
+    - the strategy keeping rung 0's fee, or never forgetting;
+    - the backtest fallback at the first rung, or ignoring the plan;
+    - S0 keeping rung 0's fee.
+  - The one survivor drops the leak-test wrapper's pass-through. Nothing the leak test reports can show it: it compares the decision records before the marker's time, and fees do not change S0's decisions. The pass-through stays so the planted run settles like the clean one.

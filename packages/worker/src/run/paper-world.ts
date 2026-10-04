@@ -80,6 +80,8 @@ export interface PaperWorldDeps {
   readonly scenario: FillScenario;
   readonly network: FillNetwork;
   readonly ladderFees: readonly bigint[];
+  /** The priority fee the strategy planned for an exit attempt (its rung's), or null when unknown (PAPER-FEE-RUNG). */
+  readonly exitFee: (signature: Signature) => bigint | null;
   readonly market: (mint: string) => PaperMarket | null;
   readonly maxSolOut: (i: IntentState) => bigint;
   /** TEST-2's dryRunTrade for one leg; null when simulation is off. Never throws (failures are records). */
@@ -264,11 +266,15 @@ export class PaperWorld implements EffectRunner {
     if (i === undefined || attempt === undefined || height === null) return;
     const draw = drawAttempt(createRng(`${this.#d.seed}:${sig}`), this.#d.scenario, i.intent.venue);
     const exit = i.intent.purpose === 'exit';
-    const rung = Math.min(i.attempts.length - 1, this.#d.ladderFees.length - 1);
+    // An exit pays the fee its plan put on the transaction (PAPER-FEE-RUNG): its rung climbs across the position's exit
+    // intents, so this intent's attempt count does not give it. Unknown (signed before a restart): the highest rung's fee,
+    // so a cost is never under-counted.
+    const planned = exit ? this.#d.exitFee(sig) : null;
+    const top = this.#d.ladderFees.reduce((m, f) => (f > m ? f : m), 0n);
     const a: PaperAttempt = {
       intentId, signature: sig, purpose: i.intent.purpose, trade: i.intent.positionId, mint: i.intent.mint,
       inAmount: attempt.quote.inAmount, quotedOut: attempt.quote.quotedOut, minOut: attempt.quote.minOut,
-      priorityFee: exit ? (this.#d.ladderFees[rung] ?? 0n) : this.#d.network.entryPriorityFee,
+      priorityFee: exit ? (planned ?? top) : this.#d.network.entryPriorityFee,
       lastValidBlockHeight: attempt.lastValidBlockHeight, fate: draw.fate, landSlot: height + BigInt(Math.max(1, draw.landingSlots)),
       outcome: 'in_flight', reason: draw.fate, landedSlot: null, fill: null, simulated: this.#d.simulate === null, sentAtMs: this.#d.now(),
     };
