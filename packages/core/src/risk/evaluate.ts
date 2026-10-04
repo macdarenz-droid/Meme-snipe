@@ -162,8 +162,13 @@ const figures = (policy: Policy, a: AccountHistory, latches: Latches, nowMs: num
   const week = melbourneWeek(nowMs);
   const atDay = realizedBefore(a, day.start);
   const atWeek = realizedBefore(a, week.start);
-  const dayLoss = maxBig(0n, atDay.equity + atDay.flowsSince - equity);
-  const weekLoss = maxBig(0n, atWeek.equity + atWeek.flowsSince - equity);
+  // The day's and week's loss: the stricter of two measures (WORKER-1c ruling, 2026-10-04). From realized equity at the
+  // boundary (an open loss carried over it counts again), and from marked equity recorded at the boundary when there is
+  // one. A boundary not recorded leaves the realized measure alone: never read as zero loss.
+  const dayChange = a.markedAtDayStart === null ? null : equity - a.markedAtDayStart - atDay.flowsSince;
+  const weekChange = a.markedAtWeekStart === null ? null : equity - a.markedAtWeekStart - atWeek.flowsSince;
+  const dayLoss = maxBig(maxBig(0n, atDay.equity + atDay.flowsSince - equity), dayChange === null ? 0n : -dayChange);
+  const weekLoss = maxBig(maxBig(0n, atWeek.equity + atWeek.flowsSince - equity), weekChange === null ? 0n : -weekChange);
   const base = weekBase(a, week.start, atWeek.equity);
 
   const trades = [...a.closedTrades].sort(byClose);
@@ -179,8 +184,8 @@ const figures = (policy: Policy, a: AccountHistory, latches: Latches, nowMs: num
       equity: usd(equity), highWaterMark: usd(highWaterMark_), dayLoss: usd(dayLoss), weekLoss: usd(weekLoss),
       weekStartEquity: usd(atWeek.equity), weekBase: usd(base), weekBaseLoss: usd(maxBig(0n, base - equity)),
       openExposure: usd(openExposure), lossStreak,
-      dayChangeMarked: a.markedAtDayStart === null ? null : usd(equity - a.markedAtDayStart - atDay.flowsSince),
-      weekChangeMarked: a.markedAtWeekStart === null ? null : usd(equity - a.markedAtWeekStart - atWeek.flowsSince),
+      dayChangeMarked: dayChange === null ? null : usd(dayChange),
+      weekChangeMarked: weekChange === null ? null : usd(weekChange),
       // Filled in by accountCheck, which has the market.
       walletEquity: null, capital: usd(equity), nav: null, navHighWaterMark: null,
       equitySol: null, capitalSol: null, navSol: null, navHighWaterMarkSol: null,
@@ -322,6 +327,18 @@ const accountCheck = (input: RiskInput, nowMs: number): AccountCheck => {
 
 /** The Melbourne rules refuse a non-integer or pre-2008 instant, so a bad clock throws before any figure is used. */
 const clockNow = (input: RiskInput): number => input.clock.now().receivedAt;
+
+/**
+ * The figures an evaluation at this moment would use, for the caller's own records (WORKER-1c: the boundary marks and
+ * the NAV peak). Read-only; null when they cannot be computed (a bad clock or input).
+ */
+export const riskSnapshot = (input: RiskInput): RiskSnapshot | null => {
+  try {
+    return accountCheck(input, clockNow(input)).figures.snapshot;
+  } catch {
+    return null;
+  }
+};
 
 // ---------- Exits ----------
 
