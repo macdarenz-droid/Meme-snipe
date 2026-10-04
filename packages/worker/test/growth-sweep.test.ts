@@ -12,6 +12,7 @@ import { fileLines } from '../../runner/src/lines.ts';
 import { journalLines } from '../src/run/booked.ts';
 import { DeployerStore } from '../src/run/deployer-store.ts';
 import { typedText } from '../src/run/json.ts';
+import { T, makeWorker } from './worker-harness.ts';
 
 const temp = (): string => mkdtempSync(join(tmpdir(), 'growth-'));
 
@@ -108,5 +109,56 @@ describe('no whole-file read of a growing file on the boot, timer or request pat
     const runner = src('runner/src/runner.ts');
     expect(runner).not.toMatch(/readFileSync\(journalPath/);
     expect(runner).not.toMatch(/readFileSync\(p, 'utf8'\)\s*\.split/);
+  });
+});
+
+describe('the deployer store with a restored index, and the seed cap (WORKER-GROW G4b)', () => {
+  const event = (k: number, receivedAt: number, key = `${LOG_CREATE_PREFIX}Mint${k}`): MarketEvent => ({
+    kind: 'market', id: `log:sig${k}:00001`, moment: { slot: BigInt(1_000 + k), txIndex: 2 ** 32, ixIndex: 2 ** 36, receivedAt }, key,
+    value: { event: { name: 'CreateEvent', program: 'pump', data: { mint: `Mint${k}`, creator: `Dev${k % 7}`, timestamp: BigInt(Math.floor(receivedAt / 1000)) } } },
+  });
+  const write = (dir: string, events: readonly MarketEvent[]) => writeFileSync(join(dir, 'deployers.jsonl'), events.map((e) => `${typedText(e)}\n`).join(''));
+
+  it('keepCreates false: no create is held, the file keeps them all, and `last` still counts them', () => {
+    const dir = temp();
+    const cov = event(-1, 1, 'coverage:creates:start');
+    const all = [cov, ...Array.from({ length: 50 }, (_, k) => event(k, 10_000 + k))];
+    write(dir, all);
+    const saved = new DeployerStore(dir).load(0, { keepCreates: false });
+    expect(saved.creates).toEqual([]);
+    expect(saved.coverage.map((e) => e.id)).toEqual([cov.id]);
+    expect(saved.last).toEqual({ slot: 1_049n, ms: 10_049 });
+    expect(readFileSync(join(dir, 'deployers.jsonl'), 'utf8')).toBe(all.map((e) => `${typedText(e)}\n`).join(''));
+    // The next start with no saved index seeds from all of them.
+    expect(new DeployerStore(dir).load(0).creates).toHaveLength(50);
+  });
+
+  it('over maxCreates the seed is refused whole (no creates, rugs, coverage or last: H14 not covered); at the cap it is kept', () => {
+    const dir = temp();
+    const cov = event(-1, 1, 'coverage:creates:start');
+    write(dir, [cov, ...Array.from({ length: 10 }, (_, k) => event(k, 10_000 + k))]);
+    expect(new DeployerStore(dir).load(0, { maxCreates: 9 })).toEqual({ creates: [], rugs: [], coverage: [], last: null, refused: '10 saved creates, over the seed cap of 9' });
+    // The file is trimmed and kept either way: a later start with a saved index still has it.
+    expect(readFileSync(join(dir, 'deployers.jsonl'), 'utf8').trim().split('\n')).toHaveLength(11);
+    const at = new DeployerStore(dir).load(0, { maxCreates: 10 });
+    expect(at.creates).toHaveLength(10);
+    expect(at.refused).toBeUndefined();
+  });
+});
+
+describe('the seed cap at a worker start with no saved index (WORKER-GROW G4b)', () => {
+  it('over the cap the start seeds nothing and says so (a fresh start: H14 not covered, as the PERSIST-1 tests show); at the cap it seeds', async () => {
+    const dir = temp();
+    const lines = Array.from({ length: 3 }, (_, k) => typedText({
+      kind: 'market', id: `log:sig${k}:00001`, moment: { slot: BigInt(1_000 + k), txIndex: 2 ** 32, ixIndex: 2 ** 36, receivedAt: T - 16 * 86_400_000 - 60_000 + k },
+      key: `${LOG_CREATE_PREFIX}Mint${k}`, value: { event: { name: 'CreateEvent', program: 'pump', data: { mint: `Mint${k}`, creator: 'Dev', timestamp: 1n } } },
+    } as MarketEvent));
+    writeFileSync(join(dir, 'deployers.jsonl'), `${lines.join('\n')}\n`);
+    const h = makeWorker({ stateDir: dir, maxSeedCreates: 2 });
+    expect(h.logs).toContain('Deployer store not seeded (3 saved creates, over the seed cap of 2): H14 is not covered until the look-back passes.');
+    await h.worker.stop();
+    const ok = makeWorker({ stateDir: dir, maxSeedCreates: 3 });
+    expect(ok.logs.some((l) => l.startsWith('Deployer store not seeded'))).toBe(false);
+    await ok.worker.stop();
   });
 });

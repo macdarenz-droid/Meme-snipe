@@ -147,7 +147,7 @@ export const LANDS = { ...FILL_CONFIG.scenarios[PAPER_SCENARIO], landPpm: { pump
 /** Boots made per state folder: a test's n-th worker is `boot-<n>` whatever the process, its pid or the other tests. */
 const boots = new Map<string, number>();
 
-export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof LANDS; stateDir?: string; timers?: TestTimers; edgePpm?: bigint; http?: HttpClient; key?: string | null; config?: Record<string, string>; fetched?: string[]; found?: boolean; facts?: FactSource[]; seed?: (r: SeedRequest) => Promise<SeedResult>; seedWaitMs?: number; entry?: { timing: 'gates' | 'random'; salt: string; s0Diagnostic?: boolean }; sources?: (ctx: SourcesContext) => FeedSource[]; exposureRpc?: SeedRpc; ops?: WorkerDeps['ops']; universe?: 'U1' | 'U2'; cutRpc?: (ms: number) => void; seedMaxMs?: number; simulate?: (leg: SimLeg) => Promise<DryRunRecord>; worldFault?: WorkerDeps['worldFault']; watchRead?: WorkerDeps['watchRead'] | null; watchHalted?: () => boolean; schedulers?: NonNullable<WorkerDeps['schedulers']>; markedHistory?: WorkerDeps['markedHistory']; strategy?: Partial<StrategyConfig>; crashPoint?: WorkerDeps['crashPoint'] } = {}): Harness => {
+export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof LANDS; stateDir?: string; timers?: TestTimers; edgePpm?: bigint; http?: HttpClient; key?: string | null; config?: Record<string, string>; fetched?: string[]; found?: boolean; facts?: FactSource[]; seed?: (r: SeedRequest) => Promise<SeedResult>; seedWaitMs?: number; entry?: { timing: 'gates' | 'random'; salt: string; s0Diagnostic?: boolean }; sources?: (ctx: SourcesContext) => FeedSource[]; exposureRpc?: SeedRpc; ops?: WorkerDeps['ops']; universe?: 'U1' | 'U2'; cutRpc?: (ms: number) => void; seedMaxMs?: number; maxSeedCreates?: number; simulate?: (leg: SimLeg) => Promise<DryRunRecord>; worldFault?: WorkerDeps['worldFault']; watchRead?: WorkerDeps['watchRead'] | null; watchHalted?: () => boolean; schedulers?: NonNullable<WorkerDeps['schedulers']>; markedHistory?: WorkerDeps['markedHistory']; strategy?: Partial<StrategyConfig>; crashPoint?: WorkerDeps['crashPoint'] } = {}): Harness => {
   const stateDir = o.stateDir ?? tempState();
   const timers = o.timers ?? virtualTimers(T - 16 * 86_400_000);
   const session = startSession(TRIAL_POLICY);
@@ -187,6 +187,7 @@ export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof L
     },
     seedWaitMs: o.seedWaitMs ?? 1_000,
     ...(o.seedMaxMs === undefined ? {} : { seedMaxMs: o.seedMaxMs }),
+    ...(o.maxSeedCreates === undefined ? {} : { maxSeedCreates: o.maxSeedCreates }),
     ...(o.cutRpc === undefined ? {} : { cutRpc: o.cutRpc }),
     ...(o.exposureRpc === undefined ? {} : { exposureRpc: o.exposureRpc }),
     ...(o.ops === undefined ? {} : { ops: o.ops }),

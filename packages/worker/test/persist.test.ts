@@ -256,12 +256,18 @@ describe('PERSIST-1: label kinds survive save and restore (RUG-1c)', () => {
 });
 
 describe('PERSIST-1 discards a bad file whole', () => {
+  /** A saved file's header line and payload (version 2: the payload follows the header line). */
+  const parts = (path: string) => {
+    const text = readFileSync(path, 'utf8');
+    const nl = text.indexOf('\n');
+    return { header: JSON.parse(text.slice(0, nl)) as { version: number; sha256: string; bytes: number }, payload: text.slice(nl + 1) };
+  };
   const rewrite = (path: string, edit: (payload: Record<string, unknown>) => void) => {
-    const outer = JSON.parse(readFileSync(path, 'utf8')) as { version: number; sha256: string; payload: string };
-    const p = JSON.parse(outer.payload) as Record<string, unknown>;
+    const { header } = parts(path);
+    const p = JSON.parse(parts(path).payload) as Record<string, unknown>;
     edit(p);
     const payload = JSON.stringify(p);
-    writeFileSync(path, JSON.stringify({ ...outer, payload, sha256: createHash('sha256').update(payload).digest('hex') }));
+    writeFileSync(path, `${JSON.stringify({ ...header, bytes: payload.length, sha256: createHash('sha256').update(payload).digest('hex') })}\n${payload}`);
   };
   const fresh = () => { const path = join(tmp(), 'state.json'); saveState(path, savedState()); return path; };
 
@@ -272,12 +278,31 @@ describe('PERSIST-1 discards a bad file whole', () => {
     expect(loadState(corrupt, RUG_CONFIG)).toEqual({ ok: false, reason: 'saved state checksum does not match' });
     const truncated = fresh();
     writeFileSync(truncated, readFileSync(truncated, 'utf8').slice(0, 200));
-    expect(loadState(truncated, RUG_CONFIG)).toMatchObject({ ok: false, reason: expect.stringContaining('unreadable') });
+    expect(loadState(truncated, RUG_CONFIG)).toEqual({ ok: false, reason: 'saved state payload is cut or longer than its header says' });
+    const cutHeader = fresh();
+    writeFileSync(cutHeader, readFileSync(cutHeader, 'utf8').slice(0, 40));
+    expect(loadState(cutHeader, RUG_CONFIG)).toMatchObject({ ok: false, reason: expect.stringContaining('unreadable') });
+    const longer = fresh();
+    writeFileSync(longer, `${readFileSync(longer, 'utf8')} `);
+    expect(loadState(longer, RUG_CONFIG)).toEqual({ ok: false, reason: 'saved state payload is cut or longer than its header says' });
     expect(loadState(join(tmp(), 'none.json'), RUG_CONFIG)).toEqual({ ok: false, reason: 'no saved state' });
     const version = fresh();
     writeFileSync(version, readFileSync(version, 'utf8').replace(`"version":${STATE_VERSION}`, '"version":99'));
     expect(loadState(version, RUG_CONFIG)).toMatchObject({ ok: false, reason: expect.stringContaining('version 99') });
     expect(loadState(fresh(), { ...RUG_CONFIG, version: `${RUG_CONFIG.version}-next` })).toMatchObject({ ok: false, reason: expect.stringContaining(`${RUG_CONFIG.version}-next`) });
+  });
+
+  it('a version 1 file (the payload inside the header) still restores, exactly as the version 2 file of the same state (WORKER-GROW)', () => {
+    const v2 = fresh();
+    const { header, payload } = parts(v2);
+    expect(header.version).toBe(2);
+    expect(header.bytes).toBe(payload.length);
+    const v1 = join(tmp(), 'state-v1.json');
+    writeFileSync(v1, JSON.stringify({ version: 1, sha256: header.sha256, payload }));
+    const a = loadState(v1, RUG_CONFIG);
+    const b = loadState(v2, RUG_CONFIG);
+    expect(a.ok).toBe(true);
+    expect(a).toEqual(b);
   });
 
   it('a well-formed file that claims anything after its moment is discarded', () => {

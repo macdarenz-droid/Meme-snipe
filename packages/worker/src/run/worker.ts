@@ -128,6 +128,8 @@ export interface WorkerDeps {
    * every exit, waits for the seed (rehearsal 37148935094: a slow seed held the start for minutes).
    */
   readonly seedMaxMs?: number;
+  /** The seed cap when no saved index restores (default `MAX_SEED_CREATES`; a test passes a small one). */
+  readonly maxSeedCreates?: number;
   /** BT-1c's delay samples (the recorder's `delays` table): the confirmed read and the sampled processed watch. */
   readonly delayProbe?: { readonly confirmed: DelayProbeOptions['confirmed']; readonly via: string; readonly everyMs: number };
   /** RUN-1c's quota (free-plan providers, credits since boot by class) and historical-lookup latency counts. */
@@ -192,6 +194,11 @@ interface FeedState {
 }
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+/**
+ * The most saved creates a start seeds the index with when no saved index restores (WORKER-GROW): about three days of
+ * creates, which a boot holds well under MemoryMax (measured in `worker-grow.test.ts`). Past it the seed is refused whole.
+ */
+export const MAX_SEED_CREATES = 200_000;
 
 /** Present while the state dir began empty and no full start has journaled its `recovered` line yet. */
 const COLD_START = 'cold_start';
@@ -394,13 +401,16 @@ export class Worker {
     });
     this.#engine = new Engine({ clock: this.#feed.clock, feed: this.#facts.feed, strategy: this.#strategy, runner: this.#world, seed, book: bookConfig });
     this.#deployerStore = new DeployerStore(c.stateDir);
-    this.#saved = this.#deployerStore.load(now - (d.session.policy.gates.deployerRugLookbackDays + 1) * 86_400_000);
+    const storeFrom = now - (d.session.policy.gates.deployerRugLookbackDays + 1) * 86_400_000;
     // PERSIST-1: the saved index, labeller and coverage, when the file holds up (else a fresh start: not covered).
     // Restored through the seed fact (recorded, so a replay rebuilds the same state) before any decision; the
     // downtime fill starts at the saved moment, closing the restart gap on the live creates watch.
     const restored = loadState(join(c.stateDir, PERSIST_FILE), d.rugs);
+    // WORKER-GROW: the store is trimmed either way; its creates are held in memory only when they seed the index.
+    this.#saved = this.#deployerStore.load(storeFrom, restored.ok ? { keepCreates: false } : { maxCreates: d.maxSeedCreates ?? MAX_SEED_CREATES });
+    if (this.#saved.refused !== undefined) d.log(`Deployer store not seeded (${this.#saved.refused}): H14 is not covered until the look-back passes.`);
     if (restored.ok) {
-      this.#restored = { asOf: restored.asOf, index: restored.index.snapshot(restored.asOf), labeller: restored.labeller.snapshot() };
+      this.#restored = { asOf: restored.asOf, index: restored.indexState, labeller: restored.labeller.snapshot() };
       this.#saved = { creates: [], rugs: [], coverage: restored.coverage, last: { slot: restored.asOf.slot, ms: restored.asOf.receivedAt } };
       d.log(`Saved state restored as of slot ${restored.asOf.slot}; ${restored.coverage.length} coverage facts, ${restored.fills.length} gaps to fill.`);
     } else if (restored.reason !== 'no saved state') d.log(`Saved state discarded (${restored.reason}): starting as a fresh process.`);
@@ -1097,6 +1107,8 @@ export class Worker {
       rugs: order(saved.rugs), asOf,
       history: coverage.map((e, k) => ({ ...e, id: `${e.id}#pre${k}`, moment: { ...pos(1 + k), receivedAt: e.moment.receivedAt } })),
     });
+    // The restored index is in the seed now (and the strategy's index): this copy is released (WORKER-GROW).
+    this.#restored = null;
     for (const e of [...result.creates, ...result.coverage, ...extra]) this.#deployerStore.keep(e);
     d.log(`Deployer index: ${result.mode} (${result.report}); ${saved.creates.length} saved creates, ${saved.coverage.length} saved coverage facts.`);
   }

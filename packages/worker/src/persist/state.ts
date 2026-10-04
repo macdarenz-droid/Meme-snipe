@@ -19,7 +19,8 @@ import { compareEvents, compareMoments, type MarketEvent, type Moment } from '..
 import { DeployerIndex, RugLabeller, type DeployerIndexState, type RugLabellerState } from '../../../core/src/gates/index.ts';
 import { SEED_VIA } from '../seed/seed.ts';
 
-export const STATE_VERSION = 1;
+/** Written as version 2 (header line, then the payload); version 1 files (the payload inside the header) are still read. */
+export const STATE_VERSION = 2;
 
 export interface SavedState {
   readonly asOf: Moment;
@@ -45,6 +46,8 @@ export type Restored =
     readonly ok: true;
     readonly asOf: Moment;
     readonly index: DeployerIndex;
+    /** The index as saved, checked by restoring it (`index`): the seed carries this, so no second copy is made. */
+    readonly indexState: DeployerIndexState;
     readonly labeller: RugLabeller;
     /** The saved coverage facts plus the restart gaps, in release order, none after `asOf`: release them first. */
     readonly coverage: readonly MarketEvent[];
@@ -88,7 +91,9 @@ export const saveState = (path: string, s: SavedState): void => {
   }
   if (compareMoments(s.index.asOf, s.asOf) !== 0) throw new RangeError('the index snapshot was taken at another moment');
   const payload = JSON.stringify(s, replacer);
-  writeAtomic(path, JSON.stringify({ version: STATE_VERSION, sha256: createHash('sha256').update(payload).digest('hex'), payload }));
+  // Version 2 (WORKER-GROW): a header line, then the payload as it is. Version 1 carried the payload as a JSON string
+  // inside the header, so a save and a load each made a second, escaped copy of it (about 65 MB at a full look-back).
+  writeAtomic(path, `${JSON.stringify({ version: STATE_VERSION, sha256: createHash('sha256').update(payload).digest('hex'), bytes: payload.length })}\n${payload}`);
 };
 
 type Obj = Readonly<Record<string, unknown>>;
@@ -133,9 +138,13 @@ export const loadState = (path: string, rugs: RugConfig, continuing: (stream: st
   if (!existsSync(path)) return { ok: false, reason: 'no saved state' };
   let s: SavedState;
   try {
-    const outer = JSON.parse(readFileSync(path, 'utf8')) as unknown;
-    if (!isObj(outer) || outer['version'] !== STATE_VERSION) return { ok: false, reason: `saved state version ${isObj(outer) ? String(outer['version']) : '?'} is not ${STATE_VERSION}` };
-    const payload = outer['payload'];
+    const text = readFileSync(path, 'utf8');
+    const nl = text.indexOf('\n');
+    const outer = JSON.parse(nl === -1 ? text : text.slice(0, nl)) as unknown;
+    if (!isObj(outer) || (outer['version'] !== STATE_VERSION && outer['version'] !== 1)) return { ok: false, reason: `saved state version ${isObj(outer) ? String(outer['version']) : '?'} is not ${STATE_VERSION} or 1` };
+    // Version 2: the payload follows the header line, exactly `bytes` long. Version 1: it is a string inside the header.
+    const payload = outer['version'] === 1 ? outer['payload'] : nl === -1 ? null : text.slice(nl + 1);
+    if (outer['version'] !== 1 && (typeof payload !== 'string' || payload.length !== outer['bytes'])) return { ok: false, reason: 'saved state payload is cut or longer than its header says' };
     if (typeof payload !== 'string' || createHash('sha256').update(payload).digest('hex') !== outer['sha256']) return { ok: false, reason: 'saved state checksum does not match' };
     s = JSON.parse(payload, reviver) as SavedState;
   } catch (e) {
@@ -168,7 +177,7 @@ export const loadState = (path: string, rugs: RugConfig, continuing: (stream: st
       if (continuing(w.stream, w.via)) fills.push({ stream: w.stream, via: w.via, fromSlot: asOf.slot, at: asOf, synthesized: true });
     }
     fills.sort((a, b) => (a.stream < b.stream ? -1 : a.stream > b.stream ? 1 : a.via < b.via ? -1 : a.via > b.via ? 1 : 0));
-    return { ok: true, asOf, index, labeller, coverage: [...coverage, ...restart].sort(compareEvents), fills };
+    return { ok: true, asOf, index, indexState: s.index, labeller, coverage: [...coverage, ...restart].sort(compareEvents), fills };
   } catch (e) {
     return { ok: false, reason: `saved state rejected: ${e instanceof Error ? e.message : String(e)}` };
   }
