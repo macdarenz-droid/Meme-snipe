@@ -32,7 +32,7 @@ const SOCKET = { initialMs: 1_000, maxMs: 8_000, idleMs: 30_000 };
 type Fill = NonNullable<WatchOptions['fill']>;
 
 /** A stream with a slot watch and one pool watch; the pool's coverage must start at `coverFrom` (its migration). */
-const setup = (o: { readonly fill?: Fill; readonly coverFrom?: bigint } = {}) => {
+const setup = (o: { readonly fill?: Fill; readonly coverFrom?: bigint; readonly holdLive?: boolean } = {}) => {
   const timers = new ManualTimers(1_000_000);
   const hub = new FakeSocketHub();
   const frames: Frame[] = [];
@@ -57,7 +57,7 @@ const setup = (o: { readonly fill?: Fill; readonly coverFrom?: bigint } = {}) =>
   };
   // The feed has seen slot 600 before the candidate's pool is watched; the migration was at slot 590.
   hub.last.push({ jsonrpc: '2.0', method: 'slotNotification', params: { subscription: slotSub, result: { slot: 600, parent: 599, root: 568 } } });
-  const poolId = stream.watchLogs(QVC, { priority: P3, decodeLogs: true, coverage: `trades:${QVC}`, commitment: 'confirmed', ...(o.fill === undefined ? {} : { fill: o.fill }), ...(o.coverFrom === undefined ? {} : { coverFrom: o.coverFrom }) });
+  const poolId = stream.watchLogs(QVC, { priority: P3, decodeLogs: true, coverage: `trades:${QVC}`, commitment: 'confirmed', ...(o.fill === undefined ? {} : { fill: o.fill }), ...(o.coverFrom === undefined ? {} : { coverFrom: o.coverFrom }), ...(o.holdLive === undefined ? {} : { holdLive: o.holdLive }) });
   const req = hub.last.requests().at(-1)!;
   hub.last.push({ jsonrpc: '2.0', id: req.id, result: 200 });
   const log = (n: number, signature: string) => hub.last.push({ jsonrpc: '2.0', method: 'logsNotification', params: { subscription: 200, result: { context: { slot: n }, value: { signature, err: null, logs: ['Program log: x'] } } } });
@@ -139,6 +139,24 @@ describe('a candidate pool watch starts its coverage at the migration', () => {
     expect(t.logFrames().at(-1)!.place.at).toBe('chain');
   });
 
+  it('a held pool\'s catch-up (holdLive false, EXIT-KEEP) puts its live trades on the feed at once; the fill still decides the resume', async () => {
+    const pending: ((ok: boolean) => void)[] = [];
+    const t = setup({ coverFrom: 590n, holdLive: false, fill: () => new Promise<boolean>((resolve) => { pending.push(resolve); }) });
+    await settle(20);
+    t.log(602, 'A'.padEnd(88, '1'));
+    await settle(20);
+    // Not held for the fill: an exit never waits on a catch-up.
+    expect(t.logFrames().map((f) => f.body.type)).toEqual(['seen', 'logs']);
+    expect(t.coverage().map(([part]) => part)).toEqual(['start', 'gap']);
+    await t.slot(604);
+    expect(pending).toHaveLength(1);
+    pending[0]!(false);
+    await settle(20);
+    // A lossy fill still closes the catch-up as a bounded gap: the held position's trade evidence is not complete.
+    expect(t.coverage().at(-1)?.[0]).toBe('gap');
+    expect((t.coverage().at(-1)?.[1] as { toSlot: unknown }).toSlot).not.toBeNull();
+  });
+
   it('a hold that overflows releases at once and the catch-up stays lossy even if the fill says complete', async () => {
     const pending: ((ok: boolean) => void)[] = [];
     const t = setup({ coverFrom: 590n, fill: () => new Promise<boolean>((r) => { pending.push(r); }) });
@@ -192,20 +210,24 @@ describe('a candidate pool watch starts its coverage at the migration', () => {
 });
 
 describe('the pool watch passes the migration to candidate watches only', () => {
-  it('a candidate gets coverFrom and the fill; a held pool gets the fill and no coverFrom', () => {
+  it('a candidate gets coverFrom and the fill; a held pool gets the fill, and coverFrom only after a restart with its live trades never held (EXIT-KEEP)', () => {
     const calls: [string, WatchOptions][] = [];
     const stream = { watchLogs: (a: string, o: WatchOptions) => { calls.push([a, o]); return calls.length; }, unwatch: () => {}, setPriority: () => true };
     const timers: Timers = { now: () => 0, setTimeout: () => ({ id: 0 }), clearTimeout: () => {} };
     const fill: Fill = async () => true;
     const w = new PoolWatch({
       stream, timers, everyMs: 1_000, fill,
-      pools: () => new Map([['PoolCand1', { mint: 'M1', held: false, fromSlot: 590n }], ['PoolHeld1', { mint: 'M2', held: true, fromSlot: 580n }], ['PoolTail1', { mint: 'M3', held: false }]]),
+      pools: () => new Map([['PoolCand1', { mint: 'M1', held: false, fromSlot: 590n }], ['PoolHeld1', { mint: 'M2', held: true, fromSlot: 580n }], ['PoolHeld2', { mint: 'M4', held: true }], ['PoolTail1', { mint: 'M3', held: false }]]),
     });
     w.sync();
     const by = new Map(calls);
     expect(by.get('PoolCand1')).toMatchObject({ priority: P3, coverFrom: 590n, fill, commitment: 'confirmed', coverage: 'trades:PoolCand1' });
-    expect(by.get('PoolHeld1')).toMatchObject({ priority: P1, fill });
-    expect(by.get('PoolHeld1')!.coverFrom).toBeUndefined();
+    // A held pool restored after a restart catches up from its saved slot, its live trades put on the feed at once (an exit
+    // never waits on a catch-up); one without a saved slot gets no catch-up at all.
+    expect(by.get('PoolHeld1')).toMatchObject({ priority: P1, fill, coverFrom: 580n, holdLive: false });
+    expect(by.get('PoolHeld2')).toMatchObject({ priority: P1, fill });
+    expect(by.get('PoolHeld2')!.coverFrom).toBeUndefined();
+    expect(by.get('PoolCand1')!.holdLive).toBeUndefined();
     expect(by.get('PoolTail1')!.coverFrom).toBeUndefined();
   });
 });

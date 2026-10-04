@@ -29,7 +29,7 @@ import {
   atr, checkStopDistance, decideExit, execPrice, liquidationValue, exitAttemptsOf, exitBookEvents, exitSettings, newTracker, noteAttempt,
 } from '../../../core/src/exits/index.ts';
 import {
-  type Coverage, type DeployerIndexState, type GateContext, type GraduatesFact, type RugLabellerState, type S0DiagnosticPart, DeployerIndex, GRADUATES_KEY, hardAllowsEntry, LOG_CREATE_PREFIX, NOT_EVALUATED, stagedHardRejects, RugLabeller, TX_CREATE_PREFIX, createKey, createsCoverage, evaluateHardRejects, evaluateRegime, migrationKey, parseCreate, parseGraduates, parseMigration, parsePool, poolKey,
+  type Coverage, type DeployerIndexState, type GateContext, type GraduatesFact, type RugLabellerState, type S0DiagnosticPart, DeployerIndex, GRADUATES_KEY, hardAllowsEntry, LOG_CREATE_PREFIX, NOT_EVALUATED, stagedHardRejects, RugLabeller, TX_CREATE_PREFIX, createKey, createsCoverage, evaluateHardRejects, evaluateRegime, migrationKey, parseCreate, parseGraduates, parseMigration, parsePool, parseStream, poolKey, streamKey,
 } from '../../../core/src/gates/index.ts';
 import type { GraduatesSeed } from '../../../core/src/facts/raw.ts';
 import { type BookEvent, type IntentState, isTerminal } from '../../../core/src/lifecycle/index.ts';
@@ -214,6 +214,12 @@ export interface SavedExit {
    * booked, so a kill in between never loses one of the retries.
    */
   readonly retryIds?: readonly string[];
+  /**
+   * The last slot through which the position's pool trades were counted with no gap (EXIT-KEEP): after a restart its pool
+   * watch catches up from the next slot, and a catch-up (or any later gap) that cannot be filled in full puts the
+   * position into sell-only recovery, its trade evidence no longer complete.
+   */
+  readonly tradesThrough?: bigint;
   /**
    * PERSIST-3: the position mint's deployer sales (EXIT-1's `deployer_sell`) and net flow minutes (`negative_flow`),
    * with the dedupe ids, as of the save. Absent or malformed at a restart: the position is flattened (sell-only).
@@ -685,7 +691,9 @@ export class LiveStrategy implements Strategy {
       const pool = this.#poolOfMint.get(mint);
       // A candidate's pool is watched from its migration (S0-ZERO): its candles are observed from the pool's creation.
       // A held pool is already watched (an exit never waits on a catch-up).
-      const from = this.#cands.has(mint) && !held.has(mint) ? this.#migrationSlot.get(mint) : undefined;
+      // A held pool restored after a restart is watched from the first slot after the trades it had counted (EXIT-KEEP).
+      const through = held.has(mint) ? this.#restoredThrough.get(mint) : undefined;
+      const from = this.#cands.has(mint) && !held.has(mint) ? this.#migrationSlot.get(mint) : through === undefined ? undefined : through + 1n;
       if (pool !== undefined) out.set(pool, { mint, held: held.has(mint), ...(from === undefined ? {} : { fromSlot: from }) });
     }
     for (const [mint, t] of this.#tail) if (!out.has(t.pool)) out.set(t.pool, { mint, held: false });
@@ -975,6 +983,9 @@ export class LiveStrategy implements Strategy {
   }
 
   /** PERSIST-3: restores a mint's deployer sales and flow from a saved exit; the reason when they cannot be. */
+  /** Each restored position's saved trades-through slot, by mint: its pool watch catches up from the next slot. */
+  readonly #restoredThrough = new Map<string, bigint>();
+
   /** Mints whose saved exit inputs this process has restored (once per mint). */
   readonly #inputsRestored = new Set<string>();
 
@@ -1072,6 +1083,12 @@ export class LiveStrategy implements Strategy {
       this.#bars.set(pid, [...saved.bars]);
       if (typeof saved.pool === 'string') this.#notePool(this.#mintOf(pid), saved.pool);
       if (saved.spot != null) this.#spot.set(pid, saved.spot);
+      if (typeof saved.tradesThrough === 'bigint' && saved.tradesThrough >= 0n) this.#restoredThrough.set(this.#mintOf(pid), saved.tradesThrough);
+      else if (saved.tradesThrough !== undefined) {
+        // Not a slot: read as nothing saved, so the trades are judged from the entry's fill (no catch-up anchor).
+        const { tradesThrough: _bad, ...rest } = saved;
+        saved = rest;
+      }
       n++;
     }
     out.push({ action: null, reasons: ['restore', `${n} exit plans and trackers restored`] });
@@ -1259,13 +1276,46 @@ export class LiveStrategy implements Strategy {
     this.#flow.set(mint, f);
     const id = `${String(v['signature'] ?? e.id)}|${String(name)}|${String(d['user'])}|${String(d['baseAmountIn'] ?? d['baseAmountOut'])}|${amount}`;
     if (f.ids.has(id)) return;
-    const start = Math.floor(e.moment.receivedAt / FLOW_MINUTE_MS) * FLOW_MINUTE_MS;
+    // A swap filled in after a gap (a restart's catch-up) arrives now: its minute is its block time, not its arrival, or
+    // the downtime's trades would all land in one minute (EXIT-KEEP).
+    const at = v['backfilled'] === true && typeof d['timestamp'] === 'bigint' && d['timestamp'] > 0n ? Number(d['timestamp']) * 1000 : e.moment.receivedAt;
+    const start = Math.floor(at / FLOW_MINUTE_MS) * FLOW_MINUTE_MS;
     f.ids.set(id, start);
     f.minutes.set(start, (f.minutes.get(start) ?? 0n) + (name === 'BuyEvent' ? amount : -amount));
     // Only the recent minutes can be part of a negative run: older ones (and their ids) are dropped, so memory and the
     // saved evidence stay bounded on a long hold.
     for (const m of f.minutes.keys()) if (m < start - FLOW_KEEP_MS) f.minutes.delete(m);
     for (const [k, m] of f.ids) if (m < start - FLOW_KEEP_MS) f.ids.delete(k);
+  }
+
+  /**
+   * EXIT-KEEP: the held pool's trade evidence must be complete since its anchor: the first slot after the trades counted
+   * before a restart (the saved `tradesThrough`), else the entry's fill slot. A pool stream that is gap-free only from
+   * later (a catch-up or reconnect gap closed lossy, or a restart with nothing saved to catch up from) means sales and
+   * flow may be missing: the position goes into sell-only recovery, never managed on evidence that reads as "nothing
+   * sold". An open gap (a catch-up still running) is waited out; with no stream fact nothing is judged. While complete,
+   * the covered-through slot is saved for the next restart.
+   */
+  #tradeCoverage(pid: string, mint: string, entryId: IntentId, saved: SavedExit, ctx: StrategyContext, out: Decision[]): SavedExit {
+    const pool = this.#poolOfMint.get(mint);
+    const r = pool === undefined ? null : ctx.lookup(streamKey(`trades:${pool}`));
+    const f = r !== null && r.ok ? parseStream(unwrap(r.value)) : null;
+    if (f === null || f.obs.quality.includes('partial') || f.obs.slot === null) return saved;
+    const restored = this.#restoredThrough.get(mint);
+    const anchor = restored !== undefined ? restored + 1n : ctx.book.intents[entryId]?.fills[0]?.slot;
+    if (anchor === undefined) return saved;
+    if (f.gapFreeSince > anchor) {
+      if (saved.recovery != null) return saved;
+      const reason = `trades not complete since slot ${anchor} (trades:${pool} gap-free only from ${f.gapFreeSince})`;
+      out.push({ action: null, reasons: ['recovery exit', pid, reason, 'the whole holding exits at the next fresh quote'] });
+      const next: SavedExit = { ...saved, recovery: reason, tracker: { ...saved.tracker, pendingFull: saved.tracker.pendingFull ?? ['emergency'] } };
+      this.#exits.set(pid, next);
+      return next;
+    }
+    if (saved.tradesThrough === f.obs.slot) return saved;
+    const next: SavedExit = { ...saved, tradesThrough: f.obs.slot };
+    this.#exits.set(pid, next);
+    return next;
   }
 
   /** The held mint's finished flow minutes, oldest first (EXIT-1 `ExitObservation.flow`). */
@@ -1617,6 +1667,7 @@ export class LiveStrategy implements Strategy {
           }
         }
       }
+      saved = this.#tradeCoverage(p.id, p.mint, p.entryIntentId, saved, ctx, out);
       const recoveryWhy = saved.recovery ?? null;
       if (recoveryWhy !== null && p.status === 'open' && saved.tracker.pendingFull === null && exitIntents.every(isTerminal)) {
         // Sell-only recovery lasts until the position closes (EXIT-1g review B1): the recovery exit was taken (which
