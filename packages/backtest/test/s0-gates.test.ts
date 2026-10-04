@@ -8,8 +8,9 @@ import { type MintPlan, POOL_ACCOUNTS, studyWorld, W0 } from './study-world.ts';
 import { SOL_USD } from './synthetic.ts';
 
 const seen = vi.hoisted(() => [] as string[]);
-vi.mock('../../core/src/gates/index.ts', async (importOriginal) => {
-  const m = await importOriginal<typeof import('../../core/src/gates/index.ts')>();
+// The gates module itself: the staged evaluation (core gates/staged.ts) calls evaluateHardRejects from it directly.
+vi.mock('../../core/src/gates/hard.ts', async (importOriginal) => {
+  const m = await importOriginal<typeof import('../../core/src/gates/hard.ts')>();
   return {
     ...m,
     evaluateHardRejects: (...a: Parameters<typeof m.evaluateHardRejects>) => {
