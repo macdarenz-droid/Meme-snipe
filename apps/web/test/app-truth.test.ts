@@ -1,10 +1,11 @@
 // APP-TRUTH (owner, from the phone): every row reads as what it is. The Session card's R3 row is the open trade limit,
 // not a count of open trades; and "Entries: Off" names the risk rule that stopped them, not just "risk limit".
-import { createElement as h } from 'react';
+import { createElement as h, type ReactElement, type ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import type { WorkerStatus } from '../src/api/contract.ts';
-import { statusRows } from '../src/dashboard/Sections.tsx';
+import { Journal, JOURNAL_FIRST, journalMore, JournalList, statusRows } from '../src/dashboard/Sections.tsx';
+import { fixtureDecisions } from '../src/dev/dashboardFixtures.ts';
 import { HALT_LABEL, RISK_CODE_LABEL } from '../src/dashboard/labels.ts';
 import { SessionCard } from '../src/screens/Snipe.tsx';
 import { EMPTY_SESSION } from '../src/screens/types.ts';
@@ -50,5 +51,41 @@ describe('a risk halt names its rule', () => {
   it('every risk rule has words, and none is flagged by the copy guard', () => {
     for (const code of ['sol_price_unknown', 'sol_price_stale', 'balance_unknown', 'balance_stale', 'mark_unknown', 'mark_stale', 'risk_fault']) expect(RISK_CODE_LABEL[code], code).toBeDefined();
     expect(findBanned(Object.values(RISK_CODE_LABEL).join(' '))).toEqual([]);
+  });
+});
+
+describe('the decision journal shows the newest 5, then more on each press (owner: it was a long scroll)', () => {
+  const twelve = Array.from({ length: 12 }, (_, k) => ({ ...fixtureDecisions('paper')[0]!, id: `d${k}`, symbol: `T${k}` }));
+  const rows = (html: string) => [...html.matchAll(/class="token-symbol">([^<]*)</g)].map((m) => m[1]);
+  // The button's press handler, found in the rendered element tree (no DOM in these tests).
+  const pressOf = (el: ReactNode): (() => void) | null => {
+    if (el === null || typeof el !== 'object') return null;
+    if (Array.isArray(el)) { for (const c of el) { const f = pressOf(c); if (f) return f; } return null; }
+    const e = el as ReactElement<{ children?: ReactNode; onClick?: () => void }>;
+    if (e.type === 'button' && e.props.children === 'Show more') return e.props.onClick ?? null;
+    return pressOf(e.props?.children);
+  };
+
+  it('12 rows render 5, newest first, with "Show more"; a press shows the rest', () => {
+    const first = renderToStaticMarkup(h(Journal, { decisions: twelve, onOpen: () => undefined }));
+    expect(rows(first)).toEqual(['T0', 'T1', 'T2', 'T3', 'T4']);
+    expect(text(first)).toContain('5 of 12 Show more');
+    let more = 0;
+    const tree = JournalList({ decisions: twelve, onOpen: () => undefined, shown: JOURNAL_FIRST, onMore: () => { more++; } });
+    pressOf(tree)!();
+    expect(more).toBe(1);
+    // Each press shows 20 more.
+    expect(journalMore(JOURNAL_FIRST)).toBe(25);
+    expect(journalMore(25)).toBe(45);
+    const after = renderToStaticMarkup(h(JournalList, { decisions: twelve, onOpen: () => undefined, shown: journalMore(JOURNAL_FIRST), onMore: () => undefined }));
+    expect(rows(after)).toEqual(twelve.map((d) => d.symbol));
+    expect(text(after)).not.toContain('Show more');
+    expect(findBanned(text(first))).toEqual([]);
+  });
+
+  it('5 or fewer rows: all of them, no button', () => {
+    const html = renderToStaticMarkup(h(Journal, { decisions: twelve.slice(0, 5), onOpen: () => undefined }));
+    expect(rows(html)).toHaveLength(5);
+    expect(html).not.toContain('Show more');
   });
 });

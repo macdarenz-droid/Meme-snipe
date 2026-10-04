@@ -2097,4 +2097,5 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - `risk_fault` gains "Risk check failed".
   - An unknown rule, or none, still reads "risk limit".
   - The no-market labels are untouched (READ-COHERENT is changing them).
-- **2026-10-05 · Evidence.** `apps/web/test/app-truth.test.ts`: 11 of its 12 tests failed before. They cover the limit row's words and each risk rule's words; the copy guard passes. Mutants caught: the acronym kept lower-case, `risk_fault` without words.
+- **2026-10-05 · The decision journal is short (owner).** It shows the 5 newest rows, newest first as served, then "Show more" with "5 of 12". Each press shows 20 more (`journalMore`). Five rows or fewer show no button.
+- **2026-10-05 · Evidence.** `apps/web/test/app-truth.test.ts`: 11 of its 12 tests failed before. They cover the limit row's words and each risk rule's words; the copy guard passes. Mutants caught: the acronym kept lower-case, `risk_fault` without words, every journal row shown, a press that adds none. The journal's two tests failed before too.

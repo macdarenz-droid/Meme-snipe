@@ -240,10 +240,23 @@ export function decisionReasons(reasons: readonly string[]): string[] {
   return [...new Set(out.filter((x) => x !== ''))];
 }
 
+/** The journal shows its newest rows first, then more on each press (APP-TRUTH, owner: it was a long scroll). */
+export const JOURNAL_FIRST = 5;
+export const JOURNAL_PAGE = 20;
+/** How many rows one press of "Show more" leaves shown. */
+export const journalMore = (shown: number): number => shown + JOURNAL_PAGE;
+
 export function Journal({ decisions, onOpen }: { decisions: DecisionRecord[]; onOpen: (d: DecisionRecord) => void }) {
+  const [shown, setShown] = useState(JOURNAL_FIRST);
+  return <JournalList decisions={decisions} onOpen={onOpen} shown={shown} onMore={() => setShown(journalMore)} />;
+}
+
+/** The first `shown` decisions, in the order served (newest first), and "Show more" while any are hidden. */
+export function JournalList({ decisions, onOpen, shown, onMore }: { decisions: DecisionRecord[]; onOpen: (d: DecisionRecord) => void; shown: number; onMore: () => void }) {
   return (
+    <>
     <ul className="dash-journal">
-      {decisions.map((d) => (
+      {decisions.slice(0, shown).map((d) => (
         <li key={d.id}>
           <button type="button" className="dash-journal-row" onClick={() => onOpen(d)}>
             <span className={`dash-outcome dash-outcome-${d.outcome}`}>{OUTCOME[d.outcome]}</span>
@@ -259,6 +272,17 @@ export function Journal({ decisions, onOpen }: { decisions: DecisionRecord[]; on
         </li>
       ))}
     </ul>
+    {shown < decisions.length && (
+      <div className="dash-more">
+        <span className="muted small num">
+          {shown} of {decisions.length}
+        </span>
+        <button type="button" className="button" onClick={onMore}>
+          Show more
+        </button>
+      </div>
+    )}
+    </>
   );
 }
 
