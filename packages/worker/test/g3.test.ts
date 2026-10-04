@@ -14,7 +14,7 @@ import { classify, g3Report, type HoldoutSummary, type Line, LIVE_ONLY_INPUTS, l
 import { scoreCounterfactual } from '../src/research/counterfactual.ts';
 import { readRecording } from '../src/research/recording.ts';
 import { FILL_CONFIG, RUG_CONFIG, TRIAL_POLICY } from '../../core/src/config/index.ts';
-import { ACCOUNT_KEY, HALT_KEY } from '../src/engine/strategy.ts';
+import { ACCOUNT_KEY, HALT_KEY, SHORTLIST } from '../src/engine/strategy.ts';
 import { LANDS, MINT, Market, POOL_ADDRESS, T, makeWorker, passingMarket, tempState } from './worker-harness.ts';
 
 type H = ReturnType<typeof makeWorker>;
@@ -65,6 +65,9 @@ const HOLDOUT: HoldoutSummary = {
 /** The plan registered before the run, judged at `evaluateAtMs` (one tail before the session's last line unless a test says otherwise). */
 const lastMs = (h: H) => Date.parse(String((JSON.parse(readFileSync(join(h.stateDir, 'journal.jsonl'), 'utf8').trim().split('\n').at(-1)!) as { ts: string }).ts));
 const reg = (h: H, evaluateAtMs = lastMs(h) - TAIL, outcomeTailMs = TAIL) => ({ registeredAtMs: T - 30 * 86_400_000, thresholds: {}, expectedSimulationErrors: [], evaluateAtMs, outcomeTailMs });
+
+/** The run's decision lines, parsed. */
+const decisionLines = (h: H): Record<string, unknown>[] => readFileSync(join(h.stateDir, 'journal.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>).filter((l) => l['kind'] === 'decision');
 
 /** Every file under `dir` with its SHA-256. */
 const tree = (dir: string): Record<string, string> => {
@@ -225,8 +228,17 @@ describe('G3: live-only vetoes and their counterfactual trades (TEST-3)', () => 
     const rk = await g3Report({ stateDir: k.stateDir, holdout: HOLDOUT, registration: reg(k, cutK), parityPassed: true, out: join(tempState(), 'g3'), scenario: LANDS });
     expect(rk.result.metrics['dryRunTrades']).toBe(1);
     expect(rk.result.checks.some((c) => c.name === 'kept outcomes')).toBe(false);
-    // Entered after the cut: not judged at all.
-    expect(readRun(k.stateDir, trade.openedAtMs - 1, TAIL)).toMatchObject({ kept: [], keptCensored: [] });
+    // Entered after the cut: not judged at all, and its simulations (inside the tail) are not counted.
+    expect(readRun(k.stateDir, trade.openedAtMs - 1, TAIL)).toMatchObject({ kept: [], keptCensored: [], simulations: { attempted: 0, succeeded: 0 } });
+    expect(readRun(k.stateDir, trade.openedAtMs - 1, TAIL).fillDifferences).toEqual([]);
+    // Decisions stop at the cut: a shortlist, a reject, a veto and an entry inside the tail change nothing.
+    for (const x of [v, k]) {
+      const shortlistMs = Date.parse(String(decisionLines(x).find((l) => (l['reasons'] as string[])[0] === SHORTLIST)!['ts']));
+      const inTail = decisionLines(x).filter((l) => Date.parse(String(l['ts'])) > shortlistMs - 1);
+      expect(inTail.some((l) => l['action'] === 'reject') || inTail.some((l) => l['action'] === 'enter')).toBe(true);
+      expect(readRun(x.stateDir, shortlistMs - 1, TAIL)).toMatchObject({ candidates: 0, rejectMix: {}, vetoes: [], entered: [] });
+    }
+    expect(readRun(v.stateDir, vetoAt - 1, TAIL).candidates).toBe(1);
     // Still open at the end of the tail: censored, never dropped, and G3 is not proven.
     const open = readRun(k.stateDir, cutK, trade.closedAtMs - cutK - 1);
     expect(open).toMatchObject({ kept: [], keptCensored: [expect.any(String)] });
