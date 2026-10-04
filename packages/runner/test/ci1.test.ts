@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 import { STUB_ENTRY, type Health, type JournalLine } from '../src/contract.ts';
 import { LocalControl } from '../src/control.ts';
 import type { DrillOutcome } from '../src/report.ts';
-import { closedSince, httpHealth, runSegment } from '../src/runner.ts';
+import { closedSince, heldAtKill, httpHealth, runSegment } from '../src/runner.ts';
 
 const root = join(import.meta.dirname, '..', '..', '..');
 const freePort = (): Promise<number> =>
@@ -65,5 +65,44 @@ describe('a backup copy counts only when the reply after it holds the same state
     expect(existsSync(join(evidenceDir, 'backup.json'))).toBe(false);
     const drills = JSON.parse(readFileSync(join(evidenceDir, 'drills.json'), 'utf8')) as DrillOutcome[];
     expect(drills.find((d) => d.id === 'restart-1')).toMatchObject({ cause: 'host-loss', pass: false, notes: ["no backup to restore: the worker's state never held still for a copy"] });
+  }, 40_000);
+});
+
+describe('a trade that closed between the reply and the kill', () => {
+  it('nothing left held means no trade was open at the kill', () => {
+    expect(heldAtKill({ pending_exits: [], positions: [] }, 0)).toBe(false);
+    expect(heldAtKill({ pending_exits: [], positions: [] }, 1)).toBe(true);
+    expect(heldAtKill({ pending_exits: ['t'], positions: [] }, 0)).toBe(true);
+  });
+
+  it('is not a mid-trade kill and exposes nothing (the reply still showed it open)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ci1-closed-'));
+    const addr = `127.0.0.1:${await freePort()}`;
+    const stateDir = join(dir, 'state');
+    const evidenceDir = join(dir, 'ev');
+    // The first reply with an open position is handed back unchanged for 2 s: by the kill the stub (1 s cycle) has
+    // closed that trade, as a reply delayed by a loaded runner would hide.
+    let frozen: { h: Health; until: number } | null = null;
+    const fetchHealth = async (a: string): Promise<Health | null> => {
+      const h = await httpHealth(a);
+      if (frozen && h?.boot === frozen.h.boot && Date.now() < frozen.until) return frozen.h;
+      if (frozen === null && h?.open_position) frozen = { h, until: Date.now() + 2000 };
+      return h;
+    };
+    const control = new LocalControl({
+      entry: STUB_ENTRY, cwd: root, logPath: join(evidenceDir, 'w.log'), stateDir, restartDelayMs: 200,
+      env: { PATH: process.env['PATH'] ?? '', ZEROED_STATE_DIR: stateDir, ZEROED_MODE: 'paper', ZEROED_RECORDER: 'on', ZEROED_SIMULATE: 'on', ZEROED_DRILLS: 'on', ZEROED_HEALTH_ADDR: addr, ZEROED_GIT_SHA: 'c0ffee', ZEROED_STUB_TICK_MS: '50', ZEROED_STUB_CYCLE_MS: '1000', ZEROED_STUB_EXIT_DELAY_MS: '300' },
+    });
+    await runSegment({
+      identity: { label: 'rehearsal', commit: 'c0ffee' }, healthAddr: addr, stateDir, evidenceDir, keepRecorded: 'copy', sampleMs: 100, recoverMs: 6000,
+      log: () => {}, control, segmentEnd: Date.now() + 8000, hostDrills: 'wipe', fetchHealth, handover: false,
+      // The first crash falls due at once and waits for the frozen "in trade" reply.
+      newRun: { runId: 'run', targetMs: 60_000, entry: STUB_ENTRY, restarts: 3, causes: ['crash', 'crash', 'crash'], restartWindowMs: 20_000, rpcDrops: 0 },
+    });
+    const drills = JSON.parse(readFileSync(join(evidenceDir, 'drills.json'), 'utf8')) as DrillOutcome[];
+    const d = drills.find((x) => x.id === 'restart-1')!;
+    expect(d.notes.join(' ')).toMatch(/closed between the last reply and the kill \(journal\)/);
+    expect(d).toMatchObject({ pass: true, midTrade: false, keep: 0 });
+    expect(d.exposure).toBeUndefined();
   }, 40_000);
 });
