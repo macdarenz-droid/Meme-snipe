@@ -12,11 +12,10 @@
 - App name: Zeroed. Logo: "Slot" (a solid zero with a Z cut into it), files in `brand/`, rules in `docs/BRAND.md`.
 
 ## Phase
-Wave D, 4 Oct 3:30 PM Melbourne. 60 PRs merged since midnight on 4 Oct (the latest are listed in `HANDOVER.md` §4; all are in the git history). The owner finished the server, Tailscale, APK and ruleset steps at 2:31 PM, chose SPA for G1 at 2:33 PM, and authorised code-only Deploy runs at 2:45 PM.
-- **Blocker:** GitHub has locked the owner's account after declined GitHub Pro payments (3:15–3:23 PM, and again from 3:37 PM), so no Actions job runs. The owner has the steps: go back to Free, or pay by PayPal.
-- **Server:** re-installed at pin e28788a, paired, published on the tailnet only. It runs the stub worker, so the app shows "Server error" until the real-worker switch (after WORKER-1b #82, WORKER-1c #99 and RISK-MARK #103).
-- **History:** the Old Faithful archive blocks our scanner (since 8:43 AM), so scan run 1 published nothing. The survey ranked Helius whole blocks first: a free pilot, then at most US$99 with the owner's approval. Triton's written OK for Old Faithful is second.
-- **Building:** EXIT-1f, STATS-1f (G1 on SPA), the BT-2 study, the G3 report fold, WORKER-1d, SWITCH-1, API-1, MEM-1 and the merge queue in `HANDOVER.md` §4.
+Wave D, 4 Oct 4:25 PM Melbourne. 65 PRs merged since midnight on 4 Oct (the latest in `HANDOVER.md` §4). The owner finished the server, Tailscale, APK and ruleset steps at 2:31 PM, chose SPA for G1 at 2:33 PM, authorised code-only Deploy runs at 2:45 PM, moved the GitHub account to Pro at about 3:47 PM, chose the free Helius plan for now, and emailed Triton.
+- **Server:** re-installed at pin e28788a, paired, published on the tailnet only. It runs the stub worker, so the app shows "Server error" until SWITCH-1 (after RISK-MARK #103 and WORKER-1c #99): expected about 9 PM – 1 AM (±3 h).
+- **History:** the Old Faithful archive blocks our scanner. A check every 3 hours uses our real identity, never a disguise. DATA-2 (#111, a Helius `getBlock` reader) is in review; its free pilot runs after merge. An early look (BT-2e) runs the bot's own backtest on 1–2 free practice days, about Tue 6 – Wed 7 Oct.
+- **Building:** #103/#99 merges, SWITCH-1, STATS-1f, FACTS-1f, APP-3, EXIT-1g, MEM-1, ARCHIVE-CHECK, BT-2e.
 
 ## Done
 - Owner rules in `AGENTS.md` and `CLAUDE.md`; the starting brief and the research in `docs/`.
@@ -31,11 +30,11 @@ Builders run as separate sessions; a fresh reviewer session checks each PR; the 
 
 | Task | What | State | Estimate (Melbourne) |
 |---|---|---|---|
-| Merge queue | #104, #108, #99, #103, #90, #106, #98, #89, #97 (all passed review); WORKER-1b #82 merged 3:41 PM | held by the GitHub lock | about 10–15 min each once Actions runs |
+| Merge queue | #103, #99, SWITCH-1, #107, #98, #106, #97, #109, #111; merged this afternoon: #82, #104, #108, #90, #89 | moving one at a time | about 10–15 min each plus merge checks |
 | SWITCH-1 | e2e proof that the release worker starts on the host, a pre-switch smoke check, the `"worker": "release"` flip; then Deploy (code only) | building (01VM97); merges after #99 and #103 | Sun 4 Oct about 9 PM – Mon 1 AM (±3 h) |
 | EXIT-1f #107, STATS-1f #109 | exact restored open time; G1 on the registered SPA test | in review | today |
 | BT-2 #41 | study: observedTip in live and backtest, funder cluster, funnel count | building | needs historical days |
-| Historical data | DATA-2: Helius `getBlock` reader and free pilot, then the full pull (19 Jul – 3 Oct) | archive blocked; the pilot waits for Actions | days about Fri 9 – Sun 11 Oct (±1–2 days) if the pilot runs Mon and the owner approves |
+| Historical data | DATA-2 #111 (in review), pilot, ARCHIVE-CHECK; BT-2e early look on 1–2 free days | free plan only (owner) | early look about Tue 6 – Wed 7 Oct; all days about Fri 9 – Sun 11 Oct (±1–2 days) only if the owner approves the paid month or Triton allows |
 
 ## Follow-ups
 - Android: cover a stop between the two asset renames, the "fixed name plus .prev" state, and a failed final delete (APP-1b review notes).
