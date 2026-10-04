@@ -238,4 +238,30 @@ describe('a held position priced from its pool\'s swap stream (POS-1)', () => {
     expect(position(h)).toBeUndefined();
     await h.worker.stop();
   });
+
+  it('an entry is judged on its pool fact\'s own age, never its carry: a fact current by slot but received 2.5 s ago is refused as a stale quote (WATCH-1c risk review)', async () => {
+    const h = makeWorker({ watchRead: () => new Promise(() => undefined) });
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    const m = await passingMarket(h, { omit: [xcheckKey(MINT)] });
+    const readSlot = h.worker.feed.releasedThrough;
+    m.tradesStart(readSlot - 100n);
+    m.accountsRead(readSlot);
+    await until(m, () => false, 1_200, () => m.pool());
+    // From now the pool fact is current by slot (the gates' 2-slot lag passes) but was received 2.5 s before it came in;
+    // the chain carries the same reserves through every slot. The cross-check arrives: everything else passes.
+    const template = h.worker.poolFact(MINT) as { obs: Record<string, unknown> };
+    const tick = () => {
+      m.omit = new Set([poolKey(MINT)]);
+      m.pool();
+      m.omit = new Set();
+      m.fact(poolKey(MINT), { ...template, obs: { ...template.obs, slot: h.worker.feed.openSlot - 1n, receivedAt: m.now - 2_500 } });
+    };
+    await until(m, () => false, 6_000, tick);
+    // The carry keeps the market fresh for an exit, but the entry's quote is the pool fact's, and it is stale.
+    expect(m.now - h.worker.poolOf(MINT)!.atMs).toBeLessThan(h.session.policy.gates.maxQuoteAgeMs);
+    const last = decisions(h).at(-1)!;
+    expect([last[0], last[3]]).toEqual(['reject', 'risk R13 quote_stale: the pool quote is stale']);
+    expect(position(h)).toBeUndefined();
+    await h.worker.stop();
+  });
 });
