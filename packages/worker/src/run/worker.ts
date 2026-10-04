@@ -606,6 +606,16 @@ export class Worker {
     writeFileSync(join(this.#d.config.stateDir, STATE_FILES.openIntents), `${n}\n`);
   }
 
+  /** The strategy's exit plans and trackers, written when they changed. */
+  #saveExits(): void {
+    const saved = this.#strategy.saved();
+    const text = jsonText(saved);
+    if (text !== this.#savedExits) {
+      this.#exitsFile.write(saved);
+      this.#savedExits = text;
+    }
+  }
+
   /** One engine step: release what is due, decide, record, write. */
   step(): void {
     const now = this.#d.timers.now();
@@ -616,6 +626,9 @@ export class Worker {
     this.#watchOpened();
     // Entry decisions' plan inputs reach disk before the desk books anything this step decided (EXIT-1h, the same order
     // as WORKER-ORDER: the durable record first, then the ledger), so an entry that fills is never without its plan.
+    // The plans go first: a plan made this step replaced its seed, so the seed may leave the disk only once the plan is
+    // on it (EXIT-1h review B1: a kill between the two writes left neither).
+    this.#saveExits();
     const seeds = jsonText(this.#strategy.seeds());
     if (seeds !== this.#savedSeeds) {
       this.#seedsFile.write(this.#strategy.seeds());
@@ -635,12 +648,7 @@ export class Worker {
         this.#report({ type: 'tick', blockHeight: this.#lastSlot });
       }
     }
-    const saved = this.#strategy.saved();
-    const text = jsonText(saved);
-    if (text !== this.#savedExits) {
-      this.#exitsFile.write(saved);
-      this.#savedExits = text;
-    }
+    this.#saveExits();
     this.#markAccount(now);
     if (now - this.#lastSaveMs >= PERSIST_EVERY_MS) this.#persist(now);
     this.#checkHalt(now);

@@ -3,7 +3,7 @@
 import { spawnSync } from 'node:child_process';
 import { cpSync, existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { replayLedgerFile } from '../../core/src/ledger/replay/index.ts';
 import { isTerminal } from '../../core/src/lifecycle/index.ts';
 import { openLedgerReader } from '../../core/src/ledger/index.ts';
@@ -19,7 +19,7 @@ import { type MicroUsd, microUsdToLamports } from '../../core/src/units/index.ts
 import { oneTimeRent } from '../src/run/settings.ts';
 import { views } from '../src/run/api.ts';
 import { runSeed } from '../src/run/seed-start.ts';
-import { exitsFile, seedsFile } from '../src/run/state.ts';
+import { StateFile, exitsFile, seedsFile } from '../src/run/state.ts';
 import type { SignatureInfo } from '../src/providers/solana-http.ts';
 import type { SeedRequest } from '../src/run/worker.ts';
 import type { SeedRpc } from '../src/seed/rpc.ts';
@@ -807,7 +807,7 @@ describe('sell-only recovery for a position without its own plan (EXIT-1g, audit
     ['saved plan refused', (saved: Record<string, SavedExit>, pid: string) => ({ ...saved, [pid]: { ...saved[pid]!, plan: { ...saved[pid]!.plan, stopPrice: 'none' as unknown as bigint } } })],
     ['saved tracker refused', (saved: Record<string, SavedExit>, pid: string) => ({ ...saved, [pid]: { ...saved[pid]!, tracker: { ...saved[pid]!.tracker, trail: 'high' as unknown as bigint } } })],
   ] as const)('the recovery outlives its exit (%s): taken, killed after a failed attempt and cancelled at restart, the next boot exits again (review B1)', async (why, change) => {
-    // Boot 2 recovers the position and takes the recovery exit; its attempts fail, and the worker is killed after the first.
+    // Boot 2 recovers the position and takes the recovery exit; the worker is killed once its attempt is sent, before it lands.
     const r = await recovered(change);
     const sent = () => Object.values(r.b.worker.book.intents).some((i) => i.intent.purpose === 'exit' && i.intent.positionId === r.pid && i.status !== 'exposure_reserved');
     await r.m.run(800, 400, () => r.m.slot());
@@ -904,6 +904,77 @@ describe('the entry decision survives a kill before its plan is made (EXIT-1h)',
     expect(b.worker.book.positions[p.id]!.status).toBe('open');
     // The seed is gone once its plan is made.
     expect(seedsFile(h.stateDir).read({})[p.entryIntentId]).toBeUndefined();
+    await b.worker.stop();
+  });
+  /** Entered and killed after the fill, before its plan is made (the EXIT-1h kill). */
+  const killedBeforePlan = async () => {
+    const h = makeWorker();
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    const m = await passingMarket(h, HELD);
+    expect(await until(m, 30_000, () => positions(h).some((p) => p.status === 'open'), () => {
+      m.slot();
+      m.pool();
+    })).toBe(true);
+    const p = positions(h).find((x) => x.status === 'open')!;
+    expect(exitsFile(h.stateDir).read({})[p.id]).toBeUndefined();
+    await h.worker.kill();
+    return { h, p };
+  };
+  it('the plan reaches disk before its seed leaves it: a kill at the seeds write of the step that makes the plan keeps the plan (review B1)', async () => {
+    const h = makeWorker();
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    const m = await passingMarket(h, HELD);
+    // What a kill at each seeds write would leave: for every seed a write drops, the saved plans on disk at that moment.
+    const atDrop: { id: string; exits: Record<string, SavedExit> }[] = [];
+    const write = StateFile.prototype.write;
+    const spy = vi.spyOn(StateFile.prototype, 'write').mockImplementation(function (this: StateFile<unknown>, v: unknown) {
+      if (this.path.endsWith('entry-seeds.json')) {
+        const before = seedsFile(h.stateDir).read({});
+        for (const id of Object.keys(before)) if (!Object.hasOwn(v as object, id)) atDrop.push({ id, exits: exitsFile(h.stateDir).read({}) });
+      }
+      write.call(this, v);
+    });
+    try {
+      expect(await until(m, 30_000, () => Object.values(h.worker.strategy.saved()).length > 0, () => {
+        m.slot();
+        m.pool();
+      })).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+    const p = positions(h).find((x) => x.status === 'open')!;
+    const dropped = atDrop.find((d) => d.id === String(p.entryIntentId));
+    expect(dropped).toBeDefined();
+    expect(dropped!.exits[p.id]?.plan).toEqual(h.worker.strategy.saved()[p.id]!.plan);
+    await h.worker.stop();
+  });
+  it('a malformed saved seed is refused and said; its position goes to sell-only recovery (review B2)', async () => {
+    const { h, p } = await killedBeforePlan();
+    const seeds = seedsFile(h.stateDir);
+    const all = seeds.read({});
+    seeds.write({ ...all, [p.entryIntentId]: { ...all[p.entryIntentId]!, stopPrice: 'low' as unknown as bigint } });
+    const { b, m: m2, first, mine } = await reboot(h, LANDS);
+    expect(await until(m2, 4_000, () => b.worker.strategy.saved()[p.id] !== undefined, () => m2.slot())).toBe(true);
+    expect(first('restore seed refused').map((l) => l['reasons'])).toEqual([['restore seed refused', String(p.entryIntentId), 'malformed saved seed']]);
+    expect(first('recovery exit').map((l) => l['reasons'])).toEqual([['recovery exit', p.id, 'saved seed refused', 'the whole holding exits at the next fresh quote']]);
+    m2.pool();
+    expect(await until(m2, 4_000, () => mine().some((l) => l['action'] === 'trigger_exit') && first('prepare exit').length > 0, () => m2.slot())).toBe(true);
+    await b.worker.stop();
+  });
+  it('a restored seed whose intent never reached the book is dropped at the restart (review N1)', async () => {
+    const { h, p } = await killedBeforePlan();
+    const seeds = seedsFile(h.stateDir);
+    const all = seeds.read({});
+    const orphan = 'i:orphan-never-booked';
+    seeds.write({ ...all, [orphan]: { ...all[p.entryIntentId]! } });
+    const { b, m: m2, first } = await reboot(h, LANDS);
+    expect(await until(m2, 4_000, () => b.worker.strategy.saved()[p.id] !== undefined, () => m2.slot())).toBe(true);
+    expect(first('restored seed dropped').map((l) => l['reasons'])).toEqual([['restored seed dropped', orphan, 'its intent never reached the book']]);
+    expect(Object.keys(b.worker.strategy.seeds())).toEqual([]);
+    await m2.run(400, 400, () => m2.slot());
+    expect(Object.keys(seedsFile(h.stateDir).read({}))).toEqual([]);
+    // The booked position's own seed still made its real plan.
+    expect(first('recovery exit')).toEqual([]);
     await b.worker.stop();
   });
   it('the same kill with its saved seed lost: neither plan nor seed comes back, so sell-only recovery exits the whole holding (EXIT-1g review N3)', async () => {
