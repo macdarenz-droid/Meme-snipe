@@ -12,7 +12,9 @@
 //   is "not covered", never "clean";
 // - the fill plan tops up only from the saved moment (or an older open gap) to now, within the daily credit budget.
 import { createHash } from 'node:crypto';
-import { closeSync, existsSync, fsyncSync, openSync, readFileSync, renameSync, writeSync } from 'node:fs';
+import { closeSync, existsSync, fsyncSync, openSync, readFileSync, readSync, renameSync, rmSync } from 'node:fs';
+import { fileLines } from '../../../runner/src/lines.ts';
+import { atomicWrite, writeAll, type WriteFn } from '../run/state.ts';
 import type { RugConfig } from '../../../core/src/config/rugs.ts';
 import { DAY_MS } from '../../../core/src/config/time.ts';
 import { compareEvents, compareMoments, type MarketEvent, type Moment } from '../../../core/src/engine/index.ts';
@@ -21,7 +23,11 @@ import { SEED_VIA } from '../seed/seed.ts';
 import { parseGraduatesSeed } from '../../../core/src/facts/raw.ts';
 import type { SavedCandidate, SavedGraduates, SavedTail } from '../engine/strategy.ts';
 
-export const STATE_VERSION = 1;
+/** Written as version 2 (streamed lines, see `saveState`); version 1 files (the payload as a string inside one JSON object) are still read. */
+export const STATE_VERSION = 2;
+
+/** The saved state's file name, in the state dir and in a boot's recording (its copy). */
+export const PERSIST_FILE = 'deployer-state.json';
 
 export interface SavedState {
   readonly asOf: Moment;
@@ -64,6 +70,8 @@ export type Restored =
   | {
     readonly ok: true;
     readonly asOf: Moment;
+    /** The file's format version (1 or 2). */
+    readonly version: number;
     readonly index: DeployerIndex;
     readonly labeller: RugLabeller;
     /** The saved coverage facts plus the restart gaps, in release order, none after `asOf`: release them first. */
@@ -92,18 +100,8 @@ const reviver = (_k: string, v: unknown): unknown => {
   return v;
 };
 
-/** Writes atomically: a temporary file, flushed, then renamed over the old one. A crash leaves the old file whole. */
-const writeAtomic = (path: string, text: string): void => {
-  const tmp = `${path}.tmp`;
-  const fd = openSync(tmp, 'w');
-  try {
-    writeSync(fd, text);
-    fsyncSync(fd);
-  } finally {
-    closeSync(fd);
-  }
-  renameSync(tmp, path);
-};
+/** Writes atomically with every write checked (`atomicWrite`, #159 review N2): a failure leaves the old file whole. */
+const writeAtomic = (path: string, text: string, write?: WriteFn): void => atomicWrite(path, text, write);
 
 /**
  * The saved graduates must be dated at the saved moment, well formed, unique per mint, and none migrated after it
@@ -159,7 +157,19 @@ const tailsProblem = (t: unknown): void => {
 /** After `asOf` in the event order, or received later than it: either way not something the save could have known. */
 const after = (m: Moment, asOf: Moment): boolean => compareMoments(m, asOf) > 0 || m.receivedAt > asOf.receivedAt;
 
-export const saveState = (path: string, s: SavedState): void => {
+/** The first line of a version 2 file. */
+export const STATE_FORMAT = 'zeroed-deployer-state';
+
+type MintRow = readonly [string, readonly (readonly [string, number])[]];
+
+/**
+ * Saves the state, streamed (version 2, WORKER-GROW): a format line; the payload with the index's mint rows left out;
+ * one line per creator's mint row (`mintRows`, else the rows of `s.index.mints`); a last line with the sha256 of every
+ * line between the first and the last (each with its newline) and their count. Nothing is held whole: at a full
+ * look-back the old single payload string was about 65 MB, twice over. Written to a temp file with every write checked,
+ * flushed, then renamed (#159 review N2): a failure leaves the old file whole.
+ */
+export const saveState = (path: string, s: SavedState, o: { readonly mintRows?: Iterable<MintRow>; readonly write?: WriteFn } = {}): void => {
   for (const e of s.coverage) {
     if (after(e.moment, s.asOf)) throw new RangeError(`coverage fact ${e.id} is dated after the snapshot moment`);
   }
@@ -167,8 +177,56 @@ export const saveState = (path: string, s: SavedState): void => {
   if (s.graduates !== undefined) graduatesProblem(s.graduates, s.asOf, true);
   if (s.candidates !== undefined) candidatesProblem(s.candidates, s.asOf, true);
   if (s.tails !== undefined) tailsProblem(s.tails);
-  const payload = JSON.stringify(s, replacer);
-  writeAtomic(path, JSON.stringify({ version: STATE_VERSION, sha256: createHash('sha256').update(payload).digest('hex'), payload }));
+  if (o.mintRows !== undefined && s.index.mints.length > 0) throw new RangeError('mint rows given twice');
+  const rows: Iterable<MintRow> = o.mintRows ?? s.index.mints;
+  const tmp = `${path}.tmp`;
+  const fd = openSync(tmp, 'w', 0o600);
+  const hash = createHash('sha256');
+  let lines = 0;
+  let out: string[] = [];
+  let bytes = 0;
+  const flush = (): void => {
+    if (out.length > 0) writeAll(fd, out.join(''), o.write);
+    out = [];
+    bytes = 0;
+  };
+  const line = (text: string, hashed: boolean): void => {
+    const l = `${text}\n`;
+    if (hashed) {
+      hash.update(l);
+      lines++;
+    }
+    out.push(l);
+    bytes += l.length;
+    if (bytes >= 1 << 20) flush();
+  };
+  try {
+    line(JSON.stringify({ format: STATE_FORMAT, version: STATE_VERSION }), false);
+    line(JSON.stringify({ ...s, index: { ...s.index, mints: [] } }, replacer), true);
+    for (const r of rows) line(JSON.stringify(r), true);
+    line(JSON.stringify({ sha256: hash.digest('hex'), lines }), false);
+    flush();
+    fsyncSync(fd);
+  } catch (e) {
+    closeSync(fd);
+    rmSync(tmp, { force: true });
+    throw e;
+  }
+  closeSync(fd);
+  renameSync(tmp, path);
+};
+
+/** The sha256 of a file's bytes, read in chunks (the recording copy's binding, WORKER-GROW). */
+export const fileSha256 = (path: string): string => {
+  const hash = createHash('sha256');
+  const fd = openSync(path, 'r');
+  try {
+    const buf = Buffer.alloc(1 << 20);
+    for (let n = readSync(fd, buf, 0, buf.length, null); n > 0; n = readSync(fd, buf, 0, buf.length, null)) hash.update(buf.subarray(0, n));
+  } finally {
+    closeSync(fd);
+  }
+  return hash.digest('hex');
 };
 
 type Obj = Readonly<Record<string, unknown>>;
@@ -212,14 +270,44 @@ const openAtEnd = (coverage: readonly MarketEvent[]) => {
 export const loadState = (path: string, rugs: RugConfig, continuing: (stream: string, via: string) => boolean = () => true): Restored => {
   if (!existsSync(path)) return { ok: false, reason: 'no saved state' };
   let s: SavedState;
+  // Version 2: the mint rows are read one line at a time while the index restores (see `rows`); version 1: in the payload.
+  let streamed: { readonly lines: Iterator<string>; readonly hash: ReturnType<typeof createHash>; count: number; trailer: string | null } | null = null;
   try {
-    const outer = JSON.parse(readFileSync(path, 'utf8')) as unknown;
-    if (!isObj(outer) || outer['version'] !== STATE_VERSION) return { ok: false, reason: `saved state version ${isObj(outer) ? String(outer['version']) : '?'} is not ${STATE_VERSION}` };
-    const payload = outer['payload'];
-    if (typeof payload !== 'string' || createHash('sha256').update(payload).digest('hex') !== outer['sha256']) return { ok: false, reason: 'saved state checksum does not match' };
-    s = JSON.parse(payload, reviver) as SavedState;
+    const first = fileLines(path)[Symbol.iterator]();
+    const head = first.next();
+    const outer = JSON.parse(head.done === true ? '' : head.value) as unknown;
+    if (isObj(outer) && outer['format'] === STATE_FORMAT) {
+      if (outer['version'] !== STATE_VERSION) return { ok: false, reason: `saved state version ${String(outer['version'])} is not ${STATE_VERSION} or 1` };
+      const hash = createHash('sha256');
+      const payload = first.next();
+      if (payload.done === true) return { ok: false, reason: 'saved state payload is missing' };
+      hash.update(`${payload.value}\n`);
+      s = JSON.parse(payload.value, reviver) as SavedState;
+      streamed = { lines: first, hash, count: 1, trailer: null };
+    } else {
+      first.return?.(undefined);
+      const text = readFileSync(path, 'utf8');
+      const v1 = JSON.parse(text) as unknown;
+      if (!isObj(v1) || v1['version'] !== 1) return { ok: false, reason: `saved state version ${isObj(v1) ? String(v1['version']) : '?'} is not ${STATE_VERSION} or 1` };
+      const payload = v1['payload'];
+      if (typeof payload !== 'string' || createHash('sha256').update(payload).digest('hex') !== v1['sha256']) return { ok: false, reason: 'saved state checksum does not match' };
+      s = JSON.parse(payload, reviver) as SavedState;
+    }
   } catch (e) {
     return { ok: false, reason: `saved state unreadable: ${e instanceof Error ? e.message : String(e)}` };
+  }
+  /** Version 2's mint rows, parsed as the restore takes them; the last line is held back as the trailer. */
+  function* rows(st: NonNullable<typeof streamed>): Generator<unknown> {
+    let prev: string | null = null;
+    for (let r = st.lines.next(); r.done !== true; r = st.lines.next()) {
+      if (prev !== null) {
+        st.hash.update(`${prev}\n`);
+        st.count++;
+        yield JSON.parse(prev) as unknown;
+      }
+      prev = r.value;
+    }
+    st.trailer = prev;
   }
   try {
     if (!isMoment(s.asOf)) throw new RangeError('no as-of moment');
@@ -235,7 +323,11 @@ export const loadState = (path: string, rugs: RugConfig, continuing: (stream: st
     if (s.graduates !== undefined) graduatesProblem(s.graduates, asOf, false);
     if (s.candidates !== undefined) candidatesProblem(s.candidates, asOf, false);
     if (s.tails !== undefined) tailsProblem(s.tails);
-    const index = DeployerIndex.restore(s.index);
+    const index = streamed === null ? DeployerIndex.restore(s.index) : DeployerIndex.restore(s.index, rows(streamed));
+    if (streamed !== null) {
+      const t = streamed.trailer === null ? null : JSON.parse(streamed.trailer) as unknown;
+      if (!isObj(t) || t['sha256'] !== streamed.hash.digest('hex') || t['lines'] !== streamed.count) throw new RangeError('saved state checksum does not match, or the file is cut');
+    }
     const labeller = RugLabeller.restore(rugs, s.labeller, asOf);
     const coverage = [...s.coverage].sort(compareEvents);
     const { open, started } = openAtEnd(coverage);
@@ -251,7 +343,7 @@ export const loadState = (path: string, rugs: RugConfig, continuing: (stream: st
       if (continuing(w.stream, w.via)) fills.push({ stream: w.stream, via: w.via, fromSlot: asOf.slot, at: asOf, synthesized: true });
     }
     fills.sort((a, b) => (a.stream < b.stream ? -1 : a.stream > b.stream ? 1 : a.via < b.via ? -1 : a.via > b.via ? 1 : 0));
-    return { ok: true, asOf, index, labeller, coverage: [...coverage, ...restart].sort(compareEvents), fills, graduates: s.graduates ?? null, candidates: s.candidates ?? [], tails: s.tails ?? [] };
+    return { ok: true, asOf, version: streamed === null ? 1 : STATE_VERSION, index, labeller, coverage: [...coverage, ...restart].sort(compareEvents), fills, graduates: s.graduates ?? null, candidates: s.candidates ?? [], tails: s.tails ?? [] };
   } catch (e) {
     return { ok: false, reason: `saved state rejected: ${e instanceof Error ? e.message : String(e)}` };
   }

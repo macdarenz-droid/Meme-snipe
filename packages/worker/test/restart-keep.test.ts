@@ -2,6 +2,7 @@
 // at the restore, with the transactions their gate facts came from read again at confirmed; a create this process
 // never saw is looked up from its mint's oldest transaction (capped, budget-charged); the downtime's migrations are
 // read from the migration authority after the saved slot.
+import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -24,7 +25,7 @@ import { chainTx } from '../../core/test/facts/helpers.ts';
 import { transactionEvents } from '../../core/src/chain/index.ts';
 import { loadState, saveState, type SavedCandidateState } from '../src/persist/index.ts';
 import { runSeed } from '../src/run/seed-start.ts';
-import { CREATE_WALK_PAGES, PERSIST_FILE, type SeedRequest } from '../src/run/worker.ts';
+import { PERSIST_FILE, type SeedRequest } from '../src/run/worker.ts';
 import { PUMP_MIGRATION_AUTHORITY } from '../src/run/sources.ts';
 import { DEV, MIGRATED_AT, MINT, Market, SUPPLY, dueTimers, passingMarket, POOL_ADDRESS, SLOT, T, makeWorker, slotAt, tempState, virtualTimers } from './worker-harness.ts';
 
@@ -38,6 +39,14 @@ const journal = (dir: string) => readFileSync(join(dir, 'journal.jsonl'), 'utf8'
 const decisions = (h: H) => journal(h.stateDir).filter((l) => l['boot'] === h.worker.boot && l['kind'] === 'decision').map((l) => (l['reasons'] as string[]) ?? []);
 
 let port = 18_700;
+
+/** Rewrites the payload line of a saved state file (format v2: header, payload, mint rows, trailer), its hash kept true. */
+const editPayload = (path: string, f: (p: Record<string, unknown>) => Record<string, unknown>) => {
+  const lines = readFileSync(path, 'utf8').split('\n').filter((l) => l !== '');
+  const body = [JSON.stringify(f(JSON.parse(lines[1]!) as Record<string, unknown>)), ...lines.slice(2, -1)].map((l) => `${l}\n`);
+  const sha = createHash('sha256').update(body.join('')).digest('hex');
+  writeFileSync(path, `${lines[0]}\n${body.join('')}${JSON.stringify({ sha256: sha, lines: body.length })}\n`);
+};
 
 const NOW = MIGRATED_AT + 30 * 60_000;
 const GOOD = { mint: MINT, pool: POOL_ADDRESS, migratedAtMs: MIGRATED_AT, migrationSlot: SLOT - 15_000n, tries: 2, lastEvalMs: NOW - 60_000, lastReason: 'H11 missing', bars: [{ startMs: NOW - 300_000, high: 2n, low: 1n, close: 2n }], signatures: { create: null, complete: null, migration: null } };
@@ -525,44 +534,14 @@ describe('RESTART-KEEP: a restart keeps the candidates in their window', () => {
     await h2.worker.stop();
   }, 60_000);
 
-  it('a create this process never saw is looked up from the mint\'s oldest transaction, at most 10 pages, charged to the budget', async () => {
+  it('a restored candidate whose create was never seen is looked up once the seed is placed (SEED-2\'s lookup)', async () => {
     const { h, timers, seed } = await shortlistedAndStopped({ create: false });
     timers.set(timers.now() + 60_000);
-    const pages: (string | undefined)[] = [];
-    const page = (n: number, from: number) => Array.from({ length: n }, (_, i) => ({ signature: `s${from + i}`, slot: 1n, err: null, blockTime: 0 }));
-    const spent: number[] = [];
-    let left = 1_000;
-    const budget = { remaining: () => left, spend: (c: number) => { left -= c; spent.push(c); }, refund: (c: number) => { left += c; spent.push(-c); } };
-    const rpc = {
-      getSignaturesForAddress: async (address: string, o: { before?: string }) => {
-        if (address !== MINT) return [];
-        pages.push(o.before);
-        // 2,400 transactions: two full pages, then the last 400 ending at the create.
-        return pages.length < 3 ? page(1_000, (pages.length - 1) * 1_000) : page(400, 2_000);
-      },
-      getTransaction: async () => null,
-    };
-    const { h2, fetchedWhy } = await restart(h, timers, seed, { restartReads: { rpc, budget } });
-    for (let k = 0; k < 100 && !(fetchedWhy.some(([s]) => s === 's2399') && h2.logs.some((l) => l.startsWith('Downtime migrations'))); k++) await new Promise<void>((r) => setImmediate(r));
-    expect(pages).toEqual([undefined, 's999', 's1999']);
-    expect(fetchedWhy).toContainEqual(['s2399', 'create']);
-    // Reserved for the cap, the unread pages given back: 3 credits used (the downtime read reserves and refunds its own).
-    expect(spent.slice(0, 2)).toEqual([CREATE_WALK_PAGES, -(CREATE_WALK_PAGES - 3)]);
-    expect(h2.logs.some((l) => l === `Create of ${MINT} looked up: s2399 (3 credits).`)).toBe(true);
-    await h2.worker.stop();
-  }, 60_000);
-
-  it('a create beyond the page cap is not found: logged, nothing fetched, and the gates that need it reject', async () => {
-    const { h, timers, seed } = await shortlistedAndStopped({ create: false });
-    timers.set(timers.now() + 60_000);
-    let calls = 0;
-    const rpc = { getSignaturesForAddress: async (address: string) => (address !== MINT ? [] : (calls++, Array.from({ length: 1_000 }, (_, i) => ({ signature: `x${calls}-${i}`, slot: 1n, err: null, blockTime: 0 })))), getTransaction: async () => null };
-    const budget = { remaining: () => 1_000, spend: () => undefined, refund: () => undefined };
-    const { h2, fetchedWhy } = await restart(h, timers, seed, { restartReads: { rpc, budget } });
-    for (let k = 0; k < 50 && !h2.logs.some((l) => l.startsWith(`Create of ${MINT} not found`)); k++) await new Promise<void>((r) => setImmediate(r));
-    expect(calls).toBe(CREATE_WALK_PAGES);
-    expect(h2.logs).toContain(`Create of ${MINT} not found (history longer than ${CREATE_WALK_PAGES} signature pages); H9 and H12-H14 reject it.`);
-    expect(fetchedWhy.filter(([, why]) => why === 'create')).toEqual([]);
+    const asked: string[] = [];
+    const findCreate = async (mint: string) => (asked.push(mint), { mint, found: false, signature: null, slot: null, pages: 1, credits: 1, stopped_by: 'not-found' as const, latency_ms: 0 });
+    const { h2 } = await restart(h, timers, seed, { findCreate });
+    for (let k = 0; k < 50 && asked.length === 0; k++) await new Promise<void>((r) => setImmediate(r));
+    expect(asked).toEqual([MINT]);
     await h2.worker.stop();
   }, 60_000);
 
@@ -622,11 +601,9 @@ describe('RESTART-KEEP: a restart keeps the candidates in their window', () => {
     await m2.run(2_000, 400, () => m2.slot());
     expect(asked).toEqual([PUMP_MIGRATION_AUTHORITY, `${mig.bondingCurve} before ${migrate.signature}`, ...asked.slice(2)]);
     expect(h2.logs.find((l) => l.startsWith('Downtime migrations'))).toMatch(/^Downtime migrations: 1 from slot \d+ to \d+, 4 credits, done\.$/);
-    // Released to the strategy, as the live migration watch's fetch would have: the coin is shortlisted, and its create
-    // (created before this start) is looked up: one more credit from the same budget.
+    // Released to the strategy, as the live migration watch's fetch would have: the coin is shortlisted.
     expect(decisions(h2).some((r) => r[0] === 'shortlist' && r[2] === mig.mint)).toBe(true);
-    expect(asked).toContain(mig.mint);
-    expect(left).toBe(5_000 - 5);
+    expect(left).toBe(5_000 - 4);
     await h2.worker.stop();
   }, 60_000);
 
@@ -637,13 +614,11 @@ describe('RESTART-KEEP: a restart keeps the candidates in their window', () => {
   ])('a saved candidate %s discards the whole file (state)', async (name, change, why) => {
     const { h } = await shortlistedAndStopped();
     const path = join(h.stateDir, PERSIST_FILE);
-    const outer = JSON.parse(readFileSync(path, 'utf8')) as { version: number; sha256: string; payload: string };
-    const inner = JSON.parse(outer.payload) as { asOf: { receivedAt: number }; candidates: Record<string, unknown>[] };
-    const c0 = inner.candidates[0]!;
-    inner.candidates = name === 'named twice' ? [c0, c0] : [change(c0, inner.asOf.receivedAt)];
-    const payload = JSON.stringify(inner);
-    const { createHash } = await import('node:crypto');
-    writeFileSync(path, JSON.stringify({ version: outer.version, sha256: createHash('sha256').update(payload).digest('hex'), payload }));
+    editPayload(path, (inner) => {
+      const c0 = (inner['candidates'] as Record<string, unknown>[])[0]!;
+      const at = (inner['asOf'] as { receivedAt: number }).receivedAt;
+      return { ...inner, candidates: name === 'named twice' ? [c0, c0] : [change(c0, at)] };
+    });
     const r = loadState(path, RUG_CONFIG);
     expect(r.ok).toBe(false);
     expect(r.ok ? '' : r.reason).toMatch(why);
@@ -672,10 +647,7 @@ describe('RESTART-KEEP: a restart keeps the candidates in their window', () => {
   ])('a saved tail list %s discards the whole file (state, load)', async (_, tails, why) => {
     const { h } = await shortlistedAndStopped();
     const path = join(h.stateDir, PERSIST_FILE);
-    const outer = JSON.parse(readFileSync(path, 'utf8')) as { version: number; sha256: string; payload: string };
-    const payload = JSON.stringify({ ...JSON.parse(outer.payload), tails });
-    const { createHash } = await import('node:crypto');
-    writeFileSync(path, JSON.stringify({ version: outer.version, sha256: createHash('sha256').update(payload).digest('hex'), payload }));
+    editPayload(path, (inner) => ({ ...inner, tails }));
     const r = loadState(path, RUG_CONFIG);
     expect(r.ok ? '' : r.reason).toMatch(why);
   }, 60_000);
@@ -683,10 +655,7 @@ describe('RESTART-KEEP: a restart keeps the candidates in their window', () => {
   it('a file without candidates (written before RESTART-KEEP) still loads, with none', async () => {
     const { h } = await shortlistedAndStopped();
     const path = join(h.stateDir, PERSIST_FILE);
-    const outer = JSON.parse(readFileSync(path, 'utf8')) as { version: number; sha256: string; payload: string };
-    const payload = JSON.stringify({ ...JSON.parse(outer.payload), candidates: undefined });
-    const { createHash } = await import('node:crypto');
-    writeFileSync(path, JSON.stringify({ version: outer.version, sha256: createHash('sha256').update(payload).digest('hex'), payload }));
+    editPayload(path, (inner) => ({ ...inner, candidates: undefined }));
     const r = loadState(path, RUG_CONFIG);
     expect(r.ok && r.candidates).toEqual([]);
     expect(T).toBeGreaterThan(MIGRATED_AT);

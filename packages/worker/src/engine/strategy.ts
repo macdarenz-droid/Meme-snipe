@@ -22,6 +22,7 @@ import {
   attemptId, blockhash, entryKey, intentId, mint as toMint, positionId, reservationId, signature,
 } from '../../../core/src/domain/index.ts';
 import { type AsOfEntry, type Decision, type MarketEvent, type Moment, type Strategy, type StrategyContext, compareMoments } from '../../../core/src/engine/index.ts';
+import { RAW } from '../../../core/src/facts/raw.ts';
 import { observedFeeContext, type SwapEvent, swapEventState } from '../../../core/src/fills/index.ts';
 import {
   type EntryPlan, type ExitDecision, type FlowMinute, type ExitSettings, type ExitTracker, type Holding, type PriceBar,
@@ -192,6 +193,8 @@ export const TRIP_PREFIX = 'trip ';
 export const TRIPPED_PREFIX = 'risk tripped ';
 /** Reason on an exit decision: the position's mark risk judged it with, micro-dollars, or `unknown`. */
 export const MARK_PREFIX = 'risk mark ';
+/** Reason on an exit decision: risk could not evaluate the account (RISK-FAULT), and why; the exit still goes. */
+export const RISK_FAULT_PREFIX = 'risk fault ';
 
 /** The ledger's account as the worker publishes it. Marks of open positions are filled in by the strategy. */
 export interface AccountFact {
@@ -270,10 +273,23 @@ export interface StrategyConfig {
   readonly maxTails: number;
 }
 
+/** The saved state a seed names (WORKER-GROW): the file in the boot's recording, its sha256 over every byte, its format version. */
+export interface SavedStateRef {
+  readonly file: string;
+  readonly sha256: string;
+  readonly version: number;
+}
+
 export interface StrategyDeps {
   readonly session: PolicySession;
   readonly rugs: RugConfig;
   readonly config: StrategyConfig;
+  /**
+   * The saved index and labeller a seed names by `SavedStateRef` (WORKER-GROW): live, what the worker restored from the
+   * recording's copy; in the parity replay, read from that copy and checked against the hash. Throws when it cannot give
+   * exactly that state (the seed is then refused, as a fresh process).
+   */
+  readonly savedState?: (ref: SavedStateRef) => { readonly index: DeployerIndex; readonly labeller: RugLabeller };
   /** Replaces marks.ts `markedHistory` (tests inject a failure; production never sets it). */
   readonly markedHistory?: typeof markedHistory;
 }
@@ -681,7 +697,7 @@ export class LiveStrategy implements Strategy {
    * PERSIST-1: what a save holds, as of the latest released moment: the index (entries older than `retainFromMs`
    * left out), the labeller's tables and every coverage fact. Null before anything was released or the seed applied.
    */
-  persistable(retainFromMs: number): { readonly asOf: Moment; readonly index: DeployerIndexState; readonly labeller: RugLabellerState; readonly coverage: readonly MarketEvent[]; readonly graduates: SavedGraduates; readonly candidates: readonly SavedCandidate[]; readonly tails: readonly SavedTail[] } | null {
+  persistable(retainFromMs: number): { readonly state: { readonly asOf: Moment; readonly index: DeployerIndexState; readonly labeller: RugLabellerState; readonly coverage: readonly MarketEvent[]; readonly graduates: SavedGraduates; readonly candidates: readonly SavedCandidate[]; readonly tails: readonly SavedTail[] }; readonly mintRows: Iterable<readonly [string, readonly (readonly [string, number])[]]> } | null {
     const asOf = this.#lastMoment;
     if (asOf === null || !this.#seedApplied || this.#waiting !== null) return null;
     // PERSIST-2: the newest graduates fact released so far, with only the entries whose survival mark was reached by
@@ -690,7 +706,12 @@ export class LiveStrategy implements Strategy {
     // RESTART-KEEP: every candidate in its window, none migrated after the save moment.
     const candidates = [...this.#cands.values()].filter((c) => c.migratedAtMs <= asOf.receivedAt).sort((a, b) => (a.mint < b.mint ? -1 : a.mint > b.mint ? 1 : 0))
       .map((c): SavedCandidate => ({ mint: c.mint, pool: this.#poolOfMint.get(c.mint) ?? null, migratedAtMs: c.migratedAtMs, migrationSlot: this.#migrationSlot.get(c.mint) ?? null, tries: c.tries, lastEvalMs: c.lastEvalMs, lastReason: c.lastReason, bars: (this.#bars.get(c.mint) ?? []).filter((b) => b.startMs <= asOf.receivedAt) }));
-    return { asOf, index: this.#deployers.snapshot(asOf, retainFromMs), labeller: this.#labeller.snapshot(), coverage: [...this.#coverageFacts], graduates: { asOfMs: asOf.receivedAt, items }, candidates, tails: [...this.#tail].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([mint, t]) => ({ mint, pool: t.pool, untilMs: t.untilMs })) };
+    // WORKER-GROW: the index's mint rows are streamed into the file by the save, never built whole; the graduates ride
+    // in the payload line.
+    return {
+      state: { asOf, index: this.#deployers.snapshot(asOf, retainFromMs, { mints: false }), labeller: this.#labeller.snapshot(), coverage: [...this.#coverageFacts], graduates: { asOfMs: asOf.receivedAt, items }, candidates, tails: [...this.#tail].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([mint, t]) => ({ mint, pool: t.pool, untilMs: t.untilMs })) },
+      mintRows: this.#deployers.mintRows(retainFromMs),
+    };
   }
 
   /** PERSIST-2: the newest graduates fact released (the regime's survival series), for the saved state. */
@@ -723,6 +744,9 @@ export class LiveStrategy implements Strategy {
     }
     this.#discover(e, ctx, out);
     this.#readLanded(e);
+    // READ-COHERENT: a batch's close is judged at once, on its own event, when every member's facts are out.
+    const closed = this.#batchLanded(e);
+    if (closed !== null) due.set(closed.mint, closed.read);
     this.#poolTrade(e, ctx);
     if (e.key === SEED_KEY || e.key === 'chain:slot' || e.key.startsWith('coverage:creates:')) {
       // H14's creates coverage over its look-back as of each slot and coverage change, for health and the restart drill.
@@ -1011,8 +1035,16 @@ export class LiveStrategy implements Strategy {
       // nothing), then the downtime fill and the saved rug facts.
       try {
         const st = v['state'];
-        const index = DeployerIndex.restore(st['index'] as DeployerIndexState);
-        const labeller = RugLabeller.restore(this.#d.rugs, st['labeller'] as RugLabellerState, asOf);
+        let index: DeployerIndex;
+        let labeller: RugLabeller;
+        if (isObj(st['ref'])) {
+          // WORKER-GROW: the seed names the saved file by its hash; the state itself never travels in the seed.
+          if (this.#d.savedState === undefined) throw new Error('the seed names a saved state file and nothing reads it');
+          ({ index, labeller } = this.#d.savedState(st['ref'] as unknown as SavedStateRef));
+        } else {
+          index = DeployerIndex.restore(st['index'] as DeployerIndexState);
+          labeller = RugLabeller.restore(this.#d.rugs, st['labeller'] as RugLabellerState, asOf);
+        }
         const f = index.fill(v['fill'] as MarketEvent[], asOf);
         this.#deployers = index;
         this.#labeller = labeller;
@@ -1509,8 +1541,10 @@ export class LiveStrategy implements Strategy {
         status: p.status, quantity: p.quantity, sold: p.sold, costBasis: p.cost + entryFees + exitFees, realized,
         exitCost: n.signaturesPerTx * n.baseFeePerSignature + this.#d.session.policy.exits.ladder.steps[0]!.priorityFeeLamports + n.tip,
         exitSeq: p.exitSeq, exitAttempts: exitAttemptsOf(ctx.book.intents, p.id),
-        // Paper: the paper wallet's token account holds exactly our tokens, and a paper sell-and-close never fails at
-        // the close (no dust or outside transfer exists in the paper world).
+        // The engine sees only the book, so it plans a clean account. Whether a sell closes the account is settled where
+        // it lands (PAPER-1): the paper world draws dust and close failures with the backtest's model (core's
+        // TokenAccounts), a failed close fails that attempt and the retry sells from a sell-only account. Live, the
+        // signer reads the real account (a before-live item, DECISIONS).
         tokenAccountBalance: p.quantity, closeFailed: false,
       };
       const m = this.#market(ctx, p.mint);
@@ -1577,6 +1611,7 @@ export class LiveStrategy implements Strategy {
       const own = account.openPositions.find((o) => o.mint === mint);
       if (own !== undefined) why.push(`${MARK_PREFIX}${own.mark ?? 'unknown'}`);
       if (r.tripped.length > 0) why.push(`${TRIPPED_PREFIX}${[...new Set(r.tripped.map((x) => x.code))].sort().join(',')}`);
+      if (r.fault !== null) why.push(`${RISK_FAULT_PREFIX}${r.fault}`);
     }
     const id = intentId(`x${pid.slice(1)}:${exitSeq + 1}`);
     const events = exitBookEvents(pid, d, id);
@@ -1678,6 +1713,30 @@ export class LiveStrategy implements Strategy {
     this.#due.set(mint, { slot: isObj(v) && typeof v['slot'] === 'bigint' ? v['slot'] : null, receivedAt: e.moment.receivedAt });
   }
 
+  /** Mints whose read batch is on the feed but not closed yet: never judged on part of a batch. */
+  readonly #batchOpen = new Set<string>();
+
+  /**
+   * READ-COHERENT: a coherent batch of reads (FactReaders.readBatch) is put on the feed between `RAW.batchOpen` and
+   * `RAW.batchClose`, and at one moment the open is released before its members and the close after them and after
+   * every fact they made. While open the candidate is not evaluated (`#entries`), so no decision is made on part of a
+   * batch; the close is the batch's landing, judged at its own event (not the next one, which may be
+   * a slot later), with the batch's oldest slot-judged member as its age. Recorded frames, so a replay does the same.
+   */
+  #batchLanded(e: MarketEvent): { readonly mint: string; readonly read: { readonly slot: bigint | null; readonly receivedAt: number } } | null {
+    const open = RAW.batchOpen('');
+    const close = RAW.batchClose('');
+    if (e.key.startsWith(open)) {
+      this.#batchOpen.add(e.key.slice(open.length));
+      return null;
+    }
+    if (!e.key.startsWith(close)) return null;
+    const mint = e.key.slice(close.length);
+    this.#batchOpen.delete(mint);
+    const v = unwrap(e.value);
+    return { mint, read: { slot: isObj(v) && typeof v['slot'] === 'bigint' ? v['slot'] : null, receivedAt: e.moment.receivedAt } };
+  }
+
   /** A read landed for the mint and is still fresh now: a slower event after it (a quiet feed) can outlive it. */
   #landedFresh(due: ReadonlyMap<string, { readonly slot: bigint | null; readonly receivedAt: number }>, mint: string, ctx: StrategyContext): boolean {
     const read = due.get(mint);
@@ -1721,6 +1780,7 @@ export class LiveStrategy implements Strategy {
       const to = cand.migratedAtMs + c.windowToMs;
       // Backstop: `#windowEnds` has already removed it on this event; an ended window is never an entry whatever the order.
       if (now >= to) continue;
+      if (this.#batchOpen.has(cand.mint)) continue;
       if (now < from || (cand.lastEvalMs !== null && now - cand.lastEvalMs < c.evaluateEveryMs && !this.#landedFresh(due, cand.mint, ctx))) continue;
       if (c.entryTiming === 'random' && now < s0EntryAt(c.entrySalt, cand.mint, from, to)) continue;
       if (Object.values(ctx.book.positions).some((p) => p.mint === cand.mint && p.status !== 'closed')) continue;
@@ -1735,7 +1795,9 @@ export class LiveStrategy implements Strategy {
       // The S0 diagnostic parts relied on count too: the same reason with a different set is a new line.
       const key = (x: string | null) => (x === null ? null : x.replace(/\d+/g, '#'));
       const waived = this.#waived.join(',');
-      if (r !== null && (key(r) !== key(cand.lastReason) || waived !== cand.lastWaived)) out.push({ action: null, reasons: ['reject', c.universe, cand.mint, r, `${GATE_REASONS_PREFIX}${JSON.stringify(this.#lastGates)}`, ...this.#diagnostic()] });
+      // A line that carries a trip is always written: risk reports a trip only while it is not latched, so it is never
+      // swallowed as "the same reason" (after an owner's re-arm the same reject must latch again) and never repeats once latched.
+      if (r !== null && (key(r) !== key(cand.lastReason) || waived !== cand.lastWaived || this.#lastTrips.length > 0)) out.push({ action: null, reasons: ['reject', c.universe, cand.mint, r, `${GATE_REASONS_PREFIX}${JSON.stringify(this.#lastGates)}`, ...this.#lastTrips, ...this.#diagnostic()] });
       if (r !== null) {
         cand.lastReason = r;
         cand.lastWaived = waived;
@@ -1754,6 +1816,12 @@ export class LiveStrategy implements Strategy {
   /** The typed reasons of the last reject `#evaluate` returned (RUN-1c's `gate_reasons`). */
   #lastGates: readonly GateReasonLine[] = [];
 
+  /**
+   * ENTRY-TRIPS: the `trip X` reasons risk found on the last refused entry (a weekly loss or NAV kill reached while flat),
+   * each its own reason on the reject line, so the worker latches it (worker.ts reads elements that start `trip `).
+   */
+  #lastTrips: readonly string[] = [];
+
   /** The same reasons with their inputs, for the candidate (not journaled: gate_reasons keeps its shape). */
   #lastNeeds: readonly CandidateReason[] = [];
 
@@ -1768,6 +1836,7 @@ export class LiveStrategy implements Strategy {
 
   /** One candidate through regime, hard rejects and risk. Returns the reject reason, or null when it proposed an entry. */
   #evaluate(cand: Candidate, ctx: StrategyContext, gctx: GateContext, out: Decision[]): string | null {
+    this.#lastTrips = [];
     const c = this.#d.config;
     const session = this.#d.session;
     const policy = session.policy;
@@ -1827,16 +1896,27 @@ export class LiveStrategy implements Strategy {
       const detail = e instanceof Error ? e.message : 'error';
       return this.#fail(`risk mark failed: ${detail}`, [{ gate: 'worker', code: 'risk-mark-failed', detail }]);
     }
-    const r = evaluateEntry(
-      { session, mode: 'paper', clock: { now: () => ctx.now }, account, latches: acct.latches, market: { solPrice: sol, solBalance: this.#balance(acct, ctx), regime: 'on' } },
-      {
-        intentId: id, reservationId: rid, mint: toMint(cand.mint), universe: c.universe, stopBps, edgePpm: c.edgePpm, medianTargetBps: c.medianTargetBps,
-        quote: quoter, quoteAtMs: m.atMs, poolLiquidity: lamportsToMicroUsd((reserveLiq * 2n) as Lamports, sol.value, 'floor'), network: c.network, rent: { ...c.rent, oneTime: acct.oneTimeRent },
-      },
-    );
-    const trips = r.trips.map((t) => `${TRIP_PREFIX}${t}`);
+    // RISK-FAULT: risk that cannot evaluate refuses the entry (fail-closed), logged, and the step goes on.
+    let r: ReturnType<typeof evaluateEntry>;
+    try {
+      r = evaluateEntry(
+        { session, mode: 'paper', clock: { now: () => ctx.now }, account, latches: acct.latches, market: { solPrice: sol, solBalance: this.#balance(acct, ctx), regime: 'on' } },
+        {
+          intentId: id, reservationId: rid, mint: toMint(cand.mint), universe: c.universe, stopBps, edgePpm: c.edgePpm, medianTargetBps: c.medianTargetBps,
+          quote: quoter, quoteAtMs: m.atMs, poolLiquidity: lamportsToMicroUsd((reserveLiq * 2n) as Lamports, sol.value, 'floor'), network: c.network, rent: { ...c.rent, oneTime: acct.oneTimeRent },
+        },
+      );
+    } catch (e) {
+      const detail = e instanceof Error ? e.message : 'error';
+      return this.#fail(`risk fault: ${detail}`, [{ gate: 'R1', code: 'risk_fault', detail }]);
+    }
+    // RISK-LATCH: an entry latches R9/R10 only from a fully marked account at a fresh SOL price; an unknown or stale mark
+    // counts as a total loss, which refuses the entry but proves no breach. The refusal still names every trip it saw.
+    const seen = r.trips.map((t) => `${TRIP_PREFIX}${t}`);
+    const trips = latchable(account, sol, ctx.now.receivedAt, policy.gates.maxQuoteAgeMs) ? seen : [];
     if (!r.allow) {
-      return this.#fail(`risk ${r.reasons.map((x) => `${x.control} ${x.code}: ${x.detail}`).join(', ')}${trips.length > 0 ? `; ${trips.join(', ')}` : ''}`, r.reasons.map((x) => ({ gate: x.control, code: x.code, detail: x.detail })));
+      this.#lastTrips = trips;
+      return this.#fail(`risk ${r.reasons.map((x) => `${x.control} ${x.code}: ${x.detail}`).join(', ')}${seen.length > 0 ? `; ${seen.join(', ')}` : ''}`, r.reasons.map((x) => ({ gate: x.control, code: x.code, detail: x.detail })));
     }
     if (r.spendLamports !== spend) {
       return this.#fail(`risk sized ${r.spendLamports} lamports, gates judged ${spend}`, [{ gate: 'worker', code: 'size-mismatch', detail: `risk sized ${r.spendLamports}, gates judged ${spend}` }]);
