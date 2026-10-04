@@ -439,7 +439,8 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
       // Recovered means reconciled and able to exit (DECISIONS, Standby), timed for every restart, open position or not.
       if (pending !== null && p.killedAt !== undefined && p.reconciledAt !== undefined && ws.exit_capable && ws.boot !== p.prevBoot) {
         const k = p.killedAt;
-        const lines = journalLines(wDir);
+        // Only what the recovery reads: these two boots' reconcile, exit_capable, recovered, entry and exit lines.
+        const lines = restartLines(journalRecords(wDir), ws.boot!, p.prevBoot ?? null);
         let recovery = { reconciled_ms: p.reconciledAt, exit_capable_ms: since(), clock };
         const notes: string[] = [];
         if (clock === 'wall') {
@@ -566,7 +567,7 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
           const shedAfter = h ? exitShed(h) : null;
           if (p.shedBefore !== null && shedAfter !== null && shedAfter > p.shedBefore) notes.push(`${shedAfter - p.shedBefore} P0/P1 requests shed`);
           // A pending exit that finished (its exit is in the journal) was not lost.
-          const finished = closedSince(journalLines(o.stateDir), p.boot, p.seqBefore);
+          const finished = closedSince(exitLines(journalRecords(o.stateDir), p.boot), p.boot, p.seqBefore);
           const lost = p.pendingBefore.filter((x) => !(h?.pending_exits ?? []).includes(x) && !finished.includes(x));
           if (lost.length) notes.push(`pending exits lost: ${lost.join(', ')}`);
           record({
@@ -702,13 +703,15 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
       // Streamed, and parsed once for every part of the report that reads it (it used to be read whole three times).
       const jr = checkJournalLines(existsSync(journalPath) ? fileLines(journalPath) : [], { allowTornTail: true });
       const samples = readLines<Sample>(P.samples);
-      const journal = readLines<JournalLine>(journalPath);
+      // G4c: the journal is never held whole. Decisions (its bulk) are counted as they stream; the parts read line by
+      // line are kept as a subsequence that gives the same answers (reportJournal).
+      const journal = reportJournal(journalRecords(o.stateDir));
       const i4 = item4(journal, m.label, samples.some((s) => s.up && s.stub));
       const ops = {
         quota: quotaReport(Object.values(boots), seg.end - m.startedAt),
         lookups: lookupLatency(Object.values(boots)),
         coverage: coverageGaps(journal, seg.end),
-        rejections: rejections(journal),
+        rejections: rejections(journalRecords(o.stateDir)),
       };
       report = buildReport(m, samples, sampleMs, seg.end, jr, withChainMoves(outcomes, journal), manifest, i4, ops);
       if (aborted) report = { ...report, pass: false, checks: { ...report.checks, not_aborted: false } };
@@ -779,9 +782,48 @@ const readToken = (stateDir: string): string | null => {
   }
 };
 
-const journalLines = (stateDir: string): JournalLine[] => readLines<JournalLine>(join(stateDir, STATE_FILES.journal));
-/** The same records, one at a time, for a check that only scans. */
+/** The journal's records, one at a time (it is never read whole: it grows for the whole run). */
 const journalRecords = (stateDir: string): Generator<JournalLine> => records<JournalLine>(join(stateDir, STATE_FILES.journal));
+/** The lines `keep` takes, in journal order. */
+const slice = (lines: Iterable<JournalLine>, keep: (l: JournalLine) => boolean): JournalLine[] => {
+  const out: JournalLine[] = [];
+  for (const l of lines) if (keep(l)) out.push(l);
+  return out;
+};
+/**
+ * The kinds the restart drill reads: journalTimes (reconcile, exit_capable), recoveredState and the recovered line
+ * (recovered), closedSince and openedSince (exit, entry).
+ */
+const RESTART_KINDS: ReadonlySet<string> = new Set(['reconcile', 'exit_capable', 'recovered', 'entry', 'exit']);
+
+/** G4c: what a restart drill reads of the journal: the new boot's and the killed boot's lines of RESTART_KINDS. */
+export const restartLines = (lines: Iterable<JournalLine>, boot: string, prevBoot: string | null): JournalLine[] =>
+  slice(lines, (l) => (l.boot === boot || l.boot === prevBoot) && RESTART_KINDS.has(l.kind));
+
+/** G4c: what the RPC drill's closedSince reads: the boot's exit lines. */
+export const exitLines = (lines: Iterable<JournalLine>, boot: string | null): JournalLine[] => slice(lines, (l) => l.boot === boot && l.kind === 'exit');
+/** The kinds the end-of-run report reads line by line: item 4 (simulation), coverage (coverage_gap), chain moves (exposure). */
+const REPORT_KINDS: ReadonlySet<string> = new Set(['simulation', 'coverage_gap', 'exposure']);
+
+/**
+ * G4c: the journal lines the end-of-run report reads, as a subsequence in journal order: every simulation, coverage_gap
+ * and exposure line, and each boot's first and last line (coverage's boot boundaries). item4, coverageGaps and
+ * withChainMoves give the same answer from it as from the whole journal; rejections streams the whole journal itself.
+ */
+export const reportJournal = (lines: Iterable<JournalLine>): JournalLine[] => {
+  const kept: { readonly i: number; readonly l: JournalLine }[] = [];
+  const last = new Map<string, { i: number; l: JournalLine }>();
+  let i = 0;
+  for (const l of lines) {
+    const first = !last.has(l.boot);
+    if (first || REPORT_KINDS.has(l.kind)) kept.push({ i, l });
+    last.set(l.boot, { i, l });
+    i++;
+  }
+  const at = new Set(kept.map((k) => k.i));
+  for (const e of last.values()) if (!at.has(e.i)) kept.push(e);
+  return kept.sort((a, b) => a.i - b.i).map((k) => k.l);
+};
 
 /** The boot journaled a successful reconcile, and no entry came before it. */
 export const reconciledFirst = (stateDir: string, boot: string): boolean => {

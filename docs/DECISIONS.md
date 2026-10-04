@@ -1508,3 +1508,11 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
     - The copy or link click reaching the row; the journal without the buttons.
     - Review N1/N2: Unrealized as the rest less the whole entry; Unrealized or Costs rounded toward zero; P&L rounded on its own (in `openUsd` and in the served row).
     - The exit fee: left out; charged with nothing left; from the ladder's second rung; without the tip.
+- **2026-10-04 · G4c: the runner never holds the worker's journal whole.**
+  - **Readers, from an inventory of every `journal.jsonl` reader.** The worker's own boot readers already stream: the journal tail, `readJournalFills`, `placeBookingsAt`, and the summary's saved offset. The runner held the whole journal as an array in three places: the end-of-run report, each restart drill, and the RPC drill's finished exits.
+  - **Report.** It now reads a subsequence in journal order (`reportJournal`): every simulation, coverage_gap and exposure line, plus each boot's first and last line. item4, coverageGaps and withChainMoves give the same answers from it (test). `rejections` streams the whole journal itself.
+  - **Restart drill.** It reads only the new and the killed boot's reconcile, exit_capable, recovered, entry and exit lines (`restartLines`).
+  - **RPC drill.** It reads only the boot's exit lines (`exitLines`).
+  - **Not changed.** The offline parity tools (`run/parity.ts`, `scripts/parity.ts`) still read the journal whole: they compare every decision line, so they hold those anyway.
+  - **No journal rotation.** Every reader that runs during a live run or at its end now streams or keeps a bounded slice. Splitting `journal.jsonl` would change the evidence contract (runner, stub worker, ops, parity) for a cost not yet measured. DISK-GUARD watches the disk instead.
+  - **Evidence.** `packages/runner/test/readers.test.ts`: the guard and the new exports fail on the base. Hand mutants X1–X11 are killed. A first draft missed the restart drill's `recovered` line; the runner's end-to-end drill tests caught it.

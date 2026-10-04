@@ -252,7 +252,7 @@ const rate = (n: number, d: number): number => (d === 0 ? 0 : Math.round((n / d)
  * From `decision` lines. Only `reject` and `skip` are rejections; `enter` and the worker's lifecycle steps (prepare,
  * sign, submit, reconcile, …) are decisions but not rejections. The rate is over all decision lines.
  */
-export const rejections = (journal: readonly JournalLine[]): Rejections => {
+export const rejections = (journal: Iterable<JournalLine>): Rejections => {
   let decisions = 0;
   let rejected = 0;
   const counts = new Map<string, number>();
