@@ -53,10 +53,14 @@ export class Journal {
   /** True when a torn last line was cut at open. */
   readonly repaired: boolean;
 
-  constructor(path: string, boot: string, now: () => number) {
+  /** Told every line as written (its kind and text), after it is on disk (FUNNEL-PERSIST: the app's views follow it). */
+  readonly #written: ((kind: JournalKind, text: string) => void) | undefined;
+
+  constructor(path: string, boot: string, now: () => number, written?: (kind: JournalKind, text: string) => void) {
     this.#path = path;
     this.#boot = boot;
     this.#now = now;
+    this.#written = written;
     let repaired = false;
     if (existsSync(path)) {
       // Only the file's tail is read: the last line (cut if torn) and the one before it give the seq and the previous
@@ -90,6 +94,8 @@ export class Journal {
 
   write(kind: JournalKind, fields: Readonly<Record<string, unknown>> = {}): void {
     this.#seq += 1;
-    appendFileSync(this.#path, `${redact(jsonText({ seq: this.#seq, ts: new Date(this.#now()).toISOString(), boot: this.#boot, kind, ...fields }))}\n`);
+    const text = redact(jsonText({ seq: this.#seq, ts: new Date(this.#now()).toISOString(), boot: this.#boot, kind, ...fields }));
+    appendFileSync(this.#path, `${text}\n`);
+    this.#written?.(kind, text);
   }
 }
