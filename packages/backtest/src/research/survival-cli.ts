@@ -6,7 +6,8 @@
 //     logs the attempt in research/survival/runs.log first, then refuses unless frozen.json is committed, unchanged
 //     against HEAD and matches this dataset and these find-days; refuses to overwrite results.json.
 // The paths are fixed (no --out): the one look is the one in this repository's history.
-// The wall is RES-3's committed one (research/signals/window.json); --window may only move it earlier.
+// The wall is RES-3's committed one (research/signals/window.json), checked against RESEARCH_CONFIG.holdout and BT-2's
+// holdout store (--registry for another store file); --window may only move it earlier.
 import { spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -16,7 +17,8 @@ import { readSeries } from '../dataset/offchain.ts';
 import type { DatasetRow } from '../dataset/rows.ts';
 import { solUsdAsOf } from './candidates.ts';
 import { PLAN_BARRIERS, scoreCandidates } from './outcome.ts';
-import { addDays, assertReadable, isPracticeDay, loadWindow, melbourneDay, readableDays, resolveWindow, type StudyRegistry, wallDay } from './practice.ts';
+import { addDays, assertReadable, isPracticeDay, melbourneDay, readableDays, wallDay } from './practice.ts';
+import { researchWindow } from './wall.ts';
 import { collectSurvival, type SurvivalDecision } from './survival.ts';
 import { featureTests, type LabelledDecision, PERMUTATIONS, splitDays } from './survival-analysis.ts';
 import { compareRules, type FeatureCond, type FrozenRule, freezeRule, passesFeatures, passesSurvival } from './survival-compare.ts';
@@ -50,10 +52,8 @@ if (args.includes('--out')) throw new Error('--out is not an option: the paths a
 
 const dataset = flag('dataset');
 
-const committed = loadWindow(join(ROOT, 'research', 'signals', 'window.json'));
-const registryPath = args.includes('--registry') ? flag('registry') : join(ROOT, 'docs', 'evidence', 'bt2', 'registry.json');
-const registry = existsSync(registryPath) ? (JSON.parse(readFileSync(registryPath, 'utf8')) as StudyRegistry) : null;
-const window = resolveWindow(committed, args.includes('--window') ? loadWindow(flag('window')) : committed, registry);
+// The wall: the committed window, checked against RESEARCH_CONFIG.holdout and BT-2's holdout store (wall.ts).
+const window = researchWindow({ ...(args.includes('--window') ? { windowPath: flag('window') } : {}), ...(args.includes('--registry') ? { storePath: flag('registry') } : {}) });
 verifySums(dataset);
 const manifest = loadManifest(dataset);
 const datasetHash = `sha256:${manifestHash(dataset)}`;
