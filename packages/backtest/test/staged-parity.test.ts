@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { createKey, evaluateHardRejects, HARD_GATES, holdersKey, mintKey, type Mode } from '../../core/src/gates/index.ts';
 import { contextOf, deps, drop, passingFacts, request, session, type Facts } from '../../core/test/gates/world.ts';
 import { HARD_STAGE_GROUPS, stagedHardRejects } from '../src/strategy/study.ts';
+import { HARD_STAGE_GROUPS as LIVE_GROUPS, hardAllowsEntry, stagedHardRejects as liveStaged } from '../../worker/src/engine/strategy.ts';
 
 const WORLDS: Record<string, Facts> = {
   passing: passingFacts(),
@@ -13,6 +14,10 @@ const WORLDS: Record<string, Facts> = {
 };
 
 describe('staged hard rejects (audit B2)', () => {
+  it('uses the live worker\'s stage groups', () => {
+    expect(HARD_STAGE_GROUPS).toEqual(LIVE_GROUPS);
+  });
+
   for (const mode of ['live', 'backtest'] as const satisfies readonly Mode[]) {
     for (const [name, facts] of Object.entries(WORLDS)) {
       it(`${mode}, ${name}: allows an entry exactly when the live single evaluation passes; each group's reasons are that stage's`, () => {
@@ -31,6 +36,11 @@ describe('staged hard rejects (audit B2)', () => {
         }
         expect(s.notEvaluated).toEqual(HARD_STAGE_GROUPS.slice(k).flat());
         expect(s.hard.passed.some((x) => s.notEvaluated.includes(x))).toBe(false);
+        // The live worker's staged path (FACTS-1f, #106) on the same facts: the same result and the same entry rule.
+        const l = liveStaged(ctx, d, request());
+        expect(s.hard).toEqual(l.hard);
+        expect(s.notEvaluated).toEqual(l.notEvaluated);
+        expect(s.hard.complete && s.hard.reasons.length === 0).toBe(hardAllowsEntry(l.hard));
       });
     }
   }
