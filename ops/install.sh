@@ -1248,10 +1248,16 @@ evidence_index() {
 # serve_ok: reads `tailscale serve status --json` on stdin; true only when HTTPS 443 proxies to the worker API
 # on loopback and Funnel is off everywhere.
 serve_ok() {
+  # Exactly one thing published (OPS-1h review): HTTPS on 443, one host, its "/" proxied to the worker API and
+  # nothing else (no other path, port, host, TCP forward or service), and Funnel on for nothing. A serve made by hand
+  # is adopted only in this shape.
   jq -e --arg target "http://$WORKER_API_ADDR" '
-    ([(.Web // {}) | to_entries[] | select(.key | endswith(":443")) | .value.Handlers["/"].Proxy] | any(. == $target))
-    and ((.AllowFunnel // {}) | to_entries | all(.value != true))
-    and ((.TCP // {}) | to_entries | all(.value.HTTPS == true))' >/dev/null 2>&1
+    type == "object"
+    and ((keys - ["TCP", "Web", "AllowFunnel"]) == [])
+    and .TCP == {"443": {"HTTPS": true}}
+    and ((.Web // {}) | length == 1)
+    and ((.Web // {}) | to_entries[0] | (.key | endswith(":443")) and .value == {"Handlers": {"/": {"Proxy": $target}}})
+    and ((.AllowFunnel // {}) | to_entries | all(.value != true))' >/dev/null 2>&1
 }
 
 # funnel_ports: reads `tailscale serve status --json` on stdin and prints each "host:port" that Funnel makes
@@ -1417,7 +1423,20 @@ if command -v tailscale >/dev/null 2>&1; then
   public="$(timeout 30 tailscale serve status --json 2>/dev/null | funnel_ports)"
   if [ -n "$public" ]; then
     alert funnel-on "ALERT Zeroed host: Tailscale Funnel was on ($(printf '%s' "$public" | tr '\n' ' ')), which makes the worker API public. Turning it off."
-    for hp in $public; do timeout 30 tailscale funnel --https="${hp##*:}" off >/dev/null 2>&1 || log "Could not turn Funnel off for $hp."; done
+    off=1
+    for hp in $public; do timeout 30 tailscale funnel --https="${hp##*:}" off >/dev/null 2>&1 || off=0; done
+    if [ "$off" = 0 ]; then
+      # Funnel could not be turned off (an error or no answer in time): take the whole serve config down, so the API
+      # never stays public with only an alert. zeroed-tailscale publishes it again.
+      if timeout 30 tailscale serve reset >/dev/null 2>&1; then
+        rm -f "$STATE_DIR/live_view"
+        msg="ALERT Zeroed host: Tailscale Funnel could not be turned off, so the live view was taken down. Run zeroed-tailscale to publish it again."
+        log "$msg"
+        notify "$msg" || log "Could not send that alert to Telegram."
+      else
+        log "Could not turn Funnel off or take the live view down."
+      fi
+    fi
   else
     alert_clear funnel-on "CLEARED Zeroed host: Tailscale Funnel is off."
   fi

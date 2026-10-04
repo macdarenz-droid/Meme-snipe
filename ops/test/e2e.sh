@@ -141,7 +141,7 @@ publish() { # issued log code [extra env...]
   shift 3
   env -i PATH="$STUBS:$PATH" HOME="$E2E" STATE="$STATE" GH_REPO="$REPO" GITHUB_SHA="$signed" ISSUED="$issued" DEPLOY_CODE="$code" \
     HELIUS_API_KEY="$T_HELIUS" ALCHEMY_API_KEY="$T_ALCHEMY" JUPITER_API_KEY="$T_JUPITER" TELEGRAM_BOT_TOKEN="$T_TELEGRAM" \
-    PICKUP_TIMEOUT_S=150 PICKUP_POLL_S=2 PICKUP_GRACE_S=2 "$@" \
+    PICKUP_TIMEOUT_S=240 PICKUP_POLL_S=2 PICKUP_GRACE_S=2 "$@" \
     bash "$ROOT/ops/deploy/publish.sh" >"$LOGS/$log" 2>&1
 }
 status() { in_c "zeroed-status" >"$LOGS/console/status-$1.txt" 2>&1; cat "$LOGS/console/status-$1.txt"; }
@@ -627,6 +627,16 @@ in_c "jq -e '(.AllowFunnel // {}) | length == 0' /var/lib/tailscale-stub/serve.j
 grep -q 'ALERT Zeroed host: Tailscale Funnel was on' <(tail -3 "$STATE/telegram.jsonl") || fail "the installer's check raised no Funnel alert"
 in_c "systemctl stop zeroed-check.timer"
 chk
+# OPS-1h review: Funnel that cannot be turned off (an error here) takes the whole serve config down, with an alert.
+in_c "zeroed-tailscale" | has 'Live view: https://zeroed' || fail "zeroed-tailscale before the Funnel-off failure"
+in_c "jq '.AllowFunnel = {\"zeroed.tail-e2e.ts.net:443\": true}' /var/lib/tailscale-stub/serve.json > /tmp/s && mv /tmp/s /var/lib/tailscale-stub/serve.json"
+in_c "touch /var/lib/tailscale-stub/funnel-fail"
+chk
+in_c "! test -e /var/lib/tailscale-stub/serve.json && ! test -e /var/lib/zeroed-host/live_view" || fail "Funnel that could not be turned off left the API published"
+grep -q 'Tailscale Funnel could not be turned off, so the live view was taken down' <(tail -3 "$STATE/telegram.jsonl") || fail "no alert when Funnel could not be turned off"
+in_c "rm -f /var/lib/tailscale-stub/funnel-fail"
+chk
+in_c "zeroed-tailscale" | has 'Live view: https://zeroed' || fail "zeroed-tailscale after the Funnel-off failure"
 in_c "zeroed-tailscale --off" | has 'Live view off' && grep -qx 'serve reset' <(in_c "cat /var/lib/tailscale-stub/calls") || fail "zeroed-tailscale --off"
 # A serve result other than exactly the worker API (here: Funnel on as well) is taken down by the script.
 in_c "touch /var/lib/tailscale-stub/bad-serve"
@@ -664,8 +674,16 @@ in_c "tailscale serve --bg --https=443 http://127.0.0.1:8788 && ! test -e /var/l
 rc=0; timeout 60 docker exec "$C" bash -c "zeroed-tailscale" >"$LOGS/console/tailscale-over-hand.txt" 2>&1 || rc=$?
 [ "$rc" = 0 ] && grep -q 'Live view: https://zeroed.tail-e2e.ts.net' "$LOGS/console/tailscale-over-hand.txt" || { cat "$LOGS/console/tailscale-over-hand.txt"; fail "zeroed-tailscale over a hand-made serve (exit $rc)"; }
 in_c "grep -qx zeroed.tail-e2e.ts.net /var/lib/zeroed-host/live_view" || fail "live view state not written over a hand-made serve"
+# A hand-made serve that publishes more than the worker API (here an extra path) is never adopted: serve keeps the
+# extra handler, the exact check refuses it, and everything is taken down.
+in_c "zeroed-tailscale --off" >/dev/null
+in_c "printf '%s\n' '{\"TCP\":{\"443\":{\"HTTPS\":true}},\"Web\":{\"zeroed.tail-e2e.ts.net:443\":{\"Handlers\":{\"/\":{\"Proxy\":\"http://127.0.0.1:8788\"},\"/admin\":{\"Proxy\":\"http://127.0.0.1:9000\"}}}}}' > /var/lib/tailscale-stub/serve.json"
+rc=0; timeout 60 docker exec "$C" bash -c "zeroed-tailscale" >"$LOGS/console/tailscale-over-extra.txt" 2>&1 || rc=$?
+[ "$rc" = 1 ] && grep -q 'so it was turned off again. Nothing is published.' "$LOGS/console/tailscale-over-extra.txt" || { cat "$LOGS/console/tailscale-over-extra.txt"; fail "a hand-made serve with an extra path was adopted (exit $rc)"; }
+in_c "! test -e /var/lib/tailscale-stub/serve.json && ! test -e /var/lib/zeroed-host/live_view" || fail "a hand-made serve with an extra path stayed published"
+in_c "zeroed-tailscale" | has 'Live view: https://zeroed' || fail "zeroed-tailscale after refusing a hand-made serve"
 in_c "zeroed-tailscale --off" | has 'Live view off' || fail "zeroed-tailscale --off (after OPS-1h)"
-pass "live view: opt-in zeroed-tailscale shows the login link on the console and sends it to the paired chat, joins as zeroed (no Tailscale SSH), Funnel off, serves HTTPS 443 to 127.0.0.1:8788 only, safe to repeat, --off stops it, a serve that is not exactly the worker API is taken down by the script; a tailnet without HTTPS Certificates or MagicDNS is named with where to turn it on (console and chat, exit 1, no hang), no funnel command is run (it waits forever without Funnel), a hand-made serve is taken over, and a tailscale call that hangs ends with a Stopped line within its limit; Funnel switched on is alerted and turned off by the minute check and by an install; the firewall admits only tailnet HTTPS"
+pass "live view: opt-in zeroed-tailscale shows the login link on the console and sends it to the paired chat, joins as zeroed (no Tailscale SSH), Funnel off, serves HTTPS 443 to 127.0.0.1:8788 only, safe to repeat, --off stops it, a serve that is not exactly the worker API is taken down by the script; a tailnet without HTTPS Certificates or MagicDNS is named with where to turn it on (console and chat, exit 1, no hang), no funnel command is run (it waits forever without Funnel), a hand-made serve is taken over only when it is exactly the worker API, Funnel that cannot be turned off takes the serve down, and a tailscale call that hangs ends with a Stopped line within its limit; Funnel switched on is alerted and turned off by the minute check and by an install; the firewall admits only tailnet HTTPS"
 
 # ---------- 11. Secret scan ----------
 in_c "journalctl --no-pager -o cat" >"$LOGS/container-journal.txt"

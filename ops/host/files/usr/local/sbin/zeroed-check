@@ -24,7 +24,20 @@ if command -v tailscale >/dev/null 2>&1; then
   public="$(timeout 30 tailscale serve status --json 2>/dev/null | funnel_ports)"
   if [ -n "$public" ]; then
     alert funnel-on "ALERT Zeroed host: Tailscale Funnel was on ($(printf '%s' "$public" | tr '\n' ' ')), which makes the worker API public. Turning it off."
-    for hp in $public; do timeout 30 tailscale funnel --https="${hp##*:}" off >/dev/null 2>&1 || log "Could not turn Funnel off for $hp."; done
+    off=1
+    for hp in $public; do timeout 30 tailscale funnel --https="${hp##*:}" off >/dev/null 2>&1 || off=0; done
+    if [ "$off" = 0 ]; then
+      # Funnel could not be turned off (an error or no answer in time): take the whole serve config down, so the API
+      # never stays public with only an alert. zeroed-tailscale publishes it again.
+      if timeout 30 tailscale serve reset >/dev/null 2>&1; then
+        rm -f "$STATE_DIR/live_view"
+        msg="ALERT Zeroed host: Tailscale Funnel could not be turned off, so the live view was taken down. Run zeroed-tailscale to publish it again."
+        log "$msg"
+        notify "$msg" || log "Could not send that alert to Telegram."
+      else
+        log "Could not turn Funnel off or take the live view down."
+      fi
+    fi
   else
     alert_clear funnel-on "CLEARED Zeroed host: Tailscale Funnel is off."
   fi

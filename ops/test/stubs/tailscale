@@ -30,12 +30,19 @@ case "$1 ${2:-}" in
       printf '{"TCP":{"443":{"HTTPS":true}},"Web":{"zeroed.tail-e2e.ts.net:443":{"Handlers":{"/":{"Proxy":"%s"}}}},"AllowFunnel":{"zeroed.tail-e2e.ts.net:443":true}}\n' "${@: -1}" > "$S/serve.json"
       exit 0
     fi
-    printf '{"TCP":{"443":{"HTTPS":true}},"Web":{"zeroed.tail-e2e.ts.net:443":{"Handlers":{"/":{"Proxy":"%s"}}}}}\n' "${@: -1}" > "$S/serve.json" ;;
+    # Like tailscaled: the new "/" handler on 443 is added to whatever serve config exists (other paths, ports and
+    # hosts stay), and Funnel for that port is cleared.
+    [ -s "$S/serve.json" ] || echo '{}' > "$S/serve.json"
+    jq --arg t "${@: -1}" '.TCP["443"] = {"HTTPS": true} | .Web["zeroed.tail-e2e.ts.net:443"].Handlers["/"] = {"Proxy": $t}
+      | if .AllowFunnel then .AllowFunnel |= with_entries(select(.key != "zeroed.tail-e2e.ts.net:443")) else . end' \
+      "$S/serve.json" > "$S/serve.json.new" && mv "$S/serve.json.new" "$S/serve.json" ;;
   "serve status")
     cat "$S/serve.json" 2>/dev/null || echo '{}' ;;
   "serve reset")
     rm -f "$S/serve.json" ;;
   "funnel --https="*)
+    # funnel-fail: turning Funnel off fails (zeroed-check must then take the serve config down).
+    [ ! -e "$S/funnel-fail" ] || { echo 'error: funnel off failed'; exit 1; }
     # The funnel command waits for the tailnet's Funnel capability first, even for "off" (cli serve_v2.go,
     # verifyFunnelEnabled). Funnel is never enabled for this tailnet unless the test switched it on in serve.json.
     if ! jq -e '[(.AllowFunnel // {})[]] | any' "$S/serve.json" >/dev/null 2>&1; then
