@@ -10,8 +10,6 @@ import { lamports } from '../../core/src/units/index.ts';
 import { DAY_START, HOUR, MINUTE, NOW, PRICE, SOL, WEEK_START, account, latches, trade } from '../../core/test/risk/helpers.ts';
 import { checkEnvelope } from '../../../apps/web/src/api/modes.ts';
 import { schemaFor } from '../../../apps/web/src/api/schemas.ts';
-import { statusRows } from '../../../apps/web/src/dashboard/Sections.tsx';
-import type { WorkerStatus } from '../../../apps/web/src/api/contract.ts';
 import { ACCOUNT_KEY, LiveStrategy, SOL_PRICE_KEY } from '../src/engine/strategy.ts';
 import { STOPS_MAX_AGE_MS, stopHalts, views } from '../src/run/api.ts';
 import { strategyConfig } from '../src/run/settings.ts';
@@ -93,39 +91,40 @@ describe('the status serves them as halt reasons', () => {
   });
 });
 
-describe('the app never shows "Entries: On" while a stop is active or the regime evaluation is old', () => {
-  const card = (patch: Record<string, unknown>) => {
+describe('what the app reads: no stop and a current regime only when both are true', () => {
+  type Served = { haltReasons: { code: string; source: string | null }[]; regime: { state: string; current: boolean } | null };
+  const served = (patch: Record<string, unknown>): Served => {
     const h = makeWorker();
     const i = { ...h.worker.apiInputs(), halted: [], budgetHalted: [], nowMs: NOW, regime: { atMs: NOW - 1_000, on: true, reasons: [] }, stops: { atMs: NOW, codes: [] as string[] }, ...patch };
     const body = JSON.parse(JSON.stringify({ mode: 'paper', asOf: new Date(NOW).toISOString(), data: views.status(i as never) }));
     void h.worker.stop();
-    return statusRows((checkEnvelope(body, 'paper', schemaFor('status', 'paper')) as { data: WorkerStatus }).data).map((r) => `${r.label}: ${r.value}`);
+    return (checkEnvelope(body, 'paper', schemaFor('status', 'paper')) as { data: Served }).data;
   };
+  const halts = (s: Served) => s.haltReasons.map((x) => x.code);
 
-  it('with no stop and a current regime on: On', () => {
-    expect(card({})).toContain('Entries: On');
+  it('with no stop and a current regime on: no halt reason, regime current (the card then shows "Entries: On")', () => {
+    const s = served({});
+    expect(s.haltReasons).toEqual([]);
+    expect(s.regime).toMatchObject({ state: 'on', current: true });
   });
-  it.each(['daily_loss', 'weekly_loss', 'weekly_review', 'kill_switch', 'loss_cooldown', 'loss_day_pause', 'loss_review', 'session_not_running'])('%s: Off', (c) => {
-    const rows = card({ stops: { atMs: NOW, codes: [c] } });
-    expect(rows).not.toContain('Entries: On');
-    expect(rows[0]).toMatch(/^Entries: Off: /);
+  it.each([
+    ['daily_loss', 'daily-loss'], ['weekly_loss', 'weekly-loss'], ['weekly_review', 'weekly-review'], ['kill_switch', 'kill-switch'],
+    ['loss_cooldown', 'loss-cooldown'], ['loss_day_pause', 'loss-day-pause'], ['loss_review', 'loss-review'], ['session_not_running', 'session-ended'],
+  ])('%s is served as %s', (c, code) => {
+    expect(halts(served({ stops: { atMs: NOW, codes: [c] } }))).toEqual([code]);
   });
-  it('stops unknown: Off', () => {
-    expect(card({ stops: null })).toContain('Entries: Off: risk unknown');
+  it('stops unknown: risk-unknown', () => {
+    expect(halts(served({ stops: null }))).toEqual(['risk-unknown']);
   });
-  it('the probe: daily loss used 2.00 of 1.00 on the meter is Off even before core risk reads it', () => {
-    const t = { closedAtMs: NOW - MINUTE, netPnl: -2_000_000n };
-    const rows = card({ trades: [t] });
-    expect(rows).toContain('Entries: Off: daily loss');
+  it('the probe: daily loss used 2.00 of 1.00 on the meter serves daily-loss even before core risk reads it', () => {
+    expect(halts(served({ trades: [{ closedAtMs: NOW - MINUTE, netPnl: -2_000_000n }] }))).toEqual(['daily-loss']);
   });
-  it('a regime evaluation older than regimeMaxAgeMs: not On', () => {
+  it('a regime evaluation older than regimeMaxAgeMs is not current', () => {
     const h = makeWorker();
     const max = h.worker.apiInputs().regimeMaxAgeMs;
     void h.worker.stop();
     expect(max).toBe(2 * TRIAL_POLICY.gates.maxQuoteAgeMs);
-    expect(card({ regime: { atMs: NOW - max, on: true, reasons: [] } })).toContain('Entries: On');
-    const old = card({ regime: { atMs: NOW - max - 1, on: true, reasons: [] } });
-    expect(old).not.toContain('Entries: On');
-    expect(old).toContain('Regime: Not checked lately');
+    expect(served({ regime: { atMs: NOW - max, on: true, reasons: [] } }).regime?.current).toBe(true);
+    expect(served({ regime: { atMs: NOW - max - 1, on: true, reasons: [] } }).regime?.current).toBe(false);
   });
 });
