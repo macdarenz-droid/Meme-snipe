@@ -59,8 +59,8 @@ describe('worker card', () => {
     expect(statusRows({ mode: 'paper', connected: true, flags: null, risk: [] } as unknown as WorkerStatus)).toEqual([]);
   });
 
-  it('shows only "Worker not connected" when the worker is down, whatever its last flags', () => {
-    expect(text(status(['paused', 'exit-blocked'], false))).toBe('Worker not connected');
+  it('shows only "Feeds down" when the worker reports no feed connected, whatever its last flags', () => {
+    expect(text(status(['paused', 'exit-blocked'], false))).toBe('Feeds down');
   });
 
   it('uses short labels with no flagged words', () => {
