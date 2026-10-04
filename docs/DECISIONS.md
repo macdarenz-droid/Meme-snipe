@@ -1969,3 +1969,49 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
 - **2026-10-05 · Supervisor ruling.** The `check` job's limit goes from 15 to 30 minutes. The full suite took 13 min 10 s (e4755f1) and 13 min 34 s (2e2c95a) on the base, and BT-2 #41's study tests take it past 15 minutes: its run on adf10f2 was cancelled at 15 min while `pnpm test` was still passing light tests (no hang, no failure). The limit is a stop for hung runs, not a test: every test still runs with its own time limit unchanged, and 30 minutes still stops a hung run. The `historical-data` job keeps 15 minutes (about 1 min 10 s).
 - **Follow-up (CI-SHARD).** Split `pnpm test` across parallel jobs that the `check` job waits on, keeping the `check` name the deploy and preview gates read, so each merge's CI takes minutes instead of 13. Measured split first; every test file runs in exactly one shard (a test lists the union).
 
+## Money totals with the account's costs (APP-MONEY, AUDIT-RM1 F4, `run/api.ts` `moneyEvents`, `run/account.ts` `costs`)
+- **2026-10-05 · One list of account costs.**
+  - `PaperAccount.costs()` is the account's costs that are no trade's (today the wallet's setup rent). Risk reads it in `fact()`, and the app's API reads the same list.
+  - `moneyEvents` puts each closed trade's net at its close and each account cost (as a loss) when booked, oldest first. These are the items core risk counts in equity.
+- **2026-10-05 · The totals use it.**
+  - Stats net and max drawdown: trades and costs in time order.
+  - Charts: cumulative and daily net; costs by day; costs by kind, where setup rent is `rentKeptUsd` and a failed entry's fees (PAPER-1's `failed_entry`, once merged) are `networkFeeUsd`.
+  - Calendar: a day's net (its trade count stays trades only).
+  - Win rate and mean net stay per trade.
+  - The backtest report already counts its stray costs this way, so the two compare.
+- **2026-10-05 · The daily-loss meter is R7's figure.**
+  - The strategy's status read (`#readStops`, the same input the entry path judges: account fact, marks, SOL price) now keeps core's `riskSnapshot.dayLoss`. It covers trades, account costs and marked open losses, with gains offsetting.
+  - The meter shows it while that read is current. Unknown or old: no meter (never a 0); the risk-unknown chip shows.
+  - Between a fill and the next read, today's realised loss (trades and costs, gains offsetting) also counts, for the meter and the daily-loss chip (API-1's probe).
+    - It is never more than R7's figure on the same data, because marked losses only add.
+    - Before, the meter summed today's losing trades only, without costs or offsetting gains.
+- **2026-10-05 · Partial sales at their own time (risk review 2).**
+  - `moneyEvents` counts each partial sale's result at its own time, open trades' too, and a closed trade's remainder (its net less its parts) at the close. Core risk counts equity the same way after RISK-PARTIAL (#132).
+  - The meter's realised figure, the calendar, the charts and stats net therefore split days as core does.
+  - It reads #132's `partials` shape (`atMs`, `pnl`).
+- **2026-10-05 · Stray fees and SOL net (base merge after #133 and #132).**
+  - PAPER-1's stray fees of entries that never filled (`strayFees`, `strayFolded`) are now in `PaperAccount.costs()` as `failed_entry`, so risk's `fact()` and the app's totals read one list. `costRecords()` is the same list with each cost's lamports.
+  - The base's SOL net in stats (`netSol`) counts the account costs' lamports too, so it equals the dollar net's items.
+  - The core comparison for partials is added: a history with a partial yesterday and the close today gives core's `dayLoss` and the app's meter the same figure.
+  - `open_trade` (#168) is not in the base, so no mapping is added; it comes with whichever lands second.
+- **2026-10-05 · Evidence.**
+  - `packages/worker/test/app-money.test.ts`: 11 tests, all failing before. They cover:
+    - setup and no trades: net, drawdown, curve, day and kind all read −setup;
+    - trades with costs in time order;
+    - a real worker's inputs carry the account's costs;
+    - the meter equals core's `dayLoss` on the same inputs;
+    - a cost booked today counts;
+    - a gain offsets;
+    - unknown or old risk means no meter;
+    - a current R7 read from before a losing close or a cost shows the higher realised figure (risk review 1);
+    - a partial yesterday and the close today split as core splits them, and an open trade's partial counts;
+    - the day split equals core risk's `dayLoss` on the same history.
+  - `paper-settlement.test.ts`: setup and one failed entry, no trades, reach the app's totals through `costs()`.
+  - `status-stops.test.ts` gains the new field in its expectations; its probe still passes.
+  - Hand mutants, all caught (21):
+    - stats, drawdown, charts or calendar on trades only; the wrong kind;
+    - the meter from realised loss only; the meter as R7 only; no realised chip; 0 when unknown; an old read accepted; realised from losing items only;
+    - the strategy without `dayLoss`; the worker without costs; mean net with costs;
+    - partials counted at the close; the close's whole net; open trades' partials ignored;
+    - stray records left out of `costs()`; `netSol` without costs; a failed entry under the wrong kind; partials at the close against core.
+

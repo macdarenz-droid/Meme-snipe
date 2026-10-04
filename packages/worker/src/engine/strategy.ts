@@ -76,6 +76,11 @@ export interface RegimeView {
 export interface RiskStopsView {
   readonly atMs: number;
   readonly codes: readonly string[] | null;
+  /**
+   * Today's loss as R7 reads it (core riskSnapshot `dayLoss`, micro-dollars) on the same input, costs and marks
+   * included (APP-MONEY): the app's daily-loss meter. Null whenever `codes` is (the account cannot be judged).
+   */
+  readonly dayLoss: bigint | null;
 }
 /** Account stops are read again on the account's own event, else at most once per this much event time. */
 export const STOPS_EVERY_MS = 1000;
@@ -534,7 +539,7 @@ export class LiveStrategy implements Strategy {
     const now = ctx.now.receivedAt;
     if (this.#stops !== null && e.key !== ACCOUNT_KEY && now - this.#stops.atMs < STOPS_EVERY_MS) return;
     const risk = this.#account(ctx);
-    if (risk === null) return void (this.#stops = { atMs: now, codes: null });
+    if (risk === null) return void (this.#stops = { atMs: now, codes: null, dayLoss: null });
     try {
       // Judged as the entry path judges it: marked with no fallback (a mark that fails refuses the entry there), and
       // unknown when core cannot evaluate the account (riskSnapshot is null exactly when its account check throws,
@@ -543,7 +548,7 @@ export class LiveStrategy implements Strategy {
       const account = this.#marked(risk.history, ctx, sol, { fallback: false });
       const input = { session: this.#d.session, mode: 'paper' as const, clock: { now: () => ctx.now }, account, latches: risk.latches, market: { solPrice: sol, solBalance: this.#balance(risk, ctx), regime: 'unknown' as const } };
       const snap = riskSnapshot(input);
-      if (snap === null) return void (this.#stops = { atMs: now, codes: null });
+      if (snap === null) return void (this.#stops = { atMs: now, codes: null, dayLoss: null });
       const r = evaluateExit(input);
       const codes = new Set<string>(r.tripped.map((x) => x.code));
       // R7 per entry, as evaluateEntry judges it (API-1 N2a): when today's loss plus one trade's worst-case costs reaches
@@ -554,9 +559,9 @@ export class LiveStrategy implements Strategy {
         const costs = maxTradeCosts(policy, { network: this.#d.config.network, rent: { ...this.#d.config.rent, oneTime: risk.oneTimeRent } }).total;
         if (snap.dayLoss + lamportsToMicroUsd(costs, sol.value, 'ceil') >= limit) codes.add('daily_loss');
       }
-      this.#stops = { atMs: now, codes: [...codes].sort() };
+      this.#stops = { atMs: now, codes: [...codes].sort(), dayLoss: snap.dayLoss };
     } catch {
-      this.#stops = { atMs: now, codes: null };
+      this.#stops = { atMs: now, codes: null, dayLoss: null };
     }
   }
 
