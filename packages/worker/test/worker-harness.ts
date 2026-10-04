@@ -147,7 +147,7 @@ export const LANDS = { ...FILL_CONFIG.scenarios[PAPER_SCENARIO], landPpm: { pump
 /** Boots made per state folder: a test's n-th worker is `boot-<n>` whatever the process, its pid or the other tests. */
 const boots = new Map<string, number>();
 
-export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof LANDS; stateDir?: string; timers?: TestTimers; edgePpm?: bigint; http?: HttpClient; key?: string | null; config?: Record<string, string>; fetched?: string[]; found?: boolean; facts?: FactSource[]; seed?: (r: SeedRequest) => Promise<SeedResult>; seedWaitMs?: number; entry?: { timing: 'gates' | 'random'; salt: string; s0Diagnostic?: boolean }; sources?: (ctx: SourcesContext) => FeedSource[]; exposureRpc?: SeedRpc; ops?: WorkerDeps['ops']; universe?: 'U1' | 'U2'; cutRpc?: (ms: number) => void; seedMaxMs?: number; simulate?: (leg: SimLeg) => Promise<DryRunRecord>; worldFault?: WorkerDeps['worldFault']; watchRead?: WorkerDeps['watchRead'] | null; watchHalted?: () => boolean; schedulers?: NonNullable<WorkerDeps['schedulers']>; markedHistory?: WorkerDeps['markedHistory']; strategy?: Partial<StrategyConfig>; crashPoint?: WorkerDeps['crashPoint'] } = {}): Harness => {
+export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof LANDS; stateDir?: string; timers?: TestTimers; edgePpm?: bigint; http?: HttpClient; key?: string | null; config?: Record<string, string>; fetched?: string[]; found?: boolean; facts?: FactSource[]; seed?: (r: SeedRequest) => Promise<SeedResult>; seedWaitMs?: number; entry?: { timing: 'gates' | 'random'; salt: string; s0Diagnostic?: boolean }; sources?: (ctx: SourcesContext) => FeedSource[]; exposureRpc?: SeedRpc; ops?: WorkerDeps['ops']; universe?: 'U1' | 'U2'; cutRpc?: (ms: number) => void; seedMaxMs?: number; simulate?: (leg: SimLeg) => Promise<DryRunRecord>; worldFault?: WorkerDeps['worldFault']; summaryFault?: WorkerDeps['summaryFault']; watchRead?: WorkerDeps['watchRead'] | null; watchHalted?: () => boolean; schedulers?: NonNullable<WorkerDeps['schedulers']>; markedHistory?: WorkerDeps['markedHistory']; strategy?: Partial<StrategyConfig>; crashPoint?: WorkerDeps['crashPoint'] } = {}): Harness => {
   const stateDir = o.stateDir ?? tempState();
   const timers = o.timers ?? virtualTimers(T - 16 * 86_400_000);
   const session = startSession(TRIAL_POLICY);
@@ -194,6 +194,7 @@ export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof L
     heartbeat: { http: o.http ?? noHttp, key: o.key === undefined ? null : o.key, ownerChatId: '42' },
     ...(o.facts === undefined ? {} : { facts: o.facts, schedulers: o.schedulers ?? { helius: new Scheduler(HELIUS_FREE, { timers }), alchemy: new Scheduler(ALCHEMY_FREE, { timers }), jupiter: new Scheduler(JUPITER_FREE, { timers }), rugcheck: new Scheduler(RUGCHECK_FREE, { timers }) } }),
     ...(o.worldFault === undefined ? {} : { worldFault: o.worldFault }),
+    ...(o.summaryFault === undefined ? {} : { summaryFault: o.summaryFault }),
     ...(o.crashPoint === undefined ? {} : { crashPoint: o.crashPoint }),
     // A second path is configured unless a test says none (null); unscripted, every read fails.
     ...(o.watchRead === null ? {} : { watchRead: o.watchRead ?? (() => Promise.reject(new Error('no second path scripted'))) }),

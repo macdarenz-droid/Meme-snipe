@@ -192,6 +192,9 @@ export function evaluate(s: Stored | undefined, now: number, l: Limits, chain: C
   return out;
 }
 
+/** OPS-SUMMARY: a summary that was refused or not written. Trading and the other checks are unaffected. */
+export const summaryAlert = (reason: string): Alert => ({ key: 'summary', text: `Daily summary not written: ${reason}.` });
+
 /**
  * Dedupe and escalate: a new alert is sent at once, repeated every `repeatCriticalS` during its first hour
  * and hourly after that while it lasts, and a "cleared" line is always sent when it goes away. All lines of
