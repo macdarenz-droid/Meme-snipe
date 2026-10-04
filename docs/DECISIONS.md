@@ -1430,3 +1430,38 @@ Built to the supervisor's revised spec and the consensus rulings that followed i
 - **2026-10-04 · The deployer store loads by streaming.** `deployers.jsonl` gains about 64k create lines a day and is trimmed only at a start, to the look-back plus a day (about 15 days, about a million lines). `load` read it whole, split it and rewrote it from one joined string. Measured on 300,000 lines (168 MB, about 4.7 days of creates): peak RSS 1,036 MB before, over the unit's MemoryMax of 800M, so a restart after about four to five days of running would be killed at boot; 432 MB after. Streaming does not bound the parsed events the index seed keeps: at that rate about 8–9 days of creates still reach 800 MB. Bounding them is WORKER-GROW's (card 4).
 - **2026-10-04 · The runner streams the worker's journal.** The end-of-run report checks the journal with `checkJournalLines` over `fileLines`, the same check as `checkJournal` (pinned: a line that is not JSON is a problem unless it is the last one and a torn tail is allowed). It parses the journal once, where it used to read it whole three times. `readLines` streams. `reconciledFirst` and `entriesBetween` scan without building an array. `closedSince`, `journalTimes`, `item4`, `coverageGaps`, `rejections` and `withChainMoves` still take parsed arrays, which grow with the journal: bounding those needs journal rotation (card 4).
 - **Evidence.** `packages/worker/test/growth-sweep.test.ts`: the UTF-8 test fails on the base `journalLines`; the guard fails on the base deployer store and runner; hand mutants G1–G7 are killed.
+
+## Candidate trade coverage from the migration (S0-ZERO, `RpcStream` `WatchOptions.coverFrom`, `PoolWatch`, `tradesFill`)
+
+- **2026-10-05 · Why.** After PRACTICE-ON the shakedown made no practice trade. Reading the code showed that no live candidate could pass H11, nor H5's event-tail check.
+  - The candles fact is observed at the pool's creation slot (the migration). It is current only while `stream:trades:<pool>` has been gap-free since then (evidence.ts).
+  - The pool's trade watch can only be subscribed once the migration names the pool. A first subscribe started its coverage at the first live slot, with no fill.
+  - So the coverage always started after the pool opened, and H11 rejected every live candidate as H16 `gap` (pinned by producer.test "covered only after the pool opened").
+  - The gate is right: the trades between the migration and the subscribe were never read. The fix reads them; no gate changes.
+- **2026-10-05 · How (supervisor ruling, card S0-ZERO).** Four parts:
+  - **Strategy.** It keeps each candidate's migration slot (the migration fact's slot, or the migration log's `txSlot`, the older of the two) and lists it with the candidate's pool. Held pools get none.
+  - **PoolWatch.** It subscribes a candidate's pool with `coverFrom` at that slot. Every pool watch gets FILL-2's in-run `fill`, so reconnect gaps on pool watches are now filled too. That hook existed but was not wired in production.
+  - **RpcStream, first subscribe with `coverFrom` before its next slot.** The coverage starts at `coverFrom` with an open `catch-up` gap, closed like a reconnect gap once a live slot is seen. Only a complete fill closes it with a `resume`. A false, failed, partial or skipped fill, or no fill hook, closes it as a bounded lossy gap, and H11 keeps rejecting. A drop during the catch-up keeps the gap open from the migration and asks the fill again on the new connection.
+  - **Live notifications during the catch-up.** They are held and go on the feed after the fill's transactions. This is needed for exact candles: a live trade released before an older filled one either flags the candles partial or, within the same minute, silently sets the wrong open and close. At most `CATCH_UP_HOLD_MAX` (5,000) are held; past that they go on the feed at once and the catch-up can no longer resume. An unwatched watch puts what it held on the feed.
+- **2026-10-05 · Order on the feed.** `IngestOptions.after` places a frame off-chain after everything ingested so far, whatever its own slot. The in-run fill's transactions and the held notifications use it.
+  - Before this, a lookup was placed off-chain only when its slot was already released. So a fill's newest transaction, whose slot was not yet released, could be released before older ones placed after the released point. FILL-2's reconnect fills had the same gap.
+- **2026-10-05 · A pool's history starts at its creation.** FILL-2 counted a fill complete only when it reached a signature older than the gap. A candidate's catch-up starts at the migration slot, and nothing older exists on the pool, so every catch-up would end as `history-end`, incomplete.
+  - `history-end` now counts as complete only when the oldest transaction read is the one whose events hold PumpSwap's `CreatePoolEvent` for this pool, and nothing else in the fill was missed.
+  - Nothing can trade on a pool before its creation, so the end of its history there is its start, not missing history.
+  - Any other history end (including another pool's creation) stays incomplete.
+- **2026-10-05 · Budget (supervisor conditions).**
+  - Each in-run fill may spend at most `TRADES_FILL_CREDITS` (500), and never more than FILL-2's daily fill budget has left (`fill-budget.json`, 20,000 a day, now one shared instance for the restart fill and the in-run fills). With nothing left there is no call at all, and the gap stays lossy.
+  - What a fill spent is booked to that budget, on top of the Helius scheduler's own metering of each call (candidates at P3, open positions at P2).
+  - Each fill is journaled as `trades_fill` (pool, mint, kind, slots, complete, transactions, credits, calls, why it stopped, latency). The runner report prints "Trade-gap fills: C complete of N, T transactions, X Helius credits", so the shakedown measures the 1,000–5,000 credits a day estimate.
+- **2026-10-05 · Known gaps (separate card, PERSIST builder).** Candidates are still forgotten at a restart, and a coin created before the process started still misses its create (H9, H12–H14).
+  - S0 judges a candidate 60–240 min after its migration, so until that card lands every deploy restart costs the shakedown up to 4 h of candidates.
+- **2026-10-05 · Evidence.** `packages/worker/test/s0-zero.test.ts`:
+  - the stream: complete, false, failed or missing fill; no `coverFrom` or one not before the next slot; held notifications after the fill's transactions, as off-chain lookups in arrival order; overflow; a drop during the catch-up; unwatch;
+  - PoolWatch: a candidate gets `coverFrom` and the fill, a held pool only the fill;
+  - the strategy's migration slot;
+  - `tradesFill`: budget booked, journaled, placed after; no budget means no call; capped at 500 or at the budget left;
+  - the runner summary;
+  - FILL-2 on real mainnet transactions: complete when the history ends at this pool's creation; incomplete when it ends at a swap or another pool's;
+  - H11 on the live path with the real migration and swaps: rejects while the catch-up is open, passes after the resume, rejects on a lossy catch-up and on coverage from the first live slot.
+  
+  16 hand mutants, all caught. Among them: resume on a partial fill; coverage opened at the first live slot; no hold; no release after the fill; overflow not lossy; any history end complete; `after` dropped in the fill or the stream; no `fromSlot` from the strategy or the pool watch; held pools given `coverFrom`; no budget booking; budget ignored in the cap; `after` ignored by the feed.

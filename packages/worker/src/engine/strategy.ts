@@ -437,6 +437,8 @@ export class LiveStrategy implements Strategy {
   #seedApplied = false;
   /** Each watched mint's PumpSwap pool, from its migration or its pool fact, and back. */
   readonly #poolOfMint = new Map<string, string>();
+  /** S0-ZERO: each candidate's migration slot, where its pool's trade coverage must start (the oldest seen). */
+  readonly #migrationSlot = new Map<string, bigint>();
   readonly #mintOfPool = new Map<string, string>();
   /** The fee terms of the latest released swap on each mint's pool (rates are per trade on chain). */
   readonly #observedFees = new Map<string, PoolFeeContext>();
@@ -565,12 +567,15 @@ export class LiveStrategy implements Strategy {
    * The pools to watch for swaps (WORKER-1 subscribes `trades:<pool>`): every candidate in its window and every open
    * position, with whether a position holds it (exit traffic).
    */
-  watchedPools(): Map<string, { readonly mint: string; readonly held: boolean }> {
+  watchedPools(): Map<string, { readonly mint: string; readonly held: boolean; readonly fromSlot?: bigint }> {
     const held = new Set([...this.#exits.keys()].map((pid) => this.#mintOf(pid)));
-    const out = new Map<string, { mint: string; held: boolean }>();
+    const out = new Map<string, { mint: string; held: boolean; fromSlot?: bigint }>();
     for (const mint of this.watched()) {
       const pool = this.#poolOfMint.get(mint);
-      if (pool !== undefined) out.set(pool, { mint, held: held.has(mint) });
+      // A candidate's pool is watched from its migration (S0-ZERO): its candles are observed from the pool's creation.
+      // A held pool is already watched (an exit never waits on a catch-up).
+      const from = this.#cands.has(mint) && !held.has(mint) ? this.#migrationSlot.get(mint) : undefined;
+      if (pool !== undefined) out.set(pool, { mint, held: held.has(mint), ...(from === undefined ? {} : { fromSlot: from }) });
     }
     for (const [mint, t] of this.#tail) if (!out.has(t.pool)) out.set(t.pool, { mint, held: false });
     return out;
@@ -803,7 +808,10 @@ export class LiveStrategy implements Strategy {
       // GATE-1's migration fact (a fetched, confirmed migration) also names a candidate.
       const f = parseMigration(e.value);
       const mint = e.key.slice(MIGRATION_PREFIX.length);
-      if (f !== null) this.#notePool(mint, f.pool);
+      if (f !== null) {
+        this.#notePool(mint, f.pool);
+        this.#noteMigrationSlot(mint, f.obs.slot);
+      }
       if (f !== null && !this.#cands.has(mint)) {
         this.#cands.set(mint, { mint, migratedAtMs: f.migratedAtMs, lastEvalMs: null, lastReason: null, lastWaived: '', tries: 0, gates: null, spend: null });
         out.push({ action: null, reasons: [SHORTLIST, this.#d.config.universe, mint, `migrated at ${f.migratedAtMs}`] });
@@ -817,7 +825,11 @@ export class LiveStrategy implements Strategy {
     const d = ev['data'];
     const mint = typeof d['mint'] === 'string' ? d['mint'] : null;
     const ts = typeof d['timestamp'] === 'bigint' ? Number(d['timestamp']) * 1000 : null;
-    if (mint !== null && typeof d['pool'] === 'string') this.#notePool(mint, d['pool']);
+    if (mint !== null && typeof d['pool'] === 'string') {
+      this.#notePool(mint, d['pool']);
+      // The migration transaction's own slot (a logs sighting carries it as txSlot): the pool cannot trade before it.
+      this.#noteMigrationSlot(mint, typeof v['txSlot'] === 'bigint' ? v['txSlot'] : e.moment.slot);
+    }
     if (mint === null || this.#cands.has(mint)) return;
     // Block time of the migration when the event states it, else when it was received.
     const migratedAtMs = ts ?? ctx.now.receivedAt;
@@ -830,7 +842,13 @@ export class LiveStrategy implements Strategy {
     if (this.watched().has(mint)) return;
     const pool = this.#poolOfMint.get(mint);
     if (pool !== undefined) this.#mintOfPool.delete(pool);
-    for (const m of [this.#poolOfMint, this.#observedFees, this.#tradeAt, this.#deployerSales]) m.delete(mint);
+    for (const m of [this.#poolOfMint, this.#observedFees, this.#tradeAt, this.#deployerSales, this.#migrationSlot]) m.delete(mint);
+  }
+
+  #noteMigrationSlot(mint: string, slot: bigint | null): void {
+    if (slot === null) return;
+    const was = this.#migrationSlot.get(mint);
+    if (was === undefined || slot < was) this.#migrationSlot.set(mint, slot);
   }
 
   #notePool(mint: string, pool: string): void {

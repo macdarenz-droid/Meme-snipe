@@ -45,7 +45,9 @@ const credits = new CreditBook(config.stateDir, timers);
 const rpcCut = new RpcCut(timers);
 const http = liveHttp(rpcCut, fetchHttp);
 const providerHttp = http.providers;
-const providers = new LiveProviders({ tradeStreams: false, secrets: environment.secrets, http: providerHttp, factory: globalSocketFactory, credits });
+// FILL-2's daily fill budget, one instance for the restart fill and the pool watches' in-run fills (S0-ZERO).
+const fillBudget = DailyBudget.load(join(config.stateDir, FILL_BUDGET_FILE), FILL_CREDITS_PER_DAY, timers.now());
+const providers = new LiveProviders({ tradeStreams: false, secrets: environment.secrets, http: providerHttp, factory: globalSocketFactory, credits, fillBudget });
 const policy = session.policy;
 const timing = watchTimingProblem(config.watch, policy.gates.maxQuoteAgeMs, DEFAULT_LIVE_FEED.horizonSlots * SLOT_MS);
 if (timing !== null) {
@@ -90,7 +92,7 @@ try {
     sources: (ctx) => providers.feeds(ctx),
     simulate,
     fetchTx: (sig) => providers.fetchTx(sig),
-    seed: (r) => runSeed(r, { rpc: providers.seedRpc(), timers, budget: DailyBudget.load(join(config.stateDir, FILL_BUDGET_FILE), FILL_CREDITS_PER_DAY, timers.now()) }),
+    seed: (r) => runSeed(r, { rpc: providers.seedRpc(), timers, budget: fillBudget }),
     seedWaitMs: 30_000,
     seedMaxMs: 90_000,
     ops: () => providers.ops(),
