@@ -331,6 +331,19 @@ describe('joint bootstrap SPA test (spa.ts)', () => {
     const r = spaTest({ variants: v, s0: Array<number>(64).fill(0), activeDays: { a: 64, b: 64 }, registration: { seFloor: 1e-6, studentisation: SPA_STUDENTISATION, regimes: real } },
       { rng: createRng(4), replicates: 400, alpha: 0.05 });
     expect(r.resampleRegimes).toEqual([{ from: 0, to: 54 }, { from: 54, to: 64 }]);
+    // The merge is what the bootstrap resamples within (review of #96, mutant S1): with the same seeds the registered
+    // layout gives exactly the merged layout's p-values and passing set, and not the unmerged layout's.
+    const runOn = (regimes: { from: number; to: number }[]) => spaTest(
+      { variants: v, s0: Array<number>(64).fill(0), activeDays: { a: 64, b: 64 }, registration: { seFloor: 1e-6, studentisation: SPA_STUDENTISATION, regimes } },
+      { rng: createRng(4), replicates: 400, alpha: 0.05 });
+    const merged = runOn([{ from: 0, to: 54 }, { from: 54, to: 64 }]);
+    expect(r.pByBlockLength).toEqual(merged.pByBlockLength);
+    expect(r.passing).toEqual(merged.passing);
+    // The unmerged resampler draws different indices (blocks stop at day 51), so its p-values differ.
+    const idx = (regimes: { from: number; to: number }[]) => Array.from(spaResampleIndices(regimes, 7, createRng(9), 64));
+    expect(idx(real)).not.toEqual(idx([{ from: 0, to: 54 }, { from: 54, to: 64 }]));
+    const unmergedLongOnly = runOn([{ from: 0, to: 51 }, { from: 51, to: 64 }]);
+    expect(unmergedLongOnly.pByBlockLength).not.toEqual(merged.pByBlockLength);
   });
   const T = 50;
   const noise = (seed: number, k: number, shift = 0) => {

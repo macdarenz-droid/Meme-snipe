@@ -1,5 +1,6 @@
 // Simulation checks from quant.md §5: false positives at most α when the true edge is zero, and about 80% power at
 // the effect the sample was designed for. All seeded, so every run gives the same numbers.
+import { appendFileSync } from 'node:fs';
 import { describe, expect, test } from 'vitest';
 import {
   bettingEProcess, clopperPearsonUpper, createRng, dayBlockMeanInterval, deflatedSharpe, deflatedSharpeDaily, designEffect, expectedMaxSharpe, mean,
@@ -237,14 +238,32 @@ describe('joint SPA test calibration (STATS-1c)', () => {
       if (res.pValue < ALPHA) global++;
       if (res.passing.length > 0) pass++;
     }
-    return { global: global / reps, pass: pass / reps };
+    return { global: global / reps, pass: pass / reps, counts: [global, pass] as [number, number] };
+  };
+  /** Global and promotion-rule rejections per scenario; the full run writes them for the sign-off pack. */
+  const record = (label: string, rows: Record<string, [number, number]>) => {
+    const out = process.env.SPA_CALIBRATION_OUT;
+    if (out) appendFileSync(out, `${JSON.stringify({ label, runs, rows })}\n`);
+  };
+  // The first 40 seeded runs are deterministic: CI pins their exact counts [global, a variant passes] (review of #96).
+  const PINNED_T50: Record<string, [number, number]> = {
+    independent: [0, 0], duplicates: [2, 0], mixture: [0, 0], heavyTails: [0, 0], commonShock: [1, 0], idleDays: [0, 0],
+    unequalLengths: [0, 0], autocorrelated: [0, 0], sparse: [0, 0], regimeShift: [1, 0], unequalVol: [0, 0], ruleGrid: [0, 0],
+  };
+  const PINNED_REAL: Record<string, [number, number]> = {
+    independent: [0, 0], duplicates: [1, 0], mixture: [1, 1], heavyTails: [1, 0], commonShock: [1, 0], idleDays: [1, 0],
+    unequalLengths: [0, 0], autocorrelated: [2, 0], sparse: [0, 0], regimeShift: [0, 0], unequalVol: [0, 0], ruleGrid: [0, 0],
   };
   test('at zero edge neither the global test nor the promotion rule exceeds α, in any scenario', () => {
+    const rows: Record<string, [number, number]> = {};
     for (const name of Object.keys(SPA_SCENARIOS)) {
       const r = run(name, 0, runs);
+      rows[name] = r.counts;
       expect(r.global, name).toBeLessThanOrEqual(ALPHA);
       expect(r.pass, name).toBeLessThanOrEqual(ALPHA);
     }
+    record('T = 50, regime shift at days 20 and 35', rows);
+    if (runs === 40) expect(rows).toEqual(PINNED_T50);
   }, 900_000);
   // For the owner's SPA sign-off (STATS-1e ruling): the registry's real T and regime layout, the 64 practice days
   // 2026-07-20 .. 09-21 that G1 reads, with B2 on day 1, B3 on day 51 and B4 on day 54, registered as
@@ -257,10 +276,14 @@ describe('joint SPA test calibration (STATS-1c)', () => {
   // merge (the reviewer's run) the global rate reached 7.0% (common shock); the promotion rule stayed at most 1.3%.
   const REAL_LAYOUT = [{ from: 0, to: 1 }, { from: 1, to: 51 }, { from: 51, to: 54 }, { from: 54, to: 64 }];
   test('on the real 64-day regime layout, on independent seeds, the promotion rule passes a variant in at most α of runs, in every scenario', () => {
+    const rows: Record<string, [number, number]> = {};
     for (const name of Object.keys(SPA_SCENARIOS)) {
       const r = run(name, 0, runs, 64, 123_000, 12_300_000, REAL_LAYOUT);
+      rows[name] = r.counts;
       expect(r.pass, name).toBeLessThanOrEqual(ALPHA);
     }
+    record('T = 64, real practice regime layout (gating: a variant passes)', rows);
+    if (runs === 40) expect(rows).toEqual(PINNED_REAL);
   }, 900_000);
   test('power: a +10%-a-trade rule among 8 × 9 variants passes the promotion rule in most runs', () => {
     expect(run('ruleGrid', 1, 60).pass).toBeGreaterThanOrEqual(0.4);

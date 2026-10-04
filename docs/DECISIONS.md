@@ -694,6 +694,10 @@ Built to the supervisor's revised spec and the consensus rulings that followed i
   - **On the real practice layout:** 07-20 to 09-21, 64 days, with B2 on day 1, B3 on day 51 and B4 on day 54. The registered regimes [0,1) [1,51) [51,54) [54,64) resample as [0,54) [54,64). `spaTest` reports the regimes it used (`resampleRegimes`).
   - **Calibration:** 300 runs per scenario at zero edge on independent seeds, all 12 scenarios. The promotion rule, which gates, passed a variant in at most 0.67% of runs (duplicates). The global test rejected in at most 4.3% (duplicates, autocorrelated), so both stay under 5%.
   - **Before the merge:** the reviewer measured up to 7.0% global (common shock) and 1.3% for the promotion rule. Per-scenario numbers are in `stats-simulation.test.ts`, and CI repeats the first 40 runs.
+  - **Review of #96:**
+    - A deterministic test shows the bootstrap resamples within the merged regimes: with the same seeds, the registered layout gives exactly the merged layout's p-values and passing set, and not the unmerged one's (this kills mutant S1).
+    - CI pins the exact counts of the 40 seeded runs.
+    - The full 300-run calibration runs by hand in `.github/workflows/spa-calibration.yml`, which uploads its counts as an artifact for the sign-off pack.
   - **G1:** stays on the clamped DSR until the owner signs off.
   - **G3 wording:** the dry-run inputs are cut at the registered end for decisions, and outcomes of trades entered by then are read to the end plus the outcome tail.
 - **2026-10-04 · STATS-1d: a 40-day trailing reverse e-process beside the full-history one, for every universe** (supervisor ruling for U1; applying it to U2 too is safe, because it only adds a trigger). Measured with daily evaluation, 100 runs per cell:
