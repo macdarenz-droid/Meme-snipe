@@ -219,7 +219,7 @@ const tick = (): void => {
       state.position = { trade, openedAt: now, universe: 'U2' };
       state.intent = null;
       saveState(state);
-      journal('entry', { trade, reasons: ['stub: synthetic setup'] });
+      journal('entry', { trade, position: 'open', universe: 'U2', reasons: ['stub: synthetic setup'] });
     }
   } else if (state.position && !state.position.exitPlanned && phase >= cycleMs * 0.4 && phase < cycleMs * 0.6) {
     state.position.exitPlanned = true;

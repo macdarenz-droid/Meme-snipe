@@ -8,7 +8,7 @@ import type { LogRecord } from '../../../core/src/engine/index.ts';
 import type { Ledger } from '../../../core/src/ledger/index.ts';
 import { applyBookEvent, type Book, type BookConfig, type BookEvent, isIllegal, isTerminal, isUnresolved } from '../../../core/src/lifecycle/index.ts';
 import type { Lamports } from '../../../core/src/units/index.ts';
-import { GATE_REASONS_PREFIX, reservationOf } from '../engine/strategy.ts';
+import { GATE_REASONS_PREFIX, reservationOf, universeOfKey } from '../engine/strategy.ts';
 
 /** Open intents for the host's update gate: intents not finished (`open_intents`, ops/README.md). */
 export const openIntents = (book: Book): number => Object.values(book.intents).filter((s) => !isTerminal(s)).length;
@@ -165,7 +165,10 @@ export class Desk {
       ? ['entry filled (paper)', ...(this.#why.get(s.intent.id) ?? [])]
       : ['exit filled (paper)', ...(before.positions[pid]?.exitOwner?.reasons ?? [])];
     this.#why.delete(s.intent.id);
-    this.#d.journal(purpose, { trade: pid, intent: s.intent.id, mint: s.intent.mint, tokens, sol, fees, position: p?.status ?? null, reasons });
+    // An entry names the universe it was entered under (CFG-2): the runner expects a trade opened after its last
+    // reply back after a restart, with that universe (RUN-1d contract).
+    const universe = purpose === 'entry' ? { universe: universeOfKey(s.intent.key) } : {};
+    this.#d.journal(purpose, { trade: pid, intent: s.intent.id, mint: s.intent.mint, tokens, sol, fees, position: p?.status ?? null, ...universe, reasons });
     this.#d.filled({ purpose, positionId: pid, mint: s.intent.mint, book: this.#book, atMs: ts, reasons });
   }
 
