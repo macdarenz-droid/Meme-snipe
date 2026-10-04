@@ -542,5 +542,58 @@ dg=$(FAKE_AVAIL=24000000000 bash "$here/disk-guard.sh" "$T" 24000000000 "the sca
 dg=$(FAKE_AVAIL=23999999999 bash "$here/disk-guard.sh" "$T" 24000000000 "the scan" 2>&1) && no "disk-guard passed one byte short" ||
   { [[ "$dg" == *"not enough disk"*"the scan"* ]] && ok "disk-guard: fails one byte short with a clear message" || no "disk-guard message: $dg"; }
 
+# ---- archive-check.sh: one request with the scanner's agent; dispatch only on success, never while a scan runs ----
+A="$T/ac"; mkdir -p "$A/bin"
+cat > "$A/bin/gh" <<'SH'
+#!/usr/bin/env bash
+echo "gh $*" >> "$AC/gh.log"
+case "$1 $2" in
+  "run list") echo "${AC_ACTIVE:-0}" ;;
+  "api repos/"*) day=${2##*data-day-}; grep -qx "$day" "$AC/published" 2>/dev/null ;;
+  "workflow run") echo "$*" >> "$AC/dispatch.log" ;;
+esac
+SH
+cat > "$A/bin/curl" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "$AC/curl.args"; echo x >> "$AC/curl.calls"
+hdr=; while (( $# )); do [[ $1 == -D ]] && hdr=$2; shift; done
+printf 'HTTP/2 %s\r\ncf-ray: 8abc123-SYD\r\n\r\n' "$AC_STATUS" > "$hdr"
+printf '%s' "$AC_STATUS"
+SH
+chmod +x "$A/bin/"*
+ac() { rm -f "$A"/*.log "$A/curl.calls" "$A/curl.args"; : > "$A/summary.md"
+  AC="$A" GH_BIN="$A/bin/gh" CURL_BIN="$A/bin/curl" GH_REPO=o/r REF=main GITHUB_STEP_SUMMARY="$A/summary.md" "$@" bash "$here/archive-check.sh" > "$A/out.txt" 2>&1; }
+ua=$(sed -n 's/^const userAgent = "\(.*\)"$/\1/p' "$here/../scanner/archive.go")
+ac env AC_ACTIVE=1 AC_STATUS=206
+[[ ! -e "$A/curl.calls" && ! -e "$A/dispatch.log" ]] && grep -q "active or queued" "$A/summary.md" &&
+  ok "archive-check: a scan run active or queued means no request and no dispatch" || no "archive-check active no-op"
+ac env AC_STATUS=429
+[[ $(wc -l < "$A/curl.calls") == 1 && ! -e "$A/dispatch.log" ]] && grep -qx -- "-A" "$A/curl.args" && grep -qxF -- "$ua" "$A/curl.args" &&
+  grep -qx -- "0-63" "$A/curl.args" && grep -q "| 429 | 0 | 8abc123-SYD |" "$A/summary.md" && [[ -n "$ua" ]] &&
+  ok "archive-check: a 429 makes exactly one 64-byte request with the scanner's agent, logs status and cf-ray, dispatches nothing" || no "archive-check 429"
+printf '2026-09-21\n2026-09-19\n' > "$A/published"
+ac env AC_STATUS=206
+[[ $(wc -l < "$A/curl.calls") == 1 && $(wc -l < "$A/dispatch.log") == 1 ]] &&
+  grep -q -- "data-scan.yml --repo o/r --ref main -f mode=scan -f days=2026-09-20,2026-09-18,2026-09-17,2026-09-16,2026-09-15,2026-09-14,2026-09-13,2026-09-12 -f max_mbps=80" "$A/dispatch.log" &&
+  ok "archive-check: a 206 dispatches once, the next 8 unpublished pre-holdout days at 80 MB/s" || no "archive-check 206 dispatch: $(cat "$A/dispatch.log" 2>/dev/null)"
+d=2026-09-21; : > "$A/published"; while [[ "$d" > 2026-07-19 ]]; do echo "$d" >> "$A/published"; d=$(date -u -d "$d - 1 day" +%F); done
+ac env AC_STATUS=206
+grep -q -- "-f days=2026-10-01,2026-09-30,2026-09-29,2026-09-28,2026-09-27,2026-09-26,2026-09-25,2026-09-24 " "$A/dispatch.log" &&
+  ok "archive-check: holdout days only after every pre-holdout day is published" || no "archive-check holdout order: $(cat "$A/dispatch.log" 2>/dev/null)"
+ac env AC_STATUS=000
+[[ $(wc -l < "$A/curl.calls") == 1 && ! -e "$A/dispatch.log" ]] && ok "archive-check: a network failure dispatches nothing" || no "archive-check failure"
+
+python3 - "$here/../../../.github/workflows/archive-check.yml" <<'PY' && ok "archive-check workflow: every 3 hours plus dispatch, one job of one script step, token only there, no inputs in the shell, credentials not persisted" || no "archive-check workflow structure"
+import sys, yaml
+wf = yaml.safe_load(open(sys.argv[1]))
+on = wf[True]
+assert set(on) == {"schedule", "workflow_dispatch"} and on["schedule"] == [{"cron": "41 */3 * * *"}], on
+assert wf["permissions"] == {"contents": "read", "actions": "write"}, wf["permissions"]
+steps = wf["jobs"]["check"]["steps"]
+assert len(steps) == 2 and steps[0]["with"]["persist-credentials"] is False, steps
+assert steps[1]["run"] == "research/historical/ci/archive-check.sh" and "github.token" in steps[1]["env"]["GH_TOKEN"], steps[1]
+assert all("${{" not in st.get("run", "") for st in steps)
+PY
+
 echo "$pass passed, $fail failed"
 (( fail == 0 ))

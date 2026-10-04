@@ -395,6 +395,13 @@ Supervisor rulings:
   - The full pull needs the owner's approval: Developer plan US$49, plus extra credits capped at 10M at US$5 per million, so at most US$99 that month (prices checked 4 Oct). The cap is set after measuring the live dry run's credit use on the same account, so the pull cannot starve the live feed.
   - Raw Helius responses never go into public releases until their terms are confirmed for derived files.
   - A message to Triton (lift the block, or a set rate or bucket, and permission to publish derived day files) is the owner's choice, and keeps the free route open.
+- **ARCHIVE-CHECK: one request every 3 hours (owner decision, 2026-10-04 3:55 PM Melbourne).** This replaces "no request until Triton answers". The owner has emailed Triton.
+  - `archive-check.yml` (cron `41 */3 * * *` and dispatch) runs `ci/archive-check.sh`.
+  - While a data-scan run is active or queued, the check does nothing. Otherwise it makes one range GET of 64 bytes from the runner, with the scanner's own User-Agent, read from `archive.go`.
+  - It never uses another agent, host, address, proxy, client or Triton service, because that would get around the block. `--max-filesize 64` keeps a server that ignores the range from streaming the file.
+  - Any answer but 206 (or a 200 of at most 64 bytes) is logged (status, cf-ray, time), with no retry.
+  - When served, it dispatches the next 8 unpublished days: pre-holdout days 21 Sep back to 20 Jul first, then the holdout days 1 Oct back to 22 Sep. The scan keeps its own limits: one job, 80 MB/s, 40 requests/s, stop on any 429 with at least 1 h back-off.
+  - A rate or bucket from Triton replaces these limits.
 - **DATA-2 build: one decoder set, re-encoded meta (2026-10-04).**
   - The RPC reader re-encodes each `getBlock` meta into the archive's protobuf, so `processBlock` and `processTx` are shared with the archive scanner and there is no second decoder.
   - Measured on 25 real blocks of the comparison unit: every CSV and event row matches the archive byte for byte.
