@@ -7,7 +7,7 @@
 // So the trade holds no position slot, reservation or entry count of the run, and reads nothing from any provider.
 // The run's own decisions, fills and account (world frames, the account and halt facts) are left out. Nothing is
 // written to the run's state directory: the scorer reads its recording only.
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { PolicySession, RugConfig } from '../../../core/src/config/index.ts';
@@ -47,6 +47,9 @@ export interface CounterfactualTrade {
   /** Entered but not closed when the recording ends: its outcome is not known. */
   readonly censored: boolean;
   readonly exitReasons: readonly string[];
+  /** Validity checks the report refuses on: events the scoring book or ledger refused, positions in other mints, and
+   *  the paper seed the scoring worker ran (its `start` line). */
+  readonly check: { readonly refused: number; readonly otherPositions: number; readonly paperSeed: string | null };
 }
 
 /** Keys of the run's own state on its feed: the scoring worker makes its own. */
@@ -96,7 +99,15 @@ export const scoreCounterfactual = async (o: CounterfactualInput): Promise<Count
       reconcileTimeoutMs: 60_000, loopMs: 100, staleFeedMs: 10_000, log: () => undefined,
       paperSeed: o.seed,
     });
-    const r = await worker.reconcile();
+    // The start reconcile waits on the worker's timers: move the clock while it runs.
+    let settled: Awaited<ReturnType<Worker['reconcile']>> | null = null;
+    const reconciling = worker.reconcile().then((x) => void (settled = x));
+    for (let k = 0; settled === null && k < 10_000; k++) {
+      timers.set(timers.now() + 100);
+      await new Promise<void>((done) => setImmediate(done));
+    }
+    await reconciling;
+    const r = settled as unknown as Awaited<ReturnType<Worker['reconcile']>>;
     if (!r.ok) throw new Error(`counterfactual worker did not reconcile: ${r.message}`);
     let stepped = first;
     for (const f of o.frames) {
@@ -118,17 +129,25 @@ export const scoreCounterfactual = async (o: CounterfactualInput): Promise<Count
     const book = worker.book;
     const position = Object.values(book.positions).find((p) => p.mint === o.mint);
     const trade = worker.apiInputs().trades.find((t) => t.mint === o.mint);
+    const check = {
+      refused: worker.desk.illegal + worker.desk.ledgerRefusals,
+      otherPositions: Object.values(book.positions).filter((p) => p.mint !== o.mint).length,
+      paperSeed: (() => {
+        const first = readFileSync(join(dir, 'journal.jsonl'), 'utf8').split('\n')[0];
+        const v = first === undefined || first === '' ? null : (JSON.parse(first) as Record<string, unknown>)['seed'];
+        return typeof v === 'string' ? v : null;
+      })(),
+    };
     await worker.stop();
-    if (position === undefined) return { mint: o.mint, entered: false, enteredAtMs: null, closedAtMs: null, cost: null, net: null, r: null, censored: false, exitReasons: [] };
+    const none = { mint: o.mint, entered: false, enteredAtMs: null, closedAtMs: null, cost: null, net: null, r: null, censored: false, exitReasons: [], check };
+    if (position === undefined) return none;
     const entry = book.intents[position.entryIntentId];
     const cost = entry === undefined ? null : entry.fills.reduce((t, f) => t + f.sol + f.fees, 0n);
-    if (entry === undefined || cost === null || cost === 0n) {
-      return { mint: o.mint, entered: false, enteredAtMs: null, closedAtMs: null, cost: null, net: null, r: null, censored: false, exitReasons: [] };
-    }
+    if (entry === undefined || cost === null || cost === 0n) return none;
     const closed = position.status === 'closed' && trade !== undefined && trade.closedAtMs !== null && trade.netLamports !== null;
     return {
       mint: o.mint, entered: true, enteredAtMs: trade?.openedAtMs ?? null, closedAtMs: closed ? trade!.closedAtMs : null, cost,
-      net: closed ? trade!.netLamports : null, r: closed ? Number(trade!.netLamports) / Number(cost) : null, censored: !closed, exitReasons: closed ? [...(trade!.exitReasons ?? [])] : [],
+      net: closed ? trade!.netLamports : null, r: closed ? Number(trade!.netLamports) / Number(cost) : null, censored: !closed, exitReasons: closed ? [...(trade!.exitReasons ?? [])] : [], check,
     };
   } finally {
     rmSync(dir, { recursive: true, force: true });

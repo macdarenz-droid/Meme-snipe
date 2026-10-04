@@ -844,3 +844,47 @@ The second reviewer, the third opinion and the supervisor reached one position o
 - **2026-10-04 · In a run.** FEED-1's socket watch takes an optional `fill` hook. Once a reconnect gap is ready to close (resubscribed, page backfill done, a live slot seen), it asks `fill({ address, fromSlot, toSlot })` for exactly that range and keeps the gap open meanwhile. True closes it with a `resume` (even if the single page alone looked lossy). False or a throw closes it as a bounded lossy gap. A drop while the fill runs discards its answer, and the next connection asks again. `ingestingFill` is the hook body WORKER-1 wires: it fills `fromSlot`..`toSlot` and ingests each transaction into the live feed as a backfilled lookup `tx` frame. The feed places what is already released after it and drops duplicates by signature. An unknown gap start answers false. Without the hook, FEED-1 behaves as before.
 - **2026-10-04 · Fail safe and budget.** Until a fill completes, the gap stands and H5/H11 reject. A partial, skipped or failed fill is lossy, never covered. One credit cap per restart (config, passed by WORKER-1) is shared: open positions first at P2, then candidates at P3, oldest gap first. Positions fill at P2, below live open-position monitoring at P1, because exits never wait (supervisor ruling on the #70 review). A test shows a P1 call admitted at once while a long position fill holds its P2 share. Each gap reads at most `maxPagesPerFill` signature pages (default 10, i.e. 10,000 signatures); a busier gap stops as `page-cap`, partial, and stays a gap. A gap reached after the cap is spent is skipped and closed as lossy; a cap that runs out inside a gap stops it there (partial). Each fill reports credits, calls, retries, latency, futures dropped and why it stopped.
 - **2026-10-04 · Evidence.** Real PumpSwap transactions from DEC-1's fixtures. Tests: a complete fill makes coverage continuous, a partial fill stays a gap, filled events equal the stream's, nothing is dated after the process start, over budget leaves the gap, the empty fill, and the in-run hook (complete, false, throw, a drop mid-fill, `ingestingFill` into a live feed). 13 of 14 mutations fail the tests. The close's 1 ms margin is tested with the feed's real start id (`coverage:<stream>:start#<seq>`, which sorts before the fill's ids on a tie), here and in SEED-1's tests, which had used an id that hid it (#70 review). The survivor is the hook's "asked once" guard, unreachable today: the socket checks a gap's close once per connection. It is kept as a guard against a double fill.
+
+## G3 report (TEST-3, `packages/worker/src/research/g3.ts`, `counterfactual.ts`, `scripts/g3.ts`)
+
+- **2026-10-04 · One command, after the run.** `node --no-warnings packages/worker/scripts/g3.ts --state <dir> --holdout <holdout.json> --registration <g3-registration.json> --parity <parity.json> --out <dir>`.
+  - It reads the qualifying run's state directory and never writes to it. Even the ledger is read from a copy, because a read-only SQLite open leaves `-shm`/`-wal` files.
+  - It writes `<out>/counterfactuals.jsonl` and `<out>/g3.json`, then runs STATS-1b's `gateG3`. It exits 0 only on a pass.
+  - A missing or unreadable parity file counts as failed.
+- **Run facts** (`readRun`), all from the journal, the account and the ledger:
+  - Candidates: shortlisted mints.
+  - Kept: mints that entered. A closed kept trade's net return is its net lamports over its entry cost, fees included.
+  - The reject mix: one count per never-entered candidate, keyed `gate:code` by the first typed reason of its last reject. **BT-2's holdout summary must count the same way.**
+  - Simulations: every `simulation` line. Failures are keyed by `outcome`; fill differences are `amountErrorE4 / 10⁶`.
+  - Qualifying: every boot's start line says so, on one commit.
+- **Live-only vetoes.**
+  - A never-entered candidate's first reject whose typed reasons are all on live-only inputs: `sim`, `xcheck`, `exec-health`. A test checks these are exactly core/facts/kinds.ts's `live-only-veto` facts.
+  - Typed reasons now carry their `input` (strategy `GateReasonLine`), so H16 "missing holders" is never mistaken for H16 "missing xcheck".
+  - It counts as vetoed, and eligible, only when its counterfactual entered. A candidate the strategy would not have entered without those checks either (another check, or risk) is listed in `notEnteredWithoutThem`, not counted.
+  - Eligible = entered + vetoed.
+- **Counterfactual trades** (`scoreCounterfactual`):
+  - The run's recorded frames, every boot, are fed in arrival order and at their receipt times to a fresh paper Worker in a temporary directory.
+  - It runs the run's own strategy, rebuilt from its start line as main.ts builds it, with the edge the strategy used (`edge_ppm`, now journaled). A policy or strategy version that does not match the release is refused.
+  - It runs the paper world's fill model (BT-1's) and the exit engine.
+  - Two differences from the live run:
+    - `gateMode: 'backtest'`: the live-only checks are not applied, exactly as BT-2.
+    - `only: <mint>`: no other candidate.
+  - Left out of the replay: the run's own world frames, account, halt and restore facts. The scoring worker makes its own.
+  - So the trade holds no position slot, reservation or entry count of the run. It reads no provider (no sources, no fact producers, no network).
+  - The paper seed is fixed per run and mint, so a rescore gives the same bytes.
+  - The report refuses a scoring that refused an event, held another mint, or ran another seed.
+  - A position still open when the recording ends is censored, which G3 reports as "not proven: extend the run".
+- **Evidence, on recorded harness sessions:**
+  - An H16 cross-check disagreement vetoes the candidate live. Offline it enters and is stopped out when the pool falls 30%; r = net / cost.
+  - The state directory is byte-identical before and after (in process, and through the script).
+  - A rescore gives the same counterfactual file.
+  - Scoring a mint the run did enter gives the strategy's own trade, with no refused event (the live world is not replayed).
+  - A recorded halt and a latched kill switch do not stop the scoring worker, and it takes no other mint.
+  - With no edge, the veto is not counted.
+  - The decision log of two identical sessions is the same whether one was scored or not.
+  - Mutation: 12 of 12 mutants fail the tests (live-only checks applied offline; the run's world, or its account and halt, replayed; any live-only reason taken as a veto; a reason without input counted; output into the state directory; the ledger read in place; the edge taken from config only; no `only`; typed reasons without input; not-entered counted as vetoed; a per-boot seed).
+- **Inputs from elsewhere:**
+  - `holdout.json` is BT-2's `HoldoutSummary`: SampleSummary, severe rate, the one-sided lower bound at VETO_COMPOSITE_LEVEL, candidates and hours, the reject mix counted as above, and the return cap. BT-2 writes it with the sealed holdout result.
+  - `parity.json` is TEST-1's result on this run's recording.
+- **Cost.** One full replay of the recording per vetoed candidate, offline: about 48 h of frames each. It runs after the run and touches no quota.
+- **Limit.** Until POS-1 lands, a vetoed mint's pool state after the veto comes only from what the run recorded: pool facts and, with WATCH-1, snapshots for held positions. A candidate whose path the recording does not carry is censored (not proven), never guessed.
