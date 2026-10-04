@@ -234,6 +234,25 @@ describe('PERSIST-1: label kinds survive save and restore (RUG-1c)', () => {
     expect(() => RugLabeller.restore(RUG_CONFIG, { ...withPeak, launches: withPeak.launches.map((l) => ({ ...l, peakState: { ...peakState, venue: 'dex' as never } })) }, SAVED_AT)).toThrow(/peak state/);
     expect(() => RugLabeller.restore(RUG_CONFIG, { ...withPeak, launches: withPeak.launches.map((l) => ({ ...l, peakState: { ...peakState, quote: -1n } })) }, SAVED_AT)).toThrow(/peak quote/);
   });
+
+  it('peakState must be present; a venue state needs a peak above zero, while a peak without one is real and kept', () => {
+    const { labeller } = liveProcess();
+    const st = labeller.snapshot();
+    // The key missing: refused, and the file discarded.
+    const missing = { ...st, launches: st.launches.map((l, k) => { if (k !== 0) return l; const { peakState: _p, ...rest } = l; return rest; }) } as unknown as typeof st;
+    expect(() => RugLabeller.restore(RUG_CONFIG, missing, SAVED_AT)).toThrow(/peakState/);
+    const path = join(tmp(), 'state.json');
+    saveState(path, savedState({ labeller: missing }));
+    expect(loadState(path, RUG_CONFIG)).toMatchObject({ ok: false, reason: expect.stringContaining('peakState') });
+    // A venue state with no peak never happens (the labeller sets it only when a level beats the peak): refused.
+    const peakState = { venue: 'curve' as const, quote: 30_000_000_000n, base: 1_000_000_000_000_000n, feeBps: 125n, real: 1_000_000n };
+    const noPeak = { ...st, launches: st.launches.map((l, k) => (k === 0 ? { ...l, peak: 0n, peakState } : l)) };
+    expect(() => RugLabeller.restore(RUG_CONFIG, noPeak, SAVED_AT)).toThrow(/peak state without a peak/);
+    // A peak with a null state does happen: a curve trade without virtual reserves, or a pool trade without base
+    // reserves, sets the peak with no venue state (rug-labeller.ts #curveTrade/#poolTrade). It is kept.
+    const nullState = { ...st, launches: st.launches.map((l, k) => (k === 0 ? { ...l, peak: 5_000_000n, peakState: null } : l)) };
+    expect(RugLabeller.restore(RUG_CONFIG, nullState, SAVED_AT).snapshot()).toEqual(nullState);
+  });
 });
 
 describe('PERSIST-1 discards a bad file whole', () => {

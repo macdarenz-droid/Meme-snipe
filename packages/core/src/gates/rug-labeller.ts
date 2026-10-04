@@ -339,7 +339,7 @@ export class RugLabeller {
     };
     // The venue state at the peak (RUG-1c): it prices a later collapse's materiality, so it comes back exactly or not at all.
     const venueState = (v: unknown): VenueState | null => {
-      if (v === null || v === undefined) return null;
+      if (v === null) return null;
       if (!isObj(v) || (v['venue'] !== 'curve' && v['venue'] !== 'pool')) throw new RangeError('bad peak state');
       return { venue: v['venue'] as Venue, quote: nat(v['quote'], 'peak quote'), base: nat(v['base'], 'peak base'), feeBps: nat(v['feeBps'], 'peak fee'), real: nat(v['real'], 'peak real') };
     };
@@ -351,6 +351,11 @@ export class RugLabeller {
     for (const l of s.launches as unknown[]) {
       if (!isObj(l) || typeof l['mint'] !== 'string' || typeof l['creator'] !== 'string' || !Number.isSafeInteger(l['createdAtMs'])) throw new RangeError('bad launch');
       if (l['pool'] !== null && typeof l['pool'] !== 'string') throw new RangeError('bad launch pool');
+      // peakState is always written (null included): a missing key is a malformed file. A venue state is set only when
+      // a level beats the peak, so it never comes with a zero peak; a peak with a null state is real (a trade without
+      // virtual or base reserves) and is kept.
+      if (!('peakState' in l)) throw new RangeError(`launch ${l['mint']} has no peakState`);
+      if (l['peakState'] !== null && l['peak'] === 0n) throw new RangeError(`launch ${l['mint']} has a peak state without a peak`);
       if (asOf !== undefined && (l['createdAtMs'] as number) > asOf.receivedAt) throw new RangeError(`launch ${l['mint']} is created after the saved moment`);
       r.#launches.set(l['mint'], {
         mint: l['mint'], creator: l['creator'], sellers: new Set(strs(l['sellers'], 'sellers')), createdAtMs: l['createdAtMs'] as number,
