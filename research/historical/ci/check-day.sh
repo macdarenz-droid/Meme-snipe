@@ -31,6 +31,10 @@ ds=$(mktemp -d -p "${DATASET_PARENT:-/tmp}")
 phase finalize zeroed-scan finalize -out "$out" -dataset "$ds" -from "$day" -to "$next" -lead-in-days 0 -regimes "$here/../regimes.json"
 phase qa node "$here/../qa/check.mjs" "$ds" --live 30 --strict --lead-in-days 0
 phase parity node --no-warnings "$here/../qa/parity.ts" "$ds"
+# Regime volume per hour (DATA-1c): exact cross-check against the units' kept rows,
+# then the plain CSV for release data-volume-DAY (ci/publish-volume.sh).
+phase volume node --no-warnings "$here/../qa/volume.ts" "$ds" "$out/units" "$day"
+"$here/volume-asset.sh" "$ds" "$day" "$assets"
 cp "$ds/qa/report.md" "$assets/qa-$day.md"
 cp "$ds/qa/report.json" "$assets/qa-$day.json"
 cp "$ds/qa/parity.json" "$assets/parity-$day.json"
