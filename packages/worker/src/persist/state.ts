@@ -18,6 +18,8 @@ import { DAY_MS } from '../../../core/src/config/time.ts';
 import { compareEvents, compareMoments, type MarketEvent, type Moment } from '../../../core/src/engine/index.ts';
 import { DeployerIndex, RugLabeller, type DeployerIndexState, type RugLabellerState } from '../../../core/src/gates/index.ts';
 import { SEED_VIA } from '../seed/seed.ts';
+import { parseGraduatesSeed } from '../../../core/src/facts/raw.ts';
+import type { SavedGraduates } from '../engine/strategy.ts';
 
 export const STATE_VERSION = 1;
 
@@ -27,6 +29,11 @@ export interface SavedState {
   readonly labeller: RugLabellerState;
   /** Every released `coverage:<stream>:start|gap|resume` fact, in release order. */
   readonly coverage: readonly MarketEvent[];
+  /**
+   * PERSIST-2: the regime's graduates series as of the save (`asOfMs` is the saved moment's receipt time). Optional, so
+   * a file written before it still loads (with no series); when present it must hold up or the whole file is discarded.
+   */
+  readonly graduates?: SavedGraduates;
 }
 
 /** One open gap the restart must fill and close: pass `via`, `fromSlot` and `at` as the fill's `close`. */
@@ -49,6 +56,8 @@ export type Restored =
     /** The saved coverage facts plus the restart gaps, in release order, none after `asOf`: release them first. */
     readonly coverage: readonly MarketEvent[];
     readonly fills: readonly RestartFill[];
+    /** The saved graduates series (null when the file has none): release it as `read:graduates-seed` before any decision. */
+    readonly graduates: SavedGraduates | null;
   }
   | { readonly ok: false; readonly reason: string };
 
@@ -79,6 +88,22 @@ const writeAtomic = (path: string, text: string): void => {
   renameSync(tmp, path);
 };
 
+/**
+ * The saved graduates must be dated at the saved moment, well formed, unique per mint, and none migrated after it
+ * (each entry's survival mark, which the producer checks again, is later still). Throws the first problem.
+ */
+const graduatesProblem = (g: unknown, asOf: Moment, saving: boolean): void => {
+  const r = parseGraduatesSeed(isObj(g) ? { ...g, source: 'persist' } : g);
+  if (r === null) throw new RangeError('the graduates series is malformed');
+  if (r.asOfMs !== asOf.receivedAt) throw new RangeError(`the graduates series is dated ${r.asOfMs}, not at the ${saving ? 'snapshot' : 'saved'} moment`);
+  const seen = new Set<string>();
+  for (const i of r.items) {
+    if (i.migratedAtMs > r.asOfMs) throw new RangeError(`graduate ${i.mint} migrated after the ${saving ? 'snapshot' : 'saved'} moment`);
+    if (seen.has(i.mint)) throw new RangeError(`graduate ${i.mint} appears twice`);
+    seen.add(i.mint);
+  }
+};
+
 /** After `asOf` in the event order, or received later than it: either way not something the save could have known. */
 const after = (m: Moment, asOf: Moment): boolean => compareMoments(m, asOf) > 0 || m.receivedAt > asOf.receivedAt;
 
@@ -87,6 +112,7 @@ export const saveState = (path: string, s: SavedState): void => {
     if (after(e.moment, s.asOf)) throw new RangeError(`coverage fact ${e.id} is dated after the snapshot moment`);
   }
   if (compareMoments(s.index.asOf, s.asOf) !== 0) throw new RangeError('the index snapshot was taken at another moment');
+  if (s.graduates !== undefined) graduatesProblem(s.graduates, s.asOf, true);
   const payload = JSON.stringify(s, replacer);
   writeAtomic(path, JSON.stringify({ version: STATE_VERSION, sha256: createHash('sha256').update(payload).digest('hex'), payload }));
 };
@@ -152,6 +178,7 @@ export const loadState = (path: string, rugs: RugConfig, continuing: (stream: st
       if (after(e.moment, asOf)) throw new RangeError(`coverage fact ${e.id} is dated after the saved moment`);
     }
     if (!isObj(s.index) || !isMoment(s.index.asOf) || compareMoments(s.index.asOf, asOf) !== 0) throw new RangeError('the index was saved at another moment');
+    if (s.graduates !== undefined) graduatesProblem(s.graduates, asOf, false);
     const index = DeployerIndex.restore(s.index);
     const labeller = RugLabeller.restore(rugs, s.labeller, asOf);
     const coverage = [...s.coverage].sort(compareEvents);
@@ -168,7 +195,7 @@ export const loadState = (path: string, rugs: RugConfig, continuing: (stream: st
       if (continuing(w.stream, w.via)) fills.push({ stream: w.stream, via: w.via, fromSlot: asOf.slot, at: asOf, synthesized: true });
     }
     fills.sort((a, b) => (a.stream < b.stream ? -1 : a.stream > b.stream ? 1 : a.via < b.via ? -1 : a.via > b.via ? 1 : 0));
-    return { ok: true, asOf, index, labeller, coverage: [...coverage, ...restart].sort(compareEvents), fills };
+    return { ok: true, asOf, index, labeller, coverage: [...coverage, ...restart].sort(compareEvents), fills, graduates: s.graduates ?? null };
   } catch (e) {
     return { ok: false, reason: `saved state rejected: ${e instanceof Error ? e.message : String(e)}` };
   }
