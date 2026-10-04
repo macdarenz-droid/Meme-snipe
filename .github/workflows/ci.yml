@@ -24,9 +24,7 @@ jobs:
   static:
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
-    # The full suite took 13 min 10 s to 13 min 34 s on the base (5 Oct) and passed 15 min with BT-2 #41's study tests,
-    # so a passing run was cancelled. 30 min still stops a hung run; no test is skipped or shortened (supervisor, DECISIONS).
-    timeout-minutes: 30
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
@@ -48,7 +46,9 @@ jobs:
   test:
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # The unsharded suite passed 15 min with BT-2 #41's study tests, so a passing run was cancelled; each shard keeps the
+    # 30 min limit, which still stops a hung run; no test is skipped or shortened (supervisor, DECISIONS).
+    timeout-minutes: 30
     strategy:
       # Every shard reports, so one failure never hides another's.
       fail-fast: false

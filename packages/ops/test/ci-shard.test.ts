@@ -40,6 +40,10 @@ describe('ci.yml: the shards and the one `check`', () => {
     expect(t).toContain('name: shard-${{ matrix.shard }}');
   });
 
+  it('each shard keeps the 30 min limit the unsharded suite was given (a passing run is never cancelled)', () => {
+    expect(Number(job('test').match(/timeout-minutes: (\d+)/)?.[1])).toBeGreaterThanOrEqual(30);
+  });
+
   it('typecheck, build and the file list still run, once, in the static job', () => {
     const s = job('static');
     for (const step of ['pnpm typecheck', 'pnpm -r --if-present build', 'pnpm exec vitest list --filesOnly --json > test-files.json']) expect(s).toContain(step);
