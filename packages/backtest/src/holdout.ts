@@ -207,7 +207,11 @@ const mutate = <T>(a: HoldoutAuthority, message: string, fn: (s: HoldoutStore | 
 };
 
 /** Sets the plan once, before any attempt; it must agree with the research config's holdout. Creates the registry. */
-export const setHoldoutPlan = (a: HoldoutAuthority, plan: HoldoutPlan, research: RunOptions['research']): HoldoutStore => {
+export const setHoldoutPlan = (
+  a: HoldoutAuthority, plan: HoldoutPlan, research: RunOptions['research'],
+  /** Tests on synthetic data only: a requirement floor below the owner's 300 trades on 10 days. The CLI never passes it. */
+  testFloor?: { readonly minTrades: number; readonly minDays: number },
+): HoldoutStore => {
   const h = research.holdout;
   if (plan.fromDay !== h.fromDay || plan.entryCutoffDay !== h.entryCutoffDay || plan.tailEndDay !== h.tailEndDay) {
     throw new RangeError(`the plan's window ${plan.fromDay}, cutoff ${plan.entryCutoffDay}, tail end ${plan.tailEndDay} is not the research config's (${h.fromDay}, ${h.entryCutoffDay}, ${h.tailEndDay})`);
@@ -221,7 +225,7 @@ export const setHoldoutPlan = (a: HoldoutAuthority, plan: HoldoutPlan, research:
       throw new RangeError('the holdout plan is fixed once set');
     }
     const store: HoldoutStore = s === null
-      ? { version: 2, plan, registry: createHoldoutRegistry(plan.familySize, { windowDays: LATER_ATTEMPT_ENTRY_DAYS, tailDays: daysBetween(plan.entryCutoffDay, plan.tailEndDay) }), attempts: [], g1: [], runs: [] }
+      ? { version: 2, plan, registry: createHoldoutRegistry(plan.familySize, { windowDays: LATER_ATTEMPT_ENTRY_DAYS, tailDays: daysBetween(plan.entryCutoffDay, plan.tailEndDay), ...testFloor }), attempts: [], g1: [], runs: [] }
       : { ...s, plan };
     return { store, value: store };
   });
@@ -321,8 +325,8 @@ export const registerAttempt = (a: HoldoutAuthority,
       return { store: { ...s, registry: reg }, value: s, error: new RangeError(`holdout attempt refused: ${why}`) };
     }
     // Attempt 1 takes the plan's window. Attempt k ≥ 2 is registered only after every earlier holdout is scored or
-    // burned, and starts on the first whole UTC day after its registration (a requested start may be later, never
-    // earlier), with 28 entry days and the plan's tail length.
+    // burned, and starts exactly on the first whole UTC day after its registration (the STATS-1c registry's rule; a
+    // requested start must be that day), with 28 entry days and the plan's tail length.
     let aw: AttemptWindow;
     if (req.index === 1) aw = { fromDay: plan.fromDay, entryCutoffDay: plan.entryCutoffDay, tailEndDay: plan.tailEndDay };
     else {
@@ -330,7 +334,7 @@ export const registerAttempt = (a: HoldoutAuthority,
       if (open.length > 0) throw new RangeError(`holdout attempt ${req.index}: earlier holdouts are not scored yet (${open.join(', ')})`);
       const earliest = addDays(now.toISOString().slice(0, 10), 1);
       const fromDay = req.fromDay ?? earliest;
-      if (fromDay < earliest) throw new RangeError(`holdout attempt ${req.index}: its window cannot start before ${earliest}, the first whole UTC day after registration`);
+      if (fromDay !== earliest) throw new RangeError(`holdout attempt ${req.index}: its window cannot start before ${earliest} or after it, the first whole UTC day after registration`);
       const cutoff = addDays(fromDay, LATER_ATTEMPT_ENTRY_DAYS);
       aw = { fromDay, entryCutoffDay: cutoff, tailEndDay: addDays(cutoff, daysBetween(plan.entryCutoffDay, plan.tailEndDay)) };
     }

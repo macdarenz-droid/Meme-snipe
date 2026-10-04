@@ -87,6 +87,9 @@ describe('sealed holdout registry', () => {
     expect(() => spendHoldout(g1.registry, 'h1', { ...after, why: 'g1-failed' })).toThrow(/already burned/);
     // short: judged against the frozen requirement, never a caller's number (400 entries on 20 days meet 330 on 10).
     expect(() => spendHoldout(sealed, 'h1', { ...after, why: 'short' })).toThrow(/is ready/);
+    // BT review S1: a holdout ready on 12 days against its frozen 10 cannot be spent as short, whatever a caller wants.
+    const twelve = sealHoldout(frozen, 'h1', { configId: 'c1', ledgerHash: 'H', counts: { ...counts, entryDays: 12 } }).registry;
+    expect(() => spendHoldout(twelve, 'h1', { ...after, why: 'short' })).toThrow(/is ready \(400 entries on 12 days\)/);
     expect(spendHoldout(sealed21, 'h1', { ...after, why: 'short' }).registry.entries[0]!.burnReason).toBe('spent');
     expect(() => spendHoldout(reg0, 'h1', { ...after, why: 'short' })).toThrow(/no frozen requirement/);
     // never-run: only while the seal is still 'registered'.
@@ -96,6 +99,12 @@ describe('sealed holdout registry', () => {
   test('the requirement and n_power seed are frozen before any count; sealing refuses without them', () => {
     expect(() => freezeRequirement(reg0, 'h1', { requiredTrades: 299, requiredDays: 10, nPower: 300, nPowerSeed: 7 })).toThrow(/below n_power 300/);
     expect(() => freezeRequirement(reg0, 'h1', { requiredTrades: 300, requiredDays: 0, nPower: 300, nPowerSeed: 7 })).toThrow(RangeError);
+    // The owner's floor: 300 trades on 10 days; only a test rule (synthetic data) sits below it.
+    expect(() => freezeRequirement(reg0, 'h1', { requiredTrades: 299, requiredDays: 10, nPower: 0, nPowerSeed: 7 })).toThrow(/below the floor of 300 on 10/);
+    expect(() => freezeRequirement(reg0, 'h1', { requiredTrades: 300, requiredDays: 9, nPower: 0, nPowerSeed: 7 })).toThrow(/below the floor of 300 on 10/);
+    expect(reg0.rule).toEqual({ windowDays: 28, tailDays: 1, minTrades: 300, minDays: 10 });
+    const testReg = registerHoldout(createHoldoutRegistry(1, { windowDays: 28, tailDays: 1, minTrades: 1, minDays: 1 }), { holdoutId: 't', universe: 'U1', configId: 'c', ...win });
+    expect(freezeRequirement(testReg, 't', { requiredTrades: 1, requiredDays: 1, nPower: 0, nPowerSeed: 7 }).ok).toBe(true);
     expect(sealHoldout(reg0, 'h1', { configId: 'c1', ledgerHash: 'H', counts })).toMatchObject({ ok: false, reason: expect.stringMatching(/no frozen requirement/) });
     expect(freezeRequirement(frozen, 'h1', { requiredTrades: 300, requiredDays: 10, nPower: 300, nPowerSeed: 7 }).ok).toBe(false);
     expect(freezeRequirement(sealed, 'h1', { requiredTrades: 330, requiredDays: 10, nPower: 300, nPowerSeed: 7 }).ok).toBe(false);

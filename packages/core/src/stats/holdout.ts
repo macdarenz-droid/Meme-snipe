@@ -60,10 +60,16 @@ export interface AttemptRule {
   readonly windowDays: number;
   /** Observation-only days after E before the seal may open (labels mature). */
   readonly tailDays: number;
+  /** Least frozen requirement: trades (the owner's 300) and entry days (the gate's MIN_DAYS). */
+  readonly minTrades: number;
+  readonly minDays: number;
 }
 
+/** The owner's floor of 300 out-of-sample trades and the gate's 10 entry days; only a test rule may sit below them. */
+export const REQUIREMENT_FLOOR = { minTrades: 300, minDays: 10 } as const;
+
 /** 28 entry days (09-22 .. 10-19, E = 10-20 for attempt 1) and one tail day: the trial exits end within 120 minutes. */
-export const DEFAULT_ATTEMPT_RULE: AttemptRule = { windowDays: 28, tailDays: 1 };
+export const DEFAULT_ATTEMPT_RULE: AttemptRule = { windowDays: 28, tailDays: 1, ...REQUIREMENT_FLOOR };
 
 /** The frozen size requirement (trades and days), the simulated n_power and the seed its simulation used. */
 export interface FrozenRequirement {
@@ -189,12 +195,22 @@ export const dayFromNumber = (n: number): string => {
   return addDays(`${String(y).padStart(4, '0')}-01-01`, rest);
 };
 
-export const createHoldoutRegistry = (familySize: number, rule: AttemptRule = DEFAULT_ATTEMPT_RULE): HoldoutRegistry => {
+/**
+ * A registry with its attempt rule. The requirement floor defaults to REQUIREMENT_FLOOR; a lower floor is for tests on
+ * synthetic data only (G2 still refuses any requirement below max(300, n_power, closed form)).
+ */
+export const createHoldoutRegistry = (
+  familySize: number,
+  rule: Pick<AttemptRule, 'windowDays' | 'tailDays'> & Partial<Pick<AttemptRule, 'minTrades' | 'minDays'>> = DEFAULT_ATTEMPT_RULE,
+): HoldoutRegistry => {
   if (!Number.isInteger(familySize) || familySize < 1 || familySize > 3) throw new RangeError(`familySize must be 1, 2 or 3, got ${familySize}`);
   if (!Number.isInteger(rule.windowDays) || rule.windowDays < 1 || !Number.isInteger(rule.tailDays) || rule.tailDays < 0) {
     throw new RangeError('the attempt rule needs windowDays >= 1 and tailDays >= 0, both integers');
   }
-  return { familySize, rule: { windowDays: rule.windowDays, tailDays: rule.tailDays }, entries: [] };
+  const minTrades = rule.minTrades ?? REQUIREMENT_FLOOR.minTrades;
+  const minDays = rule.minDays ?? REQUIREMENT_FLOOR.minDays;
+  if (!Number.isInteger(minTrades) || minTrades < 1 || !Number.isInteger(minDays) || minDays < 1) throw new RangeError('the requirement floor needs integers >= 1');
+  return { familySize, rule: { windowDays: rule.windowDays, tailDays: rule.tailDays, minTrades, minDays }, entries: [] };
 };
 
 const find = (registry: HoldoutRegistry, holdoutId: string): HoldoutEntry => {
@@ -283,6 +299,12 @@ export const freezeRequirement = (registry: HoldoutRegistry, holdoutId: string, 
     throw new RangeError('the required trades and days are positive integers, n_power an integer >= 0 and the seed a safe integer');
   }
   if (req.requiredTrades < req.nPower) throw new RangeError(`the requirement ${req.requiredTrades} sits below n_power ${req.nPower}`);
+  // A registry stored before the floor was recorded takes the ruled floor.
+  const minTrades = registry.rule.minTrades ?? REQUIREMENT_FLOOR.minTrades;
+  const minDays = registry.rule.minDays ?? REQUIREMENT_FLOOR.minDays;
+  if (req.requiredTrades < minTrades || req.requiredDays < minDays) {
+    throw new RangeError(`the requirement ${req.requiredTrades} trades on ${req.requiredDays} days sits below the floor of ${minTrades} on ${minDays}`);
+  }
   if (e.requirement) return { registry, ok: false, reason: `holdout ${holdoutId} already froze ${e.requirement.requiredTrades} trades` };
   if (e.seal !== 'registered' || e.burned) return { registry, ok: false, reason: `holdout ${holdoutId} is ${e.burned ? 'spent' : e.seal}: the requirement is frozen before any count` };
   const requirement = { requiredTrades: req.requiredTrades, requiredDays: req.requiredDays, nPower: req.nPower, nPowerSeed: req.nPowerSeed };
