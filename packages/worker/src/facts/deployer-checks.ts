@@ -56,6 +56,7 @@ export class DeployerChecks {
   readonly #o: DeployerChecksOptions;
   readonly #cache = new Map<string, Map<string, Cached>>();
   readonly #lastReread = new Map<string, number>();
+  readonly #inflight = new Map<string, Promise<DeployerCheckOutcome>>();
   #day = -1;
   #spent = 0;
 
@@ -81,7 +82,23 @@ export class DeployerChecks {
     return Math.max(0, (this.#o.creditsPerDay ?? DEPLOYER_CHECK_CREDITS_PER_DAY) - this.#spent);
   }
 
+  /**
+   * One creator's checks run one at a time (single flight per creator, whichever candidate asks): a second request
+   * waits for the first and is then answered from the cache, so a pending mint is read once and no check sees a
+   * read made for a later moment while its own is in flight.
+   */
   async check(req: RugCheckRequest, nowMs: number): Promise<DeployerCheckOutcome> {
+    const prev = this.#inflight.get(req.creator) ?? Promise.resolve();
+    const run = prev.catch(() => undefined).then(() => this.#checkNow(req, nowMs));
+    this.#inflight.set(req.creator, run);
+    try {
+      return await run;
+    } finally {
+      if (this.#inflight.get(req.creator) === run) this.#inflight.delete(req.creator);
+    }
+  }
+
+  async #checkNow(req: RugCheckRequest, nowMs: number): Promise<DeployerCheckOutcome> {
     const o = this.#o;
     const cache = this.#cache.get(req.creator) ?? new Map<string, Cached>();
     this.#cache.set(req.creator, cache);
@@ -96,9 +113,15 @@ export class DeployerChecks {
     const labels: { key: string; value: unknown }[] = [];
     const read: string[] = [];
     if (pending.length > 0 && left > 0) {
-      const r = await checkDeployer(o.history, o.rugs, { ...o.config, creditCapPerCandidate: Math.min(o.config.creditCapPerCandidate, left) }, { ...req, mints: pending }, nowMs);
+      // The read's cap is reserved and saved before it starts, and the unused part given back after: a crash mid-read
+      // can never lose what it spent.
+      const reserve = Math.min(o.config.creditCapPerCandidate, left);
+      this.#spent += reserve;
+      this.#save();
+      // checkDeployer does not throw for a source failure; anything else keeps the whole reservation (fail safe).
+      const r = await checkDeployer(o.history, o.rugs, { ...o.config, creditCapPerCandidate: reserve }, { ...req, mints: pending }, nowMs);
       credits = r.fact.credits;
-      this.#spent += credits;
+      this.#spent -= reserve - credits;
       this.#save();
       // The creator's gap runs from its last read of any kind: a first read counts as a read of its open answers.
       this.#lastReread.set(req.creator, nowMs);
@@ -112,8 +135,10 @@ export class DeployerChecks {
     const oldest = req.asOf.slot - BigInt(o.config.maxLagSlots);
     const mints: MintCheck[] = req.mints.map((m) => {
       const c = cache.get(m.mint);
-      if (c !== undefined && (FINAL.has(c.check.status) || (c.slot >= oldest && c.slot <= req.asOf.slot))) return c.check;
-      const why = c === undefined ? (left > 0 ? 'not read' : 'the daily deployer-check credits are spent') : `last read at slot ${c.slot}, more than ${o.config.maxLagSlots} slots ago`;
+      // Never an answer read for a later moment than this one (final or not); a non-final one also no older than maxLagSlots.
+      if (c !== undefined && c.slot <= req.asOf.slot && (FINAL.has(c.check.status) || c.slot >= oldest)) return c.check;
+      const why = c === undefined ? (left > 0 ? 'not read' : 'the daily deployer-check credits are spent')
+        : c.slot > req.asOf.slot ? `read at slot ${c.slot}, after this check's slot` : `last read at slot ${c.slot}, more than ${o.config.maxLagSlots} slots ago`;
       return { mint: m.mint, createdAtMs: m.createdAtMs, status: 'unfetched', detail: why };
     });
     const fact: RugCheckFact = {
@@ -138,7 +163,8 @@ export class DeployerChecks {
       this.#day = day;
       return;
     }
-    if (day !== this.#day) {
+    // Only forward: a clock stepped back (NTP, a VM restore) keeps today's spend.
+    if (day > this.#day) {
       this.#day = day;
       this.#spent = 0;
     }

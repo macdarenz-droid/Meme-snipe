@@ -12,7 +12,7 @@ import {
 } from '../src/providers/deployer-check.ts';
 import { RpcHttp, rpcHandler, scriptedHttp } from '../src/providers/index.ts';
 import { DEPLOYER_CHECK_CREDITS_PER_DAY, DEPLOYER_CHECK_SPEND_FILE, DeployerChecks, checkCovers, FactReaders, FactRpc } from '../src/facts/index.ts';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync as readText, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { HELIUS_FREE, ManualTimers, P2, Scheduler } from '../src/scheduler/index.ts';
 import { blockNetwork, settle } from './helpers.ts';
@@ -476,5 +476,73 @@ describe('deployer checks cached per creator (WORKER-1c review: cost)', () => {
     const c = new DeployerChecks({ history: counted([RUG]).source, rugs: RUG_CONFIG, config: CFG, minGapMs: MIN, creditsPerDay: 1_000, spendFile: file });
     expect(c.remaining(MIN)).toBe(0);
     expect(c.remaining(DAY)).toBe(1_000);
+  });
+
+  it('a clock stepped back across UTC midnight keeps today\'s spend (no fresh cap)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'deployer-spend-'));
+    const file = join(dir, DEPLOYER_CHECK_SPEND_FILE);
+    const r = reqAt([launch(RUG)], lastSlot(RUG) + 1n, launch(RUG).createdAtMs + 200_000);
+    const t = 5 * DAY + 10;
+    const d = new DeployerChecks({ history: counted([RUG]).source, rugs: RUG_CONFIG, config: CFG, minGapMs: MIN, creditsPerDay: 1, spendFile: file });
+    await d.check(r, t);
+    expect(d.remaining(t)).toBe(0);
+    // NTP steps the clock back 20 ms, into the previous UTC day: still spent.
+    expect(d.remaining(t - 20)).toBe(0);
+    expect(d.remaining(t - DAY)).toBe(0);
+    // A restart with the clock behind reads the same file: still spent. The next real day starts again.
+    const again = new DeployerChecks({ history: counted([RUG]).source, rugs: RUG_CONFIG, config: CFG, minGapMs: MIN, creditsPerDay: 1, spendFile: file });
+    expect(again.remaining(t - DAY)).toBe(0);
+    expect(again.remaining(t + DAY)).toBe(1);
+  });
+
+  it('reserves the read\'s cap in the spend file before the read and gives back the unused part after', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'deployer-spend-'));
+    const file = join(dir, DEPLOYER_CHECK_SPEND_FILE);
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((res) => (release = res));
+    const base = counted([RUG]).source;
+    const held: RugHistorySource = { ...base, signatures: async (a, b, l, m) => (await gate, base.signatures(a, b, l, m)) };
+    const d = new DeployerChecks({ history: held, rugs: RUG_CONFIG, config: CFG, minGapMs: MIN, creditsPerDay: 2_000, spendFile: file });
+    const run = d.check(reqAt([launch(RUG)], lastSlot(RUG) + 1n, launch(RUG).createdAtMs + 200_000), 0);
+    await settle();
+    // Mid-read (a crash here would keep it): the whole per-candidate cap is already counted.
+    expect(JSON.parse(readText(file, 'utf8'))).toEqual({ day: 0, spent: CFG.creditCapPerCandidate });
+    release();
+    const out = await run;
+    expect(JSON.parse(readText(file, 'utf8'))).toEqual({ day: 0, spent: out.credits });
+    expect(d.remaining(0)).toBe(2_000 - out.credits);
+  });
+
+  it('two overlapping checks of one creator: each pending mint is read once, and the earlier one never sees the later read', async () => {
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((res) => (release = res));
+    const c = counted([RUG]);
+    const held: RugHistorySource = { ...c.source, signatures: async (a, b, l, m) => (await gate, c.source.signatures(a, b, l, m)) };
+    const d = chk(held);
+    const early = reqAt([launch(RUG)], lastSlot(RUG) + 1n, launch(RUG).createdAtMs + 200_000);
+    const late = { ...early, asOf: at(lastSlot(RUG) + 100n) };
+    const a = d.check(early, 0);
+    const b = d.check(late, 1);
+    await settle();
+    release();
+    const [ra, rb] = await Promise.all([a, b]);
+    expect(c.pages.get(RUG.mint)).toBe(1);
+    expect(ra.read).toEqual([RUG.mint]);
+    expect(rb.read).toEqual([]);
+    expect((ra.facts.at(-1)!.value as RugCheckFact).obs.slot).toBe(lastSlot(RUG) + 1n);
+    expect(statuses(ra)).toEqual(['rug']);
+    expect(statuses(rb)).toEqual(['rug']);
+  });
+
+  it('a final answer read for a later slot is not used for an earlier asking slot (no label from the future)', async () => {
+    const c = counted([RUG]);
+    const d = chk(c.source);
+    const late = reqAt([launch(RUG)], lastSlot(RUG) + 100n, launch(RUG).createdAtMs + 200_000);
+    expect(statuses(await d.check(late, 0))).toEqual(['rug']);
+    const early = await d.check({ ...late, asOf: at(lastSlot(RUG) + 1n) }, 1);
+    expect(statuses(early)).toEqual(['unfetched']);
+    expect((early.facts.at(-1)!.value as RugCheckFact).mints[0]!.detail).toMatch(/after this check's slot/);
+    expect(early.covered).toBe(false);
+    expect(early.facts.filter((f) => f.key.startsWith('rug:'))).toEqual([]);
   });
 });
