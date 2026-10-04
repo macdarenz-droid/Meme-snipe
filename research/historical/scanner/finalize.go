@@ -290,6 +290,7 @@ var dayFileSpecs = []struct {
 	{"curve_trades", "csv", curveCols}, {"amm_trades", "csv", ammCols}, {"events", "jsonl", nil},
 	{"failed", "csv", failedCols}, {"failed_hourly", "csv", failedHourlyCols}, {"agg_hourly", "csv", aggCols}, {"blocks", "csv", blockCols},
 	{"raw", "jsonl", nil}, {"movements", "csv", movementCols}, {"delegations", "csv", delegationCols},
+	{"volume_hours", "csv", volumeHourCols},
 }
 
 func dayOf(t int64) string { return time.Unix(t, 0).UTC().Format("2006-01-02") }
@@ -780,6 +781,23 @@ func Finalize(out, dsDir string, fromDay, toDay string, opt finalizeOpts) error 
 		}
 		if err := w.writeCSV([]string{strconv.FormatInt(k.hour, 10), k.mint, strconv.Itoa(v.n), strconv.Itoa(len(v.signers)), top, strconv.Itoa(topN)}); err != nil {
 			return err
+		}
+	}
+	// Regime volume per hour (volume.go), for every day of the window, with or without
+	// trades: an hour is covered only inside the gap-free, parent-linked coverage.
+	hourCovered := func(h int64) bool {
+		return len(gaps) == 0 && len(chainBreaks) == 0 && covStart <= h && covEnd >= h+3600-1
+	}
+	for d := t0; d.Before(t1); d = d.AddDate(0, 0, 1) {
+		day := d.Format("2006-01-02")
+		w, err := dayW(day, "volume_hours")
+		if err != nil {
+			return err
+		}
+		for _, row := range volumeHourRows(d.Unix(), aggAll[day], hourCovered) {
+			if err := w.writeCSV(row); err != nil {
+				return err
+			}
 		}
 	}
 	for day, m := range aggAll {
