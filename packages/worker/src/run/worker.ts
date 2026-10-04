@@ -119,6 +119,8 @@ export interface WorkerDeps {
   readonly staleFeedMs: number;
   /** Plain status lines for the process log (never a key or a URL). */
   readonly log: (line: string) => void;
+  /** The paper world's seed; unset, it is the boot's. G3's counterfactual fixes it so a rescore is the same trade. */
+  readonly paperSeed?: string;
 }
 
 export interface SeedRequest {
@@ -224,11 +226,11 @@ export class Worker {
     mkdirSync(c.stateDir, { recursive: true });
     this.#journal = new Journal(join(c.stateDir, STATE_FILES.journal), this.#boot, () => d.timers.now());
     rmSync(join(c.stateDir, STATE_FILES.cleanStop), { force: true });
-    const seed = `paper:${this.#boot}`;
+    const seed = d.paperSeed ?? `paper:${this.#boot}`;
     this.#journal.write('start', {
       git_sha: c.gitSha, run_id: c.runId, label: c.runLabel, recorder: c.recorder, simulation: c.simulate, mode: c.mode,
       policy_version: d.session.versionHash, strategy: d.strategy.version, seed, pid: process.pid,
-      entry_rule: c.strategy.name, qualifying: c.strategy.qualifying, paper_edge_ppm: c.strategy.paperEdgePpm, s0_salt: d.strategy.entryTiming === 'random' ? d.strategy.entrySalt : null,
+      entry_rule: c.strategy.name, qualifying: c.strategy.qualifying, paper_edge_ppm: c.strategy.paperEdgePpm, edge_ppm: d.strategy.edgePpm, s0_salt: d.strategy.entryTiming === 'random' ? d.strategy.entrySalt : null,
     });
     if (this.#journal.repaired) this.#journal.write('journal_repair', { detail: 'torn last line removed' });
 

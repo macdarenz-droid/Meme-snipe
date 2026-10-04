@@ -210,6 +210,8 @@ export class Market {
   #swaps = 0;
   /** Publish the fee-context fact with each pool read (off: the strategy takes the terms of the latest swap). */
   withFees = true;
+  /** Fact keys never published (a fact a fault keeps from being read). */
+  omit: ReadonlySet<string> = new Set();
   /**
    * Test-only switch: keep publishing the pool fact with `pool()` while a position on the mint is held. Off by
    * default, as live (POS-1): after entry nothing re-reads the pool, and its state moves only with `chainSwap`.
@@ -237,6 +239,7 @@ export class Market {
   }
 
   fact(key: string, value: unknown): void {
+    if (this.omit.has(key)) return;
     this.#h.worker.feed.ingest('worker', { type: 'fact', key, value }, { receivedAt: this.now });
   }
 
@@ -356,9 +359,10 @@ export const until = async (m: Market, maxMs: number, ready: () => boolean, each
 };
 
 /** Sets up 15 days of coverage, a migrated candidate and minute pool bars, then every passing fact at T. */
-export const passingMarket = async (h: Harness, o: { readonly fees?: boolean; readonly heldPoolFacts?: boolean } = {}): Promise<Market> => {
+export const passingMarket = async (h: Harness, o: { readonly fees?: boolean; readonly heldPoolFacts?: boolean; readonly omit?: readonly string[] } = {}): Promise<Market> => {
   const m = new Market(h, { heldPoolFacts: o.heldPoolFacts ?? false });
   m.withFees = o.fees ?? true;
+  m.omit = new Set(o.omit ?? []);
   const facts = facts0();
   // 15 days before T: the creates stream and a full trade stream start; the deployer index sees its first event.
   m.slot();

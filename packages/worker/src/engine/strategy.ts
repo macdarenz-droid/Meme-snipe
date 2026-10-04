@@ -58,6 +58,8 @@ export interface GateReasonLine {
   readonly gate: string;
   readonly code: string;
   readonly detail: string;
+  /** The fact the reason is about, when it names one (G3 tells live-only vetoes by it: core/facts/kinds.ts). */
+  readonly input?: string;
 }
 
 /** A reason of a candidate's last evaluation with the fact it is about, if any (FACTS-1b reads what evidence reasons name). */
@@ -127,6 +129,13 @@ export interface StrategyConfig {
   readonly barMs: number;
   /** Bars kept per mint. */
   readonly keepBars: number;
+  /**
+   * G3's offline counterfactual only (research/counterfactual.ts), never the live worker: `backtest` leaves the
+   * live-only checks (H15's simulation, H16's cross-checks, the execution-health regime input) unapplied, as BT-2 does,
+   * and `only` restricts the candidates to one mint.
+   */
+  readonly gateMode?: 'live' | 'backtest';
+  readonly only?: string;
 }
 
 export interface StrategyDeps {
@@ -422,7 +431,7 @@ export class LiveStrategy implements Strategy {
       const f = parseMigration(e.value);
       const mint = e.key.slice(MIGRATION_PREFIX.length);
       if (f !== null) this.#notePool(mint, f.pool);
-      if (f !== null && !this.#cands.has(mint)) {
+      if (f !== null && !this.#cands.has(mint) && this.#takes(mint)) {
         this.#cands.set(mint, { mint, migratedAtMs: f.migratedAtMs, lastEvalMs: null, lastReason: null, tries: 0, gates: null });
         out.push({ action: null, reasons: [SHORTLIST, this.#d.config.universe, mint, `migrated at ${f.migratedAtMs}`] });
       }
@@ -436,11 +445,16 @@ export class LiveStrategy implements Strategy {
     const mint = typeof d['mint'] === 'string' ? d['mint'] : null;
     const ts = typeof d['timestamp'] === 'bigint' ? Number(d['timestamp']) * 1000 : null;
     if (mint !== null && typeof d['pool'] === 'string') this.#notePool(mint, d['pool']);
-    if (mint === null || this.#cands.has(mint)) return;
+    if (mint === null || this.#cands.has(mint) || !this.#takes(mint)) return;
     // Block time of the migration when the event states it, else when it was received.
     const migratedAtMs = ts ?? ctx.now.receivedAt;
     this.#cands.set(mint, { mint, migratedAtMs, lastEvalMs: null, lastReason: null, tries: 0, gates: null });
     out.push({ action: null, reasons: [SHORTLIST, this.#d.config.universe, mint, `migrated at ${migratedAtMs}`] });
+  }
+
+  /** Whether this strategy takes a candidate in `mint` (all, unless restricted to one by `only`). */
+  #takes(mint: string): boolean {
+    return this.#d.config.only === undefined || this.#d.config.only === mint;
   }
 
   /** Drops a mint's pool state once nothing watches it (its window ended and no position holds it). */
@@ -892,8 +906,8 @@ export class LiveStrategy implements Strategy {
     const c = this.#d.config;
     const session = this.#d.session;
     const policy = session.policy;
-    const regime = evaluateRegime(gctx, { session, mode: 'live' });
-    if (!regime.on) return this.#fail(`regime off: ${regime.reasons.map((x) => x.detail).join('; ') || 'no reason given'}`, regime.reasons.map((x) => ({ gate: 'regime', code: x.code, detail: x.detail })), regime.reasons.map((x) => ({ gate: 'regime', ...x })));
+    const regime = evaluateRegime(gctx, { session, mode: c.gateMode ?? 'live' });
+    if (!regime.on) return this.#fail(`regime off: ${regime.reasons.map((x) => x.detail).join('; ') || 'no reason given'}`, regime.reasons.map((x) => ({ gate: 'regime', code: x.code, detail: x.detail, ...(x.input === undefined ? {} : { input: x.input }) })), regime.reasons.map((x) => ({ gate: 'regime', ...x })));
     const sol = this.#spotSol(ctx);
     if (sol === null) return this.#fail('live SOL price unknown', [{ gate: 'worker', code: 'no-sol-price', detail: 'no live SOL/USD price' }]);
     const m = this.#market(ctx, cand.mint);
@@ -901,8 +915,8 @@ export class LiveStrategy implements Strategy {
     const notional = policy.capital.minNotional;
     const spend = microUsdToLamports(notional, sol.value, 'ceil');
     const quoter = pumpSwapRoundTrip(m.pool, m.ctx);
-    const hard = evaluateHardRejects(gctx, { session, mode: 'live', rugLabeller: 'RUG-1' }, { mint: cand.mint, universe: c.universe, notional, spend, roundTrip: quoter(spend) });
-    if (!hard.pass) return this.#fail(`hard reject ${hard.failed.join(',')}: ${hard.reasons.map((x) => `${x.gate} ${x.code} ${x.detail}`).join('; ')}`, hard.reasons.map((x) => ({ gate: x.gate, code: x.code, detail: x.detail })), hard.reasons);
+    const hard = evaluateHardRejects(gctx, { session, mode: c.gateMode ?? 'live', rugLabeller: 'RUG-1' }, { mint: cand.mint, universe: c.universe, notional, spend, roundTrip: quoter(spend) });
+    if (!hard.pass) return this.#fail(`hard reject ${hard.failed.join(',')}: ${hard.reasons.map((x) => `${x.gate} ${x.code} ${x.detail}`).join('; ')}`, hard.reasons.map((x) => ({ gate: x.gate, code: x.code, detail: x.detail, ...(x.input === undefined ? {} : { input: x.input }) })), hard.reasons);
     const acct = this.#account(ctx);
     if (acct === null) return this.#fail('account snapshot unknown', [{ gate: 'worker', code: 'no-account', detail: 'account snapshot unknown' }]);
     // Stop: the tighter of the ATR limit and the policy's maximum distance, from the executable price after the buy.

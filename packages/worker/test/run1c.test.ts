@@ -131,7 +131,13 @@ describe('typed gate_reasons and the health fields', () => {
     expect(rejects.length).toBeGreaterThan(0);
     for (const r of rejects) {
       expect(Array.isArray(r['gate_reasons'])).toBe(true);
-      for (const g of r['gate_reasons'] as { gate: string; code: string; detail: string }[]) expect(g).toEqual({ gate: expect.any(String), code: expect.any(String), detail: expect.any(String) });
+      // `input` names the fact a reason is about, when it has one (G3 tells live-only vetoes by it).
+      for (const g of r['gate_reasons'] as { gate: string; code: string; detail: string; input?: string }[]) {
+        expect(g).toEqual({ gate: expect.any(String), code: expect.any(String), detail: expect.any(String), ...(g.input === undefined ? {} : { input: expect.any(String) }) });
+      }
+    }
+    expect(rejects.flatMap((r) => r['gate_reasons'] as { input?: string }[]).some((g) => g.input !== undefined)).toBe(true);
+    for (const r of rejects) {
       expect((r.reasons ?? []).some((x) => x.startsWith('gate_reasons '))).toBe(false);
     }
     expect(decisions.some((l) => l['action'] === 'enter')).toBe(true);

@@ -858,6 +858,61 @@ The second reviewer, the third opinion and the supervisor reached one position o
 - **2026-10-04 · Fail safe and budget.** Until a fill completes, the gap stands and H5/H11 reject. A partial, skipped or failed fill is lossy, never covered. One credit cap per restart (config, passed by WORKER-1) is shared: open positions first at P2, then candidates at P3, oldest gap first. Positions fill at P2, below live open-position monitoring at P1, because exits never wait (supervisor ruling on the #70 review). A test shows a P1 call admitted at once while a long position fill holds its P2 share. Each gap reads at most `maxPagesPerFill` signature pages (default 10, i.e. 10,000 signatures); a busier gap stops as `page-cap`, partial, and stays a gap. A gap reached after the cap is spent is skipped and closed as lossy; a cap that runs out inside a gap stops it there (partial). Each fill reports credits, calls, retries, latency, futures dropped and why it stopped.
 - **2026-10-04 · Evidence.** Real PumpSwap transactions from DEC-1's fixtures. Tests: a complete fill makes coverage continuous, a partial fill stays a gap, filled events equal the stream's, nothing is dated after the process start, over budget leaves the gap, the empty fill, and the in-run hook (complete, false, throw, a drop mid-fill, `ingestingFill` into a live feed). 13 of 14 mutations fail the tests. The close's 1 ms margin is tested with the feed's real start id (`coverage:<stream>:start#<seq>`, which sorts before the fill's ids on a tie), here and in SEED-1's tests, which had used an id that hid it (#70 review). The survivor is the hook's "asked once" guard, unreachable today: the socket checks a gap's close once per connection. It is kept as a guard against a double fill.
 
+## G3 report (TEST-3, `packages/worker/src/research/g3.ts`, `counterfactual.ts`, `scripts/g3.ts`)
+
+- **2026-10-04 · One command, after the run.** `node --no-warnings packages/worker/scripts/g3.ts --state <dir> --holdout <holdout.json> --registration <g3-registration.json> --parity <parity.json> --out <dir>`.
+  - It reads the qualifying run's state directory and never writes to it. Even the ledger is read from a copy, because a read-only SQLite open leaves `-shm`/`-wal` files.
+  - It writes `<out>/counterfactuals.jsonl` and `<out>/g3.json`, then runs STATS-1b's `gateG3`. It exits 0 only on a pass.
+  - A missing or unreadable parity file counts as failed.
+- **Run facts** (`readRun`), all from the journal, the account and the ledger:
+  - Candidates: shortlisted mints.
+  - Kept: mints that entered. A closed kept trade's net return is its net lamports over its entry cost, fees included.
+  - The reject mix: one count per never-entered candidate, keyed `gate:code` by the first typed reason of its last reject. **BT-2's holdout summary must count the same way.**
+  - Simulations: every `simulation` line. Failures are keyed by `outcome`; fill differences are `amountErrorE4 / 10⁶`.
+  - Qualifying: every boot's start line says so, on one commit.
+- **Live-only vetoes.**
+  - A never-entered candidate's first reject whose typed reasons are all on live-only inputs: `sim`, `xcheck`, `exec-health`. A test checks these are exactly core/facts/kinds.ts's `live-only-veto` facts.
+  - Typed reasons now carry their `input` (strategy `GateReasonLine`), so H16 "missing holders" is never mistaken for H16 "missing xcheck".
+  - It counts as vetoed, and eligible, only when its counterfactual entered. A candidate the strategy would not have entered without those checks either (another check, or risk) is listed in `notEnteredWithoutThem`, not counted.
+  - Eligible = entered + vetoed.
+- **Counterfactual trades** (`scoreCounterfactual`):
+  - The run's recorded frames, every boot, are fed in arrival order and at their receipt times to a fresh paper Worker in a temporary directory.
+  - It runs the run's own strategy, rebuilt from its start line as main.ts builds it, with the edge the strategy used (`edge_ppm`, now journaled). A policy or strategy version that does not match the release is refused.
+  - It runs the paper world's fill model (BT-1's) and the exit engine.
+  - Two differences from the live run:
+    - `gateMode: 'backtest'`: the live-only checks are not applied, exactly as BT-2.
+    - `only: <mint>`: no other candidate.
+  - Left out of the replay: the run's own world frames, account, halt and restore facts. The scoring worker makes its own.
+  - So the trade holds no position slot, reservation or entry count of the run. It reads no provider (no sources, no fact producers, no network).
+  - The paper seed is fixed per run and mint, so a rescore gives the same bytes.
+  - The report refuses a scoring that refused an event, held another mint, or ran another seed.
+  - A position still open when the recording ends is censored, with its reason (`censoredReason`), never given a return. G3 reports it as "not proven: extend the run". REC-1 (rejected candidates' pools watched until windowEnd + T_max) will make that rarer.
+- **Evidence, on recorded harness sessions:**
+  - An H16 cross-check disagreement vetoes the candidate live. Offline it enters and is stopped out when the pool falls 30%; r = net / cost.
+  - The state directory is byte-identical before and after (in process, and through the script).
+  - A rescore gives the same counterfactual file.
+  - Scoring a mint the run did enter gives the strategy's own trade, with no refused event (the live world is not replayed).
+  - A recorded halt and a latched kill switch do not stop the scoring worker, and it takes no other mint.
+  - With no edge, the veto is not counted.
+  - The decision log of two identical sessions is the same whether one was scored or not.
+  - Mutation: 12 of 12 mutants fail the tests (live-only checks applied offline; the run's world, or its account and halt, replayed; any live-only reason taken as a veto; a reason without input counted; output into the state directory; the ledger read in place; the edge taken from config only; no `only`; typed reasons without input; not-entered counted as vetoed; a per-boot seed).
+- **Inputs from elsewhere:**
+  - `holdout.json` is BT-2's `HoldoutSummary`: SampleSummary, severe rate, the one-sided lower bound at VETO_COMPOSITE_LEVEL, candidates and hours, the reject mix counted as above, and the return cap. BT-2 writes it with the sealed holdout result.
+  - `parity.json` is TEST-1's result on this run's recording.
+- **Decisions end at `evaluateAtMs`; outcomes run to the end of the tail** (supervisor, for STATS-1c #62; #98 review, the holdout's entry cutoff and tail pattern). The registration file carries `evaluateAtMs` and `outcomeTailMs`.
+  - Cut at `evaluateAtMs`: decisions, candidates, vetoes, entries and the hours (start to `evaluateAtMs`).
+  - Read to `evaluateAtMs + outcomeTailMs`: the recording the counterfactuals see, the outcomes of kept trades entered by the cut, and those trades' simulations.
+  - A trade entered by the cut, kept or counterfactual, is scored if it closed by the end of the tail and censored if it is still open then, never dropped. A censored kept trade fails a "kept outcomes" check: G3 is "not proven".
+  - A counterfactual that would have entered only after the cut does not count as vetoed.
+  - The registration is refused when `outcomeTailMs` is shorter than the longest hold (`policy.exits.tMaxCapMs`) plus the whole exit ladder (`ladder.maxAttempts × blockhashValidBlocks × 400 ms + blockedRetryAttempts × blockedRetryMs`), all from configuration: 2 h 10 min on the trial policy.
+  - A run whose last line is more than a minute (`EVALUATE_SLACK_MS`) before the end of the tail is not judged: G3 is "not proven", with an "evaluation time" check, and nothing is scored.
+  - Tests: a veto 10 min before the cut whose stop comes after it is scored (the harness strategy's longest hold is about 16 min, so a 30 min gap cannot hold a position open across the cut); a kept trade open at the cut and closed in the tail is scored; one still open at the end of the tail is censored and G3 is not proven; a short or missing tail is refused. Mutation: 14 of 14 mutants on the cut and the tail fail the tests (with decisions read to the end of the tail, and simulations of trades entered after the cut counted).
+- **The veto moment.** A veto is dated by the candidate's first reject whose typed reasons are all live-only. Whether it counts is decided by its counterfactual: `entered`, by the cut.
+- **Censored for good.** A counterfactual censored by the recording's coverage (a gap, a boot's end, the tail cap; `censoredKind: 'coverage'`) can never close, so a longer wait does not help: the report says G3 needs a new registered run. One open when the recording ends (`censoredKind: 'recording-end'`) closes if the run goes on.
+- **Gaps are unknown, never quiet** (REC-1's recording contract, #95). A counterfactual whose path crosses a recorded `coverage:trades:<pool>:gap` is censored, with the gap in its reason. That covers a gap reported while the position is open, or one still open when it was entered. A gap closed before the entry does not touch the path. A stream's coverage also ends at its boot's last frame (watches are not made again after a restart, REC-1 review), so a path across a boot's end is censored, tested on a real two-boot recording. A mint the run stopped watching at its window end (REC-1's tail cap, a `no tail` decision) is censored past that moment, "tail cap". 6 of 6 mutants fail the tests.
+- **Cost.** One full replay of the recording per vetoed candidate, offline: about 48 h of frames each. It runs after the run and touches no quota.
+- **Limit.** Until POS-1 lands, a vetoed mint's pool state after the veto comes only from what the run recorded: pool facts and, with WATCH-1, snapshots for held positions. A candidate whose path the recording does not carry is censored (not proven), never guessed.
+
 ## Position market from swaps (POS-1, `packages/core/src/facts/producer.ts`, `packages/core/src/fills/pool.ts`)
 
 - **2026-10-04 · Why.** Live, the pool fact came only from account reads, which are made for candidate evidence and the survival mark. Nothing refreshed a held position's pool after entry, so about 2 s later (`maxQuoteAgeMs`) its state was stale: no price stop, trail or take-profit could fire and exits were booked blocked "pool state is stale". Only T_max and the deployer trigger worked. The harness hid it by publishing a pool fact every step.
