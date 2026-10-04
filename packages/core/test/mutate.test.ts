@@ -28,6 +28,12 @@ describe('mutate.mjs mutant generator', () => {
     expect(mutantsOf('x.ts', src).map((m) => m.orig)).toEqual(['1', '1']);
   });
 
+  test('an if in a comment whose condition a later code parenthesis would close is not mutated', () => {
+    // Without the code check on the `if (` itself, the scan from the comment ends at the call's `)` and makes a mutant.
+    const src = 'export const v = f(\n  // if (x\n  1);\n';
+    expect(ifs(src)).toEqual([]);
+  });
+
   test("a parenthesis in a string inside the condition does not cut the condition short", () => {
     const src = "export const h = (s: string) => {\n  if (s === ')' || s === '(') return 1;\n  return 0;\n};\n";
     expect(ifs(src).map((m) => m.orig)).toEqual(["s === ')' || s === '('", "s === ')' || s === '('"]);
