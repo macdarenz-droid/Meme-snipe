@@ -30,6 +30,11 @@ export interface CounterfactualInput {
   readonly network: FillNetwork;
   /** The paper world's seed: a fixed function of the run and the mint, so a rescore gives the same trade. */
   readonly seed: string;
+  /**
+   * When each boot but the last ended (its last frame's receipt time). Watches are not made again after a restart, so a
+   * stream's coverage ends there (REC-1): a path across one is censored.
+   */
+  readonly bootEnds?: readonly number[];
 }
 
 export interface CounterfactualTrade {
@@ -172,7 +177,12 @@ export const scoreCounterfactual = async (o: CounterfactualInput): Promise<Count
     const closed = position.status === 'closed' && trade !== undefined && trade.closedAtMs !== null && trade.netLamports !== null;
     // REC-1's contract: a span inside a recorded gap of the pool's trade stream is unknown, never quiet. A trade whose
     // path crosses one (a gap open at its entry, or one reported before it closed) is censored, never given a return.
-    const crossed = gapCrossed(o.frames, poolAddress, trade?.openedAtMs ?? null, closed ? trade!.closedAtMs! : Number.POSITIVE_INFINITY);
+    const toMs = closed ? trade!.closedAtMs! : Number.POSITIVE_INFINITY;
+    const fromMs = trade?.openedAtMs ?? null;
+    const restart = fromMs === null ? undefined : (o.bootEnds ?? []).find((t) => t >= fromMs && t < toMs);
+    const crossed = restart !== undefined
+      ? `the path crosses the end of a boot at ${new Date(restart).toISOString()}: the pool's stream is not covered past a boot's last frame`
+      : gapCrossed(o.frames, poolAddress, fromMs, toMs);
     if (crossed !== null) {
       return { mint: o.mint, entered: true, enteredAtMs: trade?.openedAtMs ?? null, closedAtMs: null, cost, net: null, r: null, censored: true, censoredReason: crossed, exitReasons: [], check };
     }

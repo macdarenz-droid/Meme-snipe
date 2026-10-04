@@ -15,7 +15,7 @@ import { scoreCounterfactual } from '../src/research/counterfactual.ts';
 import { readRecording } from '../src/research/recording.ts';
 import { FILL_CONFIG, RUG_CONFIG } from '../../core/src/config/index.ts';
 import { ACCOUNT_KEY, HALT_KEY } from '../src/engine/strategy.ts';
-import { LANDS, MINT, POOL_ADDRESS, T, makeWorker, passingMarket, tempState } from './worker-harness.ts';
+import { LANDS, MINT, Market, POOL_ADDRESS, T, makeWorker, passingMarket, tempState } from './worker-harness.ts';
 
 type H = ReturnType<typeof makeWorker>;
 const XCHECK = passingFacts().get(xcheckKey(MINT))!.value as { obs: Record<string, unknown> };
@@ -182,7 +182,7 @@ describe('G3: live-only vetoes and their counterfactual trades (TEST-3)', () => 
     expect(readRun(k.stateDir, exitMs).kept).toHaveLength(1);
   }, 120_000);
 
-  it('a path that crosses a recorded gap in the pool\'s trade stream is censored, never scored as quiet (REC-1)', async () => {
+  it('a path that crosses a recorded gap in the pool\'s trade stream, or a boot\'s end, is censored, never scored as quiet (REC-1)', async () => {
     const h = await session(true);
     const { session: s2, strategy } = runStrategy(readRun(h.stateDir).start);
     const frames = readRecording(h.stateDir).flatMap((b) => b.frames);
@@ -203,6 +203,42 @@ describe('G3: live-only vetoes and their counterfactual trades (TEST-3)', () => 
     expect(before.censoredReason).toMatch(/^the path starts inside a gap/);
     // A gap closed before the entry does not touch the path.
     expect(await score(gapAt(clean.enteredAtMs! - 5_000, 5n))).toMatchObject({ censored: false, r: clean.r });
+    // A restart while the position is open: the stream is not covered past the boot's last frame.
+    const withBoot = (t: number) => scoreCounterfactual({ mint: MINT, frames, session: s2, rugs: RUG_CONFIG, strategy, scenario: LANDS, network: FILL_CONFIG.network, seed: 'gap', bootEnds: [t] });
+    const restarted = await withBoot(clean.enteredAtMs! + 1_000);
+    expect(restarted).toMatchObject({ entered: true, censored: true, r: null });
+    expect(restarted.censoredReason).toMatch(/^the path crosses the end of a boot at .*: the pool's stream is not covered past a boot's last frame$/);
+    expect(await withBoot(clean.enteredAtMs! - 1_000)).toMatchObject({ censored: false, r: clean.r });
+    expect(await withBoot(clean.closedAtMs! + 1)).toMatchObject({ censored: false, r: clean.r });
+  }, 120_000);
+
+  it('a run that restarted while the counterfactual position was open: the report censors it at the boot\'s end', async () => {
+    const h = makeWorker();
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    const m = await passingMarket(h, { omit: [xcheckKey(MINT)] });
+    const veto = (mk: typeof m) => () => {
+      mk.slot();
+      mk.pool(1_000_000n);
+      mk.omit = new Set();
+      mk.fact(xcheckKey(MINT), { ...XCHECK, obs: { ...XCHECK.obs, receivedAt: mk.now - 50 }, sources: [{ provider: 'rugcheck', mintAuthority: 'none', freezeAuthority: 'none' }, { provider: 'goplus', mintAuthority: 'set', freezeAuthority: null }] });
+      mk.omit = new Set([xcheckKey(MINT)]);
+    };
+    await m.run(20_000, 400, veto(m));
+    await h.worker.kill();
+    const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers });
+    expect(await h2.worker.reconcile()).toEqual({ ok: true });
+    const m2 = new Market(h2);
+    m2.omit = new Set([xcheckKey(MINT)]);
+    await m2.run(20_000, 400, () => {
+      m2.slot();
+      m2.pool(700_000n);
+    });
+    await h2.worker.stop();
+    expect(readRecording(h.stateDir)).toHaveLength(2);
+    const report = await g3Report({ stateDir: h.stateDir, holdout: HOLDOUT, registration: reg(h), parityPassed: true, out: join(tempState(), 'g3'), scenario: LANDS });
+    expect(report.counterfactuals).toHaveLength(1);
+    expect(report.counterfactuals[0]).toMatchObject({ entered: true, censored: true, r: null });
+    expect(report.counterfactuals[0]!.censoredReason).toMatch(/^the path crosses the end of a boot/);
   }, 120_000);
 
   it('a veto counts only when the strategy would have entered without the live-only checks', async () => {

@@ -202,12 +202,14 @@ export const g3Report = async (o: G3ReportOptions): Promise<G3Report> => {
   const run = readRun(o.stateDir, cut);
   const { session, strategy } = runStrategy(run.start);
   // The counterfactuals see the recording up to the evaluation time only: a position open then is censored.
-  const frames = readRecording(o.stateDir).flatMap((b) => b.frames).filter((f) => f.receivedAt <= cut);
+  const boots = readRecording(o.stateDir);
+  const frames = boots.flatMap((b) => b.frames).filter((f) => f.receivedAt <= cut);
+  const bootEnds = boots.slice(0, -1).map((b) => b.frames.at(-1)!.receivedAt);
   const runId = createHash('sha256').update(`${run.start.boot}:${run.start.ts}`).digest('hex').slice(0, 16);
   const counterfactuals: G3Report['counterfactuals'][number][] = [];
   for (const v of run.vetoes) {
     const t = await scoreCounterfactual({
-      mint: v.mint, frames, session, rugs: RUG_CONFIG, strategy, scenario: o.scenario ?? FILL_CONFIG.scenarios[PAPER_SCENARIO], network: FILL_CONFIG.network, seed: `g3:${runId}:${v.mint}`,
+      mint: v.mint, frames, session, rugs: RUG_CONFIG, strategy, scenario: o.scenario ?? FILL_CONFIG.scenarios[PAPER_SCENARIO], network: FILL_CONFIG.network, seed: `g3:${runId}:${v.mint}`, bootEnds,
     });
     // A scoring that refused an event, held another mint or ran another seed is not this candidate's trade.
     if (t.check.refused > 0 || t.check.otherPositions > 0 || t.check.paperSeed !== `g3:${runId}:${v.mint}`) {
