@@ -597,6 +597,11 @@ rc=0; rd "$o" RPC_CREDITS=850 RPC_RC=3 || rc=$?
   ok "rpc-day: the cap spent mid-run exits 3 (not resumable) with the credits booked" || no "rpc-day cap: rc=$rc"
 n=$(wc -l < "$T/rpc.log"); rc=0; rd "$o" || rc=$?
 [[ $rc == 3 && $(wc -l < "$T/rpc.log") == "$n" ]] && ok "rpc-day: with the cap spent, no request is made (exit 3)" || no "rpc-day spent: rc=$rc"
+# ARCHIVE-NODUP: only a day listed in HELIUS_DAYS is read over RPC.
+o="$T/rdnd"; rm -rf "$o"; n=$(wc -l < "$T/rpc.log"); : > "$T/summary.md"; rc=0
+env RPCLOG="$T/rpc.log" PATH="$R:$PATH" GITHUB_STEP_SUMMARY="$T/summary.md" bash "$here/rpc-day.sh" 2026-09-20 "$o" 5 1000 > "$T/out.txt" 2>&1 || rc=$?
+[[ $rc == 2 && $(wc -l < "$T/rpc.log") == "$n" ]] && grep -q "2026-09-20 is not a Helius day" "$T/summary.md" &&
+  ok "ARCHIVE-NODUP: rpc-day refuses a day not in HELIUS_DAYS (an archive-queue day) before any request (exit 2)" || no "rpc-day non-helius day: rc=$rc"
 o="$T/rd2"; rm -rf "$o"; mkdir -p "$o/units/1046/1-2"; echo '{"scanner_revision": "old"}' > "$o/units/1046/1-2/stats.json"
 rc=0; rd "$o" SCANNER_REVISION=new RPC_CREDITS=1 || rc=$?
 [[ $rc == 0 && ! -e "$o/units/1046/1-2" ]] && ok "rpc-day: units of another revision are reread" || no "rpc-day revision"
@@ -721,6 +726,15 @@ ac env AC_STATUS=206 ARCHIVE_GO="$A/archive10.go"
 [[ $(wc -l < "$A/curl.calls") == 1 && $(wc -l < "$A/dispatch.log") == 1 ]] &&
   grep -q -- "data-scan.yml --repo o/r --ref main -f mode=scan -f days=2026-09-20 -f max_mbps=40$" "$A/dispatch.log" &&
   ok "ARCHIVE-SAFE: a 206 dispatches once, the next 1 unpublished pre-holdout day at 40 MB/s" || no "archive-check 206 dispatch: $(cat "$A/dispatch.log" 2>/dev/null)"
+: > "$A/published"
+ac env AC_STATUS=206 ARCHIVE_GO="$A/archive10.go"
+grep -q -- "-f days=2026-09-20 -f max_mbps=40$" "$A/dispatch.log" &&
+  ok "ARCHIVE-NODUP: with nothing published the archive queue skips the Helius day 2026-09-21 and starts at 2026-09-20" || no "archive-check skips helius day: $(cat "$A/dispatch.log" 2>/dev/null)"
+d=2026-09-20; : > "$A/published"; while [[ "$d" > 2026-07-19 ]]; do echo "$d" >> "$A/published"; d=$(date -u -d "$d - 1 day" +%F); done
+for d in 2026-10-01 2026-09-30 2026-09-29 2026-09-28 2026-09-27 2026-09-26 2026-09-25 2026-09-24 2026-09-23 2026-09-22; do echo "$d" >> "$A/published"; done
+ac env AC_STATUS=206 ARCHIVE_GO="$A/archive10.go"
+[[ ! -e "$A/dispatch.log" ]] && grep -q "every day of the window is published" "$A/summary.md" &&
+  ok "ARCHIVE-NODUP: with every other day published, the unpublished Helius day is never queued for the archive" || no "archive-check helius day last: $(cat "$A/dispatch.log" 2>/dev/null)"
 d=2026-09-21; : > "$A/published"; while [[ "$d" > 2026-07-19 ]]; do echo "$d" >> "$A/published"; d=$(date -u -d "$d - 1 day" +%F); done
 ac env AC_STATUS=206 ARCHIVE_GO="$A/archive10.go"
 grep -q -- "-f days=2026-10-01 " "$A/dispatch.log" &&
@@ -814,6 +828,16 @@ import sys, yaml
 wf = yaml.safe_load(open(sys.argv[1]))
 assert wf["run-name"] == "data-scan ${{ inputs.mode }} source=${{ inputs.source || 'archive' }}", wf.get("run-name")
 assert wf[True]["workflow_dispatch"]["inputs"]["source"]["default"] == "archive"
+PY
+python3 - "$here/../../../.github/workflows/data-scan.yml" <<'PY' && ok "ARCHIVE-NODUP: a Helius dispatch of a day already published from the archive is skipped: the published check runs for both sources and gates every read" || no "data-scan helius skips published day"
+import sys, yaml
+steps = yaml.safe_load(open(sys.argv[1]))["jobs"]["scan"]["steps"]
+pub = next(s for s in steps if s.get("id") == "published")
+assert "if" not in pub and "inputs.source" not in str(pub) and "publish-day.sh\" --check" in pub["run"], pub
+scan = next(s for s in steps if s.get("id") == "scan")
+assert scan["if"] == "steps.published.outputs.complete != 'true'" and "rpc-day.sh" in scan["run"], scan
+qa = next(s for s in steps if s.get("id") == "qa")
+assert "steps.published.outputs.complete != 'true'" in qa["if"], qa
 PY
 # ---- DATA-PUB: a day read over RPC (source helius) is never published or uploaded ----
 python3 - "$here/../../../.github/workflows/data-scan.yml" <<'PY' && ok "data-scan source helius: no day artifact, no data-day or data-volume publish; the packaged assets go only to the actions cache (data-rpc-assets-DAY-*)" || no "data-scan helius publish gate"

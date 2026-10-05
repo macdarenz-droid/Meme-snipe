@@ -14,6 +14,11 @@
 set -uo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 day=$1 out=$2 budget=$3 cap=$4
+# Only a listed Helius day is read over RPC; every other day is the archive's
+# (ARCHIVE-NODUP: a day is never downloaded from both). Refused before any request.
+# shellcheck source=archive-limits.conf
+. "$here/archive-limits.conf"
+[[ " $HELIUS_DAYS " == *" $day "* ]] || { echo "refused: $day is not a Helius day (HELIUS_DAYS in archive-limits.conf: $HELIUS_DAYS); it belongs to the archive queue" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}" >&2; exit 2; }
 next=$(date -u -d "$day + 1 day" +%F)
 start=$(date +%s)
 case $budget in
