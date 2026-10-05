@@ -78,7 +78,7 @@ export class FunnelView {
     }
     this.advance(atMs);
     this.funnel.fromMs = this.#day.start;
-    if (!this.available) return;
+    if (!this.available && l['kind'] === 'decision') return;
     if (l['kind'] === 'decision') this.#decision(l, atMs);
     else this.#entry(l, atMs);
   }
@@ -127,6 +127,7 @@ export class FunnelView {
     const mint = l['mint'];
     const trade = l['trade'];
     if (typeof mint !== 'string' || typeof trade !== 'string' || !this.#rememberEntry(trade)) return;
+    if (!this.available) return;
     const st = this.#stageOf(mint, atMs);
     if (st === null) return;
     st.stage = 4;

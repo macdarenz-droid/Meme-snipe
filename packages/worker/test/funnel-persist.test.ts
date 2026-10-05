@@ -162,9 +162,17 @@ describe('rebuildFunnel', () => {
     const i = { ...h.worker.apiInputs(), funnel: view.funnel, decisions: view.rows, funnelAvailable: view.available };
     for (const endpoint of ['funnel', 'decisions']) expect(route(`/api/v1/paper/${endpoint}`, () => i)).toEqual({ status: 503, body: { error: 'candidate view unavailable' } });
     expect(route('/api/v1/paper/status', () => i).status).toBe(200);
+    const first = entry(200_002, NOW + 1, 'OLD', 'p:OLD:1', '5');
+    view.apply(JSON.parse(first));
     view.advance(TODAY.end + 1);
     expect(view.available).toBe(true);
     expect(view.funnel.stage.size).toBe(0);
+    const partial = entry(200_003, TODAY.end + 2, 'OLD', 'p:OLD:1', '9');
+    view.apply(JSON.parse(partial));
+    const rebuilt = rebuildFunnel(journalOf([first, partial]), TODAY.end + 2);
+    expect(viewOf(view)).toEqual(viewOf(rebuilt));
+    expect(view.rows).toEqual([]);
+    expect([...view.funnel.enteredByDay]).toEqual([]);
 
   });
 
