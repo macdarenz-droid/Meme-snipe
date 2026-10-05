@@ -229,6 +229,10 @@ send_tg "$STRANGER" "/pair $PAIR2"
 [ "$(grep -vc getUpdates <(tail -n +"$((n0 + 1))" "$STATE/telegram.jsonl"))" = 0 ] || fail "server answered after pairing"
 wait_for 30 "worker running after pairing" "docker exec $C systemctl is-active zeroed-worker"
 in_c "journalctl -u zeroed-worker -o cat --no-pager" | grep -q 'Reconcile: 0 open intents, 5 of 5 credentials present. OK' || fail "worker did not reconcile with 5 credentials"
+# HEAP-GUARD: the running worker has its explicit heap limit and fatal-error report flags, and worker-start made the
+# report directory inside the unit's sandbox (ProtectSystem=strict, PrivateTmp): it exists and the worker owns it.
+in_c "tr '\\0' ' ' < /proc/\$(systemctl show -p MainPID --value zeroed-worker)/cmdline" | grep -q -- '--max-old-space-size=560 --report-on-fatalerror --report-compact --report-directory=/var/lib/zeroed/reports' || fail "worker runs without its heap limit and report flags"
+in_c "stat -c %U /var/lib/zeroed/reports" | grep -qx zeroed-worker || fail "worker's report directory missing or not the worker's"
 status paired | grep -q 'Telegram:  paired' || fail "status not paired"
 pass "pairing: a group's /pair is ignored (private chats only); a stranger's wrong /pair invalidated the code (one try), the old code then failed, a new console code paired the owner chat (stored encrypted), 'Paired' sent, the server then set the watchdog webhook itself, later messages ignored, worker reconciled and runs"
 
@@ -575,7 +579,7 @@ in_c "! systemctl list-units --all --plain --no-legend 'zeroed-worker-smoke*' | 
 in_c "journalctl -o cat --no-pager -u zeroed-worker-smoke.service | tail -20" >"$LOGS/smoke-unit.txt"
 wrestart "ln -sfn '$rel' /opt/zeroed/current.new && mv -Tf /opt/zeroed/current.new /opt/zeroed/current"
 wait_for 60 "the release's worker running" "docker exec $C systemctl is-active zeroed-worker"
-in_c "tr '\\0' ' ' < /proc/\$(systemctl show -p MainPID --value zeroed-worker)/cmdline" | has '^/usr/local/bin/node --no-warnings /opt/zeroed/current/packages/worker/src/main.ts $' || fail "zeroed-worker does not run the release's main.ts under the host's node"
+in_c "tr '\\0' ' ' < /proc/\$(systemctl show -p MainPID --value zeroed-worker)/cmdline" | has '^/usr/local/bin/node --no-warnings --max-old-space-size=560 --report-on-fatalerror --report-compact --report-directory=/var/lib/zeroed/reports /opt/zeroed/current/packages/worker/src/main.ts $' || fail "zeroed-worker does not run the release's main.ts under the host's node"
 inv() { in_c "journalctl -o cat --no-pager _SYSTEMD_INVOCATION_ID=\$(systemctl show -p InvocationID --value zeroed-worker)"; }
 relname="$(basename "$rel")"
 # The start line of this invocation (the unit's journal also holds earlier runs of the same release, whose start line
@@ -683,7 +687,8 @@ upd_run || fail "zeroed-update after the deploy tag came back"
 [ "$(current)" = "$rel" ] || fail "current moved after the deploy tag came back"
 # Back to the stand-in and the local watchdog for the sections that follow.
 wrestart "sed -i 's#^WATCHDOG_URL=.*#WATCHDOG_URL=$wd0#' /etc/zeroed/worker.env && ln -sfn '$orig' /opt/zeroed/current.new && mv -Tf /opt/zeroed/current.new /opt/zeroed/current"
-wait_for 60 "the stand-in back" "docker exec $C journalctl -u zeroed-worker -o cat --no-pager -n 5 | grep -q 'Stub worker up'"
+# This invocation's journal only: an earlier run of the stand-in logged the same line (as in 10b2's start-line wait).
+wait_for 60 "the stand-in back" "docker exec $C bash -c 'journalctl -o cat --no-pager _SYSTEMD_INVOCATION_ID=\$(systemctl show -p InvocationID --value zeroed-worker)' | grep -q 'Stub worker up'"
 pass "release's worker (SWITCH-1): zeroed-worker runs the release's main.ts under the host's Node 22 with no node_modules; --reconcile first (exit 0); start line and journal say paper with recorder, simulation and drills on; PRACTICE-ON: the release's shakedown settings reach it, /health and the start line show S0 with its diagnostic set, not qualifying, with the paper edge; 3 keys read from systemd credentials and none in its output; health on 127.0.0.1:8787 and API on 127.0.0.1:8788, loopback only; without providers it runs degraded, entries halted, no restarts; a restart comes back reconciled; live is refused; zeroed-status names the worker; worker-smoke passes it beside the running worker in the unit's sandbox and memory cap, and refuses a syntax error, a missing file, a refused config, the shakedown in a release with a qualifying run, a shakedown setting outside the five and a worker that dies after answering; zeroed-update keeps a green signed release whose worker cannot start off current, keeps the worker running and alerts once; a release whose worker passes the trial but dies under the unit is rolled back (current, deployed record, worker), alerted once and not tried again"
 
 # ---------- 10c. Telegram webhook: change alert, retry with back-off, notice after 5 failed tries ----------

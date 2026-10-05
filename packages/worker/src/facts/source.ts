@@ -26,7 +26,7 @@ import { join } from 'node:path';
 import { FactReaders, FactRpc, type BatchPart, type BatchRequest, type BatchResult, type SimFn } from './readers.ts';
 import { CHAIN_VOLUME_DIR, fileChainVolumeStore } from './volume-store.ts';
 import { DEPLOYER_CHECK_SPEND_FILE, DeployerChecks } from './deployer-checks.ts';
-import type { CandidateReason } from '../engine/strategy.ts';
+import { type CandidateReason, MARKET_MISS_CODES } from '../engine/strategy.ts';
 import type { FactContext, FactSource } from '../run/facts.ts';
 import type { TimerHandle } from '../scheduler/timers.ts';
 
@@ -107,6 +107,8 @@ const stageOf = (g: CandidateReason): number => {
 /** H14's detail when the rug half is not covered and the deployer check is missing or not accepted (gates/hard.ts). */
 const DEPLOYER_CHECK_DETAIL = `${RUG_LABELS_UNAVAILABLE}: `;
 
+const MARKET_MISS: ReadonlySet<string> = new Set(MARKET_MISS_CODES);
+
 type Kind = 'batch' | 'accounts' | 'holders' | 'holders-all' | 'xcheck' | 'mint-history' | 'sim' | 'survival' | 'sol-usd' | 'chain-volume' | 'deployer-check';
 
 /** What one candidate's last reasons ask the source to read; empty when it must not read. */
@@ -115,8 +117,9 @@ export const readsFor = (gates: readonly CandidateReason[] | null): Kind[] => {
   const out = new Set<Kind>();
   let holdersOnly = true;
   for (const g of gates) {
-    // The worker has no market for the mint yet: its pool fact comes from the account read.
-    if (g.gate === 'worker' && g.code === 'no-market') {
+    // The worker has no market for the mint (any of #market's cases, as `no-market` did): its pool fact comes from the
+    // account read.
+    if (g.gate === 'worker' && MARKET_MISS.has(g.code)) {
       out.add('accounts');
       holdersOnly = false;
       continue;

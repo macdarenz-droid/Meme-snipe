@@ -645,3 +645,43 @@ describe('log and runner contracts', () => {
     expect(replay.feed.next()).toMatchObject({ value: { price: 1n } });
   });
 });
+
+describe('as-of store retention', () => {
+  // at(slot, tx, ix) with receivedAt from the slot: the horizon is measured on receipt time.
+  const fill = (store: AsOfStore, clock: SimClock, n: number) => {
+    for (let s = 1; s <= n; s++) {
+      clock.advanceTo(at(s, 0, 0));
+      store.record('k', `v${s}`, at(s, 0, 0), `e${s}`);
+      store.record('all', `v${s}`, at(s, 0, 0), `a${s}`);
+    }
+  };
+
+  it('answers every lookup at or after the horizon exactly as an unlimited store', () => {
+    const c1 = new SimClock(at(0, 0, 0));
+    const c2 = new SimClock(at(0, 0, 0));
+    const full = new AsOfStore(c1);
+    const kept = new AsOfStore(c2, (key) => (key === 'k' ? at(10, 0, 0).receivedAt - at(0, 0, 0).receivedAt : null));
+    fill(full, c1, 500);
+    fill(kept, c2, 500);
+    const horizon = at(500, 0, 0).receivedAt - (at(10, 0, 0).receivedAt - at(0, 0, 0).receivedAt);
+    for (let s = 1; s <= 500; s++) {
+      const m = at(s, 0, 0);
+      if (m.receivedAt >= horizon) expect(kept.lookup('k', m)).toEqual(full.lookup('k', m));
+      expect(kept.lookup('all', m)).toEqual(full.lookup('all', m));
+    }
+    expect(kept.lookup('k')).toEqual(full.lookup('k'));
+    // The past before the horizon is gone for the limited key only.
+    const h = kept.history('k', at(0, 0, 0));
+    expect(Array.isArray(h) && h.length).toBeLessThan(60);
+    const all = kept.history('all', at(0, 0, 0));
+    expect(Array.isArray(all) && all.length).toBe(500);
+  });
+
+  it('keeps everything without a retention, and a key with null keeps everything', () => {
+    const c = new SimClock(at(0, 0, 0));
+    const s = new AsOfStore(c, () => null);
+    fill(s, c, 200);
+    const h = s.history('k', at(0, 0, 0));
+    expect(Array.isArray(h) && h.length).toBe(200);
+  });
+});
