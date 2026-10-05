@@ -583,7 +583,7 @@ const costsOf = (i: ApiInputs, t: PaperTrade) => {
   const both = (key: keyof NonNullable<typeof l>['legs']['entry']) => l === null ? null : l.legs.entry[key] + l.legs.exit[key];
   const lamports = { venueFeeUsd: both('venueFee'), creatorFeeUsd: both('creatorFee'), priorityFeeUsd: both('priority'), tipUsd: both('tip'), networkFeeUsd: both('networkBase'), slippageUsd: both('slippage'), rentKeptUsd: l === null ? null : l.rentPaid - l.rentReturned };
   const totalLamports = Object.values(lamports).reduce<bigint | null>((s, x) => addLam(s, x), 0n);
-  return { v, kinds, total: v?.total ?? 0n, lamports, totalLamports, rentPaid: l?.rentPaid ?? null, rentReturned: l?.rentReturned ?? null };
+  return { v, kinds, total: v?.total ?? 0n, lamports, totalLamports, rentPaid: l?.rentPaid ?? null, rentReturned: l?.rentReturned ?? null, entrySol: l?.entrySol ?? null };
 };
 
 /** Lamports as a SOL decimal string (9 places, exact). */
@@ -615,7 +615,7 @@ const tradeRecord = (i: ApiInputs, t: PaperTrade) => {
     entryPriceUsd: priceText(sol(buys), tok(buys), pxIn), exitPriceUsd: priceText(sol(sells), tok(sells), pxOut),
     sizeUsd: usdText(t.notional), grossUsd: usdText(net + c.total),
     // In lamports, exact (APP-SOL): what the entry swapped in, the trade's net (account.ts), and gross as net plus its costs.
-    sizeLamports: lamText(sol(buys)), ...lamField('netLamports', tradeSol(t)), ...lamField('grossLamports', addLam(tradeSol(t), c.totalLamports)),
+    ...lamField('sizeLamports', c.entrySol ?? (buys.length === 0 ? null : sol(buys))), ...lamField('netLamports', tradeSol(t)), ...lamField('grossLamports', addLam(tradeSol(t), c.totalLamports)),
     costs: {
       venueFeeUsd: usdText(c.kinds.venueFeeUsd), creatorFeeUsd: usdText(c.kinds.creatorFeeUsd), priorityFeeUsd: usdText(c.kinds.priorityFeeUsd),
       tipUsd: usdText(c.kinds.tipUsd), networkFeeUsd: usdText(c.kinds.networkFeeUsd), slippageUsd: usdText(c.kinds.slippageUsd),

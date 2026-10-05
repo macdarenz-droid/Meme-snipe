@@ -50,13 +50,20 @@ describe('APP-SOL capability preserves the existing v1 contract', () => {
     try {
       const address = server.address() as { port: number };
       const modern = await fetch(`http://127.0.0.1:${address.port}/api/v1/paper/stats?money=lamports`).then((r) => r.json());
-      expect(modern.data.netLamports).toBe('-1234567');
+      expect((modern as { data: { netLamports: string } }).data.netLamports).toBe('-1234567');
       const legacy = await fetch(`http://127.0.0.1:${address.port}/api/v1/paper/stats`).then((r) => r.json());
       expect(() => checkEnvelope(legacy, 'paper', baselineSchema('stats', 'paper'))).not.toThrow();
       expect(added(legacy)).toEqual([]);
     } finally {
       await new Promise<void>((resolve, reject) => server.close((e) => e ? reject(e) : resolve()));
     }
+  });
+  it('a late-fill position owns its exact entry size, so Return cannot use zero or its sibling entry', () => {
+    const base = input();
+    const i = { ...base, trades: [{ positionId: 'p1.o2', mint: 'm', openedAtMs: base.nowMs - 2000, closedAtMs: base.nowMs - 1000, notional: 100n, netPnl: 30n, netLamports: 3n, booked: 0n, stoppedOut: false }],
+      book: { positions: { 'p1.o2': { id: 'p1.o2', entryIntentId: 'buy' } }, intents: { buy: { intent: { id: 'buy', purpose: 'entry' }, fills: [{ signature: 'a', sol: 11n }, { signature: 'b', sol: 29n }] } } },
+      attempts: new Map(), legs: { ...base.legs, attempts: new Map() } } as unknown as ApiInputs;
+    expect(views.trades(i)[0]).toMatchObject({ sizeLamports: '29', netLamports: '3' });
   });
   it('partial, close, late and account costs count exactly once at their own time', () => {
     const base = input();
