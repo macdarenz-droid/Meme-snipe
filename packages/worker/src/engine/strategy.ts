@@ -29,7 +29,7 @@ import {
   atr, checkStopDistance, decideExit, execPrice, liquidationValue, exitAttemptsOf, exitBookEvents, exitSettings, newTracker, noteAttempt,
 } from '../../../core/src/exits/index.ts';
 import {
-  type Coverage, type DeployerIndexState, type GateContext, type GraduatesFact, type RugLabellerState, type S0DiagnosticPart, DeployerIndex, GRADUATES_KEY, hardAllowsEntry, LOG_CREATE_PREFIX, NOT_EVALUATED, stagedHardRejects, RugLabeller, TX_CREATE_PREFIX, type PoolFact, carryKey, createKey, createKeepVerdict, CREATE_LATE_MS, createOf, createsCoverage, evaluateHardRejects, evaluateRegime, migrationKey, parseCreate, parseGraduates, parseMigration, parsePool, poolKey, pruneCoverage,
+  AsOfClamp, type Coverage, type DeployerIndexState, type GateContext, type GraduatesFact, type RugLabellerState, type S0DiagnosticPart, DeployerIndex, GRADUATES_KEY, hardAllowsEntry, LOG_CREATE_PREFIX, NOT_EVALUATED, stagedHardRejects, RugLabeller, TX_CREATE_PREFIX, type PoolFact, carryKey, createKey, createKeepVerdict, CREATE_LATE_MS, createOf, createsCoverage, evaluateHardRejects, evaluateRegime, migrationKey, parseCreate, parseGraduates, parseMigration, parsePool, poolKey, pruneCoverage,
 } from '../../../core/src/gates/index.ts';
 import type { GraduatesSeed } from '../../../core/src/facts/raw.ts';
 import { type BookEvent, type IntentState, isTerminal } from '../../../core/src/lifecycle/index.ts';
@@ -891,22 +891,25 @@ export class LiveStrategy implements Strategy {
    * left out), the labeller's tables and the coverage facts that still matter from `retainFromMs` on (WORKER-1d,
    * `pruneCoverage`). Null before anything was released or the seed applied.
    */
-  persistable(retainFromMs: number): { readonly state: { readonly asOf: Moment; readonly index: DeployerIndexState; readonly labeller: RugLabellerState; readonly coverage: readonly MarketEvent[]; readonly graduates: SavedGraduates; readonly candidates: readonly SavedCandidate[]; readonly tails: readonly SavedTail[] }; readonly mintRows: Iterable<readonly [string, readonly (readonly [string, number])[]]> } | null {
+  persistable(retainFromMs: number): { readonly state: { readonly asOf: Moment; readonly index: DeployerIndexState; readonly labeller: RugLabellerState; readonly coverage: readonly MarketEvent[]; readonly graduates: SavedGraduates; readonly candidates: readonly SavedCandidate[]; readonly tails: readonly SavedTail[] }; readonly mintRows: Iterable<readonly [string, readonly (readonly [string, number])[]]>; readonly clamp: AsOfClamp } | null {
     const asOf = this.#lastMoment;
     if (asOf === null || !this.#seedApplied || this.#waiting !== null) return null;
     // PERSIST-2: the newest graduates fact released so far, with only the entries whose survival mark was reached by
     // the save moment (the fact itself is never newer than the last released event).
     const items = (this.#graduatesFact?.items ?? []).filter((g) => g.migratedAtMs + this.#d.session.policy.regime.survivalAfterMs <= asOf.receivedAt);
-    // RESTART-KEEP: every candidate in its window, none migrated after the save moment. SAVE-ASOF: moments order by slot
-    // first and receipt times need not follow, so an evaluation can carry a time after the moment (an event of an earlier
-    // slot received later): it is saved as at the moment, never after, as fee terms received after it are left out.
-    const candidates = [...this.#cands.values()].filter((c) => c.migratedAtMs <= asOf.receivedAt).sort((a, b) => (a.mint < b.mint ? -1 : a.mint > b.mint ? 1 : 0))
-      .map((c): SavedCandidate => ({ mint: c.mint, pool: this.#poolOfMint.get(c.mint) ?? null, migratedAtMs: c.migratedAtMs, migrationSlot: this.#migrationSlot.get(c.mint) ?? null, tries: c.tries, lastEvalMs: c.lastEvalMs === null ? null : Math.min(c.lastEvalMs, asOf.receivedAt), lastReason: c.lastReason, bars: (this.#bars.get(c.mint) ?? []).filter((b) => b.startMs <= asOf.receivedAt), fees: this.#feeTermsAsOf(c.mint, asOf.receivedAt) }));
+    // RESTART-KEEP: every candidate in its window. SAVE-ASOF: every saved time as at the moment, never after
+    // (`AsOfClamp`): moments order by slot first and receipt times need not follow, so an evaluation can carry a time
+    // after the moment (an event of an earlier slot received later), and a migration's time is its chain block time,
+    // routinely seconds off local receipt. Each candidate came from a released event, so none is left out for it.
+    const clamp = new AsOfClamp(asOf.receivedAt);
+    const candidates = [...this.#cands.values()].sort((a, b) => (a.mint < b.mint ? -1 : a.mint > b.mint ? 1 : 0))
+      .map((c): SavedCandidate => ({ mint: c.mint, pool: this.#poolOfMint.get(c.mint) ?? null, migratedAtMs: clamp.ms(c.migratedAtMs), migrationSlot: this.#migrationSlot.get(c.mint) ?? null, tries: c.tries, lastEvalMs: c.lastEvalMs === null ? null : clamp.ms(c.lastEvalMs), lastReason: c.lastReason, bars: (this.#bars.get(c.mint) ?? []).filter((b) => b.startMs <= asOf.receivedAt), fees: this.#feeTermsAsOf(c.mint, asOf.receivedAt) }));
     // WORKER-GROW: the index's mint rows are streamed into the file by the save, never built whole; the graduates ride
     // in the payload line.
     return {
-      state: { asOf, index: this.#deployers.snapshot(asOf, retainFromMs, { mints: false }), labeller: this.#labeller.snapshot(), coverage: pruneCoverage(this.#coverageFacts, retainFromMs), graduates: { asOfMs: asOf.receivedAt, items }, candidates, tails: [...this.#tail].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([mint, t]) => ({ mint, pool: t.pool, untilMs: t.untilMs })) },
-      mintRows: this.#deployers.mintRows(retainFromMs),
+      state: { asOf, index: this.#deployers.snapshot(asOf, retainFromMs, { mints: false, clamp }), labeller: this.#labeller.snapshot(clamp), coverage: pruneCoverage(this.#coverageFacts, retainFromMs).map((e) => (e.moment.receivedAt <= asOf.receivedAt ? e : { ...e, moment: clamp.moment(e.moment) })), graduates: { asOfMs: asOf.receivedAt, items }, candidates, tails: [...this.#tail].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([mint, t]) => ({ mint, pool: t.pool, untilMs: t.untilMs })) },
+      mintRows: this.#deployers.mintRows(retainFromMs, clamp),
+      clamp,
     };
   }
 

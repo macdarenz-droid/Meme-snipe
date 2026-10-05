@@ -2689,3 +2689,25 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
     claims a moment after its as-of moment`, then a fresh start), and it passed on that fallback (`close.fromSlot`
     null). Now the restart restores the state, asserted, and the fill closes the restart gap the restore opened at the
     saved moment (`close.fromSlot` = the saved moment's slot, persist/state.ts); the rest of the drill is unchanged.
+- **Persist review (supervisor, 2026-10-06): every time a restore compares, saved as at the moment** (`AsOfClamp`, core
+  `gates/as-of-clamp.ts`). Two kinds of time can be after the moment without anything being wrong: a receipt time (the
+  slot-order case above) and a chain block time, which is routinely seconds off local receipt. Each one restore
+  compares with the moment is saved as at it; slot, transaction and instruction are kept, and nothing is dropped:
+  - the index's rug and unjudged labels' `at` (a dropped rug label would fail open) and its `first`/`last`;
+  - the index's mint rows (a create's block time) and the rug labeller's launches' `createdAtMs` (same);
+  - saved coverage facts' receipt times: an off-chain fact and a later chain frame need not arrive in moment order, and
+    the downtime fill's facts carry fetch times, so "never later" cannot be shown from the code; clamped instead;
+  - a candidate's `migratedAtMs` (the migration's block time): before, a candidate migrated "after" the moment by it was
+    left out of the save, and lost at a restart; every candidate comes from a released event, so none is left out now.
+  - Not clamped: price bars (minute starts; clamping would break the alignment) and fee terms stay filtered as before
+    (FEES-KEEP); a bar is left out only when a block time crossed a minute boundary ahead of local receipt.
+  - Effect: H14 can see a create, and the labeller a launch, up to one skew (seconds) earlier after a restart than
+    without it; a restored candidate's window starts up to one skew earlier.
+  - Visibility: each clamp is counted with the largest; the worker logs a save whose largest clamp is over 10 s
+    (`CLAMP_LOG_MS`; "Saved state: N times dated after the save's moment were saved as at it, the latest X s after."),
+    so a real future-dated bug stays visible.
+  - Evidence: `save-asof.test.ts`: labels, first moment and a mint row 5 s late restore with slot, transaction and
+    instruction kept (before: refused); a create, launch and coverage fact after the moment restore; a candidate
+    migrated 5 s after the moment is saved (before: left out); the worker logs a clamp over 10 s and writes the save.
+    Hand mutants killed: labels unclamped, the clamp moving a transaction index, mint rows unclamped, labeller
+    unclamped, coverage unclamped, the candidate filter back, clamps not counted, the log threshold, `first` unclamped.

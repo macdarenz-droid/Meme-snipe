@@ -6,13 +6,18 @@
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { RUG_CONFIG } from '../../core/src/config/rugs.ts';
+import { AsOfClamp, DeployerIndex } from '../../core/src/gates/index.ts';
+import type { MarketEvent, Moment } from '../../core/src/engine/index.ts';
 import { FILL_CONFIG, RESEARCH_CONFIG, TRIAL_POLICY, startSession } from '../../core/src/config/index.ts';
 import type { StrategyContext } from '../../core/src/engine/index.ts';
 import { emptyBook } from '../../core/src/lifecycle/index.ts';
 import { HALT_KEY, LiveStrategy, RESTORE_KEY, SEED_KEY } from '../src/engine/strategy.ts';
 import { strategyConfig } from '../src/run/settings.ts';
 import { loadState, saveState } from '../src/persist/index.ts';
-import { MIGRATED_AT, MINT, POOL_ADDRESS, SLOT, tempState } from './worker-harness.ts';
+import { DEV, MIGRATED_AT, MINT, Market, POOL_ADDRESS, SLOT, dueTimers, makeWorker, slotAt, tempState } from './worker-harness.ts';
+import { PERSIST_EVERY_MS, PERSIST_FILE } from '../src/run/worker.ts';
+import { TX_CREATE_PREFIX } from '../../core/src/gates/index.ts';
+import { existsSync } from 'node:fs';
 
 const RESTORED = MIGRATED_AT + 30 * 60_000;
 /** Inside the candidate's window (U2: 60 to 240 minutes after the migration). */
@@ -87,4 +92,92 @@ describe('SAVE-ASOF', () => {
     const late = restored({ ...CANDIDATE, lastEvalMs: RESTORED + 1 });
     expect(late.out).toContainEqual({ action: null, reasons: ['candidates refused', 'a saved candidate is dated after the restore'] });
   });
+
+  // Persist review (S1), items 1, 2 and 4.
+  const createEvent = (mint: string, createdAtMs: number, slot: bigint) => ({
+    event: { name: 'CreateEvent', program: 'pump', data: { mint, creator: 'Dev1111', timestamp: BigInt(createdAtMs / 1_000), name: 'x', symbol: 'x', uri: '' } },
+    signature: `sig-${mint}`, txSlot: slot, truncated: false, via: 'logs:pump', source: 'helius', backfilled: false, seq: 1,
+  });
+  const market = (key: string, value: unknown, moment: Moment): MarketEvent => ({ kind: 'market', id: key, moment, key, value });
+
+  it('the index\'s labels, first moment and mint rows received or dated after the moment restore, with slot, transaction and instruction kept', () => {
+    const idx = new DeployerIndex();
+    const rug = { slot: SLOT + 1n, txIndex: 3, ixIndex: 1, receivedAt: IN_WINDOW + 4_000 };
+    const unjudged = { slot: SLOT + 1n, txIndex: 4, ixIndex: 2, receivedAt: IN_WINDOW + 4_500 };
+    const asOf = { slot: SLOT + 2n, txIndex: 1, ixIndex: 0, receivedAt: IN_WINDOW + 1_000 };
+    idx.observe(market('rug:R', { mint: 'R', creator: 'Dev1111', rule: 'dump' }, rug));
+    idx.observe(market('rug-unjudged:U', { mint: 'U', creator: 'Dev1111' }, unjudged));
+    // A create whose chain block time is 5 s after the moment's receipt time.
+    idx.observe(market('logs:pump:CreateEvent:M', createEvent('M', IN_WINDOW + 6_000, SLOT + 2n), asOf));
+    const clamp = new AsOfClamp(asOf.receivedAt);
+    const saved = idx.snapshot(asOf, Number.MIN_SAFE_INTEGER, { clamp });
+    const at = (m: Moment) => ({ ...m, receivedAt: asOf.receivedAt });
+    expect(saved.first).toEqual(at(rug));
+    expect(saved.last).toEqual(asOf);
+    expect(saved.rugs).toEqual([['Dev1111', [['R', { at: at(rug), kind: 'dump' }]]]]);
+    expect(saved.unjudged).toEqual([['Dev1111', [['U', { at: at(unjudged), kind: null }]]]]);
+    expect(saved.mints).toEqual([['Dev1111', [['M', asOf.receivedAt]]]]);
+    // Before: restore refused the labels ('an entry is dated after the snapshot moment') and the save was discarded.
+    const back = DeployerIndex.restore(saved);
+    expect(back.snapshot(asOf)).toEqual(saved);
+    expect(back.factFor('Dev1111', asOf, 0).rugs.map((r) => r.mint)).toEqual(['R']);
+    // Item 5: each clamp counted (first, two labels, one mint row) with the largest.
+    expect([clamp.count, clamp.maxMs]).toEqual([4, 5_000]);
+  });
+
+  it('a create, a launch and a migration dated by chain time 5 s after the moment, and a coverage fact received after it, are saved as at the moment and restore', () => {
+    const r = restored(CANDIDATE);
+    const late = IN_WINDOW + 4_000;
+    // Slot +1, received after the slot +2 event that is the save's moment: a coverage fact and a create whose block
+    // time is 5 s after the moment's receipt time (the launch of the rug labeller comes from the same create).
+    r.strategy.onMarket(market('coverage:creates:resume', { value: { fromSlot: SLOT, toSlot: SLOT + 1n, via: 'logs:pump' }, source: 'worker', backfilled: false, seq: 1 }, { slot: SLOT + 1n, txIndex: 2, ixIndex: 0, receivedAt: late }), { now: at(SLOT + 1n, late), book: emptyBook({ maxOpenPositions: 3 }), rng: { next: () => 0 }, lookup: () => ({ ok: false, reason: 'missing' }), history: () => [] } as unknown as StrategyContext);
+    r.strategy.onMarket(market('logs:pump:CreateEvent:M', createEvent('M', IN_WINDOW + 5_000, SLOT + 1n), { slot: SLOT + 1n, txIndex: 3, ixIndex: 0, receivedAt: late }), { now: at(SLOT + 1n, late), book: emptyBook({ maxOpenPositions: 3 }), rng: { next: () => 0 }, lookup: () => ({ ok: false, reason: 'missing' }), history: () => [] } as unknown as StrategyContext);
+    r.event('next', SLOT + 2n, IN_WINDOW);
+    const p = r.strategy.persistable(0)!;
+    const { state, path } = save(r.strategy);
+    expect(state.asOf.receivedAt).toBe(IN_WINDOW);
+    const cov = state.coverage.find((e) => e.key === 'coverage:creates:resume')!;
+    expect(cov.moment).toEqual({ slot: SLOT + 1n, txIndex: 2, ixIndex: 0, receivedAt: IN_WINDOW });
+    expect(state.labeller.launches.find((l) => l.mint === 'M')!.createdAtMs).toBe(IN_WINDOW);
+    expect(p.clamp.maxMs).toBe(5_000);
+    const back = loadState(path, RUG_CONFIG);
+    expect(back.ok ? 'ok' : back.reason).toBe('ok');
+  });
+
+  it('a candidate whose migration\'s chain time is after the moment is saved as at the moment, not left out', () => {
+    // Migrated (by its block time) 5 s after the save's moment, which is the restore event's (RESTORED).
+    const r = restored({ ...CANDIDATE, migratedAtMs: RESTORED });
+    r.event('next', SLOT + 1n, RESTORED - 5_000 + 1);
+    const saved = save(r.strategy);
+    // persistable's own moment check: the event at slot +1 is the moment, received before the migration's block time.
+    expect(saved.state.asOf.receivedAt).toBe(RESTORED - 5_000 + 1);
+    expect(saved.state.candidates.map((c) => [c.mint, c.migratedAtMs])).toEqual([[MINT, RESTORED - 5_000 + 1]]);
+    const back = loadState(saved.path, RUG_CONFIG);
+    expect(back.ok ? 'ok' : back.reason).toBe('ok');
+  });
+
+  it('the worker logs a save whose largest clamp is over 10 s (a real future-dated bug stays visible), and still writes it', async () => {
+    const stateDir = tempState();
+    const timers = dueTimers(MIGRATED_AT);
+    const h = makeWorker({ stateDir, timers, seed: async () => ({ mode: 'none', creates: [], coverage: [], report: 'test' }) });
+    const m = new Market(h);
+    const started = h.worker.start();
+    for (let k = 0; k < 200 && !h.order.includes('start helius-ws'); k++) {
+      timers.set(timers.now() + 100);
+      await new Promise<void>((r) => setImmediate(r));
+    }
+    m.slot();
+    m.offchain('coverage:creates:start', { fromSlot: slotAt(m.now), via: 'logs:pump' });
+    await m.run(60_000, 10_000, () => m.slot());
+    expect(await started).toEqual({ ok: true });
+    // A create whose chain time is an hour ahead: still ahead at the next save.
+    const ahead = timers.now() + 3_600_000;
+    m.fact(`${TX_CREATE_PREFIX}Future1111`, { event: { program: 'pump', name: 'CreateEvent', data: { mint: 'Future1111', creator: DEV, user: DEV, timestamp: BigInt(Math.floor(ahead / 1000)), tokenTotalSupply: 1_000_000_000_000_000n } }, signature: 'create-future' });
+    await m.run(PERSIST_EVERY_MS + 60_000, 30_000, () => m.slot());
+    expect(existsSync(join(stateDir, PERSIST_FILE))).toBe(true);
+    expect(h.logs.filter((l) => l.startsWith('Saved state: '))).toEqual(expect.arrayContaining([expect.stringMatching(/^Saved state: [1-9]\d* times dated after the save's moment were saved as at it, the latest \d+\.\d s after\.$/)]));
+    expect(h.logs.filter((l) => l.startsWith('Saved state not written') && !l.endsWith('the seed is not applied yet.'))).toEqual([]);
+    await h.worker.kill();
+  }, 60_000);
 });
+

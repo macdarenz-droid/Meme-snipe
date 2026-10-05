@@ -9,6 +9,7 @@ import { compareEvents, compareMoments, type Moment } from '../engine/moment.ts'
 import { SECOND_MS } from '../config/time.ts';
 import type { DeployerFact } from './facts.ts';
 import { MintIndex } from './mint-index.ts';
+import { AsOfClamp } from './as-of-clamp.ts';
 
 /** FEED-1 keys: creates read from logs (processed) and from fetched transactions (confirmed). */
 export const LOG_CREATE_PREFIX = 'logs:pump:CreateEvent:';
@@ -234,20 +235,21 @@ export class DeployerIndex {
     return { creators: this.#mints.creatorCount, mints: this.#mints.size, mint_bytes: this.#mints.heldBytes(), rugs, unjudged, vias: this.#createVias.size, lost: this.#lost.size };
   }
 
-  snapshot(asOf: Moment, retainFromMs = Number.MIN_SAFE_INTEGER, o: { readonly mints?: boolean } = {}): DeployerIndexState {
+  snapshot(asOf: Moment, retainFromMs = Number.MIN_SAFE_INTEGER, o: { readonly mints?: boolean; readonly clamp?: AsOfClamp } = {}): DeployerIndexState {
     if (this.#last !== null && compareMoments(this.#last, asOf) > 0) throw new RangeError('the index has observed events after the snapshot moment');
-    const keep = <V>(m: Map<string, Map<string, V>>, ms: (v: V) => number) =>
-      [...m].map(([creator, inner]) => [creator, [...inner].filter(([, v]) => ms(v) >= retainFromMs)] as const)
+    // SAVE-ASOF: every saved time as at `asOf`, never after (`AsOfClamp`): restore refuses after, and would discard the
+    // whole save. A label is never dropped for it: a dropped rug label would fail open.
+    const clamp = o.clamp ?? new AsOfClamp(asOf.receivedAt);
+    const label = (k: Known): Known => (k.at.receivedAt <= asOf.receivedAt ? k : { ...k, at: clamp.moment(k.at) });
+    const keep = (m: Map<string, Map<string, Known>>) =>
+      [...m].map(([creator, inner]) => [creator, [...inner].filter(([, v]) => v.at.receivedAt >= retainFromMs).map(([mint, v]) => [mint, label(v)] as const)] as const)
         .filter(([, inner]) => inner.length > 0)
         .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-    // SAVE-ASOF: moments order by slot first and receipt times need not follow, so an event at or before `asOf` in order
-    // can carry a receipt time after it; the snapshot keeps it as at `asOf`, never after (restore refuses after).
-    const notAfter = (m: Moment): Moment => (m.receivedAt > asOf.receivedAt ? { ...m, receivedAt: asOf.receivedAt } : m);
-    const first = this.#first === null ? null : notAfter(this.#first.receivedAt >= retainFromMs ? this.#first : { ...this.#first, receivedAt: retainFromMs });
+    const first = this.#first === null ? null : clamp.moment(this.#first.receivedAt >= retainFromMs ? this.#first : { ...this.#first, receivedAt: retainFromMs });
     return {
-      asOf, first, last: this.#last === null ? null : notAfter(this.#last), seeded: this.#seeded,
+      asOf, first, last: this.#last === null ? null : clamp.moment(this.#last), seeded: this.#seeded,
       // Without `mints` (WORKER-GROW), the rows are left to `mintRows`, for a save that streams them.
-      mints: o.mints === false ? [] : [...this.mintRows(retainFromMs)], rugs: keep(this.#rugs, (k) => k.at.receivedAt), unjudged: keep(this.#unjudged, (k) => k.at.receivedAt),
+      mints: o.mints === false ? [] : [...this.mintRows(retainFromMs, clamp)], rugs: keep(this.#rugs), unjudged: keep(this.#unjudged),
       createVias: [...this.#createVias].sort(),
       lost: [...this.#lost].filter(([, l]) => l.atMs >= retainFromMs).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
     };
@@ -257,9 +259,10 @@ export class DeployerIndex {
    * WORKER-GROW: the snapshot's mint rows one creator at a time (`snapshot(asOf, retainFromMs).mints` without building
    * them all), in the same order, for a save that streams them.
    */
-  *mintRows(retainFromMs = Number.MIN_SAFE_INTEGER): Generator<readonly [string, readonly (readonly [string, number])[]]> {
+  *mintRows(retainFromMs = Number.MIN_SAFE_INTEGER, clamp?: AsOfClamp): Generator<readonly [string, readonly (readonly [string, number])[]]> {
     for (const creator of [...this.#mints.creators()].sort()) {
-      const inner = [...this.#mints.entries(creator)].filter(([, t]) => t >= retainFromMs);
+      // SAVE-ASOF: a create's time is its chain block time, routinely seconds off local receipt: saved as at the moment.
+      const inner = [...this.#mints.entries(creator)].filter(([, t]) => t >= retainFromMs).map(([mint, t]) => [mint, clamp === undefined ? t : clamp.ms(t)] as const);
       if (inner.length > 0) yield [creator, inner] as const;
     }
   }
