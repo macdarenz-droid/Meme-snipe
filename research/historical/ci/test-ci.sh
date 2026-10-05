@@ -230,6 +230,10 @@ for g in archive40 archive10.5 archivenone; do
 done
 o="$T/scanrps"; rm -rf "$o"; mkdir -p "$o"; ARCHIVE_GO="$T/archive10.go" scan "$o" && [[ $(calls) == "scan " ]] || bad+=" archive10"
 [[ -z "$bad" ]] && ok "ARCHIVE-SAFE: scan-day refuses (exit 2, no request) a scanner request cap of 40, 10.5 or none found, and scans at 10" || no "scan-day rps:$bad"
+o="$T/scannd"; rm -rf "$o"; mkdir -p "$o"; : > "$T/calls.log"; rc=0
+ARCHIVE_GO="$T/archive10.go" PATH="$S:$PATH" GITHUB_STEP_SUMMARY="$T/summary.md" bash "$here/scan-day.sh" 2026-09-21 "$o" 40 300 > "$T/out.txt" 2>&1 || rc=$?
+[[ $rc == 2 && ! -s "$T/calls.log" ]] && grep -q "2026-09-21 is a Helius day" "$T/out.txt" &&
+  ok "ARCHIVE-NODUP: scan-day refuses the Helius day 2026-09-21 (exit 2) before any scanner call" || no "scan-day helius day: rc=$rc $(calls)"
 o="$T/scan3"; mkdir -p "$o"; now=$(date +%s); echo "$now 7200 $((now + 7200))" > "$o/archive-429.state"
 rc=0; scan "$o" 60 || rc=$?
 mapfile -t c < "$T/calls.log"; w=${c[0]#sleep }
@@ -564,7 +568,10 @@ bad=""
 for v in 41 0; do rc=0; MAX_MBPS=$v cdrun m 0 || rc=$?; [[ $rc == 2 && ! -s "$T/zs.args" ]] && grep -q "max_mbps $v is not in" "$T/summary.md" || bad+=" mbps=$v:$rc"; done
 for g in archive40 archive10.5 archivenone; do rc=0; ARCHIVE_GO="$T/$g.go" cdrun m 0 || rc=$?; [[ $rc == 2 && ! -s "$T/zs.args" ]] && grep -q "request cap" "$T/summary.md" || bad+=" $g:$rc"; done
 rc=0; MAX_MBPS=40 cdrun m 75 || rc=$?; [[ $rc == 4 ]] && grep -q '^unit ' "$T/zs.args" || bad+=" ok40:$rc"
-[[ -z "$bad" ]] && ok "ARCHIVE-SAFE: check-day (archive) exits 2 before any zeroed-scan call for max_mbps 41 or 0 and a request cap of 40, 10.5 or none; 40 MB/s at 10/s runs" || no "check-day limits:$bad"
+o="$T/cd-nd"; rm -rf "$o"; mkdir -p "$o/units/1046/1-2" "$T/cd-ds"; echo x > "$o/units/1046/1-2/blocks.csv.zst"; : > "$T/zs.args"; : > "$T/summary.md"; rc=0
+ARCHIVE_GO="$T/archive10.go" FAKE_AVAIL=999000000000 DATASET_PARENT="$T/cd-ds" PATH="$C:$PATH" GITHUB_STEP_SUMMARY="$T/summary.md" bash "$here/check-day.sh" 2026-09-21 "$o" "$T/cd-assets-nd" > "$T/out.txt" 2>&1 || rc=$?
+[[ $rc == 2 && ! -s "$T/zs.args" ]] && grep -q "2026-09-21 is a Helius day" "$T/summary.md" || bad+=" helius-day:$rc"
+[[ -z "$bad" ]] && ok "ARCHIVE-SAFE: check-day (archive) exits 2 before any zeroed-scan call for max_mbps 41 or 0, a request cap of 40, 10.5 or none, and a Helius day (ARCHIVE-NODUP); 40 MB/s at 10/s runs" || no "check-day limits:$bad"
 [[ $p == determinism ]] && grep -q "^phase determinism" "$T/summary.md" && ok "check-day: finalize, QA, parity, volume and determinism durations are logged"
 rc=0; cdrun b 1 || rc=$?
 [[ $rc == 1 ]] && grep -q "determinism rescan failed (scanner exit 1)" "$T/summary.md" && ok "check-day: any other rescan failure exits 1 (not resumable)" || no "check-day rescan failure: rc=$rc"
