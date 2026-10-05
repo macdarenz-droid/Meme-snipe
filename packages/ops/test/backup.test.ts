@@ -74,6 +74,8 @@ const STATE: Record<string, string> = {
   'journal.jsonl': '{"seq":1}\n',
   'recorder/units/1/1-2/stats.json': '{}\n',
   'drill.token': 'secret-per-boot',
+  // #218 HEAP-GUARD: Node fatal reports carry the host name and network interfaces; never copied off the host.
+  'reports/report.20261005.010000.1234.0.001.json': '{"header":{"host":"zeroed-1"}}\n',
 };
 const BOT_STATE = ['account.json', 'chain-volume/2026-10-03.json', 'cold_start', 'control.json', 'credits.json', 'deployer-state.json', 'deployers.jsonl', 'exits.json', 'exposure.json', 'fill-budget.json', 'ledger.sqlite'];
 
@@ -122,6 +124,8 @@ describe('backup: the whole bot state', () => {
     // The running worker's markers about itself: never restored onto a worker that has not reconciled yet.
     expect(body).toContain(`! -path ./${STATE_FILES.openIntents}`);
     expect(body).toContain(`! -path ./${STATE_FILES.cleanStop}`);
+    // Host details (#218's fatal reports): diagnostics for this host, not bot state.
+    expect(body).toContain("! -path './reports/*'");
     expect(Object.keys(STATE_FILES).sort()).toEqual(['cleanStop', 'drillToken', 'journal', 'openIntents', 'recorder']);
   });
 

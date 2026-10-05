@@ -1352,10 +1352,11 @@ e2e_commit() {
 # file except the run's evidence (journal.jsonl and recorder/, RUN-1's EVIDENCE_FILES), the runtime markers the
 # running worker writes about itself (the per-boot drill token, the open-intent count, the clean-stop marker: a
 # restored copy would describe the old worker, and a count of 0 from the backup would let an update through before
-# the restored worker has reconciled), files still being written (*.tmp: the worker renames a finished copy over
+# the restored worker has reconciled), Node's fatal reports (reports/: host name and network interfaces, this
+# host's diagnostics, not bot state), files still being written (*.tmp: the worker renames a finished copy over
 # the real name) and SQLite's side files (-wal, -shm, -journal: SQLite's online backup reads through them).
 backup_files() {
-  (cd "$1" && find . -type f ! -path ./journal.jsonl ! -path './recorder/*' ! -path ./drill.token \
+  (cd "$1" && find . -type f ! -path ./journal.jsonl ! -path './recorder/*' ! -path ./drill.token ! -path './reports/*' \
     ! -path ./open_intents ! -path ./clean_stop \
     ! -name '*.tmp' ! -name '*-wal' ! -name '*-shm' ! -name '*-journal' -printf '%P\n') | LC_ALL=C sort
 }
