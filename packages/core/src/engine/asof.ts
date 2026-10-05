@@ -166,7 +166,14 @@ export class AsOfStore {
       const a = key.indexOf(':');
       const b = a < 0 ? -1 : key.indexOf(':', a + 1);
       const prefix = a < 0 ? key : b < 0 ? key.slice(0, a) : key.slice(0, b);
-      byPrefix.set(prefix, (byPrefix.get(prefix) ?? 0) + every);
+      const had = byPrefix.get(prefix);
+      // A new kind is kept as a fresh copy, never a slice that would pin its whole key (facts review).
+      if (had === undefined) {
+        const units: number[] = [];
+        for (let j = 0; j < prefix.length; j++) units.push(prefix.charCodeAt(j));
+        byPrefix.set(String.fromCharCode(...units), every);
+      }
+      else byPrefix.set(prefix, had + every);
     }
     return { keys: this.#series.size, entries, tails: this.#byTail.size, byPrefix };
   }

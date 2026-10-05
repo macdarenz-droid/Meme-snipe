@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  MEM_FILE, PROBE_EVERY_MS, PROBE_KEEP, PROBE_MAX_COUNTS, PROBE_STORE_KINDS, deathMem, parseDeathMem, probeCode, probeCounts, readMem, readProbe, writeMem,
+  MEM_FILE, PROBE_EVERY_MS, PROBE_FILE, PROBE_KEEP, PROBE_MAX_COUNTS, PROBE_STORE_KINDS, deathMem, parseDeathMem, probeCode, probeCounts, readMem, readProbe, writeMem, writeProbe,
   type MemSample, type ProbeSample,
 } from '../src/run/mem-trace.ts';
 import { buildSummary, emptySummaryState, foldText, summaryBody, withoutProbe } from '../src/run/summary.ts';
@@ -32,6 +32,11 @@ describe('the counts', () => {
     const wide = Object.fromEntries(Array.from({ length: 200 }, (_, i) => [`n${i}`, i]));
     expect(probeCounts({ g: wide })).toHaveLength(PROBE_MAX_COUNTS);
     expect(probeCounts({ g: { nan: Number.NaN, inf: Number.POSITIVE_INFINITY } })).toEqual([]);
+    // No address reaches a published kind: a long or address-shaped segment counts as `x`, and kinds that merge are summed.
+    const mint = 'So11111111111111111111111111111111111111112';
+    expect(probeCounts({}, new Map([[`read:${mint}`, 3], [`pump:${'z'.repeat(25)}`, 2], ['read:x', 1], ['gates:mint', 9]]))).toEqual([
+      { code: 'store_k_gates_mint', count: 9 }, { code: 'store_k_read_x', count: 4 }, { code: 'store_k_pump_x', count: 2 },
+    ]);
     expect(probeCode('A'.repeat(80))).toBe('a'.repeat(48));
     expect(probeCode('123')).toBe('other');
   });
@@ -60,29 +65,38 @@ describe('the counts', () => {
   it('mem.json keeps the sample and the recent probes; only well-formed probes are read back', () => {
     const dir = tempState();
     const recent = [probe(1), probe(2, { saving: true })];
-    writeMem(dir, sample(), recent);
+    writeMem(dir, sample());
+    writeProbe(dir, recent);
     expect(readMem(dir)!.heap_used).toBe(100 * MB);
+    expect(readProbe(dir)).toEqual(recent);
+    // The 10-second sample is written alone: the probes stay as they were (ops review: no rewrite every 10 s).
+    writeMem(dir, sample({ at: 2_000_000 }));
     expect(readProbe(dir)).toEqual(recent);
     for (const bad of [
       [{ ...probe(1), saving: 'yes' }], [probe(1, { counts: [{ code: 'Bad Code', count: 1 }] })],
       [probe(1, { heap_used_mb: -1 })], Array.from({ length: PROBE_KEEP + 1 }, (_, i) => probe(i)), 'x',
     ]) {
-      writeFileSync(join(dir, MEM_FILE), JSON.stringify({ ...sample(), recent: bad }));
+      writeFileSync(join(dir, PROBE_FILE), JSON.stringify(bad));
       expect(readProbe(dir), JSON.stringify(bad).slice(0, 80)).toEqual([]);
     }
-    writeFileSync(join(dir, MEM_FILE), JSON.stringify(sample()));
+    rmSync(join(dir, PROBE_FILE));
     expect(readProbe(dir)).toEqual([]);
   });
 
   it('a death carries the probes when its sample is fresh, none when it is old; a malformed probe drops the record', () => {
     const dir = tempState();
-    writeMem(dir, sample({ at: 995_000 }), [probe(940_000), probe(994_000, { saving: true })]);
+    writeMem(dir, sample({ at: 995_000 }));
+    writeProbe(dir, [probe(940_000), probe(994_000, { saving: true })]);
     expect(deathMem(dir, 1_000_000, 400_000)!.recent).toEqual([probe(940_000), probe(994_000, { saving: true })]);
     expect(deathMem(dir, 1_000_000 + 30_000, 400_000)?.recent).toBeUndefined();
     const d = deathMem(dir, 1_000_000, 400_000)!;
     expect(parseDeathMem(JSON.parse(JSON.stringify(d)))).toEqual(d);
-    expect(parseDeathMem({ ...d, recent: [{ ...probe(1), saving: 1 }] })).toBeNull();
-    expect(parseDeathMem({ ...d, recent: Array.from({ length: PROBE_KEEP + 1 }, (_, i) => probe(i)) })).toBeNull();
+    // A malformed `recent` drops only itself; the rest of the record stands (ops review).
+    const { recent: _r, ...rest } = d;
+    expect(parseDeathMem({ ...d, recent: [{ ...probe(1), saving: 1 }] })).toEqual(rest);
+    expect(parseDeathMem({ ...d, recent: Array.from({ length: PROBE_KEEP + 1 }, (_, i) => probe(i)) })).toEqual(rest);
+    expect(parseDeathMem({ ...d, recent: 'x' })).toEqual(rest);
+    expect(parseDeathMem({ ...d, at: -1 })).toBeNull();
   });
 });
 
@@ -99,6 +113,7 @@ describe('in the worker', () => {
     await m.run(PROBE_EVERY_MS + 11_000, 500, () => m.slot());
     const recent = readProbe(stateDir);
     expect(recent.length).toBeGreaterThanOrEqual(2);
+    expect(JSON.parse(readFileSync(join(stateDir, MEM_FILE), 'utf8'))).not.toHaveProperty('recent');
     const codes = new Set(recent.at(-1)!.counts.map((c) => c.code));
     for (const c of ['store_keys', 'store_entries', 'store_records', 'feed_keys', 'feed_held', 'facts_books', 'facts_queue', 'strategy_cands', 'strategy_deployer_mints', 'worker_pools', 'worker_create_sig', 'worker_exits_chars', 'loop_max_ms', 'loop_p95_ms', 'fills_active', 'fills_waiting']) {
       expect(codes.has(c), c).toBe(true);
@@ -123,10 +138,12 @@ describe('in the worker', () => {
     const last = readFileSync(join(stateDir, STATE_FILES.journal), 'utf8').trimEnd().split('\n').at(-1)!;
     const death = Date.parse((JSON.parse(last) as { ts: string }).ts);
     const recent = [probe(death - 61_000), probe(death - 2_000, { saving: true, large_object_mb: 90 })];
-    writeMem(stateDir, sample({ at: death - 2_000, heap_used: 560 * MB, heap_limit: 572 * MB }), recent);
+    writeMem(stateDir, sample({ at: death - 2_000, heap_used: 560 * MB, heap_limit: 572 * MB }));
+    writeProbe(stateDir, recent);
     const pre = makeWorker({ stateDir, timers, phase: 'reconcile' });
     expect(await pre.worker.reconcileOnly()).toEqual({ ok: true });
     rmSync(join(stateDir, MEM_FILE));
+    rmSync(join(stateDir, PROBE_FILE));
     const b = makeWorker({ stateDir, timers });
     await b.worker.stop();
     const text = readFileSync(join(stateDir, STATE_FILES.journal), 'utf8');

@@ -47,7 +47,7 @@ import { engineFeed, type EngineFeed } from './engine-feed.ts';
 import { startHealthServer } from './health.ts';
 import { type HeartbeatPosition, heartbeatBody, sendHeartbeat } from './heartbeat.ts';
 import { crashSite } from './crash-site.ts';
-import { type DeathMem, MEM_EVERY_MS, PROBE_EVERY_MS, PROBE_KEEP, type ProbeCount, type ProbeSample, cgroupMax, deathMem, fatalReport, nearLimit, parseDeathMem, probeCounts, probeSample, readMem, sampleMem, writeMem } from './mem-trace.ts';
+import { type DeathMem, MEM_EVERY_MS, PROBE_EVERY_MS, PROBE_KEEP, type ProbeCount, type ProbeSample, cgroupMax, deathMem, fatalReport, nearLimit, parseDeathMem, probeCounts, probeSample, readMem, sampleMem, writeMem, writeProbe } from './mem-trace.ts';
 import { Summarizer, SummaryClock } from './summary.ts';
 import { CappedMap } from './capped-map.ts';
 import { jsonText } from './json.ts';
@@ -1987,8 +1987,9 @@ export class Worker {
       if (now - this.#memProbeAt >= PROBE_EVERY_MS) {
         this.#memProbeAt = now;
         this.#probeMem(now, false);
+        writeProbe(this.#d.config.stateDir, this.#memRecent);
       }
-      writeMem(this.#d.config.stateDir, sampleMem(now, this.#cgroupMax), this.#memRecent);
+      writeMem(this.#d.config.stateDir, sampleMem(now, this.#cgroupMax));
     } catch {
       // A sample not written (a full disk) only leaves the next boot without it.
     }
@@ -2026,12 +2027,12 @@ export class Worker {
     }, byPrefix);
   }
 
-  /** MEM-PROBE: mem.json with a probe sample around the state save (`saving` true just before it, false just after). */
+  /** MEM-PROBE: a probe sample around the state save (`saving` true just before it, false just after), written at once. */
   #markSave(saving: boolean): void {
     try {
       const now = this.#d.timers.now();
       this.#probeMem(now, saving);
-      writeMem(this.#d.config.stateDir, sampleMem(now, this.#cgroupMax), this.#memRecent);
+      writeProbe(this.#d.config.stateDir, this.#memRecent);
     } catch {
       // Not written (a full disk): the save goes ahead regardless.
     }

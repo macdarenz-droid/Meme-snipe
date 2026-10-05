@@ -69,6 +69,8 @@ export interface ProbeSample {
 }
 
 const CODE = /^(?=[^a-z]*[a-z])[a-z0-9_-]{1,48}$/;
+/** The longest key segment a published kind keeps: every base58 address (32 to 44 characters) is longer. */
+const KIND_SEGMENT_MAX = 24;
 /** A count's code: lower case, `[a-z0-9_-]` only, at most 48 characters. */
 export const probeCode = (s: string): string => {
   const c = s.toLowerCase().replace(/[^a-z0-9_-]+/g, '_').slice(0, 48);
@@ -96,7 +98,14 @@ export const probeCounts = (groups: Readonly<Record<string, Readonly<Record<stri
     if (out.length < PROBE_MAX_COUNTS && Number.isFinite(n)) out.push({ code: probeCode(code), count: Math.max(0, Math.round(n)) });
   };
   for (const [g, counts] of Object.entries(groups)) for (const [k, n] of Object.entries(counts)) put(`${g}_${k}`, n);
-  const kinds = [...byPrefix].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1)).slice(0, PROBE_STORE_KINDS);
+  // A kind is published, so no address may reach it: a segment over 24 characters (any address, signature or hash)
+  // counts as `x` (ops review), and kinds that become the same are summed.
+  const masked = new Map<string, number>();
+  for (const [k, n] of byPrefix) {
+    const kind = k.split(':').map((seg) => (seg.length > KIND_SEGMENT_MAX ? 'x' : seg)).join(':');
+    masked.set(kind, (masked.get(kind) ?? 0) + n);
+  }
+  const kinds = [...masked].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1)).slice(0, PROBE_STORE_KINDS);
   for (const [k, n] of kinds) put(`store_k_${k}`, n);
   return out;
 };
@@ -105,9 +114,11 @@ export const probeSample = (at: number, saving: boolean, counts: readonly ProbeC
   at, heap_used_mb: mb(process.memoryUsage().heapUsed), ...heapSpacesMb(), saving, counts,
 });
 
-/** The sample with the probe's recent samples beside it, oldest first. */
-export const writeMem = (dir: string, s: MemSample, recent: readonly ProbeSample[] = []): void =>
-  atomicWrite(join(dir, MEM_FILE), `${JSON.stringify({ ...s, recent })}\n`);
+export const writeMem = (dir: string, s: MemSample): void => atomicWrite(join(dir, MEM_FILE), `${JSON.stringify(s)}\n`);
+
+/** MEM-PROBE: the probe's recent samples, oldest first, in their own file: rewritten only when a sample is taken. */
+export const PROBE_FILE = 'mem-recent.json';
+export const writeProbe = (dir: string, recent: readonly ProbeSample[]): void => atomicWrite(join(dir, PROBE_FILE), `${JSON.stringify(recent)}\n`);
 
 const probeOk = (x: unknown): x is ProbeSample => {
   if (typeof x !== 'object' || x === null || Array.isArray(x)) return false;
@@ -118,11 +129,10 @@ const probeOk = (x: unknown): x is ProbeSample => {
     o['counts'].every((c) => typeof c === 'object' && c !== null && typeof (c as ProbeCount).code === 'string' && CODE.test((c as ProbeCount).code) && whole((c as ProbeCount).count));
 };
 
-/** The probe's recent samples in mem.json, oldest first: only well-formed ones, at most PROBE_KEEP; none when absent. */
+/** The probe's recent samples, oldest first: only a well-formed list of at most PROBE_KEEP; none when absent. */
 export const readProbe = (dir: string): ProbeSample[] => {
   try {
-    const v = JSON.parse(readFileSync(join(dir, MEM_FILE), 'utf8')) as Record<string, unknown>;
-    const r = v['recent'];
+    const r = JSON.parse(readFileSync(join(dir, PROBE_FILE), 'utf8')) as unknown;
     if (!Array.isArray(r) || r.length > PROBE_KEEP || !r.every(probeOk)) return [];
     return r.map((p) => ({ at: p.at, heap_used_mb: p.heap_used_mb, old_mb: p.old_mb, large_object_mb: p.large_object_mb, saving: p.saving, counts: p.counts.map((c) => ({ code: c.code, count: c.count })) }));
   } catch {
@@ -273,8 +283,9 @@ export const parseDeathMem = (v: unknown): DeathMem | null => {
   if (!Array.isArray(sp) || sp.length > DEATH_SPACES_MAX || !sp.every((x) => o(x) && typeof x['space'] === 'string' && /^[a-z][a-z-]{0,39}$/.test(x['space']) && whole(x['used_mb']))) return null;
   const s = v['sample'];
   if (s !== null && !(o(s) && ['at', 'heap_used_mb', 'heap_limit_mb', 'rss_mb', 'external_mb', 'array_buffers_mb'].every((k) => whole(s[k])))) return null;
-  const r = v['recent'] ?? [];
-  if (!Array.isArray(r) || r.length > PROBE_KEEP || !r.every(probeOk)) return null;
+  // A malformed `recent` drops only itself: the rest of the death record stands (ops review).
+  const raw = v['recent'] ?? [];
+  const r = Array.isArray(raw) && raw.length <= PROBE_KEEP && raw.every(probeOk) ? raw : [];
   return {
     at: v['at'], uptime_s: v['uptime_s'] as number | null, heap_used_mb: v['heap_used_mb'] as number | null, heap_limit_mb: v['heap_limit_mb'] as number | null,
     spaces: (sp as Record<string, unknown>[]).map((x) => ({ space: x['space'] as string, used_mb: x['used_mb'] as number })),
