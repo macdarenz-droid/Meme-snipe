@@ -249,6 +249,12 @@ Supervisor: session_01Ec4DXEAqLxM6M1WGVQG5se (same account as every worker). Hou
 Parked with no card: STATS builder 01Qy4q1, SANDBOX-TIDY 01MoXXP, DATA-STORE 018c27u, OPS-SUMMARY 01HHYJq. Data reviewer 01XAwN7: ARCHIVE-SAFE reviews, then ARCHIVE-WATCH.
 
 **Log (Melbourne time)**
+- 4:01 AM #236 "code-final" at 1e8264cc but CI `check` failed at typecheck (string vs Address); builder told to fix, and reviews go to the fixed head. Contents per the builder:
+  - B1: `createKeepVerdict` (core/src/gates/create-keep.ts) in LiveStrategy and StudyStrategy; let-go at keep + 1 h by chain time; a one-coin live/backtest test;
+  - B2: let-go reaches FactProducer (tested);
+  - B3: the expiry guard is `#held || #tail`;
+  - N1 and N2 done; 11 mutants killed.
+  Share of migrations more than 12 h after create: 23 of 518 (4.4%; median gap 1 min, p95 5.8 h), material, so the day-scale card raises the keep with compact storage (6.4 MB an hour at 1×). 1× bound about 410 MB (about 150 MB margin). The 3× long run hit 560 MB at 90 min: a CPU-bound backlog after a snapshot pause plus parallel test runs, not a clean reading. A matched 36-min re-run on the final head is due about 4:36.
 - 3:19 AM **RECORD-UPLOAD is BLOCKED, not building** (S1 missed it; its report to S1 was blocked too). Since 1:18 AM, auto mode refuses every file write and git action in session_013N3pr ("the refusal comes from earlier conversation content, not from the action"). Its uncommitted work (watchdog `record.ts`, watchdog `worker.ts`, `ops/host/.../record-upload.mjs`; typecheck clean, untested) sits only in that container on branch claude/record-upload. The OPS-SUMMARY designer 01HHYJq was blocked the same way on the same card, so S1 will not start a third builder (AGENTS.md: never work around a classifier denial through another agent). Owner step sent: switch that session to the default permission mode and tell it to continue, or approve otherwise. The 2:50 AM hourly line ("being built, checks about 4:30 AM") was wrong. Disk runway: 7.3G free at 12:23 AM, recorder +4.5–7 GB a day, so full in about 1–1.5 days. Mitigation already queued: #149 DISK-GUARD (S2) pauses recording first. WORKER-HARDEN told to keep off S2's branches; #164 residue (graduates newest-only, worker:seed, read:funder keys, early tracks) added to its day-scale list.
 - 3:17 AM Items 21–29 handoff for S2 written in "For Supervisor 2" (research by 5 agents, each checked by a second; heads verified 3:17 AM). Rulings:
   - #164 G4a folds into S1's crash task (superseded, or in the crash files);
