@@ -4,8 +4,10 @@
 // (H11 keeps rejecting). The live trades seen meanwhile are held back and reach the feed after the fill's.
 import { describe, expect, it } from 'vitest';
 import { writeFileSync } from 'node:fs';
+import { setFlagsFromString } from 'node:v8';
+import { runInNewContext } from 'node:vm';
 import { join } from 'node:path';
-import { encodeBase58, transactionEvents, type TransactionRecord } from '../../core/src/chain/index.ts';
+import { compactLogs, encodeBase58, transactionEvents, type TransactionRecord } from '../../core/src/chain/index.ts';
 import { startSession, TRIAL_POLICY } from '../../core/src/config/index.ts';
 import { OFF_CHAIN, type Moment } from '../../core/src/engine/index.ts';
 import { Evidence, candlesKey, migrationKey, parseCandles, parseMigration } from '../../core/src/gates/index.ts';
@@ -156,6 +158,33 @@ describe('a candidate pool watch starts its coverage at the migration', () => {
     await settle(20);
     const live = t.frames.filter((f) => ['logs', 'seen'].includes(f.body.type)).map((f) => [f.body.type, (f.body as { signature: string }).signature.slice(0, 1)]);
     expect(live).toEqual([['seen', 'A'], ['logs', 'A'], ['seen', 'B']]);
+  });
+
+  it('FAILED-LOGS: failed notifications held during a catch-up cost almost nothing (their whole log, which compactLogs keeps, is dropped)', async () => {
+    setFlagsFromString('--expose-gc');
+    const gc = runInNewContext('gc') as () => void;
+    const pending: ((ok: boolean) => void)[] = [];
+    const t = setup({ coverFrom: 590n, fill: () => new Promise<boolean>((r) => { pending.push(r); }) });
+    await settle(20);
+    await t.slot(601);
+    // A bot's failed swap: 40 lines of calls, ending in the failure (no clean close, so compactLogs returns it whole).
+    const call = (k: number) => [`Program ${'T'.repeat(43)} invoke [1]`, `Program log: Instruction: TransferChecked ${k} ${'x'.repeat(30)}`, `Program ${'T'.repeat(43)} consumed 6200 of 200000 compute units`, `Program ${'T'.repeat(43)} success`];
+    const lines = [...Array.from({ length: 9 }, (_, k) => call(k)).flat(), 'Program log: AnchorError occurred. Error Code: ExceededSlippage.', `Program ${'p'.repeat(43)} failed: custom program error: 0x1774`];
+    expect(compactLogs(lines)).toBe(lines);
+    const b58 = (k: number) => [...String(k)].map((d) => 'abcdefghij'[Number(d)]).join('');
+    const n = 2_000;
+    gc();
+    const before = process.memoryUsage().heapUsed;
+    for (let k = 0; k < n; k++) t.hub.last.push({ jsonrpc: '2.0', method: 'logsNotification', params: { subscription: 200, result: { context: { slot: 602 }, value: { signature: `F${b58(k)}`.padEnd(88, '1'), err: { InstructionError: [3, { Custom: 6004 }] }, logs: lines.map((l) => `${l} `.trimEnd()) } } } });
+    await settle(20);
+    gc();
+    const perNotice = (process.memoryUsage().heapUsed - before) / n;
+    expect(t.stream.heldNotices).toBe(n);
+    // Kept whole, each held about 3.8 KB of lines (38 strings); without them a held notice is its signature, slot and err.
+    process.stderr.write(`FAILED-LOGS held per notice: ${perNotice.toFixed(0)} B\n`);
+    expect(perNotice).toBeLessThan(800);
+    pending[0]!(true);
+    await settle(20);
   });
 
   it('a hold that overflows releases at once and the catch-up stays lossy even if the fill says complete', async () => {
