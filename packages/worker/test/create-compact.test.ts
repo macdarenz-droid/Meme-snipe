@@ -63,6 +63,8 @@ describe('CREATE-COMPACT: creates and curve trades in the live store', () => {
     expect(createOf(c)).not.toBeNull();
     for (const k of ['creator', 'user', 'tokenTotalSupply', 'mint', 'timestamp']) expect(c.event.data[k]).toEqual(v.event.data[k]);
     expect([c.txSlot, c.source, c.backfilled]).toEqual([v.txSlot, v.source, v.backfilled]);
+    // Facts review note a: the create fact's quality ['backfilled'] comes from this field, so both values are kept.
+    for (const backfilled of [true, false]) expect((compactCreate({ ...v, backfilled }) as typeof v).backfilled).toBe(backfilled);
     expect(liveShape(e.key)).toBe(compactCreate);
     expect(liveShape(`logs:pump:CreateEvent:x`)).toBe(compactCreate);
     expect(liveShape(`logs:pump:TradeEvent:x`)).toBe(compactCurveTrade);

@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { encodeBase58 } from '../../src/chain/index.ts';
 import { DeployerIndex, type DeployerIndexState } from '../../src/gates/index.ts';
-import { MintIndex } from '../../src/gates/mint-index.ts';
+import { MintIndex, RepeatedRowError } from '../../src/gates/mint-index.ts';
 
 setFlagsFromString('--expose-gc');
 const gc = runInNewContext('gc') as () => void;
@@ -74,6 +74,17 @@ describe('DEPLOYER-COMPACT', () => {
     m.prune(6);
     expect([...m.entries(a)]).toEqual([['TextMint', 7]]);
     expect(m.size).toBe(2);
+  });
+
+  it('setRow on a creator already held is refused before it adds anything: size and entries unchanged (facts review note b)', () => {
+    const m = new MintIndex();
+    const a = key('a');
+    m.setRow(a, [[key('m1'), 1]]);
+    expect(() => m.setRow(a, [[key('m2'), 2], [key('m3'), 3]])).toThrow(RepeatedRowError);
+    expect(m.size).toBe(1);
+    expect([...m.entries(a)]).toEqual([[key('m1'), 1]]);
+    m.prune(0);
+    expect(m.size).toBe(1);
   });
 
   it('the same mint under two creators is two entries, as in the Map-of-Maps index', () => {

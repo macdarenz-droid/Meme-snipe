@@ -3,8 +3,7 @@
 // (measured in the 3× run: 90 MB of books at 409 pools). A minute's bucket is sorted when a later minute's trade
 // arrives; a late trade for an older minute reopens that bucket until the next one.
 import { createHash } from 'node:crypto';
-
-const MINUTE_MS = 60_000;
+import { MINUTE_MS } from '../config/time.ts';
 
 /**
  * OOM-SEEN/SEEN-TAGS: a swap's repeat tag, the same from a log line and from a fetched transaction: the first 96 bits of

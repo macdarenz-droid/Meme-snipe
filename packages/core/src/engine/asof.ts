@@ -46,11 +46,12 @@ export type Forget = (key: string) => number | null;
  * later moment is refused, and a value cannot be recorded with a moment later than now.
  */
 /** A flat copy of a string (UTF-16 unit by unit): never holds the pieces or the larger string it was built or cut from. */
+const CHAR_CHUNK = 8192;
 export const flatCopy = (s: string): string => {
   const units: number[] = [];
   for (let i = 0; i < s.length; i++) units.push(s.charCodeAt(i));
   let out = '';
-  for (let i = 0; i < units.length; i += 8192) out += String.fromCharCode(...units.slice(i, i + 8192));
+  for (let i = 0; i < units.length; i += CHAR_CHUNK) out += String.fromCharCode(...units.slice(i, i + CHAR_CHUNK));
   return out;
 };
 const flat = flatCopy;
