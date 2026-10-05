@@ -6,8 +6,9 @@ import { DEFAULT_HEALTH_ADDR, EXIT, REGISTERED_STRATEGIES, isLoopback } from '..
  * FILL-BUDGET (supervisor ruling, 5 Oct, under the owner's decision "max out account 1": no Helius rationing): the default
  * daily fill budget is 20,000, above the plan's share (seed-start.ts `PLAN_FILL_CREDITS_PER_DAY`, 3,870), which let one restart's
  * catch-up wave spend the day and left every later coin without a fill. Configuration: ZEROED_FILL_CREDITS_PER_DAY.
- * Each fill is still capped (TRADES_FILL_CREDITS) and two run at once; the Helius scheduler's 70% halt still refuses
- * every non-exit call past its share, whatever is left here.
+ * Each fill is still capped (TRADES_FILL_CREDITS) and two run at once. Helius has no monthly halt of the worker's own
+ * (`HELIUS_WORKER`): whatever is left here, Helius's own refusal for used-up credits (HELIUS-EXHAUSTED) holds every
+ * non-exit call.
  */
 export const FILL_CREDITS_PER_DAY = 20_000;
 
@@ -30,7 +31,7 @@ export interface WorkerConfig {
   readonly summaryMs: number;
   /**
    * FILL-BUDGET: credits the fills may spend in a UTC day (ZEROED_FILL_CREDITS_PER_DAY, default `FILL_CREDITS_PER_DAY`).
-   * The owner's decision is no Helius rationing; the scheduler's 70% halt still refuses non-exit calls past its share.
+   * The owner's decision is no Helius rationing; past the account's real end, HELIUS-EXHAUSTED holds non-exit calls.
    */
   readonly fillCreditsPerDay: number;
   /**

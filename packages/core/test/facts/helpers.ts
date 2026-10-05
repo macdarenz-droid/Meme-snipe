@@ -109,7 +109,7 @@ export const coverage = (stream: string, part: 'start' | 'gap' | 'resume', v: Re
   offchain(`coverage:${stream}:${part}`, v, slot, receivedAt);
 
 export const OPTIONS: ProducerOptions = {
-  candleFirstMs: 6 * 60_000, candleLastMs: 4 * 60_000, maxQuoteAgeMs: 2_000, survivalAfterMs: 30 * 60_000, survivalReadWindowMs: 60_000,
+  candleFirstMs: 6 * 60_000, candleLastMs: 4 * 60_000, tradeRepeatMs: 60 * 60_000, maxQuoteAgeMs: 2_000, survivalAfterMs: 30 * 60_000, survivalReadWindowMs: 60_000,
   graduatesKeepMs: 16 * 86_400_000 + 30 * 60_000, solUsdKeepMs: 30 * 3_600_000, volumeKeepMs: 367 * 86_400_000, insiderSlots: 2, firstBuyers: 20,
 };
 
