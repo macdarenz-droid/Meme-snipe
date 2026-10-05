@@ -78,11 +78,11 @@ Owner, Mon 5 Oct about 5:07 AM (three marked screenshots): "These are future upd
   - the theme choice (Paper or Silent Black), which leaves Home.
 - **Header.** The "Paper" chip beside the logo reads "Zeroed".
 - **App controls** (owner, Mon 5 Oct about 4:05 PM: "Put this in the future upgrade when we fix the apps main issues and intelligence. Put command on pause that trigger pause to server. When i click start, should be able to start again as new day even the risk ratio reached 3x. Before midnight").
-  - When: after the app's main issues and the bot's judging are fixed. Not started before then.
+  - When: after the app's main issues and the bot's judging are fixed. Not started before then. Owner, Tue 6 Oct about 1:00 AM: this stays with Supervisor 1, second to last in the queue (only paper and backtest removal comes after it).
   - Pause: the app's Pause button sends a pause to the server. Today it only shows the state; pausing is Telegram `/pause`, and resuming is `zeroed-resume` in the server console.
   - Start: the owner can start again as a new day before midnight, even after a daily risk limit has stopped entries (the owner's example: 3×).
   - Design first: the app sending commands changes ARCHITECTURE §12 and §5.2 (today the app sends no commands, and Telegram never resumes or raises limits). So it needs a signed-command design (the owner's paired device only, single use, logged), and the risk reviewer must pass the start-again override (owner-only, recorded in the ledger, never automatic). Related open PRs: #199 (OWNER-REVIEW b: /override), #190.
-- **Cost-limit slider (RISK-DIAL), parked** (owner, Mon 5 Oct about 4:20 PM: "park my demand about the slider %. Until i say so. Keep what we have atm."). R14's maxRoundTripBps stays 500.
+- **Cost-limit slider (RISK-DIAL)**: parked on Mon 5 Oct about 4:20 PM (owner: "park my demand about the slider %. Until i say so. Keep what we have atm."). On Tue 6 Oct about 1:00 AM the owner put it in Supervisor 2's app queue (`HANDOVER-APP.md` item 8): design first, then a risk review, then the owner's OK on the final design before any build. Until then R14's maxRoundTripBps stays 500.
   - The request: an app slider from 5% (default) to 100%, set only by the owner.
   - Found in design review, kept for when it resumes:
     - the dial also drives R5 sizing (evaluate.ts:505–506), so on the $20 trial bankroll it has effect only up to about 6–16%, depending on the stop;
