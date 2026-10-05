@@ -346,7 +346,18 @@ export const buildSummary = (i: SummaryInputs): Summary => {
 const lastDeathOf = (d: DeathMem): LastDeath => ({
   at: iso(d.at), uptime_s: d.uptime_s, heap_used_mb: d.heap_used_mb, heap_limit_mb: d.heap_limit_mb, spaces: d.spaces.map((x) => ({ ...x })),
   sample: d.sample === null ? null : { ...d.sample, at: iso(d.sample.at) },
+  ...(d.recent === undefined || d.recent.length === 0 ? {} : { recent: d.recent.map((p) => ({ at: iso(p.at), heap_used_mb: p.heap_used_mb, old_mb: p.old_mb, large_object_mb: p.large_object_mb, saving: p.saving, counts: p.counts.map((c) => ({ code: c.code, count: c.count })) })) }),
 });
+
+/** The summary without MEM-PROBE's samples in `last_death`, the shape a watchdog from MEM-SUMMARY to before MEM-PROBE accepts. */
+export const withoutProbe = (s: Summary): Summary => {
+  const d = (s.worker as { readonly last_death?: LastDeath | null }).last_death;
+  if (d === undefined || d === null || !Object.hasOwn(d, 'recent')) return s;
+  const { recent: _recent, ...rest } = d;
+  return { ...s, worker: { ...s.worker, [MEM_SUMMARY_KEY]: rest } };
+};
+/** True when the summary carries MEM-PROBE's samples. */
+const hasProbe = (s: Summary): boolean => withoutProbe(s) !== s;
 
 /** The summary without MEM-SUMMARY's key of `worker`, the shape a watchdog from RESTART-CAUSE to before it accepts. */
 export const withoutLastDeath = (s: Summary): Summary => {
@@ -373,8 +384,17 @@ export const withoutCreditDetail = (s: Summary): Summary => ({
 });
 
 /** The body to post, or null with the reason when either guard refuses it (then nothing is sent). */
-export const summaryBody = (s: Summary): { readonly body: string } | { readonly refused: string } => {
+export const summaryBody = (summary: Summary): { readonly body: string } | { readonly refused: string } => {
+  let s = summary;
   let body = JSON.stringify(s);
+  // MEM-PROBE: over the size cap, the oldest probe samples go first (the trades stay listed while they can).
+  const over = () => new TextEncoder().encode(body).length > SUMMARY_MAX_BYTES;
+  while (over() && hasProbe(s)) {
+    const d = (s.worker as { readonly last_death?: LastDeath | null }).last_death!;
+    const recent = d.recent!.slice(1);
+    s = recent.length === 0 ? withoutProbe(s) : { ...s, worker: { ...s.worker, [MEM_SUMMARY_KEY]: { ...d, recent } } };
+    body = JSON.stringify(s);
+  }
   // Over the size cap: list fewer trades (all are still counted) until it fits.
   let keep = s.trades.length;
   while (new TextEncoder().encode(body).length > SUMMARY_MAX_BYTES && keep > 0) {
@@ -509,9 +529,15 @@ export class Summarizer {
     // A watchdog from before MEM-SUMMARY refuses its key, one from before HELIUS-EXHAUSTED the credit detail too, one
     // from before RESTART-CAUSE its keys too (a deploy is not atomic): the day goes again without each in turn.
     let sent = s;
+    // A watchdog from before MEM-PROBE refuses its samples: the day goes again without them, then as below.
+    if (res !== null && !res.ok && res.reason === 'HTTP 400' && hasProbe(sent)) {
+      this.#d.log(`Summary for ${day} refused; sent again without the memory probe samples.`);
+      sent = withoutProbe(sent);
+      res = await this.#send(day, sent, url, key, now);
+    }
     if (res !== null && !res.ok && res.reason === 'HTTP 400' && Object.hasOwn(s.worker, MEM_SUMMARY_KEY)) {
       this.#d.log(`Summary for ${day} refused; sent again without the memory at the last death.`);
-      sent = withoutLastDeath(s);
+      sent = withoutLastDeath(sent);
       res = await this.#send(day, sent, url, key, now);
     }
     const detail = sent.provider_credits.some((c) => CREDIT_DETAIL_KEYS.some((k) => Object.hasOwn(c, k)));

@@ -2,7 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import { existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { DEATH_SPACES_MAX, MEM_EVERY_MS, MEM_FILE, REPORTS_DIR, REPORT_FRESH_MS, cgroupMax, deathMem, fatalReport, nearLimit, parseDeathMem, readMem, type MemSample } from '../src/run/mem-trace.ts';
+import { DEATH_SPACES_MAX, MEM_EVERY_MS, MEM_FILE, PROBE_FILE, REPORTS_DIR, REPORT_FRESH_MS, cgroupMax, deathMem, fatalReport, nearLimit, parseDeathMem, readMem, type MemSample } from '../src/run/mem-trace.ts';
 import { emptySummaryState, foldText, buildSummary, summaryBody } from '../src/run/summary.ts';
 import { checkSummary } from '../../ops/src/watchdog/summary.ts';
 import { melbourneDate } from '../src/run/api.ts';
@@ -281,6 +281,8 @@ describe('the memory at a death (MEM-SUMMARY)', () => {
     const deathA = Date.parse((JSON.parse(last) as { ts: string }).ts);
     plant(stateDir, heapReport(deathA + 200), deathA + 500);
     writeFileSync(join(stateDir, MEM_FILE), JSON.stringify(sample({ at: deathA - 5_000, heap_used: 580 * MB, heap_limit: 600 * MB })));
+    // This death's memory as MEM-SUMMARY reads it: the probe samples worker A left are mem-counts.test.ts's subject.
+    rmSync(join(stateDir, PROBE_FILE), { force: true });
     const pre = makeWorker({ stateDir, timers, phase: 'reconcile' });
     expect(await pre.worker.reconcileOnly()).toEqual({ ok: true });
     // The report and the sample are gone before the main boot: it reads the pre-step's handoff, not them.

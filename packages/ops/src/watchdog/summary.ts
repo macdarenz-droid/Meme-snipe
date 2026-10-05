@@ -68,10 +68,27 @@ export interface LastDeath {
   readonly heap_limit_mb: number | null;
   readonly spaces: readonly { readonly space: string; readonly used_mb: number }[];
   readonly sample: { readonly at: string; readonly heap_used_mb: number; readonly heap_limit_mb: number; readonly rss_mb: number; readonly external_mb: number; readonly array_buffers_mb: number } | null;
+  /**
+   * MEM-PROBE: the worker's last memory probe samples before the death, oldest first: heap, old and large-object MB, a
+   * save in progress, and the size of each major collection by code. Counts only. Optional: a worker from before it
+   * still posts.
+   */
+  readonly recent?: readonly ProbeRow[];
+}
+export interface ProbeRow {
+  readonly at: string;
+  readonly heap_used_mb: number;
+  readonly old_mb: number;
+  readonly large_object_mb: number;
+  readonly saving: boolean;
+  readonly counts: readonly CodeCount[];
 }
 
 /** At most this many heap spaces in `last_death`. */
 export const SUMMARY_MAX_SPACES = 16;
+/** At most this many probe samples in `last_death.recent`, and counts in each. */
+export const SUMMARY_MAX_PROBES = 10;
+export const SUMMARY_MAX_PROBE_COUNTS = 96;
 
 export interface Summary {
   readonly v: 1;
@@ -218,8 +235,13 @@ const WORKER_KEYS = ['git_sha', 'entry_rule', 'uptime_s', 'starts', 'recorder'] 
 /** RESTART-CAUSE's keys of `worker`: present all together or not at all. */
 export const RESTART_CAUSE_KEYS = ['restarts', 'exits', 'crash_sites'] as const;
 const countOrNull = (v: unknown): boolean => v === null || count(v);
+const probeRow = (y: unknown): boolean =>
+  exact(y, ['at', 'heap_used_mb', 'old_mb', 'large_object_mb', 'saving', 'counts']) && str(y['at'], PATTERNS.TIME) &&
+  count(y['heap_used_mb']) && count(y['old_mb']) && count(y['large_object_mb']) && typeof y['saving'] === 'boolean' &&
+  list(y['counts'], SUMMARY_MAX_PROBE_COUNTS, (c) => exact(c, ['code', 'count']) && str(c['code'], PATTERNS.CODE) && count(c['count']));
 const lastDeath = (x: unknown): boolean => x === null || (
-  exact(x, ['at', 'uptime_s', 'heap_used_mb', 'heap_limit_mb', 'spaces', 'sample']) && str(x['at'], PATTERNS.TIME) &&
+  exact(x, ['at', 'uptime_s', 'heap_used_mb', 'heap_limit_mb', 'spaces', 'sample', ...(typeof x === 'object' && Object.hasOwn(x, 'recent') ? ['recent'] : [])]) && str(x['at'], PATTERNS.TIME) &&
+  (!Object.hasOwn(x, 'recent') || list(x['recent'], SUMMARY_MAX_PROBES, probeRow)) &&
   countOrNull(x['uptime_s']) && countOrNull(x['heap_used_mb']) && countOrNull(x['heap_limit_mb']) &&
   list(x['spaces'], SUMMARY_MAX_SPACES, (y) => exact(y, ['space', 'used_mb']) && str(y['space'], PATTERNS.CODE) && count(y['used_mb'])) &&
   (x['sample'] === null || (exact(x['sample'], ['at', 'heap_used_mb', 'heap_limit_mb', 'rss_mb', 'external_mb', 'array_buffers_mb']) &&
@@ -237,6 +259,7 @@ export const SHAPE_KEYS: readonly string[] = [
   'v', 'day', 'final', 'generated_at', 'mode', 'worker', 'alerts', 'halts', 'candidates', 'trades', 'trades_dropped', 'pnl', 'open_positions', 'provider_credits',
   'git_sha', 'entry_rule', 'uptime_s', 'starts', 'recorder', 'restarts', 'exits', 'crash_sites', 'last_death',
   'at', 'heap_used_mb', 'heap_limit_mb', 'spaces', 'space', 'used_mb', 'sample', 'rss_mb', 'external_mb', 'array_buffers_mb',
+  'recent', 'old_mb', 'large_object_mb', 'saving', 'counts',
   'planned', 'deploy', 'unplanned', 'error', 'file', 'line', 'event',
   'code', 'count', 'gate',
   'seen', 'entered', 'refused', 'refused_by_reason', 'refused_other',

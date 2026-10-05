@@ -295,6 +295,15 @@ export class LiveFeed implements Feed {
     return r.event;
   }
 
+  /** MEM-PROBE: counts only: held frames, slot ranks, dedupe keys and their slot lists, gaps, events ready. */
+  sizes(): Record<string, number> {
+    let held = 0;
+    for (const f of this.#held.values()) held += f.length;
+    let ranks = 0;
+    for (const m of this.#ranks.values()) ranks += m.size;
+    return { held, held_slots: this.#held.size, ranks, rank_slots: this.#ranks.size, keys: this.#keys.size, key_slots: this.#keysBySlot.size, gaps: this.#gaps.size, ready: this.#ready.length - this.#head };
+  }
+
   status(): LiveFeedStatus {
     let held = 0;
     for (const f of this.#held.values()) held += f.length;

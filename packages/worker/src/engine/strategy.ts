@@ -639,6 +639,28 @@ export class LiveStrategy implements Strategy {
     if ((deps.session.policy.exits.negativeFlowMinutes + 1) * FLOW_MINUTE_MS > FLOW_KEEP_MS) throw new RangeError('negativeFlowMinutes is longer than the kept flow window');
   }
 
+  /**
+   * MEM-PROBE: counts only: every map and list this strategy keeps, entries inside the per-mint ones summed, and the
+   * deployer index's counts.
+   */
+  sizes(): Record<string, number> {
+    const sum = <V>(m: ReadonlyMap<string, V>, n: (v: V) => number): number => {
+      let t = 0;
+      for (const v of m.values()) t += n(v);
+      return t;
+    };
+    const d = this.#deployers.sizes();
+    return {
+      cands: this.#cands.size, seeds: this.#seeds.size, exits: this.#exits.size, bars: sum(this.#bars, (b) => b.length),
+      seed_history: sum(this.#seedHistory, (l) => l.length), coverage_facts: this.#coverageFacts.length,
+      pool_of_mint: this.#poolOfMint.size, mint_of_pool: this.#mintOfPool.size, migration_slot: this.#migrationSlot.size,
+      observed_fees: this.#observedFees.size, trade_at: this.#tradeAt.size, swap_at: this.#swapAt.size,
+      deployer_sales: sum(this.#deployerSales, (s) => s.ids.size), flow_ids: sum(this.#flow, (f) => f.ids.size), deployer_memo: this.#deployerMemo.size,
+      tail: this.#tail.size, owners: this.#owners.size,
+      deployer_creators: d.creators, deployer_mints: d.mints, deployer_mint_bytes: d.mint_bytes, deployer_rugs: d.rugs, deployer_unjudged: d.unjudged, deployer_vias: d.vias, deployer_lost: d.lost,
+    };
+  }
+
   /** Exit state to save after each step (the worker writes it before the next event). */
   saved(): Record<string, SavedExit> {
     const out: Record<string, SavedExit> = {};

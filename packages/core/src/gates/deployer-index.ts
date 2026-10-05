@@ -225,6 +225,15 @@ export class DeployerIndex {
    * Entries older than `retainFromMs` are left out, and the index's own start moves up to it, so the restored index
    * never claims to have watched what it no longer holds.
    */
+  /** MEM-PROBE: counts only: creators and their mints, rug and unjudged labels, create vias, lost creates. */
+  sizes(): { readonly creators: number; readonly mints: number; readonly mint_bytes: number; readonly rugs: number; readonly unjudged: number; readonly vias: number; readonly lost: number } {
+    let rugs = 0;
+    for (const inner of this.#rugs.values()) rugs += inner.size;
+    let unjudged = 0;
+    for (const inner of this.#unjudged.values()) unjudged += inner.size;
+    return { creators: this.#mints.creatorCount, mints: this.#mints.size, mint_bytes: this.#mints.heldBytes(), rugs, unjudged, vias: this.#createVias.size, lost: this.#lost.size };
+  }
+
   snapshot(asOf: Moment, retainFromMs = Number.MIN_SAFE_INTEGER, o: { readonly mints?: boolean } = {}): DeployerIndexState {
     if (this.#last !== null && compareMoments(this.#last, asOf) > 0) throw new RangeError('the index has observed events after the snapshot moment');
     const keep = <V>(m: Map<string, Map<string, V>>, ms: (v: V) => number) =>
