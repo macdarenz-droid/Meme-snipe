@@ -6,7 +6,7 @@ From here on, S2 owns this file. S2 keeps it current on its own branch `claude/s
 
 ## Active crash-only work
 
-Only owner-approved item-22 disk crash work is active. Correcting reserve preservation before a new exact-head review and full check; APP/API, facts, EXIT, persist and run reviewers are independently auditing frozen baseline. Full backups and all other tasks stay paused; S1 alone merges/deploys.
+Owner has lifted the S2 pause in chat. Disk-crash correction is the current priority, with five area reviews awaiting its revised immutable head. After that, resume assigned queue by dependency and urgency; existing finished or ready work is preserved. S1 alone merges/deploys.
 
 ## Latest handoff audit
 
@@ -102,6 +102,8 @@ S2-READY 6af4e43b707960316d8cd8419cb2e513fa9f4b60
 - These local limitations are historical. Current directly verified GitHub results are in Latest handoff audit; they do not establish that any future base-update head is green.
 
 ## S2 events (newest first)
+
+- **2026-10-06 10:40:09 AEDT** — Owner clarified in chat that the pause applied only to S1, and S2 may continue all assigned tasks. This supersedes the 10:08 AM pause interpretation for S2. Finish active disk-crash corrections/reviews/checks first; resume the already assigned app/stability queue without repeating completed work. S1 retains exclusive merge/deploy ownership, protected files and all review/CI gates remain, and RISK-DIAL still requires explicit final-design approval.
 
 - **2026-10-06 10:38:11 AEDT** — Verified corrective fail-before log /tmp/s2-disk-crash-delta-fail-before.log: eight selected regressions fail against f2e source (tail marker, EIO/EACCES, reserve wipe/restore and unchanged healthy ten-replay parity). Builder applied those narrow source corrections; summary-loss and immediate-status tests are next. Original full check was cancelled exit 130, never counted as green; reviewers await the corrected immutable head.
 
