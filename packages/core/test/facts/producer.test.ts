@@ -276,6 +276,85 @@ describe('candles', () => {
     expect(parseCandles(w.last(candlesKey(MINT)))!.obs.quality).toEqual([]);
   });
 
+  describe('the repeat window (OOM-SEEN, TRADE_REPEAT_WINDOW_MS)', () => {
+    type Ev = { event: { signature: string; data: Record<string, unknown> } };
+    const W = OPTIONS.tradeRepeatMs;
+    const trades = (): MarketEvent[] => spread().filter((e) => /^pump_amm:(Buy|Sell)Event:/.test(e.key));
+    const atMsOf = (e: MarketEvent): number => Number((e.value as Ev).event.data['timestamp']) * 1000;
+    const base = trades().at(-1)!;
+    let at = atOf(swaps.at(-1)!) + 60_000;
+    let slot = swaps.at(-1)!.slot + 100n;
+    const next = (): Moment => ({ slot: (slot += 10n), txIndex: 0, ixIndex: 0, receivedAt: (at += 1_000) });
+    /** A new trade (its own signature, the last trade's reserves) stamped `atMs`, released after everything so far. */
+    const newer = (atMs: number, n: number): MarketEvent => {
+      const v = base.value as Ev;
+      return { ...base, id: `ev:newer:${n}`, moment: next(), value: { ...v, event: { ...v.event, signature: `newer${n}`, data: { ...v.event.data, timestamp: BigInt(Math.floor(atMs / 1000)) } } } };
+    };
+    /** The first trade again as a confirmed log line, released now. */
+    const repeat = (): MarketEvent => {
+      const first = trades()[0]!;
+      return { ...first, id: 'log:repeat:00000', key: `logs:${first.key}`, moment: { ...next(), txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN }, value: { ...(first.value as object), signature: (first.value as Ev).event.signature, commitment: 'confirmed' } };
+    };
+    const state = (w: FactWorld) => ({ candles: parseCandles(w.last(candlesKey(MINT)))!, book: w.producer.candleBook(POOL)! });
+
+    it('a repeat just inside the window (W − 1 s behind the newest trade) counts once: candles and reserve unchanged, not partial', () => {
+      const w = spreadWorld().push(newer(atMsOf(trades()[0]!) + W - 1_000, 1));
+      const before = state(w);
+      w.push(repeat());
+      const after = state(w);
+      expect(after.candles.candles).toEqual(before.candles.candles);
+      expect(after.candles.obs.quality).toEqual([]);
+      expect(after.book.reserve).toEqual(before.book.reserve);
+      expect(after.book.ids).toBe(before.book.ids);
+    });
+
+    it('a repeat just outside the window (W + 1 s behind) is never applied: reserve unchanged, the candles partial, H11 refuses them', () => {
+      const w = spreadWorld().push(newer(atMsOf(trades()[0]!) + W + 1_000, 1));
+      const before = state(w);
+      w.push(repeat());
+      const after = state(w);
+      expect(after.candles.candles).toEqual(before.candles.candles);
+      expect(after.candles.obs.quality).toEqual(['partial']);
+      expect(after.book.reserve).toEqual(before.book.reserve);
+      const head = slot + 10n;
+      w.push(slotNotice(head, at + 500));
+      expect(ev(w, { slot: head, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt: at + 501 }).read('candles', candlesKey(MINT), parseCandles, 'state', 'H11').ok).toBe(false);
+    });
+
+    it('the same swaps from live log lines and, half an hour later, from a gap fill\'s fetched transactions count once', () => {
+      const w = new FactWorld();
+      w.push(...covered(), ...txEvents(create), ...txEvents(complete), ...txEvents(migrate));
+      for (const x of swaps) w.push(...logEvents(x, 'confirmed'));
+      w.push(newer(atOf(swaps.at(-1)!) + 30 * 60_000, 1));
+      const before = state(w);
+      // The fill: every swap again from its fetched transaction, backfilled, released after everything so far.
+      for (const x of swaps) w.push(...txEvents(x).map((e) => ({ ...e, moment: next(), value: { ...(e.value as object), backfilled: true } })));
+      const after = state(w);
+      expect(after.candles.candles).toEqual(before.candles.candles);
+      expect(after.candles.obs.quality).toEqual([]);
+      expect(after.book.reserve).toEqual(before.book.reserve);
+    });
+
+    it('the remembered ids level off: 3,072 trades a second apart with a one-minute window keep at most about a sweep\'s worth, and a sweep never forgets a trade inside the window', () => {
+      const w = new FactWorld({ ...OPTIONS, tradeRepeatMs: 60_000 });
+      w.push(...covered(), ...txEvents(create), ...txEvents(complete), ...txEvents(migrate));
+      const start = atOf(migrate) + 60_000;
+      const sizes: number[] = [];
+      for (let k = 0; k < 3_072; k += 64) {
+        w.push(...Array.from({ length: 64 }, (_, j) => newer(start + (k + j) * 1_000, k + j)));
+        sizes.push(w.producer.candleBook(POOL)!.ids);
+        // The batch's last 20 trades again (the same ids, released later): inside the window, each counts once.
+        const before = parseCandles(w.last(candlesKey(MINT)))!;
+        w.push(...Array.from({ length: 20 }, (_, j) => newer(start + (k + 44 + j) * 1_000, k + 44 + j)));
+        expect(parseCandles(w.last(candlesKey(MINT)))!, `after trade ${k + 63}`).toEqual(before);
+      }
+      // Kept: the last minute (60 ids) plus what accumulates until the set doubles past the 512 floor.
+      expect(Math.max(...sizes)).toBeLessThanOrEqual(1_024);
+      expect(sizes.at(-1)).toBeLessThan(3_072);
+      expect(parseCandles(w.last(candlesKey(MINT)))!.obs.quality).toEqual([]);
+    });
+  });
+
   it('a second pool of the same mint, created by anyone, never feeds the coin\'s candles', () => {
     const w = build();
     const before = w.facts(candlesKey(MINT)).length;

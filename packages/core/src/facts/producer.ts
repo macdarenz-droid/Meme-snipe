@@ -70,6 +70,11 @@ export interface ProducerOptions {
   readonly candleFirstMs: number;
   /** Candles kept back from the newest, for the spike window (H11). */
   readonly candleLastMs: number;
+  /**
+   * OOM-SEEN: how far behind a pool's newest trade the candle book still recognises a repeat of a trade
+   * (`TRADE_REPEAT_WINDOW_MS`). A trade stamped further back is never applied and flags the candles partial.
+   */
+  readonly tradeRepeatMs: number;
   /** Third-party reads older than this are left out of a cross-check (H16 reads them as `offchain`). */
   readonly maxQuoteAgeMs: number;
   /** Graduate survival mark after migration (§6.4). */
@@ -87,10 +92,22 @@ export interface ProducerOptions {
   readonly execHealth?: ExecHealthLimits;
 }
 
+/**
+ * OOM-SEEN (supervisor ruling, Option A): the candle book remembers each trade's id for an hour behind the pool's newest
+ * trade, so the same swap from a log line and from a fetched transaction counts once. A repeat comes from the other path
+ * within minutes: the feed's own duplicate window is 1,500 slots (about 10 minutes), a catch-up's fill reads up to the
+ * watch's start, and a gap's fill runs as soon as the daily fill budget allows. An hour covers those with room. A trade
+ * stamped more than an hour behind is refused whole: never applied, so a repeat is never counted twice and the reserves
+ * never step back, and the candles are flagged partial, so H11 refuses them (fail closed). Kept whole, the ids grew the
+ * heap about 1.4 MB a minute at 4,000 swaps a minute.
+ */
+export const TRADE_REPEAT_WINDOW_MS = HOUR_MS;
+
 /** Options sized from the locked policy, so the kept windows always cover what the gates read. */
 export const producerOptions = (p: Policy, execHealth?: ExecHealthLimits): ProducerOptions => ({
   candleFirstMs: p.gates.chaseCheckAfterMs + MINUTE_MS,
   candleLastMs: p.gates.candleWindowMs + MINUTE_MS,
+  tradeRepeatMs: TRADE_REPEAT_WINDOW_MS,
   maxQuoteAgeMs: p.gates.maxQuoteAgeMs,
   survivalAfterMs: p.regime.survivalAfterMs,
   survivalReadWindowMs: MINUTE_MS,
@@ -163,7 +180,12 @@ interface CandleBook {
   readonly candles: Candle[];
   /** A trade whose price could not be formed: the candles are no longer complete. Sticky. */
   partial: boolean;
-  readonly seen: Set<string>;
+  /** Trade ids and their trade times, back to `tradeRepeatMs` behind `newestMs` (OOM-SEEN). */
+  readonly seen: Map<string, number>;
+  /** The newest trade time applied. */
+  newestMs: number;
+  /** `seen`'s size after its last sweep: the next sweep runs when it has doubled. */
+  sweptAt: number;
 }
 
 // ---------- Streams ----------
@@ -441,7 +463,7 @@ export class FactProducer {
         if (!t.pools.has(d.pool)) t.pools.set(d.pool, { pool: d.pool, slot: seen.slot, atMs, quote: d.poolQuoteAmount, base: d.poolBaseAmount });
         if (!this.#poolMint.has(d.pool)) this.#poolMint.set(d.pool, d.baseMint);
         if (!this.#books.has(d.pool)) {
-          this.#books.set(d.pool, { pool: d.pool, mint: d.baseMint, openedAtMs: atMs, fromSlot: seen.slot, candles: [], partial: false, seen: new Set() });
+          this.#books.set(d.pool, { pool: d.pool, mint: d.baseMint, openedAtMs: atMs, fromSlot: seen.slot, candles: [], partial: false, seen: new Map(), newestMs: atMs, sweptAt: 0 });
           this.#reserves.set(d.pool, { atMs, effective: d.poolQuoteAmount });
           this.#writeCandles(d.pool, seen.provider, seen.receivedAt, put);
         }
@@ -535,10 +557,19 @@ export class FactProducer {
     const virtual = d.virtualQuoteReserves ?? 0n;
     const baseBefore = d.poolBaseTokenReserves;
     const quoteBefore = d.poolQuoteTokenReserves;
+    // OOM-SEEN: a trade stamped further back than the repeat window is refused whole, before the ids are looked at, so
+    // the answer never depends on which old ids a sweep has dropped: never applied, the candles flagged partial.
+    if (atMs < book.newestMs - this.#o.tradeRepeatMs) {
+      book.partial = true;
+      this.#writeCandles(d.pool, seen.provider, seen.receivedAt, put);
+      return;
+    }
     // The same trade from a fetched transaction and from a log line counts once.
     const id = `${seen.signature}:${baseBefore}:${quoteBefore}`;
     if (book.seen.has(id)) return;
-    book.seen.add(id);
+    book.seen.set(id, atMs);
+    if (atMs > book.newestMs) book.newestMs = atMs;
+    this.#sweepSeen(book);
     // Reserves in Buy/SellEvent are before the trade; after it the base moves by the base amount and the quote by the
     // lp-adjusted amount (protocol, creator and other fees leave the pool, the LP fee stays). docs/research/historical-data.md.
     const after = ev.name === 'BuyEvent'
@@ -550,6 +581,20 @@ export class FactProducer {
     if (pre === null || post === null) book.partial = true;
     else this.#addTrade(book, atMs, pre, post);
     this.#writeCandles(d.pool, seen.provider, seen.receivedAt, put);
+  }
+
+  /** Drops the ids behind the repeat window once the set has doubled since the last sweep (amortised; answers unchanged). */
+  #sweepSeen(book: CandleBook): void {
+    if (book.seen.size < 2 * Math.max(book.sweptAt, 512)) return;
+    const cutoff = book.newestMs - this.#o.tradeRepeatMs;
+    for (const [id, at] of book.seen) if (at < cutoff) book.seen.delete(id);
+    book.sweptAt = book.seen.size;
+  }
+
+  /** OOM-SEEN: the trade ids a pool's candle book remembers, and its last reserve (tests and diagnostics). */
+  candleBook(pool: string): { readonly ids: number; readonly reserve: { readonly atMs: number; readonly effective: bigint } | undefined } | undefined {
+    const b = this.#books.get(pool);
+    return b === undefined ? undefined : { ids: b.seen.size, reserve: this.#reserves.get(pool) };
   }
 
   #addTrade(book: CandleBook, atMs: number, pre: Price, post: Price): void {

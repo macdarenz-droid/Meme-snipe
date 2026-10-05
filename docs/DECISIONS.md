@@ -2362,9 +2362,32 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
 - **Measured after.**
   - With the head facts bounded, the same run grows 4.5 MB a minute (from 21.5), and the store holds 52 MB at 7 minutes (from 146).
   - From 13 to 25 minutes on that build: 4.2 MB a minute. About 1.5 MB of it is `seen:<via>` (+51,000 entries), bounded in the second commit. About 1.4 MB is the producer's per-pool candle books, which keep the id of every swap since the pool opened (`#books[pool].seen`). LiveFeed's dedupe keys level off at `keepSlots` (1,500, about 10 minutes), and `chain:slot` adds one value per slot (about 50 KB a minute).
-- **Not done.** Bounding the books' seen ids is not exact: a duplicate arriving after its id was dropped would mark the candles partial and set the pool's reserves back. It needs a ruling and goes in a separate PR.
+- **Follow-up.** The books' seen ids and `chain:slot` are bounded in OOM-SEEN below.
 - **Evidence (fail before, pass after).** `store-rules.test.ts`:
   - The three head keys keep only their newest value; other gate facts keep their series.
   - A real worker with 240 trade streams, 2.5 slot notices a second and 4,050 swaps a minute, each swap delivered as the pool watch does (its seen signature, then its log lines): the heap grew 18.9 MB over two minutes before the fix, 4.2 MB with the head facts bounded alone, and 1.3 MB with both bounds; the test requires under 6 MB.
   - Hand mutants killed: no stream heads; no candles; no carry; no seen signatures; older values kept; another gate fact taken as a head.
   - The worker, parity and replay test files that touch these facts pass. `exit-keep.test.ts` timed out once under load and passes 8/8 alone.
+
+## Seen signatures, the slot notice and the candle books' trade ids: bounded (OOM-SEEN, `run/store-rules.ts`, `core/src/facts/producer.ts` `TRADE_REPEAT_WINDOW_MS`)
+
+- **2026-10-05 · Why.** With OOM-HEADS (#232, efa3b006), the live-rate run still grew 4.2 MB a minute from 13 to 25 minutes, steadily:
+  - `seen:<via>` in the engine's store, about 1.5 MB a minute (+51,000 entries);
+  - the candle books' trade ids (`FactProducer.#books[pool].seen`, every swap since the pool opened), about 1.4 MB a minute;
+  - `chain:slot` in the store, about 50 KB a minute.
+  The seen-signature bound was pushed to #232 after it merged, so it ships here.
+- **What.**
+  - `seen:<via>` and `chain:slot` keep only their newest value in the live store. Nothing looks either up in the store: the delay probe and the fetches act on the seen frame; the producer, the strategy and the worker act on the released slot event. The parity replay uses the same rules.
+  - **The candle books' trade ids (supervisor ruling, Option A).** A book remembers each trade's id with its trade time, back to `TRADE_REPEAT_WINDOW_MS` (an hour) behind the pool's newest trade, in the producer's options with its reason.
+    - A trade stamped further back is refused whole, before the ids are looked at. It is never applied: its reserve never replaces the pool's and nothing is counted twice. The candles are flagged partial, so H11 refuses them (fail closed). Checking the window first means the answer never depends on which old ids a sweep has dropped.
+    - A repeat comes from the other path within minutes: the feed's own duplicate window is 1,500 slots (about 10 minutes), a catch-up's fill reads up to the watch's start, and a gap's fill runs as soon as the fill budget allows. An hour covers those with room.
+    - Old ids are swept when the set has doubled since the last sweep (amortised): at most about twice the trades of the window per pool.
+- **Not done.** `LiveStrategy.#coverageFacts` is not trimmed. It holds the coverage events the store already keeps whole for `history()` (creates and rug coverage, the deployer index), a few per watch, so trimming it frees almost nothing. `pruneCoverage` run twice is not the same as run once when a gap is open, so trimming would change what a save writes, for no memory.
+- **Evidence (fail before, pass after).**
+  - `producer.test.ts` (repeat window):
+    - a repeat W − 1 s behind the newest trade counts once: candles and reserve unchanged, not partial;
+    - a repeat W + 1 s behind is never applied: reserve unchanged, candles partial, H11 refuses;
+    - the same swaps from live log lines and, half an hour later, from a gap fill's fetched transactions count once;
+    - with a one-minute window, 3,072 trades a second apart keep at most 1,024 ids, and after every batch its last 20 trades repeated count once (a sweep never forgets a trade inside the window).
+  - `store-rules.test.ts`: `seen:` and `chain:slot` keep only their newest value.
+  - Hand mutants killed: no window check; no partial flag; ids looked at before the window; no sweep; a sweep that forgets everything; a refused trade that moves the reserve; no slot-notice rule.
