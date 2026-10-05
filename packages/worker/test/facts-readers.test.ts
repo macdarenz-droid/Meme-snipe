@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { FIX, MINT, POOL } from '../../core/test/facts/helpers.ts';
 import {
   ASSUMPTIONS, DEPLOYER_CHECK_CREDITS_PER_DAY, FACT_RPC_METHODS, plannedHeliusPerDay, FactReaders, FactRpc, HELIUS_CALLS_PER_EVALUATION, SUPPLEMENT_FILE, candidateCapacity, freePlanPerMinute, holderScanCredits, holderScanCreditsPerDay, perCandidate,
-  HOLDER_SCANS_PER_DAY, holderFilters, readSupplement, supplementRow, writeSupplement, type Ingest,
+  HOLDER_SCANS_FILE, HOLDER_SCANS_PER_DAY, holderFilters, readSupplement, supplementRow, writeSupplement, type Ingest,
 } from '../src/facts/index.ts';
 import type { FrameBody, Source } from '../src/providers/index.ts';
 import type { HttpClient, HttpRequest, HttpResponse } from '../src/providers/http.ts';
@@ -232,6 +232,22 @@ describe('fact readers', () => {
     expect(await pump(readers.readHoldersAll(MINT), timers)).toBe(true);
     expect(await pump(readers.readHoldersAll(MINT), timers)).toBe(false);
     expect(gpaCalls).toBe(1);
+    // HEAP-GUARD: the day's count survives a restart (new readers on the same file); unreadable counts as spent; a new
+    // UTC day starts again.
+    const scansFile = join(mkdtempSync(join(tmpdir(), 'scans-')), HOLDER_SCANS_FILE);
+    const fresh = () => new FactReaders({ feed: { ingest: () => {} }, rpc, http, timers, timeoutMs: 1000, holderScansPerDay: 1, scansFile });
+    expect(await pump(fresh().readHoldersAll(MINT), timers)).toBe(true);
+    expect(gpaCalls).toBe(2);
+    const again = fresh();
+    expect(await pump(again.readHoldersAll(MINT), timers)).toBe(false);
+    expect(again.outcomes.at(-1)).toMatchObject({ ok: false, detail: 'daily scan cap reached' });
+    expect(gpaCalls).toBe(2);
+    writeFileSync(scansFile, 'not json');
+    expect(await pump(fresh().readHoldersAll(MINT), timers)).toBe(false);
+    expect(gpaCalls).toBe(2);
+    timers.advance(86_400_000);
+    expect(await pump(fresh().readHoldersAll(MINT), timers)).toBe(true);
+    expect(gpaCalls).toBe(3);
     expect(readers.outcomes.at(-1)).toMatchObject({ ok: false, detail: 'daily scan cap reached' });
     const r = parseHoldersAllRead((ingested[0]!.body as { value: unknown }).value)!;
     expect(r.accounts.length).toBe(hc.gpa.accounts.length);

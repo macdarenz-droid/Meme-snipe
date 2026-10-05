@@ -10,6 +10,7 @@ import {
 import {
   type AccountsRead, type ExecStats, type FunderRead, type HoldersRead, type SimRead, RAW, parseExecStats, parseSimRead, parseVolumeHoursCsv,
 } from '../../../core/src/facts/index.ts';
+import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { VOLUME_SERIES_START_DAY } from '../../../core/src/config/time.ts';
 import type { Policy } from '../../../core/src/config/policy.ts';
 import { HELIUS_RPC_CREDITS } from '../scheduler/limits.ts';
@@ -245,8 +246,17 @@ export interface FactReadersOptions {
   readonly deployerChecks?: DeployerChecks;
   /** Complete holder scans allowed per UTC day (default HOLDER_SCANS_PER_DAY). Reached: no scan, H12/H13 abstain. */
   readonly holderScansPerDay?: number;
+  /**
+   * Where today's count of complete holder scans is kept (HOLDER_SCANS_FILE in the state dir), so a restart does not
+   * start the cap again: a restart loop took a fresh 100 scans at every boot (HEAP-GUARD, 5 Oct). Unreadable: today
+   * counts as spent (fail safe). Without it the count lives in the process only.
+   */
+  readonly scansFile?: string;
   readonly token2022Filter?: Token2022Filter;
 }
+
+/** The file of today's complete holder scans, in the worker's state dir. */
+export const HOLDER_SCANS_FILE = 'holder-scans.json';
 
 /** Trial default (supervisor ruling): 100 complete holder scans a UTC day, about 1,200 Helius credits at the published
  * price; revisit once gpa-probe measures the real cost. */
@@ -324,6 +334,20 @@ export class FactReaders {
 
   constructor(o: FactReadersOptions) {
     this.#o = o;
+    const f = o.scansFile;
+    if (f !== undefined && existsSync(f)) {
+      try {
+        const v = JSON.parse(readFileSync(f, 'utf8')) as Record<string, unknown>;
+        if (!Number.isSafeInteger(v['day']) || !Number.isSafeInteger(v['scans']) || (v['scans'] as number) < 0) throw new Error('bad scans file');
+        this.#scanDay = v['day'] as number;
+        this.#scans = v['scans'] as number;
+      } catch {
+        // Unreadable: today's cap counts as spent, written back so the next UTC day starts again.
+        this.#scanDay = Math.floor(o.timers.now() / 86_400_000);
+        this.#scans = Number.MAX_SAFE_INTEGER;
+        this.#saveScans();
+      }
+    }
   }
 
   #ingest(source: Source, key: string, value: unknown): void {
@@ -657,7 +681,16 @@ export class FactReaders {
     }
     if (this.#scans >= (this.#o.holderScansPerDay ?? HOLDER_SCANS_PER_DAY)) return false;
     this.#scans++;
+    // Counted on disk before the scan runs: a death during it still counts it.
+    this.#saveScans();
     return true;
+  }
+
+  #saveScans(): void {
+    const f = this.#o.scansFile;
+    if (f === undefined) return;
+    writeFileSync(`${f}.tmp`, JSON.stringify({ day: this.#scanDay, scans: this.#scans }));
+    renameSync(`${f}.tmp`, f);
   }
 
   /**

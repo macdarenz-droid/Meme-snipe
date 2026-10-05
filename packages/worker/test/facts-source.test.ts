@@ -2,7 +2,7 @@
 // (staging), raw answers go on the worker's Feed, and the engine's FactFeed makes the gate facts, live and in a
 // replay of the recording alike.
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readdirSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { zstdDecompressSync } from 'node:zlib';
@@ -17,7 +17,7 @@ import type { RugCheckRequest } from '../src/providers/index.ts';
 import { FEE_CONTEXT } from '../../core/test/gates/world.ts';
 import { FIX } from '../../core/test/facts/helpers.ts';
 import { ACCOUNT_KEY, feesKey, type CandidateReason } from '../src/engine/strategy.ts';
-import { CHAIN_VOLUME_ALERT_KEY, DEPLOYER_CHECK_SPEND_FILE, FACT_READS_KEY, LiveFacts, liveFacts, readsFor, type LiveReaders, type MintHistoryOptions } from '../src/facts/index.ts';
+import { CHAIN_VOLUME_ALERT_KEY, DEPLOYER_CHECK_SPEND_FILE, FACT_READS_IN_FLIGHT, FACT_READS_KEY, HOLDER_SCANS_FILE, LiveFacts, liveFacts, readsFor, type LiveReaders, type MintHistoryOptions } from '../src/facts/index.ts';
 import { replayRecorded, type Frame, type HttpRequest, type HttpResponse, type Release, type Secrets } from '../src/providers/index.ts';
 import { engineFeed } from '../src/run/engine-feed.ts';
 import { parseTyped } from '../src/run/json.ts';
@@ -177,6 +177,38 @@ describe('LiveFacts', () => {
     await t.flush();
     expect(quiet).toEqual([]);
     src2.stop();
+  });
+
+  it('at most FACT_READS_IN_FLIGHT reads run at once whatever the number of candidates; the regime\'s reads go first; a stop drops the rest (STEP-B)', async () => {
+    const s = setup();
+    s.src.start(s.ctx);
+    await s.flush();
+    expect(s.f.calls).toEqual([['sol-usd', 27]]);
+    // A restart restores every candidate in its window at once: 800 of them, each missing only its holder set.
+    s.f.set('hold');
+    for (let k = 0; k < 800; k++) s.cands.set(`M${k}`, { migratedAtMs: T0, gates: [H16('holders', 'not-covered')] });
+    s.timers.advance(1_000);
+    await s.flush();
+    expect(of(s.f.calls, 'holders-all')).toHaveLength(FACT_READS_IN_FLIGHT);
+    expect(s.src.reads).toEqual({ running: FACT_READS_IN_FLIGHT, waiting: 800 - FACT_READS_IN_FLIGHT });
+    // One answers: the next starts, in arrival order.
+    s.f.pending.shift()!.resolve(true);
+    await s.flush();
+    expect(of(s.f.calls, 'holders-all').map((c) => c[1])).toEqual(['M0', 'M1', 'M2', 'M3', 'M4']);
+    // The next hour's SOL/USD read waits at the front, ahead of the candidates.
+    s.timers.advance(60 * MIN);
+    await s.flush();
+    expect(of(s.f.calls, 'sol-usd')).toHaveLength(1);
+    s.f.pending.shift()!.resolve(true);
+    await s.flush();
+    expect(s.f.calls.at(-1)).toEqual(['sol-usd', 3]);
+    // A stop: nothing waiting ever runs, even when the running reads answer.
+    const before = s.f.calls.length;
+    s.src.stop();
+    for (const p of s.f.pending.splice(0)) p.resolve(true);
+    await s.flush();
+    expect(s.f.calls).toHaveLength(before);
+    expect(s.src.reads.waiting).toBe(0);
   });
 
   it('reads what the evidence reasons name, at most once a gap per kind and mint', async () => {
@@ -577,6 +609,8 @@ describe('liveFacts: the production source', () => {
       ingest: { ingest: (_s: unknown, body: { key: string }) => void ingested.push(body.key) },
     } as unknown as FactContext;
     const stateDir = mkdtempSync(join(tmpdir(), 'facts-source-'));
+    // STEP-B: the holder scan count lives in the same state dir. An unreadable one counts today as spent and is written back.
+    writeFileSync(join(stateDir, HOLDER_SCANS_FILE), 'not json');
     const src = liveFacts({ policy: TRIAL_POLICY, secrets: { get: () => 'k' } as unknown as Secrets, http, goplus: sched(GOPLUS_FREE), coinbase: sched(COINBASE_PUBLIC), stateDir });
     src.start(ctx);
     for (let k = 0; k < 200 && !ingested.includes('coverage:rugs:deployer:DEV'); k++) {
@@ -588,6 +622,7 @@ describe('liveFacts: the production source', () => {
     expect(ingested).toContain('coverage:rugs:deployer:DEV');
     // The day's spend is kept in the state dir.
     expect(readdirSync(stateDir)).toContain(DEPLOYER_CHECK_SPEND_FILE);
+    expect(JSON.parse(readFileSync(join(stateDir, HOLDER_SCANS_FILE), 'utf8'))).toMatchObject({ scans: Number.MAX_SAFE_INTEGER });
   });
 
   it('with GitHub wired, lists releases through the API, downloads from github.com from the window\'s first day (lag plus cap), keeps verified days in the state dir and alerts on a changed release', async () => {
