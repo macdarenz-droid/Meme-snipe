@@ -26,7 +26,7 @@ import { GRADUATES_SEED_KEY } from '../../../core/src/facts/producer.ts';
 import { ACCOUNT_KEY, HALT_KEY, LiveStrategy, unwrap, POOL_PREFIX, RESTORE_KEY, SEED_KEY, SEEDING, SHORTLIST, SNAPSHOT_PREFIX, SOL_PRICE_KEY, type SnapshotFact, type CarryFact, CARRY_PREFIX, type MarketChoice, chooseMarket, parseCarryFact, type StrategyConfig, type StrategyDeps, type SavedStateRef, TRIP_PREFIX, parseSnapshotFact, snapshotKey, snapshotWins } from '../engine/strategy.ts';
 import { SLOT_MS, watchTimingProblem } from './config.ts';
 import { PositionWatch, type WatchRead } from './watch.ts';
-import { DEFAULT_LIVE_FEED, type Frame, type HttpClient, LiveFeed, type Release, seqId } from '../providers/index.ts';
+import { DEFAULT_LIVE_FEED, type Frame, HELIUS_EXHAUSTED, type HttpClient, LiveFeed, type Release, seqId } from '../providers/index.ts';
 import type { Timers } from '../scheduler/timers.ts';
 import { PaperAccount, type PaperLegs, accountFile } from './account.ts';
 import type { WorkerConfig } from './config.ts';
@@ -175,6 +175,11 @@ export interface WorkerDeps {
   readonly maxSeedCreates?: number;
   /** BT-1c's delay samples (the recorder's `delays` table): the confirmed read and the sampled processed watch. */
   readonly delayProbe?: { readonly confirmed: DelayProbeOptions['confirmed']; readonly via: string; readonly everyMs: number };
+  /**
+   * HELIUS-EXHAUSTED: Helius's answer that its credits are used up, as the Helius scheduler holds it (since boot): while
+   * `exhausted`, entries halt (`HELIUS_EXHAUSTED`); the count and first time go in the daily summary.
+   */
+  readonly heliusExhaustion?: () => { readonly exhausted: boolean; readonly count: number; readonly firstAtMs: number | null };
   /** RUN-1c's quota (free-plan providers, credits since boot by class) and historical-lookup latency counts. */
   readonly ops?: () => { readonly quota: readonly QuotaStatus[]; readonly lookups: { readonly counts: readonly number[] } };
   /** RUN-1d's drop-rpc drill: refuses every RPC call for `ms` (main wraps the providers' HTTP in an RpcCut). */
@@ -1486,6 +1491,8 @@ export class Worker {
     if (this.#ctl.paused) reasons.push('owner pause (watchdog)');
     // A position entered now could lose its price with no second path to read it (review of #87): entries stop.
     if (this.#d.watchRead === undefined || this.#d.watchHalted?.() === true) reasons.push(SECOND_PATH_UNAVAILABLE);
+    // HELIUS-EXHAUSTED: no entry is judged while Helius refuses for credits; named, never an evidence refusal.
+    if (this.#d.heliusExhaustion?.().exhausted === true) reasons.push(HELIUS_EXHAUSTED);
     if (this.#seeding) reasons.push(SEEDING);
     if (this.#recorderFault !== null) reasons.push(this.#recorderFault);
     if (Object.keys(this.#desk.book.positions).some((id) => lateFillOf(id) !== null)) reasons.push(LATE_BUY);
@@ -1950,7 +1957,7 @@ export class Worker {
           gitSha: d.config.gitSha, entryRule: d.config.strategy.name, recorder: d.config.recorder ? 'on' : 'off',
           uptimeS: (d.timers.now() - this.#started) / 1000, trades: this.#account.state.trades,
           openPositions: Object.values(this.#engine.book.positions).filter((p) => p.status !== 'closed').length,
-          solPrice: this.#solPrice, credits: d.ops?.().quota ?? [],
+          solPrice: this.#solPrice, credits: d.ops?.().quota ?? [], heliusExhaustion: d.heliusExhaustion?.() ?? null,
         };
       },
     });

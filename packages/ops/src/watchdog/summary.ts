@@ -48,10 +48,18 @@ export interface SummaryTrade {
   readonly net_lamports: string | null;
   readonly net_usd: string | null;
 }
+/** HELIUS-EXHAUSTED: the provider's "credits used up" answers since boot, and the first one's time (null: none). */
+export interface CreditExhaustion {
+  readonly count: number;
+  readonly first_at: string | null;
+}
 export interface ProviderCredits {
   readonly provider: string;
   readonly used_since_boot: number;
   readonly monthly: number | null;
+  /** HELIUS-EXHAUSTED: credits since boot by class (P0–P3; stream bytes count as P3). With `exhausted`, only on Helius. */
+  readonly by_class?: readonly [number, number, number, number];
+  readonly exhausted?: CreditExhaustion;
 }
 export interface Summary {
   readonly v: 1;
@@ -177,8 +185,16 @@ const crashSite = (x: unknown) =>
   exact(x, ['error', 'file', 'line', 'event', 'count']) && str(x['error'], PATTERNS.ERROR) && strOrNull(x['file'], PATTERNS.FILE) &&
   (x['file'] === null ? x['line'] === null : count(x['line'])) && strOrNull(x['event'], PATTERNS.EVENT) && count(x['count']);
 const restarts = (x: unknown) => exact(x, ['planned', 'deploy', 'unplanned']) && count(x['planned']) && count(x['deploy']) && count(x['unplanned']);
+/** HELIUS-EXHAUSTED's keys of a provider's credits: `by_class` alone, or with `exhausted` (Helius); absent on an older worker. */
+export const CREDIT_DETAIL_KEYS = ['by_class', 'exhausted'] as const;
+const CREDIT_KEYS = ['provider', 'used_since_boot', 'monthly'] as const;
+const byClass = (x: unknown) => Array.isArray(x) && x.length === 4 && x.every(count);
+const exhaustion = (x: unknown) =>
+  exact(x, ['count', 'first_at']) && count(x['count']) && (x['count'] === 0 ? x['first_at'] === null : str(x['first_at'], PATTERNS.TIME));
 const credits = (x: unknown) =>
-  exact(x, ['provider', 'used_since_boot', 'monthly']) && str(x['provider'], PATTERNS.CODE) && count(x['used_since_boot']) && (x['monthly'] === null || count(x['monthly']));
+  (exact(x, CREDIT_KEYS) || (exact(x, [...CREDIT_KEYS, 'by_class']) && byClass(x['by_class'])) ||
+    (exact(x, [...CREDIT_KEYS, ...CREDIT_DETAIL_KEYS]) && byClass(x['by_class']) && x['provider'] === 'helius' && exhaustion(x['exhausted']))) &&
+  str(x['provider'], PATTERNS.CODE) && count(x['used_since_boot']) && (x['monthly'] === null || count(x['monthly']));
 
 const WORKER_KEYS = ['git_sha', 'entry_rule', 'uptime_s', 'starts', 'recorder'] as const;
 /** RESTART-CAUSE's keys of `worker`: present all together or not at all. */
@@ -198,6 +214,7 @@ export const SHAPE_KEYS: readonly string[] = [
   'mint', 'opened_at', 'closed_at', 'size_usd', 'exit_reason', 'net_lamports', 'net_usd',
   'closed_trades',
   'provider', 'used_since_boot', 'monthly',
+  'by_class', 'exhausted', 'first_at',
 ];
 
 /** True only for a value of exactly the summary's shape. */
