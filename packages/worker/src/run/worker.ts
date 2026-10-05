@@ -1014,9 +1014,11 @@ export class Worker {
     const snap = this.#snapshots.get(mint);
     if (snap !== undefined && snapshotWins(snap, p === null ? null : p.obs)) return { address: snap.pool, state: snap.state, ctx: snap.ctx, atMs: snap.atMs };
     if (p === null || flagged(p)) return null;
-    const ctx = this.#fees.get(mint) ?? this.#strategy.observedFees(mint);
-    if (p === null || ctx === undefined) return null;
-    return { address: p.address, state: { baseReserve: p.baseVault, quoteVault: p.quoteVault, virtualQuoteReserves: p.pool.virtualQuoteReserves ?? 0n }, ctx, atMs: p.obs.receivedAt };
+    const state = { baseReserve: p.baseVault, quoteVault: p.quoteVault, virtualQuoteReserves: p.pool.virtualQuoteReserves ?? 0n };
+    // FEES-KEEP: restored fee terms price only the pool their swap left.
+    const ctx = this.#fees.get(mint) ?? this.#strategy.observedFees(mint, state);
+    if (ctx === undefined) return null;
+    return { address: p.address, state, ctx, atMs: p.obs.receivedAt };
   }
 
   /**

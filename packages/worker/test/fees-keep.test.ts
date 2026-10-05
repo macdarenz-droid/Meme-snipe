@@ -11,6 +11,8 @@ import { observedFeeContext } from '../../core/src/fills/index.ts';
 import { bps } from '../../core/src/units/index.ts';
 import { poolKey, rugCheckKey, simKey } from '../../core/src/gates/index.ts';
 import { passingFacts } from '../../core/test/gates/world.ts';
+import { swapLog } from '../../core/test/facts/swaps.ts';
+import type { PoolState } from '../../core/src/amm/index.ts';
 import { LiveStrategy, MARKET_MISS_CODES, RESTORE_KEY, SEED_KEY, marketMissCode } from '../src/engine/strategy.ts';
 import { strategyConfig } from '../src/run/settings.ts';
 import { loadState, saveState } from '../src/persist/index.ts';
@@ -26,8 +28,9 @@ const decisions = (h: H) => journal(h.stateDir).filter((l) => l['boot'] === h.wo
 let port = 18_900;
 
 const NOW = MIGRATED_AT + 30 * 60_000;
-/** The terms the harness's swaps report (Market.swap): a v2 buy. */
-const TERMS = { atMs: NOW - 120_000, lp: 2, protocol: 93, creator: 30, buyback: 5_000, instruction: 'v2' as const, baseSupply: SUPPLY };
+/** Saved terms of a v2 buy, with the pool its swap left. */
+const LEFT: PoolState = { baseReserve: 700_000_000_000_000n, quoteVault: 80_000_000_000n, virtualQuoteReserves: 5_000_000_000n };
+const TERMS = { atMs: NOW - 120_000, lp: 2, protocol: 93, creator: 30, buyback: 5_000, instruction: 'v2' as const, baseSupply: SUPPLY, after: { base: LEFT.baseReserve, quote: LEFT.quoteVault + LEFT.virtualQuoteReserves } };
 const GOOD = { mint: MINT, pool: POOL_ADDRESS, migratedAtMs: MIGRATED_AT, migrationSlot: SLOT - 15_000n, tries: 2, lastEvalMs: NOW - 60_000, lastReason: 'H11 missing', bars: [], fees: TERMS };
 
 /** The strategy alone, given a restore fact at NOW with these saved candidates. */
@@ -41,12 +44,23 @@ const restoreInto = (candidates: unknown[]) => {
 };
 
 describe('FEES-KEEP: the saved fee terms come back with the candidate', () => {
-  it('restores the fee context the live swap built (the same observedFeeContext from the same terms)', () => {
+  it('restores the fee context the live swap built (the same observedFeeContext from the same terms), for the pool it left', () => {
     const s = restoreInto([GOOD]);
     expect(s.strategy.candidates().has(MINT)).toBe(true);
-    expect(s.strategy.observedFees(MINT)).toEqual(observedFeeContext(
+    expect(s.strategy.observedFees(MINT, LEFT)).toEqual(observedFeeContext(
       { split: { lp: bps(2), protocol: bps(93), creator: bps(30) }, buybackFeeBps: bps(5_000), instruction: 'v2' }, SUPPLY, { mayhemMode: false, transferFee: false, transferHook: false },
     ));
+    // The same effective quote split differently between vault and virtual is the same pool (price and tier alike).
+    expect(s.strategy.observedFees(MINT, { ...LEFT, quoteVault: LEFT.quoteVault + 1n, virtualQuoteReserves: LEFT.virtualQuoteReserves - 1n })).toBeDefined();
+  });
+
+  it.each([
+    ['no pool given', null],
+    ['one more base token', { ...LEFT, baseReserve: LEFT.baseReserve + 1n }],
+    ['one more lamport of quote', { ...LEFT, quoteVault: LEFT.quoteVault + 1n }],
+  ])('restored terms price no other pool (%s): a swap missed in the downtime may have crossed a tier', (_, pool) => {
+    const s = restoreInto([GOOD]);
+    expect(s.strategy.observedFees(MINT, pool)).toBeUndefined();
   });
 
   it.each([
@@ -61,18 +75,21 @@ describe('FEES-KEEP: the saved fee terms come back with the candidate', () => {
     ['a supply not a bigint', { ...TERMS, baseSupply: 1_000 }],
     ['a zero supply', { ...TERMS, baseSupply: 0n }],
     ['no receipt time', { ...TERMS, atMs: undefined }],
+    ['no pool it left (a save from before the reserves check)', { ...TERMS, after: undefined }],
+    ['a zero reserve in the pool it left', { ...TERMS, after: { ...TERMS.after, base: 0n } }],
+    ['a quote reserve not a bigint', { ...TERMS, after: { ...TERMS.after, quote: 5 } }],
   ])('fee terms %s restore as none: the candidate comes back, unpriced as today (fail closed)', (_, fees) => {
     const { fees: _f, ...rest } = GOOD;
     const s = restoreInto([fees === undefined ? rest : { ...rest, fees }]);
     expect(s.strategy.candidates().has(MINT)).toBe(true);
-    expect(s.strategy.observedFees(MINT)).toBeUndefined();
+    expect(s.strategy.observedFees(MINT, LEFT)).toBeUndefined();
   });
 
   it('fee terms received after the restore moment refuse the saved candidates whole, as a bar would', () => {
     const s = restoreInto([GOOD, { ...GOOD, mint: 'other-mint', fees: { ...TERMS, atMs: NOW + 1 } }]);
     expect(s.out).toContainEqual({ action: null, reasons: ['candidates refused', 'a saved candidate is dated after the restore'] });
     expect(s.strategy.candidates().size).toBe(0);
-    expect(s.strategy.observedFees(MINT)).toBeUndefined();
+    expect(s.strategy.observedFees(MINT, LEFT)).toBeUndefined();
   });
 
   it('a save leaves out fee terms received after its moment (moments order by slot first, receipt times need not follow)', () => {
@@ -83,15 +100,20 @@ describe('FEES-KEEP: the saved fee terms come back with the candidate', () => {
     const saved = () => s.strategy.persistable(0)?.state.candidates.find((c) => c.mint === MINT)?.fees;
     expect(saved()).toEqual(TERMS);
     // A swap at the next slot, received at NOW + 5 s, then an event a slot later received at NOW + 1 s: the save's moment.
-    const data = { pool: POOL_ADDRESS, user: 'buyer-1', baseAmountOut: 1_000n, timestamp: BigInt(Math.floor(NOW / 1000)), lpFeeBasisPoints: 20n, protocolFeeBasisPoints: 5n, coinCreatorFeeBasisPoints: 5n, buybackFeeBasisPoints: 0n, ixName: 'buy', baseSupply: SUPPLY };
+    const { data, after } = swapLog({ pool: POOL_ADDRESS, coinCreator: DEV, supply: SUPPLY, pre: LEFT, side: 'buy', base: LEFT.baseReserve / 500n, atMs: NOW + 5_000 });
     s.strategy.onMarket({ kind: 'market', id: 'swap', moment: at(SLOT + 1n, NOW + 5_000), key: `logs:pump_amm:BuyEvent:${POOL_ADDRESS}:1`, value: { event: { program: 'pump_amm', name: 'BuyEvent', data }, signature: 'swap-1' } }, ctx(NOW + 5_000));
-    expect(s.strategy.observedFees(MINT)?.feeConfig.flatFees.lp).toBe(20);
+    // A swap seen in this run prices any pool (the live rule) and is what a save keeps, with the pool it left.
+    expect(s.strategy.observedFees(MINT)).toBeDefined();
+    expect(saved()).toEqual(expect.objectContaining({ atMs: NOW + 5_000, after: { base: after.baseReserve, quote: after.quoteVault + after.virtualQuoteReserves } }));
     s.strategy.onMarket({ kind: 'market', id: 'later', moment: at(SLOT + 2n, NOW + 1_000), key: 'chain:slot', value: { slot: SLOT + 2n } }, ctx(NOW + 1_000));
     expect(s.strategy.persistable(0)?.state.asOf.receivedAt).toBe(NOW + 1_000);
     expect(saved()).toBeNull();
   });
 
-  it('a restored candidate with a swap before the restart and none after is judged past #market (not unpriced)', async () => {
+  it.each([
+    ['the pool its swap left: judged past #market (not unpriced)', true],
+    ['a pool moved since (a downtime swap not seen): no-fee-context, never priced at the old tier', false],
+  ])('a restored candidate with a swap before the restart and none after, its pool fact at %s', async (_, same) => {
     // A fresh host 16 days before T; the coin passes every gate at T but H15 (no simulation), so it is judged, never entered.
     const stateDir = tempState();
     const timers = virtualTimers(T - 16 * 86_400_000);
@@ -105,13 +127,16 @@ describe('FEES-KEEP: the saved fee terms come back with the candidate', () => {
     // No fee-context fact: the terms come only from the swap seen on the pool.
     const m = await passingMarket(h, { fees: false, omit: [simKey(MINT)] });
     m.offchain('feed:status:helius', { state: 'up' });
-    m.swap('BuyEvent', 'buyer-1', 1_000n);
+    // A real buy on the pool as it stands (its event's reserves before; the replay gives the pool it leaves).
+    const pre = h.worker.reservesOf(MINT)!;
+    const { data, after } = swapLog({ pool: POOL_ADDRESS, coinCreator: DEV, supply: SUPPLY, pre, side: 'buy', base: pre.baseReserve / 500n, atMs: m.now });
+    m.fact(`logs:pump_amm:BuyEvent:${POOL_ADDRESS}:1`, { event: { program: 'pump_amm', name: 'BuyEvent', data }, signature: 'swap-1' });
     await m.run(3_000, 400, () => m.pool());
     expect(h.worker.strategy.observedFees(MINT)).toBeDefined();
     await h.worker.stop();
     const st = loadState(join(stateDir, PERSIST_FILE), RUG_CONFIG);
     if (!st.ok) throw new Error(st.reason);
-    expect(st.candidates.map((c) => [c.mint, c.fees])).toEqual([[MINT, expect.objectContaining({ lp: 2, protocol: 93, creator: 30, buyback: 5_000, instruction: 'v2', baseSupply: SUPPLY })]]);
+    expect(st.candidates.map((c) => [c.mint, c.fees])).toEqual([[MINT, expect.objectContaining({ lp: 2, protocol: 93, creator: 30, buyback: 5_000, instruction: 'v1', baseSupply: SUPPLY, after: { base: after.baseReserve, quote: after.quoteVault + after.virtualQuoteReserves } })]]);
     // The state file refuses fee terms dated after its moment, as it refuses such a bar.
     const later = st.candidates.map((c) => ({ ...c, fees: { ...c.fees!, atMs: st.asOf.receivedAt + 1 } }));
     expect(() => saveState(join(tempState(), PERSIST_FILE), { asOf: st.asOf, index: st.index.snapshot(st.asOf), labeller: st.labeller.snapshot(), coverage: st.coverage.filter((e) => !e.id.startsWith('persist:restart:')), candidates: later }))
@@ -129,6 +154,8 @@ describe('FEES-KEEP: the saved fee terms come back with the candidate', () => {
     const m2 = new Market(h2);
     m2.withFees = false;
     m2.omit = new Set([simKey(MINT)]);
+    // The pool fact at the reserves the swap left, or at the passing pool's (which the swap moved away from).
+    m2.poolAt = same ? after : null;
     m2.slot();
     m2.offchain('coverage:creates:start', { fromSlot: slotAt(m2.now), via: CREATES_VIA });
     m2.offchain('feed:status:helius', { state: 'up' });
@@ -141,18 +168,25 @@ describe('FEES-KEEP: the saved fee terms come back with the candidate', () => {
     const restoredAt = t2.now();
     for (let k = 0; k < 300 && !judged(); k++) {
       m2.slot();
-      if (k % 10 === 0) for (const [key, { value }] of passingFacts()) if (!key.startsWith('coverage:')) m2.fact(key, value);
+      if (k % 10 === 0) for (const [key, { value }] of passingFacts()) if (!key.startsWith('coverage:') && key !== poolKey(MINT)) m2.fact(key, value);
       m2.fact(rugCheckKey(DEV), { obs: { provider: 'helius', slot: h2.worker.feed.openSlot - 1n, receivedAt: m2.now, quality: [], commitment: 'confirmed' }, creator: DEV, version: RUG_CONFIG.version, fromMs: 0, asOfMs: m2.now, mints: [], credits: 0 });
       m2.pool();
       await tick();
     }
     expect(judged()).toBe(true);
+    if (!same) {
+      expect(h2.worker.strategy.candidates().get(MINT)!.gates).toEqual([{ gate: 'worker', code: 'no-fee-context', detail: 'fee context unknown' }]);
+      expect(h2.worker.poolOf(MINT)).toBeNull();
+      await h2.worker.stop();
+      return;
+    }
     // Priced from the kept terms: the gates judged it (H15, its simulation missing), never the worker's no-market cases.
     const gates = h2.worker.strategy.candidates().get(MINT)!.gates!;
     expect(gates.length).toBeGreaterThan(0);
     expect(gates.filter((g) => g.gate === 'worker')).toEqual([]);
     expect(gates.some((g) => g.input === 'sim' || g.neededBy === 'H15' || g.gate === 'H15')).toBe(true);
-    expect(h2.worker.strategy.observedFees(MINT)).toBeDefined();
+    expect(h2.worker.strategy.observedFees(MINT, after)).toBeDefined();
+    expect(h2.worker.poolOf(MINT)?.state).toEqual(after);
     await h2.worker.stop();
   }, 60_000);
 });

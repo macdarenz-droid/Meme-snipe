@@ -2105,7 +2105,8 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - Absent (an older file) or malformed (a rate outside 0–10,000 whole bps, an unknown instruction, a supply that is not a positive bigint, no receipt time): restores as none, the same fail-closed path as before.
   - Received after the restore moment: refuses the saved candidates whole, exactly like a bar. The state file refuses it like a bar too.
   - A save leaves out terms received after its own moment. Moments order by slot first, and receipt times need not follow.
-  - A swap seen live before the restore fact keeps its own terms.
+  - Restored terms price only the pool their swap left (worker/facts review B1). Each saved term carries the pool the reporting swap left, replayed from its event: base reserve and effective quote (vault + virtual). PumpSwap's rates are the tier of the pre-trade market cap, and a downtime swap not seen may have moved the pool across a tier. So #market, and the paper fill's `poolOf`, use restored terms only while the current pool fact shows exactly those reserves. Anything else is `no-fee-context` until a swap seen in this run (live, or the downtime fill) reports fresh terms, which then price any pool as before. A swap that does not replay gives terms that are used live but never saved.
+  - A swap seen live before the restore fact keeps its own terms. No case reaches this today: a candidate already listed is not restored at all. The guard stays so an order change cannot regress, and its mutant is equivalent.
 - **No new reads, no credits.** Stored data: public chain data only (supervisor-approved under the stored-data ruling, 2026-10-03).
 - **Typed codes (POOL-DATA):** the worker's one `no-market` code is split into the case #market met, still under gate `worker`:
   - `no-pool-state`: no pool fact yet;
@@ -2113,13 +2114,17 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - `pool-flagged`: POS-1's swap-stream gap or reserve mismatch;
   - `no-fee-context`.
   - Each still asks for the account read, as `no-market` did. The app reads each as "No pool data" with a short qualifier, and keeps the old label for journal lines written before.
-  - The same engine code runs live and in the backtest, so parity holds.
-  - No G3 or STATS code list names worker codes, so none changes. G3's reject mix counts each new code as its own reason.
+  - The split is live-only. The backtest study reports its own `worker:market-data` (packages/backtest/src/study/summary.ts), so live and backtest do not give the same code here; worker codes already differ by design between the two (G3 report note).
+  - No G3 or STATS code list names the live worker's codes, so none changes. G3's live reject mix counts each new code as its own reason.
 - **Tests that fail before:** `packages/worker/test/fees-keep.test.ts`:
-  - a restored candidate with a pre-restart swap and none after is judged by the gates (H15), with no `worker` reason;
+  - a restored candidate with a pre-restart swap and none after is judged by the gates (H15), with no `worker` reason, while its pool fact shows the pool that swap left;
+  - with a pool moved since, it is `no-fee-context` and `poolOf` is null;
+  - restored terms price no other pool: one base token or one lamport off is enough;
+  - malformed or missing reserves restore as none;
   - malformed terms restore as none;
   - future-dated terms refuse the list, and the state file refuses them;
   - the save's moment bound;
   - the four codes on the journal's gate reasons.
   - Also `facts-source.test.ts`: every typed code asks for the account read.
-- **Hand mutants killed:** restore not setting the terms; the save's moment bound removed; the state file's date check removed.
+- **Hand mutants killed:** restore not setting the terms; the save's moment bound removed; the state file's date check removed; the `v >= 0` rate guard removed (persist review B1: a negative saved rate threw in `bps()` on every boot); the reserves check removed from the restored terms, from #market and from `poolOf`; a live swap not clearing `restored`.
+- **Follow-up (FEE-TIER-NOW):** live has the same issue one swap at a time. The last swap reports its pre-trade tier, and if it crossed a boundary the next quote uses the old tier. The same post-reserves check closes it.

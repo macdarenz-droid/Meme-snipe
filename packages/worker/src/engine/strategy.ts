@@ -355,7 +355,16 @@ export interface SavedFees {
   readonly buyback: number;
   readonly instruction: 'v1' | 'v2';
   readonly baseSupply: bigint;
+  /**
+   * The pool the reporting swap left (its base reserve and effective quote, vault + virtual), replayed from the event. A
+   * restored term prices only that same pool: its rates are the tier of that market cap, and a swap not seen since (the
+   * downtime) may have moved the pool across a tier.
+   */
+  readonly after: { readonly base: bigint; readonly quote: bigint };
 }
+
+/** The pool is exactly the one the terms' swap left (FEES-KEEP: restored terms price nothing else). */
+const leftBy = (f: SavedFees, pool: PoolState): boolean => pool.baseReserve === f.after.base && effectiveQuoteReserve(pool) === f.after.quote;
 
 const feeContextOf = (f: SavedFees): PoolFeeContext => observedFeeContext(
   { split: { lp: bps(f.lp), protocol: bps(f.protocol), creator: bps(f.creator) }, buybackFeeBps: bps(f.buyback), instruction: f.instruction },
@@ -367,8 +376,11 @@ const savedFees = (x: unknown): SavedFees | null => {
   if (!isObj(x)) return null;
   const rate = (v: unknown): boolean => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 && v <= 10_000;
   const ok = typeof x['atMs'] === 'number' && Number.isSafeInteger(x['atMs']) && rate(x['lp']) && rate(x['protocol']) && rate(x['creator']) && rate(x['buyback'])
-    && (x['instruction'] === 'v1' || x['instruction'] === 'v2') && typeof x['baseSupply'] === 'bigint' && x['baseSupply'] > 0n;
-  return ok ? { atMs: x['atMs'] as number, lp: x['lp'] as number, protocol: x['protocol'] as number, creator: x['creator'] as number, buyback: x['buyback'] as number, instruction: x['instruction'] as 'v1' | 'v2', baseSupply: x['baseSupply'] as bigint } : null;
+    && (x['instruction'] === 'v1' || x['instruction'] === 'v2') && typeof x['baseSupply'] === 'bigint' && x['baseSupply'] > 0n
+    && isObj(x['after']) && typeof x['after']['base'] === 'bigint' && x['after']['base'] > 0n && typeof x['after']['quote'] === 'bigint' && x['after']['quote'] > 0n;
+  if (!ok) return null;
+  const after = x['after'] as { base: bigint; quote: bigint };
+  return { atMs: x['atMs'] as number, lp: x['lp'] as number, protocol: x['protocol'] as number, creator: x['creator'] as number, buyback: x['buyback'] as number, instruction: x['instruction'] as 'v1' | 'v2', baseSupply: x['baseSupply'] as bigint, after: { base: after.base, quote: after.quote } };
 };
 
 /** RESTART-KEEP: one filled swap of a restored candidate's downtime: its block time, reserves before and after, and the spot after. */
@@ -584,8 +596,12 @@ export class LiveStrategy implements Strategy {
   readonly #migrationSlot = new Map<string, bigint>();
   readonly #mintOfPool = new Map<string, string>();
   /** The fee terms of the latest released swap on each mint's pool (rates are per trade on chain). */
-  /** FEES-KEEP: with the terms the context was built from and the swap's receipt time, as a save keeps them. */
-  readonly #observedFees = new Map<string, { readonly ctx: PoolFeeContext; readonly terms: SavedFees }>();
+  /**
+   * FEES-KEEP: with the terms the context was built from, as a save keeps them (null when the swap did not replay, so
+   * nothing says which pool it left: not saved), and whether they came back from a save (`restored`: they then price only
+   * the pool their swap left, until a swap seen in this run replaces them).
+   */
+  readonly #observedFees = new Map<string, { readonly ctx: PoolFeeContext; readonly terms: SavedFees | null; readonly restored: boolean }>();
   /** Receipt time of the latest released swap on each mint's pool: how current the sales below are. */
   readonly #tradeAt = new Map<string, number>();
   /** Sales by each mint's deployer (its creator and the create's signer), deduplicated by event id. */
@@ -705,8 +721,16 @@ export class LiveStrategy implements Strategy {
   #saidRestoreWait = false;
 
   /** The fee terms of the latest swap seen on a mint's pool (for the paper fill when no fee-context fact exists). */
-  observedFees(mint: string): PoolFeeContext | undefined {
-    return this.#observedFees.get(mint)?.ctx;
+  observedFees(mint: string, pool: PoolState | null = null): PoolFeeContext | undefined {
+    return this.#feesFor(mint, pool);
+  }
+
+  /** The observed fee context for pricing `pool`: a restored one only for the pool its swap left (FEES-KEEP). */
+  #feesFor(mint: string, pool: PoolState | null): PoolFeeContext | undefined {
+    const o = this.#observedFees.get(mint);
+    if (o === undefined) return undefined;
+    if (!o.restored) return o.ctx;
+    return pool !== null && o.terms !== null && leftBy(o.terms, pool) ? o.ctx : undefined;
   }
 
   /**
@@ -878,7 +902,9 @@ export class LiveStrategy implements Strategy {
       this.#cands.set(c.mint, { mint: c.mint, migratedAtMs: c.migratedAtMs, lastEvalMs: c.lastEvalMs, lastReason: c.lastReason, lastWaived: '', tries: c.tries, gates: null, spend: null });
       if (c.pool !== null) this.#notePool(c.mint, c.pool);
       // FEES-KEEP: the last swap's fee terms come back with it, so a restart does not leave it unpriced until its next swap.
-      if (c.fees != null && !this.#observedFees.has(c.mint)) this.#observedFees.set(c.mint, { ctx: feeContextOf(c.fees), terms: c.fees });
+      // Terms from a swap seen in this run are never replaced by saved ones (a candidate already listed is not restored at
+      // all, so no case reaches this today; kept so an order change cannot regress).
+      if (c.fees != null && !this.#observedFees.has(c.mint)) this.#observedFees.set(c.mint, { ctx: feeContextOf(c.fees), terms: c.fees, restored: true });
       if (c.bars.length > 0 && !this.#bars.has(c.mint)) this.#bars.set(c.mint, [...c.bars]);
       // The downtime's bars, from the saved last bar (or the migration) to the restore, come from the pool's filled trades.
       const barMs = this.#d.config.barMs;
@@ -1207,7 +1233,7 @@ export class LiveStrategy implements Strategy {
   /** FEES-KEEP: the fee terms a save keeps for a mint: the latest swap's, unless it was received after the save moment. */
   #feeTermsAsOf(mint: string, atMs: number): SavedFees | null {
     const f = this.#observedFees.get(mint)?.terms;
-    return f !== undefined && f.atMs <= atMs ? f : null;
+    return f != null && f.atMs <= atMs ? f : null;
   }
 
   /** Drops a mint's pool state once nothing watches it (its window ended and no position holds it). */
@@ -1260,8 +1286,17 @@ export class LiveStrategy implements Strategy {
     const supply = typeof d['baseSupply'] === 'bigint' && d['baseSupply'] > 0n ? d['baseSupply'] : null;
     if (lp !== null && protocol !== null && supply !== null) {
       const ix = typeof d['ixName'] === 'string' && d['ixName'].endsWith('_v2') ? 'v2' : 'v1';
-      const terms: SavedFees = { atMs: e.moment.receivedAt, lp, protocol, creator: n('coinCreatorFeeBasisPoints') ?? 0, buyback: n('buybackFeeBasisPoints') ?? 0, instruction: ix, baseSupply: supply };
-      this.#observedFees.set(mint, { ctx: feeContextOf(terms), terms });
+      const creator = n('coinCreatorFeeBasisPoints') ?? 0;
+      const buyback = n('buybackFeeBasisPoints') ?? 0;
+      let r: ReturnType<typeof swapEventState>;
+      try {
+        r = swapEventState(ev as unknown as SwapEvent);
+      } catch {
+        r = { ok: false, reason: 'undecodable swap' };
+      }
+      const terms: SavedFees | null = r.ok ? { atMs: e.moment.receivedAt, lp, protocol, creator, buyback, instruction: ix, baseSupply: supply, after: { base: r.after.baseReserve, quote: effectiveQuoteReserve(r.after) } } : null;
+      const ctx = observedFeeContext({ split: { lp: bps(lp), protocol: bps(protocol), creator: bps(creator) }, buybackFeeBps: bps(buyback), instruction: ix }, supply, { mayhemMode: false, transferFee: false, transferHook: false });
+      this.#observedFees.set(mint, { ctx, terms, restored: false });
     }
     this.#addFlow(mint, e, v, ev['name'], d);
     if (ev['name'] !== 'SellEvent' || typeof d['user'] !== 'string' || typeof d['baseAmountIn'] !== 'bigint') return;
@@ -1344,12 +1379,14 @@ export class LiveStrategy implements Strategy {
     const flags = pool.obs.quality.filter((q) => q !== 'backfilled' && q !== 'deduplicated');
     if (flags.length > 0) return `${POOL_FLAGGED} ${flags.join(', ')}${typeof (p.value as { stale?: unknown }).stale === 'string' ? ` (${(p.value as { stale: string }).stale})` : ''}`;
     this.#notePool(mint, pool.address);
-    // A fee-context fact when one is published, else the terms of the latest swap seen on the pool.
+    // A fee-context fact when one is published, else the terms of the latest swap seen on the pool (restored ones only
+    // for the pool their swap left).
+    const state: PoolState = { baseReserve: pool.baseVault, quoteVault: pool.quoteVault, virtualQuoteReserves: pool.pool.virtualQuoteReserves ?? 0n };
     const f = ctx.lookup(feesKey(mint));
-    const fees = f.ok ? (unwrap(f.value) as PoolFeeContext) : this.#observedFees.get(mint)?.ctx;
+    const fees = f.ok ? (unwrap(f.value) as PoolFeeContext) : this.#feesFor(mint, state);
     if (fees === undefined) return NO_FEE_CONTEXT;
     return {
-      pool: { baseReserve: pool.baseVault, quoteVault: pool.quoteVault, virtualQuoteReserves: pool.pool.virtualQuoteReserves ?? 0n },
+      pool: state,
       ctx: fees, atMs: pool.obs.receivedAt, address: pool.address,
     };
   }
