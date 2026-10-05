@@ -21,7 +21,7 @@ import {
   type IntentId, type PositionId, type QuoteContext, type TransactionAttempt,
   attemptId, blockhash, entryKey, intentId, mint as toMint, positionId, reservationId, signature,
 } from '../../../core/src/domain/index.ts';
-import { type AsOfEntry, type Decision, type MarketEvent, type Moment, type Strategy, type StrategyContext, compareMoments } from '../../../core/src/engine/index.ts';
+import { type AsOfEntry, type Decision, type MarketEvent, type Moment, type Strategy, type StrategyContext, compareMoments, flatCopy } from '../../../core/src/engine/index.ts';
 import { RAW } from '../../../core/src/facts/raw.ts';
 import { observedFeeContext, type SwapEvent, swapEventState } from '../../../core/src/fills/index.ts';
 import {
@@ -400,6 +400,8 @@ interface Candidate {
   lastWaived: string;
   /** The mint's creator, from its released create (null until it is seen): RUG-1c checks this deployer. */
   creator?: string | null;
+  /** ENTRY-MEMO: S0's drawn entry moment, drawn once (its window is fixed: the migration time and the config). */
+  entryAt?: number;
 }
 
 /**
@@ -538,11 +540,15 @@ export interface EntrySeed {
   readonly entryReserve: bigint;
 }
 
+/** ENTRY-MEMO: how many entry moments were drawn (a hash each), for the test that each candidate draws once. */
+export const S0_DRAWS = { count: 0 };
+
 /**
  * S0's entry moment for a candidate: uniform in [from, to), from the first 48 bits of sha256(salt, mint). Independent
  * of arrival order, so a replay draws the same moments.
  */
 export const s0EntryAt = (salt: string, mint: string, from: number, to: number): number => {
+  S0_DRAWS.count++;
   const u = Number.parseInt(createHash('sha256').update(`s0|${salt}|${mint}`).digest('hex').slice(0, 12), 16) / 2 ** 48;
   return from + Math.floor(u * (to - from));
 };
@@ -631,6 +637,28 @@ export class LiveStrategy implements Strategy {
     this.#settings = exitSettings(deps.session.policy, deps.config.takeProfitOn, { signaturesPerTx: n.signaturesPerTx, baseFeePerSignature: n.baseFeePerSignature, tip: n.tip });
     // The kept flow window must hold a whole negative run and the minute before it, or a run could be cut off.
     if ((deps.session.policy.exits.negativeFlowMinutes + 1) * FLOW_MINUTE_MS > FLOW_KEEP_MS) throw new RangeError('negativeFlowMinutes is longer than the kept flow window');
+  }
+
+  /**
+   * MEM-PROBE: counts only: every map and list this strategy keeps, entries inside the per-mint ones summed, and the
+   * deployer index's counts.
+   */
+  sizes(): Record<string, number> {
+    const sum = <V>(m: ReadonlyMap<string, V>, n: (v: V) => number): number => {
+      let t = 0;
+      for (const v of m.values()) t += n(v);
+      return t;
+    };
+    const d = this.#deployers.sizes();
+    return {
+      cands: this.#cands.size, seeds: this.#seeds.size, exits: this.#exits.size, bars: sum(this.#bars, (b) => b.length),
+      seed_history: sum(this.#seedHistory, (l) => l.length), coverage_facts: this.#coverageFacts.length,
+      pool_of_mint: this.#poolOfMint.size, mint_of_pool: this.#mintOfPool.size, migration_slot: this.#migrationSlot.size,
+      observed_fees: this.#observedFees.size, trade_at: this.#tradeAt.size, swap_at: this.#swapAt.size,
+      deployer_sales: sum(this.#deployerSales, (s) => s.ids.size), flow_ids: sum(this.#flow, (f) => f.ids.size), deployer_memo: this.#deployerMemo.size,
+      tail: this.#tail.size, owners: this.#owners.size,
+      deployer_creators: d.creators, deployer_mints: d.mints, deployer_mint_bytes: d.mint_bytes, deployer_rugs: d.rugs, deployer_unjudged: d.unjudged, deployer_vias: d.vias, deployer_lost: d.lost,
+    };
   }
 
   /** Exit state to save after each step (the worker writes it before the next event). */
@@ -1425,7 +1453,7 @@ export class LiveStrategy implements Strategy {
     // Its age is the create's own chain time (a create read late, by a seed fill or a lookup, is as old as it is), else
     // when it was released.
     const created = createOf(e.value)?.createdAtMs ?? e.moment.receivedAt;
-    this.#creates.set(String.fromCharCode(...Array.from(mint, (c) => c.charCodeAt(0))), created);
+    this.#creates.set(flatCopy(mint), created);
   }
 
   /**
@@ -2215,7 +2243,7 @@ export class LiveStrategy implements Strategy {
       if (now >= to) continue;
       if (this.#batchOpen.has(cand.mint)) continue;
       if (now < from || (cand.lastEvalMs !== null && now - cand.lastEvalMs < c.evaluateEveryMs && !this.#landedFresh(due, cand.mint, ctx))) continue;
-      if (c.entryTiming === 'random' && now < s0EntryAt(c.entrySalt, cand.mint, from, to)) continue;
+      if (c.entryTiming === 'random' && now < this.#entryAt(cand, from, to)) continue;
       if (Object.values(ctx.book.positions).some((p) => p.mint === cand.mint && p.status !== 'closed')) continue;
       if (Object.values(ctx.book.intents).some((i) => i.intent.mint === cand.mint && !isTerminal(i))) continue;
       cand.lastEvalMs = now;
@@ -2237,6 +2265,16 @@ export class LiveStrategy implements Strategy {
       }
       if (out.some((d) => d.action !== null)) return;
     }
+  }
+
+  /**
+   * ENTRY-MEMO: the candidate's S0 entry moment, drawn once. It was drawn for every waiting candidate on every
+   * event: after a restart restored 400+ candidates, that hashing took over half the worker's CPU and the backlog filled
+   * the heap (the profile of a restored boot). The same salt, mint and window give the same moment, so replays agree.
+   */
+  #entryAt(cand: Candidate, from: number, to: number): number {
+    cand.entryAt ??= s0EntryAt(this.#d.config.entrySalt, cand.mint, from, to);
+    return cand.entryAt;
   }
 
   /** The S0 diagnostic parts the last `#evaluate` relied on. */

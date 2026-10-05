@@ -3,7 +3,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { sign, type Heartbeat } from '../src/watchdog/logic.ts';
 import { CODE_REPO, writeReports } from '../src/watchdog/reports.ts';
-import { FORBIDDEN, FORBIDDEN_KEY, SHAPE_KEYS, checkSummary, forbiddenIn, isSummary, type Summary } from '../src/watchdog/summary.ts';
+import { FORBIDDEN, FORBIDDEN_KEY, SHAPE_KEYS, SUMMARY_MAX_PROBES, SUMMARY_MAX_PROBE_COUNTS, checkSummary, forbiddenIn, isSummary, type Summary } from '../src/watchdog/summary.ts';
 import { Watchdog, type DurableState, type Env } from '../src/watchdog/worker.ts';
 
 const KEY = 'test-hmac-key-0123456789abcdef';
@@ -143,6 +143,23 @@ describe('the summary guards', () => {
     ]) expect(ok({ ...w, last_death: bad }), JSON.stringify(bad)).toBe(false);
     // A planted secret anywhere in it is refused by the pattern guard too.
     expect(ok({ ...w, last_death: { ...death, spaces: [{ space: 'ghp_abcdefghijklmnopqrstuvwxyz0123456789', used_mb: 1 }] } })).toBe(false);
+  });
+
+  it('accept the memory probe samples in the last death (MEM-PROBE) in exactly their shape, counts and codes only, bounded', () => {
+    const w = goodSummary().worker as Record<string, unknown>;
+    const death = { at: '2026-10-05T19:36:33.000Z', uptime_s: 1_808, heap_used_mb: 563, heap_limit_mb: 572, spaces: [{ space: 'old', used_mb: 484 }], sample: null };
+    const row = { at: '2026-10-05T19:35:33.000Z', heap_used_mb: 527, old_mb: 450, large_object_mb: 72, saving: true, counts: [{ code: 'store_keys', count: 120_000 }, { code: 'store_k_read_accounts', count: 9 }] };
+    const ok = (last_death: unknown) => checkSummary(JSON.stringify(goodSummary({ worker: { ...w, last_death } as unknown as Summary['worker'] }))).ok;
+    expect(ok({ ...death, recent: [row] })).toBe(true);
+    expect(ok({ ...death, recent: [] })).toBe(true);
+    expect(ok({ ...death, recent: Array.from({ length: SUMMARY_MAX_PROBES }, () => row) })).toBe(true);
+    expect(ok({ ...death, recent: [{ ...row, counts: Array.from({ length: SUMMARY_MAX_PROBE_COUNTS }, (_, i) => ({ code: `c${i}`, count: i })) }] })).toBe(true);
+    for (const bad of [
+      Array.from({ length: SUMMARY_MAX_PROBES + 1 }, () => row), [{ ...row, counts: Array.from({ length: SUMMARY_MAX_PROBE_COUNTS + 1 }, (_, i) => ({ code: `c${i}`, count: i })) }],
+      [{ ...row, saving: 'yes' }], [{ ...row, old_mb: -1 }], [{ ...row, large_object_mb: 1.5 }], [{ ...row, at: 'now' }], [{ ...row, note: 'x' }],
+      [{ ...row, counts: [{ code: 'Store Keys', count: 1 }] }], [{ ...row, counts: [{ code: 'store_keys', count: 1, mint: 'x' }] }], [{ ...row, counts: [{ code: 'store_keys', count: -1 }] }],
+      [{ ...row, counts: [{ code: 'ghp_abcdefghijklmnopqrstuvwxyz0123456789', count: 1 }] }], 'x', {},
+    ]) expect(ok({ ...death, recent: bad }), JSON.stringify(bad).slice(0, 120)).toBe(false);
   });
 
   it('name each forbidden kind, and never flag a mint address or a normal summary', () => {

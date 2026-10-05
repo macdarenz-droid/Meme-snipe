@@ -57,8 +57,8 @@ describe('the live store under a busy pool (OOM-SWAPS)', () => {
     await h.worker.stop();
   }, 180_000);
 
-  it('heads: the stream, candles and carry facts, the seen signatures, the slot notice, the account reads and the mint facts keep only their newest value; every other gate fact keeps its whole series', () => {
-    for (const k of [streamKey(STREAMS.trades(POOL_ADDRESS)), streamKey('creates'), candlesKey('M'), carryKey('M'), `seen:logs:${POOL_ADDRESS}`, 'seen:pumpportal:create', 'chain:slot', 'read:accounts:M', 'gates/mint:M']) {
+  it('heads: the stream, candles and carry facts, the seen signatures, the slot notice, the account reads, the mint facts and the graduates fact keep only their newest value; every other gate fact keeps its whole series', () => {
+    for (const k of [streamKey(STREAMS.trades(POOL_ADDRESS)), streamKey('creates'), candlesKey('M'), carryKey('M'), `seen:logs:${POOL_ADDRESS}`, 'seen:pumpportal:create', 'chain:slot', 'read:accounts:M', 'gates/mint:M', 'gates/graduates']) {
       const keepOlder = liveCollapse(k);
       expect(keepOlder, k).not.toBeNull();
       expect(keepOlder!({ moment: { slot: 1n, txIndex: 0, ixIndex: 0, receivedAt: 0 }, value: {}, source: 's' }), k).toBe(false);

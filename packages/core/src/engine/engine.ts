@@ -3,8 +3,9 @@
 // world only through the EffectRunner. Same seed and same events give the same log, byte for byte.
 
 import { createHash, type Hash } from 'node:crypto';
+import { HOUR_MS } from '../config/time.ts';
 import { applyBookEvent, emptyBook, isIllegal, type Book, type BookConfig, type BookEvent, type Effect } from '../lifecycle/index.ts';
-import { AsOfStore, type AsOfEntry, type Lookup, type Retention, type Collapse } from './asof.ts';
+import { AsOfStore, type AsOfEntry, type Lookup, type Retention, type Collapse, type Forget, type Shape } from './asof.ts';
 import type { Clock } from './clock.ts';
 import type { Feed, FeedEvent, MarketEvent } from './feed.ts';
 import { deepFreeze } from './freeze.ts';
@@ -77,7 +78,14 @@ export interface EngineDeps {
   readonly retention?: Retention;
   /** Keys whose older entries are kept only when they can matter (default: none). See `Collapse`. */
   readonly collapse?: Collapse;
+  /** Keys stored with only the fields their readers read (default: none). See `Shape`. */
+  readonly shape?: Shape;
+  /** Keys forgotten whole once old (default: none). See `Forget`. */
+  readonly forget?: Forget;
 }
+
+/** G4a: how often the store forgets keys past their `Forget` age (event time). */
+const FORGET_EVERY_MS = HOUR_MS;
 
 export class Engine {
   readonly #clock: Clock;
@@ -98,7 +106,7 @@ export class Engine {
     this.#feed = deps.feed;
     this.#strategy = deps.strategy;
     this.#runner = deps.runner;
-    this.#store = new AsOfStore(deps.clock, deps.retention ?? null, deps.collapse ?? null);
+    this.#store = new AsOfStore(deps.clock, deps.retention ?? null, deps.collapse ?? null, deps.shape ?? null, deps.forget ?? null);
     this.#rng = createRng(deps.seed);
     const limits = deps.reconcileLimits ?? DEFAULT_RECONCILE_LIMITS;
     this.#guard = new ReconcileGuard(limits);
@@ -115,6 +123,11 @@ export class Engine {
   get lastHandled(): string | null {
     const e = this.#last;
     return e === null ? null : e.kind === 'world' ? `world:${e.event.type}` : e.key;
+  }
+
+  /** MEM-PROBE: the store's counts and the records not yet consumed. */
+  sizes(): ReturnType<AsOfStore['sizes']> & { readonly records: number } {
+    return { ...this.#store.sizes(), records: this.#records?.length ?? 0 };
   }
 
   /** Every record so far (empty when `keepLog` is false). */
@@ -190,7 +203,14 @@ export class Engine {
       store.retire(new Set(gone));
       this.#feed.retire?.(gone);
     }
+    // G4a: keys past their `Forget` age go once an hour of event time, after the event, as a replay does.
+    if (now.receivedAt - this.#forgotAt >= FORGET_EVERY_MS) {
+      this.#forgotAt = now.receivedAt;
+      store.forgetOlder(now.receivedAt);
+    }
   }
+
+  #forgotAt = Number.NEGATIVE_INFINITY;
 
   #apply(event: BookEvent, now: Moment): { result: 'applied' | 'illegal'; reason?: string; effects: DispatchedEffect[] } {
     const r = applyBookEvent(this.#book, deepFreeze(event));

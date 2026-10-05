@@ -12,7 +12,7 @@ import { journalLines, placeBookingsAt } from './booked.ts';
 import type { Server } from 'node:http';
 import { join } from 'node:path';
 import type { PolicySession, RugConfig } from '../../../core/src/config/index.ts';
-import { compareEvents, compareMoments, Engine, type LogRecord, type MarketEvent, type Moment, OFF_CHAIN } from '../../../core/src/engine/index.ts';
+import { compareEvents, compareMoments, Engine, type LogRecord, type MarketEvent, type Moment, OFF_CHAIN, flatCopy } from '../../../core/src/engine/index.ts';
 import { Ledger, openLedger } from '../../../core/src/ledger/index.ts';
 import type { Book, BookEvent } from '../../../core/src/lifecycle/index.ts';
 import { isTerminal, isUnresolved } from '../../../core/src/lifecycle/index.ts';
@@ -38,7 +38,8 @@ import { backfillAddress, SIGNATURE_PAGE, type SeedRpc } from '../seed/rpc.ts';
 import { transactionEvents } from '../../../core/src/chain/index.ts';
 import { P2, P3 } from '../scheduler/scheduler.ts';
 import { callCost } from '../providers/solana-http.ts';
-import { PUMP_MIGRATION_AUTHORITY } from './sources.ts';
+import { FILLS, PUMP_MIGRATION_AUTHORITY } from './sources.ts';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { DelayProbe, type DelayProbeOptions } from './delay-probe.ts';
 import { type AlertSeen, type ApiInputs, type DecisionRow, classify, collectAlerts, melbourneDate, startApiServer } from './api.ts';
 import type { FactContext, FactSource } from './facts.ts';
@@ -46,7 +47,7 @@ import { engineFeed, type EngineFeed } from './engine-feed.ts';
 import { startHealthServer } from './health.ts';
 import { type HeartbeatPosition, heartbeatBody, sendHeartbeat } from './heartbeat.ts';
 import { crashSite } from './crash-site.ts';
-import { type DeathMem, MEM_EVERY_MS, cgroupMax, deathMem, fatalReport, nearLimit, parseDeathMem, readMem, sampleMem, writeMem } from './mem-trace.ts';
+import { type DeathMem, MEM_EVERY_MS, PROBE_EVERY_MS, PROBE_KEEP, type ProbeCount, type ProbeSample, cgroupMax, deathMem, fatalReport, nearLimit, parseDeathMem, probeCounts, probeSample, readMem, sampleMem, writeMem, writeProbe } from './mem-trace.ts';
 import { Summarizer, SummaryClock } from './summary.ts';
 import { CappedMap } from './capped-map.ts';
 import { jsonText } from './json.ts';
@@ -76,7 +77,7 @@ import type { ExecStats } from '../../../core/src/facts/raw.ts';
 /** POS-1: a pool fact flagged beyond backfill or dedupe (a stale swap stream) is never priced from. */
 const flagged = (p: PoolFact): boolean => p.obs.quality.some((q) => q !== 'backfilled' && q !== 'deduplicated');
 import { type PoolFeeContext, effectiveQuoteReserve, poolSell } from '../../../core/src/amm/index.ts';
-import { liveCollapse, liveRetention } from './store-rules.ts';
+import { liveCollapse, liveForget, liveRetention, liveShape } from './store-rules.ts';
 
 /** The halt reason while the book holds a late buy's position, which paper does not settle yet (risk ruling on #133). */
 export const LATE_BUY = 'late buy not settled by paper; entries off';
@@ -275,7 +276,7 @@ export const SYMBOLS_MAX = 60_000;
 export const TX_SIGS_MAX = 20_000;
 
 /** OOM-MINT: a fresh flat copy, so a kept mint never holds the whole key or log text it was cut from. */
-export const flat = (s: string): string => String.fromCharCode(...Array.from(s, (c) => c.charCodeAt(0)));
+export const flat = flatCopy;
 
 /** A create event's mint and signature (the field, else the id), or null when it is not a create or names neither. */
 const createSigOf = (e: MarketEvent): readonly [string, string] | null => {
@@ -460,6 +461,11 @@ export class Worker {
   #beat: ReturnType<Timers['setTimeout']> | null = null;
   #memTimer: ReturnType<Timers['setTimeout']> | null = null;
   readonly #cgroupMax = cgroupMax();
+  /** MEM-PROBE: the last minute samples (and the ones around each save), oldest first, at most PROBE_KEEP. */
+  readonly #memRecent: ProbeSample[] = [];
+  #memProbeAt = Number.NEGATIVE_INFINITY;
+  /** MEM-PROBE: the event loop's delay since the last probe sample (max and p95), reset at each. */
+  readonly #loopDelay = monitorEventLoopDelay({ resolution: 20 });
   #summaryClock: SummaryClock | null = null;
   #summary: Summarizer | null = null;
   #server: Server | null = null;
@@ -646,7 +652,7 @@ export class Worker {
       }
       if (e.key === GRADUATES_SEED_KEY) this.#graduatesSeed(e.value);
     });
-    this.#engine = new Engine({ clock: this.#feed.clock, feed: this.#facts.feed, strategy: this.#strategy, runner: this.#world, seed, book: bookConfig, retention: liveRetention, collapse: liveCollapse });
+    this.#engine = new Engine({ clock: this.#feed.clock, feed: this.#facts.feed, strategy: this.#strategy, runner: this.#world, seed, book: bookConfig, retention: liveRetention, collapse: liveCollapse, shape: liveShape, forget: liveForget });
     this.#deployerStore = new DeployerStore(c.stateDir);
     const storeFrom = now - (d.session.policy.gates.deployerRugLookbackDays + 1) * 86_400_000;
     // PERSIST-1: the saved index, labeller and coverage, when the file holds up (else a fresh start: not covered).
@@ -1322,6 +1328,15 @@ export class Worker {
    */
   #persist(now: number): boolean {
     this.#lastSaveMs = now;
+    this.#markSave(true);
+    try {
+      return this.#persistNow(now);
+    } finally {
+      this.#markSave(false);
+    }
+  }
+
+  #persistNow(now: number): boolean {
     const lookback = (this.#d.session.policy.gates.deployerRugLookbackDays + 1) * 86_400_000;
     let state: ReturnType<LiveStrategy['persistable']>;
     try {
@@ -1650,6 +1665,7 @@ export class Worker {
       });
     };
     beat();
+    this.#loopDelay.enable();
     this.#traceMem();
     this.#startSummary();
     // The loop already runs (exits never wait for the seed); entries resume once the seed is placed or given up.
@@ -1967,11 +1983,59 @@ export class Worker {
   #traceMem(): void {
     if (this.#stopping) return;
     try {
-      writeMem(this.#d.config.stateDir, sampleMem(this.#d.timers.now(), this.#cgroupMax));
+      const now = this.#d.timers.now();
+      if (now - this.#memProbeAt >= PROBE_EVERY_MS) {
+        this.#memProbeAt = now;
+        this.#probeMem(now, false);
+        writeProbe(this.#d.config.stateDir, this.#memRecent);
+      }
+      writeMem(this.#d.config.stateDir, sampleMem(now, this.#cgroupMax));
     } catch {
       // A sample not written (a full disk) only leaves the next boot without it.
     }
     this.#memTimer = this.#d.timers.setTimeout(() => this.#traceMem(), MEM_EVERY_MS);
+  }
+
+  /** MEM-PROBE: one probe sample kept (counts only); `saving` when taken just before the state save. Never throws. */
+  #probeMem(now: number, saving: boolean): void {
+    let counts: ProbeCount[] = [];
+    try {
+      counts = this.#memCounts();
+    } catch {
+      // A count that fails leaves the sample with the heap figures only.
+    }
+    this.#memRecent.push(probeSample(now, saving, counts));
+    if (this.#memRecent.length > PROBE_KEEP) this.#memRecent.splice(0, this.#memRecent.length - PROBE_KEEP);
+  }
+
+  /** MEM-PROBE: the size of every major collection the worker reaches, counts only. */
+  #memCounts(): ProbeCount[] {
+    const { byPrefix, ...store } = this.#engine.sizes();
+    const d = this.#loopDelay;
+    const lag = d.count === 0 ? { max_ms: 0, p95_ms: 0 } : { max_ms: d.max / 1e6, p95_ms: d.percentile(95) / 1e6 };
+    d.reset();
+    return probeCounts({
+      loop: lag, fills: { active: FILLS.active, waiting: FILLS.waiting },
+      store, feed: this.#feed.sizes(), facts: this.#facts.sizes(), strategy: this.#strategy.sizes(),
+      worker: {
+        pools: this.#pools.size, pool_released: this.#poolReleasedAt.size, carries: this.#carries.size, fees: this.#fees.size, snapshots: this.#snapshots.size,
+        opened: this.#opened.size, create_sig: this.#createSig.size, complete_sig: this.#completeSig.size, migration_sig: this.#migrationSig.size,
+        symbols: this.#symbols.size, create_lookups: this.#createLookups.size, rug_vias: this.#rugVias.size, intent_at: this.#intentAt.size,
+        rows: this.#rows.length, fill_lines: this.#fillLines.length, restored_mints: this.#restoredMints.length, create_pending: this.#createPending.length,
+        exits_chars: this.#savedExits.length, seeds_chars: this.#savedSeeds.length,
+      },
+    }, byPrefix);
+  }
+
+  /** MEM-PROBE: a probe sample around the state save (`saving` true just before it, false just after), written at once. */
+  #markSave(saving: boolean): void {
+    try {
+      const now = this.#d.timers.now();
+      this.#probeMem(now, saving);
+      writeProbe(this.#d.config.stateDir, this.#memRecent);
+    } catch {
+      // Not written (a full disk): the save goes ahead regardless.
+    }
   }
 
   /** The summarizer, made on first use; null without a watchdog or its key. */
@@ -2060,6 +2124,7 @@ export class Worker {
     if (this.#loop !== null) d.timers.clearTimeout(this.#loop);
     if (this.#beat !== null) d.timers.clearTimeout(this.#beat);
     if (this.#memTimer !== null) d.timers.clearTimeout(this.#memTimer);
+    this.#loopDelay.disable();
     this.#summaryClock?.stop();
     for (const s of this.#sources) s.stop();
     this.#probe?.stop();
@@ -2121,6 +2186,7 @@ export class Worker {
     if (this.#loop !== null) this.#d.timers.clearTimeout(this.#loop);
     if (this.#beat !== null) this.#d.timers.clearTimeout(this.#beat);
     if (this.#memTimer !== null) this.#d.timers.clearTimeout(this.#memTimer);
+    this.#loopDelay.disable();
     this.#summaryClock?.stop();
     for (const s of this.#sources) s.stop();
     this.#watch?.stop();

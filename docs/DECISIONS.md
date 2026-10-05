@@ -2530,3 +2530,158 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
     - At 1 hour: 409 pools, 945,000 swaps, 234 MB live heap, still growing about 2 MB a minute as pools fill their hour and their 4-hour window.
     - Owners at that point: books 90 MB, feed dedupe 68 MB, store 38 MB, deployer index 1.4 MB.
     - The per-structure figures above come from this snapshot.
+
+## Creates and curve trades stored compact (CREATE-COMPACT, `core/src/gates/compact.ts`, `AsOfStore` `Shape`, `run/store-rules.ts` `liveShape`)
+
+- **2026-10-06 · Why.** OOM-MINT keeps a create that never migrates for 13 hours. Its create event and its first curve trade sat in the live store as released: about 4.3 KB a create in the 3× run's heap snapshot, the largest term of the sustained-3× ceiling (about 250 MB; 84 MB at 1×).
+- **What.**
+  - **`Shape`.** A per-key rule in `AsOfStore`, passed by the engine, that stores a value with only the fields its store readers read. The strategy and the producer still receive the released event whole; only `lookup` and `history` answer with the compact value.
+  - **The rule's readers, proved per field.**
+    - A curve trade (`pump:TradeEvent:`, `logs:pump:TradeEvent:`) is read by `checkCurveTails` and its collapse (`tailVerdict`). They read the event's `trailing` and `extra`, `txSlot` and `signature`.
+    - A create (`pump:CreateEvent:`, `logs:pump:CreateEvent:`) is read by two things:
+      - the hard gates' create alias (`aliasCreate`, `createOf`): `name`, `data.mint`, `creator`, `timestamp`, `txSlot`, `source` and `backfilled`;
+      - the strategy's deployer (`#deployerOf`): `creator`, `user` and `tokenTotalSupply`.
+    - Kept strings are flat copies: a decoded tail's hex was a slice of the event's text, 291 B a trade before, 179 B after.
+  - Live and the parity replay share `liveShape`. The backtest stores values whole; its decisions match because every reader reads only kept fields.
+  - **Store bookkeeping, every key.**
+    - `#byTail` holds one key as itself and a Set only from the second (a Set each was about 150 B).
+    - The retention rule is asked at each record, not cached per key (a cache entry was about 80 B a key).
+    - Ids and new keys are kept as flat copies, never the pieces and the signature they were built from.
+  - A flat copy is now taken UTF-16 unit by unit (`flatCopy`). The earlier code-point copy would have broken a symbol with an emoji (worker `flat`).
+- **Measured** (`create-compact.test.ts`, a fetched create and curve trade decoded afresh per create):
+  - in the store, about 5.3 KB a create as released and about 1.75 KB compact;
+  - scaled to the logs path's 4.3 KB, about 1.4 KB;
+  - so the 13-hour term goes from about 84 to about 28 MB at 1×, and from about 252 to about 85 MB at sustained 3×.
+- **Evidence (fail before, pass after).**
+  - `create-compact.test.ts`:
+    - a create and its curve trade cost under 2 KB together in the store (over 4 KB released);
+    - a compact curve trade costs under 240 B;
+    - keys and ids are flat copies;
+    - the create alias, `createOf` and the deployer read the same from the compact value, a signer other than the creator included;
+    - the curve tail check answers the same from compact values, passing and failing;
+    - the worker's engine stores a released create compact.
+  - Hand mutants killed: no shape in the worker; the tail hex not copied; the signer replaced by the creator; ids not copied. The new key's copy is equivalent: V8 flattens a key when a Map hashes it.
+  - `retire.test.ts` (facts review pins from OOM-MINT):
+    - an orphan landing found but not yet booked holds the mint past every attempt's validity;
+    - after a restart, before the first slot, the attempts' age is unknown and the mint is held.
+    - Mutants killed: no orphan hold; null height treated as expired.
+
+## Candle book trade ids and feed slot ranks as compact tags (SEEN-TAGS, `core/src/facts/repeat-tags.ts`, `providers/canonical.ts` `SigRanks`)
+
+- **2026-10-06 · Why.** In the 3× run's heap at 1 h (409 pools), the candle books' remembered trade ids took 90 MB (about 96 B a trade: a repeat-id string and its Map entry), and the live feed's dedupe keys and slot ranks 68 MB. At sustained 3× (about 720 pools) the books would reach about 212 MB and the feed about 120 MB.
+- **What.**
+  - **Books:** a trade's repeat tag is the first 96 bits of a SHA-256 of its whole signature and pre-trade reserves (`tradeRepeatTag`), as two 48-bit numbers.
+    - Tags are kept per trade minute (`RepeatTags`). A minute is sorted into a Float64Array once a later minute's trade arrives (16 B a trade); a late trade for an older minute reopens it.
+    - The sweep drops a minute once it ended at or before the window's cutoff, as before; the window is still checked before the tags.
+    - Two different trades share a tag with odds of about 2^-96 per pair, against about 2^-128 for the 22-character prefix it replaces: still exact in practice.
+    - **Supervisor ruling (2026-10-06, 5:06 AM):** `tradeRepeatTag` supersedes OOM-SEEN's repeat id (#233: a 22-character signature prefix and a 32-bit reserve hash). The window and sweep rules are unchanged. The test that the log-line and fetched-transaction paths give the same tag for every recorded swap stays.
+  - **Feed ranks:** a slot's ranks are keyed by the signature's first 22 characters as a flat string (`SigRanks`, the dedupe keys' argument), not by the whole signature, which they kept alive for 1,500 slots.
+- **Measured:**
+  - a full hour of 51 trades a minute in 100 books holds under 24 B a trade (was about 96 B);
+  - a released signature costs the live feed under 200 B (229 B with ranks keyed by the signature).
+  - At sustained 3× the books go from about 212 to about 40 MB, and the feed from about 120 to about 100 MB. The dedupe keys themselves are unchanged; they are bounded by the feed's 1,500-slot window.
+- **Evidence (fail before, pass after).**
+  - `repeat-tags.test.ts`:
+    - the tag shape;
+    - every added trade is found (open minute, sorted minutes, a late trade into an older minute), and no other, including the same high half with another low half;
+    - the sweep boundary;
+    - the memory bound.
+  - `producer.test.ts`: the repeat test now compares tags from a log line and from the fetched transaction (two swaps in one transaction differ).
+  - `feed.test.ts`: a `SigRanks` rank costs under 110 B (141 B keyed by the signature) and ranks as a Map does; the live feed keeps a released signature in under 200 B (229 B with Map ranks).
+  - Hand mutants killed: the low half ignored; a minute dropped when it starts; a late trade not reopening its minute; ranks keyed by the signature; the feed not using `SigRanks`.
+
+## Deployer index mints held compact (DEPLOYER-COMPACT, `core/src/gates/mint-index.ts`)
+
+- **2026-10-06 · Why.** The deployer index kept its mints as a Map of creators to Maps of mint strings and times: about 316 B a create (measured). Over its 15-day window that is about 171 MB at the live 25 creates a minute and about 512 MB at three times that, the largest term left of the memory bounds after CREATE-COMPACT and SEEN-TAGS.
+- **What.**
+  - `MintIndex` holds the same table compact.
+    - Each mint is its address text packed six bits a character into a 34-byte slot: its length, then each character's base58 index. Its time is a float, its next link, its creator and its tag are ints. All of these live in typed arrays, with 1.25× growth, sized exactly at each prune and at once for a restore of known size.
+    - Each creator's mints are a linked list in insertion order, so saved rows keep their order. Each creator is a slot too.
+    - Creators and mints are found through open-addressing tables of ints by a 30-bit tag of their text, so an add is O(1) whatever one creator holds. A creator's mint is matched by its owner and its slot.
+    - Text that is not base58 or is longer than 44 characters (tests, malformed input) is kept as a string, so everything reads back exactly as added.
+  - **Why packed text, not 32 address bytes** (persist review):
+    - a save turns every row back into text every five minutes, and base58 arithmetic over a full window cost seconds (about 2 µs an address);
+    - a packed slot reads back with a table lookup per character.
+  - **A prune compacts in place by index:** kept entries' slots, times and tags are copied into exact-size arrays, the lists are relinked, and both tables are refilled from the kept tags. No text, no `add`.
+  - `DeployerIndex` keeps its API: `factFor`, `snapshot`, `mintRows`, `restore`, `prune`, `seed`, `fill`.
+  - **The saved shape is unchanged** (rows of creator and `[mint, time]` pairs), so no upgrade is needed. A file of today's shape, written by the index this replaces, restores to the same answers and saves back identical.
+  - **Fail closed (persist review, supervisor ruling):** a file that repeats a creator row, or a mint inside one row, is refused whole. The replaced index silently kept the last copy.
+  - Rug and unjudged labels stay as they were (small).
+- **Measured (node, this host):**
+  - Memory: about 110 to 130 B a create, against about 316 B. So about 60 MB at 1× and about 180 MB at sustained 3× over the 15-day window.
+  - At the full 1× window (540,000 creates by 400,000 creators), against the replaced index:
+    - restore about 1.3 s (0.9 to 1.0 s);
+    - prune about 0.1 s after a GC (0.2 s);
+    - a save's rows about 1.0 s (0.7 s);
+    - 1,000 `factFor` reads 5 ms (5 ms).
+  - One creator with 50,000 mints: add, restore and prune each well under 500 ms. The replaced index was constant per entry; the first compact build grew with the square of one creator's mints.
+- **Still on the event path, not new:** the five-minute save writes every row synchronously, about 0.7 s before this card and about 1.0 s after it at a full 1× window. That is over the golden rule's 100 ms. It needs the save moved off the event path (a snapshot of the typed arrays, written in chunks), which is a separate card.
+- **Bounds after all the cards, at sustained 3× with every window full:** about 515 MB, about 45 MB under 560 MB. At 1×: about 240 MB.
+- **Evidence (fail before, pass after).**
+  - `deployer-compact.test.ts`:
+    - today's saved index (`fixtures/deployer-index-v1.json`, written by the replaced index) restores, saves back, prunes and answers `factFor` and `mintRows` identically, from a whole file and from streamed rows;
+    - a bad row, entry, time, future entry, repeated mint or repeated creator row refuses the file whole;
+    - `MintIndex` keeps order, the earliest time of a repeat, and canonical and text mints alike;
+    - colliding creator tags are kept apart;
+    - under 125 B a create counted from its arrays (under 115 B after a prune);
+    - the same mint under two creators is two entries;
+    - at the full 1× window, restore and prune each take at most twice the replaced layout built here from the same rows (measured 1.7× and 0.4× under vitest);
+    - a 50,000-mint creator's add, restore and prune each stay under 500 ms.
+  - `deployer-index.test.ts`: a create from logs and from its fetched transaction counts once.
+  - `persist.test.ts`: a cut or doubled file is still reported as the checksum's failure. A repeated row met mid-stream defers to the checksum, and is the reason only for an intact file.
+  - Hand mutants killed: a repeat taking the later time; a repeated mint or creator row accepted; an entry matched without its creator; prune with `>`.
+
+## Graduates fact newest-only, seed fact stored as counts (G4a, `run/store-rules.ts`)
+
+- **2026-10-06 · Why** (#164 G4a items folded into the crash list, supervisor ruling).
+  - **Graduates:** `gates/graduates` is stated whole at every resolved graduate (about one a minute at 1×), each time with every graduate of its 16-day window. Kept whole, each statement held a pointer array the length of the series. Once the window is full that is about 180 KB a statement, about 260 MB a day; over the first days it grows as the square of the days (about 8 MB × days²).
+  - **Seed:** the boot's seed fact (`worker:seed`) carries up to 200,000 creates on a start with no saved state, plus coverage, fill, rugs and history. It was kept in the store for the process.
+- **What.**
+  - `gates/graduates` keeps its newest value (`liveCollapse`). The regime gate reads it as of now (`Evidence.read`, 'series'), the strategy acts on the released event, and nothing asks for an older value.
+  - `worker:seed` is stored as its moment and its counts (`compactSeed`, `liveShape`). The strategy acts on the released event and keeps its own copy of the seed's history; nothing looks the seed up in the store.
+- **Evidence (fail before, pass after).**
+  - `store-rules.test.ts`: the graduates fact keeps only its newest value.
+  - `create-compact.test.ts`: the seed fact is stored as its moment and counts.
+
+## Funder reads let go after a day (G4a, `FUNDER_KEEP_MS`, `AsOfStore` `Forget`, `run/store-rules.ts` `liveForget`)
+
+- **2026-10-06 · Why.** Every candidate's insider read (H13) reads the funders of its dev and first 20 buyers, about 21 wallets. Each read (`read:funder:<wallet>`) stayed for the process twice, as a store key and in `FactProducer.#funders`: about 400 B each, about 24 MB a day at 1× and about 70 MB a day at 3×, never bounded.
+- **What "funder" means** (supervisor ruling, condition a). It is a wallet's first SOL funding: `Readers.funderOf` pages back to the wallet's oldest successful transaction and reads the first SOL transfer into it (`firstFunder`, core `chain/system.ts`). Once found it cannot change, so a read again later gives the same funder. A read is `complete` only when it reached the oldest transaction, and the insiders fact uses only complete reads whose funding slot is at or before now.
+- **What** (supervisor ruling: 24 hours).
+  - The producer lets a wallet's read go `FUNDER_KEEP_MS` (a day) after it was read, oldest first. A read again moves the wallet to the end.
+  - The store forgets the read's key after the same time. A new per-key rule, `Forget`, is swept once an hour of event time by the engine, after the event, so a replay forgets at the same point. The key's retire index goes with it.
+  - Nothing looks the key up in the store; the producer acts on the released read.
+- **No live candidate loses a read it needs:** reads are made during the candidate's life, which with its tail is at most the window (240 min) plus the longest tail (`tMaxCapMs`, 120 min), well under a day.
+- **Credits (condition c): no extra reads.** `Readers.readInsiders` reads every funder again for each candidate as of that candidate's slot (it never reuses an earlier read). So letting a read go never causes a read that would not have happened anyway. The extra Helius spend is 0, well under the 1% line.
+- **Identified saving, not built (supervisor note, for the usage-cut work, item 21).** `readInsiders` reads every funder again for each candidate (`readers.ts` `readMintHistory`), although a found first funding never changes. Each read is 1 to 3 signature pages plus up to 10 transactions (`MINT_HISTORY_CAPS`) at 1 Helius credit a call (`HELIUS_RPC_CREDITS`): 2 to 13 credits a wallet, about 42 to 273 a candidate for its dev and 20 first buyers. A wallet-keyed cache of complete reads would save that for every wallet already read.
+- **Evidence (fail before, pass after).**
+  - `producer.test.ts`:
+    - funder reads are kept a millisecond short of a day and let go at a day;
+    - read again, the insiders fact is the same;
+    - the keep outlives the window plus the longest tail.
+  - `engine.test.ts`: a key past its `Forget` age is forgotten at the hourly sweep after an event, and others stay.
+  - `create-compact.test.ts`: `liveForget` covers funder reads only; forgetting cleans the retire index for a lone key and for a shared one.
+  - Hand mutants killed: `>=` at the producer's boundary; no engine sweep; the retire index not cleaned.
+
+## Feed dedupe keys as 96-bit tags (FEED-KEYS, `providers/tag-set.ts`)
+
+- **2026-10-06 · Why.** After the other cards, the live feed's dedupe keys were the largest term left at sustained 3×.
+  - A swap's two frames (seen and confirmed logs) each kept a key string and its Set entry for 1,500 slots (about 90 B each), plus a slot rank.
+  - Measured 252 B a swap in the feed, about 92 MB at about 720 pools.
+- **What.**
+  - A frame's dedupe key text (`dedupKey`, unchanged) becomes its tag: the first 96 bits of its SHA-256 (`keyTag`), as two 48-bit numbers.
+  - Tags are held in `TagSet`, an open-addressing table with linear probing, at most half full, grown and shrunk by doubling. Removal shifts the following run back, so no tombstones build up.
+  - Each placement slot keeps its tags as number pairs for the prune, as it kept its keys.
+  - Two different keys share a tag with odds of about 2^-96 per pair, so dedupe is exact in practice. The first copy still wins, and a forgotten key behaves as before.
+- **Measured:**
+  - a swap costs the feed about 110 B (was 252 B);
+  - about 40 MB at sustained 3× (was about 92 MB).
+  - Sustained 3× with every window full is now about 490 MB, about 70 MB under the 560 MB limit.
+- **Evidence (fail before, pass after).**
+  - `tag-set.test.ts`:
+    - agrees with a Set through 200,000 random adds and deletes with crowded homes, growing and shrinking;
+    - a run wrapping past the table's end stays findable through deletes in every order;
+    - an entry at its own home just past the wrap stays put.
+  - `feed.test.ts`: a released swap's signature costs the feed under 140 B (258 B with key strings). The dedupe cases and the parity and recorder suites are unchanged.
+  - Hand mutants killed: three wrong backward-shift conditions; the low half ignored.
+

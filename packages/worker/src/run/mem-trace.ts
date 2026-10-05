@@ -4,7 +4,7 @@
 // sample and, when it was near a limit and taken just before the death, says so in `last_exit`.
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { getHeapStatistics } from 'node:v8';
+import { getHeapSpaceStatistics, getHeapStatistics } from 'node:v8';
 import { atomicWrite } from './state.ts';
 import { FRAME } from './crash-site.ts';
 
@@ -43,7 +43,102 @@ export const sampleMem = (at: number, cgroup: number | null): MemSample => {
   };
 };
 
+/**
+ * MEM-PROBE: once a minute, the heap's old and large-object spaces and the size of every major collection, counts only
+ * (the bot's own data: no key, address or text). The last PROBE_KEEP ride in mem.json beside the sample, so the next
+ * boot's `death_mem` and the summary's `last_death` say what grew before a death. `saving` marks a sample written just
+ * before the synchronous state save, cleared just after: a death during the save still shows it.
+ */
+export const PROBE_EVERY_MS = 60_000;
+export const PROBE_KEEP = 10;
+/** At most this many counts per probe sample. */
+export const PROBE_MAX_COUNTS = 96;
+/** The store's key kinds kept per sample, largest first. */
+export const PROBE_STORE_KINDS = 12;
+export interface ProbeCount {
+  readonly code: string;
+  readonly count: number;
+}
+export interface ProbeSample {
+  readonly at: number;
+  readonly heap_used_mb: number;
+  readonly old_mb: number;
+  readonly large_object_mb: number;
+  readonly saving: boolean;
+  readonly counts: readonly ProbeCount[];
+}
+
+const CODE = /^(?=[^a-z]*[a-z])[a-z0-9_-]{1,48}$/;
+/** The longest key segment a published kind keeps: every base58 address (32 to 44 characters) is longer. */
+const KIND_SEGMENT_MAX = 24;
+/** A count's code: lower case, `[a-z0-9_-]` only, at most 48 characters. */
+export const probeCode = (s: string): string => {
+  const c = s.toLowerCase().replace(/[^a-z0-9_-]+/g, '_').slice(0, 48);
+  return CODE.test(c) ? c : 'other';
+};
+
+/** MB used in V8's old and large-object spaces now. */
+export const heapSpacesMb = (): { readonly old_mb: number; readonly large_object_mb: number } => {
+  let old = 0;
+  let large = 0;
+  for (const s of getHeapSpaceStatistics()) {
+    if (s.space_name === 'old_space') old = s.space_used_size;
+    else if (s.space_name === 'large_object_space') large = s.space_used_size;
+  }
+  return { old_mb: mb(old), large_object_mb: mb(large) };
+};
+
+/**
+ * Groups of counts flattened to codes (`group_name`), whole and non-negative, in the order given; the store's key kinds
+ * (`byPrefix`) as `store_k_<kind>`, the largest PROBE_STORE_KINDS. At most PROBE_MAX_COUNTS.
+ */
+export const probeCounts = (groups: Readonly<Record<string, Readonly<Record<string, number>>>>, byPrefix: ReadonlyMap<string, number> = new Map()): ProbeCount[] => {
+  const out: ProbeCount[] = [];
+  const put = (code: string, n: number) => {
+    if (out.length < PROBE_MAX_COUNTS && Number.isFinite(n)) out.push({ code: probeCode(code), count: Math.max(0, Math.round(n)) });
+  };
+  for (const [g, counts] of Object.entries(groups)) for (const [k, n] of Object.entries(counts)) put(`${g}_${k}`, n);
+  // A kind is published, so no address may reach it: a segment over 24 characters (any address, signature or hash)
+  // counts as `x` (ops review), and kinds that become the same are summed.
+  const masked = new Map<string, number>();
+  for (const [k, n] of byPrefix) {
+    const kind = k.split(':').map((seg) => (seg.length > KIND_SEGMENT_MAX ? 'x' : seg)).join(':');
+    masked.set(kind, (masked.get(kind) ?? 0) + n);
+  }
+  const kinds = [...masked].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1)).slice(0, PROBE_STORE_KINDS);
+  for (const [k, n] of kinds) put(`store_k_${k}`, n);
+  return out;
+};
+
+export const probeSample = (at: number, saving: boolean, counts: readonly ProbeCount[]): ProbeSample => ({
+  at, heap_used_mb: mb(process.memoryUsage().heapUsed), ...heapSpacesMb(), saving, counts,
+});
+
 export const writeMem = (dir: string, s: MemSample): void => atomicWrite(join(dir, MEM_FILE), `${JSON.stringify(s)}\n`);
+
+/** MEM-PROBE: the probe's recent samples, oldest first, in their own file: rewritten only when a sample is taken. */
+export const PROBE_FILE = 'mem-recent.json';
+export const writeProbe = (dir: string, recent: readonly ProbeSample[]): void => atomicWrite(join(dir, PROBE_FILE), `${JSON.stringify(recent)}\n`);
+
+const probeOk = (x: unknown): x is ProbeSample => {
+  if (typeof x !== 'object' || x === null || Array.isArray(x)) return false;
+  const o = x as Record<string, unknown>;
+  const whole = (v: unknown) => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0;
+  return whole(o['at']) && whole(o['heap_used_mb']) && whole(o['old_mb']) && whole(o['large_object_mb']) && typeof o['saving'] === 'boolean' &&
+    Array.isArray(o['counts']) && o['counts'].length <= PROBE_MAX_COUNTS &&
+    o['counts'].every((c) => typeof c === 'object' && c !== null && typeof (c as ProbeCount).code === 'string' && CODE.test((c as ProbeCount).code) && whole((c as ProbeCount).count));
+};
+
+/** The probe's recent samples, oldest first: only a well-formed list of at most PROBE_KEEP; none when absent. */
+export const readProbe = (dir: string): ProbeSample[] => {
+  try {
+    const r = JSON.parse(readFileSync(join(dir, PROBE_FILE), 'utf8')) as unknown;
+    if (!Array.isArray(r) || r.length > PROBE_KEEP || !r.every(probeOk)) return [];
+    return r.map((p) => ({ at: p.at, heap_used_mb: p.heap_used_mb, old_mb: p.old_mb, large_object_mb: p.large_object_mb, saving: p.saving, counts: p.counts.map((c) => ({ code: c.code, count: c.count })) }));
+  } catch {
+    return [];
+  }
+};
 
 const num = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0;
 
@@ -138,6 +233,8 @@ export interface DeathMem {
   readonly heap_limit_mb: number | null;
   readonly spaces: readonly DeathSpace[];
   readonly sample: { readonly at: number; readonly heap_used_mb: number; readonly heap_limit_mb: number; readonly rss_mb: number; readonly external_mb: number; readonly array_buffers_mb: number } | null;
+  /** MEM-PROBE: the probe's last samples before the death, oldest first; absent when there are none (older state). */
+  readonly recent?: readonly ProbeSample[];
 }
 
 /** At most this many heap spaces are kept (V8 has about ten). */
@@ -162,6 +259,7 @@ export const deathMem = (dir: string, lastLineMs: number | null, bootMs: number 
   spaces.sort((a, b) => b.used_mb - a.used_mb || (a.space < b.space ? -1 : 1));
   const m = readMem(dir);
   const fresh = m !== null && m.at >= lastLineMs - 2 * MEM_EVERY_MS ? m : null;
+  const recent = fresh === null ? [] : readProbe(dir);
   const at = reportAt ?? fresh?.at ?? null;
   if (at === null) return null;
   return {
@@ -171,6 +269,7 @@ export const deathMem = (dir: string, lastLineMs: number | null, bootMs: number 
     heap_limit_mb: num(heap?.['memoryLimit']) ? mb(heap['memoryLimit'] as number) : fresh === null ? null : mb(fresh.heap_limit),
     spaces,
     sample: fresh === null ? null : { at: fresh.at, heap_used_mb: mb(fresh.heap_used), heap_limit_mb: mb(fresh.heap_limit), rss_mb: mb(fresh.rss), external_mb: mb(fresh.external), array_buffers_mb: mb(fresh.array_buffers) },
+    ...(recent.length === 0 ? {} : { recent }),
   };
 };
 
@@ -184,9 +283,13 @@ export const parseDeathMem = (v: unknown): DeathMem | null => {
   if (!Array.isArray(sp) || sp.length > DEATH_SPACES_MAX || !sp.every((x) => o(x) && typeof x['space'] === 'string' && /^[a-z][a-z-]{0,39}$/.test(x['space']) && whole(x['used_mb']))) return null;
   const s = v['sample'];
   if (s !== null && !(o(s) && ['at', 'heap_used_mb', 'heap_limit_mb', 'rss_mb', 'external_mb', 'array_buffers_mb'].every((k) => whole(s[k])))) return null;
+  // A malformed `recent` drops only itself: the rest of the death record stands (ops review).
+  const raw = v['recent'] ?? [];
+  const r = Array.isArray(raw) && raw.length <= PROBE_KEEP && raw.every(probeOk) ? raw : [];
   return {
     at: v['at'], uptime_s: v['uptime_s'] as number | null, heap_used_mb: v['heap_used_mb'] as number | null, heap_limit_mb: v['heap_limit_mb'] as number | null,
     spaces: (sp as Record<string, unknown>[]).map((x) => ({ space: x['space'] as string, used_mb: x['used_mb'] as number })),
     sample: s === null ? null : { at: s['at'] as number, heap_used_mb: s['heap_used_mb'] as number, heap_limit_mb: s['heap_limit_mb'] as number, rss_mb: s['rss_mb'] as number, external_mb: s['external_mb'] as number, array_buffers_mb: s['array_buffers_mb'] as number },
+    ...(r.length === 0 ? {} : { recent: r.map((p) => ({ at: p.at, heap_used_mb: p.heap_used_mb, old_mb: p.old_mb, large_object_mb: p.large_object_mb, saving: p.saving, counts: p.counts.map((c) => ({ code: c.code, count: c.count })) })) }),
   };
 };
