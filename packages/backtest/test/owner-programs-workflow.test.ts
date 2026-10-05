@@ -99,7 +99,7 @@ const amm = (k: number, owner: string): AmmSwapRow => ({
   kind: 'amm', slot: BigInt(1000 + k), blockTime: T0 + k, txIdx: 1, evIdx: 0, signature: `s${k}`, pool: raw('pool'), baseMint: raw('mint'), quoteMint: 'Q', side: 'buy',
   mode: 'exact-base', amount: 1n, baseAmount: 1n, quoteAmount: 0n, userQuote: 0n, pre: { baseReserve: 1n, quoteVault: 0n, virtualQuoteReserves: 0n },
   fees: { split: { lp: bps(0), protocol: bps(0), creator: bps(0) }, buybackFeeBps: bps(0), instruction: 'v1' }, baseSupply: 0n, ixName: 'buy', user: 'SIGNER',
-  userTokenAccount: raw(`ata${k}`), userTokenOwner: owner,
+  userTokenAccount: raw(`ata${k}`), userTokenOwner: owner, lpFee: 0n, quoteLpAdjusted: 0n, extraHex: '',
 });
 
 let tmp = '';

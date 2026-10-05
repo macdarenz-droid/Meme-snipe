@@ -31,6 +31,12 @@ import { addUsd, cmpUsd, fromMicro, subUsd, toMicro } from '../lib/money.ts';
 
 const ENTRY = 500_000_000n; // $500 in micro-dollars
 const MAX_ENTRY = 1_250_000_000n;
+/** Micro-dollars as an exact SOL decimal at a fixed $150 SOL (fixtures only). */
+const solOf = (micro: bigint): string => {
+  const l = (micro * 1_000_000_000n) / 150_000_000n;
+  const a = l < 0n ? -l : l;
+  return `${l < 0n ? '-' : ''}${a / 1_000_000_000n}.${(a % 1_000_000_000n).toString().padStart(9, '0')}`;
+};
 /** Fake but valid base58 (no 0, O, I or l): the API schemas check addresses strictly. */
 const b58digits = (n: number, width: number) => String(n).padStart(width, '1').replace(/0/g, '9');
 const FAKE_MINT = (n: number) => `FAKEmint${b58digits(n, 4)}${'x'.repeat(32)}`;
@@ -94,6 +100,8 @@ function makeTrades(mode: Mode, count: number, start: number, spanDays: number, 
     };
     const total = c.venueFeeUsd + c.creatorFeeUsd + c.priorityFeeUsd + c.tipUsd + c.networkFeeUsd + c.slippageUsd + c.rentPaidUsd - c.rentReturnedUsd;
     const net = gross - total;
+    // SOL's own move over the trade: a small share of the size, either way.
+    const move = (size * BigInt(Math.floor(rand() * 5) - 2)) / 1000n;
     const oneR = (size * 15n) / 100n;
     const realized = (net * 100n) / oneR;
     const entry = 0.00002 + rand() * 0.00008;
@@ -121,6 +129,9 @@ function makeTrades(mode: Mode, count: number, start: number, spanDays: number, 
       grossUsd: fromMicro(gross),
       costs,
       netUsd: fromMicro(net),
+      netSol: solOf(net - move),
+      tradingUsd: fromMicro(net - move),
+      solMoveUsd: fromMicro(move),
       plannedR: '1.50',
       realizedR: hundredths(realized),
       mfeR: hundredths(realized > 0n ? realized + 40n : 35n),
@@ -217,6 +228,8 @@ function stats(mode: Mode): StatsView {
     trades: n,
     requiredTrades: mode === 'backtest' ? 321 : 30,
     netUsd: net,
+    netSol: solOf(ts.reduce((a, t) => a + toMicro(t.tradingUsd), 0n)),
+    solMoveUsd: addUsd('0', ...ts.map((t) => t.solMoveUsd)),
     maxDrawdownUsd: fromMicro(dd),
     winRate: n ? (ts.filter((t) => cmpUsd(t.netUsd, '0') > 0).length / n).toFixed(4) : null,
     meanNetUsd: mean,

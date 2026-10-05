@@ -23,7 +23,7 @@ describe('baseline', () => {
     expect(d.reservation.amount).toBe(d.spendLamports + d.maxCostsLamports);
     expect(d.reservation.limits.maxCount).toBe(TRIAL_POLICY.positions.maxOpen);
     expect(d.trips).toEqual([]);
-    expect(evaluateExit(baseInput())).toEqual({ allow: true, tripped: [], trips: [] });
+    expect(evaluateExit(baseInput())).toEqual({ allow: true, tripped: [], trips: [], fault: null });
   });
 
   test('C counts fees, rent, priority fees and the exit ladder at its worst', () => {
@@ -414,11 +414,25 @@ describe('every reason names its control, and exits survive anything', () => {
     const d = evaluateEntry({ ...input, market: { ...input.market, regime: 'off' } }, baseRequest({ stopBps: 9000 }));
     expect(new Set(d.allow ? [] : d.reasons.map((r) => r.control))).toEqual(new Set(['R3', 'R5', 'R6', 'R10', 'R16']));
   });
-  test('an exit passes even when the inputs are broken', () => {
+  test('an exit passes even when the inputs are broken, and says it could not evaluate them (RISK-FAULT)', () => {
     const input = baseInput({ clock: clockAt(Number.NaN) });
-    expect(evaluateExit(input)).toEqual({ allow: true, tripped: [], trips: [] });
-    const nonsense = baseInput({ account: { ...account(), closedTrades: null as never } });
-    expect(evaluateExit(nonsense).allow).toBe(true);
+    const bad = evaluateExit(input);
+    expect(bad.allow).toBe(true);
+    expect(bad.trips).toEqual([]);
+    expect(bad.fault).toEqual(expect.any(String));
+    expect(bad.tripped).toEqual([{ control: 'R1', code: 'risk_fault', detail: `risk could not be evaluated: ${bad.fault}` }]);
+    const nonsense = evaluateExit(baseInput({ account: { ...account(), closedTrades: null as never } }));
+    expect(nonsense.allow).toBe(true);
+    expect(nonsense.trips).toEqual([]);
+    expect(nonsense.fault).toMatch(/null/);
+    expect(nonsense.tripped.map((r) => r.code)).toEqual(['risk_fault']);
+    // A thrown value that is not an Error, or whose text cannot be read, still gives a fault; nothing throws.
+    expect(evaluateExit(baseInput({ clock: { now: () => { throw 'no clock'; } } as never })).fault).toBe('unknown error');
+    const hostile = new Error('x');
+    Object.defineProperty(hostile, 'message', { get: () => { throw new Error('again'); } });
+    expect(evaluateExit(baseInput({ clock: { now: () => { throw hostile; } } as never })).fault).toBe('unknown error');
+    // A clean account with nothing tripped is told apart: no fault.
+    expect(evaluateExit(baseInput()).fault).toBeNull();
   });
   test('a figure check: the snapshot reports loss in micro-dollars against Melbourne boundaries', () => {
     const input = baseInput({ account: account({ closedTrades: [trade(DAY_START + HOUR, '-0.75')] }) });

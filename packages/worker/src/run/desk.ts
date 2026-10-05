@@ -6,7 +6,7 @@
 import type { IntentId, ReservationId } from '../../../core/src/domain/index.ts';
 import type { LogRecord } from '../../../core/src/engine/index.ts';
 import type { Ledger } from '../../../core/src/ledger/index.ts';
-import { applyBookEvent, type Book, type BookConfig, type BookEvent, isIllegal, isTerminal, isUnresolved } from '../../../core/src/lifecycle/index.ts';
+import { applyBookEvent, type Book, type BookConfig, type BookEvent, emptyBook, isIllegal, isTerminal, isUnresolved } from '../../../core/src/lifecycle/index.ts';
 import type { Lamports, MicroUsd } from '../../../core/src/units/index.ts';
 import { GATE_REASONS_PREFIX, S0_DIAGNOSTIC_PREFIX, reservationOf, universeOfKey } from '../engine/strategy.ts';
 
@@ -29,8 +29,13 @@ export interface DeskDeps {
   readonly diverged: (reason: string) => void;
   /** A reservation was stored (the account's entry record). */
   readonly reserved: (r: { readonly intentId: string; readonly mint: string; readonly amount: bigint; readonly atMs: number }) => void;
+  /**
+   * A buy landed after its entry ended (`orphan_fill` of an entry, LEDGER-1b): its own position opens, which paper does
+   * not settle yet. The worker raises an alert and stops entries (risk ruling on #133, until the late-landing card).
+   */
+  readonly lateBuy: (r: { readonly intentId: string; readonly positionId: string; readonly mint: string; readonly signature: string; readonly atMs: number }) => void;
   /** A position filled or closed (the paper wallet and closed-trade records). */
-  readonly filled: (r: { readonly purpose: 'entry' | 'exit'; readonly positionId: string; readonly mint: string; readonly book: Book; readonly atMs: number; readonly reasons: readonly string[]; readonly solUsd?: MicroUsd | null }) => void;
+  readonly filled: (r: FilledRecord) => void;
   /**
    * Fill lines the journal already holds, by `fillKey` (`journaledFillKeys`): each is not written again when its fill
    * is booked again, and that fill is recorded with the line's own time, reasons and `sol_usd`.
@@ -40,6 +45,25 @@ export interface DeskDeps {
   readonly solUsd?: () => MicroUsd | null;
   /** Test seam: called right after each of a fill's two durable writes (a crash image is taken there). */
   readonly crashPoint?: (point: 'fill-journaled' | 'fill-committed', intentId: string) => void;
+  /**
+   * A reason no entry may reserve exposure right now, or null. Checked at the reservation, the step where an approved
+   * entry becomes exposure: a fault found inside a step reaches the engine as a halt fact only later, so an entry decided
+   * at or after the fault is refused here (exits never reserve, so they are not affected).
+   */
+  readonly entriesBlocked?: () => string | null;
+}
+
+/** A booked fill for the paper account; `closes`: the trade closes whatever the position's status (a late sell). */
+export interface FilledRecord {
+  readonly purpose: 'entry' | 'exit';
+  readonly positionId: string;
+  readonly mint: string;
+  readonly book: Book;
+  readonly atMs: number;
+  readonly reasons: readonly string[];
+  /** The rate a fill re-booked from its held journal line is valued at (undefined: the price now). */
+  readonly solUsd?: MicroUsd | null;
+  readonly closes?: true;
 }
 
 /**
@@ -115,6 +139,8 @@ interface Fill {
   readonly solUsd: MicroUsd | null | undefined;
   /** The fill's time from the held line, or null to use the booking time. */
   readonly atMs: number | null;
+  /** A late sell that leaves the position at quantity 0: the trade closes whatever the position's status. */
+  readonly closes: boolean;
 }
 
 export class Desk {
@@ -122,7 +148,12 @@ export class Desk {
   #book: Book;
   /** World event ids whose book event the ledger already holds (restored at start, or a reservation written first). */
   readonly #written = new Set<string>();
-  /** Decision reasons per entry intent, carried onto its `entry` line. */
+  /**
+   * Reasons by intent: an entry's decision reasons, carried onto its `entry` line; an exit's trigger reasons, for a sell
+   * that lands after the exit ended (see #fill). Bounded (`#prune`): an intent's go once it has ended and its position
+   * holds nothing (no sale can land on an empty account; an entry's go at its fill, or with an empty position unfilled).
+   * A late landing can be reported long after its block height (a lagging read, a wallet sweep), so height is no bound.
+   */
   readonly #why = new Map<string, readonly string[]>();
   /** Engine records that were illegal or refused (should stay 0). */
   illegal = 0;
@@ -199,23 +230,63 @@ export class Desk {
       return;
     }
     if (fill !== null) this.#d.crashPoint?.('fill-committed', fill.intentId);
+    this.#keep(this.#book, event);
+    this.#lateBuy(before, event, ts);
+    this.#prune();
     this.#after(fill, ts);
+  }
+
+  /** An exit's trigger reasons (merged into its owner by a later trigger). */
+  #keep(book: Book, event: BookEvent): void {
+    if (event.type !== 'trigger_exit') return;
+    const owner = book.positions[event.positionId]?.exitOwner;
+    if (owner) this.#why.set(owner.intentId, owner.reasons);
+  }
+
+  /** Drops reasons nothing can use any more (see `#why`). */
+  #prune(): void {
+    for (const id of this.#why.keys()) {
+      const s = this.#book.intents[id];
+      if (s === undefined || !isTerminal(s)) continue;
+      if ((this.#book.positions[s.intent.positionId]?.quantity ?? 0n) === 0n) this.#why.delete(id);
+    }
+  }
+
+  /**
+   * After a restart: the exits' trigger reasons from the ledger's stored events (replayed from an empty book), so a late
+   * sell after the restart still books its exit's reasons (a late stop counts as a stop).
+   */
+  rebuild(events: readonly BookEvent[], config: BookConfig): void {
+    let book = emptyBook(config);
+    for (const e of events) {
+      const r = applyBookEvent(book, e);
+      if (isIllegal(r)) continue;
+      book = r.state;
+      this.#keep(book, e);
+    }
+    this.#prune();
+  }
+
+  /** How many intents' reasons are kept (bounded; for tests). */
+  get keptReasons(): number {
+    return this.#why.size;
   }
 
   #after(fill: Fill | null, ts: number): void {
     // The trade records first, so the account snapshot published next already holds this fill.
     if (fill !== null) {
-      this.#d.filled({ purpose: fill.purpose, positionId: fill.positionId, mint: fill.mint, book: this.#book, atMs: fill.atMs ?? ts, reasons: fill.reasons, ...(fill.solUsd === undefined ? {} : { solUsd: fill.solUsd }) });
+      this.#d.filled({ purpose: fill.purpose, positionId: fill.positionId, mint: fill.mint, book: this.#book, atMs: fill.atMs ?? ts, reasons: fill.reasons, ...(fill.solUsd === undefined ? {} : { solUsd: fill.solUsd }), ...(fill.closes ? { closes: true as const } : {}) });
     }
     this.#d.accountChanged();
     this.#d.intentsChanged(openIntents(this.#book));
   }
 
   /**
-   * A reconcile that books fills, or a late-landing sell booked after its exit ended (`orphan_fill`, as PAPER-1 #133):
-   * its `entry` or `exit` line (after its `simulation` line), or null. A late buy opens its own position, which is not a
-   * paper trade. A line the journal already holds for the same intent and amount (written before a kill that came
-   * ahead of the ledger) is not repeated. RISK-PARTIAL: a late sell that leaves tokens held books its part when it lands.
+   * A reconcile that books fills, or a late-landing sell booked after its exit ended (`orphan_fill`): its `entry` or
+   * `exit` line (after its `simulation` line), or null. A line the journal already holds for the same intent and amount
+   * (written before a kill that came ahead of the ledger) is not repeated. A late buy opens its own position, which is
+   * not a paper trade: `#write` hands it to `lateBuy` instead (DECISIONS, PAPER-1). RISK-PARTIAL: a late sell that
+   * leaves tokens held books its part when it lands.
    */
   #fill(before: Book, after: Book, event: BookEvent): Fill | null {
     const id = event.type === 'intent' && event.event.type === 'reconcile' ? event.intentId
@@ -230,10 +301,17 @@ export class Desk {
     const tokens = s.fills.reduce((t, f) => t + f.tokens, 0n);
     const sol = s.fills.reduce((t, f) => t + f.sol, 0n);
     const fees = s.fills.reduce((t, f) => t + f.fees, 0n);
+    // An exit's reasons: its own, as owner of the position, or (a late landing after the exit ended, which clears the
+    // owner or hands it to another exit) those kept when it was triggered, so a late stop still counts as a stop.
+    const owner = before.positions[pid]?.exitOwner;
     const reasons = purpose === 'entry'
       ? ['entry filled (paper)', ...(this.#why.get(s.intent.id) ?? [])]
-      : ['exit filled (paper)', ...(before.positions[pid]?.exitOwner?.reasons ?? [])];
-    this.#why.delete(s.intent.id);
+      : ['exit filled (paper)', ...(owner?.intentId === s.intent.id ? owner.reasons : (this.#why.get(s.intent.id) ?? []))];
+    // An exit keeps its reasons for another of its attempts landing late (`#prune` drops them).
+    if (purpose === 'entry') this.#why.delete(s.intent.id);
+    // A late sell that leaves nothing closes the trade even if another exit owns the position now (run/CI review B2:
+    // that exit can only end unfilled, and the position stays at quantity 0).
+    const closes = event.type === 'orphan_fill' && p !== undefined && p.quantity === 0n;
     // An entry names the universe it was entered under (CFG-2): the runner expects a trade opened after its last
     // reply back after a restart, with that universe (RUN-1d contract).
     const universe = purpose === 'entry' ? { universe: universeOfKey(s.intent.key) } : {};
@@ -248,9 +326,17 @@ export class Desk {
       const rate = lineRate(held);
       const why = lineReasons(held) ?? reasons;
       const at = typeof held['ts'] === 'string' ? Date.parse(held['ts']) : Number.NaN;
-      return { purpose, intentId: s.intent.id, positionId: pid, mint: s.intent.mint, reasons: rate === undefined ? [...why, FILL_RATE_UNKNOWN] : why, line: null, solUsd: rate, atMs: Number.isFinite(at) ? at : null };
+      return { purpose, intentId: s.intent.id, positionId: pid, mint: s.intent.mint, reasons: rate === undefined ? [...why, FILL_RATE_UNKNOWN] : why, line: null, solUsd: rate, atMs: Number.isFinite(at) ? at : null, closes };
     }
-    return { purpose, intentId: s.intent.id, positionId: pid, mint: s.intent.mint, reasons, line, solUsd, atMs: null };
+    return { purpose, intentId: s.intent.id, positionId: pid, mint: s.intent.mint, reasons, line, solUsd, atMs: null, closes };
+  }
+
+  /** A late buy (`orphan_fill` of an entry) booked: its own position opened, which goes to `lateBuy`, never a trade. */
+  #lateBuy(before: Book, event: BookEvent, ts: number): void {
+    if (event.type !== 'orphan_fill') return;
+    const i = this.#book.intents[event.fill.intentId];
+    if (i?.intent.purpose !== 'entry' || i.fills.length <= (before.intents[event.fill.intentId]?.fills.length ?? 0)) return;
+    this.#d.lateBuy({ intentId: i.intent.id, positionId: `${i.intent.positionId}.o${i.fills.length}`, mint: i.intent.mint, signature: event.fill.signature, atMs: ts });
   }
 
   /** Writes the reservation first, then hands it to the engine; a refusal goes back as a reject. */
@@ -259,6 +345,11 @@ export class Desk {
     const reject = (why: string): void => {
       this.#d.report({ type: 'intent', intentId, event: { type: 'reject', reason: why } });
     };
+    const blocked = this.#d.entriesBlocked?.() ?? null;
+    if (blocked !== null) {
+      this.#d.journal('decision', { action: 'entry_refused', intent: intentId, reasons: [`entries halted: ${blocked}`, 'no exposure reserved'] });
+      return reject(`entries halted: ${blocked}`);
+    }
     if (req === null || req.intentId !== intentId) return reject('reservation request missing from the risk decision');
     const event: BookEvent = {
       type: 'intent', intentId,

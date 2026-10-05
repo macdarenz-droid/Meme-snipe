@@ -18,6 +18,11 @@ export interface PositionWatchOptions {
   readonly everyMs: number;
   /** A held position's market older than this is read again (config: ZEROED_WATCH_STALE_MS). */
   readonly staleMs: number;
+  /**
+   * A held market proven fresh is still read this often (WATCH-1c): the stream's proof cannot see a transfer straight
+   * into a pool vault. Absent: no such reads.
+   */
+  readonly verifyMs?: number;
   /** An answer later than this is not used: it would already be too old to quote (config: ZEROED_WATCH_LATENCY_MS). */
   readonly latencyMs: number;
   /**
@@ -30,8 +35,15 @@ export interface PositionWatchOptions {
    * (a live feed releases one each slot while the pool trades), the watch's own snapshot from its read.
    */
   readonly marketAt: (mint: string) => number | null;
-  /** The second path: one getMultipleAccounts at confirmed, through the quota scheduler at P1. */
-  readonly read: (addresses: readonly string[]) => Promise<WatchRead>;
+  /** The second path: one getMultipleAccounts at confirmed (no older than `minContextSlot`), through the quota scheduler at P0. */
+  readonly read: (addresses: readonly string[], minContextSlot: bigint | null) => Promise<WatchRead>;
+  /**
+   * WATCH-1d: the chain head the feed last released and when, or null before the first. A snapshot is held to it: read
+   * no older than `head - maxLagSlots`, refused when it answers older, live or not (a dead feed's last head is still a floor).
+   */
+  readonly head?: () => { readonly slot: bigint; readonly atMs: number } | null;
+  /** How far a snapshot's bank may trail the live head: the policy's `maxStateSlotLag`, as for the gates' chain state. */
+  readonly maxLagSlots?: number;
   /** A trusted snapshot, read at `atMs`: onto the feed. */
   readonly put: (snapshot: PoolSnapshot, atMs: number) => void;
   /** The critical alert for a held mint left without a fresh price (raised once per episode), and its end. */
@@ -44,6 +56,10 @@ export class PositionWatch {
   #timer: TimerHandle | null = null;
   #running = false;
   readonly #inFlight = new Set<string>();
+  /** When each held mint was last read (or first seen held): the verify period counts from it. */
+  readonly #lastRead = new Map<string, number>();
+  /** The last snapshot taken per pool: its bank's slot and when it was first read (a repeat of that bank is not new). */
+  readonly #taken = new Map<string, { readonly slot: bigint; readonly atMs: number }>();
   /** Vault addresses by pool, learned from the pool account (the coherent read needs them up front). */
   readonly #vaults = new Map<string, readonly [string, string]>();
   /** Mints whose critical alert is up, with its reason. */
@@ -95,10 +111,13 @@ export class PositionWatch {
     const mints = new Set(held.map((h) => h.mint));
     // A position that closed takes its alert with it.
     for (const mint of [...this.#alerts.keys()]) if (!mints.has(mint)) this.#clear(mint);
+    for (const mint of [...this.#lastRead.keys()]) if (!mints.has(mint)) this.#lastRead.delete(mint);
     for (const { mint, pool } of held) {
+      if (!this.#lastRead.has(mint)) this.#lastRead.set(mint, now);
       if (this.#inFlight.has(mint)) continue;
       const at = this.#o.marketAt(mint);
-      if (at !== null && now - at < this.#o.staleMs) continue;
+      const verify = this.#o.verifyMs !== undefined && now - this.#lastRead.get(mint)! >= this.#o.verifyMs;
+      if (at !== null && now - at < this.#o.staleMs && !verify) continue;
       if (pool === null) {
         this.#raise(mint, 'no pool known for the position');
         continue;
@@ -109,30 +128,49 @@ export class PositionWatch {
   }
 
   /** One read through the second path, refused when its answer comes later than `latencyMs`. */
-  #read(addresses: readonly string[]): Promise<WatchRead> {
+  #read(addresses: readonly string[], minContextSlot: bigint | null): Promise<WatchRead> {
     const ms = this.#o.latencyMs;
     let timer: TimerHandle | null = null;
     const late = new Promise<never>((_, reject) => {
       timer = this.#o.timers.setTimeout(() => reject(new Error(`no answer within ${ms} ms`)), ms);
     });
-    return Promise.race([this.#o.read(addresses), late]).finally(() => {
+    return Promise.race([this.#o.read(addresses, minContextSlot), late]).finally(() => {
       if (timer !== null) this.#o.timers.clearTimeout(timer);
     });
   }
 
   async #snapshot(mint: string, pool: string): Promise<void> {
     this.reads++;
+    this.#lastRead.set(mint, this.#o.timers.now());
     try {
+      const head = this.#o.head?.() ?? null;
+      const lag = BigInt(this.#o.maxLagSlots ?? 0);
+      // The last released head bounds the bank whether or not the feed is still live: the chain never goes back, so a
+      // dead feed's head is still a proven floor (risk review of #141). Live (the head moved within a stale limit and one
+      // period) only names the case in the alert.
+      const live = head !== null && this.#o.timers.now() - head.atMs < this.#o.staleMs + this.#o.everyMs;
+      const minSlot = head !== null && head.slot > lag ? head.slot - lag : null;
       let vaults = this.#vaults.get(pool);
       if (vaults === undefined) {
-        const first = await this.#read([pool]);
+        const first = await this.#read([pool], minSlot);
         const acc = first.accounts[0];
         if (acc == null) throw new Error('the pool account does not exist');
         const p = decodePool(acc.data).value;
         vaults = [p.poolBaseTokenAccount, p.poolQuoteTokenAccount];
         this.#vaults.set(pool, vaults);
       }
-      const r = await this.#read(snapshotAddresses(pool, vaults[0], vaults[1], mint));
+      const r = await this.#read(snapshotAddresses(pool, vaults[0], vaults[1], mint), minSlot);
+      // A bank older than the head allows, or no newer than the last one taken, is not a fresh price, however
+      // fresh its answer (audit: a lagging node answered the same bank twice, 10 minutes apart).
+      if (minSlot !== null && r.slot < minSlot) throw new Error(live
+        ? `the read's bank is slot ${r.slot}, ${head!.slot - r.slot} slots behind the head ${head!.slot} (at most ${lag})`
+        : `the read's bank is slot ${r.slot}, ${head!.slot - r.slot} slots behind the last released head ${head!.slot} (at most ${lag}; the feed is silent)`);
+      const last = this.#taken.get(pool);
+      if (last !== undefined && r.slot <= last.slot) {
+        if (r.slot < last.slot) throw new Error(`the read's bank is slot ${r.slot}, behind the last one taken (${last.slot})`);
+        if (this.#o.timers.now() - last.atMs >= this.#o.staleMs) throw new Error(`the read's bank is still slot ${r.slot}, first read ${this.#o.timers.now() - last.atMs} ms ago`);
+        return;
+      }
       const s = decodeSnapshot(mint, pool, r.slot, r.accounts);
       if (!s.ok) {
         // The layout may have moved: learn it again on the next read.
@@ -140,7 +178,9 @@ export class PositionWatch {
         throw new Error(s.reason);
       }
       if (!this.#running) return;
-      this.#o.put(s.snapshot, this.#o.timers.now());
+      const at = this.#o.timers.now();
+      this.#taken.set(pool, { slot: r.slot, atMs: at });
+      this.#o.put(s.snapshot, at);
       this.#clear(mint);
     } catch (e) {
       this.failures++;

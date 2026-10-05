@@ -47,6 +47,9 @@
 # - Every checkout sets persist-credentials: false; inputs reach the shell only through
 #   env variables.
 name: data-scan
+# The source in the run's title lets archive-check.sh tell a Helius-only run (which never
+# reads the archive) from one that may read it; runs before this line have no source.
+run-name: "data-scan ${{ inputs.mode }} source=${{ inputs.source || 'archive' }}"
 
 on:
   workflow_dispatch:
@@ -70,9 +73,9 @@ on:
         required: false
         default: ""
       max_mbps:
-        description: archive download cap in MB/s (at most 80 unless the operators allow more)
+        description: archive download cap in MB/s (at most 40, research/historical/ci/archive-limits.conf, unless the operators allow more)
         required: true
-        default: "80"
+        default: "40"
       chain:
         description: "scan: how many runs before this one were chained automatically (set by the workflow; leave 0)"
         required: false
@@ -131,8 +134,8 @@ jobs:
           python3 - <<'EOF' >> "$GITHUB_OUTPUT"
           import datetime, json, os, re, sys
           mbps = float(os.environ["MAX_MBPS"])
-          if not 0 < mbps <= 80:
-              sys.exit("max_mbps must be in (0, 80] unless the archive operators grant more")
+          if not 0 < mbps <= 40:  # ARCHIVE_MAX_MBPS in research/historical/ci/archive-limits.conf
+              sys.exit("max_mbps must be in (0, 40] unless the archive operators grant more")
           if os.environ["SOURCE"] not in ("archive", "helius"):
               sys.exit("source must be archive or helius")
           if os.environ["SOURCE"] == "helius":

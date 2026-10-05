@@ -45,6 +45,8 @@ export const STATE_FILES = {
   openIntents: 'open_intents',
   drillToken: 'drill.token',
   cleanStop: 'clean_stop',
+  /** RESTART-ALERT: written by the runner just before a drill kills or reboots the worker; the next boot reads and removes it. */
+  plannedRestart: 'planned_restart',
 } as const;
 
 export const DEFAULT_HEALTH_ADDR = '127.0.0.1:8787';
@@ -111,6 +113,10 @@ export interface Health {
   readonly pid: number;
   readonly uptime_s: number;
   readonly rss_bytes: number;
+  /** How the previous process ended (RESTART-ALERT): `stop: <reason>`, `no clean stop`, or null on a first start. */
+  readonly last_exit?: string | null;
+  /** Restarts in the last 24 h (RESTART-ALERT): `planned` by a runner drill, `deploy` onto a new release, `unplanned` every other one. */
+  readonly restarts_24h?: { readonly planned: number; readonly deploy: number; readonly unplanned: number };
   readonly mode: 'paper';
   readonly recorder: 'on' | 'off';
   readonly simulation: 'on' | 'off';
@@ -160,6 +166,8 @@ export type JournalKind =
   | 'h15_sim'
   /** S0-ZERO: one in-run fill of a watched pool's trade gap (a candidate's catch-up from its migration, a reconnect): size, credits, complete. */
   | 'trades_fill'
+  /** CREATE-AFTER-RESTART: a shortlisted mint's create looked up from its oldest signature (found or why not, pages, credits). */
+  | 'create_lookup'
   /** PERSIST-2: a graduates seed taken or refused (`source`, `accepted`, `added`, `reason`). */
   | 'graduates_seed';
 

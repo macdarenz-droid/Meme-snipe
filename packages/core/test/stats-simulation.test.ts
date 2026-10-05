@@ -4,7 +4,7 @@ import { appendFileSync } from 'node:fs';
 import { describe, expect, test } from 'vitest';
 import {
   bettingEProcess, clopperPearsonUpper, createRng, dayBlockMeanInterval, deflatedSharpe, deflatedSharpeDaily, designEffect, expectedMaxSharpe, mean,
-  gateG3, meanPredictiveInterval, sharpeBootstrap, median, MIN_DAYS, nextNormal, nPower, reverseEProcess, sd, sharpeRatio, SPA_STUDENTISATION, spaTest, type G3Input, type Rng, VETO_COMPOSITE_LEVEL, VETO_COMPOSITE_ALPHA, clusterWelchBounds,
+  CAPPED_ESTIMAND, gateG3, meanPredictiveInterval, sharpeBootstrap, median, MIN_DAYS, nextNormal, nPower, reverseEProcess, sd, sharpeRatio, SPA_STUDENTISATION, spaTest, type G3Input, type Rng, VETO_COMPOSITE_LEVEL, VETO_COMPOSITE_ALPHA, clusterWelchBounds,
 } from '../src/stats/index.ts';
 import { bracketDraw, bracketSd, bracketTakeProfitShare, bracketTrades, dayKey, SPA_SCENARIOS } from './stats-fixtures.ts';
 
@@ -323,8 +323,8 @@ describe('G3 power at 48 h, 7 days and 10 days (STATS-1b, STATS-1c)', () => {
     return {
       qualifyingRun: true, liveOnlyVetoes: { vetoed: Math.round(20 * f), eligible: Math.round(1000 * f) }, dryRunHours: hours,
       ...(() => { const xs = bracketTrades(41, holdoutMean, Math.round(2 * f), 30).map((t) => t.rNet); return { dryRunReturns: xs, dryRunClusters: xs.map((_, i) => `k${i}`) }; })(),
-      holdout: { n: 500, mean: holdoutMean, sd: bracketSd(holdoutMean) }, holdoutSevereRate: 0.075,
-      holdoutLower: { value: 0.06, level: VETO_COMPOSITE_LEVEL },
+      holdout: { n: 500, mean: holdoutMean, sd: bracketSd(holdoutMean), estimand: CAPPED_ESTIMAND }, holdoutSevereRate: 0.075,
+      holdoutLower: { value: 0.06, level: VETO_COMPOSITE_LEVEL, estimand: CAPPED_ESTIMAND }, holdoutCapped: 0, holdoutBelowFloor: 0,
       candidates: { dryRunCount: Math.round(960 * f), dryRunHours: hours, backtestCount: 20_000, backtestHours: 1000 },
       rejectMix: { dryRun: { H8: Math.round(210 * f), H9: Math.round(700 * f), H11: Math.round(70 * f) }, backtest: bt },
       fillDifferences: Array.from({ length: Math.round(120 * f) }, (_, i) => 0.003 + 0.001 * Math.sin(i)), parityTestPassed: true,

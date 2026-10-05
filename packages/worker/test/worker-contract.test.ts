@@ -65,8 +65,11 @@ describe('config and exit codes (§12.4)', () => {
       const p = parseConfig({ ...base, ...env }, () => null);
       return p.ok ? p.config.watch : null;
     };
-    expect(watch({})).toEqual({ everyMs: 200, staleMs: 500, latencyMs: 400 });
-    expect(watch({ ZEROED_WATCH_EVERY_MS: '300', ZEROED_WATCH_STALE_MS: '300', ZEROED_WATCH_LATENCY_MS: '100' })).toEqual({ everyMs: 300, staleMs: 300, latencyMs: 100 });
+    expect(watch({})).toEqual({ everyMs: 200, staleMs: 500, latencyMs: 400, verifyMs: 30_000 });
+    expect(watch({ ZEROED_WATCH_EVERY_MS: '300', ZEROED_WATCH_STALE_MS: '300', ZEROED_WATCH_LATENCY_MS: '100', ZEROED_WATCH_VERIFY_MS: '300' })).toEqual({ everyMs: 300, staleMs: 300, latencyMs: 100, verifyMs: 300 });
+    // WATCH-1c: the verify period is never shorter than the stale limit.
+    expect(watch({ ZEROED_WATCH_VERIFY_MS: '499' })).toBeNull();
+    expect(watch({ ZEROED_WATCH_VERIFY_MS: 'x' })).toBeNull();
     // Tied to the policy (review of #87): the oldest a watched market can be must stay below the quote age.
     const policyAge = TRIAL_POLICY.gates.maxQuoteAgeMs;
     const release = DEFAULT_LIVE_FEED.horizonSlots * SLOT_MS;
@@ -321,7 +324,7 @@ describe('the reservation goes through the ledger with the snapshot\'s account v
       reports.push(e);
       return `world#${reports.length}`;
     },
-    accountChanged: () => undefined, intentsChanged: () => undefined, reserved: () => undefined, filled: () => undefined,
+    accountChanged: () => undefined, intentsChanged: () => undefined, reserved: () => undefined, filled: () => undefined, lateBuy: () => undefined,
     diverged: (r) => void diverged.push(r),
   });
 
@@ -342,7 +345,7 @@ describe('the reservation goes through the ledger with the snapshot\'s account v
     const desk = new Desk({
       ledger, config: { maxOpenPositions: 5 }, restored: emptyBook({ maxOpenPositions: 5 }),
       journal: (_kind, f) => void journal.push(f), report: () => 'world#unused',
-      accountChanged: () => undefined, intentsChanged: () => undefined, reserved: () => undefined, filled: () => undefined,
+      accountChanged: () => undefined, intentsChanged: () => undefined, reserved: () => undefined, filled: () => undefined, lateBuy: () => undefined,
       diverged: (r) => void diverged.push(r),
     });
     const refused = (eventId: string) => ({ type: 'world', seq: 1, at, eventId, event: { type: 'intent', intentId: intentId('x'), event: { type: 'prepare' } }, result: 'illegal', reason: 'prepare needs reserved exposure (from cancelled)', effects: [] }) as unknown as LogRecord;

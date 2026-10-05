@@ -1,22 +1,42 @@
 // Worker state files in the state directory, each written whole and atomically (temp file, fsync, rename), in lossless
 // JSON. A file that is missing reads as its default; a file that exists but cannot be read stops the start (stored
 // state is never guessed).
-import { closeSync, existsSync, fsyncSync, openSync, readFileSync, renameSync, writeSync } from 'node:fs';
+import { closeSync, existsSync, fsyncSync, openSync, readFileSync, renameSync, rmSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Latches } from '../../../core/src/risk/index.ts';
 import { NO_LATCHES } from '../../../core/src/risk/index.ts';
 import type { EntrySeed, SavedExit } from '../engine/strategy.ts';
 import { parseTyped, typedText } from './json.ts';
 
-export const atomicWrite = (path: string, text: string): void => {
+/** The low-level write: bytes written, which can be fewer than asked (a nearly full disk). Tests pass a short one. */
+export type WriteFn = (fd: number, buf: Uint8Array, offset: number, length: number) => number;
+
+/**
+ * Writes all of `text`, looping on short writes; a write that makes no progress throws (#159 review N2: `writeSync`'s
+ * count was ignored, so a short write on a nearly full disk renamed a cut file over the good one).
+ */
+export const writeAll = (fd: number, text: string, write: WriteFn = writeSync): void => {
+  const buf = Buffer.from(text, 'utf8');
+  for (let off = 0; off < buf.length;) {
+    const n = write(fd, buf, off, buf.length - off);
+    if (!(n > 0)) throw new Error(`short write: ${off} of ${buf.length} bytes written`);
+    off += n;
+  }
+};
+
+/** Temp file, every byte written and flushed, then renamed over `path`. A failed write leaves `path` as it was. */
+export const atomicWrite = (path: string, text: string, write: WriteFn = writeSync): void => {
   const tmp = `${path}.tmp`;
   const fd = openSync(tmp, 'w', 0o600);
   try {
-    writeSync(fd, text);
+    writeAll(fd, text, write);
     fsyncSync(fd);
-  } finally {
+  } catch (e) {
     closeSync(fd);
+    rmSync(tmp, { force: true });
+    throw e;
   }
+  closeSync(fd);
   renameSync(tmp, path);
 };
 
@@ -76,6 +96,44 @@ export interface Exposed {
 export const NO_EXPOSED: Exposed = { trades: [], fromMs: 0 };
 export const exposedFile = (dir: string) =>
   new StateFile<Exposed>(dir, 'exposure.json', (v) => (isObj(v) && Array.isArray(v['trades']) && typeof v['fromMs'] === 'number' ? (v as unknown as Exposed) : null));
+
+/**
+ * RESTART-ALERT: each boot in the last 24 h, with its release and how it followed the previous process: `first` (no
+ * earlier process), `planned` (a runner drill's marker), `deploy` (the previous boot ran another release) or
+ * `unplanned` (any other restart on the same release, or one with no earlier record to compare).
+ */
+export type RestartKind = 'first' | 'planned' | 'deploy' | 'unplanned';
+export interface Restart {
+  readonly at: number;
+  readonly kind: RestartKind;
+  readonly git_sha: string;
+}
+const RESTART_KINDS: readonly string[] = ['first', 'planned', 'deploy', 'unplanned'];
+export const restartsFile = (dir: string) =>
+  new StateFile<Restart[]>(dir, 'restarts.json', (v) => (Array.isArray(v) && v.every((r) => isObj(r) && typeof r['at'] === 'number' && typeof r['kind'] === 'string' && RESTART_KINDS.includes(r['kind']) && typeof r['git_sha'] === 'string') ? (v as Restart[]) : null));
+
+/** The most boots `restarts.json` keeps: a crash loop of a day at systemd's pace stays a small file. */
+export const RESTARTS_MAX = 1_000;
+
+/**
+ * The boots kept after this one: the last 24 h before `nowMs` plus this boot, at most RESTARTS_MAX (newest kept). This
+ * boot's kind compares its release with the newest saved boot's.
+ */
+/** How the previous process ended, as a fixed code for the daily summary's `exits` (null on a first start). */
+export const exitKind = (lastExit: string | null): 'clean' | 'crash' | 'killed' | 'planned' | 'oom' | null =>
+  lastExit === null ? null
+    : lastExit.startsWith('planned: ') ? 'planned'
+    : lastExit === 'stop: signal' ? 'clean'
+    // HEAP-GUARD: a fatal error's report names a crash; a death just after a sample near a memory limit is `oom`.
+    : lastExit.startsWith('stop: crash') || lastExit.startsWith('fatal error (') ? 'crash'
+    : lastExit.startsWith('no clean stop (near ') ? 'oom'
+    : 'killed';
+
+export const restartsAfterBoot = (saved: readonly Restart[], nowMs: number, lastExit: string | null, gitSha: string): Restart[] => {
+  const prev = saved[saved.length - 1];
+  const kind: RestartKind = lastExit === null ? 'first' : lastExit.startsWith('planned: ') ? 'planned' : prev !== undefined && prev.git_sha !== gitSha ? 'deploy' : 'unplanned';
+  return [...saved.filter((r) => r.at <= nowMs && nowMs - r.at < 86_400_000), { at: nowMs, kind, git_sha: gitSha }].slice(-RESTARTS_MAX);
+};
 
 /** Entry decisions' plan inputs by entry intent, saved before the intent is booked (EXIT-1h). */
 export const seedsFile = (dir: string) =>

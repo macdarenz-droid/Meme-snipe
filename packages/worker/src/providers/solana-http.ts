@@ -2,7 +2,7 @@
 import { fromBase64, recordFromRpc, type RpcTransactionBase64, type TransactionRecord } from '../../../core/src/chain/index.ts';
 import { ALCHEMY_CU, HELIUS_RPC_CREDITS } from '../scheduler/limits.ts';
 import type { Priority, Scheduler } from '../scheduler/scheduler.ts';
-import { type HttpClient, parseJson, ProviderError, send } from './http.ts';
+import { type HttpClient, parseJson, ProviderError, refusal429, send } from './http.ts';
 
 export type RpcMethod = 'getTransaction' | 'getSignaturesForAddress' | 'getAccountInfo' | 'getMultipleAccounts';
 
@@ -49,10 +49,7 @@ export class RpcHttp {
     return o.scheduler.run(priority, callCost(o.provider, method), async () => {
       const body = JSON.stringify({ jsonrpc: '2.0', id: this.#id++, method, params });
       const res = await send(o.http, o.provider, method, { method: 'POST', url: o.url(), headers: { 'content-type': 'application/json' }, body, timeoutMs: o.timeoutMs });
-      if (res.status === 429) {
-        o.scheduler.penalize();
-        throw new ProviderError(o.provider, 'rate_limited', `${method} rate limited`, 429);
-      }
+      if (res.status === 429) throw refusal429(o.scheduler, o.provider, method, res.text);
       if (res.status !== 200) throw new ProviderError(o.provider, 'http', `${method} returned HTTP ${res.status}`, res.status);
       const json = parseJson(o.provider, method, res.text);
       if (!isObj(json)) throw new ProviderError(o.provider, 'shape', `${method} returned no object`);
@@ -97,9 +94,10 @@ export class RpcHttp {
   }
 
   /** Accounts read together at confirmed, in one bank: the context slot they are all as of (WATCH-1's snapshot). */
-  async getMultipleAccounts(addresses: readonly string[], priority: Priority): Promise<{ readonly slot: bigint; readonly accounts: ({ readonly owner: string; readonly lamports: bigint; readonly data: Uint8Array } | null)[] }> {
+  async getMultipleAccounts(addresses: readonly string[], priority: Priority, minContextSlot?: bigint): Promise<{ readonly slot: bigint; readonly accounts: ({ readonly owner: string; readonly lamports: bigint; readonly data: Uint8Array } | null)[] }> {
     if (addresses.length === 0 || addresses.length > 100) throw new RangeError('getMultipleAccounts takes 1 to 100 addresses');
-    const r = await this.call('getMultipleAccounts', [addresses, { encoding: 'base64', commitment: 'confirmed' }], priority);
+    // WATCH-1d: a node behind `minContextSlot` refuses the read instead of answering from an old bank.
+    const r = await this.call('getMultipleAccounts', [addresses, { encoding: 'base64', commitment: 'confirmed', ...(minContextSlot === undefined ? {} : { minContextSlot: Number(minContextSlot) }) }], priority);
     if (!isObj(r) || !isObj(r.context) || !Number.isSafeInteger(r.context.slot)) throw new ProviderError(this.provider, 'shape', 'getMultipleAccounts result has no context');
     if (!Array.isArray(r.value) || r.value.length !== addresses.length) throw new ProviderError(this.provider, 'shape', 'getMultipleAccounts returned the wrong number of accounts');
     return { slot: BigInt(r.context.slot as number), accounts: r.value.map((v) => (v === null ? null : accountValue(this.provider, v))) };
