@@ -46,7 +46,9 @@ const credits = new CreditBook(config.stateDir, timers);
 const rpcCut = new RpcCut(timers);
 const http = liveHttp(rpcCut, fetchHttp);
 const providerHttp = http.providers;
-const providers = new LiveProviders({ tradeStreams: false, secrets: environment.secrets, http: providerHttp, factory: globalSocketFactory, credits });
+// FILL-2's daily fill budget, one instance for the restart fill and the pool watches' in-run fills (S0-ZERO).
+const fillBudget = DailyBudget.load(join(config.stateDir, FILL_BUDGET_FILE), FILL_CREDITS_PER_DAY, timers.now());
+const providers = new LiveProviders({ tradeStreams: false, secrets: environment.secrets, http: providerHttp, factory: globalSocketFactory, credits, fillBudget });
 const policy = session.policy;
 const timing = watchTimingProblem(config.watch, policy.gates.maxQuoteAgeMs, DEFAULT_LIVE_FEED.horizonSlots * SLOT_MS);
 if (timing !== null) {
@@ -91,7 +93,10 @@ try {
     sources: (ctx) => providers.feeds(ctx),
     simulate,
     fetchTx: (sig) => providers.fetchTx(sig),
-    seed: (r) => runSeed(r, { rpc: providers.seedRpc(), timers, budget: DailyBudget.load(join(config.stateDir, FILL_BUDGET_FILE), FILL_CREDITS_PER_DAY, timers.now()) }),
+    findCreate: (mint) => providers.findCreate(mint, timers),
+    seed: (r) => runSeed(r, { rpc: providers.seedRpc(), timers, budget: fillBudget }),
+    // RESTART-KEEP: the downtime's migrations and unseen creates, on the same RPC and the same daily fill budget.
+    restartReads: { rpc: providers.seedRpc(), budget: fillBudget },
     seedWaitMs: 30_000,
     seedMaxMs: 90_000,
     ops: () => providers.ops(),
@@ -114,16 +119,16 @@ try {
   fatal(e);
 }
 const w = worker!;
-let stopping = false;
+// Every stop ends the process with the stop's code: a signal (0), a refused start, or a crash of the engine loop (1), which
+// the worker stops by itself. Nothing is left lingering, so systemd sees the code and restarts it. The unit gives 30 s
+// (TimeoutStopSec); finish within 25 s whatever happens.
+void w.stopping.then(() => setTimeout(() => process.exit(EXIT.crash), 25_000).unref());
+void w.stopped.then((code) => {
+  credits.flush();
+  process.exit(code);
+});
 const stop = (): void => {
-  if (stopping) return;
-  stopping = true;
-  // The unit gives 30 s (TimeoutStopSec); finish within 25 s whatever happens.
-  setTimeout(() => process.exit(EXIT.crash), 25_000).unref();
-  void w.stop(EXIT.clean).then((code) => {
-    credits.flush();
-    process.exit(code);
-  });
+  void w.stop(EXIT.clean);
 };
 process.on('SIGTERM', stop);
 process.on('SIGINT', stop);
@@ -142,8 +147,8 @@ if (environment.argv.includes('--reconcile')) {
 // `--reconcile-only` (RUN-1d's host-loss tabletop): reconcile, journal `recovered`, serve /health, send nothing; it
 // runs until SIGTERM. Otherwise the full start.
 const started = observeOnly ? await w.observeOnly() : await w.start();
-if (!started.ok && !stopping) {
+if (!started.ok) {
   fail(started.message);
-  await w.stop(started.code);
-  process.exit(started.code);
+  // Exits through `stopped`, with this code, or with the code of a stop already under way.
+  void w.stop(started.code);
 }
