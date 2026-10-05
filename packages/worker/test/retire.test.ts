@@ -2,7 +2,7 @@
 // and has no tail; the engine then forgets their keys and the producer their state.
 import { describe, expect, it } from 'vitest';
 import { blockNetwork } from './helpers.ts';
-import { MIGRATED_AT, MINT, POOL_ADDRESS, makeWorker, passingMarket, type Harness } from './worker-harness.ts';
+import { LANDS, MIGRATED_AT, MINT, POOL_ADDRESS, makeWorker, passingMarket, type Harness } from './worker-harness.ts';
 
 blockNetwork();
 
@@ -21,8 +21,8 @@ const watch = (h: Harness): string[] => {
   return got;
 };
 
-const run = async (windowToMs: number | undefined, after?: (h: Harness, m: Awaited<ReturnType<typeof passingMarket>>, got: string[]) => Promise<void>) => {
-  const h = makeWorker(windowToMs === undefined ? {} : { strategy: { windowToMs } });
+const run = async (windowToMs: number | undefined, after?: (h: Harness, m: Awaited<ReturnType<typeof passingMarket>>, got: string[]) => Promise<void>, maxTails?: number, scenario?: typeof LANDS) => {
+  const h = makeWorker({ strategy: { ...(windowToMs === undefined ? {} : { windowToMs }), ...(maxTails === undefined ? {} : { maxTails }) }, ...(scenario === undefined ? {} : { scenario }) });
   const got = watch(h);
   await h.worker.reconcile();
   const m = await passingMarket(h, { heldPoolFacts: true });
@@ -59,4 +59,43 @@ describe('a mint and its pool are let go only when nothing watches them', () => 
     });
     expect(got).not.toContain(MINT);
   });
+
+  it('review B1: an entry proposed on the window\'s last event and filled after the window ends (no tail to keep it) keeps its mint and pool', async () => {
+    let status = '';
+    let pool: unknown = null;
+    const got = await run(FIRST_PASS + 1 - MIGRATED_AT, async (h, m) => {
+      await m.run(5_000, 400, () => m.slot());
+      const p = Object.values(h.worker.book.positions).find((x) => String(x.mint) === MINT);
+      status = p?.status ?? 'none';
+      pool = h.worker.strategy.watchedPools().get(POOL_ADDRESS) ?? null;
+    }, 0);
+    expect(status).not.toBe('none');
+    expect(status).not.toBe('closed');
+    // The strategy still knows the position's pool and watches it as held (its exit's pool facts, carry and triggers).
+    expect(pool).toEqual(expect.objectContaining({ mint: MINT, held: true }));
+    expect(got).not.toContain(MINT);
+    expect(got).not.toContain(POOL_ADDRESS);
+  });
+
+  it('review B2: a position still open at the window end and past its tail\'s reach is never let go', async () => {
+    let status = '';
+    const got = await run(undefined, async (h, m) => {
+      // Past the window end (four hours after migrating) and a further two hours: no pool read after the entry (live).
+      h.timers.set(MIGRATED_AT + 4 * 3_600_000 + 121 * 60_000);
+      await m.run(2_000, 400, () => m.slot());
+      status = Object.values(h.worker.book.positions).find((x) => String(x.mint) === MINT)?.status ?? 'none';
+    });
+    expect(status).toBe('open');
+    expect(got).not.toContain(MINT);
+    expect(got).not.toContain(POOL_ADDRESS);
+  });
+
+  it('an entry that never lands lets its mint go once its seed ends without a fill (the window ended meanwhile)', async () => {
+    const got = await run(FIRST_PASS + 1 - MIGRATED_AT, async (h, m) => {
+      await m.run(120_000, 400, () => m.slot());
+      expect(Object.values(h.worker.book.positions).filter((p) => String(p.mint) === MINT && p.status !== 'closed')).toEqual([]);
+    }, 0, { ...LANDS, landPpm: { pumpswap: 0n, 'pump-curve': 0n } });
+    expect(got).toEqual(expect.arrayContaining([MINT, POOL_ADDRESS]));
+  });
 });
+

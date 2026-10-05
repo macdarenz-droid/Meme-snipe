@@ -870,6 +870,7 @@ export class LiveStrategy implements Strategy {
   }
 
   onMarket(e: MarketEvent, ctx: StrategyContext): readonly Decision[] {
+    this.#book = ctx.book;
     const out: Decision[] = [];
     // FACTS-1b: reads that landed on earlier events are judged now, after the facts their own release made (FactFeed
     // releases a read's facts right after it, at its moment). A mark set below applies from the next event on.
@@ -1331,8 +1332,22 @@ export class LiveStrategy implements Strategy {
   }
 
   /** Drops a mint's pool state once nothing watches it (its window ended and no position holds it). */
+  /**
+   * OOM-MINT review B1: a mint still in play: a candidate, an exit plan, an entry proposed and not yet booked (its seed),
+   * or any position of it in the book that is not closed (a late fill books one after the window ends).
+   */
+  #held(mint: string): boolean {
+    if (this.watched().has(mint)) return true;
+    for (const s of this.#seeds.values()) if (s.mint === mint) return true;
+    for (const p of Object.values(this.#book?.positions ?? {})) if (String(p.mint) === mint && p.status !== 'closed') return true;
+    return false;
+  }
+
+  /** The book as of the event being judged (`#held`). */
+  #book: StrategyContext['book'] | null = null;
+
   #forget(mint: string): void {
-    if (this.watched().has(mint)) return;
+    if (this.#held(mint)) return;
     const pool = this.#poolOfMint.get(mint);
     if (pool !== undefined) this.#mintOfPool.delete(pool);
     for (const m of [this.#poolOfMint, this.#observedFees, this.#tradeAt, this.#deployerSales, this.#flow, this.#deployerMemo, this.#migrationSlot, this.#swapAt, this.#inputsRestored]) m.delete(mint);
@@ -1340,11 +1355,11 @@ export class LiveStrategy implements Strategy {
   }
 
   /**
-   * OOM-MINT: a mint that is no candidate, holds no exit plan and has no tail is let go with its pool: nothing reads their
-   * facts again (`retired`). A tail keeps them until it ends.
+   * OOM-MINT: a mint no longer held (`#held`) and with no tail is let go with its pool: nothing reads their facts again
+   * (`retired`). A tail keeps them until it ends.
    */
   #retire(mint: string, pool: string | null): void {
-    if (this.watched().has(mint) || this.#tail.has(mint)) return;
+    if (this.#held(mint) || this.#tail.has(mint)) return;
     this.#letGo.push(mint);
     if (pool !== null) this.#letGo.push(pool);
   }
@@ -1616,13 +1631,16 @@ export class LiveStrategy implements Strategy {
     // dropped at the restore's first step, so the file does not grow by one per such kill (EXIT-1h review N1).
     for (const id of this.#seeds.keys()) {
       const e = ctx.book.intents[id];
+      const mint = this.#seeds.get(id)?.mint;
       if (e !== undefined && isTerminal(e) && e.fills.length === 0) {
         this.#seeds.delete(id);
         this.#restoredSeeds.delete(id);
+        if (mint !== undefined) this.#forget(mint);
       } else if (e === undefined && this.#restoredSeeds.has(id)) {
         this.#seeds.delete(id);
         this.#restoredSeeds.delete(id);
         out.push({ action: null, reasons: ['restored seed dropped', id, 'its intent never reached the book'] });
+        if (mint !== undefined) this.#forget(mint);
       }
     }
     // A restored saved exit whose position is not in the rebuilt book (the plans are written before the desk books the
