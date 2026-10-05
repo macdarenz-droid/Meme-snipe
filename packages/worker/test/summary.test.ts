@@ -196,7 +196,7 @@ describe('the summary', () => {
     expect(s.candidates.refused_by_reason).toHaveLength(SUMMARY_TOP_REASONS);
     expect(s.candidates.refused_other).toBe(2);
     expect(s.provider_credits).toEqual([{ provider: 'helius', used_since_boot: 1234, monthly: 1_000_000 }]);
-    expect(s.worker).toEqual({ git_sha: 'a'.repeat(40), entry_rule: 'S0', uptime_s: 3600, starts: 1, recorder: 'on' });
+    expect(s.worker).toEqual({ git_sha: 'a'.repeat(40), entry_rule: 'S0', uptime_s: 3600, starts: 1, recorder: 'on', restarts: { planned: 0, deploy: 0, unplanned: 0 }, exits: [], crash_sites: [] });
     const b = summaryBody(s);
     expect('body' in b && checkSummary(b.body).ok).toBe(true);
     // A final summary leaves out trades still open from another day.
@@ -272,6 +272,37 @@ describe('the worker-side guard', () => {
     await sz.tick();
     expect(calls).toEqual([]);
     expect(logs).toEqual([`Summary for ${DAY} not sent: forbidden pattern: uuid key.`]);
+  });
+});
+
+describe('a watchdog from before RESTART-CAUSE (review of #209)', () => {
+  it('refuses the new keys: the day goes again without them, once; any other failure is not resent', async () => {
+    const dir = tempState();
+    const bodies: string[] = [];
+    const logs: string[] = [];
+    let status = (body: string): number => (body.includes('"crash_sites"') ? 400 : 200);
+    const sz = new Summarizer({
+      journalPath: join(dir, 'journal.jsonl'), stateDir: dir,
+      http: (async (req) => (bodies.push(String(req.body)), { status: status(String(req.body)), header: () => null, text: '{"ok":true,"written":true}' })) as HttpClient,
+      watchdogUrl: 'https://w.test', key: 'k', now: () => NOON, log: (l) => void logs.push(l), live: () => inputs(),
+    });
+    await sz.tick();
+    expect(bodies).toHaveLength(2);
+    expect(Object.keys(JSON.parse(bodies[0]!).worker)).toEqual(expect.arrayContaining(['restarts', 'exits', 'crash_sites']));
+    const second = JSON.parse(bodies[1]!) as { worker: Record<string, unknown> };
+    expect(Object.keys(second.worker).sort()).toEqual(['entry_rule', 'git_sha', 'recorder', 'starts', 'uptime_s']);
+    expect(logs).toEqual([`Summary for ${DAY} refused; sent again without the restart counts.`]);
+    // A refusal of the old shape too is not resent again; a server error is not resent at all.
+    bodies.length = 0;
+    logs.length = 0;
+    status = () => 400;
+    await sz.tick();
+    expect(bodies).toHaveLength(2);
+    expect(logs.at(-1)).toBe(`Summary for ${DAY} not accepted: HTTP 400.`);
+    bodies.length = 0;
+    status = () => 500;
+    await sz.tick();
+    expect(bodies).toHaveLength(1);
   });
 });
 

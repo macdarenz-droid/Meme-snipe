@@ -9,8 +9,8 @@
 import { createHmac } from 'node:crypto';
 import { open, stat } from 'node:fs/promises';
 import {
-  PATTERNS, SUMMARY_MAX_BYTES, fits, SUMMARY_MAX_TRADES, SUMMARY_TOP_REASONS, SUMMARY_VERSION, checkSummary,
-  type CodeCount, type ProviderCredits, type ReasonCount, type Summary, type SummaryTrade,
+  EXIT_KINDS, PATTERNS, RESTART_CAUSE_KEYS, SUMMARY_MAX_BYTES, SUMMARY_MAX_CRASH_SITES, fits, SUMMARY_MAX_TRADES, SUMMARY_TOP_REASONS, SUMMARY_VERSION, checkSummary,
+  type CodeCount, type CrashSite, type ProviderCredits, type ReasonCount, type Summary, type SummaryTrade,
 } from '../../../ops/src/watchdog/summary.ts';
 import type { MicroUsd } from '../../../core/src/units/index.ts';
 import type { HttpClient } from '../providers/index.ts';
@@ -31,6 +31,10 @@ export interface DayFold {
   halts: Record<string, number>;
   /** Per candidate mint: its last refusal (gate, code) or null, and whether it was entered. */
   cands: Record<string, { gate: string | null; code: string | null; entered: boolean }>;
+  /** RESTART-CAUSE: restarts by kind, previous exits by kind, and crashes by site (a JSON key of error, file, line, event). Absent in older state. */
+  restarts?: Record<string, number>;
+  exits?: Record<string, number>;
+  crashSites?: Record<string, number>;
 }
 
 export interface SummaryState {
@@ -81,6 +85,18 @@ const refusal = (line: Record<string, unknown>): { gate: string; code: string } 
   return { gate: 'worker', code: 'untyped' };
 };
 
+const RESTART_KINDS = new Set(['planned', 'deploy', 'unplanned']);
+/** A stop line's crash site (crash-site.ts): `<name> at <file>:<line>|no frame in packages/[ during <event>]`. */
+const SITE = /^(\S+) at (?:no frame in packages\/|(\S+):(\d{1,9}))(?: during (\S+))?$/;
+
+/** A crash site's parts, each kept only when it fits its pattern (a file that does not fit drops its line too). */
+export const parseCrashSite = (site: string): Omit<CrashSite, 'count'> | null => {
+  const m = SITE.exec(site);
+  if (m === null || !fits(m[1], PATTERNS.ERROR)) return null;
+  const file = fits(m[2], PATTERNS.FILE) ? m[2] : null;
+  return { error: m[1], file, line: file === null ? null : Number(m[3]), event: fits(m[4], PATTERNS.EVENT) ? m[4] : null };
+};
+
 const CANDIDATE_KINDS = new Set(['shortlist', 'reject', 'enter', 'no entry', 'risk approved']);
 
 /** Folds one parsed journal line into its Melbourne day. Unknown or malformed lines change nothing. */
@@ -93,12 +109,20 @@ export const foldLine = (s: SummaryState, line: unknown): void => {
   const kind = line['kind'];
   const reasons = Array.isArray(line['reasons']) ? line['reasons'].filter((r): r is string => typeof r === 'string') : [];
   if (kind === 'start') {
-    day.starts += 1;
+    // The unit's `--reconcile` pre-step writes its own start line (RESTART-CAUSE): only real boots are counted.
+    if (line['phase'] !== 'reconcile') {
+      day.starts += 1;
+      if (typeof line['restart'] === 'string' && RESTART_KINDS.has(line['restart'])) bump((day.restarts ??= {}), line['restart']);
+      if ((EXIT_KINDS as readonly unknown[]).includes(line['exit'])) bump((day.exits ??= {}), line['exit'] as string);
+    }
     day.recorder = line['recorder'] === true || line['recorder'] === 'on' ? 'on' : line['recorder'] === false || line['recorder'] === 'off' ? 'off' : null;
     day.gitSha = fits(line['git_sha'], PATTERNS.SHA) ? line['git_sha'] : null;
     day.entryRule = fits(line['entry_rule'], PATTERNS.RULE) ? line['entry_rule'] : 'other';
     // A new process starts halted ('starting'); its first halt line is a new halt.
     s.halts = [];
+  } else if (kind === 'stop') {
+    const site = reasons[0] === 'crash' && reasons[1] !== undefined ? parseCrashSite(reasons[1]) : null;
+    if (site !== null) bump((day.crashSites ??= {}), JSON.stringify([site.error, site.file, site.line, site.event]));
   } else if (kind === 'alert') {
     if (line['level'] === 'critical') bump(day.alerts, code(line['code']) ?? 'other');
   } else if (kind === 'halt' || kind === 'resume') {
@@ -210,6 +234,15 @@ const byCount = <T extends { count: number }>(a: T, b: T, ka: string, kb: string
 const counts = (m: Record<string, number>): CodeCount[] =>
   Object.entries(m).map(([c, n]) => ({ code: c, count: n })).sort((a, b) => byCount(a, b, a.code, b.code)).slice(0, 64);
 
+const crashSites = (m: Record<string, number>): CrashSite[] =>
+  Object.entries(m)
+    .map(([k, n]) => {
+      const [error, file, line, event] = JSON.parse(k) as [string, string | null, number | null, string | null];
+      return { error, file, line, event, count: n };
+    })
+    .sort((a, b) => byCount(a, b, JSON.stringify(a), JSON.stringify(b)))
+    .slice(0, SUMMARY_MAX_CRASH_SITES);
+
 /** The book's exit reasons, as the app names them (api.ts EXIT_REASON); anything else is 'other'. */
 const EXIT = new Set(['stop', 'trailing_stop', 'take_profit', 'max_hold', 'thesis_lost', 'liquidity', 'emergency']);
 const exitReason = (t: PaperTrade): string | null => {
@@ -266,6 +299,9 @@ export const buildSummary = (i: SummaryInputs): Summary => {
       uptime_s: Math.max(0, Math.floor(i.uptimeS)),
       starts: f.starts,
       recorder: f.recorder ?? i.recorder,
+      restarts: { planned: f.restarts?.['planned'] ?? 0, deploy: f.restarts?.['deploy'] ?? 0, unplanned: f.restarts?.['unplanned'] ?? 0 },
+      exits: counts(f.exits ?? {}),
+      crash_sites: crashSites(f.crashSites ?? {}),
     },
     alerts: counts(f.alerts),
     halts: counts(f.halts),
@@ -282,6 +318,13 @@ export const buildSummary = (i: SummaryInputs): Summary => {
     open_positions: i.openPositions,
     provider_credits: credits,
   };
+};
+
+/** The summary without RESTART-CAUSE's keys of `worker`, the shape a watchdog from before them accepts. */
+export const withoutRestartCause = (s: Summary): Summary => {
+  const w: Record<string, unknown> = { ...s.worker };
+  for (const k of RESTART_CAUSE_KEYS) delete w[k];
+  return { ...s, worker: w as unknown as Summary['worker'] };
 };
 
 /** The body to post, or null with the reason when either guard refuses it (then nothing is sent). */
@@ -417,18 +460,29 @@ export class Summarizer {
     const { watchdogUrl: url, key } = this.#d;
     if (url === null || key === null) return false;
     const s = (this.#d.build ?? buildSummary)({ ...this.#d.live(), day, final, nowMs: now, fold: this.#state.days[day] });
+    let res = await this.#send(day, s, url, key, now);
+    // A watchdog from before RESTART-CAUSE refuses its keys (a deploy is not atomic): the day goes again without them.
+    if (res !== null && !res.ok && res.reason === 'HTTP 400') {
+      this.#d.log(`Summary for ${day} refused; sent again without the restart counts.`);
+      res = await this.#send(day, withoutRestartCause(s), url, key, now);
+    }
+    if (res === null) return false;
+    if (!res.ok) this.#d.log(`Summary for ${day} not accepted: ${res.reason}.`);
+    else if (!res.written) this.#d.log(`Summary for ${day} accepted, not written (the watchdog alerts why).`);
+    return res.ok;
+  }
+
+  /** One checked, signed post; null when the guards refuse the summary (nothing is sent). */
+  async #send(day: string, s: Summary, url: string, key: string, now: number): Promise<PostResult | null> {
     const b = summaryBody(s);
     if ('refused' in b) {
       this.#d.log(`Summary for ${day} not sent: ${b.refused}.`);
-      return false;
+      return null;
     }
     // The watchdog takes each signature time once: two posts in one second get consecutive times.
     const t = Math.max(Math.floor(now / 1000), this.#lastT + 1);
     this.#lastT = t;
-    const res = await postSummary(this.#d.http, url, key, b.body, t);
-    if (!res.ok) this.#d.log(`Summary for ${day} not accepted: ${res.reason}.`);
-    else if (!res.written) this.#d.log(`Summary for ${day} accepted, not written (the watchdog alerts why).`);
-    return res.ok;
+    return postSummary(this.#d.http, url, key, b.body, t);
   }
 }
 
