@@ -20,7 +20,7 @@ import { journalFields } from './desk.ts';
 import { engineFeed } from './engine-feed.ts';
 import { jsonText, parseTyped } from './json.ts';
 import { redact } from './redact.ts';
-import { liveCollapse, liveRetention } from './store-rules.ts';
+import { liveCollapse, liveForget, liveRetention, liveShape } from './store-rules.ts';
 
 /**
  * Journal `decision` lines that no engine record makes, so a replay cannot rebuild them: refused API commands and
@@ -152,7 +152,7 @@ export interface ParityDeps {
 export const replayBoot = (b: Pick<BootInput, 'seed' | 'frames' | 'releases' | 'savedState'> & { readonly boot?: string }, d: ParityDeps): string[] => {
   const { clock, feed } = replayRecorded(b.frames, b.releases);
   const strategy = new LiveStrategy({ session: d.session, rugs: d.rugs, config: d.strategy, ...savedStateOf(b, d) });
-  const engine = new Engine({ clock, feed: engineFeed(feed, d.session.policy).feed, strategy, runner: { run: () => undefined }, seed: b.seed, book: { maxOpenPositions: d.session.policy.positions.maxOpen }, retention: liveRetention, collapse: liveCollapse });
+  const engine = new Engine({ clock, feed: engineFeed(feed, d.session.policy).feed, strategy, runner: { run: () => undefined }, seed: b.seed, book: { maxOpenPositions: d.session.policy.positions.maxOpen }, retention: liveRetention, collapse: liveCollapse, shape: liveShape, forget: liveForget });
   engine.drain();
   return (engine.records as readonly LogRecord[]).flatMap((r) => {
     const line = replayLine(r);

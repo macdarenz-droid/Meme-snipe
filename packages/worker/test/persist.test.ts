@@ -299,6 +299,24 @@ describe('PERSIST-1 discards a bad file whole', () => {
     const ls = saved.split('\n').filter((l) => l !== '');
     writeFileSync(extra, [...ls.slice(0, -1), ls.at(-2), ls.at(-1)].join('\n') + '\n');
     expect(loadState(extra, RUG_CONFIG)).toMatchObject({ ok: false, reason: expect.stringContaining('checksum does not match') });
+    // Persist review: a repeated row early in an intact file names the repeat; the same row doubled without a new
+    // trailer reads as a cut or doubled file. Rows follow the repeat in both, so the rest must be read and hashed.
+    const twoRows = () => {
+      const path = fresh();
+      rewrite(path, (p) => {
+        const m = (p['index'] as { mints: [string, [string, unknown][]][] }).mints;
+        m.push(['OtherCreator', [['OtherMint', m[0]![1][0]![1]]]]);
+      });
+      expect(loadState(path, RUG_CONFIG).ok).toBe(true);
+      return path;
+    };
+    const intact = twoRows();
+    rewrite(intact, (p) => { const m = (p['index'] as { mints: unknown[] }).mints; m.splice(1, 0, m[0]); });
+    expect(loadState(intact, RUG_CONFIG)).toMatchObject({ ok: false, reason: expect.stringContaining('creator row is repeated') });
+    const doubled = twoRows();
+    const dl = readFileSync(doubled, 'utf8').split('\n').filter((l) => l !== '');
+    writeFileSync(doubled, [...dl.slice(0, 3), dl[2], ...dl.slice(3)].join('\n') + '\n');
+    expect(loadState(doubled, RUG_CONFIG)).toMatchObject({ ok: false, reason: expect.stringContaining('checksum does not match, or the file is cut') });
     const cutHeader = fresh();
     writeFileSync(cutHeader, saved.slice(0, 15));
     expect(loadState(cutHeader, RUG_CONFIG)).toMatchObject({ ok: false, reason: expect.stringContaining('unreadable') });

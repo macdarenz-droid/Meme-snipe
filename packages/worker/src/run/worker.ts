@@ -12,7 +12,7 @@ import { journalLines, placeBookingsAt } from './booked.ts';
 import type { Server } from 'node:http';
 import { join } from 'node:path';
 import type { PolicySession, RugConfig } from '../../../core/src/config/index.ts';
-import { compareEvents, compareMoments, Engine, type LogRecord, type MarketEvent, type Moment, OFF_CHAIN } from '../../../core/src/engine/index.ts';
+import { compareEvents, compareMoments, Engine, type LogRecord, type MarketEvent, type Moment, OFF_CHAIN, flatCopy } from '../../../core/src/engine/index.ts';
 import { Ledger, openLedger } from '../../../core/src/ledger/index.ts';
 import type { Book, BookEvent } from '../../../core/src/lifecycle/index.ts';
 import { isTerminal, isUnresolved } from '../../../core/src/lifecycle/index.ts';
@@ -77,7 +77,7 @@ import type { ExecStats } from '../../../core/src/facts/raw.ts';
 /** POS-1: a pool fact flagged beyond backfill or dedupe (a stale swap stream) is never priced from. */
 const flagged = (p: PoolFact): boolean => p.obs.quality.some((q) => q !== 'backfilled' && q !== 'deduplicated');
 import { type PoolFeeContext, effectiveQuoteReserve, poolSell } from '../../../core/src/amm/index.ts';
-import { liveCollapse, liveRetention } from './store-rules.ts';
+import { liveCollapse, liveForget, liveRetention, liveShape } from './store-rules.ts';
 
 /** The halt reason while the book holds a late buy's position, which paper does not settle yet (risk ruling on #133). */
 export const LATE_BUY = 'late buy not settled by paper; entries off';
@@ -276,7 +276,7 @@ export const SYMBOLS_MAX = 60_000;
 export const TX_SIGS_MAX = 20_000;
 
 /** OOM-MINT: a fresh flat copy, so a kept mint never holds the whole key or log text it was cut from. */
-export const flat = (s: string): string => String.fromCharCode(...Array.from(s, (c) => c.charCodeAt(0)));
+export const flat = flatCopy;
 
 /** A create event's mint and signature (the field, else the id), or null when it is not a create or names neither. */
 const createSigOf = (e: MarketEvent): readonly [string, string] | null => {
@@ -652,7 +652,7 @@ export class Worker {
       }
       if (e.key === GRADUATES_SEED_KEY) this.#graduatesSeed(e.value);
     });
-    this.#engine = new Engine({ clock: this.#feed.clock, feed: this.#facts.feed, strategy: this.#strategy, runner: this.#world, seed, book: bookConfig, retention: liveRetention, collapse: liveCollapse });
+    this.#engine = new Engine({ clock: this.#feed.clock, feed: this.#facts.feed, strategy: this.#strategy, runner: this.#world, seed, book: bookConfig, retention: liveRetention, collapse: liveCollapse, shape: liveShape, forget: liveForget });
     this.#deployerStore = new DeployerStore(c.stateDir);
     const storeFrom = now - (d.session.policy.gates.deployerRugLookbackDays + 1) * 86_400_000;
     // PERSIST-1: the saved index, labeller and coverage, when the file holds up (else a fresh start: not covered).
