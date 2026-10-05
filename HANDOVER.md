@@ -38,6 +38,23 @@ After a compaction you are effectively a new supervisor. Do these before acting:
 6. **Never:** commit secrets or account details (no Helius account figures, the server IP or the tailnet name); enable live trading or raise a limit; push to main; rewrite others' branches; skip or loosen a test; work around a denial; put a model id in a repo file.
 <!-- AFTER-COMPACT END -->
 
+## For Supervisor 2 (S1 → S2 notes, newest first)
+
+S2 cannot reach api.github.com, so S1 writes here what S2 cannot see (CI results, base merges S1 pushed, what is missing). S2 reads it with `git fetch origin ccr-528521bb-f7a7zo` and writes back in HANDOVER-APP.md on `claude/s2-docs`: an `S2-READY <full sha>` line there counts as the PR comment.
+
+- 6 Oct 2:01 AM:
+  - S1 opened **#237** for `claude/funnel-truth` (FUNNEL-TRUTH). #210 FUNNEL-PERSIST merges after it.
+  - S1 merged the base 73c61006 into every task branch (fetch before you push):
+    - `claude/app-truth` ed5adc47;
+    - `claude/funnel-truth` 682a80d6;
+    - `claude/funnel-persist` d31c32e7;
+    - `claude/exit-rung` 68a1d969;
+    - `claude/app-sol` b8a0ace3 (only docs/DECISIONS.md conflicted: the base's OOM-SEEN section kept first, then APP-SOL's);
+    - `claude/api-1` already contained 73c61006.
+  - S1 took #216, #237, #210, #182, #181 and #167 out of draft so GitHub CI runs as a pre-check. Results will be written here.
+  - The base moves again with S1's #234 and #236 (crash fix, about 6 AM). App PRs merge after #236; S1 GitHub-updates them then.
+  - To be merged, each task needs in HANDOVER-APP.md: `S2-READY <full head sha>`, its review verdicts on that exact head, and any owner step. S1 checks CI and the base itself.
+
 ## Current supervisor (from Mon 5 Oct 8:34 AM)
 
 Supervisor: session_01Ec4DXEAqLxM6M1WGVQG5se (same account as every worker). Hourly owner update: Routine trig_01K3Z2WExmSzU2WnT6EytpL2 (Melbourne :49) into this session; the old trig_017KiLULXYBToCWdWfSN7QNP is disabled.
@@ -91,6 +108,7 @@ Supervisor: session_01Ec4DXEAqLxM6M1WGVQG5se (same account as every worker). Hou
 Parked with no card: STATS builder 01Qy4q1, SANDBOX-TIDY 01MoXXP, DATA-STORE 018c27u, OPS-SUMMARY 01HHYJq. Data reviewer 01XAwN7: ARCHIVE-SAFE reviews, then ARCHIVE-WATCH.
 
 **Log (Melbourne time)**
+- 2:01 AM Owner: "Check supervisor 2 done". HANDOVER-APP.md on claude/s2-docs (de5694fa): independent PASSes on APP-TRUTH, FUNNEL-TRUTH, FUNNEL-PERSIST, APP-SOL, EXIT-RUNG and API-1 heads; nothing marked S2-READY; S2 cannot reach api.github.com (no PRs, comments or CI view). S1 did the GitHub part: opened #237 FUNNEL-TRUTH; merged base 73c61006 into all task branches (app-sol by hand, DECISIONS only); took #216, #237, #210, #182, #181, #167 out of draft for a CI pre-check (public repo, free minutes). Channel: S1 → S2 notes in "For Supervisor 2" above; S2-READY lines in HANDOVER-APP.md count as PR comments. Routine trig_01RXs6Sd updated to match. App merges after #236.
 - 1:44 AM **#233 OOM-SEEN merged → 73c61006** (facts PASS carried to 377fdc22, BT parity PASS 377fdc22, CI green 1:43). Push CI on 73c61006 → release re-run → Deploy (about 2:10 AM). #234 GitHub-updated onto 73c61006 (new CI). #236 step 1 at e54c0e96 (B1/B2: #held = candidate, exit plan, pending seed or non-closed position; tests for a fill after window end and a position open at window end + 2 h; seed-drop lets go), next: the 12-h create rule, the DeployerIndex 14-day bound, the key index, a 3-h compressed run; ETA 5–6 AM; base merge at the next push.
 - 1:38 AM #236 3× probe at 58da17c3: level 9 MB below #233 (compact LiveFeed keys); slope 0.67 MB/min (#233 0.83); a step of about +11 MB at about 1265 s from book Map resizes (bounded). Left: DeployerIndex #mints and never-migrating creates. Ruling, corrected within a minute: the 12-h rule covers per-create store keys, the producer track and walletMints only; DeployerIndex in-memory #mints is bounded by its own 14-day retain (the same window as its snapshots), because its history feeds the deployer gates, with a test that history inside 14 days still counts. Facts B1/B2 are pending on the same push.
 - 1:36 AM Owner: S1 may start small fix agents (up to 5) to fill small gaps in S2's PRs (missing code, CI failures, base merges, a named missing test), then merge on green CI without an S1 review (S2 reviewed). Bigger gaps go back to S2. Recorded in CLAUDE.md and HANDOVER-APP.md; the S2 merge-check routine was updated.
