@@ -16,7 +16,7 @@ import { type PoolFeeContext, type PoolState, effectiveQuoteReserve, poolBuyExac
 import { encodeBase58 } from '../../../core/src/chain/index.ts';
 import type { PolicySession, RugConfig } from '../../../core/src/config/index.ts';
 import { EXIT_UNIVERSES, type ExitUniverse, PRICE_SCALE, exitsFor } from '../../../core/src/config/index.ts';
-import { type NetworkPolicy, type RentInputs, pumpSwapRoundTrip } from '../../../core/src/costs/index.ts';
+import { type NetworkPolicy, type RentInputs, type RoundTripQuoter, pumpSwapRoundTrip } from '../../../core/src/costs/index.ts';
 import {
   type IntentId, type PositionId, type QuoteContext, type TransactionAttempt,
   attemptId, blockhash, entryKey, intentId, mint as toMint, positionId, reservationId, signature,
@@ -29,7 +29,7 @@ import {
   atr, checkStopDistance, decideExit, execPrice, liquidationValue, exitAttemptsOf, exitBookEvents, exitSettings, newTracker, noteAttempt,
 } from '../../../core/src/exits/index.ts';
 import {
-  type Coverage, type DeployerIndexState, type GateContext, type GraduatesFact, type RugLabellerState, type S0DiagnosticPart, DeployerIndex, GRADUATES_KEY, hardAllowsEntry, LOG_CREATE_PREFIX, NOT_EVALUATED, stagedHardRejects, RugLabeller, TX_CREATE_PREFIX, createKey, createsCoverage, evaluateHardRejects, evaluateRegime, migrationKey, parseCreate, parseGraduates, parseMigration, parsePool, poolKey,
+  type Coverage, type DeployerIndexState, type GateContext, type GraduatesFact, type RugLabellerState, type S0DiagnosticPart, DeployerIndex, GRADUATES_KEY, hardAllowsEntry, LOG_CREATE_PREFIX, NOT_EVALUATED, stagedHardRejects, RugLabeller, TX_CREATE_PREFIX, type PoolFact, carryKey, createKey, createsCoverage, evaluateHardRejects, evaluateRegime, migrationKey, parseCreate, parseGraduates, parseMigration, parsePool, poolKey,
 } from '../../../core/src/gates/index.ts';
 import type { GraduatesSeed } from '../../../core/src/facts/raw.ts';
 import { type BookEvent, type IntentState, isTerminal } from '../../../core/src/lifecycle/index.ts';
@@ -43,6 +43,7 @@ export type SavedGraduates = Omit<GraduatesSeed, 'source'>;
 export const ACCOUNT_KEY = 'worker:account';
 /** Key prefixes of GATE-1's pool and migration facts. */
 export const POOL_PREFIX = poolKey('');
+export const CARRY_PREFIX = carryKey('');
 export const MIGRATION_PREFIX = migrationKey('');
 export const RESTORE_KEY = 'worker:restore';
 /** A coverage fact PERSIST-1 keeps: `coverage:<stream>:start|gap|resume` (never a deployer check's own key). */
@@ -161,6 +162,56 @@ export const parseSnapshotFact = (v: unknown): SnapshotFact | null => {
   if (typeof st['baseReserve'] !== 'bigint' || typeof st['quoteVault'] !== 'bigint' || typeof st['virtualQuoteReserves'] !== 'bigint') return null;
   return v as unknown as SnapshotFact;
 };
+/** WATCH-1c: the producer's proof that a pool's chain state is unchanged through `slot` (core gates `carryKey`). */
+export interface CarryFact {
+  readonly pool: string;
+  readonly slot: bigint;
+  readonly state: PoolState;
+  readonly obs: { readonly receivedAt: number };
+}
+
+export const parseCarryFact = (v: unknown): CarryFact | null => {
+  if (!isObj(v) || typeof v['pool'] !== 'string' || typeof v['slot'] !== 'bigint' || !isObj(v['state']) || !isObj(v['obs']) || typeof v['obs']['receivedAt'] !== 'number') return null;
+  const st = v['state'];
+  if (typeof st['baseReserve'] !== 'bigint' || typeof st['quoteVault'] !== 'bigint' || typeof st['virtualQuoteReserves'] !== 'bigint') return null;
+  return v as unknown as CarryFact;
+};
+
+const sameReserves = (a: PoolState, p: PoolFact): boolean =>
+  a.baseReserve === p.baseVault && a.quoteVault === p.quoteVault && a.virtualQuoteReserves === (p.pool.virtualQuoteReserves ?? 0n);
+
+const isFlagged = (p: PoolFact): boolean => p.obs.quality.some((q) => q !== 'backfilled' && q !== 'deduplicated');
+
+/**
+ * A mint's newest whole market, as the strategy and the worker both price it (merge rule M, WATCH-1c):
+ * - the pool fact moves to its carry's moment when the carry proves the same reserves unchanged since (never for a
+ *   flagged fact, and never past a newer snapshot that disagrees with it: the chain then missed something);
+ * - WATCH-1's snapshot when newer than that;
+ * - else the pool fact, unless POS-1 flagged it.
+ */
+export type MarketChoice =
+  | { readonly kind: 'snapshot'; readonly snap: SnapshotFact }
+  | { readonly kind: 'pool'; readonly pool: PoolFact; readonly atMs: number; readonly carried: boolean; readonly confirmedAtMs: number | null }
+  | { readonly kind: 'flagged'; readonly pool: PoolFact }
+  | { readonly kind: 'none' };
+
+export const chooseMarket = (pool: PoolFact | null, snap: SnapshotFact | null, carry: CarryFact | null): MarketChoice => {
+  const disagrees = pool !== null && snap !== null && snapshotWins(snap, pool.obs) && !sameReserves(snap.state, pool);
+  const carried = pool !== null && carry !== null && !isFlagged(pool) && !disagrees && carry.pool === pool.address && sameReserves(carry.state, pool)
+    && carry.obs.receivedAt > pool.obs.receivedAt && (pool.obs.slot === null || carry.slot >= pool.obs.slot);
+  const at = pool === null ? null : carried ? { slot: carry!.slot, receivedAt: carry!.obs.receivedAt } : pool.obs;
+  if (snap !== null && snapshotWins(snap, at)) {
+    // A newer snapshot that reads the very reserves of an unflagged pool fact confirms it (WATCH-1d): the pool fact stays
+    // the market, as fresh as that read. Otherwise a confirmed bank a slot ahead of the feed would take the market over
+    // after every verify read, and the watch would chase it read after read.
+    if (pool !== null && !isFlagged(pool) && sameReserves(snap.state, pool)) return { kind: 'pool', pool, atMs: Math.max(at!.receivedAt, snap.atMs), carried, confirmedAtMs: snap.atMs };
+    return { kind: 'snapshot', snap };
+  }
+  if (pool === null) return { kind: 'none' };
+  if (isFlagged(pool)) return { kind: 'flagged', pool };
+  return { kind: 'pool', pool, atMs: at!.receivedAt, carried, confirmedAtMs: null };
+};
+
 /** Machine-read reason on `approve_risk`: the reservation request the worker sends to the ledger. */
 export const RESERVE_PREFIX = 'reserve ';
 // FACTS-1f's staged hard rejects live in core (one implementation with the backtest study, BT review of #41).
@@ -293,6 +344,8 @@ export interface StrategyDeps {
   readonly savedState?: (ref: SavedStateRef) => { readonly index: DeployerIndex; readonly labeller: RugLabeller };
   /** Replaces marks.ts `markedHistory` (tests inject a failure; production never sets it). */
   readonly markedHistory?: typeof markedHistory;
+  /** Test seam: replaces the size `#riskSize` settled on (tests force the probe and risk to disagree); production never sets it. */
+  readonly sizeProbe?: (sized: { readonly spend: Lamports; readonly notional: MicroUsd }) => { readonly spend: Lamports; readonly notional: MicroUsd };
 }
 
 const NORMAL = { mayhemMode: false, transferFee: false, transferHook: false } as const;
@@ -1305,21 +1358,27 @@ export class LiveStrategy implements Strategy {
   }
 
   /** The pool market of a mint as of now: the gate pool fact and the fee context. */
-  #market(ctx: StrategyContext, mint: string): Market | string {
+  /**
+   * `carry: false` for entries (risk review of #121): a candidate gets no verify read, so a carry would let a silent
+   * stream stall or a vault transfer date its quote without bound; an entry judges the pool fact's own moment.
+   */
+  #market(ctx: StrategyContext, mint: string, o: { readonly carry: boolean } = { carry: true }): Market | string {
     const p = ctx.lookup(poolKey(mint));
     const sr = ctx.lookup(snapshotKey(mint));
     const snap = sr.ok ? parseSnapshotFact(unwrap(sr.value)) : null;
     const pool = p.ok ? parsePool(p.value) : null;
-    // WATCH-1: a snapshot newer than the pool fact is the market, reserves and fee context alike.
-    if (snap !== null && snapshotWins(snap, pool === null ? null : pool.obs)) {
-      this.#notePool(mint, snap.pool);
-      return { pool: snap.state, ctx: snap.ctx, atMs: snap.atMs, address: snap.pool };
+    const cr = ctx.lookup(carryKey(mint));
+    const choice = chooseMarket(pool, snap, o.carry && cr.ok ? parseCarryFact(unwrap(cr.value)) : null);
+    // WATCH-1: a snapshot newer than the pool fact (carried or not) is the market, reserves and fee context alike.
+    if (choice.kind === 'snapshot') {
+      this.#notePool(mint, choice.snap.pool);
+      return { pool: choice.snap.state, ctx: choice.snap.ctx, atMs: choice.snap.atMs, address: choice.snap.pool };
     }
     if (!p.ok) return 'pool state unknown';
     if (pool === null) return 'pool state malformed';
     // A flagged pool fact (POS-1: the swap stream lost continuity) is never priced from, whatever its age.
     const flags = pool.obs.quality.filter((q) => q !== 'backfilled' && q !== 'deduplicated');
-    if (flags.length > 0) return `pool state flagged ${flags.join(', ')}${typeof (p.value as { stale?: unknown }).stale === 'string' ? ` (${(p.value as { stale: string }).stale})` : ''}`;
+    if (choice.kind === 'flagged') return `pool state flagged ${flags.join(', ')}${typeof (p.value as { stale?: unknown }).stale === 'string' ? ` (${(p.value as { stale: string }).stale})` : ''}`;
     this.#notePool(mint, pool.address);
     // A fee-context fact when one is published, else the terms of the latest swap seen on the pool.
     const f = ctx.lookup(feesKey(mint));
@@ -1327,7 +1386,7 @@ export class LiveStrategy implements Strategy {
     if (fees === undefined) return 'fee context unknown';
     return {
       pool: { baseReserve: pool.baseVault, quoteVault: pool.quoteVault, virtualQuoteReserves: pool.pool.virtualQuoteReserves ?? 0n },
-      ctx: fees, atMs: pool.obs.receivedAt, address: pool.address,
+      ctx: fees, atMs: choice.kind === 'pool' ? choice.atMs : pool.obs.receivedAt, address: pool.address,
     };
   }
 
@@ -1458,8 +1517,17 @@ export class LiveStrategy implements Strategy {
         else if (i.status === 'exposure_reserved') this.#sendEntry(i, ctx, out);
         continue;
       }
-      if (i.status === 'exposure_reserved') this.#sendExit(i.intent.id, i.intent.positionId, mint, i.intent.quantity, 0, ctx, out);
-      else if (i.status === 'reconciled' && i.fills.length === 0) this.#replaceExit(i, ctx, out);
+      if (i.status !== 'exposure_reserved' && !(i.status === 'reconciled' && i.fills.length === 0)) continue;
+      // Never more than the position holds now (a late sale may have taken some or all of it, PAPER-2); nothing left:
+      // the exit is cancelled, never sent.
+      const held = ctx.book.positions[i.intent.positionId]?.quantity ?? 0n;
+      if (held === 0n) {
+        out.push({ action: { type: 'intent', intentId: i.intent.id, event: { type: 'cancel' } }, reasons: ['exit cancelled', mint, 'nothing left to sell'] });
+        continue;
+      }
+      const quantity = i.intent.quantity < held ? i.intent.quantity : held;
+      if (i.status === 'exposure_reserved') this.#sendExit(i.intent.id, i.intent.positionId, mint, quantity, 0, ctx, out);
+      else this.#replaceExit(i, quantity, ctx, out);
     }
   }
 
@@ -1469,7 +1537,7 @@ export class LiveStrategy implements Strategy {
     const cancel = (why: string) => out.push({ action: { type: 'intent', intentId: id, event: { type: 'cancel' } }, reasons: ['entry cancelled', mint, why] });
     if (i.intent.purpose !== 'entry') return;
     if (this.#height === null) return void cancel('no slot height yet');
-    const m = this.#market(ctx, mint);
+    const m = this.#market(ctx, mint, { carry: false });
     if (typeof m === 'string') return void cancel(m);
     if (ctx.now.receivedAt - m.atMs > this.#d.session.policy.gates.maxQuoteAgeMs) return void cancel('pool state is stale');
     const q = poolBuyExactQuoteIn(m.pool, i.intent.spend, m.ctx);
@@ -1545,7 +1613,7 @@ export class LiveStrategy implements Strategy {
   }
 
   /** An exit owner whose attempt resolved without a fill: the next rung while its budget lasts, else blocked. */
-  #replaceExit(i: IntentState, ctx: StrategyContext, out: Decision[]): void {
+  #replaceExit(i: IntentState, quantity: bigint, ctx: StrategyContext, out: Decision[]): void {
     if (i.intent.purpose !== 'exit') return;
     const pid = i.intent.positionId;
     const used = exitAttemptsOf(ctx.book.intents, pid);
@@ -1556,7 +1624,7 @@ export class LiveStrategy implements Strategy {
       out.push({ action: { type: 'exit_blocked', positionId: pid, reason: `exit attempts used: ${i.attempts.length} on this exit, ${used} on the position` }, reasons: ['exit blocked', i.intent.mint, 'attempts used'] });
       return;
     }
-    this.#sendExit(i.intent.id, pid, i.intent.mint, i.intent.quantity, i.attempts.length, ctx, out);
+    this.#sendExit(i.intent.id, pid, i.intent.mint, quantity, i.attempts.length, ctx, out);
   }
 
   /** Every open position: one EXIT-1 step per call, as book events. Exits are never blocked by risk (evaluateExit). */
@@ -1948,12 +2016,17 @@ export class LiveStrategy implements Strategy {
     if (!regime.on) return this.#fail(`regime off: ${regime.reasons.map((x) => x.detail).join('; ') || 'no reason given'}`, regime.reasons.map((x) => ({ gate: 'regime', code: x.code, detail: x.detail })), regime.reasons.map((x) => ({ gate: 'regime', ...x })));
     const sol = this.#spotSol(ctx);
     if (sol === null) return this.#fail('live SOL price unknown', [{ gate: 'worker', code: 'no-sol-price', detail: 'no live SOL/USD price' }]);
-    const m = this.#market(ctx, cand.mint);
+    const m = this.#market(ctx, cand.mint, { carry: false });
     if (typeof m === 'string') return this.#fail(m, [{ gate: 'worker', code: 'no-market', detail: m }]);
-    const notional = policy.capital.minNotional;
-    const spend = microUsdToLamports(notional, sol.value, 'ceil');
-    cand.spend = spend;
     const quoter = pumpSwapRoundTrip(m.pool, m.ctx);
+    // AUDIT-RM4 F3: the gates and H15's simulation judge the size risk will use. At q_min unless the owner approved the
+    // step-up and no drawdown returns it to the minimum; then the size risk settles on, found before the gates run.
+    const minSpend = microUsdToLamports(policy.capital.minNotional, sol.value, 'ceil');
+    const probed = this.#riskSize(cand, ctx, sol, m, quoter, minSpend);
+    const sized = this.#d.sizeProbe === undefined ? probed : this.#d.sizeProbe(probed);
+    const notional = sized.notional;
+    const spend = sized.spend;
+    cand.spend = spend;
     const { hard, notEvaluated } = stagedHardRejects(gctx, { session, mode: 'live', rugLabeller: 'RUG-1', ...diag }, { mint: cand.mint, universe: c.universe, notional, spend, roundTrip: quoter(spend) });
     // The S0 diagnostic set's H14 note, from whichever stages ran (WORKER-1e).
     if (hard.notes.some((n) => n.code === 's0-diagnostic')) {
@@ -1969,20 +2042,9 @@ export class LiveStrategy implements Strategy {
     }
     const acct = this.#account(ctx);
     if (acct === null) return this.#fail('account snapshot unknown', [{ gate: 'worker', code: 'no-account', detail: 'account snapshot unknown' }]);
-    // Stop: the tighter of the ATR limit and the policy's maximum distance, from the executable price after the buy.
-    const rt = quoter(spend);
-    if (!rt.ok) return this.#fail(`no round trip: ${rt.reason}`, [{ gate: 'worker', code: 'no-round-trip', detail: rt.reason }]);
-    const entryPx = execPrice(rt.trade.proceeds, rt.trade.tokens);
-    const ux = exitsFor(policy.exits, c.universe);
-    const range = atr(this.#bars.get(cand.mint) ?? [], ux.atrPeriod, ux.atrBarMs, ctx.now.receivedAt);
-    if (range === null) return this.#fail('stop: not enough price bars for the ATR', [{ gate: 'stop', code: 'no-atr', detail: 'not enough price bars for the ATR' }]);
-    const byAtr = (BigInt(ux.stopAtrTenths) * range) / 10n;
-    const byMax = (entryPx * BigInt(policy.loss.stopMaxBps)) / BPS;
-    const distance = byAtr < byMax ? byAtr : byMax;
-    const stopPrice = entryPx - distance;
-    const stop = checkStopDistance(policy, c.universe, entryPx, stopPrice, range);
-    if (!stop.ok) return this.#fail(`stop: ${stop.reason} ${stop.detail}`, [{ gate: 'stop', code: stop.reason, detail: stop.detail }]);
-    const stopBps = Number(mulDiv(distance, BPS, entryPx, 'ceil'));
+    const st = this.#stopAt(cand, ctx, quoter, spend);
+    if (!st.ok) return this.#fail(st.text, [st.line]);
+    const { stopPrice, stopBps } = st;
     // Numbered from the book (restored at start), so a restart never reuses an intent id or key.
     // Past every entry intent the book holds for the mint and every try saved before a restart (RESTART-KEEP): ids never repeat.
     cand.tries = 1 + Math.max(cand.tries, Object.values(ctx.book.intents).filter((i) => i.intent.purpose === 'entry' && i.intent.mint === cand.mint).length);
@@ -2000,13 +2062,7 @@ export class LiveStrategy implements Strategy {
     // RISK-FAULT: risk that cannot evaluate refuses the entry (fail-closed), logged, and the step goes on.
     let r: ReturnType<typeof evaluateEntry>;
     try {
-      r = evaluateEntry(
-        { session, mode: 'paper', clock: { now: () => ctx.now }, account, latches: acct.latches, market: { solPrice: sol, solBalance: this.#balance(acct, ctx), regime: 'on' } },
-        {
-          intentId: id, reservationId: rid, mint: toMint(cand.mint), universe: c.universe, stopBps, edgePpm: c.edgePpm, medianTargetBps: c.medianTargetBps,
-          quote: quoter, quoteAtMs: m.atMs, poolLiquidity: lamportsToMicroUsd((reserveLiq * 2n) as Lamports, sol.value, 'floor'), network: c.network, rent: { ...c.rent, oneTime: acct.oneTimeRent },
-        },
-      );
+      r = this.#entryRisk(cand, ctx, sol, m, quoter, acct, account, stopBps, id, rid);
     } catch (e) {
       const detail = e instanceof Error ? e.message : 'error';
       return this.#fail(`risk fault: ${detail}`, [{ gate: 'R1', code: 'risk_fault', detail }]);
@@ -2032,6 +2088,76 @@ export class LiveStrategy implements Strategy {
     out.push({ action: { type: 'intent', intentId: id, event: { type: 'mark_eligible' } }, reasons: ['gates passed', ...base, `H1-H16 pass (${hard.passed.length} gates)`, ...this.#diagnostic()] });
     out.push({ action: { type: 'intent', intentId: id, event: { type: 'approve_risk' } }, reasons: ['risk approved', ...base, `${RESERVE_PREFIX}${JSON.stringify(request)}`, ...trips, ...this.#diagnostic()] });
     return null;
+  }
+
+  /**
+   * The stop for an entry of `spend`: the tighter of the ATR limit and the policy's maximum distance, from the
+   * executable price after the buy (the planned exit's proceeds per token at that size).
+   */
+  #stopAt(cand: Candidate, ctx: StrategyContext, quoter: RoundTripQuoter, spend: bigint):
+    { readonly ok: true; readonly stopPrice: bigint; readonly stopBps: number } | { readonly ok: false; readonly text: string; readonly line: GateReasonLine } {
+    const policy = this.#d.session.policy;
+    const rt = quoter(spend);
+    if (!rt.ok) return { ok: false, text: `no round trip: ${rt.reason}`, line: { gate: 'worker', code: 'no-round-trip', detail: rt.reason } };
+    const entryPx = execPrice(rt.trade.proceeds, rt.trade.tokens);
+    const ux = exitsFor(policy.exits, this.#d.config.universe);
+    const range = atr(this.#bars.get(cand.mint) ?? [], ux.atrPeriod, ux.atrBarMs, ctx.now.receivedAt);
+    if (range === null) return { ok: false, text: 'stop: not enough price bars for the ATR', line: { gate: 'stop', code: 'no-atr', detail: 'not enough price bars for the ATR' } };
+    const byAtr = (BigInt(ux.stopAtrTenths) * range) / 10n;
+    const byMax = (entryPx * BigInt(policy.loss.stopMaxBps)) / BPS;
+    const distance = byAtr < byMax ? byAtr : byMax;
+    const stopPrice = entryPx - distance;
+    const stop = checkStopDistance(policy, this.#d.config.universe, entryPx, stopPrice, range);
+    if (!stop.ok) return { ok: false, text: `stop: ${stop.reason} ${stop.detail}`, line: { gate: 'stop', code: stop.reason, detail: stop.detail } };
+    return { ok: true, stopPrice, stopBps: Number(mulDiv(distance, BPS, entryPx, 'ceil')) };
+  }
+
+  /** Risk's entry decision for this candidate at `stopBps` (R1–R15, sizing included): pure, nothing latches from it here. */
+  #entryRisk(cand: Candidate, ctx: StrategyContext, sol: Timed<MicroUsd>, m: Market, quoter: RoundTripQuoter, acct: AccountFact, account: AccountHistory, stopBps: number, id: IntentId, rid: ReturnType<typeof reservationId>): ReturnType<typeof evaluateEntry> {
+    const c = this.#d.config;
+    return evaluateEntry(
+      { session: this.#d.session, mode: 'paper', clock: { now: () => ctx.now }, account, latches: acct.latches, market: { solPrice: sol, solBalance: this.#balance(acct, ctx), regime: 'on' } },
+      {
+        intentId: id, reservationId: rid, mint: toMint(cand.mint), universe: c.universe, stopBps, edgePpm: c.edgePpm, medianTargetBps: c.medianTargetBps,
+        quote: quoter, quoteAtMs: m.atMs, poolLiquidity: lamportsToMicroUsd((effectiveQuoteReserve(m.pool) * 2n) as Lamports, sol.value, 'floor'), network: c.network, rent: { ...c.rent, oneTime: acct.oneTimeRent },
+      },
+    );
+  }
+
+  /**
+   * AUDIT-RM4 F3: the size the gates and the simulation judge, the one risk will use. Risk sizes at q_min unless the
+   * owner approved the step-up (and no drawdown returns it to the minimum); then above it, by its caps. The stop
+   * depends on the size (the executable price after the buy) and risk's caps on the stop, so the size is settled by
+   * asking risk again at the stop of the size it chose, up to three times; a size that does not settle, or anything
+   * risk cannot judge yet (no account, no stop, a refusal), leaves q_min, and the decision after the gates still
+   * refuses any size risk did not settle on (`size-mismatch`). This probe never decides or latches anything.
+   */
+  #riskSize(cand: Candidate, ctx: StrategyContext, sol: Timed<MicroUsd>, m: Market, quoter: RoundTripQuoter, minSpend: Lamports): { readonly spend: Lamports; readonly notional: MicroUsd } {
+    const atMin = { spend: minSpend, notional: this.#d.session.policy.capital.minNotional };
+    const acct = this.#account(ctx);
+    if (acct === null || !acct.latches.sizeStepUpApproved) return atMin;
+    let account: AccountHistory;
+    try {
+      account = this.#marked(acct.history, ctx, sol, { fallback: false });
+    } catch {
+      return atMin;
+    }
+    const probe = { id: intentId(`size:${cand.mint}`), rid: reservationId(`size:${cand.mint}`) };
+    let spend: bigint = minSpend;
+    for (let k = 0; k < 3; k++) {
+      const st = this.#stopAt(cand, ctx, quoter, spend);
+      if (!st.ok) return atMin;
+      let r: ReturnType<typeof evaluateEntry>;
+      try {
+        r = this.#entryRisk(cand, ctx, sol, m, quoter, acct, account, st.stopBps, probe.id, probe.rid);
+      } catch {
+        return atMin;
+      }
+      if (!r.allow) return atMin;
+      if (r.spendLamports === spend) return spend === minSpend ? atMin : { spend: r.spendLamports as Lamports, notional: r.notional };
+      spend = r.spendLamports;
+    }
+    return atMin;
   }
 
   /** The account risk judges: each open position at its executable mark now, or null when it cannot be (marks.ts). */
