@@ -22,6 +22,8 @@ export const CHECK_LABEL: Record<Check, string> = {
   size: 'Size',
   risk: 'Risk limits',
   regime: 'Market regime',
+  data: 'Missing data',
+  other: 'Other',
 };
 
 /** The visible states from docs/ARCHITECTURE.md §17. */

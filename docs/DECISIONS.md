@@ -2223,3 +2223,26 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - `s0-zero.test.ts`: 12 fills started together never spend past the budget and at most 2 read at once; a fill that hangs has its cap on disk before the first read (a death keeps the charge); the existing fill tests now check the net booked.
   - `restart-keep.test.ts`: an ended candidate is not restored, with the live run's record and tail; a never-evaluated one has no tail; one ms inside the window it is still restored, at the window's end exactly it is not; the in-window candidate's decisions equal a restore of it alone; a worker restarted after the window reads none of the candidate's transactions.
   - Hand mutants killed: no read limit; urgent reads at the back; waiting reads run after a stop; scan count not saved; unreadable file not counted as spent; no fill limit; no reservation; no refund; a finished fill not waking the next; the scan file not wired in production; the window check off by one either way (`>` at the exact end, one ms late); an ended candidate dropped without its tail; the check moved before the pool is noted.
+
+## The funnel names refusals truly (FUNNEL-TRUTH, `worker/src/run/api.ts` `classify`, `run/worker.ts`, `apps/web` labels and schema)
+
+- **2026-10-05 · Why.** The owner's funnel (16:00–16:05) read "hard rejects 24 → costs 21 → risk 0" with "Costs 20", though no candidate reached risk that day. The daily summary listed none at R14 and showed pool-data refusals instead. There were two causes.
+  - `checkOf` let every reason it did not know fall through to `cost`, shown as "Costs". The pool-data refusals took that path: "pool state unknown/malformed/flagged" and "fee context unknown".
+  - "live SOL price unknown" contained "SOL price", so it counted as `risk`, stage 2. That refusal comes before the pool is read and before any hard reject. Each boot starts without a price for a few seconds, so candidates were lifted to "costs passed", and the funnel keeps a mint's furthest stage.
+- **2026-10-05 · The fix.**
+  - `classify(reason)` returns the check and the stage the candidate truly passed, in the order `#evaluate` judges: regime, SOL price, pool data, sizing, hard rejects, account, stop, risk.
+  - The new check `data` ("Missing data") covers the SOL price and pool data, at stage 0, and the account snapshot, at stage 1. It is stage 0, not 1 as first asked, because those refusals come before the hard rejects run.
+  - `stop:` and `no round trip:` are `size`, stage 1.
+  - A reason starting `risk ` is `risk`, stage 2.
+  - Anything else is `other` ("Other"), stage 0: never "Costs", never a stage it did not reach.
+  - The worker no longer produces `cost` (R14 is inside risk); the app keeps the label.
+- **2026-10-05 · Deploy order.** The app's schema is strict, so an APK from before this change refuses a funnel or decisions response that carries `data` or `other`. The APK with this schema must be installed before the server runs this worker. Until then those two screens show their load error, not wrong numbers.
+- **2026-10-05 · Tests.** `worker/test/funnel-truth.test.ts`:
+  - Every reason the strategy refuses with maps to its check and stage. An unknown reason is `other`, stage 0. A real R14 line is `risk`, stage 2, with its reason labelled "Costs".
+  - Through the real worker, a boot with no SOL price and then no fee terms leaves the candidate at "seen", with stages hard-rejects/costs/risk/entered all 0 and rejects `data` 1. The response passes the app's strict schema.
+  - Fails on the base. Mutants killed:
+    - fallthrough to `cost`;
+    - SOL price at the risk stage;
+    - the account at stage 2;
+    - the stage ignored;
+    - `risk` not named.

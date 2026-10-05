@@ -55,8 +55,11 @@ export const MIN_TRADES: Record<Mode, number> = { backtest: 300, paper: 30, live
 
 /** Hard rejects H1–H17 (§7.1). */
 export type Gate = 'H1' | 'H2' | 'H3' | 'H4' | 'H5' | 'H6' | 'H7' | 'H8' | 'H9' | 'H10' | 'H11' | 'H12' | 'H13' | 'H14' | 'H15' | 'H16' | 'H17';
-/** Checks after the hard rejects: cost gate (§5.3), sizing and risk (§8), regime (§6.4). */
-export type Check = Gate | 'cost' | 'size' | 'risk' | 'regime';
+/**
+ * Checks after the hard rejects: cost gate (§5.3), sizing and risk (§8), regime (§6.4). FUNNEL-TRUTH: 'data' is a
+ * refusal for missing inputs (pool state, fee terms, SOL price, the account), 'other' a reason the worker cannot name.
+ */
+export type Check = Gate | 'cost' | 'size' | 'risk' | 'regime' | 'data' | 'other';
 
 export interface CheckResult extends Moded {
   check: Check;

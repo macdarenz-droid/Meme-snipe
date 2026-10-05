@@ -114,16 +114,27 @@ export interface FunnelState {
   readonly enteredByDay: ReadonlyMap<string, number>;
 }
 
-/** The first failing check of a reject reason, as the app names checks. */
-export const checkOf = (reason: string): string => {
-  if (reason.startsWith('regime off')) return 'regime';
+/**
+ * FUNNEL-TRUTH: a reject reason's first failing check, as the app names checks, and the funnel stage the candidate
+ * truly passed before it (0 seen, 1 hard rejects passed, 2 sizing and costs passed), in the order the strategy judges
+ * (strategy.ts #evaluate: regime, SOL price, pool data, sizing, hard rejects, account, stop, risk). A reason this list
+ * does not know is 'other' at stage 0: never "Costs", never a stage it did not reach.
+ */
+export const classify = (reason: string): { readonly check: string; readonly stage: number } => {
+  if (reason.startsWith('regime off')) return { check: 'regime', stage: 0 };
+  // Refused before the pool is read or a hard reject runs.
+  if (reason === 'live SOL price unknown') return { check: 'data', stage: 0 };
+  if (/^(pool state (unknown|malformed|flagged)|fee context unknown)/.test(reason)) return { check: 'data', stage: 0 };
   const hard = /^hard reject (H\d+)/.exec(reason);
-  if (hard !== null) return hard[1]!;
-  if (reason.startsWith('stop:')) return 'size';
-  if (reason.startsWith('risk ') || reason.includes('SOL price') || reason.includes('account snapshot')) return 'risk';
-  return 'cost';
+  if (hard !== null) return { check: hard[1]!, stage: 0 };
+  // After the hard rejects passed: the account, the stop for the size, then risk.
+  if (reason === 'account snapshot unknown') return { check: 'data', stage: 1 };
+  if (reason.startsWith('stop:') || reason.startsWith('no round trip:')) return { check: 'size', stage: 1 };
+  if (reason.startsWith('risk ')) return { check: 'risk', stage: 2 };
+  return { check: 'other', stage: 0 };
 };
-export const stageOf = (check: string): number => (check === 'regime' || /^H\d+$/.test(check) ? 0 : check === 'cost' || check === 'size' ? 1 : 2);
+/** The first failing check of a reject reason (see `classify`). */
+export const checkOf = (reason: string): string => classify(reason).check;
 
 export interface ApiInputs {
   readonly nowMs: number;

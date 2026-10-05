@@ -40,7 +40,7 @@ import { P2, P3 } from '../scheduler/scheduler.ts';
 import { callCost } from '../providers/solana-http.ts';
 import { PUMP_MIGRATION_AUTHORITY } from './sources.ts';
 import { DelayProbe, type DelayProbeOptions } from './delay-probe.ts';
-import { type AlertSeen, type ApiInputs, type DecisionRow, checkOf, collectAlerts, melbourneDate, stageOf, startApiServer } from './api.ts';
+import { type AlertSeen, type ApiInputs, type DecisionRow, classify, collectAlerts, melbourneDate, startApiServer } from './api.ts';
 import type { FactContext, FactSource } from './facts.ts';
 import { engineFeed, type EngineFeed } from './engine-feed.ts';
 import { startHealthServer } from './health.ts';
@@ -1420,9 +1420,9 @@ export class Worker {
     this.#funnel.stage.set(mint, st);
     let row: DecisionRow | null = null;
     if (kind === 'reject' && why !== undefined) {
-      const check = checkOf(why);
+      const { check, stage } = classify(why);
       st.check = check;
-      st.stage = Math.max(st.stage, stageOf(check));
+      st.stage = Math.max(st.stage, stage);
       row = { id: `${r.eventId}/${r.seq}`, atMs: at, mint, outcome: 'rejected', check, reasons: r.reasons.slice(3), tradeId: null };
     } else if (kind === 'risk approved') {
       st.stage = Math.max(st.stage, 3);
