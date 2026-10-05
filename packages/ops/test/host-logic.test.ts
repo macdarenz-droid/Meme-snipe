@@ -225,6 +225,15 @@ describe('worker start and API address', () => {
     for (const l of execs) expect(l, l).toContain('"${heap[@]}" "$entry" "$@"');
   });
 
+  it('the e2e pins the exact command line worker-start builds for the release worker (HEAP-GUARD)', () => {
+    const w = read('ops/host/files/usr/local/lib/zeroed/worker-start');
+    const lines = w.split('\n').filter((l) => /^(reports|heap)=/.test(l)).join('\n');
+    const built = spawnSync('bash', ['-c', `STATE_DIRECTORY=/var/lib/zeroed\n${lines}\nprintf '%s ' /usr/local/bin/node --no-warnings "\${heap[@]}" /opt/zeroed/current/packages/worker/src/main.ts`], { encoding: 'utf8' }).stdout;
+    const e2e = read('ops/test/e2e.sh');
+    const pinned = /has '\^(\/usr\/local\/bin\/node --no-warnings [^']*\/opt\/zeroed\/current\/packages\/worker\/src\/main\.ts )\$'/.exec(e2e)?.[1];
+    expect(pinned).toBe(built);
+  });
+
   it('worker-start keeps only the newest 5 fatal reports, before node starts, and runs clean with none (HEAP-GUARD)', () => {
     const w = read('ops/host/files/usr/local/lib/zeroed/worker-start');
     const from = w.indexOf('shopt -s nullglob');
