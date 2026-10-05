@@ -5,8 +5,8 @@
 # being read again). Called by .github/workflows/data-keep.yml.
 #   keep-check.sh list
 #       lists every default-branch cache entry data-rpc-assets-DAY-RUN-ATTEMPT (kind
-#       assets) and, per day, the newest data-rpc-DAY-RUN-ATTEMPT (kind progress; the -qa
-#       copies are not kept) from the cache API (read only) into $GITHUB_OUTPUT:
+#       assets) and, per day without an assets entry, the newest data-rpc-DAY-RUN-ATTEMPT
+#       (kind progress; the -qa copies are not kept) from the cache API (read only) into $GITHUB_OUTPUT:
 #       entries=<JSON list of {key, day, before, kind}> and count=N;
 #       writes key, size and the total against 10 GB to the step summary (a warning above
 #       7 GB). No entry: count=0, and the job does nothing else.
@@ -16,7 +16,8 @@
 #       file names and counts only, never file contents.
 #   keep-check.sh progress DAY DIR
 #       checks a restored progress entry is not empty: at least one finished unit
-#       (units/*/*/stats.json) and a whole-number rpc-credits-used. Prints counts only.
+#       (units/*/*/stats.json); rpc-credits-used, when present, must be a whole number
+#       (days read after DATA-4 book credits in the ledger and have none). Counts only.
 #   keep-check.sh touched KEY BEFORE
 #       proof that the restore refreshed the entry's 7-day clock: polls the cache API
 #       until its last_accessed_at is later than BEFORE (the API refreshes about every
@@ -62,7 +63,10 @@ for row in open(rows).read().splitlines():
     m = re.fullmatch(r"data-rpc-(\d{4}-\d{2}-\d{2})-\d+-\d+", key)
     if m and (m.group(1) not in progress or (created, key) > progress[m.group(1)][0]):
         progress[m.group(1)] = ((created, key), key, size, before)
+assets_days = {e["day"] for e in entries}
 for day in sorted(progress):
+    if day in assets_days:
+        continue  # a packaged day resumes nothing: its assets are kept, its progress is not
     _, key, size, before = progress[day]
     entries.append({"key": key, "day": day, "before": before, "kind": "progress"})
     total += int(size)
@@ -101,8 +105,13 @@ PY
     units=$(find "$dir/units" -mindepth 3 -maxdepth 3 -name stats.json 2>/dev/null | wc -l)
     used=$(cat "$dir/rpc-credits-used" 2>/dev/null || true)
     [ "$units" -gt 0 ] || { echo "keep-check: progress of $day holds no finished unit" >&2; exit 1; }
-    [[ "$used" =~ ^[0-9]+$ ]] || { echo "keep-check: progress of $day has no readable rpc-credits-used" >&2; exit 1; }
-    echo "| $day | progress: $units finished units, $used credits booked |" | tee -a "$summary"
+    if [ -e "$dir/rpc-credits-used" ]; then
+      [[ "$used" =~ ^[0-9]+$ ]] || { echo "keep-check: progress of $day has an unreadable rpc-credits-used" >&2; exit 1; }
+      booked="$used credits booked"
+    else
+      booked="credits in the ledger"
+    fi
+    echo "| $day | progress: $units finished units, $booked |" | tee -a "$summary"
     ;;
   touched)
     key=$1 before=$2 waited=0

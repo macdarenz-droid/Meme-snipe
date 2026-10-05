@@ -987,18 +987,19 @@ kcache "data-rpc-2026-09-21-37220726125-1,3400000000,2026-10-04T20:00:00Z,,2026-
   "data-rpc-2026-09-21-37250000000-1,3700000000,2026-10-05T02:00:00Z,refs/pull/9/merge,2026-10-05T02:00:00Z" \
   "data-rpc-2026-09-20-5-2,1000000000,2026-10-03T00:00:00Z,,2026-10-03T00:00:00Z" \
   "data-rpc-assets-2026-09-20-3-1,4000000000,2026-10-06T01:00:00Z"
-kc list >/dev/null && grep -qx 'count=3' "$K/out" &&
-  grep -qx 'entries=\[{"key":"data-rpc-assets-2026-09-20-3-1","day":"2026-09-20","before":"2026-10-06T01:00:00Z","kind":"assets"},{"key":"data-rpc-2026-09-20-5-2","day":"2026-09-20","before":"2026-10-03T00:00:00Z","kind":"progress"},{"key":"data-rpc-2026-09-21-37240347289-1","day":"2026-09-21","before":"2026-10-05T01:18:00Z","kind":"progress"}\]' "$K/out" &&
+kc list >/dev/null && grep -qx 'count=2' "$K/out" &&
+  grep -qx 'entries=\[{"key":"data-rpc-assets-2026-09-20-3-1","day":"2026-09-20","before":"2026-10-06T01:00:00Z","kind":"assets"},{"key":"data-rpc-2026-09-21-37240347289-1","day":"2026-09-21","before":"2026-10-05T01:18:00Z","kind":"progress"}\]' "$K/out" && ! grep -q "data-rpc-2026-09-20-5-2" "$K/out" "$K/sum" &&
   grep -q "| \`data-rpc-2026-09-21-37240347289-1\` | progress | 3.60 GB |" "$K/sum" && ! grep -q -- "-qa\|37220726125\|37250000000" "$K/out" &&
-  ok "keep-check list: per day the newest default-branch progress entry (data-rpc-DAY-RUN-ATTEMPT); older runs, -qa copies and other refs are not kept" || no "keep-check list progress: $(cat "$K/out")"
+  ok "keep-check list: per unpackaged day the newest default-branch progress entry (data-rpc-DAY-RUN-ATTEMPT); a day with assets keeps only its assets; older runs, -qa copies and other refs are not kept" || no "keep-check list progress: $(cat "$K/out")"
 kp="$K/prog"; rm -rf "$kp"; mkdir -p "$kp/units/1039/1-2"; echo '{"blocks": 1}' > "$kp/units/1039/1-2/stats.json"; echo 270000 > "$kp/rpc-credits-used"
 : > "$K/sum"; o=$(kc progress 2026-09-21 "$kp" 2>&1) && grep -q "| 2026-09-21 | progress: 1 finished units, 270000 credits booked |" "$K/sum" && [[ "$o" != *blocks* ]] &&
   ok "keep-check progress: a restored progress entry with finished units and booked credits passes, counts only" || no "keep-check progress: $o"
 bad=""
 rm "$kp/units/1039/1-2/stats.json"; kc progress 2026-09-21 "$kp" >/dev/null 2>&1 && bad+=" no-units"
-echo '{}' > "$kp/units/1039/1-2/stats.json"; rm "$kp/rpc-credits-used"; kc progress 2026-09-21 "$kp" >/dev/null 2>&1 && bad+=" no-credits"
+echo '{}' > "$kp/units/1039/1-2/stats.json"; rm "$kp/rpc-credits-used"; : > "$K/sum"
+kc progress 2026-09-21 "$kp" >/dev/null 2>&1 && grep -q "| 2026-09-21 | progress: 1 finished units, credits in the ledger |" "$K/sum" || bad+=" ledger-day"
 echo x > "$kp/rpc-credits-used"; kc progress 2026-09-21 "$kp" >/dev/null 2>&1 && bad+=" bad-credits"
-[[ -z "$bad" ]] && ok "keep-check progress: no finished unit or no whole-number rpc-credits-used fails" || no "keep-check progress:$bad"
+[[ -z "$bad" ]] && ok "keep-check progress: no finished unit or an unreadable rpc-credits-used fails; no credits file (a ledger-booked day) passes" || no "keep-check progress:$bad"
 kcache "data-rpc-assets-2026-09-21-1-1,5,2026-10-07T03:00:00Z"
 kc touched data-rpc-assets-2026-09-21-1-1 2026-10-07T02:00:00Z >/dev/null && ok "keep-check touched: a later last_accessed_at proves the restore refreshed the entry" || no "keep-check touched later"
 rc=0; KEEP_WAIT=2 kc touched data-rpc-assets-2026-09-21-1-1 2026-10-07T03:00:00Z >/dev/null 2>&1 || rc=$?
