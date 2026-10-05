@@ -108,7 +108,7 @@ try {
     },
     cutRpc: (ms) => rpcCut.cut(ms),
     // FACTS-1b: FACTS-1's readers on the worker's Feed; core's producer makes the gate facts from what they read.
-    facts: [liveFacts({ policy, secrets: environment.secrets, http: http.facts, goplus: credits.scheduler(GOPLUS_FREE), coinbase: credits.scheduler(COINBASE_PUBLIC), github: { api: credits.scheduler(GITHUB_RELEASES), downloads: credits.scheduler(GITHUB_DOWNLOADS), stateDir: config.stateDir }, stateDir: config.stateDir, ...(h15 === undefined ? {} : { sim: h15 }), ...(config.strategy.s0Diagnostic ? { execStats: () => worker?.execStats() ?? null } : {}) })],
+    facts: [liveFacts({ policy, secrets: environment.secrets, http: http.facts, goplus: credits.scheduler(GOPLUS_FREE), coinbase: credits.scheduler(COINBASE_PUBLIC), github: { api: credits.scheduler(GITHUB_RELEASES), downloads: credits.scheduler(GITHUB_DOWNLOADS), stateDir: config.stateDir }, stateDir: config.stateDir, log, ...(h15 === undefined ? {} : { sim: h15 }), ...(config.strategy.s0Diagnostic ? { execStats: () => worker?.execStats() ?? null } : {}) })],
     schedulers: { helius: providers.helius, alchemy: providers.alchemy, jupiter: providers.jupiter, rugcheck: providers.rugcheck },
     exposureRpc: providers.seedRpc(),
     watchRead: providers.watchRead(),
