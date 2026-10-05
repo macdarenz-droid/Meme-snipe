@@ -12,7 +12,7 @@ import { RUG_CONFIG } from '../../core/src/config/index.ts';
 import { type Address, PUMP_AMM_GLOBAL_CONFIG, TOKEN_PROGRAM, decodeBase58, fromBase64, isOnCurve, toBase64 } from '../../core/src/chain/index.ts';
 import { RAW, completeHolders, parseAccountsRead, parseHoldersAllRead, parseHoldersRead } from '../../core/src/facts/index.ts';
 import { Engine, type LogRecord, type MarketEvent, type Strategy } from '../../core/src/engine/index.ts';
-import { holdersKey, lpKey, mintKey, simKey, xcheckKey, type FactObs } from '../../core/src/gates/index.ts';
+import { holdersKey, lpKey, mintKey, poolKey, simKey, xcheckKey, type FactObs } from '../../core/src/gates/index.ts';
 import { TRIAL_POLICY } from '../../core/src/config/index.ts';
 import { microUsdToLamports, type MicroUsd } from '../../core/src/units/index.ts';
 import { ACC, BASE_VAULT, FEE_CONTEXT, QUOTE_VAULT, W, account, holderAccounts, passingFacts } from '../../core/test/gates/world.ts';
@@ -186,7 +186,7 @@ type JournalLine = { kind: string; action?: string; event?: string; reasons?: st
 const journal = (h: Harness): JournalLine[] => readFileSync(join(h.stateDir, 'journal.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as JournalLine);
 
 /** Starts the worker with the read-backed fact source and runs `minutes` of market (a slot every 400 ms). */
-const run = async (minutes: number, port: number, slotsPerCall = 1, o: { readonly feeAccounts?: boolean; readonly each?: (m: Market) => void } = {}) => {
+const run = async (minutes: number, port: number, slotsPerCall = 1, o: { readonly feeAccounts?: boolean; readonly each?: (m: Market) => void; readonly poolFromReads?: boolean } = {}) => {
   const timers = dueTimers(T - 16 * DAY);
   let chain: FakeChain | null = null;
   const facts = { name: 'facts', start: (c: FactContext) => src.start(c), stop: () => src.stop() };
@@ -203,7 +203,7 @@ const run = async (minutes: number, port: number, slotsPerCall = 1, o: { readonl
   }
   expect(started).toEqual({ ok: true });
   h.worker.feed.ingest('helius', { type: 'offchain', key: 'feed:status:helius', value: { state: 'up' } }, { receivedAt: h.timers.now() });
-  const m = await passingMarket(h, { heldPoolFacts: true, omit: READ_FACTS, ...(o.feeAccounts === undefined ? {} : { fees: false }) });
+  const m = await passingMarket(h, { heldPoolFacts: true, omit: o.poolFromReads === true ? [...READ_FACTS, poolKey(MINT)] : READ_FACTS, ...(o.feeAccounts === undefined ? {} : { fees: false }) });
   await m.run(minutes * 60_000, SLOT_MS, () => {
     m.slot();
     m.pool();
@@ -697,5 +697,59 @@ describe('FEE-TIER-NOW: the worker prices from the batch\'s fee context, not the
     const live = lines.filter((l) => l.kind === 'decision' && (l.reasons?.[0] === 'reject' || l.reasons?.[0] === 'enter')).map((l) => ({ event: l.event, reasons: l.reasons!.slice(0, 4) }));
     expect(live.length).toBeGreaterThan(0);
     expect(replayed).toEqual(live);
+  }, 120_000);
+});
+
+
+describe('POOL-DATA: no pool fact without its fee context', () => {
+  it('a lone account read (the survival read at 30 min) carries the fee configs in its final call and puts the fee context first', async () => {
+    const timers = new ManualTimers(T);
+    const frames: string[] = [];
+    const calls: string[][] = [];
+    const http: HttpClient = async (req) => {
+      const body = JSON.parse(req.body ?? '{}') as { method: string; params: unknown[] };
+      const list = body.params[0] as string[];
+      calls.push(list);
+      return rpcResult(1_000n, list.map((a) => {
+        if (a === MINT) return { owner: MINT_ACCOUNT.owner, data: [MINT_ACCOUNT.dataBase64, 'base64'], lamports: 1, executable: false };
+        if (a === POOL.lpMint) return { owner: TOKEN_PROGRAM, data: b64(lpMintData()), lamports: 1, executable: false };
+        if (a === POOL_ADDRESS || a === POOL.poolQuoteTokenAccount || a === POOL.poolBaseTokenAccount) {
+          const x = account(a);
+          return { owner: x.owner, data: [x.dataBase64, 'base64'], lamports: 1, executable: false };
+        }
+        return FEE_ACCOUNTS.get(a) ?? null;
+      }));
+    };
+    const readers = new FactReaders({
+      feed: { ingest: (_s, b) => void (b.type === 'offchain' && frames.push(b.key)) },
+      rpc: new FactRpc({ url: () => 'https://helius.test/?api-key=k', http, scheduler: new Scheduler(HELIUS_FREE, { timers, creditsUsed: 0 }), timeoutMs: 1000 }),
+      http, timers, timeoutMs: 1000, rugcheck: { scheduler: new Scheduler(RUGCHECK_FREE, { timers }) }, goplus: { scheduler: new Scheduler(GOPLUS_FREE, { timers }) },
+    });
+    const read = async (): Promise<boolean> => {
+      let done: boolean | null = null;
+      void readers.readAccounts(MINT).then((v) => void (done = v));
+      for (let k = 0; k < 100 && done === null; k++) {
+        await settle();
+        timers.advance(50);
+      }
+      return done ?? false;
+    };
+    // First read: the layout is learnt (mint and pool), then one bank with the configs; a later read is one call.
+    expect(await read()).toBe(true);
+    expect(calls.length).toBe(2);
+    expect(calls[1]).toEqual(expect.arrayContaining([PUMP_AMM_GLOBAL_CONFIG, PUMP_AMM_FEE_CONFIG]));
+    expect(await read()).toBe(true);
+    expect(calls.length).toBe(3);
+    expect(calls[2]).toEqual(expect.arrayContaining([PUMP_AMM_GLOBAL_CONFIG, PUMP_AMM_FEE_CONFIG]));
+    // Each read puts the fee context, then the accounts the pool fact comes from.
+    expect(frames).toEqual([feesKey(MINT), RAW.accounts(MINT), feesKey(MINT), RAW.accounts(MINT)]);
+  });
+
+  it('a quiet pool (no swap ever) read only by the worker\'s own reads is never judged without fee terms', async () => {
+    const { h } = await run(5, 19030, 1, { feeAccounts: true, poolFromReads: true });
+    const rejects = journal(h).filter((l) => l.kind === 'decision' && l.action === 'reject');
+    // Judged in its window (past the regime) and on the reads: never for missing fee terms.
+    expect(rejects.some((l) => (l.gate_reasons ?? []).some((g) => g.gate === 'H16'))).toBe(true);
+    expect(rejects.flatMap((l) => (l.gate_reasons ?? []).filter((g) => g.gate === 'worker').map((g) => g.code))).toEqual([]);
   }, 120_000);
 });
