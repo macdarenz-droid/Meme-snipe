@@ -7,7 +7,7 @@
 // `open_intents` → seed the deployer index (SEED-1's hook) → start the live sources → trade. Nothing enters before the
 // reconcile line; a reconcile that cannot settle every intent exits 3.
 import { randomBytes } from 'node:crypto';
-import { copyFileSync, existsSync, mkdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, linkSync, mkdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { journalLines, placeBookingsAt } from './booked.ts';
 import type { Server } from 'node:http';
 import { join } from 'node:path';
@@ -50,12 +50,14 @@ import { entryPrice, openPositionsHealth } from './open-positions.ts';
 import { type RiskInput, evaluateExit, riskSnapshot } from '../../../core/src/risk/index.ts';
 import { latchable, markSettings, riskAccount } from '../engine/marks.ts';
 import type { DeployerIndex, DeployerIndexState, RugLabeller, RugLabellerState } from '../../../core/src/gates/index.ts';
-import { PERSIST_FILE, fileSha256, loadState, packFile, saveState } from '../persist/index.ts';
+import { PERSIST_FILE, fileSha256, loadState, packFile, saveState, zstdContentHash } from '../persist/index.ts';
 import type { CreateLookup } from './sources.ts';
 
 /** PERSIST-1's saved deployer state in the worker's state dir, and how often it is written. */
 export { PERSIST_FILE } from '../persist/index.ts';
 export const PERSIST_EVERY_MS = 5 * 60_000;
+/** STATE-DEDUPE: the recorder folder holding each distinct saved state once, packed, named by the sha256 of its plain bytes. */
+export const SAVED_STATES = 'saved-state';
 import { type Control, NO_CONTROL, StateFile, controlFile, exitsFile, seedsFile, exposedFile, NO_EXPOSED } from './state.ts';
 import { LOG_CREATE_PREFIX, type PoolFact, S0_DIAGNOSTIC_PARTS, TX_CREATE_PREFIX, parsePool } from '../../../core/src/gates/index.ts';
 import type { ExecStats } from '../../../core/src/facts/raw.ts';
@@ -637,9 +639,32 @@ export class Worker {
     const c = this.#unpacked;
     if (c === null) return;
     this.#unpacked = null;
+    // STATE-DEDUPE: each distinct saved state is kept once, packed, in `recorder/saved-state/<sha256>.zst`; a boot that
+    // restored the same bytes (every boot of a restart loop shorter than a save) gets a hard link to it, never a copy.
+    const shared = join(this.#d.config.stateDir, STATE_FILES.recorder, SAVED_STATES, `${c.sha256}.zst`);
+    const own = `${c.path}.zst`;
     try {
+      if (existsSync(shared)) {
+        // Linked only once the stored file is checked to decompress to exactly the bytes this boot restored.
+        const held = await zstdContentHash(shared);
+        if (held.sha256 === c.sha256 && held.bytes === c.bytes) {
+          linkSync(shared, own);
+          rmSync(c.path);
+          this.#recorder?.packed(PERSIST_FILE, { sha256: fileSha256(shared), bytes: statSync(shared).size }, { sha256: c.sha256, bytes: c.bytes });
+          return;
+        }
+        this.#d.log(`Recorder: the stored saved state ${c.sha256} decompresses to sha256 ${held.sha256}; this boot packs its own copy.`);
+      }
       const p = await packFile(c.path, { sha256: c.sha256, bytes: c.bytes });
       this.#recorder?.packed(PERSIST_FILE, p.packed, p.content);
+      if (!existsSync(shared)) {
+        try {
+          mkdirSync(join(shared, '..'), { recursive: true });
+          linkSync(own, shared);
+        } catch (e) {
+          this.#d.log(`Recorder: the packed saved state was not stored for later boots (${e instanceof Error ? e.message : 'error'}).`);
+        }
+      }
     } catch (e) {
       this.#d.log(`Recorder: the saved-state copy was kept unpacked (${e instanceof Error ? e.message : 'error'}).`);
     }
@@ -1676,6 +1701,8 @@ export class Worker {
   /** For the `--reconcile` entry: settle, report, close without starting anything. */
   async reconcileOnly(): Promise<StartResult> {
     const r = await this.reconcile();
+    // The unit's pre-step restores (and copies) the saved state too: packed, or linked to the stored copy, like a start's.
+    if (!this.#stopping) await this.#packCopy();
     // A signal during the reconcile runs the clean stop, which closes both.
     if (!this.#stopping) {
       this.#recorder?.close();

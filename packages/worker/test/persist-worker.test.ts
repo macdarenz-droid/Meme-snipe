@@ -1,7 +1,7 @@
 // WORKER-1c item 1: PERSIST-1 wired into the worker. A clean stop (and every 5 minutes) saves the deployer index, the
 // rug labeller and the coverage facts; the next start restores them through the recorded seed fact before any
 // decision, tops up the downtime from the saved moment, and never saves before the seed is applied.
-import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { zstdCompressSync, zstdDecompressSync } from 'node:zlib';
 import { createHash } from 'node:crypto';
 import { SEED_KEY } from '../src/engine/strategy.ts';
@@ -16,7 +16,7 @@ import { GRADUATES_KEY, survivalCondition } from '../../core/src/gates/index.ts'
 import { DailyBudget, fileSha256, loadState } from '../src/persist/index.ts';
 import { SavedStateMissing, checkBoot, loadSession, replayBoot, savedStateOf } from '../src/run/parity.ts';
 import { FILL_BUDGET_FILE, FILL_CREDITS_PER_DAY, SEED_CREDIT_CAP, runSeed } from '../src/run/seed-start.ts';
-import { PERSIST_EVERY_MS, PERSIST_FILE, type SeedRequest, type SeedResult } from '../src/run/worker.ts';
+import { PERSIST_EVERY_MS, PERSIST_FILE, SAVED_STATES, type SeedRequest, type SeedResult } from '../src/run/worker.ts';
 import { DEV, MINT, Market, T, dueTimers, makeWorker, slotAt, tempState, virtualTimers } from './worker-harness.ts';
 
 const emptyRpc = { getSignaturesForAddress: async () => [{ signature: 'before-the-range', slot: 0n, err: null, blockTime: 0 }], getTransaction: async () => null };
@@ -109,6 +109,81 @@ describe('PERSIST-1 in the worker', () => {
     expect([existsSync(copy), existsSync(`${copy}.zst`)]).toEqual([false, true]);
     await h2.worker.stop();
   });
+
+  it('a restart loop that never saves keeps one packed copy: every boot and pre-step links to it, and parity still checks the bytes (STATE-DEDUPE)', async () => {
+    const stateDir = tempState();
+    const timers = virtualTimers(T);
+    const seed = (r: SeedRequest) => runSeed(r, { rpc: emptyRpc, timers });
+    const first = makeWorker({ stateDir, timers, seed });
+    const m = await boot(first);
+    m.create();
+    await m.run(1_000, 200, () => m.slot());
+    await first.worker.stop();
+    const sha = fileSha256(join(stateDir, PERSIST_FILE));
+    // Three restarts shorter than a save (killed): each the unit's pre-step, then the start, on the same saved bytes.
+    const boots: string[] = [];
+    for (let k = 0; k < 3; k++) {
+      timers.set(timers.now() + 60_000);
+      const pre = makeWorker({ stateDir, timers, seed });
+      expect(await pre.worker.reconcileOnly()).toEqual({ ok: true });
+      boots.push(pre.worker.boot);
+      const h = makeWorker({ stateDir, timers, seed });
+      await boot(h);
+      boots.push(h.worker.boot);
+      await h.worker.kill();
+    }
+    expect(fileSha256(join(stateDir, PERSIST_FILE))).toBe(sha);
+    const stored = join(stateDir, 'recorder', SAVED_STATES, `${sha}.zst`);
+    expect(readdirSync(join(stateDir, 'recorder', SAVED_STATES))).toEqual([`${sha}.zst`]);
+    const ino = statSync(stored).ino;
+    for (const b of boots) {
+      const copy = join(stateDir, 'recorder', b, PERSIST_FILE);
+      expect(existsSync(copy), b).toBe(false);
+      expect(statSync(`${copy}.zst`).ino, b).toBe(ino);
+    }
+    // One file on disk for the six boots: the stored copy and its six links.
+    expect(statSync(stored).nlink).toBe(boots.length + 1);
+    // Each boot's manifest lists its packed copy with the plain bytes' hash.
+    const manifest = JSON.parse(readFileSync(join(stateDir, 'recorder', boots[1]!, 'manifest.json'), 'utf8')) as { attachments: { file: string; content?: { sha256: string } }[] };
+    expect(manifest.attachments).toEqual([expect.objectContaining({ file: `${PERSIST_FILE}.zst`, content: expect.objectContaining({ sha256: sha }) })]);
+    // Parity: each started boot restores from its link; a missing link, or the shared bytes changed, is refused.
+    const d = { session: first.session, rugs: RUG_CONFIG, strategy: first.worker.strategyConfig };
+    const session = loadSession(stateDir);
+    const started = session.find((b) => b.boot === boots[1])!;
+    expect(started.savedState).toBe(join(stateDir, 'recorder', boots[1]!, `${PERSIST_FILE}.zst`));
+    expect(() => savedStateOf(started, d)).not.toThrow();
+    rmSync(join(stateDir, 'recorder', boots[3]!, `${PERSIST_FILE}.zst`));
+    expect(() => replayBoot(loadSession(stateDir).find((b) => b.boot === boots[3])!, d)).toThrow(/the recording has no copy of it/);
+    const plain = Buffer.from(zstdDecompressSync(readFileSync(stored)));
+    plain[plain.length - 10] = plain[plain.length - 10] === 0x30 ? 0x31 : 0x30;
+    writeFileSync(stored, zstdCompressSync(plain));
+    expect(() => replayBoot(loadSession(stateDir).find((b) => b.boot === boots[5])!, d)).toThrow(/the recording's copy has sha256/);
+  }, 60_000);
+
+  it('a stored copy that no longer holds the bytes is never linked: the boot packs its own (STATE-DEDUPE)', async () => {
+    const stateDir = tempState();
+    const timers = virtualTimers(T);
+    const seed = (r: SeedRequest) => runSeed(r, { rpc: emptyRpc, timers });
+    const first = makeWorker({ stateDir, timers, seed });
+    const m = await boot(first);
+    m.create();
+    await m.run(1_000, 200, () => m.slot());
+    await first.worker.stop();
+    const sha = fileSha256(join(stateDir, PERSIST_FILE));
+    const stored = join(stateDir, 'recorder', SAVED_STATES, `${sha}.zst`);
+    const { mkdirSync } = await import('node:fs');
+    mkdirSync(join(stateDir, 'recorder', SAVED_STATES), { recursive: true });
+    writeFileSync(stored, zstdCompressSync(Buffer.from('not the saved state')));
+    const h = makeWorker({ stateDir, timers, seed });
+    await boot(h);
+    const own = join(stateDir, 'recorder', h.worker.boot, `${PERSIST_FILE}.zst`);
+    expect(statSync(own).ino).not.toBe(statSync(stored).ino);
+    expect(createHash('sha256').update(zstdDecompressSync(readFileSync(own))).digest('hex')).toBe(sha);
+    expect(h.logs.some((l) => l.includes(`the stored saved state ${sha} decompresses to sha256`))).toBe(true);
+    // The bad stored file is left as it is (state copies are never deleted).
+    expect(zstdDecompressSync(readFileSync(stored)).toString()).toBe('not the saved state');
+    await h.worker.stop();
+  }, 60_000);
 
   it('the parity replay restores a restarted boot from its recording\'s copy and reproduces its decisions; it refuses loudly without exactly that copy (WORKER-GROW)', async () => {
     const stateDir = tempState();
