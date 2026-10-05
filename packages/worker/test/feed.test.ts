@@ -101,6 +101,24 @@ const script = (): Arrival[] => {
 };
 
 describe('live Feed', () => {
+  it('OOM-MINT: every dedupe case still dedupes with the compact keys, and different facts stay apart', () => {
+    const feed = new LiveFeed({ ...DEFAULT_LIVE_FEED });
+    const t = tx('pump TradeEvent');
+    const sig = t.signature;
+    const other = (sig.startsWith('1') ? '2' : '1') + sig.slice(1);
+    const at = { receivedAt: 1 };
+    const seen = (signature: string, via: string): FrameBody => ({ type: 'seen', signature, slot: BigInt(t.slot), err: null, via, detail: null });
+    const logs = (signature: string, commitment?: 'confirmed'): FrameBody => ({ type: 'logs', signature, slot: BigInt(t.slot), err: null, via: 'logs:x', logs: ['Program log: x'], ...(commitment === undefined ? {} : { commitment }) });
+    const dup = (b: FrameBody) => feed.ingest('helius', b, at).duplicate;
+    // The first copy of each fact is new; a second copy (from either provider) is a duplicate.
+    expect([dup(seen(sig, 'logs:x')), dup(seen(sig, 'logs:y'))]).toEqual([false, true]);
+    expect([dup(logs(sig)), dup(logs(sig))]).toEqual([false, true]);
+    expect([dup(logs(sig, 'confirmed')), dup(logs(sig, 'confirmed'))]).toEqual([false, true]);
+    expect([dup({ type: 'tx', record: recordOf(t) }), feed.ingest('alchemy', { type: 'tx', record: recordOf(t) }, at).duplicate]).toEqual([false, true]);
+    // Another signature, or the same one under another kind or commitment, is another fact.
+    expect([dup(seen(other, 'logs:x')), dup(logs(other)), dup(logs(other, 'confirmed'))]).toEqual([false, false, false]);
+  });
+
   it('ordering parity: recorded frames and releases replay to the live release sequence and the same decision log', () => {
     const live = run(script(), { horizonSlots: 4 });
     const back = replayLive(live.frames, live.releases);
@@ -160,7 +178,7 @@ describe('live Feed', () => {
     arrivals.splice(i + 1, 0,
       { at: arrivals[i]!.at + 1, source: 'alchemy', body: { type: 'account', slot: BigInt(mid.slot), address: PUMP_GLOBAL, owner: PUMP_GLOBAL, lamports: 1n, data: Uint8Array.of(9) } },
       { at: arrivals[i]!.at + 2, source: 'helius', backfilled: true, body: { type: 'seen', signature: tx('pump TradeEvent').signature, slot: BigInt(mid.slot), err: null, via: 'logs:x', detail: null } },
-      { at: arrivals[i]!.at + 3, source: 'helius', body: { type: 'seen', signature: early.signature.slice(0, -1) + (early.signature.endsWith('1') ? '2' : '1'), slot: BigInt(early.slot), err: null, via: 'logs:y', detail: null } },
+      { at: arrivals[i]!.at + 3, source: 'helius', body: { type: 'seen', signature: (early.signature.startsWith('1') ? '2' : '1') + early.signature.slice(1), slot: BigInt(early.slot), err: null, via: 'logs:y', detail: null } },
     );
     const live = run(arrivals, { horizonSlots: 4 });
     expect(live.released.filter((r) => r.late)).toHaveLength(3);
