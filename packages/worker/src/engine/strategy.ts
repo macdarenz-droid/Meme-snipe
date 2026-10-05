@@ -29,7 +29,7 @@ import {
   atr, checkStopDistance, decideExit, execPrice, liquidationValue, exitAttemptsOf, exitBookEvents, exitSettings, newTracker, noteAttempt,
 } from '../../../core/src/exits/index.ts';
 import {
-  type Coverage, type DeployerIndexState, type GateContext, type GraduatesFact, type RugLabellerState, type S0DiagnosticPart, DeployerIndex, GRADUATES_KEY, hardAllowsEntry, LOG_CREATE_PREFIX, NOT_EVALUATED, stagedHardRejects, RugLabeller, TX_CREATE_PREFIX, createKey, createsCoverage, evaluateHardRejects, evaluateRegime, migrationKey, parseCreate, parseGraduates, parseMigration, parsePool, poolKey,
+  type Coverage, type DeployerIndexState, type GateContext, type GraduatesFact, type RugLabellerState, type S0DiagnosticPart, DeployerIndex, GRADUATES_KEY, hardAllowsEntry, LOG_CREATE_PREFIX, NOT_EVALUATED, stagedHardRejects, RugLabeller, TX_CREATE_PREFIX, type PoolFact, carryKey, createKey, createsCoverage, evaluateHardRejects, evaluateRegime, migrationKey, parseCreate, parseGraduates, parseMigration, parsePool, poolKey,
 } from '../../../core/src/gates/index.ts';
 import type { GraduatesSeed } from '../../../core/src/facts/raw.ts';
 import { type BookEvent, type IntentState, isTerminal } from '../../../core/src/lifecycle/index.ts';
@@ -43,6 +43,7 @@ export type SavedGraduates = Omit<GraduatesSeed, 'source'>;
 export const ACCOUNT_KEY = 'worker:account';
 /** Key prefixes of GATE-1's pool and migration facts. */
 export const POOL_PREFIX = poolKey('');
+export const CARRY_PREFIX = carryKey('');
 export const MIGRATION_PREFIX = migrationKey('');
 export const RESTORE_KEY = 'worker:restore';
 /** A coverage fact PERSIST-1 keeps: `coverage:<stream>:start|gap|resume` (never a deployer check's own key). */
@@ -159,6 +160,56 @@ export const parseSnapshotFact = (v: unknown): SnapshotFact | null => {
   if (typeof st['baseReserve'] !== 'bigint' || typeof st['quoteVault'] !== 'bigint' || typeof st['virtualQuoteReserves'] !== 'bigint') return null;
   return v as unknown as SnapshotFact;
 };
+/** WATCH-1c: the producer's proof that a pool's chain state is unchanged through `slot` (core gates `carryKey`). */
+export interface CarryFact {
+  readonly pool: string;
+  readonly slot: bigint;
+  readonly state: PoolState;
+  readonly obs: { readonly receivedAt: number };
+}
+
+export const parseCarryFact = (v: unknown): CarryFact | null => {
+  if (!isObj(v) || typeof v['pool'] !== 'string' || typeof v['slot'] !== 'bigint' || !isObj(v['state']) || !isObj(v['obs']) || typeof v['obs']['receivedAt'] !== 'number') return null;
+  const st = v['state'];
+  if (typeof st['baseReserve'] !== 'bigint' || typeof st['quoteVault'] !== 'bigint' || typeof st['virtualQuoteReserves'] !== 'bigint') return null;
+  return v as unknown as CarryFact;
+};
+
+const sameReserves = (a: PoolState, p: PoolFact): boolean =>
+  a.baseReserve === p.baseVault && a.quoteVault === p.quoteVault && a.virtualQuoteReserves === (p.pool.virtualQuoteReserves ?? 0n);
+
+const isFlagged = (p: PoolFact): boolean => p.obs.quality.some((q) => q !== 'backfilled' && q !== 'deduplicated');
+
+/**
+ * A mint's newest whole market, as the strategy and the worker both price it (merge rule M, WATCH-1c):
+ * - the pool fact moves to its carry's moment when the carry proves the same reserves unchanged since (never for a
+ *   flagged fact, and never past a newer snapshot that disagrees with it: the chain then missed something);
+ * - WATCH-1's snapshot when newer than that;
+ * - else the pool fact, unless POS-1 flagged it.
+ */
+export type MarketChoice =
+  | { readonly kind: 'snapshot'; readonly snap: SnapshotFact }
+  | { readonly kind: 'pool'; readonly pool: PoolFact; readonly atMs: number; readonly carried: boolean; readonly confirmedAtMs: number | null }
+  | { readonly kind: 'flagged'; readonly pool: PoolFact }
+  | { readonly kind: 'none' };
+
+export const chooseMarket = (pool: PoolFact | null, snap: SnapshotFact | null, carry: CarryFact | null): MarketChoice => {
+  const disagrees = pool !== null && snap !== null && snapshotWins(snap, pool.obs) && !sameReserves(snap.state, pool);
+  const carried = pool !== null && carry !== null && !isFlagged(pool) && !disagrees && carry.pool === pool.address && sameReserves(carry.state, pool)
+    && carry.obs.receivedAt > pool.obs.receivedAt && (pool.obs.slot === null || carry.slot >= pool.obs.slot);
+  const at = pool === null ? null : carried ? { slot: carry!.slot, receivedAt: carry!.obs.receivedAt } : pool.obs;
+  if (snap !== null && snapshotWins(snap, at)) {
+    // A newer snapshot that reads the very reserves of an unflagged pool fact confirms it (WATCH-1d): the pool fact stays
+    // the market, as fresh as that read. Otherwise a confirmed bank a slot ahead of the feed would take the market over
+    // after every verify read, and the watch would chase it read after read.
+    if (pool !== null && !isFlagged(pool) && sameReserves(snap.state, pool)) return { kind: 'pool', pool, atMs: Math.max(at!.receivedAt, snap.atMs), carried, confirmedAtMs: snap.atMs };
+    return { kind: 'snapshot', snap };
+  }
+  if (pool === null) return { kind: 'none' };
+  if (isFlagged(pool)) return { kind: 'flagged', pool };
+  return { kind: 'pool', pool, atMs: at!.receivedAt, carried, confirmedAtMs: null };
+};
+
 /** Machine-read reason on `approve_risk`: the reservation request the worker sends to the ledger. */
 export const RESERVE_PREFIX = 'reserve ';
 // FACTS-1f's staged hard rejects live in core (one implementation with the backtest study, BT review of #41).
@@ -1363,21 +1414,27 @@ export class LiveStrategy implements Strategy {
   }
 
   /** The pool market of a mint as of now: the gate pool fact and the fee context. */
-  #market(ctx: StrategyContext, mint: string): Market | string {
+  /**
+   * `carry: false` for entries (risk review of #121): a candidate gets no verify read, so a carry would let a silent
+   * stream stall or a vault transfer date its quote without bound; an entry judges the pool fact's own moment.
+   */
+  #market(ctx: StrategyContext, mint: string, o: { readonly carry: boolean } = { carry: true }): Market | string {
     const p = ctx.lookup(poolKey(mint));
     const sr = ctx.lookup(snapshotKey(mint));
     const snap = sr.ok ? parseSnapshotFact(unwrap(sr.value)) : null;
     const pool = p.ok ? parsePool(p.value) : null;
-    // WATCH-1: a snapshot newer than the pool fact is the market, reserves and fee context alike.
-    if (snap !== null && snapshotWins(snap, pool === null ? null : pool.obs)) {
-      this.#notePool(mint, snap.pool);
-      return { pool: snap.state, ctx: snap.ctx, atMs: snap.atMs, address: snap.pool };
+    const cr = ctx.lookup(carryKey(mint));
+    const choice = chooseMarket(pool, snap, o.carry && cr.ok ? parseCarryFact(unwrap(cr.value)) : null);
+    // WATCH-1: a snapshot newer than the pool fact (carried or not) is the market, reserves and fee context alike.
+    if (choice.kind === 'snapshot') {
+      this.#notePool(mint, choice.snap.pool);
+      return { pool: choice.snap.state, ctx: choice.snap.ctx, atMs: choice.snap.atMs, address: choice.snap.pool };
     }
     if (!p.ok) return NO_POOL_STATE;
     if (pool === null) return POOL_MALFORMED;
     // A flagged pool fact (POS-1: the swap stream lost continuity) is never priced from, whatever its age.
     const flags = pool.obs.quality.filter((q) => q !== 'backfilled' && q !== 'deduplicated');
-    if (flags.length > 0) return `${POOL_FLAGGED} ${flags.join(', ')}${typeof (p.value as { stale?: unknown }).stale === 'string' ? ` (${(p.value as { stale: string }).stale})` : ''}`;
+    if (choice.kind === 'flagged') return `${POOL_FLAGGED} ${flags.join(', ')}${typeof (p.value as { stale?: unknown }).stale === 'string' ? ` (${(p.value as { stale: string }).stale})` : ''}`;
     this.#notePool(mint, pool.address);
     // A fee-context fact when one is published, else the terms of the latest swap seen on the pool (restored ones only
     // for the pool their swap left).
@@ -1387,7 +1444,7 @@ export class LiveStrategy implements Strategy {
     if (fees === undefined) return NO_FEE_CONTEXT;
     return {
       pool: state,
-      ctx: fees, atMs: pool.obs.receivedAt, address: pool.address,
+      ctx: fees, atMs: choice.kind === 'pool' ? choice.atMs : pool.obs.receivedAt, address: pool.address,
     };
   }
 
@@ -1538,7 +1595,7 @@ export class LiveStrategy implements Strategy {
     const cancel = (why: string) => out.push({ action: { type: 'intent', intentId: id, event: { type: 'cancel' } }, reasons: ['entry cancelled', mint, why] });
     if (i.intent.purpose !== 'entry') return;
     if (this.#height === null) return void cancel('no slot height yet');
-    const m = this.#market(ctx, mint);
+    const m = this.#market(ctx, mint, { carry: false });
     if (typeof m === 'string') return void cancel(m);
     if (ctx.now.receivedAt - m.atMs > this.#d.session.policy.gates.maxQuoteAgeMs) return void cancel('pool state is stale');
     const q = poolBuyExactQuoteIn(m.pool, i.intent.spend, m.ctx);
@@ -1999,7 +2056,7 @@ export class LiveStrategy implements Strategy {
     if (!regime.on) return this.#fail(`regime off: ${regime.reasons.map((x) => x.detail).join('; ') || 'no reason given'}`, regime.reasons.map((x) => ({ gate: 'regime', code: x.code, detail: x.detail })), regime.reasons.map((x) => ({ gate: 'regime', ...x })));
     const sol = this.#spotSol(ctx);
     if (sol === null) return this.#fail('live SOL price unknown', [{ gate: 'worker', code: 'no-sol-price', detail: 'no live SOL/USD price' }]);
-    const m = this.#market(ctx, cand.mint);
+    const m = this.#market(ctx, cand.mint, { carry: false });
     if (typeof m === 'string') return this.#fail(m, [{ gate: 'worker', code: marketMissCode(m), detail: m }]);
     const quoter = pumpSwapRoundTrip(m.pool, m.ctx);
     // AUDIT-RM4 F3: the gates and H15's simulation judge the size risk will use. At q_min unless the owner approved the
