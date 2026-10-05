@@ -2267,3 +2267,15 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - `store-rules.test.ts`: 12,000 real swap logs with zero 8-byte tails through the whole worker grow the heap under 9 MB (4.9 MB measured; 121.6 MB without the rules, 15.0 MB with the collapse alone, 113.6 MB with the pool horizon alone), and the worker and replay rules are the live ones.
   - Hand mutants killed: failing entries dropped too; no receipt guard; unreadable entries not kept; one program's boundary for both; two entries popped; the rules not wired, or only one of them.
 - **Parity.** The parity replay uses the same rules, and every reader's answer is unchanged, so live and replay decide alike, and a recording made before this replays to the same decisions.
+
+## Every pool read carries its fee context (FEE-READ-ALL, POOL-DATA; `facts/readers.ts` `readAccounts`, `#feesOf`)
+
+- **Why (POOL-DATA, 2026-10-05):** after FEE-TIER-NOW the fee context came only with a batch. The survival read at migration + 30 min (`facts/source.ts`) is a lone `readAccounts`: it made the pool fact without the fee context. So a quiet pool's first judgement in its window (60 min) was `no-fee-context`, once per candidate, until the batch that refusal asked for. The worker's reproduction over the fake chain showed exactly one such line per candidate on #220's head.
+- **What:** `readAccounts` puts PumpSwap's GlobalConfig and the pump-fees FeeConfig in its final `getMultipleAccounts`. The call count is the same as before: two the first time (the layout is learnt from the pool), one after. It puts the fee context before the accounts frame, so a pool fact is never released without it. The batch and the lone read share one decoder (`#feesOf`). A missing or foreign account still puts nothing (fail closed).
+- **Not changed, by reasoning:**
+  - `no-pool-state`, `pool-flagged` and H16 `gap` stay correct, transient refusals. They come from restarts (the pool chain is rebuilt from the boot's read) and from stream coverage gaps. Each clears at the next account read.
+  - Deferring a coin's first judgement until a read lands would move live timing away from the backtest (G3).
+  - H16 `missing` holders/sim on a candidate's first stage-3 judgement is the staged read by design (credits). Reading them in the first batch is a budget decision, not taken here.
+- **Tests that fail before** (`read-coherent.test.ts`, POOL-DATA block):
+  - the lone read's calls carry both configs, at the same count, and its frames are the fee context then the accounts;
+  - end to end, a quiet pool read only by the worker's own reads is judged in its window with no `worker` reason (on #220's head: one `no-fee-context`).

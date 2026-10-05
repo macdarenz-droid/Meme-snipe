@@ -377,6 +377,22 @@ export class FactReaders {
     }
   }
 
+  /**
+   * FEE-TIER-NOW: the pool's fee context from one bank that also holds PumpSwap's GlobalConfig and the pump-fees
+   * FeeConfig: the tiers, canonical flag, creator fee and coin flags (WATCH-1's decoder). Anything it cannot prove (a
+   * missing or foreign account) puts nothing: #market then falls back to the latest swap's terms, or has none.
+   */
+  static #feesOf(mint: string, layout: readonly string[], slot: bigint, at: (address: string) => { owner: string; data: string } | null, put: Put): void {
+    const [, pool, baseVault, quoteVault] = layout;
+    if (pool === undefined || baseVault === undefined || quoteVault === undefined) return;
+    const acc = (a: string) => {
+      const x = at(a);
+      return x === null ? null : { owner: x.owner, data: fromBase64(x.data) };
+    };
+    const d = decodeSnapshot(mint, pool, slot, [pool, baseVault, quoteVault, mint, PUMP_AMM_GLOBAL_CONFIG, PUMP_AMM_FEE_CONFIG].map(acc));
+    if (d.ok) put('helius', feesKey(mint), d.snapshot.ctx);
+  }
+
   /** The canonical pool of a pump mint: PDA(index 0, pool authority of the mint, mint, wrapped SOL). */
   static canonicalPool(mint: string): string {
     return poolAddress(0, pumpPoolAuthority(mint as Address), mint as Address, NATIVE_MINT);
@@ -390,19 +406,27 @@ export class FactReaders {
     return this.#guard(`accounts:${mint}`, async () => {
       const pool = FactReaders.canonicalPool(mint);
       let addresses = this.#layout.get(mint) ?? [mint, pool];
-      let r = await this.#o.rpc.getMultipleAccounts(addresses, priority);
-      if (!this.#layout.has(mint)) {
+      // POOL-DATA: the fee configs ride in the final bank here too (no extra call), so a lone read (the survival read
+      // at 30 min, before the window) never leaves a pool fact without its fee context.
+      const configs: readonly string[] = [PUMP_AMM_GLOBAL_CONFIG, PUMP_AMM_FEE_CONFIG];
+      const known = this.#layout.has(mint);
+      let r = await this.#o.rpc.getMultipleAccounts(known ? [...addresses, ...configs] : addresses, priority);
+      if (!known) {
         const p = r.accounts[1];
         if (p === null || p === undefined) throw new Error(`no pool account at ${pool}`);
         const decoded = decodePool(fromBase64(p.data)).value;
         addresses = [mint, pool, decoded.poolBaseTokenAccount, decoded.poolQuoteTokenAccount, decoded.lpMint];
         this.#layout.set(mint, addresses);
-        r = await this.#o.rpc.getMultipleAccounts(addresses, priority);
+        r = await this.#o.rpc.getMultipleAccounts([...addresses, ...configs], priority);
       }
+      const all = [...addresses, ...configs];
+      const at = (address: string) => r.accounts[all.indexOf(address)] ?? null;
       const read: AccountsRead = {
         mint, slot: r.slot, commitment: 'confirmed',
-        accounts: addresses.map((address, i) => ({ address, owner: r.accounts[i]?.owner ?? null, data: r.accounts[i]?.data ?? null })),
+        accounts: addresses.map((address) => ({ address, owner: at(address)?.owner ?? null, data: at(address)?.data ?? null })),
       };
+      // The fee context first: the pool fact the accounts make is never released without it.
+      FactReaders.#feesOf(mint, addresses, r.slot, at, (source, key, value) => this.#ingest(source, key, value));
       this.#ingest('helius', RAW.accounts(mint), read);
       return `slot ${r.slot}`;
     });
@@ -573,18 +597,7 @@ export class FactReaders {
         const m = at(mint);
         if (m !== null) this.#mintProgram.set(mint, m.owner);
         put('helius', RAW.accounts(mint), { mint, slot: b.slot, commitment: 'confirmed', accounts: p.layout.map((address) => ({ address, owner: at(address)?.owner ?? null, data: at(address)?.data ?? null })) } satisfies AccountsRead);
-        // The fee context from that one bank: the pool's tiers, canonical flag, creator fee and coin flags (WATCH-1's
-        // decoder). Anything it cannot prove (a missing or foreign account) publishes nothing: #market then falls back to
-        // the latest swap's terms, or has none.
-        const [, pool, baseVault, quoteVault] = p.layout;
-        if (pool !== undefined && baseVault !== undefined && quoteVault !== undefined) {
-          const acc = (a: string) => {
-            const x = at(a);
-            return x === null ? null : { owner: x.owner, data: fromBase64(x.data) };
-          };
-          const d = decodeSnapshot(mint, pool, b.slot, [pool, baseVault, quoteVault, mint, PUMP_AMM_GLOBAL_CONFIG, PUMP_AMM_FEE_CONFIG].map(acc));
-          if (d.ok) put('helius', feesKey(mint), d.snapshot.ctx);
-        }
+        FactReaders.#feesOf(mint, p.layout, b.slot, at, put);
         if (req.holders === 'largest') parts.push(this.#guard(`holders:${mint}`, async () => this.#bankedHolders(mint, b.slot, p.listed, at, put)).then(as('holders')));
         if (scan !== null) parts.push(this.#guard(`holders-all:${mint}`, async () => this.#bankedScan(mint, b.slot, await scan, at, put)).then(as('holders-all')));
         return `slot ${b.slot}`;
