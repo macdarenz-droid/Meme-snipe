@@ -1290,6 +1290,22 @@ worker_entry() {
   fi
 }
 
+# The only worker settings a release's ops/host-config.json may give (PRACTICE-ON): the S0 shakedown's, in its
+# "shakedown" block. Mode, recorder, simulation, drills and addresses stay with worker-start; live is never one of them.
+SHAKEDOWN_NAMES='ZEROED_STRATEGY ZEROED_S0_DIAGNOSTIC ZEROED_PAPER_EDGE_PPM ZEROED_STANDINS ZEROED_WALLET'
+
+# worker_shakedown RELEASE_DIR: the release's shakedown settings, one NAME=value per line; nothing when it has no
+# "shakedown" block. Fails (jq says why on stderr) when the block is not an object, names anything outside
+# SHAKEDOWN_NAMES, or holds a value that is not a string of 1 to 400 letters, digits and commas. The worker judges each
+# value itself and refuses with exit 2 (S0 and its settings in a release with a qualifying run, among others).
+worker_shakedown() {
+  jq -r --arg names "$SHAKEDOWN_NAMES" '($names | split(" ")) as $ok | (.shakedown // {}) as $s
+    | if ($s | type) != "object" then error("the shakedown block is not an object") else $s | to_entries[]
+      | if (.key | IN($ok[]) | not) then error("\(.key) is not a shakedown setting")
+        elif (.value | type) != "string" or (.value | test("\\A[A-Za-z0-9,]{1,400}\\z") | not) then error("\(.key) is not 1 to 400 letters, digits and commas")
+        else "\(.key)=\(.value)" end end' "$1/ops/host-config.json"
+}
+
 # ssh_open: reads `nft list ruleset` on stdin; true when the live firewall lets SSH in.
 ssh_open() { grep -Eq 'tcp dport 22 .*accept'; }
 
@@ -1371,6 +1387,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# The release's S0 shakedown settings, as worker-start gives them (PRACTICE-ON): a release whose worker refuses them
+# never becomes current.
+shakedown=()
+settings="$(worker_shakedown "$dir" 2>"$tmp/shakedown.err")" || { echo "its host-config shakedown settings are refused: $(tr -cd '[:print:]' <"$tmp/shakedown.err" | cut -c1-160)"; exit 1; }
+while IFS= read -r line; do [ -z "$line" ] || shakedown+=(--setenv="$line"); done <<<"$settings"
+
 # The worker unit's sandbox, limits and environment settings (unit_sandbox), applied to the trial.
 props=()
 while IFS= read -r line; do
@@ -1379,15 +1401,15 @@ done < <(unit_sandbox "$UNIT_FILE")
 [ "${#props[@]}" -gt 40 ] || { echo "the worker unit's sandbox could not be read from $UNIT_FILE"; exit 1; }
 
 # trial UNIT LOG MODE: the release's worker as a transient unit with that sandbox, the worker's environment file, the
-# RUN-1 environment (worker-start) on the trial's state directory and ports, and the memory cap. MODE "reconcile" runs
-# its --reconcile and waits for it (at most 120 s); "run" starts it and returns.
+# RUN-1 environment and shakedown settings (worker-start) on the trial's state directory and ports, and the memory cap.
+# MODE "reconcile" runs its --reconcile and waits for it (at most 120 s); "run" starts it and returns.
 trial() {
   local unit="$1" log="$2" opts=() args=()
   if [ "$3" = reconcile ]; then opts=(--wait -p RuntimeMaxSec=120); args=(--reconcile); fi
   systemd-run --quiet --unit="$unit" "${opts[@]}" "${props[@]}" \
     -p User=zeroed-worker -p Group=zeroed-worker -p MemoryMax="$SMOKE_MEMORY_MAX" -p OOMScoreAdjust=1000 -p TimeoutStopSec=30 \
     -p EnvironmentFile=-/etc/zeroed/worker.env -p WorkingDirectory="$dir" -p ReadWritePaths="$tmp" \
-    -p StandardOutput=append:"$log" -p StandardError=append:"$log" \
+    -p StandardOutput=append:"$log" -p StandardError=append:"$log" "${shakedown[@]}" \
     --setenv=NODE_ENV=production --setenv=ZEROED_MODE=paper --setenv=ZEROED_RECORDER=on --setenv=ZEROED_SIMULATE=on \
     --setenv=ZEROED_DRILLS=on --setenv=ZEROED_STATE_DIR="$tmp/state" --setenv=ZEROED_GIT_SHA="$(basename "$dir")" \
     --setenv=ZEROED_HEALTH_ADDR="$SMOKE_HEALTH_ADDR" --setenv=ZEROED_API_ADDR="$SMOKE_API_ADDR" \
@@ -1429,18 +1451,42 @@ install_file /usr/local/lib/zeroed/worker-start 0755 <<'__ZEROED_FILE__'
 # environment (ARCHITECTURE.md 12.4): paper mode, recorder and simulation on from the first minute, the drill
 # endpoint on, the health route for the runner and the worker API both on loopback only (tailscale serve
 # publishes the API to the tailnet, 17). The release's worker (WORKER-1) runs only once the release's
-# ops/host-config.json says "worker": "release"; until then the host's stand-in. Live is never set here or in
-# any environment file: the worker refuses any mode but paper.
+# ops/host-config.json says "worker": "release"; until then the host's stand-in. The release's worker also takes the
+# S0 shakedown settings of that file's "shakedown" block (PRACTICE-ON). Live is never set here or in any environment
+# file: the worker refuses any mode but paper.
 set -euo pipefail
 . /usr/local/lib/zeroed/logic.sh
-export ZEROED_MODE=paper ZEROED_RECORDER=on ZEROED_SIMULATE=on ZEROED_DRILLS=on
-export ZEROED_HEALTH_ADDR="$WORKER_HEALTH_ADDR" ZEROED_API_ADDR="$WORKER_API_ADDR"
 entry="$(worker_entry /opt/zeroed/current)"
 if [ "$entry" != /opt/zeroed/stub/worker.mjs ]; then
-  cd /opt/zeroed/current
-  exec /usr/local/bin/node --no-warnings "$entry" "$@"
+  # The release's S0 shakedown settings (PRACTICE-ON, its host-config "shakedown" block): public values only, judged
+  # again by the worker. A block that cannot be read is refused like any refused setting (exit 2).
+  settings="$(worker_shakedown /opt/zeroed/current)" || { echo "refused: the release's host-config shakedown settings" >&2; exit 2; }
+  while IFS= read -r line; do [ -z "$line" ] || export "$line"; done <<<"$settings"
 fi
-exec /usr/local/bin/node "$entry" "$@"
+export ZEROED_MODE=paper ZEROED_RECORDER=on ZEROED_SIMULATE=on ZEROED_DRILLS=on
+export ZEROED_HEALTH_ADDR="$WORKER_HEALTH_ADDR" ZEROED_API_ADDR="$WORKER_API_ADDR"
+# HEAP-GUARD: V8's default heap limit follows the machine's RAM (about half of it: roughly 500 MB on the 1 GB host), not
+# the unit's MemoryMax=800M, and a heap past it aborts with no handler ("no clean stop"). 560 MB of old space, plus the
+# young generation (up to 48 MB) and the measured native overhead (RSS less heap: 127 MB at a 100k-mint boot, 147 MB at
+# 1M), stays under 800M. A fatal error writes a compact report into the state dir (StateDirectory: writable under
+# ProtectSystem=strict), which the next start's reconcile reads to name the death.
+reports="${STATE_DIRECTORY:-/var/lib/zeroed}/reports"
+mkdir -p "$reports"
+# Only the newest 5 reports are kept: a restart loop would otherwise write one every few minutes. The newest (the last
+# death's) is the one the reconcile reads. Safe with no report at all (nullglob).
+shopt -s nullglob
+old=("$reports"/report.*.json)
+shopt -u nullglob
+if [ "${#old[@]}" -gt 5 ]; then
+  mapfile -t old < <(ls -1t -- "${old[@]}")
+  rm -f -- "${old[@]:5}"
+fi
+heap=(--max-old-space-size=560 --report-on-fatalerror --report-compact "--report-directory=$reports")
+if [ "$entry" != /opt/zeroed/stub/worker.mjs ]; then
+  cd /opt/zeroed/current
+  exec /usr/local/bin/node --no-warnings "${heap[@]}" "$entry" "$@"
+fi
+exec /usr/local/bin/node "${heap[@]}" "$entry" "$@"
 __ZEROED_FILE__
 install_file /usr/local/sbin/zeroed-backup 0755 <<'__ZEROED_FILE__'
 #!/usr/bin/env bash
@@ -2246,30 +2292,31 @@ else
   systemctl disable --now zeroed-backup-offsite.timer >/dev/null 2>&1 || true
 fi
 
-# answers: the worker's health route says paper. The release's worker serves it on WORKER_HEALTH_ADDR; the host's
-# stand-in on the API address.
+# answers SHA: the worker's health route says paper and names release SHA (its git_sha, the release folder's name), so
+# an answer from the worker that ran before the switch never counts. The release's worker serves it on
+# WORKER_HEALTH_ADDR; the host's stand-in on the API address.
 answers() {
   local a
   for a in "$WORKER_HEALTH_ADDR" "$WORKER_API_ADDR"; do
-    curl -fsS -m 2 "http://$a/health" 2>/dev/null | jq -e '.mode == "paper"' >/dev/null 2>&1 && return 0
+    curl -fsS -m 2 "http://$a/health" 2>/dev/null | jq -e --arg sha "$1" '.mode == "paper" and .git_sha == $sha' >/dev/null 2>&1 && return 0
   done
   return 1
 }
 
-# holds: the restarted worker answers its health route in paper within 60 s, then runs SWITCH_HOLD_S more with no
-# restart and still answering. Prints why when it does not.
+# holds: the restarted worker answers its health route in paper, as the new commit, within 60 s, then runs
+# SWITCH_HOLD_S more with no restart and still answering as it. Prints why when it does not.
 holds() {
   local up=0 n0
   for _ in $(seq 1 60); do
-    if systemctl is-active --quiet zeroed-worker.service && answers; then up=1; break; fi
+    if systemctl is-active --quiet zeroed-worker.service && answers "$commit"; then up=1; break; fi
     sleep 1
   done
-  [ "$up" = 1 ] || { echo "its health route did not answer within 60 s"; return 1; }
+  [ "$up" = 1 ] || { echo "its health route did not answer as ${commit:0:12} within 60 s"; return 1; }
   n0="$(systemctl show -p NRestarts --value zeroed-worker.service)"
   sleep "$SWITCH_HOLD_S"
   systemctl is-active --quiet zeroed-worker.service && [ "$(systemctl show -p NRestarts --value zeroed-worker.service)" = "$n0" ] ||
     { echo "it stopped or restarted within ${SWITCH_HOLD_S} s of answering"; return 1; }
-  answers || { echo "its health route stopped answering within ${SWITCH_HOLD_S} s"; return 1; }
+  answers "$commit" || { echo "its health route stopped answering as ${commit:0:12} within ${SWITCH_HOLD_S} s"; return 1; }
 }
 
 # rollback WHY: the new release's worker did not stay up. Back to the release that ran before (its host files too),

@@ -6,6 +6,9 @@ import type { PoolState } from '../../../core/src/amm/index.ts';
 import { type ObservedFees, realSwap } from '../../../core/src/fills/index.ts';
 import { bps } from '../../../core/src/units/index.ts';
 import { csvObjects } from './csv.ts';
+import type { RawRow } from './raw.ts';
+
+export type { RawRow } from './raw.ts';
 
 /** Where a row sits on chain: the engine's order is (slot, txIdx, evIdx). */
 export interface ChainPos {
@@ -43,6 +46,12 @@ export interface AmmSwapRow extends ChainPos {
   readonly baseSupply: bigint;
   readonly ixName: string;
   readonly user: string;
+  /** The event's lp_fee (stays in the pool); 0 when the column is absent. */
+  readonly lpFee: bigint;
+  /** quote_amount_lp_adjusted: quote into the pool on a buy (LP fee included), out of it on a sell (LP fee excluded). */
+  readonly quoteLpAdjusted: bigint;
+  /** Event bytes beyond the published layout (the 2026-10-02 upgrade's tail), hex; '' when none (GATE-1c). */
+  readonly extraHex: string;
   /**
    * Schema 3: the user's base-token account of the emitting instruction and that account's owner, '' when there is
    * none (an empty owner marks the transaction swap_owner_unknown; a boost buy-and-burn has no account). A swap credits
@@ -65,6 +74,8 @@ export interface CurveTradeRow extends ChainPos {
   readonly mayhem: boolean;
   readonly quoteMint: string;
   readonly user: string;
+  /** Event bytes beyond the published layout, hex; '' when none (GATE-1c). */
+  readonly extraHex: string;
   /** Schema 3, as on AmmSwapRow. */
   readonly userTokenAccount: string;
   readonly userTokenOwner: string;
@@ -85,7 +96,7 @@ export interface EventRow extends ChainPos {
   readonly fields: Readonly<Record<string, string>>;
 }
 
-export type DatasetRow = AmmSwapRow | CurveTradeRow | BlockRow | EventRow;
+export type DatasetRow = AmmSwapRow | CurveTradeRow | BlockRow | EventRow | RawRow;
 
 const int = (s: string, what: string): bigint => {
   if (!/^-?\d+$/.test(s)) throw new RangeError(`${what} must be an integer, got "${s}"`);
@@ -96,6 +107,24 @@ const num = (s: string, what: string): number => {
   const v = Number(s);
   if (!Number.isSafeInteger(v)) throw new RangeError(`${what} must be a safe integer, got "${s}"`);
   return v;
+};
+/** A column added in a later scanner revision: 0 when the file predates it. */
+const optCol = (get: (c: string) => string, column: string): bigint => {
+  let v: string;
+  try {
+    v = get(column);
+  } catch {
+    return 0n;
+  }
+  return opt(v);
+};
+/** A text column added in a later scanner revision: '' when the file predates it. */
+const textCol = (get: (c: string) => string, column: string): string => {
+  try {
+    return get(column);
+  } catch {
+    return '';
+  }
 };
 const flag = (s: string): boolean => s === 'true' || s === '1';
 
@@ -132,6 +161,9 @@ export const readAmm = (text: string, out: DatasetRow[]): void =>
       amount: r.amount, baseAmount, quoteAmount, userQuote: opt(get('user_quote_amount')), pre: r.pre, fees: r.fees, baseSupply: r.baseSupply,
       ixName,
       user: get('user'),
+      lpFee: optCol(get, 'lp_fee'),
+      quoteLpAdjusted: optCol(get, 'quote_amount_lp_adjusted'),
+      extraHex: textCol(get, 'extra_hex'),
       userTokenAccount: get('user_token_account'),
       userTokenOwner: get('user_token_owner'),
     });
@@ -146,7 +178,7 @@ export const readCurve = (text: string, out: DatasetRow[]): void =>
       virtualTokenReserves: int(get('virtual_token_reserves'), 'virtual_token_reserves'),
       realSolReserves: int(get('real_sol_reserves'), 'real_sol_reserves'),
       realTokenReserves: int(get('real_token_reserves'), 'real_token_reserves'),
-      mayhem: flag(get('mayhem_mode')), quoteMint: get('quote_mint'), user: get('user'),
+      mayhem: flag(get('mayhem_mode')), quoteMint: get('quote_mint'), user: get('user'), extraHex: textCol(get, 'extra_hex'),
       userTokenAccount: get('user_token_account'), userTokenOwner: get('user_token_owner'),
     });
   });
@@ -169,7 +201,7 @@ export const readEvents = (text: string, out: DatasetRow[]): void => {
   }
 };
 
-const ORDER = { amm: 0, curve: 0, event: 0, block: 1 } as const;
+const ORDER = { amm: 0, curve: 0, event: 0, raw: 0, block: 1 } as const;
 
 /** The dataset's chain order: slot, transaction, event; a slot's block row after its transactions. */
 export const compareRows = (a: DatasetRow, b: DatasetRow): number => {

@@ -43,14 +43,14 @@ const curve = (slot: number, isBuy: boolean, tokens: bigint, owner = O, over: Pa
   return {
     kind: 'curve', slot: BigInt(slot), blockTime: slot, txIdx: 1, evIdx: 0, signature: `c${slot}`, mint: M, isBuy, solAmount: 0n, tokenAmount: tokens,
     virtualSolReserves: 0n, virtualTokenReserves: 0n, realSolReserves: 0n, realTokenReserves: real, mayhem: false, quoteMint: '', user: 'SIGNER',
-    userTokenAccount: owner === '' ? '' : ata(owner), userTokenOwner: owner, ...over,
+    userTokenAccount: owner === '' ? '' : ata(owner), userTokenOwner: owner, extraHex: '', ...over,
   };
 };
 const amm = (slot: number, side: 'buy' | 'sell', base: bigint, pre: bigint, owner = O, over: Partial<AmmSwapRow> = {}): AmmSwapRow => ({
   kind: 'amm', slot: BigInt(slot), blockTime: slot, txIdx: 1, evIdx: 0, signature: `s${slot}`, pool: POOL, baseMint: M, quoteMint: 'Q', side,
   mode: 'exact-base', amount: base, baseAmount: base, quoteAmount: 0n, userQuote: 0n, pre: { baseReserve: pre, quoteVault: 0n, virtualQuoteReserves: 0n },
   fees: { split: { lp: bps(0), protocol: bps(0), creator: bps(0) }, buybackFeeBps: bps(0), instruction: 'v1' }, baseSupply: 0n, ixName: side, user: 'SIGNER',
-  userTokenAccount: owner === '' ? '' : ata(owner), userTokenOwner: owner, ...over,
+  userTokenAccount: owner === '' ? '' : ata(owner), userTokenOwner: owner, lpFee: 0n, quoteLpAdjusted: 0n, extraHex: '', ...over,
 });
 const move = (slot: number, kind: MovementRow['kind'], from: string, to: string, amount: bigint): MovementRow => ({
   slot: BigInt(slot), blockTime: slot, txIdx: 2, outerIx: 0, innerIx: null, mint: M, kind, fromOwner: from, toOwner: to, amount,
@@ -162,6 +162,19 @@ describe('HolderBook', () => {
     expect(classifyHolder(a, mintAccounts(M, null))).toBe('locker');
     // A wallet (on-curve) owner needs no entry.
     expect(ok(known.holdersAsOf(M)).accounts.find((x) => x.owner === curvePda)).toBeDefined();
+  });
+
+  test('a closed account stops counting: a close removes it, and with no close in the data a zero balance does', () => {
+    const b = fresh();
+    b.swap(curve(2, true, 100n));
+    b.swap(curve(3, true, 50n, R));
+    b.swap(curve(4, false, 100n));
+    // O sold everything and its account was never closed: a zero balance is not a holder.
+    expect(ok(b.holdersAsOf(M)).accounts.map((a) => a.owner)).not.toContain(O);
+    b.swap(curve(5, false, 50n, R));
+    b.applyAccountOps({ slot: 6n, txIdx: 0 }, [{ kind: 'close', mint: M, account: ata(R) }]);
+    expect(ok(b.holdersAsOf(M)).accounts.map((a) => a.owner)).not.toContain(R);
+    expect(byOwner(b.holdersAsOf(M))).toEqual({ [curvePda]: TOTAL });
   });
 
   test('delegates from account operations; an owner change or a negative balance is unresolved', () => {

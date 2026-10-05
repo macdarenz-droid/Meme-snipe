@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { zstdDecompressSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
+import { MARKET_MISS_CODES } from '../src/engine/strategy.ts';
 import { RAW, producerOptions } from '../../core/src/facts/index.ts';
 import { TRIAL_POLICY } from '../../core/src/config/index.ts';
 import { RUG_LABELS_UNAVAILABLE, holdersKey, migrationKey, mintKey, parsePool, poolKey, rugCheckFromMs } from '../../core/src/gates/index.ts';
@@ -68,14 +69,16 @@ describe('readsFor: what a candidate\'s last reasons ask for', () => {
     expect(readsFor([H16('stream', 'gap'), H16('candles', 'not-covered')])).toEqual([]);
     // WORKER-1e: H15's simulation is a live read now.
     expect(readsFor([H16('sim'), H16('stream', 'gap'), H16('candles', 'not-covered')])).toEqual(['sim']);
-    expect(readsFor([{ gate: 'worker', code: 'no-market' }])).toEqual(['accounts']);
+    // POOL-DATA: each of #market's typed cases asks for the account read, as the one `no-market` did.
+    for (const code of MARKET_MISS_CODES) expect(readsFor([{ gate: 'worker', code }])).toEqual(['accounts']);
+    expect(readsFor([{ gate: 'worker', code: 'no-market' }])).toEqual([]);
     expect(readsFor([{ gate: 'worker', code: 'no-sol-price' }])).toEqual([]);
   });
 
   it('asks for the complete holder scan only when the holder set is the last thing missing', () => {
     expect(readsFor([H16('holders', 'not-covered')])).toEqual(['holders-all']);
     expect(readsFor([H16('holders', 'not-covered'), H16('mint')])).toEqual(['accounts', 'holders']);
-    expect(readsFor([H16('holders', 'not-covered'), { gate: 'worker', code: 'no-market' }])).toEqual(['accounts', 'holders']);
+    expect(readsFor([H16('holders', 'not-covered'), { gate: 'worker', code: 'no-pool-state' }])).toEqual(['accounts', 'holders']);
     expect(readsFor([H16('holders', 'not-covered'), H16('sim')])).toEqual(['holders', 'sim']);
   });
 });

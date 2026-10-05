@@ -22,7 +22,7 @@ import { swapEventState } from '../fills/pool.ts';
 import {
   type Candle, type CandlesFact, type FactObs, type GraduatesFact, type InsidersFact, type MintFact, type PoolFact, type Price,
   type SoftFact, type XcheckFact, CURVE_VOLUME_KEY, EXEC_HEALTH_KEY, GRADUATES_KEY, SOL_USD_KEY, candlesKey, createKey, curveKey,
-  holdersKey, insidersKey, lpKey, migrationKey, mintKey, poolKey, simKey, softKey, streamKey, xcheckKey,
+  carryKey, holdersKey, insidersKey, lpKey, migrationKey, mintKey, poolKey, simKey, softKey, streamKey, xcheckKey,
 } from '../gates/facts.ts';
 import { HOURLY_MAX_AGE_MS } from '../gates/series.ts';
 import { insiderLinks } from './funding.ts';
@@ -30,13 +30,19 @@ import { ChainVolumeDays } from './volume.ts';
 import type { VolumeHour } from './raw.ts';
 import { BPS_DENOMINATOR } from '../units/index.ts';
 import {
-  RAW, decimalToMicro, parseAccountsRead, parseVolumeHour, parseExecStats, parseFunderRead, parseGoPlusRead, parseHoldersRead,
+  RAW, decimalToMicro, parseAccountsRead, parseVolumeHour, parseExecStats, parseGraduatesSeed, parseFunderRead, parseGoPlusRead, parseHoldersRead,
   parseHoldersAllRead, parseJupiterAuditRead, parseRugCheckRead, parseSimRead, parseSolUsdBar, type AccountsRead, type FunderRead,
   type HoldersAllRead, unwrap,
 } from './raw.ts';
 
 /** Holder facts not formed, and scans that fell back after a refused mint-only scan, per UTC day and reason (the coverage report reads it; it never feeds a gate). */
 export const HOLDER_ABSTENTIONS_KEY = 'facts/abstentions:holders';
+
+/**
+ * PERSIST-2: the outcome of each graduates seed, `{ source, atMs, accepted, added, reason }` (no gate reads it; the
+ * worker journals it and shows it in /health, so a restart that leaves survival unknown is visible).
+ */
+export const GRADUATES_SEED_KEY = 'facts/graduates-seed';
 
 export interface FactWrite {
   readonly key: string;
@@ -321,7 +327,12 @@ interface PoolChain {
   stale: { readonly reason: string; readonly kind: 'gap' | 'mismatch' } | null;
   /** Swaps seen at `lastSlot` (a delivery twice, from a log line and a fetched transaction, counts once); older slots are refused anyway. */
   readonly seen: Set<string>;
+  /** Swaps applied to this chain, newest last (bounded): a second delivery behind newer swaps is a repeat, not a miss. */
+  readonly applied: Set<string>;
 }
+
+/** Swap ids a pool chain remembers for repeats: a repeat (a log line and a fetched transaction) comes within seconds. */
+const APPLIED_KEPT = 512;
 
 export class FactProducer {
   readonly #o: ProducerOptions;
@@ -361,6 +372,7 @@ export class FactProducer {
     };
     // Survival marks are judged on the state before this event: a trade after the mark must not date it.
     this.#survival(e, put);
+    this.#chainOther(e, put);
     const pe = programEvent(e);
     if (pe !== null) this.#program(pe.ev, pe.seen, pe.truncated, e, put);
     else if (e.key === 'chain:slot') this.#slot(e, put);
@@ -667,6 +679,12 @@ export class FactProducer {
     }
     // Insider coverage depends on the head reaching the end of each window: recheck the watched mints.
     for (const name of this.#streams.keys()) this.#refreshInsiders(name, e, put);
+    // WATCH-1c: a chain whose stream covered every slot through the head, with no swap or other pool transaction since
+    // its last state, is proven unchanged as of the head (a slot's transactions are released before its notice).
+    for (const [pool, c] of this.#chains) {
+      if (c.stale !== null || !this.#tradesCovered(pool, c.coveredFrom)) continue;
+      put(carryKey(c.mint), { pool, slot: v, state: c.state, obs: { provider: 'facts', slot: v, receivedAt: e.moment.receivedAt, quality: [], commitment: 'confirmed' } });
+    }
   }
 
   #coverage(e: MarketEvent, put: (k: string, v: unknown) => void): void {
@@ -787,6 +805,10 @@ export class FactProducer {
       if (r === null || at < r.hourStartMs + HOUR_MS) return;
       // Linear in rows: a new fact only when the complete days change (a whole window loads at once after a restart).
       if (this.#volume.add(r)) put(CURVE_VOLUME_KEY, { obs: { provider, slot: null, receivedAt: at, quality: [] }, days: this.#volume.days() });
+    } else if (key === RAW.graduatesSeed) {
+      const r = parseGraduatesSeed(v);
+      if (r === null) put(GRADUATES_SEED_KEY, { source: null, atMs: at, accepted: false, added: 0, reason: 'malformed seed' });
+      else put(GRADUATES_SEED_KEY, { source: r.source, atMs: at, ...this.#seedGraduates(r, at) });
     } else if (key === RAW.exec) {
       const r = parseExecStats(v);
       if (r === null) return;
@@ -939,7 +961,7 @@ export class FactProducer {
     const c = this.#chains.get(fact.address);
     if (c !== undefined && c.lastSlot > slot) return;
     this.#chains.set(fact.address, {
-      mint, read: fact, coveredFrom: slot + 1n, lastSlot: slot, readSlot: slot, stale: null, seen: new Set(),
+      mint, read: fact, coveredFrom: slot + 1n, lastSlot: slot, readSlot: slot, stale: null, seen: new Set(), applied: new Set(),
       state: { baseReserve: fact.baseVault, quoteVault: fact.quoteVault, virtualQuoteReserves: fact.pool.virtualQuoteReserves ?? 0n },
     });
     put(poolKey(mint), fact);
@@ -961,6 +983,23 @@ export class FactProducer {
     if (c.stale !== null && (c.stale.kind === 'mismatch' || kind === 'gap')) return;
     c.stale = { kind, reason };
     put(poolKey(c.mint), this.#chainFact(c, obs, c.state, reason));
+  }
+
+  /**
+   * WATCH-1c: a confirmed PumpSwap event on a pool's own trade stream that is not a swap (a deposit, a withdrawal, a
+   * buyback, an admin or fee instruction, or one DEC-1 cannot name) may have moved the reserves without a swap event:
+   * the chain is stale until the next swap re-bases it on the program's own pre-trade reserves. So "no swap" proves
+   * "unchanged" only while nothing else touched the pool. Fail closed: an unnamed event counts too.
+   */
+  #chainOther(e: MarketEvent, put: (k: string, v: unknown) => void): void {
+    if (!e.key.startsWith('logs:pump_amm:')) return;
+    const v = e.value;
+    if (!isObj(v) || v['commitment'] !== 'confirmed' || typeof v['via'] !== 'string' || !v['via'].startsWith('logs:') || typeof v['txSlot'] !== 'bigint') return;
+    const name = isObj(v['event']) ? v['event']['name'] : undefined;
+    if (name === 'BuyEvent' || name === 'SellEvent') return;
+    const c = this.#chains.get(v['via'].slice('logs:'.length));
+    if (c === undefined || v['txSlot'] <= c.readSlot) return;
+    this.#stale(c, 'gap', `a pool transaction other than a swap (${typeof name === 'string' ? name : 'unnamed'})`, { provider: sourceOf(e), slot: v['txSlot'], receivedAt: e.moment.receivedAt, quality: [], commitment: 'confirmed' }, put);
   }
 
   /** A gap or hole in a pool's trade stream makes its chain stale at once; a pool no longer watched drops its chain. */
@@ -1010,7 +1049,13 @@ export class FactProducer {
       c.stale = null;
       c.seen.clear();
       c.seen.add(id);
-    } else if (older) return;
+    } else if (older) {
+      // A repeat of a swap already applied is nothing new. Any other swap released behind a newer one cannot be applied
+      // in order: the state is not known until the next swap re-bases it (fail closed; WATCH-1c carries a state only
+      // while nothing is missing from it).
+      if (c.applied.has(id)) return;
+      return this.#stale(c, 'gap', `swap ${seen.signature} arrived out of order`, obs, put);
+    }
     const state = c.state;
     if (!this.#tradesCovered(d.pool, c.coveredFrom)) return this.#stale(c, 'gap', 'swap stream gap', obs, put);
     const pre = { baseReserve: d.poolBaseTokenReserves, effective: d.poolQuoteTokenReserves + (d.virtualQuoteReserves ?? 0n) };
@@ -1022,6 +1067,8 @@ export class FactProducer {
     const r = swapEventState(ev);
     if (!r.ok) return this.#stale(c, 'mismatch', r.reason, obs, put);
     c.state = r.after;
+    c.applied.add(id);
+    if (c.applied.size > APPLIED_KEPT) c.applied.delete(c.applied.values().next().value!);
     put(poolKey(c.mint), this.#chainFact(c, obs, r.after, null));
   }
 
@@ -1039,8 +1086,38 @@ export class FactProducer {
 
   #resolve(p: Pending, reserveAfter: bigint): void {
     this.#pending.delete(p.pool);
+    // What this process measured replaces a seeded entry for the same mint.
+    const i = this.#graduates.findIndex((g) => g.mint === p.mint);
+    if (i >= 0) this.#graduates.splice(i, 1);
     this.#graduates.push({ mint: p.mint, migratedAtMs: p.migratedAtMs, reserveAfter });
     this.#graduatesChanged = true;
+  }
+
+  /**
+   * PERSIST-2: graduates known before this process. As-of honest: a seed dated after the moment it is released is
+   * refused whole, and an entry counts only when its survival mark was reached by the seed's own as-of moment. A mint
+   * the series already holds keeps its entry (a live measurement or an earlier seed); one that disagrees with it
+   * refuses the whole seed, since two sources that differ on one graduate cannot both be trusted for the others.
+   */
+  #seedGraduates(r: NonNullable<ReturnType<typeof parseGraduatesSeed>>, at: number): { accepted: boolean; added: number; reason: string | null } {
+    if (r.asOfMs > at) return { accepted: false, added: 0, reason: `dated ${r.asOfMs}, after its release at ${at}` };
+    const have = new Map(this.#graduates.map((g) => [g.mint, g]));
+    const add: GraduatesFact['items'][number][] = [];
+    for (const i of r.items) {
+      if (i.migratedAtMs + this.#o.survivalAfterMs > r.asOfMs) continue;
+      const h = have.get(i.mint);
+      if (h !== undefined) {
+        if (h.migratedAtMs !== i.migratedAtMs || h.reserveAfter !== i.reserveAfter) return { accepted: false, added: 0, reason: `disagrees with the series on ${i.mint}` };
+        continue;
+      }
+      have.set(i.mint, i);
+      add.push({ mint: i.mint, migratedAtMs: i.migratedAtMs, reserveAfter: i.reserveAfter });
+    }
+    if (add.length > 0) {
+      this.#graduates.push(...add);
+      this.#graduatesChanged = true;
+    }
+    return { accepted: true, added: add.length, reason: null };
   }
 
   #survival(e: MarketEvent, put: (k: string, v: unknown) => void): void {
@@ -1060,12 +1137,26 @@ export class FactProducer {
   #flushGraduates(e: MarketEvent, put: (k: string, v: unknown) => void): void {
     if (!this.#graduatesChanged) return;
     this.#graduatesChanged = false;
-    const now = e.moment.receivedAt;
-    const keepFrom = now - this.#o.graduatesKeepMs;
-    for (let i = this.#graduates.length - 1; i >= 0; i--) if (this.#graduates[i]!.migratedAtMs < keepFrom) this.#graduates.splice(i, 1);
-    put(GRADUATES_KEY, {
-      obs: { provider: 'facts', slot: null, receivedAt: now, quality: [] },
-      items: [...this.#graduates].sort((a, b) => a.migratedAtMs - b.migratedAtMs || (a.mint < b.mint ? -1 : a.mint > b.mint ? 1 : 0)),
-    });
+    const g = graduatesFact(this.#graduates, e.moment.receivedAt, this.#o.graduatesKeepMs);
+    this.#graduates.splice(0, this.#graduates.length, ...g.kept);
+    put(GRADUATES_KEY, g.value);
   }
 }
+
+type GraduateItem = GraduatesFact['items'][number];
+
+/**
+ * The graduates fact as of `nowMs` (one implementation for the live producer and the backtest, supervisor ruling):
+ * items that migrated within `keepMs` are kept, in their given order; the fact lists them by migration time, then mint.
+ */
+export const graduatesFact = (items: readonly GraduateItem[], nowMs: number, keepMs: number): { readonly kept: GraduateItem[]; readonly value: GraduatesFact } => {
+  const keepFrom = nowMs - keepMs;
+  const kept = items.filter((x) => x.migratedAtMs >= keepFrom);
+  return {
+    kept,
+    value: {
+      obs: { provider: 'facts', slot: null, receivedAt: nowMs, quality: [] },
+      items: [...kept].sort((a, b) => a.migratedAtMs - b.migratedAtMs || (a.mint < b.mint ? -1 : a.mint > b.mint ? 1 : 0)),
+    },
+  };
+};

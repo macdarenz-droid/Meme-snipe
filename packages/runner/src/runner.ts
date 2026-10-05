@@ -10,7 +10,8 @@ import { snapshotState, type Tabletop, type WorkerControl } from './control.ts';
 import { EXIT_UNIVERSES } from '../../core/src/config/index.ts';
 import { item4 } from './item4.ts';
 import { checkQuota, coverageGaps, lookupLatency, quotaReport, rejections, type BootTotals } from './quota.ts';
-import { checkJournal } from './journal.ts';
+import { checkJournalLines } from './journal.ts';
+import { fileLines } from './lines.ts';
 import { makePlan, type Drill } from './plan.ts';
 import { buildReport, reportMarkdown, type DrillOutcome, type Kept, type Label, type RecordedFile, type RecoveredState, type Report, type RunMeta, type Sample } from './report.ts';
 
@@ -135,18 +136,19 @@ const feedSet = (h: Health): string => Object.keys(h.feeds).sort().join(',');
 const planFeeds = (m: RunMeta): string => m.plan.flatMap((d) => (d.kind === 'feed' ? [d.feed] : [])).sort().join(',');
 
 const readJson = <T>(p: string, fallback: T): T => (existsSync(p) ? (JSON.parse(readFileSync(p, 'utf8')) as T) : fallback);
-const readLines = <T>(p: string): T[] =>
-  existsSync(p)
-    ? readFileSync(p, 'utf8')
-        .split('\n')
-        .flatMap((l) => {
-          try {
-            return l ? [JSON.parse(l) as T] : [];
-          } catch {
-            return [];
-          }
-        })
-    : [];
+/** A JSON-lines file's records, streamed (GROWTH-SWEEP: the worker's journal grows for the whole run); torn lines skipped. */
+function* records<T>(p: string): Generator<T> {
+  if (!existsSync(p)) return;
+  for (const l of fileLines(p)) {
+    if (!l) continue;
+    try {
+      yield JSON.parse(l) as T;
+    } catch {
+      // A torn or unreadable line is skipped.
+    }
+  }
+}
+const readLines = <T>(p: string): T[] => [...records<T>(p)];
 
 type Pending =
   | RestartPending
@@ -415,10 +417,19 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
               delete onDisk.killedMono;
               writeFileSync(P.reboot, JSON.stringify(onDisk));
             }
-            if (cause === 'crash') await o.control.kill();
-            else if (cause === 'reboot') await o.control.reboot();
-            else if (cause === 'host-loss') await o.control.wipe({ restoreFrom: backupDir });
-            else await o.control.wipe({});
+            // RESTART-ALERT: the next boot reports this kill as planned, so the watchdog does not alert it as a crash or an OOM.
+            const marker = join(o.stateDir, STATE_FILES.plannedRestart);
+            if (cause === 'crash' || cause === 'reboot') writeFileSync(marker, JSON.stringify({ cause: `drill ${p.drill.id} (${cause})`, at: Date.now() }));
+            try {
+              if (cause === 'crash') await o.control.kill();
+              else if (cause === 'reboot') await o.control.reboot();
+              else if (cause === 'host-loss') await o.control.wipe({ restoreFrom: backupDir });
+              else await o.control.wipe({});
+            } catch (e) {
+              // No kill came: a real crash in the next minutes must not read as this drill.
+              rmSync(marker, { force: true });
+              throw e;
+            }
             log(`Drill ${p.drill.id} (${cause}): down${p.midTrade ? ' mid-trade' : ' (no trade open in the window)'}.`);
           }
         }
@@ -697,10 +708,11 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
     let report: Report | null = null;
     if (m && (runDone || aborted)) {
       const journalPath = join(o.stateDir, STATE_FILES.journal);
-      const jr = checkJournal(existsSync(journalPath) ? readFileSync(journalPath, 'utf8') : '', { allowTornTail: true });
+      // Streamed, and parsed once for every part of the report that reads it (it used to be read whole three times).
+      const jr = checkJournalLines(existsSync(journalPath) ? fileLines(journalPath) : [], { allowTornTail: true });
       const samples = readLines<Sample>(P.samples);
-      const i4 = item4(readLines<JournalLine>(journalPath), m.label, samples.some((s) => s.up && s.stub));
       const journal = readLines<JournalLine>(journalPath);
+      const i4 = item4(journal, m.label, samples.some((s) => s.up && s.stub));
       const ops = {
         quota: quotaReport(Object.values(boots), seg.end - m.startedAt),
         lookups: lookupLatency(Object.values(boots)),
@@ -777,10 +789,12 @@ const readToken = (stateDir: string): string | null => {
 };
 
 const journalLines = (stateDir: string): JournalLine[] => readLines<JournalLine>(join(stateDir, STATE_FILES.journal));
+/** The same records, one at a time, for a check that only scans. */
+const journalRecords = (stateDir: string): Generator<JournalLine> => records<JournalLine>(join(stateDir, STATE_FILES.journal));
 
 /** The boot journaled a successful reconcile, and no entry came before it. */
 export const reconciledFirst = (stateDir: string, boot: string): boolean => {
-  for (const l of journalLines(stateDir)) {
+  for (const l of journalRecords(stateDir)) {
     if (l.boot !== boot) continue;
     if (l.kind === 'reconcile' && l.ok === true) return true;
     if (l.kind === 'entry') return false;
@@ -788,8 +802,11 @@ export const reconciledFirst = (stateDir: string, boot: string): boolean => {
   return false;
 };
 
-const entriesBetween = (stateDir: string, from: number, to: number): number =>
-  journalLines(stateDir).filter((l) => l.kind === 'entry' && Date.parse(l.ts) >= from && Date.parse(l.ts) <= to).length;
+const entriesBetween = (stateDir: string, from: number, to: number): number => {
+  let n = 0;
+  for (const l of journalRecords(stateDir)) if (l.kind === 'entry' && Date.parse(l.ts) >= from && Date.parse(l.ts) <= to) n++;
+  return n;
+};
 
 /** The host's start decision (cli vps-tick). Pure. `start` is the run name to start, or null. */
 export const tickAction = (o: {

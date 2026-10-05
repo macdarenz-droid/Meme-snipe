@@ -11,22 +11,22 @@
 // Three reads do not follow a candidate's reasons: hourly SOL/USD bars (H8, regime), hourly chain volume from DATA-1c's
 // day releases (regime, FACTS-1d), and one pool read just after each graduate's survival mark (regime), for every
 // migration the strategy shortlisted.
-import { RUG_LABELS_UNAVAILABLE, rugCheckFromMs, type EvidenceCode } from '../../../core/src/gates/index.ts';
+import { HARD_STAGE, RUG_LABELS_UNAVAILABLE, rugCheckFromMs, type EvidenceCode, type HardGate } from '../../../core/src/gates/index.ts';
 import { RUG_CHECK_CONFIG, RUG_CONFIG, type RugConfig } from '../../../core/src/config/rugs.ts';
 import { OFF_CHAIN } from '../../../core/src/engine/index.ts';
 import { P2 } from '../scheduler/index.ts';
 import { RpcHttp, rpcHistorySource, type RugCheckRequest } from '../providers/index.ts';
 import type { Policy } from '../../../core/src/config/index.ts';
 import { producerOptions } from '../../../core/src/facts/index.ts';
-import type { ExecStats, SimRead } from '../../../core/src/facts/raw.ts';
+import type { ExecStats } from '../../../core/src/facts/raw.ts';
 import { heliusRpcUrl, type HttpClient, type Secrets } from '../providers/index.ts';
 import type { Scheduler } from '../scheduler/index.ts';
 import { ASSUMPTIONS } from './budget.ts';
 import { join } from 'node:path';
-import { FactReaders, FactRpc } from './readers.ts';
+import { FactReaders, FactRpc, type BatchPart, type BatchRequest, type BatchResult, type SimFn } from './readers.ts';
 import { CHAIN_VOLUME_DIR, fileChainVolumeStore } from './volume-store.ts';
 import { DEPLOYER_CHECK_SPEND_FILE, DeployerChecks } from './deployer-checks.ts';
-import type { CandidateReason } from '../engine/strategy.ts';
+import { type CandidateReason, MARKET_MISS_CODES } from '../engine/strategy.ts';
 import type { FactContext, FactSource } from '../run/facts.ts';
 import type { TimerHandle } from '../scheduler/timers.ts';
 
@@ -46,6 +46,8 @@ export interface LiveReaders {
   readSim?(mint: string, spend: bigint): Promise<boolean>;
   /** The worker's own execution statistics onto the feed (`read:exec-health`). */
   ingestExecStats?(stats: ExecStats): void;
+  /** READ-COHERENT: a candidate's stage-2 and stage-3 inputs as one coherent batch (`FactReaders.readBatch`). */
+  readBatch?(mint: string, req: BatchRequest): Promise<BatchResult>;
 }
 
 /** The policy's volume window, for the chain-volume read. */
@@ -93,10 +95,21 @@ const DAY_MS = 86_400_000;
 const EVIDENCE: ReadonlySet<string> = new Set<EvidenceCode>(['missing', 'malformed', 'stale', 'degraded', 'gap', 'not-covered', 'inconsistent']);
 /** The inputs a read can supply, by read kind. Every other input is stream-built or has no free live source. */
 const ACCOUNTS: ReadonlySet<string> = new Set(['mint', 'pool', 'lp']);
+/** The kinds a batch reads (READ-COHERENT): never on their own while the readers can batch. */
+const BATCHED: ReadonlySet<Kind> = new Set<Kind>(['accounts', 'holders', 'holders-all', 'sim', 'xcheck']);
+/** Inputs a batch reads again each time, so their age alone never keeps the scan back. */
+const AGED: ReadonlySet<string> = new Set(['mint', 'pool', 'lp', 'xcheck', 'sim']);
+/** The evaluation stage a reason belongs to: its gate's (an evidence reason's, the gate that needed it); 0 when none. */
+const stageOf = (g: CandidateReason): number => {
+  const gate = (g.neededBy ?? g.gate) as HardGate;
+  return Object.hasOwn(HARD_STAGE, gate) ? HARD_STAGE[gate] : 0;
+};
 /** H14's detail when the rug half is not covered and the deployer check is missing or not accepted (gates/hard.ts). */
 const DEPLOYER_CHECK_DETAIL = `${RUG_LABELS_UNAVAILABLE}: `;
 
-type Kind = 'accounts' | 'holders' | 'holders-all' | 'xcheck' | 'mint-history' | 'sim' | 'survival' | 'sol-usd' | 'chain-volume' | 'deployer-check';
+const MARKET_MISS: ReadonlySet<string> = new Set(MARKET_MISS_CODES);
+
+type Kind = 'batch' | 'accounts' | 'holders' | 'holders-all' | 'xcheck' | 'mint-history' | 'sim' | 'survival' | 'sol-usd' | 'chain-volume' | 'deployer-check';
 
 /** What one candidate's last reasons ask the source to read; empty when it must not read. */
 export const readsFor = (gates: readonly CandidateReason[] | null): Kind[] => {
@@ -104,8 +117,9 @@ export const readsFor = (gates: readonly CandidateReason[] | null): Kind[] => {
   const out = new Set<Kind>();
   let holdersOnly = true;
   for (const g of gates) {
-    // The worker has no market for the mint yet: its pool fact comes from the account read.
-    if (g.gate === 'worker' && g.code === 'no-market') {
+    // The worker has no market for the mint (any of #market's cases, as `no-market` did): its pool fact comes from the
+    // account read.
+    if (g.gate === 'worker' && MARKET_MISS.has(g.code)) {
       out.add('accounts');
       holdersOnly = false;
       continue;
@@ -191,7 +205,10 @@ export class LiveFacts implements FactSource {
     }
     for (const [mint, c] of ctx.candidates()) {
       if (!this.#survivalDone.has(mint)) this.#survival.set(mint, c.migratedAtMs);
-      for (const kind of readsFor(c.gates)) this.#read(kind, mint, now, c.spend, c.creator ?? null);
+      const kinds = readsFor(c.gates);
+      const batch = this.#readers?.readBatch === undefined ? null : this.#batchFor(mint, c.gates ?? [], kinds, c.spend);
+      for (const kind of kinds) if (batch === null || !BATCHED.has(kind)) this.#read(kind, mint, now, c.spend, c.creator ?? null);
+      if (batch !== null) this.#read('batch', mint, now, c.spend, null, batch);
     }
     for (const [mint, at] of this.#survival) {
       if (now < at + this.#o.survivalAfterMs + this.#o.survivalReadDelayMs) continue;
@@ -201,10 +218,40 @@ export class LiveFacts implements FactSource {
     }
   }
 
-  #read(kind: Kind, mint: string, now: number, spend: bigint | null = null, creator: string | null = null): void {
+  /**
+   * READ-COHERENT: the batch a candidate's reasons call for, or null when they call for none of its inputs. Every input
+   * judged at one moment is read again in it, whichever one the reasons named, since all of them age together: the
+   * accounts (mint, pool, LP) and the cross-checks always; once the candidate has passed stage 2, its holder view and
+   * simulation too. The complete scan, as before, only once the bounded view was the last input missing (not covered)
+   * and, from then on, while nothing but those inputs' age or the holder view stands in the way.
+   */
+  #batchFor(mint: string, gates: readonly CandidateReason[], kinds: readonly Kind[], spend: bigint | null): BatchRequest | null {
+    if (!kinds.some((k) => BATCHED.has(k))) return null;
+    if (kinds.includes('holders-all')) this.#scanTurn.add(mint);
+    if (gates.some((g) => stageOf(g) >= 3)) this.#stage3.add(mint);
+    if (!this.#stage3.has(mint)) return { holders: null, spend: null, xcheck: true };
+    const scan = this.#scanTurn.has(mint) && gates.every((g) => g.input === 'holders' || (g.code === 'stale' && g.input !== undefined && AGED.has(g.input)));
+    return { holders: scan ? 'all' : 'largest', spend, xcheck: true };
+  }
+
+  /** Candidates that have passed stage 2, and those whose bounded holder view was judged not enough (READ-COHERENT). */
+  readonly #stage3 = new Set<string>();
+  readonly #scanTurn = new Set<string>();
+
+  #read(kind: Kind, mint: string, now: number, spend: bigint | null = null, creator: string | null = null, batch: BatchRequest | null = null): void {
     const last = this.#lastAt.get(`${kind}:${mint}`);
     if (last !== undefined && now - last < this.#o.minReadGapMs) return;
     switch (kind) {
+      case 'batch': {
+        if (batch === null) return;
+        // Counted per part under the kinds it replaces, so the coverage report reads as before.
+        return this.#run(kind, mint, async (r) => {
+          const parts = r.readBatch === undefined ? null : await r.readBatch(mint, batch).catch(() => null);
+          const asked: [BatchPart, boolean][] = parts === null ? [['accounts', false]] : (Object.entries(parts) as [BatchPart, boolean][]);
+          for (const [part, ok] of asked) this.#count(part, ok);
+          return null;
+        });
+      }
       case 'accounts': return this.#run(kind, mint, (r) => r.readAccounts(mint));
       case 'holders': return this.#run(kind, mint, (r) => r.readHolders(mint));
       case 'holders-all': return this.#run(kind, mint, (r) => r.readHoldersAll(mint));
@@ -240,7 +287,8 @@ export class LiveFacts implements FactSource {
     }
   }
 
-  #run(kind: Kind, mint: string, f: (r: LiveReaders) => Promise<boolean>, force = false): void {
+  /** Runs one read, single flight per kind and mint; `f` answering null has counted its own parts (a batch). */
+  #run(kind: Kind, mint: string, f: (r: LiveReaders) => Promise<boolean | null>, force = false): void {
     const ctx = this.#ctx;
     const readers = this.#readers;
     if (ctx === null || readers === null) return;
@@ -252,7 +300,7 @@ export class LiveFacts implements FactSource {
       .catch(() => false)
       .then((ok) => {
         this.#inFlight.delete(id);
-        this.#count(kind, ok);
+        if (ok !== null) this.#count(kind, ok);
       });
   }
 
@@ -295,14 +343,16 @@ export interface LiveFactsWiring {
 /** How often the paper execution statistics are published: logged, never judged, so freshness does not bind it. */
 export const EXEC_STATS_EVERY_MS = 10_000;
 
-type SimFn = (mint: string, spend: bigint, ingest: (read: SimRead) => void) => Promise<boolean>;
 
 /** Mint-history page caps (trial values, configuration): 20 signature pages, then 3 pages and 10 transactions a funder. */
 export const MINT_HISTORY_CAPS = { maxPages: 20, funderPages: 3, funderTransactions: 10 } as const;
 
 /** The readers with H15's simulation, its answer going onto the feed through the readers' own `ingestSim`. */
-const withSim = (r: FactReaders, sim: SimFn | undefined): LiveReaders =>
-  sim === undefined ? r : Object.assign(r, { readSim: (mint: string, spend: bigint) => sim(mint, spend, (read) => r.ingestSim(read)) });
+const withSim = (r: FactReaders, sim: SimFn | undefined): LiveReaders => {
+  if (sim === undefined) return r;
+  r.simulate = sim;
+  return Object.assign(r, { readSim: (mint: string, spend: bigint) => sim(mint, spend, (read) => r.ingestSim(read)) });
+};
 
 /** The production source: FACTS-1's readers on the worker's Feed and schedulers, sized from the locked policy. */
 export const liveFacts = (w: LiveFactsWiring): LiveFacts => {

@@ -13,6 +13,9 @@ Our own survivorship-free study: 518 graduations in a 12-hour window plus about 
 ## Signal research on practice days ([signals.md](research/signals.md))
 RES-3: which as-of signals separate positive from negative net return in U1 and U2 after conservative costs, on practice days only (a coded wall refuses holdout days). Pre-registered plan, 27 features, walk-forward with embargo, every rule logged as a trial; at most one candidate per universe goes to BT-2. Literature: no study measures forward returns for U1 or U2; for tokens this small the evidence points to reversal, not momentum. Results pending (practice days arrive from about 6 Oct).
 
+## Where an edge could clear costs ([edge.md](research/edge.md))
+RES-4: exact break-even moves per setup (conservative, rent back when the sell-and-close lands): $2 needs +4.98% on a young PumpSwap pool and +4.36% on a U1 pool at the $50k floor; $20 needs +3.09% and +2.21%. No cheaper venue is buildable today. Six hypotheses pre-registered before any practice day (`research/edge/preregistration.json`); U1 dip-reversal ranks first on small-coin reversal evidence. U2 setups likely cannot reach 300 holdout trades by 2026-10-20.
+
 ## Venues and lifecycle ([venues.md](research/venues.md))
 - pump.fun is ~70–80% of launchpad volume ($177.5M/day curve); PumpSwap $321M/day. ~49.7k launches and ~2.6% graduation in the last 24 h (measured).
 - Fees: curve 1.25% per side; canonical PumpSwap 1.25% below 420 SOL market cap, 1.20% to 1,470 SOL, down to 0.30% at 98,240 SOL; non-canonical 0.30%. Graduation is at ~411 SOL (~$49k).
@@ -65,6 +68,12 @@ RES-3: which as-of signals separate positive from negative net return in U1 and 
 
 ## Brand ([brand.md](research/brand.md))
 - Premium marks are one solid idea carried by negative space, one colour first, depth only on the app icon. Led to the "Slot" mark (`docs/BRAND.md`).
+
+## Slot time (WATCH-1c, measured 2026-10-04)
+- Source: mainnet `getRecentPerformanceSamples(720)` from api.mainnet-beta.solana.com at 06:08 UTC. 279 one-minute samples, slots 453,108,490–453,170,974. Slot time per sample is 60 s / `numSlots`.
+- Mean 267 ms, p50 267 ms, p95 274 ms, p99 278 ms, max 283 ms. This agrees with the fact-check's 0.27–0.32 s.
+- Limit: these are one-minute means, so they hide the spread of single slots (a skipped leader slot, a slow block). RPC block times have 1 s resolution and cannot measure single slots. The live dry run's recorder can (each slot notice's receipt time), and that is the measurement to use once it exists.
+- Used for: the WATCH-1 timing guard's release time, which is 2 slots × 400 ms. 400 ms is 1.44× the measured p99 minute mean.
 
 ## Still open
 - RES-2 whale copy-trading study: results pending.

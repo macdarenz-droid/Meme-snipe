@@ -17,11 +17,13 @@ export interface WorkerConfig {
   readonly gitSha: string;
   readonly watchdogUrl: string | null;
   readonly heartbeatMs: number;
+  /** OPS-SUMMARY: how often the daily summary is posted to the watchdog (ZEROED_SUMMARY_MS, default 30 minutes). */
+  readonly summaryMs: number;
   /**
    * WATCH-1: how often the position watch looks, and how old a held position's market may get before a snapshot is read
    * through the second path (ZEROED_WATCH_EVERY_MS, ZEROED_WATCH_STALE_MS).
    */
-  readonly watch: { readonly everyMs: number; readonly staleMs: number; readonly latencyMs: number };
+  readonly watch: { readonly everyMs: number; readonly staleMs: number; readonly latencyMs: number; readonly verifyMs: number };
   /** The bot wallet's public address, when the signer has made one: the dry-run builds use it. */
   readonly wallet: string | null;
   /** Funded public wallets that stand in for the unfunded bot wallet in simulations (TEST-2). */
@@ -44,7 +46,7 @@ export interface WorkerConfig {
  *   market (EXIT-1d). With integer settings the steady bound implies this one; both are checked so neither can drift.
  * Null when both hold; else why not (the entry exits 2, the worker refuses to build).
  */
-export const watchTimingProblem = (w: WorkerConfig['watch'], maxQuoteAgeMs: number, releaseMs: number): string | null => {
+export const watchTimingProblem = (w: Pick<WorkerConfig['watch'], 'everyMs' | 'staleMs' | 'latencyMs'>, maxQuoteAgeMs: number, releaseMs: number): string | null => {
   const steady = w.staleMs + w.everyMs + w.latencyMs + releaseMs;
   if (!(steady < maxQuoteAgeMs)) return `refused: ZEROED_WATCH_STALE_MS + ZEROED_WATCH_EVERY_MS + ZEROED_WATCH_LATENCY_MS + the feed's release (${w.staleMs} + ${w.everyMs} + ${w.latencyMs} + ${releaseMs}) must stay below the policy's quote age of ${maxQuoteAgeMs} ms`;
   const transition = releaseMs + steady;
@@ -52,7 +54,11 @@ export const watchTimingProblem = (w: WorkerConfig['watch'], maxQuoteAgeMs: numb
   return null;
 };
 
-/** Solana's target slot time; the feed releases an off-chain fact once its horizon of slots has passed. */
+/**
+ * The slot time the watch's timing guard charges for each slot of the feed's horizon. Measured mainnet slot time
+ * (docs/RESEARCH.md "Slot time", 2026-10-04): p99 of one-minute means 278 ms; 400 ms keeps 1.44x headroom over it until
+ * the live dry run's recorded slot receipts measure single slots.
+ */
 export const SLOT_MS = 400;
 
 export type Parsed = { readonly ok: true; readonly config: WorkerConfig } | { readonly ok: false; readonly code: number; readonly message: string };
@@ -61,6 +67,14 @@ const ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 
 /** The registered strategies live with the run contract (the runner checks the same list). */
 export { REGISTERED_STRATEGIES };
+
+/**
+ * PRACTICE-ON: the bot wallet the S0 shakedown builds for until the signer makes the real one. The program-derived
+ * address of seed "zeroed-shakedown-wallet" under the System program: off the curve, so no private key exists for it, and
+ * no account on chain. Its builds are only compared with the stand-in's (TEST-2), never simulated or signed. Refused in
+ * any release that names a qualifying run: items 3 and 4 need the signer's own wallet.
+ */
+export const SHAKEDOWN_WALLET = 'FdmNGWTvFJfkioV6jPg6HCC1ng3T5vGo4fBKAgX3vTTf';
 
 /** A qualifying-run file that is present but cannot be read. */
 export const UNREADABLE = Symbol('unreadable');
@@ -95,12 +109,17 @@ export const parseConfig = (
   if (api === null || (apiAddr === addr && o.reconcileOnly !== true)) return refuse('refused: the API port is out of range or the same as the health port');
   const beat = env['ZEROED_HEARTBEAT_MS'] === undefined ? 20_000 : Number(env['ZEROED_HEARTBEAT_MS']);
   if (!Number.isSafeInteger(beat) || beat < 1_000) return refuse('refused: ZEROED_HEARTBEAT_MS must be a whole number of at least 1000');
+  const summaryMs = env['ZEROED_SUMMARY_MS'] === undefined ? 1_800_000 : Number(env['ZEROED_SUMMARY_MS']);
+  if (!Number.isSafeInteger(summaryMs) || summaryMs < 1_000 || summaryMs > 86_400_000) return refuse('refused: ZEROED_SUMMARY_MS must be a whole number from 1000 to 86400000');
   const watchEvery = env['ZEROED_WATCH_EVERY_MS'] === undefined ? 200 : Number(env['ZEROED_WATCH_EVERY_MS']);
   if (!Number.isSafeInteger(watchEvery) || watchEvery < 100) return refuse('refused: ZEROED_WATCH_EVERY_MS must be a whole number of at least 100');
   const watchStale = env['ZEROED_WATCH_STALE_MS'] === undefined ? 500 : Number(env['ZEROED_WATCH_STALE_MS']);
   if (!Number.isSafeInteger(watchStale) || watchStale < watchEvery) return refuse('refused: ZEROED_WATCH_STALE_MS must be a whole number of at least ZEROED_WATCH_EVERY_MS');
   const watchLatency = env['ZEROED_WATCH_LATENCY_MS'] === undefined ? 400 : Number(env['ZEROED_WATCH_LATENCY_MS']);
   if (!Number.isSafeInteger(watchLatency) || watchLatency < 50) return refuse('refused: ZEROED_WATCH_LATENCY_MS must be a whole number of at least 50');
+  // WATCH-1c: a held pool proven unchanged by its stream is still read this often (a transfer into a vault is not on it).
+  const watchVerify = env['ZEROED_WATCH_VERIFY_MS'] === undefined ? 30_000 : Number(env['ZEROED_WATCH_VERIFY_MS']);
+  if (!Number.isSafeInteger(watchVerify) || watchVerify < watchStale) return refuse('refused: ZEROED_WATCH_VERIFY_MS must be a whole number of at least ZEROED_WATCH_STALE_MS');
   const wallet = env['ZEROED_WALLET'] ?? null;
   if (wallet !== null && !ADDRESS.test(wallet)) return refuse('refused: ZEROED_WALLET is not an address');
   const standIns = (env['ZEROED_STANDINS'] ?? '').split(',').map((s) => s.trim()).filter((s) => s !== '');
@@ -115,6 +134,7 @@ export const parseConfig = (
   const qualifying = qualifyingRun !== null && (runId === undefined || runId === '' || runId === qualifyingRun);
   if (qualifying && (name === 'S0' || edgeText !== undefined)) return refuse('refused: S0 and ZEROED_PAPER_EDGE_PPM are never used in the qualifying run');
   if (qualifying && !REGISTERED_STRATEGIES.includes(name)) return refuse('refused: the qualifying run needs a registered strategy in ZEROED_STRATEGY');
+  if (wallet === SHAKEDOWN_WALLET && qualifyingRun !== null) return refuse('refused: ZEROED_WALLET is the shakedown\'s keyless stand-in; a release with a qualifying run needs the signer\'s wallet');
   let paperEdgePpm: bigint | null = null;
   if (edgeText !== undefined) {
     if (name !== 'S0') return refuse('refused: ZEROED_PAPER_EDGE_PPM is only for the S0 shakedown');
@@ -139,7 +159,7 @@ export const parseConfig = (
       runId: env['ZEROED_RUN_ID'] ?? null, runLabel: env['ZEROED_RUN_LABEL'] ?? null,
       gitSha: env['ZEROED_GIT_SHA'] ?? release() ?? 'unknown',
       watchdogUrl: watchdog === '' ? null : watchdog.replace(/\/$/, ''),
-      heartbeatMs: beat, watch: { everyMs: watchEvery, staleMs: watchStale, latencyMs: watchLatency }, wallet, standIns,
+      heartbeatMs: beat, summaryMs, watch: { everyMs: watchEvery, staleMs: watchStale, latencyMs: watchLatency, verifyMs: watchVerify }, wallet, standIns,
       strategy: { name, paperEdgePpm, qualifying, s0Diagnostic },
     },
   };
