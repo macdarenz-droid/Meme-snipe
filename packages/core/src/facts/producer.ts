@@ -10,6 +10,7 @@
 //
 // Rule (owner): missing, stale or failed data produces no fact, or an explicit not-covered one (a flagged or
 // `complete: false` fact the gates reject). Nothing here ever fills a gap with a value that passes.
+import { createHash } from 'node:crypto';
 import { DAY_MS, HOUR_MS, MINUTE_MS, SECOND_MS } from '../config/time.ts';
 import type { Policy } from '../config/policy.ts';
 import {
@@ -110,7 +111,8 @@ export const TRADE_REPEAT_WINDOW_MS = HOUR_MS;
  * a remembered trade with its minute, against about 350 B for the full `signature:base:quote` text.
  */
 export const tradeRepeatId = (signature: string, baseBefore: bigint, quoteBefore: bigint): string => {
-  const h = Number(BigInt.asUintN(32, (baseBefore * 0x9e3779b1n) ^ (quoteBefore * 0x85ebca77n) ^ (baseBefore >> 32n) ^ (quoteBefore >> 29n)));
+  // The first 8 hex digits (32 bits) of a SHA-256 of both reserves: no hand-rolled mixing constants (CFG-1's literal guard).
+  const h = Number.parseInt(createHash('sha256').update(`${baseBefore}:${quoteBefore}`, 'utf8').digest('hex').slice(0, 8), 16);
   const text = signature.slice(0, 22) + h.toString(36);
   const codes = new Array<number>(text.length);
   for (let i = 0; i < text.length; i++) codes[i] = text.charCodeAt(i);
