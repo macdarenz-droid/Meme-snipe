@@ -381,6 +381,8 @@ export interface LiveFactsWiring {
   readonly execStats?: () => ExecStats | null;
   /** The worker's state dir: the deployer checks keep their daily spend there across restarts. */
   readonly stateDir?: string;
+  /** The worker's log (a holder scan count that could not be saved). */
+  readonly log?: (line: string) => void;
 }
 
 /** How often the paper execution statistics are published: logged, never judged, so freshness does not bind it. */
@@ -415,6 +417,7 @@ export const liveFacts = (w: LiveFactsWiring): LiveFacts => {
       }),
       // STEP-B: today's complete holder scans survive a restart (the cap is a day's, not a process's).
       ...(w.stateDir === undefined ? {} : { scansFile: join(w.stateDir, HOLDER_SCANS_FILE) }),
+      ...(w.log === undefined ? {} : { log: w.log }),
       ...(w.github === undefined ? {} : {
         releases: {
           api: { scheduler: w.github.api }, downloads: { scheduler: w.github.downloads },

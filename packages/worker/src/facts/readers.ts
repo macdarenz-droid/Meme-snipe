@@ -252,6 +252,8 @@ export interface FactReadersOptions {
    * counts as spent (fail safe). Without it the count lives in the process only.
    */
   readonly scansFile?: string;
+  /** A line for the worker's log (a scan count that could not be saved). Never carries a path or an error message. */
+  readonly log?: (line: string) => void;
   readonly token2022Filter?: Token2022Filter;
 }
 
@@ -341,6 +343,12 @@ export class FactReaders {
         if (!Number.isSafeInteger(v['day']) || !Number.isSafeInteger(v['scans']) || (v['scans'] as number) < 0) throw new Error('bad scans file');
         this.#scanDay = v['day'] as number;
         this.#scans = v['scans'] as number;
+        // Dated after today (the clock stepped back since it was written): spent until that day has passed, never a
+        // fresh day's budget; written back so a later process reads the same.
+        if ((v['day'] as number) > Math.floor(o.timers.now() / 86_400_000)) {
+          this.#scans = Number.MAX_SAFE_INTEGER;
+          this.#saveScans();
+        }
       } catch {
         // Unreadable: today's cap counts as spent, written back so the next UTC day starts again.
         this.#scanDay = Math.floor(o.timers.now() / 86_400_000);
@@ -675,7 +683,8 @@ export class FactReaders {
   /** One scan off today's cap, or false when the cap is reached. */
   #takeScan(): boolean {
     const day = Math.floor(this.#o.timers.now() / 86_400_000);
-    if (this.#scanDay !== day) {
+    // Only forward: a clock stepped back keeps the later day's count (as the fill budget does).
+    if (day > this.#scanDay) {
       this.#scanDay = day;
       this.#scans = 0;
     }
@@ -689,8 +698,14 @@ export class FactReaders {
   #saveScans(): void {
     const f = this.#o.scansFile;
     if (f === undefined) return;
-    writeFileSync(`${f}.tmp`, JSON.stringify({ day: this.#scanDay, scans: this.#scans }));
-    renameSync(`${f}.tmp`, f);
+    // A write that fails (a full disk, a permission) never throws out of the readers (their constructor runs at the
+    // worker's start): the count stays in memory, so what is spent stays spent in this process, and it is logged.
+    try {
+      writeFileSync(`${f}.tmp`, JSON.stringify({ day: this.#scanDay, scans: this.#scans }));
+      renameSync(`${f}.tmp`, f);
+    } catch {
+      this.#o.log?.('Holder scan count not saved: it is kept in this process only.');
+    }
   }
 
   /**
