@@ -2224,6 +2224,29 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - `restart-keep.test.ts`: an ended candidate is not restored, with the live run's record and tail; a never-evaluated one has no tail; one ms inside the window it is still restored, at the window's end exactly it is not; the in-window candidate's decisions equal a restore of it alone; a worker restarted after the window reads none of the candidate's transactions.
   - Hand mutants killed: no read limit; urgent reads at the back; waiting reads run after a stop; scan count not saved; unreadable file not counted as spent; no fill limit; no reservation; no refund; a finished fill not waking the next; the scan file not wired in production; the window check off by one either way (`>` at the exact end, one ms late); an ended candidate dropped without its tail; the check moved before the pool is noted.
 
+## Fee tiers from the chain (FEE-TIER-NOW; `facts/readers.ts` `readBatch`, `run/worker.ts`)
+
+- **Why (supervisor ruling, 2026-10-05):** a PumpSwap swap event reports the fee tier of its own pre-trade market cap. A swap that crosses a tier threshold therefore leaves the next quote priced at the old tier, live and after a restart. No check on reserves alone can tell whether two market caps share a tier: the thresholds live only in the pump-fees FeeConfig account. Pump's own advice is to read FeeConfig rather than infer tiers (research/execution.md, quant.md F11).
+- **What:** PumpSwap's GlobalConfig and the pump-fees FeeConfig join the batch's final `getMultipleAccounts`, the same single call. That is no extra call and no extra credit: Helius bills per call, and a test pins the call count.
+  - They are decoded with WATCH-1's `decodeSnapshot` from the same bank: tiers, canonical flag, creator fee override, coin flags.
+  - The result is put as `worker:fees:<mint>` inside the batch's open/close, at the bank's moment.
+  - #market already prefers that fact, so `poolFees` selects the tier at the current reserves on every quote.
+  - The worker's paper fill (`poolOf`) reads the same fact. It now unwraps the off-chain frame; before, a batch-read context would have reached the fill wrapped and unusable, which the end-to-end test caught.
+  - Observed swap terms stay only as the fallback before a mint's first batch. A missing or foreign account publishes nothing (fail closed).
+  - After a restart, the first batch prices the coin again at the current tier, whatever the restored terms say.
+- **Parity:** the recorded-live replay rebuilds the context from its recorded frames and gives the same decisions (test).
+- **Known gap, bounded (BT parity review):** the historical backtest keeps observed swap terms until a FeeConfig history arrives in the proof phase. Backtest and live can differ in exactly three cases:
+  1. A tier crossing between swaps: a quote falls in a different tier from the last swap's pre-trade market cap.
+  2. A FeeConfig or GlobalConfig update by pump between two swaps: live prices the new config from the next batch, the backtest only after the next swap.
+  3. A quote before a mint's first swap: live has a fee context from the first batch, the backtest has none.
+- **Tests that fail before** (`read-coherent.test.ts`, FEE-TIER-NOW blocks):
+  - the bank carries both configs at the same call count, and the context matches the decoder's;
+  - a FeeConfig not owned by pump-fees, or no config at all, puts no context;
+  - a crossing is priced at the tier of the reserves now;
+  - end to end, after live swaps the worker's market prices from the FeeConfig schedule (several tiers, canonical), never the swap's one-tier context;
+  - the parity replay.
+  - `fees-keep.test.ts` adds the restore case: a moved pool with a fee-context fact is judged by the gates.
+
 ## Encoded addresses are flat strings (OOM-SWAPS part 1, `core/src/chain/base58.ts`)
 
 - **2026-10-05 · Why.** The HeapOutOfMemory deaths went on after BOOT-BOUND (09790b40: crash 12 → 13 by 4:26 PM, about one boot every 10–15 minutes, so the heap filled at about 38 MB a minute in a live run). A harness probe with real swap log frames on a watched candidate pool (decode, feed, engine, strategy) measured **+10.0 KB of heap per swap, linear** (6,000 swaps +58 MB, 30,000 +286 MB). About 4,000 swaps a minute across the ~230 pools watched in their window fits the live slope. A heap snapshot after 6,000 swaps found 1.13 million concatenated strings (34.6 MB of the 58 MB), held by the engine's `AsOfStore` as each swap's six addresses. `encodeBase58` built its result one character at a time (`out +=`), and V8 keeps such a string as a rope of about 30 nodes.
