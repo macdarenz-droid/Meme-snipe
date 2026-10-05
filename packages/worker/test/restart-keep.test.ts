@@ -103,7 +103,7 @@ describe('RESTART-KEEP: a restart keeps the candidates in their window', () => {
   it('saves the candidate with its transactions; the restart restores it, reads them again and evaluates it at its moment', async () => {
     const { h, timers, seed } = await shortlistedAndStopped();
     const saved = loadState(join(h.stateDir, PERSIST_FILE), RUG_CONFIG);
-    expect(saved.ok && saved.candidates).toEqual([{ mint: MINT, pool: POOL_ADDRESS, migratedAtMs: MIGRATED_AT, migrationSlot: SLOT - 15_000n, tries: 0, lastEvalMs: null, lastReason: null, bars: [], signatures: { create: 'create-1', complete: null, migration: MIG_SIG } }]);
+    expect(saved.ok && saved.candidates).toEqual([{ mint: MINT, pool: POOL_ADDRESS, migratedAtMs: MIGRATED_AT, migrationSlot: SLOT - 15_000n, tries: 0, lastEvalMs: null, lastReason: null, bars: [], fees: null, signatures: { create: 'create-1', complete: null, migration: MIG_SIG } }]);
     timers.set(timers.now() + 10 * 60_000);
     const { h2, m2, fetchedWhy } = await restart(h, timers, seed);
     expect(decisions(h2).filter((r) => r[0] === 'candidate restored').map((r) => r[2])).toEqual([MINT]);
@@ -495,8 +495,11 @@ describe('RESTART-KEEP: a restart keeps the candidates in their window', () => {
     // The position closes: its exit and the mint's pool state are forgotten.
     ev('test:tick', null, t0 + 3_000, { [`p:${M2}:1`]: { id: `p:${M2}:1`, mint: M2, status: 'closed' } });
     expect(strategy.saved()[`p:${M2}:1`]).toBeUndefined();
-    // Held again (a new position on the same mint): nothing of the first one carries over.
-    ev(RESTORE_KEY, { exits: { [`p:${M2}:2`]: exit({ deployer: { sellers: ['dev-b'], supply: 1_000n }, deployerSales: { ids: [], list: [] }, flow: { minutes: [], ids: [] } }) } }, t0 + 4_000);
+    // Held again (a new position on the same mint): nothing of the first one carries over. The book holds the new position,
+    // as the worker's rebuilt book does at a restore (a restored exit without a booked position is dropped, EXIT-1h
+    // follow-up); `opening` keeps it out of exit management, which this test does not exercise.
+    ev(RESTORE_KEY, { exits: { [`p:${M2}:2`]: exit({ deployer: { sellers: ['dev-b'], supply: 1_000n }, deployerSales: { ids: [], list: [] }, flow: { minutes: [], ids: [] } }) } }, t0 + 4_000,
+      { [`p:${M2}:2`]: { id: `p:${M2}:2`, mint: M2, status: 'opening' } });
     const again = strategy.saved()[`p:${M2}:2`]!;
     expect(again.flow).toEqual({ minutes: [], ids: [] });
     expect(again.deployerSales).toEqual({ ids: [], list: [] });

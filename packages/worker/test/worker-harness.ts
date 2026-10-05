@@ -233,6 +233,8 @@ export class Market {
    * default, as live (POS-1): after entry nothing re-reads the pool, and its state moves only with `chainSwap`.
    */
   heldPoolFacts = false;
+  /** When set, `pool()` publishes the pool fact at exactly these reserves (FEES-KEEP: the pool a swap left). */
+  poolAt: PoolState | null = null;
   /** The SOL/USD price the `pool()` and `solPrice()` facts carry (micro-dollars). */
   solUsd: bigint = SOL_PRICE;
   /** The pool's reserves as the last `accountsRead` or `chainSwap` left them. */
@@ -277,7 +279,10 @@ export class Market {
       return { ...v, obs: { ...v.obs, slot: v.obs.slot === null ? null : slot, receivedAt: this.now - 50, ...over } };
     };
     const base = now(poolKey(MINT)) as unknown as Record<string, unknown>;
-    if (this.heldPoolFacts || !this.held()) this.fact(poolKey(MINT), { ...base, quoteVault: ((base['quoteVault'] as bigint) * quoteScalePpm) / 1_000_000n });
+    const at = this.poolAt;
+    const reserves = at === null ? { quoteVault: ((base['quoteVault'] as bigint) * quoteScalePpm) / 1_000_000n }
+      : { baseVault: at.baseReserve, quoteVault: at.quoteVault, pool: { ...(base['pool'] as object), virtualQuoteReserves: at.virtualQuoteReserves } };
+    if (this.heldPoolFacts || !this.held()) this.fact(poolKey(MINT), { ...base, ...reserves });
     if (this.withFees) this.fact(feesKey(MINT), FEE_CONTEXT);
     this.fact(SOL_PRICE_KEY, { value: this.solUsd, atMs: this.now - 50 });
     for (const k of [lpKey(MINT), holdersKey(MINT), softKey(MINT), xcheckKey(MINT), EXEC_HEALTH_KEY]) this.fact(k, now(k));
