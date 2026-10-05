@@ -4,9 +4,9 @@ Owner, Tue 6 Oct about 1:00 AM: a second supervisor (S2) takes the parked **app 
 
 From here on, S2 owns this file. S2 keeps it current on its own branch `claude/s2-docs`, which starts from S1's docs branch `ccr-528521bb-f7a7zo`. S1 reads it there and does not edit it.
 
-## Active crash-only work
+## Active S2 work
 
-Owner has lifted the S2 pause in chat. Disk-crash correction is the current priority, with five area reviews awaiting its revised immutable head. After that, resume assigned queue by dependency and urgency; existing finished or ready work is preserved. S1 alone merges/deploys.
+Owner clarified the pause affects S1 only. Disk-crash PR #246 at 616a7d531b7ba4066051e96f3d722963a9134366 has five independent area PASS reviews; local full check and CI are running. S1 saved-file acceptance remains a merge gate. FUNNEL-TRUTH #237 has one refresh builder doing latest-base merge and the identified create-expired truth delta; no duplicate full suite while the disk check occupies that slot. Remaining assigned queue resumes by dependencies; S1 alone merges/deploys.
 
 ## Latest handoff audit
 
@@ -102,6 +102,8 @@ S2-READY 6af4e43b707960316d8cd8419cb2e513fa9f4b60
 - These local limitations are historical. Current directly verified GitHub results are in Latest handoff audit; they do not establish that any future base-update head is green.
 
 ## S2 events (newest first)
+
+- **2026-10-06 10:47:12 AEDT** — Published and verified disk-crash head 616a7d531b7ba4066051e96f3d722963a9134366 on claude/s2-disk-crash, containing latest base 5efb9ae0497523c84e3bb49a82bce989652cdb0b. Opened PR #246 for pre-check CI, run 37390321713; check and historical-data started on that head. All five independent exact-head reviewers PASS (APP/API, EXIT, facts, persist, run/disk); verdict evidence posted to #246. Full local check and required CI remain pending; S1 must accept the new zero-data reserve shape under this file’s saved-data rule before landing. No S2-READY yet.
 
 - **2026-10-06 10:41:17 AEDT** — Owner clarification was posted and verified on PR #149 comment 6005614915. Verified four additional truth regressions fail before their fixes (immediate API halt, current-fault summaries, cross-midnight warning and async fallback), log /tmp/s2-disk-crash-truth-fail-before.log. All six correction paths are implemented; the builder is running the focused suite including unchanged replay/summary guards. FUNNEL-TRUTH #237 remains open at c2f426b1 with cancelled check, so it is the next app readiness gap after crash review capacity frees.
 
