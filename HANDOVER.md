@@ -249,6 +249,7 @@ Supervisor: session_01Ec4DXEAqLxM6M1WGVQG5se (same account as every worker). Hou
 Parked with no card: STATS builder 01Qy4q1, SANDBOX-TIDY 01MoXXP, DATA-STORE 018c27u, OPS-SUMMARY 01HHYJq. Data reviewer 01XAwN7: ARCHIVE-SAFE reviews, then ARCHIVE-WATCH.
 
 **Log (Melbourne time)**
+- 4:02 AM #236 at b4ec2340 (1e8264cc plus a test-only type fix in create-keep.test.ts): BT delta review (dbdd4c52..b4ec2340) and facts delta review (58da17c3..b4ec2340) sent to 01L7Gdf and 01NGXuv; CI running. Crashes continue on 73c61006: 3:11 AM (1,677 s), about 3:33 AM, 3:58 AM (1,506 s); 12 unplanned restarts so far.
 - 4:00 AM #236 "code-final" at 1e8264cc but CI `check` failed at typecheck (string vs Address); builder told to fix, and reviews go to the fixed head. Contents per the builder:
   - B1: `createKeepVerdict` (core/src/gates/create-keep.ts) in LiveStrategy and StudyStrategy; let-go at keep + 1 h by chain time; a one-coin live/backtest test;
   - B2: let-go reaches FactProducer (tested);
