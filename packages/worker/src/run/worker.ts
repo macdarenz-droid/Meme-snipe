@@ -143,6 +143,8 @@ export interface WorkerDeps {
    * Without it they are not read: coins that migrated while the worker was down are not candidates.
    */
   readonly restartReads?: { readonly rpc: SeedRpc; readonly budget: { remaining(nowMs: number): number; spend(credits: number, nowMs: number): void; refund(credits: number, nowMs: number): void } };
+  /** Test seam: the pack of the recording's saved-state copy (persist's `packFile` unless a test holds it open). */
+  readonly pack?: typeof packFile;
   /**
    * CREATE-AFTER-RESTART: looks up a shortlisted mint's create that neither this process nor the saved store holds
    * (sources.ts `findCreate`, under the fills' daily budget). Without it such a create waits, as before.
@@ -426,6 +428,8 @@ export class Worker {
   #handoff: { readonly ref: SavedStateRef; readonly index: DeployerIndex; readonly labeller: RugLabeller } | null = null;
   /** G4c: the recording's plain saved-state copy this boot restored from, packed at start. */
   #unpacked: { readonly path: string; readonly sha256: string; readonly bytes: number } | null = null;
+  /** The pack of the recording's saved-state copy, while it runs beside the start (a stop waits for it). */
+  #packing: Promise<void> | null = null;
   #lastSaveMs = 0;
   #saveRefused = false;
   #beatSeq = 0;
@@ -820,7 +824,7 @@ export class Worker {
         }
         this.#d.log(`Recorder: the stored saved state ${c.sha256} decompresses to sha256 ${held.sha256}; this boot packs its own copy.`);
       }
-      const p = await packFile(c.path, { sha256: c.sha256, bytes: c.bytes });
+      const p = await (this.#d.pack ?? packFile)(c.path, { sha256: c.sha256, bytes: c.bytes });
       this.#record((r) => r.packed(PERSIST_FILE, p.packed, p.content));
       if (!existsSync(shared)) {
         try {
@@ -889,6 +893,11 @@ export class Worker {
     } catch (j) {
       this.#d.log(`Journal: the recorder alert was not written: ${errorText(j)}.`);
     }
+  }
+
+  /** Resolves once the recording's saved-state copy is packed (or there was none to pack). */
+  whenPacked(): Promise<void> {
+    return this.#packing ?? Promise.resolve();
   }
 
   /** The strategy's `savedState`: the restored index and labeller, once, only for the seed that names exactly them. */
@@ -1540,7 +1549,9 @@ export class Worker {
     const d = this.#d;
     const r = await this.reconcile();
     if (!r.ok) return r;
-    await this.#packCopy();
+    // Packing the recording's saved-state copy is housekeeping: it runs beside the start, never ahead of the feeds (its
+    // disk time would delay them, by however long the disk takes). A stop waits for it before the recorder closes.
+    this.#packing = this.#packCopy();
     this.#journalRecovered();
     // Entries wait for the seed; this halt is released ahead of every live event, so the index waits with them.
     this.#seeding = true;
@@ -1629,7 +1640,9 @@ export class Worker {
     this.#observing = true;
     const r = await this.reconcile();
     if (!r.ok) return r;
-    await this.#packCopy();
+    // Packing the recording's saved-state copy is housekeeping: it runs beside the start, never ahead of the feeds (its
+    // disk time would delay them, by however long the disk takes). A stop waits for it before the recorder closes.
+    this.#packing = this.#packCopy();
     this.#journalRecovered();
     this.#sources = d.sources({ feed: this.#feed, timers: d.timers, pools: () => new Map() });
     for (const s of this.#sources) this.#feeds.set(s.name, { src: s, connected: false, last: null, droppedUntil: 0 });
@@ -2024,6 +2037,7 @@ export class Worker {
     this.#world.stop();
     const open = Object.values(this.#engine.book.positions).filter((p) => p.status !== 'closed').map((p) => p.id);
     this.#journal.write('stop', { open_positions: open, open_intents: openIntents(this.#desk.book), reasons: code === EXIT.clean ? ['signal'] : crash === undefined ? ['crash'] : ['crash', crash] });
+    if (this.#packing !== null) await this.#packing;
     this.#record((r) => r.close());
     this.#ledger.close();
     if (code === EXIT.clean) writeFileSync(join(d.config.stateDir, STATE_FILES.cleanStop), new Date(d.timers.now()).toISOString());

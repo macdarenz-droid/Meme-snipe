@@ -13,7 +13,7 @@ import { RUG_CONFIG } from '../../core/src/config/rugs.ts';
 import { TRIAL_POLICY } from '../../core/src/config/index.ts';
 import { RAW } from '../../core/src/facts/raw.ts';
 import { GRADUATES_KEY, survivalCondition } from '../../core/src/gates/index.ts';
-import { DailyBudget, fileSha256, loadState } from '../src/persist/index.ts';
+import { DailyBudget, fileSha256, loadState, packFile } from '../src/persist/index.ts';
 import { SavedStateMissing, checkBoot, loadSession, replayBoot, savedStateOf } from '../src/run/parity.ts';
 import { FILL_BUDGET_FILE, FILL_CREDITS_PER_DAY, SEED_CREDIT_CAP, runSeed } from '../src/run/seed-start.ts';
 import { PERSIST_EVERY_MS, PERSIST_FILE, SAVED_STATES, type SeedRequest, type SeedResult } from '../src/run/worker.ts';
@@ -105,6 +105,7 @@ describe('PERSIST-1 in the worker', () => {
     await h.worker.stop();
     const h2 = makeWorker({ stateDir, timers });
     expect(await h2.worker.observeOnly()).toEqual({ ok: true });
+    await h2.worker.whenPacked();
     const copy = join(stateDir, 'recorder', h2.worker.boot, PERSIST_FILE);
     expect([existsSync(copy), existsSync(`${copy}.zst`)]).toEqual([false, true]);
     await h2.worker.stop();
@@ -129,6 +130,7 @@ describe('PERSIST-1 in the worker', () => {
       boots.push(pre.worker.boot);
       const h = makeWorker({ stateDir, timers, seed });
       await boot(h);
+      await h.worker.whenPacked();
       boots.push(h.worker.boot);
       await h.worker.kill();
     }
@@ -160,6 +162,37 @@ describe('PERSIST-1 in the worker', () => {
     expect(() => replayBoot(loadSession(stateDir).find((b) => b.boot === boots[5])!, d)).toThrow(/the recording's copy has sha256/);
   }, 60_000);
 
+  it('the pack runs beside the start: a slow disk never delays the feeds; a stop waits for the pack (review of #217)', async () => {
+    const stateDir = tempState();
+    const timers = virtualTimers(T);
+    const seed = (r: SeedRequest) => runSeed(r, { rpc: emptyRpc, timers });
+    const first = makeWorker({ stateDir, timers, seed });
+    const m = await boot(first);
+    m.create();
+    await m.run(1_000, 200, () => m.slot());
+    await first.worker.stop();
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => (release = r));
+    const h = makeWorker({ stateDir, timers, seed, pack: async (path, content) => (await gate, packFile(path, content)) });
+    const started = h.worker.start();
+    // The feeds start while the pack is held (it used to come first, by however long the disk took).
+    for (let k = 0; k < 200 && !h.order.includes('start helius-ws'); k++) await new Promise<void>((r) => setImmediate(r));
+    expect(h.order).toContain('start helius-ws');
+    const copy = join(stateDir, 'recorder', h.worker.boot, PERSIST_FILE);
+    expect([existsSync(copy), existsSync(`${copy}.zst`)]).toEqual([true, false]);
+    // A stop waits for the pack before the recorder closes: its manifest lists the packed copy.
+    let stopped = false;
+    const stop = h.worker.stop().then(() => (stopped = true));
+    for (let k = 0; k < 50; k++) await new Promise<void>((r) => setImmediate(r));
+    expect(stopped).toBe(false);
+    release();
+    await stop;
+    await started;
+    expect([existsSync(copy), existsSync(`${copy}.zst`)]).toEqual([false, true]);
+    const manifest = JSON.parse(readFileSync(join(stateDir, 'recorder', h.worker.boot, 'manifest.json'), 'utf8')) as { attachments: { file: string }[] };
+    expect(manifest.attachments.map((x) => x.file)).toEqual([`${PERSIST_FILE}.zst`]);
+  }, 60_000);
+
   it('a stored copy that no longer holds the bytes is never linked: the boot packs its own (STATE-DEDUPE)', async () => {
     const stateDir = tempState();
     const timers = virtualTimers(T);
@@ -176,6 +209,7 @@ describe('PERSIST-1 in the worker', () => {
     writeFileSync(stored, zstdCompressSync(Buffer.from('not the saved state')));
     const h = makeWorker({ stateDir, timers, seed });
     await boot(h);
+    await h.worker.whenPacked();
     const own = join(stateDir, 'recorder', h.worker.boot, `${PERSIST_FILE}.zst`);
     expect(statSync(own).ino).not.toBe(statSync(stored).ino);
     expect(createHash('sha256').update(zstdDecompressSync(readFileSync(own))).digest('hex')).toBe(sha);
