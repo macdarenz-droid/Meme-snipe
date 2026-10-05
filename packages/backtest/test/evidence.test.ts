@@ -9,6 +9,7 @@ import { type EvidenceInput, runEvidence } from '../src/evidence.ts';
 import type { HoldoutStore } from '../src/holdout.ts';
 import { asRelease, RELEASE } from './release-fixture.ts';
 import { type RunOptions, type RunResult, runBacktest } from '../src/run.ts';
+import { loadManifest } from '../src/dataset/dataset.ts';
 import { writeDataset } from '../src/dataset/writer.ts';
 import { SOL_USD, syntheticRows } from '../src/dataset/synthetic.ts';
 
@@ -80,6 +81,12 @@ describe('pre-funding evidence (BT-3)', () => {
     for (const release of [undefined, 'synthetic', 'data-test', 'data-2026-09-06']) {
       expect(() => runEvidence(input({ windows: [{ dir: stripped, ...(release === undefined ? {} : { release }) }] }))).toThrow(/assembled window release/);
     }
+  });
+
+  test('extra manifest fields cannot unset the synthetic mark (review W1c): the window stays synthetic and gate mode refuses it', () => {
+    const opted = make('opt-out', { leadInDays: 14, sums: true, manifest: { synthetic: false } });
+    expect(loadManifest(opted).synthetic).toBe(true);
+    expect(() => runEvidence(input({ windows: [{ dir: opted, release: RELEASE }] }))).toThrow(/synthetic window is never gate evidence/);
   });
 
   test('every mode refuses a window with a holdout day, before anything runs (BT-WALL a)', () => {
