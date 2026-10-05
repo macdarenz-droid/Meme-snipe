@@ -6,6 +6,8 @@ From here on, S2 owns this file. S2 keeps it current on its own branch `claude/s
 
 ## S2 events (newest first)
 
+- **2026-10-06 01:10:39 AEDT** — FUNNEL-TRUTH independent reviewers funnel_api_review (APP/API) and funnel_facts_review (strategy/worker facts) both CHANGES NEEDED at 2d53119c4e9e5d3749255700fd7660f3434b1b90. Corrected head 0f1a3c386e9d703231bad7fc56d80615b4beb041 bounds hard checks to H1–H17 with delimiters and counts generic risk refusals at stage 1; risk-approved size mismatch retains stage 2. Nine tests failed before (including real worker fault and R14 paths); all 11 pass after. Docs updated in place. No core risk, policy, strategy decision or protected path edits. Both reviewers will inspect correction delta on exact head; CI and PR creation pending API access.
+
 - **2026-10-06 01:09:53 AEDT** — APP-TRUTH independent APP/API reviewer app_truth_review PASS on corrected exact head 1790097accb0fa680462a7a595505a95ca2d500b. Reviewed only fallback correction delta; direct runtime checks confirm inherited names fall back and known words remain. No remaining APP/API findings. Full pnpm check still running. Prior review at 4b6ed6ef remains historical, not reused as current-head evidence. Verdict must be copied to PR #216 once API access works; no CI green or S2-READY claimed.
 
 - **2026-10-06 01:08:45 AEDT** — APP-TRUTH fallback fixed at bld pending exact SHA in next event: three new inherited-property regression cases failed before with TypeError, then all 17 APP-TRUTH tests passed after Object.hasOwn guard. Historical review remains recorded; fresh reviewer will inspect corrected exact head before current PASS. Obsolete full run ended by supervisor with exit 143, not counted as passed or failed tests.
