@@ -115,16 +115,16 @@ try {
   fatal(e);
 }
 const w = worker!;
-let stopping = false;
+// Every stop ends the process with the stop's code: a signal (0), a refused start, or a crash of the engine loop (1), which
+// the worker stops by itself. Nothing is left lingering, so systemd sees the code and restarts it. The unit gives 30 s
+// (TimeoutStopSec); finish within 25 s whatever happens.
+void w.stopping.then(() => setTimeout(() => process.exit(EXIT.crash), 25_000).unref());
+void w.stopped.then((code) => {
+  credits.flush();
+  process.exit(code);
+});
 const stop = (): void => {
-  if (stopping) return;
-  stopping = true;
-  // The unit gives 30 s (TimeoutStopSec); finish within 25 s whatever happens.
-  setTimeout(() => process.exit(EXIT.crash), 25_000).unref();
-  void w.stop(EXIT.clean).then((code) => {
-    credits.flush();
-    process.exit(code);
-  });
+  void w.stop(EXIT.clean);
 };
 process.on('SIGTERM', stop);
 process.on('SIGINT', stop);
@@ -143,8 +143,8 @@ if (environment.argv.includes('--reconcile')) {
 // `--reconcile-only` (RUN-1d's host-loss tabletop): reconcile, journal `recovered`, serve /health, send nothing; it
 // runs until SIGTERM. Otherwise the full start.
 const started = observeOnly ? await w.observeOnly() : await w.start();
-if (!started.ok && !stopping) {
+if (!started.ok) {
   fail(started.message);
-  await w.stop(started.code);
-  process.exit(started.code);
+  // Exits through `stopped`, with this code, or with the code of a stop already under way.
+  void w.stop(started.code);
 }

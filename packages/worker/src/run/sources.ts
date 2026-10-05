@@ -297,9 +297,9 @@ export class LiveProviders {
    * scheduler at P0 (review of #87): it prices a held position's exit, only for open positions, only while their market
    * is stale, at most T_max each, so the monthly budget's halt never takes the price an exit needs.
    */
-  watchRead(): (addresses: readonly string[]) => Promise<WatchRead> {
+  watchRead(): (addresses: readonly string[], minContextSlot: bigint | null) => Promise<WatchRead> {
     const rpc = new RpcHttp({ provider: 'alchemy', url: () => alchemyRpcUrl(this.#o.secrets), http: this.#o.http, scheduler: this.alchemy, timeoutMs: 10_000 });
-    return (addresses) => rpc.getMultipleAccounts(addresses, P0);
+    return (addresses, minContextSlot) => rpc.getMultipleAccounts(addresses, P0, minContextSlot ?? undefined);
   }
 
   /** SEED-1's backfill RPC: Helius, charged to its scheduler like every other call. */
@@ -323,11 +323,15 @@ export class LiveProviders {
     return findCreate(mint, { rpc: this.seedRpc(), ingest, timers, budget: this.#o.fillBudget });
   }
 
-  /** A transaction at confirmed (P2), put on the feed; true when found. */
+  /**
+   * A transaction at confirmed (P2), put on the feed; true when found and readable. One DEC-1 cannot decode reads as
+   * not found, so a cut trade log it was fetched for still becomes a rugs gap (a decode failure is a fact gap).
+   */
   async fetchTx(signature: string): Promise<boolean> {
     if (this.#fetcher === null) return false;
     try {
-      return (await this.#fetcher.fetch(signature, P2)) !== null;
+      const found = await this.#fetcher.fetch(signature, P2);
+      return found !== null && found.undecodable !== true;
     } catch {
       return false;
     }
