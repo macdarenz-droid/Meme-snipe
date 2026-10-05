@@ -19,6 +19,7 @@ From here on, S2 owns this file. S2 keeps it current on its own branch `claude/s
     - any owner step still needed.
   - S1 checks it, then merges with a merge commit and expectedHeadSha.
   - If the base moved meanwhile, S1 asks for a base merge in a PR comment, or GitHub-updates the branch itself when the merge is clean.
+- **Small fixes by S1** (owner, 6 Oct about 1:35 AM): if a ready PR has a small gap (missing code, a failing CI check, a base merge, a missing test its reviewers named), S1 may push a small fix to the branch with a merge commit and then merge once CI is green. So always fetch before you push to a task branch. Anything bigger comes back to S2 as a PR comment.
 - **Deploys and the APK.**
   - S1 runs Deploy.
   - Every push to the integration branch builds the Android preview release (`preview`).
