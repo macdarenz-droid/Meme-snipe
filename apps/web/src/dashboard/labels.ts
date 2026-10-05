@@ -44,7 +44,7 @@ export const FLAG_LABEL: Record<StatusFlag, string> = {
  * An unknown rule, or none, reads as the plain risk limit.
  */
 export const riskHaltLabel = (source: unknown): string => {
-  const words = typeof source === 'string' ? RISK_CODE_LABEL[source] : undefined;
+  const words = typeof source === 'string' && Object.hasOwn(RISK_CODE_LABEL, source) ? RISK_CODE_LABEL[source] : undefined;
   if (words === undefined) return HALT_LABEL.risk;
   return /^[A-Z]{2}/.test(words) ? words : words.charAt(0).toLowerCase() + words.slice(1);
 };

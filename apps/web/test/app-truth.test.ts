@@ -48,6 +48,10 @@ describe('a risk halt names its rule', () => {
     expect(statusRows(status(null)).map((r) => r.value)).toEqual(['Off: risk limit']);
   });
 
+  it.each(['constructor', 'toString', '__proto__'])('an inherited property name %s still reads risk limit', (source) => {
+    expect(statusRows(status(source)).map((r) => r.value)).toEqual(['Off: risk limit']);
+  });
+
   it('every risk rule has words, and none is flagged by the copy guard', () => {
     for (const code of ['sol_price_unknown', 'sol_price_stale', 'balance_unknown', 'balance_stale', 'mark_unknown', 'mark_stale', 'risk_fault']) expect(RISK_CODE_LABEL[code], code).toBeDefined();
     expect(findBanned(Object.values(RISK_CODE_LABEL).join(' '))).toEqual([]);
