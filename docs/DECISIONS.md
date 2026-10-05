@@ -2180,3 +2180,23 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - Also `facts-source.test.ts`: every typed code asks for the account read.
 - **Hand mutants killed:** restore not setting the terms; the save's moment bound removed; the state file's date check removed; the `v >= 0` rate guard removed (persist review B1: a negative saved rate threw in `bps()` on every boot); the reserves check removed from the restored terms, from #market and from `poolOf`; a live swap not clearing `restored`.
 - **Follow-up (FEE-TIER-NOW):** live has the same issue one swap at a time. The last swap reports its pre-trade tier, and if it crossed a boundary the next quote uses the old tier. The same post-reserves check closes it.
+
+## Fee tiers from the chain (FEE-TIER-NOW; `facts/readers.ts` `readBatch`, `run/worker.ts`)
+
+- **Why (supervisor ruling, 2026-10-05):** a PumpSwap swap event reports the fee tier of its own pre-trade market cap. A swap that crosses a tier threshold therefore leaves the next quote priced at the old tier, live and after a restart. No check on reserves alone can tell whether two market caps share a tier: the thresholds live only in the pump-fees FeeConfig account. Pump's own advice is to read FeeConfig rather than infer tiers (research/execution.md, quant.md F11).
+- **What:** PumpSwap's GlobalConfig and the pump-fees FeeConfig join the batch's final `getMultipleAccounts`, the same single call. That is no extra call and no extra credit: Helius bills per call, and a test pins the call count.
+  - They are decoded with WATCH-1's `decodeSnapshot` from the same bank: tiers, canonical flag, creator fee override, coin flags.
+  - The result is put as `worker:fees:<mint>` inside the batch's open/close, at the bank's moment.
+  - #market already prefers that fact, so `poolFees` selects the tier at the current reserves on every quote.
+  - The worker's paper fill (`poolOf`) reads the same fact. It now unwraps the off-chain frame; before, a batch-read context would have reached the fill wrapped and unusable, which the end-to-end test caught.
+  - Observed swap terms stay only as the fallback before a mint's first batch. A missing or foreign account publishes nothing (fail closed).
+  - After a restart, the first batch prices the coin again at the current tier, whatever the restored terms say.
+- **Parity:** the recorded-live replay rebuilds the context from its recorded frames and gives the same decisions (test).
+- **Known gap, bounded:** the historical backtest keeps observed swap terms until a FeeConfig history arrives in the proof phase. Backtest and live can therefore differ only when a quote falls in a different tier from the last swap's pre-trade market cap, that is, at tier crossings between swaps.
+- **Tests that fail before** (`read-coherent.test.ts`, FEE-TIER-NOW blocks):
+  - the bank carries both configs at the same call count, and the context matches the decoder's;
+  - a FeeConfig not owned by pump-fees, or no config at all, puts no context;
+  - a crossing is priced at the tier of the reserves now;
+  - end to end, after live swaps the worker's market prices from the FeeConfig schedule (several tiers, canonical), never the swap's one-tier context;
+  - the parity replay.
+  - `fees-keep.test.ts` adds the restore case: a moved pool with a fee-context fact is judged by the gates.

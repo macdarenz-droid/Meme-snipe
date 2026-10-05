@@ -10,7 +10,7 @@ import { emptyBook } from '../../core/src/lifecycle/index.ts';
 import { observedFeeContext } from '../../core/src/fills/index.ts';
 import { bps } from '../../core/src/units/index.ts';
 import { poolKey, rugCheckKey, simKey } from '../../core/src/gates/index.ts';
-import { passingFacts } from '../../core/test/gates/world.ts';
+import { FEE_CONTEXT, passingFacts } from '../../core/test/gates/world.ts';
 import { swapLog } from '../../core/test/facts/swaps.ts';
 import type { PoolState } from '../../core/src/amm/index.ts';
 import { LiveStrategy, MARKET_MISS_CODES, RESTORE_KEY, SEED_KEY, marketMissCode } from '../src/engine/strategy.ts';
@@ -111,9 +111,10 @@ describe('FEES-KEEP: the saved fee terms come back with the candidate', () => {
   });
 
   it.each([
-    ['the pool its swap left: judged past #market (not unpriced)', true],
-    ['a pool moved since (a downtime swap not seen): no-fee-context, never priced at the old tier', false],
-  ])('a restored candidate with a swap before the restart and none after, its pool fact at %s', async (_, same) => {
+    ['the pool its swap left: judged past #market (not unpriced)', true, false],
+    ['a pool moved since (a downtime swap not seen): no-fee-context, never priced at the old tier', false, false],
+    ['a pool moved since, with a fee-context fact (FEE-TIER-NOW\'s batch read): judged past #market at the read\'s tiers', false, true],
+  ])('a restored candidate with a swap before the restart and none after, its pool fact at %s', async (_, same, feeFact) => {
     // A fresh host 16 days before T; the coin passes every gate at T but H15 (no simulation), so it is judged, never entered.
     const stateDir = tempState();
     const timers = virtualTimers(T - 16 * 86_400_000);
@@ -152,7 +153,7 @@ describe('FEES-KEEP: the saved fee terms come back with the candidate', () => {
     };
     for (let k = 0; k < 600 && !h2.order.includes('start helius-ws'); k++) await tick();
     const m2 = new Market(h2);
-    m2.withFees = false;
+    m2.withFees = feeFact;
     m2.omit = new Set([simKey(MINT)]);
     // The pool fact at the reserves the swap left, or at the passing pool's (which the swap moved away from).
     m2.poolAt = same ? after : null;
@@ -174,7 +175,7 @@ describe('FEES-KEEP: the saved fee terms come back with the candidate', () => {
       await tick();
     }
     expect(judged()).toBe(true);
-    if (!same) {
+    if (!same && !feeFact) {
       expect(h2.worker.strategy.candidates().get(MINT)!.gates).toEqual([{ gate: 'worker', code: 'no-fee-context', detail: 'fee context unknown' }]);
       expect(h2.worker.poolOf(MINT)).toBeNull();
       await h2.worker.stop();
@@ -185,6 +186,13 @@ describe('FEES-KEEP: the saved fee terms come back with the candidate', () => {
     expect(gates.length).toBeGreaterThan(0);
     expect(gates.filter((g) => g.gate === 'worker')).toEqual([]);
     expect(gates.some((g) => g.input === 'sim' || g.neededBy === 'H15' || g.gate === 'H15')).toBe(true);
+    if (feeFact) {
+      // Priced from the fact, whatever the restored terms say: the pool moved, so they price nothing.
+      expect(h2.worker.strategy.observedFees(MINT, h2.worker.poolOf(MINT)!.state)).toBeUndefined();
+      expect(h2.worker.poolOf(MINT)?.ctx).toEqual(FEE_CONTEXT);
+      await h2.worker.stop();
+      return;
+    }
     expect(h2.worker.strategy.observedFees(MINT, after)).toBeDefined();
     expect(h2.worker.poolOf(MINT)?.state).toEqual(after);
     await h2.worker.stop();

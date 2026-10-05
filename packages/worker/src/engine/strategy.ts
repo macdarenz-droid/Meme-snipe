@@ -351,7 +351,7 @@ const paperBlockhash = (id: string) => blockhash(encodeBase58(createHash('sha256
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 /** FEED-1 wraps off-chain values as `{ value, source, ... }`; worker facts arrive unwrapped. */
-const unwrap = (v: unknown): unknown => (isObj(v) && 'value' in v && 'source' in v ? v['value'] : v);
+export const unwrap = (v: unknown): unknown => (isObj(v) && 'value' in v && 'source' in v ? v['value'] : v);
 
 interface Market {
   readonly pool: PoolState;
