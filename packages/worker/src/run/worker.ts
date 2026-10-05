@@ -47,6 +47,7 @@ import { startHealthServer } from './health.ts';
 import { type HeartbeatPosition, heartbeatBody, sendHeartbeat } from './heartbeat.ts';
 import { crashSite } from './crash-site.ts';
 import { Summarizer, SummaryClock } from './summary.ts';
+import { CappedMap } from './capped-map.ts';
 import { jsonText } from './json.ts';
 import { Journal } from './journal.ts';
 import { type PaperMarket, type PaperState, PaperWorld, type SimLeg } from './paper-world.ts';
@@ -250,8 +251,11 @@ export const CREATE_RETRY_MS = 60_000;
 /** A saved create's id, live (`log:<signature>…`) or fetched (`ev:<signature>:…`): its transaction signature. */
 const CREATE_ID = /^(?:log|ev):([1-9A-HJ-NP-Za-km-z]{64,88})(?=[:#]|$)/;
 
-/** The most create signatures a process keeps (CREATE-AFTER-RESTART), oldest forgotten first. */
+/** The most create signatures (CREATE-AFTER-RESTART) and token symbols a process keeps, oldest forgotten first. */
 export const CREATE_SIGS_MAX = 200_000;
+export const SYMBOLS_MAX = 200_000;
+/** RESTART-KEEP: the most curve-completion and migration signatures kept, each. */
+export const TX_SIGS_MAX = 200_000;
 
 /** A create event's mint and signature (the field, else the id), or null when it is not a create or names neither. */
 const createSigOf = (e: MarketEvent): readonly [string, string] | null => {
@@ -371,10 +375,11 @@ export class Worker {
   #watch: PositionWatch | null = null;
   /** Positions open at the last step (WATCH-1 reads once when one opens). */
   #opened = new Set<string>();
-  #createSig = new Map<string, string>();
+  /** CREATE-AFTER-RESTART: each known create's signature by mint, the newest CREATE_SIGS_MAX. */
+  readonly #createSig: CappedMap<string, string>;
   /** RESTART-KEEP: each mint's curve completion and migration transactions, as seen (logs or fetched). */
-  readonly #completeSig = new Map<string, string>();
-  readonly #migrationSig = new Map<string, string>();
+  readonly #completeSig = new CappedMap<string, string>(TX_SIGS_MAX);
+  readonly #migrationSig = new CappedMap<string, string>(TX_SIGS_MAX);
   /** RESTART-KEEP: the saved state's slot (the downtime's migrations are looked up after it); null on a fresh start. */
   #downtimeFrom: bigint | null = null;
   /** RESTART-KEEP: restored candidates whose transactions wait for the sources to start. */
@@ -429,7 +434,7 @@ export class Worker {
   /** The app's views: recent candidate decisions, the funnel, token symbols seen on creates. */
   readonly #rows: DecisionRow[] = [];
   readonly #funnel = { fromMs: 0, stage: new Map<string, { day: string; stage: number; check: string | null }>(), enteredByDay: new Map<string, number>() };
-  readonly #symbols = new Map<string, string>();
+  readonly #symbols = new CappedMap<string, string>(SYMBOLS_MAX);
   #stopping = false;
   /** The code of the stop under way (the first `stop` call's). */
   #stopCode: number = EXIT.clean;
@@ -443,6 +448,7 @@ export class Worker {
 
   constructor(d: WorkerDeps) {
     this.#d = d;
+    this.#createSig = new CappedMap<string, string>(d.createSigsMax ?? CREATE_SIGS_MAX);
     const c = d.config;
     const now = d.timers.now();
     this.#started = now;
@@ -948,7 +954,6 @@ export class Worker {
       const sym = m.value['event']['data']['symbol'];
       if (typeof sym === 'string' && sym.trim() !== '') {
         this.#symbols.set(m.key.slice('logs:pump:CreateEvent:'.length), sym.trim().slice(0, 32));
-        if (this.#symbols.size > 200_000) this.#symbols.delete(this.#symbols.keys().next().value!);
       }
     }
     if (m.key.startsWith('logs:pump:CreateEvent:') && isObj(m.value) && typeof m.value['signature'] === 'string') this.#noteCreateSig(m.key.slice('logs:pump:CreateEvent:'.length), m.value['signature']);
@@ -957,7 +962,6 @@ export class Worker {
 
   #noteCreateSig(mint: string, signature: string): void {
     this.#createSig.set(mint, signature);
-    if (this.#createSig.size > (this.#d.createSigsMax ?? CREATE_SIGS_MAX)) this.#createSig.delete(this.#createSig.keys().next().value!);
   }
 
   /**
@@ -1055,8 +1059,8 @@ export class Worker {
     if (sig === null) return;
     const map = at[1] === 'CreateEvent' ? this.#createSig : at[1] === 'CompleteEvent' ? this.#completeSig : this.#migrationSig;
     if (map === this.#createSig && m.key.startsWith('logs:')) return;
+    // The first seen wins; each map forgets its oldest past its cap in O(1).
     if (!map.has(at[2]!)) map.set(at[2]!, sig);
-    if (map.size > 200_000) map.delete(map.keys().next().value!);
   }
 
   /**
@@ -1691,7 +1695,8 @@ export class Worker {
       coverage: order(coverage.filter((e) => e.key.startsWith('coverage:creates:') && compareMoments(e.moment, asOf) <= 0)),
       fill: order(result.mode === 'fill' ? result.creates : []),
       rugs: order(saved.rugs), asOf,
-      history: coverage.map((e, k) => ({ ...e, id: `${e.id}#pre${k}`, moment: { ...pos(1 + k), receivedAt: e.moment.receivedAt } })),
+      // WORKER-1d: a saved fact already carries an earlier boot's `#pre<k>`; it is replaced, not stacked, so ids stay short.
+      history: coverage.map((e, k) => ({ ...e, id: `${e.id.replace(/(#pre\d+)+$/, '')}#pre${k}`, moment: { ...pos(1 + k), receivedAt: e.moment.receivedAt } })),
     });
     // The restored index is in the seed now (and the strategy's index): this copy is released (WORKER-GROW).
     this.#restored = null;
