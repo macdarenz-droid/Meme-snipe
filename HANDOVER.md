@@ -42,6 +42,140 @@ After a compaction you are effectively a new supervisor. Do these before acting:
 
 S2 cannot reach api.github.com, so S1 writes here what S2 cannot see (CI results, base merges S1 pushed, what is missing). S2 reads it with `git fetch origin ccr-528521bb-f7a7zo` and writes back in HANDOVER-APP.md on `claude/s2-docs`: an `S2-READY <full sha>` line there counts as the PR comment.
 
+### Server and stability, items 21–29: handoff (S1, 6 Oct 3:17 AM)
+
+The owner gave these items to S2 at about 2:04 AM. Every head below was checked against git at 3:17 AM; base `ccr-14987baf-i6lrsl` = f088ab1e. The sources were read by S1's research agents, each checked by a second agent. S1's rulings are marked **Ruling**. S1's builders no longer push to these branches. Fetch before every push: S1 may push small fixes.
+
+**Rules for all nine.**
+- S2-READY needs a review on the exact head. If a base merge leaves the code hunks byte-identical (an identity check against the reviewed head) and only DECISIONS.md was resolved, S1 accepts the reviewed PASS carried with that check stated. Anything else needs a fresh delta review.
+- S1 takes PRs out of draft, opens PRs for new branches and reports CI here, because S2 cannot reach api.github.com.
+- S1's crash task owns these files until it says otherwise. S2 must not change them:
+  - core `engine/asof.ts`, `engine/engine.ts`, `engine/feed.ts`, `facts/feed.ts`, `facts/producer.ts`, `gates/deployer-index.ts`, `engine/hour-tags.ts`;
+  - worker `run/store-rules.ts`, `run/engine-feed.ts`, `providers/canonical.ts`, `facts/readers.ts`, `seed/**`.
+  The crash task is #236, then CREATE-COMPACT, then SEEN-TAGS, then DEPLOYER-COMPACT.
+- RECORD-UPLOAD (S1, not pushed yet) will touch the watchdog route, `ops/host` and `run/recorder.ts`. Whichever lands second resolves the overlap.
+- `.github/**` stays supervisor-owned. #149's existing `require-check.sh` change is accepted as reviewed; add nothing else there.
+- For items 21–29 this list replaces the do-not-change list in HANDOVER-APP.md. `ops/**` and `packages/ops/**` are open to S2 inside #149's and #161's scope. For item 21, `providers/` is open only for the files named there.
+- Merge order S1 plans:
+  1. #236 (crash fix);
+  2. the app batch;
+  3. #221, #207, #187 → #192 → #196 → #193;
+  4. #172;
+  5. #149;
+  6. #161;
+  7. item 21.
+  Each merge waits for its S2-READY line and green CI.
+
+**21. Helius usage cut (no branch yet).**
+- Why it is core work:
+  - The pre-funding dry run checks `quota_within_free_tier` (runner `report.ts`:245-247, `quota.ts`): projected monthly Helius must stay at or under the free 1M. At about 25k credits an hour that fails, and the check is never loosened. Target: at or under about 1,389 credits an hour, a cut of about 94%.
+  - `docs/ARCHITECTURE.md` §6.1 already says trade-level logs only for the top 1–3 shortlist tokens, time-limited. The code watches every shortlisted migration: about 224 pools, each from migration to +240 min.
+- Where the credits go:
+  - Almost all are socket bytes on the one Helius socket (`sources.ts`:294-309). The bulk is one logsSubscribe per pool from PoolWatch (`pool-watch.ts`:100-116) over `strategy.watchedPools()` (`strategy.ts`:806-818, 1298-1320).
+  - Reconnects re-subscribe every watch and start fills of up to 500 credits per pool, from the 20,000-a-day fill budget (`run/config.ts`:13).
+  - Reads are small by comparison.
+- **Ruling, cut C first (can start now, off f088ab1e):**
+  - a byte meter per watch kind, written to the journal and the test harness only (no summary or watchdog shape change: bot-first rule, and it would collide with #149 and #161);
+  - the ghost-unsubscribe fix.
+  This is the measurement A's acceptance needs.
+- **Ruling, cut A (build after #236 merges):** stop watching a candidate's pool once the gates' own verdict proves a reject that cannot change inside the window: H9 instant-graduation and H8 dust-at-migration at migration, H11 chase-at-5m at +5 min. Must-haves:
+  - The drop is derived from the same gate code, not a separate list, so a later gate change changes what is watched. Include #236's `create-expired`.
+  - Never drop:
+    - a held coin (#236's `#held`: candidate, exit plan, pending seed, non-closed position);
+    - an entry intent;
+    - a coin with unknown or partial evidence (H16);
+    - an exit path (#224 EXIT-KEEP downtime touches the same files).
+  - The +30 min survival read stays for every shortlisted migration. A dropped coin's producer state is not retired before its +30 min mark: #236 retires about 4 h after migration, so check with S1.
+  - Replay (`run/parity.ts`) drops at the same event.
+  - Tests that fail before; mutants. Reviews: facts, BT (parity, G3 reject mix), EXIT, persist (restored candidates).
+- **Ruling on data (owner's study, trade-more design):** cut A stops live swap recordings for the coins H9, H8 and H11 reject. The study uses the 5 Oct recordings (RECORD-UPLOAD), the 21 Sep history day and later history days. If the trade-more design changes one of those gates, cut A follows automatically because it reads the gates' verdicts.
+- Files S2 may change for item 21: `engine/strategy.ts` (after #236 merges), `run/pool-watch.ts`, `providers/solana-ws.ts`, `providers/rpc-socket.ts`, `run/sources.ts`. Not the crash files above.
+- Expect conflicts in `strategy.ts` with #181 and #167 (app batch). The facts on record: HANDOVER log lines of 5 Oct 3:08 PM (HELIUS-BURN), 3:22 PM and 3:23 PM. The owner's 3:23 PM "no rationing" rule allows this: cutting waste is not rationing, and the owner asked for it at 2:04 AM.
+
+**22. OPS-1j + BACKUP-STATE + DISK-GUARD (#149, `claude/ops-1j` 10e01ba7, ready).**
+- Reviewed: ops PASS at 7abab0b9, carried to e863acb2 (a pure base merge).
+- **Not reviewed:** the BACKUP-STATE + DISK-GUARD delta, about 1,405 lines in 31 files. Give reviewers the delta 7e10be72..10e01ba7 (`merge-tree(e863acb2, 09790b40)` = 7e10be72). It needs:
+  - ops (the whole delta);
+  - persist (ENOSPC on the journal and deployers.jsonl; ledger and saved state never deleted; journal_gap);
+  - worker/facts (H14 over lost ranges; "disk low" refuses entries while exits continue).
+- Base merge conflicts (identical at f088ab1e):
+  - `run/summary.ts`: keep both haltCode lines (helius-exhausted, disk-low) and both imports;
+  - `run/worker.ts`: the base's Engine `retention`/`collapse` plus #149's DeployerStore `{append, onNoSpace}` and `#storeTrimmedAt`;
+  - `test/worker-harness.ts`: both option sets.
+  If `ops/install.sh` changes, regenerate it and re-pin the README line.
+- **Ruling, BACKUP-STATE disk budget (blocking).** At 10e01ba7, `zeroed-backup` copies all of `/var/lib/zeroed` (minus exclusions) every hour, keeps 72 copies and does not compress, very likely on the same 23G root, which had about 1 day of runway. Before S2-READY:
+  - compress;
+  - keep the state files only (ledger/sqlite, saved state, deployer state; never recorder/, journal.jsonl or reports/);
+  - a stated total cap;
+  - skip a run when free disk is under the DISK-GUARD pause line.
+  The ops reviewer checks the numbers.
+- **Ruling, heartbeat (blocking).** #149 adds `disk` to Health, and `heartbeatBody` spreads all of Health to the Cloudflare watchdog. That is new data sent to a third party and needs the owner's OK. Keep `disk` in the local `/health` only, and add a test that the heartbeat body has no `disk`.
+- **Ruling, clean-up scope.** The owner gave #149 as "disk limits" at 2:04 AM. So the journald cap, pruning releases older than 7 days and the daily deployers.jsonl trim are approved. Deleting recordings stays RECORD-UPLOAD's (after a verified upload). Update the DISK-GUARD DECISIONS row that says nothing deletes recordings.
+- Lands after #236 is live and stable: its fail-closed gate holds code updates while intents are open and the worker is down. Lands after #172 (both edit `run/deployer-store.ts`).
+- After deploy, the owner confirms on the console: journald capped, releases pruned, a backup holds the state files, `/health` has the disk block. No agent can read the host.
+- Non-blocking:
+  - watchdog disk alerts wait (bot-first rule);
+  - `require-check.sh`'s comment says 8–12 min, but `check` takes about 24.5 min (a 1,560 s wait leaves 3–4 min of margin);
+  - the PR body's "result posted in the thread" claims have no comment behind them.
+
+**23. WORKER-GROW G4a (#164, `claude/worker-grow` f877a17b, draft).**
+- **Ruling: S2 does not build this one; it folds into S1's crash task.**
+  - Most of it is superseded by #226, #232, #233 and #236.
+  - Its create re-read contradicts #236's create rule, in the same `#createFor` path.
+  - What still adds value sits in S1's crash files (`store-rules.ts`, `producer.ts`, `asof.ts`), so building it in parallel would collide with CREATE-COMPACT and SEEN-TAGS. The useful parts:
+    - `gates/graduates` newest-only (readers look it up as of now: `regime.ts`:176, `strategy.ts`:885);
+    - dropping `worker:seed` after boot;
+    - `read:funder:<wallet>` keys, unbounded today;
+    - the producer's early-track facts.
+- S1 closes #164 with a note pointing to the crash PRs once those parts land.
+- S2: mark item 23 "folded into S1's crash task" in HANDOVER-APP.md.
+
+**24. Recorder and runner in small pieces: #187, #192, #196.**
+- Order: #187 → #192 → #196. All merge cleanly with the base except DECISIONS.md (base side first, then the PR's entry). The code hunks stay identical after the merge (checked on f088ab1e).
+- #187 `claude/recorder-manifest` b8311b64:
+  - Code is identical to 28791de6 (persist PASS); b8311b64 adds only the 2 tests persist asked for.
+  - The BT PASSes (31aae38, 5729f15) predate the #179 union.
+  - No review has seen #187's `#hashes` together with G4c-2's `attach()`/`packed()` (#217, now in base), which both call `#writeManifest`. Get a fresh persist + BT review on the merged head, covering that path.
+- #192 `claude/runner-readers` 3a66e3c8: run/CI PASS on the exact head; carry it with the identity check.
+- #196 `claude/runner-hash` df6996d7: run/CI PASS on the exact head; carry it with the identity check. Lands after #192.
+- Note for S1's RECORD-UPLOAD (not S2's): the runner's `collectRecorded` lists then hashes recorder files, so an upload that deletes a sealed file in between makes `finish()` throw ENOENT.
+
+**27. RUN-1d (#193, `claude/runner-drills` 201120be, draft).**
+- ops PASS on the exact head; merges cleanly in any order with #192 and #196.
+- **Blocking:** on the union f088ab1e + #187 + #192 + #196 + #193, one of 4 runs failed `runner.test.ts`:249, the tabletop "replies 150 ms old (a loaded runner)", expected 3 to be 2.
+  - Fix the cause. Never skip, retry-wrap or loosen the test.
+  - Prove it with the same test repeated under full CPU load.
+- Optional: the deterministic retry-wiring test (needs an ops delta).
+- Landing it should also steady S2's app CI: the loaded runner/drill failures S2 saw are this class.
+
+**25. N2-WRITES (#172, `claude/n2-writes` 7f2ce17b, draft).**
+- data PASS at 8c3f15ea; persist delta PASS at 7f2ce17b. #139 merged on 5 Oct, and `deployer-store.ts` now auto-merges.
+- After #236 lands, merge the base. Conflicts:
+  - `docs/DECISIONS.md`: base sections first, then #172's;
+  - `persist/state.ts`: import lines only, take the base side.
+  Then a persist delta review on the new head.
+- Lands before #149; the second lander resolves `deployer-store.ts`'s header comment and imports. No owner step: the file formats are unchanged.
+- Non-blocking: other temp-then-rename writers have no size check: `facts/deployer-checks.ts`:160, `facts/readers.ts`:746 (S1's file), `recorder.ts` sealFile (S1, RECORD-UPLOAD path), and `runner.ts`:663. Note them for later; don't widen #172.
+- The PR body is stale (it says `atomicWrite`; the code uses the streamed `saveState` with `commitTemp`). S1 will update the body when it merges.
+
+**26. TxFetcher ring (#207, `claude/txfetcher-ring` 79e9727e, draft).**
+- Can go now; no overlap with #236. It merges cleanly into f088ab1e.
+- The facts PASS was on 1f34ee0e. After it, a3c1309a added the `decodable` option to TxFetcherOptions. That needs a facts delta review (1f34ee0e → the new head): production never sets `decodable` (`sources.ts`:290); remember-after-ingest unchanged; timing bound 8 s.
+- Optional in the same PR: the "duplicate completion log keeps the first-seen signature" pin from #202's persist review.
+
+**28. KEY-ROTATE-SAFE (#161, `claude/key-rotate-safe` 26ef39e3, ready).**
+- ops PASS at f1ab2ce, carried to 26ef39e3 (a tree-identical base merge).
+- Base merge conflict in `packages/ops/test/summary.test.ts`: remove `goodSummary` there, import it from `summary-fixture.ts`, and copy the base's fuller worker block (restarts, exits, crash_sites from RESTART-CAUSE #209) into the fixture. Then an ops delta review (test-only) and CI with e2e.
+- **Owner step before merge:** the watchdog's Durable Object would store the active slot and SHA-256 hashes of retired keys (never a key). Data that relates to keys needs the owner's OK, so S1 asks the owner.
+- After merge, S1 re-states the owner's key-rotation steps (two slots, `publish.sh` reads GET /slot). #190 and #199 are stacked on it; they are not S2's.
+
+**29. FILL-THROW (#221, `claude/fill-throw` c63e6a5e, ready).**
+- Test only. facts PASS and CI green on c63e6a5e.
+- The base merge is clean. The facts PASS carries if the merged tree equals `git merge-tree(base, c63e6a5e)` (S1's scratch check on f088ab1e: `s0-zero.test.ts` 33/33, and the reviewer's mutant fails it).
+- Can go now. No owner step.
+
+**Dated notes (newest first)**
+
 - 6 Oct 3:00 AM: #182 `claude/app-sol` 6da3244f: `check`, historical-data and build all green. All six app PRs are now green on their heads (base 73c61006). They merge after #236, each GitHub-updated onto the base of the moment first.
 - 6 Oct 2:35 AM (S2-READY at d57323ae received):
   - CI pre-check on your S2-READY heads (base 73c61006): `check` green on #216 ed5adc47, #237 682a80d6, #210 d31c32e7, #181 68a1d969, #167 6af4e43b; historical-data green on all six.
@@ -115,6 +249,13 @@ Supervisor: session_01Ec4DXEAqLxM6M1WGVQG5se (same account as every worker). Hou
 Parked with no card: STATS builder 01Qy4q1, SANDBOX-TIDY 01MoXXP, DATA-STORE 018c27u, OPS-SUMMARY 01HHYJq. Data reviewer 01XAwN7: ARCHIVE-SAFE reviews, then ARCHIVE-WATCH.
 
 **Log (Melbourne time)**
+- 3:17 AM Items 21–29 handoff for S2 written in "For Supervisor 2" (research by 5 agents, each checked by a second; heads verified 3:17 AM). Rulings:
+  - #164 G4a folds into S1's crash task (superseded, or in the crash files);
+  - #149: blocking BACKUP-STATE disk budget and no `disk` in the heartbeat to the watchdog (third party); "disk limits" approved by the owner's 2:04 AM assignment, recordings excluded;
+  - #161: owner OK needed for the watchdog storing retired-key hashes;
+  - #193: blocking flake at runner.test.ts:249 on the union;
+  - item 21: cut C (journal byte meter, ghost unsubscribe) now, cut A (stop watching settled rejects, from the gates' own verdicts) after #236; target at or under 1M credits a month, which the pre-funding quota check requires.
+  - Also: removed 3 self-referencing node_modules symlinks a checker agent created in /home/user/wt233.
 - 3:08 AM #236 CI green at dbdd4c52 (still FAIL in BT review; B1–B3 to fix). WORKER-HARDEN 3× snapshot at 1 h of market time (409 pools, 945k swaps): heap 234 MB, +2 MB/min (books 90 MB, LiveFeed keys 68, AsOfStore 38 at 4.3 KB per never-migrated create). Projections: 1× steady state about 400 MB (index 171 at 15 days, creates kept 12 h 77, books 24, LiveFeed 13, CappedMaps ≤ 29, base about 50) = about 160 MB margin; sustained 3× hits 560 MB in about 10–12 h. Ruling: #236 stays the live-rate fix, with B1–B3 in it; then, in order, as the crash task itself (owner goal: days): CREATE-COMPACT (4.3 → 0.3 KB per create), SEEN-TAGS (books and LiveFeed as numeric tags), DEPLOYER-COMPACT; proof: a 24-h compressed market-time run at 1× after #236 and at sustained 3× after all three.
 - 2:52 AM #236 BT parity FAIL at dbdd4c52 (01L7Gdf): B1 create-expired depends on what the process saw (late-read creates never tagged; release-order `break`; StudyStrategy has no such refusal, so live and backtest diverge, which breaks gate 6); B2 no test that a let-go reaches FactProducer (engine-feed retire mutant survives); B3 the expiry held guard untested. Passed: replay, parity, determinism and leak; DeployerIndex prune safe (N5). Ruling to WORKER-HARDEN: fix in #236 (no split; 5f1ebbd1 is tangled with 0cc9a545/4386c63f/17069945): a market rule from facts (migratedAt − createdAt > CREATE_KEEP_MS) in live and StudyStrategy, a one-coin live/backtest test, order-proof expiry, DECISIONS; measure the share of migrations more than 12 h after create and the memory per extra keep hour (the day-scale step raises the keep if material); B2/B3/N1 tests; N2 keep the stream or validate the window order at config load.
 - 2:47 AM **Crash on 73c61006** at 2:43 AM after 1,835 s (heap 533, old 496, large-object 30): #233 alone did not end the OOM. Asked WORKER-HARDEN whether #236 is code-final, whether its 3-h 3× run (on 0cc9a545) covers the final head, and its review handoff time; facts + BT reviews start on the final head alongside the run. Owner raised the crash goal (CLAUDE.md): at least 3–5 h per fix, then a whole day and days with no crash; daily-stability work is part of the task.
