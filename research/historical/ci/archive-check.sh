@@ -115,6 +115,8 @@ fi
 
 batch=()
 for d in "${queue[@]}"; do
+  # A Helius day is read over RPC, never from the archive (ARCHIVE-NODUP).
+  [[ " $HELIUS_DAYS " == *" $d "* ]] && continue
   # A day with a release is published (data-scan's own check judges completeness).
   if "$gh" api "repos/$GH_REPO/releases/tags/data-day-$d" --silent >/dev/null 2>&1; then
     continue
