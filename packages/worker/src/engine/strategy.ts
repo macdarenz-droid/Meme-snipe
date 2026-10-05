@@ -1204,13 +1204,13 @@ export class LiveStrategy implements Strategy {
     out.push({ action: null, reasons: [SHORTLIST, this.#d.config.universe, mint, `migrated at ${migratedAtMs}`] });
   }
 
-  /** Drops a mint's pool state once nothing watches it (its window ended and no position holds it). */
   /** FEES-KEEP: the fee terms a save keeps for a mint: the latest swap's, unless it was received after the save moment. */
   #feeTermsAsOf(mint: string, atMs: number): SavedFees | null {
     const f = this.#observedFees.get(mint)?.terms;
     return f !== undefined && f.atMs <= atMs ? f : null;
   }
 
+  /** Drops a mint's pool state once nothing watches it (its window ended and no position holds it). */
   #forget(mint: string): void {
     if (this.watched().has(mint)) return;
     const pool = this.#poolOfMint.get(mint);
