@@ -2206,7 +2206,7 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - A saved candidate whose window ended during the downtime is not restored. It ends at the restore exactly as the first event would have ended it: the same `no entry … window ended` decision and, when it was evaluated and rejected, the same tail watch. It is not listed, so the worker reads none of its transactions again. Candidates still in their window are restored as before (their decisions are unchanged; the test compares them with a restore of the same candidate alone).
   - No limit, gate, stop or test is loosened. The cap of 100 scans and the daily fill credits are unchanged.
 - **Evidence (each test fails on 95c146e0 and passes after).**
-  - Why 4: one 3,000-account answer held parsed and decoded is about 3.3 MB of heap (`gpa.mjs`: 1 → +2 MB, 4 → +12 MB, 8 → +25 MB, 100 → +334 MB), so 4 in flight stay near 12 MB against the 560 MB limit, while the Helius scheduler's own rate, not the count in flight, sets the read throughput.
+  - Why 4: one 3,000-account answer held parsed and decoded is about 3.3 MB of heap (`gpa.mjs`: 1 → +2 MB, 4 → +12 MB, 8 → +25 MB, 100 → +334 MB), so 4 in flight stay near 12 MB against the 560 MB limit.
   - `facts-source.test.ts`: at 250 and at 800 restored candidates, 4 reads running and the rest waiting; the queue runs in arrival order; SOL/USD goes ahead of candidate reads; after a stop nothing waiting runs.
   - `facts-source.test.ts` (wiring): an unreadable scan file in the worker's state dir is written back as spent.
   - `facts-readers.test.ts`: the scan cap holds across new readers on the same file; an unreadable file counts as spent; a new UTC day starts again.
