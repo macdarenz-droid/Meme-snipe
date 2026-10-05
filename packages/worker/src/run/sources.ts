@@ -301,9 +301,9 @@ export class LiveProviders {
    * scheduler at P0 (review of #87): it prices a held position's exit, only for open positions, only while their market
    * is stale, at most T_max each, so the monthly budget's halt never takes the price an exit needs.
    */
-  watchRead(): (addresses: readonly string[]) => Promise<WatchRead> {
+  watchRead(): (addresses: readonly string[], minContextSlot: bigint | null) => Promise<WatchRead> {
     const rpc = new RpcHttp({ provider: 'alchemy', url: () => alchemyRpcUrl(this.#o.secrets), http: this.#o.http, scheduler: this.alchemy, timeoutMs: 10_000 });
-    return (addresses) => rpc.getMultipleAccounts(addresses, P0);
+    return (addresses, minContextSlot) => rpc.getMultipleAccounts(addresses, P0, minContextSlot ?? undefined);
   }
 
   /** SEED-1's backfill RPC: Helius, charged to its scheduler like every other call. */

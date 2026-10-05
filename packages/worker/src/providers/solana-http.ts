@@ -97,9 +97,10 @@ export class RpcHttp {
   }
 
   /** Accounts read together at confirmed, in one bank: the context slot they are all as of (WATCH-1's snapshot). */
-  async getMultipleAccounts(addresses: readonly string[], priority: Priority): Promise<{ readonly slot: bigint; readonly accounts: ({ readonly owner: string; readonly lamports: bigint; readonly data: Uint8Array } | null)[] }> {
+  async getMultipleAccounts(addresses: readonly string[], priority: Priority, minContextSlot?: bigint): Promise<{ readonly slot: bigint; readonly accounts: ({ readonly owner: string; readonly lamports: bigint; readonly data: Uint8Array } | null)[] }> {
     if (addresses.length === 0 || addresses.length > 100) throw new RangeError('getMultipleAccounts takes 1 to 100 addresses');
-    const r = await this.call('getMultipleAccounts', [addresses, { encoding: 'base64', commitment: 'confirmed' }], priority);
+    // WATCH-1d: a node behind `minContextSlot` refuses the read instead of answering from an old bank.
+    const r = await this.call('getMultipleAccounts', [addresses, { encoding: 'base64', commitment: 'confirmed', ...(minContextSlot === undefined ? {} : { minContextSlot: Number(minContextSlot) }) }], priority);
     if (!isObj(r) || !isObj(r.context) || !Number.isSafeInteger(r.context.slot)) throw new ProviderError(this.provider, 'shape', 'getMultipleAccounts result has no context');
     if (!Array.isArray(r.value) || r.value.length !== addresses.length) throw new ProviderError(this.provider, 'shape', 'getMultipleAccounts returned the wrong number of accounts');
     return { slot: BigInt(r.context.slot as number), accounts: r.value.map((v) => (v === null ? null : accountValue(this.provider, v))) };

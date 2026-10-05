@@ -22,7 +22,7 @@ import { swapEventState } from '../fills/pool.ts';
 import {
   type Candle, type CandlesFact, type FactObs, type GraduatesFact, type InsidersFact, type MintFact, type PoolFact, type Price,
   type SoftFact, type XcheckFact, CURVE_VOLUME_KEY, EXEC_HEALTH_KEY, GRADUATES_KEY, SOL_USD_KEY, candlesKey, createKey, curveKey,
-  holdersKey, insidersKey, lpKey, migrationKey, mintKey, poolKey, simKey, softKey, streamKey, xcheckKey,
+  carryKey, holdersKey, insidersKey, lpKey, migrationKey, mintKey, poolKey, simKey, softKey, streamKey, xcheckKey,
 } from '../gates/facts.ts';
 import { HOURLY_MAX_AGE_MS } from '../gates/series.ts';
 import { insiderLinks } from './funding.ts';
@@ -332,7 +332,12 @@ interface PoolChain {
   stale: { readonly reason: string; readonly kind: 'gap' | 'mismatch' } | null;
   /** Swaps seen at `lastSlot` (a delivery twice, from a log line and a fetched transaction, counts once); older slots are refused anyway. */
   readonly seen: Set<string>;
+  /** Swaps applied to this chain, newest last (bounded): a second delivery behind newer swaps is a repeat, not a miss. */
+  readonly applied: Set<string>;
 }
+
+/** Swap ids a pool chain remembers for repeats: a repeat (a log line and a fetched transaction) comes within seconds. */
+const APPLIED_KEPT = 512;
 
 export class FactProducer {
   readonly #o: ProducerOptions;
@@ -372,6 +377,7 @@ export class FactProducer {
     };
     // Survival marks are judged on the state before this event: a trade after the mark must not date it.
     this.#survival(e, put);
+    this.#chainOther(e, put);
     const pe = programEvent(e);
     if (pe !== null) this.#program(pe.ev, pe.seen, pe.truncated, e, put);
     else if (e.key === 'chain:slot') this.#slot(e, put);
@@ -689,6 +695,12 @@ export class FactProducer {
     }
     // Insider coverage depends on the head reaching the end of each window: recheck the watched mints.
     for (const name of this.#streams.keys()) this.#refreshInsiders(name, e, put);
+    // WATCH-1c: a chain whose stream covered every slot through the head, with no swap or other pool transaction since
+    // its last state, is proven unchanged as of the head (a slot's transactions are released before its notice).
+    for (const [pool, c] of this.#chains) {
+      if (c.stale !== null || !this.#tradesCovered(pool, c.coveredFrom)) continue;
+      put(carryKey(c.mint), { pool, slot: v, state: c.state, obs: { provider: 'facts', slot: v, receivedAt: e.moment.receivedAt, quality: [], commitment: 'confirmed' } });
+    }
   }
 
   #coverage(e: MarketEvent, put: (k: string, v: unknown) => void): void {
@@ -965,7 +977,7 @@ export class FactProducer {
     const c = this.#chains.get(fact.address);
     if (c !== undefined && c.lastSlot > slot) return;
     this.#chains.set(fact.address, {
-      mint, read: fact, coveredFrom: slot + 1n, lastSlot: slot, readSlot: slot, stale: null, seen: new Set(),
+      mint, read: fact, coveredFrom: slot + 1n, lastSlot: slot, readSlot: slot, stale: null, seen: new Set(), applied: new Set(),
       state: { baseReserve: fact.baseVault, quoteVault: fact.quoteVault, virtualQuoteReserves: fact.pool.virtualQuoteReserves ?? 0n },
     });
     put(poolKey(mint), fact);
@@ -987,6 +999,23 @@ export class FactProducer {
     if (c.stale !== null && (c.stale.kind === 'mismatch' || kind === 'gap')) return;
     c.stale = { kind, reason };
     put(poolKey(c.mint), this.#chainFact(c, obs, c.state, reason));
+  }
+
+  /**
+   * WATCH-1c: a confirmed PumpSwap event on a pool's own trade stream that is not a swap (a deposit, a withdrawal, a
+   * buyback, an admin or fee instruction, or one DEC-1 cannot name) may have moved the reserves without a swap event:
+   * the chain is stale until the next swap re-bases it on the program's own pre-trade reserves. So "no swap" proves
+   * "unchanged" only while nothing else touched the pool. Fail closed: an unnamed event counts too.
+   */
+  #chainOther(e: MarketEvent, put: (k: string, v: unknown) => void): void {
+    if (!e.key.startsWith('logs:pump_amm:')) return;
+    const v = e.value;
+    if (!isObj(v) || v['commitment'] !== 'confirmed' || typeof v['via'] !== 'string' || !v['via'].startsWith('logs:') || typeof v['txSlot'] !== 'bigint') return;
+    const name = isObj(v['event']) ? v['event']['name'] : undefined;
+    if (name === 'BuyEvent' || name === 'SellEvent') return;
+    const c = this.#chains.get(v['via'].slice('logs:'.length));
+    if (c === undefined || v['txSlot'] <= c.readSlot) return;
+    this.#stale(c, 'gap', `a pool transaction other than a swap (${typeof name === 'string' ? name : 'unnamed'})`, { provider: sourceOf(e), slot: v['txSlot'], receivedAt: e.moment.receivedAt, quality: [], commitment: 'confirmed' }, put);
   }
 
   /** A gap or hole in a pool's trade stream makes its chain stale at once; a pool no longer watched drops its chain. */
@@ -1036,7 +1065,13 @@ export class FactProducer {
       c.stale = null;
       c.seen.clear();
       c.seen.add(id);
-    } else if (older) return;
+    } else if (older) {
+      // A repeat of a swap already applied is nothing new. Any other swap released behind a newer one cannot be applied
+      // in order: the state is not known until the next swap re-bases it (fail closed; WATCH-1c carries a state only
+      // while nothing is missing from it).
+      if (c.applied.has(id)) return;
+      return this.#stale(c, 'gap', `swap ${seen.signature} arrived out of order`, obs, put);
+    }
     const state = c.state;
     if (!this.#tradesCovered(d.pool, c.coveredFrom)) return this.#stale(c, 'gap', 'swap stream gap', obs, put);
     const pre = { baseReserve: d.poolBaseTokenReserves, effective: d.poolQuoteTokenReserves + (d.virtualQuoteReserves ?? 0n) };
@@ -1048,6 +1083,8 @@ export class FactProducer {
     const r = swapEventState(ev);
     if (!r.ok) return this.#stale(c, 'mismatch', r.reason, obs, put);
     c.state = r.after;
+    c.applied.add(id);
+    if (c.applied.size > APPLIED_KEPT) c.applied.delete(c.applied.values().next().value!);
     put(poolKey(c.mint), this.#chainFact(c, obs, r.after, null));
   }
 

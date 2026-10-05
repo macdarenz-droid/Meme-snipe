@@ -7,7 +7,7 @@
 // `open_intents` → seed the deployer index (SEED-1's hook) → start the live sources → trade. Nothing enters before the
 // reconcile line; a reconcile that cannot settle every intent exits 3.
 import { randomBytes } from 'node:crypto';
-import { copyFileSync, existsSync, mkdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { journalLines, placeBookingsAt } from './booked.ts';
 import type { Server } from 'node:http';
 import { join } from 'node:path';
@@ -23,7 +23,7 @@ import type { DryRunRecord } from '../dryrun/index.ts';
 import { CANDIDATE_RESTORED, NO_UNIVERSE, type SavedGraduates, type SavedTail, resolveUniverse, sellOnlyReason } from '../engine/strategy.ts';
 import { RAW } from '../../../core/src/facts/raw.ts';
 import { GRADUATES_SEED_KEY } from '../../../core/src/facts/producer.ts';
-import { ACCOUNT_KEY, HALT_KEY, LiveStrategy, POOL_PREFIX, RESTORE_KEY, SEED_KEY, SEEDING, SHORTLIST, SNAPSHOT_PREFIX, SOL_PRICE_KEY, type SnapshotFact, type StrategyConfig, type StrategyDeps, type SavedStateRef, TRIP_PREFIX, parseSnapshotFact, snapshotKey, snapshotWins } from '../engine/strategy.ts';
+import { ACCOUNT_KEY, HALT_KEY, LiveStrategy, POOL_PREFIX, RESTORE_KEY, SEED_KEY, SEEDING, SHORTLIST, SNAPSHOT_PREFIX, SOL_PRICE_KEY, type SnapshotFact, type CarryFact, CARRY_PREFIX, type MarketChoice, chooseMarket, parseCarryFact, type StrategyConfig, type StrategyDeps, type SavedStateRef, TRIP_PREFIX, parseSnapshotFact, snapshotKey, snapshotWins } from '../engine/strategy.ts';
 import { SLOT_MS, watchTimingProblem } from './config.ts';
 import { PositionWatch, type WatchRead } from './watch.ts';
 import { DEFAULT_LIVE_FEED, type Frame, type HttpClient, LiveFeed, type Release, seqId } from '../providers/index.ts';
@@ -45,7 +45,9 @@ import type { FactContext, FactSource } from './facts.ts';
 import { engineFeed, type EngineFeed } from './engine-feed.ts';
 import { startHealthServer } from './health.ts';
 import { type HeartbeatPosition, heartbeatBody, sendHeartbeat } from './heartbeat.ts';
+import { crashSite } from './crash-site.ts';
 import { Summarizer, SummaryClock } from './summary.ts';
+import { CappedMap } from './capped-map.ts';
 import { jsonText } from './json.ts';
 import { Journal } from './journal.ts';
 import { type PaperMarket, type PaperState, PaperWorld, type SimLeg } from './paper-world.ts';
@@ -65,7 +67,7 @@ export const DOWNTIME_CREDIT_CAP = 3_000;
 /** RESTART-KEEP: transactions read before a migration to find its curve's completion. */
 const COMPLETION_READS = 5;
 export const PERSIST_EVERY_MS = 5 * 60_000;
-import { type Control, NO_CONTROL, StateFile, controlFile, exitsFile, seedsFile, exposedFile, NO_EXPOSED } from './state.ts';
+import { type Control, NO_CONTROL, type Restart, StateFile, controlFile, exitsFile, seedsFile, exposedFile, NO_EXPOSED, exitKind, restartsAfterBoot, restartsFile } from './state.ts';
 import { type CreateUnreadWhy, LOG_CREATE_PREFIX, type PoolFact, S0_DIAGNOSTIC_PARTS, TX_CREATE_PREFIX, createUnreadKey, parsePool } from '../../../core/src/gates/index.ts';
 import type { ExecStats } from '../../../core/src/facts/raw.ts';
 
@@ -164,6 +166,11 @@ export interface WorkerDeps {
   readonly seedMaxMs?: number;
   /** The most create signatures kept (default `CREATE_SIGS_MAX`; a test passes a small one). */
   readonly createSigsMax?: number;
+  /**
+   * RESTART-CAUSE: 'reconcile' for the unit's `--reconcile` pre-step: its start line is marked, it records no restart,
+   * and it hands its reading of the previous exit to the main boot.
+   */
+  readonly phase?: 'reconcile';
   /** The seed cap when no saved index restores (default `MAX_SEED_CREATES`; a test passes a small one). */
   readonly maxSeedCreates?: number;
   /** BT-1c's delay samples (the recorder's `delays` table): the confirmed read and the sampled processed watch. */
@@ -198,7 +205,7 @@ export interface WorkerDeps {
    * WATCH-1's second path: one getMultipleAccounts at confirmed through the quota scheduler at P1, on a provider other
    * than the live feed's (Alchemy). Without it every stale held position raises the critical alert.
    */
-  readonly watchRead?: (addresses: readonly string[]) => Promise<WatchRead>;
+  readonly watchRead?: (addresses: readonly string[], minContextSlot: bigint | null) => Promise<WatchRead>;
   /** True while the second path's provider budget is halted (its scheduler's haltShare): entries stop. */
   readonly watchHalted?: () => boolean;
 }
@@ -248,8 +255,11 @@ export const CREATE_RETRY_MS = 60_000;
 /** A saved create's id, live (`log:<signature>…`) or fetched (`ev:<signature>:…`): its transaction signature. */
 const CREATE_ID = /^(?:log|ev):([1-9A-HJ-NP-Za-km-z]{64,88})(?=[:#]|$)/;
 
-/** The most create signatures a process keeps (CREATE-AFTER-RESTART), oldest forgotten first. */
+/** The most create signatures (CREATE-AFTER-RESTART) and token symbols a process keeps, oldest forgotten first. */
 export const CREATE_SIGS_MAX = 200_000;
+export const SYMBOLS_MAX = 200_000;
+/** RESTART-KEEP: the most curve-completion and migration signatures kept, each. */
+export const TX_SIGS_MAX = 200_000;
 
 /** A create event's mint and signature (the field, else the id), or null when it is not a create or names neither. */
 const createSigOf = (e: MarketEvent): readonly [string, string] | null => {
@@ -280,9 +290,46 @@ export const readJournalFills = (path: string, chunkBytes?: number): Record<stri
 /** WORKER-GROW: a shortlisted mint's create is read again when the store does not hold it, or holds it older than `refreshMs`. */
 export const createNeedsRead = (held: Lookup, nowMs: number, refreshMs: number): boolean => !held.ok || nowMs - held.moment.receivedAt > refreshMs;
 
+/** RESTART-CAUSE: the `--reconcile` pre-step's reading of the previous exit, for the main boot that follows it. */
+export const EXIT_HANDOFF = 'last_exit.json';
+
+/** The pre-step's handoff, read and removed: its reading when recent and well formed (null is a first start), else undefined. */
+export const takeHandoff = (path: string, nowMs: number): string | null | undefined => {
+  if (!existsSync(path)) return undefined;
+  let out: string | null | undefined;
+  try {
+    const m = JSON.parse(readFileSync(path, 'utf8')) as { exit?: unknown; at?: unknown };
+    if ((typeof m.exit === 'string' || m.exit === null) && typeof m.at === 'number' && nowMs - m.at >= 0 && nowMs - m.at < PLANNED_RESTART_MS) out = typeof m.exit === 'string' ? m.exit.slice(0, 300) : null;
+  } catch {}
+  rmSync(path, { force: true });
+  return out;
+};
+
+/** A planned restart's marker younger than this is believed; an older one is stale (its kill never came). */
+export const PLANNED_RESTART_MS = 10 * 60_000;
+
+/**
+ * RESTART-ALERT: the runner's marker for a drill's kill or reboot, read and removed at boot: `planned: <cause>` when it
+ * is recent and well formed, else null (the journal's reading stands).
+ */
+export const plannedRestart = (path: string, nowMs: number): string | null => {
+  if (!existsSync(path)) return null;
+  let out: string | null = null;
+  try {
+    const m = JSON.parse(readFileSync(path, 'utf8')) as { cause?: unknown; at?: unknown };
+    if (typeof m.cause === 'string' && m.cause !== '' && typeof m.at === 'number' && nowMs - m.at >= 0 && nowMs - m.at < PLANNED_RESTART_MS) out = `planned: ${m.cause.slice(0, 80)}`;
+  } catch {}
+  rmSync(path, { force: true });
+  return out;
+};
+
 export class Worker {
   readonly #d: WorkerDeps;
   readonly #boot: string;
+  /** How the previous process ended (RESTART-ALERT): a planned restart's marker, else the journal's last line. */
+  readonly #lastExit: string | null;
+  readonly #restartsFile: ReturnType<typeof restartsFile>;
+  #restarts: readonly Restart[];
   readonly #started: number;
   readonly #journal: Journal;
   #recorder: Recorder | null = null;
@@ -310,6 +357,8 @@ export class Worker {
   #ctl: Control;
   #reconciled = false;
   #lastSlot: bigint | null = null;
+  /** When `#lastSlot` was released (WATCH-1d holds a snapshot's bank to a live head). */
+  #lastSlotAt: number | null = null;
   #ticked: bigint | null = null;
   #solPrice: MicroUsd | null = null;
   /** Whether this process settled at its first SOL price after the reconcile (a stray fee needs a price; PAPER-1). */
@@ -325,18 +374,21 @@ export class Worker {
   #pools = new Map<string, unknown>();
   /** When each mint's latest pool fact was released to the engine (WATCH-1 judges a feed fact by its release). */
   readonly #poolReleasedAt = new Map<string, number>();
+  /** WATCH-1c: each mint's latest carry (its pool state proven unchanged through a slot) and when it was released. */
+  readonly #carries = new Map<string, { readonly carry: CarryFact; readonly releasedAt: number }>();
   #fees = new Map<string, PoolFeeContext>();
   /** WATCH-1's latest snapshot per held mint, as released. */
   #snapshots = new Map<string, SnapshotFact>();
   #watch: PositionWatch | null = null;
   /** Positions open at the last step (WATCH-1 reads once when one opens). */
   #opened = new Set<string>();
-  #createSig = new Map<string, string>();
+  /** CREATE-AFTER-RESTART: each known create's signature by mint, the newest CREATE_SIGS_MAX. */
+  readonly #createSig: CappedMap<string, string>;
   /** A held raw create older than this is read again at a shortlist (`createRefreshAgeMs`). */
   readonly #createRefreshMs: number;
   /** RESTART-KEEP: each mint's curve completion and migration transactions, as seen (logs or fetched). */
-  readonly #completeSig = new Map<string, string>();
-  readonly #migrationSig = new Map<string, string>();
+  readonly #completeSig = new CappedMap<string, string>(TX_SIGS_MAX);
+  readonly #migrationSig = new CappedMap<string, string>(TX_SIGS_MAX);
   /** RESTART-KEEP: the saved state's slot (the downtime's migrations are looked up after it); null on a fresh start. */
   #downtimeFrom: bigint | null = null;
   /** RESTART-KEEP: restored candidates whose transactions wait for the sources to start. */
@@ -389,7 +441,7 @@ export class Worker {
   /** The app's views: recent candidate decisions, the funnel, token symbols seen on creates. */
   readonly #rows: DecisionRow[] = [];
   readonly #funnel = { fromMs: 0, stage: new Map<string, { day: string; stage: number; check: string | null }>(), enteredByDay: new Map<string, number>() };
-  readonly #symbols = new Map<string, string>();
+  readonly #symbols = new CappedMap<string, string>(SYMBOLS_MAX);
   #stopping = false;
   /** The code of the stop under way (the first `stop` call's). */
   #stopCode: number = EXIT.clean;
@@ -403,6 +455,7 @@ export class Worker {
 
   constructor(d: WorkerDeps) {
     this.#d = d;
+    this.#createSig = new CappedMap<string, string>(d.createSigsMax ?? CREATE_SIGS_MAX);
     const c = d.config;
     const now = d.timers.now();
     this.#started = now;
@@ -412,6 +465,33 @@ export class Worker {
     this.#journal = new Journal(join(c.stateDir, STATE_FILES.journal), this.#boot, () => d.timers.now());
     this.#fillLines = readJournalFills(join(c.stateDir, STATE_FILES.journal));
     rmSync(join(c.stateDir, STATE_FILES.cleanStop), { force: true });
+    // RESTART-CAUSE: the systemd unit runs a `--reconcile` pre-step (its own process) before each start, and it writes
+    // journal lines of its own. So the pre-step reads how the previous process ended and hands that reading to the main
+    // boot (EXIT_HANDOFF), which would otherwise read the pre-step's lines. A drill's marker is read the same way.
+    const handoff = join(c.stateDir, EXIT_HANDOFF);
+    // A handoff of null (the pre-step saw a first start) stands: it is not "no handoff".
+    const handed = takeHandoff(handoff, now);
+    this.#lastExit = handed !== undefined ? handed : plannedRestart(join(c.stateDir, STATE_FILES.plannedRestart), now) ?? this.#journal.previousExit;
+    if (d.phase === 'reconcile') writeFileSync(handoff, JSON.stringify({ exit: this.#lastExit, at: now }));
+    // Restarts in the last 24 h, planned (a runner drill), deploys and unplanned, for the heartbeat and the daily summary.
+    // The pre-step is not a boot of its own: only the main start records one.
+    this.#restartsFile = restartsFile(c.stateDir);
+    let saved: Restart[] = [];
+    try {
+      saved = this.#restartsFile.read([]);
+    } catch {
+      // A damaged count never blocks a boot: it starts again from this boot.
+      d.log('Restart counts unreadable (restarts.json): started again from this boot.');
+    }
+    this.#restarts = saved;
+    if (d.phase !== 'reconcile') {
+      this.#restarts = restartsAfterBoot(saved, now, this.#lastExit, c.gitSha);
+      try {
+        this.#restartsFile.write([...this.#restarts]);
+      } catch {
+        d.log('Restart counts not saved (restarts.json).');
+      }
+    }
     const timing = watchTimingProblem(d.config.watch, d.session.policy.gates.maxQuoteAgeMs, DEFAULT_LIVE_FEED.horizonSlots * SLOT_MS);
     if (timing !== null) throw new RangeError(timing);
     const seed = `paper:${this.#boot}`;
@@ -470,6 +550,9 @@ export class Worker {
       entry_rule: c.strategy.name, qualifying: c.strategy.qualifying, paper_edge_ppm: c.strategy.paperEdgePpm, s0_salt: d.strategy.entryTiming === 'random' ? d.strategy.entrySalt : null,
       s0_diagnostic: d.strategy.s0Diagnostic === true ? S0_DIAGNOSTIC_PARTS : null,
       sell_only: [...this.#sellOnly],
+      // RESTART-CAUSE: the unit's `--reconcile` pre-step is marked, so the daily summary counts real boots only.
+      // The main boot names its restart's kind and how the previous process ended, for the daily summary's counts.
+      ...(d.phase === 'reconcile' ? { phase: 'reconcile' } : { restart: this.#restarts[this.#restarts.length - 1]?.kind ?? null, exit: exitKind(this.#lastExit) }),
     });
     if (this.#journal.repaired) this.#journal.write('journal_repair', { detail: 'torn last line removed' });
     if (this.#sellOnly.length > 0) {
@@ -513,6 +596,10 @@ export class Worker {
     // FACTS-1b: the engine reads through core's FactFeed (engine-feed.ts); a replay of the recording uses the same.
     this.#facts = engineFeed(this.#feed, d.session.policy, (e) => {
       if (e.key.startsWith(POOL_PREFIX)) this.#setPool(e.key.slice(POOL_PREFIX.length), e.value);
+      else if (e.key.startsWith(CARRY_PREFIX)) {
+        const carry = parseCarryFact(e.value);
+        if (carry !== null) this.#carries.set(e.key.slice(CARRY_PREFIX.length), { carry, releasedAt: d.timers.now() });
+      }
       if (e.key === GRADUATES_SEED_KEY) this.#graduatesSeed(e.value);
     });
     this.#createRefreshMs = createRefreshAgeMs(d.session.policy, d.strategy.windowToMs);
@@ -796,7 +883,10 @@ export class Worker {
     // The deployer index's inputs and the creates/rugs coverage, kept across restarts (SEED-1 ruling).
     if (!r.late) this.#deployerStore.keep(m);
     // A late slot notice is refused by the engine (out of order): the paper height follows only accepted ones.
-    if (m.key === 'chain:slot' && !r.late && isObj(m.value) && typeof m.value['slot'] === 'bigint' && (this.#lastSlot === null || m.value['slot'] > this.#lastSlot)) this.#lastSlot = m.value['slot'];
+    if (m.key === 'chain:slot' && !r.late && isObj(m.value) && typeof m.value['slot'] === 'bigint' && (this.#lastSlot === null || m.value['slot'] > this.#lastSlot)) {
+      this.#lastSlot = m.value['slot'];
+      this.#lastSlotAt = this.#d.timers.now();
+    }
     else if (m.key.startsWith(POOL_PREFIX)) this.#setPool(m.key.slice(POOL_PREFIX.length), m.value);
     else if (m.key.startsWith('worker:fees:')) this.#fees.set(m.key.slice('worker:fees:'.length), m.value as PoolFeeContext);
     else if (m.key.startsWith(SNAPSHOT_PREFIX)) {
@@ -828,7 +918,6 @@ export class Worker {
       const sym = m.value['event']['data']['symbol'];
       if (typeof sym === 'string' && sym.trim() !== '') {
         this.#symbols.set(m.key.slice('logs:pump:CreateEvent:'.length), sym.trim().slice(0, 32));
-        if (this.#symbols.size > 200_000) this.#symbols.delete(this.#symbols.keys().next().value!);
       }
     }
     if (m.key.startsWith('logs:pump:CreateEvent:') && isObj(m.value) && typeof m.value['signature'] === 'string') this.#noteCreateSig(m.key.slice('logs:pump:CreateEvent:'.length), m.value['signature']);
@@ -837,7 +926,6 @@ export class Worker {
 
   #noteCreateSig(mint: string, signature: string): void {
     this.#createSig.set(mint, signature);
-    if (this.#createSig.size > (this.#d.createSigsMax ?? CREATE_SIGS_MAX)) this.#createSig.delete(this.#createSig.keys().next().value!);
   }
 
   /**
@@ -935,8 +1023,8 @@ export class Worker {
     if (sig === null) return;
     const map = at[1] === 'CreateEvent' ? this.#createSig : at[1] === 'CompleteEvent' ? this.#completeSig : this.#migrationSig;
     if (map === this.#createSig && m.key.startsWith('logs:')) return;
+    // The first seen wins; each map forgets its oldest past its cap in O(1).
     if (!map.has(at[2]!)) map.set(at[2]!, sig);
-    if (map.size > 200_000) map.delete(map.keys().next().value!);
   }
 
   /**
@@ -1017,17 +1105,24 @@ export class Worker {
     this.#poolReleasedAt.set(mint, this.#d.timers.now());
   }
 
+  /** The mint's newest whole market by the strategy's own rule (`chooseMarket`). */
+  #choice(mint: string): MarketChoice {
+    return chooseMarket(parsePool(this.#pools.get(mint)), this.#snapshots.get(mint) ?? null, this.#carries.get(mint)?.carry ?? null);
+  }
+
   /**
    * The moment WATCH-1 judges a held mint's market by (null: no market). A pool fact from the feed counts from its
-   * release: a healthy feed releases one every slot, already up to the horizon old by design, so judging it by receipt
-   * would read the second path all the time. WATCH-1's own snapshot counts from its read, as its age bound needs.
+   * release, or from its latest carry's release while a carry proves it unchanged (WATCH-1c): a live feed releases
+   * facts already up to the horizon old by design, so judging them by receipt would read the second path all the time.
+   * WATCH-1's own snapshot counts from its read, as its age bound needs.
    */
   #watchMarketAt(mint: string): number | null {
-    const p = parsePool(this.#pools.get(mint));
-    const snap = this.#snapshots.get(mint);
-    if (snap !== undefined && snapshotWins(snap, p === null ? null : p.obs)) return snap.atMs;
-    if (this.poolOf(mint) === null) return null;
-    return this.#poolReleasedAt.get(mint) ?? null;
+    const c = this.#choice(mint);
+    if (c.kind === 'snapshot') return c.snap.atMs;
+    if (c.kind !== 'pool') return null;
+    const released = c.carried ? this.#carries.get(mint)!.releasedAt : this.#poolReleasedAt.get(mint) ?? null;
+    // A confirming snapshot counts from its read, like any snapshot.
+    return c.confirmedAtMs === null ? released : Math.max(released ?? c.confirmedAtMs, c.confirmedAtMs);
   }
 
   /**
@@ -1043,13 +1138,13 @@ export class Worker {
   }
 
   poolOf(mint: string): { readonly address: string; readonly state: PaperMarket['pool']; readonly ctx: PoolFeeContext; readonly atMs: number } | null {
-    const p = parsePool(this.#pools.get(mint));
-    const snap = this.#snapshots.get(mint);
-    if (snap !== undefined && snapshotWins(snap, p === null ? null : p.obs)) return { address: snap.pool, state: snap.state, ctx: snap.ctx, atMs: snap.atMs };
-    if (p === null || flagged(p)) return null;
+    const c = this.#choice(mint);
+    if (c.kind === 'snapshot') return { address: c.snap.pool, state: c.snap.state, ctx: c.snap.ctx, atMs: c.snap.atMs };
+    if (c.kind !== 'pool') return null;
+    const p = c.pool;
     const ctx = this.#fees.get(mint) ?? this.#strategy.observedFees(mint);
-    if (p === null || ctx === undefined) return null;
-    return { address: p.address, state: { baseReserve: p.baseVault, quoteVault: p.quoteVault, virtualQuoteReserves: p.pool.virtualQuoteReserves ?? 0n }, ctx, atMs: p.obs.receivedAt };
+    if (ctx === undefined) return null;
+    return { address: p.address, state: { baseReserve: p.baseVault, quoteVault: p.quoteVault, virtualQuoteReserves: p.pool.virtualQuoteReserves ?? 0n }, ctx, atMs: c.atMs };
   }
 
   /**
@@ -1461,7 +1556,7 @@ export class Worker {
       } catch (e) {
         d.log(`Engine step failed: ${e instanceof Error ? `${e.name}: ${e.message}` : 'error'}`);
         process.exitCode = EXIT.crash;
-        void this.stop(EXIT.crash);
+        void this.stop(EXIT.crash, crashSite(e, this.#engine.lastHandled));
         return;
       }
       this.#loop = d.timers.setTimeout(loop, d.loopMs);
@@ -1689,7 +1784,7 @@ export class Worker {
   #positionWatch(): PositionWatch {
     const d = this.#d;
     return new PositionWatch({
-      timers: d.timers, everyMs: d.config.watch.everyMs, staleMs: d.config.watch.staleMs, latencyMs: d.config.watch.latencyMs,
+      timers: d.timers, everyMs: d.config.watch.everyMs, staleMs: d.config.watch.staleMs, latencyMs: d.config.watch.latencyMs, verifyMs: d.config.watch.verifyMs,
       held: () => {
         const book = this.#engine.book;
         const open = Object.values(book.positions).filter((p) => p.status !== 'closed' && p.quantity > 0n).map((p) => ({
@@ -1704,6 +1799,8 @@ export class Worker {
       },
       marketAt: (mint) => this.#watchMarketAt(mint),
       read: d.watchRead ?? (() => Promise.reject(new Error('no second path configured'))),
+      head: () => (this.#lastSlot === null || this.#lastSlotAt === null ? null : { slot: this.#lastSlot, atMs: this.#lastSlotAt }),
+      maxLagSlots: d.session.policy.gates.maxStateSlotLag,
       put: (snap, atMs) => this.#fact(snapshotKey(snap.mint), { pool: snap.pool, slot: snap.slot, atMs, state: snap.state, ctx: snap.ctx }),
       alert: (mint, reason) => {
         this.#journal.write('alert', { level: 'critical', code: 'position_unpriced', mint, reasons: [`no fresh price for ${mint}`, reason] });
@@ -1758,7 +1855,7 @@ export class Worker {
       signer: 'none', lease_epoch: null,
       sol_reserve: this.#account.state.walletLamports === null ? null : String(this.#account.state.walletLamports),
       paused: this.#ctl.paused, boot: this.#boot, pid: process.pid, uptime_s: Math.round((now - this.#started) / 1000),
-      rss_bytes: process.memoryUsage().rss, mode: 'paper', recorder: this.#d.config.recorder && this.#recorderFault === null ? 'on' : 'off', simulation: this.#d.config.simulate ? 'on' : 'off',
+      rss_bytes: process.memoryUsage().rss, last_exit: this.#lastExit, restarts_24h: this.#restartCounts(now), mode: 'paper', recorder: this.#d.config.recorder && this.#recorderFault === null ? 'on' : 'off', simulation: this.#d.config.simulate ? 'on' : 'off',
       reconciled: this.#reconciled, exit_capable: this.#exitCapable(now), quota: ops.quota, lookups: ops.lookups, entries_halted: this.#halted.length > 0, halt_reasons: [...this.#halted], critical: [...(this.#watch?.critical ?? []), ...(this.#recorderFault === null ? [] : [this.#recorderFault])], feeds, journal_seq: this.#journal.seq, signing_key: false,
       entry_rule: this.#d.config.strategy.name,
       ...(this.#d.strategy.s0Diagnostic === true ? { s0_diagnostic: S0_DIAGNOSTIC_PARTS } : {}),
@@ -1844,13 +1941,14 @@ export class Worker {
   }
 
   /** Clean stop: entries stop, simulations finish (bounded), journal and recorder close, the ledger closes. */
-  async stop(code: number = EXIT.clean): Promise<number> {
+  /** `crash`: where a crash happened (crash-site.ts), written on the stop line for the next boot's `last_exit`. */
+  async stop(code: number = EXIT.clean, crash?: string): Promise<number> {
     if (this.#stopping) return this.stopped;
     this.#stopping = true;
     this.#stopCode = code;
     this.#stoppingNow(code);
     try {
-      await this.#stop(code);
+      await this.#stop(code, crash);
     } catch (e) {
       // A stop that fails half way (a full disk) still ends the process, as a crash.
       this.#d.log(`Stop failed: ${errorText(e)}.`);
@@ -1860,7 +1958,7 @@ export class Worker {
     return code;
   }
 
-  async #stop(code: number): Promise<void> {
+  async #stop(code: number, crash?: string): Promise<void> {
     const d = this.#d;
     if (this.#loop !== null) d.timers.clearTimeout(this.#loop);
     if (this.#beat !== null) d.timers.clearTimeout(this.#beat);
@@ -1883,12 +1981,30 @@ export class Worker {
     // Past this point the state files belong to the next process: a simulation answering late writes nothing.
     this.#world.stop();
     const open = Object.values(this.#engine.book.positions).filter((p) => p.status !== 'closed').map((p) => p.id);
-    this.#journal.write('stop', { open_positions: open, open_intents: openIntents(this.#desk.book), reasons: [code === EXIT.clean ? 'signal' : 'crash'] });
+    this.#journal.write('stop', { open_positions: open, open_intents: openIntents(this.#desk.book), reasons: code === EXIT.clean ? ['signal'] : crash === undefined ? ['crash'] : ['crash', crash] });
     this.#record((r) => r.close());
     this.#ledger.close();
     if (code === EXIT.clean) writeFileSync(join(d.config.stateDir, STATE_FILES.cleanStop), new Date(d.timers.now()).toISOString());
     await new Promise<void>((r) => (this.#server === null ? r() : this.#server.close(() => r())));
     await new Promise<void>((r) => (this.#api === null ? r() : this.#api.close(() => r())));
+  }
+
+  /** Restarts in the 24 h before `now`: planned (a runner drill's marker), deploys (a new release) and unplanned. */
+  #restartCounts(now: number): { readonly planned: number; readonly deploy: number; readonly unplanned: number } {
+    const recent = this.#restarts.filter((r) => r.at <= now && now - r.at < 86_400_000);
+    const n = (k: Restart['kind']): number => recent.filter((r) => r.kind === k).length;
+    return { planned: n('planned'), deploy: n('deploy'), unplanned: n('unplanned') };
+  }
+
+  /**
+   * An uncaught exception or rejection (main's fatal handler): the stop line, with where it happened, is written at once,
+   * since the process exits right after. Nothing else runs; the next boot reconciles as after any crash.
+   */
+  crashed(e: unknown): void {
+    try {
+      const open = Object.values(this.#engine.book.positions).filter((p) => p.status !== 'closed').map((p) => p.id);
+      this.#journal.write('stop', { open_positions: open, open_intents: openIntents(this.#desk.book), reasons: ['crash', crashSite(e)] });
+    } catch {}
   }
 
   /**

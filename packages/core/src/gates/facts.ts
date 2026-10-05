@@ -293,6 +293,12 @@ export const holdersKey = (mint: string): string => `${NS}holders:${mint}`;
 export const insidersKey = (mint: string): string => `${NS}insiders:${mint}`;
 export const deployerKey = (creator: string): string => `${NS}deployer:${creator}`;
 export const streamKey = (stream: string): string => `${NS}stream:${stream}`;
+/**
+ * `{ pool, slot, state, obs }` (WATCH-1c): the pool's state from its swap chain is unchanged through `slot`, because its
+ * trade stream covers every slot since the chain's base with no gap, and no swap or other pool transaction came. Released
+ * with each slot notice; a gap, a hole or a non-swap pool transaction stops it at once (the chain goes stale).
+ */
+export const carryKey = (mint: string): string => `${NS}carry:${mint}`;
 export const simKey = (mint: string): string => `${NS}sim:${mint}`;
 export const xcheckKey = (mint: string): string => `${NS}xcheck:${mint}`;
 export const softKey = (mint: string): string => `${NS}soft:${mint}`;

@@ -112,6 +112,12 @@ export class Engine {
     return this.#book;
   }
 
+  /** What the engine handled last: a market event's key, or `world:<type>` (RESTART-ALERT names it when a step fails). */
+  get lastHandled(): string | null {
+    const e = this.#last;
+    return e === null ? null : e.kind === 'world' ? `world:${e.event.type}` : e.key;
+  }
+
   /** Every record so far (empty when `keepLog` is false). */
   get records(): readonly LogRecord[] {
     return this.#records ?? [];
