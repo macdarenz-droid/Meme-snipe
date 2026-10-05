@@ -4,13 +4,13 @@
 import { describe, expect, it } from 'vitest';
 import { decodeBase58 as decode, firstFunder, recordFromRpc, SYSTEM_PROGRAM } from '../../core/src/chain/index.ts';
 import { RAW, completeHolders, insiderLinks, parseAccountsRead, parseFunderRead, parseHoldersAllRead, parseHoldersRead, parseSolUsdBar } from '../../core/src/facts/index.ts';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FIX, MINT, POOL } from '../../core/test/facts/helpers.ts';
 import {
   ASSUMPTIONS, DEPLOYER_CHECK_CREDITS_PER_DAY, FACT_RPC_METHODS, plannedHeliusPerDay, FactReaders, FactRpc, HELIUS_CALLS_PER_EVALUATION, SUPPLEMENT_FILE, candidateCapacity, freePlanPerMinute, holderScanCredits, holderScanCreditsPerDay, perCandidate,
-  HOLDER_SCANS_PER_DAY, holderFilters, readSupplement, supplementRow, writeSupplement, type Ingest,
+  HOLDER_SCANS_FILE, HOLDER_SCANS_PER_DAY, holderFilters, readSupplement, supplementRow, writeSupplement, type Ingest,
 } from '../src/facts/index.ts';
 import type { FrameBody, Source } from '../src/providers/index.ts';
 import type { HttpClient, HttpRequest, HttpResponse } from '../src/providers/http.ts';
@@ -232,6 +232,48 @@ describe('fact readers', () => {
     expect(await pump(readers.readHoldersAll(MINT), timers)).toBe(true);
     expect(await pump(readers.readHoldersAll(MINT), timers)).toBe(false);
     expect(gpaCalls).toBe(1);
+    // HEAP-GUARD: the day's count survives a restart (new readers on the same file); unreadable counts as spent; a new
+    // UTC day starts again.
+    const scansFile = join(mkdtempSync(join(tmpdir(), 'scans-')), HOLDER_SCANS_FILE);
+    const fresh = () => new FactReaders({ feed: { ingest: () => {} }, rpc, http, timers, timeoutMs: 1000, holderScansPerDay: 1, scansFile });
+    expect(await pump(fresh().readHoldersAll(MINT), timers)).toBe(true);
+    expect(gpaCalls).toBe(2);
+    const again = fresh();
+    expect(await pump(again.readHoldersAll(MINT), timers)).toBe(false);
+    expect(again.outcomes.at(-1)).toMatchObject({ ok: false, detail: 'daily scan cap reached' });
+    expect(gpaCalls).toBe(2);
+    writeFileSync(scansFile, 'not json');
+    expect(await pump(fresh().readHoldersAll(MINT), timers)).toBe(false);
+    expect(gpaCalls).toBe(2);
+    timers.advance(86_400_000);
+    expect(await pump(fresh().readHoldersAll(MINT), timers)).toBe(true);
+    expect(gpaCalls).toBe(3);
+    // A negative saved count is malformed: spent, never a larger budget.
+    const today = Math.floor(timers.now() / 86_400_000);
+    writeFileSync(scansFile, JSON.stringify({ day: today, scans: -5 }));
+    expect(await pump(fresh().readHoldersAll(MINT), timers)).toBe(false);
+    expect(gpaCalls).toBe(3);
+    // Saved under a later day (the clock stepped back since): spent until that day has passed, not a fresh budget.
+    writeFileSync(scansFile, JSON.stringify({ day: today + 1, scans: 0 }));
+    expect(await pump(fresh().readHoldersAll(MINT), timers)).toBe(false);
+    timers.advance(86_400_000);
+    expect(await pump(fresh().readHoldersAll(MINT), timers)).toBe(false);
+    expect(gpaCalls).toBe(3);
+    timers.advance(86_400_000);
+    expect(await pump(fresh().readHoldersAll(MINT), timers)).toBe(true);
+    expect(gpaCalls).toBe(4);
+    // persist review B1: an unreadable file whose write-back fails (here the temp path is a directory) never throws
+    // out of the constructor (the worker's start): the readers come up, today stays spent, and one line is logged,
+    // with no path or error message in it.
+    writeFileSync(scansFile, 'not json');
+    mkdirSync(`${scansFile}.tmp`);
+    const lines: string[] = [];
+    let stuck: FactReaders | undefined;
+    expect(() => { stuck = new FactReaders({ feed: { ingest: () => {} }, rpc, http, timers, timeoutMs: 1000, holderScansPerDay: 1, scansFile, log: (l) => lines.push(l) }); }).not.toThrow();
+    expect(await pump(stuck!.readHoldersAll(MINT), timers)).toBe(false);
+    expect(gpaCalls).toBe(4);
+    expect(lines).toEqual(['Holder scan count not saved: it is kept in this process only.']);
+    expect(readFileSync(scansFile, 'utf8')).toBe('not json');
     expect(readers.outcomes.at(-1)).toMatchObject({ ok: false, detail: 'daily scan cap reached' });
     const r = parseHoldersAllRead((ingested[0]!.body as { value: unknown }).value)!;
     expect(r.accounts.length).toBe(hc.gpa.accounts.length);
