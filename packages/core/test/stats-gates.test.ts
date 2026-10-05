@@ -5,7 +5,7 @@ import {
   burnHoldout, createHoldoutRegistry, freezeRequirement, g2PowerInputs, type G2PowerSettings, type ClusteredReturn, type DayReturn, nPower, registerHoldout, summarizeWalkForward, type WalkForwardSummary, sealHoldout, type DemotionInput, type HoldoutRegistry, type G0Input, type G1Input, type G2Input, type G2PowerResult, type G2Universe,
   type G3Input, type G4Input, type G5Input, type TradeOutcome, type HoldoutTrade, type TripleBarrierLabel,
   clopperPearsonUpper, evaluateRevalidation, VETO_COMPOSITE_LEVEL, VETO_COMPOSITE_ALPHA, VETO_COMPOSITE_PARTS, clusterWelchBounds, g2Sensitivity, RETURN_FLOOR, scoreVetoCounterfactuals,
-  type RevalidationInput, G1_TESTS, G2_DEFAULTS, MIN_DAYS, REQUIREMENT_FLOOR,
+  type RevalidationInput, G1_TESTS, G2_DEFAULTS, MIN_DAYS, REQUIREMENT_FLOOR, CAPPED_ESTIMAND, MAX_RETURN_CAP, fisherGreater, VETO_TAIL_ALPHA, HOLDOUT_LOWER_LEVEL,
 } from '../src/stats/index.ts';
 import { EXIT_UNIVERSES, KNOWN_PLATFORM_CHANGES, RESEARCH_CONFIG, TRIAL_POLICY } from '../src/config/index.ts';
 import { bracketTrades, dayKey, type DayTrade } from './stats-fixtures.ts';
@@ -612,7 +612,7 @@ const keptOf = (xs: readonly number[], clusters: readonly string[] = xs.map((_, 
 const cfOf = (returns: readonly number[], censored = 0, clusters: readonly string[] = returns.map((_, i) => `v${i}`)) => ({ returns, clusters, censored });
 const g3Pass: G3Input = {
   qualifyingRun: true, liveOnlyVetoes: { vetoed: 20, eligible: 1000 }, dryRunHours: 49, ...keptOf(dry),
-  holdout: { n: holdout.length, mean: mean(holdout.map((t) => t.rNet)), sd: sd(holdout.map((t) => t.rNet)) },
+  holdout: { n: holdout.length, mean: mean(holdout.map((t) => t.rNet)), sd: sd(holdout.map((t) => t.rNet)), estimand: CAPPED_ESTIMAND },
   candidates: { dryRunCount: 980, dryRunHours: 49, backtestCount: 20_000, backtestHours: 1000 },
   rejectMix: { dryRun: { H8: 210, H9: 700, H11: 70 }, backtest: { H8: 4300, H9: 14_200, H11: 1500 } },
   fillDifferences: Array.from({ length: 24 }, (_, i) => [0.001, 0.002, 0.004, 0.003, 0.012, -0.002][i % 6]!), parityTestPassed: true,
@@ -622,7 +622,7 @@ const g3Pass: G3Input = {
   simulations: { attempted: 120, succeeded: 118, errors: { BlockhashNotFound: 2 } },
   // The 20 vetoed candidates scored as if entered, like the kept trades; the holdout's lower bound from G2.
   vetoCounterfactuals: cfOf(bracketTrades(42, 0.1, 1, 20).map((t) => t.rNet)),
-  holdoutLower: { value: 0.06, level: VETO_COMPOSITE_LEVEL }, returnCap: 0.3,
+  holdoutLower: { value: 0.06, level: HOLDOUT_LOWER_LEVEL, estimand: CAPPED_ESTIMAND }, holdoutCapped: 0, holdoutBelowFloor: 0, returnCap: 0.3,
 };
 
 describe('G3 live dry-run consistency', () => {
@@ -711,7 +711,7 @@ describe('G3 live dry-run consistency', () => {
     const shift = -0.01 - mean(kept);
     return {
       ...g3Pass, ...keptOf(kept.map((x) => x + shift)), liveOnlyVetoes: { vetoed: 100, eligible: 1000 },
-      holdout: { n: 500, mean: 0.05, sd: 0.33 }, holdoutLower: { value: 0.02, level: VETO_COMPOSITE_LEVEL }, vetoCounterfactuals: cfOf([]), ...over,
+      holdout: { n: 500, mean: 0.05, sd: 0.33, estimand: CAPPED_ESTIMAND }, holdoutLower: { value: 0.02, level: HOLDOUT_LOWER_LEVEL, estimand: CAPPED_ESTIMAND }, vetoCounterfactuals: cfOf([]), ...over,
     };
   };
   test('the reviewer\'s case does not pass: with no vetoed candidate scored the dry run is extended', () => {
@@ -749,11 +749,12 @@ describe('G3 live dry-run consistency', () => {
   });
   test('with fewer than 10 vetoed or kept trades the gap is the worst case the return range allows, never an assumption', () => {
     const r = gateG3({ ...g3Pass, liveOnlyVetoes: { vetoed: 3, eligible: 1000 }, vetoCounterfactuals: cfOf([0.1, 0.2, -0.1]) });
-    expect(r.metrics.vetoGapUpper).toBeCloseTo(0.3 - RETURN_FLOOR, 12);
+    // The estimand's worst case (S2 ruling C5): 3 − RETURN_FLOOR = 4.1, whatever take-profit is configured.
+    expect(r.metrics.vetoGapUpper).toBeCloseTo(MAX_RETURN_CAP - RETURN_FLOOR, 12);
     // 3 of 1,000: the rate bound is small enough that even the worst gap keeps the retained bound above 0.
     expect(r.passed).toBe(true);
     const many = gateG3({ ...g3Pass, liveOnlyVetoes: { vetoed: 60, eligible: 1000 }, vetoCounterfactuals: cfOf(Array(60).fill(0.1)), ...keptOf(dry.slice(0, 8)) });
-    expect(many.metrics.vetoGapUpper).toBeCloseTo(0.3 - RETURN_FLOOR, 12);
+    expect(many.metrics.vetoGapUpper).toBeCloseTo(MAX_RETURN_CAP - RETURN_FLOOR, 12);
     expect(many.status).toBe('not-proven');
   });
   test('an unscored or censored vetoed candidate is missing evidence; a count that does not add up fails', () => {
@@ -790,16 +791,20 @@ describe('G3 live dry-run consistency', () => {
     const abs = g3Pass.fillDifferences.map(Math.abs);
     const fillUpper = mean(abs) + studentTQuantile(1 - 0.05 / 4, abs.length - 1) * sd(abs) / Math.sqrt(abs.length);
     expect(r.metrics.executionAllowance).toBeCloseTo(2 * fillUpper, 12);
-    const at95 = gateG3({ ...g3Pass, holdoutLower: { value: 0.06, level: 0.95 } });
+    const at95 = gateG3({ ...g3Pass, holdoutLower: { value: 0.06, level: 0.95, estimand: CAPPED_ESTIMAND } });
     expect(at95.status).toBe('fail');
     expect(at95.reasons.join()).toMatch(/holdout bound level: .*need 0.9875/);
+    // S2 ruling C6 with M1: the capped holdout bound's level is the composite's own, one constant.
+    expect(HOLDOUT_LOWER_LEVEL).toBe(VETO_COMPOSITE_LEVEL);
   });
   // Mutant S3 (the |Δ| bound replaced by its point estimate) must fail this test: only Δ's uncertainty pushes the bias
   // above 5 points. Vetoed candidates are 40 points worse than kept trades, so the selection allowance is 0.
   test('the bias uses the gap bound, not its point estimate (kills mutant S3)', () => {
     const keptMean = mean(dry);
-    const raw = Array.from({ length: 100 }, (_, i) => (i % 7 === 0 ? -1.1 : 0.3));
+    // A wide spread (±0.8) kept inside the estimand's range [RETURN_FLOOR, 3] once shifted (S2: below the floor fails).
+    const raw = Array.from({ length: 100 }, (_, i) => (i % 2 === 0 ? -0.8 : 0.8));
     const cf = raw.map((x) => x - mean(raw) + keptMean - 0.4);
+    expect(Math.min(...cf)).toBeGreaterThanOrEqual(RETURN_FLOOR);
     const r = gateG3({ ...g3Pass, liveOnlyVetoes: { vetoed: 100, eligible: 1000 }, vetoCounterfactuals: cfOf(cf) });
     const point = 0.1 * Math.abs(r.metrics.vetoGap!);
     expect(point).toBeLessThanOrEqual(0.05);
@@ -816,12 +821,66 @@ describe('G3 live dry-run consistency', () => {
     const sel = base.metrics.selectionAllowance!;
     const exec = base.metrics.executionAllowance!;
     expect(exec).toBeGreaterThan(0);
-    const r = gateG3({ ...g3Pass, holdoutLower: { value: sel + exec / 2, level: VETO_COMPOSITE_LEVEL } });
+    const r = gateG3({ ...g3Pass, holdoutLower: { value: sel + exec / 2, level: HOLDOUT_LOWER_LEVEL, estimand: CAPPED_ESTIMAND } });
     expect(r.metrics.retainedLower!).toBeLessThanOrEqual(0);
     expect(r.metrics.retainedLower! + exec).toBeGreaterThan(0);
     expect(r.passed).toBe(false);
     expect(r.reasons.map((x) => x.split(':')[0])).toEqual(['retained expectancy']);
   });
+  // S2 (external audit; supervisor and stats rulings C1, C2, C5, C6): G3's bounded inputs are the capped estimand
+  // r_c = min(rNet, 3), "net, capped at +300%"; both sides of every comparison are capped identically.
+  test('C5: a vetoed trade at +500% with a 0.3 take-profit never gives a gap above the stated worst case 3 − RETURN_FLOOR', () => {
+    const cf = Array(12).fill(5) as number[];
+    const r = gateG3({ ...g3Pass, liveOnlyVetoes: { vetoed: 12, eligible: 1000 }, vetoCounterfactuals: cfOf(cf) });
+    expect(r.metrics.vetoWorstGap).toBeCloseTo(MAX_RETURN_CAP - RETURN_FLOOR, 12);
+    expect(r.metrics.vetoGap!).toBeCloseTo(3 - mean(dry.map((x) => Math.min(x, 3))), 12);
+    expect(r.metrics.vetoGap!).toBeLessThanOrEqual(r.metrics.vetoWorstGap!);
+    expect(r.metrics.vetoGapAbsUpper!).toBeLessThanOrEqual(r.metrics.vetoWorstGap!);
+  });
+
+  test('C6: the holdout bound must be the capped estimand\'s, and no return may sit below RETURN_FLOOR', () => {
+    // The holdout summary as a whole carries the tag too: its mean and sd must be the capped ones.
+    const wholeWrong = gateG3({ ...g3Pass, holdout: { ...g3Pass.holdout, estimand: 'net' } });
+    expect(wholeWrong.status).toBe('fail');
+    expect(wholeWrong.reasons.join()).toMatch(/estimand: .*holdout summary on "net"/);
+    const wrong = gateG3({ ...g3Pass, holdoutLower: { ...g3Pass.holdoutLower, estimand: 'net' } });
+    expect(wrong.status).toBe('fail');
+    expect(wrong.reasons.join()).toMatch(/estimand: .*net, capped at \+300%/);
+    expect(gateG3({ ...g3Pass, holdoutBelowFloor: 1 }).reasons.join()).toMatch(/return floor/);
+    expect(gateG3({ ...g3Pass, ...keptOf([...dry.slice(1), -1.2]) }).reasons.join()).toMatch(/return floor/);
+    expect(gateG3({ ...g3Pass, vetoCounterfactuals: cfOf([...g3Pass.vetoCounterfactuals.returns.slice(1), -1.5]) }).reasons.join()).toMatch(/return floor/);
+  });
+
+  test('C1: capped counts are reported per arm and for the holdout; a capped tail only among the vetoed is "not proven", never a pass', () => {
+    const base = gateG3({ ...g3Pass, holdoutCapped: 4 });
+    expect(base.passed).toBe(true);
+    expect([base.metrics.keptCapped, base.metrics.vetoedCapped, base.metrics.holdoutCapped]).toEqual([0, 0, 4]);
+    const cf = [...g3Pass.vetoCounterfactuals.returns.slice(1), 4];
+    const tail = gateG3({ ...g3Pass, vetoCounterfactuals: cfOf(cf) });
+    expect(tail.metrics.vetoedCapped).toBe(1);
+    expect(tail.status).toBe('not-proven');
+    expect(tail.reasons.map((x) => x.split(':')[0])).toEqual(['veto bias tail']);
+    // Kept trades capped too, at a like share: the tail rule is satisfied.
+    const both = gateG3({ ...g3Pass, vetoCounterfactuals: cfOf(cf), ...keptOf([...dry.slice(2), 4, 4]) });
+    expect(both.checks.find((x) => x.name === 'veto bias tail')!.passed).toBe(true);
+    // Both arms capped, but the vetoed far more often (10 of 20 against 1 of 30): one-sided Fisher below α/4.
+    const heavy = [...g3Pass.vetoCounterfactuals.returns.slice(10), ...Array(10).fill(4)] as number[];
+    const skew = gateG3({ ...g3Pass, vetoCounterfactuals: cfOf(heavy), ...keptOf([...dry.slice(1), 4]) });
+    expect(skew.metrics.vetoTailP!).toBeLessThan(VETO_TAIL_ALPHA);
+    expect(skew.checks.find((x) => x.name === 'veto bias tail')!.passed).toBe(false);
+    expect(skew.passed).toBe(false);
+    // The test itself: all 3 of 6 successes in the first arm of 3 has probability 1 / C(6, 3).
+    expect(fisherGreater(3, 3, 0, 3)).toBeCloseTo(1 / 20, 12);
+    expect(fisherGreater(0, 3, 3, 3)).toBeCloseTo(1, 12);
+  });
+
+  test('C2: the agree checks compare capped means; each side\'s capped count is shown', () => {
+    // One dry-run trade at +5,000%: uncapped it would move the mean by about 1.7 points per trade.
+    const r = gateG3({ ...g3Pass, ...keptOf([...dry.slice(1), 50]) });
+    expect(r.metrics.dryRunMean).toBeCloseTo(mean([...dry.slice(1), 3]), 12);
+    expect(r.checks.find((x) => x.name === 'mean')!.detail).toMatch(/capped at \+300%: dry run 1, holdout 0/);
+  });
+
   test('a joint G-test of the reject mix sits beside the per-reason intervals; a doubled H8 share disagrees', () => {
     const ok = gateG3(g3Pass);
     expect(ok.checks.find((c) => c.name === 'reject mix joint')!.passed).toBe(true);

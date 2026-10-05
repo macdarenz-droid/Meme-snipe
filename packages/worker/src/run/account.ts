@@ -84,6 +84,12 @@ export interface PaperTrade {
   /** The book's exit reasons of the closing exit. */
   exitReasons?: readonly string[];
   /**
+   * What landed after the trade closed (PAPER-2): each change to its net, in lamports and in micro-dollars (negative: a
+   * loss), dated when it was booked. The close's own `netLamports`/`netPnl` stay as they were, so a day already checked
+   * is never rewritten; a late loss counts toward the day it is booked (risk's `late_settlement` cost).
+   */
+  late?: { readonly atMs: number; readonly lamports: bigint; readonly usd: MicroUsd | null }[];
+  /**
    * RISK-PARTIAL: each partial sale's realized result (proceeds after its fees less its share of the basis), and the
    * tokens and net exit lamports those parts cover. Absent in files from before (no partial booked).
    */
@@ -91,6 +97,14 @@ export interface PaperTrade {
   partialSold?: bigint;
   partialNet?: bigint;
 }
+
+/** A trade's whole SOL result: at its close, and what landed after (PAPER-2). Null while open. */
+export const tradeSol = (t: PaperTrade): bigint | null =>
+  t.netLamports === null ? null : (t.late ?? []).reduce((s, x) => s + x.lamports, t.netLamports);
+
+/** A trade's whole dollar result: at its close, and what landed after (PAPER-2). Null while open or unvalued. */
+export const tradePnl = (t: PaperTrade): MicroUsd | null =>
+  t.netPnl === null ? null : ((t.late ?? []).reduce((s, x) => s + (x.usd ?? 0n), t.netPnl as bigint) as MicroUsd);
 
 export interface AccountState {
   readonly openedAtMs: number;
@@ -263,16 +277,63 @@ export class PaperAccount {
     }
     if (t !== undefined && l !== null && p !== undefined && (p.status === 'closed' || r.closes === true) && t.closedAtMs === null) {
       t.closedAtMs = r.atMs;
-      t.netLamports = tradeNet(l);
-      // Each cash flow at its own SOL price, as the backtest report values a trade (core's `tradeUsd`): the entry leg at
-      // the entry's price, the exit leg at the close's. An unknown price: a total loss of the notional (the safe side).
-      const pxIn = t.openSolPrice ?? null;
-      t.netPnl = solPrice === null || pxIn === null ? (-t.notional as MicroUsd) : (tradeUsd(l, pxIn, solPrice).net as MicroUsd);
-      t.stoppedOut = r.reasons.some((x) => STOPS.has(x));
       t.closeSolPrice = solPrice;
+      this.#value(t, l);
+      t.stoppedOut = r.reasons.some((x) => STOPS.has(x));
       t.exitReasons = r.reasons.filter((x) => EXIT_REASONS.has(x));
     }
+    // A sale booked late can change trades already closed: its own (a late sell) and its entry's others (a sell that
+    // closed the shared account returns the rent to the entry's first trade).
+    if (p !== undefined) this.#resettleClosed(r.book, p.entryIntentId, legs, r.atMs);
     this.#file.write(this.#s);
+  }
+
+  /**
+   * Re-settles the closed trades of the entry `positionId` belongs to, after something landed late (PAPER-2): a fee of
+   * an attempt that landed after its trade closed, or a sale or account close booked after it. The wallet moves by the
+   * change, and the trade's net is valued again at its own open and close prices. True when anything moved.
+   */
+  resettle(book: Book, positionId: string, legs: PaperLegs, nowMs: number): boolean {
+    const p = book.positions[positionId];
+    if (p === undefined) return false;
+    const moved = this.#resettleClosed(book, p.entryIntentId, legs, nowMs);
+    if (moved) this.#file.write(this.#s);
+    return moved;
+  }
+
+  #resettleClosed(book: Book, entryIntentId: string, legs: PaperLegs, nowMs: number): boolean {
+    let moved = false;
+    for (const t of this.#s.trades) {
+      if (t.closedAtMs === null || book.positions[t.positionId]?.entryIntentId !== entryIntentId) continue;
+      const before = t.booked;
+      const l = this.#book(t, book, legs);
+      if (l === null) continue;
+      // The wallet may have moved already (`filled` books its own position first); the trade's results follow it here.
+      if (t.booked !== before) moved = true;
+      const sol = tradeSol(t)!;
+      const now = tradeNet(l);
+      if (now === sol) continue;
+      // The change is dated now, as a late entry: the close's results, and the day they counted toward, stay as they were.
+      const pxIn = t.openSolPrice ?? null;
+      const pxOut = t.closeSolPrice ?? null;
+      const was = tradePnl(t);
+      const usd = was === null || pxIn === null || pxOut === null ? null : ((tradeUsd(l, pxIn, pxOut).net - was) as MicroUsd);
+      (t.late ??= []).push({ atMs: nowMs, lamports: now - sol, usd });
+      moved = true;
+    }
+    return moved;
+  }
+
+  /**
+   * A closed trade's results: each cash flow at its own SOL price, as the backtest report values a trade (core's
+   * `tradeUsd`): the entry leg at the entry's price, the exit leg at the close's. An unknown price: a total loss of the
+   * notional (the safe side).
+   */
+  #value(t: PaperTrade, l: TradeLamports): void {
+    t.netLamports = tradeNet(l);
+    const pxIn = t.openSolPrice ?? null;
+    const pxOut = t.closeSolPrice ?? null;
+    t.netPnl = pxOut === null || pxIn === null ? (-t.notional as MicroUsd) : (tradeUsd(l, pxIn, pxOut).net as MicroUsd);
   }
 
   /**
@@ -378,6 +439,31 @@ export class PaperAccount {
     return out;
   }
 
+  /**
+   * The account's costs that are no trade's (RISK-1b `costs`), dated and in micro-dollars: the one list risk reads (in
+   * `fact`) and the app's money totals add to the trades (APP-MONEY). The wallet's setup rent is one: it lowers equity and
+   * counts toward the day's and week's loss, and it is never a trade (R8, R11, R15 and trade statistics do not see it).
+   */
+  costs(): AccountCost[] {
+    return this.costRecords().map(({ atMs, amount, kind }) => ({ atMs, amount, kind }));
+  }
+
+  /** The same costs with their lamports, for the app's SOL totals (APP-MONEY). */
+  costRecords(): (AccountCost & { readonly lamports: bigint })[] {
+    const su = this.#s.setup;
+    const costs: (AccountCost & { readonly lamports: bigint })[] = su === undefined ? [] : [{ atMs: su.atMs, amount: su.cost, lamports: su.lamports, kind: 'wallet_setup' }];
+    // Fees of entries that never filled (PAPER-1): account costs too, never trades.
+    const sf = this.#s.strayFolded;
+    if (sf !== undefined) costs.push({ atMs: sf.atMs, amount: sf.cost, lamports: sf.lamports, kind: 'failed_entry' });
+    for (const r of Object.values(this.#s.strayFees ?? {})) costs.push({ atMs: r.atMs, amount: r.cost, lamports: r.lamports, kind: 'failed_entry' });
+    // A loss that landed after its trade closed counts on the day it was booked (PAPER-2); a late gain is not counted
+    // (the safe side: a day's loss is never lowered after the fact).
+    for (const t of this.#s.trades) {
+      for (const x of t.late ?? []) if (x.usd !== null && x.usd < 0n) costs.push({ atMs: x.atMs, amount: -x.usd as MicroUsd, lamports: -x.lamports, kind: 'late_settlement' });
+    }
+    return costs;
+  }
+
   /** The account snapshot risk reads, with the ledger's held reservations and version read in one transaction. */
   fact(ledger: Ledger, book: Book, latches: Latches, solPrice: MicroUsd | null, nowMs: number): AccountFact {
     const { version, value: held } = ledger.withSnapshot(() => ledger.heldExposure());
@@ -385,14 +471,7 @@ export class PaperAccount {
       mint: t.mint as Mint, openedAtMs: t.openedAtMs, closedAtMs: t.closedAtMs!, notional: t.notional, netPnl: t.netPnl!, stoppedOut: t.stoppedOut,
       partials: (t.partials ?? []).map((x) => ({ atMs: x.atMs, pnl: x.pnl })),
     }));
-    // The wallet's setup rent is an account cost (RISK-1b `costs`): it lowers equity and counts toward the day's and
-    // week's loss, and it is never a trade (R8, R11, R15 and statistics do not see it).
-    const su = this.#s.setup;
-    const costs: AccountCost[] = su === undefined ? [] : [{ atMs: su.atMs, amount: su.cost, kind: 'wallet_setup' }];
-    // Fees of entries that never filled (PAPER-1): account costs too, never trades.
-    const sf = this.#s.strayFolded;
-    if (sf !== undefined) costs.push({ atMs: sf.atMs, amount: sf.cost, kind: 'failed_entry' });
-    for (const r of Object.values(this.#s.strayFees ?? {})) costs.push({ atMs: r.atMs, amount: r.cost, kind: 'failed_entry' });
+    const costs = this.costs();
     const openPositions = Object.values(book.positions).filter((p) => p.status !== 'closed' && p.status !== 'opening').map((p) => {
       const t = this.#s.trades.find((x) => x.positionId === p.id);
       const fees = Object.values(book.intents).filter((i) => i.intent.positionId === p.id && i.intent.purpose === 'entry').reduce((s, i) => s + i.fills.reduce((a, f) => a + f.fees, 0n), 0n);
