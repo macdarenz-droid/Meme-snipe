@@ -62,6 +62,26 @@ const staleHealth = (ms: number) => async (addr: string) => {
 };
 
 describe('runner with the stub worker', () => {
+  it('a drill whose kill fails leaves no planned_restart marker behind (RESTART-ALERT review)', async () => {
+    const t = await setup();
+    const control = t.control();
+    control.kill = async () => {
+      throw new Error('kill failed');
+    };
+    const newRun = { runId: 'run', targetMs: 16_000, entry: STUB_ENTRY, restarts: 3, causes: ['crash', 'crash', 'crash'] as const, restartWindowMs: 2500, feedDropMs: 600, rpcDrops: 0 };
+    const common = { identity: { label: 'rehearsal' as const, commit: 'c0ffee' }, healthAddr: t.addr, stateDir: t.stateDir, evidenceDir: t.evidenceDir, keepRecorded: 'copy' as const, sampleMs: 100, recoverMs: 5000, log: quiet };
+    let killed = 0;
+    const kill = control.kill;
+    control.kill = async () => {
+      killed++;
+      return kill();
+    };
+    await runSegment({ ...common, control, newRun, segmentEnd: Number.POSITIVE_INFINITY, recordedDir: join(t.dir, 'rec'), recordedArtifact: 'rec' }).catch(() => undefined);
+    expect(killed).toBeGreaterThanOrEqual(1);
+    await control.stop();
+    expect(existsSync(join(t.stateDir, 'planned_restart'))).toBe(false);
+  });
+
   it('runs restart and feed drills, survives a job handover, and writes complete evidence', async () => {
     const t = await setup();
     const newRun = { runId: 'run', targetMs: 16_000, entry: STUB_ENTRY, restarts: 3, causes: ['crash', 'crash', 'crash'] as const, restartWindowMs: 2500, feedDropMs: 600, rpcDrops: 0 };
@@ -77,6 +97,8 @@ describe('runner with the stub worker', () => {
     const byKind = (k: string) => r.drills.filter((d) => d.kind === k);
     expect(byKind('restart')).toHaveLength(3);
     expect(byKind('restart').every((d) => d.pass && d.midTrade === true)).toBe(true);
+    // RESTART-ALERT: each crash drill left its marker for the next boot (the stub worker does not consume it).
+    expect(JSON.parse(readFileSync(join(t.stateDir, 'planned_restart'), 'utf8'))).toMatchObject({ cause: expect.stringMatching(/^drill restart-3 \(crash\)$/), at: expect.any(Number) });
     expect(byKind('handover')).toHaveLength(1);
     expect(byKind('handover')[0]!.pass).toBe(true);
     expect(r.drills_summary.feeds_passed).toEqual(['alchemy-ws', 'helius-ws', 'pumpportal']);

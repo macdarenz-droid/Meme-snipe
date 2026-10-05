@@ -195,6 +195,10 @@ export const RISK_CODE_LABEL: Record<string, string> = {
 export const WORKER_CODE_LABEL: Record<string, string> = {
   'no-sol-price': 'SOL price unknown',
   'no-market': 'No pool data',
+  'no-pool-state': 'No pool data (not read)',
+  'pool-malformed': 'No pool data (unreadable)',
+  'pool-flagged': 'No pool data (swap gap)',
+  'no-fee-context': 'No pool data (fee terms)',
   'no-account': 'Account unknown',
   'no-round-trip': 'No quote',
   'risk-mark-failed': 'Position value unknown',

@@ -82,6 +82,15 @@ export class CreditBook {
   }
 }
 
+/**
+ * HELIUS-EXHAUSTED (owner, 5 Oct): the worker's own count never stops Helius; Helius's own answer does ("max usage
+ * reached", a 429 the scheduler holds and re-checks). So the worker's Helius scheduler has no monthly halt: its count
+ * runs from the UTC month and cannot see what else the account spent, so it could neither stop in time nor know the
+ * account's end. The count is still kept (credits.json) and reported.
+ */
+const { budget: _heliusMonthly, ...HELIUS_NO_HALT } = HELIUS_FREE;
+export const HELIUS_WORKER: SchedulerSpec = HELIUS_NO_HALT;
+
 export interface LiveProviderOptions {
   /**
    * Full pump and PumpSwap trade log streams with rug coverage (`coverage:rugs:*`). Off on the free plans (about 14M
@@ -102,32 +111,57 @@ export interface LiveProviderOptions {
 /** S0-ZERO: credits one in-run fill of a pool's trade gap may spend (a candidate's catch-up from its migration is a few transactions). */
 export const TRADES_FILL_CREDITS = 500;
 
+/** STEP-B: in-run fills that may read at once; more wait their turn (oldest first), so a boot's catch-up stays flat. */
+export const TRADES_FILLS_IN_FLIGHT = 2;
+
 /**
  * S0-ZERO: FILL-2's in-run fill for the pool watches (a candidate's catch-up from its migration, any reconnect gap).
  * Each fill may spend at most `TRADES_FILL_CREDITS` and never more than the daily budget has left (none left: no call,
- * the gap stays lossy); what it spent is booked to the budget, on top of the provider's own credit metering, and the
- * fill is journaled as `trades_fill` so the shakedown measures its size and credits.
+ * the gap stays lossy); the fill is journaled as `trades_fill` so the shakedown measures its size and credits.
+ * STEP-B: the cap is booked to the budget before the fill reads and what it did not use is given back after (as the
+ * seed and restart reads do), so fills running together never spend past the budget and a death mid-fill keeps the
+ * charge; at most `TRADES_FILLS_IN_FLIGHT` fills read at once.
  */
 export const tradesFill = (o: {
   readonly feed: Parameters<typeof ingestingFill>[0]['feed'];
   readonly rpc: Parameters<typeof ingestingFill>[0]['rpc'];
   readonly timers: Timers;
-  readonly budget: Pick<DailyBudget, 'remaining' | 'spend'>;
+  readonly budget: Pick<DailyBudget, 'remaining' | 'spend' | 'refund'>;
   readonly pools: SourcesContext['pools'];
   readonly journal?: NonNullable<SourcesContext['journal']>;
-}) => ingestingFill({
-  feed: o.feed, rpc: o.rpc, timers: o.timers, provider: 'helius',
-  creditCap: () => Math.min(TRADES_FILL_CREDITS, o.budget.remaining(o.timers.now())),
-  streamOf: tradesStream,
-  kindOf: (address) => (o.pools().get(address)?.held === true ? 'position' : 'candidate'),
-  onReport: (f: GapFill) => {
-    o.budget.spend(f.report.creditsUsed, o.timers.now());
-    o.journal?.('trades_fill', {
-      pool: f.gap.pool, mint: o.pools().get(f.gap.pool)?.mint ?? null, kind: f.gap.kind, from_slot: f.gap.fromSlot, until_slot: f.gap.untilSlot,
-      complete: f.complete, transactions: f.records.length, credits: f.report.creditsUsed, calls: f.report.calls, stopped_by: f.report.stoppedBy, latency_ms: f.report.latencyMs,
-    });
-  },
-});
+  readonly inFlight?: number;
+}) => {
+  let active = 0;
+  const waiting: (() => void)[] = [];
+  return async (gap: Parameters<ReturnType<typeof ingestingFill>>[0]): Promise<boolean> => {
+    if (active >= (o.inFlight ?? TRADES_FILLS_IN_FLIGHT)) await new Promise<void>((go) => waiting.push(go));
+    active++;
+    try {
+      const cap = Math.min(TRADES_FILL_CREDITS, o.budget.remaining(o.timers.now()));
+      if (cap > 0) o.budget.spend(cap, o.timers.now());
+      let used = 0;
+      const ok = await ingestingFill({
+        feed: o.feed, rpc: o.rpc, timers: o.timers, provider: 'helius',
+        creditCap: () => cap,
+        streamOf: tradesStream,
+        kindOf: (address) => (o.pools().get(address)?.held === true ? 'position' : 'candidate'),
+        onReport: (f: GapFill) => {
+          used = f.report.creditsUsed;
+          o.journal?.('trades_fill', {
+            pool: f.gap.pool, mint: o.pools().get(f.gap.pool)?.mint ?? null, kind: f.gap.kind, from_slot: f.gap.fromSlot, until_slot: f.gap.untilSlot,
+            complete: f.complete, transactions: f.records.length, credits: f.report.creditsUsed, calls: f.report.calls, stopped_by: f.report.stoppedBy, latency_ms: f.report.latencyMs,
+          });
+        },
+      })(gap);
+      // A fill that threw keeps its whole reservation (fail safe on spend: what it read is not known).
+      if (cap > 0) o.budget.refund(Math.max(0, cap - used), o.timers.now());
+      return ok;
+    } finally {
+      active--;
+      waiting.shift()?.();
+    }
+  };
+};
 
 /**
  * CREATE-AFTER-RESTART: the most one create lookup may spend: pages of the mint's signatures (1,000 each, newest first)
@@ -215,7 +249,7 @@ export class LiveProviders {
   #feed: SourcesContext['feed'] | null = null;
 
   constructor(o: LiveProviderOptions) {
-    this.helius = o.credits.scheduler(HELIUS_FREE);
+    this.helius = o.credits.scheduler(HELIUS_WORKER);
     this.alchemy = o.credits.scheduler(ALCHEMY_FREE);
     this.jupiter = o.credits.scheduler(JUPITER_FREE);
     this.rugcheck = o.credits.scheduler(RUGCHECK_FREE);
@@ -240,7 +274,8 @@ export class LiveProviders {
       const cls = st.creditsByClass.map((c) => Math.ceil(c)) as [number, number, number, number];
       return {
         provider: st.provider, credits_used: cls[0] + cls[1] + cls[2] + cls[3], credits_by_class: cls,
-        monthly_credits: s.spec.budget?.monthlyCredits ?? null, granted: st.granted, shed: st.shed, halted: st.halted,
+        // The plan's published credits, as the run contract checks them (Helius's too, though its scheduler has no halt).
+        monthly_credits: (s === this.helius ? HELIUS_FREE.budget : s.spec.budget)?.monthlyCredits ?? null, granted: st.granted, shed: st.shed, halted: st.halted,
       };
     });
     return { quota, lookups: { counts: [...this.#lookups] } };
@@ -297,9 +332,9 @@ export class LiveProviders {
    * scheduler at P0 (review of #87): it prices a held position's exit, only for open positions, only while their market
    * is stale, at most T_max each, so the monthly budget's halt never takes the price an exit needs.
    */
-  watchRead(): (addresses: readonly string[]) => Promise<WatchRead> {
+  watchRead(): (addresses: readonly string[], minContextSlot: bigint | null) => Promise<WatchRead> {
     const rpc = new RpcHttp({ provider: 'alchemy', url: () => alchemyRpcUrl(this.#o.secrets), http: this.#o.http, scheduler: this.alchemy, timeoutMs: 10_000 });
-    return (addresses) => rpc.getMultipleAccounts(addresses, P0);
+    return (addresses, minContextSlot) => rpc.getMultipleAccounts(addresses, P0, minContextSlot ?? undefined);
   }
 
   /** SEED-1's backfill RPC: Helius, charged to its scheduler like every other call. */

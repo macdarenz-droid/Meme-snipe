@@ -42,7 +42,15 @@ export interface SchedulerSpec {
   /** Queued requests beyond this are shed, lowest class and newest first. */
   readonly maxQueue: number;
   readonly budget?: BudgetSpec;
+  /**
+   * HELIUS-EXHAUSTED: after the provider answers that its credits are used up, how long every class but P0 is held
+   * before calls go out again to re-check (default 10 minutes).
+   */
+  readonly exhaustedRecheckMs?: number;
 }
+
+/** HELIUS-EXHAUSTED: the default wait before re-checking a provider whose credits were used up. */
+export const EXHAUSTED_RECHECK_MS = 600_000;
 
 export type Refusal = 'window' | 'floor' | 'cap' | 'halted';
 export type Admission = { readonly ok: true } | { readonly ok: false; readonly reason: Refusal; readonly retryAt: number };
@@ -70,6 +78,11 @@ export interface SchedulerStatus {
   readonly shed: readonly [number, number, number, number];
   /** Credits spent since this process started, by class (stream metering counts as P3: bulk discovery traffic). */
   readonly creditsByClass: readonly [number, number, number, number];
+  /** HELIUS-EXHAUSTED: the provider's last answer said its credits are used up (until a call succeeds). */
+  readonly exhausted: boolean;
+  /** Such answers since this process started, and when the first came (null: none). */
+  readonly exhaustedCount: number;
+  readonly exhaustedFirstAtMs: number | null;
 }
 
 interface Waiter {
@@ -111,6 +124,10 @@ export class Scheduler {
   #used: number;
   #wake: TimerHandle | null = null;
   readonly #onSpend: ((used: number) => void) | undefined;
+  #exhausted = false;
+  #exhaustedUntil = Number.NEGATIVE_INFINITY;
+  #exhaustedCount = 0;
+  #exhaustedFirstAt: number | null = null;
 
   /**
    * `creditsUsed` is the month's use so far, loaded from storage: a restart must never reset the budget.
@@ -141,6 +158,7 @@ export class Scheduler {
   check(p: Priority, lane?: string): Admission {
     const now = this.#timers.now();
     if (p !== P0 && this.halted) return { ok: false, reason: 'halted', retryAt: Number.POSITIVE_INFINITY };
+    if (p !== P0 && now < this.#exhaustedUntil) return { ok: false, reason: 'halted', retryAt: this.#exhaustedUntil };
     const need = 1 + this.#floors[p];
     if (this.#window.free(now) < need) return { ok: false, reason: p === P0 || this.#window.free(now) < 1 ? 'window' : 'floor', retryAt: this.#window.freeAt(now, need) };
     for (const cap of this.#caps) {
@@ -165,7 +183,11 @@ export class Scheduler {
     return new Promise<T>((resolve, reject) => {
       const start = (): void => {
         try {
-          task().then(resolve, reject);
+          task().then((v) => {
+            // An answer that is not an error: the provider serves again (HELIUS-EXHAUSTED).
+            this.#exhausted = false;
+            resolve(v);
+          }, reject);
         } catch (e) {
           reject(e);
         }
@@ -195,6 +217,19 @@ export class Scheduler {
     if (Number.isFinite(remaining) && remaining >= 0 && remaining < free) this.#window.take(now, free - Math.floor(remaining));
   }
 
+  /**
+   * HELIUS-EXHAUSTED: the provider answered that its credits are used up. Every class but P0 is refused for
+   * `exhaustedRecheckMs`, then calls go out again; the next one that succeeds ends it, another such answer repeats it.
+   */
+  exhausted(): void {
+    const now = this.#timers.now();
+    this.#exhausted = true;
+    this.#exhaustedCount++;
+    this.#exhaustedFirstAt ??= now;
+    this.#exhaustedUntil = now + (this.spec.exhaustedRecheckMs ?? EXHAUSTED_RECHECK_MS);
+    this.#pump();
+  }
+
   /** After a 429: treat the window as full. */
   penalize(): void {
     const now = this.#timers.now();
@@ -221,6 +256,7 @@ export class Scheduler {
       granted: [this.#granted[0]!, this.#granted[1]!, this.#granted[2]!, this.#granted[3]!],
       shed: [this.#shed[0]!, this.#shed[1]!, this.#shed[2]!, this.#shed[3]!],
       creditsByClass: [this.#byClass[0]!, this.#byClass[1]!, this.#byClass[2]!, this.#byClass[3]!],
+      exhausted: this.#exhausted, exhaustedCount: this.#exhaustedCount, exhaustedFirstAtMs: this.#exhaustedFirstAt,
     };
   }
 
@@ -262,7 +298,7 @@ export class Scheduler {
       const q = this.#queues[p]!;
       while (q.length > 0) {
         const w = q[0]!;
-        if (p !== P0 && this.halted) {
+        if (p !== P0 && (this.halted || now < this.#exhaustedUntil)) {
           q.shift();
           this.#shed[p]!++;
           w.refuse(new ScheduleRefused(this.spec.provider, p, 'halted'));

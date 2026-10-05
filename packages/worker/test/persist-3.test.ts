@@ -50,8 +50,10 @@ const edit = (h: H, f: (s: Saved[string]) => void) => {
   for (const s of Object.values(saved)) f(s);
   writeFileSync(path, typedText(saved));
 };
-const sellOnly = (h: H, why: string) => mine(h).some((r) => r[0] === 'sell-only' && r[2] === `exit inputs not restored (${why}); flattened through the global exit ladder`);
-const flattened = (h: H) => mine(h).some((r) => r[0] === 'exit' && r.includes('exit inputs lost: flatten'));
+/** EXIT-KEEP: inputs that did not come back put the position in EXIT-1g's sell-only recovery, the reason saved with it. */
+const sellOnly = (h: H, why: string) => mine(h).some((r) => r[0] === 'recovery exit' && r[2] === `exit inputs not restored (${why})`);
+/** The whole holding exits through the recovery's emergency full exit (the price has not moved: no trigger fired). */
+const flattened = (h: H) => mine(h).some((r) => r[0] === 'exit');
 
 describe('PERSIST-3: exit inputs across a restart', () => {
   it('60% of the threshold sold before the restart and 60% after: deployer_sell fires (the create is not seen again)', async () => {
@@ -67,7 +69,7 @@ describe('PERSIST-3: exit inputs across a restart', () => {
     await h2.worker.stop();
   });
 
-  it('a saved exit without its inputs (a file from before PERSIST-3) flattens the position, reported, instead of counting from zero', async () => {
+  it('a saved exit without its inputs (a file from before PERSIST-3) puts the position in sell-only recovery, reported, instead of counting from zero', async () => {
     const h = await heldAndKilled();
     const path = join(h.stateDir, 'exits.json');
     // Drop the three fields from every saved exit, as an older worker wrote them.
@@ -77,7 +79,7 @@ describe('PERSIST-3: exit inputs across a restart', () => {
     expect(readFileSync(path, 'utf8')).not.toContain('deployerSales');
     const { h2, m2 } = await restart(h);
     await keep(m2, 4_000);
-    expect(mine(h2).some((r) => r[0] === 'sell-only' && /exit inputs not restored \(not in the saved exit\)/.test(r[2] ?? ''))).toBe(true);
+    expect(sellOnly(h2, 'not in the saved exit')).toBe(true);
     expect(mine(h2).some((r) => r[0] === 'exit')).toBe(true);
     await h2.worker.stop();
   });
@@ -100,6 +102,8 @@ describe('PERSIST-3: exit inputs across a restart', () => {
   it.each([
     ['a sale amount as a number', (s: Saved[string]) => { s.deployerSales.list[0]!.amount = 1; }],
     ['a deployer without sellers', (s: Saved[string]) => { s.deployer!.sellers = []; }],
+    // A negative amount would offset the real sales and hide a dump (persist review B2).
+    ['a negative sale amount', (s: Saved[string]) => { s.deployerSales.list[0]!.amount = -1n; }],
   ])('a malformed field (%s) flattens the position (sell-only)', async (_, spoil) => {
     const h = await heldAndKilled();
     edit(h, (s) => {
@@ -114,7 +118,7 @@ describe('PERSIST-3: exit inputs across a restart', () => {
     await h2.worker.stop();
   });
 
-  it('stays sell-only across a second restart: the lost inputs are flagged in the file, not read as complete', async () => {
+  it('stays sell-only across a second restart: the recovery reason is saved in the file, the inputs written since never read as complete', async () => {
     const h = await heldAndKilled();
     edit(h, (s) => {
       for (const k of ['deployer', 'deployerSales', 'flow']) delete s[k];
@@ -125,10 +129,45 @@ describe('PERSIST-3: exit inputs across a restart', () => {
     expect(sellOnly(h2, 'not in the saved exit')).toBe(true);
     expect(position(h2)?.status).toBe('open');
     await h2.worker.kill();
-    expect(readFileSync(join(h.stateDir, 'exits.json'), 'utf8')).toContain('inputsLost');
+    // EXIT-KEEP: one mechanism, EXIT-1g's recovery; its reason is what the file keeps (no separate flag).
+    const file = readFileSync(join(h.stateDir, 'exits.json'), 'utf8');
+    expect(file).toContain('exit inputs not restored (not in the saved exit)');
+    expect(file).not.toContain('inputsLost');
     const { h2: h3, m2: m3 } = await restart(h2, 18998);
+    // The inputs written by the second boot are well formed, but the position is still in recovery.
+    expect(Object.values(h3.worker.strategy.saved()).map((x) => x.recovery)).toEqual(['exit inputs not restored (not in the saved exit)']);
     await keep(m3, 4_000);
-    expect(sellOnly(h3, 'lost at an earlier restart')).toBe(true);
+    expect(flattened(h3)).toBe(true);
+    await h3.worker.stop();
+  });
+
+  it('a file with PERSIST-3\'s inputsLost flag (written before EXIT-KEEP) keeps the position in sell-only recovery', async () => {
+    const h = await heldAndKilled();
+    edit(h, (s) => {
+      s['inputsLost'] = true;
+    });
+    const { h2, m2 } = await restart(h);
+    expect(sellOnly(h2, 'lost at an earlier restart')).toBe(true);
+    const saved = Object.values(h2.worker.strategy.saved());
+    expect(saved.map((x) => [x.recovery, x.tracker.pendingFull, x.inputsLost])).toEqual([['exit inputs not restored (lost at an earlier restart)', ['emergency'], undefined]]);
+    await keep(m2, 4_000);
+    expect(flattened(h2)).toBe(true);
+    await h2.worker.stop();
+  });
+
+  it('a refused saved plan (its inputs never read) stays in sell-only recovery across a second restart, though the inputs saved since are well formed', async () => {
+    const h = await heldAndKilled();
+    edit(h, (s) => {
+      (s['plan'] as Record<string, unknown>)['stopPrice'] = 'none';
+    });
+    const { h2, m2 } = await restart(h);
+    await m2.run(2_000, 400, () => m2.slot());
+    expect(mine(h2).some((r) => r[0] === 'recovery exit' && r[2] === 'saved plan refused')).toBe(true);
+    expect(position(h2)?.status).toBe('open');
+    await h2.worker.kill();
+    const { h2: h3, m2: m3 } = await restart(h2, 18998);
+    expect(Object.values(h3.worker.strategy.saved()).map((x) => x.recovery)).toEqual(['saved plan refused']);
+    await keep(m3, 4_000);
     expect(flattened(h3)).toBe(true);
     await h3.worker.stop();
   });
