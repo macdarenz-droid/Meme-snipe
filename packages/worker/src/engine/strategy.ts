@@ -12,11 +12,11 @@
 // Entries stop at `approve_risk`: the reservation goes through the ledger outside the engine (RISK-1 with LEDGER-1c's
 // account version) and comes back as a world event, `reserve_exposure` or `reject`.
 import { createHash } from 'node:crypto';
-import { type PoolFeeContext, type PoolState, effectiveQuoteReserve, poolBuyExactQuoteIn, poolSell } from '../../../core/src/amm/index.ts';
+import { type PoolFeeContext, type PoolState, effectiveQuoteReserve, poolBuyExactQuoteIn, poolFees, poolSell } from '../../../core/src/amm/index.ts';
 import { encodeBase58 } from '../../../core/src/chain/index.ts';
 import type { PolicySession, RugConfig } from '../../../core/src/config/index.ts';
 import { EXIT_UNIVERSES, type ExitUniverse, PRICE_SCALE, exitsFor } from '../../../core/src/config/index.ts';
-import { type NetworkPolicy, type RentInputs, type RoundTripQuoter, pumpSwapRoundTrip } from '../../../core/src/costs/index.ts';
+import { type NetworkPolicy, type RentInputs, type RoundTripQuoter, costAtSize, pumpSwapRoundTrip } from '../../../core/src/costs/index.ts';
 import {
   type IntentId, type PositionId, type QuoteContext, type TransactionAttempt,
   attemptId, blockhash, entryKey, intentId, mint as toMint, positionId, reservationId, signature,
@@ -87,6 +87,15 @@ export interface RiskStopsView {
 export const STOPS_EVERY_MS = 1000;
 /** A reject's typed reasons ride in its last reason as `gate_reasons <json>`; the desk journals them as `gate_reasons`. */
 export const GATE_REASONS_PREFIX = 'gate_reasons ';
+/**
+ * R14-EVIDENCE: a reject by R14's cost gate or R5's planned risk carries the round trip at the size judged, in parts, as
+ * its own reason `cost <json>` (public market data and this worker's config only; the summary folds it).
+ */
+export const COST_PREFIX = 'cost ';
+/** Where a market's fee terms came from: a WATCH-1 snapshot, a fee-context fact (chain read), or the last swap seen. */
+export type FeeSource = 'snapshot' | 'feeconfig' | 'event';
+/** The risk codes whose refusal depends on the round trip at the size, so their reject carries `cost`. */
+const COST_CODES: ReadonlySet<string> = new Set(['cost_gate', 'planned_risk']);
 /** The S0 diagnostic parts a decision relied on ride in a reason as `s0_diagnostic <part,part>`; the desk journals them as `s0_diagnostic`. */
 export const S0_DIAGNOSTIC_PREFIX = 's0_diagnostic ';
 /** EXIT-1's flow bucket. */
@@ -366,6 +375,7 @@ interface Market {
   readonly ctx: PoolFeeContext;
   readonly atMs: number;
   readonly address: string;
+  readonly feeSource: FeeSource;
 }
 
 interface Candidate {
@@ -1471,7 +1481,7 @@ export class LiveStrategy implements Strategy {
     // WATCH-1: a snapshot newer than the pool fact (carried or not) is the market, reserves and fee context alike.
     if (choice.kind === 'snapshot') {
       this.#notePool(mint, choice.snap.pool);
-      return { pool: choice.snap.state, ctx: choice.snap.ctx, atMs: choice.snap.atMs, address: choice.snap.pool };
+      return { pool: choice.snap.state, ctx: choice.snap.ctx, atMs: choice.snap.atMs, address: choice.snap.pool, feeSource: 'snapshot' };
     }
     if (!p.ok) return NO_POOL_STATE;
     if (pool === null) return POOL_MALFORMED;
@@ -1487,7 +1497,7 @@ export class LiveStrategy implements Strategy {
     if (fees === undefined) return NO_FEE_CONTEXT;
     return {
       pool: state,
-      ctx: fees, atMs: choice.kind === 'pool' ? choice.atMs : pool.obs.receivedAt, address: pool.address,
+      ctx: fees, atMs: choice.kind === 'pool' ? choice.atMs : pool.obs.receivedAt, address: pool.address, feeSource: f.ok ? 'feeconfig' : 'event',
     };
   }
 
@@ -2082,7 +2092,7 @@ export class LiveStrategy implements Strategy {
       const waived = this.#waived.join(',');
       // A line that carries a trip is always written: risk reports a trip only while it is not latched, so it is never
       // swallowed as "the same reason" (after an owner's re-arm the same reject must latch again) and never repeats once latched.
-      if (r !== null && (key(r) !== key(cand.lastReason) || waived !== cand.lastWaived || this.#lastTrips.length > 0)) out.push({ action: null, reasons: ['reject', c.universe, cand.mint, r, `${GATE_REASONS_PREFIX}${JSON.stringify(this.#lastGates)}`, ...this.#lastTrips, ...this.#diagnostic()] });
+      if (r !== null && (key(r) !== key(cand.lastReason) || waived !== cand.lastWaived || this.#lastTrips.length > 0)) out.push({ action: null, reasons: ['reject', c.universe, cand.mint, r, `${GATE_REASONS_PREFIX}${JSON.stringify(this.#lastGates)}`, ...this.#lastCost, ...this.#lastTrips, ...this.#diagnostic()] });
       if (r !== null) {
         cand.lastReason = r;
         cand.lastWaived = waived;
@@ -2107,6 +2117,9 @@ export class LiveStrategy implements Strategy {
    */
   #lastTrips: readonly string[] = [];
 
+  /** R14-EVIDENCE: the `cost <json>` reason of the last refused entry, when R14 or R5 refused it (else empty). */
+  #lastCost: readonly string[] = [];
+
   /** The same reasons with their inputs, for the candidate (not journaled: gate_reasons keeps its shape). */
   #lastNeeds: readonly CandidateReason[] = [];
 
@@ -2122,6 +2135,7 @@ export class LiveStrategy implements Strategy {
   /** One candidate through regime, hard rejects and risk. Returns the reject reason, or null when it proposed an entry. */
   #evaluate(cand: Candidate, ctx: StrategyContext, gctx: GateContext, out: Decision[]): string | null {
     this.#lastTrips = [];
+    this.#lastCost = [];
     const c = this.#d.config;
     const session = this.#d.session;
     const policy = session.policy;
@@ -2189,6 +2203,7 @@ export class LiveStrategy implements Strategy {
     const trips = latchable(account, sol, ctx.now.receivedAt, policy.gates.maxQuoteAgeMs) ? seen : [];
     if (!r.allow) {
       this.#lastTrips = trips;
+      if (r.reasons.some((x) => COST_CODES.has(x.code))) this.#lastCost = [this.#costParts(m, quoter, spend, sol.value, acct, stopBps)];
       return this.#fail(`risk ${r.reasons.map((x) => `${x.control} ${x.code}: ${x.detail}`).join(', ')}${seen.length > 0 ? `; ${seen.join(', ')}` : ''}`, r.reasons.map((x) => ({ gate: x.control, code: x.code, detail: x.detail })));
     }
     if (r.spendLamports !== spend) {
@@ -2226,6 +2241,29 @@ export class LiveStrategy implements Strategy {
     const stop = checkStopDistance(policy, this.#d.config.universe, entryPx, stopPrice, range);
     if (!stop.ok) return { ok: false, text: `stop: ${stop.reason} ${stop.detail}`, line: { gate: 'stop', code: stop.reason, detail: stop.detail } };
     return { ok: true, stopPrice, stopBps: Number(mulDiv(distance, BPS, entryPx, 'ceil')) };
+  }
+
+  /**
+   * R14-EVIDENCE: the round trip at `spend` in the parts R14 counts, from the same inputs risk was given (the quote, the
+   * network terms and rent with this wallet's one-time rent), plus the fee rates and where they came from. Never throws:
+   * a size that cannot be quoted gives its reason instead of the parts.
+   */
+  #costParts(m: Market, quoter: RoundTripQuoter, spend: bigint, solUsd: MicroUsd, acct: AccountFact, stopBps: number): string {
+    const c = this.#d.config;
+    const base = { fee_source: m.feeSource, spend_lamports: String(spend), sol_usd_micro: String(solUsd), eff_quote_lamports: String(effectiveQuoteReserve(m.pool)), stop_bps: stopBps };
+    try {
+      const f = poolFees(m.pool, m.ctx);
+      const q = costAtSize(quoter, spend, c.network, { ...c.rent, oneTime: acct.oneTimeRent });
+      if (!q.ok) return `${COST_PREFIX}${JSON.stringify({ ...base, unquoted: q.reason })}`;
+      const t = q.trade;
+      const ppm = (x: bigint) => Number(mulDiv(x, 1_000_000n, t.roundTrip.paid, 'ceil'));
+      return `${COST_PREFIX}${JSON.stringify({
+        ...base, rt_ppm: ppm(t.totalLoss), fees_ppm: ppm(t.roundTrip.entryFees + t.roundTrip.exitFees), impact_ppm: ppm(t.roundTrip.entryImpact + t.roundTrip.exitImpact),
+        f_lamports: String(t.fixed.total), lp_bps: f.lp, protocol_bps: f.protocol, creator_bps: f.creator,
+      })}`;
+    } catch (e) {
+      return `${COST_PREFIX}${JSON.stringify({ ...base, unquoted: e instanceof Error ? e.name : 'error' })}`;
+    }
   }
 
   /** Risk's entry decision for this candidate at `stopBps` (R1–R15, sizing included): pure, nothing latches from it here. */

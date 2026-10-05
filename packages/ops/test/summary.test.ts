@@ -307,3 +307,37 @@ describe('/summary on the watchdog', () => {
     vi.unstubAllGlobals();
   });
 });
+
+describe('R14-EVIDENCE: cost_refusals', () => {
+  const entry = (o: Record<string, unknown> = {}) => ({
+    at: '2026-10-04T01:00:00.000Z', mint: 'So11111111111111111111111111111111111111112', gate: 'R14', code: 'cost_gate', fee_source: 'event',
+    spend_lamports: '16537126', sol_usd_micro: '120940000', eff_quote_lamports: '104806998735', stop_bps: 1500,
+    rt_ppm: 59822, fees_ppm: 54000, impact_ppm: 300, f_lamports: '99286', lp_bps: 20, protocol_bps: 5, creator_bps: 250, unquoted: null, ...o,
+  });
+  const withCosts = (xs: unknown[]) => ({ ...goodSummary(), cost_refusals: xs });
+
+  it('accepts a summary with up to 10 checked entries, or without the key', () => {
+    expect(isSummary(goodSummary())).toBe(true);
+    expect(isSummary(withCosts([entry()]))).toBe(true);
+    expect(isSummary(withCosts(Array.from({ length: 10 }, () => entry())))).toBe(true);
+    const unquoted = entry({ unquoted: 'no-liquidity', rt_ppm: null, fees_ppm: null, impact_ppm: null, f_lamports: null, lp_bps: null, protocol_bps: null, creator_bps: null });
+    expect(isSummary(withCosts([unquoted]))).toBe(true);
+    expect(checkSummary(JSON.stringify(withCosts([entry()]))).ok).toBe(true);
+  });
+
+  it('refuses 11 entries, an extra or missing key, a bad source, a bad number, a bps above 10,000, parts missing on a quoted entry or present on an unquoted one', () => {
+    expect(isSummary(withCosts(Array.from({ length: 11 }, () => entry())))).toBe(false);
+    expect(isSummary(withCosts([{ ...entry(), extra: 1 }]))).toBe(false);
+    const { rt_ppm: _drop, ...missing } = entry();
+    expect(isSummary(withCosts([missing]))).toBe(false);
+    expect(isSummary(withCosts([entry({ fee_source: 'guess' })]))).toBe(false);
+    expect(isSummary(withCosts([entry({ rt_ppm: -1 })]))).toBe(false);
+    expect(isSummary(withCosts([entry({ rt_ppm: 1.5 })]))).toBe(false);
+    expect(isSummary(withCosts([entry({ spend_lamports: '1e9' })]))).toBe(false);
+    expect(isSummary(withCosts([entry({ creator_bps: 10_001 })]))).toBe(false);
+    expect(isSummary(withCosts([entry({ rt_ppm: null })]))).toBe(false);
+    expect(isSummary(withCosts([entry({ unquoted: 'no-liquidity' })]))).toBe(false);
+    expect(isSummary(withCosts([entry({ mint: 'not a mint' })]))).toBe(false);
+    expect(isSummary({ ...goodSummary(), cost_refusals: 'x' })).toBe(false);
+  });
+});

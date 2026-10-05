@@ -226,6 +226,8 @@ export class Market {
   #swaps = 0;
   /** Publish the fee-context fact with each pool read (off: the strategy takes the terms of the latest swap). */
   withFees = true;
+  /** The fee context that fact carries (R14-EVIDENCE tests raise the creator rate). */
+  feeContext: unknown = FEE_CONTEXT;
   /** Fact keys never published (a fact a fault keeps from being read). */
   omit: ReadonlySet<string> = new Set();
   /**
@@ -283,7 +285,7 @@ export class Market {
     const reserves = at === null ? { quoteVault: ((base['quoteVault'] as bigint) * quoteScalePpm) / 1_000_000n }
       : { baseVault: at.baseReserve, quoteVault: at.quoteVault, pool: { ...(base['pool'] as object), virtualQuoteReserves: at.virtualQuoteReserves } };
     if (this.heldPoolFacts || !this.held()) this.fact(poolKey(MINT), { ...base, ...reserves });
-    if (this.withFees) this.fact(feesKey(MINT), FEE_CONTEXT);
+    if (this.withFees) this.fact(feesKey(MINT), this.feeContext);
     this.fact(SOL_PRICE_KEY, { value: this.solUsd, atMs: this.now - 50 });
     for (const k of [lpKey(MINT), holdersKey(MINT), softKey(MINT), xcheckKey(MINT), EXEC_HEALTH_KEY]) this.fact(k, now(k));
     // The simulation of the spend the worker will judge: q_min at the SOL price, rounded up to whole lamports.

@@ -9,14 +9,14 @@
 import { createHmac } from 'node:crypto';
 import { open, stat } from 'node:fs/promises';
 import {
-  EXIT_KINDS, PATTERNS, RESTART_CAUSE_KEYS, SUMMARY_MAX_BYTES, SUMMARY_MAX_CRASH_SITES, fits, SUMMARY_MAX_TRADES, SUMMARY_TOP_REASONS, SUMMARY_VERSION, checkSummary,
-  type CodeCount, type CrashSite, type ProviderCredits, type ReasonCount, type Summary, type SummaryTrade,
+  EXIT_KINDS, PATTERNS, RESTART_CAUSE_KEYS, SUMMARY_MAX_BYTES, SUMMARY_MAX_COST_REFUSALS, SUMMARY_MAX_CRASH_SITES, fits, SUMMARY_MAX_TRADES, SUMMARY_TOP_REASONS, SUMMARY_VERSION, checkSummary,
+  costRefusal, forbiddenIn, type CodeCount, type CostRefusal, type CrashSite, type ProviderCredits, type ReasonCount, type Summary, type SummaryTrade,
 } from '../../../ops/src/watchdog/summary.ts';
 import type { MicroUsd } from '../../../core/src/units/index.ts';
 import type { HttpClient } from '../providers/index.ts';
 import type { PaperTrade } from './account.ts';
 import { lamportsUsd, melbourneDate, usdText } from './api.ts';
-import { SEEDING } from '../engine/strategy.ts';
+import { COST_PREFIX, SEEDING } from '../engine/strategy.ts';
 import { StateFile } from './state.ts';
 import { melbourneDay } from '../../../core/src/risk/index.ts';
 import type { TimerHandle, Timers } from '../scheduler/timers.ts';
@@ -35,6 +35,8 @@ export interface DayFold {
   restarts?: Record<string, number>;
   exits?: Record<string, number>;
   crashSites?: Record<string, number>;
+  /** R14-EVIDENCE: the day's latest cost refusals (at most SUMMARY_MAX_COST_REFUSALS), each already in the summary's shape. Absent in older state. */
+  costs?: CostRefusal[];
 }
 
 export interface SummaryState {
@@ -97,6 +99,33 @@ export const parseCrashSite = (site: string): Omit<CrashSite, 'count'> | null =>
   return { error: m[1], file, line: file === null ? null : Number(m[3]), event: fits(m[4], PATTERNS.EVENT) ? m[4] : null };
 };
 
+/**
+ * R14-EVIDENCE: a reject line's `cost <json>` reason as one entry of `cost_refusals`, or null. Every field is checked by
+ * the summary's own shape check, so nothing unchecked is kept; an unquoted reason that is not a code becomes 'error'.
+ */
+export const costOf = (line: Record<string, unknown>, at: string, mint: string, reasons: readonly string[]): CostRefusal | null => {
+  const raw = reasons.find((x) => x.startsWith(COST_PREFIX));
+  if (raw === undefined) return null;
+  let v: unknown;
+  try {
+    v = JSON.parse(raw.slice(COST_PREFIX.length));
+  } catch {
+    return null;
+  }
+  if (!isObj(v)) return null;
+  const { gate, code: c } = refusal(line);
+  const n = (k: string): number | null => (typeof v[k] === 'number' ? (v[k] as number) : null);
+  const t = (k: string): string | null => (typeof v[k] === 'string' ? (v[k] as string) : null);
+  const unquoted = v['unquoted'] === undefined ? null : fits(v['unquoted'], PATTERNS.CODE) ? v['unquoted'] : 'error';
+  const x: CostRefusal = {
+    at, mint, gate, code: c, fee_source: t('fee_source') ?? '', spend_lamports: t('spend_lamports') ?? '', sol_usd_micro: t('sol_usd_micro') ?? '',
+    eff_quote_lamports: t('eff_quote_lamports') ?? '', stop_bps: n('stop_bps') ?? -1,
+    rt_ppm: n('rt_ppm'), fees_ppm: n('fees_ppm'), impact_ppm: n('impact_ppm'), f_lamports: t('f_lamports'),
+    lp_bps: n('lp_bps'), protocol_bps: n('protocol_bps'), creator_bps: n('creator_bps'), unquoted,
+  };
+  return costRefusal(x) && Object.values(x).every((y) => typeof y !== 'string' || forbiddenIn(y) === null) ? x : null;
+};
+
 const CANDIDATE_KINDS = new Set(['shortlist', 'reject', 'enter', 'no entry', 'risk approved']);
 
 /** Folds one parsed journal line into its Melbourne day. Unknown or malformed lines change nothing. */
@@ -136,7 +165,11 @@ export const foldLine = (s: SummaryState, line: unknown): void => {
     const [k, , mint] = reasons;
     if (k === undefined || mint === undefined || !CANDIDATE_KINDS.has(k) || !fits(mint, PATTERNS.MINT)) return;
     const c = (day.cands[mint] ??= { gate: null, code: null, entered: false });
-    if (k === 'reject') Object.assign(c, refusal(line));
+    if (k === 'reject') {
+      Object.assign(c, refusal(line));
+      const cost = costOf(line, new Date(ms).toISOString(), mint, reasons);
+      if (cost !== null) day.costs = [...(day.costs ?? []), cost].slice(-SUMMARY_MAX_COST_REFUSALS);
+    }
   } else if (kind === 'entry') {
     const mint = line['mint'];
     if (typeof mint !== 'string' || !fits(mint, PATTERNS.MINT)) return;
@@ -320,7 +353,16 @@ export const buildSummary = (i: SummaryInputs): Summary => {
     pnl: { closed_trades: closed.length, net_lamports: netL.toString(), net_usd: usdText(netU) },
     open_positions: i.openPositions,
     provider_credits: credits,
+    // R14-EVIDENCE: sent only when there is any, so a day without one posts the shape an older watchdog accepts.
+    ...(f.costs !== undefined && f.costs.length > 0 ? { cost_refusals: f.costs.slice(-SUMMARY_MAX_COST_REFUSALS) } : {}),
   };
+};
+
+/** The summary without R14-EVIDENCE's `cost_refusals`, the shape a watchdog from before it accepts. */
+export const withoutCostRefusals = (s: Summary): Summary => {
+  const o: Record<string, unknown> = { ...s };
+  delete o['cost_refusals'];
+  return o as unknown as Summary;
 };
 
 /** The summary without RESTART-CAUSE's keys of `worker`, the shape a watchdog from before them accepts. */
@@ -464,10 +506,15 @@ export class Summarizer {
     if (url === null || key === null) return false;
     const s = (this.#d.build ?? buildSummary)({ ...this.#d.live(), day, final, nowMs: now, fold: this.#state.days[day] });
     let res = await this.#send(day, s, url, key, now);
-    // A watchdog from before RESTART-CAUSE refuses its keys (a deploy is not atomic): the day goes again without them.
+    // A watchdog from before R14-EVIDENCE or RESTART-CAUSE refuses their keys (a deploy is not atomic): the day goes
+    // again without the newer one first, then without both.
+    if (res !== null && !res.ok && res.reason === 'HTTP 400' && s.cost_refusals !== undefined) {
+      this.#d.log(`Summary for ${day} refused; sent again without the cost refusals.`);
+      res = await this.#send(day, withoutCostRefusals(s), url, key, now);
+    }
     if (res !== null && !res.ok && res.reason === 'HTTP 400') {
       this.#d.log(`Summary for ${day} refused; sent again without the restart counts.`);
-      res = await this.#send(day, withoutRestartCause(s), url, key, now);
+      res = await this.#send(day, withoutRestartCause(withoutCostRefusals(s)), url, key, now);
     }
     if (res === null) return false;
     if (!res.ok) this.#d.log(`Summary for ${day} not accepted: ${res.reason}.`);

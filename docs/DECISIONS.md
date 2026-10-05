@@ -2223,3 +2223,36 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - `s0-zero.test.ts`: 12 fills started together never spend past the budget and at most 2 read at once; a fill that hangs has its cap on disk before the first read (a death keeps the charge); the existing fill tests now check the net booked.
   - `restart-keep.test.ts`: an ended candidate is not restored, with the live run's record and tail; a never-evaluated one has no tail; one ms inside the window it is still restored, at the window's end exactly it is not; the in-window candidate's decisions equal a restore of it alone; a worker restarted after the window reads none of the candidate's transactions.
   - Hand mutants killed: no read limit; urgent reads at the back; waiting reads run after a stop; scan count not saved; unreadable file not counted as spent; no fill limit; no reservation; no refund; a finished fill not waking the next; the scan file not wired in production; the window check off by one either way (`>` at the exact end, one ms late); an ended candidate dropped without its tail; the check moved before the pool is noted.
+
+## Cost refusals show their round trip (R14-EVIDENCE, `worker/src/engine/strategy.ts`, `worker/src/run/summary.ts`, `ops/src/watchdog/summary.ts`)
+
+- **2026-10-05 · Why.** The live funnel showed candidates refused by R14's cost gate (`Costs`). The model gives about 3.0% at $2 on a typical pool, under the 5% line. Nobody without the host could see the round trip a refusal was made on. Read at 09790b40 against today's mainnet, none of the inputs (swap-event fee terms, FeeConfig, pool accounts, SOL price, F) comes out wrong. Only fees above about 2% a side push $2 over 5% (creator 200 bps: 5.03%; 300 bps: 6.92%). So the evidence has to come from the live refusals themselves.
+- **2026-10-05 · What.**
+  - A reject by R14 `cost_gate` or R5 `planned_risk` carries one more reason, `cost <json>`, recomputed from the inputs risk was given: the quote at the size judged, the network terms and rent with the wallet's one-time rent. It holds `rt_ppm` (rounded up, as R14 does), `fees_ppm`, `impact_ppm`, `f_lamports`, the fee rates a side (`lp_bps`, `protocol_bps`, `creator_bps`), `fee_source`, `spend_lamports`, `sol_usd_micro`, `eff_quote_lamports` and `stop_bps`.
+  - `fee_source` is `snapshot` (WATCH-1), `feeconfig` (a fee-context fact) or `event` (the last swap's terms).
+  - A size that cannot be quoted gives `unquoted` (its reason) instead of the parts.
+  - Core risk is unchanged.
+- **2026-10-05 · Summary.**
+  - The day fold keeps the day's latest 10, each checked against the summary's own shape. An unknown key is dropped; a malformed one is not kept. The state stays bounded.
+  - The daily summary sends them as `cost_refusals`, only on a day that has any.
+  - The watchdog's shape check accepts the key as optional (at most 10 entries, exact keys, bounded numbers, the forbidden-pattern scan).
+  - A watchdog from before it answers 400: the day goes again without the key, then, as before, without the restart counts.
+  - Public market data and this worker's config only; no account data.
+  - `refused_by_reason` already counted risk-stage refusals by their gate and code (`R14/cost_gate`); a test now pins that.
+- **2026-10-05 · Tests.** `worker/test/r14-evidence.test.ts`:
+  - Through the real worker, a pool at 400 bps creator fee is refused by R14, and its line carries the parts. Its `rt_ppm` equals the figure in risk's own detail; the rates are 2/93/400 and the source `feeconfig`.
+  - At normal fees the entry opens and no line carries a cost reason.
+  - The fold keeps the latest 10 and the body passes both guards.
+  - Malformed entries are not folded; an unknown key is dropped; a day without any sends no key.
+  - An unquoted entry lists its reason as a code.
+  - The old-watchdog fallback.
+  - `ops/test/summary.test.ts`: the shape accepts up to 10 checked entries or none, and refuses 11 entries, extra or missing keys, a bad source or number, a bps above 10,000, and parts missing or present against `unquoted`.
+  - Hand mutants killed:
+    - parts not written;
+    - the source fixed to `event`;
+    - the fold unbounded;
+    - the fold unchecked;
+    - no fallback;
+    - the shape unchecked;
+    - `cost_gate` not covered;
+    - a rounding different from risk's.

@@ -53,6 +53,34 @@ export interface ProviderCredits {
   readonly used_since_boot: number;
   readonly monthly: number | null;
 }
+/**
+ * R14-EVIDENCE: one candidate refused by R14's cost gate or R5's planned risk, with the round trip at the size judged in
+ * parts (public market data and the worker's config only). `unquoted` is the quote's reason when the size could not be
+ * quoted; the round-trip parts are then null.
+ */
+export interface CostRefusal {
+  readonly at: string;
+  readonly mint: string;
+  readonly gate: string;
+  readonly code: string;
+  readonly fee_source: string;
+  readonly spend_lamports: string;
+  readonly sol_usd_micro: string;
+  readonly eff_quote_lamports: string;
+  readonly stop_bps: number;
+  readonly rt_ppm: number | null;
+  readonly fees_ppm: number | null;
+  readonly impact_ppm: number | null;
+  readonly f_lamports: string | null;
+  readonly lp_bps: number | null;
+  readonly protocol_bps: number | null;
+  readonly creator_bps: number | null;
+  readonly unquoted: string | null;
+}
+/** The most cost refusals a day's summary lists: its latest ones. */
+export const SUMMARY_MAX_COST_REFUSALS = 10;
+export const FEE_SOURCES = ['snapshot', 'feeconfig', 'event'] as const;
+
 export interface Summary {
   readonly v: 1;
   /** The Melbourne date (YYYY-MM-DD) this summary covers. */
@@ -97,6 +125,8 @@ export interface Summary {
   readonly open_positions: number;
   /** Provider credits the scheduler counted since the worker's boot (Helius credits, Alchemy compute units). */
   readonly provider_credits: readonly ProviderCredits[];
+  /** R14-EVIDENCE: that day's latest cost refusals, oldest first; absent from an older worker. */
+  readonly cost_refusals?: readonly CostRefusal[];
 }
 
 /**
@@ -180,6 +210,25 @@ const restarts = (x: unknown) => exact(x, ['planned', 'deploy', 'unplanned']) &&
 const credits = (x: unknown) =>
   exact(x, ['provider', 'used_since_boot', 'monthly']) && str(x['provider'], PATTERNS.CODE) && count(x['used_since_boot']) && (x['monthly'] === null || count(x['monthly']));
 
+const COST_KEYS = [
+  'at', 'mint', 'gate', 'code', 'fee_source', 'spend_lamports', 'sol_usd_micro', 'eff_quote_lamports', 'stop_bps',
+  'rt_ppm', 'fees_ppm', 'impact_ppm', 'f_lamports', 'lp_bps', 'protocol_bps', 'creator_bps', 'unquoted',
+] as const;
+const countOrNull = (v: unknown): boolean => v === null || count(v);
+const bpsOrNull = (v: unknown): boolean => v === null || (count(v) && (v as number) <= 10_000);
+export const costRefusal = (x: unknown): boolean => {
+  if (!exact(x, COST_KEYS)) return false;
+  const quoted = x['unquoted'] === null;
+  const parts = ['rt_ppm', 'fees_ppm', 'impact_ppm', 'f_lamports', 'lp_bps', 'protocol_bps', 'creator_bps'] as const;
+  return str(x['at'], PATTERNS.TIME) && str(x['mint'], PATTERNS.MINT) && str(x['gate'], PATTERNS.GATE) && str(x['code'], PATTERNS.CODE) &&
+    (FEE_SOURCES as readonly unknown[]).includes(x['fee_source']) && str(x['spend_lamports'], PATTERNS.LAMPORTS) && str(x['sol_usd_micro'], PATTERNS.LAMPORTS) &&
+    str(x['eff_quote_lamports'], PATTERNS.LAMPORTS) && count(x['stop_bps']) &&
+    countOrNull(x['rt_ppm']) && countOrNull(x['fees_ppm']) && countOrNull(x['impact_ppm']) && strOrNull(x['f_lamports'], PATTERNS.LAMPORTS) &&
+    bpsOrNull(x['lp_bps']) && bpsOrNull(x['protocol_bps']) && bpsOrNull(x['creator_bps']) &&
+    // Quoted: every part present and no reason. Unquoted: a reason and no part.
+    (quoted ? parts.every((k) => x[k] !== null) : str(x['unquoted'], PATTERNS.CODE) && parts.every((k) => x[k] === null));
+};
+
 const WORKER_KEYS = ['git_sha', 'entry_rule', 'uptime_s', 'starts', 'recorder'] as const;
 /** RESTART-CAUSE's keys of `worker`: present all together or not at all. */
 export const RESTART_CAUSE_KEYS = ['restarts', 'exits', 'crash_sites'] as const;
@@ -198,11 +247,14 @@ export const SHAPE_KEYS: readonly string[] = [
   'mint', 'opened_at', 'closed_at', 'size_usd', 'exit_reason', 'net_lamports', 'net_usd',
   'closed_trades',
   'provider', 'used_since_boot', 'monthly',
+  'cost_refusals', ...COST_KEYS,
 ];
 
 /** True only for a value of exactly the summary's shape. */
 export const isSummary = (x: unknown): x is Summary => {
-  if (!exact(x, SHAPE_KEYS.slice(0, 14))) return false;
+  const top = SHAPE_KEYS.slice(0, 14);
+  // R14-EVIDENCE's `cost_refusals` is optional: an older worker does not send it.
+  if (!exact(x, top) && !(exact(x, [...top, 'cost_refusals']) && list(x['cost_refusals'], SUMMARY_MAX_COST_REFUSALS, costRefusal))) return false;
   const w = x['worker'];
   const c = x['candidates'];
   const p = x['pnl'];
