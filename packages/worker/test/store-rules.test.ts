@@ -57,8 +57,8 @@ describe('the live store under a busy pool (OOM-SWAPS)', () => {
     await h.worker.stop();
   }, 180_000);
 
-  it('heads: the stream, candles and carry facts keep only their newest value; every other gate fact keeps its whole series', () => {
-    for (const k of [streamKey(STREAMS.trades(POOL_ADDRESS)), streamKey('creates'), candlesKey('M'), carryKey('M')]) {
+  it('heads: the stream, candles and carry facts and the seen signatures keep only their newest value; every other gate fact keeps its whole series', () => {
+    for (const k of [streamKey(STREAMS.trades(POOL_ADDRESS)), streamKey('creates'), candlesKey('M'), carryKey('M'), `seen:logs:${POOL_ADDRESS}`, 'seen:pumpportal:create']) {
       const keepOlder = liveCollapse(k);
       expect(keepOlder, k).not.toBeNull();
       expect(keepOlder!({ moment: { slot: 1n, txIndex: 0, ixIndex: 0, receivedAt: 0 }, value: {}, source: 's' }), k).toBe(false);
@@ -66,7 +66,7 @@ describe('the live store under a busy pool (OOM-SWAPS)', () => {
     for (const k of ['gates/mint:M', 'gates/create:M', 'gates/migration:M', 'coverage:creates:start', 'chain:slot']) expect(liveCollapse(k), k).toBeNull();
   });
 
-  it('240 pool trade streams at 2.5 slot notices a second and 4,050 swaps a minute leave the heap flat (it grew 13 MB in two minutes; live, about 20 MB a minute)', async () => {
+  it('240 pool trade streams at 2.5 slot notices a second and 4,050 swaps a minute leave the heap flat (it grew 19 MB in two minutes; live, about 20 MB a minute)', async () => {
     const h = makeWorker({});
     const m = await passingMarket(h);
     m.accountsRead(h.worker.feed.openSlot - 1n);
@@ -85,6 +85,8 @@ describe('the live store under a busy pool (OOM-SWAPS)', () => {
       m.slot();
       for (let k = 0; k < 27; k++) {
         const s = tailed(pre, k % 2 === 0 ? 'buy' : 'sell', m.now);
+        // As the pool watch delivers a notification: the signature seen, then its log lines.
+        h.worker.feed.ingest('helius', { type: 'seen', signature: `headswap${n + 1}`, slot: h.worker.feed.openSlot, err: null, via: `logs:${POOL_ADDRESS}`, detail: null }, { receivedAt: m.now });
         h.worker.feed.ingest('helius', { type: 'logs', signature: `headswap${++n}`, slot: h.worker.feed.openSlot, err: null, via: `logs:${POOL_ADDRESS}`, logs: s.logs, commitment: 'confirmed' }, { receivedAt: m.now });
         pre = s.after;
       }
