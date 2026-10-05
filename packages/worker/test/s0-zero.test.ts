@@ -174,11 +174,13 @@ describe('a candidate pool watch starts its coverage at the migration', () => {
     expect(pending.size).toBe(230);
     const b58 = (k: number) => [...String(k)].map((d) => 'abcdefghij'[Number(d)]).join('');
     let sent = 0;
-    // Ten live trades on each pool: 2,300 notifications, more than the total allows, none past the per-watch cap.
-    for (let round = 0; round < 10; round++) {
+    // Live trades on every pool until more than the total allows, none past the per-watch cap.
+    const rounds = Math.ceil(CATCH_UP_HOLD_TOTAL / 230) + 5;
+    expect(rounds).toBeLessThan(CATCH_UP_HOLD_MAX);
+    for (let round = 0; round < rounds; round++) {
       for (const [a, sub] of subs) {
         t.hub.last.push({ jsonrpc: '2.0', method: 'logsNotification', params: { subscription: sub, result: { context: { slot: 602 }, value: { signature: `S${b58(sent++)}`.padEnd(88, '1'), err: null, logs: ['Program log: x'] } } } });
-        expect(t.stream.heldNotices, a).toBeLessThanOrEqual(CATCH_UP_HOLD_TOTAL);
+        if (t.stream.heldNotices > CATCH_UP_HOLD_TOTAL) expect(t.stream.heldNotices, a).toBeLessThanOrEqual(CATCH_UP_HOLD_TOTAL);
       }
       t.log(602, `Q${b58(sent++)}`.padEnd(88, '1'));
     }
@@ -199,7 +201,7 @@ describe('a candidate pool watch starts its coverage at the migration', () => {
     expect(lossy).toBeLessThan(230);
   });
 
-  it('HOLD-TOTAL: the heap stays bounded while 230 pools hold real-size swap notifications (103 log lines, ~10.5 KB each held)', async () => {
+  it('HOLD-COMPACT: 60,000 real-size swap notifications held by 230 pools keep the heap near 50 MB (held whole, 10.5 KB each)', async () => {
     const { setFlagsFromString } = await import('node:v8');
     const { runInNewContext } = await import('node:vm');
     setFlagsFromString('--expose-gc');
@@ -227,18 +229,18 @@ describe('a candidate pool watch starts its coverage at the migration', () => {
     gc();
     const before = process.memoryUsage().heapUsed;
     const b58 = (k: number) => [...String(k)].map((d) => 'abcdefghij'[Number(d)]).join('');
-    for (let i = 0; i < 9_200; i++) {
-      t.hub.last.push({ jsonrpc: '2.0', method: 'logsNotification', params: { subscription: subs[i % subs.length], result: { context: { slot: 602 }, value: { signature: `S${b58(i)}`.padEnd(88, '1'), err: null, logs: [...lines] } } } });
-      if (i % 500 === 0) drain();
+    // Each notification parsed from its own text, as the socket parses it: its strings are its own.
+    const text = JSON.stringify(lines);
+    for (let i = 0; i < 60_000; i++) {
+      t.hub.last.push({ jsonrpc: '2.0', method: 'logsNotification', params: { subscription: subs[i % subs.length], result: { context: { slot: 602 }, value: { signature: `S${b58(i)}`.padEnd(88, '1'), err: null, logs: JSON.parse(text) as string[] } } } });
+      if (i % 1_000 === 0) drain();
     }
     await settle(20);
     drain();
     gc();
-    const held = t.stream.heldNotices;
-    expect(held).toBeLessThanOrEqual(CATCH_UP_HOLD_TOTAL);
-    // 9,200 held at ~10.5 KB would be ~95 MB; the cap keeps it near CATCH_UP_HOLD_TOTAL of them (~21 MB).
-    expect(process.memoryUsage().heapUsed - before).toBeLessThan(40 * 1024 * 1024);
-  }, 120_000);
+    expect(t.stream.heldNotices).toBeLessThanOrEqual(CATCH_UP_HOLD_TOTAL);
+    expect(process.memoryUsage().heapUsed - before).toBeLessThan(64 * 1024 * 1024);
+  }, 180_000);
 
   it('a watch dropped during the catch-up puts what it held on the feed', async () => {
     const t = setup({ coverFrom: 590n, fill: () => new Promise<boolean>(() => {}) });
