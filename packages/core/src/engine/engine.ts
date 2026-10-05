@@ -192,6 +192,11 @@ export class Engine {
   }
 
   /** The as-of store's size (keys and entries), for the retention measure and the worker's health. */
+  /** A key's newest value as of now, as a strategy would read it (the worker asks whether a create is still held). */
+  lookup(key: string): Lookup {
+    return this.#store.lookup(key);
+  }
+
   get storeSize(): { readonly keys: number; readonly entries: number } {
     return this.#store.size;
   }

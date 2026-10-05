@@ -8,6 +8,7 @@ import {
   type Strategy, type StrategyContext,
 } from '../src/engine/index.ts';
 import { LIVE_ONE_SHOT, createKey, engineRetention, liveRetention, poolTradeKeys, curveTradeKeys, retentionFor } from '../src/gates/index.ts';
+import { createRefreshAgeMs } from '../src/gates/retention.ts';
 
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
@@ -130,13 +131,12 @@ describe('the engine prunes at fixed points of the event clock and decides the s
 
 describe('the rule set (engineRetention, retentionFor)', () => {
   const r = retentionFor(TRIAL_POLICY, 240 * 60_000);
-  it('coverage keeps everything; trade keys the look-back plus a day; per-object keys at least a day; the rest (raw creates too) its newest plus an hour', () => {
+  it('coverage keeps everything; trade keys the look-back plus a day; per-object keys (raw creates too) at least a day; the rest its newest plus an hour', () => {
     expect(r('coverage:creates:start')).toBeNull();
     expect(r('coverage:rugs:gap')).toBeNull();
     for (const k of [...poolTradeKeys('P'), ...curveTradeKeys('M')]) expect(r(k), k).toEqual({ horizonMs: (TRIAL_POLICY.gates.deployerRugLookbackDays + 1) * DAY, dropStale: true });
-    // A raw create event keeps its newest entry: the exits' deployer-sell trigger and the gates' create alias read it.
-    for (const k of ['logs:pump:CreateEvent:M', 'pump:CreateEvent:M']) expect(r(k), k).toBe(HOUR);
-    for (const k of [createKey('M'), 'gates/pool:M', 'gates/holders:M', 'gates/deployer:C', 'pump:CompleteEvent:M', 'pump_amm:CreatePoolEvent:P', 'account:A']) {
+    // A raw create goes with the other per-object keys (the worker reads it again at a shortlist when it is gone).
+    for (const k of ['logs:pump:CreateEvent:M', 'pump:CreateEvent:M', createKey('M'), 'gates/pool:M', 'gates/holders:M', 'gates/deployer:C', 'pump:CompleteEvent:M', 'pump_amm:CreatePoolEvent:P', 'account:A']) {
       expect(r(k), k).toEqual({ horizonMs: DAY, dropStale: true });
     }
     for (const k of ['chain:slot', 'seen:logs:X', 'gates/sol-usd', 'worker:halt', 'logs:truncated:logs:X', 'gates/stream:chain']) expect(r(k), k).toBe(HOUR);
@@ -151,6 +151,73 @@ describe('the rule set (engineRetention, retentionFor)', () => {
     expect(long(createKey('M'))).toEqual({ horizonMs: 27 * HOUR, dropStale: true });
     expect(long(poolTradeKeys('P')[0]!)).toEqual({ horizonMs: 31 * DAY, dropStale: true });
     expect(() => engineRetention({ lookbackDays: 0, candidateWindowMs: 1, maxHoldMs: 1 })).toThrow(/lookbackDays/);
+  });
+});
+
+describe('the live rules over a long run (WORKER-GROW, review of #164)', () => {
+  /** A minute's slot, and every 2 minutes a new mint: its raw create in both forms, its create fact and one trade. */
+  const live = (days: number): FeedEvent[] => {
+    const out: FeedEvent[] = [];
+    for (let ms = 1_000; ms < days * DAY; ms += 60_000) {
+      // In event order within the slot: the mint's events, then the slot fact (off-chain, last).
+      if ((ms - 1_000) % 120_000 === 0) {
+        const mint = `M${ms}`;
+        const ev = (tx: number, key: string) => out.push({ kind: 'market', id: `${key}@${ms}`, moment: { ...at(ms), txIndex: tx, ixIndex: 0 }, key, value: { ms, pad: 'x'.repeat(200) } });
+        ev(1, `logs:pump:CreateEvent:${mint}`);
+        ev(2, `pump:CreateEvent:${mint}`);
+        ev(3, createKey(mint));
+        ev(4, curveTradeKeys(mint)[0]!);
+        if (ms % (6 * HOUR) < 60_000) ev(5, 'coverage:creates:gap');
+      }
+      out.push({ kind: 'market', id: `slot:${ms}`, moment: at(ms), key: 'chain:slot', value: { ms } });
+    }
+    return out;
+  };
+  const sizes = (days: number, retention?: Retention): { keys: number; entries: number }[] => {
+    const events = live(days);
+    const clock = new SimClock(at(0));
+    let head = 0;
+    const engine = new Engine({ clock, feed: { next: () => (head < events.length && events[head]!.moment.receivedAt <= clock.now().receivedAt ? events[head++]! : null) }, strategy: { onMarket: () => [] }, runner: { run: () => undefined }, seed: 's', book: { maxOpenPositions: 1 }, keepLog: false, ...(retention === undefined ? {} : { retention }) });
+    const out: { keys: number; entries: number }[] = [];
+    for (let day = 1; day <= days; day++) {
+      for (let ms = (day - 1) * DAY; ms < day * DAY; ms += 60_000) {
+        clock.advanceTo(at(ms + 1_000, BigInt(Math.floor((ms + 1_000) / 400)) + 1n));
+        engine.drain();
+      }
+      out.push({ ...engine.storeSize });
+    }
+    return out;
+  };
+
+  it('with liveRetention the store stops growing once the longest horizon (the look-back plus a day) is reached; without, it grows every day', () => {
+    const lookback = TRIAL_POLICY.gates.deployerRugLookbackDays + 1;
+    const days = lookback + 5;
+    const kept = sizes(days, liveRetention(TRIAL_POLICY, 240 * 60_000));
+    const all = sizes(days);
+    // Without retention: four new keys a mint, 720 mints a day, every day.
+    expect(all[days - 1]!.keys - all[days - 4]!.keys).toBeGreaterThan(3 * 720 * 3);
+    // With it: flat from the look-back on (trade keys go after it; raw creates and create facts after a day).
+    const flat = kept.slice(lookback);
+    for (const s of flat) {
+      expect(Math.abs(s.keys - flat[0]!.keys), JSON.stringify(s)).toBeLessThan(50);
+      expect(Math.abs(s.entries - flat[0]!.entries), JSON.stringify(s)).toBeLessThan(100);
+    }
+    // What stays: about the look-back's trade keys and a day of creates, never a key per mint seen.
+    expect(flat[0]!.keys).toBeLessThan(720 * (lookback + 1) + 3 * 720 * 2);
+    expect(flat.at(-1)!.keys).toBeLessThan(all.at(-1)!.keys / 2);
+  });
+
+  it('a raw create is fetched again at a shortlist when older than the refresh age, which leaves the window and the longest hold inside its horizon', () => {
+    const maxHold = Math.max(...(['U1', 'U2'] as const).map((u) => TRIAL_POLICY.exits.universes[u].tMaxMs));
+    const window = 240 * 60_000;
+    const age = createRefreshAgeMs(TRIAL_POLICY, window);
+    const horizon = (retentionFor(TRIAL_POLICY, window)('pump:CreateEvent:M') as { horizonMs: number }).horizonMs;
+    expect(age).toBeGreaterThan(0);
+    // A create read at the shortlist no older than `age` is still held after the window, the hold and the hourly prune.
+    expect(age + window + maxHold + HOUR).toBeLessThan(horizon);
+    // A long window and hold leave no room: every shortlist reads the create again.
+    const longPolicy = { ...TRIAL_POLICY, exits: { ...TRIAL_POLICY.exits, universes: Object.fromEntries(Object.entries(TRIAL_POLICY.exits.universes).map(([k, u]) => [k, { ...u, tMaxMs: DAY }])) } } as typeof TRIAL_POLICY;
+    expect(createRefreshAgeMs(longPolicy, window)).toBe(0);
   });
 });
 

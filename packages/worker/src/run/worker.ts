@@ -12,7 +12,7 @@ import { journalLines, placeBookingsAt } from './booked.ts';
 import type { Server } from 'node:http';
 import { join } from 'node:path';
 import type { PolicySession, RugConfig } from '../../../core/src/config/index.ts';
-import { compareEvents, compareMoments, Engine, type LogRecord, type MarketEvent, type Moment, OFF_CHAIN } from '../../../core/src/engine/index.ts';
+import { compareEvents, compareMoments, Engine, type LogRecord, type Lookup, type MarketEvent, type Moment, OFF_CHAIN } from '../../../core/src/engine/index.ts';
 import { Ledger, openLedger } from '../../../core/src/ledger/index.ts';
 import type { Book, BookEvent } from '../../../core/src/lifecycle/index.ts';
 import { isTerminal, isUnresolved } from '../../../core/src/lifecycle/index.ts';
@@ -50,7 +50,7 @@ import { jsonText } from './json.ts';
 import { Journal } from './journal.ts';
 import { type PaperMarket, type PaperState, PaperWorld, type SimLeg } from './paper-world.ts';
 import { Recorder, sealLeftovers } from './recorder.ts';
-import { liveRetention } from '../../../core/src/gates/retention.ts';
+import { createRefreshAgeMs, liveRetention } from '../../../core/src/gates/retention.ts';
 import { entryPrice, openPositionsHealth } from './open-positions.ts';
 import { type RiskInput, evaluateExit, riskSnapshot } from '../../../core/src/risk/index.ts';
 import { latchable, markSettings, riskAccount } from '../engine/marks.ts';
@@ -133,7 +133,8 @@ export interface WorkerDeps {
    * Fetches a transaction at confirmed and puts it on the feed; resolves true when it was found. Used for a shortlisted
    * mint's create (item 9: live H9, H12–H14 need the confirmed create) and for a cut trade log on a rug-covered stream.
    */
-  readonly fetchTx: (signature: string, why: 'create' | 'cut-log' | 'restore') => Promise<boolean>;
+  /** `fresh`: read and put it on the feed again even if it was fetched before (a create the as-of store let go). */
+  readonly fetchTx: (signature: string, why: 'create' | 'cut-log' | 'restore', fresh?: boolean) => Promise<boolean>;
   /**
    * RESTART-KEEP: signature reads on SEED-1's RPC, charged to the fill budget: the migrations of a restart's downtime.
    * Without it they are not read: coins that migrated while the worker was down are not candidates.
@@ -272,6 +273,9 @@ export const readJournalFills = (path: string, chunkBytes?: number): Record<stri
   return out;
 };
 
+/** WORKER-GROW: a shortlisted mint's create is read again when the store does not hold it, or holds it older than `refreshMs`. */
+export const createNeedsRead = (held: Lookup, nowMs: number, refreshMs: number): boolean => !held.ok || nowMs - held.moment.receivedAt > refreshMs;
+
 export class Worker {
   readonly #d: WorkerDeps;
   readonly #boot: string;
@@ -324,6 +328,8 @@ export class Worker {
   /** Positions open at the last step (WATCH-1 reads once when one opens). */
   #opened = new Set<string>();
   #createSig = new Map<string, string>();
+  /** A held raw create older than this is read again at a shortlist (`createRefreshAgeMs`). */
+  readonly #createRefreshMs: number;
   /** RESTART-KEEP: each mint's curve completion and migration transactions, as seen (logs or fetched). */
   readonly #completeSig = new Map<string, string>();
   readonly #migrationSig = new Map<string, string>();
@@ -505,6 +511,7 @@ export class Worker {
       if (e.key.startsWith(POOL_PREFIX)) this.#setPool(e.key.slice(POOL_PREFIX.length), e.value);
       if (e.key === GRADUATES_SEED_KEY) this.#graduatesSeed(e.value);
     });
+    this.#createRefreshMs = createRefreshAgeMs(d.session.policy, d.strategy.windowToMs);
     this.#engine = new Engine({ clock: this.#feed.clock, feed: this.#facts.feed, strategy: this.#strategy, runner: this.#world, seed, book: bookConfig, retention: liveRetention(d.session.policy, d.strategy.windowToMs) });
     this.#deployerStore = new DeployerStore(c.stateDir);
     const storeFrom = now - (d.session.policy.gates.deployerRugLookbackDays + 1) * 86_400_000;
@@ -934,7 +941,11 @@ export class Worker {
    */
   #createFor(mint: string): void {
     const sig = this.#createSig.get(mint);
-    if (sig !== undefined) return void this.#d.fetchTx(sig, 'create');
+    // WORKER-GROW: the store lets a raw create go after the per-object horizon. A create it no longer holds, or one too
+    // old to outlive the candidate window and the longest hold, is read again, so the gates and the exits' deployer
+    // read it for as long as the mint is a candidate or held.
+    const fresh = createNeedsRead(this.#engine.lookup(`${TX_CREATE_PREFIX}${mint}`), this.#d.timers.now(), this.#createRefreshMs);
+    if (sig !== undefined) return void this.#d.fetchTx(sig, 'create', fresh);
     if (this.#seeding) return void this.#createPending.push(mint);
     const find = this.#d.findCreate;
     if (find === undefined) return this.#d.log(`Shortlisted ${mint}: its create was not seen by this process; H9 and H12-H14 wait for it.`);

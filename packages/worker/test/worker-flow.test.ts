@@ -10,6 +10,7 @@ import { openLedgerReader } from '../../core/src/ledger/index.ts';
 import { checkJournal } from '../../runner/src/journal.ts';
 import type { LogRecord } from '../../core/src/engine/index.ts';
 import { EXEC_HEALTH_KEY, migrationKey } from '../../core/src/gates/index.ts';
+import { createNeedsRead } from '../src/run/worker.ts';
 import { passingFacts } from '../../core/test/gates/world.ts';
 import { parseHeartbeat } from '../../ops/src/watchdog/logic.ts';
 import { HALT_KEY, SEEDING, s0EntryAt, universeOfKey } from '../src/engine/strategy.ts';
@@ -178,9 +179,18 @@ describe('the swap stream of a watched pool (review of f679188, items 3 and 9)',
   });
 
   it('the deployer selling more than the policy share of supply after the entry exits the position', async () => {
-    const h = makeWorker();
+    // The create comes 16 days before the migration: the store let it go (WORKER-GROW), so the shortlist reads it
+    // again (fresh, past the fetcher's memory) and the exit judges the deployer from the copy read then.
+    const fetches: [string, string, boolean][] = [];
+    let pre: Market | null = null;
+    const h = makeWorker({ onFetch: (sig, why, fresh) => {
+      fetches.push([sig, why, fresh]);
+      if (sig !== 'create-1') return false;
+      pre!.create();
+      return true;
+    } });
     expect(await h.worker.reconcile()).toEqual({ ok: true });
-    const pre = new Market(h);
+    pre = new Market(h);
     pre.create();
     h.worker.step();
     const m = await passingMarket(h, HELD);
@@ -206,7 +216,16 @@ describe('the swap stream of a watched pool (review of f679188, items 3 and 9)',
     });
     expect(h.worker.book.positions[open.id]!.status).toBe('closed');
     expect(kinds(h.stateDir, 'exit')[0]!['reasons']).toEqual(expect.arrayContaining(['thesis_lost']));
+    expect(fetches).toContainEqual(['create-1', 'create', true]);
     await h.worker.stop();
+  });
+
+  it('a shortlist reads the create again when the store does not hold it or holds it past the refresh age (WORKER-GROW)', () => {
+    const held = (receivedAt: number) => ({ ok: true as const, value: {}, source: 'c', moment: { slot: 1n, txIndex: 0, ixIndex: 0, receivedAt } });
+    expect(createNeedsRead({ ok: false, reason: 'missing' }, 1_000, 500)).toBe(true);
+    expect(createNeedsRead(held(500), 1_000, 500)).toBe(false);
+    expect(createNeedsRead(held(499), 1_000, 500)).toBe(true);
+    expect(createNeedsRead(held(1_000), 1_000, 0)).toBe(false);
   });
 
   it('a deployer-sell trigger that cannot be judged is said once, never silent', async () => {

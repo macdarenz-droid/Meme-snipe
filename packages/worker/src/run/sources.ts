@@ -327,10 +327,10 @@ export class LiveProviders {
    * A transaction at confirmed (P2), put on the feed; true when found and readable. One DEC-1 cannot decode reads as
    * not found, so a cut trade log it was fetched for still becomes a rugs gap (a decode failure is a fact gap).
    */
-  async fetchTx(signature: string): Promise<boolean> {
+  async fetchTx(signature: string, fresh = false): Promise<boolean> {
     if (this.#fetcher === null) return false;
     try {
-      const found = await this.#fetcher.fetch(signature, P2);
+      const found = await this.#fetcher.fetch(signature, P2, false, fresh);
       return found !== null && found.undecodable !== true;
     } catch {
       return false;

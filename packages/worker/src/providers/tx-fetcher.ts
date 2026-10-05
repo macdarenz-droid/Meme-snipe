@@ -45,9 +45,12 @@ export class TxFetcher {
     this.#o = o;
   }
 
-  /** Fetches and ingests `signature` once. Resolves to its arrival, or null if no provider had it. */
-  fetch(signature: string, priority: Priority, backfilled = false): Promise<Fetched | null> {
-    const done = this.#done.get(signature);
+  /**
+   * Fetches and ingests `signature` once. Resolves to its arrival, or null if no provider had it. `fresh` reads and
+   * ingests it again even when an earlier fetch put it on the feed (WORKER-GROW: a create the as-of store let go).
+   */
+  fetch(signature: string, priority: Priority, backfilled = false, fresh = false): Promise<Fetched | null> {
+    const done = fresh ? undefined : this.#done.get(signature);
     if (done !== undefined) return Promise.resolve({ ...done, again: true });
     const running = this.#inFlight.get(signature);
     if (running) return running;

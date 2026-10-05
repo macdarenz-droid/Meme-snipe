@@ -31,6 +31,26 @@ describe('a repeat ask for a fetched signature', () => {
     expect(frames.filter((f) => f.body.type === 'tx')).toHaveLength(1);
   });
 
+  it('fresh reads it again and puts it on the feed again (WORKER-GROW: a create the store let go)', async () => {
+    const t = tx('PumpSwap BuyEvent');
+    const timers = new ManualTimers(5_000);
+    const frames: Frame[] = [];
+    const feed = new LiveFeed({ ...DEFAULT_LIVE_FEED, onFrame: (f) => frames.push(f) });
+    let reads = 0;
+    const rpc = new RpcHttp({ provider: 'helius', url: () => 'https://h.test', http: scriptedHttp(rpcHandler(() => (reads++, t.base64))), scheduler: new Scheduler(HELIUS_FREE, { timers }), timeoutMs: 1 });
+    const fetcher = new TxFetcher({ clients: [rpc], feed, timers, retries: 0, retryMs: 1, remember: 10, mono: () => 0 });
+    await fetcher.fetch(t.signature, P0);
+    timers.advance(30_000);
+    expect(await fetcher.fetch(t.signature, P0, false, true)).toMatchObject({ at: 35_000, again: false });
+    expect(reads).toBe(2);
+    // Handed to the feed again. The feed drops a copy only as a duplicate within keepSlots (about 10 minutes); the
+    // worker reads a create again only when it is hours old.
+    expect(frames.filter((f) => f.body.type === 'tx')).toHaveLength(2);
+    // The new arrival is the one remembered: a plain repeat resolves to it.
+    expect(await fetcher.fetch(t.signature, P0)).toMatchObject({ at: 35_000, again: true });
+    expect(reads).toBe(2);
+  });
+
   it('a signature forgotten past `remember` is read again', async () => {
     const a = tx('PumpSwap BuyEvent');
     const b = tx('PumpSwap SellEvent');
