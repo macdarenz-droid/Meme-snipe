@@ -256,14 +256,28 @@ describe('Durable Object', () => {
     vi.unstubAllGlobals();
   });
 
-  it('the Worker exposes only the five POST routes', async () => {
+  it('the Worker exposes only the six POST routes; /record runs outside the Durable Object and the nonce path is internal', async () => {
     const calls: string[] = [];
     const env = { WATCHDOG: { idFromName: () => 'id', get: () => ({ fetch: async (r: Request) => (calls.push(new URL(r.url).pathname), new Response('ok')) }) } } as unknown as Env;
     expect((await worker.fetch(new Request('https://w.test/check', { method: 'POST' }), env)).status).toBe(404);
     expect((await worker.fetch(new Request('https://w.test/heartbeat'), env)).status).toBe(404);
     expect((await worker.fetch(new Request('https://w.test/summary'), env)).status).toBe(404);
+    expect((await worker.fetch(new Request('https://w.test/record'), env)).status).toBe(404);
+    expect((await worker.fetch(new Request('https://w.test/record-nonce', { method: 'POST', body: '{}' }), env)).status).toBe(404);
     await worker.fetch(new Request('https://w.test/heartbeat', { method: 'POST', body: '{}' }), env);
     await worker.fetch(new Request('https://w.test/summary', { method: 'POST', body: '{}' }), env);
+    // Unsigned: refused in the outer fetch, before the Durable Object is asked for anything.
+    expect((await worker.fetch(new Request('https://w.test/record', { method: 'POST', body: '{}' }), env)).status).toBe(400);
     expect(calls).toEqual(['/heartbeat', '/summary']);
+  });
+
+  it('the nonce path takes each nonce once', async () => {
+    const h = harness();
+    const n = (nonce: string) => h.post('/record-nonce', JSON.stringify({ nonce, t: Math.floor(Date.now() / 1000) }));
+    expect((await n('a'.repeat(32))).status).toBe(200);
+    expect((await n('a'.repeat(32))).status).toBe(409);
+    expect((await n('b'.repeat(32))).status).toBe(200);
+    expect((await n('not hex')).status).toBe(400);
+    vi.unstubAllGlobals();
   });
 });
