@@ -2388,6 +2388,7 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
     - a repeat W − 1 s behind the newest trade counts once: candles and reserve unchanged, not partial;
     - a repeat W + 1 s behind is never applied: reserve unchanged, candles partial, H11 refuses;
     - the same swaps from live log lines and, half an hour later, from a gap fill's fetched transactions count once;
+    - a catch-up (the fill's fetched transactions first, then the same swaps as held log lines released after) counts once;
     - with a one-minute window, 3,072 trades a second apart keep at most 1,024 ids, and after every batch its last 20 trades repeated count once (a sweep never forgets a trade inside the window).
   - `store-rules.test.ts`: `seen:` and `chain:slot` keep only their newest value.
   - Hand mutants killed: no window check; no partial flag; ids looked at before the window; no sweep; a sweep that forgets everything; a refused trade that moves the reserve; no slot-notice rule.

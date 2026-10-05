@@ -335,6 +335,17 @@ describe('candles', () => {
       expect(after.book.reserve).toEqual(before.book.reserve);
     });
 
+    it('a catch-up: the fill\'s fetched transactions first, then the same swaps as held log lines released after, count once', () => {
+      const once = state(build());
+      const w = new FactWorld();
+      w.push(...covered(), ...txEvents(create), ...txEvents(complete), ...txEvents(migrate), ...swapEvents());
+      for (const x of swaps) w.push(...logEvents(x, 'confirmed').map((e) => ({ ...e, moment: { ...next(), txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN } })));
+      const after = state(w);
+      expect(after.candles.candles).toEqual(once.candles.candles);
+      expect(after.candles.obs.quality).toEqual([]);
+      expect(after.book.reserve).toEqual(once.book.reserve);
+    });
+
     it('the remembered ids level off: 3,072 trades a second apart with a one-minute window keep at most about a sweep\'s worth, and a sweep never forgets a trade inside the window', () => {
       const w = new FactWorld({ ...OPTIONS, tradeRepeatMs: 60_000 });
       w.push(...covered(), ...txEvents(create), ...txEvents(complete), ...txEvents(migrate));
