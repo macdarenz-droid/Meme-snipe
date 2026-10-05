@@ -4,7 +4,7 @@ import { PUMP_AMM_GLOBAL_CONFIG, PUMP_GLOBAL } from '../../core/src/chain/index.
 import { createReplay, Engine, runToEnd, type Feed, type FeedEvent, type MarketEvent, type Strategy, type Clock } from '../../core/src/engine/index.ts';
 import { CONFIG } from '../../core/test/fixtures.ts';
 import {
-  ACCOUNT_TX_INDEX, DEFAULT_LIVE_FEED, frameEvents, LIVE_TX_BASE, LiveFeed, replayRecorded, type Frame, type FrameBody, type LiveFeedOptions, type Release, type Source,
+  ACCOUNT_TX_INDEX, DEFAULT_LIVE_FEED, dedupKey, frameEvents, LIVE_TX_BASE, LiveFeed, replayRecorded, type Frame, type FrameBody, type LiveFeedOptions, type Release, type Source,
 } from '../src/providers/index.ts';
 import { blockNetwork, recordOf, tx, TXS } from './helpers.ts';
 
@@ -101,6 +101,28 @@ const script = (): Arrival[] => {
 };
 
 describe('live Feed', () => {
+  it('OOM-MINT: a kept dedupe key costs under 100 B and never keeps its frame\'s signature alive (it kept the whole 88 characters)', async () => {
+    const { setFlagsFromString } = await import('node:v8');
+    const { runInNewContext } = await import('node:vm');
+    setFlagsFromString('--expose-gc');
+    const gc = runInNewContext('gc') as () => void;
+    const B58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+    // A fresh signature string per frame, as each notification's JSON parse makes one; dropped once the key is built.
+    const fresh = (i: number): string => JSON.parse(JSON.stringify(Array.from({ length: 88 }, (_, k) => B58[(i * 7 + k * 13 + (i >> k % 16)) % 58]).join(''))) as string;
+    const N = 100_000;
+    const keys = new Set<string>();
+    gc();
+    const before = process.memoryUsage().heapUsed;
+    for (let i = 0; i < N; i++) {
+      const signature = fresh(i);
+      keys.add(dedupKey({ type: 'seen', signature, slot: 1n, err: null, via: 'logs:x', detail: null })!);
+    }
+    gc();
+    const perKey = (process.memoryUsage().heapUsed - before) / N;
+    expect(keys.size).toBe(N);
+    expect(perKey).toBeLessThan(100);
+  });
+
   it('OOM-MINT: every dedupe case still dedupes with the compact keys, and different facts stay apart', () => {
     const feed = new LiveFeed({ ...DEFAULT_LIVE_FEED });
     const t = tx('pump TradeEvent');
