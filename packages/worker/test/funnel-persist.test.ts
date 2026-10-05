@@ -1,9 +1,11 @@
 // FUNNEL-PERSIST: the app's funnel (Seen and the stages), entries per day and the latest decision rows survive a
 // restart. They are made from the journal's own lines, live and at a start alike, so a restarted worker shows what one
 // that never stopped would.
-import { appendFileSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, mkdtempSync, openSync, writeFileSync, writeSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { melbourneDay } from '../../core/src/risk/melbourne.ts';
 import { holdersKey } from '../../core/src/gates/index.ts';
@@ -107,6 +109,26 @@ describe('rebuildFunnel', () => {
     expect([...v.funnel.enteredByDay]).toEqual([['2026-10-04', 1]]);
     expect(v.funnel.stage.get('A')?.stage).toBe(4);
     expect(v.rows.filter((r) => r.outcome === 'entered').map((r) => r.tradeId)).toEqual(['p:A:1']);
+  });
+
+  it('rebuilds a journal larger than the child heap by reading slices', () => {
+    const path = journalOf([]);
+    const fd = openSync(path, 'a');
+    // 128 MiB of old decisions cannot fit in the 64 MiB child heap. Keep fixture generation bounded too.
+    const old = `${line(1, TODAY.start - 1, 'decision', { reasons: ['reject', 'U2', 'OLD', 'x'.repeat(128 * 1024)] })}\n`;
+    try {
+      for (let k = 0; k < 1024; k++) writeSync(fd, old);
+      writeSync(fd, `${reject(2, TODAY.start + 10, 'NEW')}\n`);
+    } finally {
+      closeSync(fd);
+    }
+    const module = pathToFileURL(join(import.meta.dirname, '../src/run/funnel.ts')).href;
+    const script = `const { rebuildFunnel } = await import(${JSON.stringify(module)});
+      const view = rebuildFunnel(process.argv[1], Number(process.argv[2]));
+      console.log(JSON.stringify({ mints: [...view.funnel.stage.keys()], rows: view.rows.length }));`;
+    const child = spawnSync(process.execPath, ['--max-old-space-size=64', '--input-type=module', '-e', script, path, String(NOW)], { encoding: 'utf8' });
+    expect(child.status, child.stderr).toBe(0);
+    expect(JSON.parse(child.stdout)).toEqual({ mints: ['NEW'], rows: 1 });
   });
 
   it('keeps the latest rows only', () => {
