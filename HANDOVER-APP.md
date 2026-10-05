@@ -4,13 +4,28 @@ Owner, Tue 6 Oct about 1:00 AM: a second supervisor (S2) takes the parked **app 
 
 From here on, S2 owns this file. S2 keeps it current on its own branch `claude/s2-docs`, which starts from S1's docs branch `ccr-528521bb-f7a7zo`. S1 reads it there and does not edit it.
 
+## Latest handoff audit
+
+Checked **2026-10-06 10:09:09 AEDT**, against S1 docs `343ee20b563888ed54c8befc17604383f0124aa6` and integration `5efb9ae0497523c84e3bb49a82bce989652cdb0b`. GitHub API access now works (actual PR reads and review-comment publication succeeded); the earlier API blocker is historical. This is a handoff audit, with no new stability code or workflow reruns.
+
+| App task | Current head | Verified status |
+|---|---|---|
+| APP-TRUTH #216 | `dfc48711c607b71904d19a74b7a3259bccd9b47f` | S1 merged as `e34bce34449dcaa2333baab9212d2a9399815350`; check and historical-data green. Do not rebuild. |
+| FUNNEL-TRUTH #237 | `c2f426b1cdb30855b2d591619c7549494df34694` | Open; historical-data green, current check CANCELLED. Prior S2-ready head is historical; current head needs review carry/delta evidence and green CI before merge. |
+| FUNNEL-PERSIST #210 | `d31c32e7240f4090262bd4516d41a8982f46e991` | Open; check and historical-data green, exact-head reviews recorded below. S1's latest-base update remains. |
+| APP-SOL #182 | `6da3244f90c77273f601a8bda45fb1c1669c18e2` | Open; check, historical-data and Android build green. Fresh independent APP/API delta PASS on this head; verdict posted to PR. S1's latest-base update remains. |
+| APP-TRADE #181 | `68a1d969920b6246b2a29a93092d1a8053f685e7` | Open; check and historical-data green, all three exact-head area reviews recorded below. S1's latest-base update remains. |
+| API-1 #167 | `6af4e43b707960316d8cd8419cb2e513fa9f4b60` | Open; check and historical-data green, both exact-head area reviews recorded below. S1's latest-base update remains. |
+
+Current-head CI runs verified directly: #216 [37362626087](https://github.com/macdarenz-droid/Meme-snipe/actions/runs/37362626087); #237 [37366010297](https://github.com/macdarenz-droid/Meme-snipe/actions/runs/37366010297) (check cancelled); #210 [37329486355](https://github.com/macdarenz-droid/Meme-snipe/actions/runs/37329486355); #182 [37334107041](https://github.com/macdarenz-droid/Meme-snipe/actions/runs/37334107041); #181 [37329349919](https://github.com/macdarenz-droid/Meme-snipe/actions/runs/37329349919); #167 [37329325589](https://github.com/macdarenz-droid/Meme-snipe/actions/runs/37329325589).
+
 ## Current handoff to S1
 
-Updated **2026-10-06 02:12:50 AEDT**. Under S1’s 2:01 AM handoff, these entries count as PR comments. Each listed reviewer is independent of the builder and passed the exact stated head. S1 made all six PRs non-draft. **S1 owns the final CI and latest-base check before merging; these handoffs do not claim CI is green.** S1’s latest notes have no completed current-head CI result yet. Required gates remain `check` and `historical-data`; app merges follow S1’s #236.
+Updated **2026-10-06 10:09:09 AEDT**. File handoffs remain accepted as PR comments. Latest verified statuses are in the audit above. S1 alone merges/deploys, including the latest-base update and CI on the updated head. Required gates remain `check` and `historical-data`. The two superseded readiness lines below are marked historical.
 
 ### APP-TRUTH — #216
 
-S2-READY ed5adc47223546e433e0151571ab3e72b1cbd84f
+Historical handoff: `S2-READY ed5adc47223546e433e0151571ab3e72b1cbd84f` (S1 has merged #216).
 
 - Branch: `claude/app-truth`. Verified contained base: `73c61006b08be35fff804155e6f700fa1c13d7b8`.
 - Review: **PASS** — `app_truth_review` — APP/API — `ed5adc47223546e433e0151571ab3e72b1cbd84f`.
@@ -20,7 +35,7 @@ S2-READY ed5adc47223546e433e0151571ab3e72b1cbd84f
 
 ### FUNNEL-TRUTH — #237
 
-S2-READY 682a80d6ef08b97128c5abf984a99be126e263a8
+Historical handoff: `S2-READY 682a80d6ef08b97128c5abf984a99be126e263a8` (S1 updated the branch; current check cancelled).
 
 - Branch: `claude/funnel-truth`. Verified contained base: `73c61006b08be35fff804155e6f700fa1c13d7b8`.
 - Review: **PASS** — `funnel_api_review` — APP/API — `682a80d6ef08b97128c5abf984a99be126e263a8`.
@@ -38,19 +53,18 @@ S2-READY d31c32e7240f4090262bd4516d41a8982f46e991
 - Review: **PASS** — `persist_facts_review` — strategy/worker facts — `d31c32e7240f4090262bd4516d41a8982f46e991`.
 - Review: **PASS** — `persist_data_review` — saved data — `d31c32e7240f4090262bd4516d41a8982f46e991`.
 - Evidence: Journal shape and replay are unchanged by the merge; midnight rotation, bounded retention and first-fill identity remain correct.
-- CI: not yet reported by S1 for this exact head; S1 must verify both required green checks before merge.
+- CI: `check` and `historical-data` SUCCESS on this exact head, [run37329486355](https://github.com/macdarenz-droid/Meme-snipe/actions/runs/37329486355). S1 must update the base and verify CI on any resulting new head.
 - Owner step / merge dependency: None before merge. Depends on #237 landing first.
 
 ### APP-SOL — #182
 
-S2-READY 491d291a3e69ffe7153871bac28f67dfb2efa026
+S2-READY 6da3244f90c77273f601a8bda45fb1c1669c18e2
 
-- Branch: `claude/app-sol`. Verified contained base: `73c61006b08be35fff804155e6f700fa1c13d7b8`.
-- Review: **PASS** — `app_sol_api_review` — APP/API — `491d291a3e69ffe7153871bac28f67dfb2efa026`.
-- Evidence: Production code is unchanged from prior reviewed 5ee1d4da. Final test-only fix routes mock requests by pathname and explicitly verifies money=lamports on eight requests; 3 failures before, 81 focused tests and workspace typecheck pass after.
-- CI: not yet reported by S1 for this exact head; S1 must verify both required green checks before merge.
-- New push: this head supersedes S1’s `b8a0ace3` CI head. Use CI for `491d291a3e69ffe7153871bac28f67dfb2efa026`, not the earlier run.
-- Owner step / merge dependency: None before merge. After S1 merges the batch, provide the preview APK and phone checks. Installed APK SHA is unverified; default responses preserve the verified integration-base schema.
+- Branch: `claude/app-sol`. Contained reviewed base: `73c61006b08be35fff804155e6f700fa1c13d7b8`; S1 must update to the integration head at its merge slot.
+- Review: **PASS** — `app_sol_api_review` — APP/API — `6da3244f90c77273f601a8bda45fb1c1669c18e2`.
+- Delta: S1 added `netLamports: null` to the daily-loss fixture. All production files are identical to approved `491d291a`; loss amount, limit and assertion remain unchanged. The independent reviewer confirmed no weakened test; no redundant suites rerun.
+- CI: `check` and `historical-data` **SUCCESS**, [run37334107041](https://github.com/macdarenz-droid/Meme-snipe/actions/runs/37334107041); Android build also SUCCESS on this head.
+- Review verdict published on PR #182. No owner step before merge. Preview APK and phone checks follow the app batch; actual installed APK SHA remains unverified.
 
 ### APP-TRADE / EXIT-RUNG — #181
 
@@ -61,7 +75,7 @@ S2-READY 68a1d969920b6246b2a29a93092d1a8053f685e7
 - Review: **PASS** — `exit_rung_exit_review` — EXIT — `68a1d969920b6246b2a29a93092d1a8053f685e7`.
 - Review: **PASS** — `exit_rung_facts_review` — strategy/worker facts — `68a1d969920b6246b2a29a93092d1a8053f685e7`.
 - Evidence: Signed rung, charged fee, settlement and recovery files are unchanged by the merge; released slot events still drive height and landing. No new saved shape.
-- CI: not yet reported by S1 for this exact head; S1 must verify both required green checks before merge.
+- CI: `check` and `historical-data` SUCCESS on this exact head, [run37329349919](https://github.com/macdarenz-droid/Meme-snipe/actions/runs/37329349919). S1 must update the base and verify CI on any resulting new head.
 - Owner step / merge dependency: None before merge. Resolve any API overlap with #182 in landing order.
 
 ### API-1 — #167
@@ -72,7 +86,7 @@ S2-READY 6af4e43b707960316d8cd8419cb2e513fa9f4b60
 - Review: **PASS** — `api1_api_review` — APP/API — `6af4e43b707960316d8cd8419cb2e513fa9f4b60`.
 - Review: **PASS** — `api1_facts_review` — strategy/worker facts — `6af4e43b707960316d8cd8419cb2e513fa9f4b60`.
 - Evidence: Full configured waiver set remains separate from actual per-decision reliance. Existing strict enums match; updated precise no-fee-context fixture fails without H14 serving fix and all 10 worker-1e tests pass after.
-- CI: not yet reported by S1 for this exact head; S1 must verify both required green checks before merge.
+- CI: `check` and `historical-data` SUCCESS on this exact head, [run37329325589](https://github.com/macdarenz-droid/Meme-snipe/actions/runs/37329325589). S1 must update the base and verify CI on any resulting new head.
 - Owner step / merge dependency: None before merge.
 
 ### Local full-check limitations
@@ -81,9 +95,11 @@ S2-READY 6af4e43b707960316d8cd8419cb2e513fa9f4b60
 - FUNNEL-TRUTH’s older local run: 5464 passed, 2 GPG-home setup failures. Writable GNUPGHOME now preserves the same key verification.
 - FUNNEL-PERSIST’s older-head local full run is still incomplete and has reported three runner/drill failures in unchanged runner files. No passing full-suite claim.
 - APP-SOL’s older full run was cancelled with exit130. Three mock URL failures are fixed on the new head; a loaded runner drill failure remains reported for S1 to assess against current CI. No runner test, timeout or guard was weakened.
-- Current GitHub CI is the outstanding merge gate; S1 will publish results or missing work in its HANDOVER.md “For Supervisor 2” section.
+- These local limitations are historical. Current directly verified GitHub results are in Latest handoff audit; they do not establish that any future base-update head is green.
 
 ## S2 events (newest first)
+
+- **2026-10-06 10:09:09 AEDT** — Handoff audit completed: GitHub access restored and direct PR reads confirmed APP-TRUTH merged; #237 current check cancelled; #210/#182/#181/#167 green on their current heads. APP-SOL independent one-line fixture delta PASS at6da3244f recorded and posted to PR #182. Added S1’s reviewed server/stability queue, urgent #149 blockers, item23 folded into S1, source/ref identities and ownership exceptions. Superseded readiness heads marked historical; no stability implementation, CI rerun, merge or deploy performed.
 
 - **2026-10-06 02:12:50 AEDT** — Posted six exact-head S2-READY handoffs above under S1’s new file-as-PR-comment protocol. All required independent area reviews passed after S1 base merges; API-1 head unchanged and prior exact-head verdicts retained. APP-SOL fixture correction491d291a pushed after fetching, remote verified, independently reviewed; S1 must use its new CI. Each handoff lists base, reviewers, owner/dependency steps and explicitly pending S1 CI verification; known local full-run failures remain visible. No PR merge, deploy, integration push or green-CI claim.
 
@@ -180,6 +196,30 @@ S2-READY 6af4e43b707960316d8cd8419cb2e513fa9f4b60
   - worker facts and strategy: the worker/facts reviewer;
   - saved data: the persist reviewer. A new kind of saved data (the bot's own decisions or public market data only) needs S1's approval after review. Personal data or data sent to a third party needs the owner.
 - **The app's strict schema.** The installed APK parses server responses strictly. A new field or enum value from the server can break the owner's app ("Data failed checks", 5 Oct 12:09 AM). So server changes must stay readable by the installed APK. New values ship together with a new APK, and the server must stay tolerant of the old one until the owner installs it.
+
+## Server and stability handover — items21–29
+
+Source: S1’s reviewed handover in HANDOVER.md “For Supervisor 2” at docs `343ee20b563888ed54c8befc17604383f0124aa6` (prepared3:17, updated through10:01). Every task ref below was freshly fetched and matched S1’s listed short head. Completed work stays completed. New code remains paused under the owner’s instruction; this turn only audited handoffs and refreshed review/CI evidence. Next implementation priority is item22 #149.
+
+| Item | Task / branch head | Work remaining |
+|---|---|---|
+| 21 | Helius usage cut; `No branch` `—` | No implementation started. S1 lifted FAILED-LOGS hold at10:01; cutC/A must use5efb9ae0 or newer. Measurement/ghost unsubscribe first; gate-derived watch drops need facts/BT/EXIT/persist reviews. |
+| 22 | OPS-1j / BACKUP-STATE / DISK-GUARD; `claude/ops-1j` `10e01ba7ecf826f4f05c00fae3d9a25f4d77a68e` | URGENT first stability item per S1 at9:40. Unreviewed backup/disk delta; blocking backup size/scope/cap, heartbeat privacy, and recorder-ENOSPC→journal-ENOSPC crash regression. Needs ops, persist, worker/facts reviews. |
+| 23 | WORKER-GROW #164; `claude/worker-grow` `f877a17b0a38412fc403beebd0f5b031a21f3e7a` | Folded into S1’s crash task. S2 does not build; S1 closes after useful parts land. |
+| 24 | Recorder manifest #187; `claude/recorder-manifest` `b8311b64d19b29d24930833bb74a8a544da35cc5` | Fresh persist + BT review needed on merged head: #hashes interaction with base attach()/packed()/writeManifest(). Lands before #192 and #196. |
+| 24 | Runner readers #192; `claude/runner-readers` `3a66e3c88bb0b79d6b60b9b2df86f883ac7aa903` | Prior run/CI PASS; carry only with code-hunk identity proof after base merge. Lands after #187. |
+| 24 | Runner hash #196; `claude/runner-hash` `df6996d78ae0da77ca24fc460a75e33dce9073e8` | Prior run/CI PASS; carry only with identity proof after base merge. Lands after #192. |
+| 25 | N2-WRITES #172; `claude/n2-writes` `7f2ce17bc152beaac7a06a878929420f6902498a` | Prior data/persist PASS; base merge and persist delta review needed. Lands before #149; file formats unchanged, no owner step. |
+| 26 | TxFetcher ring #207; `claude/txfetcher-ring` `79e9727e92ee39a02bdae24978936d39d2cb22b1` | Fresh facts delta review needed for decodable option added after prior PASS; production does not set it. Can be prepared independently of crash work. |
+| 27 | RUN-1d #193; `claude/runner-drills` `201120be9584f0d41f5e7464b6342e876eae8086` | Blocking loaded-runner test failure: fix cause, prove repeatedly under CPU load; never skip/retry-wrap/loosen. Runs after recorder/reader/hash chain. |
+| 28 | KEY-ROTATE-SAFE #161; `claude/key-rotate-safe` `26ef39e388df4761e369d08ffedba50e44aba641` | Base/test-fixture merge, ops delta review and CI/e2e needed. Owner approval required for Durable Object slot and retired-key SHA256 data; S1 asks owner. |
+| 29 | FILL-THROW #221; `claude/fill-throw` `c63e6a5eede81f1bca70de93d032072b7bc60c08` | Test-only prior facts PASS/green CI; can carry with exact merge-tree identity proof after base merge. No owner step. |
+
+**Ownership for items21–29 only:** S1 crash-owned core files engine/asof.ts, engine/engine.ts, engine/feed.ts, facts/feed.ts, facts/producer.ts, gates/deployer-index.ts, engine/hour-tags.ts and worker run/store-rules.ts, run/engine-feed.ts, providers/canonical.ts, facts/readers.ts, seed/** stay closed to S2. ops/** and packages/ops/** are open only inside #149/#161 scope. Item21 may touch strategy.ts after the crash merge, pool-watch.ts, solana-ws.ts, rpc-socket.ts and sources.ts, using the10:01 hold lift. No additional .github changes; #149’s already-reviewed require-check change is accepted. RECORD-UPLOAD remains S1’s; coordinate watchdog/ops-host/recorder overlap when landing.
+
+**#149 exact blocking sequence:** recorder ENOSPC halts entries while exits should continue, then the next journal write throws and main exits1. Add a regression reproducing that sequence before fixing. Backup only state files (ledger/sqlite, saved state, deployer state), compressed, with a total cap and skip below the disk pause line; exclude recorder, journal and reports. Disk data stays local /health, excluded from heartbeatBody. Never delete recordings (S1 RECORD-UPLOAD owns verified-upload deletion). Owner verifies host settings after S1 deploys.
+
+S1’s landing order stays crash fix → app batch → #221/#207/#187→#192→#196→#193 → #172 → #149 → #161 → item21. The urgent #149 build priority does not authorize bypassing its landing dependencies. S1 alone merges/deploys; fetch before every task-branch push.
 
 ## The queue, in the owner's order
 
