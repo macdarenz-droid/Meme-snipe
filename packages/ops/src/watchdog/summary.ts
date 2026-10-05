@@ -53,6 +53,18 @@ export interface ProviderCredits {
   readonly used_since_boot: number;
   readonly monthly: number | null;
 }
+export interface LastDeath {
+  readonly at: string;
+  readonly uptime_s: number | null;
+  readonly heap_used_mb: number | null;
+  readonly heap_limit_mb: number | null;
+  readonly spaces: readonly { readonly space: string; readonly used_mb: number }[];
+  readonly sample: { readonly at: string; readonly heap_used_mb: number; readonly heap_limit_mb: number; readonly rss_mb: number; readonly external_mb: number; readonly array_buffers_mb: number } | null;
+}
+
+/** At most this many heap spaces in `last_death`. */
+export const SUMMARY_MAX_SPACES = 16;
+
 export interface Summary {
   readonly v: 1;
   /** The Melbourne date (YYYY-MM-DD) this summary covers. */
@@ -76,6 +88,12 @@ export interface Summary {
     readonly exits?: readonly CodeCount[];
     /** That day's crashes by site, most frequent first, at most SUMMARY_MAX_CRASH_SITES. */
     readonly crash_sites?: readonly CrashSite[];
+    /**
+     * MEM-SUMMARY: the memory of that day's last process to die with no stop line, or null: when (node's fatal report, else
+     * the last sample), its uptime, its heap used and limit, MB used per V8 space, and the last mem.json sample. Only
+     * alongside RESTART-CAUSE's keys; a worker from before it still posts.
+     */
+    readonly last_death?: LastDeath | null;
   };
   /** Critical alerts raised that day, by code. */
   readonly alerts: readonly CodeCount[];
@@ -183,15 +201,26 @@ const credits = (x: unknown) =>
 const WORKER_KEYS = ['git_sha', 'entry_rule', 'uptime_s', 'starts', 'recorder'] as const;
 /** RESTART-CAUSE's keys of `worker`: present all together or not at all. */
 export const RESTART_CAUSE_KEYS = ['restarts', 'exits', 'crash_sites'] as const;
+const countOrNull = (v: unknown): boolean => v === null || count(v);
+const lastDeath = (x: unknown): boolean => x === null || (
+  exact(x, ['at', 'uptime_s', 'heap_used_mb', 'heap_limit_mb', 'spaces', 'sample']) && str(x['at'], PATTERNS.TIME) &&
+  countOrNull(x['uptime_s']) && countOrNull(x['heap_used_mb']) && countOrNull(x['heap_limit_mb']) &&
+  list(x['spaces'], SUMMARY_MAX_SPACES, (y) => exact(y, ['space', 'used_mb']) && str(y['space'], PATTERNS.CODE) && count(y['used_mb'])) &&
+  (x['sample'] === null || (exact(x['sample'], ['at', 'heap_used_mb', 'heap_limit_mb', 'rss_mb', 'external_mb', 'array_buffers_mb']) &&
+    str(x['sample']['at'], PATTERNS.TIME) && ['heap_used_mb', 'heap_limit_mb', 'rss_mb', 'external_mb', 'array_buffers_mb'].every((k) => count((x['sample'] as Record<string, unknown>)[k])))));
+/** MEM-SUMMARY's key of `worker`: optional, and only with RESTART-CAUSE's. */
+export const MEM_SUMMARY_KEY = 'last_death';
 const restartCause = (w: Record<string, unknown>): boolean =>
   RESTART_CAUSE_KEYS.some((k) => Object.hasOwn(w, k))
-    ? exact(w, [...WORKER_KEYS, ...RESTART_CAUSE_KEYS]) && restarts(w['restarts']) && list(w['exits'], EXIT_KINDS.length, exitCount) && list(w['crash_sites'], SUMMARY_MAX_CRASH_SITES, crashSite)
+    ? exact(w, [...WORKER_KEYS, ...RESTART_CAUSE_KEYS, ...(Object.hasOwn(w, MEM_SUMMARY_KEY) ? [MEM_SUMMARY_KEY] : [])]) && restarts(w['restarts']) &&
+      list(w['exits'], EXIT_KINDS.length, exitCount) && list(w['crash_sites'], SUMMARY_MAX_CRASH_SITES, crashSite) && (!Object.hasOwn(w, MEM_SUMMARY_KEY) || lastDeath(w[MEM_SUMMARY_KEY]))
     : exact(w, WORKER_KEYS);
 
 /** The keys of every object in the shape, for the key-name test. */
 export const SHAPE_KEYS: readonly string[] = [
   'v', 'day', 'final', 'generated_at', 'mode', 'worker', 'alerts', 'halts', 'candidates', 'trades', 'trades_dropped', 'pnl', 'open_positions', 'provider_credits',
-  'git_sha', 'entry_rule', 'uptime_s', 'starts', 'recorder', 'restarts', 'exits', 'crash_sites',
+  'git_sha', 'entry_rule', 'uptime_s', 'starts', 'recorder', 'restarts', 'exits', 'crash_sites', 'last_death',
+  'at', 'heap_used_mb', 'heap_limit_mb', 'spaces', 'space', 'used_mb', 'sample', 'rss_mb', 'external_mb', 'array_buffers_mb',
   'planned', 'deploy', 'unplanned', 'error', 'file', 'line', 'event',
   'code', 'count', 'gate',
   'seen', 'entered', 'refused', 'refused_by_reason', 'refused_other',

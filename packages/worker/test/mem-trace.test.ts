@@ -2,8 +2,9 @@
 import { describe, expect, it } from 'vitest';
 import { existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { MEM_EVERY_MS, MEM_FILE, REPORTS_DIR, REPORT_FRESH_MS, cgroupMax, fatalReport, nearLimit, readMem, type MemSample } from '../src/run/mem-trace.ts';
-import { emptySummaryState, foldText, buildSummary } from '../src/run/summary.ts';
+import { DEATH_SPACES_MAX, MEM_EVERY_MS, MEM_FILE, REPORTS_DIR, REPORT_FRESH_MS, cgroupMax, deathMem, fatalReport, nearLimit, parseDeathMem, readMem, type MemSample } from '../src/run/mem-trace.ts';
+import { emptySummaryState, foldText, buildSummary, summaryBody } from '../src/run/summary.ts';
+import { checkSummary } from '../../ops/src/watchdog/summary.ts';
 import { melbourneDate } from '../src/run/api.ts';
 import { exitKind } from '../src/run/state.ts';
 import { STATE_FILES } from '../../runner/src/contract.ts';
@@ -201,5 +202,112 @@ describe('a fatal-error report (HEAP-GUARD)', () => {
     const sum = buildSummary({ day, final: false, nowMs: timers.now(), fold: st.days[day], gitSha: 'a'.repeat(40), entryRule: 'S0', recorder: 'off', uptimeS: 1, trades: [], openPositions: 0, solPrice: null, credits: [] });
     expect(sum.worker.crash_sites).toEqual([{ error: 'HeapOutOfMemory', file: 'packages/worker/src/run/worker.ts', line: 900, event: null, count: 1 }]);
     expect(sum.worker.exits).toEqual(expect.arrayContaining([{ code: 'crash', count: 1 }, { code: 'oom', count: 1 }]));
+  });
+});
+
+/** A report with the heap section `--report-on-fatalerror` writes at a heap death, plus noise that must never be read. */
+const heapReport = (dumpMs: number) => JSON.stringify({
+  header: { reportVersion: 3, event: 'Allocation failed - JavaScript heap out of memory', trigger: 'FatalError', dumpEventTimeStamp: String(dumpMs), commandLine: ['node', `--x=${SECRET}`], cwd: '/var/lib/zeroed' },
+  javascriptStack: { message: `Error: ${SECRET}`, stack: ['at y (packages/worker/src/run/worker.ts:900:5)'] },
+  javascriptHeap: {
+    usedMemory: 590 * MB, memoryLimit: 600 * MB, totalMemory: 610 * MB,
+    heapSpaces: {
+      old_space: { used: 500 * MB, capacity: 510 * MB }, new_space: { used: 16 * MB }, large_object_space: { used: 60 * MB }, code_space: { used: 4 * MB },
+      read_only_space: { used: 'many' }, 'Evil Space!': { used: 1 }, [`sk_live_${'a'.repeat(50)}`]: { used: 1 },
+    },
+  },
+  environmentVariables: { HELIUS_API_KEY: 'sk-live-0123456789abcdef' },
+});
+
+describe('the memory at a death (MEM-SUMMARY)', () => {
+  it('reads only numbers: the dump time, heap used and limit, each space\'s use, the uptime from its boot and a fresh sample', () => {
+    const dir = tempState();
+    plant(dir, heapReport(1_000_500), 1_000_000);
+    writeFileSync(join(dir, MEM_FILE), JSON.stringify(sample({ at: 995_000, heap_used: 580 * MB, heap_limit: 600 * MB, rss: 700 * MB, external: 3 * MB, array_buffers: 2 * MB })));
+    const d = deathMem(dir, 1_000_000, 400_000);
+    expect(d).toEqual({
+      at: 1_000_500, uptime_s: 600, heap_used_mb: 590, heap_limit_mb: 600,
+      spaces: [{ space: 'old', used_mb: 500 }, { space: 'large-object', used_mb: 60 }, { space: 'new', used_mb: 16 }, { space: 'code', used_mb: 4 }],
+      sample: { at: 995_000, heap_used_mb: 580, heap_limit_mb: 600, rss_mb: 700, external_mb: 3, array_buffers_mb: 2 },
+    });
+    expect(JSON.stringify(d)).not.toMatch(/sk-live|sk_live|helius|api-key|Evil|zeroed|many/);
+    expect(parseDeathMem(JSON.parse(JSON.stringify(d)))).toEqual(d);
+  });
+
+  it('without a report the fresh sample stands alone; an old sample or no death line gives nothing; uptime only from an earlier boot', () => {
+    const dir = tempState();
+    writeFileSync(join(dir, MEM_FILE), JSON.stringify(sample({ at: 995_000 })));
+    expect(deathMem(dir, 1_000_000, null)).toEqual({ at: 995_000, uptime_s: null, heap_used_mb: 100, heap_limit_mb: 500, spaces: [], sample: { at: 995_000, heap_used_mb: 100, heap_limit_mb: 500, rss_mb: 300, external_mb: 0, array_buffers_mb: 0 } });
+    expect(deathMem(dir, 1_000_000, 996_000)?.uptime_s).toBeNull();
+    expect(deathMem(dir, 995_000 + 2 * MEM_EVERY_MS + 1, 0)).toBeNull();
+    expect(deathMem(dir, null, 0)).toBeNull();
+    expect(deathMem(tempState(), 1_000_000, 0)).toBeNull();
+  });
+
+  it('a malformed record is dropped, never guessed', () => {
+    const ok = { at: 1, uptime_s: null, heap_used_mb: 1, heap_limit_mb: null, spaces: [{ space: 'old', used_mb: 1 }], sample: null };
+    expect(parseDeathMem(ok)).toEqual(ok);
+    for (const bad of [
+      null, 'x', { ...ok, at: -1 }, { ...ok, at: 1.5 }, { ...ok, uptime_s: '1' }, { ...ok, spaces: [{ space: 'Old Space', used_mb: 1 }] },
+      { ...ok, spaces: [{ space: 'old', used_mb: -1 }] }, { ...ok, spaces: Array.from({ length: DEATH_SPACES_MAX + 1 }, () => ({ space: 'old', used_mb: 1 })) },
+      { ...ok, sample: { at: 1, heap_used_mb: 1, heap_limit_mb: 1, rss_mb: 1, external_mb: 1 } }, { ...ok, spaces: 'old' },
+    ]) expect(parseDeathMem(bad), JSON.stringify(bad)).toBeNull();
+  });
+
+  it('a start line whose death_mem is malformed gives no last_death; a later good one replaces an earlier one', () => {
+    const st = emptySummaryState();
+    const at = T - 60_000;
+    const line = (seq: number, death: unknown) => JSON.stringify({ seq, ts: new Date(at + seq).toISOString(), boot: `b${seq}`, kind: 'start', exit: 'crash', restart: 'unplanned', death_mem: death });
+    const good = { at: at - 5_000, uptime_s: 600, heap_used_mb: 590, heap_limit_mb: 600, spaces: [{ space: 'old', used_mb: 500 }], sample: null };
+    foldText(st, line(1, { ...good, spaces: [{ space: `https://x.example/${SECRET}`, used_mb: 1 }] }), new Date(T - 30 * 86_400_000).toISOString());
+    const day = melbourneDate(at);
+    const build = () => buildSummary({ day, final: false, nowMs: at + 10, fold: st.days[day], gitSha: 'a'.repeat(40), entryRule: 'S0', recorder: 'off', uptimeS: 1, trades: [], openPositions: 0, solPrice: null, credits: [] });
+    expect(build().worker.last_death).toBeNull();
+    foldText(st, line(2, good), new Date(T - 30 * 86_400_000).toISOString());
+    expect(build().worker.last_death?.uptime_s).toBe(600);
+    foldText(st, line(3, { ...good, uptime_s: 'long' }), new Date(T - 30 * 86_400_000).toISOString());
+    expect(build().worker.last_death?.uptime_s).toBe(600);
+  });
+
+  it('the pre-step reads it and hands it on; the main boot\'s start line and the day\'s summary carry it, and the watchdog\'s guard takes the body', async () => {
+    const stateDir = tempState();
+    const timers = virtualTimers(T);
+    // Its boot is the moment it was made (restarts.json); it dies after its reconcile.
+    const bootA = timers.now();
+    const a = makeWorker({ stateDir, timers });
+    await a.worker.reconcile();
+    await a.worker.kill();
+    const last = readFileSync(join(stateDir, STATE_FILES.journal), 'utf8').trimEnd().split('\n').at(-1)!;
+    const deathA = Date.parse((JSON.parse(last) as { ts: string }).ts);
+    plant(stateDir, heapReport(deathA + 200), deathA + 500);
+    writeFileSync(join(stateDir, MEM_FILE), JSON.stringify(sample({ at: deathA - 5_000, heap_used: 580 * MB, heap_limit: 600 * MB })));
+    const pre = makeWorker({ stateDir, timers, phase: 'reconcile' });
+    expect(await pre.worker.reconcileOnly()).toEqual({ ok: true });
+    // The report and the sample are gone before the main boot: it reads the pre-step's handoff, not them.
+    rmSync(join(stateDir, REPORTS_DIR), { recursive: true });
+    rmSync(join(stateDir, MEM_FILE));
+    const b = makeWorker({ stateDir, timers });
+    await b.worker.stop();
+    const text = readFileSync(join(stateDir, STATE_FILES.journal), 'utf8');
+    const starts = text.split('\n').filter((l) => l.includes('"kind":"start"'));
+    const main = JSON.parse(starts.at(-1)!) as Record<string, unknown>;
+    expect(main['phase']).toBeUndefined();
+    const dm = main['death_mem'] as { at: number; uptime_s: number; spaces: unknown[] };
+    expect(dm.at).toBe(deathA + 200);
+    expect(dm.uptime_s).toBe(Math.floor((deathA + 200 - bootA) / 1000));
+    expect(dm.uptime_s).toBeGreaterThan(0);
+    expect(dm.spaces).toHaveLength(4);
+    expect(text).not.toMatch(/sk-live|api-key/);
+    const st = emptySummaryState();
+    for (const l of text.split('\n')) foldText(st, l, new Date(T - 30 * 86_400_000).toISOString());
+    const day = melbourneDate(timers.now());
+    const sum = buildSummary({ day, final: false, nowMs: timers.now(), fold: st.days[day], gitSha: 'a'.repeat(40), entryRule: 'S0', recorder: 'off', uptimeS: 1, trades: [], openPositions: 0, solPrice: null, credits: [] });
+    expect(sum.worker.last_death).toEqual({
+      at: new Date(deathA + 200).toISOString(), uptime_s: dm.uptime_s, heap_used_mb: 590, heap_limit_mb: 600,
+      spaces: [{ space: 'old', used_mb: 500 }, { space: 'large-object', used_mb: 60 }, { space: 'new', used_mb: 16 }, { space: 'code', used_mb: 4 }],
+      sample: { at: new Date(deathA - 5_000).toISOString(), heap_used_mb: 580, heap_limit_mb: 600, rss_mb: 300, external_mb: 0, array_buffers_mb: 0 },
+    });
+    const body = summaryBody(sum);
+    expect('body' in body && checkSummary(body.body).ok).toBe(true);
   });
 });
