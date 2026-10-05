@@ -400,6 +400,8 @@ interface Candidate {
   lastWaived: string;
   /** The mint's creator, from its released create (null until it is seen): RUG-1c checks this deployer. */
   creator?: string | null;
+  /** ENTRY-MEMO: S0's drawn entry moment, drawn once (its window is fixed: the migration time and the config). */
+  entryAt?: number;
 }
 
 /**
@@ -538,11 +540,15 @@ export interface EntrySeed {
   readonly entryReserve: bigint;
 }
 
+/** ENTRY-MEMO: how many entry moments were drawn (a hash each), for the test that each candidate draws once. */
+export const S0_DRAWS = { count: 0 };
+
 /**
  * S0's entry moment for a candidate: uniform in [from, to), from the first 48 bits of sha256(salt, mint). Independent
  * of arrival order, so a replay draws the same moments.
  */
 export const s0EntryAt = (salt: string, mint: string, from: number, to: number): number => {
+  S0_DRAWS.count++;
   const u = Number.parseInt(createHash('sha256').update(`s0|${salt}|${mint}`).digest('hex').slice(0, 12), 16) / 2 ** 48;
   return from + Math.floor(u * (to - from));
 };
@@ -2215,7 +2221,7 @@ export class LiveStrategy implements Strategy {
       if (now >= to) continue;
       if (this.#batchOpen.has(cand.mint)) continue;
       if (now < from || (cand.lastEvalMs !== null && now - cand.lastEvalMs < c.evaluateEveryMs && !this.#landedFresh(due, cand.mint, ctx))) continue;
-      if (c.entryTiming === 'random' && now < s0EntryAt(c.entrySalt, cand.mint, from, to)) continue;
+      if (c.entryTiming === 'random' && now < this.#entryAt(cand, from, to)) continue;
       if (Object.values(ctx.book.positions).some((p) => p.mint === cand.mint && p.status !== 'closed')) continue;
       if (Object.values(ctx.book.intents).some((i) => i.intent.mint === cand.mint && !isTerminal(i))) continue;
       cand.lastEvalMs = now;
@@ -2237,6 +2243,16 @@ export class LiveStrategy implements Strategy {
       }
       if (out.some((d) => d.action !== null)) return;
     }
+  }
+
+  /**
+   * ENTRY-MEMO: the candidate's S0 entry moment, drawn once. It was drawn for every waiting candidate on every
+   * event: after a restart restored 400+ candidates, that hashing took over half the worker's CPU and the backlog filled
+   * the heap (the profile of a restored boot). The same salt, mint and window give the same moment, so replays agree.
+   */
+  #entryAt(cand: Candidate, from: number, to: number): number {
+    cand.entryAt ??= s0EntryAt(this.#d.config.entrySalt, cand.mint, from, to);
+    return cand.entryAt;
   }
 
   /** The S0 diagnostic parts the last `#evaluate` relied on. */
