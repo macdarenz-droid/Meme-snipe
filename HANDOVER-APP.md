@@ -103,6 +103,8 @@ S2-READY 6af4e43b707960316d8cd8419cb2e513fa9f4b60
 
 ## S2 events (newest first)
 
+- **2026-10-06 10:37:50 AEDT** — APP/API independent review also reproduced an immediate-status gap before the next worker step: journal ENOSPC was latched in health but omitted from apiInputs.halted. Builder is adding the existing reason to the existing halted list (maps to other, no new enum). All six review findings remain correction gates before a new immutable head; reviewers wait for that delta, no repeated full suites.
+
 - **2026-10-06 10:35:45 AEDT** — APP/API review reproduced another crash-related blocker on f2e17146186f021a6082fe11150128e3795de864: after alert+halt evidence loss the recovered journal gap was ignored and summaries appeared clean. Chosen fix uses existing summary error handling to suppress posts while journal fault is latched, then existing alert CodeCount journal-counts-incomplete on each retained Melbourne day affected after restart; no APK/API schema or enum change. Existing recorder-config display issue remains outside scope. Other independent EXIT checks passed pending final-head delta.
 
 - **2026-10-06 10:33:53 AEDT** — Independent review blocked f2e17146186f021a6082fe11150128e3795de864: facts reproduced healthy parity failure from journal key order; persist reproduced tail-truncate ENOSPC leaving armed reserve, then a restart incorrectly reports complete=true; run reproduced tail-termination EIO swallowed as corruption deleting a valid stop. Builder is correcting each with unchanged guards and regression tests plus runner reserve preservation. No review PASS, full-check PASS or S2-READY claimed.
