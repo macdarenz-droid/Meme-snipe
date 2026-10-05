@@ -4,6 +4,10 @@ Owner, Tue 6 Oct about 1:00 AM: a second supervisor (S2) takes the parked **app 
 
 From here on, S2 owns this file. S2 keeps it current on its own branch `claude/s2-docs`, which starts from S1's docs branch `ccr-528521bb-f7a7zo`. S1 reads it there and does not edit it.
 
+## Active crash-only work
+
+Scope: item22 crash-only exception to S1’s 10:08 owner pause. Builder disk_crash_builder; isolated branch claude/s2-disk-crash from5efb9ae0497523c84e3bb49a82bce989652cdb0b. Reproducing the recorder-to-journal ENOSPC crash; no final head/review/CI yet. Backups, wider #149 ops features, app tasks and all other stability work stay paused. S1 alone merges/deploys; original #149 remains unchanged.
+
 ## Latest handoff audit
 
 Checked **2026-10-06 10:09:09 AEDT**, against S1 docs `343ee20b563888ed54c8befc17604383f0124aa6` and integration `5efb9ae0497523c84e3bb49a82bce989652cdb0b`. GitHub API access now works (actual PR reads and review-comment publication succeeded); the earlier API blocker is historical. This is a handoff audit, with no new stability code or workflow reruns.
@@ -98,6 +102,8 @@ S2-READY 6af4e43b707960316d8cd8419cb2e513fa9f4b60
 - These local limitations are historical. Current directly verified GitHub results are in Latest handoff audit; they do not establish that any future base-update head is green.
 
 ## S2 events (newest first)
+
+- **2026-10-06 10:13:31 AEDT** — Owner asked why paused; read the fresh S1 10:08 OWNER PAUSE ALL BUT CRASH WORK note. Resuming ONLY existing item22 DISK-GUARD crash exception; all app work, item21, backups and other stability features remain paused. Base5efb9ae0497523c84e3bb49a82bce989652cdb0b and #149 ref10e01ba7 freshly fetched. Single disk_crash_builder started in isolated claude/s2-disk-crash from the current base, extracting only the recorder-ENOSPC then journal-write crash prevention. Original #149 branch untouched so paused/unreviewed backup and wider ops delta do not ship with this fix. Required evidence: exact-sequence fail-before/passafer, entries failclosed, exits keepworking, truthful bounded missing-evidence/recovery and independent exact-head reviews. No ready claim yet.
 
 - **2026-10-06 10:09:09 AEDT** — Handoff audit completed: GitHub access restored and direct PR reads confirmed APP-TRUTH merged; #237 current check cancelled; #210/#182/#181/#167 green on their current heads. APP-SOL independent one-line fixture delta PASS at6da3244f recorded and posted to PR #182. Added S1’s reviewed server/stability queue, urgent #149 blockers, item23 folded into S1, source/ref identities and ownership exceptions. Superseded readiness heads marked historical; no stability implementation, CI rerun, merge or deploy performed.
 
