@@ -44,3 +44,24 @@ describe('base58', () => {
     expect(() => decodeAddressBytes('2g')).toThrow(DecodeError);
   });
 });
+
+describe('encoded strings are flat (heap at boot: OOM-SWAPS)', () => {
+  it('20,000 encoded addresses, held, take well under 5 MB of heap (a rope of one node per character took about 25 MB)', async () => {
+    // Every swap keeps its six addresses in the engine's store; a string built one character at a time stays a rope of
+    // about 30 nodes per address. Measured after a full collection, holding exactly the encoded strings.
+    const { setFlagsFromString } = await import('node:v8');
+    const { runInNewContext } = await import('node:vm');
+    setFlagsFromString('--expose-gc');
+    const gc = runInNewContext('gc') as () => void;
+    const bytes = Array.from({ length: 20_000 }, (_, k) => Uint8Array.from({ length: 32 }, (_, j) => (k * 31 + j * 7 + 1) % 256));
+    gc();
+    const before = process.memoryUsage().heapUsed;
+    const held = bytes.map(encodeBase58);
+    gc();
+    const used = process.memoryUsage().heapUsed - before;
+    expect(held.every((s) => s.length >= 43 && s.length <= 44)).toBe(true);
+    expect(used).toBeLessThan(5 * 1024 * 1024);
+    // Output unchanged: each round-trips.
+    expect(toHex(decodeBase58(held[123]!))).toBe(toHex(bytes[123]!));
+  });
+});
