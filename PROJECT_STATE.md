@@ -77,6 +77,11 @@ Owner, Mon 5 Oct about 5:07 AM (three marked screenshots): "These are future upd
   - the Server card (address, status, last update, access, Change and Remove), also kept on Snipe;
   - the theme choice (Paper or Silent Black), which leaves Home.
 - **Header.** The "Paper" chip beside the logo reads "Zeroed".
+- **App controls** (owner, Mon 5 Oct about 4:05 PM: "Put this in the future upgrade when we fix the apps main issues and intelligence. Put command on pause that trigger pause to server. When i click start, should be able to start again as new day even the risk ratio reached 3x. Before midnight").
+  - When: after the app's main issues and the bot's judging are fixed. Not started before then.
+  - Pause: the app's Pause button sends a pause to the server. Today it only shows the state; pausing is Telegram `/pause`, and resuming is `zeroed-resume` in the server console.
+  - Start: the owner can start again as a new day before midnight, even after a daily risk limit has stopped entries (the owner's example: 3×).
+  - Design first: the app sending commands changes ARCHITECTURE §12 and §5.2 (today the app sends no commands, and Telegram never resumes or raises limits). So it needs a signed-command design (the owner's paired device only, single use, logged), and the risk reviewer must pass the start-again override (owner-only, recorded in the ledger, never automatic). Related open PRs: #199 (OWNER-REVIEW b: /override), #190.
 - **Paper and backtest removal** (owner, Mon 5 Oct about 5:15 AM: "when the app is ready we gonna remove all paper based features in ui. Even all paper, backtest logics. In the future. NOT NOW. ONLY WHEN THE APP IS READY. Removal of those treat as high risk and be very careful ... before removal of these items, i need it to be architectured properly").
   - When: only after the owner says the app is ready, which is after the six pre-funding items pass (they need paper and the backtest).
   - What: every paper feature in the app, and the paper and backtest code.
