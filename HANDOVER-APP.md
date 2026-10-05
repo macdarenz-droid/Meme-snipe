@@ -1,12 +1,12 @@
 # App queue handover (Supervisor 2)
 
-Owner, Tue 6 Oct about 1:00 AM: a second supervisor (S2), running on the owner's other Claude account, takes the parked **app and screens** tasks below to speed them up. Supervisor 1 (S1) keeps the bot, server and data work. S1 is the only one who merges and deploys.
+Owner, Tue 6 Oct about 1:00 AM: a second supervisor (S2) takes the parked **app and screens** tasks below to speed them up. S2 is a different AI agent, not Claude, running on the owner's other account. Supervisor 1 (S1) keeps the bot, server and data work. S1 is the only one who merges and deploys.
 
 From here on, S2 owns this file. S2 keeps it current on its own branch `claude/s2-docs`, which starts from S1's docs branch `ccr-528521bb-f7a7zo`. S1 reads it there and does not edit it.
 
 ## How S1 and S2 work together
 
-- **Channel.** The two supervisors are on different accounts and can't message each other. They use:
+- **Channel.** The two supervisors run on different platforms and can't message each other. They use:
   - this file;
   - PR comments;
   - the owner.
@@ -33,7 +33,7 @@ From here on, S2 owns this file. S2 keeps it current on its own branch `claude/s
   - `research/historical/**`.
 
   If a task needs one of them, write the need here and in a PR comment, and wait for S1.
-- **Reviews.** Every app PR needs a fresh reviewer (never the builder) on the exact head. Changes elsewhere need the reviewer for their area:
+- **Reviews.** Every PR needs an independent review on the exact head: never by the one who built it. If S2's platform can run a separate reviewer with no shared context, S2 uses it. If not, S2 posts a PR comment that starts `S2-REVIEW-REQUEST <full head SHA>`, naming the areas, and S1 arranges the review. Changes outside the app need the reviewer for their area:
   - `packages/core/src/risk/**`: the risk reviewer, with tests that fail before and pass after (AGENTS.md file ownership);
   - exits: the EXIT reviewer;
   - worker facts and strategy: the worker/facts reviewer;
@@ -129,4 +129,4 @@ The Pause button that pauses the server, and Start beginning a new day. The owne
   - #234 (data lanes);
   - #214 (archive scanner caps, after the 21 Sep download);
   - the recordings uploader.
-- The old API/APP builder session on S1's account is parked. S2 starts its own builders.
+- The old API/APP builder session on S1's account is parked. S2 does the building itself, or with its own helpers.
