@@ -10,7 +10,7 @@ Server: Vultr High Performance, Frankfurt, 1 vCPU / 1 GB, image **Ubuntu 24.04 L
 2. **Install.** Paste this one line the same way (Clipboard → Paste), then press Enter:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/e654a50a5a453e4b3ec976d8a0a989dde01a6ad2/ops/install.sh -o i && echo '5dcce0c102686b1547a37382bf5451c68647f2a4874efd569a9f0a95d15adf0f  i' | sha256sum -c && bash i
+curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/e654a50a5a453e4b3ec976d8a0a989dde01a6ad2/ops/install.sh -o i && echo '299fee6bfcb6c0cea5a88834a694f6e9e8c0b911840c9daa409e954e234a08c2  i' | sha256sum -c && bash i
 ```
 
    The line checks the file against its SHA-256 before anything runs; a changed file stops at `sha256sum -c`. After about two minutes the screen shows a **deploy code** of 6 words.
@@ -19,7 +19,7 @@ curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/e654a50a
 
 The console screen can be left at any time (Ctrl+C); setup carries on in the background. `zeroed-status` shows where it stands and the codes again.
 
-SHA-256 of `install.sh`: `5dcce0c102686b1547a37382bf5451c68647f2a4874efd569a9f0a95d15adf0f`
+SHA-256 of `install.sh`: `299fee6bfcb6c0cea5a88834a694f6e9e8c0b911840c9daa409e954e234a08c2`
 
 After any change to `ops/install.sh`, the commit in the line must move to one that holds the new file (`ops/test/e2e.sh` fails otherwise).
 
@@ -101,7 +101,7 @@ The worker reads free space where its state lives once a minute. Below 1.5 GiB i
 
 ## Backups
 
-Every hour `zeroed-backup` copies the worker's whole bot state under `/var/lib/zeroed`: SQLite files with SQLite's online backup, checked, and every other state file as it is (JSON state must parse). Left out: the run's evidence (`journal.jsonl`, `recorder/`), the running worker's markers about itself (`drill.token`, `open_intents`, `clean_stop`), Node's fatal reports (`reports/`: they hold the host name and network interfaces), files mid-write (`*.tmp`) and SQLite side files. It writes a SHA-256 manifest and encrypts the bundle with age to the host key and, once set, to the owner's backup code. The newest 72 stay in `/var/backups/zeroed`.
+Every hour `zeroed-backup` copies the worker's whole bot state under `/var/lib/zeroed`: SQLite files with SQLite's online backup, checked, and every other state file as it is (JSON state must parse). Left out: the run's evidence (`journal.jsonl`, `recorder/`), the running worker's markers about itself (`drill.token`, `open_intents`, `clean_stop`, `planned_restart`), Node's fatal reports (`reports/`: they hold the host name and network interfaces), files mid-write (`*.tmp`) and SQLite side files. It writes a SHA-256 manifest and encrypts the bundle with age to the host key and, once set, to the owner's backup code. The newest 72 stay in `/var/backups/zeroed`.
 
 **Off-server copy (free, no R2): off until the owner approves.** Sending backups to Telegram is sending data to a third party, which needs the owner's approval (CLAUDE.md). The timer is installed but disabled, and `zeroed-backup-offsite` refuses to send while `ops/host-config.json` says `"offsite_backup": false` (the default). Switching it on is a reviewed commit that sets it to `true`; the next code update (`zeroed-update`) applies it.
 

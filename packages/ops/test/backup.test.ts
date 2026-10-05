@@ -70,6 +70,7 @@ const STATE: Record<string, string> = {
   'open_intents': '0\n',
   'cold_start': '2026-10-04T00:00:00.000Z',
   'clean_stop': '2026-10-04T00:00:00.000Z',
+  'planned_restart': '{"cause":"drill","at":1}\n',
   'account.json.tmp': '{"half',
   'journal.jsonl': '{"seq":1}\n',
   'recorder/units/1/1-2/stats.json': '{}\n',
@@ -124,9 +125,11 @@ describe('backup: the whole bot state', () => {
     // The running worker's markers about itself: never restored onto a worker that has not reconciled yet.
     expect(body).toContain(`! -path ./${STATE_FILES.openIntents}`);
     expect(body).toContain(`! -path ./${STATE_FILES.cleanStop}`);
+    // RESTART-ALERT's drill marker: a restored copy would call the restore's own start a planned restart.
+    expect(body).toContain(`! -path ./${STATE_FILES.plannedRestart}`);
     // Host details (#218's fatal reports): diagnostics for this host, not bot state.
     expect(body).toContain("! -path './reports/*'");
-    expect(Object.keys(STATE_FILES).sort()).toEqual(['cleanStop', 'drillToken', 'journal', 'openIntents', 'recorder']);
+    expect(Object.keys(STATE_FILES).sort()).toEqual(['cleanStop', 'drillToken', 'journal', 'openIntents', 'plannedRestart', 'recorder']);
   });
 
   it("backs up the worker's JSON state byte for byte beside the ledger, with a manifest of every file", () => {
