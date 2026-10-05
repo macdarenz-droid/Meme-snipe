@@ -3,6 +3,7 @@
 // catch-up gap, closed by FILL-2's in-run fill: a resume only when the fill restored it in full, a lossy gap otherwise
 // (H11 keeps rejecting). The live trades seen meanwhile are held back and reach the feed after the fill's.
 import { describe, expect, it } from 'vitest';
+import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { transactionEvents, type TransactionRecord } from '../../core/src/chain/index.ts';
 import { startSession, TRIAL_POLICY } from '../../core/src/config/index.ts';
@@ -17,7 +18,8 @@ import {
 } from '../src/providers/index.ts';
 import type { SignatureInfo } from '../src/providers/solana-http.ts';
 import { HELIUS_FREE, ManualTimers, P1, P3, Scheduler, type Timers } from '../src/scheduler/index.ts';
-import { CAPPED_READ_CREDITS_PER_DAY, FILL_CREDITS_PER_DAY } from '../src/run/seed-start.ts';
+import { CAPPED_READ_CREDITS_PER_DAY, FILL_BUDGET_FILE, FILL_CREDITS_PER_DAY, PLAN_FILL_CREDITS_PER_DAY } from '../src/run/seed-start.ts';
+import { parseConfig } from '../src/run/config.ts';
 import { DEPLOYER_CHECK_CREDITS_PER_DAY } from '../src/facts/deployer-checks.ts';
 import { holderScanCreditsPerDay } from '../src/facts/budget.ts';
 import { fillTradeGaps, type SeedRpc } from '../src/seed/index.ts';
@@ -610,9 +612,28 @@ describe('the daily fill budget is derived from the Helius plan, not fixed', () 
     expect(DEPLOYER_CHECK_CREDITS_PER_DAY).toBe(5_000);
     expect(holderScanCreditsPerDay()).toBe(1_200);
     expect(CAPPED_READ_CREDITS_PER_DAY).toBe(14_840);
-    expect(FILL_CREDITS_PER_DAY).toBe(3_870);
-    expect(31 * (CAPPED_READ_CREDITS_PER_DAY + FILL_CREDITS_PER_DAY)).toBeLessThan(allowance);
+    expect(PLAN_FILL_CREDITS_PER_DAY).toBe(3_870);
+    expect(31 * (CAPPED_READ_CREDITS_PER_DAY + PLAN_FILL_CREDITS_PER_DAY)).toBeLessThan(allowance);
     // Half of what is left stays for the uncapped reads (socket bytes, migration fetches, fact reads).
-    expect(allowance - 31 * (CAPPED_READ_CREDITS_PER_DAY + FILL_CREDITS_PER_DAY)).toBeGreaterThanOrEqual(31 * FILL_CREDITS_PER_DAY);
+    expect(allowance - 31 * (CAPPED_READ_CREDITS_PER_DAY + PLAN_FILL_CREDITS_PER_DAY)).toBeGreaterThanOrEqual(31 * PLAN_FILL_CREDITS_PER_DAY);
+  });
+
+  it('FILL-BUDGET: the configured daily fill budget defaults to 20,000 (the owner\'s "no Helius rationing"), set by ZEROED_FILL_CREDITS_PER_DAY', () => {
+    expect(FILL_CREDITS_PER_DAY).toBe(20_000);
+    const base = { STATE_DIRECTORY: tempState(), ZEROED_MODE: 'paper' };
+    const cfg = (env: Record<string, string>) => { const r = parseConfig(env, () => null); return r.ok ? r.config.fillCreditsPerDay : r; };
+    expect(cfg(base)).toBe(20_000);
+    expect(cfg({ ...base, ZEROED_FILL_CREDITS_PER_DAY: '5000' })).toBe(5_000);
+    expect(cfg({ ...base, ZEROED_FILL_CREDITS_PER_DAY: '0' })).toBe(0);
+    for (const bad of ['-1', '1.5', 'lots', '', '1e4', '1000000000']) expect(cfg({ ...base, ZEROED_FILL_CREDITS_PER_DAY: bad }), bad).toMatchObject({ ok: false });
+  });
+
+  it('FILL-BUDGET: a day already spent under the old 3,870 has room at once under the new budget (the cap only rises)', () => {
+    const now = 1_791_032_700_000;
+    const file = join(tempState(), FILL_BUDGET_FILE);
+    const day = new Date(Math.floor(now / 86_400_000) * 86_400_000).toISOString().slice(0, 10);
+    writeFileSync(file, JSON.stringify({ version: 1, day, spent: PLAN_FILL_CREDITS_PER_DAY }));
+    expect(DailyBudget.load(file, PLAN_FILL_CREDITS_PER_DAY, now).remaining(now)).toBe(0);
+    expect(DailyBudget.load(file, FILL_CREDITS_PER_DAY, now).remaining(now)).toBe(20_000 - 3_870);
   });
 });

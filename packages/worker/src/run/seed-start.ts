@@ -31,12 +31,14 @@ export const CAPPED_READ_CREDITS_PER_DAY = SIM_READS_PER_HOUR * 24 * 2 + 24 * 60
  */
 export const FILL_SHARE = 0.5;
 /**
- * Credits the fills may spend in a UTC day, across restarts (PERSIST-1's `DailyBudget`, wired by WORKER-1c; one budget
- * for the restart's downtime fill and the pool watches' in-run fills, S0-ZERO). Derived from the plan, not fixed:
+ * The plan's share of credits the fills may spend in a UTC day, across restarts (PERSIST-1's `DailyBudget`, wired by
+ * WORKER-1c; one budget for the restart's downtime fill and the pool watches' in-run fills, S0-ZERO). Derived from the plan:
  * (1,000,000 × 0.7 − 31 × 14,840) × 0.5 / 31 = 3,870 a day on Helius Free. A 31-day month keeps it inside any month.
  * Every call is also metered by the Helius scheduler, whose 70% halt refuses non-exit calls whatever is left here.
  */
-export const FILL_CREDITS_PER_DAY = Math.floor(((HELIUS_FREE.budget!.monthlyCredits * HELIUS_FREE.budget!.haltShare) - 31 * CAPPED_READ_CREDITS_PER_DAY) * FILL_SHARE / 31);
+export const PLAN_FILL_CREDITS_PER_DAY = Math.floor(((HELIUS_FREE.budget!.monthlyCredits * HELIUS_FREE.budget!.haltShare) - 31 * CAPPED_READ_CREDITS_PER_DAY) * FILL_SHARE / 31);
+/** FILL-BUDGET: the configured default (see config.ts). */
+export { FILL_CREDITS_PER_DAY } from './config.ts';
 /** The budget's file in the worker's state dir. */
 export const FILL_BUDGET_FILE = 'fill-budget.json';
 
