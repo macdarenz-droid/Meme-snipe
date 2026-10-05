@@ -26,7 +26,7 @@ import { DEPLOYER_CHECK_CREDITS_PER_DAY } from '../src/facts/deployer-checks.ts'
 import { holderScanCreditsPerDay } from '../src/facts/budget.ts';
 import { fillTradeGaps, type SeedRpc } from '../src/seed/index.ts';
 import { PoolWatch } from '../src/run/pool-watch.ts';
-import { CreditBook, LiveProviders, TRADES_FILL_CREDITS, TRADES_FILLS_IN_FLIGHT, tradesFill } from '../src/run/sources.ts';
+import { CreditBook, FILLS, LiveProviders, TRADES_FILL_CREDITS, TRADES_FILLS_IN_FLIGHT, tradesFill } from '../src/run/sources.ts';
 import { DailyBudget } from '../src/persist/index.ts';
 import { blockNetwork, recordOf, settle, testSecrets, tx, TXS } from './helpers.ts';
 
@@ -435,9 +435,15 @@ describe('the in-run fill spends from the daily budget and is journaled', () => 
     const many: SignatureInfo[] = Array.from({ length: 400 }, (_, k) => ({ signature: `Many${k}`.replace(/0/g, 'z').padEnd(44, '1'), slot: BigInt(hyg.slot), err: null, blockTime: 1_791_032_000 }));
     let reading = 0;
     let most = 0;
+    // MEM-PROBE: the process-wide fill counts the memory probe reports, as seen while fills read.
+    let mostActive = 0;
+    let mostWaiting = 0;
     const busy: SeedRpc = {
       getSignaturesForAddress: async (_a, o) => { const from = o.before === undefined ? 0 : many.findIndex((x) => x.signature === o.before) + 1; return many.slice(from, from + o.limit); },
-      getTransaction: async () => { reading++; most = Math.max(most, reading); await settle(0); reading--; return recordOf(hyg); },
+      getTransaction: async () => {
+        reading++; most = Math.max(most, reading); mostActive = Math.max(mostActive, FILLS.active); mostWaiting = Math.max(mostWaiting, FILLS.waiting);
+        await settle(0); reading--; return recordOf(hyg);
+      },
     };
     const daily = TRADES_FILL_CREDITS * 3 + 100;
     const budget = DailyBudget.load(join(tempState(), 'fill-budget.json'), daily, now);
@@ -452,6 +458,9 @@ describe('the in-run fill spends from the daily budget and is journaled', () => 
     expect(TRADES_FILLS_IN_FLIGHT).toBe(2);
     expect(most).toBeGreaterThan(0);
     expect(most).toBeLessThanOrEqual(TRADES_FILLS_IN_FLIGHT);
+    expect(mostActive).toBe(TRADES_FILLS_IN_FLIGHT);
+    expect(mostWaiting).toBe(12 - TRADES_FILLS_IN_FLIGHT);
+    expect(FILLS).toEqual({ active: 0, waiting: 0 });
     const total = used.reduce((a, b) => a + b, 0);
     expect(total).toBeLessThanOrEqual(daily);
     expect(daily - budget.remaining(now)).toBe(total);

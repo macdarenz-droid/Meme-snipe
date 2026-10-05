@@ -149,6 +149,13 @@ export class MintIndex {
       .reduce((n, a) => n + a.byteLength, text);
   }
 
+  /** MEM-PROBE: how many creators hold at least one entry (counted on the typed arrays, no text decoded). */
+  get creatorCount(): number {
+    let n = 0;
+    for (let c = 0; c < this.#lists; c++) if (this.#head[c] !== NONE) n++;
+    return n;
+  }
+
   /** Creators with at least one entry, in no set order. */
   *creators(): Generator<string> {
     for (let c = 0; c < this.#lists; c++) if (this.#head[c] !== NONE) yield this.#creatorAt(c);

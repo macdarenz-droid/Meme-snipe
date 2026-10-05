@@ -113,6 +113,8 @@ export const TRADES_FILL_CREDITS = 500;
 
 /** STEP-B: in-run fills that may read at once; more wait their turn (oldest first), so a boot's catch-up stays flat. */
 export const TRADES_FILLS_IN_FLIGHT = 2;
+/** MEM-PROBE: trade fills reading now and waiting for a slot, over every fill limiter in this process (counts only). */
+export const FILLS = { active: 0, waiting: 0 };
 
 /**
  * S0-ZERO: FILL-2's in-run fill for the pool watches (a candidate's catch-up from its migration, any reconnect gap).
@@ -134,8 +136,13 @@ export const tradesFill = (o: {
   let active = 0;
   const waiting: (() => void)[] = [];
   return async (gap: Parameters<ReturnType<typeof ingestingFill>>[0]): Promise<boolean> => {
-    if (active >= (o.inFlight ?? TRADES_FILLS_IN_FLIGHT)) await new Promise<void>((go) => waiting.push(go));
+    if (active >= (o.inFlight ?? TRADES_FILLS_IN_FLIGHT)) {
+      FILLS.waiting++;
+      await new Promise<void>((go) => waiting.push(go));
+      FILLS.waiting--;
+    }
     active++;
+    FILLS.active++;
     try {
       const cap = Math.min(TRADES_FILL_CREDITS, o.budget.remaining(o.timers.now()));
       if (cap > 0) o.budget.spend(cap, o.timers.now());
@@ -158,6 +165,7 @@ export const tradesFill = (o: {
       return ok;
     } finally {
       active--;
+      FILLS.active--;
       waiting.shift()?.();
     }
   };

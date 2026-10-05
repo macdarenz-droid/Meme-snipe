@@ -125,6 +125,11 @@ export class Engine {
     return e === null ? null : e.kind === 'world' ? `world:${e.event.type}` : e.key;
   }
 
+  /** MEM-PROBE: the store's counts and the records not yet consumed. */
+  sizes(): ReturnType<AsOfStore['sizes']> & { readonly records: number } {
+    return { ...this.#store.sizes(), records: this.#records?.length ?? 0 };
+  }
+
   /** Every record so far (empty when `keepLog` is false). */
   get records(): readonly LogRecord[] {
     return this.#records ?? [];
