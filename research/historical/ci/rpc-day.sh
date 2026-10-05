@@ -50,11 +50,15 @@ left=$(( start + budget_s - $(date +%s) ))
 # off is reread by the next run.
 rm -f "$out/rpc-usage-run.json"
 errlog=$(mktemp)
-# rpcscan's log (stderr) goes to $errlog, then to the job log once it exits.
+# rpcscan's log (stderr) goes live to the job log and to $errlog (a tee on a fifo, so a
+# run killed by the job timeout keeps its log); rc is rpcscan's (through timeout).
+fifo=$(mktemp -u); mkfifo "$fifo"
+tee "$errlog" < "$fifo" >&2 & teepid=$!
 timeout -s INT -k 120 "$left" zeroed-rpcscan rpc-run -out "$out" -from "$day" -to "$next" -sample 0.05 \
-  -rps "${RPC_RPS:-5}" -conc "${RPC_CONC:-4}" -max-credits "$left_credits" -usage-out "$out/rpc-usage-run.json" 2> "$errlog"
+  -rps "${RPC_RPS:-5}" -conc "${RPC_CONC:-4}" -max-credits "$left_credits" -usage-out "$out/rpc-usage-run.json" 2> "$fifo"
 rc=$?
-cat "$errlog" >&2
+wait "$teepid" 2>/dev/null || true
+rm -f "$fifo"
 # A truncated or unparsable RPC response is transient (the provider cut the body): the
 # finished units are kept and the next chained run rereads only the unit it was in.
 # rpcscan exits 1 on it today; it is resumable, never fatal (HISTORY-RESUME).

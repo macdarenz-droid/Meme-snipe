@@ -589,7 +589,7 @@ u=; while (( $# )); do [[ $1 == -usage-out ]] && u=$2; shift; done
 w() { [[ -n "$u" && -z "${RPC_NOUSAGE:-}" ]] || return 0
   if [[ -n "${RPC_USAGE_RAW:-}" ]]; then printf '%s' "$RPC_USAGE_RAW" > "$u"; else printf '{\n  "credits": %s,\n  "requests": 1\n}\n' "${RPC_CREDITS:-0}" > "$u"; fi; }
 trap 'w; exit 1' INT
-[[ -n "${RPC_SLEEP:-}" ]] && { sleep "$RPC_SLEEP" & wait $!; }
+[[ -n "${RPC_SLEEP:-}" ]] && { sleep "$RPC_SLEEP" 2>/dev/null & wait $!; }
 [[ -n "${RPC_ERR:-}" ]] && echo "$RPC_ERR" >&2
 w; exit "${RPC_RC:-0}"
 STUB
@@ -864,8 +864,9 @@ PY
 o="$T/rdtr"; rm -rf "$o"; rc=0; rd "$o" RPC_CREDITS=5 RPC_RC=1 RPC_ERR="2026/10/05 17:52:00 unit 1039 449172000-449176499: rpc response: unexpected end of JSON input" || rc=$?
 msg=0; grep -q "truncated or unparsable RPC response (transient)" "$T/summary.md" && grep -q "unexpected end of JSON input" "$T/out.txt" && msg=1
 rc2=0; o2="$T/rdtr2"; rm -rf "$o2"; rd "$o2" RPC_CREDITS=5 RPC_RC=1 RPC_ERR="unit x: decode failed: bad block" || rc2=$?
-[[ $rc == 75 && $rc2 == 1 && $msg == 1 && $(cat "$o/rpc-credits-used") == 5 ]] &&
-  ok "HISTORY-RESUME: rpc-day turns a truncated RPC response (rpcscan exit 1, 'rpc response: unexpected end of JSON input') into exit 75 with credits booked; other exit-1 errors stay fatal" || no "rpc-day transient: rc=$rc rc2=$rc2"
+rc3=0; o3="$T/rdtr3"; rm -rf "$o3"; rd "$o3" RPC_CREDITS=5 RPC_RC=3 RPC_ERR="unit x: rpc response: unexpected EOF" || rc3=$?
+[[ $rc == 75 && $rc2 == 1 && $rc3 == 3 && $msg == 1 && $(cat "$o/rpc-credits-used") == 5 ]] &&
+  ok "HISTORY-RESUME: rpc-day turns a truncated RPC response (rpcscan exit 1, 'rpc response: unexpected end of JSON input') into exit 75 with credits booked; other exit-1 errors stay fatal, and another exit code with the same text passes through" || no "rpc-day transient: rc=$rc rc2=$rc2"
 PP="$T/pp"; rm -rf "$PP"; mkdir -p "$PP/bin"
 cat > "$PP/bin/gh" <<'EOF'
 #!/usr/bin/env bash
@@ -887,12 +888,27 @@ json.dump({"actions_caches": [
   c("data-rpc-2026-09-21-37290557627-1", 4186871400, "2026-10-05T09:47:50Z"),
   c("data-rpc-2026-09-21-37292410621-1", 1024, "2026-10-05T09:49:26Z"),
   c("data-rpc-2026-09-21-37312693149-1", 810661685, "2026-10-05T17:52:50Z"),
-  c("data-rpc-2026-09-21-37290557627-1-qa", 9000000000, "2026-10-05T10:00:00Z"),
+  c("data-rpc-2026-09-21-37290557627-1-qa", 4186871300, "2026-10-05T10:00:00Z"),
+  c("data-rpc-2026-09-21-37312693149-1-qa", 810661600, "2026-10-05T18:00:00Z"),
   c("data-rpc-2026-09-21-1-1", 9900000000, "2026-10-05T10:00:00Z", "refs/pull/7/merge"),
   c("data-rpc-2026-09-210-1-1", 9900000000, "2026-10-05T10:00:00Z")]}, open(sys.argv[1], "w"))
 PY
-pp data-rpc-2026-09-21- >/dev/null && grep -qx "key=data-rpc-2026-09-21-37290557627-1" "$PP/out" &&
-  ok "HISTORY-RESUME: progress-pick resumes from the largest progress entry of the day (66 units), never the newest near-empty or 11-unit one; -qa copies, other refs and other days are ignored" || no "progress-pick: $(cat "$PP/out")"
+pp data-rpc-2026-09-21- >/dev/null && grep -qx "key=data-rpc-2026-09-21-37290557627-1-qa" "$PP/out" &&
+  ok "HISTORY-RESUME: progress-pick resumes from the largest run's progress (66 units), never the newest near-empty or 11-unit one; within a run its -qa save wins although a few bytes smaller (booked QA credits); other refs and other days are ignored" || no "progress-pick: $(cat "$PP/out")"
+python3 - "$PP/caches.json" <<'PY'
+import json, sys
+c = lambda k, s, t: {"key": k, "size_in_bytes": s, "created_at": t, "ref": "refs/heads/ccr-x"}
+json.dump({"actions_caches": [c("data-rpc-2026-09-21-100-1", 4000000000, "2026-10-05T01:00:00Z"), c("data-rpc-2026-09-21-100-1-qa", 4100000000, "2026-10-05T03:00:00Z")]}, open(sys.argv[1], "w"))
+PY
+pp data-rpc-2026-09-21- >/dev/null && grep -qx "key=data-rpc-2026-09-21-100-1-qa" "$PP/out" &&
+  ok "HISTORY-RESUME: progress-pick takes a run's larger, newer -qa save over its base (the reviewer's case)" || no "progress-pick qa larger: $(cat "$PP/out")"
+python3 - "$PP/caches.json" <<'PY'
+import json, sys
+c = lambda k, s, t: {"key": k, "size_in_bytes": s, "created_at": t, "ref": "refs/heads/ccr-x"}
+json.dump({"actions_caches": [c("data-rpc-2026-09-21-200-1", 4000000000, "2026-10-05T01:00:00Z"), c("data-rpc-2026-09-21-300-1", 3900000000, "2026-10-05T05:00:00Z")]}, open(sys.argv[1], "w"))
+PY
+pp data-rpc-2026-09-21- >/dev/null && grep -qx "key=data-rpc-2026-09-21-200-1" "$PP/out" &&
+  ok "HISTORY-RESUME: progress-pick keeps an older run whose progress is clearly larger (2.5 %, more units) over a newer smaller one" || no "progress-pick older larger: $(cat "$PP/out")"
 echo '{"actions_caches": []}' > "$PP/caches.json"; pp data-rpc-2026-09-21- >/dev/null && grep -qx "key=" "$PP/out" && ok "HISTORY-RESUME: progress-pick with no saved progress picks nothing" || no "progress-pick empty"
 bad=""; rc=0; PP_FAIL=1 pp data-rpc-2026-09-21- >/dev/null 2>&1 || rc=$?; [[ $rc != 0 ]] || bad+=" api"
 rc=0; pp 'data-rpc-2026-09-21' >/dev/null 2>&1 || rc=$?; [[ $rc == 2 ]] || bad+=" prefix"

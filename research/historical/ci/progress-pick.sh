@@ -5,11 +5,13 @@
 # one (09-21, run 37292410621). This picks the entry with the most data instead.
 #   progress-pick.sh PREFIX
 #       PREFIX is "data-rpc-DAY-" or "data-scan-DAY-". Lists the cache entries named
-#       exactly PREFIX<run>-<attempt> on this run's ref (cache API, read only), and writes
-#       key=<the largest by size; on a tie the newest> to $GITHUB_OUTPUT, or key= when
-#       there is none. Units dominate an entry's size, so the largest holds the most
-#       finished units. Any API error fails the step: nothing is read until it is known
-#       which progress to resume from.
+#       PREFIX<run>-<attempt> and PREFIX<run>-<attempt>-qa on this run's ref (cache API,
+#       read only). Within one run and attempt the -qa save wins: it is the later save of
+#       the same units and holds the QA rescan's booked credits (its compressed size can
+#       be a few bytes smaller). Across runs it picks the largest (units dominate an
+#       entry's size); sizes within 0.5 % count as equal and the newest wins. Writes key=<pick> to $GITHUB_OUTPUT, or key= when
+#       there is none. Only names, sizes and dates are visible to it. Any API error fails
+#       the step: nothing is read until it is known which progress to resume from.
 # gh: GH_BIN (default gh), with GH_TOKEN, GITHUB_REPOSITORY and GITHUB_REF.
 set -euo pipefail
 gh=${GH_BIN:-/usr/bin/gh}
@@ -22,16 +24,26 @@ rows=$(mktemp); trap 'rm -f "$rows"' EXIT
 key=$(python3 - "$prefix" "$GITHUB_REF" "$rows" <<'PY'
 import re, sys
 prefix, ref, rows = sys.argv[1], sys.argv[2], sys.argv[3]
-best = None
+runs = {}  # (run, attempt) -> (is_qa, size, created, key); -qa wins within a run
 for row in open(rows).read().splitlines():
     if not row.strip():
         continue
     key, size, created, r = row.split("\t")
-    if r != ref or not re.fullmatch(re.escape(prefix) + r"\d+-\d+", key):
+    m = re.fullmatch(re.escape(prefix) + r"(\d+)-(\d+)(-qa)?", key)
+    if r != ref or not m:
         continue
-    cand = (int(size), created, key)
-    best = cand if best is None or cand > best else best
-print(best[2] if best else "")
+    cand = (m.group(3) is not None, int(size), created, key)
+    run = (m.group(1), m.group(2))
+    if run not in runs or cand > runs[run]:
+        runs[run] = cand
+# Newest first; an older run replaces the pick only when clearly larger (> 0.5 %, well
+# under one unit's ~1.4 % of a day's progress): equal units with a few bytes of
+# compression noise keep the newer save, which booked at least as many credits.
+best = None
+for c in sorted(runs.values(), key=lambda c: (c[2], c[3]), reverse=True):
+    if best is None or c[1] > best[1] * 1.005:
+        best = c
+print(best[3] if best else "")
 PY
 )
 echo "key=$key" >> "${GITHUB_OUTPUT:-/dev/null}"
