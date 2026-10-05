@@ -260,11 +260,22 @@ export const CREATE_RETRY_MS = 60_000;
 /** A saved create's id, live (`log:<signature>…`) or fetched (`ev:<signature>:…`): its transaction signature. */
 const CREATE_ID = /^(?:log|ev):([1-9A-HJ-NP-Za-km-z]{64,88})(?=[:#]|$)/;
 
-/** The most create signatures (CREATE-AFTER-RESTART) and token symbols a process keeps, oldest forgotten first. */
-export const CREATE_SIGS_MAX = 200_000;
-export const SYMBOLS_MAX = 200_000;
-/** RESTART-KEEP: the most curve-completion and migration signatures kept, each. */
-export const TX_SIGS_MAX = 200_000;
+/**
+ * The most create signatures (CREATE-AFTER-RESTART) and token symbols a process keeps, oldest forgotten first.
+ * OOM-MINT: 60,000 each (was 200,000, about 52 and 38 MB full, and the create signatures fill at boot from the saved
+ * store): more than the 12 hours a create is kept (`CREATE_KEEP_MS`) at three times the live 25 creates a minute. An
+ * older coin that migrates is looked up once from its oldest signature instead, and shows no symbol.
+ */
+export const CREATE_SIGS_MAX = 60_000;
+export const SYMBOLS_MAX = 60_000;
+/**
+ * RESTART-KEEP: the most curve-completion and migration signatures kept, each. OOM-MINT: 20,000 (was 200,000): about
+ * two weeks of migrations at the live rate, where a candidate's window is hours.
+ */
+export const TX_SIGS_MAX = 20_000;
+
+/** OOM-MINT: a fresh flat copy, so a kept mint never holds the whole key or log text it was cut from. */
+export const flat = (s: string): string => String.fromCharCode(...Array.from(s, (c) => c.charCodeAt(0)));
 
 /** A create event's mint and signature (the field, else the id), or null when it is not a create or names neither. */
 const createSigOf = (e: MarketEvent): readonly [string, string] | null => {
@@ -999,7 +1010,7 @@ export class Worker {
     if (m.key.startsWith('logs:pump:CreateEvent:') && isObj(m.value) && isObj(m.value['event']) && isObj(m.value['event']['data'])) {
       const sym = m.value['event']['data']['symbol'];
       if (typeof sym === 'string' && sym.trim() !== '') {
-        this.#symbols.set(m.key.slice('logs:pump:CreateEvent:'.length), sym.trim().slice(0, 32));
+        this.#symbols.set(flat(m.key.slice('logs:pump:CreateEvent:'.length)), flat(sym.trim().slice(0, 32)));
       }
     }
     if (m.key.startsWith('logs:pump:CreateEvent:') && isObj(m.value) && typeof m.value['signature'] === 'string') this.#noteCreateSig(m.key.slice('logs:pump:CreateEvent:'.length), m.value['signature']);
@@ -1007,7 +1018,7 @@ export class Worker {
   }
 
   #noteCreateSig(mint: string, signature: string): void {
-    this.#createSig.set(mint, signature);
+    this.#createSig.set(flat(mint), flat(signature));
   }
 
   /**
@@ -1106,7 +1117,7 @@ export class Worker {
     const map = at[1] === 'CreateEvent' ? this.#createSig : at[1] === 'CompleteEvent' ? this.#completeSig : this.#migrationSig;
     if (map === this.#createSig && m.key.startsWith('logs:')) return;
     // The first seen wins; each map forgets its oldest past its cap in O(1).
-    if (!map.has(at[2]!)) map.set(at[2]!, sig);
+    if (!map.has(at[2]!)) map.set(flat(at[2]!), flat(sig));
   }
 
   /**
