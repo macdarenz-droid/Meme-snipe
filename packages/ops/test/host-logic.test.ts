@@ -213,6 +213,16 @@ describe('worker start and API address', () => {
     expect(w).toContain('export ZEROED_HEALTH_ADDR="$WORKER_HEALTH_ADDR" ZEROED_API_ADDR="$WORKER_API_ADDR"');
     expect(w).toContain('entry="$(worker_entry /opt/zeroed/current)"');
     expect(w).not.toMatch(/ZEROED_MODE=(?!paper )/);
+    // HEAP-GUARD: an explicit heap limit under MemoryMax=800M and a fatal-error report in the state dir, on both execs
+    // (the reconcile pre-step and the run use this one wrapper); the directory is made before node starts.
+    expect(unit).toMatch(/^MemoryMax=800M$/m);
+    expect(w).toContain('reports="${STATE_DIRECTORY:-/var/lib/zeroed}/reports"');
+    expect(w).toContain('heap=(--max-old-space-size=560 --report-on-fatalerror --report-compact "--report-directory=$reports")');
+    expect(w.indexOf('mkdir -p "$reports"')).toBeGreaterThan(-1);
+    expect(w.indexOf('mkdir -p "$reports"')).toBeLessThan(w.indexOf('exec '));
+    const execs = w.split('\n').filter((l) => /^\s*exec /.test(l));
+    expect(execs).toHaveLength(2);
+    for (const l of execs) expect(l, l).toContain('"${heap[@]}" "$entry" "$@"');
   });
 
   it("runs the release's worker only when the release's host-config says so; the stand-in otherwise", () => {

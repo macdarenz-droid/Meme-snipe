@@ -2,10 +2,11 @@
 // death near a memory limit (V8's heap limit, the unit's MemoryMax) from another kill. Both leave no stop line; the
 // restart loop of 5 Oct showed only "no clean stop". The next boot (the unit's `--reconcile` pre-step) reads the last
 // sample and, when it was near a limit and taken just before the death, says so in `last_exit`.
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { getHeapStatistics } from 'node:v8';
 import { atomicWrite } from './state.ts';
+import { FRAME } from './crash-site.ts';
 
 export const MEM_FILE = 'mem.json';
 export const MEM_EVERY_MS = 10_000;
@@ -72,4 +73,42 @@ export const nearLimit = (s: MemSample | null, lastLineMs: number | null): strin
   const cg = s.cgroup_max !== null && s.rss >= NEAR_LIMIT * s.cgroup_max;
   if (!heap && !cg) return null;
   return `${heap ? 'near the heap limit' : 'near the memory limit'}: heap ${mb(s.heap_used)} of ${mb(s.heap_limit)} MB, rss ${mb(s.rss)}${s.cgroup_max === null ? '' : ` of ${mb(s.cgroup_max)}`} MB`;
+};
+
+/** HEAP-GUARD: where node writes its fatal-error reports (worker-start's `--report-directory`), in the state dir. */
+export const REPORTS_DIR = 'reports';
+/** A report written within this long before the dead process's last journal line (or after it) is that death's. */
+export const REPORT_FRESH_MS = 60_000;
+
+/**
+ * The crash site of a process that died on a fatal error (V8's heap limit: "Reached heap limit", "JavaScript heap out of
+ * memory"), from node's newest report in `reports/` written at or after `lastLineMs - REPORT_FRESH_MS`: the kind and the
+ * first JS frame inside packages/, in the crash site's form (crash-site.ts). Never the report's message or anything else
+ * from it: no text, URL or key leaves the report. Null without a fresh, readable report.
+ */
+export const fatalReport = (dir: string, lastLineMs: number | null): string | null => {
+  if (lastLineMs === null) return null;
+  const root = join(dir, REPORTS_DIR);
+  let newest: { path: string; ms: number } | null = null;
+  try {
+    for (const f of readdirSync(root)) {
+      if (!/^report\.[A-Za-z0-9.]+\.json$/.test(f)) continue;
+      const ms = statSync(join(root, f)).mtimeMs;
+      if (ms >= lastLineMs - REPORT_FRESH_MS && (newest === null || ms > newest.ms)) newest = { path: join(root, f), ms };
+    }
+  } catch {
+    return null;
+  }
+  if (newest === null) return null;
+  let r: { header?: { event?: unknown }; javascriptStack?: { stack?: unknown } };
+  try {
+    r = JSON.parse(readFileSync(newest.path, 'utf8')) as typeof r;
+  } catch {
+    return null;
+  }
+  const event = typeof r.header?.event === 'string' ? r.header.event : '';
+  const name = /heap out of memory|heap limit/i.test(event) ? 'HeapOutOfMemory' : 'FatalError';
+  const stack = Array.isArray(r.javascriptStack?.stack) ? r.javascriptStack.stack.filter((l): l is string => typeof l === 'string') : [];
+  const frame = stack.filter((l) => /^\s*at /.test(l)).map((l) => FRAME.exec(l)?.[0]).find((x) => x !== undefined) ?? 'no frame in packages/';
+  return `${name} at ${frame}`;
 };
