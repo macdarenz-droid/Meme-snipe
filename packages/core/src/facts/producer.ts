@@ -18,6 +18,7 @@ import {
 } from '../chain/index.ts';
 import type { Commitment, QualityFlag } from '../domain/index.ts';
 import type { MarketEvent } from '../engine/feed.ts';
+import { flatCopy } from '../engine/asof.ts';
 import type { PoolState } from '../amm/index.ts';
 import { swapEventState } from '../fills/pool.ts';
 import {
@@ -114,7 +115,7 @@ export const RETIRED_KEEP = 100_000;
 
 /** OOM-MINT: adds a fresh copy of `id` (never the text it was cut from), dropping the oldest entries past `cap`. */
 export const cappedAdd = (set: Set<string>, id: string, cap: number): void => {
-  set.add(String.fromCharCode(...Array.from(id, (c) => c.charCodeAt(0))));
+  set.add(flatCopy(id));
   for (const old of set) {
     if (set.size <= cap) break;
     set.delete(old);

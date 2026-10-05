@@ -1,9 +1,9 @@
 // OOM-SWAPS: what the live engine's as-of store keeps, shared by the worker and its parity replay so both prune alike.
 // Without it the store kept every event for the process: each swap on a watched pool left its trade event and a fresh
 // pool fact (about 10 KB with their addresses), and at a few thousand swaps a minute the heap reached its limit in minutes.
-import type { Collapse, Retention } from '../../../core/src/engine/index.ts';
+import type { Collapse, Retention, Shape } from '../../../core/src/engine/index.ts';
 import { RAW } from '../../../core/src/facts/index.ts';
-import { candlesKey, carryKey, mintKey, poolKey, streamKey, tradeTailCollapse } from '../../../core/src/gates/index.ts';
+import { LOG_CREATE_PREFIX, TX_CREATE_PREFIX, candlesKey, carryKey, compactCreate, compactCurveTrade, curveTradeKeys, mintKey, poolKey, streamKey, tradeTailCollapse } from '../../../core/src/gates/index.ts';
 
 const POOL_PREFIX = poolKey('');
 
@@ -47,3 +47,12 @@ const NEWEST_ONLY = (): boolean => false;
  * and every event whose tail would fail (`tradeTailCollapse`).
  */
 export const liveCollapse: Collapse = (key) => (key === SLOT || key.startsWith(SEEN) || HEADS.some((p) => key.startsWith(p)) || READS.some((p) => key.startsWith(p)) ? NEWEST_ONLY : tradeTailCollapse(key));
+
+const CURVE_TRADE = curveTradeKeys('');
+/**
+ * CREATE-COMPACT: a create event and a curve trade event are stored with only the fields their store readers read
+ * (`compactCreate`, `compactCurveTrade`); the strategy and the producer still act on the released event whole.
+ */
+export const liveShape: Shape = (key) =>
+  key.startsWith(LOG_CREATE_PREFIX) || key.startsWith(TX_CREATE_PREFIX) ? compactCreate : CURVE_TRADE.some((p) => key.startsWith(p)) ? compactCurveTrade : null;
+

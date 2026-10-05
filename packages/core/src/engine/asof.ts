@@ -29,23 +29,45 @@ export type Retention = (key: string) => number | null;
 export type Collapse = (key: string) => ((older: AsOfEntry) => boolean) | null;
 
 /**
+ * CREATE-COMPACT: for a key whose stored value is read only for some of its fields, the function that keeps those
+ * fields (`null` stores the value as released). The strategy still receives the released event whole; only lookups and
+ * history answer with the compact value, so its readers must read nothing else (proved per reader).
+ */
+export type Shape = (key: string) => ((value: unknown) => unknown) | null;
+
+/**
  * Point-in-time state. Every answer is "as of" a moment at or before the clock's now: a lookup for a
  * later moment is refused, and a value cannot be recorded with a moment later than now.
  */
+/** A flat copy of a string (UTF-16 unit by unit): never holds the pieces or the larger string it was built or cut from. */
+export const flatCopy = (s: string): string => {
+  const units: number[] = [];
+  for (let i = 0; i < s.length; i++) units.push(s.charCodeAt(i));
+  let out = '';
+  for (let i = 0; i < units.length; i += 8192) out += String.fromCharCode(...units.slice(i, i + 8192));
+  return out;
+};
+const flat = flatCopy;
+
 export class AsOfStore {
   readonly #clock: Clock;
   readonly #series = new Map<string, AsOfEntry[]>();
   readonly #retention: Retention | null;
-  readonly #keep = new Map<string, number | null>();
   readonly #collapse: Collapse | null;
   readonly #keepOlder = new Map<string, ((older: AsOfEntry) => boolean) | null>();
-  /** OOM-MINT review: keys by their last `:`-separated part, so a retire costs only the keys it forgets. */
-  readonly #byTail = new Map<string, Set<string>>();
+  /**
+   * OOM-MINT review: keys by their last `:`-separated part, so a retire costs only the keys it forgets. CREATE-COMPACT:
+   * one key as itself, a Set only from the second (most parts end one or two keys; a Set each cost about 150 B).
+   */
+  readonly #byTail = new Map<string, string | Set<string>>();
 
-  constructor(clock: Clock, retention: Retention | null = null, collapse: Collapse | null = null) {
+  readonly #shape: Shape | null;
+
+  constructor(clock: Clock, retention: Retention | null = null, collapse: Collapse | null = null, shape: Shape | null = null) {
     this.#clock = clock;
     this.#retention = retention;
     this.#collapse = collapse;
+    this.#shape = shape;
   }
 
   /**
@@ -58,9 +80,8 @@ export class AsOfStore {
       const keys = this.#byTail.get(id);
       if (keys === undefined) continue;
       this.#byTail.delete(id);
-      for (const key of keys) {
+      for (const key of typeof keys === 'string' ? [keys] : keys) {
         this.#series.delete(key);
-        this.#keep.delete(key);
         this.#keepOlder.delete(key);
         n++;
       }
@@ -81,12 +102,8 @@ export class AsOfStore {
 
   /** Drops the values of `key` older than its horizon, keeping the latest one at or before it. Batched. */
   #trim(key: string, series: AsOfEntry[], nowMs: number): void {
-    if (this.#retention === null) return;
-    let keep = this.#keep.get(key);
-    if (keep === undefined) {
-      keep = this.#retention(key);
-      this.#keep.set(key, keep);
-    }
+    // CREATE-COMPACT: asked at each record, not cached per key (a cache entry cost about 80 B a key; the rule is a prefix test).
+    const keep = this.#retention?.(key) ?? null;
     if (keep === null) return;
     const cutoff = nowMs - keep;
     let drop = 0;
@@ -98,19 +115,24 @@ export class AsOfStore {
   /** Appends a value. Refused if it is dated after now or before the key's latest value. */
   record(key: string, value: unknown, moment: Moment, source: string): void {
     checkMoment(moment);
+    // CREATE-COMPACT: the id kept as a flat copy, never the pieces (and the signature) it was built from.
     if (compareMoments(moment, this.#clock.now()) > 0) throw new RangeError(`cannot record ${key} from the future`);
     const series = this.#series.get(key);
     const last = series?.[series.length - 1];
     if (last !== undefined && compareMoments(moment, last.moment) < 0) throw new RangeError(`${key} must be recorded in time order`);
-    const entry: AsOfEntry = Object.freeze({ moment, value, source });
+    const compact = this.#shape?.(key) ?? null;
+    const entry: AsOfEntry = Object.freeze({ moment, value: compact === null ? value : compact(value), source: flat(source) });
     if (series === undefined) {
-      this.#series.set(key, [entry]);
-      const at = key.lastIndexOf(':');
+      // A new key is kept as a flat copy too.
+      const kept = flat(key);
+      this.#series.set(kept, [entry]);
+      const at = kept.lastIndexOf(':');
       if (at !== -1) {
-        const tail = key.slice(at + 1);
+        const tail = kept.slice(at + 1);
         const keys = this.#byTail.get(tail);
-        if (keys === undefined) this.#byTail.set(tail, new Set([key]));
-        else keys.add(key);
+        if (keys === undefined) this.#byTail.set(tail, kept);
+        else if (typeof keys === 'string') this.#byTail.set(tail, new Set([keys, kept]));
+        else keys.add(kept);
       }
     }
     else {

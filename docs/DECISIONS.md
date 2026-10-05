@@ -2488,3 +2488,39 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
     - At 1 hour: 409 pools, 945,000 swaps, 234 MB live heap, still growing about 2 MB a minute as pools fill their hour and their 4-hour window.
     - Owners at that point: books 90 MB, feed dedupe 68 MB, store 38 MB, deployer index 1.4 MB.
     - The per-structure figures above come from this snapshot.
+
+## Creates and curve trades stored compact (CREATE-COMPACT, `core/src/gates/compact.ts`, `AsOfStore` `Shape`, `run/store-rules.ts` `liveShape`)
+
+- **2026-10-06 · Why.** OOM-MINT keeps a create that never migrates for 13 hours. Its create event and its first curve trade sat in the live store as released: about 4.3 KB a create in the 3× run's heap snapshot, the largest term of the sustained-3× ceiling (about 250 MB; 84 MB at 1×).
+- **What.**
+  - **`Shape`.** A per-key rule in `AsOfStore`, passed by the engine, that stores a value with only the fields its store readers read. The strategy and the producer still receive the released event whole; only `lookup` and `history` answer with the compact value.
+  - **The rule's readers, proved per field.**
+    - A curve trade (`pump:TradeEvent:`, `logs:pump:TradeEvent:`) is read by `checkCurveTails` and its collapse (`tailVerdict`). They read the event's `trailing` and `extra`, `txSlot` and `signature`.
+    - A create (`pump:CreateEvent:`, `logs:pump:CreateEvent:`) is read by two things:
+      - the hard gates' create alias (`aliasCreate`, `createOf`): `name`, `data.mint`, `creator`, `timestamp`, `txSlot`, `source` and `backfilled`;
+      - the strategy's deployer (`#deployerOf`): `creator`, `user` and `tokenTotalSupply`.
+    - Kept strings are flat copies: a decoded tail's hex was a slice of the event's text, 291 B a trade before, 179 B after.
+  - Live and the parity replay share `liveShape`. The backtest stores values whole; its decisions match because every reader reads only kept fields.
+  - **Store bookkeeping, every key.**
+    - `#byTail` holds one key as itself and a Set only from the second (a Set each was about 150 B).
+    - The retention rule is asked at each record, not cached per key (a cache entry was about 80 B a key).
+    - Ids and new keys are kept as flat copies, never the pieces and the signature they were built from.
+  - A flat copy is now taken UTF-16 unit by unit (`flatCopy`). The earlier code-point copy would have broken a symbol with an emoji (worker `flat`).
+- **Measured** (`create-compact.test.ts`, a fetched create and curve trade decoded afresh per create):
+  - in the store, about 5.3 KB a create as released and about 1.75 KB compact;
+  - scaled to the logs path's 4.3 KB, about 1.4 KB;
+  - so the 13-hour term goes from about 84 to about 28 MB at 1×, and from about 252 to about 85 MB at sustained 3×.
+- **Evidence (fail before, pass after).**
+  - `create-compact.test.ts`:
+    - a create and its curve trade cost under 2 KB together in the store (over 4 KB released);
+    - a compact curve trade costs under 240 B;
+    - keys and ids are flat copies;
+    - the create alias, `createOf` and the deployer read the same from the compact value, a signer other than the creator included;
+    - the curve tail check answers the same from compact values, passing and failing;
+    - the worker's engine stores a released create compact.
+  - Hand mutants killed: no shape in the worker; the tail hex not copied; the signer replaced by the creator; ids not copied. The new key's copy is equivalent: V8 flattens a key when a Map hashes it.
+  - `retire.test.ts` (facts review pins from OOM-MINT):
+    - an orphan landing found but not yet booked holds the mint past every attempt's validity;
+    - after a restart, before the first slot, the attempts' age is unknown and the mint is held.
+    - Mutants killed: no orphan hold; null height treated as expired.
+

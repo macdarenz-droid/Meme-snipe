@@ -21,7 +21,7 @@ import {
   type IntentId, type PositionId, type QuoteContext, type TransactionAttempt,
   attemptId, blockhash, entryKey, intentId, mint as toMint, positionId, reservationId, signature,
 } from '../../../core/src/domain/index.ts';
-import { type AsOfEntry, type Decision, type MarketEvent, type Moment, type Strategy, type StrategyContext, compareMoments } from '../../../core/src/engine/index.ts';
+import { type AsOfEntry, type Decision, type MarketEvent, type Moment, type Strategy, type StrategyContext, compareMoments, flatCopy } from '../../../core/src/engine/index.ts';
 import { RAW } from '../../../core/src/facts/raw.ts';
 import { observedFeeContext, type SwapEvent, swapEventState } from '../../../core/src/fills/index.ts';
 import {
@@ -1425,7 +1425,7 @@ export class LiveStrategy implements Strategy {
     // Its age is the create's own chain time (a create read late, by a seed fill or a lookup, is as old as it is), else
     // when it was released.
     const created = createOf(e.value)?.createdAtMs ?? e.moment.receivedAt;
-    this.#creates.set(String.fromCharCode(...Array.from(mint, (c) => c.charCodeAt(0))), created);
+    this.#creates.set(flatCopy(mint), created);
   }
 
   /**

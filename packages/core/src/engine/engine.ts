@@ -4,7 +4,7 @@
 
 import { createHash, type Hash } from 'node:crypto';
 import { applyBookEvent, emptyBook, isIllegal, type Book, type BookConfig, type BookEvent, type Effect } from '../lifecycle/index.ts';
-import { AsOfStore, type AsOfEntry, type Lookup, type Retention, type Collapse } from './asof.ts';
+import { AsOfStore, type AsOfEntry, type Lookup, type Retention, type Collapse, type Shape } from './asof.ts';
 import type { Clock } from './clock.ts';
 import type { Feed, FeedEvent, MarketEvent } from './feed.ts';
 import { deepFreeze } from './freeze.ts';
@@ -77,6 +77,8 @@ export interface EngineDeps {
   readonly retention?: Retention;
   /** Keys whose older entries are kept only when they can matter (default: none). See `Collapse`. */
   readonly collapse?: Collapse;
+  /** Keys stored with only the fields their readers read (default: none). See `Shape`. */
+  readonly shape?: Shape;
 }
 
 export class Engine {
@@ -98,7 +100,7 @@ export class Engine {
     this.#feed = deps.feed;
     this.#strategy = deps.strategy;
     this.#runner = deps.runner;
-    this.#store = new AsOfStore(deps.clock, deps.retention ?? null, deps.collapse ?? null);
+    this.#store = new AsOfStore(deps.clock, deps.retention ?? null, deps.collapse ?? null, deps.shape ?? null);
     this.#rng = createRng(deps.seed);
     const limits = deps.reconcileLimits ?? DEFAULT_RECONCILE_LIMITS;
     this.#guard = new ReconcileGuard(limits);
