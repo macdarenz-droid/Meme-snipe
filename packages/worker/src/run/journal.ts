@@ -52,6 +52,12 @@ export class Journal {
   readonly previousMs: number | null = null;
   /** True when a torn last line was cut at open. */
   readonly repaired: boolean;
+  /**
+   * How the previous process ended, from the journal's last whole line (RESTART-ALERT): `stop: <reason>` when it wrote
+   * its stop line (`signal` for a clean stop, `crash` for a caught failure), `no clean stop` when it did not (a kill, an
+   * OOM, an uncaught exit), null when there was no earlier process.
+   */
+  readonly previousExit: string | null = null;
 
   constructor(path: string, boot: string, now: () => number) {
     this.#path = path;
@@ -75,8 +81,12 @@ export class Journal {
       }
       const good = lines[lines.length - 1];
       if (good !== undefined) {
-        const l = JSON.parse(good) as { seq: number; ts?: string };
+        const l = JSON.parse(good) as { seq: number; ts?: string; kind?: string; reasons?: unknown };
         this.#seq = l.seq;
+        const reasons = Array.isArray(l.reasons) ? l.reasons.filter((r): r is string => typeof r === 'string') : [];
+        // A crash's stop line carries where it happened second (crash-site.ts: never the error's message).
+        const where = reasons[1] === undefined ? '' : ` (${reasons[1].slice(0, 200)})`;
+        this.previousExit = l.kind === 'stop' ? `stop: ${reasons[0] ?? 'no reason'}${where}` : 'no clean stop';
         const t = typeof l.ts === 'string' ? Date.parse(l.ts) : Number.NaN;
         this.previousMs = Number.isFinite(t) ? t : null;
       }
