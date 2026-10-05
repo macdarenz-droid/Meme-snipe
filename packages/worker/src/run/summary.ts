@@ -9,15 +9,16 @@
 import { createHmac } from 'node:crypto';
 import { open, stat } from 'node:fs/promises';
 import {
-  EXIT_KINDS, PATTERNS, RESTART_CAUSE_KEYS, SUMMARY_MAX_BYTES, SUMMARY_MAX_CRASH_SITES, fits, SUMMARY_MAX_TRADES, SUMMARY_TOP_REASONS, SUMMARY_VERSION, checkSummary,
+  CREDIT_DETAIL_KEYS, EXIT_KINDS, MEM_SUMMARY_KEY, PATTERNS, RESTART_CAUSE_KEYS, type LastDeath, SUMMARY_MAX_BYTES, SUMMARY_MAX_CRASH_SITES, fits, SUMMARY_MAX_TRADES, SUMMARY_TOP_REASONS, SUMMARY_VERSION, checkSummary,
   type CodeCount, type CrashSite, type ProviderCredits, type ReasonCount, type Summary, type SummaryTrade,
 } from '../../../ops/src/watchdog/summary.ts';
 import type { MicroUsd } from '../../../core/src/units/index.ts';
-import type { HttpClient } from '../providers/index.ts';
+import { HELIUS_EXHAUSTED, type HttpClient } from '../providers/index.ts';
 import type { PaperTrade } from './account.ts';
 import { lamportsUsd, melbourneDate, usdText } from './api.ts';
 import { SEEDING } from '../engine/strategy.ts';
 import { StateFile } from './state.ts';
+import { parseDeathMem, type DeathMem } from './mem-trace.ts';
 import { melbourneDay } from '../../../core/src/risk/index.ts';
 import type { TimerHandle, Timers } from '../scheduler/timers.ts';
 
@@ -35,6 +36,8 @@ export interface DayFold {
   restarts?: Record<string, number>;
   exits?: Record<string, number>;
   crashSites?: Record<string, number>;
+  /** MEM-SUMMARY: the day's last start line's `death_mem` (the process before it died with no stop line). Absent in older state. */
+  lastDeath?: DeathMem;
 }
 
 export interface SummaryState {
@@ -69,6 +72,7 @@ export const haltCode = (reason: string): string => {
   if (reason === 'owner pause (watchdog)') return 'owner-pause';
   if (reason === 'second price path unavailable') return 'second-path-unavailable';
   if (reason === SEEDING) return 'seeding';
+  if (reason === HELIUS_EXHAUSTED) return 'helius-exhausted';
   if (reason === 'starting') return 'starting';
   if (reason.startsWith('sell-only')) return 'sell-only';
   if (reason.startsWith('ledger and book diverged') || reason.startsWith('ledger refused')) return 'ledger-diverged';
@@ -117,6 +121,9 @@ export const foldLine = (s: SummaryState, line: unknown): void => {
       // HEAP-GUARD: a death on a fatal error leaves no stop line; the next boot's start line carries its site.
       const site = typeof line['crash_site'] === 'string' ? parseCrashSite(line['crash_site']) : null;
       if (site !== null) bump((day.crashSites ??= {}), JSON.stringify([site.error, site.file, site.line, site.event]));
+      // MEM-SUMMARY: the dead process's memory, numbers only (checked again: a malformed one is dropped, never guessed).
+      const dm = line['death_mem'] === undefined ? null : parseDeathMem(line['death_mem']);
+      if (dm !== null) day.lastDeath = dm;
     }
     day.recorder = line['recorder'] === true || line['recorder'] === 'on' ? 'on' : line['recorder'] === false || line['recorder'] === 'off' ? 'off' : null;
     day.gitSha = fits(line['git_sha'], PATTERNS.SHA) ? line['git_sha'] : null;
@@ -229,7 +236,9 @@ export interface SummaryInputs {
   readonly trades: readonly PaperTrade[];
   readonly openPositions: number;
   readonly solPrice: MicroUsd | null;
-  readonly credits: readonly { readonly provider: string; readonly credits_used: number; readonly monthly_credits: number | null }[];
+  readonly credits: readonly { readonly provider: string; readonly credits_used: number; readonly monthly_credits: number | null; readonly credits_by_class?: readonly number[] }[];
+  /** HELIUS-EXHAUSTED: Helius's "max usage reached" answers since boot and the first one's time; null when not wired. */
+  readonly heliusExhaustion?: { readonly count: number; readonly firstAtMs: number | null } | null;
 }
 
 const iso = (ms: number): string => new Date(ms).toISOString();
@@ -288,7 +297,16 @@ export const buildSummary = (i: SummaryInputs): Summary => {
   const credits: ProviderCredits[] = i.credits
     .filter((q) => fits(q.provider, PATTERNS.CODE))
     .slice(0, 16)
-    .map((q) => ({ provider: q.provider, used_since_boot: Math.max(0, Math.round(q.credits_used)), monthly: q.monthly_credits === null ? null : Math.max(0, Math.round(q.monthly_credits)) }));
+    .map((q) => {
+      const base: ProviderCredits = { provider: q.provider, used_since_boot: Math.max(0, Math.round(q.credits_used)), monthly: q.monthly_credits === null ? null : Math.max(0, Math.round(q.monthly_credits)) };
+      // HELIUS-EXHAUSTED: by class since boot (which reads spend), and Helius's "max usage reached" answers.
+      const cls = q.credits_by_class;
+      if (cls === undefined || cls.length !== 4) return base;
+      const by = cls.map((c) => Math.max(0, Math.ceil(c))) as unknown as readonly [number, number, number, number];
+      const x = q.provider === 'helius' ? i.heliusExhaustion ?? null : null;
+      if (x === null) return { ...base, by_class: by };
+      return { ...base, by_class: by, exhausted: { count: Math.max(0, Math.floor(x.count)), first_at: x.firstAtMs === null ? null : iso(x.firstAtMs) } };
+    });
   const sha = f.gitSha ?? (fits(i.gitSha, PATTERNS.SHA) ? i.gitSha : 'unknown');
   return {
     v: SUMMARY_VERSION,
@@ -305,6 +323,7 @@ export const buildSummary = (i: SummaryInputs): Summary => {
       restarts: { planned: f.restarts?.['planned'] ?? 0, deploy: f.restarts?.['deploy'] ?? 0, unplanned: f.restarts?.['unplanned'] ?? 0 },
       exits: counts(f.exits ?? {}),
       crash_sites: crashSites(f.crashSites ?? {}),
+      last_death: f.lastDeath === undefined ? null : lastDeathOf(f.lastDeath),
     },
     alerts: counts(f.alerts),
     halts: counts(f.halts),
@@ -323,12 +342,35 @@ export const buildSummary = (i: SummaryInputs): Summary => {
   };
 };
 
-/** The summary without RESTART-CAUSE's keys of `worker`, the shape a watchdog from before them accepts. */
-export const withoutRestartCause = (s: Summary): Summary => {
+/** A death's memory in the summary's form: times as ISO strings. */
+const lastDeathOf = (d: DeathMem): LastDeath => ({
+  at: iso(d.at), uptime_s: d.uptime_s, heap_used_mb: d.heap_used_mb, heap_limit_mb: d.heap_limit_mb, spaces: d.spaces.map((x) => ({ ...x })),
+  sample: d.sample === null ? null : { ...d.sample, at: iso(d.sample.at) },
+});
+
+/** The summary without MEM-SUMMARY's key of `worker`, the shape a watchdog from RESTART-CAUSE to before it accepts. */
+export const withoutLastDeath = (s: Summary): Summary => {
   const w: Record<string, unknown> = { ...s.worker };
-  for (const k of RESTART_CAUSE_KEYS) delete w[k];
+  delete w[MEM_SUMMARY_KEY];
   return { ...s, worker: w as unknown as Summary['worker'] };
 };
+
+/** The summary without RESTART-CAUSE's keys of `worker` (nor MEM-SUMMARY's), the shape a watchdog from before them accepts. */
+export const withoutRestartCause = (s: Summary): Summary => {
+  const w: Record<string, unknown> = { ...s.worker };
+  for (const k of [...RESTART_CAUSE_KEYS, MEM_SUMMARY_KEY]) delete w[k];
+  return { ...s, worker: w as unknown as Summary['worker'] };
+};
+
+/** The summary without HELIUS-EXHAUSTED's keys of each provider's credits, the shape a watchdog from before them accepts. */
+export const withoutCreditDetail = (s: Summary): Summary => ({
+  ...s,
+  provider_credits: s.provider_credits.map((c) => {
+    const o: Record<string, unknown> = { ...c };
+    for (const k of CREDIT_DETAIL_KEYS) delete o[k];
+    return o as unknown as ProviderCredits;
+  }),
+});
 
 /** The body to post, or null with the reason when either guard refuses it (then nothing is sent). */
 export const summaryBody = (s: Summary): { readonly body: string } | { readonly refused: string } => {
@@ -464,10 +506,23 @@ export class Summarizer {
     if (url === null || key === null) return false;
     const s = (this.#d.build ?? buildSummary)({ ...this.#d.live(), day, final, nowMs: now, fold: this.#state.days[day] });
     let res = await this.#send(day, s, url, key, now);
-    // A watchdog from before RESTART-CAUSE refuses its keys (a deploy is not atomic): the day goes again without them.
+    // A watchdog from before MEM-SUMMARY refuses its key, one from before HELIUS-EXHAUSTED the credit detail too, one
+    // from before RESTART-CAUSE its keys too (a deploy is not atomic): the day goes again without each in turn.
+    let sent = s;
+    if (res !== null && !res.ok && res.reason === 'HTTP 400' && Object.hasOwn(s.worker, MEM_SUMMARY_KEY)) {
+      this.#d.log(`Summary for ${day} refused; sent again without the memory at the last death.`);
+      sent = withoutLastDeath(s);
+      res = await this.#send(day, sent, url, key, now);
+    }
+    const detail = sent.provider_credits.some((c) => CREDIT_DETAIL_KEYS.some((k) => Object.hasOwn(c, k)));
+    if (detail && res !== null && !res.ok && res.reason === 'HTTP 400') {
+      this.#d.log(`Summary for ${day} refused; sent again without the credit detail.`);
+      sent = withoutCreditDetail(sent);
+      res = await this.#send(day, sent, url, key, now);
+    }
     if (res !== null && !res.ok && res.reason === 'HTTP 400') {
       this.#d.log(`Summary for ${day} refused; sent again without the restart counts.`);
-      res = await this.#send(day, withoutRestartCause(s), url, key, now);
+      res = await this.#send(day, withoutRestartCause(withoutCreditDetail(sent)), url, key, now);
     }
     if (res === null) return false;
     if (!res.ok) this.#d.log(`Summary for ${day} not accepted: ${res.reason}.`);
