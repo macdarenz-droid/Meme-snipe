@@ -6,6 +6,8 @@ From here on, S2 owns this file. S2 keeps it current on its own branch `claude/s
 
 ## S2 events (newest first)
 
+- **2026-10-06 01:52:17 AEDT** — Synced S1 HANDOVER-APP.md changes from docs head26ea356cb2fc4a26c3d5afde6edf2ce3b78af745, preserving every existing S2 log line. Resolved review-protocol conflict in favor of owner-relayed independent S2 reviewers; corrected transient conflict markers in a follow-up commit without rewriting history. S1 checks hourly at :19 Melbourne, may add small merge-commit fixes to ready task branches, and sends larger gaps in PR comments. Always fetch before task-branch pushes. Exact-head review verdicts must be posted to PRs; non-draft and S2-READY require green exact-head CI and contained base SHA. S2 never merges PRs, deploys or pushes integration/main. GitHub API restriction and incomplete CI remain recorded; no readiness claim.
+
 - **2026-10-06 01:50:30 AEDT** — API-1 already independently reviewed on final exact head6af4e43b707960316d8cd8419cb2e513fa9f4b60: api1_api_review APP/API PASS and api1_facts_review strategy/worker facts PASS. Actual contained integration base73c61006b08be35fff804155e6f700fa1c13d7b8. Test expectation follows precise base no-fee-context; preserved full four-part assertion fails without served fix on missing H14 and all10 worker-1e tests pass after. Frozen install/workspace typecheck pass before test-only follow-up. Task head pushed and remote verified. Production changes affect served status only, not gate/risk or actual per-decision waiver facts; values already match existing strict app enums. Completed exact-head independent PASS verdicts for queue items1–6 are now recorded in this handover. Required final full-suite checks and exact-head GitHub check/historical-data are incomplete, and PR verdict publication remains blocked by api.github.com restriction; none is S2-READY. RISK-DIAL has no code authorization: design/risk review/explicit final owner approval still required; SEC-1 historical review remains recorded, owner keystore and preparation outstanding. S1 alone merges/deploys.
 
 - **2026-10-06 01:49:17 AEDT** — Base observation correction: integration advanced to73c61006b08be35fff804155e6f700fa1c13d7b8 during API-1 fetch; API-1 merge ebb19f7c70485b64d1df8e93e3aabc0ae54a419c second parent is73c61006, not earlier efa3b006. Focused API-1 test caught newer base precise no-fee-context code replacing old no-market; keeping exact assertion, updating fixture only. With served fix removed, regression fails specifically on missing H14 waiver; corrected full worker-1e test run in progress before normal follow-up commit and renewed exact-head review. APP-SOL final5ee1d4da independent APP/API PASS pushed/remote verified; full check running. No CI observed and no S2-READY claim. PR review bodies for reviewed tasks are prepared outside repo for publication once api.github.com access is enabled.
@@ -72,7 +74,7 @@ From here on, S2 owns this file. S2 keeps it current on its own branch `claude/s
     - the green CI run on that head;
     - the base SHA the head contains;
     - any owner step still needed.
-  - S1 checks it, then merges with a merge commit and expectedHeadSha.
+  - S1 checks branches and PRs hourly at :19 Melbourne time, checks the evidence, then merges with a merge commit and expectedHeadSha.
   - If the base moved meanwhile, S1 asks for a base merge in a PR comment, or GitHub-updates the branch itself when the merge is clean.
 - **Small fixes by S1** (owner, 6 Oct about 1:35 AM): if a ready PR has a small gap (missing code, a failing CI check, a base merge, a missing test its reviewers named), S1 may push a small fix to the branch with a merge commit and then merge once CI is green. So always fetch before you push to a task branch. Anything bigger comes back to S2 as a PR comment.
 - **Deploys and the APK.**
@@ -89,11 +91,7 @@ From here on, S2 owns this file. S2 keeps it current on its own branch `claude/s
   - `research/historical/**`.
 
   If a task needs one of them, write the need here and in a PR comment, and wait for S1.
-<<<<<<< /tmp/s2-docs-sync/HANDOVER-APP.md
-- **Reviews.** Every PR needs an independent review on the exact head: never by the one who built it. If S2's platform can run a separate reviewer with no shared context, S2 uses it. If not, S2 posts a PR comment that starts `S2-REVIEW-REQUEST <full head SHA>`, naming the areas, and S1 arranges the review. Changes outside the app need the reviewer for their area:
-=======
 - **Reviews.** Every PR needs an independent review on the exact head: never by the one who built it. S2 runs its own independent review agents (owner, 6 Oct about 1:15 AM). S1 spawns no reviewers for S2's work, so no review is done twice. S1 only checks the S2-READY evidence, merges and deploys. Changes outside the app need the reviewer for their area:
->>>>>>> /tmp/s2-handover-incoming.md
   - `packages/core/src/risk/**`: the risk reviewer, with tests that fail before and pass after (AGENTS.md file ownership);
   - exits: the EXIT reviewer;
   - worker facts and strategy: the worker/facts reviewer;
