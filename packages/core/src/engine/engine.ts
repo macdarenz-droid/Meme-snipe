@@ -4,7 +4,7 @@
 
 import { createHash, type Hash } from 'node:crypto';
 import { applyBookEvent, emptyBook, isIllegal, type Book, type BookConfig, type BookEvent, type Effect } from '../lifecycle/index.ts';
-import { AsOfStore, type AsOfEntry, type Lookup } from './asof.ts';
+import { AsOfStore, type AsOfEntry, type Lookup, type Retention, type Collapse } from './asof.ts';
 import type { Clock } from './clock.ts';
 import type { Feed, FeedEvent, MarketEvent } from './feed.ts';
 import { deepFreeze } from './freeze.ts';
@@ -67,6 +67,10 @@ export interface EngineDeps {
   readonly reconcileLimits?: ReconcileLimits;
   /** Keep every record in memory (default true). The hash is kept either way. */
   readonly keepLog?: boolean;
+  /** How long each key's past stays in the as-of store (default: everything). See `Retention`. */
+  readonly retention?: Retention;
+  /** Keys whose older entries are kept only when they can matter (default: none). See `Collapse`. */
+  readonly collapse?: Collapse;
 }
 
 export class Engine {
@@ -88,7 +92,7 @@ export class Engine {
     this.#feed = deps.feed;
     this.#strategy = deps.strategy;
     this.#runner = deps.runner;
-    this.#store = new AsOfStore(deps.clock);
+    this.#store = new AsOfStore(deps.clock, deps.retention ?? null, deps.collapse ?? null);
     this.#rng = createRng(deps.seed);
     const limits = deps.reconcileLimits ?? DEFAULT_RECONCILE_LIMITS;
     this.#guard = new ReconcileGuard(limits);
@@ -99,6 +103,12 @@ export class Engine {
 
   get book(): Book {
     return this.#book;
+  }
+
+  /** What the engine handled last: a market event's key, or `world:<type>` (RESTART-ALERT names it when a step fails). */
+  get lastHandled(): string | null {
+    const e = this.#last;
+    return e === null ? null : e.kind === 'world' ? `world:${e.event.type}` : e.key;
   }
 
   /** Every record so far (empty when `keepLog` is false). */

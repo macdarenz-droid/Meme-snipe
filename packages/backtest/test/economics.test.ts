@@ -54,7 +54,7 @@ describe('currency (item 6)', () => {
 describe('all-in expectancy (item 5)', () => {
   test('failed-attempt fees count in the all-in expectancy and in every daily return; the conditional mean is per filled trade', () => {
     const t = trade({ openedAt: T + 1 * H, closedAt: T + 1.5 * H, exitSol: SOL + 2n * 10_000_000n, net: 20_000_000n });
-    const stray: StrayCost[] = [{ at: T + 30 * H, lamports: 5_000_000n }];
+    const stray: StrayCost[] = [{ at: T + 30 * H, lamports: 5_000_000n, intentId: 'e9', positionId: 'p9' }];
     const e = economics({ trades: [t], stray, entryDecisions: 3, solUsd: SERIES, window: { from: T, to: T + 48 * H }, policy: TRIAL_POLICY, research: RESEARCH_CONFIG });
     expect(e.usd.conditionalMeanPerTradeMicro).toBe(2_000_000n); // +0.02 SOL at $100
     expect(e.usd.strayMicro).toBe(-1_000_000n); // 0.005 SOL at $200

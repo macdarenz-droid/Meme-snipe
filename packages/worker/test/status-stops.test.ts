@@ -45,7 +45,7 @@ const small = (t: number) => trade(t, '-0.1');
 
 describe('the strategy reads the account stops from its risk state', () => {
   it('a clean account has none', () => {
-    expect(stopsOf(account())).toEqual({ atMs: NOW, codes: [] });
+    expect(stopsOf(account())).toEqual({ atMs: NOW, codes: [], dayLoss: 0n });
   });
   it('daily loss reached (R7)', () => {
     expect(codes(account({ closedTrades: [trade(DAY_START + HOUR, '-1.5', { notional: usd('5') })] }))).toContain('daily_loss');
@@ -86,13 +86,13 @@ describe('the strategy reads the account stops from its risk state', () => {
   it('core cannot evaluate the account (its account check throws, evaluateExit then reports nothing): unknown, never none', () => {
     // A moment before 2008: the Melbourne rules refuse it, so core's account check throws and the entry is refused.
     const old = Date.UTC(2007, 0, 1);
-    expect(stopsOf(account({ openedAtMs: old - HOUR }), NO_LATCHES, { now: old })).toEqual({ atMs: old, codes: null });
+    expect(stopsOf(account({ openedAtMs: old - HOUR }), NO_LATCHES, { now: old })).toEqual({ atMs: old, codes: null, dayLoss: null });
   });
   it('marking fails (the entry path refuses with risk-mark-failed): unknown, never the unmarked account', () => {
-    expect(stopsOf(account(), NO_LATCHES, { markFails: true })).toEqual({ atMs: NOW, codes: null });
+    expect(stopsOf(account(), NO_LATCHES, { markFails: true })).toEqual({ atMs: NOW, codes: null, dayLoss: null });
   });
   it('no account fact: unknown, never none', () => {
-    expect(stopsOf(null)).toEqual({ atMs: NOW, codes: null });
+    expect(stopsOf(null)).toEqual({ atMs: NOW, codes: null, dayLoss: null });
   });
 });
 
@@ -118,7 +118,7 @@ describe('what the app reads: no stop and a current regime only when both are tr
   type Served = { haltReasons: { code: string; source: string | null }[]; regime: { state: string; current: boolean; waived: string[] } | null };
   const served = (patch: Record<string, unknown>): Served => {
     const h = makeWorker();
-    const i = { ...h.worker.apiInputs(), halted: [], budgetHalted: [], nowMs: NOW, regime: { atMs: NOW - 1_000, on: true, reasons: [], waived: [] as string[] }, stops: { atMs: NOW, codes: [] as string[] }, ...patch };
+    const i = { ...h.worker.apiInputs(), halted: [], budgetHalted: [], nowMs: NOW, regime: { atMs: NOW - 1_000, on: true, reasons: [], waived: [] as string[] }, stops: { atMs: NOW, codes: [] as string[], dayLoss: 0n }, ...patch };
     const body = JSON.parse(JSON.stringify({ mode: 'paper', asOf: new Date(NOW).toISOString(), data: views.status(i as never) }));
     void h.worker.stop();
     return (checkEnvelope(body, 'paper', schemaFor('status', 'paper')) as { data: Served }).data;
@@ -134,7 +134,7 @@ describe('what the app reads: no stop and a current regime only when both are tr
     ['daily_loss', 'daily-loss'], ['weekly_loss', 'weekly-loss'], ['weekly_review', 'weekly-review'], ['kill_switch', 'kill-switch'],
     ['loss_cooldown', 'loss-cooldown'], ['loss_day_pause', 'loss-day-pause'], ['loss_review', 'loss-review'], ['session_not_running', 'session-ended'],
   ])('%s is served as %s', (c, code) => {
-    expect(halts(served({ stops: { atMs: NOW, codes: [c] } }))).toEqual([code]);
+    expect(halts(served({ stops: { atMs: NOW, codes: [c], dayLoss: 0n } }))).toEqual([code]);
   });
   it('stops unknown: risk-unknown', () => {
     expect(halts(served({ stops: null }))).toEqual(['risk-unknown']);

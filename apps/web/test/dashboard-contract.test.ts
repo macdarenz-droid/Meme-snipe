@@ -114,10 +114,13 @@ describe('worker API contract', () => {
   it('rejects money sent as a number or with more than 6 places', () => {
     const env = (data: unknown) => ({ mode: 'paper', asOf: '2026-10-03T00:00:00Z', data });
     const stats = schemaFor('stats', 'paper');
-    const base = { mode: 'paper', trades: 0, requiredTrades: null, netUsd: '0', maxDrawdownUsd: '0', winRate: null, meanNetUsd: null, meanR: null, ci95: null };
+    const base = { mode: 'paper', trades: 0, requiredTrades: null, netUsd: '0', netSol: '0', solMoveUsd: '0', maxDrawdownUsd: '0', winRate: null, meanNetUsd: null, meanR: null, ci95: null };
     expect(checkEnvelope(env(base), 'paper', stats).data).toEqual(base);
     expect(() => checkEnvelope(env({ ...base, netUsd: 1.5 }), 'paper', stats)).toThrow(/exact dollar/);
     expect(() => checkEnvelope(env({ ...base, netUsd: '1.0000001' }), 'paper', stats)).toThrow(/exact dollar/);
+    // PAPER-1: the SOL result is an exact decimal too, and the SOL move part is money.
+    expect(() => checkEnvelope(env({ ...base, netSol: 0.004 }), 'paper', stats)).toThrow();
+    expect(() => checkEnvelope(env({ ...base, solMoveUsd: '-0.0000001' }), 'paper', stats)).toThrow(/exact dollar/);
     expect(settle('paper', stats, { ok: true, value: env({ ...base, netUsd: 1.5 }) }, NOW)).toEqual({ state: 'error', reason: 'bad-data' });
     expect(() => checkEnvelope({ mode: 'paper', data: base }, 'paper', stats)).toThrow(/asOf/);
   });
@@ -175,7 +178,7 @@ describe('worker API contract', () => {
     const api = httpApi('https://worker.example/', fake);
     expect((await api.trades('paper')).mode).toBe('paper');
     await expect(api.stats('paper')).rejects.toBeInstanceOf(DataError);
-    expect(seen).toEqual([`https://worker.example${PATHS.trades('paper')}`, `https://worker.example${PATHS.stats('paper')}`]);
+    expect(seen).toEqual([`https://worker.example${PATHS.trades('paper')}?money=lamports`, `https://worker.example${PATHS.stats('paper')}?money=lamports`]);
     expect(PATHS.calendar('backtest', '2026-08')).toBe('/api/v1/backtest/calendar/2026-08');
   });
 });

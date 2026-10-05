@@ -90,7 +90,7 @@ describe('every money figure in SOL', () => {
   });
 
   it('Results, risk meters, calendar and charts', () => {
-    const stats: StatsView = { mode: 'paper', trades: 2, requiredTrades: 30, netUsd: '1', maxDrawdownUsd: '0.5', winRate: null, meanNetUsd: '0.5', meanR: null, ci95: null, netLamports: '7000000', maxDrawdownLamports: '3000000', meanNetLamports: '3500000' };
+    const stats: StatsView = { mode: 'paper', trades: 2, requiredTrades: 30, netUsd: '1', netSol: '0.007', solMoveUsd: '0', maxDrawdownUsd: '0.5', winRate: null, meanNetUsd: '0.5', meanR: null, ci95: null, netLamports: '7000000', maxDrawdownLamports: '3000000', meanNetLamports: '3500000' };
     const s = text(at(h(Stats, { stats })));
     expect(s).toContain('Net result +0.0070 SOL');
     expect(s).toContain('Max drawdown 0.0030 SOL');

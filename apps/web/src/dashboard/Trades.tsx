@@ -4,7 +4,7 @@ import { TokenActions } from '../components/TokenActions.tsx';
 import { Money, moneyText, moneyTone } from '../components/Money.tsx';
 import { Empty } from '../components/ui.tsx';
 import { formatDuration, shortAddress } from '../lib/format.ts';
-import { formatPriceDec, formatR, formatReturn, formatUsdExact, negUsd, returnHundredths, returnLamports, toneOfReturn } from '../lib/money.ts';
+import { formatPriceDec, formatR, formatReturn, formatUsdExact, negUsd, returnHundredths, returnLamports, toneOf, toneOfReturn } from '../lib/money.ts';
 import { EXIT_LABEL, TRADE_REASON_LABEL, VENUE_LABEL } from './labels.ts';
 import { Checks } from './Sections.tsx';
 import { melDateTime, melTime } from './time.ts';
@@ -148,6 +148,8 @@ export function TradeDetail({ trade }: { trade: TradeRecord }) {
           ['Costs', <Money lamports={c.totalLamports == null ? null : neg(c.totalLamports)} usd={negUsd(c.totalUsd)} />, 'num'],
           ['Net', <Money lamports={trade.netLamports} usd={trade.netUsd} signed />, `num ${moneyTone(trade.netLamports, trade.netUsd)}`],
           ['Return', formatReturn(tradeReturn(trade)), `num ${toneOfReturn(tradeReturn(trade))}`],
+          ['Trading', formatUsdExact(trade.tradingUsd, true), `num ${toneOf(trade.tradingUsd)}`],
+          ['SOL price move', formatUsdExact(trade.solMoveUsd, true), `num ${toneOf(trade.solMoveUsd)}`],
           ['Planned R', trade.plannedR ? formatR(trade.plannedR) : '—', 'num'],
           ['Realized R', trade.realizedR ? formatR(trade.realizedR) : '—', 'num'],
           ['Best while open', trade.mfeR ? formatR(trade.mfeR) : '—', 'num'],

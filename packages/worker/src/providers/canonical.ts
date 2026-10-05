@@ -75,9 +75,12 @@ export interface Frame {
    * Where the frame sits on the timeline, fixed by the live Feed at receipt and recorded:
    * `chain` places it at its own slot and in-slot position; `offchain` places it after everything else in
    * `slot` (the open slot at receipt), which is how a fact with no slot, or a lookup answered after its own slot
-   * was released, enters the timeline without reaching back into the past.
+   * was released, enters the timeline without reaching back into the past. `arrival` (FILL-ORDER, set by the live
+   * Feed on every off-chain placement since) keeps the slot's off-chain frames in arrival order (`seq`) after its
+   * notice: a fill's transactions, ingested oldest first at one receipt time, would otherwise take id (signature)
+   * order. Recordings made before it carry no `arrival` and replay as they did.
    */
-  readonly place: { readonly at: 'chain' | 'offchain'; readonly slot: bigint };
+  readonly place: { readonly at: 'chain' | 'offchain'; readonly slot: bigint; readonly arrival?: true };
   /** A later copy of a fact already received (see `dedupKey`). Recorded, never released. */
   readonly duplicate: boolean;
   readonly body: FrameBody;
@@ -138,7 +141,10 @@ const meta = (f: Frame) => ({ source: f.source, backfilled: f.backfilled, seq: f
 
 /** The events of one frame. `ranks` must already hold the frame's signature when it is chain-placed. */
 export const eventsOfFrame = (f: Frame, ranks: ReadonlyMap<string, number>): FeedEvent[] => {
-  const off: Moment = { slot: f.place.slot, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt: f.receivedAt };
+  // FILL-ORDER: same-moment events are released in id order, and ids start with the signature; an `arrival` frame
+  // therefore takes its arrival order in `ixIndex` (1 + seq, after the slot notice's 0). Receipt times never decrease
+  // with seq, so this only settles ties that id order settled before.
+  const off: Moment = { slot: f.place.slot, txIndex: OFF_CHAIN, ixIndex: f.place.arrival === true ? 1 + f.seq : OFF_CHAIN, receivedAt: f.receivedAt };
   const chain = f.place.at === 'chain';
   // Off-chain placement can repeat a fact whose dedup key was already forgotten (older than keepSlots), so its
   // ids carry the frame's seq: event ids stay unique for the whole run, as the replay requires.
@@ -188,8 +194,20 @@ export const eventsOfFrame = (f: Frame, ranks: ReadonlyMap<string, number>): Fee
     }
     case 'tx': {
       const r = b.record;
-      // Only DEC-1's decoder reads transaction bytes (FEED-1 card: never a second decoder).
-      return transactionEvents(r).map((e): FeedEvent => {
+      // Only DEC-1's decoder reads transaction bytes (FEED-1 card: never a second decoder). A transaction it cannot
+      // decode is a fact gap, never a crash: one `tx:undecodable` event, and no `ev:` event, so a cut log it was
+      // fetched for stays a hole (the deployer index clears a hole only on an `ev:` event).
+      let decoded: ReturnType<typeof transactionEvents>;
+      try {
+        decoded = transactionEvents(r);
+      } catch (e) {
+        return [{
+          kind: 'market', id: `txerr:${r.signature}${sfx}`,
+          moment: chain ? { slot: f.place.slot, txIndex: txIndexOf(r.signature), ixIndex: 0, receivedAt: f.receivedAt } : off,
+          key: 'tx:undecodable', value: { signature: r.signature, txSlot: r.slot, error: e instanceof Error ? e.message : 'undecodable', ...meta(f) },
+        }];
+      }
+      return decoded.map((e): FeedEvent => {
         const subject = e.name === 'other' ? e.program : ('mint' in e.data ? e.data.mint : 'pool' in e.data ? e.data.pool : e.program);
         return {
           kind: 'market', id: `ev:${r.signature}:${pad(e.outerIx)}:${pad(e.innerIx)}${sfx}`,
@@ -212,6 +230,16 @@ export const eventsOfFrame = (f: Frame, ranks: ReadonlyMap<string, number>): Fee
       return [{ kind: 'market', id: `${b.key}${sfx}`, moment: off, key: b.key, value: b.value }];
     case 'world':
       return [{ kind: 'world', id: `world${sfx}`, moment: off, event: b.event }];
+  }
+};
+
+/** True when DEC-1's decoder reads the transaction: a fetched transaction it cannot decode is not a read one. */
+export const decodable = (r: TransactionRecord): boolean => {
+  try {
+    transactionEvents(r);
+    return true;
+  } catch {
+    return false;
   }
 };
 

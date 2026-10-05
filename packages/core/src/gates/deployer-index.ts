@@ -204,7 +204,7 @@ export class DeployerIndex {
    * Entries older than `retainFromMs` are left out, and the index's own start moves up to it, so the restored index
    * never claims to have watched what it no longer holds.
    */
-  snapshot(asOf: Moment, retainFromMs = Number.MIN_SAFE_INTEGER): DeployerIndexState {
+  snapshot(asOf: Moment, retainFromMs = Number.MIN_SAFE_INTEGER, o: { readonly mints?: boolean } = {}): DeployerIndexState {
     if (this.#last !== null && compareMoments(this.#last, asOf) > 0) throw new RangeError('the index has observed events after the snapshot moment');
     const keep = <V>(m: Map<string, Map<string, V>>, ms: (v: V) => number) =>
       [...m].map(([creator, inner]) => [creator, [...inner].filter(([, v]) => ms(v) >= retainFromMs)] as const)
@@ -213,14 +213,29 @@ export class DeployerIndex {
     const first = this.#first === null ? null : this.#first.receivedAt >= retainFromMs ? this.#first : { ...this.#first, receivedAt: retainFromMs };
     return {
       asOf, first, last: this.#last, seeded: this.#seeded,
-      mints: keep(this.#mints, (t) => t), rugs: keep(this.#rugs, (k) => k.at.receivedAt), unjudged: keep(this.#unjudged, (k) => k.at.receivedAt),
+      // Without `mints` (WORKER-GROW), the rows are left to `mintRows`, for a save that streams them.
+      mints: o.mints === false ? [] : keep(this.#mints, (t) => t), rugs: keep(this.#rugs, (k) => k.at.receivedAt), unjudged: keep(this.#unjudged, (k) => k.at.receivedAt),
       createVias: [...this.#createVias].sort(),
       lost: [...this.#lost].filter(([, l]) => l.atMs >= retainFromMs).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
     };
   }
 
-  /** PERSIST-1: an index restored from `snapshot`. A malformed state throws; the caller then discards the file. */
-  static restore(s: DeployerIndexState): DeployerIndex {
+  /**
+   * WORKER-GROW: the snapshot's mint rows one creator at a time (`snapshot(asOf, retainFromMs).mints` without building
+   * them all), in the same order, for a save that streams them.
+   */
+  *mintRows(retainFromMs = Number.MIN_SAFE_INTEGER): Generator<readonly [string, readonly (readonly [string, number])[]]> {
+    for (const creator of [...this.#mints.keys()].sort()) {
+      const inner = [...this.#mints.get(creator)!].filter(([, t]) => t >= retainFromMs);
+      if (inner.length > 0) yield [creator, inner] as const;
+    }
+  }
+
+  /**
+   * PERSIST-1: an index restored from `snapshot`. A malformed state throws; the caller then discards the file.
+   * `mintRows` (WORKER-GROW), when given, holds the mint rows in place of `s.mints`, read one at a time from a streamed file.
+   */
+  static restore(s: DeployerIndexState, mintRows?: Iterable<unknown>): DeployerIndex {
     const idx = new DeployerIndex();
     const moment = (m: unknown): Moment | null => {
       if (m === null) return null;
@@ -232,8 +247,8 @@ export class DeployerIndex {
     const asOf = moment(s.asOf);
     if (asOf === null) throw new RangeError('a snapshot needs its as-of moment');
     const pairs = <V>(rows: unknown, into: Map<string, Map<string, V>>, value: (v: unknown) => V, ms: (v: V) => number) => {
-      if (!Array.isArray(rows)) throw new RangeError('bad table');
-      for (const row of rows as unknown[]) {
+      if (!Array.isArray(rows) && !(typeof rows === 'object' && rows !== null && Symbol.iterator in rows)) throw new RangeError('bad table');
+      for (const row of rows as Iterable<unknown>) {
         if (!Array.isArray(row) || typeof row[0] !== 'string' || !Array.isArray(row[1])) throw new RangeError('bad row');
         const m = new Map<string, V>();
         for (const e of row[1] as unknown[]) {
@@ -249,7 +264,8 @@ export class DeployerIndex {
       if (!Number.isSafeInteger(v)) throw new RangeError('bad time');
       return v as number;
     };
-    pairs(s.mints, idx.#mints, ms, (t) => t);
+    if (mintRows !== undefined && Array.isArray(s.mints) && s.mints.length > 0) throw new RangeError('mint rows given twice');
+    pairs(mintRows ?? s.mints, idx.#mints, ms, (t) => t);
     // A label keeps its kind exactly: a string, or null for a label that named no rule (RUG-1c).
     const known = (v: unknown): Known => {
       if (typeof v !== 'object' || v === null) throw new RangeError('bad label');
@@ -372,4 +388,53 @@ export const createsCoverage = (history: History, now: Moment, windowStartMs: nu
   const l = lastLossy as { at: number; detail: string } | null;
   if (l !== null && l.at >= windowStartMs) return { covered: false, detail: `${l.detail}, reported at ${l.at}, inside the window from ${windowStartMs}` };
   return { covered: true, fromMs: l === null ? firstStart : l.at };
+};
+
+/**
+ * WORKER-1d: coverage facts (in release order) cut to what still matters for every window that starts at or after
+ * `retainFromMs`, so a saved coverage history stops growing with time and restarts. Facts received at or after that
+ * point are all kept. Of the older ones, per stream and `via`: the latest `start` (what says the stream ran from before
+ * the window), and, when that watch still has an open gap at the retain point, every fact on it since that start (so
+ * the gap and the watch's state read exactly as before). Unreadable facts are kept (they hold coverage open). For any
+ * window start at or after `retainFromMs`, `createsCoverage` gives the same verdict on the result; only a `fromMs`
+ * earlier than the retain point can move (still at or before it), and the index never claims coverage from before its
+ * own retained start.
+ */
+export const pruneCoverage = <E extends Pick<MarketEvent, 'key' | 'moment' | 'value'>>(facts: readonly E[], retainFromMs: number): E[] => {
+  const keep = new Set<number>();
+  /** `${stream}|${via}` → the index of the latest start, and the indexes of every fact since it. */
+  const watches = new Map<string, { start: number | null; since: number[]; open: Set<string> }>();
+  facts.forEach((e, i) => {
+    if (e.moment.receivedAt >= retainFromMs) {
+      keep.add(i);
+      return;
+    }
+    const m = /^coverage:(.+):(start|gap|resume)$/.exec(e.key);
+    const v = payload(e.value);
+    const via = v !== null && typeof v['via'] === 'string' ? v['via'] : null;
+    const from = v === null ? undefined : v['fromSlot'];
+    const to = v === null ? undefined : v['toSlot'];
+    if (m === null || v === null || via === null || !(from === null || typeof from === 'bigint') || (m[2] === 'gap' && !(to === null || typeof to === 'bigint'))) {
+      keep.add(i);
+      return;
+    }
+    const key = `${m[1]}|${via}`;
+    const w = watches.get(key) ?? { start: null, since: [], open: new Set<string>() };
+    watches.set(key, w);
+    const id = String(from);
+    if (m[2] === 'start') {
+      w.start = i;
+      w.since = [];
+      w.open.clear();
+      return;
+    }
+    w.since.push(i);
+    if (m[2] === 'gap' && to === null) w.open.add(id);
+    else w.open.delete(id);
+  });
+  for (const w of watches.values()) {
+    if (w.start !== null) keep.add(w.start);
+    if (w.open.size > 0) for (const i of w.since) keep.add(i);
+  }
+  return facts.filter((_, i) => keep.has(i));
 };

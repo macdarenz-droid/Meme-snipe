@@ -429,6 +429,7 @@ export function Stats({ stats }: { stats: StatsView }) {
   const items: { label: string; value: ReactNode; tone?: string }[] = [
     { label: 'Net result', value: stats.trades ? money(stats.netLamports, stats.netUsd, true) : '—', tone: moneyTone(stats.netLamports, stats.netUsd) },
     { label: 'Max drawdown', value: stats.trades ? money(stats.maxDrawdownLamports, stats.maxDrawdownUsd) : '—', tone: moneyTone(stats.maxDrawdownLamports, stats.maxDrawdownUsd) },
+    { label: 'SOL price move', value: stats.trades ? formatUsdExact(stats.solMoveUsd, true) : '—', tone: toneOf(stats.solMoveUsd) },
     { label: 'Win rate', value: shown(stats.winRate, (s) => formatShare(s)) },
     { label: 'Average net', value: enough && stats.meanNetUsd !== null ? money(stats.meanNetLamports, stats.meanNetUsd, true) : NOT_ENOUGH, ...(enough && stats.meanNetUsd ? { tone: moneyTone(stats.meanNetLamports, stats.meanNetUsd) } : {}) },
     { label: 'Average R', value: shown(stats.meanR, formatR) },
