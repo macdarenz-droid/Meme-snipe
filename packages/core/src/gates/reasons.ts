@@ -26,7 +26,9 @@ export type EvidenceCode =
   /** The source does not cover the window the rule needs (for example a deployer index younger than the look-back). */
   | 'not-covered'
   /** Two inputs that must agree do not (for example the LP mint in the pool and in the LP read). */
-  | 'inconsistent';
+  | 'inconsistent'
+  /** The worker tried to read it again and could not (not found, an RPC error or time-out, or no fill budget left). */
+  | 'unread';
 
 export type RejectCode =
   | EvidenceCode

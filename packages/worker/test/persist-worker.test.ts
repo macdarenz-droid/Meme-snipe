@@ -16,7 +16,7 @@ import { DailyBudget, fileSha256, loadState } from '../src/persist/index.ts';
 import { SavedStateMissing, checkBoot, loadSession, replayBoot, savedStateOf } from '../src/run/parity.ts';
 import { FILL_BUDGET_FILE, FILL_CREDITS_PER_DAY, SEED_CREDIT_CAP, runSeed } from '../src/run/seed-start.ts';
 import { PERSIST_EVERY_MS, PERSIST_FILE, type SeedRequest, type SeedResult } from '../src/run/worker.ts';
-import { DEV, MINT, Market, T, dueTimers, makeWorker, slotAt, tempState, virtualTimers } from './worker-harness.ts';
+import { DEV, MINT, Market, T, dueTimers, makeWorker, passingMarket, slotAt, tempState, virtualTimers } from './worker-harness.ts';
 
 const emptyRpc = { getSignaturesForAddress: async () => [{ signature: 'before-the-range', slot: 0n, err: null, blockTime: 0 }], getTransaction: async () => null };
 const VIA = 'logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM';
@@ -86,6 +86,38 @@ describe('PERSIST-1 in the worker', () => {
     expect(readFileSync(copy).equals(savedBytes)).toBe(true);
     const manifest = JSON.parse(readFileSync(join(rec, 'manifest.json'), 'utf8')) as { attachments: unknown[] };
     expect(manifest.attachments).toEqual([{ file: PERSIST_FILE, sha256: ref.sha256, bytes: savedBytes.length }]);
+  }, 60_000);
+
+  it('a coin created 16 days before its migration: the shortlist reads its create again, and the parity replay reproduces the live decisions (WORKER-GROW)', async () => {
+    const reads: string[] = [];
+    let m: Market | null = null;
+    const h = makeWorker({ seed: (r: SeedRequest) => runSeed(r, { rpc: emptyRpc, timers: h.timers }), readCreateAgain: async (sig) => {
+      reads.push(sig);
+      if (sig !== 'create-1') return 'not-found';
+      m!.create();
+      return 'found';
+    } });
+    m = new Market(h);
+    const started = h.worker.start();
+    while (!h.order.includes('start helius-ws')) await new Promise<void>((r) => setImmediate(r));
+    m.slot();
+    m.create();
+    expect(await started).toEqual({ ok: true });
+    await m.run(3_000, 400, () => m!.slot());
+    const pm = await passingMarket(h, { heldPoolFacts: true });
+    m = pm;
+    await pm.run(4_000, 100, () => pm.pool());
+    await pm.run(10_000, 400, () => { pm.slot(); pm.pool(); });
+    expect(reads).toEqual(['create-1']);
+    await h.worker.stop();
+    const b = loadSession(h.stateDir).find((x) => x.boot === h.worker.boot)!;
+    const d = { session: h.session, rugs: RUG_CONFIG, strategy: h.worker.strategyConfig };
+    expect(b.live.some((l) => l.includes('"shortlist"'))).toBe(true);
+    // The pending mark and the create read again are in the recording, so the replay sees what live saw.
+    expect(b.frames.some((f) => f.body.type === 'fact' && f.body.key === `gates/create-unread:${MINT}`)).toBe(true);
+    expect(b.frames.filter((f) => f.body.type === 'fact' && f.body.key === `pump:CreateEvent:${MINT}`).length).toBe(2);
+    expect(checkBoot(b, d, 3)).toMatchObject({ missing: null, deterministic: true, divergence: null });
+    expect(replayBoot(b, d)).toEqual(b.live);
   }, 60_000);
 
   it('the parity replay restores a restarted boot from its recording\'s copy and reproduces its decisions; it refuses loudly without exactly that copy (WORKER-GROW)', async () => {

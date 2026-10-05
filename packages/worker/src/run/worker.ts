@@ -66,7 +66,7 @@ export const DOWNTIME_CREDIT_CAP = 3_000;
 const COMPLETION_READS = 5;
 export const PERSIST_EVERY_MS = 5 * 60_000;
 import { type Control, NO_CONTROL, StateFile, controlFile, exitsFile, seedsFile, exposedFile, NO_EXPOSED } from './state.ts';
-import { LOG_CREATE_PREFIX, type PoolFact, S0_DIAGNOSTIC_PARTS, TX_CREATE_PREFIX, parsePool } from '../../../core/src/gates/index.ts';
+import { type CreateUnreadWhy, LOG_CREATE_PREFIX, type PoolFact, S0_DIAGNOSTIC_PARTS, TX_CREATE_PREFIX, createUnreadKey, parsePool } from '../../../core/src/gates/index.ts';
 import type { ExecStats } from '../../../core/src/facts/raw.ts';
 
 /** POS-1: a pool fact flagged beyond backfill or dedupe (a stale swap stream) is never priced from. */
@@ -133,8 +133,12 @@ export interface WorkerDeps {
    * Fetches a transaction at confirmed and puts it on the feed; resolves true when it was found. Used for a shortlisted
    * mint's create (item 9: live H9, H12–H14 need the confirmed create) and for a cut trade log on a rug-covered stream.
    */
-  /** `fresh`: read and put it on the feed again even if it was fetched before (a create the as-of store let go). */
-  readonly fetchTx: (signature: string, why: 'create' | 'cut-log' | 'restore', fresh?: boolean) => Promise<boolean>;
+  readonly fetchTx: (signature: string, why: 'create' | 'cut-log' | 'restore') => Promise<boolean>;
+  /**
+   * WORKER-GROW: a shortlisted mint's create read again and put on the feed again (the as-of store let it go), charged to
+   * the fills' budget (sources.ts `readCreateAgain`). Without it the plain `fetchTx` is asked.
+   */
+  readonly readCreateAgain?: (signature: string) => Promise<'found' | CreateUnreadWhy>;
   /**
    * RESTART-KEEP: signature reads on SEED-1's RPC, charged to the fill budget: the migrations of a restart's downtime.
    * Without it they are not read: coins that migrated while the worker was down are not candidates.
@@ -945,7 +949,17 @@ export class Worker {
     // old to outlive the candidate window and the longest hold, is read again, so the gates and the exits' deployer
     // read it for as long as the mint is a candidate or held.
     const fresh = createNeedsRead(this.#engine.lookup(`${TX_CREATE_PREFIX}${mint}`), this.#d.timers.now(), this.#createRefreshMs);
-    if (sig !== undefined) return void this.#d.fetchTx(sig, 'create', fresh);
+    if (sig !== undefined && !fresh) return void this.#d.fetchTx(sig, 'create');
+    if (sig !== undefined) {
+      // Fail closed: a create not read again refuses the candidate with its own reason (H16 `unread`), never a pass.
+      const again = this.#d.readCreateAgain ?? ((s: string) => this.#d.fetchTx(s, 'create').then((ok): 'found' | CreateUnreadWhy => (ok ? 'found' : 'not-found')));
+      // Marked first: the gates wait for a create newer than this mark, so nothing is judged on the old copy's absence.
+      this.#fact(createUnreadKey(mint), { why: 'pending', atMs: this.#d.timers.now() });
+      void again(sig).catch((): CreateUnreadWhy => 'error').then((r) => {
+        if (r !== 'found') this.#createUnread(mint, r);
+      });
+      return;
+    }
     if (this.#seeding) return void this.#createPending.push(mint);
     const find = this.#d.findCreate;
     if (find === undefined) return this.#d.log(`Shortlisted ${mint}: its create was not seen by this process; H9 and H12-H14 wait for it.`);
@@ -969,6 +983,13 @@ export class Worker {
         : `Shortlisted ${mint}: create lookup stopped (${r.stopped_by}, ${r.credits} credits)${retry ? '; trying once more in a minute' : ''}; H9 and H12-H14 wait for it.`);
       if (retry) this.#d.timers.setTimeout(() => (this.#stopping ? undefined : this.#lookupCreate(find, mint, 2)), CREATE_RETRY_MS);
     });
+  }
+
+  /** A shortlisted mint's create that could not be read (again): the gates refuse it with that reason (H16 `unread`). */
+  #createUnread(mint: string, why: CreateUnreadWhy): void {
+    if (this.#stopping) return;
+    this.#d.log(`Shortlisted ${mint}: its create could not be read again (${why}); it is refused until the create is read.`);
+    this.#fact(createUnreadKey(mint), { why, atMs: this.#d.timers.now() });
   }
 
   /** WORKER-1e: the paper attempts' execution statistics over the last 24 h (S0's diagnostic exec-health). */

@@ -181,13 +181,14 @@ describe('the swap stream of a watched pool (review of f679188, items 3 and 9)',
   it('the deployer selling more than the policy share of supply after the entry exits the position', async () => {
     // The create comes 16 days before the migration: the store let it go (WORKER-GROW), so the shortlist reads it
     // again (fresh, past the fetcher's memory) and the exit judges the deployer from the copy read then.
-    const fetches: [string, string, boolean][] = [];
+    const reads: string[] = [];
     let pre: Market | null = null;
-    const h = makeWorker({ onFetch: (sig, why, fresh) => {
-      fetches.push([sig, why, fresh]);
-      if (sig !== 'create-1') return false;
+    // Reading the create again puts it back on the feed (as the TxFetcher would, past its memory).
+    const h = makeWorker({ readCreateAgain: async (sig) => {
+      reads.push(sig);
+      if (sig !== 'create-1') return 'not-found';
       pre!.create();
-      return true;
+      return 'found';
     } });
     expect(await h.worker.reconcile()).toEqual({ ok: true });
     pre = new Market(h);
@@ -216,7 +217,44 @@ describe('the swap stream of a watched pool (review of f679188, items 3 and 9)',
     });
     expect(h.worker.book.positions[open.id]!.status).toBe('closed');
     expect(kinds(h.stateDir, 'exit')[0]!['reasons']).toEqual(expect.arrayContaining(['thesis_lost']));
-    expect(fetches).toContainEqual(['create-1', 'create', true]);
+    expect(reads).toEqual(['create-1']);
+    await h.worker.stop();
+  });
+
+  it.each(['no-budget', 'error', 'not-found'] as const)('a create that cannot be read again (%s) refuses the candidate with its own reason, never an entry (WORKER-GROW, fail closed)', async (why) => {
+    const h = makeWorker({ readCreateAgain: async () => {
+      if (why === 'error') throw new Error('timed out');
+      return why;
+    } });
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    // The create 16 days before the migration: the store let it go, and reading it again fails.
+    new Market(h).create();
+    h.worker.step();
+    const m = await passingMarket(h, HELD);
+    await m.run(4_000, 100, () => m.pool());
+    await m.run(10_000, 400, () => { m.slot(); m.pool(); });
+    expect(positions(h)).toEqual([]);
+    const unread = kinds(h.stateDir, 'decision').flatMap((d) => (Array.isArray(d['gate_reasons']) ? d['gate_reasons'] : []) as { gate: string; code: string; input?: string; detail: string }[]).filter((r) => r.code === 'unread');
+    expect(unread.length).toBeGreaterThan(0);
+    expect(unread[0]).toMatchObject({ gate: 'H16', code: 'unread' });
+    // Pending from the shortlist, then with the read's own reason.
+    const texts = kinds(h.stateDir, 'decision').flatMap((d) => d['reasons'] as string[]);
+    expect(texts.some((t) => t.includes(`the create could not be read again (${why})`))).toBe(true);
+    expect(h.logs.some((l) => l.includes(`its create could not be read again (${why})`))).toBe(true);
+    await h.worker.stop();
+  });
+
+  it('while the create is being read again the candidate is refused, never judged on the old copy\'s absence (WORKER-GROW)', async () => {
+    const h = makeWorker({ readCreateAgain: () => new Promise(() => {}) });
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    new Market(h).create();
+    h.worker.step();
+    const m = await passingMarket(h, HELD);
+    await m.run(4_000, 100, () => m.pool());
+    await m.run(10_000, 400, () => { m.slot(); m.pool(); });
+    expect(positions(h)).toEqual([]);
+    const texts = kinds(h.stateDir, 'decision').flatMap((d) => d['reasons'] as string[]);
+    expect(texts.some((t) => t.includes('the create is being read again'))).toBe(true);
     await h.worker.stop();
   });
 

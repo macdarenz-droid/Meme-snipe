@@ -147,7 +147,7 @@ export const LANDS = { ...FILL_CONFIG.scenarios[PAPER_SCENARIO], landPpm: { pump
 /** Boots made per state folder: a test's n-th worker is `boot-<n>` whatever the process, its pid or the other tests. */
 const boots = new Map<string, number>();
 
-export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof LANDS; stateDir?: string; timers?: TestTimers; edgePpm?: bigint; http?: HttpClient; key?: string | null; config?: Record<string, string>; fetched?: string[]; found?: boolean; facts?: FactSource[]; seed?: (r: SeedRequest) => Promise<SeedResult>; seedWaitMs?: number; entry?: { timing: 'gates' | 'random'; salt: string; s0Diagnostic?: boolean }; sources?: (ctx: SourcesContext) => FeedSource[]; exposureRpc?: SeedRpc; ops?: WorkerDeps['ops']; universe?: 'U1' | 'U2'; cutRpc?: (ms: number) => void; seedMaxMs?: number; simulate?: (leg: SimLeg) => Promise<DryRunRecord>; worldFault?: WorkerDeps['worldFault']; summaryFault?: WorkerDeps['summaryFault']; watchRead?: WorkerDeps['watchRead'] | null; watchHalted?: () => boolean; schedulers?: NonNullable<WorkerDeps['schedulers']>; markedHistory?: WorkerDeps['markedHistory']; sizeProbe?: WorkerDeps['sizeProbe']; findCreate?: WorkerDeps['findCreate']; strategy?: Partial<StrategyConfig>; crashPoint?: WorkerDeps['crashPoint']; maxSeedCreates?: number; createSigsMax?: number ; restartReads?: WorkerDeps['restartReads']; fetchedWhy?: [string, string][]; onFetch?: (sig: string, why: string, fresh: boolean) => boolean } = {}): Harness => {
+export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof LANDS; stateDir?: string; timers?: TestTimers; edgePpm?: bigint; http?: HttpClient; key?: string | null; config?: Record<string, string>; fetched?: string[]; found?: boolean; facts?: FactSource[]; seed?: (r: SeedRequest) => Promise<SeedResult>; seedWaitMs?: number; entry?: { timing: 'gates' | 'random'; salt: string; s0Diagnostic?: boolean }; sources?: (ctx: SourcesContext) => FeedSource[]; exposureRpc?: SeedRpc; ops?: WorkerDeps['ops']; universe?: 'U1' | 'U2'; cutRpc?: (ms: number) => void; seedMaxMs?: number; simulate?: (leg: SimLeg) => Promise<DryRunRecord>; worldFault?: WorkerDeps['worldFault']; summaryFault?: WorkerDeps['summaryFault']; watchRead?: WorkerDeps['watchRead'] | null; watchHalted?: () => boolean; schedulers?: NonNullable<WorkerDeps['schedulers']>; markedHistory?: WorkerDeps['markedHistory']; sizeProbe?: WorkerDeps['sizeProbe']; findCreate?: WorkerDeps['findCreate']; strategy?: Partial<StrategyConfig>; crashPoint?: WorkerDeps['crashPoint']; maxSeedCreates?: number; createSigsMax?: number ; restartReads?: WorkerDeps['restartReads']; fetchedWhy?: [string, string][]; readCreateAgain?: WorkerDeps['readCreateAgain'] } = {}): Harness => {
   const stateDir = o.stateDir ?? tempState();
   const timers = o.timers ?? virtualTimers(T - 16 * 86_400_000);
   const session = startSession(TRIAL_POLICY);
@@ -177,13 +177,12 @@ export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof L
       return made;
     }),
     simulate: o.simulate ?? okSimulation(legs),
-    fetchTx: async (sig, why, fresh) => {
+    fetchTx: async (sig, why) => {
       o.fetched?.push(sig);
       o.fetchedWhy?.push([sig, why]);
-      // A test that answers the fetch puts the transaction back on the feed itself (as the TxFetcher would).
-      if (o.onFetch !== undefined) return o.onFetch(sig, why, fresh === true);
       return o.found ?? false;
     },
+    ...(o.readCreateAgain === undefined ? {} : { readCreateAgain: o.readCreateAgain }),
     seed: async (r) => {
       order.push('seed');
       return o.seed === undefined ? { mode: 'none', creates: [], coverage: [], report: 'test: not seeded' } : o.seed(r);

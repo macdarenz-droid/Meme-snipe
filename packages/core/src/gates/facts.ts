@@ -277,6 +277,16 @@ export const poolKey = (mint: string): string => `${NS}pool:${mint}`;
 export const lpKey = (mint: string): string => `${NS}lp:${mint}`;
 export const curveKey = (mint: string): string => `${NS}curve:${mint}`;
 export const createKey = (mint: string): string => `${NS}create:${mint}`;
+/**
+ * WORKER-GROW: the worker could not read a shortlisted mint's create again (its raw create had aged out of the store):
+ * `{ why, atMs }`. H16 then refuses with its own reason (`unread`), never a pass and never a judgement without the create.
+ */
+export const createUnreadKey = (mint: string): string => `${NS}create-unread:${mint}`;
+/** Why a create was not read again: not found (or not decodable), an RPC error or time-out, or no fill budget left. */
+export const CREATE_UNREAD_WHY = ['not-found', 'error', 'no-budget'] as const;
+export type CreateUnreadWhy = (typeof CREATE_UNREAD_WHY)[number];
+/** The marker's states: `pending` from the shortlist until the read again answers, then why it failed (a found create is newer). */
+export const CREATE_UNREAD_STATES = ['pending', ...CREATE_UNREAD_WHY] as const;
 export const migrationKey = (mint: string): string => `${NS}migration:${mint}`;
 export const candlesKey = (mint: string): string => `${NS}candles:${mint}`;
 export const holdersKey = (mint: string): string => `${NS}holders:${mint}`;

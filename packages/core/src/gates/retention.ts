@@ -21,7 +21,7 @@ const TRADE = /^(logs:)?(pump_amm:(BuyEvent|SellEvent)|pump:TradeEvent):/;
  * holds it and keeps a held position's deployer from its entry (WORKER-GROW: kept for the whole process, they grew the
  * store by about 87 MB a day).
  */
-const PER_OBJECT = /^(gates\/(mint|pool|lp|curve|create|migration|candles|holders|insiders|deployer|sim|xcheck|soft):|(logs:)?(pump|pump_amm):|account:)/;
+const PER_OBJECT = /^(gates\/(mint|pool|lp|curve|create|create-unread|migration|candles|holders|insiders|deployer|sim|xcheck|soft):|(logs:)?(pump|pump_amm):|account:)/;
 
 export interface RetentionInputs {
   /** The deployer and rug look-back (policy.gates.deployerRugLookbackDays). */

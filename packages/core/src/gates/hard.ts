@@ -17,7 +17,7 @@ import { BPS_DENOMINATOR, type Lamports, type MicroUsd, lamportsToMicroUsd } fro
 import { Evidence, type GateContext, type Read } from './evidence.ts';
 import {
   type CreateFact, type MintFact, type PoolFact, type Price,
-  SOL_USD_KEY, candlesKey, createKey, curveKey, deployerKey, holdersKey, insidersKey, lpKey, migrationKey, mintKey,
+  CREATE_UNREAD_STATES, SOL_USD_KEY, candlesKey, createKey, createUnreadKey, curveKey, deployerKey, holdersKey, insidersKey, lpKey, migrationKey, mintKey,
   parseCandles, parseCreate, parseCurve, parseDeployer, parseHolders, parseInsiders, parseLp, parseMigration, parseMint,
   parsePool, parseSim, parseSolUsd, parseXcheck, poolKey, simKey, xcheckKey,
 } from './facts.ts';
@@ -25,6 +25,7 @@ import { checkCurveTails, checkPoolTails } from './tails.ts';
 import { LOG_CREATE_PREFIX, TX_CREATE_PREFIX, createOf, createsCoverage } from './deployer-index.ts';
 import { deployerCheckCovers, parseRugCheck, rugCheckFromMs, rugCheckKey } from './deployer-check.ts';
 import type { AsOfEntry } from '../engine/asof.ts';
+import { compareMoments } from '../engine/moment.ts';
 import type { Commitment } from '../domain/index.ts';
 import { type Concentration, concentration, mintAccounts, ownerBalance, shareBps } from './holders.ts';
 import type { GateNote, GateReason, HardGate, RejectCode } from './reasons.ts';
@@ -145,6 +146,18 @@ const readPool = (env: Env, gate: HardGate) => env.ev.read('pool', poolKey(env.r
  * at confirmed commitment; one read from the logs stream is at processed, which H16 refuses.
  */
 const readCreate = (env: Env, gate: HardGate): Read<CreateFact> => {
+  // WORKER-GROW, fail closed: the worker reads the mint's raw create again (the exits' deployer reads it). From the
+  // shortlist until a raw create newer than that attempt is held, the candidate is refused: while the read is pending,
+  // and with its reason when it failed, whatever create fact exists (the deployer and the supply are in the raw create).
+  const tried = env.ev.entry(createUnreadKey(env.req.mint));
+  const why = tried !== undefined && typeof tried.value === 'object' && tried.value !== null ? (tried.value as Readonly<Record<string, unknown>>)['why'] : undefined;
+  const unread = (CREATE_UNREAD_STATES as readonly unknown[]).includes(why) ? tried : undefined;
+  if (unread !== undefined) {
+    const raw = CREATE_ALIASES.map(([prefix]) => env.ev.entry(`${prefix}${env.req.mint}`)).filter((e) => e !== undefined);
+    if (!raw.some((e) => compareMoments(e.moment, unread.moment) > 0)) {
+      return { ok: false, reason: { gate: 'H16', code: 'unread', input: 'create', neededBy: gate, detail: why === 'pending' ? 'the create is being read again' : `the create could not be read again (${String(why)})` } };
+    }
+  }
   const own = createKey(env.req.mint);
   if (env.ev.raw(own) !== undefined) return env.ev.read('create', own, parseCreate, 'event', gate);
   for (const [prefix, commitment] of CREATE_ALIASES) {

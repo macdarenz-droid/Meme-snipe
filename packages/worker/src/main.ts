@@ -91,7 +91,8 @@ try {
     scenario: FILL_CONFIG.scenarios[PAPER_SCENARIO], network: FILL_CONFIG.network, timers,
     sources: (ctx) => providers.feeds(ctx),
     simulate,
-    fetchTx: (sig, _why, fresh) => providers.fetchTx(sig, fresh === true),
+    fetchTx: (sig) => providers.fetchTx(sig),
+    readCreateAgain: (sig) => providers.readCreateAgain(sig, timers),
     findCreate: (mint) => providers.findCreate(mint, timers),
     seed: (r) => runSeed(r, { rpc: providers.seedRpc(), timers, budget: fillBudget }),
     // RESTART-KEEP: the downtime's migrations and unseen creates, on the same RPC and the same daily fill budget.

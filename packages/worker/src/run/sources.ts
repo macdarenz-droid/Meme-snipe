@@ -13,6 +13,7 @@ import {
   RUGCHECK_FREE, Scheduler, type SchedulerSpec,
 } from '../scheduler/index.ts';
 import type { Timers } from '../scheduler/timers.ts';
+import type { CreateUnreadWhy } from '../../../core/src/gates/index.ts';
 import { type Credits, creditMonth, creditsFile } from './state.ts';
 import { SOL_PRICE_KEY } from '../engine/strategy.ts';
 import { PoolWatch, tradesStream } from './pool-watch.ts';
@@ -205,6 +206,9 @@ export const findCreate = async (mint: string, o: {
   }
 };
 
+/** Credits a create read again may spend: one getTransaction and the fetcher's three retries of a null answer (§1.2). */
+export const CREATE_REREAD_CREDITS = 4;
+
 export class LiveProviders {
   readonly helius: Scheduler;
   readonly alchemy: Scheduler;
@@ -327,13 +331,33 @@ export class LiveProviders {
    * A transaction at confirmed (P2), put on the feed; true when found and readable. One DEC-1 cannot decode reads as
    * not found, so a cut trade log it was fetched for still becomes a rugs gap (a decode failure is a fact gap).
    */
-  async fetchTx(signature: string, fresh = false): Promise<boolean> {
+  async fetchTx(signature: string): Promise<boolean> {
     if (this.#fetcher === null) return false;
     try {
-      const found = await this.#fetcher.fetch(signature, P2, false, fresh);
+      const found = await this.#fetcher.fetch(signature, P2);
       return found !== null && found.undecodable !== true;
     } catch {
       return false;
+    }
+  }
+
+  /**
+   * WORKER-GROW: a shortlisted mint's create read again and put on the feed again (fresh: past the fetcher's memory of
+   * fetched signatures), its credits charged to the fills' daily budget first, like any fill. Never throws.
+   */
+  async readCreateAgain(signature: string, timers: Timers): Promise<'found' | CreateUnreadWhy> {
+    if (this.#fetcher === null) return 'error';
+    const budget = this.#o.fillBudget;
+    const now = timers.now();
+    if (budget !== undefined) {
+      if (budget.remaining(now) < CREATE_REREAD_CREDITS) return 'no-budget';
+      budget.spend(CREATE_REREAD_CREDITS, now);
+    }
+    try {
+      const found = await this.#fetcher.fetch(signature, P2, false, true);
+      return found !== null && found.undecodable !== true ? 'found' : 'not-found';
+    } catch {
+      return 'error';
     }
   }
 }

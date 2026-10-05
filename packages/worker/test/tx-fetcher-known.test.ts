@@ -5,7 +5,9 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_LIVE_FEED, LiveFeed, RpcHttp, rpcHandler, scriptedHttp, TxFetcher, type Frame } from '../src/providers/index.ts';
 import { HELIUS_FREE, ManualTimers, P0, Scheduler } from '../src/scheduler/index.ts';
-import { CreditBook, LiveProviders } from '../src/run/sources.ts';
+import { CREATE_REREAD_CREDITS, CreditBook, LiveProviders } from '../src/run/sources.ts';
+import { DailyBudget } from '../src/persist/index.ts';
+import { join } from 'node:path';
 import { DelayProbe } from '../src/run/delay-probe.ts';
 import { blockNetwork, recordOf, settle, testSecrets, tx } from './helpers.ts';
 import { tempState } from './worker-harness.ts';
@@ -74,11 +76,11 @@ describe('a repeat ask for a fetched signature', () => {
 });
 
 describe('LiveProviders after the stream fetched a transaction', () => {
-  const setup = (t: ReturnType<typeof tx>) => {
+  const setup = (t: ReturnType<typeof tx>, fillBudget?: DailyBudget) => {
     const timers = new ManualTimers(1_000_000);
     let reads = 0;
     const http = scriptedHttp(rpcHandler((m) => (m === 'getTransaction' ? (reads++, t.base64) : null)));
-    const providers = new LiveProviders({ tradeStreams: false, secrets: testSecrets, http, factory: () => { throw new Error('no sockets here'); }, credits: new CreditBook(tempState(), timers) });
+    const providers = new LiveProviders({ tradeStreams: false, secrets: testSecrets, http, factory: () => { throw new Error('no sockets here'); }, credits: new CreditBook(tempState(), timers), ...(fillBudget === undefined ? {} : { fillBudget }) });
     providers.feeds({ feed: new LiveFeed(DEFAULT_LIVE_FEED), timers, pools: () => new Map() });
     return { timers, providers, reads: () => reads };
   };
@@ -89,6 +91,19 @@ describe('LiveProviders after the stream fetched a transaction', () => {
     expect(await s.providers.fetchTx(t.signature)).toBe(true);
     expect(await s.providers.fetchTx(t.signature)).toBe(true);
     expect(s.reads()).toBe(1);
+  });
+
+  it('readCreateAgain reads past the fetcher\'s memory, charges the fill budget first, and refuses when it is spent (WORKER-GROW)', async () => {
+    const t = tx('pump CreateEvent');
+    const budget = DailyBudget.load(join(tempState(), 'fill-budget.json'), CREATE_REREAD_CREDITS + 1, 1_000_000);
+    const s = setup(t, budget);
+    expect(await s.providers.fetchTx(t.signature)).toBe(true);
+    expect(await s.providers.readCreateAgain(t.signature, s.timers)).toBe('found');
+    expect(s.reads()).toBe(2);
+    expect(budget.remaining(s.timers.now())).toBe(1);
+    // Spent: no read at all.
+    expect(await s.providers.readCreateAgain(t.signature, s.timers)).toBe('no-budget');
+    expect(s.reads()).toBe(2);
   });
 
   it('the delay probe records found with the first confirmed arrival, not found: false', async () => {
