@@ -34,6 +34,7 @@ import {
 import type { GraduatesSeed } from '../../../core/src/facts/raw.ts';
 import { type BookEvent, type IntentState, isTerminal } from '../../../core/src/lifecycle/index.ts';
 import { type AccountHistory, type Latches, type Timed, evaluateEntry, evaluateExit, maxTradeCosts, riskSnapshot } from '../../../core/src/risk/index.ts';
+import { HourTags } from './hour-tags.ts';
 import { latchable, type markedHistory, markSettings, riskAccount } from './marks.ts';
 import { type Bps, BPS_DENOMINATOR, type Lamports, type MicroUsd, bps, lamportsToMicroUsd, mulDiv, microUsdToLamports } from '../../../core/src/units/index.ts';
 
@@ -336,14 +337,11 @@ export interface StrategyConfig {
 export const CREATE_KEEP_MS = 12 * 3_600_000;
 
 /**
- * OOM-MINT: how long a let-go create is remembered, so its coin's migration is refused `create-expired`: a week, as a
- * 22-character prefix (about 70 B each, about 21 MB at 30 a minute). After that its coin is treated as one whose create
- * this process never saw (the create lookup of CREATE-AFTER-RESTART).
+ * OOM-MINT: how long a let-go create is remembered, so its coin's migration is refused `create-expired`: a week, as an
+ * 8-byte tag (`HourTags`: about 6 MB at 75 creates a minute). After that its coin is treated as one whose create this
+ * process never saw (the create lookup of CREATE-AFTER-RESTART).
  */
 export const EXPIRED_CREATE_KEEP_MS = 7 * 24 * 3_600_000;
-
-/** A fresh flat copy of a mint's first 22 characters (about 128 bits): never keeps the key text it came from alive. */
-const mintTag = (mint: string): string => String.fromCharCode(...Array.from(mint.slice(0, 22), (c) => c.charCodeAt(0)));
 
 /** The saved state a seed names (WORKER-GROW): the file in the boot's recording, its sha256 over every byte, its format version. */
 export interface SavedStateRef {
@@ -1391,14 +1389,14 @@ export class LiveStrategy implements Strategy {
 
   /** OOM-MINT: creates seen and not yet let go, by mint, with their chain time (in release order). */
   readonly #creates = new Map<string, number>();
-  /** OOM-MINT: let-go creates (`mintTag`) and when, oldest first, kept `EXPIRED_CREATE_KEEP_MS`. */
-  readonly #expired = new Map<string, number>();
+  /** OOM-MINT: let-go creates, kept `EXPIRED_CREATE_KEEP_MS`. */
+  readonly #expired = new HourTags(EXPIRED_CREATE_KEEP_MS);
 
   #noteCreate(e: MarketEvent): void {
     const prefix = e.key.startsWith(LOG_CREATE_PREFIX) ? LOG_CREATE_PREFIX : e.key.startsWith(TX_CREATE_PREFIX) ? TX_CREATE_PREFIX : null;
     if (prefix === null) return;
     const mint = e.key.slice(prefix.length);
-    if (this.#creates.has(mint) || this.#expired.has(mintTag(mint))) return;
+    if (this.#creates.has(mint) || this.#expired.has(mint)) return;
     // Its age is the create's own chain time (a create read late, by a seed fill or a lookup, is as old as it is), else
     // when it was released.
     const created = createOf(e.value)?.createdAtMs ?? e.moment.receivedAt;
@@ -1416,13 +1414,10 @@ export class LiveStrategy implements Strategy {
       if (at + keep > now) break;
       this.#creates.delete(mint);
       if (this.#held(mint) || this.#tail.has(mint) || this.#poolOfMint.has(mint) || this.#migrationSlot.has(mint)) continue;
-      this.#expired.set(mintTag(mint), now);
+      this.#expired.add(mint, now);
       this.#letGo.push(mint);
     }
-    for (const [tag, at] of this.#expired) {
-      if (at + EXPIRED_CREATE_KEEP_MS > now) break;
-      this.#expired.delete(tag);
-    }
+    this.#expired.prune(now);
   }
 
   #indexPrunedAt = Number.NEGATIVE_INFINITY;
@@ -1439,7 +1434,7 @@ export class LiveStrategy implements Strategy {
 
   /** OOM-MINT: this mint's create was let go before its coin migrated (`create-expired`). */
   createExpired(mint: string): boolean {
-    return this.#expired.has(mintTag(mint));
+    return this.#expired.has(mint);
   }
 
   /** OOM-MINT: the mints and pools let go since the last call (`Strategy.retired`). */
