@@ -52,6 +52,9 @@ describe('fact kinds', () => {
     expect(o.candleFirstMs).toBe(policy.gates.chaseCheckAfterMs + 60_000);
     expect(o.candleLastMs).toBe(policy.gates.candleWindowMs + 60_000);
     expect(o.maxQuoteAgeMs).toBe(policy.gates.maxQuoteAgeMs);
+    // OOM-SEEN: the production repeat window is an hour (the worst reconnect gap-fill wait); a shorter one would flag
+    // gap-fill repeats partial for good.
+    expect(o.tradeRepeatMs).toBe(60 * 60_000);
     expect(o.survivalAfterMs).toBe(policy.regime.survivalAfterMs);
     expect(o.execHealth).toBeUndefined();
     expect(() => new FactProducer({ ...o, firstBuyers: -1 })).toThrow(/whole number/);
@@ -353,6 +356,23 @@ describe('candles', () => {
       const head = slot + 10n;
       w.push(slotNotice(head, at + 500));
       expect(ev(w, { slot: head, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt: at + 501 }).read('candles', candlesKey(MINT), parseCandles, 'state', 'H11').ok).toBe(false);
+    });
+
+    it('the window never moves back: a later trade stamped inside the window but behind the newest leaves a swept trade\'s repeat refused', () => {
+      // The newest trade at T sweeps the first trade's minute (it is more than W behind). A trade stamped T − 50 min then
+      // arrives (inside the window, out of order); the window must still be measured from T, so the first trade's repeat
+      // (its id already swept) stays refused: never applied twice, the reserve unchanged.
+      const first = atMsOf(trades()[0]!);
+      const T = first + W + 20 * 60_000;
+      const w = spreadWorld().push(newer(T, 1));
+      w.push(newer(T - 50 * 60_000, 2));
+      const before = state(w);
+      w.push(repeat());
+      const after = state(w);
+      expect(after.book.reserve).toEqual(before.book.reserve);
+      expect(after.book.ids).toBe(before.book.ids);
+      expect(after.candles.candles).toEqual(before.candles.candles);
+      expect(after.candles.obs.quality).toEqual(['partial']);
     });
 
     it('the same swaps from live log lines and, half an hour later, from a gap fill\'s fetched transactions count once', () => {
