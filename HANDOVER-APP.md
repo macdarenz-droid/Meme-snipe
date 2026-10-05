@@ -4,6 +4,18 @@ Owner, Tue 6 Oct about 1:00 AM: a second supervisor (S2), running on the owner's
 
 From here on, S2 owns this file. S2 keeps it current on its own branch `claude/s2-docs`, which starts from S1's docs branch `ccr-528521bb-f7a7zo`. S1 reads it there and does not edit it.
 
+## S2 events (newest first)
+
+### 2026-10-06 01:00:38 AEDT — startup inspection; session and API blockers
+- Read AGENTS.md, CLAUDE.md, this handover and PROJECT_STATE.md “Last part” from S1's docs branch. Created `claude/s2-docs` from that branch. Preserve all recorded completed work.
+- Verified integration base `efa3b006e5fa7bcf745a9b344d7232116511ab85`, APP-TRUTH `4b6ed6ef8b36aabe0cd586e858c2c02b1ca74361`, FUNNEL-TRUTH `7cf40fbefef25e3ee751e0c2a4c8152df696776d` through read-only remote Git operations.
+- Simulated both base merges with `git merge-tree --write-tree` without changing task branches. Both have a content conflict only in `docs/DECISIONS.md`; app labels and worker.ts auto-merge. These are conflict-discovery results, not completed merges or reviews.
+- Required separate visible Claude builder/reviewer sessions cannot be created here: no session-management tool or Claude executable is available. The available subagents do not offer the owner's required models. No substitute or hidden agents were started. Owner action: continue these builders/reviewers in the Claude account, or explicitly revise the session/model requirement for Codex.
+- Git reads work. GitHub API is blocked at the outbound proxy: `gh pr view 216` returned Forbidden; a header-only request to api.github.com returned CONNECT 403. Cannot inspect PR comments, exact-head CI, create a PR or post S2-READY. No missing Git credential inferred.
+- Saved an additive network draft allowing `api.github.com`, preserving package-manager presets; draft save confirmed, runtime change/publication not performed. Owner action: review and save the environment settings, then publish as requested by the platform. Retry the PR read after network access changes; request credentials only if that operation then establishes an authentication failure.
+- Initial environment setup installed the frozen lockfile successfully with pinned pnpm 10.28.0 and workspace-local Corepack/store caches; no source or lockfile edits. Typecheck, full tests and build have not run. This does not establish workflow readiness.
+- APP-TRUTH and FUNNEL-TRUTH wait for the required builder sessions. No S2-READY, merge, Deploy, integration push or risk change. No routine/scheduler capability is available here; no background monitor was started. Remaining queue and original review evidence below are unchanged.
+
 ## How S1 and S2 work together
 
 - **Channel.** The two supervisors are on different accounts and can't message each other. They use:
