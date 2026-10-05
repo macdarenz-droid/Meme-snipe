@@ -2551,3 +2551,29 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - `feed.test.ts`: a `SigRanks` rank costs under 110 B (141 B keyed by the signature) and ranks as a Map does; the live feed keeps a released signature in under 200 B (229 B with Map ranks).
   - Hand mutants killed: the low half ignored; a minute dropped when it starts; a late trade not reopening its minute; ranks keyed by the signature; the feed not using `SigRanks`.
 
+## Deployer index mints held compact (DEPLOYER-COMPACT, `core/src/gates/mint-index.ts`)
+
+- **2026-10-06 · Why.** The deployer index kept its mints as a Map of creators to Maps of mint strings and times: about 316 B a create (measured). Over its 15-day window that is about 171 MB at the live 25 creates a minute and about 512 MB at three times that, the largest term left of the memory bounds after CREATE-COMPACT and SEEN-TAGS.
+- **What.**
+  - `MintIndex` holds the same table compact:
+    - each mint as its 32 address bytes, its time as a float and its next link as an int, in growable typed arrays (1.25× growth, sized exactly at each prune);
+    - each creator's mints as a linked list in insertion order, so saved rows keep their order;
+    - each creator as its 32 bytes, found through an open-addressing table by a 30-bit tag, with colliding creators told apart by their bytes.
+    - A mint or creator that is not a canonical 32-byte address (tests, malformed input) is kept as its text, so everything reads back exactly as added.
+  - `DeployerIndex` keeps its API: `factFor`, `snapshot`, `mintRows`, `restore`, `prune`, `seed`, `fill`.
+  - **The saved shape is unchanged** (rows of creator and `[mint, time]` pairs), so no upgrade is needed. A file of today's shape, written by the index this replaces, restores to the same answers and saves back identical. Rug and unjudged labels stay as they were (small).
+- **Measured:** about 98 B a create (100,000 creates by 80,000 creators), against about 316 B. So about 51 MB at 1× and about 152 MB at sustained 3× over the 15-day window.
+- **Bounds after the three cards, at sustained 3× with every window full:**
+  - feed 100 MB, deployer index 152, creates 85, base 50, books 40, pool keys 30, capped maps 29, producer 31, readers 12, let-go tags 6, per-mint maps 5;
+  - total about 540 MB, which is under 560 MB but with little margin.
+  - The feed's dedupe keys are the next largest term.
+  - At 1×: about 240 MB, about 320 MB under the limit.
+- **Evidence (fail before, pass after).**
+  - `deployer-compact.test.ts`:
+    - today's saved index (`fixtures/deployer-index-v1.json`, written by the replaced index) restores, saves back, prunes and answers `factFor` and `mintRows` identically, from a whole file and from streamed rows;
+    - a bad row, entry, time or future entry refuses the file whole;
+    - `MintIndex` keeps order, the earliest time of a repeat, and canonical and text mints alike;
+    - colliding creator tags are kept apart;
+    - under 125 B a create.
+  - Hand mutants killed: a repeat taking the later time; creator bytes not compared; prune with `>`. The canonical-form check is equivalent for 32-byte base58 and is kept as a guard.
+
