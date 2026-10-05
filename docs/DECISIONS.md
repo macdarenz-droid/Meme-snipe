@@ -2685,3 +2685,7 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - an evaluation at or before the moment is saved as it was;
   - a candidate truly after the moment is still refused by the save's own check, and on restore.
   - Hand mutants killed: no clamp on `lastEvalMs`, on `last`, on `first`; a clamp applied always.
+  - `worker-flow.test.ts`, the H14 restart drill: on the base its restart **discarded** the saved state (`the snapshot
+    claims a moment after its as-of moment`, then a fresh start), and it passed on that fallback (`close.fromSlot`
+    null). Now the restart restores the state, asserted, and the fill closes the restart gap the restore opened at the
+    saved moment (`close.fromSlot` = the saved moment's slot, persist/state.ts); the rest of the drill is unchanged.
