@@ -130,12 +130,16 @@ describe('as-of store', () => {
     store.record('pump_amm:BuyEvent:P1', 'b', at(6, 0, 2), 'e4');
     store.record('gates/candles:M2', 'c2', at(6, 0, 3), 'e5');
     store.record('gates/candles:M1x', 'cx', at(6, 0, 4), 'e6');
-    expect(store.retire(new Set(['M1', 'P1']))).toBe(2);
-    for (const k of ['gates/candles:M1', 'pump_amm:BuyEvent:P1']) expect(store.lookup(k), k).toEqual({ ok: false, reason: 'missing' });
+    store.record('gates/pool:M1', 'p', at(6, 0, 5), 'e8');
+    expect(store.retire(new Set(['M1', 'P1']))).toBe(3);
+    for (const k of ['gates/candles:M1', 'gates/pool:M1', 'pump_amm:BuyEvent:P1']) expect(store.lookup(k), k).toEqual({ ok: false, reason: 'missing' });
     for (const k of ['k', 'gates/candles:M2', 'gates/candles:M1x']) expect(store.lookup(k).ok, k).toBe(true);
     clock.advanceTo(at(11));
     store.record('gates/candles:M1', 'again', at(11), 'e7');
     expect((store.history('gates/candles:M1', at(0)) as readonly AsOfEntry[]).map((x) => x.source)).toEqual(['e7']);
+    // Recorded again, it is retired again; an id retired twice forgets nothing more.
+    expect(store.retire(new Set(['M1']))).toBe(1);
+    expect(store.retire(new Set(['M1']))).toBe(0);
   });
 
   it('returns history inside the window, oldest first', () => {

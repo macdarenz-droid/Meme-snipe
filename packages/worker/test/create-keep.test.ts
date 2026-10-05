@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { LOG_CREATE_PREFIX } from '../../core/src/gates/index.ts';
 import { CREATE_KEEP_MS } from '../src/engine/strategy.ts';
 import { blockNetwork } from './helpers.ts';
-import { CREATED_AT, DEV, MINT, T, makeWorker, passingMarket } from './worker-harness.ts';
+import { DEV, MINT, T, makeWorker, passingMarket } from './worker-harness.ts';
 
 blockNetwork();
 
@@ -26,7 +26,7 @@ const run = async (ageMs: number) => {
   await h.worker.reconcile();
   const m = await passingMarket(h, {
     heldPoolFacts: true,
-    before: { atMs: T - 20 * 60_000 - ageMs, run: () => h.worker.feed.ingest('helius', { type: 'fact', key: `${LOG_CREATE_PREFIX}${MINT}`, value: { event: { program: 'pump', name: 'CreateEvent', data: { mint: MINT, creator: DEV, timestamp: BigInt(Math.floor(CREATED_AT / 1000)) } }, signature: 'createsig' } }, { receivedAt: h.timers.now() }) },
+    before: { atMs: T - 20 * 60_000 - ageMs, run: () => h.worker.feed.ingest('helius', { type: 'fact', key: `${LOG_CREATE_PREFIX}${MINT}`, value: { event: { program: 'pump', name: 'CreateEvent', data: { mint: MINT, creator: DEV, timestamp: BigInt(Math.floor((T - 20 * 60_000 - ageMs) / 1000)) } }, signature: 'createsig' } }, { receivedAt: h.timers.now() }) },
   });
   await m.run(4_000, 100, () => m.pool());
   await m.run(10_000, 400, () => {

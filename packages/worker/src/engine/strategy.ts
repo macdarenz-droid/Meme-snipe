@@ -29,7 +29,7 @@ import {
   atr, checkStopDistance, decideExit, execPrice, liquidationValue, exitAttemptsOf, exitBookEvents, exitSettings, newTracker, noteAttempt,
 } from '../../../core/src/exits/index.ts';
 import {
-  type Coverage, type DeployerIndexState, type GateContext, type GraduatesFact, type RugLabellerState, type S0DiagnosticPart, DeployerIndex, GRADUATES_KEY, hardAllowsEntry, LOG_CREATE_PREFIX, NOT_EVALUATED, stagedHardRejects, RugLabeller, TX_CREATE_PREFIX, type PoolFact, carryKey, createKey, createsCoverage, evaluateHardRejects, evaluateRegime, migrationKey, parseCreate, parseGraduates, parseMigration, parsePool, poolKey, pruneCoverage,
+  type Coverage, type DeployerIndexState, type GateContext, type GraduatesFact, type RugLabellerState, type S0DiagnosticPart, DeployerIndex, GRADUATES_KEY, hardAllowsEntry, LOG_CREATE_PREFIX, NOT_EVALUATED, stagedHardRejects, RugLabeller, TX_CREATE_PREFIX, type PoolFact, carryKey, createKey, createOf, createsCoverage, evaluateHardRejects, evaluateRegime, migrationKey, parseCreate, parseGraduates, parseMigration, parsePool, poolKey, pruneCoverage,
 } from '../../../core/src/gates/index.ts';
 import type { GraduatesSeed } from '../../../core/src/facts/raw.ts';
 import { type BookEvent, type IntentState, isTerminal } from '../../../core/src/lifecycle/index.ts';
@@ -907,6 +907,7 @@ export class LiveStrategy implements Strategy {
     this.#observe(e);
     this.#noteCreate(e);
     this.#expireCreates(e.moment.receivedAt);
+    this.#pruneIndex(e.moment.receivedAt);
     if (e.key === RESTORE_KEY) this.#restore(unwrap(e.value), out, e.moment.receivedAt);
     if (e.key === SEED_KEY) this.#seed(e.value, out);
     if (e.key === 'chain:slot') {
@@ -1388,7 +1389,7 @@ export class LiveStrategy implements Strategy {
 
   readonly #letGo: string[] = [];
 
-  /** OOM-MINT: creates seen and not yet let go, by mint, with when they were released (in release order). */
+  /** OOM-MINT: creates seen and not yet let go, by mint, with their chain time (in release order). */
   readonly #creates = new Map<string, number>();
   /** OOM-MINT: let-go creates (`mintTag`) and when, oldest first, kept `EXPIRED_CREATE_KEEP_MS`. */
   readonly #expired = new Map<string, number>();
@@ -1398,7 +1399,10 @@ export class LiveStrategy implements Strategy {
     if (prefix === null) return;
     const mint = e.key.slice(prefix.length);
     if (this.#creates.has(mint) || this.#expired.has(mintTag(mint))) return;
-    this.#creates.set(String.fromCharCode(...Array.from(mint, (c) => c.charCodeAt(0))), e.moment.receivedAt);
+    // Its age is the create's own chain time (a create read late, by a seed fill or a lookup, is as old as it is), else
+    // when it was released.
+    const created = createOf(e.value)?.createdAtMs ?? e.moment.receivedAt;
+    this.#creates.set(String.fromCharCode(...Array.from(mint, (c) => c.charCodeAt(0))), created);
   }
 
   /**
@@ -1419,6 +1423,18 @@ export class LiveStrategy implements Strategy {
       if (at + EXPIRED_CREATE_KEEP_MS > now) break;
       this.#expired.delete(tag);
     }
+  }
+
+  #indexPrunedAt = Number.NEGATIVE_INFINITY;
+
+  /**
+   * OOM-MINT: once an hour of event time, the deployer index drops what its save leaves out (the H14 look-back plus a day,
+   * the worker's PERSIST-1 line), so its memory holds what a restart would restore and no more.
+   */
+  #pruneIndex(now: number): void {
+    if (now - this.#indexPrunedAt < 3_600_000) return;
+    this.#indexPrunedAt = now;
+    this.#deployers.prune(now - (this.#d.session.policy.gates.deployerRugLookbackDays + 1) * 86_400_000);
   }
 
   /** OOM-MINT: this mint's create was let go before its coin migrated (`create-expired`). */
