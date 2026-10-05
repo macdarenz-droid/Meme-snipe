@@ -186,18 +186,23 @@ describe('the summary\'s credit detail', () => {
       live: () => ({ ...base, credits, heliusExhaustion: null }),
     });
     await sz.tick();
-    expect(bodies).toHaveLength(2);
+    // MEM-SUMMARY: the first resend leaves out the memory at the last death (a watchdog this old refuses it too).
+    expect(bodies).toHaveLength(3);
     expect(bodies[0]).toContain('"by_class"');
-    const second = JSON.parse(bodies[1]!) as { worker: Record<string, unknown>; provider_credits: Record<string, unknown>[] };
-    expect(second.provider_credits.every((c) => !('by_class' in c))).toBe(true);
-    expect(Object.keys(second.worker)).toEqual(expect.arrayContaining(['restarts', 'exits', 'crash_sites']));
-    expect(logs).toEqual(['Summary for 2026-10-05 refused; sent again without the credit detail.']);
+    expect(bodies[0]).toContain('"last_death"');
+    expect(bodies[1]).toContain('"by_class"');
+    expect(bodies[1]).not.toContain('"last_death"');
+    const third = JSON.parse(bodies[2]!) as { worker: Record<string, unknown>; provider_credits: Record<string, unknown>[] };
+    expect(third.provider_credits.every((c) => !('by_class' in c))).toBe(true);
+    expect(Object.keys(third.worker)).toEqual(expect.arrayContaining(['restarts', 'exits', 'crash_sites']));
+    expect(Object.keys(third.worker)).not.toContain('last_death');
+    expect(logs).toEqual(['Summary for 2026-10-05 refused; sent again without the memory at the last death.', 'Summary for 2026-10-05 refused; sent again without the credit detail.']);
     bodies.length = 0;
     logs.length = 0;
     status = (body) => (body.includes('"by_class"') || body.includes('"crash_sites"') ? 400 : 200);
     await sz.tick();
-    expect(bodies).toHaveLength(3);
-    expect(Object.keys((JSON.parse(bodies[2]!) as { worker: Record<string, unknown> }).worker)).not.toContain('crash_sites');
+    expect(bodies).toHaveLength(4);
+    expect(Object.keys((JSON.parse(bodies[3]!) as { worker: Record<string, unknown> }).worker)).not.toContain('crash_sites');
     expect(logs.at(-1)).toBe('Summary for 2026-10-05 refused; sent again without the restart counts.');
   });
 });
