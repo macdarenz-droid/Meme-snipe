@@ -7,7 +7,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { AsOfStore, type AsOfEntry, type Moment } from '../../core/src/engine/index.ts';
 import { checkCurveTails, compactCreate, compactCurveTrade, createOf } from '../../core/src/gates/index.ts';
 import { eventsOfFrame, type Frame } from '../src/providers/canonical.ts';
-import { liveCollapse, liveRetention, liveShape } from '../src/run/store-rules.ts';
+import { compactSeed, liveCollapse, liveRetention, liveShape } from '../src/run/store-rules.ts';
 import { blockNetwork, recordOf, tx } from './helpers.ts';
 import { MINT, makeWorker, passingMarket } from './worker-harness.ts';
 
@@ -141,5 +141,15 @@ describe('CREATE-COMPACT: creates and curve trades in the live store', () => {
     } finally {
       spy.mockRestore();
     }
+  });
+
+  it('G4a: the boot\'s seed fact is stored as its moment and counts, never its creates', () => {
+    const asOf = at(1);
+    const seed = { state: { ref: 'x' }, asOf, creates: [1, 2, 3], coverage: [1], fill: [], rugs: [1, 2], history: [1] };
+    expect(liveShape('worker:seed')).toBe(compactSeed);
+    const store = new AsOfStore({ now: () => at(2_000) }, liveRetention, liveCollapse, liveShape);
+    store.record('worker:seed', seed, at(1_000), 'seed');
+    const r = store.lookup('worker:seed') as { ok: true; value: unknown };
+    expect(r.value).toEqual({ asOf, counts: { creates: 3, coverage: 1, fill: 0, rugs: 2, history: 1 } });
   });
 });

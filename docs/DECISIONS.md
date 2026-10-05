@@ -2577,3 +2577,15 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
     - under 125 B a create.
   - Hand mutants killed: a repeat taking the later time; creator bytes not compared; prune with `>`. The canonical-form check is equivalent for 32-byte base58 and is kept as a guard.
 
+## Graduates fact newest-only, seed fact stored as counts (G4a, `run/store-rules.ts`)
+
+- **2026-10-06 · Why** (#164 G4a items folded into the crash list, supervisor ruling).
+  - **Graduates:** `gates/graduates` is stated whole at every resolved graduate (about one a minute at 1×), each time with every graduate of its 16-day window. Kept whole, each statement held a pointer array the length of the series. Once the window is full that is about 180 KB a statement, about 260 MB a day; over the first days it grows as the square of the days (about 8 MB × days²).
+  - **Seed:** the boot's seed fact (`worker:seed`) carries up to 200,000 creates on a start with no saved state, plus coverage, fill, rugs and history. It was kept in the store for the process.
+- **What.**
+  - `gates/graduates` keeps its newest value (`liveCollapse`). The regime gate reads it as of now (`Evidence.read`, 'series'), the strategy acts on the released event, and nothing asks for an older value.
+  - `worker:seed` is stored as its moment and its counts (`compactSeed`, `liveShape`). The strategy acts on the released event and keeps its own copy of the seed's history; nothing looks the seed up in the store.
+- **Evidence (fail before, pass after).**
+  - `store-rules.test.ts`: the graduates fact keeps only its newest value.
+  - `create-compact.test.ts`: the seed fact is stored as its moment and counts.
+
