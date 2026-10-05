@@ -30,6 +30,12 @@ export interface Decision {
 
 export interface Strategy {
   onMarket(event: MarketEvent, ctx: StrategyContext): readonly Decision[];
+  /**
+   * OOM-MINT: the mints and pools the strategy has let go since the last call, whose facts nothing will read again. The
+   * engine forgets their keys in the as-of store and tells the feed, right after the event that let them go, so a replay
+   * forgets at the same point.
+   */
+  retired?(): readonly string[];
 }
 
 export interface DispatchedEffect {
@@ -178,6 +184,11 @@ export class Engine {
       const base = { type: 'decision' as const, at: now, eventId: e.id, inputs: read, action: d.action, reasons: [...d.reasons] };
       if (d.action === null) this.#log({ ...base, result: 'abstained', effects: [] });
       else this.#log({ ...base, ...this.#apply(d.action, now) });
+    }
+    const gone = this.#strategy.retired?.() ?? [];
+    if (gone.length > 0) {
+      store.retire(new Set(gone));
+      this.#feed.retire?.(gone);
     }
   }
 

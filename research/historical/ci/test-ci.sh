@@ -230,6 +230,10 @@ for g in archive40 archive10.5 archivenone; do
 done
 o="$T/scanrps"; rm -rf "$o"; mkdir -p "$o"; ARCHIVE_GO="$T/archive10.go" scan "$o" && [[ $(calls) == "scan " ]] || bad+=" archive10"
 [[ -z "$bad" ]] && ok "ARCHIVE-SAFE: scan-day refuses (exit 2, no request) a scanner request cap of 40, 10.5 or none found, and scans at 10" || no "scan-day rps:$bad"
+o="$T/scannd"; rm -rf "$o"; mkdir -p "$o"; : > "$T/calls.log"; rc=0
+ARCHIVE_GO="$T/archive10.go" PATH="$S:$PATH" GITHUB_STEP_SUMMARY="$T/summary.md" bash "$here/scan-day.sh" 2026-09-21 "$o" 40 300 > "$T/out.txt" 2>&1 || rc=$?
+[[ $rc == 2 && ! -s "$T/calls.log" ]] && grep -q "2026-09-21 is a Helius day" "$T/out.txt" &&
+  ok "ARCHIVE-NODUP: scan-day refuses the Helius day 2026-09-21 (exit 2) before any scanner call" || no "scan-day helius day: rc=$rc $(calls)"
 o="$T/scan3"; mkdir -p "$o"; now=$(date +%s); echo "$now 7200 $((now + 7200))" > "$o/archive-429.state"
 rc=0; scan "$o" 60 || rc=$?
 mapfile -t c < "$T/calls.log"; w=${c[0]#sleep }
@@ -426,7 +430,9 @@ for s in steps[i + 1:]:
         continue
     assert "steps.published.outputs.complete != 'true'" in s.get("if", ""), s
 tok = [s for s in steps if "github.token" in str(s)]
-assert [s.get("id") or s.get("name") for s in tok] == ["published", "Publish this day", "Publish this day's volume hours"], tok
+assert [s.get("id") or s.get("name") for s in tok] == ["published", "pickprogress", "Publish this day", "Publish this day's volume hours"], tok
+pick = next(s for s in steps if s.get("id") == "pickprogress")
+assert pick["run"].endswith('research/historical/ci/progress-pick.sh" "$PREFIX"'), pick
 for s in tok:
     assert s["shell"].startswith("/usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc"), s
     assert s["env"]["BASH_ENV"] == "" and s["run"].startswith("/usr/bin/env -i PATH=/usr/bin:/bin "), s
@@ -451,7 +457,8 @@ assert '-f chain="$next"' in r and "-f days=\"$DAYS\"" in r, r
 assert wf[True]["workflow_dispatch"]["inputs"]["chain"]["default"] == "0"
 # volume back-fill: its own concurrency group, no archive access, token in two steps only,
 # publishing in the same clean shell as the day release
-assert wf["concurrency"]["group"] == "${{ inputs.mode == 'volume' && 'data-scan-volume' || 'data-scan' }}", wf["concurrency"]
+assert wf["concurrency"]["group"] == "${{ inputs.mode == 'volume' && 'data-scan-volume' || (inputs.source == 'helius' && 'data-scan-helius' || 'data-scan') }}", wf["concurrency"]
+assert wf["concurrency"]["cancel-in-progress"] is False, wf["concurrency"]
 vj = wf["jobs"]["volume"]
 assert vj["if"] == "inputs.mode == 'volume'" and vj["strategy"]["max-parallel"] == 1, vj
 vsteps = vj["steps"]
@@ -563,7 +570,10 @@ bad=""
 for v in 41 0; do rc=0; MAX_MBPS=$v cdrun m 0 || rc=$?; [[ $rc == 2 && ! -s "$T/zs.args" ]] && grep -q "max_mbps $v is not in" "$T/summary.md" || bad+=" mbps=$v:$rc"; done
 for g in archive40 archive10.5 archivenone; do rc=0; ARCHIVE_GO="$T/$g.go" cdrun m 0 || rc=$?; [[ $rc == 2 && ! -s "$T/zs.args" ]] && grep -q "request cap" "$T/summary.md" || bad+=" $g:$rc"; done
 rc=0; MAX_MBPS=40 cdrun m 75 || rc=$?; [[ $rc == 4 ]] && grep -q '^unit ' "$T/zs.args" || bad+=" ok40:$rc"
-[[ -z "$bad" ]] && ok "ARCHIVE-SAFE: check-day (archive) exits 2 before any zeroed-scan call for max_mbps 41 or 0 and a request cap of 40, 10.5 or none; 40 MB/s at 10/s runs" || no "check-day limits:$bad"
+o="$T/cd-nd"; rm -rf "$o"; mkdir -p "$o/units/1046/1-2" "$T/cd-ds"; echo x > "$o/units/1046/1-2/blocks.csv.zst"; : > "$T/zs.args"; : > "$T/summary.md"; rc=0
+ARCHIVE_GO="$T/archive10.go" FAKE_AVAIL=999000000000 DATASET_PARENT="$T/cd-ds" PATH="$C:$PATH" GITHUB_STEP_SUMMARY="$T/summary.md" bash "$here/check-day.sh" 2026-09-21 "$o" "$T/cd-assets-nd" > "$T/out.txt" 2>&1 || rc=$?
+[[ $rc == 2 && ! -s "$T/zs.args" ]] && grep -q "2026-09-21 is a Helius day" "$T/summary.md" || bad+=" helius-day:$rc"
+[[ -z "$bad" ]] && ok "ARCHIVE-SAFE: check-day (archive) exits 2 before any zeroed-scan call for max_mbps 41 or 0, a request cap of 40, 10.5 or none, and a Helius day (ARCHIVE-NODUP); 40 MB/s at 10/s runs" || no "check-day limits:$bad"
 [[ $p == determinism ]] && grep -q "^phase determinism" "$T/summary.md" && ok "check-day: finalize, QA, parity, volume and determinism durations are logged"
 rc=0; cdrun b 1 || rc=$?
 [[ $rc == 1 ]] && grep -q "determinism rescan failed (scanner exit 1)" "$T/summary.md" && ok "check-day: any other rescan failure exits 1 (not resumable)" || no "check-day rescan failure: rc=$rc"
@@ -579,7 +589,8 @@ u=; while (( $# )); do [[ $1 == -usage-out ]] && u=$2; shift; done
 w() { [[ -n "$u" && -z "${RPC_NOUSAGE:-}" ]] || return 0
   if [[ -n "${RPC_USAGE_RAW:-}" ]]; then printf '%s' "$RPC_USAGE_RAW" > "$u"; else printf '{\n  "credits": %s,\n  "requests": 1\n}\n' "${RPC_CREDITS:-0}" > "$u"; fi; }
 trap 'w; exit 1' INT
-[[ -n "${RPC_SLEEP:-}" ]] && { sleep "$RPC_SLEEP" & wait $!; }
+[[ -n "${RPC_SLEEP:-}" ]] && { sleep "$RPC_SLEEP" 2>/dev/null & wait $!; }
+[[ -n "${RPC_ERR:-}" ]] && echo "$RPC_ERR" >&2
 w; exit "${RPC_RC:-0}"
 STUB
 chmod +x "$R/zeroed-rpcscan"
@@ -597,6 +608,11 @@ rc=0; rd "$o" RPC_CREDITS=850 RPC_RC=3 || rc=$?
   ok "rpc-day: the cap spent mid-run exits 3 (not resumable) with the credits booked" || no "rpc-day cap: rc=$rc"
 n=$(wc -l < "$T/rpc.log"); rc=0; rd "$o" || rc=$?
 [[ $rc == 3 && $(wc -l < "$T/rpc.log") == "$n" ]] && ok "rpc-day: with the cap spent, no request is made (exit 3)" || no "rpc-day spent: rc=$rc"
+# ARCHIVE-NODUP: only a day listed in HELIUS_DAYS is read over RPC.
+o="$T/rdnd"; rm -rf "$o"; n=$(wc -l < "$T/rpc.log"); : > "$T/summary.md"; rc=0
+env RPCLOG="$T/rpc.log" PATH="$R:$PATH" GITHUB_STEP_SUMMARY="$T/summary.md" bash "$here/rpc-day.sh" 2026-09-20 "$o" 5 1000 > "$T/out.txt" 2>&1 || rc=$?
+[[ $rc == 2 && $(wc -l < "$T/rpc.log") == "$n" ]] && grep -q "2026-09-20 is not a Helius day" "$T/summary.md" &&
+  ok "ARCHIVE-NODUP: rpc-day refuses a day not in HELIUS_DAYS (an archive-queue day) before any request (exit 2)" || no "rpc-day non-helius day: rc=$rc"
 o="$T/rd2"; rm -rf "$o"; mkdir -p "$o/units/1046/1-2"; echo '{"scanner_revision": "old"}' > "$o/units/1046/1-2/stats.json"
 rc=0; rd "$o" SCANNER_REVISION=new RPC_CREDITS=1 || rc=$?
 [[ $rc == 0 && ! -e "$o/units/1046/1-2" ]] && ok "rpc-day: units of another revision are reread" || no "rpc-day revision"
@@ -678,18 +694,23 @@ for set in "in_progress|data-scan scan source=archive" "queued|data-scan scan so
 done
 [[ -z "$bad" ]] && ok "archive-check: a run that may read the archive (archive source, no source in its title, anything unexpected) means no request and no dispatch" || no "archive-check archive-run no-op:$bad"
 bad=""
+sed 's/^var reqLimiter = newLimiter([0-9.]*)$/var reqLimiter = newLimiter(10)/' "$here/../scanner/archive.go" > "$A/lane10.go"
 for set in "$H" "queued|data-scan scan source=helius" "$H;queued|data-scan scan source=helius"; do
   IFS=';' read -ra a <<< "$set"
-  ac env AC_RUNS="$(runs "${a[@]}" "completed|data-scan scan source=archive")" AC_STATUS=206
-  [[ $(wc -l < "$A/curl.calls" 2>/dev/null) == 1 && ! -e "$A/dispatch.log" ]] && grep -q "served; nothing dispatched while" "$A/summary.md" || bad+=" [$set]"
+  ac env AC_RUNS="$(runs "${a[@]}" "completed|data-scan scan source=archive")" AC_STATUS=206 ARCHIVE_GO="$A/lane10.go"
+  [[ $(wc -l < "$A/curl.calls" 2>/dev/null) == 1 && $(wc -l < "$A/dispatch.log" 2>/dev/null) == 1 ]] && grep -q "served; dispatched data-scan for" "$A/summary.md" || bad+=" [$set]"
   grep -q 'gh run list --repo o/r --workflow data-scan.yml --limit 50 --json databaseId,status,displayTitle' "$A/gh.log" || bad+=" [list-call]"
 done
 ac env AC_RUNS="$(runs "$H")" AC_STATUS=429
 [[ $(wc -l < "$A/curl.calls") == 1 && ! -e "$A/dispatch.log" ]] && grep -q "not served" "$A/summary.md" || bad+=" [429]"
 # helius_runs (manual dispatch): an old-title run named by id counts as Helius-only (ids
 # are 100, 101, ... in list order).
-ac env AC_RUNS="$(runs "in_progress|data-scan" "in_progress|data-scan")" AC_STATUS=206 HELIUS_RUNS=100,101
-[[ $(wc -l < "$A/curl.calls" 2>/dev/null) == 1 && ! -e "$A/dispatch.log" ]] && grep -q "served; nothing dispatched while 2" "$A/summary.md" || bad+=" [named]"
+ac env AC_RUNS="$(runs "in_progress|data-scan" "in_progress|data-scan")" AC_STATUS=206 HELIUS_RUNS=100,101 ARCHIVE_GO="$A/lane10.go"
+[[ $(wc -l < "$A/curl.calls" 2>/dev/null) == 1 && $(wc -l < "$A/dispatch.log" 2>/dev/null) == 1 ]] || bad+=" [named]"
+# The ARCHIVE-SAFE hold still applies beside a Helius run: a scanner capped above 10/s
+# (today's scanner/archive.go) dispatches nothing.
+ac env AC_RUNS="$(runs "$H")" AC_STATUS=206
+[[ $(wc -l < "$A/curl.calls" 2>/dev/null) == 1 && ! -e "$A/dispatch.log" ]] && grep -q "held:" "$A/summary.md" || bad+=" [hold-beside-helius]"
 ac env AC_RUNS="$(runs "in_progress|data-scan" "queued|data-scan scan source=archive")" AC_STATUS=206 HELIUS_RUNS=100
 [[ ! -e "$A/curl.calls" && ! -e "$A/dispatch.log" ]] && grep -q "may read the archive active or queued; no request made" "$A/summary.md" || bad+=" [named-but-archive-active]"
 ac env AC_RUNS="$(runs "in_progress|data-scan")" AC_STATUS=206 HELIUS_RUNS=999,1000
@@ -700,7 +721,7 @@ for v in "100;x" "100 101" "abc" "100," ",100" "1e3" '$(id)'; do
   rc=0; ac env AC_RUNS="$(runs "in_progress|data-scan")" AC_STATUS=206 HELIUS_RUNS="$v" || rc=$?
   [[ $rc == 1 && ! -e "$A/curl.calls" && ! -e "$A/gh.log" ]] && grep -q "helius_runs must be run ids" "$A/summary.md" || bad+=" [refuse:$v]"
 done
-[[ -z "$bad" ]] && ok "archive-check: only Helius runs active or queued (title source=helius, or an id named in helius_runs; anything else refused or blocking): exactly one request; served is reported but nothing is dispatched beside them" || no "archive-check helius-only:$bad"
+[[ -z "$bad" ]] && ok "ARCHIVE-LANE: only Helius runs active or queued (title source=helius, or an id named in helius_runs; anything else refused or blocking): exactly one request, and a served answer dispatches the archive day beside them (the ARCHIVE-SAFE hold still applies)" || no "archive-check helius-only:$bad"
 ac env AC_STATUS=429
 [[ $(wc -l < "$A/curl.calls") == 1 && ! -e "$A/dispatch.log" ]] && grep -qx -- "-A" "$A/curl.args" && grep -qxF -- "$ua" "$A/curl.args" &&
   grep -qx -- "0-63" "$A/curl.args" && grep -q "| 429 | 64 | 0 | 8abc123-SYD |" "$A/summary.md" && [[ -n "$ua" ]] &&
@@ -721,6 +742,15 @@ ac env AC_STATUS=206 ARCHIVE_GO="$A/archive10.go"
 [[ $(wc -l < "$A/curl.calls") == 1 && $(wc -l < "$A/dispatch.log") == 1 ]] &&
   grep -q -- "data-scan.yml --repo o/r --ref main -f mode=scan -f days=2026-09-20 -f max_mbps=40$" "$A/dispatch.log" &&
   ok "ARCHIVE-SAFE: a 206 dispatches once, the next 1 unpublished pre-holdout day at 40 MB/s" || no "archive-check 206 dispatch: $(cat "$A/dispatch.log" 2>/dev/null)"
+: > "$A/published"
+ac env AC_STATUS=206 ARCHIVE_GO="$A/archive10.go"
+grep -q -- "-f days=2026-09-20 -f max_mbps=40$" "$A/dispatch.log" &&
+  ok "ARCHIVE-NODUP: with nothing published the archive queue skips the Helius day 2026-09-21 and starts at 2026-09-20" || no "archive-check skips helius day: $(cat "$A/dispatch.log" 2>/dev/null)"
+d=2026-09-20; : > "$A/published"; while [[ "$d" > 2026-07-19 ]]; do echo "$d" >> "$A/published"; d=$(date -u -d "$d - 1 day" +%F); done
+for d in 2026-10-01 2026-09-30 2026-09-29 2026-09-28 2026-09-27 2026-09-26 2026-09-25 2026-09-24 2026-09-23 2026-09-22; do echo "$d" >> "$A/published"; done
+ac env AC_STATUS=206 ARCHIVE_GO="$A/archive10.go"
+[[ ! -e "$A/dispatch.log" ]] && grep -q "every day of the window is published" "$A/summary.md" &&
+  ok "ARCHIVE-NODUP: with every other day published, the unpublished Helius day is never queued for the archive" || no "archive-check helius day last: $(cat "$A/dispatch.log" 2>/dev/null)"
 d=2026-09-21; : > "$A/published"; while [[ "$d" > 2026-07-19 ]]; do echo "$d" >> "$A/published"; d=$(date -u -d "$d - 1 day" +%F); done
 ac env AC_STATUS=206 ARCHIVE_GO="$A/archive10.go"
 grep -q -- "-f days=2026-10-01 " "$A/dispatch.log" &&
@@ -798,7 +828,12 @@ for s in key:
     assert s["env"]["HELIUS_API_KEY"] == "${{ inputs.source == 'helius' && secrets.HELIUS_API_KEY || '' }}", s["env"]
 assert "rpc-day.sh" in steps[[s.get("id") for s in steps].index("scan")]["run"]
 caches = [s for s in steps if "actions/cache" in s.get("uses", "") and "work/data" in s["with"]["path"]]
-assert caches and all(s["with"]["key"].startswith("${{ inputs.source == 'helius' && 'data-rpc' || 'data-scan' }}-") for s in caches), caches
+saves = [s for s in caches if "cache/save" in s["uses"]]
+assert saves and all(s["with"]["key"].startswith("${{ inputs.source == 'helius' && 'data-rpc' || 'data-scan' }}-") for s in saves), saves
+res = next(s for s in caches if "cache/restore" in s["uses"])
+assert res["with"]["key"] == "${{ steps.pickprogress.outputs.key || format('{0}-{1}-{2}', inputs.source == 'helius' && 'data-rpc' || 'data-scan', matrix.day, github.run_id) }}" and "restore-keys" not in res["with"], res
+pick = next(s for s in steps if s.get("id") == "pickprogress")
+assert pick["env"]["PREFIX"] == "${{ inputs.source == 'helius' && 'data-rpc' || 'data-scan' }}-${{ matrix.day }}-", pick
 r = wf["jobs"]["continue"]["steps"][0]["run"]
 assert '-f source="$SOURCE" -f max_credits="$MAX_CREDITS" -f rpc_rps="$RPC_RPS"' in r, r
 assert 'rpc_rps must be from 1 to 50' in plan and ins["rpc_rps"]["default"] == "5"
@@ -815,12 +850,113 @@ wf = yaml.safe_load(open(sys.argv[1]))
 assert wf["run-name"] == "data-scan ${{ inputs.mode }} source=${{ inputs.source || 'archive' }}", wf.get("run-name")
 assert wf[True]["workflow_dispatch"]["inputs"]["source"]["default"] == "archive"
 PY
+python3 - "$here/../../../.github/workflows/data-scan.yml" <<'PY' && ok "ARCHIVE-NODUP: a Helius dispatch of a day already published from the archive is skipped: the published check runs for both sources and gates every read" || no "data-scan helius skips published day"
+import sys, yaml
+steps = yaml.safe_load(open(sys.argv[1]))["jobs"]["scan"]["steps"]
+pub = next(s for s in steps if s.get("id") == "published")
+assert "if" not in pub and "inputs.source" not in str(pub) and "publish-day.sh\" --check" in pub["run"], pub
+scan = next(s for s in steps if s.get("id") == "scan")
+assert scan["if"] == "steps.published.outputs.complete != 'true'" and "rpc-day.sh" in scan["run"], scan
+qa = next(s for s in steps if s.get("id") == "qa")
+assert "steps.published.outputs.complete != 'true'" in qa["if"], qa
+PY
+# ---- HISTORY-RESUME: transient RPC errors resume; progress never moves backwards ----
+o="$T/rdtr"; rm -rf "$o"; rc=0; rd "$o" RPC_CREDITS=5 RPC_RC=1 RPC_ERR="2026/10/05 17:52:00 unit 1039 449172000-449176499: rpc response: unexpected end of JSON input" || rc=$?
+msg=0; grep -q "truncated or unparsable RPC response (transient)" "$T/summary.md" && grep -q "unexpected end of JSON input" "$T/out.txt" && msg=1
+rc2=0; o2="$T/rdtr2"; rm -rf "$o2"; rd "$o2" RPC_CREDITS=5 RPC_RC=1 RPC_ERR="unit x: decode failed: bad block" || rc2=$?
+rc3=0; o3="$T/rdtr3"; rm -rf "$o3"; rd "$o3" RPC_CREDITS=5 RPC_RC=3 RPC_ERR="unit x: rpc response: unexpected EOF" || rc3=$?
+[[ $rc == 75 && $rc2 == 1 && $rc3 == 3 && $msg == 1 && $(cat "$o/rpc-credits-used") == 5 ]] &&
+  ok "HISTORY-RESUME: rpc-day turns a truncated RPC response (rpcscan exit 1, 'rpc response: unexpected end of JSON input') into exit 75 with credits booked; other exit-1 errors stay fatal, and another exit code with the same text passes through" || no "rpc-day transient: rc=$rc rc2=$rc2"
+PP="$T/pp"; rm -rf "$PP"; mkdir -p "$PP/bin"
+cat > "$PP/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "$1" == api ]] || exit 2
+shift; url="" jqx=""
+while (( $# )); do case "$1" in --jq) jqx=$2; shift ;; repos/*) url=$1 ;; esac; shift; done
+echo "$url" >> "$PPD/calls.log"
+[[ -n "${PP_FAIL:-}" ]] && { echo "HTTP 502" >&2; exit 1; }
+jq -r "$jqx" "$PPD/caches.json"
+EOF
+chmod +x "$PP/bin/gh"
+pp() { : > "$PP/out"; PPD="$PP" GH_BIN="$PP/bin/gh" GITHUB_REPOSITORY=o/r GITHUB_REF=refs/heads/ccr-x GITHUB_OUTPUT="$PP/out" GITHUB_STEP_SUMMARY="$PP/sum" bash "$here/progress-pick.sh" "$@"; }
+python3 - "$PP/caches.json" <<'PY'
+import json, sys
+c = lambda k, s, t, r="refs/heads/ccr-x": {"key": k, "size_in_bytes": s, "created_at": t, "ref": r}
+json.dump({"actions_caches": [
+  c("data-rpc-2026-09-21-37264343113-1", 4186871358, "2026-10-05T09:30:56Z"),
+  c("data-rpc-2026-09-21-37290557627-1", 4186871400, "2026-10-05T09:47:50Z"),
+  c("data-rpc-2026-09-21-37292410621-1", 1024, "2026-10-05T09:49:26Z"),
+  c("data-rpc-2026-09-21-37312693149-1", 810661685, "2026-10-05T17:52:50Z"),
+  c("data-rpc-2026-09-21-37290557627-1-qa", 4186871300, "2026-10-05T10:00:00Z"),
+  c("data-rpc-2026-09-21-37312693149-1-qa", 810661600, "2026-10-05T18:00:00Z"),
+  c("data-rpc-2026-09-21-1-1", 9900000000, "2026-10-05T10:00:00Z", "refs/pull/7/merge"),
+  c("data-rpc-2026-09-210-1-1", 9900000000, "2026-10-05T10:00:00Z")]}, open(sys.argv[1], "w"))
+PY
+pp data-rpc-2026-09-21- >/dev/null && grep -qx "key=data-rpc-2026-09-21-37290557627-1-qa" "$PP/out" &&
+  ok "HISTORY-RESUME: progress-pick resumes from the largest run's progress (66 units), never the newest near-empty or 11-unit one; within a run its -qa save wins although a few bytes smaller (booked QA credits); other refs and other days are ignored" || no "progress-pick: $(cat "$PP/out")"
+python3 - "$PP/caches.json" <<'PY'
+import json, sys
+c = lambda k, s, t: {"key": k, "size_in_bytes": s, "created_at": t, "ref": "refs/heads/ccr-x"}
+json.dump({"actions_caches": [c("data-rpc-2026-09-21-100-1", 4000000000, "2026-10-05T01:00:00Z"), c("data-rpc-2026-09-21-100-1-qa", 4100000000, "2026-10-05T03:00:00Z")]}, open(sys.argv[1], "w"))
+PY
+pp data-rpc-2026-09-21- >/dev/null && grep -qx "key=data-rpc-2026-09-21-100-1-qa" "$PP/out" &&
+  ok "HISTORY-RESUME: progress-pick takes a run's larger, newer -qa save over its base (the reviewer's case)" || no "progress-pick qa larger: $(cat "$PP/out")"
+python3 - "$PP/caches.json" <<'PY'
+import json, sys
+c = lambda k, s, t: {"key": k, "size_in_bytes": s, "created_at": t, "ref": "refs/heads/ccr-x"}
+json.dump({"actions_caches": [c("data-rpc-2026-09-21-200-1", 4000000000, "2026-10-05T01:00:00Z"), c("data-rpc-2026-09-21-300-1", 3900000000, "2026-10-05T05:00:00Z")]}, open(sys.argv[1], "w"))
+PY
+pp data-rpc-2026-09-21- >/dev/null && grep -qx "key=data-rpc-2026-09-21-200-1" "$PP/out" &&
+  ok "HISTORY-RESUME: progress-pick keeps an older run whose progress is clearly larger (2.5 %, more units) over a newer smaller one" || no "progress-pick older larger: $(cat "$PP/out")"
+echo '{"actions_caches": []}' > "$PP/caches.json"; pp data-rpc-2026-09-21- >/dev/null && grep -qx "key=" "$PP/out" && ok "HISTORY-RESUME: progress-pick with no saved progress picks nothing" || no "progress-pick empty"
+bad=""; rc=0; PP_FAIL=1 pp data-rpc-2026-09-21- >/dev/null 2>&1 || rc=$?; [[ $rc != 0 ]] || bad+=" api"
+rc=0; pp 'data-rpc-2026-09-21' >/dev/null 2>&1 || rc=$?; [[ $rc == 2 ]] || bad+=" prefix"
+[[ -z "$bad" ]] && ok "HISTORY-RESUME: progress-pick fails on an API error (nothing is read) and on a bad prefix" || no "progress-pick failures:$bad"
+PG="$T/pg"; rm -rf "$PG"; mkdir -p "$PG/rt" "$PG/d/units/1039/a" "$PG/d/units/1039/b" "$PG/d/units/1039/c"; for u in a b c; do echo '{}' > "$PG/d/units/1039/$u/stats.json"; done
+pg() { : > "$PG/out"; RUNNER_TEMP="$PG/rt" GITHUB_OUTPUT="$PG/out" GITHUB_STEP_SUMMARY="$PG/sum" bash "$here/progress-guard.sh" "$@" "$PG/d" >/dev/null; }
+bad=""
+pg check; grep -q ok=true "$PG/out" && bad+=" no-record"
+pg record; [[ $(cat "$PG/rt/progress-restored") == 3 ]] || bad+=" record"
+pg check; grep -qx ok=true "$PG/out" || bad+=" same"
+mkdir -p "$PG/d/units/1039/d"; echo '{}' > "$PG/d/units/1039/d/stats.json"; pg check; grep -qx ok=true "$PG/out" || bad+=" more"
+rm -rf "$PG/d/units/1039/a" "$PG/d/units/1039/b"; pg check; grep -q ok=true "$PG/out" && bad+=" fewer"
+[[ -z "$bad" ]] && ok "HISTORY-RESUME: progress-guard allows a save only after a finished restore and with at least as many finished units as were restored" || no "progress-guard:$bad"
+bad=""
+for u in a b c; do mkdir -p "$PG/d/units/1039/$u"; echo '{}' > "$PG/d/units/1039/$u/stats.json"; done; rm -rf "$PG/d/units/1039/d"
+rc=0; : > "$PG/sum"; EXPECT_UNITS=4 PICKED=data-rpc-2026-09-21-9-1 pg record || rc=$?
+[[ $rc == 1 ]] && grep -q "data-rpc-2026-09-21-9-1 holds 3 finished units, fewer than expect_units 4: stopping before any read" "$PG/sum" || bad+=" below:$rc"
+rc=0; EXPECT_UNITS=3 PICKED=k pg record || rc=$?; [[ $rc == 0 ]] || bad+=" equal:$rc"
+rc=0; EXPECT_UNITS= pg record || rc=$?; [[ $rc == 0 ]] || bad+=" empty:$rc"
+rc=0; EXPECT_UNITS=6x pg record || rc=$?; [[ $rc == 2 ]] || bad+=" bad:$rc"
+[[ -z "$bad" ]] && ok "HISTORY-RESUME: expect_units stops the job before any read when the picked progress holds fewer units (naming the entry); equal or unset passes; a non-number is refused" || no "progress-guard expect_units:$bad"
+python3 - "$here/../../../.github/workflows/data-scan.yml" <<'PY' && ok "HISTORY-RESUME: data-scan resumes from the picked entry, records it, and saves progress (both saves) only when the restore finished and the progress did not shrink; the scan job gains actions: read only" || no "data-scan progress wiring"
+import sys, yaml
+wf = yaml.safe_load(open(sys.argv[1]))
+job = wf["jobs"]["scan"]
+assert job["permissions"] == {"contents": "write", "actions": "read"}, job["permissions"]
+steps = job["steps"]
+ids = [s.get("id") or s.get("name") for s in steps]
+assert ids.index("pickprogress") < ids.index("restore") < ids.index("record") < ids.index("scan")
+rec = steps[ids.index("record")]
+assert rec["run"] == 'research/historical/ci/progress-guard.sh record "$RUNNER_TEMP/work/data"', rec
+assert rec["env"] == {"EXPECT_UNITS": "${{ inputs.expect_units }}", "PICKED": "${{ steps.pickprogress.outputs.key }}"} and rec["id"] == "record", rec
+assert wf[True]["workflow_dispatch"]["inputs"]["expect_units"]["default"] == "", "expect_units defaults to no check"
+cont = wf["jobs"]["continue"]
+assert '-f expect_units="$EXPECT_UNITS"' in cont["steps"][0]["run"] and cont["steps"][0]["env"]["EXPECT_UNITS"] == "${{ inputs.expect_units }}", "the chain carries expect_units"
+for guard, save in (("shrink", "save"), ("shrinkqa", "Save progress after QA")):
+    g, s = steps[ids.index(guard)], steps[ids.index(save)]
+    assert "steps.restore.outcome == 'success'" in g["if"] and "steps.record.outcome == 'success'" in g["if"] and "always()" in g["if"] and 'progress-guard.sh check "$RUNNER_TEMP/work/data"' in g["run"], g
+    assert f"steps.{guard}.outputs.ok == 'true'" in s["if"] and ids.index(guard) < ids.index(save), s
+PY
 # ---- DATA-PUB: a day read over RPC (source helius) is never published or uploaded ----
 python3 - "$here/../../../.github/workflows/data-scan.yml" <<'PY' && ok "data-scan source helius: no day artifact, no data-day or data-volume publish; the packaged assets go only to the actions cache (data-rpc-assets-DAY-*)" || no "data-scan helius publish gate"
 import sys, yaml
 steps = yaml.safe_load(open(sys.argv[1]))["jobs"]["scan"]["steps"]
 for s in steps:
     run, uses, cond = s.get("run", ""), s.get("uses", ""), s.get("if", "")
+    if s.get("id") == "pickprogress" and run.endswith('research/historical/ci/progress-pick.sh" "$PREFIX"'):
+        continue  # reads the cache list only (actions: read)
     outward = ("upload-artifact" in uses and s["with"]["name"] != "resume-${{ matrix.day }}") or ("github.token" in str(s) and "--check" not in run)
     if outward:
         assert "inputs.source != 'helius'" in cond, (s.get("name") or uses, cond)

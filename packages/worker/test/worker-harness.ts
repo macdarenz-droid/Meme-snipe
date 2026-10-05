@@ -392,7 +392,7 @@ export const until = async (m: Market, maxMs: number, ready: () => boolean, each
 };
 
 /** Sets up 15 days of coverage, a migrated candidate and minute pool bars, then every passing fact at T. */
-export const passingMarket = async (h: Harness, o: { readonly fees?: boolean; readonly heldPoolFacts?: boolean; readonly omit?: readonly string[]; readonly coverageAt?: number } = {}): Promise<Market> => {
+export const passingMarket = async (h: Harness, o: { readonly fees?: boolean; readonly heldPoolFacts?: boolean; readonly omit?: readonly string[]; readonly coverageAt?: number; readonly before?: { readonly atMs: number; readonly run: (m: Market) => void } } = {}): Promise<Market> => {
   const m = new Market(h, { heldPoolFacts: o.heldPoolFacts ?? false });
   m.withFees = o.fees ?? true;
   m.omit = new Set(o.omit ?? []);
@@ -411,6 +411,13 @@ export const passingMarket = async (h: Harness, o: { readonly fees?: boolean; re
     m.slot();
     m.offchain('coverage:creates:start', (facts.get('coverage:creates:start')!.value as { value: unknown }).value);
     await m.run(3_000);
+  }
+  // A test's own events between the coverage start and the migration (`before`, at its own moment).
+  if (o.before !== undefined) {
+    h.timers.set(o.before.atMs);
+    m.slot();
+    o.before.run(m);
+    await m.run(1_000);
   }
   // 20 minutes before T: the migration (90 min before T) and a pool fact every minute, for the ATR bars.
   h.timers.set(T - 20 * 60_000);
