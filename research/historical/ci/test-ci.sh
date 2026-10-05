@@ -451,7 +451,8 @@ assert '-f chain="$next"' in r and "-f days=\"$DAYS\"" in r, r
 assert wf[True]["workflow_dispatch"]["inputs"]["chain"]["default"] == "0"
 # volume back-fill: its own concurrency group, no archive access, token in two steps only,
 # publishing in the same clean shell as the day release
-assert wf["concurrency"]["group"] == "${{ inputs.mode == 'volume' && 'data-scan-volume' || 'data-scan' }}", wf["concurrency"]
+assert wf["concurrency"]["group"] == "${{ inputs.mode == 'volume' && 'data-scan-volume' || (inputs.source == 'helius' && 'data-scan-helius' || 'data-scan') }}", wf["concurrency"]
+assert wf["concurrency"]["cancel-in-progress"] is False, wf["concurrency"]
 vj = wf["jobs"]["volume"]
 assert vj["if"] == "inputs.mode == 'volume'" and vj["strategy"]["max-parallel"] == 1, vj
 vsteps = vj["steps"]
@@ -678,18 +679,23 @@ for set in "in_progress|data-scan scan source=archive" "queued|data-scan scan so
 done
 [[ -z "$bad" ]] && ok "archive-check: a run that may read the archive (archive source, no source in its title, anything unexpected) means no request and no dispatch" || no "archive-check archive-run no-op:$bad"
 bad=""
+sed 's/^var reqLimiter = newLimiter([0-9.]*)$/var reqLimiter = newLimiter(10)/' "$here/../scanner/archive.go" > "$A/lane10.go"
 for set in "$H" "queued|data-scan scan source=helius" "$H;queued|data-scan scan source=helius"; do
   IFS=';' read -ra a <<< "$set"
-  ac env AC_RUNS="$(runs "${a[@]}" "completed|data-scan scan source=archive")" AC_STATUS=206
-  [[ $(wc -l < "$A/curl.calls" 2>/dev/null) == 1 && ! -e "$A/dispatch.log" ]] && grep -q "served; nothing dispatched while" "$A/summary.md" || bad+=" [$set]"
+  ac env AC_RUNS="$(runs "${a[@]}" "completed|data-scan scan source=archive")" AC_STATUS=206 ARCHIVE_GO="$A/lane10.go"
+  [[ $(wc -l < "$A/curl.calls" 2>/dev/null) == 1 && $(wc -l < "$A/dispatch.log" 2>/dev/null) == 1 ]] && grep -q "served; dispatched data-scan for" "$A/summary.md" || bad+=" [$set]"
   grep -q 'gh run list --repo o/r --workflow data-scan.yml --limit 50 --json databaseId,status,displayTitle' "$A/gh.log" || bad+=" [list-call]"
 done
 ac env AC_RUNS="$(runs "$H")" AC_STATUS=429
 [[ $(wc -l < "$A/curl.calls") == 1 && ! -e "$A/dispatch.log" ]] && grep -q "not served" "$A/summary.md" || bad+=" [429]"
 # helius_runs (manual dispatch): an old-title run named by id counts as Helius-only (ids
 # are 100, 101, ... in list order).
-ac env AC_RUNS="$(runs "in_progress|data-scan" "in_progress|data-scan")" AC_STATUS=206 HELIUS_RUNS=100,101
-[[ $(wc -l < "$A/curl.calls" 2>/dev/null) == 1 && ! -e "$A/dispatch.log" ]] && grep -q "served; nothing dispatched while 2" "$A/summary.md" || bad+=" [named]"
+ac env AC_RUNS="$(runs "in_progress|data-scan" "in_progress|data-scan")" AC_STATUS=206 HELIUS_RUNS=100,101 ARCHIVE_GO="$A/lane10.go"
+[[ $(wc -l < "$A/curl.calls" 2>/dev/null) == 1 && $(wc -l < "$A/dispatch.log" 2>/dev/null) == 1 ]] || bad+=" [named]"
+# The ARCHIVE-SAFE hold still applies beside a Helius run: a scanner capped above 10/s
+# (today's scanner/archive.go) dispatches nothing.
+ac env AC_RUNS="$(runs "$H")" AC_STATUS=206
+[[ $(wc -l < "$A/curl.calls" 2>/dev/null) == 1 && ! -e "$A/dispatch.log" ]] && grep -q "held:" "$A/summary.md" || bad+=" [hold-beside-helius]"
 ac env AC_RUNS="$(runs "in_progress|data-scan" "queued|data-scan scan source=archive")" AC_STATUS=206 HELIUS_RUNS=100
 [[ ! -e "$A/curl.calls" && ! -e "$A/dispatch.log" ]] && grep -q "may read the archive active or queued; no request made" "$A/summary.md" || bad+=" [named-but-archive-active]"
 ac env AC_RUNS="$(runs "in_progress|data-scan")" AC_STATUS=206 HELIUS_RUNS=999,1000
@@ -700,7 +706,7 @@ for v in "100;x" "100 101" "abc" "100," ",100" "1e3" '$(id)'; do
   rc=0; ac env AC_RUNS="$(runs "in_progress|data-scan")" AC_STATUS=206 HELIUS_RUNS="$v" || rc=$?
   [[ $rc == 1 && ! -e "$A/curl.calls" && ! -e "$A/gh.log" ]] && grep -q "helius_runs must be run ids" "$A/summary.md" || bad+=" [refuse:$v]"
 done
-[[ -z "$bad" ]] && ok "archive-check: only Helius runs active or queued (title source=helius, or an id named in helius_runs; anything else refused or blocking): exactly one request; served is reported but nothing is dispatched beside them" || no "archive-check helius-only:$bad"
+[[ -z "$bad" ]] && ok "ARCHIVE-LANE: only Helius runs active or queued (title source=helius, or an id named in helius_runs; anything else refused or blocking): exactly one request, and a served answer dispatches the archive day beside them (the ARCHIVE-SAFE hold still applies)" || no "archive-check helius-only:$bad"
 ac env AC_STATUS=429
 [[ $(wc -l < "$A/curl.calls") == 1 && ! -e "$A/dispatch.log" ]] && grep -qx -- "-A" "$A/curl.args" && grep -qxF -- "$ua" "$A/curl.args" &&
   grep -qx -- "0-63" "$A/curl.args" && grep -q "| 429 | 64 | 0 | 8abc123-SYD |" "$A/summary.md" && [[ -n "$ua" ]] &&

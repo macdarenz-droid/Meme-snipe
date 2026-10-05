@@ -102,10 +102,12 @@ on:
 permissions:
   contents: read
 
-# One lane for the archive (scan) and assembly; the volume back-fill reads only our own
-# releases, so it has its own group and never replaces a pending chained scan run.
+# One lane for the archive (scan) and assembly, one for Helius scans (ARCHIVE-LANE: they
+# read different hosts, so a Helius day never holds up an archive day), each strictly one
+# run at a time; a new dispatch only ever waits behind, or replaces a pending run of, its
+# own lane. The volume back-fill reads only our own releases and has its own group.
 concurrency:
-  group: ${{ inputs.mode == 'volume' && 'data-scan-volume' || 'data-scan' }}
+  group: ${{ inputs.mode == 'volume' && 'data-scan-volume' || (inputs.source == 'helius' && 'data-scan-helius' || 'data-scan') }}
   cancel-in-progress: false
 
 env:
