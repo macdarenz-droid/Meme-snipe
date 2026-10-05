@@ -91,6 +91,8 @@ export const GATE_REASONS_PREFIX = 'gate_reasons ';
 export const S0_DIAGNOSTIC_PREFIX = 's0_diagnostic ';
 /** EXIT-1's flow bucket. */
 const FLOW_MINUTE_MS = 60_000;
+/** How far back flow minutes are kept and saved (EXIT-KEEP B2): well past any negative-flow run the policy reads. */
+const FLOW_KEEP_MS = 30 * FLOW_MINUTE_MS;
 
 /**
  * The one-minute flow buckets finished by `nowMs`, oldest first. The still-open minute is left out here, and EXIT-1
@@ -258,6 +260,12 @@ export interface SavedExit {
    */
   readonly recovery?: string | null;
   /**
+   * The exit owners made as blocked-exit retries, by intent id (EXIT-KEEP N1). The tracker counts a retry when it is
+   * decided, and the plans reach disk before the ledger books the step; a restart counts only the retries the ledger
+   * booked, so a kill in between never loses one of the retries.
+   */
+  readonly retryIds?: readonly string[];
+  /**
    * PERSIST-3: the position mint's deployer sales (EXIT-1's `deployer_sell`) and net flow minutes (`negative_flow`),
    * with the dedupe ids, as of the save. Absent or malformed at a restart: the position is flattened (sell-only).
    */
@@ -266,8 +274,8 @@ export interface SavedExit {
   /** PERSIST-3: the mint's deployer (creator and the create's signer) and total supply, from its create; null when never seen. */
   readonly deployer?: { readonly sellers: readonly string[]; readonly supply: bigint | null } | null;
   /**
-   * PERSIST-3: set when a restart could not restore these inputs. Saved with the exit, so every later restart keeps the
-   * position flattened (sell-only) instead of reading the inputs written since as complete.
+   * PERSIST-3's flag for inputs a restart could not restore, read only from files written before EXIT-KEEP: such a
+   * position goes into sell-only recovery (`recovery`), which is saved instead and keeps it there at every later restart.
    */
   readonly inputsLost?: true;
 }
@@ -351,7 +359,7 @@ const paperBlockhash = (id: string) => blockhash(encodeBase58(createHash('sha256
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 /** FEED-1 wraps off-chain values as `{ value, source, ... }`; worker facts arrive unwrapped. */
-const unwrap = (v: unknown): unknown => (isObj(v) && 'value' in v && 'source' in v ? v['value'] : v);
+export const unwrap = (v: unknown): unknown => (isObj(v) && 'value' in v && 'source' in v ? v['value'] : v);
 
 interface Market {
   readonly pool: PoolState;
@@ -567,6 +575,9 @@ const runnablePlan = (p: Record<string, unknown>): boolean =>
 /** A saved recovery reason the worker can act on: absent, null or a reason (EXIT-1g review B1). */
 const runnableRecovery = (r: unknown): boolean => r === undefined || r === null || typeof r === 'string';
 
+/** Saved blocked-retry ids the worker can act on: absent, or a list of ids (EXIT-KEEP N1). */
+const runnableRetryIds = (r: unknown): boolean => r === undefined || (Array.isArray(r) && r.every((x) => typeof x === 'string'));
+
 export class LiveStrategy implements Strategy {
   readonly #d: StrategyDeps;
   readonly #settings: ExitSettings;
@@ -600,6 +611,8 @@ export class LiveStrategy implements Strategy {
     this.#labeller = new RugLabeller(deps.rugs);
     const n = deps.config.network;
     this.#settings = exitSettings(deps.session.policy, deps.config.takeProfitOn, { signaturesPerTx: n.signaturesPerTx, baseFeePerSignature: n.baseFeePerSignature, tip: n.tip });
+    // The kept flow window must hold a whole negative run and the minute before it, or a run could be cut off.
+    if ((deps.session.policy.exits.negativeFlowMinutes + 1) * FLOW_MINUTE_MS > FLOW_KEEP_MS) throw new RangeError('negativeFlowMinutes is longer than the kept flow window');
   }
 
   /** Exit state to save after each step (the worker writes it before the next event). */
@@ -1100,6 +1113,9 @@ export class LiveStrategy implements Strategy {
   }
 
   /** PERSIST-3: restores a mint's deployer sales and flow from a saved exit; the reason when they cannot be. */
+  /** Mints whose saved exit inputs this process has restored (once per mint). */
+  readonly #inputsRestored = new Set<string>();
+
   #restoreInputs(mint: string, s: Record<string, unknown>, atMs: number): string | null {
     const ds = s['deployerSales'];
     const fl = s['flow'];
@@ -1119,6 +1135,10 @@ export class LiveStrategy implements Strategy {
     // As of the restore: an entry dated after it (a host clock behind the save) refuses the inputs whole, like a future
     // seed (PERSIST-2); dropping it alone would keep its dedupe id and lose a real sale.
     if (sales.list.some((x) => x.atMs > atMs) || flow.minutes.some(([start]) => start > atMs) || flow.ids.some(([, start]) => start > atMs)) return 'dated after the restore';
+    // A mint's inputs are the same in each of its saved exits (all written from one memory): taken once, so two saved
+    // exits on one mint never count a sale or a flow minute twice (EXIT-KEEP review B1). Each is still checked above.
+    if (this.#inputsRestored.has(mint)) return null;
+    this.#inputsRestored.add(mint);
     if (deployer !== null && !this.#deployerMemo.has(mint)) this.#deployerMemo.set(mint, deployer);
     const s0 = this.#deployerSales.get(mint) ?? { ids: new Set<string>(), list: [] };
     for (const id of sales.ids) s0.ids.add(id);
@@ -1160,15 +1180,25 @@ export class LiveStrategy implements Strategy {
     for (const [pid, s] of Object.entries(v['exits'])) {
       // A saved exit the exit rules could not run on is refused, never applied: its position goes into sell-only recovery
       // (EXIT-1g), so one bad entry neither stalls nor crashes the management of the others.
-      if (!isObj(s) || !isObj(s['plan']) || !isObj(s['tracker']) || !Array.isArray(s['bars']) || !runnablePlan(s['plan']) || !runnableRecovery(s['recovery'])) {
+      if (!isObj(s) || !isObj(s['plan']) || !isObj(s['tracker']) || !Array.isArray(s['bars']) || !runnablePlan(s['plan']) || !runnableRecovery(s['recovery']) || !runnableRetryIds(s['retryIds'])) {
         out.push({ action: null, reasons: ['restore entry refused', pid, 'malformed saved plan'] });
         this.#recoveryWhy.set(pid, 'saved plan refused');
         continue;
       }
       // PERSIST-3: the exit inputs come back as saved; without them (or lost at an earlier restart, the flag kept in the
       // file) the position's deployer_sell and negative_flow exits would count from zero, so it is flattened instead.
+      // A position whose exit inputs did not come back goes into EXIT-1g's sell-only recovery, the one mechanism for a
+      // position held without its own exit evidence (EXIT-KEEP): its reason is saved, so every later restart keeps it
+      // there, and the whole holding exits at the next fresh quote. A file from before this change may carry PERSIST-3's
+      // `inputsLost` flag: read as lost at an earlier restart.
       const why = s['inputsLost'] !== undefined ? 'lost at an earlier restart' : this.#restoreInputs(this.#mintOf(pid), s, atMs);
-      let saved: SavedExit = why === null ? s as unknown as SavedExit : { ...(s as unknown as SavedExit), inputsLost: true };
+      let saved = s as unknown as SavedExit;
+      if (why !== null) {
+        const reason = saved.recovery ?? `exit inputs not restored (${why})`;
+        out.push({ action: null, reasons: ['recovery exit', pid, reason, 'the whole holding exits at the next fresh quote'] });
+        const { inputsLost: _lost, ...rest } = saved;
+        saved = { ...rest, tracker: { ...saved.tracker, pendingFull: ['emergency'] }, recovery: reason };
+      }
       if (!runnableTracker(s['tracker'] as Record<string, unknown>)) {
         // A tracker the exit rules would throw on is never applied. Its trail, peak and flat target cannot be recovered, and
         // starting them again would weaken the position's protection: sell-only recovery instead (EXIT-1g).
@@ -1181,9 +1211,6 @@ export class LiveStrategy implements Strategy {
       this.#bars.set(pid, [...saved.bars]);
       if (typeof saved.pool === 'string') this.#notePool(this.#mintOf(pid), saved.pool);
       if (saved.spot != null) this.#spot.set(pid, saved.spot);
-      if (why !== null) {
-        out.push({ action: null, reasons: ['sell-only', pid, `exit inputs not restored (${why}); flattened through the global exit ladder`] });
-      }
       n++;
     }
     out.push({ action: null, reasons: ['restore', `${n} exit plans and trackers restored`] });
@@ -1304,7 +1331,7 @@ export class LiveStrategy implements Strategy {
     if (this.watched().has(mint)) return;
     const pool = this.#poolOfMint.get(mint);
     if (pool !== undefined) this.#mintOfPool.delete(pool);
-    for (const m of [this.#poolOfMint, this.#observedFees, this.#tradeAt, this.#deployerSales, this.#flow, this.#deployerMemo, this.#migrationSlot, this.#swapAt]) m.delete(mint);
+    for (const m of [this.#poolOfMint, this.#observedFees, this.#tradeAt, this.#deployerSales, this.#flow, this.#deployerMemo, this.#migrationSlot, this.#swapAt, this.#inputsRestored]) m.delete(mint);
   }
 
   #noteMigrationSlot(mint: string, slot: bigint | null): void {
@@ -1387,6 +1414,10 @@ export class LiveStrategy implements Strategy {
     const start = Math.floor(e.moment.receivedAt / FLOW_MINUTE_MS) * FLOW_MINUTE_MS;
     f.ids.set(id, start);
     f.minutes.set(start, (f.minutes.get(start) ?? 0n) + (name === 'BuyEvent' ? amount : -amount));
+    // Only the recent minutes can be part of a negative run: older ones (and their ids) are dropped, so memory and the
+    // saved evidence stay bounded on a long hold.
+    for (const m of f.minutes.keys()) if (m < start - FLOW_KEEP_MS) f.minutes.delete(m);
+    for (const [k, m] of f.ids) if (m < start - FLOW_KEEP_MS) f.ids.delete(k);
   }
 
   /** The held mint's finished flow minutes, oldest first (EXIT-1 `ExitObservation.flow`). */
@@ -1752,6 +1783,20 @@ export class LiveStrategy implements Strategy {
           this.#exits.set(p.id, saved);
           out.push({ action: null, reasons: ['partials from the book', p.id, `${sold.length} partials, ${p.sold} sold (saved: ${t.partials}, ${t.lastSold})`] });
         }
+        // Blocked-exit retries the ledger never booked (a kill after the plans were saved, before the desk booked the
+        // step) are not spent: the count follows the book, and a lost retry, already due when it was decided, is due at
+        // once (EXIT-KEEP N1).
+        const ids = saved.retryIds;
+        if (ids !== undefined && ids.length > 0) {
+          const booked = ids.filter((id) => ctx.book.intents[id] !== undefined);
+          if (booked.length < ids.length) {
+            const tr = saved.tracker;
+            const lost = ids.length - booked.length;
+            saved = { ...saved, retryIds: booked, tracker: { ...tr, blockedRetries: Math.max(0, tr.blockedRetries - lost), blockedAtMs: 0 } };
+            this.#exits.set(p.id, saved);
+            out.push({ action: null, reasons: ['blocked retry not booked', p.id, `${lost} retry not in the ledger; due again at once`] });
+          }
+        }
       }
       const recoveryWhy = saved.recovery ?? null;
       if (recoveryWhy !== null && p.status === 'open' && saved.tracker.pendingFull === null && exitIntents.every(isTerminal)) {
@@ -1788,8 +1833,8 @@ export class LiveStrategy implements Strategy {
       // partials are unknown, so the position is flattened at once through the global exit ladder (supervisor ruling).
       // Exits are never blocked: no throw, no missing decision.
       const inPolicy = Object.hasOwn(this.#d.session.policy.exits.universes, saved.plan.universe);
-      // PERSIST-3: a position whose exit inputs did not come back is flattened the same way (reported at the restore).
-      const known = inPolicy && saved.inputsLost === undefined;
+      // A position whose exit inputs did not come back is in EXIT-1g recovery instead (set at the restore).
+      const known = inPolicy;
       if (!inPolicy && !this.#flattening.has(p.id)) {
         this.#flattening.add(p.id);
         out.push({ action: null, reasons: ['universe missing', p.id, `${String(saved.plan.universe)} is not in policy ${this.#d.session.versionHash}; flattened through the global exit ladder`] });
@@ -1812,7 +1857,7 @@ export class LiveStrategy implements Strategy {
       saved = { ...saved, tracker: step.tracker, bars: this.#bars.get(p.id) ?? saved.bars, waitingSinceMs };
       this.#exits.set(p.id, saved);
       for (const why of step.ignored) out.push({ action: null, reasons: ['exit input ignored', p.mint, why] });
-      this.#exitDecision(p.id, p.mint, p.exitSeq, step.decision, ctx, out, known ? [] : [inPolicy ? 'exit inputs lost: flatten' : 'universe missing: flatten']);
+      this.#exitDecision(p.id, p.mint, p.exitSeq, step.decision, ctx, out, known ? [] : ['universe missing: flatten']);
     }
   }
 
@@ -1851,6 +1896,10 @@ export class LiveStrategy implements Strategy {
     const label = d.kind === 'merge' ? 'exit reasons merged' : d.kind === 'exit' && d.retry ? 'retry blocked exit' : d.kind === 'exit' && d.partial ? 'partial exit' : 'exit';
     for (const ev of events) out.push({ action: ev, reasons: [label, mint, ...(why.length > 0 ? why : ['no trigger detail'])] });
     // A new owner that is not booked blocked goes out in the same step, at the rung EXIT-1 chose.
+    if (d.kind === 'exit' && d.retry) {
+      const saved = this.#exits.get(pid);
+      if (saved !== undefined) this.#exits.set(pid, { ...saved, retryIds: [...(saved.retryIds ?? []), id] });
+    }
     if (d.kind === 'exit' && events.length === 1) {
       this.#owners.set(id, { startRung: d.startRung, maxAttempts: d.maxAttempts });
       this.#sendExit(id, pid, mint, d.quantity, 0, ctx, out);

@@ -4,7 +4,7 @@
 // same answer replayed. A failed or malformed read ingests nothing, so the gate sees no fact and rejects (H16).
 // Chain reads go to Helius at `confirmed` (standard RPC, 1 credit each, data.md §1.2); the gates refuse `processed`.
 import {
-  type Address, NATIVE_MINT, SYSTEM_PROGRAM, TOKEN_2022_PROGRAM, decodeBase58, decodeMint, isOnCurve, decodePool, decodeTokenAccount, firstFunder, fromBase64, poolAddress,
+  type Address, NATIVE_MINT, PUMP_AMM_GLOBAL_CONFIG, SYSTEM_PROGRAM, TOKEN_2022_PROGRAM, decodeBase58, decodeMint, isOnCurve, decodePool, decodeTokenAccount, firstFunder, fromBase64, poolAddress,
   pumpPoolAuthority, recordFromRpc, transactionEvents, type RpcTransactionBase64, type TransactionRecord,
 } from '../../../core/src/chain/index.ts';
 import {
@@ -24,6 +24,8 @@ import type { FrameBody, Source } from '../providers/canonical.ts';
 import { isAddress } from '../providers/canonical.ts';
 import { type HttpClient, type Secrets, parseJson, ProviderError, refusal429, scrub, send } from '../providers/http.ts';
 import type { IngestOptions } from '../providers/live-feed.ts';
+import { PUMP_AMM_FEE_CONFIG, decodeSnapshot } from '../run/snapshot.ts';
+import { feesKey } from '../engine/strategy.ts';
 
 /** Every JSON-RPC method the fact reads may call: reads only. Frozen; nothing that sends is or may be added. */
 export const FACT_RPC_METHODS = Object.freeze(['getAccountInfo', 'getMultipleAccounts', 'getProgramAccounts', 'getTokenLargestAccounts', 'getSignaturesForAddress', 'getTransaction'] as const);
@@ -543,7 +545,10 @@ export class FactReaders {
     const p = prep;
     if (p !== null) {
       const ownersOf = [...(this.#owners.get(mint) ?? [])].filter((o) => !p.layout.includes(o) && !p.listed.includes(o)).sort();
-      const addresses = [...p.layout, ...p.listed, ...ownersOf];
+      // FEE-TIER-NOW: PumpSwap's GlobalConfig and the pump-fees FeeConfig ride in the same bank (no extra call), so the
+      // pool's fee context, every tier included, is read at the bank's slot with the pool.
+      const fees: readonly string[] = [PUMP_AMM_GLOBAL_CONFIG, PUMP_AMM_FEE_CONFIG].filter((a) => !p.layout.includes(a));
+      const addresses = [...p.layout, ...p.listed, ...ownersOf.filter((o) => !fees.includes(o)), ...fees];
       // The scan's program is the mint's owner, learnt from the layout read (the mint is in every bank).
       const mintOwner = this.#mintProgram.get(mint);
       const scanned = req.holders === 'all' && mintOwner !== undefined && this.#takeScan();
@@ -568,6 +573,18 @@ export class FactReaders {
         const m = at(mint);
         if (m !== null) this.#mintProgram.set(mint, m.owner);
         put('helius', RAW.accounts(mint), { mint, slot: b.slot, commitment: 'confirmed', accounts: p.layout.map((address) => ({ address, owner: at(address)?.owner ?? null, data: at(address)?.data ?? null })) } satisfies AccountsRead);
+        // The fee context from that one bank: the pool's tiers, canonical flag, creator fee and coin flags (WATCH-1's
+        // decoder). Anything it cannot prove (a missing or foreign account) publishes nothing: #market then falls back to
+        // the latest swap's terms, or has none.
+        const [, pool, baseVault, quoteVault] = p.layout;
+        if (pool !== undefined && baseVault !== undefined && quoteVault !== undefined) {
+          const acc = (a: string) => {
+            const x = at(a);
+            return x === null ? null : { owner: x.owner, data: fromBase64(x.data) };
+          };
+          const d = decodeSnapshot(mint, pool, b.slot, [pool, baseVault, quoteVault, mint, PUMP_AMM_GLOBAL_CONFIG, PUMP_AMM_FEE_CONFIG].map(acc));
+          if (d.ok) put('helius', feesKey(mint), d.snapshot.ctx);
+        }
         if (req.holders === 'largest') parts.push(this.#guard(`holders:${mint}`, async () => this.#bankedHolders(mint, b.slot, p.listed, at, put)).then(as('holders')));
         if (scan !== null) parts.push(this.#guard(`holders-all:${mint}`, async () => this.#bankedScan(mint, b.slot, await scan, at, put)).then(as('holders-all')));
         return `slot ${b.slot}`;

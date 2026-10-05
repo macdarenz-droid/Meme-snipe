@@ -5,8 +5,11 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { PUMP_AMM_FEE_CONFIG, decodeSnapshot } from '../src/run/snapshot.ts';
+import { feesKey } from '../src/engine/strategy.ts';
+import { type PoolFeeContext, type PoolState, marketCap, poolFees, selectFeeTier } from '../../core/src/amm/index.ts';
 import { RUG_CONFIG } from '../../core/src/config/index.ts';
-import { type Address, TOKEN_PROGRAM, decodeBase58, isOnCurve, toBase64 } from '../../core/src/chain/index.ts';
+import { type Address, PUMP_AMM_GLOBAL_CONFIG, TOKEN_PROGRAM, decodeBase58, fromBase64, isOnCurve, toBase64 } from '../../core/src/chain/index.ts';
 import { RAW, completeHolders, parseAccountsRead, parseHoldersAllRead, parseHoldersRead } from '../../core/src/facts/index.ts';
 import { Engine, type LogRecord, type MarketEvent, type Strategy } from '../../core/src/engine/index.ts';
 import { holdersKey, lpKey, mintKey, simKey, xcheckKey, type FactObs } from '../../core/src/gates/index.ts';
@@ -24,7 +27,7 @@ import type { FactContext } from '../src/run/facts.ts';
 import { GOPLUS_FREE, HELIUS_FREE, ManualTimers, RUGCHECK_FREE, Scheduler } from '../src/scheduler/index.ts';
 import { tokenAccountData } from './dryrun-chain.ts';
 import { blockNetwork, settle } from './helpers.ts';
-import { MINT, POOL, POOL_ADDRESS, SOL_PRICE, T, dueTimers, makeWorker, passingMarket, type Harness } from './worker-harness.ts';
+import { MINT, type Market, POOL, POOL_ADDRESS, SOL_PRICE, T, dueTimers, makeWorker, passingMarket, type Harness } from './worker-harness.ts';
 
 /** The spend the worker sizes at the passing SOL price (q_min, rounded up to whole lamports). */
 const SPEND_AT_PRICE = microUsdToLamports(TRIAL_POLICY.capital.minNotional, SOL_PRICE as MicroUsd, 'ceil');
@@ -83,7 +86,7 @@ export interface FakeChain {
  * The fake RPC: each call answers one slot later, at a confirmed context slot one behind the processed tip seen when
  * it was asked. RugCheck and GoPlus agree (no authorities), one slot later too.
  */
-export const fakeChain = (h: Harness, slotsPerCall = 1): FakeChain => {
+export const fakeChain = (h: Harness, slotsPerCall = 1, feeAccounts = false): FakeChain => {
   const calls: FakeChain['calls'] = [];
   const later = (r: () => HttpResponse): Promise<HttpResponse> => new Promise((ok) => h.timers.setTimeout(() => ok(r()), SLOT_MS * slotsPerCall));
   const http: HttpClient = async (req: HttpRequest) => {
@@ -102,7 +105,7 @@ export const fakeChain = (h: Harness, slotsPerCall = 1): FakeChain => {
       }
       const t = holderData.get(address);
       if (t !== undefined) return { owner: MINT_ACCOUNT.owner, data: b64(t), lamports: 1, executable: false };
-      return null;
+      return (feeAccounts ? FEE_ACCOUNTS.get(address) : undefined) ?? null;
     };
     switch (body.method) {
       case 'getMultipleAccounts': {
@@ -183,14 +186,14 @@ type JournalLine = { kind: string; action?: string; event?: string; reasons?: st
 const journal = (h: Harness): JournalLine[] => readFileSync(join(h.stateDir, 'journal.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as JournalLine);
 
 /** Starts the worker with the read-backed fact source and runs `minutes` of market (a slot every 400 ms). */
-const run = async (minutes: number, port: number, slotsPerCall = 1) => {
+const run = async (minutes: number, port: number, slotsPerCall = 1, o: { readonly feeAccounts?: boolean; readonly each?: (m: Market) => void } = {}) => {
   const timers = dueTimers(T - 16 * DAY);
   let chain: FakeChain | null = null;
   const facts = { name: 'facts', start: (c: FactContext) => src.start(c), stop: () => src.stop() };
   // The source is built once the harness exists (the fake chain reads the worker's feed tip).
   let src: LiveFacts = null as unknown as LiveFacts;
   const h = makeWorker({ timers, facts: [facts], config: { ZEROED_HEALTH_ADDR: `127.0.0.1:${port}`, ZEROED_API_ADDR: `127.0.0.1:${port + 1}` } });
-  chain = fakeChain(h, slotsPerCall);
+  chain = fakeChain(h, slotsPerCall, o.feeAccounts === true);
   src = liveFactsOn(chain, slotsPerCall);
   let started: unknown = null;
   void h.worker.start().then((r) => void (started = r));
@@ -200,10 +203,11 @@ const run = async (minutes: number, port: number, slotsPerCall = 1) => {
   }
   expect(started).toEqual({ ok: true });
   h.worker.feed.ingest('helius', { type: 'offchain', key: 'feed:status:helius', value: { state: 'up' } }, { receivedAt: h.timers.now() });
-  const m = await passingMarket(h, { heldPoolFacts: true, omit: READ_FACTS });
+  const m = await passingMarket(h, { heldPoolFacts: true, omit: READ_FACTS, ...(o.feeAccounts === undefined ? {} : { fees: false }) });
   await m.run(minutes * 60_000, SLOT_MS, () => {
     m.slot();
     m.pool();
+    o.each?.(m);
   });
   await h.worker.stop();
   return { h, chain };
@@ -284,7 +288,13 @@ const rows = <T>(dir: string, re: RegExp, parse: (l: string) => T): T[] =>
 // ---------- FactReaders.readBatch on its own ----------
 
 /** A chain answering at once, each method at its own context slot; `hold` keeps the scan's answer until released. */
-const batchRig = (o: { readonly bankSlot?: bigint; readonly scanSlot?: bigint; readonly extraPda?: boolean; readonly hold?: boolean; readonly scansPerDay?: number; readonly movedOwner?: boolean } = {}) => {
+/** FEE-TIER-NOW: mainnet's PumpSwap GlobalConfig and pump-fees FeeConfig (WATCH-1's fixture, content-hashed there). */
+const FEE_ACCOUNTS = (() => {
+  const f = JSON.parse(readFileSync(join(import.meta.dirname, 'fixtures', 'watch-snapshot.json'), 'utf8')) as { accounts: { address: string; owner: string; dataBase64: string }[] };
+  return new Map(f.accounts.slice(4).map((a) => [a.address, { owner: a.owner, data: [a.dataBase64, 'base64'], lamports: 1, executable: false }]));
+})();
+
+const batchRig = (o: { readonly bankSlot?: bigint; readonly scanSlot?: bigint; readonly extraPda?: boolean; readonly hold?: boolean; readonly scansPerDay?: number; readonly movedOwner?: boolean; readonly feeAccounts?: 'real' | 'foreign' } = {}) => {
   const timers = new ManualTimers(T);
   const frames: { key: string; value: unknown; receivedAt: number }[] = [];
   const seen: { method: string; params: unknown[] }[] = [];
@@ -310,6 +320,8 @@ const batchRig = (o: { readonly bankSlot?: bigint; readonly scanSlot?: bigint; r
         return { owner: a.owner, data: [a.dataBase64, 'base64'], lamports: 1, executable: false };
       }
       if (address === PDA) return { owner: PAMM, data: ['', 'base64'], lamports: 1, executable: false };
+      const cfg = o.feeAccounts === undefined ? undefined : FEE_ACCOUNTS.get(address);
+      if (cfg !== undefined) return o.feeAccounts === 'foreign' && address === PUMP_AMM_FEE_CONFIG ? { ...cfg, owner: TOKEN_PROGRAM } : cfg;
       const t = holderData.get(address);
       return t === undefined ? null : { owner: MINT_ACCOUNT.owner, data: b64(t), lamports: 1, executable: false };
     };
@@ -590,4 +602,100 @@ describe('LiveStrategy: a batch is judged at its close', () => {
     expect(enter?.event).toMatch(new RegExp(`^${RAW.batchClose(MINT)}#`));
     await h.worker.stop();
   });
+});
+
+describe('FEE-TIER-NOW: the pool\'s fee context rides in the batch\'s one bank', () => {
+  const gmas = (r: ReturnType<typeof batchRig>) => r.seen.filter((c) => c.method === 'getMultipleAccounts').length;
+
+  it('GlobalConfig and FeeConfig join the final bank: no extra call; the fee context is put inside the batch, every tier included', async () => {
+    const r = batchRig({ feeAccounts: 'real' });
+    expect(allOk(await r.run({ holders: 'largest', spend: SPEND, xcheck: true }))).toBe(true);
+    const plain = batchRig();
+    await plain.run({ holders: 'largest', spend: SPEND, xcheck: true });
+    // The same number of account calls as without them (Helius bills a getMultipleAccounts per call: no extra credits).
+    expect(gmas(r)).toBe(gmas(plain));
+    const banks = r.seen.filter((c) => c.method === 'getMultipleAccounts' && (c.params[1] as { dataSlice?: unknown }).dataSlice === undefined);
+    expect(banks.at(-1)!.params[0]).toEqual(expect.arrayContaining([PUMP_AMM_GLOBAL_CONFIG, PUMP_AMM_FEE_CONFIG]));
+    // Between the open and the close, at one moment with the accounts it came from.
+    const keys = keysOf(r.frames);
+    const at = keys.indexOf(feesKey(MINT));
+    expect(at).toBeGreaterThan(keys.indexOf(RAW.batchOpen(MINT)));
+    expect(at).toBeLessThan(keys.indexOf(RAW.batchClose(MINT)));
+    expect(r.frames.find((f) => f.key === RAW.batchClose(MINT))!.value).toMatchObject({ members: expect.arrayContaining([feesKey(MINT)]) });
+    // Exactly the snapshot decoder's context from the same accounts: the FeeConfig's tiers, not one swap's rates.
+    const accounts = parseAccountsRead(r.frames.find((f) => f.key === RAW.accounts(MINT))!.value)!;
+    const read = (a: string) => {
+      const x = a === PUMP_AMM_GLOBAL_CONFIG || a === PUMP_AMM_FEE_CONFIG ? FEE_ACCOUNTS.get(a)! as { owner: string; data: string[] } : null;
+      const y = accounts.accounts.find((z) => z.address === a);
+      return x !== null ? { owner: x.owner, data: fromBase64(x.data[0]!) } : y?.owner == null || y.data === null ? null : { owner: y.owner, data: fromBase64(y.data) };
+    };
+    const d = decodeSnapshot(MINT, POOL_ADDRESS, accounts.slot, [POOL_ADDRESS, POOL.poolBaseTokenAccount, POOL.poolQuoteTokenAccount, MINT, PUMP_AMM_GLOBAL_CONFIG, PUMP_AMM_FEE_CONFIG].map(read));
+    if (!d.ok) throw new Error(d.reason);
+    const ctx = r.frames.find((f) => f.key === feesKey(MINT))!.value as PoolFeeContext;
+    expect(ctx).toEqual(d.snapshot.ctx);
+    expect(ctx.feeConfig.feeTiers.length).toBeGreaterThan(1);
+  });
+
+  it.each([
+    ['a FeeConfig not owned by pump-fees', 'foreign' as const],
+    ['no GlobalConfig or FeeConfig at all', undefined],
+  ])('%s: no fee context is put (fail closed), the batch itself still lands', async (_, feeAccounts) => {
+    const r = batchRig(feeAccounts === undefined ? {} : { feeAccounts });
+    expect(allOk(await r.run({ holders: null, spend: null, xcheck: false }))).toBe(true);
+    expect(keysOf(r.frames)).toContain(RAW.accounts(MINT));
+    expect(keysOf(r.frames)).not.toContain(feesKey(MINT));
+  });
+
+  it('a swap that crosses a tier: the next quote takes the tier at the reserves now, never the swap\'s own (pre-trade) rates', async () => {
+    const r = batchRig({ feeAccounts: 'real' });
+    await r.run({ holders: null, spend: null, xcheck: false });
+    const ctx = r.frames.find((f) => f.key === feesKey(MINT))!.value as PoolFeeContext;
+    // Two canonical SOL tiers with different rates, and a pool just below and just above the higher one's threshold.
+    const tiers = ctx.feeConfig.feeTiers;
+    const k = tiers.findIndex((t, i) => i > 0 && t.marketCapThreshold > 0n && (t.fees.lp !== tiers[i - 1]!.fees.lp || t.fees.protocol !== tiers[i - 1]!.fees.protocol || t.fees.creator !== tiers[i - 1]!.fees.creator));
+    expect(k).toBeGreaterThan(0);
+    const threshold = tiers[k]!.marketCapThreshold;
+    const base = 10n ** 15n;
+    const quoteFor = (cap: bigint) => (cap * base) / ctx.baseSupply + 1n;
+    const pre: PoolState = { baseReserve: base, quoteVault: quoteFor(threshold) - 10n ** 9n, virtualQuoteReserves: 0n };
+    const after: PoolState = { baseReserve: base, quoteVault: quoteFor(threshold), virtualQuoteReserves: 0n };
+    const swapRates = poolFees(pre, ctx);
+    // The swap at `pre` reports the lower tier; the pool it left is in the higher one.
+    expect(swapRates).toEqual(tiers[k - 1]!.fees);
+    expect(poolFees(after, ctx)).toEqual(tiers[k]!.fees);
+    expect(poolFees(after, ctx)).not.toEqual(swapRates);
+  });
+});
+
+describe('FEE-TIER-NOW: the worker prices from the batch\'s fee context, not the last swap\'s rates', () => {
+  it('after live swaps reporting their own (pre-trade) rates, the market\'s fee context is the FeeConfig\'s, tier by current reserves', async () => {
+    let n = 0;
+    const { h } = await run(3, 19010, 1, { feeAccounts: true, each: (m) => void (n++ % 25 === 0 && m.swap('BuyEvent', 'buyer', 1_000n)) });
+    const market = h.worker.poolOf(MINT);
+    expect(market).not.toBeNull();
+    // The FeeConfig's whole schedule (several tiers), canonical: never the flat one-tier context built from a swap.
+    expect(market!.ctx.feeConfig.feeTiers.length).toBeGreaterThan(1);
+    expect(market!.ctx.canonical).toBe(true);
+    expect(h.worker.strategy.observedFees(MINT)?.feeConfig.feeTiers.length).toBe(1);
+    expect(poolFees(market!.state, market!.ctx)).toEqual(selectFeeTier(market!.ctx.feeConfig.feeTiers, marketCap(market!.state.quoteVault + market!.state.virtualQuoteReserves, market!.state.baseReserve, market!.ctx.baseSupply)));
+  }, 120_000);
+
+  it('parity: the recording replays to the same decisions, the fee context rebuilt from its recorded frames', async () => {
+    let n = 0;
+    const { h } = await run(3, 19014, 1, { feeAccounts: true, each: (m) => void (n++ % 25 === 0 && m.swap('BuyEvent', 'buyer', 1_000n)) });
+    const lines = journal(h);
+    const dir = join(h.stateDir, 'recorder', h.worker.boot);
+    const frames = rows(dir, /^frames-/, (l) => parseTyped(l) as Frame);
+    const releases = rows(dir, /^releases-/, (l) => JSON.parse(l) as Release);
+    expect(frames.some((f) => f.body.type === 'offchain' && f.body.key === feesKey(MINT))).toBe(true);
+    const start = lines.find((l) => l.kind === 'start') as unknown as { seed: string };
+    const { clock, feed } = replayRecorded(frames, releases);
+    const inner = new LiveStrategy({ session: h.session, rugs: RUG_CONFIG, config: h.worker.strategyConfig });
+    const engine = new Engine({ clock, feed: engineFeed(feed, h.session.policy).feed, strategy: inner, runner: { run: () => undefined }, seed: start.seed, book: { maxOpenPositions: h.session.policy.positions.maxOpen } });
+    engine.drain();
+    const replayed = (engine.records as readonly LogRecord[]).flatMap((r) => (r.type === 'decision' && (r.reasons[0] === 'reject' || r.reasons[0] === 'enter') ? [{ event: r.eventId, reasons: r.reasons.slice(0, 4) }] : []));
+    const live = lines.filter((l) => l.kind === 'decision' && (l.reasons?.[0] === 'reject' || l.reasons?.[0] === 'enter')).map((l) => ({ event: l.event, reasons: l.reasons!.slice(0, 4) }));
+    expect(live.length).toBeGreaterThan(0);
+    expect(replayed).toEqual(live);
+  }, 120_000);
 });
