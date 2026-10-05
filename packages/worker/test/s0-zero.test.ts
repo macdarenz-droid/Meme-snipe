@@ -3,6 +3,7 @@
 // catch-up gap, closed by FILL-2's in-run fill: a resume only when the fill restored it in full, a lossy gap otherwise
 // (H11 keeps rejecting). The live trades seen meanwhile are held back and reach the feed after the fill's.
 import { describe, expect, it } from 'vitest';
+import { join } from 'node:path';
 import { transactionEvents, type TransactionRecord } from '../../core/src/chain/index.ts';
 import { startSession, TRIAL_POLICY } from '../../core/src/config/index.ts';
 import { OFF_CHAIN, type Moment } from '../../core/src/engine/index.ts';
@@ -21,8 +22,8 @@ import { DEPLOYER_CHECK_CREDITS_PER_DAY } from '../src/facts/deployer-checks.ts'
 import { holderScanCreditsPerDay } from '../src/facts/budget.ts';
 import { fillTradeGaps, type SeedRpc } from '../src/seed/index.ts';
 import { PoolWatch } from '../src/run/pool-watch.ts';
-import { CreditBook, LiveProviders, TRADES_FILL_CREDITS, tradesFill } from '../src/run/sources.ts';
-import type { DailyBudget } from '../src/persist/index.ts';
+import { CreditBook, LiveProviders, TRADES_FILL_CREDITS, TRADES_FILLS_IN_FLIGHT, tradesFill } from '../src/run/sources.ts';
+import { DailyBudget } from '../src/persist/index.ts';
 import { blockNetwork, recordOf, settle, testSecrets, tx, TXS } from './helpers.ts';
 
 blockNetwork();
@@ -258,17 +259,21 @@ describe('the in-run fill spends from the daily budget and is journaled', () => 
     const calls: string[] = [];
     const fill = tradesFill({
       feed, rpc: rpc(calls), timers,
-      budget: { remaining: () => { caps.push(remaining); return remaining; }, spend: (c) => { spent.push(c); remaining -= c; } },
+      budget: { remaining: () => { caps.push(remaining); return remaining; }, spend: (c) => { spent.push(c); remaining -= c; }, refund: (c) => { spent.push(-c); remaining += c; } },
       pools: () => new Map([[pool, { mint: 'MintX', held: false, fromSlot: 452_941_200n }]]),
       journal: (k, f) => lines.push([k, { ...f }]),
     });
     const ok = await fill({ address: pool, fromSlot: 452_941_200n, toSlot: 452_941_210n });
     expect(ok, JSON.stringify(lines, (_k, v) => (typeof v === 'bigint' ? String(v) : v))).toBe(true);
-    expect(spent).toHaveLength(1);
-    expect(spent[0]).toBeGreaterThan(0);
+    // STEP-B: the cap is booked before the read and the unused part given back after; the net is what the fill used.
+    expect(spent).toHaveLength(2);
+    expect(spent[0]).toBe(TRADES_FILL_CREDITS);
+    const net = spent[0]! + spent[1]!;
+    expect(net).toBeGreaterThan(0);
+    expect(remaining).toBe(10_000 - net);
     expect(lines).toHaveLength(1);
     expect(lines[0]![0]).toBe('trades_fill');
-    expect(lines[0]![1]).toMatchObject({ pool, mint: 'MintX', kind: 'candidate', from_slot: 452_941_200n, complete: true, credits: spent[0], transactions: 2 });
+    expect(lines[0]![1]).toMatchObject({ pool, mint: 'MintX', kind: 'candidate', from_slot: 452_941_200n, complete: true, credits: net, transactions: 2 });
     // Placed after everything ingested so far, oldest first, even where their own slots are not yet released.
     expect(placed.filter((f) => f.body.type === 'tx').map((f) => f.place.at)).toEqual(['offchain', 'offchain']);
   });
@@ -278,7 +283,7 @@ describe('the in-run fill spends from the daily budget and is journaled', () => 
     const lines: Record<string, unknown>[] = [];
     const fill = tradesFill({
       feed: new LiveFeed({ ...DEFAULT_LIVE_FEED, horizonSlots: 0 }), rpc: rpc(calls), timers,
-      budget: { remaining: () => 0, spend: () => {} },
+      budget: { remaining: () => 0, spend: () => { throw new Error('nothing to book'); }, refund: () => { throw new Error('nothing to give back'); } },
       pools: () => new Map([[pool, { mint: 'MintX', held: false }]]),
       journal: (_k, f) => lines.push({ ...f }),
     });
@@ -299,14 +304,61 @@ describe('the in-run fill spends from the daily budget and is journaled', () => 
       const lines: Record<string, unknown>[] = [];
       const fill = tradesFill({
         feed: new LiveFeed({ ...DEFAULT_LIVE_FEED, horizonSlots: 0 }), timers, rpc: busy,
-        budget: { remaining: () => remaining, spend: (c) => spent.push(c) },
+        budget: { remaining: () => remaining, spend: (c) => spent.push(c), refund: (c) => spent.push(-c) },
         pools: () => new Map(), journal: (_k, f) => lines.push({ ...f }),
       });
       expect(await fill({ address: pool, fromSlot: 452_941_200n, toSlot: 452_941_210n })).toBe(false);
       expect(lines[0]).toMatchObject({ complete: false, stopped_by: 'credit-cap' });
-      expect(spent[0]).toBeLessThanOrEqual(cap);
-      expect(spent[0]).toBeGreaterThan(cap - 3);
+      expect(spent[0]).toBe(cap);
+      const net = spent.reduce((a, b) => a + b, 0);
+      expect(net).toBeLessThanOrEqual(cap);
+      expect(net).toBeGreaterThan(cap - 3);
     }
+  });
+
+  it('STEP-B: fills running together never spend past the budget, and at most TRADES_FILLS_IN_FLIGHT read at once', async () => {
+    // A boot's catch-up asks for many fills at once. Before: each took min(cap, remaining) at its start and booked only
+    // at its end, so all of them read on the same remaining credits, with no limit on how many held answers in memory.
+    const hyg = TXS.find((x) => x.label.startsWith('PumpSwap SellEvent'))!;
+    const many: SignatureInfo[] = Array.from({ length: TRADES_FILL_CREDITS + 50 }, (_, k) => ({ signature: `Many${k}`.replace(/0/g, 'z').padEnd(44, '1'), slot: BigInt(hyg.slot), err: null, blockTime: 1_791_032_000 }));
+    let reading = 0;
+    let most = 0;
+    const busy: SeedRpc = {
+      getSignaturesForAddress: async (_a, o) => { const from = o.before === undefined ? 0 : many.findIndex((x) => x.signature === o.before) + 1; return many.slice(from, from + o.limit); },
+      getTransaction: async () => { reading++; most = Math.max(most, reading); await settle(0); reading--; return recordOf(hyg); },
+    };
+    const daily = TRADES_FILL_CREDITS * 3 + 100;
+    const budget = DailyBudget.load(join(tempState(), 'fill-budget.json'), daily, now);
+    const used: number[] = [];
+    const fill = tradesFill({
+      feed: new LiveFeed({ ...DEFAULT_LIVE_FEED, horizonSlots: 0 }), timers, rpc: busy, budget,
+      pools: () => new Map(), journal: (_k, f) => used.push(f['credits'] as number),
+    });
+    const results = await Promise.all(Array.from({ length: 12 }, (_, k) => fill({ address: `${pool.slice(0, -2)}${String(k).padStart(2, 'z')}`, fromSlot: 452_941_200n, toSlot: 452_941_210n })));
+    expect(results.every((ok) => !ok)).toBe(true);
+    expect(TRADES_FILLS_IN_FLIGHT).toBe(2);
+    expect(most).toBeGreaterThan(0);
+    expect(most).toBeLessThanOrEqual(TRADES_FILLS_IN_FLIGHT);
+    const total = used.reduce((a, b) => a + b, 0);
+    expect(total).toBeLessThanOrEqual(daily);
+    expect(daily - budget.remaining(now)).toBe(total);
+    expect(used.filter((c) => c > 0).length).toBeLessThan(12);
+  });
+
+  it('STEP-B: a death mid-fill keeps the charge: the cap is on disk before the first read', async () => {
+    const file = join(tempState(), 'fill-budget.json');
+    const budget = DailyBudget.load(file, 10_000, now);
+    let asked = false;
+    const hung: SeedRpc = {
+      getSignaturesForAddress: () => { asked = true; return new Promise(() => {}); },
+      getTransaction: () => new Promise(() => {}),
+    };
+    const fill = tradesFill({ feed: new LiveFeed({ ...DEFAULT_LIVE_FEED, horizonSlots: 0 }), timers, rpc: hung, budget, pools: () => new Map() });
+    void fill({ address: pool, fromSlot: 452_941_200n, toSlot: 452_941_210n });
+    for (let k = 0; k < 5 && !asked; k++) await settle(0);
+    expect(asked).toBe(true);
+    // The process dies here: the next boot reads the file.
+    expect(DailyBudget.load(file, 10_000, now).remaining(now)).toBe(10_000 - TRADES_FILL_CREDITS);
   });
 
   it('the runner\'s journal summary counts the fills, their transactions and credits', () => {
@@ -471,7 +523,7 @@ describe('the live providers wire the fill into the pool watches (the original b
     let spent = 0;
     const providers = new LiveProviders({
       tradeStreams: false, secrets: testSecrets, http, factory: hub.factory, credits: new CreditBook(stateDir, timers),
-      ...(withBudget ? { fillBudget: { remaining: () => 20_000 - spent, spend: (c: number) => { spent += c; } } as unknown as DailyBudget } : {}),
+      ...(withBudget ? { fillBudget: { remaining: () => 20_000 - spent, spend: (c: number) => { spent += c; }, refund: (c: number) => { spent -= c; } } as unknown as DailyBudget } : {}),
     });
     const frames: Frame[] = [];
     const feed = new LiveFeed({ ...DEFAULT_LIVE_FEED, horizonSlots: 0, onFrame: (f) => frames.push(f) });

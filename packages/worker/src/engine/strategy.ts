@@ -980,6 +980,14 @@ export class LiveStrategy implements Strategy {
       // Terms from a swap seen in this run are never replaced by saved ones (a candidate already listed is not restored at
       // all, so no case reaches this today; kept so an order change cannot regress).
       if (c.fees != null && !this.#observedFees.has(c.mint)) this.#observedFees.set(c.mint, { ctx: feeContextOf(c.fees), terms: c.fees, restored: true });
+      // STEP-B: a window that ended during the downtime ends here, as the first event after the restore would end it,
+      // before the candidate is listed: it is not restored, so none of its transactions is read again and its pool
+      // gets no catch-up, which no decision could use (a boot after a long stop restored every saved candidate and read
+      // each one again, then dropped them all at the first event).
+      if (atMs >= c.migratedAtMs + this.#d.config.windowToMs) {
+        this.#endWindow(c, out);
+        continue;
+      }
       if (c.bars.length > 0 && !this.#bars.has(c.mint)) this.#bars.set(c.mint, [...c.bars]);
       // The downtime's bars, from the saved last bar (or the migration) to the restore, come from the pool's filled trades.
       const barMs = this.#d.config.barMs;
@@ -2075,20 +2083,23 @@ export class LiveStrategy implements Strategy {
    */
   #windowEnds(now: number, out: Decision[]): void {
     const c = this.#d.config;
-    for (const cand of [...this.#cands.values()]) {
-      const to = cand.migratedAtMs + c.windowToMs;
-      if (now < to) continue;
-      const pool = this.#poolOfMint.get(cand.mint);
-      if (cand.lastReason !== null && pool !== undefined) {
-        // At the cap the pool is not watched: logged, so G3 censors that coin with the reason, never imputes it.
-        if (this.#tail.size >= c.maxTails) out.push({ action: null, reasons: [NO_TAIL, c.universe, cand.mint, `tail cap ${c.maxTails}`] });
-        else this.#tail.set(cand.mint, { pool, untilMs: to + exitsFor(this.#d.session.policy.exits, c.universe).tMaxMs });
-      }
-      this.#cands.delete(cand.mint);
-      this.#bars.delete(cand.mint);
-      this.#forget(cand.mint);
-      out.push({ action: null, reasons: ['no entry', c.universe, cand.mint, cand.lastReason === null ? 'window ended' : `window ended; last reason: ${cand.lastReason}`] });
+    for (const cand of [...this.#cands.values()]) if (now >= cand.migratedAtMs + c.windowToMs) this.#endWindow(cand, out);
+  }
+
+  /** A candidate's window has ended: it leaves, with its tail when it was evaluated and rejected (`#windowEnds`). */
+  #endWindow(cand: { readonly mint: string; readonly migratedAtMs: number; readonly lastReason: string | null }, out: Decision[]): void {
+    const c = this.#d.config;
+    const to = cand.migratedAtMs + c.windowToMs;
+    const pool = this.#poolOfMint.get(cand.mint);
+    if (cand.lastReason !== null && pool !== undefined) {
+      // At the cap the pool is not watched: logged, so G3 censors that coin with the reason, never imputes it.
+      if (this.#tail.size >= c.maxTails) out.push({ action: null, reasons: [NO_TAIL, c.universe, cand.mint, `tail cap ${c.maxTails}`] });
+      else this.#tail.set(cand.mint, { pool, untilMs: to + exitsFor(this.#d.session.policy.exits, c.universe).tMaxMs });
     }
+    this.#cands.delete(cand.mint);
+    this.#bars.delete(cand.mint);
+    this.#forget(cand.mint);
+    out.push({ action: null, reasons: ['no entry', c.universe, cand.mint, cand.lastReason === null ? 'window ended' : `window ended; last reason: ${cand.lastReason}`] });
   }
 
   #entries(ctx: StrategyContext, gctx: GateContext, out: Decision[], due: ReadonlyMap<string, { readonly slot: bigint | null; readonly receivedAt: number }>): void {
