@@ -77,6 +77,7 @@ import type { ExecStats } from '../../../core/src/facts/raw.ts';
 const flagged = (p: PoolFact): boolean => p.obs.quality.some((q) => q !== 'backfilled' && q !== 'deduplicated');
 import { type PoolFeeContext, effectiveQuoteReserve, poolSell } from '../../../core/src/amm/index.ts';
 import { liveCollapse, liveForget, liveRetention, liveShape } from './store-rules.ts';
+import { BEHIND, BehindGuard } from './behind.ts';
 
 /** The halt reason while the book holds a late buy's position, which paper does not settle yet (risk ruling on #133). */
 export const LATE_BUY = 'late buy not settled by paper; entries off';
@@ -459,6 +460,8 @@ export class Worker {
   #loop: ReturnType<Timers['setTimeout']> | null = null;
   #beat: ReturnType<Timers['setTimeout']> | null = null;
   #memTimer: ReturnType<Timers['setTimeout']> | null = null;
+  /** BEHIND: whether the loop keeps up with its inputs (entries halt while it does not). */
+  readonly #behind = new BehindGuard();
   readonly #cgroupMax = cgroupMax();
   #summaryClock: SummaryClock | null = null;
   #summary: Summarizer | null = null;
@@ -1526,6 +1529,7 @@ export class Worker {
     // HELIUS-EXHAUSTED: no entry is judged while Helius refuses for credits; named, never an evidence refusal.
     if (this.#d.heliusExhaustion?.().exhausted === true) reasons.push(HELIUS_EXHAUSTED);
     if (this.#seeding) reasons.push(SEEDING);
+    if (this.#behind.behind) reasons.push(BEHIND);
     if (this.#recorderFault !== null) reasons.push(this.#recorderFault);
     if (Object.keys(this.#desk.book.positions).some((id) => lateFillOf(id) !== null)) reasons.push(LATE_BUY);
     reasons.push(...this.#diverged, ...this.#sellOnly);
@@ -1632,6 +1636,14 @@ export class Worker {
     }
     const loop = (): void => {
       if (this.#stopping) return;
+      // BEHIND: a cycle far over its interval means inputs waited that long unread; entries halt until it keeps up.
+      const change = this.#behind.cycle(d.timers.now(), d.loopMs);
+      if (change !== null) {
+        d.log(change.behind
+          ? `Behind: a loop cycle ran ${(change.lateMs / 1000).toFixed(1)} s over its interval; new entries halt, exits run.`
+          : 'Caught up: every loop cycle on time for 30 s; entries resume once nothing else halts them.');
+        this.#checkHalt(d.timers.now());
+      }
       try {
         this.step();
       } catch (e) {
