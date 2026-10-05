@@ -1807,6 +1807,8 @@ Re-rated blocking under the owner's rule that paper money is real money (5 Oct):
     - `packages/core/test/retention.test.ts`: lookups and in-horizon history unchanged; the same decision log hash with and without retention over 3 days; a store that stays the same size from day 2 to day 6; the rules; refusals.
     - `packages/core/test/facts/producer.test.ts`: create, insiders and soft released again at migration; a store pruned between create and migration still answers the create.
     - Hand mutants A1–A8 and E1–E3 are killed.
+  - **The BT-2 study keeps its own retention (BT review of #164).** The backtest has no read again of a create at the shortlist, so `STUDY_RETENTION` (`packages/backtest/src/study/run.ts`) keeps every raw create and rug label instead of putting them on the per-object horizon, and the store stays bounded because the study run is a fixed 74 days. The live rules cannot be used there: a create they let age out would never come back.
+  - **The one known live/backtest difference this leaves.** Live marks `gates/create-unread:<mint>` and waits for a getTransaction when a coin's raw create is older than `createRefreshAgeMs` (16 hours on the trial policy) at its shortlist, refusing H16 `unread` until the create lands, or outright with `no-budget` when the fills' daily budget is spent. The study models neither the wait nor the refusal. So for coins shortlisted 16 hours or more after their create, live entry timing and budget-spent rejections can differ from the backtest's.
 
 ## Daily summary (OPS-SUMMARY, `packages/worker/src/run/summary.ts`, `packages/ops/src/watchdog/{summary,reports}.ts`, `ops/deploy/reports.sh`)
 
