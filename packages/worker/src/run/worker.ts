@@ -1120,9 +1120,11 @@ export class Worker {
     if (c.kind === 'snapshot') return { address: c.snap.pool, state: c.snap.state, ctx: c.snap.ctx, atMs: c.snap.atMs };
     if (c.kind !== 'pool') return null;
     const p = c.pool;
-    const ctx = this.#fees.get(mint) ?? this.#strategy.observedFees(mint);
+    const state = { baseReserve: p.baseVault, quoteVault: p.quoteVault, virtualQuoteReserves: p.pool.virtualQuoteReserves ?? 0n };
+    // FEES-KEEP: restored fee terms price only the pool their swap left.
+    const ctx = this.#fees.get(mint) ?? this.#strategy.observedFees(mint, state);
     if (ctx === undefined) return null;
-    return { address: p.address, state: { baseReserve: p.baseVault, quoteVault: p.quoteVault, virtualQuoteReserves: p.pool.virtualQuoteReserves ?? 0n }, ctx, atMs: c.atMs };
+    return { address: p.address, state, ctx, atMs: c.atMs };
   }
 
   /**

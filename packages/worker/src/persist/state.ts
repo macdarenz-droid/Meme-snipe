@@ -137,7 +137,9 @@ const candidatesProblem = (c: unknown, asOf: Moment, saving: boolean): void => {
       throw new RangeError('a saved candidate is malformed');
     }
     const at = saving ? 'snapshot' : 'saved';
-    if ((x['migratedAtMs'] as number) > asOf.receivedAt || ((x['lastEvalMs'] as number | null) ?? Number.NEGATIVE_INFINITY) > asOf.receivedAt || (x['bars'] as { startMs: number }[]).some((b) => b.startMs > asOf.receivedAt)) throw new RangeError(`candidate ${x['mint']} is dated after the ${at} moment`);
+    if ((x['migratedAtMs'] as number) > asOf.receivedAt || ((x['lastEvalMs'] as number | null) ?? Number.NEGATIVE_INFINITY) > asOf.receivedAt || (x['bars'] as { startMs: number }[]).some((b) => b.startMs > asOf.receivedAt)
+      // FEES-KEEP: the saved fee terms are refused like a bar when dated after the moment; malformed ones restore as none.
+      || (isObj(x['fees']) && typeof x['fees']['atMs'] === 'number' && x['fees']['atMs'] > asOf.receivedAt)) throw new RangeError(`candidate ${x['mint']} is dated after the ${at} moment`);
     if (seen.has(x['mint'])) throw new RangeError(`candidate ${x['mint']} appears twice`);
     seen.add(x['mint']);
   }
