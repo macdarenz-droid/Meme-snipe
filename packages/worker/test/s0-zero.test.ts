@@ -4,7 +4,7 @@
 // (H11 keeps rejecting). The live trades seen meanwhile are held back and reach the feed after the fill's.
 import { describe, expect, it } from 'vitest';
 import { join } from 'node:path';
-import { transactionEvents, type TransactionRecord } from '../../core/src/chain/index.ts';
+import { encodeBase58, transactionEvents, type TransactionRecord } from '../../core/src/chain/index.ts';
 import { startSession, TRIAL_POLICY } from '../../core/src/config/index.ts';
 import { OFF_CHAIN, type Moment } from '../../core/src/engine/index.ts';
 import { Evidence, candlesKey, migrationKey, parseCandles, parseMigration } from '../../core/src/gates/index.ts';
@@ -13,7 +13,7 @@ import { makeWorker, passingMarket, tempState } from './worker-harness.ts';
 import { FactWorld, MINT, POOL, RECORDS, atOf, chainTx, coverage, slotNotice, txEvents } from '../../core/test/facts/helpers.ts';
 import { checkJournal } from '../../runner/src/journal.ts';
 import {
-  CATCH_UP_HOLD_MAX, DEFAULT_LIVE_FEED, FakeSocketHub, LiveFeed, RpcHttp, RpcStream, rpcHandler, scriptedHttp, TxFetcher, type Frame, type WatchOptions,
+  CATCH_UP_HOLD_MAX, CATCH_UP_HOLD_TOTAL, DEFAULT_LIVE_FEED, FakeSocketHub, LiveFeed, RpcHttp, RpcStream, rpcHandler, scriptedHttp, TxFetcher, type Frame, type WatchOptions,
 } from '../src/providers/index.ts';
 import type { SignatureInfo } from '../src/providers/solana-http.ts';
 import { HELIUS_FREE, ManualTimers, P1, P3, Scheduler, type Timers } from '../src/scheduler/index.ts';
@@ -153,6 +153,90 @@ describe('a candidate pool watch starts its coverage at the migration', () => {
     await settle(20);
     expect(t.coverage().at(-1)).toEqual(['gap', { fromSlot: 590n, toSlot: 601n, reason: 'catch-up', via: `logs:${QVC}` }]);
   });
+
+  it('HOLD-TOTAL: 230 pools in their catch-up at once hold at most CATCH_UP_HOLD_TOTAL notifications together; nothing is dropped and an overflowed catch-up stays lossy', async () => {
+    // A boot restores every candidate in its window: each pool watch holds its live trades until its fill answers, and
+    // fills run two at a time. The per-watch cap alone let ~230 holds of 5,000 fill the heap.
+    const pending = new Map<string, (ok: boolean) => void>();
+    const t = setup({ coverFrom: 590n, fill: (g) => new Promise<boolean>((r) => { pending.set(g.address, r); }) });
+    await settle(20);
+    const addr = (k: number) => encodeBase58(Uint8Array.from({ length: 32 }, (_, j) => (k * 37 + j * 11 + 3) % 256));
+    const subs = new Map<string, number>();
+    for (let k = 0; k < 229; k++) {
+      t.stream.watchLogs(addr(k), { priority: P3, decodeLogs: true, coverage: `trades:${addr(k)}`, commitment: 'confirmed', coverFrom: 590n, fill: (g) => new Promise<boolean>((r) => { pending.set(g.address, r); }) });
+      const req = t.hub.last.requests().at(-1)!;
+      t.hub.last.push({ jsonrpc: '2.0', id: req.id, result: 1_000 + k });
+      subs.set(addr(k), 1_000 + k);
+    }
+    await t.slot(601);
+    expect(pending.size).toBe(230);
+    const b58 = (k: number) => [...String(k)].map((d) => 'abcdefghij'[Number(d)]).join('');
+    let sent = 0;
+    // Ten live trades on each pool: 2,300 notifications, more than the total allows, none past the per-watch cap.
+    for (let round = 0; round < 10; round++) {
+      for (const [a, sub] of subs) {
+        t.hub.last.push({ jsonrpc: '2.0', method: 'logsNotification', params: { subscription: sub, result: { context: { slot: 602 }, value: { signature: `S${b58(sent++)}`.padEnd(88, '1'), err: null, logs: ['Program log: x'] } } } });
+        expect(t.stream.heldNotices, a).toBeLessThanOrEqual(CATCH_UP_HOLD_TOTAL);
+      }
+      t.log(602, `Q${b58(sent++)}`.padEnd(88, '1'));
+    }
+    await settle(20);
+    expect(sent).toBeGreaterThan(CATCH_UP_HOLD_TOTAL);
+    expect(t.stream.heldNotices).toBeLessThanOrEqual(CATCH_UP_HOLD_TOTAL);
+    // Every notification is on the feed or still held: none is lost.
+    expect(t.frames.filter((f) => f.body.type === 'logs').length + t.stream.heldNotices).toBe(sent);
+    // The fills answer complete: a pool that overflowed closes lossy, one that held all its trades resumes.
+    for (const r of pending.values()) r(true);
+    await settle(40);
+    expect(t.stream.heldNotices).toBe(0);
+    expect(t.frames.filter((f) => f.body.type === 'logs').length).toBe(sent);
+    const closes = t.frames.filter((f) => f.body.type === 'offchain' && /^coverage:trades:.*:(resume|gap)$/.test(f.body.key) && (f.body.value as { toSlot?: unknown }).toSlot !== null);
+    const lossy = closes.filter((f) => (f.body as { key: string }).key.endsWith(':gap')).length;
+    expect(closes.length).toBe(230);
+    expect(lossy).toBeGreaterThan(0);
+    expect(lossy).toBeLessThan(230);
+  });
+
+  it('HOLD-TOTAL: the heap stays bounded while 230 pools hold real-size swap notifications (103 log lines, ~10.5 KB each held)', async () => {
+    const { setFlagsFromString } = await import('node:v8');
+    const { runInNewContext } = await import('node:vm');
+    setFlagsFromString('--expose-gc');
+    const gc = runInNewContext('gc') as () => void;
+    const lines = recordOf(TXS.find((x) => x.label.startsWith('PumpSwap SellEvent'))!).logMessages!;
+    expect(lines.length).toBeGreaterThan(50);
+    const t = setup({ coverFrom: 590n, fill: () => new Promise<boolean>(() => {}) });
+    await settle(20);
+    const addr = (k: number) => encodeBase58(Uint8Array.from({ length: 32 }, (_, j) => (k * 37 + j * 11 + 3) % 256));
+    const subs: number[] = [];
+    for (let k = 0; k < 229; k++) {
+      t.stream.watchLogs(addr(k), { priority: P3, decodeLogs: true, coverage: `trades:${addr(k)}`, commitment: 'confirmed', coverFrom: 590n, fill: () => new Promise<boolean>(() => {}) });
+      const req = t.hub.last.requests().at(-1)!;
+      t.hub.last.push({ jsonrpc: '2.0', id: req.id, result: 1_000 + k });
+      subs.push(1_000 + k);
+    }
+    await t.slot(601);
+    // What reaches the feed is released and taken, as the engine takes it live: only the holds are measured.
+    const drain = () => {
+      t.feed.advance(Number.MAX_SAFE_INTEGER);
+      while (t.feed.next() !== null);
+      t.frames.length = 0;
+    };
+    drain();
+    gc();
+    const before = process.memoryUsage().heapUsed;
+    const b58 = (k: number) => [...String(k)].map((d) => 'abcdefghij'[Number(d)]).join('');
+    for (let i = 0; i < 9_200; i++) {
+      t.hub.last.push({ jsonrpc: '2.0', method: 'logsNotification', params: { subscription: subs[i % subs.length], result: { context: { slot: 602 }, value: { signature: `S${b58(i)}`.padEnd(88, '1'), err: null, logs: [...lines] } } } });
+      if (i % 500 === 0) drain();
+    }
+    await settle(20);
+    drain();
+    gc();
+    const held = t.stream.heldNotices;
+    expect(held).toBeLessThanOrEqual(CATCH_UP_HOLD_TOTAL);
+    // 9,200 held at ~10.5 KB would be ~95 MB; the cap keeps it near CATCH_UP_HOLD_TOTAL of them (~21 MB).
+    expect(process.memoryUsage().heapUsed - before).toBeLessThan(40 * 1024 * 1024);
+  }, 120_000);
 
   it('a watch dropped during the catch-up puts what it held on the feed', async () => {
     const t = setup({ coverFrom: 590n, fill: () => new Promise<boolean>(() => {}) });
