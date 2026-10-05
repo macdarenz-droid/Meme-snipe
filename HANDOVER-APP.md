@@ -119,6 +119,8 @@ S2-READY 6af4e43b707960316d8cd8419cb2e513fa9f4b60
 
 ## S2 events (newest first)
 
+- **2026-10-06 10:54:16 AEDT** — FUNNEL-TRUTH refresh aac10e38dffa65134be390233bd173be5f9b880c now has fresh independent APP/API PASS (24 focused tests and schema matrix) and facts PASS (35 focused tests, exact merge-tree identity and strict source guard). CI run 37390690060 started on the verified pushed head; local full-check slot waits behind disk #246. Starting assigned RISK-DIAL DESIGN ONLY in one visible builder: resolve existing CHANGES NEEDED notes, then fresh risk review and owner final-design OK before any code. Earlier app work is preserved; no duplicate feature builds.
+
 - **2026-10-06 10:50:25 AEDT** — FUNNEL-TRUTH builder refreshed #237: merge e5facb3166c2fd88219c6b5e64bc4620255130ca exactly matches automatic merge-tree(c2f426b1,latest5efb9ae0). Final immutable aac10e38dffa65134be390233bd173be5f9b880c fixes the identified worker/create-expired adverse-versus-missing label using existing failed enum; only API and tests added beyond the merge. Two regressions fail before, 35 focused tests + strict source-guard rerun and all package typechecks pass. Fetch/ancestor checks completed before ordinary branch push; APP/API and facts fresh exact-head reviewers started. Local full-check slot remains held by disk #246.
 
 - **2026-10-06 10:48:48 AEDT** — Recorded each exact-head review and remaining gates for disk-crash #246 in its own handoff section; verified PR comment 6005719422. No new saved data reaches a third party or APK schema; S1 saved-file acceptance is an explicit existing handoff requirement, not an owner action. One FUNNEL-TRUTH refresh builder is active while disk checks complete, other already-reviewed app tasks are preserved.
