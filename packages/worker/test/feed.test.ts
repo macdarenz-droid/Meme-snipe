@@ -145,7 +145,7 @@ describe('live Feed', () => {
     expect(ranks.has(fresh(N + 1))).toBe(false);
   });
 
-  it('SEEN-TAGS: the live feed keeps a released signature in under 200 B (its dedupe key and its slot rank)', async () => {
+  it('SEEN-TAGS, FEED-KEYS: the live feed keeps a released swap\'s signature in under 140 B (its seen and confirmed-logs dedupe tags and its slot rank; 252 B with key strings)', async () => {
     const { setFlagsFromString } = await import('node:v8');
     const { runInNewContext } = await import('node:vm');
     setFlagsFromString('--expose-gc');
@@ -162,7 +162,11 @@ describe('live Feed', () => {
       for (let k = 0n; k < BigInt(slots); k++) {
         const slot = from + k;
         feed.ingest('helius', { type: 'slot', slot, parent: slot - 1n, root: null }, { receivedAt: t });
-        for (let j = 0; j < 100; j++) feed.ingest('helius', { type: 'seen', signature: fresh(n++), slot, err: null, via: 'logs:x', detail: null }, { receivedAt: t });
+        for (let j = 0; j < 100; j++) {
+          const signature = fresh(n++);
+          feed.ingest('helius', { type: 'seen', signature, slot, err: null, via: 'logs:x', detail: null }, { receivedAt: t });
+          feed.ingest('helius', { type: 'logs', signature, slot, err: null, via: 'logs:x', logs: ['Program log: x'], commitment: 'confirmed' }, { receivedAt: t });
+        }
         t += 400;
         drain();
       }
@@ -175,7 +179,7 @@ describe('live Feed', () => {
     gc();
     const per = (process.memoryUsage().heapUsed - before) / (n - n0);
     expect(feed.status().releasedThrough).toBeGreaterThan(S0 + 200n);
-    expect(per).toBeLessThan(200);
+    expect(per).toBeLessThan(140);
   });
 
   it('OOM-MINT: every dedupe case still dedupes with the compact keys, and different facts stay apart', () => {

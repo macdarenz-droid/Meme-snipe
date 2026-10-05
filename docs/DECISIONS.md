@@ -2608,3 +2608,25 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - `create-compact.test.ts`: `liveForget` covers funder reads only; forgetting cleans the retire index for a lone key and for a shared one.
   - Hand mutants killed: `>=` at the producer's boundary; no engine sweep; the retire index not cleaned.
 
+## Feed dedupe keys as 96-bit tags (FEED-KEYS, `providers/tag-set.ts`)
+
+- **2026-10-06 · Why.** After the other cards, the live feed's dedupe keys were the largest term left at sustained 3×.
+  - A swap's two frames (seen and confirmed logs) each kept a key string and its Set entry for 1,500 slots (about 90 B each), plus a slot rank.
+  - Measured 252 B a swap in the feed, about 92 MB at about 720 pools.
+- **What.**
+  - A frame's dedupe key text (`dedupKey`, unchanged) becomes its tag: the first 96 bits of its SHA-256 (`keyTag`), as two 48-bit numbers.
+  - Tags are held in `TagSet`, an open-addressing table with linear probing, at most half full, grown and shrunk by doubling. Removal shifts the following run back, so no tombstones build up.
+  - Each placement slot keeps its tags as number pairs for the prune, as it kept its keys.
+  - Two different keys share a tag with odds of about 2^-96 per pair, so dedupe is exact in practice. The first copy still wins, and a forgotten key behaves as before.
+- **Measured:**
+  - a swap costs the feed about 110 B (was 252 B);
+  - about 40 MB at sustained 3× (was about 92 MB).
+  - Sustained 3× with every window full is now about 490 MB, about 70 MB under the 560 MB limit.
+- **Evidence (fail before, pass after).**
+  - `tag-set.test.ts`:
+    - agrees with a Set through 200,000 random adds and deletes with crowded homes, growing and shrinking;
+    - a run wrapping past the table's end stays findable through deletes in every order;
+    - an entry at its own home just past the wrap stays put.
+  - `feed.test.ts`: a released swap's signature costs the feed under 140 B (258 B with key strings). The dedupe cases and the parity and recorder suites are unchanged.
+  - Hand mutants killed: three wrong backward-shift conditions; the low half ignored.
+
