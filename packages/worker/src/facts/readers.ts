@@ -12,7 +12,7 @@ import {
 } from '../../../core/src/facts/index.ts';
 import { VOLUME_SERIES_START_DAY } from '../../../core/src/config/time.ts';
 import type { Policy } from '../../../core/src/config/policy.ts';
-import { HELIUS_RPC_CREDITS } from '../scheduler/limits.ts';
+import { HELIUS_GPA_CREDITS, HELIUS_RPC_CREDITS } from '../scheduler/limits.ts';
 import { VOLUME_TAG, dayName, dayNumber, sha256Hex, volumeCheckPassed, volumeRelease, volumeReleaseAssets } from './volume-hours.ts';
 import type { ChainVolumeStore, StoredVolumeDay } from './volume-store.ts';
 import type { RugCheckRequest } from '../providers/deployer-check.ts';
@@ -21,7 +21,7 @@ import { P2, type Priority, type Scheduler, ScheduleRefused } from '../scheduler
 import type { Timers } from '../scheduler/timers.ts';
 import type { FrameBody, Source } from '../providers/canonical.ts';
 import { isAddress } from '../providers/canonical.ts';
-import { type HttpClient, type Secrets, parseJson, ProviderError, scrub, send } from '../providers/http.ts';
+import { type HttpClient, type Secrets, parseJson, ProviderError, refusal429, scrub, send } from '../providers/http.ts';
 import type { IngestOptions } from '../providers/live-feed.ts';
 
 /** Every JSON-RPC method the fact reads may call: reads only. Frozen; nothing that sends is or may be added. */
@@ -83,7 +83,10 @@ export class FactRpcError extends ProviderError {
 /** The code Helius answered a mint-only getProgramAccounts with when the set is too large (gpa-probe run 37149567929). */
 export const GPA_TOO_MANY_ACCOUNTS = -32600;
 
-/** Helius JSON-RPC reads at `confirmed`, each one standard call through the scheduler. */
+/**
+ * Helius JSON-RPC reads at `confirmed`, each one call through the scheduler at its published price: a standard call 1
+ * credit, getProgramAccounts 10 (HELIUS-GUARD: it was metered at 1, so the worker's count ran below Helius's).
+ */
 export class FactRpc {
   readonly #o: FactRpcOptions;
   #id = 1;
@@ -95,13 +98,10 @@ export class FactRpc {
   async call(method: FactRpcMethod, params: readonly unknown[], priority: Priority): Promise<unknown> {
     if (!(FACT_RPC_METHODS as readonly string[]).includes(method)) throw new RangeError(`fact reads: method ${method} is not allowed`);
     const o = this.#o;
-    return o.scheduler.run(priority, HELIUS_RPC_CREDITS, async () => {
+    return o.scheduler.run(priority, method === 'getProgramAccounts' ? HELIUS_GPA_CREDITS : HELIUS_RPC_CREDITS, async () => {
       const body = JSON.stringify({ jsonrpc: '2.0', id: this.#id++, method, params });
       const res = await send(o.http, 'helius', method, { method: 'POST', url: o.url(), headers: { 'content-type': 'application/json' }, body, timeoutMs: o.timeoutMs });
-      if (res.status === 429) {
-        o.scheduler.penalize();
-        throw new ProviderError('helius', 'rate_limited', `${method} rate limited`, 429);
-      }
+      if (res.status === 429) throw refusal429(o.scheduler, 'helius', method, res.text);
       if (res.status !== 200) throw new ProviderError('helius', 'http', `${method} returned HTTP ${res.status}`, res.status);
       const json = parseJson('helius', method, res.text);
       if (!isObj(json)) throw new ProviderError('helius', 'shape', `${method} returned no object`);

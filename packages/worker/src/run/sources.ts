@@ -82,6 +82,15 @@ export class CreditBook {
   }
 }
 
+/**
+ * HELIUS-EXHAUSTED (owner, 5 Oct): the worker's own count never stops Helius; Helius's own answer does ("max usage
+ * reached", a 429 the scheduler holds and re-checks). So the worker's Helius scheduler has no monthly halt: its count
+ * runs from the UTC month and cannot see what else the account spent, so it could neither stop in time nor know the
+ * account's end. The count is still kept (credits.json) and reported.
+ */
+const { budget: _heliusMonthly, ...HELIUS_NO_HALT } = HELIUS_FREE;
+export const HELIUS_WORKER: SchedulerSpec = HELIUS_NO_HALT;
+
 export interface LiveProviderOptions {
   /**
    * Full pump and PumpSwap trade log streams with rug coverage (`coverage:rugs:*`). Off on the free plans (about 14M
@@ -215,7 +224,7 @@ export class LiveProviders {
   #feed: SourcesContext['feed'] | null = null;
 
   constructor(o: LiveProviderOptions) {
-    this.helius = o.credits.scheduler(HELIUS_FREE);
+    this.helius = o.credits.scheduler(HELIUS_WORKER);
     this.alchemy = o.credits.scheduler(ALCHEMY_FREE);
     this.jupiter = o.credits.scheduler(JUPITER_FREE);
     this.rugcheck = o.credits.scheduler(RUGCHECK_FREE);
@@ -240,7 +249,8 @@ export class LiveProviders {
       const cls = st.creditsByClass.map((c) => Math.ceil(c)) as [number, number, number, number];
       return {
         provider: st.provider, credits_used: cls[0] + cls[1] + cls[2] + cls[3], credits_by_class: cls,
-        monthly_credits: s.spec.budget?.monthlyCredits ?? null, granted: st.granted, shed: st.shed, halted: st.halted,
+        // The plan's published credits, as the run contract checks them (Helius's too, though its scheduler has no halt).
+        monthly_credits: (s === this.helius ? HELIUS_FREE.budget : s.spec.budget)?.monthlyCredits ?? null, granted: st.granted, shed: st.shed, halted: st.halted,
       };
     });
     return { quota, lookups: { counts: [...this.#lookups] } };
