@@ -64,7 +64,7 @@ const setup = () => {
 
 /** Risk's snapshot at `now`, the open position (if any) marked at `mark` dollars. */
 const risk = (a: PaperAccount, ledger: ReturnType<typeof openLedger>, b: Book, now: number, mark: number | null) => {
-  const fact = a.fact(ledger, b, NO_LATCHES, SOL, now);
+  const fact = a.fact(ledger, b, NO_LATCHES, SOL, now, legsOf(b));
   const account: AccountHistory = { ...fact.history, openPositions: fact.history.openPositions.map((o) => ({ ...o, mark: mark === null ? null : usd(mark), markAtMs: now })) };
   return { history: account, snap: riskSnapshot({
     session: startSession(TRIAL_POLICY), mode: 'paper', clock: { now: () => ({ slot: 1n, txIndex: 0, ixIndex: 0, receivedAt: now }) },
@@ -170,7 +170,7 @@ describe('partial sales (RISK-PARTIAL)', () => {
     filled(x.a, { purpose: 'exit', positionId: PID, mint: 'MintX', book: half, atMs: T - HOUR / 2, reasons: ['partial exit'] }, null);
     expect(x.a.state.trades[0]!.partials![0]!.pnl).toBe(usd(0.5));
     // With no price the rest keeps its share of the dollar notional.
-    expect(x.a.fact(x.ledger, half, NO_LATCHES, null, T).history.openPositions[0]!.notional).toBe(usd(2.5));
+    expect(x.a.fact(x.ledger, half, NO_LATCHES, null, T, legsOf(half)).history.openPositions[0]!.notional).toBe(usd(2.5));
     x.ledger.close();
     const y = setup();
     filled(y.a, { purpose: 'entry', positionId: PID, mint: 'MintX', book: open, atMs: T - HOUR, reasons: ['notional 5000000'] }, null);

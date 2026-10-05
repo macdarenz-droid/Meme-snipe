@@ -366,7 +366,7 @@ export const reportMarkdown = (r: Report): string => {
     `| Duration | ${r.duration_h} h of ${r.target_h} h |`,
     `| Uptime | ${(r.uptime * 100).toFixed(3)}% |`,
     `| Memory | max ${r.memory.max_mb ?? '-'} MB, p50 ${r.memory.p50_mb ?? '-'} MB, p95 ${r.memory.p95_mb ?? '-'} MB (limit ${r.memory.limit_mb} MB) |`,
-    `| Journal | ${r.journal.lines} lines, ${r.journal.boots} boots, ${r.journal.entries} entries, ${r.journal.exits} exits, ${r.journal.simulations} simulations, ${r.journal.repairs} torn-tail repairs |`,
+    `| Journal | ${r.journal.lines} lines, ${r.journal.boots} boots, ${r.journal.entries} entries, ${r.journal.exits} exits, ${r.journal.simulations} simulations, ${r.journal.repairs} torn-tail repairs, ${r.journal.unpriced_fills.length} unpriced fills${r.journal.unpriced_fills.length === 0 ? '' : ` (${r.journal.unpriced_fills.join(', ')})`} |`,
     `| Recorded data | ${r.recorded.files} files, ${r.recorded.bytes} bytes |`,
     `| Worker | ${r.stub ? 'stub (contract test only)' : 'real'} |`,
     '',

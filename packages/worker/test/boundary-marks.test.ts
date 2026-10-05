@@ -126,7 +126,7 @@ describe('boundary marks from the marked account (RISK-MARK)', () => {
     // larger, so the trip itself does not single out either measure.
     const ledger = openLedger(join(h.stateDir, 'ledger.sqlite'), 'paper');
     const a = new PaperAccount(accountFile(h.stateDir), account(h2).openingEquity, at, 0n);
-    const fact = a.fact(ledger, h2.worker.book, NO_LATCHES, SOL_PRICE as MicroUsd, at);
+    const fact = a.fact(ledger, h2.worker.book, NO_LATCHES, SOL_PRICE as MicroUsd, at, h2.worker.legs);
     ledger.close();
     const history = { ...fact.history, openPositions: fact.history.openPositions.map((o) => ({ ...o, mark: exitMark as MicroUsd, markAtMs: at })) };
     const snap = riskSnapshot({

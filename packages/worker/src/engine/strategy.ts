@@ -239,6 +239,12 @@ export interface AccountFact {
   readonly paper: boolean;
   /** Rent of the one-time accounts this wallet still lacks (0 once its setup made them): risk's `rent.oneTime`. */
   readonly oneTimeRent: bigint;
+  /**
+   * ACCOUNT-RATE (risk ruling): closed trades not yet valued in dollars, and stray fees not yet booked (both wait for a
+   * fresh SOL price). Their loss is not in `history` yet, so no entry is judged until a snapshot with none is released.
+   * Absent in older recordings: 0.
+   */
+  readonly unvalued?: number;
 }
 
 /** Exit state of one position, saved after every step so a restart resumes the same stop and trail. */
@@ -1993,6 +1999,10 @@ export class LiveStrategy implements Strategy {
     }
     const acct = this.#account(ctx);
     if (acct === null) return this.#fail('account snapshot unknown', [{ gate: 'worker', code: 'no-account', detail: 'account snapshot unknown' }]);
+    if ((acct.unvalued ?? 0) > 0) {
+      const detail = `${acct.unvalued} closed trade(s) or fee(s) not yet in dollars; waiting for a snapshot with them in`;
+      return this.#fail(`account unvalued: ${detail}`, [{ gate: 'worker', code: 'account-unvalued', detail }]);
+    }
     const st = this.#stopAt(cand, ctx, quoter, spend);
     if (!st.ok) return this.#fail(st.text, [st.line]);
     const { stopPrice, stopBps } = st;
