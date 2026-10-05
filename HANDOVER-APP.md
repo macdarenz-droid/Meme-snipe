@@ -33,7 +33,7 @@ From here on, S2 owns this file. S2 keeps it current on its own branch `claude/s
   - `research/historical/**`.
 
   If a task needs one of them, write the need here and in a PR comment, and wait for S1.
-- **Reviews.** Every PR needs an independent review on the exact head: never by the one who built it. If S2's platform can run a separate reviewer with no shared context, S2 uses it. If not, S2 posts a PR comment that starts `S2-REVIEW-REQUEST <full head SHA>`, naming the areas, and S1 arranges the review. Changes outside the app need the reviewer for their area:
+- **Reviews.** Every PR needs an independent review on the exact head: never by the one who built it. S2 runs its own independent review agents (owner, 6 Oct about 1:15 AM). S1 spawns no reviewers for S2's work, so no review is done twice. S1 only checks the S2-READY evidence, merges and deploys. Changes outside the app need the reviewer for their area:
   - `packages/core/src/risk/**`: the risk reviewer, with tests that fail before and pass after (AGENTS.md file ownership);
   - exits: the EXIT reviewer;
   - worker facts and strategy: the worker/facts reviewer;
