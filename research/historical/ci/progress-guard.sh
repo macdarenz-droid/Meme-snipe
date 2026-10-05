@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # HISTORY-RESUME: a progress save never holds fewer finished units than the run restored.
 #   progress-guard.sh record DIR   after the restore: counts DIR's finished units
-#                                  (units/*/*/stats.json) into $RUNNER_TEMP/progress-restored
+#                                  (units/*/*/stats.json) into $RUNNER_TEMP/progress-restored;
+#                                  with EXPECT_UNITS set, exits 1 (before any read) when
+#                                  fewer were restored, naming the picked entry (PICKED)
 #   progress-guard.sh check DIR    before a save: ok=true to $GITHUB_OUTPUT only when DIR
 #                                  holds at least that many; a missing record (the restore
 #                                  did not finish) is never ok
@@ -10,7 +12,16 @@ cmd=$1 dir=$2
 rec="${RUNNER_TEMP:?}/progress-restored"
 count() { find "$dir/units" -mindepth 3 -maxdepth 3 -name stats.json 2>/dev/null | wc -l; }
 case $cmd in
-  record) n=$(count); echo "$n" > "$rec"; echo "progress-guard: $n finished units restored" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}" ;;
+  record)
+    n=$(count); echo "$n" > "$rec"
+    echo "progress-guard: $n finished units restored from ${PICKED:-no saved progress}" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
+    if [[ -n "${EXPECT_UNITS:-}" ]]; then
+      [[ "$EXPECT_UNITS" =~ ^[0-9]+$ ]] || { echo "progress-guard: expect_units must be a whole number, got '$EXPECT_UNITS'" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"; exit 2; }
+      if (( n < EXPECT_UNITS )); then
+        echo "progress-guard: ${PICKED:-no saved progress} holds $n finished units, fewer than expect_units $EXPECT_UNITS: stopping before any read" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
+        exit 1
+      fi
+    fi ;;
   check)
     n=$(count)
     if [[ ! -s "$rec" ]] || ! [[ "$(cat "$rec")" =~ ^[0-9]+$ ]]; then

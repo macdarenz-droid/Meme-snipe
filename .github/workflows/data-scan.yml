@@ -98,6 +98,10 @@ on:
         description: "scan with source helius: getBlock requests a second (1 to 50; free plan measured at 5, Developer's limit 50)"
         required: false
         default: "5"
+      expect_units:
+        description: "scan: stop before any read unless the restored progress holds at least this many finished units (empty: no check)"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -272,8 +276,14 @@ jobs:
         with:
           path: ${{ runner.temp }}/work/data
           key: ${{ steps.pickprogress.outputs.key || format('{0}-{1}-{2}', inputs.source == 'helius' && 'data-rpc' || 'data-scan', matrix.day, github.run_id) }}
+      # expect_units: fail closed before any read when the picked progress holds fewer
+      # finished units than the dispatcher expects (e.g. the fuller entry was evicted).
       - name: Record the restored progress
+        id: record
         if: steps.published.outputs.complete != 'true'
+        env:
+          EXPECT_UNITS: ${{ inputs.expect_units }}
+          PICKED: ${{ steps.pickprogress.outputs.key }}
         run: research/historical/ci/progress-guard.sh record "$RUNNER_TEMP/work/data"
       # One archive back-off shared by every day and run: the newest saved state wins.
       - name: Restore the shared archive back-off
@@ -314,7 +324,7 @@ jobs:
       # restore that did not finish (HISTORY-RESUME).
       - name: Check the progress did not shrink
         id: shrink
-        if: always() && steps.published.outcome == 'success' && steps.published.outputs.complete != 'true' && steps.restore.outcome == 'success'
+        if: always() && steps.published.outcome == 'success' && steps.published.outputs.complete != 'true' && steps.restore.outcome == 'success' && steps.record.outcome == 'success'
         run: research/historical/ci/progress-guard.sh check "$RUNNER_TEMP/work/data"
       - name: Log the progress entry size
         if: always() && steps.published.outcome == 'success' && steps.published.outputs.complete != 'true'
@@ -366,7 +376,7 @@ jobs:
       # in rpc-credits-used even when packaging or publishing then fails.
       - name: Check the progress did not shrink after QA
         id: shrinkqa
-        if: always() && steps.published.outcome == 'success' && (steps.qa.outcome == 'failure' || (inputs.source == 'helius' && steps.qa.outcome != 'skipped')) && steps.published.outputs.complete != 'true' && steps.restore.outcome == 'success'
+        if: always() && steps.published.outcome == 'success' && (steps.qa.outcome == 'failure' || (inputs.source == 'helius' && steps.qa.outcome != 'skipped')) && steps.published.outputs.complete != 'true' && steps.restore.outcome == 'success' && steps.record.outcome == 'success'
         run: research/historical/ci/progress-guard.sh check "$RUNNER_TEMP/work/data"
       - name: Save progress after QA
         if: always() && steps.published.outcome == 'success' && (steps.qa.outcome == 'failure' || (inputs.source == 'helius' && steps.qa.outcome != 'skipped')) && steps.published.outputs.complete != 'true' && steps.shrinkqa.outputs.ok == 'true'
@@ -505,6 +515,7 @@ jobs:
           SOURCE: ${{ inputs.source }}
           MAX_CREDITS: ${{ inputs.max_credits }}
           RPC_RPS: ${{ inputs.rpc_rps }}
+          EXPECT_UNITS: ${{ inputs.expect_units }}
         run: |
           set -euo pipefail
           [[ "$CHAIN" =~ ^[0-9]+$ ]] || { echo "bad chain '$CHAIN'"; exit 1; }
@@ -518,7 +529,7 @@ jobs:
             exit 1
           fi
           next=$((CHAIN + 1))
-          gh workflow run data-scan.yml --ref "$REF" -f mode=scan -f days="$DAYS" -f max_mbps="$MAX_MBPS" -f chain="$next" -f source="$SOURCE" -f max_credits="$MAX_CREDITS" -f rpc_rps="$RPC_RPS"
+          gh workflow run data-scan.yml --ref "$REF" -f mode=scan -f days="$DAYS" -f max_mbps="$MAX_MBPS" -f chain="$next" -f source="$SOURCE" -f max_credits="$MAX_CREDITS" -f rpc_rps="$RPC_RPS" -f expect_units="$EXPECT_UNITS"
           echo "resumable stop ($resume): dispatched chained run $next of at most $MAX_CHAIN" | tee -a "$GITHUB_STEP_SUMMARY"
 
   # Back-fill of data-volume-DAY for days already published (DATA-1c): rebuilt from each

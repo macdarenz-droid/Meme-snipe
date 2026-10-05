@@ -906,6 +906,14 @@ pg check; grep -qx ok=true "$PG/out" || bad+=" same"
 mkdir -p "$PG/d/units/1039/d"; echo '{}' > "$PG/d/units/1039/d/stats.json"; pg check; grep -qx ok=true "$PG/out" || bad+=" more"
 rm -rf "$PG/d/units/1039/a" "$PG/d/units/1039/b"; pg check; grep -q ok=true "$PG/out" && bad+=" fewer"
 [[ -z "$bad" ]] && ok "HISTORY-RESUME: progress-guard allows a save only after a finished restore and with at least as many finished units as were restored" || no "progress-guard:$bad"
+bad=""
+for u in a b c; do mkdir -p "$PG/d/units/1039/$u"; echo '{}' > "$PG/d/units/1039/$u/stats.json"; done; rm -rf "$PG/d/units/1039/d"
+rc=0; : > "$PG/sum"; EXPECT_UNITS=4 PICKED=data-rpc-2026-09-21-9-1 pg record || rc=$?
+[[ $rc == 1 ]] && grep -q "data-rpc-2026-09-21-9-1 holds 3 finished units, fewer than expect_units 4: stopping before any read" "$PG/sum" || bad+=" below:$rc"
+rc=0; EXPECT_UNITS=3 PICKED=k pg record || rc=$?; [[ $rc == 0 ]] || bad+=" equal:$rc"
+rc=0; EXPECT_UNITS= pg record || rc=$?; [[ $rc == 0 ]] || bad+=" empty:$rc"
+rc=0; EXPECT_UNITS=6x pg record || rc=$?; [[ $rc == 2 ]] || bad+=" bad:$rc"
+[[ -z "$bad" ]] && ok "HISTORY-RESUME: expect_units stops the job before any read when the picked progress holds fewer units (naming the entry); equal or unset passes; a non-number is refused" || no "progress-guard expect_units:$bad"
 python3 - "$here/../../../.github/workflows/data-scan.yml" <<'PY' && ok "HISTORY-RESUME: data-scan resumes from the picked entry, records it, and saves progress (both saves) only when the restore finished and the progress did not shrink; the scan job gains actions: read only" || no "data-scan progress wiring"
 import sys, yaml
 wf = yaml.safe_load(open(sys.argv[1]))
@@ -913,12 +921,16 @@ job = wf["jobs"]["scan"]
 assert job["permissions"] == {"contents": "write", "actions": "read"}, job["permissions"]
 steps = job["steps"]
 ids = [s.get("id") or s.get("name") for s in steps]
-assert ids.index("pickprogress") < ids.index("restore") < ids.index("Record the restored progress") < ids.index("scan")
-rec = steps[ids.index("Record the restored progress")]
+assert ids.index("pickprogress") < ids.index("restore") < ids.index("record") < ids.index("scan")
+rec = steps[ids.index("record")]
 assert rec["run"] == 'research/historical/ci/progress-guard.sh record "$RUNNER_TEMP/work/data"', rec
+assert rec["env"] == {"EXPECT_UNITS": "${{ inputs.expect_units }}", "PICKED": "${{ steps.pickprogress.outputs.key }}"} and rec["id"] == "record", rec
+assert wf[True]["workflow_dispatch"]["inputs"]["expect_units"]["default"] == "", "expect_units defaults to no check"
+cont = wf["jobs"]["continue"]
+assert '-f expect_units="$EXPECT_UNITS"' in cont["steps"][0]["run"] and cont["steps"][0]["env"]["EXPECT_UNITS"] == "${{ inputs.expect_units }}", "the chain carries expect_units"
 for guard, save in (("shrink", "save"), ("shrinkqa", "Save progress after QA")):
     g, s = steps[ids.index(guard)], steps[ids.index(save)]
-    assert "steps.restore.outcome == 'success'" in g["if"] and "always()" in g["if"] and 'progress-guard.sh check "$RUNNER_TEMP/work/data"' in g["run"], g
+    assert "steps.restore.outcome == 'success'" in g["if"] and "steps.record.outcome == 'success'" in g["if"] and "always()" in g["if"] and 'progress-guard.sh check "$RUNNER_TEMP/work/data"' in g["run"], g
     assert f"steps.{guard}.outputs.ok == 'true'" in s["if"] and ids.index(guard) < ids.index(save), s
 PY
 # ---- DATA-PUB: a day read over RPC (source helius) is never published or uploaded ----
