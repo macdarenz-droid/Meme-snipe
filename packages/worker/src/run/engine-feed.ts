@@ -9,6 +9,8 @@ export interface EngineFeed {
   readonly feed: Feed;
   /** Facts released so far. */
   readonly released: () => number;
+  /** MEM-PROBE: the producer's counts and the facts queued for release. */
+  readonly sizes: () => Record<string, number>;
 }
 
 /** `onFact` sees every fact the producer releases, before the engine does. */
@@ -24,5 +26,6 @@ export const engineFeed = (inner: Feed, policy: Policy, onFact?: (e: MarketEvent
       retire: (ids) => facts.retire(ids),
     },
     released: () => facts.released,
+    sizes: () => ({ ...facts.sizes() }),
   };
 };
