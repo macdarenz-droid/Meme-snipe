@@ -6,7 +6,7 @@ From here on, S2 owns this file. S2 keeps it current on its own branch `claude/s
 
 ## Active crash-only work
 
-Scope: item22 crash-only exception to S1’s 10:08 owner pause. Builder disk_crash_builder; isolated branch claude/s2-disk-crash from5efb9ae0497523c84e3bb49a82bce989652cdb0b. Reproducing the recorder-to-journal ENOSPC crash; no final head/review/CI yet. Backups, wider #149 ops features, app tasks and all other stability work stay paused. S1 alone merges/deploys; original #149 remains unchanged.
+Only item22 crash exception is active. Branch claude/s2-disk-crash from5efb9ae0497523c84e3bb49a82bce989652cdb0b; builder disk_crash_builder. Exact crash reproduced before fix;83 focused tests currently pass. Final commit, full check and independent reviews pending. New fixed64KiB zero-data reserve marker needs S1’s stored-bot-state acceptance after persist review. All app/other stability/backups remain paused by owner10:08; S1 alone merges/deploys.
 
 ## Latest handoff audit
 
@@ -102,6 +102,8 @@ S2-READY 6af4e43b707960316d8cd8419cb2e513fa9f4b60
 - These local limitations are historical. Current directly verified GitHub results are in Latest handoff audit; they do not establish that any future base-update head is green.
 
 ## S2 events (newest first)
+
+- **2026-10-06 10:22:56 AEDT** — Crash-only fix now passes83 focused tests including the exact recorder/journal ENOSPC path, existing crash/replay controls, 10k-loss boundedness, reserved-capacity rollback/restart and runner units. New-entry fault path uses a pre-dispatch informational alert, not a fabricated strategy decision; already-sent entry settlement and exits remain enabled. Proposed fixed64KiB journal reserve stores only zero-data capacity/size as a persistent observed-ENOSPC marker; no new API field/enum or third-party data. Durable ledger/state writes stay strict; reserve does not promise prolonged writes on a physically full filesystem. Builder finishing edge tests/typecheck before immutable head/full check and fresh area reviews. S1 approval of bot-owned reserve marker will be listed after persist review; no paused backups/ops work or original #149 branch changes.
 
 - **2026-10-06 10:15:36 AEDT** — Crash-only fail-before reproduced on current base: recorder ENOSPC is followed by an unguarded Journal.write(halt) failure through Worker.#checkHalt → Worker.step → Market.run, matching S1’s fatal/restart sequence. All4 initial regressions fail before the fix; no test weakening. Builder is adding bounded journal loss/partial-write handling and immediate entry halt; durable ledger/state errors remain strict. Design must preserve unchanged restart/drill guard tests and truthfully retain known missing evidence across kill; evaluating durable fault marking/reserve only if necessary. No new API enum, paused backup/ops work, host access or readiness claim.
 
