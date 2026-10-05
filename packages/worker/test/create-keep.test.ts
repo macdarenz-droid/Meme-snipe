@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest';
 import { CREATE_LATE_MS, LOG_CREATE_PREFIX, createKey } from '../../core/src/gates/index.ts';
 import { CREATE_KEEP_MS } from '../src/engine/strategy.ts';
 import { blockNetwork } from './helpers.ts';
-import { DEV, MIGRATED_AT, MINT, T, type Harness, makeWorker, passingMarket } from './worker-harness.ts';
+import { DEV, MIGRATED_AT, MINT, Market, T, type Harness, makeWorker, passingMarket } from './worker-harness.ts';
 import { passingFacts } from '../../core/test/gates/world.ts';
 import { KEEP_SLOTS, backtestCoin, expiredIn, judgedIn } from '../../backtest/test/create-keep-world.ts';
 
@@ -19,6 +19,8 @@ type Line = { kind: string; ts: string; action?: string; reasons?: string[]; gat
 const CREATE_FACT = passingFacts().get(createKey(MINT))!.value as Record<string, unknown>;
 const logCreate = (h: Harness, createdAtMs: number, mint: string = MINT) =>
   h.worker.feed.ingest('helius', { type: 'fact', key: `${LOG_CREATE_PREFIX}${mint}`, value: { event: { program: 'pump', name: 'CreateEvent', data: { mint, creator: DEV, timestamp: BigInt(Math.floor(createdAtMs / 1000)) } }, signature: `createsig${mint.slice(0, 4)}` } }, { receivedAt: h.timers.now() });
+/** The worker's first entry moment on the passing market with the default window (rec-same-event.test.ts pins it). */
+const FIRST_PASS = Date.parse('2026-10-03T15:00:01.800Z');
 const OTHER = 'Other111111111111111111111111111111111111111';
 
 const watch = (h: Harness): string[] => {
@@ -113,6 +115,70 @@ describe('a create let go with no migration seen (CREATE_KEEP_MS + CREATE_LATE_M
     const rejects = r.lines.filter((l) => l.action === 'reject');
     expect(rejects.length).toBeGreaterThan(0);
     for (const l of rejects) expect(l.gate_reasons).toEqual([{ gate: 'worker', code: 'create-expired', detail: 'its create was let go 13 h after it with no migration seen' }]);
+  });
+
+  it('BT review N1: a create let go whose facts come back with a gap of 12 h or less is judged from the facts (it enters)', async () => {
+    // Let go before the migration, as above, but the create fact is stated (MIGRATED_AT − 30 min): the facts decide.
+    const h = makeWorker({});
+    const got = watch(h);
+    await h.worker.reconcile();
+    const m = await passingMarket(h, { heldPoolFacts: true, before: { atMs: T - 21 * 60_000, run: () => logCreate(h, T - 21 * 60_000 - CREATE_KEEP_MS - CREATE_LATE_MS - 1_000) } });
+    await m.run(4_000, 100, () => m.pool());
+    await m.run(10_000, 400, () => { m.slot(); m.pool(); });
+    await h.worker.stop();
+    // Judgements before the create fact was stated (at T) saw no create and refused on the mark; from T, the facts decide.
+    const lines = decisions(h).filter((l) => Date.parse(l.ts) >= T);
+    expect(h.worker.strategy.createExpired(MINT)).toBe(true);
+    expect(got).toContain(MINT);
+    expect(expiredLines(lines)).toEqual([]);
+    expect(lines.filter((l) => l.action === 'enter')).toHaveLength(1);
+  });
+
+  it('BT review N1: a create is let go exactly when its age reaches the keep and the hour', async () => {
+    const run = async (offsetMs: number) => {
+      const h = makeWorker({});
+      await h.worker.reconcile();
+      const m = new Market(h);
+      m.slot();
+      await m.run(400, 100);
+      // A minute and more after the last check, the create's own event runs one; the next runs at the first event a minute later.
+      const r = Math.ceil((m.now + 70_000) / 1_000) * 1_000;
+      h.timers.set(r);
+      logCreate(h, r + 60_000 - CREATE_KEEP_MS - CREATE_LATE_MS + offsetMs);
+      m.slot();
+      await m.run(5_000, 100);
+      expect(h.worker.strategy.createExpired(MINT)).toBe(false);
+      h.timers.set(r + 60_000);
+      m.slot();
+      // Steps only (no event): the slot notice is released (the stale rule) and judged at its own receipt time.
+      await m.run(5_000, 100);
+      const expired = h.worker.strategy.createExpired(MINT);
+      await h.worker.stop();
+      return expired;
+    };
+    expect(await run(0)).toBe(true);
+    expect(await run(1_000)).toBe(false);
+  });
+
+  it('BT review B1: a rejected candidate\'s tail across its create\'s let-go time keeps the mint until the tail ends', async () => {
+    // The window ends at the first pass (a rejection, so a tail); the create turns 13 h half an hour into the tail.
+    const h = makeWorker({ strategy: { windowToMs: FIRST_PASS - MIGRATED_AT } });
+    const got = watch(h);
+    await h.worker.reconcile();
+    const m = await passingMarket(h, { heldPoolFacts: true, before: { atMs: T - 21 * 60_000, run: () => logCreate(h, FIRST_PASS + 30 * 60_000 - CREATE_KEEP_MS - CREATE_LATE_MS) } });
+    await m.run(4_000, 100, () => m.pool());
+    await m.run(10_000, 400, () => { m.slot(); m.pool(); });
+    expect(h.worker.strategy.watchedPools().size).toBeGreaterThan(0);
+    // An hour after the first pass: past the create's let-go time, inside the tail (EXIT-1 tMax, two hours).
+    h.timers.set(FIRST_PASS + 60 * 60_000);
+    await m.run(2_000, 400, () => m.slot());
+    expect(got).not.toContain(MINT);
+    expect(h.worker.strategy.createExpired(MINT)).toBe(false);
+    // Past the tail's end: let go.
+    h.timers.set(FIRST_PASS + 122 * 60_000);
+    await m.run(2_000, 400, () => m.slot());
+    expect(got).toContain(MINT);
+    await h.worker.stop();
   });
 
   it('review B3: a candidate inside its window across the create\'s let-go time is never let go', async () => {
