@@ -2242,13 +2242,14 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - Missing or unusable inputs read as H16, "Stale or unknown data", which is true of each. They are the SOL price, pool state, fee terms and a hard-reject pass that left a gate unevaluated, all at stage 0, and the account snapshot at stage 1.
   - `no round trip:` and `stop:` are `size`, stage 1.
   - `risk sized … gates judged …` is `size`, stage 2.
-  - Risk's refusal, fault or failed mark is `risk`, stage 2.
+  - Risk's refusal, fault or failed mark is `risk`, stage 1: none proves the cost gate passed. A size mismatch follows risk approval and therefore retains stage 2.
   - A reason not listed gets no check and stays at "seen": never "Costs".
   - Pool data is stage 0, not 1 as first asked: `#market` reads the pool before the hard rejects run.
   - Every reject site in strategy.ts is listed in the test, and a guard counts them, so a new one fails the test until it is classified.
+- **2026-10-06 · Independent review correction.** Only H1–H17 with a valid delimiter may be returned as hard-check identifiers; unknown gate names return no check, preserving the installed app's strict enum. Generic risk refusals, failed marks and faults keep stage 1 because risk may refuse before or at R14. Worker-level fault and real R14 tests prove the costs count stays zero. Six unknown-gate cases, both worker scenarios and the classification expectation failed before the correction (9 failed, 2 passed); all 11 tests pass after. No risk limit or decision logic changed.
 - **2026-10-05 · Follow-up (next app release).** Proper labels: a `data` check ("Missing data") and an `other` check, in place of H16 and no check. These need the app's schema first, then the server (PROJECT_STATE).
 - **2026-10-05 · Tests.** `worker/test/funnel-truth.test.ts`:
-  - Every reason maps to its check and stage, and each check is one the app knows. A real R14 line is `risk`, stage 2, labelled "Costs". An unknown reason names no check.
+  - Every reason maps to its check and stage, and each check is one the app knows. A real R14 line is `risk`, stage 1, labelled "Costs" in decisions but never counted as a cost gate pass. An unknown reason names no check.
   - The reject-site guard.
   - Through the real worker, a boot with no SOL price and then no fee terms leaves the candidate at "seen", with stages hard-rejects/costs/risk/entered all 0 and rejects H16 1. Funnel and decisions pass the base app's strict schema.
   - Fails on the base. Mutants killed:

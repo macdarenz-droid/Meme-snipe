@@ -11,6 +11,7 @@ import { PATHS } from '../../../apps/web/src/api/contract.ts';
 import { CHECK_LABEL, RISK_CODE_LABEL } from '../../../apps/web/src/dashboard/labels.ts';
 import { SOL_PRICE_KEY, feesKey } from '../src/engine/strategy.ts';
 import { classify, route } from '../src/run/api.ts';
+import { markedHistory } from '../src/engine/marks.ts';
 import { MINT, makeWorker, passingMarket } from './worker-harness.ts';
 
 type Funnel = { stages: { stage: string; count: number }[]; rejects: { check: string; count: number }[] };
@@ -32,9 +33,9 @@ const REASONS: readonly (readonly [string, string, string, number])[] = [
   ['#stopAt no round trip', 'no round trip: no-liquidity', 'size', 1],
   ['#stopAt no ATR', 'stop: not enough price bars for the ATR', 'size', 1],
   ['#stopAt stop distance', 'stop: too-wide 2400', 'size', 1],
-  ['#evaluate risk mark', 'risk mark failed: x', 'risk', 2],
-  ['#evaluate risk fault', 'risk fault: x', 'risk', 2],
-  ['#evaluate risk refusal', 'risk R14 cost_gate: round trip 59822 ppm is above 500 bps', 'risk', 2],
+  ['#evaluate risk mark', 'risk mark failed: x', 'risk', 1],
+  ['#evaluate risk fault', 'risk fault: x', 'risk', 1],
+  ['#evaluate risk refusal', 'risk R14 cost_gate: round trip 59822 ppm is above 500 bps', 'risk', 1],
   ['#evaluate size mismatch', 'risk sized 2 lamports, gates judged 1', 'size', 2],
 ];
 
@@ -45,11 +46,43 @@ describe('FUNNEL-TRUTH: each refusal at the check and stage it truly reached', (
       expect(classify(reason), where).toEqual({ check, stage });
       expect(known, where).toContain(check);
     }
-    // A real R14 refusal: the risk stage, its reason labelled "Costs" in the decisions view.
+    // A real R14 refusal never claims the cost gate passed; its reason is labelled "Costs" in the decisions view.
     expect(RISK_CODE_LABEL['cost_gate']).toBe('Costs');
     expect(CHECK_LABEL['H16']).toBe('Stale or unknown data');
     // A reason not listed names no check and stays at "seen": never "Costs", never a stage it did not reach.
     expect(classify('something new')).toEqual({ check: null, stage: 0 });
+  });
+
+  it.each(['H18', 'H0', 'H01', 'H100', 'H1suffix', 'H17suffix'])('unknown hard gate %s stays unclassified for the installed app', (gate) => {
+    expect(classify(`hard reject ${gate}: new gate`)).toEqual({ check: null, stage: 0 });
+  });
+
+  it.each(['fault', 'cost'] as const)('a worker %s refusal never counts a cost gate pass', async (kind) => {
+    let broken = false;
+    const mark: typeof markedHistory = (...args) => {
+      const r = markedHistory(...args);
+      return broken ? { ...r, closedTrades: null as never } : r;
+    };
+    const h = makeWorker(kind === 'fault' ? { markedHistory: mark } : { strategy: { medianTargetBps: 1 } });
+    try {
+      expect(await h.worker.reconcile()).toEqual({ ok: true });
+      const m = await passingMarket(h);
+      const read = h.worker.feed.releasedThrough;
+      m.tradesStart(read - 100n);
+      m.accountsRead(read);
+      broken = kind === 'fault';
+      await m.run(8_000, 400, () => { m.slot(); m.pool(); });
+      const rows = readFileSync(join(h.stateDir, 'journal.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line) as { kind: string; reasons?: string[] });
+      const reasons = rows.filter((row) => row.kind === 'decision').flatMap((row) => row.reasons ?? []);
+      expect(reasons.some((reason) => kind === 'fault' ? reason.startsWith('risk fault:') : reason.includes('R14 cost_gate:'))).toBe(true);
+      const body = route(PATHS.funnel('paper'), () => h.worker.apiInputs()).body;
+      const f = checkEnvelope(JSON.parse(JSON.stringify(body)), 'paper', schemaFor('funnel', 'paper')).data as Funnel;
+      const count = (stage: string) => f.stages.find((row) => row.stage === stage)!.count;
+      expect(count('hard-rejects')).toBe(1);
+      expect([count('costs'), count('risk'), count('entered')]).toEqual([0, 0, 0]);
+    } finally {
+      await h.worker.stop();
+    }
   });
 
   it('the list above is every reject site in strategy.ts: a new one fails here until it is classified', () => {
