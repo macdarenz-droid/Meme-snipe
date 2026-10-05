@@ -173,6 +173,8 @@ export interface ApiInputs {
   /** What a trade settles from (PAPER-1): the attempts again, the network terms and which sells closed an account. */
   readonly legs: PaperLegs;
   readonly decisions: readonly DecisionRow[];
+  /** Internal readiness only; never serialized as a new installed-app field. */
+  readonly funnelAvailable?: boolean;
   readonly funnel: FunnelState;
   readonly solPrice: MicroUsd | null;
   /**
@@ -632,6 +634,7 @@ export const route = (path: string, inputs: () => ApiInputs): { readonly status:
     return { status: 200, body: { mode, asOf: iso(inputs().nowMs), data: null, notRunning: NOT_RUNNING } };
   }
   const i = inputs();
+  if ((endpoint === 'funnel' || endpoint === 'decisions') && i.funnelAvailable === false) return { status: 503, body: { error: 'candidate view unavailable' } };
   if (endpoint === 'calendar' && month !== undefined) return { status: 200, body: { mode: MODE, asOf: asOf(i), data: views.calendar(i, month) } };
   if (month !== undefined || !ENDPOINTS.includes(endpoint as ApiEndpoint)) return { status: 404, body: { error: 'not found' } };
   return { status: 200, body: { mode: MODE, asOf: asOf(i), data: views[endpoint as ApiEndpoint](i) } };

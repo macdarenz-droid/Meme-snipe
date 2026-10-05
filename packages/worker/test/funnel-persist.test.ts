@@ -9,7 +9,7 @@ import { pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { melbourneDay } from '../../core/src/risk/melbourne.ts';
 import { holdersKey } from '../../core/src/gates/index.ts';
-import { route } from '../src/run/api.ts';
+import { melbourneDate, route } from '../src/run/api.ts';
 import { DECISION_ROWS_MAX, FunnelView, rebuildFunnel } from '../src/run/funnel.ts';
 import { STATE_FILES } from '../../runner/src/contract.ts';
 import { blockNetwork } from './helpers.ts';
@@ -22,7 +22,7 @@ type H = ReturnType<typeof makeWorker>;
 const views = (h: H) => {
   const i = h.worker.apiInputs();
   const funnel = route('/api/v1/paper/funnel', () => i).body as { data: Record<string, unknown> };
-  const { from: _from, to: _to, ...rest } = funnel.data;
+  const { to: _to, ...rest } = funnel.data;
   return { funnel: rest, decisions: route('/api/v1/paper/decisions', () => i).body, stage: [...i.funnel.stage], entered: [...i.funnel.enteredByDay] };
 };
 const viewOf = (v: FunnelView) => ({ stage: [...v.funnel.stage], entered: [...v.funnel.enteredByDay], rows: v.rows });
@@ -129,6 +129,63 @@ describe('rebuildFunnel', () => {
     const child = spawnSync(process.execPath, ['--max-old-space-size=64', '--input-type=module', '-e', script, path, String(NOW)], { encoding: 'utf8' });
     expect(child.status, child.stderr).toBe(0);
     expect(JSON.parse(child.stdout)).toEqual({ mints: ['NEW'], rows: 1 });
+  });
+
+  it('uses the same day window and from time live and after a midnight restart', () => {
+    const next = TODAY.end + 1_000;
+    const lines = [reject(1, TODAY.end - 1_000, 'OLD'), reject(2, next, 'NEW')];
+    const live = new FunnelView(TODAY.end - 2_000);
+    for (const raw of lines) live.apply(JSON.parse(raw));
+    const rebuilt = rebuildFunnel(journalOf(lines), next);
+    expect(viewOf(live)).toEqual(viewOf(rebuilt));
+    expect(live.funnel.fromMs).toBe(rebuilt.funnel.fromMs);
+    expect([...live.funnel.stage.keys()]).toEqual(['NEW']);
+  });
+
+  it('a trade first filled yesterday is not a new entry when partially filled today', () => {
+    const next = TODAY.end + 1_000;
+    const lines = [entry(1, TODAY.end - 1_000, 'OLD', 'p:OLD:1', '5'), entry(2, next, 'OLD', 'p:OLD:1', '9'), entry(3, next + 1, 'NEW', 'p:NEW:1', '5')];
+    const live = new FunnelView(TODAY.end - 2_000);
+    for (const raw of lines) live.apply(JSON.parse(raw));
+    const rebuilt = rebuildFunnel(journalOf(lines), next + 1);
+    expect(viewOf(live)).toEqual(viewOf(rebuilt));
+    expect([...rebuilt.funnel.enteredByDay]).toEqual([[melbourneDate(next), 1]]);
+    expect(rebuilt.rows.map((row) => row.tradeId)).toEqual(['p:NEW:1']);
+  });
+
+  it('refuses incomplete views at a fixed capacity without unbounded retained state', () => {
+    const view = new FunnelView(NOW);
+    for (let k = 0; k <= 200_000; k++) view.apply(JSON.parse(shortlist(k + 1, NOW, `M${k}`)));
+    expect(view.available).toBe(false);
+    expect(view.funnel.stage.size).toBe(200_000);
+    const h = makeWorker();
+    const i = { ...h.worker.apiInputs(), funnel: view.funnel, decisions: view.rows, funnelAvailable: view.available };
+    for (const endpoint of ['funnel', 'decisions']) expect(route(`/api/v1/paper/${endpoint}`, () => i)).toEqual({ status: 503, body: { error: 'candidate view unavailable' } });
+    expect(route('/api/v1/paper/status', () => i).status).toBe(200);
+    view.advance(TODAY.end + 1);
+    expect(view.available).toBe(true);
+    expect(view.funnel.stage.size).toBe(0);
+
+  });
+
+  it('first-entry dedupe has a lifetime bound and refuses uncertain views when full', () => {
+    const view = new FunnelView(NOW);
+    for (let k = 0; k <= 200_000; k++) view.apply(JSON.parse(entry(k + 1, TODAY.start - 1, `M${k}`, `p:M${k}:1`, '5')));
+    expect(view.available).toBe(false);
+    view.advance(TODAY.end + 1);
+    expect(view.available).toBe(false);
+    expect(view.funnel.stage.size).toBe(0);
+    expect(view.rows).toEqual([]);
+  });
+
+  it('semantic malformed records cannot create shifted reasons or undefined row identities', () => {
+    const view = new FunnelView(NOW);
+    const good = JSON.parse(reject(1, NOW, 'A'));
+    view.apply({ ...good, seq: -1 });
+    view.apply({ ...good, event: undefined });
+    view.apply({ ...good, reasons: ['reject', 1, 'U2', 'A', 'hard reject H1'] });
+    expect(view.rows).toEqual([]);
+    expect(view.funnel.stage.size).toBe(0);
   });
 
   it('keeps the latest rows only', () => {
