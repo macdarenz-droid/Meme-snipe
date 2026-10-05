@@ -2020,6 +2020,8 @@ export class Worker {
   /** For the `--reconcile` entry: settle, report, close without starting anything. */
   async reconcileOnly(): Promise<StartResult> {
     const r = await this.reconcile();
+    // The unit's pre-step restores (and copies) the saved state on every start too: its copy is packed like a start's.
+    if (!this.#stopping) await this.#packCopy();
     // A signal during the reconcile runs the clean stop, which closes both.
     if (!this.#stopping) {
       this.#record((r) => r.close());

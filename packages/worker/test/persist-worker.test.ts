@@ -110,6 +110,23 @@ describe('PERSIST-1 in the worker', () => {
     await h2.worker.stop();
   });
 
+  it('the unit\'s --reconcile pre-step packs its recording\'s copy too (it copied a plain one on every start)', async () => {
+    const stateDir = tempState();
+    const timers = virtualTimers(T);
+    const h = makeWorker({ stateDir, timers, seed: (r: SeedRequest) => runSeed(r, { rpc: emptyRpc, timers }) });
+    const m = await boot(h);
+    m.create();
+    await m.run(1_000, 200, () => m.slot());
+    await h.worker.stop();
+    const pre = makeWorker({ stateDir, timers, phase: 'reconcile' });
+    expect(await pre.worker.reconcileOnly()).toEqual({ ok: true });
+    const copy = join(stateDir, 'recorder', pre.worker.boot, PERSIST_FILE);
+    expect([existsSync(copy), existsSync(`${copy}.zst`)]).toEqual([false, true]);
+    expect(createHash('sha256').update(zstdDecompressSync(readFileSync(`${copy}.zst`))).digest('hex')).toBe(fileSha256(join(stateDir, PERSIST_FILE)));
+    const manifest = JSON.parse(readFileSync(join(stateDir, 'recorder', pre.worker.boot, 'manifest.json'), 'utf8')) as { attachments: { file: string }[] };
+    expect(manifest.attachments.map((a) => a.file)).toEqual([`${PERSIST_FILE}.zst`]);
+  });
+
   it('the parity replay restores a restarted boot from its recording\'s copy and reproduces its decisions; it refuses loudly without exactly that copy (WORKER-GROW)', async () => {
     const stateDir = tempState();
     const timers = virtualTimers(T);
