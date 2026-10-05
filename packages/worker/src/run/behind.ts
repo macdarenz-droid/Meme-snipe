@@ -1,6 +1,7 @@
 // BEHIND: the golden-rule bound on a worker that cannot keep up. A message's receipt time is stamped when JavaScript
 // parses it, so the time it waited in the socket while a long step held the loop never shows in its age; the loop's
-// own cycle (step start to step start, less the planned interval) is that wait, and bounds how stale any input is.
+// own cycle (step start to step start, less the planned interval, on a monotonic clock) is that wait, and bounds how
+// stale any input is.
 // Past BEHIND_MS new entries fail closed (the `behind` halt, through the same path as SEEDING); exits and held
 // positions are never held back. It clears once every cycle stays under CLEAR_MS for CLEAR_FOR_MS.
 import { SECOND_MS } from '../../../core/src/config/time.ts';

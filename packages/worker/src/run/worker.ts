@@ -194,6 +194,11 @@ export interface WorkerDeps {
   readonly reconcileTimeoutMs: number;
   /** Engine loop period. */
   readonly loopMs: number;
+  /**
+   * BEHIND: a monotonic clock (ms) for the loop's own cycle: real time the loop took, never the wall clock (which a host
+   * can step, and tests move by hand). Default `performance.now`.
+   */
+  readonly loopClock?: () => number;
   /** A critical feed with no frame for this long is stale (entries halt). */
   readonly staleFeedMs: number;
   /** Plain status lines for the process log (never a key or a URL). */
@@ -1636,13 +1641,13 @@ export class Worker {
     }
     const loop = (): void => {
       if (this.#stopping) return;
-      // BEHIND: a cycle far over its interval means inputs waited that long unread; entries halt until it keeps up.
-      const change = this.#behind.cycle(d.timers.now(), d.loopMs);
+      // BEHIND: a cycle far over its interval means inputs waited that long unread; entries halt until it keeps up (the
+      // step's own halt check applies it).
+      const change = this.#behind.cycle((d.loopClock ?? (() => performance.now()))(), d.loopMs);
       if (change !== null) {
         d.log(change.behind
           ? `Behind: a loop cycle ran ${(change.lateMs / 1000).toFixed(1)} s over its interval; new entries halt, exits run.`
           : 'Caught up: every loop cycle on time for 30 s; entries resume once nothing else halts them.');
-        this.#checkHalt(d.timers.now());
       }
       try {
         this.step();
