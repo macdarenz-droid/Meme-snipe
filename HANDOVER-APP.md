@@ -103,6 +103,8 @@ S2-READY 6af4e43b707960316d8cd8419cb2e513fa9f4b60
 
 ## S2 events (newest first)
 
+- **2026-10-06 10:41:17 AEDT** — Owner clarification was posted and verified on PR #149 comment 6005614915. Verified four additional truth regressions fail before their fixes (immediate API halt, current-fault summaries, cross-midnight warning and async fallback), log /tmp/s2-disk-crash-truth-fail-before.log. All six correction paths are implemented; the builder is running the focused suite including unchanged replay/summary guards. FUNNEL-TRUTH #237 remains open at c2f426b1 with cancelled check, so it is the next app readiness gap after crash review capacity frees.
+
 - **2026-10-06 10:40:09 AEDT** — Owner clarified in chat that the pause applied only to S1, and S2 may continue all assigned tasks. This supersedes the 10:08 AM pause interpretation for S2. Finish active disk-crash corrections/reviews/checks first; resume the already assigned app/stability queue without repeating completed work. S1 retains exclusive merge/deploy ownership, protected files and all review/CI gates remain, and RISK-DIAL still requires explicit final-design approval.
 
 - **2026-10-06 10:38:11 AEDT** — Verified corrective fail-before log /tmp/s2-disk-crash-delta-fail-before.log: eight selected regressions fail against f2e source (tail marker, EIO/EACCES, reserve wipe/restore and unchanged healthy ten-replay parity). Builder applied those narrow source corrections; summary-loss and immediate-status tests are next. Original full check was cancelled exit 130, never counted as green; reviewers await the corrected immutable head.
