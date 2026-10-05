@@ -1,7 +1,9 @@
 name: data-keep
 
 # DATA-KEEP: the packaged assets of a helius day exist only in the actions cache
-# (data-rpc-assets-DAY-*; DATA-PUB never publishes them). GitHub removes a cache entry
+# (data-rpc-assets-DAY-*; DATA-PUB never publishes them), and so does the read progress
+# of an unfinished helius day (data-rpc-DAY-RUN-ATTEMPT; losing it means paying for the
+# day's reads again). Progress entries are restored too (the newest per day). GitHub removes a cache entry
 # not accessed for 7 days and, at the 10 GB cap, the least recently accessed first.
 # Every 3 days this restores each data-rpc-assets-* entry, which counts as an access,
 # checks its files against SHA256SUMS-DAY (manifest included), and proves the access
@@ -55,17 +57,31 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-      # Same path as the save in data-scan.yml, which the cache version depends on.
-      - name: Restore the entry
+      # Same paths as the saves in data-scan.yml, which the cache version depends on.
+      - name: Restore the entry (assets)
+        if: matrix.entry.kind == 'assets'
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ runner.temp }}/work/assets
           key: ${{ matrix.entry.key }}
           fail-on-cache-miss: true
+      - name: Restore the entry (progress)
+        if: matrix.entry.kind == 'progress'
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/work/data
+          key: ${{ matrix.entry.key }}
+          fail-on-cache-miss: true
       - name: Check its files against SHA256SUMS
+        if: matrix.entry.kind == 'assets'
         env:
           DAY: ${{ matrix.entry.day }}
         run: research/historical/ci/keep-check.sh verify "$DAY" "$RUNNER_TEMP/work/assets"
+      - name: Check the progress is not empty
+        if: matrix.entry.kind == 'progress'
+        env:
+          DAY: ${{ matrix.entry.day }}
+        run: research/historical/ci/keep-check.sh progress "$DAY" "$RUNNER_TEMP/work/data"
       - name: Prove the restore refreshed its last access
         env:
           GH_TOKEN: ${{ github.token }}

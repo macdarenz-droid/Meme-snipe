@@ -899,10 +899,18 @@ for s in steps:
         assert s["with"]["persist-credentials"] is False, s
 pinned = {s["uses"] for j in ds["jobs"].values() for s in j.get("steps", []) if "uses" in s}
 assert {s["uses"] for s in steps if "uses" in s} <= pinned, "actions pinned to SHAs already used by data-scan.yml"
-res = [s for s in steps if "actions/cache/restore" in s.get("uses", "")]
-save = [s for s in ds["jobs"]["scan"]["steps"] if "actions/cache/save" in s.get("uses", "") and str(s["with"]["key"]).startswith("data-rpc-assets-")]
-assert len(res) == 1 and len(save) == 1 and res[0]["with"]["path"] == save[0]["with"]["path"], (res, save)
-assert res[0]["with"]["fail-on-cache-miss"] is True and res[0]["with"]["key"] == "${{ matrix.entry.key }}", res
+res = {s["if"]: s for s in steps if "actions/cache/restore" in s.get("uses", "")}
+assert set(res) == {"matrix.entry.kind == 'assets'", "matrix.entry.kind == 'progress'"}, list(res)
+dsave = ds["jobs"]["scan"]["steps"]
+asave = [s for s in dsave if "actions/cache/save" in s.get("uses", "") and str(s["with"]["key"]).startswith("data-rpc-assets-")]
+psave = [s for s in dsave if s.get("name") == "Save progress"]
+assert len(asave) == 1 and res["matrix.entry.kind == 'assets'"]["with"]["path"] == asave[0]["with"]["path"], asave
+assert len(psave) == 1 and res["matrix.entry.kind == 'progress'"]["with"]["path"] == psave[0]["with"]["path"], psave
+assert psave[0]["with"]["key"].startswith("${{ inputs.source == 'helius' && 'data-rpc' || 'data-scan' }}-${{ matrix.day }}-${{ github.run_id }}-${{ github.run_attempt }}"), psave
+for s in res.values():
+    assert s["with"]["fail-on-cache-miss"] is True and s["with"]["key"] == "${{ matrix.entry.key }}", s
+chk = {s["if"]: s["run"] for s in wf["jobs"]["keep"]["steps"] if "run" in s and "if" in s}
+assert "keep-check.sh verify" in chk["matrix.entry.kind == 'assets'"] and "keep-check.sh progress" in chk["matrix.entry.kind == 'progress'"], chk
 keep = wf["jobs"]["keep"]
 assert keep["if"] == "needs.list.outputs.count != '0'" and keep["strategy"]["max-parallel"] == 1, keep
 runs = [s["run"] for s in keep["steps"] if "run" in s]
@@ -933,7 +941,8 @@ kcache() { python3 - "$K/caches.json" "$@" <<'PY'
 import json, sys
 out, *rows = sys.argv[1:]
 json.dump({"actions_caches": [{"key": r.split(",")[0], "size_in_bytes": int(r.split(",")[1]), "last_accessed_at": r.split(",")[2],
-                                "ref": (r.split(",") + ["refs/heads/ccr-x"])[3]} for r in rows]}, open(out, "w"))
+                                "ref": (r.split(",") + ["refs/heads/ccr-x"])[3] or "refs/heads/ccr-x",
+                                "created_at": (r.split(",") + ["", "2026-10-01T00:00:00Z"])[4]} for r in rows]}, open(out, "w"))
 PY
 }
 : > "$K/sum"; : > "$K/out"; kcache; echo '{"active_caches_size_in_bytes": 1000}' > "$K/usage.json"; echo '{"default_branch": "ccr-x"}' > "$K/repo.json"
@@ -944,8 +953,8 @@ kcache "data-rpc-assets-2026-09-21-37185822426-1,4100000000,2026-10-05T01:00:00Z
   "data-rpc-assets-2026-09-19-7-1,3000000000,2026-10-06T01:00:00Z,refs/pull/5/merge" "data-rpc-assets-2026-09-18-8-1,3000000000,2026-10-06T01:00:00Z,refs/heads/other"
 echo '{"active_caches_size_in_bytes": 8200000000}' > "$K/usage.json"
 kc list > "$K/stdout" && grep -qx 'count=2' "$K/out" &&
-  grep -qx 'entries=\[{"key":"data-rpc-assets-2026-09-20-3-1","day":"2026-09-20","before":"2026-10-06T01:00:00Z"},{"key":"data-rpc-assets-2026-09-21-37185822426-1","day":"2026-09-21","before":"2026-10-05T01:00:00Z"}\]' "$K/out" &&
-  grep -q "| \`data-rpc-assets-2026-09-21-37185822426-1\` | 4.10 GB |" "$K/sum" && grep -q "2 entries, 8.10 GB; all repository caches 8.20 GB of 10 GB" "$K/sum" &&
+  grep -qx 'entries=\[{"key":"data-rpc-assets-2026-09-20-3-1","day":"2026-09-20","before":"2026-10-06T01:00:00Z","kind":"assets"},{"key":"data-rpc-assets-2026-09-21-37185822426-1","day":"2026-09-21","before":"2026-10-05T01:00:00Z","kind":"assets"}\]' "$K/out" &&
+  grep -q "| \`data-rpc-assets-2026-09-21-37185822426-1\` | assets | 4.10 GB |" "$K/sum" && grep -q "2 entries, 8.10 GB; all repository caches 8.20 GB of 10 GB" "$K/sum" &&
   grep -q "Warning: repository caches above 7 GB" "$K/sum" && grep -q "::warning::" "$K/stdout" &&
   ! grep -q "2026-09-19\|2026-09-18" "$K/out" "$K/sum" &&
   ok "keep-check list: only data-rpc-assets-* entries of the default branch (a PR-ref or other-branch entry is dropped), with key, day and last access; sizes and total in the summary, a warning above 7 GB" || no "keep-check list: $(cat "$K/out" "$K/sum")"
@@ -969,6 +978,27 @@ mkka; rm "$ka/manifest-$d.json"; (cd "$ka" && grep -v manifest SHA256SUMS-$d > s
 mkka; rm "$ka/SHA256SUMS-$d"; kc verify $d "$ka" >/dev/null 2>&1 && bad+=" no-sums"
 mkka; sed -i "s/^\(.\{20\}\)[0-9a-f]*\(  qa-$d.md\)\$/\1\2/" "$ka/SHA256SUMS-$d"; grep -q "^.\{20\}  qa-$d.md\$" "$ka/SHA256SUMS-$d" || bad+=" garble-setup"; kc verify $d "$ka" >/dev/null 2>&1 && bad+=" garbled"
 [[ -z "$bad" ]] && ok "keep-check verify: a changed, extra or missing file, no manifest, no sums or a truncated hash line fails, without printing contents" || no "keep-check verify:$bad"
+# progress: the newest data-rpc-DAY-RUN-ATTEMPT per day (by created_at), never -qa copies
+# or other refs.
+: > "$K/sum"; : > "$K/out"; echo '{"active_caches_size_in_bytes": 1000}' > "$K/usage.json"
+kcache "data-rpc-2026-09-21-37220726125-1,3400000000,2026-10-04T20:00:00Z,,2026-10-04T20:00:00Z" \
+  "data-rpc-2026-09-21-37240347289-1,3600000000,2026-10-05T01:18:00Z,,2026-10-05T01:18:00Z" \
+  "data-rpc-2026-09-21-37240347289-1-qa,3600000000,2026-10-05T01:30:00Z,,2026-10-05T01:30:00Z" \
+  "data-rpc-2026-09-21-37250000000-1,3700000000,2026-10-05T02:00:00Z,refs/pull/9/merge,2026-10-05T02:00:00Z" \
+  "data-rpc-2026-09-20-5-2,1000000000,2026-10-03T00:00:00Z,,2026-10-03T00:00:00Z" \
+  "data-rpc-assets-2026-09-20-3-1,4000000000,2026-10-06T01:00:00Z"
+kc list >/dev/null && grep -qx 'count=3' "$K/out" &&
+  grep -qx 'entries=\[{"key":"data-rpc-assets-2026-09-20-3-1","day":"2026-09-20","before":"2026-10-06T01:00:00Z","kind":"assets"},{"key":"data-rpc-2026-09-20-5-2","day":"2026-09-20","before":"2026-10-03T00:00:00Z","kind":"progress"},{"key":"data-rpc-2026-09-21-37240347289-1","day":"2026-09-21","before":"2026-10-05T01:18:00Z","kind":"progress"}\]' "$K/out" &&
+  grep -q "| \`data-rpc-2026-09-21-37240347289-1\` | progress | 3.60 GB |" "$K/sum" && ! grep -q -- "-qa\|37220726125\|37250000000" "$K/out" &&
+  ok "keep-check list: per day the newest default-branch progress entry (data-rpc-DAY-RUN-ATTEMPT); older runs, -qa copies and other refs are not kept" || no "keep-check list progress: $(cat "$K/out")"
+kp="$K/prog"; rm -rf "$kp"; mkdir -p "$kp/units/1039/1-2"; echo '{"blocks": 1}' > "$kp/units/1039/1-2/stats.json"; echo 270000 > "$kp/rpc-credits-used"
+: > "$K/sum"; o=$(kc progress 2026-09-21 "$kp" 2>&1) && grep -q "| 2026-09-21 | progress: 1 finished units, 270000 credits booked |" "$K/sum" && [[ "$o" != *blocks* ]] &&
+  ok "keep-check progress: a restored progress entry with finished units and booked credits passes, counts only" || no "keep-check progress: $o"
+bad=""
+rm "$kp/units/1039/1-2/stats.json"; kc progress 2026-09-21 "$kp" >/dev/null 2>&1 && bad+=" no-units"
+echo '{}' > "$kp/units/1039/1-2/stats.json"; rm "$kp/rpc-credits-used"; kc progress 2026-09-21 "$kp" >/dev/null 2>&1 && bad+=" no-credits"
+echo x > "$kp/rpc-credits-used"; kc progress 2026-09-21 "$kp" >/dev/null 2>&1 && bad+=" bad-credits"
+[[ -z "$bad" ]] && ok "keep-check progress: no finished unit or no whole-number rpc-credits-used fails" || no "keep-check progress:$bad"
 kcache "data-rpc-assets-2026-09-21-1-1,5,2026-10-07T03:00:00Z"
 kc touched data-rpc-assets-2026-09-21-1-1 2026-10-07T02:00:00Z >/dev/null && ok "keep-check touched: a later last_accessed_at proves the restore refreshed the entry" || no "keep-check touched later"
 rc=0; KEEP_WAIT=2 kc touched data-rpc-assets-2026-09-21-1-1 2026-10-07T03:00:00Z >/dev/null 2>&1 || rc=$?
