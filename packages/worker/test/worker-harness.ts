@@ -330,6 +330,24 @@ export class Market {
     this.#chain = { baseReserve: f.baseVault, quoteVault: f.quoteVault, virtualQuoteReserves: f.pool.virtualQuoteReserves ?? 0n };
   }
 
+  #failed = 0;
+  /**
+   * FAILED-LOGS: a bot's failed swap on the passing pool: a real swap's log lines (the Borsh event included) with `err`
+   * set, seen at processed in the current slot. Its sighting always goes on the feed; its lines only with `lines` (what
+   * the socket did before FAILED-LOGS). The chain's reserves do not move.
+   */
+  failedSwap(lines: boolean): void {
+    const n = ++this.#failed;
+    const slot = this.#slot ?? 0n;
+    const err = { InstructionError: [3, { Custom: 6004 }] };
+    const f = facts0().get(poolKey(MINT))!.value as { baseVault: bigint; quoteVault: bigint; pool: { virtualQuoteReserves?: bigint } };
+    const pre = this.#chain ?? { baseReserve: f.baseVault, quoteVault: f.quoteVault, virtualQuoteReserves: f.pool.virtualQuoteReserves ?? 0n };
+    const { logs } = swapLog({ pool: POOL_ADDRESS, coinCreator: DEV, supply: SUPPLY, pre, side: 'buy', base: 1_000_000n, atMs: this.now });
+    const signature = `failedswap${n}`;
+    this.#h.worker.feed.ingest('helius', { type: 'seen', signature, slot, err, via: `logs:${POOL_ADDRESS}`, detail: null }, { receivedAt: this.now });
+    if (lines) this.#h.worker.feed.ingest('helius', { type: 'logs', signature, slot, err, via: `logs:${POOL_ADDRESS}`, logs }, { receivedAt: this.now });
+  }
+
   /** The pool's reserves as the chain now holds them (after the last `chainSwap`). */
   get chainState(): PoolState {
     if (this.#chain === null) throw new Error('no accounts read yet');
