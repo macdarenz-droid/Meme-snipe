@@ -2381,7 +2381,7 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - **The candle books' trade ids (supervisor ruling, Option A).** A book remembers each trade's id with its trade time, back to `TRADE_REPEAT_WINDOW_MS` (an hour) behind the pool's newest trade, in the producer's options with its reason.
     - A trade stamped further back is refused whole, before the ids are looked at. It is never applied: its reserve never replaces the pool's and nothing is counted twice. The candles are flagged partial, so H11 refuses them (fail closed). Checking the window first means the answer never depends on which old ids a sweep has dropped.
     - A repeat comes from the other path within minutes: the feed's own duplicate window is 1,500 slots (about 10 minutes), a catch-up's fill reads up to the watch's start, and a gap's fill runs as soon as the fill budget allows. An hour covers those with room.
-    - Old ids are swept when the set has doubled since the last sweep (amortised): at most about twice the trades of the window per pool.
+    - Old ids are swept each time the newest trade has moved a quarter window since the last sweep, so a book holds at most a window and a quarter of trades (at about 17 swaps a minute a pool, about 1,300 ids). A size-based sweep (on doubling, from a floor of 512) was tried first: at a pool's live rate it almost never ran, and the live-rate run still grew about 1.5 MB a minute.
 - **Not done.** `LiveStrategy.#coverageFacts` is not trimmed. It holds the coverage events the store already keeps whole for `history()` (creates and rug coverage, the deployer index), a few per watch, so trimming it frees almost nothing. `pruneCoverage` run twice is not the same as run once when a gap is open, so trimming would change what a save writes, for no memory.
 - **Evidence (fail before, pass after).**
   - `producer.test.ts` (repeat window):
@@ -2389,6 +2389,7 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
     - a repeat W + 1 s behind is never applied: reserve unchanged, candles partial, H11 refuses;
     - the same swaps from live log lines and, half an hour later, from a gap fill's fetched transactions count once;
     - a catch-up (the fill's fetched transactions first, then the same swaps as held log lines released after) counts once;
-    - with a one-minute window, 3,072 trades a second apart keep at most 1,024 ids, and after every batch its last 20 trades repeated count once (a sweep never forgets a trade inside the window).
+    - with a one-minute window, 3,072 trades a second apart keep between 60 and 76 ids once warm, and after every batch its last 20 trades repeated count once (a sweep never forgets a trade inside the window);
+    - the W + 1 s repeat arrives while its id is still remembered (no sweep between), so only the window check refuses it.
   - `store-rules.test.ts`: `seen:` and `chain:slot` keep only their newest value.
-  - Hand mutants killed: no window check; no partial flag; ids looked at before the window; no sweep; a sweep that forgets everything; a refused trade that moves the reserve; no slot-notice rule.
+  - Hand mutants killed: no window check; no partial flag; ids looked at before the window; no sweep; a sweep only once a window; a sweep that forgets everything; a refused trade that moves the reserve; no slot-notice rule.

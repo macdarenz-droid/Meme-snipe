@@ -309,7 +309,12 @@ describe('candles', () => {
     });
 
     it('a repeat just outside the window (W + 1 s behind) is never applied: reserve unchanged, the candles partial, H11 refuses them', () => {
-      const w = spreadWorld().push(newer(atMsOf(trades()[0]!) + W + 1_000, 1));
+      // W − 1 s first (a sweep runs there and keeps the first trade's id), then W + 1 s two seconds later (no sweep): the
+      // id is still remembered when the repeat arrives, so only the window refuses it.
+      const w = spreadWorld().push(newer(atMsOf(trades()[0]!) + W - 1_000, 1));
+      const kept = w.producer.candleBook(POOL)!.ids;
+      w.push(newer(atMsOf(trades()[0]!) + W + 1_000, 2));
+      expect(w.producer.candleBook(POOL)!.ids).toBe(kept + 1);
       const before = state(w);
       w.push(repeat());
       const after = state(w);
@@ -346,7 +351,7 @@ describe('candles', () => {
       expect(after.book.reserve).toEqual(once.book.reserve);
     });
 
-    it('the remembered ids level off: 3,072 trades a second apart with a one-minute window keep at most about a sweep\'s worth, and a sweep never forgets a trade inside the window', () => {
+    it('the remembered ids level off: 3,072 trades a second apart with a one-minute window keep at most a window and a quarter, and a sweep never forgets a trade inside the window', () => {
       const w = new FactWorld({ ...OPTIONS, tradeRepeatMs: 60_000 });
       w.push(...covered(), ...txEvents(create), ...txEvents(complete), ...txEvents(migrate));
       const start = atOf(migrate) + 60_000;
@@ -359,9 +364,9 @@ describe('candles', () => {
         w.push(...Array.from({ length: 20 }, (_, j) => newer(start + (k + 44 + j) * 1_000, k + 44 + j)));
         expect(parseCandles(w.last(candlesKey(MINT)))!, `after trade ${k + 63}`).toEqual(before);
       }
-      // Kept: the last minute (60 ids) plus what accumulates until the set doubles past the 512 floor.
-      expect(Math.max(...sizes)).toBeLessThanOrEqual(1_024);
-      expect(sizes.at(-1)).toBeLessThan(3_072);
+      // Kept: the trades of the last minute and a quarter at most (75 a second apart), whatever the run's length.
+      expect(Math.max(...sizes.slice(2))).toBeLessThanOrEqual(76);
+      expect(Math.min(...sizes.slice(2))).toBeGreaterThanOrEqual(60);
       expect(parseCandles(w.last(candlesKey(MINT)))!.obs.quality).toEqual([]);
     });
   });

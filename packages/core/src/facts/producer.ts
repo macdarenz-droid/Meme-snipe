@@ -184,8 +184,8 @@ interface CandleBook {
   readonly seen: Map<string, number>;
   /** The newest trade time applied. */
   newestMs: number;
-  /** `seen`'s size after its last sweep: the next sweep runs when it has doubled. */
-  sweptAt: number;
+  /** `newestMs` at the last sweep: the next runs once the newest trade is a quarter window later. */
+  sweptMs: number;
 }
 
 // ---------- Streams ----------
@@ -463,7 +463,7 @@ export class FactProducer {
         if (!t.pools.has(d.pool)) t.pools.set(d.pool, { pool: d.pool, slot: seen.slot, atMs, quote: d.poolQuoteAmount, base: d.poolBaseAmount });
         if (!this.#poolMint.has(d.pool)) this.#poolMint.set(d.pool, d.baseMint);
         if (!this.#books.has(d.pool)) {
-          this.#books.set(d.pool, { pool: d.pool, mint: d.baseMint, openedAtMs: atMs, fromSlot: seen.slot, candles: [], partial: false, seen: new Map(), newestMs: atMs, sweptAt: 0 });
+          this.#books.set(d.pool, { pool: d.pool, mint: d.baseMint, openedAtMs: atMs, fromSlot: seen.slot, candles: [], partial: false, seen: new Map(), newestMs: atMs, sweptMs: atMs });
           this.#reserves.set(d.pool, { atMs, effective: d.poolQuoteAmount });
           this.#writeCandles(d.pool, seen.provider, seen.receivedAt, put);
         }
@@ -583,12 +583,15 @@ export class FactProducer {
     this.#writeCandles(d.pool, seen.provider, seen.receivedAt, put);
   }
 
-  /** Drops the ids behind the repeat window once the set has doubled since the last sweep (amortised; answers unchanged). */
+  /**
+   * Drops the ids behind the repeat window each time the newest trade has moved a quarter window since the last sweep, so a
+   * book holds at most a window and a quarter of trades (answers unchanged: the window is checked first).
+   */
   #sweepSeen(book: CandleBook): void {
-    if (book.seen.size < 2 * Math.max(book.sweptAt, 512)) return;
+    if (book.newestMs - book.sweptMs < this.#o.tradeRepeatMs / 4) return;
     const cutoff = book.newestMs - this.#o.tradeRepeatMs;
     for (const [id, at] of book.seen) if (at < cutoff) book.seen.delete(id);
-    book.sweptAt = book.seen.size;
+    book.sweptMs = book.newestMs;
   }
 
   /** OOM-SEEN: the trade ids a pool's candle book remembers, and its last reserve (tests and diagnostics). */
