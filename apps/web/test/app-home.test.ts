@@ -67,7 +67,7 @@ describe('Snipe: Session card', () => {
     expect(t).toContain('Session Running');
     expect(t).toContain('Bankroll $20.00');
     expect(t).toContain('Entry $2.00, max $5.00');
-    expect(t).toContain('Open positions 1');
+    expect(t).toContain('Open trade limit 1');
     expect(t).toContain('Daily loss $1.00');
     expect(t).toContain('Weekly loss $3.00');
     // A limit the policy does not have reads "None" (review N2).

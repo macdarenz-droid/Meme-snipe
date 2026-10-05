@@ -39,11 +39,33 @@ export class AsOfStore {
   readonly #keep = new Map<string, number | null>();
   readonly #collapse: Collapse | null;
   readonly #keepOlder = new Map<string, ((older: AsOfEntry) => boolean) | null>();
+  /** OOM-MINT review: keys by their last `:`-separated part, so a retire costs only the keys it forgets. */
+  readonly #byTail = new Map<string, Set<string>>();
 
   constructor(clock: Clock, retention: Retention | null = null, collapse: Collapse | null = null) {
     this.#clock = clock;
     this.#retention = retention;
     this.#collapse = collapse;
+  }
+
+  /**
+   * OOM-MINT: forgets every key whose last `:`-separated part is one of `ids` (a mint or a pool nothing will read again),
+   * with its cached rules. Returns how many keys went. A key recorded again later starts afresh.
+   */
+  retire(ids: ReadonlySet<string>): number {
+    let n = 0;
+    for (const id of ids) {
+      const keys = this.#byTail.get(id);
+      if (keys === undefined) continue;
+      this.#byTail.delete(id);
+      for (const key of keys) {
+        this.#series.delete(key);
+        this.#keep.delete(key);
+        this.#keepOlder.delete(key);
+        n++;
+      }
+    }
+    return n;
   }
 
   /** The key's collapse test, cached (`Collapse`). */
@@ -81,7 +103,16 @@ export class AsOfStore {
     const last = series?.[series.length - 1];
     if (last !== undefined && compareMoments(moment, last.moment) < 0) throw new RangeError(`${key} must be recorded in time order`);
     const entry: AsOfEntry = Object.freeze({ moment, value, source });
-    if (series === undefined) this.#series.set(key, [entry]);
+    if (series === undefined) {
+      this.#series.set(key, [entry]);
+      const at = key.lastIndexOf(':');
+      if (at !== -1) {
+        const tail = key.slice(at + 1);
+        const keys = this.#byTail.get(tail);
+        if (keys === undefined) this.#byTail.set(tail, new Set([key]));
+        else keys.add(key);
+      }
+    }
     else {
       const keepOlder = this.#olderTest(key);
       if (keepOlder !== null && last !== undefined && last.moment.receivedAt <= moment.receivedAt && !keepOlder(last)) series.pop();

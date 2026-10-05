@@ -19,6 +19,9 @@ if [ "${SOURCE:-archive}" != helius ]; then
     { echo "refused: max_mbps $mb is not in (0, $ARCHIVE_MAX_MBPS] (archive-limits.conf)" | tee -a "$summary"; exit 2; }
   "$here/scan-day.sh" --rps-ok "${ARCHIVE_GO:-$here/../scanner/archive.go}" > /dev/null ||
     { echo "refused: the scanner's request cap is not in (0, $ARCHIVE_MAX_RPS] (scanner/archive.go, archive-limits.conf)" | tee -a "$summary"; exit 2; }
+  # ARCHIVE-NODUP: a Helius day is never read from the archive.
+  [[ " $HELIUS_DAYS " == *" $day "* ]] &&
+    { echo "refused: $day is a Helius day (HELIUS_DAYS in archive-limits.conf); it is never read from the archive" | tee -a "$summary"; exit 2; }
 fi
 # phase NAME CMD...: runs CMD and logs its duration to the summary (sizes the 45 min
 # QA-phase budget in data-scan.yml from real days).

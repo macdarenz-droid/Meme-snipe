@@ -29,11 +29,12 @@ import {
   atr, checkStopDistance, decideExit, execPrice, liquidationValue, exitAttemptsOf, exitBookEvents, exitSettings, newTracker, noteAttempt,
 } from '../../../core/src/exits/index.ts';
 import {
-  type Coverage, type DeployerIndexState, type GateContext, type GraduatesFact, type RugLabellerState, type S0DiagnosticPart, DeployerIndex, GRADUATES_KEY, hardAllowsEntry, LOG_CREATE_PREFIX, NOT_EVALUATED, stagedHardRejects, RugLabeller, TX_CREATE_PREFIX, type PoolFact, carryKey, createKey, createsCoverage, evaluateHardRejects, evaluateRegime, migrationKey, parseCreate, parseGraduates, parseMigration, parsePool, poolKey, pruneCoverage,
+  type Coverage, type DeployerIndexState, type GateContext, type GraduatesFact, type RugLabellerState, type S0DiagnosticPart, DeployerIndex, GRADUATES_KEY, hardAllowsEntry, LOG_CREATE_PREFIX, NOT_EVALUATED, stagedHardRejects, RugLabeller, TX_CREATE_PREFIX, type PoolFact, carryKey, createKey, createKeepVerdict, CREATE_LATE_MS, createOf, createsCoverage, evaluateHardRejects, evaluateRegime, migrationKey, parseCreate, parseGraduates, parseMigration, parsePool, poolKey, pruneCoverage,
 } from '../../../core/src/gates/index.ts';
 import type { GraduatesSeed } from '../../../core/src/facts/raw.ts';
 import { type BookEvent, type IntentState, isTerminal } from '../../../core/src/lifecycle/index.ts';
 import { type AccountHistory, type Latches, type Timed, evaluateEntry, evaluateExit, maxTradeCosts, riskSnapshot } from '../../../core/src/risk/index.ts';
+import { HourTags } from './hour-tags.ts';
 import { latchable, type markedHistory, markSettings, riskAccount } from './marks.ts';
 import { type Bps, BPS_DENOMINATOR, type Lamports, type MicroUsd, bps, lamportsToMicroUsd, mulDiv, microUsdToLamports } from '../../../core/src/units/index.ts';
 
@@ -323,7 +324,24 @@ export interface StrategyConfig {
   readonly keepBars: number;
   /** REC-1: rejected candidates' pools watched past their window at once; one more is logged `no tail` (`tail cap`). */
   readonly maxTails: number;
+  /** OOM-MINT: how long a create's facts are kept while its coin has not migrated (`CREATE_KEEP_MS`). */
+  readonly createKeepMs: number;
 }
+
+/**
+ * OOM-MINT (supervisor rulings): a coin that migrates more than `CREATE_KEEP_MS` after its create is refused
+ * `create-expired` from the facts (`createKeepVerdict`, as the backtest refuses it). A create whose coin has not
+ * migrated `CREATE_KEEP_MS + CREATE_LATE_MS` after it is let go: its keys in the store, its producer track and its place
+ * in the wallets' mint lists; kept for ever, they were unbounded (about 4.3 KB a create).
+ */
+export { CREATE_KEEP_MS } from '../../../core/src/gates/index.ts';
+
+/**
+ * OOM-MINT: how long a let-go create is remembered, so its coin's migration is refused `create-expired`: a week, as an
+ * 8-byte tag (`HourTags`: about 6 MB at 75 creates a minute). After that its coin is treated as one whose create this
+ * process never saw (the create lookup of CREATE-AFTER-RESTART).
+ */
+export const EXPIRED_CREATE_KEEP_MS = 7 * 24 * 3_600_000;
 
 /** The saved state a seed names (WORKER-GROW): the file in the boot's recording, its sha256 over every byte, its format version. */
 export interface SavedStateRef {
@@ -870,6 +888,7 @@ export class LiveStrategy implements Strategy {
   }
 
   onMarket(e: MarketEvent, ctx: StrategyContext): readonly Decision[] {
+    this.#book = ctx.book;
     const out: Decision[] = [];
     // FACTS-1b: reads that landed on earlier events are judged now, after the facts their own release made (FactFeed
     // releases a read's facts right after it, at its moment). A mark set below applies from the next event on.
@@ -884,6 +903,9 @@ export class LiveStrategy implements Strategy {
     this.#gapBarsClose(e);
     if (e.key === GRADUATES_KEY) this.#graduatesFact = parseGraduates(unwrap(e.value)) ?? this.#graduatesFact;
     this.#observe(e);
+    this.#noteCreate(e);
+    this.#expireCreates(e.moment.receivedAt);
+    this.#pruneIndex(e.moment.receivedAt);
     if (e.key === RESTORE_KEY) this.#restore(unwrap(e.value), out, e.moment.receivedAt);
     if (e.key === SEED_KEY) this.#seed(e.value, out);
     if (e.key === 'chain:slot') {
@@ -909,7 +931,11 @@ export class LiveStrategy implements Strategy {
     this.#windowEnds(ctx.now.receivedAt, out);
     if (!out.some((d) => d.action !== null)) this.#entries(ctx, gctx, out, due);
     // Through `untilMs` itself: an exit at exactly the maximum hold (EXIT-1 fires at elapsed >= tMax) needs that moment.
-    for (const [mint, t] of this.#tail) if (ctx.now.receivedAt > t.untilMs) this.#tail.delete(mint);
+    for (const [mint, t] of this.#tail) {
+      if (ctx.now.receivedAt <= t.untilMs) continue;
+      this.#tail.delete(mint);
+      this.#retire(mint, t.pool);
+    }
     this.#readStops(e, ctx);
     return out;
   }
@@ -1327,11 +1353,123 @@ export class LiveStrategy implements Strategy {
   }
 
   /** Drops a mint's pool state once nothing watches it (its window ended and no position holds it). */
+  /**
+   * OOM-MINT review B1: a mint still in play: a candidate, an exit plan, an entry proposed and not yet booked (its seed),
+   * or any position of it in the book that is not closed (a late fill books one after the window ends).
+   */
+  #held(mint: string): boolean {
+    if (this.watched().has(mint)) return true;
+    for (const s of this.#seeds.values()) if (s.mint === mint) return true;
+    for (const p of Object.values(this.#book?.positions ?? {})) if (String(p.mint) === mint && p.status !== 'closed') return true;
+    return this.#mayLand(mint);
+  }
+
+  /**
+   * OOM-MINT facts review B3: an intent of this mint with an attempt that may still land (an orphan fill would open a
+   * position on it), or a landing not yet booked. An intent that is not terminal holds it; a terminal one until each
+   * attempt read failed at finalized or is past its last valid height by another validity window (time for the status
+   * read that would find a landing), so no position ever opens on a let-go coin.
+   */
+  #mayLand(mint: string): boolean {
+    const book = this.#book;
+    if (book === null) return false;
+    for (const o of Object.values(book.orphans)) if (String(book.intents[o.intentId]?.intent.mint) === mint) return true;
+    const height = this.#height;
+    for (const s of Object.values(book.intents)) {
+      if (String(s.intent.mint) !== mint) continue;
+      if (!isTerminal(s)) return true;
+      for (const a of s.attempts) {
+        if (s.failedSignatures.includes(a.signature) || s.fills.some((f) => f.signature === a.signature)) continue;
+        if (height === null || height <= a.lastValidBlockHeight + this.#d.config.blockhashValidBlocks) return true;
+      }
+    }
+    return false;
+  }
+
+  /** Mints a seed drop could not let go yet (`#mayLand`); retried each event until nothing holds them. */
+  readonly #letGoLater = new Set<string>();
+
+  /** The book as of the event being judged (`#held`). */
+  #book: StrategyContext['book'] | null = null;
+
   #forget(mint: string): void {
-    if (this.watched().has(mint)) return;
+    if (this.#held(mint)) return;
     const pool = this.#poolOfMint.get(mint);
     if (pool !== undefined) this.#mintOfPool.delete(pool);
     for (const m of [this.#poolOfMint, this.#observedFees, this.#tradeAt, this.#deployerSales, this.#flow, this.#deployerMemo, this.#migrationSlot, this.#swapAt, this.#inputsRestored]) m.delete(mint);
+    this.#retire(mint, pool ?? null);
+  }
+
+  /**
+   * OOM-MINT: a mint no longer held (`#held`) and with no tail is let go with its pool: nothing reads their facts again
+   * (`retired`). A tail keeps them until it ends.
+   */
+  #retire(mint: string, pool: string | null): void {
+    if (this.#held(mint) || this.#tail.has(mint)) return;
+    this.#letGo.push(mint);
+    if (pool !== null) this.#letGo.push(pool);
+  }
+
+  readonly #letGo: string[] = [];
+
+  /** OOM-MINT: creates seen and not yet let go, by mint, with their chain time (in release order). */
+  readonly #creates = new Map<string, number>();
+  /** OOM-MINT: let-go creates, kept `EXPIRED_CREATE_KEEP_MS`. */
+  readonly #expired = new HourTags(EXPIRED_CREATE_KEEP_MS);
+
+  #noteCreate(e: MarketEvent): void {
+    const prefix = e.key.startsWith(LOG_CREATE_PREFIX) ? LOG_CREATE_PREFIX : e.key.startsWith(TX_CREATE_PREFIX) ? TX_CREATE_PREFIX : null;
+    if (prefix === null) return;
+    const mint = e.key.slice(prefix.length);
+    if (this.#creates.has(mint) || this.#expired.has(mint)) return;
+    // Its age is the create's own chain time (a create read late, by a seed fill or a lookup, is as old as it is), else
+    // when it was released.
+    const created = createOf(e.value)?.createdAtMs ?? e.moment.receivedAt;
+    this.#creates.set(String.fromCharCode(...Array.from(mint, (c) => c.charCodeAt(0))), created);
+  }
+
+  /**
+   * OOM-MINT: creates older than `createKeepMs + CREATE_LATE_MS` by their chain time whose coin is not held or tailed
+   * are let go (`retired`) and remembered as expired; a held or tailed one is just dropped from the list (its coin
+   * migrated, and its facts go with the candidate).
+   */
+  #expireCreates(now: number): void {
+    // Once a minute of event time, every create is checked (chain times need not follow release order).
+    if (now - this.#createsCheckedAt < 60_000) return;
+    this.#createsCheckedAt = now;
+    const after = this.#d.config.createKeepMs + CREATE_LATE_MS;
+    for (const [mint, at] of this.#creates) {
+      if (at + after > now) continue;
+      this.#creates.delete(mint);
+      // A candidate (its pool and migration slot are noted with it), a pending entry, an open position or a tail.
+      if (this.#held(mint) || this.#tail.has(mint)) continue;
+      this.#expired.add(mint, now);
+      this.#letGo.push(mint);
+    }
+    this.#expired.prune(now);
+  }
+
+  #createsCheckedAt = Number.NEGATIVE_INFINITY;
+  #indexPrunedAt = Number.NEGATIVE_INFINITY;
+
+  /**
+   * OOM-MINT: once an hour of event time, the deployer index drops what its save leaves out (the H14 look-back plus a day,
+   * the worker's PERSIST-1 line), so its memory holds what a restart would restore and no more.
+   */
+  #pruneIndex(now: number): void {
+    if (now - this.#indexPrunedAt < 3_600_000) return;
+    this.#indexPrunedAt = now;
+    this.#deployers.prune(now - (this.#d.session.policy.gates.deployerRugLookbackDays + 1) * 86_400_000);
+  }
+
+  /** OOM-MINT: this mint's create was let go before its coin migrated (`create-expired`). */
+  createExpired(mint: string): boolean {
+    return this.#expired.has(mint);
+  }
+
+  /** OOM-MINT: the mints and pools let go since the last call (`Strategy.retired`). */
+  retired(): readonly string[] {
+    return this.#letGo.splice(0, this.#letGo.length);
   }
 
   #noteMigrationSlot(mint: string, slot: bigint | null): void {
@@ -1594,14 +1732,24 @@ export class LiveStrategy implements Strategy {
     // dropped at the restore's first step, so the file does not grow by one per such kill (EXIT-1h review N1).
     for (const id of this.#seeds.keys()) {
       const e = ctx.book.intents[id];
+      const mint = this.#seeds.get(id)?.mint;
       if (e !== undefined && isTerminal(e) && e.fills.length === 0) {
         this.#seeds.delete(id);
         this.#restoredSeeds.delete(id);
+        if (mint !== undefined) this.#letGoLater.add(mint);
       } else if (e === undefined && this.#restoredSeeds.has(id)) {
         this.#seeds.delete(id);
         this.#restoredSeeds.delete(id);
         out.push({ action: null, reasons: ['restored seed dropped', id, 'its intent never reached the book'] });
+        if (mint !== undefined) this.#letGoLater.add(mint);
       }
+    }
+    // A dropped seed's mint is let go once nothing holds it: no attempt that may still land, no position (an orphan
+    // fill's included), no candidate.
+    for (const mint of this.#letGoLater) {
+      if (this.#held(mint)) continue;
+      this.#letGoLater.delete(mint);
+      this.#forget(mint);
     }
     // A restored saved exit whose position is not in the rebuilt book (the plans are written before the desk books the
     // step, so a kill between the two leaves one) never will be: dropped at the restore's first step, so exits.json
@@ -2126,6 +2274,11 @@ export class LiveStrategy implements Strategy {
     const session = this.#d.session;
     const policy = session.policy;
     const diag = c.s0Diagnostic === true ? { s0Diagnostic: true } as const : {};
+    // OOM-MINT: a coin that migrated more than `createKeepMs` after its create is refused before anything is judged,
+    // from the facts as the backtest does; when its create's facts were let go, from the expired mark.
+    const kept = createKeepVerdict(gctx, cand.mint, c.createKeepMs);
+    if (kept?.expired === true) return this.#fail('create expired', [{ gate: 'worker', code: 'create-expired', detail: kept.detail }]);
+    if (kept === null && this.createExpired(cand.mint)) return this.#fail('create expired', [{ gate: 'worker', code: 'create-expired', detail: `its create was let go ${(c.createKeepMs + CREATE_LATE_MS) / 3_600_000} h after it with no migration seen` }]);
     const regime = evaluateRegime(gctx, { session, mode: 'live', ...diag });
     this.#waived = [...regime.waived];
     this.#regime = { atMs: gctx.now.receivedAt, on: regime.on, reasons: regime.reasons.map((x) => ({ code: x.code, input: x.input ?? null })), waived: [...regime.waived] };

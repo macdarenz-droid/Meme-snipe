@@ -200,6 +200,25 @@ export class DeployerIndex {
   }
 
   /**
+   * OOM-MINT (supervisor ruling): drops in memory what `snapshot(asOf, retainFromMs)` leaves out of a save: mints, rug
+   * labels and unjudged mints dated before `retainFromMs`, and lost creates seen before it. The worker passes its save's
+   * line (the H14 look-back plus a day), which is also where the rug check's reach ends (`rugCheckFromMs`: a day of rug
+   * windows behind the look-back), so no gate reads anything this drops. The index's own start is left as it is.
+   */
+  prune(retainFromMs: number): void {
+    const drop = <V>(m: Map<string, Map<string, V>>, ms: (v: V) => number): void => {
+      for (const [creator, inner] of m) {
+        for (const [k, v] of inner) if (ms(v) < retainFromMs) inner.delete(k);
+        if (inner.size === 0) m.delete(creator);
+      }
+    };
+    drop(this.#mints, (t) => t);
+    drop(this.#rugs, (k) => k.at.receivedAt);
+    drop(this.#unjudged, (k) => k.at.receivedAt);
+    for (const [sig, l] of this.#lost) if (l.atMs < retainFromMs) this.#lost.delete(sig);
+  }
+
+  /**
    * PERSIST-1: the index as of `asOf` (at or after the last event observed), for a restart without a re-fetch.
    * Entries older than `retainFromMs` are left out, and the index's own start moves up to it, so the restored index
    * never claims to have watched what it no longer holds.
