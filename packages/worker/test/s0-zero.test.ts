@@ -69,7 +69,9 @@ const setup = (o: { readonly fill?: Fill; readonly coverFrom?: bigint } = {}) =>
     return [b.key.split(':').at(-1)!, b.value];
   });
   const logFrames = () => frames.filter((f) => f.body.type === 'logs' || f.body.type === 'seen');
-  return { timers, hub, feed, frames, stream, poolId, slot, log, coverage, logFrames };
+  // FAILED-LOGS: a failed transaction's notification, with log lines that would decode if it had succeeded.
+  const failedLog = (n: number, signature: string) => hub.last.push({ jsonrpc: '2.0', method: 'logsNotification', params: { subscription: 200, result: { context: { slot: n }, value: { signature, err: { InstructionError: [3, { Custom: 6004 }] }, logs: ['Program log: x'] } } } });
+  return { timers, hub, feed, frames, stream, poolId, slot, log, failedLog, coverage, logFrames };
 };
 
 describe('a candidate pool watch starts its coverage at the migration', () => {
@@ -140,6 +142,20 @@ describe('a candidate pool watch starts its coverage at the migration', () => {
     t.log(605, 'C'.padEnd(88, '1'));
     await settle(20);
     expect(t.logFrames().at(-1)!.place.at).toBe('chain');
+  });
+
+  it('FAILED-LOGS: a failed transaction held during the catch-up keeps no lines, and is released as its sighting only', async () => {
+    const pending: ((ok: boolean) => void)[] = [];
+    const t = setup({ coverFrom: 590n, fill: () => new Promise<boolean>((r) => { pending.push(r); }) });
+    await settle(20);
+    t.log(602, 'A'.padEnd(88, '1'));
+    t.failedLog(602, 'B'.padEnd(88, '1'));
+    await t.slot(604);
+    expect(t.logFrames()).toEqual([]);
+    pending[0]!(true);
+    await settle(20);
+    const live = t.frames.filter((f) => ['logs', 'seen'].includes(f.body.type)).map((f) => [f.body.type, (f.body as { signature: string }).signature.slice(0, 1)]);
+    expect(live).toEqual([['seen', 'A'], ['logs', 'A'], ['seen', 'B']]);
   });
 
   it('a hold that overflows releases at once and the catch-up stays lossy even if the fill says complete', async () => {

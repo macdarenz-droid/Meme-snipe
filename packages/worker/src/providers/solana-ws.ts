@@ -219,8 +219,9 @@ export class RpcStream {
         const lines = r.value.logs;
         const ok = Array.isArray(lines) && lines.every((l) => typeof l === 'string');
         if (w.held !== null) {
-          // HOLD-COMPACT: a held notification keeps only the lines the log reader uses, each at its own index.
-          w.held.push({ signature, slot, err, lines: ok ? compactLogs(lines as string[]) : null });
+          // HOLD-COMPACT: a held notification keeps only the lines the log reader uses, each at its own index. FAILED-LOGS:
+          // a failed transaction keeps none (it yields no events).
+          w.held.push({ signature, slot, err, lines: ok && err === null ? compactLogs(lines as string[]) : null });
           this.#heldTotal++;
           if (w.held.length > CATCH_UP_HOLD_MAX || this.#heldTotal > CATCH_UP_HOLD_TOTAL) {
             if (w.gap !== null) w.gap.overflow = true;
@@ -330,7 +331,9 @@ export class RpcStream {
   #deliver(w: Extract<Watch, { kind: 'logs' }>, n: HeldNotice, lookup: boolean): void {
     const { address, opts } = w;
     this.#seen(address, n.signature, n.slot, n.err, opts, false, lookup);
-    if (opts.decodeLogs === true && n.lines !== null) {
+    // FAILED-LOGS: a failed transaction's log lines yield no events (its effects were rolled back: `logEvents`), so only
+    // its sighting goes on the feed, never its lines (most of a busy pool's logs traffic is bots' failed swaps).
+    if (opts.decodeLogs === true && n.lines !== null && n.err === null) {
       this.#o.feed.ingest(this.provider, { type: 'logs', signature: n.signature, slot: n.slot, err: n.err, via: `logs:${address}`, logs: [...n.lines], ...(opts.commitment === undefined ? {} : { commitment: opts.commitment }) }, { receivedAt: this.#o.timers.now(), ...(lookup ? { lookup: true, after: true } : {}) });
     }
   }
