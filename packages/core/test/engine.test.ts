@@ -210,6 +210,21 @@ describe('engine reads only its Clock and Feed', () => {
     expect(told).toEqual([['M1']]);
   });
 
+  it('G4a: a key past its Forget age is forgotten at the hourly sweep after an event, as a replay does', () => {
+    const HOUR_SLOTS = 9_000;
+    const replay = createReplay([market('f', 1, 0, 0, 'read:funder:W', 'x'), market('k', 1, 0, 1, 'other:W', 'y'), market('mid', 1 + HOUR_SLOTS - 10), market('sweep', 2 + HOUR_SLOTS), market('after', 3 + HOUR_SLOTS)]);
+    const asked: string[] = [];
+    const strategy: Strategy = {
+      onMarket: (e, ctx) => {
+        if (e.id !== 'f' && e.id !== 'k') asked.push(`${e.id}:${String(ctx.lookup('read:funder:W').ok)}:${String(ctx.lookup('other:W').ok)}`);
+        return [];
+      },
+    };
+    runToEnd(replay, new Engine({ clock: replay.clock, feed: replay.feed, strategy, runner: { run: () => {} }, seed: 's', book: CONFIG, forget: (k) => (k.startsWith('read:funder:') ? 3_600_000 : null) }));
+    // Kept until the sweep after the event at which an hour has passed; the other key untouched.
+    expect(asked).toEqual(['mid:true:true', 'sweep:true:true', 'after:false:true']);
+  });
+
   it('a lookup after now is refused inside the engine too', () => {
     const replay = createReplay([market('p', 1, 0, 0, POOL, 'x'), market('a', 2)]);
     const asked: unknown[] = [];

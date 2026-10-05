@@ -113,6 +113,12 @@ export const TRADE_REPEAT_WINDOW_MS = HOUR_MS;
  */
 export const RETIRED_KEEP = 100_000;
 
+/**
+ * G4a (supervisor ruling): how long a wallet's funder read (`read:funder:<wallet>`, its first SOL funding: fixed once it
+ * happened) is kept: a day. The store forgets the read's key after the same time (worker `liveForget`).
+ */
+export const FUNDER_KEEP_MS = DAY_MS;
+
 /** OOM-MINT: adds a fresh copy of `id` (never the text it was cut from), dropping the oldest entries past `cap`. */
 export const cappedAdd = (set: Set<string>, id: string, cap: number): void => {
   set.add(flatCopy(id));
@@ -424,6 +430,7 @@ export class FactProducer {
     };
     // Survival marks are judged on the state before this event: a trade after the mark must not date it.
     this.#survival(e, put);
+    this.#forgetFunders(e.moment.receivedAt);
     this.#chainOther(e, put);
     const pe = programEvent(e);
     if (pe !== null) this.#program(pe.ev, pe.seen, pe.truncated, e, put);
@@ -661,8 +668,8 @@ export class FactProducer {
   }
 
   /** OOM-MINT: how many entries the producer keeps per structure (tests and the memory ceiling). */
-  sizes(): { readonly books: number; readonly mints: number; readonly walletMints: number; readonly retiredPools: number; readonly retiredMints: number; readonly streams: number; readonly chains: number } {
-    return { books: this.#books.size, mints: this.#mints.size, walletMints: this.#walletMints.size, retiredPools: this.#retiredPools.size, retiredMints: this.#retiredMints.size, streams: this.#streams.size, chains: this.#chains.size };
+  sizes(): { readonly books: number; readonly mints: number; readonly walletMints: number; readonly retiredPools: number; readonly retiredMints: number; readonly streams: number; readonly chains: number; readonly funders: number } {
+    return { funders: this.#funders.size, books: this.#books.size, mints: this.#mints.size, walletMints: this.#walletMints.size, retiredPools: this.#retiredPools.size, retiredMints: this.#retiredMints.size, streams: this.#streams.size, chains: this.#chains.size };
   }
 
   /** OOM-SEEN: the trade ids a pool's candle book remembers, and its last reserve (tests and diagnostics). */
@@ -903,6 +910,9 @@ export class FactProducer {
       const r = parseFunderRead(v);
       if (r === null || key !== RAW.funder(r.wallet)) return;
       this.#funders.set(r.wallet, r);
+      // Re-read: moved to the end of the read-time order.
+      this.#funderAt.delete(r.wallet);
+      this.#funderAt.set(r.wallet, at);
       for (const mint of this.#walletMints.get(r.wallet) ?? []) {
         const t = this.#mints.get(mint);
         if (t !== undefined) this.#insiders(t, e, put);
@@ -1248,6 +1258,22 @@ export class FactProducer {
       this.#graduatesChanged = true;
     }
     return { accepted: true, added: add.length, reason: null };
+  }
+
+  /** G4a: wallets' funder reads in read-time order (oldest first), for `#forgetFunders`. */
+  readonly #funderAt = new Map<string, number>();
+
+  /**
+   * G4a (supervisor ruling): a wallet's funder read is let go `FUNDER_KEEP_MS` after it was read. Every candidate's
+   * insider read reads its wallets' funders again as of its own slot (`Readers.readInsiders`), so nothing a live
+   * candidate (at most about six hours with its tail) still needs is ever let go, and no read is saved by keeping one.
+   */
+  #forgetFunders(now: number): void {
+    for (const [w, at] of this.#funderAt) {
+      if (at + FUNDER_KEEP_MS > now) break;
+      this.#funderAt.delete(w);
+      this.#funders.delete(w);
+    }
   }
 
   #survival(e: MarketEvent, put: (k: string, v: unknown) => void): void {

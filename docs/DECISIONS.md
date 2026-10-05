@@ -2589,3 +2589,22 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - `store-rules.test.ts`: the graduates fact keeps only its newest value.
   - `create-compact.test.ts`: the seed fact is stored as its moment and counts.
 
+## Funder reads let go after a day (G4a, `FUNDER_KEEP_MS`, `AsOfStore` `Forget`, `run/store-rules.ts` `liveForget`)
+
+- **2026-10-06 · Why.** Every candidate's insider read (H13) reads the funders of its dev and first 20 buyers, about 21 wallets. Each read (`read:funder:<wallet>`) stayed for the process twice, as a store key and in `FactProducer.#funders`: about 400 B each, about 24 MB a day at 1× and about 70 MB a day at 3×, never bounded.
+- **What "funder" means** (supervisor ruling, condition a). It is a wallet's first SOL funding: `Readers.funderOf` pages back to the wallet's oldest successful transaction and reads the first SOL transfer into it (`firstFunder`, core `chain/system.ts`). Once found it cannot change, so a read again later gives the same funder. A read is `complete` only when it reached the oldest transaction, and the insiders fact uses only complete reads whose funding slot is at or before now.
+- **What** (supervisor ruling: 24 hours).
+  - The producer lets a wallet's read go `FUNDER_KEEP_MS` (a day) after it was read, oldest first. A read again moves the wallet to the end.
+  - The store forgets the read's key after the same time. A new per-key rule, `Forget`, is swept once an hour of event time by the engine, after the event, so a replay forgets at the same point. The key's retire index goes with it.
+  - Nothing looks the key up in the store; the producer acts on the released read.
+- **No live candidate loses a read it needs:** reads are made during the candidate's life, which with its tail is at most the window (240 min) plus the longest tail (`tMaxCapMs`, 120 min), well under a day.
+- **Credits (condition c): no extra reads.** `Readers.readInsiders` reads every funder again for each candidate as of that candidate's slot (it never reuses an earlier read). So letting a read go never causes a read that would not have happened anyway. The extra Helius spend is 0, well under the 1% line.
+- **Evidence (fail before, pass after).**
+  - `producer.test.ts`:
+    - funder reads are kept a millisecond short of a day and let go at a day;
+    - read again, the insiders fact is the same;
+    - the keep outlives the window plus the longest tail.
+  - `engine.test.ts`: a key past its `Forget` age is forgotten at the hourly sweep after an event, and others stay.
+  - `create-compact.test.ts`: `liveForget` covers funder reads only; forgetting cleans the retire index for a lone key and for a shared one.
+  - Hand mutants killed: `>=` at the producer's boundary; no engine sweep; the retire index not cleaned.
+

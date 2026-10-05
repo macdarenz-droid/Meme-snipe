@@ -7,7 +7,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { AsOfStore, type AsOfEntry, type Moment } from '../../core/src/engine/index.ts';
 import { checkCurveTails, compactCreate, compactCurveTrade, createOf } from '../../core/src/gates/index.ts';
 import { eventsOfFrame, type Frame } from '../src/providers/canonical.ts';
-import { compactSeed, liveCollapse, liveRetention, liveShape } from '../src/run/store-rules.ts';
+import { compactSeed, liveCollapse, liveForget, liveRetention, liveShape } from '../src/run/store-rules.ts';
+import { FUNDER_KEEP_MS } from '../../core/src/facts/index.ts';
 import { blockNetwork, recordOf, tx } from './helpers.ts';
 import { MINT, makeWorker, passingMarket } from './worker-harness.ts';
 
@@ -151,5 +152,20 @@ describe('CREATE-COMPACT: creates and curve trades in the live store', () => {
     store.record('worker:seed', seed, at(1_000), 'seed');
     const r = store.lookup('worker:seed') as { ok: true; value: unknown };
     expect(r.value).toEqual({ asOf, counts: { creates: 3, coverage: 1, fill: 0, rugs: 2, history: 1 } });
+  });
+
+  it('G4a: a wallet\'s funder read is forgotten from the live store a day after it was read; other keys stay', () => {
+    expect(liveForget('read:funder:W1')).toBe(FUNDER_KEEP_MS);
+    expect(liveForget('read:holders:M')).toBeNull();
+    const store = new AsOfStore({ now: () => at(FUNDER_KEEP_MS + 10_000) }, liveRetention, liveCollapse, liveShape, liveForget);
+    store.record('read:funder:W1', { wallet: 'W1' }, at(1_000), 'f1');
+    store.record('read:holders:W1', 1, at(1_000), 'h1');
+    store.record('read:funder:W2', { wallet: 'W2' }, at(1_000), 'f2');
+    expect(store.forgetOlder(1_000 + FUNDER_KEEP_MS - 1)).toBe(0);
+    expect(store.forgetOlder(1_000 + FUNDER_KEEP_MS)).toBe(2);
+    expect(store.retire(new Set(['W2']))).toBe(0);
+    expect([store.lookup('read:funder:W1').ok, store.lookup('read:holders:W1').ok]).toEqual([false, true]);
+    // Its retire index went with it: a retire of the wallet forgets only the key left.
+    expect(store.retire(new Set(['W1']))).toBe(1);
   });
 });

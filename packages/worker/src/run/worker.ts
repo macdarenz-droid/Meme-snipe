@@ -76,7 +76,7 @@ import type { ExecStats } from '../../../core/src/facts/raw.ts';
 /** POS-1: a pool fact flagged beyond backfill or dedupe (a stale swap stream) is never priced from. */
 const flagged = (p: PoolFact): boolean => p.obs.quality.some((q) => q !== 'backfilled' && q !== 'deduplicated');
 import { type PoolFeeContext, effectiveQuoteReserve, poolSell } from '../../../core/src/amm/index.ts';
-import { liveCollapse, liveRetention, liveShape } from './store-rules.ts';
+import { liveCollapse, liveForget, liveRetention, liveShape } from './store-rules.ts';
 
 /** The halt reason while the book holds a late buy's position, which paper does not settle yet (risk ruling on #133). */
 export const LATE_BUY = 'late buy not settled by paper; entries off';
@@ -646,7 +646,7 @@ export class Worker {
       }
       if (e.key === GRADUATES_SEED_KEY) this.#graduatesSeed(e.value);
     });
-    this.#engine = new Engine({ clock: this.#feed.clock, feed: this.#facts.feed, strategy: this.#strategy, runner: this.#world, seed, book: bookConfig, retention: liveRetention, collapse: liveCollapse, shape: liveShape });
+    this.#engine = new Engine({ clock: this.#feed.clock, feed: this.#facts.feed, strategy: this.#strategy, runner: this.#world, seed, book: bookConfig, retention: liveRetention, collapse: liveCollapse, shape: liveShape, forget: liveForget });
     this.#deployerStore = new DeployerStore(c.stateDir);
     const storeFrom = now - (d.session.policy.gates.deployerRugLookbackDays + 1) * 86_400_000;
     // PERSIST-1: the saved index, labeller and coverage, when the file holds up (else a fresh start: not covered).

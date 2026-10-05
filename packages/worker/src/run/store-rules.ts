@@ -1,9 +1,9 @@
 // OOM-SWAPS: what the live engine's as-of store keeps, shared by the worker and its parity replay so both prune alike.
 // Without it the store kept every event for the process: each swap on a watched pool left its trade event and a fresh
 // pool fact (about 10 KB with their addresses), and at a few thousand swaps a minute the heap reached its limit in minutes.
-import type { Collapse, Retention, Shape } from '../../../core/src/engine/index.ts';
+import type { Collapse, Forget, Retention, Shape } from '../../../core/src/engine/index.ts';
 import { SEED_KEY } from '../engine/strategy.ts';
-import { RAW } from '../../../core/src/facts/index.ts';
+import { FUNDER_KEEP_MS, RAW } from '../../../core/src/facts/index.ts';
 import { GRADUATES_KEY, LOG_CREATE_PREFIX, TX_CREATE_PREFIX, candlesKey, carryKey, compactCreate, compactCurveTrade, curveTradeKeys, mintKey, poolKey, streamKey, tradeTailCollapse } from '../../../core/src/gates/index.ts';
 
 const POOL_PREFIX = poolKey('');
@@ -78,4 +78,11 @@ export const compactSeed = (v: unknown): unknown => {
   const n = (k: string): number | null => (Array.isArray(o[k]) ? (o[k] as unknown[]).length : null);
   return Object.freeze({ asOf: o['asOf'], counts: Object.freeze({ creates: n('creates'), coverage: n('coverage'), fill: n('fill'), rugs: n('rugs'), history: n('history') }) });
 };
+
+const FUNDER = RAW.funder('');
+/**
+ * G4a (supervisor ruling): a wallet's funder read (`read:funder:<wallet>`) is forgotten a day after it was read, as the
+ * producer forgets it (`FUNDER_KEEP_MS`). The producer acts on the released read; nothing looks the key up in the store.
+ */
+export const liveForget: Forget = (key) => (key.startsWith(FUNDER) ? FUNDER_KEEP_MS : null);
 

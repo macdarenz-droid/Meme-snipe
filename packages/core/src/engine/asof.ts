@@ -36,6 +36,12 @@ export type Collapse = (key: string) => ((older: AsOfEntry) => boolean) | null;
 export type Shape = (key: string) => ((value: unknown) => unknown) | null;
 
 /**
+ * G4a: for a key nothing looks up once it is old, how long after its newest value the whole key is forgotten
+ * (`forgetOlder`); `null` keeps it. Its readers must never ask for it past that age (proved per reader).
+ */
+export type Forget = (key: string) => number | null;
+
+/**
  * Point-in-time state. Every answer is "as of" a moment at or before the clock's now: a lookup for a
  * later moment is refused, and a value cannot be recorded with a moment later than now.
  */
@@ -62,12 +68,39 @@ export class AsOfStore {
   readonly #byTail = new Map<string, string | Set<string>>();
 
   readonly #shape: Shape | null;
+  readonly #forget: Forget | null;
 
-  constructor(clock: Clock, retention: Retention | null = null, collapse: Collapse | null = null, shape: Shape | null = null) {
+  constructor(clock: Clock, retention: Retention | null = null, collapse: Collapse | null = null, shape: Shape | null = null, forget: Forget | null = null) {
     this.#clock = clock;
     this.#retention = retention;
     this.#collapse = collapse;
     this.#shape = shape;
+    this.#forget = forget;
+  }
+
+  /** G4a: forgets every key whose `Forget` age has passed since its newest value (by receipt time). Returns how many. */
+  forgetOlder(nowMs: number): number {
+    if (this.#forget === null) return 0;
+    let n = 0;
+    for (const [key, series] of this.#series) {
+      const age = this.#forget(key);
+      const last = series[series.length - 1];
+      if (age === null || last === undefined || last.moment.receivedAt + age > nowMs) continue;
+      this.#series.delete(key);
+      this.#keepOlder.delete(key);
+      const at = key.lastIndexOf(':');
+      if (at !== -1) {
+        const tail = key.slice(at + 1);
+        const keys = this.#byTail.get(tail);
+        if (keys === key) this.#byTail.delete(tail);
+        else if (keys !== undefined && typeof keys !== 'string') {
+          keys.delete(key);
+          if (keys.size === 0) this.#byTail.delete(tail);
+        }
+      }
+      n++;
+    }
+    return n;
   }
 
   /**
