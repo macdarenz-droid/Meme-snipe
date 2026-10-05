@@ -9,7 +9,7 @@ import { type EvidenceCode, HARD_GATES, type HardGate, type HardResult } from '.
 
 // Every EvidenceCode of the gates: the evidence was not there to judge. The record type fails to compile when the
 // gates add an evidence code this list lacks.
-const EVIDENCE: Record<EvidenceCode, true> = { missing: true, malformed: true, future: true, stale: true, degraded: true, gap: true, 'not-covered': true, inconsistent: true };
+const EVIDENCE: Record<EvidenceCode, true> = { missing: true, malformed: true, future: true, stale: true, degraded: true, gap: true, 'not-covered': true, inconsistent: true, unread: true };
 export const NOT_COVERED_CODES: ReadonlySet<string> = new Set(Object.keys(EVIDENCE));
 
 // The regime gate (§6.4) comes first, as live; stage-1 gates stop a check before any read is asked; 'not evaluated' is a
