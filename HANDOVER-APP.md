@@ -4,7 +4,88 @@ Owner, Tue 6 Oct about 1:00 AM: a second supervisor (S2) takes the parked **app 
 
 From here on, S2 owns this file. S2 keeps it current on its own branch `claude/s2-docs`, which starts from S1's docs branch `ccr-528521bb-f7a7zo`. S1 reads it there and does not edit it.
 
+## Current handoff to S1
+
+Updated **2026-10-06 02:12:50 AEDT**. Under S1’s 2:01 AM handoff, these entries count as PR comments. Each listed reviewer is independent of the builder and passed the exact stated head. S1 made all six PRs non-draft. **S1 owns the final CI and latest-base check before merging; these handoffs do not claim CI is green.** S1’s latest notes have no completed current-head CI result yet. Required gates remain `check` and `historical-data`; app merges follow S1’s #236.
+
+### APP-TRUTH — #216
+
+S2-READY ed5adc47223546e433e0151571ab3e72b1cbd84f
+
+- Branch: `claude/app-truth`. Verified contained base: `73c61006b08be35fff804155e6f700fa1c13d7b8`.
+- Review: **PASS** — `app_truth_review` — APP/API — `ed5adc47223546e433e0151571ab3e72b1cbd84f`.
+- Evidence: Task app tree and worker API are identical to the prior reviewed head; merge imports only S1 base changes.
+- CI: not yet reported by S1 for this exact head; S1 must verify both required green checks before merge.
+- Owner step / merge dependency: None before merge.
+
+### FUNNEL-TRUTH — #237
+
+S2-READY 682a80d6ef08b97128c5abf984a99be126e263a8
+
+- Branch: `claude/funnel-truth`. Verified contained base: `73c61006b08be35fff804155e6f700fa1c13d7b8`.
+- Review: **PASS** — `funnel_api_review` — APP/API — `682a80d6ef08b97128c5abf984a99be126e263a8`.
+- Review: **PASS** — `funnel_facts_review` — strategy/worker facts — `682a80d6ef08b97128c5abf984a99be126e263a8`.
+- Evidence: Strict schemas, corrected hard-gate validation and conservative risk stages remain intact after the base merge.
+- CI: not yet reported by S1 for this exact head; S1 must verify both required green checks before merge.
+- Owner step / merge dependency: None before merge. Land before #210.
+
+### FUNNEL-PERSIST — #210
+
+S2-READY d31c32e7240f4090262bd4516d41a8982f46e991
+
+- Branch: `claude/funnel-persist`. Verified contained base: `73c61006b08be35fff804155e6f700fa1c13d7b8`.
+- Review: **PASS** — `persist_api_review` — APP/API — `d31c32e7240f4090262bd4516d41a8982f46e991`.
+- Review: **PASS** — `persist_facts_review` — strategy/worker facts — `d31c32e7240f4090262bd4516d41a8982f46e991`.
+- Review: **PASS** — `persist_data_review` — saved data — `d31c32e7240f4090262bd4516d41a8982f46e991`.
+- Evidence: Journal shape and replay are unchanged by the merge; midnight rotation, bounded retention and first-fill identity remain correct.
+- CI: not yet reported by S1 for this exact head; S1 must verify both required green checks before merge.
+- Owner step / merge dependency: None before merge. Depends on #237 landing first.
+
+### APP-SOL — #182
+
+S2-READY 491d291a3e69ffe7153871bac28f67dfb2efa026
+
+- Branch: `claude/app-sol`. Verified contained base: `73c61006b08be35fff804155e6f700fa1c13d7b8`.
+- Review: **PASS** — `app_sol_api_review` — APP/API — `491d291a3e69ffe7153871bac28f67dfb2efa026`.
+- Evidence: Production code is unchanged from prior reviewed 5ee1d4da. Final test-only fix routes mock requests by pathname and explicitly verifies money=lamports on eight requests; 3 failures before, 81 focused tests and workspace typecheck pass after.
+- CI: not yet reported by S1 for this exact head; S1 must verify both required green checks before merge.
+- New push: this head supersedes S1’s `b8a0ace3` CI head. Use CI for `491d291a3e69ffe7153871bac28f67dfb2efa026`, not the earlier run.
+- Owner step / merge dependency: None before merge. After S1 merges the batch, provide the preview APK and phone checks. Installed APK SHA is unverified; default responses preserve the verified integration-base schema.
+
+### APP-TRADE / EXIT-RUNG — #181
+
+S2-READY 68a1d969920b6246b2a29a93092d1a8053f685e7
+
+- Branch: `claude/exit-rung`. Verified contained base: `73c61006b08be35fff804155e6f700fa1c13d7b8`.
+- Review: **PASS** — `exit_rung_api_review` — APP/API — `68a1d969920b6246b2a29a93092d1a8053f685e7`.
+- Review: **PASS** — `exit_rung_exit_review` — EXIT — `68a1d969920b6246b2a29a93092d1a8053f685e7`.
+- Review: **PASS** — `exit_rung_facts_review` — strategy/worker facts — `68a1d969920b6246b2a29a93092d1a8053f685e7`.
+- Evidence: Signed rung, charged fee, settlement and recovery files are unchanged by the merge; released slot events still drive height and landing. No new saved shape.
+- CI: not yet reported by S1 for this exact head; S1 must verify both required green checks before merge.
+- Owner step / merge dependency: None before merge. Resolve any API overlap with #182 in landing order.
+
+### API-1 — #167
+
+S2-READY 6af4e43b707960316d8cd8419cb2e513fa9f4b60
+
+- Branch: `claude/api-1`. Verified contained base: `73c61006b08be35fff804155e6f700fa1c13d7b8`.
+- Review: **PASS** — `api1_api_review` — APP/API — `6af4e43b707960316d8cd8419cb2e513fa9f4b60`.
+- Review: **PASS** — `api1_facts_review` — strategy/worker facts — `6af4e43b707960316d8cd8419cb2e513fa9f4b60`.
+- Evidence: Full configured waiver set remains separate from actual per-decision reliance. Existing strict enums match; updated precise no-fee-context fixture fails without H14 serving fix and all 10 worker-1e tests pass after.
+- CI: not yet reported by S1 for this exact head; S1 must verify both required green checks before merge.
+- Owner step / merge dependency: None before merge.
+
+### Local full-check limitations
+
+- APP-TRUTH’s older local run: 5469 passed, 3 failed (two writable-GPG-home setup failures and STATE-DEDUPE SHA mismatch). The isolated STATE-DEDUPE rerun passed; that does not establish full-suite success.
+- FUNNEL-TRUTH’s older local run: 5464 passed, 2 GPG-home setup failures. Writable GNUPGHOME now preserves the same key verification.
+- FUNNEL-PERSIST’s older-head local full run is still incomplete and has reported three runner/drill failures in unchanged runner files. No passing full-suite claim.
+- APP-SOL’s older full run was cancelled with exit130. Three mock URL failures are fixed on the new head; a loaded runner drill failure remains reported for S1 to assess against current CI. No runner test, timeout or guard was weakened.
+- Current GitHub CI is the outstanding merge gate; S1 will publish results or missing work in its HANDOVER.md “For Supervisor 2” section.
+
 ## S2 events (newest first)
+
+- **2026-10-06 02:12:50 AEDT** — Posted six exact-head S2-READY handoffs above under S1’s new file-as-PR-comment protocol. All required independent area reviews passed after S1 base merges; API-1 head unchanged and prior exact-head verdicts retained. APP-SOL fixture correction491d291a pushed after fetching, remote verified, independently reviewed; S1 must use its new CI. Each handoff lists base, reviewers, owner/dependency steps and explicitly pending S1 CI verification; known local full-run failures remain visible. No PR merge, deploy, integration push or green-CI claim.
 
 - **2026-10-06 02:08:23 AEDT** — S1 relayed an authorized handoff channel: readiness and independent review verdicts in HANDOVER-APP.md count as PR comments while API access is unavailable; S1 posts CI/missing items in HANDOVER.md For Supervisor 2 on its docs branch. Fetched all task refs before further pushes. S1 opened FUNNEL-TRUTH #237, made all6 PRs non-draft and merged base73c61006 into five heads (API-1 already contained it). Exact-head independent merge reviews PASS: APP-TRUTH ed5adc47223546e433e0151571ab3e72b1cbd84f APP/API app_truth_review; FUNNEL-TRUTH682a80d6ef08b97128c5abf984a99be126e263a8 APP/API funnel_api_review and strategy/worker facts funnel_facts_review; FUNNEL-PERSISTd31c32e7240f4090262bd4516d41a8982f46e991 APP/API persist_api_review and saved data persist_data_review (facts verdict follows). S1 inherited base files only, no task-source drift found. APP-SOL3 mock URL failures corrected with fail-before/passafer fixture change at491d291a3e69ffe7153871bac28f67dfb2efa026; independent delta review in progress. Old APP-SOL fullrun cancelled exit130, notpass; inherited loaded-runner test failure remains visible for S1 CI. New current-head CI results not yet in S1 notes; no CI success claimed.
 
@@ -65,7 +146,7 @@ From here on, S2 owns this file. S2 keeps it current on its own branch `claude/s
 
 ## How S1 and S2 work together
 
-- **Channel.** The two supervisors run on different platforms and can't message each other. They use:
+- **Channel.** S1’s 6 Oct 2:01 AM update: entries in this file count as PR comments while S2 cannot reach GitHub API. S1 publishes CI results and missing work in its docs branch HANDOVER.md, “For Supervisor 2”; S1 checks CI and the latest base before merging. The supervisors also use:
   - this file;
   - PR comments;
   - the owner.
@@ -102,6 +183,8 @@ From here on, S2 owns this file. S2 keeps it current on its own branch `claude/s
 
 ## The queue, in the owner's order
 
+The intake notes below preserve historical work and original heads. The current heads, reviews, handoff status and remaining merge gates are in **Current handoff to S1** above.
+
 ### 1. APP-TRUTH (#216): app labels match the real data; risk stops name their rule; short decision list
 - Branch `claude/app-truth`, head `4b6ed6ef`, draft. Its base is from 5 Oct morning.
 - Done: run/CI review PASS at 4b6ed6ef (5 Oct 11:45 AM):
@@ -112,7 +195,7 @@ From here on, S2 owns this file. S2 keeps it current on its own branch `claude/s
   - 7 mutants killed.
 - Left: merge the base (expect conflicts in apps/web and the API), a delta re-check, CI, then S2-READY.
 
-### 2. FUNNEL-TRUTH (no PR yet): fix the wrong "Costs" label in the coin funnel
+### 2. FUNNEL-TRUTH (#237; historical intake below): fix the wrong "Costs" label in the coin funnel
 - Branch `claude/funnel-truth`, head `7cf40fbe`. No PR. Not reviewed: its full check was pending when the 5 Oct 4:37 PM stop order paused it.
 - The cause, pinned on 5 Oct 4:28 PM:
   - api.ts `checkOf` (about line 124) falls through to `cost` for pool-data refusals (pool state unknown, flagged or malformed; fee context unknown);
