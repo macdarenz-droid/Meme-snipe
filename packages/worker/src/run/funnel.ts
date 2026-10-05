@@ -4,7 +4,7 @@
 // the entries and the decision rows a worker that never stopped would show. Nothing new is stored: the journal is read.
 import { melbourneDay } from '../../../core/src/risk/melbourne.ts';
 import { GATE_REASONS_PREFIX, S0_DIAGNOSTIC_PREFIX, SHORTLIST } from '../engine/strategy.ts';
-import { type DecisionRow, checkOf, melbourneDate, stageOf } from './api.ts';
+import { type DecisionRow, classify, melbourneDate } from './api.ts';
 import { journalLines } from './booked.ts';
 import { existsSync } from 'node:fs';
 
@@ -53,9 +53,9 @@ export class FunnelView {
     const st = this.#stageOf(mint, atMs);
     const id = `${String(l['event'])}/${String(l['seq'])}`;
     if (kind === 'reject' && why !== undefined) {
-      const check = checkOf(why);
+      const { check, stage } = classify(why);
       st.check = check;
-      st.stage = Math.max(st.stage, stageOf(check));
+      st.stage = Math.max(st.stage, stage);
       // The typed reasons and the S0 diagnostic ride on the line as fields; the row serves them as reasons again.
       const typed = l['gate_reasons'] === undefined ? [] : [`${GATE_REASONS_PREFIX}${JSON.stringify(l['gate_reasons'])}`];
       const diag = Array.isArray(l['s0_diagnostic']) ? [`${S0_DIAGNOSTIC_PREFIX}${(l['s0_diagnostic'] as unknown[]).join(',')}`] : [];

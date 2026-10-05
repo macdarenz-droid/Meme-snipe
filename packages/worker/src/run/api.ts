@@ -114,16 +114,32 @@ export interface FunnelState {
   readonly enteredByDay: ReadonlyMap<string, number>;
 }
 
-/** The first failing check of a reject reason, as the app names checks. */
-export const checkOf = (reason: string): string => {
-  if (reason.startsWith('regime off')) return 'regime';
-  const hard = /^hard reject (H\d+)/.exec(reason);
-  if (hard !== null) return hard[1]!;
-  if (reason.startsWith('stop:')) return 'size';
-  if (reason.startsWith('risk ') || reason.includes('SOL price') || reason.includes('account snapshot')) return 'risk';
-  return 'cost';
+/**
+ * FUNNEL-TRUTH: a reject reason's first failing check, named with the checks the installed app knows, and the funnel
+ * stage the candidate truly passed before it (0 seen, 1 hard rejects passed, 2 cost gate passed), in the order
+ * the strategy judges (strategy.ts #evaluate: regime, SOL price, pool data, sizing, hard rejects, account, stop, risk).
+ * Missing or unusable inputs are H16 ("Stale or unknown data"). Every reason `#evaluate` can return is listed (the
+ * test pins the list); a reason this list does not know gets no check and stays at "seen", never "Costs".
+ */
+export const classify = (reason: string): { readonly check: string | null; readonly stage: number } => {
+  if (reason.startsWith('regime off')) return { check: 'regime', stage: 0 };
+  // Refused before the pool is read or a hard reject runs (strategy.ts #evaluate, #market).
+  if (reason === 'live SOL price unknown') return { check: 'H16', stage: 0 };
+  if (/^(pool state (unknown|malformed|flagged)|fee context unknown)/.test(reason)) return { check: 'H16', stage: 0 };
+  // The hard rejects: one that failed, or a pass that left a gate unevaluated (fail closed: its inputs were not known).
+  const hard = /^hard reject (H(?:1[0-7]|[1-9]))(?=[:,\s]|$)/.exec(reason);
+  if (hard !== null) return { check: hard[1]!, stage: 0 };
+  if (reason === 'hard rejects incomplete') return { check: 'H16', stage: 0 };
+  // After the hard rejects passed: the account, then the stop at the size.
+  if (reason === 'account snapshot unknown') return { check: 'H16', stage: 1 };
+  if (reason.startsWith('stop:') || reason.startsWith('no round trip:')) return { check: 'size', stage: 1 };
+  // Risk approval proves the cost gate passed before a size mismatch. A refusal, fault or failed mark does not.
+  if (reason.startsWith('risk sized ')) return { check: 'size', stage: 2 };
+  if (reason.startsWith('risk ')) return { check: 'risk', stage: 1 };
+  return { check: null, stage: 0 };
 };
-export const stageOf = (check: string): number => (check === 'regime' || /^H\d+$/.test(check) ? 0 : check === 'cost' || check === 'size' ? 1 : 2);
+/** The first failing check of a reject reason (see `classify`); null when it names none the app knows. */
+export const checkOf = (reason: string): string | null => classify(reason).check;
 
 export interface ApiInputs {
   readonly nowMs: number;

@@ -47,6 +47,7 @@ Core plan re-checked by the new supervisor, Mon 5 Oct about 8:53 AM, against `do
 Waiting (outside the core): Telegram alerts and controls (#161, #178, #190, #199), app changes (#167, #181, #182), summaries and observability (#174, #194, #200, #175, #211, #210), drills (#193, needed later for the qualifying run), CI-SHARD (#206, blocked by the safety check), docs and supply chain (#143, #146, #135, #136), paid history storage (#150, owner decision).
 
 ## Follow-ups
+- Next app release (FUNNEL-TRUTH follow-up): give missing-input refusals their own `data` check ("Missing data") and unnamed ones an `other` check, in the app's contract, schema and labels first; then the worker uses them instead of H16 and no check.
 - Android: cover a stop between the two asset renames, the "fixed name plus .prev" state, and a failed final delete (APP-1b review notes).
 - Money scanner: aliased unit constants and a regex right after `)` (CFG-1 review notes; defence in depth).
 - Chain: i16 0x8000/0x7fff and u32 0x80000000 boundary vectors (DEC-1 review note).
