@@ -46,7 +46,7 @@ import { engineFeed, type EngineFeed } from './engine-feed.ts';
 import { startHealthServer } from './health.ts';
 import { type HeartbeatPosition, heartbeatBody, sendHeartbeat } from './heartbeat.ts';
 import { crashSite } from './crash-site.ts';
-import { MEM_EVERY_MS, cgroupMax, fatalReport, nearLimit, readMem, sampleMem, writeMem } from './mem-trace.ts';
+import { type DeathMem, MEM_EVERY_MS, cgroupMax, deathMem, fatalReport, nearLimit, parseDeathMem, readMem, sampleMem, writeMem } from './mem-trace.ts';
 import { Summarizer, SummaryClock } from './summary.ts';
 import { CappedMap } from './capped-map.ts';
 import { jsonText } from './json.ts';
@@ -296,12 +296,16 @@ export const readJournalFills = (path: string, chunkBytes?: number): Record<stri
 export const EXIT_HANDOFF = 'last_exit.json';
 
 /** The pre-step's handoff, read and removed: its reading when recent and well formed (null is a first start), else undefined. */
-export const takeHandoff = (path: string, nowMs: number): string | null | undefined => {
+export const takeHandoff = (path: string, nowMs: number, onMem?: (mem: DeathMem | null) => void): string | null | undefined => {
   if (!existsSync(path)) return undefined;
   let out: string | null | undefined;
   try {
-    const m = JSON.parse(readFileSync(path, 'utf8')) as { exit?: unknown; at?: unknown };
-    if ((typeof m.exit === 'string' || m.exit === null) && typeof m.at === 'number' && nowMs - m.at >= 0 && nowMs - m.at < PLANNED_RESTART_MS) out = typeof m.exit === 'string' ? m.exit.slice(0, 300) : null;
+    const m = JSON.parse(readFileSync(path, 'utf8')) as { exit?: unknown; at?: unknown; mem?: unknown };
+    if ((typeof m.exit === 'string' || m.exit === null) && typeof m.at === 'number' && nowMs - m.at >= 0 && nowMs - m.at < PLANNED_RESTART_MS) {
+      out = typeof m.exit === 'string' ? m.exit.slice(0, 300) : null;
+      // MEM-SUMMARY: the dead process's memory as the pre-step read it (numbers only, checked again here).
+      onMem?.(parseDeathMem(m.mem ?? null));
+    }
   } catch {}
   rmSync(path, { force: true });
   return out;
@@ -333,6 +337,8 @@ export class Worker {
   readonly #boot: string;
   /** How the previous process ended (RESTART-ALERT): a planned restart's marker, else the journal's last line. */
   readonly #lastExit: string | null;
+  /** MEM-SUMMARY: the previous process's memory at its death, when it left no stop line (`deathMem`), else null. */
+  #deathMem: DeathMem | null = null;
   readonly #restartsFile: ReturnType<typeof restartsFile>;
   #restarts: readonly Restart[];
   readonly #started: number;
@@ -479,14 +485,27 @@ export class Worker {
     // boot (EXIT_HANDOFF), which would otherwise read the pre-step's lines. A drill's marker is read the same way.
     const handoff = join(c.stateDir, EXIT_HANDOFF);
     // A handoff of null (the pre-step saw a first start) stands: it is not "no handoff".
-    const handed = takeHandoff(handoff, now);
+    let handedMem: DeathMem | null | undefined;
+    const handed = takeHandoff(handoff, now, (m) => {
+      handedMem = m;
+    });
     // MEM-TRACE: a death with no stop line just after a sample near a memory limit says so.
     // HEAP-GUARD: a fresh fatal-error report (the heap limit) names the death as a crash at its site, first.
     const fatal = this.#journal.previousExit === 'no clean stop' ? fatalReport(c.stateDir, this.#journal.previousMs) : null;
     const journalExit = fatal !== null ? `fatal error (${fatal})`
       : this.#journal.previousExit === 'no clean stop' ? withMemNote(this.#journal.previousExit, nearLimit(readMem(c.stateDir), this.#journal.previousMs)) : this.#journal.previousExit;
     this.#lastExit = handed !== undefined ? handed : plannedRestart(join(c.stateDir, STATE_FILES.plannedRestart), now) ?? journalExit;
-    if (d.phase === 'reconcile') writeFileSync(handoff, JSON.stringify({ exit: this.#lastExit, at: now }));
+    // MEM-SUMMARY: how much memory a process that left no stop line held when it died (the pre-step reads it, the main
+    // boot journals it for the daily summary). Its uptime runs from its own boot, the last entry of restarts.json.
+    if (handed !== undefined) this.#deathMem = handedMem ?? null;
+    else if (this.#journal.previousExit === 'no clean stop') {
+      let bootMs: number | null = null;
+      try {
+        bootMs = restartsFile(c.stateDir).read([]).at(-1)?.at ?? null;
+      } catch {}
+      this.#deathMem = deathMem(c.stateDir, this.#journal.previousMs, bootMs);
+    }
+    if (d.phase === 'reconcile') writeFileSync(handoff, JSON.stringify({ exit: this.#lastExit, at: now, mem: this.#deathMem }));
     // Restarts in the last 24 h, planned (a runner drill), deploys and unplanned, for the heartbeat and the daily summary.
     // The pre-step is not a boot of its own: only the main start records one.
     this.#restartsFile = restartsFile(c.stateDir);
@@ -566,7 +585,7 @@ export class Worker {
       sell_only: [...this.#sellOnly],
       // RESTART-CAUSE: the unit's `--reconcile` pre-step is marked, so the daily summary counts real boots only.
       // The main boot names its restart's kind and how the previous process ended, for the daily summary's counts.
-      ...(d.phase === 'reconcile' ? { phase: 'reconcile' } : { restart: this.#restarts[this.#restarts.length - 1]?.kind ?? null, exit: exitKind(this.#lastExit), ...(this.#lastExit?.startsWith('fatal error (') ? { crash_site: this.#lastExit.slice('fatal error ('.length, -1) } : {}) }),
+      ...(d.phase === 'reconcile' ? { phase: 'reconcile' } : { restart: this.#restarts[this.#restarts.length - 1]?.kind ?? null, exit: exitKind(this.#lastExit), ...(this.#lastExit?.startsWith('fatal error (') ? { crash_site: this.#lastExit.slice('fatal error ('.length, -1) } : {}), ...(this.#deathMem === null ? {} : { death_mem: this.#deathMem }) }),
     });
     if (this.#journal.repaired) this.#journal.write('journal_repair', { detail: 'torn last line removed' });
     if (this.#sellOnly.length > 0) {
