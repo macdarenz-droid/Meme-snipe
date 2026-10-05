@@ -8,7 +8,6 @@
 // have missed; on reopen, each log watch reads the signatures it missed and each account watch reads its current
 // state, all marked backfilled; then the hold ends. Two providers carry the position, so a copy from the other
 // provider usually got there first and the backfilled duplicate is dropped.
-import { compactLogs } from '../../../core/src/chain/index.ts';
 import { P0, P1, type Priority, ScheduleRefused, type Scheduler } from '../scheduler/scheduler.ts';
 import type { Timers } from '../scheduler/timers.ts';
 import { isAddress, isSignature } from './canonical.ts';
@@ -92,13 +91,12 @@ interface HeldNotice {
 /** Notifications one watch may hold during a catch-up; past it they go on the feed at once and the gap stays lossy. */
 export const CATCH_UP_HOLD_MAX = 5_000;
 /**
- * HOLD-TOTAL: notifications all of a stream's watches may hold together. A swap's notification held as parsed was about
+ * HOLD-TOTAL: notifications all of a stream's watches may hold together. A swap's notification held as parsed is about
  * 10.5 KB of heap (103 log lines); with ~230 pools in their catch-up at once and fills two at a time, the per-watch cap
- * alone let the holds fill the 560 MB heap within minutes of every boot. Held notifications keep only the lines the
- * log reader uses (`compactLogs`, about 2.1 KB each), so this total is about 50 MB. The watch whose notification would
- * pass it overflows exactly as at the per-watch cap: what it holds goes on the feed at once and its catch-up stays lossy.
+ * alone let the holds fill the 560 MB heap within minutes of every boot. The watch whose notification would pass this
+ * overflows exactly as at the per-watch cap: what it holds goes on the feed at once and its catch-up stays lossy.
  */
-export const CATCH_UP_HOLD_TOTAL = 24_000;
+export const CATCH_UP_HOLD_TOTAL = 2_000;
 
 interface CoverageGap {
   readonly fromSlot: bigint | null;
@@ -217,10 +215,9 @@ export class RpcStream {
         if (w.lastLogSlot === null || slot > w.lastLogSlot) w.lastLogSlot = slot;
         const err = r.value.err ?? null;
         const lines = r.value.logs;
-        const ok = Array.isArray(lines) && lines.every((l) => typeof l === 'string');
+        const n: HeldNotice = { signature, slot, err, lines: Array.isArray(lines) && lines.every((l) => typeof l === 'string') ? lines as string[] : null };
         if (w.held !== null) {
-          // HOLD-COMPACT: a held notification keeps only the lines the log reader uses, each at its own index.
-          w.held.push({ signature, slot, err, lines: ok ? compactLogs(lines as string[]) : null });
+          w.held.push(n);
           this.#heldTotal++;
           if (w.held.length > CATCH_UP_HOLD_MAX || this.#heldTotal > CATCH_UP_HOLD_TOTAL) {
             if (w.gap !== null) w.gap.overflow = true;
@@ -228,7 +225,7 @@ export class RpcStream {
           }
           return;
         }
-        this.#deliver(w, { signature, slot, err, lines: ok ? lines as string[] : null }, false);
+        this.#deliver(w, n, false);
       },
     });
   }
@@ -335,12 +332,12 @@ export class RpcStream {
     }
   }
 
+  /** Ends a catch-up hold: the held notifications go on the feed in arrival order, after everything ingested before. */
   /** HOLD-TOTAL: notifications held now across every watch's catch-up (at most `CATCH_UP_HOLD_TOTAL`). */
   get heldNotices(): number {
     return this.#heldTotal;
   }
 
-  /** Ends a catch-up hold: the held notifications go on the feed in arrival order, after everything ingested before. */
   #release(w: Extract<Watch, { kind: 'logs' }>): void {
     const held = w.held;
     if (held === null) return;
