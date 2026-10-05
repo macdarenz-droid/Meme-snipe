@@ -23,10 +23,20 @@ export const liveRetention: Retention = (key) => (key.startsWith(POOL_PREFIX) ? 
  * the heap about 20 MB a minute.
  */
 const HEADS = [streamKey(''), candlesKey(''), carryKey('')];
+/**
+ * OOM-HEADS: a signature seen on a watch (`seen:<via>`, one per logs notification, a few thousand a minute): nothing looks
+ * it up in the store (the delay probe and the fetches act on the frame), so only its newest value is kept too.
+ */
+const SEEN = 'seen:';
+/**
+ * OOM-SEEN: the chain's slot notice (`chain:slot`, 2.5 a second): the producer, the strategy and the worker act on the
+ * released event; nothing looks it up in the store, so only its newest value is kept.
+ */
+const SLOT = 'chain:slot';
 const NEWEST_ONLY = (): boolean => false;
 
 /**
- * The live store's collapse: a head fact keeps its newest value; a trade key keeps its newest event and every event whose
- * tail would fail (`tradeTailCollapse`).
+ * The live store's collapse: a head fact, a seen signature and the slot notice keep their newest value; a trade key keeps its newest event
+ * and every event whose tail would fail (`tradeTailCollapse`).
  */
-export const liveCollapse: Collapse = (key) => (HEADS.some((p) => key.startsWith(p)) ? NEWEST_ONLY : tradeTailCollapse(key));
+export const liveCollapse: Collapse = (key) => (key === SLOT || key.startsWith(SEEN) || HEADS.some((p) => key.startsWith(p)) ? NEWEST_ONLY : tradeTailCollapse(key));
