@@ -380,6 +380,21 @@ describe('candles', () => {
       expect(after.book.reserve).toEqual(once.book.reserve);
     });
 
+    it('OOM-MINT: once its pool and mint are retired, no later trade is applied and nothing is built again: a new trade, a repeat, the migration re-delivered', () => {
+      const w = build();
+      const candlesBefore = w.facts(candlesKey(MINT)).length;
+      const migrationBefore = w.facts(migrationKey(MINT)).length;
+      w.producer.retire([MINT, POOL]);
+      expect(w.producer.candleBook(POOL)).toBeUndefined();
+      const again = (events: MarketEvent[]) => events.map((e) => ({ ...e, moment: { ...next(), txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN } }));
+      w.push(newer(atOf(swaps.at(-1)!) + 60_000, 1));
+      w.push(repeat());
+      w.push(...again(txEvents(complete)), ...again(txEvents(migrate)), ...again(swapEvents()));
+      expect(w.producer.candleBook(POOL)).toBeUndefined();
+      expect(w.facts(candlesKey(MINT)).length).toBe(candlesBefore);
+      expect(w.facts(migrationKey(MINT)).length).toBe(migrationBefore);
+    });
+
     it('the remembered ids level off: 3,072 trades a second apart with a one-minute window keep at most a window and a quarter and a minute, and a sweep never forgets a trade inside the window', () => {
       const w = new FactWorld({ ...OPTIONS, tradeRepeatMs: 60_000 });
       w.push(...covered(), ...txEvents(create), ...txEvents(complete), ...txEvents(migrate));

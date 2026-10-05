@@ -124,6 +124,20 @@ describe('as-of store', () => {
     expect(store.lookup('k')).toMatchObject({ value: 'v3' });
   });
 
+  it('OOM-MINT: retire forgets every key whose last part is a retired id, and nothing else; a key recorded again starts afresh', () => {
+    const { clock, store } = setup();
+    store.record('gates/candles:M1', 'c', at(6, 0, 1), 'e3');
+    store.record('pump_amm:BuyEvent:P1', 'b', at(6, 0, 2), 'e4');
+    store.record('gates/candles:M2', 'c2', at(6, 0, 3), 'e5');
+    store.record('gates/candles:M1x', 'cx', at(6, 0, 4), 'e6');
+    expect(store.retire(new Set(['M1', 'P1']))).toBe(2);
+    for (const k of ['gates/candles:M1', 'pump_amm:BuyEvent:P1']) expect(store.lookup(k), k).toEqual({ ok: false, reason: 'missing' });
+    for (const k of ['k', 'gates/candles:M2', 'gates/candles:M1x']) expect(store.lookup(k).ok, k).toBe(true);
+    clock.advanceTo(at(11));
+    store.record('gates/candles:M1', 'again', at(11), 'e7');
+    expect((store.history('gates/candles:M1', at(0)) as readonly AsOfEntry[]).map((x) => x.source)).toEqual(['e7']);
+  });
+
   it('returns history inside the window, oldest first', () => {
     const { store } = setup();
     expect((store.history('k', at(0)) as readonly AsOfEntry[]).map((x) => x.source)).toEqual(['e1', 'e2']);
@@ -170,6 +184,26 @@ describe('engine reads only its Clock and Feed', () => {
     engine.drain();
     expect(seen).toEqual(['b']);
     expect(engine.records.filter((r) => r.type === 'fault').map((r) => r.type === 'fault' && r.fault)).toEqual(['out_of_order', 'out_of_order']);
+  });
+
+  it('OOM-MINT: what the strategy lets go is forgotten in the store right after the event that let it go, and the feed is told', () => {
+    const replay = createReplay([market('p', 1, 0, 0, `${POOL}:M1`, 'x'), market('q', 1, 0, 1, `${POOL}:M2`, 'y'), market('go', 2), market('after', 3)]);
+    const asked: string[] = [];
+    const told: string[][] = [];
+    let letGo: string[] = [];
+    const strategy: Strategy = {
+      onMarket: (e, ctx) => {
+        if (e.id === 'go') letGo = ['M1'];
+        if (e.id === 'go' || e.id === 'after') asked.push(`${e.id}:${String(ctx.lookup(`${POOL}:M1`).ok)}:${String(ctx.lookup(`${POOL}:M2`).ok)}`);
+        return [];
+      },
+      retired: () => letGo.splice(0),
+    };
+    const feed: Feed = { next: () => replay.feed.next(), retire: (ids) => void told.push([...ids]) };
+    runToEnd(replay, new Engine({ clock: replay.clock, feed, strategy, runner: { run: () => {} }, seed: 's', book: CONFIG }));
+    // Still there while the event that lets it go is judged; gone from the next event on; the other mint untouched.
+    expect(asked).toEqual(['go:true:true', 'after:false:true']);
+    expect(told).toEqual([['M1']]);
   });
 
   it('a lookup after now is refused inside the engine too', () => {

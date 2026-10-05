@@ -383,6 +383,10 @@ export class FactProducer {
   readonly #walletMints = new Map<string, Set<string>>();
   readonly #reserves = new Map<string, Reserve>();
   readonly #chains = new Map<string, PoolChain>();
+  /** OOM-MINT: pools let go (`retire`): their candle book is never built again, so no later trade is ever applied. */
+  readonly #retiredPools = new Set<string>();
+  /** OOM-MINT: mints let go (`retire`): their track is never kept again. */
+  readonly #retiredMints = new Set<string>();
   readonly #pending = new Map<string, Pending>();
   readonly #graduates: GraduatesFact['items'][number][] = [];
   readonly #sol = new Map<number, bigint>();
@@ -425,7 +429,9 @@ export class FactProducer {
     let t = this.#mints.get(mint);
     if (t === undefined) {
       t = { mint, migrationWritten: false, pools: new Map(), buyers: new Map(), devBuySameTx: false, xcheck: new Map() };
-      this.#mints.set(mint, t);
+      // OOM-MINT: a retired mint's later events build nothing that is kept (a fresh track each time, never stored), so
+      // its migration fact is never stated again.
+      if (!this.#retiredMints.has(mint)) this.#mints.set(mint, t);
     }
     return t;
   }
@@ -478,7 +484,7 @@ export class FactProducer {
         const t = this.#track(d.baseMint);
         if (!t.pools.has(d.pool)) t.pools.set(d.pool, { pool: d.pool, slot: seen.slot, atMs, quote: d.poolQuoteAmount, base: d.poolBaseAmount });
         if (!this.#poolMint.has(d.pool)) this.#poolMint.set(d.pool, d.baseMint);
-        if (!this.#books.has(d.pool)) {
+        if (!this.#books.has(d.pool) && !this.#retiredPools.has(d.pool)) {
           this.#books.set(d.pool, { pool: d.pool, mint: d.baseMint, openedAtMs: atMs, fromSlot: seen.slot, candles: [], partial: false, seen: new Map(), newestMs: atMs, sweptMs: atMs });
           this.#reserves.set(d.pool, { atMs, effective: d.poolQuoteAmount });
           this.#writeCandles(d.pool, seen.provider, seen.receivedAt, put);
@@ -609,6 +615,24 @@ export class FactProducer {
     const cutoff = book.newestMs - this.#o.tradeRepeatMs;
     for (const [id, minute] of book.seen) if ((minute + 1) * MINUTE_MS <= cutoff) book.seen.delete(id);
     book.sweptMs = book.newestMs;
+  }
+
+  /**
+   * OOM-MINT: what is kept for mints and pools the strategy let go (`Strategy.retired`): a pool's candle book, chain and
+   * trade stream, a mint's track. A retired pool's book is never built again: a later
+   * trade there, a repeat or a new one, is never applied (fail closed; nothing reads its candles, and their key is gone
+   * from the store, so H11 would find none).
+   */
+  retire(ids: readonly string[]): void {
+    // The reserve and pending graduate mark stay: they feed the regime's survival series (and are gone or small by then:
+    // a candidate leaves at least four hours after migrating, its survival mark is at thirty minutes).
+    for (const id of ids) {
+      if (this.#books.delete(id)) this.#retiredPools.add(id);
+      this.#chains.delete(id);
+      this.#poolMint.delete(id);
+      this.#streams.delete(STREAMS.trades(id));
+      if (this.#mints.delete(id)) this.#retiredMints.add(id);
+    }
   }
 
   /** OOM-SEEN: the trade ids a pool's candle book remembers, and its last reserve (tests and diagnostics). */

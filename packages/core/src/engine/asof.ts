@@ -46,6 +46,23 @@ export class AsOfStore {
     this.#collapse = collapse;
   }
 
+  /**
+   * OOM-MINT: forgets every key whose last `:`-separated part is one of `ids` (a mint or a pool nothing will read again),
+   * with its cached rules. Returns how many keys went. A key recorded again later starts afresh.
+   */
+  retire(ids: ReadonlySet<string>): number {
+    let n = 0;
+    for (const key of [...this.#series.keys()]) {
+      const at = key.lastIndexOf(':');
+      if (at === -1 || !ids.has(key.slice(at + 1))) continue;
+      this.#series.delete(key);
+      this.#keep.delete(key);
+      this.#keepOlder.delete(key);
+      n++;
+    }
+    return n;
+  }
+
   /** The key's collapse test, cached (`Collapse`). */
   #olderTest(key: string): ((older: AsOfEntry) => boolean) | null {
     if (this.#collapse === null) return null;

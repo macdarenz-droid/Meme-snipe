@@ -909,7 +909,11 @@ export class LiveStrategy implements Strategy {
     this.#windowEnds(ctx.now.receivedAt, out);
     if (!out.some((d) => d.action !== null)) this.#entries(ctx, gctx, out, due);
     // Through `untilMs` itself: an exit at exactly the maximum hold (EXIT-1 fires at elapsed >= tMax) needs that moment.
-    for (const [mint, t] of this.#tail) if (ctx.now.receivedAt > t.untilMs) this.#tail.delete(mint);
+    for (const [mint, t] of this.#tail) {
+      if (ctx.now.receivedAt <= t.untilMs) continue;
+      this.#tail.delete(mint);
+      this.#retire(mint, t.pool);
+    }
     this.#readStops(e, ctx);
     return out;
   }
@@ -1332,6 +1336,24 @@ export class LiveStrategy implements Strategy {
     const pool = this.#poolOfMint.get(mint);
     if (pool !== undefined) this.#mintOfPool.delete(pool);
     for (const m of [this.#poolOfMint, this.#observedFees, this.#tradeAt, this.#deployerSales, this.#flow, this.#deployerMemo, this.#migrationSlot, this.#swapAt, this.#inputsRestored]) m.delete(mint);
+    this.#retire(mint, pool ?? null);
+  }
+
+  /**
+   * OOM-MINT: a mint that is no candidate, holds no exit plan and has no tail is let go with its pool: nothing reads their
+   * facts again (`retired`). A tail keeps them until it ends.
+   */
+  #retire(mint: string, pool: string | null): void {
+    if (this.watched().has(mint) || this.#tail.has(mint)) return;
+    this.#letGo.push(mint);
+    if (pool !== null) this.#letGo.push(pool);
+  }
+
+  readonly #letGo: string[] = [];
+
+  /** OOM-MINT: the mints and pools let go since the last call (`Strategy.retired`). */
+  retired(): readonly string[] {
+    return this.#letGo.splice(0, this.#letGo.length);
   }
 
   #noteMigrationSlot(mint: string, slot: bigint | null): void {
