@@ -205,6 +205,12 @@ describe('Unrealized after a partial exit (APP-TRADE, review N1)', () => {
     // The old rows (the rest's value less the whole entry) read a large loss here; the served one does not.
     expect(pos['unrealizedUsd']).not.toBe(usdText(pnlMicroUsd(liq - p.cost, inputs.solPrice!)));
     expect(toMicro(pos['pnlUsd']!)).toBe(toMicro(pos['unrealizedUsd']!) - toMicro(pos['costsSoFarUsd']!));
+    // A new full-close owner after the partial must pay the same rung-1 fee shown above.
+    await m.run(10_000, 400, () => { m.slot(); m.pool(700_000n); });
+    const close = [...h.worker.apiInputs().attempts.values()].filter((a) => a.trade === p.id && a.purpose === 'exit').at(-1)!;
+    expect(close.outcome).toBe('filled');
+    expect(close.priorityFee).toBe(ladder.steps[1]!.priorityFeeLamports);
+    expect(close.costs!.base + close.costs!.priority + close.costs!.tip).toBe(fee);
     await h.worker.stop();
   });
 });

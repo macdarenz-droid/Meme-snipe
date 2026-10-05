@@ -606,6 +606,7 @@ export class Worker {
       book: () => this.#engine.book,
       seed, scenario: d.scenario, network: d.network,
       ladderFees: d.session.policy.exits.ladder.steps.map((s) => s.priorityFeeLamports as bigint),
+      exitRung: (i) => this.#strategy.signedRung(i.intent.positionId, this.#engine.book),
       market: (mint) => this.#paperMarket(mint),
       maxSolOut: (i) => {
         const n = d.network;

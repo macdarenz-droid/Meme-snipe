@@ -751,6 +751,14 @@ export class LiveStrategy implements Strategy {
     });
   }
 
+  /** The rung already signed, recorded by #sendExit before its synchronous broadcast effect. */
+  signedRung(pid: string, book: Book): number {
+    const last = this.#d.session.policy.exits.ladder.steps.length - 1;
+    const remembered = this.#exits.get(pid)?.tracker.lastRung;
+    // The book includes this signature already; without a remembered rung, its global count starts at rung zero.
+    return Math.min(remembered ?? Math.max(0, exitAttemptsOf(book.intents, pid as PositionId) - 1), last);
+  }
+
   riskStops(): RiskStopsView | null {
     return this.#stops;
   }

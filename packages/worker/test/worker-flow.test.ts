@@ -596,6 +596,8 @@ describe('an exit owner never waits booked blocked for a fresh market (EXIT-1d)'
     const at = mine().findIndex((l) => (l['reasons'] as string[])[0] === 'retry blocked exit');
     const sent = mine().slice(at).find((l) => (l['reasons'] as string[])[0] === 'prepare exit')!;
     expect(sent['reasons']).toContain(`rung ${last}`);
+    const retryAttempt = [...b.worker.apiInputs().attempts.values()].filter((a) => a.trade === pid && a.purpose === 'exit').at(-1)!;
+    expect(retryAttempt.priorityFee).toBe(TRIAL_POLICY.exits.ladder.steps[last]!.priorityFeeLamports);
     const retrying = b.worker.book.positions[pid]!;
     if (retrying.status !== 'closed') expect(b.worker.strategy.closeRung(pid, retrying.status, b.worker.book)).toBe(last);
     await b.worker.stop();
