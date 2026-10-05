@@ -1340,7 +1340,7 @@ export class LiveStrategy implements Strategy {
     if (this.watched().has(mint)) return;
     const pool = this.#poolOfMint.get(mint);
     if (pool !== undefined) this.#mintOfPool.delete(pool);
-    for (const m of [this.#poolOfMint, this.#observedFees, this.#tradeAt, this.#deployerSales, this.#flow, this.#deployerMemo, this.#migrationSlot, this.#swapAt, this.#inputsRestored]) m.delete(mint);
+    for (const m of [this.#poolOfMint, this.#observedFees, this.#tradeAt, this.#deployerSales, this.#flow, this.#deployerMemo, this.#migrationSlot, this.#swapAt, this.#inputsRestored, this.#restoredThrough]) m.delete(mint);
   }
 
   #noteMigrationSlot(mint: string, slot: bigint | null): void {

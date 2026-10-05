@@ -488,7 +488,7 @@ describe('RESTART-KEEP: a restart keeps the candidates in their window', () => {
     const plan = { openedAtMs: t0 - 60_000, universe: 'U2', notional: 2_000_000n, riskUnit: 1_000n, stopPrice: 1n, entryReserve: 1n };
     const exit = (o: Record<string, unknown>) => ({ plan, tracker: newTracker(), bars: [], pool: POOL_ADDRESS, ...o });
     // Held first: its exit inputs as saved, and a swap on its pool at slot S dated t0.
-    ev(RESTORE_KEY, { exits: { [`p:${M2}:1`]: exit({ deployer: { sellers: ['dev-a'], supply: 1_000n }, deployerSales: { ids: ['s1'], list: [{ atMs: t0 - 30_000, amount: 5n }] }, flow: { minutes: [[t0 - 60_000, -7n]], ids: [['f1', t0 - 60_000]] } }) } }, t0);
+    ev(RESTORE_KEY, { exits: { [`p:${M2}:1`]: exit({ deployer: { sellers: ['dev-a'], supply: 1_000n }, deployerSales: { ids: ['s1'], list: [{ atMs: t0 - 30_000, amount: 5n }] }, flow: { minutes: [[t0 - 60_000, -7n]], ids: [['f1', t0 - 60_000]] }, tradesThrough: SLOT }) } }, t0);
     ev(`logs:pump_amm:BuyEvent:${POOL_ADDRESS}`, { event: { program: 'pump_amm', name: 'BuyEvent', data: { pool: POOL_ADDRESS, user: 'u', timestamp: BigInt(Math.floor(t0 / 1000)) } }, signature: 'own1', txSlot: SLOT }, t0 + 1_000);
     // Another pool's swap 100 slots later, its slots slow: from it, slot S would be dated a minute after t0.
     ev('logs:pump_amm:BuyEvent:other-pool', { event: { program: 'pump_amm', name: 'BuyEvent', data: { pool: 'other-pool', timestamp: BigInt(Math.floor((t0 + 100_000) / 1000)) } }, signature: 'b1', txSlot: SLOT + 100n }, t0 + 2_000);
@@ -504,6 +504,8 @@ describe('RESTART-KEEP: a restart keeps the candidates in their window', () => {
     expect(again.flow).toEqual({ minutes: [], ids: [] });
     expect(again.deployerSales).toEqual({ ids: [], list: [] });
     expect(again.deployer).toEqual({ sellers: ['dev-b'], supply: 1_000n });
+    // Nor the first one's saved trade slot: the new position (nothing saved) is not watched from it (EXIT-KEEP downtime).
+    expect(strategy.watchedPools().get(POOL_ADDRESS)?.fromSlot).toBeUndefined();
     // A pool update at slot S: dated from the anchor (t0 + 60 s), not by the forgotten swap's t0.
     const base = passingFacts().get(poolKey(MINT))!.value as { obs: Record<string, unknown> };
     const v = { ...base, obs: { ...base.obs, slot: SLOT, receivedAt: t0 + 130_000 } };
