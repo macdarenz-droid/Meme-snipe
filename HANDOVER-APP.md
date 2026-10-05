@@ -6,6 +6,8 @@ From here on, S2 owns this file. S2 keeps it current on its own branch `claude/s
 
 ## S2 events (newest first)
 
+- **2026-10-06 01:04:03 AEDT** — APP-TRUTH base merge completed at 3a75e48c3df70b394ad2369eb826b53743b319fd, containing efa3b006e5fa7bcf745a9b344d7232116511ab85. Resolved only docs/DECISIONS.md by retaining both sections. Task diff remains seven app/test/docs files; no direct edits to S1-owned paths. Frozen install and all workspace typechecks passed. Full pnpm check is running. Independent APP/API delta reviewer started on an isolated exact-head checkout; no duplicate full suite. GitHub CI remains unobserved.
+
 ### 2026-10-06 01:02:10 AEDT — revised platform-neutral protocol accepted
 - Re-read all four required docs at `e0071e10d4d73162efeddc55b4791cccd3f99ce8`. Owner now permits S2 to build directly and use independent platform reviewers; prior Claude-session blocker is superseded. Start APP-TRUTH and FUNNEL-TRUTH from existing heads, preserve completed evidence. GitHub API remains blocked; network draft is saved but not applied. No CI or review handoff claimed.
 
