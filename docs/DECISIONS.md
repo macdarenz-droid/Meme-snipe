@@ -2192,7 +2192,10 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - Observed swap terms stay only as the fallback before a mint's first batch. A missing or foreign account publishes nothing (fail closed).
   - After a restart, the first batch prices the coin again at the current tier, whatever the restored terms say.
 - **Parity:** the recorded-live replay rebuilds the context from its recorded frames and gives the same decisions (test).
-- **Known gap, bounded:** the historical backtest keeps observed swap terms until a FeeConfig history arrives in the proof phase. Backtest and live can therefore differ only when a quote falls in a different tier from the last swap's pre-trade market cap, that is, at tier crossings between swaps.
+- **Known gap, bounded (BT parity review):** the historical backtest keeps observed swap terms until a FeeConfig history arrives in the proof phase. Backtest and live can differ in exactly three cases:
+  1. A tier crossing between swaps: a quote falls in a different tier from the last swap's pre-trade market cap.
+  2. A FeeConfig or GlobalConfig update by pump between two swaps: live prices the new config from the next batch, the backtest only after the next swap.
+  3. A quote before a mint's first swap: live has a fee context from the first batch, the backtest has none.
 - **Tests that fail before** (`read-coherent.test.ts`, FEE-TIER-NOW blocks):
   - the bank carries both configs at the same call count, and the context matches the decoder's;
   - a FeeConfig not owned by pump-fees, or no config at all, puts no context;
