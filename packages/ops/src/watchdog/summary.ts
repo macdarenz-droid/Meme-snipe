@@ -15,6 +15,21 @@ export const SUMMARY_MAX_TRADES = 500;
 /** How many refusal reasons the summary names; the rest are summed in `refused_other`. */
 export const SUMMARY_TOP_REASONS = 10;
 
+/** How the previous process ended, as counted in `worker.exits` (RESTART-CAUSE). */
+export const EXIT_KINDS = ['clean', 'crash', 'killed', 'planned', 'oom'] as const;
+/** The most crash sites one summary lists, most frequent first. */
+export const SUMMARY_MAX_CRASH_SITES = 8;
+
+/** Where a crash happened (RESTART-CAUSE): the error's name, the first frame inside packages/, and the event kind. Never a message. */
+export interface CrashSite {
+  readonly error: string;
+  /** Null when no frame of the stack is inside packages/. */
+  readonly file: string | null;
+  readonly line: number | null;
+  readonly event: string | null;
+  readonly count: number;
+}
+
 export interface CodeCount {
   readonly code: string;
   readonly count: number;
@@ -53,6 +68,14 @@ export interface Summary {
     /** Worker starts journaled that day (the first boot of the day counts too). */
     readonly starts: number;
     readonly recorder: 'on' | 'off' | null;
+    // RESTART-CAUSE: all three or none. A worker from before them still posts (a deploy is not atomic: the watchdog
+    // and the server update minutes or hours apart, in either order).
+    /** Restarts that day other than the first boot, by kind. */
+    readonly restarts?: { readonly planned: number; readonly deploy: number; readonly unplanned: number };
+    /** How each previous process ended, as read at that day's boots; codes from EXIT_KINDS. */
+    readonly exits?: readonly CodeCount[];
+    /** That day's crashes by site, most frequent first, at most SUMMARY_MAX_CRASH_SITES. */
+    readonly crash_sites?: readonly CrashSite[];
   };
   /** Critical alerts raised that day, by code. */
   readonly alerts: readonly CodeCount[];
@@ -76,7 +99,10 @@ export interface Summary {
   readonly provider_credits: readonly ProviderCredits[];
 }
 
-/** Narrow patterns for every string field. None allows ':', '/', '@' or whitespace; only `MINT` and `DAY`/`TIME` allow nothing wider. */
+/**
+ * Narrow patterns for every string field. None allows '@' or whitespace. None allows ':' and '/' together: TIME and
+ * EVENT allow ':' (no '/', no '.'), FILE allows '/' (no ':').
+ */
 export const PATTERNS = {
   DAY: /^\d{4}-\d{2}-\d{2}$/,
   TIME: /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/,
@@ -90,6 +116,12 @@ export const PATTERNS = {
   GATE: /^(?=[0-9]*[A-Za-z])[A-Za-z0-9]{1,16}$/,
   MINT: /^[1-9A-HJ-NP-Za-km-z]{32,44}$/,
   LAMPORTS: /^-?\d{1,20}$/,
+  /** An Error's name, or 'non-error' for a thrown value that is not an Error (RESTART-CAUSE). */
+  ERROR: /^[A-Za-z][A-Za-z0-9_-]{0,39}$/,
+  /** A source file inside the repo's packages: the one pattern with '/', and it has no ':', so no URL fits. */
+  FILE: /^packages\/[a-z0-9_-]+\/(src|test)\/[a-z0-9_\/.-]{1,120}\.[cm]?[jt]s$/,
+  /** An engine event's kind, up to 3 parts joined by ':'. Every part starts with a letter and has no '.', so no host:port fits. */
+  EVENT: /^[A-Za-z][A-Za-z0-9_-]{0,23}(:[A-Za-z][A-Za-z0-9_-]{0,23}){0,2}$/,
   USD: /^-?\d{1,15}(\.\d{1,6})?$/,
 } as const;
 
@@ -140,13 +172,27 @@ const trade = (x: unknown) =>
   str(x['mint'], PATTERNS.MINT) && str(x['opened_at'], PATTERNS.TIME) && strOrNull(x['closed_at'], PATTERNS.TIME) &&
   str(x['size_usd'], PATTERNS.USD) && strOrNull(x['exit_reason'], PATTERNS.CODE) &&
   strOrNull(x['net_lamports'], PATTERNS.LAMPORTS) && strOrNull(x['net_usd'], PATTERNS.USD);
+const exitCount = (x: unknown) => exact(x, ['code', 'count']) && (EXIT_KINDS as readonly unknown[]).includes(x['code']) && count(x['count']);
+const crashSite = (x: unknown) =>
+  exact(x, ['error', 'file', 'line', 'event', 'count']) && str(x['error'], PATTERNS.ERROR) && strOrNull(x['file'], PATTERNS.FILE) &&
+  (x['file'] === null ? x['line'] === null : count(x['line'])) && strOrNull(x['event'], PATTERNS.EVENT) && count(x['count']);
+const restarts = (x: unknown) => exact(x, ['planned', 'deploy', 'unplanned']) && count(x['planned']) && count(x['deploy']) && count(x['unplanned']);
 const credits = (x: unknown) =>
   exact(x, ['provider', 'used_since_boot', 'monthly']) && str(x['provider'], PATTERNS.CODE) && count(x['used_since_boot']) && (x['monthly'] === null || count(x['monthly']));
+
+const WORKER_KEYS = ['git_sha', 'entry_rule', 'uptime_s', 'starts', 'recorder'] as const;
+/** RESTART-CAUSE's keys of `worker`: present all together or not at all. */
+export const RESTART_CAUSE_KEYS = ['restarts', 'exits', 'crash_sites'] as const;
+const restartCause = (w: Record<string, unknown>): boolean =>
+  RESTART_CAUSE_KEYS.some((k) => Object.hasOwn(w, k))
+    ? exact(w, [...WORKER_KEYS, ...RESTART_CAUSE_KEYS]) && restarts(w['restarts']) && list(w['exits'], EXIT_KINDS.length, exitCount) && list(w['crash_sites'], SUMMARY_MAX_CRASH_SITES, crashSite)
+    : exact(w, WORKER_KEYS);
 
 /** The keys of every object in the shape, for the key-name test. */
 export const SHAPE_KEYS: readonly string[] = [
   'v', 'day', 'final', 'generated_at', 'mode', 'worker', 'alerts', 'halts', 'candidates', 'trades', 'trades_dropped', 'pnl', 'open_positions', 'provider_credits',
-  'git_sha', 'entry_rule', 'uptime_s', 'starts', 'recorder',
+  'git_sha', 'entry_rule', 'uptime_s', 'starts', 'recorder', 'restarts', 'exits', 'crash_sites',
+  'planned', 'deploy', 'unplanned', 'error', 'file', 'line', 'event',
   'code', 'count', 'gate',
   'seen', 'entered', 'refused', 'refused_by_reason', 'refused_other',
   'mint', 'opened_at', 'closed_at', 'size_usd', 'exit_reason', 'net_lamports', 'net_usd',
@@ -162,7 +208,7 @@ export const isSummary = (x: unknown): x is Summary => {
   const p = x['pnl'];
   return (
     x['v'] === SUMMARY_VERSION && str(x['day'], PATTERNS.DAY) && typeof x['final'] === 'boolean' && str(x['generated_at'], PATTERNS.TIME) && x['mode'] === 'paper' &&
-    exact(w, ['git_sha', 'entry_rule', 'uptime_s', 'starts', 'recorder']) && str(w['git_sha'], PATTERNS.SHA) && str(w['entry_rule'], PATTERNS.RULE) &&
+    isObj(w) && restartCause(w) && str(w['git_sha'], PATTERNS.SHA) && str(w['entry_rule'], PATTERNS.RULE) &&
     count(w['uptime_s']) && count(w['starts']) && (w['recorder'] === null || w['recorder'] === 'on' || w['recorder'] === 'off') &&
     list(x['alerts'], 64, codeCount) && list(x['halts'], 64, codeCount) &&
     exact(c, ['seen', 'entered', 'refused', 'refused_by_reason', 'refused_other']) && count(c['seen']) && count(c['entered']) && count(c['refused']) &&

@@ -29,15 +29,20 @@ Wave D, 4 Oct about 7:45 PM Melbourne. The project is being handed to a new Clau
 - All four API keys checked from CI: they work.
 
 ## Board
-Core plan, Mon 5 Oct about 8:22 AM (owner: "focus ... assign workers that will make the core of the bot done and production level"). Builders run as separate sessions, a fresh reviewer checks each PR, and the supervisor merges one at a time into `ccr-14987baf-i6lrsl` (CI about 24 min per merge, the bottleneck). Details and session ids: `HANDOVER.md`.
+Core plan re-checked by the new supervisor, Mon 5 Oct about 8:53 AM, against `docs/ARCHITECTURE.md` (read in full), the code and the live summaries. Builders run as separate sessions, a fresh reviewer checks each PR, and the supervisor merges one at a time into `ccr-14987baf-i6lrsl` (CI about 24 min per merge, the bottleneck). Details and session ids: `HANDOVER.md`.
+
+**Where the bot really is (verified).** The whole engine exists and runs on the server in paper (S0 shakedown, release e32cd0d). It restarts often (42 boots between midnight and 8:44 AM; each boot writes two `start` lines because the `--reconcile` pre-step builds a Worker too) and has judged no coin today (508 seen, 0 refused, 0 entered). Until Deploy #4 (7:59 AM) candidates lived only in memory, so a restart dropped them before their 60-minute U2 window opened; since #170 (RESTART-KEEP, in e32cd0d) they are saved every 5 minutes and restored, so the first judgements can show from about 9:00 AM. Not verified: the exit cause of the restarts (no host access; #148 fixes the crash paths found in code; #209 records the cause).
+
+**What gates proof and money (verified).** No historical day is published (the repo's only releases are `preview`; no `data-day-*` or `data-volume-*`). Helius free covers about 2–3 practice days a month (recorded estimate: a day about 250k of the 1M monthly credits, the live worker about 408k), and the archive scanner was last recorded as refused (not re-checked today). So pre-funding items 2 and 6 (backtest and a proven strategy) cannot finish on free data; the owner decides on paid data after seeing practice trades and the early look (HANDOVER §7). Live regime volume reads `data-volume-DAY` releases at D−3, so without them a real strategy's regime gate is unknown (off); only the S0 diagnostic waives it (DATA-5).
 
 | Stream | What it gives the bot | PRs (merge order) | Builder | Reviewers |
 |---|---|---|---|---|
-| 1 Stays up | no crash loop (about 38 restarts since midnight, so no coin gets judged); memory and disk safe; backups | #148, #209, then the crash fix; #164, #202 → #207, #139, #172, #187, #204, #192, #196; #137 → #149, BACKUP-STATE, DISK-GUARD | WORKER-HARDEN; ops builder 2 | worker/facts, persist, ops |
-| 2 Judges coins right | entry gates and the simulation use the real trade size; regime inputs trustworthy | #189, #177, #138 | READ-COHERENT; data builder | EXIT, persist, stats |
-| 3 Right money | paper P&L exact in SOL (fees, rent, late fills, loss streaks) | #198 → #203, #168, #201, #197, #186 | PAPER, practice-on, API/APP (#201 only) | risk, worker/facts, run/CI |
-| 4 Exits work | a restart keeps the exit's evidence and resends a lost exit; the sell route is checked | #176, #171, #130, #141 | EXIT; persist builder; WATCH builder | EXIT, persist, risk |
-| 5 Strategy proof | what the bot may trade, proven on history | #154, #160, #98, #122, #115, #191, #127, #152 | BT, RES, STATS, data builders | BT, stats, data |
+| 1 Stays up | no crash loop; memory and disk bounded before the worker stays up for days (G4a needed within about 2–3 days of uptime); backups | #202, #148 → deploy and watch; #209; #164 (G4a); #139, #172; #187, #204, #192, #196, #207; #149, BACKUP-STATE, DISK-GUARD | WORKER-HARDEN; WORKER-1d; persist; ops builder 2 | worker/facts, persist, ops |
+| 2 Judges coins right | coins actually reach the gates (checked from the summary after every deploy); entry size; regime inputs | #189, #177 | READ-COHERENT | EXIT, persist |
+| 3 Right money | practice P&L exact, counted in SOL (owner rule) | #198, #168, #197 (SOL-BOOKS), #203, #201, #186 | PAPER, WORKER-1d (#168), risk builder (#197), practice-on, API/APP (#201) | risk, worker/facts, run/CI |
+| 4 Exits work | a restart keeps the exit's evidence and resends a lost exit; the sell route is checked | #141 (closes #121), #130, #176, #171 | WATCH, persist, EXIT builders | risk, persist, EXIT |
+| 5a Early look | a descriptive backtest of the free 09-21 day (owner asked to see it before deciding on paid data) | data-scan run 37220726125 (09-21, running); #154, #122, #152 | BT, data | BT, data |
+| 5b Proof | the registered strategy, walk-forward and sealed holdout | waits for the owner's data decision; #115, #191, #160, #127, #138, #98 then | RES, STATS, data | stats, BT, data |
 
 Waiting (outside the core): Telegram alerts and controls (#161, #178, #190, #199), app changes (#167, #181, #182), summaries and observability (#174, #194, #200, #175, #211, #210), drills (#193, needed later for the qualifying run), CI-SHARD (#206, blocked by the safety check), docs and supply chain (#143, #146, #135, #136), paid history storage (#150, owner decision).
 
