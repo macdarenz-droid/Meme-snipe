@@ -46,7 +46,7 @@ import { engineFeed, type EngineFeed } from './engine-feed.ts';
 import { startHealthServer } from './health.ts';
 import { type HeartbeatPosition, heartbeatBody, sendHeartbeat } from './heartbeat.ts';
 import { crashSite } from './crash-site.ts';
-import { type DeathMem, MEM_EVERY_MS, cgroupMax, deathMem, fatalReport, nearLimit, parseDeathMem, readMem, sampleMem, writeMem } from './mem-trace.ts';
+import { type DeathMem, MEM_EVERY_MS, PROBE_EVERY_MS, PROBE_KEEP, type ProbeCount, type ProbeSample, cgroupMax, deathMem, fatalReport, nearLimit, parseDeathMem, probeCounts, probeSample, readMem, sampleMem, writeMem } from './mem-trace.ts';
 import { Summarizer, SummaryClock } from './summary.ts';
 import { CappedMap } from './capped-map.ts';
 import { jsonText } from './json.ts';
@@ -460,6 +460,9 @@ export class Worker {
   #beat: ReturnType<Timers['setTimeout']> | null = null;
   #memTimer: ReturnType<Timers['setTimeout']> | null = null;
   readonly #cgroupMax = cgroupMax();
+  /** MEM-PROBE: the last minute samples (and the ones around each save), oldest first, at most PROBE_KEEP. */
+  readonly #memRecent: ProbeSample[] = [];
+  #memProbeAt = Number.NEGATIVE_INFINITY;
   #summaryClock: SummaryClock | null = null;
   #summary: Summarizer | null = null;
   #server: Server | null = null;
@@ -1322,6 +1325,15 @@ export class Worker {
    */
   #persist(now: number): boolean {
     this.#lastSaveMs = now;
+    this.#markSave(true);
+    try {
+      return this.#persistNow(now);
+    } finally {
+      this.#markSave(false);
+    }
+  }
+
+  #persistNow(now: number): boolean {
     const lookback = (this.#d.session.policy.gates.deployerRugLookbackDays + 1) * 86_400_000;
     let state: ReturnType<LiveStrategy['persistable']>;
     try {
@@ -1967,11 +1979,54 @@ export class Worker {
   #traceMem(): void {
     if (this.#stopping) return;
     try {
-      writeMem(this.#d.config.stateDir, sampleMem(this.#d.timers.now(), this.#cgroupMax));
+      const now = this.#d.timers.now();
+      if (now - this.#memProbeAt >= PROBE_EVERY_MS) {
+        this.#memProbeAt = now;
+        this.#probeMem(now, false);
+      }
+      writeMem(this.#d.config.stateDir, sampleMem(now, this.#cgroupMax), this.#memRecent);
     } catch {
       // A sample not written (a full disk) only leaves the next boot without it.
     }
     this.#memTimer = this.#d.timers.setTimeout(() => this.#traceMem(), MEM_EVERY_MS);
+  }
+
+  /** MEM-PROBE: one probe sample kept (counts only); `saving` when taken just before the state save. Never throws. */
+  #probeMem(now: number, saving: boolean): void {
+    let counts: ProbeCount[] = [];
+    try {
+      counts = this.#memCounts();
+    } catch {
+      // A count that fails leaves the sample with the heap figures only.
+    }
+    this.#memRecent.push(probeSample(now, saving, counts));
+    if (this.#memRecent.length > PROBE_KEEP) this.#memRecent.splice(0, this.#memRecent.length - PROBE_KEEP);
+  }
+
+  /** MEM-PROBE: the size of every major collection the worker reaches, counts only. */
+  #memCounts(): ProbeCount[] {
+    const { byPrefix, ...store } = this.#engine.sizes();
+    return probeCounts({
+      store, feed: this.#feed.sizes(), facts: this.#facts.sizes(), strategy: this.#strategy.sizes(),
+      worker: {
+        pools: this.#pools.size, pool_released: this.#poolReleasedAt.size, carries: this.#carries.size, fees: this.#fees.size, snapshots: this.#snapshots.size,
+        opened: this.#opened.size, create_sig: this.#createSig.size, complete_sig: this.#completeSig.size, migration_sig: this.#migrationSig.size,
+        symbols: this.#symbols.size, create_lookups: this.#createLookups.size, rug_vias: this.#rugVias.size, intent_at: this.#intentAt.size,
+        rows: this.#rows.length, fill_lines: this.#fillLines.length, restored_mints: this.#restoredMints.length, create_pending: this.#createPending.length,
+        exits_chars: this.#savedExits.length, seeds_chars: this.#savedSeeds.length,
+      },
+    }, byPrefix);
+  }
+
+  /** MEM-PROBE: mem.json with a probe sample around the state save (`saving` true just before it, false just after). */
+  #markSave(saving: boolean): void {
+    try {
+      const now = this.#d.timers.now();
+      this.#probeMem(now, saving);
+      writeMem(this.#d.config.stateDir, sampleMem(now, this.#cgroupMax), this.#memRecent);
+    } catch {
+      // Not written (a full disk): the save goes ahead regardless.
+    }
   }
 
   /** The summarizer, made on first use; null without a watchdog or its key. */

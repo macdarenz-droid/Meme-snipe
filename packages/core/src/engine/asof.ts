@@ -32,6 +32,13 @@ export type Collapse = (key: string) => ((older: AsOfEntry) => boolean) | null;
  * Point-in-time state. Every answer is "as of" a moment at or before the clock's now: a lookup for a
  * later moment is refused, and a value cannot be recorded with a moment later than now.
  */
+/** MEM-PROBE: the most keys whose kind `sizes()` reads one by one; a larger store is sampled evenly. */
+export const PROBE_KIND_SAMPLE = 50_000;
+/** Knuth's multiplicative hash constant (2^32 / golden ratio): spreads the sampled positions. */
+const KIND_SPREAD = 2654435761;
+/** The range of an unsigned 32-bit hash. */
+const KIND_RANGE = 4294967296;
+
 export class AsOfStore {
   readonly #clock: Clock;
   readonly #series = new Map<string, AsOfEntry[]>();
@@ -139,6 +146,29 @@ export class AsOfStore {
     let start = end;
     while (start > 0 && compareMoments(series[start - 1]!.moment, from) >= 0) start--;
     return series.slice(start, end);
+  }
+
+  /**
+   * MEM-PROBE: counts only, for the worker's memory probe: keys, entries and the tail index exactly, and keys by their
+   * first two `:`-separated parts (the kind of value they hold). Over PROBE_KIND_SAMPLE keys the kinds are counted on
+   * about one key in n, spread by a hash of each key's position, and scaled by n (an estimate), so the probe's pause stays a few ms at any store size (all keys: about 60 ms per
+   * 300k).
+   */
+  sizes(): { readonly keys: number; readonly entries: number; readonly tails: number; readonly byPrefix: ReadonlyMap<string, number> } {
+    let entries = 0;
+    const byPrefix = new Map<string, number>();
+    const every = Math.max(1, Math.ceil(this.#series.size / PROBE_KIND_SAMPLE));
+    let i = 0;
+    for (const [key, series] of this.#series) {
+      entries += series.length;
+      // Which keys: a multiplicative hash of the position, so a store whose kinds repeat in a period never aliases.
+      if (every > 1 && Math.imul(i++, KIND_SPREAD) >>> 0 >= KIND_RANGE / every) continue;
+      const a = key.indexOf(':');
+      const b = a < 0 ? -1 : key.indexOf(':', a + 1);
+      const prefix = a < 0 ? key : b < 0 ? key.slice(0, a) : key.slice(0, b);
+      byPrefix.set(prefix, (byPrefix.get(prefix) ?? 0) + every);
+    }
+    return { keys: this.#series.size, entries, tails: this.#byTail.size, byPrefix };
   }
 
   /** Index of the last entry with moment <= `at`, or -1. */

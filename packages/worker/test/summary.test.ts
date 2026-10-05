@@ -275,6 +275,28 @@ describe('the worker-side guard', () => {
   });
 });
 
+describe('a watchdog from before MEM-PROBE', () => {
+  it('refuses the probe samples: the day goes again without them, keeping the rest of the last death', async () => {
+    const dir = tempState();
+    const bodies: string[] = [];
+    const logs: string[] = [];
+    const base = buildSummary(inputs());
+    const death = { at: '2026-10-05T19:36:33.000Z', uptime_s: 1_808, heap_used_mb: 563, heap_limit_mb: 572, spaces: [], sample: null };
+    const recent = [{ at: '2026-10-05T19:35:33.000Z', heap_used_mb: 527, old_mb: 450, large_object_mb: 72, saving: false, counts: [{ code: 'store_keys', count: 1 }] }];
+    const withProbe = { ...base, worker: { ...base.worker, restarts: { planned: 0, deploy: 0, unplanned: 1 }, exits: [], crash_sites: [], last_death: { ...death, recent } } };
+    const sz = new Summarizer({
+      journalPath: join(dir, 'journal.jsonl'), stateDir: dir,
+      http: (async (req) => (bodies.push(String(req.body)), { status: String(req.body).includes('"recent"') ? 400 : 200, header: () => null, text: '{"ok":true,"written":true}' })) as HttpClient,
+      watchdogUrl: 'https://w.test', key: 'k', now: () => NOON, log: (l) => void logs.push(l), live: () => inputs(), build: () => withProbe,
+    });
+    await sz.tick();
+    expect(bodies).toHaveLength(2);
+    expect(JSON.parse(bodies[0]!).worker.last_death.recent).toEqual(recent);
+    expect(JSON.parse(bodies[1]!).worker.last_death).toEqual(death);
+    expect(logs).toEqual([`Summary for ${DAY} refused; sent again without the memory probe samples.`]);
+  });
+});
+
 describe('a watchdog from before RESTART-CAUSE (review of #209)', () => {
   it('refuses the new keys: the day goes again without them, once; any other failure is not resent', async () => {
     const dir = tempState();
