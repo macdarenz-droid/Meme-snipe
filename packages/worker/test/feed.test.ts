@@ -4,7 +4,7 @@ import { PUMP_AMM_GLOBAL_CONFIG, PUMP_GLOBAL } from '../../core/src/chain/index.
 import { createReplay, Engine, runToEnd, type Feed, type FeedEvent, type MarketEvent, type Strategy, type Clock } from '../../core/src/engine/index.ts';
 import { CONFIG } from '../../core/test/fixtures.ts';
 import {
-  ACCOUNT_TX_INDEX, DEFAULT_LIVE_FEED, frameEvents, LIVE_TX_BASE, LiveFeed, replayRecorded, type Frame, type FrameBody, type LiveFeedOptions, type Release, type Source,
+  ACCOUNT_TX_INDEX, DEFAULT_LIVE_FEED, dedupKey, frameEvents, LIVE_TX_BASE, LiveFeed, replayRecorded, type Frame, type FrameBody, type LiveFeedOptions, type Release, type Source,
 } from '../src/providers/index.ts';
 import { blockNetwork, recordOf, tx, TXS } from './helpers.ts';
 
@@ -101,6 +101,46 @@ const script = (): Arrival[] => {
 };
 
 describe('live Feed', () => {
+  it('OOM-MINT: a kept dedupe key costs under 100 B and never keeps its frame\'s signature alive (it kept the whole 88 characters)', async () => {
+    const { setFlagsFromString } = await import('node:v8');
+    const { runInNewContext } = await import('node:vm');
+    setFlagsFromString('--expose-gc');
+    const gc = runInNewContext('gc') as () => void;
+    const B58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+    // A fresh signature string per frame, as each notification's JSON parse makes one; dropped once the key is built.
+    const fresh = (i: number): string => JSON.parse(JSON.stringify(Array.from({ length: 88 }, (_, k) => B58[(i * 7 + k * 13 + (i >> k % 16)) % 58]).join(''))) as string;
+    const N = 100_000;
+    const keys = new Set<string>();
+    gc();
+    const before = process.memoryUsage().heapUsed;
+    for (let i = 0; i < N; i++) {
+      const signature = fresh(i);
+      keys.add(dedupKey({ type: 'seen', signature, slot: 1n, err: null, via: 'logs:x', detail: null })!);
+    }
+    gc();
+    const perKey = (process.memoryUsage().heapUsed - before) / N;
+    expect(keys.size).toBe(N);
+    expect(perKey).toBeLessThan(100);
+  });
+
+  it('OOM-MINT: every dedupe case still dedupes with the compact keys, and different facts stay apart', () => {
+    const feed = new LiveFeed({ ...DEFAULT_LIVE_FEED });
+    const t = tx('pump TradeEvent');
+    const sig = t.signature;
+    const other = (sig.startsWith('1') ? '2' : '1') + sig.slice(1);
+    const at = { receivedAt: 1 };
+    const seen = (signature: string, via: string): FrameBody => ({ type: 'seen', signature, slot: BigInt(t.slot), err: null, via, detail: null });
+    const logs = (signature: string, commitment?: 'confirmed'): FrameBody => ({ type: 'logs', signature, slot: BigInt(t.slot), err: null, via: 'logs:x', logs: ['Program log: x'], ...(commitment === undefined ? {} : { commitment }) });
+    const dup = (b: FrameBody) => feed.ingest('helius', b, at).duplicate;
+    // The first copy of each fact is new; a second copy (from either provider) is a duplicate.
+    expect([dup(seen(sig, 'logs:x')), dup(seen(sig, 'logs:y'))]).toEqual([false, true]);
+    expect([dup(logs(sig)), dup(logs(sig))]).toEqual([false, true]);
+    expect([dup(logs(sig, 'confirmed')), dup(logs(sig, 'confirmed'))]).toEqual([false, true]);
+    expect([dup({ type: 'tx', record: recordOf(t) }), feed.ingest('alchemy', { type: 'tx', record: recordOf(t) }, at).duplicate]).toEqual([false, true]);
+    // Another signature, or the same one under another kind or commitment, is another fact.
+    expect([dup(seen(other, 'logs:x')), dup(logs(other)), dup(logs(other, 'confirmed'))]).toEqual([false, false, false]);
+  });
+
   it('ordering parity: recorded frames and releases replay to the live release sequence and the same decision log', () => {
     const live = run(script(), { horizonSlots: 4 });
     const back = replayLive(live.frames, live.releases);
@@ -160,7 +200,7 @@ describe('live Feed', () => {
     arrivals.splice(i + 1, 0,
       { at: arrivals[i]!.at + 1, source: 'alchemy', body: { type: 'account', slot: BigInt(mid.slot), address: PUMP_GLOBAL, owner: PUMP_GLOBAL, lamports: 1n, data: Uint8Array.of(9) } },
       { at: arrivals[i]!.at + 2, source: 'helius', backfilled: true, body: { type: 'seen', signature: tx('pump TradeEvent').signature, slot: BigInt(mid.slot), err: null, via: 'logs:x', detail: null } },
-      { at: arrivals[i]!.at + 3, source: 'helius', body: { type: 'seen', signature: early.signature.slice(0, -1) + (early.signature.endsWith('1') ? '2' : '1'), slot: BigInt(early.slot), err: null, via: 'logs:y', detail: null } },
+      { at: arrivals[i]!.at + 3, source: 'helius', body: { type: 'seen', signature: (early.signature.startsWith('1') ? '2' : '1') + early.signature.slice(1), slot: BigInt(early.slot), err: null, via: 'logs:y', detail: null } },
     );
     const live = run(arrivals, { horizonSlots: 4 });
     expect(live.released.filter((r) => r.late)).toHaveLength(3);

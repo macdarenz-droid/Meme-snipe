@@ -105,6 +105,23 @@ export interface ProducerOptions {
 export const TRADE_REPEAT_WINDOW_MS = HOUR_MS;
 
 /**
+ * OOM-MINT: the retired pools and mints remembered (each), so a late event never rebuilds their state. A candidate is let
+ * go a few hundred times a day and a create that never migrated about 40,000 times a day: 100,000 is days of the first
+ * and over two of the second, at about 80 B each. One dropped from here only means a very late event for it builds a
+ * little state again; the strategy still refuses an expired create (`create-expired`).
+ */
+export const RETIRED_KEEP = 100_000;
+
+/** OOM-MINT: adds a fresh copy of `id` (never the text it was cut from), dropping the oldest entries past `cap`. */
+export const cappedAdd = (set: Set<string>, id: string, cap: number): void => {
+  set.add(String.fromCharCode(...Array.from(id, (c) => c.charCodeAt(0))));
+  for (const old of set) {
+    if (set.size <= cap) break;
+    set.delete(old);
+  }
+};
+
+/**
  * OOM-SEEN (supervisor ruling, B1): a swap's repeat id, the same from a log line and from a fetched transaction: the first 22
  * characters of its signature (about 128 bits) and a 32-bit hash of its pre-trade reserves (two swaps in one transaction
  * leave different reserves). Copied into a fresh flat string, so it never keeps the whole signature alive: about 85 B
@@ -330,6 +347,8 @@ interface Track {
   readonly buyers: Map<string, bigint>;
   devBuySameTx: boolean;
   readonly xcheck: Map<'rugcheck' | 'goplus' | 'jupiter', { readonly at: number; readonly src: XcheckFact['sources'][number] }>;
+  /** OOM-MINT: every wallet this mint was added to in `#walletMints`, so a retire takes it out of exactly those. */
+  readonly wallets: Set<string>;
 }
 
 interface Pending {
@@ -383,6 +402,15 @@ export class FactProducer {
   readonly #walletMints = new Map<string, Set<string>>();
   readonly #reserves = new Map<string, Reserve>();
   readonly #chains = new Map<string, PoolChain>();
+  /** OOM-MINT: pools let go (`retire`): their candle book is never built again, so no later trade is ever applied. */
+  readonly #retiredPools = new Set<string>();
+  /** OOM-MINT: mints let go (`retire`): their track is never kept again. */
+  readonly #retiredMints = new Set<string>();
+
+  /** OOM-MINT: a tombstone (`cappedAdd`, at most `RETIRED_KEEP`). */
+  #tombstone(set: Set<string>, id: string): void {
+    cappedAdd(set, id, RETIRED_KEEP);
+  }
   readonly #pending = new Map<string, Pending>();
   readonly #graduates: GraduatesFact['items'][number][] = [];
   readonly #sol = new Map<number, bigint>();
@@ -424,8 +452,10 @@ export class FactProducer {
   #track(mint: string): Track {
     let t = this.#mints.get(mint);
     if (t === undefined) {
-      t = { mint, migrationWritten: false, pools: new Map(), buyers: new Map(), devBuySameTx: false, xcheck: new Map() };
-      this.#mints.set(mint, t);
+      t = { mint, migrationWritten: false, pools: new Map(), buyers: new Map(), devBuySameTx: false, xcheck: new Map(), wallets: new Set() };
+      // OOM-MINT: a retired mint's later events build nothing that is kept (a fresh track each time, never stored), so
+      // its migration fact is never stated again.
+      if (!this.#retiredMints.has(mint)) this.#mints.set(mint, t);
     }
     return t;
   }
@@ -445,6 +475,7 @@ export class FactProducer {
         if (atMs === null || t.create !== undefined) return;
         t.create = { creator: d.creator, atMs, slot: seen.slot, signature: seen.signature };
         this.#walletMints.set(d.creator, (this.#walletMints.get(d.creator) ?? new Set<string>()).add(d.mint));
+        t.wallets.add(d.creator);
         put(createKey(d.mint), { obs: obs(seen.slot), createdAtMs: atMs, creator: d.creator });
         this.#prune(t);
         this.#insiders(t, e, put);
@@ -478,7 +509,7 @@ export class FactProducer {
         const t = this.#track(d.baseMint);
         if (!t.pools.has(d.pool)) t.pools.set(d.pool, { pool: d.pool, slot: seen.slot, atMs, quote: d.poolQuoteAmount, base: d.poolBaseAmount });
         if (!this.#poolMint.has(d.pool)) this.#poolMint.set(d.pool, d.baseMint);
-        if (!this.#books.has(d.pool)) {
+        if (!this.#books.has(d.pool) && !this.#retiredPools.has(d.pool)) {
           this.#books.set(d.pool, { pool: d.pool, mint: d.baseMint, openedAtMs: atMs, fromSlot: seen.slot, candles: [], partial: false, seen: new Map(), newestMs: atMs, sweptMs: atMs });
           this.#reserves.set(d.pool, { atMs, effective: d.poolQuoteAmount });
           this.#writeCandles(d.pool, seen.provider, seen.receivedAt, put);
@@ -532,6 +563,7 @@ export class FactProducer {
       const mints = this.#walletMints.get(d.user) ?? new Set<string>();
       mints.add(t.mint);
       this.#walletMints.set(d.user, mints);
+      t.wallets.add(d.user);
       this.#prune(t);
       changed = true;
     }
@@ -609,6 +641,42 @@ export class FactProducer {
     const cutoff = book.newestMs - this.#o.tradeRepeatMs;
     for (const [id, minute] of book.seen) if ((minute + 1) * MINUTE_MS <= cutoff) book.seen.delete(id);
     book.sweptMs = book.newestMs;
+  }
+
+  /**
+   * OOM-MINT: what is kept for mints and pools the strategy let go (`Strategy.retired`): a pool's candle book, chain and
+   * trade stream, a mint's track and its place in `#walletMints`. A retired pool's book is never built again: a later
+   * trade there, a repeat or a new one, is never applied (fail closed; nothing reads its candles, and their key is gone
+   * from the store, so H11 would find none).
+   */
+  retire(ids: readonly string[]): void {
+    // The reserve and pending graduate mark stay: they feed the regime's survival series (and are gone or small by then:
+    // a candidate leaves at least four hours after migrating, its survival mark is at thirty minutes).
+    for (const id of ids) {
+      // Tombstoned whether or not state was built yet, so a pool create or a mint create delivered later never builds it.
+      this.#books.delete(id);
+      this.#tombstone(this.#retiredPools, id);
+      this.#tombstone(this.#retiredMints, id);
+      this.#poolMint.delete(id);
+      // Review N2: a pool whose survival mark is still pending keeps its chain and trade stream until the mark dates
+      // it or its read window passes (`#settle`); the survival series needs them.
+      if (!this.#pending.has(id)) this.#forgetPool(id);
+      const t = this.#mints.get(id);
+      if (t !== undefined) {
+        for (const w of t.wallets) {
+          const mints = this.#walletMints.get(w);
+          if (mints === undefined) continue;
+          mints.delete(id);
+          if (mints.size === 0) this.#walletMints.delete(w);
+        }
+        this.#mints.delete(id);
+      }
+    }
+  }
+
+  /** OOM-MINT: how many entries the producer keeps per structure (tests and the memory ceiling). */
+  sizes(): { readonly books: number; readonly mints: number; readonly walletMints: number; readonly retiredPools: number; readonly retiredMints: number; readonly streams: number; readonly chains: number } {
+    return { books: this.#books.size, mints: this.#mints.size, walletMints: this.#walletMints.size, retiredPools: this.#retiredPools.size, retiredMints: this.#retiredMints.size, streams: this.#streams.size, chains: this.#chains.size };
   }
 
   /** OOM-SEEN: the trade ids a pool's candle book remembers, and its last reserve (tests and diagnostics). */
@@ -1149,8 +1217,19 @@ export class FactProducer {
     if (at >= p.migratedAtMs + this.#o.survivalAfterMs) this.#resolve(p, effective);
   }
 
+  /** A pending graduate is done: its pool's chain and trade stream go too if the pool was let go meanwhile. */
+  #settle(pool: string): void {
+    this.#pending.delete(pool);
+    if (this.#retiredPools.has(pool)) this.#forgetPool(pool);
+  }
+
+  #forgetPool(pool: string): void {
+    this.#chains.delete(pool);
+    this.#streams.delete(STREAMS.trades(pool));
+  }
+
   #resolve(p: Pending, reserveAfter: bigint): void {
-    this.#pending.delete(p.pool);
+    this.#settle(p.pool);
     // What this process measured replaces a seeded entry for the same mint.
     const i = this.#graduates.findIndex((g) => g.mint === p.mint);
     if (i >= 0) this.#graduates.splice(i, 1);
@@ -1194,7 +1273,7 @@ export class FactProducer {
       const r = this.#reserves.get(p.pool);
       const through = this.#head !== null && this.#head < e.moment.slot ? this.#head : e.moment.slot;
       if (r !== undefined && r.atMs <= mark && this.#covered(STREAMS.trades(p.pool), p.slot, through)) this.#resolve(p, r.effective);
-      else if (now > mark + this.#o.survivalReadWindowMs) this.#pending.delete(p.pool);
+      else if (now > mark + this.#o.survivalReadWindowMs) this.#settle(p.pool);
     }
     this.#flushGraduates(e, put);
   }

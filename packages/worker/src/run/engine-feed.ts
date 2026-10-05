@@ -21,6 +21,7 @@ export const engineFeed = (inner: Feed, policy: Policy, onFact?: (e: MarketEvent
         if (onFact !== undefined && e !== null && e.kind === 'market' && e.id.includes(FACT_ID_SEPARATOR)) onFact(e);
         return e;
       },
+      retire: (ids) => facts.retire(ids),
     },
     released: () => facts.released,
   };

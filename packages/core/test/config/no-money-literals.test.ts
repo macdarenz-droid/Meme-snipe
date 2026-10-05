@@ -35,6 +35,7 @@ const ALLOWED: readonly Allowed[] = [
   { file: 'engine/random.ts', name: 'h3', value: '1013904242', why: 'cyrb128 initial hash state, not money' },
   { file: 'engine/random.ts', name: 'h4', value: '2773480762', why: 'cyrb128 initial hash state, not money' },
   { file: 'engine/proofs.ts', name: 'REACH_BUDGET', value: '200000', why: 'node budget of the leak-test reachability search, not money' },
+  { file: 'facts/producer.ts', name: 'RETIRED_KEEP', value: '100000', why: 'count of retired pool and mint ids remembered (OOM-MINT), not money' },
   { file: 'ledger/sqlite.ts', name: 'BUSY_TIMEOUT_MS', value: '5000', why: 'SQLite busy timeout in milliseconds, not money' },
   { file: 'tx/trade.ts', name: 'MICRO_LAMPORTS_PER_LAMPORT', value: '1000000', why: 'compute-unit prices are in micro-lamports (10^6 per lamport), a unit conversion' },
   { file: 'tx/calibration.ts', name: 'MAX_COMPUTE_UNITS', value: '1400000', why: 'runtime cap on compute units per transaction, not money' },
