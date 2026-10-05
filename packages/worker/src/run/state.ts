@@ -79,6 +79,12 @@ export interface Control {
   readonly paused: boolean;
   readonly pausedAtMs: number | null;
   readonly latches: Latches;
+  /**
+   * RISK-LATCH-2 (F4): set when a boot finds the state it would trust missing (a host-loss restore or cold start after
+   * earlier runs): entries stay halted, exits run, until the owner confirms (a watchdog pause, then resume, after it).
+   * Absent or null: nothing held.
+   */
+  readonly held?: { readonly atMs: number; readonly reason: string } | null;
 }
 export const NO_CONTROL: Control = { paused: false, pausedAtMs: null, latches: NO_LATCHES };
 export const controlFile = (dir: string) =>

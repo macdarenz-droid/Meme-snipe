@@ -220,6 +220,17 @@ interface AccountCheck {
   readonly dailyLimit: bigint;
 }
 
+/**
+ * R10's latch: set by a trip and held until the owner re-arms strictly after it. RISK-LATCH-2: the one rule for whether
+ * a stored trip still holds, used here and by the caller that stores trips, so a trip after a re-arm latches again.
+ */
+export const killLatchHolds = (l: Latches): boolean =>
+  l.killTrippedAtMs !== null && (l.killRearmedAtMs === null || l.killRearmedAtMs <= l.killTrippedAtMs);
+
+/** R9's latch: held until the week of the trip has ended and the owner has reviewed strictly after the trip. */
+export const weeklyLatchHolds = (l: Latches, nowMs: number): boolean =>
+  l.weeklyTrippedAtMs !== null && (l.weeklyReviewedAtMs === null || l.weeklyReviewedAtMs <= l.weeklyTrippedAtMs || nowMs < melbourneWeek(l.weeklyTrippedAtMs).end);
+
 const accountCheck = (input: RiskInput, nowMs: number): AccountCheck => {
   const { session, mode, account, latches, market } = input;
   const policy = session.policy;
@@ -296,10 +307,7 @@ const accountCheck = (input: RiskInput, nowMs: number): AccountCheck => {
   // flow-scaled base (RISK-1b), so a flow can neither hide a weekly loss nor loosen the limit.
   const weekLimit = ofBps(s.weekStartEquity, policy.loss.weeklyBps, 'floor');
   const weekBaseLimit = ofBps(s.weekBase, policy.loss.weeklyBps, 'floor');
-  const weeklyTripped = latches.weeklyTrippedAtMs;
-  const weeklyLatched = weeklyTripped !== null && (
-    latches.weeklyReviewedAtMs === null || latches.weeklyReviewedAtMs <= weeklyTripped || nowMs < melbourneWeek(weeklyTripped).end
-  );
+  const weeklyLatched = weeklyLatchHolds(latches, nowMs);
   if (s.weekLoss >= weekLimit || s.weekBaseLoss >= weekBaseLimit) {
     reasons.push(reason('weekly_loss', 'weekly loss trigger reached; paused for the week'));
     if (!weeklyLatched) trips.push('weekly_loss');
@@ -310,8 +318,7 @@ const accountCheck = (input: RiskInput, nowMs: number): AccountCheck => {
   // on economic NAV per unit (RISK-1b) and, kept so a rise in SOL never hides a trading loss, on the trading ledger.
   const killLine = ofBps(s.highWaterMark, policy.loss.killSwitchFloorBps, 'ceil');
   const navKillLine = s.navHighWaterMark === null ? null : ofBps(s.navHighWaterMark, policy.loss.killSwitchFloorBps, 'ceil');
-  const killTripped = latches.killTrippedAtMs;
-  const killLatched = killTripped !== null && (latches.killRearmedAtMs === null || latches.killRearmedAtMs <= killTripped);
+  const killLatched = killLatchHolds(latches);
   const navBelow = s.nav !== null && navKillLine !== null && s.nav <= navKillLine;
   if (s.equity <= killLine || navBelow || killLatched) {
     reasons.push(reason('kill_switch', 'equity at or below the kill line; only the owner re-arms'));
