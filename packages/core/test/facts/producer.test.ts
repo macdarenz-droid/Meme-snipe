@@ -11,7 +11,7 @@ import {
   holdersKey, insidersKey, lpKey, migrationKey, mintKey, parseCandles, parseCreate, parseHolders, parseInsiders, parseLp, parseMigration, parseMint,
   parsePool, parseSim, parseSolUsd, parseXcheck, poolKey, simKey, streamKey, xcheckKey, type CandlesFact, type GateRequest,
 } from '../../src/gates/index.ts';
-import { FACT_KINDS, FactFeed, FactProducer, GRADUATES_SEED_KEY, HOLDER_ABSTENTIONS_KEY, RAW, STREAMS, dailyChainVolume, graduatesFact, insiderLinks, decimalToMicro, producerOptions, tradeRepeatId } from '../../src/facts/index.ts';
+import { FACT_KINDS, FactFeed, FactProducer, GRADUATES_SEED_KEY, HOLDER_ABSTENTIONS_KEY, RAW, STREAMS, dailyChainVolume, graduatesFact, insiderLinks, decimalToMicro, producerOptions, tradeRepeatId, RETIRED_KEEP, cappedAdd } from '../../src/facts/index.ts';
 import { lamports, microUsd } from '../../src/units/index.ts';
 import { FEE_CONTEXT } from '../gates/world.ts';
 import { recordFromRpc } from '../../src/chain/index.ts';
@@ -393,6 +393,23 @@ describe('candles', () => {
       expect(w.producer.candleBook(POOL)).toBeUndefined();
       expect(w.facts(candlesKey(MINT)).length).toBe(candlesBefore);
       expect(w.facts(migrationKey(MINT)).length).toBe(migrationBefore);
+    });
+
+    it('OOM-MINT: a retired mint leaves the wallets\' mint lists it was in (creator and buyers), and the tombstones stay capped', () => {
+      const w = build();
+      const before = w.producer.sizes();
+      expect(before.walletMints).toBeGreaterThan(0);
+      w.producer.retire([MINT, POOL]);
+      const after = w.producer.sizes();
+      // This world's wallets hold only this mint: every list it was in is gone with it.
+      expect(after.walletMints).toBe(0);
+      expect(after.mints).toBe(before.mints - 1);
+      expect([after.retiredMints, after.retiredPools]).toEqual([1, 1]);
+      expect(RETIRED_KEEP).toBe(100_000);
+      // The cap: the oldest go first, the newest stay, never more than the cap.
+      const set = new Set<string>();
+      for (let k = 0; k < 10; k++) cappedAdd(set, `Gone${k}`, 4);
+      expect([...set]).toEqual(['Gone6', 'Gone7', 'Gone8', 'Gone9']);
     });
 
     it('the remembered ids level off: 3,072 trades a second apart with a one-minute window keep at most a window and a quarter and a minute, and a sweep never forgets a trade inside the window', () => {

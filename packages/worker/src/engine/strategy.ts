@@ -323,7 +323,27 @@ export interface StrategyConfig {
   readonly keepBars: number;
   /** REC-1: rejected candidates' pools watched past their window at once; one more is logged `no tail` (`tail cap`). */
   readonly maxTails: number;
+  /** OOM-MINT: how long a create's facts are kept while its coin has not migrated (`CREATE_KEEP_MS`). */
+  readonly createKeepMs: number;
 }
+
+/**
+ * OOM-MINT (supervisor ruling): a create whose coin has not migrated within 12 hours is let go: its keys in the store,
+ * its producer track and its place in the wallets' mint lists. About 30 creates a minute at about 3 KB each is about
+ * 65 MB kept at the ceiling; kept for ever, it was unbounded. Most coins that migrate do so within minutes to hours of
+ * their create; one that migrates later is refused `create-expired` (never judged on what is left of its facts).
+ */
+export const CREATE_KEEP_MS = 12 * 3_600_000;
+
+/**
+ * OOM-MINT: how long a let-go create is remembered, so its coin's migration is refused `create-expired`: a week, as a
+ * 22-character prefix (about 70 B each, about 21 MB at 30 a minute). After that its coin is treated as one whose create
+ * this process never saw (the create lookup of CREATE-AFTER-RESTART).
+ */
+export const EXPIRED_CREATE_KEEP_MS = 7 * 24 * 3_600_000;
+
+/** A fresh flat copy of a mint's first 22 characters (about 128 bits): never keeps the key text it came from alive. */
+const mintTag = (mint: string): string => String.fromCharCode(...Array.from(mint.slice(0, 22), (c) => c.charCodeAt(0)));
 
 /** The saved state a seed names (WORKER-GROW): the file in the boot's recording, its sha256 over every byte, its format version. */
 export interface SavedStateRef {
@@ -885,6 +905,8 @@ export class LiveStrategy implements Strategy {
     this.#gapBarsClose(e);
     if (e.key === GRADUATES_KEY) this.#graduatesFact = parseGraduates(unwrap(e.value)) ?? this.#graduatesFact;
     this.#observe(e);
+    this.#noteCreate(e);
+    this.#expireCreates(e.moment.receivedAt);
     if (e.key === RESTORE_KEY) this.#restore(unwrap(e.value), out, e.moment.receivedAt);
     if (e.key === SEED_KEY) this.#seed(e.value, out);
     if (e.key === 'chain:slot') {
@@ -1365,6 +1387,44 @@ export class LiveStrategy implements Strategy {
   }
 
   readonly #letGo: string[] = [];
+
+  /** OOM-MINT: creates seen and not yet let go, by mint, with when they were released (in release order). */
+  readonly #creates = new Map<string, number>();
+  /** OOM-MINT: let-go creates (`mintTag`) and when, oldest first, kept `EXPIRED_CREATE_KEEP_MS`. */
+  readonly #expired = new Map<string, number>();
+
+  #noteCreate(e: MarketEvent): void {
+    const prefix = e.key.startsWith(LOG_CREATE_PREFIX) ? LOG_CREATE_PREFIX : e.key.startsWith(TX_CREATE_PREFIX) ? TX_CREATE_PREFIX : null;
+    if (prefix === null) return;
+    const mint = e.key.slice(prefix.length);
+    if (this.#creates.has(mint) || this.#expired.has(mintTag(mint))) return;
+    this.#creates.set(String.fromCharCode(...Array.from(mint, (c) => c.charCodeAt(0))), e.moment.receivedAt);
+  }
+
+  /**
+   * OOM-MINT: creates older than `createKeepMs` whose coin has not migrated are let go (`retired`) and remembered as
+   * expired; one whose coin migrated (a candidate, held, tailed or with a known pool or migration slot) is just dropped from
+   * the list.
+   */
+  #expireCreates(now: number): void {
+    const keep = this.#d.config.createKeepMs;
+    for (const [mint, at] of this.#creates) {
+      if (at + keep > now) break;
+      this.#creates.delete(mint);
+      if (this.#held(mint) || this.#tail.has(mint) || this.#poolOfMint.has(mint) || this.#migrationSlot.has(mint)) continue;
+      this.#expired.set(mintTag(mint), now);
+      this.#letGo.push(mint);
+    }
+    for (const [tag, at] of this.#expired) {
+      if (at + EXPIRED_CREATE_KEEP_MS > now) break;
+      this.#expired.delete(tag);
+    }
+  }
+
+  /** OOM-MINT: this mint's create was let go before its coin migrated (`create-expired`). */
+  createExpired(mint: string): boolean {
+    return this.#expired.has(mintTag(mint));
+  }
 
   /** OOM-MINT: the mints and pools let go since the last call (`Strategy.retired`). */
   retired(): readonly string[] {
@@ -2166,6 +2226,8 @@ export class LiveStrategy implements Strategy {
     const session = this.#d.session;
     const policy = session.policy;
     const diag = c.s0Diagnostic === true ? { s0Diagnostic: true } as const : {};
+    // OOM-MINT: a coin whose create was let go before it migrated is refused before anything is judged.
+    if (this.createExpired(cand.mint)) return this.#fail('create expired', [{ gate: 'worker', code: 'create-expired', detail: `its create was released over ${c.createKeepMs / 3_600_000} h before its migration; its facts were let go` }]);
     const regime = evaluateRegime(gctx, { session, mode: 'live', ...diag });
     this.#waived = [...regime.waived];
     this.#regime = { atMs: gctx.now.receivedAt, on: regime.on, reasons: regime.reasons.map((x) => ({ code: x.code, input: x.input ?? null })), waived: [...regime.waived] };

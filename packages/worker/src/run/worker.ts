@@ -1114,6 +1114,8 @@ export class Worker {
    * fill may bring it); else looked up once from the mint's oldest signature. A lookup that fails leaves it missing.
    */
   #createFor(mint: string): void {
+    // OOM-MINT: a coin whose create was let go is refused `create-expired`: reading its create again would spend for nothing.
+    if (this.#strategy.createExpired(mint)) return;
     const sig = this.#createSig.get(mint);
     if (sig !== undefined) return void this.#d.fetchTx(sig, 'create');
     if (this.#seeding) return void this.#createPending.push(mint);
