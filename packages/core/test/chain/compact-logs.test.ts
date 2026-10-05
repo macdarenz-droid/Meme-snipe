@@ -84,6 +84,13 @@ describe('compactLogs keeps every answer of the log reader', () => {
     ]) expect(compactLogs(logs)).toBe(logs);
   });
 
+  it('a close that does not match the running call: refused whole, so the reader still says undecodable', () => {
+    const logs = ['Program A invoke [1]', 'Program B success'];
+    expect(read(logs)).toMatch(/^throws DecodeError/);
+    expect(compactLogs(logs)).toBe(logs);
+    expect(read(compactLogs(logs))).toBe(read(logs));
+  });
+
   it('keeps nothing of a call with no pump or PumpSwap event data, its own data lines included', () => {
     const token = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
     const logs = [`Program ${token} invoke [1]`, 'Program data: AAAA', 'Program log: x', `Program ${token} success`];
