@@ -2,7 +2,8 @@
 // Without it the store kept every event for the process: each swap on a watched pool left its trade event and a fresh
 // pool fact (about 10 KB with their addresses), and at a few thousand swaps a minute the heap reached its limit in minutes.
 import type { Collapse, Retention } from '../../../core/src/engine/index.ts';
-import { candlesKey, carryKey, poolKey, streamKey, tradeTailCollapse } from '../../../core/src/gates/index.ts';
+import { RAW } from '../../../core/src/facts/index.ts';
+import { candlesKey, carryKey, mintKey, poolKey, streamKey, tradeTailCollapse } from '../../../core/src/gates/index.ts';
 
 const POOL_PREFIX = poolKey('');
 
@@ -33,10 +34,16 @@ const SEEN = 'seen:';
  * released event; nothing looks it up in the store, so only its newest value is kept.
  */
 const SLOT = 'chain:slot';
+/**
+ * OOM-MINT: a candidate's account read (`read:accounts:<mint>`) and the mint fact made from it (`gates/mint:<mint>`), each
+ * stated again whole at every read: the producer acts on the released read, the gates look the mint fact up as of now
+ * (`Evidence.read`); nothing asks for an older value (`history` is asked for trade, coverage and deployer keys only).
+ */
+const READS = [RAW.accounts(''), mintKey('')];
 const NEWEST_ONLY = (): boolean => false;
 
 /**
- * The live store's collapse: a head fact, a seen signature and the slot notice keep their newest value; a trade key keeps its newest event
+ * The live store's collapse: a head fact, a seen signature, the slot notice, an account read and its mint fact keep their newest value; a trade key keeps its newest event
  * and every event whose tail would fail (`tradeTailCollapse`).
  */
-export const liveCollapse: Collapse = (key) => (key === SLOT || key.startsWith(SEEN) || HEADS.some((p) => key.startsWith(p)) ? NEWEST_ONLY : tradeTailCollapse(key));
+export const liveCollapse: Collapse = (key) => (key === SLOT || key.startsWith(SEEN) || HEADS.some((p) => key.startsWith(p)) || READS.some((p) => key.startsWith(p)) ? NEWEST_ONLY : tradeTailCollapse(key));

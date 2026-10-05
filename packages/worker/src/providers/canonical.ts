@@ -93,16 +93,28 @@ export const isSignature = (s: unknown): s is string => typeof s === 'string' &&
 export const isAddress = (s: unknown): s is string => typeof s === 'string' && ADDRESS.test(s);
 
 /**
+ * OOM-MINT: a signature's dedupe key, its kind and the first 22 characters of the signature (about 128 bits), copied into
+ * a fresh flat string. The feed keeps every key for 1,500 slots: built as text around the whole signature, each one kept
+ * the 88-character signature alive (about 44 MB at 12,000 swaps a minute); this is about a quarter of that.
+ */
+const signatureKey = (kind: string, signature: string, suffix = ''): string => {
+  const text = `${kind}:${signature.slice(0, 22)}${suffix}`;
+  const codes = new Array<number>(text.length);
+  for (let i = 0; i < text.length; i++) codes[i] = text.charCodeAt(i);
+  return String.fromCharCode(...codes);
+};
+
+/**
  * Two frames with the same key carry the same fact; the first to arrive wins (data.md §8.1C: two providers,
  * first copy wins, deduplicated by slot and signature). Null for facts that are never duplicates.
  */
 export const dedupKey = (b: FrameBody): string | null => {
   switch (b.type) {
     case 'slot': return `slot:${b.slot}`;
-    case 'seen': return `seen:${b.signature}`;
+    case 'seen': return signatureKey('seen', b.signature);
     // A confirmed watch's copy is a different fact from a processed one: the stronger commitment is kept apart.
-    case 'logs': return b.commitment === undefined ? `logs:${b.signature}` : `logs:${b.signature}:${b.commitment}`;
-    case 'tx': return `tx:${b.record.signature}`;
+    case 'logs': return signatureKey('logs', b.signature, b.commitment === undefined ? '' : `:${b.commitment}`);
+    case 'tx': return signatureKey('tx', b.record.signature);
     case 'account': return `acct:${b.address}:${b.slot}:${b.lamports}:${toBase64(b.data)}`;
     default: return null;
   }
