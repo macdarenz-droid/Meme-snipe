@@ -393,8 +393,11 @@ export const loadState = (path: string, rugs: RugConfig, continuing: (stream: st
     if (streamed === null) index = DeployerIndex.restore(s.index);
     else {
       const it = rows(streamed);
+      // No `return` on what the restore iterates: its `for…of` would close the generator on a throw, and the drain
+      // below would then hash nothing (persist review).
+      const once: Iterable<unknown> = { [Symbol.iterator]: () => ({ next: () => it.next() }) };
       try {
-        index = DeployerIndex.restore(s.index, it);
+        index = DeployerIndex.restore(s.index, once);
       } catch (e) {
         // DEPLOYER-COMPACT: a repeated creator row or mint is what a cut or doubled file looks like mid-stream: the rest
         // is read for the checksum, whose failure is the reason, as before; an intact file that repeats one is refused
