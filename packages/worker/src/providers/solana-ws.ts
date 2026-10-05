@@ -90,6 +90,13 @@ interface HeldNotice {
 
 /** Notifications one watch may hold during a catch-up; past it they go on the feed at once and the gap stays lossy. */
 export const CATCH_UP_HOLD_MAX = 5_000;
+/**
+ * HOLD-TOTAL: notifications all of a stream's watches may hold together. A swap's notification held as parsed is about
+ * 10.5 KB of heap (103 log lines); with ~230 pools in their catch-up at once and fills two at a time, the per-watch cap
+ * alone let the holds fill the 560 MB heap within minutes of every boot. The watch whose notification would pass this
+ * overflows exactly as at the per-watch cap: what it holds goes on the feed at once and its catch-up stays lossy.
+ */
+export const CATCH_UP_HOLD_TOTAL = 2_000;
 
 interface CoverageGap {
   readonly fromSlot: bigint | null;
@@ -130,6 +137,8 @@ export class RpcStream {
   /** Told when the server accepts a watch's subscription (POOL-1: a refused watch's wait starts over once served). */
   readonly #served: ((id: number) => void)[] = [];
   #nextId = 1;
+  /** HOLD-TOTAL: notifications held now across every watch's catch-up. */
+  #heldTotal = 0;
   #lastSlot: bigint | null = null;
   #gapFrom: bigint | null = null;
   #wasDown = false;
@@ -209,7 +218,8 @@ export class RpcStream {
         const n: HeldNotice = { signature, slot, err, lines: Array.isArray(lines) && lines.every((l) => typeof l === 'string') ? lines as string[] : null };
         if (w.held !== null) {
           w.held.push(n);
-          if (w.held.length > CATCH_UP_HOLD_MAX) {
+          this.#heldTotal++;
+          if (w.held.length > CATCH_UP_HOLD_MAX || this.#heldTotal > CATCH_UP_HOLD_TOTAL) {
             if (w.gap !== null) w.gap.overflow = true;
             this.#release(w);
           }
@@ -323,10 +333,16 @@ export class RpcStream {
   }
 
   /** Ends a catch-up hold: the held notifications go on the feed in arrival order, after everything ingested before. */
+  /** HOLD-TOTAL: notifications held now across every watch's catch-up (at most `CATCH_UP_HOLD_TOTAL`). */
+  get heldNotices(): number {
+    return this.#heldTotal;
+  }
+
   #release(w: Extract<Watch, { kind: 'logs' }>): void {
     const held = w.held;
     if (held === null) return;
     w.held = null;
+    this.#heldTotal -= held.length;
     for (const n of held) this.#deliver(w, n, true);
   }
 
@@ -361,6 +377,7 @@ export class RpcStream {
   #catchUp(w: Extract<Watch, { kind: 'logs' }>, cover: bigint): void {
     this.#start(w, cover);
     w.gap = { fromSlot: cover, reason: 'catch-up', backfilled: true, lossy: true, liveAfter: null, fill: 'no' };
+    if (w.held !== null) this.#heldTotal -= w.held.length;
     w.held = [];
     this.#fact(`coverage:${w.opts.coverage}:gap`, { fromSlot: cover, toSlot: null, reason: 'catch-up', via: `logs:${w.address}` });
   }
