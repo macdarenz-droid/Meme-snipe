@@ -422,9 +422,10 @@ tail -n +"$((n0 + 1))" "$STATE/telegram.jsonl" | grep -E '"method":"sendMessage"
 pass "watchdog (locked wrangler dev, miniflare): signed heartbeats from the host teach it the owner chat; quiet while fresh; /pause and /status only from the owner chat and the right webhook secret; worker applied pause and later the resume; /resume refused over Telegram; stale alert once, cleared on return; resume only from the host"
 
 # ---------- 9c. Recording upload (RECORD-UPLOAD) through the real watchdog to the fake private data repository ----------
-# Two boots as the recorder leaves them, a day old: the older one ended (uploaded, then its frames and releases deleted),
-# the newer one is the newest folder while the worker runs (uploaded, nothing deleted), and one of its files holds a
-# credential-shaped value (kept on the server, alerted, cleared once it is gone).
+# Two boots as the recorder leaves them, their files a day old: the older one ended (uploaded, then its frames and releases
+# deleted); the other is the newest folder while the worker runs (its id is the newest; uploaded, nothing deleted), and
+# one of its files holds a credential-shaped value (kept on the server, alerted, cleared once it is gone). Earlier
+# sections' real worker boots stay as they are (changed minutes ago, so not touched); every check names these two.
 DATA="$STATE/data-repo"
 in_c "jq '.record_upload = true | .record_upload_delete_local = true' /opt/zeroed/current/ops/host-config.json > /tmp/hc && cat /tmp/hc > /opt/zeroed/current/ops/host-config.json"
 in_c "install -d -o zeroed-worker -g zeroed-worker -m 0700 /var/lib/zeroed/recorder"
@@ -437,7 +438,7 @@ const root = '/var/lib/zeroed/recorder';
 const now = Date.now();
 const day = new Date(now - 86_400_000).toISOString().slice(0, 10);
 const out = { day, boots: {} };
-for (const [h, pid, plant] of [[30, 4101, false], [20, 4102, true]]) {
+for (const [h, pid, plant] of [[30, 4101, false], [-1, 4102, true]]) {
   const boot = `${(now - h * 3_600_000).toString(36)}-${pid}`;
   const dir = join(root, boot);
   mkdirSync(join(dir, 'days', day), { recursive: true });
@@ -459,23 +460,23 @@ const walk = (d) => {
   }
   utimesSync(d, t, t);
 };
-walk(root);
+for (const boot of Object.keys(out.boots)) walk(join(root, boot));
 console.log(JSON.stringify(out));
 NODE
 )" || fail "recording fixture"
 RDAY="$(printf '%s' "$fixture" | jq -r .day)"
-OLD="$(printf '%s' "$fixture" | jq -r '.boots | keys | sort | .[0]')"
-NEW="$(printf '%s' "$fixture" | jq -r '.boots | keys | sort | .[1]')"
+OLD="$(printf '%s' "$fixture" | jq -r '.boots | keys[] | select(endswith("-4101"))')"
+NEW="$(printf '%s' "$fixture" | jq -r '.boots | keys[] | select(endswith("-4102"))')"
 sha_of() { printf '%s' "$fixture" | jq -r --arg b "$1" --arg p "days/$RDAY/$2.jsonl.zst" '.boots[$b][] | select(.path == $p) | .sha256'; }
 in_c "systemctl is-active zeroed-worker" >/dev/null || fail "the worker must run for the newest-boot case"
 # Telegram lines from here on (zeroed-check's timer may raise the alert before the explicit runs below do).
 n0="$(wc -l <"$STATE/telegram.jsonl")"
 in_c "systemctl start zeroed-record-upload@all.service" || { in_c "journalctl -u zeroed-record-upload@all -o cat --no-pager | tail -30"; fail "recording upload run"; }
 in_c "journalctl -u zeroed-record-upload@all -o cat --no-pager" >"$LOGS/record-upload-1.txt"
-grep -q "Recording upload: .* 2 deleted" "$LOGS/record-upload-1.txt" || { cat "$LOGS/record-upload-1.txt"; fail "recording upload summary"; }
-# What the data repository holds: the ended boot's frames, releases and manifest, the newest boot's clean files, the day's
+grep -q "Recording upload: .* kept, 0 failed\.$" "$LOGS/record-upload-1.txt" || { cat "$LOGS/record-upload-1.txt"; fail "recording upload summary"; }
+# What the day's release holds: the ended boot's frames, releases and manifest, the newest boot's clean files, the day's
 # index; never raw or delays, never the planted file. Every asset's bytes are the local file's (sha256).
-names="$(jq -r '.assets[] | .name' "$DATA/state.json" | sort | tr '\n' ' ')"
+names="$(jq -r --arg t "rec-$RDAY" '.assets[] | select(.tag == $t) | .name' "$DATA/state.json" | sort | tr '\n' ' ')"
 [ "$names" = "index-1.json $NEW.frames-000.jsonl.zst $OLD.frames-000.jsonl.zst $OLD.manifest.json $OLD.releases-000.jsonl.zst " ] || fail "data repository assets: $names"
 for b in "$OLD" "$NEW"; do for t in frames-000 releases-000; do
   want="$(sha_of "$b" "$t")"
@@ -502,9 +503,9 @@ tail -n +"$((n0 + 1))" "$STATE/telegram.jsonl" | grep -q "\"chat_id\":\"$T_CHAT\
 in_c "zeroed-check" >/dev/null 2>&1 || true
 [ "$(tail -n +"$((n0 + 1))" "$STATE/telegram.jsonl" | grep -c 'recording file(s) kept')" = 1 ] || fail "kept-file alert repeated"
 in_c "rm /var/lib/zeroed/recorder/$NEW/days/$RDAY/releases-000.jsonl.zst"
-u0="$(grep -c '"call":"upload"' "$DATA/calls.jsonl")"
+u0="$(grep -c "\"call\":\"upload\",\"tag\":\"rec-$RDAY\"" "$DATA/calls.jsonl")"
 in_c "zeroed-record-upload --day $RDAY" >"$LOGS/record-upload-2.txt" 2>&1 || { cat "$LOGS/record-upload-2.txt"; fail "zeroed-record-upload --day"; }
-[ "$(grep -c '"call":"upload"' "$DATA/calls.jsonl")" = "$u0" ] || fail "a second run uploaded again"
+[ "$(grep -c "\"call\":\"upload\",\"tag\":\"rec-$RDAY\"" "$DATA/calls.jsonl")" = "$u0" ] || fail "a second run uploaded again"
 in_c "zeroed-check" >/dev/null 2>&1 || true
 tail -n +"$((n0 + 1))" "$STATE/telegram.jsonl" | grep -q 'CLEARED Zeroed host: no recording file is kept back from upload.' || fail "kept-file alert not cleared"
 in_c "zeroed-record-upload --day 2026-02-30" >/dev/null 2>&1 && fail "a day that does not exist was accepted"
