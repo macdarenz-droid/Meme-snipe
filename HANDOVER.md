@@ -1,5 +1,43 @@
 # Supervisor handover
 
+<!-- AFTER-COMPACT START -->
+## After a context compaction: read this first (owner, 6 Oct about 1:30 AM)
+
+After a compaction you are effectively a new supervisor. Do these before acting:
+
+1. **Read, in this order:**
+   - `/home/user/sup/CLAUDE.md` and `/home/user/sup/AGENTS.md`: the owner's rules (the newest are at the end of "Working" and "Product");
+   - this file's newest Log lines, under "Current supervisor", then "Log";
+   - `/home/user/sup/HANDOVER-APP.md`: Supervisor 2's app queue and protocol.
+2. **Role.** You are S1, the only one who merges and deploys.
+   - Repo macdarenz-droid/Meme-snipe; integration branch `ccr-14987baf-i6lrsl` (the default; never push to it or to main).
+   - Your docs live in worktree `/home/user/sup`, local branch `sup-docs`. Push with `git push origin sup-docs:ccr-528521bb-f7a7zo`.
+   - The bot's summaries are in `/home/user/zeroed-data` (`git pull`, then `reports/latest.json`).
+3. **Owner chat:**
+   - one ✅ line per DONE task, in very simple words: who did what, start → finish (duration), next;
+   - direct answers to the owner's questions;
+   - exact owner steps;
+   - an hourly update at :49 (Routine trig_01K3Z2WExmSzU2WnT6EytpL2);
+   - otherwise reply "( )";
+   - push notifications ONLY for a new APK, a Deploy that went live, or a whole task category done;
+   - times from `TZ=Australia/Melbourne date`; never guess a time, SHA or number.
+4. **The loop:**
+   - Only the identified tasks run, one category at a time, each until proven working and reviewed.
+   - When one is done, take the next identified parked task by yourself, the most needed for the app first.
+   - A NEW task, one not on the identified list, needs the owner's approval.
+   - The app queue belongs to S2: merge an `S2-READY <sha>` only after verifying its evidence, and never start reviewers for S2's work.
+   - The crash issue counts as done after 3–5 h with no crash live; then park a daily-stability task.
+5. **Merge and deploy mechanics:**
+   - The head must contain the latest base, and `git merge-tree --write-tree base head` must equal the head's tree.
+   - Reviews PASS on the exact head, and CI `check` is green.
+   - Then merge_pull_request (merge method, expectedHeadSha).
+   - After the merge: push CI on the merge commit. The "Android preview" release job fails its 20-min wait; re-run the failed jobs once after `check` is green.
+   - Then run deploy.yml and confirm `refs/tags/deploy` moved. The server switches within about 5 min.
+   - The DEPLOY_CODE secret must be absent for a code-only Deploy. It was deleted 6 Oct 9:05 PM; a stale one would break the watchdog heartbeat key.
+   - A data-scan run attaches to the branch tip at dispatch, and the deploy gate refuses any commit with a pending or failed run. So deploy right after merges, and dispatch data runs only on already-deployed tips.
+6. **Never:** commit secrets or account details (no Helius account figures, the server IP or the tailnet name); enable live trading or raise a limit; push to main; rewrite others' branches; skip or loosen a test; work around a denial; put a model id in a repo file.
+<!-- AFTER-COMPACT END -->
+
 ## Current supervisor (from Mon 5 Oct 8:34 AM)
 
 Supervisor: session_01Ec4DXEAqLxM6M1WGVQG5se (same account as every worker). Hourly owner update: Routine trig_01K3Z2WExmSzU2WnT6EytpL2 (Melbourne :49) into this session; the old trig_017KiLULXYBToCWdWfSN7QNP is disabled.
