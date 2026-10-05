@@ -2413,12 +2413,13 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - **Never let go while needed (review B1/B2).** A mint with a pending entry seed or a book position not yet closed is held, as are candidates and exit plans (`#held`).
     - **Facts review B3:** an intent of the mint whose attempt may still land also holds it. That is an intent not terminal, or a terminal one with an attempt neither failed at finalized nor past its last valid height plus another validity window; so is an orphan landing not yet booked.
     - A dropped seed's mint is let go on a later event, once nothing holds it. So an orphan fill never opens a position on a let-go coin.
+    - **Unit (BT review N2):** `#mayLand` compares the strategy's height, the newest `chain:slot`, with each attempt's `lastValidBlockHeight`. In paper both are slots (`#attempt` stamps the slot height). A real-signing path that stores true block heights must compare block heights. This is on the live-activation list.
   - **Creates that never migrate.** The limit is `CREATE_KEEP_MS`, 12 hours, defined in `core/src/gates/create-keep.ts`; live passes it as `StrategyConfig.createKeepMs`, the study strategy as `createKeepMs`.
     - **The market rule (supervisor ruling on the BT review, B1).**
       - A coin whose migration came more than `CREATE_KEEP_MS` after its create, by the create fact's and the migration fact's chain times (`createKeepVerdict`), is refused `create-expired` before the regime or any gate.
       - This applies in live and in the backtest (`StudyStrategy`, funnel stage `create expired`), so both refuse the same coins whatever order the events arrive in.
       - Exactly 12 hours is judged as before.
-    - **Effect on the backtest.** Such coins are now refused, where before they were judged. In a 518-migration backfill (`research/empirical/backfill`, Jupiter `createdAt` against the on-chain migration):
+    - **Effect on the backtest.** Such coins are now refused, where before they were judged. In a 518-migration backfill (`research/empirical/backfill`): the gap is the on-chain migration's block time minus Jupiter's off-chain `createdAt` (`analyze.py` `ttg_s`), not the create transaction's chain time.
       - 23 migrations (4.4%) came more than 12 hours after their create: 10 at 12–24 h, 13 later;
       - the median gap is 1 minute, the 90th percentile 55 minutes, the 95th 5.8 hours.
       - That share is material. The day-scale card raises the keep with compact create storage (supervisor ruling).
@@ -2484,6 +2485,8 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
     - with no landing, the mint is let go after the validity and the margin.
     - Mutants killed: no `#mayLand`; no book-position guard. The non-terminal clause is kept as a defence: an in-flight entry always has its seed.
   - Hand mutants killed: `>=` for `>`; the early `break` in the expiry scan; held ignored at expiry; no expiry mark; no facts rule; no late hour; the backtest rule off; the pool stream dropped while pending; a settled pool's stream kept; the conditional tombstone; the engine feed not retiring; create age from release time; `HourTags` sealed hours unsearched; an hour dropped when it starts instead of when it ends; no index prune; a prune line a day later; `#byTail` not indexing a second key; `#byTail` not cleared on retire; the mint kept as a slice.
+  - BT review B1: a rejected candidate's tail across its create's let-go time keeps the mint until the tail ends. BT review N1: a create let go whose create fact comes back with a gap of 12 hours or less is judged from the facts. A create is let go exactly when its age reaches the keep and the hour. Mutants killed: no tail guard; the mark before the facts; `>=` for `>` at the let-go.
+  - Note (BT review N3): `parity.test` and `fault-injection` no longer let anything go, since `#mayLand` holds their mints for the run. Replay equal to live with retirement is covered by `worker-recorder.test` only.
   - **3× run of the real worker.** `main.ts` with stubbed fetch and WebSocket, a fake market in a worker thread, 230 pools at boot, 51 swaps a minute per pool, 75 creates a minute, a migration every 20 s, 560 MB limit.
     - At 1 hour: 409 pools, 945,000 swaps, 234 MB live heap, still growing about 2 MB a minute as pools fill their hour and their 4-hour window.
     - Owners at that point: books 90 MB, feed dedupe 68 MB, store 38 MB, deployer index 1.4 MB.
