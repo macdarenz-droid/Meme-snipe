@@ -114,6 +114,9 @@ export const foldLine = (s: SummaryState, line: unknown): void => {
       day.starts += 1;
       if (typeof line['restart'] === 'string' && RESTART_KINDS.has(line['restart'])) bump((day.restarts ??= {}), line['restart']);
       if ((EXIT_KINDS as readonly unknown[]).includes(line['exit'])) bump((day.exits ??= {}), line['exit'] as string);
+      // HEAP-GUARD: a death on a fatal error leaves no stop line; the next boot's start line carries its site.
+      const site = typeof line['crash_site'] === 'string' ? parseCrashSite(line['crash_site']) : null;
+      if (site !== null) bump((day.crashSites ??= {}), JSON.stringify([site.error, site.file, site.line, site.event]));
     }
     day.recorder = line['recorder'] === true || line['recorder'] === 'on' ? 'on' : line['recorder'] === false || line['recorder'] === 'off' ? 'off' : null;
     day.gitSha = fits(line['git_sha'], PATTERNS.SHA) ? line['git_sha'] : null;
