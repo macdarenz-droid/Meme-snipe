@@ -653,10 +653,14 @@ export class FactProducer {
     // The reserve and pending graduate mark stay: they feed the regime's survival series (and are gone or small by then:
     // a candidate leaves at least four hours after migrating, its survival mark is at thirty minutes).
     for (const id of ids) {
-      if (this.#books.delete(id)) this.#tombstone(this.#retiredPools, id);
-      this.#chains.delete(id);
+      // Tombstoned whether or not state was built yet, so a pool create or a mint create delivered later never builds it.
+      this.#books.delete(id);
+      this.#tombstone(this.#retiredPools, id);
+      this.#tombstone(this.#retiredMints, id);
       this.#poolMint.delete(id);
-      this.#streams.delete(STREAMS.trades(id));
+      // Review N2: a pool whose survival mark is still pending keeps its chain and trade stream until the mark dates
+      // it or its read window passes (`#settle`); the survival series needs them.
+      if (!this.#pending.has(id)) this.#forgetPool(id);
       const t = this.#mints.get(id);
       if (t !== undefined) {
         for (const w of t.wallets) {
@@ -666,7 +670,6 @@ export class FactProducer {
           if (mints.size === 0) this.#walletMints.delete(w);
         }
         this.#mints.delete(id);
-        this.#tombstone(this.#retiredMints, id);
       }
     }
   }
@@ -1214,8 +1217,19 @@ export class FactProducer {
     if (at >= p.migratedAtMs + this.#o.survivalAfterMs) this.#resolve(p, effective);
   }
 
+  /** A pending graduate is done: its pool's chain and trade stream go too if the pool was let go meanwhile. */
+  #settle(pool: string): void {
+    this.#pending.delete(pool);
+    if (this.#retiredPools.has(pool)) this.#forgetPool(pool);
+  }
+
+  #forgetPool(pool: string): void {
+    this.#chains.delete(pool);
+    this.#streams.delete(STREAMS.trades(pool));
+  }
+
   #resolve(p: Pending, reserveAfter: bigint): void {
-    this.#pending.delete(p.pool);
+    this.#settle(p.pool);
     // What this process measured replaces a seeded entry for the same mint.
     const i = this.#graduates.findIndex((g) => g.mint === p.mint);
     if (i >= 0) this.#graduates.splice(i, 1);
@@ -1259,7 +1273,7 @@ export class FactProducer {
       const r = this.#reserves.get(p.pool);
       const through = this.#head !== null && this.#head < e.moment.slot ? this.#head : e.moment.slot;
       if (r !== undefined && r.atMs <= mark && this.#covered(STREAMS.trades(p.pool), p.slot, through)) this.#resolve(p, r.effective);
-      else if (now > mark + this.#o.survivalReadWindowMs) this.#pending.delete(p.pool);
+      else if (now > mark + this.#o.survivalReadWindowMs) this.#settle(p.pool);
     }
     this.#flushGraduates(e, put);
   }

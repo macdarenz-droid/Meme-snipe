@@ -13,3 +13,4 @@ export * from './tails.ts';
 export * from './rug-labeller.ts';
 export * from './deployer-check.ts';
 export * from './staged.ts';
+export * from './create-keep.ts';

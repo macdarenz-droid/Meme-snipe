@@ -415,6 +415,16 @@ describe('candles', () => {
       expect(w.facts(migrationKey(MINT)).length).toBe(migrationBefore);
     });
 
+    it('OOM-MINT: ids retired before anything was built for them build nothing later: the create, the migration and the pool', () => {
+      const w = new FactWorld();
+      w.push(...covered());
+      w.producer.retire([MINT, POOL]);
+      w.push(...txEvents(create), ...txEvents(complete), ...txEvents(migrate), ...swapEvents());
+      expect(w.producer.candleBook(POOL)).toBeUndefined();
+      expect(w.producer.sizes().mints).toBe(0);
+      expect(w.facts(migrationKey(MINT))).toEqual([]);
+    });
+
     it('OOM-MINT: a retired mint leaves the wallets\' mint lists it was in (creator and buyers), and the tombstones stay capped', () => {
       const w = build();
       const before = w.producer.sizes();
@@ -424,7 +434,7 @@ describe('candles', () => {
       // This world's wallets hold only this mint: every list it was in is gone with it.
       expect(after.walletMints).toBe(0);
       expect(after.mints).toBe(before.mints - 1);
-      expect([after.retiredMints, after.retiredPools]).toEqual([1, 1]);
+      expect([after.retiredMints, after.retiredPools]).toEqual([2, 2]); // both ids in both lists
       expect(RETIRED_KEEP).toBe(100_000);
       // The cap: the oldest go first, the newest stay, never more than the cap.
       const set = new Set<string>();
@@ -1044,6 +1054,17 @@ describe('graduate survival', () => {
     const g = w.last(GRADUATES_KEY) as { items: { reserveAfter: bigint }[] };
     // After the migration's own buy: vault 67,405,853,773 + 2,469,629,629 lp-adjusted, plus 17,584,505,289 virtual.
     expect(g.items).toEqual([{ mint: MINT, migratedAtMs: 1_791_032_673_000, reserveAfter: 67_405_853_773n + 2_469_629_629n + 17_584_505_289n }]);
+  });
+  it('review N2: a pool let go before its survival mark keeps its trade stream until the mark dates it, then drops it', () => {
+    const w = new FactWorld();
+    w.push(coverage(STREAMS.trades(POOL), 'start', { fromSlot: migrate.slot, via: `logs:${POOL}` }, migrate.slot - 1n, atOf(migrate) - 500), ...txEvents(complete));
+    w.push(...txEvents(migrate), slotNotice(migrate.slot + 1n, atOf(migrate) + 400));
+    w.producer.retire([MINT, POOL]);
+    expect(w.producer.sizes().streams).toBe(1);
+    w.push(slotNotice(migrate.slot + 4600n, 1_791_032_673_000 + 30 * 60_000 + 5));
+    const g = w.last(GRADUATES_KEY) as { items: { reserveAfter: bigint }[] };
+    expect(g.items).toEqual([{ mint: MINT, migratedAtMs: 1_791_032_673_000, reserveAfter: 67_405_853_773n + 2_469_629_629n + 17_584_505_289n }]);
+    expect(w.producer.sizes()).toMatchObject({ streams: 0, chains: 0 });
   });
 });
 

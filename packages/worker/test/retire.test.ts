@@ -1,6 +1,7 @@
 // OOM-MINT: the strategy lets a mint and its pool go (`Strategy.retired`) only when it is no candidate, holds no exit plan
 // and has no tail; the engine then forgets their keys and the producer their state.
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { FactProducer, STREAMS } from '../../core/src/facts/index.ts';
 import { blockNetwork } from './helpers.ts';
 import { LANDS, MIGRATED_AT, MINT, POOL_ADDRESS, makeWorker, passingMarket, type Harness } from './worker-harness.ts';
 
@@ -40,6 +41,36 @@ describe('a mint and its pool are let go only when nothing watches them', () => 
   it('a candidate whose window ends before it is judged (no tail) is let go with its pool at once', async () => {
     const got = await run(60_000);
     expect(got).toEqual(expect.arrayContaining([MINT, POOL_ADDRESS]));
+  });
+
+  it('review B2: the let-go reaches the worker\'s fact producer, which drops the pool\'s trade stream and tombstones both', async () => {
+    const seen: { ids: string[]; before: ReturnType<FactProducer['sizes']>; after: ReturnType<FactProducer['sizes']> }[] = [];
+    const own = FactProducer.prototype.retire;
+    const spy = vi.spyOn(FactProducer.prototype, 'retire').mockImplementation(function (this: FactProducer, ids: readonly string[]) {
+      const before = this.sizes();
+      own.call(this, ids);
+      seen.push({ ids: [...ids], before, after: this.sizes() });
+    });
+    try {
+      const h = makeWorker({ strategy: { windowToMs: 60_000 } });
+      await h.worker.reconcile();
+      // The pool's trade stream starts (as the pool watch opens it), so the producer holds state for the pool.
+      const m = await passingMarket(h, { heldPoolFacts: true, before: { atMs: MIGRATED_AT + 1_000, run: (mk) => mk.offchain(`coverage:${STREAMS.trades(POOL_ADDRESS)}:start`, { fromSlot: h.worker.feed.openSlot, via: `logs:${POOL_ADDRESS}` }) } });
+      await m.run(4_000, 100, () => m.pool());
+      await m.run(10_000, 400, () => {
+        m.slot();
+        m.pool();
+      });
+      await h.worker.stop();
+    } finally {
+      spy.mockRestore();
+    }
+    const hit = seen.find((x) => x.ids.includes(MINT) && x.ids.includes(POOL_ADDRESS));
+    expect(hit).toBeDefined();
+    expect(hit!.before.streams).toBeGreaterThan(0);
+    expect(hit!.after.streams).toBe(hit!.before.streams - 1);
+    // Both ids are tombstoned in both lists, built state or not.
+    expect([hit!.after.retiredPools, hit!.after.retiredMints]).toEqual([hit!.before.retiredPools + 2, hit!.before.retiredMints + 2]);
   });
 
   it('a candidate judged and rejected keeps its tail: let go only when the tail ends', async () => {

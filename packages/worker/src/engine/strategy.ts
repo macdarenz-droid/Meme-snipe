@@ -29,7 +29,7 @@ import {
   atr, checkStopDistance, decideExit, execPrice, liquidationValue, exitAttemptsOf, exitBookEvents, exitSettings, newTracker, noteAttempt,
 } from '../../../core/src/exits/index.ts';
 import {
-  type Coverage, type DeployerIndexState, type GateContext, type GraduatesFact, type RugLabellerState, type S0DiagnosticPart, DeployerIndex, GRADUATES_KEY, hardAllowsEntry, LOG_CREATE_PREFIX, NOT_EVALUATED, stagedHardRejects, RugLabeller, TX_CREATE_PREFIX, type PoolFact, carryKey, createKey, createOf, createsCoverage, evaluateHardRejects, evaluateRegime, migrationKey, parseCreate, parseGraduates, parseMigration, parsePool, poolKey, pruneCoverage,
+  type Coverage, type DeployerIndexState, type GateContext, type GraduatesFact, type RugLabellerState, type S0DiagnosticPart, DeployerIndex, GRADUATES_KEY, hardAllowsEntry, LOG_CREATE_PREFIX, NOT_EVALUATED, stagedHardRejects, RugLabeller, TX_CREATE_PREFIX, type PoolFact, carryKey, createKey, createKeepVerdict, CREATE_LATE_MS, createOf, createsCoverage, evaluateHardRejects, evaluateRegime, migrationKey, parseCreate, parseGraduates, parseMigration, parsePool, poolKey, pruneCoverage,
 } from '../../../core/src/gates/index.ts';
 import type { GraduatesSeed } from '../../../core/src/facts/raw.ts';
 import { type BookEvent, type IntentState, isTerminal } from '../../../core/src/lifecycle/index.ts';
@@ -329,12 +329,12 @@ export interface StrategyConfig {
 }
 
 /**
- * OOM-MINT (supervisor ruling): a create whose coin has not migrated within 12 hours is let go: its keys in the store,
- * its producer track and its place in the wallets' mint lists. About 30 creates a minute at about 3 KB each is about
- * 65 MB kept at the ceiling; kept for ever, it was unbounded. Most coins that migrate do so within minutes to hours of
- * their create; one that migrates later is refused `create-expired` (never judged on what is left of its facts).
+ * OOM-MINT (supervisor rulings): a coin that migrates more than `CREATE_KEEP_MS` after its create is refused
+ * `create-expired` from the facts (`createKeepVerdict`, as the backtest refuses it). A create whose coin has not
+ * migrated `CREATE_KEEP_MS + CREATE_LATE_MS` after it is let go: its keys in the store, its producer track and its place
+ * in the wallets' mint lists; kept for ever, they were unbounded (about 4.3 KB a create).
  */
-export const CREATE_KEEP_MS = 12 * 3_600_000;
+export { CREATE_KEEP_MS } from '../../../core/src/gates/index.ts';
 
 /**
  * OOM-MINT: how long a let-go create is remembered, so its coin's migration is refused `create-expired`: a week, as an
@@ -1404,22 +1404,27 @@ export class LiveStrategy implements Strategy {
   }
 
   /**
-   * OOM-MINT: creates older than `createKeepMs` whose coin has not migrated are let go (`retired`) and remembered as
-   * expired; one whose coin migrated (a candidate, held, tailed or with a known pool or migration slot) is just dropped from
-   * the list.
+   * OOM-MINT: creates older than `createKeepMs + CREATE_LATE_MS` by their chain time whose coin is not held or tailed
+   * are let go (`retired`) and remembered as expired; a held or tailed one is just dropped from the list (its coin
+   * migrated, and its facts go with the candidate).
    */
   #expireCreates(now: number): void {
-    const keep = this.#d.config.createKeepMs;
+    // Once a minute of event time, every create is checked (chain times need not follow release order).
+    if (now - this.#createsCheckedAt < 60_000) return;
+    this.#createsCheckedAt = now;
+    const after = this.#d.config.createKeepMs + CREATE_LATE_MS;
     for (const [mint, at] of this.#creates) {
-      if (at + keep > now) break;
+      if (at + after > now) continue;
       this.#creates.delete(mint);
-      if (this.#held(mint) || this.#tail.has(mint) || this.#poolOfMint.has(mint) || this.#migrationSlot.has(mint)) continue;
+      // A candidate (its pool and migration slot are noted with it), a pending entry, an open position or a tail.
+      if (this.#held(mint) || this.#tail.has(mint)) continue;
       this.#expired.add(mint, now);
       this.#letGo.push(mint);
     }
     this.#expired.prune(now);
   }
 
+  #createsCheckedAt = Number.NEGATIVE_INFINITY;
   #indexPrunedAt = Number.NEGATIVE_INFINITY;
 
   /**
@@ -2237,8 +2242,11 @@ export class LiveStrategy implements Strategy {
     const session = this.#d.session;
     const policy = session.policy;
     const diag = c.s0Diagnostic === true ? { s0Diagnostic: true } as const : {};
-    // OOM-MINT: a coin whose create was let go before it migrated is refused before anything is judged.
-    if (this.createExpired(cand.mint)) return this.#fail('create expired', [{ gate: 'worker', code: 'create-expired', detail: `its create was released over ${c.createKeepMs / 3_600_000} h before its migration; its facts were let go` }]);
+    // OOM-MINT: a coin that migrated more than `createKeepMs` after its create is refused before anything is judged,
+    // from the facts as the backtest does; when its create's facts were let go, from the expired mark.
+    const kept = createKeepVerdict(gctx, cand.mint, c.createKeepMs);
+    if (kept?.expired === true) return this.#fail('create expired', [{ gate: 'worker', code: 'create-expired', detail: kept.detail }]);
+    if (kept === null && this.createExpired(cand.mint)) return this.#fail('create expired', [{ gate: 'worker', code: 'create-expired', detail: `its create was let go ${(c.createKeepMs + CREATE_LATE_MS) / 3_600_000} h after it with no migration seen` }]);
     const regime = evaluateRegime(gctx, { session, mode: 'live', ...diag });
     this.#waived = [...regime.waived];
     this.#regime = { atMs: gctx.now.receivedAt, on: regime.on, reasons: regime.reasons.map((x) => ({ code: x.code, input: x.input ?? null })), waived: [...regime.waived] };
