@@ -111,10 +111,12 @@ export class Journal {
       const { lines, offsets } = lastLines(path);
       const last = lines[lines.length - 1];
       if (last !== undefined) {
+        const complete = terminated(path); // I/O errors are strict, never confused with malformed JSON.
         try {
-          if (!terminated(path)) throw new Error('unterminated append');
+          if (!complete) throw new SyntaxError('unterminated append');
           JSON.parse(last);
-        } catch {
+        } catch (e) {
+          if (!(e instanceof SyntaxError)) throw e;
           // Keep everything before the torn line, newline included.
           this.#truncateAt = offsets[offsets.length - 1]!;
           this.#repairTail();
@@ -280,6 +282,8 @@ export class Journal {
       truncateSync(this.#path, this.#truncateAt);
     } catch (e) {
       if (!noSpace(e)) throw e;
+      this.#releaseReserve();
+      this.#notifyNoSpace();
       return false;
     }
     this.#truncateAt = null;
@@ -290,7 +294,7 @@ export class Journal {
     if (!this.#repairTail()) return false;
     const before = existsSync(this.#path) ? statSync(this.#path).size : 0;
     try {
-      (this.#o.append ?? appendFileSync)(this.#path, `${redact(jsonText({ ...fields, seq, ts: new Date(now).toISOString(), boot: this.#boot, kind }))}\n`);
+      (this.#o.append ?? appendFileSync)(this.#path, `${redact(jsonText({ seq, ts: new Date(now).toISOString(), boot: this.#boot, kind, ...fields }))}\n`);
       if (kind === 'coverage_gap' && fields['stream'] === 'journal') {
         const fd = openSync(this.#path, 'r');
         try { fsyncSync(fd); } finally { closeSync(fd); }

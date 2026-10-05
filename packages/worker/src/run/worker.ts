@@ -1537,7 +1537,7 @@ export class Worker {
     const d = this.#d;
     return {
       nowMs: d.timers.now(), policy: d.session.policy, policyVersion: d.session.versionHash, strategyVersion: d.strategy.version,
-      connected: this.#reconciled && [...this.#feeds.values()].some((f) => f.connected), halted: this.#halted, paused: this.#ctl.paused,
+      connected: this.#reconciled && [...this.#feeds.values()].some((f) => f.connected), halted: [...this.#halted, ...(this.#journalFault !== null && !this.#halted.includes(this.#journalFault) ? [this.#journalFault] : [])], paused: this.#ctl.paused,
       exitCapable: this.#exitCapable(d.timers.now()), budgetHalted: (d.ops?.().quota ?? []).filter((q) => q.halted).map((q) => q.provider),
       alerts: [...this.#alerts], regime: this.#strategy.regime(), regimeMaxAgeMs: 2 * d.strategy.evaluateEveryMs, stops: this.#strategy.riskStops(),
       book: this.#engine.book, trades: this.#account.state.trades, accountCosts: this.#account.costRecords(), attempts: this.#world.attempts, legs: this.#legs(), decisions: this.#rows, funnel: this.#funnel,
@@ -2080,6 +2080,7 @@ export class Worker {
       journalPath: join(d.config.stateDir, STATE_FILES.journal), stateDir: d.config.stateDir, http: d.heartbeat.http,
       watchdogUrl: url, key, now: () => d.timers.now(), log: d.log,
       live: () => {
+        if (this.#journalFault !== null) throw new Error('journal evidence incomplete: summary suppressed');
         d.summaryFault?.();
         return {
           gitSha: d.config.gitSha, entryRule: d.config.strategy.name, recorder: d.config.recorder ? 'on' : 'off',

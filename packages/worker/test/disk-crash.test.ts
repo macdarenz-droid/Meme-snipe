@@ -4,13 +4,16 @@ import { appendFileSync, existsSync, mkdtempSync, readFileSync, statSync, writeF
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { LocalControl, snapshotState } from '../../runner/src/control.ts';
 import { EXIT } from '../../runner/src/contract.ts';
 import { checkJournal } from '../../runner/src/journal.ts';
 import { Journal } from '../src/run/journal.ts';
+import { checkSummary } from '../../ops/src/watchdog/summary.ts';
+import type { HttpClient } from '../src/providers/index.ts';
 import { Recorder } from '../src/run/recorder.ts';
 import { Market, makeWorker, passingMarket } from './worker-harness.ts';
 
-const disk = vi.hoisted(() => ({ dir: '', full: false, attempts: [] as string[], action: '', kind: '', reserveNoSpace: false, syncNoSpace: false }));
+const disk = vi.hoisted(() => ({ dir: '', full: false, attempts: [] as string[], action: '', kind: '', reserveNoSpace: false, syncNoSpace: false, repairNoSpace: false, byteReadError: '' }));
 vi.mock('node:fs', async (load) => {
   const fs = await load<typeof import('node:fs')>();
   const paths = new Map<number, string>();
@@ -20,7 +23,13 @@ vi.mock('node:fs', async (load) => {
   }) as typeof fs.openSync, writeSync: ((fd: number, ...args: unknown[]) => {
     if (disk.reserveNoSpace && paths.get(fd)?.endsWith('.reserve')) throw Object.assign(new Error('no reserve space'), { code: 'ENOSPC' });
     return (fs.writeSync as (...a: unknown[]) => number)(fd, ...args);
-  }) as typeof fs.writeSync, fsyncSync: (fd: number) => {
+  }) as typeof fs.writeSync, truncateSync: (path: string, size?: number) => {
+    if (disk.repairNoSpace && path.endsWith('journal.jsonl')) throw Object.assign(new Error('no repair space'), { code: 'ENOSPC' });
+    fs.truncateSync(path, size);
+  }, readSync: ((fd: number, b: Uint8Array, offset: number, length: number, pos: number) => {
+    if (disk.byteReadError && length === 1 && paths.get(fd)?.endsWith('journal.jsonl')) throw Object.assign(new Error('tail I/O failure'), { code: disk.byteReadError });
+    return fs.readSync(fd, b, offset, length, pos);
+  }) as typeof fs.readSync, fsyncSync: (fd: number) => {
     if (disk.syncNoSpace && paths.get(fd)?.endsWith('journal.jsonl')) throw Object.assign(new Error('no sync space'), { code: 'ENOSPC' });
     fs.fsyncSync(fd);
   }, appendFileSync: ((path: string, ...args: unknown[]) => {
@@ -37,7 +46,7 @@ vi.mock('node:fs', async (load) => {
 });
 const noSpace = () => Object.assign(new Error('no space'), { code: 'ENOSPC' });
 const read = (path: string) => readFileSync(path, 'utf8').trim().split('\n').map((x) => JSON.parse(x) as Record<string, unknown>);
-afterEach(() => { vi.restoreAllMocks(); disk.full = false; disk.dir = ''; disk.attempts = []; disk.action = ''; disk.kind = ''; disk.reserveNoSpace = false; disk.syncNoSpace = false; });
+afterEach(() => { vi.restoreAllMocks(); disk.full = false; disk.dir = ''; disk.attempts = []; disk.action = ''; disk.kind = ''; disk.reserveNoSpace = false; disk.syncNoSpace = false; disk.repairNoSpace = false; disk.byteReadError = ''; });
 
 describe('DISK-CRASH', () => {
   it('recorder ENOSPC, lost alert, next halt: stays up, stops entries, lands and settles an exit', async () => {
@@ -247,6 +256,115 @@ j.write('start'); j.write('halt', { reasons: ['full disk'] }); process.kill(proc
     expect(rows.map((r) => r['kind'])).toEqual(['start', 'coverage_gap']);
     expect(rows[1]).toMatchObject({ stream: 'journal', lost: null });
     expect(checkJournal(readFileSync(path, 'utf8')).complete).toBe(false);
+  });
+
+  it('a between-step journal fault appears in API halted reasons immediately, with no duplicate after the next step', async () => {
+    const h = makeWorker();
+    await h.worker.reconcile();
+    const m = await passingMarket(h, { heldPoolFacts: true });
+    await m.run(4_000, 100, () => m.pool());
+    expect(h.worker.apiInputs().halted).toEqual([]);
+    disk.dir = h.stateDir; disk.full = true;
+    h.worker.journal.write('feed', { feed: 'all', connected: false });
+    const reason = 'journal failed (ENOSPC): evidence lost, entries off until a restart';
+    expect(h.worker.apiInputs().halted).toContain(reason);
+    expect(h.worker.health().critical).toContain(reason);
+    h.worker.step();
+    expect(h.worker.apiInputs().halted.filter((r) => r === reason)).toHaveLength(1);
+    disk.full = false;
+    await h.worker.stop();
+  });
+
+  it('summaries stop throughout the faulty boot, then the next boot posts only with an existing-schema count warning', async () => {
+    const summaries: string[] = [];
+    const http: HttpClient = async (req) => {
+      if (req.url.endsWith('/summary')) summaries.push(String(req.body));
+      return { status: 200, header: () => null, text: JSON.stringify({ ok: true, written: true, paused: false }) };
+    };
+    const h = makeWorker({ key: 'k', http });
+    await h.worker.reconcile();
+    const m = await passingMarket(h, { heldPoolFacts: true });
+    await m.run(4_000, 100, () => m.pool());
+    await h.worker.summaryNow();
+    const before = summaries.length;
+    expect(before).toBeGreaterThan(0);
+    disk.dir = h.stateDir; disk.full = true;
+    h.worker.journal.write('feed', { feed: 'all', connected: false });
+    await h.worker.summaryNow();
+    expect(summaries).toHaveLength(before);
+    disk.full = false;
+    h.worker.journal.retry();
+    await h.worker.summaryNow();
+    expect(summaries).toHaveLength(before);
+    await h.worker.heartbeat();
+    expect(h.worker.health().critical).toContain('journal failed (ENOSPC): evidence lost, entries off until a restart');
+    await h.worker.stop();
+    const next = makeWorker({ stateDir: h.stateDir, timers: h.timers, key: 'k', http });
+    await next.worker.reconcile();
+    await next.worker.summaryNow();
+    expect(summaries.length).toBeGreaterThan(before);
+    const final = JSON.parse(summaries.at(-1)!);
+    expect(final.alerts).toContainEqual({ code: 'journal-counts-incomplete', count: 1 });
+    expect(checkSummary(summaries.at(-1)!).ok).toBe(true);
+    await next.worker.stop();
+  });
+
+  it('tail repair ENOSPC releases the reserve and retains unknown loss after another kill', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'disk-journal-')), 'journal.jsonl');
+    const first = new Journal(path, 'a', () => 1_000);
+    first.write('start');
+    appendFileSync(path, '{"seq":2,"kind":"halt"');
+    disk.repairNoSpace = true;
+    let faults = 0;
+    const next = new Journal(path, 'b', () => 2_000, { onNoSpace: () => faults++ });
+    next.write('start');
+    next.write('halt', { reasons: ['disk full'] });
+    expect(next.failing).toBe(true);
+    expect(faults).toBe(1);
+    expect(statSync(`${path}.reserve`).size).toBe(0);
+    disk.repairNoSpace = false;
+    new Journal(path, 'c', () => 3_000).write('start');
+    expect(read(path).some((r) => r['boot'] === 'c' && r['stream'] === 'journal' && r['lost'] === null)).toBe(true);
+    expect(checkJournal(readFileSync(path, 'utf8')).complete).toBe(false);
+  });
+
+  it.each(['EIO', 'EACCES'])('tail I/O %s is strict and never truncates valid evidence', (code) => {
+    const path = join(mkdtempSync(join(tmpdir(), 'disk-journal-')), 'journal.jsonl');
+    const first = new Journal(path, 'a', () => 1_000);
+    first.write('start'); first.write('stop', { reasons: ['signal'] });
+    const before = readFileSync(path);
+    disk.byteReadError = code;
+    expect(() => new Journal(path, 'b', () => 2_000)).toThrow('tail I/O failure');
+    expect(readFileSync(path)).toEqual(before);
+    expect(statSync(`${path}.reserve`).size).toBe(64 * 1024);
+  });
+
+  it.each([
+    { fault: false, restore: false }, { fault: false, restore: true },
+    { fault: true, restore: false }, { fault: true, restore: true },
+  ])('LocalControl wipe preserves the journal reserve (fault=$fault, restore=$restore)', async ({ fault, restore }) => {
+    const dir = mkdtempSync(join(tmpdir(), 'disk-wipe-'));
+    const path = join(dir, 'journal.jsonl');
+    const first = new Journal(path, 'a', () => 1_000);
+    first.write('start');
+    writeFileSync(join(dir, 'book-state'), 'state');
+    const backup = mkdtempSync(join(tmpdir(), 'disk-backup-'));
+    snapshotState(dir, backup);
+    if (fault) {
+      const failed = new Journal(path, 'a', () => 2_000, { append: () => { throw noSpace(); } });
+      failed.write('halt', { reasons: ['full disk'] });
+    }
+    const expectedSize = fault ? 0 : 64 * 1024;
+    const control = new LocalControl({ entry: 'packages/runner/stub/worker.ts', cwd: join(import.meta.dirname, '../../..'), env: {}, logPath: join(dir, 'worker.log'), stateDir: dir });
+    try {
+      await control.wipe(restore ? { restoreFrom: backup } : {});
+      expect(existsSync(`${path}.reserve`)).toBe(true);
+      expect(statSync(`${path}.reserve`).size).toBe(expectedSize);
+      expect(existsSync(join(backup, 'journal.jsonl.reserve'))).toBe(false);
+      expect(existsSync(join(dir, 'book-state'))).toBe(restore);
+      new Journal(path, 'b', () => 3_000).write('start');
+      expect(checkJournal(readFileSync(path, 'utf8')).complete).toBe(!fault);
+    } finally { await control.stop(); }
   });
 
   it('a startup recovery gap that cannot be appended notifies immediately and preserves its marker', () => {
