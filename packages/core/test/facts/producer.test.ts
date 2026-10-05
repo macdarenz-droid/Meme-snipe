@@ -11,9 +11,11 @@ import {
   holdersKey, insidersKey, lpKey, migrationKey, mintKey, parseCandles, parseCreate, parseHolders, parseInsiders, parseLp, parseMigration, parseMint,
   parsePool, parseSim, parseSolUsd, parseXcheck, poolKey, simKey, streamKey, xcheckKey, type CandlesFact, type GateRequest,
 } from '../../src/gates/index.ts';
-import { FACT_KINDS, FactFeed, FactProducer, GRADUATES_SEED_KEY, HOLDER_ABSTENTIONS_KEY, RAW, STREAMS, dailyChainVolume, graduatesFact, insiderLinks, decimalToMicro, producerOptions } from '../../src/facts/index.ts';
+import { FACT_KINDS, FactFeed, FactProducer, GRADUATES_SEED_KEY, HOLDER_ABSTENTIONS_KEY, RAW, STREAMS, dailyChainVolume, graduatesFact, insiderLinks, decimalToMicro, producerOptions, tradeRepeatId } from '../../src/facts/index.ts';
 import { lamports, microUsd } from '../../src/units/index.ts';
 import { FEE_CONTEXT } from '../gates/world.ts';
+import { recordFromRpc } from '../../src/chain/index.ts';
+import { TRANSACTIONS } from '../chain/helpers.ts';
 import { FIX, FactWorld, MINT, OPTIONS, POOL, RECORDS, atOf, chainTx, coverage, logEvents, offchain, slotNotice, txEvents } from './helpers.ts';
 
 const session = startSession(TRIAL_POLICY);
@@ -308,6 +310,33 @@ describe('candles', () => {
       expect(after.book.ids).toBe(before.book.ids);
     });
 
+    it('a repeat exactly W behind the newest trade is still inside the window: counted once, not partial', () => {
+      const w = spreadWorld().push(newer(atMsOf(trades()[0]!) + W, 1));
+      const before = state(w);
+      w.push(repeat());
+      const after = state(w);
+      expect(after.candles).toEqual(before.candles);
+      expect(after.book.reserve).toEqual(before.book.reserve);
+    });
+
+    it('the repeat id is the same from a log line and from the fetched transaction of every recorded swap, and two swaps in one transaction differ', () => {
+      type Swap = { name: string; data: { poolBaseTokenReserves: bigint; poolQuoteTokenReserves: bigint } };
+      const ids = (events: MarketEvent[]) => events.filter((e) => /pump_amm:(Buy|Sell)Event:/.test(e.key)).map((e) => {
+        const v = e.value as { signature?: string; event: Swap & { signature?: string } };
+        return tradeRepeatId((v.signature ?? v.event.signature)!, v.event.data.poolBaseTokenReserves, v.event.data.poolQuoteTokenReserves);
+      });
+      const chain = TRANSACTIONS.map((t) => recordFromRpc(t.signature, t.base64 as never));
+      for (const x of [...swaps, migrate, ...RECORDS.map((r) => r.rec), ...chain]) {
+        const fromTx = ids(txEvents(x));
+        expect(ids(logEvents(x, 'confirmed')), x.signature).toEqual(fromTx);
+        expect(new Set(fromTx).size, x.signature).toBe(fromTx.length);
+      }
+      // A recorded transaction with two PumpSwap swaps (a sell then a buy): two different ids.
+      expect(chain.some((r) => ids(txEvents(r)).length > 1)).toBe(true);
+      // Compact: a fresh 22 + up to 7 character string, never the whole signature.
+      for (const id of ids(txEvents(swaps[0]!))) expect(id.length).toBeLessThanOrEqual(29);
+    });
+
     it('a repeat just outside the window (W + 1 s behind) is never applied: reserve unchanged, the candles partial, H11 refuses them', () => {
       // W − 1 s first (a sweep runs there and keeps the first trade's id), then W + 1 s two seconds later (no sweep): the
       // id is still remembered when the repeat arrives, so only the window refuses it.
@@ -351,7 +380,7 @@ describe('candles', () => {
       expect(after.book.reserve).toEqual(once.book.reserve);
     });
 
-    it('the remembered ids level off: 3,072 trades a second apart with a one-minute window keep at most a window and a quarter, and a sweep never forgets a trade inside the window', () => {
+    it('the remembered ids level off: 3,072 trades a second apart with a one-minute window keep at most a window and a quarter and a minute, and a sweep never forgets a trade inside the window', () => {
       const w = new FactWorld({ ...OPTIONS, tradeRepeatMs: 60_000 });
       w.push(...covered(), ...txEvents(create), ...txEvents(complete), ...txEvents(migrate));
       const start = atOf(migrate) + 60_000;
@@ -364,8 +393,9 @@ describe('candles', () => {
         w.push(...Array.from({ length: 20 }, (_, j) => newer(start + (k + 44 + j) * 1_000, k + 44 + j)));
         expect(parseCandles(w.last(candlesKey(MINT)))!, `after trade ${k + 63}`).toEqual(before);
       }
-      // Kept: the trades of the last minute and a quarter at most (75 a second apart), whatever the run's length.
-      expect(Math.max(...sizes.slice(2))).toBeLessThanOrEqual(76);
+      // Kept: the trades of the window, a quarter window between sweeps and the minute a trade's time is rounded to (135 a
+      // second apart) at most, whatever the run's length.
+      expect(Math.max(...sizes.slice(2))).toBeLessThanOrEqual(136);
       expect(Math.min(...sizes.slice(2))).toBeGreaterThanOrEqual(60);
       expect(parseCandles(w.last(candlesKey(MINT)))!.obs.quality).toEqual([]);
     });

@@ -103,6 +103,20 @@ export interface ProducerOptions {
  */
 export const TRADE_REPEAT_WINDOW_MS = HOUR_MS;
 
+/**
+ * OOM-SEEN (supervisor ruling, B1): a swap's repeat id, the same from a log line and from a fetched transaction: the first 22
+ * characters of its signature (about 128 bits) and a 32-bit hash of its pre-trade reserves (two swaps in one transaction
+ * leave different reserves). Copied into a fresh flat string, so it never keeps the whole signature alive: about 85 B
+ * a remembered trade with its minute, against about 350 B for the full `signature:base:quote` text.
+ */
+export const tradeRepeatId = (signature: string, baseBefore: bigint, quoteBefore: bigint): string => {
+  const h = Number(BigInt.asUintN(32, (baseBefore * 0x9e3779b1n) ^ (quoteBefore * 0x85ebca77n) ^ (baseBefore >> 32n) ^ (quoteBefore >> 29n)));
+  const text = signature.slice(0, 22) + h.toString(36);
+  const codes = new Array<number>(text.length);
+  for (let i = 0; i < text.length; i++) codes[i] = text.charCodeAt(i);
+  return String.fromCharCode(...codes);
+};
+
 /** Options sized from the locked policy, so the kept windows always cover what the gates read. */
 export const producerOptions = (p: Policy, execHealth?: ExecHealthLimits): ProducerOptions => ({
   candleFirstMs: p.gates.chaseCheckAfterMs + MINUTE_MS,
@@ -180,7 +194,7 @@ interface CandleBook {
   readonly candles: Candle[];
   /** A trade whose price could not be formed: the candles are no longer complete. Sticky. */
   partial: boolean;
-  /** Trade ids and their trade times, back to `tradeRepeatMs` behind `newestMs` (OOM-SEEN). */
+  /** Trade repeat ids (`tradeRepeatId`) and their trade minutes, back to `tradeRepeatMs` behind `newestMs` (OOM-SEEN). */
   readonly seen: Map<string, number>;
   /** The newest trade time applied. */
   newestMs: number;
@@ -565,9 +579,9 @@ export class FactProducer {
       return;
     }
     // The same trade from a fetched transaction and from a log line counts once.
-    const id = `${seen.signature}:${baseBefore}:${quoteBefore}`;
+    const id = tradeRepeatId(seen.signature, baseBefore, quoteBefore);
     if (book.seen.has(id)) return;
-    book.seen.set(id, atMs);
+    book.seen.set(id, Math.floor(atMs / MINUTE_MS));
     if (atMs > book.newestMs) book.newestMs = atMs;
     this.#sweepSeen(book);
     // Reserves in Buy/SellEvent are before the trade; after it the base moves by the base amount and the quote by the
@@ -589,8 +603,9 @@ export class FactProducer {
    */
   #sweepSeen(book: CandleBook): void {
     if (book.newestMs - book.sweptMs < this.#o.tradeRepeatMs / 4) return;
+    // A trade in minute m was stamped before (m + 1) minutes: dropped only when that is at or before the cutoff.
     const cutoff = book.newestMs - this.#o.tradeRepeatMs;
-    for (const [id, at] of book.seen) if (at < cutoff) book.seen.delete(id);
+    for (const [id, minute] of book.seen) if ((minute + 1) * MINUTE_MS <= cutoff) book.seen.delete(id);
     book.sweptMs = book.newestMs;
   }
 
