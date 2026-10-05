@@ -1,6 +1,6 @@
 // MEM-TRACE: a death with no stop line just after a memory sample near a limit is told apart from another kill.
 import { describe, expect, it } from 'vitest';
-import { existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { MEM_EVERY_MS, MEM_FILE, REPORTS_DIR, REPORT_FRESH_MS, cgroupMax, fatalReport, nearLimit, readMem, type MemSample } from '../src/run/mem-trace.ts';
 import { emptySummaryState, foldText, buildSummary } from '../src/run/summary.ts';
@@ -63,6 +63,39 @@ describe('in the worker', () => {
     timers.set(timers.now() + 5 * MEM_EVERY_MS);
     await new Promise<void>((r) => setImmediate(r));
     expect(readMem(stateDir)!.at).toBe(last);
+  });
+
+  it('a sample that cannot be written never stops the worker; the next tick writes again (review B1)', async () => {
+    const stateDir = tempState();
+    const timers = virtualTimers(T);
+    // mem.json is a directory holding a file: the atomic write's rename fails.
+    mkdirSync(join(stateDir, MEM_FILE, 'x'), { recursive: true });
+    const h = makeWorker({ stateDir, timers, seedWaitMs: 0 });
+    const m = new Market(h);
+    const started = h.worker.start();
+    while (!h.order.includes('start helius-ws')) await new Promise<void>((r) => setImmediate(r));
+    m.slot();
+    expect(await started).toEqual({ ok: true });
+    await m.run(MEM_EVERY_MS + 1_000, 500, () => m.slot());
+    expect(process.exitCode ?? 0).toBe(0);
+    expect(readMem(stateDir)).toBeNull();
+    // Writable again: the timer kept re-arming, so the next tick writes.
+    rmSync(join(stateDir, MEM_FILE), { recursive: true });
+    await m.run(MEM_EVERY_MS + 1_000, 500, () => m.slot());
+    expect(readMem(stateDir)).not.toBeNull();
+    expect(await h.worker.stop()).toBe(0);
+  });
+
+  it('a fresh fatal report is read only after "no clean stop": a clean stop stays a clean stop (review a)', async () => {
+    const stateDir = tempState();
+    const timers = virtualTimers(T);
+    const a = makeWorker({ stateDir, timers });
+    await a.worker.reconcile();
+    await a.worker.stop();
+    plant(stateDir, report('Allocation failed - JavaScript heap out of memory', ['at y (packages/worker/src/run/worker.ts:900:5)']), timers.now());
+    const b = makeWorker({ stateDir, timers });
+    expect(b.worker.health().last_exit).toBe('stop: signal');
+    await b.worker.stop();
   });
 
   it('the pre-step names a death near the heap limit in last_exit; a kill with no such sample stays "no clean stop"', async () => {
