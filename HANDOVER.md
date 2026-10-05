@@ -18,7 +18,7 @@ After a compaction you are effectively a new supervisor. Do these before acting:
    - direct answers to the owner's questions;
    - exact owner steps;
    - an hourly update at :49 (Routine trig_01K3Z2WExmSzU2WnT6EytpL2);
-   - otherwise reply "( )";
+   - otherwise reply with one blank character, U+2800 "⠀", which shows as nothing (an empty reply is refused);
    - push notifications ONLY for a new APK, a Deploy that went live, or a whole task category done;
    - times from `TZ=Australia/Melbourne date`; never guess a time, SHA or number.
 4. **The loop:**
