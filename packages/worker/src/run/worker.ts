@@ -46,6 +46,7 @@ import { engineFeed, type EngineFeed } from './engine-feed.ts';
 import { startHealthServer } from './health.ts';
 import { type HeartbeatPosition, heartbeatBody, sendHeartbeat } from './heartbeat.ts';
 import { crashSite } from './crash-site.ts';
+import { MEM_EVERY_MS, cgroupMax, fatalReport, nearLimit, readMem, sampleMem, writeMem } from './mem-trace.ts';
 import { Summarizer, SummaryClock } from './summary.ts';
 import { CappedMap } from './capped-map.ts';
 import { jsonText } from './json.ts';
@@ -316,6 +317,9 @@ export const plannedRestart = (path: string, nowMs: number): string | null => {
   return out;
 };
 
+/** `no clean stop`, with how the memory stood at the death when that is known (MEM-TRACE). */
+export const withMemNote = (exit: string, note: string | null): string => (note === null ? exit : `${exit} (${note})`);
+
 export class Worker {
   readonly #d: WorkerDeps;
   readonly #boot: string;
@@ -427,6 +431,8 @@ export class Worker {
   #beatSeq = 0;
   #loop: ReturnType<Timers['setTimeout']> | null = null;
   #beat: ReturnType<Timers['setTimeout']> | null = null;
+  #memTimer: ReturnType<Timers['setTimeout']> | null = null;
+  readonly #cgroupMax = cgroupMax();
   #summaryClock: SummaryClock | null = null;
   #summary: Summarizer | null = null;
   #server: Server | null = null;
@@ -464,7 +470,12 @@ export class Worker {
     const handoff = join(c.stateDir, EXIT_HANDOFF);
     // A handoff of null (the pre-step saw a first start) stands: it is not "no handoff".
     const handed = takeHandoff(handoff, now);
-    this.#lastExit = handed !== undefined ? handed : plannedRestart(join(c.stateDir, STATE_FILES.plannedRestart), now) ?? this.#journal.previousExit;
+    // MEM-TRACE: a death with no stop line just after a sample near a memory limit says so.
+    // HEAP-GUARD: a fresh fatal-error report (the heap limit) names the death as a crash at its site, first.
+    const fatal = this.#journal.previousExit === 'no clean stop' ? fatalReport(c.stateDir, this.#journal.previousMs) : null;
+    const journalExit = fatal !== null ? `fatal error (${fatal})`
+      : this.#journal.previousExit === 'no clean stop' ? withMemNote(this.#journal.previousExit, nearLimit(readMem(c.stateDir), this.#journal.previousMs)) : this.#journal.previousExit;
+    this.#lastExit = handed !== undefined ? handed : plannedRestart(join(c.stateDir, STATE_FILES.plannedRestart), now) ?? journalExit;
     if (d.phase === 'reconcile') writeFileSync(handoff, JSON.stringify({ exit: this.#lastExit, at: now }));
     // Restarts in the last 24 h, planned (a runner drill), deploys and unplanned, for the heartbeat and the daily summary.
     // The pre-step is not a boot of its own: only the main start records one.
@@ -545,7 +556,7 @@ export class Worker {
       sell_only: [...this.#sellOnly],
       // RESTART-CAUSE: the unit's `--reconcile` pre-step is marked, so the daily summary counts real boots only.
       // The main boot names its restart's kind and how the previous process ended, for the daily summary's counts.
-      ...(d.phase === 'reconcile' ? { phase: 'reconcile' } : { restart: this.#restarts[this.#restarts.length - 1]?.kind ?? null, exit: exitKind(this.#lastExit) }),
+      ...(d.phase === 'reconcile' ? { phase: 'reconcile' } : { restart: this.#restarts[this.#restarts.length - 1]?.kind ?? null, exit: exitKind(this.#lastExit), ...(this.#lastExit?.startsWith('fatal error (') ? { crash_site: this.#lastExit.slice('fatal error ('.length, -1) } : {}) }),
     });
     if (this.#journal.repaired) this.#journal.write('journal_repair', { detail: 'torn last line removed' });
     if (this.#sellOnly.length > 0) {
@@ -1585,6 +1596,7 @@ export class Worker {
       });
     };
     beat();
+    this.#traceMem();
     this.#startSummary();
     // The loop already runs (exits never wait for the seed); entries resume once the seed is placed or given up.
     try {
@@ -1895,6 +1907,17 @@ export class Worker {
     this.#summaryClock.start();
   }
 
+  /** MEM-TRACE: the memory sample, every MEM_EVERY_MS, for the next boot's reading of how this process ended. Never throws. */
+  #traceMem(): void {
+    if (this.#stopping) return;
+    try {
+      writeMem(this.#d.config.stateDir, sampleMem(this.#d.timers.now(), this.#cgroupMax));
+    } catch {
+      // A sample not written (a full disk) only leaves the next boot without it.
+    }
+    this.#memTimer = this.#d.timers.setTimeout(() => this.#traceMem(), MEM_EVERY_MS);
+  }
+
   /** The summarizer, made on first use; null without a watchdog or its key. */
   #summarizer(): Summarizer | null {
     const d = this.#d;
@@ -1980,6 +2003,7 @@ export class Worker {
     const d = this.#d;
     if (this.#loop !== null) d.timers.clearTimeout(this.#loop);
     if (this.#beat !== null) d.timers.clearTimeout(this.#beat);
+    if (this.#memTimer !== null) d.timers.clearTimeout(this.#memTimer);
     this.#summaryClock?.stop();
     for (const s of this.#sources) s.stop();
     this.#probe?.stop();
@@ -2039,6 +2063,7 @@ export class Worker {
     this.#world.stop();
     if (this.#loop !== null) this.#d.timers.clearTimeout(this.#loop);
     if (this.#beat !== null) this.#d.timers.clearTimeout(this.#beat);
+    if (this.#memTimer !== null) this.#d.timers.clearTimeout(this.#memTimer);
     this.#summaryClock?.stop();
     for (const s of this.#sources) s.stop();
     this.#watch?.stop();
