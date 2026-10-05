@@ -302,6 +302,9 @@ export interface FunderOptions {
 }
 
 /** What one read cost and whether it ingested, for the worker's journal and the live-only veto rates. */
+/** Read outcomes a `FactReaders` keeps (the latest; older ones are dropped). */
+export const OUTCOMES_KEPT = 500;
+
 export interface ReadOutcome {
   readonly read: string;
   readonly ok: boolean;
@@ -334,7 +337,16 @@ export class FactReaders {
   readonly #volumeTried = new Map<number, number>();
   readonly #volumeTampered = new Set<number>();
   #volumeStoreRead = false;
+  /**
+   * The latest read outcomes, newest last, for diagnostics and tests: at most `OUTCOMES_KEPT` (trimmed in batches, in
+   * place). It grew with every read for the whole process (a slow leak over a multi-day run).
+   */
   readonly outcomes: ReadOutcome[] = [];
+
+  #outcome(o: ReadOutcome): void {
+    this.outcomes.push(o);
+    if (this.outcomes.length > 2 * OUTCOMES_KEPT) this.outcomes.splice(0, this.outcomes.length - OUTCOMES_KEPT);
+  }
 
   constructor(o: FactReadersOptions) {
     this.#o = o;
@@ -369,10 +381,10 @@ export class FactReaders {
 
   async #guard(read: string, f: () => Promise<string>): Promise<boolean> {
     try {
-      this.outcomes.push({ read, ok: true, detail: await f() });
+      this.#outcome({ read, ok: true, detail: await f() });
       return true;
     } catch (e) {
-      this.outcomes.push({ read, ok: false, detail: e instanceof Error ? e.message : 'failed' });
+      this.#outcome({ read, ok: false, detail: e instanceof Error ? e.message : 'failed' });
       return false;
     }
   }
@@ -475,7 +487,7 @@ export class FactReaders {
    */
   async readHoldersAll(mint: string, priority: Priority = P2): Promise<boolean> {
     if (!this.#takeScan()) {
-      this.outcomes.push({ read: `holders-all:${mint}`, ok: false, detail: 'daily scan cap reached' });
+      this.#outcome({ read: `holders-all:${mint}`, ok: false, detail: 'daily scan cap reached' });
       return false;
     }
     return this.#guard(`holders-all:${mint}`, async () => {
@@ -576,7 +588,7 @@ export class FactReaders {
       // The scan's program is the mint's owner, learnt from the layout read (the mint is in every bank).
       const mintOwner = this.#mintProgram.get(mint);
       const scanned = req.holders === 'all' && mintOwner !== undefined && this.#takeScan();
-      if (req.holders === 'all' && !scanned) this.outcomes.push({ read: `holders-all:${mint}`, ok: false, detail: mintOwner === undefined ? 'mint program not known' : 'daily scan cap reached' });
+      if (req.holders === 'all' && !scanned) this.#outcome({ read: `holders-all:${mint}`, ok: false, detail: mintOwner === undefined ? 'mint program not known' : 'daily scan cap reached' });
       // The final round: every call at once.
       const bank = addresses.length <= 100 ? this.#o.rpc.getMultipleAccounts(addresses, priority) : Promise.reject(new Error(`${addresses.length} accounts do not fit one bank`));
       const scan = scanned ? this.#scan(mintOwner!, mint, p.minSlot, priority) : null;
@@ -967,7 +979,7 @@ export class FactReaders {
         if (rows === null) continue;
         for (const r of rows) this.#ingest('github', RAW.volumeHour, r);
         this.#volumeDays.set(day, d);
-        this.outcomes.push({ read: `chain-volume:${d.day}`, ok: true, detail: `${rows.length} hours from the store` });
+        this.#outcome({ read: `chain-volume:${d.day}`, ok: true, detail: `${rows.length} hours from the store` });
       }
     }
     const limited = (e: unknown): boolean => e instanceof ScheduleRefused || (e instanceof ProviderError && (e.kind === 'rate_limited' || e.status === 403));
@@ -986,7 +998,7 @@ export class FactReaders {
         if (v.length < 100) break;
       }
     } catch (e) {
-      this.outcomes.push({ read: 'chain-volume:list', ok: false, detail: e instanceof Error ? e.message : 'failed' });
+      this.#outcome({ read: 'chain-volume:list', ok: false, detail: e instanceof Error ? e.message : 'failed' });
       return false;
     }
     // Days already verified must still match their release.
@@ -1000,7 +1012,7 @@ export class FactReaders {
       this.#volumeTampered.add(day);
       src.store?.save({ ...d, tampered: true });
       const detail = `${d.day} volume unknown: release ${d.tag} changed after it was verified`;
-      this.outcomes.push({ read: `chain-volume:${d.day}`, ok: false, detail });
+      this.#outcome({ read: `chain-volume:${d.day}`, ok: false, detail });
       src.alert?.(detail);
     }
     let all = true;
@@ -1037,9 +1049,9 @@ export class FactReaders {
         const stored: StoredVolumeDay = { tag, day: name, hours: { id: refs.hours.id, sha256: refs.hours.sha256, text: hours }, check: { id: refs.check.id, sha256: refs.check.sha256, text: check }, tampered: false };
         this.#volumeDays.set(day, stored);
         src.store?.save(stored);
-        this.outcomes.push({ read, ok: true, detail: `${rows.length} hours` });
+        this.#outcome({ read, ok: true, detail: `${rows.length} hours` });
       } catch (e) {
-        this.outcomes.push({ read, ok: false, detail: e instanceof Error ? e.message : 'failed' });
+        this.#outcome({ read, ok: false, detail: e instanceof Error ? e.message : 'failed' });
         this.#volumeTried.set(day, this.#o.timers.now());
         all = false;
         if (limited(e)) return false;
