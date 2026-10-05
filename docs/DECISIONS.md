@@ -2599,6 +2599,7 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - Nothing looks the key up in the store; the producer acts on the released read.
 - **No live candidate loses a read it needs:** reads are made during the candidate's life, which with its tail is at most the window (240 min) plus the longest tail (`tMaxCapMs`, 120 min), well under a day.
 - **Credits (condition c): no extra reads.** `Readers.readInsiders` reads every funder again for each candidate as of that candidate's slot (it never reuses an earlier read). So letting a read go never causes a read that would not have happened anyway. The extra Helius spend is 0, well under the 1% line.
+- **Identified saving, not built (supervisor note, for the usage-cut work, item 21).** `readInsiders` reads every funder again for each candidate (`readers.ts` `readMintHistory`), although a found first funding never changes. Each read is 1 to 3 signature pages plus up to 10 transactions (`MINT_HISTORY_CAPS`) at 1 Helius credit a call (`HELIUS_RPC_CREDITS`): 2 to 13 credits a wallet, about 42 to 273 a candidate for its dev and 20 first buyers. A wallet-keyed cache of complete reads would save that for every wallet already read.
 - **Evidence (fail before, pass after).**
   - `producer.test.ts`:
     - funder reads are kept a millisecond short of a day and let go at a day;
