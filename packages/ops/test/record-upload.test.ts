@@ -287,6 +287,18 @@ describe('upload and delete', () => {
     expect(x.status().deleted).toBe(0);
   });
 
+  it('a recorder folder that is itself a link deletes nothing', async () => {
+    const f = fx();
+    const real = join(f.outside, 'recorder');
+    makeBoot({ ...f, root: real }, bootId(30, 125));
+    rmSync(f.root, { recursive: true });
+    symlinkSync(real, f.root);
+    const x = uploader(f);
+    expect(await x.u.run()).toBe(0);
+    expect(assetNames(x.r).length).toBeGreaterThan(0);
+    expect(x.status().deleted).toBe(0);
+  });
+
   it('keeps every file when the day index is not uploaded', async () => {
     const f = fx();
     const dir = makeBoot(f, bootId(30, 113));

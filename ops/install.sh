@@ -2020,7 +2020,7 @@ export class Uploader {
   async index(day) {
     const st = (this.state.index[day] ??= { n: 0, hash: null, verified: false, keys: [], pending: null });
     const entries = Object.entries(this.state.files)
-      .filter(([, r]) => r.day === day && r.verified)
+      .filter(([key, r]) => r.day === day && r.verified && !key.startsWith('index/'))
       .sort(([a], [b]) => (a < b ? -1 : 1))
       .map(([key, r]) => ({ key, boot: r.boot, path: r.path, release: r.release, asset: r.asset, asset_id: r.asset_id, size: r.size, sha256: r.sha256 }));
     if (entries.length === 0) return;
@@ -2080,6 +2080,8 @@ export class Uploader {
     if (!m || running.has(it.boot)) return;
     if (!this.state.index[it.day]?.keys.includes(it.key)) return;
     try {
+      // The recorder folder itself must be a real folder at its own path: nothing outside it is ever deleted.
+      if (lstatSync(this.cfg.root).isSymbolicLink()) return;
       const root = realpathSync(this.cfg.root);
       const path = join(root, it.boot, it.rel);
       const st = lstatSync(path);
