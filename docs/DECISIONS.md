@@ -2224,6 +2224,29 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - `restart-keep.test.ts`: an ended candidate is not restored, with the live run's record and tail; a never-evaluated one has no tail; one ms inside the window it is still restored, at the window's end exactly it is not; the in-window candidate's decisions equal a restore of it alone; a worker restarted after the window reads none of the candidate's transactions.
   - Hand mutants killed: no read limit; urgent reads at the back; waiting reads run after a stop; scan count not saved; unreadable file not counted as spent; no fill limit; no reservation; no refund; a finished fill not waking the next; the scan file not wired in production; the window check off by one either way (`>` at the exact end, one ms late); an ended candidate dropped without its tail; the check moved before the pool is noted.
 
+## Fee tiers from the chain (FEE-TIER-NOW; `facts/readers.ts` `readBatch`, `run/worker.ts`)
+
+- **Why (supervisor ruling, 2026-10-05):** a PumpSwap swap event reports the fee tier of its own pre-trade market cap. A swap that crosses a tier threshold therefore leaves the next quote priced at the old tier, live and after a restart. No check on reserves alone can tell whether two market caps share a tier: the thresholds live only in the pump-fees FeeConfig account. Pump's own advice is to read FeeConfig rather than infer tiers (research/execution.md, quant.md F11).
+- **What:** PumpSwap's GlobalConfig and the pump-fees FeeConfig join the batch's final `getMultipleAccounts`, the same single call. That is no extra call and no extra credit: Helius bills per call, and a test pins the call count.
+  - They are decoded with WATCH-1's `decodeSnapshot` from the same bank: tiers, canonical flag, creator fee override, coin flags.
+  - The result is put as `worker:fees:<mint>` inside the batch's open/close, at the bank's moment.
+  - #market already prefers that fact, so `poolFees` selects the tier at the current reserves on every quote.
+  - The worker's paper fill (`poolOf`) reads the same fact. It now unwraps the off-chain frame; before, a batch-read context would have reached the fill wrapped and unusable, which the end-to-end test caught.
+  - Observed swap terms stay only as the fallback before a mint's first batch. A missing or foreign account publishes nothing (fail closed).
+  - After a restart, the first batch prices the coin again at the current tier, whatever the restored terms say.
+- **Parity:** the recorded-live replay rebuilds the context from its recorded frames and gives the same decisions (test).
+- **Known gap, bounded (BT parity review):** the historical backtest keeps observed swap terms until a FeeConfig history arrives in the proof phase. Backtest and live can differ in exactly three cases:
+  1. A tier crossing between swaps: a quote falls in a different tier from the last swap's pre-trade market cap.
+  2. A FeeConfig or GlobalConfig update by pump between two swaps: live prices the new config from the next batch, the backtest only after the next swap.
+  3. A quote before a mint's first swap: live has a fee context from the first batch, the backtest has none.
+- **Tests that fail before** (`read-coherent.test.ts`, FEE-TIER-NOW blocks):
+  - the bank carries both configs at the same call count, and the context matches the decoder's;
+  - a FeeConfig not owned by pump-fees, or no config at all, puts no context;
+  - a crossing is priced at the tier of the reserves now;
+  - end to end, after live swaps the worker's market prices from the FeeConfig schedule (several tiers, canonical), never the swap's one-tier context;
+  - the parity replay.
+  - `fees-keep.test.ts` adds the restore case: a moved pool with a fee-context fact is judged by the gates.
+
 ## The live store under busy pools (OOM-SWAPS part 2, `core/src/engine/asof.ts` `Collapse`, `core/src/gates/tails.ts` `tradeTailCollapse`, `worker/src/run/store-rules.ts`)
 
 - **2026-10-05 · Why.** The live engine ran with no retention, so its as-of store kept every released event for the whole process. Each swap on a watched pool adds two entries: its trade event (`logs:pump_amm:BuyEvent|SellEvent:<pool>`) and a fresh pool fact (`gates/pool:<mint>`). Measured in the harness with real swap log frames: 10.0 KB of heap per swap (4.2 KB with part 1's flat addresses), linear. At about 4,000 swaps a minute across the ~230 pools in their window, the heap reached its 560 MB limit 10–15 minutes after every boot (HeapOutOfMemory 13 on 5 Oct, still on 09790b40). G4a (#164) does not bound it: it keeps trade keys for the look-back plus a day and per-object keys for at least a day.
