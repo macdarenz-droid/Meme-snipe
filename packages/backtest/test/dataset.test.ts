@@ -7,9 +7,9 @@ import { createHash } from 'node:crypto';
 import { loadCoverage, loadDay, loadManifest, loadMovements, loadVolumeHours, regimeBoundariesOf, SUPPORTED_SCHEMA, tableOf, verifySums } from '../src/dataset/dataset.ts';
 import type { CoverageRow, MovementRow } from '../src/dataset/rows.ts';
 import { readSeries, usableFrom } from '../src/dataset/offchain.ts';
-import { writeDataset } from './dataset-writer.ts';
+import { writeDataset } from '../src/dataset/writer.ts';
 import { decodeBase58, toBase64 } from '../../core/src/chain/index.ts';
-import { SOL_USD, syntheticRows, T0 } from './synthetic.ts';
+import { SOL_USD, syntheticRows, T0 } from '../src/dataset/synthetic.ts';
 import { RESEARCH_CONFIG } from '../../core/src/config/index.ts';
 
 vi.setConfig({ testTimeout: 300_000 });
@@ -216,7 +216,7 @@ describe('release-asset layout', () => {
 describe('PumpSwap reserves in the reader', () => {
   test('the signed virtual quote reserve is read into the pre-trade state (negative included), never dropped', async () => {
     const { readAmm } = await import('../src/dataset/rows.ts');
-    const { AMM_COLS } = await import('./dataset-writer.ts');
+    const { AMM_COLS } = await import('../src/dataset/writer.ts');
     const values: Record<string, string> = {
       slot: '1', block_time: '2', tx_idx: '0', ev_idx: '0', signature: 's', pool: 'p', base_mint: 'b', quote_mint: 'q', side: 'buy',
       base_amount: '10', quote_amount: '1000', pool_base_token_reserves: '5000000', pool_quote_token_reserves: '900000',

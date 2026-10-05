@@ -9,7 +9,7 @@ import { SOL_USD_BOOKS_STALE_MS, SOL_USD_MAX_AGE_MS } from '../src/strategy/stud
 import { devFunderOf, NO_CLUSTER, scoreRun } from '../src/study/score.ts';
 import { mintHashFraction } from '../src/sim/facts.ts';
 import { key, type MintPlan, studyWorld, W0, WSLOT0 } from './study-world.ts';
-import { SOL_USD } from './synthetic.ts';
+import { SOL_USD } from '../src/dataset/synthetic.ts';
 import { oneTimeRent } from '../../worker/src/run/settings.ts';
 import { ASSUMPTIONS } from '../../worker/src/facts/budget.ts';
 import { HOLDER_SCANS_PER_DAY } from '../../worker/src/facts/readers.ts';

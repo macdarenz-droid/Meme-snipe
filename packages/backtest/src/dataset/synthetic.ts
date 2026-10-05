@@ -1,11 +1,11 @@
 // A small synthetic market in the DATA-1 row shapes: one graduated mint with a canonical PumpSwap pool, a block every
-// slot and swaps through the pool for several hours. Used where real data is not needed (unit and property tests).
+// slot and swaps through the pool for several hours. Used where real data is not needed (unit and property tests, and the synthetic evidence run).
 import { createHash } from 'node:crypto';
-import { encodeBase58, NATIVE_MINT, poolAddress, pumpPoolAuthority, toAddress } from '../../core/src/chain/index.ts';
-import { replaySwap } from '../../core/src/fills/index.ts';
-import { bps } from '../../core/src/units/index.ts';
-import type { OffchainSeries } from '../src/dataset/offchain.ts';
-import type { AmmSwapRow, DatasetRow } from '../src/dataset/rows.ts';
+import { encodeBase58, NATIVE_MINT, poolAddress, pumpPoolAuthority, toAddress } from '../../../core/src/chain/index.ts';
+import { replaySwap } from '../../../core/src/fills/index.ts';
+import { bps } from '../../../core/src/units/index.ts';
+import type { OffchainSeries } from './offchain.ts';
+import type { AmmSwapRow, DatasetRow } from './rows.ts';
 
 export const key = (label: string): string => encodeBase58(createHash('sha256').update(label).digest());
 const sig = (label: string): string => encodeBase58(new Uint8Array([...createHash('sha256').update(`a${label}`).digest(), ...createHash('sha256').update(`b${label}`).digest()]));

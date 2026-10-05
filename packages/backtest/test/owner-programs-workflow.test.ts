@@ -11,7 +11,7 @@ import { decodeBase58, encodeBase58, isOnCurve } from '../../core/src/chain/inde
 import { bps } from '../../core/src/units/index.ts';
 import { writeOwnerPrograms } from '../src/dataset/owner-programs.ts';
 import type { AmmSwapRow } from '../src/dataset/rows.ts';
-import { writeDataset } from './dataset-writer.ts';
+import { writeDataset } from '../src/dataset/writer.ts';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 const read = (p: string) => readFileSync(join(root, p), 'utf8');

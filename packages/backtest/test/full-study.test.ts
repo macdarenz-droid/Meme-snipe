@@ -12,7 +12,7 @@ import { readHoldoutStore, registerAttempt } from '../src/holdout.ts';
 import { runSealedHoldout } from '../src/study/sealed.ts';
 import { runFullStudy, type StudyInputs } from '../src/study/study.ts';
 import { type MintPlan, studyWorld, W0 } from './study-world.ts';
-import { SOL_USD } from './synthetic.ts';
+import { SOL_USD } from '../src/dataset/synthetic.ts';
 import { POOL_ACCOUNTS } from './study-world.ts';
 
 vi.setConfig({ testTimeout: 900_000 });

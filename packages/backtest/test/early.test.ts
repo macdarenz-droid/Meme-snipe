@@ -5,13 +5,13 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { writeDataset } from './dataset-writer.ts';
+import { writeDataset } from '../src/dataset/writer.ts';
 import { FILL_CONFIG, RESEARCH_CONFIG, TRIAL_POLICY } from '../../core/src/config/index.ts';
 import { STUDY_CONFIG, configId, type UniverseConfig } from '../src/strategy/config.ts';
 import { EARLY_LABEL, earlyDay, tradeStats } from '../src/study/early.ts';
 import type { ScoredTrade } from '../src/study/score.ts';
 import { type MintPlan, POOL_ACCOUNTS, studyWorld, W0 } from './study-world.ts';
-import { SOL_USD } from './synthetic.ts';
+import { SOL_USD } from '../src/dataset/synthetic.ts';
 
 vi.setConfig({ testTimeout: 600_000 });
 

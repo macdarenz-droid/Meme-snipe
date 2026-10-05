@@ -170,7 +170,14 @@ if (command === 'holdout-plan' || command === 'holdout-register' || command === 
       { kind: 'market', id: 'plant:event', moment: { slot: midRow.slot, txIndex: OFF_CHAIN - 3, ixIndex: 0, receivedAt: midRow.blockTime * 1000 }, key: `life:${token}`, value: { event: 'Planted', fields: { marker: token } } },
       { kind: 'market', id: 'plant:account', moment: { slot: midRow.slot, txIndex: OFF_CHAIN - 3, ixIndex: 1, receivedAt: midRow.blockTime * 1000 }, key: `acct:${token}`, value: { owner: token } },
     ],
-  }, { labels: [{ note: token }] });
+  }, ({ rows: stream }) => {
+    // The scoring stage's view of the window's second half (it runs after the engine and may read the future): swaps
+    // per pool from the marker's time on. The planted swap is one of them, so the labels carry the marker only when
+    // the plant reached the data.
+    const swaps: Record<string, number> = {};
+    for (let it = stream(), r = it.next(); !r.done; r = it.next()) if (r.value.kind === 'amm' && r.value.blockTime * 1000 >= mid) swaps[r.value.pool] = (swaps[r.value.pool] ?? 0) + 1;
+    return swaps;
+  });
   const { trades, stray } = tradesOf(first, FILL_CONFIG);
   const candidates = first.records.filter((r) => r.type === 'decision' && r.reasons[0] === 'candidate').length;
   const entries = first.attempts.filter((a) => a.purpose === 'entry' && a.outcome === 'filled').length;

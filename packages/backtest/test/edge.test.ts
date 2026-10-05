@@ -11,7 +11,7 @@ import type { AmmSwapRow } from '../src/dataset/rows.ts';
 import { collectCandidates, PLAN_DRIVE, solUsdAsOf } from '../src/research/candidates.ts';
 import { PLAN_BARRIERS, scoreCandidates } from '../src/research/outcome.ts';
 import type { PracticeWindow } from '../src/research/practice.ts';
-import { SOL_USD, syntheticRows, T0 } from './synthetic.ts';
+import { SOL_USD, syntheticRows, T0 } from '../src/dataset/synthetic.ts';
 
 const synth = syntheticRows({ mints: 1, slots: 2.5 * 3600 * 6 });
 import { FEATURE_IDS } from '../src/research/tracker.ts';
