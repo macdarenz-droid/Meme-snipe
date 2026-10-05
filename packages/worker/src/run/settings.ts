@@ -1,10 +1,12 @@
 // The worker's trading settings, all from versioned configuration: the locked policy (owner limits), the fill config
-// (network terms, paper scenarios) and the research config (U2's window). Nothing here is a limit of its own.
+// (network terms, paper scenarios), the research config (U2's window) and the study's registered configuration (R14's
+// median target). Nothing here is a limit of its own.
 import { type FillConfig, type Policy, type ResearchConfig, exitsFor } from '../../../core/src/config/index.ts';
 import type { FillScenario } from '../../../core/src/fills/index.ts';
 import { PPM } from '../../../core/src/costs/index.ts';
 import { MAX_CREATED_ACCOUNT_BYTES, USER_VOLUME_ACCUMULATOR_SIZE, rentExempt } from '../../../core/src/tx/rent.ts';
 import type { StrategyConfig } from '../engine/strategy.ts';
+import { registeredMedianTargetBps, STUDY_CONFIG, type StudyConfig } from '../../../backtest/src/strategy/config.ts';
 
 /** The paper fill scenario: conservative (the safe side) until the dry run measures our own latency (§11). */
 export const PAPER_SCENARIO = 'conservative';
@@ -17,6 +19,7 @@ export const PAPER_SCENARIO = 'conservative';
 export const strategyConfig = (
   policy: Policy, fills: FillConfig, research: ResearchConfig, edgePpm: bigint = 0n,
   entry: { readonly timing: 'gates' | 'random'; readonly salt: string; readonly s0Diagnostic?: boolean } = { timing: 'gates', salt: '' },
+  study: StudyConfig = STUDY_CONFIG,
 ): StrategyConfig => {
   const net = fills.network;
   const s: FillScenario = fills.scenarios[PAPER_SCENARIO];
@@ -34,7 +37,9 @@ export const strategyConfig = (
     // No edge is proven yet: risk refuses every entry until research registers one (CLAUDE.md, "zeroed trades only
     // when the data proves the setup").
     edgePpm,
-    medianTargetBps: exitsFor(policy.exits, 'U2').partialAtGainBps,
+    // R14's median target is the one the study registered for U2 (S0 included, as the backtest's S0 uses it), never an
+    // exit parameter standing in. Without one it is 0, which risk refuses (`median_target_invalid`): no entry on a guess.
+    medianTargetBps: registeredMedianTargetBps(study, 'U2') ?? 0,
     takeProfitOn: s.takeProfit,
     network: {
       signaturesPerTx: net.signaturesPerTx, baseFeePerSignature: net.baseFeePerSignature, entryPriorityFee: net.entryPriorityFee,

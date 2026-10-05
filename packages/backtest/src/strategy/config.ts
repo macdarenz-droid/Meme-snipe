@@ -186,6 +186,16 @@ const freeze = <T>(v: T): T => {
 
 export const STUDY_CONFIG: StudyConfig = freeze(structuredClone(VALUES));
 
+/**
+ * R14's median target registered for `universe` (MEDIAN-TARGET): the one value its configurations carry, the same the
+ * study hands risk. Null when the universe has no configuration, or its configurations disagree, so the caller has no
+ * registered value and must not trade on a stand-in.
+ */
+export const registeredMedianTargetBps = (c: StudyConfig, universe: string): number | null => {
+  const values = new Set(c.universes.filter((u) => u.universe === universe).map((u) => u.medianTargetBps));
+  return values.size === 1 ? [...values][0]! : null;
+};
+
 /** The configuration id of a universe: sha256 of its canonical content and the shared study values. */
 /** A configuration's tag: its hypothesis id, else its universe. */
 export const configTag = (u: UniverseConfig): string => u.id ?? u.universe;
