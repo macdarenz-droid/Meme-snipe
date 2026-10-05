@@ -7,7 +7,7 @@ import { toBase64, type TransactionRecord } from '../../core/src/chain/index.ts'
 import { createReplay, Engine, runToEnd, type Clock, type Feed, type FeedEvent, type MarketEvent, type Strategy } from '../../core/src/engine/index.ts';
 import { FactFeed, FactProducer, RAW, STREAMS } from '../../core/src/facts/index.ts';
 import {
-  candlesKey, createKey, holdersKey, insidersKey, lpKey, migrationKey, mintKey, poolKey, streamKey, xcheckKey, SOL_USD_KEY, GRADUATES_KEY,
+  candlesKey, carryKey, createKey, holdersKey, insidersKey, lpKey, migrationKey, mintKey, poolKey, streamKey, xcheckKey, SOL_USD_KEY, GRADUATES_KEY,
 } from '../../core/src/gates/index.ts';
 import { CONFIG } from '../../core/test/fixtures.ts';
 import { FIX, FactWorld, MINT, OPTIONS, POOL, RECORDS, chainTx, offchain } from '../../core/test/facts/helpers.ts';
@@ -191,10 +191,16 @@ describe('pool state from the swap stream, live and replayed (POS-1)', () => {
     expect(pools(b.seen)).toEqual(pools(run.seen));
     expect(factEvents(b.seen)).toEqual(factEvents(run.seen));
     expect(b.engine.logHash()).toBe(run.engine.logHash());
+    // WATCH-1c: the carries (the unchanged state through each covered slot) are derived, so every path re-releases
+    // them alike, the same events in the same places.
+    const carries = (events: readonly FeedEvent[]) => factEvents(events).filter((e) => (e as MarketEvent).key === carryKey(MINT));
+    expect(carries(run.seen).length).toBeGreaterThan(0);
+    expect(carries(b.seen)).toEqual(carries(run.seen));
     const s = createReplay(frameEvents(run.frames));
     const c = through(s.clock, s.feed);
     runToEnd(s, c.engine);
     expect(pools(c.seen)).toEqual(pools(run.seen));
+    expect(carries(c.seen)).toEqual(carries(run.seen));
     expect(c.engine.logHash()).toBe(run.engine.logHash());
   });
 });
