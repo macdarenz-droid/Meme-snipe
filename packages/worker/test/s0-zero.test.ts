@@ -288,9 +288,9 @@ describe('the in-run fill spends from the daily budget and is journaled', () => 
       expect(await fill({ address: pool, fromSlot: 452_941_200n, toSlot: 452_941_210n })).toBe(false);
       expect(lines[0]).toMatchObject({ complete: false, stopped_by: 'credit-cap' });
       expect(spent[0]).toBe(cap);
-      const net = spent.reduce((a, b) => a + b, 0);
-      expect(net).toBeLessThanOrEqual(cap);
-      expect(net).toBeGreaterThan(cap - 3);
+      // FILL-FORESEE: the first page shows the gap cannot fit, so the fill stops there: one credit, the rest given back.
+      expect(spent.reduce((a, b) => a + b, 0)).toBe(1);
+      expect(lines[0]).toMatchObject({ transactions: 0, credits: 1 });
     }
   });
 
@@ -298,7 +298,8 @@ describe('the in-run fill spends from the daily budget and is journaled', () => 
     // A boot's catch-up asks for many fills at once. Before: each took min(cap, remaining) at its start and booked only
     // at its end, so all of them read on the same remaining credits, with no limit on how many held answers in memory.
     const hyg = TXS.find((x) => x.label.startsWith('PumpSwap SellEvent'))!;
-    const many: SignatureInfo[] = Array.from({ length: TRADES_FILL_CREDITS + 50 }, (_, k) => ({ signature: `Many${k}`.replace(/0/g, 'z').padEnd(44, '1'), slot: BigInt(hyg.slot), err: null, blockTime: 1_791_032_000 }));
+    // Each gap fits one fill (400 reads): the fills read, and the daily budget binds before the twelfth.
+    const many: SignatureInfo[] = Array.from({ length: 400 }, (_, k) => ({ signature: `Many${k}`.replace(/0/g, 'z').padEnd(44, '1'), slot: BigInt(hyg.slot), err: null, blockTime: 1_791_032_000 }));
     let reading = 0;
     let most = 0;
     const busy: SeedRpc = {
@@ -308,9 +309,10 @@ describe('the in-run fill spends from the daily budget and is journaled', () => 
     const daily = TRADES_FILL_CREDITS * 3 + 100;
     const budget = DailyBudget.load(join(tempState(), 'fill-budget.json'), daily, now);
     const used: number[] = [];
+    const read: number[] = [];
     const fill = tradesFill({
       feed: new LiveFeed({ ...DEFAULT_LIVE_FEED, horizonSlots: 0 }), timers, rpc: busy, budget,
-      pools: () => new Map(), journal: (_k, f) => used.push(f['credits'] as number),
+      pools: () => new Map(), journal: (_k, f) => { used.push(f['credits'] as number); read.push(f['transactions'] as number); },
     });
     const results = await Promise.all(Array.from({ length: 12 }, (_, k) => fill({ address: `${pool.slice(0, -2)}${String(k).padStart(2, 'z')}`, fromSlot: 452_941_200n, toSlot: 452_941_210n })));
     expect(results.every((ok) => !ok)).toBe(true);
@@ -320,7 +322,64 @@ describe('the in-run fill spends from the daily budget and is journaled', () => 
     const total = used.reduce((a, b) => a + b, 0);
     expect(total).toBeLessThanOrEqual(daily);
     expect(daily - budget.remaining(now)).toBe(total);
-    expect(used.filter((c) => c > 0).length).toBeLessThan(12);
+    // Only the fills the budget could cover read (401 credits each: a page and 400 reads); the rest stopped at their
+    // first page (FILL-FORESEE), so the budget the others could not use is still there.
+    expect(read.filter((n) => n > 0).length).toBe(Math.floor(daily / 401));
+    expect(budget.remaining(now)).toBeGreaterThan(0);
+  });
+
+  it('FILL-FORESEE: a restore wave of busy catch-ups no longer spends the day\'s fill budget; a new migration\'s small catch-up still completes', async () => {
+    // After a restart every restored candidate catches up from its migration. A pool a few minutes old has more trades
+    // than one fill reads (TRADES_FILL_CREDITS), so its fill can only end partial (lossy). Before: each such fill read up
+    // to its whole cap, and about eight of them spent the day's budget, so a coin migrating later got no fill at all.
+    const hyg = TXS.find((x) => x.label.startsWith('PumpSwap SellEvent'))!;
+    const busyOf = (a: string): SignatureInfo[] => Array.from({ length: TRADES_FILL_CREDITS + 50 }, (_, k) => ({ signature: `B${a.slice(0, 6)}${k}`.replace(/[0lIO]/g, 'z').padEnd(88, '1'), slot: BigInt(hyg.slot), err: null, blockTime: 1_791_032_000 }));
+    const fresh = 'Fresh'.padEnd(44, '1');
+    // The new pool: two trades since its migration, then an older signature (its history reaches the gap's start).
+    const small: SignatureInfo[] = [...sigs(2), { signature: 'Older452941100'.padEnd(44, '1'), slot: 452_941_100n, err: null, blockTime: 1_791_032_000 }];
+    const pages = new Map<string, SignatureInfo[]>();
+    const rpcOf: SeedRpc = {
+      getSignaturesForAddress: async (a, o) => {
+        const all = a === fresh ? small : (pages.get(a) ?? pages.set(a, busyOf(a)).get(a)!);
+        const from = o.before === undefined ? 0 : all.findIndex((x) => x.signature === o.before) + 1;
+        return all.slice(from, from + o.limit);
+      },
+      getTransaction: async (sg) => { const t = TXS.find((x) => x.signature === sg); return t === undefined ? recordOf(hyg) : recordOf(t); },
+    };
+    const budget = DailyBudget.load(join(tempState(), 'fill-budget.json'), FILL_CREDITS_PER_DAY, now);
+    const fill = tradesFill({ feed: new LiveFeed({ ...DEFAULT_LIVE_FEED, horizonSlots: 0 }), timers, rpc: rpcOf, budget, pools: () => new Map() });
+    const restored = await Promise.all(Array.from({ length: 20 }, (_, k) => fill({ address: `R${k}`.padEnd(44, '1'), fromSlot: 452_941_200n, toSlot: 452_941_210n })));
+    expect(restored.every((ok) => !ok)).toBe(true);
+    // One page each.
+    expect(FILL_CREDITS_PER_DAY - budget.remaining(now)).toBe(20);
+    expect(await fill({ address: fresh, fromSlot: 452_941_200n, toSlot: 452_941_210n })).toBe(true);
+  });
+
+  it('FILL-FORESEE: the foresight is a lower bound: a candidate gap that exactly fits reads to completion, one more read stops at the first page', async () => {
+    const hyg = TXS.find((x) => x.label.startsWith('PumpSwap SellEvent'))!;
+    for (const [n, cap, stops] of [[9, 10, false], [10, 10, true]] as const) {
+      // n trades in the gap, then a signature older than the gap: the first page reaches the gap's start.
+      const list: SignatureInfo[] = [...Array.from({ length: n }, (_, k) => ({ signature: `X${k}`.replace(/0/g, 'z').padEnd(88, '1'), slot: BigInt(hyg.slot), err: null, blockTime: 1_791_032_000 })), { signature: 'Older452941100'.padEnd(44, '1'), slot: 452_941_100n, err: null, blockTime: 1_791_032_000 }];
+      const r: SeedRpc = { getSignaturesForAddress: async (_a, o) => (o.before === undefined ? list.slice(0, o.limit) : []), getTransaction: async () => recordOf(hyg) };
+      const lines: Record<string, unknown>[] = [];
+      const f = tradesFill({ feed: new LiveFeed({ ...DEFAULT_LIVE_FEED, horizonSlots: 0 }), timers, rpc: r, budget: { remaining: () => cap, spend: () => {}, refund: () => {} }, pools: () => new Map(), journal: (_k, x) => lines.push({ ...x }) });
+      await f({ address: pool, fromSlot: 452_941_200n, toSlot: 452_941_210n });
+      expect(lines[0], `n ${n}`).toMatchObject(stops ? { stopped_by: 'credit-cap', transactions: 0, credits: 1 } : { stopped_by: 'done', transactions: n, credits: 1 + n });
+    }
+    const run = async (list: SignatureInfo[], cap: number) => {
+      const r: SeedRpc = { getSignaturesForAddress: async (_a, o) => { const from = o.before === undefined ? 0 : list.findIndex((x) => x.signature === o.before) + 1; return list.slice(from, from + o.limit); }, getTransaction: async () => recordOf(hyg) };
+      const lines: Record<string, unknown>[] = [];
+      const f = tradesFill({ feed: new LiveFeed({ ...DEFAULT_LIVE_FEED, horizonSlots: 0 }), timers, rpc: r, budget: { remaining: () => cap, spend: () => {}, refund: () => {} }, pools: () => new Map(), journal: (_k, x) => lines.push({ ...x }) });
+      await f({ address: pool, fromSlot: 452_941_200n, toSlot: 452_941_210n });
+      return lines[0]!;
+    };
+    const sig = (k: number, err: unknown = null): SignatureInfo => ({ signature: `Y${k}`.replace(/0/g, 'z').padEnd(88, '1'), slot: BigInt(hyg.slot), err, blockTime: 1_791_032_000 });
+    const older: SignatureInfo = { signature: 'Older452941100'.padEnd(44, '1'), slot: 452_941_100n, err: null, blockTime: 1_791_032_000 };
+    // Failed transactions cost no read: nine good and three failed fit a cap of ten.
+    expect(await run([...Array.from({ length: 9 }, (_, k) => sig(k)), ...[9, 10, 11].map((k) => sig(k, { InstructionError: [0, 'x'] })), older], 10)).toMatchObject({ stopped_by: 'done', transactions: 9, credits: 10 });
+    // A full first page that does not reach the gap's start needs another page: four reads and two pages pass a cap of five.
+    const full = [...Array.from({ length: 4 }, (_, k) => sig(k)), ...Array.from({ length: 996 }, (_, k) => sig(10 + k, { InstructionError: [0, 'x'] })), older];
+    expect(await run(full, 5)).toMatchObject({ stopped_by: 'credit-cap', transactions: 0, credits: 1 });
   });
 
   it('STEP-B: a death mid-fill keeps the charge: the cap is on disk before the first read', async () => {
