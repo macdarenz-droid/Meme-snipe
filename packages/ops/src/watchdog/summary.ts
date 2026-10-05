@@ -16,7 +16,7 @@ export const SUMMARY_MAX_TRADES = 500;
 export const SUMMARY_TOP_REASONS = 10;
 
 /** How the previous process ended, as counted in `worker.exits` (RESTART-CAUSE). */
-export const EXIT_KINDS = ['clean', 'crash', 'killed', 'planned'] as const;
+export const EXIT_KINDS = ['clean', 'crash', 'killed', 'planned', 'oom'] as const;
 /** The most crash sites one summary lists, most frequent first. */
 export const SUMMARY_MAX_CRASH_SITES = 8;
 

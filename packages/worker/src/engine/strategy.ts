@@ -29,7 +29,7 @@ import {
   atr, checkStopDistance, decideExit, execPrice, liquidationValue, exitAttemptsOf, exitBookEvents, exitSettings, newTracker, noteAttempt,
 } from '../../../core/src/exits/index.ts';
 import {
-  type Coverage, type DeployerIndexState, type GateContext, type GraduatesFact, type RugLabellerState, type S0DiagnosticPart, DeployerIndex, GRADUATES_KEY, hardAllowsEntry, LOG_CREATE_PREFIX, NOT_EVALUATED, stagedHardRejects, RugLabeller, TX_CREATE_PREFIX, type PoolFact, carryKey, createKey, createsCoverage, evaluateHardRejects, evaluateRegime, migrationKey, parseCreate, parseGraduates, parseMigration, parsePool, poolKey,
+  type Coverage, type DeployerIndexState, type GateContext, type GraduatesFact, type RugLabellerState, type S0DiagnosticPart, DeployerIndex, GRADUATES_KEY, hardAllowsEntry, LOG_CREATE_PREFIX, NOT_EVALUATED, stagedHardRejects, RugLabeller, TX_CREATE_PREFIX, type PoolFact, carryKey, createKey, createsCoverage, evaluateHardRejects, evaluateRegime, migrationKey, parseCreate, parseGraduates, parseMigration, parsePool, poolKey, pruneCoverage,
 } from '../../../core/src/gates/index.ts';
 import type { GraduatesSeed } from '../../../core/src/facts/raw.ts';
 import { type BookEvent, type IntentState, isTerminal } from '../../../core/src/lifecycle/index.ts';
@@ -827,7 +827,8 @@ export class LiveStrategy implements Strategy {
 
   /**
    * PERSIST-1: what a save holds, as of the latest released moment: the index (entries older than `retainFromMs`
-   * left out), the labeller's tables and every coverage fact. Null before anything was released or the seed applied.
+   * left out), the labeller's tables and the coverage facts that still matter from `retainFromMs` on (WORKER-1d,
+   * `pruneCoverage`). Null before anything was released or the seed applied.
    */
   persistable(retainFromMs: number): { readonly state: { readonly asOf: Moment; readonly index: DeployerIndexState; readonly labeller: RugLabellerState; readonly coverage: readonly MarketEvent[]; readonly graduates: SavedGraduates; readonly candidates: readonly SavedCandidate[]; readonly tails: readonly SavedTail[] }; readonly mintRows: Iterable<readonly [string, readonly (readonly [string, number])[]]> } | null {
     const asOf = this.#lastMoment;
@@ -841,7 +842,7 @@ export class LiveStrategy implements Strategy {
     // WORKER-GROW: the index's mint rows are streamed into the file by the save, never built whole; the graduates ride
     // in the payload line.
     return {
-      state: { asOf, index: this.#deployers.snapshot(asOf, retainFromMs, { mints: false }), labeller: this.#labeller.snapshot(), coverage: [...this.#coverageFacts], graduates: { asOfMs: asOf.receivedAt, items }, candidates, tails: [...this.#tail].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([mint, t]) => ({ mint, pool: t.pool, untilMs: t.untilMs })) },
+      state: { asOf, index: this.#deployers.snapshot(asOf, retainFromMs, { mints: false }), labeller: this.#labeller.snapshot(), coverage: pruneCoverage(this.#coverageFacts, retainFromMs), graduates: { asOfMs: asOf.receivedAt, items }, candidates, tails: [...this.#tail].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([mint, t]) => ({ mint, pool: t.pool, untilMs: t.untilMs })) },
       mintRows: this.#deployers.mintRows(retainFromMs),
     };
   }
