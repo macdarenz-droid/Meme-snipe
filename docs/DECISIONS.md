@@ -2395,3 +2395,27 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
     - the W + 1 s repeat arrives while its id is still remembered (no sweep between), so only the window check refuses it.
   - `store-rules.test.ts`: `seen:` and `chain:slot` keep only their newest value.
   - Hand mutants killed: no window check; the window's edge excluded (`<=`); no partial flag; ids looked at before the window; no sweep; a sweep only once a window; a minute swept too early; an id without the reserves; an id with the whole signature; a sweep that forgets everything; a refused trade that moves the reserve; no slot-notice rule.
+
+## Dedupe keys, account reads, mint facts and let-go coins (OOM-MINT, `providers/canonical.ts`, `run/store-rules.ts`, `Strategy.retired`)
+
+- **2026-10-05 · Why.** At three times the live rates (12,000 swaps a minute, a new pool every 20 s), the OOM-SEEN build still grew 1.6 MB a minute after warm-up. The rest was:
+  - LiveFeed's dedupe keys: 44 → 53 MB, each a text holding the whole 88-character signature for 1,500 slots;
+  - the store's per-read and per-coin keys: `gates/mint` restated at every read, plus create, curve and pool keys;
+  - candle books, tracks and keys of coins nothing watches any more, never let go.
+- **What.**
+  - **Dedupe keys** (`dedupKey`): kind plus the first 22 characters of the signature (about 128 bits), copied into a fresh flat string. Exact under the same argument as `tradeRepeatId`. A kept key costs under 100 B, against about 160 B that also kept the signature alive.
+  - **`read:accounts:<mint>` and `gates/mint:<mint>`** keep only their newest value. The producer acts on the released read, and the gates look the mint fact up as of now (`Evidence.read`). No store lookup in the code passes an older moment, and `history` is asked for trade, coverage and deployer keys only.
+  - **Let go (`Strategy.retired`).** The strategy reports a mint and its pool once the mint is no candidate, holds no exit plan and has no tail (a rejected candidate's tail keeps its pool watched until it ends).
+    - The engine forgets every key ending in either address right after that event, so a replay forgets at the same point, and tells the feed.
+    - The producer drops the pool's candle book, chain and trade stream and the mint's track, and never builds them again: a later trade, a repeat or a re-delivered migration is never applied, and the migration fact is never stated again (fail closed).
+    - The pool's reserve and its pending graduate mark stay, because they feed the regime's survival series. A candidate leaves at least four hours after migrating; its survival mark is at thirty minutes.
+- **Not done.**
+  - `LiveStrategy.#coverageFacts`, for the reason in OOM-SEEN.
+  - Creates that never migrate: their create and curve keys and producer tracks stay, about 3 KB a create. They need an age rule that could send a later migrating coin to the create lookup, so it is a separate decision.
+- **Evidence (fail before, pass after).**
+  - `feed.test.ts`: a kept dedupe key costs under 100 B; every dedupe case still dedupes (seen, logs, confirmed logs, tx from either provider) and different facts stay apart. The cross-slot test's fabricated other signature now differs in its first character: it differed only in the last, past 128 bits.
+  - `store-rules.test.ts`: account reads and mint facts keep only their newest value. A whole worker at three times the live rates (12,150 swaps a minute, 240 trade streams and 3 more a minute) grows under 1 MB a minute once the feed's duplicate window is full (0.32 MB over four minutes; the base shows the same, since the harness has one coin).
+  - `engine.test.ts`: `retire` forgets exactly the keys ending in a retired id; a let-go address is still there for the event that lets it go and gone from the next, and the feed is told.
+  - `producer.test.ts`: after a retire, a later trade, a repeat and a re-delivered migration build nothing.
+  - `retire.test.ts`: a candidate whose window ends unjudged is let go at once; a rejected one only when its tail ends; a held position never.
+  - Hand mutants killed: the pool's book rebuilt; the mint's track rebuilt; the book kept; the tail ignored; no let-go at tail end; `#forget` silent; the engine not forgetting; the feed not told; any key containing an id taken as its own; the full-signature dedupe key.
