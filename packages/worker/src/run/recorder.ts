@@ -281,9 +281,18 @@ export class Recorder {
   }
 
   /** A file written into this boot's folder beside the recording (the restored saved state), listed in the manifest. */
-  attach(file: string, sha256: string, bytes: number): void {
-    this.#attachments.push({ file, sha256, bytes });
+  attach(file: string, sha256: string, bytes: number, content?: Attachment['content']): void {
+    const i = this.#attachments.findIndex((x) => x.file === file);
+    if (i !== -1) this.#attachments.splice(i, 1);
+    this.#attachments.push({ file, sha256, bytes, ...(content === undefined ? {} : { content }) });
     this.#writeManifest();
+  }
+
+  /** G4c: an attachment replaced by its packed form (`<file>.zst`), listed with its own hash and its content's. */
+  packed(file: string, packed: { readonly sha256: string; readonly bytes: number }, content: { readonly sha256: string; readonly bytes: number }): void {
+    const i = this.#attachments.findIndex((x) => x.file === file);
+    if (i !== -1) this.#attachments.splice(i, 1);
+    this.attach(`${file}.zst`, packed.sha256, packed.bytes, { encoding: 'zstd', sha256: content.sha256, bytes: content.bytes });
   }
 
   #writeManifest(): void {
@@ -314,6 +323,8 @@ export interface Attachment {
   readonly file: string;
   readonly sha256: string;
   readonly bytes: number;
+  /** A packed file's content: what it decompresses to. */
+  readonly content?: { readonly encoding: 'zstd'; readonly sha256: string; readonly bytes: number };
 }
 
 /** The manifest of one recorder folder, from the sealed files on disk. */

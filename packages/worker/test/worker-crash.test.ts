@@ -3,7 +3,7 @@
 // code, also during the seed; (c) a recorder that cannot write (ENOSPC) halts entries and alerts, without a crash loop,
 // and exits go on; (d) a delay sample that cannot be recorded never stops the probe.
 import { spawn } from 'node:child_process';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -12,9 +12,11 @@ import { DEFAULT_LIVE_FEED, LiveFeed, decodable, frameEvents, rpcHandler, script
 import { ManualTimers } from '../src/scheduler/index.ts';
 import { DelayProbe } from '../src/run/delay-probe.ts';
 import { Recorder } from '../src/run/recorder.ts';
+import { PERSIST_FILE } from '../src/run/worker.ts';
 import { CreditBook, LiveProviders } from '../src/run/sources.ts';
 import { blockNetwork, recordOf, settle, testSecrets, tx } from './helpers.ts';
-import { Market, makeWorker, passingMarket, tempState } from './worker-harness.ts';
+import { Market, T, makeWorker, passingMarket, slotAt, tempState, virtualTimers } from './worker-harness.ts';
+import { runSeed } from '../src/run/seed-start.ts';
 
 blockNetwork();
 
@@ -108,7 +110,8 @@ describe('(b) a crash of the engine loop exits with the crash code', () => {
     expect(await started).toMatchObject({ ok: false, code: EXIT.crash });
     expect(await h.worker.stopped).toBe(EXIT.crash);
     expect(await h.worker.stop(EXIT.clean)).toBe(EXIT.crash);
-    expect(kinds(h.stateDir, 'stop').at(-1)!['reasons']).toEqual(['crash']);
+    // RESTART-CAUSE: the stop line names where (the throwing frame and the event kind), never the message.
+    expect(kinds(h.stateDir, 'stop').at(-1)!['reasons']).toEqual(['crash', expect.stringMatching(/^Error at packages\/worker\/test\/worker-crash\.test\.ts:\d+ during [A-Za-z0-9_.:\/-]+$/)]);
     expect(h.logs.some((l) => l.startsWith('Engine step failed: Error: step failed (test)'))).toBe(true);
   });
 
@@ -279,6 +282,36 @@ describe('(c) a recorder that cannot write: entries halt, the alert goes up, no 
     await h.worker.reconcile();
     const m = new Market(h);
     await m.run(800, 400, () => m.slot());
+    expect(h.worker.health().halt_reasons).toContain('recorder failed (ENOSPC): recording stopped, entries off until a restart');
+    expect(await h.worker.stop()).toBe(EXIT.clean);
+  });
+
+  it('a recorder that cannot attach the restored state at boot (#record) halts entries, never the boot', async () => {
+    const stateDir = tempState();
+    const timers = virtualTimers(T);
+    const emptyRpc = { getSignaturesForAddress: async () => [{ signature: 'before-the-range', slot: 0n, err: null, blockTime: 0 }], getTransaction: async () => null };
+    const first = makeWorker({ stateDir, timers, seed: (r) => runSeed(r, { rpc: emptyRpc, timers }) });
+    const m = new Market(first);
+    const started = first.worker.start();
+    while (!first.order.includes('start helius-ws')) await new Promise<void>((r) => setImmediate(r));
+    m.slot();
+    m.offchain('coverage:creates:start', { fromSlot: slotAt(m.now), via: 'logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM' });
+    expect(await started).toEqual({ ok: true });
+    await m.run(3_000, 400, () => m.slot());
+    await first.worker.stop();
+    // A clean stop saved the deployer state: the next boot copies it into its recording and attaches it there.
+    expect(existsSync(join(stateDir, PERSIST_FILE))).toBe(true);
+    const attach = vi.spyOn(Recorder.prototype, 'attach').mockImplementation(() => {
+      throw enospc();
+    });
+    const h = makeWorker({ stateDir, timers });
+    // The boot went on (the constructor returned): the fault is the recorder's, and entries halt from the first check.
+    expect(attach).toHaveBeenCalledTimes(1);
+    expect(h.worker.health().recorder).toBe('off');
+    expect(kinds(stateDir, 'alert').map((l) => l['code'])).toEqual(['recorder_failed']);
+    await h.worker.reconcile();
+    const m2 = new Market(h);
+    await m2.run(800, 400, () => m2.slot());
     expect(h.worker.health().halt_reasons).toContain('recorder failed (ENOSPC): recording stopped, entries off until a restart');
     expect(await h.worker.stop()).toBe(EXIT.clean);
   });

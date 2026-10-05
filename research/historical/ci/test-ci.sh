@@ -177,7 +177,7 @@ S="$T/sbin"; mkdir -p "$S"
 cat > "$S/zeroed-scan" <<'STUB'
 #!/usr/bin/env bash
 # first call exits FIRST_RC (75: a 429 with a 10 s back-off in the state), later calls 0
-echo scan >> "$T/calls.log"
+echo scan >> "$T/calls.log"; echo "$*" > "$T/scan.args"
 while (( $# )); do [[ "$1" == -out ]] && out=$2; shift; done
 # SLOW: a scan that outlasts the budget; interrupted (SIGINT) it exits 1 like the scanner
 if [[ -n "${SLOW:-}" ]]; then trap 'echo interrupted >> "$T/calls.log"; exit 1' INT; /bin/sleep 30 & wait; exit 0; fi
@@ -192,9 +192,13 @@ cat > "$S/sleep" <<'STUB'
 echo "sleep $1" >> "$T/calls.log"
 STUB
 chmod +x "$S"/*
+# A scanner capped at 10 requests/s (archive-limits.conf); variants for the refusals.
+for n in 10 40 10.5; do sed "s/^var reqLimiter = newLimiter([0-9.]*)\$/var reqLimiter = newLimiter($n)/" "$here/../scanner/archive.go" > "$T/archive$n.go"; done
+grep -v '^var reqLimiter' "$here/../scanner/archive.go" > "$T/archivenone.go"
+grep -qx 'var reqLimiter = newLimiter(10)' "$T/archive10.go" || no "test copy of archive.go at 10/s"
 scan() {
   : > "$T/calls.log"
-  PATH="$S:$PATH" GITHUB_STEP_SUMMARY="$T/summary.md" bash "$here/scan-day.sh" 2026-09-20 "$1" 80 "${2:-300}" > "$T/out.txt" 2>&1
+  ARCHIVE_GO=${ARCHIVE_GO:-$T/archive10.go} PATH="$S:$PATH" GITHUB_STEP_SUMMARY="$T/summary.md" bash "$here/scan-day.sh" 2026-09-20 "$1" "${MBPS:-40}" "${2:-300}" > "$T/out.txt" 2>&1
 }
 calls() { tr '\n' ' ' < "$T/calls.log"; }
 o="$T/scan1"; mkdir -p "$o"; now=$(date +%s); echo "$((now - 5)) 600 $((now + 120))" > "$o/archive-429.state"
@@ -204,13 +208,28 @@ if scan "$o"; then
     ok "scan-day honours an existing back-off: waits until its end (${w} s) before the first scan" || no "existing back-off: $(calls)"
 else no "scan-day with an existing back-off: $(cat "$T/out.txt")"; fi
 o="$T/scan2"; mkdir -p "$o"; : > "$T/summary.md"
-if FIRST_RC=75 scan "$o"; then
-  mapfile -t c < "$T/calls.log"; w=${c[1]#sleep }
-  [[ ${#c[@]} == 3 && "${c[0]}" == scan && "${c[1]}" == sleep* && "${c[2]}" == scan ]] && (( w >= 3600 )) &&
-    ok "after scanner exit 75 the wait is >= 3600 s (${w} s), then the same lane resumes" || no "429 wait: $(calls)"
-  grep -q "429 from archive" "$T/summary.md" && ls "$o"/429-*.log >/dev/null 2>&1 &&
-    ok "429 log goes to the summary and is kept" || no "429 log"
-else no "scan-day after a 429: $(cat "$T/out.txt")"; fi
+rc=0; t0=$(date +%s); FIRST_RC=75 scan "$o" || rc=$?
+end=$(awk '{print $3}' "$o/archive-429.state")
+[[ $rc == 4 && $(calls) == "scan " ]] && (( end >= t0 + 10800 && end <= t0 + 10810 )) && grep -q "the chain stops, and only a later served archive-check resumes" "$T/summary.md" &&
+  ok "ARCHIVE-SAFE: after a 429 the back-off is held to at least 3 h ($(( end - t0 )) s), no resume in the run, exit 4 (not resumable: no chained run)" || no "429 stop: rc=$rc $(calls) $(cat "$o/archive-429.state")"
+grep -q "429 from archive" "$T/summary.md" && ls "$o"/429-*.log >/dev/null 2>&1 &&
+  ok "429 log goes to the summary and is kept" || no "429 log"
+[[ " $(cat "$T/scan.args") " == *" -parallel 1 -dl 4 "* && " $(cat "$T/scan.args") " == *" -max-mbps 40 "* ]] &&
+  ok "ARCHIVE-SAFE: the scanner runs with -parallel 1 -dl 4 (4 connections) at 40 MB/s, from archive-limits.conf" || no "scan args: $(cat "$T/scan.args")"
+o="$T/scan2b"; mkdir -p "$o"; now=$(date +%s); echo "$now 20000 $((now + 20000))" > "$o/archive-429.state"
+bash "$here/scan-day.sh" --hold "$o/archive-429.state" 10800 && [[ $(awk '{print $3}' "$o/archive-429.state") == $((now + 20000)) ]] &&
+  bash "$here/scan-day.sh" --hold "$T/scan2b/new/s" 10800 && (( $(awk '{print $3}' "$T/scan2b/new/s") >= now + 10800 )) &&
+  ok "ARCHIVE-SAFE: --hold keeps a later back-off end and creates a missing one at least 3 h out" || no "hold"
+o="$T/scan2c"; mkdir -p "$o"; rc=0; MBPS=41 scan "$o" || rc=$?
+rc2=0; MBPS=0 scan "$o" || rc2=$?
+[[ $rc == 2 && $rc2 == 2 && ! -s "$T/calls.log" ]] && grep -q "not in (0, 40\]" "$T/out.txt" && ok "ARCHIVE-SAFE: scan-day refuses max_mbps above 40 (or 0) before any request" || no "mbps cap: $rc $rc2 $(calls)"
+bad=""
+for g in archive40 archive10.5 archivenone; do
+  o="$T/scanrps"; rm -rf "$o"; mkdir -p "$o"; rc=0; ARCHIVE_GO="$T/$g.go" scan "$o" || rc=$?
+  [[ $rc == 2 && ! -s "$T/calls.log" ]] && grep -q "request cap" "$T/out.txt" || bad+=" $g:$rc"
+done
+o="$T/scanrps"; rm -rf "$o"; mkdir -p "$o"; ARCHIVE_GO="$T/archive10.go" scan "$o" && [[ $(calls) == "scan " ]] || bad+=" archive10"
+[[ -z "$bad" ]] && ok "ARCHIVE-SAFE: scan-day refuses (exit 2, no request) a scanner request cap of 40, 10.5 or none found, and scans at 10" || no "scan-day rps:$bad"
 o="$T/scan3"; mkdir -p "$o"; now=$(date +%s); echo "$now 7200 $((now + 7200))" > "$o/archive-429.state"
 rc=0; scan "$o" 60 || rc=$?
 mapfile -t c < "$T/calls.log"; w=${c[0]#sleep }
@@ -268,7 +287,7 @@ printf '{\n  "scanner_revision": "rOld"\n}\n' > "$o/units/1047/1-2/stats.json"
 printf '{\n  "scanner_revision": "rNew"\n}\n' > "$o/units/1047/3-4/stats.json"
 mkdir -p "$o/units/1047/7-8"; printf '{\n  "blocks": 3\n}\n' > "$o/units/1047/7-8/stats.json"
 : > "$T/calls.log"
-SCANNER_REVISION=rNew PATH="$S:$PATH" GITHUB_STEP_SUMMARY="$T/summary.md" bash "$here/scan-day.sh" 2026-09-20 "$o" 80 300 > "$T/out.txt" 2>&1
+ARCHIVE_GO="$T/archive10.go" SCANNER_REVISION=rNew PATH="$S:$PATH" GITHUB_STEP_SUMMARY="$T/summary.md" bash "$here/scan-day.sh" 2026-09-20 "$o" 40 300 > "$T/out.txt" 2>&1
 [[ ! -d "$o/units/1047/1-2" && ! -d "$o/units/1047/7-8" && -d "$o/units/1047/3-4" && -d "$o/units/1047/5-6" ]] && grep -q "rescanning it" "$T/summary.md" &&
   ok "scan-day: cached units of another revision or with no scanner_revision are dropped and rescanned, the rest kept" || no "scan-day revision drop"
 
@@ -512,6 +531,7 @@ C="$T/cdbin"; mkdir -p "$C"
 cat > "$C/zeroed-scan" <<'STUB'
 #!/usr/bin/env bash
 # finalize: an empty dataset with its manifest; unit (determinism rescan): exit RESCAN_RC
+echo "$*" >> "$T/zs.args"
 if [[ $1 == finalize ]]; then
   while (( $# )); do [[ "$1" == -dataset ]] && ds=$2; shift; done
   mkdir -p "$ds/qa"; echo '{}' > "$ds/manifest.json"; exit 0
@@ -528,13 +548,22 @@ chmod +x "$C"/*
 cdrun() {
   local o="$T/cd-$1"; rm -rf "$o"; mkdir -p "$o/units/1046/1-2" "$o/cache" "$T/cd-ds"; echo x > "$o/units/1046/1-2/blocks.csv.zst"
   : > "$T/summary.md"
-  RESCAN_RC=$2 FAKE_AVAIL=999000000000 DATASET_PARENT="$T/cd-ds" PATH="$C:$PATH" GITHUB_STEP_SUMMARY="$T/summary.md" \
+  : > "$T/zs.args"
+  ARCHIVE_GO=${ARCHIVE_GO:-$T/archive10.go} RESCAN_RC=$2 FAKE_AVAIL=999000000000 DATASET_PARENT="$T/cd-ds" PATH="$C:$PATH" GITHUB_STEP_SUMMARY="$T/summary.md" \
     bash "$here/check-day.sh" 2026-09-20 "$o" "$T/cd-assets-$1" > "$T/out.txt" 2>&1
 }
-rc=0; cdrun a 75 || rc=$?
-[[ $rc == 75 ]] && grep -q "429 during the determinism rescan" "$T/summary.md" &&
-  ok "check-day: a 429 in the determinism rescan exits 75 (resumable) with a summary line" || no "check-day 429: rc=$rc $(cat "$T/out.txt")"
+rc=0; t0=$(date +%s); cdrun a 75 || rc=$?
+end=$(awk '{print $3}' "$T/cd-a/archive-429.state" 2>/dev/null)
+[[ $rc == 4 ]] && (( ${end:-0} >= t0 + 10800 )) && grep -q "429 during the determinism rescan: back-off of at least 3 h; the chain stops" "$T/summary.md" &&
+  ok "ARCHIVE-SAFE: check-day: a 429 in the determinism rescan holds a 3 h back-off and exits 4 (not resumable)" || no "check-day 429: rc=$rc end=$end $(cat "$T/out.txt")"
 for p in finalize qa parity volume determinism; do grep -q "^phase $p (2026-09-20): [0-9]* s$" "$T/summary.md" || { no "check-day: no duration for $p"; break; }; done
+u=$(grep '^unit ' "$T/zs.args")
+[[ " $u " == *" -max-mbps 40 -dl 4 "* ]] && ok "ARCHIVE-SAFE: check-day's determinism rescan runs at -max-mbps 40 -dl 4 (archive-limits.conf)" || no "check-day rescan args: $u"
+bad=""
+for v in 41 0; do rc=0; MAX_MBPS=$v cdrun m 0 || rc=$?; [[ $rc == 2 && ! -s "$T/zs.args" ]] && grep -q "max_mbps $v is not in" "$T/summary.md" || bad+=" mbps=$v:$rc"; done
+for g in archive40 archive10.5 archivenone; do rc=0; ARCHIVE_GO="$T/$g.go" cdrun m 0 || rc=$?; [[ $rc == 2 && ! -s "$T/zs.args" ]] && grep -q "request cap" "$T/summary.md" || bad+=" $g:$rc"; done
+rc=0; MAX_MBPS=40 cdrun m 75 || rc=$?; [[ $rc == 4 ]] && grep -q '^unit ' "$T/zs.args" || bad+=" ok40:$rc"
+[[ -z "$bad" ]] && ok "ARCHIVE-SAFE: check-day (archive) exits 2 before any zeroed-scan call for max_mbps 41 or 0 and a request cap of 40, 10.5 or none; 40 MB/s at 10/s runs" || no "check-day limits:$bad"
 [[ $p == determinism ]] && grep -q "^phase determinism" "$T/summary.md" && ok "check-day: finalize, QA, parity, volume and determinism durations are logged"
 rc=0; cdrun b 1 || rc=$?
 [[ $rc == 1 ]] && grep -q "determinism rescan failed (scanner exit 1)" "$T/summary.md" && ok "check-day: any other rescan failure exits 1 (not resumable)" || no "check-day rescan failure: rc=$rc"
@@ -677,13 +706,24 @@ ac env AC_STATUS=429
   grep -qx -- "0-63" "$A/curl.args" && grep -q "| 429 | 64 | 0 | 8abc123-SYD |" "$A/summary.md" && [[ -n "$ua" ]] &&
   ok "archive-check: a 429 makes exactly one 64-byte request with the scanner's agent, logs status and cf-ray, dispatches nothing" || no "archive-check 429"
 printf '2026-09-21\n2026-09-19\n' > "$A/published"
+# ARCHIVE-SAFE hold: with the scanner's request cap above 10/s (today's 40), a served
+# check dispatches nothing; a scanner capped at 10/s (a test copy) lets it dispatch.
 ac env AC_STATUS=206
+[[ $(wc -l < "$A/curl.calls") == 1 && ! -e "$A/dispatch.log" ]] && grep -q "held: the scanner's request cap (40/s, scanner/archive.go) is above 10/s" "$A/summary.md" &&
+  ok "ARCHIVE-SAFE: served, but the scanner's request cap (40/s) is above 10/s: held, nothing dispatched" || no "archive-check hold: $(cat "$A/summary.md")"
+sed 's/^var reqLimiter = newLimiter(40)$/var reqLimiter = newLimiter(10)/' "$here/../scanner/archive.go" > "$A/archive10.go"
+sed 's/^var reqLimiter = newLimiter(40)$/var reqLimiter = newLimiter(10.5)/' "$here/../scanner/archive.go" > "$A/archive105.go"
+grep -v '^var reqLimiter' "$here/../scanner/archive.go" > "$A/archivenone.go"
+bad=""
+for g in archive105 archivenone; do ac env AC_STATUS=206 ARCHIVE_GO="$A/$g.go"; [[ ! -e "$A/dispatch.log" ]] && grep -q "held:" "$A/summary.md" || bad+=" $g"; done
+[[ -z "$bad" ]] && ok "ARCHIVE-SAFE: a cap of 10.5/s or no cap found is held too" || no "archive-check hold variants:$bad"
+ac env AC_STATUS=206 ARCHIVE_GO="$A/archive10.go"
 [[ $(wc -l < "$A/curl.calls") == 1 && $(wc -l < "$A/dispatch.log") == 1 ]] &&
-  grep -q -- "data-scan.yml --repo o/r --ref main -f mode=scan -f days=2026-09-20,2026-09-18,2026-09-17,2026-09-16,2026-09-15,2026-09-14,2026-09-13,2026-09-12 -f max_mbps=80" "$A/dispatch.log" &&
-  ok "archive-check: a 206 dispatches once, the next 8 unpublished pre-holdout days at 80 MB/s" || no "archive-check 206 dispatch: $(cat "$A/dispatch.log" 2>/dev/null)"
+  grep -q -- "data-scan.yml --repo o/r --ref main -f mode=scan -f days=2026-09-20 -f max_mbps=40$" "$A/dispatch.log" &&
+  ok "ARCHIVE-SAFE: a 206 dispatches once, the next 1 unpublished pre-holdout day at 40 MB/s" || no "archive-check 206 dispatch: $(cat "$A/dispatch.log" 2>/dev/null)"
 d=2026-09-21; : > "$A/published"; while [[ "$d" > 2026-07-19 ]]; do echo "$d" >> "$A/published"; d=$(date -u -d "$d - 1 day" +%F); done
-ac env AC_STATUS=206
-grep -q -- "-f days=2026-10-01,2026-09-30,2026-09-29,2026-09-28,2026-09-27,2026-09-26,2026-09-25,2026-09-24 " "$A/dispatch.log" &&
+ac env AC_STATUS=206 ARCHIVE_GO="$A/archive10.go"
+grep -q -- "-f days=2026-10-01 " "$A/dispatch.log" &&
   ok "archive-check: holdout days only after every pre-holdout day is published" || no "archive-check holdout order: $(cat "$A/dispatch.log" 2>/dev/null)"
 ac env AC_STATUS=206 AC_BYTES=65
 [[ ! -e "$A/dispatch.log" ]] && ok "archive-check: a 206 of more than 64 bytes is not served" || no "archive-check oversized 206"
@@ -724,7 +764,7 @@ t1=$(date +%s)
 row=$(grep "^| 20" "$A/summary.md" | tail -1); IFS='|' read -r _ _ st by ex _ <<< "$row"
 [[ ! -e "$A/dispatch.log" ]] && (( t1 - t0 < 10 )) && (( ${st// /} == 200 && ${by// /} <= 65 && ${ex// /} != 0 )) &&
   ok "archive-check: a server ignoring the range and streaming a chunked 200 is cut (${by// /} bytes, curl exit ${ex// /}) in $((t1 - t0)) s, nothing dispatched" || no "archive-check streaming: $row"
-ac env -u CURL_BIN CURL_BIN=curl NO_PROXY=127.0.0.1 no_proxy=127.0.0.1 ARCHIVE_CHECK_URL="http://127.0.0.1:$port/ok"
+ac env -u CURL_BIN CURL_BIN=curl NO_PROXY=127.0.0.1 no_proxy=127.0.0.1 ARCHIVE_CHECK_URL="http://127.0.0.1:$port/ok" ARCHIVE_GO="$A/archive10.go"
 [[ $(wc -l < "$A/dispatch.log" 2>/dev/null) == 1 ]] && grep -q "| 206 | 64 | 0 | ok-1 |" "$A/summary.md" &&
   ok "archive-check: a real 206 of 64 bytes dispatches once" || no "archive-check real 206: $(cat "$A/summary.md")"
 kill $srv 2>/dev/null; wait $srv 2>/dev/null
@@ -739,7 +779,7 @@ steps = wf["jobs"]["check"]["steps"]
 assert len(steps) == 2 and steps[0]["with"]["persist-credentials"] is False, steps
 assert steps[1]["run"] == "research/historical/ci/archive-check.sh" and "github.token" in steps[1]["env"]["GH_TOKEN"], steps[1]
 assert all("${{" not in st.get("run", "") for st in steps)
-assert not any(k in str(steps) for k in ("ARCHIVE_CHECK_URL", "CURL_BIN", "GH_BIN")), "test-only overrides in the workflow"
+assert not any(k in str(steps) for k in ("ARCHIVE_CHECK_URL", "CURL_BIN", "GH_BIN", "ARCHIVE_GO")), "test-only overrides in the workflow"
 assert set(on["workflow_dispatch"]["inputs"]) == {"helius_runs"} and on["workflow_dispatch"]["inputs"]["helius_runs"]["default"] == "", on
 assert steps[1]["env"]["HELIUS_RUNS"] == "${{ github.event_name == 'workflow_dispatch' && inputs.helius_runs || '' }}", steps[1]["env"]
 PY
@@ -814,7 +854,17 @@ import sys, yaml
 run = yaml.safe_load(open(sys.argv[1]))["jobs"]["plan"]["steps"][0]["run"]
 print(run.split("<<'EOF' >> \"$GITHUB_OUTPUT\"\n", 1)[1].rsplit("\nEOF", 1)[0])
 PY
-plan() { env MODE=scan DAYS=2026-09-21 MAX_MBPS=80 SOURCE=helius MAX_CREDITS=260000 RPC_RPS=5 REGIME_BOUNDARY_DAY=2026-10-02 "$@" python3 "$T/plan.py" > "$T/plan.out" 2>&1; }
+( . "$here/archive-limits.conf"
+  python3 - "$here/../../../.github/workflows/data-scan.yml" "$ARCHIVE_MAX_MBPS" "$ARCHIVE_MAX_RPS" "$ARCHIVE_PARALLEL" "$ARCHIVE_DL" "$ARCHIVE_BACKOFF_S" "$ARCHIVE_DAYS_PER_CHECK" <<'PY'
+import sys, yaml
+wf = yaml.safe_load(open(sys.argv[1]))
+mbps, rps, par, dl, back, days = map(int, sys.argv[2:])
+assert (mbps, rps, par, dl, back, days) == (40, 10, 1, 4, 10800, 1), (mbps, rps, par, dl, back, days)
+assert wf[True]["workflow_dispatch"]["inputs"]["max_mbps"]["default"] == str(mbps)
+assert f"if not 0 < mbps <= {mbps}:" in wf["jobs"]["plan"]["steps"][0]["run"]
+PY
+) && ok "ARCHIVE-SAFE: archive-limits.conf holds 40 MB/s, 10 req/s, 1 x 4 connections, 3 h back-off, 1 day per check, and data-scan.yml's max_mbps default and check match it" || no "archive-limits consistency"
+plan() { env MODE=scan DAYS=2026-09-21 MAX_MBPS=40 SOURCE=helius MAX_CREDITS=260000 RPC_RPS=5 REGIME_BOUNDARY_DAY=2026-10-02 "$@" python3 "$T/plan.py" > "$T/plan.out" 2>&1; }
 bad=""
 plan || bad+=" valid-refused"
 for v in 0 51 5.5 ""; do plan RPC_RPS="$v" && bad+=" rps=$v"; done
@@ -822,7 +872,8 @@ for v in 0 1000001 ""; do plan MAX_CREDITS="$v" && bad+=" credits=$v"; done
 plan MODE=volume && bad+=" helius-volume"
 plan SOURCE=other && bad+=" source=other"
 plan SOURCE=archive MAX_CREDITS=0 RPC_RPS=0 || bad+=" archive-refused"
-[[ -z "$bad" ]] && ok "data-scan plan: refuses rpc_rps 0, 51, 5.5 and empty, a cap outside 1..1000000, helius outside scan, an unknown source; accepts the free day and archive scans" || no "data-scan plan validation:$bad"
+for v in 41 80 0; do plan SOURCE=archive MAX_MBPS=$v && bad+=" mbps=$v"; done
+[[ -z "$bad" ]] && ok "data-scan plan: refuses max_mbps 41, 80 and 0 (ARCHIVE-SAFE), rpc_rps 0, 51, 5.5 and empty, a cap outside 1..1000000, helius outside scan, an unknown source; accepts the free day and archive scans" || no "data-scan plan validation:$bad"
 
 echo "$pass passed, $fail failed"
 (( fail == 0 ))

@@ -26,7 +26,7 @@ export interface WorkerConfig {
    * WATCH-1: how often the position watch looks, and how old a held position's market may get before a snapshot is read
    * through the second path (ZEROED_WATCH_EVERY_MS, ZEROED_WATCH_STALE_MS).
    */
-  readonly watch: { readonly everyMs: number; readonly staleMs: number; readonly latencyMs: number };
+  readonly watch: { readonly everyMs: number; readonly staleMs: number; readonly latencyMs: number; readonly verifyMs: number };
   /** The bot wallet's public address, when the signer has made one: the dry-run builds use it. */
   readonly wallet: string | null;
   /** Funded public wallets that stand in for the unfunded bot wallet in simulations (TEST-2). */
@@ -49,7 +49,7 @@ export interface WorkerConfig {
  *   market (EXIT-1d). With integer settings the steady bound implies this one; both are checked so neither can drift.
  * Null when both hold; else why not (the entry exits 2, the worker refuses to build).
  */
-export const watchTimingProblem = (w: WorkerConfig['watch'], maxQuoteAgeMs: number, releaseMs: number): string | null => {
+export const watchTimingProblem = (w: Pick<WorkerConfig['watch'], 'everyMs' | 'staleMs' | 'latencyMs'>, maxQuoteAgeMs: number, releaseMs: number): string | null => {
   const steady = w.staleMs + w.everyMs + w.latencyMs + releaseMs;
   if (!(steady < maxQuoteAgeMs)) return `refused: ZEROED_WATCH_STALE_MS + ZEROED_WATCH_EVERY_MS + ZEROED_WATCH_LATENCY_MS + the feed's release (${w.staleMs} + ${w.everyMs} + ${w.latencyMs} + ${releaseMs}) must stay below the policy's quote age of ${maxQuoteAgeMs} ms`;
   const transition = releaseMs + steady;
@@ -57,7 +57,11 @@ export const watchTimingProblem = (w: WorkerConfig['watch'], maxQuoteAgeMs: numb
   return null;
 };
 
-/** Solana's target slot time; the feed releases an off-chain fact once its horizon of slots has passed. */
+/**
+ * The slot time the watch's timing guard charges for each slot of the feed's horizon. Measured mainnet slot time
+ * (docs/RESEARCH.md "Slot time", 2026-10-04): p99 of one-minute means 278 ms; 400 ms keeps 1.44x headroom over it until
+ * the live dry run's recorded slot receipts measure single slots.
+ */
 export const SLOT_MS = 400;
 
 export type Parsed = { readonly ok: true; readonly config: WorkerConfig } | { readonly ok: false; readonly code: number; readonly message: string };
@@ -116,6 +120,9 @@ export const parseConfig = (
   if (!Number.isSafeInteger(watchStale) || watchStale < watchEvery) return refuse('refused: ZEROED_WATCH_STALE_MS must be a whole number of at least ZEROED_WATCH_EVERY_MS');
   const watchLatency = env['ZEROED_WATCH_LATENCY_MS'] === undefined ? 400 : Number(env['ZEROED_WATCH_LATENCY_MS']);
   if (!Number.isSafeInteger(watchLatency) || watchLatency < 50) return refuse('refused: ZEROED_WATCH_LATENCY_MS must be a whole number of at least 50');
+  // WATCH-1c: a held pool proven unchanged by its stream is still read this often (a transfer into a vault is not on it).
+  const watchVerify = env['ZEROED_WATCH_VERIFY_MS'] === undefined ? 30_000 : Number(env['ZEROED_WATCH_VERIFY_MS']);
+  if (!Number.isSafeInteger(watchVerify) || watchVerify < watchStale) return refuse('refused: ZEROED_WATCH_VERIFY_MS must be a whole number of at least ZEROED_WATCH_STALE_MS');
   const wallet = env['ZEROED_WALLET'] ?? null;
   if (wallet !== null && !ADDRESS.test(wallet)) return refuse('refused: ZEROED_WALLET is not an address');
   const standIns = (env['ZEROED_STANDINS'] ?? '').split(',').map((s) => s.trim()).filter((s) => s !== '');
@@ -165,7 +172,7 @@ export const parseConfig = (
       runId: env['ZEROED_RUN_ID'] ?? null, runLabel: env['ZEROED_RUN_LABEL'] ?? null,
       gitSha: env['ZEROED_GIT_SHA'] ?? release() ?? 'unknown',
       watchdogUrl: watchdog === '' ? null : watchdog.replace(/\/$/, ''),
-      heartbeatMs: beat, summaryMs, watch: { everyMs: watchEvery, staleMs: watchStale, latencyMs: watchLatency }, wallet, standIns,
+      heartbeatMs: beat, summaryMs, watch: { everyMs: watchEvery, staleMs: watchStale, latencyMs: watchLatency, verifyMs: watchVerify }, wallet, standIns,
       strategy: { name, paperEdgePpm, qualifying, s0Diagnostic },
       disk,
     },

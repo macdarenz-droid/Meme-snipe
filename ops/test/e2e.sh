@@ -230,6 +230,10 @@ send_tg "$STRANGER" "/pair $PAIR2"
 [ "$(grep -vc getUpdates <(tail -n +"$((n0 + 1))" "$STATE/telegram.jsonl"))" = 0 ] || fail "server answered after pairing"
 wait_for 30 "worker running after pairing" "docker exec $C systemctl is-active zeroed-worker"
 in_c "journalctl -u zeroed-worker -o cat --no-pager" | grep -q 'Reconcile: 0 open intents, 5 of 5 credentials present. OK' || fail "worker did not reconcile with 5 credentials"
+# HEAP-GUARD: the running worker has its explicit heap limit and fatal-error report flags, and worker-start made the
+# report directory inside the unit's sandbox (ProtectSystem=strict, PrivateTmp): it exists and the worker owns it.
+in_c "tr '\\0' ' ' < /proc/\$(systemctl show -p MainPID --value zeroed-worker)/cmdline" | grep -q -- '--max-old-space-size=560 --report-on-fatalerror --report-compact --report-directory=/var/lib/zeroed/reports' || fail "worker runs without its heap limit and report flags"
+in_c "stat -c %U /var/lib/zeroed/reports" | grep -qx zeroed-worker || fail "worker's report directory missing or not the worker's"
 status paired | grep -q 'Telegram:  paired' || fail "status not paired"
 pass "pairing: a group's /pair is ignored (private chats only); a stranger's wrong /pair invalidated the code (one try), the old code then failed, a new console code paired the owner chat (stored encrypted), 'Paired' sent, the server then set the watchdog webhook itself, later messages ignored, worker reconciled and runs"
 
@@ -624,7 +628,7 @@ in_c "! systemctl list-units --all --plain --no-legend 'zeroed-worker-smoke*' | 
 in_c "journalctl -o cat --no-pager -u zeroed-worker-smoke.service | tail -20" >"$LOGS/smoke-unit.txt"
 wrestart "ln -sfn '$rel' /opt/zeroed/current.new && mv -Tf /opt/zeroed/current.new /opt/zeroed/current"
 wait_for 60 "the release's worker running" "docker exec $C systemctl is-active zeroed-worker"
-in_c "tr '\\0' ' ' < /proc/\$(systemctl show -p MainPID --value zeroed-worker)/cmdline" | has '^/usr/local/bin/node --no-warnings /opt/zeroed/current/packages/worker/src/main.ts $' || fail "zeroed-worker does not run the release's main.ts under the host's node"
+in_c "tr '\\0' ' ' < /proc/\$(systemctl show -p MainPID --value zeroed-worker)/cmdline" | has '^/usr/local/bin/node --no-warnings --max-old-space-size=560 --report-on-fatalerror --report-compact --report-directory=/var/lib/zeroed/reports /opt/zeroed/current/packages/worker/src/main.ts $' || fail "zeroed-worker does not run the release's main.ts under the host's node"
 inv() { in_c "journalctl -o cat --no-pager _SYSTEMD_INVOCATION_ID=\$(systemctl show -p InvocationID --value zeroed-worker)"; }
 relname="$(basename "$rel")"
 # The start line of this invocation (the unit's journal also holds earlier runs of the same release, whose start line
