@@ -6,7 +6,7 @@ From here on, S2 owns this file. S2 keeps it current on its own branch `claude/s
 
 ## Active crash-only work
 
-Only item22 crash exception is active. Branch claude/s2-disk-crash from5efb9ae0497523c84e3bb49a82bce989652cdb0b; builder disk_crash_builder. Exact crash reproduced before fix;83 focused tests currently pass. Final commit, full check and independent reviews pending. New fixed64KiB zero-data reserve marker needs S1’s stored-bot-state acceptance after persist review. All app/other stability/backups remain paused by owner10:08; S1 alone merges/deploys.
+Only owner-approved item-22 disk crash work is active. Correcting reserve preservation before a new exact-head review and full check; APP/API, facts, EXIT, persist and run reviewers are independently auditing frozen baseline. Full backups and all other tasks stay paused; S1 alone merges/deploys.
 
 ## Latest handoff audit
 
@@ -102,6 +102,8 @@ S2-READY 6af4e43b707960316d8cd8419cb2e513fa9f4b60
 - These local limitations are historical. Current directly verified GitHub results are in Latest handoff audit; they do not establish that any future base-update head is green.
 
 ## S2 events (newest first)
+
+- **2026-10-06 10:32:32 AEDT** — Crash-only fix reached frozen f2e17146186f021a6082fe11150128e3795de864 on base 5efb9ae0497523c84e3bb49a82bce989652cdb0b: 147 focused tests and package typechecks passed; five independent area reviewers started. Builder then found chain-rebuild wipe deletes the new reserve beside retained journal, causing false gaps. Final check stopped for a preservation fix and fail-before regression; no ready claim or task push.
 
 - **2026-10-06 10:22:56 AEDT** — Crash-only fix now passes83 focused tests including the exact recorder/journal ENOSPC path, existing crash/replay controls, 10k-loss boundedness, reserved-capacity rollback/restart and runner units. New-entry fault path uses a pre-dispatch informational alert, not a fabricated strategy decision; already-sent entry settlement and exits remain enabled. Proposed fixed64KiB journal reserve stores only zero-data capacity/size as a persistent observed-ENOSPC marker; no new API field/enum or third-party data. Durable ledger/state writes stay strict; reserve does not promise prolonged writes on a physically full filesystem. Builder finishing edge tests/typecheck before immutable head/full check and fresh area reviews. S1 approval of bot-owned reserve marker will be listed after persist review; no paused backups/ops work or original #149 branch changes.
 
