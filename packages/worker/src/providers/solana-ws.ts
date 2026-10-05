@@ -99,6 +99,11 @@ export const CATCH_UP_HOLD_MAX = 5_000;
  * pass it overflows exactly as at the per-watch cap: what it holds goes on the feed at once and its catch-up stays lossy.
  */
 export const CATCH_UP_HOLD_TOTAL = 24_000;
+/**
+ * FAILED-LOGS: failed transactions' notifications whose log lines were left off the feed, and those lines' characters,
+ * over every stream in this process (counts only): the share of live traffic they were, for the memory probe.
+ */
+export const FAILED_LOGS = { notices: 0, chars: 0 };
 
 interface CoverageGap {
   readonly fromSlot: bigint | null;
@@ -218,6 +223,10 @@ export class RpcStream {
         const err = r.value.err ?? null;
         const lines = r.value.logs;
         const ok = Array.isArray(lines) && lines.every((l) => typeof l === 'string');
+        if (err !== null && ok && opts.decodeLogs === true) {
+          FAILED_LOGS.notices++;
+          for (const l of lines as string[]) FAILED_LOGS.chars += l.length;
+        }
         if (w.held !== null) {
           // HOLD-COMPACT: a held notification keeps only the lines the log reader uses, each at its own index. FAILED-LOGS:
           // a failed transaction keeps none (it yields no events).

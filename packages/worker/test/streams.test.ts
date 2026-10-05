@@ -4,7 +4,7 @@ import { PUMP_AMM_GLOBAL_CONFIG, PUMP_GLOBAL, logEvents, transactionEvents } fro
 import { createReplay, Engine, type MarketEvent } from '../../core/src/engine/index.ts';
 import { CONFIG } from '../../core/test/fixtures.ts';
 import {
-  DEFAULT_LIVE_FEED, FakeSocketHub, frameEvents, LiveFeed, RpcHttp, RpcStream, rpcHandler, scriptedHttp, TxFetcher, type Frame,
+  DEFAULT_LIVE_FEED, FAILED_LOGS, FakeSocketHub, frameEvents, LiveFeed, RpcHttp, RpcStream, rpcHandler, scriptedHttp, TxFetcher, type Frame,
 } from '../src/providers/index.ts';
 import { HELIUS_FREE, ManualTimers, P0, P1, P2, P3, Scheduler } from '../src/scheduler/index.ts';
 import { blockNetwork, recordOf, settle, tx } from './helpers.ts';
@@ -200,6 +200,7 @@ describe('RPC stream', () => {
     hub.last.open();
     const [sub] = ack(hub);
     const err = { InstructionError: [3, { Custom: 6004 }] };
+    const before = { ...FAILED_LOGS };
     hub.last.push({ jsonrpc: '2.0', method: 'logsNotification', params: { subscription: sub, result: { context: { slot }, value: { signature: c.signature, err, logs: c.base64.meta!.logMessages } } } });
     feed.ingest('helius', { type: 'slot', slot: BigInt(slot) + 1n, parent: null, root: null }, { receivedAt: timers.now() + 1 });
     await settle();
@@ -210,8 +211,11 @@ describe('RPC stream', () => {
     expect(mine.map((f) => f.body.type)).toEqual(['seen']);
     expect((mine[0]!.body as { err: unknown }).err).toEqual(err);
     // What the lines would have given: nothing (a failed transaction's events were rolled back).
-    expect(logEvents(c.base64.meta!.logMessages, err).events).toEqual([]);
+    expect(logEvents(c.base64.meta!.logMessages!, err).events).toEqual([]);
     expect(released.filter((e) => e.id.includes(c.signature)).map((e) => e.id)).toEqual([`seen:${c.signature}`]);
+    // Counted for the memory probe: one notice, its lines' characters.
+    expect(FAILED_LOGS.notices - before.notices).toBe(1);
+    expect(FAILED_LOGS.chars - before.chars).toBe(c.base64.meta!.logMessages!.reduce((n, l) => n + l.length, 0));
   });
 
   it('cut or malformed log lines are reported as such, never guessed past', () => {
