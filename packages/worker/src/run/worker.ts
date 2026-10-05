@@ -38,7 +38,8 @@ import { backfillAddress, SIGNATURE_PAGE, type SeedRpc } from '../seed/rpc.ts';
 import { transactionEvents } from '../../../core/src/chain/index.ts';
 import { P2, P3 } from '../scheduler/scheduler.ts';
 import { callCost } from '../providers/solana-http.ts';
-import { PUMP_MIGRATION_AUTHORITY } from './sources.ts';
+import { FILLS, PUMP_MIGRATION_AUTHORITY } from './sources.ts';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { DelayProbe, type DelayProbeOptions } from './delay-probe.ts';
 import { type AlertSeen, type ApiInputs, type DecisionRow, checkOf, collectAlerts, melbourneDate, stageOf, startApiServer } from './api.ts';
 import type { FactContext, FactSource } from './facts.ts';
@@ -463,6 +464,8 @@ export class Worker {
   /** MEM-PROBE: the last minute samples (and the ones around each save), oldest first, at most PROBE_KEEP. */
   readonly #memRecent: ProbeSample[] = [];
   #memProbeAt = Number.NEGATIVE_INFINITY;
+  /** MEM-PROBE: the event loop's delay since the last probe sample (max and p95), reset at each. */
+  readonly #loopDelay = monitorEventLoopDelay({ resolution: 20 });
   #summaryClock: SummaryClock | null = null;
   #summary: Summarizer | null = null;
   #server: Server | null = null;
@@ -1662,6 +1665,7 @@ export class Worker {
       });
     };
     beat();
+    this.#loopDelay.enable();
     this.#traceMem();
     this.#startSummary();
     // The loop already runs (exits never wait for the seed); entries resume once the seed is placed or given up.
@@ -2006,7 +2010,11 @@ export class Worker {
   /** MEM-PROBE: the size of every major collection the worker reaches, counts only. */
   #memCounts(): ProbeCount[] {
     const { byPrefix, ...store } = this.#engine.sizes();
+    const d = this.#loopDelay;
+    const lag = d.count === 0 ? { max_ms: 0, p95_ms: 0 } : { max_ms: d.max / 1e6, p95_ms: d.percentile(95) / 1e6 };
+    d.reset();
     return probeCounts({
+      loop: lag, fills: { active: FILLS.active, waiting: FILLS.waiting },
       store, feed: this.#feed.sizes(), facts: this.#facts.sizes(), strategy: this.#strategy.sizes(),
       worker: {
         pools: this.#pools.size, pool_released: this.#poolReleasedAt.size, carries: this.#carries.size, fees: this.#fees.size, snapshots: this.#snapshots.size,
@@ -2115,6 +2123,7 @@ export class Worker {
     if (this.#loop !== null) d.timers.clearTimeout(this.#loop);
     if (this.#beat !== null) d.timers.clearTimeout(this.#beat);
     if (this.#memTimer !== null) d.timers.clearTimeout(this.#memTimer);
+    this.#loopDelay.disable();
     this.#summaryClock?.stop();
     for (const s of this.#sources) s.stop();
     this.#probe?.stop();
@@ -2176,6 +2185,7 @@ export class Worker {
     if (this.#loop !== null) this.#d.timers.clearTimeout(this.#loop);
     if (this.#beat !== null) this.#d.timers.clearTimeout(this.#beat);
     if (this.#memTimer !== null) this.#d.timers.clearTimeout(this.#memTimer);
+    this.#loopDelay.disable();
     this.#summaryClock?.stop();
     for (const s of this.#sources) s.stop();
     this.#watch?.stop();

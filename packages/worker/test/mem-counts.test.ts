@@ -100,7 +100,7 @@ describe('in the worker', () => {
     const recent = readProbe(stateDir);
     expect(recent.length).toBeGreaterThanOrEqual(2);
     const codes = new Set(recent.at(-1)!.counts.map((c) => c.code));
-    for (const c of ['store_keys', 'store_entries', 'store_records', 'feed_keys', 'feed_held', 'facts_books', 'facts_queue', 'strategy_cands', 'strategy_deployer_mints', 'worker_pools', 'worker_create_sig', 'worker_exits_chars']) {
+    for (const c of ['store_keys', 'store_entries', 'store_records', 'feed_keys', 'feed_held', 'facts_books', 'facts_queue', 'strategy_cands', 'strategy_deployer_mints', 'worker_pools', 'worker_create_sig', 'worker_exits_chars', 'loop_max_ms', 'loop_p95_ms', 'fills_active', 'fills_waiting']) {
       expect(codes.has(c), c).toBe(true);
     }
     expect(recent.at(-1)!.counts.find((c) => c.code === 'store_keys')!.count).toBeGreaterThan(0);
