@@ -5,7 +5,8 @@
 // once the wall-clock fields (seq, ts, boot) are dropped, in every one of N replays. The first differing line is
 // reported with its event. The session's ledger is replayed too, by the check the caller hands in (core's
 // `replayLedgerFile`: worker source never reaches ledger internals, packages/core/test/ledger/guard.ts).
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { zstdDecompressSync } from 'node:zlib';
 import type { PolicySession, RugConfig } from '../../../core/src/config/index.ts';
@@ -56,14 +57,27 @@ export const savedStateOf = (b: Pick<BootInput, 'frames' | 'savedState'> & { rea
     throw new SavedStateMissing(`boot ${b.boot ?? '?'}: the seed names saved state ${ref.file} (sha256 ${ref.sha256}), ${why}; nothing is replayed`);
   };
   if (path === null || path === undefined || !existsSync(path)) return fail('and the recording has no copy of it');
+  // G4c: a packed copy is read through a plain temporary file; the hash is that of the plain bytes, as the seed's.
+  let plain = path;
   let sha: string;
+  let tmp: string | null = null;
   try {
-    sha = fileSha256(path);
+    if (path.endsWith('.zst')) {
+      tmp = mkdtempSync(join(tmpdir(), 'zeroed-saved-'));
+      plain = join(tmp, PERSIST_FILE);
+      writeFileSync(plain, zstdDecompressSync(readFileSync(path)));
+    }
+    sha = fileSha256(plain);
   } catch (e) {
+    if (tmp !== null) rmSync(tmp, { recursive: true, force: true });
     return fail(`and its copy is unreadable (${e instanceof Error ? e.message : 'error'})`);
   }
-  if (sha !== ref.sha256) return fail(`and the recording's copy has sha256 ${sha}`);
-  const restored = loadState(path, d.rugs);
+  if (sha !== ref.sha256) {
+    if (tmp !== null) rmSync(tmp, { recursive: true, force: true });
+    return fail(`and the recording's copy has sha256 ${sha}`);
+  }
+  const restored = loadState(plain, d.rugs);
+  if (tmp !== null) rmSync(tmp, { recursive: true, force: true });
   if (!restored.ok) return fail(`and its copy is refused (${restored.reason})`);
   if (restored.version !== ref.version) return fail(`and its copy is format version ${restored.version}, not ${ref.version}`);
   let given = false;
@@ -217,7 +231,7 @@ export const loadSession = (stateDir: string): BootInput[] => {
     const missing = j.seed === undefined ? 'no seed' : !existsSync(dir) ? 'no recording' : null;
     out.push({
       boot: j.boot, missing, seed: j.seed ?? '', live, excluded, redactions: missing === 'no recording' ? 0 : redactionsOf(dir),
-      savedState: existsSync(join(dir, PERSIST_FILE)) ? join(dir, PERSIST_FILE) : null,
+      savedState: existsSync(join(dir, PERSIST_FILE)) ? join(dir, PERSIST_FILE) : existsSync(join(dir, `${PERSIST_FILE}.zst`)) ? join(dir, `${PERSIST_FILE}.zst`) : null,
       frames: rows(dir, /^frames-.*\.jsonl(\.zst)?$/, (l) => parseTyped(l) as Frame),
       releases: rows(dir, /^releases-.*\.jsonl(\.zst)?$/, (l) => JSON.parse(l) as Release),
     });
