@@ -2241,3 +2241,15 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - end to end, after live swaps the worker's market prices from the FeeConfig schedule (several tiers, canonical), never the swap's one-tier context;
   - the parity replay.
   - `fees-keep.test.ts` adds the restore case: a moved pool with a fee-context fact is judged by the gates.
+
+## Every pool read carries its fee context (FEE-READ-ALL, POOL-DATA; `facts/readers.ts` `readAccounts`, `#feesOf`)
+
+- **Why (POOL-DATA, 2026-10-05):** after FEE-TIER-NOW the fee context came only with a batch. The survival read at migration + 30 min (`facts/source.ts`) is a lone `readAccounts`: it made the pool fact without the fee context. So a quiet pool's first judgement in its window (60 min) was `no-fee-context`, once per candidate, until the batch that refusal asked for. The worker's reproduction over the fake chain showed exactly one such line per candidate on #220's head.
+- **What:** `readAccounts` puts PumpSwap's GlobalConfig and the pump-fees FeeConfig in its final `getMultipleAccounts`. The call count is the same as before: two the first time (the layout is learnt from the pool), one after. It puts the fee context before the accounts frame, so a pool fact is never released without it. The batch and the lone read share one decoder (`#feesOf`). A missing or foreign account still puts nothing (fail closed).
+- **Not changed, by reasoning:**
+  - `no-pool-state`, `pool-flagged` and H16 `gap` stay correct, transient refusals. They come from restarts (the pool chain is rebuilt from the boot's read) and from stream coverage gaps. Each clears at the next account read.
+  - Deferring a coin's first judgement until a read lands would move live timing away from the backtest (G3).
+  - H16 `missing` holders/sim on a candidate's first stage-3 judgement is the staged read by design (credits). Reading them in the first batch is a budget decision, not taken here.
+- **Tests that fail before** (`read-coherent.test.ts`, POOL-DATA block):
+  - the lone read's calls carry both configs, at the same count, and its frames are the fee context then the accounts;
+  - end to end, a quiet pool read only by the worker's own reads is judged in its window with no `worker` reason (on #220's head: one `no-fee-context`).
