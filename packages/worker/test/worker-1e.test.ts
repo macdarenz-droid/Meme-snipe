@@ -132,7 +132,7 @@ describe('the served regime under the set (API-1 N1\')', () => {
       m.pool();
     });
     const cand = h.worker.apiInputs().discovered.find((t) => t.mint === MINT)!;
-    expect(cand.gates).toEqual([expect.objectContaining({ gate: 'worker', code: 'no-market' })]);
+    expect(cand.gates).toEqual([expect.objectContaining({ gate: 'worker', code: 'no-fee-context' })]);
     expect(servedWaived(h)).toEqual(['regime-volume', 'regime-survival', 'exec-health', 'h14-creates-coverage']);
     await h.worker.stop();
   });
