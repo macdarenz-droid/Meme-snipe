@@ -249,7 +249,7 @@ Supervisor: session_01Ec4DXEAqLxM6M1WGVQG5se (same account as every worker). Hou
 Parked with no card: STATS builder 01Qy4q1, SANDBOX-TIDY 01MoXXP, DATA-STORE 018c27u, OPS-SUMMARY 01HHYJq. Data reviewer 01XAwN7: ARCHIVE-SAFE reviews, then ARCHIVE-WATCH.
 
 **Log (Melbourne time)**
-- 4:01 AM #236 "code-final" at 1e8264cc but CI `check` failed at typecheck (string vs Address); builder told to fix, and reviews go to the fixed head. Contents per the builder:
+- 4:00 AM #236 "code-final" at 1e8264cc but CI `check` failed at typecheck (string vs Address); builder told to fix, and reviews go to the fixed head. Contents per the builder:
   - B1: `createKeepVerdict` (core/src/gates/create-keep.ts) in LiveStrategy and StudyStrategy; let-go at keep + 1 h by chain time; a one-coin live/backtest test;
   - B2: let-go reaches FactProducer (tested);
   - B3: the expiry guard is `#held || #tail`;
