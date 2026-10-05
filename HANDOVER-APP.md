@@ -27,6 +27,22 @@ Current-head CI runs verified directly: #216 [37362626087](https://github.com/ma
 
 Updated **2026-10-06 10:09:09 AEDT**. File handoffs remain accepted as PR comments. Latest verified statuses are in the audit above. S1 alone merges/deploys, including the latest-base update and CI on the updated head. Required gates remain `check` and `historical-data`. The two superseded readiness lines below are marked historical.
 
+### DISK-CRASH — #246
+
+Head: `616a7d531b7ba4066051e96f3d722963a9134366`; branch `claude/s2-disk-crash`; contains verified integration base `5efb9ae0497523c84e3bb49a82bce989652cdb0b`. All independent reviews below are on this exact head:
+
+| Reviewer | Area | Verdict |
+|---|---|---|
+| disk_crash_api_review | APP/API | PASS |
+| disk_crash_exit_review | EXIT | PASS |
+| disk_crash_facts_review | strategy/worker facts | PASS |
+| disk_crash_persist_review | saved data | PASS |
+| disk_crash_run_review | run/CI and disk resource behavior | PASS |
+
+Review evidence published in [PR comment6005719422](https://github.com/macdarenz-droid/Meme-snipe/pull/246#issuecomment-6005719422). Builder: 204 focused tests in nine files and package typechecks PASS; exact crash regression failed on base, plus eight correction and four truth regressions failed before their fixes. Single final local full check and required [GitHub CI37390321713](https://github.com/macdarenz-droid/Meme-snipe/actions/runs/37390321713) are pending; **not S2-READY yet**.
+
+**S1 step before landing:** accept the new public bot-diagnostic `journal.jsonl.reserve` shape under this file's saved-data rule after persist PASS. Fixed 64 KiB zeros when armed, zero-length marker after observed journal ENOSPC; existing gap/summary schemas, no personal/key data. No owner credential or phone action. Durable ledger/state policies are unchanged; injected faults and SIGKILL do not prove prolonged survival on a physically saturated volume or power loss. Wider #149 backup/disk-budget delta stays on `claude/ops-1j` for its own review; not included here. S1 alone merges/deploys and validates the live server.
+
 ### APP-TRUTH — #216
 
 Historical handoff: `S2-READY ed5adc47223546e433e0151571ab3e72b1cbd84f` (S1 has merged #216).
@@ -102,6 +118,8 @@ S2-READY 6af4e43b707960316d8cd8419cb2e513fa9f4b60
 - These local limitations are historical. Current directly verified GitHub results are in Latest handoff audit; they do not establish that any future base-update head is green.
 
 ## S2 events (newest first)
+
+- **2026-10-06 10:48:48 AEDT** — Recorded each exact-head review and remaining gates for disk-crash #246 in its own handoff section; verified PR comment 6005719422. No new saved data reaches a third party or APK schema; S1 saved-file acceptance is an explicit existing handoff requirement, not an owner action. One FUNNEL-TRUTH refresh builder is active while disk checks complete, other already-reviewed app tasks are preserved.
 
 - **2026-10-06 10:47:12 AEDT** — Published and verified disk-crash head 616a7d531b7ba4066051e96f3d722963a9134366 on claude/s2-disk-crash, containing latest base 5efb9ae0497523c84e3bb49a82bce989652cdb0b. Opened PR #246 for pre-check CI, run 37390321713; check and historical-data started on that head. All five independent exact-head reviewers PASS (APP/API, EXIT, facts, persist, run/disk); verdict evidence posted to #246. Full local check and required CI remain pending; S1 must accept the new zero-data reserve shape under this file’s saved-data rule before landing. No S2-READY yet.
 
