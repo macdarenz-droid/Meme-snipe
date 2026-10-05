@@ -206,6 +206,8 @@ describe('off-server backup gate', () => {
   it('ships off: the flag is false, the installer does not enable the timer, and the sender checks the flag first', () => {
     expect(JSON.parse(read('ops/host-config.json'))).toEqual({
       offsite_backup: false, worker: 'release',
+      // RECORD-UPLOAD: on by the owner's decision (6 Oct about 12:30 AM: "Approve upload", "Okay yes delete after upload").
+      record_upload: true, record_upload_delete_local: true,
       // PRACTICE-ON: the S0 shakedown (packages/worker/test/practice-on.test.ts checks each value).
       shakedown: {
         ZEROED_STRATEGY: 'S0', ZEROED_S0_DIAGNOSTIC: 'on', ZEROED_PAPER_EDGE_PPM: '178092',
@@ -269,6 +271,49 @@ describe('systemd units (ARCHITECTURE.md 12.1)', () => {
     expect(s.match(/^LoadCredentialEncrypted=/gm)).toHaveLength(5);
     expect(s).toContain('ConditionPathExists=/etc/credstore.encrypted/telegram_chat_id');
     expect(s).toMatch(/^ExecStartPre=.* --reconcile$/m);
+  });
+
+  it('the recording upload runs as the worker user with no capability, the recorder its only writable data path, low priority and bounded', () => {
+    const s = unit('zeroed-record-upload@.service');
+    const has = (k: string) => expect(s, k).toMatch(new RegExp(`^${k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'm'));
+    for (const k of [...common, 'User=zeroed-worker', 'Group=zeroed-worker', 'AmbientCapabilities=', 'RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6', 'ProtectProc=invisible', 'Nice=19', 'IOSchedulingClass=idle', 'CPUQuota=25%', 'MemoryMax=96M', 'TimeoutStartSec=12h', 'Type=oneshot']) has(k);
+    // Pinned exactly, so none of these can widen without this test changing: who it runs as, what it may hold and write.
+    const pinned = s.split('\n').filter((l) => /^(User|Group|SupplementaryGroups|DynamicUser|CapabilityBoundingSet|AmbientCapabilities|ReadWritePaths|ReadOnlyPaths|BindPaths|BindReadOnlyPaths|StateDirectory|LoadCredential|LoadCredentialEncrypted|SetCredential|ImportCredential|ExecStart|ExecStartPre|ExecStartPost|PermissionsStartOnly)=/.test(l));
+    expect(pinned).toEqual([
+      'User=zeroed-worker', 'Group=zeroed-worker',
+      'ExecStart=/usr/bin/flock /var/lib/zeroed-record-upload/run.lock /usr/local/bin/node --max-old-space-size=48 /usr/local/lib/zeroed/record-upload.mjs --scope %i',
+      'ImportCredential=heartbeat_hmac_key', 'ImportCredential=helius_api_key', 'ImportCredential=alchemy_api_key', 'ImportCredential=jupiter_api_key',
+      'ImportCredential=telegram_bot_token', 'ImportCredential=telegram_chat_id',
+      'StateDirectory=zeroed-record-upload', 'ReadWritePaths=/var/lib/zeroed/recorder', 'CapabilityBoundingSet=', 'AmbientCapabilities=',
+    ]);
+    // The credentials it imports are the ones the worker already holds, and the ones it scans recordings for.
+    const worker = unit('zeroed-worker.service');
+    for (const n of ['helius_api_key', 'alchemy_api_key', 'jupiter_api_key', 'telegram_bot_token', 'telegram_chat_id']) expect(worker).toContain(`LoadCredentialEncrypted=${n}:`);
+    expect(worker).toContain('ImportCredential=heartbeat_hmac_key');
+    expect(read('ops/host/files/usr/local/lib/zeroed/record-upload.mjs')).toContain("export const CREDENTIALS = ['helius_api_key', 'alchemy_api_key', 'jupiter_api_key', 'telegram_bot_token', 'telegram_chat_id', 'heartbeat_hmac_key'];");
+    // RemoveIPC would remove the running worker's IPC objects (same user) when a run ends.
+    expect(s).not.toMatch(/^RemoveIPC=/m);
+  });
+
+  it('the recording upload timer runs 10 minutes after boot or switch-on, then an hour after each run, and only the host-config switch turns it on', () => {
+    const t = unit('zeroed-record-upload.timer');
+    for (const k of ['OnBootSec=10min', 'OnActiveSec=10min', 'OnUnitInactiveSec=1h', 'Unit=zeroed-record-upload@all.service']) expect(t).toMatch(new RegExp(`^${k}$`, 'm'));
+    expect(read('ops/host/install-main.sh')).not.toMatch(/enable[^\n]*zeroed-record-upload/);
+    const upd = read('ops/host/files/usr/local/sbin/zeroed-update');
+    expect(upd).toContain(`if [ "$(jq -r '.record_upload == true' /opt/zeroed/current/ops/host-config.json 2>/dev/null || echo false)" = true ]; then\n  systemctl enable --now zeroed-record-upload.timer`);
+    expect(upd).toContain('  systemctl disable --now zeroed-record-upload.timer >/dev/null 2>&1 || true');
+    // The uploader reads the switch itself before anything else, and a missing or invalid delete switch is off.
+    const mjs = read('ops/host/files/usr/local/lib/zeroed/record-upload.mjs');
+    const main = mjs.slice(mjs.indexOf('const main = async'));
+    expect(main.indexOf('if (hc.record_upload !== true)')).toBeGreaterThan(0);
+    expect(main.indexOf('if (hc.record_upload !== true)')).toBeLessThan(main.indexOf('new Uploader('));
+    expect(main).toContain('deleteLocal: hc.record_upload_delete_local === true');
+  });
+
+  it('curl gets its URL, headers and file on stdin (-K -), at 2 MB/s, without "Expect: 100-continue"', () => {
+    const mjs = read('ops/host/files/usr/local/lib/zeroed/record-upload.mjs');
+    expect(mjs).toContain("spawn(curl, ['-K', '-'], { stdio: ['pipe', 'pipe', 'pipe'] })");
+    for (const k of ["'header = \"expect:\"'", "'limit-rate = 2M'", "`upload-file = ${quote(path)}`", "`header = ${quote(`x-zeroed-signature: ${h.signature}`)}`"]) expect(mjs, k).toContain(k);
   });
 
   it('the firewall drops all inbound and limits the worker to HTTPS and DNS out', () => {

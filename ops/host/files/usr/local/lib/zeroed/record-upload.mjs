@@ -89,8 +89,9 @@ export const scanFile = async (path, values) => {
   const cuts = values.some((v) => v.includes('"')) ? ['\n'] : ['\n', '"'];
   const src = createReadStream(path);
   const dec = path.endsWith('.zst') ? createZstdDecompress() : null;
-  const stream = dec ?? src;
-  const done = dec ? pipeline(src, dec).catch((e) => e) : Promise.resolve(null);
+  // Not pipeline(): it may close the decompressor before its last output is read. A read error ends the loop below.
+  if (dec) src.on('error', (e) => dec.destroy(e));
+  const stream = dec ? src.pipe(dec) : src;
   const td = new TextDecoder('utf-8');
   let carry = '';
   let hit = null;
@@ -107,8 +108,6 @@ export const scanFile = async (path, values) => {
       if (hit) return hit;
       carry = text.slice(cut + 1);
     }
-    const err = await done;
-    if (err) throw err;
     return hitIn(carry + td.decode(), values);
   } finally {
     src.destroy();
@@ -423,11 +422,18 @@ export class Uploader {
     if (it.open && this.d.now() - st.mtimeMs < QUIET_MS) return;
     if (st.size > MAX_BYTES) return this.keep(it.key, 'over 95 MB');
     if (it.sha256 !== null && st.size !== it.size) return this.keep(it.key, 'size differs from its manifest');
-    const hit = await scanFile(it.path, this.cfg.values);
+    const before = await hashFile(it.path);
+    if (it.sha256 !== null && (before.sha256 !== it.sha256 || before.bytes !== it.size)) return this.keep(it.key, 'bytes differ from its manifest');
+    let hit;
+    try {
+      hit = await scanFile(it.path, this.cfg.values);
+    } catch {
+      hit = 'unreadable text';
+    }
     if (hit) return this.keep(it.key, `holds ${hit}`);
     // Hashed again just before sending: the watchdog keeps the asset only if GitHub's digest equals this.
     const h0 = await hashFile(it.path);
-    if (it.sha256 !== null && (h0.sha256 !== it.sha256 || h0.bytes !== it.size)) return this.keep(it.key, 'bytes differ from its manifest');
+    if (h0.sha256 !== before.sha256 || h0.bytes !== before.bytes) return this.fail(`${it.key}: changed while it was checked`);
     const shared = it.kind === 'attachment' ? files[this.state.shared[h0.sha256]] : undefined;
     if (shared?.verified) {
       // The same saved state is already up (an earlier boot restored the same bytes): listed, never sent twice.
@@ -739,8 +745,8 @@ const main = async () => {
   } catch {}
   if (hc.record_upload !== true) {
     console.log('Recording upload is off (ops/host-config.json "record_upload").');
-    mkdirSync(cfg.stateDir, { recursive: true });
-    writeAtomic(join(cfg.stateDir, 'status.json'), `${JSON.stringify({ v: 1, at: Date.now(), enabled: false })}\n`);
+    // The unit's state folder (systemd makes it); never created here.
+    if (existsSync(cfg.stateDir)) writeAtomic(join(cfg.stateDir, 'status.json'), `${JSON.stringify({ v: 1, at: Date.now(), enabled: false })}\n`);
     return 0;
   }
   const { key, values } = readCredentials(process.env.CREDENTIALS_DIRECTORY);
