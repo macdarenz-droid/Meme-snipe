@@ -120,8 +120,14 @@ export const RESTARTS_MAX = 1_000;
  * boot's kind compares its release with the newest saved boot's.
  */
 /** How the previous process ended, as a fixed code for the daily summary's `exits` (null on a first start). */
-export const exitKind = (lastExit: string | null): 'clean' | 'crash' | 'killed' | 'planned' | null =>
-  lastExit === null ? null : lastExit.startsWith('planned: ') ? 'planned' : lastExit === 'stop: signal' ? 'clean' : lastExit.startsWith('stop: crash') ? 'crash' : 'killed';
+export const exitKind = (lastExit: string | null): 'clean' | 'crash' | 'killed' | 'planned' | 'oom' | null =>
+  lastExit === null ? null
+    : lastExit.startsWith('planned: ') ? 'planned'
+    : lastExit === 'stop: signal' ? 'clean'
+    // HEAP-GUARD: a fatal error's report names a crash; a death just after a sample near a memory limit is `oom`.
+    : lastExit.startsWith('stop: crash') || lastExit.startsWith('fatal error (') ? 'crash'
+    : lastExit.startsWith('no clean stop (near ') ? 'oom'
+    : 'killed';
 
 export const restartsAfterBoot = (saved: readonly Restart[], nowMs: number, lastExit: string | null, gitSha: string): Restart[] => {
   const prev = saved[saved.length - 1];
