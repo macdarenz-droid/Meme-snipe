@@ -6,6 +6,8 @@ From here on, S2 owns this file. S2 keeps it current on its own branch `claude/s
 
 ## S2 events (newest first)
 
+- **2026-10-06 01:08:45 AEDT** — APP-TRUTH fallback fixed at bld pending exact SHA in next event: three new inherited-property regression cases failed before with TypeError, then all 17 APP-TRUTH tests passed after Object.hasOwn guard. Historical review remains recorded; fresh reviewer will inspect corrected exact head before current PASS. Obsolete full run ended by supervisor with exit 143, not counted as passed or failed tests.
+
 - **2026-10-06 01:06:25 AEDT** — APP-TRUTH independent APP/API delta review CHANGES NEEDED at 3a75e48c3df70b394ad2369eb826b53743b319fd: inherited object-property risk sources (constructor, toString, __proto__) crash label rendering rather than fallback. Reviewer app_truth_review passed 53 focused tests and verified all 40 entry risk labels, but found this additional schema-valid case. No PASS claimed; add fail-before regression then own-property lookup. Stop the obsolete in-progress full suite and run the finished head once after correction. PR comment publication is pending outbound API access.
 
 - **2026-10-06 01:05:12 AEDT** — Owner clarified review publication: every task gets fresh independent agents for each touched area; no builder self-approval and no S1 review fallback. Existing historical PASS remains attributed only to its old head. APP-TRUTH fresh delta review and full checks remain in progress; no current-head PASS or S2-READY claimed.
