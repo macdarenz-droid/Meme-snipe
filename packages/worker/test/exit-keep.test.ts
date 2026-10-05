@@ -346,3 +346,26 @@ describe('the trades a held pool had while the worker was down (EXIT-KEEP, downt
     await h2.worker.stop();
   });
 });
+
+describe('saved blocked-retry ids the worker cannot act on are refused (EXIT-KEEP persist review B1)', () => {
+  const journal = (dir: string) => readFileSync(join(dir, 'journal.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>);
+  it.each([['a string', 'x'], ['a number in the list', [1]]] as const)('retryIds as %s refuses the saved exit into sell-only recovery; management goes on and the position exits', async (_, bad) => {
+    const h = makeWorker();
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    const m = await passingMarket(h, HELD);
+    expect(await until(m, 30_000, () => Object.keys(h.worker.strategy.saved()).length > 0, tick(m))).toBe(true);
+    const pid = Object.keys(h.worker.strategy.saved())[0]!;
+    await h.worker.kill();
+    const file = exitsFile(h.stateDir);
+    const saved = file.read({});
+    file.write({ ...saved, [pid]: { ...saved[pid]!, retryIds: bad as never } });
+    const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers });
+    expect(await h2.worker.reconcile()).toEqual({ ok: true });
+    const m2 = new Market(h2, HELD);
+    // A field the manage loop would throw on (a string has no filter) must never reach it: every position's exits run there.
+    expect(await until(m2, 10_000, () => h2.worker.book.positions[pid]!.status === 'closed', tick(m2))).toBe(true);
+    const said = journal(h.stateDir).filter((l) => l['boot'] === h2.worker.boot && l['kind'] === 'decision').map((l) => (l['reasons'] as string[]).slice(0, 3));
+    expect(said).toEqual(expect.arrayContaining([['restore entry refused', pid, 'malformed saved plan'], ['recovery exit', pid, 'saved plan refused']]));
+    await h2.worker.stop();
+  });
+});
