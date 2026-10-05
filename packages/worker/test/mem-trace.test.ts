@@ -148,7 +148,7 @@ describe('a fatal-error report (HEAP-GUARD)', () => {
     expect(await pre.worker.reconcileOnly()).toEqual({ ok: true });
     const b = makeWorker({ stateDir, timers });
     expect(b.worker.health().last_exit).toBe('fatal error (HeapOutOfMemory at packages/worker/src/run/worker.ts:900)');
-    expect(exitKind(b.worker.health().last_exit)).toBe('crash');
+    expect(exitKind(b.worker.health().last_exit ?? null)).toBe('crash');
     // B dies two minutes later, with no report of its own: the old report is not this death's.
     timers.set(timers.now() + 2 * REPORT_FRESH_MS);
     await b.worker.reconcile();
@@ -157,7 +157,7 @@ describe('a fatal-error report (HEAP-GUARD)', () => {
     writeFileSync(join(stateDir, MEM_FILE), JSON.stringify(sample({ at: deathB, rss: 780 * MB })));
     const c = makeWorker({ stateDir, timers });
     expect(c.worker.health().last_exit).toBe('no clean stop (near the memory limit: heap 100 of 500 MB, rss 780 of 800 MB)');
-    expect(exitKind(c.worker.health().last_exit)).toBe('oom');
+    expect(exitKind(c.worker.health().last_exit ?? null)).toBe('oom');
     await c.worker.stop();
     const text = readFileSync(join(stateDir, STATE_FILES.journal), 'utf8');
     const starts = text.split('\n').filter((l) => l.includes('"kind":"start"') && !l.includes('"phase":"reconcile"'));
