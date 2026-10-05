@@ -119,6 +119,8 @@ S2-READY 6af4e43b707960316d8cd8419cb2e513fa9f4b60
 
 ## S2 events (newest first)
 
+- **2026-10-06 10:50:25 AEDT** — FUNNEL-TRUTH builder refreshed #237: merge e5facb3166c2fd88219c6b5e64bc4620255130ca exactly matches automatic merge-tree(c2f426b1,latest5efb9ae0). Final immutable aac10e38dffa65134be390233bd173be5f9b880c fixes the identified worker/create-expired adverse-versus-missing label using existing failed enum; only API and tests added beyond the merge. Two regressions fail before, 35 focused tests + strict source-guard rerun and all package typechecks pass. Fetch/ancestor checks completed before ordinary branch push; APP/API and facts fresh exact-head reviewers started. Local full-check slot remains held by disk #246.
+
 - **2026-10-06 10:48:48 AEDT** — Recorded each exact-head review and remaining gates for disk-crash #246 in its own handoff section; verified PR comment 6005719422. No new saved data reaches a third party or APK schema; S1 saved-file acceptance is an explicit existing handoff requirement, not an owner action. One FUNNEL-TRUTH refresh builder is active while disk checks complete, other already-reviewed app tasks are preserved.
 
 - **2026-10-06 10:47:12 AEDT** — Published and verified disk-crash head 616a7d531b7ba4066051e96f3d722963a9134366 on claude/s2-disk-crash, containing latest base 5efb9ae0497523c84e3bb49a82bce989652cdb0b. Opened PR #246 for pre-check CI, run 37390321713; check and historical-data started on that head. All five independent exact-head reviewers PASS (APP/API, EXIT, facts, persist, run/disk); verdict evidence posted to #246. Full local check and required CI remain pending; S1 must accept the new zero-data reserve shape under this file’s saved-data rule before landing. No S2-READY yet.
