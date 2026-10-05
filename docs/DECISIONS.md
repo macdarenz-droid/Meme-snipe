@@ -2535,6 +2535,7 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
     - Tags are kept per trade minute (`RepeatTags`). A minute is sorted into a Float64Array once a later minute's trade arrives (16 B a trade); a late trade for an older minute reopens it.
     - The sweep drops a minute once it ended at or before the window's cutoff, as before; the window is still checked before the tags.
     - Two different trades share a tag with odds of about 2^-96 per pair, against about 2^-128 for the 22-character prefix it replaces: still exact in practice.
+    - **Supervisor ruling (2026-10-06, 5:06 AM):** `tradeRepeatTag` supersedes OOM-SEEN's repeat id (#233: a 22-character signature prefix and a 32-bit reserve hash). The window and sweep rules are unchanged. The test that the log-line and fetched-transaction paths give the same tag for every recorded swap stays.
   - **Feed ranks:** a slot's ranks are keyed by the signature's first 22 characters as a flat string (`SigRanks`, the dedupe keys' argument), not by the whole signature, which they kept alive for 1,500 slots.
 - **Measured:**
   - a full hour of 51 trades a minute in 100 books holds under 24 B a trade (was about 96 B);
