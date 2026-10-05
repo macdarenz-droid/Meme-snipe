@@ -1,7 +1,10 @@
 // The deployer index's saved state (supervisor ruling 2026-10-04, SEED-1): every released event the index learns from
 // (creates, rug labels, unjudged mints) and every creates and rugs coverage fact, appended as it is released, so a
 // restart re-seeds the index and puts the coverage history back into the engine instead of blanking H14 for a whole
-// look-back. Public chain data only. Kept for the look-back plus a day; older lines are dropped at each start.
+// look-back. Public chain data only. Kept for the look-back plus a day; older lines are dropped at each start and once a
+// day while running (DISK-GUARD: the file stays bounded however long the worker runs). A line that does not fit (ENOSPC)
+// is not a crash: the next line that fits is preceded by a bounded `coverage:<creates|rugs>:gap` over the lost range,
+// so a restart seeded from this file reads H14 as not covered across it, never as complete.
 import { appendFileSync, closeSync, existsSync, fsyncSync, openSync, renameSync, rmSync } from 'node:fs';
 import { fileLines } from '../../../runner/src/lines.ts';
 import { join } from 'node:path';
@@ -37,21 +40,62 @@ export interface SavedDeployers {
   readonly refused?: string;
 }
 
+/** The `via` of the gaps the store writes for lines it lost (no live watch has this name). */
+export const STORE_GAP_VIA = 'deployer-store';
+
+export interface DeployerStoreOptions {
+  /** Told when a line was not written for lack of space. */
+  readonly onNoSpace?: () => void;
+  /** Test seam: appends a line (default appendFileSync), so a test can make a write fail with ENOSPC. */
+  readonly append?: (path: string, text: string) => void;
+}
+
+const noSpace = (e: unknown): boolean => typeof e === 'object' && e !== null && (e as { code?: unknown }).code === 'ENOSPC';
+
 export class DeployerStore {
   readonly #path: string;
 
   readonly #write: WriteFn | undefined;
+  readonly #o: DeployerStoreOptions;
+  /** DISK-GUARD: the first lost line's moment and how many were lost, until their gaps are written. */
+  #lost: { from: MarketEvent['moment']; count: number } | null = null;
 
   /** `write` is for tests (a short write); the default checks every write's count. */
-  constructor(stateDir: string, write?: WriteFn) {
+  constructor(stateDir: string, write?: WriteFn, o: DeployerStoreOptions = {}) {
     this.#path = join(stateDir, 'deployers.jsonl');
     this.#write = write;
+    this.#o = o;
+  }
+
+  /** True while lines were lost for lack of space and their gaps are not written yet. */
+  get failing(): boolean {
+    return this.#lost !== null;
   }
 
   /** Keeps a released event when the index or H14's coverage reads it. */
   keep(e: MarketEvent): void {
     if (!isCreate(e.key) && !isRugFact(e.key) && !isCoverage(e.key)) return;
-    appendFileSync(this.#path, `${typedText(isCreate(e.key) ? compactCreate(e) : e)}\n`);
+    const lost = this.#lost;
+    let text = `${typedText(isCreate(e.key) ? compactCreate(e) : e)}\n`;
+    if (lost !== null) {
+      // The gaps go in the same append as the line after them, after a newline that ends any part of a lost line a short
+      // write left (load skips that fragment and the empty line): all land, or the range grows and they are tried again.
+      const gap = (stream: string): string => typedText({
+        kind: 'market', id: `${STORE_GAP_VIA}:${stream}:${String(lost.from.slot)}:${lost.from.receivedAt}`, moment: e.moment, key: `coverage:${stream}:gap`,
+        value: { value: { fromSlot: lost.from.slot, toSlot: e.moment.slot, reason: `${lost.count} saved line(s) lost: no space left on the device`, via: STORE_GAP_VIA }, source: 'worker', backfilled: false, seq: 0 },
+      });
+      text = `\n${gap('creates')}\n${gap('rugs')}\n${text}`;
+    }
+    try {
+      (this.#o.append ?? appendFileSync)(this.#path, text);
+    } catch (err) {
+      if (!noSpace(err)) throw err;
+      if (this.#lost === null) this.#lost = { from: e.moment, count: 0 };
+      this.#lost.count += 1;
+      this.#o.onNoSpace?.();
+      return;
+    }
+    this.#lost = null;
   }
 
   /**

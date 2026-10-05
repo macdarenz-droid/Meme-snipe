@@ -22,8 +22,6 @@ export interface Heartbeat {
   owner_chat_id?: string | null;
   /** Critical alerts the worker raised (WATCH-1: a held position with no fresh price), one line each. */
   critical?: string[];
-  /** DISK-GUARD: free space where the worker's state lives, and the steps it took as space ran low. */
-  disk?: { free_bytes: number | null; total_bytes: number | null; recorder_bytes: number | null; days_to_full: number | null; recorder: string; entries_refused: boolean };
 }
 
 export interface Stored {
@@ -38,9 +36,6 @@ export interface Limits {
   stopNoExitS: number;
   solReserveFloor: number;
   repeatCriticalS: number;
-  /** DISK-GUARD: alert below this many free bytes, or under this many days to full at the worker's measured slope. */
-  diskFreeMinBytes: number;
-  diskDaysToFullMin: number;
 }
 
 export interface ChainView {
@@ -135,10 +130,6 @@ export function limitsFrom(env: Record<string, unknown>): Limits {
     stopNoExitS: n('STOP_NO_EXIT_S', 60),
     solReserveFloor: n('SOL_RESERVE_FLOOR', 0.02),
     repeatCriticalS: n('REPEAT_CRITICAL_S', 300),
-    // 3 GiB: the warning comes while a worst-case recorder day (about 1 GiB) still fits above the worker's own
-    // recorder pause at 1.5 GiB, so the owner hears of it before any data is lost.
-    diskFreeMinBytes: n('DISK_FREE_MIN_BYTES', 3 * 1024 ** 3),
-    diskDaysToFullMin: n('DISK_DAYS_TO_FULL_MIN', 3),
   };
 }
 
@@ -173,19 +164,6 @@ export function evaluate(s: Stored | undefined, now: number, l: Limits, chain: C
   if (hb.signer === 'unreachable' || hb.signer === 'timeout') out.push({ key: 'signer', text: `Worker cannot reach the signer (${hb.signer}).` });
   const critical = Array.isArray(hb.critical) ? hb.critical.filter((c): c is string => typeof c === 'string' && c !== '') : [];
   if (critical.length > 0) out.push({ key: 'worker_critical', text: `Worker critical: ${critical.join('; ')}.` });
-  const d = hb.disk;
-  if (typeof d === 'object' && d !== null) {
-    const gib = (b: number) => `${(b / 1024 ** 3).toFixed(1)} GiB`;
-    const low = num(d.free_bytes) && d.free_bytes < l.diskFreeMinBytes;
-    const soon = num(d.days_to_full) && d.days_to_full < l.diskDaysToFullMin;
-    if (low || soon) {
-      const free = num(d.free_bytes) ? `${gib(d.free_bytes)} free${num(d.total_bytes) ? ` of ${gib(d.total_bytes)}` : ''}` : 'free space unknown';
-      const days = num(d.days_to_full) ? `, full in about ${d.days_to_full} days at the current rate` : '';
-      out.push({ key: 'disk_low', text: `Server disk: ${free}${days} (alert below ${gib(l.diskFreeMinBytes)} or ${l.diskDaysToFullMin} days).` });
-    }
-    if (d.recorder === 'paused') out.push({ key: 'disk_recorder', text: 'Server disk: the market recorder is paused for lack of space; this gap is missing from the recorded data.' });
-    if (d.entries_refused === true) out.push({ key: 'disk_entries', text: `Server disk: new entries are refused (${num(d.free_bytes) ? `${gib(d.free_bytes)} free` : 'free space unknown'}); open positions still exit.` });
-  }
   return out;
 }
 

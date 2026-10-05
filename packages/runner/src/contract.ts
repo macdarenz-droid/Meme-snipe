@@ -152,6 +152,8 @@ export interface DiskHealth {
 
 export type JournalKind =
   | 'start' | 'reconcile' | 'decision' | 'entry' | 'exit' | 'simulation' | 'feed' | 'halt' | 'resume' | 'stop' | 'journal_repair'
+  /** DISK-GUARD: `lost` lines were not written for lack of space, the first due at `from_ts` (the journal is incomplete). */
+  | 'journal_gap'
   /** DISK-GUARD: a step taken or undone (`step`: recorder_paused, recorder_resumed, entries_refused, entries_allowed). */
   | 'disk'
   /** A coverage gap of a discovery stream: journaled when it opens (to_ts null) and again when it closes, same gap_id. */

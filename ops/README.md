@@ -10,7 +10,7 @@ Server: Vultr High Performance, Frankfurt, 1 vCPU / 1 GB, image **Ubuntu 24.04 L
 2. **Install.** Paste this one line the same way (Clipboard → Paste), then press Enter:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/0b9b18ac43060d75e0f525e4a7c4a6c20ae13fb4/ops/install.sh -o i && echo 'f38d6f2d5e58cd2c0c29571115f2698ff41ac9087cd7f2d5245232026440fe6d  i' | sha256sum -c && bash i
+curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/0b9b18ac43060d75e0f525e4a7c4a6c20ae13fb4/ops/install.sh -o i && echo '4d5e57b3b118c9326a8677e1a98b496d98708eb15b4f029816bf60f84168f31a  i' | sha256sum -c && bash i
 ```
 
    The line checks the file against its SHA-256 before anything runs; a changed file stops at `sha256sum -c`. After about two minutes the screen shows a **deploy code** of 6 words.
@@ -19,7 +19,7 @@ curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/0b9b18ac
 
 The console screen can be left at any time (Ctrl+C); setup carries on in the background. `zeroed-status` shows where it stands and the codes again.
 
-SHA-256 of `install.sh`: `f38d6f2d5e58cd2c0c29571115f2698ff41ac9087cd7f2d5245232026440fe6d`
+SHA-256 of `install.sh`: `4d5e57b3b118c9326a8677e1a98b496d98708eb15b4f029816bf60f84168f31a`
 
 After any change to `ops/install.sh`, the commit in the line must move to one that holds the new file (`ops/test/e2e.sh` fails otherwise).
 
@@ -97,7 +97,7 @@ At the server console, as root:
 
 ## Disk space
 
-The worker reads free space where its state lives once a minute. Below 1.5 GiB it stops recording market data (the gap is marked in the recorder's manifest); below 512 MiB it also refuses new entries ("disk low"), while open positions keep exiting. Each comes back 512 MiB higher. The watchdog alerts below 3 GiB free, under 3 days to full at the current rate, and while either step is in force. The system journal is capped at 500 MB, and `zeroed-update` removes releases older than 7 days (never the current one, the one before it, or the 3 newest). To make room by hand, see what is large with `du -sh /var/lib/zeroed/recorder/* | sort -h | tail` and `ls -lt /opt/zeroed/releases`; recorder folders are pre-funding evidence, so copy one off the server before removing it.
+The worker reads free space where its state lives once a minute. Below 1.5 GiB it stops recording market data (the gap is marked in the recorder's manifest); below 512 MiB it also refuses new entries ("disk low"), while open positions keep exiting. Each comes back 512 MiB higher. `/health` and the heartbeat carry the reading (`disk`: free and total bytes, the recorder's bytes, days to full at the measured rate, and both steps). Every file the worker keeps adding to is bounded: the recorder by the steps above; `journal.jsonl` and `deployers.jsonl` never stop the worker on a full disk (a line that does not fit is counted, entries stop until it fits again, and the loss is written down then: a `journal_gap` line, and a coverage gap so the deployer check reads as not covered across it after a restart); `deployers.jsonl` is also cut to the look-back once a day; Node's fatal reports keep the newest 5 (#218). Nothing deletes the ledger or saved state. The system journal is capped at 500 MB, and `zeroed-update` removes releases older than 7 days (never the current one, the one before it, or the 3 newest). To make room by hand, see what is large with `du -sh /var/lib/zeroed/recorder/* | sort -h | tail` and `ls -lt /opt/zeroed/releases`; recorder folders are pre-funding evidence, so copy one off the server before removing it.
 
 ## Backups
 

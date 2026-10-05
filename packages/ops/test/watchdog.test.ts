@@ -74,27 +74,6 @@ describe('checks', () => {
     expect(evaluate(stored(hb()), T0 + 91_000, L, noChain).map((a) => a.key)).toEqual(['heartbeat']);
   });
 
-  it('DISK-GUARD: flags low free space at its floor, few days to full, a paused recorder and refused entries, each on its own', () => {
-    const GiB = 1024 ** 3;
-    const disk = (over: Partial<NonNullable<Heartbeat['disk']>> = {}) => hb({ disk: { free_bytes: 10 * GiB, total_bytes: 25 * GiB, recorder_bytes: 1, days_to_full: null, recorder: 'on', entries_refused: false, ...over } });
-    const keys = (h: Heartbeat) => evaluate(stored(h), T0, L, noChain).map((a) => a.key);
-    expect(L.diskFreeMinBytes).toBe(3 * GiB);
-    expect(L.diskDaysToFullMin).toBe(3);
-    expect(keys(disk())).toEqual([]);
-    expect(keys(disk({ free_bytes: 3 * GiB }))).toEqual([]);
-    expect(keys(disk({ free_bytes: 3 * GiB - 1 }))).toEqual(['disk_low']);
-    expect(keys(disk({ days_to_full: 3 }))).toEqual([]);
-    expect(keys(disk({ days_to_full: 2.9 }))).toEqual(['disk_low']);
-    expect(keys(disk({ recorder: 'paused' }))).toEqual(['disk_recorder']);
-    expect(keys(disk({ free_bytes: null, entries_refused: true }))).toEqual(['disk_entries']);
-    expect(keys(disk({ free_bytes: GiB / 4, recorder: 'paused', entries_refused: true, days_to_full: 0.2 }))).toEqual(['disk_low', 'disk_recorder', 'disk_entries']);
-    expect(evaluate(stored(disk({ free_bytes: 2 * GiB, days_to_full: 1.5 })), T0, L, noChain)[0]!.text).toBe('Server disk: 2.0 GiB free of 25.0 GiB, full in about 1.5 days at the current rate (alert below 3.0 GiB or 3 days).');
-    // Without a disk reading (an older worker, or the stand-in) there is nothing to check.
-    expect(keys(hb())).toEqual([]);
-    const set = limitsFrom({ DISK_FREE_MIN_BYTES: String(5 * GiB), DISK_DAYS_TO_FULL_MIN: '7' });
-    expect([set.diskFreeMinBytes, set.diskDaysToFullMin]).toEqual([5 * GiB, 7]);
-  });
-
   it('flags slot lag against the independent RPC', () => {
     const s = stored(hb({ last_processed_slot: 1000 }));
     expect(evaluate(s, T0, L, { slot: 1150, heldMints: null })).toEqual([]);

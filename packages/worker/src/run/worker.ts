@@ -73,6 +73,9 @@ import type { ExecStats } from '../../../core/src/facts/raw.ts';
 const flagged = (p: PoolFact): boolean => p.obs.quality.some((q) => q !== 'backfilled' && q !== 'deduplicated');
 import { type PoolFeeContext, effectiveQuoteReserve, poolSell } from '../../../core/src/amm/index.ts';
 
+/** DISK-GUARD: how often deployers.jsonl is cut to the look-back while running. */
+const STORE_TRIM_EVERY_MS = 86_400_000;
+
 /** The halt reason while the book holds a late buy's position, which paper does not settle yet (risk ruling on #133). */
 export const LATE_BUY = 'late buy not settled by paper; entries off';
 /** The halt reason while WATCH-1's second price path cannot serve (not configured, or its budget halted). */
@@ -189,6 +192,8 @@ export interface WorkerDeps {
   readonly summaryFault?: () => void;
   /** Test seam: the desk calls it right after each of a fill's two durable writes (ARCHITECTURE §12.4). */
   readonly crashPoint?: (point: 'fill-journaled' | 'fill-committed', intentId: string) => void;
+  /** Test seam (DISK-GUARD): the journal's and deployers.jsonl's appends (default appendFileSync), to make one fail with ENOSPC. */
+  readonly append?: (path: string, text: string) => void;
   /**
    * WATCH-1's second path: one getMultipleAccounts at confirmed through the quota scheduler at P1, on a provider other
    * than the live feed's (Alchemy). Without it every stale held position raises the critical alert.
@@ -350,6 +355,12 @@ export class Worker {
   #diskSample: DiskSample | null = null;
   #diskAt: number | null = null;
   #diskHistory: DiskPoint[] = [];
+  /** DISK-GUARD: a journal line was lost for lack of space since the last log of it. */
+  #journalNoSpace = false;
+  /** DISK-GUARD: a deployer-index line was lost for lack of space since the last log of it. */
+  #storeNoSpace = false;
+  /** DISK-GUARD: when deployers.jsonl was last cut to the look-back (at start, then once a day). */
+  #storeTrimmedAt = 0;
   /** Entries start halted: nothing enters before the first feed check says otherwise. */
   #halted: readonly string[] = ['starting'];
   /** SEED-1's seed is not placed yet: entries halt (SEEDING), exits run. */
@@ -411,7 +422,16 @@ export class Worker {
     this.#funnel.fromMs = now;
     this.#boot = d.boot ?? `${now.toString(36)}-${process.pid}`;
     mkdirSync(c.stateDir, { recursive: true });
-    this.#journal = new Journal(join(c.stateDir, STATE_FILES.journal), this.#boot, () => d.timers.now());
+    // DISK-GUARD: a line that does not fit is counted (a `journal_gap` line follows once there is room), never a crash;
+    // entries stop while one is pending, and the disk is read again now.
+    this.#journal = new Journal(join(c.stateDir, STATE_FILES.journal), this.#boot, () => d.timers.now(), {
+      ...(d.append === undefined ? {} : { append: d.append }),
+      onNoSpace: () => {
+        if (!this.#journalNoSpace) d.log('Journal: a line was not written (no space left on the device); entries stop until it can write again.');
+        this.#journalNoSpace = true;
+        this.#diskAt = null;
+      },
+    });
     this.#fillLines = readJournalFills(join(c.stateDir, STATE_FILES.journal));
     rmSync(join(c.stateDir, STATE_FILES.cleanStop), { force: true });
     const timing = watchTimingProblem(d.config.watch, d.session.policy.gates.maxQuoteAgeMs, DEFAULT_LIVE_FEED.horizonSlots * SLOT_MS);
@@ -528,7 +548,17 @@ export class Worker {
       if (e.key === GRADUATES_SEED_KEY) this.#graduatesSeed(e.value);
     });
     this.#engine = new Engine({ clock: this.#feed.clock, feed: this.#facts.feed, strategy: this.#strategy, runner: this.#world, seed, book: bookConfig });
-    this.#deployerStore = new DeployerStore(c.stateDir);
+    // DISK-GUARD: a line that does not fit is not a crash; its range becomes a coverage gap once there is room, and
+    // entries stop until then.
+    this.#deployerStore = new DeployerStore(c.stateDir, undefined, {
+      ...(d.append === undefined ? {} : { append: d.append }),
+      onNoSpace: () => {
+        if (!this.#storeNoSpace) d.log('Deployer index: a saved line was not written (no space left on the device); entries stop until it can write again.');
+        this.#storeNoSpace = true;
+        this.#diskAt = null;
+      },
+    });
+    this.#storeTrimmedAt = now;
     const storeFrom = now - (d.session.policy.gates.deployerRugLookbackDays + 1) * 86_400_000;
     // PERSIST-1: the saved index, labeller and coverage, when the file holds up (else a fresh start: not covered).
     // Restored through the seed fact (recorded, so a replay rebuilds the same state) before any decision; the
@@ -1130,6 +1160,7 @@ export class Worker {
     this.#markAccount(now);
     if (now - this.#lastSaveMs >= PERSIST_EVERY_MS) this.#persist(now);
     if (this.#diskAt === null || now - this.#diskAt >= DISK_EVERY_MS) this.#checkDisk(now);
+    if (now - this.#storeTrimmedAt >= STORE_TRIM_EVERY_MS) this.#trimStore(now);
     this.#checkHalt(now);
   }
 
@@ -1138,7 +1169,28 @@ export class Worker {
    * for the slope. The recorder stays paused while it paused itself on a failed write until free space is back above its
    * resume line.
    */
+  /**
+   * DISK-GUARD: deployers.jsonl cut to the look-back plus a day while running, as at start, so it stays bounded however
+   * long the worker runs (the index already holds what it needs; only rugs and coverage pass through memory). A failed
+   * cut (no room for the copy) leaves the file whole and is tried again in an hour.
+   */
+  #trimStore(now: number): void {
+    const from = now - (this.#d.session.policy.gates.deployerRugLookbackDays + 1) * 86_400_000;
+    try {
+      this.#deployerStore.load(from, { keepCreates: false });
+      this.#storeTrimmedAt = now;
+    } catch (e) {
+      this.#storeTrimmedAt = now - STORE_TRIM_EVERY_MS + 3_600_000;
+      this.#d.log(`Deployer index: the saved file was not cut to the look-back: ${errorText(e)}; tried again in an hour.`);
+    }
+  }
+
   #checkDisk(now: number): void {
+    // Lines lost for lack of space: their `journal_gap` goes first, once there is room.
+    if (this.#journal.failing && this.#journal.retry()) {
+      this.#journalNoSpace = false;
+      this.#d.log('Journal: writing again; the lines lost for lack of space are counted in a journal_gap line.');
+    }
     const read = this.#d.disk;
     if (read === undefined) return;
     this.#diskAt = now;
@@ -1385,7 +1437,11 @@ export class Worker {
     // A position entered now could lose its price with no second path to read it (review of #87): entries stop.
     if (this.#d.watchRead === undefined || this.#d.watchHalted?.() === true) reasons.push(SECOND_PATH_UNAVAILABLE);
     if (this.#seeding) reasons.push(SEEDING);
-    if (this.#disk.entriesRefused) reasons.push(DISK_LOW);
+    if (this.#disk.entriesRefused || this.#journal.failing || this.#deployerStore.failing) reasons.push(DISK_LOW);
+    if (this.#storeNoSpace && !this.#deployerStore.failing) {
+      this.#storeNoSpace = false;
+      this.#d.log('Deployer index: writing again; the lost range is saved as a coverage gap.');
+    }
     if (this.#recorderFault !== null) reasons.push(this.#recorderFault);
     if (Object.keys(this.#desk.book.positions).some((id) => lateFillOf(id) !== null)) reasons.push(LATE_BUY);
     reasons.push(...this.#diverged, ...this.#sellOnly);

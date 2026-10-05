@@ -1,6 +1,6 @@
 // TEST-3: the §18 acceptance cases as scripted faults on the real worker (virtual time, scripted market). Every wait is
 // "until the effect, within a virtual-time bound", never a fixed window: a slow CI host only makes a run take longer.
-import { cpSync, readdirSync, readFileSync } from 'node:fs';
+import { appendFileSync, cpSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { replayLedgerFile } from '../../core/src/ledger/replay/index.ts';
@@ -26,6 +26,8 @@ import { SECOND_PATH_UNAVAILABLE } from '../src/run/worker.ts';
 import { gatesOfStages, parsePool, xcheckKey } from '../../core/src/gates/index.ts';
 import { NOT_EVALUATED } from '../src/engine/strategy.ts';
 import { DEFAULT_DISK_POLICY, DISK_LOW, type DiskSample } from '../src/run/disk.ts';
+import { STORE_GAP_VIA } from '../src/run/deployer-store.ts';
+import { typedText } from '../src/run/json.ts';
 
 type H = ReturnType<typeof makeWorker>;
 const journal = (dir: string) => readFileSync(join(dir, 'journal.jsonl'), 'utf8');
@@ -737,6 +739,98 @@ describe('DISK-GUARD: free space runs low (golden rule: a full disk is an outage
     free = P.recorderResumeBytes;
     await until(m, () => h.worker.health().disk?.recorder === 'on', 70_000, step(), 400);
     expect(kinds(h.stateDir, 'disk').map((l) => l['step'])).toEqual(['recorder_paused', 'entries_refused', 'entries_allowed', 'recorder_resumed']);
+    await h.worker.stop();
+  });
+
+  /** Appends that fail with ENOSPC for the files named in `full` (by basename), as on a full disk. */
+  const fullDisk = () => {
+    const full = new Set<string>();
+    const append = (path: string, text: string): void => {
+      if (full.has(path.split('/').at(-1)!)) throw Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' });
+      appendFileSync(path, text);
+    };
+    return { full, append };
+  };
+
+  it('a journal line that does not fit: no crash, entries refused while lines are lost, exits go on, and the gap is journaled once it fits', async () => {
+    const { full, append } = fullDisk();
+    const feeds = [scriptedSource('helius-ws', true, ['helius']), scriptedSource('coinbase-ws', true, ['coinbase'])];
+    const h = makeWorker({ timers: dueTimers(T - 16 * 86_400_000), sources: () => feeds, append, config: { ZEROED_HEALTH_ADDR: '127.0.0.1:18908', ZEROED_API_ADDR: '127.0.0.1:18909' } });
+    const m = new Market(h, { heldPoolFacts: true });
+    await boot(h, m, feeds);
+    const step = (scalePpm = 1_000_000n) => () => {
+      up(h, m, 'coinbase');
+      tick(m, scalePpm)();
+    };
+    await passingMarket(h);
+    await until(m, () => Object.values(h.worker.book.positions).some((p) => p.status === 'open'), 30_000, step(), 400);
+    const pid = Object.values(h.worker.book.positions).find((p) => p.status === 'open')!.id;
+    const seq = h.worker.health().journal_seq;
+
+    // The disk fills. The open position still exits on its stop, though none of its lines can be journaled, and entries
+    // stop from the first line lost.
+    full.add('journal.jsonl');
+    await until(m, () => h.worker.book.positions[pid]!.status === 'closed', 30_000, step(700_000n));
+    await m.run(2_000, 400, step());
+    expect(h.worker.health().halt_reasons).toContain(DISK_LOW);
+    expect(h.worker.health().journal_seq).toBe(seq);
+    const entered = entries(h).length;
+    await passingMarket(h);
+    await m.run(20_000, 400, step());
+    expect(entries(h).length).toBe(entered);
+    expect(h.worker.health().journal_seq).toBe(seq);
+
+    full.delete('journal.jsonl');
+    await until(m, () => !h.worker.health().halt_reasons.includes(DISK_LOW), 70_000, step(), 400);
+    const gaps = kinds(h.stateDir, 'journal_gap');
+    expect(gaps).toHaveLength(1);
+    expect(gaps[0]!['seq']).toBe(seq + 1);
+    expect(gaps[0]!['lost']).toBeGreaterThan(0);
+    const r = checkJournal(journal(h.stateDir));
+    expect(r.problems).toEqual([expect.stringMatching(new RegExp(`^seq ${seq + 1}: \\d+ line\\(s\\) not written from .+ \\(no space left on the device\\)$`))]);
+    await h.worker.stop();
+  });
+
+  it('a deployers.jsonl line that does not fit: entries refused until it writes again, then the lost range is saved as coverage gaps', async () => {
+    const { full, append } = fullDisk();
+    const feeds = [scriptedSource('helius-ws', true, ['helius']), scriptedSource('coinbase-ws', true, ['coinbase'])];
+    const h = makeWorker({ timers: dueTimers(T - 16 * 86_400_000), sources: () => feeds, append, config: { ZEROED_HEALTH_ADDR: '127.0.0.1:18910', ZEROED_API_ADDR: '127.0.0.1:18911' } });
+    const m = new Market(h);
+    await boot(h, m, feeds);
+    const coverage = (k: number) => h.worker.feed.ingest('helius', { type: 'fact', key: 'coverage:creates:start', value: { fromSlot: BigInt(k), via: `logs:test-${k}` } }, { receivedAt: m.now });
+    const step = () => {
+      up(h, m, 'coinbase');
+      m.slot();
+    };
+    await m.run(2_000, 400, step);
+    expect(h.worker.health().halt_reasons).not.toContain(DISK_LOW);
+
+    full.add('deployers.jsonl');
+    coverage(1);
+    await until(m, () => h.worker.health().halt_reasons.includes(DISK_LOW), 30_000, step, 400);
+    full.delete('deployers.jsonl');
+    await m.run(10_000, 400, step);
+    expect(h.worker.health().halt_reasons).toContain(DISK_LOW);
+    coverage(2);
+    await until(m, () => !h.worker.health().halt_reasons.includes(DISK_LOW), 30_000, step, 400);
+    const saved = readFileSync(join(h.stateDir, 'deployers.jsonl'), 'utf8').split('\n').filter((l) => l.includes(STORE_GAP_VIA));
+    expect(saved.map((l) => (JSON.parse(l) as { key: string }).key)).toEqual(['coverage:creates:gap', 'coverage:rugs:gap']);
+    await h.worker.stop();
+  });
+
+  it('deployers.jsonl is cut to the look-back once a day while the worker runs, not only at start', async () => {
+    const feeds = [scriptedSource('helius-ws', true, ['helius'])];
+    const h = makeWorker({ timers: dueTimers(T - 16 * 86_400_000), sources: () => feeds, config: { ZEROED_HEALTH_ADDR: '127.0.0.1:18912', ZEROED_API_ADDR: '127.0.0.1:18913' } });
+    const m = new Market(h);
+    await boot(h, m, feeds);
+    // A create from before the look-back, as a long run leaves behind.
+    const old = { kind: 'market', id: 'old-create', moment: { slot: 1n, txIndex: 0, ixIndex: 0, receivedAt: T - 60 * 86_400_000 }, key: 'pump:CreateEvent:old', value: { event: { name: 'CreateEvent', program: 'pump', data: { mint: 'OLD', creator: 'D', timestamp: 1 } } } };
+    appendFileSync(join(h.stateDir, 'deployers.jsonl'), `${typedText(old)}\n`);
+    await m.run(2_000, 400, () => m.slot());
+    expect(readFileSync(join(h.stateDir, 'deployers.jsonl'), 'utf8')).toContain('old-create');
+    h.timers.set(m.now + 86_400_000);
+    await m.run(2_000, 400, () => m.slot());
+    expect(readFileSync(join(h.stateDir, 'deployers.jsonl'), 'utf8')).not.toContain('old-create');
     await h.worker.stop();
   });
 
