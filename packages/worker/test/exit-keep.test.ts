@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { SavedExit } from '../src/engine/strategy.ts';
 import { TRIAL_POLICY } from '../../core/src/config/index.ts';
+import { streamKey } from '../../core/src/gates/index.ts';
 import { StateFile, exitsFile } from '../src/run/state.ts';
 import { DEV, Market, POOL_ADDRESS, SUPPLY, makeWorker, passingMarket, until } from './worker-harness.ts';
 
@@ -245,6 +246,104 @@ describe('restored trade evidence is never counted twice (EXIT-KEEP review B1)',
     await m2.run(800, 400, tick(m2));
     expect(totals(h2.worker.strategy.saved()[pid]!)).toEqual(totals(before));
     expect(h2.worker.book.positions[pid]!.status).toBe('open');
+    await h2.worker.stop();
+  });
+});
+
+describe('the trades a held pool had while the worker was down (EXIT-KEEP, downtime)', () => {
+  const journal = (dir: string) => readFileSync(join(dir, 'journal.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>);
+  const decisions = (h: H) => journal(h.stateDir).filter((l) => l['boot'] === h.worker.boot && l['kind'] === 'decision').map((l) => l['reasons'] as string[]);
+  const POOL_COVERAGE = `coverage:trades:${POOL_ADDRESS}`;
+  /** Entered with the pool's trade stream covered from before the entry, the deployer sold 1.5%; killed. */
+  const held = async () => {
+    const h = makeWorker();
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    const pre = new Market(h);
+    pre.create();
+    h.worker.step();
+    const m = await passingMarket(h, HELD);
+    m.tradesStart(h.worker.feed.releasedThrough + 1n);
+    expect(await until(m, 30_000, () => Object.values(h.worker.book.positions).some((p) => p.status === 'open'), tick(m))).toBe(true);
+    const pid = Object.values(h.worker.book.positions).find((p) => p.status === 'open')!.id;
+    m.swap('SellEvent', DEV, (SUPPLY * 150n) / 10_000n);
+    await m.run(2_000, 400, tick(m));
+    const through = h.worker.strategy.saved()[pid]!.tradesThrough;
+    expect(typeof through).toBe('bigint');
+    await h.worker.kill();
+    return { h, pid, through: through! };
+  };
+  const reboot = async (h: H) => {
+    const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers });
+    expect(await h2.worker.reconcile()).toEqual({ ok: true });
+    const m2 = new Market(h2, HELD);
+    // The passing world publishes its own trade-stream fact (gap-free from long ago); after the restart the stream is
+    // what this boot's coverage facts make it, so that stand-in is left out.
+    m2.omit = new Set([streamKey(`trades:${POOL_ADDRESS}`)]);
+    return { h2, m2 };
+  };
+
+  it('the restart catches the held pool up from the first slot after its saved trades; a catch-up closed lossy puts it in sell-only recovery', async () => {
+    const { h, pid, through } = await held();
+    const { h2, m2 } = await reboot(h);
+    // The pool watch is asked to cover from the next slot (live trades never held for a held pool).
+    expect(h2.worker.strategy.watchedPools().get(POOL_ADDRESS)).toMatchObject({ held: true, fromSlot: through + 1n });
+    m2.offchain(`${POOL_COVERAGE}:start`, { fromSlot: through + 1n, via: `logs:${POOL_ADDRESS}` });
+    m2.offchain(`${POOL_COVERAGE}:gap`, { fromSlot: through + 1n, toSlot: null, reason: 'catch-up', via: `logs:${POOL_ADDRESS}` });
+    await m2.run(1_200, 400, tick(m2));
+    // Open: waited out, nothing judged, and the saved slot does not move past the unfilled downtime (a kill now must
+    // catch up from the same slot again).
+    expect(decisions(h2).some((r) => r[0] === 'recovery exit')).toBe(false);
+    expect(h2.worker.strategy.saved()[pid]!.tradesThrough).toBe(through);
+    // The fill could not restore it all: a bounded lossy gap.
+    m2.offchain(`${POOL_COVERAGE}:gap`, { fromSlot: through + 1n, toSlot: through + 5n, reason: 'catch-up', via: `logs:${POOL_ADDRESS}` });
+    expect(await until(m2, 10_000, () => h2.worker.book.positions[pid]!.status === 'closed', tick(m2))).toBe(true);
+    expect(decisions(h2).filter((r) => r[0] === 'recovery exit').map((r) => r[2])).toEqual([`trades not complete since slot ${through + 1n} (trades:${POOL_ADDRESS} gap-free only from ${through + 6n})`]);
+    await h2.worker.stop();
+  });
+
+  it('a catch-up filled in full counts the deployer\'s downtime sale: 1.5% before the kill and 1% while down exits on deployer_sell', async () => {
+    const { h, pid, through } = await held();
+    const { h2, m2 } = await reboot(h);
+    m2.offchain(`${POOL_COVERAGE}:start`, { fromSlot: through + 1n, via: `logs:${POOL_ADDRESS}` });
+    m2.offchain(`${POOL_COVERAGE}:gap`, { fromSlot: through + 1n, toSlot: null, reason: 'catch-up', via: `logs:${POOL_ADDRESS}` });
+    // The fill's transaction: the deployer's sale during the downtime, filled in after the restart.
+    m2.fact(`logs:pump_amm:SellEvent:${POOL_ADDRESS}:downtime`, { event: { program: 'pump_amm', name: 'SellEvent', data: {
+      pool: POOL_ADDRESS, user: DEV, baseAmountIn: (SUPPLY * 100n) / 10_000n, quoteAmountOut: 1n, timestamp: BigInt(Math.floor((m2.now - 30_000) / 1000)), baseSupply: SUPPLY,
+    } }, signature: 'downtime-sale', backfilled: true });
+    m2.offchain(`${POOL_COVERAGE}:resume`, { fromSlot: through + 1n, toSlot: h2.worker.feed.releasedThrough, via: `logs:${POOL_ADDRESS}` });
+    expect(await until(m2, 10_000, () => h2.worker.book.positions[pid]!.status === 'closed', tick(m2))).toBe(true);
+    expect(decisions(h2).some((r) => r[0] === 'recovery exit')).toBe(false);
+    expect(journal(h.stateDir).find((l) => l['kind'] === 'exit' && l['boot'] === h2.worker.boot)!['reasons']).toEqual(expect.arrayContaining(['thesis_lost']));
+    await h2.worker.stop();
+  });
+
+  it('a restart with nothing saved to catch up from (the stream starts after the entry) puts the position in sell-only recovery', async () => {
+    const { h, pid } = await held();
+    const file = exitsFile(h.stateDir);
+    const saved = file.read({});
+    const { tradesThrough: _t, ...rest } = saved[pid]!;
+    file.write({ ...saved, [pid]: rest });
+    const { h2, m2 } = await reboot(h);
+    expect(h2.worker.strategy.watchedPools().get(POOL_ADDRESS)?.fromSlot).toBeUndefined();
+    // The restarted watch starts at the stream's current slot, after the entry's fill.
+    await m2.run(800, 400, () => m2.slot());
+    m2.tradesStart(h2.worker.feed.releasedThrough + 1n);
+    expect(await until(m2, 10_000, () => h2.worker.book.positions[pid]!.status === 'closed', tick(m2))).toBe(true);
+    expect(decisions(h2).some((r) => r[0] === 'recovery exit' && r[2]!.startsWith('trades not complete since slot'))).toBe(true);
+    await h2.worker.stop();
+  });
+
+  it('a filled-in swap is counted in the flow minute of its block time, not its arrival', async () => {
+    const { h, pid } = await held();
+    const { h2, m2 } = await reboot(h);
+    await m2.run(800, 400, tick(m2));
+    const blockMs = Math.floor((m2.now - 5 * 60_000) / 60_000) * 60_000 + 10_000;
+    m2.fact(`logs:pump_amm:SellEvent:${POOL_ADDRESS}:late`, { event: { program: 'pump_amm', name: 'SellEvent', data: {
+      pool: POOL_ADDRESS, user: 'someone', baseAmountIn: 1_000n, quoteAmountOut: 7_000n, timestamp: BigInt(Math.floor(blockMs / 1000)), baseSupply: SUPPLY,
+    } }, signature: 'late-sale', backfilled: true });
+    await m2.run(800, 400, tick(m2));
+    const flow = h2.worker.strategy.saved()[pid]!.flow!;
+    expect(flow.ids.find(([id]) => id.startsWith('late-sale'))?.[1]).toBe(Math.floor(blockMs / 60_000) * 60_000);
     await h2.worker.stop();
   });
 });

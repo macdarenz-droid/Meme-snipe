@@ -16,7 +16,10 @@ export const REFUSED_RETRY_MS = { first: 2_000, most: 60_000 } as const;
 export interface PoolWatchOptions {
   readonly stream: Pick<RpcStream, 'watchLogs' | 'unwatch' | 'setPriority'> & Partial<Pick<RpcStream, 'onDropped' | 'onServed'>>;
   readonly timers: Timers;
-  /** `fromSlot`: a candidate's migration slot, where its trade coverage must start (S0-ZERO); none for held pools. */
+  /**
+   * `fromSlot`: where the pool's trade coverage must start: a candidate's migration slot (S0-ZERO), or a held position's
+   * first slot after the trades it had counted before a restart (EXIT-KEEP; its live trades are not held back).
+   */
   readonly pools: () => ReadonlyMap<string, { readonly mint: string; readonly held: boolean; readonly fromSlot?: bigint }>;
   readonly everyMs: number;
   /**
@@ -107,7 +110,7 @@ export class PoolWatch {
         // A candidate's coverage starts at its migration (S0-ZERO): its candles are observed from the pool's creation.
         const id = this.#o.stream.watchLogs(pool, {
           priority: held ? P1 : P3, decodeLogs: true, coverage: tradesStream(pool), commitment: 'confirmed',
-          ...(this.#o.fill === undefined ? {} : { fill: this.#o.fill }), ...(fromSlot === undefined || held ? {} : { coverFrom: fromSlot }),
+          ...(this.#o.fill === undefined ? {} : { fill: this.#o.fill }), ...(fromSlot === undefined ? {} : { coverFrom: fromSlot, ...(held ? { holdLive: false } : {}) }),
         });
         this.#watching.set(pool, { id, held });
       } catch {

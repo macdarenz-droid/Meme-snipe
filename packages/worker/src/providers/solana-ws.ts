@@ -78,6 +78,11 @@ export interface WatchOptions {
    * fill's transactions, so the pool's trades reach the feed oldest first. Ignored when not before the stream's next slot.
    */
   readonly coverFrom?: bigint;
+  /**
+   * EXIT-KEEP: false for a held pool's catch-up after a restart. Its live notifications are put on the feed at once,
+   * not held back for the fill: an exit never waits on a catch-up. The fill's transactions follow when it answers.
+   */
+  readonly holdLive?: boolean;
 }
 
 /** One live logs notification held back while a catch-up gap is open (S0-ZERO). */
@@ -361,7 +366,7 @@ export class RpcStream {
   #catchUp(w: Extract<Watch, { kind: 'logs' }>, cover: bigint): void {
     this.#start(w, cover);
     w.gap = { fromSlot: cover, reason: 'catch-up', backfilled: true, lossy: true, liveAfter: null, fill: 'no' };
-    w.held = [];
+    w.held = w.opts.holdLive === false ? null : [];
     this.#fact(`coverage:${w.opts.coverage}:gap`, { fromSlot: cover, toSlot: null, reason: 'catch-up', via: `logs:${w.address}` });
   }
 
