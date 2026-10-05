@@ -1361,8 +1361,33 @@ export class LiveStrategy implements Strategy {
     if (this.watched().has(mint)) return true;
     for (const s of this.#seeds.values()) if (s.mint === mint) return true;
     for (const p of Object.values(this.#book?.positions ?? {})) if (String(p.mint) === mint && p.status !== 'closed') return true;
+    return this.#mayLand(mint);
+  }
+
+  /**
+   * OOM-MINT facts review B3: an intent of this mint with an attempt that may still land (an orphan fill would open a
+   * position on it), or a landing not yet booked. An intent that is not terminal holds it; a terminal one until each
+   * attempt read failed at finalized or is past its last valid height by another validity window (time for the status
+   * read that would find a landing), so no position ever opens on a let-go coin.
+   */
+  #mayLand(mint: string): boolean {
+    const book = this.#book;
+    if (book === null) return false;
+    for (const o of Object.values(book.orphans)) if (String(book.intents[o.intentId]?.intent.mint) === mint) return true;
+    const height = this.#height;
+    for (const s of Object.values(book.intents)) {
+      if (String(s.intent.mint) !== mint) continue;
+      if (!isTerminal(s)) return true;
+      for (const a of s.attempts) {
+        if (s.failedSignatures.includes(a.signature) || s.fills.some((f) => f.signature === a.signature)) continue;
+        if (height === null || height <= a.lastValidBlockHeight + this.#d.config.blockhashValidBlocks) return true;
+      }
+    }
     return false;
   }
+
+  /** Mints a seed drop could not let go yet (`#mayLand`); retried each event until nothing holds them. */
+  readonly #letGoLater = new Set<string>();
 
   /** The book as of the event being judged (`#held`). */
   #book: StrategyContext['book'] | null = null;
@@ -1711,13 +1736,20 @@ export class LiveStrategy implements Strategy {
       if (e !== undefined && isTerminal(e) && e.fills.length === 0) {
         this.#seeds.delete(id);
         this.#restoredSeeds.delete(id);
-        if (mint !== undefined) this.#forget(mint);
+        if (mint !== undefined) this.#letGoLater.add(mint);
       } else if (e === undefined && this.#restoredSeeds.has(id)) {
         this.#seeds.delete(id);
         this.#restoredSeeds.delete(id);
         out.push({ action: null, reasons: ['restored seed dropped', id, 'its intent never reached the book'] });
-        if (mint !== undefined) this.#forget(mint);
+        if (mint !== undefined) this.#letGoLater.add(mint);
       }
+    }
+    // A dropped seed's mint is let go once nothing holds it: no attempt that may still land, no position (an orphan
+    // fill's included), no candidate.
+    for (const mint of this.#letGoLater) {
+      if (this.#held(mint)) continue;
+      this.#letGoLater.delete(mint);
+      this.#forget(mint);
     }
     // A restored saved exit whose position is not in the rebuilt book (the plans are written before the desk books the
     // step, so a kill between the two leaves one) never will be: dropped at the restore's first step, so exits.json

@@ -3,7 +3,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { FactProducer, STREAMS } from '../../core/src/facts/index.ts';
 import { blockNetwork } from './helpers.ts';
-import { LANDS, MIGRATED_AT, MINT, POOL_ADDRESS, makeWorker, passingMarket, type Harness } from './worker-harness.ts';
+import { LANDS, MIGRATED_AT, MINT, POOL_ADDRESS, makeWorker, passingMarket, until, type Harness } from './worker-harness.ts';
+import { isTerminal } from '../../core/src/lifecycle/index.ts';
+import type { Fill } from '../../core/src/domain/index.ts';
 
 blockNetwork();
 
@@ -128,5 +130,51 @@ describe('a mint and its pool are let go only when nothing watches them', () => 
     }, 0, { ...LANDS, landPpm: { pumpswap: 0n, 'pump-curve': 0n } });
     expect(got).toEqual(expect.arrayContaining([MINT, POOL_ADDRESS]));
   });
-});
 
+  describe('facts review B3: a dropped entry whose attempts may still land', () => {
+    // Every attempt never reaches a block, so the entry ends unfilled after its window (ending 1 ms after the first pass).
+    const scenario = { ...LANDS, landPpm: { pumpswap: 0n, 'pump-curve': 0n }, dropPpm: 1_000_000n };
+    const setup = async () => {
+      // No tail (maxTails 0), so only the guards under test hold the mint.
+      const h = makeWorker({ scenario, strategy: { windowToMs: FIRST_PASS + 1 - MIGRATED_AT, maxTails: 0 } });
+      const got = watch(h);
+      await h.worker.reconcile();
+      const m = await passingMarket(h, { heldPoolFacts: true });
+      await m.run(4_000, 100, () => m.pool());
+      const ended = () => Object.values(h.worker.book.intents).find((i) => i.intent.purpose === 'entry' && isTerminal(i) && i.fills.length === 0);
+      expect(await until(m, 120_000, () => ended() !== undefined, () => {
+        m.slot();
+        m.pool();
+      })).toBe(true);
+      return { h, m, got, i: ended()! };
+    };
+
+    it('the mint is not let go while an attempt may land; an orphan fill then opens a position on a coin still watched, whose swaps still reach it', async () => {
+      const { h, m, got, i } = await setup();
+      await m.run(2_000, 400, () => { m.slot(); m.pool(); });
+      expect(got).not.toContain(MINT);
+      const fill = { intentId: i.intent.id, signature: i.attempts[0]!.signature, slot: 1n, commitment: 'confirmed', tokens: 1_000_000n, sol: 20_000_000n, fees: 0n } as Fill;
+      h.worker.feed.ingest('worker', { type: 'world', event: { type: 'orphan_fill', fill } }, { receivedAt: m.now });
+      await m.run(2_000, 400, () => { m.slot(); m.pool(); });
+      const pid = `${i.intent.positionId}.o1`;
+      expect(h.worker.book.positions[pid]).toBeDefined();
+      // Past every attempt's validity and the margin: the open position alone holds the mint (the book-position guard).
+      await m.run(5 * 60_000, 400, () => { m.slot(); m.pool(); });
+      expect(h.worker.book.positions[pid]!.status).not.toBe('closed');
+      expect(got).not.toContain(MINT);
+      expect([...h.worker.strategy.watchedPools().keys()]).toContain(POOL_ADDRESS);
+      // A swap on its pool still reaches the mint (fee context and the deployer and flow triggers read it).
+      m.swap('SellEvent', 'someone', 1_000n, 1_000n);
+      await m.run(800, 100, () => m.slot());
+      expect(h.worker.strategy.observedFees(MINT)).toBeDefined();
+      await h.worker.stop();
+    }, 120_000);
+
+    it('with no landing, the mint is let go once every attempt is past its validity and the margin', async () => {
+      const { h, m, got } = await setup();
+      await m.run(5 * 60_000, 400, () => { m.slot(); m.pool(); });
+      expect(got).toEqual(expect.arrayContaining([MINT, POOL_ADDRESS]));
+      await h.worker.stop();
+    }, 120_000);
+  });
+});

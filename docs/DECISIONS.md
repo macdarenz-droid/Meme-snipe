@@ -2411,6 +2411,8 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
     - The producer drops the pool's candle book, chain and trade stream and the mint's track, and never builds them again: a later trade, a repeat or a re-delivered migration is never applied, and the migration fact is never stated again (fail closed).
     - The pool's reserve and its pending graduate mark stay, because they feed the regime's survival series. A candidate leaves at least four hours after migrating; its survival mark is at thirty minutes.
   - **Never let go while needed (review B1/B2).** A mint with a pending entry seed or a book position not yet closed is held, as are candidates and exit plans (`#held`).
+    - **Facts review B3:** an intent of the mint whose attempt may still land also holds it. That is an intent not terminal, or a terminal one with an attempt neither failed at finalized nor past its last valid height plus another validity window; so is an orphan landing not yet booked.
+    - A dropped seed's mint is let go on a later event, once nothing holds it. So an orphan fill never opens a position on a let-go coin.
   - **Creates that never migrate.** The limit is `CREATE_KEEP_MS`, 12 hours, defined in `core/src/gates/create-keep.ts`; live passes it as `StrategyConfig.createKeepMs`, the study strategy as `createKeepMs`.
     - **The market rule (supervisor ruling on the BT review, B1).**
       - A coin whose migration came more than `CREATE_KEEP_MS` after its create, by the create fact's and the migration fact's chain times (`createKeepVerdict`), is refused `create-expired` before the regime or any gate.
@@ -2476,6 +2478,11 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - `deployer-index.test.ts` and `index-prune.test.ts`: the prune drops what the save drops; in a worker, a creator's mint 14.5 days old still counts after a prune and one 15 days and an hour old is gone.
   - `engine.test.ts`: two keys with one last part are both retired; a key recorded again is retired again.
   - `sig-caps.test.ts`: the caps cover 12 hours at 3×; a full create-signature map costs under 230 B an entry (265 B when the mint keeps its key).
+  - `retire.test.ts` (facts review B3):
+    - an entry that ends unfilled after its window is not let go while its attempt may land;
+    - an orphan fill then opens a position whose pool stays watched and whose swaps still reach the mint, also past the attempts' validity (this pins the book-position guard);
+    - with no landing, the mint is let go after the validity and the margin.
+    - Mutants killed: no `#mayLand`; no book-position guard. The non-terminal clause is kept as a defence: an in-flight entry always has its seed.
   - Hand mutants killed: `>=` for `>`; the early `break` in the expiry scan; held ignored at expiry; no expiry mark; no facts rule; no late hour; the backtest rule off; the pool stream dropped while pending; a settled pool's stream kept; the conditional tombstone; the engine feed not retiring; create age from release time; `HourTags` sealed hours unsearched; an hour dropped when it starts instead of when it ends; no index prune; a prune line a day later; `#byTail` not indexing a second key; `#byTail` not cleared on retire; the mint kept as a slice.
   - **3× run of the real worker.** `main.ts` with stubbed fetch and WebSocket, a fake market in a worker thread, 230 pools at boot, 51 swaps a minute per pool, 75 creates a minute, a migration every 20 s, 560 MB limit.
     - At 1 hour: 409 pools, 945,000 swaps, 234 MB live heap, still growing about 2 MB a minute as pools fill their hour and their 4-hour window.
