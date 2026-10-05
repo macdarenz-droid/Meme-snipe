@@ -203,6 +203,9 @@ const STORED_SIG = SIG('S');
 /** The create reaches the feed the way the fetched transaction's create fact does (the harness puts facts directly). */
 const landCreate = (m: Market): void => {
   m.omit = new Set([...m.omit].filter((k) => k !== createKey(MINT)));
+  // The read transaction releases the raw create (WORKER-GROW: the gates wait for one newer than the read's mark) and
+  // the producer's create fact from it.
+  m.create();
   m.fact(createKey(MINT), CREATE_FACT);
 };
 
