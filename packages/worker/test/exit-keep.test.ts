@@ -46,16 +46,16 @@ describe('a re-made exit after a hard kill is sent at once (EXIT-KEEP B3)', () =
     expect(h2.worker.book.positions[pid]!.status).toBe('open');
     const m2 = new Market(h2, HELD);
     expect(await until(m2, 200_000, () => h2.worker.book.positions[pid]!.status === 'closed', tick(m2, 700_000n))).toBe(true);
-    // From the re-made exit's decision to its fill: the paper world's landing, inside one blockhash lifetime (150 slots
-    // of the harness's 400 ms), not a dead signature waiting it out before a second attempt (that took 132.8 s). The
-    // landing's place on the harness's timer grid moves with the boot's other timers, so the bound is the lifetime.
-    const ls = readFileSync(join(image!, 'journal.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>)
-      .filter((l) => l['boot'] === h2.worker.boot);
-    const at = (kind: string, first: string) => Date.parse(String(ls.find((l) => l['kind'] === kind && (l['reasons'] as string[] | undefined)?.[0] === first)!['ts']));
-    expect(at('exit', 'exit filled (paper)') - at('decision', 'prepare exit')).toBeLessThan(150 * 400);
-    // One attempt, at the ladder's first rung: no rung was burned on the dead signature.
+    // The re-made exit lands on its one attempt, inside that attempt's own blockhash: no dead signature waited out its
+    // block height before a second attempt, and no ladder rung was burned on it. Block height, never wall-clock
+    // (ARCHITECTURE §10 Confirmation): the harness's virtual clock jumps by each background timer it fires, so a
+    // decision-to-fill time measures the harness, not the exit.
     const exits = Object.values(h2.worker.book.intents).filter((i) => i.intent.purpose === 'exit' && i.intent.positionId === pid);
-    expect(exits.flatMap((i) => i.attempts)).toHaveLength(1);
+    const attempts = exits.flatMap((i) => i.attempts);
+    expect(attempts).toHaveLength(1);
+    const fills = exits.flatMap((i) => i.fills);
+    expect(fills).toHaveLength(1);
+    expect(fills[0]!.slot <= attempts[0]!.lastValidBlockHeight).toBe(true);
     await h2.worker.stop();
   });
 });
