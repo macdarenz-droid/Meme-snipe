@@ -21,6 +21,14 @@ export type Lookup = ({ readonly ok: true } & AsOfEntry) | { readonly ok: false;
 export type Retention = (key: string) => number | null;
 
 /**
+ * OOM-SWAPS: for a key whose past is read only for entries that can fail a check (a trade key's tails), the test an
+ * older entry must pass to stay; `null` keeps every entry of the key. When a value is recorded, the key's previous
+ * newest entry is dropped if it fails the test and is not received later than the new one, so the key holds its newest
+ * entry and the entries that matter. Its readers must answer the same from that subset (proved per reader).
+ */
+export type Collapse = (key: string) => ((older: AsOfEntry) => boolean) | null;
+
+/**
  * Point-in-time state. Every answer is "as of" a moment at or before the clock's now: a lookup for a
  * later moment is refused, and a value cannot be recorded with a moment later than now.
  */
@@ -29,10 +37,24 @@ export class AsOfStore {
   readonly #series = new Map<string, AsOfEntry[]>();
   readonly #retention: Retention | null;
   readonly #keep = new Map<string, number | null>();
+  readonly #collapse: Collapse | null;
+  readonly #keepOlder = new Map<string, ((older: AsOfEntry) => boolean) | null>();
 
-  constructor(clock: Clock, retention: Retention | null = null) {
+  constructor(clock: Clock, retention: Retention | null = null, collapse: Collapse | null = null) {
     this.#clock = clock;
     this.#retention = retention;
+    this.#collapse = collapse;
+  }
+
+  /** The key's collapse test, cached (`Collapse`). */
+  #olderTest(key: string): ((older: AsOfEntry) => boolean) | null {
+    if (this.#collapse === null) return null;
+    let t = this.#keepOlder.get(key);
+    if (t === undefined) {
+      t = this.#collapse(key);
+      this.#keepOlder.set(key, t);
+    }
+    return t;
   }
 
   /** Drops the values of `key` older than its horizon, keeping the latest one at or before it. Batched. */
@@ -61,6 +83,8 @@ export class AsOfStore {
     const entry: AsOfEntry = Object.freeze({ moment, value, source });
     if (series === undefined) this.#series.set(key, [entry]);
     else {
+      const keepOlder = this.#olderTest(key);
+      if (keepOlder !== null && last !== undefined && last.moment.receivedAt <= moment.receivedAt && !keepOlder(last)) series.pop();
       series.push(entry);
       this.#trim(key, series, this.#clock.now().receivedAt);
     }

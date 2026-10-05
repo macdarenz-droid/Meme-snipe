@@ -4,7 +4,7 @@
 import { fromBase64, toBase64 } from '../../../core/src/chain/index.ts';
 import { HELIUS_RPC_CREDITS } from '../scheduler/limits.ts';
 import { P2, type Priority, type Scheduler } from '../scheduler/scheduler.ts';
-import { type HttpClient, parseJson, ProviderError, send } from '../providers/http.ts';
+import { type HttpClient, parseJson, ProviderError, refusal429, send } from '../providers/http.ts';
 
 /** Every JSON-RPC method the dry run may call. Frozen: nothing that sends a transaction is or may be added. */
 export const DRYRUN_METHODS = Object.freeze(['getMultipleAccounts', 'getTokenLargestAccounts', 'simulateTransaction'] as const);
@@ -123,10 +123,7 @@ export class DryRunRpc {
     return o.scheduler.run(priority, HELIUS_RPC_CREDITS, async () => {
       const body = JSON.stringify({ jsonrpc: '2.0', id: this.#id++, method, params });
       const res = await send(o.http, PROVIDER, method, { method: 'POST', url: o.url(), headers: { 'content-type': 'application/json' }, body, timeoutMs: o.timeoutMs });
-      if (res.status === 429) {
-        o.scheduler.penalize();
-        throw new ProviderError(PROVIDER, 'rate_limited', `${method} rate limited`, 429);
-      }
+      if (res.status === 429) throw refusal429(o.scheduler, PROVIDER, method, res.text);
       if (res.status !== 200) throw new ProviderError(PROVIDER, 'http', `${method} returned HTTP ${res.status}`, res.status);
       const json = parseJson(PROVIDER, method, res.text);
       if (!isObj(json)) throw shape(`${method} returned no object`);

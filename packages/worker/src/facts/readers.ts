@@ -4,15 +4,16 @@
 // same answer replayed. A failed or malformed read ingests nothing, so the gate sees no fact and rejects (H16).
 // Chain reads go to Helius at `confirmed` (standard RPC, 1 credit each, data.md §1.2); the gates refuse `processed`.
 import {
-  type Address, NATIVE_MINT, SYSTEM_PROGRAM, TOKEN_2022_PROGRAM, decodeBase58, decodeMint, isOnCurve, decodePool, decodeTokenAccount, firstFunder, fromBase64, poolAddress,
+  type Address, NATIVE_MINT, PUMP_AMM_GLOBAL_CONFIG, SYSTEM_PROGRAM, TOKEN_2022_PROGRAM, decodeBase58, decodeMint, isOnCurve, decodePool, decodeTokenAccount, firstFunder, fromBase64, poolAddress,
   pumpPoolAuthority, recordFromRpc, transactionEvents, type RpcTransactionBase64, type TransactionRecord,
 } from '../../../core/src/chain/index.ts';
 import {
   type AccountsRead, type ExecStats, type FunderRead, type HoldersRead, type SimRead, RAW, parseExecStats, parseSimRead, parseVolumeHoursCsv,
 } from '../../../core/src/facts/index.ts';
+import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { VOLUME_SERIES_START_DAY } from '../../../core/src/config/time.ts';
 import type { Policy } from '../../../core/src/config/policy.ts';
-import { HELIUS_RPC_CREDITS } from '../scheduler/limits.ts';
+import { HELIUS_GPA_CREDITS, HELIUS_RPC_CREDITS } from '../scheduler/limits.ts';
 import { VOLUME_TAG, dayName, dayNumber, sha256Hex, volumeCheckPassed, volumeRelease, volumeReleaseAssets } from './volume-hours.ts';
 import type { ChainVolumeStore, StoredVolumeDay } from './volume-store.ts';
 import type { RugCheckRequest } from '../providers/deployer-check.ts';
@@ -21,8 +22,10 @@ import { P2, type Priority, type Scheduler, ScheduleRefused } from '../scheduler
 import type { Timers } from '../scheduler/timers.ts';
 import type { FrameBody, Source } from '../providers/canonical.ts';
 import { isAddress } from '../providers/canonical.ts';
-import { type HttpClient, type Secrets, parseJson, ProviderError, scrub, send } from '../providers/http.ts';
+import { type HttpClient, type Secrets, parseJson, ProviderError, refusal429, scrub, send } from '../providers/http.ts';
 import type { IngestOptions } from '../providers/live-feed.ts';
+import { PUMP_AMM_FEE_CONFIG, decodeSnapshot } from '../run/snapshot.ts';
+import { feesKey } from '../engine/strategy.ts';
 
 /** Every JSON-RPC method the fact reads may call: reads only. Frozen; nothing that sends is or may be added. */
 export const FACT_RPC_METHODS = Object.freeze(['getAccountInfo', 'getMultipleAccounts', 'getProgramAccounts', 'getTokenLargestAccounts', 'getSignaturesForAddress', 'getTransaction'] as const);
@@ -83,7 +86,10 @@ export class FactRpcError extends ProviderError {
 /** The code Helius answered a mint-only getProgramAccounts with when the set is too large (gpa-probe run 37149567929). */
 export const GPA_TOO_MANY_ACCOUNTS = -32600;
 
-/** Helius JSON-RPC reads at `confirmed`, each one standard call through the scheduler. */
+/**
+ * Helius JSON-RPC reads at `confirmed`, each one call through the scheduler at its published price: a standard call 1
+ * credit, getProgramAccounts 10 (HELIUS-GUARD: it was metered at 1, so the worker's count ran below Helius's).
+ */
 export class FactRpc {
   readonly #o: FactRpcOptions;
   #id = 1;
@@ -95,13 +101,10 @@ export class FactRpc {
   async call(method: FactRpcMethod, params: readonly unknown[], priority: Priority): Promise<unknown> {
     if (!(FACT_RPC_METHODS as readonly string[]).includes(method)) throw new RangeError(`fact reads: method ${method} is not allowed`);
     const o = this.#o;
-    return o.scheduler.run(priority, HELIUS_RPC_CREDITS, async () => {
+    return o.scheduler.run(priority, method === 'getProgramAccounts' ? HELIUS_GPA_CREDITS : HELIUS_RPC_CREDITS, async () => {
       const body = JSON.stringify({ jsonrpc: '2.0', id: this.#id++, method, params });
       const res = await send(o.http, 'helius', method, { method: 'POST', url: o.url(), headers: { 'content-type': 'application/json' }, body, timeoutMs: o.timeoutMs });
-      if (res.status === 429) {
-        o.scheduler.penalize();
-        throw new ProviderError('helius', 'rate_limited', `${method} rate limited`, 429);
-      }
+      if (res.status === 429) throw refusal429(o.scheduler, 'helius', method, res.text);
       if (res.status !== 200) throw new ProviderError('helius', 'http', `${method} returned HTTP ${res.status}`, res.status);
       const json = parseJson('helius', method, res.text);
       if (!isObj(json)) throw new ProviderError('helius', 'shape', `${method} returned no object`);
@@ -245,8 +248,19 @@ export interface FactReadersOptions {
   readonly deployerChecks?: DeployerChecks;
   /** Complete holder scans allowed per UTC day (default HOLDER_SCANS_PER_DAY). Reached: no scan, H12/H13 abstain. */
   readonly holderScansPerDay?: number;
+  /**
+   * Where today's count of complete holder scans is kept (HOLDER_SCANS_FILE in the state dir), so a restart does not
+   * start the cap again: a restart loop took a fresh 100 scans at every boot (HEAP-GUARD, 5 Oct). Unreadable: today
+   * counts as spent (fail safe). Without it the count lives in the process only.
+   */
+  readonly scansFile?: string;
+  /** A line for the worker's log (a scan count that could not be saved). Never carries a path or an error message. */
+  readonly log?: (line: string) => void;
   readonly token2022Filter?: Token2022Filter;
 }
+
+/** The file of today's complete holder scans, in the worker's state dir. */
+export const HOLDER_SCANS_FILE = 'holder-scans.json';
 
 /** Trial default (supervisor ruling): 100 complete holder scans a UTC day, about 1,200 Helius credits at the published
  * price; revisit once gpa-probe measures the real cost. */
@@ -288,6 +302,9 @@ export interface FunderOptions {
 }
 
 /** What one read cost and whether it ingested, for the worker's journal and the live-only veto rates. */
+/** Read outcomes a `FactReaders` keeps (the latest; older ones are dropped). */
+export const OUTCOMES_KEPT = 500;
+
 export interface ReadOutcome {
   readonly read: string;
   readonly ok: boolean;
@@ -320,10 +337,39 @@ export class FactReaders {
   readonly #volumeTried = new Map<number, number>();
   readonly #volumeTampered = new Set<number>();
   #volumeStoreRead = false;
+  /**
+   * The latest read outcomes, newest last, for diagnostics and tests: at most `OUTCOMES_KEPT` (trimmed in batches, in
+   * place). It grew with every read for the whole process (a slow leak over a multi-day run).
+   */
   readonly outcomes: ReadOutcome[] = [];
+
+  #outcome(o: ReadOutcome): void {
+    this.outcomes.push(o);
+    if (this.outcomes.length > 2 * OUTCOMES_KEPT) this.outcomes.splice(0, this.outcomes.length - OUTCOMES_KEPT);
+  }
 
   constructor(o: FactReadersOptions) {
     this.#o = o;
+    const f = o.scansFile;
+    if (f !== undefined && existsSync(f)) {
+      try {
+        const v = JSON.parse(readFileSync(f, 'utf8')) as Record<string, unknown>;
+        if (!Number.isSafeInteger(v['day']) || !Number.isSafeInteger(v['scans']) || (v['scans'] as number) < 0) throw new Error('bad scans file');
+        this.#scanDay = v['day'] as number;
+        this.#scans = v['scans'] as number;
+        // Dated after today (the clock stepped back since it was written): spent until that day has passed, never a
+        // fresh day's budget; written back so a later process reads the same.
+        if ((v['day'] as number) > Math.floor(o.timers.now() / 86_400_000)) {
+          this.#scans = Number.MAX_SAFE_INTEGER;
+          this.#saveScans();
+        }
+      } catch {
+        // Unreadable: today's cap counts as spent, written back so the next UTC day starts again.
+        this.#scanDay = Math.floor(o.timers.now() / 86_400_000);
+        this.#scans = Number.MAX_SAFE_INTEGER;
+        this.#saveScans();
+      }
+    }
   }
 
   #ingest(source: Source, key: string, value: unknown): void {
@@ -335,12 +381,28 @@ export class FactReaders {
 
   async #guard(read: string, f: () => Promise<string>): Promise<boolean> {
     try {
-      this.outcomes.push({ read, ok: true, detail: await f() });
+      this.#outcome({ read, ok: true, detail: await f() });
       return true;
     } catch (e) {
-      this.outcomes.push({ read, ok: false, detail: e instanceof Error ? e.message : 'failed' });
+      this.#outcome({ read, ok: false, detail: e instanceof Error ? e.message : 'failed' });
       return false;
     }
+  }
+
+  /**
+   * FEE-TIER-NOW: the pool's fee context from one bank that also holds PumpSwap's GlobalConfig and the pump-fees
+   * FeeConfig: the tiers, canonical flag, creator fee and coin flags (WATCH-1's decoder). Anything it cannot prove (a
+   * missing or foreign account) puts nothing: #market then falls back to the latest swap's terms, or has none.
+   */
+  static #feesOf(mint: string, layout: readonly string[], slot: bigint, at: (address: string) => { owner: string; data: string } | null, put: Put): void {
+    const [, pool, baseVault, quoteVault] = layout;
+    if (pool === undefined || baseVault === undefined || quoteVault === undefined) return;
+    const acc = (a: string) => {
+      const x = at(a);
+      return x === null ? null : { owner: x.owner, data: fromBase64(x.data) };
+    };
+    const d = decodeSnapshot(mint, pool, slot, [pool, baseVault, quoteVault, mint, PUMP_AMM_GLOBAL_CONFIG, PUMP_AMM_FEE_CONFIG].map(acc));
+    if (d.ok) put('helius', feesKey(mint), d.snapshot.ctx);
   }
 
   /** The canonical pool of a pump mint: PDA(index 0, pool authority of the mint, mint, wrapped SOL). */
@@ -356,19 +418,27 @@ export class FactReaders {
     return this.#guard(`accounts:${mint}`, async () => {
       const pool = FactReaders.canonicalPool(mint);
       let addresses = this.#layout.get(mint) ?? [mint, pool];
-      let r = await this.#o.rpc.getMultipleAccounts(addresses, priority);
-      if (!this.#layout.has(mint)) {
+      // POOL-DATA: the fee configs ride in the final bank here too (no extra call), so a lone read (the survival read
+      // at 30 min, before the window) never leaves a pool fact without its fee context.
+      const configs: readonly string[] = [PUMP_AMM_GLOBAL_CONFIG, PUMP_AMM_FEE_CONFIG];
+      const known = this.#layout.has(mint);
+      let r = await this.#o.rpc.getMultipleAccounts(known ? [...addresses, ...configs] : addresses, priority);
+      if (!known) {
         const p = r.accounts[1];
         if (p === null || p === undefined) throw new Error(`no pool account at ${pool}`);
         const decoded = decodePool(fromBase64(p.data)).value;
         addresses = [mint, pool, decoded.poolBaseTokenAccount, decoded.poolQuoteTokenAccount, decoded.lpMint];
         this.#layout.set(mint, addresses);
-        r = await this.#o.rpc.getMultipleAccounts(addresses, priority);
+        r = await this.#o.rpc.getMultipleAccounts([...addresses, ...configs], priority);
       }
+      const all = [...addresses, ...configs];
+      const at = (address: string) => r.accounts[all.indexOf(address)] ?? null;
       const read: AccountsRead = {
         mint, slot: r.slot, commitment: 'confirmed',
-        accounts: addresses.map((address, i) => ({ address, owner: r.accounts[i]?.owner ?? null, data: r.accounts[i]?.data ?? null })),
+        accounts: addresses.map((address) => ({ address, owner: at(address)?.owner ?? null, data: at(address)?.data ?? null })),
       };
+      // The fee context first: the pool fact the accounts make is never released without it.
+      FactReaders.#feesOf(mint, addresses, r.slot, at, (source, key, value) => this.#ingest(source, key, value));
       this.#ingest('helius', RAW.accounts(mint), read);
       return `slot ${r.slot}`;
     });
@@ -417,7 +487,7 @@ export class FactReaders {
    */
   async readHoldersAll(mint: string, priority: Priority = P2): Promise<boolean> {
     if (!this.#takeScan()) {
-      this.outcomes.push({ read: `holders-all:${mint}`, ok: false, detail: 'daily scan cap reached' });
+      this.#outcome({ read: `holders-all:${mint}`, ok: false, detail: 'daily scan cap reached' });
       return false;
     }
     return this.#guard(`holders-all:${mint}`, async () => {
@@ -511,11 +581,14 @@ export class FactReaders {
     const p = prep;
     if (p !== null) {
       const ownersOf = [...(this.#owners.get(mint) ?? [])].filter((o) => !p.layout.includes(o) && !p.listed.includes(o)).sort();
-      const addresses = [...p.layout, ...p.listed, ...ownersOf];
+      // FEE-TIER-NOW: PumpSwap's GlobalConfig and the pump-fees FeeConfig ride in the same bank (no extra call), so the
+      // pool's fee context, every tier included, is read at the bank's slot with the pool.
+      const fees: readonly string[] = [PUMP_AMM_GLOBAL_CONFIG, PUMP_AMM_FEE_CONFIG].filter((a) => !p.layout.includes(a));
+      const addresses = [...p.layout, ...p.listed, ...ownersOf.filter((o) => !fees.includes(o)), ...fees];
       // The scan's program is the mint's owner, learnt from the layout read (the mint is in every bank).
       const mintOwner = this.#mintProgram.get(mint);
       const scanned = req.holders === 'all' && mintOwner !== undefined && this.#takeScan();
-      if (req.holders === 'all' && !scanned) this.outcomes.push({ read: `holders-all:${mint}`, ok: false, detail: mintOwner === undefined ? 'mint program not known' : 'daily scan cap reached' });
+      if (req.holders === 'all' && !scanned) this.#outcome({ read: `holders-all:${mint}`, ok: false, detail: mintOwner === undefined ? 'mint program not known' : 'daily scan cap reached' });
       // The final round: every call at once.
       const bank = addresses.length <= 100 ? this.#o.rpc.getMultipleAccounts(addresses, priority) : Promise.reject(new Error(`${addresses.length} accounts do not fit one bank`));
       const scan = scanned ? this.#scan(mintOwner!, mint, p.minSlot, priority) : null;
@@ -536,6 +609,7 @@ export class FactReaders {
         const m = at(mint);
         if (m !== null) this.#mintProgram.set(mint, m.owner);
         put('helius', RAW.accounts(mint), { mint, slot: b.slot, commitment: 'confirmed', accounts: p.layout.map((address) => ({ address, owner: at(address)?.owner ?? null, data: at(address)?.data ?? null })) } satisfies AccountsRead);
+        FactReaders.#feesOf(mint, p.layout, b.slot, at, put);
         if (req.holders === 'largest') parts.push(this.#guard(`holders:${mint}`, async () => this.#bankedHolders(mint, b.slot, p.listed, at, put)).then(as('holders')));
         if (scan !== null) parts.push(this.#guard(`holders-all:${mint}`, async () => this.#bankedScan(mint, b.slot, await scan, at, put)).then(as('holders-all')));
         return `slot ${b.slot}`;
@@ -651,13 +725,29 @@ export class FactReaders {
   /** One scan off today's cap, or false when the cap is reached. */
   #takeScan(): boolean {
     const day = Math.floor(this.#o.timers.now() / 86_400_000);
-    if (this.#scanDay !== day) {
+    // Only forward: a clock stepped back keeps the later day's count (as the fill budget does).
+    if (day > this.#scanDay) {
       this.#scanDay = day;
       this.#scans = 0;
     }
     if (this.#scans >= (this.#o.holderScansPerDay ?? HOLDER_SCANS_PER_DAY)) return false;
     this.#scans++;
+    // Counted on disk before the scan runs: a death during it still counts it.
+    this.#saveScans();
     return true;
+  }
+
+  #saveScans(): void {
+    const f = this.#o.scansFile;
+    if (f === undefined) return;
+    // A write that fails (a full disk, a permission) never throws out of the readers (their constructor runs at the
+    // worker's start): the count stays in memory, so what is spent stays spent in this process, and it is logged.
+    try {
+      writeFileSync(`${f}.tmp`, JSON.stringify({ day: this.#scanDay, scans: this.#scans }));
+      renameSync(`${f}.tmp`, f);
+    } catch {
+      this.#o.log?.('Holder scan count not saved: it is kept in this process only.');
+    }
   }
 
   /**
@@ -889,7 +979,7 @@ export class FactReaders {
         if (rows === null) continue;
         for (const r of rows) this.#ingest('github', RAW.volumeHour, r);
         this.#volumeDays.set(day, d);
-        this.outcomes.push({ read: `chain-volume:${d.day}`, ok: true, detail: `${rows.length} hours from the store` });
+        this.#outcome({ read: `chain-volume:${d.day}`, ok: true, detail: `${rows.length} hours from the store` });
       }
     }
     const limited = (e: unknown): boolean => e instanceof ScheduleRefused || (e instanceof ProviderError && (e.kind === 'rate_limited' || e.status === 403));
@@ -908,7 +998,7 @@ export class FactReaders {
         if (v.length < 100) break;
       }
     } catch (e) {
-      this.outcomes.push({ read: 'chain-volume:list', ok: false, detail: e instanceof Error ? e.message : 'failed' });
+      this.#outcome({ read: 'chain-volume:list', ok: false, detail: e instanceof Error ? e.message : 'failed' });
       return false;
     }
     // Days already verified must still match their release.
@@ -922,7 +1012,7 @@ export class FactReaders {
       this.#volumeTampered.add(day);
       src.store?.save({ ...d, tampered: true });
       const detail = `${d.day} volume unknown: release ${d.tag} changed after it was verified`;
-      this.outcomes.push({ read: `chain-volume:${d.day}`, ok: false, detail });
+      this.#outcome({ read: `chain-volume:${d.day}`, ok: false, detail });
       src.alert?.(detail);
     }
     let all = true;
@@ -959,9 +1049,9 @@ export class FactReaders {
         const stored: StoredVolumeDay = { tag, day: name, hours: { id: refs.hours.id, sha256: refs.hours.sha256, text: hours }, check: { id: refs.check.id, sha256: refs.check.sha256, text: check }, tampered: false };
         this.#volumeDays.set(day, stored);
         src.store?.save(stored);
-        this.outcomes.push({ read, ok: true, detail: `${rows.length} hours` });
+        this.#outcome({ read, ok: true, detail: `${rows.length} hours` });
       } catch (e) {
-        this.outcomes.push({ read, ok: false, detail: e instanceof Error ? e.message : 'failed' });
+        this.#outcome({ read, ok: false, detail: e instanceof Error ? e.message : 'failed' });
         this.#volumeTried.set(day, this.#o.timers.now());
         all = false;
         if (limited(e)) return false;

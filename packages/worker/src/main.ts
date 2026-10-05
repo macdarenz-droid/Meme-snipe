@@ -19,7 +19,7 @@ import { redact, setSecretValues } from './run/redact.ts';
 import { join } from 'node:path';
 import { DailyBudget } from './persist/index.ts';
 import { RpcCut, liveHttp } from './run/rpc-cut.ts';
-import { FILL_BUDGET_FILE, FILL_CREDITS_PER_DAY, runSeed } from './run/seed-start.ts';
+import { FILL_BUDGET_FILE, runSeed } from './run/seed-start.ts';
 import { SIM_READS_PER_HOUR, simReader } from './run/sim-read.ts';
 import { RoundTripSimulator } from './sim/index.ts';
 import { Worker } from './run/worker.ts';
@@ -46,7 +46,7 @@ const rpcCut = new RpcCut(timers);
 const http = liveHttp(rpcCut, fetchHttp);
 const providerHttp = http.providers;
 // FILL-2's daily fill budget, one instance for the restart fill and the pool watches' in-run fills (S0-ZERO).
-const fillBudget = DailyBudget.load(join(config.stateDir, FILL_BUDGET_FILE), FILL_CREDITS_PER_DAY, timers.now());
+const fillBudget = DailyBudget.load(join(config.stateDir, FILL_BUDGET_FILE), config.fillCreditsPerDay, timers.now());
 const providers = new LiveProviders({ tradeStreams: false, secrets: environment.secrets, http: providerHttp, factory: globalSocketFactory, credits, fillBudget });
 const policy = session.policy;
 const timing = watchTimingProblem(config.watch, policy.gates.maxQuoteAgeMs, DEFAULT_LIVE_FEED.horizonSlots * SLOT_MS);
@@ -80,6 +80,8 @@ log(`Credentials present: ${environment.present.length} of 3 provider keys; hear
 
 const fatal = (e: unknown): never => {
   fail(`Worker crashed: ${e instanceof Error ? `${e.name}: ${e.message}` : 'error'}`);
+  // RESTART-ALERT: the stop line names where (never the message), for the next boot's heartbeat.
+  worker?.crashed(e);
   process.exit(EXIT.crash);
 };
 process.on('uncaughtException', fatal);
@@ -87,6 +89,7 @@ process.on('unhandledRejection', fatal);
 
 try {
   worker = new Worker({
+    ...(environment.argv.includes('--reconcile') ? { phase: 'reconcile' as const } : {}),
     config, session, rugs: RUG_CONFIG, strategy: strategyConfig(policy, FILL_CONFIG, RESEARCH_CONFIG, config.strategy.paperEdgePpm ?? 0n, config.strategy.name === 'S0' ? { timing: 'random', salt: config.runId ?? 'S0', s0Diagnostic: config.strategy.s0Diagnostic } : { timing: 'gates', salt: '' }),
     scenario: FILL_CONFIG.scenarios[PAPER_SCENARIO], network: FILL_CONFIG.network, timers,
     sources: (ctx) => providers.feeds(ctx),
@@ -99,9 +102,13 @@ try {
     seedWaitMs: 30_000,
     seedMaxMs: 90_000,
     ops: () => providers.ops(),
+    heliusExhaustion: () => {
+      const s = providers.helius.status();
+      return { exhausted: s.exhausted, count: s.exhaustedCount, firstAtMs: s.exhaustedFirstAtMs };
+    },
     cutRpc: (ms) => rpcCut.cut(ms),
     // FACTS-1b: FACTS-1's readers on the worker's Feed; core's producer makes the gate facts from what they read.
-    facts: [liveFacts({ policy, secrets: environment.secrets, http: http.facts, goplus: credits.scheduler(GOPLUS_FREE), coinbase: credits.scheduler(COINBASE_PUBLIC), github: { api: credits.scheduler(GITHUB_RELEASES), downloads: credits.scheduler(GITHUB_DOWNLOADS), stateDir: config.stateDir }, stateDir: config.stateDir, ...(h15 === undefined ? {} : { sim: h15 }), ...(config.strategy.s0Diagnostic ? { execStats: () => worker?.execStats() ?? null } : {}) })],
+    facts: [liveFacts({ policy, secrets: environment.secrets, http: http.facts, goplus: credits.scheduler(GOPLUS_FREE), coinbase: credits.scheduler(COINBASE_PUBLIC), github: { api: credits.scheduler(GITHUB_RELEASES), downloads: credits.scheduler(GITHUB_DOWNLOADS), stateDir: config.stateDir }, stateDir: config.stateDir, log, ...(h15 === undefined ? {} : { sim: h15 }), ...(config.strategy.s0Diagnostic ? { execStats: () => worker?.execStats() ?? null } : {}) })],
     schedulers: { helius: providers.helius, alchemy: providers.alchemy, jupiter: providers.jupiter, rugcheck: providers.rugcheck },
     exposureRpc: providers.seedRpc(),
     watchRead: providers.watchRead(),

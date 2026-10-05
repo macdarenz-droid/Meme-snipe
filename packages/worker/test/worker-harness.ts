@@ -147,7 +147,7 @@ export const LANDS = { ...FILL_CONFIG.scenarios[PAPER_SCENARIO], landPpm: { pump
 /** Boots made per state folder: a test's n-th worker is `boot-<n>` whatever the process, its pid or the other tests. */
 const boots = new Map<string, number>();
 
-export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof LANDS; stateDir?: string; timers?: TestTimers; edgePpm?: bigint; http?: HttpClient; key?: string | null; config?: Record<string, string>; fetched?: string[]; found?: boolean; facts?: FactSource[]; seed?: (r: SeedRequest) => Promise<SeedResult>; seedWaitMs?: number; entry?: { timing: 'gates' | 'random'; salt: string; s0Diagnostic?: boolean }; sources?: (ctx: SourcesContext) => FeedSource[]; exposureRpc?: SeedRpc; ops?: WorkerDeps['ops']; universe?: 'U1' | 'U2'; cutRpc?: (ms: number) => void; seedMaxMs?: number; simulate?: (leg: SimLeg) => Promise<DryRunRecord>; worldFault?: WorkerDeps['worldFault']; summaryFault?: WorkerDeps['summaryFault']; watchRead?: WorkerDeps['watchRead'] | null; watchHalted?: () => boolean; schedulers?: NonNullable<WorkerDeps['schedulers']>; markedHistory?: WorkerDeps['markedHistory']; sizeProbe?: WorkerDeps['sizeProbe']; findCreate?: WorkerDeps['findCreate']; strategy?: Partial<StrategyConfig>; crashPoint?: WorkerDeps['crashPoint']; maxSeedCreates?: number; createSigsMax?: number ; restartReads?: WorkerDeps['restartReads']; fetchedWhy?: [string, string][] } = {}): Harness => {
+export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof LANDS; stateDir?: string; timers?: TestTimers; edgePpm?: bigint; http?: HttpClient; key?: string | null; config?: Record<string, string>; fetched?: string[]; found?: boolean; facts?: FactSource[]; seed?: (r: SeedRequest) => Promise<SeedResult>; seedWaitMs?: number; entry?: { timing: 'gates' | 'random'; salt: string; s0Diagnostic?: boolean }; sources?: (ctx: SourcesContext) => FeedSource[]; exposureRpc?: SeedRpc; ops?: WorkerDeps['ops']; universe?: 'U1' | 'U2'; cutRpc?: (ms: number) => void; seedMaxMs?: number; simulate?: (leg: SimLeg) => Promise<DryRunRecord>; worldFault?: WorkerDeps['worldFault']; summaryFault?: WorkerDeps['summaryFault']; watchRead?: WorkerDeps['watchRead'] | null; watchHalted?: () => boolean; schedulers?: NonNullable<WorkerDeps['schedulers']>; markedHistory?: WorkerDeps['markedHistory']; sizeProbe?: WorkerDeps['sizeProbe']; findCreate?: WorkerDeps['findCreate']; strategy?: Partial<StrategyConfig>; crashPoint?: WorkerDeps['crashPoint']; maxSeedCreates?: number; createSigsMax?: number ; restartReads?: WorkerDeps['restartReads']; fetchedWhy?: [string, string][]; phase?: 'reconcile'; pack?: WorkerDeps['pack']; heliusExhaustion?: WorkerDeps['heliusExhaustion'] } = {}): Harness => {
   const stateDir = o.stateDir ?? tempState();
   const timers = o.timers ?? virtualTimers(T - 16 * 86_400_000);
   const session = startSession(TRIAL_POLICY);
@@ -190,6 +190,7 @@ export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof L
     ...(o.seedMaxMs === undefined ? {} : { seedMaxMs: o.seedMaxMs }),
     ...(o.maxSeedCreates === undefined ? {} : { maxSeedCreates: o.maxSeedCreates }),
     ...(o.createSigsMax === undefined ? {} : { createSigsMax: o.createSigsMax }),
+    ...(o.phase === undefined ? {} : { phase: o.phase }),
     ...(o.cutRpc === undefined ? {} : { cutRpc: o.cutRpc }),
     ...(o.exposureRpc === undefined ? {} : { exposureRpc: o.exposureRpc }),
     ...(o.restartReads === undefined ? {} : { restartReads: o.restartReads }),
@@ -197,6 +198,7 @@ export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof L
     ...(o.markedHistory === undefined ? {} : { markedHistory: o.markedHistory }),
     ...(o.sizeProbe === undefined ? {} : { sizeProbe: o.sizeProbe }),
     ...(o.findCreate === undefined ? {} : { findCreate: o.findCreate }),
+    ...(o.pack === undefined ? {} : { pack: o.pack }),
     heartbeat: { http: o.http ?? noHttp, key: o.key === undefined ? null : o.key, ownerChatId: '42' },
     ...(o.facts === undefined ? {} : { facts: o.facts, schedulers: o.schedulers ?? { helius: new Scheduler(HELIUS_FREE, { timers }), alchemy: new Scheduler(ALCHEMY_FREE, { timers }), jupiter: new Scheduler(JUPITER_FREE, { timers }), rugcheck: new Scheduler(RUGCHECK_FREE, { timers }) } }),
     ...(o.worldFault === undefined ? {} : { worldFault: o.worldFault }),
@@ -205,6 +207,7 @@ export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof L
     // A second path is configured unless a test says none (null); unscripted, every read fails.
     ...(o.watchRead === null ? {} : { watchRead: o.watchRead ?? (() => Promise.reject(new Error('no second path scripted'))) }),
     ...(o.watchHalted === undefined ? {} : { watchHalted: o.watchHalted }),
+    ...(o.heliusExhaustion === undefined ? {} : { heliusExhaustion: o.heliusExhaustion }),
     reconcileTimeoutMs: o.reconcileTimeoutMs ?? 120_000, loopMs: 100, staleFeedMs: 10_000, log: (l) => void logs.push(l),
   });
   return { worker, timers, legs, logs, stateDir, session, sources, order };
@@ -231,6 +234,8 @@ export class Market {
    * default, as live (POS-1): after entry nothing re-reads the pool, and its state moves only with `chainSwap`.
    */
   heldPoolFacts = false;
+  /** When set, `pool()` publishes the pool fact at exactly these reserves (FEES-KEEP: the pool a swap left). */
+  poolAt: PoolState | null = null;
   /** The SOL/USD price the `pool()` and `solPrice()` facts carry (micro-dollars). */
   solUsd: bigint = SOL_PRICE;
   /** The pool's reserves as the last `accountsRead` or `chainSwap` left them. */
@@ -275,7 +280,10 @@ export class Market {
       return { ...v, obs: { ...v.obs, slot: v.obs.slot === null ? null : slot, receivedAt: this.now - 50, ...over } };
     };
     const base = now(poolKey(MINT)) as unknown as Record<string, unknown>;
-    if (this.heldPoolFacts || !this.held()) this.fact(poolKey(MINT), { ...base, quoteVault: ((base['quoteVault'] as bigint) * quoteScalePpm) / 1_000_000n });
+    const at = this.poolAt;
+    const reserves = at === null ? { quoteVault: ((base['quoteVault'] as bigint) * quoteScalePpm) / 1_000_000n }
+      : { baseVault: at.baseReserve, quoteVault: at.quoteVault, pool: { ...(base['pool'] as object), virtualQuoteReserves: at.virtualQuoteReserves } };
+    if (this.heldPoolFacts || !this.held()) this.fact(poolKey(MINT), { ...base, ...reserves });
     if (this.withFees) this.fact(feesKey(MINT), FEE_CONTEXT);
     this.fact(SOL_PRICE_KEY, { value: this.solUsd, atMs: this.now - 50 });
     for (const k of [lpKey(MINT), holdersKey(MINT), softKey(MINT), xcheckKey(MINT), EXEC_HEALTH_KEY]) this.fact(k, now(k));

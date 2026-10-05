@@ -142,6 +142,10 @@ export const fillTradeGaps = async (o: FillOptions): Promise<{ readonly fills: r
         afterSlot: first - 1n, untilSlot: last, address: gap.pool,
         // Open positions at P2, below live open-position monitoring at P1 (exits never wait: #70 review); candidates P3.
         priority: gap.kind === 'position' ? P2 : P3, maxPages: o.maxPagesPerFill ?? DEFAULT_MAX_PAGES,
+        // FILL-FORESEE: a candidate's gap the cap cannot cover is known from its first page; reading part of it proves
+        // nothing (its candles and bars need the whole tape). An open position's partial read still gives its exits the
+        // newest trades, so it reads as before.
+        foresee: gap.kind === 'candidate',
         accept: (rec, rank, seq) => {
           const frame: Frame = {
             seq, receivedAt: (rec.blockTime ?? 0) * SECOND_MS, source: o.provider as Source, backfilled: true,
