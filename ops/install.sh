@@ -1472,6 +1472,15 @@ export ZEROED_HEALTH_ADDR="$WORKER_HEALTH_ADDR" ZEROED_API_ADDR="$WORKER_API_ADD
 # ProtectSystem=strict), which the next start's reconcile reads to name the death.
 reports="${STATE_DIRECTORY:-/var/lib/zeroed}/reports"
 mkdir -p "$reports"
+# Only the newest 5 reports are kept: a restart loop would otherwise write one every few minutes. The newest (the last
+# death's) is the one the reconcile reads. Safe with no report at all (nullglob).
+shopt -s nullglob
+old=("$reports"/report.*.json)
+shopt -u nullglob
+if [ "${#old[@]}" -gt 5 ]; then
+  mapfile -t old < <(ls -1t -- "${old[@]}")
+  rm -f -- "${old[@]:5}"
+fi
 heap=(--max-old-space-size=560 --report-on-fatalerror --report-compact "--report-directory=$reports")
 if [ "$entry" != /opt/zeroed/stub/worker.mjs ]; then
   cd /opt/zeroed/current

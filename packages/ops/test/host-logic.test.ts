@@ -1,7 +1,7 @@
 // OPS-1e: the host's decision helpers (ops/host/files/usr/local/lib/zeroed/logic.sh) run in bash here, and
 // the scripts that use them are checked for the wiring the e2e (ops/test/e2e.sh) then drives on a real host.
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -223,6 +223,33 @@ describe('worker start and API address', () => {
     const execs = w.split('\n').filter((l) => /^\s*exec /.test(l));
     expect(execs).toHaveLength(2);
     for (const l of execs) expect(l, l).toContain('"${heap[@]}" "$entry" "$@"');
+  });
+
+  it('worker-start keeps only the newest 5 fatal reports, before node starts, and runs clean with none (HEAP-GUARD)', () => {
+    const w = read('ops/host/files/usr/local/lib/zeroed/worker-start');
+    const from = w.indexOf('shopt -s nullglob');
+    const to = w.indexOf('fi\n', w.indexOf('rm -f -- "${old[@]:5}"')) + 3;
+    expect(from).toBeGreaterThan(w.indexOf('mkdir -p "$reports"'));
+    expect(to).toBeLessThan(w.indexOf('exec '));
+    const prune = w.slice(from, to);
+    const dir = join(tmp, 'reports-prune');
+    const runPrune = () => spawnSync('bash', ['-c', `set -euo pipefail\nreports=${dir}\n${prune}`], { encoding: 'utf8' });
+    mkdirSync(dir, { recursive: true });
+    // No report at all.
+    expect(runPrune().status).toBe(0);
+    const at = (k: number) => new Date(Date.UTC(2026, 9, 5, 1, 0, k)).toISOString();
+    const put = (k: number) => {
+      const f = join(dir, `report.2026.${String(k).padStart(2, '0')}.json`);
+      writeFileSync(f, '{}');
+      spawnSync('touch', ['-d', at(k), f]);
+    };
+    for (let k = 0; k < 3; k++) put(k);
+    writeFileSync(join(dir, 'notes.txt'), 'kept');
+    expect(runPrune().status).toBe(0);
+    expect(readdirSync(dir).sort()).toEqual(['notes.txt', 'report.2026.00.json', 'report.2026.01.json', 'report.2026.02.json']);
+    for (let k = 3; k < 9; k++) put(k);
+    expect(runPrune().status).toBe(0);
+    expect(readdirSync(dir).sort()).toEqual(['notes.txt', 'report.2026.04.json', 'report.2026.05.json', 'report.2026.06.json', 'report.2026.07.json', 'report.2026.08.json']);
   });
 
   it("runs the release's worker only when the release's host-config says so; the stand-in otherwise", () => {
