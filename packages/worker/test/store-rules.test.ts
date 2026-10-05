@@ -103,5 +103,42 @@ describe('the live store under a busy pool (OOM-SWAPS)', () => {
     expect(grew).toBeLessThan(6 * 1024 * 1024);
     await h.worker.stop();
   }, 300_000);
+
+  it('OOM-MINT: at three times the live rates (12,150 swaps a minute, 240 trade streams and 3 more a minute), the heap grows under 1 MB a minute once the feed\'s duplicate window is full', async () => {
+    const h = makeWorker({});
+    const m = await passingMarket(h);
+    m.accountsRead(h.worker.feed.openSlot - 1n);
+    let streams = 0;
+    const stream = () => {
+      const pool = `Pool${String(streams++).padStart(4, '1')}`.padEnd(44, 'z');
+      m.offchain(`coverage:${STREAMS.trades(pool)}:start`, { fromSlot: h.worker.feed.openSlot, via: `logs:${pool}` });
+    };
+    for (let i = 0; i < 240; i++) stream();
+    let pre = m.chainState;
+    let n = 0;
+    let step = 0;
+    const minutes = (k: number) => m.run(k * 60_000, 400, () => {
+      m.slot();
+      if (++step % 50 === 0) stream();
+      for (let j = 0; j < 81; j++) {
+        const s = tailed(pre, j % 2 === 0 ? 'buy' : 'sell', m.now);
+        const signature = `x3swap${++n}`.padEnd(88, 'q');
+        h.worker.feed.ingest('helius', { type: 'seen', signature, slot: h.worker.feed.openSlot, err: null, via: `logs:${POOL_ADDRESS}`, detail: null }, { receivedAt: m.now });
+        h.worker.feed.ingest('helius', { type: 'logs', signature, slot: h.worker.feed.openSlot, err: null, via: `logs:${POOL_ADDRESS}`, logs: s.logs, commitment: 'confirmed' }, { receivedAt: m.now });
+        pre = s.after;
+      }
+      m.solPrice();
+    });
+    // The feed keeps duplicates for 1,500 slots (10 minutes): warm up past it, then measure four minutes.
+    await minutes(11);
+    gc();
+    const before = process.memoryUsage().heapUsed;
+    await minutes(4);
+    gc();
+    const grew = process.memoryUsage().heapUsed - before;
+    console.log(`X3 grew ${(grew / 1048576).toFixed(2)} MB in 4 min, ${n} swaps, ${streams} streams`);
+    expect(grew).toBeLessThan(4 * 1024 * 1024);
+    await h.worker.stop();
+  }, 900_000);
 });
 
