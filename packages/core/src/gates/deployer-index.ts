@@ -289,6 +289,8 @@ export class DeployerIndex {
     // DEPLOYER-COMPACT: the mint rows straight into the compact index, checked as the other tables (same saved shape).
     const rows = mintRows ?? s.mints;
     if (!Array.isArray(rows) && !(typeof rows === 'object' && rows !== null && Symbol.iterator in rows)) throw new RangeError('bad table');
+    // A whole table of a known size is given room at once (no regrowth); streamed rows grow as they come.
+    if (Array.isArray(rows)) idx.#mints.reserve(rows.reduce((n: number, r: unknown) => n + (Array.isArray(r) && Array.isArray(r[1]) ? r[1].length : 0), 0), rows.length);
     for (const row of rows as Iterable<unknown>) {
       if (!Array.isArray(row) || typeof row[0] !== 'string' || !Array.isArray(row[1])) throw new RangeError('bad row');
       const entries: [string, number][] = [];

@@ -21,7 +21,7 @@ import { atomicWrite, writeAll, type WriteFn } from '../run/state.ts';
 import type { RugConfig } from '../../../core/src/config/rugs.ts';
 import { DAY_MS } from '../../../core/src/config/time.ts';
 import { compareEvents, compareMoments, type MarketEvent, type Moment } from '../../../core/src/engine/index.ts';
-import { DeployerIndex, RugLabeller, type DeployerIndexState, type RugLabellerState } from '../../../core/src/gates/index.ts';
+import { DeployerIndex, RepeatedRowError, RugLabeller, type DeployerIndexState, type RugLabellerState } from '../../../core/src/gates/index.ts';
 import { SEED_VIA } from '../seed/seed.ts';
 import { parseGraduatesSeed } from '../../../core/src/facts/raw.ts';
 import type { SavedCandidate, SavedGraduates, SavedTail } from '../engine/strategy.ts';
@@ -385,10 +385,26 @@ export const loadState = (path: string, rugs: RugConfig, continuing: (stream: st
     if (s.graduates !== undefined) graduatesProblem(s.graduates, asOf, false);
     if (s.candidates !== undefined) candidatesProblem(s.candidates, asOf, false);
     if (s.tails !== undefined) tailsProblem(s.tails);
-    const index = streamed === null ? DeployerIndex.restore(s.index) : DeployerIndex.restore(s.index, rows(streamed));
-    if (streamed !== null) {
-      const t = streamed.trailer === null ? null : JSON.parse(streamed.trailer) as unknown;
-      if (!isObj(t) || t['sha256'] !== streamed.hash.digest('hex') || t['lines'] !== streamed.count) throw new RangeError('saved state checksum does not match, or the file is cut');
+    const checkTrailer = (st: NonNullable<typeof streamed>): void => {
+      const t = st.trailer === null ? null : JSON.parse(st.trailer) as unknown;
+      if (!isObj(t) || t['sha256'] !== st.hash.digest('hex') || t['lines'] !== st.count) throw new RangeError('saved state checksum does not match, or the file is cut');
+    };
+    let index: DeployerIndex;
+    if (streamed === null) index = DeployerIndex.restore(s.index);
+    else {
+      const it = rows(streamed);
+      try {
+        index = DeployerIndex.restore(s.index, it);
+      } catch (e) {
+        // DEPLOYER-COMPACT: a repeated creator row or mint is what a cut or doubled file looks like mid-stream: the rest
+        // is read for the checksum, whose failure is the reason, as before; an intact file that repeats one is refused
+        // for that.
+        if (!(e instanceof RepeatedRowError)) throw e;
+        for (let r = it.next(); r.done !== true; r = it.next()) { /* hashed by `rows` */ }
+        checkTrailer(streamed);
+        throw e;
+      }
+      checkTrailer(streamed);
     }
     const labeller = RugLabeller.restore(rugs, s.labeller, asOf);
     const coverage = [...s.coverage].sort(compareEvents);

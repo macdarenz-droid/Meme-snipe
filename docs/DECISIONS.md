@@ -2555,27 +2555,42 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
 
 - **2026-10-06 · Why.** The deployer index kept its mints as a Map of creators to Maps of mint strings and times: about 316 B a create (measured). Over its 15-day window that is about 171 MB at the live 25 creates a minute and about 512 MB at three times that, the largest term left of the memory bounds after CREATE-COMPACT and SEEN-TAGS.
 - **What.**
-  - `MintIndex` holds the same table compact:
-    - each mint as its 32 address bytes, its time as a float and its next link as an int, in growable typed arrays (1.25× growth, sized exactly at each prune);
-    - each creator's mints as a linked list in insertion order, so saved rows keep their order;
-    - each creator as its 32 bytes, found through an open-addressing table by a 30-bit tag, with colliding creators told apart by their bytes.
-    - A mint or creator that is not a canonical 32-byte address (tests, malformed input) is kept as its text, so everything reads back exactly as added.
+  - `MintIndex` holds the same table compact.
+    - Each mint is its address text packed six bits a character into a 34-byte slot: its length, then each character's base58 index. Its time is a float, its next link, its creator and its tag are ints. All of these live in typed arrays, with 1.25× growth, sized exactly at each prune and at once for a restore of known size.
+    - Each creator's mints are a linked list in insertion order, so saved rows keep their order. Each creator is a slot too.
+    - Creators and mints are found through open-addressing tables of ints by a 30-bit tag of their text, so an add is O(1) whatever one creator holds. A creator's mint is matched by its owner and its slot.
+    - Text that is not base58 or is longer than 44 characters (tests, malformed input) is kept as a string, so everything reads back exactly as added.
+  - **Why packed text, not 32 address bytes** (persist review):
+    - a save turns every row back into text every five minutes, and base58 arithmetic over a full window cost seconds (about 2 µs an address);
+    - a packed slot reads back with a table lookup per character.
+  - **A prune compacts in place by index:** kept entries' slots, times and tags are copied into exact-size arrays, the lists are relinked, and both tables are refilled from the kept tags. No text, no `add`.
   - `DeployerIndex` keeps its API: `factFor`, `snapshot`, `mintRows`, `restore`, `prune`, `seed`, `fill`.
-  - **The saved shape is unchanged** (rows of creator and `[mint, time]` pairs), so no upgrade is needed. A file of today's shape, written by the index this replaces, restores to the same answers and saves back identical. Rug and unjudged labels stay as they were (small).
-- **Measured:** about 98 B a create (100,000 creates by 80,000 creators), against about 316 B. So about 51 MB at 1× and about 152 MB at sustained 3× over the 15-day window.
-- **Bounds after the three cards, at sustained 3× with every window full:**
-  - feed 100 MB, deployer index 152, creates 85, base 50, books 40, pool keys 30, capped maps 29, producer 31, readers 12, let-go tags 6, per-mint maps 5;
-  - total about 540 MB, which is under 560 MB but with little margin.
-  - The feed's dedupe keys are the next largest term.
-  - At 1×: about 240 MB, about 320 MB under the limit.
+  - **The saved shape is unchanged** (rows of creator and `[mint, time]` pairs), so no upgrade is needed. A file of today's shape, written by the index this replaces, restores to the same answers and saves back identical.
+  - **Fail closed (persist review, supervisor ruling):** a file that repeats a creator row, or a mint inside one row, is refused whole. The replaced index silently kept the last copy.
+  - Rug and unjudged labels stay as they were (small).
+- **Measured (node, this host):**
+  - Memory: about 110 to 130 B a create, against about 316 B. So about 60 MB at 1× and about 180 MB at sustained 3× over the 15-day window.
+  - At the full 1× window (540,000 creates by 400,000 creators), against the replaced index:
+    - restore about 1.3 s (0.9 to 1.0 s);
+    - prune about 0.1 s after a GC (0.2 s);
+    - a save's rows about 1.0 s (0.7 s);
+    - 1,000 `factFor` reads 5 ms (5 ms).
+  - One creator with 50,000 mints: add, restore and prune each well under 500 ms. The replaced index was constant per entry; the first compact build grew with the square of one creator's mints.
+- **Still on the event path, not new:** the five-minute save writes every row synchronously, about 0.7 s before this card and about 1.0 s after it at a full 1× window. That is over the golden rule's 100 ms. It needs the save moved off the event path (a snapshot of the typed arrays, written in chunks), which is a separate card.
+- **Bounds after all the cards, at sustained 3× with every window full:** about 515 MB, about 45 MB under 560 MB. At 1×: about 240 MB.
 - **Evidence (fail before, pass after).**
   - `deployer-compact.test.ts`:
     - today's saved index (`fixtures/deployer-index-v1.json`, written by the replaced index) restores, saves back, prunes and answers `factFor` and `mintRows` identically, from a whole file and from streamed rows;
-    - a bad row, entry, time or future entry refuses the file whole;
+    - a bad row, entry, time, future entry, repeated mint or repeated creator row refuses the file whole;
     - `MintIndex` keeps order, the earliest time of a repeat, and canonical and text mints alike;
     - colliding creator tags are kept apart;
-    - under 125 B a create.
-  - Hand mutants killed: a repeat taking the later time; creator bytes not compared; prune with `>`. The canonical-form check is equivalent for 32-byte base58 and is kept as a guard.
+    - under 125 B a create counted from its arrays (under 115 B after a prune);
+    - the same mint under two creators is two entries;
+    - at the full 1× window, restore and prune each take at most twice the replaced layout built here from the same rows (measured 1.7× and 0.4× under vitest);
+    - a 50,000-mint creator's add, restore and prune each stay under 500 ms.
+  - `deployer-index.test.ts`: a create from logs and from its fetched transaction counts once.
+  - `persist.test.ts`: a cut or doubled file is still reported as the checksum's failure. A repeated row met mid-stream defers to the checksum, and is the reason only for an intact file.
+  - Hand mutants killed: a repeat taking the later time; a repeated mint or creator row accepted; an entry matched without its creator; prune with `>`.
 
 ## Graduates fact newest-only, seed fact stored as counts (G4a, `run/store-rules.ts`)
 
