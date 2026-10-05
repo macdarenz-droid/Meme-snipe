@@ -117,6 +117,8 @@ export interface WorkerDeps {
   readonly strategy: StrategyConfig;
   /** Test seam: replaces the strategy's position marking (marks.ts `markedHistory`). */
   readonly markedHistory?: StrategyDeps['markedHistory'];
+  /** Test seam: replaces the marking of the account valuation alone (`#markAccount`); unset, it follows `markedHistory`. */
+  readonly valuationMark?: StrategyDeps['markedHistory'];
   /** Test seam: replaces the strategy's entry-size probe result (`StrategyDeps.sizeProbe`). */
   readonly sizeProbe?: StrategyDeps['sizeProbe'];
   readonly scenario: FillScenario;
@@ -1275,12 +1277,13 @@ export class Worker {
     const sol = this.#solPrice === null || this.#solPriceAt === null ? null : { value: this.#solPrice, atMs: this.#solPriceAt };
     const policy = this.#d.session.policy;
     const held = Object.values(this.#engine.book.positions).filter((p) => p.status !== 'closed');
+    const mark = this.#d.valuationMark ?? this.#d.markedHistory;
     const account = riskAccount(fact.history, (mint) => {
       const p = held.find((x) => x.mint === mint);
       if (p === undefined) return undefined;
       const m = this.poolOf(mint);
       return { quantity: p.quantity, market: m === null ? null : { pool: m.state, ctx: m.ctx, atMs: m.atMs } };
-    }, sol, now, markSettings(policy, this.#d.strategy.network), { fallback: true, ...(this.#d.markedHistory === undefined ? {} : { mark: this.#d.markedHistory }) });
+    }, sol, now, markSettings(policy, this.#d.strategy.network), { fallback: true, ...(mark === undefined ? {} : { mark }) });
     const input: RiskInput = {
       session: this.#d.session, mode: 'paper', clock: { now: () => ({ slot: this.#lastSlot ?? 0n, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt: now }) },
       account, latches: fact.latches, market: { solPrice: sol, solBalance: fact.solBalance, regime: 'unknown' },

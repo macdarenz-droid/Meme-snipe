@@ -20,19 +20,18 @@ const HELD = { heldPoolFacts: true } as const;
 
 /**
  * RISK-LATCH (#124) latches R9/R10 from the worker's account valuation at the end of every step, which comes before a
- * candidate is first judged. To pin the entry path's own latching, this marking seam shows that valuation one open
- * position with no mark (never latchable) and leaves the strategy's marking as given. `valuations` counts the calls it
- * changed, so a renamed frame fails the test instead of passing it vacuously.
+ * candidate is first judged. To pin the entry path's own latching, the valuation's own seam (`valuationMark`) shows it
+ * one open position with no mark (never latchable), while the strategy marks with `inner`. `valuations` counts its
+ * calls, so a valuation that stops using the seam fails the test instead of passing it vacuously.
  */
 const entryPath = (inner: typeof markedHistory = markedHistory) => {
   const seen = { valuations: 0 };
-  const mark: typeof markedHistory = (h, held, sol, nowMs, st) => {
-    const r = inner(h, held, sol, nowMs, st);
-    if (!(new Error().stack ?? '').includes('#markAccount')) return r;
+  const valuationMark: typeof markedHistory = (h, held, sol, nowMs, st) => {
     seen.valuations++;
+    const r = inner(h, held, sol, nowMs, st);
     return { ...r, openPositions: [...r.openPositions, { mint: 'Unmarked' as never, openedAtMs: nowMs, notional: 0n as MicroUsd, mark: null, markAtMs: null }] };
   };
-  return { mark, seen };
+  return { deps: { markedHistory: inner, valuationMark }, seen };
 };
 
 /** A paper account whose recorded week-start or NAV peak puts it past a stop while it holds nothing. */
@@ -43,8 +42,8 @@ const seeded = (over: Record<string, unknown>): string => {
   return dir;
 };
 
-const run = async (stateDir: string, mark?: typeof markedHistory) => {
-  const h = makeWorker({ stateDir, ...(mark === undefined ? {} : { markedHistory: mark }) });
+const run = async (stateDir: string, deps: { markedHistory?: typeof markedHistory; valuationMark?: typeof markedHistory } = {}) => {
+  const h = makeWorker({ stateDir, ...deps });
   expect(await h.worker.reconcile()).toEqual({ ok: true });
   const m = await passingMarket(h, HELD);
   await m.run(10_000, 400, () => {
@@ -64,7 +63,7 @@ describe('a stop reached on the entry path while flat is latched', () => {
     expect(closedAt).toBeGreaterThanOrEqual(melbourneWeek(T).start);
     const dir = seeded({ trades: [{ positionId: 'p:old:1', mint: 'OldMint1111111111111111111111111111111111111', openedAtMs: closedAt - 600_000, notional: usd('5'), closedAtMs: closedAt, netLamports: -33_000_000n, netPnl: -usd('5'), stoppedOut: true, booked: -33_000_000n }] });
     const e = entryPath();
-    const { h, lines, latches } = await run(dir, e.mark);
+    const { h, lines, latches } = await run(dir, e.deps);
     expect(e.seen.valuations).toBeGreaterThan(0);
     const rejects = lines.filter((l) => l.kind === 'decision' && l.reasons?.[0] === 'reject');
     expect(rejects.some((l) => l.reasons!.includes('trip weekly_loss')), JSON.stringify(lines.filter((l) => l.kind === 'decision').map((l) => l.reasons?.slice(0, 4)))).toBe(true);
@@ -75,7 +74,7 @@ describe('a stop reached on the entry path while flat is latched', () => {
   it('NAV kill: the reject carries `trip kill_switch` as its own reason, and the kill latch is set', async () => {
     const dir = seeded({ navPeak: { atMs: T - 3_600_000, nav: usd('40') } });
     const e = entryPath();
-    const { h, lines, latches } = await run(dir, e.mark);
+    const { h, lines, latches } = await run(dir, e.deps);
     expect(e.seen.valuations).toBeGreaterThan(0);
     const rejects = lines.filter((l) => l.kind === 'decision' && l.reasons?.[0] === 'reject');
     expect(rejects.some((l) => l.reasons!.includes('trip kill_switch'))).toBe(true);
@@ -115,7 +114,7 @@ describe('an entry-path trip latches only from a fully marked account', () => {
 
   for (const mode of ['unmarked', 'stale'] as const) {
     it(`(b) a held position with ${mode === 'unmarked' ? 'no' : 'a stale'} mark, whose stand-in crosses the weekly line: no trip reason, no latch`, async () => {
-      const { lines, latches } = await run(tempState(), steered(mode, maxAge));
+      const { lines, latches } = await run(tempState(), { markedHistory: steered(mode, maxAge) });
       const rs = rejects(lines);
       // Risk saw the stand-in cross the line: the refusal names the trip in its text...
       expect(rs.some((r) => r.some((x) => x.startsWith('risk ') && x.includes('trip weekly_loss'))), JSON.stringify(rs.map((r) => r.slice(0, 4)))).toBe(true);
@@ -130,7 +129,7 @@ describe('an entry-path trip latches only from a fully marked account', () => {
     const seam = { mode: 'stale' as Seam };
     const e = entryPath((...a) => steered(seam.mode, maxAge)(...a));
     const stateDir = tempState();
-    const h = makeWorker({ stateDir, markedHistory: e.mark });
+    const h = makeWorker({ stateDir, ...e.deps });
     expect(await h.worker.reconcile()).toEqual({ ok: true });
     const m = await passingMarket(h, HELD);
     const tick = () => {
@@ -153,7 +152,7 @@ describe('an entry-path trip latches only from a fully marked account', () => {
 
   it('(c) the same position with a fresh mark showing a real fall: `trip weekly_loss` on the reject, and R9 latched', async () => {
     const e = entryPath(steered('dip', maxAge));
-    const { lines, latches } = await run(tempState(), e.mark);
+    const { lines, latches } = await run(tempState(), e.deps);
     expect(e.seen.valuations).toBeGreaterThan(0);
     expect(rejects(lines).some((r) => r.includes('trip weekly_loss'))).toBe(true);
     expect(typeof latches['weeklyTrippedAtMs']).toBe('number');
