@@ -46,7 +46,9 @@ describe('forgetting the oldest signature', () => {
   });
 
   it('costs O(1) however many were forgotten: 600,000 fetches remembering 50,000 in under 8 s (the old trim: about 20 s)', async () => {
-    const fetcher = new TxFetcher({ clients: [instant([])], feed: { ingest: () => undefined } as unknown as LiveFeed, timers: new ManualTimers(0), retries: 0, retryMs: 1, remember: 50_000 });
+    // Only the remembered set is timed: DEC-1's decode check (about 90 µs a transaction, WORKER-CRASH) is stubbed, as
+    // the feed is, so its cost cannot hide or stand in for the trim's.
+    const fetcher = new TxFetcher({ clients: [instant([])], feed: { ingest: () => undefined } as unknown as LiveFeed, timers: new ManualTimers(0), retries: 0, retryMs: 1, remember: 50_000, decodable: () => true });
     const t = performance.now();
     for (let i = 0; i < 600_000; i++) await fetcher.fetch(`S${i}`, P0);
     expect(performance.now() - t).toBeLessThan(8_000);

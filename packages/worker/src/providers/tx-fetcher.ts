@@ -23,6 +23,8 @@ export interface TxFetcherOptions {
   readonly onLookup?: (ms: number) => void;
   /** A monotonic local clock (ms) for the arrival stamp; default `performance.now`. */
   readonly mono?: () => number;
+  /** Whether DEC-1 decodes the record (default `decodable`); a seam so a timing test measures only the remembered set. */
+  readonly decodable?: (record: TransactionRecord) => boolean;
 }
 
 /** A transaction found: its slot and when it first arrived on this host. `again` when an earlier fetch put it on the feed. */
@@ -72,7 +74,7 @@ export class TxFetcher {
         try {
           const record: TransactionRecord | null = await client.getTransaction(signature, priority);
           if (record === null) continue;
-          const found: Fetched = { slot: record.slot, at: o.timers.now(), mono: (o.mono ?? (() => performance.now()))(), again: false, ...(decodable(record) ? {} : { undecodable: true as const }) };
+          const found: Fetched = { slot: record.slot, at: o.timers.now(), mono: (o.mono ?? (() => performance.now()))(), again: false, ...((o.decodable ?? decodable)(record) ? {} : { undecodable: true as const }) };
           o.feed.ingest(client.provider, { type: 'tx', record }, { receivedAt: found.at, lookup: true, backfilled });
           // Remembered only once on the feed: an ingest that throws leaves the next ask to read it again.
           this.#done.set(signature, found);
