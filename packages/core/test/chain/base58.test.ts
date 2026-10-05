@@ -44,3 +44,63 @@ describe('base58', () => {
     expect(() => decodeAddressBytes('2g')).toThrow(DecodeError);
   });
 });
+
+/** The encoder as it was before OOM-SWAPS (one character appended at a time): the reference for byte-identical output. */
+const ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+const encodeBefore = (bytes: Uint8Array): string => {
+  let zeros = 0;
+  while (zeros < bytes.length && bytes[zeros] === 0) zeros++;
+  const digits: number[] = [];
+  for (let i = zeros; i < bytes.length; i++) {
+    let carry = bytes[i]!;
+    for (let j = 0; j < digits.length; j++) {
+      carry += digits[j]! << 8;
+      digits[j] = carry % 58;
+      carry = (carry / 58) | 0;
+    }
+    while (carry > 0) {
+      digits.push(carry % 58);
+      carry = (carry / 58) | 0;
+    }
+  }
+  let out = '1'.repeat(zeros);
+  for (let i = digits.length - 1; i >= 0; i--) out += ALPHABET[digits[i]!];
+  return out;
+};
+
+describe('the flat encoder gives the old output exactly (OOM-SWAPS)', () => {
+  it('over 20,000 random inputs of 0 to 80 bytes, many with leading zeros', () => {
+    let x = 0x9e3779b9;
+    const next = (n: number): number => {
+      x ^= x << 13; x >>>= 0; x ^= x >>> 17; x ^= x << 5; x >>>= 0;
+      return x % n;
+    };
+    for (let k = 0; k < 20_000; k++) {
+      const len = next(81);
+      const lead = next(4) === 0 ? next(len + 1) : 0;
+      const bytes = Uint8Array.from({ length: len }, (_, i) => (i < lead ? 0 : next(256)));
+      expect(encodeBase58(bytes), `input ${toHex(bytes)}`).toBe(encodeBefore(bytes));
+    }
+  });
+});
+
+describe('encoded strings are flat (heap at boot: OOM-SWAPS)', () => {
+  it('20,000 encoded addresses, held, take well under 5 MB of heap (a rope of one node per character took about 25 MB)', async () => {
+    // Every swap keeps its six addresses in the engine's store; a string built one character at a time stays a rope of
+    // about 30 nodes per address. Measured after a full collection, holding exactly the encoded strings.
+    const { setFlagsFromString } = await import('node:v8');
+    const { runInNewContext } = await import('node:vm');
+    setFlagsFromString('--expose-gc');
+    const gc = runInNewContext('gc') as () => void;
+    const bytes = Array.from({ length: 20_000 }, (_, k) => Uint8Array.from({ length: 32 }, (_, j) => (k * 31 + j * 7 + 1) % 256));
+    gc();
+    const before = process.memoryUsage().heapUsed;
+    const held = bytes.map(encodeBase58);
+    gc();
+    const used = process.memoryUsage().heapUsed - before;
+    expect(held.every((s) => s.length >= 43 && s.length <= 44)).toBe(true);
+    expect(used).toBeLessThan(5 * 1024 * 1024);
+    // Output unchanged: each round-trips.
+    expect(toHex(decodeBase58(held[123]!))).toBe(toHex(bytes[123]!));
+  });
+});

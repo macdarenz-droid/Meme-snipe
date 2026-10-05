@@ -2247,6 +2247,13 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - the parity replay.
   - `fees-keep.test.ts` adds the restore case: a moved pool with a fee-context fact is judged by the gates.
 
+## Encoded addresses are flat strings (OOM-SWAPS part 1, `core/src/chain/base58.ts`)
+
+- **2026-10-05 · Why.** The HeapOutOfMemory deaths went on after BOOT-BOUND (09790b40: crash 12 → 13 by 4:26 PM, about one boot every 10–15 minutes, so the heap filled at about 38 MB a minute in a live run). A harness probe with real swap log frames on a watched candidate pool (decode, feed, engine, strategy) measured **+10.0 KB of heap per swap, linear** (6,000 swaps +58 MB, 30,000 +286 MB). About 4,000 swaps a minute across the ~230 pools watched in their window fits the live slope. A heap snapshot after 6,000 swaps found 1.13 million concatenated strings (34.6 MB of the 58 MB), held by the engine's `AsOfStore` as each swap's six addresses. `encodeBase58` built its result one character at a time (`out +=`), and V8 keeps such a string as a rope of about 30 nodes.
+- **What.** The digits are written into one array of character codes and turned into a string at once (`String.fromCharCode`), so the string is flat. The output is unchanged (the Bitcoin vectors and every decode test pass).
+- **Measured.** The swap probe drops from 10.0 KB to 4.2 KB per swap. The store still keeps every swap for the process, so memory still grows without limit; bounding the trade tape is part 2 (the trade-tail readers decide what must be kept).
+- **Evidence.** `base58.test.ts`: 20,000 encoded addresses held take under 5 MB of heap after a full collection (21.2 MB on the base: fails before, passes after, stable over repeated runs); over 20,000 random inputs of 0 to 80 bytes (a quarter with leading zeros) the output equals the old encoder's, kept in the test as the reference.
+
 ## The live store under busy pools (OOM-SWAPS part 2, `core/src/engine/asof.ts` `Collapse`, `core/src/gates/tails.ts` `tradeTailCollapse`, `worker/src/run/store-rules.ts`)
 
 - **2026-10-05 · Why.** The live engine ran with no retention, so its as-of store kept every released event for the whole process. Each swap on a watched pool adds two entries: its trade event (`logs:pump_amm:BuyEvent|SellEvent:<pool>`) and a fresh pool fact (`gates/pool:<mint>`). Measured in the harness with real swap log frames: 10.0 KB of heap per swap (4.2 KB with part 1's flat addresses), linear. At about 4,000 swaps a minute across the ~230 pools in their window, the heap reached its 560 MB limit 10–15 minutes after every boot (HeapOutOfMemory 13 on 5 Oct, still on 09790b40). G4a (#164) does not bound it: it keeps trade keys for the look-back plus a day and per-object keys for at least a day.
