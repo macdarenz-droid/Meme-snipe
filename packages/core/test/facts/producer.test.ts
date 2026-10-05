@@ -11,7 +11,7 @@ import {
   holdersKey, insidersKey, lpKey, migrationKey, mintKey, parseCandles, parseCreate, parseHolders, parseInsiders, parseLp, parseMigration, parseMint,
   parsePool, parseSim, parseSolUsd, parseXcheck, poolKey, simKey, streamKey, xcheckKey, type CandlesFact, type GateRequest,
 } from '../../src/gates/index.ts';
-import { FACT_KINDS, FactFeed, FactProducer, GRADUATES_SEED_KEY, HOLDER_ABSTENTIONS_KEY, RAW, STREAMS, dailyChainVolume, graduatesFact, insiderLinks, decimalToMicro, producerOptions, tradeRepeatId, RETIRED_KEEP, cappedAdd } from '../../src/facts/index.ts';
+import { FACT_KINDS, FactFeed, FactProducer, GRADUATES_SEED_KEY, HOLDER_ABSTENTIONS_KEY, RAW, STREAMS, dailyChainVolume, graduatesFact, insiderLinks, decimalToMicro, producerOptions, tradeRepeatTag, RETIRED_KEEP, cappedAdd } from '../../src/facts/index.ts';
 import { lamports, microUsd } from '../../src/units/index.ts';
 import { FEE_CONTEXT } from '../gates/world.ts';
 import { recordFromRpc } from '../../src/chain/index.ts';
@@ -326,7 +326,7 @@ describe('candles', () => {
       type Swap = { name: string; data: { poolBaseTokenReserves: bigint; poolQuoteTokenReserves: bigint } };
       const ids = (events: MarketEvent[]) => events.filter((e) => /pump_amm:(Buy|Sell)Event:/.test(e.key)).map((e) => {
         const v = e.value as { signature?: string; event: Swap & { signature?: string } };
-        return tradeRepeatId((v.signature ?? v.event.signature)!, v.event.data.poolBaseTokenReserves, v.event.data.poolQuoteTokenReserves);
+        return tradeRepeatTag((v.signature ?? v.event.signature)!, v.event.data.poolBaseTokenReserves, v.event.data.poolQuoteTokenReserves).join(':');
       });
       const chain = TRANSACTIONS.map((t) => recordFromRpc(t.signature, t.base64 as never));
       for (const x of [...swaps, migrate, ...RECORDS.map((r) => r.rec), ...chain]) {
@@ -336,8 +336,8 @@ describe('candles', () => {
       }
       // A recorded transaction with two PumpSwap swaps (a sell then a buy): two different ids.
       expect(chain.some((r) => ids(txEvents(r)).length > 1)).toBe(true);
-      // Compact: a fresh 22 + up to 7 character string, never the whole signature.
-      for (const id of ids(txEvents(swaps[0]!))) expect(id.length).toBeLessThanOrEqual(29);
+      // Two 48-bit numbers (SEEN-TAGS).
+      for (const id of ids(txEvents(swaps[0]!))) for (const n of id.split(':').map(Number)) expect(Number.isSafeInteger(n) && n >= 0 && n < 2 ** 48).toBe(true);
     });
 
     it('a repeat just outside the window (W + 1 s behind) is never applied: reserve unchanged, the candles partial, H11 refuses them', () => {

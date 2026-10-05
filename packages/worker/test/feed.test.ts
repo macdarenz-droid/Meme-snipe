@@ -7,6 +7,7 @@ import {
   ACCOUNT_TX_INDEX, DEFAULT_LIVE_FEED, dedupKey, frameEvents, LIVE_TX_BASE, LiveFeed, replayRecorded, type Frame, type FrameBody, type LiveFeedOptions, type Release, type Source,
 } from '../src/providers/index.ts';
 import { blockNetwork, recordOf, tx, TXS } from './helpers.ts';
+import { SigRanks } from '../src/providers/canonical.ts';
 
 blockNetwork();
 
@@ -121,6 +122,60 @@ describe('live Feed', () => {
     const perKey = (process.memoryUsage().heapUsed - before) / N;
     expect(keys.size).toBe(N);
     expect(perKey).toBeLessThan(100);
+  });
+
+  it('SEEN-TAGS: a slot rank costs under 110 B and never keeps its signature alive; ranks are as a Map\'s', async () => {
+    const { setFlagsFromString } = await import('node:v8');
+    const { runInNewContext } = await import('node:vm');
+    setFlagsFromString('--expose-gc');
+    const gc = runInNewContext('gc') as () => void;
+    const B58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+    const fresh = (i: number): string => JSON.parse(JSON.stringify(Array.from({ length: 88 }, (_, k) => B58[(i * 7 + k * 13 + (i >> k % 16)) % 58]).join(''))) as string;
+    const N = 50_000;
+    const ranks = new SigRanks();
+    const plain = new Map<string, number>();
+    gc();
+    const before = process.memoryUsage().heapUsed;
+    for (let i = 0; i < N; i++) ranks.set(fresh(i), ranks.size);
+    gc();
+    const per = (process.memoryUsage().heapUsed - before) / N;
+    expect(per).toBeLessThan(110);
+    for (let i = 0; i < 2_000; i++) plain.set(fresh(i), plain.size);
+    for (let i = 0; i < 2_000; i++) expect(ranks.get(fresh(i))).toBe(plain.get(fresh(i)));
+    expect(ranks.has(fresh(N + 1))).toBe(false);
+  });
+
+  it('SEEN-TAGS: the live feed keeps a released signature in under 200 B (its dedupe key and its slot rank)', async () => {
+    const { setFlagsFromString } = await import('node:v8');
+    const { runInNewContext } = await import('node:vm');
+    setFlagsFromString('--expose-gc');
+    const gc = runInNewContext('gc') as () => void;
+    const B58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+    const fresh = (i: number): string => JSON.parse(JSON.stringify(Array.from({ length: 88 }, (_, k) => B58[(i * 7 + k * 13 + (i >> k % 16)) % 58]).join(''))) as string;
+    const feed = new LiveFeed({ ...DEFAULT_LIVE_FEED });
+    const S0 = 452_000_000n;
+    let n = 0;
+    let t = 1_000;
+    const drain = () => { feed.advance(t); while (feed.next() !== null) { /* released */ } };
+    // Warm the feed's own structures first, then measure 200 slots of 100 signatures each (inside its 1,500-slot window).
+    const run = (slots: number, from: bigint) => {
+      for (let k = 0n; k < BigInt(slots); k++) {
+        const slot = from + k;
+        feed.ingest('helius', { type: 'slot', slot, parent: slot - 1n, root: null }, { receivedAt: t });
+        for (let j = 0; j < 100; j++) feed.ingest('helius', { type: 'seen', signature: fresh(n++), slot, err: null, via: 'logs:x', detail: null }, { receivedAt: t });
+        t += 400;
+        drain();
+      }
+    };
+    run(20, S0);
+    gc();
+    const before = process.memoryUsage().heapUsed;
+    const n0 = n;
+    run(200, S0 + 20n);
+    gc();
+    const per = (process.memoryUsage().heapUsed - before) / (n - n0);
+    expect(feed.status().releasedThrough).toBeGreaterThan(S0 + 200n);
+    expect(per).toBeLessThan(200);
   });
 
   it('OOM-MINT: every dedupe case still dedupes with the compact keys, and different facts stay apart', () => {

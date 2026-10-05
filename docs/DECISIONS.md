@@ -2524,3 +2524,26 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
     - after a restart, before the first slot, the attempts' age is unknown and the mint is held.
     - Mutants killed: no orphan hold; null height treated as expired.
 
+## Candle book trade ids and feed slot ranks as compact tags (SEEN-TAGS, `core/src/facts/repeat-tags.ts`, `providers/canonical.ts` `SigRanks`)
+
+- **2026-10-06 · Why.** In the 3× run's heap at 1 h (409 pools), the candle books' remembered trade ids took 90 MB (about 96 B a trade: a repeat-id string and its Map entry), and the live feed's dedupe keys and slot ranks 68 MB. At sustained 3× (about 720 pools) the books would reach about 212 MB and the feed about 120 MB.
+- **What.**
+  - **Books:** a trade's repeat tag is the first 96 bits of a SHA-256 of its whole signature and pre-trade reserves (`tradeRepeatTag`), as two 48-bit numbers.
+    - Tags are kept per trade minute (`RepeatTags`). A minute is sorted into a Float64Array once a later minute's trade arrives (16 B a trade); a late trade for an older minute reopens it.
+    - The sweep drops a minute once it ended at or before the window's cutoff, as before; the window is still checked before the tags.
+    - Two different trades share a tag with odds of about 2^-96 per pair, against about 2^-128 for the 22-character prefix it replaces: still exact in practice.
+  - **Feed ranks:** a slot's ranks are keyed by the signature's first 22 characters as a flat string (`SigRanks`, the dedupe keys' argument), not by the whole signature, which they kept alive for 1,500 slots.
+- **Measured:**
+  - a full hour of 51 trades a minute in 100 books holds under 24 B a trade (was about 96 B);
+  - a released signature costs the live feed under 200 B (229 B with ranks keyed by the signature).
+  - At sustained 3× the books go from about 212 to about 40 MB, and the feed from about 120 to about 100 MB. The dedupe keys themselves are unchanged; they are bounded by the feed's 1,500-slot window.
+- **Evidence (fail before, pass after).**
+  - `repeat-tags.test.ts`:
+    - the tag shape;
+    - every added trade is found (open minute, sorted minutes, a late trade into an older minute), and no other, including the same high half with another low half;
+    - the sweep boundary;
+    - the memory bound.
+  - `producer.test.ts`: the repeat test now compares tags from a log line and from the fetched transaction (two swaps in one transaction differ).
+  - `feed.test.ts`: a `SigRanks` rank costs under 110 B (141 B keyed by the signature) and ranks as a Map does; the live feed keeps a released signature in under 200 B (229 B with Map ranks).
+  - Hand mutants killed: the low half ignored; a minute dropped when it starts; a late trade not reopening its minute; ranks keyed by the signature; the feed not using `SigRanks`.
+

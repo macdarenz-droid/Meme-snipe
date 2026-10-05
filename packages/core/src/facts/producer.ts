@@ -10,7 +10,6 @@
 //
 // Rule (owner): missing, stale or failed data produces no fact, or an explicit not-covered one (a flagged or
 // `complete: false` fact the gates reject). Nothing here ever fills a gap with a value that passes.
-import { createHash } from 'node:crypto';
 import { DAY_MS, HOUR_MS, MINUTE_MS, SECOND_MS } from '../config/time.ts';
 import type { Policy } from '../config/policy.ts';
 import {
@@ -19,6 +18,7 @@ import {
 import type { Commitment, QualityFlag } from '../domain/index.ts';
 import type { MarketEvent } from '../engine/feed.ts';
 import { flatCopy } from '../engine/asof.ts';
+import { RepeatTags, tradeRepeatTag } from './repeat-tags.ts';
 import type { PoolState } from '../amm/index.ts';
 import { swapEventState } from '../fills/pool.ts';
 import {
@@ -122,21 +122,6 @@ export const cappedAdd = (set: Set<string>, id: string, cap: number): void => {
   }
 };
 
-/**
- * OOM-SEEN (supervisor ruling, B1): a swap's repeat id, the same from a log line and from a fetched transaction: the first 22
- * characters of its signature (about 128 bits) and a 32-bit hash of its pre-trade reserves (two swaps in one transaction
- * leave different reserves). Copied into a fresh flat string, so it never keeps the whole signature alive: about 85 B
- * a remembered trade with its minute, against about 350 B for the full `signature:base:quote` text.
- */
-export const tradeRepeatId = (signature: string, baseBefore: bigint, quoteBefore: bigint): string => {
-  // The first 8 hex digits (32 bits) of a SHA-256 of both reserves: no hand-rolled mixing constants (CFG-1's literal guard).
-  const h = Number.parseInt(createHash('sha256').update(`${baseBefore}:${quoteBefore}`, 'utf8').digest('hex').slice(0, 8), 16);
-  const text = signature.slice(0, 22) + h.toString(36);
-  const codes = new Array<number>(text.length);
-  for (let i = 0; i < text.length; i++) codes[i] = text.charCodeAt(i);
-  return String.fromCharCode(...codes);
-};
-
 /** Options sized from the locked policy, so the kept windows always cover what the gates read. */
 export const producerOptions = (p: Policy, execHealth?: ExecHealthLimits): ProducerOptions => ({
   candleFirstMs: p.gates.chaseCheckAfterMs + MINUTE_MS,
@@ -214,8 +199,8 @@ interface CandleBook {
   readonly candles: Candle[];
   /** A trade whose price could not be formed: the candles are no longer complete. Sticky. */
   partial: boolean;
-  /** Trade repeat ids (`tradeRepeatId`) and their trade minutes, back to `tradeRepeatMs` behind `newestMs` (OOM-SEEN). */
-  readonly seen: Map<string, number>;
+  /** Trade repeat tags (`tradeRepeatTag`) by their trade minute, back to `tradeRepeatMs` behind `newestMs` (OOM-SEEN, SEEN-TAGS). */
+  readonly seen: RepeatTags;
   /** The newest trade time applied. */
   newestMs: number;
   /** `newestMs` at the last sweep: the next runs once the newest trade is a quarter window later. */
@@ -511,7 +496,7 @@ export class FactProducer {
         if (!t.pools.has(d.pool)) t.pools.set(d.pool, { pool: d.pool, slot: seen.slot, atMs, quote: d.poolQuoteAmount, base: d.poolBaseAmount });
         if (!this.#poolMint.has(d.pool)) this.#poolMint.set(d.pool, d.baseMint);
         if (!this.#books.has(d.pool) && !this.#retiredPools.has(d.pool)) {
-          this.#books.set(d.pool, { pool: d.pool, mint: d.baseMint, openedAtMs: atMs, fromSlot: seen.slot, candles: [], partial: false, seen: new Map(), newestMs: atMs, sweptMs: atMs });
+          this.#books.set(d.pool, { pool: d.pool, mint: d.baseMint, openedAtMs: atMs, fromSlot: seen.slot, candles: [], partial: false, seen: new RepeatTags(), newestMs: atMs, sweptMs: atMs });
           this.#reserves.set(d.pool, { atMs, effective: d.poolQuoteAmount });
           this.#writeCandles(d.pool, seen.provider, seen.receivedAt, put);
         }
@@ -614,9 +599,9 @@ export class FactProducer {
       return;
     }
     // The same trade from a fetched transaction and from a log line counts once.
-    const id = tradeRepeatId(seen.signature, baseBefore, quoteBefore);
-    if (book.seen.has(id)) return;
-    book.seen.set(id, Math.floor(atMs / MINUTE_MS));
+    const tag = tradeRepeatTag(seen.signature, baseBefore, quoteBefore);
+    if (book.seen.has(tag)) return;
+    book.seen.add(tag, Math.floor(atMs / MINUTE_MS));
     if (atMs > book.newestMs) book.newestMs = atMs;
     this.#sweepSeen(book);
     // Reserves in Buy/SellEvent are before the trade; after it the base moves by the base amount and the quote by the
@@ -640,7 +625,7 @@ export class FactProducer {
     if (book.newestMs - book.sweptMs < this.#o.tradeRepeatMs / 4) return;
     // A trade in minute m was stamped before (m + 1) minutes: dropped only when that is at or before the cutoff.
     const cutoff = book.newestMs - this.#o.tradeRepeatMs;
-    for (const [id, minute] of book.seen) if ((minute + 1) * MINUTE_MS <= cutoff) book.seen.delete(id);
+    book.seen.sweep(cutoff);
     book.sweptMs = book.newestMs;
   }
 

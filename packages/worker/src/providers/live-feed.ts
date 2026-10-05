@@ -9,7 +9,7 @@
 import type { Clock, Feed, FeedEvent, Moment } from '../../../core/src/engine/index.ts';
 import { compareEvents, compareMoments, GENESIS } from '../../../core/src/engine/index.ts';
 import { deepFreeze } from '../../../core/src/engine/freeze.ts';
-import { chainSlot, dedupKey, eventsOfFrame, rankIn, type Frame, type FrameBody, type Source } from './canonical.ts';
+import { SigRanks, chainSlot, dedupKey, eventsOfFrame, rankIn, type Frame, type FrameBody, type Source } from './canonical.ts';
 
 export interface LiveFeedOptions {
   /** A slot is released once the tip is this many slots past it (late notifications get that long to arrive). */
@@ -141,7 +141,7 @@ export class LiveFeed implements Feed {
   #firstHeldAt: number | null = null;
   #released: bigint;
   readonly #held = new Map<bigint, Frame[]>();
-  readonly #ranks = new Map<bigint, Map<string, number>>();
+  readonly #ranks = new Map<bigint, SigRanks>();
   readonly #keys = new Set<string>();
   readonly #keysBySlot = new Map<bigint, string[]>();
   readonly #gaps = new Map<string, { readonly fromSlot: bigint; readonly since: number }>();
@@ -303,7 +303,7 @@ export class LiveFeed implements Feed {
 
   #eventsOf(frames: readonly Frame[], slot: bigint): { event: FeedEvent; frameSeq: number }[] {
     let ranks = this.#ranks.get(slot);
-    if (ranks === undefined) this.#ranks.set(slot, (ranks = new Map()));
+    if (ranks === undefined) this.#ranks.set(slot, (ranks = new SigRanks()));
     const sorted = [...frames].sort((a, b) => a.seq - b.seq);
     for (const f of sorted) rankIn(ranks, f);
     return sorted.flatMap((f) => eventsOfFrame(f, ranks).map((e) => ({ event: deepFreeze(e), frameSeq: f.seq })));
