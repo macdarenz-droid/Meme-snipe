@@ -2397,7 +2397,7 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - `store-rules.test.ts`: `seen:` and `chain:slot` keep only their newest value.
   - Hand mutants killed: no window check; the window's edge excluded (`<=`); no partial flag; ids looked at before the window; no sweep; a sweep only once a window; a minute swept too early; an id without the reserves; an id with the whole signature; a sweep that forgets everything; a refused trade that moves the reserve; no slot-notice rule.
 
-## Dedupe keys, account reads, mint facts and let-go coins (OOM-MINT, `providers/canonical.ts`, `run/store-rules.ts`, `Strategy.retired`)
+## Dedupe keys, account reads, mint facts, let-go coins and memory bounds (OOM-MINT, `providers/canonical.ts`, `run/store-rules.ts`, `Strategy.retired`, `CREATE_KEEP_MS`)
 
 - **2026-10-05 · Why.** At three times the live rates (12,000 swaps a minute, a new pool every 20 s), the OOM-SEEN build still grew 1.6 MB a minute after warm-up. The rest was:
   - LiveFeed's dedupe keys: 44 → 53 MB, each a text holding the whole 88-character signature for 1,500 slots;
@@ -2410,9 +2410,41 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
     - The engine forgets every key ending in either address right after that event, so a replay forgets at the same point, and tells the feed.
     - The producer drops the pool's candle book, chain and trade stream and the mint's track, and never builds them again: a later trade, a repeat or a re-delivered migration is never applied, and the migration fact is never stated again (fail closed).
     - The pool's reserve and its pending graduate mark stay, because they feed the regime's survival series. A candidate leaves at least four hours after migrating; its survival mark is at thirty minutes.
+  - **Never let go while needed (review B1/B2).** A mint with a pending entry seed or a book position not yet closed is held, as are candidates and exit plans (`#held`).
+  - **Creates that never migrate (`CREATE_KEEP_MS`, 12 hours, in `StrategyConfig.createKeepMs`).**
+    - A create is aged from its own chain time.
+    - Once it is 12 hours old with no candidate, position, tail, pool or migration slot, its mint is let go. That drops its store keys, its producer track and its `walletMints` entries.
+    - The mint is then remembered for a week (`EXPIRED_CREATE_KEEP_MS`) as an 8-byte tag (`HourTags`, sorted per hour). A Map of 22-character prefixes measured 95 B each, 68 MB a week at 75 creates a minute; the tags measured 5.8 MB.
+    - If that coin migrates later, it is refused with `create-expired` before the regime or any gate, and the worker does not look its create up. The refusal reaches the summary's `refused_by_reason` through the existing journal path.
+    - Why 12 hours: almost every coin that graduates does so within hours of its create. A later one is refused rather than judged without its creation facts (fail closed).
+  - **Deployer index (supervisor ruling: not the 12-hour rule).** Once an hour of event time, `DeployerIndex.prune` drops in memory what the PERSIST-1 save leaves out: mints, rug labels and unjudged mints dated before the H14 look-back plus a day, and lost creates seen before it. A creator's mints inside the window still count.
+  - **Store retire by key index.** `AsOfStore` indexes its keys by their last `:` part, so a retire costs only the keys it forgets.
+  - **Worker capped maps.** Measured 265 B an entry for create signatures and 188 B for symbols, about 190 MB at full fill; the create signatures fill at boot from the saved store.
+    - `CREATE_SIGS_MAX` and `SYMBOLS_MAX` go from 200,000 to 60,000, more than 12 hours at three times the live create rate. An older coin that migrates is looked up once from its oldest signature and shows no symbol.
+    - `TX_SIGS_MAX` goes from 200,000 to 20,000, about two weeks of migrations.
+    - Kept mints are flat copies, so they never hold the 66-character key they were cut from.
+- **Memory bounds (per structure; live is 1×: 25 creates and 1 migration a minute, 17 swaps a minute per pool, a 4-hour candidate window, so about 240 pools).** Measured in a 3× run of the real worker (see below) and by unit measurements.
+
+  | Structure | Bound | 1× | Sustained 3× |
+  |---|---|---|---|
+  | Candle books (dead pools let go) | pools in window or tail × an hour of trade ids (about 96 B each) | 24 MB | 212 MB (720 pools) |
+  | LiveFeed keys and ranks | 1,500 slots of dedupe keys | 13 MB | 120 MB |
+  | Store keys per create that never migrated | 12 hours × 4.3 KB (curve trade and create log values) | 77 MB | 232 MB |
+  | Store keys per pool, AsOfStore key maps, `#byTail` | let go with the coin | about 10 MB | about 30 MB |
+  | Producer tracks and `walletMints` | let go with the coin, or at 12 hours | under 5 MB | under 15 MB |
+  | Producer retired ids | 100,000 each | 16 MB | 16 MB |
+  | Deployer index | 15 days × 316 B a create | 171 MB | 512 MB |
+  | Let-go creates | a week × 8 B | 2 MB | 6 MB |
+  | Worker capped maps | 60k, 60k, 20k, 20k | at most 29 MB | at most 29 MB |
+  | Readers (tx fetcher) | 50,000 × about 250 B | 12 MB | 12 MB |
+  | Strategy and worker per-mint maps | cleared when the mint leaves (`#forget`, position close) | under 2 MB | under 5 MB |
+  | Base (code, modules, buffers) | fixed | about 50 MB | about 50 MB |
+
+  - **1× ceiling: about 400 MB, about 160 MB under the 560 MB limit.**
+  - **Sustained 3×:** about 685 MB before the deployer index fills, so the limit is reached in about 10–12 hours. That is the 12-hour create fill plus the 4-hour pool window, not days. A short burst fills neither window.
+  - **Cards that close 3×, after this one:** compact create facts in the store (about 0.3 KB each); 8-byte tags for book trade ids and feed dedupe keys; and DEPLOYER-COMPACT (supervisor ruling: the first item of the daily-stability task).
 - **Not done.**
   - `LiveStrategy.#coverageFacts`, for the reason in OOM-SEEN.
-  - Creates that never migrate: their create and curve keys and producer tracks stay, about 3 KB a create. They need an age rule that could send a later migrating coin to the create lookup, so it is a separate decision.
 - **Evidence (fail before, pass after).**
   - `feed.test.ts`: a kept dedupe key costs under 100 B; every dedupe case still dedupes (seen, logs, confirmed logs, tx from either provider) and different facts stay apart. The cross-slot test's fabricated other signature now differs in its first character: it differed only in the last, past 128 bits.
   - `store-rules.test.ts`: account reads and mint facts keep only their newest value. A whole worker at three times the live rates (12,150 swaps a minute, 240 trade streams and 3 more a minute) grows under 1 MB a minute once the feed's duplicate window is full (0.32 MB over four minutes; the base shows the same, since the harness has one coin).
@@ -2420,3 +2452,14 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - `producer.test.ts`: after a retire, a later trade, a repeat and a re-delivered migration build nothing.
   - `retire.test.ts`: a candidate whose window ends unjudged is let go at once; a rejected one only when its tail ends; a held position never.
   - Hand mutants killed: the pool's book rebuilt; the mint's track rebuilt; the book kept; the tail ignored; no let-go at tail end; `#forget` silent; the engine not forgetting; the feed not told; any key containing an id taken as its own; the full-signature dedupe key.
+  - `retire.test.ts` (B1/B2): a mint with a pending entry seed (with no tail) or an open book position past its window is never let go; a seed that never lands lets go.
+  - `create-keep.test.ts`: a migration 1 s inside 12 hours of the create enters as before; 1 s past it is refused `create-expired` at every judgement and builds nothing.
+  - `hour-tags.test.ts`: every added mint is found in open and sealed hours and no other; an hour is kept until `keepMs` after it ends, to the millisecond; a week at 75 creates a minute holds under 8 MB.
+  - `deployer-index.test.ts` and `index-prune.test.ts`: the prune drops what the save drops; in a worker, a creator's mint 14.5 days old still counts after a prune and one 15 days and an hour old is gone.
+  - `engine.test.ts`: two keys with one last part are both retired; a key recorded again is retired again.
+  - `sig-caps.test.ts`: the caps cover 12 hours at 3×; a full create-signature map costs under 230 B an entry (265 B when the mint keeps its key).
+  - Hand mutants killed: create age from release time; no expiry mark; `HourTags` sealed hours unsearched; an hour dropped when it starts instead of when it ends; no index prune; a prune line a day later; `#byTail` not indexing a second key; `#byTail` not cleared on retire; the mint kept as a slice.
+  - **3× run of the real worker.** `main.ts` with stubbed fetch and WebSocket, a fake market in a worker thread, 230 pools at boot, 51 swaps a minute per pool, 75 creates a minute, a migration every 20 s, 560 MB limit.
+    - At 1 hour: 409 pools, 945,000 swaps, 234 MB live heap, still growing about 2 MB a minute as pools fill their hour and their 4-hour window.
+    - Owners at that point: books 90 MB, feed dedupe 68 MB, store 38 MB, deployer index 1.4 MB.
+    - The per-structure figures above come from this snapshot.
