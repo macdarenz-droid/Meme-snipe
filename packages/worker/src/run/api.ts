@@ -458,7 +458,7 @@ export const views = {
   trades: (i: ApiInputs) => i.trades.filter((t) => t.closedAtMs !== null).map((t) => tradeRecord(i, t)).reverse(),
 
   calendar: (i: ApiInputs, month: string) => {
-    const missing = unvaluedDays(i);
+    const missing = [...unvaluedDays(i)].some((date) => date.startsWith(month));
     // A day's net is every realised movement that day (APP-MONEY): its trades and the account costs booked on it.
     const byDay = new Map<string, { net: bigint; lam: bigint | null; ids: string[] }>();
     for (const e of moneyEvents(i)) {
@@ -472,7 +472,7 @@ export const views = {
     }
     return {
       mode: MODE, month, timeZone: 'Australia/Melbourne',
-      days: [...byDay].sort(([a], [b]) => (a < b ? -1 : 1)).map(([date, d]) => ({ mode: MODE, date, netUsd: usdText(d.net), ...lamField('netLamports', missing.has(date) ? null : d.lam), trades: d.ids.length, pauses: 0, tradeIds: d.ids })),
+      days: [...byDay].sort(([a], [b]) => (a < b ? -1 : 1)).map(([date, d]) => ({ mode: MODE, date, netUsd: usdText(d.net), ...lamField('netLamports', missing ? null : d.lam), trades: d.ids.length, pauses: 0, tradeIds: d.ids })),
     };
   },
 
@@ -504,7 +504,7 @@ export const views = {
     });
     return {
       mode: MODE, cumulative,
-      daily: [...daily].map(([date, v]) => ({ mode: MODE, date, netUsd: usdText(v.usd), ...lamField('netLamports', missing.has(date) ? null : v.lam) })),
+      daily: [...daily].map(([date, v]) => ({ mode: MODE, date, netUsd: usdText(v.usd), ...lamField('netLamports', missing.size > 0 ? null : v.lam) })),
       rBuckets: [],
       costsDaily: [...costsDaily].map(([date, v]) => ({ mode: MODE, date, totalUsd: usdText(v.usd), ...lamField('totalLamports', v.lam) })),
       costsByKind: [...kinds].map(([kind, v]) => ({ mode: MODE, kind, amountUsd: usdText(v.usd), ...lamField('amountLamports', v.lam) })),

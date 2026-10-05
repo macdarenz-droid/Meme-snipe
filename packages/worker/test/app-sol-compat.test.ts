@@ -44,6 +44,17 @@ describe('APP-SOL capability preserves the existing v1 contract', () => {
     // A trade's own lamports still include the late loss, with no conversion.
     expect(views.trades(i)[0]).toMatchObject({ netLamports: '-8' });
   });
+  it('an unvalued settlement on another day invalidates month and daily SOL aggregates', () => {
+    const base = input();
+    const closeAt = Date.parse('2026-10-02T01:00:00Z');
+    const i = { ...base, accountCosts: [], trades: [{ positionId: 'p1', mint: 'm', openedAtMs: closeAt - 1000, closedAtMs: closeAt, notional: 100n, netPnl: 30n, netLamports: 3n, booked: 0n, stoppedOut: false, late: [{ atMs: Date.parse('2026-10-03T01:00:00Z'), usd: null, lamports: -5n }] }] } as unknown as ApiInputs;
+    const cal = views.calendar(i, '2026-10');
+    expect(cal.days).toHaveLength(1);
+    expect(cal.days.every((d) => d.netLamports != null)).toBe(false);
+    expect(views.charts(i).daily.every((d) => d.netLamports != null)).toBe(false);
+    expect(cal.days[0]).toMatchObject({ netUsd: '0.00003' });
+    expect(views.stats(i)).not.toHaveProperty('netLamports');
+  });
   it('the HTTP server preserves capability queries through dispatch', async () => {
     const i = input();
     const server = await startApiServer('127.0.0.1', 0, () => i);

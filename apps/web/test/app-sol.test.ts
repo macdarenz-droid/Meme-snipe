@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 import type { CalendarMonth, ChartsView, PositionRecord, RiskMeter, StatsView, TradeRecord } from '../src/api/contract.ts';
 import { Money, SolPriceContext } from '../src/components/Money.tsx';
 import { fixturePosition, fixtureTrades } from '../src/dev/dashboardFixtures.ts';
-import { PnlCalendar } from '../src/dashboard/Calendar.tsx';
+import { PnlCalendar, monthTotals } from '../src/dashboard/Calendar.tsx';
 import { CostsChart, CumulativeChart, DailyPnlChart } from '../src/dashboard/Charts.tsx';
 import { OpenPosition, RiskList, Stats } from '../src/dashboard/Sections.tsx';
 import { TradeDetail, TradeTable, tradeReturn } from '../src/dashboard/Trades.tsx';
@@ -114,6 +114,10 @@ describe('every money figure in SOL', () => {
     expect(text(at(h(CumulativeChart, { points: charts.cumulative })))).toContain('2 trades · net −0.0020 SOL · largest drawdown −0.0030 SOL');
     expect(at(h(DailyPnlChart, { daily: charts.daily }))).toContain('0 up and 1 flat or down');
     expect(text(at(h(CostsChart, { view: charts, mode: 'paper' })))).toContain('Total 0.0001 SOL');
+  });
+
+  it('an empty calendar cannot establish a known zero SOL sum', () => {
+    expect(monthTotals({ mode: 'paper', month: '2026-10', timeZone: 'Australia/Melbourne', days: [] }).netLamports).toBeNull();
   });
 
   it('a worker without lamports: dollars, as before', () => {

@@ -20,7 +20,7 @@ export const monthTitle = (month: string) => {
 };
 
 /** The month is shown in SOL when every day carries its lamports (APP-SOL); else in dollars, as before. */
-const inSol = (cal: CalendarMonth): boolean => cal.days.every((d) => d.netLamports != null);
+const inSol = (cal: CalendarMonth): boolean => cal.days.length > 0 && cal.days.every((d) => d.netLamports != null);
 
 /** Month total: exact, and only from days of the calendar's own mode. */
 export function monthTotals(cal: CalendarMonth) {
