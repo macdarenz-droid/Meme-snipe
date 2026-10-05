@@ -6,6 +6,8 @@ From here on, S2 owns this file. S2 keeps it current on its own branch `claude/s
 
 ## S2 events (newest first)
 
+- **2026-10-06 01:05:12 AEDT** — Owner clarified review publication: every task gets fresh independent agents for each touched area; no builder self-approval and no S1 review fallback. Existing historical PASS remains attributed only to its old head. APP-TRUTH fresh delta review and full checks remain in progress; no current-head PASS or S2-READY claimed.
+
 - **2026-10-06 01:04:52 AEDT** — FUNNEL-TRUTH base merge completed in an isolated builder checkout at 2d53119c4e9e5d3749255700fd7660f3434b1b90, containing efa3b006e5fa7bcf745a9b344d7232116511ab85. Only docs/DECISIONS.md conflicted; both sections preserved. Task diff remains API, worker, funnel tests and two docs. Frozen install passed; no direct edits to protected S1 paths. Owner explicitly requires independent agents per touched area, with every exact-head verdict in a PR comment. S1 does not supply reviews. Independent APP/API and worker/facts reviews will cover this head.
 
 - **2026-10-06 01:04:03 AEDT** — APP-TRUTH base merge completed at 3a75e48c3df70b394ad2369eb826b53743b319fd, containing efa3b006e5fa7bcf745a9b344d7232116511ab85. Resolved only docs/DECISIONS.md by retaining both sections. Task diff remains seven app/test/docs files; no direct edits to S1-owned paths. Frozen install and all workspace typechecks passed. Full pnpm check is running. Independent APP/API delta reviewer started on an isolated exact-head checkout; no duplicate full suite. GitHub CI remains unobserved.
