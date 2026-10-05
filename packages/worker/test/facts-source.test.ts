@@ -179,18 +179,20 @@ describe('LiveFacts', () => {
     src2.stop();
   });
 
-  it('at most FACT_READS_IN_FLIGHT reads run at once whatever the number of candidates; the regime\'s reads go first; a stop drops the rest (STEP-B)', async () => {
+  it.each([250, 800])('at most FACT_READS_IN_FLIGHT reads run at once with %i restored candidates; the regime\'s reads go first; a stop drops the rest (STEP-B)', async (n) => {
     const s = setup();
     s.src.start(s.ctx);
     await s.flush();
     expect(s.f.calls).toEqual([['sol-usd', 27]]);
-    // A restart restores every candidate in its window at once: 800 of them, each missing only its holder set.
+    // A restart restores every candidate in its window at once, each missing only its holder set. Each read in flight
+    // holds a getProgramAccounts answer (about 3.3 MB of heap at 3,000 holders, measured), so what is held is bounded
+    // by the limit, never by the list.
     s.f.set('hold');
-    for (let k = 0; k < 800; k++) s.cands.set(`M${k}`, { migratedAtMs: T0, gates: [H16('holders', 'not-covered')] });
+    for (let k = 0; k < n; k++) s.cands.set(`M${k}`, { migratedAtMs: T0, gates: [H16('holders', 'not-covered')] });
     s.timers.advance(1_000);
     await s.flush();
     expect(of(s.f.calls, 'holders-all')).toHaveLength(FACT_READS_IN_FLIGHT);
-    expect(s.src.reads).toEqual({ running: FACT_READS_IN_FLIGHT, waiting: 800 - FACT_READS_IN_FLIGHT });
+    expect(s.src.reads).toEqual({ running: FACT_READS_IN_FLIGHT, waiting: n - FACT_READS_IN_FLIGHT });
     // One answers: the next starts, in arrival order.
     s.f.pending.shift()!.resolve(true);
     await s.flush();
