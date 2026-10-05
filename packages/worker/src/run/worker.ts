@@ -7,7 +7,7 @@
 // `open_intents` → seed the deployer index (SEED-1's hook) → start the live sources → trade. Nothing enters before the
 // reconcile line; a reconcile that cannot settle every intent exits 3.
 import { randomBytes } from 'node:crypto';
-import { copyFileSync, existsSync, mkdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { journalLines, placeBookingsAt } from './booked.ts';
 import type { Server } from 'node:http';
 import { join } from 'node:path';
@@ -45,6 +45,7 @@ import type { FactContext, FactSource } from './facts.ts';
 import { engineFeed, type EngineFeed } from './engine-feed.ts';
 import { startHealthServer } from './health.ts';
 import { type HeartbeatPosition, heartbeatBody, sendHeartbeat } from './heartbeat.ts';
+import { crashSite } from './crash-site.ts';
 import { Summarizer, SummaryClock } from './summary.ts';
 import { jsonText } from './json.ts';
 import { Journal } from './journal.ts';
@@ -64,7 +65,7 @@ export const DOWNTIME_CREDIT_CAP = 3_000;
 /** RESTART-KEEP: transactions read before a migration to find its curve's completion. */
 const COMPLETION_READS = 5;
 export const PERSIST_EVERY_MS = 5 * 60_000;
-import { type Control, NO_CONTROL, StateFile, controlFile, exitsFile, seedsFile, exposedFile, NO_EXPOSED } from './state.ts';
+import { type Control, NO_CONTROL, type Restart, StateFile, controlFile, exitsFile, seedsFile, exposedFile, NO_EXPOSED, exitKind, restartsAfterBoot, restartsFile } from './state.ts';
 import { LOG_CREATE_PREFIX, type PoolFact, S0_DIAGNOSTIC_PARTS, TX_CREATE_PREFIX, parsePool } from '../../../core/src/gates/index.ts';
 import type { ExecStats } from '../../../core/src/facts/raw.ts';
 
@@ -158,6 +159,11 @@ export interface WorkerDeps {
   readonly seedMaxMs?: number;
   /** The most create signatures kept (default `CREATE_SIGS_MAX`; a test passes a small one). */
   readonly createSigsMax?: number;
+  /**
+   * RESTART-CAUSE: 'reconcile' for the unit's `--reconcile` pre-step: its start line is marked, it records no restart,
+   * and it hands its reading of the previous exit to the main boot.
+   */
+  readonly phase?: 'reconcile';
   /** The seed cap when no saved index restores (default `MAX_SEED_CREATES`; a test passes a small one). */
   readonly maxSeedCreates?: number;
   /** BT-1c's delay samples (the recorder's `delays` table): the confirmed read and the sampled processed watch. */
@@ -271,9 +277,46 @@ export const readJournalFills = (path: string, chunkBytes?: number): Record<stri
   return out;
 };
 
+/** RESTART-CAUSE: the `--reconcile` pre-step's reading of the previous exit, for the main boot that follows it. */
+export const EXIT_HANDOFF = 'last_exit.json';
+
+/** The pre-step's handoff, read and removed: its reading when recent and well formed (null is a first start), else undefined. */
+export const takeHandoff = (path: string, nowMs: number): string | null | undefined => {
+  if (!existsSync(path)) return undefined;
+  let out: string | null | undefined;
+  try {
+    const m = JSON.parse(readFileSync(path, 'utf8')) as { exit?: unknown; at?: unknown };
+    if ((typeof m.exit === 'string' || m.exit === null) && typeof m.at === 'number' && nowMs - m.at >= 0 && nowMs - m.at < PLANNED_RESTART_MS) out = typeof m.exit === 'string' ? m.exit.slice(0, 300) : null;
+  } catch {}
+  rmSync(path, { force: true });
+  return out;
+};
+
+/** A planned restart's marker younger than this is believed; an older one is stale (its kill never came). */
+export const PLANNED_RESTART_MS = 10 * 60_000;
+
+/**
+ * RESTART-ALERT: the runner's marker for a drill's kill or reboot, read and removed at boot: `planned: <cause>` when it
+ * is recent and well formed, else null (the journal's reading stands).
+ */
+export const plannedRestart = (path: string, nowMs: number): string | null => {
+  if (!existsSync(path)) return null;
+  let out: string | null = null;
+  try {
+    const m = JSON.parse(readFileSync(path, 'utf8')) as { cause?: unknown; at?: unknown };
+    if (typeof m.cause === 'string' && m.cause !== '' && typeof m.at === 'number' && nowMs - m.at >= 0 && nowMs - m.at < PLANNED_RESTART_MS) out = `planned: ${m.cause.slice(0, 80)}`;
+  } catch {}
+  rmSync(path, { force: true });
+  return out;
+};
+
 export class Worker {
   readonly #d: WorkerDeps;
   readonly #boot: string;
+  /** How the previous process ended (RESTART-ALERT): a planned restart's marker, else the journal's last line. */
+  readonly #lastExit: string | null;
+  readonly #restartsFile: ReturnType<typeof restartsFile>;
+  #restarts: readonly Restart[];
   readonly #started: number;
   readonly #journal: Journal;
   #recorder: Recorder | null = null;
@@ -405,6 +448,33 @@ export class Worker {
     this.#journal = new Journal(join(c.stateDir, STATE_FILES.journal), this.#boot, () => d.timers.now());
     this.#fillLines = readJournalFills(join(c.stateDir, STATE_FILES.journal));
     rmSync(join(c.stateDir, STATE_FILES.cleanStop), { force: true });
+    // RESTART-CAUSE: the systemd unit runs a `--reconcile` pre-step (its own process) before each start, and it writes
+    // journal lines of its own. So the pre-step reads how the previous process ended and hands that reading to the main
+    // boot (EXIT_HANDOFF), which would otherwise read the pre-step's lines. A drill's marker is read the same way.
+    const handoff = join(c.stateDir, EXIT_HANDOFF);
+    // A handoff of null (the pre-step saw a first start) stands: it is not "no handoff".
+    const handed = takeHandoff(handoff, now);
+    this.#lastExit = handed !== undefined ? handed : plannedRestart(join(c.stateDir, STATE_FILES.plannedRestart), now) ?? this.#journal.previousExit;
+    if (d.phase === 'reconcile') writeFileSync(handoff, JSON.stringify({ exit: this.#lastExit, at: now }));
+    // Restarts in the last 24 h, planned (a runner drill), deploys and unplanned, for the heartbeat and the daily summary.
+    // The pre-step is not a boot of its own: only the main start records one.
+    this.#restartsFile = restartsFile(c.stateDir);
+    let saved: Restart[] = [];
+    try {
+      saved = this.#restartsFile.read([]);
+    } catch {
+      // A damaged count never blocks a boot: it starts again from this boot.
+      d.log('Restart counts unreadable (restarts.json): started again from this boot.');
+    }
+    this.#restarts = saved;
+    if (d.phase !== 'reconcile') {
+      this.#restarts = restartsAfterBoot(saved, now, this.#lastExit, c.gitSha);
+      try {
+        this.#restartsFile.write([...this.#restarts]);
+      } catch {
+        d.log('Restart counts not saved (restarts.json).');
+      }
+    }
     const timing = watchTimingProblem(d.config.watch, d.session.policy.gates.maxQuoteAgeMs, DEFAULT_LIVE_FEED.horizonSlots * SLOT_MS);
     if (timing !== null) throw new RangeError(timing);
     const seed = `paper:${this.#boot}`;
@@ -463,6 +533,9 @@ export class Worker {
       entry_rule: c.strategy.name, qualifying: c.strategy.qualifying, paper_edge_ppm: c.strategy.paperEdgePpm, s0_salt: d.strategy.entryTiming === 'random' ? d.strategy.entrySalt : null,
       s0_diagnostic: d.strategy.s0Diagnostic === true ? S0_DIAGNOSTIC_PARTS : null,
       sell_only: [...this.#sellOnly],
+      // RESTART-CAUSE: the unit's `--reconcile` pre-step is marked, so the daily summary counts real boots only.
+      // The main boot names its restart's kind and how the previous process ended, for the daily summary's counts.
+      ...(d.phase === 'reconcile' ? { phase: 'reconcile' } : { restart: this.#restarts[this.#restarts.length - 1]?.kind ?? null, exit: exitKind(this.#lastExit) }),
     });
     if (this.#journal.repaired) this.#journal.write('journal_repair', { detail: 'torn last line removed' });
     if (this.#sellOnly.length > 0) {
@@ -1446,7 +1519,7 @@ export class Worker {
       } catch (e) {
         d.log(`Engine step failed: ${e instanceof Error ? `${e.name}: ${e.message}` : 'error'}`);
         process.exitCode = EXIT.crash;
-        void this.stop(EXIT.crash);
+        void this.stop(EXIT.crash, crashSite(e, this.#engine.lastHandled));
         return;
       }
       this.#loop = d.timers.setTimeout(loop, d.loopMs);
@@ -1745,7 +1818,7 @@ export class Worker {
       signer: 'none', lease_epoch: null,
       sol_reserve: this.#account.state.walletLamports === null ? null : String(this.#account.state.walletLamports),
       paused: this.#ctl.paused, boot: this.#boot, pid: process.pid, uptime_s: Math.round((now - this.#started) / 1000),
-      rss_bytes: process.memoryUsage().rss, mode: 'paper', recorder: this.#d.config.recorder && this.#recorderFault === null ? 'on' : 'off', simulation: this.#d.config.simulate ? 'on' : 'off',
+      rss_bytes: process.memoryUsage().rss, last_exit: this.#lastExit, restarts_24h: this.#restartCounts(now), mode: 'paper', recorder: this.#d.config.recorder && this.#recorderFault === null ? 'on' : 'off', simulation: this.#d.config.simulate ? 'on' : 'off',
       reconciled: this.#reconciled, exit_capable: this.#exitCapable(now), quota: ops.quota, lookups: ops.lookups, entries_halted: this.#halted.length > 0, halt_reasons: [...this.#halted], critical: [...(this.#watch?.critical ?? []), ...(this.#recorderFault === null ? [] : [this.#recorderFault])], feeds, journal_seq: this.#journal.seq, signing_key: false,
       entry_rule: this.#d.config.strategy.name,
       ...(this.#d.strategy.s0Diagnostic === true ? { s0_diagnostic: S0_DIAGNOSTIC_PARTS } : {}),
@@ -1831,13 +1904,14 @@ export class Worker {
   }
 
   /** Clean stop: entries stop, simulations finish (bounded), journal and recorder close, the ledger closes. */
-  async stop(code: number = EXIT.clean): Promise<number> {
+  /** `crash`: where a crash happened (crash-site.ts), written on the stop line for the next boot's `last_exit`. */
+  async stop(code: number = EXIT.clean, crash?: string): Promise<number> {
     if (this.#stopping) return this.stopped;
     this.#stopping = true;
     this.#stopCode = code;
     this.#stoppingNow(code);
     try {
-      await this.#stop(code);
+      await this.#stop(code, crash);
     } catch (e) {
       // A stop that fails half way (a full disk) still ends the process, as a crash.
       this.#d.log(`Stop failed: ${errorText(e)}.`);
@@ -1847,7 +1921,7 @@ export class Worker {
     return code;
   }
 
-  async #stop(code: number): Promise<void> {
+  async #stop(code: number, crash?: string): Promise<void> {
     const d = this.#d;
     if (this.#loop !== null) d.timers.clearTimeout(this.#loop);
     if (this.#beat !== null) d.timers.clearTimeout(this.#beat);
@@ -1870,12 +1944,30 @@ export class Worker {
     // Past this point the state files belong to the next process: a simulation answering late writes nothing.
     this.#world.stop();
     const open = Object.values(this.#engine.book.positions).filter((p) => p.status !== 'closed').map((p) => p.id);
-    this.#journal.write('stop', { open_positions: open, open_intents: openIntents(this.#desk.book), reasons: [code === EXIT.clean ? 'signal' : 'crash'] });
+    this.#journal.write('stop', { open_positions: open, open_intents: openIntents(this.#desk.book), reasons: code === EXIT.clean ? ['signal'] : crash === undefined ? ['crash'] : ['crash', crash] });
     this.#record((r) => r.close());
     this.#ledger.close();
     if (code === EXIT.clean) writeFileSync(join(d.config.stateDir, STATE_FILES.cleanStop), new Date(d.timers.now()).toISOString());
     await new Promise<void>((r) => (this.#server === null ? r() : this.#server.close(() => r())));
     await new Promise<void>((r) => (this.#api === null ? r() : this.#api.close(() => r())));
+  }
+
+  /** Restarts in the 24 h before `now`: planned (a runner drill's marker), deploys (a new release) and unplanned. */
+  #restartCounts(now: number): { readonly planned: number; readonly deploy: number; readonly unplanned: number } {
+    const recent = this.#restarts.filter((r) => r.at <= now && now - r.at < 86_400_000);
+    const n = (k: Restart['kind']): number => recent.filter((r) => r.kind === k).length;
+    return { planned: n('planned'), deploy: n('deploy'), unplanned: n('unplanned') };
+  }
+
+  /**
+   * An uncaught exception or rejection (main's fatal handler): the stop line, with where it happened, is written at once,
+   * since the process exits right after. Nothing else runs; the next boot reconciles as after any crash.
+   */
+  crashed(e: unknown): void {
+    try {
+      const open = Object.values(this.#engine.book.positions).filter((p) => p.status !== 'closed').map((p) => p.id);
+      this.#journal.write('stop', { open_positions: open, open_intents: openIntents(this.#desk.book), reasons: ['crash', crashSite(e)] });
+    } catch {}
   }
 
   /**
