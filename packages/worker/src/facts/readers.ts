@@ -515,7 +515,7 @@ export class FactReaders {
       const ownersOf = [...(this.#owners.get(mint) ?? [])].filter((o) => !p.layout.includes(o) && !p.listed.includes(o)).sort();
       // FEE-TIER-NOW: PumpSwap's GlobalConfig and the pump-fees FeeConfig ride in the same bank (no extra call), so the
       // pool's fee context, every tier included, is read at the bank's slot with the pool.
-      const fees = [PUMP_AMM_GLOBAL_CONFIG, PUMP_AMM_FEE_CONFIG].filter((a) => !p.layout.includes(a));
+      const fees: readonly string[] = [PUMP_AMM_GLOBAL_CONFIG, PUMP_AMM_FEE_CONFIG].filter((a) => !p.layout.includes(a));
       const addresses = [...p.layout, ...p.listed, ...ownersOf.filter((o) => !fees.includes(o)), ...fees];
       // The scan's program is the mint's owner, learnt from the layout read (the mint is in every bank).
       const mintOwner = this.#mintProgram.get(mint);
