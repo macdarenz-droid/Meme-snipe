@@ -1302,12 +1302,14 @@ export class Worker {
     const shed = this.#feed.shed((via) => {
       if (!via.startsWith('logs:')) return false;
       const p = pools.get(via.slice('logs:'.length));
-      return p !== undefined && !p.held;
+      return p !== undefined && !p.held && !this.#strategy.committed(p.mint);
     });
     for (const [via, r] of shed) {
       const pool = via.slice('logs:'.length);
-      // As the stream's own watch reports a gap (solana-ws `#coverageGap`): an off-chain fact on the feed.
-      this.#feed.ingest('worker', { type: 'offchain', key: `coverage:${tradesStream(pool)}:gap`, value: { fromSlot: r.fromSlot, toSlot: r.toSlot, reason: 'shed', via } }, { receivedAt: this.#d.timers.now() });
+      // As the stream's own watch reports a gap (solana-ws `#coverageGap`), but placed first in the range's first slot
+      // (facts review B1): released before any event of the range, so H11 refuses the pool as not covered from its first
+      // shed slot on, live and in the recording's replay alike.
+      this.#feed.ingest('worker', { type: 'offchain', key: `coverage:${tradesStream(pool)}:gap`, value: { fromSlot: r.fromSlot, toSlot: r.toSlot, reason: 'shed', via } }, { receivedAt: this.#d.timers.now(), firstIn: r.fromSlot });
     }
     if (shed.size > 0) this.#d.log(`Behind: the feed held over ${SHED_HELD_FRAMES} frames; shed ${shed.size} candidate pools' trade streams (coverage gaps, entries there refused).`);
   }

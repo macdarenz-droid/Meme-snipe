@@ -27,13 +27,40 @@ describe('BEHIND: the shed cap', () => {
     await passingMarket(h, HELD);
     expect(Object.values(h.worker.book.positions)).toEqual([]);
     flood(h, POOL_ADDRESS);
+    const floodSlot = h.worker.feed.tip!;
     expect(h.worker.feed.heldFrames).toBeGreaterThan(SHED_HELD_FRAMES);
+    // The gap goes on the feed first in the range's first slot (facts review B1): released before any event of it.
+    const ingest = h.worker.feed.ingest.bind(h.worker.feed);
+    const gaps: unknown[] = [];
+    h.worker.feed.ingest = (src, body, o) => {
+      if (body.type === 'offchain' && body.key === `coverage:trades:${POOL_ADDRESS}:gap`) gaps.push(o.firstIn);
+      return ingest(src, body, o);
+    };
     h.worker.step();
+    expect(gaps).toEqual([floodSlot]);
     expect(h.worker.feed.heldFrames).toBeLessThan(SHED_HELD_FRAMES);
     expect(h.logs.some((l) => l.startsWith(`Behind: the feed held over ${SHED_HELD_FRAMES} frames; shed 1 candidate pools`))).toBe(true);
     // The coverage journal books it as the stream's own gap: the trades stream of that pool, from its logs watch.
     expect(shedGaps(h)).toHaveLength(1);
     expect(shedGaps(h)[0]).toMatchObject({ stream: 'trades', coverage: `trades:${POOL_ADDRESS}`, via: `logs:${POOL_ADDRESS}` });
+    await h.worker.stop();
+  });
+
+  it('never sheds a pool whose entry is in flight, its position still opening (no exit plan yet): facts review', async () => {
+    let h: Harness | null = null;
+    // The paper world never reports the entry's landing: its attempt stays in flight, no position is booked.
+    h = makeWorker({ worldFault: (e) => (e.type === 'intent' && e.event.type === 'status' && h!.worker.book.intents[e.intentId]?.intent.purpose === 'entry' ? null : e) });
+    await h.worker.reconcile();
+    const m = await passingMarket(h, HELD);
+    const inFlight = () => Object.values(h!.worker.book.intents).some((i) => i.intent.purpose === 'entry' && i.attempts.length > 0);
+    expect(await until(m, 30_000, inFlight, () => { m.slot(); m.pool(); })).toBe(true);
+    // Its position is still opening: the pool is not held (no exit plan yet), yet money is in flight on it.
+    expect(Object.values(h.worker.book.positions).map((p) => p.status)).toEqual(['opening']);
+    expect(h.worker.strategy.watchedPools().get(POOL_ADDRESS)?.held).toBe(false);
+    flood(h, POOL_ADDRESS);
+    h.worker.step();
+    expect(h.logs.some((l) => l.includes('candidate pools\' trade streams'))).toBe(false);
+    expect(shedGaps(h)).toEqual([]);
     await h.worker.stop();
   });
 

@@ -60,6 +60,11 @@ export interface IngestOptions {
    * after every off-chain fact ingested before them (FILL-ORDER: off-chain frames keep arrival order, canonical.ts).
    */
   readonly after?: boolean;
+  /**
+   * BEHIND: an off-chain body placed first in this slot, which must still be held (above the release point): a shed
+   * range's coverage gap, so it is released before any event of the range, in live and in the recording's replay alike.
+   */
+  readonly firstIn?: bigint;
 }
 
 export interface LiveFeedStatus {
@@ -196,7 +201,10 @@ export class LiveFeed implements Feed {
     const cutoff = this.#released - BigInt(this.#opts.keepSlots);
     let place: Frame['place'];
     // FILL-ORDER: every off-chain frame in arrival order (canonical.ts `arrival`).
-    if (cs === null || cs <= cutoff || o.after === true || (o.lookup === true && cs <= this.#released)) place = { at: 'offchain', slot: this.openSlot, arrival: true };
+    if (cs === null && o.firstIn !== undefined) {
+      if (o.firstIn <= this.#released) throw new RangeError(`slot ${o.firstIn} is already released`);
+      place = { at: 'chain', slot: o.firstIn, first: true };
+    } else if (cs === null || cs <= cutoff || o.after === true || (o.lookup === true && cs <= this.#released)) place = { at: 'offchain', slot: this.openSlot, arrival: true };
     else place = { at: 'chain', slot: cs };
     const text = dedupKey(body);
     const key = text === null ? null : keyTag(text);
@@ -247,6 +255,13 @@ export class LiveFeed implements Feed {
   shed(shed: (via: string) => boolean): Map<string, { fromSlot: bigint; toSlot: bigint }> {
     const out = new Map<string, { fromSlot: bigint; toSlot: bigint }>();
     for (const [slot, frames] of this.#held) {
+      const named = (f: Frame) => 'via' in f.body && typeof f.body.via === 'string' && shed(f.body.via);
+      if (!frames.some(named)) continue;
+      // Ranked first, in arrival order, as the recording's replay ranks every recorded frame of the slot: a shed frame
+      // keeps its rank, so a frame released from this slot later takes the same transaction index live and in replay.
+      let ranks = this.#ranks.get(slot);
+      if (ranks === undefined) this.#ranks.set(slot, (ranks = new SigRanks()));
+      for (const f of [...frames].sort((a, b) => a.seq - b.seq)) rankIn(ranks, f);
       const kept = frames.filter((f) => {
         const via = 'via' in f.body && typeof f.body.via === 'string' ? f.body.via : null;
         if (via === null || !shed(via)) return true;

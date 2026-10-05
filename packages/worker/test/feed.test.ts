@@ -407,3 +407,47 @@ describe('BEHIND: shedding held frames', () => {
     expect(feed.shed(() => true).size).toBe(0);
   });
 });
+
+describe('BEHIND: a shed slot in live and in the recording\'s replay', () => {
+  const sig = (k: number) => `Rank${[...String(k)].map((d) => 'abcdefghij'[Number(d)]).join('')}`.padEnd(88, '1');
+  const live = () => {
+    const frames: Frame[] = [];
+    const releases: Release[] = [];
+    const moments = new Map<string, unknown>();
+    const feed = new LiveFeed({ ...DEFAULT_LIVE_FEED, horizonSlots: 2, onFrame: (f) => frames.push(f), onRelease: (e, r) => { releases.push(r); moments.set(e.id, e.moment); } });
+    return { feed, frames, releases, moments };
+  };
+  const seen = (feed: LiveFeed, k: number, slot: bigint, via: string, at: number) => feed.ingest('helius', { type: 'seen', signature: sig(k), slot, err: null, via, detail: null }, { receivedAt: at });
+
+  it('a frame released from a shed slot takes the same moment live and in replay (shed frames keep their rank: BT review B1)', () => {
+    const l = live();
+    for (let k = 0; k < 5; k++) seen(l.feed, k, 20n, 'logs:CandPool', 10 + k);
+    l.feed.shed((via) => via === 'logs:CandPool');
+    seen(l.feed, 9, 20n, 'logs:Other', 30);
+    l.feed.ingest('helius', { type: 'slot', slot: 23n, parent: 22n, root: null }, { receivedAt: 31 });
+    l.feed.advance(32);
+    for (let e = l.feed.next(); e; e = l.feed.next()) void e;
+    const r = replayRecorded(l.frames, l.releases);
+    const replayed = new Map<string, unknown>();
+    for (let e = r.feed.next(); e; e = r.feed.next()) replayed.set(e.id, e.moment);
+    const other = [...l.moments.keys()].find((id) => id.startsWith(`seen:${sig(9)}`))!;
+    expect(other).toBeDefined();
+    expect(replayed.get(other)).toEqual(l.moments.get(other));
+  });
+
+  it('a gap placed first in a held slot is released before every event of that slot, at its first position; a released slot is refused', () => {
+    const l = live();
+    seen(l.feed, 1, 20n, 'logs:Other', 10);
+    seen(l.feed, 2, 21n, 'logs:Other', 11);
+    l.feed.ingest('worker', { type: 'offchain', key: 'coverage:trades:CandPool:gap', value: { fromSlot: 20n, toSlot: 21n, reason: 'shed', via: 'logs:CandPool' } }, { receivedAt: 12, firstIn: 20n });
+    l.feed.ingest('helius', { type: 'slot', slot: 23n, parent: 22n, root: null }, { receivedAt: 13 });
+    l.feed.advance(14);
+    const order: string[] = [];
+    for (let e = l.feed.next(); e; e = l.feed.next()) if (e.kind === 'market') order.push(e.key);
+    expect(order.indexOf('coverage:trades:CandPool:gap')).toBeLessThan(order.indexOf('seen:logs:Other'));
+    expect(order[0]).toBe('coverage:trades:CandPool:gap');
+    const gap = [...l.moments.entries()].find(([id]) => id.startsWith('coverage:trades:CandPool:gap'))!;
+    expect(gap[1]).toMatchObject({ slot: 20n, txIndex: 0, ixIndex: 0 });
+    expect(() => l.feed.ingest('worker', { type: 'offchain', key: 'coverage:trades:X:gap', value: {} }, { receivedAt: 15, firstIn: 21n })).toThrow(/already released/);
+  });
+});
