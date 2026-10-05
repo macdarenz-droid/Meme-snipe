@@ -17,7 +17,7 @@ blockNetwork();
 type Line = { kind: string; ts: string; action?: string; reasons?: string[]; gate_reasons?: { gate: string; code: string; detail?: string }[] };
 
 const CREATE_FACT = passingFacts().get(createKey(MINT))!.value as Record<string, unknown>;
-const logCreate = (h: Harness, createdAtMs: number, mint = MINT) =>
+const logCreate = (h: Harness, createdAtMs: number, mint: string = MINT) =>
   h.worker.feed.ingest('helius', { type: 'fact', key: `${LOG_CREATE_PREFIX}${mint}`, value: { event: { program: 'pump', name: 'CreateEvent', data: { mint, creator: DEV, timestamp: BigInt(Math.floor(createdAtMs / 1000)) } }, signature: `createsig${mint.slice(0, 4)}` } }, { receivedAt: h.timers.now() });
 const OTHER = 'Other111111111111111111111111111111111111111';
 
