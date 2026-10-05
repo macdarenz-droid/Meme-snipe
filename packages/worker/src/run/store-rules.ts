@@ -1,9 +1,10 @@
 // OOM-SWAPS: what the live engine's as-of store keeps, shared by the worker and its parity replay so both prune alike.
 // Without it the store kept every event for the process: each swap on a watched pool left its trade event and a fresh
 // pool fact (about 10 KB with their addresses), and at a few thousand swaps a minute the heap reached its limit in minutes.
-import type { Collapse, Retention } from '../../../core/src/engine/index.ts';
-import { RAW } from '../../../core/src/facts/index.ts';
-import { candlesKey, carryKey, mintKey, poolKey, streamKey, tradeTailCollapse } from '../../../core/src/gates/index.ts';
+import type { Collapse, Forget, Retention, Shape } from '../../../core/src/engine/index.ts';
+import { SEED_KEY } from '../engine/strategy.ts';
+import { FUNDER_KEEP_MS, RAW } from '../../../core/src/facts/index.ts';
+import { GRADUATES_KEY, LOG_CREATE_PREFIX, TX_CREATE_PREFIX, candlesKey, carryKey, compactCreate, compactCurveTrade, curveTradeKeys, mintKey, poolKey, streamKey, tradeTailCollapse } from '../../../core/src/gates/index.ts';
 
 const POOL_PREFIX = poolKey('');
 
@@ -40,10 +41,48 @@ const SLOT = 'chain:slot';
  * (`Evidence.read`); nothing asks for an older value (`history` is asked for trade, coverage and deployer keys only).
  */
 const READS = [RAW.accounts(''), mintKey('')];
+/**
+ * G4a (supervisor ruling): the graduates fact (`gates/graduates`), stated whole at every resolved graduate (about one a
+ * minute), each time with every graduate of its 16-day window: kept whole, each statement held a pointer array the
+ * length of the series, about 180 KB a statement at the live rate once the window is full (about 260 MB a day). The
+ * regime gate reads it as of now (`Evidence.read`, 'series'); the strategy acts on the released event; nothing asks
+ * for an older value.
+ */
+const GRADUATES = GRADUATES_KEY;
 const NEWEST_ONLY = (): boolean => false;
 
 /**
- * The live store's collapse: a head fact, a seen signature, the slot notice, an account read and its mint fact keep their newest value; a trade key keeps its newest event
+ * The live store's collapse: a head fact, a seen signature, the slot notice, an account read and its mint fact, and the graduates fact keep their newest value; a trade key keeps its newest event
  * and every event whose tail would fail (`tradeTailCollapse`).
  */
-export const liveCollapse: Collapse = (key) => (key === SLOT || key.startsWith(SEEN) || HEADS.some((p) => key.startsWith(p)) || READS.some((p) => key.startsWith(p)) ? NEWEST_ONLY : tradeTailCollapse(key));
+export const liveCollapse: Collapse = (key) => (key === SLOT || key === GRADUATES || key.startsWith(SEEN) || HEADS.some((p) => key.startsWith(p)) || READS.some((p) => key.startsWith(p)) ? NEWEST_ONLY : tradeTailCollapse(key));
+
+const CURVE_TRADE = curveTradeKeys('');
+/**
+ * CREATE-COMPACT: a create event and a curve trade event are stored with only the fields their store readers read
+ * (`compactCreate`, `compactCurveTrade`); the strategy and the producer still act on the released event whole.
+ */
+export const liveShape: Shape = (key) =>
+  key === SEED_KEY ? compactSeed
+    : key.startsWith(LOG_CREATE_PREFIX) || key.startsWith(TX_CREATE_PREFIX) ? compactCreate : CURVE_TRADE.some((p) => key.startsWith(p)) ? compactCurveTrade : null;
+
+/**
+ * G4a (supervisor ruling): the boot's seed fact (`worker:seed`) carries the index's creates, coverage, fill, rugs and
+ * history, up to 200,000 creates on a start with no saved state. The strategy acts on the released event; nothing
+ * looks it up in the store (the seed's history is the strategy's own copy), so the store keeps only its moment and
+ * how many of each it carried.
+ */
+export const compactSeed = (v: unknown): unknown => {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return v;
+  const o = v as Readonly<Record<string, unknown>>;
+  const n = (k: string): number | null => (Array.isArray(o[k]) ? (o[k] as unknown[]).length : null);
+  return Object.freeze({ asOf: o['asOf'], counts: Object.freeze({ creates: n('creates'), coverage: n('coverage'), fill: n('fill'), rugs: n('rugs'), history: n('history') }) });
+};
+
+const FUNDER = RAW.funder('');
+/**
+ * G4a (supervisor ruling): a wallet's funder read (`read:funder:<wallet>`) is forgotten a day after it was read, as the
+ * producer forgets it (`FUNDER_KEEP_MS`). The producer acts on the released read; nothing looks the key up in the store.
+ */
+export const liveForget: Forget = (key) => (key.startsWith(FUNDER) ? FUNDER_KEEP_MS : null);
+

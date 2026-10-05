@@ -8,6 +8,7 @@ import type { MarketEvent } from '../engine/feed.ts';
 import { compareEvents, compareMoments, type Moment } from '../engine/moment.ts';
 import { SECOND_MS } from '../config/time.ts';
 import type { DeployerFact } from './facts.ts';
+import { MintIndex } from './mint-index.ts';
 
 /** FEED-1 keys: creates read from logs (processed) and from fetched transactions (confirmed). */
 export const LOG_CREATE_PREFIX = 'logs:pump:CreateEvent:';
@@ -44,7 +45,8 @@ export interface Known {
 
 /** The deployer index: mints and rug labels per creator, from released events only. */
 export class DeployerIndex {
-  readonly #mints = new Map<string, Map<string, number>>();
+  /** DEPLOYER-COMPACT: mints by creator, compact (`MintIndex`). */
+  readonly #mints = new MintIndex();
   /** Rug labels and unjudged mints per creator, each at the moment it became known (compared in full with now). */
   readonly #rugs = new Map<string, Map<string, Known>>();
   readonly #unjudged = new Map<string, Map<string, Known>>();
@@ -63,7 +65,7 @@ export class DeployerIndex {
     this.#trackLoss(e);
     if (e.key.startsWith(LOG_CREATE_PREFIX) || e.key.startsWith(TX_CREATE_PREFIX)) {
       const c = createOf(e.value);
-      if (c !== null) this.#addMint(this.#mints, c);
+      if (c !== null) this.#mints.add(c.creator, c.mint, c.createdAtMs);
       return;
     }
     const into = e.key.startsWith(RUG_PREFIX) ? this.#rugs : e.key.startsWith(RUG_UNJUDGED_PREFIX) ? this.#unjudged : null;
@@ -142,7 +144,7 @@ export class DeployerIndex {
   }
 
   #merge(mints: Map<string, Map<string, number>>): void {
-    for (const [creator, m] of mints) for (const [mint, createdAtMs] of m) this.#addMint(this.#mints, { mint, creator, createdAtMs });
+    for (const [creator, m] of mints) for (const [mint, createdAtMs] of m) this.#mints.add(creator, mint, createdAtMs);
   }
 
   /**
@@ -188,7 +190,7 @@ export class DeployerIndex {
     return {
       obs: { provider: 'deployer-index', slot: now.slot, receivedAt: now.receivedAt, quality: [], commitment: 'confirmed' },
       coverageFromMs,
-      mints: sorted(this.#mints.get(creator)).filter(([, t]) => t <= now.receivedAt).map(([mint, createdAtMs]) => ({ mint, createdAtMs })),
+      mints: [...this.#mints.entries(creator)].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).filter(([, t]) => t <= now.receivedAt).map(([mint, createdAtMs]) => ({ mint, createdAtMs })),
       rugs: known(this.#rugs.get(creator)),
       unjudged: known(this.#unjudged.get(creator)),
     };
@@ -212,7 +214,7 @@ export class DeployerIndex {
         if (inner.size === 0) m.delete(creator);
       }
     };
-    drop(this.#mints, (t) => t);
+    this.#mints.prune(retainFromMs);
     drop(this.#rugs, (k) => k.at.receivedAt);
     drop(this.#unjudged, (k) => k.at.receivedAt);
     for (const [sig, l] of this.#lost) if (l.atMs < retainFromMs) this.#lost.delete(sig);
@@ -233,7 +235,7 @@ export class DeployerIndex {
     return {
       asOf, first, last: this.#last, seeded: this.#seeded,
       // Without `mints` (WORKER-GROW), the rows are left to `mintRows`, for a save that streams them.
-      mints: o.mints === false ? [] : keep(this.#mints, (t) => t), rugs: keep(this.#rugs, (k) => k.at.receivedAt), unjudged: keep(this.#unjudged, (k) => k.at.receivedAt),
+      mints: o.mints === false ? [] : [...this.mintRows(retainFromMs)], rugs: keep(this.#rugs, (k) => k.at.receivedAt), unjudged: keep(this.#unjudged, (k) => k.at.receivedAt),
       createVias: [...this.#createVias].sort(),
       lost: [...this.#lost].filter(([, l]) => l.atMs >= retainFromMs).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
     };
@@ -244,8 +246,8 @@ export class DeployerIndex {
    * them all), in the same order, for a save that streams them.
    */
   *mintRows(retainFromMs = Number.MIN_SAFE_INTEGER): Generator<readonly [string, readonly (readonly [string, number])[]]> {
-    for (const creator of [...this.#mints.keys()].sort()) {
-      const inner = [...this.#mints.get(creator)!].filter(([, t]) => t >= retainFromMs);
+    for (const creator of [...this.#mints.creators()].sort()) {
+      const inner = [...this.#mints.entries(creator)].filter(([, t]) => t >= retainFromMs);
       if (inner.length > 0) yield [creator, inner] as const;
     }
   }
@@ -284,7 +286,22 @@ export class DeployerIndex {
       return v as number;
     };
     if (mintRows !== undefined && Array.isArray(s.mints) && s.mints.length > 0) throw new RangeError('mint rows given twice');
-    pairs(mintRows ?? s.mints, idx.#mints, ms, (t) => t);
+    // DEPLOYER-COMPACT: the mint rows straight into the compact index, checked as the other tables (same saved shape).
+    const rows = mintRows ?? s.mints;
+    if (!Array.isArray(rows) && !(typeof rows === 'object' && rows !== null && Symbol.iterator in rows)) throw new RangeError('bad table');
+    // A whole table of a known size is given room at once (no regrowth); streamed rows grow as they come.
+    if (Array.isArray(rows)) idx.#mints.reserve(rows.reduce((n: number, r: unknown) => n + (Array.isArray(r) && Array.isArray(r[1]) ? r[1].length : 0), 0), rows.length);
+    for (const row of rows as Iterable<unknown>) {
+      if (!Array.isArray(row) || typeof row[0] !== 'string' || !Array.isArray(row[1])) throw new RangeError('bad row');
+      const entries: [string, number][] = [];
+      for (const e of row[1] as unknown[]) {
+        if (!Array.isArray(e) || typeof e[0] !== 'string') throw new RangeError('bad entry');
+        const t = ms(e[1]);
+        if (t > asOf.receivedAt) throw new RangeError('an entry is dated after the snapshot moment');
+        entries.push([e[0], t]);
+      }
+      idx.#mints.setRow(row[0], entries);
+    }
     // A label keeps its kind exactly: a string, or null for a label that named no rule (RUG-1c).
     const known = (v: unknown): Known => {
       if (typeof v !== 'object' || v === null) throw new RangeError('bad label');
