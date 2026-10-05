@@ -206,12 +206,14 @@ export interface DiscoveredInput {
 export const DISCOVERED_MAX = 200;
 
 /**
- * The token checks of a candidate's last evaluation (APP-HOME): `failed` when a hard gate (H1–H15, H17) rejected it,
+ * The token checks of a candidate's last evaluation (APP-HOME): `failed` when a hard gate (H1–H15, H17) rejected it
+ * or its create expired (an adverse market rule, judged before the hard gates),
  * `missing` before any evaluation or while evidence, the regime or the worker's own inputs stopped it before the hard
  * gates judged it (H16, regime, worker), `passed` otherwise (it cleared the hard gates; later stops are not checks).
  */
 export const checksOf = (gates: DiscoveredInput['gates']): 'passed' | 'failed' | 'missing' => {
   if (gates === null) return 'missing';
+  if (gates.some((g) => g.gate === 'worker' && g.code === 'create-expired')) return 'failed';
   if (gates.some((g) => /^H\d+$/.test(g.gate) && g.gate !== 'H16')) return 'failed';
   if (gates.some((g) => g.gate === 'H16' || g.gate === 'regime' || g.gate === 'worker')) return 'missing';
   return 'passed';

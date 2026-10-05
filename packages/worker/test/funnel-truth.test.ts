@@ -9,10 +9,12 @@ import { checkEnvelope } from '../../../apps/web/src/api/modes.ts';
 import { schemaFor } from '../../../apps/web/src/api/schemas.ts';
 import { PATHS } from '../../../apps/web/src/api/contract.ts';
 import { CHECK_LABEL, RISK_CODE_LABEL } from '../../../apps/web/src/dashboard/labels.ts';
-import { SOL_PRICE_KEY, feesKey } from '../src/engine/strategy.ts';
-import { classify, route } from '../src/run/api.ts';
+import { CREATE_KEEP_MS, SOL_PRICE_KEY, feesKey } from '../src/engine/strategy.ts';
+import { createKey } from '../../core/src/gates/index.ts';
+import { passingFacts } from '../../core/test/gates/world.ts';
+import { checksOf, classify, route } from '../src/run/api.ts';
 import { markedHistory } from '../src/engine/marks.ts';
-import { MINT, makeWorker, passingMarket } from './worker-harness.ts';
+import { MIGRATED_AT, MINT, makeWorker, passingMarket } from './worker-harness.ts';
 
 type Funnel = { stages: { stage: string; count: number }[]; rejects: { check: string; count: number }[] };
 
@@ -20,7 +22,9 @@ type Funnel = { stages: { stage: string; count: number }[]; rejects: { check: st
  * Every reason strategy.ts `#evaluate` can refuse with (its `#fail` calls, `#market`'s misses and `#stopAt`'s texts),
  * an instance of each, and the check and stage it must read as.
  */
-const REASONS: readonly (readonly [string, string, string, number])[] = [
+const REASONS: readonly (readonly [string, string, string | null, number])[] = [
+  // Refused before any installed hard check runs: no invented H code or passed stage.
+  ['#evaluate expired create (facts or let-go mark)', 'create expired', null, 0],
   ['#evaluate regime', 'regime off: no graduates as of slot 1', 'regime', 0],
   ['#evaluate SOL price', 'live SOL price unknown', 'H16', 0],
   ['#market no pool', 'pool state unknown', 'H16', 0],
@@ -44,13 +48,54 @@ describe('FUNNEL-TRUTH: each refusal at the check and stage it truly reached', (
     const known = Object.keys(CHECK_LABEL);
     for (const [where, reason, check, stage] of REASONS) {
       expect(classify(reason), where).toEqual({ check, stage });
-      expect(known, where).toContain(check);
+      if (check !== null) expect(known, where).toContain(check);
     }
     // A real R14 refusal never claims the cost gate passed; its reason is labelled "Costs" in the decisions view.
     expect(RISK_CODE_LABEL['cost_gate']).toBe('Costs');
     expect(CHECK_LABEL['H16']).toBe('Stale or unknown data');
     // A reason not listed names no check and stays at "seen": never "Costs", never a stage it did not reach.
     expect(classify('something new')).toEqual({ check: null, stage: 0 });
+  });
+
+  it('an expired create is failed, while worker input gaps still read as missing', () => {
+    const expired = { gate: 'worker', code: 'create-expired' };
+    expect(checksOf([expired])).toBe('failed');
+    expect(checksOf([{ gate: 'H16', code: 'missing' }, expired])).toBe('failed');
+    expect(checksOf([{ gate: 'worker', code: 'no-sol-price' }])).toBe('missing');
+    expect(checksOf([{ gate: 'worker', code: 'no-fee-context' }])).toBe('missing');
+    expect(checksOf([{ gate: 'H16', code: 'create-expired' }])).toBe('missing');
+    expect(checksOf([{ gate: 'regime', code: 'create-expired' }])).toBe('missing');
+  });
+
+  it('a real expired create serves failed token checks through the installed strict schema, without passing funnel stages', async () => {
+    const h = makeWorker();
+    try {
+      expect(await h.worker.reconcile()).toEqual({ ok: true });
+      const m = await passingMarket(h, { heldPoolFacts: true, omit: [createKey(MINT)] });
+      m.omit = new Set([...m.omit].filter((key) => key !== createKey(MINT)));
+      const create = passingFacts().get(createKey(MINT))!.value as Record<string, unknown>;
+      m.fact(createKey(MINT), { ...create, createdAtMs: MIGRATED_AT - CREATE_KEEP_MS - 1_000 });
+      await m.run(4_000, 100, () => m.pool());
+      await m.run(10_000, 400, () => { m.slot(); m.pool(); });
+      expect(h.worker.apiInputs().discovered.find((token) => token.mint === MINT)!.gates).toEqual([
+        expect.objectContaining({ gate: 'worker', code: 'create-expired' }),
+      ]);
+      const get = (endpoint: 'discovered' | 'funnel' | 'decisions') => checkEnvelope(
+        JSON.parse(JSON.stringify(route(PATHS[endpoint]('paper'), () => h.worker.apiInputs()).body)),
+        'paper', schemaFor(endpoint, 'paper'),
+      ).data;
+      const discovered = get('discovered') as { tokens: { mint: string; checks: string }[] };
+      expect(discovered.tokens.find((token) => token.mint === MINT)!.checks).toBe('failed');
+      const funnel = get('funnel') as Funnel;
+      expect(funnel.stages.map((stage) => stage.count)).toEqual([1, 0, 0, 0, 0]);
+      // There is no installed check for this market rule. It cannot be reported as a missing input or a cost refusal.
+      const decisions = get('decisions') as { reasons: string[]; checks: { check: string }[] }[];
+      const expired = decisions.filter((decision) => decision.reasons.includes('create expired'));
+      expect(expired.length).toBeGreaterThan(0);
+      for (const decision of expired) expect(decision.checks).toEqual([]);
+    } finally {
+      await h.worker.stop();
+    }
   });
 
   it.each(['H18', 'H0', 'H01', 'H100', 'H1suffix', 'H17suffix'])('unknown hard gate %s stays unclassified for the installed app', (gate) => {
@@ -88,7 +133,9 @@ describe('FUNNEL-TRUTH: each refusal at the check and stage it truly reached', (
   it('the list above is every reject site in strategy.ts: a new one fails here until it is classified', () => {
     const src = readFileSync(join(import.meta.dirname, '../src/engine/strategy.ts'), 'utf8');
     // #evaluate's `#fail` calls (the market miss, the stop text and the regime pass their own text through).
-    expect(src.match(/return this\.#fail\(/g)).toHaveLength(11);
+    expect(src.match(/return this\.#fail\(/g)).toHaveLength(13);
+    // #236 added both paths to the same pre-gate refusal, covered above by reason and exact worker code.
+    expect(src.match(/return this\.#fail\('create expired', \[\{ gate: 'worker', code: 'create-expired',/g)).toHaveLength(2);
     // #market's misses and #stopAt's texts.
     expect(src.match(/^const (NO_POOL_STATE|POOL_MALFORMED|POOL_FLAGGED|NO_FEE_CONTEXT) = /gm)).toHaveLength(4);
     expect(src.match(/return \{ ok: false, text: /g)).toHaveLength(3);
