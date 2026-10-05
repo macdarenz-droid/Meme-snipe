@@ -64,13 +64,16 @@ mkdir -p "$again/cache" && cp "$out"/cache/* "$again/cache/" 2>/dev/null || true
 # (exit 1).
 rc=0
 if [ "${SOURCE:-archive}" = helius ]; then
-  # A day read over RPC is reread over RPC; the credits count toward the day's cap
-  # (RPC_CREDIT_CAP, the same total as rpc-day.sh). Exit 3: the cap is spent.
-  used=$("$here/rpc-credits.sh" get "$out")
-  [ $(( ${RPC_CREDIT_CAP:?} - used )) -gt 0 ] || { echo "credit cap spent before the determinism rescan" | tee -a "$summary"; exit 3; }
+  # A day read over RPC is reread over RPC, within what is left of this run's ledger
+  # reservation (RPC_RESERVATION, ci/rpc-ledger.sh) after the scan's final spend. The
+  # start marker makes the ledger book the whole reservation if the rescan dies.
+  spent=$(python3 -c 'import json,sys; u=json.load(open(sys.argv[1])); assert u["final"] is True; print(int(u["credits"]))' "$out/rpc-usage-scan.json" 2>/dev/null) || spent=${RPC_RESERVATION:?}
+  left=$(( ${RPC_RESERVATION:?} - spent ))
+  [ "$left" -gt 0 ] || { echo "no reserved credits left for the determinism rescan" | tee -a "$summary"; exit 3; }
+  rm -f "$out/rpc-usage-rescan.json"
+  : > "$out/rpc-started-rescan"
   phase determinism zeroed-rpcscan rpc-unit -out "$again" -epoch "$epoch" -from-slot "${range%-*}" -to-slot "${range#*-}" -sample 0.05 \
-    -rps "${RPC_RPS:-5}" -conc "${RPC_CONC:-4}" -max-credits $(( RPC_CREDIT_CAP - used )) -usage-out "$again/rpc-usage.json" || rc=$?
-  "$here/rpc-credits.sh" add "$out" "$again/rpc-usage.json"
+    -rps "${RPC_RPS:-5}" -conc "${RPC_CONC:-4}" -max-credits "$left" -usage-out "$out/rpc-usage-rescan.json" || rc=$?
 else
   phase determinism zeroed-scan unit -out "$again" -epoch "$epoch" -from-slot "${range%-*}" -to-slot "${range#*-}" -sample 0.05 -max-mbps "$mb" -dl "$ARCHIVE_DL" -on-429 stop -state "$out" || rc=$?
 fi

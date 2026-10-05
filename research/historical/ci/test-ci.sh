@@ -32,6 +32,7 @@ case "$cmd" in
       jq -s --argjson d "$draft" '{isDraft: $d, assets: .}' | jq -r "$jqx" ;;
   download)
     [[ -d "$dir" ]] || exit 1
+    [[ -n "${FAKE_GH_DOWNLOAD_FAIL:-}" ]] && { echo "HTTP 502" >&2; exit 1; }
     echo "$tag" >> "$T/downloads.log"
     out="" pats=()
     while (( $# )); do
@@ -44,8 +45,17 @@ case "$cmd" in
     (( $# )) && { shift; (( $# )) && cp -- "$@" "$dir/"; }
     true ;;
   upload)
-    while (( $# )) && [[ "$1" != -- ]]; do shift; done; shift
+    clob=; while (( $# )) && [[ "$1" != -- ]]; do [[ "$1" == --clobber ]] && clob=1; shift; done; shift
+    [[ -d "$dir" ]] || { echo "release not found" >&2; exit 1; }
+    [[ -n "${FAKE_GH_UPLOAD_FAIL:-}" ]] && { echo "HTTP 502" >&2; exit 1; }
+    for f in "$@"; do [[ "$(basename "$f")" == "${FAKE_GH_FAIL_ASSET:-}" ]] && { echo "HTTP 502" >&2; exit 1; }; done
+    # gh's --clobber deletes the old asset first, then uploads: this fails after the delete
+    if [[ -n "$clob" && -n "${FAKE_GH_CLOBBER_FAIL:-}" ]]; then for f in "$@"; do rm -f -- "$dir/$(basename "$f")"; done; echo "HTTP 502" >&2; exit 1; fi
+    if [[ -z "$clob" ]]; then for f in "$@"; do [[ -e "$dir/$(basename "$f")" ]] && { echo "asset under the same name already exists" >&2; exit 1; }; done; fi
     cp -- "$@" "$dir/" ;;
+  delete-asset)
+    [[ "$1" == "${FAKE_GH_DELETE_FAIL_ASSET:-}" ]] && { echo "HTTP 502" >&2; exit 1; }
+    rm -- "$dir/$1" ;;
   *) exit 2 ;;
 esac
 EOF
@@ -415,7 +425,7 @@ tree=$(cd "$here" && git rev-parse HEAD:research/historical/scanner)
   ok "scanner-rev: a toolchain other than go\$GO_VERSION fails the build"
 
 # ---- data-scan.yml: a published day is skipped before any archive read; the token only in two clean steps ----
-python3 - "$here/../../../.github/workflows/data-scan.yml" <<'PY' && ok "workflow: every step after the published check (scan, QA, publish) is skipped for a complete day; token only in the check and publish steps, both in a clean shell; a resumable stop chains the next run, bounded, only after a saved progress; QA starts only with 45 min left" || no "workflow skip/token structure"
+python3 - "$here/../../../.github/workflows/data-scan.yml" <<'PY' && ok "workflow: every step after the published check (scan, QA, publish) is skipped for a complete day; token only in the check, publish and Helius ledger steps, all in a clean shell; a resumable stop chains the next run, bounded, only after a saved progress; QA starts only with 45 min left" || no "workflow skip/token structure"
 import sys, yaml
 steps = yaml.safe_load(open(sys.argv[1]))["jobs"]["scan"]["steps"]
 i = next(k for k, s in enumerate(steps) if s.get("id") == "published")
@@ -426,10 +436,12 @@ for s in steps[i + 1:]:
         continue
     assert "steps.published.outputs.complete != 'true'" in s.get("if", ""), s
 tok = [s for s in steps if "github.token" in str(s)]
-assert [s.get("id") or s.get("name") for s in tok] == ["published", "Publish this day", "Publish this day's volume hours"], tok
+assert [s.get("id") or s.get("name") for s in tok] == ["published", "reserve", "Settle Helius credits", "Publish this day", "Publish this day's volume hours"], tok
 for s in tok:
     assert s["shell"].startswith("/usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc"), s
-    assert s["env"]["BASH_ENV"] == "" and s["run"].startswith("/usr/bin/env -i PATH=/usr/bin:/bin "), s
+    # only absolute paths before the env -i call: the reserve step first clears old spend markers
+    run = "\n".join(l for l in s["run"].splitlines() if not l.startswith("#") and not l.startswith("/usr/bin/rm -f "))
+    assert s["env"]["BASH_ENV"] == "" and run.startswith("/usr/bin/env -i PATH=/usr/bin:/bin "), s
     assert all(s["env"][k] == "" for k in ("LD_PRELOAD", "LD_AUDIT", "LD_LIBRARY_PATH")), s
 for s in steps[i + 1:]:
     if "always()" in s.get("if", ""):
@@ -506,11 +518,12 @@ for f in $(cd "$sc/idl" && ls); do cmp -s "$sc/idl/$f" "$rs/idl/$f" || bad+=" id
 [[ -z "$bad" ]] && ok "rpcscan: every scanner source but main.go is a symlink to ../scanner (no copied decoder), and the embedded IDLs equal the scanner's" || no "rpcscan links:$bad"
 
 # ---- data-helius-pilot.yml: dispatch only, a hard credit stop, the key in one step, only the report out ----
-python3 - "$here/../../../.github/workflows/data-helius-pilot.yml" <<'PY' && ok "helius pilot workflow: dispatch only, read-only token, credit stop checked first (at most 15000), HELIUS_API_KEY only in the pilot step's env, inputs only through env, only the report uploaded" || no "helius pilot workflow structure"
+python3 - "$here/../../../.github/workflows/data-helius-pilot.yml" <<'PY' && ok "helius pilot workflow: dispatch only, the token only in the two ledger steps (clean shell, no key), credit stop checked first (at most 15000), HELIUS_API_KEY only in the pilot step's env, inputs only through env, only the report uploaded" || no "helius pilot workflow structure"
 import sys, yaml
 wf = yaml.safe_load(open(sys.argv[1]))
 assert list(wf[True].keys()) == ["workflow_dispatch"], wf[True]
 assert wf["permissions"] == {"contents": "read"}, wf["permissions"]
+assert wf["jobs"]["pilot"]["permissions"] == {"contents": "write"}, wf["jobs"]["pilot"]
 steps = wf["jobs"]["pilot"]["steps"]
 assert steps[0]["name"] == "Check the credit stop" and "MAX_CREDITS > 15000" in steps[0]["run"], steps[0]
 for st in steps:
@@ -518,12 +531,22 @@ for st in steps:
         assert st["with"]["persist-credentials"] is False, st
     assert "${{" not in st.get("run", ""), st  # inputs and secrets reach the shell only through env
 sec = [st for st in steps if "secrets." in str(st)]
-assert len(sec) == 1 and sec[0]["env"] == {"HELIUS_API_KEY": "${{ secrets.HELIUS_API_KEY }}", "MAX_CREDITS": "${{ inputs.max_credits }}"}, sec
+assert len(sec) == 1 and sec[0]["env"] == {"HELIUS_API_KEY": "${{ secrets.HELIUS_API_KEY }}"}, sec
 r = sec[0]["run"]
 assert "zeroed-rpcscan pilot" in r and '-max-credits "$MAX_CREDITS"' in r and "-sample 0.05" in r and "HELIUS_API_KEY" not in r, r
+# DATA-4: the pilot spends only its ledger reservation, with a start marker before it
+assert r.index('MAX_CREDITS=$(cat "$RUNNER_TEMP/rpc-reservation")') < r.index('rpc-started-pilot') < r.index("zeroed-rpcscan pilot"), r
+names = [st.get("name") for st in steps]
+assert names.index("Reserve Helius credits") < names.index("Pilot (free plan, hard credit stop)") < names.index("Settle Helius credits"), names
+tok = [st for st in steps if "github.token" in str(st)]
+assert [st["name"] for st in tok] == ["Reserve Helius credits", "Settle Helius credits"], tok
+for st in tok:
+    assert st["shell"].startswith("/usr/bin/env -u BASH_ENV -u ENV /usr/bin/bash --noprofile --norc") and "/usr/bin/env -i PATH=/usr/bin:/bin " in st["run"], st
+    assert "rpc-ledger.sh" in st["run"] and "secrets." not in str(st), st
+assert "always()" in tok[1]["if"] and "steps.reserve.outcome != 'skipped'" in tok[1]["if"], tok[1]
+assert all('GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY"' in st["run"] for st in tok), tok
 up = [st for st in steps if "upload-artifact" in st.get("uses", "")]
 assert len(up) == 1 and up[0]["with"]["path"].endswith("/report/pilot-report.json"), up
-assert "github.token" not in open(sys.argv[1]).read()
 PY
 
 # ---- check-day.sh: phase durations; a 429 in the determinism rescan is resumable (75) ----
@@ -568,63 +591,169 @@ rc=0; MAX_MBPS=40 cdrun m 75 || rc=$?; [[ $rc == 4 ]] && grep -q '^unit ' "$T/zs
 rc=0; cdrun b 1 || rc=$?
 [[ $rc == 1 ]] && grep -q "determinism rescan failed (scanner exit 1)" "$T/summary.md" && ok "check-day: any other rescan failure exits 1 (not resumable)" || no "check-day rescan failure: rc=$rc"
 
-# ---- rpc-day.sh / rpc-credits.sh / check-day.sh (source helius): one credit total per day across runs ----
+# ---- rpc-day.sh / check-day.sh (source helius): spend only the run's ledger reservation ----
 R="$T/rpcbin"; mkdir -p "$R"
 cat > "$R/zeroed-rpcscan" <<'STUB'
 #!/usr/bin/env bash
-# rpc-run / rpc-unit stand-in: logs its arguments, writes RPC_CREDITS into -usage-out,
-# sleeps RPC_SLEEP (interruptible: SIGINT writes the usage and exits 1), exits RPC_RC.
+# rpc-run / rpc-unit stand-in: logs its arguments, writes RPC_CREDITS into -usage-out
+# ("final" when RPC_FINAL is set), sleeps RPC_SLEEP (interruptible: SIGINT writes the
+# usage and exits 1), exits RPC_RC.
 echo "$*" >> "$RPCLOG"
 u=; while (( $# )); do [[ $1 == -usage-out ]] && u=$2; shift; done
 w() { [[ -n "$u" && -z "${RPC_NOUSAGE:-}" ]] || return 0
-  if [[ -n "${RPC_USAGE_RAW:-}" ]]; then printf '%s' "$RPC_USAGE_RAW" > "$u"; else printf '{\n  "credits": %s,\n  "requests": 1\n}\n' "${RPC_CREDITS:-0}" > "$u"; fi; }
+  printf '{\n  "credits": %s,\n  "requests": 1,\n  "final": %s\n}\n' "${RPC_CREDITS:-0}" "${RPC_FINAL:-false}" > "$u"; }
 trap 'w; exit 1' INT
 [[ -n "${RPC_SLEEP:-}" ]] && { sleep "$RPC_SLEEP" & wait $!; }
 w; exit "${RPC_RC:-0}"
 STUB
 chmod +x "$R/zeroed-rpcscan"
 rd() { local o=$1; shift; : > "$T/summary.md"; env RPCLOG="$T/rpc.log" PATH="$R:$PATH" GITHUB_STEP_SUMMARY="$T/summary.md" "$@" \
-  bash "$here/rpc-day.sh" 2026-09-21 "$o" "${RD_BUDGET:-5}" 1000 > "$T/out.txt" 2>&1; }
+  bash "$here/rpc-day.sh" 2026-09-21 "$o" "${RD_BUDGET:-5}" "${RD_CREDITS:-1000}" > "$T/out.txt" 2>&1; }
 o="$T/rd1"; rm -rf "$o" "$T/rpc.log"
-rc=0; rd "$o" RPC_CREDITS=100 RPC_RC=75 || rc=$?
-[[ $rc == 75 && $(cat "$o/rpc-credits-used") == 100 ]] && grep -q -- "-max-credits 1000 " "$T/rpc.log" && grep -q -- "-from 2026-09-21 -to 2026-09-22 " "$T/rpc.log" &&
-  ok "rpc-day: a back-off stop exits 75 (resumable) and books the run's credits" || no "rpc-day 75: rc=$rc $(cat "$T/out.txt")"
-rc=0; rd "$o" RPC_CREDITS=50 RPC_RC=0 || rc=$?
-[[ $rc == 0 && $(cat "$o/rpc-credits-used") == 150 ]] && grep -q -- "-max-credits 900 " "$T/rpc.log" &&
-  ok "rpc-day: the next chained run may spend only what is left of the day's cap (900 of 1000), and the total adds up" || no "rpc-day resume: rc=$rc $(cat "$T/rpc.log")"
-rc=0; rd "$o" RPC_CREDITS=850 RPC_RC=3 || rc=$?
-[[ $rc == 3 && $(cat "$o/rpc-credits-used") == 1000 ]] && grep -q "credit cap 1000 spent while reading" "$T/summary.md" &&
-  ok "rpc-day: the cap spent mid-run exits 3 (not resumable) with the credits booked" || no "rpc-day cap: rc=$rc"
-n=$(wc -l < "$T/rpc.log"); rc=0; rd "$o" || rc=$?
-[[ $rc == 3 && $(wc -l < "$T/rpc.log") == "$n" ]] && ok "rpc-day: with the cap spent, no request is made (exit 3)" || no "rpc-day spent: rc=$rc"
+rc=0; rd "$o" RPC_CREDITS=100 RPC_FINAL=true RPC_RC=75 || rc=$?
+[[ $rc == 75 && -e "$o/rpc-started-scan" ]] && grep -q -- "-max-credits 1000 -usage-out $o/rpc-usage-scan.json" "$T/rpc.log" && grep -q -- "-from 2026-09-21 -to 2026-09-22 " "$T/rpc.log" &&
+  ok "rpc-day: spends at most the run's reservation, marks the start before spending, and a back-off stop exits 75 (resumable)" || no "rpc-day 75: rc=$rc $(cat "$T/out.txt")"
+rc=0; rd "$o" RPC_CREDITS=1000 RPC_FINAL=true RPC_RC=3 || rc=$?
+[[ $rc == 3 ]] && grep -q "reserved credits are spent while reading" "$T/summary.md" && ok "rpc-day: the reservation spent mid-run exits 3 (not resumable)" || no "rpc-day cap: rc=$rc"
+n=$(wc -l < "$T/rpc.log"); rc=0; RD_CREDITS=0 rd "$o" || rc=$?
+[[ $rc == 3 && $(wc -l < "$T/rpc.log") == "$n" ]] && ok "rpc-day: with nothing reserved, no request is made (exit 3)" || no "rpc-day spent: rc=$rc"
 o="$T/rd2"; rm -rf "$o"; mkdir -p "$o/units/1046/1-2"; echo '{"scanner_revision": "old"}' > "$o/units/1046/1-2/stats.json"
 rc=0; rd "$o" SCANNER_REVISION=new RPC_CREDITS=1 || rc=$?
 [[ $rc == 0 && ! -e "$o/units/1046/1-2" ]] && ok "rpc-day: units of another revision are reread" || no "rpc-day revision"
-o="$T/rd3"; rm -rf "$o"; t0=$(date +%s); rc=0; RD_BUDGET=2s rd "$o" RPC_SLEEP=30 RPC_CREDITS=7 || rc=$?
-[[ $rc == 75 && $(cat "$o/rpc-credits-used") == 7 ]] && (( $(date +%s) - t0 < 20 )) &&
-  ok "rpc-day: at the time budget the read is interrupted, its credits booked, exit 75" || no "rpc-day budget: rc=$rc $(cat "$T/out.txt")"
-o="$T/rd4"; rm -rf "$o"; rc=0; rd "$o" RPC_USAGE_RAW='{"cre' RPC_RC=75 || rc=$?
-[[ $rc != 0 && $rc != 75 ]] && grep -q "not booked" "$T/summary.md" &&
-  ok "rpc-day: credits that cannot be booked (malformed usage file) stop the day, not resumable (exit $rc, never 75)" || no "rpc-day unbooked: rc=$rc $(cat "$T/out.txt")"
-o="$T/rd5"; rm -rf "$o"; rc=0; rd "$o" RPC_CREDITS=100 RPC_RC=75 || rc=$?; rd "$o" RPC_NOUSAGE=1 RPC_RC=75 || true
-[[ $(cat "$o/rpc-credits-used") == 100 ]] && ok "rpc-day: a run that writes no usage file books nothing (the previous run's file is not counted again)" || no "rpc-day stale usage: $(cat "$o/rpc-credits-used")"
-printf '{\n  "requests": 3\n}\n' > "$T/bad-usage.json"; mkdir -p "$T/rc0"
-"$here/rpc-credits.sh" add "$T/rc0" "$T/bad-usage.json" 2>/dev/null && no "rpc-credits accepted a usage file without credits" || ok "rpc-credits: a usage file without credits fails (never drops spent credits)"
-# check-day, source helius: the determinism rescan goes over RPC within the day's cap
+o="$T/rd3"; rm -rf "$o"; t0=$(date +%s); rc=0; RD_BUDGET=2s rd "$o" RPC_SLEEP=30 RPC_CREDITS=7 RPC_FINAL=true || rc=$?
+[[ $rc == 75 ]] && (( $(date +%s) - t0 < 20 )) && grep -Eq '"final": ?true' "$o/rpc-usage-scan.json" &&
+  ok "rpc-day: at the time budget the read is interrupted and exits 75 with its usage written" || no "rpc-day budget: rc=$rc $(cat "$T/out.txt")"
+o="$T/rd5"; rm -rf "$o"; rc=0; rd "$o" RPC_CREDITS=100 RPC_FINAL=true RPC_RC=75 || rc=$?; rd "$o" RPC_NOUSAGE=1 RPC_RC=75 || true
+[[ ! -e "$o/rpc-usage-scan.json" && -e "$o/rpc-started-scan" ]] && ok "rpc-day: an earlier run's usage file is removed before spending, so a run that writes none is never settled with it" || no "rpc-day stale usage"
+# check-day, source helius: the determinism rescan goes over RPC within what is left of the reservation
 cdh() {
   local o="$T/cdh-$1"; rm -rf "$o"; mkdir -p "$o/units/1046/1-2" "$T/cd-ds"; echo x > "$o/units/1046/1-2/blocks.csv.zst"
-  [[ -n "${2:-}" ]] && echo "$2" > "$o/rpc-credits-used"
+  [[ -n "${2:-}" ]] && printf '%s' "$2" > "$o/rpc-usage-scan.json"
   : > "$T/summary.md"; rm -f "$T/rpc.log"
-  env SOURCE=helius RPC_CREDIT_CAP=500 RPCLOG="$T/rpc.log" FAKE_AVAIL=999000000000 DATASET_PARENT="$T/cd-ds" PATH="$R:$C:$PATH" GITHUB_STEP_SUMMARY="$T/summary.md" "${@:3}" \
+  env SOURCE=helius RPC_RESERVATION=500 RPCLOG="$T/rpc.log" FAKE_AVAIL=999000000000 DATASET_PARENT="$T/cd-ds" PATH="$R:$C:$PATH" GITHUB_STEP_SUMMARY="$T/summary.md" "${@:3}" \
     bash "$here/check-day.sh" 2026-09-20 "$o" "$T/cdh-assets-$1" > "$T/out.txt" 2>&1
 }
-rc=0; cdh a 200 RPC_CREDITS=40 RESCAN_RC=1 || rc=$?
-[[ $(cat "$T/cdh-a/rpc-credits-used") == 240 ]] && grep -q -- "rpc-unit .*-epoch 1046 -from-slot 1 -to-slot 2 .*-max-credits 300 " "$T/rpc.log" &&
-  ok "check-day (helius): the determinism rescan is an RPC rpc-unit within what is left of the cap, its credits booked" || no "check-day helius rescan: rc=$rc $(cat "$T/rpc.log" 2>/dev/null) $(tail -3 "$T/out.txt")"
-rc=0; cdh b 500 || rc=$?
-[[ $rc == 3 && ! -s "$T/rpc.log" ]] && ok "check-day (helius): with the cap spent, no rescan request and exit 3" || no "check-day helius cap: rc=$rc"
-rc=0; cdh c 0 RPC_RC=75 || rc=$?
+rc=0; cdh a '{"credits": 200, "final": true}' RPC_CREDITS=40 RESCAN_RC=1 || rc=$?
+[[ -e "$T/cdh-a/rpc-started-rescan" ]] && grep -q -- "rpc-unit .*-epoch 1046 -from-slot 1 -to-slot 2 .*-max-credits 300 -usage-out $T/cdh-a/rpc-usage-rescan.json" "$T/rpc.log" &&
+  ok "check-day (helius): the determinism rescan is an RPC rpc-unit within what is left of the reservation after the scan's final spend, start marked" || no "check-day helius rescan: rc=$rc $(cat "$T/rpc.log" 2>/dev/null) $(tail -3 "$T/out.txt")"
+rc=0; cdh b '{"credits": 200, "final": false}' || rc=$?
+[[ $rc == 3 && ! -s "$T/rpc.log" ]] && ok "check-day (helius): a scan spend that is not final counts as the whole reservation: no rescan request, exit 3" || no "check-day helius non-final: rc=$rc"
+rc=0; cdh c '{"credits": 500, "final": true}' || rc=$?
+[[ $rc == 3 && ! -s "$T/rpc.log" ]] && ok "check-day (helius): with the reservation spent, no rescan request and exit 3" || no "check-day helius cap: rc=$rc"
+rc=0; cdh d '{"credits": 0, "final": true}' RPC_RC=75 || rc=$?
 [[ $rc == 75 ]] && grep -q "RPC rate-limit back-off ran out during the determinism rescan" "$T/summary.md" && ok "check-day (helius): an RPC back-off stop in the rescan is resumable (75)" || no "check-day helius 75: rc=$rc"
+
+# helius-ledger.yml's init, run as written: only worker_budget 700000 reaches the ledger.
+HY="$T/hly"; rm -rf "$HY"; mkdir -p "$HY/ws/research/historical/ci"
+printf '#!/usr/bin/bash\necho "ledger-called $*"\n' > "$HY/ws/research/historical/ci/rpc-ledger.sh"
+python3 - "$here/../../../.github/workflows/helius-ledger.yml" > "$HY/run.sh" <<'PY'
+import sys, yaml
+st = [s for s in yaml.safe_load(open(sys.argv[1]))["jobs"]["ledger"]["steps"] if s.get("name") == "Ledger"][0]
+print(st["run"])
+PY
+hl() { env -i PATH=/usr/bin:/bin HOME="$HOME" ACTION=init PERIOD=2026-10 LIMIT=1000000 USED=100 DAYS="" WORKER_BUDGET=$1 GITHUB_WORKSPACE="$HY/ws" GITHUB_STEP_SUMMARY="$HY/sum" bash "$HY/run.sh" 2>&1; }
+o1=$(hl 408000) && no "helius-ledger.yml accepted worker_budget 408000" ||
+  { [[ "$o1" == *"worker_budget must be 700000"* && "$o1" != *ledger-called* ]] && o2=$(hl 700000) && [[ "$o2" == *"ledger-called init 2026-10 1000000 700000 100"* ]] &&
+    ok "helius-ledger.yml init: worker_budget 408000 is refused before the ledger, 700000 passes" || no "helius-ledger.yml worker_budget: $o1 / ${o2:-}"; }
+# ---- rpc-ledger.sh: the account-wide credit ledger (DATA-4) ----
+export GH_BIN="$T/bin/gh"
+L="$T/ledger"; mkdir -p "$L"; rm -rf "$T/rel/helius-ledger"
+led() { env LOCK_WAIT=0 LOCK_POLL=1 "$@"; }
+lj() { python3 -c 'import json,sys; l=json.load(open(sys.argv[1])); print(eval(sys.argv[2]))' "$T/rel/helius-ledger/ledger.json" "$1"; }
+rc=0; led bash "$here/rpc-ledger.sh" reserve r0 2026-09-20 500 500 "$L/res" 2>"$L/err" || rc=$?
+[[ $rc == 1 && ! -e "$L/res" ]] && grep -q "refusing to spend credits" "$L/err" && ok "rpc-ledger: no ledger: reserve fails closed (exit 1, nothing reserved)" || no "rpc-ledger missing: rc=$rc $(cat "$L/err")"
+mkdir -p "$T/rel/helius-ledger"; echo '{"period": "x"' > "$T/rel/helius-ledger/ledger.json"
+rc=0; led bash "$here/rpc-ledger.sh" reserve r0 2026-09-20 500 500 "$L/res" 2>"$L/err" || rc=$?
+[[ $rc == 1 && ! -e "$L/res" && ! -e "$T/rel/helius-ledger/ledger.lock" ]] && ok "rpc-ledger: an unreadable ledger fails closed, and the lock is released" || no "rpc-ledger unreadable: rc=$rc $(cat "$L/err")"
+rm -f "$T/rel/helius-ledger/ledger.json"; echo held > "$T/rel/helius-ledger/ledger.lock"
+rc=0; led bash "$here/rpc-ledger.sh" init 2026-10 700700 700000 100 2>/dev/null || rc=$?
+[[ $rc == 1 && ! -e "$T/rel/helius-ledger/ledger.json" ]] && ok "rpc-ledger: init waits for the lock too (fails closed while another job holds it)" || no "rpc-ledger init lock: rc=$rc"
+rm -rf "$T/rel/helius-ledger"
+for wb in 699999 408000 700001; do
+  rc=0; led bash "$here/rpc-ledger.sh" init 2026-10 1000000 $wb 100 2>"$L/err" || rc=$?
+  [[ $rc == 1 && ! -e "$T/rel/helius-ledger/ledger.json" ]] && grep -q "is not the worker's own halt of 700000" "$L/err" &&
+    ok "rpc-ledger: init refuses worker share $wb (only the worker's own 700000 halt)" || no "rpc-ledger init worker $wb: rc=$rc $(cat "$L/err")"
+done
+led bash "$here/rpc-ledger.sh" init 2026-10 700700 700000 100 2026-09-21=100 > "$L/init" &&
+  grep -qx "rpc-ledger: the live worker's Helius halt must be exactly 700000 credits (the worker share held back here)" "$L/init" && [[ $(lj 'l["used"], l["days"]') == "(100, {'2026-09-21': 100})" ]] &&
+  ! led bash "$here/rpc-ledger.sh" init 2026-10 800000 700000 2>/dev/null && [[ $(lj 'l["worker_budget"]') == 700000 ]] &&
+  ok "rpc-ledger: init creates the ledger with what was spent before it; a second init is refused" || no "rpc-ledger init"
+# The day cap counts what the day already used and what it holds reserved.
+rc=0; led bash "$here/rpc-ledger.sh" reserve rD 2026-09-21 150 800 "$L/rD" >/dev/null || rc=$?
+rcE=0; led bash "$here/rpc-ledger.sh" reserve rE 2026-09-21 150 800 "$L/rE" >/dev/null 2>&1 || rcE=$?
+mkdir -p "$L/wD"; led bash "$here/rpc-ledger.sh" settle rD "$L/wD" >/dev/null
+[[ $rc == 0 && $(cat "$L/rD") == 50 && $rcE == 3 && $(lj 'l["used"], l["outstanding"]') == "(100, [])" ]] &&
+  ok "rpc-ledger: a day's cap counts its earlier use (150 - 100 = 50) and its open reservations (then none left: exit 3)" || no "rpc-ledger day cap: $rc $rcE $(cat "$L/rD" 2>/dev/null)"
+rc=0; led bash "$here/rpc-ledger.sh" reserve r1 2026-09-20 500 800 "$L/r1" >/dev/null || rc=$?
+rc2=0; led bash "$here/rpc-ledger.sh" reserve r2 2026-09-19 900 800 "$L/r2" >/dev/null || rc2=$?
+rc3=0; led bash "$here/rpc-ledger.sh" reserve r3 2026-09-18 900 800 "$L/r3" >/dev/null 2>&1 || rc3=$?
+[[ $rc == 0 && $(cat "$L/r1") == 500 && $rc2 == 0 && $(cat "$L/r2") == 100 && $rc3 == 3 && ! -e "$L/r3" ]] &&
+  ok "rpc-ledger: reservations take the least of the run budget, the day cap and the month after the worker's share (500, then 100 of 700700 - 700000 - 100), then exit 3" || no "rpc-ledger reserve: $rc $rc2 $rc3 $(cat "$L/r1" "$L/r2" 2>/dev/null)"
+rc=0; led bash "$here/rpc-ledger.sh" reserve r1 2026-09-20 500 1 "$L/rx" 2>/dev/null || rc=$?
+[[ $rc == 1 ]] && ok "rpc-ledger: an id already holding a reservation is refused" || no "rpc-ledger duplicate id: rc=$rc"
+w="$L/w1"; mkdir -p "$w"; : > "$w/rpc-started-scan"; echo '{"credits": 120, "final": true}' > "$w/rpc-usage-scan.json"
+: > "$w/rpc-started-rescan"; echo '{"credits": 30, "final": true}' > "$w/rpc-usage-rescan.json"
+led bash "$here/rpc-ledger.sh" settle r1 "$w" >/dev/null && [[ $(lj 'l["used"], l["days"]["2026-09-20"], [o["id"] for o in l["outstanding"]]') == "(250, 150, ['r2'])" ]] &&
+  ok "rpc-ledger: settle books the final spend of the scan and the rescan and closes the reservation" || no "rpc-ledger settle: $(lj 'l')"
+w="$L/w2"; mkdir -p "$w"; : > "$w/rpc-started-scan"; echo '{"credits": 7, "final": false}' > "$w/rpc-usage-scan.json"
+led bash "$here/rpc-ledger.sh" settle r2 "$w" >/dev/null && [[ $(lj 'l["used"], l["days"]["2026-09-19"], l["outstanding"]') == "(350, 100, [])" ]] &&
+  ok "rpc-ledger: a spend without a final usage file (a killed run) books the whole reservation, never the last count written" || no "rpc-ledger kill: $(lj 'l')"
+led bash "$here/rpc-ledger.sh" reserve r4 2026-09-18 900 50 "$L/r4" >/dev/null; w="$L/w4"; mkdir -p "$w"; : > "$w/rpc-started-scan"
+led bash "$here/rpc-ledger.sh" settle r4 "$w" >/dev/null && [[ $(lj 'l["used"]') == 400 ]] && ok "rpc-ledger: a spend that started with no usage file books the whole reservation" || no "rpc-ledger no usage: $(lj 'l')"
+led bash "$here/rpc-ledger.sh" reserve r5 2026-09-18 900 50 "$L/r5" >/dev/null; w="$L/w5"; mkdir -p "$w"
+led bash "$here/rpc-ledger.sh" settle r5 "$w" >/dev/null && [[ $(lj 'l["used"]') == 400 ]] && ok "rpc-ledger: a run that never started spending books nothing" || no "rpc-ledger no start: $(lj 'l')"
+# A run killed before settle leaves its reservation outstanding: the next reservation sees it.
+led bash "$here/rpc-ledger.sh" reserve r6 2026-09-17 900 250 "$L/r6" >/dev/null
+rc=0; led bash "$here/rpc-ledger.sh" reserve r7 2026-09-16 900 150 "$L/r7" >/dev/null || rc=$?
+[[ $(cat "$L/r6") == 250 && $(cat "$L/r7") == 50 ]] && ok "rpc-ledger: an unsettled reservation (a lost runner) stays booked against the month" || no "rpc-ledger outstanding: $(cat "$L/r6" "$L/r7")"
+before=$(cat "$T/rel/helius-ledger/ledger.json"); echo held > "$T/rel/helius-ledger/ledger.lock"
+rc=0; led bash "$here/rpc-ledger.sh" settle r6 "$L/w5" 2>"$L/err" || rc=$?
+rcR=0; led bash "$here/rpc-ledger.sh" reserve r8 2026-09-15 900 1 "$L/r8" 2>/dev/null || rcR=$?
+[[ $rc == 1 && $rcR == 1 && ! -e "$L/r8" && "$(cat "$T/rel/helius-ledger/ledger.json")" == "$before" && -e "$T/rel/helius-ledger/ledger.lock" ]] && grep -q "stayed locked" "$L/err" &&
+  ok "rpc-ledger: while another job holds the lock, a writer fails closed and changes nothing" || no "rpc-ledger lock: rc=$rc $(cat "$L/err")"
+bash "$here/rpc-ledger.sh" unlock >/dev/null && [[ ! -e "$T/rel/helius-ledger/ledger.lock" ]] && led bash "$here/rpc-ledger.sh" settle r6 "$L/w5" >/dev/null &&
+  [[ ! -e "$T/rel/helius-ledger/ledger.lock" ]] && ok "rpc-ledger: unlock clears a stale lock; a writer releases its own lock" || no "rpc-ledger unlock"
+# A write that fails half-way never loses the ledger or a reservation (gh's --clobber
+# deletes ledger.json before it uploads), and every failed write fails the command.
+HL="$T/rel/helius-ledger"; lnx() { python3 -c 'import json,sys; l=json.load(open(sys.argv[1])); print(eval(sys.argv[2]))' "$HL/ledger.next.json" "$1"; }
+rc=0; led FAKE_GH_CLOBBER_FAIL=1 GITHUB_STEP_SUMMARY="$L/sum" bash "$here/rpc-ledger.sh" reserve rB 2026-09-14 900 10 "$L/rB" >/dev/null 2>"$L/err" || rc=$?
+[[ $rc == 1 && ! -e "$L/rB" && ! -e "$HL/ledger.json" && ! -e "$HL/ledger.lock" && $(lnx '[o["id"] for o in l["outstanding"]]') == "['r7', 'rB']" ]] &&
+  grep -q '"rB"' "$L/sum" && grep -q "could not write the ledger" "$L/err" &&
+  ok "rpc-ledger: reserve fails (no amount written) when replacing ledger.json fails after gh deleted it; ledger.next.json keeps every reservation, and the ledger goes to the step summary" || no "rpc-ledger clobber fail reserve: rc=$rc $(cat "$L/err")"
+led bash "$here/rpc-ledger.sh" show | grep -q '"rB"' && ok "rpc-ledger: readers fall back to ledger.next.json" || no "rpc-ledger show next"
+rc=0; led bash "$here/rpc-ledger.sh" init 2026-10 800000 700000 2>"$L/err" || rc=$?
+[[ $rc == 1 && ! -e "$HL/ledger.json" && -e "$HL/ledger.next.json" ]] && grep -q "a ledger already exists (ledger.next.json" "$L/err" && ok "rpc-ledger: init refuses while only ledger.next.json exists" || no "rpc-ledger init next: rc=$rc"
+mkdir -p "$L/wB"; led bash "$here/rpc-ledger.sh" settle rB "$L/wB" >/dev/null && [[ ! -e "$HL/ledger.next.json" && ! -e "$HL/ledger.lock" ]] &&
+  [[ $(lj '[o["id"] for o in l["outstanding"]], [s["id"] for s in l["settled"]][-1]') == "(['r7'], 'rB')" ]] &&
+  ok "rpc-ledger: the next writer carries ledger.next.json over and the release ends with one full ledger.json" || no "rpc-ledger next repair: $(ls "$HL") $(lj 'l')"
+led bash "$here/rpc-ledger.sh" reserve rC 2026-09-14 900 10 "$L/rC" >/dev/null
+rc=0; led FAKE_GH_CLOBBER_FAIL=1 bash "$here/rpc-ledger.sh" settle rC "$L/wB" >/dev/null 2>&1 || rc=$?
+[[ $rc == 1 && ! -e "$HL/ledger.json" && $(lnx '[s["id"] for s in l["settled"]][-1], [o["id"] for o in l["outstanding"]]') == "('rC', ['r7'])" ]] &&
+  ok "rpc-ledger: settle fails when replacing ledger.json fails; ledger.next.json holds the settlement" || no "rpc-ledger clobber fail settle: rc=$rc"
+led bash "$here/rpc-ledger.sh" reserve rZ 2026-09-13 900 1 "$L/rZ" >/dev/null && led bash "$here/rpc-ledger.sh" settle rZ "$L/wB" >/dev/null && [[ -e "$HL/ledger.json" && ! -e "$HL/ledger.next.json" ]] || no "rpc-ledger repair after settle"
+before=$(cat "$HL/ledger.json")
+rc=0; led FAKE_GH_FAIL_ASSET=ledger.next.json bash "$here/rpc-ledger.sh" reserve rY 2026-09-13 900 1 "$L/rY" >/dev/null 2>&1 || rc=$?
+[[ $rc == 1 && ! -e "$L/rY" && "$(cat "$HL/ledger.json")" == "$before" && ! -e "$HL/ledger.next.json" && ! -e "$HL/ledger.lock" ]] &&
+  ok "rpc-ledger: a failed first upload fails reserve and leaves ledger.json as it was" || no "rpc-ledger next upload fail: rc=$rc"
+rc=0; led FAKE_GH_DELETE_FAIL_ASSET=ledger.next.json bash "$here/rpc-ledger.sh" reserve rX 2026-09-13 900 1 "$L/rX" >/dev/null 2>&1 || rc=$?
+[[ $rc == 1 && ! -e "$L/rX" && $(lj '[o["id"] for o in l["outstanding"]]') == "['r7', 'rX']" && $(lnx '[o["id"] for o in l["outstanding"]]') == "['r7', 'rX']" ]] &&
+  led bash "$here/rpc-ledger.sh" settle rX "$L/wB" >/dev/null && [[ ! -e "$HL/ledger.next.json" ]] &&
+  ok "rpc-ledger: a failed delete of ledger.next.json fails reserve (the reservation stays booked, not spent); the next writer clears it" || no "rpc-ledger next delete fail: rc=$rc"
+echo "123 2026-01-01T00:00:00Z" > "$HL/ledger.lock"
+rc=0; FAKE_GH_DOWNLOAD_FAIL=1 bash "$here/rpc-ledger.sh" unlock >/dev/null 2>"$L/err" || rc=$?
+[[ $rc == 1 && -e "$HL/ledger.lock" ]] && grep -q "cannot read ledger.lock" "$L/err" &&
+  ok "rpc-ledger: unlock fails closed when it cannot read the lock" || no "rpc-ledger unlock read error: rc=$rc $(cat "$L/err")"
+echo "123 $(date -u +%FT%TZ)" > "$HL/ledger.lock"
+rc=0; bash "$here/rpc-ledger.sh" unlock >/dev/null 2>"$L/err" || rc=$?
+[[ $rc == 1 && -e "$HL/ledger.lock" ]] && grep -q "may still be writing" "$L/err" && echo "123 2026-01-01T00:00:00Z" > "$HL/ledger.lock" &&
+  bash "$here/rpc-ledger.sh" unlock >/dev/null && [[ ! -e "$HL/ledger.lock" ]] &&
+  ok "rpc-ledger: unlock refuses a lock younger than LOCK_WAIT and removes an old one" || no "rpc-ledger unlock young: rc=$rc $(cat "$L/err")"
+# End to end: a day read killed mid-unit is settled at its whole reservation (the old
+# per-run total booked only the last count the scanner wrote).
+o="$T/rdk"; rm -rf "$o"; rc=0; RD_CREDITS=$(cat "$L/r7") rd "$o" RPC_CREDITS=7 RPC_RC=137 || rc=$?
+led bash "$here/rpc-ledger.sh" settle r7 "$o" >/dev/null && [[ $rc == 137 && $(lj '[s["actual"] for s in l["settled"] if s["id"] == "r7"]') == "[50]" ]] &&
+  ok "rpc-day + rpc-ledger: a read killed mid-unit (usage not final) is settled at its whole reservation" || no "rpc-day kill settle: rc=$rc $(lj 'l["settled"]')"
+unset GH_BIN
 
 # ---- time-left.sh: a phase starts only when it fits before the job timeout ----
 now=$(date +%s); : > "$T/summary.md"
@@ -784,7 +913,7 @@ assert set(on["workflow_dispatch"]["inputs"]) == {"helius_runs"} and on["workflo
 assert steps[1]["env"]["HELIUS_RUNS"] == "${{ github.event_name == 'workflow_dispatch' && inputs.helius_runs || '' }}", steps[1]["env"]
 PY
 
-python3 - "$here/../../../.github/workflows/data-scan.yml" <<'PY' && ok "data-scan source helius: refused without a cap of 1 to 1000000 or outside scan mode; the key only in the scan and QA steps and only for helius; own progress cache; the chain carries source and cap" || no "data-scan helius wiring"
+python3 - "$here/../../../.github/workflows/data-scan.yml" <<'PY' && ok "data-scan source helius: refused without a cap of 1 to 1000000 or outside scan mode; the key only in the scan and QA steps and only for helius; credits reserved in the ledger before the scan and settled after QA, even on failure; own progress cache; the chain carries source and cap" || no "data-scan helius wiring"
 import sys, yaml
 wf = yaml.safe_load(open(sys.argv[1]))
 ins = wf[True]["workflow_dispatch"]["inputs"]
@@ -805,8 +934,19 @@ assert 'rpc_rps must be from 1 to 50' in plan and ins["rpc_rps"]["default"] == "
 for s in key:
     assert s["env"]["RPC_RPS"] == "${{ inputs.rpc_rps }}", s["env"]
 assert "secrets." not in str(wf["jobs"]["continue"]) and "secrets." not in str(wf["jobs"]["plan"])
-saq = next(s for s in steps if s.get("name") == "Save progress after QA")
-assert "inputs.source == 'helius'" in saq["if"] and "always()" in saq["if"], saq["if"]
+# DATA-4: reserve before the scan (no key), spend only the reservation, settle after QA
+ids = [s.get("id") or s.get("name") for s in steps]
+assert ids.index("reserve") < ids.index("scan") < ids.index("qa") < ids.index("Settle Helius credits"), ids
+res, stl = steps[ids.index("reserve")], steps[ids.index("Settle Helius credits")]
+assert res["if"] == "inputs.source == 'helius' && steps.published.outputs.complete != 'true'", res["if"]
+assert 'reserve "$RID" "$DAY" "$MAX_CREDITS" "$MAX_CREDITS" "$RUNNER_TEMP/rpc-reservation"' in res["run"], res["run"]
+assert res["run"].index("rm -f") < res["run"].index("rpc-ledger.sh"), "old spend markers are cleared before reserving"
+assert "always()" in stl["if"] and "steps.reserve.outcome != 'skipped'" in stl["if"] and 'settle "$RID" "$RUNNER_TEMP/work/data"' in stl["run"], stl
+assert 'GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY"' in res["run"] and 'GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY"' in stl["run"], (res, stl)
+assert res["env"]["RID"] == stl["env"]["RID"] == "${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.day }}"
+assert 'rpc-day.sh "$DAY" "$RUNNER_TEMP/work/data" 300 "$(cat "$RUNNER_TEMP/rpc-reservation")"' in steps[ids.index("scan")]["run"]
+assert 'RPC_RESERVATION=$(cat "$RUNNER_TEMP/rpc-reservation")' in steps[ids.index("qa")]["run"]
+assert "max_credits" not in str(steps[ids.index("scan")]["env"]) and "max_credits" not in str(steps[ids.index("qa")]["env"]), "the scan and QA spend the reservation, not the input"
 PY
 
 python3 - "$here/../../../.github/workflows/data-scan.yml" <<'PY' && ok "data-scan run-name carries mode and source (archive-check reads it): data-scan scan source=helius / source=archive" || no "data-scan run-name"
@@ -819,11 +959,27 @@ PY
 python3 - "$here/../../../.github/workflows/data-scan.yml" <<'PY' && ok "data-scan source helius: no day artifact, no data-day or data-volume publish; the packaged assets go only to the actions cache (data-rpc-assets-DAY-*)" || no "data-scan helius publish gate"
 import sys, yaml
 steps = yaml.safe_load(open(sys.argv[1]))["jobs"]["scan"]["steps"]
-for s in steps:
-    run, uses, cond = s.get("run", ""), s.get("uses", ""), s.get("if", "")
-    outward = ("upload-artifact" in uses and s["with"]["name"] != "resume-${{ matrix.day }}") or ("github.token" in str(s) and "--check" not in run)
-    if outward:
-        assert "inputs.source != 'helius'" in cond, (s.get("name") or uses, cond)
+# The only token steps a helius day may run: the credit ledger's Reserve and Settle
+# (DATA-4), which write credit numbers to release helius-ledger and nothing else.
+LEDGER = {"Reserve Helius credits": "reserve", "Settle Helius credits": "settle"}
+def gate(steps):
+    for s in steps:
+        run, uses, cond, name = s.get("run", ""), s.get("uses", ""), s.get("if", ""), s.get("name", "")
+        if name in LEDGER:
+            body = run.replace("\\\n", " ")
+            assert "rpc-ledger.sh" in run and f'rpc-ledger.sh" {LEDGER[name]} ' in " ".join(body.split()), (name, run)
+            assert not any(k in run for k in ("publish-", "release create", "release upload", "upload-artifact")), (name, run)
+            continue
+        outward = ("upload-artifact" in uses and s["with"]["name"] != "resume-${{ matrix.day }}") or ("github.token" in str(s) and "--check" not in run)
+        if outward:
+            assert "inputs.source != 'helius'" in cond, (name or uses, cond)
+gate(steps)
+assert sorted(s["name"] for s in steps if s.get("name") in LEDGER) == sorted(LEDGER), "the ledger steps are named as listed"
+extra = {"name": "Upload a helius extra", "if": "inputs.source == 'helius'", "env": {"GH_TOKEN": "${{ github.token }}"}, "run": "gh release upload x y"}
+try:
+    gate(steps + [extra]); raise SystemExit("a third helius step with github.token passed the gate")
+except AssertionError:
+    pass
 pub = [s for s in steps if 'publish-day.sh" "$DAY"' in s.get("run", "") or "publish-volume.sh" in s.get("run", "")]
 assert len(pub) == 2 and all("inputs.source != 'helius'" in s["if"] for s in pub), pub
 keep = [s for s in steps if "actions/cache/save" in s.get("uses", "") and "work/assets" in s["with"]["path"]]

@@ -95,7 +95,7 @@ func main() {
 		u := unitSpec{*ep, *from, *to}
 		st, err := RPCUnit(ctx, src, u.epoch, u.from, u.to, u.dir(*out), conc, *workers)
 		if h, ok := src.(*heliusClient); ok {
-			writeUsage(*usageOut, h)
+			writeUsage(*usageOut, h, true)
 		}
 		if err != nil {
 			log.Print(err)
@@ -131,7 +131,7 @@ func main() {
 			os.Exit(2)
 		}
 		defer h.logUsage()
-		exit := func(code int) { writeUsage(*usageOut, h); h.logUsage(); os.Exit(code) }
+		exit := func(code int) { writeUsage(*usageOut, h, true); h.logUsage(); os.Exit(code) }
 		if err := os.MkdirAll(*out, 0o755); err != nil {
 			log.Fatal(err)
 		}
@@ -165,13 +165,13 @@ func main() {
 				log.Printf("unit %d %d-%d: %s", u.epoch, u.from, u.to, h.scrub(err.Error()))
 				exit(rpcExitCode(err)) // finished units are kept
 			}
-			writeUsage(*usageOut, h) // after every unit: a hard kill loses at most one unit's count
+			writeUsage(*usageOut, h, false) // after every unit; not final until the run exits
 			eta := time.Duration(float64(time.Since(start)) / float64(i+1) * float64(len(todo)-i-1))
 			log.Printf("unit %d %d-%d ok: blocks=%d skipped=%d curve=%d amm=%d decodeFail=%d %.0fs | %d/%d, eta %s, credits %d",
 				u.epoch, u.from, u.to, st.Blocks, st.SkippedSlots, st.CurveTrades, st.AmmTrades, st.DecodeFailures, st.Seconds,
 				i+1, len(todo), eta.Round(time.Minute), h.Credits.Load())
 		}
-		writeUsage(*usageOut, h)
+		writeUsage(*usageOut, h, true)
 	case "digest":
 		// Fingerprint a unit's rows (digest.go): the committed pilot baseline is made
 		// with this from the archive unit.
@@ -270,13 +270,15 @@ func rpcExitCode(err error) int {
 }
 
 // writeUsage writes the client's counters to path (no-op for "").
-func writeUsage(path string, h *heliusClient) {
+func writeUsage(path string, h *heliusClient, final bool) {
 	if path == "" {
 		return
 	}
 	// Written whole or not at all (a temp file renamed into place), so a run killed
 	// mid-write never leaves a half file that would fail the booking.
-	b, _ := json.MarshalIndent(h.usage(), "", "  ")
+	u := h.usage()
+	u.Final = final
+	b, _ := json.MarshalIndent(u, "", "  ")
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, b, 0o644); err != nil {
 		log.Printf("usage file: %v", err)

@@ -416,8 +416,13 @@ Supervisor rulings:
   - The exemption is per record, from the review. The candidate's log must equal Agave's default 10,000-byte cut of the archive's log, which keeps later messages that still fit, so the marker can sit mid-log. All other fields must be equal. A second differing column, a different row count, a one-sided column or another table's difference is never exempt.
 - **BT-2e practice days go through data-scan.yml, not a copy of it (2026-10-04).**
   - A `source: helius` input with a per-day `max_credits` cap reuses the day job: QA, parity, determinism, packaging and publishing. The day files are published exactly as the pipeline does now.
-  - The cap holds across chained runs through a running total in the day's progress. A spent cap is not resumable, so it never loops.
+  - The cap holds across chained runs (since DATA-4, through the account-wide credit ledger). A spent cap is not resumable, so it never loops.
   - The live dry run has priority on the shared 1M free credits. The supervisor sets the cap from the dry run's measured first 24 h.
+- **DATA-4: Helius credits are reserved in one account-wide ledger before they are spent (2026-10-04).**
+  - The per-day total in the day's progress was booked after each unit, so a run killed mid-unit could forget credits it had spent, and nothing counted the pilot or the live worker against the same month.
+  - Now every helius job reserves its budget durably (release `helius-ledger`) before any request and settles the actual spend after. A spend without a final usage file books the whole reservation, so a kill over-books, never under-books. A missing or unreadable ledger, or a lock it cannot take, fails closed.
+  - The live worker cannot write to the ledger, so its share is held back from every reservation. That share must equal the worker's own Helius halt, which counts only the worker's use (supervisor ruling, 2026-10-04): until WORKER-CREDITS makes the halt a setting, both are exactly 700k, and init refuses any other figure.
+  - Chosen over a cache-based ledger (a cache can be evicted or restored stale) and over a repo file (commits from CI would touch a branch). A release asset outlives runs and caches, and its upload refuses a duplicate name, which gives the lock.
 - **DATA-2 pilot baseline: 1 Oct 09:40–10:00 instead of an hour of 2 Oct (2026-10-04).**
   - It is the only archive unit in today's schema (epoch 1046, 452,277,000–452,281,499, 4,496 blocks). The 2 Oct slices are schema 1, sampled at 0.25.
   - It is committed as a digest: per-block and per-column hashes plus counters, with no rows. Publishing files derived from the archive waits on Triton.

@@ -282,6 +282,9 @@ type heliusUsage struct {
 	ResponseBytes int64   `json:"response_bytes"`
 	MeanLatencyMs float64 `json:"mean_latency_ms"`
 	WaitedSeconds float64 `json:"waited_seconds"`
+	// Final: written at a clean exit. The ledger books a non-final file's whole
+	// reservation (a run killed mid-unit may have spent more than it last wrote).
+	Final bool `json:"final"`
 }
 
 func (h *heliusClient) usage() heliusUsage {
