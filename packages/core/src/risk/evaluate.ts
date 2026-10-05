@@ -327,8 +327,9 @@ const accountCheck = (input: RiskInput, nowMs: number): AccountCheck => {
   // Not latched: it follows the SOL price and lifts when the wallet's value is back above the line.
   if (s.walletEquity !== null && s.walletEquity <= killLine) reasons.push(reason('wallet_below_kill_line', 'the wallet\'s value at the SOL price is at or below the kill line'));
 
-  // R11 (live only): entries per day.
-  if (live) {
+  // R11: entries per day, in paper exactly as live (supervisor ruling, golden rule: paper money is real money); only the
+  // backtest's research evaluation is uncapped.
+  if (mode !== 'backtest') {
     const today = account.entries.filter((e) => e.atMs >= s.dayStartMs).length;
     if (today >= policy.positions.maxEntriesPerDay) reasons.push(reason('entries_per_day', `${today} entries today, limit ${policy.positions.maxEntriesPerDay}`));
   }
@@ -368,14 +369,26 @@ export const riskSnapshot = (input: RiskInput): RiskSnapshot | null => {
 /**
  * Exits are never blocked by any risk control. This reports which entry controls are tripped, for the log, and returns
  * new trips (R9, R10) so that a marked dip seen while managing an exit is latched even if it recovers before the next
- * entry is evaluated. It never throws, whatever the inputs.
+ * entry is evaluated. It never throws, whatever the inputs: an internal failure is returned as `fault` (and the
+ * `risk_fault` code), so a caller can tell "nothing tripped" from "could not evaluate" (RISK-FAULT).
  */
 export const evaluateExit = (input: RiskInput): ExitDecision => {
   try {
     const check = accountCheck(input, clockNow(input));
-    return { allow: true, tripped: check.reasons, trips: check.trips };
+    return { allow: true, tripped: check.reasons, trips: check.trips, fault: null };
+  } catch (e) {
+    // RISK-FAULT: still allowed, but marked as not evaluated, so no caller reads it as a clean account.
+    const fault = faultText(e);
+    return { allow: true, tripped: [reason('risk_fault', `risk could not be evaluated: ${fault}`)], trips: [], fault };
+  }
+};
+
+/** A thrown value as text, without calling anything on it that could throw again. */
+const faultText = (e: unknown): string => {
+  try {
+    return e instanceof Error && typeof e.message === 'string' && e.message !== '' ? e.message : 'unknown error';
   } catch {
-    return { allow: true, tripped: [], trips: [] };
+    return 'unknown error';
   }
 };
 
@@ -424,8 +437,8 @@ export const evaluateEntry = (input: RiskInput, request: EntryRequest): EntryDec
   const live = mode === 'live';
   const qMin = policy.capital.minNotional;
 
-  // R11 (live only): per mint, and no re-entry after a stop.
-  if (live) {
+  // R11: per mint, and no re-entry after a stop, in paper exactly as live (supervisor ruling); not in the backtest.
+  if (mode !== 'backtest') {
     const day = account.entries.filter((e) => e.mint === request.mint && e.atMs >= s.dayStartMs).length;
     if (day >= policy.positions.maxEntriesPerMintPerDay) reasons.push(reason('entries_per_mint', `${day} entries in this mint today`));
     if (account.closedTrades.some((t) => t.mint === request.mint && t.stoppedOut && nowMs < t.closedAtMs + policy.positions.reentryBlockMs)) {

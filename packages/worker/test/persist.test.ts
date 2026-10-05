@@ -255,13 +255,26 @@ describe('PERSIST-1: label kinds survive save and restore (RUG-1c)', () => {
   });
 });
 
+/** A version 2 file as one payload object, the mint rows put back in `index.mints` (bigints stay encoded). */
+const whole = (path: string): Record<string, unknown> => {
+  const lines = readFileSync(path, 'utf8').split('\n').filter((l) => l !== '');
+  const p = JSON.parse(lines[1]!) as { index: { mints: unknown[] } } & Record<string, unknown>;
+  p.index.mints = lines.slice(2, -1).map((l) => JSON.parse(l) as unknown);
+  return p;
+};
+/** Writes `p` back as a version 2 file with a correct trailer (an edited state, still well formed). */
+const writeV2 = (path: string, p: Record<string, unknown>) => {
+  const { index, ...rest } = p as { index: { mints: unknown[] } & Record<string, unknown> };
+  const body = [JSON.stringify({ ...rest, index: { ...index, mints: [] } }), ...index.mints.map((r) => JSON.stringify(r))].map((l) => `${l}\n`);
+  const sha = createHash('sha256').update(body.join('')).digest('hex');
+  writeFileSync(path, `${JSON.stringify({ format: 'zeroed-deployer-state', version: 2 })}\n${body.join('')}${JSON.stringify({ sha256: sha, lines: body.length })}\n`);
+};
+
 describe('PERSIST-1 discards a bad file whole', () => {
   const rewrite = (path: string, edit: (payload: Record<string, unknown>) => void) => {
-    const outer = JSON.parse(readFileSync(path, 'utf8')) as { version: number; sha256: string; payload: string };
-    const p = JSON.parse(outer.payload) as Record<string, unknown>;
+    const p = whole(path);
     edit(p);
-    const payload = JSON.stringify(p);
-    writeFileSync(path, JSON.stringify({ ...outer, payload, sha256: createHash('sha256').update(payload).digest('hex') }));
+    writeV2(path, p);
   };
   const fresh = () => { const path = join(tmp(), 'state.json'); saveState(path, savedState()); return path; };
 
@@ -269,15 +282,61 @@ describe('PERSIST-1 discards a bad file whole', () => {
     const corrupt = fresh();
     const text = readFileSync(corrupt, 'utf8');
     writeFileSync(corrupt, text.replace('Dev1', 'Dev2'));
-    expect(loadState(corrupt, RUG_CONFIG)).toEqual({ ok: false, reason: 'saved state checksum does not match' });
+    expect(loadState(corrupt, RUG_CONFIG)).toEqual({ ok: false, reason: 'saved state rejected: saved state checksum does not match, or the file is cut' });
+    // Cut anywhere: inside the format line, inside the payload, between rows, or with the trailer gone.
+    const saved = readFileSync(fresh(), 'utf8');
+    const lines = saved.split('\n');
+    const cuts = [20, lines[0]!.length + 30, saved.length - lines.at(-2)!.length - 1, saved.lastIndexOf('\n', saved.length - 2) + 1];
+    for (const at of cuts) {
+      const cut = fresh();
+      writeFileSync(cut, saved.slice(0, at));
+      expect(loadState(cut, RUG_CONFIG).ok, `cut at ${at}`).toBe(false);
+    }
     const truncated = fresh();
-    writeFileSync(truncated, readFileSync(truncated, 'utf8').slice(0, 200));
-    expect(loadState(truncated, RUG_CONFIG)).toMatchObject({ ok: false, reason: expect.stringContaining('unreadable') });
+    writeFileSync(truncated, saved.slice(0, saved.lastIndexOf('\n', saved.length - 2) + 1));
+    expect(loadState(truncated, RUG_CONFIG)).toMatchObject({ ok: false, reason: expect.stringContaining('checksum does not match, or the file is cut') });
+    const extra = fresh();
+    const ls = saved.split('\n').filter((l) => l !== '');
+    writeFileSync(extra, [...ls.slice(0, -1), ls.at(-2), ls.at(-1)].join('\n') + '\n');
+    expect(loadState(extra, RUG_CONFIG)).toMatchObject({ ok: false, reason: expect.stringContaining('checksum does not match') });
+    const cutHeader = fresh();
+    writeFileSync(cutHeader, saved.slice(0, 15));
+    expect(loadState(cutHeader, RUG_CONFIG)).toMatchObject({ ok: false, reason: expect.stringContaining('unreadable') });
     expect(loadState(join(tmp(), 'none.json'), RUG_CONFIG)).toEqual({ ok: false, reason: 'no saved state' });
     const version = fresh();
-    writeFileSync(version, readFileSync(version, 'utf8').replace(`"version":${STATE_VERSION}`, '"version":99'));
+    writeFileSync(version, readFileSync(version, 'utf8').replace(`"version":${STATE_VERSION}}`, '"version":99}'));
     expect(loadState(version, RUG_CONFIG)).toMatchObject({ ok: false, reason: expect.stringContaining('version 99') });
     expect(loadState(fresh(), { ...RUG_CONFIG, version: `${RUG_CONFIG.version}-next` })).toMatchObject({ ok: false, reason: expect.stringContaining(`${RUG_CONFIG.version}-next`) });
+  });
+
+  it('a version 1 file (the whole payload as a string in one object) still restores, exactly as the version 2 file of the same state (WORKER-GROW)', () => {
+    const v2 = fresh();
+    const payload = JSON.stringify(whole(v2));
+    const v1 = join(tmp(), 'state-v1.json');
+    writeFileSync(v1, JSON.stringify({ version: 1, sha256: createHash('sha256').update(payload).digest('hex'), payload }));
+    const a = loadState(v1, RUG_CONFIG);
+    const b = loadState(v2, RUG_CONFIG);
+    expect(a.ok && b.ok).toBe(true);
+    if (a.ok && b.ok) {
+      expect(a.version).toBe(1);
+      expect(b.version).toBe(2);
+      expect(a.index.snapshot(a.asOf)).toEqual(b.index.snapshot(b.asOf));
+      expect(a.labeller.snapshot()).toEqual(b.labeller.snapshot());
+      expect(a.coverage).toEqual(b.coverage);
+      expect(a.fills).toEqual(b.fills);
+    }
+  });
+
+  it('the streamed save: the trailer hash equals the sha256 of the hashed lines read whole; mint rows are one line each (WORKER-GROW)', () => {
+    const p = fresh();
+    const text = readFileSync(p, 'utf8');
+    const first = text.indexOf('\n') + 1;
+    const lastStart = text.lastIndexOf('\n', text.length - 2) + 1;
+    const trailer = JSON.parse(text.slice(lastStart)) as { sha256: string; lines: number };
+    expect(trailer.sha256).toBe(createHash('sha256').update(text.slice(first, lastStart)).digest('hex'));
+    expect(trailer.lines).toBe(text.slice(first, lastStart).split('\n').length - 1);
+    expect(JSON.parse(text.slice(0, first))).toEqual({ format: 'zeroed-deployer-state', version: 2 });
+    expect((JSON.parse(text.slice(first, text.indexOf('\n', first))) as { index: { mints: unknown[] } }).index.mints).toEqual([]);
   });
 
   it('a well-formed file that claims anything after its moment is discarded', () => {
@@ -324,5 +383,67 @@ describe('PERSIST-1 daily credit budget', () => {
     writeFileSync(path, 'garbage');
     expect(DailyBudget.load(path, 10_000, day).remaining(day)).toBe(0);
     expect(() => b.spend(-1, day)).toThrow(/non-negative/);
+  });
+});
+
+describe('PERSIST-2: the graduates series in the saved state', () => {
+  const G = [
+    { mint: 'G1', migratedAtMs: SAVED_AT.receivedAt - 10 * DAY_MS, reserveAfter: 90_000_000_000n },
+    { mint: 'G2', migratedAtMs: SAVED_AT.receivedAt - HOUR_MS, reserveAfter: 1_000n },
+  ];
+  it('round-trips as saved, dated at the saved moment', () => {
+    const path = join(tmp(), 'state.json');
+    saveState(path, savedState({ graduates: { asOfMs: SAVED_AT.receivedAt, items: G } }));
+    const r = loadState(path, RUG_CONFIG);
+    expect(r.ok && r.graduates).toEqual({ asOfMs: SAVED_AT.receivedAt, items: G });
+  });
+
+  it('a file from before PERSIST-2 still loads, with no series', () => {
+    const path = join(tmp(), 'state.json');
+    saveState(path, savedState());
+    const r = loadState(path, RUG_CONFIG);
+    expect(r.ok).toBe(true);
+    expect(r.ok && r.graduates).toBeNull();
+  });
+
+  it('the series rides in the version 2 payload line; a version 1 file without one loads with none (WORKER-GROW)', () => {
+    const path = join(tmp(), 'state.json');
+    saveState(path, savedState({ graduates: { asOfMs: SAVED_AT.receivedAt, items: G } }));
+    const lines = readFileSync(path, 'utf8').split('\n').filter((l) => l !== '');
+    expect(JSON.parse(lines[0]!)).toEqual({ format: 'zeroed-deployer-state', version: 2 });
+    expect(Object.keys(JSON.parse(lines[1]!) as object)).toContain('graduates');
+    const v2 = loadState(path, RUG_CONFIG);
+    expect(v2.ok && [v2.version, v2.graduates]).toEqual([2, { asOfMs: SAVED_AT.receivedAt, items: G }]);
+    const old = join(tmp(), 'state-v1.json');
+    const inner = whole(path);
+    delete inner['graduates'];
+    const payload = JSON.stringify(inner);
+    writeFileSync(old, JSON.stringify({ version: 1, sha256: createHash('sha256').update(payload).digest('hex'), payload }));
+    const v1 = loadState(old, RUG_CONFIG);
+    expect(v1.ok && [v1.version, v1.graduates]).toEqual([1, null]);
+  });
+
+  it('nothing after the saved moment: refused at save, and a file claiming it is discarded whole', () => {
+    const late = { asOfMs: SAVED_AT.receivedAt, items: [...G, { mint: 'G3', migratedAtMs: SAVED_AT.receivedAt + 1, reserveAfter: 1n }] };
+    expect(() => saveState(join(tmp(), 'state.json'), savedState({ graduates: late }))).toThrow(/after the snapshot moment/);
+    expect(() => saveState(join(tmp(), 'state.json'), savedState({ graduates: { asOfMs: SAVED_AT.receivedAt + 1, items: G } }))).toThrow(/not at the snapshot moment/);
+    // Written by hand past the save check (checksum and all): the load discards the whole file.
+    // Both layouts: version 2 (the payload line, trailer recomputed) and version 1 (the payload string, checksum recomputed).
+    for (const [g, why] of [[late, /after the saved moment/], [{ asOfMs: SAVED_AT.receivedAt, items: [G[0], G[0]] }, /appears twice/], [{ asOfMs: SAVED_AT.receivedAt, items: [{ mint: 'G1' }] }, /malformed/]] as const) {
+      for (const version of [2, 1] as const) {
+        const path = join(tmp(), 'state.json');
+        saveState(path, savedState());
+        const inner = whole(path);
+        inner['graduates'] = JSON.parse(JSON.stringify(g, (_k, v: unknown) => (typeof v === 'bigint' ? { $bigint: v.toString() } : v)));
+        if (version === 2) writeV2(path, inner);
+        else {
+          const payload = JSON.stringify(inner);
+          writeFileSync(path, JSON.stringify({ version: 1, sha256: createHash('sha256').update(payload).digest('hex'), payload }));
+        }
+        const r = loadState(path, RUG_CONFIG);
+        expect(r.ok, `version ${version}`).toBe(false);
+        expect(!r.ok && r.reason).toMatch(why);
+      }
+    }
   });
 });
