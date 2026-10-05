@@ -232,6 +232,39 @@ export class LiveFeed implements Feed {
     return frame;
   }
 
+  /** BEHIND: frames held now (not yet released), the backlog the shed cap bounds. */
+  get heldFrames(): number {
+    let n = 0;
+    for (const f of this.#held.values()) n += f.length;
+    return n;
+  }
+
+  /**
+   * BEHIND: drops every held (not yet released) frame of a stream `shed` names, by its `via`, and returns each shed
+   * stream's slot range. Frames without a stream (transactions, slots, facts) always stay. The worker opens a coverage
+   * gap over each range, so a candidate on a shed stream fails closed; it never sheds a held position's stream.
+   */
+  shed(shed: (via: string) => boolean): Map<string, { fromSlot: bigint; toSlot: bigint }> {
+    const out = new Map<string, { fromSlot: bigint; toSlot: bigint }>();
+    for (const [slot, frames] of this.#held) {
+      const kept = frames.filter((f) => {
+        const via = 'via' in f.body && typeof f.body.via === 'string' ? f.body.via : null;
+        if (via === null || !shed(via)) return true;
+        const r = out.get(via);
+        if (r === undefined) out.set(via, { fromSlot: slot, toSlot: slot });
+        else {
+          if (slot < r.fromSlot) r.fromSlot = slot;
+          if (slot > r.toSlot) r.toSlot = slot;
+        }
+        return false;
+      });
+      if (kept.length === 0) this.#held.delete(slot);
+      else if (kept.length < frames.length) this.#held.set(slot, kept);
+    }
+    if (this.#held.size === 0) this.#firstHeldAt = null;
+    return out;
+  }
+
   /** A provider lost its stream from `fromSlot`: hold the release point below it until its backfill ends or the hold times out. */
   openGap(id: string, fromSlot: bigint, nowMs: number): void {
     if (!this.#gaps.has(id)) this.#gaps.set(id, { fromSlot, since: nowMs });

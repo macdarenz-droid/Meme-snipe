@@ -10,6 +10,11 @@ export const BEHIND = 'behind: the worker is not keeping up with its feeds';
 export const BEHIND_MS = 10 * SECOND_MS;
 export const CLEAR_MS = 2 * SECOND_MS;
 export const CLEAR_FOR_MS = 30 * SECOND_MS;
+/**
+ * The most frames the feed holds before the worker sheds candidate pools' trade streams (a few hundred is normal: the
+ * confirmation hold). Past it the backlog would grow without bound; a held position's stream is never shed.
+ */
+export const SHED_HELD_FRAMES = 20_000;
 
 export class BehindGuard {
   #behind = false;

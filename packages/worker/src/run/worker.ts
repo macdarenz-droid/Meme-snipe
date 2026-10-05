@@ -77,7 +77,8 @@ import type { ExecStats } from '../../../core/src/facts/raw.ts';
 const flagged = (p: PoolFact): boolean => p.obs.quality.some((q) => q !== 'backfilled' && q !== 'deduplicated');
 import { type PoolFeeContext, effectiveQuoteReserve, poolSell } from '../../../core/src/amm/index.ts';
 import { liveCollapse, liveForget, liveRetention, liveShape } from './store-rules.ts';
-import { BEHIND, BehindGuard } from './behind.ts';
+import { BEHIND, BehindGuard, SHED_HELD_FRAMES } from './behind.ts';
+import { tradesStream } from './pool-watch.ts';
 
 /** The halt reason while the book holds a late buy's position, which paper does not settle yet (risk ruling on #133). */
 export const LATE_BUY = 'late buy not settled by paper; entries off';
@@ -1285,10 +1286,31 @@ export class Worker {
     }
   }
 
+  /**
+   * BEHIND: past SHED_HELD_FRAMES held frames, the trade streams of watched pools no position holds are shed, and each
+   * shed range is a coverage gap (reason `shed`), so a candidate on it fails closed. A held pool is never shed.
+   */
+  #shedOver(): void {
+    if (this.#feed.heldFrames <= SHED_HELD_FRAMES) return;
+    const pools = this.#strategy.watchedPools();
+    const shed = this.#feed.shed((via) => {
+      if (!via.startsWith('logs:')) return false;
+      const p = pools.get(via.slice('logs:'.length));
+      return p !== undefined && !p.held;
+    });
+    for (const [via, r] of shed) {
+      const pool = via.slice('logs:'.length);
+      // As the stream's own watch reports a gap (solana-ws `#coverageGap`): an off-chain fact on the feed.
+      this.#feed.ingest('worker', { type: 'offchain', key: `coverage:${tradesStream(pool)}:gap`, value: { fromSlot: r.fromSlot, toSlot: r.toSlot, reason: 'shed', via } }, { receivedAt: this.#d.timers.now() });
+    }
+    if (shed.size > 0) this.#d.log(`Behind: the feed held over ${SHED_HELD_FRAMES} frames; shed ${shed.size} candidate pools' trade streams (coverage gaps, entries there refused).`);
+  }
+
   /** One engine step: release what is due, decide, record, write. */
   step(): void {
     const now = this.#d.timers.now();
     this.#record((r) => r.flush());
+    this.#shedOver();
     this.#feed.advance(now);
     this.#engine.drain();
     this.#record((r) => r.flush());

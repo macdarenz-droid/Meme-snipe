@@ -381,3 +381,29 @@ describe('live Feed', () => {
     expect(feed.ingest('rugcheck', { type: 'offchain', key: 'b', value: 1 }, { receivedAt: 900 }).receivedAt).toBe(1_000);
   });
 });
+
+describe('BEHIND: shedding held frames', () => {
+  it('drops only the named streams\' held frames, keeps transactions, slots, other streams and released frames, and returns each shed range', () => {
+    const feed = new LiveFeed({ ...DEFAULT_LIVE_FEED, horizonSlots: 2 });
+    const sig = (k: number) => `Shed${k}`.padEnd(88, '1');
+    const seen = (k: number, slot: bigint, via: string) => feed.ingest('helius', { type: 'seen', signature: sig(k), slot, err: null, via, detail: null }, { receivedAt: k + 1 });
+    // Released before the shed: slot 10, then the tip moves to 20 with a horizon of 2.
+    seen(1, 10n, 'logs:CandPool');
+    feed.ingest('helius', { type: 'slot', slot: 12n, parent: 11n, root: null }, { receivedAt: 2 });
+    feed.advance(3);
+    seen(2, 14n, 'logs:CandPool');
+    seen(3, 15n, 'logs:HeldPool');
+    seen(4, 17n, 'logs:CandPool');
+    feed.ingest('helius', { type: 'tx', record: recordOf(tx('pump CreateEvent')) }, { receivedAt: 6 });
+    feed.ingest('helius', { type: 'slot', slot: 20n, parent: 19n, root: null }, { receivedAt: 7 });
+    const before = feed.heldFrames;
+    const shed = feed.shed((via) => via === 'logs:CandPool');
+    expect([...shed]).toEqual([['logs:CandPool', { fromSlot: 14n, toSlot: 17n }]]);
+    expect(feed.heldFrames).toBe(before - 2);
+    feed.advance(10);
+    const vias: string[] = [];
+    for (let e = feed.next(); e; e = feed.next()) if (e.kind === 'market' && e.key.startsWith('seen:')) vias.push(`${e.key}@${String((e.value as { slot: bigint }).slot)}`);
+    expect(vias).toEqual(['seen:logs:CandPool@10', 'seen:logs:HeldPool@15']);
+    expect(feed.shed(() => true).size).toBe(0);
+  });
+});
