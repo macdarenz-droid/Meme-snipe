@@ -29,15 +29,22 @@ Wave D, 4 Oct about 7:45 PM Melbourne. The project is being handed to a new Clau
 - All four API keys checked from CI: they work.
 
 ## Board
-Builders run as separate sessions; a fresh reviewer session checks each PR; the supervisor merges into `ccr-14987baf-i6lrsl` when review passed and CI is green on a head with the latest base. The merge queue, open cards and sessions are in `HANDOVER.md` §4–5 (one place, kept current).
+Core plan re-checked by the new supervisor, Mon 5 Oct about 8:53 AM, against `docs/ARCHITECTURE.md` (read in full), the code and the live summaries. Builders run as separate sessions, a fresh reviewer checks each PR, and the supervisor merges one at a time into `ccr-14987baf-i6lrsl` (CI about 24 min per merge, the bottleneck). Details and session ids: `HANDOVER.md`.
 
-| Task | What | State | Estimate (Melbourne) |
-|---|---|---|---|
-| Merge queue | #114, #116, #118 (delta), #106, #107, #98, #123, then the audit-fix PRs (see HANDOVER §4) | moving one at a time | about 10 min each plus reviews |
-| Online | deployed (7d5e203, run 37189025276); the owner confirms Online | waiting for the owner's check | now |
-| Audit fixes | PAPER-1, RISK-LATCH #124, RISK-PARTIAL, WATCH-1c #121 / 1d, EXIT-1g #128 / 1h, PERSIST-2 #125 / 3, EXIT-ROUTE #130, WORKER-ORDER #123, STATS-1g #129, OPS-GATE, PNPM-CLAIMS, SEC-1, DATA-4 #127, DATA-5 | building or in review | about 2–3 days (±1) |
-| BT-2 #41 | audit B1–B5 and S2, then RES-4 (b)/(c) under the stats rulings; early-look runner ready | building and in review | early look about Tue 6 – Wed 7 Oct |
-| Historical data | 09-21 free day running; DATA-4 ledger after it | free plan only (owner) | 09-21 about Mon 8 AM; more days as credits allow |
+**Where the bot really is (verified).** The whole engine exists and runs on the server in paper (S0 shakedown, release e32cd0d). It restarts often (42 boots between midnight and 8:44 AM; each boot writes two `start` lines because the `--reconcile` pre-step builds a Worker too) and has judged no coin today (508 seen, 0 refused, 0 entered). Until Deploy #4 (7:59 AM) candidates lived only in memory, so a restart dropped them before their 60-minute U2 window opened; since #170 (RESTART-KEEP, in e32cd0d) they are saved every 5 minutes and restored, so the first judgements can show from about 9:00 AM. Not verified: the exit cause of the restarts (no host access; #148 fixes the crash paths found in code; #209 records the cause).
+
+**What gates proof and money (verified).** No historical day is published (the repo's only releases are `preview`; no `data-day-*` or `data-volume-*`). Helius free covers about 2–3 practice days a month (recorded estimate: a day about 250k of the 1M monthly credits, the live worker about 408k), and the archive scanner was last recorded as refused (not re-checked today). So pre-funding items 2 and 6 (backtest and a proven strategy) cannot finish on free data; the owner decides on paid data after seeing practice trades and the early look (HANDOVER §7). Live regime volume reads `data-volume-DAY` releases at D−3, so without them a real strategy's regime gate is unknown (off); only the S0 diagnostic waives it (DATA-5).
+
+| Stream | What it gives the bot | PRs (merge order) | Builder | Reviewers |
+|---|---|---|---|---|
+| 1 Stays up | no crash loop; memory and disk bounded before the worker stays up for days (G4a needed within about 2–3 days of uptime); backups | #202, #148 → deploy and watch; #209; #164 (G4a); #139, #172; #187, #204, #192, #196, #207; #149, BACKUP-STATE, DISK-GUARD | WORKER-HARDEN; WORKER-1d; persist; ops builder 2 | worker/facts, persist, ops |
+| 2 Judges coins right | coins actually reach the gates (checked from the summary after every deploy); entry size; regime inputs | #189, #177 | READ-COHERENT | EXIT, persist |
+| 3 Right money | practice P&L exact, counted in SOL (owner rule) | #198, #168, #197 (SOL-BOOKS), #203, #201, #186 | PAPER, WORKER-1d (#168), risk builder (#197), practice-on, API/APP (#201) | risk, worker/facts, run/CI |
+| 4 Exits work | a restart keeps the exit's evidence and resends a lost exit; the sell route is checked | #141 (closes #121), #130, #176, #171 | WATCH, persist, EXIT builders | risk, persist, EXIT |
+| 5a Early look | a descriptive backtest of the free 09-21 day (owner asked to see it before deciding on paid data) | data-scan run 37220726125 (09-21, running); #154, #122, #152 | BT, data | BT, data |
+| 5b Proof | the registered strategy, walk-forward and sealed holdout | waits for the owner's data decision; #115, #191, #160, #127, #138, #98 then | RES, STATS, data | stats, BT, data |
+
+Waiting (outside the core): Telegram alerts and controls (#161, #178, #190, #199), app changes (#167, #181, #182), summaries and observability (#174, #194, #200, #175, #211, #210), drills (#193, needed later for the qualifying run), CI-SHARD (#206, blocked by the safety check), docs and supply chain (#143, #146, #135, #136), paid history storage (#150, owner decision).
 
 ## Follow-ups
 - Android: cover a stop between the two asset renames, the "fixed name plus .prev" state, and a failed final delete (APP-1b review notes).
