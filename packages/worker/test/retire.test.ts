@@ -6,6 +6,8 @@ import { blockNetwork } from './helpers.ts';
 import { LANDS, MIGRATED_AT, MINT, POOL_ADDRESS, makeWorker, passingMarket, until, type Harness } from './worker-harness.ts';
 import { isTerminal } from '../../core/src/lifecycle/index.ts';
 import type { Fill } from '../../core/src/domain/index.ts';
+import { seedsFile } from '../src/run/state.ts';
+import { Market } from './worker-harness.ts';
 
 blockNetwork();
 
@@ -168,6 +170,44 @@ describe('a mint and its pool are let go only when nothing watches them', () => 
       await m.run(800, 100, () => m.slot());
       expect(h.worker.strategy.observedFees(MINT)).toBeDefined();
       await h.worker.stop();
+    }, 120_000);
+
+    it('a landing found but not yet booked (an orphan) holds the mint past every attempt\'s validity', async () => {
+      const { h, m, got, i } = await setup();
+      // A status read finds the ended entry's attempt landed: the book records an orphan; no fill for it ever comes.
+      h.worker.feed.ingest('worker', { type: 'world', event: { type: 'intent', intentId: i.intent.id, event: { type: 'status', signature: i.attempts[0]!.signature, result: 'succeeded', commitment: 'finalized', blockHeight: i.attempts[0]!.lastValidBlockHeight, searchedHistory: true } } }, { receivedAt: m.now });
+      await m.run(1_000, 400, () => { m.slot(); m.pool(); });
+      expect(Object.keys(h.worker.book.orphans)).toHaveLength(1);
+      await m.run(5 * 60_000, 400, () => { m.slot(); m.pool(); });
+      expect(Object.keys(h.worker.book.orphans)).toHaveLength(1);
+      expect(got).not.toContain(MINT);
+      await h.worker.stop();
+    }, 120_000);
+
+    it('after a restart, before the first slot, an attempt\'s age is unknown: the mint is held', async () => {
+      // The seed as saved while the entry was in flight, put back after the stop: the restart drops it at once.
+      const h = makeWorker({ scenario, strategy: { windowToMs: FIRST_PASS + 1 - MIGRATED_AT, maxTails: 0 } });
+      await h.worker.reconcile();
+      const m = await passingMarket(h, { heldPoolFacts: true });
+      let saved: Record<string, unknown> = {};
+      await m.run(4_000, 100, () => {
+        m.pool();
+        const now = seedsFile(h.stateDir).read({}) as Record<string, unknown>;
+        if (Object.keys(now).length > 0) saved = now;
+      });
+      expect(await until(m, 120_000, () => Object.values(h.worker.book.intents).some((x) => x.intent.purpose === 'entry' && isTerminal(x) && x.fills.length === 0), () => { m.slot(); m.pool(); })).toBe(true);
+      expect(Object.keys(saved)).toHaveLength(1);
+      await h.worker.stop();
+      seedsFile(h.stateDir).write(saved as never);
+      const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers, scenario, strategy: { windowToMs: FIRST_PASS + 1 - MIGRATED_AT, maxTails: 0 } });
+      const got = watch(h2);
+      expect(await h2.worker.reconcile()).toEqual({ ok: true });
+      const m2 = new Market(h2);
+      // No slot notice: only off-chain prices move the engine.
+      await m2.run(3_000, 100, () => m2.solPrice());
+      expect(Object.keys(seedsFile(h.stateDir).read({}))).toEqual([]);
+      expect(got).not.toContain(MINT);
+      await h2.worker.stop();
     }, 120_000);
 
     it('with no landing, the mint is let go once every attempt is past its validity and the margin', async () => {

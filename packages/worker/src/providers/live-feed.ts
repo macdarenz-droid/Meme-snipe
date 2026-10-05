@@ -9,7 +9,8 @@
 import type { Clock, Feed, FeedEvent, Moment } from '../../../core/src/engine/index.ts';
 import { compareEvents, compareMoments, GENESIS } from '../../../core/src/engine/index.ts';
 import { deepFreeze } from '../../../core/src/engine/freeze.ts';
-import { chainSlot, dedupKey, eventsOfFrame, rankIn, type Frame, type FrameBody, type Source } from './canonical.ts';
+import { TagSet, keyTag } from './tag-set.ts';
+import { SigRanks, chainSlot, dedupKey, eventsOfFrame, rankIn, type Frame, type FrameBody, type Source } from './canonical.ts';
 
 export interface LiveFeedOptions {
   /** A slot is released once the tip is this many slots past it (late notifications get that long to arrive). */
@@ -141,9 +142,10 @@ export class LiveFeed implements Feed {
   #firstHeldAt: number | null = null;
   #released: bigint;
   readonly #held = new Map<bigint, Frame[]>();
-  readonly #ranks = new Map<bigint, Map<string, number>>();
-  readonly #keys = new Set<string>();
-  readonly #keysBySlot = new Map<bigint, string[]>();
+  readonly #ranks = new Map<bigint, SigRanks>();
+  /** FEED-KEYS: the dedupe keys as 96-bit tags (`TagSet`), and each placement slot's tags as pairs, for the prune. */
+  readonly #keys = new TagSet();
+  readonly #keysBySlot = new Map<bigint, number[]>();
   readonly #gaps = new Map<string, { readonly fromSlot: bigint; readonly since: number }>();
   #ready: { readonly event: FeedEvent; readonly frameSeq: number; readonly late: boolean }[] = [];
   #releases = 0;
@@ -196,7 +198,8 @@ export class LiveFeed implements Feed {
     // FILL-ORDER: every off-chain frame in arrival order (canonical.ts `arrival`).
     if (cs === null || cs <= cutoff || o.after === true || (o.lookup === true && cs <= this.#released)) place = { at: 'offchain', slot: this.openSlot, arrival: true };
     else place = { at: 'chain', slot: cs };
-    const key = dedupKey(body);
+    const text = dedupKey(body);
+    const key = text === null ? null : keyTag(text);
     const duplicate = key !== null && this.#keys.has(key);
     // Frozen one level down: the body may hold transaction bytes, and a typed array with elements cannot be frozen.
     const frame: Frame = Object.freeze({ seq: this.#seq++, receivedAt, source, backfilled, place: Object.freeze(place), duplicate, body: Object.freeze(body) });
@@ -208,8 +211,8 @@ export class LiveFeed implements Feed {
     if (key !== null) {
       this.#keys.add(key);
       const list = this.#keysBySlot.get(place.slot);
-      if (list === undefined) this.#keysBySlot.set(place.slot, [key]);
-      else list.push(key);
+      if (list === undefined) this.#keysBySlot.set(place.slot, [key[0], key[1]]);
+      else list.push(key[0], key[1]);
     }
     if (cs !== null && !backfilled && (this.#tip === null || cs > this.#tip)) {
       this.#tip = cs;
@@ -303,7 +306,7 @@ export class LiveFeed implements Feed {
 
   #eventsOf(frames: readonly Frame[], slot: bigint): { event: FeedEvent; frameSeq: number }[] {
     let ranks = this.#ranks.get(slot);
-    if (ranks === undefined) this.#ranks.set(slot, (ranks = new Map()));
+    if (ranks === undefined) this.#ranks.set(slot, (ranks = new SigRanks()));
     const sorted = [...frames].sort((a, b) => a.seq - b.seq);
     for (const f of sorted) rankIn(ranks, f);
     return sorted.flatMap((f) => eventsOfFrame(f, ranks).map((e) => ({ event: deepFreeze(e), frameSeq: f.seq })));
@@ -314,7 +317,7 @@ export class LiveFeed implements Feed {
     const cutoff = this.#released - BigInt(this.#opts.keepSlots);
     for (const [slot, keys] of this.#keysBySlot) {
       if (slot > cutoff) continue;
-      for (const k of keys) this.#keys.delete(k);
+      for (let i = 0; i < keys.length; i += 2) this.#keys.delete([keys[i]!, keys[i + 1]!]);
       this.#keysBySlot.delete(slot);
     }
     for (const slot of this.#ranks.keys()) if (slot <= cutoff) this.#ranks.delete(slot);

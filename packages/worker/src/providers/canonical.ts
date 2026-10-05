@@ -143,7 +143,37 @@ export const chainSlot = (b: FrameBody): bigint | null => {
  * Ranks signatures in one slot by first arrival. `ranks` is the slot's running table: the live Feed keeps it
  * across releases so a late frame gets the next rank, and the pure path builds it from all frames at once.
  */
-export const rankIn = (ranks: Map<string, number>, frame: Frame): void => {
+/** A slot's transaction ranks by signature: a Map, or `SigRanks`. */
+export interface Ranks {
+  readonly size: number;
+  has(signature: string): boolean;
+  get(signature: string): number | undefined;
+  set(signature: string, rank: number): unknown;
+}
+
+/**
+ * SEEN-TAGS: a slot's ranks keyed by each signature's first 22 characters (about 128 bits, the dedupe keys' argument)
+ * as a fresh flat string. The live feed keeps every slot's ranks for 1,500 slots; keyed by the whole signature, each
+ * rank kept its 88-character signature alive (about 28 MB of the 3× run's heap at 1 h).
+ */
+export class SigRanks implements Ranks {
+  readonly #m = new Map<string, number>();
+  get size(): number {
+    return this.#m.size;
+  }
+  has(signature: string): boolean {
+    return this.#m.has(signatureKey('r', signature));
+  }
+  get(signature: string): number | undefined {
+    return this.#m.get(signatureKey('r', signature));
+  }
+  set(signature: string, rank: number): this {
+    this.#m.set(signatureKey('r', signature), rank);
+    return this;
+  }
+}
+
+export const rankIn = (ranks: Ranks, frame: Frame): void => {
   if (frame.place.at !== 'chain') return;
   const sig = signatureOf(frame.body);
   if (sig !== null && !ranks.has(sig)) ranks.set(sig, ranks.size);
@@ -152,7 +182,7 @@ export const rankIn = (ranks: Map<string, number>, frame: Frame): void => {
 const meta = (f: Frame) => ({ source: f.source, backfilled: f.backfilled, seq: f.seq });
 
 /** The events of one frame. `ranks` must already hold the frame's signature when it is chain-placed. */
-export const eventsOfFrame = (f: Frame, ranks: ReadonlyMap<string, number>): FeedEvent[] => {
+export const eventsOfFrame = (f: Frame, ranks: Pick<Ranks, 'get'>): FeedEvent[] => {
   // FILL-ORDER: same-moment events are released in id order, and ids start with the signature; an `arrival` frame
   // therefore takes its arrival order in `ixIndex` (1 + seq, after the slot notice's 0). Receipt times never decrease
   // with seq, so this only settles ties that id order settled before.

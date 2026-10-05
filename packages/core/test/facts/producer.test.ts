@@ -3,7 +3,7 @@
 // no fact (or a flagged one) and GATE-1 rejects. Facts go through the FactFeed into an as-of store, as in the engine.
 import { describe, expect, it } from 'vitest';
 import { transactionEvents, type TransactionRecord } from '../../src/chain/index.ts';
-import { startSession, TRIAL_POLICY } from '../../src/config/index.ts';
+import { RESEARCH_CONFIG, startSession, TRIAL_POLICY } from '../../src/config/index.ts';
 import { pumpSwapRoundTrip } from '../../src/costs/index.ts';
 import { OFF_CHAIN, createReplay, type MarketEvent, type Moment } from '../../src/engine/index.ts';
 import {
@@ -11,7 +11,7 @@ import {
   holdersKey, insidersKey, lpKey, migrationKey, mintKey, parseCandles, parseCreate, parseHolders, parseInsiders, parseLp, parseMigration, parseMint,
   parsePool, parseSim, parseSolUsd, parseXcheck, poolKey, simKey, streamKey, xcheckKey, type CandlesFact, type GateRequest,
 } from '../../src/gates/index.ts';
-import { FACT_KINDS, FactFeed, FactProducer, GRADUATES_SEED_KEY, HOLDER_ABSTENTIONS_KEY, RAW, STREAMS, dailyChainVolume, graduatesFact, insiderLinks, decimalToMicro, producerOptions, tradeRepeatId, RETIRED_KEEP, cappedAdd } from '../../src/facts/index.ts';
+import { FACT_KINDS, FactFeed, FactProducer, GRADUATES_SEED_KEY, HOLDER_ABSTENTIONS_KEY, RAW, STREAMS, dailyChainVolume, graduatesFact, insiderLinks, decimalToMicro, producerOptions, tradeRepeatTag, RETIRED_KEEP, FUNDER_KEEP_MS, cappedAdd } from '../../src/facts/index.ts';
 import { lamports, microUsd } from '../../src/units/index.ts';
 import { FEE_CONTEXT } from '../gates/world.ts';
 import { recordFromRpc } from '../../src/chain/index.ts';
@@ -326,7 +326,7 @@ describe('candles', () => {
       type Swap = { name: string; data: { poolBaseTokenReserves: bigint; poolQuoteTokenReserves: bigint } };
       const ids = (events: MarketEvent[]) => events.filter((e) => /pump_amm:(Buy|Sell)Event:/.test(e.key)).map((e) => {
         const v = e.value as { signature?: string; event: Swap & { signature?: string } };
-        return tradeRepeatId((v.signature ?? v.event.signature)!, v.event.data.poolBaseTokenReserves, v.event.data.poolQuoteTokenReserves);
+        return tradeRepeatTag((v.signature ?? v.event.signature)!, v.event.data.poolBaseTokenReserves, v.event.data.poolQuoteTokenReserves).join(':');
       });
       const chain = TRANSACTIONS.map((t) => recordFromRpc(t.signature, t.base64 as never));
       for (const x of [...swaps, migrate, ...RECORDS.map((r) => r.rec), ...chain]) {
@@ -336,8 +336,8 @@ describe('candles', () => {
       }
       // A recorded transaction with two PumpSwap swaps (a sell then a buy): two different ids.
       expect(chain.some((r) => ids(txEvents(r)).length > 1)).toBe(true);
-      // Compact: a fresh 22 + up to 7 character string, never the whole signature.
-      for (const id of ids(txEvents(swaps[0]!))) expect(id.length).toBeLessThanOrEqual(29);
+      // Two 48-bit numbers (SEEN-TAGS).
+      for (const id of ids(txEvents(swaps[0]!))) for (const n of id.split(':').map(Number)) expect(Number.isSafeInteger(n) && n >= 0 && n < 2 ** 48).toBe(true);
     });
 
     it('a repeat just outside the window (W + 1 s behind) is never applied: reserve unchanged, the candles partial, H11 refuses them', () => {
@@ -583,6 +583,32 @@ describe('insiders', () => {
     if (opts.head ?? true) w.push(slotNotice(last.slot + 3n, atOf(last) + 2000));
     return w;
   };
+
+  it('G4a: funder reads are let go a day after they were read; read again, the insiders fact is the same', () => {
+    const w = run();
+    const before = parseInsiders(w.last(insidersKey(MINT)))!;
+    expect(before.complete).toBe(true);
+    const n = w.producer.sizes().funders;
+    expect(n).toBeGreaterThan(0);
+    const last = window.at(-1)!;
+    const readAt = atOf(last) + 100;
+    // A second short of a day: kept. A day after: let go.
+    w.push(slotNotice(last.slot + 10n, readAt + FUNDER_KEEP_MS - 1));
+    expect(w.producer.sizes().funders).toBe(n);
+    w.push(slotNotice(last.slot + 11n, readAt + FUNDER_KEEP_MS));
+    expect(w.producer.sizes().funders).toBe(0);
+    // Read again (a later candidate's insider read): the same funders, so the same verdict.
+    for (const f of funders()) w.push(offchain(RAW.funder(f.wallet), f, last.slot + 12n, readAt + FUNDER_KEEP_MS + 100));
+    const again = parseInsiders(w.last(insidersKey(MINT)))!;
+    const { obs: _a, ...was } = before;
+    const { obs: _b, ...now } = again;
+    expect(now).toEqual(was);
+    expect(w.producer.sizes().funders).toBe(n);
+  });
+
+  it('G4a: a funder read outlives every candidate that reads it: the window and the longest tail are under a day', () => {
+    expect(FUNDER_KEEP_MS).toBeGreaterThan(RESEARCH_CONFIG.s0.u2WindowToMs + TRIAL_POLICY.exits.tMaxCapMs);
+  });
 
   it('creation-slot buyers and dev-funded first buyers, complete only with coverage and every funder found', () => {
     const w = run();

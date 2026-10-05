@@ -10,7 +10,6 @@
 //
 // Rule (owner): missing, stale or failed data produces no fact, or an explicit not-covered one (a flagged or
 // `complete: false` fact the gates reject). Nothing here ever fills a gap with a value that passes.
-import { createHash } from 'node:crypto';
 import { DAY_MS, HOUR_MS, MINUTE_MS, SECOND_MS } from '../config/time.ts';
 import type { Policy } from '../config/policy.ts';
 import {
@@ -18,6 +17,8 @@ import {
 } from '../chain/index.ts';
 import type { Commitment, QualityFlag } from '../domain/index.ts';
 import type { MarketEvent } from '../engine/feed.ts';
+import { flatCopy } from '../engine/asof.ts';
+import { RepeatTags, tradeRepeatTag } from './repeat-tags.ts';
 import type { PoolState } from '../amm/index.ts';
 import { swapEventState } from '../fills/pool.ts';
 import {
@@ -112,28 +113,19 @@ export const TRADE_REPEAT_WINDOW_MS = HOUR_MS;
  */
 export const RETIRED_KEEP = 100_000;
 
+/**
+ * G4a (supervisor ruling): how long a wallet's funder read (`read:funder:<wallet>`, its first SOL funding: fixed once it
+ * happened) is kept: a day. The store forgets the read's key after the same time (worker `liveForget`).
+ */
+export const FUNDER_KEEP_MS = DAY_MS;
+
 /** OOM-MINT: adds a fresh copy of `id` (never the text it was cut from), dropping the oldest entries past `cap`. */
 export const cappedAdd = (set: Set<string>, id: string, cap: number): void => {
-  set.add(String.fromCharCode(...Array.from(id, (c) => c.charCodeAt(0))));
+  set.add(flatCopy(id));
   for (const old of set) {
     if (set.size <= cap) break;
     set.delete(old);
   }
-};
-
-/**
- * OOM-SEEN (supervisor ruling, B1): a swap's repeat id, the same from a log line and from a fetched transaction: the first 22
- * characters of its signature (about 128 bits) and a 32-bit hash of its pre-trade reserves (two swaps in one transaction
- * leave different reserves). Copied into a fresh flat string, so it never keeps the whole signature alive: about 85 B
- * a remembered trade with its minute, against about 350 B for the full `signature:base:quote` text.
- */
-export const tradeRepeatId = (signature: string, baseBefore: bigint, quoteBefore: bigint): string => {
-  // The first 8 hex digits (32 bits) of a SHA-256 of both reserves: no hand-rolled mixing constants (CFG-1's literal guard).
-  const h = Number.parseInt(createHash('sha256').update(`${baseBefore}:${quoteBefore}`, 'utf8').digest('hex').slice(0, 8), 16);
-  const text = signature.slice(0, 22) + h.toString(36);
-  const codes = new Array<number>(text.length);
-  for (let i = 0; i < text.length; i++) codes[i] = text.charCodeAt(i);
-  return String.fromCharCode(...codes);
 };
 
 /** Options sized from the locked policy, so the kept windows always cover what the gates read. */
@@ -213,8 +205,8 @@ interface CandleBook {
   readonly candles: Candle[];
   /** A trade whose price could not be formed: the candles are no longer complete. Sticky. */
   partial: boolean;
-  /** Trade repeat ids (`tradeRepeatId`) and their trade minutes, back to `tradeRepeatMs` behind `newestMs` (OOM-SEEN). */
-  readonly seen: Map<string, number>;
+  /** Trade repeat tags (`tradeRepeatTag`) by their trade minute, back to `tradeRepeatMs` behind `newestMs` (OOM-SEEN, SEEN-TAGS). */
+  readonly seen: RepeatTags;
   /** The newest trade time applied. */
   newestMs: number;
   /** `newestMs` at the last sweep: the next runs once the newest trade is a quarter window later. */
@@ -438,6 +430,7 @@ export class FactProducer {
     };
     // Survival marks are judged on the state before this event: a trade after the mark must not date it.
     this.#survival(e, put);
+    this.#forgetFunders(e.moment.receivedAt);
     this.#chainOther(e, put);
     const pe = programEvent(e);
     if (pe !== null) this.#program(pe.ev, pe.seen, pe.truncated, e, put);
@@ -510,7 +503,7 @@ export class FactProducer {
         if (!t.pools.has(d.pool)) t.pools.set(d.pool, { pool: d.pool, slot: seen.slot, atMs, quote: d.poolQuoteAmount, base: d.poolBaseAmount });
         if (!this.#poolMint.has(d.pool)) this.#poolMint.set(d.pool, d.baseMint);
         if (!this.#books.has(d.pool) && !this.#retiredPools.has(d.pool)) {
-          this.#books.set(d.pool, { pool: d.pool, mint: d.baseMint, openedAtMs: atMs, fromSlot: seen.slot, candles: [], partial: false, seen: new Map(), newestMs: atMs, sweptMs: atMs });
+          this.#books.set(d.pool, { pool: d.pool, mint: d.baseMint, openedAtMs: atMs, fromSlot: seen.slot, candles: [], partial: false, seen: new RepeatTags(), newestMs: atMs, sweptMs: atMs });
           this.#reserves.set(d.pool, { atMs, effective: d.poolQuoteAmount });
           this.#writeCandles(d.pool, seen.provider, seen.receivedAt, put);
         }
@@ -613,9 +606,9 @@ export class FactProducer {
       return;
     }
     // The same trade from a fetched transaction and from a log line counts once.
-    const id = tradeRepeatId(seen.signature, baseBefore, quoteBefore);
-    if (book.seen.has(id)) return;
-    book.seen.set(id, Math.floor(atMs / MINUTE_MS));
+    const tag = tradeRepeatTag(seen.signature, baseBefore, quoteBefore);
+    if (book.seen.has(tag)) return;
+    book.seen.add(tag, Math.floor(atMs / MINUTE_MS));
     if (atMs > book.newestMs) book.newestMs = atMs;
     this.#sweepSeen(book);
     // Reserves in Buy/SellEvent are before the trade; after it the base moves by the base amount and the quote by the
@@ -639,7 +632,7 @@ export class FactProducer {
     if (book.newestMs - book.sweptMs < this.#o.tradeRepeatMs / 4) return;
     // A trade in minute m was stamped before (m + 1) minutes: dropped only when that is at or before the cutoff.
     const cutoff = book.newestMs - this.#o.tradeRepeatMs;
-    for (const [id, minute] of book.seen) if ((minute + 1) * MINUTE_MS <= cutoff) book.seen.delete(id);
+    book.seen.sweep(cutoff);
     book.sweptMs = book.newestMs;
   }
 
@@ -675,8 +668,8 @@ export class FactProducer {
   }
 
   /** OOM-MINT: how many entries the producer keeps per structure (tests and the memory ceiling). */
-  sizes(): { readonly books: number; readonly mints: number; readonly walletMints: number; readonly retiredPools: number; readonly retiredMints: number; readonly streams: number; readonly chains: number } {
-    return { books: this.#books.size, mints: this.#mints.size, walletMints: this.#walletMints.size, retiredPools: this.#retiredPools.size, retiredMints: this.#retiredMints.size, streams: this.#streams.size, chains: this.#chains.size };
+  sizes(): { readonly books: number; readonly mints: number; readonly walletMints: number; readonly retiredPools: number; readonly retiredMints: number; readonly streams: number; readonly chains: number; readonly funders: number } {
+    return { funders: this.#funders.size, books: this.#books.size, mints: this.#mints.size, walletMints: this.#walletMints.size, retiredPools: this.#retiredPools.size, retiredMints: this.#retiredMints.size, streams: this.#streams.size, chains: this.#chains.size };
   }
 
   /** OOM-SEEN: the trade ids a pool's candle book remembers, and its last reserve (tests and diagnostics). */
@@ -917,6 +910,9 @@ export class FactProducer {
       const r = parseFunderRead(v);
       if (r === null || key !== RAW.funder(r.wallet)) return;
       this.#funders.set(r.wallet, r);
+      // Re-read: moved to the end of the read-time order.
+      this.#funderAt.delete(r.wallet);
+      this.#funderAt.set(r.wallet, at);
       for (const mint of this.#walletMints.get(r.wallet) ?? []) {
         const t = this.#mints.get(mint);
         if (t !== undefined) this.#insiders(t, e, put);
@@ -1262,6 +1258,22 @@ export class FactProducer {
       this.#graduatesChanged = true;
     }
     return { accepted: true, added: add.length, reason: null };
+  }
+
+  /** G4a: wallets' funder reads in read-time order (oldest first), for `#forgetFunders`. */
+  readonly #funderAt = new Map<string, number>();
+
+  /**
+   * G4a (supervisor ruling): a wallet's funder read is let go `FUNDER_KEEP_MS` after it was read. Every candidate's
+   * insider read reads its wallets' funders again as of its own slot (`Readers.readInsiders`), so nothing a live
+   * candidate (at most about six hours with its tail) still needs is ever let go, and no read is saved by keeping one.
+   */
+  #forgetFunders(now: number): void {
+    for (const [w, at] of this.#funderAt) {
+      if (at + FUNDER_KEEP_MS > now) break;
+      this.#funderAt.delete(w);
+      this.#funders.delete(w);
+    }
   }
 
   #survival(e: MarketEvent, put: (k: string, v: unknown) => void): void {
