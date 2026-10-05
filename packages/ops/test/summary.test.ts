@@ -96,6 +96,8 @@ describe('the summary guards', () => {
     const site = goodSummary().worker.crash_sites![0]!;
     expect(ok({ exits: [{ code: 'killed', count: 1 }, { code: 'clean', count: 1 }], crash_sites: [{ ...site, file: null, line: null, event: null, error: 'non-error' }] })).toBe(true);
     expect(ok({ exits: [{ code: 'other', count: 1 }] })).toBe(false);
+    // HEAP-GUARD: a death just after a sample near a memory limit.
+    expect(ok({ exits: [{ code: 'oom', count: 2 }, { code: 'crash', count: 1 }] })).toBe(true);
     expect(ok({ crash_sites: [{ ...site, file: null }] })).toBe(false);
     expect(ok({ crash_sites: [{ ...site, line: null }] })).toBe(false);
     expect(ok({ crash_sites: [{ ...site, line: -1 }] })).toBe(false);

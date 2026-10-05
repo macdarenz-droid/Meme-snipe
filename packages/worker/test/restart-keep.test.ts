@@ -103,7 +103,7 @@ describe('RESTART-KEEP: a restart keeps the candidates in their window', () => {
   it('saves the candidate with its transactions; the restart restores it, reads them again and evaluates it at its moment', async () => {
     const { h, timers, seed } = await shortlistedAndStopped();
     const saved = loadState(join(h.stateDir, PERSIST_FILE), RUG_CONFIG);
-    expect(saved.ok && saved.candidates).toEqual([{ mint: MINT, pool: POOL_ADDRESS, migratedAtMs: MIGRATED_AT, migrationSlot: SLOT - 15_000n, tries: 0, lastEvalMs: null, lastReason: null, bars: [], signatures: { create: 'create-1', complete: null, migration: MIG_SIG } }]);
+    expect(saved.ok && saved.candidates).toEqual([{ mint: MINT, pool: POOL_ADDRESS, migratedAtMs: MIGRATED_AT, migrationSlot: SLOT - 15_000n, tries: 0, lastEvalMs: null, lastReason: null, bars: [], fees: null, signatures: { create: 'create-1', complete: null, migration: MIG_SIG } }]);
     timers.set(timers.now() + 10 * 60_000);
     const { h2, m2, fetchedWhy } = await restart(h, timers, seed);
     expect(decisions(h2).filter((r) => r[0] === 'candidate restored').map((r) => r[2])).toEqual([MINT]);
@@ -118,6 +118,47 @@ describe('RESTART-KEEP: a restart keeps the candidates in their window', () => {
     m2.offchain('feed:status:helius', { state: 'up' });
     await m2.run(4_000, 400, () => m2.slot());
     expect(decisions(h2).some((r) => r[0] === 'reject' && r[2] === MINT)).toBe(true);
+    await h2.worker.stop();
+  }, 60_000);
+
+  it('STEP-B: a candidate whose window ended during the downtime is not restored: it ends as the first event would end it', () => {
+    const c = strategyConfig(startSession(TRIAL_POLICY).policy, FILL_CONFIG, RESEARCH_CONFIG);
+    const ENDED_AT = NOW - c.windowToMs - 1;
+    const ended = { ...GOOD, mint: 'ended-mint', pool: 'ended-pool', migratedAtMs: ENDED_AT, lastEvalMs: ENDED_AT + 60_000, bars: [{ startMs: ENDED_AT + 60_000, high: 2n, low: 1n, close: 2n }] };
+    const unseen = { ...ended, mint: 'unseen-mint', pool: 'unseen-pool', lastEvalMs: null, lastReason: null, bars: [] };
+    const s = restoreInto([GOOD, ended, unseen]);
+    // Only the candidate still in its window is restored (and so read again by the worker); the others are not listed.
+    expect(s.out.filter((d) => d.reasons[0] === 'candidate restored').map((d) => d.reasons[2])).toEqual([MINT]);
+    expect([...s.strategy.candidates().keys()]).toEqual([MINT]);
+    expect(s.strategy.barsOf('ended-mint')).toEqual([]);
+    // The record a live run makes at the window end: the rejected one keeps its tail, the never-evaluated one has none.
+    expect(s.out).toContainEqual({ action: null, reasons: ['no entry', 'U2', 'ended-mint', 'window ended; last reason: H11 missing'] });
+    expect(s.out).toContainEqual({ action: null, reasons: ['no entry', 'U2', 'unseen-mint', 'window ended'] });
+    expect(s.strategy.tail.get('ended-mint')).toEqual({ pool: 'ended-pool', untilMs: ENDED_AT + c.windowToMs + exitsFor(startSession(TRIAL_POLICY).policy.exits, c.universe).tMaxMs });
+    expect(s.strategy.tail.has('unseen-mint')).toBe(false);
+    expect(s.strategy.watchedPools().has('unseen-pool')).toBe(false);
+    // The candidate in its window comes back exactly as it did alone (decisions for in-window candidates unchanged).
+    const alone = restoreInto([GOOD]);
+    expect(s.out.filter((d) => d.reasons[2] === MINT)).toEqual(alone.out.filter((d) => d.reasons[2] === MINT));
+    expect(s.strategy.candidates().get(MINT)).toEqual(alone.strategy.candidates().get(MINT));
+    expect(s.strategy.watchedPools().get(POOL_ADDRESS)).toEqual(alone.strategy.watchedPools().get(POOL_ADDRESS));
+    // One ms inside its window it is still restored.
+    const edge = restoreInto([{ ...unseen, migratedAtMs: NOW - c.windowToMs + 1 }]);
+    expect(edge.out.filter((d) => d.reasons[0] === 'candidate restored' || d.reasons[0] === 'no entry').map((d) => d.reasons[0])).toEqual(['candidate restored']);
+    // At its window's end exactly it has ended, as `#windowEnds` reads it (now >= end).
+    const atEnd = restoreInto([{ ...unseen, migratedAtMs: NOW - c.windowToMs }]);
+    expect(atEnd.out.filter((d) => d.reasons[0] === 'candidate restored' || d.reasons[0] === 'no entry').map((d) => d.reasons[0])).toEqual(['no entry']);
+  });
+
+  it('STEP-B: a restart after the window ended reads none of the candidate\'s transactions again', async () => {
+    const { h, timers, seed } = await shortlistedAndStopped();
+    const c = strategyConfig(startSession(TRIAL_POLICY).policy, FILL_CONFIG, RESEARCH_CONFIG);
+    timers.set(MIGRATED_AT + c.windowToMs + 60_000);
+    const { h2, fetchedWhy } = await restart(h, timers, seed);
+    expect(decisions(h2).some((r) => r[0] === 'candidate restored')).toBe(false);
+    expect(decisions(h2)).toContainEqual(['no entry', 'U2', MINT, 'window ended']);
+    expect(fetchedWhy.filter(([, why]) => why === 'restore' || why === 'create')).toEqual([]);
+    expect(h2.worker.strategy.candidates().has(MINT)).toBe(false);
     await h2.worker.stop();
   }, 60_000);
 
@@ -495,8 +536,11 @@ describe('RESTART-KEEP: a restart keeps the candidates in their window', () => {
     // The position closes: its exit and the mint's pool state are forgotten.
     ev('test:tick', null, t0 + 3_000, { [`p:${M2}:1`]: { id: `p:${M2}:1`, mint: M2, status: 'closed' } });
     expect(strategy.saved()[`p:${M2}:1`]).toBeUndefined();
-    // Held again (a new position on the same mint): nothing of the first one carries over.
-    ev(RESTORE_KEY, { exits: { [`p:${M2}:2`]: exit({ deployer: { sellers: ['dev-b'], supply: 1_000n }, deployerSales: { ids: [], list: [] }, flow: { minutes: [], ids: [] } }) } }, t0 + 4_000);
+    // Held again (a new position on the same mint): nothing of the first one carries over. The book holds the new position,
+    // as the worker's rebuilt book does at a restore (a restored exit without a booked position is dropped, EXIT-1h
+    // follow-up); `opening` keeps it out of exit management, which this test does not exercise.
+    ev(RESTORE_KEY, { exits: { [`p:${M2}:2`]: exit({ deployer: { sellers: ['dev-b'], supply: 1_000n }, deployerSales: { ids: [], list: [] }, flow: { minutes: [], ids: [] } }) } }, t0 + 4_000,
+      { [`p:${M2}:2`]: { id: `p:${M2}:2`, mint: M2, status: 'opening' } });
     const again = strategy.saved()[`p:${M2}:2`]!;
     expect(again.flow).toEqual({ minutes: [], ids: [] });
     expect(again.deployerSales).toEqual({ ids: [], list: [] });

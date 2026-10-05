@@ -7,7 +7,7 @@
 // `open_intents` → seed the deployer index (SEED-1's hook) → start the live sources → trade. Nothing enters before the
 // reconcile line; a reconcile that cannot settle every intent exits 3.
 import { randomBytes } from 'node:crypto';
-import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, linkSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { journalLines, placeBookingsAt } from './booked.ts';
 import type { Server } from 'node:http';
 import { join } from 'node:path';
@@ -46,6 +46,7 @@ import { engineFeed, type EngineFeed } from './engine-feed.ts';
 import { startHealthServer } from './health.ts';
 import { type HeartbeatPosition, heartbeatBody, sendHeartbeat } from './heartbeat.ts';
 import { crashSite } from './crash-site.ts';
+import { MEM_EVERY_MS, cgroupMax, fatalReport, nearLimit, readMem, sampleMem, writeMem } from './mem-trace.ts';
 import { Summarizer, SummaryClock } from './summary.ts';
 import { CappedMap } from './capped-map.ts';
 import { jsonText } from './json.ts';
@@ -57,7 +58,7 @@ import { entryPrice, openPositionsHealth } from './open-positions.ts';
 import { type RiskInput, evaluateExit, riskSnapshot } from '../../../core/src/risk/index.ts';
 import { latchable, markSettings, riskAccount } from '../engine/marks.ts';
 import type { DeployerIndex, DeployerIndexState, RugLabeller, RugLabellerState } from '../../../core/src/gates/index.ts';
-import { PERSIST_FILE, fileSha256, loadState, saveState, type SavedCandidateState } from '../persist/index.ts';
+import { PERSIST_FILE, fileSha256, loadState, packFile, saveState, zstdContentHash, type SavedCandidateState } from '../persist/index.ts';
 import type { CreateLookup } from './sources.ts';
 
 /** PERSIST-1's saved deployer state in the worker's state dir, and how often it is written. */
@@ -67,6 +68,8 @@ export const DOWNTIME_CREDIT_CAP = 3_000;
 /** RESTART-KEEP: transactions read before a migration to find its curve's completion. */
 const COMPLETION_READS = 5;
 export const PERSIST_EVERY_MS = 5 * 60_000;
+/** STATE-DEDUPE: the recorder folder holding each distinct saved state once, packed, named by the sha256 of its plain bytes. */
+export const SAVED_STATES = 'saved-state';
 import { type Control, NO_CONTROL, type Restart, StateFile, controlFile, exitsFile, seedsFile, exposedFile, NO_EXPOSED, exitKind, restartsAfterBoot, restartsFile } from './state.ts';
 import { type CreateUnreadWhy, LOG_CREATE_PREFIX, type PoolFact, S0_DIAGNOSTIC_PARTS, TX_CREATE_PREFIX, createUnreadKey, parsePool } from '../../../core/src/gates/index.ts';
 import type { ExecStats } from '../../../core/src/facts/raw.ts';
@@ -146,6 +149,8 @@ export interface WorkerDeps {
    * Without it they are not read: coins that migrated while the worker was down are not candidates.
    */
   readonly restartReads?: { readonly rpc: SeedRpc; readonly budget: { remaining(nowMs: number): number; spend(credits: number, nowMs: number): void; refund(credits: number, nowMs: number): void } };
+  /** Test seam: the pack of the recording's saved-state copy (persist's `packFile` unless a test holds it open). */
+  readonly pack?: typeof packFile;
   /**
    * CREATE-AFTER-RESTART: looks up a shortlisted mint's create that neither this process nor the saved store holds
    * (sources.ts `findCreate`, under the fills' daily budget). Without it such a create waits, as before.
@@ -323,6 +328,9 @@ export const plannedRestart = (path: string, nowMs: number): string | null => {
   return out;
 };
 
+/** `no clean stop`, with how the memory stood at the death when that is known (MEM-TRACE). */
+export const withMemNote = (exit: string, note: string | null): string => (note === null ? exit : `${exit} (${note})`);
+
 export class Worker {
   readonly #d: WorkerDeps;
   readonly #boot: string;
@@ -429,11 +437,17 @@ export class Worker {
   #restored: { readonly asOf: Moment; readonly ref: SavedStateRef } | null = null;
   /** The restored index and labeller, given once to the strategy when it applies the seed that names them. */
   #handoff: { readonly ref: SavedStateRef; readonly index: DeployerIndex; readonly labeller: RugLabeller } | null = null;
+  /** G4c: the recording's plain saved-state copy this boot restored from, packed at start. */
+  #unpacked: { readonly path: string; readonly sha256: string; readonly bytes: number } | null = null;
+  /** The pack of the recording's saved-state copy, while it runs beside the start (a stop waits for it). */
+  #packing: Promise<void> | null = null;
   #lastSaveMs = 0;
   #saveRefused = false;
   #beatSeq = 0;
   #loop: ReturnType<Timers['setTimeout']> | null = null;
   #beat: ReturnType<Timers['setTimeout']> | null = null;
+  #memTimer: ReturnType<Timers['setTimeout']> | null = null;
+  readonly #cgroupMax = cgroupMax();
   #summaryClock: SummaryClock | null = null;
   #summary: Summarizer | null = null;
   #server: Server | null = null;
@@ -471,7 +485,12 @@ export class Worker {
     const handoff = join(c.stateDir, EXIT_HANDOFF);
     // A handoff of null (the pre-step saw a first start) stands: it is not "no handoff".
     const handed = takeHandoff(handoff, now);
-    this.#lastExit = handed !== undefined ? handed : plannedRestart(join(c.stateDir, STATE_FILES.plannedRestart), now) ?? this.#journal.previousExit;
+    // MEM-TRACE: a death with no stop line just after a sample near a memory limit says so.
+    // HEAP-GUARD: a fresh fatal-error report (the heap limit) names the death as a crash at its site, first.
+    const fatal = this.#journal.previousExit === 'no clean stop' ? fatalReport(c.stateDir, this.#journal.previousMs) : null;
+    const journalExit = fatal !== null ? `fatal error (${fatal})`
+      : this.#journal.previousExit === 'no clean stop' ? withMemNote(this.#journal.previousExit, nearLimit(readMem(c.stateDir), this.#journal.previousMs)) : this.#journal.previousExit;
+    this.#lastExit = handed !== undefined ? handed : plannedRestart(join(c.stateDir, STATE_FILES.plannedRestart), now) ?? journalExit;
     if (d.phase === 'reconcile') writeFileSync(handoff, JSON.stringify({ exit: this.#lastExit, at: now }));
     // Restarts in the last 24 h, planned (a runner drill), deploys and unplanned, for the heartbeat and the daily summary.
     // The pre-step is not a boot of its own: only the main start records one.
@@ -552,7 +571,7 @@ export class Worker {
       sell_only: [...this.#sellOnly],
       // RESTART-CAUSE: the unit's `--reconcile` pre-step is marked, so the daily summary counts real boots only.
       // The main boot names its restart's kind and how the previous process ended, for the daily summary's counts.
-      ...(d.phase === 'reconcile' ? { phase: 'reconcile' } : { restart: this.#restarts[this.#restarts.length - 1]?.kind ?? null, exit: exitKind(this.#lastExit) }),
+      ...(d.phase === 'reconcile' ? { phase: 'reconcile' } : { restart: this.#restarts[this.#restarts.length - 1]?.kind ?? null, exit: exitKind(this.#lastExit), ...(this.#lastExit?.startsWith('fatal error (') ? { crash_site: this.#lastExit.slice('fatal error ('.length, -1) } : {}) }),
     });
     if (this.#journal.repaired) this.#journal.write('journal_repair', { detail: 'torn last line removed' });
     if (this.#sellOnly.length > 0) {
@@ -661,7 +680,11 @@ export class Worker {
         }
       }
       const ref: SavedStateRef = { file: PERSIST_FILE, sha256: fileSha256(loadFrom), version: restored.version };
-      if (loadFrom !== statePath) this.#record((r) => r.attach(PERSIST_FILE, ref.sha256, statSync(loadFrom).size));
+      if (loadFrom !== statePath) {
+        const bytes = statSync(loadFrom).size;
+        this.#record((r) => r.attach(PERSIST_FILE, ref.sha256, bytes));
+        this.#unpacked = { path: loadFrom, sha256: ref.sha256, bytes };
+      }
       this.#restored = { asOf: restored.asOf, ref };
       this.#handoff = { ref, index: restored.index, labeller: restored.labeller };
       this.#saved = { creates: [], rugs: [], coverage: restored.coverage, last: { slot: restored.asOf.slot, ms: restored.asOf.receivedAt } };
@@ -789,6 +812,46 @@ export class Worker {
   }
 
   /**
+   * G4c: the recording's saved-state copy is packed (about a ninth of its size) once the restore has read it; the seed's
+   * sha256 stays that of the plain bytes, which the packed file is checked to decompress to. A failure keeps the plain
+   * copy (the boot stays replayable) and is logged.
+   */
+  async #packCopy(): Promise<void> {
+    const c = this.#unpacked;
+    if (c === null) return;
+    this.#unpacked = null;
+    // STATE-DEDUPE: each distinct saved state is kept once, packed, in `recorder/saved-state/<sha256>.zst`; a boot that
+    // restored the same bytes (every boot of a restart loop shorter than a save) gets a hard link to it, never a copy.
+    const shared = join(this.#d.config.stateDir, STATE_FILES.recorder, SAVED_STATES, `${c.sha256}.zst`);
+    const own = `${c.path}.zst`;
+    try {
+      if (existsSync(shared)) {
+        // Linked only once the stored file is checked to decompress to exactly the bytes this boot restored.
+        const held = await zstdContentHash(shared);
+        if (held.sha256 === c.sha256 && held.bytes === c.bytes) {
+          linkSync(shared, own);
+          rmSync(c.path);
+          this.#record((r) => r.packed(PERSIST_FILE, { sha256: fileSha256(shared), bytes: statSync(shared).size }, { sha256: c.sha256, bytes: c.bytes }));
+          return;
+        }
+        this.#d.log(`Recorder: the stored saved state ${c.sha256} decompresses to sha256 ${held.sha256}; this boot packs its own copy.`);
+      }
+      const p = await (this.#d.pack ?? packFile)(c.path, { sha256: c.sha256, bytes: c.bytes });
+      this.#record((r) => r.packed(PERSIST_FILE, p.packed, p.content));
+      if (!existsSync(shared)) {
+        try {
+          mkdirSync(join(shared, '..'), { recursive: true });
+          linkSync(own, shared);
+        } catch (e) {
+          this.#d.log(`Recorder: the packed saved state was not stored for later boots (${e instanceof Error ? e.message : 'error'}).`);
+        }
+      }
+    } catch (e) {
+      this.#d.log(`Recorder: the saved-state copy was kept unpacked (${e instanceof Error ? e.message : 'error'}).`);
+    }
+  }
+
+  /**
    * A refused API command, journaled; at most COMMAND_LINES_PER_MINUTE lines a minute, so a client on the tailnet cannot
    * grow the journal without bound. The refusals past that are counted on one line when the next minute's first comes.
    */
@@ -842,6 +905,11 @@ export class Worker {
     } catch (j) {
       this.#d.log(`Journal: the recorder alert was not written: ${errorText(j)}.`);
     }
+  }
+
+  /** Resolves once the recording's saved-state copy is packed (or there was none to pack). */
+  whenPacked(): Promise<void> {
+    return this.#packing ?? Promise.resolve();
   }
 
   /** The strategy's `savedState`: the restored index and labeller, once, only for the seed that names exactly them. */
@@ -1142,9 +1210,11 @@ export class Worker {
     if (c.kind === 'snapshot') return { address: c.snap.pool, state: c.snap.state, ctx: c.snap.ctx, atMs: c.snap.atMs };
     if (c.kind !== 'pool') return null;
     const p = c.pool;
-    const ctx = this.#fees.get(mint) ?? this.#strategy.observedFees(mint);
+    const state = { baseReserve: p.baseVault, quoteVault: p.quoteVault, virtualQuoteReserves: p.pool.virtualQuoteReserves ?? 0n };
+    // FEES-KEEP: restored fee terms price only the pool their swap left.
+    const ctx = this.#fees.get(mint) ?? this.#strategy.observedFees(mint, state);
     if (ctx === undefined) return null;
-    return { address: p.address, state: { baseReserve: p.baseVault, quoteVault: p.quoteVault, virtualQuoteReserves: p.pool.virtualQuoteReserves ?? 0n }, ctx, atMs: c.atMs };
+    return { address: p.address, state, ctx, atMs: c.atMs };
   }
 
   /**
@@ -1514,6 +1584,9 @@ export class Worker {
     const d = this.#d;
     const r = await this.reconcile();
     if (!r.ok) return r;
+    // Packing the recording's saved-state copy is housekeeping: it runs beside the start, never ahead of the feeds (its
+    // disk time would delay them, by however long the disk takes). A stop waits for it before the recorder closes.
+    this.#packing = this.#packCopy();
     this.#journalRecovered();
     // Entries wait for the seed; this halt is released ahead of every live event, so the index waits with them.
     this.#seeding = true;
@@ -1569,6 +1642,7 @@ export class Worker {
       });
     };
     beat();
+    this.#traceMem();
     this.#startSummary();
     // The loop already runs (exits never wait for the seed); entries resume once the seed is placed or given up.
     try {
@@ -1601,6 +1675,9 @@ export class Worker {
     this.#observing = true;
     const r = await this.reconcile();
     if (!r.ok) return r;
+    // Packing the recording's saved-state copy is housekeeping: it runs beside the start, never ahead of the feeds (its
+    // disk time would delay them, by however long the disk takes). A stop waits for it before the recorder closes.
+    this.#packing = this.#packCopy();
     this.#journalRecovered();
     this.#sources = d.sources({ feed: this.#feed, timers: d.timers, pools: () => new Map() });
     for (const s of this.#sources) this.#feeds.set(s.name, { src: s, connected: false, last: null, droppedUntil: 0 });
@@ -1878,6 +1955,17 @@ export class Worker {
     this.#summaryClock.start();
   }
 
+  /** MEM-TRACE: the memory sample, every MEM_EVERY_MS, for the next boot's reading of how this process ended. Never throws. */
+  #traceMem(): void {
+    if (this.#stopping) return;
+    try {
+      writeMem(this.#d.config.stateDir, sampleMem(this.#d.timers.now(), this.#cgroupMax));
+    } catch {
+      // A sample not written (a full disk) only leaves the next boot without it.
+    }
+    this.#memTimer = this.#d.timers.setTimeout(() => this.#traceMem(), MEM_EVERY_MS);
+  }
+
   /** The summarizer, made on first use; null without a watchdog or its key. */
   #summarizer(): Summarizer | null {
     const d = this.#d;
@@ -1963,6 +2051,7 @@ export class Worker {
     const d = this.#d;
     if (this.#loop !== null) d.timers.clearTimeout(this.#loop);
     if (this.#beat !== null) d.timers.clearTimeout(this.#beat);
+    if (this.#memTimer !== null) d.timers.clearTimeout(this.#memTimer);
     this.#summaryClock?.stop();
     for (const s of this.#sources) s.stop();
     this.#probe?.stop();
@@ -1983,6 +2072,7 @@ export class Worker {
     this.#world.stop();
     const open = Object.values(this.#engine.book.positions).filter((p) => p.status !== 'closed').map((p) => p.id);
     this.#journal.write('stop', { open_positions: open, open_intents: openIntents(this.#desk.book), reasons: code === EXIT.clean ? ['signal'] : crash === undefined ? ['crash'] : ['crash', crash] });
+    if (this.#packing !== null) await this.#packing;
     this.#record((r) => r.close());
     this.#ledger.close();
     if (code === EXIT.clean) writeFileSync(join(d.config.stateDir, STATE_FILES.cleanStop), new Date(d.timers.now()).toISOString());
@@ -2022,6 +2112,7 @@ export class Worker {
     this.#world.stop();
     if (this.#loop !== null) this.#d.timers.clearTimeout(this.#loop);
     if (this.#beat !== null) this.#d.timers.clearTimeout(this.#beat);
+    if (this.#memTimer !== null) this.#d.timers.clearTimeout(this.#memTimer);
     this.#summaryClock?.stop();
     for (const s of this.#sources) s.stop();
     this.#watch?.stop();
@@ -2033,6 +2124,8 @@ export class Worker {
   /** For the `--reconcile` entry: settle, report, close without starting anything. */
   async reconcileOnly(): Promise<StartResult> {
     const r = await this.reconcile();
+    // The unit's pre-step restores (and copies) the saved state too: packed, or linked to the stored copy, like a start's.
+    if (!this.#stopping) await this.#packCopy();
     // A signal during the reconcile runs the clean stop, which closes both.
     if (!this.#stopping) {
       this.#record((r) => r.close());

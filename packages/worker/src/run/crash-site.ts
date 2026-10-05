@@ -3,7 +3,7 @@
 // carry a URL with its API key, and a query string can carry anything.
 
 const NAME = /^[A-Za-z][A-Za-z0-9_]{0,39}$/;
-const FRAME = /packages\/[A-Za-z0-9_.\/-]+\.[cm]?[jt]s:\d+/;
+export const FRAME = /packages\/[A-Za-z0-9_.\/-]+\.[cm]?[jt]s:\d+/;
 
 /**
  * The kind of an engine event from its key (`logs:pump:CreateEvent:<mint>` → `logs:pump:CreateEvent`), at most 3 parts.
