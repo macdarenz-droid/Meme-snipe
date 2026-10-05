@@ -240,9 +240,12 @@ export class DeployerIndex {
       [...m].map(([creator, inner]) => [creator, [...inner].filter(([, v]) => ms(v) >= retainFromMs)] as const)
         .filter(([, inner]) => inner.length > 0)
         .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-    const first = this.#first === null ? null : this.#first.receivedAt >= retainFromMs ? this.#first : { ...this.#first, receivedAt: retainFromMs };
+    // SAVE-ASOF: moments order by slot first and receipt times need not follow, so an event at or before `asOf` in order
+    // can carry a receipt time after it; the snapshot keeps it as at `asOf`, never after (restore refuses after).
+    const notAfter = (m: Moment): Moment => (m.receivedAt > asOf.receivedAt ? { ...m, receivedAt: asOf.receivedAt } : m);
+    const first = this.#first === null ? null : notAfter(this.#first.receivedAt >= retainFromMs ? this.#first : { ...this.#first, receivedAt: retainFromMs });
     return {
-      asOf, first, last: this.#last, seeded: this.#seeded,
+      asOf, first, last: this.#last === null ? null : notAfter(this.#last), seeded: this.#seeded,
       // Without `mints` (WORKER-GROW), the rows are left to `mintRows`, for a save that streams them.
       mints: o.mints === false ? [] : [...this.mintRows(retainFromMs)], rugs: keep(this.#rugs, (k) => k.at.receivedAt), unjudged: keep(this.#unjudged, (k) => k.at.receivedAt),
       createVias: [...this.#createVias].sort(),

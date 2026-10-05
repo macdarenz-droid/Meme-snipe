@@ -2657,3 +2657,31 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - `feed.test.ts`: a released swap's signature costs the feed under 140 B (258 B with key strings). The dedupe cases and the parity and recorder suites are unchanged.
   - Hand mutants killed: three wrong backward-shift conditions; the low half ignored.
 
+
+## A save is never refused or discarded for an in-order run of events (SAVE-ASOF, WORKER-HARDEN)
+- **Why.** Moments order by slot first, and receipt times need not follow it: a frame of an earlier slot can arrive after
+  a later slot's (two providers, fetched transactions), and both are released in slot order after the confirmation hold.
+  The save's moment is the last event's, so its receipt time can be earlier than an event handled before it.
+  - A candidate evaluated on that earlier-handled event carried `lastEvalMs` after the moment, and state.ts refused the
+    whole save (`candidate … is dated after the snapshot moment`), at every turn until a later event came. The 24-h
+    harness run logged it at 16 of its last 17 saves.
+  - The deployer index's `first` and `last` moments could carry a receipt time after the moment the same way; the save
+    was written, and restore refused it (`the snapshot claims a moment after its as-of moment`): the restart discarded
+    the saved state.
+- **What.** The save keeps the moment as it is (the last event's, as FEES-KEEP pins) and saves each such time as at the
+  moment, never after: `lastEvalMs` is `min(lastEvalMs, asOf.receivedAt)`; the index snapshot's `first` and `last` keep
+  their slot, transaction and instruction and take `asOf.receivedAt` when theirs is later. This was chosen over moving the
+  moment's receipt time to the latest seen: that would change what every other check of the save means (and the pinned
+  FEES-KEEP behaviour), while this keeps every restore check exact and unchanged.
+  - Effect on a restored candidate: it is evaluated again up to one receipt skew (seconds) earlier than without the
+    clamp; an evaluation only recomputes the gates.
+  - Effect on the index: its coverage start can read up to one receipt skew earlier by receipt time, never by slot; this
+    happens only when the index's first event lands within seconds of a save.
+- **Evidence (fail before, pass after).** `save-asof.test.ts`:
+  - a candidate evaluated on an event received after the save's moment is saved as at it; the save is written and
+    restores (before: refused);
+  - with no candidate, the index's first and last moments received after the moment still restore (before: refused at
+    restore);
+  - an evaluation at or before the moment is saved as it was;
+  - a candidate truly after the moment is still refused by the save's own check, and on restore.
+  - Hand mutants killed: no clamp on `lastEvalMs`, on `last`, on `first`; a clamp applied always.

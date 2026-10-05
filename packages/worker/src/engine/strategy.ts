@@ -897,9 +897,11 @@ export class LiveStrategy implements Strategy {
     // PERSIST-2: the newest graduates fact released so far, with only the entries whose survival mark was reached by
     // the save moment (the fact itself is never newer than the last released event).
     const items = (this.#graduatesFact?.items ?? []).filter((g) => g.migratedAtMs + this.#d.session.policy.regime.survivalAfterMs <= asOf.receivedAt);
-    // RESTART-KEEP: every candidate in its window, none migrated after the save moment.
+    // RESTART-KEEP: every candidate in its window, none migrated after the save moment. SAVE-ASOF: moments order by slot
+    // first and receipt times need not follow, so an evaluation can carry a time after the moment (an event of an earlier
+    // slot received later): it is saved as at the moment, never after, as fee terms received after it are left out.
     const candidates = [...this.#cands.values()].filter((c) => c.migratedAtMs <= asOf.receivedAt).sort((a, b) => (a.mint < b.mint ? -1 : a.mint > b.mint ? 1 : 0))
-      .map((c): SavedCandidate => ({ mint: c.mint, pool: this.#poolOfMint.get(c.mint) ?? null, migratedAtMs: c.migratedAtMs, migrationSlot: this.#migrationSlot.get(c.mint) ?? null, tries: c.tries, lastEvalMs: c.lastEvalMs, lastReason: c.lastReason, bars: (this.#bars.get(c.mint) ?? []).filter((b) => b.startMs <= asOf.receivedAt), fees: this.#feeTermsAsOf(c.mint, asOf.receivedAt) }));
+      .map((c): SavedCandidate => ({ mint: c.mint, pool: this.#poolOfMint.get(c.mint) ?? null, migratedAtMs: c.migratedAtMs, migrationSlot: this.#migrationSlot.get(c.mint) ?? null, tries: c.tries, lastEvalMs: c.lastEvalMs === null ? null : Math.min(c.lastEvalMs, asOf.receivedAt), lastReason: c.lastReason, bars: (this.#bars.get(c.mint) ?? []).filter((b) => b.startMs <= asOf.receivedAt), fees: this.#feeTermsAsOf(c.mint, asOf.receivedAt) }));
     // WORKER-GROW: the index's mint rows are streamed into the file by the save, never built whole; the graduates ride
     // in the payload line.
     return {
