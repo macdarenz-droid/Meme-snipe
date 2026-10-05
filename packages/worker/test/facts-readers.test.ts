@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { FIX, MINT, POOL } from '../../core/test/facts/helpers.ts';
 import {
   ASSUMPTIONS, DEPLOYER_CHECK_CREDITS_PER_DAY, FACT_RPC_METHODS, plannedHeliusPerDay, FactReaders, FactRpc, HELIUS_CALLS_PER_EVALUATION, SUPPLEMENT_FILE, candidateCapacity, freePlanPerMinute, holderScanCredits, holderScanCreditsPerDay, perCandidate,
-  HOLDER_SCANS_FILE, HOLDER_SCANS_PER_DAY, holderFilters, readSupplement, supplementRow, writeSupplement, type Ingest,
+  HOLDER_SCANS_FILE, HOLDER_SCANS_PER_DAY, OUTCOMES_KEPT, holderFilters, readSupplement, supplementRow, writeSupplement, type Ingest,
 } from '../src/facts/index.ts';
 import type { FrameBody, Source } from '../src/providers/index.ts';
 import type { HttpClient, HttpRequest, HttpResponse } from '../src/providers/http.ts';
@@ -281,6 +281,21 @@ describe('fact readers', () => {
     expect(completeHolders(r)!.accounts.reduce((x, a) => x + a.amount, 0n)).toBe(completeHolders(r)!.supply);
     // The pool's own vault is owned by a PDA: its program was read.
     expect(r.ownerPrograms.length).toBeGreaterThan(0);
+  });
+
+  it('keeps only the latest read outcomes: a long run does not grow them (they grew with every read)', async () => {
+    const timers = new ManualTimers(1_791_100_000_000);
+    const http = (async () => { throw new Error('no network in this test'); }) as unknown as HttpClient;
+    const rpc = new FactRpc({ url: () => 'x', http, scheduler: new Scheduler(HELIUS_FREE, { timers, creditsUsed: 0 }), timeoutMs: 1000 });
+    const readers = new FactReaders({ feed: { ingest: () => {} }, rpc, http, timers, timeoutMs: 1000, holderScansPerDay: 0 });
+    // Each read past the daily scan cap records one outcome and returns at once.
+    for (let k = 0; k < 5 * OUTCOMES_KEPT; k++) expect(await readers.readHoldersAll(`M${k}`)).toBe(false);
+    expect(readers.outcomes.length).toBeGreaterThanOrEqual(OUTCOMES_KEPT);
+    expect(readers.outcomes.length).toBeLessThanOrEqual(2 * OUTCOMES_KEPT);
+    // The newest are kept, in order.
+    expect(readers.outcomes.at(-1)).toEqual({ read: `holders-all:M${5 * OUTCOMES_KEPT - 1}`, ok: false, detail: 'daily scan cap reached' });
+    const n = readers.outcomes.length;
+    expect(readers.outcomes.map((o) => o.read)).toEqual(Array.from({ length: n }, (_, i) => `holders-all:M${5 * OUTCOMES_KEPT - n + i}`));
   });
 
   it('third-party reads are trimmed to the authorities; a report without them ingests nothing', async () => {

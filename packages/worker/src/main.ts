@@ -19,7 +19,7 @@ import { redact, setSecretValues } from './run/redact.ts';
 import { join } from 'node:path';
 import { DailyBudget } from './persist/index.ts';
 import { RpcCut, liveHttp } from './run/rpc-cut.ts';
-import { FILL_BUDGET_FILE, FILL_CREDITS_PER_DAY, runSeed } from './run/seed-start.ts';
+import { FILL_BUDGET_FILE, runSeed } from './run/seed-start.ts';
 import { SIM_READS_PER_HOUR, simReader } from './run/sim-read.ts';
 import { RoundTripSimulator } from './sim/index.ts';
 import { Worker } from './run/worker.ts';
@@ -46,7 +46,7 @@ const rpcCut = new RpcCut(timers);
 const http = liveHttp(rpcCut, fetchHttp);
 const providerHttp = http.providers;
 // FILL-2's daily fill budget, one instance for the restart fill and the pool watches' in-run fills (S0-ZERO).
-const fillBudget = DailyBudget.load(join(config.stateDir, FILL_BUDGET_FILE), FILL_CREDITS_PER_DAY, timers.now());
+const fillBudget = DailyBudget.load(join(config.stateDir, FILL_BUDGET_FILE), config.fillCreditsPerDay, timers.now());
 const providers = new LiveProviders({ tradeStreams: false, secrets: environment.secrets, http: providerHttp, factory: globalSocketFactory, credits, fillBudget });
 const policy = session.policy;
 const timing = watchTimingProblem(config.watch, policy.gates.maxQuoteAgeMs, DEFAULT_LIVE_FEED.horizonSlots * SLOT_MS);

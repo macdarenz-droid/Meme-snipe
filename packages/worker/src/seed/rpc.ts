@@ -139,6 +139,13 @@ export const backfillAddress = async (o: BackfillOptions & {
   readonly accept: Accept;
   /** Signature pages this run may read; past it the run stops as `page-cap` and the rest stays a gap. */
   readonly maxPages?: number;
+  /**
+   * FILL-FORESEE: after the first signature page, stop as `credit-cap` before reading any transaction when even the
+   * fewest credits the run could still need (one read per successful signature in range on that page, plus one more
+   * page if the page did not reach `afterSlot`) would pass the cap. Such a run could only end partial; this way it
+   * spends one page instead of the whole cap. A run that could complete is never stopped (the count is a lower bound).
+   */
+  readonly foresee?: boolean;
 }): Promise<BackfillResult> => {
   const retry = o.retry ?? DEFAULT_RETRY;
   const calls = { getSignaturesForAddress: 0, getTransaction: 0 };
@@ -189,6 +196,16 @@ export const backfillAddress = async (o: BackfillOptions & {
         if (e instanceof Stop) throw e;
         if (first && notConfirmedYet(e)) throw new Stop('not-confirmed', `confirmed never reached slot ${o.untilSlot}`);
         throw new Stop('page-failed', `signature page failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
+      if (first && o.foresee === true) {
+        const inRange = page.filter((s) => s.slot <= o.untilSlot && s.slot > o.afterSlot);
+        const reads = inRange.filter((s) => s.err === null).length;
+        const reachedStart = page.some((s) => s.slot <= o.afterSlot) || page.length < SIGNATURE_PAGE;
+        const fewest = credits + reads * callCost(o.provider, 'getTransaction') + (reachedStart ? 0 : callCost(o.provider, 'getSignaturesForAddress'));
+        if (fewest > o.creditCap) {
+          // Owed from the oldest slot read on the page (nothing newer was read either): the whole range stays a gap.
+          throw new Stop('credit-cap', `foreseen: at least ${fewest} credits needed, cap ${o.creditCap}`);
+        }
       }
       for (const s of page) {
         if (s.slot > o.untilSlot) {
