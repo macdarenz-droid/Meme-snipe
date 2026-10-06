@@ -2853,3 +2853,7 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   8 MB. Hand mutants killed: every failing entry kept, the latest received dropped, the earliest dropped, the latest
   in order dropped, nothing kept of the `false` class, the two kinds merged into one class (P5), the answer by order
   across kinds.
+
+## The recorder hashes each sealed file once (G4c, `run/recorder.ts`)
+
+- **2026-10-04 · G4c: the recorder hashes each sealed file once.** The manifest is rewritten at every seal and listed every sealed file by reading and hashing it again, so a boot's manifest work grew with the square of its file count (each 64 MiB rotation re-read every earlier file). Each file is now hashed from the compressed bytes as it is sealed, and the manifest lists that seal-time size and hash; a file a crashed boot had sealed keeps the size and hash its manifest listed (review N1), and a file sealed at the next start is hashed then. A later change to a sealed file now shows as a hash mismatch instead of being re-hashed into the manifest. Evidence: `packages/worker/test/worker-grow-c.test.ts` (the seal-time test fails on the base); hand mutants R1 (ignore the kept hashes) and R2 (hash other bytes) are killed; R3 (do not keep the seal's hash) is equivalent, since the manifest write that follows hashes the file once and keeps it.

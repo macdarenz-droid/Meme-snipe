@@ -7,10 +7,11 @@
 //   days/<UTC day>/releases-NNN.jsonl.zst  every event handed to the engine, in order (FEED-1 `Release`)
 // Frames and releases use lossless JSON (bigints `{"$n":…}`, bytes `{"$b":…}`). Lines are appended to plain `.jsonl`
 // files as they come and flushed before the engine acts on them; a file is compressed and listed in the manifest when
-// it is rotated, at a clean stop, or at the next start after a crash, so a kill loses no flushed line.
+// it is rotated, at a clean stop, or at the next start after a crash, so a kill loses no flushed line. Each sealed
+// file is hashed once, from the bytes written when it is sealed; the manifest lists that hash and never re-reads it.
 import { createHash } from 'node:crypto';
 import { redactCounted } from './redact.ts';
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { zstdCompressSync } from 'node:zlib';
 import { toBase64 } from '../../../core/src/chain/index.ts';
@@ -81,6 +82,8 @@ export class Recorder {
   readonly #coverage: Coverage = { first_slot: null, last_slot: null, first_block_time: null, last_block_time: null };
   readonly #gaps: unknown[] = [];
   readonly #attachments: Attachment[] = [];
+  /** Sealed files' sizes and hashes, by path relative to the folder, as sealed (G4c: never re-read). */
+  readonly #hashes: FileHashes = new Map();
   #frames = 0;
   #raw = 0;
   #releases = 0;
@@ -191,7 +194,7 @@ export class Recorder {
     const o = this.#open.get(t);
     this.#open.delete(t);
     if (o === undefined || !existsSync(o.path)) return;
-    sealFile(o.path);
+    this.#hashes.set(relative(this.#dir, `${o.path}.zst`), sealFile(o.path));
     this.#sealed[t] += o.rows;
     if (o.redactions > 0) this.#gaps.push({ reason: 'values redacted as credentials; a replay of this file differs there', file: relative(this.#dir, `${o.path}.zst`), redactions: o.redactions });
     this.#writeManifest();
@@ -220,16 +223,23 @@ export class Recorder {
   }
 
   #writeManifest(): void {
-    writeManifest(this.#dir, { boot: this.#o.boot, git_sha: this.#o.gitSha, coverage: this.#coverage, coverage_gaps: this.#gaps, counts: this.#sealed, commitments: this.#o.commitments ?? null, attachments: this.#attachments });
+    writeManifest(this.#dir, { boot: this.#o.boot, git_sha: this.#o.gitSha, coverage: this.#coverage, coverage_gaps: this.#gaps, counts: this.#sealed, commitments: this.#o.commitments ?? null, attachments: this.#attachments }, this.#hashes);
   }
 }
 
-/** Compresses a plain `.jsonl` into `.jsonl.zst` (written beside it, then the plain one removed). */
-const sealFile = (path: string): void => {
+/** A sealed file's size and sha256, by its path relative to the recorder folder. */
+type FileHashes = Map<string, { readonly bytes: number; readonly sha256: string }>;
+
+const hashOf = (b: Buffer): { readonly bytes: number; readonly sha256: string } => ({ bytes: b.length, sha256: createHash('sha256').update(b).digest('hex') });
+
+/** Compresses a plain `.jsonl` into `.jsonl.zst` (written beside it, then the plain one removed). Returns its size and hash. */
+const sealFile = (path: string): { readonly bytes: number; readonly sha256: string } => {
   const zst = `${path}.zst`;
-  writeFileSync(`${zst}.tmp`, zstdCompressSync(readFileSync(path)));
+  const packed = zstdCompressSync(readFileSync(path));
+  writeFileSync(`${zst}.tmp`, packed);
   renameSync(`${zst}.tmp`, zst);
   rmSync(path);
+  return hashOf(packed);
 };
 
 interface ManifestState {
@@ -251,15 +261,22 @@ export interface Attachment {
   readonly content?: { readonly encoding: 'zstd'; readonly sha256: string; readonly bytes: number };
 }
 
-/** The manifest of one recorder folder, from the sealed files on disk. */
-const writeManifest = (dir: string, s: ManifestState): void => {
+/**
+ * The manifest of one recorder folder, from the sealed files on disk. A file in `hashes` is listed as sealed; any other
+ * (an earlier process's) is hashed once and added.
+ */
+const writeManifest = (dir: string, s: ManifestState, hashes: FileHashes = new Map()): void => {
   const daysDir = join(dir, 'days');
   const days = existsSync(daysDir) ? readdirSync(daysDir).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort() : [];
   const dayEntries = days.map((day) => {
     const files = readdirSync(join(daysDir, day)).filter((f) => f.endsWith('.jsonl.zst')).sort().map((f) => {
-      const p = join(daysDir, day, f);
-      const bytes = readFileSync(p);
-      return { path: relative(dir, p), bytes: statSync(p).size, sha256: createHash('sha256').update(bytes).digest('hex') };
+      const path = relative(dir, join(daysDir, day, f));
+      let h = hashes.get(path);
+      if (h === undefined) {
+        h = hashOf(readFileSync(join(daysDir, day, f)));
+        hashes.set(path, h);
+      }
+      return { path, bytes: h.bytes, sha256: h.sha256 };
     });
     const rows: Record<string, number> = {};
     return { day, blocks_expected: 0, blocks_scanned: 0, complete: false, warm_up: false, rows, files };
@@ -285,6 +302,22 @@ const writeManifest = (dir: string, s: ManifestState): void => {
   renameSync(join(dir, 'manifest.json.tmp'), join(dir, 'manifest.json'));
 };
 
+/** The well-formed `days[].files` entries of a manifest (anything else is skipped and hashed afresh). */
+const listedFiles = (days: unknown): { readonly path: string; readonly bytes: number; readonly sha256: string }[] => {
+  if (!Array.isArray(days)) return [];
+  const out: { path: string; bytes: number; sha256: string }[] = [];
+  for (const d of days) {
+    const files = typeof d === 'object' && d !== null ? (d as { files?: unknown }).files : undefined;
+    if (!Array.isArray(files)) continue;
+    for (const f of files) {
+      if (typeof f !== 'object' || f === null) continue;
+      const { path, bytes, sha256 } = f as { path?: unknown; bytes?: unknown; sha256?: unknown };
+      if (typeof path === 'string' && Number.isSafeInteger(bytes) && typeof sha256 === 'string' && /^[0-9a-f]{64}$/.test(sha256)) out.push({ path, bytes: bytes as number, sha256 });
+    }
+  }
+  return out;
+};
+
 /**
  * At start, before this boot records anything: earlier boots' folders that a crash left with plain `.jsonl` files get
  * them compressed and their manifest rewritten (counts and coverage as the files show them). Returns the folders fixed.
@@ -299,6 +332,7 @@ export const sealLeftovers = (root: string, current: string): string[] => {
     if (!existsSync(daysDir)) continue;
     let open = 0;
     const counts = { frames: 0, raw: 0, releases: 0, pre: 0, delays: 0 };
+    const hashes: FileHashes = new Map();
     for (const day of readdirSync(daysDir)) {
       for (const f of readdirSync(join(daysDir, day))) {
         const m = /^(frames|raw|releases|pre|delays)-\d{3}\.jsonl$/.exec(f);
@@ -309,15 +343,18 @@ export const sealLeftovers = (root: string, current: string): string[] => {
         const whole = text.endsWith('\n') ? text : text.slice(0, text.lastIndexOf('\n') + 1);
         writeFileSync(p, whole);
         counts[m[1] as Table] += whole === '' ? 0 : whole.split('\n').length - 1;
-        sealFile(p);
+        hashes.set(relative(dir, `${p}.zst`), sealFile(p));
         open++;
       }
     }
     if (open === 0) continue;
-    let prev: { git_sha?: string | null; coverage?: Coverage; coverage_gaps?: unknown[]; commitments?: Record<string, string> | null; attachments?: Attachment[]; units?: { frames?: number; raw?: number; releases?: number }[] } = {};
+    let prev: { git_sha?: string | null; coverage?: Coverage; coverage_gaps?: unknown[]; commitments?: Record<string, string> | null; attachments?: Attachment[]; units?: { frames?: number; raw?: number; releases?: number }[]; days?: unknown } = {};
     try {
       prev = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8')) as typeof prev;
     } catch {}
+    // Files the crashed boot had sealed keep the size and hash its manifest listed at their seal (G4c review N1), so a
+    // change made to one between the crash and this start shows as a mismatch, not a fresh hash.
+    for (const f of listedFiles(prev.days)) if (!hashes.has(f.path)) hashes.set(f.path, { bytes: f.bytes, sha256: f.sha256 });
     writeManifest(dir, {
       boot, git_sha: prev.git_sha ?? null,
       coverage: prev.coverage ?? { first_slot: null, last_slot: null, first_block_time: null, last_block_time: null },
@@ -328,7 +365,7 @@ export const sealLeftovers = (root: string, current: string): string[] => {
         frames: (prev.units?.[0]?.frames ?? 0) + counts.frames, raw: (prev.units?.[0]?.raw ?? 0) + counts.raw,
         releases: (prev.units?.[0]?.releases ?? 0) + counts.releases,
       },
-    });
+    }, hashes);
     fixed.push(boot);
   }
   return fixed;
