@@ -66,10 +66,11 @@ export class SlotClock {
 }
 
 /**
- * Commitment lag: a slot is processed when produced and confirmed about 1.2 s later (two to three slots). Reads at
- * confirmed see slots produced at least this long ago.
+ * Commitment lag: reads at confirmed see slots produced at least this long ago. One slot: measured on the keyless
+ * publicnode endpoint (7 Oct, 60 paired getSlot reads), confirmed was 0 slots behind processed 36 times and 1 slot
+ * behind 24 times; this takes the slower end. (Helius, which the bot reads, could not be measured without a key.)
  */
-export const CONFIRMED_LAG_MS = 1_200;
+export const CONFIRMED_LAG_MS = 400;
 /** Slots per bucket of the cached as-of pages (about five minutes). */
 export const BUCKET_SLOTS = 750;
 
