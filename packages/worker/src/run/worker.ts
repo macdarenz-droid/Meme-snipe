@@ -41,7 +41,7 @@ import { callCost } from '../providers/solana-http.ts';
 import { FILLS, PUMP_MIGRATION_AUTHORITY } from './sources.ts';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { DelayProbe, type DelayProbeOptions } from './delay-probe.ts';
-import { type AlertSeen, type ApiInputs, collectAlerts, startApiServer } from './api.ts';
+import { closeFee, type AlertSeen, type ApiInputs, collectAlerts, startApiServer } from './api.ts';
 import { FunnelView, rebuildFunnel } from './funnel.ts';
 import type { FactContext, FactSource } from './facts.ts';
 import { engineFeed, type EngineFeed } from './engine-feed.ts';
@@ -650,6 +650,7 @@ export class Worker {
       book: () => this.#engine.book,
       seed, scenario: d.scenario, network: d.network,
       ladderFees: d.session.policy.exits.ladder.steps.map((s) => s.priorityFeeLamports as bigint),
+      exitRung: (i) => this.#strategy.signedRung(i.intent.positionId, this.#engine.book),
       market: (mint) => this.#paperMarket(mint),
       maxSolOut: (i) => {
         const n = d.network;
@@ -1542,7 +1543,7 @@ export class Worker {
       exitCapable: this.#exitCapable(d.timers.now()), budgetHalted: (d.ops?.().quota ?? []).filter((q) => q.halted).map((q) => q.provider),
       alerts: [...this.#alerts], regime: this.#strategy.regime(), regimeMaxAgeMs: 2 * d.strategy.evaluateEveryMs, stops: this.#strategy.riskStops(),
       book: this.#engine.book, trades: this.#account.state.trades, accountCosts: this.#account.costRecords(), attempts: this.#world.attempts, legs: this.#legs(), decisions: this.#funnelView.rows, funnel: this.#funnelView.funnel, funnelAvailable: this.#funnelView.available,
-      exitFee: attemptFee(d.network, BigInt(d.session.policy.exits.ladder.steps[0]?.priorityFeeLamports ?? 0), 'filled'),
+      exitFee: (p) => closeFee(d.session.policy.exits.ladder, d.network, this.#strategy.closeRung(p.id, p.status, this.#engine.book)),
       solPrice: this.#solPrice, symbol: (mint) => this.#symbols.get(mint) ?? `${mint.slice(0, 4)}…`, waitingExits: this.#strategy.waitingExits(),
       discovered: [...this.#strategy.candidates()].map(([mint, c]) => {
         const r = this.reservesOf(mint);

@@ -17,7 +17,7 @@ import { FILL_CONFIG, PRICE_SCALE, TRIAL_POLICY } from '../../core/src/config/in
 import type { SavedExit } from '../src/engine/strategy.ts';
 import { type MicroUsd, microUsdToLamports } from '../../core/src/units/index.ts';
 import { oneTimeRent } from '../src/run/settings.ts';
-import { views } from '../src/run/api.ts';
+import { closeFee, views } from '../src/run/api.ts';
 import { runSeed } from '../src/run/seed-start.ts';
 import { StateFile, exitsFile, seedsFile } from '../src/run/state.ts';
 import type { SignatureInfo } from '../src/providers/solana-http.ts';
@@ -544,6 +544,10 @@ describe('an exit owner never waits booked blocked for a fresh market (EXIT-1d)'
     const failed = await until(m2, 60_000, () => first('exit waiting for a fresh market').length > 0, () => m2.slot());
     expect(failed).toBe(true);
     expect(first('exit waiting for a fresh market')[0]!['reasons']).toContain('pool state is stale');
+    // While the replacement waits, the open P&L's close fee is the rung it will be sent at: rung 1 (EXIT review N1).
+    const waiting = h2.worker.book.positions[pid]!;
+    expect(h2.worker.strategy.closeRung(pid, waiting.status, h2.worker.book)).toBe(1);
+    expect(h2.worker.apiInputs().exitFee(waiting)).toBe(closeFee(TRIAL_POLICY.exits.ladder, FILL_CONFIG.network, 1));
     expect(mine().some((l) => l['action'] === 'exit_blocked')).toBe(false);
     expect(h2.worker.book.positions[pid]!.status).not.toBe('exit_blocked');
     expect(h2.worker.health().pending_exits).toEqual([pid]);
@@ -586,6 +590,19 @@ describe('an exit owner never waits booked blocked for a fresh market (EXIT-1d)'
     expect(first('exit waiting for a fresh market')).toEqual([]);
     expect(b.worker.book.positions[pid]!.status).toBe('exit_blocked');
     expect(b.worker.strategy.waitingExits().has(pid)).toBe(false);
+    // Blocked: the close fee is the last rung's, the rung a blocked retry goes at (EXIT review B1).
+    const last = TRIAL_POLICY.exits.ladder.steps.length - 1;
+    const blockedPos = b.worker.book.positions[pid]!;
+    expect(b.worker.strategy.closeRung(pid, blockedPos.status, b.worker.book)).toBe(last);
+    // The market pays again and the retry wait passes: the retry is sent at the last rung, and the display agrees.
+    expect(await until(m2, TRIAL_POLICY.exits.blockedRetryMs + 10_000, () => first('retry blocked exit').length > 0, () => { m2.slot(); m2.pool(); })).toBe(true);
+    const at = mine().findIndex((l) => (l['reasons'] as string[])[0] === 'retry blocked exit');
+    const sent = mine().slice(at).find((l) => (l['reasons'] as string[])[0] === 'prepare exit')!;
+    expect(sent['reasons']).toContain(`rung ${last}`);
+    const retryAttempt = [...b.worker.apiInputs().attempts.values()].filter((a) => a.trade === pid && a.purpose === 'exit').at(-1)!;
+    expect(retryAttempt.priorityFee).toBe(TRIAL_POLICY.exits.ladder.steps[last]!.priorityFeeLamports);
+    const retrying = b.worker.book.positions[pid]!;
+    if (retrying.status !== 'closed') expect(b.worker.strategy.closeRung(pid, retrying.status, b.worker.book)).toBe(last);
     await b.worker.stop();
   });
 

@@ -26,13 +26,13 @@ import { RAW } from '../../../core/src/facts/raw.ts';
 import { observedFeeContext, type SwapEvent, swapEventState } from '../../../core/src/fills/index.ts';
 import {
   type EntryPlan, type ExitDecision, type FlowMinute, type ExitSettings, type ExitTracker, type Holding, type PriceBar,
-  atr, checkStopDistance, decideExit, execPrice, liquidationValue, exitAttemptsOf, exitBookEvents, exitSettings, newTracker, noteAttempt,
+  atr, attemptRung, checkStopDistance, decideExit, execPrice, liquidationValue, exitAttemptsOf, exitBookEvents, exitSettings, newTracker, noteAttempt,
 } from '../../../core/src/exits/index.ts';
 import {
   type Coverage, type DeployerIndexState, type GateContext, type GraduatesFact, type RugLabellerState, type S0DiagnosticPart, DeployerIndex, GRADUATES_KEY, hardAllowsEntry, LOG_CREATE_PREFIX, NOT_EVALUATED, stagedHardRejects, RugLabeller, TX_CREATE_PREFIX, type PoolFact, carryKey, createKey, createKeepVerdict, CREATE_LATE_MS, createOf, createsCoverage, evaluateHardRejects, evaluateRegime, migrationKey, parseCreate, parseGraduates, parseMigration, parsePool, poolKey, pruneCoverage,
 } from '../../../core/src/gates/index.ts';
 import type { GraduatesSeed } from '../../../core/src/facts/raw.ts';
-import { type BookEvent, type IntentState, isTerminal } from '../../../core/src/lifecycle/index.ts';
+import { type Book, type BookEvent, type IntentState, isTerminal } from '../../../core/src/lifecycle/index.ts';
 import { type AccountHistory, type Latches, type Timed, evaluateEntry, evaluateExit, maxTradeCosts, riskSnapshot } from '../../../core/src/risk/index.ts';
 import { HourTags } from './hour-tags.ts';
 import { latchable, type markedHistory, markSettings, riskAccount } from './marks.ts';
@@ -84,6 +84,17 @@ export interface RiskStopsView {
    */
   readonly dayLoss: bigint | null;
 }
+/**
+ * The rung a close would go at now, as `#sendExit` would send it (core `attemptRung`; EXIT review B1/N1): an exit owner in
+ * flight with no signed attempt uses its own start rung (a blocked retry's is the last); a blocked position with no owner
+ * yet retries at the last rung; otherwise the next rung up. Unknown (no saved plan, `lastRung` undefined): the last rung.
+ */
+export const closeRungOf = (i: { readonly last: number; readonly status: string; readonly lastRung: number | null | undefined; readonly used: number; readonly owner: { readonly startRung: number; readonly signed: number } | null }): number => {
+  if (i.lastRung === undefined) return i.last;
+  if (i.owner !== null) return attemptRung(i.lastRung, i.used, i.last, i.owner);
+  if (i.status === 'exit_blocked') return i.last;
+  return attemptRung(i.lastRung, i.used, i.last, null);
+};
 /** Account stops are read again on the account's own event, else at most once per this much event time. */
 export const STOPS_EVERY_MS = 1000;
 /** A reject's typed reasons ride in its last reason as `gate_reasons <json>`; the desk journals them as `gate_reasons`. */
@@ -774,6 +785,25 @@ export class LiveStrategy implements Strategy {
 
   /** The latest account stops (RiskStopsView); null before the first event. */
   #stops: RiskStopsView | null = null;
+
+  /** The rung a close of position `pid` would go at now (`closeRungOf`, from this strategy's plan, owners and the book). */
+  closeRung(pid: string, status: string, book: Book): number {
+    const saved = this.#exits.get(pid);
+    const live = Object.values(book.intents).filter((i) => i.intent.purpose === 'exit' && i.intent.positionId === pid && !isTerminal(i)).at(-1);
+    const owner = live === undefined ? undefined : this.#owners.get(live.intent.id);
+    return closeRungOf({
+      last: this.#d.session.policy.exits.ladder.steps.length - 1, status, lastRung: saved === undefined ? undefined : saved.tracker.lastRung,
+      used: exitAttemptsOf(book.intents, pid as PositionId), owner: live !== undefined && owner !== undefined ? { startRung: owner.startRung, signed: live.attempts.length } : null,
+    });
+  }
+
+  /** The rung already signed, recorded by #sendExit before its synchronous broadcast effect. */
+  signedRung(pid: string, book: Book): number {
+    const last = this.#d.session.policy.exits.ladder.steps.length - 1;
+    const remembered = this.#exits.get(pid)?.tracker.lastRung;
+    // The book includes this signature already; without a remembered rung, its global count starts at rung zero.
+    return Math.min(remembered ?? Math.max(0, exitAttemptsOf(book.intents, pid as PositionId) - 1), last);
+  }
 
   riskStops(): RiskStopsView | null {
     return this.#stops;
@@ -1877,9 +1907,10 @@ export class LiveStrategy implements Strategy {
     const last = steps.length - 1;
     const owner = this.#owners.get(id);
     const used = exitAttemptsOf(ctx.book.intents, pid);
-    // Escalation never goes down: one rung above the highest tried, and never below the position's attempt count.
+    // Escalation never goes down: one rung above the highest tried, and never below the position's attempt count; a new
+    // owner's first attempt goes at its own start rung (core attemptRung, which the app's close fee also reads).
     const lastRung = saved?.tracker.lastRung ?? null;
-    const rung = Math.min(signed === 0 && owner !== undefined ? owner.startRung : Math.max(lastRung === null ? 0 : lastRung + 1, used), last);
+    const rung = attemptRung(lastRung, used, last, owner === undefined ? null : { startRung: owner.startRung, signed });
     const height = this.#height;
     const q = height === null ? 'no slot height yet' : this.#sellQuote(ctx, mint, quantity, rung);
     if (typeof q === 'string' && !q.startsWith(NO_QUOTE)) {
@@ -2508,4 +2539,3 @@ export const reservationOf = (reasons: readonly string[]): { reservationId: stri
     return null;
   }
 };
-
