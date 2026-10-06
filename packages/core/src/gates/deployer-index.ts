@@ -240,12 +240,12 @@ export class DeployerIndex {
 
   snapshot(asOf: Moment, retainFromMs = Number.MIN_SAFE_INTEGER, o: { readonly mints?: boolean; readonly clamp?: AsOfClamp } = {}): DeployerIndexState {
     if (this.#last !== null && compareMoments(this.#last, asOf) > 0) throw new RangeError('the index has observed events after the snapshot moment');
-    // SAVE-ASOF: every saved time as at `asOf`, never after (`AsOfClamp`): restore refuses after, and would discard the
-    // whole save. A label is never dropped for it: a dropped rug label would fail open.
+    // SAVE-ASOF: the index's first and last moments as at `asOf`, never after (`AsOfClamp`): restore refuses after, and
+    // would discard the whole save. Labels keep their exact receipt time (H14 counts a prior rug by it, so moving it
+    // earlier could drop one from the look-back early): restore checks a label by its moment (facts review B1).
     const clamp = o.clamp ?? new AsOfClamp(asOf.receivedAt);
-    const label = (k: Known): Known => (k.at.receivedAt <= asOf.receivedAt ? k : { ...k, at: clamp.moment(k.at) });
     const keep = (m: Map<string, Map<string, Known>>) =>
-      [...m].map(([creator, inner]) => [creator, [...inner].filter(([, v]) => v.at.receivedAt >= retainFromMs).map(([mint, v]) => [mint, label(v)] as const)] as const)
+      [...m].map(([creator, inner]) => [creator, [...inner].filter(([, v]) => v.at.receivedAt >= retainFromMs)] as const)
         .filter(([, inner]) => inner.length > 0)
         .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
     const first = this.#first === null ? null : clamp.moment(this.#first.receivedAt >= retainFromMs ? this.#first : { ...this.#first, receivedAt: retainFromMs });
@@ -285,7 +285,7 @@ export class DeployerIndex {
     };
     const asOf = moment(s.asOf);
     if (asOf === null) throw new RangeError('a snapshot needs its as-of moment');
-    const pairs = <V>(rows: unknown, into: Map<string, Map<string, V>>, value: (v: unknown) => V, ms: (v: V) => number) => {
+    const pairs = <V>(rows: unknown, into: Map<string, Map<string, V>>, value: (v: unknown) => V, future: (v: V) => boolean) => {
       if (!Array.isArray(rows) && !(typeof rows === 'object' && rows !== null && Symbol.iterator in rows)) throw new RangeError('bad table');
       for (const row of rows as Iterable<unknown>) {
         if (!Array.isArray(row) || typeof row[0] !== 'string' || !Array.isArray(row[1])) throw new RangeError('bad row');
@@ -293,7 +293,7 @@ export class DeployerIndex {
         for (const e of row[1] as unknown[]) {
           if (!Array.isArray(e) || typeof e[0] !== 'string') throw new RangeError('bad entry');
           const v = value(e[1]);
-          if (ms(v) > asOf.receivedAt) throw new RangeError('an entry is dated after the snapshot moment');
+          if (future(v)) throw new RangeError('an entry is dated after the snapshot moment');
           m.set(e[0], v);
         }
         into.set(row[0], m);
@@ -328,8 +328,10 @@ export class DeployerIndex {
       if (at === null || (o['kind'] !== null && typeof o['kind'] !== 'string')) throw new RangeError('bad label');
       return { at, kind: o['kind'] as string | null };
     };
-    pairs(s.rugs, idx.#rugs, known, (k) => k.at.receivedAt);
-    pairs(s.unjudged, idx.#unjudged, known, (k) => k.at.receivedAt);
+    // SAVE-ASOF (facts review B1): a label is checked by its moment, the engine's own order (slot first): one released
+    // at or before the save is never future, whatever its receipt time, and keeps that receipt time exactly.
+    pairs(s.rugs, idx.#rugs, known, (k) => compareMoments(k.at, asOf) > 0);
+    pairs(s.unjudged, idx.#unjudged, known, (k) => compareMoments(k.at, asOf) > 0);
     if (!Array.isArray(s.createVias) || !s.createVias.every((v) => typeof v === 'string')) throw new RangeError('bad vias');
     for (const v of s.createVias) idx.#createVias.add(v);
     if (!Array.isArray(s.lost)) throw new RangeError('bad lost table');

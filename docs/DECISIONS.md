@@ -2693,18 +2693,27 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   `gates/as-of-clamp.ts`). Two kinds of time can be after the moment without anything being wrong: a receipt time (the
   slot-order case above) and a chain block time, which is routinely seconds off local receipt. Each one restore
   compares with the moment is saved as at it; slot, transaction and instruction are kept, and nothing is dropped:
-  - the index's rug and unjudged labels' `at` (a dropped rug label would fail open) and its `first`/`last`;
+  - the index's `first`/`last` moments;
   - the index's mint rows (a create's block time) and the rug labeller's launches' `createdAtMs` (same);
   - saved coverage facts' receipt times: an off-chain fact and a later chain frame need not arrive in moment order, and
     the downtime fill's facts carry fetch times, so "never later" cannot be shown from the code; clamped instead;
   - a candidate's `migratedAtMs` (the migration's block time): before, a candidate migrated "after" the moment by it was
     left out of the save, and lost at a restart; every candidate comes from a released event, so none is left out now.
+  - Labels are not clamped (facts review B1): H14 and the soft features count a prior rug or an unjudged mint while
+    `knownAtMs` (its receipt time) is inside the look-back, so a clamp could drop one from the look-back early, a
+    known rugger missed. A label keeps its exact receipt time, and restore checks it by moment (`compareMoments`, slot
+    first, the engine's own order): one released at or before the save is never future; one at a later slot is
+    refused as before. A dropped label would fail open too, so none is dropped.
+  - Capped (facts review B2): a time more than `CHAIN_SKEW_MS` (60 s) after the moment cannot be skew, and refuses
+    the save with its reason ("a saved time is N ms after the save's moment, more than the 60000 ms of clock skew
+    allowed"), logged as "Saved state not written: …", the last file kept: the fail-closed behaviour from before
+    SAVE-ASOF, kept for the extreme case.
   - Not clamped: price bars (minute starts; clamping would break the alignment) and fee terms stay filtered as before
     (FEES-KEEP); a bar is left out only when a block time crossed a minute boundary ahead of local receipt.
   - Effect: H14 can see a create, and the labeller a launch, up to one skew (seconds) earlier after a restart than
     without it; a restored candidate's window starts up to one skew earlier.
-  - Accepted fail-open edges (supervisor ruling). Each is at most one clamp (seconds; over 10 s it is logged, the
-    tripwire) and needs a window edge to fall inside those same seconds; refusing the save instead discards the whole
+  - Accepted fail-open edges (supervisor ruling). Each is at most one clamp (at most 60 s, capped; over 10 s it is
+    logged, the tripwire) and needs a window edge to fall inside those same seconds; refusing the save instead discards the whole
     state and reads not covered for a look-back, which fails far wider:
     - H14 serial count (`hard.ts`, `createdAtMs > now - DAY_MS`): a clamped create leaves the 24 h window up to one skew
       early, so the count can read one lower for those seconds.
@@ -2712,15 +2721,21 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
       within N ms of a launch can stop applying up to one skew early.
     - Coverage (`createsCoverage`: `firstStart` and `lastLossy.at` by receipt time): a clamped start reads covered up to
       one skew earlier, and a clamped lossy gap can fall just before a window start it was really inside. Receipt time
-      only: slot is never moved.
+      only: slot is never moved. The same for the index's own start (`DeployerIndex.factFor` `own`, from
+      `first.receivedAt`): a clamped `first` reads the index as watching up to one skew earlier.
+  - Not checked (facts review N2): the index's lost-create rows (`lost`, `atMs` when a log read may have lost a
+    create) have no as-of check on restore; they only name signatures to fetch again, and decide nothing.
   - Visibility: each clamp is counted with the largest; the worker logs a save whose largest clamp is over 10 s
     (`CLAMP_LOG_MS`; "Saved state: N times dated after the save's moment were saved as at it, the latest X s after."),
     so a real future-dated bug stays visible.
-  - Evidence: `save-asof.test.ts`: labels, first moment and a mint row 5 s late restore with slot, transaction and
-    instruction kept (before: refused); a create, launch and coverage fact after the moment restore; a candidate
-    migrated 5 s after the moment is saved (before: left out); the worker logs a clamp over 10 s and writes the save.
-    Hand mutants killed: labels unclamped, the clamp moving a transaction index, mint rows unclamped, labeller
-    unclamped, coverage unclamped, the candidate filter back, clamps not counted, the log threshold, `first` unclamped.
+  - Evidence: `save-asof.test.ts`: labels received after the moment restore with their exact receipt time and the
+    look-back edge reads as before the restart, a label at a later slot is refused (before: every late label refused);
+    the first moment and a mint row 5 s late restore with slot, transaction and instruction kept; a create, launch and
+    coverage fact after the moment restore; a candidate migrated 5 s after the moment is saved (before: left out); a
+    clamp just under 60 s is saved, just over refuses the save, also through the worker (reason logged, file kept); the
+    log line at 9 s, 10 s and 11 s. Hand mutants killed: labels checked by receipt time, labels unchecked, labels
+    clamped, no cap, the cap at `>=`, the log at `>=`, the clamp moving a transaction index, mint rows unclamped,
+    labeller unclamped, coverage unclamped, the candidate filter back, clamps not counted, `first` unclamped.
   - The seed and the downtime fill (`DeployerIndex.#checked`, supervisor ruling): a create whose block time was after the
     process start's receipt time refused the whole seed, so H14 read not covered for a full look-back after a restart
     near a create. A block time up to `CHAIN_SKEW_MS` (60 s, config/platform.ts) after the start is now taken as at the

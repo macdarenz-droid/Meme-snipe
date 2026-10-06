@@ -15,9 +15,10 @@ import { HALT_KEY, LiveStrategy, RESTORE_KEY, SEED_KEY } from '../src/engine/str
 import { strategyConfig } from '../src/run/settings.ts';
 import { loadState, saveState } from '../src/persist/index.ts';
 import { DEV, MIGRATED_AT, MINT, Market, POOL_ADDRESS, SLOT, dueTimers, makeWorker, slotAt, tempState } from './worker-harness.ts';
-import { PERSIST_EVERY_MS, PERSIST_FILE } from '../src/run/worker.ts';
+import { CLAMP_LOG_MS, PERSIST_EVERY_MS, PERSIST_FILE, clampNote } from '../src/run/worker.ts';
+import { CHAIN_SKEW_MS } from '../../core/src/config/index.ts';
 import { TX_CREATE_PREFIX } from '../../core/src/gates/index.ts';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 
 const RESTORED = MIGRATED_AT + 30 * 60_000;
 /** Inside the candidate's window (U2: 60 to 240 minutes after the migration). */
@@ -100,7 +101,7 @@ describe('SAVE-ASOF', () => {
   });
   const market = (key: string, value: unknown, moment: Moment): MarketEvent => ({ kind: 'market', id: key, moment, key, value });
 
-  it('the index\'s labels, first moment and mint rows received or dated after the moment restore, with slot, transaction and instruction kept', () => {
+  it('labels received after the moment keep their exact receipt time and restore, checked by moment; the first moment and mint rows are saved as at it, slot, transaction and instruction kept', () => {
     const idx = new DeployerIndex();
     const rug = { slot: SLOT + 1n, txIndex: 3, ixIndex: 1, receivedAt: IN_WINDOW + 4_000 };
     const unjudged = { slot: SLOT + 1n, txIndex: 4, ixIndex: 2, receivedAt: IN_WINDOW + 4_500 };
@@ -111,18 +112,54 @@ describe('SAVE-ASOF', () => {
     idx.observe(market('logs:pump:CreateEvent:M', createEvent('M', IN_WINDOW + 6_000, SLOT + 2n), asOf));
     const clamp = new AsOfClamp(asOf.receivedAt);
     const saved = idx.snapshot(asOf, Number.MIN_SAFE_INTEGER, { clamp });
-    const at = (m: Moment) => ({ ...m, receivedAt: asOf.receivedAt });
-    expect(saved.first).toEqual(at(rug));
+    expect(saved.first).toEqual({ ...rug, receivedAt: asOf.receivedAt });
     expect(saved.last).toEqual(asOf);
-    expect(saved.rugs).toEqual([['Dev1111', [['R', { at: at(rug), kind: 'dump' }]]]]);
-    expect(saved.unjudged).toEqual([['Dev1111', [['U', { at: at(unjudged), kind: null }]]]]);
+    // Facts review B1: never clamped (H14 counts a prior rug by its receipt time).
+    expect(saved.rugs).toEqual([['Dev1111', [['R', { at: rug, kind: 'dump' }]]]]);
+    expect(saved.unjudged).toEqual([['Dev1111', [['U', { at: unjudged, kind: null }]]]]);
     expect(saved.mints).toEqual([['Dev1111', [['M', asOf.receivedAt]]]]);
     // Before: restore refused the labels ('an entry is dated after the snapshot moment') and the save was discarded.
     const back = DeployerIndex.restore(saved);
     expect(back.snapshot(asOf)).toEqual(saved);
-    expect(back.factFor('Dev1111', asOf, 0).rugs.map((r) => r.mint)).toEqual(['R']);
-    // Item 5: each clamp counted (first, two labels, one mint row) with the largest.
-    expect([clamp.count, clamp.maxMs]).toEqual([4, 5_000]);
+    // The look-back edge reads exactly as before the restart: the same labels with the same receipt times.
+    const edge = { ...asOf, receivedAt: rug.receivedAt };
+    for (const now of [asOf, edge]) expect(back.factFor('Dev1111', now, 0)).toMatchObject({ rugs: idx.factFor('Dev1111', now, 0).rugs, unjudged: idx.factFor('Dev1111', now, 0).unjudged });
+    expect(back.factFor('Dev1111', edge, 0).rugs).toEqual([expect.objectContaining({ mint: 'R', knownAtMs: rug.receivedAt })]);
+    // Item 5: each clamp counted (first, one mint row) with the largest.
+    expect([clamp.count, clamp.maxMs]).toEqual([2, 5_000]);
+  });
+
+  it('a label at a later slot than the save\'s moment is still refused on restore', () => {
+    const idx = new DeployerIndex();
+    const asOf = { slot: SLOT + 2n, txIndex: 1, ixIndex: 0, receivedAt: IN_WINDOW + 1_000 };
+    idx.observe(market('logs:pump:CreateEvent:M', createEvent('M', IN_WINDOW, SLOT + 2n), asOf));
+    const saved = idx.snapshot(asOf);
+    // Received before the moment, but at a later slot: future by the engine's order.
+    for (const table of ['rugs', 'unjudged'] as const) {
+      const later = { ...saved, [table]: [['Dev1111', [['R', { at: { slot: SLOT + 3n, txIndex: 0, ixIndex: 0, receivedAt: IN_WINDOW }, kind: null }]]]] };
+      expect(() => DeployerIndex.restore(later), table).toThrow(/dated after the snapshot moment/);
+    }
+  });
+
+  it('a clamp is capped at CHAIN_SKEW_MS: just under is saved as at the moment, just over refuses the save with its reason', () => {
+    const c = new AsOfClamp(IN_WINDOW);
+    expect(c.ms(IN_WINDOW + CHAIN_SKEW_MS)).toBe(IN_WINDOW);
+    expect(() => c.ms(IN_WINDOW + CHAIN_SKEW_MS + 1)).toThrow(/more than the 60000 ms of clock skew allowed/);
+    // Through the save: an evaluation received 61 s after the moment refuses the whole save (as before SAVE-ASOF).
+    const r = restored(CANDIDATE);
+    r.event('late', SLOT + 1n, IN_WINDOW + CHAIN_SKEW_MS + 1_000);
+    r.event('next', SLOT + 2n, IN_WINDOW);
+    expect(() => r.strategy.persistable(0)).toThrow(/clock skew allowed/);
+    const ok = restored(CANDIDATE);
+    ok.event('late', SLOT + 1n, IN_WINDOW + CHAIN_SKEW_MS - 1_000);
+    ok.event('next', SLOT + 2n, IN_WINDOW);
+    expect(ok.strategy.persistable(0)!.clamp.maxMs).toBe(CHAIN_SKEW_MS - 1_000);
+  });
+
+  it('the log line is written for a largest clamp over 10 s only (9 s: none; 11 s: logged)', () => {
+    expect(clampNote({ count: 3, maxMs: 9_000 })).toBeNull();
+    expect(clampNote({ count: 3, maxMs: CLAMP_LOG_MS })).toBeNull();
+    expect(clampNote({ count: 3, maxMs: 11_000 })).toBe("Saved state: 3 times dated after the save's moment were saved as at it, the latest 11.0 s after.");
   });
 
   it('a create, a launch and a migration dated by chain time 5 s after the moment, and a coverage fact received after it, are saved as at the moment and restore', () => {
@@ -156,7 +193,7 @@ describe('SAVE-ASOF', () => {
     expect(back.ok ? 'ok' : back.reason).toBe('ok');
   });
 
-  it('the worker logs a save whose largest clamp is over 10 s (a real future-dated bug stays visible), and still writes it', async () => {
+  it('the worker refuses a save holding a time more than 60 s after its moment, logs the reason and keeps the last file', async () => {
     const stateDir = tempState();
     const timers = dueTimers(MIGRATED_AT);
     const h = makeWorker({ stateDir, timers, seed: async () => ({ mode: 'none', creates: [], coverage: [], report: 'test' }) });
@@ -168,16 +205,17 @@ describe('SAVE-ASOF', () => {
     }
     m.slot();
     m.offchain('coverage:creates:start', { fromSlot: slotAt(m.now), via: 'logs:pump' });
-    await m.run(60_000, 10_000, () => m.slot());
+    await m.run(PERSIST_EVERY_MS + 60_000, 30_000, () => m.slot());
     expect(await started).toEqual({ ok: true });
-    // A create whose chain time is an hour ahead: still ahead at the next save.
+    const path = join(stateDir, PERSIST_FILE);
+    expect(existsSync(path)).toBe(true);
+    const before = readFileSync(path, 'utf8');
+    // A create whose chain time is an hour ahead: no clock is that far off.
     const ahead = timers.now() + 3_600_000;
     m.fact(`${TX_CREATE_PREFIX}Future1111`, { event: { program: 'pump', name: 'CreateEvent', data: { mint: 'Future1111', creator: DEV, user: DEV, timestamp: BigInt(Math.floor(ahead / 1000)), tokenTotalSupply: 1_000_000_000_000_000n } }, signature: 'create-future' });
     await m.run(PERSIST_EVERY_MS + 60_000, 30_000, () => m.slot());
-    expect(existsSync(join(stateDir, PERSIST_FILE))).toBe(true);
-    expect(h.logs.filter((l) => l.startsWith('Saved state: '))).toEqual(expect.arrayContaining([expect.stringMatching(/^Saved state: [1-9]\d* times dated after the save's moment were saved as at it, the latest \d+\.\d s after\.$/)]));
-    expect(h.logs.filter((l) => l.startsWith('Saved state not written') && !l.endsWith('the seed is not applied yet.'))).toEqual([]);
+    expect(h.logs.filter((l) => l.startsWith('Saved state not written') && !l.endsWith('the seed is not applied yet.'))).toEqual(expect.arrayContaining([expect.stringMatching(/^Saved state not written: a saved time is \d+ ms after the save's moment, more than the 60000 ms of clock skew allowed\.$/)]));
+    expect(readFileSync(path, 'utf8')).toBe(before);
     await h.worker.kill();
   }, 60_000);
 });
-
