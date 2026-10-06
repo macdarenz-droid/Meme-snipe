@@ -137,6 +137,8 @@ Full signatures, buffers and hashes are in `packages/core/test/chain/fixtures/up
 
 **New events.** `pump:742b4dbd117a482b`, `amm:82a42461e48287a5` and `pump:a943276d6686b6e8` (DATA-1) match no IDL name in any SDK version or any pump-public-docs commit, nor 1,820 suffix and prefix variants of the known names. None appeared in the 89 blocks sampled here, as self-CPI events or as `Program data:` logs, so they are rare. DEC-1 keeps them as `other` with their discriminator, never decoded.
 
+**Update 2026-10-06 (TAIL-PROOF, `research/tail-proof/README.md`).** Two of the three are named by exact Anchor hash: `82a42461e48287a5` = `SweepPoolFeeEvent` (PumpSwap) and `742b4dbd117a482b` = `SweepBondingCurveFeeEvent` (pump). They are emitted by two new instructions on both programs, `sweep_creator_fee` (`20f6bf3408c949ba`) and `sweep_protocol_fee` (`0830be07b644b7e5`). On SOL PumpSwap pools the 8-byte trade tail, read as a u64, is the unswept creator fee: it grows by exactly `coin_creator_fee` on each v2-instruction trade, and the creator sweep pays out exactly the tail and resets it to 0 (891/891 trades, 3/3 sweeps). 1,188 non-zero-tail trades on 36 pools reproduce exactly in the quote, the vaults and the swap's own transfers. `a943276d6686b6e8` stays unnamed. Nothing is published; this is measured.
+
 **Fees, accounts and rent.**
 - pump: 95 bps protocol and 30 bps creator, the same before and after.
 - PumpSwap: the same tier shape before and after (LP 20 or 25 bps, protocol 5 bps, creator by tier; the first tier is LP 2, protocol 93, creator 30).

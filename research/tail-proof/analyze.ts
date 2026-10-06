@@ -335,11 +335,13 @@ const main = () => {
     };
     const nz = spread(rows.filter((r) => r.nonzero).map((r) => r.v), 20);
     const zPicked = spread(rows.filter((r) => !r.nonzero).map((r) => r.v), 8);
+    // Flows keep role and amount only (the test needs no addresses), to keep the fixture small.
+    const slim = (v: Vector) => ({ ...v, flows: v.flows.map((f) => ({ role: f.role, amount: f.amount })) });
     const fixture = {
       source: 'public mainnet RPC (keyless), research/tail-proof/collect.ts', fetchedAt: report.generatedAt,
       feeConfig: { address: '5PHirr8joyTMp9JMm6nW7hNDVyEYdkzDqazxPD7RaTjx', slot: fc.slot, data: fc.data },
       selection: 'successful PumpSwap buys and sells on canonical, SOL-quoted, non-mayhem pools after B5; nonzero: sampled trades whose 8-byte tail is non-zero, at most 20 per pool; zero: controls, at most 8 per pool; tapes: consecutive trades and sweeps of single pools',
-      nonzero: nz, zero: zPicked,
+      nonzero: nz.map(slim), zero: zPicked.map(slim),
       tapes: Object.fromEntries(Object.entries(tapes).filter(([, t]) => t.length > 0)),
     };
     writeFileSync(FIXTURE, JSON.stringify(fixture));
