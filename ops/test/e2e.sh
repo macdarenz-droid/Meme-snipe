@@ -178,7 +178,7 @@ start=$(date +%s)
 # A fresh server gets the watchdog in its very first Deploy run (the Cloudflare secrets already exist).
 T_CF="TESTcloudflare$(rnd 16)"
 printf '%s' "$T_CF" >"$STATE/cf-token"
-CF_ENV=(CLOUDFLARE_API_TOKEN="$T_CF" CLOUDFLARE_ACCOUNT_ID=e2e WRANGLER="$STUBS/wrangler --config packages/ops/wrangler.toml" TELEGRAM_API="http://127.0.0.1:$PORT" CLOUDFLARE_API_URL="http://127.0.0.1:$PORT/client/v4")
+CF_ENV=(CLOUDFLARE_API_TOKEN="$T_CF" CLOUDFLARE_ACCOUNT_ID=e2e WRANGLER="$STUBS/wrangler --config packages/ops/wrangler.toml" TELEGRAM_API="http://127.0.0.1:$PORT" CLOUDFLARE_API_URL="http://127.0.0.1:$PORT/client/v4" WATCHDOG_PROBE_URL="http://127.0.0.1:$PORT" SLOT_POLL_S=1)
 publish 1001 publish-right.log "$CODE1" "${CF_ENV[@]}" || { cat "$LOGS/publish-right.log"; fail "publish (right code)"; }
 grep -q '"method":"setWebhook"' "$STATE/telegram.jsonl" 2>/dev/null && fail "a webhook was set before pairing (it would block /pair)"
 echo "handoff picked up in $(($(date +%s) - start)) s" >>"$LOGS/summary-times.txt"
@@ -264,15 +264,16 @@ CODES+=("$CODE2")
 r0="$(in_c "journalctl -u zeroed-worker -o cat --no-pager | grep -c 'Reconcile: 0 open intents, 5 of 5'")"
 rm -f "$STATE/cf-subdomain" # the account lost its subdomain: Deploy registers a new one
 n_hook="$(grep -c '"method":"setWebhook"' "$STATE/telegram.jsonl")"
-publish 1002 publish-rotate.log "$CODE2" CLOUDFLARE_API_TOKEN="$T_CF" CLOUDFLARE_ACCOUNT_ID=e2e WRANGLER="$STUBS/wrangler --config packages/ops/wrangler.toml" TELEGRAM_API="http://127.0.0.1:$PORT" CLOUDFLARE_API_URL="http://127.0.0.1:$PORT/client/v4" || { cat "$LOGS/publish-rotate.log"; fail "publish (rotation)"; }
+publish 1002 publish-rotate.log "$CODE2" CLOUDFLARE_API_TOKEN="$T_CF" CLOUDFLARE_ACCOUNT_ID=e2e WRANGLER="$STUBS/wrangler --config packages/ops/wrangler.toml" TELEGRAM_API="http://127.0.0.1:$PORT" CLOUDFLARE_API_URL="http://127.0.0.1:$PORT/client/v4" WATCHDOG_PROBE_URL="http://127.0.0.1:$PORT" SLOT_POLL_S=1 || { cat "$LOGS/publish-rotate.log"; fail "publish (rotation)"; }
 # Deploy returns once the server has downloaded the bundle; the server then stores the keys, restarts the worker
 # (reconcile first), tells the owner and sets the webhook. Wait for those ends, not for Deploy's return.
 wait_for 120 "the server finished the rotation" "grep -q 'keys replaced (issue 1002)' '$STATE/telegram.jsonl' && [ \$(grep -c '\"method\":\"setWebhook\",\"token_ok\":true' '$STATE/telegram.jsonl') -gt $n_hook ] && [ \$(docker exec $C journalctl -u zeroed-worker -o cat --no-pager | grep -c 'Reconcile: 0 open intents, 5 of 5') -gt $r0 ]"
 grep -q '"method":"PUT","auth_ok":true' "$STATE/cloudflare.jsonl" && [[ "$(cat "$STATE/cf-subdomain")" =~ ^zeroed-[0-9a-f]{8}$ ]] || fail "workers.dev subdomain not registered"
 grep -q "Registered the workers.dev subdomain $(cat "$STATE/cf-subdomain")" "$LOGS/publish-rotate.log" || fail "subdomain registration not reported"
-[ "$(in_c "systemd-creds decrypt --name=heartbeat_hmac_key /etc/credstore.encrypted/heartbeat_hmac_key - | sha256sum | cut -c1-64")" = "$(sha256sum <"$STATE/wrangler-secrets/HEARTBEAT_HMAC_KEY" | cut -c1-64)" ] || fail "server and watchdog got different heartbeat keys"
+[ "$(in_c "systemd-creds decrypt --name=heartbeat_hmac_key /etc/credstore.encrypted/heartbeat_hmac_key - | sha256sum | cut -c1-64")" = "$(sha256sum <"$STATE/wrangler-secrets/HEARTBEAT_HMAC_KEY_A" | cut -c1-64)" ] || fail "server and watchdog got different heartbeat keys"
 in_c "grep -qx 'WATCHDOG_URL=https://zeroed-watchdog.e2e.workers.dev' /etc/zeroed/worker.env" || fail "watchdog address not delivered"
-[ "$(sort -u "$STATE/wrangler-calls.log" | tr '\n' ' ')" = "secret put HEARTBEAT_HMAC_KEY secret put TELEGRAM_BOT_TOKEN secret put TELEGRAM_WEBHOOK_SECRET " ] || fail "watchdog secrets"
+# KEY-ROTATE-SAFE: only the slot that is not active (no slot promoted here, so A), never the single-slot names.
+[ "$(sort -u "$STATE/wrangler-calls.log" | tr '\n' ' ')" = "secret put HEARTBEAT_HMAC_KEY_A secret put TELEGRAM_BOT_TOKEN secret put TELEGRAM_WEBHOOK_SECRET_A " ] || fail "watchdog secrets"
 [ "$(grep -c '"method":"setWebhook","token_ok":true' "$STATE/telegram.jsonl")" -gt "$n_hook" ] || fail "the server did not set the webhook again with the new token"
 for pair in "helius_api_key:$T_HELIUS" "alchemy_api_key:$T_ALCHEMY" "jupiter_api_key:$T_JUPITER" "telegram_bot_token:$T_TELEGRAM"; do
   want="$(printf '%s' "${pair#*:}" | sha256sum | cut -c1-64)"
@@ -363,11 +364,17 @@ pass "off-server backup: off and nothing sent until approved (ops/host-config.js
 # ---------- 9b. Watchdog on local wrangler (miniflare, the locked version from ops/watchdog/deploy) with the stub worker's real heartbeats ----------
 WD="$E2E/watchdog"
 mkdir -p "$WD"
+T_OLD_HMAC="TESTold$(rnd 24)"
+T_OLD_HOOK="TESTold$(rnd 24)"
 cp -r "$ROOT/packages/ops/src" "$ROOT/packages/ops/wrangler.toml" "$WD/"
 {
-  printf 'HEARTBEAT_HMAC_KEY=%s\n' "$(cat "$STATE/wrangler-secrets/HEARTBEAT_HMAC_KEY")"
+  # KEY-ROTATE-SAFE: the old single-slot values stay set (as on a watchdog deployed before the slots); the server's
+  # keys are the offers in slot A, which its first heartbeat and Telegram's first request make active.
+  printf 'HEARTBEAT_HMAC_KEY=%s\n' "$T_OLD_HMAC"
+  printf 'HEARTBEAT_HMAC_KEY_A=%s\n' "$(cat "$STATE/wrangler-secrets/HEARTBEAT_HMAC_KEY_A")"
   printf 'TELEGRAM_BOT_TOKEN=%s\n' "$(cat "$STATE/wrangler-secrets/TELEGRAM_BOT_TOKEN")"
-  printf 'TELEGRAM_WEBHOOK_SECRET=%s\n' "$(cat "$STATE/wrangler-secrets/TELEGRAM_WEBHOOK_SECRET")"
+  printf 'TELEGRAM_WEBHOOK_SECRET=%s\n' "$T_OLD_HOOK"
+  printf 'TELEGRAM_WEBHOOK_SECRET_A=%s\n' "$(cat "$STATE/wrangler-secrets/TELEGRAM_WEBHOOK_SECRET_A")"
   printf 'TELEGRAM_API=http://127.0.0.1:%s\nCHAIN_RPC_URL=\nHEARTBEAT_MAX_AGE_S=10\n' "$PORT"
 } >"$WD/.dev.vars"
 curl -s -m 2 -o /dev/null http://127.0.0.1:443/ && fail "port 443 is already in use"
@@ -383,7 +390,7 @@ in_c "printf 'WATCHDOG_URL=http://$GW:443\nZEROED_HEARTBEAT_MS=3000\n' > /etc/ze
 sched() { curl -s "http://127.0.0.1:443/__scheduled?cron=*+*+*+*+*" >/dev/null; }
 hook() { # chat text [secret]
   curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:443/telegram -H 'content-type: application/json' \
-    -H "x-telegram-bot-api-secret-token: ${3:-$(cat "$STATE/wrangler-secrets/TELEGRAM_WEBHOOK_SECRET")}" \
+    -H "x-telegram-bot-api-secret-token: ${3:-$(cat "$STATE/wrangler-secrets/TELEGRAM_WEBHOOK_SECRET_A")}" \
     -d "{\"message\":{\"chat\":{\"id\":$1},\"text\":\"$2\"}}"
 }
 sleep 8
@@ -393,6 +400,15 @@ sleep 1
 [ "$(wc -l <"$STATE/telegram.jsonl")" = "$n0" ] || fail "watchdog alerted while heartbeats are fresh"
 [ "$(hook 777 /pause)" = 200 ] && [ "$(wc -l <"$STATE/telegram.jsonl")" = "$n0" ] || fail "stranger's /pause got an answer"
 [ "$(hook "$T_CHAT" /pause wrong-secret)" = 401 ] || fail "webhook accepted a wrong secret"
+# KEY-ROTATE-SAFE: the server's heartbeats made slot A active for the key and the webhook secret (one bundle), and the
+# old values are refused from then on.
+curl -s http://127.0.0.1:443/slot | grep -q '"heartbeat":"A"' || fail "the server's heartbeats did not make its key active"
+hook 777 /status >/dev/null
+curl -s http://127.0.0.1:443/slot | grep -qx '{"heartbeat":"A","webhook":"A","pending":false}' || fail "the new webhook secret did not become active"
+[ "$(hook "$T_CHAT" /status "$T_OLD_HOOK")" = 401 ] || fail "the old webhook secret still works after the switch"
+t_old="$(date +%s)"
+sig_old="$(printf '%s\nPOST\n/resume\n{}' "$t_old" | openssl dgst -sha256 -hmac "$T_OLD_HMAC" | sed 's/^.* //')"
+[ "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:443/resume -H "x-zeroed-signature: t=$t_old,v1=$sig_old" -d '{}')" = 401 ] || fail "the old heartbeat key still works after the switch"
 hook "$T_CHAT" /pause >/dev/null
 wait_for 20 "worker applies /pause" "docker exec $C journalctl -u zeroed-worker -o cat --no-pager | grep -q 'Entries paused by the owner'"
 hook "$T_CHAT" /status >/dev/null
@@ -417,7 +433,7 @@ in_c "zeroed-resume" | grep -q 'Entries allowed again' || fail "zeroed-resume"
 wait_for 20 "worker applies the resume" "docker exec $C journalctl -u zeroed-worker -o cat --no-pager | grep -q 'Entries allowed again (pause cleared from the host)'"
 wait_for 10 "resume notice" "tail -2 '$STATE/telegram.jsonl' | grep -q 'Entries allowed again'"
 tail -n +"$((n0 + 1))" "$STATE/telegram.jsonl" | grep -E '"method":"sendMessage"' | grep -v "\"chat_id\":\"$T_CHAT\"" | grep -q . && fail "the watchdog wrote to a chat other than the owner's"
-pass "watchdog (locked wrangler dev, miniflare): signed heartbeats from the host teach it the owner chat; quiet while fresh; /pause and /status only from the owner chat and the right webhook secret; worker applied pause and later the resume; /resume refused over Telegram; stale alert once, cleared on return; resume only from the host"
+pass "watchdog (locked wrangler dev, miniflare): the server's first heartbeat and Telegram's first request switch to the rotated key and webhook secret and the old ones are refused (KEY-ROTATE-SAFE); signed heartbeats from the host teach it the owner chat; quiet while fresh; /pause and /status only from the owner chat and the right webhook secret; worker applied pause and later the resume; /resume refused over Telegram; stale alert once, cleared on return; resume only from the host"
 
 # ---------- 10. Restart and crash drills ----------
 r0="$(in_c "journalctl -u zeroed-worker -o cat --no-pager | grep -c 'Reconcile: 0 open intents'")"
@@ -886,7 +902,7 @@ docker logs "$C" >"$LOGS/container-console.txt" 2>&1
 in_c "tar -c --exclude=/proc --exclude=/sys --exclude=/dev --exclude=/run/credentials --exclude=/opt/node-v22.23.3 --exclude=/usr --exclude=/opt/zeroed/repo --exclude=/opt/zeroed/releases / 2>/dev/null" >"$E2E/container-fs.tar" || true
 mkdir -p "$E2E/fs" && tar -xf "$E2E/container-fs.tar" -C "$E2E/fs" 2>/dev/null || true
 node -e 'for (const l of require("fs").readFileSync(process.argv[1], "utf8").split("\n").filter(Boolean)) console.log(JSON.parse(l).text)' "$STATE/telegram.jsonl" >"$LOGS/telegram-texts.txt"
-KEYS=("${VALUES_A[@]}" "$T_HELIUS" "$T_ALCHEMY" "$T_JUPITER" "$T_TELEGRAM" "$T_CHAT" "$T_CHAT2" "$T_OTHER" "$T_CF" "$(cat "$STATE/wrangler-secrets/HEARTBEAT_HMAC_KEY")" "$(cat "$STATE/wrangler-secrets/TELEGRAM_WEBHOOK_SECRET")")
+KEYS=("${VALUES_A[@]}" "$T_HELIUS" "$T_ALCHEMY" "$T_JUPITER" "$T_TELEGRAM" "$T_CHAT" "$T_CHAT2" "$T_OTHER" "$T_CF" "$(cat "$STATE/wrangler-secrets/HEARTBEAT_HMAC_KEY_A")" "$(cat "$STATE/wrangler-secrets/TELEGRAM_WEBHOOK_SECRET_A")" "$T_OLD_HMAC" "$T_OLD_HOOK")
 scan_hits() { # values-array-name paths... : prints each value found (by hash) and then the number found
   local hits=0 v
   local -n vals="$1"
