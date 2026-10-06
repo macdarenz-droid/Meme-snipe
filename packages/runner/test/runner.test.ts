@@ -10,6 +10,8 @@ import { LocalControl } from '../src/control.ts';
 import { reportMarkdown, type DrillOutcome, type Report } from '../src/report.ts';
 import { httpHealth, runSegment } from '../src/runner.ts';
 import { scanPaths } from '../src/scan.ts';
+import { journalLines, tradePhases } from './trade-phases.ts';
+import { nativeStub } from './native-stub.ts';
 
 const root = join(import.meta.dirname, '..', '..', '..');
 const freePort = (): Promise<number> =>
@@ -27,9 +29,9 @@ const setup = async (envOver: Record<string, string> = {}) => {
   const addr = `127.0.0.1:${await freePort()}`;
   const stateDir = join(dir, 'state');
   const evidenceDir = join(dir, 'evidence', 'run');
-  const control = () =>
+  const control = (entry = STUB_ENTRY) =>
     new LocalControl({
-      entry: STUB_ENTRY,
+      entry,
       cwd: root,
       logPath: join(evidenceDir, 'logs', 'worker.log'),
       stateDir,
@@ -84,13 +86,14 @@ describe('runner with the stub worker', () => {
 
   it('runs restart and feed drills, survives a job handover, and writes complete evidence', async () => {
     const t = await setup();
-    const newRun = { runId: 'run', targetMs: 16_000, entry: STUB_ENTRY, restarts: 3, causes: ['crash', 'crash', 'crash'] as const, restartWindowMs: 2500, feedDropMs: 600, rpcDrops: 0 };
+    const entry = nativeStub(t.dir);
+    const newRun = { runId: 'run', targetMs: 16_000, entry, restarts: 3, causes: ['crash', 'crash', 'crash'] as const, restartWindowMs: 2500, feedDropMs: 600, rpcDrops: 0 };
     const common = { identity: { label: 'rehearsal' as const, commit: 'c0ffee' }, healthAddr: t.addr, stateDir: t.stateDir, evidenceDir: t.evidenceDir, keepRecorded: 'copy' as const, sampleMs: 100, recoverMs: 5000, log: quiet };
     // Job 1 stops part-way, like a GitHub job at its time limit; job 2 restores and finishes.
-    const first = await runSegment({ ...common, control: t.control(), newRun, segmentEnd: Date.now() + 8000, recordedDir: join(t.dir, 'rec1'), recordedArtifact: 'rec1' });
+    const first = await runSegment({ ...common, control: t.control(entry), newRun, segmentEnd: Date.now() + 8000, recordedDir: join(t.dir, 'rec1'), recordedArtifact: 'rec1' });
     expect(first).toMatchObject({ done: false, aborted: null, report: null });
     expect(existsSync(join(t.stateDir, 'clean_stop'))).toBe(true);
-    const second = await runSegment({ ...common, control: t.control(), segmentEnd: Number.POSITIVE_INFINITY, recordedDir: join(t.dir, 'rec2'), recordedArtifact: 'rec2' });
+    const second = await runSegment({ ...common, control: t.control(entry), segmentEnd: Number.POSITIVE_INFINITY, recordedDir: join(t.dir, 'rec2'), recordedArtifact: 'rec2' });
     expect(second.done).toBe(true);
     const r = second.report as Report;
 
@@ -151,6 +154,28 @@ describe('runner with the stub worker', () => {
     writeFileSync(join(t.evidenceDir, 'logs', 'planted.log'), `url=https://x/?api-key=${FAKE.HELIUS_API_KEY}`);
     expect(scanPaths([t.dir], new Map(Object.entries(FAKE))).map((f) => f.what)).toEqual(['HELIUS_API_KEY']);
   }, 60_000);
+
+  it('stopping between a killed child and its pending restart stays unclean and never invents a graceful-stop marker', async () => {
+    const t = await setup();
+    const phases = tradePhases(t.dir, 'hold');
+    const control = new LocalControl({
+      entry: STUB_ENTRY, cwd: root, logPath: join(t.evidenceDir, 'logs', 'worker.log'), stateDir: t.stateDir,
+      restartDelayMs: 60_000,
+      env: { PATH: process.env['PATH'] ?? '', ...FAKE, ZEROED_STATE_DIR: t.stateDir, ZEROED_MODE: 'paper', ZEROED_RECORDER: 'on', ZEROED_SIMULATE: 'on', ZEROED_DRILLS: 'on', ZEROED_HEALTH_ADDR: t.addr, ZEROED_GIT_SHA: 'c0ffee', ZEROED_STUB_TICK_MS: '50', ZEROED_STUB_TRADE_PHASE_FILE: phases.file },
+    });
+    try {
+      await control.start();
+      await phases.wait(t.addr, Date.now() + 6000, (h) => h.reconciled && h.exit_capable);
+      await control.kill();
+      await control.stop();
+      expect(control.starts).toBe(1);
+      expect(existsSync(join(t.stateDir, 'clean_stop'))).toBe(false);
+      expect(journalLines(t.stateDir).some((line) => line.kind === 'stop')).toBe(false);
+      expect(await httpHealth(t.addr)).toBeNull();
+    } finally {
+      await control.stop();
+    }
+  }, 30_000);
 
   // CI-1: under parallel load a reply describes the worker a moment before the runner acts on it (the trade it shows
   // may close before the kill or the copy). 150 ms old replies reproduced it every time; the runner must not care.

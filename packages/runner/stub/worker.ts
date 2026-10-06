@@ -23,6 +23,9 @@ const simulationOn = env['ZEROED_SIMULATE'] === 'on';
 const drillsOn = env['ZEROED_DRILLS'] === 'on';
 const tickMs = Number(env['ZEROED_STUB_TICK_MS'] ?? 1000);
 const cycleMs = Number(env['ZEROED_STUB_CYCLE_MS'] ?? 60_000);
+// Test fixtures can request a real entry/exit instead of guessing where a timer cycle falls under CPU load.
+// This hook only drives this synthetic stub; all state changes and journal writes still use the paths below.
+const tradePhaseFile = env['ZEROED_STUB_TRADE_PHASE_FILE'];
 
 const credDir = env['CREDENTIALS_DIRECTORY'];
 const credentials = SECRET_NAMES.filter((n) => (credDir ? existsSync(join(credDir, n.toLowerCase())) : Boolean(env[n])));
@@ -201,7 +204,8 @@ const tick = (): void => {
   if (reconcileOnly) return;
   // Paper trading: open for 60% of each cycle, flat for the rest. Exits run even while entries are halted.
   tradeTimer += tickMs;
-  const phase = tradeTimer % cycleMs;
+  const requestedPhase = tradePhaseFile ? readFileSync(tradePhaseFile, 'utf8').trim() : null;
+  const phase = requestedPhase === 'entry' ? 0 : requestedPhase === 'exit' ? cycleMs * 0.6 : requestedPhase === 'hold' ? cycleMs * 0.2 : tradeTimer % cycleMs;
   if (!state.position && phase < tickMs) {
     if (halted) {
       journal('decision', {
