@@ -137,6 +137,9 @@ export class FunnelView {
   }
 }
 
+/** The fixed start of a decision line as the journal writes it (seq, ts, boot, kind), with its ts in toISOString form. */
+const DECISION_HEAD = /^\{"seq":\d+,"ts":"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z)","boot":"[^"\\]*","kind":"decision"/;
+
 /**
  * The view as of a start at `nowMs`: today's (Melbourne) `decision` and `entry` lines of the journal at `path`, streamed
  * in file order. Earlier decisions, future lines, torn and malformed records are skipped. With valid lines today the view
@@ -145,9 +148,14 @@ export class FunnelView {
 export const rebuildFunnel = (path: string, nowMs: number): FunnelView => {
   const view = new FunnelView(nowMs);
   if (!existsSync(path)) return view;
+  // apply() ignores a decision before today's Melbourne day, so such a line is skipped unparsed (the journal is never
+  // rotated). Same-format ISO instants compare as strings; any line whose prefix differs is parsed as before.
+  const dayStart = new Date(melbourneDay(nowMs).start).toISOString();
   for (const text of journalLines(path)) {
     // Cheap filters first: only decision and entry lines are parsed.
     if (!text.includes('"kind":"decision"') && !text.includes('"kind":"entry"')) continue;
+    const head = DECISION_HEAD.exec(text);
+    if (head !== null && head[1]! < dayStart) continue;
     let l: unknown;
     try {
       l = JSON.parse(text);

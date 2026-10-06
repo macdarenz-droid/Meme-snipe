@@ -6,14 +6,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { melbourneDay } from '../../core/src/risk/melbourne.ts';
 import { holdersKey } from '../../core/src/gates/index.ts';
 import { melbourneDate, route } from '../src/run/api.ts';
 import { DECISION_ROWS_MAX, FunnelView, rebuildFunnel } from '../src/run/funnel.ts';
 import { STATE_FILES } from '../../runner/src/contract.ts';
+import { journalLines } from '../src/run/booked.ts';
 import { blockNetwork } from './helpers.ts';
-import { MINT, makeWorker, passingMarket, until } from './worker-harness.ts';
+import { MINT, T, makeWorker, passingMarket, tempState, until, virtualTimers } from './worker-harness.ts';
 
 blockNetwork();
 
@@ -202,5 +203,64 @@ describe('rebuildFunnel', () => {
     expect(v.rows.length).toBe(DECISION_ROWS_MAX);
     expect(v.rows[0]!.mint).toBe('M20');
     expect(v.funnel.stage.size).toBe(DECISION_ROWS_MAX + 20);
+  });
+
+  it('skipping earlier days\' decisions unparsed changes nothing: same rows, stages, entries and from time over several days', () => {
+    const DAY = 86_400_000;
+    const lines: string[] = [];
+    let seq = 0;
+    for (let d = 4; d >= 1; d--) {
+      const at = TODAY.start - d * DAY + 3_600_000;
+      lines.push(shortlist(++seq, at, `D${d}`), reject(++seq, at + 1, `D${d}`), entry(++seq, at + 2, `D${d}`, `p:D${d}:1`, '5'));
+    }
+    // Prefixes the skip does not recognise (another key order, a non-ISO ts): parsed as before, earlier day and today.
+    lines.push(JSON.stringify({ ts: new Date(TODAY.start - 5).toISOString(), seq: ++seq, boot: 'b', kind: 'decision', event: 'x', reasons: ['reject', 'U2', 'ODD', 'hard reject H12: H16 missing holders'] }));
+    lines.push(JSON.stringify({ ts: new Date(TODAY.start + 5).toISOString(), seq: ++seq, boot: 'b', kind: 'decision', event: 'y', reasons: ['reject', 'U2', 'ODD2', 'hard reject H12: H16 missing holders'] }));
+    lines.push(line(++seq, TODAY.start - 7, 'decision', { event: 'z', reasons: ['reject', 'U2', 'ODD3', 'why'] }).replace(/"ts":"[^"]+"/, `"ts":"${new Date(TODAY.start - 7).toUTCString()}"`));
+    lines.push(shortlist(++seq, TODAY.start + 10, 'NEW'), reject(++seq, TODAY.start + 11, 'NEW'), entry(++seq, TODAY.start + 12, 'NEW', 'p:NEW:1', '5'));
+    // A partial fill today of a trade first filled two days ago: the earlier entry line still seeds the dedupe.
+    lines.push(entry(++seq, TODAY.start + 13, 'D2', 'p:D2:1', '1'));
+    const p = journalOf(lines);
+    // The view without the skip: every decision and entry line parsed and applied, as before.
+    const full = new FunnelView(NOW);
+    for (const text of journalLines(p)) {
+      if (!text.includes('"kind":"decision"') && !text.includes('"kind":"entry"')) continue;
+      let l: Record<string, unknown>;
+      try { l = JSON.parse(text) as Record<string, unknown>; } catch { continue; }
+      const at = typeof l['ts'] === 'string' ? Date.parse(l['ts']) : Number.NaN;
+      if (!Number.isFinite(at) || at > NOW) continue;
+      full.apply(l);
+    }
+    const parse = vi.spyOn(JSON, 'parse');
+    const v = rebuildFunnel(p, NOW);
+    const parsed = parse.mock.calls.map(([t]) => String(t));
+    parse.mockRestore();
+    expect(viewOf(v)).toEqual(viewOf(full));
+    expect(v.funnel.fromMs).toBe(full.funnel.fromMs);
+    expect(v.available).toBe(full.available);
+    expect([...v.funnel.stage.keys()]).toEqual(['ODD2', 'NEW']);
+    expect([...v.funnel.enteredByDay.values()]).toEqual([1]);
+    // Earlier days' decisions were skipped unparsed; every entry line and every unrecognised prefix was parsed.
+    expect(parsed.filter((t) => t.includes('"kind":"decision"') && /"mint"|"reasons"/.test(t)).map((t) => (JSON.parse(t) as { reasons: string[] }).reasons[2])).toEqual(['ODD', 'ODD2', 'ODD3', 'NEW', 'NEW']);
+    expect(parsed.filter((t) => t.includes('"kind":"entry"'))).toHaveLength(6);
+  });
+});
+
+describe('the --reconcile pre-step (FUNNEL-PERSIST start time)', () => {
+  it('reads no decision lines for the funnel; the main start still does', async () => {
+    const stateDir = tempState();
+    const timers = virtualTimers(T);
+    // The journal's own open reads only its last two lines; the decisions sit before them.
+    writeFileSync(join(stateDir, STATE_FILES.journal), [shortlist(1, T, 'PRE'), reject(2, T, 'PRE'), line(3, T, 'stop', { reasons: ['signal'] }), line(4, T, 'stop', { reasons: ['signal'] })].map((l) => `${l}\n`).join(''));
+    const parse = vi.spyOn(JSON, 'parse');
+    const pre = makeWorker({ stateDir, timers, phase: 'reconcile' });
+    const read = parse.mock.calls.filter(([t]) => String(t).includes('"kind":"decision"'));
+    parse.mockRestore();
+    expect(read).toEqual([]);
+    expect(pre.worker.apiInputs().funnel.stage.size).toBe(0);
+    expect(await pre.worker.reconcileOnly()).toEqual({ ok: true });
+    const main = makeWorker({ stateDir, timers });
+    expect([...main.worker.apiInputs().funnel.stage.keys()]).toEqual(['PRE']);
+    await main.worker.stop();
   });
 });

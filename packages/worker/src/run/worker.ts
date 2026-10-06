@@ -524,7 +524,8 @@ export class Worker {
       },
     });
     // After the open, which cuts a torn last line: today's lines already on disk, so a restart keeps the app's views.
-    this.#funnelView = rebuildFunnel(join(c.stateDir, STATE_FILES.journal), now);
+    // The `--reconcile` pre-step serves no app views (its API never starts), so it does not read the journal for them.
+    this.#funnelView = d.phase === 'reconcile' ? new FunnelView(now) : rebuildFunnel(join(c.stateDir, STATE_FILES.journal), now);
     this.#fillLines = readJournalFills(join(c.stateDir, STATE_FILES.journal));
     rmSync(join(c.stateDir, STATE_FILES.cleanStop), { force: true });
     // RESTART-CAUSE: the systemd unit runs a `--reconcile` pre-step (its own process) before each start, and it writes

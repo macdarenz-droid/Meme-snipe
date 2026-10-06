@@ -49,7 +49,7 @@ export interface JournalOptions {
   readonly onNoSpace?: () => void;
   /** Test seam; production appends synchronously. */
   readonly append?: (path: string, text: string) => void;
-  /** Told every line as written (its kind and text), after it is on disk (FUNNEL-PERSIST: the app's views follow it). */
+  /** Told every line as written (its kind and text), after it is on disk (FUNNEL-PERSIST: the app's views follow it). Its errors are ignored. */
   readonly written?: (kind: JournalKind, text: string) => void;
 }
 
@@ -313,7 +313,13 @@ export class Journal {
       return false;
     }
     // Only a line that reached the file is told (a line lost to ENOSPC is not), outside the append's ENOSPC handling.
-    this.#o.written?.(kind, text);
+    // Observer only: a throwing hook must never skip the caller's bookkeeping (retry's seq, gap and reserve, or a
+    // desk's ledger write after its entry line), so its error is dropped here (no logger is in reach of the journal).
+    try {
+      this.#o.written?.(kind, text);
+    } catch {
+      // ignored by design
+    }
     return true;
   }
 }
