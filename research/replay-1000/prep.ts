@@ -25,6 +25,7 @@ const main = async () => {
   const all = [...new Map(lists.flatMap((f) => (JSON.parse(readFileSync(join(DATA_DIR, f), 'utf8')) as { coins: Coin[] }).coins).map((c) => [c.mint, c] as const)).values()];
   const tapes = JSON.parse(readFileSync(join(DATA_DIR, `tapes-${day}.json`), 'utf8')) as Record<string, CoinTapes>;
   const inRun = all.filter((c) => c.migrationTime >= start && c.migrationTime < end);
+  // The day's coins only can be full coins (the tapes are the day's); the previous day's tail is always "others".
   const full = inRun.filter((c) => tapes[c.mint] !== undefined && !tapes[c.mint]!.truncated && (which !== 'sample' || inSample(c)));
   const fullSet = new Set(full.map((c) => c.mint));
   const others = inRun.filter((c) => !fullSet.has(c.mint));

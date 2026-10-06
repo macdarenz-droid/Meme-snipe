@@ -255,7 +255,8 @@ const main = async () => {
   const others = othersFile === null ? [] : (JSON.parse(readFileSync(othersFile, 'utf8')) as RunCoin[]);
   const createsFile = process.argv.includes('--creates') ? process.argv[process.argv.indexOf('--creates') + 1]! : null;
   const creates = createsFile === null ? [] : (JSON.parse(readFileSync(createsFile, 'utf8')) as RawSig[]);
-  const s = await runReplay({ out: resolve(out!), coins, others, startMs: Date.parse(startIso!), endMs: Date.parse(endIso!), creates, mode });
+  const parityReplays = process.argv.includes('--parity') ? Number(process.argv[process.argv.indexOf('--parity') + 1]) : 10;
+  const s = await runReplay({ out: resolve(out!), coins, others, startMs: Date.parse(startIso!), endMs: Date.parse(endIso!), creates, mode, parityReplays });
   console.log(JSON.stringify({ end: s.virtualEnd, wall: s.wallSeconds, refusals: s.refusals }, null, 1));
   process.exit(0);
 };

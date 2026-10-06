@@ -139,11 +139,20 @@ export class ChainView {
   async *newestFirst(address: string, asOf: number): AsyncGenerator<RawSig> {
     const bucketEnd = (Math.floor(asOf / BUCKET_SLOTS) + 1) * BUCKET_SLOTS;
     let cursor = this.anchorAfter(bucketEnd)?.signature;
+    // Exact reverse block order: slot, then position in the block (a page lists a slot's transactions in no set order),
+    // holding back the page's last slot until the next page, which may hold more of it.
+    let held: RawSig[] = [];
+    const desc = (a: RawSig, b: RawSig) => b.slot - a.slot || (b.transactionIndex ?? -1) - (a.transactionIndex ?? -1);
     for (;;) {
       const page = await this.rpc.sigPage(address, cursor);
-      if (page.length === 0) return;
-      for (const x of page) if (x.slot <= asOf) yield x;
-      if (page.length < 1000) return;
+      const all = [...held, ...page.filter((x) => x.slot <= asOf)].sort(desc);
+      if (page.length < 1000) {
+        for (const x of all) yield x;
+        return;
+      }
+      const lastSlot = page.at(-1)!.slot;
+      held = all.filter((x) => x.slot === lastSlot);
+      for (const x of all) if (x.slot !== lastSlot) yield x;
       cursor = page.at(-1)!.signature;
     }
   }

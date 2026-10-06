@@ -234,7 +234,7 @@ class CoinbaseSocket extends WorldSocket {
       i++;
       if (tr.t - lastKept >= 500) {
         lastKept = tr.t;
-        this.emit({ type: 'ticker', product_id: 'SOL-USD', price: tr.price, time: new Date(tr.t).toISOString() });
+        this.emit({ type: 'ticker', product_id: 'SOL-USD', price: tickerPrice(tr.price), time: new Date(tr.t).toISOString() });
       }
       const nx = this.#trades[i];
       if (nx !== undefined) this.clock.setTimeout(tick, Math.max(0, nx.t + 100 - this.clock.now()));
@@ -246,6 +246,13 @@ class CoinbaseSocket extends WorldSocket {
     this.#stopped = true;
   }
 }
+
+/**
+ * The REST trade history writes prices with 8 decimals ("121.20000000"); the WebSocket ticker writes them at the
+ * product's price increment ("121.2" for SOL-USD, 0.01). Trailing zeros are dropped: the same value, in the
+ * ticker's form (CoinbaseSolPrice refuses more than 6 decimals).
+ */
+export const tickerPrice = (rest: string): string => (rest.includes('.') ? rest.replace(/0+$/, '').replace(/\.$/, '') : rest);
 
 const lowerBound = (xs: readonly CoinbaseTrade[], t: number): number => {
   let lo = 0;
