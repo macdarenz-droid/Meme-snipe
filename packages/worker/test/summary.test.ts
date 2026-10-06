@@ -11,7 +11,7 @@ import type { HttpClient } from '../src/providers/index.ts';
 import type { PaperTrade } from '../src/run/account.ts';
 import {
   SUMMARY_AFTER_START_MS, SUMMARY_MIN_GAP_MS, Summarizer, SummaryClock, buildSummary, emptySummaryState, foldLine, foldNewLines, foldText, haltCode,
-  nextSummaryDelay, signSummary, withoutProbe, withoutLastDeath, withoutRestartCause, withoutCreditDetail, summaryBody, type SummaryInputs,
+  nextSummaryDelay, signSummary, withoutH16, withoutProbe, withoutLastDeath, withoutRestartCause, withoutCreditDetail, summaryBody, type SummaryInputs,
 } from '../src/run/summary.ts';
 import { ManualTimers } from '../src/scheduler/timers.ts';
 import { MINT, makeWorker, passingMarket, tempState } from './worker-harness.ts';
@@ -28,6 +28,10 @@ const M4 = 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263';
 const line = (kind: string, ms: number, f: Record<string, unknown> = {}) => ({ seq: 1, ts: at(ms), boot: 'b', kind, ...f });
 const reject = (ms: number, mint: string, gate: string, code: string) =>
   line('decision', ms, { action: 'reject', reasons: ['reject', 'U2', mint, `hard reject ${gate}`], gate_reasons: [{ gate, code, detail: 'x' }] });
+
+const B58 = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+const h16 = (ms: number, mint: string, code: string, input?: unknown, neededBy?: unknown) =>
+  line('decision', ms, { action: 'reject', reasons: ['reject', 'U2', mint, `hard reject H16`], gate_reasons: [{ gate: 'H16', code, detail: 'x', ...(input === undefined ? {} : { input }), ...(neededBy === undefined ? {} : { neededBy }) }] });
 
 const trade = (o: Partial<PaperTrade> = {}): PaperTrade => ({
   positionId: 'p1', mint: M1, openedAtMs: NOON, notional: 3_000_000n as MicroUsd, closedAtMs: NOON + 60_000, netLamports: -1_500_000n,
@@ -116,6 +120,79 @@ describe('counts from the journal', () => {
     // The feed's name is never kept, whatever it holds.
     expect(haltCode('feed https://10.0.0.1 stale')).toBe('feed-stale');
     expect(haltCode('anything else: 10.0.0.1')).toBe('other');
+  });
+});
+
+describe('H16-WHY: the H16 refusals by input and needing gate', () => {
+  it('counts each refused candidate\'s last H16 refusal by code, input and gate; a line without them is null; an entry or a later other refusal drops it', () => {
+    const s = emptySummaryState();
+    const mints = Array.from({ length: 8 }, (_, k) => `${M1.slice(0, 40)}${'ABCDEFGH'[k]}`);
+    [
+      h16(NOON + 1, mints[0]!, 'missing', 'pool', 'H5'),
+      h16(NOON + 2, mints[1]!, 'missing', 'pool', 'H5'),
+      h16(NOON + 3, mints[2]!, 'missing', 'xcheck', 'H1'),
+      h16(NOON + 4, mints[3]!, 'stale', 'pool', 'H5'),
+      // A line from before H16-WHY, and one whose names do not fit their patterns (free text is never kept).
+      h16(NOON + 5, mints[4]!, 'missing'),
+      h16(NOON + 6, mints[5]!, 'missing', 'no pool as of slot 9', 'https://x'),
+      // H16 first, then refused by another gate: counted under that gate only.
+      h16(NOON + 7, mints[6]!, 'missing', 'pool', 'H17'),
+      reject(NOON + 8, mints[6]!, 'H7', 'top-holders'),
+      // H16, then entered: not refused.
+      h16(NOON + 9, mints[7]!, 'missing', 'pool', 'H5'),
+      line('entry', NOON + 10, { mint: mints[7], trade: 'p1', reasons: ['entry filled (paper)'] }),
+    ].forEach((l) => foldLine(s, l));
+    const sum = buildSummary(inputs({ fold: s.days[DAY] }));
+    expect(sum.candidates.refused_by_reason).toEqual([{ gate: 'H16', code: 'missing', count: 5 }, { gate: 'H16', code: 'stale', count: 1 }, { gate: 'H7', code: 'top-holders', count: 1 }]);
+    expect(sum.candidates.h16_by_input).toEqual([
+      // Ties in a fixed order (by the row's JSON), so two posts of the same counts are the same text.
+      { code: 'missing', input: 'pool', needed_by: 'H5', count: 2 },
+      { code: 'missing', input: null, needed_by: null, count: 2 },
+      { code: 'missing', input: 'xcheck', needed_by: 'H1', count: 1 },
+      { code: 'stale', input: 'pool', needed_by: 'H5', count: 1 },
+    ]);
+    expect(sum.candidates.h16_other).toBe(0);
+    const b = summaryBody(sum);
+    expect('body' in b && checkSummary(b.body).ok).toBe(true);
+    // Saved and read back (summary.json keeps the input and gate), the same counts.
+    const back = JSON.parse(JSON.stringify(s)) as typeof s;
+    expect(buildSummary(inputs({ fold: back.days[DAY] })).candidates).toEqual(sum.candidates);
+  });
+
+  it('names the top reasons and sums the rest; a day with no H16 refusal leaves both keys out (the older shape)', () => {
+    const s = emptySummaryState();
+    for (let k = 0; k < SUMMARY_TOP_REASONS + 3; k++) {
+      for (let n = 0; n <= k; n++) foldLine(s, h16(NOON + k * 100 + n, `${M2.slice(0, 38)}${B58[k]}${B58[n]}`, 'missing', `in${k}`, 'H5'));
+    }
+    const c = buildSummary(inputs({ fold: s.days[DAY] })).candidates;
+    expect(c.h16_by_input).toHaveLength(SUMMARY_TOP_REASONS);
+    expect(c.h16_by_input![0]).toEqual({ code: 'missing', input: `in${SUMMARY_TOP_REASONS + 2}`, needed_by: 'H5', count: SUMMARY_TOP_REASONS + 3 });
+    // The three smallest (1, 2 and 3 refusals) are summed.
+    expect(c.h16_other).toBe(6);
+    expect(c.h16_by_input!.reduce((t, r) => t + r.count, 0) + c.h16_other!).toBe(c.refused);
+    const none = emptySummaryState();
+    foldLine(none, reject(NOON, M1, 'H7', 'top-holders'));
+    expect(Object.keys(buildSummary(inputs({ fold: none.days[DAY] })).candidates)).toEqual(['seen', 'entered', 'refused', 'refused_by_reason', 'refused_other']);
+  });
+
+  it('a watchdog from before H16-WHY refuses the breakdown: the day goes again without it, keeping everything else', async () => {
+    const dir = tempState();
+    const bodies: string[] = [];
+    const logs: string[] = [];
+    const s = emptySummaryState();
+    foldLine(s, h16(NOON, M1, 'missing', 'pool', 'H5'));
+    const withH16 = buildSummary(inputs({ fold: s.days[DAY] }));
+    const sz = new Summarizer({
+      journalPath: join(dir, 'journal.jsonl'), stateDir: dir,
+      http: (async (req) => (bodies.push(String(req.body)), { status: String(req.body).includes('"h16_by_input"') ? 400 : 200, header: () => null, text: '{"ok":true,"written":true}' })) as HttpClient,
+      watchdogUrl: 'https://w.test', key: 'k', now: () => NOON, log: (l) => void logs.push(l), live: () => inputs(), build: () => withH16,
+    });
+    await sz.tick();
+    expect(bodies).toHaveLength(2);
+    expect(JSON.parse(bodies[0]!).candidates.h16_by_input).toEqual([{ code: 'missing', input: 'pool', needed_by: 'H5', count: 1 }]);
+    expect(JSON.parse(bodies[1]!)).toEqual(JSON.parse(JSON.stringify(withoutH16(withH16))));
+    expect(JSON.parse(bodies[1]!).candidates).toEqual({ seen: 1, entered: 0, refused: 1, refused_by_reason: [{ gate: 'H16', code: 'missing', count: 1 }], refused_other: 0 });
+    expect(logs).toEqual([`Summary for ${DAY} refused; sent again without the H16 breakdown.`]);
   });
 });
 

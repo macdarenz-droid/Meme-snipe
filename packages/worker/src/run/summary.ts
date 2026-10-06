@@ -9,8 +9,8 @@
 import { createHmac } from 'node:crypto';
 import { open, stat } from 'node:fs/promises';
 import {
-  CREDIT_DETAIL_KEYS, EXIT_KINDS, MEM_SUMMARY_KEY, PATTERNS, RESTART_CAUSE_KEYS, type LastDeath, SUMMARY_MAX_BYTES, SUMMARY_MAX_CRASH_SITES, fits, SUMMARY_MAX_TRADES, SUMMARY_TOP_REASONS, SUMMARY_VERSION, checkSummary,
-  type CodeCount, type CrashSite, type ProviderCredits, type ReasonCount, type Summary, type SummaryTrade,
+  CREDIT_DETAIL_KEYS, EXIT_KINDS, MEM_SUMMARY_KEY, PATTERNS, RESTART_CAUSE_KEYS, type LastDeath, SUMMARY_MAX_BYTES, SUMMARY_MAX_CRASH_SITES, fits, SUMMARY_MAX_TRADES, SUMMARY_TOP_REASONS, SUMMARY_VERSION, checkSummary, H16_KEYS,
+  type CodeCount, type H16Count, type CrashSite, type ProviderCredits, type ReasonCount, type Summary, type SummaryTrade,
 } from '../../../ops/src/watchdog/summary.ts';
 import type { MicroUsd } from '../../../core/src/units/index.ts';
 import { HELIUS_EXHAUSTED, type HttpClient } from '../providers/index.ts';
@@ -30,14 +30,25 @@ export interface DayFold {
   entryRule: string | null;
   alerts: Record<string, number>;
   halts: Record<string, number>;
-  /** Per candidate mint: its last refusal (gate, code) or null, and whether it was entered. */
-  cands: Record<string, { gate: string | null; code: string | null; entered: boolean }>;
+  /**
+   * Per candidate mint: its last refusal (gate, code) or null, and whether it was entered. H16-WHY: an H16 refusal's
+   * input and needing gate when its line named them (absent in older state and on other refusals).
+   */
+  cands: Record<string, CandFold>;
   /** RESTART-CAUSE: restarts by kind, previous exits by kind, and crashes by site (a JSON key of error, file, line, event). Absent in older state. */
   restarts?: Record<string, number>;
   exits?: Record<string, number>;
   crashSites?: Record<string, number>;
   /** MEM-SUMMARY: the day's last start line's `death_mem` (the process before it died with no stop line). Absent in older state. */
   lastDeath?: DeathMem;
+}
+
+export interface CandFold {
+  gate: string | null;
+  code: string | null;
+  entered: boolean;
+  input?: string | null | undefined;
+  neededBy?: string | null | undefined;
 }
 
 export interface SummaryState {
@@ -80,14 +91,20 @@ export const haltCode = (reason: string): string => {
   return 'other';
 };
 
-/** A refusal's reason: the first typed gate reason (`gate_reasons`), or the worker's own when none is typed. */
-const refusal = (line: Record<string, unknown>): { gate: string; code: string } => {
+/**
+ * A refusal's reason: the first typed gate reason (`gate_reasons`), or the worker's own when none is typed. H16-WHY: an
+ * H16 reason's input and needing gate, each kept only when it fits its pattern (else null); other gates carry none.
+ */
+const refusal = (line: Record<string, unknown>): Omit<CandFold, 'entered'> => {
   const g = Array.isArray(line['gate_reasons']) ? line['gate_reasons'][0] : undefined;
   if (isObj(g) && fits(g['gate'], PATTERNS.GATE)) {
     const c = code(g['code']);
-    if (c !== null) return { gate: g['gate'], code: c };
+    if (c !== null && g['gate'] === 'H16') {
+      return { gate: 'H16', code: c, input: code(g['input']), neededBy: fits(g['neededBy'], PATTERNS.GATE) ? g['neededBy'] : null };
+    }
+    if (c !== null) return { gate: g['gate'], code: c, input: undefined, neededBy: undefined };
   }
-  return { gate: 'worker', code: 'untyped' };
+  return { gate: 'worker', code: 'untyped', input: undefined, neededBy: undefined };
 };
 
 const RESTART_KINDS = new Set(['planned', 'deploy', 'unplanned']);
@@ -303,6 +320,7 @@ export const buildSummary = (i: SummaryInputs): Summary => {
   }
   const reasons = [...refusedBy.values()].sort((a, b) => byCount(a, b, `${a.gate}/${a.code}`, `${b.gate}/${b.code}`));
   const top = reasons.slice(0, SUMMARY_TOP_REASONS);
+  const h16 = h16Counts(cands);
   const inDay = (ms: number | null) => ms !== null && melbourneDate(ms) === i.day;
   const inScope = i.trades.filter((t) => inDay(t.openedAtMs) || inDay(t.closedAtMs) || (!i.final && t.closedAtMs === null));
   // A trade whose mint is not a mint address is counted, never listed (nothing unchecked reaches the text).
@@ -363,6 +381,7 @@ export const buildSummary = (i: SummaryInputs): Summary => {
       refused,
       refused_by_reason: top,
       refused_other: reasons.slice(SUMMARY_TOP_REASONS).reduce((s, r) => s + r.count, 0),
+      ...(h16.length === 0 ? {} : { h16_by_input: h16.slice(0, SUMMARY_TOP_REASONS), h16_other: h16.slice(SUMMARY_TOP_REASONS).reduce((s, r) => s + r.count, 0) }),
     },
     trades,
     trades_dropped: inScope.length - trades.length,
@@ -371,6 +390,26 @@ export const buildSummary = (i: SummaryInputs): Summary => {
     provider_credits: credits,
   };
 };
+
+/** H16-WHY: the refused candidates whose last refusal was H16, by code, input and needing gate, most frequent first. */
+const h16Counts = (cands: readonly CandFold[]): H16Count[] => {
+  const by = new Map<string, H16Count>();
+  for (const c of cands) {
+    if (c.entered || c.gate !== 'H16' || c.code === null) continue;
+    const r = { code: c.code, input: c.input ?? null, needed_by: c.neededBy ?? null };
+    const k = JSON.stringify(r);
+    by.set(k, { ...r, count: (by.get(k)?.count ?? 0) + 1 });
+  }
+  return [...by.values()].sort((a, b) => byCount(a, b, JSON.stringify([a.code, a.input, a.needed_by]), JSON.stringify([b.code, b.input, b.needed_by])));
+};
+
+/** The summary without H16-WHY's keys of `candidates`, the shape a watchdog from before them accepts. */
+export const withoutH16 = (s: Summary): Summary => {
+  const c: Record<string, unknown> = { ...s.candidates };
+  for (const k of H16_KEYS) delete c[k];
+  return { ...s, candidates: c as unknown as Summary['candidates'] };
+};
+const hasH16 = (s: Summary): boolean => H16_KEYS.some((k) => Object.hasOwn(s.candidates, k));
 
 /** A death's memory in the summary's form: times as ISO strings. */
 const lastDeathOf = (d: DeathMem): LastDeath => ({
@@ -559,6 +598,12 @@ export class Summarizer {
     // A watchdog from before MEM-SUMMARY refuses its key, one from before HELIUS-EXHAUSTED the credit detail too, one
     // from before RESTART-CAUSE its keys too (a deploy is not atomic): the day goes again without each in turn.
     let sent = s;
+    // H16-WHY: a watchdog from before it refuses the H16 breakdown: the day goes again without it, then as below.
+    if (res !== null && !res.ok && res.reason === 'HTTP 400' && hasH16(sent)) {
+      this.#d.log(`Summary for ${day} refused; sent again without the H16 breakdown.`);
+      sent = withoutH16(sent);
+      res = await this.#send(day, sent, url, key, now);
+    }
     // A watchdog from before MEM-PROBE refuses its samples: the day goes again without them, then as below.
     if (res !== null && !res.ok && res.reason === 'HTTP 400' && hasProbe(sent)) {
       this.#d.log(`Summary for ${day} refused; sent again without the memory probe samples.`);

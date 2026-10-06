@@ -51,6 +51,27 @@ const STRING_FIELDS: readonly ((s: Record<string, any>, v: string) => void)[] = 
 const AMOUNT_FIELDS = new Set([17, 19, 20, 21, 22]);
 
 describe('the summary guards', () => {
+  it('H16-WHY: accept the H16 breakdown (both keys, at most the top reasons), and refuse one key alone, a long list or a bad name', () => {
+    const c = goodSummary().candidates;
+    const row = { code: 'missing', input: 'pool', needed_by: 'H5', count: 3 };
+    const h16 = (by: unknown, other: unknown = 0) => goodSummary({ candidates: { ...c, h16_by_input: by, h16_other: other } as unknown as Summary['candidates'] });
+    expect(checkSummary(JSON.stringify(h16([row, { code: 'missing', input: null, needed_by: null, count: 1 }], 2))).ok).toBe(true);
+    expect(checkSummary(JSON.stringify(h16([]))).ok).toBe(true);
+    expect(checkSummary(JSON.stringify(goodSummary({ candidates: { ...c, h16_by_input: [row] } as unknown as Summary['candidates'] }))).ok).toBe(false);
+    expect(checkSummary(JSON.stringify(goodSummary({ candidates: { ...c, h16_other: 0 } as unknown as Summary['candidates'] }))).ok).toBe(false);
+    expect(checkSummary(JSON.stringify(h16(Array.from({ length: 11 }, () => row)))).ok).toBe(false);
+    expect(checkSummary(JSON.stringify(h16([row], -1))).ok).toBe(false);
+    expect(checkSummary(JSON.stringify(h16([{ ...row, detail: 'x' }]))).ok).toBe(false);
+    for (const bad of [{ input: 'Pool' }, { input: 'no pool as of slot 5' }, { needed_by: 'H-5' }, { code: null }, { count: 1.5 }]) {
+      expect(checkSummary(JSON.stringify(h16([{ ...row, ...bad }]))).ok, JSON.stringify(bad)).toBe(false);
+    }
+    for (const secret of PLANTED) {
+      for (const f of ['code', 'input', 'needed_by'] as const) {
+        expect(checkSummary(JSON.stringify(h16([{ ...row, [f]: secret }]))).ok, `${secret} in ${f}`).toBe(false);
+      }
+    }
+  });
+
   it('accept the exact shape and refuse a missing, extra or mistyped field', () => {
     expect(checkSummary(JSON.stringify(goodSummary())).ok).toBe(true);
     const { pnl: _, ...missing } = goodSummary();
