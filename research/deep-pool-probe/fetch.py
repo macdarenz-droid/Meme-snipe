@@ -10,6 +10,7 @@ WALL = 1789999200            # 2026-09-21T14:00:00Z
 START = 1784419200           # 2026-07-19T00:00:00Z (3-day look-back before 07-22)
 GT = 'https://api.geckoterminal.com/api/v2/networks/solana/pools/{}/ohlcv/{}?aggregate={}&before_timestamp={}&limit={}&currency=token'
 WSOL = 'So11111111111111111111111111111111111111112'
+SOL_QUOTES = ('None', '11111111111111111111111111111111', WSOL)
 
 def ctx():
     for f in (os.environ.get('SSL_CERT_FILE'), '/root/.ccr/ca-bundle.crt'):
@@ -48,7 +49,8 @@ def universe(src, out):
     for x in coins.values():
         if not x.get('pump_swap_pool'):
             continue
-        if (x.get('quote_mint') or WSOL) != WSOL:
+        # pump.fun encodes a native-SOL quote as the System Program address; older coins omit the field.
+        if str(x.get('quote_mint')) not in (SOL_QUOTES):
             continue
         if str(x.get('total_supply')) != '1000000000000000':
             continue

@@ -45,3 +45,4 @@ The registered verdict stays on the rules above. Because GeckoTerminal's 5-minut
 4. The 500-bar minimum counts only bars with volume.
 S0 in the realistic line enters at the close of the first bar with volume at or after its random bar, with the same exits and costs.
 Also reported beside the bootstrap: a day-cluster t-interval (trade-weighted, D − 1 degrees of freedom), because the bootstrap is slightly liberal with about 20 validation days. No verdict uses the realistic line or the t-interval; they are disclosed for honesty.
+- Universe filter fix (code matches "SOL quote"): pump.fun's API encodes a native-SOL quote as the System Program address `11111111111111111111111111111111` and older coins omit the field; the first build accepted only the wrapped-SOL mint and so left out most SOL-quoted coins (312 instead of 481 pools). Found while checking the eligibility list, before any 5-minute bar was downloaded or any return computed.
