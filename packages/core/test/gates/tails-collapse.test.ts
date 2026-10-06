@@ -30,7 +30,11 @@ const valueOf = (r: (n: number) => number, program: 'pump_amm' | 'pump', slot: b
   const kind = r(100);
   if (kind < 85) return { event: { trailing: clean, extra: '00'.repeat(clean) }, txSlot: slot, signature: sig };
   if (kind < 89) return { event: { trailing: 8 - clean, extra: '00'.repeat(8 - clean) }, txSlot: slot, signature: sig };
-  if (kind < 93) return { event: { trailing: 8, extra: '0100000000000000' }, txSlot: slot, signature: sig };
+  if (kind < 93) {
+    // H5-POOL-TAILS: a non-zero tail with no vault, under the vault (passes on a pool after its boundary), or above it.
+    const vault = [undefined, 1n, 0n][r(3)];
+    return { event: { trailing: 8, extra: '0100000000000000', ...(vault === undefined ? {} : { data: { poolQuoteTokenReserves: vault } }) }, txSlot: slot, signature: sig };
+  }
   if (kind < 95) return { event: { trailing: clean, extra: '0'.repeat(2 * clean + 1) }, txSlot: slot, signature: sig };
   if (kind < 97) return { event: { trailing: clean, extra: '00'.repeat(clean) }, signature: sig };
   if (kind < 99) return { event: null, txSlot: slot };
@@ -41,6 +45,8 @@ const strip = (r: ReturnType<typeof checkPoolTails>) => (r.ok ? { ok: true } : r
 /** The verdict class as H5 and H16 map it (hard.ts): pass; `event-tail` an H5 reject; `malformed` or not covered an H16 refusal. */
 const verdict = (r: ReturnType<typeof checkPoolTails>) => (r.ok ? 'pass' : r.code === 'event-tail' ? 'H5' : 'H16');
 const START: Since = { slot: 0n, ms: Number.MIN_SAFE_INTEGER };
+/** H5-POOL-TAILS: a pool tail refused under the new rule (above the event's quote vault). */
+const ABOVE = { poolQuoteTokenReserves: 0n };
 
 describe('the trade-tail collapse keeps every answer of the tail checks', () => {
   it('over 400 random tapes on both programs, checked after every record: the same verdict for every kind of since, the same answer from the tape\'s start, at most eight entries a key', () => {
@@ -80,7 +86,7 @@ describe('the trade-tail collapse keeps every answer of the tail checks', () => 
     }
   });
 
-  it('F1: 5,000 records with a non-zero tail (mainnet, 2026-10-06) keep three entries: the earliest, the latest and the newest are one', () => {
+  it('F1: 5,000 records with a refused non-zero tail (above the vault) keep three entries: the earliest, the latest and the newest are one', () => {
     const clock = new SimClock(ORIGIN);
     const store = new AsOfStore(clock, null, tradeTailCollapse);
     const [buy] = poolTradeKeys(POOL);
@@ -88,7 +94,7 @@ describe('the trade-tail collapse keeps every answer of the tail checks', () => 
     for (let k = 1; k <= 5_000; k++) {
       const m = { slot: slot + BigInt(k), txIndex: 0, ixIndex: 0, receivedAt: k };
       clock.advanceTo(m);
-      store.record(buy!, { event: { trailing: 8, extra: '546c140000000000' }, txSlot: m.slot, signature: `S${k}` }, m, `ev:${k}`);
+      store.record(buy!, { event: { trailing: 8, extra: '546c140000000000', data: ABOVE }, txSlot: m.slot, signature: `S${k}` }, m, `ev:${k}`);
     }
     const h = store.history(buy!, ORIGIN) as readonly AsOfEntry[];
     expect(h.length).toBeLessThanOrEqual(3);
@@ -104,7 +110,7 @@ describe('the trade-tail collapse keeps every answer of the tail checks', () => 
     const kept = new AsOfStore(clock, null, tradeTailCollapse);
     const [buy] = poolTradeKeys(POOL);
     const slot = EVENT_TAIL_UPGRADE_SLOT.pump_amm + 10n;
-    const bad = (sig: string) => ({ event: { trailing: 8, extra: '546c140000000000' }, txSlot: slot, signature: sig });
+    const bad = (sig: string) => ({ event: { trailing: 8, extra: '546c140000000000', data: ABOVE }, txSlot: slot, signature: sig });
     const clean = { event: { trailing: 8, extra: '0000000000000000' }, txSlot: slot, signature: 'C' };
     // In order: failing (received 100), failing (received 300: a late fill), failing (200), failing (210), clean (150).
     for (const [s, recv, v, id] of [[1n, 100, bad('A'), 'a'], [2n, 300, bad('B'), 'b'], [3n, 200, bad('C'), 'c'], [4n, 210, bad('D'), 'd'], [5n, 150, clean, 'e']] as const) {
@@ -129,7 +135,7 @@ describe('the trade-tail collapse keeps every answer of the tail checks', () => 
     const base = EVENT_TAIL_UPGRADE_SLOT.pump_amm + 10n;
     // No readable tail (no `extra`): `malformed`, an H16 refusal.
     const unreadable = { event: { trailing: 8 }, txSlot: base, signature: 'M' };
-    const bad = { event: { trailing: 8, extra: '546c140000000000' }, txSlot: base, signature: 'T' };
+    const bad = { event: { trailing: 8, extra: '546c140000000000', data: ABOVE }, txSlot: base, signature: 'T' };
     const clean = { event: { trailing: 8, extra: '0000000000000000' }, txSlot: base, signature: 'C' };
     // The reviewer's tape: M@s1 (received 99), M@s4 (150), T@s6 (160), M@s9 (400), C@s10 (410).
     for (const [s, recv, v, id] of [[1n, 99, unreadable, 'm1'], [4n, 150, unreadable, 'm4'], [6n, 160, bad, 't6'], [9n, 400, unreadable, 'm9'], [10n, 410, clean, 'c10']] as const) {
@@ -154,7 +160,7 @@ describe('the trade-tail collapse keeps every answer of the tail checks', () => 
     for (let k = 1; k <= 5_000; k++) {
       const m = { slot: slot + BigInt(k), txIndex: 0, ixIndex: 0, receivedAt: k };
       clock.advanceTo(m);
-      store.record(buy!, k === 100 ? { event: { trailing: 8, extra: 'ff00000000000000' }, txSlot: slot, signature: 'Bad' } : k === 200 ? { event: {} } : clean, m, `ev:${k}`);
+      store.record(buy!, k === 100 ? { event: { trailing: 8, extra: 'ff00000000000000', data: ABOVE }, txSlot: slot, signature: 'Bad' } : k === 200 ? { event: {} } : clean, m, `ev:${k}`);
     }
     const h = store.history(buy!, ORIGIN) as readonly AsOfEntry[];
     expect(h.map((e) => e.source)).toEqual(['ev:100', 'ev:200', 'ev:5000']);
