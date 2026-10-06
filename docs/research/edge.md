@@ -105,3 +105,102 @@ File: `research/edge/preregistration.json`, sha256 `43c7bc8a8971ea90118daec5d6f6
 - Krause (SSRN 6292920): page returned 403; the correlation figure is from a search snippet.
 - Li, Shin & Wang: figures from a search summary; the PDF was not opened.
 - Fičura's sign convention for "distance from the high" was not checked in the full text.
+
+## 6. Strategy search beyond the six (RES-6, 2026-10-06)
+
+Owner request (6 Oct): find any rule, inside or outside the current plan, that could make the bot win or be profitable. **Research only.** Nothing here is registered, nothing changes attempt 1 (H1–H6, §3), and no statistic was computed on market data at or after the holdout wall (2026-09-21T14:00Z). Method: five researchers (repo evidence, the design-blueprint artifact "Solana Meme Bot Blueprint", literature 2018–2026, market structure, statistics), one synthesis, and three critics who tried to refute every candidate (execution cost, evidence, owner rules). Labels: VERIFIED (source opened or code run), REPORTED (secondary source), UNVERIFIED. Every chance figure below is judgement, not a measurement.
+
+### 6.1 Bottom line
+
+- No verified source shows a long-only bot that pays taker costs making money in meme tokens: not the repo, not the blueprint, not the literature. The money goes to insiders and bundlers, co-located searchers, the protocol and creators (fees) and liquidity makers. The repo's own tests agree: 0 of 72 graduation rules, 0 of 120 copy-trading variants.
+- The most likely outcome (judgement, about 75–85%) is that a small, free-data, non-insider bot has no edge. In that case staying in paper is the correct result, not a failure.
+- One seat has a plausible loser on the other side: impatient sellers who pay for immediacy. To clear costs it needs the cheapest pools (0.30% tier), trades of $20–50 rather than $2, and costs measured in the dry run rather than assumed. Even then the critics put the chance of passing the gate at about 3–8%.
+- The first job is clean data and measured costs, not more ideas.
+
+### 6.2 "Win with high probability" is the wrong target
+
+- On a price with no drift, the chance of hitting +W before −L is L/(W+L). Every bracket's gross expectancy is zero and its net is minus the cost. A high win rate is free to manufacture (wide stop, tight target) and says nothing about profit.
+- Break-even win rate with cost c: p* = (L + c)/(W + L). Each 1% chance of a total loss (rug, blocked exit) adds about (100 − L)/(W + L) points. Example, 0.30%-tier pool at $50 (c 0.75%): a +2/−6 bracket needs 84.4% wins against 75% by pure chance; with 4% total losses it needs more than 100%, so it cannot work.
+- Profit comes only from the signal's conditional drift. Exits change the spread of outcomes, not the sign. Scaling out does not add expectancy, and each extra exit leg costs 149,777 lamports (0.89% of a $2 trade, 0.09% at $20).
+
+### 6.3 What the proof really measures
+
+- The gate is a test of per-trade net Sharpe S = μ/σ: a pass at 80% power needs √(n/DEFF) · S ≥ z_α + z_β, where DEFF = 1 + (m − 1)ρ for m trades a day with same-day correlation ρ. Attempt 1 (0.02 per universe): z = 3.168. Attempt 2 (0.0025 per universe, Holm of 2): 3.865, or 3.649 if one universe.
+- The gross per-trade Sharpe a signal must have is κ = S_req + c/σ. **Cost relative to volatility decides, not cost alone.** At n = 300, DEFF 1 (S_req 0.183; arithmetic, σ for deep pools assumed):
+
+| Setup | Break-even c | Needed gross κ |
+|---|---|---|
+| Young pool, $2 (σ 0.32) | 4.98% | 0.34 |
+| Young pool, $20 (σ 0.32) | 3.09% | 0.28 |
+| 0.30% tier, $2 (σ 4%) | 3.07% | 0.95, hopeless |
+| 0.30% tier, $20 (σ 4% / 6%) | 0.87% | 0.40 / 0.33 |
+| 0.30% tier, $50 (σ 4% / 6%) | 0.75% | 0.37 / 0.31 |
+
+- For scale: the best of 72 pure-noise variants over 100 trades shows about 0.24 by luck ([quant.md](quant.md)). A needed κ of 0.28–0.40 is very high. The best diversified portfolio in the main reversal paper reaches a gross daily Sharpe of about 0.30, and its long leg alone about 0.12 (Bianchi, Babiak & Dickerson, Table 3, read by the evidence critic).
+- At σ 0.32 and n = 300 the true net mean needed is about 5.4–5.9%, so n_power at the +5% target is about 340–410 and U1 needs about 12–15 entries a day over 28 days, not 11.
+- Register targetMean at each strategy's realistic edge, never the +5% default. For a low-σ strategy the default drops n_power to the 300 floor while the real power at μ 0.5% is about 28%. A lower target only tightens, and DECISIONS allows it (target ≤ +5 points).
+
+### 6.4 Break-even by fee tier and size
+
+Repo cost code, conservative scenario, read-only re-run (`packages/backtest/src/research/edge-costs.ts`), SOL $119.26. Round-trip move needed, % of the amount paid in:
+
+| Setup | $2 | $5 | $20 | $50 |
+|---|---|---|---|---|
+| Young pool, 1.25% | 4.98 | 3.55 | 3.09 | 3.51 |
+| U1 ($50k quote), 0.95% | 4.36 | 2.89 | 2.21 | 2.18 |
+| 0.55% tier (about 700 SOL quote) | 3.57 | — | 1.39 | 1.31 |
+| 1,500 SOL pool, 0.30% | 3.07 | 1.59 | 0.87 | 0.75 |
+| Raydium v4 0.25% (estimate; no builder) | 2.95 | 1.48 | 0.77 | 0.65 |
+
+- The young pool gets worse at $50 because impact grows on about 85 SOL of depth.
+- Of the 414,009-lamport fixed cost, about 53% is modelled lost rent (14.5% of 1,513,840) and about 32% failed exit attempts (0.7728 × 155,000). Only 14% is fees on transactions that land. These are conservative assumptions, and only a measured value may replace one. The dry run sends nothing, so landing can be measured only by an owner-authorised canary or by observing landings on chain.
+- Keeping token accounts open saves only the lost-rent share: about 0.13 points at $20 and 0.05 at $50 (1.3 points at $2). It also conflicts with ARCHITECTURE §5.3 (close in the same transaction as the full sell).
+- The 0.30% tier needs a market cap of at least 98,240 SOL (about $11.7M). On the migration constant product that is about 1,314 SOL of quote, so tier and depth are close to the same filter. How many such canonical pools exist is unknown.
+
+### 6.5 Findings that need a ruling
+
+1. **Holdout contamination (VERIFIED by date).** empirical.md's backfill window (2026-10-01T23:00Z to 10-02T11:00Z) and its live sample (10-03) lie inside the sealed window [09-22, 10-20). H8, H9 and H11 take their thresholds from that study. H9 applies to every universe (`packages/core/src/gates/hard.ts` lines 318–327), so U1, U2 and S0 are touched, not only U2. The supervisor should record this in DECISIONS and rule before any look: disclose it, or exclude entries from 2026-10-01T23:00Z to 10-03T23:59Z from G2 scoring (that only tightens).
+2. **Migration-price reference (UNVERIFIED, needs a mainnet fixture).** `research/empirical/backfill_migrations.mjs` (lines 37–49) prices the migration from the real WSOL vault only (`migPriceSol = sol / tok` from postTokenBalances). Since BOOST, a fresh pool prices on effective reserves (about 67.4 real + 17.6 virtual SOL; [venues.md](venues.md) F4–F5). If so, the study's reference sits about 26% below the executable price, and "above the migration price at +5 min" (H11) may not mean in code what it meant in the study. Figures re-derived from that holdout-dated data must not shape any design.
+3. **The proof cannot be reached by most strategies under today's settings (VERIFIED).** The trial policy allows 1 open position, 3 entries a day and 1 per token a day (`packages/core/src/config/policy.ts` lines 190–191). Attempt 2's window is fixed at 28 days (DECISIONS, "Attempt 2 is registered now as a rule"). 3 a day × 28 days = 84 trades, under 300. Any strategy needs at least about 11–15 entries a day. Entries per day and trade size are owner settings, and the window length is a supervisor rule. All must be set before registration, never after a look.
+4. **Data.** The repo holds no real pre-wall market day. Practice days with today's fees and layouts run only from B4 (2026-09-12) to the wall, about 9.5 days, which is under SPA's 10-day minimum and none of them is published. The free source of fresh, never-run windows is the live recorder capturing the target universe from now on, within free Helius credits (the live worker already uses about 408k of 1M a month); a larger scope needs the owner's approval of a paid plan.
+5. **Economics at trial size.** About $6 a month of server cost is about 30% of a $20 bankroll every month. The trial can prove a rule, but it cannot be profitable overall at that size.
+
+### 6.6 Candidates after critique
+
+| Candidate | Verdict | Why | Needs |
+|---|---|---|---|
+| **MR-LV**: buy sharp, low-volume drops in canonical PumpSwap SOL pools in the 0.30% tier, not caused by one top-1% sell or the creator; time stop near the reversion half-life; $20–50; ≤ 1 entry per token a day | Keep, but only for a zero-alpha Phase 0 | For: daily and weekly reversal in illiquid coins, concentrated in low-volume selling (Bianchi, Babiak & Dickerson 2022; Zaremba et al. 2021; Fičura 2023). Against: the long-only leg earns about 0.57–0.72% a day gross at CEX daily closes, below this venue's 0.75–0.87% round trip; part of a close-to-close reversal is bid-ask bounce, which an AMM taker cannot capture; no sub-hour Solana DEX evidence either way; large memes show momentum rather than reversal (Liu, Tsyvinski & Wu 2022); on Uniswap, large sells were followed by more falling (Ante 2022); the effect is fading (Fieberg, Liedtke & Zaremba 2024). Practical: probably few pools; flow is split across venues and only PumpSwap is decoded; H9 may reject most of the universe; "funder cluster" filters cannot be built (no funding links or transfers in DATA-1) and must fail closed. Use σ ≥ 5–6% as the base case. | Owner: size and bankroll. Supervisor: attempt-2 window. Data. Chance about 3–8% |
+| **Attempt 1 as registered** (H1–H6) | Keep | It must be scored before attempt 2 can be registered (DECISIONS). U2 cannot reach 300 trades (≤ 112), so it ends "not proven". Spending α 0.04 leaves 0.01 for every later attempt. | Owner's data decision. Chance about 2–5% |
+| **Maker dip-buying** with Meteora DLMM limit orders (earn the fee instead of paying it) | Park | Fills come mostly from arbitrageurs after the canonical pool has already moved (loss-versus-rebalancing, Milionis et al.); bin-array rent was reported at about 0.075 SOL, a large share of a $20 trade (Meteora docs FAQ, figure probably from before the rent cut); no decoder, builder or fill model; Meteora is not on the signer allowlist (owner approval). | Owner: venue and signer. Chance about 1–5% |
+| **BOOST window**: buy right after migration and sell while the scheduled buy-and-burn runs | Drop | It is public protocol flow, so not front-running a user, but the repo lands through SWQoS-only with a conservative entry delay of about 23 slots (about 9 s), inside the window already measured as negative. It conflicts with H10 and "not a first-block sniper". | — |
+| **Curve intensity** (Marino, Naviglio, Tarantelli & Lillo 2026) | Drop | In-sample, no fees, exit assumed at the graduation price (impossible against bundled completions); graduation predictors decay (AUROC 0.86 to 0.46); curve fills are research-only. | — |
+| **Event-clock U2** (decide after BOOST ends) | Drop as a strategy | Too few trades; "early buyers sold" is blind to transfers. Record f_boost_done and f_since_boost as as-of features; only allowed as an extra gate on top of the 60-minute floor. | — |
+| **Listing announcements** | Drop | Far under 300 events; no free feed; the canonical pool is repriced by arbitrage first; part of the move leaks before the announcement (REPORTED). | — |
+
+Also ruled out by the market-structure pass: passive LP on meme pools (the LP share on canonical PumpSwap is small and value falls with √(price ratio)), cross-pool arbitrage (a latency race, REPORTED about $1.58 per arbitrage in 2024), perp shorts (derivatives and cross-chain; owner decision; only anecdotal evidence), holder-reward carry, copy-trading (about −11% a trade, RES-2). Benchmark: staked SOL earns about 6–7% a year (REPORTED), the honest baseline any strategy must beat in SOL. Proof reports should show it beside the strategy.
+
+### 6.7 What raises the odds for any strategy
+
+1. Data exists (owner: a paid month of about US$94, or time with the recorder running).
+2. Size in cheap, quiet markets (owner setting): in the 0.30% tier, $2 to $20 cuts the needed κ from 0.95 to about 0.40. In young pools it only moves 0.34 to 0.28.
+3. Fee tier: 0.30% instead of 0.95% at $20 cuts break-even from 2.21% to 0.87%.
+4. Measured costs: replace the modelled lost rent and failed exits only with dry-run or canary measurements, registered and frozen before any look.
+5. Independent breadth: ≤ 1 entry per token a day and a cap per creator. DEFF 2 to 1 lowers the needed S from 0.259 to 0.183. Deep memes share sector moves, so expect DEFF above 1.
+6. Exit near the reversion half-life. No scaling out below about $20. Never a tight target with a wide stop.
+7. Simulate stop gaps: the exit ladder allows minOut 8% below the trigger (attempts 1–2) and 25% (attempts 3–4), and the conservative model fails 44% of attempts, so a 4–5% stop is a trigger, not a realised loss.
+8. Check that the fill model ties landing and minOut rejects to price direction (dip buys land on continued falls; stops fail in crowded dumps). If it does not, add a stress case.
+9. Stricter gates from the blueprint (they only tighten): t ≥ 3, positive in every calendar week, still positive at 2× latency, monthly fixed cost covered, CUSUM demotion when live.
+
+### 6.8 Proposed order (no alpha spent before step 4)
+
+1. Supervisor: record the contamination (6.5.1); check the migration-price reference against a mainnet fixture (6.5.2); start recording the 0.30% and 0.55% tier canonical pools (public market data only) within free credits.
+2. Owner: the data decision, and the trade size and entries per day the proof will be registered at.
+3. Phase 0 on same-regime pre-wall days and recorder days, with no signal tested: eligible pools per day after H9, the canonical pool's share of each token's volume, unconditional absolute moves at 5, 15, 30 and 60 min, σ, ρ, time from dip to reversion against the 23-slot entry delay, and the stop-gap distribution. Kill MR-LV if fewer than 10 pools qualify on most days, or if a typical 30–60 min move is not several times break-even.
+4. Score attempt 1 as registered. If Phase 0 passed, register MR-LV as attempt 2 (at most 2 configurations fixed from the mechanism, targetMean at the realistic edge, breadth caps) on a never-run window, after the supervisor has ruled that its trades per day can reach n inside that window.
+5. If everything fails its fixed kill test: the bot stays in paper, the report says no edge was found, and no new trial opens without new data or a new mechanism.
+
+### 6.9 Sources and limits
+
+Opened by a researcher or critic: Bianchi, Babiak & Dickerson, J. Banking & Finance 142 (2022), [working paper](https://www.riksbank.se/globalassets/media/rapporter/working-papers/2022/no.-413-trading-volume-and-liquidity-provision-in-cryptocurreny-markets.pdf) (cost wording differs between its text, 30/40 bps, and Table 5, 20/30 bps); Zaremba et al., IRFA 78 (2021), doi:10.1016/j.irfa.2021.101908; Fičura, [FFA WP 5:003](https://ideas.repec.org/p/prg/jnlwps/v5y2023id5.003.html) (2023; sign convention not confirmed in the full text); Fieberg, Liedtke & Zaremba, IRFA 94 (2024), doi:10.1016/j.irfa.2024.103218; Liu, Tsyvinski & Wu, J. Finance (2022), [NBER w25882](https://www.nber.org/papers/w25882); Ante, [BRL WP 26](https://www.blockchainresearchlab.org/wp-content/uploads/2020/05/BRL-Working-Paper-26-Liquidity-shocks-token-returns-and-market-capitalization-in-DeFi-markets.pdf) (2022) and [BRL WP 3](https://www.blockchainresearchlab.org/wp-content/uploads/2019/10/Exploring-Market-Reactions-to-Exchange-Listings-of-Cryptocurrencies-BRL-working-paper3.pdf) (2019); Caporale & Plastun, J. Economic Studies 46(5) (2019); Marino, Naviglio, Tarantelli & Lillo, [arXiv 2602.14860](https://arxiv.org/abs/2602.14860) (2026); Milionis, Moallemi, Roughgarden & Zhang, [arXiv 2208.06046](https://arxiv.org/abs/2208.06046); Meteora DLMM [limit orders](https://docs.meteora.ag/core-products/dlmm/limit-order.md); [pump.fun fees](https://pump.fun/docs/fees); the pump_amm IDL in pump-fun/pump-public-docs. REPORTED only: Nagel, RFS 25(7) (2012); insider trading before Coinbase listings (Félez-Viñas, Johnson & Putniņš, via Decrypt); staking yield; the arbitrage profit figure.
+
+Limits: the Kamat graduation paper is cited in the repo as arXiv 2607.02795 and was found in this search as 2607.02823; check which is right before citing it again. The deep-pool σ (4–8% per trade) and every pool count and trades-per-day figure are assumptions until Phase 0 measures them. No market data was downloaded and nothing at or after the wall was read for a new statistic.
