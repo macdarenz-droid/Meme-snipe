@@ -31,3 +31,17 @@ Entry at the open of the bar after the signal bar. One open position per pool, a
 ## Statistics and verdict (fixed)
 Per configuration, group and period: trades, mean and median net return in SOL as % of q, win rate, mean gross, 95% and 99% confidence intervals of the mean by day-block bootstrap (5,000 resamples of UTC days), and the S0 mean.
 A configuration is **promising** only if, in the primary group at the $200 size: validation mean net > 0 with the 99% CI lower bound > 0 (about Bonferroni over 5 trials), validation mean net > the S0 mean, discovery mean net > 0, and the stress line's validation mean > 0. Otherwise **not supported**. Even "promising" is only a reason to register a proper test on a never-run window, never a reason to trade.
+
+## Amendments before the first run (2026-10-07, from the pre-run code review; no return had been computed)
+
+Code fixes that make the code match the text above (not rule changes):
+- Missing bars are carried to the last 5-minute bar that ends at or before the wall, not only to the pool's last traded bar, so a trade taken just before a pool went quiet time-exits at the carried close instead of being dropped.
+- Costs are charged additively, exactly as written: net = gross − 2 × fee − 2 × q/R − fixed/q (stress: a further −0.5 points).
+
+The registered verdict stays on the rules above. Because GeckoTerminal's 5-minute open always equals the previous close, the registered entry buys at the exact close of the signal bar with no delay, and the gap-through-stop clause can never fire, so every stop fills exactly at its level. Both are optimistic. One extra line, labelled **realistic** and reported beside every registered result as a deviation, changes four things together:
+1. Entry at the close of the first bar with volume after the signal bar (within 3 bars, else no trade); the holding window starts after it.
+2. A stop fills at the lower of the stop level and that bar's close.
+3. Fee tier and depth R from the signal bar's close × 1e9, not the previous day's close.
+4. The 500-bar minimum counts only bars with volume.
+S0 in the realistic line enters at the close of the first bar with volume at or after its random bar, with the same exits and costs.
+Also reported beside the bootstrap: a day-cluster t-interval (trade-weighted, D − 1 degrees of freedom), because the bootstrap is slightly liberal with about 20 validation days. No verdict uses the realistic line or the t-interval; they are disclosed for honesty.

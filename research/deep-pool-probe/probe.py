@@ -80,7 +80,8 @@ def load_bars(path):
     ts, o, h, l, c, v = [], [], [], [], [], []
     prev = float(raw[0][1])
     t = t0
-    while t <= t1:
+    t_end = WALL - BAR                 # last bar that ends at or before the wall (PREREG amendment)
+    while t <= t_end:
         r = by.get(t)
         if r:
             oo, hh, ll, cc, vv = map(float, r[1:6])
@@ -104,8 +105,8 @@ CONFIGS = {
     'MOM-C':   {'L': 12, 'dir': +1, 'z': 3.0, 'vol': 'high', 'tp': 0.08, 'sl': 0.04, 'H': 24},
 }
 
-def signals(bars, cfg):
-    """Indices i of signal bars; uses only bars <= i."""
+def signals(bars, cfg, traded_min=False):
+    """Indices i of signal bars; uses only bars <= i. traded_min: the 500-bar minimum counts bars with volume."""
     ts, o, h, l, c, v = bars
     L = cfg['L']
     n = len(c)
@@ -118,6 +119,7 @@ def signals(bars, cfg):
     # Rolling sums over rets[i - LOOKBACK : i] (the previous 3 days, never bar i itself).
     s = ss = 0.0
     cnt = 0
+    traded = sum(1 for j in range(L, L + LOOKBACK) if v[j] > 0)
     for j in range(L, L + LOOKBACK):
         if not math.isnan(rets[j]):
             s += rets[j]; ss += rets[j] * rets[j]; cnt += 1
@@ -128,7 +130,10 @@ def signals(bars, cfg):
                 s += add; ss += add * add; cnt += 1
             if not math.isnan(drop):
                 s -= drop; ss -= drop * drop; cnt -= 1
+            traded += (1 if v[i - 1] > 0 else 0) - (1 if v[i - 1 - LOOKBACK] > 0 else 0)
         if cnt < MIN_WINDOW or math.isnan(rets[i]) or v[i] <= 0:
+            continue
+        if traded_min and traded < MIN_WINDOW:
             continue
         var = ss / cnt - (s / cnt) ** 2
         sd = math.sqrt(var) if var > 0 else 0.0
@@ -148,56 +153,66 @@ def signals(bars, cfg):
         out.append(i)
     return out
 
-def simulate(bars, e, cfg):
-    """Enter at the open of bar e; returns (exit_index, gross) or None if the window crosses the data end."""
+def simulate(bars, e, cfg, real=False):
+    """Registered: enter at the open of bar e, hold bars e..e+H-1.
+    Realistic: enter at the close of the first bar with volume among e..e+2, hold the next H bars,
+    and a stop fills at min(stop, that bar's close). Returns (exit_index, gross, entry_index) or None."""
     ts, o, h, l, c, v = bars
-    last = e + cfg['H'] - 1
+    if real:
+        k = next((j for j in range(e, min(e + 3, len(c))) if v[j] > 0), None)
+        if k is None:
+            return None
+        p0, first, last = c[k], k + 1, k + cfg['H']
+    else:
+        k, p0, first, last = e, o[e], e, e + cfg['H'] - 1
     if last >= len(c) or ts[last] + BAR > WALL:
         return None
-    p0 = o[e]
     if p0 <= 0:
         return None
     tp, sl = p0 * (1 + cfg['tp']), p0 * (1 - cfg['sl'])
-    for j in range(e, last + 1):
-        if j > e and o[j] <= sl:
-            return j, o[j] / p0 - 1
+    for j in range(first, last + 1):
+        if j > first and o[j] <= sl:
+            return j, o[j] / p0 - 1, k
         if l[j] <= sl:
-            return j, sl / p0 - 1
+            fill = min(sl, c[j]) if real else sl
+            return j, fill / p0 - 1, k
         if h[j] >= tp:
-            return j, tp / p0 - 1
-    return last, c[last] / p0 - 1
+            return j, tp / p0 - 1, k
+    return last, c[last] / p0 - 1, k
 
 def net(gross, mcap, q):
+    """Additive, as written in PREREG: gross - 2 fee - 2 q/R - fixed/q."""
     f = fee_bps(mcap) / 1e4
     R = math.sqrt(K_MIG * mcap / 1e9)
-    return (1 - f) ** 2 * (1 + gross) / (1 + q / R) ** 2 - 1 - FIXED_SOL / q
+    return gross - 2 * f - 2 * q / R - FIXED_SOL / q
 
 def day_of(t):
     return t - t % DAY
 
-def run_pool(pool, bars, cfgname, cfg):
+def run_pool(pool, bars, cfg, real=False):
     days = {int(k): v for k, v in pool['days'].items()}
-    ts = bars[0]
+    ts, c = bars[0], bars[4]
     trades, busy_until, used_days = [], -1, set()
-    for i in signals(bars, cfg):
+    for i in signals(bars, cfg, traded_min=real):
         e = i + 1
         if e <= busy_until:
             continue
         d = day_of(ts[e])
         if d not in days or d in used_days or ts[e] < DEC_START:
             continue
-        sim = simulate(bars, e, cfg)
+        sim = simulate(bars, e, cfg, real)
         if not sim:
             continue
-        x, g = sim
+        x, g, k = sim
         busy_until = x
         used_days.add(d)
-        trades.append({'pool': pool['pool'], 'sym': pool['symbol'], 't': ts[e], 'day': d, 'g': g, 'grp': days[d]['g'], 'mcap': days[d]['mcap']})
+        mcap = c[i] * 1e9 if real else days[d]['mcap']
+        trades.append({'pool': pool['pool'], 'sym': pool['symbol'], 't': ts[e], 'day': d, 'g': g, 'grp': days[d]['g'], 'mcap': mcap})
     return trades
 
-def run_s0(pool, bars, cfg, seed):
+def run_s0(pool, bars, cfg, seed, real=False):
     days = {int(k): v for k, v in pool['days'].items()}
-    ts = bars[0]
+    ts, c = bars[0], bars[4]
     out = []
     for d, info in days.items():
         lo = bisect.bisect_left(ts, max(d, ts[0] + (LOOKBACK + cfg['L']) * BAR))
@@ -206,9 +221,10 @@ def run_s0(pool, bars, cfg, seed):
             continue
         hsh = int(hashlib.sha256(f"{seed}|{pool['pool']}|{d}".encode()).hexdigest(), 16)
         e = lo + hsh % (hi - lo)
-        sim = simulate(bars, e, cfg)
+        sim = simulate(bars, e, cfg, real)
         if sim:
-            out.append({'pool': pool['pool'], 't': ts[e], 'day': d, 'g': sim[1], 'grp': info['g'], 'mcap': info['mcap']})
+            mcap = c[max(sim[2] - 1, 0)] * 1e9 if real else info['mcap']
+            out.append({'pool': pool['pool'], 't': ts[e], 'day': d, 'g': sim[1], 'grp': info['g'], 'mcap': mcap})
     return out
 
 def boot_ci(trs, key, reps=BOOT, seed=7):
@@ -230,6 +246,44 @@ def boot_ci(trs, key, reps=BOOT, seed=7):
     q = lambda p: means[min(len(means) - 1, max(0, int(p * len(means))))]
     return {'95': [q(0.025), q(0.975)], '99': [q(0.005), q(0.995)]}
 
+def t_quantile(p, df):
+    """Inverse Student t CDF by bisection on a Simpson-integrated density."""
+    def cdf(x):
+        if x == 0:
+            return 0.5
+        a, b, n = 0.0, abs(x), 2000
+        hh = (b - a) / n
+        cst = math.gamma((df + 1) / 2) / (math.sqrt(df * math.pi) * math.gamma(df / 2))
+        f = lambda t: cst * (1 + t * t / df) ** (-(df + 1) / 2)
+        sm = f(a) + f(b) + sum((4 if k % 2 else 2) * f(a + k * hh) for k in range(1, n))
+        area = sm * hh / 3
+        return 0.5 + area if x > 0 else 0.5 - area
+    lo, hi = -50.0, 50.0
+    for _ in range(80):
+        mid = (lo + hi) / 2
+        if cdf(mid) < p:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2
+
+def t_ci(trs, key):
+    byday = {}
+    for t in trs:
+        byday.setdefault(t['day'], []).append(t[key])
+    D = len(byday)
+    if D < 3:
+        return None
+    N = sum(len(x) for x in byday.values())
+    m = sum(sum(x) for x in byday.values()) / N
+    var = sum((sum(x) - len(x) * m) ** 2 for x in byday.values()) / N ** 2 * D / (D - 1)
+    se = math.sqrt(var)
+    out = {}
+    for lev, p in (('95', 0.975), ('99', 0.995)):
+        tq = t_quantile(p, D - 1)
+        out[lev] = [m - tq * se, m + tq * se]
+    return out
+
 def summarize(trs, s0):
     if not trs:
         return {'n': 0}
@@ -240,15 +294,16 @@ def summarize(trs, s0):
         'win': sum(1 for x in xs if x > 0) / len(xs),
         'mean_gross': statistics.fmean(t['g'] for t in trs),
         'mean_stress': statistics.fmean(t['net'] - STRESS for t in trs),
-        'ci': boot_ci(trs, 'net'),
+        'ci': boot_ci(trs, 'net'), 't_ci': t_ci(trs, 'net'),
         's0_n': len(s0), 's0_mean_net': statistics.fmean(t['net'] for t in s0) if s0 else None,
     }
 
 def run(elig, bdir, outdir):
     os.makedirs(outdir, exist_ok=True)
     pools = json.load(open(elig))
-    allt = {k: [] for k in CONFIGS}
-    alls0 = {k: [] for k in CONFIGS}
+    modes = ('reg', 'real')
+    allt = {(m, k): [] for m in modes for k in CONFIGS}
+    alls0 = {(m, k): [] for m in modes for k in CONFIGS}
     manifest = []
     for p in pools:
         path = os.path.join(bdir, p['pool'] + '.json')
@@ -258,20 +313,24 @@ def run(elig, bdir, outdir):
         bars = load_bars(path)
         if not bars or len(bars[0]) < LOOKBACK + 20:
             continue
-        for k, cfg in CONFIGS.items():
-            allt[k] += run_pool(p, bars, k, cfg)
-            for s in range(SEEDS):
-                alls0[k] += run_s0(p, bars, cfg, s)
+        for m in modes:
+            real = m == 'real'
+            for k, cfg in CONFIGS.items():
+                allt[(m, k)] += run_pool(p, bars, cfg, real)
+                for sd in range(SEEDS):
+                    alls0[(m, k)] += run_s0(p, bars, cfg, sd, real)
     results = {}
-    for k in CONFIGS:
-        results[k] = {}
-        for sz, q in SIZES.items():
-            tr = [{**t, 'net': net(t['g'], t['mcap'], q)} for t in allt[k]]
-            s0 = [{**t, 'net': net(t['g'], t['mcap'], q)} for t in alls0[k]]
-            for gname, gset in (('AB', 'AB'), ('A', 'A'), ('B', 'B'), ('C', 'C')):
-                for per, (lo, hi) in (('disc', (DEC_START, VAL_START)), ('val', (VAL_START, WALL)), ('all', (DEC_START, WALL))):
-                    f = lambda t: t['grp'] in gset and lo <= t['t'] < hi
-                    results[k][f'{sz}|{gname}|{per}'] = summarize([t for t in tr if f(t)], [t for t in s0 if f(t)])
+    for m in modes:
+        for k in CONFIGS:
+            key = k if m == 'reg' else k + ' (realistic)'
+            results[key] = {}
+            for sz, q in SIZES.items():
+                tr = [{**t, 'net': net(t['g'], t['mcap'], q)} for t in allt[(m, k)]]
+                s0 = [{**t, 'net': net(t['g'], t['mcap'], q)} for t in alls0[(m, k)]]
+                for gname, gset in (('AB', 'AB'), ('A', 'A'), ('B', 'B'), ('C', 'C')):
+                    for per, (lo, hi) in (('disc', (DEC_START, VAL_START)), ('val', (VAL_START, WALL)), ('all', (DEC_START, WALL))):
+                        f = lambda t: t['grp'] in gset and lo <= t['t'] < hi
+                        results[key][f'{sz}|{gname}|{per}'] = summarize([t for t in tr if f(t)], [t for t in s0 if f(t)])
     verdict = {}
     for k in CONFIGS:
         v = results[k]['$200|AB|val']; d = results[k]['$200|AB|disc']
