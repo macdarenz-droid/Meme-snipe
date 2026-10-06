@@ -20,7 +20,7 @@ import { attemptFee, type FillNetwork, type FillScenario, lateFillOf } from '../
 import type { MicroUsd } from '../../../core/src/units/index.ts';
 import { EXIT, LOOKUP_BOUNDS_MS, STATE_FILES, type FeedHealth, type Health, type JournalKind, type QuotaStatus, type RecoveredFields } from '../../../runner/src/contract.ts';
 import type { DryRunRecord } from '../dryrun/index.ts';
-import { CANDIDATE_RESTORED, NO_UNIVERSE, type SavedGraduates, type SavedTail, resolveUniverse, sellOnlyReason } from '../engine/strategy.ts';
+import { CANDIDATE_RESTORED, GATE_REASONS_PREFIX, NO_UNIVERSE, type SavedGraduates, type SavedTail, resolveUniverse, sellOnlyReason } from '../engine/strategy.ts';
 import { RAW } from '../../../core/src/facts/raw.ts';
 import { GRADUATES_SEED_KEY, HOLE_FETCH_PREFIX } from '../../../core/src/facts/producer.ts';
 import { ACCOUNT_KEY, HALT_KEY, LiveStrategy, unwrap, POOL_PREFIX, RESTORE_KEY, SEED_KEY, SEEDING, SHORTLIST, SNAPSHOT_PREFIX, SOL_PRICE_KEY, type SnapshotFact, type CarryFact, CARRY_PREFIX, type MarketChoice, chooseMarket, parseCarryFact, type StrategyConfig, type StrategyDeps, type SavedStateRef, TRIP_PREFIX, parseSnapshotFact, snapshotKey, snapshotWins } from '../engine/strategy.ts';
@@ -35,7 +35,7 @@ import { DeployerStore, liveWatchToClose, type SavedDeployers } from './deployer
 import { CoverageJournal } from './coverage-journal.ts';
 import { rebuildMove } from './exposure.ts';
 import { backfillAddress, SIGNATURE_PAGE, type SeedRpc } from '../seed/rpc.ts';
-import { transactionEvents } from '../../../core/src/chain/index.ts';
+import { bondingCurveAddress, transactionEvents, type Address } from '../../../core/src/chain/index.ts';
 import { P2, P3 } from '../scheduler/scheduler.ts';
 import { callCost } from '../providers/solana-http.ts';
 import { FILLS, PUMP_MIGRATION_AUTHORITY } from './sources.ts';
@@ -98,6 +98,25 @@ export const CUT_TRADE_FETCHES_PER_DAY = 3_000;
 export const CUT_TRADE_HOLES_PER_POOL = 30;
 /** TRADE-GAP-HEAL: pool watches remembered (about 1,300 a day are watched; the oldest are forgotten first). */
 const TRADE_VIAS_KEPT = 10_000;
+/**
+ * FACTS-REREAD: the credits a UTC day may spend re-reading a candidate's missing stage-1 facts (migration, curve
+ * completion, create), per process, counted in `fetch-caps.json` with the cut-log caps and never from the fills' budget
+ * the boot seed can empty. One try is at most 1 (the migration by its signature) + 1 + REREAD_CURVE_READS (the curve's
+ * newest transactions) + 1 or CREATE_LOOKUP_CREDITS (the create): 33 at worst, about 10 when signatures are known.
+ * About 200 candidates are in their window at a restart and all may need it once (≈ 2,000), plus live fetch failures;
+ * 6,000 leaves room for retries. Past it the refusal stands (fail closed).
+ */
+export const REREAD_CREDITS_PER_DAY = 6_000;
+/**
+ * FACTS-REREAD: the newest transactions of a graduated coin's bonding curve read for its migration and completing buy.
+ * After the migration nothing trades on the curve, so both are among its newest signatures (COMPLETION-READ reads the
+ * same curve before the migration); one more than COMPLETION_READS leaves room for the migration itself.
+ */
+export const REREAD_CURVE_READS = COMPLETION_READS + 1;
+/** FACTS-REREAD: the stage-1 inputs whose `missing` reason asks for a re-read (H7 curve, H9/H14 create, H10 migration, H11 candles). */
+const STAGE1_INPUTS: ReadonlySet<string> = new Set(['migration', 'curve', 'candles', 'create']);
+/** FACTS-REREAD: candidates remembered with their re-read state (about 1,300 graduates a day; the oldest are forgotten first). */
+const REREADS_KEPT = 5_000;
 /** COMPLETION-READ: the credits one completion read reserves: 1 signatures page and up to COMPLETION_READS transactions. */
 export const COMPLETION_CREDITS = callCost('helius', 'getSignaturesForAddress') + COMPLETION_READS * callCost('helius', 'getTransaction');
 const MIGRATION_TX_PREFIX = 'pump:CompletePumpAmmMigrationEvent:';
@@ -105,6 +124,23 @@ export const PERSIST_EVERY_MS = 5 * 60_000;
 /** SAVE-ASOF: a save whose largest clamp (`AsOfClamp`) is over this is logged: a skew of seconds is normal, more is a bug. */
 export const CLAMP_LOG_MS = 10_000;
 /** SAVE-ASOF: the log line for a save whose largest clamp is over CLAMP_LOG_MS, else null. */
+/** FACTS-REREAD: the stage-1 inputs a reject's typed reasons name as H16 `missing` (none when it has no typed reasons). */
+export const stage1Missing = (reasons: readonly string[]): string[] => {
+  const typed = reasons.find((x) => x.startsWith(GATE_REASONS_PREFIX));
+  if (typed === undefined) return [];
+  let gates: unknown;
+  try {
+    gates = JSON.parse(typed.slice(GATE_REASONS_PREFIX.length));
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(gates)) return [];
+  const out = new Set<string>();
+  for (const g of gates) {
+    if (isObj(g) && g['gate'] === 'H16' && g['code'] === 'missing' && typeof g['input'] === 'string' && STAGE1_INPUTS.has(g['input'])) out.add(g['input']);
+  }
+  return [...out].sort();
+};
 export const clampNote = (clamp: { readonly count: number; readonly maxMs: number }): string | null =>
   clamp.maxMs > CLAMP_LOG_MS ? `Saved state: ${clamp.count} times dated after the save's moment were saved as at it, the latest ${(clamp.maxMs / 1000).toFixed(1)} s after.` : null;
 export { SAVED_STATES } from './recorder.ts';
@@ -184,7 +220,7 @@ export interface WorkerDeps {
    * Fetches a transaction at confirmed and puts it on the feed; resolves true when it was found. Used for a shortlisted
    * mint's create (item 9: live H9, H12–H14 need the confirmed create) and for a cut trade log on a rug-covered stream.
    */
-  readonly fetchTx: (signature: string, why: 'create' | 'cut-log' | 'cut-create' | 'cut-trade' | 'restore') => Promise<boolean>;
+  readonly fetchTx: (signature: string, why: 'create' | 'cut-log' | 'cut-create' | 'cut-trade' | 'restore' | 'reread') => Promise<boolean>;
   /**
    * RESTART-KEEP: signature reads on SEED-1's RPC, charged to the fill budget: the migrations of a restart's downtime,
    * and (COMPLETION-READ) each fetched migration's curve completion. Without it they are not read: coins that migrated
@@ -201,7 +237,7 @@ export interface WorkerDeps {
    * CREATE-AFTER-RESTART: looks up a shortlisted mint's create that neither this process nor the saved store holds
    * (sources.ts `findCreate`, under the fills' daily budget). Without it such a create waits, as before.
    */
-  readonly findCreate?: (mint: string) => Promise<CreateLookup>;
+  readonly findCreate?: (mint: string, budget?: { remaining(nowMs: number): number; spend(credits: number, nowMs: number): void; refund(credits: number, nowMs: number): void }) => Promise<CreateLookup>;
   /**
    * SEED-1: the deployer index's seed (first start: days and RPC up to the live creates watch's first slot) or the
    * downtime fill (restart from saved state), built by `buildSeed`. `untilSlot` is null when the live watch did not
@@ -470,6 +506,8 @@ export class Worker {
   /** RESTART-KEEP: each mint's curve completion and migration transactions, as seen (logs or fetched). */
   readonly #completeSig = new CappedMap<string, string>(TX_SIGS_MAX);
   readonly #migrationSig = new CappedMap<string, string>(TX_SIGS_MAX);
+  /** FACTS-REREAD: each migration signature's mint, so a failed fetch of it names its candidate. */
+  readonly #migrationMint = new CappedMap<string, string>(TX_SIGS_MAX);
   /** RESTART-KEEP: the saved state's slot (the downtime's migrations are looked up after it); null on a fresh start. */
   #downtimeFrom: bigint | null = null;
   /** RESTART-KEEP: restored candidates whose transactions wait for the sources to start. */
@@ -495,7 +533,12 @@ export class Worker {
    * The day's counts of both capped fetches, saved at each try (`fetch-caps.json`, review B1), so a restart keeps them.
    * A file that cannot be read or written counts the day as spent (fail safe on credits).
    */
-  #fetchCaps: { day: number; cutCreate: number; cutTrade: number } = { day: -1, cutCreate: 0, cutTrade: 0 };
+  #fetchCaps: { day: number; cutCreate: number; cutTrade: number; reread: number } = { day: -1, cutCreate: 0, cutTrade: 0, reread: 0 };
+  /**
+   * FACTS-REREAD: each candidate's re-read of its missing stage-1 facts: what it needs, and whether its chain of tries
+   * is running, landed or spent. One chain per candidate per process.
+   */
+  readonly #rereads = new CappedMap<string, { readonly needs: Set<string>; state: 'running' | 'landed' | 'spent' }>(REREADS_KEPT);
   #fetchCapsFile: StateFile<FetchCaps> | null = null;
   /** Signatures of cut pool-trade logs already asked for (a cut log names its signature on each of its events). */
   readonly #cutTradeSeen = new CappedMap<string, true>(CUT_TRADE_FETCHES_PER_DAY);
@@ -675,9 +718,9 @@ export class Worker {
     this.#ctl = this.#control.read(NO_CONTROL);
     this.#fetchCapsFile = fetchCapsFile(c.stateDir);
     try {
-      this.#fetchCaps = { ...this.#fetchCapsFile.read({ day: -1, cutCreate: 0, cutTrade: 0 }) };
+      this.#fetchCaps = { reread: 0, ...this.#fetchCapsFile.read({ day: -1, cutCreate: 0, cutTrade: 0, reread: 0 }) };
     } catch {
-      this.#fetchCaps = { day: Math.floor(now / 86_400_000), cutCreate: CUT_CREATE_FETCHES_PER_DAY, cutTrade: CUT_TRADE_FETCHES_PER_DAY };
+      this.#fetchCaps = { day: Math.floor(now / 86_400_000), cutCreate: CUT_CREATE_FETCHES_PER_DAY, cutTrade: CUT_TRADE_FETCHES_PER_DAY, reread: REREAD_CREDITS_PER_DAY };
       d.log(`${this.#fetchCapsFile.path} cannot be read: today's cut-log fetches count as spent.`);
     }
     this.#exitsFile = exitsFile(c.stateDir);
@@ -1164,6 +1207,11 @@ export class Worker {
     } else if (m.key === 'coverage:creates:start') {
       const v = isObj(m.value) && isObj(m.value['value']) ? m.value['value'] : m.value;
       if (isObj(v) && typeof v['via'] === 'string') this.#createVias.add(v['via']);
+    } else if (m.key.startsWith('feed:status:')) {
+      // FACTS-REREAD: the migration watch's fetch of a candidate's migration failed (solana-ws `fetch_failed`).
+      const v = isObj(m.value) && isObj(m.value['value']) ? m.value['value'] : m.value;
+      const mint = isObj(v) && v['state'] === 'fetch_failed' && typeof v['signature'] === 'string' ? this.#migrationMint.get(v['signature']) : undefined;
+      if (mint !== undefined) this.#rereadFacts(mint, ['migration'], 'fetch-failed');
     } else if (m.key.startsWith('coverage:trades:') && m.key.endsWith(':start')) {
       const v = isObj(m.value) && isObj(m.value['value']) ? m.value['value'] : m.value;
       if (isObj(v) && typeof v['via'] === 'string') this.#tradeVias.set(v['via'], true);
@@ -1200,7 +1248,11 @@ export class Worker {
   #readRestored(): void {
     for (const mint of this.#restoredMints.splice(0)) {
       const sigs = [this.#migrationSig.get(mint), this.#completeSig.get(mint)];
-      for (const sig of sigs) if (sig !== undefined) void this.#d.fetchTx(sig, 'restore');
+      // FACTS-REREAD: a restored candidate's facts are not saved; one that re-fetch cannot bring is read again.
+      for (const sig of sigs) {
+        if (sig !== undefined) void this.#d.fetchTx(sig, 'restore').catch(() => false).then((found) => (found ? undefined : this.#rereadFacts(mint, ['migration'], 'restored')));
+      }
+      if (sigs[0] === undefined) this.#rereadFacts(mint, ['migration'], 'restored');
       // The create: fetched again by its saved signature, or looked up from the mint's oldest transaction (SEED-2).
       this.#createFor(mint);
       if (sigs[0] === undefined) this.#d.log(`Restored candidate ${mint}: its migration was not seen; H9 waits for it.`);
@@ -1270,7 +1322,11 @@ export class Worker {
     const rr = this.#d.restartReads;
     if (rr === undefined || this.#stopping || this.#completeSig.has(mint)) return;
     const now = this.#d.timers.now();
-    if (rr.budget.remaining(now) < COMPLETION_CREDITS) return this.#d.log(`Curve completion of ${mint} not read: the fill budget is spent; H7 waits for it.`);
+    if (rr.budget.remaining(now) < COMPLETION_CREDITS) {
+      this.#d.log(`Curve completion of ${mint} not read: the fill budget is spent; H7 waits for it.`);
+      // FACTS-REREAD: read under its own budget instead (a candidate only: a migration not yet one is skipped there).
+      return this.#rereadFacts(mint, ['curve'], 'fill-budget');
+    }
     rr.budget.spend(COMPLETION_CREDITS, now);
     let used = 0;
     try {
@@ -1315,6 +1371,7 @@ export class Worker {
     if (map === this.#createSig && m.key.startsWith('logs:')) return;
     // The first seen wins; each map forgets its oldest past its cap in O(1).
     if (!map.has(at[2]!)) map.set(flat(at[2]!), flat(sig));
+    if (map === this.#migrationSig && !this.#migrationMint.has(sig)) this.#migrationMint.set(flat(sig), flat(at[2]!));
   }
 
   /**
@@ -1343,6 +1400,8 @@ export class Worker {
     const failed = (): CreateLookup => ({ mint, found: false, signature: null, slot: null, pages: 0, credits: 0, stopped_by: 'error', latency_ms: 0 });
     void find(mint).catch(failed).then((r) => {
       this.#journal.write('create_lookup', { ...r, attempt });
+      // FACTS-REREAD: a lookup the fills' budget skipped is made under the re-read budget instead.
+      if (r.stopped_by === 'skipped-no-budget') this.#rereadFacts(mint, ['create'], 'fill-budget');
       const retry = r.stopped_by === 'error' && attempt === 1 && !this.#stopping;
       this.#d.log(r.found
         ? `Shortlisted ${mint}: its create (slot ${r.slot}) found from the mint's oldest signature, ${r.credits} credits.`
@@ -1488,11 +1547,10 @@ export class Worker {
    * later day's counts) and a new day starts both counts at zero. The counts are saved before the fetch is made; a save
    * that fails refuses it (fail safe: no fetch whose count a restart could lose).
    */
-  #takeFetch(kind: 'cutCreate' | 'cutTrade', cap: number): boolean {
-    const day = Math.floor(this.#d.timers.now() / 86_400_000);
-    if (day > this.#fetchCaps.day) this.#fetchCaps = { day, cutCreate: 0, cutTrade: 0 };
-    if (this.#fetchCaps[kind] >= cap) return false;
-    this.#fetchCaps[kind] += 1;
+  #takeFetch(kind: 'cutCreate' | 'cutTrade' | 'reread', cap: number, n = 1): boolean {
+    this.#rollFetchCaps();
+    if (this.#fetchCaps[kind] + n > cap) return false;
+    this.#fetchCaps[kind] += n;
     try {
       this.#fetchCapsFile?.write({ ...this.#fetchCaps });
     } catch {
@@ -1500,6 +1558,155 @@ export class Worker {
       return false;
     }
     return true;
+  }
+
+  /** A new UTC day starts every count at zero; the day only moves forward. */
+  #rollFetchCaps(): void {
+    const day = Math.floor(this.#d.timers.now() / 86_400_000);
+    if (day > this.#fetchCaps.day) this.#fetchCaps = { day, cutCreate: 0, cutTrade: 0, reread: 0 };
+  }
+
+  /** FACTS-REREAD: gives back re-read credits reserved and not used (a save that fails keeps the higher count: safe). */
+  #refundReread(n: number): void {
+    if (n <= 0) return;
+    this.#rollFetchCaps();
+    this.#fetchCaps.reread = Math.max(0, this.#fetchCaps.reread - n);
+    try {
+      this.#fetchCapsFile?.write({ ...this.#fetchCaps });
+    } catch {
+      // The count in memory is lower than on disk: a restart counts more, never less.
+    }
+  }
+
+  /** FACTS-REREAD: the re-read budget in the shape the create lookup takes (`findCreate`); a refused reserve throws. */
+  readonly #rereadBudget = {
+    remaining: (): number => {
+      this.#rollFetchCaps();
+      return Math.max(0, REREAD_CREDITS_PER_DAY - this.#fetchCaps.reread);
+    },
+    spend: (credits: number): void => {
+      if (!this.#takeFetch('reread', REREAD_CREDITS_PER_DAY, credits)) throw new Error('the re-read budget is spent');
+    },
+    refund: (credits: number): void => this.#refundReread(credits),
+  };
+
+  /**
+   * FACTS-REREAD: a candidate whose stage-1 facts are missing (`needs`: migration, curve, candles, create) has them read
+   * again, from a refusal that names them, a restored candidate whose one re-fetch failed or never ran, or a completion
+   * or create read the fills' budget skipped. A try reads the migration by its saved signature, the curve's newest
+   * transactions (the completing buy, and the migration when it has no signature), and the create; a try that does not
+   * land everything it needs is asked again after each wait in CUT_CREATE_RETRY_MS while the coin is still a candidate.
+   * Fail-closed: nothing is decided here; the facts form only from the transactions put on the feed (at confirmed, as of
+   * their own slots), and until they do, after the last try, or past the day's budget, the refusal stands.
+   */
+  #rereadFacts(mint: string, needs: readonly string[], why: 'refused' | 'restored' | 'fill-budget' | 'fetch-failed'): void {
+    if (this.#stopping || !this.#strategy.candidates().has(mint)) return;
+    const st = this.#rereads.get(mint);
+    if (st !== undefined) {
+      for (const n of needs) st.needs.add(n);
+      return;
+    }
+    this.#rereads.set(mint, { needs: new Set(needs), state: 'running' });
+    this.#rereadTry(mint, 0, why);
+  }
+
+  #rereadTry(mint: string, tried: number, why: string): void {
+    // The day's budget spent: no try can read anything, so none is made and none is waited for (the refusal stands).
+    if (this.#rereadBudget.remaining() < callCost('helius', 'getSignaturesForAddress') + callCost('helius', 'getTransaction')) {
+      const st = this.#rereads.get(mint);
+      if (st !== undefined) st.state = 'spent';
+      this.#journal.write('facts_reread', { mint, try: tried + 1, why, needs: st === undefined ? [] : [...st.needs].sort(), landed: false, budget: 'spent' });
+      return this.#d.log(`Candidate ${mint}: its stage-1 facts are not read again: the day's re-read budget is spent; its refusal stands.`);
+    }
+    void this.#rereadOnce(mint).catch(() => false).then((landed) => {
+      const st = this.#rereads.get(mint);
+      this.#journal.write('facts_reread', { mint, try: tried + 1, why, needs: st === undefined ? [] : [...st.needs].sort(), landed });
+      if (st === undefined || this.#stopping) return;
+      if (landed) {
+        st.state = 'landed';
+        return;
+      }
+      const wait = CUT_CREATE_RETRY_MS[tried];
+      if (wait === undefined || !this.#strategy.candidates().has(mint)) {
+        st.state = 'spent';
+        return this.#d.log(`Candidate ${mint}: its stage-1 facts were not read again in ${tried + 1} tries; its refusal stands.`);
+      }
+      const h = this.#d.timers.setTimeout(() => {
+        this.#cutCreateTimers.delete(h);
+        if (this.#stopping) return;
+        if (!this.#strategy.candidates().has(mint)) {
+          st.state = 'spent';
+          return;
+        }
+        this.#rereadTry(mint, tried + 1, why);
+      }, wait);
+      this.#cutCreateTimers.add(h);
+    });
+  }
+
+  /** One try: true only when every needed transaction was found and put on the feed. */
+  async #rereadOnce(mint: string): Promise<boolean> {
+    const st = this.#rereads.get(mint);
+    if (st === undefined) return false;
+    let landed = true;
+    if (st.needs.has('migration') || st.needs.has('curve') || st.needs.has('candles')) landed = (await this.#rereadMigration(mint)) && landed;
+    if (st.needs.has('create')) landed = (await this.#rereadCreate(mint)) && landed;
+    return landed;
+  }
+
+  /**
+   * The migration (by its saved signature, through the shared fetcher) and the curve's newest transactions: those that
+   * carry this mint's migration or completion go on the feed at confirmed, as of their own slots (COMPLETION-READ's path).
+   */
+  async #rereadMigration(mint: string): Promise<boolean> {
+    const rr = this.#d.restartReads;
+    if (rr === undefined) return false;
+    let migration = false;
+    const sig = this.#migrationSig.get(mint);
+    const page = callCost('helius', 'getSignaturesForAddress');
+    const read = callCost('helius', 'getTransaction');
+    const reserve = page + REREAD_CURVE_READS * read;
+    // The whole try or nothing: a budget that cannot pay for the curve read spends nothing on the migration either.
+    if (this.#rereadBudget.remaining() < (sig === undefined ? 0 : 1) + reserve) return false;
+    if (sig !== undefined && this.#takeFetch('reread', REREAD_CREDITS_PER_DAY)) migration = await this.#d.fetchTx(sig, 'reread').catch(() => false);
+    if (!this.#takeFetch('reread', REREAD_CREDITS_PER_DAY, reserve)) return false;
+    let used = page;
+    let complete = false;
+    try {
+      const curve = bondingCurveAddress(mint as Address);
+      const sigs = await rr.rpc.getSignaturesForAddress(curve, { limit: REREAD_CURVE_READS }, P2);
+      for (const x of sigs) {
+        if (migration && complete) break;
+        if (x.err !== null) continue;
+        used += read;
+        const record = await rr.rpc.getTransaction(x.signature, P2);
+        if (record === null) continue;
+        const evs = transactionEvents(record);
+        const isMigration = evs.some((e) => e.name === 'CompletePumpAmmMigrationEvent' && e.data.mint === mint);
+        const isComplete = evs.some((e) => e.name === 'CompleteEvent' && e.data.mint === mint);
+        if (!isMigration && !isComplete) continue;
+        this.#feed.ingest('helius', { type: 'tx', record }, { receivedAt: this.#d.timers.now(), backfilled: true, lookup: true });
+        migration ||= isMigration;
+        complete ||= isComplete;
+      }
+    } catch (e) {
+      this.#d.log(`Candidate ${mint}: curve read for its migration failed: ${e instanceof Error ? e.message : 'error'}.`);
+    } finally {
+      this.#refundReread(reserve - used);
+    }
+    return migration && complete;
+  }
+
+  /** The create: by its saved signature, else looked up from the mint's oldest signature under the re-read budget. */
+  async #rereadCreate(mint: string): Promise<boolean> {
+    const sig = this.#createSig.get(mint);
+    if (sig !== undefined) return this.#takeFetch('reread', REREAD_CREDITS_PER_DAY) && (await this.#d.fetchTx(sig, 'reread').catch(() => false));
+    const find = this.#d.findCreate;
+    // Nothing is asked without the budget for a page and the transaction (the lookup's own floor).
+    if (find === undefined || this.#rereadBudget.remaining() < callCost('helius', 'getSignaturesForAddress') + callCost('helius', 'getTransaction')) return false;
+    const r = await find(mint, this.#rereadBudget);
+    this.#journal.write('create_lookup', { ...r, attempt: 'reread' });
+    return r.found;
   }
 
   #lostCreatesAsked = false;
@@ -1815,6 +2022,10 @@ export class Worker {
       if (mint !== undefined) this.#createFor(mint);
     }
     if (r.reasons[0] === CANDIDATE_RESTORED && r.reasons[2] !== undefined) this.#restoredMints.push(r.reasons[2]);
+    if (r.reasons[0] === 'reject' && r.reasons[2] !== undefined) {
+      const needs = stage1Missing(r.reasons);
+      if (needs.length > 0) this.#rereadFacts(r.reasons[2], needs, 'refused');
+    }
     const trips = r.reasons.filter((x) => x.startsWith(TRIP_PREFIX)).map((x) => x.slice(TRIP_PREFIX.length));
     if (trips.length > 0) this.#latch(trips, r.at.receivedAt);
     if (r.action?.type === 'propose_entry') this.#intentAt.set(r.action.intent.id, r.at.receivedAt);

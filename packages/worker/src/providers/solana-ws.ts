@@ -364,7 +364,8 @@ export class RpcStream {
   #seen(address: string, signature: string, slot: bigint, err: unknown, opts: WatchOptions, backfilled: boolean, lookup = false): void {
     const f = this.#o.feed.ingest(this.provider, { type: 'seen', signature, slot, err, via: `logs:${address}`, detail: null }, { receivedAt: this.#o.timers.now(), backfilled, ...(lookup ? { lookup: true, after: true } : {}) });
     if (opts.fetch !== undefined && err === null && !f.duplicate && this.#o.fetcher) {
-      this.#o.fetcher.fetch(signature, opts.fetch, backfilled).catch(() => this.#status('fetch_failed', { signature }));
+      // FACTS-REREAD: a fetch no provider answered (null after the fetcher's retries) fails as an error does.
+      this.#o.fetcher.fetch(signature, opts.fetch, backfilled).then((f) => (f === null ? this.#status('fetch_failed', { signature }) : undefined), () => this.#status('fetch_failed', { signature }));
     }
   }
 

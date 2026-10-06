@@ -20,7 +20,8 @@ import { DEFAULT_LIVE_FEED, FakeSocketHub, LiveFeed, rpcHandler, scriptedHttp, t
 import { ManualTimers } from '../src/scheduler/index.ts';
 import { blockNetwork, recordOf, testSecrets, tx } from './helpers.ts';
 import { MINT, T, Market, dueTimers, makeWorker, passingMarket, slotAt, tempState } from './worker-harness.ts';
-import { CREATE_RETRY_MS, type SeedResult } from '../src/run/worker.ts';
+import { CREATE_RETRY_MS, REREAD_CREDITS_PER_DAY, type SeedResult, type WorkerDeps } from '../src/run/worker.ts';
+import { fetchCapsFile } from '../src/run/state.ts';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -207,8 +208,11 @@ const landCreate = (m: Market): void => {
 };
 
 /** A worker over a state dir whose deployer store holds `creates`, with the passing market minus the create fact. */
-const restarted = async (o: { creates?: readonly MarketEvent[]; findCreate?: (mint: string) => Promise<CreateLookup>; seed?: readonly MarketEvent[]; savedState?: boolean; createSigsMax?: number } = {}) => {
+const restarted = async (o: { creates?: readonly MarketEvent[]; findCreate?: NonNullable<WorkerDeps['findCreate']>; seed?: readonly MarketEvent[]; savedState?: boolean; createSigsMax?: number; reread?: boolean } = {}) => {
   const stateDir = tempState();
+  // CREATE-AFTER-RESTART alone unless `reread`: FACTS-REREAD's own budget is spent for the day, so its re-reads add no
+  // lookups or fetches to what these tests count.
+  if (o.reread !== true) fetchCapsFile(stateDir).write({ day: Math.floor(T / 86_400_000), cutCreate: 0, cutTrade: 0, reread: REREAD_CREDITS_PER_DAY });
   const store = new DeployerStore(stateDir);
   for (const e of o.creates ?? []) store.keep(e);
   if (o.savedState === true) {
@@ -307,6 +311,50 @@ describe('a candidate created before the start reaches H9 with its real create',
     const line = text.trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>).find((l) => l['kind'] === 'create_lookup');
     expect(line).toMatchObject({ mint: MINT, found: true, credits: 3, stopped_by: 'found', pages: 2 });
     expect(checkJournal(text).create_lookup).toEqual({ lines: 1, found: 1, skipped_no_budget: 0, credits: 3 });
+  });
+
+  it('FACTS-REREAD (c): a lookup the fills\' budget skipped is made again under the re-read budget; found, the candidate passes H9', async () => {
+    const asked: string[] = [];
+    let market: Market | null = null;
+    const find: NonNullable<WorkerDeps['findCreate']> = async (mint, b) => {
+      asked.push(b === undefined ? 'fills' : 'reread');
+      if (b === undefined) return { mint, found: false, signature: null, slot: null, pages: 0, credits: 0, stopped_by: 'skipped-no-budget', latency_ms: 0 };
+      do await new Promise<void>((r) => setImmediate(r));
+      while (market === null);
+      landCreate(market);
+      return { mint, found: true, signature: SIG('C'), slot: '123', pages: 2, credits: 3, stopped_by: 'found', latency_ms: 40 };
+    };
+    const { h, stateDir } = await restarted({ findCreate: find, reread: true });
+    market = await passingMarket(h, { omit: [createKey(MINT)] });
+    await market.run(12_000, 400, tick(market));
+    expect(asked).toEqual(['fills', 'reread']);
+    expect(entered(stateDir)).toBe(true);
+    await h.worker.stop();
+    const rereads = readFileSync(join(stateDir, 'journal.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>).filter((l) => l['kind'] === 'facts_reread');
+    expect(rereads).toEqual([expect.objectContaining({ mint: MINT, try: 1, why: 'fill-budget', needs: ['create'], landed: true })]);
+  });
+
+  it('FACTS-REREAD: a refusal naming the create missing asks for it again (the first lookup answered, nothing found)', async () => {
+    const asked: string[] = [];
+    let market: Market | null = null;
+    const find: NonNullable<WorkerDeps['findCreate']> = async (mint, b) => {
+      asked.push(b === undefined ? 'fills' : 'reread');
+      if (b === undefined) return { mint, found: false, signature: null, slot: null, pages: 1, credits: 1, stopped_by: 'not-found', latency_ms: 0 };
+      do await new Promise<void>((r) => setImmediate(r));
+      while (market === null);
+      landCreate(market);
+      return { mint, found: true, signature: SIG('C'), slot: '123', pages: 2, credits: 3, stopped_by: 'found', latency_ms: 40 };
+    };
+    const { h, stateDir } = await restarted({ findCreate: find, reread: true });
+    market = await passingMarket(h, { omit: [createKey(MINT)] });
+    await market.run(12_000, 400, tick(market));
+    expect(asked).toEqual(['fills', 'reread']);
+    expect(missingCreate(stateDir)).toBe(true);
+    expect(entered(stateDir)).toBe(true);
+    await h.worker.stop();
+    const rereads = readFileSync(join(stateDir, 'journal.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>).filter((l) => l['kind'] === 'facts_reread');
+    expect(rereads[0]).toEqual(expect.objectContaining({ mint: MINT, try: 1, why: 'refused', landed: true }));
+    expect(rereads[0]!['needs']).toEqual(expect.arrayContaining(['create']));
   });
 
   it('a lookup that finds nothing leaves the create missing: H9 keeps refusing, nothing is guessed, and it is not repeated', async () => {

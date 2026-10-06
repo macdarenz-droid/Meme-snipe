@@ -3269,3 +3269,52 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
     - a hole released behind the mark is never healed;
     - both caps hold across a restart, and a new UTC day resets them;
     - an unreadable `fetch-caps.json` counts the day as spent.
+
+## A candidate's missing stage-1 facts are read again under their own budget (FACTS-REREAD, `run/worker.ts` `#rereadFacts`, `REREAD_CREDITS_PER_DAY`)
+
+- **2026-10-07 · Why (S1 card FACTS-REREAD, from the H16-WHY diagnosis).**
+  - Live, one hour after a boot, the biggest blocker was H16 `missing` for stage-1 facts: curve/H7 124, migration/H10 124, candles/H11 121, create/H14 and H9 113, growing about 56 coins an hour.
+  - Nothing removes these facts from a candidate. They were never written in that process:
+    - **a.** The saved state does not hold the store's facts, and a restored candidate gets one re-fetch of its migration, with no retry.
+    - **b.** The migration watch fetches each migration once, and a failure only sets a status.
+    - **c.** The completion and create lookups draw on the fills' daily budget, which the boot seed may take whole (`SEED_CREDIT_CAP` 150,000 against a 20,000 daily budget).
+  - Every such refusal is of a coin inside its entry window.
+- **What.**
+  - **Triggers.** A candidate's re-read starts on any of:
+    - a reject whose typed reasons name H16 `missing` for `migration`, `curve`, `candles` or `create` (`stage1Missing`);
+    - a restored candidate whose migration signature is unknown or whose one re-fetch failed (a);
+    - the migration watch's `fetch_failed` status for its migration (b). The stream now also reports a fetch that no provider answered (null), not only one that errored;
+    - a completion or create lookup that the fills' budget skipped (c).
+  - **A try.** It reads the migration by its saved signature through the shared fetcher. It then reads the newest transactions of the coin's bonding curve (`bondingCurveAddress`, REREAD_CURVE_READS = 6) and puts those carrying this mint's migration or completion on the feed, at confirmed, as of their own slots: COMPLETION-READ's path, so there is no lookahead. Finally it reads the create, by signature or with `findCreate` under this budget.
+    - **Curve, not pool.** The curve is read rather than the pool's oldest signatures because nothing trades on the curve after the migration. Its newest page therefore holds both the migration and the completion, while a pool's oldest signature needs paging back through every trade since then.
+  - **Retries.** A try that does not land everything it needs is asked again after 2, 4, 8 and 16 minutes, while the coin is still a candidate: 5 tries. There is one chain per candidate per process.
+  - **Budget.** `REREAD_CREDITS_PER_DAY` = 6,000 credits a UTC day, counted in `fetch-caps.json` with the cut-log caps (TRADE-GAP-HEAL), never from the fills' budget.
+    - A try is all or nothing: a budget that cannot pay for the curve read spends nothing.
+    - A spent budget stops the chain at once, with no waits.
+    - An unreadable file counts the day as spent.
+    - A file from before this has no `reread` count and reads as 0.
+    - A try costs at most 33 credits: 1 + 1 + 6, plus 1 or 25 for the create. About 10 when signatures are known.
+    - About 200 candidates are in their window at a restart, about 2,000 credits, plus live fetch failures.
+  - **Fail-closed.** Nothing here decides anything. The facts form only from transactions put on the feed. Until they do, and after the last try or a spent budget, the refusal stands. Each try is journaled as `facts_reread` (mint, try, why, needs, landed).
+  - **readsFor is not the hook.** `readsFor` (facts/source.ts) is not where these reads go. The LiveFacts source it feeds has no fetcher, no saved signatures and no seed RPC; the worker has all three. The same refusal is read from the worker's decision records instead.
+- **Not changed: the seed's share of the fills' budget.** The seed reserves `min(SEED_CREDIT_CAP, remaining)` and returns what it does not use. After a long downtime it can spend the whole day's 20,000, and COMPLETION-READ and the create lookup then wait for the next UTC day. FACTS-REREAD no longer depends on that budget, so its reads are not starved.
+  - **Smallest safe further change (proposed, not made):** let the seed reserve at most `remaining − 6,000`, keeping room for about 1,000 completion reads of 6 credits. The seed's own floor is unchanged.
+  - Not made here, because it changes how much of a downtime the seed may fill, which needs its own review.
+- **Summary counter: not added.** It is not cheap: the summary's shape is exact on both sides, so it needs a new key, a watchdog fallback and tests. The live effect shows instead in the existing H16 breakdown (H16-WHY): the stage-1 `missing` rows should fall. The journal holds every try.
+- **Evidence.**
+  - `facts-reread.test.ts` (real mainnet migration and completion):
+    - `stage1Missing` names only stage-1 `missing` inputs;
+    - the fills' budget spent: the curve is read under this budget (fills' budget untouched, 4 credits counted on disk) and H7 and H10 pass once the fact forms;
+    - (b) a failed migration fetch: asked again, the curve brings it, H7 and H10 pass;
+    - (a) a restored candidate whose re-fetch failed: read at boot, before its window;
+    - a failed try is tried again after its wait and lands;
+    - every try failing keeps the refusal, after exactly 5 tries;
+    - the day's budget spent as `fetch-caps.json` says at boot: nothing read, refusal stands;
+    - an unreadable file counts as spent.
+  - `create-after-restart.test.ts`:
+    - a create lookup the fills' budget skipped is made again under this budget and the candidate passes H9;
+    - a refusal naming the create asks for it again.
+  - Eight of these fail on the code before this change. The other two (spent budget, unreadable file) pin fail-closed behaviour that held before.
+  - Mutants killed: no retry; no boot re-read; budget not persisted; no refusal trigger; no `fetch_failed` trigger; no fills'-budget trigger.
+  - Existing tests isolated with the day's re-read budget spent (`completion-read`, `create-after-restart`), so they still pin COMPLETION-READ and CREATE-AFTER-RESTART alone.
+  - Two others updated: `streams` now pins the connection states and names every `fetch_failed`; `restart-keep` pins the one migration-authority read.

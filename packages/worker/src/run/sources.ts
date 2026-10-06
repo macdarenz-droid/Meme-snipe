@@ -362,15 +362,18 @@ export class LiveProviders {
     return this.#fetcher === null ? null : this.#fetcher.fetch(signature, P3);
   }
 
-  /** CREATE-AFTER-RESTART: a shortlisted mint's create looked up from its oldest signature, under the fills' budget. */
-  async findCreate(mint: string, timers: Timers): Promise<CreateLookup> {
+  /**
+   * CREATE-AFTER-RESTART: a shortlisted mint's create looked up from its oldest signature, under the fills' budget, or
+   * under `budget` when one is given (FACTS-REREAD's own, which the boot seed cannot empty).
+   */
+  async findCreate(mint: string, timers: Timers, budget?: Pick<DailyBudget, 'remaining' | 'spend' | 'refund'>): Promise<CreateLookup> {
     const ingest = (record: TransactionRecord): boolean => {
       const feed = this.#feed;
       if (feed === null) return false;
       feed.ingest('helius', { type: 'tx', record }, { receivedAt: timers.now(), lookup: true });
       return true;
     };
-    return findCreate(mint, { rpc: this.seedRpc(), ingest, timers, budget: this.#o.fillBudget });
+    return findCreate(mint, { rpc: this.seedRpc(), ingest, timers, budget: budget ?? this.#o.fillBudget });
   }
 
   /**

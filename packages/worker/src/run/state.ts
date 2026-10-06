@@ -79,10 +79,12 @@ export interface FetchCaps {
   readonly day: number;
   readonly cutCreate: number;
   readonly cutTrade: number;
+  /** FACTS-REREAD: the day's credits spent re-reading candidates' missing stage-1 facts (absent in a file from before it: 0). */
+  readonly reread?: number;
 }
 const isCount = (x: unknown): boolean => typeof x === 'number' && Number.isSafeInteger(x) && x >= 0;
 export const fetchCapsFile = (dir: string) =>
-  new StateFile<FetchCaps>(dir, 'fetch-caps.json', (v) => (isObj(v) && typeof v['day'] === 'number' && Number.isSafeInteger(v['day']) && isCount(v['cutCreate']) && isCount(v['cutTrade']) ? (v as unknown as FetchCaps) : null));
+  new StateFile<FetchCaps>(dir, 'fetch-caps.json', (v) => (isObj(v) && typeof v['day'] === 'number' && Number.isSafeInteger(v['day']) && isCount(v['cutCreate']) && isCount(v['cutTrade']) && (v['reread'] === undefined || isCount(v['reread'])) ? (v as unknown as FetchCaps) : null));
 
 /** The month a credit total belongs to. */
 export const creditMonth = (ms: number): string => new Date(ms).toISOString().slice(0, 7);
