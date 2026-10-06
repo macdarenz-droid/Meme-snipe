@@ -46,6 +46,125 @@ Core plan re-checked by the new supervisor, Mon 5 Oct about 8:53 AM, against `do
 
 Waiting (outside the core): Telegram alerts and controls (#161, #178, #190, #199), app changes (#167, #181, #182), summaries and observability (#174, #194, #200, #175, #211, #210), drills (#193, needed later for the qualifying run), CI-SHARD (#206, blocked by the safety check), docs and supply chain (#143, #146, #135, #136), paid history storage (#150, owner decision).
 
+## Priority hierarchy (verified 6 Oct 9:50 PM; owner picks the next task, one at a time)
+
+This replaces the Board order for new work (CLAUDE.md "One task at a time"). It comes from the owner's Fable review (7e5aa96), re-checked against base 0f32a79a by workflow wf_281f6178-a9d: 6 adversarial verifiers, a completeness critic and a ranking. Full verdicts with file:line are in HANDOVER, 9:58 PM.
+
+I checked everything against the current code (base 0f32a79a) on Tue 6 Oct at 9:49 PM Melbourne time. Every "True" item below was confirmed in the code. Times and figures marked "about" are estimates.
+
+### Tier 1: the bot can't trade, or would trade with the wrong money
+| ID | Problem | What fixing it does | Size | PR / branch | Status |
+|---|---|---|---|---|---|
+| T1-1 | Every coin fails the first check. The bot never sees the last buy that finishes a coin's launch. | Coins can get past the first check, so the bot can trade at all. | M | #255 COMPLETION-READ | In progress (in review) |
+| T1-2 | The Helius data credits run out about 3 PM Wed 7 Oct (supervisor's estimate, about 46k credits an hour; not measured again) | The bot keeps its eyes open. When the credits are gone it stops buying. | Your step (new key or paid plan), plus M for a usage cut | #250 (usage cut) | **Needs you** |
+| T1-3 | The disk fills about Thu 8 Oct: recordings add 4.5–7 GB a day and 13 GB is free | Recordings stay under a size limit and are uploaded, so the bot doesn't fall over. | M | #254 RECORD-BUDGET, #244 RECORD-UPLOAD | #254 in progress; #244 ready, held until after the T1-1 deploy |
+| T1-4 | The SOL price feed goes quiet for a few seconds and the bot pauses as if the feed broke (about 5% of the time) | Quiet seconds no longer pause buying. | S | #256 COINBASE-LIVENESS | In progress |
+| T1-5 | Two of your entry rules (the pool must hold at least $15k; the price must not already be up 5 min after launch) let through 0 of 22 sampled pools | This is not a bug: they are your rules. Easing them needs a study on past data and your OK. | Decision (the study is L) | — | **Your call.** Parked until past data exists (T4-3). |
+| T1-6 | The pool-safety rule H5 may wrongly refuse pools whose trades leave small leftover amounts | Tests H5 on 200+ real trades. Any change comes to you. | M | claude/tail-proof | In progress (research) |
+| T1-7 | The insider check (H13) likely refuses almost every coin that reaches it: a first buyer with more than 3,000 transactions counts as "unknown". 2 of 2 sampled coins failed. A stuck coin also uses up the hourly test-trade allowance. | Busy wallets get looked up properly, so good coins aren't all refused. | M | — | Not started. Measure on live data after T1-1 first. |
+| T1-8 | Money limits are counted in dollars, not SOL | SOL's price alone can't stop the bot. Today, with no trades at all, a fall of about 6% in SOL blocks every buy, and a fall of about 22% locks the kill switch until someone edits a file by hand. | L | #197 SOL-BOOKS (needs #168 first) | Draft, out of date |
+| T1-9 | The cost check counts about a quarter of the expected costs. It assumes the token-account deposit always comes back and prices failed sells at the cheapest fee. | The bot stops taking trades that lose money on costs. | M | — | Not started |
+
+### Tier 2: paper results couldn't be trusted as proof
+| ID | Problem | What fixing it does | Size | PR / branch | Status |
+|---|---|---|---|---|---|
+| T2-1 | Paper sells fill too easily. There is no busy network, no provider outage and no worse price on a repeated sell try; the backtest has all three. | Paper profit stops looking better than real life. | M | — | Not started |
+| T2-2 | Take-profit fires on a brief price spike and ignores the "wait for slot close" setting | Sells follow the same rule as the backtest. | S | — | Not started |
+| T2-3 | The bot measures a trade's risk and its cost differently live and in the backtest. A part-sell fires at 1.19x live but 1.39x in the backtest. | Exits happen at the same prices on both sides. | M | — | Not started (do after T1-9) |
+| T2-4 | Live and backtest strategies are two separate programs, and no test compares them | First a test that lists every difference, then one shared strategy. | Test S–M; full fix L | — | Not started |
+| T2-5 | Coins the bot never judged aren't counted: a coin's window ends unjudged, coins are lost on a restart, nothing is logged per coin during a pause (only partly true) | Every missed coin is counted, with its reason. | M | — | Not started |
+| T2-6 | Pool depth is counted twice as large live as in the backtest | Same number on both sides. No decision changes today. | S | — | Not started |
+| T2-7 | The median-target cap is 33% live and 10% in the backtest | Same cap on both sides. No decision changes today. | S | #225 | Draft |
+
+### Tier 3: staying up for days
+| ID | Problem | What fixing it does | Size | PR / branch | Status |
+|---|---|---|---|---|---|
+| T3-1 | After 10 quick crashes in 10 minutes the server stops restarting the bot, and one file write has no full-disk guard | The bot keeps retrying slowly, and a full disk pauses buying instead of crashing. | S | The guard is inside #149 | Not started |
+| T3-2 | Backups copy only the trade record. They skip the paper wallet, the pause and kill locks, saved exit plans and all paper fees. | A restore brings back the whole bot, with its locks still on. | M | #149 BACKUP-STATE | Draft, changes needed |
+| T3-3 | A damaged save file stops the bot completely instead of starting it in sell-only mode | The bot can still sell what it holds. | M | — | Not started |
+| T3-4 | After a Helius connection drop, coin launches it missed are never filled in | The history of who launched which coins stays complete. In the strict 48-h run, one drop would otherwise block rule H14 for 14 days. | M | — | Not started |
+| T3-5 | Each deploy throws away up to about 4 h of coins being watched | Space deploys apart (a habit now, no code). | S | — | Habit now |
+| T3-6 | There is no off-site backup at all | One encrypted copy kept off the server. | S | — | **Needs your OK** to send it to Telegram |
+| T3-7 | Tests take 26 minutes of their 30-minute limit | Fixes keep merging; one slow run can't cancel a good one. | M | #206 | Draft, blocked by a safety check |
+| T3-8 | Small delays: H15 re-checks on every SOL price tick, and the stop-loss needs 14 unbroken minutes of trades | Measure after T1-1, fix only if they block. | S | — | Watch |
+
+### Tier 4: proof, and before real money
+| ID | Problem | What fixing it does | Size | PR / branch | Status |
+|---|---|---|---|---|---|
+| T4-1 | The dry run's mainnet test fails every buy and every sell. The spending caps are below what the safety policy counts, and an off-by-one refuses the 25% emergency sells. | Pre-funding item 4 can pass. Must land before the 48-h run counts. | S | — | Not started |
+| T4-2 | Outside practice mode the network-health check can never turn green, so no real strategy can buy | Real strategies can trade once you set the limits. | S, plus your limits | — | Not started |
+| T4-3 | There is no past data yet | Backtests become possible (items 2 and 6). | L, plus your choice (paid Helius about US$94 a month) | #150, #152, #214 | **Needs you** |
+| T4-4 | Helius use is about 33x the free plan, and the dry-run report requires staying within it | Item 3 can pass. | Your plan choice, or a usage cut of about 94% | #250 | **Needs you** |
+| T4-5 | The proof test G1 can never pass: one required statistics test isn't connected | G1 can pass. Must land before anyone freezes a strategy, or its one-shot test is wasted. | M | — | Not started |
+| T4-6 | Hidden test results are written to disk before they may be opened | The "look only once" rule holds. | S | — | Not started |
+| T4-7 | A registered test doesn't pin the code version and the data | A failed test can't be re-run on changed code. | S | — | Not started |
+| T4-8 | There is no proven strategy; only the random practice mode can buy | A real strategy the bot can run. | L | #115, #191 | Waits on T4-3 and T4-5 |
+| T4-9 | No real backtest or hidden-data test has been run | Evidence for items 2 and 6. | L | #154 | Waits on T4-3 |
+| T4-10 | The check that the dry run matches the backtest (G3) isn't connected | The second half of item 6 can be judged. | M | #98 (very out of date) | Not started |
+| T4-11 | The U2 exit plan has no measured results and may not reach 300 test trades by 20 Oct | Decide whether to keep U2. | S (decision) | — | Not started |
+| T4-12 | The watchdog's SOL-reserve and position alarms can never fire | The alarms work before real money. | S | — | Parked (alerts) |
+| T4-13 | A failed key change breaks /pause in Telegram | Your remote stop always works. | M | #161 | **Waits on your OK** to store key fingerprints |
+| T4-14 | The program that will sign real transactions doesn't exist yet | Needed only before live trading. | M | — | After the proof, with your approval |
+| T4-15 | Coin features that don't block trades aren't logged | Data for tuning later. | M | — | Not started |
+
+### Tier 5: docs and housekeeping
+| ID | Problem | What fixing it does | Size | PR | Status |
+|---|---|---|---|---|---|
+| T5-1 | PROJECT_STATE is about 39 merges out of date; the current HANDOVER is only on a side branch | Records you can trust. | S | — | Not started |
+| T5-2 | Docs promise things that weren't built: R2 backups, Healthchecks, @solana/kit, the Helius 70% stop (you dropped it), a Jupiter fallback | Docs match the code. | S | #143 (out of date) | Not started |
+| T5-3 | The main branch on GitHub has no protection, and AGENTS.md names a "main" branch that doesn't exist | Nobody can wipe or rewrite history. | S | — | **Needs you** (repo admin) |
+| T5-4 | 3 of the package-install safety settings are missing (the others are set) | Safer installs. | S | #135 | Draft |
+| T5-5 | The raw price data behind the 518-coin study isn't in the repo | The study can be checked again. | S | — | Not started |
+| T5-6 | No test-coverage report and no nightly mutation run | Better test signal. | M | — | Not started |
+| T5-7 | The app's Wallet screen is always empty | Shows the wallet. | S | — | Parked (app) |
+
+### Already fixed, or not true
+- **Dollars in the app headline:** fixed (#182, merged in #253). The daily-loss meter still converts dollars until T1-8.
+- **Cheapest fee charged on sell retries:** fixed in #253. Draft #201 can be closed or cut down.
+- **Dry-run problems changing paper trades:** not true. The dry-run results are only logged.
+- **"No Helius 70% stop in the code":** the stop exists. You turned it off for Helius on 5 Oct; only the docs are out of date (T5-2).
+- **"Unjudged coins not counted":** partly true. Each one is logged as "window ended" but not counted on its own (T2-5).
+- **Restarts every 5–12 minutes:** these were out-of-memory crashes, fixed by #249. No crash since 1:06 PM.
+- **Filling the launch history from published days:** true, but not worth doing. It stops helping after 16 Oct. Parked.
+
+### Where (for the supervisor)
+| Item | Location |
+|---|---|
+| T1-2 | HANDOVER 7:02 PM; `worker.ts:1584` |
+| T1-3 | HANDOVER 8:03 PM; `deployer-store.ts:54`; `DECISIONS.md:2966` |
+| T1-4 | HANDOVER 8:43 PM |
+| T1-5 | HANDOVER 8:43 PM; `policy.ts:205` |
+| T1-7 | `facts/source.ts:393`; `facts/readers.ts:782-785`, `:811-814` (rechecked) |
+| T1-8 | `policy.ts:190`; `risk/evaluate.ts:118-137`, `:311-341`, `:510`; `account.ts:184`, `:197` |
+| T1-9 | `costs/index.ts:175`; `run/settings.ts:39-46`; `research/edge-costs.ts:38-60` |
+| T2-1 | `paper-world.ts:275`, `:334-337` vs `sim/world.ts:151-162`, `:228` |
+| T2-2 | `strategy.ts:2068`; `exits/rules.ts:314-317` |
+| T2-3 | `strategy.ts:2041-2043`, `:2178-2187` vs `study.ts:575`, `:630`, `:643` |
+| T2-4 | `strategy.ts:616`; `study.ts:134`; `run/parity.ts:154` |
+| T2-5 | `strategy.ts:2264-2286`; `worker.ts:773`, `:1414-1440` |
+| T2-6 | `strategy.ts:2479` vs `study.ts:500` |
+| T2-7 | `run/settings.ts:37` vs backtest `strategy/config.ts:155`, `:162` |
+| T3-1 | `zeroed-worker.service:9-10` |
+| T3-2 | `zeroed-backup:15` |
+| T3-3 | `run/state.ts:52-56` |
+| T3-4 | `sources.ts:314`; `solana-ws.ts:449`, `:551` |
+| T3-5 | `seed/fill.ts:145-148` |
+| T3-6 | `host-config.json:2` |
+| T3-7 | `ci.yml:22-35` (run: 26 min 15 s) |
+| T4-1 | `worker.ts:661-667`; `tx/policy.ts:113-116`, `:282-286`; `live-sim.ts:116`; `tx/trade.ts:153` |
+| T4-2 | `main.ts:112`; `facts/producer.ts:948-953` |
+| T4-4 | runner `report.ts:247` |
+| T4-5 | `study/gates.ts:31-35` |
+| T4-6 | `study/study.ts:394-428` |
+| T4-7 | `strategy/config.ts:194-199`; `holdout.ts:309-316` |
+| T4-8 | `contract.ts:203` |
+| T4-10 | `stats/gates.ts:962` (no callers) |
+| T4-12 | `worker.ts:2010`; watchdog `logic.ts:163` |
+| T4-13 | `publish.sh:63-65`, `:88` |
+| T5-2 | `ARCHITECTURE.md:121`, `:143`, `:283`, `:334`, `:336` |
+| T5-3 | `AGENTS.md:57` |
+| T5-7 | `App.tsx:29` |
+
 ## Follow-ups
 - Android: cover a stop between the two asset renames, the "fixed name plus .prev" state, and a failed final delete (APP-1b review notes).
 - Money scanner: aliased unit constants and a regex right after `)` (CFG-1 review notes; defence in depth).

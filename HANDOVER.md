@@ -48,6 +48,19 @@ The previous S1 account reached its usage limit about 12:45 PM. The owner made t
 - No host access, no secrets access (owner only), as before.
 
 **Log (Melbourne time, newest first)**
+- 9:58 PM **Fable review verified** (wf_281f6178-a9d; 8 agents). The ranked hierarchy (T1–T5) is now in PROJECT_STATE "Priority hierarchy". Key verdicts:
+  - money in dollars: TRUE; a flat-wallet simulation shows about 6–8% SOL fall → R6 blocks every entry, about 22% → R10 latches (no re-arm command; #190 open);
+  - app headline: FIXED (#182);
+  - retry exit fee: FIXED (#181);
+  - cost gate F is about 0.24 of the research model: TRUE;
+  - paper fills kinder than the backtest: TRUE;
+  - wick take-profit: TRUE;
+  - two strategies with no cross-parity test: TRUE;
+  - exit cap vs signer policy (item 4): TRUE;
+  - regime exec-health deadlock outside S0: TRUE;
+  - G1 SPA not wired: TRUE;
+  - holdout written before the seal: TRUE.
+  New from the critic: H13 insider check treats a first buyer with more than 3,000 transactions as unknown, so it likely refuses most coins that reach it (T1-7). Running work finishes in order: T1-1 #255 (merged), T1-3 #254/#244, T1-4 #256, T1-6 TAIL-PROOF. The owner picks the next task.
 - 9:51 PM **#255 COMPLETION-READ merged → b8cd3c50** (facts PASS, BT-parity PASS and app/API PASS at 15c1b080; CI check + historical-data green; contained 0f32a79a, merge-tree equal). Deploys as soon as push CI is green (trading first). Follow-ups from review, not built: facts N4 (the fill budget has no reserve for held-position fills, up to about 9k of 20k a day; matters once trades exist), N1 (signature page of 5 includes failed signatures), N2 (no log when no CompleteEvent is found); BT N1 (a failed read drops that graduate from the regime-survival series; add a DECISIONS note and a per-day counter). #256 COINBASE-LIVENESS at 64e4673d: feeds reviewer session_013hgmegRFXLMAZ9GEbnkFEX. #254: persist B1 (pass rmdirs the running boot's empty day folder, so the recorder gets ENOENT) and data B3 test relayed to its builder.
 - 8:56 PM **Owner sent a Fable review** (read-only, at 7e5aa96, 6.5/10) and asked: verify what is true now, rank by effect on bot trading, owner picks the first task, the rest park; one task at a time, each closed and reviewed before the next (rule in CLAUDE.md). Verification workflow wf_281f6178-a9d running (6 adversarial verifiers by group, a completeness critic, then a tiered ranking).
 - 8:43 PM **Blocker research done** (session_01NsQjZGjxGh57ih72Q5aqAZ, archived; small samples, figures approximate). After COMPLETION-READ, these refusals are correct under today's rules:
