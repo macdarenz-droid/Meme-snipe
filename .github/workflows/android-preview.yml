@@ -74,16 +74,16 @@ jobs:
           "$mgr" "platforms;android-36" "build-tools;36.0.0"
 
       # Signing (SEC-1, docs/ANDROID_PREVIEW.md Keystore). Pull requests and other branches always sign with a
-      # throwaway key made below and never see a stable one. The integration branch signs with the owner's
+      # throwaway key made below. Only integration push/manual events inject either signing secret. They sign with the owner's
       # key from the PREVIEW_KEYSTORE_B64 secret, refused unless its certificate matches the
       # PREVIEW_CERT_SHA256 variable. Until the owner adds them, it keeps APP-1's cached key; any
       # pull-request workflow can restore that cache, so it is replaced, never trusted further.
       - name: Signing key
         id: signing
         env:
-          INTEGRATION: ${{ github.ref == 'refs/heads/ccr-14987baf-i6lrsl' && github.event_name != 'pull_request' }}
-          KEYSTORE_B64: ${{ secrets.PREVIEW_KEYSTORE_B64 }}
-          KEYSTORE_PASSWORD: ${{ secrets.PREVIEW_KEYSTORE_PASSWORD }}
+          INTEGRATION: ${{ github.ref == 'refs/heads/ccr-14987baf-i6lrsl' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
+          KEYSTORE_B64: ${{ github.ref == 'refs/heads/ccr-14987baf-i6lrsl' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && secrets.PREVIEW_KEYSTORE_B64 || '' }}
+          KEYSTORE_PASSWORD: ${{ github.ref == 'refs/heads/ccr-14987baf-i6lrsl' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && secrets.PREVIEW_KEYSTORE_PASSWORD || '' }}
           CERT_SHA256: ${{ vars.PREVIEW_CERT_SHA256 }}
         run: bash .github/scripts/preview-signing.sh
 

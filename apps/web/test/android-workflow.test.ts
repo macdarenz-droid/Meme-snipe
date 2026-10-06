@@ -81,8 +81,11 @@ describe('android-preview workflow', () => {
   it('signs pull requests and other branches with a throwaway key, and only the integration branch with a stable one (SEC-1)', () => {
     const step = (name: string) => wf.slice(wf.indexOf(`name: ${name}`), wf.indexOf('\n      - ', wf.indexOf(`name: ${name}`)));
     const signing = step('Signing key');
-    expect(signing).toContain("INTEGRATION: ${{ github.ref == 'refs/heads/ccr-14987baf-i6lrsl' && github.event_name != 'pull_request' }}");
-    expect(signing).toContain('KEYSTORE_B64: ${{ secrets.PREVIEW_KEYSTORE_B64 }}');
+    const eligible = "github.ref == 'refs/heads/ccr-14987baf-i6lrsl' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')";
+    expect(signing).toContain(`INTEGRATION: \${{ ${eligible} }}`);
+    for (const [name, secret] of [['KEYSTORE_B64', 'PREVIEW_KEYSTORE_B64'], ['KEYSTORE_PASSWORD', 'PREVIEW_KEYSTORE_PASSWORD']]) {
+      expect(signing).toContain(`${name}: \${{ ${eligible} && secrets.${secret} || '' }}`);
+    }
     expect(signing).toContain('CERT_SHA256: ${{ vars.PREVIEW_CERT_SHA256 }}');
     expect(signing).toContain('run: bash .github/scripts/preview-signing.sh');
     // The cache any pull-request workflow can restore is never even restored by one here.
@@ -104,6 +107,37 @@ describe('android-preview workflow', () => {
     expect(gradle).toContain("System.getenv('ZEROED_KEY_ALIAS') ?: 'androiddebugkey'");
     const ignore = readFileSync(fileURLToPath(new URL('../../../.gitignore', import.meta.url)), 'utf8');
     for (const g of ['*.keystore', '*.jks', '*.p12', '*.b64']) expect(ignore.split('\n')).toContain(g);
+  });
+
+  // These expressions use only JS-compatible equality and boolean operators. Evaluate the actual
+  // workflow values with synthetic strings, so the table checks env injection before the shell runs.
+  it.each([
+    ['refs/heads/ccr-14987baf-i6lrsl', 'push', true],
+    ['refs/heads/ccr-14987baf-i6lrsl', 'workflow_dispatch', true],
+    ['refs/heads/ccr-14987baf-i6lrsl', 'pull_request', false],
+    ['refs/pull/136/merge', 'pull_request', false],
+    ['refs/heads/feature', 'workflow_dispatch', false],
+    ['refs/heads/feature', 'push', false],
+    ['refs/heads/ccr-14987baf-i6lrsl', 'pull_request_target', false],
+    ['refs/heads/ccr-14987baf-i6lrsl', 'schedule', false],
+    ['refs/tags/ccr-14987baf-i6lrsl', 'workflow_dispatch', false],
+    ['refs/heads/ccr-14987baf-i6lrsl-extra', 'push', false],
+  ] as const)('injects signing secrets only for an allowed integration event: %s %s', (ref, event, eligible) => {
+    const start = wf.indexOf('name: Signing key');
+    const signing = wf.slice(start, wf.indexOf('\n      - ', start));
+    const secrets = { PREVIEW_KEYSTORE_B64: 'synthetic-keystore', PREVIEW_KEYSTORE_PASSWORD: 'synthetic-password' };
+    const evaluate = (name: string) => {
+      const line = signing.split('\n').find((l) => l.trimStart().startsWith(`${name}: `));
+      const expression = line?.match(/\$\{\{ (.*) \}\}/)?.[1];
+      expect(expression, name).toBeDefined();
+      return Function('github', 'secrets', `return (${expression});`)({ ref, event_name: event }, secrets) as unknown;
+    };
+    // Check both secret env values first: a throwaway exit cannot undo secrets injected by Actions.
+    expect([evaluate('KEYSTORE_B64'), evaluate('KEYSTORE_PASSWORD'), evaluate('INTEGRATION')]).toEqual([
+      eligible ? secrets.PREVIEW_KEYSTORE_B64 : '',
+      eligible ? secrets.PREVIEW_KEYSTORE_PASSWORD : '',
+      eligible,
+    ]);
   });
 
   const script = (name: string) => fileURLToPath(new URL(`../../../.github/scripts/${name}`, import.meta.url));

@@ -17,8 +17,8 @@ Download (always the newest build): https://github.com/macdarenz-droid/Meme-snip
 
 ## Keystore
 Signing (SEC-1, `.github/scripts/preview-signing.sh`):
-- Pull requests and every other branch sign with a throwaway key made for that build. They never restore a cache or read the owner's key, even when a same-repo pull request receives secrets.
-- The integration branch signs with the owner's key from the `PREVIEW_KEYSTORE_B64` and `PREVIEW_KEYSTORE_PASSWORD` secrets. The build refuses to sign unless the key's certificate SHA-256 equals the `PREVIEW_CERT_SHA256` repository variable; the APK's one signer is checked against it after the build and again in the release job before the link changes (`verify-preview-cert.sh`).
+- Pull requests and every other branch sign with a throwaway key made for that build. The signing step injects both signing secrets only for a `push` or `workflow_dispatch` on the exact integration branch; otherwise both environment values are empty, including on same-repo pull requests. Throwaway builds never restore the keystore cache.
+- Those integration builds sign with the owner's key from the `PREVIEW_KEYSTORE_B64` and `PREVIEW_KEYSTORE_PASSWORD` secrets. The build refuses to sign unless the key's certificate SHA-256 equals the `PREVIEW_CERT_SHA256` repository variable; the APK's one signer is checked against it after the build and again in the release job before the link changes (`verify-preview-cert.sh`).
 - Until the owner adds them, the integration branch keeps the APP-1 key in `actions/cache` (`zeroed-preview-debug-keystore-v1`) and every run warns. That key is exposed: any pull-request workflow, including one a fork edits, can restore a cache of its base branch (confirmed on 2026-10-04: run 37188909095 of pull request #134 restored it, its "Create debug keystore" step skipped on a cache hit). Whoever holds it can sign an APK that installs over Zeroed on the phone. A YAML guard cannot stop a fork, because a fork's pull request runs the fork's workflow files.
 
 Nothing key-like is committed (`*.keystore`, `*.jks`, `*.p12` and `*.b64` are ignored).
