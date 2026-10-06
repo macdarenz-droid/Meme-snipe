@@ -22,6 +22,8 @@ import { blockNetwork, recordOf, testSecrets, tx } from './helpers.ts';
 import { MINT, T, Market, dueTimers, makeWorker, passingMarket, slotAt, tempState } from './worker-harness.ts';
 import { CREATE_RETRY_MS, REREAD_CREDITS_PER_DAY, type SeedResult, type WorkerDeps } from '../src/run/worker.ts';
 import { fetchCapsFile } from '../src/run/state.ts';
+import { checkSession } from '../src/run/parity.ts';
+import { replayLedgerFile } from '../../core/src/ledger/replay/index.ts';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -231,6 +233,15 @@ const restarted = async (o: { creates?: readonly MarketEvent[]; findCreate?: Non
   return { h, fetched, stateDir };
 };
 
+/** Parity (TEST-1): the session's decisions replay ten times to the live ones, and its ledger replays. */
+const parity = (h: { readonly session: Parameters<typeof checkSession>[1]['session']; readonly worker: { readonly strategyConfig: Parameters<typeof checkSession>[1]['strategy'] } }, stateDir: string): void => {
+  const r = checkSession(stateDir, { session: h.session, rugs: RUG_CONFIG, strategy: h.worker.strategyConfig }, replayLedgerFile, 10);
+  expect(r.boots.map((b) => [b.replays, b.deterministic, b.divergence])).toEqual(r.boots.map(() => [10, true, null]));
+  expect(r.boots.length).toBeGreaterThan(0);
+  expect(r.boots.every((b) => b.decisions > 0)).toBe(true);
+  expect(r.ok).toBe(true);
+};
+
 const decisions = (stateDir: string): string[][] =>
   readFileSync(join(stateDir, 'journal.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>).filter((l) => l['kind'] === 'decision').map((l) => (l['reasons'] as string[]) ?? []);
 const missingCreate = (stateDir: string): boolean => decisions(stateDir).some((r) => r[0] === 'reject' && r.some((x) => /create/.test(x) && /H9/.test(x)));
@@ -332,6 +343,8 @@ describe('a candidate created before the start reaches H9 with its real create',
     await h.worker.stop();
     const rereads = readFileSync(join(stateDir, 'journal.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>).filter((l) => l['kind'] === 'facts_reread');
     expect(rereads).toEqual([expect.objectContaining({ mint: MINT, try: 1, why: 'fill-budget', needs: ['create'], landed: true })]);
+    // The re-read's create replays to the same decisions (it is on the feed, at confirmed, as of its own slot).
+    parity(h, stateDir);
   });
 
   it('FACTS-REREAD: a refusal naming the create missing asks for it again (the first lookup answered, nothing found)', async () => {
@@ -355,6 +368,8 @@ describe('a candidate created before the start reaches H9 with its real create',
     const rereads = readFileSync(join(stateDir, 'journal.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>).filter((l) => l['kind'] === 'facts_reread');
     expect(rereads[0]).toEqual(expect.objectContaining({ mint: MINT, try: 1, why: 'refused', landed: true }));
     expect(rereads[0]!['needs']).toEqual(expect.arrayContaining(['create']));
+    // The re-read's create replays to the same decisions (it is on the feed, at confirmed, as of its own slot).
+    parity(h, stateDir);
   });
 
   it('a lookup that finds nothing leaves the create missing: H9 keeps refusing, nothing is guessed, and it is not repeated', async () => {

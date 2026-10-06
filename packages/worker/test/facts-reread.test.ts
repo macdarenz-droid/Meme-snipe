@@ -9,10 +9,13 @@ import { recordFromRpc, type RpcTransactionBase64 } from '../../core/src/chain/i
 import type { MarketEvent, StrategyContext } from '../../core/src/engine/index.ts';
 import { evaluateHardRejects, migrationKey, type GateContext, type GateRequest, type HardResult } from '../../core/src/gates/index.ts';
 import type { MicroUsd, Lamports } from '../../core/src/units/index.ts';
-import { RESEARCH_CONFIG } from '../../core/src/config/index.ts';
-import { COMPLETION_CREDITS, CUT_CREATE_RETRY_MS, REREAD_CREDITS_PER_DAY, stage1Missing } from '../src/run/worker.ts';
+import { RESEARCH_CONFIG, RUG_CONFIG } from '../../core/src/config/index.ts';
+import { COMPLETION_CREDITS, CUT_CREATE_RETRY_MS, REREAD_CREDITS_PER_DAY, REREAD_CURVE_READS, stage1Missing, type WorkerDeps } from '../src/run/worker.ts';
+import type { CreateLookup } from '../src/run/sources.ts';
+import { checkSession } from '../src/run/parity.ts';
+import { replayLedgerFile } from '../../core/src/ledger/replay/index.ts';
 import { fetchCapsFile } from '../src/run/state.ts';
-import { Market, makeWorker, tempState, virtualTimers } from './worker-harness.ts';
+import { type Harness, Market, makeWorker, tempState, virtualTimers } from './worker-harness.ts';
 import { PUMP_MIGRATION_AUTHORITY as MIGRATION_AUTHORITY } from '../src/run/sources.ts';
 
 interface Fixture {
@@ -74,13 +77,15 @@ const curveRpc = (fail = 0) => {
  * migration watch's fetch puts it on the feed, then the run goes into the candidate's window. `reread` is what
  * fetch-caps.json holds for today when it starts (null: no file).
  */
-const run = async (rpc: Rpc, o: { readonly reread?: number | null; readonly stateDir?: string; readonly window?: boolean; readonly logsOnly?: boolean; readonly timers?: ReturnType<typeof virtualTimers>; readonly noMigration?: boolean; readonly runMs?: number } = {}) => {
-  let left = COMPLETION_CREDITS - 1;
+const run = async (rpc: Rpc, o: { readonly reread?: number | null; readonly stateDir?: string; readonly window?: boolean; readonly logsOnly?: boolean; readonly timers?: ReturnType<typeof virtualTimers>; readonly noMigration?: boolean; readonly runMs?: number; readonly findCreate?: WorkerDeps['findCreate']; readonly fill?: number; readonly found?: (sig: string, why: string, h: Harness) => boolean; readonly after?: (h: Harness, m: Market, tick: () => void) => Promise<void> } = {}) => {
+  let left = o.fill ?? COMPLETION_CREDITS - 1;
   const budget = { remaining: () => left, spend: (c: number) => { left -= c; }, refund: (c: number) => { left += c; } };
   const timers = o.timers ?? virtualTimers(AT - 30_000);
   const stateDir = o.stateDir ?? tempState();
   if (o.reread !== undefined && o.reread !== null) fetchCapsFile(stateDir).write({ day: Math.floor(timers.now() / DAY_MS), cutCreate: 0, cutTrade: 0, reread: o.reread });
-  const h = makeWorker({ stateDir, timers, config: { ZEROED_HEALTH_ADDR: `127.0.0.1:${port++}`, ZEROED_API_ADDR: `127.0.0.1:${port++}` }, restartReads: { rpc: rpc as never, budget } });
+  let ref: Harness | null = null;
+  const h = makeWorker({ ...(o.found === undefined ? {} : { found: (sig: string, why: string) => o.found!(sig, why, ref!) }), stateDir, timers, config: { ZEROED_HEALTH_ADDR: `127.0.0.1:${port++}`, ZEROED_API_ADDR: `127.0.0.1:${port++}` }, restartReads: { rpc: rpc as never, budget }, ...(o.findCreate === undefined ? {} : { findCreate: o.findCreate }) });
+  ref = h;
   session = h.session;
   const judged: { readonly at: number; readonly migration: boolean; readonly r: HardResult }[] = [];
   const s = h.worker.strategy as unknown as { onMarket: (e: MarketEvent, ctx: StrategyContext) => unknown };
@@ -116,6 +121,7 @@ const run = async (rpc: Rpc, o: { readonly reread?: number | null; readonly stat
   await m.run(20_000, 400, tick);
   if (o.runMs !== undefined) await m.run(o.runMs, 5_000, tick);
   else if (o.window !== false) await m.run(RESEARCH_CONFIG.s0.u2WindowFromMs + 40 * 60_000, 5_000, tick);
+  if (o.after !== undefined) await o.after(h, m, tick);
   const last = judged.at(-1)!;
   await h.worker.stop();
   let caps: { readonly reread?: number } = {};
@@ -167,6 +173,11 @@ describe('FACTS-REREAD: a candidate missing its migration fact has it read again
     const inWindow = r.judged.filter((j) => j.at >= AT + RESEARCH_CONFIG.s0.u2WindowFromMs);
     expect(inWindow.length).toBeGreaterThan(0);
     for (const j of inWindow) expect(j.r).toEqual(expect.objectContaining({ passed: ['H7', 'H10'], failed: [], reasons: [] }));
+    // Parity (TEST-1): the session, the re-read's transactions included, replays ten times to the live decisions.
+    const p = checkSession(r.h.stateDir, { session: r.h.session, rugs: RUG_CONFIG, strategy: r.h.worker.strategyConfig }, replayLedgerFile, 10);
+    expect(p.boots.map((b) => [b.replays, b.deterministic, b.divergence])).toEqual([[10, true, null]]);
+    expect(p.boots[0]!.decisions).toBeGreaterThan(1);
+    expect(p.ok).toBe(true);
   }, 60_000);
 
   it('(b) the migration watch\'s fetch failed: the candidate\'s migration is asked for again, the curve brings it, H7 and H10 pass', async () => {
@@ -245,5 +256,114 @@ describe('FACTS-REREAD: a candidate missing its migration fact has it read again
     expect(curveReads(asked)).toBe(0);
     expect(missingMigration(r.last.r)).toBe(true);
     expect(r.h.logs.some((l) => l.includes('fetch-caps.json cannot be read'))).toBe(true);
+  }, 60_000);
+  it('a need that arrives after the chain landed starts a new chain for just that need, inside the same tries and budget', async () => {
+    const { asked, rpc } = curveRpc();
+    const stateDir = tempState();
+    const landedCurve = () => readFileSync(join(stateDir, 'journal.jsonl'), 'utf8').includes('"kind":"facts_reread"');
+    const calls: string[] = [];
+    const none = (mint: string, stopped_by: CreateLookup['stopped_by']): CreateLookup => ({ mint, found: false, signature: null, slot: null, pages: 0, credits: 0, stopped_by, latency_ms: 0 });
+    // The fills' lookup answers only once the curve re-read has landed, and finds the fills' budget spent; the re-read's
+    // lookups find nothing, so the create stays missing.
+    const findCreate = async (mint: string, b?: unknown): Promise<CreateLookup> => {
+      calls.push(b === undefined ? 'fills' : 'reread');
+      if (b !== undefined) return none(mint, 'not-found');
+      while (!landedCurve()) await new Promise<void>((r) => setImmediate(r));
+      return none(mint, 'skipped-no-budget');
+    };
+    const r = await run(rpc, { reread: null, stateDir, findCreate });
+    expect(r.rereads[0]).toEqual(expect.objectContaining({ try: 1, why: 'fill-budget', needs: ['curve'], landed: true }));
+    // The create's chain: its own needs only, the tries counted on from the curve's (5 in all), never the curve again.
+    expect(r.rereads.slice(1).map((x) => [x['try'], x['needs'], x['landed']])).toEqual([2, 3, 4, 5].map((t) => [t, ['create'], false]));
+    expect(calls).toEqual(['fills', 'reread', 'reread', 'reread', 'reread']);
+    expect(curveReads(asked)).toBe(1);
+    expect(r.h.logs).toContain(`Candidate ${MINT}: its stage-1 facts were not read again in ${CUT_CREATE_RETRY_MS.length + 1} tries; its refusal stands.`);
+  }, 60_000);
+
+  it('a try that finds the migration without its completion has not landed: it is asked again, without reading the migration twice', async () => {
+    // The first try lands the migration only (its completion cannot be read yet); the second reads the curve for the
+    // completion alone.
+    const { asked: asked2, rpc: rpc2 } = curveRpc();
+    let first = true;
+    const get2 = rpc2.getTransaction;
+    rpc2.getTransaction = async (sig) => (first && sig === complete.signature ? ((first = false), asked2.push(`tx ${sig}`), null) : get2(sig));
+    const t = await run(rpc2, { reread: null });
+    expect(t.rereads.map((x) => [x['try'], x['landed']])).toEqual([[1, false], [2, true]]);
+    // The first try reads on past the completion it cannot get; the second skips the migration it already has.
+    const second = asked2.lastIndexOf(`sigs ${CURVE}`);
+    expect(asked2.slice(0, 3)).toEqual([`sigs ${CURVE}`, `tx ${migrate.signature}`, `tx ${complete.signature}`]);
+    expect(asked2.slice(second)).toEqual([`sigs ${CURVE}`, `tx ${complete.signature}`]);
+    expect(asked2.filter((a) => a === `tx ${migrate.signature}`)).toHaveLength(1);
+    expect(missingMigration(t.last.r)).toBe(false);
+  }, 120_000);
+
+  it('the budget edge: a try that needs exactly what is left is made and spends no more than the cap; one credit less makes none', async () => {
+    // Fill-budget case: the migration's signature is known (1), then a page and REREAD_CURVE_READS transactions.
+    const cost = 1 + 1 + REREAD_CURVE_READS;
+    const { asked, rpc } = curveRpc();
+    const at = await run(rpc, { reread: REREAD_CREDITS_PER_DAY - cost, window: false, runMs: 60_000 });
+    expect(curveReads(asked)).toBe(1);
+    expect(at.rereads[0]).toEqual(expect.objectContaining({ try: 1, landed: true }));
+    // Charged what was used: the signature ask, the page and two transactions.
+    expect(at.caps.reread).toBe(REREAD_CREDITS_PER_DAY - cost + 4);
+    const less = curveRpc();
+    const under = await run(less.rpc, { reread: REREAD_CREDITS_PER_DAY - cost + 1, window: false, runMs: 60_000 });
+    expect(curveReads(less.asked)).toBe(0);
+    expect(less.asked).toEqual([]);
+    expect(under.rereads).toEqual([expect.objectContaining({ try: 1, landed: false, budget: 'spent' })]);
+    expect(under.caps.reread).toBe(REREAD_CREDITS_PER_DAY - cost + 1);
+  }, 60_000);
+
+  it('a chain stopped by a spent budget resumes on the next UTC day, in the same process, and lands', async () => {
+    const { asked, rpc } = curveRpc();
+    const r = await run(rpc, {
+      reread: REREAD_CREDITS_PER_DAY, window: false, runMs: 60_000,
+      after: async (h) => {
+        expect(curveReads(asked)).toBe(0);
+        // A later step the same day does not resume it.
+        h.worker.step();
+        for (let k = 0; k < 20; k++) await new Promise<void>((res) => setImmediate(res));
+        expect(curveReads(asked)).toBe(0);
+        // The UTC day rolls over (the candidate still one): the next step resumes the chain under the new day's budget.
+        h.timers.set((Math.floor(h.timers.now() / DAY_MS) + 1) * DAY_MS + 1_000);
+        h.worker.step();
+        for (let k = 0; k < 20; k++) await new Promise<void>((res) => setImmediate(res));
+      },
+    });
+    expect(curveReads(asked)).toBe(1);
+    expect(r.rereads.map((x) => [x['try'], x['landed'], x['budget'] ?? null])).toEqual([[1, false, 'spent'], [1, true, null]]);
+    // The new day's count holds this try alone.
+    expect(r.caps.reread).toBe(4);
+  }, 60_000);
+  it('the re-read\'s own migration does not start a second curve read from the fills\' budget while its chain reads the curve', async () => {
+    const { asked, rpc } = curveRpc();
+    let first = true;
+    const get = rpc.getTransaction;
+    rpc.getTransaction = async (sig) => (first && sig === complete.signature ? ((first = false), asked.push(`tx ${sig}`), null) : get(sig));
+    // The fills' budget has room: only the running re-read keeps COMPLETION-READ from reading the curve as well.
+    const r = await run(rpc, { reread: null, logsOnly: true, fill: 10 * COMPLETION_CREDITS });
+    expect(r.rereads.map((x) => [x['try'], x['landed']])).toEqual([[1, false], [2, true]]);
+    expect(asked.filter((a) => a.includes('before'))).toEqual([]);
+    expect(r.fillLeft()).toBe(10 * COMPLETION_CREDITS);
+    expect(missingMigration(r.last.r)).toBe(false);
+  }, 60_000);
+  it('once the completion is on the feed, a later try fetches the migration by its signature alone and reads no curve', async () => {
+    const { asked, rpc } = curveRpc();
+    let hidden = true;
+    const get = rpc.getTransaction;
+    // The curve's newest transactions give the completion, not the migration (not readable yet); its signature fetch
+    // fails the first time and finds it the second, putting it on the feed as the fetcher does.
+    rpc.getTransaction = async (sig) => (hidden && sig === migrate.signature ? ((hidden = false), asked.push(`tx ${sig}`), null) : get(sig));
+    let asks = 0;
+    const found = (sig: string, why: string, h: Harness): boolean => {
+      if (why !== 'reread' || sig !== migrate.signature || ++asks < 2) return false;
+      h.worker.feed.ingest('helius', { type: 'tx', record: migrate }, { receivedAt: h.timers.now(), backfilled: true, lookup: true });
+      return true;
+    };
+    const r = await run(rpc, { reread: null, found });
+    expect(r.rereads.map((x) => [x['try'], x['landed']])).toEqual([[1, false], [2, true]]);
+    expect(curveReads(asked)).toBe(1);
+    expect(asks).toBe(2);
+    expect(missingMigration(r.last.r)).toBe(false);
   }, 60_000);
 });

@@ -117,6 +117,16 @@ export const REREAD_CURVE_READS = COMPLETION_READS + 1;
 const STAGE1_INPUTS: ReadonlySet<string> = new Set(['migration', 'curve', 'candles', 'create']);
 /** FACTS-REREAD: candidates remembered with their re-read state (about 1,300 graduates a day; the oldest are forgotten first). */
 const REREADS_KEPT = 5_000;
+/** FACTS-REREAD: one candidate's re-read (`#rereads`); `read` holds the needs landed and the transactions put on the feed. */
+interface RereadState {
+  readonly pending: Set<string>;
+  readonly read: Set<string>;
+  tries: number;
+  state: 'running' | 'idle' | 'parked' | 'spent';
+  why: string;
+  /** The UTC day a parked chain was refused on. */
+  day: number;
+}
 /** COMPLETION-READ: the credits one completion read reserves: 1 signatures page and up to COMPLETION_READS transactions. */
 export const COMPLETION_CREDITS = callCost('helius', 'getSignaturesForAddress') + COMPLETION_READS * callCost('helius', 'getTransaction');
 const MIGRATION_TX_PREFIX = 'pump:CompletePumpAmmMigrationEvent:';
@@ -533,10 +543,14 @@ export class Worker {
    */
   #fetchCaps: { day: number; cutCreate: number; cutTrade: number; reread: number } = { day: -1, cutCreate: 0, cutTrade: 0, reread: 0 };
   /**
-   * FACTS-REREAD: each candidate's re-read of its missing stage-1 facts: what it needs, and whether its chain of tries
-   * is running, landed or spent. One chain per candidate per process.
+   * FACTS-REREAD: each candidate's re-read of its missing stage-1 facts: what is still pending, what landed, the tries
+   * made (CUT_CREATE_RETRY_MS.length + 1 at most per candidate per process), and whether a chain is running, idle (nothing pending),
+   * parked on a spent budget until the next UTC day, or spent.
    */
-  readonly #rereads = new CappedMap<string, { readonly needs: Set<string>; state: 'running' | 'landed' | 'spent' }>(REREADS_KEPT);
+  readonly #rereads = new CappedMap<string, RereadState>(REREADS_KEPT);
+  /** FACTS-REREAD: candidates whose chain waits for a new UTC day's budget (bounded by #rereads; stale entries skipped). */
+  readonly #rereadsParked = new Set<string>();
+  #rereadsScanDay = -1;
   #fetchCapsFile: StateFile<FetchCaps> | null = null;
   /** Signatures of cut pool-trade logs already asked for (a cut log names its signature on each of its events). */
   readonly #cutTradeSeen = new CappedMap<string, true>(CUT_TRADE_FETCHES_PER_DAY);
@@ -1319,6 +1333,9 @@ export class Worker {
     await Promise.resolve();
     const rr = this.#d.restartReads;
     if (rr === undefined || this.#stopping || this.#completeSig.has(mint)) return;
+    // FACTS-REREAD: a running re-read of this mint's migration (whose ingest released it) reads the curve itself.
+    const st = this.#rereads.get(mint);
+    if (st?.state === 'running' && !st.read.has('tx:complete') && (st.pending.has('migration') || st.pending.has('curve') || st.pending.has('candles'))) return;
     const now = this.#d.timers.now();
     if (rr.budget.remaining(now) < COMPLETION_CREDITS) {
       this.#d.log(`Curve completion of ${mint} not read: the fill budget is spent; H7 waits for it.`);
@@ -1591,43 +1608,82 @@ export class Worker {
   /**
    * FACTS-REREAD: a candidate whose stage-1 facts are missing (`needs`: migration, curve, candles, create) has them read
    * again, from a refusal that names them, a restored candidate whose one re-fetch failed or never ran, or a completion
-   * or create read the fills' budget skipped. A try reads the migration by its saved signature, the curve's newest
-   * transactions (the completing buy, and the migration when it has no signature), and the create; a try that does not
-   * land everything it needs is asked again after each wait in CUT_CREATE_RETRY_MS while the coin is still a candidate.
-   * Fail-closed: nothing is decided here; the facts form only from the transactions put on the feed (at confirmed, as of
-   * their own slots), and until they do, after the last try, or past the day's budget, the refusal stands.
+   * or create read the fills' budget skipped. A try reads only what is still pending: the migration by its saved
+   * signature and the curve's newest transactions (the completing buy, and the migration when it has no signature)
+   * until both are on the feed, and the create. A try that leaves anything pending is asked again after each wait in
+   * CUT_CREATE_RETRY_MS while the coin is still a candidate, up to CUT_CREATE_RETRY_MS.length + 1 tries per candidate in all: a need that
+   * arrives after a chain landed starts a new chain for itself inside that cap. A try the day's budget cannot pay for is
+   * not made: the chain waits for the next UTC day (`#resumeRereads`). Fail-closed: nothing is decided here; the facts
+   * form only from the transactions put on the feed (at confirmed, as of their own slots), and until they do, after the
+   * last try, or while the budget is spent, the refusal stands.
    */
   #rereadFacts(mint: string, needs: readonly string[], why: 'refused' | 'restored' | 'fill-budget' | 'fetch-failed'): void {
     if (this.#stopping || !this.#strategy.candidates().has(mint)) return;
-    const st = this.#rereads.get(mint);
-    if (st !== undefined) {
-      for (const n of needs) st.needs.add(n);
-      return;
+    let st = this.#rereads.get(mint);
+    if (st === undefined) {
+      st = { pending: new Set(), read: new Set(), tries: 0, state: 'idle', why, day: 0 };
+      this.#rereads.set(mint, st);
     }
-    this.#rereads.set(mint, { needs: new Set(needs), state: 'running' });
-    this.#rereadTry(mint, 0, why);
+    let added = false;
+    for (const n of needs) {
+      if (st.read.has(n) || st.pending.has(n)) continue;
+      st.pending.add(n);
+      added = true;
+    }
+    // A running chain reads what is pending at its next try; a parked one at the next day; a spent one never again.
+    if (!added || st.state !== 'idle') return;
+    st.why = why;
+    this.#rereadTry(mint, st);
   }
 
-  #rereadTry(mint: string, tried: number, why: string): void {
-    // The day's budget spent: no try can read anything, so none is made and none is waited for (the refusal stands).
-    if (this.#rereadBudget.remaining() < callCost('helius', 'getSignaturesForAddress') + callCost('helius', 'getTransaction')) {
+  /** FACTS-REREAD: chains parked on a spent budget try again once a new UTC day gives the budget back (from `step`). */
+  #resumeRereads(): void {
+    const day = Math.floor(this.#d.timers.now() / 86_400_000);
+    // Once per UTC day: a chain parked today waits for tomorrow.
+    if (this.#rereadsParked.size === 0 || day <= this.#rereadsScanDay) return;
+    this.#rereadsScanDay = day;
+    for (const mint of [...this.#rereadsParked]) {
       const st = this.#rereads.get(mint);
-      if (st !== undefined) st.state = 'spent';
-      this.#journal.write('facts_reread', { mint, try: tried + 1, why, needs: st === undefined ? [] : [...st.needs].sort(), landed: false, budget: 'spent' });
-      return this.#d.log(`Candidate ${mint}: its stage-1 facts are not read again: the day's re-read budget is spent; its refusal stands.`);
+      if (st === undefined || st.state !== 'parked') {
+        this.#rereadsParked.delete(mint);
+        continue;
+      }
+      if (st.day >= day) continue;
+      this.#rereadsParked.delete(mint);
+      if (!this.#strategy.candidates().has(mint)) {
+        st.state = 'spent';
+        continue;
+      }
+      this.#rereadTry(mint, st);
     }
-    void this.#rereadOnce(mint).catch(() => false).then((landed) => {
-      const st = this.#rereads.get(mint);
-      this.#journal.write('facts_reread', { mint, try: tried + 1, why, needs: st === undefined ? [] : [...st.needs].sort(), landed });
-      if (st === undefined || this.#stopping) return;
+  }
+
+  #rereadTry(mint: string, st: RereadState): void {
+    st.state = 'running';
+    const needs = [...st.pending].sort();
+    void this.#rereadOnce(mint, st).catch(() => 'tried' as const).then((r) => {
+      if (r === 'budget') {
+        // The day's budget cannot pay for the try: none is made, none is counted, and the chain waits for the next day.
+        st.state = 'parked';
+        st.day = Math.floor(this.#d.timers.now() / 86_400_000);
+        this.#rereadsParked.add(mint);
+        // Bounded as #rereads is: the oldest parked candidate is forgotten first (its refusal stands).
+        if (this.#rereadsParked.size > REREADS_KEPT) this.#rereadsParked.delete(this.#rereadsParked.values().next().value!);
+        this.#journal.write('facts_reread', { mint, try: st.tries + 1, why: st.why, needs, landed: false, budget: 'spent' });
+        return this.#d.log(`Candidate ${mint}: its stage-1 facts are not read again: the day's re-read budget is spent; its refusal stands.`);
+      }
+      st.tries++;
+      const landed = st.pending.size === 0;
+      this.#journal.write('facts_reread', { mint, try: st.tries, why: st.why, needs, landed });
+      if (this.#stopping) return;
       if (landed) {
-        st.state = 'landed';
+        st.state = 'idle';
         return;
       }
-      const wait = CUT_CREATE_RETRY_MS[tried];
+      const wait = CUT_CREATE_RETRY_MS[st.tries - 1];
       if (wait === undefined || !this.#strategy.candidates().has(mint)) {
         st.state = 'spent';
-        return this.#d.log(`Candidate ${mint}: its stage-1 facts were not read again in ${tried + 1} tries; its refusal stands.`);
+        return this.#d.log(`Candidate ${mint}: its stage-1 facts were not read again in ${st.tries} tries; its refusal stands.`);
       }
       const h = this.#d.timers.setTimeout(() => {
         this.#cutCreateTimers.delete(h);
@@ -1636,46 +1692,78 @@ export class Worker {
           st.state = 'spent';
           return;
         }
-        this.#rereadTry(mint, tried + 1, why);
+        this.#rereadTry(mint, st);
       }, wait);
       this.#cutCreateTimers.add(h);
     });
   }
 
-  /** One try: true only when every needed transaction was found and put on the feed. */
-  async #rereadOnce(mint: string): Promise<boolean> {
-    const st = this.#rereads.get(mint);
-    if (st === undefined) return false;
-    let landed = true;
-    if (st.needs.has('migration') || st.needs.has('curve') || st.needs.has('candles')) landed = (await this.#rereadMigration(mint)) && landed;
-    if (st.needs.has('create')) landed = (await this.#rereadCreate(mint)) && landed;
-    return landed;
+  /**
+   * One try over what is pending. The migration and its completion are read together (the migration fact needs both;
+   * the candles' book opens with the migration's CreatePoolEvent, so `candles` lands with the migration and brings no
+   * trade from before it): `migration`, `curve` and `candles` leave `pending` once both are on the feed. 'budget' when
+   * the day's budget cannot pay for the try (nothing was read or spent).
+   */
+  async #rereadOnce(mint: string, st: RereadState): Promise<'budget' | 'tried'> {
+    const chain = st.pending.has('migration') || st.pending.has('curve') || st.pending.has('candles');
+    const create = st.pending.has('create');
+    // The whole try or none of it: a budget that cannot pay for every part pending spends nothing (a retry after a wait
+    // could not read more either).
+    const cost = (chain ? this.#rereadChainCost(mint, st) : 0) + (create ? this.#rereadCreateCost(mint) : 0);
+    if (this.#rereadBudget.remaining() < cost) return 'budget';
+    if (chain) {
+      const r = await this.#rereadMigration(mint, st);
+      if (r === 'budget') return 'budget';
+      if (st.read.has('tx:migration') && st.read.has('tx:complete')) {
+        for (const n of ['migration', 'curve', 'candles']) {
+          if (st.pending.delete(n)) st.read.add(n);
+        }
+      }
+    }
+    if (create && (await this.#rereadCreate(mint))) {
+      st.pending.delete('create');
+      st.read.add('create');
+    }
+    return 'tried';
+  }
+
+  /** The credits the chain read reserves: the migration by its signature (when known and not yet read) and the curve. */
+  #rereadChainCost(mint: string, st: RereadState): number {
+    const ask = !st.read.has('tx:migration') && this.#migrationSig.has(mint) ? 1 : 0;
+    return ask + callCost('helius', 'getSignaturesForAddress') + REREAD_CURVE_READS * callCost('helius', 'getTransaction');
+  }
+
+  /** The least a create read spends: its saved signature, else the lookup's floor (a page and the transaction). */
+  #rereadCreateCost(mint: string): number {
+    return this.#createSig.has(mint) ? 1 : callCost('helius', 'getSignaturesForAddress') + callCost('helius', 'getTransaction');
   }
 
   /**
-   * The migration (by its saved signature, through the shared fetcher) and the curve's newest transactions: those that
-   * carry this mint's migration or completion go on the feed at confirmed, as of their own slots (COMPLETION-READ's path).
+   * The migration (by its saved signature, through the shared fetcher) and, while either is still missing, the curve's
+   * newest transactions: those that carry this mint's migration or completion go on the feed at confirmed, as of their
+   * own slots (COMPLETION-READ's path). What landed is kept in `st.read` (`tx:migration`, `tx:complete`), so a later try
+   * reads only what is still missing. The whole reserve is taken at once and the unused part given back.
    */
-  async #rereadMigration(mint: string): Promise<boolean> {
+  async #rereadMigration(mint: string, st: RereadState): Promise<'budget' | 'tried'> {
     const rr = this.#d.restartReads;
-    if (rr === undefined) return false;
-    let migration = false;
-    const sig = this.#migrationSig.get(mint);
-    const page = callCost('helius', 'getSignaturesForAddress');
-    const read = callCost('helius', 'getTransaction');
-    const reserve = page + REREAD_CURVE_READS * read;
-    // The whole try or nothing: a budget that cannot pay for the curve read spends nothing on the migration either.
-    if (this.#rereadBudget.remaining() < (sig === undefined ? 0 : 1) + reserve) return false;
-    if (sig !== undefined && this.#takeFetch('reread', REREAD_CREDITS_PER_DAY)) migration = await this.#d.fetchTx(sig, 'reread').catch(() => false);
-    if (!this.#takeFetch('reread', REREAD_CREDITS_PER_DAY, reserve)) return false;
-    let used = page;
-    let complete = false;
+    if (rr === undefined) return 'tried';
+    const sig = st.read.has('tx:migration') ? undefined : this.#migrationSig.get(mint);
+    const taken = this.#rereadChainCost(mint, st);
+    if (!this.#takeFetch('reread', REREAD_CREDITS_PER_DAY, taken)) return 'budget';
+    let used = 0;
     try {
-      const curve = bondingCurveAddress(mint as Address);
-      const sigs = await rr.rpc.getSignaturesForAddress(curve, { limit: REREAD_CURVE_READS }, P2);
+      if (sig !== undefined) {
+        used += 1;
+        if (await this.#d.fetchTx(sig, 'reread').catch(() => false)) st.read.add('tx:migration');
+      }
+      if (st.read.has('tx:migration') && st.read.has('tx:complete')) return 'tried';
+      used += callCost('helius', 'getSignaturesForAddress');
+      const read = callCost('helius', 'getTransaction');
+      const sigs = await rr.rpc.getSignaturesForAddress(bondingCurveAddress(mint as Address), { limit: REREAD_CURVE_READS }, P2);
       for (const x of sigs) {
-        if (migration && complete) break;
-        if (x.err !== null) continue;
+        if (st.read.has('tx:migration') && st.read.has('tx:complete')) break;
+        // The migration already on the feed (by its signature) is not read again.
+        if (x.err !== null || (x.signature === this.#migrationSig.get(mint) && st.read.has('tx:migration'))) continue;
         used += read;
         const record = await rr.rpc.getTransaction(x.signature, P2);
         if (record === null) continue;
@@ -1684,15 +1772,15 @@ export class Worker {
         const isComplete = evs.some((e) => e.name === 'CompleteEvent' && e.data.mint === mint);
         if (!isMigration && !isComplete) continue;
         this.#feed.ingest('helius', { type: 'tx', record }, { receivedAt: this.#d.timers.now(), backfilled: true, lookup: true });
-        migration ||= isMigration;
-        complete ||= isComplete;
+        if (isMigration) st.read.add('tx:migration');
+        if (isComplete) st.read.add('tx:complete');
       }
     } catch (e) {
       this.#d.log(`Candidate ${mint}: curve read for its migration failed: ${e instanceof Error ? e.message : 'error'}.`);
     } finally {
-      this.#refundReread(reserve - used);
+      this.#refundReread(taken - used);
     }
-    return migration && complete;
+    return 'tried';
   }
 
   /** The create: by its saved signature, else looked up from the mint's oldest signature under the re-read budget. */
@@ -1845,6 +1933,7 @@ export class Worker {
     this.#engine.drain();
     this.#record((r) => r.flush());
     this.#watchOpened();
+    this.#resumeRereads();
     // H16-WHY C: once the seed (or the restore) is applied, the restored holes are the index's: ask for them again.
     if (!this.#lostCreatesAsked && this.#strategy.seedApplied) {
       this.#lostCreatesAsked = true;
