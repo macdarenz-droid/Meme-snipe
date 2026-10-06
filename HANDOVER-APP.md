@@ -29,7 +29,9 @@ Updated **2026-10-06 10:09:09 AEDT**. File handoffs remain accepted as PR commen
 
 ### DISK-CRASH — #246
 
-S2-READY 616a7d531b7ba4066051e96f3d722963a9134366
+Historical reviewed readiness: S2-READY 616a7d531b7ba4066051e96f3d722963a9134366
+
+**Latest S1 step:** saved reserve shape approved11:21; S1 performs pure latest-base merges and runs CI before landing. Verified d1850132c828cfc2a300ee59cdb142fbe22c8556 equals automaticmerge(616,8107), then S1 advanced the branch again after SAVE-SPIKE8c375. Current merged head must be fetched/CI-checked by S1; below are the original exact616 reviews/checks, carried by S1's explicit small-gap pure-merge protocol, not fabricated new-head executions.
 
 Head: `616a7d531b7ba4066051e96f3d722963a9134366`; branch `claude/s2-disk-crash`; contains verified integration base `5efb9ae0497523c84e3bb49a82bce989652cdb0b`. All independent reviews below are on this exact head:
 
@@ -43,7 +45,7 @@ Head: `616a7d531b7ba4066051e96f3d722963a9134366`; branch `claude/s2-disk-crash`;
 
 Review evidence published in [PR comment6005719422](https://github.com/macdarenz-droid/Meme-snipe/pull/246#issuecomment-6005719422); readiness published and verified in [comment6006262617](https://github.com/macdarenz-droid/Meme-snipe/pull/246#issuecomment-6006262617). Builder: 204 focused tests in nine files and package typechecks PASS; exact crash regression failed on base, plus eight correction and four truth regressions failed before their fixes. Single final local `pnpm check` **PASS exit0**, 242/242 files and5593/5593 tests, duration1848.11s; log `/tmp/s2-disk-crash-check-616a7d53.log`, no retries. Required [GitHub CI37390321713](https://github.com/macdarenz-droid/Meme-snipe/actions/runs/37390321713) is **green on exact616a7d53**: check and historical-data SUCCESS, including build. Before landing S1 performs its planned latest-base update from contained5efb9ae0 to current8107eb79 or newer and requires green CI on that resulting head; prior-head results do not claim to run on a future merge. Any task-logic delta comes back for exact-head review.
 
-**S1 step before landing:** accept the new public bot-diagnostic `journal.jsonl.reserve` shape under this file's saved-data rule after persist PASS. Fixed 64 KiB zeros when armed, zero-length marker after observed journal ENOSPC; existing gap/summary schemas, no personal/key data. No owner credential or phone action. Durable ledger/state policies are unchanged; injected faults and SIGKILL do not prove prolonged survival on a physically saturated volume or power loss. Wider #149 backup/disk-budget delta stays on `claude/ops-1j` for its own review; not included here. S1 alone merges/deploys and validates the live server.
+**Saved-data approval complete:** S1 approved `journal.jsonl.reserve` under the bot-diagnostic saved-data rule at11:21 in its HANDOVER.md. Fixed64KiB zeros when armed, zero-length marker after observed journal ENOSPC; existing gap/summary schemas, no personal/key data. No owner credential or phone action. Durable ledger/state policies unchanged; injected faults/SIGKILL do not prove prolonged survival on physically saturated disk or power loss. Wider #149 is separate. S1 alone completes latest-head CI, merges/deploys and validates the live server.
 
 ### RISK-DIAL — draft design #247, blocked; no build
 
@@ -71,8 +73,16 @@ Current head: `aac10e38dffa65134be390233bd173be5f9b880c`, branch `claude/funnel-
 - **PASS** — `funnel_refresh_facts_review` — strategy/worker facts — exact `aac10e38dffa65134be390233bd173be5f9b880c`; 35 focused tests, source guard and real evaluation-order audit.
 - Merge `e5facb3166c2fd88219c6b5e64bc4620255130ca` is exactly automatic `merge-tree(c2f426b1,5efb9ae0)`. Added delta only maps exact worker/create-expired to existing discovered checks failed, leaving other worker misses missing and expiry unclassified at stage0. No new APK enum or invented hard check.
 - Two expiry cases fail before; focused 35/35, strict source guard and workspace typecheck pass. Guard pins all13 refusal sites plus both exact expiry text/gate/code sites. No skipped or weakened guard.
-- Review verdicts posted on PR #237; [CI37390690060](https://github.com/macdarenz-droid/Meme-snipe/actions/runs/37390690060) running on this exact head. Local full check waits for disk #246's slot. No owner action; land before #210.
+- Review verdicts posted on PR #237; [CI37390690060](https://github.com/macdarenz-droid/Meme-snipe/actions/runs/37390690060) **check and historical-data SUCCESS on exactaac**. Single local full check started11:16 on frozenaac, still awaiting actual summary/exit; `/tmp/s2-funnel-aac10e38-fullcheck.log`. No retry or mutation. No owner action; land before #210. S1 latest-base update/CI at merge slot remains required.
 - Older readiness `682a80d6ef08b97128c5abf984a99be126e263a8` is historical.
+
+### SEC-1 — #136, preparation; not S2-READY
+
+Published head `3e70c9fe17ee15f0697e1b3fe2c1bd6f6117da8b`, branch `claude/sec-1`, contains8107 by ordinary merge. Independent `sec1_ops_delta_review` security/ops/run+APPbuild **PASS on this exacthead**; prior626d7d31 CHANGES NEEDED preserved. Both signing-secret bindings now require exact integration ref and push/manual events; every other event/ref receives empty values. Reviewer evaluated10 actual-YAML synthetic cases,21/21 Android tests/types PASS;9failbefore12pass on unchanged626. Original signing refusals/certificate/release/OPS-GATE guards remain intact.
+
+Verdict [comment6006650525](https://github.com/macdarenz-droid/Meme-snipe/pull/136#issuecomment-6006650525) verified. Required **CI37394840199** running on exacthead; separate Android-preview run37394840216 succeeded, which does **not** establish check/historical-data. Local full-check slot pending. PR body updated through supported REST because gh edit's GraphQL endpoint failed on deprecated projectCards; no permission denial or alternate auth.
+
+Owner steps remain in branch docs/ANDROID_PREVIEW.md: privately create/back up PKCS12 key/password, add PREVIEW_KEYSTORE_B64/PREVIEW_KEYSTORE_PASSWORD and PREVIEW_CERT_SHA256, remove temporary exports/Codespace and exposed cache. After approved new preview, uninstall/reinstall Zeroed; existing app data is lost. No keys/secrets/cache read or generated by S2. .github work is preparation only; S1 merges and coordinates #149 order. No owner setup claimed complete.
 
 ### FUNNEL-PERSIST — #210
 
@@ -128,6 +138,8 @@ S2-READY 6af4e43b707960316d8cd8419cb2e513fa9f4b60
 - These local limitations are historical. Current directly verified GitHub results are in Latest handoff audit; they do not establish that any future base-update head is green.
 
 ## S2 events (newest first)
+
+- **2026-10-06 11:45:19 AEDT** — SEC3e70 publishedordinarypushverified, correctivePASScomment6006650525 verified; PRbodyupdatedsupportedRESTafterghGraphQLdeprecatedprojectCards failure(notpermissiondenial). CI37394840199 runningexact3e70; Androidrun37394840216SUCCESSisnotrequiredcheck/historicalevidence. Recorder187 local02309ef0 containslatest8c375,99focusedtests/3typesPASS, freshpersist+BT started. N2newb88a623b9ff11f2ccb1e58576145ad96c948def0 freshpersistPASS: unchangedN2hunks+baseSAVESPIKE, independent2736051byteUTF8/trailer/line-countcomparisonPASS;127tests/typesPASS, ordinarypushpublishing. Wider149 onebuilderactive backup compression/cap/localdisk/heartbeatprivacy; accidentalnewworktree preservedthenmigratedtoindependentclone, no progressloss/historyrewrite. RUNfix now also pins latepositive simulation/rejectmix scoring, receipt-time samples and fixedqualificationwindow; nostress onobsolete426. Currenthandoff sections correctedtodistinguishS1acceptedreserve/puremergeCI andoriginal616 executions.
 
 - **2026-10-06 11:35:04 AEDT** — Heliusc8 freshreviews CHANGESNEEDED: factsH9+missing/partialH14H16stilldrops; EXIT realSolana duplicate-param IDs causeghostunsubscribeheldreplacementinBOTH ACKorders (basecontrol preservesexitreceipt), plusseparateall-entrypreservation/moneyprioritycleanup inconsistency; BT normalunwatchgapchangesH8dust/H11chase toH16degraded G3lastreasonmix. Buildercorrects in separatecloneleavingreviewedc8immutable: fullactualstagedH16guard, boundedreplacementownership, separatecanonicalpriority; RETAIN H8/H11 watches/tails to protect G3. No frozenreason/counter/thresholdworkaround; furtherprotectedfeed/producer needS1scopebeforebuild. RUN193 independentCODEFAIL42688839: late-recovery tail creditedasqualifyingduration/uptime/quota; builderfixesfixedrunEnd cutoff withfailbefore, no stressonobsoletehead. SEC136 independentcorrectivePASS3e70c9fe resolvesbothsecret envexposure;21tests/typesPASS, full/CI/ownerkeystorepending.
 
