@@ -2,7 +2,7 @@
 // A pass deletes sealed recording files oldest first and never touches the running boot's open files, temporary files,
 // symlinks, anything outside the recorder folder or the rest of the state dir.
 import { createHash } from 'node:crypto';
-import { existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, statSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs';
+import { existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, statSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { parseConfig } from '../src/run/config.ts';
@@ -23,40 +23,131 @@ const put = (path: string, bytes: number | string): void => {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, typeof bytes === 'string' ? bytes : Buffer.alloc(bytes, 7));
 };
-const data = (root: string, boot: string, day: string, name: string, bytes = 1000): string => {
+/** Seal times: each file made is sealed a second after the one before, unless a test says when. */
+let clock = 1_790_000_000;
+const data = (root: string, boot: string, day: string, name: string, bytes = 1000, sealedAt = ++clock): string => {
   const p = join(root, boot, 'days', day, name);
   put(p, bytes);
+  utimesSync(p, sealedAt, sealedAt);
   return p;
 };
+type Listed = { path: string; bytes: number; sha256: string };
+type Manifest = { boot: string; git_sha: string; coverage_gaps: unknown[]; attachments: unknown[]; days: { day: string; files: Listed[] }[]; pruned: (Listed & { reason: string })[] };
+/** A manifest for each boot folder that has none, listing its sealed files as a clean stop would. */
+const manifests = (root: string): void => {
+  for (const boot of readdirSync(root)) {
+    const dir = join(root, boot);
+    if (boot === 'saved-state' || lstatSync(dir).isSymbolicLink() || existsSync(join(dir, 'manifest.json'))) continue;
+    const daysDir = join(dir, 'days');
+    const days = existsSync(daysDir) ? readdirSync(daysDir).filter((d) => lstatSync(join(daysDir, d)).isDirectory()).sort().map((day) => ({
+      day, files: readdirSync(join(daysDir, day)).filter((f) => f.endsWith('.jsonl.zst') && lstatSync(join(daysDir, day, f)).isFile()).sort().map((f) => {
+        const p = join(daysDir, day, f);
+        return { path: `days/${day}/${f}`, bytes: statSync(p).size, sha256: sha(p) };
+      }),
+    })) : [];
+    writeFileSync(join(dir, 'manifest.json'), JSON.stringify({ schema: 2, boot, git_sha: 'abc', coverage: null, coverage_gaps: [{ reason: 'kept' }], attachments: [], units: [{ frames: 3, raw: 1, releases: 2 }], days }));
+  }
+};
+const manifestOf = (root: string, boot: string): Manifest => JSON.parse(readFileSync(join(root, boot, 'manifest.json'), 'utf8')) as Manifest;
+const MANIFEST_BYTES = (root: string, ...boots: string[]): number => boots.reduce((n, b) => n + statSync(join(root, b, 'manifest.json')).size, 0);
 const sha = (p: string): string => createHash('sha256').update(readFileSync(p)).digest('hex');
 const opts = (root: string, o: Partial<PruneOptions> = {}): PruneOptions => ({
   root, current: B3, maxBytes: 100 * GiB, floorBytes: DISK_PRUNE_FREE_BYTES, freeBytes: () => 100 * GiB, packing: () => false, ...o,
 });
 
 describe('the recorder budget (RECORD-BUDGET)', () => {
-  it('T1: over the cap, the oldest go first (UTC day, then boot start, then file number) until the total is at or below it', () => {
+  it('T1: over the cap, the oldest go first (UTC day, then boot start, then seal time) until the total is at or below it', () => {
     const root = join(tempState(), 'recorder');
-    // Listed out of order on purpose: the order comes from the day, the boot's start and the number, not the names.
+    // Made out of order on purpose: the order comes from the day, the boot's start and the seal, not the names.
     data(root, B2, DAY1, 'frames-000.jsonl.zst');
-    data(root, B1, DAY1, 'raw-001.jsonl.zst');
     data(root, B1, DAY1, 'frames-000.jsonl.zst');
+    data(root, B1, DAY1, 'raw-001.jsonl.zst');
     data(root, B1, DAY2, 'frames-000.jsonl.zst');
     data(root, B3, DAY2, 'frames-000.jsonl.zst');
     data(root, B3, DAY2, 'frames-001.jsonl.zst');
-    const r = pruneRecordings(opts(root, { maxBytes: 2_500 }));
+    manifests(root);
+    const before = { b1: manifestOf(root, B1), b2: manifestOf(root, B2) };
+    const kept = MANIFEST_BYTES(root, B1, B2, B3);
+    const r = pruneRecordings(opts(root, { maxBytes: 2_500 + kept }));
     expect(r.reason).toBe('cap');
+    expect(r.errors).toEqual([]);
     expect(r.deleted.map((d) => `${d.boot === B1 ? 'b1' : d.boot === B2 ? 'b2' : 'b3'}/${d.path}`)).toEqual([
       `b1/days/${DAY1}/frames-000.jsonl.zst`, `b1/days/${DAY1}/raw-001.jsonl.zst`, `b2/days/${DAY1}/frames-000.jsonl.zst`, `b1/days/${DAY2}/frames-000.jsonl.zst`,
     ]);
-    expect(r.recorderBytes).toBe(2_000);
-    expect(r.recorderBytes).toBeLessThanOrEqual(2_500);
+    expect(r.recorderBytes).toBeLessThanOrEqual(2_500 + MANIFEST_BYTES(root, B1, B2, B3));
     expect(r.short).toBe(false);
-    // Past boots left with no recording are removed whole; the running boot keeps its folder and newest files.
-    expect([...r.boots].sort()).toEqual([B1, B2].sort());
-    expect(readdirSync(root)).toEqual([B3]);
+    // Ended boots keep their folders and manifests (B2: an upload finds a boot by its manifest); empty days go.
+    expect(r.boots).toEqual([]);
+    expect(readdirSync(root).sort()).toEqual([B1, B2, B3].sort());
+    expect(readdirSync(join(root, B1))).toEqual(['manifest.json']);
     expect(readdirSync(join(root, B3, 'days', DAY2)).sort()).toEqual(['frames-000.jsonl.zst', 'frames-001.jsonl.zst']);
     // Within the cap: the next pass deletes nothing.
-    expect(pruneRecordings(opts(root, { maxBytes: 2_500 }))).toMatchObject({ reason: null, deleted: [], short: false });
+    expect(pruneRecordings(opts(root, { maxBytes: 2_500 + MANIFEST_BYTES(root, B1, B2, B3) }))).toMatchObject({ reason: null, deleted: [], short: false });
+    // B1: each ended boot's manifest names what went, with the size and sha256 it listed, and lists only what is left.
+    const b1 = manifestOf(root, B1);
+    expect(b1.days).toEqual([]);
+    const listedB1 = new Map(before.b1.days.flatMap((d) => d.files).map((f) => [f.path, f] as const));
+    expect(b1.pruned).toEqual(r.deleted.filter((d) => d.boot === B1).map((d) => ({ ...listedB1.get(d.path)!, reason: 'cap' })));
+    expect(b1.pruned).toHaveLength(3);
+    expect(manifestOf(root, B2).pruned).toEqual([{ ...before.b2.days[0]!.files[0]!, reason: 'cap' }]);
+    // Every other field stays.
+    expect(b1).toMatchObject({ boot: B1, git_sha: 'abc', coverage_gaps: [{ reason: 'kept' }], attachments: [] });
+  });
+
+  it('B1: a partly pruned ended boot lists only the files on disk, and the deleted one under pruned with its seal-time sha256', () => {
+    const root = join(tempState(), 'recorder');
+    const at = Date.parse(`${DAY1}T00:00:00Z`);
+    const rec = new Recorder({ root, boot: B1, gitSha: 'abc', rotateBytes: 1 });
+    for (let n = 0; n < 20; n++) rec.delay({ n }, at);
+    rec.close();
+    const listed = manifestOf(root, B1).days[0]!.files;
+    expect(listed).toHaveLength(20);
+    const total = pruneRecordings(opts(root, { current: B3, maxBytes: 100 * GiB })).recorderBytes;
+    const r = pruneRecordings(opts(root, { current: B3, maxBytes: total - 1 }));
+    expect(r.deleted).toHaveLength(1);
+    const m = manifestOf(root, B1);
+    const files = m.days[0]!.files;
+    expect(files).toHaveLength(19);
+    for (const f of files) expect(existsSync(join(root, B1, f.path))).toBe(true);
+    const gone = listed.find((f) => !files.some((g) => g.path === f.path))!;
+    expect(m.pruned).toEqual([{ path: gone.path, bytes: gone.bytes, sha256: gone.sha256, reason: 'cap' }]);
+    // A later pass appends; the first entry stays.
+    pruneRecordings(opts(root, { current: B3, maxBytes: total - 1_000_000 }));
+    expect(manifestOf(root, B1).pruned[0]).toEqual(m.pruned[0]);
+    expect(manifestOf(root, B1).pruned.length).toBeGreaterThan(1);
+  });
+
+  it('B2: an ended boot keeps its manifest and attachments; only a folder that never recorded goes whole, named', () => {
+    const root = join(tempState(), 'recorder');
+    data(root, B1, DAY1, 'frames-000.jsonl.zst');
+    put(join(root, B1, 'deployer-state.json.zst'), 'saved state');
+    put(join(root, B2, 'deployer-state.json.zst'), 'pre-step state');
+    put(join(root, B2, 'manifest.json'), JSON.stringify({ boot: B2, days: [], pruned: [] }));
+    // A folder whose manifest cannot be read is kept (it may list files).
+    put(join(root, bootId(1_789_000_000_000), 'manifest.json'), '{ torn');
+    manifests(root);
+    const r = pruneRecordings(opts(root, { maxBytes: 1 }));
+    expect(r.boots).toEqual([B2]);
+    expect(readdirSync(join(root, B1)).sort()).toEqual(['deployer-state.json.zst', 'manifest.json']);
+    expect(readFileSync(join(root, B1, 'deployer-state.json.zst'), 'utf8')).toBe('saved state');
+    expect(existsSync(join(root, bootId(1_789_000_000_000), 'manifest.json'))).toBe(true);
+    expect(manifestOf(root, B1).pruned.map((p) => p.path)).toEqual([`days/${DAY1}/frames-000.jsonl.zst`]);
+    // B1, pruned and now without recording, is not a never-recorded folder: a later pass keeps it.
+    expect(pruneRecordings(opts(root, { maxBytes: 1 })).boots).toEqual([]);
+    expect(existsSync(join(root, B1, 'manifest.json'))).toBe(true);
+  });
+
+  it('B3: within a day and boot the order is the seal, so a period\'s tables go together', () => {
+    const root = join(tempState(), 'recorder');
+    // releases-000 was sealed after frames-001 (each table rotates on its own): it outlives both frames files.
+    data(root, B1, DAY1, 'frames-000.jsonl.zst', 1000, 1_790_000_010);
+    data(root, B1, DAY1, 'frames-001.jsonl.zst', 1000, 1_790_000_020);
+    data(root, B1, DAY1, 'releases-000.jsonl.zst', 1000, 1_790_000_030);
+    data(root, B1, DAY1, 'frames-002.jsonl.zst', 1000, 1_790_000_040);
+    manifests(root);
+    const r = pruneRecordings(opts(root, { maxBytes: 2_000 + MANIFEST_BYTES(root, B1) }));
+    expect(r.deleted.map((d) => d.path)).toEqual([`days/${DAY1}/frames-000.jsonl.zst`, `days/${DAY1}/frames-001.jsonl.zst`]);
+    expect(readdirSync(join(root, B1, 'days', DAY1)).sort()).toEqual(['frames-002.jsonl.zst', 'releases-000.jsonl.zst']);
   });
 
   it('T1: bytes count once per inode (the saved-state store is hard-linked into the boot folders)', () => {
@@ -134,6 +225,7 @@ describe('the recorder budget (RECORD-BUDGET)', () => {
     const links = [join(root, B1, 'days', DAY1, 'frames-000.jsonl.zst'), join(root, B1, 'days', DAY1, 'frames-001.jsonl.zst'), join(root, B1, 'days', DAY2), join(root, bootId(1_780_000_000_000))];
     const sealed = data(root, B3, DAY2, 'frames-000.jsonl.zst');
     keep.push(join(outside, 'precious.jsonl.zst'), join(outside, 'day', 'frames-009.jsonl.zst'), join(outside, 'boot', 'days', DAY1, 'frames-008.jsonl.zst'));
+    manifests(root);
     const before = keep.map(sha);
     for (let k = 0; k < 20; k++) {
       const r = pruneRecordings(opts(root, { freeBytes: () => 0, maxBytes: 1 }));
@@ -214,18 +306,40 @@ describe('the recorder budget (RECORD-BUDGET)', () => {
     expect(existsSync(join(root, 'saved-state', 'notes.txt'))).toBe(true);
   });
 
-  it('T7: a past boot removed whole leaves its stored saved state at link count 1, which then goes', () => {
+  it('T7: a never-recorded folder removed whole leaves its stored saved state at link count 1, which then goes', () => {
     const root = join(tempState(), 'recorder');
     const store = join(root, 'saved-state', `${'c'.repeat(64)}.zst`);
     put(store, 100);
-    mkdirSync(join(root, B1), { recursive: true });
+    put(join(root, B1, 'manifest.json'), JSON.stringify({ boot: B1, days: [] }));
     linkSync(store, join(root, B1, 'deployer-state.json.zst'));
-    data(root, B1, DAY1, 'frames-000.jsonl.zst');
     data(root, B3, DAY2, 'frames-000.jsonl.zst');
     const r = pruneRecordings(opts(root, { maxBytes: 1_000 }));
     expect(r.boots).toEqual([B1]);
     expect(existsSync(store)).toBe(false);
+    expect(r.deleted.map((d) => d.path)).toEqual([`saved-state/${'c'.repeat(64)}.zst`]);
     expect(r.recorderBytes).toBe(1_000);
+  });
+
+  it('N1: a removed link frees nothing while another link holds the bytes (floor mode)', () => {
+    const root = join(tempState(), 'recorder');
+    // A never-recorded folder whose saved state (0.5 GiB, sparse) is linked from the store; the pack holds the store.
+    const store = join(root, 'saved-state', `${'f'.repeat(64)}.zst`);
+    mkdirSync(dirname(store), { recursive: true });
+    writeFileSync(store, '');
+    truncateSync(store, FLOOR_HEADROOM);
+    // No manifest (a missing one counts as never recorded), so the folder frees nothing but its link.
+    mkdirSync(join(root, B1), { recursive: true });
+    linkSync(store, join(root, B1, 'deployer-state.json.zst'));
+    for (let n = 0; n < 6; n++) {
+      const p = data(root, B2, DAY1, `frames-00${n}.jsonl.zst`, 0);
+      truncateSync(p, FLOOR_HEADROOM / 4);
+    }
+    const r = pruneRecordings(opts(root, { freeBytes: () => DISK_PRUNE_FREE_BYTES - 1, packing: () => true }));
+    expect(r.boots).toEqual([B1]);
+    expect(existsSync(store)).toBe(true);
+    // The folder's link freed nothing: 0.5 GiB + 1 still had to come from recordings, five eighth-GiB files.
+    expect(r.deleted.filter((d) => d.boot === B2)).toHaveLength(5);
+    expect(r.freeBytes).toBe(DISK_PRUNE_FREE_BYTES - 1 + 5 * (FLOOR_HEADROOM / 4));
   });
 
   it('config: the cap and the floor are settings; a floor under 2 GiB is refused (exit 2)', () => {

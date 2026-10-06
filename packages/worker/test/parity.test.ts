@@ -194,6 +194,25 @@ describe('TEST-1 parity harness', () => {
     expect(r.divergence).toBeNull();
   });
 
+  it('RECORD-BUDGET N2: a boot the byte budget pruned is reported as pruned, not replayed into a divergence', async () => {
+    const h = await session();
+    const path = join(h.stateDir, STATE_FILES.recorder, h.worker.boot, 'manifest.json');
+    const text = readFileSync(path, 'utf8');
+    const m = JSON.parse(text) as { pruned: unknown[]; days: { files: { path: string }[] }[] };
+    expect(checkSession(h.stateDir, deps(h), replayLedgerFile, 1).boots.map((b) => b.missing)).toEqual([null]);
+    // Named in its manifest's pruned.
+    writeFileSync(path, JSON.stringify({ ...m, pruned: [{ path: 'days/2026-01-01/frames-000.jsonl.zst', bytes: 1, sha256: null, reason: 'cap' }] }));
+    const r = checkSession(h.stateDir, deps(h), replayLedgerFile, 1);
+    expect(r.boots.map((b) => b.missing)).toEqual(['pruned']);
+    expect(r.ok).toBe(false);
+    // Or a file its manifest lists is gone.
+    writeFileSync(path, text);
+    const listed = m.days.flatMap((d) => d.files.map((f) => f.path));
+    expect(listed.length).toBeGreaterThan(0);
+    rmSync(join(h.stateDir, STATE_FILES.recorder, h.worker.boot, listed[0]!));
+    expect(checkSession(h.stateDir, deps(h), replayLedgerFile, 1).boots.map((b) => b.missing)).toEqual(['pruned']);
+  });
+
   it('a folder with no recording at all is not parity: its deciding boot is reported with no recording', async () => {
     const h = await session();
     rmSync(join(h.stateDir, STATE_FILES.recorder), { recursive: true });

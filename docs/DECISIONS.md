@@ -2864,39 +2864,61 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   1 whole day of trading fills the server data"). The live recorder writes about 4.5 to 7 GB a day; a full disk
   crash-loops the worker. The upload half is RECORD-UPLOAD (#244); this is the hard local budget, which holds whether
   or not uploads succeed.
-- **What.** A pass (`pruneRecordings`) runs right after the leftovers are sealed at start (before the deployer store
-  is loaded and rewritten) and then once a minute beside the memory sample, whether the recorder is on, off or failed.
-  It deletes sealed recording files (`(frames|raw|releases|pre|delays)-NNN.jsonl.zst`), oldest first by UTC day, then
-  boot start (the base-36 boot id), then file number, while the recordings are over the cap; when the disk has less
-  free than the floor, until it has the floor plus 0.5 GiB. Past boot folders that hold no recording go first, and a
-  past boot's folder goes whole once it holds none; a packed saved state in `recorder/saved-state/` goes only at link
-  count 1 (no boot links it) and never while a pack runs. Bytes count once per inode (the store is hard-linked).
-  - Never touched: the running boot's plain `.jsonl`, any `*.tmp`, its manifest and attachments; symlinks (the walk is
-    lstat only) and anything whose real path leaves `recorder/`; everything else in the state dir (it is never walked).
-  - The running boot's deleted files leave `days[].files` and are listed in the manifest's `pruned[]` with their
-    seal-time size and sha256. Its file numbers never go back (a high-water mark per table and day), so a deleted
-    newest `-002` is followed by `-003`. `sealLeftovers` skips a folder that goes while it reads (ENOENT).
-  - Each pass that deletes writes a `recorder_prune` journal line (reason `cap` or `floor`, files, bytes, boots, free
-    and recorder bytes after). A failed pass, or one still over with nothing left to delete, logs and journals a
-    critical alert (`recorder_budget`) at most once an hour and is listed in /health `critical` until a pass is within
-    both bounds. A pass never throws.
+- **What.** A pass (`pruneRecordings`) runs at start before the leftovers are sealed (a full disk would otherwise fail
+  the recorder for the whole boot) and before the deployer store is loaded and rewritten, then once a minute beside the
+  memory sample, whether the recorder is on, off or failed. It deletes sealed recording files
+  (`(frames|raw|releases|pre|delays)-NNN.jsonl.zst`) oldest first, while the recordings are over the cap; when the
+  disk has less free than the floor, until it has the floor plus 0.5 GiB. Bytes count once per inode.
+  - Order: UTC day, then boot start (the base-36 boot id), then seal time (the `.zst`'s mtime, written once at the
+    seal), then name. Each table rotates on its own, so file numbers do not line up across tables: by number,
+    `releases-000` (often a whole day) went right after `frames-000` and left `frames-001…` without the releases that
+    order them (data review B3). By seal, one period's tables go together.
+  - An ended boot keeps its folder, `manifest.json` and attachments; the upload (#244) finds boots by their manifest
+    (data review B2). Its manifest is rewritten in place (`notePruned`): `days` from what is on disk, each deleted file
+    appended to `pruned[]` with the size and sha256 the manifest listed, every other field kept (B1). Day folders left
+    empty, and an ended boot's empty `days/`, are removed. Only a folder that never recorded (no recording file, none
+    listed or pruned; a reconcile pre-step's manifest and saved state) is removed whole, first, and named.
+  - A packed saved state in `recorder/saved-state/` goes only at link count 1 (no boot links it) and never while a
+    pack runs. Ended boots keep their attachments, so their store copies stay until #244 removes the boot.
+  - Never touched: the running boot's plain `.jsonl`, any `*.tmp`, the manifest and attachments of any boot that
+    recorded; symlinks (the walk is lstat only) and anything whose real path leaves `recorder/`; everything else in the
+    state dir (it is never walked).
+  - The running boot's deleted files leave `days[].files` and go to its manifest's `pruned[]` through the recorder (or
+    through `notePruned` when the recorder is off or failed). Its file numbers never go back (a high-water mark per
+    table and day), so a deleted newest `-002` is followed by `-003`. `sealLeftovers` skips a folder that goes while it
+    reads (ENOENT).
+  - Each pass that deletes writes a `recorder_prune` journal line: reason `cap` or `floor`, `files`, `bytes`, `paths`
+    (every deleted file, `<boot>/days/<day>/<file>` or `saved-state/<sha>.zst`), `boots` (the never-recorded folders
+    removed, by name), and free and recorder bytes after. A failed pass, a manifest not rewritten, or a pass still over
+    with nothing left to delete logs and journals a critical alert (`recorder_budget`) at most once an hour and is
+    listed in /health `critical` until a pass is within both bounds. A pass never throws.
+  - Parity (TEST-1): a boot with a non-empty `pruned[]`, or a listed file gone, is reported `missing: 'pruned'` and not
+    replayed, so a partial recording never reads as an engine divergence (data review N2).
 - **Thresholds (settings, not constants).** `ZEROED_RECORDER_MAX_BYTES`, default 8 GiB (8.59 GB);
   `ZEROED_DISK_PRUNE_FREE_BYTES`, default 3 GiB, values under 2 GiB refused (exit 2). Arithmetic from S1's research
   (not re-measured here): on the 23 GB disk with an 8 GiB cap the steady state leaves about 5.5 GB free; the worst
   short-term need between passes is about 1.26 GiB, under the 3 GiB floor. At 7 GB a day the cap holds about 1.2 days
-  of recording on the host; anything older lives only where RECORD-UPLOAD put it.
+  of recording on the host; anything older lives only where RECORD-UPLOAD put it. Kept manifests and attachments
+  count against the cap; if they alone exceed it, the pass is short and alerts.
 - **Saved-data ruling** (S1, CLAUDE.md "Stored data"): the `recorder_prune` line and `pruned[]` hold only the bot's own
   diagnostics; approved.
-- **Evidence (fail before, pass after).** `record-budget.test.ts`: T1 cap order and total, one count per inode; T2
-  floor target exactly floor + 0.5 GiB, nothing left reported as short; T3 state files, the open `.jsonl`, a `.tmp`,
-  the manifest and symlinks (to outside and inside) byte-identical after 20 passes at free 0; T4 `pruned[]` with the
-  seal-time hash and recording going on; T5 `-003` after `-002` is deleted; T6 a vanished folder in `sealLeftovers`;
-  T7 store files only at link count 1 and not while packing; the config. `record-budget-worker.test.ts`: T8 the start
-  pass before the deployer store's rewrite, minute passes deleting the running boot's files, `recorder_prune` lines,
-  /health recorder on; T2 alert once an hour, a failing pass alerts, the pass runs with the recorder off; T6 no
-  recorder fault; T7 no store deletion while the pack is held. Hand mutants killed: newest first, open file not
-  excluded, symlink check removed, floor target = floor, no high-water mark, packing ignored, no start pass, start
-  pass after the deployer store, ENOENT not skipped, links counted per link, store file at any link count, `pruned`
-  not recorded, alert not hourly. Survives: the real-path check alone removed (the lstat checks already stop every
-  case a test can build; it guards a folder swapped for a symlink between the walk and the delete).
-- **Not in this card.** Uploads (#244); a parity replay of a boot whose files were pruned has only what is left.
+- **Evidence (fail before, pass after).** `record-budget.test.ts`: T1 cap order and total, ended manifests rewritten,
+  one count per inode; B1 a partly pruned ended boot (20 sealed files) lists only what is on disk and the deleted file
+  under `pruned` with its seal-time sha256; B2 an ended boot keeps manifest and attachments, a never-recorded folder
+  goes and is named, an unreadable manifest's folder stays; B3 `releases-000` sealed after `frames-001` outlives it;
+  T2 floor target exactly floor + 0.5 GiB, nothing left reported as short; T3 state files, the open `.jsonl`, a
+  `.tmp`, manifests and symlinks (to outside and inside) byte-identical after 20 passes at free 0; T4 `pruned[]` with
+  the seal-time hash and recording going on; T5 `-003` after `-002` is deleted; T6 a vanished folder in
+  `sealLeftovers`; T7 store files only at link count 1 and not while packing; N1 a removed link frees nothing while
+  another holds the bytes; the config. `record-budget-worker.test.ts`: T8 the start pass before the deployer store's
+  rewrite, minute passes deleting the running boot's files, `recorder_prune` lines naming paths and boots, the ended
+  boot's manifest kept with `pruned`, /health recorder on; N3 the start pass before the leftovers' seal; T2 alert once
+  an hour, a failing pass alerts, the pass runs with the recorder off; T6 no recorder fault; T7 no store deletion while
+  the pack is held. `parity.test.ts`: N2. Hand mutants killed: newest first, open file not excluded, symlink check
+  removed, floor target = floor, no high-water mark, packing ignored, no start pass, start pass after the leftovers'
+  seal, ENOENT not skipped, links freed per link, store file at any link count, `pruned` not recorded, ended manifest
+  not rewritten, `pruned` sha256 not from the listing, recorded boot removed whole, journal without paths, order by
+  number instead of seal, alert not hourly, pruned boot replayed. Survives: the real-path check alone removed (the
+  lstat checks already stop every case a test can build; it guards a folder swapped for a symlink between the walk and
+  the delete).
+- **Not in this card.** Uploads and removing ended boots after read-back (#244).

@@ -2,10 +2,11 @@
 // rewritten), then one a minute beside the memory sample, whether the recorder is on, off or failed. A pass that deletes
 // writes a `recorder_prune` line; one that fails, or is still over with nothing left, raises the critical alert at
 // most once an hour.
-import { linkSync, existsSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { linkSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { packFile } from '../src/persist/index.ts';
+import { Recorder } from '../src/run/recorder.ts';
 import { runSeed } from '../src/run/seed-start.ts';
 import { SAVED_STATES, type SeedRequest } from '../src/run/worker.ts';
 import { Market, T, makeWorker, slotAt, tempState, virtualTimers } from './worker-harness.ts';
@@ -38,8 +39,13 @@ type Manifest = { days: { files: { path: string }[] }[]; pruned: { path: string;
 describe('the recorder budget in the worker (RECORD-BUDGET)', () => {
   it('T8, T4: the start pass runs before the deployer store loads, the minute pass deletes the running boot\'s sealed files, and the recorder stays on', async () => {
     const stateDir = tempState();
-    const old = join(stateDir, 'recorder', OLD, 'days', '2026-09-01', 'frames-000.jsonl.zst');
-    put(old, 5_000);
+    // An ended boot that recorded one sealed file, and a reconcile pre-step's folder that never recorded.
+    const ended = new Recorder({ root: join(stateDir, 'recorder'), boot: OLD, gitSha: 'abc', rotateBytes: 1 << 20 });
+    ended.delay({ n: 1 }, Date.parse('2026-09-01T00:00:00Z'));
+    ended.close();
+    const endedFile = (JSON.parse(readFileSync(join(ended.dir, 'manifest.json'), 'utf8')) as Manifest & { days: { files: { path: string; bytes: number; sha256: string }[] }[] }).days[0]!.files[0]!;
+    const PRE = `${(T - 29 * 86_400_000).toString(36)}-2`;
+    put(join(stateDir, 'recorder', PRE, 'manifest.json'), JSON.stringify({ boot: PRE, days: [] }));
     const deployers = join(stateDir, 'deployers.jsonl');
     put(deployers, 'not an event\n');
     const ino = statSync(deployers).ino;
@@ -49,14 +55,19 @@ describe('the recorder budget in the worker (RECORD-BUDGET)', () => {
     const h = makeWorker({ stateDir, timers, recorderRotateBytes: 2_048, config: { ZEROED_RECORDER_MAX_BYTES: '1' }, diskFree: () => (seen.push(statSync(deployers).ino), 100 * GiB) });
     expect(seen).toEqual([ino]);
     expect(statSync(deployers).ino).not.toBe(ino);
-    expect(existsSync(join(stateDir, 'recorder', OLD))).toBe(false);
+    // B1, B2: the ended boot keeps its manifest, which names the deleted file; the never-recorded folder goes.
+    expect(readdirSync(ended.dir)).toEqual(['manifest.json']);
+    expect((JSON.parse(readFileSync(join(ended.dir, 'manifest.json'), 'utf8')) as Manifest).pruned).toEqual([{ ...endedFile, reason: 'cap' }]);
+    expect(existsSync(join(stateDir, 'recorder', PRE))).toBe(false);
     const m = await boot(h);
     await m.run(120_000, 1_000, () => m.slot());
     expect(seen.length).toBeGreaterThan(1);
     const lines = journal(stateDir).filter((l) => l['boot'] === h.worker.boot);
     expect(lines[0]!['kind']).toBe('start');
     const prunes = lines.filter((l) => l['kind'] === 'recorder_prune');
-    expect(prunes[0]).toMatchObject({ reason: 'cap', boots: 1, files: 1, bytes: 5_000 });
+    // The journal alone names what went.
+    expect(prunes[0]).toMatchObject({ reason: 'cap', boots: [PRE], files: 1, bytes: endedFile.bytes, paths: [`${OLD}/${endedFile.path}`] });
+    expect(prunes.slice(1).some((p) => (p['paths'] as string[]).some((x) => x.startsWith(`${h.worker.boot}/days/`)))).toBe(true);
     expect(prunes.length).toBeGreaterThan(1);
     for (const p of prunes) expect(Object.keys(p)).toEqual(expect.arrayContaining(['reason', 'files', 'bytes', 'boots', 'free_bytes', 'recorder_bytes']));
     // A cap of one byte cannot be met (the manifest stays): the alert goes up once in the hour, and /health lists it.
@@ -94,6 +105,17 @@ describe('the recorder budget in the worker (RECORD-BUDGET)', () => {
     const off = makeWorker({ diskFree: () => 0, config: { ZEROED_RECORDER: 'off' } });
     expect(off.logs.some((l) => l.startsWith('ALERT disk low'))).toBe(true);
     await off.worker.kill();
+  });
+
+  it('N3: the start pass runs before the leftovers are sealed (a full disk must not fail the recorder for the boot)', async () => {
+    const stateDir = tempState();
+    const leftover = join(stateDir, 'recorder', OLD, 'days', '2026-09-01', 'frames-000.jsonl');
+    put(leftover, '{"a":1}\n');
+    const seen: boolean[] = [];
+    const h = makeWorker({ stateDir, diskFree: () => (seen.push(existsSync(leftover)), 100 * GiB) });
+    expect(seen).toEqual([true]);
+    expect(existsSync(`${leftover}.zst`)).toBe(true);
+    await h.worker.kill();
   });
 
   it('T6: a past boot\'s folder that goes while the leftovers are sealed causes no recorder fault', async () => {

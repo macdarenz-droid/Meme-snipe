@@ -12,7 +12,7 @@
 import { createHash } from 'node:crypto';
 import { redactCounted } from './redact.ts';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { basename, join, relative } from 'node:path';
 import { zstdCompressSync } from 'node:zlib';
 import { toBase64 } from '../../../core/src/chain/index.ts';
 import type { Frame, Release } from '../providers/index.ts';
@@ -350,6 +350,45 @@ const listedFiles = (days: unknown): { readonly path: string; readonly bytes: nu
 };
 
 /**
+ * RECORD-BUDGET: an ended boot's sealed files were deleted by the byte budget. Its manifest is rewritten in place: the
+ * days and files from what is on disk, and each deleted file appended to `pruned` with the size and sha256 its manifest
+ * listed (null when it was not listed). Every other field is kept. Throws when the manifest cannot be read.
+ */
+export const notePruned = (dir: string, entries: readonly { readonly path: string; readonly bytes: number }[], reason: 'cap' | 'floor'): void => {
+  const prev = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8')) as PrevManifest;
+  const listed = new Map(listedFiles(prev.days).map((f) => [f.path, f] as const));
+  const hashes: FileHashes = new Map([...listed].map(([path, f]) => [path, { bytes: f.bytes, sha256: f.sha256 }] as const));
+  const pruned: PrunedFile[] = [...(Array.isArray(prev.pruned) ? prev.pruned : [])];
+  for (const e of entries) {
+    const l = listed.get(e.path);
+    pruned.push({ path: e.path, bytes: l?.bytes ?? e.bytes, sha256: l?.sha256 ?? null, reason });
+  }
+  const u = prev.units?.[0] ?? {};
+  writeManifest(dir, {
+    boot: prev.boot ?? basename(dir), git_sha: prev.git_sha ?? null,
+    coverage: prev.coverage ?? { first_slot: null, last_slot: null, first_block_time: null, last_block_time: null },
+    coverage_gaps: prev.coverage_gaps ?? [], commitments: prev.commitments ?? null, attachments: prev.attachments ?? [], pruned,
+    counts: {
+      frames: u.frames ?? 0, raw: u.raw ?? 0, releases: u.releases ?? 0,
+      ...(typeof u.pre === 'number' ? { pre: u.pre } : {}), ...(typeof u.delays === 'number' ? { delays: u.delays } : {}),
+    },
+  }, hashes);
+};
+
+/** The fields of a manifest on disk that a rewrite keeps. */
+interface PrevManifest {
+  boot?: string;
+  git_sha?: string | null;
+  coverage?: Coverage;
+  coverage_gaps?: unknown[];
+  commitments?: Record<string, string> | null;
+  attachments?: Attachment[];
+  pruned?: PrunedFile[];
+  units?: { frames?: number; raw?: number; releases?: number; pre?: number; delays?: number }[];
+  days?: unknown;
+}
+
+/**
  * At start, before this boot records anything: earlier boots' folders that a crash left with plain `.jsonl` files get
  * them compressed and their manifest rewritten (counts and coverage as the files show them). Returns the folders fixed.
  */
@@ -394,7 +433,7 @@ const sealBoot = (root: string, boot: string): boolean => {
     }
   }
   if (open === 0) return false;
-  let prev: { git_sha?: string | null; coverage?: Coverage; coverage_gaps?: unknown[]; commitments?: Record<string, string> | null; attachments?: Attachment[]; pruned?: PrunedFile[]; units?: { frames?: number; raw?: number; releases?: number }[]; days?: unknown } = {};
+  let prev: PrevManifest = {};
   try {
     prev = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8')) as typeof prev;
   } catch {}

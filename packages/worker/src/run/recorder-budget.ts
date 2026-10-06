@@ -1,17 +1,22 @@
 // RECORD-BUDGET: the recordings under `<state>/recorder/` are kept under a byte cap and above a free-disk floor, whether
 // or not they were uploaded (a full disk crash-loops the worker). A pass deletes sealed recording files, oldest first by
-// (UTC day, boot start, file number), until the recordings are at or below the cap, or, when the disk's free space is
-// under the floor, until it is back to the floor plus FLOOR_HEADROOM. A past boot's folder is removed whole once it holds
-// no recording file. A packed saved state in `recorder/saved-state/` that no boot links to any more (link count 1) goes
-// too, never while a pack runs.
+// (UTC day, boot start, seal time), until the recordings are at or below the cap, or, when the disk's free space is
+// under the floor, until it is back to the floor plus FLOOR_HEADROOM. Seal time (the `.zst`'s mtime, written once at
+// the seal) keeps one period's tables together: each table rotates on its own, so file numbers do not line up.
+//
+// An ended boot keeps its folder, manifest and attachments: its manifest is rewritten with the deleted files under
+// `pruned` (recorder.ts `notePruned`), and day folders left empty are removed. Only a folder that never recorded
+// anything (no recording file, none listed or pruned in its manifest: a reconcile pre-step's) is removed whole. A
+// packed saved state in `recorder/saved-state/` that no boot links to any more (link count 1) goes too, never while a
+// pack runs.
 //
 // What a pass never touches: the running boot's plain `.jsonl` files (the regex takes only sealed `.jsonl.zst`), any
-// `*.tmp`, its manifest and attachments; symlinks, or anything whose real path leaves the recorder folder; and the rest
-// of the state dir (ledger, journal, deployers, every other state file), which is never walked. The walk uses lstat
-// only, and a file's bytes count once per inode (the saved-state store is hard-linked into the boot folders).
-import { lstatSync, readdirSync, realpathSync, rmSync, statfsSync, unlinkSync, type Stats } from 'node:fs';
+// `*.tmp`, any manifest or attachment of a boot that recorded; symlinks, or anything whose real path leaves the
+// recorder folder; and the rest of the state dir (ledger, journal, deployers, every other state file), which is never
+// walked. The walk uses lstat only, and a file's bytes count once per inode (the store is hard-linked into boots).
+import { lstatSync, readdirSync, readFileSync, realpathSync, rmdirSync, rmSync, statfsSync, unlinkSync, type Stats } from 'node:fs';
 import { join, relative, sep } from 'node:path';
-import { SAVED_STATES } from './recorder.ts';
+import { SAVED_STATES, notePruned } from './recorder.ts';
 
 const GiB = 1024 ** 3;
 /** Defaults (config: ZEROED_RECORDER_MAX_BYTES, ZEROED_DISK_PRUNE_FREE_BYTES). */
@@ -32,7 +37,10 @@ const DAY = /^\d{4}-\d{2}-\d{2}$/;
 export interface PruneOptions {
   /** `<state>/recorder`. */
   readonly root: string;
-  /** The running boot: its folder is never removed and only its sealed recording files are deleted. */
+  /**
+   * The running boot: its folder is never removed and only its sealed recording files are deleted. Its manifest is
+   * the recorder's to rewrite (`Recorder.pruned`), so the pass leaves it to the caller.
+   */
   readonly current: string;
   readonly maxBytes: number;
   readonly floorBytes: number;
@@ -54,15 +62,18 @@ export interface PruneResult {
   readonly reason: 'cap' | 'floor' | null;
   readonly deleted: readonly Pruned[];
   readonly bytes: number;
-  /** Past boot folders removed whole. */
+  /** Folders that never recorded anything, removed whole. */
   readonly boots: readonly string[];
   readonly freeBytes: number;
   readonly recorderBytes: number;
   /** Still over the cap or under the floor with nothing left this pass may delete. */
   readonly short: boolean;
-  /** Deletions that failed (not counting a file already gone). */
+  /** Deletions that failed (not counting a file already gone), and ended boots' manifests not rewritten. */
   readonly errors: readonly string[];
 }
+
+/** The deleted files as paths under the recorder folder (`<boot>/days/<day>/<file>`, `saved-state/<sha>.zst`). */
+export const prunedPaths = (r: PruneResult): string[] => r.deleted.map((d) => (d.boot === '' ? d.path : `${d.boot}/${d.path}`));
 
 const statfsFree = (root: string): number => {
   const s = statfsSync(root);
@@ -104,7 +115,8 @@ interface Candidate {
   readonly boot: string;
   readonly day: string;
   readonly start: number;
-  readonly n: number;
+  /** The `.zst`'s mtime: when it was sealed. */
+  readonly sealed: number;
   readonly name: string;
   readonly path: string;
   readonly key: string;
@@ -181,7 +193,7 @@ export const pruneRecordings = (o: PruneOptions): PruneResult => {
     return true;
   };
 
-  /** A past boot's folder with no recording file and no symlink anywhere in it is removed whole. */
+  /** Whether a folder holds a recording file (sealed or plain) or a symlink anywhere in it. */
   const holdsData = (dir: string): boolean => {
     const s = lstat(dir);
     if (s === null || !s.isDirectory()) return true;
@@ -196,11 +208,25 @@ export const pruneRecordings = (o: PruneOptions): PruneResult => {
     }
     return false;
   };
+  /** A manifest that lists no file and no pruned one; a missing manifest counts as one, an unreadable one does not. */
+  const neverRecorded = (dir: string): boolean => {
+    const path = join(dir, 'manifest.json');
+    const s = lstat(path);
+    if (s === null) return true;
+    if (!s.isFile()) return false;
+    try {
+      const m = JSON.parse(readFileSync(path, 'utf8')) as { days?: { files?: unknown[] }[]; pruned?: unknown[] };
+      return (m.pruned ?? []).length === 0 && (m.days ?? []).every((d) => (d.files ?? []).length === 0);
+    } catch {
+      return false;
+    }
+  };
+  /** A past folder that never recorded anything (a reconcile pre-step's: a manifest and its saved state) goes whole. */
   const removeBoot = (boot: string): void => {
     if (boot === o.current || boot === SAVED_STATES) return;
     const dir = join(o.root, boot);
     const s = lstat(dir);
-    if (s === null || !s.isDirectory() || !within(dir) || holdsData(dir)) return;
+    if (s === null || !s.isDirectory() || !within(dir) || holdsData(dir) || !neverRecorded(dir)) return;
     const files: Stats[] = [];
     const collect = (d: string): void => {
       for (const name of list(d)) {
@@ -238,7 +264,7 @@ export const pruneRecordings = (o: PruneOptions): PruneResult => {
   };
 
   const bootNames = list(o.root).filter((b) => b !== SAVED_STATES && lstat(join(o.root, b))?.isDirectory() === true);
-  // Past boot folders that hold no recording (a reconcile pre-step's) go first, then unlinked saved states.
+  // Folders that never recorded go first, then unlinked saved states.
   for (const b of bootNames) {
     if (!over()) break;
     removeBoot(b);
@@ -252,26 +278,46 @@ export const pruneRecordings = (o: PruneOptions): PruneResult => {
     for (const day of list(daysDir)) {
       if (!DAY.test(day) || lstat(join(daysDir, day))?.isDirectory() !== true) continue;
       for (const name of list(join(daysDir, day))) {
-        const m = DATA.exec(name);
-        if (m === null) continue;
+        if (!DATA.test(name)) continue;
         const p = join(daysDir, day, name);
         const s = lstat(p);
         if (s === null || !s.isFile()) continue;
-        candidates.push({ boot, day, start: bootStart(boot), n: Number(m[2]), name, path: p, key: keyOf(s) });
+        candidates.push({ boot, day, start: bootStart(boot), sealed: s.mtimeMs, name, path: p, key: keyOf(s) });
       }
     }
   }
-  candidates.sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : a.start - b.start || a.n - b.n || (a.boot < b.boot ? -1 : a.boot > b.boot ? 1 : a.name < b.name ? -1 : a.name > b.name ? 1 : 0)));
-  const left = new Map<string, number>();
-  for (const c of candidates) left.set(c.boot, (left.get(c.boot) ?? 0) + 1);
+  const text = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+  candidates.sort((a, b) => text(a.day, b.day) || a.start - b.start || text(a.boot, b.boot) || a.sealed - b.sealed || text(a.name, b.name));
+  /** Per boot, the day folders touched and the files deleted (paths in the boot's folder). */
+  const touched = new Map<string, { days: Set<string>; files: { path: string; bytes: number }[] }>();
   for (const c of candidates) {
     if (!over()) break;
-    remove(c.path, c.boot, `days/${c.day}/${c.name}`);
-    const n = (left.get(c.boot) ?? 1) - 1;
-    left.set(c.boot, n);
-    if (n === 0 && c.boot !== o.current) {
-      removeBoot(c.boot);
-      dropOrphans();
+    if (!remove(c.path, c.boot, `days/${c.day}/${c.name}`)) continue;
+    const t = touched.get(c.boot) ?? { days: new Set<string>(), files: [] };
+    t.days.add(c.day);
+    t.files.push({ path: `days/${c.day}/${c.name}`, bytes: deleted[deleted.length - 1]!.bytes });
+    touched.set(c.boot, t);
+  }
+  for (const [boot, t] of touched) {
+    // A day folder left empty goes (the running boot opens its next file with mkdir, so it may lose one too).
+    for (const day of t.days) {
+      const d = join(o.root, boot, 'days', day);
+      if (list(d).length > 0 || lstat(d)?.isDirectory() !== true) continue;
+      try {
+        rmdirSync(d);
+      } catch {}
+    }
+    if (boot === o.current || reason === null) continue;
+    const daysDir = join(o.root, boot, 'days');
+    if (list(daysDir).length === 0 && lstat(daysDir)?.isDirectory() === true) {
+      try {
+        rmdirSync(daysDir);
+      } catch {}
+    }
+    try {
+      notePruned(join(o.root, boot), t.files, reason);
+    } catch (e) {
+      errors.push(`${boot}/manifest.json not rewritten: ${e instanceof Error ? e.message : 'error'}`);
     }
   }
   return { reason, deleted, bytes: deleted.reduce((a, d) => a + d.bytes, 0), boots, freeBytes: free(), recorderBytes, short: over(), errors };

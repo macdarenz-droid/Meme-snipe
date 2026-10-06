@@ -53,8 +53,8 @@ import { CappedMap } from './capped-map.ts';
 import { jsonText } from './json.ts';
 import { Journal } from './journal.ts';
 import { type PaperMarket, type PaperState, PaperWorld, type SimLeg } from './paper-world.ts';
-import { Recorder, SAVED_STATES, sealLeftovers } from './recorder.ts';
-import { DISK_PRUNE_FREE_BYTES, PRUNE_EVERY_MS, RECORDER_MAX_BYTES, pruneRecordings } from './recorder-budget.ts';
+import { Recorder, SAVED_STATES, notePruned, sealLeftovers } from './recorder.ts';
+import { DISK_PRUNE_FREE_BYTES, PRUNE_EVERY_MS, RECORDER_MAX_BYTES, prunedPaths, pruneRecordings } from './recorder-budget.ts';
 import { entryPrice, openPositionsHealth } from './open-positions.ts';
 import { type RiskInput, evaluateExit, riskSnapshot } from '../../../core/src/risk/index.ts';
 import { latchable, markSettings, riskAccount } from '../engine/marks.ts';
@@ -583,6 +583,10 @@ export class Worker {
     const seed = `paper:${this.#boot}`;
 
     const recRoot = join(c.stateDir, STATE_FILES.recorder);
+    // RECORD-BUDGET: room on the disk before anything at start writes much: the leftovers' seal (a full disk would fail
+    // the recorder for the whole boot) and the deployer store's rewrite below.
+    this.#pruneAt = now;
+    this.#prune();
     try {
       mkdirSync(recRoot, { recursive: true });
       for (const b of sealLeftovers(recRoot, this.#boot)) d.log(`Recorder: sealed files of boot ${b} left by a stop without a clean stop.`);
@@ -591,9 +595,6 @@ export class Worker {
       if (c.recorder) this.#recorderFailed(e);
       else d.log(`Recorder: leftovers not sealed: ${errorText(e)}.`);
     }
-    // RECORD-BUDGET: room on the disk before anything at start writes much (the deployer store's rewrite below).
-    this.#pruneAt = now;
-    this.#prune();
     this.#probe = d.delayProbe === undefined || this.#recorder === null ? null : new DelayProbe({
       timers: d.timers, confirmed: d.delayProbe.confirmed, via: d.delayProbe.via, everyMs: d.delayProbe.everyMs,
       record: (row, at) => this.#record((r) => r.delay(row, at)),
@@ -2128,17 +2129,30 @@ export class Worker {
     const root = join(d.config.stateDir, STATE_FILES.recorder);
     let problem: string | null = null;
     try {
-      if (!existsSync(root)) return;
+      // The free-space floor holds even before anything is recorded (the folder is made here at a first start).
+      mkdirSync(root, { recursive: true });
       const r = pruneRecordings({ root, current: this.#boot, maxBytes: b.maxBytes, floorBytes: b.floorBytes, packing: () => this.#packRunning, ...(d.diskFree === undefined ? {} : { freeBytes: d.diskFree }) });
       const reason = r.reason;
-      if (reason !== null) for (const p of r.deleted) if (p.boot === this.#boot) this.#record((rec) => rec.pruned(p.path, p.bytes, reason));
+      const own = r.deleted.filter((p) => p.boot === this.#boot);
+      if (reason !== null && own.length > 0) {
+        if (this.#recorder !== null && this.#recorderFault === null) for (const p of own) this.#record((rec) => rec.pruned(p.path, p.bytes, reason));
+        else {
+          // The recorder is off or failed: its folder's manifest is rewritten as an ended boot's would be.
+          try {
+            notePruned(join(root, this.#boot), own, reason);
+          } catch (e) {
+            problem = `recorder budget: this boot's manifest not rewritten (${errorText(e)})`;
+          }
+        }
+      }
       if (reason !== null && (r.deleted.length > 0 || r.boots.length > 0)) {
-        const fields = { reason, files: r.deleted.length, bytes: r.bytes, boots: r.boots.length, free_bytes: r.freeBytes, recorder_bytes: r.recorderBytes };
-        d.log(`Recorder budget (${reason}): deleted ${r.deleted.length} files (${r.bytes} bytes) and ${r.boots.length} boot folders; ${r.freeBytes} bytes free, recordings ${r.recorderBytes} bytes.`);
+        // The journal alone names what went: every deleted file and every folder removed whole.
+        const fields = { reason, files: r.deleted.length, bytes: r.bytes, paths: prunedPaths(r), boots: [...r.boots], free_bytes: r.freeBytes, recorder_bytes: r.recorderBytes };
+        d.log(`Recorder budget (${reason}): deleted ${r.deleted.length} files (${r.bytes} bytes)${r.boots.length > 0 ? ` and the folders of boots ${r.boots.join(', ')}, which never recorded` : ''}; ${r.freeBytes} bytes free, recordings ${r.recorderBytes} bytes.`);
         this.#pruneJournal('recorder_prune', fields);
       }
-      if (r.errors.length > 0) problem = `recorder budget: ${r.errors.length} deletions failed (${r.errors[0]})`;
-      else if (r.short) problem = reason === 'floor'
+      if (problem === null && r.errors.length > 0) problem = `recorder budget: ${r.errors.length} deletions or manifest rewrites failed (${r.errors[0]})`;
+      else if (problem === null && r.short) problem = reason === 'floor'
         ? `disk low: ${r.freeBytes} bytes free, under the floor of ${b.floorBytes}, with no recording left to delete`
         : `recordings at ${r.recorderBytes} bytes, over the cap of ${b.maxBytes}, with no recording left to delete`;
     } catch (e) {
