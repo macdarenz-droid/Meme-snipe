@@ -48,6 +48,13 @@ The previous S1 account reached its usage limit about 12:45 PM. The owner made t
 - No host access, no secrets access (owner only), as before.
 
 **Log (Melbourne time, newest first)**
+- 3:00 AM #260 CI green on a52368e8 (check, historical-data, e2e). **REPLAY-1000's answer on H16 'missing'** (47 sample coins at e138ad2, Mode B):
+  - Every one comes from evidence.ts:89: "no migration" (hard.ts:157, 8 coins), "no curve" (hard.ts:279, 8), "no create" (hard.ts:149-155, 2).
+  - All of them came from late re-evaluations, 1.5–4 h after migration and outside the entry window, once the facts were no longer held (eviction likely, not verified).
+  - 0 for sol-usd, is_mayhem, H17 fields and xcheck. The replay never fails a cross-check, so live xcheck (:593) is not ruled out.
+  - 0 entries in all three Mode B runs (no-H5, H5, what-if) through about 14:13Z.
+
+  If live matches, the H16-missing count is mostly late re-evaluation noise, and the in-window blockers are H9 (genuine), cut pool-trade logs → H11 gap (about 57% of coins) and H14 cut creates (#260 C). The live breakdown from #260 A decides. The next fix card is probably cut pool-trade fetch plus producer healing (B6). Builder told to add this as a hypothesis in B.
 - 2:38 AM #260 reviews:
   - **ops/contract PASS** at a52368e8 (S1 checked its session: it ran typecheck, the 3 test files and 2 mutants).
   - **worker/facts FAIL, B1:** C clears H14 only if every cut-create fetch in the 14-day look-back succeeds. One failed, shed or expired fetch, or one still out at a restart (#lost is saved and restored), blocks H14 for 14 days, and #cutCreateSeen blocks any re-ask.
