@@ -204,3 +204,38 @@ Also ruled out by the market-structure pass: passive LP on meme pools (the LP sh
 Opened by a researcher or critic: Bianchi, Babiak & Dickerson, J. Banking & Finance 142 (2022), [working paper](https://www.riksbank.se/globalassets/media/rapporter/working-papers/2022/no.-413-trading-volume-and-liquidity-provision-in-cryptocurreny-markets.pdf) (cost wording differs between its text, 30/40 bps, and Table 5, 20/30 bps); Zaremba et al., IRFA 78 (2021), doi:10.1016/j.irfa.2021.101908; Fičura, [FFA WP 5:003](https://ideas.repec.org/p/prg/jnlwps/v5y2023id5.003.html) (2023; sign convention not confirmed in the full text); Fieberg, Liedtke & Zaremba, IRFA 94 (2024), doi:10.1016/j.irfa.2024.103218; Liu, Tsyvinski & Wu, J. Finance (2022), [NBER w25882](https://www.nber.org/papers/w25882); Ante, [BRL WP 26](https://www.blockchainresearchlab.org/wp-content/uploads/2020/05/BRL-Working-Paper-26-Liquidity-shocks-token-returns-and-market-capitalization-in-DeFi-markets.pdf) (2022) and [BRL WP 3](https://www.blockchainresearchlab.org/wp-content/uploads/2019/10/Exploring-Market-Reactions-to-Exchange-Listings-of-Cryptocurrencies-BRL-working-paper3.pdf) (2019); Caporale & Plastun, J. Economic Studies 46(5) (2019); Marino, Naviglio, Tarantelli & Lillo, [arXiv 2602.14860](https://arxiv.org/abs/2602.14860) (2026); Milionis, Moallemi, Roughgarden & Zhang, [arXiv 2208.06046](https://arxiv.org/abs/2208.06046); Meteora DLMM [limit orders](https://docs.meteora.ag/core-products/dlmm/limit-order.md); [pump.fun fees](https://pump.fun/docs/fees); the pump_amm IDL in pump-fun/pump-public-docs. REPORTED only: Nagel, RFS 25(7) (2012); insider trading before Coinbase listings (Félez-Viñas, Johnson & Putniņš, via Decrypt); staking yield; the arbitrage profit figure.
 
 Limits: the Kamat graduation paper is cited in the repo as arXiv 2607.02795 and was found in this search as 2607.02823; check which is right before citing it again. The deep-pool σ (4–8% per trade) and every pool count and trades-per-day figure are assumptions until Phase 0 measures them. No market data was downloaded and nothing at or after the wall was read for a new statistic.
+
+## 7. Routes that pay by rule, not by prediction (RES-7, 2026-10-07)
+
+Owner request (7 Oct): "Think outside the box. Find every maze route ... not statistics." Five researchers each took one route (protocol payouts, atomic arbitrage, carry, being the house, forced or price-blind flows), read the pump and pump_amm IDLs (pump-public-docs `cb188ce`) and live mainnet accounts, and two critics re-checked every claim on chain. No strategy return was computed on data at or after the wall; reading today's protocol state was allowed.
+
+### 7.1 Bottom line
+
+No route turns $500–$5,000 into meaningful income without price risk. Every route that pays well either holds the meme coin (LP, holder rewards, BOOST) or needs speed, venues or leverage the bot does not have (arbitrage, perp carry). The only money that reaches the bot by rule is staking yield on idle SOL.
+
+### 7.2 What survived
+
+| Route | Mechanism (VERIFIED unless marked) | Size | Needs |
+|---|---|---|---|
+| **Stake idle SOL** (JitoSOL or a native stake account) | Issuance plus MEV tips paid to stakers by protocol rule: pool rate grew +0.0172% per 1.342-day epoch, about 4.8% a year (5.7% over the last 12 months), counted in SOL. A SOL→JitoSOL→SOL round trip on Jupiter costs about 0.005%. | Small but certain: about 0.2–2.4 SOL a year on $500–$5,000. $0 before funding. | Owner: a new asset and a signer route. Exit is a DEX sale: the pool's instant-withdraw reserve held only 0.438 SOL when read, so keep the trading float in SOL. |
+| **Protocol-flow hygiene** (defensive) | BOOST buys carry `user` = PDA(["boost_vault", pool]) and zero fees; Mayhem agent trades carry `user` = the whitelisted mayhem vault and zero fees. After BOOST, a pool keeps `virtual_quote_reserves` ≈ 17.58 SOL while the real vault can drain (one pool read: 17.58 virtual, 0.27 real). | No income; prevents false demand and false depth. | Supervisor (core stream 2). See 7.3. |
+| **All-or-nothing entries** (Jito `bundleOnly`) | A transaction that would fail is dropped instead of landing and paying fees. | About 0.8% of a $2 trade; negligible at $500+. | Owner (Jito tip accounts in the signer). Entries only: a dropped stop exit costs time in a crash. |
+
+### 7.3 A risk found on the way (for the supervisor)
+
+H8 values liquidity as `quoteVault + virtualQuoteReserves` (`packages/core/src/gates/hard.ts` line 311). After BOOST, about 17.58 SOL of that is virtual: it sets the price but cannot be sold into (`pump-swap.ts` refuses a sell larger than the real vault). So H8, and any collapse label built on effective reserves, can count about 17.6 SOL (about $2,100) of depth that is not there. A drained pool can look alive to a label. Suggested ruling: use the real vault for "can exit" and "collapse", and effective reserves only for price and impact, with a replay fixture of a drained post-BOOST pool as the test.
+
+### 7.4 Dead ends, with the reason
+
+- **Volume incentives (PUMP per SOL of volume):** both GlobalVolumeAccumulators are zeroed; pays 0 today. Farming them would be wash trading anyway.
+- **Cashback coins** (legacy pools where the creator fee goes back to the trader, net 0.25% a side above 420 SOL cap): the mechanism works, but no new coin can be cashback (`create_v2`), only 29 pools sit at ≥ 420 SOL cap, they carried about 0.09% of PumpSwap trades in pre-wall samples, every sampled trade already collected the cashback, and the bot rejects them on purpose (H17).
+- **Atomic cross-pool arbitrage:** cannot lose per attempt, but in pre-wall blocks 73% of arbitrages landed in the same block as the trade that opened the gap and 22% in the next; trades two or more slots late held about 0.05% of the value. The bot lands about 23 slots late, so its prize is crumbs.
+- **Funding carry** (spot meme plus a short perp): about +4.7% a year median in dollars over 18 Hyperliquid meme perps, two liquidated even at 1x, and about −1.6% a year median once made flat in SOL. Also derivatives and cross-chain (owner rules).
+- **Being the LP:** any wallet can deposit into a canonical PumpSwap pool (20 bps LP fee above 420 SOL cap, 2 bps below), but on pre-wall daily data across about 250 established coins the median LP result was −2.5% to −7.4% in SOL; today's median volume earns an LP about 1.9% a year, below staking. Meteora DLMM: high fees, but concentrated positions turn into the dying token bin by bin; the only net study (Uniswap v3) shows impermanent loss above fees.
+- **BOOST, the Mayhem agent, the PUMP buyback:** all public and rule-bound, but BOOST is taken by snipers within seconds and conflicts with H10, Mayhem prices are synthetic (a 0.023 SOL agent sell moved virtual SOL from 43.80 to 32.01), and each buyback buy moves PUMP about 0.005%.
+- **Holder rewards:** paid by one off-chain operator key on its own choice of wallets; a sliver on top of a directional position.
+- **LST arbitrage band, creator-fee seats, cranks, front-page attention, retail-bot defaults, DCA orders, unlocks:** closed, out of reach without launching coins or acting on users' orders, or statistical after all.
+
+### 7.5 What this changes
+
+Nothing replaces a proven price rule. Staking and all-or-nothing entries only stop the bot losing SOL to idleness and fees; the hygiene work stops false signals. Evidence files are in the RES-7 session scratchpad and were not committed (raw RPC reads).
