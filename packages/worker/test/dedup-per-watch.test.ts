@@ -8,7 +8,7 @@ import { type PoolState } from '../../core/src/amm/index.ts';
 import { InitBoostEventLayout, PUMP_AMM_PROGRAM, encodeBase58, toBase64 } from '../../core/src/chain/index.ts';
 import { OFF_CHAIN, compareEvents, type MarketEvent } from '../../core/src/engine/index.ts';
 import { HOLE_FETCH_PREFIX, RAW, STREAMS } from '../../core/src/facts/index.ts';
-import { candlesKey, parsePool, parseStream, poolKey, streamKey } from '../../core/src/gates/index.ts';
+import { DeployerIndex, candlesKey, parsePool, parseStream, poolKey, streamKey } from '../../core/src/gates/index.ts';
 import { FIX, FactWorld, MINT, POOL } from '../../core/test/facts/helpers.ts';
 import { encode } from '../../core/test/chain/encode.ts';
 import { swapLog } from '../../core/test/facts/swaps.ts';
@@ -340,5 +340,22 @@ describe('DEDUP-PER-WATCH: the worker fetches a cut log once for every pool watc
     expect(tries(fetchedWhy)).toBe(1);
     expect(out.map((o) => [o.via, o.found])).toEqual([[VIA1, true], [VIA2, false]]);
     await h.worker.stop();
+  });
+});
+
+describe('DEDUP-PER-WATCH: a cut creates log seen first on another watch', () => {
+  it('is still a hole on the creates watch, so a boot asks for it', () => {
+    const CREATES = `logs:${addr(11)}`;
+    const RUGS = `logs:${addr(12)}`;
+    const idx = new DeployerIndex();
+    const feed = new LiveFeed({ ...DEFAULT_LIVE_FEED, horizonSlots: 0 });
+    const t = at(S0);
+    feed.ingest('worker', { type: 'offchain', key: 'coverage:creates:start', value: { fromSlot: S0 - 1n, via: CREATES } }, { receivedAt: t });
+    // Processed watches (no commitment): the rugs watch's copy first, then the creates watch's.
+    for (const via of [RUGS, CREATES]) feed.ingest('helius', { type: 'logs', signature: SIG, slot: S0, err: null, via, logs: ['Log truncated'] }, { receivedAt: t + 1 });
+    feed.ingest('helius', { type: 'slot', slot: S0 + 1n, parent: S0, root: null }, { receivedAt: t + 10 });
+    feed.advance(t + 11);
+    for (let e = feed.next(); e !== null; e = feed.next()) if (e.kind === 'market') idx.observe(e);
+    expect(idx.lostCreates(0, t + 20)).toEqual([SIG]);
   });
 });
