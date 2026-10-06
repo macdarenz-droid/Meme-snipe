@@ -209,9 +209,11 @@ export class AsOfStore {
    * about one key in n, spread by a hash of each key's position, and scaled by n (an estimate), so the probe's pause stays a few ms at any store size (all keys: about 60 ms per
    * 300k).
    */
-  sizes(): { readonly keys: number; readonly entries: number; readonly tails: number; readonly byPrefix: ReadonlyMap<string, number> } {
+  sizes(): { readonly keys: number; readonly entries: number; readonly tails: number; readonly byPrefix: ReadonlyMap<string, number>; readonly entriesByPrefix: ReadonlyMap<string, number> } {
     let entries = 0;
     const byPrefix = new Map<string, number>();
+    // STORE-GROWTH: entries per kind too, so a kind of one key whose series grows (a running fact) is seen.
+    const entriesByPrefix = new Map<string, number>();
     const every = Math.max(1, Math.ceil(this.#series.size / PROBE_KIND_SAMPLE));
     let i = 0;
     for (const [key, series] of this.#series) {
@@ -223,10 +225,16 @@ export class AsOfStore {
       const prefix = a < 0 ? key : b < 0 ? key.slice(0, a) : key.slice(0, b);
       const had = byPrefix.get(prefix);
       // A new kind is kept as a fresh copy, never a slice that would pin its whole key (facts review).
-      if (had === undefined) byPrefix.set(flat(prefix), every);
-      else byPrefix.set(prefix, had + every);
+      if (had === undefined) {
+        const kind = flat(prefix);
+        byPrefix.set(kind, every);
+        entriesByPrefix.set(kind, series.length * every);
+      } else {
+        byPrefix.set(prefix, had + every);
+        entriesByPrefix.set(prefix, (entriesByPrefix.get(prefix) ?? 0) + series.length * every);
+      }
     }
-    return { keys: this.#series.size, entries, tails: this.#byTail.size, byPrefix };
+    return { keys: this.#series.size, entries, tails: this.#byTail.size, byPrefix, entriesByPrefix };
   }
 
   /** Index of the last entry with moment <= `at`, or -1. */

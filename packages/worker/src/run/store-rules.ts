@@ -5,7 +5,7 @@ import type { Collapse, Forget, Retention, Shape } from '../../../core/src/engin
 import { SEED_KEY, SOL_PRICE_KEY } from '../engine/strategy.ts';
 import { FACT_READS_KEY } from '../facts/source.ts';
 import { FUNDER_KEEP_MS, RAW } from '../../../core/src/facts/index.ts';
-import { GRADUATES_KEY, LOG_CREATE_PREFIX, TX_CREATE_PREFIX, candlesKey, carryKey, compactCreate, compactCurveTrade, curveTradeKeys, mintKey, poolKey, streamKey, tradeTailCollapse } from '../../../core/src/gates/index.ts';
+import { CURVE_VOLUME_KEY, EXEC_HEALTH_KEY, GRADUATES_KEY, LOG_CREATE_PREFIX, SOL_USD_KEY, TX_CREATE_PREFIX, candlesKey, carryKey, compactCreate, compactCurveTrade, curveTradeKeys, mintKey, poolKey, streamKey, tradeTailCollapse } from '../../../core/src/gates/index.ts';
 
 const POOL_PREFIX = poolKey('');
 
@@ -57,13 +57,21 @@ const GRADUATES = GRADUATES_KEY;
  * grew for the process: in the harness about 200 entries a minute between them, more at live's read rate.
  */
 const RUNNING = [SOL_PRICE_KEY, FACT_READS_KEY];
+/**
+ * STORE-GROWTH sweep: the regime's other series, stated whole like the graduates fact (SOL/USD's hourly points, the
+ * curve volume's days, execution health), and the raw reads they are made from (`sol-usd`, `read:chain-volume-hour`,
+ * `read:exec-health`). The regime and H8 read the facts as of now (`Evidence.read`); the producer acts on the released
+ * raw read and keeps its own series; nothing asks the store for an older value (`history` is asked for trade, coverage
+ * and deployer keys only).
+ */
+const REGIME = [SOL_USD_KEY, CURVE_VOLUME_KEY, EXEC_HEALTH_KEY, RAW.solUsd, RAW.volumeHour, RAW.exec];
 const NEWEST_ONLY = (): boolean => false;
 
 /**
- * The live store's collapse: a head fact, a seen signature, the slot notice, an account read and its mint fact, the graduates fact, and the worker's running facts keep their newest value; a trade key keeps its newest event
+ * The live store's collapse: a head fact, a seen signature, the slot notice, an account read and its mint fact, the graduates fact and the regime's other series with their raw reads, and the worker's running facts keep their newest value; a trade key keeps its newest event
  * and every event whose tail would fail (`tradeTailCollapse`).
  */
-export const liveCollapse: Collapse = (key) => (key === SLOT || key === GRADUATES || RUNNING.includes(key) || key.startsWith(SEEN) || HEADS.some((p) => key.startsWith(p)) || READS.some((p) => key.startsWith(p)) ? NEWEST_ONLY : tradeTailCollapse(key));
+export const liveCollapse: Collapse = (key) => (key === SLOT || key === GRADUATES || RUNNING.includes(key) || REGIME.includes(key) || key.startsWith(SEEN) || HEADS.some((p) => key.startsWith(p)) || READS.some((p) => key.startsWith(p)) ? NEWEST_ONLY : tradeTailCollapse(key));
 
 const CURVE_TRADE = curveTradeKeys('');
 /**

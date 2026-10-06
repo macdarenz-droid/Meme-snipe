@@ -2664,3 +2664,28 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
 - **What.** A loop cycle late by more than 10 s (the loop's monotonic clock) halts entries (`behind`, through the halt check); the halt clears after 30 s of cycles under 2 s. Exits keep running. Past 20,000 held frames, the feed sheds the held log frames of candidate pools only: never a pool that is held, has a position or seed, or has an exit or entry in flight (`LiveStrategy.committed`).
 - **Coverage.** Each shed range becomes a recorded coverage gap (`coverage:trades:<pool>:gap`, reason `shed`), placed first in its first slot, so it sorts before every shed event. H11 refuses the pool from that slot (H16 `gap`), live and in the recording's replay alike. Shed frames are ranked before they drop, so live and replay give the same moments after a shed.
 - **Cost.** A shed tail pool censors its REC-1 counterfactual for that range.
+
+## The store keeps only the newest of every running and regime fact (STORE-GROWTH, `run/store-rules.ts`)
+
+- **2026-10-06 · Why.** Live on 5efb9ae0 (MEM-PROBE, 6.9 min before crash 27): store entries grew about 2,870 a minute
+  while store keys grew about 77 a minute (almost all create logs, one entry each). So the growth was in existing
+  keys. The harness (heap snapshots 20 and 30 min, entries per key kind) found single-key series kept whole for the
+  process: `worker:fact-reads` (+143 a minute, the day's read counts restated at every read) and `worker:sol-price`
+  (+60 a minute), with the regime's series and their raw reads growing the same way at lower rates.
+- **What.** Newest value only (`liveCollapse`), after checking every reader: `history` is asked for trade, coverage and
+  deployer keys only, and no gate or worker lookup asks for a time before now.
+  - The worker's running facts: `worker:sol-price` (the strategy looks it up as of now) and `worker:fact-reads`
+    (nothing reads it from the store).
+  - The regime's other series, stated whole like the graduates fact: `gates/sol-usd`, `gates/curve-volume`,
+    `gates/exec-health` (read as of now by the regime and H8), and their raw reads `sol-usd`,
+    `read:chain-volume-hour`, `read:exec-health` (the producer acts on the released read and keeps its own series).
+- **Create logs** (supervisor item 2): already let go 13 h after their create when the coin has not migrated
+  (OOM-MINT, `CREATE_KEEP_MS` + `CREATE_LATE_MS`); live's create-log keys still grow while that window fills after a
+  restart (about 70 a minute, about 55k at the full window). Shortening it changes which coins are refused
+  `create-expired`, so it is left to a ruling.
+- **Probe.** MEM-PROBE also reports the largest kinds by entries (`store_e_<kind>`, after `store_k_<kind>`), so a
+  one-key kind whose series grows is seen.
+- **Evidence (fail before, pass after).** `store-rules.test.ts`: each of the eight keys keeps one entry after an
+  hour of ticks, and a lookup as of now returns the newest (before: one entry a tick); `mem-counts.test.ts`: entries
+  per kind exactly, sampled at scale, and the `store_e_` codes. Hand mutants killed: sol-price whole, fact-reads whole,
+  `read:exec-health` whole, no `store_e_` codes, entries counted as keys.

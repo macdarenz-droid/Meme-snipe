@@ -90,9 +90,10 @@ export const heapSpacesMb = (): { readonly old_mb: number; readonly large_object
 
 /**
  * Groups of counts flattened to codes (`group_name`), whole and non-negative, in the order given; the store's key kinds
- * (`byPrefix`) as `store_k_<kind>`, the largest PROBE_STORE_KINDS. At most PROBE_MAX_COUNTS.
+ * (`byPrefix`) as `store_k_<kind>`, the largest PROBE_STORE_KINDS, then by entries (`entriesByPrefix`) as `store_e_<kind>`.
+ * At most PROBE_MAX_COUNTS.
  */
-export const probeCounts = (groups: Readonly<Record<string, Readonly<Record<string, number>>>>, byPrefix: ReadonlyMap<string, number> = new Map()): ProbeCount[] => {
+export const probeCounts = (groups: Readonly<Record<string, Readonly<Record<string, number>>>>, byPrefix: ReadonlyMap<string, number> = new Map(), entriesByPrefix: ReadonlyMap<string, number> = new Map()): ProbeCount[] => {
   const out: ProbeCount[] = [];
   const put = (code: string, n: number) => {
     if (out.length < PROBE_MAX_COUNTS && Number.isFinite(n)) out.push({ code: probeCode(code), count: Math.max(0, Math.round(n)) });
@@ -100,13 +101,18 @@ export const probeCounts = (groups: Readonly<Record<string, Readonly<Record<stri
   for (const [g, counts] of Object.entries(groups)) for (const [k, n] of Object.entries(counts)) put(`${g}_${k}`, n);
   // A kind is published, so no address may reach it: a segment over 24 characters (any address, signature or hash)
   // counts as `x` (ops review), and kinds that become the same are summed.
-  const masked = new Map<string, number>();
-  for (const [k, n] of byPrefix) {
-    const kind = k.split(':').map((seg) => (seg.length > KIND_SEGMENT_MAX ? 'x' : seg)).join(':');
-    masked.set(kind, (masked.get(kind) ?? 0) + n);
-  }
-  const kinds = [...masked].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1)).slice(0, PROBE_STORE_KINDS);
-  for (const [k, n] of kinds) put(`store_k_${k}`, n);
+  const top = (counts: ReadonlyMap<string, number>): [string, number][] => {
+    const masked = new Map<string, number>();
+    for (const [k, n] of counts) {
+      const kind = k.split(':').map((seg) => (seg.length > KIND_SEGMENT_MAX ? 'x' : seg)).join(':');
+      masked.set(kind, (masked.get(kind) ?? 0) + n);
+    }
+    return [...masked].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1)).slice(0, PROBE_STORE_KINDS);
+  };
+  for (const [k, n] of top(byPrefix)) put(`store_k_${k}`, n);
+  // STORE-GROWTH: the largest kinds by entries (`store_e_<kind>`), after the kinds by keys: a one-key kind whose
+  // series grows never reached the key list.
+  for (const [k, n] of top(entriesByPrefix)) put(`store_e_${k}`, n);
   return out;
 };
 

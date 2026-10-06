@@ -50,7 +50,10 @@ describe('the counts', () => {
     small.record('gates:mint:m', 1, now, 'i4');
     small.record('plain', 1, now, 'i5');
     // A key with no `:` has no tail to index.
-    expect(small.sizes()).toEqual({ keys: 4, entries: 5, tails: 3, byPrefix: new Map([['logs:pump', 2], ['gates:mint', 1], ['plain', 1]]) });
+    small.record('plain', 2, now, 'i6');
+    small.record('plain', 3, now, 'i7');
+    // STORE-GROWTH: entries per kind too: one key (`plain`) with three entries outweighs two keys with three between them.
+    expect(small.sizes()).toEqual({ keys: 4, entries: 7, tails: 3, byPrefix: new Map([['logs:pump', 2], ['gates:mint', 1], ['plain', 1]]), entriesByPrefix: new Map([['logs:pump', 3], ['gates:mint', 1], ['plain', 3]]) });
     const big = new AsOfStore({ now: () => now });
     const n = 3 * PROBE_KIND_SAMPLE;
     for (let i = 0; i < n; i++) big.record(`${i % 3 === 0 ? 'read:accounts' : 'pump:TradeEvent'}:${i}`, i, now, `i${i}`);
@@ -60,6 +63,20 @@ describe('the counts', () => {
     const est = (k: string) => z.byPrefix.get(k) ?? 0;
     expect(Math.abs(est('read:accounts') - n / 3)).toBeLessThan(0.05 * n / 3);
     expect(Math.abs(est('pump:TradeEvent') - 2 * n / 3)).toBeLessThan(0.05 * 2 * n / 3);
+    expect(Math.abs((z.entriesByPrefix.get('read:accounts') ?? 0) - n / 3)).toBeLessThan(0.05 * n / 3);
+  });
+
+  it('STORE-GROWTH: the largest kinds by entries follow the kinds by keys, masked and summed the same way', () => {
+    const mint = 'So11111111111111111111111111111111111111112';
+    const keys = new Map([['logs:pump', 500], ['worker:fact-reads', 1]]);
+    const entries = new Map([['logs:pump', 500], ['worker:fact-reads', 5_723], [`read:${mint}`, 3], ['read:x', 1]]);
+    expect(probeCounts({ store: { keys: 501 } }, keys, entries)).toEqual([
+      { code: 'store_keys', count: 501 },
+      { code: 'store_k_logs_pump', count: 500 }, { code: 'store_k_worker_fact-reads', count: 1 },
+      { code: 'store_e_worker_fact-reads', count: 5_723 }, { code: 'store_e_logs_pump', count: 500 }, { code: 'store_e_read_x', count: 4 },
+    ]);
+    const many = new Map(Array.from({ length: 40 }, (_, i) => [`k${i}`, 1_000 - i] as const));
+    expect(probeCounts({}, new Map(), many).map((x) => x.code)).toEqual(Array.from({ length: PROBE_STORE_KINDS }, (_, i) => `store_e_k${i}`));
   });
 
   it('mem.json keeps the sample and the recent probes; only well-formed probes are read back', () => {
