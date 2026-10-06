@@ -8,6 +8,7 @@ import type { Priority } from '../scheduler/scheduler.ts';
 import type { Timers } from '../scheduler/timers.ts';
 import type { LiveFeed } from './live-feed.ts';
 import type { RpcHttp } from './solana-http.ts';
+import { CappedMap } from '../run/capped-map.ts';
 
 export interface TxFetcherOptions {
   readonly clients: readonly RpcHttp[];
@@ -22,6 +23,8 @@ export interface TxFetcherOptions {
   readonly onLookup?: (ms: number) => void;
   /** A monotonic local clock (ms) for the arrival stamp; default `performance.now`. */
   readonly mono?: () => number;
+  /** Whether DEC-1 decodes the record (default `decodable`); a seam so a timing test measures only the remembered set. */
+  readonly decodable?: (record: TransactionRecord) => boolean;
 }
 
 /** A transaction found: its slot and when it first arrived on this host. `again` when an earlier fetch put it on the feed. */
@@ -37,12 +40,16 @@ export interface Fetched {
 export class TxFetcher {
   readonly #o: TxFetcherOptions;
   readonly #inFlight = new Map<string, Promise<Fetched | null>>();
-  /** Fetched signatures and their first arrival, oldest forgotten first (a few dozen bytes each, never the record). */
-  readonly #done = new Map<string, Fetched>();
+  /**
+   * Fetched signatures and their first arrival, the newest `remember`, oldest forgotten first in O(1) (a few dozen bytes
+   * each, never the record). A signature is remembered only once its transaction is on the feed.
+   */
+  readonly #done: CappedMap<string, Fetched>;
 
   constructor(o: TxFetcherOptions) {
     if (o.clients.length === 0) throw new RangeError('TxFetcher needs at least one client');
     this.#o = o;
+    this.#done = new CappedMap(o.remember);
   }
 
   /** Fetches and ingests `signature` once. Resolves to its arrival, or null if no provider had it. */
@@ -67,9 +74,10 @@ export class TxFetcher {
         try {
           const record: TransactionRecord | null = await client.getTransaction(signature, priority);
           if (record === null) continue;
-          const found: Fetched = { slot: record.slot, at: o.timers.now(), mono: (o.mono ?? (() => performance.now()))(), again: false, ...(decodable(record) ? {} : { undecodable: true as const }) };
-          this.#remember(signature, found);
+          const found: Fetched = { slot: record.slot, at: o.timers.now(), mono: (o.mono ?? (() => performance.now()))(), again: false, ...((o.decodable ?? decodable)(record) ? {} : { undecodable: true as const }) };
           o.feed.ingest(client.provider, { type: 'tx', record }, { receivedAt: found.at, lookup: true, backfilled });
+          // Remembered only once on the feed: an ingest that throws leaves the next ask to read it again.
+          this.#done.set(signature, found);
           o.onLookup?.(found.at - started);
           return found;
         } catch (e) {
@@ -81,13 +89,5 @@ export class TxFetcher {
       if (failures === o.clients.length && attempt === o.retries) throw lastError;
     }
     return null;
-  }
-
-  #remember(signature: string, found: Fetched): void {
-    this.#done.set(signature, found);
-    if (this.#done.size > this.#o.remember) {
-      const oldest = this.#done.keys().next().value;
-      if (oldest !== undefined) this.#done.delete(oldest);
-    }
   }
 }
