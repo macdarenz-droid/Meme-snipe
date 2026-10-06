@@ -476,7 +476,8 @@ in_c "journalctl -u zeroed-record-upload@all -o cat --no-pager" >"$LOGS/record-u
 grep -q "Recording upload: .* kept, 0 failed\.$" "$LOGS/record-upload-1.txt" || { cat "$LOGS/record-upload-1.txt"; fail "recording upload summary"; }
 # What the day's release holds: the ended boot's frames, releases and manifest, the newest boot's clean files, the day's
 # index; never raw or delays, never the planted file. Every asset's bytes are the local file's (sha256).
-names="$(jq -r --arg t "rec-$RDAY" '.assets[] | select(.tag == $t) | .name' "$DATA/state.json" | sort | tr '\n' ' ')"
+# (A run near UTC midnight may also send that day's journal: left out here.)
+names="$(jq -r --arg t "rec-$RDAY" '.assets[] | select(.tag == $t) | .name | select(startswith("journal-") | not)' "$DATA/state.json" | sort | tr '\n' ' ')"
 want="$(printf '%s\n' index-1.json "$NEW.frames-000.jsonl.zst" "$OLD.frames-000.jsonl.zst" "$OLD.manifest.json" "$OLD.releases-000.jsonl.zst" | sort | tr '\n' ' ')"
 [ "$names" = "$want" ] || fail "data repository assets: $names (want $want)"
 for b in "$OLD" "$NEW"; do for t in frames-000 releases-000; do
@@ -488,8 +489,8 @@ done; done
 jq -e --arg t "rec-$RDAY" 'select(.call == "create-release") | select(.tag_name == $t and .prerelease == true and .make_latest == "false")' "$DATA/calls.jsonl" >/dev/null || fail "release rec-$RDAY not a prerelease kept from latest"
 # FixedLengthStream in the real Worker runtime: every upload carried its exact Content-Length, none was chunked.
 jq -s -e 'map(select(.call == "upload")) | length > 0 and all(.chunked == false and .length != null and (.length | tonumber) == .bytes)' "$DATA/calls.jsonl" >/dev/null || fail "an upload was chunked or had no Content-Length"
-idx="$(jq -r '.assets[] | select(.name == "index-1.json") | .id' "$DATA/state.json")"
-head -1 "$DATA/assets/$idx" | jq -e --arg d "$RDAY" '.kind == "zeroed-record-index" and .day == $d and (.files | length) == 4' >/dev/null || fail "day index"
+idx="$(jq -r --arg t "rec-$RDAY" '.assets[] | select(.tag == $t and .name == "index-1.json") | .id' "$DATA/state.json")"
+head -1 "$DATA/assets/$idx" | jq -e --arg d "$RDAY" '.kind == "zeroed-record-index" and .day == $d and (.files | map(select(.boot != null)) | length) == 4' >/dev/null || fail "day index"
 tail -1 "$DATA/assets/$idx" | grep -Eq '^hmac-sha256=[0-9a-f]{64}$' || fail "day index HMAC line"
 # On the server: the ended boot's frames and releases are gone, its raw, delays and manifest stay; the newest boot keeps all.
 in_c "cd /var/lib/zeroed/recorder/$OLD && [ ! -e days/$RDAY/frames-000.jsonl.zst ] && [ ! -e days/$RDAY/releases-000.jsonl.zst ] && [ -e days/$RDAY/raw-000.jsonl.zst ] && [ -e days/$RDAY/delays-000.jsonl.zst ] && [ -e manifest.json ]" || fail "ended boot: wrong files deleted or kept"
@@ -504,9 +505,9 @@ tail -n +"$((n0 + 1))" "$STATE/telegram.jsonl" | grep -q "\"chat_id\":\"$T_CHAT\
 in_c "zeroed-check" >/dev/null 2>&1 || true
 [ "$(tail -n +"$((n0 + 1))" "$STATE/telegram.jsonl" | grep -c 'recording file(s) kept')" = 1 ] || fail "kept-file alert repeated"
 in_c "rm /var/lib/zeroed/recorder/$NEW/days/$RDAY/releases-000.jsonl.zst"
-u0="$(grep -c "\"call\":\"upload\",\"tag\":\"rec-$RDAY\"" "$DATA/calls.jsonl")"
+u0="$(grep -cE "\"call\":\"upload\",\"tag\":\"rec-$RDAY\",\"name\":\"($OLD|$NEW)\." "$DATA/calls.jsonl")"
 in_c "zeroed-record-upload --day $RDAY" >"$LOGS/record-upload-2.txt" 2>&1 || { cat "$LOGS/record-upload-2.txt"; fail "zeroed-record-upload --day"; }
-[ "$(grep -c "\"call\":\"upload\",\"tag\":\"rec-$RDAY\"" "$DATA/calls.jsonl")" = "$u0" ] || fail "a second run uploaded again"
+[ "$(grep -cE "\"call\":\"upload\",\"tag\":\"rec-$RDAY\",\"name\":\"($OLD|$NEW)\." "$DATA/calls.jsonl")" = "$u0" ] || fail "a second run uploaded again"
 in_c "zeroed-check" >/dev/null 2>&1 || true
 tail -n +"$((n0 + 1))" "$STATE/telegram.jsonl" | grep -q 'CLEARED Zeroed host: no recording file is kept back from upload.' || fail "kept-file alert not cleared"
 in_c "zeroed-record-upload --day 2026-02-30" >/dev/null 2>&1 && fail "a day that does not exist was accepted"
