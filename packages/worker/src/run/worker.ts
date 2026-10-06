@@ -157,6 +157,29 @@ export const stage1Missing = (reasons: readonly string[]): string[] => {
   }
   return [...out].sort();
 };
+/**
+ * FACTS-REREAD: the day's re-read count after giving back `n` credits reserved on `reserveDay`. A reserve from an earlier
+ * UTC day gives nothing back to a later day's count (that day's credits were never taken by it), so a refund landing
+ * after midnight cannot lower the new day's count below what the new day spent.
+ */
+export const rereadRefund = (caps: { readonly day: number; readonly reread: number }, n: number, reserveDay: number): number =>
+  reserveDay !== caps.day || n <= 0 ? caps.reread : Math.max(0, caps.reread - n);
+/**
+ * FACTS-REREAD: one reserve's view of a daily budget. `take` counts credits and answers the UTC day they were counted
+ * on (null: refused); a refund goes back to that day, never to a later one (`rereadRefund`).
+ */
+export const reserveBudget = (d: { readonly remaining: () => number; readonly take: (n: number) => number | null; readonly refund: (n: number, day: number) => void }): { remaining(): number; spend(credits: number): void; refund(credits: number): void } => {
+  let day = -1;
+  return {
+    remaining: () => d.remaining(),
+    spend: (credits) => {
+      const at = d.take(credits);
+      if (at === null) throw new Error('the re-read budget is spent');
+      day = at;
+    },
+    refund: (credits) => d.refund(credits, day),
+  };
+};
 export const clampNote = (clamp: { readonly count: number; readonly maxMs: number }): string | null =>
   clamp.maxMs > CLAMP_LOG_MS ? `Saved state: ${clamp.count} times dated after the save's moment were saved as at it, the latest ${(clamp.maxMs / 1000).toFixed(1)} s after.` : null;
 export { SAVED_STATES } from './recorder.ts';
@@ -556,6 +579,8 @@ export class Worker {
   readonly #rereads = new CappedMap<string, RereadState>(REREADS_KEPT);
   /** FACTS-REREAD: candidates whose chain waits for a new UTC day's budget (bounded by #rereads; stale entries skipped). */
   readonly #rereadsParked = new Set<string>();
+  /** FACTS-REREAD: COMPLETION-READs that stood aside for a running chain, by mint (made when it stops without one; null once made). */
+  readonly #completionWaits = new CappedMap<string, { readonly curve: string; readonly migration: string } | null>(REREADS_KEPT);
   #rereadsScanDay = -1;
   #fetchCapsFile: StateFile<FetchCaps> | null = null;
   /**
@@ -1345,7 +1370,11 @@ export class Worker {
     if (rr === undefined || this.#stopping || this.#completeSig.has(mint)) return;
     // FACTS-REREAD: a running re-read of this mint's migration (whose ingest released it) reads the curve itself.
     const st = this.#rereads.get(mint);
-    if (st?.state === 'running' && !st.read.has('tx:complete') && (st.pending.has('migration') || st.pending.has('curve') || st.pending.has('candles'))) return;
+    // It is made once that chain stops without the completion (#completionAfterChain).
+    if (st?.state === 'running' && !st.read.has('tx:complete') && (st.pending.has('migration') || st.pending.has('curve') || st.pending.has('candles'))) {
+      this.#completionWaits.set(mint, { curve, migration });
+      return;
+    }
     const now = this.#d.timers.now();
     if (rr.budget.remaining(now) < COMPLETION_CREDITS) {
       this.#d.log(`Curve completion of ${mint} not read: the fill budget is spent; H7 waits for it.`);
@@ -1591,11 +1620,16 @@ export class Worker {
     if (day > this.#fetchCaps.day) this.#fetchCaps = { day, cutCreate: 0, cutTrade: 0, reread: 0 };
   }
 
-  /** FACTS-REREAD: gives back re-read credits reserved and not used (a save that fails keeps the higher count: safe). */
-  #refundReread(n: number): void {
+  /**
+   * FACTS-REREAD: gives back re-read credits reserved on `day` and not used. A reserve taken before a UTC day change is
+   * never refunded to the new day's count (`rereadRefund`). A save that fails keeps the higher count: safe.
+   */
+  #refundReread(n: number, day: number): void {
     if (n <= 0) return;
     this.#rollFetchCaps();
-    this.#fetchCaps.reread = Math.max(0, this.#fetchCaps.reread - n);
+    const reread = rereadRefund(this.#fetchCaps, n, day);
+    if (reread === this.#fetchCaps.reread) return;
+    this.#fetchCaps.reread = reread;
     try {
       this.#fetchCapsFile?.write({ ...this.#fetchCaps });
     } catch {
@@ -1603,17 +1637,23 @@ export class Worker {
     }
   }
 
-  /** FACTS-REREAD: the re-read budget in the shape the create lookup takes (`findCreate`); a refused reserve throws. */
-  readonly #rereadBudget = {
-    remaining: (): number => {
-      this.#rollFetchCaps();
-      return Math.max(0, REREAD_CREDITS_PER_DAY - this.#fetchCaps.reread);
-    },
-    spend: (credits: number): void => {
-      if (!this.#takeFetch('reread', REREAD_CREDITS_PER_DAY, credits)) throw new Error('the re-read budget is spent');
-    },
-    refund: (credits: number): void => this.#refundReread(credits),
-  };
+  /** FACTS-REREAD: the re-read credits the day has left. */
+  #rereadRemaining(): number {
+    this.#rollFetchCaps();
+    return Math.max(0, REREAD_CREDITS_PER_DAY - this.#fetchCaps.reread);
+  }
+
+  /**
+   * FACTS-REREAD: the re-read budget in the shape a create lookup takes (`findCreate`), one per reserve, so its refund
+   * goes back to the UTC day its credits were taken on (`reserveBudget`); a refused reserve throws.
+   */
+  #rereadBudgetFor(): ReturnType<typeof reserveBudget> {
+    return reserveBudget({
+      remaining: () => this.#rereadRemaining(),
+      take: (n) => (this.#takeFetch('reread', REREAD_CREDITS_PER_DAY, n) ? this.#fetchCaps.day : null),
+      refund: (n, day) => this.#refundReread(n, day),
+    });
+  }
 
   /**
    * FACTS-REREAD: a candidate whose stage-1 facts are missing (`needs`: migration, curve, candles, create) has them read
@@ -1680,6 +1720,7 @@ export class Worker {
         // Bounded as #rereads is: the oldest parked candidate is forgotten first (its refusal stands).
         if (this.#rereadsParked.size > REREADS_KEPT) this.#rereadsParked.delete(this.#rereadsParked.values().next().value!);
         this.#journal.write('facts_reread', { mint, try: st.tries + 1, why: st.why, needs, landed: false, budget: 'spent' });
+        this.#completionAfterChain(mint, st);
         return this.#d.log(`Candidate ${mint}: its stage-1 facts are not read again: the day's re-read budget is spent; its refusal stands.`);
       }
       st.tries++;
@@ -1687,12 +1728,14 @@ export class Worker {
       this.#journal.write('facts_reread', { mint, try: st.tries, why: st.why, needs, landed });
       if (this.#stopping) return;
       if (landed) {
-        st.state = 'idle';
-        return;
+        // The candidate's tries are all made: a need arriving later starts nothing (CUT_CREATE_RETRY_MS.length + 1 in all).
+        st.state = st.tries > CUT_CREATE_RETRY_MS.length ? 'spent' : 'idle';
+        return this.#completionAfterChain(mint, st);
       }
       const wait = CUT_CREATE_RETRY_MS[st.tries - 1];
       if (wait === undefined || !this.#strategy.candidates().has(mint)) {
         st.state = 'spent';
+        this.#completionAfterChain(mint, st);
         return this.#d.log(`Candidate ${mint}: its stage-1 facts were not read again in ${st.tries} tries; its refusal stands.`);
       }
       const h = this.#d.timers.setTimeout(() => {
@@ -1709,6 +1752,18 @@ export class Worker {
   }
 
   /**
+   * A COMPLETION-READ that stood aside for this mint's running chain is made now that the chain has stopped (landed,
+   * parked or spent) without the completion, under the fills' budget rules as any other.
+   */
+  #completionAfterChain(mint: string, st: RereadState): void {
+    const w = this.#completionWaits.get(mint);
+    if (w == null) return;
+    this.#completionWaits.set(mint, null);
+    if (st.read.has('tx:complete') || this.#stopping) return;
+    void this.#liveCompletion(mint, w.curve, w.migration).catch((e: unknown) => this.#d.log(`Curve completion of ${w.curve} not read: ${e instanceof Error ? e.message : 'error'}.`));
+  }
+
+  /**
    * One try over what is pending. The migration and its completion are read together (the migration fact needs both;
    * the candles' book opens with the migration's CreatePoolEvent, so `candles` lands with the migration and brings no
    * trade from before it): `migration`, `curve` and `candles` leave `pending` once both are on the feed. 'budget' when
@@ -1720,7 +1775,7 @@ export class Worker {
     // The whole try or none of it: a budget that cannot pay for every part pending spends nothing (a retry after a wait
     // could not read more either).
     const cost = (chain ? this.#rereadChainCost(mint, st) : 0) + (create ? this.#rereadCreateCost(mint) : 0);
-    if (this.#rereadBudget.remaining() < cost) return 'budget';
+    if (this.#rereadRemaining() < cost) return 'budget';
     if (chain) {
       const r = await this.#rereadMigration(mint, st);
       if (r === 'budget') return 'budget';
@@ -1759,7 +1814,12 @@ export class Worker {
     if (rr === undefined) return 'tried';
     const sig = st.read.has('tx:migration') ? undefined : this.#migrationSig.get(mint);
     const taken = this.#rereadChainCost(mint, st);
-    if (!this.#takeFetch('reread', REREAD_CREDITS_PER_DAY, taken)) return 'budget';
+    const budget = this.#rereadBudgetFor();
+    try {
+      budget.spend(taken);
+    } catch {
+      return 'budget';
+    }
     let used = 0;
     try {
       if (sig !== undefined) {
@@ -1788,7 +1848,7 @@ export class Worker {
     } catch (e) {
       this.#d.log(`Candidate ${mint}: curve read for its migration failed: ${e instanceof Error ? e.message : 'error'}.`);
     } finally {
-      this.#refundReread(taken - used);
+      budget.refund(taken - used);
     }
     return 'tried';
   }
@@ -1799,8 +1859,8 @@ export class Worker {
     if (sig !== undefined) return this.#takeFetch('reread', REREAD_CREDITS_PER_DAY) && (await this.#d.fetchTx(sig, 'reread').catch(() => false));
     const find = this.#d.findCreate;
     // Nothing is asked without the budget for a page and the transaction (the lookup's own floor).
-    if (find === undefined || this.#rereadBudget.remaining() < callCost('helius', 'getSignaturesForAddress') + callCost('helius', 'getTransaction')) return false;
-    const r = await find(mint, this.#rereadBudget);
+    if (find === undefined || this.#rereadRemaining() < callCost('helius', 'getSignaturesForAddress') + callCost('helius', 'getTransaction')) return false;
+    const r = await find(mint, this.#rereadBudgetFor());
     this.#journal.write('create_lookup', { ...r, attempt: 'reread' });
     return r.found;
   }

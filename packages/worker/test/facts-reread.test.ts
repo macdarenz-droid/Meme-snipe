@@ -10,7 +10,7 @@ import type { MarketEvent, StrategyContext } from '../../core/src/engine/index.t
 import { evaluateHardRejects, migrationKey, type GateContext, type GateRequest, type HardResult } from '../../core/src/gates/index.ts';
 import type { MicroUsd, Lamports } from '../../core/src/units/index.ts';
 import { RESEARCH_CONFIG, RUG_CONFIG } from '../../core/src/config/index.ts';
-import { COMPLETION_CREDITS, CUT_CREATE_RETRY_MS, REREAD_CREDITS_PER_DAY, REREAD_CURVE_READS, stage1Missing, type WorkerDeps } from '../src/run/worker.ts';
+import { COMPLETION_CREDITS, CUT_CREATE_RETRY_MS, REREAD_CREDITS_PER_DAY, REREAD_CURVE_READS, rereadRefund, reserveBudget, stage1Missing, type WorkerDeps } from '../src/run/worker.ts';
 import type { CreateLookup } from '../src/run/sources.ts';
 import { checkSession } from '../src/run/parity.ts';
 import { replayLedgerFile } from '../../core/src/ledger/replay/index.ts';
@@ -364,6 +364,61 @@ describe('FACTS-REREAD: a candidate missing its migration fact has it read again
     expect(r.rereads.map((x) => [x['try'], x['landed']])).toEqual([[1, false], [2, true]]);
     expect(curveReads(asked)).toBe(1);
     expect(asks).toBe(2);
+    expect(missingMigration(r.last.r)).toBe(false);
+  }, 60_000);
+  it.each([
+    [CUT_CREATE_RETRY_MS.length, ['fills']],
+    [CUT_CREATE_RETRY_MS.length - 1, ['fills', 'reread']],
+  ])('the try cap holds across chains: a chain landing after %i failed tries, then a later need', async (failed, lookups) => {
+    // The curve read fails `failed` times, then lands; only then does the fills' lookup answer, skipped. Landing on the
+    // fifth try leaves the create unread (5 tries in all); landing on the fourth leaves it one try.
+    const { asked, rpc } = curveRpc(failed);
+    const stateDir = tempState();
+    const landed = () => readFileSync(join(stateDir, 'journal.jsonl'), 'utf8').includes('"landed":true');
+    const calls: string[] = [];
+    const findCreate = async (mint: string, b?: unknown): Promise<CreateLookup> => {
+      calls.push(b === undefined ? 'fills' : 'reread');
+      while (b === undefined && !landed()) await new Promise<void>((r) => setImmediate(r));
+      return { mint, found: false, signature: null, slot: null, pages: 0, credits: 0, stopped_by: b === undefined ? 'skipped-no-budget' : 'not-found', latency_ms: 0 };
+    };
+    const r = await run(rpc, { reread: null, stateDir, findCreate });
+    expect(curveReads(asked)).toBe(failed + 1);
+    expect(r.rereads.slice(0, failed + 1).map((x) => x['landed'])).toEqual([...Array(failed).fill(false), true]);
+    expect(r.rereads.slice(failed + 1).map((x) => [x['try'], x['needs']])).toEqual(lookups.length === 1 ? [] : [[CUT_CREATE_RETRY_MS.length + 1, ['create']]]);
+    expect(calls).toEqual(lookups);
+  }, 60_000);
+
+  it('a refund is given back only to the day its reserve was taken on', () => {
+    expect(rereadRefund({ day: 10, reread: 20 }, 8, 10)).toBe(12);
+    expect(rereadRefund({ day: 10, reread: 5 }, 8, 10)).toBe(0);
+    // Taken before midnight, refunded after: the new day's count keeps what the new day spent.
+    expect(rereadRefund({ day: 11, reread: 20 }, 8, 10)).toBe(20);
+    expect(rereadRefund({ day: 11, reread: 20 }, 0, 11)).toBe(20);
+    expect(rereadRefund({ day: 11, reread: 20 }, 8, -1)).toBe(20);
+    // A reserve refunds to the day its take was counted on, whatever the day is when it refunds.
+    const refunds: [number, number][] = [];
+    let day = 10;
+    const b = reserveBudget({ remaining: () => 99, take: () => day, refund: (n, d) => refunds.push([n, d]) });
+    b.spend(8);
+    day = 11;
+    b.refund(4);
+    expect(refunds).toEqual([[4, 10]]);
+    expect(() => reserveBudget({ remaining: () => 0, take: () => null, refund: () => undefined }).spend(1)).toThrow('spent');
+  });
+
+  it('a COMPLETION-READ that stood aside is made once its chain is spent without the completion, from the fills\' budget', async () => {
+    const { asked, rpc } = curveRpc();
+    let fails = CUT_CREATE_RETRY_MS.length + 1;
+    const get = rpc.getTransaction;
+    // The completion cannot be read during the chain's five tries; it can afterwards.
+    rpc.getTransaction = async (sig) => (sig === complete.signature && fails-- > 0 ? (asked.push(`tx ${sig}`), null) : get(sig));
+    const r = await run(rpc, { reread: null, logsOnly: true, fill: 10 * COMPLETION_CREDITS });
+    expect(r.rereads.map((x) => x['landed'])).toEqual([false, false, false, false, false]);
+    // After the last try, COMPLETION-READ reads the curve before the migration once, from the fills' budget.
+    const before = asked.findIndex((a) => a.includes('before'));
+    expect(before).toBeGreaterThan(asked.lastIndexOf(`sigs ${CURVE}`));
+    expect(asked.filter((a) => a.includes('before'))).toHaveLength(1);
+    expect(r.fillLeft()).toBeLessThan(10 * COMPLETION_CREDITS);
     expect(missingMigration(r.last.r)).toBe(false);
   }, 60_000);
 });
