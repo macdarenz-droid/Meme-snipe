@@ -6,7 +6,7 @@ From here on, S2 owns this file. S2 keeps it current on its own branch `claude/s
 
 ## Active S2 work
 
-Crash priority: PR #249 exact206a84689631a421bf1bb9eb0d479398bc3b5b14, ordinary correctionmerge on reviewedmemoryfix, has5fresh independent exact-head PASS reviews (249#6009116499) and GREEN exact-head CI37412024643(check25m49s+historical-data1m17s). Single unfiltered local Node22/pnpm10.28 check started15:04:36 AEDT, all6typesPASS, testsstillrunning; notS2-READY until resultassessed. Prior860 fullFAIL5611PASS/4FAIL recorded; corrected complete34/34 fixturetests and actualmainnet69.73MiB→0.467MiB evidence are scoped, not sustainedliveproof. PR #245 e466c3df54015383ae88805d64f41d6b40a19027 source exactreviews/CIgreen; freshPERSIST unionreviewPASS. Latest15:01server paper958294a0,6879suptime,33unplanned unchanged,lastdeath13:06;249notlive. SpecificS2 releaseauthority override and DEPLOY_CODE absence confirmationpending aftermetadata403; no denialbypass/no merge/deploy/integration/mainpush. Otherqueuesparked. Reusable Node22/pnpm10.28 setup savedverifieddraft, requiresreview/save/publish forfuturetasks, notserverdeployment.
+Crash priority: PR #249 exact206a84689631a421bf1bb9eb0d479398bc3b5b14 has5fresh sourcePASS reviews and greenexact-head CI37412024643; HOWEVER its single unfiltered local Node22 full check has now reported run1e.test.ts lost-restore negative failure while stillrunning. NOT S2-READY. Actual backup/journal/restore and final stack are being investigated by the one visible builder; all guards/assertions remain. All6typesPASS; complete34/34 correctionfixturetests and original860 failures remain scopedrecorded evidence. No repeated unchangedfull. PR #245 exacte466 has source reviews/greenCI and compatiblePERSIST union; otherqueuesparked. Latest15:01server paper958,6879suptime,33unplanned unchanged,lastdeath13:06;249notlive. Specificreleaseauthority override+DEPLOY_CODE absence repliespending; metadata403notbypassed; no merge/deploy/integration/mainpush. ReusableverifiedNode22/pnpm10.28 setupdraft saved, requiresreview/save/publish forfuturetasks, notserverdeployment.
 
 ## Historical handoff audit (10:09 AEDT)
 
@@ -140,6 +140,8 @@ S2-READY 6af4e43b707960316d8cd8419cb2e513fa9f4b60
 - These local limitations are historical. Current directly verified GitHub results are in Latest handoff audit; they do not establish that any future base-update head is green.
 
 ## S2 events (newest first)
+
+- **2026-10-06 15:34:35 AEDT** — New exact206 local full failure observed while run continues: run1e.test.ts fails a restore that lost what the live worker held at the backup (20087ms). Final assertion/counts/exit pending. Builder instructed to preserve actual report/journal and diagnose held-at-backup/restore truth read-only; no mutation/retry/guard relaxation. Exact206 green CI37412024643 and five static codePASS reviews remain separate evidence and do not erase this failure. S2-READY held; no release. Current full source stays frozen206.
 
 - **2026-10-06 15:32:45 AEDT** — Required CI37412024643 completedSUCCESS on exact206a84689631a421bf1bb9eb0d479398bc3b5b14, native run+bothjob heads verified: check15:05:14→15:31:03 AEDT25m49s; historical-data15:05:14→15:06:31,1m17s. No old-head CI carried, no continuousCIwatch. Publishing S2-CI-PASS comment; five fresh source PASS reviews alreadypublished249#6009116499. Single unfiltered localexact206 Node22 full remainsrunning with6typesPASS; finalcounts/exitpending, notS2-READY. Releaseownership/DEPLOY_CODE absence answerspending; no merge/deploy/integrationpush.
 
