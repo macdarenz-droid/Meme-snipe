@@ -55,7 +55,7 @@ import { jsonText } from './json.ts';
 import { Journal } from './journal.ts';
 import { type PaperMarket, type PaperState, PaperWorld, type SimLeg } from './paper-world.ts';
 import { Recorder, SAVED_STATES, notePruned, sealLeftovers } from './recorder.ts';
-import { DISK_PRUNE_FREE_BYTES, PRUNE_EVERY_MS, RECORDER_MAX_BYTES, prunedPaths, pruneRecordings } from './recorder-budget.ts';
+import { DISK_PRUNE_FREE_BYTES, PRUNE_EVERY_MS, RECORDER_MAX_BYTES, prunedPaths, pruneRecordings, statfsFree } from './recorder-budget.ts';
 import { entryPrice, openPositionsHealth } from './open-positions.ts';
 import { type RiskInput, evaluateExit, riskSnapshot } from '../../../core/src/risk/index.ts';
 import { latchable, markSettings, riskAccount } from '../engine/marks.ts';
@@ -2099,36 +2099,42 @@ export class Worker {
     let problem: string | null = null;
     try {
       // The free-space floor holds even before anything is recorded (the folder is made here at a first start). A path
-      // that is not a folder holds no recording to prune: the recorder's own failure is the alert for it.
+      // that is not a folder holds no recording to prune (a running recorder raises its own failure there), but the
+      // disk's free space is still judged, from the state dir, so a low disk alerts even with the recorder off.
       if (!existsSync(root)) mkdirSync(root, { recursive: true });
       if (!statSync(root).isDirectory()) {
-        this.#budgetFault = null;
-        return;
-      }
-      const r = pruneRecordings({ root, current: this.#boot, maxBytes: b.maxBytes, floorBytes: b.floorBytes, packing: () => this.#packRunning, ...(d.diskFree === undefined ? {} : { freeBytes: d.diskFree }) });
-      const reason = r.reason;
-      const own = r.deleted.filter((p) => p.boot === this.#boot);
-      if (reason !== null && own.length > 0) {
-        if (this.#recorder !== null && this.#recorderFault === null) for (const p of own) this.#record((rec) => rec.pruned(p.path, p.bytes, reason));
+        const free = (d.diskFree ?? statfsFree)(d.config.stateDir);
+        if (free < b.floorBytes) problem = `disk low: ${free} bytes free, under the floor of ${b.floorBytes}, and no recorder folder to prune (${root} is not a folder)`;
         else {
-          // The recorder is off or failed: its folder's manifest is rewritten as an ended boot's would be.
-          try {
-            notePruned(join(root, this.#boot), own, reason);
-          } catch (e) {
-            problem = `recorder budget: this boot's manifest not rewritten (${errorText(e)})`;
+          this.#budgetFault = null;
+          return;
+        }
+      } else {
+        const r = pruneRecordings({ root, current: this.#boot, maxBytes: b.maxBytes, floorBytes: b.floorBytes, packing: () => this.#packRunning, ...(d.diskFree === undefined ? {} : { freeBytes: d.diskFree }) });
+        const reason = r.reason;
+        const own = r.deleted.filter((p) => p.boot === this.#boot);
+        if (reason !== null && own.length > 0) {
+          if (this.#recorder !== null && this.#recorderFault === null) for (const p of own) this.#record((rec) => rec.pruned(p.path, p.bytes, reason));
+          else {
+            // The recorder is off or failed: its folder's manifest is rewritten as an ended boot's would be.
+            try {
+              notePruned(join(root, this.#boot), own, reason);
+            } catch (e) {
+              problem = `recorder budget: this boot's manifest not rewritten (${errorText(e)})`;
+            }
           }
         }
+        if (reason !== null && (r.deleted.length > 0 || r.boots.length > 0)) {
+          // The journal alone names what went: every deleted file and every folder removed whole.
+          const fields = { reason, files: r.deleted.length, bytes: r.bytes, paths: prunedPaths(r), boots: [...r.boots], free_bytes: r.freeBytes, recorder_bytes: r.recorderBytes };
+          d.log(`Recorder budget (${reason}): deleted ${r.deleted.length} files (${r.bytes} bytes)${r.boots.length > 0 ? ` and the folders of boots ${r.boots.join(', ')}, which never recorded` : ''}; ${r.freeBytes} bytes free, recordings ${r.recorderBytes} bytes.`);
+          this.#pruneJournal('recorder_prune', fields);
+        }
+        if (problem === null && r.errors.length > 0) problem = `recorder budget: ${r.errors.length} deletions or manifest rewrites failed (${r.errors[0]})`;
+        else if (problem === null && r.short) problem = reason === 'floor'
+          ? `disk low: ${r.freeBytes} bytes free, under the floor of ${b.floorBytes}, with no recording left to delete`
+          : `recordings at ${r.recorderBytes} bytes, over the cap of ${b.maxBytes}, with no recording left to delete`;
       }
-      if (reason !== null && (r.deleted.length > 0 || r.boots.length > 0)) {
-        // The journal alone names what went: every deleted file and every folder removed whole.
-        const fields = { reason, files: r.deleted.length, bytes: r.bytes, paths: prunedPaths(r), boots: [...r.boots], free_bytes: r.freeBytes, recorder_bytes: r.recorderBytes };
-        d.log(`Recorder budget (${reason}): deleted ${r.deleted.length} files (${r.bytes} bytes)${r.boots.length > 0 ? ` and the folders of boots ${r.boots.join(', ')}, which never recorded` : ''}; ${r.freeBytes} bytes free, recordings ${r.recorderBytes} bytes.`);
-        this.#pruneJournal('recorder_prune', fields);
-      }
-      if (problem === null && r.errors.length > 0) problem = `recorder budget: ${r.errors.length} deletions or manifest rewrites failed (${r.errors[0]})`;
-      else if (problem === null && r.short) problem = reason === 'floor'
-        ? `disk low: ${r.freeBytes} bytes free, under the floor of ${b.floorBytes}, with no recording left to delete`
-        : `recordings at ${r.recorderBytes} bytes, over the cap of ${b.maxBytes}, with no recording left to delete`;
     } catch (e) {
       problem = `recorder budget pass failed: ${errorText(e)}`;
     }

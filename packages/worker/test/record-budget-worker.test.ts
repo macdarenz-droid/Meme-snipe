@@ -140,6 +140,18 @@ describe('the recorder budget in the worker (RECORD-BUDGET)', () => {
     await h.worker.stop();
   }, 60_000);
 
+  it('a file in place of the recorder folder still has the disk judged: low disk alerts even with the recorder off', async () => {
+    const stateDir = tempState();
+    writeFileSync(join(stateDir, 'recorder'), 'not a folder');
+    const seen: string[] = [];
+    const h = makeWorker({ stateDir, config: { ZEROED_RECORDER: 'off' }, diskFree: (p) => (seen.push(p), 0) });
+    expect(seen).toEqual([stateDir]);
+    const alerts = journal(stateDir).filter((l) => l['kind'] === 'alert' && l['code'] === 'recorder_budget');
+    expect(alerts.map((l) => (l['reasons'] as string[])[0])).toEqual([expect.stringMatching(/^disk low: 0 bytes free, under the floor of 3221225472, and no recorder folder to prune/)]);
+    expect(h.worker.health().critical.some((c) => c.startsWith('disk low'))).toBe(true);
+    await h.worker.kill();
+  });
+
   it('T6: a past boot\'s folder that goes while the leftovers are sealed causes no recorder fault', async () => {
     const stateDir = tempState();
     mkdirSync(join(stateDir, 'recorder', OLD, 'days'), { recursive: true });

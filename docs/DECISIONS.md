@@ -2994,8 +2994,11 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   test seam) and the boot-name check (a symlinked boot inside the recorder), the config's exact-integer bound, the
   stale budget fault.
 - **2026-10-06 · Persist review notes 3 to 5.** Each guard layer has a test of its own. `ZEROED_RECORDER_MAX_BYTES` and
-  `ZEROED_DISK_PRUNE_FREE_BYTES` above 2^53 - 1 are refused (exit 2): they could not be held exactly. A pass that finds
-  no recorder folder to judge (a file in its place) clears the budget fault; the recorder's own failure is the alert.
+  `ZEROED_DISK_PRUNE_FREE_BYTES` above 2^53 - 1 are refused (exit 2): they could not be held exactly. A
+  file in place of the recorder folder holds nothing to prune: a running recorder raises `recorder_failed` there, and
+  the pass still judges free space (statfs of the state dir), so a disk under the floor alerts even with the recorder
+  off; otherwise the budget fault is cleared, never left stale. A missing recorder folder is made again and judged as
+  usual.
 - **Not in this card.** Uploads and removing ended boots after read-back (#244).
 
 ## Money in SOL first (APP-SOL, owner 2026-10-05: success is counted in SOL; `components/Money.tsx`, `lib/money.ts` `formatSol`)

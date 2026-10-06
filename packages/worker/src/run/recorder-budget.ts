@@ -77,7 +77,8 @@ export interface PruneResult {
 /** The deleted files as paths under the recorder folder (`<boot>/days/<day>/<file>`, `saved-state/<sha>.zst`). */
 export const prunedPaths = (r: PruneResult): string[] => r.deleted.map((d) => (d.boot === '' ? d.path : `${d.boot}/${d.path}`));
 
-const statfsFree = (root: string): number => {
+/** Free bytes on the disk holding `path` (statfs `bavail * bsize`). */
+export const statfsFree = (root: string): number => {
   const s = statfsSync(root);
   return Number(s.bavail) * Number(s.bsize);
 };
