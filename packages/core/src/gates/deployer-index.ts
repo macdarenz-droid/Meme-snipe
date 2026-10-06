@@ -244,8 +244,14 @@ export class DeployerIndex {
     // would discard the whole save. Labels keep their exact receipt time (H14 counts a prior rug by it, so moving it
     // earlier could drop one from the look-back early): restore checks a label by its moment (facts review B1).
     const clamp = o.clamp ?? new AsOfClamp(asOf.receivedAt);
+    // A label received more than CHAIN_SKEW_MS after the moment would be refused on restore and the whole save
+    // discarded: the save is refused instead, and the last good file kept (facts review B1).
+    const label = (mint: string, v: Known): Known => {
+      if (v.at.receivedAt > asOf.receivedAt + CHAIN_SKEW_MS) throw new RangeError(`label ${mint} was received ${v.at.receivedAt - asOf.receivedAt} ms after the save's moment, more than the ${CHAIN_SKEW_MS} ms of clock skew allowed`);
+      return v;
+    };
     const keep = (m: Map<string, Map<string, Known>>) =>
-      [...m].map(([creator, inner]) => [creator, [...inner].filter(([, v]) => v.at.receivedAt >= retainFromMs)] as const)
+      [...m].map(([creator, inner]) => [creator, [...inner].filter(([, v]) => v.at.receivedAt >= retainFromMs).map(([mint, v]) => [mint, label(mint, v)] as const)] as const)
         .filter(([, inner]) => inner.length > 0)
         .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
     const first = this.#first === null ? null : clamp.moment(this.#first.receivedAt >= retainFromMs ? this.#first : { ...this.#first, receivedAt: retainFromMs });

@@ -2706,8 +2706,9 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
     known rugger missed. A label keeps its exact receipt time, and restore checks it by moment (`compareMoments`, slot
     first, the engine's own order): one after the save's moment (a later slot, or its slot at a later transaction or
     instruction) is refused as before, and so is one received more than `CHAIN_SKEW_MS` after the moment, which
-    cannot be skew (persist review: the receipt check stays bounded). A dropped label would fail open too, so none is
-    dropped.
+    cannot be skew (persist review: the receipt check stays bounded). The save refuses the same label (facts review
+    B1): `snapshot` throws, the worker logs "Saved state not written: …" and keeps the last good file, instead of
+    writing a file restore would discard. A dropped label would fail open too, so none is dropped.
   - Capped (facts review B2): a time more than `CHAIN_SKEW_MS` (60 s) after the moment cannot be skew, and refuses
     the save with its reason ("a saved time is N ms after the save's moment, more than the 60000 ms of clock skew
     allowed"), logged as "Saved state not written: …", the last file kept: the fail-closed behaviour from before

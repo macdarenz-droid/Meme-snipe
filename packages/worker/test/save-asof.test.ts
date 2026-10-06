@@ -150,6 +150,30 @@ describe('SAVE-ASOF', () => {
     }
   });
 
+  it('a save holding a label received more than 60 s after its moment is refused, not written, so the last good file stays (facts review B1)', () => {
+    for (const key of ['rug:R', 'rug-unjudged:U'] as const) {
+      const idx = new DeployerIndex();
+      const asOf = { slot: SLOT + 2n, txIndex: 1, ixIndex: 0, receivedAt: IN_WINDOW };
+      idx.observe(market(key, { mint: key.slice(key.indexOf(':') + 1), creator: 'Dev1111' }, { slot: SLOT + 1n, txIndex: 0, ixIndex: 0, receivedAt: IN_WINDOW + CHAIN_SKEW_MS + 1 }));
+      idx.observe(market('logs:pump:CreateEvent:M', createEvent('M', IN_WINDOW, SLOT + 2n), asOf));
+      expect(() => idx.snapshot(asOf), key).toThrow(/more than the 60000 ms of clock skew allowed/);
+      // Just under: saved with its exact receipt time, and restores.
+      const ok = new DeployerIndex();
+      ok.observe(market(key, { mint: 'R', creator: 'Dev1111' }, { slot: SLOT + 1n, txIndex: 0, ixIndex: 0, receivedAt: IN_WINDOW + CHAIN_SKEW_MS }));
+      ok.observe(market('logs:pump:CreateEvent:M', createEvent('M', IN_WINDOW, SLOT + 2n), asOf));
+      expect(() => DeployerIndex.restore(ok.snapshot(asOf)), key).not.toThrow();
+    }
+    // Through the strategy and the worker's save: the refusal comes before anything is written, so the file is as it was.
+    const r = restored(CANDIDATE);
+    r.event('next', SLOT + 1n, IN_WINDOW);
+    const { path } = save(r.strategy);
+    const before = readFileSync(path, 'utf8');
+    r.strategy.onMarket(market('rug:Late', { mint: 'Late', creator: 'Dev1111' }, { slot: SLOT + 2n, txIndex: 0, ixIndex: 0, receivedAt: IN_WINDOW + CHAIN_SKEW_MS + 5_000 }), { now: at(SLOT + 2n, IN_WINDOW + CHAIN_SKEW_MS + 5_000), book: emptyBook({ maxOpenPositions: 3 }), rng: { next: () => 0 }, lookup: () => ({ ok: false, reason: 'missing' }), history: () => [] } as unknown as StrategyContext);
+    r.event('later', SLOT + 3n, IN_WINDOW + 1);
+    expect(() => r.strategy.persistable(0)).toThrow(/label Late was received/);
+    expect(readFileSync(path, 'utf8')).toBe(before);
+  });
+
   it('a clamp is capped at CHAIN_SKEW_MS: just under is saved as at the moment, just over refuses the save with its reason', () => {
     const c = new AsOfClamp(IN_WINDOW);
     expect(c.ms(IN_WINDOW + CHAIN_SKEW_MS)).toBe(IN_WINDOW);
