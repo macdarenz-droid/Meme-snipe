@@ -2946,8 +2946,10 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
     order them (data review B3). By seal, one period's tables go together.
   - An ended boot keeps its folder, `manifest.json` and attachments; the upload (#244) finds boots by their manifest
     (data review B2). Its manifest is rewritten in place (`notePruned`): `days` from what is on disk, each deleted file
-    appended to `pruned[]` with the size and sha256 the manifest listed, every other field kept (B1). Day folders left
-    empty, and an ended boot's empty `days/`, are removed. Only a folder that never recorded (no recording file, none
+    appended to `pruned[]` with the size and sha256 the manifest listed, every other field kept (B1). An ended boot's day
+    folders left empty, and its empty `days/`, are removed. The running boot's never are: its next file in that folder
+    may still be only buffered (the folder is made when a file opens, not at each flush), so a removed folder made the
+    next flush fail and the recorder fault (persist delta review B1). Only a folder that never recorded (no recording file, none
     listed or pruned; a reconcile pre-step's manifest and saved state) is removed whole, first, and named.
   - A packed saved state in `recorder/saved-state/` goes only at link count 1 (no boot links it) and never while a
     pack runs. Ended boots keep their attachments, so their store copies stay until #244 removes the boot.

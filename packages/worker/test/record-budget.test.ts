@@ -147,7 +147,9 @@ describe('the recorder budget (RECORD-BUDGET)', () => {
     manifests(root);
     const r = pruneRecordings(opts(root, { maxBytes: 2_000 + MANIFEST_BYTES(root, B1) }));
     expect(r.deleted.map((d) => d.path)).toEqual([`days/${DAY1}/frames-000.jsonl.zst`, `days/${DAY1}/frames-001.jsonl.zst`]);
-    expect(readdirSync(join(root, B1, 'days', DAY1)).sort()).toEqual(['frames-002.jsonl.zst', 'releases-000.jsonl.zst']);
+    // By name, frames-002 would go next; by seal, releases-000 does.
+    const r2 = pruneRecordings(opts(root, { maxBytes: 1_000 + MANIFEST_BYTES(root, B1) }));
+    expect(r2.deleted.map((d) => d.path)).toEqual([`days/${DAY1}/releases-000.jsonl.zst`]);
   });
 
   it('T1: bytes count once per inode (the saved-state store is hard-linked into the boot folders)', () => {
@@ -290,6 +292,22 @@ describe('the recorder budget (RECORD-BUDGET)', () => {
     rec.close();
     expect(man().days[0]!.files.map((f) => f.path)).toEqual([`days/${DAY2}/delays-001.jsonl.zst`, `days/${DAY2}/delays-002.jsonl.zst`]);
     expect(man().pruned).toHaveLength(1);
+  });
+
+  it('the running boot keeps an emptied day folder: its next file there may be buffered only (persist delta B1)', () => {
+    const root = tempState();
+    const at = Date.parse(`${DAY2}T00:00:00Z`);
+    const rec = new Recorder({ root, boot: B3, gitSha: 'abc', rotateBytes: 1 });
+    rec.delay({ n: 1 }, at);
+    rec.flush();
+    rec.delay({ n: 2 }, at); // seals -000; -001 is opened and buffered, not yet on disk
+    const r = pruneRecordings(opts(root, { maxBytes: 1 }));
+    expect(r.deleted.map((d) => d.path)).toEqual([`days/${DAY2}/delays-000.jsonl.zst`]);
+    for (const d of r.deleted) rec.pruned(d.path, d.bytes, 'cap');
+    expect(existsSync(join(rec.dir, 'days', DAY2))).toBe(true);
+    expect(() => rec.flush()).not.toThrow();
+    rec.close();
+    expect(readdirSync(join(rec.dir, 'days', DAY2))).toEqual(['delays-001.jsonl.zst']);
   });
 
   it('T5: after the newest sealed file is deleted, the next file is -003, never a reused -002', () => {

@@ -303,7 +303,9 @@ export const pruneRecordings = (o: PruneOptions): PruneResult => {
     touched.set(c.boot, t);
   }
   for (const [boot, t] of touched) {
-    // A day folder left empty goes (the running boot opens its next file with mkdir, so it may lose one too).
+    // An ended boot's day folder left empty goes. The running boot's never does: its next file there may still be only
+    // buffered (the folder is made when a file opens, not at each flush), and a flush into a removed folder fails.
+    if (boot === o.current) continue;
     for (const day of t.days) {
       const d = join(o.root, boot, 'days', day);
       if (list(d).length > 0 || lstat(d)?.isDirectory() !== true) continue;
@@ -311,7 +313,7 @@ export const pruneRecordings = (o: PruneOptions): PruneResult => {
         rmdirSync(d);
       } catch {}
     }
-    if (boot === o.current || reason === null) continue;
+    if (reason === null) continue;
     const daysDir = join(o.root, boot, 'days');
     if (list(daysDir).length === 0 && lstat(daysDir)?.isDirectory() === true) {
       try {
