@@ -1,6 +1,7 @@
 // The worker's settings from its environment (docs/ARCHITECTURE.md §12.4). Pure: the entry passes the environment in
 // (boot/environment.ts is the one place that reads it). Anything refused exits 2; live is never set from here.
 import { DEFAULT_HEALTH_ADDR, EXIT, REGISTERED_STRATEGIES, isLoopback } from '../../../runner/src/contract.ts';
+import { DISK_PRUNE_FREE_BYTES, MIN_DISK_PRUNE_FREE_BYTES, RECORDER_MAX_BYTES } from './recorder-budget.ts';
 
 /**
  * FILL-BUDGET (supervisor ruling, 5 Oct, under the owner's decision "max out account 1": no Helius rationing): the default
@@ -49,6 +50,12 @@ export interface WorkerConfig {
    * shakedown (supervisor ruling 2026-10-04). A qualifying run takes a strategy BT-2 registers.
    */
   readonly strategy: { readonly name: string; readonly paperEdgePpm: bigint | null; readonly qualifying: boolean; readonly s0Diagnostic: boolean };
+  /**
+   * RECORD-BUDGET: the recordings are kept at or below `maxBytes` (ZEROED_RECORDER_MAX_BYTES, default 8 GiB), and while
+   * the disk has less than `floorBytes` free (ZEROED_DISK_PRUNE_FREE_BYTES, default 3 GiB, at least 2 GiB) the oldest
+   * go until it has the floor plus 0.5 GiB. Absent (a test's hand-made config): the defaults.
+   */
+  readonly recorderBudget?: { readonly maxBytes: number; readonly floorBytes: number };
 }
 
 /**
@@ -166,6 +173,11 @@ export const parseConfig = (
   const s0Diagnostic = diagText === 'on';
   if (s0Diagnostic && name !== 'S0') return refuse('refused: ZEROED_S0_DIAGNOSTIC is only for the S0 shakedown');
   if (s0Diagnostic && (qualifying || qualifyingRun !== null)) return refuse('refused: ZEROED_S0_DIAGNOSTIC is never used in a release with a qualifying run');
+  const maxText = env['ZEROED_RECORDER_MAX_BYTES'];
+  if (maxText !== undefined && !/^[1-9][0-9]{0,15}$/.test(maxText)) return refuse('refused: ZEROED_RECORDER_MAX_BYTES must be a whole number of bytes, at least 1');
+  const floorText = env['ZEROED_DISK_PRUNE_FREE_BYTES'];
+  if (floorText !== undefined && (!/^[0-9]{1,16}$/.test(floorText) || Number(floorText) < MIN_DISK_PRUNE_FREE_BYTES)) return refuse(`refused: ZEROED_DISK_PRUNE_FREE_BYTES must be a whole number of bytes, at least ${MIN_DISK_PRUNE_FREE_BYTES} (2 GiB)`);
+  const recorderBudget = { maxBytes: maxText === undefined ? RECORDER_MAX_BYTES : Number(maxText), floorBytes: floorText === undefined ? DISK_PRUNE_FREE_BYTES : Number(floorText) };
   const watchdog = env['WATCHDOG_URL'] ?? '';
   if (watchdog !== '' && !/^https:\/\/[^\s/]+(\/[^\s]*)?$/.test(watchdog)) return refuse('refused: WATCHDOG_URL must be an https URL');
   return {
@@ -179,6 +191,7 @@ export const parseConfig = (
       watchdogUrl: watchdog === '' ? null : watchdog.replace(/\/$/, ''),
       heartbeatMs: beat, summaryMs, fillCreditsPerDay, watch: { everyMs: watchEvery, staleMs: watchStale, latencyMs: watchLatency, verifyMs: watchVerify }, wallet, standIns,
       strategy: { name, paperEdgePpm, qualifying, s0Diagnostic },
+      recorderBudget,
     },
   };
 };

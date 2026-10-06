@@ -19,6 +19,8 @@ import type { Frame, Release } from '../providers/index.ts';
 import { typedText } from './json.ts';
 
 export const RECORDER_SCHEMA = 2;
+/** STATE-DEDUPE: the recorder folder holding each distinct saved state once, packed, named by the sha256 of its plain bytes. */
+export const SAVED_STATES = 'saved-state';
 // `pre` held SEED-1's seed before it became a recorded frame; kept so an older boot's leftover files still seal.
 const TABLES = ['frames', 'raw', 'releases', 'pre', 'delays'] as const;
 type Table = (typeof TABLES)[number];
@@ -84,6 +86,10 @@ export class Recorder {
   readonly #attachments: Attachment[] = [];
   /** Sealed files' sizes and hashes, by path relative to the folder, as sealed (G4c: never re-read). */
   readonly #hashes: FileHashes = new Map();
+  /** RECORD-BUDGET: the highest file number used per table and day, so a deleted newest file's number is never reused. */
+  readonly #high = new Map<string, number>();
+  /** RECORD-BUDGET: this boot's sealed files deleted by the budget, listed in the manifest's `pruned`. */
+  readonly #pruned: PrunedFile[] = [];
   #frames = 0;
   #raw = 0;
   #releases = 0;
@@ -170,9 +176,12 @@ export class Recorder {
 
   #nextNumber(t: Table, day: string): number {
     const dir = join(this.#dir, 'days', day);
-    if (!existsSync(dir)) return 0;
-    const used = readdirSync(dir).map((f) => new RegExp(`^${t}-(\\d{3})\\.jsonl`).exec(f)).filter((m) => m !== null).map((m) => Number(m![1]));
-    return used.length === 0 ? 0 : Math.max(...used) + 1;
+    const used = existsSync(dir) ? readdirSync(dir).map((f) => new RegExp(`^${t}-(\\d{3})\\.jsonl`).exec(f)).filter((m) => m !== null).map((m) => Number(m![1])) : [];
+    const high = this.#high.get(`${t}/${day}`);
+    if (high !== undefined) used.push(high);
+    const n = used.length === 0 ? 0 : Math.max(...used) + 1;
+    this.#high.set(`${t}/${day}`, n);
+    return n;
   }
 
   #flushTable(t: Table): void {
@@ -207,6 +216,17 @@ export class Recorder {
     this.#writeManifest();
   }
 
+  /**
+   * RECORD-BUDGET: one of this boot's sealed files was deleted by the byte budget. It leaves `days[].files` (the
+   * manifest lists what is on disk) and is listed under `pruned` with the size and hash it had when sealed.
+   */
+  pruned(path: string, bytes: number, reason: 'cap' | 'floor'): void {
+    const h = this.#hashes.get(path);
+    this.#hashes.delete(path);
+    this.#pruned.push({ path, bytes: h?.bytes ?? bytes, sha256: h?.sha256 ?? null, reason });
+    this.#writeManifest();
+  }
+
   /** A file written into this boot's folder beside the recording (the restored saved state), listed in the manifest. */
   attach(file: string, sha256: string, bytes: number, content?: Attachment['content']): void {
     const i = this.#attachments.findIndex((x) => x.file === file);
@@ -223,7 +243,7 @@ export class Recorder {
   }
 
   #writeManifest(): void {
-    writeManifest(this.#dir, { boot: this.#o.boot, git_sha: this.#o.gitSha, coverage: this.#coverage, coverage_gaps: this.#gaps, counts: this.#sealed, commitments: this.#o.commitments ?? null, attachments: this.#attachments }, this.#hashes);
+    writeManifest(this.#dir, { boot: this.#o.boot, git_sha: this.#o.gitSha, coverage: this.#coverage, coverage_gaps: this.#gaps, counts: this.#sealed, commitments: this.#o.commitments ?? null, attachments: this.#attachments, pruned: this.#pruned }, this.#hashes);
   }
 }
 
@@ -251,6 +271,16 @@ interface ManifestState {
   readonly commitments?: Readonly<Record<string, string>> | null;
   /** Files kept beside the recording (WORKER-GROW: the saved state the boot restored from), each with its sha256 and size. */
   readonly attachments?: readonly Attachment[];
+  /** RECORD-BUDGET: sealed files the byte budget deleted. */
+  readonly pruned?: readonly PrunedFile[];
+}
+
+/** A sealed file the byte budget deleted: its path in the folder, its size and sha256 as sealed (null if unknown). */
+export interface PrunedFile {
+  readonly path: string;
+  readonly bytes: number;
+  readonly sha256: string | null;
+  readonly reason: 'cap' | 'floor';
 }
 
 export interface Attachment {
@@ -292,6 +322,7 @@ const writeManifest = (dir: string, s: ManifestState, hashes: FileHashes = new M
     coverage_gaps: s.coverage_gaps,
     commitments: s.commitments ?? null,
     attachments: s.attachments ?? [],
+    pruned: s.pruned ?? [],
     chain_breaks: [],
     decode_failures: 0,
     units: [{ boot: s.boot, schema: RECORDER_SCHEMA, ...s.counts, unknown_events: {}, newer_layouts: {} }],
@@ -327,46 +358,60 @@ export const sealLeftovers = (root: string, current: string): string[] => {
   const fixed: string[] = [];
   for (const boot of readdirSync(root)) {
     if (boot === current) continue;
-    const dir = join(root, boot);
-    const daysDir = join(dir, 'days');
-    if (!existsSync(daysDir)) continue;
-    let open = 0;
-    const counts = { frames: 0, raw: 0, releases: 0, pre: 0, delays: 0 };
-    const hashes: FileHashes = new Map();
-    for (const day of readdirSync(daysDir)) {
-      for (const f of readdirSync(join(daysDir, day))) {
-        const m = /^(frames|raw|releases|pre|delays)-\d{3}\.jsonl$/.exec(f);
-        if (m === null) continue;
-        // A torn last line (the kill) is cut; every whole line is kept.
-        const p = join(daysDir, day, f);
-        const text = readFileSync(p, 'utf8');
-        const whole = text.endsWith('\n') ? text : text.slice(0, text.lastIndexOf('\n') + 1);
-        writeFileSync(p, whole);
-        counts[m[1] as Table] += whole === '' ? 0 : whole.split('\n').length - 1;
-        hashes.set(relative(dir, `${p}.zst`), sealFile(p));
-        open++;
-      }
-    }
-    if (open === 0) continue;
-    let prev: { git_sha?: string | null; coverage?: Coverage; coverage_gaps?: unknown[]; commitments?: Record<string, string> | null; attachments?: Attachment[]; units?: { frames?: number; raw?: number; releases?: number }[]; days?: unknown } = {};
     try {
-      prev = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8')) as typeof prev;
-    } catch {}
-    // Files the crashed boot had sealed keep the size and hash its manifest listed at their seal (G4c review N1), so a
-    // change made to one between the crash and this start shows as a mismatch, not a fresh hash.
-    for (const f of listedFiles(prev.days)) if (!hashes.has(f.path)) hashes.set(f.path, { bytes: f.bytes, sha256: f.sha256 });
-    writeManifest(dir, {
-      boot, git_sha: prev.git_sha ?? null,
-      coverage: prev.coverage ?? { first_slot: null, last_slot: null, first_block_time: null, last_block_time: null },
-      coverage_gaps: [...(prev.coverage_gaps ?? []), { reason: 'worker stopped without a clean stop; files sealed at the next start' }],
-      commitments: prev.commitments ?? null,
-      attachments: prev.attachments ?? [],
-      counts: {
-        frames: (prev.units?.[0]?.frames ?? 0) + counts.frames, raw: (prev.units?.[0]?.raw ?? 0) + counts.raw,
-        releases: (prev.units?.[0]?.releases ?? 0) + counts.releases,
-      },
-    }, hashes);
-    fixed.push(boot);
+      if (sealBoot(root, boot)) fixed.push(boot);
+    } catch (e) {
+      // RECORD-BUDGET: a folder removed while it is read (the budget, an upload) is no fault; anything else is.
+      if (isObj(e) && e['code'] === 'ENOENT') continue;
+      throw e;
+    }
   }
   return fixed;
+};
+
+const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null;
+
+/** One earlier boot's folder: its plain files sealed and its manifest rewritten. False when it had none. */
+const sealBoot = (root: string, boot: string): boolean => {
+  const dir = join(root, boot);
+  const daysDir = join(dir, 'days');
+  if (!existsSync(daysDir)) return false;
+  let open = 0;
+  const counts = { frames: 0, raw: 0, releases: 0, pre: 0, delays: 0 };
+  const hashes: FileHashes = new Map();
+  for (const day of readdirSync(daysDir)) {
+    for (const f of readdirSync(join(daysDir, day))) {
+      const m = /^(frames|raw|releases|pre|delays)-\d{3}\.jsonl$/.exec(f);
+      if (m === null) continue;
+      // A torn last line (the kill) is cut; every whole line is kept.
+      const p = join(daysDir, day, f);
+      const text = readFileSync(p, 'utf8');
+      const whole = text.endsWith('\n') ? text : text.slice(0, text.lastIndexOf('\n') + 1);
+      writeFileSync(p, whole);
+      counts[m[1] as Table] += whole === '' ? 0 : whole.split('\n').length - 1;
+      hashes.set(relative(dir, `${p}.zst`), sealFile(p));
+      open++;
+    }
+  }
+  if (open === 0) return false;
+  let prev: { git_sha?: string | null; coverage?: Coverage; coverage_gaps?: unknown[]; commitments?: Record<string, string> | null; attachments?: Attachment[]; pruned?: PrunedFile[]; units?: { frames?: number; raw?: number; releases?: number }[]; days?: unknown } = {};
+  try {
+    prev = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8')) as typeof prev;
+  } catch {}
+  // Files the crashed boot had sealed keep the size and hash its manifest listed at their seal (G4c review N1), so a
+  // change made to one between the crash and this start shows as a mismatch, not a fresh hash.
+  for (const f of listedFiles(prev.days)) if (!hashes.has(f.path)) hashes.set(f.path, { bytes: f.bytes, sha256: f.sha256 });
+  writeManifest(dir, {
+    boot, git_sha: prev.git_sha ?? null,
+    coverage: prev.coverage ?? { first_slot: null, last_slot: null, first_block_time: null, last_block_time: null },
+    coverage_gaps: [...(prev.coverage_gaps ?? []), { reason: 'worker stopped without a clean stop; files sealed at the next start' }],
+    commitments: prev.commitments ?? null,
+    attachments: prev.attachments ?? [],
+    ...(prev.pruned === undefined ? {} : { pruned: prev.pruned }),
+    counts: {
+      frames: (prev.units?.[0]?.frames ?? 0) + counts.frames, raw: (prev.units?.[0]?.raw ?? 0) + counts.raw,
+      releases: (prev.units?.[0]?.releases ?? 0) + counts.releases,
+    },
+  }, hashes);
+  return true;
 };

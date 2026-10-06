@@ -53,7 +53,8 @@ import { CappedMap } from './capped-map.ts';
 import { jsonText } from './json.ts';
 import { Journal } from './journal.ts';
 import { type PaperMarket, type PaperState, PaperWorld, type SimLeg } from './paper-world.ts';
-import { Recorder, sealLeftovers } from './recorder.ts';
+import { Recorder, SAVED_STATES, sealLeftovers } from './recorder.ts';
+import { DISK_PRUNE_FREE_BYTES, PRUNE_EVERY_MS, RECORDER_MAX_BYTES, pruneRecordings } from './recorder-budget.ts';
 import { entryPrice, openPositionsHealth } from './open-positions.ts';
 import { type RiskInput, evaluateExit, riskSnapshot } from '../../../core/src/risk/index.ts';
 import { latchable, markSettings, riskAccount } from '../engine/marks.ts';
@@ -73,8 +74,7 @@ export const CLAMP_LOG_MS = 10_000;
 /** SAVE-ASOF: the log line for a save whose largest clamp is over CLAMP_LOG_MS, else null. */
 export const clampNote = (clamp: { readonly count: number; readonly maxMs: number }): string | null =>
   clamp.maxMs > CLAMP_LOG_MS ? `Saved state: ${clamp.count} times dated after the save's moment were saved as at it, the latest ${(clamp.maxMs / 1000).toFixed(1)} s after.` : null;
-/** STATE-DEDUPE: the recorder folder holding each distinct saved state once, packed, named by the sha256 of its plain bytes. */
-export const SAVED_STATES = 'saved-state';
+export { SAVED_STATES } from './recorder.ts';
 import { type Control, NO_CONTROL, type Restart, StateFile, controlFile, exitsFile, seedsFile, exposedFile, NO_EXPOSED, exitKind, restartsAfterBoot, restartsFile } from './state.ts';
 import { LOG_CREATE_PREFIX, type PoolFact, S0_DIAGNOSTIC_PARTS, TX_CREATE_PREFIX, parsePool } from '../../../core/src/gates/index.ts';
 import type { ExecStats } from '../../../core/src/facts/raw.ts';
@@ -154,6 +154,9 @@ export interface WorkerDeps {
   readonly restartReads?: { readonly rpc: SeedRpc; readonly budget: { remaining(nowMs: number): number; spend(credits: number, nowMs: number): void; refund(credits: number, nowMs: number): void } };
   /** Test seam: the pack of the recording's saved-state copy (persist's `packFile` unless a test holds it open). */
   readonly pack?: typeof packFile;
+  /** Test seams (RECORD-BUDGET): the recorder disk's free bytes (statfs unless a test fakes it), and the rotation size. */
+  readonly diskFree?: (root: string) => number;
+  readonly recorderRotateBytes?: number;
   /**
    * CREATE-AFTER-RESTART: looks up a shortlisted mint's create that neither this process nor the saved store holds
    * (sources.ts `findCreate`, under the fills' daily budget). Without it such a create waits, as before.
@@ -471,6 +474,14 @@ export class Worker {
   #unpacked: { readonly path: string; readonly sha256: string; readonly bytes: number } | null = null;
   /** The pack of the recording's saved-state copy, while it runs beside the start (a stop waits for it). */
   #packing: Promise<void> | null = null;
+  /** RECORD-BUDGET: true while the saved-state copy is being packed. */
+  #packRunning = false;
+  /** RECORD-BUDGET: the last pass's moment, the last alert's, and the problem /health reports while it holds. */
+  #pruneAt = Number.NEGATIVE_INFINITY;
+  #pruneAlertAt = Number.NEGATIVE_INFINITY;
+  #budgetFault: string | null = null;
+  /** RECORD-BUDGET: the start pass's journal lines, written once the start line is (it goes first). */
+  readonly #pruneLines: (readonly [JournalKind, Record<string, unknown>])[] = [];
   #lastSaveMs = 0;
   #saveRefused = false;
   #beatSeq = 0;
@@ -575,11 +586,14 @@ export class Worker {
     try {
       mkdirSync(recRoot, { recursive: true });
       for (const b of sealLeftovers(recRoot, this.#boot)) d.log(`Recorder: sealed files of boot ${b} left by a stop without a clean stop.`);
-      this.#recorder = c.recorder && this.#journalFault === null ? new Recorder({ root: recRoot, boot: this.#boot, gitSha: c.gitSha, rotateBytes: 64 * 1024 * 1024, ...(d.commitments === undefined ? {} : { commitments: d.commitments }) }) : null;
+      this.#recorder = c.recorder && this.#journalFault === null ? new Recorder({ root: recRoot, boot: this.#boot, gitSha: c.gitSha, rotateBytes: d.recorderRotateBytes ?? 64 * 1024 * 1024, ...(d.commitments === undefined ? {} : { commitments: d.commitments }) }) : null;
     } catch (e) {
       if (c.recorder) this.#recorderFailed(e);
       else d.log(`Recorder: leftovers not sealed: ${errorText(e)}.`);
     }
+    // RECORD-BUDGET: room on the disk before anything at start writes much (the deployer store's rewrite below).
+    this.#pruneAt = now;
+    this.#prune();
     this.#probe = d.delayProbe === undefined || this.#recorder === null ? null : new DelayProbe({
       timers: d.timers, confirmed: d.delayProbe.confirmed, via: d.delayProbe.via, everyMs: d.delayProbe.everyMs,
       record: (row, at) => this.#record((r) => r.delay(row, at)),
@@ -630,6 +644,7 @@ export class Worker {
       ...(d.phase === 'reconcile' ? { phase: 'reconcile' } : { restart: this.#restarts[this.#restarts.length - 1]?.kind ?? null, exit: exitKind(this.#lastExit), ...(this.#lastExit?.startsWith('fatal error (') ? { crash_site: this.#lastExit.slice('fatal error ('.length, -1) } : {}), ...(this.#deathMem === null ? {} : { death_mem: this.#deathMem }) }),
     });
     this.#journalStarted = true;
+    for (const [kind, fields] of this.#pruneLines.splice(0)) this.#journal.write(kind, fields);
     if (this.#recorderFault !== null) this.#journal.write('alert', { level: 'critical', code: 'recorder_failed', reasons: [this.#recorderFault] });
     if (this.#journal.repaired) this.#journal.write('journal_repair', { detail: 'torn last line removed' });
     if (this.#sellOnly.length > 0) {
@@ -894,6 +909,16 @@ export class Worker {
     const c = this.#unpacked;
     if (c === null) return;
     this.#unpacked = null;
+    // RECORD-BUDGET: the budget leaves the saved-state store alone while a pack may be linking into it.
+    this.#packRunning = true;
+    try {
+      await this.#packOne(c);
+    } finally {
+      this.#packRunning = false;
+    }
+  }
+
+  async #packOne(c: { readonly path: string; readonly sha256: string; readonly bytes: number }): Promise<void> {
     // STATE-DEDUPE: each distinct saved state is kept once, packed, in `recorder/saved-state/<sha256>.zst`; a boot that
     // restored the same bytes (every boot of a restart loop shorter than a save) gets a hard link to it, never a copy.
     const shared = join(this.#d.config.stateDir, STATE_FILES.recorder, SAVED_STATES, `${c.sha256}.zst`);
@@ -1800,6 +1825,7 @@ export class Worker {
       while (this.#feed.next() !== null) {
         // Drained unread: the reconcile-only process decides nothing.
       }
+      this.#pruneDue(d.timers.now());
       this.#loop = d.timers.setTimeout(drain, d.loopMs);
     };
     this.#loop = d.timers.setTimeout(drain, d.loopMs);
@@ -2041,7 +2067,7 @@ export class Worker {
       sol_reserve: this.#account.state.walletLamports === null ? null : String(this.#account.state.walletLamports),
       paused: this.#ctl.paused, boot: this.#boot, pid: process.pid, uptime_s: Math.round((now - this.#started) / 1000),
       rss_bytes: process.memoryUsage().rss, last_exit: this.#lastExit, restarts_24h: this.#restartCounts(now), mode: 'paper', recorder: this.#d.config.recorder && this.#recorderFault === null && this.#journalFault === null ? 'on' : 'off', simulation: this.#d.config.simulate ? 'on' : 'off',
-      reconciled: this.#reconciled, exit_capable: this.#exitCapable(now), quota: ops.quota, lookups: ops.lookups, entries_halted: this.#halted.length > 0 || this.#journalFault !== null, halt_reasons: [...this.#halted, ...(this.#journalFault !== null && !this.#halted.includes(this.#journalFault) ? [this.#journalFault] : [])], critical: [...(this.#watch?.critical ?? []), ...(this.#recorderFault === null ? [] : [this.#recorderFault]), ...(this.#journalFault === null ? [] : [this.#journalFault])], feeds, journal_seq: this.#journal.seq, signing_key: false,
+      reconciled: this.#reconciled, exit_capable: this.#exitCapable(now), quota: ops.quota, lookups: ops.lookups, entries_halted: this.#halted.length > 0 || this.#journalFault !== null, halt_reasons: [...this.#halted, ...(this.#journalFault !== null && !this.#halted.includes(this.#journalFault) ? [this.#journalFault] : [])], critical: [...(this.#watch?.critical ?? []), ...(this.#recorderFault === null ? [] : [this.#recorderFault]), ...(this.#journalFault === null ? [] : [this.#journalFault]), ...(this.#budgetFault === null ? [] : [this.#budgetFault])], feeds, journal_seq: this.#journal.seq, signing_key: false,
       entry_rule: this.#d.config.strategy.name,
       ...(this.#d.strategy.s0Diagnostic === true ? { s0_diagnostic: S0_DIAGNOSTIC_PARTS } : {}),
       ...(this.#seedOutcome === null ? {} : { graduates_seed: this.#seedOutcome }),
@@ -2076,7 +2102,68 @@ export class Worker {
     } catch {
       // A sample not written (a full disk) only leaves the next boot without it.
     }
+    this.#pruneDue(this.#d.timers.now());
     this.#memTimer = this.#d.timers.setTimeout(() => this.#traceMem(), MEM_EVERY_MS);
+  }
+
+  /**
+   * RECORD-BUDGET: a budget pass once PRUNE_EVERY_MS has passed since the last (the first ran at construction). It rides
+   * the memory sample's timer (and the reconcile-only drain) rather than a timer of its own. Never throws.
+   */
+  #pruneDue(now: number): void {
+    if (this.#stopping || now - this.#pruneAt < PRUNE_EVERY_MS) return;
+    this.#pruneAt = now;
+    this.#prune();
+  }
+
+  /**
+   * RECORD-BUDGET: one pass over the recordings (recorder-budget.ts), whether the recorder is on, off or failed. A pass
+   * that deleted writes a `recorder_prune` line; one that failed, or is still over with nothing left to delete, logs
+   * and journals a critical alert at most once an hour, and /health lists it until a pass is within both bounds.
+   * Never throws.
+   */
+  #prune(): void {
+    const d = this.#d;
+    const b = d.config.recorderBudget ?? { maxBytes: RECORDER_MAX_BYTES, floorBytes: DISK_PRUNE_FREE_BYTES };
+    const root = join(d.config.stateDir, STATE_FILES.recorder);
+    let problem: string | null = null;
+    try {
+      if (!existsSync(root)) return;
+      const r = pruneRecordings({ root, current: this.#boot, maxBytes: b.maxBytes, floorBytes: b.floorBytes, packing: () => this.#packRunning, ...(d.diskFree === undefined ? {} : { freeBytes: d.diskFree }) });
+      const reason = r.reason;
+      if (reason !== null) for (const p of r.deleted) if (p.boot === this.#boot) this.#record((rec) => rec.pruned(p.path, p.bytes, reason));
+      if (reason !== null && (r.deleted.length > 0 || r.boots.length > 0)) {
+        const fields = { reason, files: r.deleted.length, bytes: r.bytes, boots: r.boots.length, free_bytes: r.freeBytes, recorder_bytes: r.recorderBytes };
+        d.log(`Recorder budget (${reason}): deleted ${r.deleted.length} files (${r.bytes} bytes) and ${r.boots.length} boot folders; ${r.freeBytes} bytes free, recordings ${r.recorderBytes} bytes.`);
+        this.#pruneJournal('recorder_prune', fields);
+      }
+      if (r.errors.length > 0) problem = `recorder budget: ${r.errors.length} deletions failed (${r.errors[0]})`;
+      else if (r.short) problem = reason === 'floor'
+        ? `disk low: ${r.freeBytes} bytes free, under the floor of ${b.floorBytes}, with no recording left to delete`
+        : `recordings at ${r.recorderBytes} bytes, over the cap of ${b.maxBytes}, with no recording left to delete`;
+    } catch (e) {
+      problem = `recorder budget pass failed: ${errorText(e)}`;
+    }
+    this.#budgetFault = problem;
+    if (problem === null) return;
+    const now = d.timers.now();
+    if (now - this.#pruneAlertAt < 3_600_000) return;
+    this.#pruneAlertAt = now;
+    d.log(`ALERT ${problem}`);
+    this.#pruneJournal('alert', { level: 'critical', code: 'recorder_budget', reasons: [problem] });
+  }
+
+  /** A budget line: held until the start line is written, then journaled; a failed write only logs. */
+  #pruneJournal(kind: JournalKind, fields: Record<string, unknown>): void {
+    if (!this.#journalStarted) {
+      this.#pruneLines.push([kind, fields]);
+      return;
+    }
+    try {
+      this.#journal.write(kind, fields);
+    } catch (e) {
+      this.#d.log(`Journal: the recorder budget line was not written: ${errorText(e)}.`);
+    }
   }
 
   /** MEM-PROBE: one probe sample kept (counts only); `saving` when taken just before the state save. Never throws. */
