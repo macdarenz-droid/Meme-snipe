@@ -1,14 +1,15 @@
 // REPLAY-1000: the worker's WebSockets, replayed from chain history on the virtual clock.
 // - Helius: `slotSubscribe` (one notification per slot, at the slot's time) and `logsSubscribe` {mentions: [address]}
 //   (each transaction that mentions the address, from the subscription's moment on, at its slot's time plus the
-//   processed lag, in block order). Log lines come from the transaction's own meta, which is what the node streams.
+//   processed lag, or the confirmed lag for a subscription at confirmed, in block order: a confirmed notice never
+//   arrives before a confirmed read can see its slot). Log lines come from the transaction's own meta, which is what the node streams.
 //   The two program-wide streams (pump's create authority, its withdraw authority) carry only the replayed coins'
 //   transactions and their creators' creates (README "Streams").
 // - Coinbase: SOL-USD heartbeats each second and ticker messages from Coinbase's own trade history.
 // - PumpPortal and anything else: the connection is refused (README "Streams").
 import type { SocketFactory, SocketLike } from '../../../packages/worker/src/providers/http.ts';
 import type { RawSig } from '../rpc.ts';
-import type { ChainView } from './chain.ts';
+import { CONFIRMED_LAG_MS, type ChainView } from './chain.ts';
 import type { VirtualClock } from './vclock.ts';
 
 /** A processed notification reaches the worker this long after its slot was produced. */
@@ -130,8 +131,14 @@ class HeliusSocket extends WorldSocket {
         reply({ error: { code: -32602, message: 'replay: this address is not streamed' } });
         return;
       }
+      const commitment = (m.params[1] as { commitment?: string } | undefined)?.commitment ?? 'finalized';
+      if (commitment !== 'processed' && commitment !== 'confirmed') {
+        // Finalized notices (about 13 s late) are not modelled; the worker never asks for them.
+        reply({ error: { code: -32602, message: `replay: ${commitment} log notices are not served` } });
+        return;
+      }
       reply({ result: id });
-      this.#subs.set(id, this.#logs(id, address));
+      this.#subs.set(id, this.#logs(id, address, commitment === 'confirmed' ? Math.max(PROCESSED_LAG_MS, CONFIRMED_LAG_MS) : PROCESSED_LAG_MS));
       return;
     }
     this.#count(`ws-refused:${m.method}`);
@@ -158,7 +165,7 @@ class HeliusSocket extends WorldSocket {
     return { stop: () => void (stopped = true) };
   }
 
-  #logs(id: number, address: string): { stop: () => void } {
+  #logs(id: number, address: string, lag: number): { stop: () => void } {
     const { clock, chain, fixed } = this.#d;
     let stopped = false;
     // Transactions processed after the subscription is in place.
@@ -182,7 +189,7 @@ class HeliusSocket extends WorldSocket {
             if (stopped || this.closed) return;
             this.#count(s.err === null ? 'log-notices' : 'log-notices-failed');
             this.emit({ jsonrpc: '2.0', method: 'logsNotification', params: { result: { context: { slot: s.slot }, value: { signature: s.signature, err: s.err, logs: logs ?? [] } }, subscription: id } });
-          }, Math.max(0, chain.clock.timeOf(s.slot) + PROCESSED_LAG_MS - clock.now()));
+          }, Math.max(0, chain.clock.timeOf(s.slot) + lag - clock.now()));
         }
         // The next chunk is read when this one's end is near (one chunk ahead of the clock).
         from = to;

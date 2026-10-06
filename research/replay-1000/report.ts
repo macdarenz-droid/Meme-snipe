@@ -5,7 +5,7 @@ import { join } from 'node:path';
 
 interface Result {
   coins: number; entered: number; refused: number; notEvaluated: number;
-  refusalsByGate: Record<string, number>; coinsFailingEachGate?: Record<string, number>;
+  refusalsByGate: Record<string, number>; firstRefusalsByGate?: Record<string, number>; coinsFailingEachGate?: Record<string, number>;
   trades: number; closedTrades: number; wins: number; winRate: number | null; meanNetSol: number | null; ci95: [number, number] | null; totalNetSol: number; shortOf300: number;
   tradeRows: { mint: string; entryAt: string; exitAt: string | null; solIn: string; solOut: string; fees: string; net: string; entryPrice: number; exitPrice: number | null; exitReasons: string[]; closed: boolean }[];
   stressed?: { trade: string; net: string; solOut: string; note: string | null }[];
@@ -27,9 +27,9 @@ const main = () => {
     out.push(`| ${label} | ${commit} | ${r.coins} | ${r.entered} | ${r.refused} | ${r.notEvaluated} | ${r.trades} (${r.closedTrades}) | ${pct(r.winRate)} | ${r.meanNetSol === null ? 'n/a' : r.meanNetSol.toFixed(6)} | ${r.ci95 === null ? 'n/a' : `${r.ci95[0].toFixed(6)} to ${r.ci95[1].toFixed(6)}`} | ${r.totalNetSol.toFixed(6)} | ${r.shortOf300} |`);
   }
   for (const { label, r } of runs) {
-    out.push('', `### ${label}: refusals`, '', 'First gate of each refused coin\'s last rejection, and how many coins failed each gate in it (a coin fails several):', '', '| Gate:code | First | Failed |', '| --- | ---: | ---: |');
-    const keys = [...new Set([...Object.keys(r.refusalsByGate), ...Object.keys(r.coinsFailingEachGate ?? {})])];
-    for (const k of keys.sort((a, b) => (r.coinsFailingEachGate?.[b] ?? 0) - (r.coinsFailingEachGate?.[a] ?? 0))) out.push(`| ${k} | ${r.refusalsByGate[k] ?? 0} | ${r.coinsFailingEachGate?.[k] ?? 0} |`);
+    out.push('', `### ${label}: refusals`, '', 'Each refused coin\'s first rejection and its last one (the first gate listed in each), and how many coins failed each gate in either (a coin fails several):', '', '| Gate:code | First rejection | Last rejection | Failed |', '| --- | ---: | ---: | ---: |');
+    const keys = [...new Set([...Object.keys(r.firstRefusalsByGate ?? {}), ...Object.keys(r.refusalsByGate), ...Object.keys(r.coinsFailingEachGate ?? {})])];
+    for (const k of keys.sort((a, b) => (r.coinsFailingEachGate?.[b] ?? 0) - (r.coinsFailingEachGate?.[a] ?? 0))) out.push(`| ${k} | ${r.firstRefusalsByGate?.[k] ?? 0} | ${r.refusalsByGate[k] ?? 0} | ${r.coinsFailingEachGate?.[k] ?? 0} |`);
     if (r.tradeRows.length > 0) {
       out.push('', `### ${label}: trades`, '', '| Mint | Entry (UTC) | Exit (UTC) | SOL in | SOL out | Fees | Net (SOL) | Stressed net (SOL) | Exit reason |', '| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |');
       for (const t of r.tradeRows) {
