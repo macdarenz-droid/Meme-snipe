@@ -1,7 +1,7 @@
 // OPS-1e: the host's decision helpers (ops/host/files/usr/local/lib/zeroed/logic.sh) run in bash here, and
 // the scripts that use them are checked for the wiring the e2e (ops/test/e2e.sh) then drives on a real host.
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -213,6 +213,52 @@ describe('worker start and API address', () => {
     expect(w).toContain('export ZEROED_HEALTH_ADDR="$WORKER_HEALTH_ADDR" ZEROED_API_ADDR="$WORKER_API_ADDR"');
     expect(w).toContain('entry="$(worker_entry /opt/zeroed/current)"');
     expect(w).not.toMatch(/ZEROED_MODE=(?!paper )/);
+    // HEAP-GUARD: an explicit heap limit under MemoryMax=800M and a fatal-error report in the state dir, on both execs
+    // (the reconcile pre-step and the run use this one wrapper); the directory is made before node starts.
+    expect(unit).toMatch(/^MemoryMax=800M$/m);
+    expect(w).toContain('reports="${STATE_DIRECTORY:-/var/lib/zeroed}/reports"');
+    expect(w).toContain('heap=(--max-old-space-size=560 --report-on-fatalerror --report-compact "--report-directory=$reports")');
+    expect(w.indexOf('mkdir -p "$reports"')).toBeGreaterThan(-1);
+    expect(w.indexOf('mkdir -p "$reports"')).toBeLessThan(w.indexOf('exec '));
+    const execs = w.split('\n').filter((l) => /^\s*exec /.test(l));
+    expect(execs).toHaveLength(2);
+    for (const l of execs) expect(l, l).toContain('"${heap[@]}" "$entry" "$@"');
+  });
+
+  it('the e2e pins the exact command line worker-start builds for the release worker (HEAP-GUARD)', () => {
+    const w = read('ops/host/files/usr/local/lib/zeroed/worker-start');
+    const lines = w.split('\n').filter((l) => /^(reports|heap)=/.test(l)).join('\n');
+    const built = spawnSync('bash', ['-c', `STATE_DIRECTORY=/var/lib/zeroed\n${lines}\nprintf '%s ' /usr/local/bin/node --no-warnings "\${heap[@]}" /opt/zeroed/current/packages/worker/src/main.ts`], { encoding: 'utf8' }).stdout;
+    const e2e = read('ops/test/e2e.sh');
+    const pinned = /has '\^(\/usr\/local\/bin\/node --no-warnings [^']*\/opt\/zeroed\/current\/packages\/worker\/src\/main\.ts )\$'/.exec(e2e)?.[1];
+    expect(pinned).toBe(built);
+  });
+
+  it('worker-start keeps only the newest 5 fatal reports, before node starts, and runs clean with none (HEAP-GUARD)', () => {
+    const w = read('ops/host/files/usr/local/lib/zeroed/worker-start');
+    const from = w.indexOf('shopt -s nullglob');
+    const to = w.indexOf('fi\n', w.indexOf('rm -f -- "${old[@]:5}"')) + 3;
+    expect(from).toBeGreaterThan(w.indexOf('mkdir -p "$reports"'));
+    expect(to).toBeLessThan(w.indexOf('exec '));
+    const prune = w.slice(from, to);
+    const dir = join(tmp, 'reports-prune');
+    const runPrune = () => spawnSync('bash', ['-c', `set -euo pipefail\nreports=${dir}\n${prune}`], { encoding: 'utf8' });
+    mkdirSync(dir, { recursive: true });
+    // No report at all.
+    expect(runPrune().status).toBe(0);
+    const at = (k: number) => new Date(Date.UTC(2026, 9, 5, 1, 0, k)).toISOString();
+    const put = (k: number) => {
+      const f = join(dir, `report.2026.${String(k).padStart(2, '0')}.json`);
+      writeFileSync(f, '{}');
+      spawnSync('touch', ['-d', at(k), f]);
+    };
+    for (let k = 0; k < 3; k++) put(k);
+    writeFileSync(join(dir, 'notes.txt'), 'kept');
+    expect(runPrune().status).toBe(0);
+    expect(readdirSync(dir).sort()).toEqual(['notes.txt', 'report.2026.00.json', 'report.2026.01.json', 'report.2026.02.json']);
+    for (let k = 3; k < 9; k++) put(k);
+    expect(runPrune().status).toBe(0);
+    expect(readdirSync(dir).sort()).toEqual(['notes.txt', 'report.2026.04.json', 'report.2026.05.json', 'report.2026.06.json', 'report.2026.07.json', 'report.2026.08.json']);
   });
 
   it("runs the release's worker only when the release's host-config says so; the stand-in otherwise", () => {
@@ -242,6 +288,40 @@ describe('worker start and API address', () => {
     expect(entry()).toBe(STUB);
     // SWITCH-1 is the reviewed switch: the repository now runs the release's own worker.
     expect(JSON.parse(read('ops/host-config.json')).worker).toBe('release');
+  });
+
+  it("PRACTICE-ON: the release's shakedown settings, and only those, go to its worker", () => {
+    const rel = join(tmp, 'release-shakedown');
+    mkdirSync(join(rel, 'ops'), { recursive: true });
+    const cfg = (o: unknown) => writeFileSync(join(rel, 'ops/host-config.json'), typeof o === 'string' ? o : JSON.stringify(o));
+    const run = () => sh(`worker_shakedown "${rel}"`);
+    cfg({ worker: 'release' });
+    expect(run()).toMatchObject({ status: 0, out: '' });
+    cfg({ worker: 'release', shakedown: { ZEROED_STRATEGY: 'S0', ZEROED_S0_DIAGNOSTIC: 'on', ZEROED_PAPER_EDGE_PPM: '178092', ZEROED_STANDINS: 'A1,B2', ZEROED_WALLET: 'C3' } });
+    expect(run()).toMatchObject({ status: 0, out: 'ZEROED_STRATEGY=S0\nZEROED_S0_DIAGNOSTIC=on\nZEROED_PAPER_EDGE_PPM=178092\nZEROED_STANDINS=A1,B2\nZEROED_WALLET=C3' });
+    // Nothing else, and nothing that could carry a second line, a space or a shell character.
+    for (const bad of [
+      { ZEROED_MODE: 'live' }, { ZEROED_RUN_ID: 'x' }, { HELIUS_API_KEY: 'x' }, { zeroed_strategy: 'S0' },
+      { ZEROED_STRATEGY: 'S0\nZEROED_MODE=live' }, { ZEROED_STRATEGY: 'S0\n' }, { ZEROED_STRATEGY: 'S0 x' }, { ZEROED_STRATEGY: '$(id)' }, { ZEROED_STRATEGY: '' },
+      { ZEROED_PAPER_EDGE_PPM: 178092 }, { ZEROED_STANDINS: ['A1'] }, { ZEROED_STANDINS: 'A'.repeat(401) },
+    ]) {
+      cfg({ worker: 'release', shakedown: bad });
+      expect(run(), JSON.stringify(bad)).toMatchObject({ status: 5, out: '' });
+    }
+    cfg({ worker: 'release', shakedown: ['ZEROED_STRATEGY=S0'] });
+    expect(run().status).not.toBe(0);
+    cfg('{not json');
+    expect(run().status).not.toBe(0);
+    // The wrapper exports them for the release's worker only, before its fixed settings; the trial passes the same.
+    const w = read('ops/host/files/usr/local/lib/zeroed/worker-start');
+    const take = w.indexOf('settings="$(worker_shakedown /opt/zeroed/current)" || {');
+    expect(take).toBeGreaterThan(w.indexOf('if [ "$entry" != /opt/zeroed/stub/worker.mjs ]; then'));
+    expect(take).toBeLessThan(w.indexOf('export ZEROED_MODE=paper'));
+    expect(w).toContain('exit 2; }');
+    const smoke = read('ops/host/files/usr/local/lib/zeroed/worker-smoke');
+    expect(smoke).toContain('settings="$(worker_shakedown "$dir" 2>"$tmp/shakedown.err")" || {');
+    expect(smoke).toContain('shakedown+=(--setenv="$line")');
+    expect(smoke).toContain('"${shakedown[@]}" \\\n    --setenv=NODE_ENV=production');
   });
 
   it("SWITCH-1: zeroed-update tries the new release's worker before anything changes", () => {
@@ -287,6 +367,24 @@ describe('worker start and API address', () => {
     const rb = upd.slice(upd.indexOf('rollback() {'), upd.indexOf('# Restart with reconcile first'));
     for (const want of ['printf \'%s\\n\' "$commit" > "$STATE_DIR/failed_release"', 'ln -sfn "$prev" /opt/zeroed/current.new', 'printf \'%s\\n\' "$current" > "$STATE_DIR/deployed"', 'apply_host', 'systemctl restart zeroed-worker.service', 'alert worker-switch "ALERT']) expect(rb, want).toContain(want);
     expect(upd).toContain('[ "$commit" != "$(cat "$STATE_DIR/failed_release" 2>/dev/null || true)" ] || exit 0');
+  });
+
+  it('OPS-1i: zeroed-update holds the switch only for the new commit\'s worker, never on an answer from the release before', () => {
+    const upd = read('ops/host/files/usr/local/sbin/zeroed-update');
+    const fns = upd.slice(upd.indexOf('answers() {'), upd.indexOf('# rollback WHY'));
+    // answers() and holds() as the script has them, with systemd, curl and sleep stood in: the unit is active, never
+    // restarts, and its health route answers paper as release $SHA_NOW.
+    const holds = (shaNow: string) => spawnSync('bash', ['-c', `set -euo pipefail
+WORKER_HEALTH_ADDR=127.0.0.1:8787 WORKER_API_ADDR=127.0.0.1:8788 SWITCH_HOLD_S=1 commit=${'b'.repeat(40)}
+systemctl() { [ "$1" = show ] && echo 0; return 0; }
+sleep() { :; }
+curl() { printf '{"mode":"paper","git_sha":"%s"}' "$SHA_NOW"; }
+${fns}
+holds`], { encoding: 'utf8', env: { PATH: process.env['PATH'] ?? '', SHA_NOW: shaNow } });
+    expect(holds('b'.repeat(40))).toMatchObject({ status: 0, stdout: '' });
+    const old = holds('a'.repeat(40));
+    expect(old.status).toBe(1);
+    expect(old.stdout.trim()).toBe(`its health route did not answer as ${'b'.repeat(12)} within 60 s`);
   });
 
   it('health for the runner on 127.0.0.1:8787 and the worker API on 127.0.0.1:8788, as WORKER-1 and RUN-1 expect', () => {

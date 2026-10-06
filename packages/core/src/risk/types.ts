@@ -15,7 +15,7 @@ export const CONTROL_IDS: readonly ControlId[] = [
 /** Why an entry is refused. Every code belongs to exactly one control (see CODE_CONTROL). */
 export type RiskCode =
   // R1 bankroll and its valuation
-  | 'bankroll_invalid' | 'sol_price_unknown' | 'sol_price_stale' | 'mark_unknown' | 'mark_stale'
+  | 'bankroll_invalid' | 'sol_price_unknown' | 'sol_price_stale' | 'mark_unknown' | 'mark_stale' | 'risk_fault'
   // R2 trade size range
   | 'size_below_minimum'
   // R3 open positions
@@ -50,7 +50,7 @@ export type RiskCode =
   | 'withdrawal_queued' | 'withdrawal_unreconciled' | 'withdrawal_over_free_cash' | 'withdrawal_invalid';
 
 export const CODE_CONTROL: Readonly<Record<RiskCode, ControlId>> = {
-  bankroll_invalid: 'R1', sol_price_unknown: 'R1', sol_price_stale: 'R1', mark_unknown: 'R1', mark_stale: 'R1',
+  bankroll_invalid: 'R1', sol_price_unknown: 'R1', sol_price_stale: 'R1', mark_unknown: 'R1', mark_stale: 'R1', risk_fault: 'R1',
   size_below_minimum: 'R2',
   max_open_positions: 'R3',
   balance_unknown: 'R4', balance_stale: 'R4', ops_reserve: 'R4',
@@ -87,24 +87,41 @@ export interface RiskClock {
  * A finished trade from the ledger. `notional` is the entry's notional q as decided (`EntryAllowed.notional`), costs
  * excluded, so R15 compares a new q with the last q. `netPnl` is after every fee and cost.
  */
+/**
+ * What one partial sale of a trade realized (RISK-PARTIAL): its proceeds after fees less its share of the cost basis
+ * and entry fees, counted in equity at its own time.
+ */
+export interface RealizedPart {
+  readonly atMs: number;
+  readonly pnl: MicroUsd;
+}
+
 export interface ClosedTrade {
   readonly mint: Mint;
   readonly openedAtMs: number;
   readonly closedAtMs: number;
   readonly notional: MicroUsd;
+  /** The whole trade's result: statistics (R8, win rate, loss streak) count each trade once, whole. */
   readonly netPnl: MicroUsd;
   /** Closed by a stop (price, thesis or flow): blocks re-entry on the mint for the policy's re-entry window. */
   readonly stoppedOut: boolean;
+  /**
+   * The parts of `netPnl` realized by partial sales before the close (none when absent). Equity counts each at its own
+   * time and the rest of `netPnl` at the close.
+   */
+  readonly partials?: readonly RealizedPart[];
 }
 
 /** An open position. `mark` is the executable liquidation value of the whole position, net of fees (§9), or null if unknown. */
 export interface OpenPosition {
   readonly mint: Mint;
   readonly openedAtMs: number;
-  /** Cost basis in micro-dollars, entry costs included. */
+  /** Cost basis of what is still held in micro-dollars, entry costs included (after a partial sale, its remaining share). */
   readonly notional: MicroUsd;
   readonly mark: MicroUsd | null;
   readonly markAtMs: number | null;
+  /** What partial sales of this position have realized so far (none when absent), counted in equity at their times. */
+  readonly partials?: readonly RealizedPart[];
 }
 
 /** A deposit (positive) or withdrawal (negative) of trading capital. Neither counts as profit or loss. */
@@ -119,11 +136,17 @@ export interface CashFlow {
   readonly navBefore: MicroUsd;
 }
 
-/** A cost of the account itself, not of a trade. `amount` is what was paid (zero or more). */
+/**
+ * A cost of the account itself, not of a trade. `amount` is what was paid (zero or more). `failed_entry`: the fees of
+ * an entry that never filled (the backtest's stray costs, PAPER-1): it lowers equity and counts toward the day's and
+ * week's loss like any cost, and is never a trade (R8, R11, R15 and statistics do not see it). `late_settlement`: a loss
+ * that landed after its trade closed (a late fee, sale or rent outcome, PAPER-2), dated when it was booked, so the day
+ * the trade closed is never rewritten after its checks ran; counted the same way.
+ */
 export interface AccountCost {
   readonly atMs: number;
   readonly amount: MicroUsd;
-  readonly kind: 'wallet_setup';
+  readonly kind: 'wallet_setup' | 'failed_entry' | 'late_settlement';
 }
 
 /** An economic NAV (`economicNav`) the worker observed and recorded; the NAV high-water mark is the peak of these. */
@@ -350,4 +373,9 @@ export interface ExitDecision {
   readonly tripped: readonly RiskReason[];
   /** Triggers that tripped now and are not latched yet (R9, R10): the caller stores them, as for an entry. */
   readonly trips: readonly Trip[];
+  /**
+   * RISK-FAULT: null when the account was evaluated; otherwise why it could not be (`tripped` then holds `risk_fault`
+   * and `trips` is empty). Empty `trips` with a fault means "not known", never "nothing tripped".
+   */
+  readonly fault: string | null;
 }

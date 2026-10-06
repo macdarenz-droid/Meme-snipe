@@ -4,15 +4,16 @@
 // same answer replayed. A failed or malformed read ingests nothing, so the gate sees no fact and rejects (H16).
 // Chain reads go to Helius at `confirmed` (standard RPC, 1 credit each, data.md §1.2); the gates refuse `processed`.
 import {
-  type Address, NATIVE_MINT, SYSTEM_PROGRAM, TOKEN_2022_PROGRAM, decodeBase58, decodeMint, isOnCurve, decodePool, decodeTokenAccount, firstFunder, fromBase64, poolAddress,
+  type Address, NATIVE_MINT, PUMP_AMM_GLOBAL_CONFIG, SYSTEM_PROGRAM, TOKEN_2022_PROGRAM, decodeBase58, decodeMint, isOnCurve, decodePool, decodeTokenAccount, firstFunder, fromBase64, poolAddress,
   pumpPoolAuthority, recordFromRpc, transactionEvents, type RpcTransactionBase64, type TransactionRecord,
 } from '../../../core/src/chain/index.ts';
 import {
   type AccountsRead, type ExecStats, type FunderRead, type HoldersRead, type SimRead, RAW, parseExecStats, parseSimRead, parseVolumeHoursCsv,
 } from '../../../core/src/facts/index.ts';
+import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { VOLUME_SERIES_START_DAY } from '../../../core/src/config/time.ts';
 import type { Policy } from '../../../core/src/config/policy.ts';
-import { HELIUS_RPC_CREDITS } from '../scheduler/limits.ts';
+import { HELIUS_GPA_CREDITS, HELIUS_RPC_CREDITS } from '../scheduler/limits.ts';
 import { VOLUME_TAG, dayName, dayNumber, sha256Hex, volumeCheckPassed, volumeRelease, volumeReleaseAssets } from './volume-hours.ts';
 import type { ChainVolumeStore, StoredVolumeDay } from './volume-store.ts';
 import type { RugCheckRequest } from '../providers/deployer-check.ts';
@@ -21,8 +22,10 @@ import { P2, type Priority, type Scheduler, ScheduleRefused } from '../scheduler
 import type { Timers } from '../scheduler/timers.ts';
 import type { FrameBody, Source } from '../providers/canonical.ts';
 import { isAddress } from '../providers/canonical.ts';
-import { type HttpClient, type Secrets, parseJson, ProviderError, scrub, send } from '../providers/http.ts';
+import { type HttpClient, type Secrets, parseJson, ProviderError, refusal429, scrub, send } from '../providers/http.ts';
 import type { IngestOptions } from '../providers/live-feed.ts';
+import { PUMP_AMM_FEE_CONFIG, decodeSnapshot } from '../run/snapshot.ts';
+import { feesKey } from '../engine/strategy.ts';
 
 /** Every JSON-RPC method the fact reads may call: reads only. Frozen; nothing that sends is or may be added. */
 export const FACT_RPC_METHODS = Object.freeze(['getAccountInfo', 'getMultipleAccounts', 'getProgramAccounts', 'getTokenLargestAccounts', 'getSignaturesForAddress', 'getTransaction'] as const);
@@ -31,6 +34,32 @@ export type FactRpcMethod = (typeof FACT_RPC_METHODS)[number];
 export interface Ingest {
   ingest(source: Source, body: FrameBody, o: IngestOptions): unknown;
 }
+
+/** Puts one raw answer (`offchain` frame) somewhere: the feed, or a batch's list. */
+type Put = (source: Source, key: string, value: unknown) => void;
+
+/** H15's round-trip simulation at `spend`, handing its answer to `ingest` (the worker's `simReader`). */
+export type SimFn = (mint: string, spend: bigint, ingest: (read: SimRead) => void) => Promise<boolean>;
+
+/** What one coherent batch reads besides the accounts (READ-COHERENT): the holder view, the simulation, the cross-checks. */
+export interface BatchRequest {
+  /** The largest accounts (a bounded view), the complete scan, or no holder read. */
+  readonly holders: 'largest' | 'all' | null;
+  /** H15's simulation at this spend (the candidate's own), or none. */
+  readonly spend: bigint | null;
+  readonly xcheck: boolean;
+}
+
+
+/** Raw reads whose facts are judged by slot lag (evidence.ts 'state'): a batch's age is its oldest of these. */
+const LAG_BOUND: ReadonlySet<string> = new Set(['read:accounts:', 'read:holders:', 'read:holders-all:']);
+
+/** A batch's parts, named as the reads they replace (the `worker:fact-reads` counter's kinds). */
+export type BatchPart = 'accounts' | 'holders' | 'holders-all' | 'sim' | 'xcheck';
+/** Whether each part the batch asked for landed (a refused or failed part is false). */
+export type BatchResult = Partial<Record<BatchPart, boolean>>;
+
+type Scan = { readonly gpa: Awaited<ReturnType<FactRpc['getProgramAccounts']>>; readonly filter: Token2022Filter; readonly fallback: boolean };
 
 type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -57,7 +86,10 @@ export class FactRpcError extends ProviderError {
 /** The code Helius answered a mint-only getProgramAccounts with when the set is too large (gpa-probe run 37149567929). */
 export const GPA_TOO_MANY_ACCOUNTS = -32600;
 
-/** Helius JSON-RPC reads at `confirmed`, each one standard call through the scheduler. */
+/**
+ * Helius JSON-RPC reads at `confirmed`, each one call through the scheduler at its published price: a standard call 1
+ * credit, getProgramAccounts 10 (HELIUS-GUARD: it was metered at 1, so the worker's count ran below Helius's).
+ */
 export class FactRpc {
   readonly #o: FactRpcOptions;
   #id = 1;
@@ -69,13 +101,10 @@ export class FactRpc {
   async call(method: FactRpcMethod, params: readonly unknown[], priority: Priority): Promise<unknown> {
     if (!(FACT_RPC_METHODS as readonly string[]).includes(method)) throw new RangeError(`fact reads: method ${method} is not allowed`);
     const o = this.#o;
-    return o.scheduler.run(priority, HELIUS_RPC_CREDITS, async () => {
+    return o.scheduler.run(priority, method === 'getProgramAccounts' ? HELIUS_GPA_CREDITS : HELIUS_RPC_CREDITS, async () => {
       const body = JSON.stringify({ jsonrpc: '2.0', id: this.#id++, method, params });
       const res = await send(o.http, 'helius', method, { method: 'POST', url: o.url(), headers: { 'content-type': 'application/json' }, body, timeoutMs: o.timeoutMs });
-      if (res.status === 429) {
-        o.scheduler.penalize();
-        throw new ProviderError('helius', 'rate_limited', `${method} rate limited`, 429);
-      }
+      if (res.status === 429) throw refusal429(o.scheduler, 'helius', method, res.text);
       if (res.status !== 200) throw new ProviderError('helius', 'http', `${method} returned HTTP ${res.status}`, res.status);
       const json = parseJson('helius', method, res.text);
       if (!isObj(json)) throw new ProviderError('helius', 'shape', `${method} returned no object`);
@@ -219,8 +248,19 @@ export interface FactReadersOptions {
   readonly deployerChecks?: DeployerChecks;
   /** Complete holder scans allowed per UTC day (default HOLDER_SCANS_PER_DAY). Reached: no scan, H12/H13 abstain. */
   readonly holderScansPerDay?: number;
+  /**
+   * Where today's count of complete holder scans is kept (HOLDER_SCANS_FILE in the state dir), so a restart does not
+   * start the cap again: a restart loop took a fresh 100 scans at every boot (HEAP-GUARD, 5 Oct). Unreadable: today
+   * counts as spent (fail safe). Without it the count lives in the process only.
+   */
+  readonly scansFile?: string;
+  /** A line for the worker's log (a scan count that could not be saved). Never carries a path or an error message. */
+  readonly log?: (line: string) => void;
   readonly token2022Filter?: Token2022Filter;
 }
+
+/** The file of today's complete holder scans, in the worker's state dir. */
+export const HOLDER_SCANS_FILE = 'holder-scans.json';
 
 /** Trial default (supervisor ruling): 100 complete holder scans a UTC day, about 1,200 Helius credits at the published
  * price; revisit once gpa-probe measures the real cost. */
@@ -262,11 +302,28 @@ export interface FunderOptions {
 }
 
 /** What one read cost and whether it ingested, for the worker's journal and the live-only veto rates. */
+/** Read outcomes a `FactReaders` keeps (the latest; older ones are dropped). */
+export const OUTCOMES_KEPT = 500;
+
 export interface ReadOutcome {
   readonly read: string;
   readonly ok: boolean;
   readonly detail: string;
 }
+
+/** The off-curve owners (PDAs) of a scan's token accounts, sorted; an account that does not decode is skipped (the producer refuses the set). */
+const offCurveOwners = (accounts: readonly { readonly owner: string; readonly data: string }[]): string[] => {
+  const owners = new Set<string>();
+  for (const a of accounts) {
+    try {
+      const o = decodeTokenAccount(fromBase64(a.data), a.owner as Address).owner;
+      if (!isOnCurve(decodeBase58(o))) owners.add(o);
+    } catch {
+      // Nothing to classify.
+    }
+  }
+  return [...owners].sort();
+};
 
 export class FactReaders {
   readonly #o: FactReadersOptions;
@@ -280,24 +337,72 @@ export class FactReaders {
   readonly #volumeTried = new Map<number, number>();
   readonly #volumeTampered = new Set<number>();
   #volumeStoreRead = false;
+  /**
+   * The latest read outcomes, newest last, for diagnostics and tests: at most `OUTCOMES_KEPT` (trimmed in batches, in
+   * place). It grew with every read for the whole process (a slow leak over a multi-day run).
+   */
   readonly outcomes: ReadOutcome[] = [];
+
+  #outcome(o: ReadOutcome): void {
+    this.outcomes.push(o);
+    if (this.outcomes.length > 2 * OUTCOMES_KEPT) this.outcomes.splice(0, this.outcomes.length - OUTCOMES_KEPT);
+  }
 
   constructor(o: FactReadersOptions) {
     this.#o = o;
+    const f = o.scansFile;
+    if (f !== undefined && existsSync(f)) {
+      try {
+        const v = JSON.parse(readFileSync(f, 'utf8')) as Record<string, unknown>;
+        if (!Number.isSafeInteger(v['day']) || !Number.isSafeInteger(v['scans']) || (v['scans'] as number) < 0) throw new Error('bad scans file');
+        this.#scanDay = v['day'] as number;
+        this.#scans = v['scans'] as number;
+        // Dated after today (the clock stepped back since it was written): spent until that day has passed, never a
+        // fresh day's budget; written back so a later process reads the same.
+        if ((v['day'] as number) > Math.floor(o.timers.now() / 86_400_000)) {
+          this.#scans = Number.MAX_SAFE_INTEGER;
+          this.#saveScans();
+        }
+      } catch {
+        // Unreadable: today's cap counts as spent, written back so the next UTC day starts again.
+        this.#scanDay = Math.floor(o.timers.now() / 86_400_000);
+        this.#scans = Number.MAX_SAFE_INTEGER;
+        this.#saveScans();
+      }
+    }
   }
 
   #ingest(source: Source, key: string, value: unknown): void {
     this.#o.feed.ingest(source, { type: 'offchain', key, value }, { receivedAt: this.#o.timers.now() });
   }
 
+  /** Where a read puts its answer: the feed now, or a batch's list until the whole batch has landed (`readBatch`). */
+  readonly #now: Put = (source, key, value) => this.#ingest(source, key, value);
+
   async #guard(read: string, f: () => Promise<string>): Promise<boolean> {
     try {
-      this.outcomes.push({ read, ok: true, detail: await f() });
+      this.#outcome({ read, ok: true, detail: await f() });
       return true;
     } catch (e) {
-      this.outcomes.push({ read, ok: false, detail: e instanceof Error ? e.message : 'failed' });
+      this.#outcome({ read, ok: false, detail: e instanceof Error ? e.message : 'failed' });
       return false;
     }
+  }
+
+  /**
+   * FEE-TIER-NOW: the pool's fee context from one bank that also holds PumpSwap's GlobalConfig and the pump-fees
+   * FeeConfig: the tiers, canonical flag, creator fee and coin flags (WATCH-1's decoder). Anything it cannot prove (a
+   * missing or foreign account) puts nothing: #market then falls back to the latest swap's terms, or has none.
+   */
+  static #feesOf(mint: string, layout: readonly string[], slot: bigint, at: (address: string) => { owner: string; data: string } | null, put: Put): void {
+    const [, pool, baseVault, quoteVault] = layout;
+    if (pool === undefined || baseVault === undefined || quoteVault === undefined) return;
+    const acc = (a: string) => {
+      const x = at(a);
+      return x === null ? null : { owner: x.owner, data: fromBase64(x.data) };
+    };
+    const d = decodeSnapshot(mint, pool, slot, [pool, baseVault, quoteVault, mint, PUMP_AMM_GLOBAL_CONFIG, PUMP_AMM_FEE_CONFIG].map(acc));
+    if (d.ok) put('helius', feesKey(mint), d.snapshot.ctx);
   }
 
   /** The canonical pool of a pump mint: PDA(index 0, pool authority of the mint, mint, wrapped SOL). */
@@ -313,19 +418,27 @@ export class FactReaders {
     return this.#guard(`accounts:${mint}`, async () => {
       const pool = FactReaders.canonicalPool(mint);
       let addresses = this.#layout.get(mint) ?? [mint, pool];
-      let r = await this.#o.rpc.getMultipleAccounts(addresses, priority);
-      if (!this.#layout.has(mint)) {
+      // POOL-DATA: the fee configs ride in the final bank here too (no extra call), so a lone read (the survival read
+      // at 30 min, before the window) never leaves a pool fact without its fee context.
+      const configs: readonly string[] = [PUMP_AMM_GLOBAL_CONFIG, PUMP_AMM_FEE_CONFIG];
+      const known = this.#layout.has(mint);
+      let r = await this.#o.rpc.getMultipleAccounts(known ? [...addresses, ...configs] : addresses, priority);
+      if (!known) {
         const p = r.accounts[1];
         if (p === null || p === undefined) throw new Error(`no pool account at ${pool}`);
         const decoded = decodePool(fromBase64(p.data)).value;
         addresses = [mint, pool, decoded.poolBaseTokenAccount, decoded.poolQuoteTokenAccount, decoded.lpMint];
         this.#layout.set(mint, addresses);
-        r = await this.#o.rpc.getMultipleAccounts(addresses, priority);
+        r = await this.#o.rpc.getMultipleAccounts([...addresses, ...configs], priority);
       }
+      const all = [...addresses, ...configs];
+      const at = (address: string) => r.accounts[all.indexOf(address)] ?? null;
       const read: AccountsRead = {
         mint, slot: r.slot, commitment: 'confirmed',
-        accounts: addresses.map((address, i) => ({ address, owner: r.accounts[i]?.owner ?? null, data: r.accounts[i]?.data ?? null })),
+        accounts: addresses.map((address) => ({ address, owner: at(address)?.owner ?? null, data: at(address)?.data ?? null })),
       };
+      // The fee context first: the pool fact the accounts make is never released without it.
+      FactReaders.#feesOf(mint, addresses, r.slot, at, (source, key, value) => this.#ingest(source, key, value));
       this.#ingest('helius', RAW.accounts(mint), read);
       return `slot ${r.slot}`;
     });
@@ -374,7 +487,7 @@ export class FactReaders {
    */
   async readHoldersAll(mint: string, priority: Priority = P2): Promise<boolean> {
     if (!this.#takeScan()) {
-      this.outcomes.push({ read: `holders-all:${mint}`, ok: false, detail: 'daily scan cap reached' });
+      this.#outcome({ read: `holders-all:${mint}`, ok: false, detail: 'daily scan cap reached' });
       return false;
     }
     return this.#guard(`holders-all:${mint}`, async () => {
@@ -383,32 +496,9 @@ export class FactReaders {
       if (m.account === null) throw new Error('mint account missing');
       // Supply first (slot A), then the scan at a bank no older than A (slot B >= A): with no mint authority the supply
       // can only fall, so balances summing to the supply at A prove nothing was left out and nothing burned between.
-      let filter: Token2022Filter = this.#o.token2022Filter ?? 'mintOnly';
-      let fallback = false;
-      let gpa: Awaited<ReturnType<FactRpc['getProgramAccounts']>>;
-      try {
-        gpa = await this.#o.rpc.getProgramAccounts(m.account.owner, mint, m.slot, priority, filter);
-      } catch (e) {
-        // Only the refusal of a too-large mint-only scan (-32600) earns one indexed retry, counted as its own scan. Every
-        // other failure (a 429, a timeout, "minimum context slot not reached", a legacy program) propagates: no retry.
-        // The retry's result stays fail-safe: an extension-less account holding tokens breaks the sum and no fact forms.
-        if (!(e instanceof FactRpcError && e.rpcCode === GPA_TOO_MANY_ACCOUNTS && m.account.owner === TOKEN_2022_PROGRAM && filter === 'mintOnly')) throw e;
-        if (!this.#takeScan()) throw new Error('mint-only scan refused and the daily scan cap is reached');
-        filter = 'indexed';
-        fallback = true;
-        gpa = await this.#o.rpc.getProgramAccounts(m.account.owner, mint, m.slot, priority, filter);
-      }
+      const { gpa, filter, fallback } = await this.#scan(m.account.owner, mint, m.slot, priority);
       if (gpa.slot < m.slot) throw new Error(`scan at slot ${gpa.slot} is older than the supply read at ${m.slot}`);
-      const owners = new Set<string>();
-      for (const a of gpa.accounts) {
-        try {
-          const o = decodeTokenAccount(fromBase64(a.data), a.owner as Address).owner;
-          if (!isOnCurve(decodeBase58(o))) owners.add(o);
-        } catch {
-          // The producer refuses the set; nothing to classify here.
-        }
-      }
-      const offCurve = [...owners].sort();
+      const offCurve = offCurveOwners(gpa.accounts);
       const ownerPrograms: { owner: string; program: string | null }[] = [];
       for (let i = 0; i < offCurve.length; i += 100) {
         const chunk = offCurve.slice(i, i + 100);
@@ -423,19 +513,241 @@ export class FactReaders {
     });
   }
 
+  /** The mint, canonical pool, both vaults and the LP mint, learning the vault and LP addresses from the pool once. */
+  async #layoutOf(mint: string, priority: Priority): Promise<{ readonly addresses: readonly string[]; readonly slot: bigint | null }> {
+    const known = this.#layout.get(mint);
+    if (known !== undefined) return { addresses: known, slot: null };
+    const pool = FactReaders.canonicalPool(mint);
+    const r = await this.#o.rpc.getMultipleAccounts([mint, pool], priority);
+    const p = r.accounts[1];
+    if (p === null || p === undefined) throw new Error(`no pool account at ${pool}`);
+    const decoded = decodePool(fromBase64(p.data)).value;
+    const addresses = [mint, pool, decoded.poolBaseTokenAccount, decoded.poolQuoteTokenAccount, decoded.lpMint];
+    const m = r.accounts[0];
+    if (m !== null && m !== undefined) this.#mintProgram.set(mint, m.owner);
+    this.#layout.set(mint, addresses);
+    return { addresses, slot: r.slot };
+  }
+
+  /** Owners of the mint's holders seen so far (largest-account discovery and scans), so one bank can classify them. */
+  readonly #owners = new Map<string, Set<string>>();
+
+  /**
+   * READ-COHERENT: a candidate's stage-2 and stage-3 read inputs as one coherent batch, so every fact the decision
+   * needs is fresh at one moment. Inputs judged by slot lag (mint, pool, LP, holders) come from ONE bank: the mint,
+   * pool, vaults and LP mint, the listed holder accounts and their owners in one getMultipleAccounts (slot A). The
+   * complete scan (slot B), the simulation and the cross-checks run alongside it, never after it. What is only
+   * discovery comes first and is never a fact: the pool layout, and the largest accounts with their owners (which
+   * accounts to list, which owners to classify). Nothing is put on the feed until the whole batch has answered; then
+   * every answer goes on at once between `read-batch:<mint>` and `reads:<mint>` (RAW.batchOpen, RAW.batchClose), and the
+   * strategy judges the candidate at the close, on the batch alone.
+   *
+   * Refused parts (no frame, so the gate rejects): a largest-account list whose owners at A were not all in the bank; a
+   * scan older than A (H12/H13: the supply must be read first) or with an off-curve owner the bank did not classify
+   * (remembered, so the next batch classifies it); a scan past the daily cap. The listed accounts are only which ones
+   * the view lists: balances, supply and owners are all at A, and GATE-1d bounds whatever the list leaves out.
+   */
+  async readBatch(mint: string, req: BatchRequest, priority: Priority = P2): Promise<BatchResult> {
+    const frames: { source: Source; key: string; value: unknown }[] = [];
+    const put: Put = (source, key, value) => void frames.push({ source, key, value });
+    // Each part's outcome under its old read kind, so the coverage report counts reads as before.
+    const parts: Promise<readonly [BatchPart, boolean]>[] = [];
+    const as = (part: BatchPart) => (ok: boolean) => [part, ok] as const;
+    let banked = false;
+    const prep = await this.#attempt(`batch-prep:${mint}`, async () => {
+      const layout = await this.#layoutOf(mint, priority);
+      const known = this.#owners.get(mint) ?? new Set<string>();
+      this.#owners.set(mint, known);
+      let listed: readonly string[] = [];
+      let minSlot = layout.slot ?? 0n;
+      if (req.holders !== null) {
+        const largest = await this.#o.rpc.getTokenLargestAccounts(mint, priority);
+        listed = largest.accounts.map((a) => a.address);
+        minSlot = largest.slot > minSlot ? largest.slot : minSlot;
+        if (listed.length > 0) {
+          const toks = await this.#o.rpc.getMultipleAccounts(listed, priority);
+          for (const t of toks.accounts) {
+            if (t === null) continue;
+            try {
+              known.add(decodeTokenAccount(fromBase64(t.data), t.owner as Address).owner);
+            } catch {
+              // Not a token account: the bank's decode refuses it.
+            }
+          }
+        }
+      }
+      return { value: { layout: layout.addresses, listed: req.holders === 'largest' ? listed : [], minSlot }, detail: `${listed.length} listed, ${known.size} owners` };
+    });
+    const p = prep;
+    if (p !== null) {
+      const ownersOf = [...(this.#owners.get(mint) ?? [])].filter((o) => !p.layout.includes(o) && !p.listed.includes(o)).sort();
+      // FEE-TIER-NOW: PumpSwap's GlobalConfig and the pump-fees FeeConfig ride in the same bank (no extra call), so the
+      // pool's fee context, every tier included, is read at the bank's slot with the pool.
+      const fees: readonly string[] = [PUMP_AMM_GLOBAL_CONFIG, PUMP_AMM_FEE_CONFIG].filter((a) => !p.layout.includes(a));
+      const addresses = [...p.layout, ...p.listed, ...ownersOf.filter((o) => !fees.includes(o)), ...fees];
+      // The scan's program is the mint's owner, learnt from the layout read (the mint is in every bank).
+      const mintOwner = this.#mintProgram.get(mint);
+      const scanned = req.holders === 'all' && mintOwner !== undefined && this.#takeScan();
+      if (req.holders === 'all' && !scanned) this.#outcome({ read: `holders-all:${mint}`, ok: false, detail: mintOwner === undefined ? 'mint program not known' : 'daily scan cap reached' });
+      // The final round: every call at once.
+      const bank = addresses.length <= 100 ? this.#o.rpc.getMultipleAccounts(addresses, priority) : Promise.reject(new Error(`${addresses.length} accounts do not fit one bank`));
+      const scan = scanned ? this.#scan(mintOwner!, mint, p.minSlot, priority) : null;
+      bank.catch(() => undefined);
+      scan?.catch(() => undefined);
+      if (req.spend !== null && this.simulate !== null) {
+        const sim = this.simulate;
+        const spend = req.spend;
+        parts.push(sim(mint, spend, (read) => {
+          if (parseSimRead(read) === null) throw new RangeError('malformed simulation read');
+          put('helius', RAW.sim(read.mint), read);
+        }).catch(() => false).then(as('sim')));
+      }
+      if (req.xcheck) parts.push(this.readCrossChecks(mint, priority, put).then((x) => x.some(Boolean)).then(as('xcheck')));
+      banked = await this.#guard(`accounts:${mint}`, async () => {
+        const b = await bank;
+        const at = (address: string) => b.accounts[addresses.indexOf(address)] ?? null;
+        const m = at(mint);
+        if (m !== null) this.#mintProgram.set(mint, m.owner);
+        put('helius', RAW.accounts(mint), { mint, slot: b.slot, commitment: 'confirmed', accounts: p.layout.map((address) => ({ address, owner: at(address)?.owner ?? null, data: at(address)?.data ?? null })) } satisfies AccountsRead);
+        FactReaders.#feesOf(mint, p.layout, b.slot, at, put);
+        if (req.holders === 'largest') parts.push(this.#guard(`holders:${mint}`, async () => this.#bankedHolders(mint, b.slot, p.listed, at, put)).then(as('holders')));
+        if (scan !== null) parts.push(this.#guard(`holders-all:${mint}`, async () => this.#bankedScan(mint, b.slot, await scan, at, put)).then(as('holders-all')));
+        return `slot ${b.slot}`;
+      });
+      if (!banked) await scan?.catch(() => undefined);
+    }
+    const done = await Promise.all(parts);
+    if (frames.length > 0) {
+      // The batch's age by slot: its oldest input judged by slot lag (mint, pool, LP, holders).
+      const slots = frames.filter((f) => LAG_BOUND.has(f.key.slice(0, f.key.lastIndexOf(':') + 1))).map((f) => (isObj(f.value) && typeof f.value['slot'] === 'bigint' ? f.value['slot'] : null)).filter((x): x is bigint => x !== null);
+      const oldest = slots.length === 0 ? null : slots.reduce((a, b) => (b < a ? b : a));
+      const keys = frames.map((f) => f.key).sort();
+      // One synchronous block: the members never reach the feed without their close.
+      this.#ingest('worker', RAW.batchOpen(mint), { mint, members: keys });
+      try {
+        for (const f of frames) this.#ingest(f.source, f.key, f.value);
+      } finally {
+        this.#ingest('worker', RAW.batchClose(mint), { mint, slot: oldest, members: keys });
+      }
+    }
+    // Every part asked for is counted: one that never ran (no prep, no bank, no scan) failed.
+    const out: Partial<Record<BatchPart, boolean>> = { accounts: banked };
+    if (req.holders !== null) out[req.holders === 'all' ? 'holders-all' : 'holders'] = false;
+    if (req.spend !== null && this.simulate !== null) out.sim = false;
+    if (req.xcheck) out.xcheck = false;
+    for (const [part, ok] of done) out[part] = ok;
+    return out;
+  }
+
+  /** `#guard` for a step that returns a value: null (and a failed outcome) when it throws. */
+  async #attempt<T>(read: string, f: () => Promise<{ readonly value: T; readonly detail: string }>): Promise<T | null> {
+    let out: T | null = null;
+    await this.#guard(read, async () => {
+      const r = await f();
+      out = r.value;
+      return r.detail;
+    });
+    return out;
+  }
+
+  /** The program of each mint (Token or Token-2022), from its last bank: the scan's program. */
+  readonly #mintProgram = new Map<string, string>();
+
+  /** H15's simulation, set by the worker's wiring (`withSim`); a batch asks it for the candidate's spend. */
+  simulate: SimFn | null = null;
+
+  /** The largest accounts at the bank's slot: balances, supply and owners' programs all from that one bank. */
+  #bankedHolders(mint: string, slot: bigint, listed: readonly string[], at: (address: string) => { owner: string; data: string } | null, put: Put): string {
+    const m = at(mint);
+    if (m === null) throw new Error('mint account missing');
+    const supply = decodeMint(fromBase64(m.data), m.owner as Address).supply;
+    const known = this.#owners.get(mint)!;
+    const accounts: HoldersRead['accounts'][number][] = [];
+    const unclassified: string[] = [];
+    for (const address of listed) {
+      const v = at(address);
+      if (v === null) continue;
+      const t = decodeTokenAccount(fromBase64(v.data), v.owner as Address);
+      if (t.mint !== mint) throw new Error(`token account ${address} is not of ${mint}`);
+      const owner = t.owner as string;
+      if (!known.has(owner)) {
+        known.add(owner);
+        unclassified.push(owner);
+        continue;
+      }
+      const o = at(owner);
+      // A plain wallet (System-owned) or an account that does not exist is a system wallet: null.
+      accounts.push({ address, owner, ownerProgram: o === null || o.owner === SYSTEM_PROGRAM ? null : o.owner, amount: t.amount, delegate: t.delegate as string | null, delegatedAmount: t.delegatedAmount });
+    }
+    if (unclassified.length > 0) throw new Error(`owners ${unclassified.sort().join(', ')} were not in the bank`);
+    put('helius', RAW.holders(mint), { mint, slot, commitment: 'confirmed', supply, accounts } satisfies HoldersRead);
+    return `${accounts.length} accounts, slot ${slot}`;
+  }
+
+  /** The complete scan, refused unless at or after the bank's supply read and with every off-curve owner classified by it. */
+  #bankedScan(mint: string, slot: bigint, s: Scan, at: (address: string) => { owner: string; data: string } | null, put: Put): string {
+    const m = at(mint);
+    if (m === null) throw new Error('mint account missing');
+    if (s.gpa.slot < slot) throw new Error(`scan at slot ${s.gpa.slot} is older than the supply read at ${slot}`);
+    const known = this.#owners.get(mint)!;
+    const offCurve = offCurveOwners(s.gpa.accounts);
+    const missing = offCurve.filter((o) => !known.has(o));
+    for (const o of missing) known.add(o);
+    if (missing.length > 0) throw new Error(`off-curve owners ${missing.join(', ')} were not in the bank`);
+    put('helius', RAW.holdersAll(mint), {
+      mint, slot: s.gpa.slot, commitment: 'confirmed', program: m.owner, mintSlot: slot, mintData: m.data, accounts: s.gpa.accounts,
+      ownerPrograms: offCurve.map((o) => ({ owner: o, program: at(o)?.owner ?? null })),
+      filter: m.owner === TOKEN_2022_PROGRAM ? s.filter : 'legacy', fallback: s.fallback,
+    });
+    return `${s.gpa.accounts.length} accounts at slot ${s.gpa.slot}, ${s.filter}`;
+  }
+
+  /**
+   * One getProgramAccounts of the mint's token accounts at a bank no older than `minSlot` (the scan already taken off
+   * the daily cap). Only the refusal of a too-large mint-only scan (-32600) earns one indexed retry, counted as its own
+   * scan. Every other failure (a 429, a timeout, "minimum context slot not reached", a legacy program) propagates: no
+   * retry. The retry's result stays fail-safe: an extension-less account holding tokens breaks the sum and no fact forms.
+   */
+  async #scan(program: string, mint: string, minSlot: bigint, priority: Priority): Promise<Scan> {
+    const filter: Token2022Filter = this.#o.token2022Filter ?? 'mintOnly';
+    try {
+      return { gpa: await this.#o.rpc.getProgramAccounts(program, mint, minSlot, priority, filter), filter, fallback: false };
+    } catch (e) {
+      if (!(e instanceof FactRpcError && e.rpcCode === GPA_TOO_MANY_ACCOUNTS && program === TOKEN_2022_PROGRAM && filter === 'mintOnly')) throw e;
+      if (!this.#takeScan()) throw new Error('mint-only scan refused and the daily scan cap is reached');
+      return { gpa: await this.#o.rpc.getProgramAccounts(program, mint, minSlot, priority, 'indexed'), filter: 'indexed', fallback: true };
+    }
+  }
+
   #scanDay = -1;
   #scans = 0;
 
   /** One scan off today's cap, or false when the cap is reached. */
   #takeScan(): boolean {
     const day = Math.floor(this.#o.timers.now() / 86_400_000);
-    if (this.#scanDay !== day) {
+    // Only forward: a clock stepped back keeps the later day's count (as the fill budget does).
+    if (day > this.#scanDay) {
       this.#scanDay = day;
       this.#scans = 0;
     }
     if (this.#scans >= (this.#o.holderScansPerDay ?? HOLDER_SCANS_PER_DAY)) return false;
     this.#scans++;
+    // Counted on disk before the scan runs: a death during it still counts it.
+    this.#saveScans();
     return true;
+  }
+
+  #saveScans(): void {
+    const f = this.#o.scansFile;
+    if (f === undefined) return;
+    // A write that fails (a full disk, a permission) never throws out of the readers (their constructor runs at the
+    // worker's start): the count stays in memory, so what is spent stays spent in this process, and it is logged.
+    try {
+      writeFileSync(`${f}.tmp`, JSON.stringify({ day: this.#scanDay, scans: this.#scans }));
+      renameSync(`${f}.tmp`, f);
+    } catch {
+      this.#o.log?.('Holder scan count not saved: it is kept in this process only.');
+    }
   }
 
   /**
@@ -554,7 +866,7 @@ export class FactReaders {
   }
 
   /** RugCheck's report, trimmed to the authorities (`read:rugcheck:<mint>`). Both fields must be present. */
-  async readRugCheck(mint: string, priority: Priority = P2): Promise<boolean> {
+  async readRugCheck(mint: string, priority: Priority = P2, put: Put = this.#now): Promise<boolean> {
     const s = this.#o.rugcheck;
     if (s === undefined) return false;
     return this.#guard(`rugcheck:${mint}`, async () => {
@@ -563,13 +875,13 @@ export class FactReaders {
       const a = v['mintAuthority'];
       const f = v['freezeAuthority'];
       if (!(a === null || typeof a === 'string') || !(f === null || typeof f === 'string')) throw new ProviderError('rugcheck', 'shape', 'report authorities are malformed');
-      this.#ingest('rugcheck', RAW.rugcheck(mint), { mint, mintAuthority: a === '' ? null : a, freezeAuthority: f === '' ? null : f });
+      put('rugcheck', RAW.rugcheck(mint), { mint, mintAuthority: a === '' ? null : a, freezeAuthority: f === '' ? null : f });
       return 'ok';
     });
   }
 
   /** GoPlus token security, trimmed to `mintable` and `freezable` status (`read:goplus:<mint>`). */
-  async readGoPlus(mint: string, priority: Priority = P2): Promise<boolean> {
+  async readGoPlus(mint: string, priority: Priority = P2, put: Put = this.#now): Promise<boolean> {
     const s = this.#o.goplus;
     if (s === undefined) return false;
     return this.#guard(`goplus:${mint}`, async () => {
@@ -577,13 +889,13 @@ export class FactReaders {
       const r = isObj(v) && isObj(v['result']) ? v['result'][mint] : undefined;
       if (!isObj(v) || v['code'] !== 1 || !isObj(r)) throw new ProviderError('goplus', 'shape', 'token_security has no result for this mint');
       const status = (x: unknown): string | null => (isObj(x) && (x['status'] === '0' || x['status'] === '1') ? x['status'] : null);
-      this.#ingest('goplus', RAW.goplus(mint), { mint, mintable: status(r['mintable']), freezable: status(r['freezable']) });
+      put('goplus', RAW.goplus(mint), { mint, mintable: status(r['mintable']), freezable: status(r['freezable']) });
       return 'ok';
     });
   }
 
   /** Jupiter Tokens `audit` authority flags (`read:jupiter-audit:<mint>`). */
-  async readJupiterAudit(mint: string, priority: Priority = P2): Promise<boolean> {
+  async readJupiterAudit(mint: string, priority: Priority = P2, put: Put = this.#now): Promise<boolean> {
     const s = this.#o.jupiter;
     if (s === undefined) return false;
     return this.#guard(`jupiter:${mint}`, async () => {
@@ -592,14 +904,14 @@ export class FactReaders {
       if (!isObj(row)) throw new ProviderError('jupiter', 'shape', 'tokens/search has no row for this mint');
       const audit = isObj(row['audit']) ? row['audit'] : {};
       const flag = (x: unknown): boolean | null => (typeof x === 'boolean' ? x : null);
-      this.#ingest('jupiter', RAW.jupiter(mint), { mint, mintAuthorityDisabled: flag(audit['mintAuthorityDisabled']), freezeAuthorityDisabled: flag(audit['freezeAuthorityDisabled']) });
+      put('jupiter', RAW.jupiter(mint), { mint, mintAuthorityDisabled: flag(audit['mintAuthorityDisabled']), freezeAuthorityDisabled: flag(audit['freezeAuthorityDisabled']) });
       return 'ok';
     });
   }
 
   /** Every cross-check source configured, in parallel. H16 needs at least one answer under 2 s old at the decision. */
-  async readCrossChecks(mint: string, priority: Priority = P2): Promise<boolean[]> {
-    return Promise.all([this.readRugCheck(mint, priority), this.readGoPlus(mint, priority), this.readJupiterAudit(mint, priority)]);
+  async readCrossChecks(mint: string, priority: Priority = P2, put: Put = this.#now): Promise<boolean[]> {
+    return Promise.all([this.readRugCheck(mint, priority, put), this.readGoPlus(mint, priority, put), this.readJupiterAudit(mint, priority, put)]);
   }
 
   /**
@@ -667,7 +979,7 @@ export class FactReaders {
         if (rows === null) continue;
         for (const r of rows) this.#ingest('github', RAW.volumeHour, r);
         this.#volumeDays.set(day, d);
-        this.outcomes.push({ read: `chain-volume:${d.day}`, ok: true, detail: `${rows.length} hours from the store` });
+        this.#outcome({ read: `chain-volume:${d.day}`, ok: true, detail: `${rows.length} hours from the store` });
       }
     }
     const limited = (e: unknown): boolean => e instanceof ScheduleRefused || (e instanceof ProviderError && (e.kind === 'rate_limited' || e.status === 403));
@@ -686,7 +998,7 @@ export class FactReaders {
         if (v.length < 100) break;
       }
     } catch (e) {
-      this.outcomes.push({ read: 'chain-volume:list', ok: false, detail: e instanceof Error ? e.message : 'failed' });
+      this.#outcome({ read: 'chain-volume:list', ok: false, detail: e instanceof Error ? e.message : 'failed' });
       return false;
     }
     // Days already verified must still match their release.
@@ -700,7 +1012,7 @@ export class FactReaders {
       this.#volumeTampered.add(day);
       src.store?.save({ ...d, tampered: true });
       const detail = `${d.day} volume unknown: release ${d.tag} changed after it was verified`;
-      this.outcomes.push({ read: `chain-volume:${d.day}`, ok: false, detail });
+      this.#outcome({ read: `chain-volume:${d.day}`, ok: false, detail });
       src.alert?.(detail);
     }
     let all = true;
@@ -737,9 +1049,9 @@ export class FactReaders {
         const stored: StoredVolumeDay = { tag, day: name, hours: { id: refs.hours.id, sha256: refs.hours.sha256, text: hours }, check: { id: refs.check.id, sha256: refs.check.sha256, text: check }, tampered: false };
         this.#volumeDays.set(day, stored);
         src.store?.save(stored);
-        this.outcomes.push({ read, ok: true, detail: `${rows.length} hours` });
+        this.#outcome({ read, ok: true, detail: `${rows.length} hours` });
       } catch (e) {
-        this.outcomes.push({ read, ok: false, detail: e instanceof Error ? e.message : 'failed' });
+        this.#outcome({ read, ok: false, detail: e instanceof Error ? e.message : 'failed' });
         this.#volumeTried.set(day, this.#o.timers.now());
         all = false;
         if (limited(e)) return false;

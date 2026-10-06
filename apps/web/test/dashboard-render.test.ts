@@ -8,7 +8,7 @@ import { BacktestReportView, groupMonth } from '../src/dashboard/BacktestReport.
 import { Boundary } from '../src/dashboard/Boundary.tsx';
 import { monthTotals, PnlCalendar } from '../src/dashboard/Calendar.tsx';
 import { Dashboard } from '../src/dashboard/Dashboard.tsx';
-import { headline, Journal, OpenPosition, Stats, StatusFlags } from '../src/dashboard/Sections.tsx';
+import { headline, JournalList, OpenPosition, Stats, StatusFlags } from '../src/dashboard/Sections.tsx';
 import { Load, OfflineContext, STALE_TICK_MS, startStaleTicker } from '../src/dashboard/State.tsx';
 import { TradeDetail, TradeTable } from '../src/dashboard/Trades.tsx';
 import { fixtureApi, fixtureDays, fixtureDecisions, fixturePosition, fixtureReport, fixtureStats, fixtureTrades } from '../src/dev/dashboardFixtures.ts';
@@ -100,7 +100,9 @@ describe('decisions, position and status', () => {
     const rejected = fixtureDecisions('paper').find((d) => d.outcome === 'rejected');
     if (!rejected) throw new Error('no rejection');
     expect(headline(rejected)).toMatch(/: .+ \(needs .+\)$/);
-    const out = text(html(h(Journal, { decisions: fixtureDecisions('paper'), onOpen: noop })));
+    // Every row, as after enough presses of "Show more" (APP-TRUTH: the journal opens on the newest 5).
+    const all = fixtureDecisions('paper');
+    const out = text(html(h(JournalList, { decisions: all, onOpen: noop, shown: all.length, onMore: noop })));
     expect(out).toContain('Rejected');
     expect(out).toContain('Entered');
   });
@@ -110,9 +112,11 @@ describe('decisions, position and status', () => {
     for (const label of ['Liquidation value', 'Unrealized', 'Costs so far', 'Price stop', 'Take profit', 'Armed']) expect(out).toContain(label);
   });
 
-  it('shows worker states, and an offline worker plainly', () => {
+  it('shows worker states, and a worker with no feed connected plainly', () => {
     expect(text(html(h(StatusFlags, { status: { mode: 'paper', connected: true, flags: ['exit-blocked', 'paused'], risk: [] } })))).toContain('Exit blocked Paused');
-    expect(text(html(h(StatusFlags, { status: { mode: 'paper', connected: false, flags: [], risk: [] } })))).toContain('Worker not connected');
+    const down = text(html(h(StatusFlags, { status: { mode: 'paper', connected: false, flags: [], risk: [] } })));
+    expect(down.trim()).toBe('Feeds down');
+    expect(down).not.toContain('Worker not connected');
   });
 });
 
@@ -127,8 +131,10 @@ describe('backtest report', () => {
   });
 
   it('holds back win rate, average and interval for a group below 300 trades', () => {
-    const counts = fixtureReport.results.map((r) => r.trades);
-    expect(counts.some((n) => n >= 300) || counts.every((n) => n < 300)).toBe(true);
+    // Per group: one group just below 300 holds back its three figures, the others at 300 show theirs.
+    expect(fixtureReport.results.length).toBeGreaterThanOrEqual(2);
+    const mixed = { ...fixtureReport, results: fixtureReport.results.map((r, i) => ({ ...r, trades: i === 0 ? 299 : 300, wins: 150 })) };
+    expect(text(html(h(BacktestReportView, { report: mixed }))).match(/Not enough trades/g)).toHaveLength(3);
     const small = { ...fixtureReport, results: fixtureReport.results.map((r) => ({ ...r, trades: 299 })) };
     const out = text(html(h(BacktestReportView, { report: small })));
     expect(out.match(/Not enough trades/g)).toHaveLength(3 * small.results.length);

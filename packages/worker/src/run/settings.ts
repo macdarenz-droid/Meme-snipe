@@ -4,7 +4,7 @@ import { type FillConfig, type Policy, type ResearchConfig, exitsFor } from '../
 import type { FillScenario } from '../../../core/src/fills/index.ts';
 import { PPM } from '../../../core/src/costs/index.ts';
 import { MAX_CREATED_ACCOUNT_BYTES, USER_VOLUME_ACCUMULATOR_SIZE, rentExempt } from '../../../core/src/tx/rent.ts';
-import type { StrategyConfig } from '../engine/strategy.ts';
+import { CREATE_KEEP_MS, type StrategyConfig } from '../engine/strategy.ts';
 
 /** The paper fill scenario: conservative (the safe side) until the dry run measures our own latency (§11). */
 export const PAPER_SCENARIO = 'conservative';
@@ -47,9 +47,13 @@ export const strategyConfig = (
     blockhashValidBlocks: net.blockhashValidBlocks,
     evaluateEveryMs: policy.gates.maxQuoteAgeMs,
     barMs: exitsFor(policy.exits, 'U2').atrBarMs,
+    // Mainnet's slot target is 350 ms since epoch 1020 (August 2026; 400 ms from genesis, about 360 ms measured after the
+    // change); 500 ms bounds the mean from above, so a fill dated from its slot is never dated later than it happened.
+    maxSlotMs: 500,
     keepBars: exitsFor(policy.exits, 'U2').atrPeriod * 4,
     // REC-1 (supervisor ruling): at most 3 rejected candidates' pools watched past their window at once (Helius cost).
     maxTails: 3,
+    createKeepMs: CREATE_KEEP_MS,
   };
 };
 

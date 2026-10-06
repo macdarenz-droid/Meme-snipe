@@ -12,7 +12,7 @@ import { FACT_READS_KEY, FactRpc, liveFacts } from '../src/facts/index.ts';
 import type { FactSource } from '../src/run/facts.ts';
 import { ProviderError, rpcHandler, type Secrets, type Source, scriptedHttp } from '../src/providers/index.ts';
 import { ALCHEMY_FREE, COINBASE_PUBLIC, GOPLUS_FREE, HELIUS_FREE, JUPITER_FREE, P1, P3, RUGCHECK_FREE, Scheduler, type SchedulerSpec } from '../src/scheduler/index.ts';
-import { LANDS, MINT, Market, POOL_ADDRESS, T, dueTimers, makeWorker, passingMarket, scriptedSource, tempState } from './worker-harness.ts';
+import { LANDS, MINT, Market, POOL_ADDRESS, T, dueTimers, makeWorker, passingMarket, scriptedSource, slotAt, tempState } from './worker-harness.ts';
 import { POOL, QUOTE_VAULT, account } from '../../core/test/gates/world.ts';
 import { poolSell } from '../../core/src/amm/index.ts';
 import { withSlippage } from '../../core/src/fills/index.ts';
@@ -20,10 +20,12 @@ import { FEE_CONTEXT } from '../../core/test/gates/world.ts';
 import { PUMP_AMM_GLOBAL_CONFIG, fromBase64 } from '../../core/src/chain/index.ts';
 import { PUMP_AMM_FEE_CONFIG, type ReadAccount, decodeSnapshot } from '../src/run/snapshot.ts';
 import type { WatchRead } from '../src/run/watch.ts';
+import { BEHIND } from '../src/run/behind.ts';
 import { SLOT_MS, parseConfig } from '../src/run/config.ts';
 import { DEFAULT_LIVE_FEED } from '../src/providers/live-feed.ts';
 import { SECOND_PATH_UNAVAILABLE } from '../src/run/worker.ts';
-import { parsePool, xcheckKey } from '../../core/src/gates/index.ts';
+import { gatesOfStages, parsePool, xcheckKey } from '../../core/src/gates/index.ts';
+import { NOT_EVALUATED } from '../src/engine/strategy.ts';
 
 type H = ReturnType<typeof makeWorker>;
 const journal = (dir: string) => readFileSync(join(dir, 'journal.jsonl'), 'utf8');
@@ -265,6 +267,46 @@ describe('§18: a feed gap (TEST-3)', () => {
   });
 });
 
+describe('§18: the worker falls behind its feeds (BEHIND)', () => {
+  it('a loop cycle over 10 s late halts new entries, the open position still exits, and entries resume after 30 s on time', async () => {
+    // The loop's own monotonic clock: each cycle 100 ms, plus `late` (how far the worker runs behind its inputs).
+    let mono = 0;
+    let late = 0;
+    const feeds = [scriptedSource('helius-ws', true, ['helius']), scriptedSource('coinbase-ws', true, ['coinbase'])];
+    const h = makeWorker({ timers: dueTimers(T - 16 * 86_400_000), sources: () => feeds, config: { ZEROED_HEALTH_ADDR: '127.0.0.1:18920', ZEROED_API_ADDR: '127.0.0.1:18921' }, loopClock: () => (mono += 100 + late) });
+    const boot0 = new Market(h);
+    await boot(h, boot0, feeds);
+    // The passing market with its held pool's facts (what an exit is priced from).
+    const m = await passingMarket(h, { heldPoolFacts: true });
+    const on = (scale = 1_000_000n) => () => { up(h, m, 'coinbase'); up(h, m, 'helius'); tick(m, scale)(); };
+    await until(m, () => Object.values(h.worker.book.positions).some((p) => p.status === 'open'), 30_000, on());
+    const pid = Object.values(h.worker.book.positions).find((p) => p.status === 'open')!.id;
+    expect(h.worker.health().entries_halted).toBe(false);
+    // The worker falls 15 s behind: entries halt, named, journaled and logged.
+    late = 15_000;
+    await until(m, () => h.worker.health().halt_reasons.includes(BEHIND), 10_000, on());
+    const haltAt = m.now;
+    expect(kinds(h.stateDir, 'halt').at(-1)!['reasons']).toEqual([BEHIND]);
+    expect(h.logs.some((l) => l.startsWith('Behind: a loop cycle ran 15.0 s over its interval'))).toBe(true);
+    // Behind, the price falls through the stop: the open position still exits.
+    await until(m, () => h.worker.book.positions[pid]!.status === 'closed', 60_000, on(700_000n));
+    expect(h.worker.book.positions[pid]!.status).toBe('closed');
+    expect(h.worker.health().halt_reasons).toEqual([BEHIND]);
+    // Still behind with the market passing again: no entry is proposed.
+    await m.run(10_000, 400, on());
+    const proposed = () => kinds(h.stateDir, 'decision').filter((l) => l['action'] === 'enter').map((l) => Date.parse(String(l['ts'])));
+    expect(proposed().filter((t) => t > haltAt)).toEqual([]);
+    // On time again: the halt clears only after 30 s of calm cycles.
+    late = 0;
+    const calmFrom = mono;
+    await until(m, () => !h.worker.health().entries_halted, 120_000, on());
+    expect(mono - calmFrom).toBeGreaterThanOrEqual(30_000);
+    expect(kinds(h.stateDir, 'resume').length).toBeGreaterThan(0);
+    expect(h.logs.some((l) => l.startsWith('Caught up:'))).toBe(true);
+    await h.worker.stop();
+  });
+});
+
 describe('§18: a provider rate-limits (TEST-3)', () => {
   it('every read answers 429: no fact is made, the provider is left alone for its window, an exit-class read goes before the queued reads, and the open position still exits', async () => {
     const timers = dueTimers(T - 16 * 86_400_000);
@@ -355,10 +397,12 @@ describe('§18: a provider rate-limits (TEST-3)', () => {
     expect(Object.values(h.worker.book.positions)).toEqual([]);
     // Not a global halt: no halt reason names the provider; the gate says which fact is missing.
     expect(h.worker.health().halt_reasons).toEqual([]);
-    // From T on (every other fact passing), each reject names only the cross-check, missing.
+    // From T on (every other fact passing), each reject names only the cross-check, missing; the cross-check is a stage-2
+    // gate, so stages 3 and 4 are named as not evaluated (FACTS-1f, BT-2's stages).
+    const later = `; ${NOT_EVALUATED}${gatesOfStages([3, 4]).join(',')}`;
     const rejects = kinds(h.stateDir, 'decision').filter((l) => l['action'] === 'reject' && Date.parse(String(l['ts'])) >= T).map((l) => (l['reasons'] as string[]).slice(3));
     expect(rejects.length).toBeGreaterThan(0);
-    for (const r of rejects) expect(r).toEqual([expect.stringMatching(/^hard reject H16: H16 missing no xcheck as of slot \d+$/)]);
+    for (const r of rejects) expect(r).toEqual([expect.stringMatching(new RegExp(`^hard reject H16: H16 missing no xcheck as of slot \\d+${later}$`))]);
     await h.worker.stop();
   }, 60_000);
 });
@@ -378,8 +422,9 @@ const scaledRead = (h: H, scalePpm: () => bigint, calls: string[][], latencyMs =
     new DataView(data.buffer, data.byteOffset, data.byteLength).setBigUint64(64, (QUOTE_VAULT * scalePpm()) / 1_000_000n, true);
     return { owner: acc.owner, data };
   });
-  // A confirmed read's context slot: behind the tip, so a later pool fact from the feed is newer.
-  return { slot: h.worker.feed.releasedThrough, accounts };
+  // A confirmed read's context slot: the chain's, two slots behind its tip (the chain moves on whether or not the feed
+  // does), so a later pool fact from the feed is newer.
+  return { slot: slotAt(h.timers.now()) - 2n, accounts };
 };
 
 describe('§18: the feed dies for 5 minutes with a position open and the pool falls 40% (WATCH-1)', () => {
@@ -399,10 +444,12 @@ describe('§18: the feed dies for 5 minutes with a position open and the pool fa
     // The entry in flight and the open were watched already (risk review B1): the vault layout was learned then.
     expect(calls[0]).toEqual([POOL_ADDRESS]);
     const before = calls.length;
-    // A held minute on a healthy feed: no read at all (the CU projection at the defaults: one read at the open, 20 CU,
-    // and nothing after it while the pool's facts keep coming).
+    // A held minute on a healthy feed: no read but the verify reads, one per ZEROED_WATCH_VERIFY_MS (the CU projection
+    // at the defaults: one read at the open and one every 30 s, 20 CU each, while the pool's facts keep coming).
     await m.run(60_000, 100, tick(m));
-    expect(calls.length).toBe(before);
+    expect(calls.length - before).toBe(2);
+    expect(calls.slice(before).every((c) => c.length === 6)).toBe(true);
+    const verified = calls.length;
     // Swaps on the pool give the strategy observed fee terms of its own, before the feed dies.
     for (let k = 0; k < 3; k++) {
       m.swap('BuyEvent', `buyer${k}`, 1_000_000n);
@@ -411,7 +458,7 @@ describe('§18: the feed dies for 5 minutes with a position open and the pool fa
     const observed = h.worker.strategy.observedFees(MINT);
     expect(observed).toBeDefined();
     // While the feed is alive the watch reads nothing: each slot releases a new pool fact.
-    expect(calls.length).toBe(before);
+    expect(calls.length).toBe(verified);
     // The feed dies: no slot, no pool fact, nothing. The pool falls 40% on chain.
     scale = 600_000n;
     const deadAt = m.now;
@@ -481,6 +528,80 @@ describe('§18: the feed dies for 5 minutes with a position open and the pool fa
     await until(m, () => kinds(h.stateDir, 'decision').some((l) => Date.parse(String(l['ts'])) >= deadAt && l['action'] === 'submit'), 10_000, undefined, 100);
     expect(kinds(h.stateDir, 'alert').map((l) => l['level'])).toEqual(['critical', 'cleared']);
     expect(h.worker.health().critical).toEqual([]);
+    await h.worker.stop();
+  }, 60_000);
+
+  /** WATCH-1c: a position open on a pool kept by POS-1's chain (its trade stream and one account read), quiet after. */
+  const quietHeld = async (port: number) => {
+    const readAt: number[] = [];
+    const o = { scale: 1_000_000n, lagSlots: 0n };
+    const feeds = [scriptedSource('helius-ws', true, ['helius'])];
+    let h!: H;
+    h = makeWorker({ timers: dueTimers(T - 16 * 86_400_000), sources: () => feeds, watchRead: (a) => {
+      readAt.push(h.timers.now());
+      return scaledRead(h, () => o.scale, [])(a).then((r) => ({ ...r, slot: r.slot - o.lagSlots }));
+    }, config: { ZEROED_HEALTH_ADDR: `127.0.0.1:${port}`, ZEROED_API_ADDR: `127.0.0.1:${port + 1}` } });
+    const m = new Market(h);
+    await boot(h, m, feeds);
+    const pm = await passingMarket(h);
+    const readSlot = h.worker.feed.releasedThrough;
+    pm.tradesStart(readSlot - 100n);
+    pm.accountsRead(readSlot);
+    await until(m, () => Object.values(h.worker.book.positions).some((p) => p.status === 'open'), 30_000, tick(pm), 100);
+    const p0 = Object.values(h.worker.book.positions).find((p) => p.status === 'open')!;
+    await m.run(2_000, 100, () => m.slot());
+    const w = (parseConfig({ ZEROED_STATE_DIR: '/x', ZEROED_MODE: 'paper' }, () => null) as { config: { watch: { verifyMs: number; everyMs: number } } }).config.watch;
+    return { h, m, pm, p0, readAt, o, w };
+  };
+
+  it('a quiet held pool on a healthy feed: its covered stream proves it unchanged, so the watch makes only its verify reads for the whole hold and the market stays quotable; a vault change on no pool transaction is caught by the verify read (WATCH-1c)', async () => {
+    const { h, m, p0, readAt, o, w } = await quietHeld(18918);
+    const before = readAt.length;
+    const from = m.now;
+    // Ten quiet minutes, slot by slot (400 ms).
+    const HOLD = 10 * 60_000;
+    const ages: number[] = [];
+    for (let t = 0; t < HOLD; t += 400) {
+      await m.run(400, 400, () => m.slot());
+      ages.push(m.now - h.worker.poolOf(MINT)!.atMs);
+    }
+    // Only the verify reads, one per ZEROED_WATCH_VERIFY_MS: 20 for ten minutes (it read about 1,500 times before).
+    const reads = readAt.slice(before);
+    expect(reads.length).toBe(HOLD / w.verifyMs);
+    expect(reads.every((t, k) => k === 0 || t - reads[k - 1]! >= w.verifyMs)).toBe(true);
+    expect(Math.max(...ages)).toBeLessThan(TRIAL_POLICY.gates.maxQuoteAgeMs);
+    expect(h.worker.book.positions[p0.id]!.status).toBe('open');
+    expect(m.now - from).toBeGreaterThanOrEqual(HOLD);
+    // SOL taken straight out of the quote vault is on no pool transaction (here: the vault reads 30% lower, no event):
+    // the next verify read disagrees with the proven state, its snapshot is the market, and the stop goes out.
+    o.scale = 700_000n;
+    const movedAt = m.now;
+    const mine = () => kinds(h.stateDir, 'decision').filter((l) => Date.parse(String(l['ts'])) >= movedAt);
+    const took = await until(m, () => mine().some((l) => l['action'] === 'submit'), 60_000, () => m.slot(), 100);
+    expect(took).toBeLessThanOrEqual(w.verifyMs + w.everyMs + 2_000);
+    expect(mine().find((l) => l['action'] === 'trigger_exit')!['reasons']).toEqual(expect.arrayContaining([expect.stringMatching(/^price_stop/)]));
+    await h.worker.stop();
+  }, 120_000);
+
+  it('a node that answers from a bank far behind the live head is refused and alerted, never taken as a fresh price (WATCH-1d, audit)', async () => {
+    const { h, m, readAt, o, w } = await quietHeld(18922);
+    o.lagSlots = 20n;
+    const quiet = readAt.length;
+    await until(m, () => h.worker.health().critical.length > 0, w.verifyMs + 5_000, () => m.slot(), 400);
+    expect(readAt.length).toBeGreaterThan(quiet);
+    expect(h.worker.health().critical).toEqual([expect.stringMatching(new RegExp(`^${MINT}: no fresh price \\(the read's bank is slot \\d+, 1\\d slots behind the head \\d+ \\(at most 2\\)\\)$`))]);
+    await h.worker.stop();
+  }, 60_000);
+
+  it('a quiet held pool whose stream gaps loses its proof: the watch reads on its next look (WATCH-1c)', async () => {
+    const { h, m, pm, readAt, w } = await quietHeld(18920);
+    await m.run(10_000, 400, () => m.slot());
+    const quiet = readAt.length;
+    pm.tradesGap(h.worker.feed.openSlot, null);
+    await until(m, () => (parsePool(h.worker.poolFact(MINT))?.obs.quality ?? []).includes('partial'), 4_000, () => m.slot(), 100);
+    const gapAt = m.now;
+    await until(m, () => readAt.length > quiet, 2_000, () => m.slot(), 100);
+    expect(readAt[quiet]! - gapAt).toBeLessThanOrEqual(w.everyMs);
     await h.worker.stop();
   }, 60_000);
 

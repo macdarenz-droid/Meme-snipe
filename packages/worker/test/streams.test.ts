@@ -1,10 +1,10 @@
 // RPC streams on recorded frames: subscribe, notifications to frames, reconnect with backfill, halt, two providers.
 import { describe, expect, it } from 'vitest';
-import { PUMP_AMM_GLOBAL_CONFIG, PUMP_GLOBAL, transactionEvents } from '../../core/src/chain/index.ts';
+import { PUMP_AMM_GLOBAL_CONFIG, PUMP_GLOBAL, logEvents, transactionEvents } from '../../core/src/chain/index.ts';
 import { createReplay, Engine, type MarketEvent } from '../../core/src/engine/index.ts';
 import { CONFIG } from '../../core/test/fixtures.ts';
 import {
-  DEFAULT_LIVE_FEED, FakeSocketHub, frameEvents, LiveFeed, RpcHttp, RpcStream, rpcHandler, scriptedHttp, TxFetcher, type Frame,
+  DEFAULT_LIVE_FEED, FAILED_LOGS, FakeSocketHub, frameEvents, LiveFeed, RpcHttp, RpcStream, rpcHandler, scriptedHttp, TxFetcher, type Frame,
 } from '../src/providers/index.ts';
 import { HELIUS_FREE, ManualTimers, P0, P1, P2, P3, Scheduler } from '../src/scheduler/index.ts';
 import { blockNetwork, recordOf, settle, tx } from './helpers.ts';
@@ -189,6 +189,33 @@ describe('RPC stream', () => {
     expect(frames.find((f) => f.body.type === 'logs')!.duplicate).toBe(false);
     expect(frameEvents(frames).filter((e) => e.id.startsWith('log:')).map((e) => e.id)).toEqual(released.filter((e) => e.id.startsWith('log:')).map((e) => e.id));
     expect(() => createReplay(frameEvents(frames))).not.toThrow();
+  });
+
+  it('FAILED-LOGS: a failed transaction is seen (signature, slot, err) but its log lines never reach the feed; the released events are those its lines gave', async () => {
+    const c = tx('pump CreateEvent');
+    const slot = Number(c.slot);
+    const { hub, frames, feed, stream, timers } = setup(() => undefined);
+    stream.watchLogs(MINT_AUTH, { priority: P3, decodeLogs: true });
+    stream.start();
+    hub.last.open();
+    const [sub] = ack(hub);
+    const err = { InstructionError: [3, { Custom: 6004 }] };
+    const before = { ...FAILED_LOGS };
+    hub.last.push({ jsonrpc: '2.0', method: 'logsNotification', params: { subscription: sub, result: { context: { slot }, value: { signature: c.signature, err, logs: c.base64.meta!.logMessages } } } });
+    feed.ingest('helius', { type: 'slot', slot: BigInt(slot) + 1n, parent: null, root: null }, { receivedAt: timers.now() + 1 });
+    await settle();
+    feed.advance(timers.now() + 10_000);
+    const released: MarketEvent[] = [];
+    for (let e = feed.next(); e; e = feed.next()) if (e.kind === 'market') released.push(e);
+    const mine = frames.filter((f) => 'signature' in f.body && f.body.signature === c.signature);
+    expect(mine.map((f) => f.body.type)).toEqual(['seen']);
+    expect((mine[0]!.body as { err: unknown }).err).toEqual(err);
+    // What the lines would have given: nothing (a failed transaction's events were rolled back).
+    expect(logEvents(c.base64.meta!.logMessages!, err).events).toEqual([]);
+    expect(released.filter((e) => e.id.includes(c.signature)).map((e) => e.id)).toEqual([`seen:${c.signature}`]);
+    // Counted for the memory probe: one notice, its lines' characters.
+    expect(FAILED_LOGS.notices - before.notices).toBe(1);
+    expect(FAILED_LOGS.chars - before.chars).toBe(c.base64.meta!.logMessages!.reduce((n, l) => n + l.length, 0));
   });
 
   it('cut or malformed log lines are reported as such, never guessed past', () => {
@@ -428,16 +455,43 @@ describe('RPC stream', () => {
         r.watch.sync();
         const waits: number[] = [];
         for (let k = 0; k < 7; k++) {
-            r.answer(false);
+          r.answer(false);
           const asked = r.asked();
           let waited = 0;
-          while (r.asked() === asked) {
+          // Bounded: a watch never asked again fails the assertion below instead of looping forever.
+          while (r.asked() === asked && waited < 120_000) {
             r.second();
             waited += 1_000;
           }
           waits.push(waited);
         }
         expect(waits).toEqual([2_000, 4_000, 8_000, 16_000, 32_000, 60_000, 60_000]);
+      });
+
+      it('a watch served again starts over: a refusal hours later waits 2 s, not the doubled wait of before', async () => {
+        const r = await refusing();
+        r.watch.sync();
+        r.answer(false);
+        r.second();
+        r.second();
+        expect(r.asked()).toBe(2);
+        r.answer(false); // second refusal: the next wait is 4 s
+        for (let k = 0; k < 4; k++) r.second();
+        expect(r.asked()).toBe(3);
+        r.answer(true); // served: the wait is forgotten
+        await settle();
+        // Hours later the server refuses it again (a reconnect re-subscribes it and the server says no).
+        for (let k = 0; k < 10; k++) r.second();
+        r.t.hub.last.drop();
+        r.t.timers.advance(5_000);
+        r.t.hub.last.open();
+        const latest = r.t.hub.last.requests().filter((q) => q.method === 'logsSubscribe' && JSON.stringify(q.params).includes(HELD)).at(-1)!;
+        r.t.hub.last.push({ jsonrpc: '2.0', id: latest.id, error: { code: -32602 } });
+        const asked = r.asked();
+        r.second();
+        expect(r.asked()).toBe(asked);
+        r.second();
+        expect(r.asked()).toBe(asked + 1);
       });
 
       it('a pool that leaves the list and comes back is asked again at once (its wait is forgotten)', async () => {

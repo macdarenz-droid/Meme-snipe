@@ -63,24 +63,51 @@ const checkTape = (
     return required ? { ok: false, code: 'not-covered', detail: `no trade event of ${what} since migration` } : { ok: true, events: 0 };
   }
   for (const e of entries) {
-    const v = isObj(e.value) ? e.value : null;
-    const ev = v !== null && isObj(v['event']) ? v['event'] : null;
-    const slot = v?.['txSlot'];
-    if (v === null || ev === null || typeof ev['trailing'] !== 'number' || typeof ev['extra'] !== 'string' || typeof slot !== 'bigint') {
-      return { ok: false, code: 'malformed', detail: `trade event ${e.source} of ${what} has no readable tail`, signature: v === null ? e.source : signatureOf(e, v) };
-    }
-    const signature = signatureOf(e, v);
-    const trailing = ev['trailing'];
-    const extra = ev['extra'];
-    const allowed = allowedLengths(program, slot);
-    if (!allowed.includes(trailing) || extra.length !== 2 * trailing) {
-      return { ok: false, code: 'event-tail', signature, detail: `${what} trade event tail is ${trailing} bytes at slot ${slot}; the upgrade boundary allows ${allowed.join(' or ')} (first offending signature ${signature})` };
-    }
-    if (/[^0]/.test(extra)) {
-      return { ok: false, code: 'event-tail', signature, detail: `${what} trade event tail is non-zero (${extra}) on a SOL-quoted market (first offending signature ${signature})` };
-    }
+    const failed = tailVerdict(e, program, what);
+    if (failed !== null) return failed;
   }
   return { ok: true, events: entries.length };
+};
+
+/**
+ * One trade event's tail against the boundary: null when it passes; else the failure (`malformed` for an event with no
+ * readable tail, `event-tail` for a wrong length or non-zero bytes). The check and the store's collapse both use it.
+ */
+const tailVerdict = (e: AsOfEntry, program: Program, what: string): Exclude<TailCheck, { readonly ok: true }> | null => {
+  const v = isObj(e.value) ? e.value : null;
+  const ev = v !== null && isObj(v['event']) ? v['event'] : null;
+  const slot = v?.['txSlot'];
+  if (v === null || ev === null || typeof ev['trailing'] !== 'number' || typeof ev['extra'] !== 'string' || typeof slot !== 'bigint') {
+    return { ok: false, code: 'malformed', detail: `trade event ${e.source} of ${what} has no readable tail`, signature: v === null ? e.source : signatureOf(e, v) };
+  }
+  const signature = signatureOf(e, v);
+  const trailing = ev['trailing'];
+  const extra = ev['extra'];
+  const allowed = allowedLengths(program, slot);
+  if (!allowed.includes(trailing) || extra.length !== 2 * trailing) {
+    return { ok: false, code: 'event-tail', signature, detail: `${what} trade event tail is ${trailing} bytes at slot ${slot}; the upgrade boundary allows ${allowed.join(' or ')} (first offending signature ${signature})` };
+  }
+  if (/[^0]/.test(extra)) {
+    return { ok: false, code: 'event-tail', signature, detail: `${what} trade event tail is non-zero (${extra}) on a SOL-quoted market (first offending signature ${signature})` };
+  }
+  return null;
+};
+
+/** A trade-event key's program (`poolTradeKeys`, `curveTradeKeys`), or null for any other key. */
+const TRADE_KEY = /^(?:logs:)?(pump_amm):(?:BuyEvent|SellEvent):|^(?:logs:)?(pump):TradeEvent:/;
+
+/**
+ * OOM-SWAPS: the store keeps, of a trade-event key, its newest entry and every entry whose tail would fail the check
+ * (`Collapse`). `checkTape` answers the same from that subset: it reads only the first failing entry in order, which is
+ * kept, and whether any entry is there since migration, which the newest (the latest slot and receipt) answers. The
+ * event count it returns is not read by any gate. A live pool trades thousands of times a minute, each event with its
+ * six addresses: the whole tape filled the worker's heap in minutes (the backtest feed keeps the same subset, sim/facts.ts).
+ */
+export const tradeTailCollapse = (key: string): ((older: AsOfEntry) => boolean) | null => {
+  const m = TRADE_KEY.exec(key);
+  if (m === null) return null;
+  const program: Program = m[1] !== undefined ? 'pump_amm' : 'pump';
+  return (older) => tailVerdict(older, program, key) !== null;
 };
 
 type Ctx = { readonly now: Moment; readonly history: GateContext['history'] };

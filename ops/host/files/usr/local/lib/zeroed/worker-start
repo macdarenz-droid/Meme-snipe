@@ -3,15 +3,39 @@
 # environment (ARCHITECTURE.md 12.4): paper mode, recorder and simulation on from the first minute, the drill
 # endpoint on, the health route for the runner and the worker API both on loopback only (tailscale serve
 # publishes the API to the tailnet, 17). The release's worker (WORKER-1) runs only once the release's
-# ops/host-config.json says "worker": "release"; until then the host's stand-in. Live is never set here or in
-# any environment file: the worker refuses any mode but paper.
+# ops/host-config.json says "worker": "release"; until then the host's stand-in. The release's worker also takes the
+# S0 shakedown settings of that file's "shakedown" block (PRACTICE-ON). Live is never set here or in any environment
+# file: the worker refuses any mode but paper.
 set -euo pipefail
 . /usr/local/lib/zeroed/logic.sh
-export ZEROED_MODE=paper ZEROED_RECORDER=on ZEROED_SIMULATE=on ZEROED_DRILLS=on
-export ZEROED_HEALTH_ADDR="$WORKER_HEALTH_ADDR" ZEROED_API_ADDR="$WORKER_API_ADDR"
 entry="$(worker_entry /opt/zeroed/current)"
 if [ "$entry" != /opt/zeroed/stub/worker.mjs ]; then
-  cd /opt/zeroed/current
-  exec /usr/local/bin/node --no-warnings "$entry" "$@"
+  # The release's S0 shakedown settings (PRACTICE-ON, its host-config "shakedown" block): public values only, judged
+  # again by the worker. A block that cannot be read is refused like any refused setting (exit 2).
+  settings="$(worker_shakedown /opt/zeroed/current)" || { echo "refused: the release's host-config shakedown settings" >&2; exit 2; }
+  while IFS= read -r line; do [ -z "$line" ] || export "$line"; done <<<"$settings"
 fi
-exec /usr/local/bin/node "$entry" "$@"
+export ZEROED_MODE=paper ZEROED_RECORDER=on ZEROED_SIMULATE=on ZEROED_DRILLS=on
+export ZEROED_HEALTH_ADDR="$WORKER_HEALTH_ADDR" ZEROED_API_ADDR="$WORKER_API_ADDR"
+# HEAP-GUARD: V8's default heap limit follows the machine's RAM (about half of it: roughly 500 MB on the 1 GB host), not
+# the unit's MemoryMax=800M, and a heap past it aborts with no handler ("no clean stop"). 560 MB of old space, plus the
+# young generation (up to 48 MB) and the measured native overhead (RSS less heap: 127 MB at a 100k-mint boot, 147 MB at
+# 1M), stays under 800M. A fatal error writes a compact report into the state dir (StateDirectory: writable under
+# ProtectSystem=strict), which the next start's reconcile reads to name the death.
+reports="${STATE_DIRECTORY:-/var/lib/zeroed}/reports"
+mkdir -p "$reports"
+# Only the newest 5 reports are kept: a restart loop would otherwise write one every few minutes. The newest (the last
+# death's) is the one the reconcile reads. Safe with no report at all (nullglob).
+shopt -s nullglob
+old=("$reports"/report.*.json)
+shopt -u nullglob
+if [ "${#old[@]}" -gt 5 ]; then
+  mapfile -t old < <(ls -1t -- "${old[@]}")
+  rm -f -- "${old[@]:5}"
+fi
+heap=(--max-old-space-size=560 --report-on-fatalerror --report-compact "--report-directory=$reports")
+if [ "$entry" != /opt/zeroed/stub/worker.mjs ]; then
+  cd /opt/zeroed/current
+  exec /usr/local/bin/node --no-warnings "${heap[@]}" "$entry" "$@"
+fi
+exec /usr/local/bin/node "${heap[@]}" "$entry" "$@"

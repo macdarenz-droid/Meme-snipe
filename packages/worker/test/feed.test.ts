@@ -4,9 +4,10 @@ import { PUMP_AMM_GLOBAL_CONFIG, PUMP_GLOBAL } from '../../core/src/chain/index.
 import { createReplay, Engine, runToEnd, type Feed, type FeedEvent, type MarketEvent, type Strategy, type Clock } from '../../core/src/engine/index.ts';
 import { CONFIG } from '../../core/test/fixtures.ts';
 import {
-  ACCOUNT_TX_INDEX, DEFAULT_LIVE_FEED, frameEvents, LIVE_TX_BASE, LiveFeed, replayRecorded, type Frame, type FrameBody, type LiveFeedOptions, type Release, type Source,
+  ACCOUNT_TX_INDEX, DEFAULT_LIVE_FEED, dedupKey, frameEvents, LIVE_TX_BASE, LiveFeed, replayRecorded, type Frame, type FrameBody, type LiveFeedOptions, type Release, type Source,
 } from '../src/providers/index.ts';
 import { blockNetwork, recordOf, tx, TXS } from './helpers.ts';
+import { SigRanks } from '../src/providers/canonical.ts';
 
 blockNetwork();
 
@@ -101,6 +102,104 @@ const script = (): Arrival[] => {
 };
 
 describe('live Feed', () => {
+  it('OOM-MINT: a kept dedupe key costs under 100 B and never keeps its frame\'s signature alive (it kept the whole 88 characters)', async () => {
+    const { setFlagsFromString } = await import('node:v8');
+    const { runInNewContext } = await import('node:vm');
+    setFlagsFromString('--expose-gc');
+    const gc = runInNewContext('gc') as () => void;
+    const B58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+    // A fresh signature string per frame, as each notification's JSON parse makes one; dropped once the key is built.
+    const fresh = (i: number): string => JSON.parse(JSON.stringify(Array.from({ length: 88 }, (_, k) => B58[(i * 7 + k * 13 + (i >> k % 16)) % 58]).join(''))) as string;
+    const N = 100_000;
+    const keys = new Set<string>();
+    gc();
+    const before = process.memoryUsage().heapUsed;
+    for (let i = 0; i < N; i++) {
+      const signature = fresh(i);
+      keys.add(dedupKey({ type: 'seen', signature, slot: 1n, err: null, via: 'logs:x', detail: null })!);
+    }
+    gc();
+    const perKey = (process.memoryUsage().heapUsed - before) / N;
+    expect(keys.size).toBe(N);
+    expect(perKey).toBeLessThan(100);
+  });
+
+  it('SEEN-TAGS: a slot rank costs under 110 B and never keeps its signature alive; ranks are as a Map\'s', async () => {
+    const { setFlagsFromString } = await import('node:v8');
+    const { runInNewContext } = await import('node:vm');
+    setFlagsFromString('--expose-gc');
+    const gc = runInNewContext('gc') as () => void;
+    const B58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+    const fresh = (i: number): string => JSON.parse(JSON.stringify(Array.from({ length: 88 }, (_, k) => B58[(i * 7 + k * 13 + (i >> k % 16)) % 58]).join(''))) as string;
+    const N = 50_000;
+    const ranks = new SigRanks();
+    const plain = new Map<string, number>();
+    gc();
+    const before = process.memoryUsage().heapUsed;
+    for (let i = 0; i < N; i++) ranks.set(fresh(i), ranks.size);
+    gc();
+    const per = (process.memoryUsage().heapUsed - before) / N;
+    expect(per).toBeLessThan(110);
+    for (let i = 0; i < 2_000; i++) plain.set(fresh(i), plain.size);
+    for (let i = 0; i < 2_000; i++) expect(ranks.get(fresh(i))).toBe(plain.get(fresh(i)));
+    expect(ranks.has(fresh(N + 1))).toBe(false);
+  });
+
+  it('SEEN-TAGS, FEED-KEYS: the live feed keeps a released swap\'s signature in under 140 B (its seen and confirmed-logs dedupe tags and its slot rank; 252 B with key strings)', async () => {
+    const { setFlagsFromString } = await import('node:v8');
+    const { runInNewContext } = await import('node:vm');
+    setFlagsFromString('--expose-gc');
+    const gc = runInNewContext('gc') as () => void;
+    const B58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+    const fresh = (i: number): string => JSON.parse(JSON.stringify(Array.from({ length: 88 }, (_, k) => B58[(i * 7 + k * 13 + (i >> k % 16)) % 58]).join(''))) as string;
+    const feed = new LiveFeed({ ...DEFAULT_LIVE_FEED });
+    const S0 = 452_000_000n;
+    let n = 0;
+    let t = 1_000;
+    const drain = () => { feed.advance(t); while (feed.next() !== null) { /* released */ } };
+    // Warm the feed's own structures first, then measure 200 slots of 100 signatures each (inside its 1,500-slot window).
+    const run = (slots: number, from: bigint) => {
+      for (let k = 0n; k < BigInt(slots); k++) {
+        const slot = from + k;
+        feed.ingest('helius', { type: 'slot', slot, parent: slot - 1n, root: null }, { receivedAt: t });
+        for (let j = 0; j < 100; j++) {
+          const signature = fresh(n++);
+          feed.ingest('helius', { type: 'seen', signature, slot, err: null, via: 'logs:x', detail: null }, { receivedAt: t });
+          feed.ingest('helius', { type: 'logs', signature, slot, err: null, via: 'logs:x', logs: ['Program log: x'], commitment: 'confirmed' }, { receivedAt: t });
+        }
+        t += 400;
+        drain();
+      }
+    };
+    run(20, S0);
+    gc();
+    const before = process.memoryUsage().heapUsed;
+    const n0 = n;
+    run(200, S0 + 20n);
+    gc();
+    const per = (process.memoryUsage().heapUsed - before) / (n - n0);
+    expect(feed.status().releasedThrough).toBeGreaterThan(S0 + 200n);
+    expect(per).toBeLessThan(140);
+  });
+
+  it('OOM-MINT: every dedupe case still dedupes with the compact keys, and different facts stay apart', () => {
+    const feed = new LiveFeed({ ...DEFAULT_LIVE_FEED });
+    const t = tx('pump TradeEvent');
+    const sig = t.signature;
+    const other = (sig.startsWith('1') ? '2' : '1') + sig.slice(1);
+    const at = { receivedAt: 1 };
+    const seen = (signature: string, via: string): FrameBody => ({ type: 'seen', signature, slot: BigInt(t.slot), err: null, via, detail: null });
+    const logs = (signature: string, commitment?: 'confirmed'): FrameBody => ({ type: 'logs', signature, slot: BigInt(t.slot), err: null, via: 'logs:x', logs: ['Program log: x'], ...(commitment === undefined ? {} : { commitment }) });
+    const dup = (b: FrameBody) => feed.ingest('helius', b, at).duplicate;
+    // The first copy of each fact is new; a second copy (from either provider) is a duplicate.
+    expect([dup(seen(sig, 'logs:x')), dup(seen(sig, 'logs:y'))]).toEqual([false, true]);
+    expect([dup(logs(sig)), dup(logs(sig))]).toEqual([false, true]);
+    expect([dup(logs(sig, 'confirmed')), dup(logs(sig, 'confirmed'))]).toEqual([false, true]);
+    expect([dup({ type: 'tx', record: recordOf(t) }), feed.ingest('alchemy', { type: 'tx', record: recordOf(t) }, at).duplicate]).toEqual([false, true]);
+    // Another signature, or the same one under another kind or commitment, is another fact.
+    expect([dup(seen(other, 'logs:x')), dup(logs(other)), dup(logs(other, 'confirmed'))]).toEqual([false, false, false]);
+  });
+
   it('ordering parity: recorded frames and releases replay to the live release sequence and the same decision log', () => {
     const live = run(script(), { horizonSlots: 4 });
     const back = replayLive(live.frames, live.releases);
@@ -160,7 +259,7 @@ describe('live Feed', () => {
     arrivals.splice(i + 1, 0,
       { at: arrivals[i]!.at + 1, source: 'alchemy', body: { type: 'account', slot: BigInt(mid.slot), address: PUMP_GLOBAL, owner: PUMP_GLOBAL, lamports: 1n, data: Uint8Array.of(9) } },
       { at: arrivals[i]!.at + 2, source: 'helius', backfilled: true, body: { type: 'seen', signature: tx('pump TradeEvent').signature, slot: BigInt(mid.slot), err: null, via: 'logs:x', detail: null } },
-      { at: arrivals[i]!.at + 3, source: 'helius', body: { type: 'seen', signature: early.signature.slice(0, -1) + (early.signature.endsWith('1') ? '2' : '1'), slot: BigInt(early.slot), err: null, via: 'logs:y', detail: null } },
+      { at: arrivals[i]!.at + 3, source: 'helius', body: { type: 'seen', signature: (early.signature.startsWith('1') ? '2' : '1') + early.signature.slice(1), slot: BigInt(early.slot), err: null, via: 'logs:y', detail: null } },
     );
     const live = run(arrivals, { horizonSlots: 4 });
     expect(live.released.filter((r) => r.late)).toHaveLength(3);
@@ -253,7 +352,7 @@ describe('live Feed', () => {
     feed.ingest('helius', { type: 'slot', slot: 1_000n, parent: null, root: null }, { receivedAt: 1 });
     feed.advance(1);
     const old = feed.ingest('helius', { type: 'seen', signature: tx('pump TradeEvent').signature, slot: 900n, err: null, via: 'logs:x', detail: null }, { receivedAt: 2 });
-    expect(old.place).toEqual({ at: 'offchain', slot: 1_001n });
+    expect(old.place).toEqual({ at: 'offchain', slot: 1_001n, arrival: true });
     const recent = feed.ingest('helius', { type: 'seen', signature: tx('pump TradeEvent', 1).signature, slot: 995n, err: null, via: 'logs:x', detail: null }, { receivedAt: 3 });
     expect(recent.place).toEqual({ at: 'chain', slot: 995n });
   });
@@ -280,5 +379,75 @@ describe('live Feed', () => {
     const feed = new LiveFeed(DEFAULT_LIVE_FEED);
     feed.ingest('rugcheck', { type: 'offchain', key: 'a', value: 1 }, { receivedAt: 1_000 });
     expect(feed.ingest('rugcheck', { type: 'offchain', key: 'b', value: 1 }, { receivedAt: 900 }).receivedAt).toBe(1_000);
+  });
+});
+
+describe('BEHIND: shedding held frames', () => {
+  it('drops only the named streams\' held frames, keeps transactions, slots, other streams and released frames, and returns each shed range', () => {
+    const feed = new LiveFeed({ ...DEFAULT_LIVE_FEED, horizonSlots: 2 });
+    const sig = (k: number) => `Shed${k}`.padEnd(88, '1');
+    const seen = (k: number, slot: bigint, via: string) => feed.ingest('helius', { type: 'seen', signature: sig(k), slot, err: null, via, detail: null }, { receivedAt: k + 1 });
+    // Released before the shed: slot 10, then the tip moves to 20 with a horizon of 2.
+    seen(1, 10n, 'logs:CandPool');
+    feed.ingest('helius', { type: 'slot', slot: 12n, parent: 11n, root: null }, { receivedAt: 2 });
+    feed.advance(3);
+    seen(2, 14n, 'logs:CandPool');
+    seen(3, 15n, 'logs:HeldPool');
+    seen(4, 17n, 'logs:CandPool');
+    feed.ingest('helius', { type: 'tx', record: recordOf(tx('pump CreateEvent')) }, { receivedAt: 6 });
+    feed.ingest('helius', { type: 'slot', slot: 20n, parent: 19n, root: null }, { receivedAt: 7 });
+    const before = feed.heldFrames;
+    const shed = feed.shed((via) => via === 'logs:CandPool');
+    expect([...shed]).toEqual([['logs:CandPool', { fromSlot: 14n, toSlot: 17n }]]);
+    expect(feed.heldFrames).toBe(before - 2);
+    feed.advance(10);
+    const vias: string[] = [];
+    for (let e = feed.next(); e; e = feed.next()) if (e.kind === 'market' && e.key.startsWith('seen:')) vias.push(`${e.key}@${String((e.value as { slot: bigint }).slot)}`);
+    expect(vias).toEqual(['seen:logs:CandPool@10', 'seen:logs:HeldPool@15']);
+    expect(feed.shed(() => true).size).toBe(0);
+  });
+});
+
+describe('BEHIND: a shed slot in live and in the recording\'s replay', () => {
+  const sig = (k: number) => `Rank${[...String(k)].map((d) => 'abcdefghij'[Number(d)]).join('')}`.padEnd(88, '1');
+  const live = () => {
+    const frames: Frame[] = [];
+    const releases: Release[] = [];
+    const moments = new Map<string, unknown>();
+    const feed = new LiveFeed({ ...DEFAULT_LIVE_FEED, horizonSlots: 2, onFrame: (f) => frames.push(f), onRelease: (e, r) => { releases.push(r); moments.set(e.id, e.moment); } });
+    return { feed, frames, releases, moments };
+  };
+  const seen = (feed: LiveFeed, k: number, slot: bigint, via: string, at: number) => feed.ingest('helius', { type: 'seen', signature: sig(k), slot, err: null, via, detail: null }, { receivedAt: at });
+
+  it('a frame released from a shed slot takes the same moment live and in replay (shed frames keep their rank: BT review B1)', () => {
+    const l = live();
+    for (let k = 0; k < 5; k++) seen(l.feed, k, 20n, 'logs:CandPool', 10 + k);
+    l.feed.shed((via) => via === 'logs:CandPool');
+    seen(l.feed, 9, 20n, 'logs:Other', 30);
+    l.feed.ingest('helius', { type: 'slot', slot: 23n, parent: 22n, root: null }, { receivedAt: 31 });
+    l.feed.advance(32);
+    for (let e = l.feed.next(); e; e = l.feed.next()) void e;
+    const r = replayRecorded(l.frames, l.releases);
+    const replayed = new Map<string, unknown>();
+    for (let e = r.feed.next(); e; e = r.feed.next()) replayed.set(e.id, e.moment);
+    const other = [...l.moments.keys()].find((id) => id.startsWith(`seen:${sig(9)}`))!;
+    expect(other).toBeDefined();
+    expect(replayed.get(other)).toEqual(l.moments.get(other));
+  });
+
+  it('a gap placed first in a held slot is released before every event of that slot, at its first position; a released slot is refused', () => {
+    const l = live();
+    seen(l.feed, 1, 20n, 'logs:Other', 10);
+    seen(l.feed, 2, 21n, 'logs:Other', 11);
+    l.feed.ingest('worker', { type: 'offchain', key: 'coverage:trades:CandPool:gap', value: { fromSlot: 20n, toSlot: 21n, reason: 'shed', via: 'logs:CandPool' } }, { receivedAt: 12, firstIn: 20n });
+    l.feed.ingest('helius', { type: 'slot', slot: 23n, parent: 22n, root: null }, { receivedAt: 13 });
+    l.feed.advance(14);
+    const order: string[] = [];
+    for (let e = l.feed.next(); e; e = l.feed.next()) if (e.kind === 'market') order.push(e.key);
+    expect(order.indexOf('coverage:trades:CandPool:gap')).toBeLessThan(order.indexOf('seen:logs:Other'));
+    expect(order[0]).toBe('coverage:trades:CandPool:gap');
+    const gap = [...l.moments.entries()].find(([id]) => id.startsWith('coverage:trades:CandPool:gap'))!;
+    expect(gap[1]).toMatchObject({ slot: 20n, txIndex: 0, ixIndex: 0 });
+    expect(() => l.feed.ingest('worker', { type: 'offchain', key: 'coverage:trades:X:gap', value: {} }, { receivedAt: 15, firstIn: 21n })).toThrow(/already released/);
   });
 });

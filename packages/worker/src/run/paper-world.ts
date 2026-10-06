@@ -9,7 +9,7 @@
 import { type PoolFeeContext, type PoolState, poolBuyExactQuoteIn, poolSell } from '../../../core/src/amm/index.ts';
 import type { Fill, IntentId, Signature } from '../../../core/src/domain/index.ts';
 import { createRng, type EffectRunner, type Moment } from '../../../core/src/engine/index.ts';
-import { attemptFee, drawAttempt, type FillNetwork, type FillScenario, withSlippage } from '../../../core/src/fills/index.ts';
+import { type AccountLeg, attemptFee, drawAttempt, type FillNetwork, type FillScenario, TokenAccounts, withSlippage } from '../../../core/src/fills/index.ts';
 import type { Book, BookEvent, Effect, IntentState } from '../../../core/src/lifecycle/index.ts';
 import type { Lamports, RawAmount } from '../../../core/src/units/index.ts';
 import type { ExecStats } from '../../../core/src/facts/raw.ts';
@@ -90,25 +90,63 @@ export interface PaperWorldDeps {
   readonly file: StateFile<PaperState>;
   /** Called when an attempt changed (the worker refreshes open_intents). */
   readonly changed: () => void;
+  /** Called when an attempt landed failed: its fee is paid (PAPER-1, M4). */
+  readonly landedFailed?: (a: PaperAttempt) => void;
 }
+
+/**
+ * The token-account leg of a paper attempt. The draws are seeded by the signature alone, so a restart under a new boot
+ * re-derives the same dust and close outcomes from paper.json.
+ */
+const accountLeg = (a: PaperAttempt, tokens: bigint): AccountLeg => ({
+  purpose: a.purpose, mint: a.mint, tokens, closeSeed: `paper:${a.signature}`, dustSeed: `paper:${a.mint}:${a.signature}`,
+});
+const CLOSE_FAILED = 'close failed';
 
 /** Every line carries these in full (null when unknown): finalExit, simulatedSlot and standIn too (#60 review). */
 const SIMULATION_FIELDS = ['outcome', 'success', 'error', 'standIn', 'finalExit', 'simulatedSlot', 'quotedOut', 'simulatedOut', 'amountErrorE4', 'quoteAgeSlots', 'rentDeclared', 'rentPaid', 'balancesFrom'] as const;
 
 /** The journal fields of a simulation record (bigints stay bigints here; the journal writes them as strings). */
-export const simulationFields = (leg: SimLeg, r: DryRunRecord): Record<string, unknown> => {
+export const simulationFields = (leg: SimLeg, r: DryRunRecord, timing?: SimTiming): Record<string, unknown> => {
   const out: Record<string, unknown> = { trade: leg.trade, leg: leg.leg, intent: leg.intentId, mint: leg.mint, venue: r.venue };
   for (const k of SIMULATION_FIELDS) out[k] = r[k] ?? null;
+  if (timing !== undefined) {
+    out['sent_height'] = timing.sentHeight;
+    out['land_slot'] = timing.landSlot;
+    out['last_valid'] = timing.lastValid;
+    out['sim_done_height'] = timing.doneHeight;
+    out['sim_ms'] = timing.ms;
+  }
   return out;
 };
 
+/**
+ * AUDIT-RM3 N2: how long a paper attempt's simulation took against its drawn landing. A paper attempt lands only once
+ * simulated, so a simulation still running at `landSlot` holds the landing (a later, different fill) and one still
+ * running past `lastValid` lets the attempt expire: our own queue, not the network. The report counts both.
+ */
+export interface SimTiming {
+  readonly sentHeight: bigint;
+  readonly landSlot: bigint;
+  readonly lastValid: bigint;
+  /** The paper height when the simulation answered (null when no slot was seen). */
+  readonly doneHeight: bigint | null;
+  readonly ms: number;
+}
+
 /** The lower median (a whole number, as ExecStats needs), null when empty. */
 const lowerMedian = (xs: readonly number[]): number | null => (xs.length === 0 ? null : [...xs].sort((a, b) => a - b)[(xs.length - 1) >> 1]!);
+
+/** A paper attempt that was in flight when its process stopped: it never lands. */
+const lostInRestart = (a: PaperAttempt): boolean => a.outcome === 'expired' && a.reason.startsWith('lost');
 
 export class PaperWorld implements EffectRunner {
   readonly #d: PaperWorldDeps;
   readonly #attempts: Map<string, PaperAttempt>;
   #height: bigint | null = null;
+  /** Our paper token accounts (the backtest's settlement, PAPER-1): dust, a failed close, and which sells closed one. */
+  readonly #accounts = new TokenAccounts();
+  readonly #closed = new Set<string>();
   /** Simulations still running, by signature (a clean stop waits for them). */
   readonly pending = new Map<string, Promise<void>>();
   /** The process is going: state files belong to its successor from here on, so nothing more is written. */
@@ -128,6 +166,18 @@ export class PaperWorld implements EffectRunner {
       lost++;
     }
     if (lost > 0) d.file.write({ attempts: Object.fromEntries(this.#attempts) });
+    // The token accounts as the attempts already settled left them, in landing order (the order `onSlot` lands them).
+    const landed = [...this.#attempts.values()].filter((a) => a.landedSlot !== null && (a.outcome === 'filled' || a.reason === CLOSE_FAILED))
+      .sort((x, y) => (x.landedSlot! < y.landedSlot! ? -1 : x.landedSlot! > y.landedSlot! ? 1 : x.signature < y.signature ? -1 : 1));
+    for (const a of landed) {
+      const filled = a.outcome === 'filled' && a.fill !== null;
+      if (this.#accounts.restore(accountLeg(a, filled ? a.fill!.tokens : a.inAmount), d.scenario, filled ? 'filled' : CLOSE_FAILED)) this.#closed.add(a.signature);
+    }
+  }
+
+  /** True when this filled sell closed its token account, so its rent came back (RENT-1). */
+  closedAccount(signature: string): boolean {
+    return this.#closed.has(signature);
   }
 
   /**
@@ -137,7 +187,7 @@ export class PaperWorld implements EffectRunner {
    */
   #heightFor(sig: string, lastValid: bigint): bigint | null {
     const a = this.#attempts.get(sig);
-    if (a === undefined || (a.outcome === 'expired' && a.reason.startsWith('lost'))) return lastValid + 1n;
+    if (a === undefined || lostInRestart(a)) return lastValid + 1n;
     return this.#height;
   }
 
@@ -209,8 +259,13 @@ export class PaperWorld implements EffectRunner {
   }
 
   #broadcast(intentId: IntentId, sig: Signature): void {
-    // Rebroadcasts send the same bytes: the same signature lands at most once, so its fate was drawn already.
-    if (this.#attempts.has(sig)) return;
+    // Rebroadcasts send the same bytes: the same signature lands at most once, so its fate was drawn already. One lost
+    // in a restart is the exception (EXIT-KEEP B3): a kill after this world saved the attempt but before the ledger
+    // booked it leaves the book without the intent, so the re-made intent gets the same id and the same paper
+    // signature. It is a new send, made by this process (a real re-made exit is a new transaction); ignoring it left
+    // the intent waiting out its blockhash (about 150 slots) and burned a ladder rung.
+    const known = this.#attempts.get(sig);
+    if (known !== undefined && !lostInRestart(known)) return;
     const i = this.#intent(intentId);
     const attempt = i?.attempts.find((a) => a.signature === sig);
     const height = this.#height;
@@ -235,10 +290,11 @@ export class PaperWorld implements EffectRunner {
     const leg: SimLeg = {
       trade: a.trade, leg: exit ? 'exit' : 'entry', intentId, mint: a.mint, side: exit ? 'sell' : 'buy', inAmount: a.inAmount,
       quotedOut: a.quotedOut, minOut: a.minOut, priorityFee: a.priorityFee, lastValidBlockHeight: a.lastValidBlockHeight,
-      closes: exit && holding !== undefined && a.inAmount >= holding.quantity, minContextSlot: height, maxSolOut: this.#d.maxSolOut(i),
+      // Only a sell of the whole balance from an account that is not sell-only (dust, a failed close) closes it.
+      closes: exit && holding !== undefined && a.inAmount >= holding.quantity && this.#accounts.closes(a.mint, a.inAmount), minContextSlot: height, maxSolOut: this.#d.maxSolOut(i),
     };
     const p = sim(leg).then((r) => {
-      this.#d.journal(simulationFields(leg, r));
+      this.#d.journal(simulationFields(leg, r, { sentHeight: height, landSlot: a.landSlot, lastValid: a.lastValidBlockHeight, doneHeight: this.#height, ms: this.#d.now() - (a.sentAtMs ?? this.#d.now()) }));
       const cur = this.#attempts.get(sig);
       if (cur !== undefined) {
         cur.simulated = true;
@@ -267,6 +323,7 @@ export class PaperWorld implements EffectRunner {
     a.landedSlot = slot;
     const failed = (reason: string): void => {
       done('failed', reason);
+      this.#d.landedFailed?.(a);
       this.#d.report({ type: 'intent', intentId: a.intentId as IntentId, event: { type: 'status', signature: a.signature as Signature, result: 'failed', commitment: 'finalized', blockHeight: slot, searchedHistory: false } });
     };
     if (a.fate === 'fails') return failed('landed failed (drawn)');
@@ -277,6 +334,11 @@ export class PaperWorld implements EffectRunner {
     const executed = a.purpose === 'entry' ? q.trade.base : q.trade.userQuote;
     const out = withSlippage(executed, a.quotedOut, this.#d.scenario.slippagePpm);
     if (out < a.minOut) return failed(`slippage: ${out} below min-out ${a.minOut}`);
+    // The token account (PAPER-1): a sell of the whole balance closes it in the same transaction, and a failed close
+    // fails the attempt; a new account may pick up dust. The backtest's world settles the same way.
+    const acct = this.#accounts.settle(accountLeg(a, a.purpose === 'entry' ? out : a.inAmount), this.#d.scenario);
+    if (!acct.ok) return failed(acct.reason);
+    if (acct.closedAccount) this.#closed.add(a.signature);
     const fee = attemptFee(this.#d.network, a.priorityFee, 'filled');
     const net = this.#d.network;
     // Extra slippage in lamports: on a sell the shortfall itself; on a buy the tokens lost, valued at the fill's price.
