@@ -176,6 +176,11 @@ The owner gave these items to S2 at about 2:04 AM. Every head below was checked 
 
 **Dated notes (newest first)**
 
+- 6 Oct 11:21 AM: **#246 DISK (S2-READY 616a7d53) accepted for landing.**
+  - Saved-data ruling (S1, under CLAUDE.md "Stored data"): `journal.jsonl.reserve` is approved. It holds 64 KiB of zeros when armed, or zero length as the observed-ENOSPC marker: the bot's own diagnostic, with no personal, key or account data and nothing sent to a third party.
+  - S1 GitHub-updated #246 onto 8107eb79, giving d1850132: a pure base merge (merge-tree equal to merging 616a7d53 with the base), clean auto-merge in worker.ts with #243 BEHIND.
+  - S1 checked locally on d1850132: typecheck clean; 10 files and 133 tests pass (disk-crash, summary, behind, behind-shed, fault-injection, feed, worker-crash, kill-latch, write-order, journal-fills).
+  - Your PASSes carry over the pure base merge. It merges when CI is green on d1850132.
 - 6 Oct 10:11 AM: **Owner: "S2 can safely continue."** The pause above does not apply to S2: continue your app queue and the stability items 21–29, with item 22 DISK-GUARD's full-disk piece first. S1's merge-check routine is back on. Merges of your work still wait while a crash fix is ahead in the merge queue.
 - 6 Oct 10:08 AM: **OWNER: PAUSE ALL BUT CRASH WORK.** The owner said: "Pause all of them aside from crash workers and reviewers. Need to prio crash first before anything else." Stop app items, the item-21 cuts and the other stability items. The only exception is the item-22 DISK-GUARD piece that stops a full disk crashing the worker; that one is crash work (see the urgent note below). S1's S2 merge-check routine is disabled until the crash is fixed.
 - 6 Oct 10:01 AM: FAILED-LOGS (#242) has merged, base 5efb9ae0. The hold on `providers/solana-ws.ts` and `pool-watch.ts` (8:59 AM note) is lifted: build item 21's cut C/A on 5efb9ae0 or later. The BEHIND guard (S1, claude/behind) also touches the feed path; whoever lands second resolves the conflict.
@@ -255,6 +260,7 @@ Supervisor: session_01Ec4DXEAqLxM6M1WGVQG5se (same account as every worker). Hou
 Parked with no card: STATS builder 01Qy4q1, SANDBOX-TIDY 01MoXXP, DATA-STORE 018c27u, OPS-SUMMARY 01HHYJq. Data reviewer 01XAwN7: ARCHIVE-SAFE reviews, then ARCHIVE-WATCH.
 
 **Log (Melbourne time)**
+- 11:21 AM S2 merge check: **#246 DISK S2-READY 616a7d53** (5 S2 reviews PASS; CI and local full check green). S1 accepted the journal.jsonl.reserve shape (bot diagnostic, no personal data). GitHub update → d1850132 (pure base merge with 8107eb79). S1 local check: typecheck clean, 133 focused tests pass. CI running; merge when green, then deploy with #243. #247 RISK-DIAL is S2's design-only draft, waiting on an owner choice. #237 is at aac10e38 (S2's full check running).
 - 11:16 AM **#245 facts FAIL at 62ffca8d** (01NGXuv; the c1cf0787 base merge was also tested). B1: prior-rug and unjudged labels count by knownAtMs = at.receivedAt (hard.ts:551/:545, soft.ts:77), so the label clamp lets H14 miss a known rugger for seconds after a restart. B2: the receipt-time clamp is unbounded in code. Rulings (fail closed): labels are NOT clamped and restore checks them by moment (slot first); any clamp over CHAIN_SKEW_MS (60 s) refuses the save, named and logged; tests at 9/11 s and 59/61 s; DECISIONS updated (factFor own edge; N2). Order: SAVE-SPIKE first (new branch claude/save-spike from 8107eb79), then the #245 rework.
 - 11:14 AM **Crash 27 on 5efb9ae0** at 11:08:51, uptime 1,809 s. **First MEM-PROBE data** (last_death.recent, 10 samples):
   - Trigger: the 5-min save. The last sample has saving:true (heap 428, old 412, large-object 8); the death record has large-object 107, so the save allocates about 100 MB at once on top of old space. The 00:03:49 save also jumped the heap 382 → 409.
