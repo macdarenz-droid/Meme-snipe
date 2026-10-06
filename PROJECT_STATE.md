@@ -106,6 +106,7 @@ I checked everything against the current code (base 0f32a79a) on Tue 6 Oct at 9:
 | T4-13 | A failed key change breaks /pause in Telegram | Your remote stop always works. | M | #161 | **Waits on your OK** to store key fingerprints |
 | T4-14 | The program that will sign real transactions doesn't exist yet | Needed only before live trading. | M | — | After the proof, with your approval |
 | T4-15 | Coin features that don't block trades aren't logged | Data for tuning later. | M | — | Not started |
+| T4-16 | BT-HEAL-MODEL: the backtest has no cut-log holes, while live refuses unhealed holes (#262 live-only veto, cases a–f). A G3 report would count hole gaps as ordinary H16 rejects | Model the same holes and heal rules in the backtest (logMessages 'Log truncated'; candidate pools only; 30 per pool; 3,000 a day; heal delay) and split hole-gap from feed-gap for G3 | M | — | **Precondition of any G2/G3 run** (not started) |
 
 ### Tier 5: docs and housekeeping
 | ID | Problem | What fixing it does | Size | PR | Status |

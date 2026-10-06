@@ -48,6 +48,7 @@ The previous S1 account reached its usage limit about 12:45 PM. The owner made t
 - No host access, no secrets access (owner only), as before.
 
 **Log (Melbourne time, newest first)**
+- 5:45 AM **#262 both PASS at 30a19a12**: worker/facts delta (comment 6022728135) and BT parity delta (6023038080; mutant C now killed; deferring the hole-gap vs feed-gap split to BT-HEAL-MODEL accepted because no strategy is registered and no G2/G3 run is possible). Contains 3ee09a5a, merge-tree equal. CI: historical-data green, check running. Merge when check is green; **no deploy yet** (batch with DEDUP-PER-WATCH + FACTS-REREAD). BT N1': BT-HEAL-MODEL put on the board as a precondition of any G2/G3 run (PROJECT_STATE).
 - 5:22 AM DEDUP-PER-WATCH repro (dedup-per-watch.test.ts on df3da20).
   - (1) Not true: with a complete log, both pools get their swaps; the producer routes by the event's own pool.
   - (2) True, fail-open: a cut log makes a hole only on the first watch's pool. The second pool's stream stays "gap-free" (test gapFreeSince 1000 vs 1006), so H11 can pass.
