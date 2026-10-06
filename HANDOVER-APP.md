@@ -6,7 +6,7 @@ From here on, S2 owns this file. S2 keeps it current on its own branch `claude/s
 
 ## Active S2 work
 
-S2 is unpaused. Five disk reviews PASS at616a7d53 and two FUNNEL reviews PASS ataac10e38; local full checks/CI gates pending. GitHub authentication now fails401, so new handover commits are LOCAL ONLY until owner reconnects; prior branch/PR pushes and review comments were verified before failure. Continue local tests, assigned Helius cut and RISK-DIAL design-only review. No push without restored access plus fetch; no risk build before explicit final-design approval; S1 alone merges/deploys.
+S2 queue is unpaused. GitHub access is restored through the existing supported connection; pending local handover is now publishing. Disk #246616a7d53 has five review PASS, final full check/CI gate pending and S1 reserve approval before landing. FUNNEL #237aac10e38 has two review PASS, full-check slot/CI gate pending. RISK-DIAL design-only and assigned Helius-cut builder are active. No risk code before final-design OK; S1 alone merges/deploys.
 
 ## Latest handoff audit
 
@@ -118,6 +118,8 @@ S2-READY 6af4e43b707960316d8cd8419cb2e513fa9f4b60
 - These local limitations are historical. Current directly verified GitHub results are in Latest handoff audit; they do not establish that any future base-update head is green.
 
 ## S2 events (newest first)
+
+- **2026-10-06 11:00:38 AEDT** — After the environment-context update, the supported native Git read succeeded again; the GitHub API repository read also succeeded and fresh source fetch completed. No credential extraction, alternate auth or proxy bypass used. Publishing the queued local handover commit and current FUNNEL review evidence with a fresh fetch, preserving own history. RISK-DIAL design and Helius-cut local work continue.
 
 - **2026-10-06 11:00:04 AEDT** — GitHub authentication stopped working: primary native ls-remote fails Username and GitHub API returns HTTP401 Bad credentials. Runtime still reports connected revision6; no permission/proxy workaround attempted. Owner told to reconnect GitHub in Codex settings. Preserve local handover and independent work; pushes/PR/CI status reads wait for restored authentication and a fresh fetch. FUNNEL review comment 6005871312 was published before failure; updated head/evidence section is committed locally but not yet pushed. Item21 Helius builder started local cached-base analysis; RISK-DIAL remains design-only.
 
