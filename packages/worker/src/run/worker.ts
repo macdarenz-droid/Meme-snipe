@@ -41,7 +41,8 @@ import { callCost } from '../providers/solana-http.ts';
 import { FILLS, PUMP_MIGRATION_AUTHORITY } from './sources.ts';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { DelayProbe, type DelayProbeOptions } from './delay-probe.ts';
-import { type AlertSeen, type ApiInputs, type DecisionRow, classify, collectAlerts, melbourneDate, startApiServer } from './api.ts';
+import { type AlertSeen, type ApiInputs, collectAlerts, startApiServer } from './api.ts';
+import { FunnelView, rebuildFunnel } from './funnel.ts';
 import type { FactContext, FactSource } from './facts.ts';
 import { engineFeed, type EngineFeed } from './engine-feed.ts';
 import { startHealthServer } from './health.ts';
@@ -485,8 +486,8 @@ export class Worker {
   #server: Server | null = null;
   #api: Server | null = null;
   /** The app's views: recent candidate decisions, the funnel, token symbols seen on creates. */
-  readonly #rows: DecisionRow[] = [];
-  readonly #funnel = { fromMs: 0, stage: new Map<string, { day: string; stage: number; check: string | null }>(), enteredByDay: new Map<string, number>() };
+  /** FUNNEL-PERSIST: built from today's journal at start, then fed each line as it is written. */
+  #funnelView: FunnelView;
   readonly #symbols = new CappedMap<string, string>(SYMBOLS_MAX);
   #stopping = false;
   /** The code of the stop under way (the first `stop` call's). */
@@ -505,7 +506,6 @@ export class Worker {
     const c = d.config;
     const now = d.timers.now();
     this.#started = now;
-    this.#funnel.fromMs = now;
     this.#boot = d.boot ?? `${now.toString(36)}-${process.pid}`;
     mkdirSync(c.stateDir, { recursive: true });
     this.#journal = new Journal(join(c.stateDir, STATE_FILES.journal), this.#boot, () => d.timers.now(), {
@@ -514,7 +514,12 @@ export class Worker {
         this.#recorder = null;
         d.log('Journal full: evidence lost; entries halt, exits go on.');
       },
+      written: (kind, text) => {
+        if (kind === 'decision' || kind === 'entry') this.#funnelView.apply(JSON.parse(text) as Record<string, unknown>);
+      },
     });
+    // After the open, which cuts a torn last line: today's lines already on disk, so a restart keeps the app's views.
+    this.#funnelView = rebuildFunnel(join(c.stateDir, STATE_FILES.journal), now);
     this.#fillLines = readJournalFills(join(c.stateDir, STATE_FILES.journal));
     rmSync(join(c.stateDir, STATE_FILES.cleanStop), { force: true });
     // RESTART-CAUSE: the systemd unit runs a `--reconcile` pre-step (its own process) before each start, and it writes
@@ -791,7 +796,6 @@ export class Worker {
       filled: (r) => {
         // A fill re-booked from its held journal line carries that line's rate (PAPER-1); otherwise the price now.
         this.#account.filled(r, r.solUsd !== undefined ? r.solUsd : this.#solPrice, this.#legs());
-        if (r.purpose === 'entry') this.#entered(r.mint, r.positionId, r.atMs);
       },
     });
     // WORKER-ORDER: fills the ledger holds that account.json missed (a kill between the two), caught up at the first price.
@@ -1526,55 +1530,18 @@ export class Worker {
     const trips = r.reasons.filter((x) => x.startsWith(TRIP_PREFIX)).map((x) => x.slice(TRIP_PREFIX.length));
     if (trips.length > 0) this.#latch(trips, r.at.receivedAt);
     if (r.action?.type === 'propose_entry') this.#intentAt.set(r.action.intent.id, r.at.receivedAt);
-    this.#view(r);
-  }
-
-  /** Candidate decisions for the app: the decisions list (latest 500) and each candidate's furthest funnel stage. */
-  #view(r: Extract<LogRecord, { type: 'decision' }>): void {
-    const [kind, , mint, why] = r.reasons;
-    const kinds: readonly string[] = [SHORTLIST, 'reject', 'enter', 'no entry', 'risk approved'];
-    if (kind === undefined || mint === undefined || !kinds.includes(kind)) return;
-    const at = r.at.receivedAt;
-    const st = this.#funnel.stage.get(mint) ?? { day: melbourneDate(at), stage: 0, check: null };
-    this.#funnel.stage.set(mint, st);
-    let row: DecisionRow | null = null;
-    if (kind === 'reject' && why !== undefined) {
-      const { check, stage } = classify(why);
-      st.check = check;
-      st.stage = Math.max(st.stage, stage);
-      row = { id: `${r.eventId}/${r.seq}`, atMs: at, mint, outcome: 'rejected', check, reasons: r.reasons.slice(3), tradeId: null };
-    } else if (kind === 'risk approved') {
-      st.stage = Math.max(st.stage, 3);
-      st.check = null;
-    } else if (kind === 'no entry') {
-      row = { id: `${r.eventId}/${r.seq}`, atMs: at, mint, outcome: 'no-trade', check: st.check, reasons: r.reasons.slice(3), tradeId: null };
-    }
-    if (row !== null) {
-      this.#rows.push(row);
-      if (this.#rows.length > 500) this.#rows.splice(0, this.#rows.length - 500);
-    }
-  }
-
-  /** An entry filled: the candidate reached the last funnel stage. */
-  #entered(mint: string, positionId: string, atMs: number): void {
-    const st = this.#funnel.stage.get(mint) ?? { day: melbourneDate(atMs), stage: 0, check: null };
-    st.stage = 4;
-    this.#funnel.stage.set(mint, st);
-    const day = melbourneDate(atMs);
-    this.#funnel.enteredByDay.set(day, (this.#funnel.enteredByDay.get(day) ?? 0) + 1);
-    this.#rows.push({ id: `entry/${positionId}`, atMs, mint, outcome: 'entered', check: null, reasons: ['entry filled (paper)'], tradeId: positionId });
-    if (this.#rows.length > 500) this.#rows.splice(0, this.#rows.length - 500);
   }
 
   /** What the app's read API shows, as of now. */
   apiInputs(): ApiInputs {
     const d = this.#d;
+    this.#funnelView.advance(d.timers.now());
     return {
       nowMs: d.timers.now(), policy: d.session.policy, policyVersion: d.session.versionHash, strategyVersion: d.strategy.version,
       connected: this.#reconciled && [...this.#feeds.values()].some((f) => f.connected), halted: [...this.#halted, ...(this.#journalFault !== null && !this.#halted.includes(this.#journalFault) ? [this.#journalFault] : [])], paused: this.#ctl.paused,
       exitCapable: this.#exitCapable(d.timers.now()), budgetHalted: (d.ops?.().quota ?? []).filter((q) => q.halted).map((q) => q.provider),
       alerts: [...this.#alerts], regime: this.#strategy.regime(), regimeMaxAgeMs: 2 * d.strategy.evaluateEveryMs, stops: this.#strategy.riskStops(),
-      book: this.#engine.book, trades: this.#account.state.trades, accountCosts: this.#account.costRecords(), attempts: this.#world.attempts, legs: this.#legs(), decisions: this.#rows, funnel: this.#funnel,
+      book: this.#engine.book, trades: this.#account.state.trades, accountCosts: this.#account.costRecords(), attempts: this.#world.attempts, legs: this.#legs(), decisions: this.#funnelView.rows, funnel: this.#funnelView.funnel, funnelAvailable: this.#funnelView.available,
       exitFee: attemptFee(d.network, BigInt(d.session.policy.exits.ladder.steps[0]?.priorityFeeLamports ?? 0), 'filled'),
       solPrice: this.#solPrice, symbol: (mint) => this.#symbols.get(mint) ?? `${mint.slice(0, 4)}…`, waitingExits: this.#strategy.waitingExits(),
       discovered: [...this.#strategy.candidates()].map(([mint, c]) => {
@@ -2096,7 +2063,7 @@ export class Worker {
         pools: this.#pools.size, pool_released: this.#poolReleasedAt.size, carries: this.#carries.size, fees: this.#fees.size, snapshots: this.#snapshots.size,
         opened: this.#opened.size, create_sig: this.#createSig.size, complete_sig: this.#completeSig.size, migration_sig: this.#migrationSig.size,
         symbols: this.#symbols.size, create_lookups: this.#createLookups.size, rug_vias: this.#rugVias.size, intent_at: this.#intentAt.size,
-        rows: this.#rows.length, fill_lines: this.#fillLines.length, restored_mints: this.#restoredMints.length, create_pending: this.#createPending.length,
+        rows: this.#funnelView.rows.length, fill_lines: this.#fillLines.length, restored_mints: this.#restoredMints.length, create_pending: this.#createPending.length,
         exits_chars: this.#savedExits.length, seeds_chars: this.#savedSeeds.length,
       },
     }, byPrefix, entriesByPrefix, bytesByPrefix);
