@@ -1,14 +1,14 @@
 // A map that keeps at most `max` keys, the oldest-inserted forgotten first. Eviction is O(1) whatever was deleted
 // before: the keys' insertion order is kept in a ring, never by iterating the map. (`map.keys().next()` after many
 // deletes walks the deleted slots V8 keeps until a rehash: 600,000 inserts at a cap of 50,000 took 17 s against 0.2 s.)
-// Setting a key already present replaces its value and keeps its place, as `Map.set` does. A deleted key frees its
-// place in the ring; set again later, it is the newest.
+// Setting a key already present replaces its value and keeps its place, as `Map.set` does.
+// POOL-FIRST-READ: `delete` costs no memory per key (OOM-MINT's per-entry budget): the deleted key's ring place is left
+// as it is and frees nothing until the ring comes round to it. A key set again after a delete takes a new place, and is
+// forgotten at the older one if that comes round first: early, never late, so the cap always holds.
 export class CappedMap<K, V> {
   readonly #max: number;
   readonly #map = new Map<K, V>();
   readonly #ring: K[] = [];
-  /** Each live key's place in the ring: a ring entry whose key has moved on or gone is free. */
-  readonly #at = new Map<K, number>();
   readonly #onEvict: ((key: K, value: V) => void) | undefined;
   #head = 0;
 
@@ -32,25 +32,20 @@ export class CappedMap<K, V> {
   }
 
   delete(key: K): boolean {
-    this.#at.delete(key);
     return this.#map.delete(key);
   }
 
   set(key: K, value: V): this {
     if (!this.#map.has(key)) {
-      if (this.#ring.length < this.#max) {
-        this.#at.set(key, this.#ring.length);
-        this.#ring.push(key);
-      } else {
+      if (this.#ring.length < this.#max) this.#ring.push(key);
+      else {
         const old = this.#ring[this.#head]!;
-        if (this.#at.get(old) === this.#head) {
+        if (this.#map.has(old)) {
           const v = this.#map.get(old) as V;
           this.#map.delete(old);
-          this.#at.delete(old);
           this.#onEvict?.(old, v);
         }
         this.#ring[this.#head] = key;
-        this.#at.set(key, this.#head);
         this.#head = (this.#head + 1) % this.#max;
       }
     }

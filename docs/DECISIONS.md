@@ -3305,7 +3305,7 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
 - **Bounds (worker heap 572 MB).**
   - `PRE_READ_POOLS` = 64 pools (a `CappedMap`, oldest-kept pool let go first) × `PRE_READ_KEEP` = 64 events each (the newest). Measured: about 4.4 KB per kept swap with every string distinct, so at most about 18 MB (approximate, one measurement in vitest).
   - A pool's kept events go when its read arrives, when it leaves the watch list, and when it is let go (`retire`, `#forgetPool`).
-  - `CappedMap` moved from the worker to core (`facts/capped-map.ts`, the worker re-exports it) and gained `delete` and an eviction hook.
+  - `CappedMap` moved from the worker to core (`facts/capped-map.ts`, the worker re-exports it) and gained `delete` and an eviction hook. `delete` keeps no index per key, so OOM-MINT's per-entry memory budget (`sig-caps.test.ts`, under 230 B) still holds: a deleted key's ring place is freed only when the ring comes round to it, and a key set again before that can be let go early (never late; the cap always holds). For the producer, early means the pool's first read starts stale (fail closed).
 - **Fail closed.**
   - Events let go past `PRE_READ_KEEP` whose slot is newer than the read, or a pool whose kept events were let go whole past `PRE_READ_POOLS` (remembered in a capped set of `HOLE_SIGS_KEEP`): the chain starts stale (a gap). The next kept or live swap re-bases on its own pre-trade reserves, as after any gap.
   - Any kept swap that does not chain or does not reproduce: stale (a mismatch, needs a read), exactly as live.

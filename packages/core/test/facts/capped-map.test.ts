@@ -1,5 +1,5 @@
-// POOL-FIRST-READ: the capped map (moved from the worker) gains `delete` and an eviction hook; the bound holds whatever
-// is deleted, and a deleted key frees its place without ever evicting a key set later.
+// POOL-FIRST-READ: the capped map (moved from the worker) gains `delete` and an eviction hook; the cap holds whatever
+// is deleted, and a deleted key frees its place once the ring comes round to it.
 import { describe, expect, it } from 'vitest';
 import { CappedMap } from '../../src/facts/index.ts';
 
