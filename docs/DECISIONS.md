@@ -3313,6 +3313,24 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
 - **Parity.**
   - The backtest reads accounts as of their slot, so it never has this race. Live with the late read now reaches the same pool state as live with the read in order and as the backtest's `ShiftedPool` replay of the same swaps' amm rows (`worker/test/facts-parity.test.ts`). The recorded replay and backtest re-sort of the late run give the same facts and log.
 - **Evidence.** `core/test/facts/pool-chain.test.ts` (POOL-FIRST-READ: 8 of its 11 tests fail on the code before; the other 3 guard behaviour that already held), `core/test/facts/capped-map.test.ts`, `worker/test/facts-parity.test.ts` (the late-read parity test fails before). Mutants killed: no buffer; kept swaps applied at or before the read's slot; kept other events applied at the read's slot; kept swaps applied without the continuity check; no stale for a pool let go whole; no stale for events let go past the cap; re-read ignoring `otherSlot`; other events not kept; kept events surviving an unwatch or a retire.
+- **Part 3: candles after a late migration (2026-10-07, S1; #263's finding).**
+  - **Why.** A pool's candle book opens only at the migration's `CreatePoolEvent`. Swaps released before it were dropped, so a migration released late (a FACTS-REREAD re-read after a restart or a failed fetch) opened an empty book. Its candles came out `[]`, complete, with Evidence ok, and H11's chase check then refused the coin `not-covered` for good.
+  - **Change.** The same buffer, with one cap for both: each kept event records whether the chain (no read yet), the book (no `CreatePoolEvent` yet), or both still need it. A non-swap event is kept for the chain only. Each side takes its own events when it opens; the pool's entry goes once both exist.
+  - **Order.** The migration transaction carries its own first swap after its `CreatePoolEvent`. On mainnet, the recorded coin's migration logs CreatePool, then InitBoost, then CompletePumpAmmMigration, then Buy.
+    - So the kept swaps are taken when the next event from another transaction arrives, not at the `CreatePoolEvent` (`#bookTake`).
+    - Every kept swap comes later in chain order, because the pool did not exist before that transaction. They are applied in release order through the same `#bookSwap` a live swap takes, so the candles equal an in-order run.
+    - Kept swaps from before the `CreatePoolEvent`'s slot are not taken.
+  - **Fail closed.** If a swap the book needed was dropped past the cap, or the pool's whole entry was dropped (`#preBookLost`), the book is marked partial. It never reads as complete with trades missing.
+  - **Memory, both parts together.** The buffer is the same cap, `PRE_READ_POOLS` × `PRE_READ_KEEP` = 64 × 64 events, so still about 18 MB at most (approximate, from the measured 4.4 KB per swap).
+    - A late book's pending swaps are taken out of that buffer and held only until the next event.
+    - The two lost-pool sets hold up to 20,000 pool addresses each (`HOLE_SIGS_KEEP`), roughly 2 MB each (approximate, not measured).
+  - **Evidence.**
+    - `core/test/facts/trade-heal.test.ts`: the late migration equals the in-order tape's candles and pool, with H11 and H12 ok. The migration transaction's own swap comes before the kept swaps. A pre-migration swap is not taken. A drop past the cap is partial. A pool dropped whole is partial. All 5 fail on the code before part 3.
+    - `worker/test/facts-parity.test.ts`: the recorded coin's real migration transaction, released after 5 swaps through LiveFeed, gives the in-order candles and pool. This test fails before part 3. The recording of the late run replays identically 10 times (`replayRecorded`, the §16.1 replay), and the backtest re-sort gives the same facts and log.
+    - Not run with the worker's `checkSession`. In the worker harness, candles are published as ready facts, and the worker path that releases a migration late is FACTS-REREAD's (#263), which is not merged into this base.
+    - Mutants, parts 1 and 3 run together: 19 of 20 killed.
+      - Part 3 kills: no keep for the book; no `#bookOpen`; no `#bookTake`; taking within the opening transaction; taking pre-migration swaps; no partial when swaps were dropped; no partial when the entry was lost whole; the eviction hook not marking the book lost; the entry never deleted.
+      - The survivor (each side taking every kept event, not only its own) is equivalent. An event is kept for the book alone only while the chain exists, and a chain is only built afresh after its pool's entry was deleted (unwatch or `#forgetPool`).
 
 ## Server paused on the stand-in until every blocker is fixed (PAUSE, `ops/host-config.json` `"worker": "stub"`)
 

@@ -326,3 +326,70 @@ describe('swaps released before the pool\'s first read, live and backtest (POOL-
     expect(c.engine.logHash()).toBe(run.engine.logHash());
   });
 });
+
+describe('candles after a late migration, live and replayed (POOL-FIRST-READ part 3)', () => {
+  // #263's finding: the pool's candle book opens at the migration's CreatePoolEvent; swaps released before a late
+  // migration (a re-read) were dropped, leaving the candles [] and complete. The recorded coin, its pool read and
+  // swaps continuing the read; once with the migration transaction in order, once fetched late, after the swaps.
+  const SUPPLY = 1_000_000_000_000_000n;
+  const tape = (late: boolean) => {
+    const out = script(RECORDS.map((r) => r.rec));
+    const migrate = chainTx('migration CreatePoolEvent');
+    const complete = chainTx('pump CompleteEvent (curve filled)');
+    const isMigration = (a: Arrival) => a.body.type === 'tx' && [migrate.signature, complete.signature].includes((a.body as { record: TransactionRecord }).record.signature);
+    const moved = late ? out.filter(isMigration) : [];
+    const kept = late ? out.filter((a) => !isMigration(a)) : out;
+    const read = kept.find((a) => a.body.type === 'offchain' && a.body.key === RAW.accounts(MINT))!;
+    const readSlot = (read.body as { value: { slot: bigint } }).value.slot;
+    const p = parsePool(new FactWorld().push(offchain(RAW.accounts(MINT), { ...FIX.accountsRead, slot: readSlot }, readSlot, read.at)).last(poolKey(MINT)))!;
+    let pre = { baseReserve: p.baseVault, quoteVault: p.quoteVault, virtualQuoteReserves: p.pool.virtualQuoteReserves ?? 0n };
+    let at = kept.at(-1)!.at;
+    let slot = readSlot + 2n;
+    for (let i = 0; i < 5; i++) {
+      slot++;
+      at += 30_000;
+      kept.push({ at, source: 'helius', body: { type: 'slot', slot, parent: slot - 1n, root: slot - 32n } });
+      const s = swapLog({ pool: POOL, coinCreator: FIX.meta.creator, supply: SUPPLY, pre, side: i % 2 === 0 ? 'buy' : 'sell', base: pre.baseReserve / BigInt(500 + 100 * i), atMs: at });
+      kept.push({ at: at + 50, source: 'helius', body: { type: 'logs', signature: `lm${i}`, slot, err: null, via: `logs:${POOL}`, logs: s.logs, commitment: 'confirmed' } });
+      pre = s.after;
+    }
+    // Late: the migration transaction (and the completion read) fetched now, as a re-read puts them on the feed.
+    at += 1_000;
+    for (const a of moved) kept.push({ ...a, at: at++, lookup: true });
+    kept.push({ at: at + 400, source: 'helius', body: { type: 'slot', slot: slot + 1n, parent: slot, root: slot - 31n } });
+    kept.push({ at: at + 800, source: 'helius', body: { type: 'slot', slot: slot + 2n, parent: slot + 1n, root: slot - 30n } });
+    return kept;
+  };
+  const lastOf = (events: readonly FeedEvent[], key: string) => (factEvents(events).filter((e) => (e as MarketEvent).key === key).at(-1) as MarketEvent | undefined)?.value as Record<string, unknown> | undefined;
+  const noReceipt = (v: Record<string, unknown> | undefined) => {
+    const { receivedAt: _r, ...obs } = (v?.['obs'] ?? {}) as Record<string, unknown>;
+    return { ...v, obs };
+  };
+
+  it('the late migration gives the in-order candles (not [] complete) and pool, with no fault', () => {
+    const a = live(tape(false));
+    const b = live(tape(true));
+    const ca = lastOf(a.seen, candlesKey(MINT))!;
+    const cb = lastOf(b.seen, candlesKey(MINT))!;
+    expect((ca['candles'] as unknown[]).length).toBeGreaterThan(0);
+    expect(noReceipt(cb)).toEqual(noReceipt(ca));
+    expect(noReceipt(lastOf(b.seen, poolKey(MINT)))).toEqual(noReceipt(lastOf(a.seen, poolKey(MINT))));
+    for (const r of [a, b]) expect(r.engine.records.filter((x) => x.type === 'fault')).toEqual([]);
+  });
+
+  it('the recording of the late run replays identically 10 times, and the backtest re-sort gives the same facts and log', () => {
+    const run = live(tape(true));
+    for (let i = 0; i < 10; i++) {
+      const r = replayRecorded(run.frames, run.releases);
+      const b = through(r.clock, r.feed);
+      b.engine.drain();
+      expect(factEvents(b.seen)).toEqual(factEvents(run.seen));
+      expect(b.engine.logHash()).toBe(run.engine.logHash());
+    }
+    const s = createReplay(frameEvents(run.frames));
+    const c = through(s.clock, s.feed);
+    runToEnd(s, c.engine);
+    expect(factEvents(c.seen)).toEqual(factEvents(run.seen));
+    expect(c.engine.logHash()).toBe(run.engine.logHash());
+  });
+});

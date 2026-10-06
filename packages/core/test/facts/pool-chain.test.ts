@@ -330,7 +330,8 @@ describe('swaps released before the pool\'s first read (POOL-FIRST-READ)', () =>
     const world = new FactWorld().push(start(), s1.event, s2.event, s3.event, read(READ_SLOT, READ_SLOT + 3n));
     expect(facts(world).at(-1)!).toMatchObject({ obs: { quality: [], slot: READ_SLOT + 2n }, baseVault: s3.after.baseReserve, quoteVault: s3.after.quoteVault });
     expect(stale(world)).toBeUndefined();
-    expect(world.producer.sizes().preReads).toBe(0);
+    // Still kept for the candle book: this world has no migration, so the book has not opened (part 3).
+    expect(world.producer.sizes().preReads).toBe(1);
     // The next live swap chains on them (before the fix: "reserves mismatch").
     const s4 = swap('sell', s3.after, state.baseReserve / 8000n, READ_SLOT + 4n);
     world.push(s4.event, slotNotice(READ_SLOT + 4n, at(READ_SLOT + 4n) + 50));
