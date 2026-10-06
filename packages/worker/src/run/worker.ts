@@ -491,12 +491,10 @@ export class Worker {
    * and H14 refuses every coin while it is a hole (DeployerIndex.lostCreate); its transaction is fetched to close it.
    */
   #createVias = new Set<string>();
-  /** Cut-creates-log fetches this UTC day (bounded by CUT_CREATE_FETCHES_PER_DAY), and that day. */
   /** Retries waiting to ask again, for cut creates logs and cut pool-trade logs (cleared at a stop). */
   readonly #cutCreateTimers = new Set<TimerHandle>();
   /** TRADE-GAP-HEAL: the pool watches (`coverage:trades:<pool>:start` vias): a cut log on one is a hole in its trade stream. */
   readonly #tradeVias = new CappedMap<string, true>(TRADE_VIAS_KEPT);
-  /** Cut-pool-trade-log fetches this UTC day (bounded by CUT_TRADE_FETCHES_PER_DAY), and that day. */
   /**
    * The day's counts of both capped fetches, saved at each try (`fetch-caps.json`, review B1), so a restart keeps them.
    * A file that cannot be read or written counts the day as spent (fail safe on credits).

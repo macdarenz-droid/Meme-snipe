@@ -3238,8 +3238,25 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - **N3.** There is no cap on the swaps held by all heals together. Each heal holds at most 20,000, and only pools with a pending hole hold any, normally for seconds. A starved P3 queue holds them up to 45 minutes.
 - **No lookahead, and parity.**
   - Healed facts are released at the outcome's moment, from events already released.
-  - The backtest's dataset holds full transactions, so it has no holes. Live after a heal reaches the same facts.
-  - Test: the same tape, (a) with a cut log healed by its fetch and (b) complete from the start, ends at the same value for every fact key (receipt times aside), with the same H11 and H12 verdicts. Recorded live data replays the outcome event, so a replay heals the same way.
+  - The backtest's dataset holds full transactions (events from inner instructions, never logs), so it has no holes. Live after a heal reaches the same facts as the backtest.
+  - Test: the same tape ends at the same value for every fact key (receipt times aside), with the same H11 and H12 verdicts, in three forms:
+    - (a) with a cut log healed by its fetch;
+    - (b) complete from the start, as log lines;
+    - (c) complete as the backtest's full-transaction events (review N1).
+  - Recorded live data replays the outcome event, so a replay heals the same way. A TEST-1 recording test of a heal was not added: the harness's sessions take their candles as facts, so no decision depends on a heal there (BT review N3, optional).
+- **A live-only veto where no heal lands (BT parity review B1, 2026-10-07).**
+  - Only a hole that heals reaches the backtest's facts. In each of these cases live keeps H11's refusal (H16 `gap`, input `stream`) where the backtest, which has no holes, can enter:
+    - (a) a heal pending: its transaction not yet fetched, up to 45 minutes (`HEAL_WAIT_MS`);
+    - (b) the transaction not found in 5 tries;
+    - (c) a pool past `CUT_TRADE_HOLES_PER_POOL` (30) holes (2 of the 7 measured coins);
+    - (d) the day's `CUT_TRADE_FETCHES_PER_DAY` cap spent (about 200 of about 1,280 candidates a day are healed);
+    - (e) a restart while a heal is pending (heal state is in memory);
+    - (f) a hole whose transaction holds another PumpSwap event, or a non-swap pool transaction seen since the mark, and every other fail-closed case above.
+  - It only removes trades, never adds one, so it is a **live-only veto** (ARCHITECTURE §16.3):
+    - G3 counts it in the veto rate v and scores its vetoed candidates for Δ;
+    - the backtest report's bias note names it.
+  - The gates tag no live-only veto in live mode. `live-only-not-applied` (H15, H16 cross-checks) is a backtest-mode note, and the backtest has no hole to note, so no gate code changes here.
+  - To count this veto in G3, a hole-caused `gap` must be told apart from a feed gap. That, and modelling the same holes and heal rules in the backtest from the dataset's `logMessages` ("Log truncated"), is the follow-up card BT-HEAL-MODEL (S1), needed before the G2/G3 evidence.
 - **Evidence (the heal and cap tests fail on the code before this change).**
   - `core test/facts/trade-heal.test.ts`:
     - heal from a cut log and from an undecodable log;
@@ -3268,7 +3285,9 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
     - more than `HEAL_TAPE_MAX` swaps lets the heal go;
     - a hole released behind the mark is never healed;
     - both caps hold across a restart, and a new UTC day resets them;
-    - an unreadable `fetch-caps.json` counts the day as spent.
+    - an unreadable `fetch-caps.json` counts the day as spent;
+    - a count that cannot be saved refuses the fetch (review N6);
+    - the backtest-shape tape kills mutant C, which moves only fetched-transaction swaps one candle later.
 
 ## Every watch that saw a cut log gets its hole (DEDUP-PER-WATCH, `providers/canonical.ts` `echoEvents`, `providers/live-feed.ts` `ingest`, `facts/producer.ts` `#chainOther`, `run/worker.ts` `#cutPoolLog`)
 
