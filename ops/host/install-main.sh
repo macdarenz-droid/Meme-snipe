@@ -73,6 +73,7 @@ managed() {
   case "$p" in
     /usr/local/sbin/zeroed-* | /usr/local/lib/zeroed/* | /usr/local/share/zeroed/* | /usr/local/bin/node) return 0 ;;
     /etc/systemd/system/zeroed-* | /etc/zeroed/* | /etc/nftables.conf | /etc/apt/apt.conf.d/* | /etc/ssh/sshd_config.d/*) return 0 ;;
+    /etc/systemd/journald.conf.d/zeroed-*) return 0 ;;
     /var/lib/zeroed-host/* | /opt/zeroed/*) return 0 ;;
   esac
   return 1
@@ -112,6 +113,7 @@ roll_back() {
     b=$((b + 1))
   done < "$JOURNAL"
   systemctl daemon-reload
+  systemctl restart systemd-journald >/dev/null 2>&1 || true
   while read -r kind p en act; do
     [ "$kind" = unit ] && [[ "$p" =~ ^zeroed-[A-Za-z0-9@._-]+$ ]] || continue
     [ "$en" != 1 ] || systemctl enable "$p" >/dev/null 2>&1
@@ -289,6 +291,8 @@ printf '%s\n' "${new_units[@]}" > /var/lib/zeroed-host/release-units
 
 say "Services"
 systemctl daemon-reload
+# HOST-CAPS: journald reads its size limits only when it starts.
+[[ " ${CHANGED[*]} " != *" /etc/systemd/journald.conf.d/zeroed-journal.conf "* ]] || systemctl restart systemd-journald
 systemctl enable --now zeroed-signer.service >/dev/null
 systemctl enable zeroed-worker.service >/dev/null
 systemctl enable --now zeroed-pair.timer zeroed-update.timer zeroed-backup.timer zeroed-check.timer >/dev/null

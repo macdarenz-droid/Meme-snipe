@@ -3029,3 +3029,15 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - Default and unknown capabilities pass the strict response schema frozen at base `efa3b006`; the opt-in route passes the new schema, and the HTTP dispatch retains its query. Existing default enums are unchanged.
   - The owner's installed APK commit has not been confirmed; this verifies the integration-base contract, not a guessed device version. A new APK is required to show SOL first. Risk limits remain dollar policy values converted conservatively until SOL-BOOKS.
   - Delta regressions cover capability/default compatibility, partial/late/account-cost sums, unvalued late settlement failure, HTTP query forwarding, exact paid/returned rent and the owned entry size of a late-fill position (so its Return has the correct denominator).
+
+## The host's disk: journald capped and old releases pruned (HOST-CAPS)
+
+**Why.** The server has 23 GB and filled within a day. Besides the recordings (a separate card), two things grew without a limit: the systemd journal (the install set none) and the folders under `/opt/zeroed/releases/<commit>` (about 65 to 68 MB each, one per deploy, 30 or more in two days; `zeroed-update` reuses an existing folder but never removed one).
+
+**Journal.** `/etc/systemd/journald.conf.d/zeroed-journal.conf` sets `SystemMaxUse=500M` and `SystemKeepFree=2G`. It is a managed file (rolled back with the rest of a failed update), and the installer restarts `systemd-journald` when the file changes, because journald reads these limits only at start.
+
+**Releases.** After a successful switch, `zeroed-update` calls `prunable_releases` (`logic.sh`) and removes what it lists. Kept: the current release (`readlink -f /opt/zeroed/current`), the previous one (the roll-back target), the deploy tag's commit, the 3 newest others, and any half-written `*.new` folder. With the usual case (tag = current) that is at most 5 folders, about 340 MB. There is no age rule: on a host this young a 7-day rule would prune nothing. Pruning runs only after the new worker has stayed up (a roll-back exits before it) and never during a switch. If the current release cannot be read, or is not a folder under the releases root, nothing is pruned.
+
+**Never pruned:** the running release, the roll-back target, the deploy tag's commit, half-written folders. Pruned: everything else beyond the 3 newest. Source: the two pieces come from PR #149 (DISK-GUARD), minus its 7-day rule.
+
+**Evidence.** `packages/ops/test/host-logic.test.ts` (HOST-CAPS): the keep rules, 9 releases leave 5, no age rule, an unreadable current prunes nothing, the drop-in's content and the installer's managed-file entry and restart. `ops/test/e2e.sh`: the drop-in is on the host, and 6 deploys leave at most 5 releases.
