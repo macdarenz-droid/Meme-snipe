@@ -126,11 +126,11 @@ export const HOLE_FETCH_PREFIX = 'hole-fetch:';
  */
 export const HEAL_WAIT_MS = 45 * MINUTE_MS;
 
-/** TRADE-GAP-HEAL: the most swaps one pool's heal keeps while it waits; past it the hole stays (memory bound). */
-export const HEAL_TAPE_MAX = 20_000;
+/** TRADE-GAP-HEAL: the most swaps one pool's heal keeps while it waits (20,000, a fifth of RETIRED_KEEP); past it the hole stays (memory bound). */
+export const HEAL_TAPE_MAX = RETIRED_KEEP / 5;
 
-/** TRADE-GAP-HEAL: hole signatures remembered, so a late fetched copy of a hole's swaps is never applied out of order. */
-export const HOLE_SIGS_KEEP = 20_000;
+/** TRADE-GAP-HEAL: hole signatures remembered (20,000, a fifth of RETIRED_KEEP), so a late fetched copy of a hole's swaps is never applied out of order. */
+export const HOLE_SIGS_KEEP = RETIRED_KEEP / 5;
 
 /**
  * G4a (supervisor ruling): how long a wallet's funder read (`read:funder:<wallet>`, its first SOL funding: fixed once it

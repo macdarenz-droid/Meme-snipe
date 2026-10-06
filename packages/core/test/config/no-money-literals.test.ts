@@ -36,8 +36,6 @@ const ALLOWED: readonly Allowed[] = [
   { file: 'engine/random.ts', name: 'h4', value: '2773480762', why: 'cyrb128 initial hash state, not money' },
   { file: 'engine/proofs.ts', name: 'REACH_BUDGET', value: '200000', why: 'node budget of the leak-test reachability search, not money' },
   { file: 'facts/producer.ts', name: 'RETIRED_KEEP', value: '100000', why: 'count of retired pool and mint ids remembered (OOM-MINT), not money' },
-  { file: 'facts/producer.ts', name: 'HEAL_TAPE_MAX', value: '20000', why: 'count of swaps one pool\'s waiting heal keeps (TRADE-GAP-HEAL memory bound), not money' },
-  { file: 'facts/producer.ts', name: 'HOLE_SIGS_KEEP', value: '20000', why: 'count of hole signatures remembered (TRADE-GAP-HEAL), not money' },
   { file: 'engine/asof.ts', name: 'PROBE_KIND_SAMPLE', value: '50000', why: 'count of store keys the memory probe reads one by one before sampling (MEM-PROBE), not money' },
   { file: 'engine/asof.ts', name: 'KIND_SPREAD', value: '2654435761', why: 'multiplicative hash constant spreading the memory probe\'s sample (MEM-PROBE), not money' },
   { file: 'engine/asof.ts', name: 'KIND_RANGE', value: '4294967296', why: 'range of an unsigned 32-bit hash (2^32) for the memory probe\'s sample (MEM-PROBE), not money' },
