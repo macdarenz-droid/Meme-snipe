@@ -205,7 +205,7 @@ describe('deploy code', () => {
 describe('off-server backup gate', () => {
   it('ships off: the flag is false, the installer does not enable the timer, and the sender checks the flag first', () => {
     expect(JSON.parse(read('ops/host-config.json'))).toEqual({
-      offsite_backup: false, worker: 'release',
+      offsite_backup: false, worker: 'stub', // PAUSE (owner, 2026-10-07): back to 'release' when every blocker is fixed
       // RECORD-UPLOAD: on by the owner's decision (6 Oct about 12:30 AM: "Approve upload", "Okay yes delete after upload").
       record_upload: true, record_upload_delete_local: true,
       // PRACTICE-ON: the S0 shakedown (packages/worker/test/practice-on.test.ts checks each value).
