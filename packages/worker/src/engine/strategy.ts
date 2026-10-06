@@ -29,7 +29,7 @@ import {
   atr, checkStopDistance, decideExit, execPrice, liquidationValue, exitAttemptsOf, exitBookEvents, exitSettings, newTracker, noteAttempt,
 } from '../../../core/src/exits/index.ts';
 import {
-  type Coverage, type DeployerIndexState, type GateContext, type GraduatesFact, type RugLabellerState, type S0DiagnosticPart, DeployerIndex, GRADUATES_KEY, hardAllowsEntry, LOG_CREATE_PREFIX, NOT_EVALUATED, stagedHardRejects, RugLabeller, TX_CREATE_PREFIX, type PoolFact, carryKey, createKey, createKeepVerdict, CREATE_LATE_MS, createOf, createsCoverage, evaluateHardRejects, evaluateRegime, migrationKey, parseCreate, parseGraduates, parseMigration, parsePool, poolKey, pruneCoverage,
+  type Coverage, type DeployerIndexState, type GateContext, type GraduatesFact, type RugLabellerState, type S0DiagnosticPart, DeployerIndex, GRADUATES_KEY, hardAllowsEntry, LOG_CREATE_PREFIX, NOT_EVALUATED, stagedHardRejects, RugLabeller, TX_CREATE_PREFIX, type PoolFact, carryKey, createKey, createKeepVerdict, CREATE_LATE_MS, createOf, createsCoverage, evaluateRegime, migrationKey, parseCreate, parseGraduates, parseMigration, parsePool, poolKey, pruneCoverage,
 } from '../../../core/src/gates/index.ts';
 import type { GraduatesSeed } from '../../../core/src/facts/raw.ts';
 import { type BookEvent, type IntentState, isTerminal } from '../../../core/src/lifecycle/index.ts';
@@ -1032,12 +1032,10 @@ export class LiveStrategy implements Strategy {
       // Terms from a swap seen in this run are never replaced by saved ones (a candidate already listed is not restored at
       // all, so no case reaches this today; kept so an order change cannot regress).
       if (c.fees != null && !this.#observedFees.has(c.mint)) this.#observedFees.set(c.mint, { ctx: feeContextOf(c.fees), terms: c.fees, restored: true });
-      // STEP-B: a window that ended during the downtime ends here, as the first event after the restore would end it,
-      // before the candidate is listed: it is not restored, so none of its transactions is read again and its pool
-      // gets no catch-up, which no decision could use (a boot after a long stop restored every saved candidate and read
-      // each one again, then dropped them all at the first event).
+      // STEP-B: an ended window gets no bars/catch-up and is never externally listed after this restore event.
+      // The same event's #windowEnds ends it after all saved money state is loaded and the actual current expiry/H16
+      // verdict is checked; ending it here would start a tail before re-proving a known create-expiry drop.
       if (atMs >= c.migratedAtMs + this.#d.config.windowToMs) {
-        this.#endWindow(c, out);
         continue;
       }
       if (c.bars.length > 0 && !this.#bars.has(c.mint)) this.#bars.set(c.mint, [...c.bars]);
@@ -2355,16 +2353,13 @@ export class LiveStrategy implements Strategy {
       const req = { mint: cand.mint, universe: c.universe, notional: session.policy.capital.minNotional, spend: 1n as Lamports, roundTrip: { ok: false as const, reason: 'missing-params' as const, detail: 'swap-watch verdict needs no trade quote' } };
       const expiry = this.#createExpiry(cand.mint, gctx);
       // Most candidates cannot be cut: do not scan accounts/holders on every frame just to discover that again.
-      // This is the actual H9 gate, only a prefilter; every proposed drop still needs the full staged H16 check.
-      if (expiry === null && !evaluateHardRejects(gctx, deps, req, { only: ['H9'] }).reasons.some((r) => r.gate === 'H9' && r.code === 'instant-graduation')) continue;
+      if (expiry === null) continue;
       const { hard } = stagedHardRejects(gctx, deps, req);
       // H16 wins over a known adverse reason: unknown, partial, stale or unconfirmed evidence never drops a watch.
       if (hard.reasons.some((r) => r.gate === 'H16')) continue;
-      // H8/H11 still need observed swaps and REC-1 tails: dropping them degrades staged G3 evidence to H16.
-      const reason: GateReasonLine | undefined = expiry ?? hard.reasons.find((r) => r.gate === 'H9' && r.code === 'instant-graduation');
-      if (reason === undefined) continue;
+      // H8/H9/H11 keep observed swaps and REC-1 tails: a normal unwatch also flags the actual pool reserve chain.
       this.#stoppedPools.add(cand.mint);
-      out.push({ action: null, reasons: ['pool watch stopped', c.universe, cand.mint, reason.code, reason.detail ?? ''] });
+      out.push({ action: null, reasons: ['pool watch stopped', c.universe, cand.mint, expiry.code, expiry.detail ?? ''] });
     }
   }
 
