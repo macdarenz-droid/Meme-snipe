@@ -1393,6 +1393,19 @@ export class LiveStrategy implements Strategy {
    */
   #held(mint: string): boolean {
     if (this.watched().has(mint)) return true;
+    return this.#money(mint);
+  }
+
+  /**
+   * BEHIND (facts review): money is or may be on this mint: an exit plan, an entry proposed and not yet booked (its
+   * seed), a position not closed, or an attempt that may still land. Its trade stream is never shed.
+   */
+  committed(mint: string): boolean {
+    for (const pid of this.#exits.keys()) if (this.#mintOf(pid) === mint) return true;
+    return this.#money(mint);
+  }
+
+  #money(mint: string): boolean {
     for (const s of this.#seeds.values()) if (s.mint === mint) return true;
     for (const p of Object.values(this.#book?.positions ?? {})) if (String(p.mint) === mint && p.status !== 'closed') return true;
     return this.#mayLand(mint);

@@ -80,7 +80,8 @@ export interface Frame {
    * notice: a fill's transactions, ingested oldest first at one receipt time, would otherwise take id (signature)
    * order. Recordings made before it carry no `arrival` and replay as they did.
    */
-  readonly place: { readonly at: 'chain' | 'offchain'; readonly slot: bigint; readonly arrival?: true };
+  /** `first`: an off-chain body placed first in a chain slot (BEHIND: a shed range's gap, before any event of the range). */
+  readonly place: { readonly at: 'chain' | 'offchain'; readonly slot: bigint; readonly arrival?: true; readonly first?: true };
   /** A later copy of a fact already received (see `dedupKey`). Recorded, never released. */
   readonly duplicate: boolean;
   readonly body: FrameBody;
@@ -186,7 +187,12 @@ export const eventsOfFrame = (f: Frame, ranks: Pick<Ranks, 'get'>): FeedEvent[] 
   // FILL-ORDER: same-moment events are released in id order, and ids start with the signature; an `arrival` frame
   // therefore takes its arrival order in `ixIndex` (1 + seq, after the slot notice's 0). Receipt times never decrease
   // with seq, so this only settles ties that id order settled before.
-  const off: Moment = { slot: f.place.slot, txIndex: OFF_CHAIN, ixIndex: f.place.arrival === true ? 1 + f.seq : OFF_CHAIN, receivedAt: f.receivedAt };
+  const off: Moment = f.place.first === true
+    // BEHIND: at the slot's first position, so a shed range's gap precedes every shed event (a log event sits at
+    // LIVE_TX_BASE + its rank and LOG_IX_BASE + its line); only a kept transaction at index 0 can sort with it, and
+    // nothing shed comes before that.
+    ? { slot: f.place.slot, txIndex: 0, ixIndex: 0, receivedAt: f.receivedAt }
+    : { slot: f.place.slot, txIndex: OFF_CHAIN, ixIndex: f.place.arrival === true ? 1 + f.seq : OFF_CHAIN, receivedAt: f.receivedAt };
   const chain = f.place.at === 'chain';
   // Off-chain placement can repeat a fact whose dedup key was already forgotten (older than keepSlots), so its
   // ids carry the frame's seq: event ids stay unique for the whole run, as the replay requires.

@@ -78,6 +78,8 @@ import type { ExecStats } from '../../../core/src/facts/raw.ts';
 const flagged = (p: PoolFact): boolean => p.obs.quality.some((q) => q !== 'backfilled' && q !== 'deduplicated');
 import { type PoolFeeContext, effectiveQuoteReserve, poolSell } from '../../../core/src/amm/index.ts';
 import { liveCollapse, liveForget, liveRetention, liveShape } from './store-rules.ts';
+import { BEHIND, BehindGuard, SHED_HELD_FRAMES } from './behind.ts';
+import { tradesStream } from './pool-watch.ts';
 
 /** The halt reason while the book holds a late buy's position, which paper does not settle yet (risk ruling on #133). */
 export const LATE_BUY = 'late buy not settled by paper; entries off';
@@ -195,6 +197,11 @@ export interface WorkerDeps {
   readonly reconcileTimeoutMs: number;
   /** Engine loop period. */
   readonly loopMs: number;
+  /**
+   * BEHIND: a monotonic clock (ms) for the loop's own cycle: real time the loop took, never the wall clock (which a host
+   * can step, and tests move by hand). Default `performance.now`.
+   */
+  readonly loopClock?: () => number;
   /** A critical feed with no frame for this long is stale (entries halt). */
   readonly staleFeedMs: number;
   /** Plain status lines for the process log (never a key or a URL). */
@@ -461,6 +468,8 @@ export class Worker {
   #loop: ReturnType<Timers['setTimeout']> | null = null;
   #beat: ReturnType<Timers['setTimeout']> | null = null;
   #memTimer: ReturnType<Timers['setTimeout']> | null = null;
+  /** BEHIND: whether the loop keeps up with its inputs (entries halt while it does not). */
+  readonly #behind = new BehindGuard();
   readonly #cgroupMax = cgroupMax();
   /** MEM-PROBE: the last minute samples (and the ones around each save), oldest first, at most PROBE_KEEP. */
   readonly #memRecent: ProbeSample[] = [];
@@ -1284,10 +1293,33 @@ export class Worker {
     }
   }
 
+  /**
+   * BEHIND: past SHED_HELD_FRAMES held frames, the trade streams of watched pools no position holds are shed, and each
+   * shed range is a coverage gap (reason `shed`), so a candidate on it fails closed. A held pool is never shed.
+   */
+  #shedOver(): void {
+    if (this.#feed.heldFrames <= SHED_HELD_FRAMES) return;
+    const pools = this.#strategy.watchedPools();
+    const shed = this.#feed.shed((via) => {
+      if (!via.startsWith('logs:')) return false;
+      const p = pools.get(via.slice('logs:'.length));
+      return p !== undefined && !p.held && !this.#strategy.committed(p.mint);
+    });
+    for (const [via, r] of shed) {
+      const pool = via.slice('logs:'.length);
+      // As the stream's own watch reports a gap (solana-ws `#coverageGap`), but placed first in the range's first slot
+      // (facts review B1): released before any event of the range, so H11 refuses the pool as not covered from its first
+      // shed slot on, live and in the recording's replay alike.
+      this.#feed.ingest('worker', { type: 'offchain', key: `coverage:${tradesStream(pool)}:gap`, value: { fromSlot: r.fromSlot, toSlot: r.toSlot, reason: 'shed', via } }, { receivedAt: this.#d.timers.now(), firstIn: r.fromSlot });
+    }
+    if (shed.size > 0) this.#d.log(`Behind: the feed held over ${SHED_HELD_FRAMES} frames; shed ${shed.size} candidate pools' trade streams (coverage gaps, entries there refused).`);
+  }
+
   /** One engine step: release what is due, decide, record, write. */
   step(): void {
     const now = this.#d.timers.now();
     this.#record((r) => r.flush());
+    this.#shedOver();
     this.#feed.advance(now);
     this.#engine.drain();
     this.#record((r) => r.flush());
@@ -1542,6 +1574,7 @@ export class Worker {
     // HELIUS-EXHAUSTED: no entry is judged while Helius refuses for credits; named, never an evidence refusal.
     if (this.#d.heliusExhaustion?.().exhausted === true) reasons.push(HELIUS_EXHAUSTED);
     if (this.#seeding) reasons.push(SEEDING);
+    if (this.#behind.behind) reasons.push(BEHIND);
     if (this.#recorderFault !== null) reasons.push(this.#recorderFault);
     if (Object.keys(this.#desk.book.positions).some((id) => lateFillOf(id) !== null)) reasons.push(LATE_BUY);
     reasons.push(...this.#diverged, ...this.#sellOnly);
@@ -1648,6 +1681,14 @@ export class Worker {
     }
     const loop = (): void => {
       if (this.#stopping) return;
+      // BEHIND: a cycle far over its interval means inputs waited that long unread; entries halt until it keeps up (the
+      // step's own halt check applies it).
+      const change = this.#behind.cycle((d.loopClock ?? (() => performance.now()))(), d.loopMs);
+      if (change !== null) {
+        d.log(change.behind
+          ? `Behind: a loop cycle ran ${(change.lateMs / 1000).toFixed(1)} s over its interval; new entries halt, exits run.`
+          : 'Caught up: every loop cycle on time for 30 s; entries resume once nothing else halts them.');
+      }
       try {
         this.step();
       } catch (e) {
