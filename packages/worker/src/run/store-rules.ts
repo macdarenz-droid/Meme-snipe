@@ -2,9 +2,10 @@
 // Without it the store kept every event for the process: each swap on a watched pool left its trade event and a fresh
 // pool fact (about 10 KB with their addresses), and at a few thousand swaps a minute the heap reached its limit in minutes.
 import type { Collapse, Forget, Retention, Shape } from '../../../core/src/engine/index.ts';
-import { SEED_KEY } from '../engine/strategy.ts';
+import { SEED_KEY, SOL_PRICE_KEY } from '../engine/strategy.ts';
+import { FACT_READS_KEY } from '../facts/source.ts';
 import { FUNDER_KEEP_MS, RAW } from '../../../core/src/facts/index.ts';
-import { GRADUATES_KEY, LOG_CREATE_PREFIX, TX_CREATE_PREFIX, candlesKey, carryKey, compactCreate, compactCurveTrade, curveTradeKeys, mintKey, poolKey, streamKey, tradeTailCollapse } from '../../../core/src/gates/index.ts';
+import { CURVE_VOLUME_KEY, EXEC_HEALTH_KEY, GRADUATES_KEY, LOG_CREATE_PREFIX, RUG_CHECK_PREFIX, SOL_USD_KEY, TX_CREATE_PREFIX, candlesKey, carryKey, compactCreate, compactCurveTrade, curveTradeKeys, mintKey, poolKey, streamKey, tradeTailCollapse } from '../../../core/src/gates/index.ts';
 
 const POOL_PREFIX = poolKey('');
 
@@ -49,13 +50,41 @@ const READS = [RAW.accounts(''), mintKey('')];
  * for an older value.
  */
 const GRADUATES = GRADUATES_KEY;
+/**
+ * STORE-GROWTH: the worker's own running facts, each stated again whole: SOL/USD at every price tick (`worker:sol-price`,
+ * about one a second live), and the day's read counts at every read (`worker:fact-reads`). The strategy looks the price
+ * up as of now only; nothing looks the read counts up in the store (the source keeps its own counts). Kept whole, both
+ * grew for the process: in the harness about 200 entries a minute between them, more at live's read rate.
+ */
+const RUNNING = [SOL_PRICE_KEY, FACT_READS_KEY];
+/**
+ * STORE-GROWTH sweep: the regime's other series, stated whole like the graduates fact (SOL/USD's hourly points, the
+ * curve volume's days, execution health), and the raw reads they are made from (`sol-usd`, `read:chain-volume-hour`,
+ * `read:exec-health`). The regime and H8 read the facts as of now (`Evidence.read`); the producer acts on the released
+ * raw read and keeps its own series; nothing asks the store for an older value (`history` is asked for trade, coverage
+ * and deployer keys only).
+ */
+const REGIME = [SOL_USD_KEY, CURVE_VOLUME_KEY, EXEC_HEALTH_KEY, RAW.solUsd, RAW.volumeHour, RAW.exec];
+/**
+ * F1b (supervisor ruling): an event of a known program that DEC-1 does not decode (`<program>:other:<program>`, from logs
+ * and from fetched transactions). Its subject is the program, so the key never retires; nothing reads it (the producer
+ * skips `other` events, `programEvent`), so only its newest value is kept.
+ */
+const OTHER = /^(?:logs:)?(?:pump|pump_amm):other:/;
+/**
+ * F4 (supervisor ruling): a creator's on-demand deployer check (`coverage:rugs:deployer:<creator>`, RUG-1c), stated
+ * whole at every check, read by H14 as of now (`Evidence.read`; `history` reads only the `coverage:<stream>:start|gap|
+ * resume` keys, which it is not); and a feed's status (`feed:status:<feed>`), which the worker acts on as it arrives
+ * and nothing looks up in the store.
+ */
+const STATED = [RUG_CHECK_PREFIX, 'feed:status:'];
 const NEWEST_ONLY = (): boolean => false;
 
 /**
- * The live store's collapse: a head fact, a seen signature, the slot notice, an account read and its mint fact, and the graduates fact keep their newest value; a trade key keeps its newest event
+ * The live store's collapse: a head fact, a seen signature, the slot notice, an account read and its mint fact, the graduates fact and the regime's other series with their raw reads, and the worker's running facts keep their newest value; a trade key keeps its newest event
  * and every event whose tail would fail (`tradeTailCollapse`).
  */
-export const liveCollapse: Collapse = (key) => (key === SLOT || key === GRADUATES || key.startsWith(SEEN) || HEADS.some((p) => key.startsWith(p)) || READS.some((p) => key.startsWith(p)) ? NEWEST_ONLY : tradeTailCollapse(key));
+export const liveCollapse: Collapse = (key) => (key === SLOT || key === GRADUATES || OTHER.test(key) || STATED.some((p) => key.startsWith(p)) || RUNNING.includes(key) || REGIME.includes(key) || key.startsWith(SEEN) || HEADS.some((p) => key.startsWith(p)) || READS.some((p) => key.startsWith(p)) ? NEWEST_ONLY : tradeTailCollapse(key));
 
 const CURVE_TRADE = curveTradeKeys('');
 /**
