@@ -162,9 +162,10 @@ describe('c. pending-reboot.json', () => {
 describe('e. a VPS run on --strategy none', () => {
   const plan = makePlan({ durationMs: 100, feeds: ['f'], restartWindowMs: 1, feedDropMs: 1 });
   const meta = (o: Partial<RunMeta>): RunMeta => ({ runId: 'r', label: 'vps', commit: 'c0ffee', startedAt: 0, targetMs: 100, entry: 'e', plan, ...o });
-  const start = (entry_rule: string) => checkJournal(JSON.stringify({ seq: 1, ts: '2026-10-04T00:00:00.000Z', boot: 'b1', kind: 'start', entry_rule, paper_edge_ppm: null, s0_salt: null, qualifying: true }));
+  const start = (entry_rule: string, at: number) => checkJournal(JSON.stringify({ seq: 1, ts: new Date(at).toISOString(), boot: 'b1', kind: 'start', entry_rule, paper_edge_ppm: null, s0_salt: null, qualifying: true }));
   const md = (m: RunMeta, rule: string) => {
-    const r = buildReport(m, [], 10, 100, start(rule), [], [], item4([], 'vps', false), OPS_OK);
+    const observed: Sample = { t: m.startedAt, up: true, ready: true, boot: 'b1', git_sha: 'c0ffee', rss_bytes: 1, in_trade: false, entries_halted: false, recorder: true, simulation: true, stub: false, feeds: 'f', feeds_down: [] };
+    const r = buildReport(m, [observed], 10, 100, start(rule, m.startedAt), [], [], item4([], 'vps', false), OPS_OK);
     return { r, md: reportMarkdown(r) };
   };
   it('says "no registered strategy, not qualifying"', () => {

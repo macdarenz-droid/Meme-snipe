@@ -140,10 +140,10 @@ describe('5–7. reboot timing and units', () => {
 describe('qualifying guard: one check, qualifying_start, on a named host run', () => {
   // Start lines as the journal holds them (gapless seq), through checkJournal, so the report sees what a run would.
   const starts = (...fields: Record<string, unknown>[]) => checkJournal(fields.map((f, i) =>
-    JSON.stringify({ seq: i + 1, ts: '2026-10-04T00:00:00.000Z', boot: `b${i + 1}`, kind: 'start', entry_rule: 'U2-v1', paper_edge_ppm: null, s0_salt: null, qualifying: true, ...f })).join('\n'));
+    JSON.stringify({ seq: i + 1, ts: new Date(meta.startedAt + i).toISOString(), boot: `b${i + 1}`, kind: 'start', entry_rule: 'U2-v1', paper_edge_ppm: null, s0_salt: null, qualifying: true, ...f })).join('\n'));
   const named: RunMeta = { ...meta, name: 'qual-1', strategy: 'U2-v1' };
-  const judge = (j: ReturnType<typeof checkJournal>, m: RunMeta = named, registered: readonly string[] = ['U2-v1']) =>
-    buildReport(m, samples, 10, 100, j, all, [], item4([], 'vps', false), OPS_OK, registered);
+  const judge = (j: ReturnType<typeof checkJournal>, m: RunMeta = named, registered: readonly string[] = ['U2-v1'], observed: readonly Sample[] = samples.map((s, i) => ({ ...s, boot: j.starts[Math.min(i, j.starts.length - 1)]?.boot ?? s.boot }))) =>
+    buildReport(m, observed, 10, 100, j, all, [], item4([], 'vps', false), OPS_OK, registered);
   it.each([
     ['the S0 shakedown', starts({ entry_rule: 'S0' }), /entry rule "S0", the run's strategy is U2-v1/],
     ['a paper edge', starts({ paper_edge_ppm: '5000' }), /paper edge 5000 ppm/],
@@ -171,6 +171,17 @@ describe('qualifying guard: one check, qualifying_start, on a named host run', (
     expect(r.qualifying).toMatchObject({ ok: true, seen: ['U2-v1'] });
     expect(r.checks['qualifying_start']).toBe(true);
     expect(r.counts).not.toMatch(/NOT qualifying/);
+  });
+  it.each([-1, 100, 101])('a registered start outside the exact run window (%s ms) cannot qualify', (at) => {
+    const r = judge(starts({ ts: new Date(meta.startedAt + at).toISOString() }), named, ['U2-v1'], [{ ...samples[0]!, t: at, boot: 'b1' }]);
+    expect(r.checks['qualifying_start']).toBe(false);
+    expect(r.qualifying?.problems).toContain('no qualifying start observed within the run window');
+    expect(r.pass).toBe(false);
+  });
+  it.each([0, 99])('a registered start observed within the exact run window (%s ms) can qualify', (at) => {
+    const r = judge(starts({ ts: new Date(meta.startedAt + at).toISOString() }), named, ['U2-v1'], [{ ...samples[0]!, t: at, boot: 'b1' }]);
+    expect(r.checks['qualifying_start']).toBe(true);
+    expect(r.qualifying?.problems).toEqual([]);
   });
   it('a rehearsal is not judged; a VPS run without a name never passes, even on a registered strategy', () => {
     const bad = starts({ entry_rule: 'S0', paper_edge_ppm: '5000', qualifying: false });
