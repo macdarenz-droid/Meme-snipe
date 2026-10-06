@@ -551,3 +551,40 @@ describe('a pool\'s lost mark never falls out (review of #266, item 2)', () => {
     expect((world.last(poolKey(MINT)) as { stale?: string }).stale).toBe('pool events before the first read were let go');
   }, 60_000);
 });
+
+describe('PumpSwap events proven to leave the reserves unchanged (POOL-FIRST-READ part 2)', () => {
+  // research/pool-noop-events: CloseUserVolumeAccumulatorEvent (929fbdac925838f4) and ExtendAccountEvent
+  // (6161d7905d92167c), each with the pool's swap before and after chaining exactly across it on mainnet.
+  const ev = (slot: bigint, discriminator: string): MarketEvent => ({
+    kind: 'market', id: `log:noop${slot}${discriminator}:confirmed:00000`, moment: { slot, txIndex: 2 ** 32 + 999, ixIndex: 2 ** 36, receivedAt: at(slot) },
+    key: `logs:pump_amm:other:pump_amm`,
+    value: { event: { program: 'pump_amm', name: 'other', discriminator, logIndex: 0 }, signature: `noop${slot}${discriminator}`, txSlot: slot, truncated: false, via: `logs:${POOL}`, commitment: 'confirmed', source: 'helius', backfilled: false, seq: 0 },
+  });
+  const carries = (w: FactWorld) => w.facts(carryKey(MINT)).map((e) => e.value as { slot: bigint });
+  const stale = (w: FactWorld): string | undefined => (w.last(poolKey(MINT)) as { stale?: string }).stale;
+
+  for (const d of ['929fbdac925838f4', '6161d7905d92167c']) {
+    it(`${d} leaves the chain clean and carried, and the next swap still chains`, () => {
+      const { world, state } = base();
+      world.push(ev(READ_SLOT + 1n, d), slotNotice(READ_SLOT + 1n, at(READ_SLOT + 1n) + 50));
+      expect(stale(world)).toBeUndefined();
+      expect(carries(world).map((c) => c.slot)).toEqual([READ_SLOT + 1n]);
+      const s = swap('buy', state, 1_000n, READ_SLOT + 2n);
+      world.push(s.event);
+      expect(facts(world).at(-1)!).toMatchObject({ obs: { quality: [] }, baseVault: s.after.baseReserve });
+    });
+  }
+
+  it('any other unnamed PumpSwap event, or one a byte off, still makes the chain stale', () => {
+    for (const d of ['0011223344556677', '929fbdac925838f5', '6161d7905d92167d', 'a943276d6686b6e8']) {
+      const { world } = base();
+      world.push(ev(READ_SLOT + 1n, d));
+      expect(stale(world), d).toBe('a pool transaction other than a swap (other)');
+    }
+  });
+
+  it('kept before the first read, a no-change event leaves the first read clean', () => {
+    const world = new FactWorld().push(start(), ev(READ_SLOT + 1n, '929fbdac925838f4'), read(READ_SLOT, READ_SLOT + 2n));
+    expect(stale(world)).toBeUndefined();
+  });
+});

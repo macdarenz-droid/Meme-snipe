@@ -445,6 +445,26 @@ describe('a hole in a pool\'s trade stream, healed by its fetched transaction (T
   });
 });
 
+describe('a hole whose transaction holds a no-change PumpSwap event (POOL-FIRST-READ part 2)', () => {
+  const withEvent = (d: string) => {
+    const { world, state } = opened();
+    const s = tape(state);
+    world.push(logOf(s[0]!), logOf(s[1]!), hole(s[2]!.sig, s[2]!.slot), logOf(s[3]!), logOf(s[4]!));
+    const arrives = R + 6n;
+    const evs = fetched(s[2]!.sig, s[2]!.slot, arrives, [{ name: s[2]!.name, data: s[2]!.data }, { name: 'other' }]);
+    const o = evs[1]!.value as { event: Record<string, unknown> };
+    const tx = [evs[0]!, { ...evs[1]!, value: { ...o, event: { ...o.event, discriminator: d } } }];
+    world.push(...tx, outcome(s[2]!.sig, true, arrives));
+    return head(world);
+  };
+
+  it('a proven no-change event in it does not block the heal; any other unnamed one does', () => {
+    expect(gapFree(withEvent('929fbdac925838f4'))).toBe(gapFree(complete().world));
+    expect(gapFree(withEvent('6161d7905d92167c'))).toBe(gapFree(complete().world));
+    expect(gapFree(withEvent('0011223344556677'))).toBe(R + 4n);
+  });
+});
+
 describe('candles after a late migration (POOL-FIRST-READ part 3)', () => {
   // #263's finding: the book opens only at the migration's CreatePoolEvent, and swaps released before it were dropped:
   // with the migration released late (a re-read), the candles were [] and complete, and Evidence ok.

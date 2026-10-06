@@ -32,7 +32,7 @@ const rpc = async (method: string, params: unknown[]): Promise<any> => {
     if (wait > 0) await sleep(wait);
     last = Date.now();
     try {
-      const res = await fetch(RPC, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) });
+      const res = await fetch(RPC, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }), signal: AbortSignal.timeout(30_000) });
       if (res.status === 429 || res.status >= 500) { await sleep(Math.min(10_000, 1500 * (attempt + 1))); continue; }
       const body = (await res.json()) as { result?: unknown; error?: unknown };
       if (body.error) throw new Error(`${method}: ${JSON.stringify(body.error)}`);

@@ -13,7 +13,7 @@
 import { DAY_MS, HOUR_MS, MINUTE_MS, SECOND_MS } from '../config/time.ts';
 import type { Policy } from '../config/policy.ts';
 import {
-  type Address, type PumpEventData, PUMP_AMM_PROGRAM, decodeMint, decodePool, decodeTokenAccount, fromBase64,
+  type Address, type PumpEventData, PUMP_AMM_PROGRAM, decodeMint, decodePool, decodeTokenAccount, fromBase64, isNoChangePoolEvent,
 } from '../chain/index.ts';
 import type { Commitment, QualityFlag } from '../domain/index.ts';
 import type { MarketEvent } from '../engine/feed.ts';
@@ -888,7 +888,7 @@ export class FactProducer {
     const v = e.value;
     if (!isObj(v) || !isObj(v['event'])) return;
     const ev = v['event'];
-    if (ev['program'] !== 'pump_amm' || ev['name'] === 'BuyEvent' || ev['name'] === 'SellEvent' || typeof ev['signature'] !== 'string') return;
+    if (ev['program'] !== 'pump_amm' || ev['name'] === 'BuyEvent' || ev['name'] === 'SellEvent' || isNoChangePoolEvent(ev) || typeof ev['signature'] !== 'string') return;
     for (const h of this.#heals.values()) if (h.holes.has(ev['signature'])) h.tainted = true;
   }
 
@@ -1567,6 +1567,9 @@ export class FactProducer {
     const ev = isObj(v['event']) ? v['event'] : undefined;
     const name = echo ? v['name'] : ev?.['name'];
     if (name === 'BuyEvent' || name === 'SellEvent') return;
+    // POOL-FIRST-READ part 2: an event proven on mainnet to leave the reserves unchanged is not a change (only its exact
+    // discriminators; an echo carries none, so it stays a change).
+    if (!echo && isNoChangePoolEvent(ev)) return;
     // DEDUP-PER-WATCH: the pool the event touched. A named one says it; one DEC-1 cannot name says nothing, so every
     // watch that saw its transaction counts it (this watch here, the others by their `pool-other` copies). Fail closed.
     const named = !echo && ev !== undefined && isObj(ev['data']) && typeof ev['data']['pool'] === 'string' ? ev['data']['pool'] : null;
