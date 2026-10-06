@@ -48,6 +48,7 @@ The previous S1 account reached its usage limit about 12:45 PM. The owner made t
 - No host access, no secrets access (owner only), as before.
 
 **Log (Melbourne time, newest first)**
+- 4:02 AM hourly. **Tag deploy → 3ee09a5a (#260)** at 3:58:46 (ls-remote). All runs on 3ee09a5a were green on the first try, e2e included (it is now the newest ops-path commit). Waiting for the summary to show git_sha 3ee09a5a and the new candidates.h16_by_input breakdown, then check zeroed-data tags (the new zeroed-update enables the upload timer, first run about 10 min after the switch).
 - 3:48 AM **TRADE-GAP-HEAL step 1 measurement** (7 graduates of 6 Oct, public RPC, a random 400 txs per pool over migration to +6 h). Cut pool-trade logs per coin: mean about 150, median about 16, p90 about 460, max about 760; the spread is very wide (one coin had 19% of its txs cut), so order of magnitude only. Healing every hole would be about 190k getTransaction a day (about 5.8M credits a month), against Helius free at 1M a month, so not affordable. S1 accepts the builder's design:
   - fetch for candidate pools only;
   - a per-pool limit of 30 holes (beyond that, refuse at once at no cost);
