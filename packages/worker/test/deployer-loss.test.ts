@@ -2,7 +2,7 @@ import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { appendFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { AsOfStore, SimClock, compareMoments } from '../../core/src/engine/index.ts';
+import { AsOfStore, SimClock, compareMoments, type Moment } from '../../core/src/engine/index.ts';
 import { DeployerIndex, DAY_MS, evaluateHardRejects, createsCoverage, rugCheckFromMs } from '../../core/src/gates/index.ts';
 import { RUG_CHECK_CONFIG, RUG_CONFIG } from '../../core/src/config/index.ts';
 import { DeployerChecks } from '../src/facts/deployer-checks.ts';
@@ -25,7 +25,7 @@ function ctx(idx: DeployerIndex, coverage: typeof starts) {
   const clock=new SimClock(at(0n,Number.MIN_SAFE_INTEGER)); const store=new AsOfStore(clock);
   for (const e of rows) {clock.advanceTo(e.moment);store.record(e.key,e.value,e.moment,e.key);}
   clock.advanceTo(NOW);
-  return {now:NOW,observedTip:NOW.slot,lookup:(k:string,a:any)=>store.lookup(k,a),history:(k:string,f:number,t:any)=>store.history(k,f,t),deployers:idx};
+  return {now:NOW,observedTip:NOW.slot,lookup:(k:string,a:Moment)=>store.lookup(k,a),history:(k:string,f:Moment,t?:Moment)=>store.history(k,f,t),deployers:idx};
 }
 function h14(idx: DeployerIndex, coverage: typeof starts) {
   return evaluateHardRejects(ctx(idx,coverage),deps('live',session(),'RUG-1'),request(),{only:['H14']});
@@ -55,8 +55,8 @@ try {
     const s=new DeployerStore(d,undefined,{append:(p,t)=>{if(full)throw Object.assign(new Error('ENOSPC'),{code:'ENOSPC'});appendFileSync(p,t);}});
     const candidate=ev('candidate-create','pump:CreateEvent:'+MINT,{event:{name:'CreateEvent',program:'pump',data:{mint:MINT,creator:DEV,timestamp:BigInt((T-2*3600000)/1000)}}},at(SLOT-100n,T-10000));
     const missing=['PriorA','PriorB'].map((mint,i)=>ev('lost-'+mint,'pump:CreateEvent:'+mint,{event:{name:'CreateEvent',program:'pump',data:{mint,creator:DEV,timestamp:BigInt((T-3600000)/1000)}}},at(SLOT-100n,T-9999+i,i+1)));
-    const original=new DeployerIndex();for(const e of [starts[0],candidate,...missing])original.observe(e);
-    s.keep(starts[0]);s.keep(candidate);full=true;for(const e of missing)s.keep(e);
+    const original=new DeployerIndex();for(const e of [starts[0]!,candidate,...missing])original.observe(e);
+    s.keep(starts[0]!);s.keep(candidate);full=true;for(const e of missing)s.keep(e);
     const saved=new DeployerStore(d).load(T-15*DAY_MS);const restarted=new DeployerIndex();restarted.seed(saved.creates,saved.coverage.filter(e=>e.key.startsWith('coverage:creates:')),NOW);
     const fromMs=rugCheckFromMs(T-14*DAY_MS,RUG_CONFIG);
     const prior=restarted.factFor(DEV,NOW,T-30*DAY_MS).mints.filter(m=>m.mint!==MINT&&m.createdAtMs>=fromMs);

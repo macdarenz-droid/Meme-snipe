@@ -1778,13 +1778,14 @@ fi
 work="$(mktemp -d "$OUT/.backup.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/snap"
+manifest_bytes=0
+for rel in "${found[@]}"; do manifest_bytes=$((manifest_bytes + 67 + ${#rel})); done
+[ "$manifest_bytes" -le 65536 ] && [ "$manifest_bytes" -lt "$SNAPSHOT_BYTES" ] || { echo "Manifest exceeds the snapshot limit; nothing published."; exit 1; }
 files=()
 bytes=0
 for rel in "${found[@]}"; do
   mkdir -p "$work/snap/$(dirname "$rel")"
-  remaining=$((SNAPSHOT_BYTES - bytes - 65536))
-  # Permit small lower test/operator budgets too; the manifest's actual size is checked below.
-  [ "$remaining" -gt 0 ] || remaining=$((SNAPSHOT_BYTES - bytes))
+  remaining=$((SNAPSHOT_BYTES - bytes - manifest_bytes))
   [ "$remaining" -gt 0 ] || { echo "Backup exceeds the state snapshot limit; nothing published."; exit 1; }
   case "$rel" in
     *.sqlite)
