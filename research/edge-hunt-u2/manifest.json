@@ -10,21 +10,21 @@
    "bytes": 7852913
   },
   "created.jsonl": {
-   "sha256": "d0892d94b7129663c6933c5ee6eeb86474be89c7766b19843fc96a19c5515785",
-   "bytes": 1597775
+   "sha256": "41709e58851397914e43b171e38d692d2ffcedc0c7fee2c1efe8b475406ad115",
+   "bytes": 1666150
   },
   "solusd_hour.json": {
    "sha256": "96f3783b78f181f091e700210d9e6cf16629529e544dc9e1433d501d8d8bed29",
    "bytes": 100882
   },
-  "preregistration.json": "8a76eec4935ec20b5cb766b027c71691883bfbb46d0f6bcf47a9b3b6458db0ca"
+  "preregistration.json": "8693472172ef0fa636bf55e4eb945c6ffedc70d2615b64a4bf57887c25f76efd"
  },
  "ohlcv_dir": {
   "files": 5309,
-  "sha256": "ccc2e21b8860861a08664c1c079b29866b6afd2516ec5ec9603ee35cdcfb08b8"
+  "sha256": "4e6e98b97eb2f59ffad83a8066aa7b7d7d895663e2c030e89c38465bd59536e2"
  },
  "outputs": {
-  "disc_final.json": "d766a17163e86d6ed522b0a62b005dc737477614269fae49d5248b0edd89562f",
-  "hold_T3.json": "3e40a47e6eb2472e4e4cbde39df3fbd27c4ed2ffc69dfff826f585772f09181a"
+  "discovery sim": "b4e3473d1d5a55b10ddb42fd92aca8d0b2d0388b04d69dccb94393d94221168d",
+  "holdout sim T3": "61cc7a46057553fa887ab5e95bd8824c58b7ae869cae442c803e73333c229603"
  }
 }

@@ -1,22 +1,22 @@
-Sample: {'migrations': 16546, 'fetched': 4037, 'err': 1, 'empty': 0, 'used': 4036}; holdout=False
+Sample: {'migrations': 16546, 'fetched': 4037, 'err': 1, 'empty': 0, 'stale_window': 61, 'earlier_migration': 10, 'used': 3965}; holdout=False
 
 | Trial | n | Win | Mean net | Median net | 95% CI (coins) | 95% CI (days) | SOL total | H9 out | H9 unknown | Exits |
 |---|---|---|---|---|---|---|---|---|---|---|
-| T1-H4-current | 10 | 30% | -9.8% | -20.2% | -23.9% to +6.7% | -19.5% to +2.8% | -0.0164 | 6 | 0 | price_stop 7, trailing_stop 3 |
-| T2-H4-relaxed | 108 | 19% | -10.5% | -20.7% | -15.2% to -5.5% | -15.3% to -5.2% | -0.1900 | 14 | 0 | negative_flow 7, price_stop 79, time_flat 5, trailing_stop 17 |
-| T3-H4-H8only | 38 | 29% | -8.7% | -20.6% | -16.2% to -0.3% | -17.8% to +4.1% | -0.0546 | 7 | 0 | price_stop 28, time_flat 1, trailing_stop 9 |
-| T4-H4-H11only | 38 | 16% | -14.9% | -23.6% | -22.7% to -5.7% | -22.6% to -8.3% | -0.0954 | 8 | 0 | negative_flow 1, price_stop 32, trailing_stop 5 |
-| T5-H5p-current | 4 | 50% | -4.9% | -6.2% | -30.3% to +21.7% | -30.3% to +21.7% | -0.0035 | 2 | 0 | price_stop 3, trailing_stop 1 |
-| T6-H5p-relaxed | 323 | 23% | -11.5% | -24.4% | -14.5% to -8.2% | -13.9% to -9.0% | -0.6239 | 42 | 0 | negative_flow 48, price_stop 179, time_flat 52, time_max 2, trailing_stop 42 |
+| T1-H4-current | 10 | 30% | -9.8% | -20.2% | -23.9% to +6.7% | -19.5% to +2.8% | -0.0164 | 5 | 0 | price_stop 7, trailing_stop 3 |
+| T2-H4-relaxed | 109 | 19% | -10.6% | -20.6% | -15.3% to -5.5% | -15.3% to -5.3% | -0.1931 | 13 | 0 | negative_flow 7, price_stop 80, time_flat 5, trailing_stop 17 |
+| T3-H4-H8only | 38 | 29% | -8.7% | -20.6% | -16.2% to -0.3% | -17.8% to +4.1% | -0.0546 | 6 | 0 | price_stop 28, time_flat 1, trailing_stop 9 |
+| T4-H4-H11only | 39 | 15% | -15.0% | -23.6% | -22.6% to -6.1% | -22.3% to -8.4% | -0.0985 | 7 | 0 | negative_flow 1, price_stop 33, trailing_stop 5 |
+| T5-H5p-current | 4 | 50% | -4.9% | -6.2% | -30.3% to +21.7% | -30.3% to +21.7% | -0.0035 | 1 | 0 | price_stop 3, trailing_stop 1 |
+| T6-H5p-relaxed | 323 | 23% | -11.5% | -24.4% | -14.5% to -8.2% | -13.9% to -9.0% | -0.6239 | 36 | 0 | negative_flow 48, price_stop 179, time_flat 52, time_max 2, trailing_stop 42 |
 
 Funnel (furthest stage per graduate; gate = first failing modelled gate):
 
-- T1-H4-current: H8:floor 3504, H11:chase 430, H11:spike 41, H8:dust 21, entered 16, stop-check 14, no-setup 9, H16:not-covered 1
-- T2-H4-relaxed: H8:floor 2740, no-setup 1058, entered 122, stop-check 93, H8:dust 21, H11:spike 2
-- T3-H4-H8only: H8:floor 2796, H11:chase 910, no-setup 140, H11:spike 88, entered 45, stop-check 35, H8:dust 21, H16:not-covered 1
-- T4-H4-H11only: H8:floor 3431, no-setup 491, entered 46, stop-check 45, H8:dust 21, H11:spike 2
-- T5-H5p-current: H8:floor 3504, H11:chase 430, H11:spike 41, no-setup 33, H8:dust 21, entered 6, H16:not-covered 1
-- T6-H5p-relaxed: H8:floor 2740, no-setup 651, entered 365, stop-check 257, H8:dust 21, H11:spike 2
+- T1-H4-current: H8:floor 3440, H11:chase 431, H11:spike 41, H8:dust 18, entered 15, stop-check 14, no-setup 6
+- T2-H4-relaxed: H8:floor 2686, no-setup 1044, entered 122, stop-check 93, H8:dust 18, H11:spike 2
+- T3-H4-H8only: H8:floor 2742, H11:chase 900, no-setup 137, H11:spike 88, entered 44, stop-check 36, H8:dust 18
+- T4-H4-H11only: H8:floor 3368, no-setup 486, entered 46, stop-check 45, H8:dust 18, H11:spike 2
+- T5-H5p-current: H8:floor 3440, H11:chase 431, H11:spike 41, no-setup 30, H8:dust 18, entered 5
+- T6-H5p-relaxed: H8:floor 2686, no-setup 644, entered 359, stop-check 256, H8:dust 18, H11:spike 2
 
 ## Size sweep and gross
 
@@ -30,24 +30,24 @@ Same signals; exits re-simulated at each size. "Allowed" = trades the bot would 
 |  |  |  | $100 | -8.0% | -22.3% to +8.6% | 30% | 0.63% | 0 | — |
 |  |  |  | $1,000 | -18.8% | -31.5% to -2.5% | 20% | 5.98% | 0 | — |
 |  |  |  | $10,000 | -56.3% | -63.5% to -47.5% | 0% | 38.88% | 0 | — |
-| T2-H4-relaxed | 108 | -5.6% (-10.4% to -0.4%) | $2 | -10.5% | -15.2% to -5.5% | 19% | 0.02% | 108 | -10.5% (-15.2% to -5.5%) |
-|  |  |  | $5 | -9.5% | -14.1% to -4.6% | 19% | 0.04% | 108 | -9.5% (-14.1% to -4.6%) |
-|  |  |  | $20 | -8.7% | -13.3% to -3.9% | 22% | 0.17% | 11 | -24.2% (-28.9% to -20.3%) |
-|  |  |  | $100 | -9.6% | -14.1% to -4.7% | 20% | 0.82% | 0 | — |
-|  |  |  | $1,000 | -19.4% | -23.6% to -15.1% | 13% | 7.64% | 0 | — |
-|  |  |  | $10,000 | -63.1% | -65.0% to -61.1% | 0% | 45.27% | 0 | — |
+| T2-H4-relaxed | 109 | -5.7% (-10.5% to -0.4%) | $2 | -10.6% | -15.3% to -5.5% | 19% | 0.02% | 109 | -10.6% (-15.3% to -5.5%) |
+|  |  |  | $5 | -9.7% | -14.2% to -4.7% | 19% | 0.04% | 109 | -9.7% (-14.2% to -4.7%) |
+|  |  |  | $20 | -8.9% | -13.4% to -3.9% | 22% | 0.17% | 11 | -24.2% (-28.9% to -20.3%) |
+|  |  |  | $100 | -9.7% | -14.3% to -4.8% | 20% | 0.82% | 0 | — |
+|  |  |  | $1,000 | -19.4% | -23.5% to -15.0% | 13% | 7.64% | 0 | — |
+|  |  |  | $10,000 | -62.8% | -64.8% to -60.8% | 0% | 45.27% | 0 | — |
 | T3-H4-H8only | 38 | -3.6% (-11.5% to +5.1%) | $2 | -8.7% | -16.2% to -0.3% | 29% | 0.02% | 38 | -8.7% (-16.2% to -0.3%) |
 |  |  |  | $5 | -7.5% | -14.9% to +0.8% | 29% | 0.04% | 38 | -7.5% (-14.9% to +0.8%) |
 |  |  |  | $20 | -6.1% | -13.7% to +2.2% | 34% | 0.18% | 1 | -25.6% (— to —) |
 |  |  |  | $100 | -7.3% | -14.8% to +1.0% | 32% | 0.89% | 0 | — |
 |  |  |  | $1,000 | -18.1% | -25.7% to -9.6% | 16% | 8.21% | 0 | — |
-|  |  |  | $10,000 | -64.2% | -67.4% to -60.5% | 0% | 47.21% | 0 | — |
-| T4-H4-H11only | 38 | -10.2% (-18.2% to -0.6%) | $2 | -14.9% | -22.7% to -5.7% | 16% | 0.01% | 38 | -14.9% (-22.7% to -5.7%) |
-|  |  |  | $5 | -13.4% | -21.2% to -4.1% | 16% | 0.03% | 38 | -13.4% (-21.2% to -4.1%) |
-|  |  |  | $20 | -12.7% | -20.6% to -3.4% | 16% | 0.11% | 12 | -14.1% (-27.4% to +8.0%) |
-|  |  |  | $100 | -13.2% | -21.0% to -3.9% | 16% | 0.55% | 0 | — |
-|  |  |  | $1,000 | -19.1% | -26.4% to -10.3% | 18% | 5.24% | 0 | — |
-|  |  |  | $10,000 | -55.2% | -58.5% to -51.6% | 0% | 35.59% | 0 | — |
+|  |  |  | $10,000 | -64.2% | -67.4% to -60.5% | 0% | 47.20% | 0 | — |
+| T4-H4-H11only | 39 | -10.2% (-18.1% to -1.0%) | $2 | -15.0% | -22.6% to -6.1% | 15% | 0.01% | 39 | -15.0% (-22.6% to -6.1%) |
+|  |  |  | $5 | -13.7% | -21.4% to -4.7% | 15% | 0.03% | 39 | -13.7% (-21.4% to -4.7%) |
+|  |  |  | $20 | -13.0% | -20.7% to -4.0% | 15% | 0.11% | 12 | -14.1% (-27.4% to +8.0%) |
+|  |  |  | $100 | -13.4% | -21.1% to -4.5% | 15% | 0.55% | 0 | — |
+|  |  |  | $1,000 | -19.2% | -26.4% to -10.7% | 18% | 5.25% | 0 | — |
+|  |  |  | $10,000 | -54.7% | -58.1% to -51.1% | 0% | 35.67% | 0 | — |
 | T5-H5p-current | 4 | +0.5% (-25.8% to +28.1%) | $2 | -4.9% | -30.3% to +21.7% | 50% | 0.01% | 4 | -4.9% (-30.3% to +21.7%) |
 |  |  |  | $5 | -4.2% | -28.7% to +22.6% | 50% | 0.03% | 4 | -4.2% (-28.7% to +22.6%) |
 |  |  |  | $20 | -4.0% | -29.0% to +22.9% | 50% | 0.13% | 1 | -18.8% (— to —) |
@@ -61,5 +61,5 @@ Same signals; exits re-simulated at each size. "Allowed" = trades the bot would 
 |  |  |  | $1,000 | -25.4% | -27.7% to -23.0% | 9% | 10.49% | 0 | — |
 |  |  |  | $10,000 | -70.7% | -71.8% to -69.6% | 0% | 53.96% | 0 | — |
 
-Deflated Sharpe of the best-mean trial: {'trial': 'T5-H5p-current', 'dsr': 0.29043303891216343}
+Deflated Sharpe of the best-mean trial: {'trial': 'T5-H5p-current', 'dsr': 0.2880806270470015}
 PBO (CSCV, 10 day blocks): 0.8293650793650794
