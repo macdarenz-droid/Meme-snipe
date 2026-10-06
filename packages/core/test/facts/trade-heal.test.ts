@@ -137,6 +137,21 @@ const noReceipt = (v: unknown): unknown => {
   return { ...o, obs };
 };
 
+/** The swap as the backtest's dataset delivers it: its fetched transaction's `ev:` event, at its own slot (review N1). */
+const txOf = (x: Swap, k = 0): MarketEvent => ({
+  kind: 'market', id: `ev:${x.sig}:00000:00000`, moment: { slot: x.slot, txIndex: 2 ** 32 + k, ixIndex: 1, receivedAt: at(x.slot) + k },
+  key: `pump_amm:${x.name}:${POOL}`,
+  value: { event: { program: 'pump_amm', name: x.name, data: x.data, signature: x.sig, slot: x.slot, txIndex: k, outerIx: 0, innerIx: 0 }, txSlot: x.slot, blockTime: null, source: 'helius', backfilled: false, seq: n++ },
+});
+
+/** The complete tape in the backtest's shape: every swap from its transaction, none from a log line. */
+const completeTx = () => {
+  const { world, state } = opened();
+  const s = tape(state);
+  world.push(...s.map((x) => txOf(x)));
+  return { world: head(world), s };
+};
+
 /** The complete tape: every swap's log line. */
 const complete = () => {
   const { world, state } = opened();
@@ -184,6 +199,11 @@ describe('a hole in a pool\'s trade stream, healed by its fetched transaction (T
       return [...out].sort(([x], [y]) => (x < y ? -1 : 1));
     };
     expect(lastFacts(a.world)).toEqual(lastFacts(b.world));
+    // And the backtest's shape of the same tape (full transactions, no log lines) reaches the same facts and verdicts.
+    const c = completeTx();
+    const sourceless = (w: FactWorld) => lastFacts(w).map(([k, v]) => [k, { ...(v as { obs: object }), obs: { ...(v as { obs: object }).obs, provider: '-' } }]);
+    expect(sourceless(c.world)).toEqual(sourceless(a.world));
+    expect(verdicts(c.world)).toEqual(verdicts(a.world));
     // No lookahead: the healed facts are released at the outcome's moment, not before.
     const healed = a.world.facts(candlesKey(MINT)).at(-1)!;
     expect(healed.moment.slot).toBe(R + 6n);
