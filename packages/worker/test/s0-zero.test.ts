@@ -540,6 +540,32 @@ describe('the in-run fill spends from the daily budget and is journaled', () => 
     expect(DailyBudget.load(file, 10_000, now).remaining(now)).toBe(10_000 - TRADES_FILL_CREDITS);
   });
 
+  it('STEP-B: a fill that throws keeps its whole reservation, and its slot goes to the next fill', async () => {
+    // An RPC failure never throws out of a fill (the backfill turns it into a lossy stop, answered false). What can
+    // throw is the feed, after the transactions were read and their credits spent: then none of the cap is given back
+    // (fail safe on spend: what the fill used is not booked anywhere else).
+    const file = join(tempState(), 'fill-budget.json');
+    const budget = DailyBudget.load(file, 10_000, now);
+    const calls: string[] = [];
+    const closed = { ingest: () => { throw new Error('feed closed'); } };
+    const fill = tradesFill({ feed: closed, timers, rpc: rpc(calls), budget, pools: () => new Map(), inFlight: 1 });
+    await expect(fill({ address: pool, fromSlot: 452_941_200n, toSlot: 452_941_210n })).rejects.toThrow('feed closed');
+    expect(calls.length).toBeGreaterThan(0);
+    expect(budget.remaining(now)).toBe(10_000 - TRADES_FILL_CREDITS);
+    expect(DailyBudget.load(file, 10_000, now).remaining(now)).toBe(10_000 - TRADES_FILL_CREDITS);
+    // The same fill function, one slot: the slot the throwing fill held was released (a leaked slot would hang here),
+    // and the next fill books only what it used.
+    let open = false;
+    const feed = new LiveFeed({ ...DEFAULT_LIVE_FEED, horizonSlots: 0 });
+    const shared = tradesFill({ feed: { ingest: (...a: Parameters<LiveFeed['ingest']>) => { if (!open) throw new Error('feed closed'); return feed.ingest(...a); } }, timers, rpc: rpc([]), budget, pools: () => new Map(), inFlight: 1 });
+    await expect(shared({ address: pool, fromSlot: 452_941_200n, toSlot: 452_941_210n })).rejects.toThrow('feed closed');
+    open = true;
+    expect(await shared({ address: pool, fromSlot: 452_941_200n, toSlot: 452_941_210n })).toBe(true);
+    const used = 10_000 - 2 * TRADES_FILL_CREDITS - budget.remaining(now);
+    expect(used).toBeGreaterThan(0);
+    expect(used).toBeLessThan(TRADES_FILL_CREDITS);
+  });
+
   it('the runner\'s journal summary counts the fills, their transactions and credits', () => {
     const line = (seq: number, kind: string, extra: Record<string, unknown> = {}) => JSON.stringify({ seq, ts: '2026-10-05T00:00:00.000Z', boot: 'b1', kind, ...extra });
     const text = [
