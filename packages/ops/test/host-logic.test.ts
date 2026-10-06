@@ -803,42 +803,67 @@ describe('deploy gate (OPS-GATE): named runs from GitHub Actions, shared by the 
 
 describe('HOST-CAPS on the host', () => {
   const rel = join(tmp, 'caps-releases');
-  const make = (names: string[]) => {
+  // Release folders are 40-hex commit names. The tests label them r1..r9 and map them here.
+  const H = (l: string) => (/^r\d$/.test(l) ? l.slice(1).padStart(40, '0') : l);
+  const label = (n: string) => (/^0{39}\d$/.test(n) ? `r${n.slice(-1)}` : n);
+  // names are oldest first, each one second newer than the one before, in 2023 (no age rule: all are old).
+  const make = (names: string[], base = 1_700_000_000) => {
     rmSync(rel, { recursive: true, force: true });
     mkdirSync(rel, { recursive: true });
-    // Oldest first: each folder is one second newer than the one before.
     names.forEach((n, i) => {
-      mkdirSync(join(rel, n));
-      spawnSync('touch', ['-d', `@${1_700_000_000 + i}`, join(rel, n)]);
+      mkdirSync(join(rel, H(n)));
+      spawnSync('touch', ['-d', `@${base + i}`, join(rel, H(n))]);
     });
   };
   const gone = (cur: string, prev: string, tag: string) =>
-    sh(`prunable_releases "${rel}" "${cur ? join(rel, cur) : ''}" "${prev ? join(rel, prev) : ''}" "${tag}"`)
-      .out.split('\n').filter(Boolean).map((p) => p.slice(rel.length + 1)).sort();
+    sh(`prunable_releases "${rel}" "${cur ? join(rel, H(cur)) : ''}" "${prev ? join(rel, H(prev)) : ''}" "${H(tag)}"`)
+      .out.split('\n').filter(Boolean).map((p) => label(p.slice(rel.length + 1))).sort();
 
   it('prunable_releases keeps current, previous, the deploy tag and the 3 newest others, whatever their age', () => {
     make(['r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7', 'r8', 'r9']);
-    // Very old releases are pruned too: there is no age rule, and the folders here are decades old.
     expect(gone('r9', 'r8', 'r9')).toEqual(['r1', 'r2', 'r3', 'r4']);
-    // 9 folders, at most 5 stay: r9, r8, and the 3 newest others (r7, r6, r5).
     expect(9 - gone('r9', 'r8', 'r9').length).toBe(5);
-    // Current and previous that are the OLDEST are never pruned; the 3 newest others stay.
     expect(gone('r1', 'r2', 'r1')).toEqual(['r3', 'r4', 'r5', 'r6']);
-    // The deploy tag's commit stays even when it is neither current nor previous.
     expect(gone('r9', 'r8', 'r1')).toEqual(['r2', 'r3', 'r4']);
   });
 
-  it('prunable_releases never touches half-written folders and prunes nothing when current cannot be read', () => {
-    make(['r1', 'r2', 'x.new', 'r3', 'r4', 'r5', 'r6', 'r7']);
+  it('prunes folders of any age, including ones made just now (no age rule)', () => {
+    make(['r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7', 'r8', 'r9'], Math.floor(Date.now() / 1000) - 60);
+    expect(gone('r9', 'r8', 'r9')).toEqual(['r1', 'r2', 'r3', 'r4']);
+  });
+
+  it('prunable_releases lists only 40-hex release folders: half-written, odd names, spaces and a * are never listed', () => {
+    make(['r1', 'r2', `${'f'.repeat(40)}.new`, 'r3', 'r4', 'r5', 'r6', 'r7']);
+    for (const odd of ['*', 'a b', '-rf', 'ABCDEF'.repeat(7).slice(0, 40), 'a'.repeat(39), 'a'.repeat(41)]) mkdirSync(join(rel, odd));
     expect(gone('r7', 'r6', 'r7')).toEqual(['r1', 'r2']);
-    expect(gone('r7', 'r6', 'r7')).not.toContain('x.new');
+    // The same folders as the only ones beyond the keep set still list nothing odd.
+    make(['r5', 'r6', 'r7']);
+    for (const odd of ['*', 'a b']) mkdirSync(join(rel, odd));
+    expect(gone('r7', 'r6', 'r7')).toEqual([]);
+  });
+
+  it('prunable_releases prunes nothing when current cannot be read', () => {
+    make(['r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7']);
     expect(gone('', 'r6', 'r7')).toEqual([]);
     expect(gone('missing', 'r6', 'r7')).toEqual([]);
-    // A current outside the releases root is unreadable for this purpose too.
-    expect(sh(`prunable_releases "${rel}" /etc "${join(rel, 'r6')}" r7`).out).toBe('');
+    expect(sh(`prunable_releases "${rel}" /etc "${join(rel, H('r6'))}" ${H('r7')}`).out).toBe('');
     rmSync(rel, { recursive: true, force: true });
     mkdirSync(rel);
     expect(gone('a', 'b', 'c')).toEqual([]);
+  });
+
+  it("zeroed-update's prune loop never word-splits or globs the names, and runs only in a real run with * and space folders", () => {
+    const update = read('ops/host/files/usr/local/sbin/zeroed-update');
+    expect(update).not.toMatch(/for old in \$\(/);
+    expect(update).toContain('while IFS= read -r old; do');
+    // Run the loop itself against a releases root that holds a '*' and an 'a b' folder: only the old 40-hex folders go.
+    make(['r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7']);
+    for (const odd of ['*', 'a b']) mkdirSync(join(rel, odd));
+    const start = update.indexOf('while IFS= read -r old; do');
+    const loop = update.slice(start, update.indexOf('\n', update.indexOf('done < <(prunable_releases', start)));
+    const cur = join(rel, H('r7'));
+    const r = sh(`log() { :; }; prev="${join(rel, H('r6'))}"; commit="${H('r7')}"; ${loop.replace('/opt/zeroed/releases', rel).replace('"$(readlink -f /opt/zeroed/current 2>/dev/null || true)"', `"${cur}"`)}; ls -1 "${rel}"`);
+    expect(r.out.split('\n').filter(Boolean).sort()).toEqual(['*', 'a b', ...['r3', 'r4', 'r5', 'r6', 'r7'].map(H)].sort());
   });
 
   it('zeroed-update prunes only after a deploy that stayed up, and the system journal has a size cap the installer applies', () => {

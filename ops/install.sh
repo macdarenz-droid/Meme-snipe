@@ -1359,12 +1359,14 @@ e2e_commit() {
 
 # prunable_releases ROOT CURRENT PREV TAG_COMMIT: release folders under ROOT that may go (HOST-CAPS), one per line.
 # Kept: the current release, the one before it (the roll-back target), the deploy tag's commit, the 3 newest others
-# and anything half-written (*.new). No age rule. Fails closed: when CURRENT is not a folder under ROOT, nothing goes.
+# and anything that is not a 40-hex commit folder (half-written *.new and strays are never listed). No age rule.
+# Fails closed: when CURRENT is not a folder under ROOT, nothing goes.
 # Each release is a full copy of the repository (about 68 MB), and every update adds one.
 prunable_releases() {
   local root="${1%/}" cur="$2" prev="$3" tag="$4" d i=0
   [ -n "$cur" ] && [ -d "$cur" ] && [ "$(dirname "$cur")" = "$root" ] || return 0
   while IFS= read -r d; do
+    [[ "${d##*/}" =~ ^[0-9a-f]{40}$ ]] || continue
     [ "$d" != "$cur" ] && [ "$d" != "$prev" ] && [ "$d" != "$root/$tag" ] || continue
     i=$((i + 1))
     [ "$i" -gt 3 ] || continue
@@ -2375,9 +2377,10 @@ if [ -s "$CRED_DIR/helius_api_key" ]; then
 fi
 # HOST-CAPS: old releases go once the new one runs; it, the one before it (the roll-back target) and the 3 newest stay.
 # Never during a switch (a rollback exits above); an unreadable current prunes nothing (logic.sh).
-for old in $(prunable_releases /opt/zeroed/releases "$(readlink -f /opt/zeroed/current 2>/dev/null || true)" "$prev" "$commit"); do
-  rm -rf -- "$old" && log "Removed the old release $(basename "$old" | cut -c1-12) (HOST-CAPS)."
-done
+# One name per line, never word-split or globbed (prunable_releases lists only 40-hex release folders).
+while IFS= read -r old; do
+  [ -n "$old" ] && rm -rf -- "$old" && log "Removed the old release $(basename "$old" | cut -c1-12) (HOST-CAPS)."
+done < <(prunable_releases /opt/zeroed/releases "$(readlink -f /opt/zeroed/current 2>/dev/null || true)" "$prev" "$commit")
 log "Deployed ${commit:0:12}. Worker: $worker."
 notify "Zeroed host: deployed ${commit:0:12}. Worker $worker." || true
 __ZEROED_FILE__
