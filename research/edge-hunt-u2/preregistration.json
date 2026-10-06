@@ -1,0 +1,24 @@
+{
+  "task": "EDGE-HUNT-U2",
+  "written": "2026-10-06T22:55+11:00 (Melbourne), before any candle was analysed (only a format check of 16 files)",
+  "window": "graduations (pump.fun MigrateV2, successful) with blockTime in [2026-09-22T00:00Z, 2026-10-06T05:30Z)",
+  "split": "discovery: blockTime < 2026-10-02T18:00Z (10.75 days); holdout: blockTime >= 2026-10-02T18:00Z (3.48 days, 24.5%). The holdout is read once, for at most one trial.",
+  "sample": "migration transactions are fetched in a seeded random order (mulberry32 seed 20261006); candles follow that order, so a partial fetch is a uniform random sample of the window",
+  "size": "$2 per trade, SOL/USD from the GeckoTerminal SOL-USDC hourly close",
+  "costs": "PumpSwap fee 1.25% per side below 420 SOL market cap, 1.20% above; constant-product price impact at the modelled reserves; 414,009 lamports fixed per round trip (research/edge/costs.json, conservative scenario incl. expected failed exits and rent loss) plus 146,784 lamports for a second exit transaction after a partial",
+  "fills": "signal on finished 1-minute bars at a minute boundary t; entry at the open of the bar starting at t (else the last close); price-level exits (stop, trail) at min(level, bar close), never the wick; state exits (time, negative flow, break-even, take-profit) at the next bar's open",
+  "gates_modelled": "H8 dust (< 5 SOL real quote at migration) and floor on effective quote reserve in USD; H10 (window 60-240 min); H11 spike (any of the last 3 finished 1-min candles with high > open +25%) and, when on, H11 chase (close of the last bar ending by migration+5 min above the bot's migration price, created-pool quote/base without virtual reserves; no such bar rejects as H16); H9 (creation to graduation < 5 min) applied after simulation from chain creation time; the stop-distance check (stop below entry, <= 20%, <= 3 x ATR(14, 1 min) on a contiguous run of traded minutes)",
+  "gates_not_modelled": "H1-H7, H12-H17 and the deployer-sell exit: no free historical data; this makes every trial looser (more trades) than the bot",
+  "trials": {
+    "T1-H4-current": "U2 reclaim (preregistration H4-U2-reclaim) with the current gates: H8 floor $15k, H11 chase on",
+    "T2-H4-relaxed": "H4 with the owner's relaxed gates: H8 floor $5k, H11 chase off (spike kept)",
+    "T3-H4-H8only": "H4, H8 floor $5k, H11 chase on",
+    "T4-H4-H11only": "H4, H8 floor $15k, H11 chase off",
+    "T5-H5p-current": "H5 exhausted dump, price-only conditions (f_dd <= -0.60, f_net15 >= 0 via price, f_hl = 1, stop 20%), current gates. f_early_sold and f_devnet are not available, so H5p is looser than H5 (exploratory)",
+    "T6-H5p-relaxed": "H5p with the relaxed gates"
+  },
+  "exits": "U2 policy block (stop at structure, take 50% at +1.5R or +100% of cost basis, then 3 x ATR trail and break-even, flat exit at 15 min unless +0.5R was reached, T_max 120 min, negative flow 5 min, liquidity drop 30%)",
+  "metrics": "per trial: n, win rate, mean and median net return per trade in SOL terms, 95% CI of the mean by bootstrap resampling coins (one trade per coin, 10,000 resamples, seed 1) and by day blocks; deflated Sharpe over the 6 trials; PBO by CSCV over discovery days",
+  "selection": "the holdout candidate is the trial with the highest discovery mean net return among trials with n >= 30 (else n >= 10, else none). It is run once on the holdout whatever its discovery result, so the result is recorded; no other trial ever reads the holdout",
+  "verdict_rule": "'would make money' only if the holdout mean net return's 95% lower bound is above 0 with n >= 30; 'no' if the discovery and holdout upper bounds are below 0 or the discovery mean is below 0 for every trial; otherwise 'unclear'"
+}
