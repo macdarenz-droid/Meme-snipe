@@ -52,7 +52,15 @@ def summarize(trades):
     for t in trades:
         reasons[t['reason']] = reasons.get(t['reason'], 0) + 1
     sd = (sum((x - mean(r)) ** 2 for x in r) / (len(r) - 1)) ** 0.5 if len(r) > 1 else None
-    return dict(n=len(r), win=sum(x > 0 for x in r) / len(r), mean=mean(r), median=median(r), ci=(lo, hi), day_ci=(dlo, dhi),
+    g = [t['gross_ret'] for t in trades]
+    sweep = {}
+    for usd in trades[0].get('sweep', {}):
+        xs = [t['sweep'][usd]['net_ret'] for t in trades]
+        ok = [t['sweep'][usd]['net_ret'] for t in trades if t['sweep'][usd]['r12_ok'] and t['sweep'][usd]['impact_ok']]
+        sweep[usd] = dict(mean=mean(xs), ci=boot_ci(xs), median=median(xs), win=sum(x > 0 for x in xs) / len(xs),
+                          impact_med=median(t['sweep'][usd]['entry_impact'] for t in trades),
+                          n_allowed=len(ok), mean_allowed=(mean(ok) if ok else None), ci_allowed=boot_ci(ok))
+    return dict(gross_mean=mean(g), gross_ci=boot_ci(g), gross_median=median(g), sweep=sweep, n=len(r), win=sum(x > 0 for x in r) / len(r), mean=mean(r), median=median(r), ci=(lo, hi), day_ci=(dlo, dhi),
                 sharpe=(mean(r) / sd if sd else None), sum_sol=sum(t['net_sol'] for t in trades),
                 partials=sum(t['partials'] for t in trades), reasons=reasons, days=len(set(days)))
 
@@ -126,6 +134,15 @@ if __name__ == '__main__':
     lines += ['', 'Funnel (furthest stage per graduate; gate = first failing modelled gate):', '']
     for name, s in out['trials'].items():
         lines.append(f"- {name}: " + ', '.join(f'{k} {v}' for k, v in sorted(s['funnel'].items(), key=lambda kv: -kv[1])))
+    lines += ['', '## Size sweep and gross', '', 'Same signals; exits re-simulated at each size. "Allowed" = trades the bot would still take: pool quote side >= max(trial floor, 1,000 x size) (R12) and entry impact <= 1%.', '',
+              '| Trial | n | Gross (no costs) mean, 95% CI | Size | Net mean | 95% CI | Win | Median entry impact | Allowed n | Allowed net mean (95% CI) |', '|---|---|---|---|---|---|---|---|---|---|']
+    for name, s_ in out['trials'].items():
+        if not s_['n']:
+            continue
+        for i, (usd, w) in enumerate(s_['sweep'].items()):
+            gross = f"{pct(s_['gross_mean'])} ({pct(s_['gross_ci'][0])} to {pct(s_['gross_ci'][1])})" if i == 0 else ''
+            allowed = f"{pct(w['mean_allowed'])} ({pct(w['ci_allowed'][0])} to {pct(w['ci_allowed'][1])})" if w['n_allowed'] else '—'
+            lines.append(f"| {name if i == 0 else ''} | {s_['n'] if i == 0 else ''} | {gross} | ${int(usd):,} | {pct(w['mean'])} | {pct(w['ci'][0])} to {pct(w['ci'][1])} | {100 * w['win']:.0f}% | {100 * w['impact_med']:.2f}% | {w['n_allowed']} | {allowed} |")
     lines += ['', f"Deflated Sharpe of the best-mean trial: {out['dsr_best']}", f"PBO (CSCV, 10 day blocks): {out['pbo']}"]
     open(outmd, 'w').write('\n'.join(lines) + '\n')
     if len(sys.argv) > 4:

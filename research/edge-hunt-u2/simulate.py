@@ -29,6 +29,8 @@ FIXED_ONE_EXIT = 414_009    # lamports per filled round trip with one exit (entr
 FIXED_EXTRA_EXIT = 30_000 + 0.7728 * 155_000  # one more exit tx: base+priority+tip, plus its expected failed attempts
 VIRTUAL_SOL = 17.6          # BOOST virtual quote on a standard migration (edge-costs.ts 'young' pool)
 
+SWEEP_USD = (2, 5, 20, 100, 1000, 10000)
+
 TRIALS = {
     # id: (entry rule, H8 floor USD, H11 chase check on)
     'T1-H4-current':      ('H4', 15000.0, True),
@@ -192,8 +194,8 @@ def sell_value(pool, p, tokens):
     return q * tokens / (b + tokens) * (1 - f)
 
 
-def simulate_trade(pool, t_entry, stop, solusd):
-    paid = NOTIONAL_USD / solusd(t_entry)                      # SOL
+def simulate_trade(pool, t_entry, stop, solusd, notional=NOTIONAL_USD):
+    paid = notional / solusd(t_entry)                          # SOL
     fixed1 = FIXED_ONE_EXIT / 1e9
     pe = price_at_open(pool, t_entry)
     tokens = buy(pool, pe, paid)
@@ -214,6 +216,7 @@ def simulate_trade(pool, t_entry, stop, solusd):
         return realized + sell_value(pool, p, held) - cost_basis - (FIXED_EXTRA_EXIT / 1e9 if partials else 0)
 
     events = []
+    gross_back = 0.0  # spot value of the legs per unit entry spot: the same exits with no fee, impact or fixed cost
     for b in bars:
         t0, o, h, l, c, v = b
         # time stops fire at their time: fill at the price then
@@ -257,6 +260,7 @@ def simulate_trade(pool, t_entry, stop, solusd):
             tp = price_at_open(pool, t0 + MIN)
             sell = held * U2X['partial_share']
             realized += sell_value(pool, tp, sell)
+            gross_back += U2X['partial_share'] * tp / pe
             held -= sell
             partials += 1
             fixed += FIXED_EXTRA_EXIT / 1e9
@@ -268,8 +272,11 @@ def simulate_trade(pool, t_entry, stop, solusd):
         px_exit = price_at_open(pool, t_exit)
     proceeds = realized + sell_value(pool, px_exit, held)
     net = proceeds - paid - fixed
+    gross_back += (1 - U2X['partial_share'] * partials) * px_exit / pe
+    q_usd = pool.quote_at(pe) * solusd(t_entry)
+    impact = paid / (pool.quote_at(pe) + paid)
     return dict(entry_t=t_entry, entry_px=pe, stop=stop, exit_t=t_exit, exit_px=px_exit, reason=reason, partials=partials,
-                last_leg_move=px_exit / pe - 1, net_sol=net, net_ret=net / paid, paid_sol=paid, events=events)
+                last_leg_move=px_exit / pe - 1, gross_ret=gross_back - 1, quote_usd=q_usd, entry_impact=impact, net_sol=net, net_ret=net / paid, paid_sol=paid, events=events)
 
 
 def run_trial(trial, pools, solusd):
@@ -301,6 +308,13 @@ def run_trial(trial, pools, solusd):
                 continue
             tr = simulate_trade(pool, t, stop, solusd)
             tr.update(pool=pool.mig['pool'], mint=pool.mig['mint'], mig_t=mt, signal_t=t)
+            # Owner's size sweep (S1, 2026-10-07): the same signal at each size, exits re-simulated (R, take-profit and
+            # impact all scale with size). R12 floor = max(trial floor, 1,000 x size); max entry impact 1% (policy).
+            tr['sweep'] = {}
+            for usd in SWEEP_USD:
+                x = simulate_trade(pool, t, stop, solusd, usd)
+                tr['sweep'][str(usd)] = dict(net_ret=x['net_ret'], reason=x['reason'], entry_impact=x['entry_impact'],
+                                             r12_ok=x['quote_usd'] >= max(floor, 1000 * usd), impact_ok=x['entry_impact'] <= 0.01)
             trades.append(tr)
             stage = 'entered'
             break
