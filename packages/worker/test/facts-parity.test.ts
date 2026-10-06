@@ -16,6 +16,8 @@ import { DEFAULT_LIVE_FEED, frameEvents, LiveFeed, replayRecorded, type Frame, t
 import { blockNetwork } from './helpers.ts';
 import { parsePool } from '../../core/src/gates/index.ts';
 import { swapLog } from '../../core/test/facts/swaps.ts';
+import { ShiftedPool } from '../../core/src/fills/index.ts';
+import { readAmm, type AmmSwapRow, type DatasetRow } from '../../backtest/src/dataset/rows.ts';
 
 blockNetwork();
 
@@ -228,6 +230,99 @@ describe('pool state from the swap stream, live and replayed (POS-1)', () => {
     runToEnd(s, c.engine);
     expect(pools(c.seen)).toEqual(pools(run.seen));
     expect(carries(c.seen)).toEqual(carries(run.seen));
+    expect(c.engine.logHash()).toBe(run.engine.logHash());
+  });
+});
+
+describe('swaps released before the pool\'s first read, live and backtest (POOL-FIRST-READ)', () => {
+  // REPLAY-1000 (pool ECVuPnoq, 6 Oct): the first account read, answered for an older slot, lands after swaps of newer
+  // slots. The tape: the recorded coin, then confirmed swaps continuing the read's real reserves; once with the read in
+  // order (as the backtest's as-of read sees it), once with it landing late, after three of them.
+  const SUPPLY = 1_000_000_000_000_000n;
+  const tape = (late: boolean) => {
+    const out = script(RECORDS.map((r) => r.rec));
+    const i = out.findIndex((a) => a.body.type === 'offchain' && a.body.key === RAW.accounts(MINT));
+    const read = out.splice(i, 1)[0]!;
+    const readSlot = (read.body as { value: { slot: bigint } }).value.slot;
+    const tail = out.splice(out.findIndex((a, k) => k >= i && a.body.type === 'slot'));
+    const p = parsePool(new FactWorld().push(offchain(RAW.accounts(MINT), { ...FIX.accountsRead, slot: readSlot }, readSlot, read.at)).last(poolKey(MINT)))!;
+    let pre = { baseReserve: p.baseVault, quoteVault: p.quoteVault, virtualQuoteReserves: p.pool.virtualQuoteReserves ?? 0n };
+    let at = read.at;
+    if (!late) out.push(read);
+    const swaps: { slot: bigint; data: Record<string, unknown>; side: 'buy' | 'sell' }[] = [];
+    const swapAt = (slot: bigint, side: 'buy' | 'sell', base: bigint, n: number): void => {
+      at += 200;
+      const s = swapLog({ pool: POOL, coinCreator: FIX.meta.creator, supply: SUPPLY, pre, side, base, atMs: at });
+      out.push({ at, source: 'helius', body: { type: 'logs', signature: `pfr${n}`, slot, err: null, via: `logs:${POOL}`, logs: s.logs, commitment: 'confirmed' } });
+      swaps.push({ slot, data: s.data, side });
+      pre = s.after;
+    };
+    out.push(...tail.slice(0, 1).map((a) => ({ ...a, at: at + 100 })));
+    swapAt(readSlot + 1n, 'buy', pre.baseReserve / 1_000n, 0);
+    swapAt(readSlot + 1n, 'sell', pre.baseReserve / 2_000n, 1);
+    out.push(...tail.slice(1, 2).map((a) => ({ ...a, at: at + 100 })));
+    at += 100;
+    swapAt(readSlot + 2n, 'buy', pre.baseReserve / 700n, 2);
+    if (late) out.push({ ...read, at: at + 50 });
+    at += 400;
+    out.push({ at, source: 'helius', body: { type: 'slot', slot: readSlot + 3n, parent: readSlot + 2n, root: readSlot - 29n } });
+    swapAt(readSlot + 3n, 'sell', pre.baseReserve / 900n, 3);
+    out.push({ at: at + 400, source: 'helius', body: { type: 'slot', slot: readSlot + 4n, parent: readSlot + 3n, root: readSlot - 28n } });
+    out.push({ at: at + 800, source: 'helius', body: { type: 'slot', slot: readSlot + 5n, parent: readSlot + 4n, root: readSlot - 27n } });
+    return { arrivals: out, swaps, end: pre };
+  };
+  const pools = (events: readonly FeedEvent[]) => factEvents(events).filter((e) => (e as MarketEvent).key === poolKey(MINT)).map((e) => (e as MarketEvent).value as Record<string, unknown>);
+  const carries = (events: readonly FeedEvent[]) => factEvents(events).filter((e) => (e as MarketEvent).key === carryKey(MINT)).map((e) => (e as MarketEvent).value as { slot: bigint; state: unknown });
+
+  it('the late read gives the same pool state as the read in order, clean, and the same as the backtest\'s replay of the swaps', () => {
+    const inOrder = tape(false);
+    const late = tape(true);
+    const a = live(inOrder.arrivals);
+    const b = live(late.arrivals);
+    const last = (r: ReturnType<typeof live>) => parsePool(pools(r.seen).at(-1))!;
+    for (const r of [a, b]) {
+      expect(pools(r.seen).every((v) => v['stale'] === undefined)).toBe(true);
+      expect(last(r)).toMatchObject({ baseVault: late.end.baseReserve, quoteVault: late.end.quoteVault, obs: { quality: [] } });
+      expect(r.engine.records.filter((x) => x.type === 'fault')).toEqual([]);
+    }
+    expect(last(b)).toEqual(last(a));
+    expect(carries(b.seen).at(-1)).toEqual(carries(a.seen).at(-1));
+    expect(carries(b.seen).at(-1)!.state).toEqual(late.end);
+    // The backtest's pool state: DATA-1's amm rows of the same swaps through `readAmm` and `ShiftedPool.applyReal`.
+    const shifted = new ShiftedPool();
+    let real: unknown = null;
+    for (const s of late.swaps) {
+      const d = s.data as Record<string, bigint | string | boolean>;
+      const buy = s.side === 'buy';
+      const cols: Record<string, string> = {
+        slot: String(s.slot), block_time: '1790968137', tx_idx: '0', ev_idx: '0', signature: 'x', pool: POOL, base_mint: MINT, quote_mint: 'So11111111111111111111111111111111111111112', side: s.side,
+        base_amount: String(buy ? d['baseAmountOut'] : d['baseAmountIn']), quote_amount: String(buy ? d['quoteAmountIn'] : d['quoteAmountOut']),
+        user_quote_amount: String(buy ? d['userQuoteAmountIn'] : d['userQuoteAmountOut']), pool_base_token_reserves: String(d['poolBaseTokenReserves']),
+        pool_quote_token_reserves: String(d['poolQuoteTokenReserves']), virtual_quote_reserves: String(d['virtualQuoteReserves']), lp_fee_basis_points: String(d['lpFeeBasisPoints']),
+        protocol_fee_basis_points: String(d['protocolFeeBasisPoints']), coin_creator_fee_basis_points: String(d['coinCreatorFeeBasisPoints']), buyback_fee_basis_points: String(d['buybackFeeBasisPoints']),
+        base_supply: String(d['baseSupply']), ix_name: buy ? 'buy' : '', user: 'u', user_token_account: '', user_token_owner: '',
+      };
+      const names = Object.keys(cols);
+      const rows: DatasetRow[] = [];
+      readAmm(`${names.join(',')}\n${names.map((n) => cols[n]).join(',')}\n`, rows);
+      const r = shifted.applyReal(rows[0] as AmmSwapRow);
+      expect(r).not.toBeNull();
+      real = r!.real;
+    }
+    expect(real).toEqual(late.end);
+  });
+
+  it('the recorded replay and the backtest re-sort of the late run give the same facts and log', () => {
+    const run = live(tape(true).arrivals);
+    const r = replayRecorded(run.frames, run.releases);
+    const b = through(r.clock, r.feed);
+    b.engine.drain();
+    expect(factEvents(b.seen)).toEqual(factEvents(run.seen));
+    expect(b.engine.logHash()).toBe(run.engine.logHash());
+    const s = createReplay(frameEvents(run.frames));
+    const c = through(s.clock, s.feed);
+    runToEnd(s, c.engine);
+    expect(factEvents(c.seen)).toEqual(factEvents(run.seen));
     expect(c.engine.logHash()).toBe(run.engine.logHash());
   });
 });

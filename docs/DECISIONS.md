@@ -3288,3 +3288,28 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
     - an unreadable `fetch-caps.json` counts the day as spent;
     - a count that cannot be saved refuses the fetch (review N6);
     - the backtest-shape tape kills mutant C, which moves only fetched-transaction swaps one candle later.
+
+## Swaps released before a pool's first read are kept and applied (POOL-FIRST-READ, `facts/producer.ts` `#preRead`, `#chainRead`)
+
+- **2026-10-07 · Why (REPLAY-1000; S1 verified the code).**
+  - `#chainSwap` dropped every swap of a pool that had no chain yet. A first account read whose context slot is older than swaps already released then built the chain without them.
+  - The next swap's pre-trade reserves held the dropped swaps: "reserves mismatch", and the pool stayed flagged until a new read.
+  - Example: pool ECVuPnoq, 6 Oct 00:38Z. The read, answered for slot 453742328, arrived at slot 330, after the swaps of slot 329. 9 of REPLAY's 47 sample coins hit this.
+- **What changed.**
+  - A watched pool's (one with a `trades:` stream) swaps and other PumpSwap events released before its first read are kept, in release order.
+  - When the first read builds the chain, each kept event goes through the same code as a live one, in the same order, as if the read had come first: a swap through `#chainSwap` (skipped at or before the read's slot, otherwise it must chain and reproduce its event), another event through the same stale rule as WATCH-1c. Nothing is re-ordered: within a slot, release order is the order the stream applies live.
+  - A pool event other than a swap released before the first read used to be dropped too. A chain built from an older read then counted as clean and could be carried (WATCH-1c) without the change. It now makes the chain stale until the next swap, as it would after the read.
+- **Re-read (the same race on a later read).**
+  - A re-read answered for a slot older than a swap already applied was already left out (`lastSlot`).
+  - A re-read older than a pool event other than a swap seen since the last read was not: it re-based the chain clean, without that change. The chain now keeps `otherSlot`, and such a read is left out too (the chain stays stale until a newer read or the next swap).
+- **Bounds (worker heap 572 MB).**
+  - `PRE_READ_POOLS` = 64 pools (a `CappedMap`, oldest-kept pool let go first) × `PRE_READ_KEEP` = 64 events each (the newest). Measured: about 4.4 KB per kept swap with every string distinct, so at most about 18 MB (approximate, one measurement in vitest).
+  - A pool's kept events go when its read arrives, when it leaves the watch list, and when it is let go (`retire`, `#forgetPool`).
+  - `CappedMap` moved from the worker to core (`facts/capped-map.ts`, the worker re-exports it) and gained `delete` and an eviction hook.
+- **Fail closed.**
+  - Events let go past `PRE_READ_KEEP` whose slot is newer than the read, or a pool whose kept events were let go whole past `PRE_READ_POOLS` (remembered in a capped set of `HOLE_SIGS_KEEP`): the chain starts stale (a gap). The next kept or live swap re-bases on its own pre-trade reserves, as after any gap.
+  - Any kept swap that does not chain or does not reproduce: stale (a mismatch, needs a read), exactly as live.
+  - State is in memory: a restart keeps nothing, and the first read after it is as before this change (the next swap then shows any mismatch).
+- **Parity.**
+  - The backtest reads accounts as of their slot, so it never has this race. Live with the late read now reaches the same pool state as live with the read in order and as the backtest's `ShiftedPool` replay of the same swaps' amm rows (`worker/test/facts-parity.test.ts`). The recorded replay and backtest re-sort of the late run give the same facts and log.
+- **Evidence.** `core/test/facts/pool-chain.test.ts` (POOL-FIRST-READ: 8 of its 11 tests fail on the code before; the other 3 guard behaviour that already held), `core/test/facts/capped-map.test.ts`, `worker/test/facts-parity.test.ts` (the late-read parity test fails before). Mutants killed: no buffer; kept swaps applied at or before the read's slot; kept other events applied at the read's slot; kept swaps applied without the continuity check; no stale for a pool let go whole; no stale for events let go past the cap; re-read ignoring `otherSlot`; other events not kept; kept events surviving an unwatch or a retire.
