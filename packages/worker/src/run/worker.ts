@@ -27,7 +27,7 @@ import { ACCOUNT_KEY, HALT_KEY, LiveStrategy, unwrap, POOL_PREFIX, RESTORE_KEY, 
 import { SLOT_MS, watchTimingProblem } from './config.ts';
 import { PositionWatch, type WatchRead } from './watch.ts';
 import { DEFAULT_LIVE_FEED, type Frame, HELIUS_EXHAUSTED, type HttpClient, LiveFeed, type Release, seqId } from '../providers/index.ts';
-import type { Timers } from '../scheduler/timers.ts';
+import type { TimerHandle, Timers } from '../scheduler/timers.ts';
 import { PaperAccount, type PaperLegs, accountFile } from './account.ts';
 import type { WorkerConfig } from './config.ts';
 import { Desk, FILL_RATE_UNKNOWN, journaledFillKeys, lineRate, lineReasons, openIntents } from './desk.ts';
@@ -69,6 +69,21 @@ export { PERSIST_FILE } from '../persist/index.ts';
 export const DOWNTIME_CREDIT_CAP = 3_000;
 /** RESTART-KEEP, COMPLETION-READ: transactions read before a migration to find its curve's completion. */
 export const COMPLETION_READS = 5;
+/**
+ * H16-WHY C: the most cut-creates-log fetches (first tries, retries and boot re-asks together) in one UTC day, per
+ * process. About 2,000 cut logs a day are expected (S1: 41 of 600 sampled creates on 6 Oct were cut, at about 30,000
+ * creates a day), nearly all found at the first try; each try costs one Helius getTransaction (1 credit), up to 4 with
+ * the fetcher's own quick retries. Past the cap the hole stays and H14 refuses (fail closed).
+ */
+export const CUT_CREATE_FETCHES_PER_DAY = 3_000;
+/**
+ * H16-WHY C (review B1): the waits before asking again for a cut creates log whose fetch failed (not found, an error,
+ * shed or expired at P2, undecodable): 2, 4, 8 and 16 minutes, so 5 tries over about 30 minutes. The fetcher already
+ * retries "not found" 3 times a second apart, so these cover what outlasts that: an RPC node or a provider down for
+ * minutes, a P2 queue full while the feeds catch up. Doubling keeps the cost of a transaction that never comes to 5
+ * tries. One hole left blocks H14 for its whole look-back (14 days), so it is worth these few credits.
+ */
+export const CUT_CREATE_RETRY_MS: readonly number[] = [120_000, 240_000, 480_000, 960_000];
 /** COMPLETION-READ: the credits one completion read reserves: 1 signatures page and up to COMPLETION_READS transactions. */
 export const COMPLETION_CREDITS = callCost('helius', 'getSignaturesForAddress') + COMPLETION_READS * callCost('helius', 'getTransaction');
 const MIGRATION_TX_PREFIX = 'pump:CompletePumpAmmMigrationEvent:';
@@ -155,7 +170,7 @@ export interface WorkerDeps {
    * Fetches a transaction at confirmed and puts it on the feed; resolves true when it was found. Used for a shortlisted
    * mint's create (item 9: live H9, H12–H14 need the confirmed create) and for a cut trade log on a rug-covered stream.
    */
-  readonly fetchTx: (signature: string, why: 'create' | 'cut-log' | 'restore') => Promise<boolean>;
+  readonly fetchTx: (signature: string, why: 'create' | 'cut-log' | 'cut-create' | 'restore') => Promise<boolean>;
   /**
    * RESTART-KEEP: signature reads on SEED-1's RPC, charged to the fill budget: the migrations of a restart's downtime,
    * and (COMPLETION-READ) each fetched migration's curve completion. Without it they are not read: coins that migrated
@@ -451,6 +466,15 @@ export class Worker {
   readonly #createLookups = new Set<string>();
   /** Watches that carry rug coverage (`coverage:rugs:start` vias): a cut log on one is a gap until its transaction is read. */
   #rugVias = new Set<string>();
+  /**
+   * H16-WHY C: watches that carry the creates stream (`coverage:creates:start` vias). A cut log on one may hide a create,
+   * and H14 refuses every coin while it is a hole (DeployerIndex.lostCreate); its transaction is fetched to close it.
+   */
+  #createVias = new Set<string>();
+  /** Cut-creates-log fetches this UTC day (bounded by CUT_CREATE_FETCHES_PER_DAY), and that day. */
+  #cutCreateFetches = { day: -1, count: 0 };
+  /** Retries waiting to ask again (cleared at a stop). */
+  readonly #cutCreateTimers = new Set<TimerHandle>();
   #intentAt = new Map<string, number>();
   /** Entries start halted: nothing enters before the first feed check says otherwise. */
   #halted: readonly string[] = ['starting'];
@@ -1104,6 +1128,9 @@ export class Worker {
     } else if (m.key === 'coverage:rugs:start') {
       const v = isObj(m.value) && isObj(m.value['value']) ? m.value['value'] : m.value;
       if (isObj(v) && typeof v['via'] === 'string') this.#rugVias.add(v['via']);
+    } else if (m.key === 'coverage:creates:start') {
+      const v = isObj(m.value) && isObj(m.value['value']) ? m.value['value'] : m.value;
+      if (isObj(v) && typeof v['via'] === 'string') this.#createVias.add(v['via']);
     }
     this.#cutTradeLog(m);
     if (m.key.startsWith('logs:pump:CreateEvent:') && isObj(m.value) && isObj(m.value['event']) && isObj(m.value['event']['data'])) {
@@ -1368,7 +1395,9 @@ export class Worker {
     const via = m.key.startsWith('logs:truncated:') ? m.key.slice('logs:truncated:'.length)
       : m.key.startsWith('logs:undecodable:') ? m.key.slice('logs:undecodable:'.length)
         : m.key.startsWith('logs:') && v['truncated'] === true && typeof v['via'] === 'string' ? v['via'] : null;
-    if (via === null || !this.#rugVias.has(via)) return;
+    if (via === null) return;
+    if (this.#createVias.has(via) && !this.#rugVias.has(via)) return this.#cutCreateLog(v['signature']);
+    if (!this.#rugVias.has(via)) return;
     const sig = v['signature'];
     const slot = m.moment.slot;
     void this.#d.fetchTx(sig, 'cut-log').catch(() => false).then((found) => {
@@ -1376,6 +1405,71 @@ export class Worker {
       this.#feed.ingest('worker', { type: 'offchain', key: 'coverage:rugs:gap', value: { fromSlot: slot, toSlot: slot, reason: `cut trade log ${sig}, transaction not found`, via } }, { receivedAt: this.#d.timers.now() });
     });
   }
+
+  /**
+   * H16-WHY C: a cut or undecodable log on the creates watch. Its transaction is fetched; once released, its `ev:` events
+   * clear the hole in the deployer index (nothing else does). A failed fetch is asked again after each wait in
+   * CUT_CREATE_RETRY_MS while the hole is still there (review B1). Fails closed: until the transaction is released the
+   * hole stays, and after the last try, or past the day's cap, it stays and H14 keeps refusing across it (journaled as
+   * H16 not-covered, input coverage, needed by H14). A cut log names its signature on each of its events: one chain of
+   * tries per signature (`#cutCreateSeen`).
+   */
+  #cutCreateLog(sig: string): void {
+    if (this.#cutCreateSeen.has(sig)) return;
+    if (!this.#takeCutCreateFetch()) return;
+    this.#cutCreateSeen.add(sig);
+    if (this.#cutCreateSeen.size > CUT_CREATE_FETCHES_PER_DAY) this.#cutCreateSeen.delete(this.#cutCreateSeen.values().next().value!);
+    this.#cutCreateTry(sig, 0);
+  }
+
+  /** One try for a cut creates log's transaction; on failure, the next after its wait (each try counted against the cap). */
+  #cutCreateTry(sig: string, tried: number): void {
+    void this.#d.fetchTx(sig, 'cut-create').catch(() => false).then((found) => {
+      if (found || this.#stopping || !this.#strategy.deployers.isLost(sig)) return;
+      const wait = CUT_CREATE_RETRY_MS[tried];
+      if (wait === undefined) return this.#d.log(`Cut creates log ${sig}: its transaction was not read in ${tried + 1} tries; H14 stays not covered across it.`);
+      const h = this.#d.timers.setTimeout(() => {
+        this.#cutCreateTimers.delete(h);
+        if (this.#stopping || !this.#strategy.deployers.isLost(sig)) return;
+        if (!this.#takeCutCreateFetch()) return this.#d.log(`Cut creates log ${sig}: the day's ${CUT_CREATE_FETCHES_PER_DAY} fetches are spent; H14 stays not covered across it.`);
+        this.#cutCreateTry(sig, tried + 1);
+      }, wait);
+      this.#cutCreateTimers.add(h);
+    });
+  }
+
+  /**
+   * One fetch from the day's cap, or false when it is spent. The day only moves forward: a clock stepped back keeps the
+   * later day's count (review N3), so the bound is per UTC day, never per distinct clock reading.
+   */
+  #takeCutCreateFetch(): boolean {
+    const day = Math.floor(this.#d.timers.now() / 86_400_000);
+    if (day > this.#cutCreateFetches.day) this.#cutCreateFetches = { day, count: 0 };
+    if (this.#cutCreateFetches.count >= CUT_CREATE_FETCHES_PER_DAY) return false;
+    this.#cutCreateFetches.count += 1;
+    return true;
+  }
+
+  #lostCreatesAsked = false;
+
+  /**
+   * H16-WHY C (review B1): at boot, once the seed or restore is applied (the index is the
+   * restored one only then), every hole on a creates watch inside H14's look-back is asked for again (its fetch may have
+   * been out, failed or capped when the last process ended), under the same cap and retries.
+   */
+  #readLostCreates(): void {
+    const now = this.#d.timers.now();
+    const lookback = Math.max(this.#d.session.policy.gates.deployerRugLookbackDays, 1) * 86_400_000;
+    for (const sig of this.#strategy.deployers.lostCreates(now - lookback, now)) this.#cutCreateLog(sig);
+  }
+
+  #clearCutCreateTimers(): void {
+    for (const h of this.#cutCreateTimers) this.#d.timers.clearTimeout(h);
+    this.#cutCreateTimers.clear();
+  }
+
+  /** Signatures of cut creates logs already being fetched or fetched (a truncated log names its signature on each event). */
+  readonly #cutCreateSeen = new Set<string>();
 
   #paperMarket(mint: string): PaperMarket | null {
     const m = this.poolOf(mint);
@@ -1442,6 +1536,11 @@ export class Worker {
     this.#engine.drain();
     this.#record((r) => r.flush());
     this.#watchOpened();
+    // H16-WHY C: once the seed (or the restore) is applied, the restored holes are the index's: ask for them again.
+    if (!this.#lostCreatesAsked && this.#strategy.seedApplied) {
+      this.#lostCreatesAsked = true;
+      this.#readLostCreates();
+    }
     // Entry decisions' plan inputs reach disk before the desk books anything this step decided (EXIT-1h, the same order
     // as WORKER-ORDER: the durable record first, then the ledger), so an entry that fills is never without its plan.
     // The plans go first: a plan made this step replaced its seed, so the seed may leave the disk only once the plan is
@@ -2322,6 +2421,7 @@ export class Worker {
     this.#stopping = true;
     this.#stopCode = code;
     this.#stoppingNow(code);
+    this.#clearCutCreateTimers();
     try {
       await this.#stop(code, crash);
     } catch (e) {
@@ -2396,6 +2496,7 @@ export class Worker {
     this.#stopCode = EXIT.crash;
     this.#stoppingNow(EXIT.crash);
     this.#stoppedNow(EXIT.crash);
+    this.#clearCutCreateTimers();
     this.#world.stop();
     if (this.#loop !== null) this.#d.timers.clearTimeout(this.#loop);
     if (this.#beat !== null) this.#d.timers.clearTimeout(this.#beat);
