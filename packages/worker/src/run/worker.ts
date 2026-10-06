@@ -108,7 +108,7 @@ export const CLAMP_LOG_MS = 10_000;
 export const clampNote = (clamp: { readonly count: number; readonly maxMs: number }): string | null =>
   clamp.maxMs > CLAMP_LOG_MS ? `Saved state: ${clamp.count} times dated after the save's moment were saved as at it, the latest ${(clamp.maxMs / 1000).toFixed(1)} s after.` : null;
 export { SAVED_STATES } from './recorder.ts';
-import { type Control, NO_CONTROL, type Restart, StateFile, controlFile, exitsFile, seedsFile, exposedFile, NO_EXPOSED, exitKind, restartsAfterBoot, restartsFile } from './state.ts';
+import { type Control, type FetchCaps, NO_CONTROL, type Restart, StateFile, controlFile, exitsFile, fetchCapsFile, seedsFile, exposedFile, NO_EXPOSED, exitKind, restartsAfterBoot, restartsFile } from './state.ts';
 import { LOG_CREATE_PREFIX, type PoolFact, S0_DIAGNOSTIC_PARTS, TX_CREATE_PREFIX, parsePool } from '../../../core/src/gates/index.ts';
 import type { ExecStats } from '../../../core/src/facts/raw.ts';
 
@@ -486,13 +486,17 @@ export class Worker {
    */
   #createVias = new Set<string>();
   /** Cut-creates-log fetches this UTC day (bounded by CUT_CREATE_FETCHES_PER_DAY), and that day. */
-  #cutCreateFetches = { day: -1, count: 0 };
   /** Retries waiting to ask again, for cut creates logs and cut pool-trade logs (cleared at a stop). */
   readonly #cutCreateTimers = new Set<TimerHandle>();
   /** TRADE-GAP-HEAL: the pool watches (`coverage:trades:<pool>:start` vias): a cut log on one is a hole in its trade stream. */
   readonly #tradeVias = new CappedMap<string, true>(TRADE_VIAS_KEPT);
   /** Cut-pool-trade-log fetches this UTC day (bounded by CUT_TRADE_FETCHES_PER_DAY), and that day. */
-  #cutTradeFetches = { day: -1, count: 0 };
+  /**
+   * The day's counts of both capped fetches, saved at each try (`fetch-caps.json`, review B1), so a restart keeps them.
+   * A file that cannot be read or written counts the day as spent (fail safe on credits).
+   */
+  #fetchCaps: { day: number; cutCreate: number; cutTrade: number } = { day: -1, cutCreate: 0, cutTrade: 0 };
+  #fetchCapsFile: StateFile<FetchCaps> | null = null;
   /** Signatures of cut pool-trade logs already asked for (a cut log names its signature on each of its events). */
   readonly #cutTradeSeen = new CappedMap<string, true>(CUT_TRADE_FETCHES_PER_DAY);
   /** Holes asked for per pool watch (bounded by CUT_TRADE_HOLES_PER_POOL; the oldest watches are forgotten first). */
@@ -669,6 +673,13 @@ export class Worker {
     this.#ledger = openLedger(join(c.stateDir, Ledger.FILE), 'paper');
     this.#control = controlFile(c.stateDir);
     this.#ctl = this.#control.read(NO_CONTROL);
+    this.#fetchCapsFile = fetchCapsFile(c.stateDir);
+    try {
+      this.#fetchCaps = { ...this.#fetchCapsFile.read({ day: -1, cutCreate: 0, cutTrade: 0 }) };
+    } catch {
+      this.#fetchCaps = { day: Math.floor(now / 86_400_000), cutCreate: CUT_CREATE_FETCHES_PER_DAY, cutTrade: CUT_TRADE_FETCHES_PER_DAY };
+      d.log(`${this.#fetchCapsFile.path} cannot be read: today's cut-log fetches count as spent.`);
+    }
     this.#exitsFile = exitsFile(c.stateDir);
     this.#seedsFile = seedsFile(c.stateDir);
     this.#account = new PaperAccount(accountFile(c.stateDir), d.session.policy.capital.bankroll, now, d.strategy.rent.oneTime);
@@ -1469,10 +1480,25 @@ export class Worker {
    * later day's count (review N3), so the bound is per UTC day, never per distinct clock reading.
    */
   #takeCutCreateFetch(): boolean {
+    return this.#takeFetch('cutCreate', CUT_CREATE_FETCHES_PER_DAY);
+  }
+
+  /**
+   * One fetch from a day's cap, or false when it is spent. The day only moves forward (a clock stepped back keeps the
+   * later day's counts) and a new day starts both counts at zero. The counts are saved before the fetch is made; a save
+   * that fails refuses it (fail safe: no fetch whose count a restart could lose).
+   */
+  #takeFetch(kind: 'cutCreate' | 'cutTrade', cap: number): boolean {
     const day = Math.floor(this.#d.timers.now() / 86_400_000);
-    if (day > this.#cutCreateFetches.day) this.#cutCreateFetches = { day, count: 0 };
-    if (this.#cutCreateFetches.count >= CUT_CREATE_FETCHES_PER_DAY) return false;
-    this.#cutCreateFetches.count += 1;
+    if (day > this.#fetchCaps.day) this.#fetchCaps = { day, cutCreate: 0, cutTrade: 0 };
+    if (this.#fetchCaps[kind] >= cap) return false;
+    this.#fetchCaps[kind] += 1;
+    try {
+      this.#fetchCapsFile?.write({ ...this.#fetchCaps });
+    } catch {
+      this.#fetchCaps[kind] = cap;
+      return false;
+    }
     return true;
   }
 
@@ -1538,11 +1564,7 @@ export class Worker {
 
   /** One fetch from the day's cut-trade cap, or false when it is spent (the day only moves forward, as for creates). */
   #takeCutTradeFetch(): boolean {
-    const day = Math.floor(this.#d.timers.now() / 86_400_000);
-    if (day > this.#cutTradeFetches.day) this.#cutTradeFetches = { day, count: 0 };
-    if (this.#cutTradeFetches.count >= CUT_TRADE_FETCHES_PER_DAY) return false;
-    this.#cutTradeFetches.count += 1;
-    return true;
+    return this.#takeFetch('cutTrade', CUT_TRADE_FETCHES_PER_DAY);
   }
 
   #clearCutCreateTimers(): void {

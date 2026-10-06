@@ -3203,6 +3203,13 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - Each try is one Helius `getTransaction` (1 credit), up to 4 with the fetcher's own quick retries. So the cap is 3,000–12,000 credits a day, about 90k–360k a month at most.
   - Expected demand under the pool limit is about 1,280 × 13 ≈ 17k tries a day. The cap binds and heals roughly the first 200 candidates of each UTC day.
   - Raising it is the owner's call once credits are settled (more credits, or a paid plan).
+- **The caps hold across restarts (review B1).**
+  - The day's counts of both capped fetches (this card's and H16-WHY C's cut creates logs) are saved at each try in `fetch-caps.json` (`{ day, cutCreate, cutTrade }`, the UTC day number), with the worker's other state files, before the fetch is made.
+  - A restart or a crash loop therefore never starts a day's caps from zero, which would let them burn credits toward the Helius halt that also refuses P1 held-position reads.
+  - A new UTC day starts both counts at zero, and the day only moves forward.
+  - Fail safe:
+    - a file that cannot be read counts the day as spent for both;
+    - a save that fails refuses that fetch.
 - **Exits and held positions first.**
   - Tries are asked at P3 (`main.ts`), the lowest class. The Helius scheduler keeps its floors for P0 and P1 every second, and sheds P3 first when a queue is full.
   - The daily cap bounds the month, so these reads can never take the credits an exit or a held position's read needs.
@@ -3225,6 +3232,10 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
     - any swap does not chain, two could come next, or one does not reproduce.
   - Until the heal, the gap and H11's refusal stand.
   - The heal state is in memory: a restart drops pending heals and their holes stay (fail closed).
+- **Known limits (review N1–N3).**
+  - **N1.** One transaction cut on two pool watches is asked for once. The live feed already keeps one copy of a log notification per signature, whatever the watch (`dedupKey`), so only the first watch's hole is ever released.
+  - **N2.** `HOLE_SIGS_KEEP` (20,000 hole signatures) covers about 2.5 hours at the measured rate, well above the 45-minute wait. A hole forgotten early only lets its late fetched swaps apply as they arrive, which can only make the chain stale; they also stay in the heal's tape.
+  - **N3.** There is no cap on the swaps held by all heals together. Each heal holds at most 20,000, and only pools with a pending hole hold any, normally for seconds. A starved P3 queue holds them up to 45 minutes.
 - **No lookahead, and parity.**
   - Healed facts are released at the outcome's moment, from events already released.
   - The backtest's dataset holds full transactions, so it has no holes. Live after a heal reaches the same facts.
@@ -3250,3 +3261,11 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
     - skipping the continuity check;
     - no daily cap; no per-pool limit; fetching for pools that are not a candidate's;
     - no retry; no found outcome.
+  - After review (each test fails without its guard):
+    - a deposit after the last swap blocks the heal (`h.other`);
+    - a chain stale at the mark stays stale (`!mc.clean`);
+    - two swaps that could come next give no order;
+    - more than `HEAL_TAPE_MAX` swaps lets the heal go;
+    - a hole released behind the mark is never healed;
+    - both caps hold across a restart, and a new UTC day resets them;
+    - an unreadable `fetch-caps.json` counts the day as spent.

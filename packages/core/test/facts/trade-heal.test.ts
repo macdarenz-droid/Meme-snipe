@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { type PoolState, poolBuyExactBase, poolSell } from '../../src/amm/index.ts';
 import { startSession, TRIAL_POLICY } from '../../src/config/index.ts';
 import { OFF_CHAIN, type MarketEvent, type Moment } from '../../src/engine/index.ts';
-import { HEAL_WAIT_MS, HOLE_FETCH_PREFIX, RAW, STREAMS } from '../../src/facts/index.ts';
+import { HEAL_TAPE_MAX, HEAL_WAIT_MS, HOLE_FETCH_PREFIX, RAW, STREAMS, type SwapEv, chainOrder } from '../../src/facts/index.ts';
 import { observedFeeContext } from '../../src/fills/index.ts';
 import { Evidence, candlesKey, parseCandles, parsePool, poolKey, streamKey } from '../../src/gates/index.ts';
 import { bps } from '../../src/units/index.ts';
@@ -20,6 +20,9 @@ const VIA = `logs:${POOL}`;
 const FEES = { split: { lp: bps(2), protocol: bps(93), creator: bps(30) }, buybackFeeBps: bps(5_000), instruction: 'v1' as const };
 const SUPPLY = 1_000_000_000_000_000n;
 const ctx = observedFeeContext(FEES, SUPPLY, { mayhemMode: false, transferFee: false, transferHook: false });
+/** No fees at all: a buy and a sell of the same base can bring the reserves back exactly. */
+const ZERO = { split: { lp: bps(0), protocol: bps(0), creator: bps(0) }, buybackFeeBps: bps(0), instruction: 'v1' as const };
+const ctx0 = observedFeeContext(ZERO, SUPPLY, { mayhemMode: false, transferFee: false, transferHook: false });
 
 /** Receipt time of a slot; trade timestamps step 25 s a slot, so the candles span several minutes. */
 const at = (slot: bigint): number => T0 + Number(slot - R) * 400;
@@ -35,14 +38,15 @@ interface Swap {
 
 let n = 0;
 /** A swap on `pre`, its amounts from the exact math. */
-const swap = (side: 'buy' | 'sell', pre: PoolState, base: bigint, slot: bigint): Swap => {
-  const q = side === 'buy' ? poolBuyExactBase(pre, base, ctx) : poolSell(pre, base, ctx);
+const swap = (side: 'buy' | 'sell', pre: PoolState, base: bigint, slot: bigint, free = false): Swap => {
+  const c = free ? ctx0 : ctx;
+  const q = side === 'buy' ? poolBuyExactBase(pre, base, c) : poolSell(pre, base, c);
   if (!q.ok) throw new Error(q.reason);
   const t = q.trade;
   const common = {
     timestamp: stamp(slot), poolBaseTokenReserves: pre.baseReserve, poolQuoteTokenReserves: pre.quoteVault, virtualQuoteReserves: pre.virtualQuoteReserves,
-    lpFeeBasisPoints: 2n, lpFee: t.lpFee, protocolFeeBasisPoints: 93n, protocolFee: t.protocolFee, coinCreatorFeeBasisPoints: 30n, coinCreatorFee: t.creatorFee,
-    buybackFeeBasisPoints: 5_000n, buybackFee: t.buybackFee, baseSupply: SUPPLY, pool: POOL, user: 'trader',
+    lpFeeBasisPoints: free ? 0n : 2n, lpFee: t.lpFee, protocolFeeBasisPoints: free ? 0n : 93n, protocolFee: t.protocolFee, coinCreatorFeeBasisPoints: free ? 0n : 30n, coinCreatorFee: t.creatorFee,
+    buybackFeeBasisPoints: free ? 0n : 5_000n, buybackFee: t.buybackFee, baseSupply: SUPPLY, pool: POOL, user: 'trader',
   };
   const data = side === 'buy'
     ? { ...common, baseAmountOut: base, quoteAmountIn: t.quote, quoteAmountInWithLpFee: t.quote + t.lpFee, userQuoteAmountIn: t.userQuote, ixName: 'buy' }
@@ -314,5 +318,109 @@ describe('a hole in a pool\'s trade stream, healed by its fetched transaction (T
     // The hole's late fetched swap is never applied out of order: the chain, re-based by the next swap, stays clean.
     expect(verdicts(world).pool).toBe('ok');
     expect(parsePool(world.last(poolKey(MINT)))!.baseVault).toBe(s[4]!.after.baseReserve);
+  });
+
+  /** A confirmed PumpSwap event on the pool's watch that is not a swap (a deposit; DEC-1 names it 'other' when it cannot). */
+  const other = (slot: bigint, k = 9): MarketEvent => ({
+    kind: 'market', id: `log:other${slot}:confirmed:00000`, moment: { slot, txIndex: 2 ** 32 + k, ixIndex: 2 ** 36, receivedAt: at(slot) + k },
+    key: 'logs:pump_amm:other:pump_amm',
+    value: { event: { program: 'pump_amm', name: 'other', discriminator: '0011223344556677', logIndex: 0 }, signature: `other${slot}`, txSlot: slot, truncated: false, via: VIA, commitment: 'confirmed', source: 'helius', backfilled: false, seq: n++ },
+  });
+
+  it('review B2: a deposit (or any other pool transaction) on the watch during the wait, after the last swap, blocks the heal: the pool stays stale, never priced from before it', () => {
+    const { world, state } = opened();
+    const s = tape(state);
+    world.push(logOf(s[0]!), logOf(s[1]!), hole(s[2]!.sig, s[2]!.slot), logOf(s[3]!), logOf(s[4]!), other(R + 5n));
+    world.push(...fetchedSwaps(s[2]!.sig, s[2]!.slot, R + 6n, [s[2]!]), outcome(s[2]!.sig, true, R + 6n));
+    head(world);
+    expect(verdicts(world).candles).toBe('H16:gap');
+    expect((world.last(poolKey(MINT)) as { stale?: string }).stale).toBe('a pool transaction other than a swap (other)');
+    expect(verdicts(world).pool).not.toBe('ok');
+  });
+
+  it('review B2: a chain already stale at the mark (a swap that did not chain from the read) is never marked clean by a heal', () => {
+    const { world, state } = opened();
+    // A swap nobody saw moved the pool after the read: s0 starts elsewhere, so the chain is stale (mismatch) from s0 on.
+    const missed = swap('buy', state, 4_444_444n, R + 1n);
+    const s = tape(missed.after);
+    world.push(logOf(s[0]!), logOf(s[1]!), hole(s[2]!.sig, s[2]!.slot), logOf(s[3]!), logOf(s[4]!));
+    expect((world.last(poolKey(MINT)) as { stale?: string }).stale).toMatch(/^reserves mismatch/);
+    world.push(...fetchedSwaps(s[2]!.sig, s[2]!.slot, R + 6n, [s[2]!]), outcome(s[2]!.sig, true, R + 6n));
+    head(world);
+    // The candles heal (every swap since the book's mark chains); the chain needs a read.
+    expect(verdicts(world).candles).toBe('ok');
+    expect((world.last(poolKey(MINT)) as { stale?: string }).stale).toMatch(/^reserves mismatch/);
+    expect(verdicts(world).pool).not.toBe('ok');
+  });
+
+  it('review B2: a chain stale at the mark (a stream gap its fill restored, no swap since to re-base it) stays stale after the heal: only a read or a swap clears it', () => {
+    const { world, state } = opened();
+    const s = tape(state);
+    world.push(logOf(s[0]!), logOf(s[1]!));
+    // A disconnect, then a fill that restored the range in full: no hole is left, but the chain went stale on the gap.
+    world.push(
+      coverage(STREAM, 'gap', { fromSlot: R + 3n, toSlot: null, reason: 'disconnect', via: VIA }, R + 2n, at(R + 2n) + 100),
+      coverage(STREAM, 'resume', { fromSlot: R + 3n, toSlot: R + 3n, via: VIA }, R + 2n, at(R + 2n) + 200),
+    );
+    expect((world.last(poolKey(MINT)) as { stale?: string }).stale).toBe('swap stream gap');
+    // The hole's swap is the last one: nothing re-bases the chain before the heal.
+    world.push(hole(s[2]!.sig, s[2]!.slot));
+    world.push(...fetchedSwaps(s[2]!.sig, s[2]!.slot, R + 6n, [s[2]!]), outcome(s[2]!.sig, true, R + 6n));
+    head(world);
+    // The candles heal (the stream has no hole left); the chain was not clean at the mark, so it is not set clean.
+    expect(verdicts(world).candles).toBe('ok');
+    expect((world.last(poolKey(MINT)) as { stale?: string }).stale).toBe('swap stream gap');
+  });
+
+  it('review N4: two swaps that could come next (a round trip back to the same reserves) leave the order unproven: no heal', () => {
+    // No fees: buying half the base and selling it back returns the reserves exactly.
+    const anchor = swap('sell', { baseReserve: 999_000_000n, quoteVault: 1_001_001_002n, virtualQuoteReserves: 0n }, 1_000_000n, R + 1n, true);
+    const from = anchor.after;
+    const a = swap('buy', from, from.baseReserve / 2n, R + 2n, true);
+    const back = swap('sell', a.after, from.baseReserve / 2n, R + 2n, true);
+    expect(back.after).toEqual(from);
+    const c = swap('buy', from, 1_000n, R + 2n, true);
+    const t = (x: Swap) => ({ ev: { name: x.name, data: x.data } as unknown as SwapEv, seen: { slot: x.slot } });
+    // A, its exact reverse, then C chains; but A and C both start at the same reserves, so which came first is not
+    // proven by the chain: no order.
+    expect(chainOrder(from, [t(a), t(back), t(c)])).toBeNull();
+    expect(chainOrder(from, [t(c)])).not.toBeNull();
+  });
+
+  it('review N4: a heal that holds more than HEAL_TAPE_MAX swaps is let go: the hole stays', () => {
+    const { world, state } = opened();
+    const s = tape(state);
+    world.push(logOf(s[0]!), logOf(s[1]!), hole(s[2]!.sig, s[2]!.slot));
+    // Past the hole: HEAL_TAPE_MAX + 1 tiny swaps, a few hundred a slot, all chained from swap 3's end.
+    let pre = s[2]!.after;
+    const per = 250;
+    const many: Swap[] = [];
+    for (let i = 0; i <= HEAL_TAPE_MAX; i++) {
+      const x = swap(i % 2 === 0 ? 'buy' : 'sell', pre, 1_000_000n, R + 4n + BigInt(Math.floor(i / per)), false);
+      many.push(x);
+      pre = x.after;
+    }
+    const last = many.at(-1)!.slot;
+    world.push(...many.map((x, i) => logOf(x, i % per)));
+    world.push(...fetchedSwaps(s[2]!.sig, s[2]!.slot, last + 1n, [s[2]!]), outcome(s[2]!.sig, true, last + 1n));
+    world.push(slotNotice(last + 2n, at(last + 2n) + 50));
+    expect((world.last(streamKey(STREAM)) as { gapFreeSince: bigint }).gapFreeSince).toBe(s[2]!.slot + 1n);
+  }, 120_000);
+
+  it('review N4: a hole released behind the book\'s newest trade slot (before its mark) is never healed, even by a transaction with no swap on the pool', () => {
+    const { world, state } = opened();
+    const s = tape(state);
+    world.push(logOf(s[0]!), logOf(s[1]!), logOf(s[2]!));
+    // A cut log of a transaction at slot R+2 (a swap on another pool, then the cut), released at R+3 behind swap 3.
+    const late: MarketEvent = {
+      kind: 'market', id: 'log:lateCut:confirmed:00000', moment: { slot: R + 3n, txIndex: 2 ** 32 + 50, ixIndex: 2 ** 36, receivedAt: at(R + 3n) + 50 },
+      key: 'logs:pump_amm:BuyEvent:OtherPool111111111111111111111111111111111',
+      value: { event: { program: 'pump_amm', name: 'BuyEvent', data: { ...s[0]!.data, pool: 'OtherPool111111111111111111111111111111111' }, logIndex: 0 }, signature: 'lateCut', txSlot: R + 2n, truncated: true, via: VIA, commitment: 'confirmed', source: 'helius', backfilled: false, seq: n++ },
+    };
+    world.push(late, logOf(s[3]!), logOf(s[4]!));
+    world.push(...fetched('lateCut', R + 2n, R + 6n, []), outcome('lateCut', true, R + 6n));
+    head(world);
+    expect(gapFree(world)).toBe(R + 3n);
+    expect(verdicts(world).candles).toBe('H16:gap');
   });
 });

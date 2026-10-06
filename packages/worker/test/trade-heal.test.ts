@@ -2,10 +2,12 @@
 // (P3 in main.ts), under a daily cap, with the same bounded retries as a cut creates log; after the fetch settles the
 // worker puts its outcome on the feed (`hole-fetch:<via>`, after the transaction's own events), and the producer heals
 // the hole only on found (core test/facts/trade-heal.test.ts). Fail closed: not found, capped or unwatched says so.
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { HOLE_FETCH_PREFIX } from '../../core/src/facts/index.ts';
-import { CUT_CREATE_RETRY_MS, CUT_TRADE_FETCHES_PER_DAY, CUT_TRADE_HOLES_PER_POOL } from '../src/run/worker.ts';
-import { type Harness, Market, POOL_ADDRESS, makeWorker, passingMarket, slotAt } from './worker-harness.ts';
+import { CUT_CREATE_FETCHES_PER_DAY, CUT_CREATE_RETRY_MS, CUT_TRADE_FETCHES_PER_DAY, CUT_TRADE_HOLES_PER_POOL } from '../src/run/worker.ts';
+import { type Harness, Market, POOL_ADDRESS, type TestTimers, makeWorker, passingMarket, slotAt } from './worker-harness.ts';
 
 const VIA = `logs:${POOL_ADDRESS}`;
 const AMM = 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA';
@@ -146,5 +148,95 @@ describe('TRADE-GAP-HEAL: a cut log on a pool watch', () => {
     expect(tries(fetchedWhy, sig(5))).toBe(0);
     expect(out).toEqual([]);
     await h.worker.stop();
+  });
+});
+
+describe('TRADE-GAP-HEAL review B1: the day\'s fetch caps hold across a restart', () => {
+  const DAY = 86_400_000;
+  const CREATES = 'logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM';
+  const PUMP = '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P';
+  const POOLS = Array.from({ length: Math.ceil(CUT_TRADE_FETCHES_PER_DAY / CUT_TRADE_HOLES_PER_POOL) + 2 }, (_, i) => `logs:${sig(60_000 + i)}`);
+
+  /** A worker whose pool watches (POOLS, each a candidate's) and creates watch have started; on `stateDir` and `timers` when given. */
+  const boot = async (fetchedWhy: [string, string][], o: { stateDir?: string; timers?: TestTimers } = {}) => {
+    const h = makeWorker({ found: true, fetchedWhy, ...o });
+    await h.worker.reconcile();
+    const m = new Market(h);
+    m.slot();
+    m.offchain('coverage:creates:start', { fromSlot: slotAt(h.timers.now()) - 100n, via: CREATES });
+    for (const v of POOLS) m.offchain(`coverage:trades:${v.slice(5)}:start`, { fromSlot: slotAt(h.timers.now()) - 100n, via: v });
+    const own = h.worker.strategy.watchedPools.bind(h.worker.strategy);
+    h.worker.strategy.watchedPools = () => new Map([...own(), ...POOLS.map((v): [string, { mint: string; held: boolean; fromSlot: bigint }] => [v.slice(5), { mint: v, held: false, fromSlot: 1n }])]);
+    await m.run(1_000, 200, () => m.slot());
+    return { h, m, out: outcomes(h) };
+  };
+  const cutTrades = (h: Harness, from: number, n: number) => {
+    for (let k = from; k < from + n; k++) cut(h, sig(k), POOLS[Math.floor(k / CUT_TRADE_HOLES_PER_POOL) % POOLS.length]!);
+  };
+  const cutCreate = (h: Harness, signature: string) =>
+    h.worker.feed.ingest('helius', { type: 'logs', signature, slot: slotAt(h.timers.now()), err: null, via: CREATES, logs: [`Program ${PUMP} invoke [1]`, 'Log truncated'] }, { receivedAt: h.timers.now() });
+  const count = (w: [string, string][], why: string) => w.filter(([, y]) => y === why).length;
+
+  it('cut-trade: the count goes on after a restart, and the next UTC day starts it again', async () => {
+    const a: [string, string][] = [];
+    const first = await boot(a);
+    cutTrades(first.h, 0, CUT_TRADE_FETCHES_PER_DAY - 1);
+    await first.m.run(2_000, 200, () => first.m.slot());
+    expect(count(a, 'cut-trade')).toBe(CUT_TRADE_FETCHES_PER_DAY - 1);
+    await first.h.worker.stop();
+    const b: [string, string][] = [];
+    const again = await boot(b, { stateDir: first.h.stateDir, timers: first.h.timers });
+    cutTrades(again.h, CUT_TRADE_FETCHES_PER_DAY, 2);
+    await again.m.run(2_000, 200, () => again.m.slot());
+    // One try was left of the day: the second is told not found, unfetched.
+    expect(count(b, 'cut-trade')).toBe(1);
+    expect(again.out.filter((o) => !o.found).map((o) => o.signature)).toEqual([sig(CUT_TRADE_FETCHES_PER_DAY + 1)]);
+    again.h.timers.set((Math.floor(again.h.timers.now() / DAY) + 1) * DAY + 1_000);
+    again.m.slot();
+    cutTrades(again.h, CUT_TRADE_FETCHES_PER_DAY + 2, 1);
+    await again.m.run(1_000, 200, () => again.m.slot());
+    expect(count(b, 'cut-trade')).toBe(2);
+    await again.h.worker.stop();
+  });
+
+  it('cut-create: the count goes on after a restart, and the next UTC day starts it again', async () => {
+    const a: [string, string][] = [];
+    const first = await boot(a);
+    for (let k = 0; k < CUT_CREATE_FETCHES_PER_DAY - 1; k++) cutCreate(first.h, sig(k));
+    await first.m.run(2_000, 200, () => first.m.slot());
+    expect(count(a, 'cut-create')).toBe(CUT_CREATE_FETCHES_PER_DAY - 1);
+    await first.h.worker.stop();
+    const b: [string, string][] = [];
+    const again = await boot(b, { stateDir: first.h.stateDir, timers: first.h.timers });
+    cutCreate(again.h, sig(CUT_CREATE_FETCHES_PER_DAY));
+    cutCreate(again.h, sig(CUT_CREATE_FETCHES_PER_DAY + 1));
+    await again.m.run(2_000, 200, () => again.m.slot());
+    expect(count(b, 'cut-create')).toBe(1);
+    again.h.timers.set((Math.floor(again.h.timers.now() / DAY) + 1) * DAY + 1_000);
+    again.m.slot();
+    cutCreate(again.h, sig(CUT_CREATE_FETCHES_PER_DAY + 2));
+    await again.m.run(1_000, 200, () => again.m.slot());
+    expect(count(b, 'cut-create')).toBe(2);
+    await again.h.worker.stop();
+  });
+
+  it('a saved count that cannot be read counts the day as spent (fail safe), until the next UTC day', async () => {
+    const first = await boot([]);
+    await first.h.worker.stop();
+    writeFileSync(join(first.h.stateDir, 'fetch-caps.json'), '{ not json');
+    const b: [string, string][] = [];
+    const again = await boot(b, { stateDir: first.h.stateDir, timers: first.h.timers });
+    cutTrades(again.h, 0, 1);
+    cutCreate(again.h, sig(500));
+    await again.m.run(2_000, 200, () => again.m.slot());
+    expect([count(b, 'cut-trade'), count(b, 'cut-create')]).toEqual([0, 0]);
+    expect(again.out).toEqual([{ signature: sig(0), found: false, via: POOLS[0] }]);
+    again.h.timers.set((Math.floor(again.h.timers.now() / DAY) + 1) * DAY + 1_000);
+    again.m.slot();
+    cutTrades(again.h, 1, 1);
+    cutCreate(again.h, sig(501));
+    await again.m.run(1_000, 200, () => again.m.slot());
+    expect([count(b, 'cut-trade'), count(b, 'cut-create')]).toEqual([1, 1]);
+    await again.h.worker.stop();
   });
 });

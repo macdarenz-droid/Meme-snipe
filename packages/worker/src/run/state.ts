@@ -71,6 +71,19 @@ export interface Credits {
 export const creditsFile = (dir: string) =>
   new StateFile<Credits>(dir, 'credits.json', (v) => (isObj(v) && typeof v['month'] === 'string' && isObj(v['used']) && Object.values(v['used']).every((x) => typeof x === 'number' && x >= 0) ? (v as unknown as Credits) : null));
 
+/**
+ * TRADE-GAP-HEAL review B1: the day's counts of the capped transaction fetches (cut creates logs, cut pool-trade logs),
+ * by UTC day number, so a restart (or a crash loop) never starts the day's caps again from zero.
+ */
+export interface FetchCaps {
+  readonly day: number;
+  readonly cutCreate: number;
+  readonly cutTrade: number;
+}
+const isCount = (x: unknown): boolean => typeof x === 'number' && Number.isSafeInteger(x) && x >= 0;
+export const fetchCapsFile = (dir: string) =>
+  new StateFile<FetchCaps>(dir, 'fetch-caps.json', (v) => (isObj(v) && typeof v['day'] === 'number' && Number.isSafeInteger(v['day']) && isCount(v['cutCreate']) && isCount(v['cutTrade']) ? (v as unknown as FetchCaps) : null));
+
 /** The month a credit total belongs to. */
 export const creditMonth = (ms: number): string => new Date(ms).toISOString().slice(0, 7);
 

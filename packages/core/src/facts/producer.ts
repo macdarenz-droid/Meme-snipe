@@ -238,7 +238,7 @@ interface CandleBook {
   mark: BookMark | null;
 }
 
-type SwapEv = Extract<PumpEventData, { name: 'BuyEvent' | 'SellEvent' }>;
+export type SwapEv = Extract<PumpEventData, { name: 'BuyEvent' | 'SellEvent' }>;
 
 /** TRADE-GAP-HEAL: a swap as released, with where it was seen. */
 interface TapeSwap {
@@ -456,7 +456,7 @@ const effectiveOf = (s: PoolState): bigint => s.quoteVault + s.virtualQuoteReser
  * (core fills `swapEventState`) the reserves after it. Null when any slot leaves a swap that does not chain, two that
  * could come next, or one that does not reproduce its event: the order is not proven.
  */
-const chainOrder = <T extends { readonly ev: SwapEv; readonly seen: { readonly slot: bigint } }>(from: PoolState, swaps: readonly T[]): { readonly t: T; readonly after: PoolState }[] | null => {
+export const chainOrder = <T extends { readonly ev: SwapEv; readonly seen: { readonly slot: bigint } }>(from: PoolState, swaps: readonly T[]): { readonly t: T; readonly after: PoolState }[] | null => {
   const slots = [...new Set(swaps.map((t) => t.seen.slot))].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
   const out: { t: T; after: PoolState }[] = [];
   let cur = from;
