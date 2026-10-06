@@ -117,6 +117,12 @@ if [ "$(jq -r '.offsite_backup == true' /opt/zeroed/current/ops/host-config.json
 else
   systemctl disable --now zeroed-backup-offsite.timer >/dev/null 2>&1 || true
 fi
+# RECORD-UPLOAD (owner, 2026-10-06 "Approve upload"): sealed recordings to the private data repository, hourly.
+if [ "$(jq -r '.record_upload == true' /opt/zeroed/current/ops/host-config.json 2>/dev/null || echo false)" = true ]; then
+  systemctl enable --now zeroed-record-upload.timer >/dev/null 2>&1 || true
+else
+  systemctl disable --now zeroed-record-upload.timer >/dev/null 2>&1 || true
+fi
 
 # answers SHA: the worker's health route says paper and names release SHA (its git_sha, the release folder's name), so
 # an answer from the worker that ran before the switch never counts. The release's worker serves it on

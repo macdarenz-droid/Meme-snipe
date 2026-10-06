@@ -320,8 +320,8 @@ export interface OtherEvent {
  * `trailing` counts bytes after the last field of the pinned IDL and `extra` holds them as hex. They are kept, never
  * interpreted: since the unannounced 2026-10-02 upgrade (PumpSwap from slot 452,654,883, pump from 452,654,933) both
  * programs append 8 undocumented bytes to TradeEvent, BuyEvent and SellEvent (absent from pump-public-docs cb188ce, the
- * npm SDKs and the on-chain IDL accounts). Every sampled SOL-quoted event has them zero; every documented field before them
- * decodes and cross-checks unchanged (test/chain/events.test.ts, test/chain/upgrade.test.ts; venues.md 2.7).
+ * npm SDKs and the on-chain IDL accounts). On SOL PumpSwap pools they are the unswept creator fee as a u64 (TAIL-PROOF;
+ * GATE-1c reads them in `gates/tails.ts`); every documented field before them decodes and cross-checks unchanged (test/chain/events.test.ts, test/chain/upgrade.test.ts; venues.md 2.7).
  */
 export type ProgramEvent = (PumpEventData & { readonly trailing: number; readonly extra: string }) | OtherEvent;
 

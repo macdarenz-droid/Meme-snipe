@@ -98,6 +98,7 @@ One row per decision in the table; detailed module decisions follow in sections 
 | 2026-10-04 | Regime volume per hour as release `data-volume-DAY` (DATA-1c): SOL-quoted curve plus canonical WSOL PumpSwap volume, lamports, buys plus sells, `covered` only for fully scanned hours; exact cross-check against kept rows; back-fill from published units; regime reads day D−3 (supervisor rulings) | A separate release keeps every published `data-day-DAY` complete and unedited; D−3 always holds under the measured archive lag (epoch ready 0.29–0.60 d after its end, epochs about 1.34 d long) plus a 2–3 h scan | [historical-data.md](research/historical-data.md) "Regime volume per hour" |
 | 2026-10-04 | The census stays unchanged for curves whose `quote_mint` is the system program (it counts `quote_amount`, while `qa/volume.ts` re-derives from `sol_amount`); units stay byte-identical with run 1's (supervisor ruling on #77) | Changing `emitRow` would change `agg_hourly` and break unit identity across the run. On 2026-10-01 all 43,332 such rows have `quote_amount` = `sol_amount` and `virtual_quote_reserves` = `virtual_sol_reserves`. If they ever differ, the exact cross-check fails the day loudly, the safe direction (tests: scanner `TestCensusSystemProgramQuoteDivergenceReachesVolumeHours`, `volume.test.ts`) | [historical-data.md](research/historical-data.md) "Regime volume per hour" |
 | 2026-10-04 | Daily summary of the paper worker goes to a private GitHub repository through the watchdog (owner: "yes summary"; design approved by the supervisor) (OPS-SUMMARY) | No agent can read the host; the watchdog already has the signed channel and the free plan, so the server needs no new secret | "Daily summary (OPS-SUMMARY)" below, [ops/README.md](../ops/README.md) "Daily summary" |
+| 2026-10-06 | RECORD-UPLOAD: sealed recordings go through the watchdog to day prereleases in the private data repository; a local frames or releases file is deleted only after a fresh read-back of its uploaded copy (owner approved upload and delete-after-upload) | Disk fills in about a day; cloud agents need the data | "Recording upload" below, `ops/README.md` |
 
 ## Supervisor rulings after the external review (2026-10-04)
 
@@ -176,7 +177,7 @@ The same outside reviewer answered nine follow-up questions on 8370c2a. Each cla
   - E is one common endpoint for every registered universe, and no universe is dropped after counts. Entries stop at the cutoff, and an observation-only tail lets labels mature.
   - The holdout is opened once, at E. If it is short of n ≥ max(300, n_power) or of 10 trade days, the result is "not proven".
   - n_power is computed for each attempt's α and this procedure. The report gives power once n is reached, the probability of reaching n by E, and the overall pass probability.
-  - A window past 10-01 crosses B5 (10-02 15:47 UTC). UPG-1 found SOL-market fields, quotes, fees and rent unchanged there, and H5 refuses any non-zero tail, so B5 changes nothing we trade. Results are reported before and after B5. B2–B4 stay hard boundaries for every window.
+  - A window past 10-01 crosses B5 (10-02 15:47 UTC). UPG-1 found SOL-market fields, quotes, fees and rent unchanged there, and H5 refuses any non-zero tail, so B5 changes nothing we trade. (2026-10-06, H5-POOL-TAILS: H5 now passes a pool tail up to the event's quote vault, which TAIL-PROOF measured as the unswept creator fee with no effect on a trade's money; curve tails stay refused.) Results are reported before and after B5. B2–B4 stay hard boundaries for every window.
   - Repeated attempts share one error budget. Attempt 1 is tested at family α = 0.04 (Holm across universes, with n_power simulated at that level). Attempt k ≥ 2 is tested at 0.01 / 2^(k−1) on a new, later window. At most 0.05 family error is spent across attempts. The bound requires valid testing under each attempt's registered selection, stopping and dependence assumptions.
   - The 48-hour dry run is operational evidence and G3 only. It is never part of the holdout. STATS-1b, BT-2.
 - **Rent.** Rent follows the transaction's real outcome:
@@ -2925,6 +2926,84 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   in order dropped, nothing kept of the `false` class, the two kinds merged into one class (P5), the answer by order
   across kinds.
 
+## The recorder hashes each sealed file once (G4c, `run/recorder.ts`)
+
+- **2026-10-04 · G4c: the recorder hashes each sealed file once.** The manifest is rewritten at every seal and listed every sealed file by reading and hashing it again, so a boot's manifest work grew with the square of its file count (each 64 MiB rotation re-read every earlier file). Each file is now hashed from the compressed bytes as it is sealed, and the manifest lists that seal-time size and hash; a file a crashed boot had sealed keeps the size and hash its manifest listed (review N1), and a file sealed at the next start is hashed then. A later change to a sealed file now shows as a hash mismatch instead of being re-hashed into the manifest. Evidence: `packages/worker/test/worker-grow-c.test.ts` (the seal-time test fails on the base); hand mutants R1 (ignore the kept hashes) and R2 (hash other bytes) are killed; R3 (do not keep the seal's hash) is equivalent, since the manifest write that follows hashes the file once and keeps it.
+
+## Recordings kept under a byte cap and a free-disk floor (RECORD-BUDGET, `run/recorder-budget.ts`)
+
+- **2026-10-06 · Why** (owner, 6 Oct: "once its saved it will auto delete to stop populating the server. Which is 23gb.
+  1 whole day of trading fills the server data"). The live recorder writes about 4.5 to 7 GB a day; a full disk
+  crash-loops the worker. The upload half is RECORD-UPLOAD (#244); this is the hard local budget, which holds whether
+  or not uploads succeed.
+- **What.** A pass (`pruneRecordings`) runs at start before the leftovers are sealed (a full disk would otherwise fail
+  the recorder for the whole boot) and before the deployer store is loaded and rewritten, then once a minute beside the
+  memory sample, whether the recorder is on, off or failed. It deletes sealed recording files
+  (`(frames|raw|releases|pre|delays)-NNN.jsonl.zst`) oldest first, while the recordings are over the cap; when the
+  disk has less free than the floor, until it has the floor plus 0.5 GiB. Bytes count once per inode.
+  - Order: UTC day, then boot start (the base-36 boot id), then seal time (the `.zst`'s mtime, written once at the
+    seal), then name. Each table rotates on its own, so file numbers do not line up across tables: by number,
+    `releases-000` (often a whole day) went right after `frames-000` and left `frames-001…` without the releases that
+    order them (data review B3). By seal, one period's tables go together.
+  - An ended boot keeps its folder, `manifest.json` and attachments; the upload (#244) finds boots by their manifest
+    (data review B2). Its manifest is rewritten in place (`notePruned`): `days` from what is on disk, each deleted file
+    appended to `pruned[]` with the size and sha256 the manifest listed, every other field kept (B1). An ended boot's day
+    folders left empty, and its empty `days/`, are removed. The running boot's never are: its next file in that folder
+    may still be only buffered (the folder is made when a file opens, not at each flush), so a removed folder made the
+    next flush fail and the recorder fault (persist delta review B1). Only a folder that never recorded (no recording file, none
+    listed or pruned; a reconcile pre-step's manifest and saved state) is removed whole, first, and named.
+  - A packed saved state in `recorder/saved-state/` goes only at link count 1 (no boot links it) and never while a
+    pack runs. Ended boots keep their attachments, so their store copies stay until #244 removes the boot.
+  - Never touched: the running boot's plain `.jsonl`, any `*.tmp`, the manifest and attachments of any boot that
+    recorded; symlinks (the walk is lstat only) and anything whose real path leaves `recorder/`; everything else in the
+    state dir (it is never walked).
+  - The running boot's deleted files leave `days[].files` and go to its manifest's `pruned[]` through the recorder (or
+    through `notePruned` when the recorder is off or failed). Its file numbers never go back (a high-water mark per
+    table and day), so a deleted newest `-002` is followed by `-003`. `sealLeftovers` skips a folder that goes while it
+    reads (ENOENT).
+  - Each pass that deletes writes a `recorder_prune` journal line: reason `cap` or `floor`, `files`, `bytes`, `paths`
+    (every deleted file, `<boot>/days/<day>/<file>` or `saved-state/<sha>.zst`), `boots` (the never-recorded folders
+    removed, by name), and free and recorder bytes after. A failed pass, a manifest not rewritten, or a pass still over
+    with nothing left to delete logs and journals a critical alert (`recorder_budget`) at most once an hour and is
+    listed in /health `critical` until a pass is within both bounds. A pass never throws.
+  - Parity (TEST-1): a boot with a non-empty `pruned[]`, or a listed file gone, is reported `missing: 'pruned'` and not
+    replayed, so a partial recording never reads as an engine divergence (data review N2).
+- **Thresholds (settings, not constants).** `ZEROED_RECORDER_MAX_BYTES`, default 8 GiB (8.59 GB);
+  `ZEROED_DISK_PRUNE_FREE_BYTES`, default 3 GiB, values under 2 GiB refused (exit 2). Arithmetic from S1's research
+  (not re-measured here): on the 23 GB disk with an 8 GiB cap the steady state leaves about 5.5 GB free; the worst
+  short-term need between passes is about 1.26 GiB, under the 3 GiB floor. At 7 GB a day the cap holds about 1.2 days
+  of recording on the host; anything older lives only where RECORD-UPLOAD put it. Kept manifests and attachments
+  count against the cap; if they alone exceed it, the pass is short and alerts.
+- **Saved-data ruling** (S1, CLAUDE.md "Stored data"): the `recorder_prune` line and `pruned[]` hold only the bot's own
+  diagnostics; approved.
+- **Evidence (fail before, pass after).** `record-budget.test.ts`: T1 cap order and total, ended manifests rewritten,
+  one count per inode; B1 a partly pruned ended boot (20 sealed files) lists only what is on disk and the deleted file
+  under `pruned` with its seal-time sha256; B2 an ended boot keeps manifest and attachments, a never-recorded folder
+  goes and is named, an unreadable manifest's folder stays; B3 `releases-000` sealed after `frames-001` outlives it;
+  T2 floor target exactly floor + 0.5 GiB, nothing left reported as short; T3 state files, the open `.jsonl`, a
+  `.tmp`, manifests and symlinks (to outside and inside) byte-identical after 20 passes at free 0; T4 `pruned[]` with
+  the seal-time hash and recording going on; T5 `-003` after `-002` is deleted; T6 a vanished folder in
+  `sealLeftovers`; T7 store files only at link count 1 and not while packing; N1 a removed link frees nothing while
+  another holds the bytes; the config. `record-budget-worker.test.ts`: T8 the start pass before the deployer store's
+  rewrite, minute passes deleting the running boot's files, `recorder_prune` lines naming paths and boots, the ended
+  boot's manifest kept with `pruned`, /health recorder on; N3 the start pass before the leftovers' seal; T2 alert once
+  an hour, a failing pass alerts, the pass runs with the recorder off; T6 no recorder fault; T7 no store deletion while
+  the pack is held. `parity.test.ts`: N2. Hand mutants killed: newest first, open file not excluded, symlink check
+  removed, floor target = floor, no high-water mark, packing ignored, no start pass, start pass after the leftovers'
+  seal, ENOENT not skipped, links freed per link, store file at any link count, `pruned` not recorded, ended manifest
+  not rewritten, `pruned` sha256 not from the listing, recorded boot removed whole, journal without paths, order by
+  number instead of seal, alert not hourly, pruned boot replayed; and each guard layer alone (persist review note 3):
+  the real-path check (a day folder swapped for a symlink between the walk and the delete, through the `afterWalk`
+  test seam) and the boot-name check (a symlinked boot inside the recorder), the config's exact-integer bound, the
+  stale budget fault.
+- **2026-10-06 · Persist review notes 3 to 5.** Each guard layer has a test of its own. `ZEROED_RECORDER_MAX_BYTES` and
+  `ZEROED_DISK_PRUNE_FREE_BYTES` above 2^53 - 1 are refused (exit 2): they could not be held exactly. A
+  file in place of the recorder folder holds nothing to prune: a running recorder raises `recorder_failed` there, and
+  the pass still judges free space (statfs of the state dir), so a disk under the floor alerts even with the recorder
+  off; otherwise the budget fault is cleared, never left stale. A missing recorder folder is made again and judged as
+  usual.
+- **Not in this card.** Uploads and removing ended boots after read-back (#244).
+
 ## Money in SOL first (APP-SOL, owner 2026-10-05: success is counted in SOL; `components/Money.tsx`, `lib/money.ts` `formatSol`)
 - **2026-10-05 · The worker serves lamports beside every dollar figure.** Exact integer strings from the lamports it already holds:
   - Trades: size (what the entry swapped in), net (the paper account's `tradeSol`, including late settlements), gross (net plus costs), each cost kind, the fills.
@@ -3020,3 +3099,201 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
 **Risk.** A heartbeat arriving while ticker trades have stopped (a quiet market) now leaves entries on, but the price ages past 2 s and R1 refuses each entry until a trade prices it again. So quiet minutes no longer halt the worker, and no entry is judged on an old price. Heartbeats come only from the same socket, so a half-open connection that stops delivering anything still goes stale (and the socket's own 30 s idle timer reconnects it).
 
 **Evidence** (`test/coinbase-liveness.test.ts`): heartbeats only for 30 s give no halt (it halts without the signal); no frames for over 10 s still halts; heartbeats after a ticker leave the one price fact unchanged and R1 refuses it as stale; heartbeats add no frame; the subscription names both channels. Hand mutants killed: heartbeat sets the price, heartbeat re-dates the price, heartbeat ignored.
+
+## H5 accepts the pool's creator-fee tail (H5-POOL-TAILS, `gates/tails.ts`; owner "Go", 2026-10-06)
+
+**Why.** Since 2026-10-06 most SOL PumpSwap pools carry a non-zero 8-byte trade-event tail. H5 refused any non-zero tail, so once #255 lets coins past H16 it would refuse most coins. TAIL-PROOF (#257; reviews PASS from facts and chain/backtest) measured the pool tail as the unswept creator fee, a little-endian u64. It grows by exactly `coin_creator_fee` on each v2 trade, and the creator sweep pays it out and resets it (891/891 tape trades, 3/3 sweeps). 1,188 non-zero-tail trades on 36 pools reproduce exactly in the quote, the vaults and the swap's own transfers. The tail does not change a trade's money.
+
+**Rule** (one function, `tailVerdict`, used by the check and the store's collapse):
+- A PumpSwap (`pump_amm`) BuyEvent/SellEvent after its boundary slot (452,654,882) passes with a tail of exactly 8 bytes of any value, as long as that u64 is at most the event's own pre-trade quote vault (`poolQuoteTokenReserves`, where the unswept fee sits).
+- Above the vault, or non-hex: `event-tail` (H5). A non-zero tail with no readable vault (not a non-negative bigint): `malformed` (H16). A zero tail needs no vault.
+
+**Still refused, unchanged:**
+- A non-zero curve (`pump` TradeEvent) tail: the proof does not cover the curve.
+- A wrong length, before, at or after the boundary: `event-tail`.
+- A non-zero pool tail in the boundary slot itself.
+- An unreadable tail: `malformed`.
+- No trade since migration: not covered.
+- A swap that does not reproduce its event, or whose reserves do not chain: the pool fact goes stale (`producer.ts` `#chainSwap`), with or without a tail.
+
+**Bound checked first.** On all 467 fixture vectors (359 non-zero, 108 zero) and all 894 tape trades, the tail is at most the vault. The largest ratio is 0.44% on the vectors and 2.2% on the tapes. None breaks the bound.
+
+**Backtest parity.** The backtest feed's pool tail fact (`backtest/src/sim/facts.ts` `tradeTailValue`) now carries the dataset's `pool_quote_token_reserves` (`row.pre.quoteVault`) as `event.data.poolQuoteTokenReserves`, the field live reads from the decoded event. No other code re-implements the zero-tail rule: `chain/schema.ts` `trailingNonZero` is for account layouts, and the matches in `research/tail-proof` are research scripts.
+
+**Sample limit.** The evidence is one 38-minute window on one day (2026-10-06 09:42–10:20 UTC), 36 pools, only 31 v2-instruction trades, and 3 tapes. It is evidence, not proof for every pool. The vault bound is the fail-closed guard against a tail that means something else.
+
+**Evidence.**
+- `core/test/gates/tails-pool-fee.test.ts`: every real non-zero vector passes and was refused before. Also covered: the bound at equal and one above, a missing vault, wrong lengths, the boundary slot, the curve, not covered, the collapse, and the hard rejects end to end.
+- `backtest/test/tail-parity.test.ts`: live and backtest give the same answer on every real trade, with and without the vault moved below the tail.
+- `core/test/facts/pool-chain.test.ts`: a non-zero-tail swap that does not reproduce, or does not chain, still goes stale.
+- Changed expectations in `tails.test.ts` and `tails-collapse.test.ts`: refused pool tails now carry a vault below the tail.
+- Mutants killed:
+  - the bound dropped;
+  - curve non-zero accepted;
+  - any length accepted;
+  - non-zero accepted in the boundary slot;
+  - a missing vault passed;
+  - the backtest dropping the vault.
+
+## Recording upload (RECORD-UPLOAD, `ops/host/files/usr/local/lib/zeroed/record-upload.mjs`, `packages/ops/src/watchdog/record.ts`)
+
+- **Runs as the worker's user, with no capability.** The recorder is `/var/lib/zeroed` (`StateDirectoryMode=0700`, `UMask=0077`, owner `zeroed-worker`). Root with an empty capability set cannot read those files or delete them. The other way, root with `CAP_DAC_OVERRIDE`, could write anywhere. The worker's user already holds every credential the uploader reads: the API keys and the bot token by `LoadCredentialEncrypted`, the heartbeat key by `ImportCredential`. So running as that user exposes nothing new. The unit has no `zeroed-signer` group, so the signer's socket stays out of reach. Writable: only `/var/lib/zeroed/recorder` and its own state folder. The ops-files test pins the user, the capability lines, the writable paths, the credentials and `ExecStart`.
+  - Consequences: the state file is `/var/lib/zeroed-record-upload/state.json`, not `/var/lib/zeroed-host`, and the lock is in the same folder. Alerts are raised by `zeroed-check` (root) from the uploader's status file, since that user cannot use `cred` or the host's alert folder. `RemoveIPC` is left out because it would remove the running worker's IPC objects (same user).
+- **Uploads a running boot's sealed files, deletes only an ended boot's.** A boot id is new per process start, and the crash work's goal is boots that run for days. "Ended boots only" would upload nothing while a boot runs, and at 5–7 GB a day against 7.3 GB free the disk fills during the first long boot. A sealed `.jsonl.zst` never changes after its rename, so reading it is safe: it must be listed in the manifest, 15 minutes old, and hash to the listed value.
+  - Deleting from a running boot is not safe with the worker as it is. `writeManifest` lists the boot's day folders and then reads every sealed file on each seal. A file deleted in between throws ENOENT inside `#seal`, called from `frame()`, and that crashes the worker. Disk relief during a long boot therefore needs a worker change first: the manifest built from the recorder's own seal records, or tolerating a vanished file. That is a follow-up, not this card.
+- **Fail-safe at each step.** Any error, timeout, mismatch or missing field keeps the local file. GitHub's digest is "generated at upload time, immutable" (GitHub changelog, 2025-06-03). If GitHub gives none, the asset stays but is not counted, and the file stays on the server.
+  - The watchdog route runs outside the Durable Object and never reads the body, so the free plan's 10 ms of CPU holds whatever the size. A day release's id is kept in the Durable Object (returned with the nonce, newest 64 days), so an upload never reads the release back: a near-full release's reply (900 assets, about 1.5 MB of JSON) took 4–7 ms to parse in a measurement here. A lost reply is resolved through the upload's 422 and a 100-per-page list by name. The body is piped natively behind `FixedLengthStream`, which sets the Content-Length GitHub requires. A local run of the locked wrangler showed it (2.3 MB, not chunked), and the ops e2e checks it.
+- **A file that vanishes mid-run is skipped, not a failure** (supervisor card, 2026-10-06). RECORD-BUDGET deletes the oldest recordings in the worker when the recorder passes 8 GiB or free disk falls under 3 GiB, uploaded or not. Before, a file gone between listing and hashing threw ENOENT out to `run()` and stopped the whole run, so the rest of the backlog waited and the run counted as failed. Now an ENOENT at any step of one file (lstat, hash, scan, the second hash, curl reading it) skips that file, logs "Vanished before upload", counts it in the status file and goes on; the state marks it so it is reported once. A walk of a boot folder that hits a vanished file marks the boot open for that run (uploads still go, no deletes), and a waiting file gone while the backlog is measured is left out of it. Any other error still stops the run. Deletes are unchanged: only ended boots, only after the sha256 read-back.
+- **The signed index, not the manifest copy, says what exists upstream** (data review of #244, B3). A boot's `manifest.json` is the recorder's own list and can still name a file RECORD-BUDGET deleted before it was sent. Its uploaded copy can never be replaced (another file under the name gets 409). So each day's `index-N.json` lists every confirmed file under `files` and every recorder file that vanished before upload under `vanished` (key, boot, path, the listed sha256 and bytes, when). Both are in the index hash, so a new vanish makes a new N; with none, the hash is the one saved before, so no day is indexed again for nothing. A boot's manifest goes up only once every frames and releases file it lists is confirmed or vanished, so its one copy is final, with RECORD-BUDGET's notes included. A file kept back (a credential hit, over 95 MB, a name taken) holds its boot's manifest back too. The `files kept back` alert covers it, and the index still embeds the manifest's content under `boots`. A replay reads the newest index: a file in `files` is there to download, a file in `vanished` never will be, and a listed file in neither is not up yet.
+- **A taken index number moves on** (review N3). After the state file is lost, numbering restarts at 1, and `index-1.json` already holds other bytes (409). The uploader takes the next N, up to 20 a run, instead of stalling the index and with it every delete.
+- **No typed text in the uploaded journal** (owner's rule: recordings never carry personal data; review N6). A `command_refused` line carries the first 32 characters of a refused Telegram command, text a person typed. In the uploaded day slice that reason becomes `command [redacted] refused`. An unreadable line that names a refused command is left out, and every other line goes byte for byte. The journal on the server is unchanged, and `command_refused` is not replayed (`parity.ts` `NOT_REPLAYED`).
+- **Sandbox narrowed** (ops review of #244, B1 and B2). `zeroed-worker` is created with `--groups zeroed-signer`, and systemd applies a `User=` unit's /etc/group groups, so the unit could reach the signer's socket after all. It now has `InaccessiblePaths=-/run/zeroed-signer -/var/lib/zeroed-signer`. `ReadWritePaths=/var/lib/zeroed/recorder` left the ledger and the worker's other state readable (read-only, but the same user). It is replaced by `TemporaryFileSystem=/var/lib/zeroed:ro`, `BindPaths=/var/lib/zeroed/recorder` and `BindReadOnlyPaths=-/var/lib/zeroed/journal.jsonl`, the only two paths the uploader reads there. The ops-files test pins all four lines, and e2e 9c checks them on the unit and runs the uploader under them.
+- **Bounded state** (ops review B3). `state.files` grew by one record per file forever, and the unit's 48 MB heap ran out at roughly 35–45k records (the reviewer's measurement), after which every run crashed and nothing was deleted. Now a boot whose every item is finished (confirmed upstream and gone from the server, or vanished) goes into `done_boots` and is never read again. `done_boots` drops a boot once its folder is gone. A day whose records are all finished, whose boots are all done, whose standing index hash equals its content, and which ended 2 days ago moves its records to `days/<day>.json`. `index()` merges that file back in only if the day ever gets a new record, so a later index never drops an archived file. A frames or releases file counts as finished only once it is gone from the server, so with deletes off nothing is archived or marked done and switching deletes on later still finds every file. Evidence: 100 days of 1,000 confirmed and deleted files run under `--max-old-space-size=48` with `state.json` under 200 kB; the code before this dies with "JavaScript heap out of memory" in the same test.
+- **Known gap:** `raw-NNN` and `delays-NNN` are never uploaded or deleted. If they are most of the daily growth, the disk still fills. Their share has to be measured on the server (`du` by prefix) before this is counted as the disk fix.
+
+## H16 refusals counted by input and gate in the daily summary (H16-WHY, `engine/strategy.ts` `#evaluate`, `run/summary.ts`, `ops/src/watchdog/summary.ts`)
+
+- **2026-10-07 · Why (supervisor card H16-WHY).** Live, most graduates are refused as H16 `missing` (50 of 64 refusals, 13:01Z–13:14Z on 2026-10-06; 636 of 851 earlier that day). The summary counts only gate and code, and H16 `missing` has at least six sources (evidence reads, stream heads, the pool's mayhem flag, H17's unread pool fields, SOL/USD, the third-party cross-check). No agent can read the server's journal, so the fix cannot be chosen from the summary as it was.
+- **What.**
+  - A hard reject's journaled `gate_reasons` now carry each reason's `input` (a `FactName`) and `neededBy` (H1–H17) when the reason has them. Before this they were dropped at the journal (`#fail` kept only gate, code and detail). Additive: every reader takes gate and code only (`runner/quota.ts` `rejections`, `run/api.ts` `servedReason`, the summary), and live and replay map them through the same `journalFields`, so parity still compares like with like.
+  - The summary folds, for each candidate's last refusal, every distinct H16 reason in it as code, input and gate (each name kept only when it fits its pattern, else null; a line from before this has none; at most 8 per candidate). Every one, not only the first: a stage evaluates all its gates and journals their reasons in table order (H1–H4, H6, H8, H16, H5, H17 in stage 2), so the first H16 reason would hide H5's and H17's pool reasons behind H16's own cross-check. `candidates.h16_by_input` counts refused candidates by those reasons, most frequent first, at most `SUMMARY_TOP_REASONS`; `candidates.h16_other` sums the rest. A candidate counts once under each of its reasons, so the rows can add up to more than `refused`. Counts and fixed names only: no mint, no detail text.
+  - Both keys or neither, and only on a day with an H16 refusal: a day without one keeps the older shape. The watchdog accepts them only in exactly that shape; the forbidden-pattern guard still runs over the whole body.
+  - A watchdog from before this refuses the keys. The worker then sends the day again without them, then falls back as before (a deploy is not atomic).
+- **Evidence (each fails on the code before this change).** `facts-stages.test.ts`: a live stage-2 and stage-3 H16 reject journals `input` (`mint`, `holders`) and `neededBy`. `summary.test.ts` (worker): counts by every distinct H16 reason of the last refusal, also after another gate's reason (killed mutants: first reason only; no de-duplication); null for a line without the names or with free text in them; a later other refusal or an entry drops the H16 count; ties in a fixed order; summary.json round-trip; top 10 and the rest summed (the totals add up to `refused`); a day without H16 keeps the older shape; an older watchdog gets the day again without the keys. `summary.test.ts` (ops): accepted with both keys; refused with one key, 11 rows, a negative or fractional count, an extra field, a bad name, or a planted secret in any of its three strings.
+
+## A cut creates log is fetched so H14 can judge across it (H16-WHY C, `run/worker.ts` `#cutCreateLog`, `CUT_CREATE_FETCHES_PER_DAY`, `CUT_CREATE_RETRY_MS`)
+
+- **2026-10-07 · Why (S1, from REPLAY-1000, verified in code).** H14 refuses every coin (H16 `not-covered`, input `coverage`, needed by H14) while any creates log inside its look-back was cut or undecodable and its transaction was never released (`hard.ts` `lostCreate`; the deployer index clears a hole only when the fetched transaction's `ev:` events are released). The look-back is `max(deployerRugLookbackDays, 1)` days, 14 in the trial policy; under the S0 diagnostic it is the current unbroken creates coverage instead. Production runs with `tradeStreams: false` (`main.ts`), so no rugs watch fetched these, and the creates watch has no `fetch`. On chain, 41 of 600 sampled 6 Oct creates (6.8%) were cut ("Log truncated", a create plus buys in one transaction), about 2,000 a day (S1's figures).
+- **What.**
+  - The worker tracks the creates watches (`coverage:creates:start` vias) as it tracks rug watches. A cut or undecodable log on one has its transaction fetched (`fetchTx(sig, 'cut-create')`, P2, the existing fetcher, which itself retries "not found" 3 times a second apart). One chain of tries per signature: a cut log names its signature on each of its events.
+  - **Retries (review B1).** A try that fails (not found, an error, shed or expired at P2, undecodable) while the hole is still there is asked again after 2, 4, 8 and 16 minutes: 5 tries over about 30 minutes. That covers what outlasts the fetcher's own second-scale retries: an RPC node or provider down for minutes, or a P2 queue full while the feeds catch up. Doubling keeps a transaction that never comes at 5 tries.
+  - **Boot (review B1).** The holes are saved and restored with the index. Once the seed or restore is applied, every restored hole on a creates watch inside the look-back is asked for again, with the same retries.
+  - **Cap.** First tries, retries and boot re-asks all count against `CUT_CREATE_FETCHES_PER_DAY` = 3,000 per UTC day per process. The day only moves forward: a clock stepped back keeps the later day's count.
+  - **Fail-closed.** The ask clears nothing; only the released transaction does. Until then the hole stays. After the last try, or past the cap, it stays, the worker logs it, and H14 keeps refusing across it for the rest of the look-back. That shows in the summary's breakdown as H16 `not-covered` / `coverage` / `H14`. No rugs gap is written for a creates watch, which is a different stream.
+- **Cost, bounded.** Each try is one Helius `getTransaction` (1 credit), up to 4 with the fetcher's own retries. Nearly all cut logs should be found at the first try, so about 2,000–3,000 credits a day (about 60–90k of Helius's 1M a month). The cap holds tries to 3,000 a day, so at most 12,000 credits a day. The count is in memory: a restart starts a new count, so the bound is per process-day.
+- **What still leaves H14 refusing.** A transaction no provider returns in 5 tries; tries past the day's cap (beyond about 3,000 tries, for example during a long outage); and an undecodable transaction (DEC-1 cannot read it, so it never yields `ev:` events). Each holds H14 not covered until the hole leaves the look-back: up to 14 days on the full rule. H14 is open only while every cut creates log inside the look-back has been read. The live breakdown will show whether that holds; if it does not, the next step is a wider retry window or a second decoder path, not a looser gate.
+- **Evidence.** `worker-contract.test.ts` "H16-WHY C", 7 tests. Three fail on the code before this change (a52368e8): retried then cleared; spent retries; boot re-ask. The others pin behaviour that was already right.
+  - A cut creates log is fetched as `cut-create`; while the fetch is out the hole stays (`lostCreate` names it); the released transaction clears it.
+  - Two failed tries, then found at the third (at +2 and +6 minutes): the released transaction clears it.
+  - All 5 tries fail: the hole stays and no sixth try is made.
+  - A hole restored at boot is asked for again.
+  - A cut log with several events naming one signature is fetched once (the worker's own guard).
+  - The cap: none past 3,000, then the next UTC day starts a new count; a clock stepped back a day does not reset a spent day.
+  - Mutants killed: no fetch; clearing without the transaction (the deployer index clearing on the cut log's own `log:` id); no cap; no retry; no boot re-ask; no once-per-signature guard; no day roll; a day reset on any change rather than only forward.
+
+## A hole in a pool's trade stream is healed from its fetched transaction (TRADE-GAP-HEAL, `facts/producer.ts` `#heal`, `run/worker.ts` `#cutPoolLog`)
+
+- **2026-10-07 · Why (#260 part B finding 6, REPLAY-1000).**
+  - A cut ("Log truncated") or undecodable log on a pool watch is a hole in that pool's trade stream.
+  - The candles' stream is then not gap-free since the pool opened (`gapFreeSince`), so H11 refuses the coin (H16 `gap`) for the rest of its window. Nothing healed it.
+  - On REPLAY's sample of 6 Oct graduates, 29 of 47 coins failed this way.
+- **Measured (mainnet, keyless public RPCs, 7 Oct about 3:50 AM Melbourne).**
+  - Method: 7 graduates that migrated 6 Oct 08:39–09:30 UTC, window from migration to +6 h (4 h candidate window + 2 h hold). A random 400 of each pool's transactions in the window, read with `getTransaction`.
+  - What counts as a hole: a successful transaction whose logs DEC-1 reports cut or cannot read (canonical.ts's rule; a failed one makes none).
+  - Estimated holes per coin (rate × the pool's transactions in the window): 742, 264, 17, 16, 1, 0, 0.
+  - Mean about 150, median about 16, p90 about 460, max about 760. No undecodable logs were seen.
+  - The coins differ widely (one had 19% of its transactions cut). A single hit in 400 has a 95% interval of about 0.006–1.4%, so these are orders of magnitude only.
+  - About 1,280 coins migrate a day (31 of 40 sampled migration-authority transactions were migrations; 711 succeeded in 10.35 h; approximate). Each becomes a candidate whose pool is watched.
+- **Credit math (Helius free plan: 1M credits a month, and the account is near its end; owner action pending).**
+  - Healing every hole: about 1,280 × 150 ≈ 190k `getTransaction` a day, about 5.8M credits a month. Not affordable.
+  - A heal is all or nothing per coin: H11 needs no hole since the pool opened. So the spend goes only where a heal can land:
+    - **Candidates only.** A candidate's pool is fetched for (`watchedPools` gives it its migration slot). A held position's chain re-bases on its next swap anyway, and a tail's candles are never read: their holes are told not found and spend nothing.
+    - **`CUT_TRADE_HOLES_PER_POOL` = 30.** Past it, the pool's later holes are told not found at once. With 30, 5 of the 7 measured coins are healable.
+    - **`CUT_TRADE_FETCHES_PER_DAY` = 3,000 tries a UTC day per process.** First tries and retries count; the day only moves forward. This is the same as the creates cap (H16-WHY C).
+  - Each try is one Helius `getTransaction` (1 credit), up to 4 with the fetcher's own quick retries. So the cap is 3,000–12,000 credits a day, about 90k–360k a month at most.
+  - Expected demand under the pool limit is about 1,280 × 13 ≈ 17k tries a day. The cap binds and heals roughly the first 200 candidates of each UTC day.
+  - Raising it is the owner's call once credits are settled (more credits, or a paid plan).
+- **The caps hold across restarts (review B1).**
+  - The day's counts of both capped fetches (this card's and H16-WHY C's cut creates logs) are saved at each try in `fetch-caps.json` (`{ day, cutCreate, cutTrade }`, the UTC day number), with the worker's other state files, before the fetch is made.
+  - A restart or a crash loop therefore never starts a day's caps from zero, which would let them burn credits toward the Helius halt that also refuses P1 held-position reads.
+  - A new UTC day starts both counts at zero, and the day only moves forward.
+  - Fail safe:
+    - a file that cannot be read counts the day as spent for both;
+    - a save that fails refuses that fetch.
+- **Exits and held positions first.**
+  - Tries are asked at P3 (`main.ts`), the lowest class. The Helius scheduler keeps its floors for P0 and P1 every second, and sheds P3 first when a queue is full.
+  - The daily cap bounds the month, so these reads can never take the credits an exit or a held position's read needs.
+- **How it works.**
+  - **Worker.** It learns the pool watches from `coverage:trades:<pool>:start` vias. A cut or undecodable log on one is fetched once per signature through the shared `TxFetcher` (`fetchTx(sig, 'cut-trade')`).
+    - A failed try is asked again after 2, 4, 8 and 16 minutes while the pool is still a candidate's, as for creates.
+    - When the fetch settles, the worker puts the outcome on the feed: `hole-fetch:<via>` with `{ signature, found }`.
+    - A found transaction's events are already on the feed before the outcome, so the outcome is released after them.
+  - **Producer.**
+    - Each candle book keeps a mark: its state (and its pool chain's) before the first swap of its newest trade slot, and every swap it took since. A hole at that slot or later starts a heal from the mark and keeps every later swap.
+    - The hole's own swaps from its fetched transaction are held back, never applied out of order. A late fetched copy of a hole that cannot be healed is dropped, so it never makes the chain stale.
+    - Once every hole of the pool has a found outcome, the heal puts the mark's swaps and the holes' swaps in exact chain order. It works slot by slot: each next swap is the one whose pre-trade base and effective quote equal the reserves so far, starting from the mark's last swap, and replaying it (`swapEventState`) must reproduce its event.
+    - Only when every swap chains does it rebuild the book from the mark in that order, take the holes out of the stream's gaps, and release the candles and stream facts. The pool's chain is also set to the end, when it was clean at the mark, is the same chain (no read since) and its stream is covered.
+- **Fail closed.**
+  - The hole stays for good when:
+    - the outcome is not found, or the fetch was capped or the pool was not a candidate's (both say not found);
+    - no outcome comes within 45 minutes (`HEAL_WAIT_MS`), or a heal holds more than 20,000 swaps (`HEAL_TAPE_MAX`);
+    - the hole's slot is before the mark (a swap was released late), or the mark has no swap to anchor on (a hole before the pool's first swap);
+    - the hole's transaction holds another PumpSwap event (a deposit, an unnamed one), or a pool transaction other than a swap was seen since the mark;
+    - any swap does not chain, two could come next, or one does not reproduce.
+  - Until the heal, the gap and H11's refusal stand.
+  - The heal state is in memory: a restart drops pending heals and their holes stay (fail closed).
+- **Known limits (review N1–N3).**
+  - **N1.** One transaction cut on two pool watches is asked for once. The live feed already keeps one copy of a log notification per signature, whatever the watch (`dedupKey`), so only the first watch's hole is ever released.
+  - **N2.** `HOLE_SIGS_KEEP` (20,000 hole signatures) covers about 2.5 hours at the measured rate, well above the 45-minute wait. A hole forgotten early only lets its late fetched swaps apply as they arrive, which can only make the chain stale; they also stay in the heal's tape.
+  - **N3.** There is no cap on the swaps held by all heals together. Each heal holds at most 20,000, and only pools with a pending hole hold any, normally for seconds. A starved P3 queue holds them up to 45 minutes.
+- **No lookahead, and parity.**
+  - Healed facts are released at the outcome's moment, from events already released.
+  - The backtest's dataset holds full transactions (events from inner instructions, never logs), so it has no holes. Live after a heal reaches the same facts as the backtest.
+  - Test: the same tape ends at the same value for every fact key (receipt times aside), with the same H11 and H12 verdicts, in three forms:
+    - (a) with a cut log healed by its fetch;
+    - (b) complete from the start, as log lines;
+    - (c) complete as the backtest's full-transaction events (review N1).
+  - Recorded live data replays the outcome event, so a replay heals the same way. A TEST-1 recording test of a heal was not added: the harness's sessions take their candles as facts, so no decision depends on a heal there (BT review N3, optional).
+- **A live-only veto where no heal lands (BT parity review B1, 2026-10-07).**
+  - Only a hole that heals reaches the backtest's facts. In each of these cases live keeps H11's refusal (H16 `gap`, input `stream`) where the backtest, which has no holes, can enter:
+    - (a) a heal pending: its transaction not yet fetched, up to 45 minutes (`HEAL_WAIT_MS`);
+    - (b) the transaction not found in 5 tries;
+    - (c) a pool past `CUT_TRADE_HOLES_PER_POOL` (30) holes (2 of the 7 measured coins);
+    - (d) the day's `CUT_TRADE_FETCHES_PER_DAY` cap spent (about 200 of about 1,280 candidates a day are healed);
+    - (e) a restart while a heal is pending (heal state is in memory);
+    - (f) a hole whose transaction holds another PumpSwap event, or a non-swap pool transaction seen since the mark, and every other fail-closed case above.
+  - It only removes trades, never adds one, so it is a **live-only veto** (ARCHITECTURE §16.3):
+    - G3 counts it in the veto rate v and scores its vetoed candidates for Δ;
+    - the backtest report's bias note names it.
+  - The gates tag no live-only veto in live mode. `live-only-not-applied` (H15, H16 cross-checks) is a backtest-mode note, and the backtest has no hole to note, so no gate code changes here.
+  - To count this veto in G3, a hole-caused `gap` must be told apart from a feed gap. That, and modelling the same holes and heal rules in the backtest from the dataset's `logMessages` ("Log truncated"), is the follow-up card BT-HEAL-MODEL (S1), needed before the G2/G3 evidence.
+- **Evidence (the heal and cap tests fail on the code before this change).**
+  - `core test/facts/trade-heal.test.ts`:
+    - heal from a cut log and from an undecodable log;
+    - a log cut after its first swap (the first counts once);
+    - same-slot swaps released out of order put back in chain order;
+    - two holes heal only together;
+    - not found, pending, and an outcome after the wait keep the gap;
+    - no swap in the fetched transaction, a swap that does not chain, a swap missed outside the hole, a deposit in the hole's transaction, and a hole before the first swap all keep the gap;
+    - the parity test.
+  - `worker test/trade-heal.test.ts`:
+    - fetched once as `cut-trade` with a found outcome;
+    - retried after its waits;
+    - all tries fail gives not found once;
+    - a pool not a candidate's fetches nothing;
+    - the per-pool limit, the day's cap and the next day's count;
+    - a non-pool watch is left alone.
+  - Mutants killed:
+    - clearing the gap without the transaction (on a not-found outcome; before the chain check);
+    - skipping the continuity check;
+    - no daily cap; no per-pool limit; fetching for pools that are not a candidate's;
+    - no retry; no found outcome.
+  - After review (each test fails without its guard):
+    - a deposit after the last swap blocks the heal (`h.other`);
+    - a chain stale at the mark stays stale (`!mc.clean`);
+    - two swaps that could come next give no order;
+    - more than `HEAL_TAPE_MAX` swaps lets the heal go;
+    - a hole released behind the mark is never healed;
+    - both caps hold across a restart, and a new UTC day resets them;
+    - an unreadable `fetch-caps.json` counts the day as spent;
+    - a count that cannot be saved refuses the fetch (review N6);
+    - the backtest-shape tape kills mutant C, which moves only fetched-transaction swaps one candle later.
+
+## Server paused on the stand-in until every blocker is fixed (PAUSE, `ops/host-config.json` `"worker": "stub"`)
+
+- **Owner, 2026-10-07 about 6:20 AM Melbourne:** "Keep refining bot before u update server. Or its better no server first until u fix the bot all issues. To stop wasting tokens. You can pause server, start server again when all has been fixed."
+- **What changes:** the release's `ops/host-config.json` names `"worker": "stub"`, so `worker_entry` (`logic.sh`) starts the host's stand-in (`/opt/zeroed/stub/worker.mjs`) instead of the release's worker. The stand-in makes no Helius, Alchemy or Jupiter calls. It keeps the heartbeat, the ledger file and the health route (`git_sha`, `mode: paper`), so the update gate still switches and `worker-smoke` passes (it skips the stand-in, `worker-smoke:19`).
+- **What stops while paused:** paper decisions, the recorder, the 30-minute summaries to the data repository, and the no-crash clock. The upload timer still runs, finds nothing new, deletes nothing extra and writes its status each run, so zeroed-check's "record-upload-stale" alert does not fire (`record-upload.mjs` `status()`, `logic.sh` `record_alerts`).
+- **Test while paused:** the ops end-to-end test (`ops/test/e2e.sh`, section 10b2) still runs the release's own worker with this commit's shakedown settings, by setting `"release"` in its test copy only when this commit says `"stub"`. Without that, the pause would also stop the end-to-end proof of every blocker fix.
+- **Why:** the worker spent about 80k Helius credits an hour by its own count (2026-10-07 summary) while no coin could pass the hard rejects, and each restart's seed can take up to `SEED_CREDIT_CAP` (150k). The data was paid for and could not produce a trade.
+- **Resume:** set `"worker": "release"` again, in the same commit that carries the last blocker fix. The two pinning tests (`ops-files.test.ts`, `host-logic.test.ts`) flip back with it.

@@ -24,7 +24,7 @@ const at = (slot: bigint): number => T0 + Number(slot - READ_SLOT) * 400;
 let n = 0;
 
 /** A confirmed BuyEvent/SellEvent log line on the pool, its amounts from the exact math on `pre`. */
-const swap = (side: 'buy' | 'sell', pre: PoolState, base: bigint, slot: bigint, o: { commitment?: 'confirmed' | null; tamper?: Record<string, bigint>; arrives?: bigint } = {}): { event: MarketEvent; after: PoolState } => {
+const swap = (side: 'buy' | 'sell', pre: PoolState, base: bigint, slot: bigint, o: { commitment?: 'confirmed' | null; tamper?: Record<string, bigint>; arrives?: bigint; tail?: string } = {}): { event: MarketEvent; after: PoolState } => {
   const q = side === 'buy' ? poolBuyExactBase(pre, base, ctx) : poolSell(pre, base, ctx);
   if (!q.ok) throw new Error(q.reason);
   const t = q.trade;
@@ -44,7 +44,7 @@ const swap = (side: 'buy' | 'sell', pre: PoolState, base: bigint, slot: bigint, 
       kind: 'market', id: `log:sig${k}${commitment ? `:${commitment}` : ''}:00000`, moment: { slot: o.arrives ?? slot, txIndex: 2 ** 32 + k, ixIndex: 2 ** 36, receivedAt: at(o.arrives ?? slot) },
       key: `logs:pump_amm:${side === 'buy' ? 'BuyEvent' : 'SellEvent'}:${POOL}`,
       value: {
-        event: { program: 'pump_amm', name: side === 'buy' ? 'BuyEvent' : 'SellEvent', data: { ...data, ...o.tamper }, logIndex: 0 }, signature: `sig${k}`, txSlot: slot,
+        event: { program: 'pump_amm', name: side === 'buy' ? 'BuyEvent' : 'SellEvent', data: { ...data, ...o.tamper }, logIndex: 0, ...(o.tail === undefined ? {} : { trailing: o.tail.length / 2, extra: o.tail }) }, signature: `sig${k}`, txSlot: slot,
         truncated: false, via: `logs:${POOL}`, ...(commitment ? { commitment } : {}), source: 'helius', backfilled: false, seq: k,
       },
     },
@@ -144,6 +144,24 @@ describe('pool state from the swap stream (POS-1)', () => {
     const lpFee = ((s.event.value as { event: { data: { lpFee: bigint } } }).event.data.lpFee) + 1n;
     world.push(swap('buy', state, 1_000_000n, READ_SLOT + 2n, { tamper: { lpFee } }).event);
     expect((world.last(poolKey(MINT)) as { stale: string }).stale).toMatch(/does not reproduce its event: lp fee/);
+  });
+
+  it('H5-POOL-TAILS: a swap with a non-zero creator-fee tail is applied when it reproduces, and still marks the state stale when it does not', () => {
+    const TAIL = '384a120000000000';
+    const ok = base();
+    const s = swap('buy', ok.state, 1_000_000n, READ_SLOT + 2n, { tail: TAIL });
+    ok.world.push(s.event);
+    expect(facts(ok.world).at(-1)!.obs).toMatchObject({ slot: READ_SLOT + 2n, quality: [] });
+    expect((ok.world.last(poolKey(MINT)) as { stale?: string }).stale).toBeUndefined();
+    const bad = base();
+    const lpFee = ((s.event.value as { event: { data: { lpFee: bigint } } }).event.data.lpFee) + 1n;
+    bad.world.push(swap('buy', bad.state, 1_000_000n, READ_SLOT + 2n, { tail: TAIL, tamper: { lpFee } }).event);
+    expect((bad.world.last(poolKey(MINT)) as { stale: string }).stale).toMatch(/does not reproduce its event: lp fee/);
+    const gap = base();
+    const s1 = swap('buy', gap.state, 1_000_000n, READ_SLOT + 2n, { tail: TAIL });
+    const missed = swap('buy', s1.after, 3_000_000n, READ_SLOT + 3n, { tail: TAIL });
+    gap.world.push(s1.event, swap('sell', missed.after, 1_000_000n, READ_SLOT + 4n, { tail: TAIL }).event);
+    expect((gap.world.last(poolKey(MINT)) as { stale: string }).stale).toMatch(/^reserves mismatch/);
   });
 
   it('a stream that started after the read, or no stream at all, gives no swap state', () => {

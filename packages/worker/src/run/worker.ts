@@ -22,12 +22,12 @@ import { EXIT, LOOKUP_BOUNDS_MS, STATE_FILES, type FeedHealth, type Health, type
 import type { DryRunRecord } from '../dryrun/index.ts';
 import { CANDIDATE_RESTORED, NO_UNIVERSE, type SavedGraduates, type SavedTail, resolveUniverse, sellOnlyReason } from '../engine/strategy.ts';
 import { RAW } from '../../../core/src/facts/raw.ts';
-import { GRADUATES_SEED_KEY } from '../../../core/src/facts/producer.ts';
+import { GRADUATES_SEED_KEY, HOLE_FETCH_PREFIX } from '../../../core/src/facts/producer.ts';
 import { ACCOUNT_KEY, HALT_KEY, LiveStrategy, unwrap, POOL_PREFIX, RESTORE_KEY, SEED_KEY, SEEDING, SHORTLIST, SNAPSHOT_PREFIX, SOL_PRICE_KEY, type SnapshotFact, type CarryFact, CARRY_PREFIX, type MarketChoice, chooseMarket, parseCarryFact, type StrategyConfig, type StrategyDeps, type SavedStateRef, TRIP_PREFIX, parseSnapshotFact, snapshotKey, snapshotWins } from '../engine/strategy.ts';
 import { SLOT_MS, watchTimingProblem } from './config.ts';
 import { PositionWatch, type WatchRead } from './watch.ts';
 import { DEFAULT_LIVE_FEED, type Frame, HELIUS_EXHAUSTED, type HttpClient, LiveFeed, type Release, seqId } from '../providers/index.ts';
-import type { Timers } from '../scheduler/timers.ts';
+import type { TimerHandle, Timers } from '../scheduler/timers.ts';
 import { PaperAccount, type PaperLegs, accountFile } from './account.ts';
 import type { WorkerConfig } from './config.ts';
 import { Desk, FILL_RATE_UNKNOWN, journaledFillKeys, lineRate, lineReasons, openIntents } from './desk.ts';
@@ -54,7 +54,8 @@ import { CappedMap } from './capped-map.ts';
 import { jsonText } from './json.ts';
 import { Journal } from './journal.ts';
 import { type PaperMarket, type PaperState, PaperWorld, type SimLeg } from './paper-world.ts';
-import { Recorder, sealLeftovers } from './recorder.ts';
+import { Recorder, SAVED_STATES, notePruned, sealLeftovers } from './recorder.ts';
+import { DISK_PRUNE_FREE_BYTES, PRUNE_EVERY_MS, RECORDER_MAX_BYTES, prunedPaths, pruneRecordings, statfsFree } from './recorder-budget.ts';
 import { entryPrice, openPositionsHealth } from './open-positions.ts';
 import { type RiskInput, evaluateExit, riskSnapshot } from '../../../core/src/risk/index.ts';
 import { latchable, markSettings, riskAccount } from '../engine/marks.ts';
@@ -68,6 +69,35 @@ export { PERSIST_FILE } from '../persist/index.ts';
 export const DOWNTIME_CREDIT_CAP = 3_000;
 /** RESTART-KEEP, COMPLETION-READ: transactions read before a migration to find its curve's completion. */
 export const COMPLETION_READS = 5;
+/**
+ * H16-WHY C: the most cut-creates-log fetches (first tries, retries and boot re-asks together) in one UTC day, per
+ * process. About 2,000 cut logs a day are expected (S1: 41 of 600 sampled creates on 6 Oct were cut, at about 30,000
+ * creates a day), nearly all found at the first try; each try costs one Helius getTransaction (1 credit), up to 4 with
+ * the fetcher's own quick retries. Past the cap the hole stays and H14 refuses (fail closed).
+ */
+export const CUT_CREATE_FETCHES_PER_DAY = 3_000;
+/**
+ * H16-WHY C (review B1): the waits before asking again for a cut creates log whose fetch failed (not found, an error,
+ * shed or expired at P2, undecodable): 2, 4, 8 and 16 minutes, so 5 tries over about 30 minutes. The fetcher already
+ * retries "not found" 3 times a second apart, so these cover what outlasts that: an RPC node or a provider down for
+ * minutes, a P2 queue full while the feeds catch up. Doubling keeps the cost of a transaction that never comes to 5
+ * tries. One hole left blocks H14 for its whole look-back (14 days), so it is worth these few credits.
+ */
+export const CUT_CREATE_RETRY_MS: readonly number[] = [120_000, 240_000, 480_000, 960_000];
+/**
+ * TRADE-GAP-HEAL: the most cut-pool-trade-log fetches (first tries and retries together) in one UTC day, per process.
+ * Each try is one Helius getTransaction at P3 (1 credit, up to 4 with the fetcher's own quick retries), below every
+ * position and exit read. Past the cap the hole stays and H11 refuses that coin (fail closed). Sized in
+ * docs/DECISIONS.md "TRADE-GAP-HEAL" from the mainnet measurement against the Helius free plan.
+ */
+export const CUT_TRADE_FETCHES_PER_DAY = 3_000;
+/**
+ * TRADE-GAP-HEAL: the most holes one pool's trade stream has fetched. A heal needs every hole of the pool's stream, so
+ * a pool past this is refused by H11 anyway: its later holes are told not found at once and spend nothing.
+ */
+export const CUT_TRADE_HOLES_PER_POOL = 30;
+/** TRADE-GAP-HEAL: pool watches remembered (about 1,300 a day are watched; the oldest are forgotten first). */
+const TRADE_VIAS_KEPT = 10_000;
 /** COMPLETION-READ: the credits one completion read reserves: 1 signatures page and up to COMPLETION_READS transactions. */
 export const COMPLETION_CREDITS = callCost('helius', 'getSignaturesForAddress') + COMPLETION_READS * callCost('helius', 'getTransaction');
 const MIGRATION_TX_PREFIX = 'pump:CompletePumpAmmMigrationEvent:';
@@ -77,9 +107,8 @@ export const CLAMP_LOG_MS = 10_000;
 /** SAVE-ASOF: the log line for a save whose largest clamp is over CLAMP_LOG_MS, else null. */
 export const clampNote = (clamp: { readonly count: number; readonly maxMs: number }): string | null =>
   clamp.maxMs > CLAMP_LOG_MS ? `Saved state: ${clamp.count} times dated after the save's moment were saved as at it, the latest ${(clamp.maxMs / 1000).toFixed(1)} s after.` : null;
-/** STATE-DEDUPE: the recorder folder holding each distinct saved state once, packed, named by the sha256 of its plain bytes. */
-export const SAVED_STATES = 'saved-state';
-import { type Control, NO_CONTROL, type Restart, StateFile, controlFile, exitsFile, seedsFile, exposedFile, NO_EXPOSED, exitKind, restartsAfterBoot, restartsFile } from './state.ts';
+export { SAVED_STATES } from './recorder.ts';
+import { type Control, type FetchCaps, NO_CONTROL, type Restart, StateFile, controlFile, exitsFile, fetchCapsFile, seedsFile, exposedFile, NO_EXPOSED, exitKind, restartsAfterBoot, restartsFile } from './state.ts';
 import { LOG_CREATE_PREFIX, type PoolFact, S0_DIAGNOSTIC_PARTS, TX_CREATE_PREFIX, parsePool } from '../../../core/src/gates/index.ts';
 import type { ExecStats } from '../../../core/src/facts/raw.ts';
 
@@ -155,7 +184,7 @@ export interface WorkerDeps {
    * Fetches a transaction at confirmed and puts it on the feed; resolves true when it was found. Used for a shortlisted
    * mint's create (item 9: live H9, H12–H14 need the confirmed create) and for a cut trade log on a rug-covered stream.
    */
-  readonly fetchTx: (signature: string, why: 'create' | 'cut-log' | 'restore') => Promise<boolean>;
+  readonly fetchTx: (signature: string, why: 'create' | 'cut-log' | 'cut-create' | 'cut-trade' | 'restore') => Promise<boolean>;
   /**
    * RESTART-KEEP: signature reads on SEED-1's RPC, charged to the fill budget: the migrations of a restart's downtime,
    * and (COMPLETION-READ) each fetched migration's curve completion. Without it they are not read: coins that migrated
@@ -165,6 +194,9 @@ export interface WorkerDeps {
   readonly restartReads?: { readonly rpc: SeedRpc; readonly budget: { remaining(nowMs: number): number; spend(credits: number, nowMs: number): void; refund(credits: number, nowMs: number): void } };
   /** Test seam: the pack of the recording's saved-state copy (persist's `packFile` unless a test holds it open). */
   readonly pack?: typeof packFile;
+  /** Test seams (RECORD-BUDGET): the recorder disk's free bytes (statfs unless a test fakes it), and the rotation size. */
+  readonly diskFree?: (root: string) => number;
+  readonly recorderRotateBytes?: number;
   /**
    * CREATE-AFTER-RESTART: looks up a shortlisted mint's create that neither this process nor the saved store holds
    * (sources.ts `findCreate`, under the fills' daily budget). Without it such a create waits, as before.
@@ -448,6 +480,25 @@ export class Worker {
   readonly #createLookups = new Set<string>();
   /** Watches that carry rug coverage (`coverage:rugs:start` vias): a cut log on one is a gap until its transaction is read. */
   #rugVias = new Set<string>();
+  /**
+   * H16-WHY C: watches that carry the creates stream (`coverage:creates:start` vias). A cut log on one may hide a create,
+   * and H14 refuses every coin while it is a hole (DeployerIndex.lostCreate); its transaction is fetched to close it.
+   */
+  #createVias = new Set<string>();
+  /** Retries waiting to ask again, for cut creates logs and cut pool-trade logs (cleared at a stop). */
+  readonly #cutCreateTimers = new Set<TimerHandle>();
+  /** TRADE-GAP-HEAL: the pool watches (`coverage:trades:<pool>:start` vias): a cut log on one is a hole in its trade stream. */
+  readonly #tradeVias = new CappedMap<string, true>(TRADE_VIAS_KEPT);
+  /**
+   * The day's counts of both capped fetches, saved at each try (`fetch-caps.json`, review B1), so a restart keeps them.
+   * A file that cannot be read or written counts the day as spent (fail safe on credits).
+   */
+  #fetchCaps: { day: number; cutCreate: number; cutTrade: number } = { day: -1, cutCreate: 0, cutTrade: 0 };
+  #fetchCapsFile: StateFile<FetchCaps> | null = null;
+  /** Signatures of cut pool-trade logs already asked for (a cut log names its signature on each of its events). */
+  readonly #cutTradeSeen = new CappedMap<string, true>(CUT_TRADE_FETCHES_PER_DAY);
+  /** Holes asked for per pool watch (bounded by CUT_TRADE_HOLES_PER_POOL; the oldest watches are forgotten first). */
+  readonly #cutTradePerPool = new CappedMap<string, number>(TRADE_VIAS_KEPT);
   #intentAt = new Map<string, number>();
   /** Entries start halted: nothing enters before the first feed check says otherwise. */
   #halted: readonly string[] = ['starting'];
@@ -482,6 +533,14 @@ export class Worker {
   #unpacked: { readonly path: string; readonly sha256: string; readonly bytes: number } | null = null;
   /** The pack of the recording's saved-state copy, while it runs beside the start (a stop waits for it). */
   #packing: Promise<void> | null = null;
+  /** RECORD-BUDGET: true while the saved-state copy is being packed. */
+  #packRunning = false;
+  /** RECORD-BUDGET: the last pass's moment, the last alert's, and the problem /health reports while it holds. */
+  #pruneAt = Number.NEGATIVE_INFINITY;
+  #pruneAlertAt = Number.NEGATIVE_INFINITY;
+  #budgetFault: string | null = null;
+  /** RECORD-BUDGET: the start pass's journal lines, written once the start line is (it goes first). */
+  readonly #pruneLines: (readonly [JournalKind, Record<string, unknown>])[] = [];
   #lastSaveMs = 0;
   #saveRefused = false;
   #beatSeq = 0;
@@ -588,10 +647,14 @@ export class Worker {
     const seed = `paper:${this.#boot}`;
 
     const recRoot = join(c.stateDir, STATE_FILES.recorder);
+    // RECORD-BUDGET: room on the disk before anything at start writes much: the leftovers' seal (a full disk would fail
+    // the recorder for the whole boot) and the deployer store's rewrite below.
+    this.#pruneAt = now;
+    this.#prune();
     try {
       mkdirSync(recRoot, { recursive: true });
       for (const b of sealLeftovers(recRoot, this.#boot)) d.log(`Recorder: sealed files of boot ${b} left by a stop without a clean stop.`);
-      this.#recorder = c.recorder && this.#journalFault === null ? new Recorder({ root: recRoot, boot: this.#boot, gitSha: c.gitSha, rotateBytes: 64 * 1024 * 1024, ...(d.commitments === undefined ? {} : { commitments: d.commitments }) }) : null;
+      this.#recorder = c.recorder && this.#journalFault === null ? new Recorder({ root: recRoot, boot: this.#boot, gitSha: c.gitSha, rotateBytes: d.recorderRotateBytes ?? 64 * 1024 * 1024, ...(d.commitments === undefined ? {} : { commitments: d.commitments }) }) : null;
     } catch (e) {
       if (c.recorder) this.#recorderFailed(e);
       else d.log(`Recorder: leftovers not sealed: ${errorText(e)}.`);
@@ -608,6 +671,13 @@ export class Worker {
     this.#ledger = openLedger(join(c.stateDir, Ledger.FILE), 'paper');
     this.#control = controlFile(c.stateDir);
     this.#ctl = this.#control.read(NO_CONTROL);
+    this.#fetchCapsFile = fetchCapsFile(c.stateDir);
+    try {
+      this.#fetchCaps = { ...this.#fetchCapsFile.read({ day: -1, cutCreate: 0, cutTrade: 0 }) };
+    } catch {
+      this.#fetchCaps = { day: Math.floor(now / 86_400_000), cutCreate: CUT_CREATE_FETCHES_PER_DAY, cutTrade: CUT_TRADE_FETCHES_PER_DAY };
+      d.log(`${this.#fetchCapsFile.path} cannot be read: today's cut-log fetches count as spent.`);
+    }
     this.#exitsFile = exitsFile(c.stateDir);
     this.#seedsFile = seedsFile(c.stateDir);
     this.#account = new PaperAccount(accountFile(c.stateDir), d.session.policy.capital.bankroll, now, d.strategy.rent.oneTime);
@@ -646,6 +716,7 @@ export class Worker {
       ...(d.phase === 'reconcile' ? { phase: 'reconcile' } : { restart: this.#restarts[this.#restarts.length - 1]?.kind ?? null, exit: exitKind(this.#lastExit), ...(this.#lastExit?.startsWith('fatal error (') ? { crash_site: this.#lastExit.slice('fatal error ('.length, -1) } : {}), ...(this.#deathMem === null ? {} : { death_mem: this.#deathMem }) }),
     });
     this.#journalStarted = true;
+    for (const [kind, fields] of this.#pruneLines.splice(0)) this.#journal.write(kind, fields);
     if (this.#recorderFault !== null) this.#journal.write('alert', { level: 'critical', code: 'recorder_failed', reasons: [this.#recorderFault] });
     if (this.#journal.repaired) this.#journal.write('journal_repair', { detail: 'torn last line removed' });
     if (this.#sellOnly.length > 0) {
@@ -910,6 +981,16 @@ export class Worker {
     const c = this.#unpacked;
     if (c === null) return;
     this.#unpacked = null;
+    // RECORD-BUDGET: the budget leaves the saved-state store alone while a pack may be linking into it.
+    this.#packRunning = true;
+    try {
+      await this.#packOne(c);
+    } finally {
+      this.#packRunning = false;
+    }
+  }
+
+  async #packOne(c: { readonly path: string; readonly sha256: string; readonly bytes: number }): Promise<void> {
     // STATE-DEDUPE: each distinct saved state is kept once, packed, in `recorder/saved-state/<sha256>.zst`; a boot that
     // restored the same bytes (every boot of a restart loop shorter than a save) gets a hard link to it, never a copy.
     const shared = join(this.#d.config.stateDir, STATE_FILES.recorder, SAVED_STATES, `${c.sha256}.zst`);
@@ -1078,6 +1159,12 @@ export class Worker {
     } else if (m.key === 'coverage:rugs:start') {
       const v = isObj(m.value) && isObj(m.value['value']) ? m.value['value'] : m.value;
       if (isObj(v) && typeof v['via'] === 'string') this.#rugVias.add(v['via']);
+    } else if (m.key === 'coverage:creates:start') {
+      const v = isObj(m.value) && isObj(m.value['value']) ? m.value['value'] : m.value;
+      if (isObj(v) && typeof v['via'] === 'string') this.#createVias.add(v['via']);
+    } else if (m.key.startsWith('coverage:trades:') && m.key.endsWith(':start')) {
+      const v = isObj(m.value) && isObj(m.value['value']) ? m.value['value'] : m.value;
+      if (isObj(v) && typeof v['via'] === 'string') this.#tradeVias.set(v['via'], true);
     }
     this.#cutTradeLog(m);
     if (m.key.startsWith('logs:pump:CreateEvent:') && isObj(m.value) && isObj(m.value['event']) && isObj(m.value['event']['data'])) {
@@ -1342,7 +1429,10 @@ export class Worker {
     const via = m.key.startsWith('logs:truncated:') ? m.key.slice('logs:truncated:'.length)
       : m.key.startsWith('logs:undecodable:') ? m.key.slice('logs:undecodable:'.length)
         : m.key.startsWith('logs:') && v['truncated'] === true && typeof v['via'] === 'string' ? v['via'] : null;
-    if (via === null || !this.#rugVias.has(via)) return;
+    if (via === null) return;
+    if (this.#tradeVias.has(via)) return this.#cutPoolLog(v['signature'], via);
+    if (this.#createVias.has(via) && !this.#rugVias.has(via)) return this.#cutCreateLog(v['signature']);
+    if (!this.#rugVias.has(via)) return;
     const sig = v['signature'];
     const slot = m.moment.slot;
     void this.#d.fetchTx(sig, 'cut-log').catch(() => false).then((found) => {
@@ -1350,6 +1440,138 @@ export class Worker {
       this.#feed.ingest('worker', { type: 'offchain', key: 'coverage:rugs:gap', value: { fromSlot: slot, toSlot: slot, reason: `cut trade log ${sig}, transaction not found`, via } }, { receivedAt: this.#d.timers.now() });
     });
   }
+
+  /**
+   * H16-WHY C: a cut or undecodable log on the creates watch. Its transaction is fetched; once released, its `ev:` events
+   * clear the hole in the deployer index (nothing else does). A failed fetch is asked again after each wait in
+   * CUT_CREATE_RETRY_MS while the hole is still there (review B1). Fails closed: until the transaction is released the
+   * hole stays, and after the last try, or past the day's cap, it stays and H14 keeps refusing across it (journaled as
+   * H16 not-covered, input coverage, needed by H14). A cut log names its signature on each of its events: one chain of
+   * tries per signature (`#cutCreateSeen`).
+   */
+  #cutCreateLog(sig: string): void {
+    if (this.#cutCreateSeen.has(sig)) return;
+    if (!this.#takeCutCreateFetch()) return;
+    this.#cutCreateSeen.add(sig);
+    if (this.#cutCreateSeen.size > CUT_CREATE_FETCHES_PER_DAY) this.#cutCreateSeen.delete(this.#cutCreateSeen.values().next().value!);
+    this.#cutCreateTry(sig, 0);
+  }
+
+  /** One try for a cut creates log's transaction; on failure, the next after its wait (each try counted against the cap). */
+  #cutCreateTry(sig: string, tried: number): void {
+    void this.#d.fetchTx(sig, 'cut-create').catch(() => false).then((found) => {
+      if (found || this.#stopping || !this.#strategy.deployers.isLost(sig)) return;
+      const wait = CUT_CREATE_RETRY_MS[tried];
+      if (wait === undefined) return this.#d.log(`Cut creates log ${sig}: its transaction was not read in ${tried + 1} tries; H14 stays not covered across it.`);
+      const h = this.#d.timers.setTimeout(() => {
+        this.#cutCreateTimers.delete(h);
+        if (this.#stopping || !this.#strategy.deployers.isLost(sig)) return;
+        if (!this.#takeCutCreateFetch()) return this.#d.log(`Cut creates log ${sig}: the day's ${CUT_CREATE_FETCHES_PER_DAY} fetches are spent; H14 stays not covered across it.`);
+        this.#cutCreateTry(sig, tried + 1);
+      }, wait);
+      this.#cutCreateTimers.add(h);
+    });
+  }
+
+  /**
+   * One fetch from the day's cap, or false when it is spent. The day only moves forward: a clock stepped back keeps the
+   * later day's count (review N3), so the bound is per UTC day, never per distinct clock reading.
+   */
+  #takeCutCreateFetch(): boolean {
+    return this.#takeFetch('cutCreate', CUT_CREATE_FETCHES_PER_DAY);
+  }
+
+  /**
+   * One fetch from a day's cap, or false when it is spent. The day only moves forward (a clock stepped back keeps the
+   * later day's counts) and a new day starts both counts at zero. The counts are saved before the fetch is made; a save
+   * that fails refuses it (fail safe: no fetch whose count a restart could lose).
+   */
+  #takeFetch(kind: 'cutCreate' | 'cutTrade', cap: number): boolean {
+    const day = Math.floor(this.#d.timers.now() / 86_400_000);
+    if (day > this.#fetchCaps.day) this.#fetchCaps = { day, cutCreate: 0, cutTrade: 0 };
+    if (this.#fetchCaps[kind] >= cap) return false;
+    this.#fetchCaps[kind] += 1;
+    try {
+      this.#fetchCapsFile?.write({ ...this.#fetchCaps });
+    } catch {
+      this.#fetchCaps[kind] = cap;
+      return false;
+    }
+    return true;
+  }
+
+  #lostCreatesAsked = false;
+
+  /**
+   * H16-WHY C (review B1): at boot, once the seed or restore is applied (the index is the
+   * restored one only then), every hole on a creates watch inside H14's look-back is asked for again (its fetch may have
+   * been out, failed or capped when the last process ended), under the same cap and retries.
+   */
+  #readLostCreates(): void {
+    const now = this.#d.timers.now();
+    const lookback = Math.max(this.#d.session.policy.gates.deployerRugLookbackDays, 1) * 86_400_000;
+    for (const sig of this.#strategy.deployers.lostCreates(now - lookback, now)) this.#cutCreateLog(sig);
+  }
+
+  /**
+   * TRADE-GAP-HEAL: a cut or undecodable log on a pool watch is a hole in that pool's trade stream (H11 refuses its
+   * candles while it stays). Its transaction is fetched at P3 through the shared fetcher; when it is found its events
+   * are on the feed, and the outcome (`hole-fetch:<via>`, found) follows them, so the producer can heal the hole in
+   * exact chain order. Only a candidate's pool is fetched for, up to CUT_TRADE_HOLES_PER_POOL holes. A failed try is
+   * asked again after each wait in CUT_CREATE_RETRY_MS while the pool is still a candidate's. Fails closed: after the
+   * last try, past either cap, or once the pool is no longer a candidate's, the outcome says not found and the hole stays.
+   */
+  #cutPoolLog(sig: string, via: string): void {
+    if (this.#cutTradeSeen.has(sig)) return;
+    this.#cutTradeSeen.set(sig, true);
+    // Only a candidate's candles are judged (H11): a held position's chain re-bases on its next swap, a tail's candles
+    // are never read. Their holes spend nothing.
+    if (!this.#candidatePool(via)) return this.#holeOutcome(via, sig, false);
+    const holes = (this.#cutTradePerPool.get(via) ?? 0) + 1;
+    this.#cutTradePerPool.set(via, holes);
+    if (holes > CUT_TRADE_HOLES_PER_POOL || !this.#takeCutTradeFetch()) return this.#holeOutcome(via, sig, false);
+    this.#cutPoolTry(sig, via, 0);
+  }
+
+  #cutPoolTry(sig: string, via: string, tried: number): void {
+    void this.#d.fetchTx(sig, 'cut-trade').catch(() => false).then((found) => {
+      if (this.#stopping) return;
+      if (found) return this.#holeOutcome(via, sig, true);
+      const wait = CUT_CREATE_RETRY_MS[tried];
+      if (wait === undefined || !this.#candidatePool(via)) return this.#holeOutcome(via, sig, false);
+      const h = this.#d.timers.setTimeout(() => {
+        this.#cutCreateTimers.delete(h);
+        if (this.#stopping) return;
+        if (!this.#candidatePool(via) || !this.#takeCutTradeFetch()) return this.#holeOutcome(via, sig, false);
+        this.#cutPoolTry(sig, via, tried + 1);
+      }, wait);
+      this.#cutCreateTimers.add(h);
+    });
+  }
+
+  /** A candidate's pool, not held (`watchedPools` gives a candidate's pool its migration slot, `fromSlot`). */
+  #candidatePool(via: string): boolean {
+    const w = this.#strategy.watchedPools().get(via.slice('logs:'.length));
+    return w !== undefined && !w.held && w.fromSlot !== undefined;
+  }
+
+  /** The fetch outcome of a hole, after its transaction's events (the producer heals only on found). */
+  #holeOutcome(via: string, sig: string, found: boolean): void {
+    this.#feed.ingest('worker', { type: 'offchain', key: `${HOLE_FETCH_PREFIX}${via}`, value: { signature: sig, found } }, { receivedAt: this.#d.timers.now() });
+  }
+
+  /** One fetch from the day's cut-trade cap, or false when it is spent (the day only moves forward, as for creates). */
+  #takeCutTradeFetch(): boolean {
+    return this.#takeFetch('cutTrade', CUT_TRADE_FETCHES_PER_DAY);
+  }
+
+  #clearCutCreateTimers(): void {
+    for (const h of this.#cutCreateTimers) this.#d.timers.clearTimeout(h);
+    this.#cutCreateTimers.clear();
+  }
+
+  /** Signatures of cut creates logs already being fetched or fetched (a truncated log names its signature on each event). */
+  readonly #cutCreateSeen = new Set<string>();
 
   #paperMarket(mint: string): PaperMarket | null {
     const m = this.poolOf(mint);
@@ -1416,6 +1638,11 @@ export class Worker {
     this.#engine.drain();
     this.#record((r) => r.flush());
     this.#watchOpened();
+    // H16-WHY C: once the seed (or the restore) is applied, the restored holes are the index's: ask for them again.
+    if (!this.#lostCreatesAsked && this.#strategy.seedApplied) {
+      this.#lostCreatesAsked = true;
+      this.#readLostCreates();
+    }
     // Entry decisions' plan inputs reach disk before the desk books anything this step decided (EXIT-1h, the same order
     // as WORKER-ORDER: the durable record first, then the ledger), so an entry that fills is never without its plan.
     // The plans go first: a plan made this step replaced its seed, so the seed may leave the disk only once the plan is
@@ -1818,6 +2045,7 @@ export class Worker {
       while (this.#feed.next() !== null) {
         // Drained unread: the reconcile-only process decides nothing.
       }
+      this.#pruneDue(d.timers.now());
       this.#loop = d.timers.setTimeout(drain, d.loopMs);
     };
     this.#loop = d.timers.setTimeout(drain, d.loopMs);
@@ -2059,7 +2287,7 @@ export class Worker {
       sol_reserve: this.#account.state.walletLamports === null ? null : String(this.#account.state.walletLamports),
       paused: this.#ctl.paused, boot: this.#boot, pid: process.pid, uptime_s: Math.round((now - this.#started) / 1000),
       rss_bytes: process.memoryUsage().rss, last_exit: this.#lastExit, restarts_24h: this.#restartCounts(now), mode: 'paper', recorder: this.#d.config.recorder && this.#recorderFault === null && this.#journalFault === null ? 'on' : 'off', simulation: this.#d.config.simulate ? 'on' : 'off',
-      reconciled: this.#reconciled, exit_capable: this.#exitCapable(now), quota: ops.quota, lookups: ops.lookups, entries_halted: this.#halted.length > 0 || this.#journalFault !== null, halt_reasons: [...this.#halted, ...(this.#journalFault !== null && !this.#halted.includes(this.#journalFault) ? [this.#journalFault] : [])], critical: [...(this.#watch?.critical ?? []), ...(this.#recorderFault === null ? [] : [this.#recorderFault]), ...(this.#journalFault === null ? [] : [this.#journalFault])], feeds, journal_seq: this.#journal.seq, signing_key: false,
+      reconciled: this.#reconciled, exit_capable: this.#exitCapable(now), quota: ops.quota, lookups: ops.lookups, entries_halted: this.#halted.length > 0 || this.#journalFault !== null, halt_reasons: [...this.#halted, ...(this.#journalFault !== null && !this.#halted.includes(this.#journalFault) ? [this.#journalFault] : [])], critical: [...(this.#watch?.critical ?? []), ...(this.#recorderFault === null ? [] : [this.#recorderFault]), ...(this.#journalFault === null ? [] : [this.#journalFault]), ...(this.#budgetFault === null ? [] : [this.#budgetFault])], feeds, journal_seq: this.#journal.seq, signing_key: false,
       entry_rule: this.#d.config.strategy.name,
       ...(this.#d.strategy.s0Diagnostic === true ? { s0_diagnostic: S0_DIAGNOSTIC_PARTS } : {}),
       ...(this.#seedOutcome === null ? {} : { graduates_seed: this.#seedOutcome }),
@@ -2094,7 +2322,92 @@ export class Worker {
     } catch {
       // A sample not written (a full disk) only leaves the next boot without it.
     }
+    this.#pruneDue(this.#d.timers.now());
     this.#memTimer = this.#d.timers.setTimeout(() => this.#traceMem(), MEM_EVERY_MS);
+  }
+
+  /**
+   * RECORD-BUDGET: a budget pass once PRUNE_EVERY_MS has passed since the last (the first ran at construction). It rides
+   * the memory sample's timer (and the reconcile-only drain) rather than a timer of its own. Never throws.
+   */
+  #pruneDue(now: number): void {
+    if (this.#stopping || now - this.#pruneAt < PRUNE_EVERY_MS) return;
+    this.#pruneAt = now;
+    this.#prune();
+  }
+
+  /**
+   * RECORD-BUDGET: one pass over the recordings (recorder-budget.ts), whether the recorder is on, off or failed. A pass
+   * that deleted writes a `recorder_prune` line; one that failed, or is still over with nothing left to delete, logs
+   * and journals a critical alert at most once an hour, and /health lists it until a pass is within both bounds.
+   * Never throws.
+   */
+  #prune(): void {
+    const d = this.#d;
+    const b = d.config.recorderBudget ?? { maxBytes: RECORDER_MAX_BYTES, floorBytes: DISK_PRUNE_FREE_BYTES };
+    const root = join(d.config.stateDir, STATE_FILES.recorder);
+    let problem: string | null = null;
+    try {
+      // The free-space floor holds even before anything is recorded (the folder is made here at a first start). A path
+      // that is not a folder holds no recording to prune (a running recorder raises its own failure there), but the
+      // disk's free space is still judged, from the state dir, so a low disk alerts even with the recorder off.
+      if (!existsSync(root)) mkdirSync(root, { recursive: true });
+      if (!statSync(root).isDirectory()) {
+        const free = (d.diskFree ?? statfsFree)(d.config.stateDir);
+        if (free < b.floorBytes) problem = `disk low: ${free} bytes free, under the floor of ${b.floorBytes}, and no recorder folder to prune (${root} is not a folder)`;
+        else {
+          this.#budgetFault = null;
+          return;
+        }
+      } else {
+        const r = pruneRecordings({ root, current: this.#boot, maxBytes: b.maxBytes, floorBytes: b.floorBytes, packing: () => this.#packRunning, ...(d.diskFree === undefined ? {} : { freeBytes: d.diskFree }) });
+        const reason = r.reason;
+        const own = r.deleted.filter((p) => p.boot === this.#boot);
+        if (reason !== null && own.length > 0) {
+          if (this.#recorder !== null && this.#recorderFault === null) for (const p of own) this.#record((rec) => rec.pruned(p.path, p.bytes, reason));
+          else {
+            // The recorder is off or failed: its folder's manifest is rewritten as an ended boot's would be.
+            try {
+              notePruned(join(root, this.#boot), own, reason);
+            } catch (e) {
+              problem = `recorder budget: this boot's manifest not rewritten (${errorText(e)})`;
+            }
+          }
+        }
+        if (reason !== null && (r.deleted.length > 0 || r.boots.length > 0)) {
+          // The journal alone names what went: every deleted file and every folder removed whole.
+          const fields = { reason, files: r.deleted.length, bytes: r.bytes, paths: prunedPaths(r), boots: [...r.boots], free_bytes: r.freeBytes, recorder_bytes: r.recorderBytes };
+          d.log(`Recorder budget (${reason}): deleted ${r.deleted.length} files (${r.bytes} bytes)${r.boots.length > 0 ? ` and the folders of boots ${r.boots.join(', ')}, which never recorded` : ''}; ${r.freeBytes} bytes free, recordings ${r.recorderBytes} bytes.`);
+          this.#pruneJournal('recorder_prune', fields);
+        }
+        if (problem === null && r.errors.length > 0) problem = `recorder budget: ${r.errors.length} deletions or manifest rewrites failed (${r.errors[0]})`;
+        else if (problem === null && r.short) problem = reason === 'floor'
+          ? `disk low: ${r.freeBytes} bytes free, under the floor of ${b.floorBytes}, with no recording left to delete`
+          : `recordings at ${r.recorderBytes} bytes, over the cap of ${b.maxBytes}, with no recording left to delete`;
+      }
+    } catch (e) {
+      problem = `recorder budget pass failed: ${errorText(e)}`;
+    }
+    this.#budgetFault = problem;
+    if (problem === null) return;
+    const now = d.timers.now();
+    if (now - this.#pruneAlertAt < 3_600_000) return;
+    this.#pruneAlertAt = now;
+    d.log(`ALERT ${problem}`);
+    this.#pruneJournal('alert', { level: 'critical', code: 'recorder_budget', reasons: [problem] });
+  }
+
+  /** A budget line: held until the start line is written, then journaled; a failed write only logs. */
+  #pruneJournal(kind: JournalKind, fields: Record<string, unknown>): void {
+    if (!this.#journalStarted) {
+      this.#pruneLines.push([kind, fields]);
+      return;
+    }
+    try {
+      this.#journal.write(kind, fields);
+    } catch (e) {
+      this.#d.log(`Journal: the recorder budget line was not written: ${errorText(e)}.`);
+    }
   }
 
   /** MEM-PROBE: one probe sample kept (counts only); `saving` when taken just before the state save. Never throws. */
@@ -2210,6 +2523,7 @@ export class Worker {
     this.#stopping = true;
     this.#stopCode = code;
     this.#stoppingNow(code);
+    this.#clearCutCreateTimers();
     try {
       await this.#stop(code, crash);
     } catch (e) {
@@ -2284,6 +2598,7 @@ export class Worker {
     this.#stopCode = EXIT.crash;
     this.#stoppingNow(EXIT.crash);
     this.#stoppedNow(EXIT.crash);
+    this.#clearCutCreateTimers();
     this.#world.stop();
     if (this.#loop !== null) this.#d.timers.clearTimeout(this.#loop);
     if (this.#beat !== null) this.#d.timers.clearTimeout(this.#beat);

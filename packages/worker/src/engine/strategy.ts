@@ -117,6 +117,9 @@ export interface GateReasonLine {
   readonly gate: string;
   readonly code: string;
   readonly detail: string;
+  /** H16-WHY: an evidence reason's input (a FactName) and the hard gate that needed it, so the summary can count them. */
+  readonly input?: string;
+  readonly neededBy?: string;
 }
 
 /** A reason of a candidate's last evaluation with the fact it is about, if any (FACTS-1b reads what evidence reasons name). */
@@ -2342,7 +2345,7 @@ export class LiveStrategy implements Strategy {
    */
   #lastTrips: readonly string[] = [];
 
-  /** The same reasons with their inputs, for the candidate (not journaled: gate_reasons keeps its shape). */
+  /** The same reasons with their inputs and details, for the candidate (the journal keeps only input and neededBy, H16-WHY). */
   #lastNeeds: readonly CandidateReason[] = [];
 
   #fail(text: string, gates: readonly GateReasonLine[], needs: readonly CandidateReason[] = gates): string {
@@ -2395,7 +2398,7 @@ export class LiveStrategy implements Strategy {
       // Fails closed: a pass that left a gate out (groups that stop covering every hard gate) is no entry.
       if (hard.reasons.length === 0) return this.#fail('hard rejects incomplete', [{ gate: 'worker', code: 'hard-incomplete', detail: 'not every hard gate was evaluated' }]);
       const later = notEvaluated.length > 0 ? `; ${NOT_EVALUATED}${notEvaluated.join(',')}` : '';
-      return this.#fail(`hard reject ${hard.failed.join(',')}: ${hard.reasons.map((x) => `${x.gate} ${x.code} ${x.detail}`).join('; ')}${later}`, hard.reasons.map((x) => ({ gate: x.gate, code: x.code, detail: x.detail })), hard.reasons);
+      return this.#fail(`hard reject ${hard.failed.join(',')}: ${hard.reasons.map((x) => `${x.gate} ${x.code} ${x.detail}`).join('; ')}${later}`, hard.reasons.map((x) => ({ gate: x.gate, code: x.code, detail: x.detail, ...(x.input === undefined ? {} : { input: x.input }), ...(x.neededBy === undefined ? {} : { neededBy: x.neededBy }) })), hard.reasons);
     }
     const acct = this.#account(ctx);
     if (acct === null) return this.#fail('account snapshot unknown', [{ gate: 'worker', code: 'no-account', detail: 'account snapshot unknown' }]);
