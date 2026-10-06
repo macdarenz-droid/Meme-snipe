@@ -2337,11 +2337,8 @@ export class LiveStrategy implements Strategy {
       if (this.#stoppedPools.has(cand.mint) || this.#batchOpen.has(cand.mint)) continue;
       // A candidate itself is kept. Every money/exit path holds its swaps, including a seed before it is booked and
       // a terminal entry with an attempt which could land late. An entry already in the book is never cut.
-      if ([...this.#exits.keys()].some((pid) => this.#mintOf(pid) === cand.mint)
-        || [...this.#seeds.values()].some((s) => s.mint === cand.mint)
-        || Object.values(ctx.book.positions).some((p) => String(p.mint) === cand.mint && p.status !== 'closed')
-        || Object.values(ctx.book.intents).some((i) => String(i.intent.mint) === cand.mint && i.intent.purpose === 'entry')
-        || this.#mayLand(cand.mint)) continue;
+      if (this.committed(cand.mint)
+        || Object.values(ctx.book.intents).some((i) => String(i.intent.mint) === cand.mint && i.intent.purpose === 'entry')) continue;
       // These gates' irreversible verdicts do not depend on trade size or a quote. The request still satisfies the
       // actual gate evaluator's contract; no fabricated round-trip pass can reach an entry or H15.
       const req = { mint: cand.mint, universe: c.universe, notional: session.policy.capital.minNotional, spend: 1n as Lamports, roundTrip: { ok: false as const, reason: 'missing-params' as const, detail: 'swap-watch verdict needs no trade quote' } };

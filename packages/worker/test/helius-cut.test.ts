@@ -5,14 +5,15 @@ import { newEntryIntent, newPosition } from '../../core/src/lifecycle/index.ts';
 import { entryKey, intentId, mint, positionId } from '../../core/src/domain/index.ts';
 import { lamports } from '../../core/src/units/index.ts';
 import type { StrategyContext } from '../../core/src/engine/index.ts';
-import { candlesKey, createKey, migrationKey } from '../../core/src/gates/index.ts';
+import { candlesKey, createKey, migrationKey, poolKey } from '../../core/src/gates/index.ts';
+import { RAW } from '../../core/src/facts/raw.ts';
 import { MINT, NOW, POOL_ADDRESS, T, contextOf, passingFacts, patch, session } from '../../core/test/gates/world.ts';
 import { FakeSocketHub } from '../src/providers/index.ts';
 import { DEFAULT_LIVE_FEED, LiveFeed, rpcHandler, scriptedHttp } from '../src/providers/index.ts';
 import { RpcSocket } from '../src/providers/rpc-socket.ts';
 import { SOCKET_BYTE_KINDS } from '../src/providers/rpc-socket.ts';
 import { ALCHEMY_FREE, HELIUS_FREE, JUPITER_FREE, RUGCHECK_FREE, Scheduler, HELIUS_WS_CREDITS_PER_BYTE, HELIUS_WS_CREDITS_PER_CONNECTION, ManualTimers } from '../src/scheduler/index.ts';
-import { LiveStrategy, RESTORE_KEY, type StrategyConfig } from '../src/engine/strategy.ts';
+import { HALT_KEY, LiveStrategy, RESTORE_KEY, type StrategyConfig } from '../src/engine/strategy.ts';
 import { strategyConfig } from '../src/run/settings.ts';
 import { CreditBook, LiveProviders, PUMP_CREATE_AUTHORITY, PUMP_MIGRATION_AUTHORITY } from '../src/run/sources.ts';
 import { blockNetwork, testSecrets } from './helpers.ts';
@@ -22,6 +23,7 @@ import { emptySummaryState, foldLine } from '../src/run/summary.ts';
 import { checkSession, loadSession } from '../src/run/parity.ts';
 import { replayLedgerFile } from '../../core/src/ledger/replay/index.ts';
 import { LiveFacts } from '../src/facts/source.ts';
+import { PoolWatch } from '../src/run/pool-watch.ts';
 
 blockNetwork();
 
@@ -222,6 +224,7 @@ describe('gate-proven pool retirement', () => {
     for (const w of [world()]) {
       w.step();
       expect(w.strategy.watchedPools().has(POOL_ADDRESS)).toBe(true);
+      expect(w.strategy.watchedPools().get(POOL_ADDRESS)?.held).toBe(false);
     }
     const f = patch(passingFacts(), migrationKey(MINT), { quoteAtMigration: 6_000_000_000n });
     const unchanged = world(f);
@@ -260,6 +263,26 @@ describe('gate-proven pool retirement', () => {
     expect(w.strategy.watchedPools().has(POOL_ADDRESS)).toBe(true);
   });
 
+  it('waits for a coherent read batch to close and drops on that exact event', () => {
+    const f = patch(passingFacts(), migrationKey(MINT), { quoteAtMigration: 1n });
+    const w = world(f);
+    w.step(RAW.batchOpen(MINT), NOW, { mint: MINT });
+    w.step();
+    expect(w.strategy.watchedPools().has(POOL_ADDRESS)).toBe(true);
+    const d = w.step(RAW.batchClose(MINT), NOW, { mint: MINT, slot: NOW.slot });
+    expect(w.strategy.watchedPools().has(POOL_ADDRESS)).toBe(false);
+    expect(d.some((x) => x.reasons[0] === 'pool watch stopped')).toBe(true);
+  });
+
+  it('never stops a watch for a transient liquidity floor or candle spike', () => {
+    const floor = world(patch(passingFacts(), poolKey(MINT), { quoteVault: 1n }));
+    floor.step();
+    expect(floor.strategy.watchedPools().has(POOL_ADDRESS)).toBe(true);
+    const spike = world(patch(passingFacts(), candlesKey(MINT), { candles: [{ startMs: T - 60_000, open: { quote: 100n, base: 1_000_000n }, high: { quote: 500n, base: 1_000_000n }, close: { quote: 100n, base: 1_000_000n } }] }));
+    spike.step();
+    expect(spike.strategy.watchedPools().has(POOL_ADDRESS)).toBe(true);
+  });
+
   it('a stopped migration still receives its +30 minute survival read and is never producer-retired early', async () => {
     const f = patch(passingFacts(), migrationKey(MINT), { migratedAtMs: T, graduatedAtMs: T, quoteAtMigration: 1n });
     const w = world(f);
@@ -275,7 +298,7 @@ describe('gate-proven pool retirement', () => {
     src.start({ sink: { fact: () => {}, now: () => timers.now() }, timers, schedulers: {
       helius: new Scheduler(HELIUS_FREE, { timers }), alchemy: new Scheduler(ALCHEMY_FREE, { timers }),
       jupiter: new Scheduler(JUPITER_FREE, { timers }), rugcheck: new Scheduler(RUGCHECK_FREE, { timers }),
-    }, watched: () => w.strategy.watched(), candidates: () => w.strategy.candidates(), ingest: () => {}, tip: () => NOW.slot });
+    }, watched: () => w.strategy.watched(), candidates: () => w.strategy.candidates(), ingest: { ingest: () => {} }, tip: () => NOW.slot });
     for (let k = 0; k < 10; k++) await Promise.resolve();
     timers.advance(30 * 60_000 + 4_000);
     for (let k = 0; k < 10; k++) await Promise.resolve();
@@ -332,6 +355,48 @@ describe('gate-proven pool retirement', () => {
     late.setBook({ ...empty, positions: { [position.id]: position } });
     late.step('chain:slot', { ...NOW, receivedAt: T + 400 });
     expect(late.strategy.watchedPools().get(POOL_ADDRESS)?.held).toBe(true);
+  });
+
+  it('keeps the normal reject log but never starts a swap tail for a proven immutable reject', () => {
+    const f = patch(passingFacts(), migrationKey(MINT), { quoteAtMigration: 1n });
+    f.set(HALT_KEY, { value: { halted: false, reasons: [] }, moment: NOW });
+    const w = world(f);
+    const before = w.step();
+    expect(before.some((d) => d.reasons[0] === 'reject')).toBe(true);
+    expect(w.strategy.candidates().get(MINT)?.lastEvalMs).not.toBeNull();
+    const migratedAtMs = (f.get(migrationKey(MINT))!.value as { migratedAtMs: number }).migratedAtMs;
+    w.step('chain:slot', { ...NOW, receivedAt: migratedAtMs + w.config.windowToMs });
+    expect(w.strategy.candidates().has(MINT)).toBe(false);
+    expect(w.strategy.tail.has(MINT)).toBe(false);
+    expect(w.strategy.watchedPools().has(POOL_ADDRESS)).toBe(false);
+  });
+
+  it('never re-watches a stopped pool on repeated syncs and releases its memo with the retired candidate', () => {
+    const w = world();
+    w.step();
+    let adds = 0;
+    let removes = 0;
+    const pools = new PoolWatch({ stream: { watchLogs: () => ++adds, unwatch: () => { removes++; }, setPriority: () => true },
+      timers: new ManualTimers(T), pools: () => w.strategy.watchedPools(), everyMs: 2_000 });
+    pools.sync();
+    expect(adds).toBe(1);
+    const row = w.facts.get(migrationKey(MINT))!;
+    const migration = row.value as { migratedAtMs: number };
+    w.facts.set(migrationKey(MINT), { ...row, value: { ...(row.value as object), quoteAtMigration: 1n } });
+    w.step();
+    for (let k = 0; k < 100; k++) pools.sync();
+    expect([adds, removes, pools.watching.size]).toEqual([1, 1, 0]);
+    const end = { ...NOW, receivedAt: migration.migratedAtMs + w.config.windowToMs };
+    w.step('chain:slot', end);
+    expect(w.strategy.sizes()).toMatchObject({ cands: 0, pool_of_mint: 0, mint_of_pool: 0 });
+    // At the strategy boundary a later rediscovery is judged from its facts again, never suppressed by a stale ID.
+    // The production producer's tombstone policy remains S1's; this checks only the swap-retirement memo lifecycle.
+    const again = { ...end, receivedAt: end.receivedAt + 1 };
+    w.facts.set(migrationKey(MINT), { moment: again, value: { ...(row.value as object), migratedAtMs: again.receivedAt, graduatedAtMs: again.receivedAt } });
+    w.step(migrationKey(MINT), again);
+    expect(w.strategy.watchedPools().get(POOL_ADDRESS)?.held).toBe(false);
+    pools.sync();
+    expect([adds, removes, pools.watching.size]).toEqual([2, 1, 1]);
   });
 
   it('recorded H8/H9/H11/create-expired drops replay at the identical event, ten times each', async () => {
