@@ -503,6 +503,10 @@ in_c "cd /var/lib/zeroed/recorder/$NEW && for t in frames-000 releases-000 raw-0
 # Who ran it: the worker's user with no capability; its state is its own.
 [ "$(in_c "systemctl show -p User --value zeroed-record-upload@all.service")" = zeroed-worker ] || fail "uploader user"
 [ -z "$(in_c "systemctl show -p CapabilityBoundingSet --value zeroed-record-upload@all.service")" ] || fail "uploader holds a capability"
+# What it can reach: never the signer's folders, and of the worker's state only the recorder and the journal.
+in_c "systemctl show -p InaccessiblePaths --value zeroed-record-upload@all.service" | grep -q '/run/zeroed-signer' || fail "uploader can reach the signer's socket folder"
+in_c "systemctl show -p InaccessiblePaths --value zeroed-record-upload@all.service" | grep -q '/var/lib/zeroed-signer' || fail "uploader can reach the signer's state"
+in_c "systemctl show -p TemporaryFileSystem --value zeroed-record-upload@all.service" | grep -q '/var/lib/zeroed:ro' || fail "uploader sees the worker's whole state folder"
 [ "$(in_c "stat -c '%U %a' /var/lib/zeroed-record-upload/state.json")" = "zeroed-worker 600" ] || fail "uploader state owner or mode"
 # The kept file: alerted from the status file by zeroed-check, once, to the owner chat; cleared once it is gone.
 in_c "zeroed-check" >/dev/null 2>&1 || true

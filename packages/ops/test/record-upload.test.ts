@@ -654,6 +654,110 @@ describe('data review: the read-back and index gates', () => {
   });
 });
 
+describe('ops review: the index read-back gate and a bounded state', () => {
+  it('nothing of a day is deleted when that day\'s standing index no longer reads back', async () => {
+    const f = fx();
+    const boot = bootId(30, 160);
+    const dir = makeBoot(f, boot);
+    const x = uploader(f, { deleteLocal: false });
+    expect(await x.u.run()).toBe(0);
+    // The index asset is gone upstream; the state still holds it as verified with the same content, so no new index is sent.
+    x.r.gh.assets.delete(assetOf(x.r, 'index-1.json').id);
+    const y = uploader(f, { r: x.r });
+    await y.u.run();
+    expect(y.status().deleted).toBe(0);
+    for (const t of ['frames-000', 'frames-001', 'releases-000']) expect(exists(dir, `days/${D2}/${t}.jsonl.zst`)).toBe(true);
+  });
+
+  it('a finished day moves out of state.json into its own file, its done boot is never read again, and a later record for that day is indexed with the archived ones', async () => {
+    const f = fx();
+    const D4 = day(4);
+    const a = bootId(100, 161);
+    makeBoot(f, a, { days: [D4] });
+    const x = uploader(f);
+    expect(await x.u.run()).toBe(0);
+    const st = x.state();
+    expect(Object.keys(st.files)).toEqual([]);
+    expect(st.done_boots[a]).toBe(NOW);
+    expect(st.index[D4]).toMatchObject({ n: 1, verified: true, archived: true, keys: [] });
+    const archived = JSON.parse(readFileSync(join(f.stateDir, 'days', `${D4}.json`), 'utf8'));
+    expect(Object.keys(archived.files).sort()).toEqual([`${a}/days/${D4}/frames-000.jsonl.zst`, `${a}/days/${D4}/frames-001.jsonl.zst`, `${a}/days/${D4}/releases-000.jsonl.zst`, `${a}/manifest.json`]);
+    // A second run sends nothing and does not open the done boot's manifest.
+    const assets = x.r.gh.assets.size;
+    const seen: string[] = [];
+    fsHooks.afterReaddir = (d) => void seen.push(d);
+    const y = uploader(f, { r: x.r });
+    expect(await y.u.run()).toBe(0);
+    expect(x.r.gh.assets.size).toBe(assets);
+    expect(seen.some((d) => d.startsWith(join(f.root, a)))).toBe(false);
+    fsHooks.afterReaddir = null;
+    // A new boot with files on that day: the next index lists the archived files and the new ones.
+    const b = bootId(99, 162);
+    makeBoot(f, b, { days: [D4] });
+    const z = uploader(f, { r: x.r });
+    expect(await z.u.run()).toBe(0);
+    const keys = indexBody(x.r, 2, `rec-${D4}`).files.map((e: { key: string }) => e.key);
+    expect(keys).toEqual(expect.arrayContaining([`${a}/days/${D4}/frames-000.jsonl.zst`, `${a}/manifest.json`, `${b}/days/${D4}/frames-000.jsonl.zst`, `${b}/manifest.json`]));
+    expect(keys).toHaveLength(8);
+  });
+
+  it('with deletes off nothing is archived or marked done, so switching deletes on later still deletes', async () => {
+    const f = fx();
+    const D4 = day(4);
+    const a = bootId(100, 163);
+    const dir = makeBoot(f, a, { days: [D4] });
+    const x = uploader(f, { deleteLocal: false });
+    expect(await x.u.run()).toBe(0);
+    expect(x.state().done_boots).toEqual({});
+    expect(x.state().index[D4].archived).toBeUndefined();
+    const y = uploader(f, { r: x.r });
+    expect(await y.u.run()).toBe(0);
+    expect(y.status().deleted).toBe(3);
+    expect(exists(dir, `days/${D4}/frames-000.jsonl.zst`)).toBe(false);
+  });
+
+  it('100 days of 1,000 uploaded files each run under the unit\'s 48 MB heap, and state.json stays small', () => {
+    const base = join(tmp, 'heap');
+    mkdirSync(join(base, 'recorder'), { recursive: true });
+    const driver = join(base, 'driver.mjs');
+    writeFileSync(driver, `
+import { createHash } from 'node:crypto';
+import { statSync } from 'node:fs';
+import { join } from 'node:path';
+const up = await import(${JSON.stringify(new URL(`file://${MJS}`).href)});
+const [base] = process.argv.slice(2);
+const cfg = { root: join(base, 'recorder'), journal: join(base, 'journal.jsonl'), stateDir: join(base, 'state'), key: 'k', values: [], deleteLocal: true, scope: 'all' };
+let id = 1;
+// The watchdog, answering as GitHub would for exactly the signed bytes.
+const transport = {
+  put: async (h) => ({ status: 200, json: { ok: true, asset_id: id++, name: JSON.parse(h.text).file } }),
+  check: async (h) => { const j = JSON.parse(h.text); return { status: 200, json: { ok: true, match: true, asset_id: j.asset_id, size: j.size, digest: 'sha256:' + j.sha256, state: 'uploaded' } }; },
+};
+const NOW = Date.now();
+for (let d = 120; d > 20; d--) {
+  const day = new Date(NOW - d * 86400000).toISOString().slice(0, 10);
+  const u = new up.Uploader(cfg, { transport, workerActive: async () => false, now: () => NOW, log: () => {} });
+  // What a day of uploads leaves in the state: 1,000 frames files of a boot since removed, each confirmed and deleted.
+  const boot = (NOW - d * 86400000).toString(36) + '-' + (1000 + d);
+  for (let i = 0; i < 1000; i++) {
+    const path = 'days/' + day + '/frames-' + String(i).padStart(3, '0') + '.jsonl.zst';
+    const sha256 = createHash('sha256').update(boot + path).digest('hex');
+    u.state.files[boot + '/' + path] = { day, boot, path, release: 'rec-' + day, asset: boot + '.frames-' + String(i).padStart(3, '0') + '.jsonl.zst', asset_id: id++, size: 4000000 + i, sha256, verified: true, deleted_at: NOW - 3600000 };
+  }
+  u.save();
+  if ((await u.run()) !== 0) { console.log('run failed for ' + day); process.exit(3); }
+}
+console.log(JSON.stringify({ state_bytes: statSync(join(cfg.stateDir, 'state.json')).size }));
+`);
+    const r = spawnSync(process.execPath, ['--max-old-space-size=48', driver, base], { encoding: 'utf8', timeout: 240_000 });
+    expect(r.status, `${r.stdout}\n${r.stderr.slice(-2000)}`).toBe(0);
+    const out = JSON.parse(r.stdout.trim().split('\n').at(-1)!);
+    // 100 days of index records, done boots and release counters; no file records.
+    expect(out.state_bytes).toBeLessThan(200_000);
+    expect(readdirSync(join(base, 'state', 'days'))).toHaveLength(100);
+  }, 300_000);
+});
+
 describe('redaction scan', () => {
   it('keeps the same patterns as the worker (packages/worker/src/run/redact.ts)', () => {
     const src = readFileSync(join(ROOT, 'packages/worker/src/run/redact.ts'), 'utf8');

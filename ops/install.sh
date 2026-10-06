@@ -382,7 +382,8 @@ ConditionPathExists=/var/lib/zeroed/recorder
 [Service]
 Type=oneshot
 # The worker's own user: it already holds every credential read here and owns the recorder, so no capability is needed.
-# No zeroed-signer group: the signer's socket stays out of reach.
+# That user is in the zeroed-signer group (/etc/group), which systemd applies here too, so the signer's folders are made
+# inaccessible below.
 User=zeroed-worker
 Group=zeroed-worker
 EnvironmentFile=/etc/zeroed/worker.env
@@ -398,7 +399,12 @@ ImportCredential=telegram_bot_token
 ImportCredential=telegram_chat_id
 StateDirectory=zeroed-record-upload
 StateDirectoryMode=0700
-ReadWritePaths=/var/lib/zeroed/recorder
+# Of the worker's state only the recorder (read and delete) and the journal (read) are visible: an empty read-only
+# /var/lib/zeroed with those two bound in, so the ledger and the rest of the worker's state are out of reach.
+TemporaryFileSystem=/var/lib/zeroed:ro
+BindPaths=/var/lib/zeroed/recorder
+BindReadOnlyPaths=-/var/lib/zeroed/journal.jsonl
+InaccessiblePaths=-/run/zeroed-signer -/var/lib/zeroed-signer
 UMask=0077
 Nice=19
 IOSchedulingClass=idle
@@ -1593,7 +1599,9 @@ export const writeAtomic = (path, text) => {
   }
 };
 
-const freshState = () => ({ v: 1, files: {}, shared: {}, releases: {}, journal: { offset: 0, days: {}, pending: null }, index: {}, failed_runs: 0 });
+const freshState = () => ({ v: 1, files: {}, shared: {}, shared_done: {}, done_boots: {}, releases: {}, journal: { offset: 0, days: {}, pending: null }, index: {}, failed_runs: 0 });
+/** A day's file records move out of state.json into their own file once the day is finished and this much older. */
+export const ARCHIVE_AFTER_MS = 2 * 86_400_000;
 
 /** The saved state; a missing or unreadable one starts fresh (GitHub is the record: names that exist are matched again). */
 export const loadState = (dir) => {
@@ -1674,11 +1682,11 @@ export const settled = (dir, now) => {
  * journal's last start), the newest folder while the worker runs, and any folder not settled. An open boot's sealed
  * files are uploaded (they never change once sealed), but nothing in it is ever deleted.
  */
-export const readBoots = async (cfg, now, workerActive) => {
+export const readBoots = async (cfg, now, workerActive, skip = new Set()) => {
   if (!existsSync(cfg.root)) return [];
   const boots = [];
   for (const name of readdirSync(cfg.root)) {
-    if (!BOOT_RE.test(name) || name === 'saved-state') continue;
+    if (!BOOT_RE.test(name) || name === 'saved-state' || skip.has(name)) continue;
     const dir = join(cfg.root, name);
     let manifest = null;
     let mtime = 0;
@@ -1953,10 +1961,11 @@ export class Uploader {
     // Hashed again just before sending: the watchdog keeps the asset only if GitHub's digest equals this.
     const h0 = await hashFile(it.path);
     if (h0.sha256 !== before.sha256 || h0.bytes !== before.bytes) return this.fail(`${it.key}: changed while it was checked`);
-    const shared = it.kind === 'attachment' ? files[this.state.shared[h0.sha256]] : undefined;
+    const sref = this.state.shared[h0.sha256];
+    const shared = it.kind === 'attachment' ? (files[sref] ?? this.state.shared_done[h0.sha256]) : undefined;
     if (shared?.verified) {
       // The same saved state is already up (an earlier boot restored the same bytes): listed, never sent twice.
-      files[it.key] = { day: it.day, boot: it.boot, path: it.rel, release: shared.release, asset: shared.asset, asset_id: shared.asset_id, size: shared.size, sha256: shared.sha256, verified: true, ref: this.state.shared[h0.sha256] };
+      files[it.key] = { day: it.day, boot: it.boot, path: it.rel, release: shared.release, asset: shared.asset, asset_id: shared.asset_id, size: shared.size, sha256: shared.sha256, verified: true, ref: sref };
       this.save();
       return;
     }
@@ -2086,9 +2095,32 @@ export class Uploader {
   /** index-N.json for a day once its uploaded set changed: every confirmed file with its asset and sha256, and the boots' manifests. */
   async index(day) {
     const st = (this.state.index[day] ??= { n: 0, hash: null, verified: false, keys: [], pending: null });
-    const sorted = Object.entries(this.state.files)
-      .filter(([key, r]) => r.day === day && !key.startsWith('index/'))
-      .sort(([a], [b]) => (a < b ? -1 : 1));
+    const { entries, vanished, hash } = this.indexContent(day);
+    if (entries.length === 0 && vanished.length === 0) return;
+    if (st.pending === null && st.verified && st.hash === hash) return;
+    // A number taken by another index (the state file was lost and numbering restarted) moves on to the next one.
+    for (let tries = 0; tries < 20 && !this.stopped; tries++) {
+      if ((await this.indexOnce(day, st, entries, vanished, hash)) !== 'taken') return;
+    }
+  }
+
+  /** What the day's index lists: its archived records (a finished day, see prune) and those still in the state. */
+  dayRecords(day) {
+    const out = new Map();
+    if (this.state.index[day]?.archived) {
+      const a = JSON.parse(readFileSync(this.archivePath(day), 'utf8'));
+      for (const [key, r] of Object.entries(a.files)) out.set(key, r);
+    }
+    for (const [key, r] of Object.entries(this.state.files)) if (r.day === day && !key.startsWith('index/')) out.set(key, r);
+    return out;
+  }
+
+  archivePath(day) {
+    return join(this.cfg.stateDir, 'days', `${day}.json`);
+  }
+
+  indexContent(day) {
+    const sorted = [...this.dayRecords(day)].sort(([a], [b]) => (a < b ? -1 : 1));
     const entries = sorted
       .filter(([, r]) => r.verified)
       .map(([key, r]) => ({ key, boot: r.boot, path: r.path, release: r.release, asset: r.asset, asset_id: r.asset_id, size: r.size, sha256: r.sha256 }));
@@ -2096,13 +2128,72 @@ export class Uploader {
     const vanished = sorted
       .filter(([, r]) => !r.verified && r.vanished_at !== undefined)
       .map(([key, r]) => ({ key, boot: r.boot, path: r.path, sha256: r.listed?.sha256 ?? null, bytes: r.listed?.bytes ?? null, at: new Date(r.vanished_at).toISOString() }));
-    if (entries.length === 0 && vanished.length === 0) return;
     // Without vanished files the hash is the one earlier versions saved, so no day is indexed again for nothing.
     const hash = createHash('sha256').update(JSON.stringify(vanished.length === 0 ? entries : { files: entries, vanished })).digest('hex');
-    if (st.pending === null && st.verified && st.hash === hash) return;
-    // A number taken by another index (the state file was lost and numbering restarted) moves on to the next one.
-    for (let tries = 0; tries < 20 && !this.stopped; tries++) {
-      if ((await this.indexOnce(day, st, entries, vanished, hash)) !== 'taken') return;
+    return { entries, vanished, hash };
+  }
+
+  /**
+   * Nothing left to do for this record: confirmed upstream and, for a frames or releases file, no longer on the server
+   * (deleted here, or by RECORD-BUDGET after it went up); or vanished before upload. With deletes off a frames or releases
+   * file stays and so never finishes: switching deletes on later still finds every one.
+   */
+  finished(r) {
+    if (r === undefined) return false;
+    if (!r.verified) return r.vanished_at !== undefined && !r.asset_id;
+    if (!DATA_RE.test(r.path ?? '') || r.deleted_at !== undefined) return true;
+    try {
+      lstatSync(join(this.cfg.root, r.boot, r.path));
+      return false;
+    } catch (e) {
+      return isGone(e);
+    }
+  }
+
+  /** A boot that can add no more records: marked done, or its folder is gone. */
+  bootDone(boot, cache) {
+    if (boot === null) return true;
+    if (!cache.has(boot)) cache.set(boot, this.state.done_boots[boot] !== undefined || !existsSync(join(this.cfg.root, boot)));
+    return cache.get(boot);
+  }
+
+  /**
+   * Keeps state.json small (it is read whole under a 48 MB heap): a boot whose every item is finished is marked done and
+   * never listed again; a day whose records are all finished, whose boots are all done, whose standing index lists exactly
+   * them, and which ended ARCHIVE_AFTER_MS ago moves to days/<day>.json, read again only if that day ever gets a new record.
+   */
+  prune(boots) {
+    const now = this.d.now();
+    for (const b of boots) {
+      const its = this.bootItems.get(b.boot) ?? [];
+      if (!b.open && its.some((i) => i.kind === 'manifest') && its.every((i) => this.finished(this.state.files[i.key]))) this.state.done_boots[b.boot] = now;
+    }
+    const byDay = new Map();
+    for (const [key, r] of Object.entries(this.state.files)) {
+      if (key.startsWith('index/')) continue;
+      if (!byDay.has(r.day)) byDay.set(r.day, []);
+      byDay.get(r.day).push([key, r]);
+    }
+    const cache = new Map();
+    for (const [day, recs] of byDay) {
+      if (now < dayEnd(day) + ARCHIVE_AFTER_MS) continue;
+      const st = this.state.index[day];
+      if (!st?.verified || st.pending !== null) continue;
+      if (!recs.every(([, r]) => this.finished(r) && this.bootDone(r.boot ?? null, cache))) continue;
+      if (st.hash !== this.indexContent(day).hash) continue;
+      mkdirSync(join(this.cfg.stateDir, 'days'), { recursive: true });
+      const all = Object.fromEntries(this.dayRecords(day));
+      writeAtomic(this.archivePath(day), `${JSON.stringify({ v: 1, day, files: all })}\n`);
+      for (const [key, r] of recs) {
+        const sha = r.sha256;
+        if (sha && this.state.shared[sha] === key) {
+          this.state.shared_done[sha] = { ...r, key };
+          delete this.state.shared[sha];
+        }
+        delete this.state.files[key];
+      }
+      st.archived = true;
+      st.keys = [];
     }
   }
 
@@ -2204,7 +2295,10 @@ export class Uploader {
     this.save();
     this.status({ running: true });
     try {
-      const boots = await readBoots(this.cfg, now, this.d.workerActive);
+      const names = new Set(existsSync(this.cfg.root) ? readdirSync(this.cfg.root) : []);
+      for (const b of Object.keys(this.state.done_boots)) if (!names.has(b)) delete this.state.done_boots[b];
+      // A done boot has nothing left to send or delete: never read again, so a run's work stays bounded.
+      const boots = await readBoots(this.cfg, now, this.d.workerActive, new Set(Object.keys(this.state.done_boots)));
       const items = boots.flatMap(itemsOf);
       for (const i of items) this.bootItems.set(i.boot, [...(this.bootItems.get(i.boot) ?? []), i]);
       const days = [...new Set(items.map((i) => i.day))].sort().filter((d) => this.cfg.scope === 'all' || d === this.cfg.scope);
@@ -2224,7 +2318,7 @@ export class Uploader {
       for (const day of touched) if (!this.stopped) await this.index(day);
       if (this.cfg.deleteLocal && !this.stopped) {
         // The running set is read again now, not taken from the start of the run.
-        const fresh = await readBoots(this.cfg, this.d.now(), this.d.workerActive);
+        const fresh = await readBoots(this.cfg, this.d.now(), this.d.workerActive, new Set(Object.keys(this.state.done_boots)));
         const running = new Set(fresh.filter((b) => b.open).map((b) => b.boot));
         for (const day of days) {
           const mine = items.filter((i) => i.day === day && i.kind === 'data' && this.state.files[i.key]?.verified && !this.state.files[i.key]?.deleted_at);
@@ -2245,6 +2339,7 @@ export class Uploader {
         })
         .filter((t) => t !== null);
       const oldest = pending.reduce((m, t) => Math.min(m, t), this.journalBacklogFrom());
+      this.prune(boots);
       if (this.failures === 0) this.state.failed_runs = 0;
       this.save();
       this.status({ running: false, ok: this.failures === 0, pending: pending.length, backlog_age_s: Number.isFinite(oldest) ? Math.max(0, Math.round((this.d.now() - oldest) / 1000)) : 0 });

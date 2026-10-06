@@ -278,14 +278,20 @@ describe('systemd units (ARCHITECTURE.md 12.1)', () => {
     const has = (k: string) => expect(s, k).toMatch(new RegExp(`^${k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'm'));
     for (const k of [...common, 'User=zeroed-worker', 'Group=zeroed-worker', 'AmbientCapabilities=', 'RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6', 'ProtectProc=invisible', 'Nice=19', 'IOSchedulingClass=idle', 'CPUQuota=25%', 'MemoryMax=96M', 'TimeoutStartSec=12h', 'Type=oneshot']) has(k);
     // Pinned exactly, so none of these can widen without this test changing: who it runs as, what it may hold and write.
-    const pinned = s.split('\n').filter((l) => /^(User|Group|SupplementaryGroups|DynamicUser|CapabilityBoundingSet|AmbientCapabilities|ReadWritePaths|ReadOnlyPaths|BindPaths|BindReadOnlyPaths|StateDirectory|LoadCredential|LoadCredentialEncrypted|SetCredential|ImportCredential|ExecStart|ExecStartPre|ExecStartPost|PermissionsStartOnly)=/.test(l));
+    const pinned = s.split('\n').filter((l) => /^(User|Group|SupplementaryGroups|DynamicUser|CapabilityBoundingSet|AmbientCapabilities|ReadWritePaths|ReadOnlyPaths|BindPaths|BindReadOnlyPaths|TemporaryFileSystem|InaccessiblePaths|InaccessibleDirectories|ReadWriteDirectories|StateDirectory|LoadCredential|LoadCredentialEncrypted|SetCredential|ImportCredential|ExecStart|ExecStartPre|ExecStartPost|PermissionsStartOnly)=/.test(l));
     expect(pinned).toEqual([
       'User=zeroed-worker', 'Group=zeroed-worker',
       'ExecStart=/usr/bin/flock /var/lib/zeroed-record-upload/run.lock /usr/local/bin/node --max-old-space-size=48 /usr/local/lib/zeroed/record-upload.mjs --scope %i',
       'ImportCredential=heartbeat_hmac_key', 'ImportCredential=helius_api_key', 'ImportCredential=alchemy_api_key', 'ImportCredential=jupiter_api_key',
       'ImportCredential=telegram_bot_token', 'ImportCredential=telegram_chat_id',
-      'StateDirectory=zeroed-record-upload', 'ReadWritePaths=/var/lib/zeroed/recorder', 'CapabilityBoundingSet=', 'AmbientCapabilities=',
+      'StateDirectory=zeroed-record-upload',
+      // The ledger and the worker's other state unreachable; the signer's folders too (the user is in its group).
+      'TemporaryFileSystem=/var/lib/zeroed:ro', 'BindPaths=/var/lib/zeroed/recorder', 'BindReadOnlyPaths=-/var/lib/zeroed/journal.jsonl',
+      'InaccessiblePaths=-/run/zeroed-signer -/var/lib/zeroed-signer',
+      'CapabilityBoundingSet=', 'AmbientCapabilities=',
     ]);
+    // The only paths the uploader reads in the worker's state are the two bound in.
+    expect(read('ops/host/files/usr/local/lib/zeroed/record-upload.mjs')).toContain("root: '/var/lib/zeroed/recorder',\n  journal: '/var/lib/zeroed/journal.jsonl',");
     // The credentials it imports are the ones the worker already holds, and the ones it scans recordings for.
     const worker = unit('zeroed-worker.service');
     for (const n of ['helius_api_key', 'alchemy_api_key', 'jupiter_api_key', 'telegram_bot_token', 'telegram_chat_id']) expect(worker).toContain(`LoadCredentialEncrypted=${n}:`);

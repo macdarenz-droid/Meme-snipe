@@ -8,7 +8,8 @@ ConditionPathExists=/var/lib/zeroed/recorder
 [Service]
 Type=oneshot
 # The worker's own user: it already holds every credential read here and owns the recorder, so no capability is needed.
-# No zeroed-signer group: the signer's socket stays out of reach.
+# That user is in the zeroed-signer group (/etc/group), which systemd applies here too, so the signer's folders are made
+# inaccessible below.
 User=zeroed-worker
 Group=zeroed-worker
 EnvironmentFile=/etc/zeroed/worker.env
@@ -24,7 +25,12 @@ ImportCredential=telegram_bot_token
 ImportCredential=telegram_chat_id
 StateDirectory=zeroed-record-upload
 StateDirectoryMode=0700
-ReadWritePaths=/var/lib/zeroed/recorder
+# Of the worker's state only the recorder (read and delete) and the journal (read) are visible: an empty read-only
+# /var/lib/zeroed with those two bound in, so the ledger and the rest of the worker's state are out of reach.
+TemporaryFileSystem=/var/lib/zeroed:ro
+BindPaths=/var/lib/zeroed/recorder
+BindReadOnlyPaths=-/var/lib/zeroed/journal.jsonl
+InaccessiblePaths=-/run/zeroed-signer -/var/lib/zeroed-signer
 UMask=0077
 Nice=19
 IOSchedulingClass=idle
