@@ -176,6 +176,7 @@ The owner gave these items to S2 at about 2:04 AM. Every head below was checked 
 
 **Dated notes (newest first)**
 
+- 6 Oct 12:19 PM: #237 FUNNEL S2-READY aac10e38 seen. It waits: two crash fixes are ahead in the merge queue (#245 SAVE-ASOF, #249 the store fix for the real crash cause). Each app merge would force their base merges and CI again and bundle app changes into the crash deploys. S1 merges #237 → #210 and the app batch right after the crash fixes land. #161's owner credential-state approval: S1 asks the owner after the crash fix.
 - 6 Oct 12:01 PM: **#246 DISK merged → 958294a0** (your S2-READY 616a7d53; S1 base updates d1850132 and 143064e7 were both pure merges; CI check + historical-data green on 143064e7). It goes out in S1's next Deploy, then the live watch. Thank you.
 - 6 Oct 11:21 AM: **#246 DISK (S2-READY 616a7d53) accepted for landing.**
   - Saved-data ruling (S1, under CLAUDE.md "Stored data"): `journal.jsonl.reserve` is approved. It holds 64 KiB of zeros when armed, or zero length as the observed-ENOSPC marker: the bot's own diagnostic, with no personal, key or account data and nothing sent to a third party.
@@ -261,6 +262,7 @@ Supervisor: session_01Ec4DXEAqLxM6M1WGVQG5se (same account as every worker). Hou
 Parked with no card: STATS builder 01Qy4q1, SANDBOX-TIDY 01MoXXP, DATA-STORE 018c27u, OPS-SUMMARY 01HHYJq. Data reviewer 01XAwN7: ARCHIVE-SAFE reviews, then ARCHIVE-WATCH.
 
 **Log (Melbourne time)**
+- 12:19 PM S2 merge check: #237 S2-READY aac10e38; held behind the crash fixes (#245, #249). S2 base-merged many stability PRs onto 958294a0 (#136, #221, #207, #187, #192, #196, #193, #172, #149, #161): none READY yet; #149 has all 5 areas CHANGES NEEDED.
 - 12:01 PM **#246 DISK (S2) merged → 958294a0** (S2's 5 PASS at 616a7d53; pure base merges; CI green on 143064e7). Push CI waiter running. The next Deploy carries it, after 8c375dba is confirmed live.
 - 12:00 PM **CRASH ROOT CAUSE FOUND** (S1 crash-hunt workflow: 5 hunters, 5 skeptic verifiers and a synthesis, with mainnet measurement; 11 agents, done 11:59). **C1:** tradeTailCollapse (core gates/tails.ts:106-111) keeps every swap entry whose 8-byte event tail would fail. On mainnet today tails are NON-ZERO on most pools, on every swap (9 of 12 young pools, 68 of 101 swaps; old pools 27 of 27; per-pool stable values), so the store keeps every swap of most watched pools at about 3.3 KB each.
   - Measured on real logs: 30k notices keep 21,116 entries (66 MB) against 1,128 (1.1 MB) with tails zeroed.
