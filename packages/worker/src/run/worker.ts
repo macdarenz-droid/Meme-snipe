@@ -6,6 +6,7 @@
 // frames, then `restart`) → reconcile every open intent through the paper world → journal `reconcile` and write
 // `open_intents` → seed the deployer index (SEED-1's hook) → start the live sources → trade. Nothing enters before the
 // reconcile line; a reconcile that cannot settle every intent exits 3.
+import { PUMP_CREATE_AUTHORITY } from './sources.ts';
 import { randomBytes } from 'node:crypto';
 import { copyFileSync, existsSync, linkSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { journalLines, placeBookingsAt } from './booked.ts';
@@ -1342,11 +1343,13 @@ export class Worker {
     const via = m.key.startsWith('logs:truncated:') ? m.key.slice('logs:truncated:'.length)
       : m.key.startsWith('logs:undecodable:') ? m.key.slice('logs:undecodable:'.length)
         : m.key.startsWith('logs:') && v['truncated'] === true && typeof v['via'] === 'string' ? v['via'] : null;
-    if (via === null || !this.#rugVias.has(via)) return;
+    // REPLAY-1000 WHAT-IF (not in the app): a cut create log is fetched too, so the deployer index clears its loss.
+    const createVia = via === `logs:${PUMP_CREATE_AUTHORITY}`;
+    if (via === null || !(this.#rugVias.has(via) || createVia)) return;
     const sig = v['signature'];
     const slot = m.moment.slot;
     void this.#d.fetchTx(sig, 'cut-log').catch(() => false).then((found) => {
-      if (found || this.#stopping) return;
+      if (found || this.#stopping || createVia) return;
       this.#feed.ingest('worker', { type: 'offchain', key: 'coverage:rugs:gap', value: { fromSlot: slot, toSlot: slot, reason: `cut trade log ${sig}, transaction not found`, via } }, { receivedAt: this.#d.timers.now() });
     });
   }
