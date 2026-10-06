@@ -48,7 +48,7 @@ The previous S1 account reached its usage limit about 12:45 PM. The owner made t
 - No host access, no secrets access (owner only), as before.
 
 **Log (Melbourne time, newest first)**
-- 3:16 AM **Owner: "Start an agent for letter B now"** (item 2: cut pool-trade logs → permanent H11/H16 gap on about 57% of coins). This is an explicit owner exception to one-task-at-a-time. Builder TRADE-GAP-HEAL session_01VTn22ZTvSUzWe72saEX2md (Opus) on claude/trade-gap-heal from claude/h16-why (it reuses #260's cut-log fetch path; base merge after #260 merges). Steps:
+- 3:15 AM **Owner: "Start an agent for letter B now"** (item 2: cut pool-trade logs → permanent H11/H16 gap on about 57% of coins). This is an explicit owner exception to one-task-at-a-time. Builder TRADE-GAP-HEAL session_01VTn22ZTvSUzWe72saEX2md (Opus) on claude/trade-gap-heal from claude/h16-why (it reuses #260's cut-log fetch path; base merge after #260 merges). Steps:
   1. Measure cut logs per coin on mainnet first (public RPC) and report.
   2. Fetch cut or undecodable pool-trade logs below exit priority, with a daily cap and bounded retry.
   3. Heal the producer's gap only when the reserves chain is exact again; fail-closed.
