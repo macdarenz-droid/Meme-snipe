@@ -171,6 +171,17 @@ export class DeployerIndex {
     if (!this.#lost.has(o['signature'])) this.#lost.set(o['signature'], { atMs: e.moment.receivedAt, via });
   }
 
+  /** H16-WHY C: true while `signature` is a hole (a cut or undecodable log whose transaction has not been released). */
+  isLost(signature: string): boolean {
+    return this.#lost.has(signature);
+  }
+
+  /** H16-WHY C: every hole on a creates watch since `fromMs` (and not after `nowMs`), oldest first: what a boot asks for again. */
+  lostCreates(fromMs: number, nowMs: number): readonly string[] {
+    return [...this.#lost].filter(([, l]) => this.#createVias.has(l.via) && l.atMs >= fromMs && l.atMs <= nowMs)
+      .sort(([a, x], [b, y]) => x.atMs - y.atMs || (a < b ? -1 : a > b ? 1 : 0)).map(([sig]) => sig);
+  }
+
   /** The first cut or undecodable creates log since `fromMs` whose transaction has not been fetched, or null. */
   lostCreate(fromMs: number, now: Moment): { readonly signature: string; readonly atMs: number; readonly via: string } | null {
     let found: { signature: string; atMs: number; via: string } | null = null;
