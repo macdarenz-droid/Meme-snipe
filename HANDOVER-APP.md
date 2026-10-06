@@ -6,7 +6,7 @@ From here on, S2 owns this file. S2 keeps it current on its own branch `claude/s
 
 ## Active S2 work
 
-Owner clarified the pause affects S1 only. Disk-crash PR #246 at 616a7d531b7ba4066051e96f3d722963a9134366 has five independent area PASS reviews; local full check and CI are running. S1 saved-file acceptance remains a merge gate. FUNNEL-TRUTH #237 has one refresh builder doing latest-base merge and the identified create-expired truth delta; no duplicate full suite while the disk check occupies that slot. Remaining assigned queue resumes by dependencies; S1 alone merges/deploys.
+S2 is unpaused. Five disk reviews PASS at616a7d53 and two FUNNEL reviews PASS ataac10e38; local full checks/CI gates pending. GitHub authentication now fails401, so new handover commits are LOCAL ONLY until owner reconnects; prior branch/PR pushes and review comments were verified before failure. Continue local tests, assigned Helius cut and RISK-DIAL design-only review. No push without restored access plus fetch; no risk build before explicit final-design approval; S1 alone merges/deploys.
 
 ## Latest handoff audit
 
@@ -15,7 +15,7 @@ Checked **2026-10-06 10:09:09 AEDT**, against S1 docs `343ee20b563888ed54c8befc1
 | App task | Current head | Verified status |
 |---|---|---|
 | APP-TRUTH #216 | `dfc48711c607b71904d19a74b7a3259bccd9b47f` | S1 merged as `e34bce34449dcaa2333baab9212d2a9399815350`; check and historical-data green. Do not rebuild. |
-| FUNNEL-TRUTH #237 | `c2f426b1cdb30855b2d591619c7549494df34694` | Open; historical-data green, current check CANCELLED. Prior S2-ready head is historical; current head needs review carry/delta evidence and green CI before merge. |
+| FUNNEL-TRUTH #237 | `aac10e38dffa65134be390233bd173be5f9b880c` | Refreshed to base `5efb9ae0`; APP/API and facts independent PASS, identified expiry truth fix covered. CI37390690060 running; local full-check slot pending. Not S2-READY yet. |
 | FUNNEL-PERSIST #210 | `d31c32e7240f4090262bd4516d41a8982f46e991` | Open; check and historical-data green, exact-head reviews recorded below. S1's latest-base update remains. |
 | APP-SOL #182 | `6da3244f90c77273f601a8bda45fb1c1669c18e2` | Open; check, historical-data and Android build green. Fresh independent APP/API delta PASS on this head; verdict posted to PR. S1's latest-base update remains. |
 | APP-TRADE #181 | `68a1d969920b6246b2a29a93092d1a8053f685e7` | Open; check and historical-data green, all three exact-head area reviews recorded below. S1's latest-base update remains. |
@@ -55,14 +55,14 @@ Historical handoff: `S2-READY ed5adc47223546e433e0151571ab3e72b1cbd84f` (S1 has 
 
 ### FUNNEL-TRUTH — #237
 
-Historical handoff: `S2-READY 682a80d6ef08b97128c5abf984a99be126e263a8` (S1 updated the branch; current check cancelled).
+Current head: `aac10e38dffa65134be390233bd173be5f9b880c`, branch `claude/funnel-truth`; contains latest verified base `5efb9ae0497523c84e3bb49a82bce989652cdb0b`. **Not S2-READY yet**: CI and local full check are pending.
 
-- Branch: `claude/funnel-truth`. Verified contained base: `73c61006b08be35fff804155e6f700fa1c13d7b8`.
-- Review: **PASS** — `funnel_api_review` — APP/API — `682a80d6ef08b97128c5abf984a99be126e263a8`.
-- Review: **PASS** — `funnel_facts_review` — strategy/worker facts — `682a80d6ef08b97128c5abf984a99be126e263a8`.
-- Evidence: Strict schemas, corrected hard-gate validation and conservative risk stages remain intact after the base merge.
-- CI: not yet reported by S1 for this exact head; S1 must verify both required green checks before merge.
-- Owner step / merge dependency: None before merge. Land before #210.
+- **PASS** — `funnel_refresh_api_review` — APP/API/run — exact `aac10e38dffa65134be390233bd173be5f9b880c`; 24 focused tests, typecheck and valid/invalid schema matrix.
+- **PASS** — `funnel_refresh_facts_review` — strategy/worker facts — exact `aac10e38dffa65134be390233bd173be5f9b880c`; 35 focused tests, source guard and real evaluation-order audit.
+- Merge `e5facb3166c2fd88219c6b5e64bc4620255130ca` is exactly automatic `merge-tree(c2f426b1,5efb9ae0)`. Added delta only maps exact worker/create-expired to existing discovered checks failed, leaving other worker misses missing and expiry unclassified at stage0. No new APK enum or invented hard check.
+- Two expiry cases fail before; focused 35/35, strict source guard and workspace typecheck pass. Guard pins all13 refusal sites plus both exact expiry text/gate/code sites. No skipped or weakened guard.
+- Review verdicts posted on PR #237; [CI37390690060](https://github.com/macdarenz-droid/Meme-snipe/actions/runs/37390690060) running on this exact head. Local full check waits for disk #246's slot. No owner action; land before #210.
+- Older readiness `682a80d6ef08b97128c5abf984a99be126e263a8` is historical.
 
 ### FUNNEL-PERSIST — #210
 
@@ -118,6 +118,8 @@ S2-READY 6af4e43b707960316d8cd8419cb2e513fa9f4b60
 - These local limitations are historical. Current directly verified GitHub results are in Latest handoff audit; they do not establish that any future base-update head is green.
 
 ## S2 events (newest first)
+
+- **2026-10-06 11:00:04 AEDT** — GitHub authentication stopped working: primary native ls-remote fails Username and GitHub API returns HTTP401 Bad credentials. Runtime still reports connected revision6; no permission/proxy workaround attempted. Owner told to reconnect GitHub in Codex settings. Preserve local handover and independent work; pushes/PR/CI status reads wait for restored authentication and a fresh fetch. FUNNEL review comment 6005871312 was published before failure; updated head/evidence section is committed locally but not yet pushed. Item21 Helius builder started local cached-base analysis; RISK-DIAL remains design-only.
 
 - **2026-10-06 10:54:16 AEDT** — FUNNEL-TRUTH refresh aac10e38dffa65134be390233bd173be5f9b880c now has fresh independent APP/API PASS (24 focused tests and schema matrix) and facts PASS (35 focused tests, exact merge-tree identity and strict source guard). CI run 37390690060 started on the verified pushed head; local full-check slot waits behind disk #246. Starting assigned RISK-DIAL DESIGN ONLY in one visible builder: resolve existing CHANGES NEEDED notes, then fresh risk review and owner final-design OK before any code. Earlier app work is preserved; no duplicate feature builds.
 
