@@ -105,11 +105,24 @@ const tapes = async (perDisc: number) => {
     for (const pool of o.pools) {
       const key = `${o.sig}:${o.outerIx}:${o.innerIx}:${pool}`;
       if (done[key] === undefined) {
-        // The pool's transactions around the occurrence: 10 before it, and up to 1,000 after it (newest first).
-        const older = (await rpc('getSignaturesForAddress', [pool, { limit: 10, before: o.sig }])) as { signature: string; err: unknown }[];
-        const newer = (await rpc('getSignaturesForAddress', [pool, { limit: 1000, until: o.sig }])) as { signature: string; err: unknown }[];
+        // The pool's transactions around the occurrence: the 20 just before it, and the 20 just after it. The RPC lists
+        // newest first, so the ones just after are reached by paging back from the newest to the occurrence (at most
+        // 50 pages); a pool busier than that is left without a tape. Failed transactions are kept on the list here and
+        // dropped below, so the window is contiguous.
+        type Sig = { signature: string; err: unknown };
+        const older = (await rpc('getSignaturesForAddress', [pool, { limit: 20, before: o.sig }])) as Sig[];
+        const newer: Sig[] = [];
+        let cursor: string | undefined;
+        let complete = false;
+        for (let p = 0; p < 50; p++) {
+          const res = (await rpc('getSignaturesForAddress', [pool, { limit: 1000, until: o.sig, ...(cursor ? { before: cursor } : {}) }])) as Sig[];
+          newer.push(...res);
+          if (res.length < 1000) { complete = true; break; }
+          cursor = res.at(-1)!.signature;
+        }
+        if (!complete) { done[key] = []; writeJson('tapes.json', done); continue; }
         // Chronological, in the RPC's order (its order within a slot is checked by the whole tape chaining, in report).
-        const sigs = [...[...older].reverse(), { signature: o.sig, err: null }, ...newer.slice(-10).reverse()].filter((x) => x.err === null).map((x) => x.signature);
+        const sigs = [...[...older].reverse(), { signature: o.sig, err: null }, ...newer.slice(-20).reverse()].filter((x) => x.err === null).map((x) => x.signature);
         for (const s of sigs) await getTx(s);
         done[key] = sigs;
         writeJson('tapes.json', done);
@@ -199,6 +212,7 @@ const report = () => {
       const key = `${o.sig}:${o.outerIx}:${o.innerIx}:${pool}`;
       const sigs = tapesOf[key];
       if (sigs === undefined) continue;
+      if (sigs.length === 0) { checks.push({ key, disc: o.disc, pool, slot: o.slot, verdict: 'inconclusive', why: 'pool too busy to page back to the event' }); continue; }
       const add = (verdict: Check['verdict'], why: string) => checks.push({ key, disc: o.disc, pool, slot: o.slot, verdict, why });
       // Every pool event on the tape (the occurrence's transaction and its neighbours), in chain order.
       const all: { pos: Pos; e: LocatedEvent }[] = [];
