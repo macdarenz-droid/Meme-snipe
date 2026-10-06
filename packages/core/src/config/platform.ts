@@ -12,3 +12,10 @@ export const KNOWN_PLATFORM_CHANGES: readonly { readonly id: string; readonly at
   { id: 'B4', atMs: 1_789_226_640_000, economicsUnchanged: false }, // 2026-09-12 15:24 UTC, holder rewards
   { id: 'B5', atMs: 1_790_956_020_000, economicsUnchanged: true }, //  2026-10-02 15:47 UTC, unpublished upgrade (UPG-1)
 ];
+
+/**
+ * SAVE-ASOF: how far a chain block time may be after local receipt and still count as clock skew (Solana block times
+ * are a stake-weighted estimate, routinely seconds off a local clock). The seed and the downtime fill take a create up
+ * to this far after the process start as at the start; further is refused as data that cannot be true.
+ */
+export const CHAIN_SKEW_MS = 60_000;

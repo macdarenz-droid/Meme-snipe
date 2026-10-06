@@ -7,6 +7,7 @@ import type { AsOfEntry } from '../engine/asof.ts';
 import type { MarketEvent } from '../engine/feed.ts';
 import { compareEvents, compareMoments, type Moment } from '../engine/moment.ts';
 import { SECOND_MS } from '../config/time.ts';
+import { CHAIN_SKEW_MS } from '../config/platform.ts';
 import type { DeployerFact } from './facts.ts';
 import { MintIndex } from './mint-index.ts';
 import { AsOfClamp } from './as-of-clamp.ts';
@@ -93,8 +94,8 @@ export class DeployerIndex {
    * restarted worker does not reject H14 for a whole look-back. `creates` are create events in FEED-1's shape, in
    * release order; `coverage` are the `coverage:creates:*` facts of the seeded range, which the worker must also
    * release into the engine, because H14 reads coverage from the engine's history and never from here.
-   * As of `asOf` (the process start): an event or fact dated after it, or a create whose chain time is after it, is
-   * refused and nothing is seeded. The index's own start becomes the seeded range's first `coverage:creates:start`;
+   * As of `asOf` (the process start): an event or fact dated after it, or a create whose chain time is more than
+   * CHAIN_SKEW_MS after it, is refused and nothing is seeded (a chain time within that is taken as at the start). The index's own start becomes the seeded range's first `coverage:creates:start`;
    * without one the start is unchanged (the first live event), so a seed with no coverage never widens what the
    * index claims to have watched. Gaps inside the range stay gaps: they are coverage facts, judged by H14.
    */
@@ -138,8 +139,10 @@ export class DeployerIndex {
       prev = e;
       const c = e.key.startsWith(LOG_CREATE_PREFIX) || e.key.startsWith(TX_CREATE_PREFIX) ? createOf(e.value) : null;
       if (c === null) throw new RangeError(`${what} event ${e.id} is not a create event`);
-      if (c.createdAtMs > asOf.receivedAt) throw new RangeError(`${what} create ${e.id} has a chain time after the process start`);
-      this.#addMint(mints, c);
+      // SAVE-ASOF: a block time is routinely seconds off local receipt: up to CHAIN_SKEW_MS after the start it is taken
+      // as at the start (the moment check above already refuses anything released after it); further is refused.
+      if (c.createdAtMs > asOf.receivedAt + CHAIN_SKEW_MS) throw new RangeError(`${what} create ${e.id} has a chain time after the process start`);
+      this.#addMint(mints, c.createdAtMs > asOf.receivedAt ? { ...c, createdAtMs: asOf.receivedAt } : c);
     }
     return { mints, last: prev?.moment ?? null };
   }

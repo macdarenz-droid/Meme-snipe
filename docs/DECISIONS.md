@@ -2711,3 +2711,11 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
     migrated 5 s after the moment is saved (before: left out); the worker logs a clamp over 10 s and writes the save.
     Hand mutants killed: labels unclamped, the clamp moving a transaction index, mint rows unclamped, labeller
     unclamped, coverage unclamped, the candidate filter back, clamps not counted, the log threshold, `first` unclamped.
+  - The seed and the downtime fill (`DeployerIndex.#checked`, supervisor ruling): a create whose block time was after the
+    process start's receipt time refused the whole seed, so H14 read not covered for a full look-back after a restart
+    near a create. A block time up to `CHAIN_SKEW_MS` (60 s, config/platform.ts) after the start is now taken as at the
+    start; further is still refused (the SEED-1 leak guard's hour-ahead case is unchanged), and a create released after
+    the start is refused by its moment whatever its block time. Bounded here, unlike the save's clamp: a seed has no
+    save log to show a large one, and an hour-ahead block time cannot be skew. Test: `deployer-index.test.ts` "SAVE-ASOF:
+    a create whose block time is seconds after the process start"; mutants killed: no bound, no clamp, `>=` at the
+    bound, no refusal.
