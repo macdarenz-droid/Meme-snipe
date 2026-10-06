@@ -48,6 +48,7 @@ The previous S1 account reached its usage limit about 12:45 PM. The owner made t
 - No host access, no secrets access (owner only), as before.
 
 **Log (Melbourne time, newest first)**
+- 10:03 PM **TAIL-PROOF done → draft #257** (researcher session_01Mbukg26Fx5c528hdhXrUHD, 8:43–10:00 PM). A non-zero B5 tail does not change a trade's money: 1,188 non-zero-tail trades on 36 pools and 180 zero-tail controls reproduce exactly (event amounts, fees, vaults, the swap's own transfers); the tail is the pool's unswept creator fee (grows by coin_creator_fee on v2 trades 891/891; reset by the unpublished sweep_creator_fee, price unchanged). Recommendation (evidence for the owner's H5 ruling): accept tails whose trades reproduce exactly, keep the 8-byte check; stricter: tail must equal the running v2 creator-fee sum since the last sweep. Side effect: sweeps move vault/virtual reserves between trades. Sample: one 38-minute window. H5 unchanged. Researcher told to base-merge b8cd3c50, then park. Reviewers: facts session_01N5hyMSQZX6QToZpJbGkdmy, chain/BT session_01BKajVHGPmQt8ZUHKdt2qFK. The H5 change is put to the owner only after both PASS. Priority list presented to the owner at 9:57 PM; no pick yet.
 - 9:58 PM **Fable review verified** (wf_281f6178-a9d; 8 agents). The ranked hierarchy (T1–T5) is now in PROJECT_STATE "Priority hierarchy". Key verdicts:
   - money in dollars: TRUE; a flat-wallet simulation shows about 6–8% SOL fall → R6 blocks every entry, about 22% → R10 latches (no re-arm command; #190 open);
   - app headline: FIXED (#182);
