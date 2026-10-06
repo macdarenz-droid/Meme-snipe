@@ -124,9 +124,9 @@ describe('counts from the journal', () => {
 });
 
 describe('H16-WHY: the H16 refusals by input and needing gate', () => {
-  it('counts each refused candidate\'s last H16 refusal by code, input and gate; a line without them is null; an entry or a later other refusal drops it', () => {
+  it('counts each refused candidate\'s last refusal by every distinct H16 reason in it; a line without the names is null; an entry or a later other refusal drops it', () => {
     const s = emptySummaryState();
-    const mints = Array.from({ length: 8 }, (_, k) => `${M1.slice(0, 40)}${'ABCDEFGH'[k]}`);
+    const mints = Array.from({ length: 9 }, (_, k) => `${M1.slice(0, 40)}${'ABCDEFGHJ'[k]}`);
     [
       h16(NOON + 1, mints[0]!, 'missing', 'pool', 'H5'),
       h16(NOON + 2, mints[1]!, 'missing', 'pool', 'H5'),
@@ -141,14 +141,25 @@ describe('H16-WHY: the H16 refusals by input and needing gate', () => {
       // H16, then entered: not refused.
       h16(NOON + 9, mints[7]!, 'missing', 'pool', 'H5'),
       line('entry', NOON + 10, { mint: mints[7], trade: 'p1', reasons: ['entry filled (paper)'] }),
+      // A stage evaluates all its gates: H8 first, then H16's cross-check, then H17's pool fields (twice: once counted).
+      line('decision', NOON + 11, { action: 'reject', reasons: ['reject', 'U2', mints[8], 'hard reject H8,H16,H17'], gate_reasons: [
+        { gate: 'H8', code: 'below-liquidity-floor', detail: 'x', input: 'pool' },
+        { gate: 'H16', code: 'missing', detail: 'x', input: 'xcheck', neededBy: 'H16' },
+        { gate: 'H16', code: 'missing', detail: 'x', input: 'pool', neededBy: 'H17' },
+        { gate: 'H16', code: 'missing', detail: 'y', input: 'pool', neededBy: 'H17' },
+      ] }),
     ].forEach((l) => foldLine(s, l));
     const sum = buildSummary(inputs({ fold: s.days[DAY] }));
-    expect(sum.candidates.refused_by_reason).toEqual([{ gate: 'H16', code: 'missing', count: 5 }, { gate: 'H16', code: 'stale', count: 1 }, { gate: 'H7', code: 'top-holders', count: 1 }]);
+    expect(sum.candidates.refused_by_reason).toEqual([
+      { gate: 'H16', code: 'missing', count: 5 }, { gate: 'H16', code: 'stale', count: 1 }, { gate: 'H7', code: 'top-holders', count: 1 }, { gate: 'H8', code: 'below-liquidity-floor', count: 1 },
+    ]);
     expect(sum.candidates.h16_by_input).toEqual([
       // Ties in a fixed order (by the row's JSON), so two posts of the same counts are the same text.
       { code: 'missing', input: 'pool', needed_by: 'H5', count: 2 },
       { code: 'missing', input: null, needed_by: null, count: 2 },
+      { code: 'missing', input: 'pool', needed_by: 'H17', count: 1 },
       { code: 'missing', input: 'xcheck', needed_by: 'H1', count: 1 },
+      { code: 'missing', input: 'xcheck', needed_by: 'H16', count: 1 },
       { code: 'stale', input: 'pool', needed_by: 'H5', count: 1 },
     ]);
     expect(sum.candidates.h16_other).toBe(0);
@@ -169,6 +180,7 @@ describe('H16-WHY: the H16 refusals by input and needing gate', () => {
     expect(c.h16_by_input![0]).toEqual({ code: 'missing', input: `in${SUMMARY_TOP_REASONS + 2}`, needed_by: 'H5', count: SUMMARY_TOP_REASONS + 3 });
     // The three smallest (1, 2 and 3 refusals) are summed.
     expect(c.h16_other).toBe(6);
+    // One H16 reason per candidate here, so the rows and the rest add up to the refusals.
     expect(c.h16_by_input!.reduce((t, r) => t + r.count, 0) + c.h16_other!).toBe(c.refused);
     const none = emptySummaryState();
     foldLine(none, reject(NOON, M1, 'H7', 'top-holders'));

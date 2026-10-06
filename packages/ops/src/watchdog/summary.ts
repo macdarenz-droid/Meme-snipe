@@ -40,9 +40,9 @@ export interface ReasonCount {
   readonly count: number;
 }
 /**
- * H16-WHY: refused candidates whose last refusal was gate H16, by its code, the input it names and the hard gate that
- * needed it. Fixed names only (a FactName and H1–H17); null when the journal line named none (a line from before
- * H16-WHY, or an evidence reason without one).
+ * H16-WHY: refused candidates by an H16 reason of their last refusal: its code, the input it names and the hard gate
+ * that needed it. Fixed names only (a FactName and H1–H17); null when the journal line named none (a line from before
+ * H16-WHY, or an evidence reason without one). A candidate counts once under each of its distinct H16 reasons.
  */
 export interface H16Count {
   readonly code: string;
@@ -143,9 +143,9 @@ export interface Summary {
     readonly refused_by_reason: readonly ReasonCount[];
     readonly refused_other: number;
     /**
-     * H16-WHY: both or neither; present only when a refused candidate's last refusal was H16. The H16 refusals by code,
-     * input and needing gate, most frequent first, at most SUMMARY_TOP_REASONS; the rest summed in `h16_other`. A worker
-     * from before them still posts.
+     * H16-WHY: both or neither; present only when a refused candidate's last refusal had an H16 reason. Refused
+     * candidates by H16 reason (code, input, needing gate), most frequent first, at most SUMMARY_TOP_REASONS; the rest
+     * summed in `h16_other`. A candidate counts under each of its distinct H16 reasons. A worker from before them still posts.
      */
     readonly h16_by_input?: readonly H16Count[];
     readonly h16_other?: number;

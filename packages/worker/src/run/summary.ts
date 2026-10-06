@@ -31,8 +31,8 @@ export interface DayFold {
   alerts: Record<string, number>;
   halts: Record<string, number>;
   /**
-   * Per candidate mint: its last refusal (gate, code) or null, and whether it was entered. H16-WHY: an H16 refusal's
-   * input and needing gate when its line named them (absent in older state and on other refusals).
+   * Per candidate mint: its last refusal (gate, code) or null, and whether it was entered. H16-WHY: every distinct H16
+   * reason of that refusal as [code, input, needing gate] (absent in older state and when it had none).
    */
   cands: Record<string, CandFold>;
   /** RESTART-CAUSE: restarts by kind, previous exits by kind, and crashes by site (a JSON key of error, file, line, event). Absent in older state. */
@@ -47,9 +47,12 @@ export interface CandFold {
   gate: string | null;
   code: string | null;
   entered: boolean;
-  input?: string | null | undefined;
-  neededBy?: string | null | undefined;
+  h16?: H16Key[] | undefined;
 }
+/** An H16 reason as [code, input, needing gate]; a name that does not fit its pattern (or a line without it) is null. */
+export type H16Key = [string, string | null, string | null];
+/** The most H16 reasons kept per candidate (a stage-2 refusal has at most one per stage-2 gate and fact). */
+const H16_PER_CAND = 8;
 
 export interface SummaryState {
   readonly v: 1;
@@ -92,19 +95,27 @@ export const haltCode = (reason: string): string => {
 };
 
 /**
- * A refusal's reason: the first typed gate reason (`gate_reasons`), or the worker's own when none is typed. H16-WHY: an
- * H16 reason's input and needing gate, each kept only when it fits its pattern (else null); other gates carry none.
+ * A refusal's reason: the first typed gate reason (`gate_reasons`), or the worker's own when none is typed. H16-WHY:
+ * with every distinct H16 reason of the line (a stage evaluates all its gates, so an H16 reason can follow another
+ * gate's), its input and needing gate each kept only when it fits its pattern (else null).
  */
 const refusal = (line: Record<string, unknown>): Omit<CandFold, 'entered'> => {
-  const g = Array.isArray(line['gate_reasons']) ? line['gate_reasons'][0] : undefined;
+  const all = Array.isArray(line['gate_reasons']) ? line['gate_reasons'] : [];
+  const h16: H16Key[] = [];
+  for (const x of all) {
+    if (h16.length >= H16_PER_CAND) break;
+    const c = isObj(x) && x['gate'] === 'H16' ? code(x['code']) : null;
+    if (c === null) continue;
+    const k: H16Key = [c, code((x as Record<string, unknown>)['input']), fits((x as Record<string, unknown>)['neededBy'], PATTERNS.GATE) ? (x as Record<string, string>)['neededBy']! : null];
+    if (!h16.some((y) => y[0] === k[0] && y[1] === k[1] && y[2] === k[2])) h16.push(k);
+  }
+  const more = h16.length === 0 ? { h16: undefined } : { h16 };
+  const g = all[0];
   if (isObj(g) && fits(g['gate'], PATTERNS.GATE)) {
     const c = code(g['code']);
-    if (c !== null && g['gate'] === 'H16') {
-      return { gate: 'H16', code: c, input: code(g['input']), neededBy: fits(g['neededBy'], PATTERNS.GATE) ? g['neededBy'] : null };
-    }
-    if (c !== null) return { gate: g['gate'], code: c, input: undefined, neededBy: undefined };
+    if (c !== null) return { gate: g['gate'], code: c, ...more };
   }
-  return { gate: 'worker', code: 'untyped', input: undefined, neededBy: undefined };
+  return { gate: 'worker', code: 'untyped', ...more };
 };
 
 const RESTART_KINDS = new Set(['planned', 'deploy', 'unplanned']);
@@ -391,14 +402,19 @@ export const buildSummary = (i: SummaryInputs): Summary => {
   };
 };
 
-/** H16-WHY: the refused candidates whose last refusal was H16, by code, input and needing gate, most frequent first. */
+/**
+ * H16-WHY: refused candidates by each distinct H16 reason of their last refusal (code, input, needing gate), most
+ * frequent first. A candidate counts once per reason, so the rows can sum to more than the refusals.
+ */
 const h16Counts = (cands: readonly CandFold[]): H16Count[] => {
   const by = new Map<string, H16Count>();
   for (const c of cands) {
-    if (c.entered || c.gate !== 'H16' || c.code === null) continue;
-    const r = { code: c.code, input: c.input ?? null, needed_by: c.neededBy ?? null };
-    const k = JSON.stringify(r);
-    by.set(k, { ...r, count: (by.get(k)?.count ?? 0) + 1 });
+    if (c.entered || c.code === null || c.gate === null) continue;
+    for (const [code, input, neededBy] of c.h16 ?? []) {
+      const r = { code, input, needed_by: neededBy };
+      const k = JSON.stringify(r);
+      by.set(k, { ...r, count: (by.get(k)?.count ?? 0) + 1 });
+    }
   }
   return [...by.values()].sort((a, b) => byCount(a, b, JSON.stringify([a.code, a.input, a.needed_by]), JSON.stringify([b.code, b.input, b.needed_by])));
 };
