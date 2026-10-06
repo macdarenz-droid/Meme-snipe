@@ -11,6 +11,11 @@ type Row = readonly [string, unknown, Moment];
 const BUY = `pump_amm:BuyEvent:${POOL_ADDRESS}`;
 const SELL_LOGS = `logs:pump_amm:SellEvent:${POOL_ADDRESS}`;
 const ZERO = '0000000000000000';
+/** A pool trade event whose pre-trade quote vault is below any non-zero tail (H5-POOL-TAILS: refused). */
+const overVault = (name: 'BuyEvent' | 'SellEvent', extra: string, txSlot: bigint, signature: string) => {
+  const e = tradeEvent(name, 8, extra, txSlot, signature);
+  return { ...e, event: { ...e.event, data: { poolQuoteTokenReserves: 0n } } };
+};
 
 const contextWith = (rows: readonly Row[], base: Facts = passingFacts()): GateContext => {
   const clock = new SimClock({ slot: 0n, txIndex: 0, ixIndex: 0, receivedAt: Number.MIN_SAFE_INTEGER });
@@ -34,10 +39,11 @@ describe('trade-event tails on the pool (GATE-1c)', () => {
     expect(h5([[SELL_LOGS, tradeEvent('SellEvent', 8, ZERO, SLOT - 700n, 'SigSell'), recent(0)]])).toEqual([]);
   });
 
-  it('a non-zero tail rejects H5, naming the rule and the first offending signature', () => {
+  // H5-POOL-TAILS: was "a non-zero tail rejects H5"; a non-zero pool tail now rejects only above the pool's quote vault.
+  it('a non-zero tail above the quote vault rejects H5, naming the rule and the first offending signature', () => {
     const r = h5([
-      [SELL_LOGS, tradeEvent('SellEvent', 8, '0100000000000000', SLOT - 700n, 'SigFirst'), recent(0)],
-      [BUY, tradeEvent('BuyEvent', 8, 'ff00000000000000', SLOT - 600n, 'SigLater'), recent(100)],
+      [SELL_LOGS, overVault('SellEvent', '0100000000000000', SLOT - 700n, 'SigFirst'), recent(0)],
+      [BUY, overVault('BuyEvent', 'ff00000000000000', SLOT - 600n, 'SigLater'), recent(100)],
     ]);
     expect(r).toEqual([expect.objectContaining({ gate: 'H5', code: 'event-tail', input: 'trades', value: 'SigFirst', detail: expect.stringContaining('first offending signature SigFirst') })]);
   });
@@ -92,12 +98,12 @@ describe('trade-event tails on the pool (GATE-1c)', () => {
   it('the pool tape starts at the migration slot when the migration fact has one, else at its time', () => {
     const migSlot = SLOT - 15_000n;
     // Received after the migration time but in a slot before the migration: not part of the pool's tape.
-    const early: Row = [BUY, tradeEvent('BuyEvent', 8, '0100000000000000', migSlot - 1n, 'SigEarly'), at(MIGRATED_AT + 5, migSlot - 1n)];
+    const early: Row = [BUY, overVault('BuyEvent', '0100000000000000', migSlot - 1n, 'SigEarly'), at(MIGRATED_AT + 5, migSlot - 1n)];
     const ctx = contextWith([early], drop(passingFacts(), BUY));
     expect(checkPoolTails(ctx, POOL_ADDRESS, { slot: migSlot, ms: MIGRATED_AT })).toEqual(expect.objectContaining({ code: 'not-covered' }));
     expect(checkPoolTails(ctx, POOL_ADDRESS, { slot: null, ms: MIGRATED_AT })).toEqual(expect.objectContaining({ code: 'event-tail', signature: 'SigEarly' }));
     // In the migration slot itself: part of the tape.
-    const same: Row = [BUY, tradeEvent('BuyEvent', 8, '0100000000000000', migSlot, 'SigSame'), at(MIGRATED_AT, migSlot)];
+    const same: Row = [BUY, overVault('BuyEvent', '0100000000000000', migSlot, 'SigSame'), at(MIGRATED_AT, migSlot)];
     expect(checkPoolTails(contextWith([same], drop(passingFacts(), BUY)), POOL_ADDRESS, { slot: migSlot, ms: MIGRATED_AT })).toEqual(expect.objectContaining({ code: 'event-tail', signature: 'SigSame' }));
   });
 });
