@@ -2702,8 +2702,10 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - Labels are not clamped (facts review B1): H14 and the soft features count a prior rug or an unjudged mint while
     `knownAtMs` (its receipt time) is inside the look-back, so a clamp could drop one from the look-back early, a
     known rugger missed. A label keeps its exact receipt time, and restore checks it by moment (`compareMoments`, slot
-    first, the engine's own order): one released at or before the save is never future; one at a later slot is
-    refused as before. A dropped label would fail open too, so none is dropped.
+    first, the engine's own order): one after the save's moment (a later slot, or its slot at a later transaction or
+    instruction) is refused as before, and so is one received more than `CHAIN_SKEW_MS` after the moment, which
+    cannot be skew (persist review: the receipt check stays bounded). A dropped label would fail open too, so none is
+    dropped.
   - Capped (facts review B2): a time more than `CHAIN_SKEW_MS` (60 s) after the moment cannot be skew, and refuses
     the save with its reason ("a saved time is N ms after the save's moment, more than the 60000 ms of clock skew
     allowed"), logged as "Saved state not written: …", the last file kept: the fail-closed behaviour from before
@@ -2729,7 +2731,8 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
     (`CLAMP_LOG_MS`; "Saved state: N times dated after the save's moment were saved as at it, the latest X s after."),
     so a real future-dated bug stays visible.
   - Evidence: `save-asof.test.ts`: labels received after the moment restore with their exact receipt time and the
-    look-back edge reads as before the restart, a label at a later slot is refused (before: every late label refused);
+    look-back edge reads as before the restart; a label later in the moment's order (slot, transaction, instruction)
+    or received over 60 s after it is refused, just under 60 s restores exactly (before: every late label refused);
     the first moment and a mint row 5 s late restore with slot, transaction and instruction kept; a create, launch and
     coverage fact after the moment restore; a candidate migrated 5 s after the moment is saved (before: left out); a
     clamp just under 60 s is saved, just over refuses the save, also through the worker (reason logged, file kept); the

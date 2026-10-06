@@ -328,10 +328,12 @@ export class DeployerIndex {
       if (at === null || (o['kind'] !== null && typeof o['kind'] !== 'string')) throw new RangeError('bad label');
       return { at, kind: o['kind'] as string | null };
     };
-    // SAVE-ASOF (facts review B1): a label is checked by its moment, the engine's own order (slot first): one released
-    // at or before the save is never future, whatever its receipt time, and keeps that receipt time exactly.
-    pairs(s.rugs, idx.#rugs, known, (k) => compareMoments(k.at, asOf) > 0);
-    pairs(s.unjudged, idx.#unjudged, known, (k) => compareMoments(k.at, asOf) > 0);
+    // SAVE-ASOF (facts review B1): a label is checked by its moment, the engine's own order (slot first), and keeps its
+    // receipt time exactly; one received more than CHAIN_SKEW_MS after the save cannot be skew and is refused (persist
+    // review: the receipt check stays bounded).
+    const futureLabel = (k: Known): boolean => compareMoments(k.at, asOf) > 0 || k.at.receivedAt > asOf.receivedAt + CHAIN_SKEW_MS;
+    pairs(s.rugs, idx.#rugs, known, futureLabel);
+    pairs(s.unjudged, idx.#unjudged, known, futureLabel);
     if (!Array.isArray(s.createVias) || !s.createVias.every((v) => typeof v === 'string')) throw new RangeError('bad vias');
     for (const v of s.createVias) idx.#createVias.add(v);
     if (!Array.isArray(s.lost)) throw new RangeError('bad lost table');

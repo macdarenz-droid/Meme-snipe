@@ -129,15 +129,24 @@ describe('SAVE-ASOF', () => {
     expect([clamp.count, clamp.maxMs]).toEqual([2, 5_000]);
   });
 
-  it('a label at a later slot than the save\'s moment is still refused on restore', () => {
+  it('a label after the save\'s moment in the engine\'s order (a later slot, or its own slot at a later transaction or instruction), or received more than 60 s after it, is refused on restore', () => {
     const idx = new DeployerIndex();
-    const asOf = { slot: SLOT + 2n, txIndex: 1, ixIndex: 0, receivedAt: IN_WINDOW + 1_000 };
+    const asOf = { slot: SLOT + 2n, txIndex: 1, ixIndex: 1, receivedAt: IN_WINDOW + 1_000 };
     idx.observe(market('logs:pump:CreateEvent:M', createEvent('M', IN_WINDOW, SLOT + 2n), asOf));
     const saved = idx.snapshot(asOf);
-    // Received before the moment, but at a later slot: future by the engine's order.
+    const withLabel = (table: 'rugs' | 'unjudged', at: Moment) => ({ ...saved, [table]: [['Dev1111', [['R', { at, kind: null }]]]] });
     for (const table of ['rugs', 'unjudged'] as const) {
-      const later = { ...saved, [table]: [['Dev1111', [['R', { at: { slot: SLOT + 3n, txIndex: 0, ixIndex: 0, receivedAt: IN_WINDOW }, kind: null }]]]] };
-      expect(() => DeployerIndex.restore(later), table).toThrow(/dated after the snapshot moment/);
+      // Received before the moment, but after it in the engine's order: future.
+      for (const at of [{ slot: SLOT + 3n, txIndex: 0, ixIndex: 0 }, { slot: SLOT + 2n, txIndex: 2, ixIndex: 0 }, { slot: SLOT + 2n, txIndex: 1, ixIndex: 2 }]) {
+        expect(() => DeployerIndex.restore(withLabel(table, { ...at, receivedAt: IN_WINDOW })), `${table} ${at.slot}/${at.txIndex}/${at.ixIndex}`).toThrow(/dated after the snapshot moment/);
+      }
+      // Its own slot, the moment itself: restores.
+      expect(() => DeployerIndex.restore(withLabel(table, { ...asOf, receivedAt: IN_WINDOW }))).not.toThrow();
+      // An earlier slot, received just under and just over CHAIN_SKEW_MS after the moment.
+      const early = { slot: SLOT + 1n, txIndex: 0, ixIndex: 0 };
+      const ok = DeployerIndex.restore(withLabel(table, { ...early, receivedAt: asOf.receivedAt + CHAIN_SKEW_MS }));
+      expect(ok.snapshot(asOf)[table]).toEqual([['Dev1111', [['R', { at: { ...early, receivedAt: asOf.receivedAt + CHAIN_SKEW_MS }, kind: null }]]]]);
+      expect(() => DeployerIndex.restore(withLabel(table, { ...early, receivedAt: asOf.receivedAt + CHAIN_SKEW_MS + 1 })), table).toThrow(/dated after the snapshot moment/);
     }
   });
 
