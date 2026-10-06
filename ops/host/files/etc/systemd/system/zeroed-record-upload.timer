@@ -1,0 +1,12 @@
+[Unit]
+Description=Zeroed: hourly upload of sealed recordings
+
+[Timer]
+# 10 minutes after boot or after the timer is switched on, then an hour after each run ends.
+OnBootSec=10min
+OnActiveSec=10min
+OnUnitInactiveSec=1h
+Unit=zeroed-record-upload@all.service
+
+[Install]
+WantedBy=timers.target

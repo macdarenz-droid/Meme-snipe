@@ -17,6 +17,7 @@ import {
   type Stored,
   summaryAlert,
 } from './logic.ts';
+import { handleRecord, RECORD_PATH, takeNonceIn } from './record.ts';
 import { writeReports } from './reports.ts';
 import { checkSummary } from './summary.ts';
 
@@ -38,6 +39,8 @@ interface DurableNamespace {
 interface ExecutionContext {
   waitUntil(p: Promise<unknown>): void;
 }
+/** Workers' identity stream that sets the body length (an upload to GitHub needs a Content-Length). */
+declare const FixedLengthStream: new (length: number) => { readable: ReadableStream<Uint8Array>; writable: WritableStream<Uint8Array> };
 
 export interface Env {
   WATCHDOG: DurableNamespace;
@@ -51,6 +54,8 @@ export interface Env {
   DATA_REPO?: string;
   REPORTS_TOKEN?: string;
   GITHUB_API?: string;
+  /** RECORD-UPLOAD: the upload host; uploads.github.com when unset (a stand-in only in the ops end-to-end). */
+  GITHUB_UPLOADS?: string;
   [k: string]: unknown;
 }
 
@@ -61,6 +66,8 @@ const TOKEN_PROGRAMS = ['TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', 'TokenzQd
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const { pathname } = new URL(req.url);
+    // RECORD-UPLOAD runs here, outside the Durable Object, so the body is never read: only piped on to GitHub.
+    if (req.method === 'POST' && pathname === RECORD_PATH) return handleRecord(req, env, recordDeps(env));
     if (req.method !== 'POST' || !['/heartbeat', '/telegram', '/lease', '/resume', '/summary'].includes(pathname)) return new Response('Not found', { status: 404 });
     return env.WATCHDOG.get(env.WATCHDOG.idFromName('primary')).fetch(req);
   },
@@ -69,6 +76,28 @@ export default {
     ctx.waitUntil(stub.fetch(new Request('https://watchdog.internal/check', { method: 'POST' })));
   },
 };
+
+// The nonce book and the release ids are in the Durable Object, on paths the public fetch above never routes.
+const recordStore = (env: Env, path: string, body: unknown) =>
+  env.WATCHDOG.get(env.WATCHDOG.idFromName('primary')).fetch(new Request(`https://watchdog.internal${path}`, { method: 'POST', body: JSON.stringify(body) }));
+
+const recordDeps = (env: Env) => ({
+  fetch: (u: string, i: RequestInit) => fetch(u, i),
+  takeNonce: async (nonce: string, t: number, release: string) => {
+    const r = await recordStore(env, '/record-nonce', { nonce, t, release });
+    if (r.status !== 200) return { ok: false, releaseId: null };
+    const id = ((await r.json()) as { release_id?: unknown }).release_id;
+    return { ok: true, releaseId: Number.isSafeInteger(id) ? (id as number) : null };
+  },
+  rememberRelease: async (release: string, id: number | null) => void (await recordStore(env, '/record-release', { release, id })),
+  fixedLength: (body: ReadableStream<Uint8Array>, size: number) => {
+    const { readable, writable } = new FixedLengthStream(size);
+    // Not awaited: the upload reads the other end. A short or long body errors the stream, and the upload fails.
+    body.pipeTo(writable).catch(() => {});
+    return readable;
+  },
+  nowS: () => Math.floor(Date.now() / 1000),
+});
 
 export class Watchdog {
   private readonly state: DurableState;
@@ -83,6 +112,8 @@ export class Watchdog {
     const { pathname } = new URL(req.url);
     if (pathname === '/check') return json(await this.check(Date.now()));
     const body = await req.text();
+    if (pathname === '/record-nonce') return this.recordNonce(body);
+    if (pathname === '/record-release') return this.recordRelease(body);
     if (pathname === '/telegram') return this.telegram(req, body);
     // The signature covers method and path too, so a heartbeat's signature can never open /resume.
     const t = await verifySignature(req.headers.get('x-zeroed-signature'), req.method, pathname, body, this.env.HEARTBEAT_HMAC_KEY ?? '', Math.floor(Date.now() / 1000));
@@ -138,6 +169,39 @@ export class Watchdog {
       await this.state.storage.put('summary_failure', { reason: r.reason, at: Date.now() });
     }
     return json({ ok: true, written: r.ok });
+  }
+
+  /** RECORD-UPLOAD: one use per nonce. Reached only from the outer fetch (never routed from outside). */
+  private async recordNonce(body: string): Promise<Response> {
+    let r: { nonce?: unknown; t?: unknown; release?: unknown };
+    try {
+      r = JSON.parse(body) as typeof r;
+    } catch {
+      return json({ error: 'bad request' }, 400);
+    }
+    if (typeof r.nonce !== 'string' || !/^[0-9a-f]{32}$/.test(r.nonce) || !Number.isSafeInteger(r.t)) return json({ error: 'bad request' }, 400);
+    const next = takeNonceIn((await this.state.storage.get<Record<string, number>>('record_nonces')) ?? {}, r.nonce, r.t as number, Math.floor(Date.now() / 1000));
+    if (next === null) return json({ error: 'used' }, 409);
+    await this.state.storage.put('record_nonces', next);
+    const ids = (await this.state.storage.get<Record<string, number>>('record_releases')) ?? {};
+    return json({ ok: true, release_id: typeof r.release === 'string' && Object.hasOwn(ids, r.release) ? ids[r.release] : null });
+  }
+
+  /** RECORD-UPLOAD: a day release's id, kept so an upload never reads the release back; the newest 64 days are kept. */
+  private async recordRelease(body: string): Promise<Response> {
+    let r: { release?: unknown; id?: unknown };
+    try {
+      r = JSON.parse(body) as typeof r;
+    } catch {
+      return json({ error: 'bad request' }, 400);
+    }
+    if (typeof r.release !== 'string' || !/^rec-\d{4}-\d{2}-\d{2}(?:\.[1-9]\d?)?$/.test(r.release) || !(r.id === null || (Number.isSafeInteger(r.id) && (r.id as number) > 0))) return json({ error: 'bad request' }, 400);
+    const ids = { ...((await this.state.storage.get<Record<string, number>>('record_releases')) ?? {}) };
+    delete ids[r.release];
+    if (r.id !== null) ids[r.release] = r.id as number;
+    const keep = Object.keys(ids).sort().slice(-64);
+    await this.state.storage.put('record_releases', Object.fromEntries(keep.map((k) => [k, ids[k]!])));
+    return json({ ok: true });
   }
 
   private async lease(body: string): Promise<Response> {
