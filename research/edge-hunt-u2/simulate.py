@@ -221,12 +221,12 @@ def simulate_trade(pool, t_entry, stop, solusd):
             reason, t_exit = 'time_flat', t_entry + U2X['t_flat']
             px_exit = price_at_open(pool, t_exit)
             break
-        # price levels inside the bar: never better than the level, never the wick
+        # price levels inside the bar: never better than the level or a gap open below it, never the wick
         if l <= stop:
-            reason, t_exit, px_exit = 'price_stop', t0, min(stop, c)
+            reason, t_exit, px_exit = 'price_stop', t0, min(stop, o, c)
             break
         if trail is not None and l <= trail:
-            reason, t_exit, px_exit = 'trailing_stop', t0, min(trail, c)
+            reason, t_exit, px_exit = 'trailing_stop', t0, min(trail, o, c)
             break
         if pool.quote_at(c) <= q_entry * (1 - LIQ_DROP):
             reason, t_exit, px_exit = 'liquidity_drop', t0 + MIN, price_at_open(pool, t0 + MIN)
@@ -236,8 +236,7 @@ def simulate_trade(pool, t_entry, stop, solusd):
         neg_run = (neg_run + 1 if (net_neg and last_start is not None and t0 == last_start + MIN) else (1 if net_neg else 0))
         last_start, last_close = t0, c
         pnl = pnl_at(c)
-        ex = sell_value(pool, c, held) / held if held > 0 else c
-        peak = ex if peak is None else max(peak, ex)
+        peak = c if peak is None else max(peak, c)  # spot terms, like the stop and the bar lows it is compared with
         if not flat_met and t0 + MIN - t_entry <= U2X['t_flat'] and pnl >= U2X['flat_min_r'] * R:
             flat_met = True
         if partials >= 1:
@@ -270,7 +269,7 @@ def simulate_trade(pool, t_entry, stop, solusd):
     proceeds = realized + sell_value(pool, px_exit, held)
     net = proceeds - paid - fixed
     return dict(entry_t=t_entry, entry_px=pe, stop=stop, exit_t=t_exit, exit_px=px_exit, reason=reason, partials=partials,
-                gross=px_exit / pe - 1, net_sol=net, net_ret=net / paid, paid_sol=paid, events=events)
+                last_leg_move=px_exit / pe - 1, net_sol=net, net_ret=net / paid, paid_sol=paid, events=events)
 
 
 def run_trial(trial, pools, solusd):

@@ -20,5 +20,8 @@
   "exits": "U2 policy block (stop at structure, take 50% at +1.5R or +100% of cost basis, then 3 x ATR trail and break-even, flat exit at 15 min unless +0.5R was reached, T_max 120 min, negative flow 5 min, liquidity drop 30%)",
   "metrics": "per trial: n, win rate, mean and median net return per trade in SOL terms, 95% CI of the mean by bootstrap resampling coins (one trade per coin, 10,000 resamples, seed 1) and by day blocks; deflated Sharpe over the 6 trials; PBO by CSCV over discovery days",
   "selection": "the holdout candidate is the trial with the highest discovery mean net return among trials with n >= 30 (else n >= 10, else none). It is run once on the holdout whatever its discovery result, so the result is recorded; no other trial ever reads the holdout",
-  "verdict_rule": "'would make money' only if the holdout mean net return's 95% lower bound is above 0 with n >= 30; 'no' if the discovery and holdout upper bounds are below 0 or the discovery mean is below 0 for every trial; otherwise 'unclear'"
+  "verdict_rule": "'would make money' only if the holdout mean net return's 95% lower bound is above 0 with n >= 30; 'no' if the discovery and holdout upper bounds are below 0 or the discovery mean is below 0 for every trial; otherwise 'unclear'",
+  "amendments": [
+    "2026-10-06 23:05 Melbourne, before any result beyond a 61-graduate smoke test of the code: a price-level exit fills at min(level, bar open, bar close), so a bar that opens below the level fills no better than that open (stricter than the line above); the trail's peak is kept in spot terms like the stop."
+  ]
 }
