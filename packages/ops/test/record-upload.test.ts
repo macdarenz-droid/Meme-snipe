@@ -708,6 +708,23 @@ describe('ops review: the index read-back gate and a bounded state', () => {
     expect(all.size).toBe(8);
   });
 
+  it('a day of a boot that is not done is never archived, so its uploaded files are never re-listed as vanished', async () => {
+    const f = fx();
+    const D4 = day(4);
+    const D3 = day(3);
+    const a = bootId(100, 171);
+    makeBoot(f, a, { days: [D4, D3], text: (d, t) => (d === D4 && t === 'releases-000' ? '{"u":"https://x.test/?api-key=PLANTEDVALUE"}\n' : lines(`${a}/${d}/${t}`)) });
+    const x = uploader(f);
+    await x.u.run();
+    const y = uploader(f, { r: x.r });
+    await y.u.run();
+    const st = y.state();
+    expect(st.done_boots[a]).toBeUndefined();
+    expect(st.index[D3]?.archived).toBeUndefined();
+    const body = indexBody(x.r, st.index[D3].n, `rec-${D3}`);
+    expect(body.vanished ?? []).toEqual([]);
+  });
+
   it('with deletes off nothing is archived or marked done, so switching deletes on later still deletes', async () => {
     const f = fx();
     const D4 = day(4);
