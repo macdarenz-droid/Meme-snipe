@@ -3,7 +3,7 @@
 // sqlite3 and age are stand-ins here (the CI runner has neither); ops/test/e2e.sh runs the real ones on a host.
 import { randomBytes } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -26,7 +26,7 @@ const contract = nodeEval("import { EVIDENCE_FILES, STATE_FILES } from './packag
 const { EVIDENCE_FILES, STATE_FILES } = contract;
 
 const logic = (script: string) => {
-  const r = spawnSync('bash', ['-c', `set -euo pipefail; . "${LIB}/logic.sh"; ${script}`], { encoding: 'utf8', env: { PATH: process.env['PATH'] ?? '' } });
+  const r = spawnSync('bash', ['-c', `set -euo pipefail; . "${LIB}/logic.sh"; ${script}`], { encoding: 'utf8', env: { PATH: process.env['PATH'] ?? '', ZEROED_LIB: LIB } });
   return { status: r.status, out: r.stdout.trim(), err: r.stderr };
 };
 
@@ -36,15 +36,16 @@ mkdirSync(bin);
 writeFileSync(join(bin, 'sqlite3'), `#!/usr/bin/env bash
 [ "$1" = -readonly ] && shift
 db="$1"; shift
+[ -z "\${ZEROED_TEST_REMOVE_FILE:-}" ] || rm -f -- "$ZEROED_TEST_REMOVE_FILE"
 case "$*" in
-  *.backup*) dest="$*"; dest="\${dest##*.backup \\'}"; cp "$db" "\${dest%\\'}" ;;
+  *.backup*) [ -z "\${ZEROED_TEST_SNAPSHOT_HOOK:-}" ] || node "$ZEROED_TEST_SNAPSHOT_HOOK" "$ZEROED_BACKUP_SRC"; dest="$*"; dest="\${dest##*.backup \\'}"; cp "$db" "\${dest%\\'}" ;;
   *integrity_check*) echo ok ;;
   *sqlite_schema*) echo trades ;;
   *count*) echo 3 ;;
 esac
 `);
 writeFileSync(join(bin, 'age'), `#!/usr/bin/env bash
-if [ "$1" = -d ]; then cat "$4"; elif [ "\${ZEROED_TEST_AGE_FAIL:-}" = 1 ]; then exit 1; else cat > "$4"; fi
+if [ "$1" = -d ]; then if [ -n "\${4:-}" ]; then cat "$4"; else cat; fi; elif [ "\${ZEROED_TEST_AGE_FAIL:-}" = 1 ]; then exit 1; else if [ -n "\${4:-}" ]; then cat > "$4"; else cat; fi; fi
 `);
 chmodSync(join(bin, 'sqlite3'), 0o755);
 chmodSync(join(bin, 'age'), 0o755);
@@ -72,13 +73,14 @@ const STATE: Record<string, string> = {
   'exits.json': '{}\n',
   'entry-seeds.json': '{"trade-1":{"mint":"coin"}}\n',
   'paper.json': '{"attempts":{}}\n',
-  'deployer-state.json': '{"v":1}\n',
+  'deployer-state.json': JSON.stringify(nodeEval(`import { createHash } from 'node:crypto'; const payload=JSON.stringify({asOf:{slot:{$n:"1"},txIndex:0,ixIndex:0,receivedAt:1},coverage:[],index:{asOf:{slot:{$n:"1"},txIndex:0,ixIndex:0,receivedAt:1}}}); console.log(JSON.stringify({version:1,payload,sha256:createHash('sha256').update(payload).digest('hex')}));`))+'\n',
   'fill-budget.json': '{"day":"2026-10-04","used":3}\n',
   'credits.json': '{"month":"2026-10","used":{"helius":4}}\n',
   'control.json': '{"paused":false,"pausedAtMs":null,"latches":{}}\n',
   'exposure.json': '{"trades":[],"fromMs":0}\n',
   'deployers.jsonl': '{"key":"create:x"}\n',
-  'chain-volume/2026-10-03.json': '{"sol":1}\n',
+  'deployers.jsonl.reserve': '\0'.repeat(65536),
+  'chain-volume/data-volume-2026-10-03.json': '{"sol":1}\n',
   'open_intents': '0\n',
   'cold_start': '2026-10-04T00:00:00.000Z',
   'clean_stop': '2026-10-04T00:00:00.000Z',
@@ -91,7 +93,7 @@ const STATE: Record<string, string> = {
   // #218 HEAP-GUARD: Node fatal reports carry the host name and network interfaces; never copied off the host.
   'reports/report.20261005.010000.1234.0.001.json': '{"header":{"host":"zeroed-1"}}\n',
 };
-const BOT_STATE = ['account.json', 'chain-volume/2026-10-03.json', 'cold_start', 'control.json', 'credits.json', 'deployer-state.json', 'deployers.jsonl', 'entry-seeds.json', 'exits.json', 'exposure.json', 'fill-budget.json', 'ledger.sqlite', 'paper.json'];
+const BOT_STATE = ['account.json', 'chain-volume/data-volume-2026-10-03.json', 'cold_start', 'control.json', 'credits.json', 'deployer-state.json', 'deployers.jsonl', 'deployers.jsonl.reserve', 'entry-seeds.json', 'exits.json', 'exposure.json', 'fill-budget.json', 'ledger.sqlite', 'paper.json'];
 
 const stateDir = (name: string, files: Record<string, string> = STATE): string => {
   const dir = join(tmp, name);
@@ -144,7 +146,7 @@ describe('backup: the whole bot state', () => {
     const out = join(tmp, 'out');
     const r = backup(src, out);
     expect(r.status, r.out).toBe(0);
-    expect(r.out).toMatch(/: 13 file\(s\), 1 recipient\(s\)\./);
+    expect(r.out).toMatch(/: 14 file\(s\), 1 recipient\(s\)\./);
     const got = unpack(r.bundle!);
     for (const rel of BOT_STATE) expect(readFileSync(join(got, rel), 'utf8'), rel).toBe(STATE[rel]);
     const manifest = readFileSync(join(got, 'MANIFEST.sha256'), 'utf8').trim().split('\n').map((l) => l.split(/\s+/)[1]);
@@ -156,7 +158,7 @@ describe('backup: the whole bot state', () => {
     const src = stateDir('torn', { ...STATE, 'exits.json': '{"a":' });
     const r = backup(src, join(tmp, 'out-torn'));
     expect(r.status).toBe(1);
-    expect(r.out).toContain('Backup copy of exits.json is not valid JSON.');
+    expect(r.out).toContain('Backup copy of exits.json is not valid JSON or versioned state.');
   });
 
   it('backs up nothing on a host whose worker has no state yet', () => {
@@ -199,14 +201,14 @@ describe('backup disk budget', () => {
     const out = join(tmp, 'cap-out');
     mkdirSync(out);
     const old = 'zeroed-20260101T000000Z.tar.age', recent = 'zeroed-20260102T000000Z.tar.age';
-    writeFileSync(join(out, old), Buffer.alloc(6000));
-    writeFileSync(join(out, recent), Buffer.alloc(6000));
-    const r = backup(stateDir('cap-src'), out, { ZEROED_BACKUP_MAX_BYTES: '8192', ZEROED_BACKUP_SNAPSHOT_BYTES: '4096' });
+    writeFileSync(join(out, old), Buffer.alloc(180000));
+    writeFileSync(join(out, recent), Buffer.alloc(180000));
+    const r = backup(stateDir('cap-src'), out, { ZEROED_BACKUP_MAX_BYTES: '262144', ZEROED_BACKUP_SNAPSHOT_BYTES: '131072' });
     expect(r.status, r.out).toBe(0);
     const names = readdirSync(out);
     expect(names).not.toContain(old);
     expect(names).toContain(recent);
-    expect(names.reduce((n, f) => n + statSync(join(out, f)).size, 0)).toBeLessThanOrEqual(8192);
+    expect(names.reduce((n, f) => n + statSync(join(out, f)).size, 0)).toBeLessThanOrEqual(262144);
     expect(names.filter((f) => f.endsWith('.tar.age'))).toHaveLength(2);
   });
 
@@ -223,8 +225,8 @@ describe('backup disk budget', () => {
 
   it('checks destination free bytes as well as source bytes, and includes all bounded staging in the floor', () => {
     const pause = 1610612736;
-    const floor = pause + 8192 + 65536;
-    const env = { ZEROED_BACKUP_MAX_BYTES: '8192', ZEROED_BACKUP_SNAPSHOT_BYTES: '4096', ZEROED_TEST_FREE_BYTES: String(floor) };
+    const floor = pause + 262144 + 65536;
+    const env = { ZEROED_BACKUP_MAX_BYTES: '262144', ZEROED_BACKUP_SNAPSHOT_BYTES: '131072', ZEROED_TEST_FREE_BYTES: String(floor) };
     const src = stateDir('separate-disk-src');
     const refused = backup(src, join(tmp, 'separate-disk-low'), { ...env, ZEROED_TEST_OUT_FREE_BYTES: String(floor - 1) });
     expect(refused.status, refused.out).toBe(0);
@@ -280,12 +282,27 @@ describe('backup disk budget', () => {
     mkdirSync(out);
     const old = 'zeroed-20260101T000000Z.tar.age';
     writeFileSync(join(out, old), 'good backup');
-    const r = backup(stateDir('large-src', { ...STATE, 'deployer-state.json': JSON.stringify({ data: randomBytes(8192).toString('hex') }) }), out,
-      { ZEROED_BACKUP_MAX_BYTES: '8192', ZEROED_BACKUP_SNAPSHOT_BYTES: '4096' });
+    const r = backup(stateDir('large-src', { ...STATE, 'deployer-state.json': JSON.stringify({ data: randomBytes(100000).toString('hex') }) }), out,
+      { ZEROED_BACKUP_MAX_BYTES: '262144', ZEROED_BACKUP_SNAPSHOT_BYTES: '131072' });
     expect(r.status, r.out).toBe(1);
     expect(r.out).toContain('snapshot limit');
     expect(readdirSync(out)).toEqual([old]);
     expect(readFileSync(join(out, old), 'utf8')).toBe('good backup');
+  });
+});
+
+describe('whole-capture source generation stability',()=>{
+  it.each(['marker-cycle','new-state','state-replacement','wal-only'])('rejects the whole archive after an interleaved %s update',kind=>{
+    const files={...STATE};if(kind==='new-state')delete files['credits.json'];
+    const src=stateDir(`generation-${kind}`,files), out=join(tmp,`generation-${kind}-out`);mkdirSync(out);
+    const old=join(out,'zeroed-20260101T000000Z.tar.age');writeFileSync(old,'last good archive');
+    const hook=join(tmp,`generation-${kind}.mjs`);
+    const body=kind==='marker-cycle'?`const before=readFileSync(join(src,'deployers.jsonl.reserve'))[0];const s=new DeployerStore(src);s.keep({kind:'market',id:'same-slot-update',key:'pump:CreateEvent:new',moment:{slot:1n,txIndex:0,ixIndex:1,receivedAt:2},value:{event:{name:'CreateEvent',program:'pump',data:{mint:'New',creator:'Creator',timestamp:1n}}}});const after=readFileSync(join(src,'deployers.jsonl.reserve'))[0];if(before!==0||after!==0||s.failing)throw Error('fixture marker did not complete a clean cycle');`:
+      kind==='new-state'?`writeFileSync(join(src,'credits.json'),'{}');`:
+      kind==='state-replacement'?`writeFileSync(join(src,'exits.json'),'{}\\n');`:
+      `const main=readFileSync(join(src,'ledger.sqlite'));appendFileSync(join(src,'ledger.sqlite-wal'),'new committed WAL frame');if(!readFileSync(join(src,'ledger.sqlite')).equals(main))throw Error('main DB changed in WAL-only fixture');`;
+    writeFileSync(hook,`import {appendFileSync,readFileSync,writeFileSync} from 'node:fs';import {join} from 'node:path';import {DeployerStore} from ${JSON.stringify(join(root,'packages/worker/src/run/deployer-store.ts'))};const src=process.argv[2];${body}`);
+    const result=backup(src,out,{ZEROED_TEST_SNAPSHOT_HOOK:hook});expect(result.status,result.out).toBe(1);expect(result.out).toContain('State changed during capture');expect(result.bundle).toBeNull();expect(readdirSync(out)).toEqual(['zeroed-20260101T000000Z.tar.age']);expect(readFileSync(old,'utf8')).toBe('last good archive');
   });
 });
 
@@ -301,7 +318,7 @@ describe('restore drill and restore', () => {
     const r = run('zeroed-restore-drill', [id, made.bundle!], { ZEROED_BACKUP_SRC: src, ZEROED_BACKUP_OUT: out });
     expect(r.status, r.out).toBe(0);
     expect(r.out).toContain('PASS: ');
-    expect(r.out).toContain('13 file(s) restored to a scratch directory and verified.');
+    expect(r.out).toContain('14 file(s) restored to a scratch directory and verified.');
     for (const rel of ['account.json', 'exits.json', 'deployer-state.json', 'fill-budget.json', 'credits.json', 'control.json']) expect(r.out, rel).toContain(`  ${rel}: `);
   });
 
@@ -328,7 +345,7 @@ describe('restore drill and restore', () => {
     expect(spawnSync('tar', ['-c', '-C', bad, '-f', tampered, '.']).status).toBe(0);
     const r = run('zeroed-restore-drill', [id, tampered], { ZEROED_BACKUP_SRC: src, ZEROED_BACKUP_OUT: out });
     expect(r.status).toBe(1);
-    expect(r.out).toContain('FAIL: account.json is not valid JSON');
+    expect(r.out).toContain('account.json is not valid JSON');
   });
 
   it('the restore puts the whole bot state back, keeps the evidence and moves what was there aside', () => {
@@ -353,7 +370,10 @@ describe('restore drill and restore', () => {
     expect(readFileSync(join(live, 'recorder/units/1/1-2/stats.json'), 'utf8')).toBe('{}\n');
     const [kept] = readdirSync(aside);
     expect(readFileSync(join(aside, kept!, 'account.json'), 'utf8')).toBe('{"newer":true}\n');
-    expect(readFileSync(calls, 'utf8')).toBe(`systemctl stop zeroed-worker.service\nchown -R zeroed-worker:zeroed-worker ${live}\nsystemctl start zeroed-worker.service\n`);
+    const actions = readFileSync(calls, 'utf8').trimEnd().split('\n');
+    expect(actions).toHaveLength(3);
+    expect(actions[0]).toMatch(new RegExp(`^chown -R zeroed-worker:zeroed-worker ${tmp}/\\.restore\\.[^/]+/snap$`));
+    expect(actions.slice(1)).toEqual(['systemctl stop zeroed-worker.service', 'systemctl start zeroed-worker.service']);
   });
 
   it('restores nothing and leaves the worker alone when the backup fails the restore drill', () => {
@@ -387,6 +407,126 @@ describe('restore drill and restore', () => {
     expect(ctl.paused).toBe(true);
     expect(typeof ctl.pausedAtMs).toBe('number');
     expect(ctl.latches).toEqual(none);
+  });
+});
+
+describe('reviewed archive and snapshot failure regressions', () => {
+  const id = join(tmp, 'review.key');
+  writeFileSync(id, 'synthetic-test-only');
+  const bundle = (name: string, bodies: Record<string, string>, extra?: (dir: string) => void) => {
+    const dir = stateDir(`review-${name}`, bodies);
+    extra?.(dir);
+    const sums = spawnSync('sha256sum', Object.keys(bodies), { cwd: dir, encoding: 'utf8' });
+    expect(sums.status).toBe(0);
+    writeFileSync(join(dir, 'MANIFEST.sha256'), sums.stdout);
+    const archive = join(tmp, `${name}.tar.age`);
+    expect(spawnSync('tar', ['-cf', archive, '-C', dir, '.']).status).toBe(0);
+    return { dir, archive };
+  };
+  const drill = (archive: string, env: Record<string, string> = {}) => run('zeroed-restore-drill', [id, archive], { ZEROED_BACKUP_SRC: join(tmp, 'review-empty'), ...env });
+  it('rejects manifest traversal before any worker stop or outside write', () => {
+    const { dir } = bundle('traversal', { 'account.json': '{}' });
+    const outside = join(dirname(dir), 'external.json');
+    writeFileSync(outside, '{"sentinel":true}');
+    writeFileSync(join(dir, 'MANIFEST.sha256'), spawnSync('sha256sum', ['../external.json'], { cwd: dir, encoding: 'utf8' }).stdout);
+    const archive = join(tmp, 'traversal-repacked.tar.age');
+    expect(spawnSync('tar', ['-cf', archive, '-C', dir, '.']).status).toBe(0);
+    writeFileSync(calls, '');
+    expect(drill(archive, { TMPDIR: tmp }).status).toBe(1);
+    expect(readFileSync(calls, 'utf8')).toBe('');
+    expect(readFileSync(outside, 'utf8')).toBe('{"sentinel":true}');
+  });
+  it('rejects archive symlinks even with a matching target hash', () => {
+    const { dir } = bundle('link', { 'account.json': '{}' });
+    const target = join(tmp, 'external-target.json');
+    writeFileSync(target, '{}');
+    rmSync(join(dir, 'account.json')); symlinkSync(target, join(dir, 'account.json'));
+    const archive = join(tmp, 'link-repacked.tar.age');
+    expect(spawnSync('tar', ['-cf', archive, '-C', dir, '.']).status).toBe(0);
+    expect(drill(archive).status).toBe(1);
+  });
+  it('rejects unmanifested archive members', () => {
+    const { archive } = bundle('extra-member', { 'account.json': '{}' }, (dir) => writeFileSync(join(dir, 'paper.json'), '{}'));
+    expect(drill(archive).status).toBe(1);
+  });
+  it('bounds encrypted and expanded plain inputs before extraction', () => {
+    const { archive } = bundle('bounded', { 'account.json': JSON.stringify({ data: 'a'.repeat(20000) }) });
+    const compressed = join(tmp, 'bounded-gzip.tar.age');
+    const gz = spawnSync('gzip', ['-c', archive]); writeFileSync(compressed, gz.stdout);
+    expect(drill(archive, { ZEROED_BACKUP_SNAPSHOT_BYTES: '4096' }).status).toBe(1);
+    expect(drill(compressed, { ZEROED_BACKUP_SNAPSHOT_BYTES: '4096' }).status).toBe(1);
+  });
+  it('preserves a released live journal reserve when validating and restoring legacy archives', () => {
+    const { archive } = bundle('legacy-reserve', { 'account.json': '{}', 'journal.jsonl.reserve': '\0'.repeat(65536) });
+    const live = stateDir('review-reserve-live', { 'account.json': '{"old":true}', 'journal.jsonl': 'live-evidence', 'journal.jsonl.reserve': '' });
+    const result = run('zeroed-restore', [id, archive], { ZEROED_BACKUP_SRC: live, ZEROED_RESTORE_ASIDE: join(tmp, 'review-reserve-aside'), ZEROED_RESTORE_DRILL: join(SBIN, 'zeroed-restore-drill') });
+    expect(result.status, result.out).toBe(0);
+    expect(readFileSync(join(live, 'journal.jsonl.reserve'))).toHaveLength(0);
+    expect(readFileSync(join(live, 'journal.jsonl'), 'utf8')).toBe('live-evidence');
+  });
+  it('fails closed if a selected file disappears after enumeration', () => {
+    const src = stateDir('review-disappear');
+    const result = backup(src, join(tmp, 'review-disappear-out'), { ZEROED_TEST_REMOVE_FILE: join(src, 'paper.json') });
+    expect(result.status, result.out).toBe(1); expect(result.bundle).toBeNull();
+  });
+  it('fails closed for a symlink at the actual main saved-state path', () => {
+    const src = stateDir('review-main-symlink');
+    rmSync(join(src, 'deployer-state.json')); symlinkSync(join(tmp, 'external-target.json'), join(src, 'deployer-state.json'));
+    const result = backup(src, join(tmp, 'review-main-symlink-out'));
+    expect(result.status, result.out).toBe(1); expect(result.bundle).toBeNull();
+  });
+  it('cannot clear live deployer uncertainty with a clean backup',()=>{
+    const {archive}=bundle('clean-deployer-marker',{'deployers.jsonl':'', 'deployers.jsonl.reserve':'\0'.repeat(65536)});
+    const live=stateDir('live-dirty-marker',{'account.json':'{"old":true}','deployers.jsonl':'','deployers.jsonl.reserve':'\x01'+'\0'.repeat(65535)});
+    const result=run('zeroed-restore',[id,archive],{ZEROED_BACKUP_SRC:live,ZEROED_RESTORE_ASIDE:join(tmp,'live-dirty-aside'),ZEROED_RESTORE_DRILL:join(SBIN,'zeroed-restore-drill')});
+    expect(result.status,result.out).toBe(0);expect(readFileSync(join(live,'deployers.jsonl.reserve'))[0]).toBe(1);
+  });
+  it('restores legacy deployer data without a diagnostic marker as unknown',()=>{
+    const {archive}=bundle('legacy-deployer-marker',{'deployers.jsonl':''});
+    const live=stateDir('legacy-marker-live',{'account.json':'{}'});
+    const result=run('zeroed-restore',[id,archive],{ZEROED_BACKUP_SRC:live,ZEROED_RESTORE_ASIDE:join(tmp,'legacy-marker-aside'),ZEROED_RESTORE_DRILL:join(SBIN,'zeroed-restore-drill')});
+    expect(result.status,result.out).toBe(0);const bytes=readFileSync(join(live,'deployers.jsonl.reserve'));expect(bytes).toHaveLength(65536);expect(bytes[0]).toBe(1);
+  });
+  it('rejects a torn archived marker before stopping the worker',()=>{
+    const {archive}=bundle('torn-deployer-marker',{'deployers.jsonl':'','deployers.jsonl.reserve':'\x01'});
+    writeFileSync(calls,'');expect(drill(archive).status).toBe(1);expect(readFileSync(calls,'utf8')).toBe('');
+  });
+  it('preserves archived deployer uncertainty when live state has a clean marker',()=>{
+    const {archive}=bundle('dirty-deployer-marker',{'deployers.jsonl':'','deployers.jsonl.reserve':'\x01'+'\0'.repeat(65535)});
+    const live=stateDir('clean-marker-live',{'deployers.jsonl':'','deployers.jsonl.reserve':'\0'.repeat(65536)});
+    const result=run('zeroed-restore',[id,archive],{ZEROED_BACKUP_SRC:live,ZEROED_RESTORE_ASIDE:join(tmp,'clean-marker-aside'),ZEROED_RESTORE_DRILL:join(SBIN,'zeroed-restore-drill')});
+    expect(result.status,result.out).toBe(0);expect(readFileSync(join(live,'deployers.jsonl.reserve'))[0]).toBe(1);
+  });
+  it.each(['install', 'evidence', 'restart'])('rolls back all prior state and restarts after post-stop %s failure', (phase) => {
+    const { archive } = bundle(`rollback-${phase}`, { 'account.json': '{"backup":true}' });
+    const live = stateDir(`rollback-${phase}-live`, { 'account.json':'{"old":true}', 'exits.json':'{"pending":true}', 'journal.jsonl':'live-evidence', 'journal.jsonl.reserve':'' });
+    const failure = join(tmp, `rollback-${phase}-once`);
+    const failbin = join(tmp, `rollback-${phase}-bin`); mkdirSync(failbin);
+    writeFileSync(join(failbin,'mv'), `#!/usr/bin/env bash
+if [ ! -e "${failure}" ] && { { [ "${phase}" = install ] && [[ "$2" = */snap ]]; } || { [ "${phase}" = evidence ] && [[ "$2" = */journal.jsonl.reserve ]]; }; }; then touch "${failure}"; echo 'No space left on device' >&2; exit 1; fi
+exec /usr/bin/mv "$@"
+`);
+    writeFileSync(join(failbin,'systemctl'), `#!/usr/bin/env bash
+echo "systemctl $*" >> "${calls}"
+if [ "${phase}" = restart ] && [ "$1" = start ] && [ ! -e "${failure}" ]; then touch "${failure}"; exit 1; fi
+`);
+    chmodSync(join(failbin,'mv'),0o755); chmodSync(join(failbin,'systemctl'),0o755);
+    writeFileSync(calls,'');
+    const result=run('zeroed-restore',[id,archive],{ PATH:`${failbin}:${bin}:${process.env['PATH'] ?? ''}`, ZEROED_BACKUP_SRC:live, ZEROED_RESTORE_ASIDE:join(tmp,`rollback-${phase}-aside`), ZEROED_RESTORE_DRILL:join(SBIN,'zeroed-restore-drill') });
+    expect(result.status,result.out).toBe(1);
+    expect(readFileSync(join(live,'account.json'),'utf8')).toBe('{"old":true}');
+    expect(readFileSync(join(live,'exits.json'),'utf8')).toBe('{"pending":true}');
+    expect(readFileSync(join(live,'journal.jsonl'),'utf8')).toBe('live-evidence');
+    expect(readFileSync(join(live,'journal.jsonl.reserve'))).toHaveLength(0);
+    expect(readFileSync(calls,'utf8').trimEnd().split('\n').filter(x=>x.startsWith('systemctl '))).toEqual(phase==='restart'?['systemctl stop zeroed-worker.service','systemctl start zeroed-worker.service','systemctl start zeroed-worker.service']:['systemctl stop zeroed-worker.service','systemctl start zeroed-worker.service']);
+  });
+  it('rejects a real streamed saved state with the footer removed', () => {
+    const src = stateDir('review-state-footer');
+    const path = join(src, 'deployer-state.json');
+    nodeEval(`import { saveState } from './packages/worker/src/persist/state.ts'; import { DeployerIndex, RugLabeller } from './packages/core/src/gates/index.ts'; import { RUG_CONFIG } from './packages/core/src/config/rugs.ts'; const asOf = {slot:1n,txIndex:0,ixIndex:0,receivedAt:1}; saveState(${JSON.stringify(path)}, {asOf,index:new DeployerIndex().snapshot(asOf),labeller:new RugLabeller(RUG_CONFIG).snapshot(),coverage:[]}); console.log('{}');`);
+    writeFileSync(path, readFileSync(path, 'utf8').trimEnd().split('\n').slice(0, -1).join('\n')+'\n');
+    const result = backup(src, join(tmp, 'review-state-footer-out'));
+    expect(result.status, result.out).toBe(1); expect(result.bundle).toBeNull();
   });
 });
 

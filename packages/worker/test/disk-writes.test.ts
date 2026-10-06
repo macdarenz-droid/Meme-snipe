@@ -135,10 +135,11 @@ describe('deployer index file on a full disk', () => {
     expect(told).toBe(2);
     full.on = false;
     s.keep(create(4, at(400n, T0 + 4 * DAY)));
-    expect(s.failing).toBe(false);
+    expect(s.failing).toBe(true);
     const saved = new DeployerStore(d).load(0);
     expect(saved.creates.map((e) => e.id)).toEqual(['c1', 'c4']);
-    const gaps = saved.coverage.filter((e) => e.key.endsWith(':gap'));
+    const gaps = saved.coverage.filter((e) => e.key.endsWith(':gap') && (e.value as { value: { toSlot: bigint | null } }).value.toSlot !== null);
+    expect(saved.coverage.filter((e) => e.key.endsWith(':gap') && (e.value as { value: { toSlot: bigint | null } }).value.toSlot === null).map((e) => e.key)).toEqual(['coverage:creates:gap', 'coverage:rugs:gap']);
     expect(gaps.map((e) => e.key)).toEqual(['coverage:creates:gap', 'coverage:rugs:gap']);
     for (const g of gaps) {
       expect(g.moment).toEqual(at(400n, T0 + 4 * DAY));
@@ -146,8 +147,8 @@ describe('deployer index file on a full disk', () => {
     }
     // Seeded from this file, H14 is not covered for a window that holds the gap, and covered again once the look-back
     // passes it.
-    expect(coverageOf(saved.coverage, at(500n, T0 + 5 * DAY), T0 + DAY / 2)).toEqual({ covered: false, detail: expect.stringContaining(`on ${STORE_GAP_VIA}`) });
-    expect(coverageOf(saved.coverage, at(500n, T0 + 20 * DAY), T0 + 5 * DAY)).toEqual({ covered: true, fromMs: T0 + 4 * DAY });
+    expect(coverageOf(saved.coverage, at(500n, T0 + 5 * DAY), T0 + DAY / 2)).toEqual({ covered: false, detail: expect.stringContaining(`${STORE_GAP_VIA}-uncertain`) });
+    expect(coverageOf(saved.coverage, at(500n, T0 + 20 * DAY), T0 + 5 * DAY)).toEqual({ covered: false, detail: expect.stringContaining(`${STORE_GAP_VIA}-uncertain`) });
     // Without the loss the same window is covered: the gap is what makes it not.
     expect(coverageOf([start], at(500n, T0 + 5 * DAY), T0 + DAY / 2)).toEqual({ covered: true, fromMs: T0 });
   });
@@ -164,7 +165,7 @@ describe('deployer index file on a full disk', () => {
     s.keep(create(4, at(400n, T0 + 4 * DAY)));
     const saved = new DeployerStore(d).load(0);
     expect(saved.creates.map((e) => e.id)).toEqual(['c3', 'c4']);
-    expect(saved.coverage.filter((e) => e.key.endsWith(':gap')).map((e) => (e.value as { value: { fromSlot: bigint; toSlot: bigint } }).value)).toEqual([
+    expect(saved.coverage.filter((e) => e.key.endsWith(':gap') && (e.value as { value: { toSlot: bigint | null } }).value.toSlot !== null).map((e) => (e.value as { value: { fromSlot: bigint; toSlot: bigint } }).value)).toEqual([
       expect.objectContaining({ fromSlot: 200n, toSlot: 300n }), expect.objectContaining({ fromSlot: 200n, toSlot: 300n }),
     ]);
   });
@@ -178,7 +179,8 @@ describe('deployer index file on a full disk', () => {
     });
     s.keep({ kind: 'market', id: 'x', moment: at(1n, T0), key: 'chain:slot', value: { slot: 1n } });
     expect(() => s.keep(create(1, at(100n, T0)))).toThrow('EIO');
-    expect(s.failing).toBe(false);
+    expect(s.failing).toBe(true);
+    expect(new DeployerStore(d).failing).toBe(true);
   });
 
   it('cut to the look-back keeps every coverage fact and the creates inside it', () => {

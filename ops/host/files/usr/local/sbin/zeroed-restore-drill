@@ -17,12 +17,7 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 fail() { echo "FAIL: $*"; exit 1; }
 
-age -d -i "$identity" "$backup" > "$work/archive" 2>/dev/null || fail "cannot decrypt or unpack $(basename "$backup")"
-# A seekable archive lets tar detect both legacy plain tar and the bounded gzip backups.
-tar -x -f "$work/archive" -C "$work" --no-same-owner 2>/dev/null || fail "cannot decrypt or unpack $(basename "$backup")"
-rm -f "$work/archive"
-[ -f "$work/MANIFEST.sha256" ] || fail "manifest missing"
-(cd "$work" && sha256sum --quiet -c MANIFEST.sha256) >/dev/null 2>&1 || fail "a file does not match the manifest"
+node "${ZEROED_LIB:-/usr/local/lib/zeroed}/backup-safety.mjs" prepare "$identity" "$backup" "$work" >/dev/null || fail "archive preflight failed"
 
 files=0
 while read -r _ rel; do
@@ -31,9 +26,7 @@ while read -r _ rel; do
     *.sqlite | *.db)
       [ "$(sqlite3 "$work/$rel" 'PRAGMA integrity_check;')" = ok ] || fail "$rel failed the integrity check"
       tables="$(sqlite3 "$work/$rel" "SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name;")"
-      for t in $tables; do
-        printf '  %s %s: %s rows\n' "$rel" "$t" "$(sqlite3 "$work/$rel" "SELECT count(*) FROM \"$t\";")"
-      done
+      printf '  %s: SQLite integrity verified\n' "$rel"
       if [ -f "$SRC/$rel" ]; then
         live="$(sqlite3 -readonly "$SRC/$rel" "SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name;" 2>/dev/null || true)"
         [ "$live" = "$tables" ] || fail "$rel tables differ from the live database"
@@ -45,6 +38,6 @@ while read -r _ rel; do
       ;;
     *) printf '  %s: %s bytes\n' "$rel" "$(wc -c < "$work/$rel")" ;;
   esac
-done < "$work/MANIFEST.sha256"
+done < <(find "$work" -type f -printf '%P\n' | LC_ALL=C sort | sed 's/^/validated /')
 [ "$files" -gt 0 ] || fail "backup holds no files"
 echo "PASS: $(basename "$backup"), $files file(s) restored to a scratch directory and verified."

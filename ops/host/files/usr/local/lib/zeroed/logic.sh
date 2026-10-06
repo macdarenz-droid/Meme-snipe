@@ -176,12 +176,7 @@ e2e_commit() {
 # Ledger WAL/SHM files are never copied: SQLite online backup incorporates committed WAL pages. The journal and
 # its reserve, recordings, host reports, runtime markers, temp files and unrelated files are never selected.
 backup_files() {
-  (cd "$1" && find . -maxdepth 2 -type f \
-    \( -path ./ledger.sqlite -o -path ./account.json -o -path ./exits.json -o -path ./entry-seeds.json \
-       -o -path ./paper.json -o -path ./deployer-state.json -o -path ./deployers.jsonl \
-       -o -path ./fill-budget.json -o -path ./credits.json -o -path ./control.json \
-       -o -path ./exposure.json -o -path ./cold_start -o -path './chain-volume/*.json' \) \
-    -printf '%P\n') | LC_ALL=C sort
+  node "${ZEROED_LIB:-/usr/local/lib/zeroed}/backup-safety.mjs" list "$1"
 }
 
 # intents_hold ACTIVE STATE_DIR: true while a code update or a worker restart must wait for open intents. ACTIVE

@@ -719,7 +719,7 @@ export class Worker {
             this.#desk.journalBeforeDispatch(this.#engine.records as readonly LogRecord[]);
             this.#journal.ensureDurable();
           }
-          if (this.#recorderFault !== null || this.#journalFault !== null) {
+          if (this.#recorderFault !== null || this.#journalFault !== null || this.#deployerStore.failing || this.#storeNoSpace || this.#disk.entriesRefused) {
             this.#report({ type: 'intent', intentId: effect.intentId, event: { type: 'send_error', message: 'entries halted: evidence not recorded' } });
             return;
           }
@@ -728,15 +728,16 @@ export class Worker {
       this.#world.run(effect, moment);
     } }, seed, book: bookConfig, retention: liveRetention, collapse: liveCollapse, shape: liveShape, forget: liveForget });
     // DISK-GUARD: a line that does not fit is not a crash; its range becomes a coverage gap once there is room, and
-    // entries stop until then.
+    // entries remain stopped across restarts until verified saved-data repair.
     this.#deployerStore = new DeployerStore(c.stateDir, undefined, {
       ...(d.append === undefined ? {} : { append: d.append }),
       onNoSpace: () => {
-        if (!this.#storeNoSpace) d.log('Deployer index: a saved line was not written (no space left on the device); entries stop until it can write again.');
+        if (!this.#storeNoSpace) d.log('Deployer index: a saved line was not written (no space left on the device); entries stay stopped until saved-data uncertainty is verified and repaired.');
         this.#storeNoSpace = true;
         this.#diskAt = null;
       },
     });
+    if (this.#deployerStore.failing) d.log('Deployer index: durable saved-data uncertainty; creates and rugs remain unknown and entries stay stopped until verified repair.');
     this.#storeTrimmedAt = now;
     const storeFrom = now - (d.session.policy.gates.deployerRugLookbackDays + 1) * 86_400_000;
     // PERSIST-1: the saved index, labeller and coverage, when the file holds up (else a fresh start: not covered).
@@ -801,7 +802,7 @@ export class Worker {
       }
       this.#restored = { asOf: restored.asOf, ref };
       this.#handoff = { ref, index: restored.index, labeller: restored.labeller };
-      this.#saved = { creates: [], rugs: [], coverage: restored.coverage, last: { slot: restored.asOf.slot, ms: restored.asOf.receivedAt } };
+      this.#saved = { creates: [], rugs: [], coverage: [...restored.coverage, ...this.#deployerStore.uncertaintyCoverage()].sort(compareEvents), last: { slot: restored.asOf.slot, ms: restored.asOf.receivedAt } };
       d.log(`Saved state restored as of slot ${restored.asOf.slot}; ${restored.coverage.length} coverage facts, ${restored.fills.length} gaps to fill.`);
     } else if (restored.reason !== 'no saved state') d.log(`Saved state discarded (${restored.reason}): starting as a fresh process.`);
     this.#desk = new Desk({
@@ -1718,10 +1719,7 @@ export class Worker {
     if (this.#d.heliusExhaustion?.().exhausted === true) reasons.push(HELIUS_EXHAUSTED);
     if (this.#seeding) reasons.push(SEEDING);
     if (this.#disk.entriesRefused || this.#journal.failing || this.#deployerStore.failing) reasons.push(DISK_LOW);
-    if (this.#storeNoSpace && !this.#deployerStore.failing) {
-      this.#storeNoSpace = false;
-      this.#d.log('Deployer index: writing again; the lost range is saved as a coverage gap.');
-    }
+
     if (this.#behind.behind) reasons.push(BEHIND);
     if (this.#recorderFault !== null) reasons.push(this.#recorderFault);
     if (this.#journalFault !== null) reasons.push(this.#journalFault);

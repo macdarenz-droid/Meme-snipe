@@ -1,3 +1,8 @@
+import { spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 // API-1: what /api/v1/paper/status adds for the app's worker card: why entries are off (haltReasons), exit readiness,
 // the critical alerts since boot and the latest regime evaluation, all from state the worker already holds, read only.
 import { describe, expect, it } from 'vitest';
@@ -21,12 +26,40 @@ describe('haltOf', () => {
     ['feed helius dropped by drill', 'feed-dropped', 'helius'],
     ['owner pause (watchdog)', 'paused', null],
     [SEEDING, 'seeding', null],
-    [DISK_LOW, 'disk-low', null],
+    [DISK_LOW, 'other', null],
     ['ledger and book diverged', 'divergence', null],
     ['something new', 'other', null],
     ['feed helius stale and more', 'other', null],
   ])('%s is %s', (text, code, source) => {
     expect(haltOf(text)).toEqual({ code, source });
+  });
+});
+
+describe('verified baseline app compatibility', () => {
+  it('accepts actual low-disk and journal-ENOSPC status with the unchanged baseline strict checker', () => {
+    const temp=mkdtempSync(join(tmpdir(),'ops149-app-baseline-'));
+    try {
+      for(const folder of ['api','lib']) mkdirSync(join(temp,folder));
+      for(const file of ['api/contract','api/modes','api/schema','api/schemas','lib/money']) {
+        writeFileSync(join(temp,file+'.ts'),readFileSync(new URL(`./fixtures/app-8c375/${file}.ts.txt`,import.meta.url)));
+      }
+      const script=`import { appendFileSync } from 'node:fs'; import { checkAnswer } from ${JSON.stringify(join(temp,'api/modes.ts'))}; import { schemaFor } from ${JSON.stringify(join(temp,'api/schemas.ts'))};
+        import { makeWorker } from './packages/worker/test/worker-harness.ts'; import { route } from './packages/worker/src/run/api.ts';
+        const results=[];
+        for(const kind of ['low','enospc']) {
+          let fail=false;
+          const h=makeWorker(kind==='low'?{disk:atMs=>({atMs,freeBytes:100,totalBytes:1000,recorderBytes:25})}:{append:(p,t)=>{if(fail)throw Object.assign(new Error('disk full'),{code:'ENOSPC'});appendFileSync(p,t);}});
+          try {await h.worker.reconcile();fail=true;await h.worker.step();await h.worker.step();
+            const dto=JSON.parse(JSON.stringify(route('/api/v1/paper/status',()=>h.worker.apiInputs()).body));
+            checkAnswer(dto,'paper',schemaFor('status','paper'));
+            results.push({kind,code:dto.data.haltReasons[0].code,localDiskReason:h.worker.health().halt_reasons.some(r=>r.includes('disk'))});
+          } finally {await h.worker.stop();}
+        }
+        console.log(JSON.stringify(results));`;
+      const result=spawnSync(process.execPath,['--no-warnings','--input-type=module','-e',script],{cwd:fileURLToPath(new URL('../../../',import.meta.url)),encoding:'utf8'});
+      expect(result.status,result.stderr).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual([{kind:'low',code:'other',localDiskReason:true},{kind:'enospc',code:'other',localDiskReason:true}]);
+    } finally {rmSync(temp,{recursive:true,force:true});}
   });
 });
 

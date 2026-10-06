@@ -3,12 +3,12 @@
 // restart re-seeds the index and puts the coverage history back into the engine instead of blanking H14 for a whole
 // look-back. Public chain data only. Kept for the look-back plus a day; older lines are dropped at each start and once a
 // day while running (DISK-GUARD: the file stays bounded however long the worker runs). A line that does not fit (ENOSPC)
-// is not a crash: the next line that fits is preceded by a bounded `coverage:<creates|rugs>:gap` over the lost range,
+// is not a crash: durable write-ahead uncertainty holds entries across restarts; the next line that fits is preceded by a bounded `coverage:<creates|rugs>:gap` over the lost range,
 // so a restart seeded from this file reads H14 as not covered across it, never as complete.
-import { appendFileSync, closeSync, existsSync, openSync, rmSync } from 'node:fs';
+import { appendFileSync, closeSync, constants, existsSync, fstatSync, fsyncSync, ftruncateSync, openSync, readFileSync, readSync, rmSync } from 'node:fs';
 import { fileLines } from '../../../runner/src/lines.ts';
 import { join } from 'node:path';
-import type { MarketEvent } from '../../../core/src/engine/index.ts';
+import { compareEvents, type MarketEvent } from '../../../core/src/engine/index.ts';
 import { LOG_CREATE_PREFIX, RUG_PREFIX, RUG_UNJUDGED_PREFIX, TX_CREATE_PREFIX, pruneCoverage } from '../../../core/src/gates/index.ts';
 import { parseTyped, typedText } from './json.ts';
 import { commitTemp, writeAll, type WriteFn } from './state.ts';
@@ -48,28 +48,95 @@ export interface DeployerStoreOptions {
   readonly onNoSpace?: () => void;
   /** Test seam: appends a line (default appendFileSync), so a test can make a write fail with ENOSPC. */
   readonly append?: (path: string, text: string) => void;
+  /** Fault seams for the durable write-ahead marker; default checked writes and fsync. */
+  readonly markerWrite?: WriteFn;
+  readonly sync?: (fd: number) => void;
 }
 
 const noSpace = (e: unknown): boolean => typeof e === 'object' && e !== null && (e as { code?: unknown }).code === 'ENOSPC';
 
 export class DeployerStore {
   readonly #path: string;
+  readonly #marker: string;
+  readonly #stateDir: string;
+  #uncertain = false;
 
   readonly #write: WriteFn | undefined;
   readonly #o: DeployerStoreOptions;
-  /** DISK-GUARD: the first lost line's moment and how many were lost, until their gaps are written. */
+  /** DISK-GUARD: the first lost line's moment and how many were lost, until their bounded gaps are written; durable uncertainty stays independent. */
   #lost: { from: MarketEvent['moment']; count: number } | null = null;
 
   /** `write` is for tests (a short write); the default checks every write's count. */
   constructor(stateDir: string, write?: WriteFn, o: DeployerStoreOptions = {}) {
     this.#path = join(stateDir, 'deployers.jsonl');
+    this.#marker = join(stateDir, 'deployers.jsonl.reserve');
+    this.#stateDir = stateDir;
     this.#write = write;
     this.#o = o;
+    if (existsSync(this.#marker)) {
+      const fd = openSync(this.#marker, constants.O_RDONLY | constants.O_NOFOLLOW);
+      try {
+        const st = fstatSync(fd);
+        if (!st.isFile() || st.nlink !== 1 || st.size !== 65536) this.#uncertain = true;
+        else {
+          const bytes = readFileSync(fd);
+          this.#uncertain = bytes[0] !== 0 || bytes.subarray(1).some((b) => b !== 0);
+        }
+      } finally { closeSync(fd); }
+    } else {
+      // Migration cannot certify an older saved store. A missing marker beside saved data is unknown.
+      this.#uncertain = existsSync(this.#path) || existsSync(join(stateDir, 'deployer-state.json'));
+      let fd: number | null = null;
+      try {
+        fd = openSync(this.#marker, 'wx', 0o600);
+        writeAll(fd, (this.#uncertain ? '\x01' : '\0') + '\0'.repeat(65535), o.markerWrite);
+        if (fstatSync(fd).size !== 65536) throw new Error('deployer uncertainty marker short write');
+        (o.sync ?? fsyncSync)(fd);
+        this.#syncDir();
+      } catch (err) {
+        this.#uncertain = true;
+        if (!noSpace(err)) throw err;
+        o.onNoSpace?.();
+      } finally { if (fd !== null) closeSync(fd); }
+    }
   }
 
-  /** True while lines were lost for lack of space and their gaps are not written yet. */
+  #syncDir(): void {
+    const fd = openSync(this.#stateDir, constants.O_RDONLY | constants.O_DIRECTORY);
+    try { (this.#o.sync ?? fsyncSync)(fd); } finally { closeSync(fd); }
+  }
+
+  #mark(pending: boolean): void {
+    const fd = openSync(this.#marker, constants.O_RDWR | constants.O_NOFOLLOW);
+    try {
+      const st = fstatSync(fd);
+      if (!st.isFile() || st.nlink !== 1 || st.size !== 65536) throw new Error('deployer-store uncertainty marker is invalid');
+      writeAll(fd, pending ? '\x01' : '\0', this.#o.markerWrite);
+      const byte = Buffer.alloc(1);
+      if (readSync(fd, byte, 0, 1, 0) !== 1 || byte[0] !== (pending ? 1 : 0)) throw new Error('deployer write-ahead marker short write');
+      (this.#o.sync ?? fsyncSync)(fd);
+    } catch (err) {
+      // A failed write-ahead operation never dispatches the append. Releasing already allocated bytes gives
+      // zero-progress/torn marker failures a persistent unknown state too; never rearm it after a failure.
+      this.#uncertain = true;
+      try { ftruncateSync(fd, 0); (this.#o.sync ?? fsyncSync)(fd); } catch { /* The original failure stays strict. */ }
+      throw err;
+    } finally { closeSync(fd); }
+  }
+
+  /** Independent open gaps cannot be settled by an ordinary watch restart, retry or creates-only refill. */
+  uncertaintyCoverage(): readonly MarketEvent[] {
+    if (!this.#uncertain) return [];
+    return ['creates', 'rugs'].map((stream) => ({
+      kind: 'market', id: `${STORE_GAP_VIA}:uncertain:${stream}`, key: `coverage:${stream}:gap`,
+      moment: { slot: 0n, txIndex: 0, ixIndex: 0, receivedAt: 0 },
+      value: { value: { fromSlot: 0n, toSlot: null, via: `${STORE_GAP_VIA}-uncertain`, reason: 'saved deployer data uncertain; verified repair required' }, source: 'worker', backfilled: false, seq: 0 },
+    }));
+  }
+
+  /** True while a write failed or a durable marker says saved deployer history is uncertain. */
   get failing(): boolean {
-    return this.#lost !== null;
+    return this.#uncertain || this.#lost !== null;
   }
 
   /** Keeps a released event when the index or H14's coverage reads it. */
@@ -87,8 +154,16 @@ export class DeployerStore {
       text = `\n${gap('creates')}\n${gap('rugs')}\n${text}`;
     }
     try {
+      const alreadyUncertain = this.#uncertain;
+      if (!alreadyUncertain) this.#mark(true);
+      const existed = existsSync(this.#path);
       (this.#o.append ?? appendFileSync)(this.#path, text);
+      const fd = openSync(this.#path, constants.O_RDONLY | constants.O_NOFOLLOW);
+      try { (this.#o.sync ?? fsyncSync)(fd); } finally { closeSync(fd); }
+      if (!existed) this.#syncDir();
+      if (!alreadyUncertain) this.#mark(false);
     } catch (err) {
+      this.#uncertain = true;
       if (!noSpace(err)) throw err;
       if (this.#lost === null) this.#lost = { from: e.moment, count: 0 };
       this.#lost.count += 1;
@@ -104,7 +179,7 @@ export class DeployerStore {
    * start older than the window is what says the stream has run since before it, and an open gap stays open.
    */
   load(fromMs: number, o: { readonly keepCreates?: boolean; readonly maxCreates?: number; readonly onCreate?: (e: MarketEvent) => void } = {}): SavedDeployers {
-    if (!existsSync(this.#path)) return { creates: [], rugs: [], coverage: [], last: null };
+    if (!existsSync(this.#path)) return { creates: [], rugs: [], coverage: this.uncertaintyCoverage(), last: null };
     // WORKER-GROW: with a restored index the creates are already in it, so they stay in the file only (`keepCreates`
     // false). Without one they seed the index, at most `maxCreates` of them: past that the seed is refused whole (no
     // creates, rugs or coverage), so H14 reads not covered until the look-back passes, which is fail safe; seeding the
@@ -174,8 +249,8 @@ export class DeployerStore {
       throw e;
     }
     commitTemp(fd, tmp, this.#path, written);
-    if (keepCreates && creates > maxCreates) return { creates: [], rugs: [], coverage: [], last: null, refused: `${creates} saved creates, over the seed cap of ${maxCreates}` };
-    return { creates: kept.filter((e) => isCreate(e.key)), rugs: kept.filter((e) => isRugFact(e.key)), coverage: kept.filter((e) => isCoverage(e.key)), last };
+    if (keepCreates && creates > maxCreates) return { creates: [], rugs: [], coverage: this.uncertaintyCoverage(), last: null, refused: `${creates} saved creates, over the seed cap of ${maxCreates}` };
+    return { creates: kept.filter((e) => isCreate(e.key)), rugs: kept.filter((e) => isRugFact(e.key)), coverage: [...kept.filter((e) => isCoverage(e.key)), ...this.uncertaintyCoverage()].sort(compareEvents), last };
   }
 }
 

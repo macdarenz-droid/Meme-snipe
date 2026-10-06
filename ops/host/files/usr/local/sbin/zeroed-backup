@@ -22,7 +22,8 @@ done
   { echo "Invalid backup disk budget (at most 256 MiB, 72 copies; room for two snapshots required)."; exit 1; }
 [ -s "$RECIPIENTS" ] || { echo "No backup recipients yet (keys not delivered); nothing backed up."; exit 0; }
 [ -d "$SRC" ] || { echo "No worker state yet; nothing backed up."; exit 0; }
-mapfile -t found < <(backup_files "$SRC")
+before="$(node "${ZEROED_LIB:-/usr/local/lib/zeroed}/backup-safety.mjs" generation "$SRC")" || { echo "Unsafe, changing, or oversized state source (snapshot limit); nothing published."; exit 1; }
+mapfile -t found < <(jq -r '.names[]' <<< "$before")
 [ "${#found[@]}" -gt 0 ] || { echo "No worker state yet; nothing backed up."; exit 0; }
 mkdir -p "$OUT"
 # Lock the directory itself: manual runs cannot race the timer's budget or leave a persistent lock file.
@@ -54,33 +55,38 @@ for rel in "${found[@]}"; do
   [ "$remaining" -gt 0 ] || { echo "Backup exceeds the state snapshot limit; nothing published."; exit 1; }
   case "$rel" in
     *.sqlite)
+      node "${ZEROED_LIB:-/usr/local/lib/zeroed}/backup-safety.mjs" check "$SRC" "$rel" || exit 1
+      sqlite_before="$(stat -c '%d:%i' -- "$SRC/$rel")"
       # The child file-size limit prevents an online SQLite copy exceeding the remaining staging budget.
       (ulimit -f "$(((remaining + 1023) / 1024))"; sqlite3 "$SRC/$rel" ".timeout 10000" ".backup '$work/snap/$rel'") ||
         { echo "SQLite backup failed or exceeds the state snapshot limit; nothing published."; exit 1; }
+      node "${ZEROED_LIB:-/usr/local/lib/zeroed}/backup-safety.mjs" check "$SRC" "$rel" || exit 1
+      [ "$sqlite_before" = "$(stat -c '%d:%i' -- "$SRC/$rel")" ] || { echo "SQLite source changed during backup; nothing published."; exit 1; }
       check="$(sqlite3 "$work/snap/$rel" 'PRAGMA integrity_check;')"
       [ "$check" = ok ] || { echo "Backup copy of $rel failed its integrity check."; exit 1; }
       ;;
     *)
-      # Read at most the remaining budget plus a detection byte, including a state replacement during the copy.
-      if ! head -c "$((remaining + 1))" -- "$SRC/$rel" > "$work/snap/$rel"; then
-        [ -e "$SRC/$rel" ] || { rm -f "$work/snap/$rel"; continue; }
-        echo "Could not copy $rel."
-        exit 1
-      fi
+      node "${ZEROED_LIB:-/usr/local/lib/zeroed}/backup-safety.mjs" copy "$SRC" "$rel" "$work/snap/$rel" "$remaining" ||
+        { echo "Could not copy $rel; snapshot incomplete or exceeds the snapshot limit; nothing published."; exit 1; }
       ;;
   esac
   size="$(stat -c %s "$work/snap/$rel")"
   [ "$size" -le "$remaining" ] || { echo "Backup exceeds the state snapshot limit; nothing published."; exit 1; }
   bytes=$((bytes + size))
-  case "$rel" in *.json) jq empty "$work/snap/$rel" >/dev/null 2>&1 || { echo "Backup copy of $rel is not valid JSON."; exit 1; } ;; esac
+  node "${ZEROED_LIB:-/usr/local/lib/zeroed}/backup-safety.mjs" validate "$work/snap/$rel" "$rel" || { echo "Backup copy of $rel is not valid JSON or versioned state."; exit 1; }
   files+=("$rel")
 done
 [ "${#files[@]}" -gt 0 ] || { echo "No worker state yet; nothing backed up."; exit 0; }
 (cd "$work/snap" && sha256sum -- "${files[@]}") > "$work/snap/MANIFEST.sha256"
 [ "$((bytes + $(stat -c %s "$work/snap/MANIFEST.sha256")))" -le "$SNAPSHOT_BYTES" ] ||
   { echo "Backup exceeds the state snapshot limit; nothing published."; exit 1; }
+# Optimistic whole-capture stability: all durable names, bytes and generations plus live SQLite WAL.
+# A clean marker can cycle while files are copied; its changed generation (and changed store bytes) rejects
+# the entire snapshot. New known files, atomic replacements and WAL-only commits also reject it.
+after="$(node "${ZEROED_LIB:-/usr/local/lib/zeroed}/backup-safety.mjs" generation "$SRC")" || { echo "State changed during capture; nothing published."; exit 1; }
+[ "$before" = "$after" ] || { echo "State changed during capture; nothing published."; exit 1; }
 # Compression precedes encryption. The destination limit bounds encrypted staging even for incompressible data.
-(ulimit -f "$(((SNAPSHOT_BYTES + 1023) / 1024))"; tar -C "$work/snap" -cz . | age -R "$RECIPIENTS" -o "$work/candidate") ||
+node "${ZEROED_LIB:-/usr/local/lib/zeroed}/backup-safety.mjs" pack "$work/snap" "$RECIPIENTS" "$work/candidate" ||
   { echo "Backup compression/encryption failed or exceeds the snapshot limit; nothing published."; exit 1; }
 size="$(stat -c %s "$work/candidate")"
 [ "$size" -le "$SNAPSHOT_BYTES" ] || { echo "Backup exceeds the encrypted snapshot limit; nothing published."; exit 1; }
