@@ -623,6 +623,7 @@ Supervisor rulings, late evening:
   - Regime freshness. "Entries: On" and "Regime: On" need a regime evaluation at most `regimeMaxAgeMs` old: two candidate evaluation steps (`evaluateEveryMs`, which is the policy's `maxQuoteAgeMs`, 2 s on the trial policy, settings.ts). The worker evaluates the regime first for every candidate at that step, so an older evaluation means no candidate is being judged. Status serves `regime.current`; when it is false the card shows "Regime: Not checked lately".
   - S0 diagnostic (supervisor ruling, after WORKER-1e): status serves `regime.waived`, the regime parts the diagnostic set did not judge. With any of them the card reads "Regime: On (practice: <parts> not judged)" and "Entries: On (practice)", never a plain "On"; a regime with no waived list served shows neither.
   - A paper answer with `notRunning` is bad data (`bad-shape`), never "Not running": every server runs paper.
+  - 2026-10-05 · `regime.waived` under the set is the whole set (N1', re-rated blocking by the run/CI reviewer). While `ZEROED_S0_DIAGNOSTIC` is on, status serves every part the set configures (`S0_DIAGNOSTIC_PARTS`), in set order, then anything else the regime waived. Before, H14's `h14-creates-coverage` was added only when the latest candidate reached H14, so a candidate stopping earlier (no market, an early gate) took it off and the card could read a plain "On". The journal's per-decision `s0_diagnostic` still names only the parts that decision relied on. Test: `worker-1e.test.ts` (a candidate stopping at `no-market`), failing before; mutants caught: the list without the set, the set without the diagnostic on, duplicates.
 
   Delta review fixes (run/CI reviewer's FAIL at 62242b3, supervisor rulings):
   - B1: worker-1e's shakedown now reads the served status. With the diagnostic set it serves every waived part, and without it `[]`. Before this, serving `waived: []` passed every worker test.
@@ -883,7 +884,7 @@ Supervisor rulings, late evening:
   - The 5 SOL sustained-reserve candidate keeps 11 of 33 collapse labels, against 19 by exit cost.
   - Deployer first sales of 2% or more were followed by a collapse in 16 of 17 launches; first sales under 0.5% in 8 of 9.
   - rugs-1 missed none by design in this sample: 1 launch had a transfer-then-sell and 9 a creation-slot bundle dump, but all were labelled by another rule.
-  
+
   The sample is small and drawn from a single hour, so it only shows that the tool works and where the questions are (micro peaks dominate the collapse-only labels). The value is chosen on practice days.
 - **2026-10-04 · RUG-1c: an on-demand check of the candidate's deployer** (`packages/core/src/gates/deployer-check.ts`, `packages/worker/src/providers/deployer-check.ts`, config `rug-check-1`). The free live plan cannot watch every trade, and the backtest day files hold sampled tapes, so neither gives stream coverage of the rug half for every prior mint. At decision time the worker takes the deployer index's mints by the candidate's creator inside the look-back (the candidate excepted) and, for each, newest launch first: pages the mint's signatures at confirmed back past its launch, then reads its successful transactions oldest first, strictly before the as-of slot (a fetched transaction's place inside a slot is not known, so the decision's own slot is never read) and up to the end of its rugs-1 windows, decodes them with DEC-1 and FEED-1's canonical events, and judges them with the same labeller, stopping at the first label. Each mint ends `rug`, `clear` (windows ended before the as-of time), `open` (a prior mint under 24 h old: judged on what exists so far, and again at the next check), `unfetched` (credit cap, an RPC failure, or a history without the create) or `unjudged` (no supply). The worker releases a `rug:<mint>` label per rug and one `coverage:rugs:deployer:<creator>` fact (as-of slot as `obs.slot`, confirmed).
 - **2026-10-04 · H14 with a deployer check.** When the `coverage:rugs` stream does not cover the look-back, H14 reads the deployer's check and accepts it only if it is for this creator, lists mints from at or before the look-back start, is at most `maxLagSlots` behind the decision (and not after it), and lists every prior mint the index knows from `rugCheckFromMs` on as `rug`, `clear` or `open`. That is the look-back start less the longest rug window (1 day): a mint launched just before the look-back can still be labelled inside it, and the stream path would count that label, so the check reads those mints too. Every signatures page is asked with `minContextSlot` = the as-of slot less one, so a node that has not seen that far fails the read and the mint is `unfetched`; it is never judged on a shorter history. Known limit: a check is accepted up to 300 slots (about 2 minutes) behind the decision, so a dump in that last stretch is not seen on the check path. The next check, at the next decision, sees it. Anything else, including no check, is H16 `not-covered` (neededBy H14). Rugs found by the check count as prior rugs, with the index's labels. This is also the closer for a restart (PERSIST-1): the open restart gap in `coverage:rugs` keeps the stream uncovered for the look-back, so each candidate's deployer is checked on demand. The check gives coverage for that deployer's mints only, never the stream, and a deployer it cannot fully check stays not covered.
@@ -1912,7 +1913,7 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - FILL-2 on real mainnet transactions: complete when the history ends at this pool's creation; incomplete when it ends at a swap or another pool's;
   - H11 on the live path with the real migration and swaps: rejects while the catch-up is open, passes after the resume, rejects on a lossy catch-up and on coverage from the first live slot; a reconnect gap after the catch-up passes again once filled in full and keeps rejecting when the fill was lossy.
 - **2026-10-05 · Restart gaps (supervisor ruling: S0-ZERO owns the wiring).** A pool's trade coverage is held in memory and is not saved across a restart, so there is no saved restart gap on a pool to fill. Once candidates are restored at a restart (card RESTART-KEEP), each restored candidate's pool gets `coverFrom` at its migration and goes through this same catch-up fill. That fill can be hours of trades, so it may hit `TRADES_FILL_CREDITS` and stay lossy; RESTART-KEEP sizes that cap from the measured `trades_fill` lines. Open positions do not need trades from before a restart: EXIT-1's flow starts again after a restart, as recorded under WORKER-1e.
-  
+
   16 hand mutants, all caught. Among them: resume on a partial fill; coverage opened at the first live slot; no hold; no release after the fill; overflow not lossy; any history end complete; `after` dropped in the fill or the stream; no `fromSlot` from the strategy or the pool watch; held pools given `coverFrom`; no budget booking; budget ignored in the cap; `after` ignored by the feed.
 
 ## Open trade as a live trade (APP-TRADE, `run/api.ts` `openPnl`, `lib/money.ts` `returnHundredths`, `dashboard/Sections.tsx` `OpenPosition`)
@@ -1933,6 +1934,26 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
 - **2026-10-05 · Price now.** It is the rest's executable price (liquidation quote per token held), the price the stops judge. It uses the triggers' "$" and 4 significant digits.
   - `markedAt` is when its pool was read. Past the app's stale rule (15 s) both turn the loss colour.
   - "Running" counts from the server's `openedAt`, re-read every second, never from the phone.
+- **2026-10-05 · The close fee is the rung the next attempt is sent at (follow-up, supervisor ruling under the paper-as-real rule; EXIT review B1/N1).**
+  - `closeFee(ladder, network, rung)` charges base + tip + that rung's priority fee, capped at the ladder's per-attempt maximum.
+  - The rung is the strategy's `closeRung`, from core `attemptRung`. That one function is also what `#sendExit` sends at, so the display and the send cannot drift:
+    - an exit owner in flight with no signed attempt uses its own start rung (a blocked retry's is the last);
+    - otherwise `nextExitRung` (one above the highest rung tried, or the attempt count when the rung was forgotten, held at the last rung);
+    - a blocked position with no owner yet retries at the last rung;
+    - a position with no saved plan pays the last rung's fee.
+  - Core's `decideExit` uses `nextExitRung` too.
+  - So the open P&L never shows a close cheaper than the one that would be sent. Before, it always counted the first rung's fee.
+  - Tests, failing before:
+    - `app-trade-api.test.ts`: after a partial exit, rung 1's fee; blocked, the last; a remembered rung 2 means rung 3; a forgotten rung uses the attempt count; unknown, the last; `attemptRung` with a new owner (a blocked retry's start rung beats the next rung up) and after it signed; `closeFee`'s cap.
+    - `worker-flow.test.ts`: while a replacement waits for a fresh market, the displayed rung is the one it is then sent at; a blocked position shows the last rung, and its real retry is sent at the last rung.
+  - The rule is the pure `closeRungOf` (strategy.ts), and `closeRung` only looks up its inputs. A unit test covers a live unsigned owner with start rung = last (EXIT review C1), plus the signed, blocked and unknown cases. Its four mutants are caught.
+  - **2026-10-06 · Charged fees follow the signed rung too.** The paper world's owner-local attempt count reset fees to rung 0 after a partial sale or a blocked retry. It now reads `signedRung`, the existing tracker rung recorded by `#sendExit` before synchronous broadcast; a missing rung falls back to the book's position-wide signed count minus one, capped. No stored field changes. Actual charged-fee regressions failed before: a post-partial full close paid 20,000 instead of 60,000 lamports priority, and a last-rung blocked retry paid 20,000 instead of 500,000. The post-partial fill also checks base + priority + tip against the earlier displayed close fee.
+  - One mutant, where the method passes no owner, survives. It differs from the correct code only while an owner is unsigned, which the harness cannot reach (below).
+  - The reviewer's exact window, a new owner whose first send waits, is not reachable in the harness. Also tried: a WATCH-1 snapshot before any slot, which the feed does not release either.
+    - After a restart, market facts arrive only with slots.
+    - The send's freshness rule is the decision's own, in the same step.
+    - So it is pinned through the shared function and its unit test.
+  - Mutants caught: rung 0 always; blocked or unknown not the last; no cap; the same rung again; a restart ignoring the attempt count; not held at the last rung; `attemptRung` ignoring the owner or uncapped; `closeRung` without the blocked case, unknown as rung 0, or the owner counted as unsigned; `#sendExit` ignoring the owner.
 - **2026-10-05 · No margin row.** The bot buys outright (spot swaps on the pool, no borrowing, no leverage), so the size is the whole amount at risk, and a margin row would only repeat Size.
 - **2026-10-05 · Older workers.** `pnlUsd`, `markPriceUsd` and `markedAt` are `optional()` in the app's schema, so a worker without them loads and shows "—".
   - An app older than these fields refuses them. After APP-COMPAT (#162) it reads "App update needed".
@@ -2166,6 +2187,28 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
 
   Hand mutants, each killed: 55 across the strategy, worker and state (no save, no restore, tries from the book only, each dated-after and malformed check, bars or tries not restored, the migration signature not noted, restored transactions not read, no create lookup at restore, no downtime read, saved signatures not reseeded, no load check, no duplicate check, no curve read, records not ingested, credits not counted; tails not saved, not restored, not in the restore fact, ended kept, no cap, malformed accepted; the migration slot not given to the catch-up; bars: a quiet minute filled flat, no dedupe, no merge, a lossy close merged, a refused swap ignored, arrival order kept, the chain not checked, the merge at the close's own moment, the opening gap taken as the close, no downtime marked, the restart minute's live close or the saved bar's close not kept, the price before the trade; no save-side candidate check; no load-side tail check; the rebuild's minute one second late (R9); live bars on receipt time; the estimate not capped at now; no earlier-bar branch; the earlier bar's close moved; the anchor on the moment slot; no stale bound; every anchor stale; the pool's own swap not used; 450 ms a slot; the anchor in any order; the bound at 151 or taken at 150; the pool's own swap kept forward only). One equivalent mutant: taking trades from before the downtime only adds back prices the saved bars already hold.
 
+
+## The app's funnel survives restarts (FUNNEL-PERSIST, `packages/worker/src/run/funnel.ts`)
+
+- **2026-10-05 · The funnel, entries per day and the decision rows come from the journal's own lines.** The owner saw Seen and the Discovered list drop (12 → 4 → 1 → 9) because each restart started the app's views empty: they lived in the worker's memory, counted from the process start. `FunnelView` now builds them from `decision` and `entry` journal lines. Live, the worker hands it each line as written (`Journal`'s new `written` hook, after the line is on disk, redacted, exactly as stored). At start, after the journal's open cuts a torn last line, `rebuildFunnel` streams the file and applies today's lines (Melbourne day of the start moment, nothing after it). Live and rebuilt views are therefore the same function over the same lines: a restarted worker shows what one that never stopped shows. No new stored data: the journal already held every line.
+- **Small meaning changes, so live and rebuilt agree.**
+  - A row's time is its journal line's time (when the decision was recorded), not the triggering event's receipt (up to about 2 s earlier).
+  - A row's id is `<event>/<journal seq>`, unique across restarts.
+  - A trade counts as entered once, on its first entry line. Before, each partial fill counted again in `enteredByDay` and added a row.
+  - The funnel's `from` is the start of the Melbourne day when any of today's lines were read, else the start moment as before. The API already serves `from`, so the contract needs no new field.
+  - A day's view keeps the latest 500 rows (`DECISION_ROWS_MAX`), as before.
+- **Not in this card.** The Discovered list is the strategy's candidates. A new process only shortlists migrations it sees, so a coin shortlisted before a restart is no longer evaluated after it. Its funnel line stays, but its evaluation does not resume. That needs the candidates restored (a separate card, raised with the supervisor).
+- **Cost.** One streamed pass over the journal at start, with only decision and entry lines parsed; the start already reads the whole journal for fills (`readJournalFills`).
+- **Evidence.** `packages/worker/test/funnel-persist.test.ts`. A worker with holder rejects and then an entry: the live view equals the view rebuilt from its journal, and a restarted worker on the same folder serves the same funnel, decisions, stages and entries (fails on the base, where the restart starts empty). Also: yesterday's lines (Melbourne, across the UTC date) do not leak in; a torn last line and an unreadable line are skipped; partial fills count once; lines after the start moment are not read; the 500-row cap. Hand mutants killed: no rebuild, no day filter, partial fills counted twice, `from` not moved, future lines read, no row cap, live view not fed.
+
+- **2026-10-06 · Independent midnight and retention corrections.** Live and replay show the same Melbourne-day window and move `from` to midnight when valid lines are seen. Earlier entry lines seed first-ever fill identity without displaying old rows, so a partial fill after midnight never becomes a new trade. Typed malformed records (including shifted reasons and invalid sequence/event IDs) are ignored. Per-day mint state and lifetime entry dedupe each stop at 200,000 keys; current-day rows remain capped at 500. At either key limit an incomplete candidate view returns HTTP 503 for funnel/decisions, with no new app fields/enums. Other endpoints and trading remain available. Daily mint overflow clears on the next day; lifetime trade overflow remains unavailable because silently forgetting earlier entries would fabricate new trades. No saved shape or risk limit changes. The reviewed FUNNEL-TRUTH dependency is included, with corrected classification applied identically live and on rebuild.
+- **Overflow recovery.** Lifetime entry identity is maintained even while daily display is unavailable; otherwise a first fill during overflow would become a new trade after midnight. The overflow-to-midnight partial-fill regression failed before this correction and passed after.
+- **Regression evidence.** Five tests failed before the correction: actual worker `from` equality, midnight parity, old-trade partial fills, capacity and malformed records. Both funnel test files pass after (22 tests before adding the final lifetime-cap and HTTP checks). Those extra checks verify incomplete views cannot be served as complete counts and a new day cannot silently clear lost lifetime dedupe.
+
+- **2026-10-06 · Heap guard.** A 128 MiB journal of old decisions plus one current decision rebuilds correctly in a separate process limited to a 64 MiB heap. Fixture writing is bounded too. This verifies streamed replay instead of a whole-file allocation; it does not establish bounds for every live retained map. The base merge retains S1's CappedMap symbols.
+
+- **2026-10-06 · Review fixes on APP-BATCH (#253).** (1) The journal's `written` hook is observer-only: its errors are dropped inside `Journal`, so a throwing hook never skips `retry()`'s seq, gap and reserve re-arm or a desk's ledger write after its entry line. (2) A test pins that `written` hears only lines that reached the file, with their exact on-disk text; it fails on the mutant that calls the hook before the append. (3) Start time: the `--reconcile` pre-step builds an empty view instead of reading the journal, and `rebuildFunnel` skips, unparsed, a decision line whose fixed prefix shows a ts before today's Melbourne day start (entry lines and unrecognised prefixes are still parsed). Evidence: `disk-crash.test.ts` (two tests) and `funnel-persist.test.ts` (same view with and without the skip over several days; the pre-step parses no decision line); each failed before its fix.
+
 - **2026-10-05 · The worker's capped maps forget the oldest key in O(1) (review of #179).** `#createSig` and `#symbols` (200,000 keys each) evicted with `map.keys().next()` after each delete. V8 keeps deleted slots until a rehash, so each eviction walked past them: 600,000 inserts at a cap of 50,000 took 17 s against 0.2 s for a ring. `CappedMap` keeps the insertion order in a ring of keys, with the same semantics: oldest-inserted first, and an update keeps its place. The TxFetcher's remembered set has the same pattern; it changes after #184 lands, with that PR's "remember after ingest" hardening. RESTART-KEEP's curve-completion and migration signature maps (merge of 47dec6f) use the same `CappedMap` (`TX_SIGS_MAX`, 200,000 each), so no map in `worker.ts` trims by iteration. After #179 the signature map's cap is the `createSigsMax` dep (default `CREATE_SIGS_MAX`), as the store's ring is. Evidence: `capped-map.test.ts` (semantics against a trimmed Map, a timing bound, a guard that fails on the base, and three live mainnet creates at a cap of two: the oldest mint's shortlist reads nothing while the two newest are read); mutants C1–C3 and the cap-ignored mutant are killed.
 
 ## Entry size the gates judge (AUDIT-RM4 F3, `packages/worker/src/engine/strategy.ts` `#riskSize`)
@@ -2244,6 +2287,34 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - `s0-zero.test.ts`: 12 fills started together never spend past the budget and at most 2 read at once; a fill that hangs has its cap on disk before the first read (a death keeps the charge); the existing fill tests now check the net booked.
   - `restart-keep.test.ts`: an ended candidate is not restored, with the live run's record and tail; a never-evaluated one has no tail; one ms inside the window it is still restored, at the window's end exactly it is not; the in-window candidate's decisions equal a restore of it alone; a worker restarted after the window reads none of the candidate's transactions.
   - Hand mutants killed: no read limit; urgent reads at the back; waiting reads run after a stop; scan count not saved; unreadable file not counted as spent; no fill limit; no reservation; no refund; a finished fill not waking the next; the scan file not wired in production; the window check off by one either way (`>` at the exact end, one ms late); an ended candidate dropped without its tail; the check moved before the pool is noted.
+
+## The funnel names refusals truly (FUNNEL-TRUTH, `worker/src/run/api.ts` `classify`, `run/worker.ts`)
+
+- **2026-10-05 · Why.** The owner's funnel (16:00–16:05) read "hard rejects 24 → costs 21 → risk 0" with "Costs 20", though no candidate reached risk that day. The daily summary listed none at R14 and showed pool-data refusals instead. There were two causes.
+  - `checkOf` let every reason it did not know fall through to `cost`, shown as "Costs". The pool-data refusals took that path: "pool state unknown/malformed/flagged" and "fee context unknown".
+  - "live SOL price unknown" contained "SOL price", so it counted as `risk`, stage 2. That refusal comes before the pool is read and before any hard reject. Each boot starts without a price for a few seconds, so candidates were lifted to "costs passed", and the funnel keeps a mint's furthest stage.
+- **2026-10-05 · The fix (server only; supervisor ruling: nothing may break the installed app).**
+  - `classify(reason)` returns the check and the stage the candidate truly passed, in the order `#evaluate` judges: regime, SOL price, pool data, sizing, hard rejects, account, stop, risk. It uses only checks the installed app's strict schema knows.
+  - Missing or unusable inputs read as H16, "Stale or unknown data", which is true of each. They are the SOL price, pool state, fee terms and a hard-reject pass that left a gate unevaluated, all at stage 0, and the account snapshot at stage 1.
+  - `no round trip:` and `stop:` are `size`, stage 1.
+  - `risk sized … gates judged …` is `size`, stage 2.
+  - Risk's refusal, fault or failed mark is `risk`, stage 1: none proves the cost gate passed. A size mismatch follows risk approval and therefore retains stage 2.
+  - A reason not listed gets no check and stays at "seen": never "Costs".
+  - Pool data is stage 0, not 1 as first asked: `#market` reads the pool before the hard rejects run.
+  - Every reject site in strategy.ts is listed in the test, and a guard counts them, so a new one fails the test until it is classified.
+- **2026-10-06 · Independent review correction.** Only H1–H17 with a valid delimiter may be returned as hard-check identifiers; unknown gate names return no check, preserving the installed app's strict enum. Generic risk refusals, failed marks and faults keep stage 1 because risk may refuse before or at R14. Worker-level fault and real R14 tests prove the costs count stays zero. Six unknown-gate cases, both worker scenarios and the classification expectation failed before the correction (9 failed, 2 passed); all 11 tests pass after. No risk limit or decision logic changed.
+- **2026-10-05 · Follow-up (next app release).** Proper labels: a `data` check ("Missing data") and an `other` check, in place of H16 and no check. These need the app's schema first, then the server (PROJECT_STATE).
+- **2026-10-05 · Tests.** `worker/test/funnel-truth.test.ts`:
+  - Every reason maps to its check and stage, and each check is one the app knows. A real R14 line is `risk`, stage 1, labelled "Costs" in decisions but never counted as a cost gate pass. An unknown reason names no check.
+  - The reject-site guard.
+  - Through the real worker, a boot with no SOL price and then no fee terms leaves the candidate at "seen", with stages hard-rejects/costs/risk/entered all 0 and rejects H16 1. Funnel and decisions pass the base app's strict schema.
+  - Fails on the base. Mutants killed:
+    - fallthrough to `cost`;
+    - SOL price at the risk stage;
+    - the account at the risk stage;
+    - the stage ignored;
+    - the size mismatch as risk;
+    - fee terms unnamed.
 
 ## Fee tiers from the chain (FEE-TIER-NOW; `facts/readers.ts` `readBatch`, `run/worker.ts`)
 
@@ -2853,6 +2924,42 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   8 MB. Hand mutants killed: every failing entry kept, the latest received dropped, the earliest dropped, the latest
   in order dropped, nothing kept of the `false` class, the two kinds merged into one class (P5), the answer by order
   across kinds.
+
+## Money in SOL first (APP-SOL, owner 2026-10-05: success is counted in SOL; `components/Money.tsx`, `lib/money.ts` `formatSol`)
+- **2026-10-05 · The worker serves lamports beside every dollar figure.** Exact integer strings from the lamports it already holds:
+  - Trades: size (what the entry swapped in), net (the paper account's `tradeSol`, including late settlements), gross (net plus costs), each cost kind, the fills.
+  - The open trade: size, liquidation value, Unrealized, Costs so far and P&L (`openPnl`, so P&L = Unrealized − Costs so far holds in lamports too).
+  - Stats net, drawdown and mean; the charts' cumulative, daily and costs; the calendar's day net.
+  - The risk meters: open exposure in lamports. The daily-loss used and limit are the policy's dollars converted at the current SOL price (used up, limit down), until SOL-BOOKS gives core's own SOL limits.
+  - `status.solPriceUsd`: the current SOL price.
+  - The dollar fields stay. The app's schema takes every lamport field as `optional()`, so a worker without them still loads and shows dollars as before. APP-SOL additions are served only with `?money=lamports`, which the new app requests. Default v1 responses keep the integration-base contract, including APP-MONEY fields and enums.
+- **2026-10-05 · Review B1/N1.**
+  - The interim daily-loss meter's rounding is pinned at a SOL price that does not divide the dollar figures ($150.000001): used is rounded up, the limit down.
+  - Whenever the dollars say the limit is reached, so does SOL.
+  - A trade whose lamport net is unknown fails closed. The SOL totals it belongs to (stats, a calendar day, the charts from it on, the trade's own net and gross) are not served, and the app shows their dollars. It never counts as 0 SOL.
+  - Mutants caught: the limit rounded up, used rounded down, an unknown net summed as 0, stats served regardless, a trade's net as 0.
+- **2026-10-05 · The app shows SOL first.**
+  - "+0.0123 SOL": four decimals, rounded half away from zero. Under 0.0001 SOL it keeps four significant digits ("0.000005 SOL"), so a fee never reads 0.0000. Exact from the integer.
+  - The dollars sit in a small line under it at the current SOL price, never toned, never the headline. Without a price there is no dollar line.
+  - Colour follows the SOL sign.
+  - It covers the open trade, the trades list and detail (with every cost and fill), Results, the risk meters, the Daily P&L calendar (cells, day sheet, month net), and the Net P&L, daily and costs charts.
+  - A chart or calendar uses SOL only when every point carries lamports; else dollars.
+  - The backtest report stays in dollars (its figures are dollar-native).
+- **2026-10-05 · Return is on SOL.** It is net lamports ÷ entry lamports, exact (`returnLamports`, the same rounding as the dollar return). A trade that lost SOL reads as a loss even if the dollars rose.
+- **2026-10-05 · Evidence.**
+  - `apps/web/test/app-sol.test.ts` and `packages/worker/test/app-sol-api.test.ts`: 8 tests, 7 failing before. The eighth pins the older-worker dollar fallback.
+  - The real worker's lamports match their sources: trade net, entry swaps, gross = net + costs, stats, charts and calendar sums, `openPnl`, open exposure, the SOL price.
+  - Hand mutants, all caught (15):
+    - Return on dollars (open trade, trades);
+    - small amounts at four decimals; SOL truncated;
+    - dollars first; the dollar line at the wrong scale;
+    - meters, charts or calendar in dollars despite lamports;
+    - the worker's net, size, stats or calendar from the wrong source; gross without costs; no SOL price.
+
+- **2026-10-06 · Integration delta.** APP-MONEY remains the dollar source: partial sales, close remainders, late settlements and wallet setup/failed-entry costs stay at their own times. SOL totals follow those same events, with exact rented amounts and attempt costs from shared paper settlement. `netSol`, `tradingUsd` and `solMoveUsd` are preserved. An unvalued movement absent from the dollar timeline invalidates the whole affected calendar month and daily/cumulative SOL chart aggregates, even when that day has no dollar row; an empty calendar cannot establish a known zero SOL sum; a trade's known lamports remain available.
+  - Default and unknown capabilities pass the strict response schema frozen at base `efa3b006`; the opt-in route passes the new schema, and the HTTP dispatch retains its query. Existing default enums are unchanged.
+  - The owner's installed APK commit has not been confirmed; this verifies the integration-base contract, not a guessed device version. A new APK is required to show SOL first. Risk limits remain dollar policy values converted conservatively until SOL-BOOKS.
+  - Delta regressions cover capability/default compatibility, partial/late/account-cost sums, unvalued late settlement failure, HTTP query forwarding, exact paid/returned rent and the owned entry size of a late-fill position (so its Return has the correct denominator).
 
 ## The host's disk: journald capped and old releases pruned (HOST-CAPS)
 
