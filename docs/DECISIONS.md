@@ -3269,3 +3269,30 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
     - a hole released behind the mark is never healed;
     - both caps hold across a restart, and a new UTC day resets them;
     - an unreadable `fetch-caps.json` counts the day as spent.
+
+## Every watch that saw a cut log gets its hole (DEDUP-PER-WATCH, `providers/canonical.ts` `echoEvents`, `providers/live-feed.ts` `ingest`, `facts/producer.ts` `#chainOther`, `run/worker.ts` `#cutPoolLog`)
+
+- **2026-10-07 · Why (found by the TRADE-GAP-HEAL builder, #262).**
+  - Each candidate pool has its own logs watch. The live feed kept one copy of a log per signature and commitment (`dedupKey`), whichever watch it came from, so a transaction touching two watched pools reached the engine through the first watch only.
+  - Checked on the code before the change (`worker/test/dedup-per-watch.test.ts`):
+    - A complete log: both pools already got their swaps. The first copy carries every event, and the producer routes a swap by its own `pool`. Not a bug.
+    - A cut log: only the first watch's pool got a hole. The second pool's swaps after the cut were lost with no gap, so H11 could pass on missing trades. **Fail-open.**
+    - `#chainOther` staled the first watch's pool, not the pool the event touched.
+- **Choice: a later copy from another watch is an echo that releases only that watch's marks.**
+  - The feed keeps the old key and adds a per-watch key (`echoKey`: signature, commitment and watch). A copy whose old key is taken but whose watch key is not is an echo, recorded with `echo: true`. A copy whose watch key is taken (a second provider on the same watch) stays a duplicate.
+  - An echo releases only: `logs:truncated:<via>` when the log was cut (with or without events before the cut), `logs:undecodable:<via>` when DEC-1 cannot read it, and `logs:pool-other:<via>` when it holds a PumpSwap event DEC-1 cannot name. No swap, create or trade is released twice, so nothing downstream (volume, buyers, deployer index, EXIT-1 flow) counts anything twice.
+  - An echo that arrives after its slot was released is placed after everything (off-chain), so its hole is never refused as out of order.
+  - `#chainOther` stales the pool a named PumpSwap event names (each one carries `pool`). An unnamed one names no pool, so every watch that saw its transaction counts it: the first watch's pool by the event, the others by their `pool-other` marks. Fail closed: a pool that was not touched may be staled, and it re-bases on its next swap.
+  - The worker fetches a cut log's transaction once per signature, whichever watch heard of it first; every pool watch waiting on that fetch is told its outcome. A pool heard of after the fetch settled is told not found at once (its swaps may already be applied ahead of its hole): its hole stays. Credits: no extra fetch per extra pool. Each pool's hole still counts toward its own `CUT_TRADE_HOLES_PER_POOL`.
+  - The deployer index keeps a hole's first time, but a creates watch's copy names its watch, so a boot still asks for it.
+- **Rejected.**
+  - Deduping fully per watch: every event would be released once per watch, and each consumer would need its own dedupe or it double-counts.
+  - Naming the pools from the account keys: a logs notification carries none. The transaction would have to be fetched first, which leaves a fail-open window until the fetch lands, or forever when it fails.
+- **Side effects, accepted.**
+  - The processed watches (creates authority, migration authority, and the rugs watches on the pump and PumpSwap programs) can share transactions too. An echo now gives their streams a hole on a cut log as well (the same fail-open, fixed the same way). A cut log on a rugs watch is fetched as before, so a transaction cut on two rugs watches can cost one more `getTransaction`.
+  - Memory: one more 96-bit tag per log copy in the feed's dedupe set, pruned with the others after `keepSlots`. The worker's per-signature entry holds the pool watches waiting on its fetch (a few at most), capped at `CUT_TRADE_FETCHES_PER_DAY`.
+  - Recordings: an echo frame carries `echo: true`. Older recordings, with those copies marked duplicate, replay as they did.
+- **Evidence (`worker/test/dedup-per-watch.test.ts`).**
+  - Fail before, pass after: a cut log gives both pools a hole (with and without events before the cut); an unnamed event seen first on another watch stales this pool; a named event stales the pool it names; one pool's fetch is shared and both pools are told found or not found; a pool heard of after the fetch settled is told not found.
+  - Pass before and after (pins the finding): a complete log gives both pools their swaps; a named event for another pool leaves this pool clean.
+  - Parity: live (cut log on both watches, fetched, healed) ends with the same candles and coverage as the backtest of the full transaction on both pools. The recording, round-tripped through its JSON, replays to the same events and facts; a recording made before echoes replays as it did.

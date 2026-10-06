@@ -98,6 +98,12 @@ export const CUT_TRADE_FETCHES_PER_DAY = 3_000;
 export const CUT_TRADE_HOLES_PER_POOL = 30;
 /** TRADE-GAP-HEAL: pool watches remembered (about 1,300 a day are watched; the oldest are forgotten first). */
 const TRADE_VIAS_KEPT = 10_000;
+/** A cut pool-trade log's fetch: the pool watches it was a hole on, those waiting on the fetch, and whether it settled. */
+interface CutTrade {
+  readonly vias: Set<string>;
+  waiting: string[];
+  settled: boolean;
+}
 /** COMPLETION-READ: the credits one completion read reserves: 1 signatures page and up to COMPLETION_READS transactions. */
 export const COMPLETION_CREDITS = callCost('helius', 'getSignaturesForAddress') + COMPLETION_READS * callCost('helius', 'getTransaction');
 const MIGRATION_TX_PREFIX = 'pump:CompletePumpAmmMigrationEvent:';
@@ -497,8 +503,12 @@ export class Worker {
    */
   #fetchCaps: { day: number; cutCreate: number; cutTrade: number } = { day: -1, cutCreate: 0, cutTrade: 0 };
   #fetchCapsFile: StateFile<FetchCaps> | null = null;
-  /** Signatures of cut pool-trade logs already asked for (a cut log names its signature on each of its events). */
-  readonly #cutTradeSeen = new CappedMap<string, true>(CUT_TRADE_FETCHES_PER_DAY);
+  /**
+   * Cut pool-trade logs already asked for, by signature (a cut log names its signature on each of its events): the pool
+   * watches it was a hole on, those waiting on the one fetch (DEDUP-PER-WATCH: a transaction touching several watched
+   * pools is a hole on each), and whether that fetch has settled.
+   */
+  readonly #cutTradeSeen = new CappedMap<string, CutTrade>(CUT_TRADE_FETCHES_PER_DAY);
   /** Holes asked for per pool watch (bounded by CUT_TRADE_HOLES_PER_POOL; the oldest watches are forgotten first). */
   readonly #cutTradePerPool = new CappedMap<string, number>(TRADE_VIAS_KEPT);
   #intentAt = new Map<string, number>();
@@ -1524,31 +1534,48 @@ export class Worker {
    * last try, past either cap, or once the pool is no longer a candidate's, the outcome says not found and the hole stays.
    */
   #cutPoolLog(sig: string, via: string): void {
-    if (this.#cutTradeSeen.has(sig)) return;
-    this.#cutTradeSeen.set(sig, true);
+    let asked = this.#cutTradeSeen.get(sig);
+    if (asked?.vias.has(via) === true) return;
+    if (asked === undefined) this.#cutTradeSeen.set(sig, (asked = { vias: new Set(), waiting: [], settled: false }));
+    asked.vias.add(via);
     // Only a candidate's candles are judged (H11): a held position's chain re-bases on its next swap, a tail's candles
     // are never read. Their holes spend nothing.
     if (!this.#candidatePool(via)) return this.#holeOutcome(via, sig, false);
     const holes = (this.#cutTradePerPool.get(via) ?? 0) + 1;
     this.#cutTradePerPool.set(via, holes);
-    if (holes > CUT_TRADE_HOLES_PER_POOL || !this.#takeCutTradeFetch()) return this.#holeOutcome(via, sig, false);
-    this.#cutPoolTry(sig, via, 0);
+    // DEDUP-PER-WATCH: a hole heard of after its transaction's fetch settled may have its swaps already applied ahead of
+    // it: it stays (fail closed). One heard of while the fetch runs waits on it; no second fetch.
+    if (holes > CUT_TRADE_HOLES_PER_POOL || asked.settled) return this.#holeOutcome(via, sig, false);
+    asked.waiting.push(via);
+    if (asked.waiting.length > 1) return;
+    if (!this.#takeCutTradeFetch()) return this.#cutPoolSettled(sig, asked, false);
+    this.#cutPoolTry(sig, asked, 0);
   }
 
-  #cutPoolTry(sig: string, via: string, tried: number): void {
+  /** Asked again while any waiting pool is still a candidate's; a pool that left the list is told with the others. */
+  #cutPoolTry(sig: string, asked: CutTrade, tried: number): void {
+    const wanted = (): boolean => asked.waiting.some((v) => this.#candidatePool(v));
     void this.#d.fetchTx(sig, 'cut-trade').catch(() => false).then((found) => {
       if (this.#stopping) return;
-      if (found) return this.#holeOutcome(via, sig, true);
+      if (found) return this.#cutPoolSettled(sig, asked, true);
       const wait = CUT_CREATE_RETRY_MS[tried];
-      if (wait === undefined || !this.#candidatePool(via)) return this.#holeOutcome(via, sig, false);
+      if (wait === undefined || !wanted()) return this.#cutPoolSettled(sig, asked, false);
       const h = this.#d.timers.setTimeout(() => {
         this.#cutCreateTimers.delete(h);
         if (this.#stopping) return;
-        if (!this.#candidatePool(via) || !this.#takeCutTradeFetch()) return this.#holeOutcome(via, sig, false);
-        this.#cutPoolTry(sig, via, tried + 1);
+        if (!wanted() || !this.#takeCutTradeFetch()) return this.#cutPoolSettled(sig, asked, false);
+        this.#cutPoolTry(sig, asked, tried + 1);
       }, wait);
       this.#cutCreateTimers.add(h);
     });
+  }
+
+  /** The fetch settled: every pool waiting on it is told, after the transaction's own events. */
+  #cutPoolSettled(sig: string, asked: CutTrade, found: boolean): void {
+    asked.settled = true;
+    const waiting = asked.waiting;
+    asked.waiting = [];
+    for (const via of waiting) this.#holeOutcome(via, sig, found);
   }
 
   /** A candidate's pool, not held (`watchedPools` gives a candidate's pool its migration slot, `fromSlot`). */
