@@ -649,6 +649,25 @@ describe('H11 on the live path: migration, a late subscribe, then trades', () =>
     }
   });
 
+  it('BEHIND (facts review B1): a shed range\'s gap released first in the range keeps H11 rejecting on every event of it; released after it, the range\'s events would pass without the shed swap', () => {
+    // The catch-up resumed in full up to the last swaps' slot; the swaps of that slot are shed (never released).
+    const drop = swaps.at(-1)!.slot;
+    const base = () => new FactWorld().push(
+      ...txEvents(create), ...txEvents(complete), ...txEvents(migrate),
+      coverage(stream, 'start', { fromSlot: migrate.slot, via: `logs:${POOL}` }, migrate.slot, atOf(migrate) + 2_000),
+      coverage(stream, 'gap', { fromSlot: migrate.slot, toSlot: null, reason: 'catch-up', via: `logs:${POOL}` }, migrate.slot, atOf(migrate) + 2_001),
+      ...swaps.filter((s) => s.slot < drop).flatMap((s) => txEvents(s)),
+      coverage(stream, 'resume', { fromSlot: migrate.slot, toSlot: drop - 1n, via: `logs:${POOL}` }, drop - 1n, at - 10),
+    );
+    // As the worker places it: first in the range's first slot (index 0, 0), before any event of the range.
+    const shedGap = { ...coverage(stream, 'gap', { fromSlot: drop, toSlot: head, reason: 'shed', via: `logs:${POOL}` }, drop, at - 5), moment: { slot: drop, txIndex: 0, ixIndex: 0, receivedAt: at - 5 } };
+    const placed = base().push(shedGap, slotNotice(drop, at - 4));
+    const r = h11(placed, drop, at - 3);
+    expect(!r.ok && r.reason).toMatchObject({ gate: 'H16', code: 'gap', input: 'stream' });
+    // Without the gap yet (placed after the range, at the open slot): an event of the range passes, the swap missing.
+    expect(h11(base().push(slotNotice(drop, at - 4)), drop, at - 3).ok).toBe(true);
+  });
+
   it('coverage that starts at the first live slot, as before S0-ZERO, never passes: H16 gap', () => {
     const w = new FactWorld().push(
       ...txEvents(create), ...txEvents(complete), ...txEvents(migrate),

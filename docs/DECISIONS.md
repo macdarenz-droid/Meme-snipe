@@ -2658,6 +2658,14 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - `feed.test.ts`: a released swap's signature costs the feed under 140 B (258 B with key strings). The dedupe cases and the parity and recorder suites are unchanged.
   - Hand mutants killed: three wrong backward-shift conditions; the low half ignored.
 
+
+## Falling behind the feeds (BEHIND, `run/behind.ts`)
+
+- **2026-10-06 · Why.** A worker that falls behind its feeds holds every unreleased frame in memory, and the hold grows until the heap runs out.
+- **What.** A loop cycle late by more than 10 s (the loop's monotonic clock) halts entries (`behind`, through the halt check); the halt clears after 30 s of cycles under 2 s. Exits keep running. Past 20,000 held frames, the feed sheds the held log frames of candidate pools only: never a pool that is held, has a position or seed, or has an exit or entry in flight (`LiveStrategy.committed`).
+- **Coverage.** Each shed range becomes a recorded coverage gap (`coverage:trades:<pool>:gap`, reason `shed`), placed first in its first slot, so it sorts before every shed event. H11 refuses the pool from that slot (H16 `gap`), live and in the recording's replay alike. Shed frames are ranked before they drop, so live and replay give the same moments after a shed.
+- **Cost.** A shed tail pool censors its REC-1 counterfactual for that range.
+
 ## Recording upload (RECORD-UPLOAD, `ops/host/files/usr/local/lib/zeroed/record-upload.mjs`, `packages/ops/src/watchdog/record.ts`)
 
 - **Runs as the worker's user, with no capability.** The recorder is `/var/lib/zeroed` (`StateDirectoryMode=0700`, `UMask=0077`, owner `zeroed-worker`). Root with an empty capability set cannot read those files or delete them. The other way, root with `CAP_DAC_OVERRIDE`, could write anywhere. The worker's user already holds every credential the uploader reads: the API keys and the bot token by `LoadCredentialEncrypted`, the heartbeat key by `ImportCredential`. So running as that user exposes nothing new. The unit has no `zeroed-signer` group, so the signer's socket stays out of reach. Writable: only `/var/lib/zeroed/recorder` and its own state folder. The ops-files test pins the user, the capability lines, the writable paths, the credentials and `ExecStart`.
