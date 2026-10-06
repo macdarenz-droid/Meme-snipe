@@ -477,7 +477,8 @@ grep -q "Recording upload: .* kept, 0 failed\.$" "$LOGS/record-upload-1.txt" || 
 # What the day's release holds: the ended boot's frames, releases and manifest, the newest boot's clean files, the day's
 # index; never raw or delays, never the planted file. Every asset's bytes are the local file's (sha256).
 names="$(jq -r --arg t "rec-$RDAY" '.assets[] | select(.tag == $t) | .name' "$DATA/state.json" | sort | tr '\n' ' ')"
-[ "$names" = "index-1.json $NEW.frames-000.jsonl.zst $OLD.frames-000.jsonl.zst $OLD.manifest.json $OLD.releases-000.jsonl.zst " ] || fail "data repository assets: $names"
+want="$(printf '%s\n' index-1.json "$NEW.frames-000.jsonl.zst" "$OLD.frames-000.jsonl.zst" "$OLD.manifest.json" "$OLD.releases-000.jsonl.zst" | sort | tr '\n' ' ')"
+[ "$names" = "$want" ] || fail "data repository assets: $names (want $want)"
 for b in "$OLD" "$NEW"; do for t in frames-000 releases-000; do
   want="$(sha_of "$b" "$t")"
   got="$(jq -r --arg n "$b.$t.jsonl.zst" '.assets[] | select(.name == $n) | .sha256' "$DATA/state.json")"
