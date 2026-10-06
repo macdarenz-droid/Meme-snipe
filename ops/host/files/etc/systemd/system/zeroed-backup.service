@@ -1,8 +1,9 @@
 [Unit]
-Description=Zeroed: encrypted backup of the SQLite files
+Description=Zeroed: bounded encrypted backup of bot state
 
 [Service]
 Type=oneshot
+EnvironmentFile=-/etc/zeroed/worker.env
 ExecStart=/usr/local/sbin/zeroed-backup
 UMask=0077
 Nice=10

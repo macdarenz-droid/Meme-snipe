@@ -17,7 +17,10 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 fail() { echo "FAIL: $*"; exit 1; }
 
-age -d -i "$identity" "$backup" 2>/dev/null | tar -x -C "$work" --no-same-owner 2>/dev/null || fail "cannot decrypt or unpack $(basename "$backup")"
+age -d -i "$identity" "$backup" > "$work/archive" 2>/dev/null || fail "cannot decrypt or unpack $(basename "$backup")"
+# A seekable archive lets tar detect both legacy plain tar and the bounded gzip backups.
+tar -x -f "$work/archive" -C "$work" --no-same-owner 2>/dev/null || fail "cannot decrypt or unpack $(basename "$backup")"
+rm -f "$work/archive"
 [ -f "$work/MANIFEST.sha256" ] || fail "manifest missing"
 (cd "$work" && sha256sum --quiet -c MANIFEST.sha256) >/dev/null 2>&1 || fail "a file does not match the manifest"
 

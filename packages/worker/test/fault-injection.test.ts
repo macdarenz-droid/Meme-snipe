@@ -870,7 +870,7 @@ describe('DISK-GUARD: free space runs low (golden rule: a full disk is an outage
     return { full, append };
   };
 
-  it('a journal line that does not fit: no crash, entries refused while lines are lost, exits go on, and the gap is journaled once it fits', async () => {
+  it('a journal line that does not fit: no crash, entries stay refused until restart, exits go on, and the gap is journaled once it fits', async () => {
     const { full, append } = fullDisk();
     const feeds = [scriptedSource('helius-ws', true, ['helius']), scriptedSource('coinbase-ws', true, ['coinbase'])];
     const h = makeWorker({ timers: dueTimers(T - 16 * 86_400_000), sources: () => feeds, append, config: { ZEROED_HEALTH_ADDR: '127.0.0.1:18908', ZEROED_API_ADDR: '127.0.0.1:18909' } });
@@ -891,21 +891,32 @@ describe('DISK-GUARD: free space runs low (golden rule: a full disk is an outage
     await until(m, () => h.worker.book.positions[pid]!.status === 'closed', 30_000, step(700_000n));
     await m.run(2_000, 400, step());
     expect(h.worker.health().halt_reasons).toContain(DISK_LOW);
-    expect(h.worker.health().journal_seq).toBe(seq);
+    expect(h.worker.health().journal_seq).toBeGreaterThan(seq);
     const entered = entries(h).length;
     await passingMarket(h);
     await m.run(20_000, 400, step());
     expect(entries(h).length).toBe(entered);
-    expect(h.worker.health().journal_seq).toBe(seq);
+    expect(h.worker.health().journal_seq).toBeGreaterThan(seq);
 
+    const lostSeq = h.worker.health().journal_seq;
     full.delete('journal.jsonl');
     await until(m, () => !h.worker.health().halt_reasons.includes(DISK_LOW), 70_000, step(), 400);
-    const gaps = kinds(h.stateDir, 'journal_gap');
+    const gaps = kinds(h.stateDir, 'coverage_gap').filter((l) => l['stream'] === 'journal');
     expect(gaps).toHaveLength(1);
-    expect(gaps[0]!['seq']).toBe(seq + 1);
+    expect(gaps[0]).toMatchObject({ seq: lostSeq + 1, lost: lostSeq - seq, known_lost: lostSeq - seq, from_seq: seq + 1, to_seq: lostSeq });
     expect(gaps[0]!['lost']).toBeGreaterThan(0);
     const r = checkJournal(journal(h.stateDir));
-    expect(r.problems).toEqual([expect.stringMatching(new RegExp(`^seq ${seq + 1}: \\d+ line\\(s\\) not written from .+ \\(no space left on the device\\)$`))]);
+    expect(r.complete).toBe(false);
+    expect(r.problems).toEqual([`seq ${lostSeq + 1} where ${seq + 1} expected`, `seq ${lostSeq + 1}: journal evidence missing (${lostSeq - seq} events)`]);
+    // Approved #246 is stricter: evidence loss holds this boot even when space returns. Exits already completed.
+    expect(h.worker.health().entries_halted).toBe(true);
+    expect(h.worker.health().halt_reasons).toContain('journal failed (ENOSPC): evidence lost, entries off until a restart');
+    expect(h.worker.health().critical).toContain('journal failed (ENOSPC): evidence lost, entries off until a restart');
+    expect(h.worker.health().recorder).toBe('off');
+    await passingMarket(h);
+    await m.run(20_000, 400, step());
+    expect(entries(h).length).toBe(entered);
+    expect(h.worker.book.positions[pid]!.status).toBe('closed');
     await h.worker.stop();
   });
 

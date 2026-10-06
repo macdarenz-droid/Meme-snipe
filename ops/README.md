@@ -10,7 +10,7 @@ Server: Vultr High Performance, Frankfurt, 1 vCPU / 1 GB, image **Ubuntu 24.04 L
 2. **Install.** Paste this one line the same way (Clipboard → Paste), then press Enter:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/b76a1255c1f98cb826e5bc91894ddb007b262865/ops/install.sh -o i && echo '299fee6bfcb6c0cea5a88834a694f6e9e8c0b911840c9daa409e954e234a08c2  i' | sha256sum -c && bash i
+curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/b76a1255c1f98cb826e5bc91894ddb007b262865/ops/install.sh -o i && echo '807c1fb151e04cc1ef7d5da815f3ed0728ecae99f417eda18e24a53facf2e489  i' | sha256sum -c && bash i
 ```
 
    The line checks the file against its SHA-256 before anything runs; a changed file stops at `sha256sum -c`. After about two minutes the screen shows a **deploy code** of 6 words.
@@ -19,7 +19,7 @@ curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/b76a1255
 
 The console screen can be left at any time (Ctrl+C); setup carries on in the background. `zeroed-status` shows where it stands and the codes again.
 
-SHA-256 of `install.sh`: `299fee6bfcb6c0cea5a88834a694f6e9e8c0b911840c9daa409e954e234a08c2`
+SHA-256 of `install.sh`: `807c1fb151e04cc1ef7d5da815f3ed0728ecae99f417eda18e24a53facf2e489`
 
 After any change to `ops/install.sh`, the commit in the line must move to one that holds the new file (`ops/test/e2e.sh` fails otherwise).
 
@@ -97,17 +97,23 @@ At the server console, as root:
 
 ## Disk space
 
-The worker reads free space where its state lives once a minute. Below 1.5 GiB it stops recording market data (the gap is marked in the recorder's manifest); below 512 MiB it also refuses new entries ("disk low"), while open positions keep exiting. Each comes back 512 MiB higher. `/health` and the heartbeat carry the reading (`disk`: free and total bytes, the recorder's bytes, days to full at the measured rate, and both steps). Every file the worker keeps adding to is bounded: the recorder by the steps above; `journal.jsonl` and `deployers.jsonl` never stop the worker on a full disk (a line that does not fit is counted, entries stop until it fits again, and the loss is written down then: a `journal_gap` line, and a coverage gap so the deployer check reads as not covered across it after a restart); `deployers.jsonl` is also cut to the look-back once a day; Node's fatal reports keep the newest 5 (#218). Nothing deletes the ledger or saved state. The system journal is capped at 500 MB, and `zeroed-update` removes releases older than 7 days (never the current one, the one before it, or the 3 newest). To make room by hand, see what is large with `du -sh /var/lib/zeroed/recorder/* | sort -h | tail` and `ls -lt /opt/zeroed/releases`; recorder folders are pre-funding evidence, so copy one off the server before removing it.
+The worker reads free space where its state lives once a minute. Below 1.5 GiB it pauses recording (the manifest marks the gap); below 512 MiB it refuses new entries ("disk low") while exits continue. Each resumes 512 MiB higher. The `disk` reading stays in local `/health`; the heartbeat sent to the watchdog excludes it. `deployers.jsonl` is trimmed to the look-back plus a day daily; a failed append refuses entries until the lost range is saved as creates/rugs coverage gaps. A journal ENOSPC releases the approved 64 KiB reserve, consumes sequence numbers and later records a journal `coverage_gap`; that boot keeps entries off and recording off until a restart. The durable check before a new buy prevents sending without its evidence; existing attempts and exits continue. Ledger and critical state errors remain strict. Nothing here deletes ledger, saved state or recordings. Only S1's RECORD-UPLOAD removes a sealed recording after verifying the uploaded copy's sha256. The system journal is capped at 500 MB with 2 GB kept free. Releases older than 7 days are pruned, preserving the current release, rollback target and 3 newest. Node's fatal reports keep the newest 5 (#218).
 
 ## Backups
 
-Every hour `zeroed-backup` copies the worker's whole bot state under `/var/lib/zeroed`: SQLite files with SQLite's online backup, checked, and every other state file as it is (JSON state must parse). Left out: the run's evidence (`journal.jsonl`, `recorder/`), the running worker's markers about itself (`drill.token`, `open_intents`, `clean_stop`, `planned_restart`), Node's fatal reports (`reports/`: they hold the host name and network interfaces), files mid-write (`*.tmp`) and SQLite side files. It writes a SHA-256 manifest and encrypts the bundle with age to the host key and, once set, to the owner's backup code. The newest 72 stay in `/var/backups/zeroed`.
+Every hour `zeroed-backup` selects durable state under `/var/lib/zeroed`: `ledger.sqlite` (SQLite online backup and integrity check), `deployer-state.json` (the actual streamed `saveState` path), `deployers.jsonl`, `account.json`, `exits.json`, `entry-seeds.json`, `paper.json`, `control.json`, `credits.json`, `fill-budget.json`, `exposure.json`, `cold_start` and direct `chain-volume/*.json` files. JSON documents must parse. Its allowlist excludes recordings, `journal.jsonl` and its reserve, reports, temporary/SQLite side files, runtime markers and unrelated files. A SHA-256 manifest covers every selected file; gzip compresses before age encryption to the existing host recipient and the owner's recipient when configured.
+
+`/var/backups/zeroed` retains at most **256 MiB total** of encrypted compressed archives and at most 72 copies, pruning oldest first only after a complete candidate is ready. Raw staging and the encrypted candidate are each limited to **128 MiB**; an oversized state rejects the whole snapshot, publishes nothing and keeps the newest existing copy. The documented 23.4 MB saved state fits; future growth is unmeasured, so an oversized-state failure needs a reviewed budget or state-size fix. This cap does not promise 72 hours: the byte cap can shorten retention. Concurrent runs use a directory lock.
+
+A run skips if either the state or backup filesystem cannot leave the recorder pause line free after **256 MiB plus 64 KiB** of staging headroom. The backup service reads the same `/etc/zeroed/worker.env` pause setting as the worker (`ZEROED_DISK_RECORDER_PAUSE_BYTES`, default 1.5 GiB); unreadable disk availability also skips. At defaults it needs at least 1.75 GiB plus 64 KiB free before starting. This check cannot reserve space against unrelated writes after the sample. Failed copies, validation or encryption remove their scratch candidate and never publish a partial archive.
+
+The filename stays `zeroed-<UTC time>.tar.age`. Restore and restore-drill decrypt into scratch and let tar detect both older plain tar and new gzip archives. At the console after S1 deploys, confirm journald's cap, the retained releases, a successful state-only compressed backup and its restore-drill, the archive total under 256 MiB, and the local `/health` disk block. Agents have no owner-host access.
 
 **Off-server copy (free, no R2): off until the owner approves.** Sending backups to Telegram is sending data to a third party, which needs the owner's approval (CLAUDE.md). The timer is installed but disabled, and `zeroed-backup-offsite` refuses to send while `ops/host-config.json` says `"offsite_backup": false` (the default). Switching it on is a reviewed commit that sets it to `true`; the next code update (`zeroed-update`) applies it.
 
 Once on: run `zeroed-backup-code` once at the console. It shows a 6-word backup code one time; write it down. Only its public half (an age recipient, derived with the same scrypt step as the deploy code but a different salt) stays on the server. Every day at about 03:20 Melbourne time the newest backup is re-encrypted to that recipient alone, so nothing on the server, the host key included, can open the copy. It is then sent as a silent Telegram document to the paired chat (bots may send up to 50 MB).
 
-To open a copy anywhere with Node and age: `node derive-key.mjs --backup` (type the 6 words, press Enter) `> id.txt`, then `age -d -i id.txt zeroed-….tar.age | tar -x`.
+To open a copy anywhere with Node and age: `node derive-key.mjs --backup` (type the 6 words, press Enter) `> id.txt`, then `age -d -i id.txt zeroed-….tar.age > backup.tar`, then `tar -xf backup.tar` (works with both plain and gzip archives).
 
 `zeroed-restore-drill /etc/zeroed/age/host.key` (or the identity made from the words) restores the newest backup into a scratch directory. It prints PASS once the manifest, the integrity check and the tables all match, and never touches the live files.
 

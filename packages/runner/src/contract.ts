@@ -145,7 +145,7 @@ export interface Health {
   readonly entry_rule?: string;
 }
 
-/** DISK-GUARD's reading in health and the heartbeat; the byte fields are null until read or when the read failed. */
+/** DISK-GUARD's local health reading, omitted from the watchdog heartbeat; byte fields are null on a failed read. */
 export interface DiskHealth {
   readonly free_bytes: number | null;
   readonly total_bytes: number | null;

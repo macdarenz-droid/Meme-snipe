@@ -1,6 +1,6 @@
 // DISK-GUARD: the worker's own appends on a full disk. The journal and the deployer index's saved file count a line
 // that does not fit instead of throwing (the worker keeps exiting positions), and say what they lost once there is room:
-// a `journal_gap` line the runner reads as missing evidence, and a bounded coverage gap that keeps H14 uncovered across
+// a journal `coverage_gap` line the runner reads as missing evidence, and a bounded coverage gap that keeps H14 uncovered across
 // the lost range after a restart.
 import { appendFileSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -27,7 +27,7 @@ const appendWith = (full: { on: boolean; part?: number }) => (path: string, text
 const lines = (path: string) => readFileSync(path, 'utf8').split('\n').filter((l) => l !== '');
 
 describe('journal on a full disk', () => {
-  it('counts lines that do not fit, keeps seq unbroken, and writes a journal_gap before the next line that fits', () => {
+  it('counts lines that do not fit, consumes seqs, and writes a coverage_gap before the next line that fits', () => {
     const path = join(dir(), 'journal.jsonl');
     const full = { on: false };
     let told = 0;
@@ -38,20 +38,21 @@ describe('journal on a full disk', () => {
     now += 1000;
     j.write('decision', { reasons: ['a'] });
     j.write('decision', { reasons: ['b'] });
-    expect(j.seq).toBe(1);
+    expect(j.seq).toBe(3);
     expect(j.failing).toBe(true);
-    expect(told).toBe(2);
+    expect(told).toBe(1);
     full.on = false;
     now += 1000;
     j.write('decision', { reasons: ['c'] });
     expect(j.failing).toBe(false);
     const got = lines(path).map((l) => JSON.parse(l) as Record<string, unknown>);
-    expect(got.map((l) => [l['seq'], l['kind']])).toEqual([[1, 'start'], [2, 'journal_gap'], [3, 'decision']]);
-    expect(got[1]).toMatchObject({ lost: 2, from_ts: '2026-10-05T01:00:01.000Z', reasons: ['2 journal line(s) not written: no space left on the device'] });
-    // The runner: seq unbroken, but the journal is not complete; the gap is named.
+    expect(got.map((l) => [l['seq'], l['kind']])).toEqual([[1, 'start'], [4, 'coverage_gap'], [5, 'decision']]);
+    expect(got[1]).toMatchObject({ stream: 'journal', lost: 2, known_lost: 2, from_seq: 2, to_seq: 3, from_ts: '2026-10-05T01:00:01.000Z', to_ts: '2026-10-05T01:00:02.000Z', reason: 'journal events not written: no space left on device' });
+    // The runner reports both the consumed sequence gap and the explicit missing evidence.
     const r = checkJournal(readFileSync(path, 'utf8'));
     expect(r.complete).toBe(false);
-    expect(r.problems).toEqual(['seq 2: 2 line(s) not written from 2026-10-05T01:00:01.000Z (no space left on the device)']);
+    expect(r.problems).toEqual(['seq 4 where 2 expected', 'seq 4: journal evidence missing (2 events)']);
+    expect(new Journal(path, 'b2', () => now).seq).toBe(5);
   });
 
   it('retry writes the pending gap alone once there is room, and nothing when none is pending', () => {
@@ -65,7 +66,7 @@ describe('journal on a full disk', () => {
     expect(j.retry()).toBe(false);
     full.on = false;
     expect(j.retry()).toBe(true);
-    expect(lines(path).map((l) => (JSON.parse(l) as { kind: string }).kind)).toEqual(['start', 'journal_gap']);
+    expect(lines(path).map((l) => (JSON.parse(l) as { kind: string }).kind)).toEqual(['start', 'coverage_gap']);
   });
 
   it('a short write leaves a fragment: the gap starts on its own line, so the next lines stay whole', () => {
@@ -78,11 +79,12 @@ describe('journal on a full disk', () => {
     full.on = false;
     j.write('stop', {});
     const raw = lines(path);
-    expect(raw).toHaveLength(4);
-    expect(raw[1]).toBe('{"seq":2,"');
-    expect(raw.slice(2).map((l) => (JSON.parse(l) as { kind: string }).kind)).toEqual(['journal_gap', 'stop']);
-    // A restart reads seq from the whole last line.
-    expect(new Journal(path, 'b2', () => 0).seq).toBe(3);
+    expect(raw).toHaveLength(3);
+    const got = raw.map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(got.map((l) => [l['seq'], l['kind']])).toEqual([[1, 'start'], [3, 'coverage_gap'], [4, 'stop']]);
+    expect(got[1]).toMatchObject({ stream: 'journal', lost: 1, known_lost: 1, from_seq: 2, to_seq: 2 });
+    // The short fragment is repaired and every surviving line parses; restart keeps consumed seqs.
+    expect(new Journal(path, 'b2', () => 0).seq).toBe(4);
   });
 
   it('any other write error is thrown as before', () => {

@@ -1455,10 +1455,10 @@ export class Worker {
   }
 
   #checkDisk(now: number): void {
-    // Lines lost for lack of space: their `journal_gap` goes first, once there is room.
+    // Lines lost for lack of space: their journal `coverage_gap` goes first, once there is room.
     if (this.#journal.failing && this.#journal.retry()) {
       this.#journalNoSpace = false;
-      this.#d.log('Journal: writing again; the lines lost for lack of space are counted in a journal_gap line.');
+      this.#d.log('Journal: writing again; the lines lost for lack of space are counted in a coverage_gap line.');
     }
     const read = this.#d.disk;
     if (read === undefined) return;

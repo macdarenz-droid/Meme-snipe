@@ -286,10 +286,11 @@ WantedBy=timers.target
 __ZEROED_FILE__
 install_file /etc/systemd/system/zeroed-backup.service 0644 <<'__ZEROED_FILE__'
 [Unit]
-Description=Zeroed: encrypted backup of the SQLite files
+Description=Zeroed: bounded encrypted backup of bot state
 
 [Service]
 Type=oneshot
+EnvironmentFile=-/etc/zeroed/worker.env
 ExecStart=/usr/local/sbin/zeroed-backup
 UMask=0077
 Nice=10
@@ -1357,18 +1358,16 @@ e2e_commit() {
   done
 }
 
-# backup_files STATE_DIR: the worker's bot state, one path relative to STATE_DIR per line, sorted. That is every
-# file except the run's evidence (journal.jsonl and recorder/, RUN-1's EVIDENCE_FILES), the runtime markers the
-# running worker writes about itself (the per-boot drill token, the open-intent count, the clean-stop marker, a
-# drill's planned-restart marker: a restored copy would describe the old worker, a count of 0 from the backup would
-# let an update through before the restored worker has reconciled, and a restored drill marker would call the
-# restore's own start a planned restart), Node's fatal reports (reports/: host name and network interfaces, this
-# host's diagnostics, not bot state), files still being written (*.tmp: the worker renames a finished copy over
-# the real name) and SQLite's side files (-wal, -shm, -journal: SQLite's online backup reads through them).
+# backup_files STATE_DIR: known durable bot state only. This allowlist is checked against the real worker paths.
+# Ledger WAL/SHM files are never copied: SQLite online backup incorporates committed WAL pages. The journal and
+# its reserve, recordings, host reports, runtime markers, temp files and unrelated files are never selected.
 backup_files() {
-  (cd "$1" && find . -type f ! -path ./journal.jsonl ! -path './recorder/*' ! -path ./drill.token ! -path './reports/*' \
-    ! -path ./open_intents ! -path ./clean_stop ! -path ./planned_restart \
-    ! -name '*.tmp' ! -name '*-wal' ! -name '*-shm' ! -name '*-journal' -printf '%P\n') | LC_ALL=C sort
+  (cd "$1" && find . -maxdepth 2 -type f \
+    \( -path ./ledger.sqlite -o -path ./account.json -o -path ./exits.json -o -path ./entry-seeds.json \
+       -o -path ./paper.json -o -path ./deployer-state.json -o -path ./deployers.jsonl \
+       -o -path ./fill-budget.json -o -path ./credits.json -o -path ./control.json \
+       -o -path ./exposure.json -o -path ./cold_start -o -path './chain-volume/*.json' \) \
+    -printf '%P\n') | LC_ALL=C sort
 }
 
 # intents_hold ACTIVE STATE_DIR: true while a code update or a worker restart must wait for open intents. ACTIVE
@@ -1543,12 +1542,10 @@ exec /usr/local/bin/node "${heap[@]}" "$entry" "$@"
 __ZEROED_FILE__
 install_file /usr/local/sbin/zeroed-backup 0755 <<'__ZEROED_FILE__'
 #!/usr/bin/env bash
-# Hourly encrypted backup of the worker's bot state under /var/lib/zeroed (logic.sh backup_files: everything but
-# the run's evidence, the drill token and files mid-write). SQLite files are copied with SQLite's online backup
-# (consistent under WAL) and checked; every other file is copied whole: the worker writes its state files to a
-# temporary name and renames them, so a copy reads one complete version. JSON files must parse. Each file is listed
-# in a manifest with its SHA-256, packed and encrypted with age to /etc/zeroed/backup-recipients (the host key, plus
-# the owner's key once the Deploy workflow delivered one). Keeps the newest 72 locally.
+# Hourly state-only backup: consistent SQLite online backup, complete durable JSON/deployer state, SHA-256 manifest,
+# gzip before age encryption. Retained encrypted archives total at most 256 MiB and 72 copies; raw staging and the
+# encrypted candidate each have a 128 MiB ceiling. No partial snapshot is published. Skip when either filesystem
+# cannot leave the worker's configured recorder pause line free after maximum staging. Existing evidence stays.
 set -euo pipefail
 umask 077
 . "${ZEROED_LIB:-/usr/local/lib/zeroed}/logic.sh"
@@ -1557,43 +1554,95 @@ SRC="${ZEROED_BACKUP_SRC:-/var/lib/zeroed}"
 OUT="${ZEROED_BACKUP_OUT:-/var/backups/zeroed}"
 RECIPIENTS="${ZEROED_BACKUP_RECIPIENTS:-/etc/zeroed/backup-recipients}"
 KEEP="${ZEROED_BACKUP_KEEP:-72}"
-
+MAX_BYTES="${ZEROED_BACKUP_MAX_BYTES:-268435456}"
+SNAPSHOT_BYTES="${ZEROED_BACKUP_SNAPSHOT_BYTES:-134217728}"
+PAUSE_BYTES="${ZEROED_DISK_RECORDER_PAUSE_BYTES:-1610612736}"
+for n in "$KEEP" "$MAX_BYTES" "$SNAPSHOT_BYTES" "$PAUSE_BYTES"; do
+  [[ "$n" =~ ^[1-9][0-9]{0,15}$ ]] || { echo "Invalid backup disk budget."; exit 1; }
+done
+[ "$KEEP" -ge 2 ] && [ "$KEEP" -le 72 ] && [ "$MAX_BYTES" -le 268435456 ] &&
+  [ "$SNAPSHOT_BYTES" -le 134217728 ] && [ "$((SNAPSHOT_BYTES * 2))" -le "$MAX_BYTES" ] ||
+  { echo "Invalid backup disk budget (at most 256 MiB, 72 copies; room for two snapshots required)."; exit 1; }
 [ -s "$RECIPIENTS" ] || { echo "No backup recipients yet (keys not delivered); nothing backed up."; exit 0; }
 [ -d "$SRC" ] || { echo "No worker state yet; nothing backed up."; exit 0; }
 mapfile -t found < <(backup_files "$SRC")
+[ "${#found[@]}" -gt 0 ] || { echo "No worker state yet; nothing backed up."; exit 0; }
+mkdir -p "$OUT"
+# Lock the directory itself: manual runs cannot race the timer's budget or leave a persistent lock file.
+exec {lock}<"$OUT"
+flock -n "$lock" || { echo "Backup skipped: another backup is running."; exit 0; }
 
-work="$(mktemp -d)"
+# bavail × block size: the same unprivileged free bytes as worker statfs. Never count root's reserved blocks.
+room() {
+  local sample blocks size
+  sample="$(stat -f -c '%a:%S' -- "$1")" || return 1
+  IFS=: read -r blocks size <<< "$sample"
+  [[ "$blocks" =~ ^[0-9]{1,15}$ && "$size" =~ ^[0-9]{1,9}$ ]] || return 1
+  [ "$((blocks * size))" -ge "$((PAUSE_BYTES + SNAPSHOT_BYTES * 2 + 65536))" ]
+}
+if ! room "$SRC" || ! room "$OUT"; then
+  echo "Backup skipped: insufficient free disk above the recorder pause line for bounded staging."
+  exit 0
+fi
+work="$(mktemp -d "$OUT/.backup.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/snap"
 files=()
+bytes=0
 for rel in "${found[@]}"; do
   mkdir -p "$work/snap/$(dirname "$rel")"
+  remaining=$((SNAPSHOT_BYTES - bytes - 65536))
+  # Permit small lower test/operator budgets too; the manifest's actual size is checked below.
+  [ "$remaining" -gt 0 ] || remaining=$((SNAPSHOT_BYTES - bytes))
+  [ "$remaining" -gt 0 ] || { echo "Backup exceeds the state snapshot limit; nothing published."; exit 1; }
   case "$rel" in
-    *.sqlite | *.db)
-      sqlite3 "$SRC/$rel" ".timeout 10000" ".backup '$work/snap/$rel'"
+    *.sqlite)
+      # The child file-size limit prevents an online SQLite copy exceeding the remaining staging budget.
+      (ulimit -f "$(((remaining + 1023) / 1024))"; sqlite3 "$SRC/$rel" ".timeout 10000" ".backup '$work/snap/$rel'") ||
+        { echo "SQLite backup failed or exceeds the state snapshot limit; nothing published."; exit 1; }
       check="$(sqlite3 "$work/snap/$rel" 'PRAGMA integrity_check;')"
       [ "$check" = ok ] || { echo "Backup copy of $rel failed its integrity check."; exit 1; }
       ;;
     *)
-      if ! cp -p -- "$SRC/$rel" "$work/snap/$rel" 2>/dev/null; then
-        # Removed by the worker since the listing: not part of this backup.
-        [ -e "$SRC/$rel" ] || continue
+      # Read at most the remaining budget plus a detection byte, including a state replacement during the copy.
+      if ! head -c "$((remaining + 1))" -- "$SRC/$rel" > "$work/snap/$rel"; then
+        [ -e "$SRC/$rel" ] || { rm -f "$work/snap/$rel"; continue; }
         echo "Could not copy $rel."
         exit 1
       fi
-      case "$rel" in *.json) jq empty "$work/snap/$rel" >/dev/null 2>&1 || { echo "Backup copy of $rel is not valid JSON."; exit 1; } ;; esac
       ;;
   esac
+  size="$(stat -c %s "$work/snap/$rel")"
+  [ "$size" -le "$remaining" ] || { echo "Backup exceeds the state snapshot limit; nothing published."; exit 1; }
+  bytes=$((bytes + size))
+  case "$rel" in *.json) jq empty "$work/snap/$rel" >/dev/null 2>&1 || { echo "Backup copy of $rel is not valid JSON."; exit 1; } ;; esac
   files+=("$rel")
 done
 [ "${#files[@]}" -gt 0 ] || { echo "No worker state yet; nothing backed up."; exit 0; }
 (cd "$work/snap" && sha256sum -- "${files[@]}") > "$work/snap/MANIFEST.sha256"
-
+[ "$((bytes + $(stat -c %s "$work/snap/MANIFEST.sha256")))" -le "$SNAPSHOT_BYTES" ] ||
+  { echo "Backup exceeds the state snapshot limit; nothing published."; exit 1; }
+# Compression precedes encryption. The destination limit bounds encrypted staging even for incompressible data.
+(ulimit -f "$(((SNAPSHOT_BYTES + 1023) / 1024))"; tar -C "$work/snap" -cz . | age -R "$RECIPIENTS" -o "$work/candidate") ||
+  { echo "Backup compression/encryption failed or exceeds the snapshot limit; nothing published."; exit 1; }
+size="$(stat -c %s "$work/candidate")"
+[ "$size" -le "$SNAPSHOT_BYTES" ] || { echo "Backup exceeds the encrypted snapshot limit; nothing published."; exit 1; }
 ts="$(date -u +%Y%m%dT%H%M%SZ)"
-mkdir -p "$OUT"
-tar -C "$work/snap" -c . | age -R "$RECIPIENTS" -o "$OUT/zeroed-$ts.tar.age.new"
-mv -f "$OUT/zeroed-$ts.tar.age.new" "$OUT/zeroed-$ts.tar.age"
-ls -1 "$OUT"/zeroed-*.tar.age | LC_ALL=C sort -r | tail -n +"$((KEEP + 1))" | xargs -r rm -f
+[ ! -e "$OUT/zeroed-$ts.tar.age" ] || { echo "Backup skipped: this second already has a backup."; exit 0; }
+mapfile -t old < <(find "$OUT" -maxdepth 1 -type f -name 'zeroed-*.tar.age' -printf '%f\n' | LC_ALL=C sort)
+total=0
+for name in "${old[@]}"; do total=$((total + $(stat -c %s "$OUT/$name"))); done
+count=${#old[@]}
+prune=0
+while [ "$((total + size))" -gt "$MAX_BYTES" ] || [ "$((count + 1))" -gt "$KEEP" ]; do
+  # Always retain the newest existing copy until the verified candidate is atomically published.
+  [ "$count" -gt 1 ] || { echo "Backup skipped: the newest existing backup plus this snapshot exceeds the total cap."; exit 0; }
+  total=$((total - $(stat -c %s "$OUT/${old[$prune]}")))
+  prune=$((prune + 1))
+  count=$((count - 1))
+done
+for ((i=0; i<prune; i++)); do rm -f -- "$OUT/${old[$i]}"; done
+mv -- "$work/candidate" "$OUT/zeroed-$ts.tar.age"
 echo "Backup zeroed-$ts.tar.age: ${#files[@]} file(s), $(wc -l < "$RECIPIENTS") recipient(s)."
 __ZEROED_FILE__
 install_file /usr/local/sbin/zeroed-backup-code 0755 <<'__ZEROED_FILE__'
@@ -1892,7 +1941,7 @@ install_file /usr/local/sbin/zeroed-restore 0755 <<'__ZEROED_FILE__'
 #!/usr/bin/env bash
 # Restores the worker's bot state from a backup (host loss): runs the restore drill on the backup first, stops the
 # worker, moves the bot state it has aside to /var/lib/zeroed-prerestore/<UTC time>/ (the run's evidence,
-# journal.jsonl and recorder/, stays where it is), puts every file of the backup in its place, gives them to the
+# journal.jsonl, its reserve and recorder/, stays where it is), puts every file of the backup in its place, gives them to the
 # worker and starts it; it reconciles first. Without control.json in the backup, entries start paused.
 #   zeroed-restore IDENTITY_FILE [BACKUP_FILE]    (default: the newest backup)
 set -euo pipefail
@@ -1909,7 +1958,10 @@ backup="${2:-$(ls -1 "$OUT"/zeroed-*.tar.age 2>/dev/null | LC_ALL=C sort -r | he
 "$DRILL" "$identity" "$backup" || { echo "The backup failed the restore drill; nothing restored."; exit 1; }
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
-age -d -i "$identity" "$backup" | tar -x -C "$work" --no-same-owner
+age -d -i "$identity" "$backup" > "$work/archive"
+# Supports both legacy plain tar and new gzip archives.
+tar -x -f "$work/archive" -C "$work" --no-same-owner
+rm -f "$work/archive"
 (cd "$work" && sha256sum --quiet -c MANIFEST.sha256) >/dev/null
 
 systemctl stop zeroed-worker.service
@@ -1918,7 +1970,7 @@ aside="$ASIDE/$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p "$aside"
 moved=0
 while IFS= read -r name; do
-  case "$name" in journal.jsonl | recorder) continue ;; esac
+  case "$name" in journal.jsonl | journal.jsonl.reserve | recorder) continue ;; esac
   mv -- "$SRC/$name" "$aside/$name"
   moved=$((moved + 1))
 done < <(find "$SRC" -mindepth 1 -maxdepth 1 -printf '%P\n')
@@ -1959,7 +2011,10 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 fail() { echo "FAIL: $*"; exit 1; }
 
-age -d -i "$identity" "$backup" 2>/dev/null | tar -x -C "$work" --no-same-owner 2>/dev/null || fail "cannot decrypt or unpack $(basename "$backup")"
+age -d -i "$identity" "$backup" > "$work/archive" 2>/dev/null || fail "cannot decrypt or unpack $(basename "$backup")"
+# A seekable archive lets tar detect both legacy plain tar and the bounded gzip backups.
+tar -x -f "$work/archive" -C "$work" --no-same-owner 2>/dev/null || fail "cannot decrypt or unpack $(basename "$backup")"
+rm -f "$work/archive"
 [ -f "$work/MANIFEST.sha256" ] || fail "manifest missing"
 (cd "$work" && sha256sum --quiet -c MANIFEST.sha256) >/dev/null 2>&1 || fail "a file does not match the manifest"
 

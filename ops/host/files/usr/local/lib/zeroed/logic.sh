@@ -172,18 +172,16 @@ e2e_commit() {
   done
 }
 
-# backup_files STATE_DIR: the worker's bot state, one path relative to STATE_DIR per line, sorted. That is every
-# file except the run's evidence (journal.jsonl and recorder/, RUN-1's EVIDENCE_FILES), the runtime markers the
-# running worker writes about itself (the per-boot drill token, the open-intent count, the clean-stop marker, a
-# drill's planned-restart marker: a restored copy would describe the old worker, a count of 0 from the backup would
-# let an update through before the restored worker has reconciled, and a restored drill marker would call the
-# restore's own start a planned restart), Node's fatal reports (reports/: host name and network interfaces, this
-# host's diagnostics, not bot state), files still being written (*.tmp: the worker renames a finished copy over
-# the real name) and SQLite's side files (-wal, -shm, -journal: SQLite's online backup reads through them).
+# backup_files STATE_DIR: known durable bot state only. This allowlist is checked against the real worker paths.
+# Ledger WAL/SHM files are never copied: SQLite online backup incorporates committed WAL pages. The journal and
+# its reserve, recordings, host reports, runtime markers, temp files and unrelated files are never selected.
 backup_files() {
-  (cd "$1" && find . -type f ! -path ./journal.jsonl ! -path './recorder/*' ! -path ./drill.token ! -path './reports/*' \
-    ! -path ./open_intents ! -path ./clean_stop ! -path ./planned_restart \
-    ! -name '*.tmp' ! -name '*-wal' ! -name '*-shm' ! -name '*-journal' -printf '%P\n') | LC_ALL=C sort
+  (cd "$1" && find . -maxdepth 2 -type f \
+    \( -path ./ledger.sqlite -o -path ./account.json -o -path ./exits.json -o -path ./entry-seeds.json \
+       -o -path ./paper.json -o -path ./deployer-state.json -o -path ./deployers.jsonl \
+       -o -path ./fill-budget.json -o -path ./credits.json -o -path ./control.json \
+       -o -path ./exposure.json -o -path ./cold_start -o -path './chain-volume/*.json' \) \
+    -printf '%P\n') | LC_ALL=C sort
 }
 
 # intents_hold ACTIVE STATE_DIR: true while a code update or a worker restart must wait for open intents. ACTIVE

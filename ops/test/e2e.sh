@@ -346,10 +346,10 @@ for f in sbin/zeroed-backup sbin/zeroed-restore sbin/zeroed-restore-drill lib/ze
   docker exec -i "$C" cmp -s "/usr/local/$f" - <"$ROOT/ops/host/files/usr/local/$f" || fail "test setup: this branch's $f not in place"
 done
 # JSON state beside the ledger: the worker's exit plans (empty: the release's worker refuses any other shape, and
-# §8 may have switched to it) and a file it does not read, which carries a random marker. The backup takes every
-# file, so both must come back byte for byte (OPS-1j).
-MARK="{\"e2e\":\"$(rnd 8)\"}"
-in_c "printf '{}\n' > /var/lib/zeroed/exits.json && printf '%s\n' '$MARK' > /var/lib/zeroed/e2e-state.json && chown zeroed-worker: /var/lib/zeroed/exits.json /var/lib/zeroed/e2e-state.json"
+# §8 may have switched to it) and durable entry seed state with an unused mint marker. Both approved state
+# files must come back byte for byte (OPS-1j); unrelated files are excluded.
+MARK="{\"e2e\":{\"mint\":\"$(rnd 8)\"}}"
+in_c "printf '{}\n' > /var/lib/zeroed/exits.json && printf '%s\n' '$MARK' > /var/lib/zeroed/entry-seeds.json && chown zeroed-worker: /var/lib/zeroed/exits.json /var/lib/zeroed/entry-seeds.json"
 # The owner's controls (BACKUP-STATE): a tripped kill switch, in the worker's own control.json shape, written while the
 # worker is stopped (a running worker rewrites the file from what it holds) and read by the worker as it starts.
 KILL_AT="$(( $(date +%s) * 1000 ))"
@@ -364,7 +364,7 @@ in_c "zeroed-restore-drill /etc/zeroed/age/host.key" >"$LOGS/drill-host.txt" 2>&
 in_c "cp /var/backups/zeroed/$bk /root/tampered.age && printf 'x' | dd of=/root/tampered.age bs=1 seek=200 conv=notrunc 2>/dev/null"
 in_c "zeroed-restore-drill /etc/zeroed/age/host.key /root/tampered.age" >"$LOGS/drill-tampered.txt" 2>&1 && fail "tampered backup passed"
 in_c "rm -f /root/tampered.age"
-grep -q '^PASS' "$LOGS/drill-host.txt" && grep -q 'host_events' "$LOGS/drill-host.txt" && grep -q '^  exits.json: ' "$LOGS/drill-host.txt" && grep -q '^  e2e-state.json: ' "$LOGS/drill-host.txt" && grep -q '^FAIL' "$LOGS/drill-tampered.txt" || fail "drill output"
+grep -q '^PASS' "$LOGS/drill-host.txt" && grep -q 'host_events' "$LOGS/drill-host.txt" && grep -q '^  exits.json: ' "$LOGS/drill-host.txt" && grep -q '^  entry-seeds.json: ' "$LOGS/drill-host.txt" && grep -q '^FAIL' "$LOGS/drill-tampered.txt" || fail "drill output"
 in_c "systemctl is-enabled zeroed-backup.timer && systemctl show -p TimersCalendar --value zeroed-backup.timer" | grep -q 'OnCalendar=\*-\*-\* \*:00:00' || fail "backup timer is not hourly"
 # Real restore: the newer state goes aside, the backup's comes back, the evidence stays, the worker starts again.
 # The evidence is append-only and the worker appends to it as it stops and starts, so "kept" means every byte
@@ -372,13 +372,13 @@ in_c "systemctl is-enabled zeroed-backup.timer && systemctl show -p TimersCalend
 # The newer state has the kill switch cleared, as a host rebuilt without the backup would: the restore must bring the
 # trip back, and the worker that starts on it must keep it.
 in_c "systemctl stop zeroed-worker.service && printf '%s\n' '$(latches null)' > /var/lib/zeroed/control.json"
-in_c "printf '{\"newer\":true}\n' > /var/lib/zeroed/e2e-state.json && touch /var/lib/zeroed/journal.jsonl && cp /var/lib/zeroed/journal.jsonl /root/journal-before.jsonl"
+in_c "printf '{\"newer\":true}\n' > /var/lib/zeroed/entry-seeds.json && touch /var/lib/zeroed/journal.jsonl && cp /var/lib/zeroed/journal.jsonl /root/journal-before.jsonl"
 in_c "zeroed-restore /etc/zeroed/age/host.key" >"$LOGS/restore.txt" 2>&1 || { cat "$LOGS/restore.txt"; fail "restore"; }
-[ "$(in_c "cat /var/lib/zeroed/e2e-state.json")" = "$MARK" ] || fail "restore did not bring back the worker's JSON state"
-in_c "grep -lx '{\"newer\":true}' /var/lib/zeroed-prerestore/*/e2e-state.json" >/dev/null || fail "restore did not keep the replaced state aside"
+[ "$(in_c "cat /var/lib/zeroed/entry-seeds.json")" = "$MARK" ] || fail "restore did not bring back the worker's JSON state"
+in_c "grep -lx '{\"newer\":true}' /var/lib/zeroed-prerestore/*/entry-seeds.json" >/dev/null || fail "restore did not keep the replaced state aside"
 in_c "cmp -s -n \$(stat -c %s /root/journal-before.jsonl) /root/journal-before.jsonl /var/lib/zeroed/journal.jsonl" || fail "restore touched the evidence"
 in_c "rm -f /root/journal-before.jsonl"
-in_c "test ! -e /var/lib/zeroed/MANIFEST.sha256 && stat -c %U /var/lib/zeroed/exits.json /var/lib/zeroed/e2e-state.json | sort -u" | grep -qx zeroed-worker || fail "restored files not the worker's"
+in_c "test ! -e /var/lib/zeroed/MANIFEST.sha256 && stat -c %U /var/lib/zeroed/exits.json /var/lib/zeroed/entry-seeds.json | sort -u" | grep -qx zeroed-worker || fail "restored files not the worker's"
 in_c "for i in \$(seq 60); do systemctl is-active --quiet zeroed-worker.service && exit 0; sleep 1; done; exit 1" || fail "worker not back after restore"
 in_c "jq -e '.latches.killTrippedAtMs == $KILL_AT' /var/lib/zeroed-prerestore/*/control.json" >/dev/null && fail "test setup: the replaced control.json still had the trip"
 sleep 5
@@ -400,7 +400,7 @@ in_c "zeroed-status" | grep "off-server copy off (waits for the owner's approval
 in_c "printf '{\"offsite_backup\": true}\n' > /opt/zeroed/current/ops/host-config.json && systemctl start zeroed-backup-offsite.service" || fail "off-server copy failed"
 grep -q "\"method\":\"sendDocument\",\"token_ok\":true,\"chat_id\":\"$T_CHAT\"" "$STATE/telegram.jsonl" || fail "backup not sent to the owner chat"
 printf '%s' "$BCODE" | node "$ROOT/ops/host/files/usr/local/lib/zeroed/derive-key.mjs" --backup >"$E2E/owner-backup.id"
-age -d -i "$E2E/owner-backup.id" "$STATE/received-document" | tar -t | grep -q 'MANIFEST.sha256' || fail "the Telegram copy does not open with the backup code"
+age -d -i "$E2E/owner-backup.id" "$STATE/received-document" | tar -tz | grep -q 'MANIFEST.sha256' || fail "the Telegram copy does not open with the backup code"
 docker cp "$STATE/received-document" "$C:/root/received.age" >/dev/null
 in_c "age -d -i /etc/zeroed/age/host.key /root/received.age >/dev/null 2>&1" && fail "the Telegram copy opens with the host key"
 in_c "rm -f /root/received.age"
