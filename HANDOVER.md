@@ -48,6 +48,11 @@ The previous S1 account reached its usage limit about 12:45 PM. The owner made t
 - No host access, no secrets access (owner only), as before.
 
 **Log (Melbourne time, newest first)**
+- 2:38 AM #260 reviews:
+  - **ops/contract PASS** at a52368e8 (S1 checked its session: it ran typecheck, the 3 test files and 2 mutants).
+  - **worker/facts FAIL, B1:** C clears H14 only if every cut-create fetch in the 14-day look-back succeeds. One failed, shed or expired fetch, or one still out at a restart (#lost is saved and restored), blocks H14 for 14 days, and #cutCreateSeen blocks any re-ask.
+  - Builder told to add a bounded retry with backoff, a boot re-ask for restored holes (both under the cap, still fail-closed), corrected docs, fail-before tests and mutants, plus N2 (worker guard test), N3 (UTC day roll; a clock that steps back cannot reset the cap) and N5 (four citations).
+  - Non-blocking, recorded: N4 (TEST-1 needs recordings from this build; old recordings differ at their first H16 line), N6 (summary.json validation is shallow, as before).
 - 2:30 AM **#260 H16-WHY ready**, head a52368e8 (contains 7f1ff241). Full check: 263 files, 6,674 tests, 30 min. Marked ready, CI running. Reviewers: worker/facts session_01DRL6VdgrNsNuJ1af1iqrHN (Opus), ops/contract session_01VRRt2CL6rGPdWrQMjaRViY (Sonnet).
   - **A:** the journal's gate_reasons now keep input/neededBy (strategy.ts:2401 dropped them). The summary adds candidates.h16_by_input (every H16 code, top 10 + h16_other, the distinct reasons on a coin's last refusal). The watchdog takes the keys only together and only in exact shape.
   - **C:** cut or undecodable creates logs are fetched (P2, cap 3,000 per UTC day per process, about 2–3k credits a day expected), fail-closed. Known gap: holes from before the deploy are not re-fetched at boot.
