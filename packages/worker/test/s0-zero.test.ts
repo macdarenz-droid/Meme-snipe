@@ -20,7 +20,9 @@ import {
 } from '../src/providers/index.ts';
 import type { SignatureInfo } from '../src/providers/solana-http.ts';
 import { HELIUS_FREE, ManualTimers, P1, P3, Scheduler, type Timers } from '../src/scheduler/index.ts';
-import { CAPPED_READ_CREDITS_PER_DAY, FILL_BUDGET_FILE, FILL_CREDITS_PER_DAY, PLAN_FILL_CREDITS_PER_DAY } from '../src/run/seed-start.ts';
+import { CAPPED_READ_CREDITS_PER_DAY, FILL_BUDGET_FILE, FILL_CREDITS_PER_DAY, planFillCreditsPerDay } from '../src/run/seed-start.ts';
+/** The Free plan's figure (HELIUS-PLAN: the default plan is now Developer; helius-plan.test.ts checks its figures). */
+const PLAN_FILL_CREDITS_PER_DAY = planFillCreditsPerDay(HELIUS_FREE);
 import { parseConfig } from '../src/run/config.ts';
 import { DEPLOYER_CHECK_CREDITS_PER_DAY } from '../src/facts/deployer-checks.ts';
 import { holderScanCreditsPerDay } from '../src/facts/budget.ts';

@@ -15,6 +15,26 @@ export const HELIUS_FREE: SchedulerSpec = {
   budget: { monthlyCredits: 1_000_000, haltShare: 0.7 },
 };
 
+/**
+ * Helius Developer (owner upgraded the plan, 2026-10-07 about 6:10 AM Melbourne; Helius pricing page checked 6:15 AM:
+ * 10M credits a month, 50 RPC requests a second). The free plan's shape scaled by five: P2 and P3 keep the same share
+ * of the window free for P0–P1 (5 of 10 there, 25 of 50 here); the halt share is unchanged.
+ */
+export const HELIUS_DEVELOPER: SchedulerSpec = {
+  provider: 'helius',
+  window: { limit: 50, windowMs: 1_000 },
+  floors: [0, 0, 25, 25],
+  maxWaitMs: [NO_LIMIT, 5_000, 3_000, 2_000],
+  maxQueue: 64,
+  budget: { monthlyCredits: 10_000_000, haltShare: 0.7 },
+};
+
+/** The Helius plans the worker can be configured for (`ZEROED_HELIUS_PLAN`); the scripts keep HELIUS_FREE. */
+export const HELIUS_PLANS = { free: HELIUS_FREE, developer: HELIUS_DEVELOPER } as const satisfies Readonly<Record<string, SchedulerSpec>>;
+export type HeliusPlan = keyof typeof HELIUS_PLANS;
+/** The plan the worker uses when none is configured: the account's current one. */
+export const DEFAULT_HELIUS_PLAN: HeliusPlan = 'developer';
+
 /** Helius WebSocket metering: 2 credits per 0.1 MB uncompressed, plus 1 credit per connection opened (F2). */
 export const HELIUS_WS_CREDITS_PER_BYTE = 2 / 100_000;
 export const HELIUS_WS_CREDITS_PER_CONNECTION = 1;
