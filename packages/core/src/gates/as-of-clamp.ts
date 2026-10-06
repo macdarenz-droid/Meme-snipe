@@ -5,7 +5,7 @@ import type { Moment } from '../engine/moment.ts';
  * first, so an event at or before the moment can carry a receipt time after it, and a chain block time (a create's, a
  * migration's) is routinely seconds off local receipt. Such a time is saved as at the moment, never after; slot,
  * transaction and instruction are kept. Each clamp is counted with the largest, so a real future-dated bug stays
- * visible (the worker logs a save whose largest clamp is over `CLAMP_LOG_MS`).
+ * visible (the worker logs a save whose largest clamp is over its `CLAMP_LOG_MS`).
  */
 export class AsOfClamp {
   #count = 0;
@@ -37,6 +37,3 @@ export class AsOfClamp {
     return m.receivedAt <= this.asOfMs ? m : { ...m, receivedAt: this.ms(m.receivedAt) };
   }
 }
-
-/** A save whose largest clamp is over this is logged (a skew of seconds is normal; minutes is a bug). */
-export const CLAMP_LOG_MS = 10_000;

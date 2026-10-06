@@ -68,10 +68,12 @@ export const DOWNTIME_CREDIT_CAP = 3_000;
 /** RESTART-KEEP: transactions read before a migration to find its curve's completion. */
 const COMPLETION_READS = 5;
 export const PERSIST_EVERY_MS = 5 * 60_000;
+/** SAVE-ASOF: a save whose largest clamp (`AsOfClamp`) is over this is logged: a skew of seconds is normal, more is a bug. */
+export const CLAMP_LOG_MS = 10_000;
 /** STATE-DEDUPE: the recorder folder holding each distinct saved state once, packed, named by the sha256 of its plain bytes. */
 export const SAVED_STATES = 'saved-state';
 import { type Control, NO_CONTROL, type Restart, StateFile, controlFile, exitsFile, seedsFile, exposedFile, NO_EXPOSED, exitKind, restartsAfterBoot, restartsFile } from './state.ts';
-import { CLAMP_LOG_MS, LOG_CREATE_PREFIX, type PoolFact, S0_DIAGNOSTIC_PARTS, TX_CREATE_PREFIX, parsePool } from '../../../core/src/gates/index.ts';
+import { LOG_CREATE_PREFIX, type PoolFact, S0_DIAGNOSTIC_PARTS, TX_CREATE_PREFIX, parsePool } from '../../../core/src/gates/index.ts';
 import type { ExecStats } from '../../../core/src/facts/raw.ts';
 
 /** POS-1: a pool fact flagged beyond backfill or dedupe (a stale swap stream) is never priced from. */
