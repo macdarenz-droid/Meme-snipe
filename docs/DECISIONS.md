@@ -2681,6 +2681,13 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - The regime's other series, stated whole like the graduates fact: `gates/sol-usd`, `gates/curve-volume`,
     `gates/exec-health` (read as of now by the regime and H8), and their raw reads `sol-usd`,
     `read:chain-volume-hour`, `read:exec-health` (the producer acts on the released read and keeps its own series).
+- **F1b, F4** (supervisor rulings, after a reader check each): newest value only for an undecoded program event
+  (`<pump|pump_amm>:other:<program>`: nothing reads it, the producer skips `other`; the key is the program, so it never
+  retires), a creator's on-demand deployer check (`coverage:rugs:deployer:<creator>`: H14 reads it as of now; `history`
+  reads only the `coverage:<stream>:start|gap|resume` keys) and a feed's status (`feed:status:<feed>`: the worker acts
+  on it as it arrives).
+- **F6.** MEM-PROBE also carries the Helius stream's held catch-up notifications (`feed_stream_held`,
+  `RpcStream.heldNotices`, passed by main).
 - **Create logs** (supervisor item 2): already let go 13 h after their create when the coin has not migrated
   (OOM-MINT, `CREATE_KEEP_MS` + `CREATE_LATE_MS`); live's create-log keys still grow while that window fills after a
   restart (about 70 a minute, about 55k at the full window). Shortening it changes which coins are refused
@@ -2693,7 +2700,8 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   hour of ticks, and a lookup as of now returns the newest (before: one entry a tick); `mem-counts.test.ts`: entries and rough bytes per kind exactly, sampled
   at scale, the `store_b_` and `store_e_` codes, `roughBytes` within a factor of two on a value it stops early in.
   Hand mutants killed: sol-price whole, fact-reads whole, `read:exec-health` whole, no `store_e_` codes, entries
-  counted as keys, no `store_b_` codes, no field cost, no scaling of skipped values. The per-mint `read:` keys stay
+  counted as keys, no `store_b_` codes, no field cost, no scaling of skipped values, `other` events whole, the
+  deployer check whole, feed status whole, no `feed_stream_held`. The per-mint `read:` keys stay
   whole (supervisor: bounded per mint, refuted as the climb).
 
 ## The 5-min save streams its payload (SAVE-SPIKE, `persist/state.ts`)

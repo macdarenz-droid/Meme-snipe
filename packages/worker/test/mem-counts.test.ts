@@ -80,8 +80,9 @@ describe('the counts', () => {
     const many = new Map(Array.from({ length: 40 }, (_, i) => [`k${i}`, 1_000 - i] as const));
     expect(probeCounts({}, new Map(), many).map((x) => x.code)).toEqual(Array.from({ length: PROBE_STORE_SIZE_KINDS }, (_, i) => `store_e_k${i}`));
     expect(probeCounts({}, new Map(), new Map(), many).map((x) => x.code)).toEqual(Array.from({ length: PROBE_STORE_SIZE_KINDS }, (_, i) => `store_b_k${i}`));
-    // Today's 68 group codes (80 in a live sample, less its 12 key kinds), then the key, size and entry kinds: under the cap.
-    expect(68 + PROBE_STORE_KINDS + 2 * PROBE_STORE_SIZE_KINDS).toBeLessThanOrEqual(PROBE_MAX_COUNTS);
+    // Today's 69 group codes (80 in a live sample less its 12 key kinds, plus F6's stream_held), then the key, size and
+    // entry kinds: under the cap.
+    expect(69 + PROBE_STORE_KINDS + 2 * PROBE_STORE_SIZE_KINDS).toBeLessThanOrEqual(PROBE_MAX_COUNTS);
   });
 
   it('roughBytes ranks values by size and stops early on a huge one', () => {
@@ -138,7 +139,8 @@ describe('in the worker', () => {
   it('keeps a probe sample each minute with the major collections, and one just before and just after each save', async () => {
     const stateDir = tempState();
     const timers = virtualTimers(T);
-    const h = makeWorker({ stateDir, timers, seedWaitMs: 0 });
+    // F6: the Helius stream's held catch-up notifications, as main passes them (`RpcStream.heldNotices`).
+    const h = makeWorker({ stateDir, timers, seedWaitMs: 0, streamHeld: () => 1_234 });
     const m = new Market(h);
     const started = h.worker.start();
     while (!h.order.includes('start helius-ws')) await new Promise<void>((r) => setImmediate(r));
@@ -146,6 +148,7 @@ describe('in the worker', () => {
     expect(await started).toEqual({ ok: true });
     await m.run(PROBE_EVERY_MS + 11_000, 500, () => m.slot());
     const recent = readProbe(stateDir);
+    expect(recent.at(-1)!.counts.find((c) => c.code === 'feed_stream_held')?.count).toBe(1_234);
     expect(recent.length).toBeGreaterThanOrEqual(2);
     expect(JSON.parse(readFileSync(join(stateDir, MEM_FILE), 'utf8'))).not.toHaveProperty('recent');
     const codes = new Set(recent.at(-1)!.counts.map((c) => c.code));

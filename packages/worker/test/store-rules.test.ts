@@ -9,7 +9,7 @@ import type { PoolState } from '../../core/src/amm/index.ts';
 import { swapLog } from '../../core/test/facts/swaps.ts';
 import { POOL_FACT_KEEP_MS, liveCollapse, liveRetention } from '../src/run/store-rules.ts';
 import { DEV, POOL_ADDRESS, SUPPLY, makeWorker, passingMarket } from './worker-harness.ts';
-import { CURVE_VOLUME_KEY, EXEC_HEALTH_KEY, SOL_USD_KEY, candlesKey, carryKey, poolKey, poolTradeKeys, streamKey } from '../../core/src/gates/index.ts';
+import { CURVE_VOLUME_KEY, EXEC_HEALTH_KEY, SOL_USD_KEY, rugCheckKey, candlesKey, carryKey, poolKey, poolTradeKeys, streamKey } from '../../core/src/gates/index.ts';
 import { RAW, STREAMS } from '../../core/src/facts/index.ts';
 import { AsOfStore, SimClock } from '../../core/src/engine/index.ts';
 import { deepFreeze } from '../../core/src/engine/freeze.ts';
@@ -73,7 +73,7 @@ describe('the live store under a busy pool (OOM-SWAPS)', () => {
   });
 
   it('STORE-GROWTH: the worker\'s running facts (SOL/USD, the day\'s read counts) and the regime\'s series with their raw reads keep only their newest value; a lookup as of now is unchanged', () => {
-    for (const k of [SOL_PRICE_KEY, FACT_READS_KEY, SOL_USD_KEY, CURVE_VOLUME_KEY, EXEC_HEALTH_KEY, RAW.solUsd, RAW.volumeHour, RAW.exec]) {
+    for (const k of [SOL_PRICE_KEY, FACT_READS_KEY, SOL_USD_KEY, CURVE_VOLUME_KEY, EXEC_HEALTH_KEY, RAW.solUsd, RAW.volumeHour, RAW.exec, 'logs:pump:other:pump', 'logs:pump_amm:other:pump_amm', 'pump:other:pump', 'pump_amm:other:pump_amm', rugCheckKey('Creator1111'), 'feed:status:helius', 'feed:status:pumpportal']) {
       const keepOlder = liveCollapse(k);
       expect(keepOlder, k).not.toBeNull();
       expect(keepOlder!({ moment: { slot: 1n, txIndex: 0, ixIndex: 0, receivedAt: 0 }, value: {}, source: 's' }), k).toBe(false);
@@ -123,7 +123,7 @@ describe('the live store under a busy pool (OOM-SWAPS)', () => {
       expect(keepOlder, k).not.toBeNull();
       expect(keepOlder!({ moment: { slot: 1n, txIndex: 0, ixIndex: 0, receivedAt: 0 }, value: {}, source: 's' }), k).toBe(false);
     }
-    for (const k of ['gates/holders:M', 'read:holders:M', 'gates/create:M', 'gates/migration:M', 'coverage:creates:start', 'chain:slots']) expect(liveCollapse(k), k).toBeNull();
+    for (const k of ['gates/holders:M', 'read:holders:M', 'gates/create:M', 'gates/migration:M', 'coverage:creates:start', 'coverage:rugs:start', 'coverage:rugs:gap', 'chain:slots']) expect(liveCollapse(k), k).toBeNull();
   });
 
   it('240 pool trade streams at 2.5 slot notices a second and 4,050 swaps a minute leave the heap flat (it grew 19 MB in two minutes; live, about 20 MB a minute)', async () => {
