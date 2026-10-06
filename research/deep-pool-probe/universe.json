@@ -1,0 +1,1874 @@
+[
+{
+"mint": "13i7SfDDzg3t4MQnfZNtFKptHpv8HR2eaGRMfetSpump",
+"symbol": "\u718a\u732b",
+"pool": "Hbi14thnGfHncVpbdbKMzPgGg2UX5o8WWP2NYrSiaLTR",
+"created_ms": 1778010172000
+},
+{
+"mint": "21CnrFRqvEVkQZUTFmTXjcsJTLZhRY51ohoaCPwRpump",
+"symbol": "DOG",
+"pool": "E4yxghwjWbSJSXpxNpfvVVa6KvKW51aNuVVH2TC7542e",
+"created_ms": 1770300493000
+},
+{
+"mint": "21nnfR4TkbZNLwvRrqEseAbz7P3kxKjaV7KuboLJpump",
+"symbol": "weedcoin",
+"pool": "46RmnrAStMUhWi838FymQ6NxJ9KrkkPayjtaoVTTTJKT",
+"created_ms": 1743524520703
+},
+{
+"mint": "21rKrtBzibPAZHAHQRzGiGDSh7XimCKB2a8VgsjZpump",
+"symbol": "CHUD",
+"pool": "GyqM8Pe9FUbkk5hCw7ffpeUt6F6WcHnc8pPdMYcnShiS",
+"created_ms": 1775698443000
+},
+{
+"mint": "25skNZqQeebbGRbpGQNAaESHFxgMYJ4UKQ2VfS3gpump",
+"symbol": "MTAUR",
+"pool": "BwvxYXyqsFU7yrwHi72mFRsJ4CjogjoGgkP7irxrpVZ",
+"created_ms": 1748857316826
+},
+{
+"mint": "28EtJ8fBo5SqqBUPGdyLrdSYgUoW9dFKFRwn5XUrpump",
+"symbol": "TLLT",
+"pool": "Dp9b7ReFkuAnyXeEGdDwFvLHxG5WXbRa94i12srzSJhb",
+"created_ms": 1758267776201
+},
+{
+"mint": "28a2oQVCPrJB7SLZo4DVMVdHchSXiG8sZy31DohPpump",
+"symbol": "$PRINT",
+"pool": "91FPaXonom2yWwK6t4AWxKJ8gexh6AV6tLji41HFt8FB",
+"created_ms": 1761048456563
+},
+{
+"mint": "2AF7CqwieUjUPALL7icuZtL3X7wENdjUjGBMmfV2pump",
+"symbol": "TINY",
+"pool": "GEF9WdZj9UzsMnNViGiRFqMYtxzHNQF5kwts9eMYHh6d",
+"created_ms": 1778452466000
+},
+{
+"mint": "2GXmB95pGD3pHV4mzNq7YsmyiEmVYWQLptbwYqgdpump",
+"symbol": "WNTV",
+"pool": "AjBm4BBsZFoSndhwEb5KqjxaBzEBgh1CRCo3E8wF43cv",
+"created_ms": 1759693630903
+},
+{
+"mint": "2HtyE1W7fE2cdoYxR5fsukr9AyoQGpJep14NAVBMpump",
+"symbol": "HYRE",
+"pool": "ERokNZdfXB3R6STLeQseXPmNaNKXJiYsGnog5xgZPs5t",
+"created_ms": 1775577617000
+},
+{
+"mint": "2LYTMGch89RabgQsCnzgMRiFLuzXi8rrnYqQRnZMe7mx",
+"symbol": "GOLDINU",
+"pool": "7pR9jDKuhmJhZj9VQBT72JprkExdGs7hFQspynXXHjhd",
+"created_ms": 1769458092000
+},
+{
+"mint": "2NhoUWfCbM8V63aCpqdTk4tpf6AmP1Rq11zJvEWHpump",
+"symbol": "Fartkmm",
+"pool": "6EVoMTG1DsNComAUECbBR8RyrQZqa7StoaLQseba2CjL",
+"created_ms": 1747510314243
+},
+{
+"mint": "2PzS5SYYWjUFvzXNFaMmRkpjkxGX6R5v8DnKYtdcpump",
+"symbol": "OPAL",
+"pool": "Co81s1dCCYkxvMQRdoapkpiRzKg83SpSStXv6rq95pmF",
+"created_ms": 1769285722000
+},
+{
+"mint": "2SrjXiPANxk5XXcuVrGEse1EZrBCgRt1N3BNf2m1pump",
+"symbol": "OBC",
+"pool": "7wzcgEizCWHRD9p9uwVJHNgPRx9maiuJC6R4qQ59ULkZ",
+"created_ms": 1778094741000
+},
+{
+"mint": "2akXpuyFXAVN5YofZpZMfBp2Vxognpmv9NooBMuHpump",
+"symbol": "ELON",
+"pool": "afpugRuqYSxVwEMHSV1x4EZeq8pNPU3GqaRtpxh1sue",
+"created_ms": 1769727566000
+},
+{
+"mint": "2c1KjiyQow66QfsnCtoyuqfo3AuxgpBMEoAq5oiiXqdu",
+"symbol": "Chiikawa",
+"pool": "EY75tsmUY7GnB3noq7pdcjg8GxCzTHou6h6XjwcCFVh3",
+"created_ms": 1775489529000
+},
+{
+"mint": "2giC2MXhhENo4jkbRjfAgNAZboTJtXZTsSFbMZKwpump",
+"symbol": "KERMIT",
+"pool": "HRB4i1TjFEFpWcCghp5Cx3XNVHfxukQnaAVBctVTia5q",
+"created_ms": 1773755120000
+},
+{
+"mint": "2nP9yKQNSGQy851iyawDvBkzkK2R2aqKArQCKc2gpump",
+"symbol": "PsyopAnime",
+"pool": "FpyosQzp5ijfrxqqBVNm67rfam7VsbVNAm7PUf8Yvt1c",
+"created_ms": 1768005629000
+},
+{
+"mint": "2rC1nTbdFEWZoqyfWnCezLwWh2VDd4W2WEBbCRBHpump",
+"symbol": "PEC",
+"pool": "FZFWbW6v1rNKsWPXxapNuggUwgvVCp14czuM71USEkqP",
+"created_ms": 1745624463950
+},
+{
+"mint": "2sJ8epmEevDnTFYKB4LeGCNz7NQBPrkK79CUJUkfpump",
+"symbol": "$CHILL",
+"pool": "2zUeFQH1kaupFjJZGeFQ5EUyXMXnxFwJNqT6GKSMfBsh",
+"created_ms": 1774405031000
+},
+{
+"mint": "2wzVMXhLypmP92mXNCq4fuFcd9TCC972AbMfuiH3pump",
+"symbol": "AISLOP",
+"pool": "8LjfG2dAMgyTQmvKKT3VtwLgfxJc79RwkcLGuq19LSfC",
+"created_ms": 1743302420379
+},
+{
+"mint": "2xm2WZ9krE2YAArRC6S6ZzJAYgN813K6hh2dawKjpump",
+"symbol": "PANDU",
+"pool": "BFn7n6xPSX4ZsLwBMfFvAaDKGvQbyDcwWAj8UGDiPHr6",
+"created_ms": 1775596824000
+},
+{
+"mint": "2xpoapWZuP4sRHnAxtXHibe57RhKDLVo7a3a3MEqpump",
+"symbol": "BREW",
+"pool": "GtGC8eNaLrkfTW5M2hQoUDFLsy5z23p1k2NFndQbVTXS",
+"created_ms": 1775870950000
+},
+{
+"mint": "2yeyNC83oe3kht8Jnsd4xsrL64X35RYFKgZQakEdpump",
+"symbol": "Ouroboros",
+"pool": "3GW168i3HxSno6pu2wkJipC5NB3Hb1rVnMgVPqWkpGWt",
+"created_ms": 1773728139000
+},
+{
+"mint": "32CdQdBUxbCsLy5AUHWmyidfwhgGUr9N573NBUrDpump",
+"symbol": "maxxing",
+"pool": "DMnTidVC8dMxRxUzFyZ4StQkbS4R8ACwxhNsEyi6u3Lx",
+"created_ms": 1764617879000
+},
+{
+"mint": "34q2KmCvapecJgR6ZrtbCTrzZVtkt3a5mHEA3TuEsWYb",
+"symbol": "LOL",
+"pool": "Dx5wFoszXvND6XYYAjAjUQrGLqDAUrTVH2JmHz6eJDNt",
+"created_ms": 1773878265000
+},
+{
+"mint": "3ADvYyTbmQcLMiqdFSo1m2KpQWxYg9X6wW4N8viRTNf9",
+"symbol": "TRIAD",
+"pool": "B7P4B3wPpnnCyTjDNy2qYv8PFsB9ysVxMDu3essNack2",
+"created_ms": 1772046844000
+},
+{
+"mint": "3B1ijcocM5EDga6XxQ7JLW7weocQPWWjuhBYG8Vepump",
+"symbol": "BP",
+"pool": "GYwaQP8Lb3vqG7q2c58ZGueVYfF8hYogg8BeSa1FNcpZ",
+"created_ms": 1768692871000
+},
+{
+"mint": "3BRC7ZfRXXfXNFwYkQr1dJCPNZKDRYc4n7KGwrtzpump",
+"symbol": "Mirumi",
+"pool": "A1RWbpHPwuYtM2cCPq8E4scDXeyYfUfy5JiKyrHMQ696",
+"created_ms": 1764764878000
+},
+{
+"mint": "3E7nd9oom8Wdvc6jdHWRSLhpZ6kymd8oYXT5zaU2pump",
+"symbol": "M2M",
+"pool": "7NzExuuB8tpdk4YtpS2JZQWVXTSMvowx7GQDS1PKwJMD",
+"created_ms": 1776199712000
+},
+{
+"mint": "3HRZjzdZTfS6HEG5ECcewXvXjpzSf9i7VkczpHJtpump",
+"symbol": "MIAU",
+"pool": "7bSSxenVbEWGmQsJ4c3oU8n7XHU2BrH1p9yNtPSvqk7D",
+"created_ms": 1778456548000
+},
+{
+"mint": "3KHMZhpthXuiCcgfTv7vVu9PpEz64KAEURFwi6Lopump",
+"symbol": "Goblin",
+"pool": "BJt1j9BqcGGHLmFMmCwYvD5aapSEut1MvFCR64xmrAYV",
+"created_ms": 1777130737000
+},
+{
+"mint": "3YNCESdqhSgvsD4aARHC4rdqXpjyW9CWjosH82hNpump",
+"symbol": "DINKY",
+"pool": "CFF8nW52Ru26pF5UciswzymjtLtVqwnLeDbDVqjYtFM7",
+"created_ms": 1775235671000
+},
+{
+"mint": "3Ydb2n8vAFdBJYpdiZEoDxRXLmiGDY1fuizVmMPMpump",
+"symbol": "OPAN",
+"pool": "4kfz4pK6D7cTTS458QMqCic78QDhXQ9JN3ZEvC5bc72S",
+"created_ms": 1759927155655
+},
+{
+"mint": "3d1qHSAkQhoN7kN1C6tvpAArCkXWxwYdBng6taXCDM6u",
+"symbol": "RTM",
+"pool": "EBNUexqpB5WjKXJsfm3ruFt7zb7ZbXHZGR7YdhYuvuyy",
+"created_ms": 1739742532425
+},
+{
+"mint": "3gjBts3YV6AtXr5WPY9PviakFgosPrVT74hVeUEGov1B",
+"symbol": "aoc",
+"pool": "B74T8HvVupHrEuk9HNitq1LQ9vBAZbnNj9kkdaS1qXx1",
+"created_ms": 1710288124553
+},
+{
+"mint": "3iC63FgnB7EhcPaiSaC51UkVweeBDkqu17SaRyy2pump",
+"symbol": "RAIN",
+"pool": "69AU8DkW4XxrzA6hoSi4fibMYKjt6Uefo9o4cRUS4vne",
+"created_ms": 1766773041000
+},
+{
+"mint": "3scMvmF6e4ahkaz6SxPzVvb8DytrDyViTLYnHccApump",
+"symbol": "BUM",
+"pool": "HyC8bzJoX9fxP9FKHom1mYWFmbeRa9YHBC9HBqU6z686",
+"created_ms": 1756449695449
+},
+{
+"mint": "3srdiFxca22oK1g7qdbGGe9qXy4aS9QGVdTETCBFpump",
+"symbol": "Mansion",
+"pool": "jZDdZEuYeFKXC4gXQJ5PpvH5DPL22xEryNmt4HzKjw8",
+"created_ms": 1745603235991
+},
+{
+"mint": "3wASZZHadqJDw2decXbBoM1qLMKmh3pCBXk9nArwpump",
+"symbol": "LilyBux",
+"pool": "2RhB2HDe3fFwcmZLYNuKfQhVioe4nkhmH2KZyuesqHDQ",
+"created_ms": 1767431003000
+},
+{
+"mint": "3wtGGWZ8wLWW6BqtC5rxmkHdqvM62atUcGTH4cw3pump",
+"symbol": "ALPHA",
+"pool": "H6gcHGx6HrDtwjBLfcRrNvp1yqNnXsYCwaNVhcSSnLdc",
+"created_ms": 1762873708000
+},
+{
+"mint": "3zKhzZhbfU2wgpaTwNTL6tietudCQFZFC9c3MuNRpump",
+"symbol": "LUNC",
+"pool": "ArdjvvX3NSWPRcqK4Fo7aBAAoeL2oxgGHzABbuJnj7go",
+"created_ms": 1777171634000
+},
+{
+"mint": "42HsffEQoHqWoeiffksYayC75fQDxaoUdMBzmeXdpump",
+"symbol": "DNC",
+"pool": "6hzB3zErPvuGMtvq4Sk9HNQPHDZ63yUR4W9RHWfCCedu",
+"created_ms": 1744841870034
+},
+{
+"mint": "43yfnktSfyKkPXRLyevHu8rNXwWHxTXS1ntQbeArpump",
+"symbol": "gnzystrm",
+"pool": "3hWDromytfT4UMgYBG5KTDiuHBLd2VtqCVTjogTAiKHH",
+"created_ms": 1743782369557
+},
+{
+"mint": "48iJcUv9jsiZ7cCisyVFLPFLMoNBKg3L43bRvktXpump",
+"symbol": "KOBX",
+"pool": "9C42sHKgcne7bupmTzvtYRfLSsBeSXgsxd5g7hjAeR9f",
+"created_ms": 1761978206478
+},
+{
+"mint": "4AjvPXMn8YZG9saAVJvcWspg73oTFf2JmU4in4Xgpump",
+"symbol": "STABLE",
+"pool": "EnJV4SQbaw1yAjSmvsPPBsPydWY3KbTRdtmg3pMfWhkx",
+"created_ms": 1770243102000
+},
+{
+"mint": "4FdojUmXeaFMBG6yUaoufAC5Bz7u9AwnSAMizkx5pump",
+"symbol": "core",
+"pool": "CmRJPWZrcLFrw3iyi2dT7s5osXqdSTW5z2dybTbuXq7a",
+"created_ms": 1749179957323
+},
+{
+"mint": "4Ge6ejgv7KJHqDgML3w2S48rntuZQ4KZ9WGEVeibpump",
+"symbol": "FTZNFRTZ",
+"pool": "Eph5WmFa4x5ZbdYQeij96rJPd1n6iWijhaXGZ5RtZrLy",
+"created_ms": 1738892172202
+},
+{
+"mint": "4R3DPW4BY97kJRfv8J5wgTtbDpoXpRv92W957tXMpump",
+"symbol": "1DEV",
+"pool": "FgbFzkWuyeTmCojRb3cd1oBtuUSW7UiZbWdeyEzxjyiJ",
+"created_ms": 1758633014502
+},
+{
+"mint": "4TBi66vi32S7J8X1A6eWfaLHYmUXu7CStcEmsJQdpump",
+"symbol": "Ghibli",
+"pool": "H9d3XHfvMGfoohydEpqh4w3mopnvjCRzE9VqaiHKdqs7",
+"created_ms": 1742982326895
+},
+{
+"mint": "4TyZGqRLG3VcHTGMcLBoPUmqYitMVojXinAmkL8xpump",
+"symbol": "testicle",
+"pool": "E616WShkSjxnyToCExYLhNWxyYraFqs1RTQz1gZ9ZDUk",
+"created_ms": 1766279404000
+},
+{
+"mint": "4XKGjKaKowFvL5sYwh2AKx72vj9iwC8MNvpL44E9pump",
+"symbol": "BRAINLET",
+"pool": "3whYbw26asxFG5Qh9emHA6Mi6uizvduYg1cVKLQ1eetq",
+"created_ms": 1775843291000
+},
+{
+"mint": "4bY7N2hPq4aHQJwbhawceNqS5ksyQAayiLEsjNMwpump",
+"symbol": "COMAT",
+"pool": "Aq6aFXoNvRrKnrEp8P1EB6Knqz68PjYRrTo2wNxkRiYt",
+"created_ms": 1763131842000
+},
+{
+"mint": "4ikwYoNvoGEwtMbziUyYBTz1zRM6nmxspsfw9G7Bpump",
+"symbol": "crypto",
+"pool": "4yFioXwUAiVqUN6c9VRiz8aM6zUA4eoB52Nv4Git1bAx",
+"created_ms": 1744672104944
+},
+{
+"mint": "4nV5gNwwP68zUDat26ySChREqVaQaLudfJBkSgEzpump",
+"symbol": "BOBO",
+"pool": "31ZmTzEufRDBGKsJ7NicCkEKxtPQgAEMQvdbCuUfE6GX",
+"created_ms": 1777922180000
+},
+{
+"mint": "4nyYwRTETgwa9pAUDxirve3FFUV1zSpsu9mvsPCupump",
+"symbol": "Szukalski",
+"pool": "WuNcdabwHAdA4z7UnBnDGbzJXcVXGrY7WHBdecchuan",
+"created_ms": 1745679205459
+},
+{
+"mint": "4qq7Ptd8ZZPg2EPaoiscR5sTXD6vZDea3QYxtCiHxp3H",
+"symbol": "SKILLISSUE",
+"pool": "GoaR9oCiKyPK1FFPrpLFcRr4AWrtPjm1DCrqGVL3KCR6",
+"created_ms": 1710774354613
+},
+{
+"mint": "4rWuWZei2iFNHYpnz5wjMeSvimsJcj5EgpSNvNS1pump",
+"symbol": "SAID",
+"pool": "BoeHYU42BxAvZQa5WmhygWXofzveUHfNLigKUS8XV1Ju",
+"created_ms": 1771297737000
+},
+{
+"mint": "4rwPNRSFgcS7EGphFdX7VwXuhjZGxph7gYyb7Zp2pump",
+"symbol": "AuraFarm",
+"pool": "Hmd7r12FavNMKout8LudrTiS372d39uPB92UqVziA7Zv",
+"created_ms": 1742659158923
+},
+{
+"mint": "4t1xhKJd6oFGr98oWJoxYjLU74eFe7xiYSRDoX18pump",
+"symbol": "RIVERBOAT",
+"pool": "ADW7ZcSmGS3R6oDAknmLZtfcaeKoWGpDtfAcG4J5iCkm",
+"created_ms": 1776978159000
+},
+{
+"mint": "4u7KijCYFhh9hkArq41ysg4CfFns7Pv2jUKUoABCpump",
+"symbol": "COYT",
+"pool": "EdDPX5inBvhTn53wfjWWuRxXdjF9Lwmf6pospUZBF6fz",
+"created_ms": 1778095214000
+},
+{
+"mint": "5314GTpDziP2ZdaANnt5KJEABGXy5Nn5Kyc3SFPYpump",
+"symbol": "TOUCHGRASS",
+"pool": "HCSSW5tyLPCRUYcVUxRfYtmJQ3niAPzstsPHg8srt5CH",
+"created_ms": 1751329172771
+},
+{
+"mint": "53Xy4g1RJnGR6saaJRDNoo1rYTGZ3W5U321EDdSa5BGD",
+"symbol": "LOL",
+"pool": "HNMnNj7Uvx988rWxjkK8gGWAQSi3E1nuEEcAb763dQyS",
+"created_ms": 1712198281000
+},
+{
+"mint": "53Ybk2s9pyg1dZMBbeuE2VgBU4qL5BujbXCMa2dEpump",
+"symbol": "ONC",
+"pool": "2QXctMFzLUUnmzqjrPWBRKFSup4ppNtmcu82Fzo14EpL",
+"created_ms": 1758775920907
+},
+{
+"mint": "5Aru7v34QY1F69aWuY3mXKf5oxpg2CZNYcmo9hvPpump",
+"symbol": "SCAN",
+"pool": "ADJqyCe1VgQrmqyszeuiHCPi4HJb6WFajCftYYgrimYe",
+"created_ms": 1772062535000
+},
+{
+"mint": "5CvySD4GB7mrp3X5UXHWqQeKn96gxo7rPC71nKx8pump",
+"symbol": "ELURC",
+"pool": "H6sQhyZP4qZvY39dGCmVjoDc4h7Uo7YS5CTsT1XWZBhk",
+"created_ms": 1733223982966
+},
+{
+"mint": "5EaYZcaKfTVdpQ2avVtJ7BNWJ1Rnj86F1dWxppawpump",
+"symbol": "dollo",
+"pool": "2H87WiHP7gMcBGodhRtzgmVc3MYqEx1xPcGdoVUHNQhj",
+"created_ms": 1752268906430
+},
+{
+"mint": "5GV3iDWoURdYaSS52wr4NkGLzpk7G6pVf8A9QXLhpump",
+"symbol": "RCSC",
+"pool": "4EXgRkov3qK27a9hmyrrPnWS1Vv7f3KQnqbhZwBH82Tb",
+"created_ms": 1776307244000
+},
+{
+"mint": "5Kc2PwwPkyvRXC8wHgkVfKwxrMGktRuDpwTgAy1bpump",
+"symbol": "LAD",
+"pool": "J7DKJjzuUUYbodFMFjomy7aG3bW93DEJKSUYvbLsBoeN",
+"created_ms": 1772552355000
+},
+{
+"mint": "5PwsE1yXAvANamqbYwM6zoWrYkNw8RZ74TZSsxnGu4vq",
+"symbol": "black",
+"pool": "J3PekVEVfWBWX2cLASfkJPkJBJuEaocGuTZEaS5AmaaE",
+"created_ms": 1757862084036
+},
+{
+"mint": "5SZ6FWCg2rBuTEk8zFNdxSj5H9kuqFs82sPiYaXypump",
+"symbol": "GOON",
+"pool": "Fyf4fX2TUuAVDe8UJuQRTt2S5XicQswx9aCXWhqGiWSf",
+"created_ms": 1738187085245
+},
+{
+"mint": "5TfqNKZbn9AnNtzq8bbkyhKgcPGTfNDc9wNzFrTBpump",
+"symbol": "PFP",
+"pool": "GdFCD7L8x1GiudFz1wthNHEb352k3Ni37rSwtJgMgLpT",
+"created_ms": 1759424090765
+},
+{
+"mint": "5c74v6Px9RKwdGWCfqLGfEk7UZfE3Y4qJbuYrLbVG63V",
+"symbol": "solami",
+"pool": "Dhd8USj4RNAetMN4EE66RGsenA9w3USskffbv5GsmBuF",
+"created_ms": 1750777411772
+},
+{
+"mint": "5fMpeZmt2wKYwt1ADH1h26djvNM1tVHQrYnSgjQUpump",
+"symbol": "DGN",
+"pool": "8mAWn4sBEZ6iA2PJdQjoCfqow3wx2TWCuat7Ck3KMQM",
+"created_ms": 1752711746058
+},
+{
+"mint": "5iHiq35fgSLKW1Fq7XRYFtyDfJQiuFaZSRBm5wcqpump",
+"symbol": "STiFF",
+"pool": "3xajguSgRHHRGHi4jWrqpa9r53FhfTSnX6175sR6b1ZN",
+"created_ms": 1766615418000
+},
+{
+"mint": "5iVmFCCwJTuuw7p4FrxYoZ1bUNdjg14j7uv5hMsMpump",
+"symbol": "SUGAR",
+"pool": "FHM5QWmggA8HDdUEtUxH8ySSVUrDngAM5uAYB6EhPqXt",
+"created_ms": 1744780952340
+},
+{
+"mint": "5kkkNahbYVYZUQthCZCU6ax4zkcN622jAMTnAvJApump",
+"symbol": "BER",
+"pool": "65B8a8GeiQgsjgtwJtCXaiPH4ww4XzWzJHdKfSwxLkkr",
+"created_ms": 1766513643000
+},
+{
+"mint": "5qEEHVW7HAebQFJYt5x8FoXbSMeXnChtBP2tniC3pump",
+"symbol": "SUP",
+"pool": "EyakiyZJiQJ5nmsWDUHsUYKa3fjTSuT1U2NKZjArGBEF",
+"created_ms": 1752606920034
+},
+{
+"mint": "5w3wVdJaESaJKyLmStM6Hv9UyUkmZ1b9DLQquAqqpump",
+"symbol": "SID",
+"pool": "5x6WneWRWQ3gVFUC74p4XEpEgGScAXGKhXH4jFEkJERw",
+"created_ms": 1769360411000
+},
+{
+"mint": "5yC9BM8KUsJTPbWPLfA2N8qH1s9V8DQ3Vcw1G6Jdpump",
+"symbol": "AgenC",
+"pool": "BUMh6YebpBvAh4by4oTGJUvzQ9CvH6dqPgrZvXFDMwC1",
+"created_ms": 1771976988000
+},
+{
+"mint": "5ypxFmuJUTsSkAeKRuRs4xSxkb4vWbjMLT3GY7ckpump",
+"symbol": "TRASH",
+"pool": "EHnfophQPENeapnzZfS95QjYsFuPByfMhDVMmdg26Dub",
+"created_ms": 1751307281259
+},
+{
+"mint": "5zCETicUCJqJ5Z3wbfFPZqtSpHPYqnggs1wX7ZRpump",
+"symbol": "SPARK",
+"pool": "3mgxf9VVDd82E75bovuAJPS1wYmJoZCAo4MB6zpQDjnv",
+"created_ms": 1754379337469
+},
+{
+"mint": "61Wj56QgGyyB966T7YsMzEAKRLcMvJpDbPzjkrCZc4Bi",
+"symbol": "COPPERINU",
+"pool": "3iUT1oAAUSqKeHAjkumZJbptihy2yN7AwFij2CrsUZVC",
+"created_ms": 1769449329000
+},
+{
+"mint": "66MH83n3jRqZMni87niTyKRoGbh9HxBkTm73sTRKpump",
+"symbol": "OTCfi",
+"pool": "2Dt3Ye6dL9xnacNXmagURvxejtkwAvxhxR9ztLUETyeP",
+"created_ms": 1756747604962
+},
+{
+"mint": "66eAjoi4Wc7G38QbmE2eoqmQxiKGkSuaAAduN66Xpump",
+"symbol": "SPUD",
+"pool": "DBWk94gvuN2Hj6nHhJMHWSfuSyicaueXw2f9FHcLxTCd",
+"created_ms": 1764948421000
+},
+{
+"mint": "6AVAUKa9uxQpruHZUinFECpXEh1usRVtzQWK8N2wpump",
+"symbol": "SCAM",
+"pool": "B5K3qfft5ALRJBskL7qJPDzbbW76TXLkfKSd1mP4MtgN",
+"created_ms": 1777306931000
+},
+{
+"mint": "6KmwvVo8gDUVAnoAftMuyUTojfx6xtgm2xkHp2ixpump",
+"symbol": "delusional",
+"pool": "Frn5m8m1iSjmVqUmt2L38u2RL8Z4n5ZFm5LMs24BmhN7",
+"created_ms": 1770873997000
+},
+{
+"mint": "6NX2MWBuJM2Fn63K4hUgMPivLXHV8pwsU1yTdmjKpump",
+"symbol": "pSOQ",
+"pool": "EM9NyPqcByrz8zBxZUi2LazBTCY2zbVJa49nTXHi3Pq8",
+"created_ms": 1765970373000
+},
+{
+"mint": "6NwarBvDkXhByqVp2Qkq5i9XbtA2B3Bwe8SWGu9vpump",
+"symbol": "Cupsey",
+"pool": "DPzKoJVewaH1wpchD3gWKeeGm7G2mXkBW48uRniAgbVx",
+"created_ms": 1768935571000
+},
+{
+"mint": "6PuC6gyVfZAATJwoArT49ajY9dibXc3YX9WyfXZbpmrQ",
+"symbol": "NO",
+"pool": "HXHTLcG2Zqu9zYC4Uye1rx7vHepXQ4UAga6N7ShSou45",
+"created_ms": 1711279154000
+},
+{
+"mint": "6VoGmoGsCP7eraJoXiQ6n3fTeJW4g6tap7cNRBEsXbD1",
+"symbol": "RNLD",
+"pool": "BaTncZ2uCULiywYeLE7PVMmLayD2ZFHUFsgTaL78Uznb",
+"created_ms": 1706303857182
+},
+{
+"mint": "6cuYJR2URgm35Da7abxE7i5xF4EDxAcJPzBmA5Vcpump",
+"symbol": "MUTM",
+"pool": "FTaYBWVCmPiL6Grh8zCbqWE3ukZgJfkZQLvU4ikBrEnr",
+"created_ms": 1739793425993
+},
+{
+"mint": "6fQ55CghVKVZe9bqMpsR6sVZUqVjXvZ159ERjmGpump",
+"symbol": "HYPER",
+"pool": "88UaBNGwkJk59S4nWAx4GY6nQHAFtUP42jwKqUXsjXpn",
+"created_ms": 1749253130114
+},
+{
+"mint": "6hKtz8FV7cAQMrbjcBZeTQAcrYep3WCM83164JpJpump",
+"symbol": "M32",
+"pool": "5hCoPUqEoYaiReGeQvm9hDkgxyhWute8D1VhaHvcLtXs",
+"created_ms": 1776302317000
+},
+{
+"mint": "6iA73gWCKkLWKbVr8rgibV57MMRxzsaqS9cWpgKBpump",
+"symbol": "\u6211\u7684\u5200\u76fe",
+"pool": "9RpsV1vWy6itWjiHsBjrbpw2Z36AeiCnaiktyqTnXxcr",
+"created_ms": 1772029057000
+},
+{
+"mint": "6nR8wBnfsmXfcdDr1hovJKjvFQxNSidN6XFyfAFZpump",
+"symbol": "Clash",
+"pool": "EuAKdgnHKKe9ETSx7wd4NVb3EhbUptFemRrLdQaSdrkH",
+"created_ms": 1757983014296
+},
+{
+"mint": "6oLycKuJqRiz7Vw3EjAjmQstZLCcnHDbWd729Vdipump",
+"symbol": "CDLC",
+"pool": "5ZVoEKgcB8TmsQxhfwY8DXS2EBycNvnWvPZVvsoDwDuA",
+"created_ms": 1773925490000
+},
+{
+"mint": "6qHtAvksH2cSaUjz6euVSikPU8RnDqLpFtuWH6Ropump",
+"symbol": "BLOB",
+"pool": "5pR4k9mzZZx6E2B1LDtYpZG9n2PV23y2JCQf68wweqgr",
+"created_ms": 1742841617534
+},
+{
+"mint": "6qdzMx4c9rL2X3Ns3SwZ8uEo4zReDPjdXpAEmpo7pump",
+"symbol": "BABYTROLL",
+"pool": "34UtPx3zyYfC5GVqDXWJqLf77BU5Ebb6o3C2XynpKtzL",
+"created_ms": 1778402542000
+},
+{
+"mint": "6ymxqmDH8HPgheJMhLYdrM9exvwZz8dsR5DJBvnXpump",
+"symbol": "PP+",
+"pool": "9MNdi4UZxaHM1zyWM2cFBhPG6KmjHkLQMNPguaPx8vsQ",
+"created_ms": 1770591187000
+},
+{
+"mint": "739dnZEG4yaBWFsY8L8ZwrfhGG6dhtCSercW8Umspump",
+"symbol": "CLAW",
+"pool": "CqC3Hz1VLgRtoy8Kcahif6vxAcYNyQVM7SWxLXCQAfcK",
+"created_ms": 1771969253000
+},
+{
+"mint": "73edX6xoGY4v5y2hzuKdrUbJXLntqgmo74au1Ki1pump",
+"symbol": "Staccana",
+"pool": "J6F4eB4iJwa29gNPFXwaK5j8jGCJ6dWQovdqLcPDmxkG",
+"created_ms": 1777843635000
+},
+{
+"mint": "76EDL5qNcte2ZH29quTaFzagXjWAEY83CATEjyA6pump",
+"symbol": "gork",
+"pool": "AZmU4Bv6TPHimgqBe5eRsRQ18KKKr2aemHdqmfbVKqvr",
+"created_ms": 1744060430835
+},
+{
+"mint": "76r29NpnRW8PAxpnSnVBFcZPUcukgvno1Kkiysg8pump",
+"symbol": "POCK",
+"pool": "KmZEaV28iXohQNMzVuLce1Z82caaeXFL8V1wuSN7ZXN",
+"created_ms": 1774630770000
+},
+{
+"mint": "76vtyUXAedrSAWJetcdQx4tZmKK9GfmhnCXQq55rpump",
+"symbol": "MCV",
+"pool": "DqmyQvvmQtnxTzP9Fb4DTNSSekQfeJmFh6wG7rZMGMrV",
+"created_ms": 1775070661000
+},
+{
+"mint": "7CLBRXBp534WyZfgMDnR3E4VyedeHVPFQe3P1EHDpump",
+"symbol": "STONKS",
+"pool": "J5GpDQfYmK2PyYZdqK8jjBqYYq8FT9Eju1tj5onXYPi7",
+"created_ms": 1751455250586
+},
+{
+"mint": "7M3A35cr3cjw43W8ps98P71K5Y1V8PrEH1bFBxsKpump",
+"symbol": "Ye-I",
+"pool": "GTFTnd2BLJPMr69GUc4L14ERZFAw5ELeX7pk8HsTuWjX",
+"created_ms": 1742409527576
+},
+{
+"mint": "7Pnqg1S6MYrL6AP1ZXcToTHfdBbTB77ze6Y33qBBpump",
+"symbol": "Bagwork",
+"pool": "FBZSQpAYGQJpmRT8L33QnGwv6bCaTx6XCjmTPVCw3gdZ",
+"created_ms": 1757550077786
+},
+{
+"mint": "7TgfC7finEVA1QcCbn1Jb2cz4RiDL4if4ATEGHZupump",
+"symbol": "LADYBUG",
+"pool": "HAU6BCrtagVa1MNKN6aK4Lv7HUQg78PXPQDb3zDxXF2b",
+"created_ms": 1739753255165
+},
+{
+"mint": "7Tx8qTXSakpfaSFjdztPGQ9n2uyT1eUkYz7gYxxopump",
+"symbol": "ASSDAQ",
+"pool": "8r2FgpMpJiLiHBV6tzM21TqoHgWny4vkvuaN6Rv2So2H",
+"created_ms": 1747193357831
+},
+{
+"mint": "7UJpq5ZD1The1h5asDru5ZEpA84sLMFqnqkAJ9ZQpump",
+"symbol": "Cryptnex",
+"pool": "8JbNzHQWN8BhSNLwdnUHbuZw2wv3wRtVMiohMabbjoYk",
+"created_ms": 1737729291239
+},
+{
+"mint": "7XdCaKpqLmKE2K7yr9xaeWB1H2CVZ1oGwxB6hmd9pump",
+"symbol": "WIZARD",
+"pool": "Dw4kAH8LhdmgfW1cgyvnWSwSDqkt37jeY7pW4oFkbGTu",
+"created_ms": 1773241191000
+},
+{
+"mint": "7nLukVng5teXze14rum9v57juXLjUp7JJnCveko1pump",
+"symbol": "Martians",
+"pool": "42SrahWLALtSf9uHs8JsjvwjJXj5gLbEnQCjXkyK4Eho",
+"created_ms": 1719465483480
+},
+{
+"mint": "7sGdNQSvUGpahh6qyXB3g5gsdK9FAzZM299KyCXspump",
+"symbol": "https",
+"pool": "AmK2hPHoHktE2tcJWKbfMpYR3JiMdS3J19xGdHX4ZCLK",
+"created_ms": 1765938071000
+},
+{
+"mint": "7thY5PzYdH311NXYE6mecBjUs7wcosk1bWw2qfH4pump",
+"symbol": "Sapijiju",
+"pool": "2wC4qzATB6L7HLoqgLM253K18g3qZ2qoNCkPLzG6oXeb",
+"created_ms": 1737676939304
+},
+{
+"mint": "7voKerVHPvbXde3bEpyNcdodVEufq17tW6eZLUUkpump",
+"symbol": "Y2K",
+"pool": "FzXPKq9fGpJ6EHtBGsMX31nmNSPWEaSx7t4453Rdyc3j",
+"created_ms": 1773172966000
+},
+{
+"mint": "83mCRQJzvKMeQd9wJbZDUCTPgRbZMDoPdMSx5Sf1pump",
+"symbol": "NA",
+"pool": "HDG8eQAVqaK5FsMsgM1CGPjjejQuLRoJ7j7UupQpY3Gy",
+"created_ms": 1746336340819
+},
+{
+"mint": "86bLYh7z2zxkaeFojhGLHB9LGE1ebZ8Di3cGwrMZtQ4K",
+"symbol": "ALIBAR",
+"pool": "B8mukufsYjy9Ca93toJQZymMJ8t6TsaFgVktHef7bfdk",
+"created_ms": 1748399867095
+},
+{
+"mint": "8EZqVPJdEWt754S17nghfa4Y4jQJ7tigBwsGbo1Tpump",
+"symbol": "SOLARIS",
+"pool": "6s4PQ2YvrRY2roer5Dijiwp4X6bw5TLG32erEr4QsrJo",
+"created_ms": 1767982386000
+},
+{
+"mint": "8EeDdvCRmFAzVD4takkBrNNwkeUTUQh4MscRK5Fzpump",
+"symbol": "NULL ",
+"pool": "EvAFQZ7YUxofeZ9ut8UripR7hb23GBPHCgpn1RXASNiv",
+"created_ms": 1764730647000
+},
+{
+"mint": "8G5ayEsJF4Q7FEWEGeF4jtnUWZBEKCqhySTFQf9Ppump",
+"symbol": "HeavyPulp",
+"pool": "3LHYwhm61rVwPxHJwnkV7zB7tmknAoa6scHXX4nCZfQY",
+"created_ms": 1769521065000
+},
+{
+"mint": "8Gzb4Le3rUkDepM6xtaj7X6cN1xxbrHNXqtMb8Pipump",
+"symbol": "FTF100",
+"pool": "HM6aRTTVXGbqDfAeSdzWAUxBboveZC4CPjmmiHaHBa1K",
+"created_ms": 1757340058607
+},
+{
+"mint": "8Jx8AAHj86wbQgUTjGuj6GTTL5Ps3cqxKRTvpaJApump",
+"symbol": "PENGUIN",
+"pool": "DRAf8QxQY86h7yeHdo9GytXAF6GoTTT8oZjknwXV6dCS",
+"created_ms": 1768587795000
+},
+{
+"mint": "8PzFWyLpCVEmbZmVJcaRTU5r69XKJx1rd7YGpWvnpump",
+"symbol": "Percolator",
+"pool": "Ebs3mXAzqZfzHfsdinTNw7gPy4uNyEAywcCiJxzLRrBW",
+"created_ms": 1760952312163
+},
+{
+"mint": "8RWFpyz9VW7Wyv626v49f8ybzREcYhYDC19vaWedpump",
+"symbol": "DASH",
+"pool": "6FiQ6xCA2nbPMGQ5NxuuuumMMUJKvwuRCLMvPJ6s9KA7",
+"created_ms": 1776103161000
+},
+{
+"mint": "8WFe29HGpJ4XH1xQUAq2aFJpMTYEVddiDDytnKPWpump",
+"symbol": "OWO",
+"pool": "HDZHLGHtRmWLMQCrHjS5enEF8GhBF1bUxRGtBjqkwF9r",
+"created_ms": 1749491664562
+},
+{
+"mint": "8Xw9yanvsEK8NbKQvvREboMzKLP22H6Z6e1YiZK2pump",
+"symbol": "#FAP",
+"pool": "EgRpTECyzki8bKU2va22VewwavMPFB6f8smtfhp9SFCT",
+"created_ms": 1773697852000
+},
+{
+"mint": "8cHzQHUS2s2h8TzCmfqPKYiM4dSt4roa3n7MyRLApump",
+"symbol": "CLAWD",
+"pool": "GBzd5ooMFkYtYgzUMKfzyaEJpvzxvm5FK4FDJcpVJJcH",
+"created_ms": 1775616205000
+},
+{
+"mint": "8cWtr4Y2XwPHHgwV4CVXHNt44431NCTFxjezr6X6WgMR",
+"symbol": "KETUBOT37A",
+"pool": "8Ryc3jqG4CExv95uYUQ3n7vmTM6XRN5Gt22afh4Vb9Rt",
+"created_ms": 1747430151950
+},
+{
+"mint": "8d3bQS9vNy3BfqK9dX95JRoaTbWoiuL2hzmSFLDopump",
+"symbol": "AILE",
+"pool": "PibATxvKbXFdzrugGGZSz8CLrX35h9v6EZ9bo99TK4z",
+"created_ms": 1789154641502
+},
+{
+"mint": "8ewoKq3gXXH3QuA6YZVWQSHcg3DpBMWArJ63VxQ6pump",
+"symbol": "SCI-BOT",
+"pool": "89qvBrFcztKakft7qxQuSWHmCc6MjjVdTg2ZtFKkKSFH",
+"created_ms": 1778398923000
+},
+{
+"mint": "8gHPxqgHj6JQ2sQtMSghQYVN5qRP8wm5T6HNejuwpump",
+"symbol": "RYS",
+"pool": "BuX9TN5doE5hCqpcmqMKYkidXC8zgBK5wHHKujdaAbiQ",
+"created_ms": 1750858386287
+},
+{
+"mint": "8ncucXv6U6epZKHPbgaEBcEK399TpHGKCquSt4RnmX4f",
+"symbol": "TRENCHER",
+"pool": "6WwcmiRJFPDNdFmtgVQ8eY1zxMzLKGLrYuUtRy4iZmye",
+"created_ms": 1745485811202
+},
+{
+"mint": "8oHGDC3xLYZGbAYxPweZoarAfEzuc6fynz5A1kqWpump",
+"symbol": "PKC",
+"pool": "BmFtnNskdCAyf7RKX73jhtWtzeDyaLVS9HthqsuwQwdP",
+"created_ms": 1739884153189
+},
+{
+"mint": "8rdDnfhbA3qkajg76LHEFugj66yvwoNmZEBczKJupump",
+"symbol": "CLAW",
+"pool": "FYLFWQqZkDGYGtueazz2LzDAKdsrASS8ukH8quVnnmgs",
+"created_ms": 1769749407000
+},
+{
+"mint": "8ryRQD6jWfxnSdvvVbQ8Tzwo1NgGP7w1X1nQPpb4pump",
+"symbol": "meowl",
+"pool": "7X7TqM1xEQioAQtxri9UBVVChLvjacQARZKzWfX7T2Ao",
+"created_ms": 1746786230326
+},
+{
+"mint": "8sdZVK4cLbXPEstDTpyN3VAtdNfFJvWVKchEYS8epump",
+"symbol": "PLOOB",
+"pool": "ArnWdnyKHDosGL7xSQELo65HqDK4uMa3nw5CnmoYgtWn",
+"created_ms": 1768688209811
+},
+{
+"mint": "8vGr1eX9vfpootWiUPYa5kYoGx9bTuRy2Xc4dNMrpump",
+"symbol": "Fapcoin",
+"pool": "AypFy111g9Nt1JvUNYmtJd9iS2m8C3PbVEosmX9ecHEu",
+"created_ms": 1760749339694
+},
+{
+"mint": "986j8mhmidrcbx3wf1XJxsQFvWBMXg7gnDi3mejsr8H8",
+"symbol": "StrSzn",
+"pool": "4CYQwFLd2F6qXA29fPaT9RfX9j4sy71tmBTztTyqcLUN",
+"created_ms": 1757948203230
+},
+{
+"mint": "9AvytnUKsLxPxFHFqS6VLxaxt5p6BhYNr53SD2Chpump",
+"symbol": "67",
+"pool": "DMAFL613XTipuA3jFNYczavWT7XsiYf9cR3qmRMZQhB6",
+"created_ms": 1757292536634
+},
+{
+"mint": "9BVn3Y8tPghbnGuuuxoj2mGekqgSQV1M7nALF7brpump",
+"symbol": "NYAN",
+"pool": "EaRqg8VQP8xrJx9HpKk46rbWPK3b55UyQKzWU9b4rdK2",
+"created_ms": 1764213575000
+},
+{
+"mint": "9BySdih23rwDPZB8auQXX9k5u6a2Nk4GSDji2MB6pump",
+"symbol": "$MYCO",
+"pool": "DQMpwYbPHyV1AojiaP4EefzUnirq1WdDb8XhdXo7otTN",
+"created_ms": 1749400267602
+},
+{
+"mint": "9EQSeWY7pDB7MYoSFr8QJ19onGS1ehDmLbSGT2b3pump",
+"symbol": "monke ",
+"pool": "6Wi1NKZecquGoi41DwgidU8Sk7YDAjMjcULf22xSz3TJ",
+"created_ms": 1750189157131
+},
+{
+"mint": "9F6VbPeM8xR9Nkntyjp5nPY52w9YG9331bLuyhe3pump",
+"symbol": "AKA",
+"pool": "45DHwYMixrDKnd1ERz6qtRH8HTam2ydonCQVomWpqSVc",
+"created_ms": 1769453713000
+},
+{
+"mint": "9HHrikqNLYvfXzxtNV8pvPLrWbDGG4mZkVpaKBcvgLyu",
+"symbol": "buddy",
+"pool": "36VnT7AR1GfUgUYz4EBgqkzLrZpVduziCx3wVNkaNjYw",
+"created_ms": 1715681830595
+},
+{
+"mint": "9LjvTxWgtoEVdwRucY9hJLqmTcPnCRxoDiwbpzRvpump",
+"symbol": "COINS",
+"pool": "FYn8uSFS4BirpCbnE9rKwwRViJ7291fNjp1H9pYNGULr",
+"created_ms": 1746221866563
+},
+{
+"mint": "9LrAzb3eiu3X3HU1sqzGEX3snmmAwRidjwGnDm6Gpump",
+"symbol": "STARLINK",
+"pool": "6coPJmQhx1LT3hHwVWMfqFXnEDVfo7zp1JhNhASpZqGy",
+"created_ms": 1772030347000
+},
+{
+"mint": "9QTDnPQU4x5B8wj9q7dkbmW64hBE5eBbVhnpovhYpump",
+"symbol": "XTM",
+"pool": "HgaM3nD8Hv6dx8jZZYBgj3Js7kAT1vJgMcKcA7mYy96n",
+"created_ms": 1760715789303
+},
+{
+"mint": "9TeTTkVoyzk36TRzsWNPMFuSmN3AXvGxVD7TUuASpump",
+"symbol": "OLI",
+"pool": "6saQ6Dgjd9Hj9ynRBnvjhnQeURpvx6ewHibQw8E53xKp",
+"created_ms": 1739046941372
+},
+{
+"mint": "9ezFthWrDUpSSeMdpLW6SDD9TJigHdc4AuQ5QN5bpump",
+"symbol": "XERIS",
+"pool": "2Ff7ABu3yFcJBRZcoBMydyKnEDGmqEz76CmkWq2BdTFq",
+"created_ms": 1760727237907
+},
+{
+"mint": "9f52wiW2zrt2497HroMHtZtuj7VzWu4AsEusmW3pump",
+"symbol": "$NRG",
+"pool": "DfvDaMkTr9RuFfMzhjXUhnL1utvZBgMtFYfnJagoQCGo",
+"created_ms": 1759090633015
+},
+{
+"mint": "9gSFB9ZVvhd7iLiQpEHH1fg6BC4JAnmbzx36LXAbpump",
+"symbol": "GDOR",
+"pool": "2gha1QK9tbewqypx1PJW59L2ND5x81QuqMWD7BSoH12q",
+"created_ms": 1777779540000
+},
+{
+"mint": "9hdynudAhhWzuNFAnpz7NjvdKMfh9z8mcZKNYHuAUgJQ",
+"symbol": "SWIF",
+"pool": "4zvyyRUrQKHMqAYd8DTjWRUshfSwxLTmP4ysd2uGuDwU",
+"created_ms": 1710106301820
+},
+{
+"mint": "9jV4dz33PfEYcuXpdWjczt3LKYXSaq5SXqJb5Ripump",
+"symbol": "QTIP",
+"pool": "CY3Ba3Fy8P5eNUGbWFiM5wsL73ZSYj4rTzywjGfU1aUh",
+"created_ms": 1773241058000
+},
+{
+"mint": "9oxGicd5KXNcthYM6yD23X9zcznQVnHjrAEN38fFpump",
+"symbol": "BioLLM",
+"pool": "PkwihQgfvHaM7B1Ezvq3Hj6hBx2raj1L1ZiyC8Gs6me",
+"created_ms": 1772548586000
+},
+{
+"mint": "9voQQTTdfbqfXwc9rZAdJEeXXjUWjHnB4wkShMT8pump",
+"symbol": "LAYOFF",
+"pool": "HdTXiwhqPTFFriGDndoaFAaPNGSERXSFUDirxj1m8N42",
+"created_ms": 1772216011000
+},
+{
+"mint": "9xaYxTt3wkmHCuYUzkGa7p52bwUdydNTKvUZqWoEpump",
+"symbol": "puffbtc",
+"pool": "5uLHRFt96Rcp9vRTq15LhyFDhn9QQWmxhf7ajzJ3ZXVV",
+"created_ms": 1762155474750
+},
+{
+"mint": "9yZ5Ru8pbmJZ6Q2DKLCGXkaLNwkm83cnJ4QCw4PFpump",
+"symbol": "wobbles",
+"pool": "2FUgN9XQGNqDxnpoCcXQziEUAH3DSnUxt5HJ9bY9vcFw",
+"created_ms": 1761872267809
+},
+{
+"mint": "9zB5wRarXMj86MymwLumSKA1Dx35zPqqKfcZtK1Spump",
+"symbol": "asdfasdfa",
+"pool": "DuhRX5JTPtsWU5n44t8tcFEfmzy2Eu27p4y6z8Rhf2bb",
+"created_ms": 1750275967355
+},
+{
+"mint": "9zqre5sRRdFvKqyTyvEd1jcKDRF4g47s7mZSGUnQpump",
+"symbol": "boob",
+"pool": "4W4G9TDrAeZCQz8DEPBZ7JsEivgatnEVVzRvFUhqU1SP",
+"created_ms": 1767989712000
+},
+{
+"mint": "A8YHuvQBMAxXoZAZE72FyC8B7jKHo8RJyByXRRffpump",
+"symbol": "XBT",
+"pool": "99D5oi479AxQpQcfVKkTK6E7r1Y8KJSKhaA9dUBws1vd",
+"created_ms": 1747352648170
+},
+{
+"mint": "A9E2AopuG56LWYiXsvGLLTcLjUjQ539PY6k5Fhfepump",
+"symbol": "KABUTO",
+"pool": "GBsngTQLDQ6Afv7A4JV6enHz6vHrdzgNC1e45DekQc1L",
+"created_ms": 1764354443000
+},
+{
+"mint": "A9NRQhVs76nXdPFVJBT1edHDJHdkrxD4JsqF1bPdpump",
+"symbol": "PRELODE",
+"pool": "HFREFa2jczxNTGn7NeGisjz84yQJZS64ZsgDEzwwYnPd",
+"created_ms": 1772081784000
+},
+{
+"mint": "A9eR2GkTPEs3vbQjxMdkdvNJnWiKaBDq1Y9K5LEkpump",
+"symbol": "$BRAINROT",
+"pool": "CBXUVV7i1rsQcoGMEso8fzhfvPSfmxEd4MqWN46AMgrk",
+"created_ms": 1773506070000
+},
+{
+"mint": "AB2aUKyBeMpAm23yvvSWN2pARNXLKe4XsJVLwTRzpump",
+"symbol": "1mf",
+"pool": "3kfbtatnNZGhRf7KseKUibh63rm8pbBeJhV5HSYgJMeJ",
+"created_ms": 1749691842598
+},
+{
+"mint": "ACtfUWtgvaXrQGNMiohTusi5jcx5RJf5zwu9aAxkpump",
+"symbol": "unc",
+"pool": "BWFZkx1pMpvwxammwTrizvoWzZZGiFEYUYW6Ee51SHLy",
+"created_ms": 1775894019000
+},
+{
+"mint": "ADcF26nFGKMuRZ7va5361H2PCHCDRi2FmeJBkX3Spump",
+"symbol": "$TAP",
+"pool": "FaQkcmM7gYPJgbnd4nVa6sMnUtwCLNVEdu7sLHSPCfgN",
+"created_ms": 1788101800104
+},
+{
+"mint": "ADcgdafjKxvyPjqJRqPsuixCQRae2Ngqq1c8pQo2pump",
+"symbol": "TTC",
+"pool": "5WguHFQRoyvh1mQJfb8WcRrFJ3p3GHQ5E8rSQ6dmsppM",
+"created_ms": 1749564672723
+},
+{
+"mint": "AGdGTQa8iRnSx4fQJehWo4Xwbh1bzTazs55R6Jwupump",
+"symbol": "114514",
+"pool": "AA2x8NAEEen6zQ7wxxL6horSkHmJMPnsiYjLroQZMkCe",
+"created_ms": 1766666845000
+},
+{
+"mint": "AKfXaJnRLEYMW68sjfxCXtCSaSf18FmgDbDoKyqpump",
+"symbol": "FANSEM",
+"pool": "DY9bVEiqQnDXzcpCSRLdEUjPkuDrUUYCTXiAoTnagGQ4",
+"created_ms": 1746145406884
+},
+{
+"mint": "ALR5X2H6THn2VDPoMtkVwxVktcN1kQGvxCwLfejzpump",
+"symbol": "WURK",
+"pool": "Gmsra1w2AY9BPFoFHtRsBf1QDQHbUV7ay4QgiFPrwCYW",
+"created_ms": 1758917222637
+},
+{
+"mint": "AM9BFKtaGwk6pxXz9JBUfqRsxAL4MrRRPZSeTCmRpump",
+"symbol": "DBWW",
+"pool": "3hJYXiwV59qELbENsJMSJRtxunBRLcTJR6nPiWbf2ikL",
+"created_ms": 1774092189000
+},
+{
+"mint": "ANLEpx1hMMGJ2vHwENrVhH1gkysDNwf5p4uNKJxGpump",
+"symbol": "RIPTRUMP",
+"pool": "6JoeEfDteYxqwwovY5GPTMDRJsZvNNpbdtQ7H8p5Q2R",
+"created_ms": 1718085695165
+},
+{
+"mint": "APbVLtq66bKBpUUdncHtVSab9TM1UrcqZ9wodXzmpump",
+"symbol": "SNAI",
+"pool": "HuBNw1qhT8ZuKpC9u6YHMhX4dXQcBnEjwhb5G9Dx21J3",
+"created_ms": 1766528850000
+},
+{
+"mint": "ATBR4i19gcQ31Rfr7ymA2XvkCQEAkNFGBtVKTmdqpump",
+"symbol": "Machi",
+"pool": "7cmefCYxzK6yfBcmB4j234A3EKY2w13GfEdB3DJvNWzx",
+"created_ms": 1772442785000
+},
+{
+"mint": "AWGCDT2gd8JadbYbYyZy1iKxfWokPNgrEQoU24zUpump",
+"symbol": "Clude",
+"pool": "7udbgT6w6X5VpdZuEm4UHbkuUaULYFZmKhntbNuNmaUt",
+"created_ms": 1771902750000
+},
+{
+"mint": "AXQyzYRdk6ebp3VdwSNNNFR5Ssm5rMVTP84EEg98pump",
+"symbol": "DCA",
+"pool": "GmRrh4awL5CMApuS1B5jqBTj2E6bNxDj4tLi3EBwefM",
+"created_ms": 1766094763000
+},
+{
+"mint": "Ab16ce5SDbibTbXevxHLpqUnUvu9tNkkpaJcSDvCpump",
+"symbol": "ZAPP",
+"pool": "GnnKAkwk2pxb4eKCsHRo2xSpJPDe6b1PzXbk2H6pqpGx",
+"created_ms": 1777600487000
+},
+{
+"mint": "Ai3eKAWjzKMV8wRwd41nVP83yqfbAVJykhvJVPxspump",
+"symbol": "moonpig",
+"pool": "F8R9okKt8PvygkZ6bCimxELYb2kUn9E3FDdugfeRUYJw",
+"created_ms": 1746107208287
+},
+{
+"mint": "AjgSvYmJLhvt3FteiyTqQf8XBj1SVs6T6AmSUfkHpump",
+"symbol": "Groyper",
+"pool": "9bGYzUG6Mpuy8dHuJaSkbguW87GZk7A8YgPgCSVANGpx",
+"created_ms": 1747605206588
+},
+{
+"mint": "AzeNfRi7DX5HndH7dUgCxMD5sQPV7FPFH1cwDkoqpump",
+"symbol": "KNIGHT",
+"pool": "CjJ4aKLBYCgx4WrydnVXVXj2urMpwKKgSt6kcdmo3dvb",
+"created_ms": 1777857212000
+},
+{
+"mint": "B1oEzGes1QxVZoxR3abiwAyL4jcPRF2s2ok5Yerrpump",
+"symbol": "rasmr",
+"pool": "8eiHaE8xwLN9pxnw6Nb3vGKu8zwK47E47u7s5mrkFfjE",
+"created_ms": 1750179049109
+},
+{
+"mint": "B8RHrVBxSjBGKqAbn1tXo6CWjvt5jFkkqjbCZtuDpump",
+"symbol": "DUSD",
+"pool": "2z2uBDXaAFishs6XRz2atV2Ro7jL8hfdUcKxTTfhjHDw",
+"created_ms": 1757091959863
+},
+{
+"mint": "BHS8LHW11NKxzxyCtqz9NJbTkh3h94WqeMVYgTY5pump",
+"symbol": "YOYO",
+"pool": "2eAX4Jgn81aaW7wGCoLc43NVrBcnswKKz7cmpE7unyqh",
+"created_ms": 1772996976000
+},
+{
+"mint": "BQ2hgVwRmjAmLgrnBFUBnk6y1HuzZPzQYhChL5c3pump",
+"symbol": "BBC",
+"pool": "GkNteVvgxhhZuK8AQLewj9Kf9i9fpGKjvxF5WRuUaTt3",
+"created_ms": 1757602042141
+},
+{
+"mint": "BQQzEvYT4knThhkSPBvSKBLg1LEczisWLhx5ydJipump",
+"symbol": "Buckazoids",
+"pool": "DUjFqjqJ69pSRQhGcZetD5QCaLANYY12TBWVFcpQXvKu",
+"created_ms": 1743131209075
+},
+{
+"mint": "BRrc4qh3t1wpE97FETgea1DEefu8A95Cu3g9vcN5pump",
+"symbol": "YAJUCoin",
+"pool": "3hRYvwMVQr25ytA2p8XetPmtbX44ux2NrpajJKhnxcBZ",
+"created_ms": 1767585885000
+},
+{
+"mint": "BS7HxRitaY5ipGfbek1nmatWLbaS9yoWRSEQzCb3pump",
+"symbol": "DOGGY",
+"pool": "B3TR9TDcPqDtKAh6Hou2uT3U4udV1Na75oE6r4FemUMt",
+"created_ms": 1757975067153
+},
+{
+"mint": "Bb4jR951QtVjeFAYFLBYXDSMKjbTDroCLPbFLdd7pump",
+"symbol": "memecoin",
+"pool": "EbpUDz8ekE1TavcRAsMAaeGZk3wJveESRxMiDmxUYXAY",
+"created_ms": 1773768720000
+},
+{
+"mint": "BbbwE8rudhjK4husSRc37X54mYyDBRcykJ7fk5oHpump",
+"symbol": "TBC",
+"pool": "HRh8KKV3q8Tu9Qj8AVGqPeJGL4zgUwd1puH8NVNe6vBF",
+"created_ms": 1749685032088
+},
+{
+"mint": "Bi4i1q6oUp1VskhYqWbdNaEhiwzGKf8ynNZLmY87pump",
+"symbol": "SPC",
+"pool": "4h4KaCTfgr5Vys6fDbmCNUr5fTnE73F5RjbGQ8fMgsVA",
+"created_ms": 1771277385000
+},
+{
+"mint": "BnYKTZjTf42u5G9qqsBBzYCuGZT8CvrGL3JuRcLnpump",
+"symbol": "TYTAN",
+"pool": "3EogojAfrHAyc8XXQHn6cxcGeU9vvE7W1MvPkEiPU5fr",
+"created_ms": 1739758487753
+},
+{
+"mint": "BpdHpqznEgYPXZNrJVRZvBhdWoafYLVVuLxTQo34pump",
+"symbol": "SSR",
+"pool": "C2TLNU8AwnaWrnAGhQm4X6y9T79mcMnmbKTMsYGPHKJd",
+"created_ms": 1770919296000
+},
+{
+"mint": "C2omVhcvt3DDY77S2KZzawFJQeETZofgZ4eNWWkXpump",
+"symbol": "BULLISH",
+"pool": "GC1uTsxrrLAuWby3uWSEMjUXhJMJhhv1SXJ9A1jHvyxp",
+"created_ms": 1759413677956
+},
+{
+"mint": "C3DwDjT17gDvvCYC2nsdGHxDHVmQRdhKfpAdqQ29pump",
+"symbol": "RFC",
+"pool": "D6Rgz1JG2syjsTXGaSAZ39cLffWL4TfabEAAnJHGRrZC",
+"created_ms": 1742855678043
+},
+{
+"mint": "C9HwNWaVVecVm35raAaZBXEa4sQF3hGXszhGKpy3pump",
+"symbol": "10K DOG",
+"pool": "83QiEeSqNKd3HkYMd87rbfnaMTThfvBUmwVVGvKdtZ5W",
+"created_ms": 1762864296000
+},
+{
+"mint": "C9dJfTGUzhuqPWxh9mcDr66JZN4uzXh2gh9EWnEdpump",
+"symbol": "WAR",
+"pool": "7xYkR7Rz9PWZLBxpyq385AgEcdzPabFHzHN3JsuDyMrP",
+"created_ms": 1773175112000
+},
+{
+"mint": "CEV9ZFRE3GYMEK73nu3JHKkun4Kawdmc5rZ3ehWvpump",
+"symbol": "$FAAV",
+"pool": "F3bP8pe11LB9Cnf3FPd7M8SEVVeiV5nddWm6JsPnRe3d",
+"created_ms": 1773951557000
+},
+{
+"mint": "CF5VehjuZvxZZQFP5tybGra6ts574FAwt6Z7GuX9pump",
+"symbol": "ELLA",
+"pool": "2P8EXJf3m9978ta3cxGZfFAvji1xuxwCj96Gk1D6mHc1",
+"created_ms": 1749785744558
+},
+{
+"mint": "CFYhdWXsYfS7swnJgHRwb5toTHMEQD7Ljd5gGwKLpump",
+"symbol": "KILROY",
+"pool": "faKN3Y8zXRNEQaGcWFkniu4X8gn4DmSymyJH1s5EBRX",
+"created_ms": 1762884148000
+},
+{
+"mint": "CJD1adkwHSWauapWdU46MmQR2GSJshGM2ayCycs1pump",
+"symbol": "WCC",
+"pool": "A7yZV4bPtVXSkpHdxTatFvgCCFUcKFASLcDtJ3VpbSjf",
+"created_ms": 1752623288792
+},
+{
+"mint": "CPLTbYbtDMKZtHBaPqdDmHjxNwESCEB14gm6VuoDpump",
+"symbol": "DTV",
+"pool": "DGyCVpjgzAV7obtZNS9639fjJRH8JJ2xJEkX51NF4RsA",
+"created_ms": 1760034110908
+},
+{
+"mint": "CVfniqNEj2f4Yd8Z4TEtaTU49gWNTwUyCiDDUbsZpump",
+"symbol": "KNS",
+"pool": "22KdyHojhUa5K7Ary5perQm5eHZnuN86TCQ2yFddpiU9",
+"created_ms": 1765246634000
+},
+{
+"mint": "CcLd8HTAKLWtQHatqPwBQjtuCA72FNB9E1ckRTEzpump",
+"symbol": "ALTSZN",
+"pool": "89XnvgGVKvtx5trrLtkrPZ6G2tD2TrSgPHXEWQPs5iN9",
+"created_ms": 1776451144000
+},
+{
+"mint": "CdGRXAgJ8HLD2F7GiyZ1UagrGbg24Hqe7GfXf7B2pump",
+"symbol": "crazylive",
+"pool": "DD36MKnoHFG3yLhWBDcUwRrAZqCptLiMyWVwj6nKwfbL",
+"created_ms": 1736239713832
+},
+{
+"mint": "Cg2KJtCDYZHGMo7MhoE25uy4i8wBnoZzZvsSNo2Kpump",
+"symbol": "ANTH",
+"pool": "BMjrGXumZdNbHPxFBkezf2Poc4FYuRYunkFKeQbQRaTr",
+"created_ms": 1733095264329
+},
+{
+"mint": "Ch1Kzi24hWy5Cd3mKhx8FHGHqPjYjAmRNEtwBbKGpump",
+"symbol": "Artilect",
+"pool": "93FVz2kccWCJh6Gcf1cKQLvT3tK8T2BL8Nq3nzNvvYco",
+"created_ms": 1764413902000
+},
+{
+"mint": "Ckit5s1Cpc3RdMh1HrhfW2nAy4PnkkgjXgXMeykbpump",
+"symbol": "XONA",
+"pool": "AQFn8wKSsYVRiGHx7sBhpbkxg7y6gbfepUio4akrbe8b",
+"created_ms": 1768399782000
+},
+{
+"mint": "Cm6fNnMk7NfzStP9CZpsQA2v3jjzbcYGAxdJySmHpump",
+"symbol": "Buttcoin",
+"pool": "FFcYgSSgWHforA9rXXkA48p8YFoz8TSW85Jpo3CQHDyS",
+"created_ms": 1767964561000
+},
+{
+"mint": "CscZaq5twomhUkvCY8Jdd1tge32L4Yj9FbkFFEZQpump",
+"symbol": "PLAGUE",
+"pool": "9GBXHym9gxDZH3u6UnW71yXaixaBkG8K7EegywH2WQGg",
+"created_ms": 1723667544968
+},
+{
+"mint": "CvXyWJRq3ZxqifMzAuyUomDvJ8PF8NitXx8HxRLGpump",
+"symbol": "WYNN",
+"pool": "5gP2NMgddgx48QJsRJ54mhLLjvxxkmK5gYvdyQH2DAe2",
+"created_ms": 1768934166000
+},
+{
+"mint": "D8yYkMGQPh4AsXXNJtQS1g6Zph35XhpkUE49SUpppump",
+"symbol": "AHB",
+"pool": "3MVqReorMbUkXqUfpQuuXup1V7bwpRFoAanAujpEUmHp",
+"created_ms": 1771411223000
+},
+{
+"mint": "DAfKg6exaeMMUQeqwRq3UP5KYPJjFNyVuVzFfr4kpump",
+"symbol": "PICKLE",
+"pool": "6cpie3vWeBgojsnhKG15NEaJGbTAjYCbqvTL3pv4PdtX",
+"created_ms": 1757037725535
+},
+{
+"mint": "DKWnaomrvGZLK2NoUx7hRCEfTaseSLPiER1GdSDVpump",
+"symbol": "eco",
+"pool": "D3cnj8E3Wrdaj7q4XLbyVcLjCbPsoi8FFV1U2G4qVwRt",
+"created_ms": 1741739522216
+},
+{
+"mint": "DLGRpmkMGr7J4KD1xR5x2XjaGeQH64PLFQkyxNNSpump",
+"symbol": "TCG",
+"pool": "9NcS7HT3tfw35PXBhG9JKPqHQnHvTUabQtJiDSMmpVV",
+"created_ms": 1764611297000
+},
+{
+"mint": "DNhQZ1CE9qZ2FNrVhsCXwQJ2vZG8ufZkcYakTS5Jpump",
+"symbol": "ZAUTH",
+"pool": "5XbRDoL7YpKYwUKSfBZBFiJaipUtVXrFVtyVXoVSeKsQ",
+"created_ms": 1765299872000
+},
+{
+"mint": "DNzwyxqpdPqQChDTUAUpU3WtDjig1Ct3d4HuCaeQpump",
+"symbol": "YOLO",
+"pool": "Baop9WxQ2bwh63dE4vxgCxzxdxk57N4ty1aVo1KbAXmk",
+"created_ms": 1777316185000
+},
+{
+"mint": "DPdNMhjBnftREwT82KXytQBk7zd5RBkRrG41L795pump",
+"symbol": "QE",
+"pool": "9PX5Rt6NCBsjBjgKyaFqm1TDe3uNpU9spVGeMNLSzW7H",
+"created_ms": 1757501343804
+},
+{
+"mint": "DPgo26tLZXdNfB24ahP2LTXsxSPxvxPq7takvavppump",
+"symbol": "PFF",
+"pool": "EEb1xU5Dp9iz573SpXXSUBjVPdUXdr7knPbrryNfL91z",
+"created_ms": 1759793832636
+},
+{
+"mint": "DRtvTCzfiKGhCVREmBbZdN9sB8PHeq9KdRZ3VmFhpump",
+"symbol": "ChiefPussy",
+"pool": "881t1o9J3zXrpimGExcRV7HRzXb73VPTVwqXZvTo1BGk",
+"created_ms": 1768967849000
+},
+{
+"mint": "DSZeB6pCzZsM43gTz7jakiYeCafinsNMKcpeB1FApump",
+"symbol": "Wasabi",
+"pool": "5Fc4vroj4N4dQtznT936y81eER3tyFt2SHN37QrMCq22",
+"created_ms": 1776357731000
+},
+{
+"mint": "DVr62PSjVCrEwmWVRdKQABqJumb1jmJGKa8BkUG6pump",
+"symbol": "TOMMYJINGL",
+"pool": "3KFN45igGN2vJ86UTgB4RMJt3A68PHzuvLA6qQ3i7dQ5",
+"created_ms": 1763451044000
+},
+{
+"mint": "DYCLLejhtfyCDUY8ygBx7YuwfcdaRzLo7nHHVGdApump",
+"symbol": "GOJIPOWER",
+"pool": "Gcrrge17RVpmv1U7NopwLzxkwPtwDDyLEzSBy5C1zm37",
+"created_ms": 1744619185581
+},
+{
+"mint": "De3bkk4HxHwnhKcfCJEVe3qyyzw28PzvWv94Dk28pump",
+"symbol": "XDC NET",
+"pool": "GAggbpiKRZJ7FZhSGZgi1R9o77NXYuThnFyLoW5WbHrS",
+"created_ms": 1769448572000
+},
+{
+"mint": "DgXjupqUXCMRzyR98WxKPdhxyLC72MdtMJULu4C3pump",
+"symbol": "Rubio",
+"pool": "EBQEhUbis8EWmitWEn6VZUs3HMoacwborQJXrVchsXJz",
+"created_ms": 1771797677000
+},
+{
+"mint": "DhaLZtprNqwpUYqhrTrtnCGSuxsdnk489UqSrZj3pump",
+"symbol": "PMV",
+"pool": "whamNMp7e8UozUV4EBcPUGsfEnm34WZVxjEzjH8on47",
+"created_ms": 1758057863084
+},
+{
+"mint": "DitHyRMQiSDhn5cnKMJV2CDDt6sVct96YrECiM49pump",
+"symbol": "House",
+"pool": "Gj5t6KjTw3gWW7SrMHEi1ojCkaYHyvLwb17gktf96HNH",
+"created_ms": 1742834683095
+},
+{
+"mint": "DmxDBXTxEnNXVNNVVZe9QhgoKnr8anjE1b49dpZapump",
+"symbol": "XPT ",
+"pool": "E7AAB5spEZRTa8Rj2nawtPVGWvXGg3DVNXGfE9bSkpmk",
+"created_ms": 1771341759000
+},
+{
+"mint": "DoBtyHG3s2uhJ8WhjKPTiiQVZpjeDdu8uqKrLbjtpump",
+"symbol": "BTCAURA",
+"pool": "G4577oGPieKGKQYUvzMqrm3rY6P4mNpHrPHppyWQQKhH",
+"created_ms": 1758223313048
+},
+{
+"mint": "DvNcJZTiSMD1RBCtZ2J31mh7s42CVCwrzGapv1Lypump",
+"symbol": "MICRO",
+"pool": "mnnen34cBuJJ7Pvfdb2PN7WHgRvCMzcTej4bAgUiXob",
+"created_ms": 1756322039754
+},
+{
+"mint": "DycqsssTijnk7AzAyPj5nJuLHW42PXd2NDEJGW77pump",
+"symbol": "MOMO",
+"pool": "9ww754k5JU7jNvj6rPapf1bgBpbPE5BZJvZMXye1fifW",
+"created_ms": 1750943634229
+},
+{
+"mint": "DyidQqHQvWv9r76bWY7H11uB5qnDE7GyDT7Hq1QCpump",
+"symbol": "CATS",
+"pool": "4CNqCWB1tVZoTcrTvVjM22Wcr6V1u8MGAjPGymTSQQye",
+"created_ms": 1787588940982
+},
+{
+"mint": "E4um9bJTEd463EaiwyNdcDrQK2Q75xyTRczu5Ym5pump",
+"symbol": "WCLAW",
+"pool": "AZr285aSKkXuwZj1EydKPMq9chkQLGdHBjFjX3swnbKv",
+"created_ms": 1772110161000
+},
+{
+"mint": "E6ifp2mJy8cYQehUGUtFvrXriRKxRuonLmrvTFypump",
+"symbol": "SPCX",
+"pool": "DZxWcyPpTyr2NTfmEN2xAUSCb77t1ZLpkg63PbpbKmbC",
+"created_ms": 1737222697341
+},
+{
+"mint": "EBPmy5T7g5PFhsn6tQ8UskzdqmD5odG9fdGVsfPDpump",
+"symbol": "FRAG",
+"pool": "DgtbVBcytbupbGiLhR7Wkcy1eiyvgBzyR63xtvuweKu7",
+"created_ms": 1774439816000
+},
+{
+"mint": "EGedTSu2zdFNT1k7phURksCpcwHNyxepLzSMYGApump",
+"symbol": "BEB1M",
+"pool": "B1X1edX2q5TUjRLsQAKBCZuo79QdV13fMdHfSZZVgW5D",
+"created_ms": 1760334942145
+},
+{
+"mint": "EMeugag3yfyvKqNKknGDWAudNALafZjbv9ByzCE8pump",
+"symbol": "SIMD",
+"pool": "EozBrsBqcmuNuZNFxiugHbrPxaq6g8jW1Hr3XHWsBcMp",
+"created_ms": 1763773672000
+},
+{
+"mint": "EN2nnxrg8uUi6x2sJkzNPd2eT6rB9rdSoQNNaENA4RZA",
+"symbol": "SQUIRE",
+"pool": "4CPVihvjKUUsXq3HFrS8wniUKffbpDqz2h6jHKjeXoYD",
+"created_ms": 1773864853000
+},
+{
+"mint": "ENcwYGVhRsEqKpH4SzRH4mcYSGc9Cb6s4WJGS9ojpump",
+"symbol": "KOKOP",
+"pool": "A3zBDD45Ctz7QjEQmAw6gjLm24prbnrfueN1go5qKnjH",
+"created_ms": 1773084444000
+},
+{
+"mint": "EaK5BoVLiGovVu1JNXJDguMtQyMid3zBX4xWVqhZpump",
+"symbol": "100x",
+"pool": "Df9f9J8mAzRTgfGtv2uwwPHBvWv7YAQLykHFVNVnkWB1",
+"created_ms": 1757820454423
+},
+{
+"mint": "EfPoo4wWgxKVToit7yX5VtXXBrhao4G8L7vrbKy6pump",
+"symbol": "DEXTER",
+"pool": "Csqt5aXbzLcSd13DpY6AYLtRKcU5q1NztAPaM67eLxRo",
+"created_ms": 1760578698567
+},
+{
+"mint": "EkDGB5fbPXiRmDDjxKcC7dFjzvFZj2KT9t7oeyyPx4SX",
+"symbol": "PIXEL",
+"pool": "8LTRgxZ2KWDc2sDGuYAe5VtDgguAzteSeQUJisLQ5BVA",
+"created_ms": 1713526818000
+},
+{
+"mint": "EsLb2XdNWVezNnhEsRVKYZ7BymiKUabzh4tdVhz4pump",
+"symbol": "Twin",
+"pool": "3GVKFXXE178kQPBcy9X4W6TeGJ3eY9CbUeWC1GmWEEe4",
+"created_ms": 1773335040000
+},
+{
+"mint": "Eu8qFQrtyRdTLmjn42vnuVCY26fsZPSbkbyVo31t4xFJ",
+"symbol": "RICKROLL",
+"pool": "CdvVVssDq6GSTfvfUwwzBfywc9WxvHLjgsnmAhnnVDww",
+"created_ms": 1708322280457
+},
+{
+"mint": "Ew8KqgSitYucieR5KnSAL2SUFspcwA8AgSuZ5xWspump",
+"symbol": "Kurumi",
+"pool": "2xHRmdXSKURh8CkMERbNhYCiQGHGsjLWMgckEP9bmLKK",
+"created_ms": 1767032621000
+},
+{
+"mint": "EygStH4gHv1h4E8w4raYv6NGsrDiij3nbfCc26iTpump",
+"symbol": "LARP",
+"pool": "2YTdAkr7YxyWZk5GmU3ihhVzYYR8xj8fRRNReJukHe6N",
+"created_ms": 1768675876000
+},
+{
+"mint": "EyiVQN5W1s2z3DPrbZnQuxyzQBPpzvc1inyScUxxpump",
+"symbol": "RTX",
+"pool": "JCSYX9tYhbn2yZK1hr4Xq9wda2fMP91XWfNyYz4xo8iu",
+"created_ms": 1735242231434
+},
+{
+"mint": "F1Ur6YGnhfvXjimfeipS59R5kMy3dUmtf5xShxgQpump",
+"symbol": "kotr",
+"pool": "9sstSqnsJmwWbQyi5xNJqTNK8ReP8x6CLrZboHS45p9U",
+"created_ms": 1766445100427
+},
+{
+"mint": "F2k82EcxLtzekq1bfoGVdgp6EXZ5dLT1jE7g3LvQpump",
+"symbol": "PENGO",
+"pool": "Ayj7dtozWUwVmTreDL5QgXnP7zQVjsxG6PsrY5zTgfGw",
+"created_ms": 1760110577256
+},
+{
+"mint": "F5tfztTnE4sYsMhZT5KrFpWvHmYSfJZoRjCuxKPbpump",
+"symbol": "Aliens",
+"pool": "7nVP4qykvMpEuhobyrzCn1TQiz7K8PMK5UXQeeBrZyh",
+"created_ms": 1771110493000
+},
+{
+"mint": "F7pB3ZdfBnyFw2LRHydWEn9BmhEa5XihXLjhySFRpump",
+"symbol": "NOTHING",
+"pool": "2pA1GMh9WbPtURmr6Rt5oxNs6RdpLzxJphSJQcdyaNFq",
+"created_ms": 1762891632000
+},
+{
+"mint": "FHmF8Twyu2xYoQg22ZVmJAS1HvHfJ2iutHoSZQz7pump",
+"symbol": "LUNACRYPTO",
+"pool": "41kBqQuruNQoUfQwNTkhJwCa4jtD3uBGRM5HvUPhE9k7",
+"created_ms": 1769739702000
+},
+{
+"mint": "FMpbX9EBjGUgjeUZMmvzTMuu8ZViZJMNsAwQBKGXpump",
+"symbol": "BUSINESS",
+"pool": "9sRJDcodWnUCmDTQq9wnhAM44VMVahPkx6bZLggQ3cn",
+"created_ms": 1764114537000
+},
+{
+"mint": "FVGdJQVzAdKr8ZH7ahyhp4cvDszX3N8QYGSdzueopump",
+"symbol": "attn",
+"pool": "6UEnykZiRnB2TMJvfvqa7hr71XCybzYiDxYqqoNdwJ5b",
+"created_ms": 1772057321000
+},
+{
+"mint": "FYtP5AiiB4eUjVA88EeZS73PDpi7RPLusdqtXizYpump",
+"symbol": "GOY",
+"pool": "FKLu5tKAvCrUgX7qjV1KobWfCgBrSoWv9QW5vA8zQoRv",
+"created_ms": 1763684115000
+},
+{
+"mint": "Fa6ECeWqumfDfu62ZFgibv15nifegAn898NaMZoMpump",
+"symbol": "Halle",
+"pool": "MSx39MTASMSCk1U3LZSWgPDAnnq2cq7GosWmUHq7jNV",
+"created_ms": 1741716540063
+},
+{
+"mint": "Fa7ZE9nCEYnrHsnoeHuhEExJpchtrBtKXnWe6CgHpump",
+"symbol": "$MAD",
+"pool": "Gt3dWHHKRd2mNQmmCHPzdeTpG4tTAa23exN1m2vwinfs",
+"created_ms": 1770258444000
+},
+{
+"mint": "Fd8TNp5GhhTk6Uq6utMvK13vfQdLN1yUUHCnapWvpump",
+"symbol": "DGN",
+"pool": "88pMrPHuusnbJnntiPZEJJwxz5sZRh7sFywwMAWLGAjk",
+"created_ms": 1751465071126
+},
+{
+"mint": "FeMbDoX7R1Psc4GEcvJdsbNbZA3bfztcyDCatJVJpump",
+"symbol": "three",
+"pool": "5ByL7MZoLABYnwMPZKPKjf4MGkZ7FeBzrAnos19Pre2z",
+"created_ms": 1777441309000
+},
+{
+"mint": "FfixAeHevSKBZWoXPTbLk4U4X9piqvzGKvQaFo3cpump",
+"symbol": "POLYFACTS",
+"pool": "HkmNWpHkuQGfJzj6YRednAJWFkagyxFKSpxg9eAELRNQ",
+"created_ms": 1756314248931
+},
+{
+"mint": "FgK4g4i9LtTxE3Vd2NnWCv9GsVhzm7Wcx4ZmSyAtpump",
+"symbol": "FOMO",
+"pool": "3VsrCqycYYnvSCkwceMRAznk9cZrCqwmknJwG4o99GzH",
+"created_ms": 1731600182934
+},
+{
+"mint": "FiDNTyuVE3V89DXRyoEWj1Gv4bycDL9Hub9tGmoHpump",
+"symbol": "kancler",
+"pool": "3vtEyjEvP98tsEWj39GB8iL4RW4pVyYyeUf3dHUbHKhW",
+"created_ms": 1760693219532
+},
+{
+"mint": "FrSFwE2BxWADEyUWFXDMAeomzuB4r83ZvzdG9sevpump",
+"symbol": "Normie",
+"pool": "4QcxVQLZj1aJTrUqnPAznCg8sBfkwRnCpZHk7ERw8LUT",
+"created_ms": 1764277411000
+},
+{
+"mint": "G39XqxxapUfp5mQiqowBZ3Qo1hDNG8CExkYEyGe8pump",
+"symbol": "CRPC",
+"pool": "F3BpcSFfYQLcuU2z5J5jihsPARVSvwhpLpadc9Be7XPY",
+"created_ms": 1774468043000
+},
+{
+"mint": "GAFQP8vSdDsHcjbBapN794CNEp5Wo6scqSDMSzDHpump",
+"symbol": "BAWLS",
+"pool": "CWGAtPcNTp7CbgatnFgEsRs3ZUmKU9mWfcY6GajD6zzw",
+"created_ms": 1741515478938
+},
+{
+"mint": "GMk6j2defJhS7F194toqmJNFNhAkbDXhYJo5oR3Rpump",
+"symbol": "Pumpswap ",
+"pool": "FDtu6W24K2iyW9Ce9NsTyVSmSGjxj2hHrTkKc2xFTxSL",
+"created_ms": 1729782510793
+},
+{
+"mint": "GQz5ThKHNcuAvMKA8rCPSdoFUoApk9Fi8qB9m3Gqpump",
+"symbol": "SAN",
+"pool": "E4dZyLB1ousbEnXKhXUrvK6Ern2cRe456KsMWC6BHgTC",
+"created_ms": 1770487953000
+},
+{
+"mint": "Gbu7JAKhTVtGyRryg8cYPiKNhonXpUqbrZuCDjfUpump",
+"symbol": "snowball",
+"pool": "4KfHWqcSJWsrTq19FLzFYm3cGN4oASAj7ZCiUoFx16KS",
+"created_ms": 1766072386000
+},
+{
+"mint": "GkYy1zoqHfghVvpenEuZH9rs6E5sEpDoKnfeH7acpump",
+"symbol": "BRO",
+"pool": "529sxgey2aLKA8g8EUF3fWbsCvbmWMujooCjs4USNfLD",
+"created_ms": 1743198684118
+},
+{
+"mint": "Gka1TQEevBbVw4W9K15ER96ZzKByMTb6TBMQzWFEpump",
+"symbol": "MINER",
+"pool": "7RewgB9eXiLbaFdLU14cQLY46wH4Ccn46DxsMh51iGay",
+"created_ms": 1764867563000
+},
+{
+"mint": "GnFMf6JVRhAqPbA9r8yW16xycynKNkXfbaYbusLEpump",
+"symbol": "ZReaL",
+"pool": "imG3UwuWh2YQPgu6TjV7UHAqtSEMDyWQ7ux8zqUG3JH",
+"created_ms": 1768679564000
+},
+{
+"mint": "GnHpRsrcyfHSMZNzmpjAzTFQA26vnbRMzbKQ11ZKpump",
+"symbol": "ACE",
+"pool": "6FEUgxZHVy2Zh4rTnoaret4Hyh1wXa3E3isouFBSSakJ",
+"created_ms": 1766552871000
+},
+{
+"mint": "GnM6XZ7DN9KSPW2ZVMNqCggsxjnxHMGb2t4kiWrUpump",
+"symbol": "WAGMI",
+"pool": "DW6rLxPNi9nH42jinmToY8ii13UaeeDmC9sanLu2zUxD",
+"created_ms": 1745854643469
+},
+{
+"mint": "GpmmQBjXxoppbELykD2PGQ4wwVR74o5sSZXVW6hVpump",
+"symbol": "EYED",
+"pool": "6y5EhAxcdjJtW6wADfZC8nZ35j7e2tupigKZBEtD7ZEv",
+"created_ms": 1774050398000
+},
+{
+"mint": "Gq7eEnTR1YDzNgs7qVRMThY8xt9CDZknxixKJSxQpump",
+"symbol": "GIRAFFISH",
+"pool": "6Q83NuK1AV89QTrb3Ecp3dZoKffpVT28Mc1KWi3MXfda",
+"created_ms": 1758204048623
+},
+{
+"mint": "Gqdw9DgDQuPekAwcvLvK7wgLGohGQntP45nVeAsZpump",
+"symbol": "BLACKCOIN",
+"pool": "pnz3HgWKih5BPYJKENRb8kQNRfr7AyRwhXXHAtFkjTJ",
+"created_ms": 1735674840792
+},
+{
+"mint": "GukrEzkYpiqw8YV64xQBmYKoRYJvMwdckTPbyA4Hpump",
+"symbol": "WA",
+"pool": "9J6bDUqnXuAik1uubbeJ6QqMAYXTehBGQqc175EZvRvn",
+"created_ms": 1741073080378
+},
+{
+"mint": "GvV7sFu6FHJsSVXfpG7xqFnWar3c7YkcC74rqe7Bpump",
+"symbol": "RAGEGUY",
+"pool": "6gTQBJBV7DUQUGfsQoxzqi8Kgpa5ymF5riquo1k9sXoe",
+"created_ms": 1738845146110
+},
+{
+"mint": "Gw5uPEK6LUBxG3tQpJa3SakqaFhYK2NWEmudSa99pump",
+"symbol": "nsf",
+"pool": "65XQtov918isGs6DvV6TbjfCJn3RNSRFMR1S4Zb9pQ6P",
+"created_ms": 1758070549367
+},
+{
+"mint": "GybbFwXj2K4r73F6MMBxX6PUphh9H4KBdnZpn4zgpump",
+"symbol": "CLIP",
+"pool": "EFxNfueLsEBTqLuwbXKLNqB5EaWyhnSapzUu66G3fX9s",
+"created_ms": 1771378080000
+},
+{
+"mint": "H2yHLoC24dM5v1Vjh2Poqx7fZ9mp8EfR2MYseXScpump",
+"symbol": "BOXABL",
+"pool": "9shHp1YwJQ2Jb4dUp2upv96txAyCbdjKCssqD8THQhxt",
+"created_ms": 1765239163000
+},
+{
+"mint": "HEFKmRDRHnUC1DxxX9rb5VhAUDR5X93w5JCv1491pump",
+"symbol": "APE",
+"pool": "FZnNDLLjyfF66UzMPAGs8eguhF7SH1g5amE3QQn1Wj7L",
+"created_ms": 1773645759000
+},
+{
+"mint": "HHf2VfXSPUVqQth6tXypfdUX2vawCiVKfkbAX4CJpump",
+"symbol": "MAXIS",
+"pool": "5WgYinqANwpEXJiW59nL2dDr683QyzqKahJQxCJJ1NFv",
+"created_ms": 1769781825000
+},
+{
+"mint": "HRvw81mktEraX9gZLTHKeYGaFygCSNKuAwNLVE6Tpump",
+"symbol": "POKEAHOE",
+"pool": "DnHUs5daHYiwceKp4NcGuFe8ADSHxkdT35MhraQVk918",
+"created_ms": 1757641722392
+},
+{
+"mint": "HeC2xWqGT9gPfdvaMuqxPo2bUQ1XgY5wRtnrwTEHpump",
+"symbol": "BELIEVE",
+"pool": "EBBGBx2L4UyANypmZ1xTsLY84EWcbDMCcRzSvV6Kj4A3",
+"created_ms": 1775004591000
+},
+{
+"mint": "HfJvxwLQeHeiDz8e91RWSwMm3R1pLh1vyjLoSr5gpump",
+"symbol": "SYNAPZ",
+"pool": "1fNcmhvLh4NMkKoDnEdyMsUiN8AmRNpkxkaDsv7LDcF",
+"created_ms": 1762294501378
+},
+{
+"mint": "Hh3oTaqDCKKfdBgsQEvxp9sUwyNf8x9qmKqEMLBWpump",
+"symbol": "HODL",
+"pool": "DTdtHUx79bmNMnesv3au7pzBKAkB3mUUi8GwUdZ6Suw",
+"created_ms": 1770925652000
+},
+{
+"mint": "HmCxqpgxaQng3A73F7vLgJjc9sr6ACFt8CEJwWY2hMGR",
+"symbol": "OpiumBird",
+"pool": "2AQY8FQfVxeAJAT1fQkPGbBzqEDCjp9iVcgGxvfydvdL",
+"created_ms": 1715037013034
+},
+{
+"mint": "HnXDnwTa68tRhLRZdJkVRLAeYrUkCYgFgDavtwD1pump",
+"symbol": "Fartcoin",
+"pool": "eUsB7o5HXb4xj3RD4eZjumRV6T65PQELbhd8mNFRjk6",
+"created_ms": 1764214958000
+},
+{
+"mint": "Hon2rHAiqkcDtUzL5gA2vjXPr7T1MPCK2UT2AHKCpump",
+"symbol": "MAGA",
+"pool": "HVimk99ygSSDnWz9eSqumdThrFz4DADE7j6phmFms6at",
+"created_ms": 1771558504000
+},
+{
+"mint": "Hrpq2D2YHzaYMUNNAt37TnHyQKRv5CSjvGWWRViHpump",
+"symbol": "NEURIX",
+"pool": "hkYzqzZFiD2KtR1PPvtFcE7xDYDf19qYvWoWbC6cfvC",
+"created_ms": 1773706465000
+},
+{
+"mint": "HyLXondhNhGkvWPXr8z4EPSgZNRRs4j8BHdyqMdVpump",
+"symbol": "MOLT",
+"pool": "GKb1LfJ1kwhdnQxzQtUvxTXBgqEU8qSkq5K5YAjpPhvv",
+"created_ms": 1771541107000
+},
+{
+"mint": "J8PSdNP3QewKq2Z1JJJFDMaqF7KcaiJhR7gbr5KZpump",
+"symbol": "TripleT",
+"pool": "3KFCgJ5R3zshW8hTDbzjSrrKSRYmKvsMfhc4Vo4iddxD",
+"created_ms": 1771921732000
+},
+{
+"mint": "JCNpsBt9TYKBDccqhfUuxHh8xDyYZZzTG919Wbt9pump",
+"symbol": "IRR",
+"pool": "7Ft9CqMD58LUW5fzG2neP1ggKyr7254gZsAwoCwB5RjF",
+"created_ms": 1773054750000
+},
+{
+"mint": "JE5rzcjJHtM5rRAecnhXM2HmmBy5xrbfbBEk9z62pump",
+"symbol": "PEPETO",
+"pool": "AVzwGUB9wwiDSopQQyXB4R8m63hp7CnLdpwQtFdNKKB",
+"created_ms": 1774370848000
+},
+{
+"mint": "JE8zmsKRivXggZsJxXHBdCkako85YawNtU5hqS4upump",
+"symbol": "PAX",
+"pool": "4utojFKPR6cZFY5tp5wntBkQ9CJ6KDpRPHkYERD1hRbU",
+"created_ms": 1767788138000
+},
+{
+"mint": "NV2RYH954cTJ3ckFUpvfqaQXU4ARqqDH3562nFSpump",
+"symbol": "Punch",
+"pool": "A6KHMiFzn9AM7VKBtVP4fZNY9bCo2jP63R9dphaW1vrq",
+"created_ms": 1770281241000
+},
+{
+"mint": "Sg4k4iFaEeqhv5866cQmsFTMhRx8sVCPAq2j8Xcpump",
+"symbol": "SPSN",
+"pool": "9n97DeJbnJrrUbpCAyv1v1UUzvPo8DcJMVe5cRrpZ8YV",
+"created_ms": 1761963574656
+},
+{
+"mint": "UKbXwN3ySC2jP5p9TyQ91yXYXmnnDsjiZQ55QCqpump",
+"symbol": "KASPA",
+"pool": "Ci3aHhHz6LjhBkfCTAi64S1ZQ4TkUax7MVtafkGpmyiy",
+"created_ms": 1729767331419
+},
+{
+"mint": "UVcu7kbVKW6Rs5PKzuwVSbm8ukvrWByS3hBXqHapump",
+"symbol": "PNP",
+"pool": "Fa6TdnLtpmYuycUfkEJ7BGvaVXf9WC6J6iedEqcWAptD",
+"created_ms": 1765961022000
+},
+{
+"mint": "WC7Awj7NppEf2YjonhexE71UNrzK5aBZnDR1MVmpump",
+"symbol": "\u6cf5",
+"pool": "H7zh7kBJY8cGHcbHgKpJgRC9vmQGf3Bk4m8fdbNdy3hL",
+"created_ms": 1752411060940
+},
+{
+"mint": "XGbMLzy8r7iJN96huatiyv3VtJ3o1VYjpVzSz7Zpump",
+"symbol": "CR7",
+"pool": "7mkMgZfBX7X7osh4bXYB8V5DYpSN2XLHmRXqHFyqPHVt",
+"created_ms": 1776985803000
+},
+{
+"mint": "a3W4qutoEJA4232T2gwZUfgYJTetr96pU4SJMwppump",
+"symbol": "WhiteWhale",
+"pool": "4qxSqMh6iEdbdvtMp8r5MK2psAGKNk57PfGeVo2VhczQ",
+"created_ms": 1760319703770
+},
+{
+"mint": "cTxqg4vt21u1Q2f9DSEig6S1fxmxLSsUV2v2wWspump",
+"symbol": "ECASH",
+"pool": "EtiNcFxdVVSuphoS44JvcVQCb74vgqqT56PzWm3L678x",
+"created_ms": 1777135106000
+},
+{
+"mint": "dTzEP9JU2NRDPuWtM32gaVKip2fTHBqjheU1APBpump",
+"symbol": "BITTY",
+"pool": "66m6d9BehNL29PhqZtf85Lh9BuuZwU7MEZ7i1G4fwec6",
+"created_ms": 1752513935216
+},
+{
+"mint": "kLqMvUm1p4pRbxU4r8kWCTVAuWMJLtcTJqGb4b5pump",
+"symbol": "BRENT",
+"pool": "29wZa1Cfy7JmsRJ2dohAKmuLU4Fsu8rHh5BUrtMb24GQ",
+"created_ms": 1774135192000
+},
+{
+"mint": "qnko6WJGEwEU3JYQFZakLe9V8dmS4YAXFARHeRipump",
+"symbol": "LIL",
+"pool": "BCxMJQ1DSuRNFi5iSJUk5iXanvkr4A5ESciNP7eCPgq",
+"created_ms": 1760961082336
+},
+{
+"mint": "rG49p6sSbBsrbWbsdEhFFe15uq5nch2eSnQLV4fpump",
+"symbol": "XPX",
+"pool": "BNtEtcatCMqpT27X8xBDHWfSoCWB6YNJDwUqbLonx2z6",
+"created_ms": 1775717308000
+},
+{
+"mint": "s6nhgeppKdbfockwnrUAA5art6ca4Sa4enN5fNApump",
+"symbol": "WHATEVER",
+"pool": "GaxYCtXfkdW33oiasC7N8fJ7R2xcK7D7enkpns9z389P",
+"created_ms": 1756501826460
+},
+{
+"mint": "skDGuSDyKYGbYTWnMCNcPeDd4vHUxAsMNVVxxUfpump",
+"symbol": "ADA",
+"pool": "rSyt64cs33cvfqXQ2KvnY13A7isRkkE3DBMUc8T9PL8",
+"created_ms": 1766120808000
+},
+{
+"mint": "utLyQQCPvjuCc6zeaXdsFeEC3JNdxKS3vxaZWoGdoge",
+"symbol": "OGDOGE",
+"pool": "6wgSaJRFy9FXGxkZrfNS3RnT2YRgmHrs1XAfpMKr8yKd",
+"created_ms": 1778183007000
+},
+{
+"mint": "vuus1Ucw2nfEpZwUzofLr9Kd6ugieNPkjXz3Aqgpump",
+"symbol": "NLINK",
+"pool": "C7UTXaWbLJk5uLhZS7vMVFogNNJHBYrusdhBJ3g7WE4U",
+"created_ms": 1771570426000
+}
+]
