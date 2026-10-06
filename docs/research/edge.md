@@ -205,6 +205,10 @@ Opened by a researcher or critic: Bianchi, Babiak & Dickerson, J. Banking & Fina
 
 Limits: the Kamat graduation paper is cited in the repo as arXiv 2607.02795 and was found in this search as 2607.02823; check which is right before citing it again. The deep-pool σ (4–8% per trade) and every pool count and trades-per-day figure are assumptions until Phase 0 measures them. No market data was downloaded and nothing at or after the wall was read for a new statistic.
 
+### 6.10 First real-data check of MR-LV's family (2026-10-07)
+
+Pre-registered (`research/deep-pool-probe/PREREG.md`, pushed before any return) and run on free pre-wall 5-minute prices for 41 established pump.fun coins in canonical PumpSwap pools at the 0.30%–0.55% fee tiers (2026-07-22 to the wall). **All five rules: not supported.** Sharp drops are followed by a small bounce (dip rules beat random entry by about +0.2 to +0.5 points), but the bounce, about +0.1% to +0.6% gross, is smaller than the 0.85–1.0% round trip in the cheapest pools, at $50, $200 and $500. Most of it happens in the first 5 minutes, so a slow bot captures less. Momentum after volume spikes does worse than random. The coin list favours dip-buying (survivors only), so the true result is likely worse. Details: `research/deep-pool-probe/RESULTS.md`.
+
 ## 7. Routes that pay by rule, not by prediction (RES-7, 2026-10-07)
 
 Owner request (7 Oct): "Think outside the box. Find every maze route ... not statistics." Five researchers each took one route (protocol payouts, atomic arbitrage, carry, being the house, forced or price-blind flows), read the pump and pump_amm IDLs (pump-public-docs `cb188ce`) and live mainnet accounts, and two critics re-checked every claim on chain. No strategy return was computed on data at or after the wall; reading today's protocol state was allowed.
