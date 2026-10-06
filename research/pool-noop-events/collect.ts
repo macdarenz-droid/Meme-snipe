@@ -5,6 +5,7 @@
 // right after the event. Raw `getTransaction` results are cached under data/ (git-ignored).
 //
 //   node research/pool-noop-events/collect.ts discover <pages> [sig] program-wide transactions with the events (back from sig)
+//   node research/pool-noop-events/collect.ts extends <n> [pages]   ExtendAccount transactions of sampled pools
 //   node research/pool-noop-events/collect.ts tapes <per-disc>      each found pool's swaps around the event
 //   node research/pool-noop-events/collect.ts report                writes data/report.json and prints the counts
 //
@@ -119,6 +120,66 @@ const tapes = async (perDisc: number) => {
   }
 };
 
+/**
+ * ExtendAccount runs once per pool, when a pool account written before the upgrade (287 bytes) is grown (to 301), so
+ * program-wide samples rarely hold one. For pools traded in the sampled transactions, its transaction is found by binary
+ * search over the pool's own signatures on its lamports: the extension tops up rent, the only lamport change of a pool.
+ */
+const extendsOf = async (want: number, maxPages: number) => {
+  const found = readJson<Occurrence[]>('occurrences.json', []);
+  const tried = readJson<Record<string, string>>('extend-tried.json', {});
+  const pools = new Set<string>();
+  for (const o of found) for (const p of o.pools) pools.add(p);
+  const lamportsOf = (tx: any, pool: string): { pre: number; post: number } | null => {
+    const msgKeys: string[] = tx.transaction?.message?.accountKeys?.map((k: any) => (typeof k === 'string' ? k : k.pubkey)) ?? [];
+    const keys = [...msgKeys, ...(tx.meta?.loadedAddresses?.writable ?? []), ...(tx.meta?.loadedAddresses?.readonly ?? [])];
+    const i = keys.indexOf(pool);
+    return i < 0 ? null : { pre: tx.meta.preBalances[i], post: tx.meta.postBalances[i] };
+  };
+  const json = async (sig: string) => rpc('getTransaction', [sig, { maxSupportedTransactionVersion: 1, encoding: 'json', commitment: 'confirmed' }]);
+  let n = found.filter((o) => o.disc === '6161d7905d92167c').length;
+  for (const pool of pools) {
+    if (n >= want) break;
+    if (tried[pool] !== undefined) continue;
+    const sigs: string[] = [];
+    let before: string | undefined;
+    for (let p = 0; p < maxPages; p++) {
+      const res = (await rpc('getSignaturesForAddress', [pool, { limit: 1000, ...(before ? { before } : {}) }])) as { signature: string; err: unknown }[];
+      if (res.length === 0) break;
+      sigs.push(...res.filter((x) => x.err === null).map((x) => x.signature));
+      before = res.at(-1)!.signature;
+      if (res.length < 1000) { before = undefined; break; }
+    }
+    if (before !== undefined || sigs.length < 2) { tried[pool] = 'too long or empty'; writeJson('extend-tried.json', tried); continue; }
+    sigs.reverse(); // oldest first
+    const first = lamportsOf(await json(sigs[0]!), pool);
+    const last = lamportsOf(await json(sigs.at(-1)!), pool);
+    if (first === null || last === null || last.post - first.post <= 0) { tried[pool] = 'no rent top-up'; writeJson('extend-tried.json', tried); continue; }
+    // The first transaction after which the pool holds more lamports than after its oldest one.
+    let lo = 1;
+    let hi = sigs.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      const l = lamportsOf(await json(sigs[mid]!), pool);
+      if (l !== null && l.post > first.post) hi = mid;
+      else lo = mid + 1;
+    }
+    const sig = sigs[lo]!;
+    const tx = await getTx(sig);
+    let evs: LocatedEvent[] = [];
+    try { evs = events(sig, tx); } catch { /* undecodable */ }
+    const ext = evs.filter((e) => discOf(e) === '6161d7905d92167c');
+    tried[pool] = ext.length > 0 ? sig : `top-up without ExtendAccount: ${sig}`;
+    writeJson('extend-tried.json', tried);
+    for (const e of ext) {
+      found.push({ sig, slot: Number(e.slot), disc: '6161d7905d92167c', outerIx: e.outerIx, innerIx: e.innerIx, pools: [pool] });
+      n++;
+    }
+    writeJson('occurrences.json', found);
+    console.log(`ExtendAccount ${n}/${want} (${pool}: ${tried[pool]})`);
+  }
+};
+
 interface Check { key: string; disc: string; pool: string; slot: number; verdict: 'unchanged' | 'changed' | 'inconclusive'; why: string }
 
 const report = () => {
@@ -187,5 +248,6 @@ const report = () => {
 const [cmd, a] = process.argv.slice(2);
 if (cmd === 'discover') await discover(Number(a ?? 1), process.argv[4]);
 else if (cmd === 'tapes') await tapes(Number(a ?? 60));
+else if (cmd === 'extends') await extendsOf(Number(a ?? 60), Number(process.argv[4] ?? 5));
 else if (cmd === 'report') report();
 else console.log('discover <pages> | tapes <per-disc> | report');
