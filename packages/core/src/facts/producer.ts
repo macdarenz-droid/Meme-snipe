@@ -1558,13 +1558,20 @@ export class FactProducer {
    * "unchanged" only while nothing else touched the pool. Fail closed: an unnamed event counts too.
    */
   #chainOther(e: MarketEvent, put: (k: string, v: unknown) => void): void {
-    if (!e.key.startsWith('logs:pump_amm:')) return;
+    // DEDUP-PER-WATCH: `logs:pool-other:<via>` is another watch's copy of a log whose PumpSwap event DEC-1 cannot name
+    // (the feed releases a transaction's events once, through the first watch that saw it).
+    const echo = e.key.startsWith('logs:pool-other:');
+    if (!echo && !e.key.startsWith('logs:pump_amm:')) return;
     const v = e.value;
     if (!isObj(v) || v['commitment'] !== 'confirmed' || typeof v['via'] !== 'string' || !v['via'].startsWith('logs:') || typeof v['txSlot'] !== 'bigint') return;
-    const name = isObj(v['event']) ? v['event']['name'] : undefined;
+    const ev = isObj(v['event']) ? v['event'] : undefined;
+    const name = echo ? v['name'] : ev?.['name'];
     if (name === 'BuyEvent' || name === 'SellEvent') return;
+    // DEDUP-PER-WATCH: the pool the event touched. A named one says it; one DEC-1 cannot name says nothing, so every
+    // watch that saw its transaction counts it (this watch here, the others by their `pool-other` copies). Fail closed.
+    const named = !echo && ev !== undefined && isObj(ev['data']) && typeof ev['data']['pool'] === 'string' ? ev['data']['pool'] : null;
+    const pool = named ?? v['via'].slice('logs:'.length);
     // TRADE-GAP-HEAL: no heal across it (a pool transaction other than a swap may move the reserves).
-    const pool = v['via'].slice('logs:'.length);
     const b = this.#books.get(pool);
     if (b?.mark) b.mark.other = true;
     const h = this.#heals.get(pool);
