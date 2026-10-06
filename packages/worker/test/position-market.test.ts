@@ -5,7 +5,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { parsePool, poolKey } from '../../core/src/gates/index.ts';
+import { parsePool, poolKey, xcheckKey } from '../../core/src/gates/index.ts';
 import { FEE_CONTEXT } from '../../core/test/gates/world.ts';
 import { executableMark } from '../../core/src/exits/index.ts';
 import { type Lamports, type MicroUsd, lamportsToMicroUsd } from '../../core/src/units/index.ts';
@@ -221,6 +221,88 @@ describe('a held position priced from its pool\'s swap stream (POS-1)', () => {
     m.pool();
     await until(m, () => false, 800);
     expect(poolFact(h)!.fact.obs.receivedAt).toBeGreaterThan(last);
+    await h.worker.stop();
+  });
+
+  it('a carry never dates an entry: a quiet candidate pool past the quote age is not entered, though its carry keeps it fresh for an exit (WATCH-1c risk review)', async () => {
+    // A second path that never answers: only the feed's pool fact and the producer's carry can date the market.
+    const h = makeWorker({ watchRead: () => new Promise(() => undefined) });
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    // Held back by a missing cross-check while its pool goes quiet: the pool fact stops, the chain's carry does not.
+    const m = await passingMarket(h, { omit: [xcheckKey(MINT)] });
+    const readSlot = h.worker.feed.releasedThrough;
+    m.tradesStart(readSlot - 100n);
+    m.accountsRead(readSlot);
+    await until(m, () => false, 1_200, () => m.pool());
+    m.omit = new Set([xcheckKey(MINT), poolKey(MINT)]);
+    await until(m, () => false, 2_800, () => m.pool());
+    // The cross-check arrives: everything passes but the pool state's age (the carry keeps it fresh for an exit).
+    m.omit = new Set([poolKey(MINT)]);
+    await until(m, () => false, 4_000, () => m.pool());
+    // Not entered: the pool fact is past the quote age, though the carry keeps the market fresh for an exit. The
+    // gates' state lag (2 slots) refuses it first, in every stage-2 gate that reads the pool (FACTS-1f's staged reasons),
+    // and the later stages are not evaluated; the entry's own quote checks judge the uncarried moment too.
+    expect(m.now - poolFact(h)!.fact.obs.receivedAt).toBeGreaterThan(h.session.policy.gates.maxQuoteAgeMs);
+    expect(m.now - h.worker.poolOf(MINT)!.atMs).toBeLessThan(h.session.policy.gates.maxQuoteAgeMs);
+    expect(decisions(h).at(-1)!.slice(0, 1).concat(decisions(h).at(-1)![3]!.replace(/slot \d+, \d+ slots/g, 'slot S, N slots'))).toEqual(['reject', `hard reject H6,H8,H5,H17: ${Array(4).fill('H16 stale pool read at slot S, N slots behind').join('; ')}; not evaluated: H12,H13,H15`]);
+    expect(position(h)).toBeUndefined();
+    await h.worker.stop();
+  });
+
+  it('an entry is judged on its pool fact\'s own age, never its carry: a fact current by slot but received 2.5 s ago is refused as a stale quote (WATCH-1c risk review)', async () => {
+    const h = makeWorker({ watchRead: () => new Promise(() => undefined) });
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    const m = await passingMarket(h, { omit: [xcheckKey(MINT)] });
+    const readSlot = h.worker.feed.releasedThrough;
+    m.tradesStart(readSlot - 100n);
+    m.accountsRead(readSlot);
+    await until(m, () => false, 1_200, () => m.pool());
+    // From now the pool fact is current by slot (the gates' 2-slot lag passes) but was received 2.5 s before it came in;
+    // the chain carries the same reserves through every slot. The cross-check arrives: everything else passes.
+    const template = h.worker.poolFact(MINT) as { obs: Record<string, unknown> };
+    const tick = () => {
+      m.omit = new Set([poolKey(MINT)]);
+      m.pool();
+      m.omit = new Set();
+      m.fact(poolKey(MINT), { ...template, obs: { ...template.obs, slot: h.worker.feed.openSlot - 1n, receivedAt: m.now - 2_500 } });
+    };
+    await until(m, () => false, 6_000, tick);
+    // The carry keeps the market fresh for an exit, but the entry's quote is the pool fact's, and it is stale.
+    expect(m.now - h.worker.poolOf(MINT)!.atMs).toBeLessThan(h.session.policy.gates.maxQuoteAgeMs);
+    const last = decisions(h).at(-1)!;
+    expect([last[0], last[3]]).toEqual(['reject', 'risk R13 quote_stale: the pool quote is stale']);
+    expect(position(h)).toBeUndefined();
+    await h.worker.stop();
+  });
+
+  it('an entry evaluated on a quote nearly at the age limit is cancelled at the send once it is past it, though a carry is present (WATCH-1c risk review)', async () => {
+    const h = makeWorker({ watchRead: () => new Promise(() => undefined) });
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    const m = await passingMarket(h, { omit: [xcheckKey(MINT)] });
+    const readSlot = h.worker.feed.releasedThrough;
+    m.tradesStart(readSlot - 100n);
+    m.accountsRead(readSlot);
+    // From now every pool fact is current by slot but carries one receipt time: the pool's state as of then.
+    // The pool fact carries the chain read's reserves, the state its carry proves unchanged.
+    const raw = h.worker.poolFact(MINT) as { obs: Record<string, unknown>; pool: Record<string, unknown> };
+    const cs = m.chainState;
+    const template = { ...raw, baseVault: cs.baseReserve, quoteVault: cs.quoteVault, pool: { ...raw.pool, virtualQuoteReserves: cs.virtualQuoteReserves } };
+    const at = m.now;
+    // Held back by a missing cross-check for the first second.
+    const hold = 600;
+    const tick = () => {
+      const omit = m.now - at < hold ? [xcheckKey(MINT)] : [];
+      m.omit = new Set([poolKey(MINT), ...omit]);
+      m.pool();
+      m.omit = new Set(omit);
+      m.fact(poolKey(MINT), { ...template, obs: { ...template.obs, slot: h.worker.feed.openSlot - 1n, receivedAt: at } });
+    };
+    await until(m, () => decisions(h).some((r) => r[0] === 'entry cancelled' || r[0] === 'submit entry (paper)' || r[3]?.startsWith('risk R13') === true), 20_000, tick);
+    // Evaluated and approved on that quote while it was within the age limit; by the send, a decision later, it is past
+    // it: cancelled, though the chain's carry keeps the market fresh (a carried send would have gone out).
+    expect(decisions(h).slice(-3).map((r) => r[0])).toEqual(['gates passed', 'risk approved', 'entry cancelled']);
+    expect(decisions(h).at(-1)![2]).toBe('pool state is stale');
+    expect(position(h)?.status ?? 'none').not.toBe('open');
     await h.worker.stop();
   });
 });

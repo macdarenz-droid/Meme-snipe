@@ -8,6 +8,7 @@ import type { MarketEvent } from '../engine/feed.ts';
 import { compareEvents, compareMoments, type Moment } from '../engine/moment.ts';
 import { SECOND_MS } from '../config/time.ts';
 import type { DeployerFact } from './facts.ts';
+import { MintIndex } from './mint-index.ts';
 
 /** FEED-1 keys: creates read from logs (processed) and from fetched transactions (confirmed). */
 export const LOG_CREATE_PREFIX = 'logs:pump:CreateEvent:';
@@ -44,7 +45,8 @@ export interface Known {
 
 /** The deployer index: mints and rug labels per creator, from released events only. */
 export class DeployerIndex {
-  readonly #mints = new Map<string, Map<string, number>>();
+  /** DEPLOYER-COMPACT: mints by creator, compact (`MintIndex`). */
+  readonly #mints = new MintIndex();
   /** Rug labels and unjudged mints per creator, each at the moment it became known (compared in full with now). */
   readonly #rugs = new Map<string, Map<string, Known>>();
   readonly #unjudged = new Map<string, Map<string, Known>>();
@@ -63,7 +65,7 @@ export class DeployerIndex {
     this.#trackLoss(e);
     if (e.key.startsWith(LOG_CREATE_PREFIX) || e.key.startsWith(TX_CREATE_PREFIX)) {
       const c = createOf(e.value);
-      if (c !== null) this.#addMint(this.#mints, c);
+      if (c !== null) this.#mints.add(c.creator, c.mint, c.createdAtMs);
       return;
     }
     const into = e.key.startsWith(RUG_PREFIX) ? this.#rugs : e.key.startsWith(RUG_UNJUDGED_PREFIX) ? this.#unjudged : null;
@@ -142,7 +144,7 @@ export class DeployerIndex {
   }
 
   #merge(mints: Map<string, Map<string, number>>): void {
-    for (const [creator, m] of mints) for (const [mint, createdAtMs] of m) this.#addMint(this.#mints, { mint, creator, createdAtMs });
+    for (const [creator, m] of mints) for (const [mint, createdAtMs] of m) this.#mints.add(creator, mint, createdAtMs);
   }
 
   /**
@@ -188,7 +190,7 @@ export class DeployerIndex {
     return {
       obs: { provider: 'deployer-index', slot: now.slot, receivedAt: now.receivedAt, quality: [], commitment: 'confirmed' },
       coverageFromMs,
-      mints: sorted(this.#mints.get(creator)).filter(([, t]) => t <= now.receivedAt).map(([mint, createdAtMs]) => ({ mint, createdAtMs })),
+      mints: [...this.#mints.entries(creator)].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).filter(([, t]) => t <= now.receivedAt).map(([mint, createdAtMs]) => ({ mint, createdAtMs })),
       rugs: known(this.#rugs.get(creator)),
       unjudged: known(this.#unjudged.get(creator)),
     };
@@ -200,11 +202,39 @@ export class DeployerIndex {
   }
 
   /**
+   * OOM-MINT (supervisor ruling): drops in memory what `snapshot(asOf, retainFromMs)` leaves out of a save: mints, rug
+   * labels and unjudged mints dated before `retainFromMs`, and lost creates seen before it. The worker passes its save's
+   * line (the H14 look-back plus a day), which is also where the rug check's reach ends (`rugCheckFromMs`: a day of rug
+   * windows behind the look-back), so no gate reads anything this drops. The index's own start is left as it is.
+   */
+  prune(retainFromMs: number): void {
+    const drop = <V>(m: Map<string, Map<string, V>>, ms: (v: V) => number): void => {
+      for (const [creator, inner] of m) {
+        for (const [k, v] of inner) if (ms(v) < retainFromMs) inner.delete(k);
+        if (inner.size === 0) m.delete(creator);
+      }
+    };
+    this.#mints.prune(retainFromMs);
+    drop(this.#rugs, (k) => k.at.receivedAt);
+    drop(this.#unjudged, (k) => k.at.receivedAt);
+    for (const [sig, l] of this.#lost) if (l.atMs < retainFromMs) this.#lost.delete(sig);
+  }
+
+  /**
    * PERSIST-1: the index as of `asOf` (at or after the last event observed), for a restart without a re-fetch.
    * Entries older than `retainFromMs` are left out, and the index's own start moves up to it, so the restored index
    * never claims to have watched what it no longer holds.
    */
-  snapshot(asOf: Moment, retainFromMs = Number.MIN_SAFE_INTEGER): DeployerIndexState {
+  /** MEM-PROBE: counts only: creators and their mints, rug and unjudged labels, create vias, lost creates. */
+  sizes(): { readonly creators: number; readonly mints: number; readonly mint_bytes: number; readonly rugs: number; readonly unjudged: number; readonly vias: number; readonly lost: number } {
+    let rugs = 0;
+    for (const inner of this.#rugs.values()) rugs += inner.size;
+    let unjudged = 0;
+    for (const inner of this.#unjudged.values()) unjudged += inner.size;
+    return { creators: this.#mints.creatorCount, mints: this.#mints.size, mint_bytes: this.#mints.heldBytes(), rugs, unjudged, vias: this.#createVias.size, lost: this.#lost.size };
+  }
+
+  snapshot(asOf: Moment, retainFromMs = Number.MIN_SAFE_INTEGER, o: { readonly mints?: boolean } = {}): DeployerIndexState {
     if (this.#last !== null && compareMoments(this.#last, asOf) > 0) throw new RangeError('the index has observed events after the snapshot moment');
     const keep = <V>(m: Map<string, Map<string, V>>, ms: (v: V) => number) =>
       [...m].map(([creator, inner]) => [creator, [...inner].filter(([, v]) => ms(v) >= retainFromMs)] as const)
@@ -213,14 +243,29 @@ export class DeployerIndex {
     const first = this.#first === null ? null : this.#first.receivedAt >= retainFromMs ? this.#first : { ...this.#first, receivedAt: retainFromMs };
     return {
       asOf, first, last: this.#last, seeded: this.#seeded,
-      mints: keep(this.#mints, (t) => t), rugs: keep(this.#rugs, (k) => k.at.receivedAt), unjudged: keep(this.#unjudged, (k) => k.at.receivedAt),
+      // Without `mints` (WORKER-GROW), the rows are left to `mintRows`, for a save that streams them.
+      mints: o.mints === false ? [] : [...this.mintRows(retainFromMs)], rugs: keep(this.#rugs, (k) => k.at.receivedAt), unjudged: keep(this.#unjudged, (k) => k.at.receivedAt),
       createVias: [...this.#createVias].sort(),
       lost: [...this.#lost].filter(([, l]) => l.atMs >= retainFromMs).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
     };
   }
 
-  /** PERSIST-1: an index restored from `snapshot`. A malformed state throws; the caller then discards the file. */
-  static restore(s: DeployerIndexState): DeployerIndex {
+  /**
+   * WORKER-GROW: the snapshot's mint rows one creator at a time (`snapshot(asOf, retainFromMs).mints` without building
+   * them all), in the same order, for a save that streams them.
+   */
+  *mintRows(retainFromMs = Number.MIN_SAFE_INTEGER): Generator<readonly [string, readonly (readonly [string, number])[]]> {
+    for (const creator of [...this.#mints.creators()].sort()) {
+      const inner = [...this.#mints.entries(creator)].filter(([, t]) => t >= retainFromMs);
+      if (inner.length > 0) yield [creator, inner] as const;
+    }
+  }
+
+  /**
+   * PERSIST-1: an index restored from `snapshot`. A malformed state throws; the caller then discards the file.
+   * `mintRows` (WORKER-GROW), when given, holds the mint rows in place of `s.mints`, read one at a time from a streamed file.
+   */
+  static restore(s: DeployerIndexState, mintRows?: Iterable<unknown>): DeployerIndex {
     const idx = new DeployerIndex();
     const moment = (m: unknown): Moment | null => {
       if (m === null) return null;
@@ -232,8 +277,8 @@ export class DeployerIndex {
     const asOf = moment(s.asOf);
     if (asOf === null) throw new RangeError('a snapshot needs its as-of moment');
     const pairs = <V>(rows: unknown, into: Map<string, Map<string, V>>, value: (v: unknown) => V, ms: (v: V) => number) => {
-      if (!Array.isArray(rows)) throw new RangeError('bad table');
-      for (const row of rows as unknown[]) {
+      if (!Array.isArray(rows) && !(typeof rows === 'object' && rows !== null && Symbol.iterator in rows)) throw new RangeError('bad table');
+      for (const row of rows as Iterable<unknown>) {
         if (!Array.isArray(row) || typeof row[0] !== 'string' || !Array.isArray(row[1])) throw new RangeError('bad row');
         const m = new Map<string, V>();
         for (const e of row[1] as unknown[]) {
@@ -249,7 +294,23 @@ export class DeployerIndex {
       if (!Number.isSafeInteger(v)) throw new RangeError('bad time');
       return v as number;
     };
-    pairs(s.mints, idx.#mints, ms, (t) => t);
+    if (mintRows !== undefined && Array.isArray(s.mints) && s.mints.length > 0) throw new RangeError('mint rows given twice');
+    // DEPLOYER-COMPACT: the mint rows straight into the compact index, checked as the other tables (same saved shape).
+    const rows = mintRows ?? s.mints;
+    if (!Array.isArray(rows) && !(typeof rows === 'object' && rows !== null && Symbol.iterator in rows)) throw new RangeError('bad table');
+    // A whole table of a known size is given room at once (no regrowth); streamed rows grow as they come.
+    if (Array.isArray(rows)) idx.#mints.reserve(rows.reduce((n: number, r: unknown) => n + (Array.isArray(r) && Array.isArray(r[1]) ? r[1].length : 0), 0), rows.length);
+    for (const row of rows as Iterable<unknown>) {
+      if (!Array.isArray(row) || typeof row[0] !== 'string' || !Array.isArray(row[1])) throw new RangeError('bad row');
+      const entries: [string, number][] = [];
+      for (const e of row[1] as unknown[]) {
+        if (!Array.isArray(e) || typeof e[0] !== 'string') throw new RangeError('bad entry');
+        const t = ms(e[1]);
+        if (t > asOf.receivedAt) throw new RangeError('an entry is dated after the snapshot moment');
+        entries.push([e[0], t]);
+      }
+      idx.#mints.setRow(row[0], entries);
+    }
     // A label keeps its kind exactly: a string, or null for a label that named no rule (RUG-1c).
     const known = (v: unknown): Known => {
       if (typeof v !== 'object' || v === null) throw new RangeError('bad label');
@@ -372,4 +433,53 @@ export const createsCoverage = (history: History, now: Moment, windowStartMs: nu
   const l = lastLossy as { at: number; detail: string } | null;
   if (l !== null && l.at >= windowStartMs) return { covered: false, detail: `${l.detail}, reported at ${l.at}, inside the window from ${windowStartMs}` };
   return { covered: true, fromMs: l === null ? firstStart : l.at };
+};
+
+/**
+ * WORKER-1d: coverage facts (in release order) cut to what still matters for every window that starts at or after
+ * `retainFromMs`, so a saved coverage history stops growing with time and restarts. Facts received at or after that
+ * point are all kept. Of the older ones, per stream and `via`: the latest `start` (what says the stream ran from before
+ * the window), and, when that watch still has an open gap at the retain point, every fact on it since that start (so
+ * the gap and the watch's state read exactly as before). Unreadable facts are kept (they hold coverage open). For any
+ * window start at or after `retainFromMs`, `createsCoverage` gives the same verdict on the result; only a `fromMs`
+ * earlier than the retain point can move (still at or before it), and the index never claims coverage from before its
+ * own retained start.
+ */
+export const pruneCoverage = <E extends Pick<MarketEvent, 'key' | 'moment' | 'value'>>(facts: readonly E[], retainFromMs: number): E[] => {
+  const keep = new Set<number>();
+  /** `${stream}|${via}` → the index of the latest start, and the indexes of every fact since it. */
+  const watches = new Map<string, { start: number | null; since: number[]; open: Set<string> }>();
+  facts.forEach((e, i) => {
+    if (e.moment.receivedAt >= retainFromMs) {
+      keep.add(i);
+      return;
+    }
+    const m = /^coverage:(.+):(start|gap|resume)$/.exec(e.key);
+    const v = payload(e.value);
+    const via = v !== null && typeof v['via'] === 'string' ? v['via'] : null;
+    const from = v === null ? undefined : v['fromSlot'];
+    const to = v === null ? undefined : v['toSlot'];
+    if (m === null || v === null || via === null || !(from === null || typeof from === 'bigint') || (m[2] === 'gap' && !(to === null || typeof to === 'bigint'))) {
+      keep.add(i);
+      return;
+    }
+    const key = `${m[1]}|${via}`;
+    const w = watches.get(key) ?? { start: null, since: [], open: new Set<string>() };
+    watches.set(key, w);
+    const id = String(from);
+    if (m[2] === 'start') {
+      w.start = i;
+      w.since = [];
+      w.open.clear();
+      return;
+    }
+    w.since.push(i);
+    if (m[2] === 'gap' && to === null) w.open.add(id);
+    else w.open.delete(id);
+  });
+  for (const w of watches.values()) {
+    if (w.start !== null) keep.add(w.start);
+    if (w.open.size > 0) for (const i of w.since) keep.add(i);
+  }
+  return facts.filter((_, i) => keep.has(i));
 };

@@ -124,6 +124,24 @@ describe('as-of store', () => {
     expect(store.lookup('k')).toMatchObject({ value: 'v3' });
   });
 
+  it('OOM-MINT: retire forgets every key whose last part is a retired id, and nothing else; a key recorded again starts afresh', () => {
+    const { clock, store } = setup();
+    store.record('gates/candles:M1', 'c', at(6, 0, 1), 'e3');
+    store.record('pump_amm:BuyEvent:P1', 'b', at(6, 0, 2), 'e4');
+    store.record('gates/candles:M2', 'c2', at(6, 0, 3), 'e5');
+    store.record('gates/candles:M1x', 'cx', at(6, 0, 4), 'e6');
+    store.record('gates/pool:M1', 'p', at(6, 0, 5), 'e8');
+    expect(store.retire(new Set(['M1', 'P1']))).toBe(3);
+    for (const k of ['gates/candles:M1', 'gates/pool:M1', 'pump_amm:BuyEvent:P1']) expect(store.lookup(k), k).toEqual({ ok: false, reason: 'missing' });
+    for (const k of ['k', 'gates/candles:M2', 'gates/candles:M1x']) expect(store.lookup(k).ok, k).toBe(true);
+    clock.advanceTo(at(11));
+    store.record('gates/candles:M1', 'again', at(11), 'e7');
+    expect((store.history('gates/candles:M1', at(0)) as readonly AsOfEntry[]).map((x) => x.source)).toEqual(['e7']);
+    // Recorded again, it is retired again; an id retired twice forgets nothing more.
+    expect(store.retire(new Set(['M1']))).toBe(1);
+    expect(store.retire(new Set(['M1']))).toBe(0);
+  });
+
   it('returns history inside the window, oldest first', () => {
     const { store } = setup();
     expect((store.history('k', at(0)) as readonly AsOfEntry[]).map((x) => x.source)).toEqual(['e1', 'e2']);
@@ -170,6 +188,41 @@ describe('engine reads only its Clock and Feed', () => {
     engine.drain();
     expect(seen).toEqual(['b']);
     expect(engine.records.filter((r) => r.type === 'fault').map((r) => r.type === 'fault' && r.fault)).toEqual(['out_of_order', 'out_of_order']);
+  });
+
+  it('OOM-MINT: what the strategy lets go is forgotten in the store right after the event that let it go, and the feed is told', () => {
+    const replay = createReplay([market('p', 1, 0, 0, `${POOL}:M1`, 'x'), market('q', 1, 0, 1, `${POOL}:M2`, 'y'), market('go', 2), market('after', 3)]);
+    const asked: string[] = [];
+    const told: string[][] = [];
+    let letGo: string[] = [];
+    const strategy: Strategy = {
+      onMarket: (e, ctx) => {
+        if (e.id === 'go') letGo = ['M1'];
+        if (e.id === 'go' || e.id === 'after') asked.push(`${e.id}:${String(ctx.lookup(`${POOL}:M1`).ok)}:${String(ctx.lookup(`${POOL}:M2`).ok)}`);
+        return [];
+      },
+      retired: () => letGo.splice(0),
+    };
+    const feed: Feed = { next: () => replay.feed.next(), retire: (ids) => void told.push([...ids]) };
+    runToEnd(replay, new Engine({ clock: replay.clock, feed, strategy, runner: { run: () => {} }, seed: 's', book: CONFIG }));
+    // Still there while the event that lets it go is judged; gone from the next event on; the other mint untouched.
+    expect(asked).toEqual(['go:true:true', 'after:false:true']);
+    expect(told).toEqual([['M1']]);
+  });
+
+  it('G4a: a key past its Forget age is forgotten at the hourly sweep after an event, as a replay does', () => {
+    const HOUR_SLOTS = 9_000;
+    const replay = createReplay([market('f', 1, 0, 0, 'read:funder:W', 'x'), market('k', 1, 0, 1, 'other:W', 'y'), market('mid', 1 + HOUR_SLOTS - 10), market('sweep', 2 + HOUR_SLOTS), market('after', 3 + HOUR_SLOTS)]);
+    const asked: string[] = [];
+    const strategy: Strategy = {
+      onMarket: (e, ctx) => {
+        if (e.id !== 'f' && e.id !== 'k') asked.push(`${e.id}:${String(ctx.lookup('read:funder:W').ok)}:${String(ctx.lookup('other:W').ok)}`);
+        return [];
+      },
+    };
+    runToEnd(replay, new Engine({ clock: replay.clock, feed: replay.feed, strategy, runner: { run: () => {} }, seed: 's', book: CONFIG, forget: (k) => (k.startsWith('read:funder:') ? 3_600_000 : null) }));
+    // Kept until the sweep after the event at which an hour has passed; the other key untouched.
+    expect(asked).toEqual(['mid:true:true', 'sweep:true:true', 'after:false:true']);
   });
 
   it('a lookup after now is refused inside the engine too', () => {
@@ -643,5 +696,45 @@ describe('log and runner contracts', () => {
     value.price = 2n;
     replay.advance();
     expect(replay.feed.next()).toMatchObject({ value: { price: 1n } });
+  });
+});
+
+describe('as-of store retention', () => {
+  // at(slot, tx, ix) with receivedAt from the slot: the horizon is measured on receipt time.
+  const fill = (store: AsOfStore, clock: SimClock, n: number) => {
+    for (let s = 1; s <= n; s++) {
+      clock.advanceTo(at(s, 0, 0));
+      store.record('k', `v${s}`, at(s, 0, 0), `e${s}`);
+      store.record('all', `v${s}`, at(s, 0, 0), `a${s}`);
+    }
+  };
+
+  it('answers every lookup at or after the horizon exactly as an unlimited store', () => {
+    const c1 = new SimClock(at(0, 0, 0));
+    const c2 = new SimClock(at(0, 0, 0));
+    const full = new AsOfStore(c1);
+    const kept = new AsOfStore(c2, (key) => (key === 'k' ? at(10, 0, 0).receivedAt - at(0, 0, 0).receivedAt : null));
+    fill(full, c1, 500);
+    fill(kept, c2, 500);
+    const horizon = at(500, 0, 0).receivedAt - (at(10, 0, 0).receivedAt - at(0, 0, 0).receivedAt);
+    for (let s = 1; s <= 500; s++) {
+      const m = at(s, 0, 0);
+      if (m.receivedAt >= horizon) expect(kept.lookup('k', m)).toEqual(full.lookup('k', m));
+      expect(kept.lookup('all', m)).toEqual(full.lookup('all', m));
+    }
+    expect(kept.lookup('k')).toEqual(full.lookup('k'));
+    // The past before the horizon is gone for the limited key only.
+    const h = kept.history('k', at(0, 0, 0));
+    expect(Array.isArray(h) && h.length).toBeLessThan(60);
+    const all = kept.history('all', at(0, 0, 0));
+    expect(Array.isArray(all) && all.length).toBe(500);
+  });
+
+  it('keeps everything without a retention, and a key with null keeps everything', () => {
+    const c = new SimClock(at(0, 0, 0));
+    const s = new AsOfStore(c, () => null);
+    fill(s, c, 200);
+    const h = s.history('k', at(0, 0, 0));
+    expect(Array.isArray(h) && h.length).toBe(200);
   });
 });

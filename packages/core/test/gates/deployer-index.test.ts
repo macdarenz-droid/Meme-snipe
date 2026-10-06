@@ -29,7 +29,7 @@ const contextWith = (rows: readonly Row[], base: Facts = passingFacts(), now: Mo
     store.record(k, v, m, `${k}@${m.slot}`);
   }
   clock.advanceTo(now);
-  return { now, lookup: (k, a) => store.lookup(k, a), history: (k, f, t) => store.history(k, f, t), ...(deployers ? { deployers } : {}) };
+  return { now, observedTip: now.slot, lookup: (k, a) => store.lookup(k, a), history: (k, f, t) => store.history(k, f, t), ...(deployers ? { deployers } : {}) };
 };
 const h14 = (ctx: GateContext, rug?: 'RUG-1'): readonly GateReason[] =>
   evaluateHardRejects(ctx, deps('live', session(), rug), request(), { stopAtFirst: false }).reasons.filter((r) => r.gate === 'H14' || r.neededBy === ('H14' as HardGate));
@@ -138,6 +138,26 @@ const started = (): DeployerIndex => {
 };
 
 describe('deployer index', () => {
+  it('OOM-MINT: prune drops in memory exactly what a save at the same line leaves out; mints inside the look-back still count', () => {
+    const idx = started();
+    const line = T - 15 * DAY_MS;
+    const ages = [2 * DAY_MS, 14 * DAY_MS, 15 * DAY_MS - 1_000, 15 * DAY_MS + 1_000, 20 * DAY_MS];
+    ages.forEach((age, k) => idx.observe(marketOf(`logs:pump:CreateEvent:A${k}`, createEvent(`A${k}`, DEV, T - age, SLOT - 6_000_000n + BigInt(k)), at(T - 29 * DAY_MS + k, SLOT - 6_000_000n + BigInt(k)))));
+    idx.observe(marketOf('rug:OldRug', { mint: 'OldRug', creator: DEV }, at(T - 16 * DAY_MS, SLOT - 3_000_000n)));
+    idx.observe(marketOf('rug:NewRug', { mint: 'NewRug', creator: DEV }, at(T - 3 * DAY_MS, SLOT - 600_000n)));
+    const saved = idx.snapshot(NOW, line);
+    const before = idx.factFor(DEV, NOW, T - 30 * DAY_MS);
+    idx.prune(line);
+    const after = idx.factFor(DEV, NOW, T - 30 * DAY_MS);
+    // What stays in memory is what the save at that line holds.
+    expect(after.mints.map((m) => [m.mint, m.createdAtMs])).toEqual(saved.mints.flatMap(([, rows]) => rows).sort(([a], [b]) => (a < b ? -1 : 1)));
+    expect(after.mints.map((m) => m.mint)).toEqual(['A0', 'A1', 'A2']);
+    expect(after.rugs.map((r) => r.mint)).toEqual(['NewRug']);
+    // Every mint inside the H14 look-back (14 days) still counts, as before the prune.
+    const inside = (f: typeof before) => f.mints.filter((m) => m.createdAtMs >= T - 14 * DAY_MS).map((m) => m.mint);
+    expect(inside(after)).toEqual(inside(before));
+  });
+
   it('counts each create once across logs and fetched transactions, per creator, as of now', () => {
     const idx = new DeployerIndex();
     idx.observe(marketOf(`logs:pump:CreateEvent:${MINT}`, createEvent(MINT, DEV, CREATED_AT, SLOT - 20_000n), at(CREATED_AT, SLOT - 20_000n)));
@@ -439,7 +459,7 @@ describe('leak test with the deployer index in the engine', () => {
         onMarket: (e, ctx) => {
           idx.observe(e);
           if (e.key !== 'tick') return [];
-          const r = evaluateHardRejects({ now: ctx.now, lookup: ctx.lookup, history: ctx.history, deployers: idx }, deps('backtest'), request(), { stopAtFirst: false });
+          const r = evaluateHardRejects({ now: ctx.now, observedTip: ctx.now.slot, lookup: ctx.lookup, history: ctx.history, deployers: idx }, deps('backtest'), request(), { stopAtFirst: false });
           return [{ action: null, reasons: [...r.reasons.map((x) => `${x.gate}:${x.code}:${x.input ?? ''}:${x.detail}`), `pass=${r.pass}`] }];
         },
       };

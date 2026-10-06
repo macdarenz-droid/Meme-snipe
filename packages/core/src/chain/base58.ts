@@ -5,6 +5,7 @@ import { DecodeError } from './errors.ts';
 const ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 const INDEX = new Int8Array(128).fill(-1);
 for (let i = 0; i < ALPHABET.length; i++) INDEX[ALPHABET.charCodeAt(i)] = i;
+const ALPHABET_CODES = Array.from(ALPHABET, (c) => c.charCodeAt(0));
 
 export const encodeBase58 = (bytes: Uint8Array): string => {
   let zeros = 0;
@@ -23,9 +24,10 @@ export const encodeBase58 = (bytes: Uint8Array): string => {
       carry = (carry / 58) | 0;
     }
   }
-  let out = '1'.repeat(zeros);
-  for (let i = digits.length - 1; i >= 0; i--) out += ALPHABET[digits[i]!];
-  return out;
+  const codes = new Array<number>(zeros + digits.length);
+  for (let i = 0; i < zeros; i++) codes[i] = 49; // '1'
+  for (let i = 0; i < digits.length; i++) codes[zeros + i] = ALPHABET_CODES[digits[digits.length - 1 - i]!]!;
+  return String.fromCharCode(...codes);
 };
 
 export const decodeBase58 = (text: string): Uint8Array => {

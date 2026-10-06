@@ -10,8 +10,10 @@ import type { MicroUsd } from '../../core/src/units/index.ts';
 import type { HttpClient } from '../src/providers/index.ts';
 import type { PaperTrade } from '../src/run/account.ts';
 import {
-  Summarizer, buildSummary, emptySummaryState, foldLine, foldNewLines, foldText, haltCode, nextSummaryDelay, signSummary, summaryBody, type SummaryInputs,
+  SUMMARY_AFTER_START_MS, SUMMARY_MIN_GAP_MS, Summarizer, SummaryClock, buildSummary, emptySummaryState, foldLine, foldNewLines, foldText, haltCode,
+  nextSummaryDelay, signSummary, summaryBody, type SummaryInputs,
 } from '../src/run/summary.ts';
+import { ManualTimers } from '../src/scheduler/timers.ts';
 import { MINT, makeWorker, passingMarket, tempState } from './worker-harness.ts';
 
 // 2026-10-04 12:00 Melbourne (AEDT, UTC+11) = 01:00 UTC.
@@ -194,7 +196,7 @@ describe('the summary', () => {
     expect(s.candidates.refused_by_reason).toHaveLength(SUMMARY_TOP_REASONS);
     expect(s.candidates.refused_other).toBe(2);
     expect(s.provider_credits).toEqual([{ provider: 'helius', used_since_boot: 1234, monthly: 1_000_000 }]);
-    expect(s.worker).toEqual({ git_sha: 'a'.repeat(40), entry_rule: 'S0', uptime_s: 3600, starts: 1, recorder: 'on' });
+    expect(s.worker).toEqual({ git_sha: 'a'.repeat(40), entry_rule: 'S0', uptime_s: 3600, starts: 1, recorder: 'on', restarts: { planned: 0, deploy: 0, unplanned: 0 }, exits: [], crash_sites: [], last_death: null });
     const b = summaryBody(s);
     expect('body' in b && checkSummary(b.body).ok).toBe(true);
     // A final summary leaves out trades still open from another day.
@@ -273,6 +275,61 @@ describe('the worker-side guard', () => {
   });
 });
 
+describe('a watchdog from before MEM-PROBE', () => {
+  it('refuses the probe samples: the day goes again without them, keeping the rest of the last death', async () => {
+    const dir = tempState();
+    const bodies: string[] = [];
+    const logs: string[] = [];
+    const base = buildSummary(inputs());
+    const death = { at: '2026-10-05T19:36:33.000Z', uptime_s: 1_808, heap_used_mb: 563, heap_limit_mb: 572, spaces: [], sample: null };
+    const recent = [{ at: '2026-10-05T19:35:33.000Z', heap_used_mb: 527, old_mb: 450, large_object_mb: 72, saving: false, counts: [{ code: 'store_keys', count: 1 }] }];
+    const withProbe = { ...base, worker: { ...base.worker, restarts: { planned: 0, deploy: 0, unplanned: 1 }, exits: [], crash_sites: [], last_death: { ...death, recent } } };
+    const sz = new Summarizer({
+      journalPath: join(dir, 'journal.jsonl'), stateDir: dir,
+      http: (async (req) => (bodies.push(String(req.body)), { status: String(req.body).includes('"recent"') ? 400 : 200, header: () => null, text: '{"ok":true,"written":true}' })) as HttpClient,
+      watchdogUrl: 'https://w.test', key: 'k', now: () => NOON, log: (l) => void logs.push(l), live: () => inputs(), build: () => withProbe,
+    });
+    await sz.tick();
+    expect(bodies).toHaveLength(2);
+    expect(JSON.parse(bodies[0]!).worker.last_death.recent).toEqual(recent);
+    expect(JSON.parse(bodies[1]!).worker.last_death).toEqual(death);
+    expect(logs).toEqual([`Summary for ${DAY} refused; sent again without the memory probe samples.`]);
+  });
+});
+
+describe('a watchdog from before RESTART-CAUSE (review of #209)', () => {
+  it('refuses the new keys: the day goes again without them, once; any other failure is not resent', async () => {
+    const dir = tempState();
+    const bodies: string[] = [];
+    const logs: string[] = [];
+    let status = (body: string): number => (body.includes('"crash_sites"') ? 400 : 200);
+    const sz = new Summarizer({
+      journalPath: join(dir, 'journal.jsonl'), stateDir: dir,
+      http: (async (req) => (bodies.push(String(req.body)), { status: status(String(req.body)), header: () => null, text: '{"ok":true,"written":true}' })) as HttpClient,
+      watchdogUrl: 'https://w.test', key: 'k', now: () => NOON, log: (l) => void logs.push(l), live: () => inputs(),
+    });
+    await sz.tick();
+    // MEM-SUMMARY: first without the death's memory (still refused by this watchdog), then without the restart counts.
+    expect(bodies).toHaveLength(3);
+    expect(Object.keys(JSON.parse(bodies[0]!).worker)).toEqual(expect.arrayContaining(['restarts', 'exits', 'crash_sites', 'last_death']));
+    expect(Object.keys(JSON.parse(bodies[1]!).worker).sort()).toEqual(['crash_sites', 'entry_rule', 'exits', 'git_sha', 'recorder', 'restarts', 'starts', 'uptime_s']);
+    const third = JSON.parse(bodies[2]!) as { worker: Record<string, unknown> };
+    expect(Object.keys(third.worker).sort()).toEqual(['entry_rule', 'git_sha', 'recorder', 'starts', 'uptime_s']);
+    expect(logs).toEqual([`Summary for ${DAY} refused; sent again without the memory at the last death.`, `Summary for ${DAY} refused; sent again without the restart counts.`]);
+    // A refusal of the old shape too is not resent again; a server error is not resent at all.
+    bodies.length = 0;
+    logs.length = 0;
+    status = () => 400;
+    await sz.tick();
+    expect(bodies).toHaveLength(3);
+    expect(logs.at(-1)).toBe(`Summary for ${DAY} not accepted: HTTP 400.`);
+    bodies.length = 0;
+    status = () => 500;
+    await sz.tick();
+    expect(bodies).toHaveLength(1);
+  });
+});
+
 describe('a summary that throws', () => {
   it('is caught and logged: tick resolves (journal path a directory, or the worker\'s state unreadable)', async () => {
     const dir = tempState();
@@ -345,8 +402,11 @@ describe('the post', () => {
     expect(posts[1]!.t).toBeGreaterThan(posts[0]!.t);
   });
 
-  it('posts every 30 minutes and just after Melbourne midnight', () => {
-    expect(nextSummaryDelay(NOON, 1_800_000)).toBe(1_800_000);
+  it('posts on the Melbourne :00 and :30 slots (plus a minute) and just after Melbourne midnight', () => {
+    // 12:00 Melbourne: the next post is 12:01; from 12:01 itself, 12:31; from 12:17, 12:31.
+    expect(nextSummaryDelay(NOON, 1_800_000)).toBe(60_000);
+    expect(nextSummaryDelay(NOON + 60_000, 1_800_000)).toBe(1_800_000);
+    expect(nextSummaryDelay(NOON + 17 * 60_000, 1_800_000)).toBe(14 * 60_000);
     const late = Date.parse('2026-10-04T12:50:00.000Z');
     expect(nextSummaryDelay(late, 1_800_000)).toBeGreaterThanOrEqual(10 * 60_000 + 5_000);
     expect(nextSummaryDelay(late, 1_800_000)).toBeLessThanOrEqual(10 * 60_000 + 6_000);
@@ -413,5 +473,112 @@ describe('the summary timer', () => {
     const after = posts.length;
     await new Promise((r) => setTimeout(r, 100));
     expect(posts.length).toBe(after);
+  });
+});
+
+// SUMMARY-CLOCK: the posts follow the Melbourne wall clock, not the process's start, and a start soon after a post does
+// not post again. Each worker process is a Summarizer and a SummaryClock on the same state directory (summary.json),
+// stopped when the next one starts, on one manual clock moved in small steps.
+describe('SUMMARY-CLOCK: a worker that restarts still posts', () => {
+  // 2026-10-05 18:00 Melbourne (AEDT, UTC+11).
+  const EVENING = Date.parse('2026-10-05T07:00:00.000Z');
+  const HALF = 1_800_000;
+  type Post = { day: string; final: boolean; at: number };
+
+  const simulate = async (o: { from: number; hours: number; everyMs: number; stepMs: number; guard?: boolean }) => {
+    const dir = tempState();
+    const timers = new ManualTimers(o.from);
+    const posts: Post[] = [];
+    const http: HttpClient = async (req) => {
+      const b = JSON.parse(req.body!) as { day: string; final: boolean; generated_at: string };
+      posts.push({ day: b.day, final: b.final, at: Date.parse(b.generated_at) });
+      return { status: 200, header: () => null, text: '{"ok":true,"written":true}' };
+    };
+    // Each step waits for the posts it started (file and HTTP work is real I/O), so a process stops between posts.
+    const inflight: Promise<void>[] = [];
+    const flush = async () => {
+      while (inflight.length > 0) await inflight.shift();
+    };
+    const end = o.from + o.hours * 3_600_000;
+    let starts = 0;
+    while (timers.now() < end) {
+      starts++;
+      // Each process writes its start line, as the worker does (the day's counts the final post is made from).
+      appendFileSync(join(dir, 'journal.jsonl'), `${JSON.stringify({ seq: starts, ts: at(timers.now()), boot: `b${starts}`, kind: 'start', git_sha: 'a'.repeat(40), entry_rule: 'S0', recorder: true })}\n`);
+      const sz = new Summarizer({
+        journalPath: join(dir, 'journal.jsonl'), stateDir: dir, http, watchdogUrl: 'https://w.test', key: 'k', now: () => timers.now(), log: () => {},
+        live: () => inputs(),
+      });
+      const clock = new SummaryClock({ timers, everyMs: HALF, tick: () => {
+        const p = sz.tick();
+        inflight.push(p);
+        return p;
+      }, lastPostedMs: () => (o.guard === false ? null : sz.lastPostedMs) });
+      clock.start();
+      const stopAt = Math.min(end, timers.now() + o.everyMs);
+      while (timers.now() < stopAt) {
+        timers.advance(Math.min(o.stepMs, stopAt - timers.now()));
+        await flush();
+      }
+      clock.stop();
+      await flush();
+    }
+    return { posts, starts };
+  };
+  /** Every :01 and :31 Melbourne in [from, to). */
+  const slots = (from: number, to: number) => {
+    const out: number[] = [];
+    for (let t = from - (from % HALF) + 60_000; t < to; t += HALF) if (t >= from) out.push(t);
+    return out;
+  };
+
+  it('restarted every 20 minutes for 6 hours, it posts at every half-hour it is up', async () => {
+    const { posts, starts } = await simulate({ from: EVENING, hours: 6, everyMs: 20 * 60_000, stepMs: 5_000 });
+    expect(starts).toBe(18);
+    const want = slots(EVENING, EVENING + 6 * 3_600_000);
+    expect(want).toHaveLength(12);
+    for (const t of want) expect(posts.some((p) => p.at === t), new Date(t).toISOString()).toBe(true);
+    // Plus the one after the first start (nothing posted before it); the later starts are within 10 minutes of a post
+    // or 3 minutes after one: 18:03 is 2 minutes after 18:01, so it is skipped too.
+    expect(posts.every((p) => !p.final)).toBe(true);
+  });
+
+  it('restarted every 5 seconds, it posts at most once per 10 minutes, and still on the half-hours', async () => {
+    const { posts, starts } = await simulate({ from: EVENING, hours: 2, everyMs: 5_000, stepMs: 1_000 });
+    expect(starts).toBe(1440);
+    for (const t of slots(EVENING, EVENING + 2 * 3_600_000)) expect(posts.some((p) => p.at === t), new Date(t).toISOString()).toBe(true);
+    for (let k = 1; k < posts.length; k++) expect(posts[k]!.at - posts[k - 1]!.at).toBeGreaterThanOrEqual(SUMMARY_MIN_GAP_MS);
+  });
+
+  it('restarted every 4 minutes, a start posts 3 minutes in only when nothing was taken in the 10 minutes before (kept in summary.json)', async () => {
+    const { posts } = await simulate({ from: EVENING, hours: 2, everyMs: 4 * 60_000, stepMs: 5_000 });
+    const onSlot = (t: number) => t % HALF === 60_000;
+    const afterStart = posts.filter((p) => !onSlot(p.at));
+    expect(afterStart.length).toBeGreaterThan(0);
+    for (const p of afterStart) {
+      expect((p.at - EVENING) % (4 * 60_000)).toBe(SUMMARY_AFTER_START_MS);
+      const before = posts.filter((q) => q.at < p.at).at(-1);
+      if (before !== undefined) expect(p.at - before.at).toBeGreaterThanOrEqual(SUMMARY_MIN_GAP_MS);
+    }
+    for (const t of slots(EVENING, EVENING + 2 * 3_600_000)) expect(posts.some((p) => p.at === t)).toBe(true);
+    // Without the check every start would post: the check is what holds it to one per 10 minutes.
+    const unguarded = await simulate({ from: EVENING, hours: 2, everyMs: 4 * 60_000, stepMs: 5_000, guard: false });
+    const gaps = unguarded.posts.slice(1).map((p, k) => p.at - unguarded.posts[k]!.at);
+    expect(Math.min(...gaps)).toBeLessThan(SUMMARY_MIN_GAP_MS);
+  });
+
+  it('across Melbourne midnight, restarting or not, the day that ended gets exactly one final post, first after midnight', async () => {
+    // 2026-10-05 22:00 to 2026-10-06 02:00 Melbourne.
+    const from = Date.parse('2026-10-05T11:00:00.000Z');
+    const midnight = Date.parse('2026-10-05T13:00:00.000Z');
+    for (const everyMs of [20 * 60_000, 4 * 3_600_000]) {
+      const { posts } = await simulate({ from, hours: 4, everyMs, stepMs: 5_000 });
+      const finals = posts.filter((p) => p.final);
+      expect(finals.map((p) => [p.day, p.final]), `restart every ${everyMs} ms`).toEqual([['2026-10-05', true]]);
+      // Just after midnight; a process that starts at midnight itself posts it on the first slot, 00:01.
+      expect(finals[0]!.at).toBe(everyMs === 20 * 60_000 ? midnight + 60_000 : midnight + 5_000);
+      expect(posts.filter((p) => p.at >= midnight)[0]).toEqual(finals[0]);
+      expect(posts.filter((p) => p.at >= midnight).slice(1).every((p) => p.day === '2026-10-06' && !p.final)).toBe(true);
+    }
   });
 });
