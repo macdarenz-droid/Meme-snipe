@@ -255,6 +255,7 @@ Supervisor: session_01Ec4DXEAqLxM6M1WGVQG5se (same account as every worker). Hou
 Parked with no card: STATS builder 01Qy4q1, SANDBOX-TIDY 01MoXXP, DATA-STORE 018c27u, OPS-SUMMARY 01HHYJq. Data reviewer 01XAwN7: ARCHIVE-SAFE reviews, then ARCHIVE-WATCH.
 
 **Log (Melbourne time)**
+- 11:16 AM **#245 facts FAIL at 62ffca8d** (01NGXuv; the c1cf0787 base merge was also tested). B1: prior-rug and unjudged labels count by knownAtMs = at.receivedAt (hard.ts:551/:545, soft.ts:77), so the label clamp lets H14 miss a known rugger for seconds after a restart. B2: the receipt-time clamp is unbounded in code. Rulings (fail closed): labels are NOT clamped and restore checks them by moment (slot first); any clamp over CHAIN_SKEW_MS (60 s) refuses the save, named and logged; tests at 9/11 s and 59/61 s; DECISIONS updated (factFor own edge; N2). Order: SAVE-SPIKE first (new branch claude/save-spike from 8107eb79), then the #245 rework.
 - 11:14 AM **Crash 27 on 5efb9ae0** at 11:08:51, uptime 1,809 s. **First MEM-PROBE data** (last_death.recent, 10 samples):
   - Trigger: the 5-min save. The last sample has saving:true (heap 428, old 412, large-object 8); the death record has large-object 107, so the save allocates about 100 MB at once on top of old space. The 00:03:49 save also jumped the heap 382 → 409.
   - Old-space baseline: about 359 MB at about 20 min uptime, growing about 10 MB/min.
