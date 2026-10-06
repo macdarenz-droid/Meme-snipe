@@ -746,6 +746,14 @@ Supervisor rulings, late evening:
 - **2026-10-03 · Rate buckets are sliding windows.** Provider limits are windows: Jupiter documents a 60 s sliding window, and Helius counts requests per second. A refill-rate token bucket either bursts past such a window or wastes part of it. Each provider bucket grants at most `limit` per window, keeps `floors[c]` grants free for higher classes, and has optional caps by class or lane. RugCheck runs at one request per 4.5 s, the only rate verified never to hit a 429.
 - **2026-10-03 · At 70% of the monthly credits only P0 requests run, and the open position stays watched.** New requests of P1–P3 are refused, P2–P3 stream watches are dropped, and new P1–P3 watches are refused. Existing P0–P1 watches stay open. The card says all non-exit traffic halts, but the open position's stream is what triggers its exit. Closing it would leave an exit with no fresh state, so keeping it is the safe reading of "exits are never starved". Stream bytes are still metered.
 - **2026-10-03 · The month's credit use is loaded at start and reported on every spend.** A restart must never reset the 70% halt. The scheduler takes `creditsUsed` and calls `onSpend` with each new total. Persisting it is WORKER-1's job.
+- **2026-10-05 · Helius runs until Helius refuses for credits (HELIUS-EXHAUSTED; owner decision, golden rule).** The owner's call: use the Helius account in full, and know when it is used up. So the worker's own count no longer stops Helius, and Helius's own answer does.
+  - **No monthly halt of our own on Helius.** The worker's Helius scheduler is `HELIUS_WORKER` (sources.ts): `HELIUS_FREE` without its `budget`. Its count runs from the UTC month and cannot see what else the account spent, so its 70% halt could neither stop in time nor mark the account's real end. The count is still kept in `credits.json` and reported by class; `HELIUS_FREE.budget` stays for the planning figures (seed-start.ts, budget.ts). The other providers keep their halts. The 2026-10-03 halt entry above now applies to them only.
+  - **"Used up" is told apart from a rate limit.** Helius answers an account with no credits left with 429 "max usage reached" (Helius docs: billing, rate limits and the billing FAQ). `refusal429` (providers/http.ts) reads the body: that answer is a `ProviderError` of kind `exhausted`, and the scheduler's `exhausted()` holds every class but P0 for `exhaustedRecheckMs` (10 minutes, `EXHAUSTED_RECHECK_MS`), refusing queued requests too. Any other 429 stays a rate limit (`penalize`, the window full). All three Helius HTTP clients use it: the RPC client (`RpcHttp`), the fact reads (`FactRpc`) and the dry run (`DryRunRpc`). The seed's retry list does not include `exhausted`, so it is never retried in a loop.
+  - **The re-check.** After the hold, calls go out again. The first one that succeeds ends the state; another "used up" answer holds again for 10 minutes. P0 is never held: exit prices come from Alchemy (WATCH-1's second path), and a P0 call that reaches Helius gets its answer.
+  - **Entries halt by name** while the state lasts: `helius credits exhausted` (summary halt code `helius-exhausted`), never an evidence refusal; no gate changes.
+  - **The summary says when.** Each provider's credits carry `by_class` (P0–P3 since boot; stream bytes count as P3). Helius's also carry `exhausted` (`count` since boot and `first_at`, null at none). A watchdog from before them refuses with 400; the worker sends the day again without them, then also without RESTART-CAUSE's keys, as #209 did. The halt count in `halts` spans restarts (the journal); the `exhausted` count is since boot.
+  - **Metering.** getProgramAccounts is metered at its published 10 credits (`HELIUS_GPA_CREDITS`, now in scheduler/limits.ts); it was metered at 1, so the count ran below Helius's bill.
+  - No saved state changes. Tests (each failing before; `helius-exhausted.test.ts`): the "used up" 429 against a rate-limit 429 in the RPC client (kind, state, window), the fact reads and the dry run; the hold refuses P1–P3 (queued too) and serves P0, re-checks at 10 minutes, ends on a success and repeats on another refusal with the first time kept; no monthly halt on Helius whatever `credits.json` holds, Alchemy's kept; getProgramAccounts at 10; a worker halts entries by name and lifts it; the summary's fields and the watchdog's guard; the resend chain. Mutants killed (20): every 429 read as used up; no mark; a used-up answer filling the window; each of the three clients left on the old 429 path; the hold ignored at the check or in the queue; never cleared; the first time overwritten; a short re-check; the monthly halt kept; Helius's plan figure dropped from the quota report; getProgramAccounts at 1; no named halt; no halt code; no count in the summary; no detail resend; the count accepted on any provider or without its time.
 - **2026-10-03 · A reconnect holds the release point below the missed slots for up to 3 s.** While a stream's backfill runs (`getSignaturesForAddress` since the last seen signature for each log watch, `getAccountInfo` for each account watch; always at P0 for P0–P1 watches, because they serve the open position and the 70% halt must not starve them), the release point stays below the first slot it may have missed. Backfilled facts therefore arrive on time and are marked `backfilled`. After 3 s the hold ends, and later backfill answers follow the late rule. With no tip progress for 2 s, everything held is released (a stale feed never blocks the engine), and a `feed:status:<provider>` fact reports each drop, refusal and recovery.
 - **2026-10-03 · The worker imports core by relative path.** That adds no dependency and no lockfile change. Switching to a `workspace:*` link is the supervisor's call.
 
@@ -813,6 +821,11 @@ Supervisor rulings, late evening:
 - **2026-10-04 · EXIT-1f: restored exit state is checked per field, and a fallback plan never restarts the clock.** A saved plan is refused unless its amounts are bigints and its open time a finite number (a bad open time made the elapsed time NaN, so the time stops never fired). A saved tracker is checked per field; one with a field missing (defaulting a field whose meaning a restore cannot check would be a guess; every deployed tracker has them all) or of the wrong type (it threw in the exit rules and stopped every position's management) is refused, logged (`restore tracker refused`) and replaced by a new tracker, keeping the plan (partials come back from the book). A position whose plan is missing or refused falls back to the plan from its fill, opened at the moment the ledger booked the entry fill (its first `open` position event's `ts`, passed in the restore fact, so a replay of the recording agrees): exact, and a restart cannot extend T_flat or T_max. The one exception is a booking made during a boot's reconcile (a fill found by a status read after downtime may have landed earlier): placed from the journal (the booking falls between that boot's start line and its reconcile line, `run/booked.ts`; the journal is streamed in 1 MB chunks, every line is checked to be a whole record and only start and reconcile lines are parsed, so a start after a 48 h run stays fast and small, EXIT-1g N7; the journal's own open reads only its last two lines, from the end in 64 KB chunks, EXIT-1g review N1), it opens at the earlier of its booking and its slot dating. A booking the journal cannot place with certainty stays exact and the log says why; nothing new is saved. A live booking is never moved to the slot dating, since that would fire time stops up to about 40% early and break parity with the backtest (supervisor ruling). Only when that moment is missing is the fill dated from its slot: open time = now − (current slot − fill slot) × `maxSlotMs`, 500 ms, an upper bound on mainnet's mean slot time (350 ms target since epoch 1020, about 360 ms measured, 400 ms before; a stretch of slower slots would make this bound too small, which is why it is only the fallback); before the first slot that fallback waits for it (nothing can be sent before then either).
 - **2026-10-04 · EXIT-1g: a position without its own plan goes into sell-only recovery (external audit M7, supervisor ruling).** When the saved plan is missing or refused, the saved tracker is refused, or a fill has no decision seed, the position's stop, trail, peak and flat target cannot be recovered, and holding it under a substituted plan (the policy-maximum stop, a fresh tracker, a new holding period) would weaken its protection. It is never held that way: the whole holding exits at the next fresh executable quote on the normal ladder (an `emergency` full exit remembered like EXIT-1c's, waiting visibly while no quote exists), and the log says why (`recovery exit`, with `no saved plan`, `saved plan refused`, `saved tracker refused` or `no decision seed`). The fallback plan only describes the position; its open time (EXIT-1f) is information, so the slot-time bound no longer decides any protection. Its entry price comes from the book: cost over the tokens bought, never over what is left after a partial. The recovery lasts until the position closes (review B1): its reason is saved with the position's exit state (`recovery` in exits.json, the bot's own decision data, approved under the stored-data ruling), so taking the recovery exit (which clears the remembered full exit) and an exit that then ends without selling everything, in this process or across a restart, never leaves the position held under the fallback plan: whenever it is open with no exit owner, the emergency full exit is armed again and said (`recovery exit` with the saved reason). A saved reason that is not a string refuses the saved exit, so the position stays in recovery.
 - **2026-10-04 · EXIT-1h: an entry decision's plan inputs are saved before its intent is booked (supervisor ruling).** The entry plan is made on the market event after the fill, so a kill between the fill and that event left a filled position with no plan, which EXIT-1g sends to sell-only recovery. Each entry decision's seed (mint, universe, notional, stop, entry reserve) is now written to `entry-seeds.json` right after the engine step that decided it and before the desk books anything that step decided (the WORKER-ORDER order: the durable record first, then the ledger), so a filled entry always has its seed on disk. A restart restores the seeds and rebuilds the real plan, dated at the fill as the ledger booked it (never the restart's clock). A seed is dropped when its plan is made or its entry ends without a fill. The file holds only the bot's own decision data (approved under the stored-data ruling). Review fixes: the saved plans are written before the seeds file in every step (exits.json, then entry-seeds.json, both before the desk books), so a seed leaves the disk only once its plan is on it (B1: the old order left neither after a kill between the two writes). A saved seed that fails the per-field check is refused and logged (`restore seed refused`), and its position goes to sell-only recovery with the reason `saved seed refused` (B2). A restored seed whose intent is not in the rebuilt book never will be, so it is dropped at the restore's first step and logged (`restored seed dropped`); the file no longer grows by one per such kill (N1). Follow-up (owner golden rule): the plans are written before the desk books the step, so a kill between the two can leave a saved plan for a position the ledger never booked; a restored saved exit whose position is not in the rebuilt book is dropped at the restore's first step and logged (`restored exit dropped`), so exits.json keeps only booked positions.
+- **2026-10-05 · EXIT-KEEP: what a restart keeps for an open position's exit (AUDIT-RM3, owner golden rule).**
+  - **Trade evidence (B2), rebuilt on PERSIST-3 (supervisor ruling).** PERSIST-3 (#131) saves each held position's deployer, the deployer's sales with their ids and the flow minutes with their ids (`deployer`, `deployerSales`, `flow` in exits.json), and refuses missing, malformed (a negative sale amount included) or after-the-restore inputs. EXIT-KEEP keeps that shape and adds: flow minutes and their ids older than 30 minutes are dropped (a negative run needs 5; the constructor refuses a policy whose run would not fit); a mint's inputs are restored once, so two saved exits on one mint never count a sale or a flow minute twice (PERSIST-3 alone doubled them); and one recovery mechanism. **Unified recovery:** inputs that do not come back put the position in EXIT-1g's sell-only recovery (`recovery: "exit inputs not restored (<why>)"`, the emergency full exit armed), not in PERSIST-3's separate global-ladder flatten with its `inputsLost` flag. The recovery reason is saved, so every later restart keeps the position there even though the inputs it saves since are well formed; a refused plan (inputs never read) is in recovery the same way (`saved plan refused`). A file with PERSIST-3's `inputsLost` flag reads as `lost at an earlier restart`.
+  - **Downtime trades (B2, not in this change).** Trades during the downtime are not seen: closing that gap needs #166's trades fill from the held pool's last seen slot, and a lossy fill must count as unknown evidence and exit. Until it lands, the evidence kept is what was seen before the kill plus what is seen after the restart.
+  - **Re-made exit after a kill (B3).** A kill after the paper world saved an exit attempt but before the ledger booked it left the book without the intent, so the re-made exit had the same id and paper signature, and the world ignored it as a rebroadcast: the intent waited out its blockhash (about 150 slots) and burned a ladder rung. A broadcast of a signature lost in a restart is now a new send (a real re-made exit is a new transaction).
+  - **Blocked retries (N1).** The tracker counts a blocked-exit retry when it is decided, and the plans reach disk before the ledger books the step. Each retry's intent id is saved (`retryIds`); a restart keeps only the retries the ledger booked, and a lost retry, already due when decided, is due again at once.
 - **2026-10-03 · EXIT-1b: sell before reclaiming rent; a bounded sell-only recovery path.** The exit decision says whether the order may also close the token account (`closeAccount`): only a full exit of a clean account (balance equal to our quantity) with no failed close before. Otherwise it sells only, and the rent stays locked until a later close succeeds. Dust or tokens someone sent us never block the sale: our quantity is sold and the account left open. Once a sell-and-close is resolved failed at the close (`Holding.closeFailed`, classified by TX-1b), later exits sell only, within the same per-position ladder and blocked retries, so the recovery path is bounded. Worst-case reservations keep counting the full rent.
 
 ## Live screens on the phone (APP-2, `apps/web/src/api/server.ts`, `poll.ts`, `connection.ts`)
@@ -1883,7 +1896,7 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - Over a 31-day month that is 460,040, leaving 239,960 for everything else. The old 20,000 a day (620,000 a month) could not fit even with no other reads.
   - The fills now get `FILL_SHARE` 0.5 of that remainder: `FILL_CREDITS_PER_DAY` = (700,000 − 31 × 14,840) × 0.5 / 31 = 3,870 a day. The other half stays for the reads the code does not cap: socket bytes, migration fetches, the per-candidate fact reads.
   - The 0.5 is provisional. The supervisor sets it from the shakedown's quota report (credits by class).
-  - Whatever is left in the fill budget, the scheduler's 70% halt still refuses non-exit calls.
+  - Helius has no monthly halt of the worker's own (`HELIUS_WORKER`, 2026-10-04 above): whatever is left in the fill budget, Helius's own refusal for used-up credits (HELIUS-EXHAUSTED) holds every non-exit call.
   - Test: `s0-zero.test.ts` checks each of the five figures and that 31 × (14,840 + fills) stays under 700,000 with at least the fills' share left over.
 - **2026-10-05 · Risk: the catch-ups may need more than the fill budget (golden rule: count it as real).**
   - A catch-up costs one signature page plus one credit per transaction between the migration and the subscribe.
@@ -2164,6 +2177,17 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
 - **2026-10-05 · The gates and H15's simulation judge the size risk will use.** The strategy judged every gate and simulation at q_min, and risk then sized the entry. With the owner's step-up approved (`sizeStepUpApproved`) and no drawdown, risk sizes above q_min (`evaluate.ts`: `atMinimum` false, the size from its caps), so the decision refused every entry as `size-mismatch` (gates judged one size, risk another). This is fail-closed, but it would have stopped all trading the moment the owner raised sizes. Today it is masked: the paper wallet's NAV starts about 12% under its high-water mark (the ops floor, RISK-LATCH-2's open F3), so the drawdown reset keeps every size at q_min. Before the gates run, `#riskSize` now asks risk (the same `evaluateEntry` call the decision makes) which size it would choose at the stop for that size. The stop depends on the size (the executable price after the buy), and risk's caps depend on the stop, so it asks again at the stop of the size risk chose, up to three times, until the size settles. That size and its notional go to the gates, and `cand.spend` sends it to the simulation (READ-COHERENT's batch reads the simulation at it). This probe decides nothing, books nothing and latches nothing; its trips and reasons are dropped. Anything it cannot judge (no account, no stop, a risk refusal, a size that does not settle) leaves q_min, as before. After the gates, the decision runs risk again and still refuses any size it did not settle on (`size-mismatch`): the guard stays. Without the latch nothing changes, since risk itself sizes at q_min.
 - **Evidence.** `packages/worker/test/size-step-up.test.ts`: a worker with the latch set and a wallet above its high-water mark (about $23 of SOL on the $20 bankroll) is refused as `size-mismatch` on the base code, and is now entered above q_min, with H15 judged on a simulation at that exact size. Without the latch it is entered at q_min, simulated at q_min. The guard is pinned: with the probe's answer forced to q_min (test seam `sizeProbe`, never set in production) while risk sizes above it, the decision is a `size-mismatch` refusal and nothing is booked. Hand mutants killed: never sizing, the simulation asked at q_min, the gates judged at q_min, the size-mismatch guard disabled (review of #189), the probe's risk-fault catch rethrowing (review of #189 B2: with the latch set and risk unable to evaluate, the probe stays at q_min, the entry is refused as `risk_fault`, nothing is booked, no step fails, and the coin is entered above q_min once risk can evaluate again). Removing the latch shortcut is an equivalent mutant: risk itself sizes at q_min without the latch.
 
+## Rows that read as what they are (APP-TRUTH, owner from the phone; `screens/Snipe.tsx`, `dashboard/labels.ts` `riskHaltLabel`)
+- **2026-10-05 · The Session card's R3 row is the limit.** It showed `session.maxOpenPositions` under "Open positions", so "1" read as an open trade when none existed. It now reads "Open trade limit", the same words as the halt that stops entries at it.
+  - No live count row: neither the status nor the position view serves a count of open trades, and none is added here.
+- **2026-10-05 · A risk halt names its rule.** The worker sends `{ code: 'risk', source: <RiskCode> }` for account stops outside its named halts. The app now shows the rule's words from `RISK_CODE_LABEL`, after "Off:" ("Entries: Off: SOL price unknown").
+  - The first word is lower-cased unless it is an acronym.
+  - `risk_fault` gains "Risk check failed".
+  - An unknown rule, or none, still reads "risk limit".
+  - The no-market labels are untouched (READ-COHERENT is changing them).
+- **2026-10-05 · The decision journal is short (owner).** It shows the 5 newest rows, newest first as served, then "Show more" with "5 of 12". Each press shows 20 more (`journalMore`). Five rows or fewer show no button.
+- **2026-10-05 · Evidence.** `apps/web/test/app-truth.test.ts`: 11 of its 12 tests failed before. They cover the limit row's words and each risk rule's words; the copy guard passes. Mutants caught: the acronym kept lower-case, `risk_fault` without words, every journal row shown, a press that adds none. The journal's two tests failed before too.
+
 ## How a process with no stop line died, and heap headroom (HEAP-GUARD with MEM-TRACE, `worker-start`, `run/mem-trace.ts`, `run/worker.ts`)
 
 - **2026-10-05 · Why.** After #209, every restart of the loop of 5 Oct read "no clean stop" (exits: killed), no crash site: a SIGKILL or a V8 heap-limit abort ("Reached heap limit"), neither of which runs any handler. On the 1 GB host V8's default heap limit follows the machine's RAM (about half), roughly 500 MB, below the unit's MemoryMax=800M. Reproduced in the test harness under `--max-old-space-size=480` with a host-like restore (100k mints) and live-rate slots and creates: heap 56 MB and RSS about 190 MB, flat for 7 minutes. So what grows is in live provider traffic the harness does not model, and the next deploy has to name it.
@@ -2224,3 +2248,446 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - `s0-zero.test.ts`: 12 fills started together never spend past the budget and at most 2 read at once; a fill that hangs has its cap on disk before the first read (a death keeps the charge); the existing fill tests now check the net booked.
   - `restart-keep.test.ts`: an ended candidate is not restored, with the live run's record and tail; a never-evaluated one has no tail; one ms inside the window it is still restored, at the window's end exactly it is not; the in-window candidate's decisions equal a restore of it alone; a worker restarted after the window reads none of the candidate's transactions.
   - Hand mutants killed: no read limit; urgent reads at the back; waiting reads run after a stop; scan count not saved; unreadable file not counted as spent; no fill limit; no reservation; no refund; a finished fill not waking the next; the scan file not wired in production; the window check off by one either way (`>` at the exact end, one ms late); an ended candidate dropped without its tail; the check moved before the pool is noted.
+
+## Fee tiers from the chain (FEE-TIER-NOW; `facts/readers.ts` `readBatch`, `run/worker.ts`)
+
+- **Why (supervisor ruling, 2026-10-05):** a PumpSwap swap event reports the fee tier of its own pre-trade market cap. A swap that crosses a tier threshold therefore leaves the next quote priced at the old tier, live and after a restart. No check on reserves alone can tell whether two market caps share a tier: the thresholds live only in the pump-fees FeeConfig account. Pump's own advice is to read FeeConfig rather than infer tiers (research/execution.md, quant.md F11).
+- **What:** PumpSwap's GlobalConfig and the pump-fees FeeConfig join the batch's final `getMultipleAccounts`, the same single call. That is no extra call and no extra credit: Helius bills per call, and a test pins the call count.
+  - They are decoded with WATCH-1's `decodeSnapshot` from the same bank: tiers, canonical flag, creator fee override, coin flags.
+  - The result is put as `worker:fees:<mint>` inside the batch's open/close, at the bank's moment.
+  - #market already prefers that fact, so `poolFees` selects the tier at the current reserves on every quote.
+  - The worker's paper fill (`poolOf`) reads the same fact. It now unwraps the off-chain frame; before, a batch-read context would have reached the fill wrapped and unusable, which the end-to-end test caught.
+  - Observed swap terms stay only as the fallback before a mint's first batch. A missing or foreign account publishes nothing (fail closed).
+  - After a restart, the first batch prices the coin again at the current tier, whatever the restored terms say.
+- **Parity:** the recorded-live replay rebuilds the context from its recorded frames and gives the same decisions (test).
+- **Known gap, bounded (BT parity review):** the historical backtest keeps observed swap terms until a FeeConfig history arrives in the proof phase. Backtest and live can differ in exactly three cases:
+  1. A tier crossing between swaps: a quote falls in a different tier from the last swap's pre-trade market cap.
+  2. A FeeConfig or GlobalConfig update by pump between two swaps: live prices the new config from the next batch, the backtest only after the next swap.
+  3. A quote before a mint's first swap: live has a fee context from the first batch, the backtest has none.
+- **Tests that fail before** (`read-coherent.test.ts`, FEE-TIER-NOW blocks):
+  - the bank carries both configs at the same call count, and the context matches the decoder's;
+  - a FeeConfig not owned by pump-fees, or no config at all, puts no context;
+  - a crossing is priced at the tier of the reserves now;
+  - end to end, after live swaps the worker's market prices from the FeeConfig schedule (several tiers, canonical), never the swap's one-tier context;
+  - the parity replay.
+  - `fees-keep.test.ts` adds the restore case: a moved pool with a fee-context fact is judged by the gates.
+
+## Encoded addresses are flat strings (OOM-SWAPS part 1, `core/src/chain/base58.ts`)
+
+- **2026-10-05 · Why.** The HeapOutOfMemory deaths went on after BOOT-BOUND (09790b40: crash 12 → 13 by 4:26 PM, about one boot every 10–15 minutes, so the heap filled at about 38 MB a minute in a live run). A harness probe with real swap log frames on a watched candidate pool (decode, feed, engine, strategy) measured **+10.0 KB of heap per swap, linear** (6,000 swaps +58 MB, 30,000 +286 MB). About 4,000 swaps a minute across the ~230 pools watched in their window fits the live slope. A heap snapshot after 6,000 swaps found 1.13 million concatenated strings (34.6 MB of the 58 MB), held by the engine's `AsOfStore` as each swap's six addresses. `encodeBase58` built its result one character at a time (`out +=`), and V8 keeps such a string as a rope of about 30 nodes.
+- **What.** The digits are written into one array of character codes and turned into a string at once (`String.fromCharCode`), so the string is flat. The output is unchanged (the Bitcoin vectors and every decode test pass).
+- **Measured.** The swap probe drops from 10.0 KB to 4.2 KB per swap. The store still keeps every swap for the process, so memory still grows without limit; bounding the trade tape is part 2 (the trade-tail readers decide what must be kept).
+- **Evidence.** `base58.test.ts`: 20,000 encoded addresses held take under 5 MB of heap after a full collection (21.2 MB on the base: fails before, passes after, stable over repeated runs); over 20,000 random inputs of 0 to 80 bytes (a quarter with leading zeros) the output equals the old encoder's, kept in the test as the reference.
+
+## The live store under busy pools (OOM-SWAPS part 2, `core/src/engine/asof.ts` `Collapse`, `core/src/gates/tails.ts` `tradeTailCollapse`, `worker/src/run/store-rules.ts`)
+
+- **2026-10-05 · Why.** The live engine ran with no retention, so its as-of store kept every released event for the whole process. Each swap on a watched pool adds two entries: its trade event (`logs:pump_amm:BuyEvent|SellEvent:<pool>`) and a fresh pool fact (`gates/pool:<mint>`). Measured in the harness with real swap log frames: 10.0 KB of heap per swap (4.2 KB with part 1's flat addresses), linear. At about 4,000 swaps a minute across the ~230 pools in their window, the heap reached its 560 MB limit 10–15 minutes after every boot (HeapOutOfMemory 13 on 5 Oct, still on 09790b40). G4a (#164) does not bound it: it keeps trade keys for the look-back plus a day and per-object keys for at least a day.
+- **What.**
+  - `AsOfStore` takes an optional `Collapse`: per key, the test an older entry must pass to stay. When a value is recorded, the key's previous newest entry is dropped if it fails the test and was not received later than the new one. `Engine` passes it through. Default none: the backtest, the proofs and every other caller are unchanged.
+  - `tradeTailCollapse` (core gates, beside the check it serves): a trade-event key keeps its newest entry and every entry whose tail would fail (`tailVerdict`, the same function `checkTape` now uses). The tail check answers exactly as with every entry: it reads only the first failing entry in order, which is kept, and whether any entry is there since migration, which the newest answers (the latest slot; and, for the time-based since, the latest receipt, which the receipt guard keeps). Its event count is read by no gate. The backtest's feed already keeps the same subset (`sim/facts.ts`).
+  - The live worker and its parity replay share `store-rules.ts`: trade keys collapse; pool facts keep a minute (`POOL_FACT_KEEP_MS`). Every pool-fact reader looks it up as of now (the gates' evidence and the strategy's market and exits; only the engine's proofs look up an earlier moment), and the store keeps the latest value at or before the horizon, so each answer is exact.
+- **Measured.** The swap probe with both rules (and part 1): about 0.5 KB per swap and flat (+5, +5, +8 MB over 18,000 swaps), against 10.0 KB on the base.
+- **Evidence (fail before, pass after).**
+  - `tails-collapse.test.ts`: over 400 random tapes on both programs (slots around both boundaries, receipts not tied to slots, clean, wrong-length, non-zero, odd-length, unreadable and null entries), `checkPoolTails` with every kind of since and `checkCurveTails` answer the same with and without the collapse after every record; a clean tape of 5,000 keeps one entry plus its offender and unreadable entry; an older entry received later stays; other keys keep every entry.
+  - `store-rules.test.ts`: 12,000 real swap logs with zero 8-byte tails through the whole worker grow the heap under 9 MB (4.9 MB measured; 121.6 MB without the rules, 15.0 MB with the collapse alone, 113.6 MB with the pool horizon alone), and the worker and replay rules are the live ones.
+  - Hand mutants killed: failing entries dropped too; no receipt guard; unreadable entries not kept; one program's boundary for both; two entries popped; the rules not wired, or only one of them.
+- **Parity.** The parity replay uses the same rules, and every reader's answer is unchanged, so live and replay decide alike, and a recording made before this replays to the same decisions.
+
+## Every pool read carries its fee context (FEE-READ-ALL, POOL-DATA; `facts/readers.ts` `readAccounts`, `#feesOf`)
+
+- **Why (POOL-DATA, 2026-10-05):** after FEE-TIER-NOW the fee context came only with a batch. The survival read at migration + 30 min (`facts/source.ts`) is a lone `readAccounts`: it made the pool fact without the fee context. So a quiet pool's first judgement in its window (60 min) was `no-fee-context`, once per candidate, until the batch that refusal asked for. The worker's reproduction over the fake chain showed exactly one such line per candidate on #220's head.
+- **What:** `readAccounts` puts PumpSwap's GlobalConfig and the pump-fees FeeConfig in its final `getMultipleAccounts`. The call count is the same as before: two the first time (the layout is learnt from the pool), one after. It puts the fee context before the accounts frame, so a pool fact is never released without it. The batch and the lone read share one decoder (`#feesOf`). A missing or foreign account still puts nothing (fail closed).
+- **Not changed, by reasoning:**
+  - `no-pool-state`, `pool-flagged` and H16 `gap` stay correct, transient refusals. They come from restarts (the pool chain is rebuilt from the boot's read) and from stream coverage gaps. Each clears at the next account read.
+  - Deferring a coin's first judgement until a read lands would move live timing away from the backtest (G3).
+  - H16 `missing` holders/sim on a candidate's first stage-3 judgement is the staged read by design (credits). Reading them in the first batch is a budget decision, not taken here.
+- **Tests that fail before** (`read-coherent.test.ts`, POOL-DATA block):
+  - the lone read's calls carry both configs, at the same count, and its frames are the fee context then the accounts;
+  - end to end, a quiet pool read only by the worker's own reads is judged in its window with no `worker` reason (on #220's head: one `no-fee-context`).
+
+## The memory at the last death in the daily summary (MEM-SUMMARY, `run/mem-trace.ts` `deathMem`, `run/worker.ts`, `run/summary.ts`, `ops/src/watchdog/summary.ts`)
+
+- **2026-10-05 · Why (supervisor, 6:25 PM).** After BOOT-BOUND and OOM-SWAPS the summary could still say only "HeapOutOfMemory, no packages/ frame". That names the death, not what filled the heap. The server already keeps the evidence: `mem.json` (every 10 s) and node's fatal report, whose `javascriptHeap` holds the heap used and limit and the MB used per V8 space. Supervisor ruling: put the last of these in the summary so the next death is legible live. It is the bot's own diagnostics: numbers and V8 space names, no personal data, nothing a third party sends.
+- **What.**
+  - `deathMem` reads, for a process that left no stop line, only numbers. From the fresh fatal report (the same freshness rule as the crash site): the dump time, the heap used and limit, and per V8 space its MB used, its name shortened (`old`, `new`, `large-object`, `code`; a name that is not lowercase letters and `_` is dropped). From `mem.json`, when it was taken at most two periods before the death: heap used and limit, rss, external and array buffers in MB. Uptime runs from the dead process's own boot (its entry in `restarts.json`). Nothing else is read from the report: no message, path, argument or environment.
+  - The unit's `--reconcile` pre-step reads it and passes it in its handoff, as it does the exit reading. The main boot's start line carries it as `death_mem`, checked again (`parseDeathMem`: exactly its shape, whole non-negative numbers). Without a pre-step the boot reads it itself.
+  - The daily summary keeps the day's last one as `worker.last_death` (null when there was none), with times as ISO strings. The watchdog accepts it only beside RESTART-CAUSE's keys, in exactly its shape (counts, times, codes, at most 16 spaces), and the forbidden-pattern guard still runs over the whole body.
+  - A watchdog from before this refuses the key. The worker then sends the day again without it, and, if that is refused too, without the restart counts as before (a deploy is not atomic).
+- **Evidence.**
+  - `mem-trace.test.ts`: a planted report gives exactly the numbers and space names, and none of its planted secret, path, environment or bad space names; without a report a fresh sample stands alone; an old sample or no death line gives nothing; uptime only from an earlier boot; a malformed record is dropped; a malformed start line gives no `last_death`, a later good one replaces it; end to end, the pre-step reads it (the report and sample are then removed), the main start line carries it, the summary shows it, and the body passes the watchdog's guard.
+  - `summary.test.ts` (ops): accepted with RESTART-CAUSE's keys, and as null; refused without them; refused for 15 malformed shapes; a planted token in a space name is refused. `summary.test.ts` (worker): the post goes again without `last_death`, then without the restart counts.
+  - Hand mutants killed: no `death_mem` on the start line; no memory in the handoff; the watchdog taking it without RESTART-CAUSE's keys; space names not checked; no fallback without it; uptime from the last journal line; a stale sample kept; the summary folding an unchecked record; the watchdog's shape loosened.
+
+## Held catch-up notifications: compact, with a total cap (HOLD-TOTAL with HOLD-COMPACT, `providers/solana-ws.ts` `CATCH_UP_HOLD_TOTAL`, `core/src/chain/transaction.ts` `compactLogs`)
+
+- **2026-10-05 · Why.** After OOM-SWAPS (127f5325) the worker still died of HeapOutOfMemory, about 19 minutes after its boot (6:20 → about 6:39 PM, 5 Oct), so the heap still grew about 25–30 MB a minute live. A harness probe on 76c301c7 rules out the engine side. It booted from a saved state of 250 candidates, each with its own mint and pool, and ran 230 of those pools trading 4,200 times a minute (real swap logs with their tails), plus 46 creates a minute, with the recorder on. Over 20 simulated minutes the heap grew +15 MB, flat. The harness replaces the provider sockets with scripted sources, so the growth is below the engine. In the Helius stream, each pool watch in its S0-ZERO catch-up holds its live notifications until its fill answers, up to `CATCH_UP_HOLD_MAX` = 5,000 per watch, with no total. A real PumpSwap swap's notification held as parsed is 10.5 KB of heap (103 log lines; 20,000 held = +201 MB). A boot restores every candidate in its window, so about 230 pools start their catch-up at once, and fills run two at a time (BOOT-BOUND): most pools hold for a long time. 25–30 MB a minute is about 2,500–3,000 held notifications a minute. The ceiling was 230 × 5,000 × 10.5 KB, about 12 GB.
+- **What.**
+  - **Compact holds (supervisor, 6:58 PM).** A held notification keeps only the lines the log reader uses (`compactLogs`, in core beside `logEvents`): the `Program data:` lines of pump and PumpSwap and the invoke and result lines of every call on their path, each at its own index; every other line is blanked (''). An event's id and moment come from its line's index, so blanking, not removing, keeps them. A log the reader would refuse or stop on (a wrong depth, a close out of order, an unclosed call, `Log truncated`) is held unchanged, so the refusal is the same. Held, a swap notification is about 2.1 KB instead of 10.5 KB (103 of 1,714 lines kept over the recorded transactions). Only held notifications are compacted; one delivered at once is unchanged.
+  - **Total cap (the safety net).** The stream counts what all its watches hold. A notification that would take the total past `CATCH_UP_HOLD_TOTAL` = 24,000 (about 50 MB) overflows its watch exactly as the per-watch cap does: what the watch holds goes on the feed at once, in arrival order, and its catch-up closes lossy when the fill answers, whatever the fill says. That pool's trade coverage then has a gap, so its candles are never proven and H11 refuses it for its window (missing evidence). Nothing is dropped. `heldNotices` reports the total.
+- **How many catch-ups go lossy (simulated with the code's rules).** 230 catch-ups, fills two at a time, about 17 trades a minute per pool, a fill with no budget answering at once:
+  - With the fill budget as it was then (3,870 credits a day, up to 500 per fill: about 7 funded fills; FILL-BUDGET below raised it to 20,000, the 40-fill run below), the compact holds under 24,000 never overflow; a total of 2,000 at 10.5 KB overflowed 191 of 230.
+  - If every fill were funded and took a minute, 183 of 230 would still overflow at 24,000 (the catch-ups take about two hours to drain): the cap matters only when fills are slow.
+  - Either way, a pool whose fill gets no budget, or whose history since migration is larger than one fill reads (500 credits), closes its catch-up lossy at once: after a restart most restored candidates cannot be judged on their tape for their window, whatever the holds do.
+- **Measured through the real stream (230 pool watches in catch-up, 4,000 real 103-line swap notifications a minute, fills two at a time, the funded ones complete, the rest answer at once with no budget).**
+  - 7 funded fills of 60 s, 8 minutes: with the total of 2,000 whole notifications (#229 alone) 4 of the 7 pools whose fill completed still closed lossy (overflow); with compact holds under 24,000, none did (peak 7,989 held, about 16 MB).
+  - 40 funded fills of 30 s, 12 minutes: 29 of 40 lossy by overflow with #229 alone; none with compact holds (peak 22,600 held, about 47 MB, under the cap).
+- **What the recorder saves.** The recorder writes each logs frame as the feed ingests it, so a notification held during a catch-up is now recorded with its compacted lines (blank strings in place of the dropped lines, every kept line at its own index), not the raw frame as received; a notification delivered at once is still recorded raw. The parity replay re-reads recorded frames with the same `logEvents`, and the compacted lines give it the same events at the same indices and moments, or the same refusal and message (proved by `compact-logs.test.ts` below), so a replay of recorded data gives identical decisions. What the recording loses is only the lines no reader uses (other programs' logs, compute and `Program log:` lines). It is the bot's own market data; nothing new is saved.
+- **Evidence (fail before, pass after).**
+  - `compact-logs.test.ts`: on every recorded transaction and over 5,000 random call trees (both programs and others, undecodable data, log and compute lines, failed calls, cut, wrong-depth, unclosed and stray-close logs), `logEvents` gives the same events at the same indices, or the same refusal; a refused log comes back unchanged; a close that does not match the running call (`Program A invoke [1]`, `Program B success`) is refused whole, so the reader still says undecodable (the random trees never hit this case); a call with no event data keeps nothing.
+  - `s0-zero.test.ts`: 230 pools in their catch-up past the total: it is never passed, every notification is on the feed or held, overflowed pools close lossy and the rest resume. Through the real stream, 60,000 real-size notifications (each parsed from its own text) across 230 holding pools stay under 64 MB of heap.
+  - Hand mutants killed: lines removed instead of blanked; a call's parent not kept; a cut log compacted; other programs' data kept; the depth unchecked; held lines not compacted; the total too large; no total; the total not lowered on release; an overflow at the total not marked lossy; held notifications dropped instead of released; the mismatched-close check removed.
+
+## Read outcomes kept in memory are bounded (READ-OUTCOMES, `facts/readers.ts` `OUTCOMES_KEPT`)
+
+- **2026-10-05 · Why.** An independent read-only check (the owner's) found, and the supervisor verified, that `FactReaders.outcomes` grew by one entry on every guarded read and every capped holder scan or chain-volume read, for the whole process. Nothing in `src` reads it; tests and diagnostics read the latest entries. Each entry is small, so this is hours to days of uptime, not the 13-minute crash, but a multi-day run must not grow.
+- **What.** Every write goes through one place, which keeps the latest `OUTCOMES_KEPT` (500), newest last, trimmed in place in batches (when it passes twice that), so a push stays cheap and a reader of the latest entries is unchanged.
+- **Evidence.** `facts-readers.test.ts`: 2,500 reads past the daily scan cap leave between 500 and 1,000 outcomes, the newest kept in order (fails before: all 2,500 stay). Hand mutants killed: no trim; the oldest kept instead of the newest. Every test that reads `outcomes` passes unchanged.
+
+## A catch-up the fill cannot cover is known from its first page (FILL-FORESEE, `seed/rpc.ts` `foresee`, `seed/fill.ts`)
+
+- **2026-10-05 · Why (supervisor ruling, FILL-SKIP-RESTORED).** After a restart every restored candidate catches up from its migration. A candidate's candles count only when its pool's trade stream has had no gap since the pool opened, so its catch-up must be complete or H11 refuses it for its window. A pool a few minutes old has more trades than one fill reads (`TRADES_FILL_CREDITS` = 500: one signature page and up to 499 reads), so its fill can only end partial and lossy. Each such fill still read up to its whole cap. About eight of them spent the day's fill budget (`FILL_CREDITS_PER_DAY` = 3,870, a UTC day, so reset at 11:00 AM Melbourne), and every coin migrating later that day got no fill, closed lossy and was refused: one restart could leave the rest of the day with no coin to judge.
+- **What.** The ruling asked to skip the fill of a restored candidate whose catch-up cannot complete, with the threshold measured, not guessed. The fill measures it per pool, from its own first signature page: before reading any transaction it counts the fewest credits the run could still need (one read per successful signature in range on that page, plus one more page when the page did not reach the gap's start). When that already passes the cap, the run stops as `credit-cap` (partial, lossy, nothing read), having spent one credit. The count is a lower bound, so a gap that could complete is never stopped. This covers restored candidates and any other catch-up too large to complete. Only candidates' gaps do this; an open position's partial read still gives its exits the newest trades, so it reads as before.
+- **Effect.** A restore wave of 20 busy catch-ups spends 20 credits instead of the day's budget, and a new migration's small catch-up afterwards still completes. Nothing a decision reads came from a partial candidate fill: its candles and restored bars need the whole tape, and its pool state is re-based by account reads.
+- **Evidence (fail before, pass after).** `s0-zero.test.ts`: the restore wave on the real daily budget; the lower bound's edges (a gap that exactly fits completes, one more read stops at the first page; failed transactions cost no read; a full first page that does not reach the start counts one more page). `fill.test.ts`: a candidate's gap past the cap spends one credit and reads nothing, while an open position's still reads its newest trades. The STEP-B tests now check that only the fills the budget covers read, and that a budget-starved fill no longer drains it. Hand mutants killed: no foresight; foresight for positions too; an off-by-one at the cap; failed signatures counted as reads; the next page left out.
+
+## The daily fill budget is configuration, 20,000 by default (FILL-BUDGET, `run/config.ts` `FILL_CREDITS_PER_DAY`, `ZEROED_FILL_CREDITS_PER_DAY`)
+
+- **2026-10-05 · Why (supervisor ruling under the owner's standing decision "max out account 1": no Helius rationing).** The fills' daily budget was the plan's share, 3,870 credits (`PLAN_FILL_CREDITS_PER_DAY`: half of what is left of the 70% non-exit allowance after the capped reads, over a 31-day month). That is our own ration, not Helius's. With the restart loop, one boot's catch-up wave could spend it, and every coin migrating later that UTC day then got no fill, closed its catch-up lossy and was refused by H11 until the reset at 11:00 AM Melbourne.
+- **What.** The budget the worker loads is configuration: `ZEROED_FILL_CREDITS_PER_DAY`, a whole number, default 20,000 (no constant inside the fill code). The name is in the boot's `ENV_NAMES`, so production can set it (`practice-on.test.ts` fails for a name config reads that the boot does not pass). The per-fill cap (`TRADES_FILL_CREDITS`, 500) and the two fills at once are unchanged, and Helius has no monthly halt of the worker's own (`HELIUS_WORKER`): whatever is left here, Helius's own refusal for used-up credits (HELIUS-EXHAUSTED) holds every non-exit call. The plan's figure and its test stay as they were, renamed, as the reference. The budget only rises, so a day already spent under 3,870 has 16,130 left as soon as this is deployed.
+- **Not done (supervisor's condition).** Fill-budget spent and remaining in the daily summary would change the watchdog's shape and its older-watchdog fallback (another ops and e2e cycle), so it is left out.
+- **Evidence (fail before, pass after).** `s0-zero.test.ts`: the default is 20,000 and the variable sets it; a negative, fractional, empty, exponent or out-of-range value is refused; a day spent at 3,870 has 16,130 left under the new budget and none under the old. The plan test is unchanged on `PLAN_FILL_CREDITS_PER_DAY`. Hand mutant killed: the variable ignored.
+
+## Producer head facts and seen signatures: newest only (OOM-HEADS, `run/store-rules.ts` `liveCollapse`)
+
+- **2026-10-05 · Why.** HOLD-TOTAL (#229, deployed at 0c07c577) did not end the OOM. With a working Helius key the worker still died of HeapOutOfMemory after 788 s (old space 520 MB, crash 34). While Helius refused every call, its socket included, a process on the same build ran 36 minutes with no OOM.
+- **Reproduction.**
+  - The real worker (`main.ts`, unmodified) ran on a fake market. `fetch` and `WebSocket` were stubbed into a worker thread, so the market's CPU and heap stay outside the measured isolate.
+  - The market served real fixture transactions, re-keyed per coin (mint, curve, pool and vaults by their PDAs), so creates (111 lines), migrations (223) and PumpSwap swaps (57–123) decode as live.
+  - Rates: 230 pools restored at boot, about 17 swaps a minute each (about 4,000 a minute), 25 creates a minute and a slot notice every 400 ms.
+  - Fills, fact reads, the recorder and the SOL/USD candles ran on their real paths.
+  - The live heap was read after a forced GC every 30 s, and two heap snapshots were diffed by retainer.
+- **Found.** The heap grew 21.5 MB a minute, steadily. Almost all of it was held by the engine's as-of store (`Worker.#engine` → `Engine.#store` → `AsOfStore.#series`), in facts the producer states again whole:
+  - `gates/stream:<stream>`: `FactProducer.#slot` puts every stream's head at every slot notice. 236 trade streams × 2.5 a second is about 590 entries a second: +176,000 entries in 5 minutes, about 11 MB a minute.
+  - `gates/candles:<mint>`: `#writeCandles` puts a copy of the pool's candles at every swap. About 5 MB a minute, more as the arrays fill.
+  - `gates/carry:<mint>`: a chain's carry at every slot, one per covered chain (small in the run).
+  - The growth follows the socket's slot notices and the number of streams, not the reads. The run with Helius refusing every call had no socket, so no slot notices and no growth. Live has more streams than 240 (mint transactions, rugs), which fits the 35 MB a minute seen there.
+- **What.** `liveCollapse` keeps only the newest value of these three keys.
+  - Every reader looks them up as of now: `Evidence.raw` (the stream head behind each stream-kept fact, H11's candles) and the strategy (carry).
+  - `history()`, the only reader of older values, is asked for trade, coverage and deployer keys only. So every answer stays the same.
+  - `seen:<via>`, a signature seen on a watch (one per logs notification), keeps only its newest value too. Nothing looks it up in the store: the delay probe and the fetches act on the frame.
+  - The parity replay uses the same rules (`store-rules.ts`), so live and replay keep the same values.
+- **Measured after.**
+  - With the head facts bounded, the same run grows 4.5 MB a minute (from 21.5), and the store holds 52 MB at 7 minutes (from 146).
+  - From 13 to 25 minutes on that build: 4.2 MB a minute. About 1.5 MB of it is `seen:<via>` (+51,000 entries), bounded in the second commit. About 1.4 MB is the producer's per-pool candle books, which keep the id of every swap since the pool opened (`#books[pool].seen`). LiveFeed's dedupe keys level off at `keepSlots` (1,500, about 10 minutes), and `chain:slot` adds one value per slot (about 50 KB a minute).
+- **Follow-up.** The books' seen ids and `chain:slot` are bounded in OOM-SEEN below.
+- **Evidence (fail before, pass after).** `store-rules.test.ts`:
+  - The three head keys keep only their newest value; other gate facts keep their series.
+  - A real worker with 240 trade streams, 2.5 slot notices a second and 4,050 swaps a minute, each swap delivered as the pool watch does (its seen signature, then its log lines): the heap grew 18.9 MB over two minutes before the fix, 4.2 MB with the head facts bounded alone, and 1.3 MB with both bounds; the test requires under 6 MB.
+  - Hand mutants killed: no stream heads; no candles; no carry; no seen signatures; older values kept; another gate fact taken as a head.
+  - The worker, parity and replay test files that touch these facts pass. `exit-keep.test.ts` timed out once under load and passes 8/8 alone.
+
+## Seen signatures, the slot notice and the candle books' trade ids: bounded (OOM-SEEN, `run/store-rules.ts`, `core/src/facts/producer.ts` `TRADE_REPEAT_WINDOW_MS`)
+
+- **2026-10-05 · Why.** With OOM-HEADS (#232, efa3b006), the live-rate run still grew 4.2 MB a minute from 13 to 25 minutes, steadily:
+  - `seen:<via>` in the engine's store, about 1.5 MB a minute (+51,000 entries);
+  - the candle books' trade ids (`FactProducer.#books[pool].seen`, every swap since the pool opened), about 1.4 MB a minute;
+  - `chain:slot` in the store, about 50 KB a minute.
+  The seen-signature bound was pushed to #232 after it merged, so it ships here.
+- **What.**
+  - `seen:<via>` and `chain:slot` keep only their newest value in the live store. Nothing looks either up in the store: the delay probe and the fetches act on the seen frame; the producer, the strategy and the worker act on the released slot event. The parity replay uses the same rules.
+  - **The candle books' trade ids (supervisor ruling, Option A).** A book remembers each trade's id with its trade time, back to `TRADE_REPEAT_WINDOW_MS` (an hour) behind the pool's newest trade, in the producer's options with its reason.
+    - A trade stamped further back is refused whole, before the ids are looked at. It is never applied: its reserve never replaces the pool's and nothing is counted twice. The candles are flagged partial, so H11 refuses them (fail closed). Checking the window first means the answer never depends on which old ids a sweep has dropped.
+    - A repeat comes from the other path within minutes: the feed's own duplicate window is 1,500 slots (about 10 minutes), a catch-up's fill reads up to the watch's start, and a gap's fill runs as soon as the fill budget allows. An hour covers those with room.
+    - The id is `tradeRepeatId`: the first 22 characters of the signature (about 128 bits) and a 32-bit hash of the pre-trade reserves, the same from a log line and from a fetched transaction. It is compact, not exact: two different swaps in one transaction on one pool share an id only if their 32-bit reserve hashes collide (about 2^-32 per pair; the second would then be dropped silently, not flagged). The hash is the first 32 bits of a SHA-256 of both reserves (no mixing constants, so CFG-1's literal guard holds). It is copied into a fresh flat string and kept with its trade minute: 85 B a remembered trade, against about 350 B for the full `signature:base:quote` text (facts measured 497 B with its Map entry, B1: about 149 MB at an hour and 4,000 swaps a minute).
+    - Old ids are swept each time the newest trade has moved a quarter window since the last sweep (a trade minute m is dropped only when (m + 1) minutes is at or before the cutoff), so a book holds at most a window, a quarter and a minute of trades (at about 17 swaps a minute a pool, about 1,300 ids). A size-based sweep (on doubling, from a floor of 512) was tried first: at a pool's live rate it almost never ran, and the live-rate run still grew about 1.5 MB a minute.
+- **Not done.** `LiveStrategy.#coverageFacts` is not trimmed. It holds the coverage events the store already keeps whole for `history()` (creates and rug coverage, the deployer index), a few per watch, so trimming it frees almost nothing. `pruneCoverage` run twice is not the same as run once when a gap is open, so trimming would change what a save writes, for no memory.
+- **Evidence (fail before, pass after).**
+  - `producer.test.ts` (repeat window):
+    - a repeat W − 1 s, or exactly W, behind the newest trade counts once: candles and reserve unchanged, not partial;
+    - the repeat id is the same from the log line and the fetched transaction of every recorded swap, two swaps in one recorded transaction differ, and it is at most 29 characters;
+    - the window never moves back: an out-of-order trade inside the window does not lower the newest time, so a swept trade's repeat stays refused (BT B1, fails when the newest time may step back); the production window is pinned at an hour (BT N1);
+    - a repeat W + 1 s behind is never applied: reserve unchanged, candles partial, H11 refuses;
+    - the same swaps from live log lines and, half an hour later, from a gap fill's fetched transactions count once;
+    - a catch-up (the fill's fetched transactions first, then the same swaps as held log lines released after) counts once;
+    - with a one-minute window, 3,072 trades a second apart keep between 60 and 136 ids once warm, and after every batch its last 20 trades repeated count once (a sweep never forgets a trade inside the window);
+    - the W + 1 s repeat arrives while its id is still remembered (no sweep between), so only the window check refuses it.
+  - `store-rules.test.ts`: `seen:` and `chain:slot` keep only their newest value.
+  - Hand mutants killed: no window check; the window's edge excluded (`<=`); no partial flag; ids looked at before the window; no sweep; a sweep only once a window; a minute swept too early; an id without the reserves; an id with the whole signature; a sweep that forgets everything; a refused trade that moves the reserve; no slot-notice rule.
+
+## Dedupe keys, account reads, mint facts, let-go coins and memory bounds (OOM-MINT, `providers/canonical.ts`, `run/store-rules.ts`, `Strategy.retired`, `CREATE_KEEP_MS`)
+
+- **2026-10-05 · Why.** At three times the live rates (12,000 swaps a minute, a new pool every 20 s), the OOM-SEEN build still grew 1.6 MB a minute after warm-up. The rest was:
+  - LiveFeed's dedupe keys: 44 → 53 MB, each a text holding the whole 88-character signature for 1,500 slots;
+  - the store's per-read and per-coin keys: `gates/mint` restated at every read, plus create, curve and pool keys;
+  - candle books, tracks and keys of coins nothing watches any more, never let go.
+- **What.**
+  - **Dedupe keys** (`dedupKey`): kind plus the first 22 characters of the signature (about 128 bits), copied into a fresh flat string. Exact under the same argument as `tradeRepeatId`. A kept key costs under 100 B, against about 160 B that also kept the signature alive.
+  - **`read:accounts:<mint>` and `gates/mint:<mint>`** keep only their newest value. The producer acts on the released read, and the gates look the mint fact up as of now (`Evidence.read`). No store lookup in the code passes an older moment, and `history` is asked for trade, coverage and deployer keys only.
+  - **Let go (`Strategy.retired`).** The strategy reports a mint and its pool once the mint is no candidate, holds no exit plan and has no tail (a rejected candidate's tail keeps its pool watched until it ends).
+    - The engine forgets every key ending in either address right after that event, so a replay forgets at the same point, and tells the feed.
+    - The producer drops the pool's candle book, chain and trade stream and the mint's track, and never builds them again: a later trade, a repeat or a re-delivered migration is never applied, and the migration fact is never stated again (fail closed).
+    - The pool's reserve and its pending graduate mark stay, because they feed the regime's survival series. A candidate leaves at least four hours after migrating; its survival mark is at thirty minutes.
+  - **Never let go while needed (review B1/B2).** A mint with a pending entry seed or a book position not yet closed is held, as are candidates and exit plans (`#held`).
+    - **Facts review B3:** an intent of the mint whose attempt may still land also holds it. That is an intent not terminal, or a terminal one with an attempt neither failed at finalized nor past its last valid height plus another validity window; so is an orphan landing not yet booked.
+    - A dropped seed's mint is let go on a later event, once nothing holds it. So an orphan fill never opens a position on a let-go coin.
+    - **Unit (BT review N2):** `#mayLand` compares the strategy's height, the newest `chain:slot`, with each attempt's `lastValidBlockHeight`. In paper both are slots (`#attempt` stamps the slot height). A real-signing path that stores true block heights must compare block heights. This is on the live-activation list.
+  - **Creates that never migrate.** The limit is `CREATE_KEEP_MS`, 12 hours, defined in `core/src/gates/create-keep.ts`; live passes it as `StrategyConfig.createKeepMs`, the study strategy as `createKeepMs`.
+    - **The market rule (supervisor ruling on the BT review, B1).**
+      - A coin whose migration came more than `CREATE_KEEP_MS` after its create, by the create fact's and the migration fact's chain times (`createKeepVerdict`), is refused `create-expired` before the regime or any gate.
+      - This applies in live and in the backtest (`StudyStrategy`, funnel stage `create expired`), so both refuse the same coins whatever order the events arrive in.
+      - Exactly 12 hours is judged as before.
+    - **Effect on the backtest.** Such coins are now refused, where before they were judged. In a 518-migration backfill (`research/empirical/backfill`): the gap is the on-chain migration's block time minus Jupiter's off-chain `createdAt` (`analyze.py` `ttg_s`), not the create transaction's chain time.
+      - 23 migrations (4.4%) came more than 12 hours after their create: 10 at 12–24 h, 13 later;
+      - the median gap is 1 minute, the 90th percentile 55 minutes, the 95th 5.8 hours.
+      - That share is material. The day-scale card raises the keep with compact create storage (supervisor ruling).
+    - **Live memory.** A create with no migration seen `CREATE_KEEP_MS + CREATE_LATE_MS` (one more hour) after it, by its chain time, is let go: its store keys, producer track and `walletMints` entries go.
+      - The check runs once a minute over every kept create, because chain times need not follow release order.
+      - The extra hour means a migration delivered up to an hour late is still judged from its facts, as the backtest judges it.
+      - The mint is remembered for a week (`EXPIRED_CREATE_KEEP_MS`) as an 8-byte tag (`HourTags`, sorted per hour). A Map of 22-character prefixes measured 95 B each, 68 MB a week at 75 creates a minute; the tags measured 5.8 MB.
+      - If the coin migrates later and its create facts are gone, it is refused `create-expired` on that mark, and the worker does not look its create up. Only a migration delivered more than an hour late can be refused here where the backtest would judge it: a live-only case, like a coin seen across a restart's downtime.
+    - **Cost of the keep.** Each hour costs about 6.4 MB at 1× (25 creates a minute × 4.3 KB) and about 19 MB at 3×.
+    - The refusal reaches the summary's `refused_by_reason` through the existing journal path.
+  - **Producer tombstones.** A retired id is tombstoned whether or not state was built for it yet, so a pool create or a mint create delivered later never builds it. A pool whose survival mark is still pending keeps its chain and trade stream until the mark dates it or its read window passes (review N2); then they go.
+  - **Deployer index (supervisor ruling: not the 12-hour rule).** Once an hour of event time, `DeployerIndex.prune` drops in memory what the PERSIST-1 save leaves out: mints, rug labels and unjudged mints dated before the H14 look-back plus a day, and lost creates seen before it. A creator's mints inside the window still count.
+  - **Store retire by key index.** `AsOfStore` indexes its keys by their last `:` part, so a retire costs only the keys it forgets.
+  - **Worker capped maps.** Measured 265 B an entry for create signatures and 188 B for symbols, about 190 MB at full fill; the create signatures fill at boot from the saved store.
+    - `CREATE_SIGS_MAX` and `SYMBOLS_MAX` go from 200,000 to 60,000, more than 12 hours at three times the live create rate. An older coin that migrates is looked up once from its oldest signature and shows no symbol.
+    - `TX_SIGS_MAX` goes from 200,000 to 20,000, about two weeks of migrations.
+    - Kept mints are flat copies, so they never hold the 66-character key they were cut from.
+- **Memory bounds (per structure; live is 1×: 25 creates and 1 migration a minute, 17 swaps a minute per pool, a 4-hour candidate window, so about 240 pools).** Measured in a 3× run of the real worker (see below) and by unit measurements.
+
+  | Structure | Bound | 1× | Sustained 3× |
+  |---|---|---|---|
+  | Candle books (dead pools let go) | pools in window or tail × an hour of trade ids (about 96 B each) | 24 MB | 212 MB (720 pools) |
+  | LiveFeed keys and ranks | 1,500 slots of dedupe keys | 13 MB | 120 MB |
+  | Store keys per create that never migrated | 13 hours (the keep and the late hour) × 4.3 KB (curve trade and create log values) | 84 MB | 252 MB |
+  | Store keys per pool, AsOfStore key maps, `#byTail` | let go with the coin | about 10 MB | about 30 MB |
+  | Producer tracks and `walletMints` | let go with the coin, or at 12 hours | under 5 MB | under 15 MB |
+  | Producer retired ids | 100,000 each | 16 MB | 16 MB |
+  | Deployer index | 15 days × 316 B a create | 171 MB | 512 MB |
+  | Let-go creates | a week × 8 B | 2 MB | 6 MB |
+  | Worker capped maps | 60k, 60k, 20k, 20k | at most 29 MB | at most 29 MB |
+  | Readers (tx fetcher) | 50,000 × about 250 B | 12 MB | 12 MB |
+  | Strategy and worker per-mint maps | cleared when the mint leaves (`#forget`, position close) | under 2 MB | under 5 MB |
+  | Base (code, modules, buffers) | fixed | about 50 MB | about 50 MB |
+
+  - **1× ceiling: about 410 MB, about 150 MB under the 560 MB limit.** The deployer index reaches its 171 MB only after 15 days.
+  - **Sustained 3×:** about 705 MB before the deployer index fills, so the limit is reached in about 10–12 hours. That is the 13-hour create fill plus the 4-hour pool window, not days. A short burst fills neither window.
+  - **Cards that close 3×, after this one:** compact create facts in the store (about 0.3 KB each); 8-byte tags for book trade ids and feed dedupe keys; and DEPLOYER-COMPACT (supervisor ruling: the first item of the daily-stability task).
+- **Not done.**
+  - `LiveStrategy.#coverageFacts`, for the reason in OOM-SEEN.
+- **Evidence (fail before, pass after).**
+  - `feed.test.ts`: a kept dedupe key costs under 100 B; every dedupe case still dedupes (seen, logs, confirmed logs, tx from either provider) and different facts stay apart. The cross-slot test's fabricated other signature now differs in its first character: it differed only in the last, past 128 bits.
+  - `store-rules.test.ts`: account reads and mint facts keep only their newest value. A whole worker at three times the live rates (12,150 swaps a minute, 240 trade streams and 3 more a minute) grows under 1 MB a minute once the feed's duplicate window is full (0.32 MB over four minutes; the base shows the same, since the harness has one coin).
+  - `engine.test.ts`: `retire` forgets exactly the keys ending in a retired id; a let-go address is still there for the event that lets it go and gone from the next, and the feed is told.
+  - `producer.test.ts`: after a retire, a later trade, a repeat and a re-delivered migration build nothing.
+  - `retire.test.ts`: a candidate whose window ends unjudged is let go at once; a rejected one only when its tail ends; a held position never.
+  - Hand mutants killed: the pool's book rebuilt; the mint's track rebuilt; the book kept; the tail ignored; no let-go at tail end; `#forget` silent; the engine not forgetting; the feed not told; any key containing an id taken as its own; the full-signature dedupe key.
+  - `retire.test.ts` (B1/B2): a mint with a pending entry seed (with no tail) or an open book position past its window is never let go; a seed that never lands lets go. Review B2: a worker let-go reaches its fact producer (the pool's trade stream goes, both ids are tombstoned); it fails with the engine feed's retire line removed.
+  - `producer.test.ts`: ids retired before anything was built for them build nothing later. Review N2: a pool let go before its survival mark keeps its trade stream until the mark dates it, then drops it.
+  - `create-keep.test.ts` (worker):
+    - Review N1: a migration exactly 12 hours after its create enters; 1 s past it is refused `create-expired` from the facts at every judgement.
+    - A create aged by its chain time past the keep and the hour is let go, and its coin is refused on the mark.
+    - Order-proof: a younger create released first does not hold back an older one.
+    - Review B3: a candidate inside its window across its create's let-go time is never let go.
+    - Review B1: the same gaps through the live worker and the study strategy are refused in both or in neither.
+  - `create-keep.test.ts` (backtest): exactly 12 hours is judged; a slot more is refused at every check, at the `create expired` funnel stage.
+  - `hour-tags.test.ts`: every added mint is found in open and sealed hours and no other; an hour is kept until `keepMs` after it ends, to the millisecond; a week at 75 creates a minute holds under 8 MB.
+  - `deployer-index.test.ts` and `index-prune.test.ts`: the prune drops what the save drops; in a worker, a creator's mint 14.5 days old still counts after a prune and one 15 days and an hour old is gone.
+  - `engine.test.ts`: two keys with one last part are both retired; a key recorded again is retired again.
+  - `sig-caps.test.ts`: the caps cover 12 hours at 3×; a full create-signature map costs under 230 B an entry (265 B when the mint keeps its key).
+  - `retire.test.ts` (facts review B3):
+    - an entry that ends unfilled after its window is not let go while its attempt may land;
+    - an orphan fill then opens a position whose pool stays watched and whose swaps still reach the mint, also past the attempts' validity (this pins the book-position guard);
+    - with no landing, the mint is let go after the validity and the margin.
+    - Mutants killed: no `#mayLand`; no book-position guard. The non-terminal clause is kept as a defence: an in-flight entry always has its seed.
+  - Hand mutants killed: `>=` for `>`; the early `break` in the expiry scan; held ignored at expiry; no expiry mark; no facts rule; no late hour; the backtest rule off; the pool stream dropped while pending; a settled pool's stream kept; the conditional tombstone; the engine feed not retiring; create age from release time; `HourTags` sealed hours unsearched; an hour dropped when it starts instead of when it ends; no index prune; a prune line a day later; `#byTail` not indexing a second key; `#byTail` not cleared on retire; the mint kept as a slice.
+  - BT review B1: a rejected candidate's tail across its create's let-go time keeps the mint until the tail ends. BT review N1: a create let go whose create fact comes back with a gap of 12 hours or less is judged from the facts. A create is let go exactly when its age reaches the keep and the hour. Mutants killed: no tail guard; the mark before the facts; `>=` for `>` at the let-go.
+  - Note (BT review N3): `parity.test` and `fault-injection` no longer let anything go, since `#mayLand` holds their mints for the run. Replay equal to live with retirement is covered by `worker-recorder.test` only.
+  - **3× run of the real worker.** `main.ts` with stubbed fetch and WebSocket, a fake market in a worker thread, 230 pools at boot, 51 swaps a minute per pool, 75 creates a minute, a migration every 20 s, 560 MB limit.
+    - At 1 hour: 409 pools, 945,000 swaps, 234 MB live heap, still growing about 2 MB a minute as pools fill their hour and their 4-hour window.
+    - Owners at that point: books 90 MB, feed dedupe 68 MB, store 38 MB, deployer index 1.4 MB.
+    - The per-structure figures above come from this snapshot.
+
+## Creates and curve trades stored compact (CREATE-COMPACT, `core/src/gates/compact.ts`, `AsOfStore` `Shape`, `run/store-rules.ts` `liveShape`)
+
+- **2026-10-06 · Why.** OOM-MINT keeps a create that never migrates for 13 hours. Its create event and its first curve trade sat in the live store as released: about 4.3 KB a create in the 3× run's heap snapshot, the largest term of the sustained-3× ceiling (about 250 MB; 84 MB at 1×).
+- **What.**
+  - **`Shape`.** A per-key rule in `AsOfStore`, passed by the engine, that stores a value with only the fields its store readers read. The strategy and the producer still receive the released event whole; only `lookup` and `history` answer with the compact value.
+  - **The rule's readers, proved per field.**
+    - A curve trade (`pump:TradeEvent:`, `logs:pump:TradeEvent:`) is read by `checkCurveTails` and its collapse (`tailVerdict`). They read the event's `trailing` and `extra`, `txSlot` and `signature`.
+    - A create (`pump:CreateEvent:`, `logs:pump:CreateEvent:`) is read by two things:
+      - the hard gates' create alias (`aliasCreate`, `createOf`): `name`, `data.mint`, `creator`, `timestamp`, `txSlot`, `source` and `backfilled`;
+      - the strategy's deployer (`#deployerOf`): `creator`, `user` and `tokenTotalSupply`.
+    - Kept strings are flat copies: a decoded tail's hex was a slice of the event's text, 291 B a trade before, 179 B after.
+  - Live and the parity replay share `liveShape`. The backtest stores values whole; its decisions match because every reader reads only kept fields.
+  - **Store bookkeeping, every key.**
+    - `#byTail` holds one key as itself and a Set only from the second (a Set each was about 150 B).
+    - The retention rule is asked at each record, not cached per key (a cache entry was about 80 B a key).
+    - Ids and new keys are kept as flat copies, never the pieces and the signature they were built from.
+  - A flat copy is now taken UTF-16 unit by unit (`flatCopy`). The earlier code-point copy would have broken a symbol with an emoji (worker `flat`).
+- **Measured** (`create-compact.test.ts`, a fetched create and curve trade decoded afresh per create):
+  - in the store, about 5.3 KB a create as released and about 1.75 KB compact;
+  - scaled to the logs path's 4.3 KB, about 1.4 KB;
+  - so the 13-hour term goes from about 84 to about 28 MB at 1×, and from about 252 to about 85 MB at sustained 3×.
+- **Evidence (fail before, pass after).**
+  - `create-compact.test.ts`:
+    - a create and its curve trade cost under 2 KB together in the store (over 4 KB released);
+    - a compact curve trade costs under 240 B;
+    - keys and ids are flat copies;
+    - the create alias, `createOf` and the deployer read the same from the compact value, a signer other than the creator included;
+    - the curve tail check answers the same from compact values, passing and failing;
+    - the worker's engine stores a released create compact.
+  - Hand mutants killed: no shape in the worker; the tail hex not copied; the signer replaced by the creator; ids not copied. The new key's copy is equivalent: V8 flattens a key when a Map hashes it.
+  - `retire.test.ts` (facts review pins from OOM-MINT):
+    - an orphan landing found but not yet booked holds the mint past every attempt's validity;
+    - after a restart, before the first slot, the attempts' age is unknown and the mint is held.
+    - Mutants killed: no orphan hold; null height treated as expired.
+
+## Candle book trade ids and feed slot ranks as compact tags (SEEN-TAGS, `core/src/facts/repeat-tags.ts`, `providers/canonical.ts` `SigRanks`)
+
+- **2026-10-06 · Why.** In the 3× run's heap at 1 h (409 pools), the candle books' remembered trade ids took 90 MB (about 96 B a trade: a repeat-id string and its Map entry), and the live feed's dedupe keys and slot ranks 68 MB. At sustained 3× (about 720 pools) the books would reach about 212 MB and the feed about 120 MB.
+- **What.**
+  - **Books:** a trade's repeat tag is the first 96 bits of a SHA-256 of its whole signature and pre-trade reserves (`tradeRepeatTag`), as two 48-bit numbers.
+    - Tags are kept per trade minute (`RepeatTags`). A minute is sorted into a Float64Array once a later minute's trade arrives (16 B a trade); a late trade for an older minute reopens it.
+    - The sweep drops a minute once it ended at or before the window's cutoff, as before; the window is still checked before the tags.
+    - Two different trades share a tag with odds of about 2^-96 per pair, against about 2^-128 for the 22-character prefix it replaces: still exact in practice.
+    - **Supervisor ruling (2026-10-06, 5:06 AM):** `tradeRepeatTag` supersedes OOM-SEEN's repeat id (#233: a 22-character signature prefix and a 32-bit reserve hash). The window and sweep rules are unchanged. The test that the log-line and fetched-transaction paths give the same tag for every recorded swap stays.
+  - **Feed ranks:** a slot's ranks are keyed by the signature's first 22 characters as a flat string (`SigRanks`, the dedupe keys' argument), not by the whole signature, which they kept alive for 1,500 slots.
+- **Measured:**
+  - a full hour of 51 trades a minute in 100 books holds under 24 B a trade (was about 96 B);
+  - a released signature costs the live feed under 200 B (229 B with ranks keyed by the signature).
+  - At sustained 3× the books go from about 212 to about 40 MB, and the feed from about 120 to about 100 MB. The dedupe keys themselves are unchanged; they are bounded by the feed's 1,500-slot window.
+- **Evidence (fail before, pass after).**
+  - `repeat-tags.test.ts`:
+    - the tag shape;
+    - every added trade is found (open minute, sorted minutes, a late trade into an older minute), and no other, including the same high half with another low half;
+    - the sweep boundary;
+    - the memory bound.
+  - `producer.test.ts`: the repeat test now compares tags from a log line and from the fetched transaction (two swaps in one transaction differ).
+  - `feed.test.ts`: a `SigRanks` rank costs under 110 B (141 B keyed by the signature) and ranks as a Map does; the live feed keeps a released signature in under 200 B (229 B with Map ranks).
+  - Hand mutants killed: the low half ignored; a minute dropped when it starts; a late trade not reopening its minute; ranks keyed by the signature; the feed not using `SigRanks`.
+
+## Deployer index mints held compact (DEPLOYER-COMPACT, `core/src/gates/mint-index.ts`)
+
+- **2026-10-06 · Why.** The deployer index kept its mints as a Map of creators to Maps of mint strings and times: about 316 B a create (measured). Over its 15-day window that is about 171 MB at the live 25 creates a minute and about 512 MB at three times that, the largest term left of the memory bounds after CREATE-COMPACT and SEEN-TAGS.
+- **What.**
+  - `MintIndex` holds the same table compact.
+    - Each mint is its address text packed six bits a character into a 34-byte slot: its length, then each character's base58 index. Its time is a float, its next link, its creator and its tag are ints. All of these live in typed arrays, with 1.25× growth, sized exactly at each prune and at once for a restore of known size.
+    - Each creator's mints are a linked list in insertion order, so saved rows keep their order. Each creator is a slot too.
+    - Creators and mints are found through open-addressing tables of ints by a 30-bit tag of their text, so an add is O(1) whatever one creator holds. A creator's mint is matched by its owner and its slot.
+    - Text that is not base58 or is longer than 44 characters (tests, malformed input) is kept as a string, so everything reads back exactly as added.
+  - **Why packed text, not 32 address bytes** (persist review):
+    - a save turns every row back into text every five minutes, and base58 arithmetic over a full window cost seconds (about 2 µs an address);
+    - a packed slot reads back with a table lookup per character.
+  - **A prune compacts in place by index:** kept entries' slots, times and tags are copied into exact-size arrays, the lists are relinked, and both tables are refilled from the kept tags. No text, no `add`.
+  - `DeployerIndex` keeps its API: `factFor`, `snapshot`, `mintRows`, `restore`, `prune`, `seed`, `fill`.
+  - **The saved shape is unchanged** (rows of creator and `[mint, time]` pairs), so no upgrade is needed. A file of today's shape, written by the index this replaces, restores to the same answers and saves back identical.
+  - **Fail closed (persist review, supervisor ruling):** a file that repeats a creator row, or a mint inside one row, is refused whole. The replaced index silently kept the last copy.
+  - Rug and unjudged labels stay as they were (small).
+- **Measured (node, this host):**
+  - Memory: about 110 to 130 B a create, against about 316 B. So about 60 MB at 1× and about 180 MB at sustained 3× over the 15-day window.
+  - At the full 1× window (540,000 creates by 400,000 creators), against the replaced index:
+    - restore about 1.3 s (0.9 to 1.0 s);
+    - prune about 0.1 s after a GC (0.2 s);
+    - a save's rows about 1.0 s (0.7 s);
+    - 1,000 `factFor` reads 5 ms (5 ms).
+  - One creator with 50,000 mints: add, restore and prune each well under 500 ms. The replaced index was constant per entry; the first compact build grew with the square of one creator's mints.
+- **Still on the event path, not new:** the five-minute save writes every row synchronously, about 0.7 s before this card and about 1.0 s after it at a full 1× window. That is over the golden rule's 100 ms. It needs the save moved off the event path (a snapshot of the typed arrays, written in chunks), which is a separate card.
+- **Bounds after all the cards, at sustained 3× with every window full:** about 515 MB, about 45 MB under 560 MB. At 1×: about 240 MB.
+- **Evidence (fail before, pass after).**
+  - `deployer-compact.test.ts`:
+    - today's saved index (`fixtures/deployer-index-v1.json`, written by the replaced index) restores, saves back, prunes and answers `factFor` and `mintRows` identically, from a whole file and from streamed rows;
+    - a bad row, entry, time, future entry, repeated mint or repeated creator row refuses the file whole;
+    - `MintIndex` keeps order, the earliest time of a repeat, and canonical and text mints alike;
+    - colliding creator tags are kept apart;
+    - under 125 B a create counted from its arrays (under 115 B after a prune);
+    - the same mint under two creators is two entries;
+    - at the full 1× window, restore and prune each take at most twice the replaced layout built here from the same rows (measured 1.7× and 0.4× under vitest);
+    - a 50,000-mint creator's add, restore and prune each stay under 500 ms.
+  - `deployer-index.test.ts`: a create from logs and from its fetched transaction counts once.
+  - `persist.test.ts`: a cut or doubled file is still reported as the checksum's failure. A repeated row met mid-stream defers to the checksum, and is the reason only for an intact file.
+  - Hand mutants killed: a repeat taking the later time; a repeated mint or creator row accepted; an entry matched without its creator; prune with `>`.
+
+## Graduates fact newest-only, seed fact stored as counts (G4a, `run/store-rules.ts`)
+
+- **2026-10-06 · Why** (#164 G4a items folded into the crash list, supervisor ruling).
+  - **Graduates:** `gates/graduates` is stated whole at every resolved graduate (about one a minute at 1×), each time with every graduate of its 16-day window. Kept whole, each statement held a pointer array the length of the series. Once the window is full that is about 180 KB a statement, about 260 MB a day; over the first days it grows as the square of the days (about 8 MB × days²).
+  - **Seed:** the boot's seed fact (`worker:seed`) carries up to 200,000 creates on a start with no saved state, plus coverage, fill, rugs and history. It was kept in the store for the process.
+- **What.**
+  - `gates/graduates` keeps its newest value (`liveCollapse`). The regime gate reads it as of now (`Evidence.read`, 'series'), the strategy acts on the released event, and nothing asks for an older value.
+  - `worker:seed` is stored as its moment and its counts (`compactSeed`, `liveShape`). The strategy acts on the released event and keeps its own copy of the seed's history; nothing looks the seed up in the store.
+- **Evidence (fail before, pass after).**
+  - `store-rules.test.ts`: the graduates fact keeps only its newest value.
+  - `create-compact.test.ts`: the seed fact is stored as its moment and counts.
+
+## Funder reads let go after a day (G4a, `FUNDER_KEEP_MS`, `AsOfStore` `Forget`, `run/store-rules.ts` `liveForget`)
+
+- **2026-10-06 · Why.** Every candidate's insider read (H13) reads the funders of its dev and first 20 buyers, about 21 wallets. Each read (`read:funder:<wallet>`) stayed for the process twice, as a store key and in `FactProducer.#funders`: about 400 B each, about 24 MB a day at 1× and about 70 MB a day at 3×, never bounded.
+- **What "funder" means** (supervisor ruling, condition a). It is a wallet's first SOL funding: `Readers.funderOf` pages back to the wallet's oldest successful transaction and reads the first SOL transfer into it (`firstFunder`, core `chain/system.ts`). Once found it cannot change, so a read again later gives the same funder. A read is `complete` only when it reached the oldest transaction, and the insiders fact uses only complete reads whose funding slot is at or before now.
+- **What** (supervisor ruling: 24 hours).
+  - The producer lets a wallet's read go `FUNDER_KEEP_MS` (a day) after it was read, oldest first. A read again moves the wallet to the end.
+  - The store forgets the read's key after the same time. A new per-key rule, `Forget`, is swept once an hour of event time by the engine, after the event, so a replay forgets at the same point. The key's retire index goes with it.
+  - Nothing looks the key up in the store; the producer acts on the released read.
+- **No live candidate loses a read it needs:** reads are made during the candidate's life, which with its tail is at most the window (240 min) plus the longest tail (`tMaxCapMs`, 120 min), well under a day.
+- **Credits (condition c): no extra reads.** `Readers.readInsiders` reads every funder again for each candidate as of that candidate's slot (it never reuses an earlier read). So letting a read go never causes a read that would not have happened anyway. The extra Helius spend is 0, well under the 1% line.
+- **Identified saving, not built (supervisor note, for the usage-cut work, item 21).** `readInsiders` reads every funder again for each candidate (`readers.ts` `readMintHistory`), although a found first funding never changes. Each read is 1 to 3 signature pages plus up to 10 transactions (`MINT_HISTORY_CAPS`) at 1 Helius credit a call (`HELIUS_RPC_CREDITS`): 2 to 13 credits a wallet, about 42 to 273 a candidate for its dev and 20 first buyers. A wallet-keyed cache of complete reads would save that for every wallet already read.
+- **Evidence (fail before, pass after).**
+  - `producer.test.ts`:
+    - funder reads are kept a millisecond short of a day and let go at a day;
+    - read again, the insiders fact is the same;
+    - the keep outlives the window plus the longest tail.
+  - `engine.test.ts`: a key past its `Forget` age is forgotten at the hourly sweep after an event, and others stay.
+  - `create-compact.test.ts`: `liveForget` covers funder reads only; forgetting cleans the retire index for a lone key and for a shared one.
+  - Hand mutants killed: `>=` at the producer's boundary; no engine sweep; the retire index not cleaned.
+
+## Feed dedupe keys as 96-bit tags (FEED-KEYS, `providers/tag-set.ts`)
+
+- **2026-10-06 · Why.** After the other cards, the live feed's dedupe keys were the largest term left at sustained 3×.
+  - A swap's two frames (seen and confirmed logs) each kept a key string and its Set entry for 1,500 slots (about 90 B each), plus a slot rank.
+  - Measured 252 B a swap in the feed, about 92 MB at about 720 pools.
+- **What.**
+  - A frame's dedupe key text (`dedupKey`, unchanged) becomes its tag: the first 96 bits of its SHA-256 (`keyTag`), as two 48-bit numbers.
+  - Tags are held in `TagSet`, an open-addressing table with linear probing, at most half full, grown and shrunk by doubling. Removal shifts the following run back, so no tombstones build up.
+  - Each placement slot keeps its tags as number pairs for the prune, as it kept its keys.
+  - Two different keys share a tag with odds of about 2^-96 per pair, so dedupe is exact in practice. The first copy still wins, and a forgotten key behaves as before.
+- **Measured:**
+  - a swap costs the feed about 110 B (was 252 B);
+  - about 40 MB at sustained 3× (was about 92 MB).
+  - Sustained 3× with every window full is now about 490 MB, about 70 MB under the 560 MB limit.
+- **Evidence (fail before, pass after).**
+  - `tag-set.test.ts`:
+    - agrees with a Set through 200,000 random adds and deletes with crowded homes, growing and shrinking;
+    - a run wrapping past the table's end stays findable through deletes in every order;
+    - an entry at its own home just past the wrap stays put.
+  - `feed.test.ts`: a released swap's signature costs the feed under 140 B (258 B with key strings). The dedupe cases and the parity and recorder suites are unchanged.
+  - Hand mutants killed: three wrong backward-shift conditions; the low half ignored.
+
+
+## Falling behind the feeds (BEHIND, `run/behind.ts`)
+
+- **2026-10-06 · Why.** A worker that falls behind its feeds holds every unreleased frame in memory, and the hold grows until the heap runs out.
+- **What.** A loop cycle late by more than 10 s (the loop's monotonic clock) halts entries (`behind`, through the halt check); the halt clears after 30 s of cycles under 2 s. Exits keep running. Past 20,000 held frames, the feed sheds the held log frames of candidate pools only: never a pool that is held, has a position or seed, or has an exit or entry in flight (`LiveStrategy.committed`).
+- **Coverage.** Each shed range becomes a recorded coverage gap (`coverage:trades:<pool>:gap`, reason `shed`), placed first in its first slot, so it sorts before every shed event. H11 refuses the pool from that slot (H16 `gap`), live and in the recording's replay alike. Shed frames are ranked before they drop, so live and replay give the same moments after a shed.
+- **Cost.** A shed tail pool censors its REC-1 counterfactual for that range.
+
+## The 5-min save streams its payload (SAVE-SPIKE, `persist/state.ts`)
+
+- **2026-10-06 · Why.** Live on 5efb9ae0 died at a save (crash 27, MEM-PROBE): the last sample, 2 s before death, was
+  saving with old space at 412 MB and large-object space at 8 MB; the death record had large-object space at 107 MB.
+  The payload line (everything but the mint rows) was one `JSON.stringify` of the whole state, copied again to add its
+  newline, then written whole. With live's 41.2k coverage facts it is about 23 MB of text, so each save added about
+  47 MB of large objects (measured on the day2 state with coverage raised to 41.2k), on top of old space.
+- **What.** `streamJson` writes the payload in pieces: the payload's keys, its tables, and their rows, each row as one
+  `JSON.stringify` (`PAYLOAD_DEPTH` 3). Pieces are hashed as they go (the same digest as the whole line) and written in
+  batches of about 1 MiB. The file is byte for byte the same (same sha256 at 1.7k and 41.2k coverage facts), so the
+  saved format, the loader and the recording copy are unchanged.
+- **Measured** (day2 state, coverage raised to 41.2k): large-object space after a save, without a collection, +47 MB
+  before, +0.7 MB after.
+- **Evidence (fail before, pass after).** `save-spike.test.ts`: `streamJson` equals `JSON.stringify` with the bigint
+  replacer at every depth (omitted keys, `null` elements, `toJSON`, escapes); a saved file's payload line is the
+  one-string text and loads; at 41.2k coverage facts every write is at most 1 MiB plus one row and no piece reaches
+  1 KiB; a save adds under 4 MB to large-object space. Hand mutants killed: the one-string payload back, depth 0, no
+  `null` for an omitted element, no omission of a key, a piece not hashed, no batch flush, no `toJSON`.
+- **Not in this card.** Why 41.2k coverage facts are kept is STORE-GROWTH's question; loading still parses the payload
+  line whole (the boot side, ruled separately as BOOT-CAP).

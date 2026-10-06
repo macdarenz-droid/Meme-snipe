@@ -38,6 +38,17 @@ export const FLAG_LABEL: Record<StatusFlag, string> = {
   'regime-off': 'Regime off',
 };
 
+/**
+ * A risk halt's rule in words, after "Off:" (APP-TRUTH): the worker sends `risk` with the core rule as its source, so
+ * the reason names the rule ("SOL price unknown"), lower-cased after the first word unless that word is an acronym.
+ * An unknown rule, or none, reads as the plain risk limit.
+ */
+export const riskHaltLabel = (source: unknown): string => {
+  const words = typeof source === 'string' && Object.hasOwn(RISK_CODE_LABEL, source) ? RISK_CODE_LABEL[source] : undefined;
+  if (words === undefined) return HALT_LABEL.risk;
+  return /^[A-Z]{2}/.test(words) ? words : words.charAt(0).toLowerCase() + words.slice(1);
+};
+
 /** Why entries are off, after "Off:" (API-1); `other` has no label, so it adds no reason. */
 export const HALT_LABEL: Record<Exclude<HaltCode, 'other'>, string> = {
   starting: 'starting',
@@ -144,6 +155,7 @@ export const RISK_CODE_LABEL: Record<string, string> = {
   sol_price_stale: 'SOL price stale',
   mark_unknown: 'Position value unknown',
   mark_stale: 'Position value stale',
+  risk_fault: 'Risk check failed',
   size_below_minimum: 'Size below minimum',
   max_open_positions: 'Open trade limit',
   balance_unknown: 'Balance unknown',
