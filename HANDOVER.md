@@ -48,6 +48,7 @@ The previous S1 account reached its usage limit about 12:45 PM. The owner made t
 - No host access, no secrets access (owner only), as before.
 
 **Log (Melbourne time, newest first)**
+- 6:26 AM **Owner plan (CLAUDE.md "Pause, fix, red-team, then resume"):** pause → fix all blockers → S1 checks the whole path itself → 3 red teams attack the bot's logic and every corner → fix their findings → switch the worker back on → resume the parked tasks → monitor trading. The red teams start after FACTS-REREAD, DEDUP-PER-WATCH and POOL-FIRST-READ (with the unknown-events part) are merged.
 - 6:21 AM **Owner: pause the server until every blocker is fixed** ("start server again when all has been fixed … To stop wasting tokens").
   - Mechanism, verified in code: `"worker": "stub"` in ops/host-config.json makes worker_entry (logic.sh:107-115) start /opt/zeroed/stub/worker.mjs, which makes no provider calls, keeps the heartbeat and serves /health with git_sha and paper; worker-smoke exits 0 for the stub (worker-smoke:19).
   - PR #265 claude/pause-worker 8a902c45 (S1): host-config flip; ops-files.test.ts:207-208 and host-logic.test.ts:290 now pin 'stub' (intended state, flip back on resume); DECISIONS entry. Ops reviewer session_01DHzLKt5CaXGN934xwHpspk (Sonnet). Then CI, merge and Deploy.
