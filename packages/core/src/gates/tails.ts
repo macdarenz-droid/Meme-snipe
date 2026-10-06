@@ -43,8 +43,8 @@ type Program = keyof typeof EVENT_TAIL_UPGRADE_SLOT;
 
 /**
  * Checks every trade event under `keys` released as of now (and since `since`, when given), in release order.
- * Rejects on the first whose tail is non-zero or of a length the `program`'s boundary does not allow; refuses an
- * unreadable event or a refused history; with `required`, no event at all is not covered.
+ * Rejects when any tail is non-zero or of a length the `program`'s boundary does not allow (naming the earliest);
+ * else refuses an unreadable event (the earliest) or a refused history; with `required`, no event at all is not covered.
  */
 const checkTape = (
   ctx: { readonly now: Moment; readonly history: GateContext['history'] }, keys: readonly string[], program: Program,
@@ -63,11 +63,16 @@ const checkTape = (
   if (entries.length === 0) {
     return required ? { ok: false, code: 'not-covered', detail: `no trade event of ${what} since migration` } : { ok: true, events: 0 };
   }
+  // F1 (facts review B1): the answer does not depend on the order across kinds: any wrong or non-zero tail in range
+  // rejects (`event-tail`, H5); else any unreadable one refuses (`malformed`, H16), each named by its earliest entry.
+  let malformed: Exclude<TailCheck, { readonly ok: true }> | null = null;
   for (const e of entries) {
     const failed = tailVerdict(e, program, what);
-    if (failed !== null) return failed;
+    if (failed === null) continue;
+    if (failed.code === 'event-tail') return failed;
+    malformed ??= failed;
   }
-  return { ok: true, events: entries.length };
+  return malformed ?? { ok: true, events: entries.length };
 };
 
 /**
@@ -100,11 +105,11 @@ const TRADE_KEY = /^(?:logs:)?(pump_amm):(?:BuyEvent|SellEvent):|^(?:logs:)?(pum
 /**
  * OOM-SWAPS, F1 (supervisor ruling): the store keeps, of a trade-event key, its newest entry and, of the entries whose
  * tail would fail the check, per kind (`event-tail`, `malformed`) the earliest, the latest in order and the one received
- * last (`Collapse`), so at most eight entries a key. `checkTape` gives the same verdict (pass, reject, not covered) from
- * that subset for any `since`: an entry that passes the since filter exists exactly when the newest (by slot) or the
- * latest received does, and a failing one exactly when the latest failing in order (a slot since) or the one received
- * last (a time since) does. The entry it names is exact for a since at or before the key's first entry (the
- * migration). The event count it returns is not read by any gate. Before F1 every failing entry stayed; since non-zero
+ * last (`Collapse`), so at most eight entries a key. `checkTape` gives the same verdict (pass, `event-tail` for H5,
+ * `malformed` or not covered for H16) from that subset for any `since`: it answers by kind, not by order across kinds
+ * (facts review B1), and per kind an entry in range exists exactly when the latest of that kind in order (a slot since)
+ * or the one received last (a time since) does; an entry at all, when the newest or the latest received does. The
+ * entry it names is exact for a since at or before the key's first entry (the migration). The event count it returns is not read by any gate. Before F1 every failing entry stayed; since non-zero
  * tails became common on mainnet (2026-10-06), that was every swap, about 3 KB each, and the worker's heap ran out in
  * minutes (the backtest feed keeps its own subset, sim/facts.ts).
  */

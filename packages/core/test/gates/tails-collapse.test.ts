@@ -38,8 +38,8 @@ const valueOf = (r: (n: number) => number, program: 'pump_amm' | 'pump', slot: b
 };
 
 const strip = (r: ReturnType<typeof checkPoolTails>) => (r.ok ? { ok: true } : r);
-/** The verdict class: pass, reject (a failing tail of either kind) or not covered. */
-const verdict = (r: ReturnType<typeof checkPoolTails>) => (r.ok ? 'pass' : r.code === 'not-covered' ? 'not-covered' : 'reject');
+/** The verdict class as H5 and H16 map it (hard.ts): pass; `event-tail` an H5 reject; `malformed` or not covered an H16 refusal. */
+const verdict = (r: ReturnType<typeof checkPoolTails>) => (r.ok ? 'pass' : r.code === 'event-tail' ? 'H5' : 'H16');
 const START: Since = { slot: 0n, ms: Number.MIN_SAFE_INTEGER };
 
 describe('the trade-tail collapse keeps every answer of the tail checks', () => {
@@ -117,8 +117,32 @@ describe('the trade-tail collapse keeps every answer of the tail checks', () => 
     const ctx = (st: AsOfStore) => ({ now: clock.now(), history: (k: string, f: Moment, t?: Moment) => st.history(k, f, t) });
     // Only the entry received at 300 is at or after a since of 250 by receipt time: it fails, so both reject.
     const since: Since = { slot: null, ms: 250 };
-    expect(verdict(checkPoolTails(ctx(kept), POOL, since))).toBe('reject');
-    expect(verdict(checkPoolTails(ctx(full), POOL, since))).toBe('reject');
+    expect(verdict(checkPoolTails(ctx(kept), POOL, since))).toBe('H5');
+    expect(verdict(checkPoolTails(ctx(full), POOL, since))).toBe('H5');
+  });
+
+  it('F1 (facts review B1): the answer is by kind, not by order across kinds, so a dropped middle entry of one kind never lets the other kind answer', () => {
+    const clock = new SimClock(ORIGIN);
+    const full = new AsOfStore(clock);
+    const kept = new AsOfStore(clock, null, tradeTailCollapse);
+    const [buy] = poolTradeKeys(POOL);
+    const base = EVENT_TAIL_UPGRADE_SLOT.pump_amm + 10n;
+    // No readable tail (no `extra`): `malformed`, an H16 refusal.
+    const unreadable = { event: { trailing: 8 }, txSlot: base, signature: 'M' };
+    const bad = { event: { trailing: 8, extra: '546c140000000000' }, txSlot: base, signature: 'T' };
+    const clean = { event: { trailing: 8, extra: '0000000000000000' }, txSlot: base, signature: 'C' };
+    // The reviewer's tape: M@s1 (received 99), M@s4 (150), T@s6 (160), M@s9 (400), C@s10 (410).
+    for (const [s, recv, v, id] of [[1n, 99, unreadable, 'm1'], [4n, 150, unreadable, 'm4'], [6n, 160, bad, 't6'], [9n, 400, unreadable, 'm9'], [10n, 410, clean, 'c10']] as const) {
+      const m = { slot: base + s, txIndex: 0, ixIndex: 0, receivedAt: recv };
+      clock.advanceTo(m);
+      full.record(buy!, v, m, id);
+      kept.record(buy!, v, m, id);
+    }
+    const ctx = (st: AsOfStore) => ({ now: clock.now(), history: (k: string, f: Moment, t?: Moment) => st.history(k, f, t) });
+    for (const since of [{ slot: base + 3n, ms: 0 }, { slot: null, ms: 140 }, START] as Since[]) {
+      expect(checkPoolTails(ctx(full), POOL, since), JSON.stringify(String(since.slot))).toMatchObject({ ok: false, code: 'event-tail', signature: 'T' });
+      expect(checkPoolTails(ctx(kept), POOL, since), JSON.stringify(String(since.slot))).toMatchObject({ ok: false, code: 'event-tail', signature: 'T' });
+    }
   });
 
   it('a clean tape keeps one entry per key however long it runs; a single offender and a single unreadable entry stay', () => {

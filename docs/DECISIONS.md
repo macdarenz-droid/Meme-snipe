@@ -2736,10 +2736,15 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   store keeps the earliest, the latest in order and the one received last; of entries kept for nothing, only the one
   received last while it was received after the newest. Trade keys class failing entries by kind (`event-tail`,
   `malformed`): at most eight entries a key whatever the tape, three when every swap fails.
-  - H5 gives the same verdict (pass, reject, not covered) for any `since`: a slot since needs the latest failing in
-    order, a receipt-time since the one received last, and "any entry since" the newest or the latest received; all
-    are kept. The entry it names is exact for a since at or before the key's first entry, which is the production
-    since (the migration).
+  - The check answers by kind, not by order across kinds (facts review B1): any wrong or non-zero tail in range
+    rejects (`event-tail`, H5), else any unreadable one refuses (`malformed`, H16), each named by its earliest entry.
+    Before, the first failing entry in order answered, so a dropped middle entry of one kind could let the other kind
+    answer (H5 for H16 or back); on a whole tape it also turned an H5 reject into an H16 refusal when an unreadable
+    event came first. Both block an entry; the class is now exact.
+  - The same verdict (pass, H5, H16) for any `since`: per kind, a slot since needs the latest of that kind in order and
+    a receipt-time since the one received last; "any entry since" the newest or the latest received; all are kept.
+    The entry it names is exact for a since at or before the key's first entry, which is the production since (the
+    migration).
   - The receipt-time rule (one received after the newest) beyond the supervisor's five also bounds clean entries
     that a late fill used to leave behind for good.
   - Newest-only keys (`false` for every entry) keep their newest and at most the latest received before it: lookups
@@ -2749,7 +2754,9 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
 - **Evidence (fail before, pass after).** `tails-collapse.test.ts`: 5,000 records with tail `546c140000000000` keep
   three entries and still reject naming the first (before: 5,000); the failing entry received last stays though not
   last in order (receipt-time since); 400 random tapes: same verdict for every since, same answer from the start, at
-  most eight entries a key. `store-rules.test.ts`: real mainnet swaps (`fixtures/crash-hunt/mainnet-swaps-2026-10-06.json`,
+  most eight entries a key, the verdict compared as H5 and H16 map it; the reviewer's tape (unreadable, unreadable,
+  non-zero, unreadable, clean) answers `event-tail` for every since in both stores. `store-rules.test.ts`: real mainnet swaps (`fixtures/crash-hunt/mainnet-swaps-2026-10-06.json`,
   public chain data from the supervisor's hunt) at 30,000 notices keep at most five entries a trade key and under
   8 MB. Hand mutants killed: every failing entry kept, the latest received dropped, the earliest dropped, the latest
-  in order dropped, nothing kept of the `false` class.
+  in order dropped, nothing kept of the `false` class, the two kinds merged into one class (P5), the answer by order
+  across kinds.
