@@ -32,7 +32,11 @@ while (idle < 20) {
     const c = JSON.parse(l);
     h9.set(c.mint, c.oldestBefore === null ? null : c.complete ? c.migTs - c.oldestBefore >= 300 : c.oldestBefore < c.migTs - 300 ? true : null);
   }
-  const todo = L.filter((x) => !seen.has(x.pool) && x.sol >= 5 && h9.has(x.mint) && h9.get(x.mint) !== false);
+  // Graduates that pass H9 first; unchecked ones only when none is waiting, so the lane is never idle (H9 is then checked
+  // at analysis time for the graduates that trade).
+  const ok = L.filter((x) => !seen.has(x.pool) && x.sol >= 5 && h9.get(x.mint) !== false);
+  const passed = ok.filter((x) => h9.get(x.mint) === true);
+  const todo = passed.length ? passed : ok.slice(0, 20);
   if (!todo.length) { idle++; await sleep(30000); continue; }
   idle = 0;
   for (const x of todo) {
