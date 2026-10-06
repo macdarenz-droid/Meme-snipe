@@ -2,7 +2,7 @@
 // (P3 in main.ts), under a daily cap, with the same bounded retries as a cut creates log; after the fetch settles the
 // worker puts its outcome on the feed (`hole-fetch:<via>`, after the transaction's own events), and the producer heals
 // the hole only on found (core test/facts/trade-heal.test.ts). Fail closed: not found, capped or unwatched says so.
-import { writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { HOLE_FETCH_PREFIX } from '../../core/src/facts/index.ts';
@@ -217,6 +217,21 @@ describe('TRADE-GAP-HEAL review B1: the day\'s fetch caps hold across a restart'
     cutCreate(again.h, sig(CUT_CREATE_FETCHES_PER_DAY + 2));
     await again.m.run(1_000, 200, () => again.m.slot());
     expect(count(b, 'cut-create')).toBe(2);
+    await again.h.worker.stop();
+  });
+
+  it('review N6: a count that cannot be saved refuses the fetch (no fetch whose count a restart could lose)', async () => {
+    const first = await boot([]);
+    await first.h.worker.stop();
+    // The save's temp file cannot be opened: every save fails.
+    mkdirSync(join(first.h.stateDir, 'fetch-caps.json.tmp'));
+    const b: [string, string][] = [];
+    const again = await boot(b, { stateDir: first.h.stateDir, timers: first.h.timers });
+    cutTrades(again.h, 0, 1);
+    cutCreate(again.h, sig(600));
+    await again.m.run(2_000, 200, () => again.m.slot());
+    expect([count(b, 'cut-trade'), count(b, 'cut-create')]).toEqual([0, 0]);
+    expect(again.out).toEqual([{ signature: sig(0), found: false, via: POOLS[0] }]);
     await again.h.worker.stop();
   });
 
