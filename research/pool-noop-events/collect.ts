@@ -97,7 +97,16 @@ const cmp = (a: Pos, b: Pos) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
 
 /** For each occurrence and each pool swapped in its transaction, the pool's swaps just before and after it. */
 const tapes = async (perDisc: number) => {
-  const occ = readJson<Occurrence[]>('occurrences.json', []);
+  // Round-robin over pools (each pool's first occurrence, then each one's second, ...), so the sample spans pools.
+  const all = readJson<Occurrence[]>('occurrences.json', []);
+  const nth = new Map<string, number>();
+  const rank = all.map((o) => {
+    const k = `${o.disc}:${o.pools[0] ?? ''}`;
+    const r = nth.get(k) ?? 0;
+    nth.set(k, r + 1);
+    return r;
+  });
+  const occ = all.map((o, i) => ({ o, r: rank[i]! })).sort((a, b) => a.r - b.r).map((x) => x.o);
   const done = readJson<Record<string, string[]>>('tapes.json', {});
   const count: Record<string, number> = {};
   for (const o of occ) {
@@ -110,22 +119,29 @@ const tapes = async (perDisc: number) => {
         // 50 pages); a pool busier than that is left without a tape. Failed transactions are kept on the list here and
         // dropped below, so the window is contiguous.
         type Sig = { signature: string; err: unknown };
-        const older = (await rpc('getSignaturesForAddress', [pool, { limit: 20, before: o.sig }])) as Sig[];
-        const newer: Sig[] = [];
-        let cursor: string | undefined;
-        let complete = false;
-        for (let p = 0; p < 50; p++) {
-          const res = (await rpc('getSignaturesForAddress', [pool, { limit: 1000, until: o.sig, ...(cursor ? { before: cursor } : {}) }])) as Sig[];
-          newer.push(...res);
-          if (res.length < 1000) { complete = true; break; }
-          cursor = res.at(-1)!.signature;
+        try {
+          const older = (await rpc('getSignaturesForAddress', [pool, { limit: 20, before: o.sig }])) as Sig[];
+          const newer: Sig[] = [];
+          let cursor: string | undefined;
+          let complete = false;
+          for (let p = 0; p < 50; p++) {
+            const res = (await rpc('getSignaturesForAddress', [pool, { limit: 1000, until: o.sig, ...(cursor ? { before: cursor } : {}) }])) as Sig[];
+            newer.push(...res);
+            if (res.length < 1000) { complete = true; break; }
+            cursor = res.at(-1)!.signature;
+          }
+          if (!complete) { done[key] = []; writeJson('tapes.json', done); continue; }
+          // Chronological, in the RPC's order (its order within a slot is checked by the whole tape chaining, in report).
+          const sigs = [...[...older].reverse(), { signature: o.sig, err: null }, ...newer.slice(-20).reverse()].filter((x) => x.err === null).map((x) => x.signature);
+          for (const s of sigs) await getTx(s);
+          done[key] = sigs;
+          writeJson('tapes.json', done);
+        } catch (e) {
+          // The RPC no longer finds the event's or a neighbour's transaction: no tape (reported inconclusive).
+          console.log(`${key}: ${(e as Error).message.slice(0, 120)}`);
+          done[key] = [];
+          writeJson('tapes.json', done);
         }
-        if (!complete) { done[key] = []; writeJson('tapes.json', done); continue; }
-        // Chronological, in the RPC's order (its order within a slot is checked by the whole tape chaining, in report).
-        const sigs = [...[...older].reverse(), { signature: o.sig, err: null }, ...newer.slice(-20).reverse()].filter((x) => x.err === null).map((x) => x.signature);
-        for (const s of sigs) await getTx(s);
-        done[key] = sigs;
-        writeJson('tapes.json', done);
       }
     }
     count[o.disc] = (count[o.disc] ?? 0) + 1;
@@ -212,7 +228,7 @@ const report = () => {
       const key = `${o.sig}:${o.outerIx}:${o.innerIx}:${pool}`;
       const sigs = tapesOf[key];
       if (sigs === undefined) continue;
-      if (sigs.length === 0) { checks.push({ key, disc: o.disc, pool, slot: o.slot, verdict: 'inconclusive', why: 'pool too busy to page back to the event' }); continue; }
+      if (sigs.length === 0) { checks.push({ key, disc: o.disc, pool, slot: o.slot, verdict: 'inconclusive', why: 'no tape: pool too busy to page back to the event, or a transaction not found' }); continue; }
       const add = (verdict: Check['verdict'], why: string) => checks.push({ key, disc: o.disc, pool, slot: o.slot, verdict, why });
       // Every pool event on the tape (the occurrence's transaction and its neighbours), in chain order.
       const all: { pos: Pos; e: LocatedEvent }[] = [];
