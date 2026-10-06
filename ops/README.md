@@ -10,7 +10,7 @@ Server: Vultr High Performance, Frankfurt, 1 vCPU / 1 GB, image **Ubuntu 24.04 L
 2. **Install.** Paste this one line the same way (Clipboard → Paste), then press Enter:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/3add13d7a4a70713cdf653d12be00b1026cec68c/ops/install.sh -o i && echo 'fe90ed95dbda4d59698cfc4c3e4a83639225206e20a3305d322eb213c16f32f7  i' | sha256sum -c && bash i
+curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/3add13d7a4a70713cdf653d12be00b1026cec68c/ops/install.sh -o i && echo '225c0c63f3f1cfb82a753ba4b97630bfd7fcd7046031135ac73c88c554c49abd  i' | sha256sum -c && bash i
 ```
 
    The line checks the file against its SHA-256 before anything runs; a changed file stops at `sha256sum -c`. After about two minutes the screen shows a **deploy code** of 6 words.
@@ -19,7 +19,7 @@ curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/3add13d7
 
 The console screen can be left at any time (Ctrl+C); setup carries on in the background. `zeroed-status` shows where it stands and the codes again.
 
-SHA-256 of `install.sh`: `fe90ed95dbda4d59698cfc4c3e4a83639225206e20a3305d322eb213c16f32f7`
+SHA-256 of `install.sh`: `225c0c63f3f1cfb82a753ba4b97630bfd7fcd7046031135ac73c88c554c49abd`
 
 After any change to `ops/install.sh`, the commit in the line must move to one that holds the new file (`ops/test/e2e.sh` fails otherwise).
 
@@ -163,6 +163,7 @@ The owner approved it on 6 Oct ("Approve upload"; "Okay yes delete after upload"
 - **What goes up:** from each boot folder in `/var/lib/zeroed/recorder`, the `frames-NNN` and `releases-NNN` files (`.jsonl.zst`, listed with their sha256 in the boot's manifest), once each is 15 minutes old. Once the boot has ended, its `manifest.json` and its saved state go too; a saved state already up is listed, never sent twice. For each ended UTC day: that day's journal lines (`journal-YYYY-MM-DD.jsonl.zst`) and a signed `index-N.json`. `raw-NNN`, `delays-NNN` and plain `.jsonl` files never go.
 - **Where:** GitHub Release assets, one prerelease per UTC day (`rec-YYYY-MM-DD`, never "latest"; past 900 assets `rec-YYYY-MM-DD.1`, `.2`, ...). Asset names are `<boot>.<file>`; day files keep their own name.
 - **How:** one file at a time, oldest first, at 2 MB/s. The file is checked against its manifest, scanned (below) and hashed again, then curl sends it to the watchdog's `POST /record`, its headers on stdin. The header is signed with the heartbeat key over `t\nRECORD\n/record\n<header>` and carries a one-use nonce. The watchdog checks the signature, the file allowlist and that the repository is private and not this one. It pipes the body to GitHub with a fixed length and reads the asset back by id. It keeps the asset only if GitHub's digest is `sha256:<the signed hash>` with the same size. A name that exists with the same bytes counts as up. An unfinished upload is removed and sent again. Other bytes under the name are never replaced. Then the host reads the asset back once more (`op: check`) before counting it.
+- **A file deleted meanwhile:** RECORD-BUDGET deletes old recordings on its own schedule, so a listed file may be gone by the time it is checked, hashed or sent. It is skipped, logged once as "Vanished before upload", counted in the status file (`vanished`, `vanished_files`), and the run goes on; it is not a failure and raises no alert. A boot folder where a file went while it was listed counts as open for that run, so nothing in it is deleted until it has been quiet for 15 minutes again.
 - **Index:** `index-N.json` lists each confirmed file of the day (boot, path, release, asset, asset id, size, sha256) and the boots' manifests. Its last line is `hmac-sha256=<hex>` over `RECORD-INDEX\n<body>`, with the heartbeat key. A changed set is a new N, never a replacement; the newest N wins. Download a day by verifying every file's sha256 against it.
 - **Redaction scan:** each file is read decompressed through the worker's own redaction patterns (`packages/worker/src/run/redact.ts`, kept equal by a test) and the credentials the worker holds. A hit (`[redacted]` alone is not one) keeps the file on the server, unchanged, and alerts naming the file, never the value.
 - **Delete after upload:** only a frames or releases file of an ended boot (not the journal's last start, not the newest folder while the worker runs, no plain `.jsonl` and nothing changed for 15 minutes). All of these must hold, checked just before the delete:

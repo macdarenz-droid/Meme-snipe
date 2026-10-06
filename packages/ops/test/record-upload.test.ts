@@ -11,6 +11,35 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { zstdCompressSync } from 'node:zlib';
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
+
+// node:fs passes through, with hooks a test arms to delete a file at an exact moment of the uploader's run (RECORD-BUDGET
+// deletes recordings on its own schedule, so any file may vanish between two steps).
+const fsHooks = vi.hoisted(() => ({
+  beforeStream: null as ((path: string) => void) | null,
+  afterReaddir: null as ((dir: string) => void) | null,
+  afterExists: null as ((path: string, found: boolean) => void) | null,
+}));
+vi.mock('node:fs', async (importOriginal) => {
+  const fs = await importOriginal<typeof import('node:fs')>();
+  const wrapped = {
+    ...fs,
+    createReadStream: ((path: string, ...rest: unknown[]) => {
+      fsHooks.beforeStream?.(String(path));
+      return (fs.createReadStream as (...a: unknown[]) => unknown)(path, ...rest);
+    }) as typeof fs.createReadStream,
+    readdirSync: ((dir: string, ...rest: unknown[]) => {
+      const out = (fs.readdirSync as (...a: unknown[]) => unknown)(dir, ...rest);
+      fsHooks.afterReaddir?.(String(dir));
+      return out;
+    }) as typeof fs.readdirSync,
+    existsSync: ((path: string) => {
+      const found = fs.existsSync(path);
+      fsHooks.afterExists?.(String(path), found);
+      return found;
+    }) as typeof fs.existsSync,
+  };
+  return { ...wrapped, default: wrapped };
+});
 import worker from '../src/watchdog/worker.ts';
 import { KEY, rig, sha } from './record-fakes.ts';
 
@@ -28,7 +57,12 @@ const TODAY = day(0);
 const SECRET = 'TESTHELIUSKEY0123456789abcdef';
 const tmp = mkdtempSync(join(tmpdir(), 'zeroed-record-'));
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  fsHooks.beforeStream = null;
+  fsHooks.afterReaddir = null;
+  fsHooks.afterExists = null;
+});
 
 interface Fx {
   root: string;
@@ -407,6 +441,70 @@ describe('upload and delete', () => {
     const x = uploader(f);
     expect(await x.u.run()).toBe(0);
     expect([...x.r.gh.releases.keys()]).toEqual([`rec-${D2}.1`]);
+  });
+});
+
+describe('a file deleted by someone else during the run (RECORD-BUDGET)', () => {
+  it('a file deleted between lstat and hash is skipped, counted and reported, and the run goes on', async () => {
+    const f = fx();
+    const boot = bootId(30, 140);
+    const dir = makeBoot(f, boot);
+    const gone = join(dir, `days/${D2}/frames-000.jsonl.zst`);
+    fsHooks.beforeStream = (p) => {
+      if (p === gone && existsSync(gone)) unlinkSync(gone);
+    };
+    const x = uploader(f);
+    expect(await x.u.run()).toBe(0);
+    // The others went up; the vanished one is neither kept nor failed. The delete changed the day folder just now, so
+    // the boot is not settled and nothing is deleted in this run.
+    expect(assetNames(x.r).filter((a) => a.startsWith(boot))).toEqual([`${boot}.frames-001.jsonl.zst`, `${boot}.manifest.json`, `${boot}.releases-000.jsonl.zst`]);
+    expect(exists(dir, `days/${D2}/frames-001.jsonl.zst`)).toBe(true);
+    expect(x.status()).toMatchObject({ ok: true, vanished: 1, uploaded: 4, deleted: 0, kept: [], last_error: null });
+    expect(x.status().vanished_files).toEqual([`${boot}/days/${D2}/frames-000.jsonl.zst`]);
+    expect(x.log.filter((l: string) => l.startsWith('Vanished before upload'))).toEqual([`Vanished before upload: ${boot}/days/${D2}/frames-000.jsonl.zst.`]);
+    expect(x.log.at(-1)).toMatch(/ 1 vanished before upload, /);
+    expect(x.state().files[`${boot}/days/${D2}/frames-000.jsonl.zst`]).toMatchObject({ vanished_at: NOW });
+    // Reported once: a run after the folder settled neither counts it again nor tries to send it, and deletes the others.
+    fsHooks.beforeStream = null;
+    age(dir);
+    const y = uploader(f, { r: x.r });
+    expect(await y.u.run()).toBe(0);
+    expect(y.status()).toMatchObject({ ok: true, vanished: 0, pending: 0, uploaded: 0, deleted: 2 });
+    expect(exists(dir, `days/${D2}/frames-001.jsonl.zst`)).toBe(false);
+    expect(exists(dir, `days/${D2}/releases-000.jsonl.zst`)).toBe(false);
+  });
+
+  it('a file deleted while its boot folder is walked keeps the boot open for the run (nothing deleted), and the run goes on', async () => {
+    const f = fx();
+    const boot = bootId(30, 141);
+    const dir = makeBoot(f, boot);
+    const day = join(dir, 'days', D2);
+    const gone = join(day, 'frames-000.jsonl.zst');
+    fsHooks.afterReaddir = (d) => {
+      if (d === day && existsSync(gone)) unlinkSync(gone);
+    };
+    const x = uploader(f);
+    expect(await x.u.run()).toBe(0);
+    expect(assetNames(x.r).filter((a) => a.startsWith(boot))).toEqual([`${boot}.frames-001.jsonl.zst`, `${boot}.releases-000.jsonl.zst`]);
+    expect(exists(dir, `days/${D2}/frames-001.jsonl.zst`)).toBe(true);
+    expect(x.status()).toMatchObject({ ok: true, vanished: 1, deleted: 0 });
+  });
+
+  it('a waiting file deleted while the backlog is measured is left out of it, and the run ends normally', async () => {
+    const f = fx();
+    const boot = bootId(30, 142);
+    const dir = makeBoot(f, boot);
+    writeFileSync(f.journal, startLine(boot, new Date(NOW - 30 * H).toISOString()));
+    // Sealed less than 15 minutes ago in the running boot: it waits for a later run.
+    const young = join(dir, `days/${D2}/releases-000.jsonl.zst`);
+    const t = (NOW - 60_000) / 1000;
+    utimesSync(young, t, t);
+    fsHooks.afterExists = (p, found) => {
+      if (p === young && found) unlinkSync(young);
+    };
+    const x = uploader(f);
+    expect(await x.u.run()).toBe(0);
+    expect(x.status()).toMatchObject({ ok: true, pending: 0, running: false });
   });
 });
 

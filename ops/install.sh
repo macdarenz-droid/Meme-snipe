@@ -1506,6 +1506,10 @@ const DATA_RE = /^days\/(\d{4}-\d{2}-\d{2})\/((?:frames|releases)-\d{3}\.jsonl\.
 const ATTACHMENTS = new Set(['deployer-state.json', 'deployer-state.json.zst']);
 const isSha = (s) => typeof s === 'string' && /^[0-9a-f]{64}$/.test(s);
 const isBytes = (n) => Number.isSafeInteger(n) && n > 0;
+/** True for "no such file": RECORD-BUDGET deletes recordings on its own schedule, so any file may vanish mid-run. */
+const isGone = (e) => e?.code === 'ENOENT';
+/** Recorder files (not the uploader's own journal and index copies): one that vanishes is reported once. */
+const RECORDER_KINDS = new Set(['data', 'manifest', 'attachment']);
 const dayOf = (ms) => new Date(ms).toISOString().slice(0, 10);
 const dayEnd = (day) => Date.parse(`${day}T00:00:00Z`) + 86_400_000;
 
@@ -1693,7 +1697,14 @@ export const readBoots = async (cfg, now, workerActive) => {
   boots.sort((a, b) => a.time - b.time || (a.boot < b.boot ? -1 : 1));
   const running = await runningBoots(cfg, boots, workerActive);
   for (const b of boots) {
-    const why = running.has(b.boot) ? 'the running boot' : settled(b.dir, now);
+    let why;
+    try {
+      why = running.has(b.boot) ? 'the running boot' : settled(b.dir, now);
+    } catch (e) {
+      if (!isGone(e)) throw e;
+      // A file went while the folder was walked: open for this run (its sealed files still go up, nothing is deleted).
+      why = 'a file went while it was listed';
+    }
     b.open = why !== null;
     b.why = why;
   }
@@ -1798,7 +1809,8 @@ export class Uploader {
     this.failures = 0;
     this.inARow = 0;
     this.uploads = 0;
-    this.counts = { uploaded: 0, verified: 0, deleted: 0, freed_bytes: 0 };
+    this.counts = { uploaded: 0, verified: 0, deleted: 0, freed_bytes: 0, vanished: 0 };
+    this.vanishedFiles = [];
     this.lastError = null;
     this.stopped = false;
     this.lastStatus = 0;
@@ -1810,7 +1822,7 @@ export class Uploader {
   }
 
   status(extra) {
-    writeAtomic(join(this.cfg.stateDir, 'status.json'), `${JSON.stringify({ v: 1, at: this.d.now(), scope: this.cfg.scope, delete_local: this.cfg.deleteLocal, failed_runs: this.state.failed_runs, ...this.counts, kept: this.kept, last_error: this.lastError, ...extra })}\n`);
+    writeAtomic(join(this.cfg.stateDir, 'status.json'), `${JSON.stringify({ v: 1, at: this.d.now(), scope: this.cfg.scope, delete_local: this.cfg.deleteLocal, failed_runs: this.state.failed_runs, ...this.counts, vanished_files: this.vanishedFiles, kept: this.kept, last_error: this.lastError, ...extra })}\n`);
   }
 
   /** The status file, at most once a minute during a run, so a long first run never looks stalled. */
@@ -1831,6 +1843,23 @@ export class Uploader {
   keep(key, why) {
     this.kept.push({ key, why });
     this.d.log(`Kept on the server, not uploaded: ${key} (${why}).`);
+  }
+
+  /**
+   * A listed file that is no longer on the server (deleted before it was sent): skipped, counted and reported, never a
+   * failure, and the run goes on. A recorder file is marked in the state so it is reported once and not tried again; an
+   * asset sent earlier but not yet confirmed is still read back on later runs.
+   */
+  vanish(it) {
+    const files = this.state.files;
+    if (files[it.key]?.vanished_at) return;
+    if (RECORDER_KINDS.has(it.kind)) {
+      files[it.key] = { ...(files[it.key] ?? { day: it.day, boot: it.boot, path: it.rel }), vanished_at: this.d.now() };
+      this.save();
+    }
+    this.counts.vanished++;
+    this.vanishedFiles.push(it.key);
+    this.d.log(`Vanished before upload: ${it.key}.`);
   }
 
   release(day) {
@@ -1865,13 +1894,20 @@ export class Uploader {
         return;
       }
     }
-    if (this.uploads >= MAX_UPLOADS_PER_RUN) return;
-    let st;
+    if (rec?.vanished_at || this.uploads >= MAX_UPLOADS_PER_RUN) return;
     try {
-      st = lstatSync(it.path);
-    } catch {
-      return; // gone (deleted after an earlier upload, or never written): nothing to send
+      await this.send(it);
+    } catch (e) {
+      if (!isGone(e)) throw e;
+      this.vanish(it);
     }
+  }
+
+  /** upload()'s checks and sends; a file that vanishes at any step throws ENOENT, which upload() reports. */
+  async send(it) {
+    const files = this.state.files;
+    const rec = files[it.key];
+    const st = lstatSync(it.path);
     if (!st.isFile()) return this.keep(it.key, 'not a plain file');
     if (it.open && this.d.now() - st.mtimeMs < QUIET_MS) return;
     if (st.size > MAX_BYTES) return this.keep(it.key, 'over 95 MB');
@@ -1881,7 +1917,8 @@ export class Uploader {
     let hit;
     try {
       hit = await scanFile(it.path, this.cfg.values);
-    } catch {
+    } catch (e) {
+      if (isGone(e)) throw e;
       hit = 'unreadable text';
     }
     if (hit) return this.keep(it.key, `holds ${hit}`);
@@ -1927,6 +1964,8 @@ export class Uploader {
         files[it.key] = { day: it.day, boot: it.boot, path: it.rel, release, asset: j.name ?? null, asset_id: j.asset_id, size: h0.bytes, sha256: h0.sha256, verified: false };
         this.save();
       }
+      // curl could not read a file deleted while it was sent: that is a vanish, not a failure.
+      if (!existsSync(it.path)) return this.vanish(it);
       return this.fail(`${it.key}: HTTP ${r.status}${typeof j.error === 'string' ? ` (${j.error})` : ''}${r.error ? ` (${r.error})` : ''}`);
     }
     this.fail(`${it.key}: the watchdog asked to send again three times`);
@@ -2135,12 +2174,23 @@ export class Uploader {
           for (const it of mine) await this.deleteFile(it, running);
         }
       }
-      const pending = items.filter((i) => !this.state.files[i.key]?.verified && !this.state.files[i.key]?.deleted_at && !this.kept.some((k) => k.key === i.key) && existsSync(i.path));
-      const oldest = pending.reduce((m, i) => Math.min(m, statSync(i.path).mtimeMs), this.journalBacklogFrom());
+      // Each waiting file's age, read once; one deleted meanwhile is left out.
+      const pending = items
+        .filter((i) => !this.state.files[i.key]?.verified && !this.state.files[i.key]?.deleted_at && !this.state.files[i.key]?.vanished_at && !this.kept.some((k) => k.key === i.key) && existsSync(i.path))
+        .map((i) => {
+          try {
+            return statSync(i.path).mtimeMs;
+          } catch (e) {
+            if (isGone(e)) return null;
+            throw e;
+          }
+        })
+        .filter((t) => t !== null);
+      const oldest = pending.reduce((m, t) => Math.min(m, t), this.journalBacklogFrom());
       if (this.failures === 0) this.state.failed_runs = 0;
       this.save();
       this.status({ running: false, ok: this.failures === 0, pending: pending.length, backlog_age_s: Number.isFinite(oldest) ? Math.max(0, Math.round((this.d.now() - oldest) / 1000)) : 0 });
-      this.d.log(`Recording upload: ${this.counts.uploaded} sent, ${this.counts.verified} confirmed, ${this.counts.deleted} deleted (${this.counts.freed_bytes} bytes), ${pending.length} waiting, ${this.kept.length} kept, ${this.failures} failed.`);
+      this.d.log(`Recording upload: ${this.counts.uploaded} sent, ${this.counts.verified} confirmed, ${this.counts.deleted} deleted (${this.counts.freed_bytes} bytes), ${this.counts.vanished} vanished before upload, ${pending.length} waiting, ${this.kept.length} kept, ${this.failures} failed.`);
       return this.failures === 0 ? 0 : 1;
     } catch (e) {
       this.lastError = e instanceof Error ? `${e.name}: ${e.code ?? e.message.slice(0, 120)}` : 'error';
