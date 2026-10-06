@@ -97,6 +97,29 @@ describe('DEDUP-PER-WATCH: a transaction touching two watched pools', () => {
     expect(gapFree(w, B)).toBe(S + 1n);
   });
 
+  it('an echo after its slot was released still gives its pool a hole, placed after everything (never refused as late)', () => {
+    const w = opened();
+    const feed = new LiveFeed({ ...DEFAULT_LIVE_FEED, horizonSlots: 0 });
+    const t = at(S);
+    const body = (via: string): FrameBody => ({ type: 'logs', signature: SIG, slot: S, err: null, via, logs: [...swapOf(A, S).logs, 'Log truncated'], commitment: 'confirmed' });
+    const out: MarketEvent[] = [];
+    const drain = (ms: number): void => {
+      feed.advance(ms);
+      for (let e = feed.next(); e !== null; e = feed.next()) if (e.kind === 'market') out.push(e);
+    };
+    feed.ingest('helius', body(VIA(A)), { receivedAt: t });
+    feed.ingest('helius', { type: 'slot', slot: S + 1n, parent: S, root: null }, { receivedAt: t + 10 });
+    drain(t + 11);
+    const late = feed.ingest('helius', body(VIA(B)), { receivedAt: t + 20 });
+    expect(late.echo).toBe(true);
+    expect(late.place.at).toBe('offchain');
+    feed.ingest('helius', { type: 'slot', slot: S + 2n, parent: S + 1n, root: null }, { receivedAt: t + 30 });
+    drain(t + 31);
+    expect(feed.status().late).toBe(0);
+    w.push(...out);
+    expect(gapFree(w, B)).toBeGreaterThan(S);
+  });
+
   it('a cut log with no event left gives both pools a hole', () => {
     const w = opened();
     through(w, ['Log truncated'], S, [VIA(A), VIA(B)]);
