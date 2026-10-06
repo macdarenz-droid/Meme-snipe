@@ -133,7 +133,27 @@ export const RAW = {
   solUsd: 'sol-usd',
   volumeHour: 'read:chain-volume-hour',
   exec: 'read:exec-health',
+  /**
+   * READ-COHERENT: a coherent batch of reads goes on the feed between these two frames (`{ mint, members }`, then
+   * `{ mint, slot, members }`, `slot` the oldest member judged by slot lag, or null). At one moment events are released
+   * in key order, so the open comes before every `read:` key and the close after: the decision on the batch is made at
+   * the close, on its members alone. A backtest supplying the same reads emits the same three parts.
+   */
+  batchOpen: (mint: string) => `read-batch:${mint}`,
+  batchClose: (mint: string) => `reads:${mint}`,
+  /** PERSIST-2: graduates known before this process (its own saved series, or DATA-1's day files). */
+  graduatesSeed: 'read:graduates-seed',
 } as const;
+
+/**
+ * PERSIST-2: graduates the producer did not build in this process, each with its survival-mark reserve, as of
+ * `asOfMs`: the worker's saved series (`persist`) or DATA-1's day files (`data-1`).
+ */
+export interface GraduatesSeed {
+  readonly source: 'persist' | 'data-1';
+  readonly asOfMs: number;
+  readonly items: readonly { readonly mint: string; readonly migratedAtMs: number; readonly reserveAfter: bigint }[];
+}
 
 // ---------- Shape checks ----------
 
@@ -191,6 +211,11 @@ export const parseSolUsdBar = (v: unknown): SolUsdBar | null =>
 export const parseVolumeHour = (v: unknown): VolumeHour | null =>
   isObj(v) && Number.isSafeInteger(v['hourStartMs']) && (v['hourStartMs'] as number) % HOUR_MS === 0 && isNat(v['lamports']) && typeof v['covered'] === 'boolean'
     ? (v as unknown as VolumeHour) : null;
+
+export const parseGraduatesSeed = (v: unknown): GraduatesSeed | null =>
+  isObj(v) && (v['source'] === 'persist' || v['source'] === 'data-1') && isCount(v['asOfMs'])
+  && every(v['items'], (i): i is GraduatesSeed['items'][number] => isObj(i) && isStr(i['mint']) && isCount(i['migratedAtMs']) && isNat(i['reserveAfter']))
+    ? (v as unknown as GraduatesSeed) : null;
 
 export const parseExecStats = (v: unknown): ExecStats | null =>
   isObj(v) && isCount(v['attempts']) && isCount(v['failed']) && (v['failed'] as number) <= (v['attempts'] as number)

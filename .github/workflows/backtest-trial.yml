@@ -1,0 +1,73 @@
+name: Backtest trial
+
+# BT-2 trial view (docs/ARCHITECTURE.md §17): tests every assembled data window that holds practice days only and
+# publishes the cumulative trial report to the `backtest` release, where the app's Backtest view loads it. Days of the
+# sealed window are never downloaded, run or shown (src/study/trial.ts refuses them; trial-windows.ts skips them).
+# Manual dispatch only. Only the publish step can write, in a clean environment with no other secret.
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: backtest-trial
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: SOL/USD hourly series (Coinbase public candles, fixed once closed)
+        run: node packages/backtest/scripts/fetch-sol-usd.ts 2026-07-01 2026-10-03 trial/sol-usd.csv
+      - name: Trial runs, one window at a time
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node --no-warnings packages/backtest/scripts/trial-windows.ts trial/sol-usd.csv trial
+      - name: Cumulative report
+        run: node --no-warnings packages/backtest/scripts/trial-report.ts trial trial/sol-usd.csv trial/latest-report.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: backtest-trial
+          path: |
+            trial/latest-report.json
+            trial/trial-part-*.json
+            trial/trial-*.json
+          retention-days: 30
+
+  publish:
+    needs: run
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: backtest-trial
+          path: trial
+      - name: Publish the trial report (write token here only, clean environment)
+        env:
+          WRITE_TOKEN: ${{ github.token }}
+        run: |
+          node_bin="$(command -v node)"
+          env -i PATH=/usr/bin:/bin HOME="$HOME" GITHUB_TOKEN="$WRITE_TOKEN" GITHUB_REPOSITORY="$GITHUB_REPOSITORY" \
+            GITHUB_EVENT_NAME="$GITHUB_EVENT_NAME" "$node_bin" packages/backtest/scripts/publish-report.ts trial/latest-report.json

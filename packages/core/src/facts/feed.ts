@@ -20,6 +20,16 @@ export class FactFeed implements Feed {
     this.#producer = producer;
   }
 
+  /** OOM-MINT: the producer drops what it keeps for these mints and pools (`FactProducer.retire`). */
+  /** MEM-PROBE: the producer's counts and the facts queued for release. */
+  sizes(): ReturnType<FactProducer['sizes']> & { readonly queue: number } {
+    return { ...this.#producer.sizes(), queue: this.#queue.length };
+  }
+
+  retire(ids: readonly string[]): void {
+    this.#producer.retire(ids);
+  }
+
   next(): FeedEvent | null {
     const q = this.#queue.shift();
     if (q !== undefined) {

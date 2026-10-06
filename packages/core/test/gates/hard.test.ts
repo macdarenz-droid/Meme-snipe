@@ -191,6 +191,24 @@ describe('unknown, stale or degraded input rejects with a reason (H16)', () => {
     expect(r).toContainEqual(expect.objectContaining({ gate: 'H16', code: 'stale', input: 'holders', value: '3', limit: '2' }));
   });
 
+  it('with an observed tip (a backtest\'s observation delay), chain state is judged against it, never past now', () => {
+    const withTip = (facts: Facts, observedTip: bigint) =>
+      evaluateHardRejects({ ...contextOf(facts), observedTip }, deps('live', session(), 'RUG-1'), request(), { stopAtFirst: false }).reasons;
+    const stale = (r: readonly GateReason[], input: string) => r.filter((x) => x.code === 'stale' && x.input === input);
+    // Seen 3 slots late: a value read at the newest observed slot is fresh, and a stream head there keeps it current.
+    const late = patch(patch(passingFacts(), holdersKey(MINT), { obs: obs({ slot: SLOT - 3n }) }), streamKey('chain'), { obs: obs({ slot: SLOT - 3n }) });
+    expect(stale(withTip(late, SLOT - 3n), 'holders')).toEqual([]);
+    expect(stale(withTip(late, SLOT - 3n), 'stream')).toEqual([]);
+    // Older than the tip by more than 2 slots is stale, as live.
+    const old = stale(withTip(patch(passingFacts(), holdersKey(MINT), { obs: obs({ slot: SLOT - 6n }) }), SLOT - 3n), 'holders');
+    expect(old.length).toBeGreaterThan(0);
+    for (const r of old) expect(r).toMatchObject({ value: '3', limit: '2' });
+    // A tip ahead of the clock is not believed: now's slot is used.
+    const ahead = stale(withTip(late, SLOT + 10n), 'holders');
+    expect(ahead.length).toBeGreaterThan(0);
+    for (const r of ahead) expect(r).toMatchObject({ value: '3' });
+  });
+
   it('a stream head more than 2 slots behind makes every value it keeps stale', () => {
     const f = patch(passingFacts(), streamKey('chain'), { obs: obs({ slot: SLOT - 3n }) });
     expect(reasonsOf(f)).toContainEqual(expect.objectContaining({ gate: 'H16', code: 'stale', input: 'stream', neededBy: 'H1' }));
@@ -347,8 +365,8 @@ describe('boundaries found by mutation testing', () => {
   it('e: the H15 tolerance is the rounding bound exactly; a simulated spend that differs is inconsistent', () => {
     const q = roundTrip();
     if (!q.ok) throw new Error('quote');
-    expect(codes(patch(passingFacts(), simKey(MINT), { proceeds: q.trade.proceeds - 16n }), 'H15')).toEqual([]);
-    expect(codes(patch(passingFacts(), simKey(MINT), { proceeds: q.trade.proceeds - 17n }), 'H15')).toEqual(['sim-loss']);
+    expect(codes(patch(passingFacts(), simKey(MINT), { proceeds: q.trade.immediateProceeds - 16n }), 'H15')).toEqual([]);
+    expect(codes(patch(passingFacts(), simKey(MINT), { proceeds: q.trade.immediateProceeds - 17n }), 'H15')).toEqual(['sim-loss']);
     expect(reasonsOf(patch(passingFacts(), simKey(MINT), { spend: SPEND + 1n }))).toContainEqual(expect.objectContaining({ gate: 'H16', code: 'inconsistent', input: 'sim', neededBy: 'H15' }));
   });
 

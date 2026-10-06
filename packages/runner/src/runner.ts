@@ -417,10 +417,19 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
               delete onDisk.killedMono;
               writeFileSync(P.reboot, JSON.stringify(onDisk));
             }
-            if (cause === 'crash') await o.control.kill();
-            else if (cause === 'reboot') await o.control.reboot();
-            else if (cause === 'host-loss') await o.control.wipe({ restoreFrom: backupDir });
-            else await o.control.wipe({});
+            // RESTART-ALERT: the next boot reports this kill as planned, so the watchdog does not alert it as a crash or an OOM.
+            const marker = join(o.stateDir, STATE_FILES.plannedRestart);
+            if (cause === 'crash' || cause === 'reboot') writeFileSync(marker, JSON.stringify({ cause: `drill ${p.drill.id} (${cause})`, at: Date.now() }));
+            try {
+              if (cause === 'crash') await o.control.kill();
+              else if (cause === 'reboot') await o.control.reboot();
+              else if (cause === 'host-loss') await o.control.wipe({ restoreFrom: backupDir });
+              else await o.control.wipe({});
+            } catch (e) {
+              // No kill came: a real crash in the next minutes must not read as this drill.
+              rmSync(marker, { force: true });
+              throw e;
+            }
             log(`Drill ${p.drill.id} (${cause}): down${p.midTrade ? ' mid-trade' : ' (no trade open in the window)'}.`);
           }
         }

@@ -167,9 +167,13 @@ describe('FILL-2 after a restart', () => {
     expect(covered(`trades:${HYG}`, fills[1]!.coverage).covered).toBe(false);
     expect(creditsUsed).toBe(1 + QVC_TXS.length);
     expect(rpc.priorities.every((p) => p === P2)).toBe(true);
-    // A cap that runs out inside a gap stops it there: partial, lossy.
-    const cut = await fillTradeGaps({ rpc: fakeRpc(QVC_HISTORY), timers: instant(), provider: 'helius', creditCap: 2, gaps: [gapOf(QVC)], asOf: ASOF });
+    // A cap that runs out inside an open position's gap stops it there: partial, lossy, its newest trades read.
+    const cut = await fillTradeGaps({ rpc: fakeRpc(QVC_HISTORY), timers: instant(), provider: 'helius', creditCap: 2, gaps: [gapOf(QVC, { kind: 'position' })], asOf: ASOF });
     expect(cut.fills[0]).toMatchObject({ complete: false, report: { stoppedBy: 'credit-cap', creditsUsed: 2 } });
+    // FILL-FORESEE: a candidate's gap that cannot fit is known from its first page: one credit, nothing read, lossy.
+    const seen = await fillTradeGaps({ rpc: fakeRpc(QVC_HISTORY), timers: instant(), provider: 'helius', creditCap: 2, gaps: [gapOf(QVC, { kind: 'candidate' })], asOf: ASOF });
+    expect(seen.fills[0]).toMatchObject({ complete: false, records: [], events: [], report: { stoppedBy: 'credit-cap', creditsUsed: 1 } });
+    expect(covered(`trades:${QVC}`, seen.fills[0]!.coverage).covered).toBe(false);
     expect(hyg.priorities.length).toBe(0);
     void P3;
   });
