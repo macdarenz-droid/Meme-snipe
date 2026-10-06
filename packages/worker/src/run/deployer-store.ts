@@ -1,16 +1,11 @@
 // The deployer index's saved state (supervisor ruling 2026-10-04, SEED-1): every released event the index learns from
 // (creates, rug labels, unjudged mints) and every creates and rugs coverage fact, appended as it is released, so a
 // restart re-seeds the index and puts the coverage history back into the engine instead of blanking H14 for a whole
-<<<<<<< HEAD
 // look-back. Public chain data only. Kept for the look-back plus a day; older lines are dropped at each start and once a
 // day while running (DISK-GUARD: the file stays bounded however long the worker runs). A line that does not fit (ENOSPC)
 // is not a crash: the next line that fits is preceded by a bounded `coverage:<creates|rugs>:gap` over the lost range,
 // so a restart seeded from this file reads H14 as not covered across it, never as complete.
-import { appendFileSync, closeSync, existsSync, fsyncSync, openSync, renameSync, rmSync } from 'node:fs';
-=======
-// look-back. Public chain data only. Kept for the look-back plus a day; older lines are dropped at each start.
 import { appendFileSync, closeSync, existsSync, openSync, rmSync } from 'node:fs';
->>>>>>> b88a623b9ff11f2ccb1e58576145ad96c948def0
 import { fileLines } from '../../../runner/src/lines.ts';
 import { join } from 'node:path';
 import type { MarketEvent } from '../../../core/src/engine/index.ts';
