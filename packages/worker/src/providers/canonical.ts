@@ -84,6 +84,18 @@ export interface Frame {
   readonly place: { readonly at: 'chain' | 'offchain'; readonly slot: bigint; readonly arrival?: true; readonly first?: true };
   /** A later copy of a fact already received (see `dedupKey`). Recorded, never released. */
   readonly duplicate: boolean;
+  /**
+   * DEDUP-PER-WATCH: a `logs` copy of a transaction already taken from another watch (`echoKey`). Its events were
+   * released with the first copy; this one releases only what belongs to its own watch: the hole a cut or undecodable
+   * log makes in that watch's streams, and a mark that the transaction held a PumpSwap event DEC-1 cannot name
+   * (`echoEvents`). Recordings made before it carry none: those copies were duplicates and replay as they did.
+   */
+  readonly echo?: true;
+  /**
+   * DEDUP-PER-WATCH (review N1): an echo standing in for a whole copy `shed` dropped, too late to be released whole (its
+   * slot already released): its watch gets a hole (`logs:truncated:<via>`), as if the log were cut.
+   */
+  readonly lost?: true;
   readonly body: FrameBody;
 }
 
@@ -120,6 +132,12 @@ export const dedupKey = (b: FrameBody): string | null => {
     default: return null;
   }
 };
+
+/**
+ * DEDUP-PER-WATCH: a `logs` copy's key on its own watch. A copy whose `dedupKey` was taken from another watch is an
+ * echo (released as `echoEvents`); one whose key here was taken too is a duplicate (a second provider on the same watch).
+ */
+export const echoKey = (b: Extract<FrameBody, { type: 'logs' }>): string => signatureKey('logs', b.signature, `${b.commitment === undefined ? '' : `:${b.commitment}`}@${b.via}`);
 
 /** The signature a chain-placed frame belongs to, for its rank in the slot. */
 const signatureOf = (b: FrameBody): string | null => (b.type === 'seen' || b.type === 'logs' ? b.signature : b.type === 'tx' ? b.record.signature : null);
@@ -219,6 +237,7 @@ export const eventsOfFrame = (f: Frame, ranks: Pick<Ranks, 'get'>): FeedEvent[] 
     case 'logs': {
       // A confirmed watch's copy of a transaction already seen at processed is its own event: ids keep them apart.
       const cs = b.commitment === undefined ? '' : `:${b.commitment}`;
+      if (f.echo === true) return echoEvents(f, b, cs, sfx, txIndexOf, off);
       // DEC-1's log reader: a failed transaction yields none; a cut log is reported, never guessed past.
       let read: ReturnType<typeof logEvents>;
       try {
@@ -281,6 +300,46 @@ export const eventsOfFrame = (f: Frame, ranks: Pick<Ranks, 'get'>): FeedEvent[] 
   }
 };
 
+/**
+ * A PumpSwap event DEC-1 cannot name (a deposit, a withdrawal, an admin instruction): it may move the reserves without a
+ * swap event (WATCH-1c's `#chainOther`) and names no pool, so only the watches that saw its transaction can say which
+ * pools it may have touched. A named one carries its own `pool`, which the first copy's event already gives.
+ */
+const unnamedPoolEvent = (e: { readonly program: string; readonly name: string }): boolean => e.program === 'pump_amm' && e.name === 'other';
+
+/**
+ * DEDUP-PER-WATCH: an echo's events, on its own watch only (ids carry the watch, so each watch's copy stays apart):
+ * `logs:undecodable:<via>` when DEC-1 cannot read the log, `logs:truncated:<via>` when the log was cut (whether or not
+ * events came before the cut: the first copy's events carry `truncated` for the first watch only), and
+ * `logs:pool-other:<via>` when the log holds a PumpSwap event DEC-1 cannot name. Nothing the first copy released is
+ * released again, so no swap, create or trade is counted twice.
+ */
+const echoEvents = (
+  f: Frame, b: Extract<FrameBody, { type: 'logs' }>, cs: string, sfx: string, txIndexOf: (sig: string) => number, off: Moment,
+): FeedEvent[] => {
+  const chain = f.place.at === 'chain';
+  const at = (ix: number): Moment => (chain ? { slot: f.place.slot, txIndex: txIndexOf(b.signature), ixIndex: ix, receivedAt: f.receivedAt } : off);
+  const id = (what: string): string => `log:${b.signature}${cs}@${b.via}:${what}${sfx}`;
+  let read: ReturnType<typeof logEvents>;
+  try {
+    read = logEvents(b.logs, b.err);
+  } catch (e) {
+    return [{ kind: 'market', id: id('undecodable'), moment: at(LOG_IX_BASE), key: `logs:undecodable:${b.via}`, value: { signature: b.signature, txSlot: b.slot, error: e instanceof Error ? e.message : 'undecodable', ...meta(f) } }];
+  }
+  const out: FeedEvent[] = [];
+  const other = read.events.find(unnamedPoolEvent);
+  if (other !== undefined) {
+    out.push({
+      kind: 'market', id: id('pool-other'), moment: at(LOG_IX_BASE + other.logIndex), key: `logs:pool-other:${b.via}`,
+      value: { signature: b.signature, name: other.name, txSlot: b.slot, via: b.via, ...(b.commitment === undefined ? {} : { commitment: b.commitment }), ...meta(f) },
+    });
+  }
+  // `txSlot`: the transaction's own slot, which a late echo's off-chain placement does not show. A `lost` echo's watch
+  // missed the transaction's events (its whole copy was shed): a hole too.
+  if (read.truncated || f.lost === true) out.push({ kind: 'market', id: id('truncated'), moment: at(LOG_IX_BASE), key: `logs:truncated:${b.via}`, value: { signature: b.signature, txSlot: b.slot, ...meta(f) } });
+  return out;
+};
+
 /** True when DEC-1's decoder reads the transaction: a fetched transaction it cannot decode is not a read one. */
 export const decodable = (r: TransactionRecord): boolean => {
   try {
@@ -299,6 +358,9 @@ export const decodable = (r: TransactionRecord): boolean => {
  * them, so nothing here depends on when the frames arrived relative to the release point.
  */
 export const frameEvents = (frames: readonly Frame[]): FeedEvent[] => {
+  // DEDUP-PER-WATCH: an echo only exists in recorded live data, which has its release record: replayed with
+  // `replayRecorded`, never re-sorted here (a whole copy that `shed` dropped would be released here as well as its stand-in).
+  if (frames.some((f) => f.echo === true)) throw new RangeError('recorded live frames (with echoes) replay with replayRecorded and their release record');
   const kept = frames.filter((f) => !f.duplicate).sort((a, b) => a.seq - b.seq);
   const ranks = new Map<bigint, Map<string, number>>();
   for (const f of kept) {

@@ -168,7 +168,10 @@ export class DeployerIndex {
     const cut = e.key.startsWith('logs:truncated:') || e.key.startsWith('logs:undecodable:') || (e.key.startsWith('logs:') && o['truncated'] === true);
     if (!cut) return;
     const via = typeof o['via'] === 'string' ? o['via'] : e.key.startsWith('logs:truncated:') ? e.key.slice('logs:truncated:'.length) : e.key.slice('logs:undecodable:'.length);
-    if (!this.#lost.has(o['signature'])) this.#lost.set(o['signature'], { atMs: e.moment.receivedAt, via });
+    // DEDUP-PER-WATCH: the same transaction cut on another watch too (the feed's echo of it) keeps its first time; a
+    // creates watch's copy names the hole's watch, so a boot still asks for it (`lostCreates`).
+    const had = this.#lost.get(o['signature']);
+    if (had === undefined || (!this.#createVias.has(had.via) && this.#createVias.has(via))) this.#lost.set(o['signature'], { atMs: had?.atMs ?? e.moment.receivedAt, via });
   }
 
   /** H16-WHY C: true while `signature` is a hole (a cut or undecodable log whose transaction has not been released). */
