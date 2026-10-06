@@ -200,6 +200,54 @@ j.write('start'); j.write('halt', { reasons: ['full disk'] }); process.kill(proc
     expect(checkJournal(readFileSync(path, 'utf8')).complete).toBe(false);
   });
 
+  it('a written hook that throws on every line never breaks write, seq order or the gap recovery and reserve re-arm', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'disk-journal-')), 'journal.jsonl');
+    let full = false;
+    let told = 0;
+    const journal = new Journal(path, 'a', () => 1_000, {
+      append: (p, text) => { if (full) throw noSpace(); appendFileSync(p, text); },
+      written: () => { told++; throw new Error('observer failed'); },
+    });
+    expect(() => journal.write('start')).not.toThrow();
+    full = true;
+    expect(() => journal.write('halt', { reasons: ['no disk'] })).not.toThrow();
+    expect(statSync(`${path}.reserve`).size).toBe(0);
+    full = false;
+    expect(() => journal.write('resume', { reasons: ['disk recovered'] })).not.toThrow();
+    expect(() => journal.write('halt', { reasons: ['after'] })).not.toThrow();
+    const rows = read(path);
+    expect(rows.map((r) => r['seq'])).toEqual([1, 3, 4, 5]);
+    expect(rows.map((r) => r['kind'])).toEqual(['start', 'coverage_gap', 'resume', 'halt']);
+    expect(rows[1]).toMatchObject({ lost: 1, from_seq: 2, to_seq: 2 });
+    expect(journal.failing).toBe(false);
+    expect(readFileSync(`${path}.reserve`).equals(Buffer.alloc(64 * 1024))).toBe(true);
+    expect(told).toBe(4);
+  });
+
+  it('written is told only lines that reached the file, with their exact on-disk text', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'disk-journal-')), 'journal.jsonl');
+    let full = false;
+    const seen: [string, string][] = [];
+    const journal = new Journal(path, 'a', () => 1_000, {
+      append: (p, text) => { if (full && text.includes('"kind":"decision"')) throw noSpace(); appendFileSync(p, text); },
+      written: (kind, text) => { seen.push([kind, text]); },
+    });
+    journal.write('start');
+    full = true;
+    journal.write('decision', { event: 'e1', reasons: ['reject', 'x', 'MintFull', 'why'] });
+    expect(seen.map(([k]) => k)).toEqual(['start']);
+    expect(journal.failing).toBe(true);
+    full = false;
+    journal.write('decision', { event: 'e2', reasons: ['reject', 'x', 'MintBack', 'why'] });
+    expect(seen.map(([k]) => k)).toEqual(['start', 'coverage_gap', 'decision']);
+    expect(seen.some(([, t]) => t.includes('MintFull'))).toBe(false);
+    const lines = readFileSync(path, 'utf8').trimEnd().split('\n');
+    expect(seen[seen.length - 1]![1]).toBe(lines[lines.length - 1]);
+    expect(seen.map(([, t]) => t)).toEqual(lines);
+    expect(read(path)[1]).toMatchObject({ kind: 'coverage_gap', lost: 1, from_seq: 2, to_seq: 2 });
+    expect(journal.failing).toBe(false);
+  });
+
   it('other journal errors still throw; complete JSON without a newline is a torn append', () => {
     const path = join(mkdtempSync(join(tmpdir(), 'disk-journal-')), 'journal.jsonl');
     const e = Object.assign(new Error('I/O failure'), { code: 'EIO' });

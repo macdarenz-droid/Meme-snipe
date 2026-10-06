@@ -4,7 +4,8 @@ import { MODE_LABEL, hasSample, requiredTrades } from '../api/modes.ts';
 import { TokenActions } from '../components/TokenActions.tsx';
 import { Badge, Empty } from '../components/ui.tsx';
 import { formatDuration, shortAddress } from '../lib/format.ts';
-import { formatPrice4, formatPriceDec, formatR, formatReturn, formatShare, formatSolExact, formatUsdExact, returnHundredths, toMicro, toneOf, toneOfReturn } from '../lib/money.ts';
+import { formatPrice4, formatPriceDec, formatR, formatReturn, formatShare, formatSol, formatUsdExact, returnHundredths, returnLamports, toLamports, toMicro, toneOf, toneOfReturn } from '../lib/money.ts';
+import { Money, moneyTone } from '../components/Money.tsx';
 import { ALERT_LABEL, CHECK_LABEL, EXIT_RULE_LABEL, FLAG_ALERT, FLAG_LABEL, HALT_LABEL, REGIME_INPUT_LABEL, REGIME_REASON_LABEL, RISK_CODE_LABEL, RISK_LABEL, riskHaltLabel, STAGE_LABEL, VENUE_LABEL, WAIVED_LABEL, WORKER_CODE_LABEL } from './labels.ts';
 import { ago, melDateTime } from './time.ts';
 
@@ -133,10 +134,13 @@ export function RiskList({ meters }: { meters: RiskMeter[] }) {
   return (
     <ul className="meters">
       {meters.map((m) => {
-        const used = toMicro(m.usedUsd);
-        const limit = m.limitUsd === null ? null : toMicro(m.limitUsd);
+        // SOL when the worker serves it (APP-SOL), else dollars.
+        const sol = m.usedLamports != null && (m.limitUsd === null || m.limitLamports != null);
+        const used = sol ? toLamports(m.usedLamports!) : toMicro(m.usedUsd);
+        const limit = m.limitUsd === null ? null : sol ? toLamports(m.limitLamports!) : toMicro(m.limitUsd);
         const share = limit && limit > 0n ? Math.min(100, Number((used * 1000n) / limit) / 10) : 0;
-        const text = m.limitUsd === null ? 'Limit not set' : `${formatUsdExact(m.usedUsd)} of ${formatUsdExact(m.limitUsd)}`;
+        const fmt = (lam: string | null | undefined, usd: string) => (sol ? formatSol(lam!) : formatUsdExact(usd));
+        const text = m.limitUsd === null ? 'Limit not set' : `${fmt(m.usedLamports, m.usedUsd)} of ${fmt(m.limitLamports, m.limitUsd)}`;
         return (
           <li key={m.kind} className="meter">
             <div className="meter-label">
@@ -396,7 +400,9 @@ function PriceNow({ position, now }: { position: PositionRecord; now: number }) 
 export function OpenPosition({ position, now: fixed }: { position: PositionRecord; now?: number }) {
   const now = useNow(fixed);
   const pnl = position.pnlUsd ?? null;
-  const ret = pnl === null ? null : returnHundredths(pnl, position.sizeUsd);
+  const lam = position.pnlLamports != null && position.sizeLamports != null;
+  // Return on SOL when served (APP-SOL: net lamports ÷ entry lamports), else on dollars.
+  const ret = lam ? returnLamports(position.pnlLamports!, position.sizeLamports!) : pnl === null ? null : returnHundredths(pnl, position.sizeUsd);
   const rows: [string, ReactNode, string?][] = [
     ['Token', <><strong>{position.symbol}</strong> <span className="mono muted">{shortAddress(position.mint)}</span> <TokenActions mint={position.mint} /></>],
     ['Venue', VENUE_LABEL[position.venue]],
@@ -404,11 +410,11 @@ export function OpenPosition({ position, now: fixed }: { position: PositionRecor
     ['Running', formatDuration(runningSeconds(position.openedAt, now)), 'num'],
     ['Entry price', formatPriceDec(position.entryPriceUsd), 'num'],
     ['Price now', <PriceNow position={position} now={now} />, 'num'],
-    ['Size', formatUsdExact(position.sizeUsd), 'num'],
-    ['Liquidation value', formatUsdExact(position.liquidationValueUsd), 'num'],
-    ['Unrealized', formatUsdExact(position.unrealizedUsd, true), `num ${toneOf(position.unrealizedUsd)}`],
-    ['Costs so far', formatUsdExact(position.costsSoFarUsd), 'num'],
-    ['P&L', pnl === null ? '—' : formatUsdExact(pnl, true), `num ${pnl === null ? '' : toneOf(pnl)}`],
+    ['Size', <Money lamports={position.sizeLamports} usd={position.sizeUsd} />, 'num'],
+    ['Liquidation value', <Money lamports={position.liquidationValueLamports} usd={position.liquidationValueUsd} />, 'num'],
+    ['Unrealized', <Money lamports={position.unrealizedLamports} usd={position.unrealizedUsd} signed />, `num ${moneyTone(position.unrealizedLamports, position.unrealizedUsd)}`],
+    ['Costs so far', <Money lamports={position.costsSoFarLamports} usd={position.costsSoFarUsd} />, 'num'],
+    ['P&L', <Money lamports={position.pnlLamports} usd={pnl} signed />, `num ${position.pnlLamports != null ? moneyTone(position.pnlLamports, '0') : pnl === null ? '' : toneOf(pnl)}`],
     ['Return', formatReturn(ret), `num ${toneOfReturn(ret)}`],
     ['Worker', WORKER_STATE[position.worker]],
   ];
@@ -443,13 +449,13 @@ export function Stats({ stats }: { stats: StatsView }) {
   const enough = hasSample(stats);
   const need = requiredTrades(stats);
   const shown = (v: string | null, f: (s: string) => string) => (enough && v !== null ? f(v) : NOT_ENOUGH);
-  const items: { label: string; value: string; tone?: string }[] = [
-    { label: 'Net result', value: stats.trades ? formatUsdExact(stats.netUsd, true) : '—', tone: toneOf(stats.netUsd) },
-    { label: 'Net in SOL', value: stats.trades ? formatSolExact(stats.netSol, true) : '—' },
+  const money = (lam: string | null | undefined, usd: string, signed = false): ReactNode => <Money lamports={lam} usd={usd} signed={signed} />;
+  const items: { label: string; value: ReactNode; tone?: string }[] = [
+    { label: 'Net result', value: stats.trades ? money(stats.netLamports, stats.netUsd, true) : '—', tone: moneyTone(stats.netLamports, stats.netUsd) },
+    { label: 'Max drawdown', value: stats.trades ? money(stats.maxDrawdownLamports, stats.maxDrawdownUsd) : '—', tone: moneyTone(stats.maxDrawdownLamports, stats.maxDrawdownUsd) },
     { label: 'SOL price move', value: stats.trades ? formatUsdExact(stats.solMoveUsd, true) : '—', tone: toneOf(stats.solMoveUsd) },
-    { label: 'Max drawdown', value: stats.trades ? formatUsdExact(stats.maxDrawdownUsd) : '—', tone: toneOf(stats.maxDrawdownUsd) },
     { label: 'Win rate', value: shown(stats.winRate, (s) => formatShare(s)) },
-    { label: 'Average net', value: shown(stats.meanNetUsd, (s) => formatUsdExact(s, true)), ...(enough && stats.meanNetUsd ? { tone: toneOf(stats.meanNetUsd) } : {}) },
+    { label: 'Average net', value: enough && stats.meanNetUsd !== null ? money(stats.meanNetLamports, stats.meanNetUsd, true) : NOT_ENOUGH, ...(enough && stats.meanNetUsd ? { tone: moneyTone(stats.meanNetLamports, stats.meanNetUsd) } : {}) },
     { label: 'Average R', value: shown(stats.meanR, formatR) },
     { label: '95% interval', value: enough && stats.ci95 ? `${formatUsdExact(stats.ci95.lowUsd, true)} to ${formatUsdExact(stats.ci95.highUsd, true)}` : NOT_ENOUGH },
   ];
@@ -459,7 +465,7 @@ export function Stats({ stats }: { stats: StatsView }) {
         {items.map((i) => (
           <div className="stat" key={i.label}>
             <dt>{i.label}</dt>
-            <dd className={`num ${i.tone ?? ''} ${i.value === NOT_ENOUGH ? 'muted-value' : ''} ${i.value.includes(' to ') ? 'dash-range' : ''}`}>{i.value}</dd>
+            <dd className={`num ${i.tone ?? ''} ${i.value === NOT_ENOUGH ? 'muted-value' : ''} ${typeof i.value === 'string' && i.value.includes(' to ') ? 'dash-range' : ''}`}>{i.value}</dd>
           </div>
         ))}
       </dl>
