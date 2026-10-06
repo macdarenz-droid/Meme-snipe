@@ -343,6 +343,18 @@ export class FactProjector {
    * scan every pool's stream on every slot notice (about 94k pools over 16M slots in a 74-day run). The resolved items
    * go through FACTS-1's `graduatesFact` (the one aggregation the live producer uses) and are released as one fact.
    */
+  /** Survival tracks live now (tests). */
+  survivalTracked(): number {
+    return this.#survivalTracks.size;
+  }
+
+  /** POOL-FIRST-READ: events the live survival producers keep before a read or book (tests: none, no read comes). */
+  survivalKept(): number {
+    let n = 0;
+    for (const s of this.#survivalTracks.values()) n += s.producer.sizes().preReads;
+    return n;
+  }
+
   #feedSurvival(row: DatasetRow, m: Moment, out: FeedEvent[]): void {
     const o = this.#o.survival!;
     const ev = (key: string, value: unknown): MarketEvent => ({ kind: 'market', id: `sv:${this.#survivalSeq++}`, moment: m, key, value });
@@ -370,7 +382,8 @@ export class FactProjector {
       let s = this.#survivalTracks.get(mint);
       if (s === undefined) {
         if (row.event !== 'CompleteEvent') return;
-        s = { producer: new FactProducer(o), pool: null, markMs: null, done: false };
+        // No account read ever reaches it and its events come in chain order: nothing is kept before a read (POOL-FIRST-READ).
+        s = { producer: new FactProducer({ ...o, preReadKeep: 0 }), pool: null, markMs: null, done: false };
         this.#survivalTracks.set(mint, s);
       }
       if (row.event === 'CreatePoolEvent' && typeof d['pool'] === 'string' && s.pool === null) {

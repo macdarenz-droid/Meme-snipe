@@ -215,6 +215,13 @@ describe('fact projector', () => {
     expect(replay([PLAN], SLOTS).events.some((e) => e.key === GRADUATES_KEY)).toBe(false);
   });
 
+  it('POOL-FIRST-READ (review of #266): a survival producer keeps no swaps for a read that never comes', () => {
+    // Stopped 10 minutes after migration: the survival track is live and has taken the pool's swaps.
+    const r = replay([PLAN], 10 + 20 * MIN + 10 * MIN, 1, undefined, 'test-salt', undefined, true, undefined, producerOptions(TRIAL_POLICY));
+    expect(r.facts.survivalTracked()).toBe(1);
+    expect(r.facts.survivalKept()).toBe(0);
+  });
+
   it('releases the regime\'s curve volume from FACTS-1\'s producer: whole covered days only, each hour once it has ended', () => {
     const d0 = Math.floor((W0 - 2 * 86_400_000) / 86_400_000);
     const hours = (day: number, uncovered = -1) => Array.from({ length: 24 }, (_, i) => ({ hourStartMs: day * 86_400_000 + i * 3_600_000, lamports: 1_000n, covered: i !== uncovered }));

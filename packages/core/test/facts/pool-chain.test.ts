@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { type PoolState, poolBuyExactBase, poolSell } from '../../src/amm/index.ts';
 import { startSession, TRIAL_POLICY } from '../../src/config/index.ts';
 import { OFF_CHAIN, type MarketEvent, type Moment } from '../../src/engine/index.ts';
-import { PRE_READ_KEEP, PRE_READ_POOLS, RAW, STREAMS } from '../../src/facts/index.ts';
+import { HOLE_SIGS_KEEP, PRE_READ_KEEP, PRE_READ_POOLS, RAW, STREAMS } from '../../src/facts/index.ts';
 import { observedFeeContext } from '../../src/fills/index.ts';
 import { Evidence, carryKey, parsePool, poolKey } from '../../src/gates/index.ts';
 import { bps } from '../../src/units/index.ts';
@@ -467,4 +467,87 @@ describe('swaps released before the pool\'s first read (POOL-FIRST-READ)', () =>
     world.push(read(READ_SLOT, READ_SLOT + 2n));
     expect(stale(world)).toBe('pool events before the first read were let go');
   });
+});
+
+describe('a swap older than a non-swap pool event never re-bases the chain (review of #266, P1/P2)', () => {
+  const other = (slot: bigint, name = 'WithdrawEvent', arrives = slot): MarketEvent => ({
+    kind: 'market', id: `log:other${slot}:confirmed:00000`, moment: { slot: arrives, txIndex: 2 ** 32 + 999, ixIndex: 2 ** 36, receivedAt: at(arrives) },
+    key: `logs:pump_amm:${name}:pump_amm`,
+    value: { event: { program: 'pump_amm', name, discriminator: '0011223344556677', logIndex: 0 }, signature: `other${slot}`, txSlot: slot, truncated: false, via: `logs:${POOL}`, commitment: 'confirmed', source: 'helius', backfilled: false, seq: 0 },
+  });
+  const stale = (w: FactWorld): string | undefined => (w.last(poolKey(MINT)) as { stale?: string }).stale;
+
+  it('P1 (live): a withdraw at S+3, then a swap from S+2 released after it: stale; the next swap after it re-bases', () => {
+    const { world, state } = base();
+    const s1 = swap('buy', state, 1_000_000n, READ_SLOT + 1n);
+    const s2 = swap('sell', s1.after, 500_000n, READ_SLOT + 2n, { arrives: READ_SLOT + 4n });
+    world.push(s1.event, other(READ_SLOT + 3n), s2.event);
+    expect(stale(world)).toBe('a pool transaction other than a swap (WithdrawEvent)');
+    expect(facts(world).at(-1)!.obs.quality).toEqual(['partial']);
+    // Not stuck: a swap after the withdraw re-bases on its own pre-trade reserves.
+    const s3 = swap('buy', state, 2_000_000n, READ_SLOT + 5n);
+    world.push(s3.event);
+    expect(facts(world).at(-1)!).toMatchObject({ obs: { quality: [], slot: READ_SLOT + 5n }, baseVault: s3.after.baseReserve });
+  });
+
+  it('a swap in the same slot as the non-swap event, released after it, does not re-base either (order in the slot unproven)', () => {
+    const { world, state } = base();
+    const s1 = swap('buy', state, 1_000_000n, READ_SLOT + 3n, { arrives: READ_SLOT + 4n });
+    world.push(other(READ_SLOT + 3n), s1.event);
+    expect(stale(world)).toBe('a pool transaction other than a swap (WithdrawEvent)');
+  });
+
+  it('P2 (kept): the same order kept before the first read: stale at the read; the next swap re-bases', () => {
+    const state = base().state;
+    const s1 = swap('buy', state, 1_000_000n, READ_SLOT + 1n);
+    const s2 = swap('sell', s1.after, 500_000n, READ_SLOT + 2n, { arrives: READ_SLOT + 4n });
+    const world = new FactWorld().push(start(), s1.event, other(READ_SLOT + 3n), s2.event, read(READ_SLOT, READ_SLOT + 5n));
+    expect(stale(world)).toBe('a pool transaction other than a swap (WithdrawEvent)');
+    const s3 = swap('buy', state, 2_000_000n, READ_SLOT + 6n);
+    world.push(s3.event);
+    expect(facts(world).at(-1)!).toMatchObject({ obs: { quality: [], slot: READ_SLOT + 6n }, baseVault: s3.after.baseReserve });
+  });
+
+  it('a read at or after the non-swap event re-bases the stale chain', () => {
+    const { world, state } = base();
+    world.push(swap('buy', state, 1_000_000n, READ_SLOT + 1n).event, other(READ_SLOT + 3n), read(READ_SLOT + 3n, READ_SLOT + 4n));
+    expect(stale(world)).toBeUndefined();
+    expect(facts(world).at(-1)!.obs).toMatchObject({ slot: READ_SLOT + 3n, quality: [] });
+  });
+});
+
+describe('a pool\'s lost mark never falls out (review of #266, item 2)', () => {
+  it('the mark is spent by the read it stales: after an unwatch and a new watch, the next first read is clean', () => {
+    const state = base().state;
+    const pools = Array.from({ length: PRE_READ_POOLS }, (_, i) => `OtherPool${i}`);
+    const world = new FactWorld().push(start(), ...pools.map((p) => coverage(STREAMS.trades(p), 'start', { fromSlot: READ_SLOT - 10n, via: `logs:${p}` }, READ_SLOT - 11n, at(READ_SLOT - 11n))));
+    world.push(swap('buy', state, 1_000n, READ_SLOT + 1n).event);
+    const s = swap('buy', state, 1_000n, READ_SLOT + 1n);
+    const v = s.event.value as { event: { data: Record<string, unknown> }; via: string };
+    for (const pool of pools) world.producer.observe({ ...s.event, key: s.event.key.replace(POOL, pool), value: { ...v, event: { ...v.event, data: { ...v.event.data, pool } }, via: `logs:${pool}` } });
+    world.push(read(READ_SLOT, READ_SLOT + 2n));
+    expect((world.last(poolKey(MINT)) as { stale?: string }).stale).toBe('pool events before the first read were let go');
+    world.push(
+      coverage(STREAM, 'gap', { fromSlot: READ_SLOT + 3n, toSlot: null, reason: 'not watched', via: `logs:${POOL}` }, READ_SLOT + 3n, at(READ_SLOT + 3n)),
+      coverage(STREAM, 'start', { fromSlot: READ_SLOT + 5n, via: `logs:${POOL}` }, READ_SLOT + 5n, at(READ_SLOT + 5n)),
+      read(READ_SLOT + 6n, READ_SLOT + 7n),
+    );
+    expect((world.last(poolKey(MINT)) as { stale?: string }).stale).toBeUndefined();
+  });
+
+  it('after more than HOLE_SIGS_KEEP other pools were let go whole, the first one\'s first read still starts stale', () => {
+    const state = base().state;
+    const count = HOLE_SIGS_KEEP + PRE_READ_POOLS + 1;
+    const pools = Array.from({ length: count }, (_, i) => `LostPool${i}`);
+    const world = new FactWorld().push(start(), ...pools.map((p) => coverage(STREAMS.trades(p), 'start', { fromSlot: READ_SLOT - 10n, via: `logs:${p}` }, READ_SLOT - 11n, at(READ_SLOT - 11n))));
+    world.push(swap('buy', state, 1_000n, READ_SLOT + 1n).event);
+    const s = swap('buy', state, 1_000n, READ_SLOT + 1n);
+    const v = s.event.value as { event: { data: Record<string, unknown> }; via: string };
+    const p = world.producer;
+    for (const pool of pools) {
+      p.observe({ ...s.event, key: s.event.key.replace(POOL, pool), value: { ...v, event: { ...v.event, data: { ...v.event.data, pool } }, via: `logs:${pool}` } });
+    }
+    world.push(read(READ_SLOT, READ_SLOT + 2n));
+    expect((world.last(poolKey(MINT)) as { stale?: string }).stale).toBe('pool events before the first read were let go');
+  }, 60_000);
 });

@@ -3302,12 +3302,12 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
 - **Re-read (the same race on a later read).**
   - A re-read answered for a slot older than a swap already applied was already left out (`lastSlot`).
   - A re-read older than a pool event other than a swap seen since the last read was not: it re-based the chain clean, without that change. The chain now keeps `otherSlot`, and such a read is left out too (the chain stays stale until a newer read or the next swap).
-- **Bounds (worker heap 572 MB).**
+- **Bounds (worker heap 560 MB: `--max-old-space-size=560`, `ops/install.sh`; an earlier draft said 572, corrected after review of #266).**
   - `PRE_READ_POOLS` = 64 pools (a `CappedMap`, oldest-kept pool let go first) × `PRE_READ_KEEP` = 64 events each (the newest). Measured: about 4.4 KB per kept swap with every string distinct, so at most about 18 MB (approximate, one measurement in vitest).
   - A pool's kept events go when its read arrives, when it leaves the watch list, and when it is let go (`retire`, `#forgetPool`).
   - `CappedMap` moved from the worker to core (`facts/capped-map.ts`, the worker re-exports it) and gained `delete` and an eviction hook. `delete` keeps no index per key, so OOM-MINT's per-entry memory budget (`sig-caps.test.ts`, under 230 B) still holds: a deleted key's ring place is freed only when the ring comes round to it, and a key set again before that can be let go early (never late; the cap always holds). For the producer, early means the pool's first read starts stale (fail closed).
 - **Fail closed.**
-  - Events let go past `PRE_READ_KEEP` whose slot is newer than the read, or a pool whose kept events were let go whole past `PRE_READ_POOLS` (remembered in a capped set of `HOLE_SIGS_KEEP`): the chain starts stale (a gap). The next kept or live swap re-bases on its own pre-trade reserves, as after any gap.
+  - Events let go past `PRE_READ_KEEP` whose slot is newer than the read, or a pool whose kept events were let go whole past `PRE_READ_POOLS` (marked on the pool's trade stream, so the mark lives as long as the stream and cannot fall out of a cap; review of #266): the chain starts stale (a gap). The next kept or live swap re-bases on its own pre-trade reserves, as after any gap.
   - Any kept swap that does not chain or does not reproduce: stale (a mismatch, needs a read), exactly as live.
   - State is in memory: a restart keeps nothing, and the first read after it is as before this change (the next swap then shows any mismatch).
 - **Parity.**
@@ -3320,10 +3320,11 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
     - So the kept swaps are taken when the next event from another transaction arrives, not at the `CreatePoolEvent` (`#bookTake`).
     - Every kept swap comes later in chain order, because the pool did not exist before that transaction. They are applied in release order through the same `#bookSwap` a live swap takes, so the candles equal an in-order run.
     - Kept swaps from before the `CreatePoolEvent`'s slot are not taken.
-  - **Fail closed.** If a swap the book needed was dropped past the cap, or the pool's whole entry was dropped (`#preBookLost`), the book is marked partial. It never reads as complete with trades missing.
+  - **Fail closed.** If a swap the book needed was dropped past the cap, or the pool's whole entry was dropped (the same mark on its trade stream), the book is marked partial. It never reads as complete with trades missing.
   - **Memory, both parts together.** The buffer is the same cap, `PRE_READ_POOLS` × `PRE_READ_KEEP` = 64 × 64 events, so still about 18 MB at most (approximate, from the measured 4.4 KB per swap).
     - A late book's pending swaps are taken out of that buffer and held only until the next event.
-    - The two lost-pool sets hold up to 20,000 pool addresses each (`HOLE_SIGS_KEEP`), roughly 2 MB each (approximate, not measured).
+    - The lost marks are two booleans on each watched pool's trade stream: no separate set.
+    - Against the 560 MB heap: about 18 MB at most, about 3%. The backtest's survival producers keep nothing (`preReadKeep: 0`), so that cost does not apply there.
   - **Evidence.**
     - `core/test/facts/trade-heal.test.ts`: the late migration equals the in-order tape's candles and pool, with H11 and H12 ok. The migration transaction's own swap comes before the kept swaps. A pre-migration swap is not taken. A drop past the cap is partial. A pool dropped whole is partial. All 5 fail on the code before part 3.
     - `worker/test/facts-parity.test.ts`: the recorded coin's real migration transaction, released after 5 swaps through LiveFeed, gives the in-order candles and pool. This test fails before part 3. The recording of the late run replays identically 10 times (`replayRecorded`, the §16.1 replay), and the backtest re-sort gives the same facts and log.
@@ -3331,6 +3332,27 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
     - Mutants, parts 1 and 3 run together: 19 of 20 killed.
       - Part 3 kills: no keep for the book; no `#bookOpen`; no `#bookTake`; taking within the opening transaction; taking pre-migration swaps; no partial when swaps were dropped; no partial when the entry was lost whole; the eviction hook not marking the book lost; the entry never deleted.
       - The survivor (each side taking every kept event, not only its own) is equivalent. An event is kept for the book alone only while the chain exists, and a chain is only built afresh after its pool's entry was deleted (unwatch or `#forgetPool`).
+- **Review fixes for parts 1 and 3 (2026-10-07, S1; each test-first).**
+  - **A swap older than a non-swap pool event never re-bases the chain (must fix: fail-open, already in the base).**
+    - The stale path re-based on any swap not older than the newest swap seen (`lastSlot`), which a non-swap event never moves. So a withdraw at S+3 followed by a swap from S+2 released after it rebuilt the chain clean, and the withdraw's change was lost.
+    - The same held for kept events replayed at the first read (probes P1 live and P2 kept: both failed on 8d45e3c1 and 1288c97e).
+    - Now the stale path never re-bases on a swap from the non-swap event's slot or before it (`otherSlot`). The order inside a slot is not proven, so the same slot does not re-base either.
+    - No deadlock: a swap from a later slot re-bases, and so does a read at or after the event (tests).
+  - **Lost marks cannot fall out.** The marks for a pool dropped whole were in sets capped at 20,000. Past that, a mark fell out and the pool's first read came out clean (fail-open). They now live on the pool's trade stream. Test: more than 20,000 pools dropped whole after it, and the first pool's read still starts stale.
+  - **Backtest memory.** The survival producers (one per graduating mint) kept up to 64 swaps each (about 280 KB) for a read that never comes. They now run with `preReadKeep: 0`: their events come in chain order and no read reaches them.
+    - Outputs unchanged: a two-mint survival run's released events hash the same on the code before and after (951 events, 2 graduates releases).
+    - Test: a live survival track keeps nothing.
+  - ARCHITECTURE §16.3 live-only vetoes row: added the stale chain and partial candles after a pool dropped whole, and the stale state after a non-swap event (live only, stricter).
+  - **Mutants (parts 1 and 3 with these fixes, one run, core and backtest tests): 26 of 27 killed.**
+    - Fix kills:
+      - the `otherSlot` check removed (P1/P2);
+      - same-slot re-base allowed (`<`);
+      - `otherSlot` never moved;
+      - lost mark ignored;
+      - eviction not marking the chain lost;
+      - lost mark never spent (a pool unwatched and watched again stayed stale at its next first read);
+      - `preReadKeep` ignored.
+    - The survivor is the equivalent unfiltered take (above).
 
 ## Server paused on the stand-in until every blocker is fixed (PAUSE, `ops/host-config.json` `"worker": "stub"`)
 
