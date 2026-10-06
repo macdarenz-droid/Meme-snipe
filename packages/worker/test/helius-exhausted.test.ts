@@ -9,7 +9,7 @@ import { FactRpc } from '../src/facts/index.ts';
 import { HELIUS_EXHAUSTED, type HttpClient, ProviderError, RpcHttp, type Source } from '../src/providers/index.ts';
 import { DryRunRpc } from '../src/dryrun/rpc.ts';
 import { EXHAUSTED_RECHECK_MS, HELIUS_FREE, HELIUS_GPA_CREDITS, ManualTimers, P0, P1, P2, P3, ScheduleRefused, Scheduler } from '../src/scheduler/index.ts';
-import { CreditBook, HELIUS_WORKER, LiveProviders, heliusWorker } from '../src/run/sources.ts';
+import { CreditBook, HELIUS_WORKER, LiveProviders } from '../src/run/sources.ts';
 import { haltCode, buildSummary, Summarizer, withoutCreditDetail, type SummaryInputs } from '../src/run/summary.ts';
 import { checkSummary } from '../../ops/src/watchdog/summary.ts';
 import { creditsFile } from '../src/run/state.ts';
@@ -59,8 +59,7 @@ describe('a 429 that says the credits are used up', () => {
 describe('the Helius scheduler while exhausted', () => {
   it('refuses P1–P3 (queued ones too) and serves P0; re-checks after 10 minutes; a success ends it; another refusal repeats it', async () => {
     const timers = new ManualTimers(NOW);
-    // The Free plan's shape on a small window (the Developer floors of 25 do not fit a window of 6).
-    const s = new Scheduler({ ...heliusWorker('free'), window: { limit: 6, windowMs: 1_000 } }, { timers });
+    const s = new Scheduler({ ...HELIUS_WORKER, window: { limit: 6, windowMs: 1_000 } }, { timers });
     // Fill the window so one P3 waits in the queue.
     for (let k = 0; k < 6; k++) expect(s.tryAcquire(P0).ok).toBe(true);
     const queued = s.run(P3, 1, async () => 'late').catch((x: unknown) => x);

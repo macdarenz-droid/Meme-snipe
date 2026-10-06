@@ -7,7 +7,7 @@ import { FILL_CONFIG, RESEARCH_CONFIG, RUG_CONFIG, TRIAL_POLICY, startSession } 
 import { EXIT } from '../../runner/src/contract.ts';
 import { DryRunRpc } from './dryrun/index.ts';
 import { liveFacts } from './facts/index.ts';
-import { COINBASE_PUBLIC, GITHUB_DOWNLOADS, GITHUB_RELEASES, GOPLUS_FREE, HELIUS_PLANS, P2, P3 } from './scheduler/index.ts';
+import { COINBASE_PUBLIC, GITHUB_DOWNLOADS, GITHUB_RELEASES, GOPLUS_FREE, P2, P3 } from './scheduler/index.ts';
 import { toAddress } from '../../core/src/chain/index.ts';
 import { DEFAULT_LIVE_FEED, fetchHttp, globalSocketFactory, heliusRpcUrl } from './providers/index.ts';
 import { systemTimers } from './scheduler/index.ts';
@@ -19,7 +19,7 @@ import { redact, setSecretValues } from './run/redact.ts';
 import { join } from 'node:path';
 import { DailyBudget } from './persist/index.ts';
 import { RpcCut, liveHttp } from './run/rpc-cut.ts';
-import { FILL_BUDGET_FILE, runSeed, seedCreditCap } from './run/seed-start.ts';
+import { FILL_BUDGET_FILE, runSeed } from './run/seed-start.ts';
 import { SIM_READS_PER_HOUR, simReader } from './run/sim-read.ts';
 import { RoundTripSimulator } from './sim/index.ts';
 import { Worker } from './run/worker.ts';
@@ -47,7 +47,7 @@ const http = liveHttp(rpcCut, fetchHttp);
 const providerHttp = http.providers;
 // FILL-2's daily fill budget, one instance for the restart fill and the pool watches' in-run fills (S0-ZERO).
 const fillBudget = DailyBudget.load(join(config.stateDir, FILL_BUDGET_FILE), config.fillCreditsPerDay, timers.now());
-const providers = new LiveProviders({ tradeStreams: false, heliusPlan: config.heliusPlan, secrets: environment.secrets, http: providerHttp, factory: globalSocketFactory, credits, fillBudget });
+const providers = new LiveProviders({ tradeStreams: false, secrets: environment.secrets, http: providerHttp, factory: globalSocketFactory, credits, fillBudget });
 const policy = session.policy;
 const timing = watchTimingProblem(config.watch, policy.gates.maxQuoteAgeMs, DEFAULT_LIVE_FEED.horizonSlots * SLOT_MS);
 if (timing !== null) {
@@ -97,7 +97,7 @@ try {
     // TRADE-GAP-HEAL: a pool-trade hole's transaction at P3, below position and exit reads; everything else at P2.
     fetchTx: (sig, why) => providers.fetchTx(sig, why === 'cut-trade' ? P3 : P2),
     findCreate: (mint, budget) => providers.findCreate(mint, timers, budget),
-    seed: (r) => runSeed(r, { rpc: providers.seedRpc(), timers, budget: fillBudget, creditCap: seedCreditCap(HELIUS_PLANS[config.heliusPlan]) }),
+    seed: (r) => runSeed(r, { rpc: providers.seedRpc(), timers, budget: fillBudget }),
     // RESTART-KEEP: the downtime's migrations and unseen creates, on the same RPC and the same daily fill budget.
     restartReads: { rpc: providers.seedRpc(), budget: fillBudget },
     seedWaitMs: 30_000,

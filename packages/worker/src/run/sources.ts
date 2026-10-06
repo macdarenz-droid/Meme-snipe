@@ -9,7 +9,7 @@ import { PUMP_AMM_PROGRAM, PUMP_PROGRAM, type TransactionRecord, transactionEven
 import type { Fetched, SocketFactory, HttpClient, Secrets } from '../providers/index.ts';
 import { CoinbaseSolPrice, alchemyRpcUrl, heliusRpcUrl, heliusWsUrl, PumpPortalSource, RpcHttp, RpcStream, TxFetcher } from '../providers/index.ts';
 import {
-  ALCHEMY_FREE, DEFAULT_HELIUS_PLAN, HELIUS_PLANS, type HeliusPlan, HELIUS_WS_CREDITS_PER_BYTE, HELIUS_WS_CREDITS_PER_CONNECTION, JUPITER_FREE, P0, P1, P2, P3,
+  ALCHEMY_FREE, HELIUS_FREE, HELIUS_WS_CREDITS_PER_BYTE, HELIUS_WS_CREDITS_PER_CONNECTION, JUPITER_FREE, P0, P1, P2, P3,
   RUGCHECK_FREE, Scheduler, type SchedulerSpec,
 } from '../scheduler/index.ts';
 import type { Timers } from '../scheduler/timers.ts';
@@ -88,12 +88,8 @@ export class CreditBook {
  * runs from the UTC month and cannot see what else the account spent, so it could neither stop in time nor know the
  * account's end. The count is still kept (credits.json) and reported.
  */
-export const heliusWorker = (plan: HeliusPlan): SchedulerSpec => {
-  const { budget: _heliusMonthly, ...noHalt } = HELIUS_PLANS[plan];
-  return noHalt;
-};
-/** The worker's Helius scheduler on the default plan (HELIUS-PLAN: the configured plan's, `heliusWorker`). */
-export const HELIUS_WORKER: SchedulerSpec = heliusWorker(DEFAULT_HELIUS_PLAN);
+const { budget: _heliusMonthly, ...HELIUS_NO_HALT } = HELIUS_FREE;
+export const HELIUS_WORKER: SchedulerSpec = HELIUS_NO_HALT;
 
 export interface LiveProviderOptions {
   /**
@@ -101,8 +97,6 @@ export interface LiveProviderOptions {
    * Helius credits a month for pump logs alone, data.md); without them H14 stays not covered.
    */
   readonly tradeStreams: boolean;
-  /** HELIUS-PLAN: the Helius plan the account is on (`ZEROED_HELIUS_PLAN`); default DEFAULT_HELIUS_PLAN. */
-  readonly heliusPlan?: HeliusPlan;
   readonly secrets: Secrets;
   readonly http: HttpClient;
   readonly factory: SocketFactory;
@@ -264,7 +258,7 @@ export class LiveProviders {
   #feed: SourcesContext['feed'] | null = null;
 
   constructor(o: LiveProviderOptions) {
-    this.helius = o.credits.scheduler(heliusWorker(o.heliusPlan ?? DEFAULT_HELIUS_PLAN));
+    this.helius = o.credits.scheduler(HELIUS_WORKER);
     this.alchemy = o.credits.scheduler(ALCHEMY_FREE);
     this.jupiter = o.credits.scheduler(JUPITER_FREE);
     this.rugcheck = o.credits.scheduler(RUGCHECK_FREE);
@@ -290,7 +284,7 @@ export class LiveProviders {
       return {
         provider: st.provider, credits_used: cls[0] + cls[1] + cls[2] + cls[3], credits_by_class: cls,
         // The plan's published credits, as the run contract checks them (Helius's too, though its scheduler has no halt).
-        monthly_credits: (s === this.helius ? HELIUS_PLANS[this.#o.heliusPlan ?? DEFAULT_HELIUS_PLAN].budget : s.spec.budget)?.monthlyCredits ?? null, granted: st.granted, shed: st.shed, halted: st.halted,
+        monthly_credits: (s === this.helius ? HELIUS_FREE.budget : s.spec.budget)?.monthlyCredits ?? null, granted: st.granted, shed: st.shed, halted: st.halted,
       };
     });
     return { quota, lookups: { counts: [...this.#lookups] } };
