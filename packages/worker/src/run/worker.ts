@@ -2098,8 +2098,10 @@ export class Worker {
     const root = join(d.config.stateDir, STATE_FILES.recorder);
     let problem: string | null = null;
     try {
-      // The free-space floor holds even before anything is recorded (the folder is made here at a first start).
-      mkdirSync(root, { recursive: true });
+      // The free-space floor holds even before anything is recorded (the folder is made here at a first start). A path
+      // that is not a folder holds no recording to prune: the recorder's own failure is the alert for it.
+      if (!existsSync(root)) mkdirSync(root, { recursive: true });
+      if (!statSync(root).isDirectory()) return;
       const r = pruneRecordings({ root, current: this.#boot, maxBytes: b.maxBytes, floorBytes: b.floorBytes, packing: () => this.#packRunning, ...(d.diskFree === undefined ? {} : { freeBytes: d.diskFree }) });
       const reason = r.reason;
       const own = r.deleted.filter((p) => p.boot === this.#boot);
