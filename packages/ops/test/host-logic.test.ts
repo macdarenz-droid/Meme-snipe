@@ -800,3 +800,58 @@ describe('deploy gate (OPS-GATE): named runs from GitHub Actions, shared by the 
     expect(tag).toContain('. "$here/../host/files/usr/local/lib/zeroed/logic.sh"');
   });
 });
+
+describe('HOST-CAPS on the host', () => {
+  const rel = join(tmp, 'caps-releases');
+  const make = (names: string[]) => {
+    rmSync(rel, { recursive: true, force: true });
+    mkdirSync(rel, { recursive: true });
+    // Oldest first: each folder is one second newer than the one before.
+    names.forEach((n, i) => {
+      mkdirSync(join(rel, n));
+      spawnSync('touch', ['-d', `@${1_700_000_000 + i}`, join(rel, n)]);
+    });
+  };
+  const gone = (cur: string, prev: string, tag: string) =>
+    sh(`prunable_releases "${rel}" "${cur ? join(rel, cur) : ''}" "${prev ? join(rel, prev) : ''}" "${tag}"`)
+      .out.split('\n').filter(Boolean).map((p) => p.slice(rel.length + 1)).sort();
+
+  it('prunable_releases keeps current, previous, the deploy tag and the 3 newest others, whatever their age', () => {
+    make(['r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7', 'r8', 'r9']);
+    // Very old releases are pruned too: there is no age rule, and the folders here are decades old.
+    expect(gone('r9', 'r8', 'r9')).toEqual(['r1', 'r2', 'r3', 'r4']);
+    // 9 folders, at most 5 stay: r9, r8, and the 3 newest others (r7, r6, r5).
+    expect(9 - gone('r9', 'r8', 'r9').length).toBe(5);
+    // Current and previous that are the OLDEST are never pruned; the 3 newest others stay.
+    expect(gone('r1', 'r2', 'r1')).toEqual(['r3', 'r4', 'r5', 'r6']);
+    // The deploy tag's commit stays even when it is neither current nor previous.
+    expect(gone('r9', 'r8', 'r1')).toEqual(['r2', 'r3', 'r4']);
+  });
+
+  it('prunable_releases never touches half-written folders and prunes nothing when current cannot be read', () => {
+    make(['r1', 'r2', 'x.new', 'r3', 'r4', 'r5', 'r6', 'r7']);
+    expect(gone('r7', 'r6', 'r7')).toEqual(['r1', 'r2']);
+    expect(gone('r7', 'r6', 'r7')).not.toContain('x.new');
+    expect(gone('', 'r6', 'r7')).toEqual([]);
+    expect(gone('missing', 'r6', 'r7')).toEqual([]);
+    // A current outside the releases root is unreadable for this purpose too.
+    expect(sh(`prunable_releases "${rel}" /etc "${join(rel, 'r6')}" r7`).out).toBe('');
+    rmSync(rel, { recursive: true, force: true });
+    mkdirSync(rel);
+    expect(gone('a', 'b', 'c')).toEqual([]);
+  });
+
+  it('zeroed-update prunes only after a deploy that stayed up, and the system journal has a size cap the installer applies', () => {
+    const update = read('ops/host/files/usr/local/sbin/zeroed-update');
+    const prune = update.indexOf('prunable_releases /opt/zeroed/releases');
+    expect(prune).toBeGreaterThan(update.indexOf('if ! why="$(holds)"; then rollback "$why"; fi'));
+    expect(prune).toBeLessThan(update.indexOf('log "Deployed ${commit:0:12}. Worker: $worker."'));
+    expect(update).toContain('"$(readlink -f /opt/zeroed/current 2>/dev/null || true)" "$prev" "$commit")');
+    const conf = read('ops/host/files/etc/systemd/journald.conf.d/zeroed-journal.conf');
+    expect(conf.split('\n').filter((l) => l && !l.startsWith('#'))).toEqual(['[Journal]', 'SystemMaxUse=500M', 'SystemKeepFree=2G']);
+    const main = read('ops/host/install-main.sh');
+    expect(main).toContain('/etc/systemd/journald.conf.d/zeroed-*) return 0 ;;');
+    expect(main).toContain('[[ " ${CHANGED[*]} " != *" /etc/systemd/journald.conf.d/zeroed-journal.conf "* ]] || systemctl restart systemd-journald');
+    expect(read('ops/install.sh')).toContain('install_file /etc/systemd/journald.conf.d/zeroed-journal.conf');
+  });
+});
