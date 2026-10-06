@@ -2661,12 +2661,142 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - Hand mutants killed: three wrong backward-shift conditions; the low half ignored.
 
 
+## A save is never refused or discarded for an in-order run of events (SAVE-ASOF, WORKER-HARDEN)
+- **Why.** Moments order by slot first, and receipt times need not follow it: a frame of an earlier slot can arrive after
+  a later slot's (two providers, fetched transactions), and both are released in slot order after the confirmation hold.
+  The save's moment is the last event's, so its receipt time can be earlier than an event handled before it.
+  - A candidate evaluated on that earlier-handled event carried `lastEvalMs` after the moment, and state.ts refused the
+    whole save (`candidate … is dated after the snapshot moment`), at every turn until a later event came. The 24-h
+    harness run logged it at 16 of its last 17 saves.
+  - The deployer index's `first` and `last` moments could carry a receipt time after the moment the same way; the save
+    was written, and restore refused it (`the snapshot claims a moment after its as-of moment`): the restart discarded
+    the saved state.
+- **What.** The save keeps the moment as it is (the last event's, as FEES-KEEP pins) and saves each such time as at the
+  moment, never after: `lastEvalMs` is `min(lastEvalMs, asOf.receivedAt)`; the index snapshot's `first` and `last` keep
+  their slot, transaction and instruction and take `asOf.receivedAt` when theirs is later. This was chosen over moving the
+  moment's receipt time to the latest seen: that would change what every other check of the save means (and the pinned
+  FEES-KEEP behaviour), while this keeps every restore check exact and unchanged.
+  - Effect on a restored candidate: it is evaluated again up to one receipt skew (seconds) earlier than without the
+    clamp; an evaluation only recomputes the gates.
+  - Effect on the index: its coverage start can read up to one receipt skew earlier by receipt time, never by slot; this
+    happens only when the index's first event lands within seconds of a save.
+- **Evidence (fail before, pass after).** `save-asof.test.ts`:
+  - a candidate evaluated on an event received after the save's moment is saved as at it; the save is written and
+    restores (before: refused);
+  - with no candidate, the index's first and last moments received after the moment still restore (before: refused at
+    restore);
+  - an evaluation at or before the moment is saved as it was;
+  - a candidate truly after the moment is still refused by the save's own check, and on restore.
+  - Hand mutants killed: no clamp on `lastEvalMs`, on `last`, on `first`; a clamp applied always.
+  - `worker-flow.test.ts`, the H14 restart drill: on the base its restart **discarded** the saved state (`the snapshot
+    claims a moment after its as-of moment`, then a fresh start), and it passed on that fallback (`close.fromSlot`
+    null). Now the restart restores the state, asserted, and the fill closes the restart gap the restore opened at the
+    saved moment (`close.fromSlot` = the saved moment's slot, persist/state.ts); the rest of the drill is unchanged.
+- **Persist review (supervisor, 2026-10-06): every time a restore compares, saved as at the moment** (`AsOfClamp`, core
+  `gates/as-of-clamp.ts`). Two kinds of time can be after the moment without anything being wrong: a receipt time (the
+  slot-order case above) and a chain block time, which is routinely seconds off local receipt. Each one restore
+  compares with the moment is saved as at it; slot, transaction and instruction are kept, and nothing is dropped:
+  - the index's `first`/`last` moments;
+  - the index's mint rows (a create's block time) and the rug labeller's launches' `createdAtMs` (same);
+  - saved coverage facts' receipt times: an off-chain fact and a later chain frame need not arrive in moment order, and
+    the downtime fill's facts carry fetch times, so "never later" cannot be shown from the code; clamped instead;
+  - a candidate's `migratedAtMs` (the migration's block time): before, a candidate migrated "after" the moment by it was
+    left out of the save, and lost at a restart; every candidate comes from a released event, so none is left out now.
+  - Labels are not clamped (facts review B1): H14 and the soft features count a prior rug or an unjudged mint while
+    `knownAtMs` (its receipt time) is inside the look-back, so a clamp could drop one from the look-back early, a
+    known rugger missed. A label keeps its exact receipt time, and restore checks it by moment (`compareMoments`, slot
+    first, the engine's own order): one after the save's moment (a later slot, or its slot at a later transaction or
+    instruction) is refused as before, and so is one received more than `CHAIN_SKEW_MS` after the moment, which
+    cannot be skew (persist review: the receipt check stays bounded). The save refuses the same label (facts review
+    B1): `snapshot` throws, the worker logs "Saved state not written: …" and keeps the last good file, instead of
+    writing a file restore would discard. A dropped label would fail open too, so none is dropped.
+  - Capped (facts review B2): a time more than `CHAIN_SKEW_MS` (60 s) after the moment cannot be skew, and refuses
+    the save with its reason ("a saved time is N ms after the save's moment, more than the 60000 ms of clock skew
+    allowed"), logged as "Saved state not written: …", the last file kept: the fail-closed behaviour from before
+    SAVE-ASOF, kept for the extreme case.
+  - Not clamped: price bars (minute starts; clamping would break the alignment) and fee terms stay filtered as before
+    (FEES-KEEP); a bar is left out only when a block time crossed a minute boundary ahead of local receipt.
+  - Effect: H14 can see a create, and the labeller a launch, up to one skew (seconds) earlier after a restart than
+    without it; a restored candidate's window starts up to one skew earlier.
+  - Accepted fail-open edges (supervisor ruling). Each is at most one clamp (at most 60 s, capped; over 10 s it is
+    logged, the tripwire) and needs a window edge to fall inside those same seconds; refusing the save instead discards the whole
+    state and reads not covered for a look-back, which fails far wider:
+    - H14 serial count (`hard.ts`, `createdAtMs > now - DAY_MS`): a clamped create leaves the 24 h window up to one skew
+      early, so the count can read one lower for those seconds.
+    - Labeller age (`rug-labeller.ts`, `age = at - createdAtMs`): a clamped launch reads older, so a rule that applies
+      within N ms of a launch can stop applying up to one skew early.
+    - Coverage (`createsCoverage`: `firstStart` and `lastLossy.at` by receipt time): a clamped start reads covered up to
+      one skew earlier, and a clamped lossy gap can fall just before a window start it was really inside. Receipt time
+      only: slot is never moved. The same for the index's own start (`DeployerIndex.factFor` `own`, from
+      `first.receivedAt`): a clamped `first` reads the index as watching up to one skew earlier.
+  - Not checked (facts review N2): the index's lost-create rows (`lost`, `atMs` when a log read may have lost a
+    create) have no as-of check on restore; they only name signatures to fetch again, and decide nothing.
+  - Visibility: each clamp is counted with the largest; the worker logs a save whose largest clamp is over 10 s
+    (`CLAMP_LOG_MS`; "Saved state: N times dated after the save's moment were saved as at it, the latest X s after."),
+    so a real future-dated bug stays visible.
+  - Evidence: `save-asof.test.ts`: labels received after the moment restore with their exact receipt time and the
+    look-back edge reads as before the restart; a label later in the moment's order (slot, transaction, instruction)
+    or received over 60 s after it is refused, just under 60 s restores exactly (before: every late label refused);
+    the first moment and a mint row 5 s late restore with slot, transaction and instruction kept; a create, launch and
+    coverage fact after the moment restore; a candidate migrated 5 s after the moment is saved (before: left out); a
+    clamp just under 60 s is saved, just over refuses the save, also through the worker (reason logged, file kept); the
+    log line at 9 s, 10 s and 11 s. Hand mutants killed: labels checked by receipt time, labels unchecked, labels
+    clamped, no cap, the cap at `>=`, the log at `>=`, the clamp moving a transaction index, mint rows unclamped,
+    labeller unclamped, coverage unclamped, the candidate filter back, clamps not counted, `first` unclamped.
+  - The seed and the downtime fill (`DeployerIndex.#checked`, supervisor ruling): a create whose block time was after the
+    process start's receipt time refused the whole seed, so H14 read not covered for a full look-back after a restart
+    near a create. A block time up to `CHAIN_SKEW_MS` (60 s, config/platform.ts) after the start is now taken as at the
+    start; further is still refused (the SEED-1 leak guard's hour-ahead case is unchanged), and a create released after
+    the start is refused by its moment whatever its block time. A seeded or filled create taken as at the start is up to 60 s early, so it
+    leaves the 24 h serial window up to 60 s early: the same accepted edge as the save's clamp, bounded at 60 s instead
+    of logged. Bounded here, unlike the save's clamp: a seed has no
+    save log to show a large one, and an hour-ahead block time cannot be skew. Test: `deployer-index.test.ts` "SAVE-ASOF:
+    a create whose block time is seconds after the process start"; mutants killed: no bound, no clamp, `>=` at the
+    bound, no refusal.
+
 ## Falling behind the feeds (BEHIND, `run/behind.ts`)
 
 - **2026-10-06 · Why.** A worker that falls behind its feeds holds every unreleased frame in memory, and the hold grows until the heap runs out.
 - **What.** A loop cycle late by more than 10 s (the loop's monotonic clock) halts entries (`behind`, through the halt check); the halt clears after 30 s of cycles under 2 s. Exits keep running. Past 20,000 held frames, the feed sheds the held log frames of candidate pools only: never a pool that is held, has a position or seed, or has an exit or entry in flight (`LiveStrategy.committed`).
 - **Coverage.** Each shed range becomes a recorded coverage gap (`coverage:trades:<pool>:gap`, reason `shed`), placed first in its first slot, so it sorts before every shed event. H11 refuses the pool from that slot (H16 `gap`), live and in the recording's replay alike. Shed frames are ranked before they drop, so live and replay give the same moments after a shed.
 - **Cost.** A shed tail pool censors its REC-1 counterfactual for that range.
+
+## The store keeps only the newest of every running and regime fact (STORE-GROWTH, `run/store-rules.ts`)
+
+- **2026-10-06 · Why.** Live on 5efb9ae0 (MEM-PROBE, 6.9 min before crash 27): store entries grew about 2,870 a minute
+  while store keys grew about 77 a minute (almost all create logs, one entry each). So the growth was in existing
+  keys. The harness (heap snapshots 20 and 30 min, entries per key kind) found single-key series kept whole for the
+  process: `worker:fact-reads` (+143 a minute, the day's read counts restated at every read) and `worker:sol-price`
+  (+60 a minute), with the regime's series and their raw reads growing the same way at lower rates.
+- **What.** Newest value only (`liveCollapse`), after checking every reader: `history` is asked for trade, coverage and
+  deployer keys only, and no gate or worker lookup asks for a time before now.
+  - The worker's running facts: `worker:sol-price` (the strategy looks it up as of now) and `worker:fact-reads`
+    (nothing reads it from the store).
+  - The regime's other series, stated whole like the graduates fact: `gates/sol-usd`, `gates/curve-volume`,
+    `gates/exec-health` (read as of now by the regime and H8), and their raw reads `sol-usd`,
+    `read:chain-volume-hour`, `read:exec-health` (the producer acts on the released read and keeps its own series).
+- **F1b, F4** (supervisor rulings, after a reader check each): newest value only for an undecoded program event
+  (`<pump|pump_amm>:other:<program>`: nothing reads it, the producer skips `other`; the key is the program, so it never
+  retires), a creator's on-demand deployer check (`coverage:rugs:deployer:<creator>`: H14 reads it as of now; `history`
+  reads only the `coverage:<stream>:start|gap|resume` keys) and a feed's status (`feed:status:<feed>`: the worker acts
+  on it as it arrives).
+- **F6.** MEM-PROBE also carries the Helius stream's held catch-up notifications (`feed_stream_held`,
+  `RpcStream.heldNotices`, passed by main).
+- **Create logs** (supervisor item 2): already let go 13 h after their create when the coin has not migrated
+  (OOM-MINT, `CREATE_KEEP_MS` + `CREATE_LATE_MS`); live's create-log keys still grow while that window fills after a
+  restart (about 70 a minute, about 55k at the full window). Shortening it changes which coins are refused
+  `create-expired`, so it is left to a ruling.
+- **Probe.** MEM-PROBE also reports the largest kinds by rough size in KB (`store_b_<kind>`) and by entries
+  (`store_e_<kind>`), six each, after the twelve `store_k_<kind>`: a one-key kind whose series grows, or a kind of
+  large values, is seen. Rough size is `roughBytes` of the newest value times the series' length (at most 256 values
+  walked per value, the rest scaled), for the sampled keys; 92 codes a sample, under the cap of 96.
+- **Evidence (fail before, pass after).** `store-rules.test.ts`: each of the eight keys keeps one entry after an
+  hour of ticks, and a lookup as of now returns the newest (before: one entry a tick); `mem-counts.test.ts`: entries and rough bytes per kind exactly, sampled
+  at scale, the `store_b_` and `store_e_` codes, `roughBytes` within a factor of two on a value it stops early in.
+  Hand mutants killed: sol-price whole, fact-reads whole, `read:exec-health` whole, no `store_e_` codes, entries
+  counted as keys, no `store_b_` codes, no field cost, no scaling of skipped values, `other` events whole, the
+  deployer check whole, feed status whole, no `feed_stream_held`. The per-mint `read:` keys stay
+  whole (supervisor: bounded per mint, refuted as the climb).
 
 ## The 5-min save streams its payload (SAVE-SPIKE, `persist/state.ts`)
 
@@ -2689,6 +2819,42 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
 - **Not in this card.** Why 41.2k coverage facts are kept is STORE-GROWTH's question; loading still parses the payload
   line whole (the boot side, ruled separately as BOOT-CAP).
 
+## A trade key keeps a few failing entries, not all (F1, `gates/tails.ts`, `engine/asof.ts`)
+
+- **2026-10-06 · Why** (supervisor's crash hunt, crashes 27 to 30). The store kept, of a trade-event key, its newest
+  entry and every entry whose 8-byte tail would fail H5. On 6 Oct the tails were non-zero on most mainnet pools on
+  every swap (9 of 12 young pools, 68 of 101 swaps; 27 of 27 older pools), so every swap stayed: 30,000 real notices
+  kept 21,116 entries, 66 MB (about 3.3 KB an entry), against 1,128 entries with the tails zeroed. Live fit: about
+  2.7 to 3.7 KB of old space per store entry, death in 12 to 36 minutes. The harness never had non-zero tails.
+- **What** (supervisor ruling F1, fail-closed). A collapse can now class an older entry (`Collapse`): per class the
+  store keeps the earliest, the latest in order and the one received last; of entries kept for nothing, only the one
+  received last while it was received after the newest. Trade keys class failing entries by kind (`event-tail`,
+  `malformed`): at most eight entries a key whatever the tape, three when every swap fails.
+  - The check answers by kind, not by order across kinds (facts review B1): any wrong or non-zero tail in range
+    rejects (`event-tail`, H5), else any unreadable one refuses (`malformed`, H16), each named by its earliest entry.
+    Before, the first failing entry in order answered, so a dropped middle entry of one kind could let the other kind
+    answer (H5 for H16 or back); on a whole tape it also turned an H5 reject into an H16 refusal when an unreadable
+    event came first. Both block an entry; the class is now exact.
+  - The same verdict (pass, H5, H16) for any `since`: per kind, a slot since needs the latest of that kind in order and
+    a receipt-time since the one received last; "any entry since" the newest or the latest received; all are kept.
+    The entry it names is exact for a since at or before the key's first entry, which is the production since (the
+    migration).
+  - The receipt-time rule (one received after the newest) beyond the supervisor's five also bounds clean entries
+    that a late fill used to leave behind for good.
+  - Newest-only keys (`false` for every entry) keep their newest and at most the latest received before it: lookups
+    as of now are unchanged.
+- **Ruling recorded:** comparing the verdict class instead of the whole answer for an arbitrary `since` is not a
+  loosening; the whole answer, offending entry included, is still compared for a since at the tape's start.
+- **Evidence (fail before, pass after).** `tails-collapse.test.ts`: 5,000 records with tail `546c140000000000` keep
+  three entries and still reject naming the first (before: 5,000); the failing entry received last stays though not
+  last in order (receipt-time since); 400 random tapes: same verdict for every since, same answer from the start, at
+  most eight entries a key, the verdict compared as H5 and H16 map it; the reviewer's tape (unreadable, unreadable,
+  non-zero, unreadable, clean) answers `event-tail` for every since in both stores. `store-rules.test.ts`: real mainnet swaps (`fixtures/crash-hunt/mainnet-swaps-2026-10-06.json`,
+  public chain data from the supervisor's hunt) at 30,000 notices keep at most five entries a trade key and under
+  8 MB. Hand mutants killed: every failing entry kept, the latest received dropped, the earliest dropped, the latest
+  in order dropped, nothing kept of the `false` class, the two kinds merged into one class (P5), the answer by order
+  across kinds.
+
 ## Recording upload (RECORD-UPLOAD, `ops/host/files/usr/local/lib/zeroed/record-upload.mjs`, `packages/ops/src/watchdog/record.ts`)
 
 - **Runs as the worker's user, with no capability.** The recorder is `/var/lib/zeroed` (`StateDirectoryMode=0700`, `UMask=0077`, owner `zeroed-worker`). Root with an empty capability set cannot read those files or delete them. The other way, root with `CAP_DAC_OVERRIDE`, could write anywhere. The worker's user already holds every credential the uploader reads: the API keys and the bot token by `LoadCredentialEncrypted`, the heartbeat key by `ImportCredential`. So running as that user exposes nothing new. The unit has no `zeroed-signer` group, so the signer's socket stays out of reach. Writable: only `/var/lib/zeroed/recorder` and its own state folder. The ops-files test pins the user, the capability lines, the writable paths, the credentials and `ExecStart`.
@@ -2698,4 +2864,3 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
 - **Fail-safe at each step.** Any error, timeout, mismatch or missing field keeps the local file. GitHub's digest is "generated at upload time, immutable" (GitHub changelog, 2025-06-03). If GitHub gives none, the asset stays but is not counted, and the file stays on the server.
   - The watchdog route runs outside the Durable Object and never reads the body, so the free plan's 10 ms of CPU holds whatever the size. A day release's id is kept in the Durable Object (returned with the nonce, newest 64 days), so an upload never reads the release back: a near-full release's reply (900 assets, about 1.5 MB of JSON) took 4–7 ms to parse in a measurement here. A lost reply is resolved through the upload's 422 and a 100-per-page list by name. The body is piped natively behind `FixedLengthStream`, which sets the Content-Length GitHub requires. A local run of the locked wrangler showed it (2.3 MB, not chunked), and the ops e2e checks it.
 - **Known gap:** `raw-NNN` and `delays-NNN` are never uploaded or deleted. If they are most of the daily growth, the disk still fills. Their share has to be measured on the server (`du` by prefix) before this is counted as the disk fix.
-

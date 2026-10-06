@@ -21,12 +21,18 @@ export type Lookup = ({ readonly ok: true } & AsOfEntry) | { readonly ok: false;
 export type Retention = (key: string) => number | null;
 
 /**
- * OOM-SWAPS: for a key whose past is read only for entries that can fail a check (a trade key's tails), the test an
- * older entry must pass to stay; `null` keeps every entry of the key. When a value is recorded, the key's previous
- * newest entry is dropped if it fails the test and is not received later than the new one, so the key holds its newest
- * entry and the entries that matter. Its readers must answer the same from that subset (proved per reader).
+ * OOM-SWAPS, F1: for a key whose past is read only for entries that can fail a check (a trade key's tails), the class
+ * of an older entry; `null` keeps every entry of the key. When a value is recorded, every older entry is classed:
+ * - `true`: kept;
+ * - `false` (nothing to keep it for): only the one received last stays, and only while it was received later than the
+ *   new entry (a reader by receipt time still finds the latest receipt);
+ * - a class name (an entry that matters): the earliest of its class, the latest of its class in order, and the one of
+ *   its class received last stay; the others are dropped.
+ * So a key holds its newest entry and at most a few per class, however long it runs. Its readers must answer the same
+ * from that subset (proved per reader). Before F1 a class kept every entry: when non-zero trade tails became common on
+ * mainnet (2026-10-06), every swap stayed, and the store grew about 3 KB a swap until the worker died.
  */
-export type Collapse = (key: string) => ((older: AsOfEntry) => boolean) | null;
+export type Collapse = (key: string) => ((older: AsOfEntry) => boolean | string) | null;
 
 /**
  * CREATE-COMPACT: for a key whose stored value is read only for some of its fields, the function that keeps those
@@ -62,12 +68,77 @@ export const flatCopy = (s: string): string => {
 };
 const flat = flatCopy;
 
+/** STORE-GROWTH: the most values `roughBytes` visits in one value, so a probe never walks a huge value whole. */
+const ROUGH_NODES = 256;
+/**
+ * STORE-GROWTH (MEM-PROBE): a rough size of a value in bytes, for comparing key kinds, not an exact heap size: a string
+ * its length plus a header, a number 8, a bigint 16, an object or array 16, and each field 16 more. Stops after
+ * ROUGH_NODES values and scales what it saw to the values it skipped.
+ */
+export const roughBytes = (v: unknown): number => {
+  let bytes = 0;
+  let nodes = 0;
+  let skipped = 0;
+  // Each value carries the 16-byte field that holds it, so what was seen is a fair sample of what was skipped.
+  const stack: unknown[] = [v];
+  let root = true;
+  while (stack.length > 0) {
+    if (nodes >= ROUGH_NODES) {
+      skipped = stack.length;
+      break;
+    }
+    const x = stack.pop();
+    nodes += 1;
+    bytes += root ? 0 : 16;
+    root = false;
+    if (typeof x === 'string') bytes += 16 + x.length;
+    else if (typeof x === 'bigint') bytes += 16;
+    else if (typeof x === 'object' && x !== null) {
+      bytes += 16;
+      for (const y of Array.isArray(x) ? x : Object.values(x as Record<string, unknown>)) stack.push(y);
+    } else bytes += 8;
+  }
+  return nodes === 0 ? 0 : Math.round(bytes * (1 + skipped / nodes));
+};
+
+/**
+ * F1 (`Collapse`): of the entries before the newest, keeps per class the earliest, the latest in order and the one
+ * received last (the latest of them on a tie); of the `false` class only the one received last, while it was received
+ * later than the newest. In place, order kept.
+ */
+const collapseOlder = (series: AsOfEntry[], keepOlder: (older: AsOfEntry) => boolean | string): void => {
+  const n = series.length - 1;
+  if (n < 1) return;
+  const newest = series[n]!;
+  const classes = new Map<string | false, number[]>();
+  for (let i = 0; i < n; i++) {
+    const c = keepOlder(series[i]!);
+    if (c === true) continue;
+    const at = classes.get(c);
+    if (at === undefined) classes.set(c, [i]);
+    else at.push(i);
+  }
+  const drop = new Set<number>();
+  for (const [c, at] of classes) {
+    let received = at[0]!;
+    for (const i of at) if (series[i]!.moment.receivedAt >= series[received]!.moment.receivedAt) received = i;
+    const keep = c === false
+      ? (series[received]!.moment.receivedAt > newest.moment.receivedAt ? [received] : [])
+      : [at[0]!, at[at.length - 1]!, received];
+    for (const i of at) if (!keep.includes(i)) drop.add(i);
+  }
+  if (drop.size === 0) return;
+  let w = 0;
+  for (let i = 0; i < series.length; i++) if (!drop.has(i)) series[w++] = series[i]!;
+  series.length = w;
+};
+
 export class AsOfStore {
   readonly #clock: Clock;
   readonly #series = new Map<string, AsOfEntry[]>();
   readonly #retention: Retention | null;
   readonly #collapse: Collapse | null;
-  readonly #keepOlder = new Map<string, ((older: AsOfEntry) => boolean) | null>();
+  readonly #keepOlder = new Map<string, ((older: AsOfEntry) => boolean | string) | null>();
   /**
    * OOM-MINT review: keys by their last `:`-separated part, so a retire costs only the keys it forgets. CREATE-COMPACT:
    * one key as itself, a Set only from the second (most parts end one or two keys; a Set each cost about 150 B).
@@ -130,7 +201,7 @@ export class AsOfStore {
   }
 
   /** The key's collapse test, cached (`Collapse`). */
-  #olderTest(key: string): ((older: AsOfEntry) => boolean) | null {
+  #olderTest(key: string): ((older: AsOfEntry) => boolean | string) | null {
     if (this.#collapse === null) return null;
     let t = this.#keepOlder.get(key);
     if (t === undefined) {
@@ -177,8 +248,8 @@ export class AsOfStore {
     }
     else {
       const keepOlder = this.#olderTest(key);
-      if (keepOlder !== null && last !== undefined && last.moment.receivedAt <= moment.receivedAt && !keepOlder(last)) series.pop();
       series.push(entry);
+      if (keepOlder !== null) collapseOlder(series, keepOlder);
       this.#trim(key, series, this.#clock.now().receivedAt);
     }
   }
@@ -209,9 +280,13 @@ export class AsOfStore {
    * about one key in n, spread by a hash of each key's position, and scaled by n (an estimate), so the probe's pause stays a few ms at any store size (all keys: about 60 ms per
    * 300k).
    */
-  sizes(): { readonly keys: number; readonly entries: number; readonly tails: number; readonly byPrefix: ReadonlyMap<string, number> } {
+  sizes(): { readonly keys: number; readonly entries: number; readonly tails: number; readonly byPrefix: ReadonlyMap<string, number>; readonly entriesByPrefix: ReadonlyMap<string, number>; readonly bytesByPrefix: ReadonlyMap<string, number> } {
     let entries = 0;
     const byPrefix = new Map<string, number>();
+    // STORE-GROWTH: entries per kind too, so a kind of one key whose series grows (a running fact) is seen.
+    const entriesByPrefix = new Map<string, number>();
+    // And a rough size per kind: the newest value's `roughBytes` times the series' length, for the sampled keys.
+    const bytesByPrefix = new Map<string, number>();
     const every = Math.max(1, Math.ceil(this.#series.size / PROBE_KIND_SAMPLE));
     let i = 0;
     for (const [key, series] of this.#series) {
@@ -223,10 +298,20 @@ export class AsOfStore {
       const prefix = a < 0 ? key : b < 0 ? key.slice(0, a) : key.slice(0, b);
       const had = byPrefix.get(prefix);
       // A new kind is kept as a fresh copy, never a slice that would pin its whole key (facts review).
-      if (had === undefined) byPrefix.set(flat(prefix), every);
-      else byPrefix.set(prefix, had + every);
+      const newest = series[series.length - 1];
+      const size = newest === undefined ? 0 : roughBytes(newest.value) * series.length * every;
+      if (had === undefined) {
+        const kind = flat(prefix);
+        byPrefix.set(kind, every);
+        entriesByPrefix.set(kind, series.length * every);
+        bytesByPrefix.set(kind, size);
+      } else {
+        byPrefix.set(prefix, had + every);
+        entriesByPrefix.set(prefix, (entriesByPrefix.get(prefix) ?? 0) + series.length * every);
+        bytesByPrefix.set(prefix, (bytesByPrefix.get(prefix) ?? 0) + size);
+      }
     }
-    return { keys: this.#series.size, entries, tails: this.#byTail.size, byPrefix };
+    return { keys: this.#series.size, entries, tails: this.#byTail.size, byPrefix, entriesByPrefix, bytesByPrefix };
   }
 
   /** Index of the last entry with moment <= `at`, or -1. */

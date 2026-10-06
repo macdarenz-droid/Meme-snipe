@@ -14,6 +14,7 @@ import { makePlan } from '../src/plan.ts';
 import { buildReport, reportMarkdown, type DrillOutcome, type Kept, type Report, type RunMeta, type Sample } from '../src/report.ts';
 import { keptAt, runSegment } from '../src/runner.ts';
 import { OPS_OK } from './fixtures.ts';
+import { nativeStub } from './native-stub.ts';
 
 const root = join(import.meta.dirname, '..', '..', '..');
 const freePort = (): Promise<number> =>
@@ -92,10 +93,12 @@ describe('b–d. a host-loss tabletop on the host, end to end', () => {
   const hostRun = async (restoreEmpty: boolean, named: boolean) => {
     // A position open from the first tick and held (no exit within the run), so the state is steady around the backup.
     const t = await setup({ ZEROED_STUB_CYCLE_MS: '60000', ZEROED_STUB_OPEN_AT_START: '1' });
-    const control = new HostLike(t.opts, { backupDir: join(t.dir, 'backup'), evidenceDir: t.evidenceDir, restoreEmpty, namedFrom: named ? 1 : Number.POSITIVE_INFINITY, sampleMs: 100, windowMs: 300 });
+    // Compile before the registered run; its real initial start, reconcile and later restarts stay in the run.
+    const entry = nativeStub(t.dir);
+    const control = new HostLike({ ...t.opts, entry }, { backupDir: join(t.dir, 'backup'), evidenceDir: t.evidenceDir, restoreEmpty, namedFrom: named ? 1 : Number.POSITIVE_INFINITY, sampleMs: 100, windowMs: 300 });
     const res = await runSegment({
       ...t.common, control, recoverMs: 6000, segmentEnd: Number.POSITIVE_INFINITY, hostDrills: 'tabletop', offsiteBackup: true, backupWindowMs: 300,
-      newRun: { runId: 'run', targetMs: 20_000, entry: STUB_ENTRY, restarts: 3, causes: ['host-loss', 'crash', 'crash'], restartWindowMs: 500, rpcDrops: 0 },
+      newRun: { runId: 'run', targetMs: 20_000, entry, restarts: 3, causes: ['host-loss', 'crash', 'crash'], restartWindowMs: 500, rpcDrops: 0 },
     });
     const r = res.report as Report;
     return { t, r, d: r.drills.find((x) => x.id === 'restart-1')! };

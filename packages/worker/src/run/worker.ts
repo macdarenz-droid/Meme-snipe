@@ -68,6 +68,11 @@ export const DOWNTIME_CREDIT_CAP = 3_000;
 /** RESTART-KEEP: transactions read before a migration to find its curve's completion. */
 const COMPLETION_READS = 5;
 export const PERSIST_EVERY_MS = 5 * 60_000;
+/** SAVE-ASOF: a save whose largest clamp (`AsOfClamp`) is over this is logged: a skew of seconds is normal, more is a bug. */
+export const CLAMP_LOG_MS = 10_000;
+/** SAVE-ASOF: the log line for a save whose largest clamp is over CLAMP_LOG_MS, else null. */
+export const clampNote = (clamp: { readonly count: number; readonly maxMs: number }): string | null =>
+  clamp.maxMs > CLAMP_LOG_MS ? `Saved state: ${clamp.count} times dated after the save's moment were saved as at it, the latest ${(clamp.maxMs / 1000).toFixed(1)} s after.` : null;
 /** STATE-DEDUPE: the recorder folder holding each distinct saved state once, packed, named by the sha256 of its plain bytes. */
 export const SAVED_STATES = 'saved-state';
 import { type Control, NO_CONTROL, type Restart, StateFile, controlFile, exitsFile, seedsFile, exposedFile, NO_EXPOSED, exitKind, restartsAfterBoot, restartsFile } from './state.ts';
@@ -185,6 +190,8 @@ export interface WorkerDeps {
   readonly heliusExhaustion?: () => { readonly exhausted: boolean; readonly count: number; readonly firstAtMs: number | null };
   /** RUN-1c's quota (free-plan providers, credits since boot by class) and historical-lookup latency counts. */
   readonly ops?: () => { readonly quota: readonly QuotaStatus[]; readonly lookups: { readonly counts: readonly number[] } };
+  /** F6 (MEM-PROBE): notifications the Helius stream holds in its catch-ups now (`RpcStream.heldNotices`). */
+  readonly streamHeld?: () => number;
   /** RUN-1d's drop-rpc drill: refuses every RPC call for `ms` (main wraps the providers' HTTP in an RpcCut). */
   readonly cutRpc?: (ms: number) => void;
   /** RUN-1c's exposure rebuild: chain history reads (Helius) for each exposed trade's pool. */
@@ -1417,6 +1424,9 @@ export class Worker {
       // RESTART-KEEP: each candidate with the transactions a restart reads again for its gate facts.
       const candidates = state.state.candidates.map((c) => ({ ...c, signatures: { create: this.#createSig.get(c.mint) ?? null, complete: this.#completeSig.get(c.mint) ?? null, migration: this.#migrationSig.get(c.mint) ?? null } }));
       saveState(join(this.#d.config.stateDir, PERSIST_FILE), { ...state.state, candidates }, { mintRows: state.mintRows });
+      // SAVE-ASOF: times after the save's moment are saved as at it; a skew of seconds is normal, more is a bug to see.
+      const note = clampNote(state.clamp);
+      if (note !== null) this.#d.log(note);
       return true;
     } catch (e) {
       this.#d.log(`Saved state not written: ${e instanceof Error ? e.message : 'error'}.`);
@@ -2083,13 +2093,13 @@ export class Worker {
 
   /** MEM-PROBE: the size of every major collection the worker reaches, counts only. */
   #memCounts(): ProbeCount[] {
-    const { byPrefix, ...store } = this.#engine.sizes();
+    const { byPrefix, entriesByPrefix, bytesByPrefix, ...store } = this.#engine.sizes();
     const d = this.#loopDelay;
     const lag = d.count === 0 ? { max_ms: 0, p95_ms: 0 } : { max_ms: d.max / 1e6, p95_ms: d.percentile(95) / 1e6 };
     d.reset();
     return probeCounts({
       loop: lag, fills: { active: FILLS.active, waiting: FILLS.waiting },
-      store, feed: this.#feed.sizes(), facts: this.#facts.sizes(), strategy: this.#strategy.sizes(),
+      store, feed: { ...this.#feed.sizes(), stream_held: this.#d.streamHeld?.() ?? 0 }, facts: this.#facts.sizes(), strategy: this.#strategy.sizes(),
       worker: {
         pools: this.#pools.size, pool_released: this.#poolReleasedAt.size, carries: this.#carries.size, fees: this.#fees.size, snapshots: this.#snapshots.size,
         opened: this.#opened.size, create_sig: this.#createSig.size, complete_sig: this.#completeSig.size, migration_sig: this.#migrationSig.size,
@@ -2097,7 +2107,7 @@ export class Worker {
         rows: this.#rows.length, fill_lines: this.#fillLines.length, restored_mints: this.#restoredMints.length, create_pending: this.#createPending.length,
         exits_chars: this.#savedExits.length, seeds_chars: this.#savedSeeds.length,
       },
-    }, byPrefix);
+    }, byPrefix, entriesByPrefix, bytesByPrefix);
   }
 
   /** MEM-PROBE: a probe sample around the state save (`saving` true just before it, false just after), written at once. */
