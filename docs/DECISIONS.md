@@ -2679,13 +2679,26 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - The regime's other series, stated whole like the graduates fact: `gates/sol-usd`, `gates/curve-volume`,
     `gates/exec-health` (read as of now by the regime and H8), and their raw reads `sol-usd`,
     `read:chain-volume-hour`, `read:exec-health` (the producer acts on the released read and keeps its own series).
+- **Read bodies** (supervisor ruling, crash 28: old space grew about 4 KB for every new store entry). Every raw read
+  (`read:` — holders with their largest accounts, the complete holder scan with every account, simulation, the
+  cross-checks, funder), a batch's open and close (`read-batch:`, `reads:`), and the facts a read restates whole
+  (`gates/holders:` with the account list again, `gates/insiders:`, `gates/sim:`, `gates/xcheck:`, `gates/lp:`, and
+  `facts/abstentions:holders`) keep only their newest value. Nothing looks a raw read up in the store (the producer and
+  the strategy act on the released read); the gates look the facts up as of now (`Evidence.read`). Before, each re-read
+  of a candidate stacked another holder list. The earlier pin that `gates/holders:` and `read:holders:` keep their
+  whole series (OOM-HEADS) is replaced by this rule; the create and migration facts stay whole (stated once).
 - **Create logs** (supervisor item 2): already let go 13 h after their create when the coin has not migrated
   (OOM-MINT, `CREATE_KEEP_MS` + `CREATE_LATE_MS`); live's create-log keys still grow while that window fills after a
   restart (about 70 a minute, about 55k at the full window). Shortening it changes which coins are refused
   `create-expired`, so it is left to a ruling.
-- **Probe.** MEM-PROBE also reports the largest kinds by entries (`store_e_<kind>`, after `store_k_<kind>`), so a
-  one-key kind whose series grows is seen.
+- **Probe.** MEM-PROBE also reports the largest kinds by rough size in KB (`store_b_<kind>`) and by entries
+  (`store_e_<kind>`), six each, after the twelve `store_k_<kind>`: a one-key kind whose series grows, or a kind of
+  large values, is seen. Rough size is `roughBytes` of the newest value times the series' length (at most 256 values
+  walked per value, the rest scaled), for the sampled keys; 92 codes a sample, under the cap of 96.
 - **Evidence (fail before, pass after).** `store-rules.test.ts`: each of the eight keys keeps one entry after an
-  hour of ticks, and a lookup as of now returns the newest (before: one entry a tick); `mem-counts.test.ts`: entries
-  per kind exactly, sampled at scale, and the `store_e_` codes. Hand mutants killed: sol-price whole, fact-reads whole,
-  `read:exec-health` whole, no `store_e_` codes, entries counted as keys.
+  hour of ticks, and a lookup as of now returns the newest (before: one entry a tick); fifteen read and per-read fact
+  keys re-read 120 times keep one entry each; `mem-counts.test.ts`: entries and rough bytes per kind exactly, sampled
+  at scale, the `store_b_` and `store_e_` codes, `roughBytes` within a factor of two on a value it stops early in.
+  Hand mutants killed: sol-price whole, fact-reads whole, `read:exec-health` whole, no `store_e_` codes, entries
+  counted as keys, raw reads whole, holders facts whole, abstentions whole, no `store_b_` codes, no field cost, no
+  scaling of skipped values.

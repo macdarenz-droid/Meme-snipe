@@ -55,6 +55,8 @@ export const PROBE_KEEP = 10;
 export const PROBE_MAX_COUNTS = 96;
 /** The store's key kinds kept per sample, largest first. */
 export const PROBE_STORE_KINDS = 12;
+/** STORE-GROWTH: the store's kinds by rough size (KB) and by entries kept per sample, largest first (within PROBE_MAX_COUNTS). */
+export const PROBE_STORE_SIZE_KINDS = 6;
 export interface ProbeCount {
   readonly code: string;
   readonly count: number;
@@ -90,10 +92,10 @@ export const heapSpacesMb = (): { readonly old_mb: number; readonly large_object
 
 /**
  * Groups of counts flattened to codes (`group_name`), whole and non-negative, in the order given; the store's key kinds
- * (`byPrefix`) as `store_k_<kind>`, the largest PROBE_STORE_KINDS, then by entries (`entriesByPrefix`) as `store_e_<kind>`.
- * At most PROBE_MAX_COUNTS.
+ * (`byPrefix`) as `store_k_<kind>`, the largest PROBE_STORE_KINDS, then by rough size in KB (`store_b_<kind>`) and by
+ * entries (`store_e_<kind>`), PROBE_STORE_SIZE_KINDS each. At most PROBE_MAX_COUNTS.
  */
-export const probeCounts = (groups: Readonly<Record<string, Readonly<Record<string, number>>>>, byPrefix: ReadonlyMap<string, number> = new Map(), entriesByPrefix: ReadonlyMap<string, number> = new Map()): ProbeCount[] => {
+export const probeCounts = (groups: Readonly<Record<string, Readonly<Record<string, number>>>>, byPrefix: ReadonlyMap<string, number> = new Map(), entriesByPrefix: ReadonlyMap<string, number> = new Map(), bytesByPrefix: ReadonlyMap<string, number> = new Map()): ProbeCount[] => {
   const out: ProbeCount[] = [];
   const put = (code: string, n: number) => {
     if (out.length < PROBE_MAX_COUNTS && Number.isFinite(n)) out.push({ code: probeCode(code), count: Math.max(0, Math.round(n)) });
@@ -101,18 +103,19 @@ export const probeCounts = (groups: Readonly<Record<string, Readonly<Record<stri
   for (const [g, counts] of Object.entries(groups)) for (const [k, n] of Object.entries(counts)) put(`${g}_${k}`, n);
   // A kind is published, so no address may reach it: a segment over 24 characters (any address, signature or hash)
   // counts as `x` (ops review), and kinds that become the same are summed.
-  const top = (counts: ReadonlyMap<string, number>): [string, number][] => {
+  const top = (counts: ReadonlyMap<string, number>, n = PROBE_STORE_KINDS): [string, number][] => {
     const masked = new Map<string, number>();
     for (const [k, n] of counts) {
       const kind = k.split(':').map((seg) => (seg.length > KIND_SEGMENT_MAX ? 'x' : seg)).join(':');
       masked.set(kind, (masked.get(kind) ?? 0) + n);
     }
-    return [...masked].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1)).slice(0, PROBE_STORE_KINDS);
+    return [...masked].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1)).slice(0, n);
   };
   for (const [k, n] of top(byPrefix)) put(`store_k_${k}`, n);
-  // STORE-GROWTH: the largest kinds by entries (`store_e_<kind>`), after the kinds by keys: a one-key kind whose
-  // series grows never reached the key list.
-  for (const [k, n] of top(entriesByPrefix)) put(`store_e_${k}`, n);
+  // STORE-GROWTH: the largest kinds by rough size in KB (`store_b_<kind>`), then by entries (`store_e_<kind>`), after
+  // the kinds by keys: a one-key kind whose series grows, or whose values are large, never reached the key list.
+  for (const [k, n] of top(bytesByPrefix, PROBE_STORE_SIZE_KINDS)) put(`store_b_${k}`, n / 1024);
+  for (const [k, n] of top(entriesByPrefix, PROBE_STORE_SIZE_KINDS)) put(`store_e_${k}`, n);
   return out;
 };
 

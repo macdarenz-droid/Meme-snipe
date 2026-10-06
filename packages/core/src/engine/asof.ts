@@ -62,6 +62,39 @@ export const flatCopy = (s: string): string => {
 };
 const flat = flatCopy;
 
+/** STORE-GROWTH: the most values `roughBytes` visits in one value, so a probe never walks a huge value whole. */
+const ROUGH_NODES = 256;
+/**
+ * STORE-GROWTH (MEM-PROBE): a rough size of a value in bytes, for comparing key kinds, not an exact heap size: a string
+ * its length plus a header, a number 8, a bigint 16, an object or array 16, and each field 16 more. Stops after
+ * ROUGH_NODES values and scales what it saw to the values it skipped.
+ */
+export const roughBytes = (v: unknown): number => {
+  let bytes = 0;
+  let nodes = 0;
+  let skipped = 0;
+  // Each value carries the 16-byte field that holds it, so what was seen is a fair sample of what was skipped.
+  const stack: unknown[] = [v];
+  let root = true;
+  while (stack.length > 0) {
+    if (nodes >= ROUGH_NODES) {
+      skipped = stack.length;
+      break;
+    }
+    const x = stack.pop();
+    nodes += 1;
+    bytes += root ? 0 : 16;
+    root = false;
+    if (typeof x === 'string') bytes += 16 + x.length;
+    else if (typeof x === 'bigint') bytes += 16;
+    else if (typeof x === 'object' && x !== null) {
+      bytes += 16;
+      for (const y of Array.isArray(x) ? x : Object.values(x as Record<string, unknown>)) stack.push(y);
+    } else bytes += 8;
+  }
+  return nodes === 0 ? 0 : Math.round(bytes * (1 + skipped / nodes));
+};
+
 export class AsOfStore {
   readonly #clock: Clock;
   readonly #series = new Map<string, AsOfEntry[]>();
@@ -209,11 +242,13 @@ export class AsOfStore {
    * about one key in n, spread by a hash of each key's position, and scaled by n (an estimate), so the probe's pause stays a few ms at any store size (all keys: about 60 ms per
    * 300k).
    */
-  sizes(): { readonly keys: number; readonly entries: number; readonly tails: number; readonly byPrefix: ReadonlyMap<string, number>; readonly entriesByPrefix: ReadonlyMap<string, number> } {
+  sizes(): { readonly keys: number; readonly entries: number; readonly tails: number; readonly byPrefix: ReadonlyMap<string, number>; readonly entriesByPrefix: ReadonlyMap<string, number>; readonly bytesByPrefix: ReadonlyMap<string, number> } {
     let entries = 0;
     const byPrefix = new Map<string, number>();
     // STORE-GROWTH: entries per kind too, so a kind of one key whose series grows (a running fact) is seen.
     const entriesByPrefix = new Map<string, number>();
+    // And a rough size per kind: the newest value's `roughBytes` times the series' length, for the sampled keys.
+    const bytesByPrefix = new Map<string, number>();
     const every = Math.max(1, Math.ceil(this.#series.size / PROBE_KIND_SAMPLE));
     let i = 0;
     for (const [key, series] of this.#series) {
@@ -225,16 +260,20 @@ export class AsOfStore {
       const prefix = a < 0 ? key : b < 0 ? key.slice(0, a) : key.slice(0, b);
       const had = byPrefix.get(prefix);
       // A new kind is kept as a fresh copy, never a slice that would pin its whole key (facts review).
+      const newest = series[series.length - 1];
+      const size = newest === undefined ? 0 : roughBytes(newest.value) * series.length * every;
       if (had === undefined) {
         const kind = flat(prefix);
         byPrefix.set(kind, every);
         entriesByPrefix.set(kind, series.length * every);
+        bytesByPrefix.set(kind, size);
       } else {
         byPrefix.set(prefix, had + every);
         entriesByPrefix.set(prefix, (entriesByPrefix.get(prefix) ?? 0) + series.length * every);
+        bytesByPrefix.set(prefix, (bytesByPrefix.get(prefix) ?? 0) + size);
       }
     }
-    return { keys: this.#series.size, entries, tails: this.#byTail.size, byPrefix, entriesByPrefix };
+    return { keys: this.#series.size, entries, tails: this.#byTail.size, byPrefix, entriesByPrefix, bytesByPrefix };
   }
 
   /** Index of the last entry with moment <= `at`, or -1. */

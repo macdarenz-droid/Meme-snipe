@@ -4,8 +4,8 @@
 import type { Collapse, Forget, Retention, Shape } from '../../../core/src/engine/index.ts';
 import { SEED_KEY, SOL_PRICE_KEY } from '../engine/strategy.ts';
 import { FACT_READS_KEY } from '../facts/source.ts';
-import { FUNDER_KEEP_MS, RAW } from '../../../core/src/facts/index.ts';
-import { CURVE_VOLUME_KEY, EXEC_HEALTH_KEY, GRADUATES_KEY, LOG_CREATE_PREFIX, SOL_USD_KEY, TX_CREATE_PREFIX, candlesKey, carryKey, compactCreate, compactCurveTrade, curveTradeKeys, mintKey, poolKey, streamKey, tradeTailCollapse } from '../../../core/src/gates/index.ts';
+import { FUNDER_KEEP_MS, HOLDER_ABSTENTIONS_KEY, RAW } from '../../../core/src/facts/index.ts';
+import { CURVE_VOLUME_KEY, EXEC_HEALTH_KEY, GRADUATES_KEY, LOG_CREATE_PREFIX, SOL_USD_KEY, holdersKey, insidersKey, lpKey, simKey, xcheckKey, TX_CREATE_PREFIX, candlesKey, carryKey, compactCreate, compactCurveTrade, curveTradeKeys, mintKey, poolKey, streamKey, tradeTailCollapse } from '../../../core/src/gates/index.ts';
 
 const POOL_PREFIX = poolKey('');
 
@@ -65,13 +65,23 @@ const RUNNING = [SOL_PRICE_KEY, FACT_READS_KEY];
  * and deployer keys only).
  */
 const REGIME = [SOL_USD_KEY, CURVE_VOLUME_KEY, EXEC_HEALTH_KEY, RAW.solUsd, RAW.volumeHour, RAW.exec];
+/**
+ * STORE-GROWTH (read bodies, supervisor ruling): every raw read (`read:<kind>:...`: holders with their largest accounts,
+ * the complete holder scan with every account, a simulation, the cross-checks, a funder) and a batch's open and close
+ * (`read-batch:`, `reads:`), restated at every re-read of a candidate: the producer and the strategy act on the released
+ * read; nothing looks a raw read up in the store. And the facts each read restates whole, looked up as of now only by
+ * the gates (`Evidence.read`): holders (the account list again), insiders, simulation, cross-check, LP, and the
+ * producer's holder abstentions. Kept whole, a candidate's re-reads stacked a holder list each time (live: old space
+ * grew about 4 KB for every new store entry).
+ */
+const READ_BODIES = ['read:', RAW.batchOpen(''), RAW.batchClose(''), holdersKey(''), insidersKey(''), simKey(''), xcheckKey(''), lpKey('')];
 const NEWEST_ONLY = (): boolean => false;
 
 /**
  * The live store's collapse: a head fact, a seen signature, the slot notice, an account read and its mint fact, the graduates fact and the regime's other series with their raw reads, and the worker's running facts keep their newest value; a trade key keeps its newest event
  * and every event whose tail would fail (`tradeTailCollapse`).
  */
-export const liveCollapse: Collapse = (key) => (key === SLOT || key === GRADUATES || RUNNING.includes(key) || REGIME.includes(key) || key.startsWith(SEEN) || HEADS.some((p) => key.startsWith(p)) || READS.some((p) => key.startsWith(p)) ? NEWEST_ONLY : tradeTailCollapse(key));
+export const liveCollapse: Collapse = (key) => (key === SLOT || key === GRADUATES || key === HOLDER_ABSTENTIONS_KEY || RUNNING.includes(key) || REGIME.includes(key) || READ_BODIES.some((p) => key.startsWith(p)) || key.startsWith(SEEN) || HEADS.some((p) => key.startsWith(p)) || READS.some((p) => key.startsWith(p)) ? NEWEST_ONLY : tradeTailCollapse(key));
 
 const CURVE_TRADE = curveTradeKeys('');
 /**

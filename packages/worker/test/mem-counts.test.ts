@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  MEM_FILE, PROBE_EVERY_MS, PROBE_FILE, PROBE_KEEP, PROBE_MAX_COUNTS, PROBE_STORE_KINDS, deathMem, parseDeathMem, probeCode, probeCounts, readMem, readProbe, writeMem, writeProbe,
+  MEM_FILE, PROBE_EVERY_MS, PROBE_FILE, PROBE_KEEP, PROBE_MAX_COUNTS, PROBE_STORE_KINDS, PROBE_STORE_SIZE_KINDS, deathMem, parseDeathMem, probeCode, probeCounts, readMem, readProbe, writeMem, writeProbe,
   type MemSample, type ProbeSample,
 } from '../src/run/mem-trace.ts';
 import { buildSummary, emptySummaryState, foldText, summaryBody, withoutProbe } from '../src/run/summary.ts';
@@ -13,7 +13,7 @@ import { SUMMARY_MAX_BYTES, checkSummary } from '../../ops/src/watchdog/summary.
 import { melbourneDate } from '../src/run/api.ts';
 import { STATE_FILES } from '../../runner/src/contract.ts';
 import { Market, makeWorker, tempState, virtualTimers, T } from './worker-harness.ts';
-import { AsOfStore, PROBE_KIND_SAMPLE } from '../../core/src/engine/asof.ts';
+import { AsOfStore, PROBE_KIND_SAMPLE, roughBytes } from '../../core/src/engine/asof.ts';
 
 const MB = 1_048_576;
 const sample = (over: Partial<MemSample> = {}): MemSample => ({ at: 1_000_000, heap_used: 100 * MB, heap_limit: 500 * MB, rss: 300 * MB, external: 1, array_buffers: 1, cgroup_max: null, ...over });
@@ -53,7 +53,7 @@ describe('the counts', () => {
     small.record('plain', 2, now, 'i6');
     small.record('plain', 3, now, 'i7');
     // STORE-GROWTH: entries per kind too: one key (`plain`) with three entries outweighs two keys with three between them.
-    expect(small.sizes()).toEqual({ keys: 4, entries: 7, tails: 3, byPrefix: new Map([['logs:pump', 2], ['gates:mint', 1], ['plain', 1]]), entriesByPrefix: new Map([['logs:pump', 3], ['gates:mint', 1], ['plain', 3]]) });
+    expect(small.sizes()).toEqual({ keys: 4, entries: 7, tails: 3, byPrefix: new Map([['logs:pump', 2], ['gates:mint', 1], ['plain', 1]]), entriesByPrefix: new Map([['logs:pump', 3], ['gates:mint', 1], ['plain', 3]]), bytesByPrefix: new Map([['logs:pump', 24], ['gates:mint', 8], ['plain', 24]]) });
     const big = new AsOfStore({ now: () => now });
     const n = 3 * PROBE_KIND_SAMPLE;
     for (let i = 0; i < n; i++) big.record(`${i % 3 === 0 ? 'read:accounts' : 'pump:TradeEvent'}:${i}`, i, now, `i${i}`);
@@ -70,13 +70,30 @@ describe('the counts', () => {
     const mint = 'So11111111111111111111111111111111111111112';
     const keys = new Map([['logs:pump', 500], ['worker:fact-reads', 1]]);
     const entries = new Map([['logs:pump', 500], ['worker:fact-reads', 5_723], [`read:${mint}`, 3], ['read:x', 1]]);
-    expect(probeCounts({ store: { keys: 501 } }, keys, entries)).toEqual([
+    const bytes = new Map([['read:holders', 4_096_000], ['logs:pump', 512_000]]);
+    expect(probeCounts({ store: { keys: 501 } }, keys, entries, bytes)).toEqual([
       { code: 'store_keys', count: 501 },
       { code: 'store_k_logs_pump', count: 500 }, { code: 'store_k_worker_fact-reads', count: 1 },
+      { code: 'store_b_read_holders', count: 4_000 }, { code: 'store_b_logs_pump', count: 500 },
       { code: 'store_e_worker_fact-reads', count: 5_723 }, { code: 'store_e_logs_pump', count: 500 }, { code: 'store_e_read_x', count: 4 },
     ]);
     const many = new Map(Array.from({ length: 40 }, (_, i) => [`k${i}`, 1_000 - i] as const));
-    expect(probeCounts({}, new Map(), many).map((x) => x.code)).toEqual(Array.from({ length: PROBE_STORE_KINDS }, (_, i) => `store_e_k${i}`));
+    expect(probeCounts({}, new Map(), many).map((x) => x.code)).toEqual(Array.from({ length: PROBE_STORE_SIZE_KINDS }, (_, i) => `store_e_k${i}`));
+    expect(probeCounts({}, new Map(), new Map(), many).map((x) => x.code)).toEqual(Array.from({ length: PROBE_STORE_SIZE_KINDS }, (_, i) => `store_b_k${i}`));
+    // Today's 68 group codes (80 in a live sample, less its 12 key kinds), then the key, size and entry kinds: under the cap.
+    expect(68 + PROBE_STORE_KINDS + 2 * PROBE_STORE_SIZE_KINDS).toBeLessThanOrEqual(PROBE_MAX_COUNTS);
+  });
+
+  it('roughBytes ranks values by size and stops early on a huge one', () => {
+    const holders = { accounts: Array.from({ length: 20 }, (_, i) => ({ address: 'A'.repeat(44), owner: 'O'.repeat(44), amount: BigInt(i) })) };
+    expect(roughBytes(holders)).toBeGreaterThan(20 * 2 * 44);
+    expect(roughBytes(1)).toBe(8);
+    expect(roughBytes('abc')).toBe(19);
+    const huge = Array.from({ length: 100_000 }, () => 1);
+    // Scaled from what it saw: within a factor of two of the full walk (16, then 16 a field and 8 a number).
+    const full = 16 + 24 * huge.length;
+    expect(roughBytes(huge)).toBeGreaterThan(full / 2);
+    expect(roughBytes(huge)).toBeLessThan(full * 2);
   });
 
   it('mem.json keeps the sample and the recent probes; only well-formed probes are read back', () => {

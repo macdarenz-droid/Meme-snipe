@@ -2051,7 +2051,7 @@ export class Worker {
 
   /** MEM-PROBE: the size of every major collection the worker reaches, counts only. */
   #memCounts(): ProbeCount[] {
-    const { byPrefix, entriesByPrefix, ...store } = this.#engine.sizes();
+    const { byPrefix, entriesByPrefix, bytesByPrefix, ...store } = this.#engine.sizes();
     const d = this.#loopDelay;
     const lag = d.count === 0 ? { max_ms: 0, p95_ms: 0 } : { max_ms: d.max / 1e6, p95_ms: d.percentile(95) / 1e6 };
     d.reset();
@@ -2065,7 +2065,7 @@ export class Worker {
         rows: this.#rows.length, fill_lines: this.#fillLines.length, restored_mints: this.#restoredMints.length, create_pending: this.#createPending.length,
         exits_chars: this.#savedExits.length, seeds_chars: this.#savedSeeds.length,
       },
-    }, byPrefix, entriesByPrefix);
+    }, byPrefix, entriesByPrefix, bytesByPrefix);
   }
 
   /** MEM-PROBE: a probe sample around the state save (`saving` true just before it, false just after), written at once. */
