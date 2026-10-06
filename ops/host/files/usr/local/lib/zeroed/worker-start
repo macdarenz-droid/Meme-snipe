@@ -17,8 +17,25 @@ if [ "$entry" != /opt/zeroed/stub/worker.mjs ]; then
 fi
 export ZEROED_MODE=paper ZEROED_RECORDER=on ZEROED_SIMULATE=on ZEROED_DRILLS=on
 export ZEROED_HEALTH_ADDR="$WORKER_HEALTH_ADDR" ZEROED_API_ADDR="$WORKER_API_ADDR"
+# HEAP-GUARD: V8's default heap limit follows the machine's RAM (about half of it: roughly 500 MB on the 1 GB host), not
+# the unit's MemoryMax=800M, and a heap past it aborts with no handler ("no clean stop"). 560 MB of old space, plus the
+# young generation (up to 48 MB) and the measured native overhead (RSS less heap: 127 MB at a 100k-mint boot, 147 MB at
+# 1M), stays under 800M. A fatal error writes a compact report into the state dir (StateDirectory: writable under
+# ProtectSystem=strict), which the next start's reconcile reads to name the death.
+reports="${STATE_DIRECTORY:-/var/lib/zeroed}/reports"
+mkdir -p "$reports"
+# Only the newest 5 reports are kept: a restart loop would otherwise write one every few minutes. The newest (the last
+# death's) is the one the reconcile reads. Safe with no report at all (nullglob).
+shopt -s nullglob
+old=("$reports"/report.*.json)
+shopt -u nullglob
+if [ "${#old[@]}" -gt 5 ]; then
+  mapfile -t old < <(ls -1t -- "${old[@]}")
+  rm -f -- "${old[@]:5}"
+fi
+heap=(--max-old-space-size=560 --report-on-fatalerror --report-compact "--report-directory=$reports")
 if [ "$entry" != /opt/zeroed/stub/worker.mjs ]; then
   cd /opt/zeroed/current
-  exec /usr/local/bin/node --no-warnings "$entry" "$@"
+  exec /usr/local/bin/node --no-warnings "${heap[@]}" "$entry" "$@"
 fi
-exec /usr/local/bin/node "$entry" "$@"
+exec /usr/local/bin/node "${heap[@]}" "$entry" "$@"

@@ -69,6 +69,12 @@ RES-4: exact break-even moves per setup (conservative, rent back when the sell-a
 ## Brand ([brand.md](research/brand.md))
 - Premium marks are one solid idea carried by negative space, one colour first, depth only on the app icon. Led to the "Slot" mark (`docs/BRAND.md`).
 
+## Slot time (WATCH-1c, measured 2026-10-04)
+- Source: mainnet `getRecentPerformanceSamples(720)` from api.mainnet-beta.solana.com at 06:08 UTC. 279 one-minute samples, slots 453,108,490–453,170,974. Slot time per sample is 60 s / `numSlots`.
+- Mean 267 ms, p50 267 ms, p95 274 ms, p99 278 ms, max 283 ms. This agrees with the fact-check's 0.27–0.32 s.
+- Limit: these are one-minute means, so they hide the spread of single slots (a skipped leader slot, a slow block). RPC block times have 1 s resolution and cannot measure single slots. The live dry run's recorder can (each slot notice's receipt time), and that is the measurement to use once it exists.
+- Used for: the WATCH-1 timing guard's release time, which is 2 slots × 400 ms. 400 ms is 1.44× the measured p99 minute mean.
+
 ## Still open
 - RES-2 whale copy-trading study: results pending.
 - Every report now ends with an independent "Fact-check" section (59 claims confirmed, 11 contradicted). The corrections are applied in `docs/ARCHITECTURE.md` and listed below.

@@ -75,10 +75,10 @@ describe('the app against the real worker (APP-HOME)', () => {
     expect(status({}).weeklyLossLimitUsd).toBe(String((Number(p.capital.bankroll) * p.loss.weeklyBps) / 10_000 / 1e6));
     expect(status({}).weeklyLossLimitUsd).not.toBe(status({}).dailyLossLimitUsd);
     // U9: paused when the owner paused; ended with a session-ended halt; running otherwise.
-    const fresh = { atMs: base.nowMs, codes: [] as string[] };
+    const fresh = { atMs: base.nowMs, codes: [] as string[], dayLoss: 0n };
     expect(status({ stops: fresh }).state).toBe('running');
     expect(status({ stops: fresh, paused: true }).state).toBe('paused');
-    expect(status({ stops: { atMs: base.nowMs, codes: ['session_not_running'] } }).state).toBe('ended');
+    expect(status({ stops: { atMs: base.nowMs, codes: ['session_not_running'], dayLoss: 0n } }).state).toBe('ended');
     await w.worker.stop();
   });
 

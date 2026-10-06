@@ -23,10 +23,10 @@ import { heliusRpcUrl, type HttpClient, type Secrets } from '../providers/index.
 import type { Scheduler } from '../scheduler/index.ts';
 import { ASSUMPTIONS } from './budget.ts';
 import { join } from 'node:path';
-import { FactReaders, FactRpc, type BatchPart, type BatchRequest, type BatchResult, type SimFn } from './readers.ts';
+import { HOLDER_SCANS_FILE, FactReaders, FactRpc, type BatchPart, type BatchRequest, type BatchResult, type SimFn } from './readers.ts';
 import { CHAIN_VOLUME_DIR, fileChainVolumeStore } from './volume-store.ts';
 import { DEPLOYER_CHECK_SPEND_FILE, DeployerChecks } from './deployer-checks.ts';
-import type { CandidateReason } from '../engine/strategy.ts';
+import { type CandidateReason, MARKET_MISS_CODES } from '../engine/strategy.ts';
 import type { FactContext, FactSource } from '../run/facts.ts';
 import type { TimerHandle } from '../scheduler/timers.ts';
 
@@ -68,6 +68,8 @@ export interface LiveFactsOptions {
   readonly readers: (ctx: FactContext) => LiveReaders;
   /** How often the source looks at the candidates. */
   readonly tickMs: number;
+  /** Fact reads running at once (FACT_READS_IN_FLIGHT unless a test sets it). */
+  readonly readsInFlight?: number;
   /** Least time between two reads of one kind for one mint (60 s: the budget's one evaluation a minute). */
   readonly minReadGapMs: number;
   /** The policy's survival mark after a migration (regime.survivalAfterMs) and how soon after it the pool is read. */
@@ -107,6 +109,8 @@ const stageOf = (g: CandidateReason): number => {
 /** H14's detail when the rug half is not covered and the deployer check is missing or not accepted (gates/hard.ts). */
 const DEPLOYER_CHECK_DETAIL = `${RUG_LABELS_UNAVAILABLE}: `;
 
+const MARKET_MISS: ReadonlySet<string> = new Set(MARKET_MISS_CODES);
+
 type Kind = 'batch' | 'accounts' | 'holders' | 'holders-all' | 'xcheck' | 'mint-history' | 'sim' | 'survival' | 'sol-usd' | 'chain-volume' | 'deployer-check';
 
 /** What one candidate's last reasons ask the source to read; empty when it must not read. */
@@ -115,8 +119,9 @@ export const readsFor = (gates: readonly CandidateReason[] | null): Kind[] => {
   const out = new Set<Kind>();
   let holdersOnly = true;
   for (const g of gates) {
-    // The worker has no market for the mint yet: its pool fact comes from the account read.
-    if (g.gate === 'worker' && g.code === 'no-market') {
+    // The worker has no market for the mint (any of #market's cases, as `no-market` did): its pool fact comes from the
+    // account read.
+    if (g.gate === 'worker' && MARKET_MISS.has(g.code)) {
       out.add('accounts');
       holdersOnly = false;
       continue;
@@ -139,6 +144,9 @@ export const readsFor = (gates: readonly CandidateReason[] | null): Kind[] => {
   }
   return [...out].sort();
 };
+
+/** HEAP-GUARD STEP B: fact reads running at once, across every kind and mint (the rest wait their turn). */
+export const FACT_READS_IN_FLIGHT = 4;
 
 export class LiveFacts implements FactSource {
   readonly name = 'facts';
@@ -176,6 +184,8 @@ export class LiveFacts implements FactSource {
     if (this.#tick !== null) this.#ctx?.timers.clearTimeout(this.#tick);
     this.#tick = null;
     this.#ctx = null;
+    // Reads still waiting never run: each sees the stop and only clears its single-flight mark.
+    for (const go of [...this.#urgent.splice(0), ...this.#queue.splice(0)]) go();
   }
 
   /** One look at the candidates (the timer calls it; tests call it directly). */
@@ -284,7 +294,19 @@ export class LiveFacts implements FactSource {
     }
   }
 
-  /** Runs one read, single flight per kind and mint; `f` answering null has counted its own parts (a batch). */
+  /** Reads running now, across every kind and mint, and those waiting their turn (HEAP-GUARD STEP B). */
+  #active = 0;
+  readonly #urgent: (() => void)[] = [];
+  readonly #queue: (() => void)[] = [];
+
+  /**
+   * Runs one read, single flight per kind and mint; `f` answering null has counted its own parts (a batch). At most
+   * `readsInFlight` (FACT_READS_IN_FLIGHT) run at once, whatever the number of candidates: a restart restores every
+   * candidate in its window at once, and their reads together (complete holder scans are MBs of JSON each) passed V8's
+   * heap limit (HEAP-GUARD, 5 Oct). The rest wait in arrival order, the regime's own reads (`force`) ahead of the
+   * candidates' (each in arrival order). A read
+   * still waiting at a stop never runs.
+   */
   #run(kind: Kind, mint: string, f: (r: LiveReaders) => Promise<boolean | null>, force = false): void {
     const ctx = this.#ctx;
     const readers = this.#readers;
@@ -293,12 +315,36 @@ export class LiveFacts implements FactSource {
     if (this.#inFlight.has(id)) return;
     if (!force) this.#lastAt.set(id, ctx.timers.now());
     this.#inFlight.add(id);
-    void f(readers)
-      .catch(() => false)
-      .then((ok) => {
+    const go = (): void => {
+      if (this.#ctx === null) {
         this.#inFlight.delete(id);
-        if (ok !== null) this.#count(kind, ok);
-      });
+        return;
+      }
+      this.#active++;
+      void f(readers)
+        .catch(() => false)
+        .then((ok) => {
+          this.#active--;
+          this.#inFlight.delete(id);
+          this.#next();
+          if (ok !== null) this.#count(kind, ok);
+        });
+    };
+    if (this.#active < this.#limit()) go();
+    else (force ? this.#urgent : this.#queue).push(go);
+  }
+
+  #limit(): number {
+    return this.#o.readsInFlight ?? FACT_READS_IN_FLIGHT;
+  }
+
+  #next(): void {
+    while (this.#active < this.#limit() && this.#urgent.length + this.#queue.length > 0) (this.#urgent.shift() ?? this.#queue.shift()!)();
+  }
+
+  /** Reads running and waiting now (for tests and health). */
+  get reads(): { readonly running: number; readonly waiting: number } {
+    return { running: this.#active, waiting: this.#urgent.length + this.#queue.length };
   }
 
   #count(kind: Kind, ok: boolean): void {
@@ -335,6 +381,8 @@ export interface LiveFactsWiring {
   readonly execStats?: () => ExecStats | null;
   /** The worker's state dir: the deployer checks keep their daily spend there across restarts. */
   readonly stateDir?: string;
+  /** The worker's log (a holder scan count that could not be saved). */
+  readonly log?: (line: string) => void;
 }
 
 /** How often the paper execution statistics are published: logged, never judged, so freshness does not bind it. */
@@ -367,6 +415,9 @@ export const liveFacts = (w: LiveFactsWiring): LiveFacts => {
         rugs: RUG_CONFIG, config: RUG_CHECK_CONFIG, minGapMs: 60_000 / ASSUMPTIONS.evaluationsPerMinute,
         ...(w.stateDir === undefined ? {} : { spendFile: join(w.stateDir, DEPLOYER_CHECK_SPEND_FILE) }),
       }),
+      // STEP-B: today's complete holder scans survive a restart (the cap is a day's, not a process's).
+      ...(w.stateDir === undefined ? {} : { scansFile: join(w.stateDir, HOLDER_SCANS_FILE) }),
+      ...(w.log === undefined ? {} : { log: w.log }),
       ...(w.github === undefined ? {} : {
         releases: {
           api: { scheduler: w.github.api }, downloads: { scheduler: w.github.downloads },

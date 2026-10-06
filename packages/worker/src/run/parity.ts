@@ -5,25 +5,30 @@
 // once the wall-clock fields (seq, ts, boot) are dropped, in every one of N replays. The first differing line is
 // reported with its event. The session's ledger is replayed too, by the check the caller hands in (core's
 // `replayLedgerFile`: worker source never reaches ledger internals, packages/core/test/ledger/guard.ts).
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { zstdDecompressSync } from 'node:zlib';
 import type { PolicySession, RugConfig } from '../../../core/src/config/index.ts';
 import { Engine, type LogRecord } from '../../../core/src/engine/index.ts';
 import { Ledger } from '../../../core/src/ledger/index.ts';
 import { STATE_FILES } from '../../../runner/src/contract.ts';
-import { LiveStrategy, type StrategyConfig } from '../engine/strategy.ts';
+import { LiveStrategy, SEED_KEY, type SavedStateRef, type StrategyConfig, type StrategyDeps } from '../engine/strategy.ts';
+import { PERSIST_FILE, fileSha256, loadState } from '../persist/index.ts';
 import { replayRecorded, type Frame, type Release } from '../providers/index.ts';
 import { journalFields } from './desk.ts';
 import { engineFeed } from './engine-feed.ts';
 import { jsonText, parseTyped } from './json.ts';
 import { redact } from './redact.ts';
+import { liveCollapse, liveForget, liveRetention, liveShape } from './store-rules.ts';
 
 /**
  * Journal `decision` lines that no engine record makes, so a replay cannot rebuild them: refused API commands and
  * ledger refusals (a ledger write failing after the engine applied the event). Counted in the report, never compared;
  * a ledger refusal fails the session (it is a live divergence), a refused command does not.
  */
+const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+
 export const NOT_REPLAYED: readonly string[] = ['command_refused', 'ledger_refused'];
 
 /** A journal line without its wall-clock fields: `{"kind":...}` exactly as the replay writes it. */
@@ -35,8 +40,61 @@ const replayLine = (r: LogRecord): string | null => {
   return f === null ? null : redact(jsonText({ kind: 'decision', ...f }));
 };
 
+/** The parity replay cannot restore the saved state a boot's seed names (WORKER-GROW): it refuses, with no decisions. */
+export class SavedStateMissing extends Error {}
+
+/**
+ * The saved state a boot's seed names, read from the copy in its recording and checked against the sha256 the seed
+ * carries, before anything is replayed. A copy that is missing, unreadable, refused or of another hash fails the replay
+ * loudly (`SavedStateMissing`); it never falls back to an empty or other state.
+ */
+export const savedStateOf = (b: Pick<BootInput, 'frames' | 'savedState'> & { readonly boot?: string }, d: ParityDeps): Pick<StrategyDeps, 'savedState'> => {
+  const seed = b.frames.find((f) => f.body.type === 'fact' && f.body.key === SEED_KEY);
+  const st = seed !== undefined && seed.body.type === 'fact' && isObj(seed.body.value) ? seed.body.value['state'] : undefined;
+  const ref = isObj(st) && isObj(st['ref']) ? st['ref'] as unknown as SavedStateRef : null;
+  if (ref === null) return {};
+  const path = b.savedState;
+  const fail = (why: string): never => {
+    throw new SavedStateMissing(`boot ${b.boot ?? '?'}: the seed names saved state ${ref.file} (sha256 ${ref.sha256}), ${why}; nothing is replayed`);
+  };
+  if (path === null || path === undefined || !existsSync(path)) return fail('and the recording has no copy of it');
+  // G4c: a packed copy is read through a plain temporary file; the hash is that of the plain bytes, as the seed's.
+  let plain = path;
+  let sha: string;
+  let tmp: string | null = null;
+  try {
+    if (path.endsWith('.zst')) {
+      tmp = mkdtempSync(join(tmpdir(), 'zeroed-saved-'));
+      plain = join(tmp, PERSIST_FILE);
+      writeFileSync(plain, zstdDecompressSync(readFileSync(path)));
+    }
+    sha = fileSha256(plain);
+  } catch (e) {
+    if (tmp !== null) rmSync(tmp, { recursive: true, force: true });
+    return fail(`and its copy is unreadable (${e instanceof Error ? e.message : 'error'})`);
+  }
+  if (sha !== ref.sha256) {
+    if (tmp !== null) rmSync(tmp, { recursive: true, force: true });
+    return fail(`and the recording's copy has sha256 ${sha}`);
+  }
+  const restored = loadState(plain, d.rugs);
+  if (tmp !== null) rmSync(tmp, { recursive: true, force: true });
+  if (!restored.ok) return fail(`and its copy is refused (${restored.reason})`);
+  if (restored.version !== ref.version) return fail(`and its copy is format version ${restored.version}, not ${ref.version}`);
+  let given = false;
+  return {
+    savedState: (r) => {
+      if (given || r.sha256 !== ref.sha256 || r.file !== ref.file || r.version !== ref.version) throw new SavedStateMissing(`boot ${b.boot ?? '?'}: a second or different saved state asked for`);
+      given = true;
+      return { index: restored.index, labeller: restored.labeller };
+    },
+  };
+};
+
 export interface BootInput {
   readonly boot: string;
+  /** The copy of the saved state the boot restored from (`<recording>/deployer-state.json`), or null when there is none. */
+  readonly savedState?: string | null;
   /** Why this boot cannot be replayed at all (it has decisions but no recording or no seed), or null. */
   readonly missing: 'no recording' | 'no seed' | null;
   readonly seed: string;
@@ -91,10 +149,10 @@ export interface ParityDeps {
 }
 
 /** Replays one boot's recording once and returns the journal lines the desk would have written. */
-export const replayBoot = (b: Pick<BootInput, 'seed' | 'frames' | 'releases'>, d: ParityDeps): string[] => {
+export const replayBoot = (b: Pick<BootInput, 'seed' | 'frames' | 'releases' | 'savedState'> & { readonly boot?: string }, d: ParityDeps): string[] => {
   const { clock, feed } = replayRecorded(b.frames, b.releases);
-  const strategy = new LiveStrategy({ session: d.session, rugs: d.rugs, config: d.strategy });
-  const engine = new Engine({ clock, feed: engineFeed(feed, d.session.policy).feed, strategy, runner: { run: () => undefined }, seed: b.seed, book: { maxOpenPositions: d.session.policy.positions.maxOpen } });
+  const strategy = new LiveStrategy({ session: d.session, rugs: d.rugs, config: d.strategy, ...savedStateOf(b, d) });
+  const engine = new Engine({ clock, feed: engineFeed(feed, d.session.policy).feed, strategy, runner: { run: () => undefined }, seed: b.seed, book: { maxOpenPositions: d.session.policy.positions.maxOpen }, retention: liveRetention, collapse: liveCollapse, shape: liveShape, forget: liveForget });
   engine.drain();
   return (engine.records as readonly LogRecord[]).flatMap((r) => {
     const line = replayLine(r);
@@ -174,6 +232,7 @@ export const loadSession = (stateDir: string): BootInput[] => {
     const missing = j.seed === undefined ? 'no seed' : !existsSync(dir) ? 'no recording' : null;
     out.push({
       boot: j.boot, missing, seed: j.seed ?? '', live, excluded, redactions: missing === 'no recording' ? 0 : redactionsOf(dir),
+      savedState: existsSync(join(dir, PERSIST_FILE)) ? join(dir, PERSIST_FILE) : existsSync(join(dir, `${PERSIST_FILE}.zst`)) ? join(dir, `${PERSIST_FILE}.zst`) : null,
       frames: rows(dir, /^frames-.*\.jsonl(\.zst)?$/, (l) => parseTyped(l) as Frame),
       releases: rows(dir, /^releases-.*\.jsonl(\.zst)?$/, (l) => JSON.parse(l) as Release),
     });

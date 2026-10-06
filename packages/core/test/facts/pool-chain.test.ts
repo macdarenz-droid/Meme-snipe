@@ -8,9 +8,9 @@ import { startSession, TRIAL_POLICY } from '../../src/config/index.ts';
 import { OFF_CHAIN, type MarketEvent, type Moment } from '../../src/engine/index.ts';
 import { RAW, STREAMS } from '../../src/facts/index.ts';
 import { observedFeeContext } from '../../src/fills/index.ts';
-import { Evidence, parsePool, poolKey } from '../../src/gates/index.ts';
+import { Evidence, carryKey, parsePool, poolKey } from '../../src/gates/index.ts';
 import { bps } from '../../src/units/index.ts';
-import { FIX, FactWorld, MINT, POOL, coverage, offchain } from './helpers.ts';
+import { FIX, FactWorld, MINT, POOL, coverage, offchain, slotNotice } from './helpers.ts';
 
 const policy = startSession(TRIAL_POLICY).policy;
 const READ_SLOT = BigInt(FIX.accountsRead.slot);
@@ -230,4 +230,64 @@ describe('pool state from the swap stream (POS-1)', () => {
     expect(f.obs.slot).toBe(READ_SLOT + 4n);
     expect(f.baseVault).toBe(s1.after.baseReserve);
   });
+
+describe('a quiet pool proven unchanged by its covered stream (WATCH-1c)', () => {
+  const carries = (w: FactWorld) => w.facts(carryKey(MINT)).map((e) => e.value as { pool: string; slot: bigint; state: PoolState; obs: { slot: bigint; receivedAt: number } });
+  const notice = (slot: bigint) => slotNotice(slot, at(slot) + 50);
+  /** A confirmed PumpSwap event on the pool's stream that is not a swap (DEC-1 names it 'other' when it cannot). */
+  const other = (slot: bigint, name = 'other'): MarketEvent => ({
+    kind: 'market', id: `log:other${slot}:confirmed:00000`, moment: { slot, txIndex: 2 ** 32 + 999, ixIndex: 2 ** 36, receivedAt: at(slot) },
+    key: `logs:pump_amm:${name}:pump_amm`,
+    value: { event: { program: 'pump_amm', name, discriminator: '0011223344556677', logIndex: 0 }, signature: `other${slot}`, txSlot: slot, truncated: false, via: `logs:${POOL}`, commitment: 'confirmed', source: 'helius', backfilled: false, seq: 0 },
+  });
+
+  it('each slot notice carries the unchanged state through its slot; a swap moves the state it carries', () => {
+    const { world, state } = base();
+    world.push(notice(READ_SLOT + 1n), notice(READ_SLOT + 2n));
+    expect(carries(world).map((c) => [c.slot, c.state])).toEqual([[READ_SLOT + 1n, state], [READ_SLOT + 2n, state]]);
+    expect(carries(world)[1]!).toMatchObject({ pool: POOL, obs: { slot: READ_SLOT + 2n, receivedAt: at(READ_SLOT + 2n) + 50, quality: [], commitment: 'confirmed' } });
+    const s1 = swap('buy', state, state.baseReserve / 1000n, READ_SLOT + 3n);
+    world.push(s1.event, notice(READ_SLOT + 3n));
+    expect(carries(world).at(-1)).toMatchObject({ slot: READ_SLOT + 3n, state: s1.after });
+  });
+
+  it('nothing is carried without coverage: before the stream starts, across a gap, after a hole or a non-swap pool transaction', () => {
+    // No stream: the read alone proves nothing about the slots after it.
+    const bare = new FactWorld().push(read(), notice(READ_SLOT + 1n));
+    expect(carries(bare)).toEqual([]);
+    // A gap.
+    const g = base();
+    g.world.push(coverage(STREAM, 'gap', { fromSlot: READ_SLOT + 1n, toSlot: null, reason: 'disconnect', via: `logs:${POOL}` }, READ_SLOT + 1n, at(READ_SLOT + 1n)), notice(READ_SLOT + 2n));
+    expect(carries(g.world)).toEqual([]);
+    // A cut log on the stream.
+    const h = base();
+    h.world.push(offchain(`logs:truncated:logs:${POOL}`, { signature: 'cut' }, READ_SLOT + 1n, at(READ_SLOT + 1n)), notice(READ_SLOT + 2n));
+    expect(carries(h.world)).toEqual([]);
+    // A deposit, a withdrawal, a buyback or anything else on the pool that is not a swap: stale until the next swap.
+    for (const name of ['other', 'BoostBuyAndBurnEvent']) {
+      const o = base();
+      o.world.push(notice(READ_SLOT + 1n), other(READ_SLOT + 2n, name), notice(READ_SLOT + 2n), notice(READ_SLOT + 3n));
+      expect(carries(o.world).map((c) => c.slot)).toEqual([READ_SLOT + 1n]);
+      expect(facts(o.world).at(-1)!.obs.quality).toContain('partial');
+      expect((o.world.last(poolKey(MINT)) as { stale: string }).stale).toBe(`a pool transaction other than a swap (${name})`);
+      // The next swap re-bases on its own pre-trade reserves, and carrying resumes.
+      const s = swap('buy', o.state, o.state.baseReserve / 1000n, READ_SLOT + 4n);
+      o.world.push(s.event, notice(READ_SLOT + 4n));
+      expect(carries(o.world).at(-1)).toMatchObject({ slot: READ_SLOT + 4n, state: s.after });
+    }
+  });
+
+  it('a swap released behind a newer one makes the state stale; a repeat of an applied one does not', () => {
+    const { world, state } = base();
+    const s1 = swap('buy', state, state.baseReserve / 1000n, READ_SLOT + 3n);
+    const s2 = swap('buy', s1.after, state.baseReserve / 1000n, READ_SLOT + 5n);
+    const late = swap('sell', state, state.baseReserve / 4000n, READ_SLOT + 4n, { arrives: READ_SLOT + 6n });
+    const again = { ...s1.event, id: `${s1.event.id}:again`, moment: { ...s1.event.moment, slot: READ_SLOT + 5n, txIndex: 2 ** 32 + 10_000, receivedAt: at(READ_SLOT + 5n) + 10 } };
+    world.push(s1.event, s2.event, again, notice(READ_SLOT + 5n));
+    expect(carries(world).at(-1)).toMatchObject({ slot: READ_SLOT + 5n, state: s2.after });
+    world.push(late.event, notice(READ_SLOT + 6n));
+    expect(carries(world).at(-1)!.slot).toBe(READ_SLOT + 5n);
+    expect((world.last(poolKey(MINT)) as { stale: string }).stale).toBe(`swap ${late.event.value && (late.event.value as { signature: string }).signature} arrived out of order`);
+  });
+});
 });

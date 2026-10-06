@@ -4,8 +4,8 @@ import { MODE_LABEL, hasSample, requiredTrades } from '../api/modes.ts';
 import { TokenActions } from '../components/TokenActions.tsx';
 import { Badge, Empty } from '../components/ui.tsx';
 import { formatDuration, shortAddress } from '../lib/format.ts';
-import { formatPrice4, formatPriceDec, formatR, formatReturn, formatShare, formatUsdExact, returnHundredths, toMicro, toneOf, toneOfReturn } from '../lib/money.ts';
-import { ALERT_LABEL, CHECK_LABEL, EXIT_RULE_LABEL, FLAG_ALERT, FLAG_LABEL, HALT_LABEL, REGIME_INPUT_LABEL, REGIME_REASON_LABEL, RISK_CODE_LABEL, RISK_LABEL, STAGE_LABEL, VENUE_LABEL, WAIVED_LABEL, WORKER_CODE_LABEL } from './labels.ts';
+import { formatPrice4, formatPriceDec, formatR, formatReturn, formatShare, formatSolExact, formatUsdExact, returnHundredths, toMicro, toneOf, toneOfReturn } from '../lib/money.ts';
+import { ALERT_LABEL, CHECK_LABEL, EXIT_RULE_LABEL, FLAG_ALERT, FLAG_LABEL, HALT_LABEL, REGIME_INPUT_LABEL, REGIME_REASON_LABEL, RISK_CODE_LABEL, RISK_LABEL, riskHaltLabel, STAGE_LABEL, VENUE_LABEL, WAIVED_LABEL, WORKER_CODE_LABEL } from './labels.ts';
 import { ago, melDateTime } from './time.ts';
 
 export const NOT_ENOUGH = 'Not enough trades';
@@ -78,12 +78,12 @@ export interface StatusRow {
  */
 export const statusRows = (status: WorkerStatus): StatusRow[] => {
   const has = new Set<string>(list<string>(status.flags) ?? []);
-  const halts = list<{ code?: unknown }>(status.haltReasons);
+  const halts = list<{ code?: unknown; source?: unknown }>(status.haltReasons);
   const regime = status.regime !== null && typeof status.regime === 'object' && (status.regime.state === 'on' || status.regime.state === 'off') ? status.regime : null;
   const rows: StatusRow[] = [];
   const waived = regime === null ? null : list<unknown>(regime.waived);
 
-  const off = unique([...ENTRY_OFF.filter(([f]) => has.has(f)).map(([, why]) => why), ...(halts ?? []).map((h) => label(HALT_LABEL, h.code))]);
+  const off = unique([...ENTRY_OFF.filter(([f]) => has.has(f)).map(([, why]) => why), ...(halts ?? []).map((h) => (h.code === 'risk' ? riskHaltLabel(h.source) : label(HALT_LABEL, h.code)))]);
   if (off.length > 0 || (halts !== null && halts.length > 0)) rows.push({ label: 'Entries', value: off.length > 0 ? `Off: ${off.join(', ')}` : 'Off', alert: false });
   // On only with every stop served and none active (the account's risk stops are among the halts), and a regime
   // evaluation that is on and current (at most two candidate evaluation steps old: the worker's regimeMaxAgeMs).
@@ -240,10 +240,23 @@ export function decisionReasons(reasons: readonly string[]): string[] {
   return [...new Set(out.filter((x) => x !== ''))];
 }
 
+/** The journal shows its newest rows first, then more on each press (APP-TRUTH, owner: it was a long scroll). */
+export const JOURNAL_FIRST = 5;
+export const JOURNAL_PAGE = 20;
+/** How many rows one press of "Show more" leaves shown. */
+export const journalMore = (shown: number): number => shown + JOURNAL_PAGE;
+
 export function Journal({ decisions, onOpen }: { decisions: DecisionRecord[]; onOpen: (d: DecisionRecord) => void }) {
+  const [shown, setShown] = useState(JOURNAL_FIRST);
+  return <JournalList decisions={decisions} onOpen={onOpen} shown={shown} onMore={() => setShown(journalMore)} />;
+}
+
+/** The first `shown` decisions, in the order served (newest first), and "Show more" while any are hidden. */
+export function JournalList({ decisions, onOpen, shown, onMore }: { decisions: DecisionRecord[]; onOpen: (d: DecisionRecord) => void; shown: number; onMore: () => void }) {
   return (
+    <>
     <ul className="dash-journal">
-      {decisions.map((d) => (
+      {decisions.slice(0, shown).map((d) => (
         <li key={d.id}>
           <button type="button" className="dash-journal-row" onClick={() => onOpen(d)}>
             <span className={`dash-outcome dash-outcome-${d.outcome}`}>{OUTCOME[d.outcome]}</span>
@@ -259,6 +272,17 @@ export function Journal({ decisions, onOpen }: { decisions: DecisionRecord[]; on
         </li>
       ))}
     </ul>
+    {shown < decisions.length && (
+      <div className="dash-more">
+        <span className="muted small num">
+          {shown} of {decisions.length}
+        </span>
+        <button type="button" className="button" onClick={onMore}>
+          Show more
+        </button>
+      </div>
+    )}
+    </>
   );
 }
 
@@ -421,6 +445,8 @@ export function Stats({ stats }: { stats: StatsView }) {
   const shown = (v: string | null, f: (s: string) => string) => (enough && v !== null ? f(v) : NOT_ENOUGH);
   const items: { label: string; value: string; tone?: string }[] = [
     { label: 'Net result', value: stats.trades ? formatUsdExact(stats.netUsd, true) : '—', tone: toneOf(stats.netUsd) },
+    { label: 'Net in SOL', value: stats.trades ? formatSolExact(stats.netSol, true) : '—' },
+    { label: 'SOL price move', value: stats.trades ? formatUsdExact(stats.solMoveUsd, true) : '—', tone: toneOf(stats.solMoveUsd) },
     { label: 'Max drawdown', value: stats.trades ? formatUsdExact(stats.maxDrawdownUsd) : '—', tone: toneOf(stats.maxDrawdownUsd) },
     { label: 'Win rate', value: shown(stats.winRate, (s) => formatShare(s)) },
     { label: 'Average net', value: shown(stats.meanNetUsd, (s) => formatUsdExact(s, true)), ...(enough && stats.meanNetUsd ? { tone: toneOf(stats.meanNetUsd) } : {}) },

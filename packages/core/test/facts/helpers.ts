@@ -109,7 +109,7 @@ export const coverage = (stream: string, part: 'start' | 'gap' | 'resume', v: Re
   offchain(`coverage:${stream}:${part}`, v, slot, receivedAt);
 
 export const OPTIONS: ProducerOptions = {
-  candleFirstMs: 6 * 60_000, candleLastMs: 4 * 60_000, maxQuoteAgeMs: 2_000, survivalAfterMs: 30 * 60_000, survivalReadWindowMs: 60_000,
+  candleFirstMs: 6 * 60_000, candleLastMs: 4 * 60_000, tradeRepeatMs: 60 * 60_000, maxQuoteAgeMs: 2_000, survivalAfterMs: 30 * 60_000, survivalReadWindowMs: 60_000,
   graduatesKeepMs: 16 * 86_400_000 + 30 * 60_000, solUsdKeepMs: 30 * 3_600_000, volumeKeepMs: 367 * 86_400_000, insiderSlots: 2, firstBuyers: 20,
 };
 
@@ -153,6 +153,7 @@ export class FactWorld {
   ctx(now?: Moment): GateContext {
     if (now !== undefined) this.clock.advanceTo(now);
     const store = this.store;
-    return { now: this.clock.now(), lookup: (k, at) => store.lookup(k, at), history: (k, f, t) => store.history(k, f, t) };
+    const at = this.clock.now();
+    return { now: at, observedTip: at.slot, lookup: (k, a) => store.lookup(k, a), history: (k, f, t) => store.history(k, f, t) };
   }
 }

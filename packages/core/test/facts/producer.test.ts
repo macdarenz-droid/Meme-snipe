@@ -3,7 +3,7 @@
 // no fact (or a flagged one) and GATE-1 rejects. Facts go through the FactFeed into an as-of store, as in the engine.
 import { describe, expect, it } from 'vitest';
 import { transactionEvents, type TransactionRecord } from '../../src/chain/index.ts';
-import { startSession, TRIAL_POLICY } from '../../src/config/index.ts';
+import { RESEARCH_CONFIG, startSession, TRIAL_POLICY } from '../../src/config/index.ts';
 import { pumpSwapRoundTrip } from '../../src/costs/index.ts';
 import { OFF_CHAIN, createReplay, type MarketEvent, type Moment } from '../../src/engine/index.ts';
 import {
@@ -11,9 +11,11 @@ import {
   holdersKey, insidersKey, lpKey, migrationKey, mintKey, parseCandles, parseCreate, parseHolders, parseInsiders, parseLp, parseMigration, parseMint,
   parsePool, parseSim, parseSolUsd, parseXcheck, poolKey, simKey, streamKey, xcheckKey, type CandlesFact, type GateRequest,
 } from '../../src/gates/index.ts';
-import { FACT_KINDS, FactFeed, FactProducer, GRADUATES_SEED_KEY, HOLDER_ABSTENTIONS_KEY, RAW, STREAMS, dailyChainVolume, insiderLinks, decimalToMicro, producerOptions } from '../../src/facts/index.ts';
+import { FACT_KINDS, FactFeed, FactProducer, GRADUATES_SEED_KEY, HOLDER_ABSTENTIONS_KEY, RAW, STREAMS, dailyChainVolume, graduatesFact, insiderLinks, decimalToMicro, producerOptions, tradeRepeatTag, RETIRED_KEEP, FUNDER_KEEP_MS, cappedAdd } from '../../src/facts/index.ts';
 import { lamports, microUsd } from '../../src/units/index.ts';
 import { FEE_CONTEXT } from '../gates/world.ts';
+import { recordFromRpc } from '../../src/chain/index.ts';
+import { TRANSACTIONS } from '../chain/helpers.ts';
 import { FIX, FactWorld, MINT, OPTIONS, POOL, RECORDS, atOf, chainTx, coverage, logEvents, offchain, slotNotice, txEvents } from './helpers.ts';
 
 const session = startSession(TRIAL_POLICY);
@@ -50,6 +52,9 @@ describe('fact kinds', () => {
     expect(o.candleFirstMs).toBe(policy.gates.chaseCheckAfterMs + 60_000);
     expect(o.candleLastMs).toBe(policy.gates.candleWindowMs + 60_000);
     expect(o.maxQuoteAgeMs).toBe(policy.gates.maxQuoteAgeMs);
+    // OOM-SEEN: the production repeat window is an hour (the worst reconnect gap-fill wait); a shorter one would flag
+    // gap-fill repeats partial for good.
+    expect(o.tradeRepeatMs).toBe(60 * 60_000);
     expect(o.survivalAfterMs).toBe(policy.regime.survivalAfterMs);
     expect(o.execHealth).toBeUndefined();
     expect(() => new FactProducer({ ...o, firstBuyers: -1 })).toThrow(/whole number/);
@@ -276,6 +281,188 @@ describe('candles', () => {
     expect(parseCandles(w.last(candlesKey(MINT)))!.obs.quality).toEqual([]);
   });
 
+  describe('the repeat window (OOM-SEEN, TRADE_REPEAT_WINDOW_MS)', () => {
+    type Ev = { event: { signature: string; data: Record<string, unknown> } };
+    const W = OPTIONS.tradeRepeatMs;
+    const trades = (): MarketEvent[] => spread().filter((e) => /^pump_amm:(Buy|Sell)Event:/.test(e.key));
+    const atMsOf = (e: MarketEvent): number => Number((e.value as Ev).event.data['timestamp']) * 1000;
+    const base = trades().at(-1)!;
+    let at = atOf(swaps.at(-1)!) + 60_000;
+    let slot = swaps.at(-1)!.slot + 100n;
+    const next = (): Moment => ({ slot: (slot += 10n), txIndex: 0, ixIndex: 0, receivedAt: (at += 1_000) });
+    /** A new trade (its own signature, the last trade's reserves) stamped `atMs`, released after everything so far. */
+    const newer = (atMs: number, n: number): MarketEvent => {
+      const v = base.value as Ev;
+      return { ...base, id: `ev:newer:${n}`, moment: next(), value: { ...v, event: { ...v.event, signature: `newer${n}`, data: { ...v.event.data, timestamp: BigInt(Math.floor(atMs / 1000)) } } } };
+    };
+    /** The first trade again as a confirmed log line, released now. */
+    const repeat = (): MarketEvent => {
+      const first = trades()[0]!;
+      return { ...first, id: 'log:repeat:00000', key: `logs:${first.key}`, moment: { ...next(), txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN }, value: { ...(first.value as object), signature: (first.value as Ev).event.signature, commitment: 'confirmed' } };
+    };
+    const state = (w: FactWorld) => ({ candles: parseCandles(w.last(candlesKey(MINT)))!, book: w.producer.candleBook(POOL)! });
+
+    it('a repeat just inside the window (W − 1 s behind the newest trade) counts once: candles and reserve unchanged, not partial', () => {
+      const w = spreadWorld().push(newer(atMsOf(trades()[0]!) + W - 1_000, 1));
+      const before = state(w);
+      w.push(repeat());
+      const after = state(w);
+      expect(after.candles.candles).toEqual(before.candles.candles);
+      expect(after.candles.obs.quality).toEqual([]);
+      expect(after.book.reserve).toEqual(before.book.reserve);
+      expect(after.book.ids).toBe(before.book.ids);
+    });
+
+    it('a repeat exactly W behind the newest trade is still inside the window: counted once, not partial', () => {
+      const w = spreadWorld().push(newer(atMsOf(trades()[0]!) + W, 1));
+      const before = state(w);
+      w.push(repeat());
+      const after = state(w);
+      expect(after.candles).toEqual(before.candles);
+      expect(after.book.reserve).toEqual(before.book.reserve);
+    });
+
+    it('the repeat id is the same from a log line and from the fetched transaction of every recorded swap, and two swaps in one transaction differ', () => {
+      type Swap = { name: string; data: { poolBaseTokenReserves: bigint; poolQuoteTokenReserves: bigint } };
+      const ids = (events: MarketEvent[]) => events.filter((e) => /pump_amm:(Buy|Sell)Event:/.test(e.key)).map((e) => {
+        const v = e.value as { signature?: string; event: Swap & { signature?: string } };
+        return tradeRepeatTag((v.signature ?? v.event.signature)!, v.event.data.poolBaseTokenReserves, v.event.data.poolQuoteTokenReserves).join(':');
+      });
+      const chain = TRANSACTIONS.map((t) => recordFromRpc(t.signature, t.base64 as never));
+      for (const x of [...swaps, migrate, ...RECORDS.map((r) => r.rec), ...chain]) {
+        const fromTx = ids(txEvents(x));
+        expect(ids(logEvents(x, 'confirmed')), x.signature).toEqual(fromTx);
+        expect(new Set(fromTx).size, x.signature).toBe(fromTx.length);
+      }
+      // A recorded transaction with two PumpSwap swaps (a sell then a buy): two different ids.
+      expect(chain.some((r) => ids(txEvents(r)).length > 1)).toBe(true);
+      // Two 48-bit numbers (SEEN-TAGS).
+      for (const id of ids(txEvents(swaps[0]!))) for (const n of id.split(':').map(Number)) expect(Number.isSafeInteger(n) && n >= 0 && n < 2 ** 48).toBe(true);
+    });
+
+    it('a repeat just outside the window (W + 1 s behind) is never applied: reserve unchanged, the candles partial, H11 refuses them', () => {
+      // W − 1 s first (a sweep runs there and keeps the first trade's id), then W + 1 s two seconds later (no sweep): the
+      // id is still remembered when the repeat arrives, so only the window refuses it.
+      const w = spreadWorld().push(newer(atMsOf(trades()[0]!) + W - 1_000, 1));
+      const kept = w.producer.candleBook(POOL)!.ids;
+      w.push(newer(atMsOf(trades()[0]!) + W + 1_000, 2));
+      expect(w.producer.candleBook(POOL)!.ids).toBe(kept + 1);
+      const before = state(w);
+      w.push(repeat());
+      const after = state(w);
+      expect(after.candles.candles).toEqual(before.candles.candles);
+      expect(after.candles.obs.quality).toEqual(['partial']);
+      expect(after.book.reserve).toEqual(before.book.reserve);
+      const head = slot + 10n;
+      w.push(slotNotice(head, at + 500));
+      expect(ev(w, { slot: head, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt: at + 501 }).read('candles', candlesKey(MINT), parseCandles, 'state', 'H11').ok).toBe(false);
+    });
+
+    it('the window never moves back: a later trade stamped inside the window but behind the newest leaves a swept trade\'s repeat refused', () => {
+      // The newest trade at T sweeps the first trade's minute (it is more than W behind). A trade stamped T − 50 min then
+      // arrives (inside the window, out of order); the window must still be measured from T, so the first trade's repeat
+      // (its id already swept) stays refused: never applied twice, the reserve unchanged.
+      const first = atMsOf(trades()[0]!);
+      const T = first + W + 20 * 60_000;
+      const w = spreadWorld().push(newer(T, 1));
+      w.push(newer(T - 50 * 60_000, 2));
+      const before = state(w);
+      w.push(repeat());
+      const after = state(w);
+      expect(after.book.reserve).toEqual(before.book.reserve);
+      expect(after.book.ids).toBe(before.book.ids);
+      expect(after.candles.candles).toEqual(before.candles.candles);
+      expect(after.candles.obs.quality).toEqual(['partial']);
+    });
+
+    it('the same swaps from live log lines and, half an hour later, from a gap fill\'s fetched transactions count once', () => {
+      const w = new FactWorld();
+      w.push(...covered(), ...txEvents(create), ...txEvents(complete), ...txEvents(migrate));
+      for (const x of swaps) w.push(...logEvents(x, 'confirmed'));
+      w.push(newer(atOf(swaps.at(-1)!) + 30 * 60_000, 1));
+      const before = state(w);
+      // The fill: every swap again from its fetched transaction, backfilled, released after everything so far.
+      for (const x of swaps) w.push(...txEvents(x).map((e) => ({ ...e, moment: next(), value: { ...(e.value as object), backfilled: true } })));
+      const after = state(w);
+      expect(after.candles.candles).toEqual(before.candles.candles);
+      expect(after.candles.obs.quality).toEqual([]);
+      expect(after.book.reserve).toEqual(before.book.reserve);
+    });
+
+    it('a catch-up: the fill\'s fetched transactions first, then the same swaps as held log lines released after, count once', () => {
+      const once = state(build());
+      const w = new FactWorld();
+      w.push(...covered(), ...txEvents(create), ...txEvents(complete), ...txEvents(migrate), ...swapEvents());
+      for (const x of swaps) w.push(...logEvents(x, 'confirmed').map((e) => ({ ...e, moment: { ...next(), txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN } })));
+      const after = state(w);
+      expect(after.candles.candles).toEqual(once.candles.candles);
+      expect(after.candles.obs.quality).toEqual([]);
+      expect(after.book.reserve).toEqual(once.book.reserve);
+    });
+
+    it('OOM-MINT: once its pool and mint are retired, no later trade is applied and nothing is built again: a new trade, a repeat, the migration re-delivered', () => {
+      const w = build();
+      const candlesBefore = w.facts(candlesKey(MINT)).length;
+      const migrationBefore = w.facts(migrationKey(MINT)).length;
+      w.producer.retire([MINT, POOL]);
+      expect(w.producer.candleBook(POOL)).toBeUndefined();
+      const again = (events: MarketEvent[]) => events.map((e) => ({ ...e, moment: { ...next(), txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN } }));
+      w.push(newer(atOf(swaps.at(-1)!) + 60_000, 1));
+      w.push(repeat());
+      w.push(...again(txEvents(complete)), ...again(txEvents(migrate)), ...again(swapEvents()));
+      expect(w.producer.candleBook(POOL)).toBeUndefined();
+      expect(w.facts(candlesKey(MINT)).length).toBe(candlesBefore);
+      expect(w.facts(migrationKey(MINT)).length).toBe(migrationBefore);
+    });
+
+    it('OOM-MINT: ids retired before anything was built for them build nothing later: the create, the migration and the pool', () => {
+      const w = new FactWorld();
+      w.push(...covered());
+      w.producer.retire([MINT, POOL]);
+      w.push(...txEvents(create), ...txEvents(complete), ...txEvents(migrate), ...swapEvents());
+      expect(w.producer.candleBook(POOL)).toBeUndefined();
+      expect(w.producer.sizes().mints).toBe(0);
+      expect(w.facts(migrationKey(MINT))).toEqual([]);
+    });
+
+    it('OOM-MINT: a retired mint leaves the wallets\' mint lists it was in (creator and buyers), and the tombstones stay capped', () => {
+      const w = build();
+      const before = w.producer.sizes();
+      expect(before.walletMints).toBeGreaterThan(0);
+      w.producer.retire([MINT, POOL]);
+      const after = w.producer.sizes();
+      // This world's wallets hold only this mint: every list it was in is gone with it.
+      expect(after.walletMints).toBe(0);
+      expect(after.mints).toBe(before.mints - 1);
+      expect([after.retiredMints, after.retiredPools]).toEqual([2, 2]); // both ids in both lists
+      expect(RETIRED_KEEP).toBe(100_000);
+      // The cap: the oldest go first, the newest stay, never more than the cap.
+      const set = new Set<string>();
+      for (let k = 0; k < 10; k++) cappedAdd(set, `Gone${k}`, 4);
+      expect([...set]).toEqual(['Gone6', 'Gone7', 'Gone8', 'Gone9']);
+    });
+
+    it('the remembered ids level off: 3,072 trades a second apart with a one-minute window keep at most a window and a quarter and a minute, and a sweep never forgets a trade inside the window', () => {
+      const w = new FactWorld({ ...OPTIONS, tradeRepeatMs: 60_000 });
+      w.push(...covered(), ...txEvents(create), ...txEvents(complete), ...txEvents(migrate));
+      const start = atOf(migrate) + 60_000;
+      const sizes: number[] = [];
+      for (let k = 0; k < 3_072; k += 64) {
+        w.push(...Array.from({ length: 64 }, (_, j) => newer(start + (k + j) * 1_000, k + j)));
+        sizes.push(w.producer.candleBook(POOL)!.ids);
+        // The batch's last 20 trades again (the same ids, released later): inside the window, each counts once.
+        const before = parseCandles(w.last(candlesKey(MINT)))!;
+        w.push(...Array.from({ length: 20 }, (_, j) => newer(start + (k + 44 + j) * 1_000, k + 44 + j)));
+        expect(parseCandles(w.last(candlesKey(MINT)))!, `after trade ${k + 63}`).toEqual(before);
+      }
+      // Kept: the trades of the window, a quarter window between sweeps and the minute a trade's time is rounded to (135 a
+      // second apart) at most, whatever the run's length.
+      expect(Math.max(...sizes.slice(2))).toBeLessThanOrEqual(136);
+      expect(Math.min(...sizes.slice(2))).toBeGreaterThanOrEqual(60);
+      expect(parseCandles(w.last(candlesKey(MINT)))!.obs.quality).toEqual([]);
+    });
+  });
+
   it('a second pool of the same mint, created by anyone, never feeds the coin\'s candles', () => {
     const w = build();
     const before = w.facts(candlesKey(MINT)).length;
@@ -396,6 +583,32 @@ describe('insiders', () => {
     if (opts.head ?? true) w.push(slotNotice(last.slot + 3n, atOf(last) + 2000));
     return w;
   };
+
+  it('G4a: funder reads are let go a day after they were read; read again, the insiders fact is the same', () => {
+    const w = run();
+    const before = parseInsiders(w.last(insidersKey(MINT)))!;
+    expect(before.complete).toBe(true);
+    const n = w.producer.sizes().funders;
+    expect(n).toBeGreaterThan(0);
+    const last = window.at(-1)!;
+    const readAt = atOf(last) + 100;
+    // A second short of a day: kept. A day after: let go.
+    w.push(slotNotice(last.slot + 10n, readAt + FUNDER_KEEP_MS - 1));
+    expect(w.producer.sizes().funders).toBe(n);
+    w.push(slotNotice(last.slot + 11n, readAt + FUNDER_KEEP_MS));
+    expect(w.producer.sizes().funders).toBe(0);
+    // Read again (a later candidate's insider read): the same funders, so the same verdict.
+    for (const f of funders()) w.push(offchain(RAW.funder(f.wallet), f, last.slot + 12n, readAt + FUNDER_KEEP_MS + 100));
+    const again = parseInsiders(w.last(insidersKey(MINT)))!;
+    const { obs: _a, ...was } = before;
+    const { obs: _b, ...now } = again;
+    expect(now).toEqual(was);
+    expect(w.producer.sizes().funders).toBe(n);
+  });
+
+  it('G4a: a funder read outlives every candidate that reads it: the window and the longest tail are under a day', () => {
+    expect(FUNDER_KEEP_MS).toBeGreaterThan(RESEARCH_CONFIG.s0.u2WindowToMs + TRIAL_POLICY.exits.tMaxCapMs);
+  });
 
   it('creation-slot buyers and dev-funded first buyers, complete only with coverage and every funder found', () => {
     const w = run();
@@ -867,6 +1080,45 @@ describe('graduate survival', () => {
     const g = w.last(GRADUATES_KEY) as { items: { reserveAfter: bigint }[] };
     // After the migration's own buy: vault 67,405,853,773 + 2,469,629,629 lp-adjusted, plus 17,584,505,289 virtual.
     expect(g.items).toEqual([{ mint: MINT, migratedAtMs: 1_791_032_673_000, reserveAfter: 67_405_853_773n + 2_469_629_629n + 17_584_505_289n }]);
+  });
+  it('review N2: a pool let go before its survival mark keeps its trade stream until the mark dates it, then drops it', () => {
+    const w = new FactWorld();
+    w.push(coverage(STREAMS.trades(POOL), 'start', { fromSlot: migrate.slot, via: `logs:${POOL}` }, migrate.slot - 1n, atOf(migrate) - 500), ...txEvents(complete));
+    w.push(...txEvents(migrate), slotNotice(migrate.slot + 1n, atOf(migrate) + 400));
+    w.producer.retire([MINT, POOL]);
+    expect(w.producer.sizes().streams).toBe(1);
+    w.push(slotNotice(migrate.slot + 4600n, 1_791_032_673_000 + 30 * 60_000 + 5));
+    const g = w.last(GRADUATES_KEY) as { items: { reserveAfter: bigint }[] };
+    expect(g.items).toEqual([{ mint: MINT, migratedAtMs: 1_791_032_673_000, reserveAfter: 67_405_853_773n + 2_469_629_629n + 17_584_505_289n }]);
+    expect(w.producer.sizes()).toMatchObject({ streams: 0, chains: 0 });
+  });
+});
+
+describe('graduates fact (pinned across the graduatesFact refactor)', () => {
+  it('releases the whole fact exactly: kept items, sorted, obs as of the event', () => {
+    const w = new FactWorld();
+    w.push(coverage(STREAMS.trades(POOL), 'start', { fromSlot: migrate.slot, via: `logs:${POOL}` }, migrate.slot - 1n, atOf(migrate) - 500), ...txEvents(complete));
+    w.push(...txEvents(migrate), slotNotice(migrate.slot + 1n, atOf(migrate) + 400));
+    const at = 1_791_032_673_000 + 30 * 60_000 + 5;
+    w.push(slotNotice(migrate.slot + 4600n, at));
+    expect(w.last(GRADUATES_KEY)).toEqual({
+      obs: { provider: 'facts', slot: null, receivedAt: at, quality: [] },
+      items: [{ mint: MINT, migratedAtMs: 1_791_032_673_000, reserveAfter: 67_405_853_773n + 2_469_629_629n + 17_584_505_289n }],
+      completeness: 'complete',
+    });
+  });
+
+  it('graduatesFact keeps items inside the window, drops older ones, sorts by migration then mint', () => {
+    const items = [
+      { mint: 'B', migratedAtMs: 5_000, reserveAfter: 2n },
+      { mint: 'A', migratedAtMs: 5_000, reserveAfter: 1n },
+      { mint: 'C', migratedAtMs: 100, reserveAfter: 3n },
+      { mint: 'D', migratedAtMs: 4_000, reserveAfter: 4n },
+    ];
+    const r = graduatesFact(items, 6_000, 2_000);
+    expect(r.kept.map((x) => x.mint)).toEqual(['B', 'A', 'D']);
+    expect(r.value).toEqual({ obs: { provider: 'facts', slot: null, receivedAt: 6_000, quality: [] }, items: [items[3], items[1], items[0]] });
+    expect(items).toHaveLength(4);
   });
 });
 
