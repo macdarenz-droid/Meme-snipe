@@ -8,6 +8,7 @@
 import { PUMP_AMM_PROGRAM, PUMP_PROGRAM, type TransactionRecord, transactionEvents } from '../../../core/src/chain/index.ts';
 import type { Fetched, SocketFactory, HttpClient, Secrets } from '../providers/index.ts';
 import { CoinbaseSolPrice, alchemyRpcUrl, heliusRpcUrl, heliusWsUrl, PumpPortalSource, RpcHttp, RpcStream, TxFetcher } from '../providers/index.ts';
+import { SOCKET_BYTE_KINDS, type SocketByteKind } from '../providers/rpc-socket.ts';
 import {
   ALCHEMY_FREE, HELIUS_FREE, HELIUS_WS_CREDITS_PER_BYTE, HELIUS_WS_CREDITS_PER_CONNECTION, JUPITER_FREE, P0, P1, P2, P3,
   RUGCHECK_FREE, Scheduler, type SchedulerSpec,
@@ -299,13 +300,31 @@ export class LiveProviders {
     this.#fetcher = fetcher;
     this.#feed = feed;
     const socket = { initialMs: 1_000, maxMs: 30_000, idleMs: 30_000 };
+    const bytes = new Map<SocketByteKind, number>();
+    let fromMs = timers.now();
+    let byteTimer: ReturnType<Timers['setTimeout']> | null = null;
+    const flushBytes = (): void => {
+      const toMs = timers.now();
+      const totalBytes = [...bytes.values()].reduce((a, n) => a + n, 0);
+      if (totalBytes > 0) ctx.journal?.('socket_bytes', {
+        provider: 'helius', fromMs, toMs, totalBytes, credits: totalBytes * HELIUS_WS_CREDITS_PER_BYTE,
+        bytes: Object.fromEntries(SOCKET_BYTE_KINDS.map((kind) => [kind, bytes.get(kind) ?? 0])),
+      });
+      bytes.clear();
+      fromMs = toMs;
+    };
+    const byteTick = (): void => {
+      flushBytes();
+      byteTimer = timers.setTimeout(byteTick, 60_000);
+    };
     const helius = new RpcStream({
       provider: 'helius', url: () => heliusWsUrl(o.secrets), factory: o.factory, timers, feed, scheduler: this.helius,
       creditsPerByte: HELIUS_WS_CREDITS_PER_BYTE, creditsPerConnection: HELIUS_WS_CREDITS_PER_CONNECTION, http: hRpc, fetcher, socket, backfillLimit: 100,
+      ...(ctx.journal === undefined ? {} : { onBytesByKind: (n: number, kind: SocketByteKind) => bytes.set(kind, (bytes.get(kind) ?? 0) + n) }),
     });
     helius.watchSlots(P1);
     helius.watchLogs(PUMP_CREATE_AUTHORITY, { priority: P3, decodeLogs: true, coverage: 'creates' });
-    helius.watchLogs(PUMP_MIGRATION_AUTHORITY, { priority: P2, decodeLogs: true, fetch: P2 });
+    helius.watchLogs(PUMP_MIGRATION_AUTHORITY, { priority: P2, decodeLogs: true, fetch: P2, byteKind: 'migrations' });
     if (o.tradeStreams) {
       helius.watchLogs(PUMP_PROGRAM, { priority: P3, decodeLogs: true, coverage: 'rugs' });
       helius.watchLogs(PUMP_AMM_PROGRAM, { priority: P3, decodeLogs: true, coverage: 'rugs' });
@@ -321,12 +340,19 @@ export class LiveProviders {
       {
         name: 'helius-ws', critical: true, sources: ['helius'],
         start: () => {
+          if (ctx.journal !== undefined && byteTimer === null) {
+            fromMs = timers.now();
+            byteTimer = timers.setTimeout(byteTick, 60_000);
+          }
           helius.start();
           pools.start();
         },
         stop: () => {
           pools.stop();
           helius.stop();
+          if (byteTimer !== null) timers.clearTimeout(byteTimer);
+          byteTimer = null;
+          flushBytes();
         },
       },
       { name: 'pumpportal', critical: false, sources: ['pumpportal'], start: () => pumpportal.start(), stop: () => pumpportal.stop() },

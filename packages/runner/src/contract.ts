@@ -144,6 +144,8 @@ export interface Health {
 }
 
 export type JournalKind =
+  /** Fixed watch-kind byte counts; journal only, with no summary or watchdog field. */
+  | 'socket_bytes'
   | 'start' | 'reconcile' | 'decision' | 'entry' | 'exit' | 'simulation' | 'feed' | 'halt' | 'resume' | 'stop' | 'journal_repair'
   /** A coverage gap of a discovery stream: journaled when it opens (to_ts null) and again when it closes, same gap_id. */
   | 'coverage_gap'

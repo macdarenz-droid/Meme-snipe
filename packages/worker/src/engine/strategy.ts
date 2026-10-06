@@ -850,16 +850,21 @@ export class LiveStrategy implements Strategy {
    * position, with whether a position holds it (exit traffic).
    */
   watchedPools(): Map<string, { readonly mint: string; readonly held: boolean; readonly fromSlot?: bigint }> {
-    const held = new Set([...this.#exits.keys()].map((pid) => this.#mintOf(pid)));
+    const exitHeld = new Set([...this.#exits.keys()].map((pid) => this.#mintOf(pid)));
+    for (const p of Object.values(this.#book?.positions ?? {})) if (p.status !== 'closed') exitHeld.add(String(p.mint));
+    const held = new Set(exitHeld);
+    for (const s of this.#seeds.values()) held.add(s.mint);
+    for (const i of Object.values(this.#book?.intents ?? {})) if (i.intent.purpose === 'entry' || this.#mayLand(String(i.intent.mint))) held.add(String(i.intent.mint));
     const out = new Map<string, { mint: string; held: boolean; fromSlot?: bigint }>();
-    for (const mint of this.watched()) {
+    for (const mint of new Set([...this.watched(), ...held])) {
+      if (this.#stoppedPools.has(mint) && !held.has(mint)) continue;
       const pool = this.#poolOfMint.get(mint);
       // A candidate's pool is watched from its migration (S0-ZERO): its candles are observed from the pool's creation.
       // A held pool is already watched (an exit never waits on a catch-up).
-      const from = this.#cands.has(mint) && !held.has(mint) ? this.#migrationSlot.get(mint) : undefined;
+      const from = this.#cands.has(mint) && !exitHeld.has(mint) ? this.#migrationSlot.get(mint) : undefined;
       if (pool !== undefined) out.set(pool, { mint, held: held.has(mint), ...(from === undefined ? {} : { fromSlot: from }) });
     }
-    for (const [mint, t] of this.#tail) if (!out.has(t.pool)) out.set(t.pool, { mint, held: false });
+    for (const [mint, t] of this.#tail) if (!this.#stoppedPools.has(mint) && !out.has(t.pool)) out.set(t.pool, { mint, held: false });
     return out;
   }
 
@@ -955,6 +960,7 @@ export class LiveStrategy implements Strategy {
     this.#track(e, ctx);
     this.#lifecycle(ctx, out);
     this.#manage(ctx, out);
+    this.#stopPoolWatches(ctx, gctx, out);
     // At most one entry step per call, and only while nothing else acted: ctx.book is the book before these decisions.
     this.#windowEnds(ctx.now.receivedAt, out);
     if (!out.some((d) => d.action !== null)) this.#entries(ctx, gctx, out, due);
@@ -1434,6 +1440,7 @@ export class LiveStrategy implements Strategy {
    */
   #retire(mint: string, pool: string | null): void {
     if (this.#held(mint) || this.#tail.has(mint)) return;
+    this.#stoppedPools.delete(mint);
     this.#letGo.push(mint);
     if (pool !== null) this.#letGo.push(pool);
   }
@@ -2216,7 +2223,7 @@ export class LiveStrategy implements Strategy {
     const c = this.#d.config;
     const to = cand.migratedAtMs + c.windowToMs;
     const pool = this.#poolOfMint.get(cand.mint);
-    if (cand.lastReason !== null && pool !== undefined) {
+    if (cand.lastReason !== null && pool !== undefined && !this.#stoppedPools.has(cand.mint)) {
       // At the cap the pool is not watched: logged, so G3 censors that coin with the reason, never imputes it.
       if (this.#tail.size >= c.maxTails) out.push({ action: null, reasons: [NO_TAIL, c.universe, cand.mint, `tail cap ${c.maxTails}`] });
       else this.#tail.set(cand.mint, { pool, untilMs: to + exitsFor(this.#d.session.policy.exits, c.universe).tMaxMs });
@@ -2305,6 +2312,53 @@ export class LiveStrategy implements Strategy {
     return text;
   }
 
+  /** Swap watches only. Candidates and producer state remain, including every shortlisted migration's +30 min read.
+   * Nothing is restored from lastReason: a boot must prove the reject again from its as-of gate facts. */
+  readonly #stoppedPools = new Set<string>();
+
+  #stopPoolWatches(ctx: StrategyContext, gctx: GateContext, out: Decision[]): void {
+    const c = this.#d.config;
+    const session = this.#d.session;
+    const deps = { session, mode: 'live' as const, rugLabeller: 'RUG-1' as const, ...(c.s0Diagnostic === true ? { s0Diagnostic: true as const } : {}) };
+    for (const cand of this.#cands.values()) {
+      if (this.#stoppedPools.has(cand.mint) || this.#batchOpen.has(cand.mint)) continue;
+      // A candidate itself is kept. Every money/exit path holds its swaps, including a seed before it is booked and
+      // a terminal entry with an attempt which could land late. An entry already in the book is never cut.
+      if ([...this.#exits.keys()].some((pid) => this.#mintOf(pid) === cand.mint)
+        || [...this.#seeds.values()].some((s) => s.mint === cand.mint)
+        || Object.values(ctx.book.positions).some((p) => String(p.mint) === cand.mint && p.status !== 'closed')
+        || Object.values(ctx.book.intents).some((i) => String(i.intent.mint) === cand.mint && i.intent.purpose === 'entry')
+        || this.#mayLand(cand.mint)) continue;
+      // These gates' irreversible verdicts do not depend on trade size or a quote. The request still satisfies the
+      // actual gate evaluator's contract; no fabricated round-trip pass can reach an entry or H15.
+      const req = { mint: cand.mint, universe: c.universe, notional: session.policy.capital.minNotional, spend: 1n as Lamports, roundTrip: { ok: false as const, reason: 'missing-params' as const, detail: 'swap-watch verdict needs no trade quote' } };
+      const hard = evaluateHardRejects(gctx, deps, req, { only: ['H8', 'H9'], stopAtFirst: false });
+      // H16 wins over a known adverse reason: unknown, partial, stale or unconfirmed evidence never drops a watch.
+      if (hard.reasons.some((r) => r.gate === 'H16')) continue;
+      const read = gctx.lookup(migrationKey(cand.mint));
+      const migration = read.ok ? parseMigration(read.value) : null;
+      // H11 examines the last closed candle at this policy's checkpoint. Before it, that candle can still change.
+      const chase = migration !== null && ctx.now.receivedAt >= migration.migratedAtMs + session.policy.gates.chaseCheckAfterMs
+        ? evaluateHardRejects(gctx, deps, req, { only: ['H11'], stopAtFirst: false }) : null;
+      if (chase?.reasons.some((r) => r.gate === 'H16')) continue;
+      const expiry = this.#createExpiry(cand.mint, gctx);
+      const reason: GateReasonLine | undefined = expiry ?? hard.reasons.find((r) => (r.gate === 'H8' && r.code === 'dust-at-migration') || (r.gate === 'H9' && r.code === 'instant-graduation'))
+        ?? chase?.reasons.find((r) => r.gate === 'H11' && r.code === 'chase-at-5m');
+      if (reason === undefined) continue;
+      this.#stoppedPools.add(cand.mint);
+      out.push({ action: null, reasons: ['pool watch stopped', c.universe, cand.mint, reason.code, reason.detail ?? ''] });
+    }
+  }
+
+  /** One create-expired rule for entry evaluation and swap-watch retirement. */
+  #createExpiry(mint: string, gctx: GateContext): GateReasonLine | null {
+    const c = this.#d.config;
+    const kept = createKeepVerdict(gctx, mint, c.createKeepMs);
+    if (kept?.expired === true) return { gate: 'worker', code: 'create-expired', detail: kept.detail };
+    if (kept === null && this.createExpired(mint)) return { gate: 'worker', code: 'create-expired', detail: `its create was let go ${(c.createKeepMs + CREATE_LATE_MS) / 3_600_000} h after it with no migration seen` };
+    return null;
+  }
+
   /** One candidate through regime, hard rejects and risk. Returns the reject reason, or null when it proposed an entry. */
   #evaluate(cand: Candidate, ctx: StrategyContext, gctx: GateContext, out: Decision[]): string | null {
     this.#lastTrips = [];
@@ -2314,9 +2368,8 @@ export class LiveStrategy implements Strategy {
     const diag = c.s0Diagnostic === true ? { s0Diagnostic: true } as const : {};
     // OOM-MINT: a coin that migrated more than `createKeepMs` after its create is refused before anything is judged,
     // from the facts as the backtest does; when its create's facts were let go, from the expired mark.
-    const kept = createKeepVerdict(gctx, cand.mint, c.createKeepMs);
-    if (kept?.expired === true) return this.#fail('create expired', [{ gate: 'worker', code: 'create-expired', detail: kept.detail }]);
-    if (kept === null && this.createExpired(cand.mint)) return this.#fail('create expired', [{ gate: 'worker', code: 'create-expired', detail: `its create was let go ${(c.createKeepMs + CREATE_LATE_MS) / 3_600_000} h after it with no migration seen` }]);
+    const expiry = this.#createExpiry(cand.mint, gctx);
+    if (expiry !== null) return this.#fail('create expired', [expiry]);
     const regime = evaluateRegime(gctx, { session, mode: 'live', ...diag });
     this.#waived = [...regime.waived];
     this.#regime = { atMs: gctx.now.receivedAt, on: regime.on, reasons: regime.reasons.map((x) => ({ code: x.code, input: x.input ?? null })), waived: [...regime.waived] };
@@ -2495,4 +2548,3 @@ export const reservationOf = (reasons: readonly string[]): { reservationId: stri
     return null;
   }
 };
-

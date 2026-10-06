@@ -26,6 +26,8 @@ import { DEPLOYER_CHECK_CREDITS_PER_DAY } from '../src/facts/deployer-checks.ts'
 import { holderScanCreditsPerDay } from '../src/facts/budget.ts';
 import { fillTradeGaps, type SeedRpc } from '../src/seed/index.ts';
 import { PoolWatch } from '../src/run/pool-watch.ts';
+import { SOCKET_BYTE_KINDS } from '../src/providers/rpc-socket.ts';
+import { HELIUS_WS_CREDITS_PER_BYTE } from '../src/scheduler/index.ts';
 import { CreditBook, FILLS, LiveProviders, TRADES_FILL_CREDITS, TRADES_FILLS_IN_FLIGHT, tradesFill } from '../src/run/sources.ts';
 import { DailyBudget } from '../src/persist/index.ts';
 import { blockNetwork, recordOf, settle, testSecrets, tx, TXS } from './helpers.ts';
@@ -706,39 +708,54 @@ describe('the live providers wire the fill into the pool watches (the original b
     });
     const frames: Frame[] = [];
     const feed = new LiveFeed({ ...DEFAULT_LIVE_FEED, horizonSlots: 0, onFrame: (f) => frames.push(f) });
-    const lines: unknown[] = [];
-    const sources = providers.feeds({ feed, timers, pools: () => new Map([[pool, { mint: 'MintM', held: false, fromSlot: record.slot }]]), journal: (_k, f) => lines.push(f) });
+    const lines: { kind: string; fields: Readonly<Record<string, unknown>> }[] = [];
+    const sources = providers.feeds({ feed, timers, pools: () => new Map([[pool, { mint: 'MintM', held: false, fromSlot: record.slot }]]), journal: (kind, fields) => lines.push({ kind, fields }) });
     sources.find((s) => s.name === 'helius-ws')!.start();
     const hel = hub.sockets.find((s) => s.url.includes('helius'))!;
     hel.open();
+    let wireBytes = 0;
+    const push = (v: unknown) => { wireBytes += Buffer.byteLength(JSON.stringify(v)); hel.push(v); };
     await settle(20);
     const subs = new Map<string, number>();
     hel.requests().forEach((r, k) => {
       if (typeof r.method === 'string' && r.method.endsWith('Subscribe') && r.id !== undefined) {
-        hel.push({ jsonrpc: '2.0', id: r.id, result: 700 + k });
+        push({ jsonrpc: '2.0', id: r.id, result: 700 + k });
         subs.set(r.method === 'slotSubscribe' ? 'slot' : JSON.stringify(r.params), 700 + k);
       }
     });
     await settle(20);
-    hel.push({ jsonrpc: '2.0', method: 'slotNotification', params: { subscription: subs.get('slot'), result: { slot: Number(record.slot) + 5, parent: 0, root: 0 } } });
+    push({ jsonrpc: '2.0', method: 'slotNotification', params: { subscription: subs.get('slot'), result: { slot: Number(record.slot) + 5, parent: 0, root: 0 } } });
     for (let k = 0; k < 20; k++) await settle(20);
     const cov = frames.filter((f) => f.body.type === 'offchain' && f.body.key.startsWith(`coverage:trades:${pool}:`)).map((f) => (f.body as { key: string }).key.split(':').at(-1));
     sources.find((s) => s.name === 'helius-ws')!.stop();
-    return { cov, lines, spent };
+    return { cov, lines, spent, wireBytes };
+  };
+
+  const meter = (r: Awaited<ReturnType<typeof run>>) => {
+    const m = r.lines.at(-1)!;
+    expect(m.kind).toBe('socket_bytes');
+    expect(m.fields).toMatchObject({ provider: 'helius', totalBytes: r.wireBytes, credits: r.wireBytes * HELIUS_WS_CREDITS_PER_BYTE });
+    const bytes = m.fields['bytes'] as Record<string, number>;
+    expect(Object.keys(bytes)).toEqual([...SOCKET_BYTE_KINDS]);
+    expect(Object.values(bytes).reduce((a, n) => a + n, 0)).toBe(r.wireBytes);
+    for (const kind of ['slots', 'creates', 'migrations', 'trades']) expect(bytes[kind]).toBeGreaterThan(0);
   };
 
   it('with the fill budget: the catch-up from the migration closes with a resume, journaled and booked', async () => {
     const r = await run(true);
     expect(r.cov).toEqual(['start', 'gap', 'resume']);
-    expect(r.lines).toHaveLength(1);
-    expect(r.lines[0]).toMatchObject({ pool, complete: true, transactions: 1 });
+    expect(r.lines.map((l) => l.kind)).toEqual(['trades_fill', 'socket_bytes']);
+    expect(r.lines[0]!.fields).toMatchObject({ pool, complete: true, transactions: 1 });
     expect(r.spent).toBeGreaterThan(0);
+    meter(r);
   });
 
   it('without a fill budget: no fill, the catch-up closes lossy and H11 keeps rejecting', async () => {
     const r = await run(false);
     expect(r.cov).toEqual(['start', 'gap', 'gap']);
-    expect(r.lines).toEqual([]);
+    expect(r.lines.map((l) => l.kind)).toEqual(['socket_bytes']);
+    expect(r.spent).toBe(0);
+    meter(r);
   });
 });
 

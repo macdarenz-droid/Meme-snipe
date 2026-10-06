@@ -106,7 +106,8 @@ export interface SourcesContext {
   /** The pools to watch for swaps: candidates' and open positions' (the strategy's `watchedPools`). */
   readonly pools: () => ReadonlyMap<string, { readonly mint: string; readonly held: boolean; readonly fromSlot?: bigint }>;
   /** Writes a journal line (S0-ZERO: each in-run fill of a pool's trade gap, `trades_fill`). */
-  readonly journal?: (kind: 'trades_fill', fields: Readonly<Record<string, unknown>>) => void;
+  /** Source diagnostics only; neither record changes summary, health or API shapes. */
+  readonly journal?: (kind: 'trades_fill' | 'socket_bytes', fields: Readonly<Record<string, unknown>>) => void;
 }
 
 export interface WorkerDeps {

@@ -4,7 +4,12 @@ import type { Timers } from '../scheduler/timers.ts';
 import type { SocketFactory } from './http.ts';
 import { ReconnectingSocket, type SocketOptions } from './socket.ts';
 
+/** Fixed buckets: no address, signature or arbitrary stream name is retained by the meter. */
+export const SOCKET_BYTE_KINDS = ['slots', 'accounts', 'logs', 'creates', 'migrations', 'rugs', 'trades', 'control', 'unattributed'] as const;
+export type SocketByteKind = typeof SOCKET_BYTE_KINDS[number];
+
 export interface SubscriptionSpec {
+  readonly byteKind?: SocketByteKind;
   readonly method: string;
   readonly params: readonly unknown[];
   readonly unsubscribe: string;
@@ -20,7 +25,7 @@ export interface RpcSocketEvents {
   onOpen?(): void;
   onDown?(reason: string, wasOpen: boolean): void;
   /** Bytes received, for byte-metered providers. */
-  onBytes?(bytes: number): void;
+  onBytes?(bytes: number, kind: SocketByteKind): void;
 }
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -30,7 +35,7 @@ export class RpcSocket {
   readonly #events: RpcSocketEvents;
   readonly #subs = new Map<number, SubscriptionSpec>();
   /** Request id → local handle, for subscribe requests in flight. */
-  readonly #pending = new Map<number, number>();
+  readonly #pending = new Map<number, { readonly handle: number; readonly unsubscribe: string; readonly byteKind: SocketByteKind }>();
   /** Server subscription id → local handle, valid until the connection drops. */
   readonly #live = new Map<number, number>();
   readonly #serverOf = new Map<number, number>();
@@ -95,24 +100,33 @@ export class RpcSocket {
   #subscribe(h: number): void {
     const spec = this.#subs.get(h)!;
     const id = this.#nextId++;
-    this.#pending.set(id, h);
+    // Keep only the unsubscribe and bucket after removal, never the notification callback or watch's data.
+    this.#pending.set(id, { handle: h, unsubscribe: spec.unsubscribe, byteKind: spec.byteKind ?? 'logs' });
     this.#socket.send(JSON.stringify({ jsonrpc: '2.0', id, method: spec.method, params: spec.params }));
   }
 
   #message(text: string): void {
-    this.#events.onBytes?.(Buffer.byteLength(text, 'utf8'));
+    const bytes = Buffer.byteLength(text, 'utf8');
     let m: unknown;
     try {
       m = JSON.parse(text);
     } catch {
+      this.#events.onBytes?.(bytes, 'unattributed');
       return; // not ours to decode; a malformed frame carries no fact
     }
-    if (!isObj(m)) return;
+    if (!isObj(m)) { this.#events.onBytes?.(bytes, 'unattributed'); return; }
     if (typeof m.id === 'number' && this.#pending.has(m.id)) {
-      const h = this.#pending.get(m.id)!;
+      const pending = this.#pending.get(m.id)!;
+      const h = pending.handle;
       this.#pending.delete(m.id);
+      this.#events.onBytes?.(bytes, pending.byteKind);
       const spec = this.#subs.get(h);
-      if (spec === undefined) return; // removed while in flight; the server drops it on the next reconnect
+      if (spec === undefined) {
+        // Removed in flight: the server accepted a subscription we no longer want. Stop it on this connection,
+        // without reviving it or touching a replacement watch (each add has its own handle and request id).
+        if (typeof m.result === 'number') this.#socket.send(JSON.stringify({ jsonrpc: '2.0', id: this.#nextId++, method: pending.unsubscribe, params: [m.result] }));
+        return;
+      }
       if (typeof m.result === 'number') {
         this.#live.set(m.result, h);
         this.#serverOf.set(h, m.result);
@@ -122,10 +136,15 @@ export class RpcSocket {
       }
       return;
     }
-    if (typeof m.method !== 'string' || !isObj(m.params) || typeof m.params.subscription !== 'number') return;
+    if (typeof m.method !== 'string' || !isObj(m.params) || typeof m.params.subscription !== 'number') {
+      this.#events.onBytes?.(bytes, typeof m.id === 'number' ? 'control' : 'unattributed');
+      return;
+    }
     const h = this.#live.get(m.params.subscription);
-    if (h === undefined) return;
-    const spec = this.#subs.get(h);
+    let spec = h === undefined ? undefined : this.#subs.get(h);
+    this.#events.onBytes?.(bytes, spec?.notification === m.method ? spec.byteKind ?? 'logs' : 'unattributed');
+    // The byte charge may halt and remove this watch. A removed watch never delivers a notification.
+    spec = h === undefined ? undefined : this.#subs.get(h);
     if (spec === undefined || spec.notification !== m.method) return;
     spec.onNotify(m.params.result);
   }

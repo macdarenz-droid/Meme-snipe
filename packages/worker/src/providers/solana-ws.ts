@@ -14,12 +14,14 @@ import type { Timers } from '../scheduler/timers.ts';
 import { isAddress, isSignature } from './canonical.ts';
 import type { SocketFactory } from './http.ts';
 import type { LiveFeed } from './live-feed.ts';
-import { RpcSocket } from './rpc-socket.ts';
+import { RpcSocket, type SocketByteKind } from './rpc-socket.ts';
 import { accountValue, type RpcHttp } from './solana-http.ts';
 import type { SocketOptions } from './socket.ts';
 import type { TxFetcher } from './tx-fetcher.ts';
 
 export interface RpcStreamOptions {
+  /** Journal and harness only: all received bytes, in fixed watch-kind buckets. Budget metering is unchanged. */
+  readonly onBytesByKind?: (bytes: number, kind: SocketByteKind) => void;
   readonly provider: 'helius' | 'alchemy';
   readonly url: () => string;
   readonly factory: SocketFactory;
@@ -39,6 +41,7 @@ export interface RpcStreamOptions {
 }
 
 export interface WatchOptions {
+  readonly byteKind?: SocketByteKind;
   readonly priority: Priority;
   /** Fetch and decode each transaction seen, at this priority. Off by default: creates alone run ~50k a day. */
   readonly fetch?: Priority;
@@ -165,7 +168,10 @@ export class RpcStream {
         else this.#status('up', { fromSlot: null, first: true });
       },
       onDown: (reason, wasOpen) => this.#down(reason, wasOpen),
-      onBytes: (n) => this.#meter(n * o.creditsPerByte),
+      onBytes: (n, kind) => {
+        o.onBytesByKind?.(n, kind);
+        this.#meter(n * o.creditsPerByte);
+      },
     });
   }
 
@@ -197,6 +203,7 @@ export class RpcStream {
   watchSlots(priority: Priority = P1): number {
     return this.#add({ kind: 'slot', priority, handle: 0 }, {
       method: 'slotSubscribe', params: [], unsubscribe: 'slotUnsubscribe', notification: 'slotNotification',
+      byteKind: 'slots',
       onNotify: (r) => {
         if (!isObj(r)) return;
         const slot = slotOf(r.slot);
@@ -212,6 +219,7 @@ export class RpcStream {
     const w: Watch = { kind: 'logs', address, opts, priority: opts.priority, handle: 0, lastSignature: null, acked: false, started: false, startPending: false, gap: null, lastLogSlot: null, startSlot: null, held: null };
     return this.#add(w, {
       method: 'logsSubscribe', params: [{ mentions: [address] }, { commitment: opts.commitment ?? 'processed' }], unsubscribe: 'logsUnsubscribe', notification: 'logsNotification',
+      byteKind: opts.byteKind ?? (opts.coverage?.startsWith('trades:') ? 'trades' : opts.coverage === 'creates' ? 'creates' : opts.coverage === 'rugs' ? 'rugs' : 'logs'),
       onNotify: (r) => {
         if (!isObj(r) || !isObj(r.context) || !isObj(r.value)) return;
         const slot = slotOf(r.context.slot);
@@ -247,6 +255,7 @@ export class RpcStream {
     if (!isAddress(address)) throw new RangeError('account watch needs a base58 address');
     return this.#add({ kind: 'account', address, priority, handle: 0 }, {
       method: 'accountSubscribe', params: [address, { encoding: 'base64', commitment: 'processed' }], unsubscribe: 'accountUnsubscribe', notification: 'accountNotification',
+      byteKind: 'accounts',
       onNotify: (r) => {
         if (!isObj(r) || !isObj(r.context)) return;
         const slot = slotOf(r.context.slot);
