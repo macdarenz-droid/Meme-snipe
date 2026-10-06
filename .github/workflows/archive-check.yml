@@ -13,6 +13,11 @@ on:
   schedule:
     - cron: "41 */3 * * *"
   workflow_dispatch:
+    inputs:
+      helius_runs:
+        description: "data-scan run ids (digits and commas) to treat as Helius-only, for runs dispatched before data-scan's run-name; scheduled checks never set it"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -35,4 +40,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           REF: ${{ github.ref_name }}
+          HELIUS_RUNS: ${{ github.event_name == 'workflow_dispatch' && inputs.helius_runs || '' }}
         run: research/historical/ci/archive-check.sh

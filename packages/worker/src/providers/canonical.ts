@@ -80,7 +80,8 @@ export interface Frame {
    * notice: a fill's transactions, ingested oldest first at one receipt time, would otherwise take id (signature)
    * order. Recordings made before it carry no `arrival` and replay as they did.
    */
-  readonly place: { readonly at: 'chain' | 'offchain'; readonly slot: bigint; readonly arrival?: true };
+  /** `first`: an off-chain body placed first in a chain slot (BEHIND: a shed range's gap, before any event of the range). */
+  readonly place: { readonly at: 'chain' | 'offchain'; readonly slot: bigint; readonly arrival?: true; readonly first?: true };
   /** A later copy of a fact already received (see `dedupKey`). Recorded, never released. */
   readonly duplicate: boolean;
   readonly body: FrameBody;
@@ -93,16 +94,28 @@ export const isSignature = (s: unknown): s is string => typeof s === 'string' &&
 export const isAddress = (s: unknown): s is string => typeof s === 'string' && ADDRESS.test(s);
 
 /**
+ * OOM-MINT: a signature's dedupe key, its kind and the first 22 characters of the signature (about 128 bits), copied into
+ * a fresh flat string. The feed keeps every key for 1,500 slots: built as text around the whole signature, each one kept
+ * the 88-character signature alive (about 44 MB at 12,000 swaps a minute); this is about a quarter of that.
+ */
+const signatureKey = (kind: string, signature: string, suffix = ''): string => {
+  const text = `${kind}:${signature.slice(0, 22)}${suffix}`;
+  const codes = new Array<number>(text.length);
+  for (let i = 0; i < text.length; i++) codes[i] = text.charCodeAt(i);
+  return String.fromCharCode(...codes);
+};
+
+/**
  * Two frames with the same key carry the same fact; the first to arrive wins (data.md §8.1C: two providers,
  * first copy wins, deduplicated by slot and signature). Null for facts that are never duplicates.
  */
 export const dedupKey = (b: FrameBody): string | null => {
   switch (b.type) {
     case 'slot': return `slot:${b.slot}`;
-    case 'seen': return `seen:${b.signature}`;
+    case 'seen': return signatureKey('seen', b.signature);
     // A confirmed watch's copy is a different fact from a processed one: the stronger commitment is kept apart.
-    case 'logs': return b.commitment === undefined ? `logs:${b.signature}` : `logs:${b.signature}:${b.commitment}`;
-    case 'tx': return `tx:${b.record.signature}`;
+    case 'logs': return signatureKey('logs', b.signature, b.commitment === undefined ? '' : `:${b.commitment}`);
+    case 'tx': return signatureKey('tx', b.record.signature);
     case 'account': return `acct:${b.address}:${b.slot}:${b.lamports}:${toBase64(b.data)}`;
     default: return null;
   }
@@ -131,7 +144,37 @@ export const chainSlot = (b: FrameBody): bigint | null => {
  * Ranks signatures in one slot by first arrival. `ranks` is the slot's running table: the live Feed keeps it
  * across releases so a late frame gets the next rank, and the pure path builds it from all frames at once.
  */
-export const rankIn = (ranks: Map<string, number>, frame: Frame): void => {
+/** A slot's transaction ranks by signature: a Map, or `SigRanks`. */
+export interface Ranks {
+  readonly size: number;
+  has(signature: string): boolean;
+  get(signature: string): number | undefined;
+  set(signature: string, rank: number): unknown;
+}
+
+/**
+ * SEEN-TAGS: a slot's ranks keyed by each signature's first 22 characters (about 128 bits, the dedupe keys' argument)
+ * as a fresh flat string. The live feed keeps every slot's ranks for 1,500 slots; keyed by the whole signature, each
+ * rank kept its 88-character signature alive (about 28 MB of the 3× run's heap at 1 h).
+ */
+export class SigRanks implements Ranks {
+  readonly #m = new Map<string, number>();
+  get size(): number {
+    return this.#m.size;
+  }
+  has(signature: string): boolean {
+    return this.#m.has(signatureKey('r', signature));
+  }
+  get(signature: string): number | undefined {
+    return this.#m.get(signatureKey('r', signature));
+  }
+  set(signature: string, rank: number): this {
+    this.#m.set(signatureKey('r', signature), rank);
+    return this;
+  }
+}
+
+export const rankIn = (ranks: Ranks, frame: Frame): void => {
   if (frame.place.at !== 'chain') return;
   const sig = signatureOf(frame.body);
   if (sig !== null && !ranks.has(sig)) ranks.set(sig, ranks.size);
@@ -140,11 +183,16 @@ export const rankIn = (ranks: Map<string, number>, frame: Frame): void => {
 const meta = (f: Frame) => ({ source: f.source, backfilled: f.backfilled, seq: f.seq });
 
 /** The events of one frame. `ranks` must already hold the frame's signature when it is chain-placed. */
-export const eventsOfFrame = (f: Frame, ranks: ReadonlyMap<string, number>): FeedEvent[] => {
+export const eventsOfFrame = (f: Frame, ranks: Pick<Ranks, 'get'>): FeedEvent[] => {
   // FILL-ORDER: same-moment events are released in id order, and ids start with the signature; an `arrival` frame
   // therefore takes its arrival order in `ixIndex` (1 + seq, after the slot notice's 0). Receipt times never decrease
   // with seq, so this only settles ties that id order settled before.
-  const off: Moment = { slot: f.place.slot, txIndex: OFF_CHAIN, ixIndex: f.place.arrival === true ? 1 + f.seq : OFF_CHAIN, receivedAt: f.receivedAt };
+  const off: Moment = f.place.first === true
+    // BEHIND: at the slot's first position, so a shed range's gap precedes every shed event (a log event sits at
+    // LIVE_TX_BASE + its rank and LOG_IX_BASE + its line); only a kept transaction at index 0 can sort with it, and
+    // nothing shed comes before that.
+    ? { slot: f.place.slot, txIndex: 0, ixIndex: 0, receivedAt: f.receivedAt }
+    : { slot: f.place.slot, txIndex: OFF_CHAIN, ixIndex: f.place.arrival === true ? 1 + f.seq : OFF_CHAIN, receivedAt: f.receivedAt };
   const chain = f.place.at === 'chain';
   // Off-chain placement can repeat a fact whose dedup key was already forgotten (older than keepSlots), so its
   // ids carry the frame's seq: event ids stay unique for the whole run, as the replay requires.
@@ -194,8 +242,20 @@ export const eventsOfFrame = (f: Frame, ranks: ReadonlyMap<string, number>): Fee
     }
     case 'tx': {
       const r = b.record;
-      // Only DEC-1's decoder reads transaction bytes (FEED-1 card: never a second decoder).
-      return transactionEvents(r).map((e): FeedEvent => {
+      // Only DEC-1's decoder reads transaction bytes (FEED-1 card: never a second decoder). A transaction it cannot
+      // decode is a fact gap, never a crash: one `tx:undecodable` event, and no `ev:` event, so a cut log it was
+      // fetched for stays a hole (the deployer index clears a hole only on an `ev:` event).
+      let decoded: ReturnType<typeof transactionEvents>;
+      try {
+        decoded = transactionEvents(r);
+      } catch (e) {
+        return [{
+          kind: 'market', id: `txerr:${r.signature}${sfx}`,
+          moment: chain ? { slot: f.place.slot, txIndex: txIndexOf(r.signature), ixIndex: 0, receivedAt: f.receivedAt } : off,
+          key: 'tx:undecodable', value: { signature: r.signature, txSlot: r.slot, error: e instanceof Error ? e.message : 'undecodable', ...meta(f) },
+        }];
+      }
+      return decoded.map((e): FeedEvent => {
         const subject = e.name === 'other' ? e.program : ('mint' in e.data ? e.data.mint : 'pool' in e.data ? e.data.pool : e.program);
         return {
           kind: 'market', id: `ev:${r.signature}:${pad(e.outerIx)}:${pad(e.innerIx)}${sfx}`,
@@ -218,6 +278,16 @@ export const eventsOfFrame = (f: Frame, ranks: ReadonlyMap<string, number>): Fee
       return [{ kind: 'market', id: `${b.key}${sfx}`, moment: off, key: b.key, value: b.value }];
     case 'world':
       return [{ kind: 'world', id: `world${sfx}`, moment: off, event: b.event }];
+  }
+};
+
+/** True when DEC-1's decoder reads the transaction: a fetched transaction it cannot decode is not a read one. */
+export const decodable = (r: TransactionRecord): boolean => {
+  try {
+    transactionEvents(r);
+    return true;
+  } catch {
+    return false;
   }
 };
 

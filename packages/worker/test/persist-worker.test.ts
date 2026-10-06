@@ -1,8 +1,9 @@
 // WORKER-1c item 1: PERSIST-1 wired into the worker. A clean stop (and every 5 minutes) saves the deployer index, the
 // rug labeller and the coverage facts; the next start restores them through the recorded seed fact before any
 // decision, tops up the downtime from the saved moment, and never saves before the seed is applied.
-import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { zstdDecompressSync } from 'node:zlib';
+import { existsSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { zstdCompressSync, zstdDecompressSync } from 'node:zlib';
+import { createHash } from 'node:crypto';
 import { SEED_KEY } from '../src/engine/strategy.ts';
 import type { Frame } from '../src/providers/index.ts';
 import { parseTyped } from '../src/run/json.ts';
@@ -12,10 +13,10 @@ import { RUG_CONFIG } from '../../core/src/config/rugs.ts';
 import { TRIAL_POLICY } from '../../core/src/config/index.ts';
 import { RAW } from '../../core/src/facts/raw.ts';
 import { GRADUATES_KEY, survivalCondition } from '../../core/src/gates/index.ts';
-import { DailyBudget, fileSha256, loadState } from '../src/persist/index.ts';
+import { DailyBudget, fileSha256, loadState, packFile } from '../src/persist/index.ts';
 import { SavedStateMissing, checkBoot, loadSession, replayBoot, savedStateOf } from '../src/run/parity.ts';
 import { FILL_BUDGET_FILE, FILL_CREDITS_PER_DAY, SEED_CREDIT_CAP, runSeed } from '../src/run/seed-start.ts';
-import { PERSIST_EVERY_MS, PERSIST_FILE, type SeedRequest, type SeedResult } from '../src/run/worker.ts';
+import { PERSIST_EVERY_MS, PERSIST_FILE, SAVED_STATES, type SeedRequest, type SeedResult } from '../src/run/worker.ts';
 import { DEV, MINT, Market, T, dueTimers, makeWorker, slotAt, tempState, virtualTimers } from './worker-harness.ts';
 
 const emptyRpc = { getSignaturesForAddress: async () => [{ signature: 'before-the-range', slot: 0n, err: null, blockTime: 0 }], getTransaction: async () => null };
@@ -80,12 +81,142 @@ describe('PERSIST-1 in the worker', () => {
     const frames = readdirSync(dir).flatMap((d) => readdirSync(join(dir, d)).filter((f) => /^frames-/.test(f)).map((f) => zstdDecompressSync(readFileSync(join(dir, d, f))).toString('utf8')))
       .join('\n').split('\n').filter((l) => l !== '').map((l) => parseTyped(l) as Frame);
     const seedFrame = frames.find((f) => f.body.type === 'fact' && f.body.key === SEED_KEY);
+    // G4c: the copy is packed once the restore read it; it decompresses to exactly those bytes, whose sha256 the seed names.
     const copy = join(rec, PERSIST_FILE);
-    const ref = { file: PERSIST_FILE, sha256: fileSha256(copy), version: 2 };
+    expect(existsSync(copy)).toBe(false);
+    const packed = readFileSync(`${copy}.zst`);
+    expect(zstdDecompressSync(packed).equals(savedBytes)).toBe(true);
+    const ref = { file: PERSIST_FILE, sha256: createHash('sha256').update(savedBytes).digest('hex'), version: 2 };
     expect((seedFrame?.body as { value: { state?: unknown } }).value.state).toEqual({ ref });
-    expect(readFileSync(copy).equals(savedBytes)).toBe(true);
     const manifest = JSON.parse(readFileSync(join(rec, 'manifest.json'), 'utf8')) as { attachments: unknown[] };
-    expect(manifest.attachments).toEqual([{ file: PERSIST_FILE, sha256: ref.sha256, bytes: savedBytes.length }]);
+    expect(manifest.attachments).toEqual([{
+      file: `${PERSIST_FILE}.zst`, sha256: createHash('sha256').update(packed).digest('hex'), bytes: packed.length,
+      content: { encoding: 'zstd', sha256: ref.sha256, bytes: savedBytes.length },
+    }]);
+  }, 60_000);
+
+  it('the observe-only start (the tabletop) packs its recording\'s copy too (G4c-2)', async () => {
+    const stateDir = tempState();
+    const timers = virtualTimers(T);
+    const h = makeWorker({ stateDir, timers, seed: (r: SeedRequest) => runSeed(r, { rpc: emptyRpc, timers }) });
+    const m = await boot(h);
+    m.create();
+    await m.run(1_000, 200, () => m.slot());
+    await h.worker.stop();
+    const h2 = makeWorker({ stateDir, timers });
+    expect(await h2.worker.observeOnly()).toEqual({ ok: true });
+    await h2.worker.whenPacked();
+    const copy = join(stateDir, 'recorder', h2.worker.boot, PERSIST_FILE);
+    expect([existsSync(copy), existsSync(`${copy}.zst`)]).toEqual([false, true]);
+    await h2.worker.stop();
+  });
+
+  it('a restart loop that never saves keeps one packed copy: every boot and pre-step links to it, and parity still checks the bytes (STATE-DEDUPE)', async () => {
+    const stateDir = tempState();
+    const timers = virtualTimers(T);
+    const seed = (r: SeedRequest) => runSeed(r, { rpc: emptyRpc, timers });
+    const first = makeWorker({ stateDir, timers, seed });
+    const m = await boot(first);
+    m.create();
+    await m.run(1_000, 200, () => m.slot());
+    await first.worker.stop();
+    const sha = fileSha256(join(stateDir, PERSIST_FILE));
+    // Three restarts shorter than a save (killed): each the unit's pre-step, then the start, on the same saved bytes.
+    const boots: string[] = [];
+    for (let k = 0; k < 3; k++) {
+      timers.set(timers.now() + 60_000);
+      const pre = makeWorker({ stateDir, timers, seed });
+      expect(await pre.worker.reconcileOnly()).toEqual({ ok: true });
+      boots.push(pre.worker.boot);
+      const h = makeWorker({ stateDir, timers, seed });
+      await boot(h);
+      await h.worker.whenPacked();
+      boots.push(h.worker.boot);
+      await h.worker.kill();
+    }
+    expect(fileSha256(join(stateDir, PERSIST_FILE))).toBe(sha);
+    const stored = join(stateDir, 'recorder', SAVED_STATES, `${sha}.zst`);
+    expect(readdirSync(join(stateDir, 'recorder', SAVED_STATES))).toEqual([`${sha}.zst`]);
+    const ino = statSync(stored).ino;
+    for (const b of boots) {
+      const copy = join(stateDir, 'recorder', b, PERSIST_FILE);
+      expect(existsSync(copy), b).toBe(false);
+      expect(statSync(`${copy}.zst`).ino, b).toBe(ino);
+    }
+    // One file on disk for the six boots: the stored copy and its six links.
+    expect(statSync(stored).nlink).toBe(boots.length + 1);
+    // Each boot's manifest lists its packed copy with the plain bytes' hash.
+    const manifest = JSON.parse(readFileSync(join(stateDir, 'recorder', boots[1]!, 'manifest.json'), 'utf8')) as { attachments: { file: string; content?: { sha256: string } }[] };
+    expect(manifest.attachments).toEqual([expect.objectContaining({ file: `${PERSIST_FILE}.zst`, content: expect.objectContaining({ sha256: sha }) })]);
+    // Parity: each started boot restores from its link; a missing link, or the shared bytes changed, is refused.
+    const d = { session: first.session, rugs: RUG_CONFIG, strategy: first.worker.strategyConfig };
+    const session = loadSession(stateDir);
+    const started = session.find((b) => b.boot === boots[1])!;
+    expect(started.savedState).toBe(join(stateDir, 'recorder', boots[1]!, `${PERSIST_FILE}.zst`));
+    expect(() => savedStateOf(started, d)).not.toThrow();
+    rmSync(join(stateDir, 'recorder', boots[3]!, `${PERSIST_FILE}.zst`));
+    expect(() => replayBoot(loadSession(stateDir).find((b) => b.boot === boots[3])!, d)).toThrow(/the recording has no copy of it/);
+    const plain = Buffer.from(zstdDecompressSync(readFileSync(stored)));
+    plain[plain.length - 10] = plain[plain.length - 10] === 0x30 ? 0x31 : 0x30;
+    writeFileSync(stored, zstdCompressSync(plain));
+    expect(() => replayBoot(loadSession(stateDir).find((b) => b.boot === boots[5])!, d)).toThrow(/the recording's copy has sha256/);
+  }, 60_000);
+
+  it('the pack runs beside the start: a slow disk never delays the feeds; a stop waits for the pack (review of #217)', async () => {
+    const stateDir = tempState();
+    const timers = virtualTimers(T);
+    const seed = (r: SeedRequest) => runSeed(r, { rpc: emptyRpc, timers });
+    const first = makeWorker({ stateDir, timers, seed });
+    const m = await boot(first);
+    m.create();
+    await m.run(1_000, 200, () => m.slot());
+    await first.worker.stop();
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => (release = r));
+    const h = makeWorker({ stateDir, timers, seed, pack: async (path, content) => (await gate, packFile(path, content)) });
+    const started = h.worker.start();
+    // The feeds start while the pack is held (it used to come first, by however long the disk took).
+    for (let k = 0; k < 200 && !h.order.includes('start helius-ws'); k++) await new Promise<void>((r) => setImmediate(r));
+    expect(h.order).toContain('start helius-ws');
+    const copy = join(stateDir, 'recorder', h.worker.boot, PERSIST_FILE);
+    expect([existsSync(copy), existsSync(`${copy}.zst`)]).toEqual([true, false]);
+    // A stop waits for the pack before the recorder closes: its manifest lists the packed copy.
+    let stopped = false;
+    const stop = h.worker.stop().then(() => (stopped = true));
+    for (let k = 0; k < 50; k++) await new Promise<void>((r) => setImmediate(r));
+    expect(stopped).toBe(false);
+    release();
+    await stop;
+    await started;
+    expect([existsSync(copy), existsSync(`${copy}.zst`)]).toEqual([false, true]);
+    const manifest = JSON.parse(readFileSync(join(stateDir, 'recorder', h.worker.boot, 'manifest.json'), 'utf8')) as { attachments: { file: string }[] };
+    expect(manifest.attachments.map((x) => x.file)).toEqual([`${PERSIST_FILE}.zst`]);
+  }, 60_000);
+
+  it('a stored copy that no longer holds the bytes is never linked: the boot packs its own (STATE-DEDUPE)', async () => {
+    const stateDir = tempState();
+    const timers = virtualTimers(T);
+    const seed = (r: SeedRequest) => runSeed(r, { rpc: emptyRpc, timers });
+    const first = makeWorker({ stateDir, timers, seed });
+    const m = await boot(first);
+    m.create();
+    await m.run(1_000, 200, () => m.slot());
+    await first.worker.stop();
+    const sha = fileSha256(join(stateDir, PERSIST_FILE));
+    const stored = join(stateDir, 'recorder', SAVED_STATES, `${sha}.zst`);
+    const { mkdirSync } = await import('node:fs');
+    mkdirSync(join(stateDir, 'recorder', SAVED_STATES), { recursive: true });
+    writeFileSync(stored, zstdCompressSync(Buffer.from('not the saved state')));
+    const h = makeWorker({ stateDir, timers, seed });
+    await boot(h);
+    await h.worker.whenPacked();
+    const own = join(stateDir, 'recorder', h.worker.boot, `${PERSIST_FILE}.zst`);
+    expect(statSync(own).ino).not.toBe(statSync(stored).ino);
+    expect(createHash('sha256').update(zstdDecompressSync(readFileSync(own))).digest('hex')).toBe(sha);
+    expect(h.logs.some((l) => l.includes(`the stored saved state ${sha} decompresses to sha256`))).toBe(true);
+    // The bad stored file is left as it is (state copies are never deleted).
+    expect(zstdDecompressSync(readFileSync(stored)).toString()).toBe('not the saved state');
+    await h.worker.stop();
   }, 60_000);
 
   it('the parity replay restores a restarted boot from its recording\'s copy and reproduces its decisions; it refuses loudly without exactly that copy (WORKER-GROW)', async () => {
@@ -103,7 +234,7 @@ describe('PERSIST-1 in the worker', () => {
     await m2.run(1_000, 200, () => m2.slot());
     await h2.worker.stop();
     const b2 = loadSession(stateDir).find((b) => b.boot === h2.worker.boot)!;
-    const copy = join(stateDir, 'recorder', h2.worker.boot, PERSIST_FILE);
+    const copy = join(stateDir, 'recorder', h2.worker.boot, `${PERSIST_FILE}.zst`);
     expect(b2.savedState).toBe(copy);
     expect(b2.live.some((l) => l.includes('saved state restored'))).toBe(true);
     const d = { session: h2.session, rugs: RUG_CONFIG, strategy: h2.worker.strategyConfig };
@@ -115,17 +246,32 @@ describe('PERSIST-1 in the worker', () => {
     // tells): refused before anything is replayed, never an empty or other state.
     expect(() => replayBoot({ ...b2, savedState: null }, d)).toThrow(SavedStateMissing);
     expect(() => replayBoot({ ...b2, savedState: null }, d)).toThrow(/the recording has no copy of it; nothing is replayed/);
+    const plainBytes = zstdDecompressSync(readFileSync(copy));
     const altered = join(tempState(), PERSIST_FILE);
-    const bytes = readFileSync(copy);
+    const bytes = Buffer.from(plainBytes);
     bytes[bytes.length - 10] = bytes[bytes.length - 10] === 0x30 ? 0x31 : 0x30;
     writeFileSync(altered, bytes);
     expect(() => replayBoot({ ...b2, savedState: altered }, d)).toThrow(/the recording's copy has sha256/);
+    // The same change inside a packed copy, and a packed copy that does not decompress: refused too.
+    const alteredPacked = join(tempState(), `${PERSIST_FILE}.zst`);
+    writeFileSync(alteredPacked, zstdCompressSync(bytes));
+    expect(() => replayBoot({ ...b2, savedState: alteredPacked }, d)).toThrow(/the recording's copy has sha256/);
+    const torn = join(tempState(), `${PERSIST_FILE}.zst`);
+    writeFileSync(torn, readFileSync(copy).subarray(0, 40));
+    // (Node's zstd may return a cut file's partial output without an error; the plain bytes' hash refuses it either way.)
+    expect(() => replayBoot({ ...b2, savedState: torn }, d)).toThrow(SavedStateMissing);
+    expect(() => replayBoot({ ...b2, savedState: torn }, d)).toThrow(/(unreadable|has sha256).*nothing is replayed/);
+    // The plain copy (a pack that failed) replays the same.
+    const unpacked = join(tempState(), PERSIST_FILE);
+    writeFileSync(unpacked, plainBytes);
+    expect(replayBoot({ ...b2, savedState: unpacked }, d)).toEqual(b2.live);
     const other = join(stateDir, PERSIST_FILE);
     expect(loadState(other, RUG_CONFIG).ok).toBe(true);
-    expect(fileSha256(other)).not.toBe(fileSha256(copy));
+    expect(fileSha256(other)).not.toBe(fileSha256(unpacked));
     expect(() => replayBoot({ ...b2, savedState: other }, d)).toThrow(/the recording's copy has sha256/);
     // The copy is handed over once, and only for exactly the reference the seed names.
-    const ref = { file: PERSIST_FILE, sha256: fileSha256(copy), version: 2 };
+    // The seed's hash is the plain bytes' (the copy is packed).
+    const ref = { file: PERSIST_FILE, sha256: createHash('sha256').update(plainBytes).digest('hex'), version: 2 };
     const once = savedStateOf(b2, d);
     expect(once.savedState!(ref).index.factFor(DEV, { slot: 1n << 40n, txIndex: 0, ixIndex: 0, receivedAt: timers.now() }, 0).mints.map((x) => x.mint)).toEqual([MINT]);
     expect(() => once.savedState!(ref)).toThrow(SavedStateMissing);

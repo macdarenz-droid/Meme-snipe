@@ -7,12 +7,12 @@
 // `open_intents` → seed the deployer index (SEED-1's hook) → start the live sources → trade. Nothing enters before the
 // reconcile line; a reconcile that cannot settle every intent exits 3.
 import { randomBytes } from 'node:crypto';
-import { copyFileSync, existsSync, mkdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, linkSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { journalLines, placeBookingsAt } from './booked.ts';
 import type { Server } from 'node:http';
 import { join } from 'node:path';
 import type { PolicySession, RugConfig } from '../../../core/src/config/index.ts';
-import { compareEvents, compareMoments, Engine, type LogRecord, type MarketEvent, type Moment, OFF_CHAIN } from '../../../core/src/engine/index.ts';
+import { compareEvents, compareMoments, Engine, type LogRecord, type MarketEvent, type Moment, OFF_CHAIN, flatCopy } from '../../../core/src/engine/index.ts';
 import { Ledger, openLedger } from '../../../core/src/ledger/index.ts';
 import type { Book, BookEvent } from '../../../core/src/lifecycle/index.ts';
 import { isTerminal, isUnresolved } from '../../../core/src/lifecycle/index.ts';
@@ -20,13 +20,13 @@ import { attemptFee, type FillNetwork, type FillScenario, lateFillOf } from '../
 import type { MicroUsd } from '../../../core/src/units/index.ts';
 import { EXIT, LOOKUP_BOUNDS_MS, STATE_FILES, type FeedHealth, type Health, type JournalKind, type QuotaStatus, type RecoveredFields } from '../../../runner/src/contract.ts';
 import type { DryRunRecord } from '../dryrun/index.ts';
-import { NO_UNIVERSE, type SavedGraduates, resolveUniverse, sellOnlyReason } from '../engine/strategy.ts';
+import { CANDIDATE_RESTORED, NO_UNIVERSE, type SavedGraduates, type SavedTail, resolveUniverse, sellOnlyReason } from '../engine/strategy.ts';
 import { RAW } from '../../../core/src/facts/raw.ts';
 import { GRADUATES_SEED_KEY } from '../../../core/src/facts/producer.ts';
-import { ACCOUNT_KEY, HALT_KEY, LiveStrategy, POOL_PREFIX, RESTORE_KEY, SEED_KEY, SEEDING, SHORTLIST, SNAPSHOT_PREFIX, SOL_PRICE_KEY, type SnapshotFact, type StrategyConfig, type StrategyDeps, type SavedStateRef, TRIP_PREFIX, parseSnapshotFact, snapshotKey, snapshotWins } from '../engine/strategy.ts';
+import { ACCOUNT_KEY, HALT_KEY, LiveStrategy, unwrap, POOL_PREFIX, RESTORE_KEY, SEED_KEY, SEEDING, SHORTLIST, SNAPSHOT_PREFIX, SOL_PRICE_KEY, type SnapshotFact, type CarryFact, CARRY_PREFIX, type MarketChoice, chooseMarket, parseCarryFact, type StrategyConfig, type StrategyDeps, type SavedStateRef, TRIP_PREFIX, parseSnapshotFact, snapshotKey, snapshotWins } from '../engine/strategy.ts';
 import { SLOT_MS, watchTimingProblem } from './config.ts';
 import { PositionWatch, type WatchRead } from './watch.ts';
-import { DEFAULT_LIVE_FEED, type Frame, type HttpClient, LiveFeed, type Release, seqId } from '../providers/index.ts';
+import { DEFAULT_LIVE_FEED, type Frame, HELIUS_EXHAUSTED, type HttpClient, LiveFeed, type Release, seqId } from '../providers/index.ts';
 import type { Timers } from '../scheduler/timers.ts';
 import { PaperAccount, type PaperLegs, accountFile } from './account.ts';
 import type { WorkerConfig } from './config.ts';
@@ -34,14 +34,22 @@ import { Desk, FILL_RATE_UNKNOWN, journaledFillKeys, lineRate, lineReasons, open
 import { DeployerStore, liveWatchToClose, type SavedDeployers } from './deployer-store.ts';
 import { CoverageJournal } from './coverage-journal.ts';
 import { rebuildMove } from './exposure.ts';
-import type { SeedRpc } from '../seed/rpc.ts';
+import { backfillAddress, SIGNATURE_PAGE, type SeedRpc } from '../seed/rpc.ts';
+import { transactionEvents } from '../../../core/src/chain/index.ts';
+import { P2, P3 } from '../scheduler/scheduler.ts';
+import { callCost } from '../providers/solana-http.ts';
+import { FILLS, PUMP_MIGRATION_AUTHORITY } from './sources.ts';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { DelayProbe, type DelayProbeOptions } from './delay-probe.ts';
 import { type AlertSeen, type ApiInputs, type DecisionRow, checkOf, collectAlerts, melbourneDate, stageOf, startApiServer } from './api.ts';
 import type { FactContext, FactSource } from './facts.ts';
 import { engineFeed, type EngineFeed } from './engine-feed.ts';
 import { startHealthServer } from './health.ts';
 import { type HeartbeatPosition, heartbeatBody, sendHeartbeat } from './heartbeat.ts';
-import { Summarizer, nextSummaryDelay } from './summary.ts';
+import { crashSite } from './crash-site.ts';
+import { type DeathMem, MEM_EVERY_MS, PROBE_EVERY_MS, PROBE_KEEP, type ProbeCount, type ProbeSample, cgroupMax, deathMem, fatalReport, nearLimit, parseDeathMem, probeCounts, probeSample, readMem, sampleMem, writeMem, writeProbe } from './mem-trace.ts';
+import { Summarizer, SummaryClock } from './summary.ts';
+import { CappedMap } from './capped-map.ts';
 import { jsonText } from './json.ts';
 import { Journal } from './journal.ts';
 import { type PaperMarket, type PaperState, PaperWorld, type SimLeg } from './paper-world.ts';
@@ -50,19 +58,28 @@ import { entryPrice, openPositionsHealth } from './open-positions.ts';
 import { type RiskInput, evaluateExit, riskSnapshot } from '../../../core/src/risk/index.ts';
 import { latchable, markSettings, riskAccount } from '../engine/marks.ts';
 import type { DeployerIndex, DeployerIndexState, RugLabeller, RugLabellerState } from '../../../core/src/gates/index.ts';
-import { PERSIST_FILE, fileSha256, loadState, saveState } from '../persist/index.ts';
+import { PERSIST_FILE, fileSha256, loadState, packFile, saveState, zstdContentHash, type SavedCandidateState } from '../persist/index.ts';
 import type { CreateLookup } from './sources.ts';
 
 /** PERSIST-1's saved deployer state in the worker's state dir, and how often it is written. */
 export { PERSIST_FILE } from '../persist/index.ts';
+/** RESTART-KEEP: the downtime migrations' credit cap. */
+export const DOWNTIME_CREDIT_CAP = 3_000;
+/** RESTART-KEEP: transactions read before a migration to find its curve's completion. */
+const COMPLETION_READS = 5;
 export const PERSIST_EVERY_MS = 5 * 60_000;
-import { type Control, NO_CONTROL, StateFile, controlFile, exitsFile, seedsFile, exposedFile, NO_EXPOSED } from './state.ts';
+/** STATE-DEDUPE: the recorder folder holding each distinct saved state once, packed, named by the sha256 of its plain bytes. */
+export const SAVED_STATES = 'saved-state';
+import { type Control, NO_CONTROL, type Restart, StateFile, controlFile, exitsFile, seedsFile, exposedFile, NO_EXPOSED, exitKind, restartsAfterBoot, restartsFile } from './state.ts';
 import { LOG_CREATE_PREFIX, type PoolFact, S0_DIAGNOSTIC_PARTS, TX_CREATE_PREFIX, parsePool } from '../../../core/src/gates/index.ts';
 import type { ExecStats } from '../../../core/src/facts/raw.ts';
 
 /** POS-1: a pool fact flagged beyond backfill or dedupe (a stale swap stream) is never priced from. */
 const flagged = (p: PoolFact): boolean => p.obs.quality.some((q) => q !== 'backfilled' && q !== 'deduplicated');
 import { type PoolFeeContext, effectiveQuoteReserve, poolSell } from '../../../core/src/amm/index.ts';
+import { liveCollapse, liveForget, liveRetention, liveShape } from './store-rules.ts';
+import { BEHIND, BehindGuard, SHED_HELD_FRAMES } from './behind.ts';
+import { tradesStream } from './pool-watch.ts';
 
 /** The halt reason while the book holds a late buy's position, which paper does not settle yet (risk ruling on #133). */
 export const LATE_BUY = 'late buy not settled by paper; entries off';
@@ -107,6 +124,8 @@ export interface WorkerDeps {
   readonly strategy: StrategyConfig;
   /** Test seam: replaces the strategy's position marking (marks.ts `markedHistory`). */
   readonly markedHistory?: StrategyDeps['markedHistory'];
+  /** Test seam: replaces the strategy's entry-size probe result (`StrategyDeps.sizeProbe`). */
+  readonly sizeProbe?: StrategyDeps['sizeProbe'];
   readonly scenario: FillScenario;
   readonly network: FillNetwork;
   readonly timers: Timers;
@@ -122,7 +141,14 @@ export interface WorkerDeps {
    * Fetches a transaction at confirmed and puts it on the feed; resolves true when it was found. Used for a shortlisted
    * mint's create (item 9: live H9, H12–H14 need the confirmed create) and for a cut trade log on a rug-covered stream.
    */
-  readonly fetchTx: (signature: string, why: 'create' | 'cut-log') => Promise<boolean>;
+  readonly fetchTx: (signature: string, why: 'create' | 'cut-log' | 'restore') => Promise<boolean>;
+  /**
+   * RESTART-KEEP: signature reads on SEED-1's RPC, charged to the fill budget: the migrations of a restart's downtime.
+   * Without it they are not read: coins that migrated while the worker was down are not candidates.
+   */
+  readonly restartReads?: { readonly rpc: SeedRpc; readonly budget: { remaining(nowMs: number): number; spend(credits: number, nowMs: number): void; refund(credits: number, nowMs: number): void } };
+  /** Test seam: the pack of the recording's saved-state copy (persist's `packFile` unless a test holds it open). */
+  readonly pack?: typeof packFile;
   /**
    * CREATE-AFTER-RESTART: looks up a shortlisted mint's create that neither this process nor the saved store holds
    * (sources.ts `findCreate`, under the fills' daily budget). Without it such a create waits, as before.
@@ -143,10 +169,20 @@ export interface WorkerDeps {
   readonly seedMaxMs?: number;
   /** The most create signatures kept (default `CREATE_SIGS_MAX`; a test passes a small one). */
   readonly createSigsMax?: number;
+  /**
+   * RESTART-CAUSE: 'reconcile' for the unit's `--reconcile` pre-step: its start line is marked, it records no restart,
+   * and it hands its reading of the previous exit to the main boot.
+   */
+  readonly phase?: 'reconcile';
   /** The seed cap when no saved index restores (default `MAX_SEED_CREATES`; a test passes a small one). */
   readonly maxSeedCreates?: number;
   /** BT-1c's delay samples (the recorder's `delays` table): the confirmed read and the sampled processed watch. */
   readonly delayProbe?: { readonly confirmed: DelayProbeOptions['confirmed']; readonly via: string; readonly everyMs: number };
+  /**
+   * HELIUS-EXHAUSTED: Helius's answer that its credits are used up, as the Helius scheduler holds it (since boot): while
+   * `exhausted`, entries halt (`HELIUS_EXHAUSTED`); the count and first time go in the daily summary.
+   */
+  readonly heliusExhaustion?: () => { readonly exhausted: boolean; readonly count: number; readonly firstAtMs: number | null };
   /** RUN-1c's quota (free-plan providers, credits since boot by class) and historical-lookup latency counts. */
   readonly ops?: () => { readonly quota: readonly QuotaStatus[]; readonly lookups: { readonly counts: readonly number[] } };
   /** RUN-1d's drop-rpc drill: refuses every RPC call for `ms` (main wraps the providers' HTTP in an RpcCut). */
@@ -160,6 +196,11 @@ export interface WorkerDeps {
   readonly reconcileTimeoutMs: number;
   /** Engine loop period. */
   readonly loopMs: number;
+  /**
+   * BEHIND: a monotonic clock (ms) for the loop's own cycle: real time the loop took, never the wall clock (which a host
+   * can step, and tests move by hand). Default `performance.now`.
+   */
+  readonly loopClock?: () => number;
   /** A critical feed with no frame for this long is stale (entries halt). */
   readonly staleFeedMs: number;
   /** Plain status lines for the process log (never a key or a URL). */
@@ -177,7 +218,7 @@ export interface WorkerDeps {
    * WATCH-1's second path: one getMultipleAccounts at confirmed through the quota scheduler at P1, on a provider other
    * than the live feed's (Alchemy). Without it every stale held position raises the critical alert.
    */
-  readonly watchRead?: (addresses: readonly string[]) => Promise<WatchRead>;
+  readonly watchRead?: (addresses: readonly string[], minContextSlot: bigint | null) => Promise<WatchRead>;
   /** True while the second path's provider budget is halted (its scheduler's haltShare): entries stop. */
   readonly watchHalted?: () => boolean;
 }
@@ -211,6 +252,9 @@ interface FeedState {
 }
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+/** Refused API commands journaled one by one per minute; more are counted on one line. */
+export const COMMAND_LINES_PER_MINUTE = 10;
+const errorText = (e: unknown): string => (e instanceof Error ? `${e.name}: ${e.message}` : 'error');
 /**
  * The most saved creates a start seeds the index with when no saved index restores (WORKER-GROW): about three days of
  * creates, which a boot holds well under MemoryMax (measured: docs/DECISIONS.md, WORKER-GROW G4b). Past it the seed is refused whole.
@@ -224,8 +268,22 @@ export const CREATE_RETRY_MS = 60_000;
 /** A saved create's id, live (`log:<signature>…`) or fetched (`ev:<signature>:…`): its transaction signature. */
 const CREATE_ID = /^(?:log|ev):([1-9A-HJ-NP-Za-km-z]{64,88})(?=[:#]|$)/;
 
-/** The most create signatures a process keeps (CREATE-AFTER-RESTART), oldest forgotten first. */
-export const CREATE_SIGS_MAX = 200_000;
+/**
+ * The most create signatures (CREATE-AFTER-RESTART) and token symbols a process keeps, oldest forgotten first.
+ * OOM-MINT: 60,000 each (was 200,000, about 52 and 38 MB full, and the create signatures fill at boot from the saved
+ * store): more than the 12 hours a create is kept (`CREATE_KEEP_MS`) at three times the live 25 creates a minute. An
+ * older coin that migrates is looked up once from its oldest signature instead, and shows no symbol.
+ */
+export const CREATE_SIGS_MAX = 60_000;
+export const SYMBOLS_MAX = 60_000;
+/**
+ * RESTART-KEEP: the most curve-completion and migration signatures kept, each. OOM-MINT: 20,000 (was 200,000): about
+ * two weeks of migrations at the live rate, where a candidate's window is hours.
+ */
+export const TX_SIGS_MAX = 20_000;
+
+/** OOM-MINT: a fresh flat copy, so a kept mint never holds the whole key or log text it was cut from. */
+export const flat = flatCopy;
 
 /** A create event's mint and signature (the field, else the id), or null when it is not a create or names neither. */
 const createSigOf = (e: MarketEvent): readonly [string, string] | null => {
@@ -253,12 +311,65 @@ export const readJournalFills = (path: string, chunkBytes?: number): Record<stri
   return out;
 };
 
+/** RESTART-CAUSE: the `--reconcile` pre-step's reading of the previous exit, for the main boot that follows it. */
+export const EXIT_HANDOFF = 'last_exit.json';
+
+/** The pre-step's handoff, read and removed: its reading when recent and well formed (null is a first start), else undefined. */
+export const takeHandoff = (path: string, nowMs: number, onMem?: (mem: DeathMem | null) => void): string | null | undefined => {
+  if (!existsSync(path)) return undefined;
+  let out: string | null | undefined;
+  try {
+    const m = JSON.parse(readFileSync(path, 'utf8')) as { exit?: unknown; at?: unknown; mem?: unknown };
+    if ((typeof m.exit === 'string' || m.exit === null) && typeof m.at === 'number' && nowMs - m.at >= 0 && nowMs - m.at < PLANNED_RESTART_MS) {
+      out = typeof m.exit === 'string' ? m.exit.slice(0, 300) : null;
+      // MEM-SUMMARY: the dead process's memory as the pre-step read it (numbers only, checked again here).
+      onMem?.(parseDeathMem(m.mem ?? null));
+    }
+  } catch {}
+  rmSync(path, { force: true });
+  return out;
+};
+
+/** A planned restart's marker younger than this is believed; an older one is stale (its kill never came). */
+export const PLANNED_RESTART_MS = 10 * 60_000;
+
+/**
+ * RESTART-ALERT: the runner's marker for a drill's kill or reboot, read and removed at boot: `planned: <cause>` when it
+ * is recent and well formed, else null (the journal's reading stands).
+ */
+export const plannedRestart = (path: string, nowMs: number): string | null => {
+  if (!existsSync(path)) return null;
+  let out: string | null = null;
+  try {
+    const m = JSON.parse(readFileSync(path, 'utf8')) as { cause?: unknown; at?: unknown };
+    if (typeof m.cause === 'string' && m.cause !== '' && typeof m.at === 'number' && nowMs - m.at >= 0 && nowMs - m.at < PLANNED_RESTART_MS) out = `planned: ${m.cause.slice(0, 80)}`;
+  } catch {}
+  rmSync(path, { force: true });
+  return out;
+};
+
+/** `no clean stop`, with how the memory stood at the death when that is known (MEM-TRACE). */
+export const withMemNote = (exit: string, note: string | null): string => (note === null ? exit : `${exit} (${note})`);
+
 export class Worker {
   readonly #d: WorkerDeps;
   readonly #boot: string;
+  /** How the previous process ended (RESTART-ALERT): a planned restart's marker, else the journal's last line. */
+  readonly #lastExit: string | null;
+  /** MEM-SUMMARY: the previous process's memory at its death, when it left no stop line (`deathMem`), else null. */
+  #deathMem: DeathMem | null = null;
+  readonly #restartsFile: ReturnType<typeof restartsFile>;
+  #restarts: readonly Restart[];
   readonly #started: number;
   readonly #journal: Journal;
-  readonly #recorder: Recorder | null;
+  #recorder: Recorder | null = null;
+  /**
+   * The recorder's first failure (a full disk, ENOSPC): recording stops, entries halt for the rest of the process and
+   * the alert goes up; exits and the rest of the worker go on. Never a crash, so a disk that stays full is no crash loop.
+   */
+  #recorderFault: string | null = null;
+  /** API command refusals journaled in the current minute, and those counted only (see `#commandRefused`). */
+  readonly #refusals = { since: -Infinity, written: 0, dropped: 0 };
   readonly #ledger: Ledger;
   readonly #control: StateFile<Control>;
   readonly #exitsFile: ReturnType<typeof exitsFile>;
@@ -276,6 +387,8 @@ export class Worker {
   #ctl: Control;
   #reconciled = false;
   #lastSlot: bigint | null = null;
+  /** When `#lastSlot` was released (WATCH-1d holds a snapshot's bank to a live head). */
+  #lastSlotAt: number | null = null;
   #ticked: bigint | null = null;
   #solPrice: MicroUsd | null = null;
   /** Whether this process settled at its first SOL price after the reconcile (a stray fee needs a price; PAPER-1). */
@@ -291,13 +404,23 @@ export class Worker {
   #pools = new Map<string, unknown>();
   /** When each mint's latest pool fact was released to the engine (WATCH-1 judges a feed fact by its release). */
   readonly #poolReleasedAt = new Map<string, number>();
+  /** WATCH-1c: each mint's latest carry (its pool state proven unchanged through a slot) and when it was released. */
+  readonly #carries = new Map<string, { readonly carry: CarryFact; readonly releasedAt: number }>();
   #fees = new Map<string, PoolFeeContext>();
   /** WATCH-1's latest snapshot per held mint, as released. */
   #snapshots = new Map<string, SnapshotFact>();
   #watch: PositionWatch | null = null;
   /** Positions open at the last step (WATCH-1 reads once when one opens). */
   #opened = new Set<string>();
-  #createSig = new Map<string, string>();
+  /** CREATE-AFTER-RESTART: each known create's signature by mint, the newest CREATE_SIGS_MAX. */
+  readonly #createSig: CappedMap<string, string>;
+  /** RESTART-KEEP: each mint's curve completion and migration transactions, as seen (logs or fetched). */
+  readonly #completeSig = new CappedMap<string, string>(TX_SIGS_MAX);
+  readonly #migrationSig = new CappedMap<string, string>(TX_SIGS_MAX);
+  /** RESTART-KEEP: the saved state's slot (the downtime's migrations are looked up after it); null on a fresh start. */
+  #downtimeFrom: bigint | null = null;
+  /** RESTART-KEEP: restored candidates whose transactions wait for the sources to start. */
+  readonly #restoredMints: string[] = [];
   /** Mints shortlisted while the seed is being built, with no create signature yet: the downtime fill may bring it. */
   #createPending: string[] = [];
   /** Mints whose create this process has looked up (once each). */
@@ -334,24 +457,46 @@ export class Worker {
   #restored: { readonly asOf: Moment; readonly ref: SavedStateRef } | null = null;
   /** The restored index and labeller, given once to the strategy when it applies the seed that names them. */
   #handoff: { readonly ref: SavedStateRef; readonly index: DeployerIndex; readonly labeller: RugLabeller } | null = null;
+  /** G4c: the recording's plain saved-state copy this boot restored from, packed at start. */
+  #unpacked: { readonly path: string; readonly sha256: string; readonly bytes: number } | null = null;
+  /** The pack of the recording's saved-state copy, while it runs beside the start (a stop waits for it). */
+  #packing: Promise<void> | null = null;
   #lastSaveMs = 0;
   #saveRefused = false;
   #beatSeq = 0;
   #loop: ReturnType<Timers['setTimeout']> | null = null;
   #beat: ReturnType<Timers['setTimeout']> | null = null;
-  #summaryTimer: ReturnType<Timers['setTimeout']> | null = null;
+  #memTimer: ReturnType<Timers['setTimeout']> | null = null;
+  /** BEHIND: whether the loop keeps up with its inputs (entries halt while it does not). */
+  readonly #behind = new BehindGuard();
+  readonly #cgroupMax = cgroupMax();
+  /** MEM-PROBE: the last minute samples (and the ones around each save), oldest first, at most PROBE_KEEP. */
+  readonly #memRecent: ProbeSample[] = [];
+  #memProbeAt = Number.NEGATIVE_INFINITY;
+  /** MEM-PROBE: the event loop's delay since the last probe sample (max and p95), reset at each. */
+  readonly #loopDelay = monitorEventLoopDelay({ resolution: 20 });
+  #summaryClock: SummaryClock | null = null;
   #summary: Summarizer | null = null;
   #server: Server | null = null;
   #api: Server | null = null;
   /** The app's views: recent candidate decisions, the funnel, token symbols seen on creates. */
   readonly #rows: DecisionRow[] = [];
   readonly #funnel = { fromMs: 0, stage: new Map<string, { day: string; stage: number; check: string | null }>(), enteredByDay: new Map<string, number>() };
-  readonly #symbols = new Map<string, string>();
+  readonly #symbols = new CappedMap<string, string>(SYMBOLS_MAX);
   #stopping = false;
+  /** The code of the stop under way (the first `stop` call's). */
+  #stopCode: number = EXIT.clean;
+  #stoppingNow: (code: number) => void = () => {};
+  #stoppedNow: (code: number) => void = () => {};
+  /** Resolves with the stop's code when a stop begins (a signal, a refused start or a loop crash). */
+  readonly stopping = new Promise<number>((r) => (this.#stoppingNow = r));
+  /** Resolves with the stop's code once the stop has finished: the entry exits with it (a loop crash exits 1). */
+  readonly stopped = new Promise<number>((r) => (this.#stoppedNow = r));
   #sources: readonly FeedSource[] = [];
 
   constructor(d: WorkerDeps) {
     this.#d = d;
+    this.#createSig = new CappedMap<string, string>(d.createSigsMax ?? CREATE_SIGS_MAX);
     const c = d.config;
     const now = d.timers.now();
     this.#started = now;
@@ -361,16 +506,69 @@ export class Worker {
     this.#journal = new Journal(join(c.stateDir, STATE_FILES.journal), this.#boot, () => d.timers.now());
     this.#fillLines = readJournalFills(join(c.stateDir, STATE_FILES.journal));
     rmSync(join(c.stateDir, STATE_FILES.cleanStop), { force: true });
+    // RESTART-CAUSE: the systemd unit runs a `--reconcile` pre-step (its own process) before each start, and it writes
+    // journal lines of its own. So the pre-step reads how the previous process ended and hands that reading to the main
+    // boot (EXIT_HANDOFF), which would otherwise read the pre-step's lines. A drill's marker is read the same way.
+    const handoff = join(c.stateDir, EXIT_HANDOFF);
+    // A handoff of null (the pre-step saw a first start) stands: it is not "no handoff".
+    let handedMem: DeathMem | null | undefined;
+    const handed = takeHandoff(handoff, now, (m) => {
+      handedMem = m;
+    });
+    // MEM-TRACE: a death with no stop line just after a sample near a memory limit says so.
+    // HEAP-GUARD: a fresh fatal-error report (the heap limit) names the death as a crash at its site, first.
+    const fatal = this.#journal.previousExit === 'no clean stop' ? fatalReport(c.stateDir, this.#journal.previousMs) : null;
+    const journalExit = fatal !== null ? `fatal error (${fatal})`
+      : this.#journal.previousExit === 'no clean stop' ? withMemNote(this.#journal.previousExit, nearLimit(readMem(c.stateDir), this.#journal.previousMs)) : this.#journal.previousExit;
+    this.#lastExit = handed !== undefined ? handed : plannedRestart(join(c.stateDir, STATE_FILES.plannedRestart), now) ?? journalExit;
+    // MEM-SUMMARY: how much memory a process that left no stop line held when it died (the pre-step reads it, the main
+    // boot journals it for the daily summary). Its uptime runs from its own boot, the last entry of restarts.json.
+    if (handed !== undefined) this.#deathMem = handedMem ?? null;
+    else if (this.#journal.previousExit === 'no clean stop') {
+      let bootMs: number | null = null;
+      try {
+        bootMs = restartsFile(c.stateDir).read([]).at(-1)?.at ?? null;
+      } catch {}
+      this.#deathMem = deathMem(c.stateDir, this.#journal.previousMs, bootMs);
+    }
+    if (d.phase === 'reconcile') writeFileSync(handoff, JSON.stringify({ exit: this.#lastExit, at: now, mem: this.#deathMem }));
+    // Restarts in the last 24 h, planned (a runner drill), deploys and unplanned, for the heartbeat and the daily summary.
+    // The pre-step is not a boot of its own: only the main start records one.
+    this.#restartsFile = restartsFile(c.stateDir);
+    let saved: Restart[] = [];
+    try {
+      saved = this.#restartsFile.read([]);
+    } catch {
+      // A damaged count never blocks a boot: it starts again from this boot.
+      d.log('Restart counts unreadable (restarts.json): started again from this boot.');
+    }
+    this.#restarts = saved;
+    if (d.phase !== 'reconcile') {
+      this.#restarts = restartsAfterBoot(saved, now, this.#lastExit, c.gitSha);
+      try {
+        this.#restartsFile.write([...this.#restarts]);
+      } catch {
+        d.log('Restart counts not saved (restarts.json).');
+      }
+    }
     const timing = watchTimingProblem(d.config.watch, d.session.policy.gates.maxQuoteAgeMs, DEFAULT_LIVE_FEED.horizonSlots * SLOT_MS);
     if (timing !== null) throw new RangeError(timing);
     const seed = `paper:${this.#boot}`;
 
     const recRoot = join(c.stateDir, STATE_FILES.recorder);
-    mkdirSync(recRoot, { recursive: true });
-    for (const b of sealLeftovers(recRoot, this.#boot)) d.log(`Recorder: sealed files of boot ${b} left by a stop without a clean stop.`);
-    this.#recorder = c.recorder ? new Recorder({ root: recRoot, boot: this.#boot, gitSha: c.gitSha, rotateBytes: 64 * 1024 * 1024, ...(d.commitments === undefined ? {} : { commitments: d.commitments }) }) : null;
-    const rec = this.#recorder;
-    this.#probe = d.delayProbe === undefined || rec === null ? null : new DelayProbe({ timers: d.timers, confirmed: d.delayProbe.confirmed, via: d.delayProbe.via, everyMs: d.delayProbe.everyMs, record: (row, at) => rec.delay(row, at) });
+    try {
+      mkdirSync(recRoot, { recursive: true });
+      for (const b of sealLeftovers(recRoot, this.#boot)) d.log(`Recorder: sealed files of boot ${b} left by a stop without a clean stop.`);
+      this.#recorder = c.recorder ? new Recorder({ root: recRoot, boot: this.#boot, gitSha: c.gitSha, rotateBytes: 64 * 1024 * 1024, ...(d.commitments === undefined ? {} : { commitments: d.commitments }) }) : null;
+    } catch (e) {
+      if (c.recorder) this.#recorderFailed(e);
+      else d.log(`Recorder: leftovers not sealed: ${errorText(e)}.`);
+    }
+    this.#probe = d.delayProbe === undefined || this.#recorder === null ? null : new DelayProbe({
+      timers: d.timers, confirmed: d.delayProbe.confirmed, via: d.delayProbe.via, everyMs: d.delayProbe.everyMs,
+      record: (row, at) => this.#record((r) => r.delay(row, at)),
+      onError: (e) => d.log(`Delay probe: sample not recorded: ${errorText(e)}.`),
+    });
 
     // RUN-1d: no ledger at all means a cold start (host lost with no backup): what comes back comes from the chain. A
     // paper position is not on chain, so nothing does. Marked until a full start journals its `recovered` line.
@@ -387,7 +585,7 @@ export class Worker {
       onFrame: (f) => this.#onFrame(f),
       onRelease: (e, r) => this.#onRelease(e, r),
     });
-    this.#strategy = new LiveStrategy({ session: d.session, rugs: d.rugs, config: d.strategy, savedState: (ref) => this.savedStateFor(ref), ...(d.markedHistory === undefined ? {} : { markedHistory: d.markedHistory }) });
+    this.#strategy = new LiveStrategy({ session: d.session, rugs: d.rugs, config: d.strategy, savedState: (ref) => this.savedStateFor(ref), ...(d.markedHistory === undefined ? {} : { markedHistory: d.markedHistory }), ...(d.sizeProbe === undefined ? {} : { sizeProbe: d.sizeProbe }) });
     const bookConfig = { maxOpenPositions: d.session.policy.positions.maxOpen };
     const stored = this.#ledger.storedBookEvents(bookConfig);
     // RUN-1c: trades open or in flight when the previous process stopped writing, kept until a full start journals them.
@@ -411,6 +609,9 @@ export class Worker {
       entry_rule: c.strategy.name, qualifying: c.strategy.qualifying, paper_edge_ppm: c.strategy.paperEdgePpm, s0_salt: d.strategy.entryTiming === 'random' ? d.strategy.entrySalt : null,
       s0_diagnostic: d.strategy.s0Diagnostic === true ? S0_DIAGNOSTIC_PARTS : null,
       sell_only: [...this.#sellOnly],
+      // RESTART-CAUSE: the unit's `--reconcile` pre-step is marked, so the daily summary counts real boots only.
+      // The main boot names its restart's kind and how the previous process ended, for the daily summary's counts.
+      ...(d.phase === 'reconcile' ? { phase: 'reconcile' } : { restart: this.#restarts[this.#restarts.length - 1]?.kind ?? null, exit: exitKind(this.#lastExit), ...(this.#lastExit?.startsWith('fatal error (') ? { crash_site: this.#lastExit.slice('fatal error ('.length, -1) } : {}), ...(this.#deathMem === null ? {} : { death_mem: this.#deathMem }) }),
     });
     if (this.#journal.repaired) this.#journal.write('journal_repair', { detail: 'torn last line removed' });
     if (this.#sellOnly.length > 0) {
@@ -445,16 +646,22 @@ export class Worker {
       file: new StateFile<PaperState>(c.stateDir, 'paper.json', (v) => (isObj(v) && isObj(v['attempts']) ? (v as unknown as PaperState) : null)),
       changed: () => this.#writeOpenIntents(),
       // A landed failure paid its fee (PAPER-1, M4): the account settles it and risk sees the new snapshot.
-      landedFailed: () => {
-        if (this.#settle()) this.#publishAccount();
+      landedFailed: (a) => {
+        // Its trade may have closed already (PAPER-2): that trade is settled again with this fee.
+        const late = this.#account.resettle(this.#desk.book, a.trade, this.#legs(), this.#d.timers.now());
+        if (this.#settle() || late) this.#publishAccount();
       },
     });
     // FACTS-1b: the engine reads through core's FactFeed (engine-feed.ts); a replay of the recording uses the same.
     this.#facts = engineFeed(this.#feed, d.session.policy, (e) => {
       if (e.key.startsWith(POOL_PREFIX)) this.#setPool(e.key.slice(POOL_PREFIX.length), e.value);
+      else if (e.key.startsWith(CARRY_PREFIX)) {
+        const carry = parseCarryFact(e.value);
+        if (carry !== null) this.#carries.set(e.key.slice(CARRY_PREFIX.length), { carry, releasedAt: d.timers.now() });
+      }
       if (e.key === GRADUATES_SEED_KEY) this.#graduatesSeed(e.value);
     });
-    this.#engine = new Engine({ clock: this.#feed.clock, feed: this.#facts.feed, strategy: this.#strategy, runner: this.#world, seed, book: bookConfig });
+    this.#engine = new Engine({ clock: this.#feed.clock, feed: this.#facts.feed, strategy: this.#strategy, runner: this.#world, seed, book: bookConfig, retention: liveRetention, collapse: liveCollapse, shape: liveShape, forget: liveForget });
     this.#deployerStore = new DeployerStore(c.stateDir);
     const storeFrom = now - (d.session.policy.gates.deployerRugLookbackDays + 1) * 86_400_000;
     // PERSIST-1: the saved index, labeller and coverage, when the file holds up (else a fresh start: not covered).
@@ -496,10 +703,27 @@ export class Worker {
     ring.length = 0;
     if (this.#saved.refused !== undefined) d.log(`Deployer store not seeded (${this.#saved.refused}): H14 is not covered until the look-back passes.`);
     let graduates: SavedGraduates | null = null;
+    let candidates: readonly SavedCandidateState[] = [];
+    let tails: readonly SavedTail[] = [];
     if (restored.ok) {
       graduates = restored.graduates;
+      // RESTART-KEEP: the saved candidates go back to the strategy with the restore fact; their transactions are read
+      // again once the sources are up, and the migrations of the downtime are looked up from the saved slot.
+      candidates = restored.candidates;
+      tails = restored.tails;
+      this.#downtimeFrom = restored.asOf.slot;
+      for (const c of candidates) {
+        for (const [k, map] of [['create', this.#createSig], ['complete', this.#completeSig], ['migration', this.#migrationSig]] as const) {
+          const sig = c.signatures[k];
+          if (sig !== null && !map.has(c.mint)) map.set(c.mint, sig);
+        }
+      }
       const ref: SavedStateRef = { file: PERSIST_FILE, sha256: fileSha256(loadFrom), version: restored.version };
-      if (loadFrom !== statePath) this.#recorder?.attach(PERSIST_FILE, ref.sha256, statSync(loadFrom).size);
+      if (loadFrom !== statePath) {
+        const bytes = statSync(loadFrom).size;
+        this.#record((r) => r.attach(PERSIST_FILE, ref.sha256, bytes));
+        this.#unpacked = { path: loadFrom, sha256: ref.sha256, bytes };
+      }
       this.#restored = { asOf: restored.asOf, ref };
       this.#handoff = { ref, index: restored.index, labeller: restored.labeller };
       this.#saved = { creates: [], rugs: [], coverage: restored.coverage, last: { slot: restored.asOf.slot, ms: restored.asOf.receivedAt } };
@@ -532,6 +756,8 @@ export class Worker {
         this.#checkHalt(this.#d.timers.now());
       },
       reserved: (r) => this.#account.reserved(r.mint, r.atMs),
+      // The recorder fault refuses entries from the moment it is found, ahead of its halt fact (WORKER-CRASH review B1).
+      entriesBlocked: () => this.#recorderFault,
       filled: (r) => {
         // A fill re-booked from its held journal line carries that line's rate (PAPER-1); otherwise the price now.
         this.#account.filled(r, r.solUsd !== undefined ? r.solUsd : this.#solPrice, this.#legs());
@@ -541,6 +767,8 @@ export class Worker {
     // WORKER-ORDER: fills the ledger holds that account.json missed (a kill between the two), caught up at the first price.
     this.#accountBehind = this.#account.behind(stored.book);
     // The stored book goes back to the engine as world frames (recorded, so a replay rebuilds the same book).
+    // PAPER-2: exits' trigger reasons survive the restart (a late stop still counts as a stop).
+    this.#desk.rebuild(stored.events, bookConfig);
     for (const e of stored.events) this.#desk.written(this.#report(e));
     // The worker's own start facts are dated 1 ms after the last restored frame, so every restored event sorts before
     // them whatever the clock's resolution: the engine rebuilds the stored book before the strategy sees anything and
@@ -558,7 +786,7 @@ export class Worker {
     // The saved exit plans come first, alone in their millisecond: the strategy manages positions on any market event,
     // and on the halt fact (which sorted first by id at a tie) it built fresh plans and trackers from the fills and
     // decided exits with them, before the saved ones arrived. The halt and the restart follow 1 ms later.
-    this.#fact(RESTORE_KEY, { exits: this.#exitsFile.read({}), openedAt, bookedWhen, seeds: this.#seedsFile.read({}) }, startAt);
+    this.#fact(RESTORE_KEY, { exits: this.#exitsFile.read({}), openedAt, bookedWhen, seeds: this.#seedsFile.read({}), candidates, tails }, startAt);
     // PERSIST-2: the saved graduates series goes to the producer as a raw read (recorded, so a replay rebuilds it), so
     // the regime's survival check keeps its 15 days across a restart.
     if (graduates !== null) this.#feed.ingest('worker', { type: 'offchain', key: RAW.graduatesSeed, value: { source: 'persist', ...graduates } }, { receivedAt: startAt });
@@ -622,6 +850,107 @@ export class Worker {
     this.#feed.ingest('worker', { type: 'fact', key, value }, { receivedAt: atMs });
   }
 
+  /**
+   * G4c: the recording's saved-state copy is packed (about a ninth of its size) once the restore has read it; the seed's
+   * sha256 stays that of the plain bytes, which the packed file is checked to decompress to. A failure keeps the plain
+   * copy (the boot stays replayable) and is logged.
+   */
+  async #packCopy(): Promise<void> {
+    const c = this.#unpacked;
+    if (c === null) return;
+    this.#unpacked = null;
+    // STATE-DEDUPE: each distinct saved state is kept once, packed, in `recorder/saved-state/<sha256>.zst`; a boot that
+    // restored the same bytes (every boot of a restart loop shorter than a save) gets a hard link to it, never a copy.
+    const shared = join(this.#d.config.stateDir, STATE_FILES.recorder, SAVED_STATES, `${c.sha256}.zst`);
+    const own = `${c.path}.zst`;
+    try {
+      if (existsSync(shared)) {
+        // Linked only once the stored file is checked to decompress to exactly the bytes this boot restored.
+        const held = await zstdContentHash(shared);
+        if (held.sha256 === c.sha256 && held.bytes === c.bytes) {
+          linkSync(shared, own);
+          rmSync(c.path);
+          this.#record((r) => r.packed(PERSIST_FILE, { sha256: fileSha256(shared), bytes: statSync(shared).size }, { sha256: c.sha256, bytes: c.bytes }));
+          return;
+        }
+        this.#d.log(`Recorder: the stored saved state ${c.sha256} decompresses to sha256 ${held.sha256}; this boot packs its own copy.`);
+      }
+      const p = await (this.#d.pack ?? packFile)(c.path, { sha256: c.sha256, bytes: c.bytes });
+      this.#record((r) => r.packed(PERSIST_FILE, p.packed, p.content));
+      if (!existsSync(shared)) {
+        try {
+          mkdirSync(join(shared, '..'), { recursive: true });
+          linkSync(own, shared);
+        } catch (e) {
+          this.#d.log(`Recorder: the packed saved state was not stored for later boots (${e instanceof Error ? e.message : 'error'}).`);
+        }
+      }
+    } catch (e) {
+      this.#d.log(`Recorder: the saved-state copy was kept unpacked (${e instanceof Error ? e.message : 'error'}).`);
+    }
+  }
+
+  /**
+   * A refused API command, journaled; at most COMMAND_LINES_PER_MINUTE lines a minute, so a client on the tailnet cannot
+   * grow the journal without bound. The refusals past that are counted on one line when the next minute's first comes.
+   */
+  #commandRefused(command: string, auth: string | null): void {
+    const now = this.#d.timers.now();
+    const r = this.#refusals;
+    if (now - r.since >= 60_000) {
+      this.#countRefusals();
+      r.since = now;
+      r.written = 0;
+    }
+    if (r.written >= COMMAND_LINES_PER_MINUTE) {
+      r.dropped++;
+      return;
+    }
+    r.written++;
+    this.#journal.write('decision', { action: 'command_refused', reasons: [`command ${command.slice(0, 32)} refused`, auth === null ? 'unknown command' : `needs ${auth}`] });
+  }
+
+  /** The refusals counted but not journaled, on one line; also at the heartbeat once the minute is over (a flood that stopped). */
+  #countRefusals(): void {
+    const r = this.#refusals;
+    if (r.dropped === 0) return;
+    this.#journal.write('decision', { action: 'command_refused', reasons: [`${r.dropped} more commands refused`, `not journaled one by one (over ${COMMAND_LINES_PER_MINUTE} a minute)`] });
+    r.dropped = 0;
+  }
+
+  /** Every recorder write goes through here: a throw (ENOSPC) is the recorder's fault, never the caller's crash. */
+  #record(write: (r: Recorder) => void): void {
+    const r = this.#recorder;
+    if (r === null || this.#recorderFault !== null) return;
+    try {
+      write(r);
+    } catch (e) {
+      this.#recorderFailed(e);
+    }
+  }
+
+  /**
+   * The recorder failed: it records nothing more in this process (its open files are sealed by the next start), entries
+   * halt with the reason from the next step on, and the critical alert goes up in /health and the heartbeat. It does not
+   * ingest or halt here: it can run inside the feed's ingest.
+   */
+  #recorderFailed(e: unknown): void {
+    if (this.#recorderFault !== null) return;
+    const code = isObj(e) && typeof e['code'] === 'string' ? e['code'] : e instanceof Error ? e.name : 'error';
+    this.#recorderFault = `recorder failed (${code}): recording stopped, entries off until a restart`;
+    this.#d.log(`Recorder failed: ${errorText(e)}. Recording stopped; entries halt, exits go on.`);
+    try {
+      this.#journal.write('alert', { level: 'critical', code: 'recorder_failed', reasons: [this.#recorderFault, errorText(e)] });
+    } catch (j) {
+      this.#d.log(`Journal: the recorder alert was not written: ${errorText(j)}.`);
+    }
+  }
+
+  /** Resolves once the recording's saved-state copy is packed (or there was none to pack). */
+  whenPacked(): Promise<void> {
+    return this.#packing ?? Promise.resolve();
+  }
+
   /** The strategy's `savedState`: the restored index and labeller, once, only for the seed that names exactly them. */
   savedStateFor(ref: SavedStateRef): { readonly index: DeployerIndex; readonly labeller: RugLabeller } {
     const h = this.#handoff;
@@ -631,7 +960,7 @@ export class Worker {
   }
 
   #onFrame(f: Frame): void {
-    this.#recorder?.frame(f);
+    this.#record((r) => r.frame(f));
     this.#probe?.frame(f);
     for (const s of this.#feeds.values()) if (s.src.sources.includes(f.source)) s.last = f.receivedAt;
     const b = f.body;
@@ -650,20 +979,24 @@ export class Worker {
         this.#liveStartAt = { slot: f.place.slot, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt: f.receivedAt };
       }
     }
-    if ((b.type === 'offchain' || b.type === 'fact') && /^coverage:.+:gap$/.test(b.key)) this.#recorder?.gap({ key: b.key, value: isObj(b.value) ? b.value : null, receivedAt: f.receivedAt });
+    if ((b.type === 'offchain' || b.type === 'fact') && /^coverage:.+:gap$/.test(b.key)) this.#record((r) => r.gap({ key: b.key, value: isObj(b.value) ? b.value : null, receivedAt: f.receivedAt }));
     if (b.type === 'offchain' || b.type === 'fact') this.#coverageJournal.fact(b.key, b.value, f.receivedAt);
   }
 
   #onRelease(e: { readonly kind: string; readonly key?: string; readonly value?: unknown; readonly moment: { readonly receivedAt: number } }, r: Release): void {
-    this.#recorder?.release(r, e.moment.receivedAt);
+    this.#record((rec) => rec.release(r, e.moment.receivedAt));
     if (e.kind !== 'market') return;
     const m = e as unknown as MarketEvent;
     // The deployer index's inputs and the creates/rugs coverage, kept across restarts (SEED-1 ruling).
     if (!r.late) this.#deployerStore.keep(m);
     // A late slot notice is refused by the engine (out of order): the paper height follows only accepted ones.
-    if (m.key === 'chain:slot' && !r.late && isObj(m.value) && typeof m.value['slot'] === 'bigint' && (this.#lastSlot === null || m.value['slot'] > this.#lastSlot)) this.#lastSlot = m.value['slot'];
+    if (m.key === 'chain:slot' && !r.late && isObj(m.value) && typeof m.value['slot'] === 'bigint' && (this.#lastSlot === null || m.value['slot'] > this.#lastSlot)) {
+      this.#lastSlot = m.value['slot'];
+      this.#lastSlotAt = this.#d.timers.now();
+    }
     else if (m.key.startsWith(POOL_PREFIX)) this.#setPool(m.key.slice(POOL_PREFIX.length), m.value);
-    else if (m.key.startsWith('worker:fees:')) this.#fees.set(m.key.slice('worker:fees:'.length), m.value as PoolFeeContext);
+    // An off-chain frame (the batch's FEE-TIER-NOW read) arrives wrapped; a worker fact does not.
+    else if (m.key.startsWith('worker:fees:')) this.#fees.set(m.key.slice('worker:fees:'.length), unwrap(m.value) as PoolFeeContext);
     else if (m.key.startsWith(SNAPSHOT_PREFIX)) {
       const snap = parseSnapshotFact(m.value);
       if (snap !== null) this.#snapshots.set(m.key.slice(SNAPSHOT_PREFIX.length), snap);
@@ -692,16 +1025,15 @@ export class Worker {
     if (m.key.startsWith('logs:pump:CreateEvent:') && isObj(m.value) && isObj(m.value['event']) && isObj(m.value['event']['data'])) {
       const sym = m.value['event']['data']['symbol'];
       if (typeof sym === 'string' && sym.trim() !== '') {
-        this.#symbols.set(m.key.slice('logs:pump:CreateEvent:'.length), sym.trim().slice(0, 32));
-        if (this.#symbols.size > 200_000) this.#symbols.delete(this.#symbols.keys().next().value!);
+        this.#symbols.set(flat(m.key.slice('logs:pump:CreateEvent:'.length)), flat(sym.trim().slice(0, 32)));
       }
     }
     if (m.key.startsWith('logs:pump:CreateEvent:') && isObj(m.value) && typeof m.value['signature'] === 'string') this.#noteCreateSig(m.key.slice('logs:pump:CreateEvent:'.length), m.value['signature']);
+    this.#noteSignature(m);
   }
 
   #noteCreateSig(mint: string, signature: string): void {
-    this.#createSig.set(mint, signature);
-    if (this.#createSig.size > (this.#d.createSigsMax ?? CREATE_SIGS_MAX)) this.#createSig.delete(this.#createSig.keys().next().value!);
+    this.#createSig.set(flat(mint), flat(signature));
   }
 
   /**
@@ -716,11 +1048,100 @@ export class Worker {
     }
   }
 
+  /** RESTART-KEEP: each restored candidate's migration, curve completion and create, read again at confirmed. */
+  #readRestored(): void {
+    for (const mint of this.#restoredMints.splice(0)) {
+      const sigs = [this.#migrationSig.get(mint), this.#completeSig.get(mint)];
+      for (const sig of sigs) if (sig !== undefined) void this.#d.fetchTx(sig, 'restore');
+      // The create: fetched again by its saved signature, or looked up from the mint's oldest transaction (SEED-2).
+      this.#createFor(mint);
+      if (sigs[0] === undefined) this.#d.log(`Restored candidate ${mint}: its migration was not seen; H9 waits for it.`);
+    }
+  }
+
+  /**
+   * RESTART-KEEP: the migrations of the downtime, from the migration authority's signatures after the saved slot up
+   * to the head seen now (the live watch, started before, covers the rest; the feed drops what both read). Each
+   * transaction goes on the feed at confirmed, as the live watch's fetch would put it, so the producer and the strategy
+   * find those candidates as they would live. A curve completion in its own transaction is read from the curve.
+   * Charged to the fill budget; a partial read is logged and the coins it missed are not candidates.
+   */
+  async #downtimeMigrations(): Promise<void> {
+    const rr = this.#d.restartReads;
+    const from = this.#downtimeFrom;
+    if (rr === undefined || from === null) return;
+    for (let i = 0; this.#lastSlot === null && i < 100 && !this.#stopping; i++) await new Promise<void>((r) => this.#d.timers.setTimeout(r, 200));
+    const until = this.#lastSlot;
+    if (until === null || until <= from) {
+      this.#d.log(`Downtime migrations not read: ${until === null ? 'no slot seen' : 'no downtime'}.`);
+      return;
+    }
+    const now = this.#d.timers.now();
+    const cap = Math.min(DOWNTIME_CREDIT_CAP, rr.budget.remaining(now));
+    rr.budget.spend(cap, now);
+    let used = 0;
+    try {
+      const res = await backfillAddress({ rpc: rr.rpc, timers: this.#d.timers, afterSlot: from, untilSlot: until, creditCap: cap, provider: 'helius', address: PUMP_MIGRATION_AUTHORITY, priority: P2, accept: () => [] });
+      used = res.creditsUsed;
+      let migrations = 0;
+      for (const record of res.records) {
+        this.#feed.ingest('helius', { type: 'tx', record }, { receivedAt: this.#d.timers.now(), backfilled: true, lookup: true });
+        const evs = transactionEvents(record);
+        const m = evs.find((e) => e.name === 'CompletePumpAmmMigrationEvent');
+        if (m === undefined) continue;
+        migrations++;
+        if (!evs.some((e) => e.name === 'CompleteEvent') && 'bondingCurve' in m.data) used += await this.#readCompletion(rr, String(m.data.bondingCurve), record.signature, cap - used);
+      }
+      this.#d.log(`Downtime migrations: ${migrations} from slot ${from + 1n} to ${until}, ${used} credits, ${res.stoppedBy}${res.gaps.length > 0 ? `, ${res.gaps.length} unread` : ''}.`);
+    } finally {
+      rr.budget.refund(Math.max(0, cap - used), this.#d.timers.now());
+    }
+  }
+
+  /** The curve's completing transaction just before its migration (after it nothing trades on the curve): 1 page. */
+  async #readCompletion(rr: NonNullable<WorkerDeps['restartReads']>, curve: string, migration: string, credits: number): Promise<number> {
+    const cost = callCost('helius', 'getSignaturesForAddress');
+    if (credits < cost + COMPLETION_READS * callCost('helius', 'getTransaction')) return 0;
+    let used = cost;
+    try {
+      const sigs = await rr.rpc.getSignaturesForAddress(curve, { before: migration, limit: COMPLETION_READS }, P2);
+      for (const x of sigs) {
+        if (x.err !== null) continue;
+        used += callCost('helius', 'getTransaction');
+        const record = await rr.rpc.getTransaction(x.signature, P2);
+        if (record === null) continue;
+        this.#feed.ingest('helius', { type: 'tx', record }, { receivedAt: this.#d.timers.now(), backfilled: true, lookup: true });
+        if (transactionEvents(record).some((e) => e.name === 'CompleteEvent')) break;
+      }
+    } catch (e) {
+      this.#d.log(`Curve completion of ${curve} not read: ${e instanceof Error ? e.message : 'error'}.`);
+    }
+    return used;
+  }
+
+  /**
+   * RESTART-KEEP: the transactions a candidate's gate facts come from (its curve completion and its migration, from a
+   * log or a fetched transaction; a fetched create too), so the saved state can name them for a restart to read again.
+   */
+  #noteSignature(m: MarketEvent): void {
+    const tx = /^ev:([^:]+):/.exec(m.id);
+    const at = /^(?:logs:)?pump:(CreateEvent|CompleteEvent|CompletePumpAmmMigrationEvent):(.+)$/.exec(m.key);
+    if (at === null) return;
+    const sig = tx !== null && !m.key.startsWith('logs:') ? tx[1]! : isObj(m.value) && typeof m.value['signature'] === 'string' ? m.value['signature'] : null;
+    if (sig === null) return;
+    const map = at[1] === 'CreateEvent' ? this.#createSig : at[1] === 'CompleteEvent' ? this.#completeSig : this.#migrationSig;
+    if (map === this.#createSig && m.key.startsWith('logs:')) return;
+    // The first seen wins; each map forgets its oldest past its cap in O(1).
+    if (!map.has(at[2]!)) map.set(flat(at[2]!), flat(sig));
+  }
+
   /**
    * A shortlisted mint's create: read by its signature when one is known; held while the seed is built (its downtime
    * fill may bring it); else looked up once from the mint's oldest signature. A lookup that fails leaves it missing.
    */
   #createFor(mint: string): void {
+    // OOM-MINT: a coin whose create was let go is refused `create-expired`: reading its create again would spend for nothing.
+    if (this.#strategy.createExpired(mint)) return;
     const sig = this.#createSig.get(mint);
     if (sig !== undefined) return void this.#d.fetchTx(sig, 'create');
     if (this.#seeding) return void this.#createPending.push(mint);
@@ -773,17 +1194,24 @@ export class Worker {
     this.#poolReleasedAt.set(mint, this.#d.timers.now());
   }
 
+  /** The mint's newest whole market by the strategy's own rule (`chooseMarket`). */
+  #choice(mint: string): MarketChoice {
+    return chooseMarket(parsePool(this.#pools.get(mint)), this.#snapshots.get(mint) ?? null, this.#carries.get(mint)?.carry ?? null);
+  }
+
   /**
    * The moment WATCH-1 judges a held mint's market by (null: no market). A pool fact from the feed counts from its
-   * release: a healthy feed releases one every slot, already up to the horizon old by design, so judging it by receipt
-   * would read the second path all the time. WATCH-1's own snapshot counts from its read, as its age bound needs.
+   * release, or from its latest carry's release while a carry proves it unchanged (WATCH-1c): a live feed releases
+   * facts already up to the horizon old by design, so judging them by receipt would read the second path all the time.
+   * WATCH-1's own snapshot counts from its read, as its age bound needs.
    */
   #watchMarketAt(mint: string): number | null {
-    const p = parsePool(this.#pools.get(mint));
-    const snap = this.#snapshots.get(mint);
-    if (snap !== undefined && snapshotWins(snap, p === null ? null : p.obs)) return snap.atMs;
-    if (this.poolOf(mint) === null) return null;
-    return this.#poolReleasedAt.get(mint) ?? null;
+    const c = this.#choice(mint);
+    if (c.kind === 'snapshot') return c.snap.atMs;
+    if (c.kind !== 'pool') return null;
+    const released = c.carried ? this.#carries.get(mint)!.releasedAt : this.#poolReleasedAt.get(mint) ?? null;
+    // A confirming snapshot counts from its read, like any snapshot.
+    return c.confirmedAtMs === null ? released : Math.max(released ?? c.confirmedAtMs, c.confirmedAtMs);
   }
 
   /**
@@ -799,13 +1227,15 @@ export class Worker {
   }
 
   poolOf(mint: string): { readonly address: string; readonly state: PaperMarket['pool']; readonly ctx: PoolFeeContext; readonly atMs: number } | null {
-    const p = parsePool(this.#pools.get(mint));
-    const snap = this.#snapshots.get(mint);
-    if (snap !== undefined && snapshotWins(snap, p === null ? null : p.obs)) return { address: snap.pool, state: snap.state, ctx: snap.ctx, atMs: snap.atMs };
-    if (p === null || flagged(p)) return null;
-    const ctx = this.#fees.get(mint) ?? this.#strategy.observedFees(mint);
-    if (p === null || ctx === undefined) return null;
-    return { address: p.address, state: { baseReserve: p.baseVault, quoteVault: p.quoteVault, virtualQuoteReserves: p.pool.virtualQuoteReserves ?? 0n }, ctx, atMs: p.obs.receivedAt };
+    const c = this.#choice(mint);
+    if (c.kind === 'snapshot') return { address: c.snap.pool, state: c.snap.state, ctx: c.snap.ctx, atMs: c.snap.atMs };
+    if (c.kind !== 'pool') return null;
+    const p = c.pool;
+    const state = { baseReserve: p.baseVault, quoteVault: p.quoteVault, virtualQuoteReserves: p.pool.virtualQuoteReserves ?? 0n };
+    // FEES-KEEP: restored fee terms price only the pool their swap left.
+    const ctx = this.#fees.get(mint) ?? this.#strategy.observedFees(mint, state);
+    if (ctx === undefined) return null;
+    return { address: p.address, state, ctx, atMs: c.atMs };
   }
 
   /**
@@ -862,13 +1292,36 @@ export class Worker {
     }
   }
 
+  /**
+   * BEHIND: past SHED_HELD_FRAMES held frames, the trade streams of watched pools no position holds are shed, and each
+   * shed range is a coverage gap (reason `shed`), so a candidate on it fails closed. A held pool is never shed.
+   */
+  #shedOver(): void {
+    if (this.#feed.heldFrames <= SHED_HELD_FRAMES) return;
+    const pools = this.#strategy.watchedPools();
+    const shed = this.#feed.shed((via) => {
+      if (!via.startsWith('logs:')) return false;
+      const p = pools.get(via.slice('logs:'.length));
+      return p !== undefined && !p.held && !this.#strategy.committed(p.mint);
+    });
+    for (const [via, r] of shed) {
+      const pool = via.slice('logs:'.length);
+      // As the stream's own watch reports a gap (solana-ws `#coverageGap`), but placed first in the range's first slot
+      // (facts review B1): released before any event of the range, so H11 refuses the pool as not covered from its first
+      // shed slot on, live and in the recording's replay alike.
+      this.#feed.ingest('worker', { type: 'offchain', key: `coverage:${tradesStream(pool)}:gap`, value: { fromSlot: r.fromSlot, toSlot: r.toSlot, reason: 'shed', via } }, { receivedAt: this.#d.timers.now(), firstIn: r.fromSlot });
+    }
+    if (shed.size > 0) this.#d.log(`Behind: the feed held over ${SHED_HELD_FRAMES} frames; shed ${shed.size} candidate pools' trade streams (coverage gaps, entries there refused).`);
+  }
+
   /** One engine step: release what is due, decide, record, write. */
   step(): void {
     const now = this.#d.timers.now();
-    this.#recorder?.flush();
+    this.#record((r) => r.flush());
+    this.#shedOver();
     this.#feed.advance(now);
     this.#engine.drain();
-    this.#recorder?.flush();
+    this.#record((r) => r.flush());
     this.#watchOpened();
     // Entry decisions' plan inputs reach disk before the desk books anything this step decided (EXIT-1h, the same order
     // as WORKER-ORDER: the durable record first, then the ledger), so an entry that fills is never without its plan.
@@ -907,6 +1360,15 @@ export class Worker {
    */
   #persist(now: number): boolean {
     this.#lastSaveMs = now;
+    this.#markSave(true);
+    try {
+      return this.#persistNow(now);
+    } finally {
+      this.#markSave(false);
+    }
+  }
+
+  #persistNow(now: number): boolean {
     const lookback = (this.#d.session.policy.gates.deployerRugLookbackDays + 1) * 86_400_000;
     let state: ReturnType<LiveStrategy['persistable']>;
     try {
@@ -921,7 +1383,9 @@ export class Worker {
       return false;
     }
     try {
-      saveState(join(this.#d.config.stateDir, PERSIST_FILE), state.state, { mintRows: state.mintRows });
+      // RESTART-KEEP: each candidate with the transactions a restart reads again for its gate facts.
+      const candidates = state.state.candidates.map((c) => ({ ...c, signatures: { create: this.#createSig.get(c.mint) ?? null, complete: this.#completeSig.get(c.mint) ?? null, migration: this.#migrationSig.get(c.mint) ?? null } }));
+      saveState(join(this.#d.config.stateDir, PERSIST_FILE), { ...state.state, candidates }, { mintRows: state.mintRows });
       return true;
     } catch (e) {
       this.#d.log(`Saved state not written: ${e instanceof Error ? e.message : 'error'}.`);
@@ -1025,6 +1489,7 @@ export class Worker {
       const mint = r.reasons[2];
       if (mint !== undefined) this.#createFor(mint);
     }
+    if (r.reasons[0] === CANDIDATE_RESTORED && r.reasons[2] !== undefined) this.#restoredMints.push(r.reasons[2]);
     const trips = r.reasons.filter((x) => x.startsWith(TRIP_PREFIX)).map((x) => x.slice(TRIP_PREFIX.length));
     if (trips.length > 0) this.#latch(trips, r.at.receivedAt);
     if (r.action?.type === 'propose_entry') this.#intentAt.set(r.action.intent.id, r.at.receivedAt);
@@ -1076,7 +1541,7 @@ export class Worker {
       connected: this.#reconciled && [...this.#feeds.values()].some((f) => f.connected), halted: this.#halted, paused: this.#ctl.paused,
       exitCapable: this.#exitCapable(d.timers.now()), budgetHalted: (d.ops?.().quota ?? []).filter((q) => q.halted).map((q) => q.provider),
       alerts: [...this.#alerts], regime: this.#strategy.regime(), regimeMaxAgeMs: 2 * d.strategy.evaluateEveryMs, stops: this.#strategy.riskStops(),
-      book: this.#engine.book, trades: this.#account.state.trades, attempts: this.#world.attempts, legs: this.#legs(), decisions: this.#rows, funnel: this.#funnel,
+      book: this.#engine.book, trades: this.#account.state.trades, accountCosts: this.#account.costRecords(), attempts: this.#world.attempts, legs: this.#legs(), decisions: this.#rows, funnel: this.#funnel,
       exitFee: attemptFee(d.network, BigInt(d.session.policy.exits.ladder.steps[0]?.priorityFeeLamports ?? 0), 'filled'),
       solPrice: this.#solPrice, symbol: (mint) => this.#symbols.get(mint) ?? `${mint.slice(0, 4)}…`, waitingExits: this.#strategy.waitingExits(),
       discovered: [...this.#strategy.candidates()].map(([mint, c]) => {
@@ -1105,7 +1570,11 @@ export class Worker {
     if (this.#ctl.paused) reasons.push('owner pause (watchdog)');
     // A position entered now could lose its price with no second path to read it (review of #87): entries stop.
     if (this.#d.watchRead === undefined || this.#d.watchHalted?.() === true) reasons.push(SECOND_PATH_UNAVAILABLE);
+    // HELIUS-EXHAUSTED: no entry is judged while Helius refuses for credits; named, never an evidence refusal.
+    if (this.#d.heliusExhaustion?.().exhausted === true) reasons.push(HELIUS_EXHAUSTED);
     if (this.#seeding) reasons.push(SEEDING);
+    if (this.#behind.behind) reasons.push(BEHIND);
+    if (this.#recorderFault !== null) reasons.push(this.#recorderFault);
     if (Object.keys(this.#desk.book.positions).some((id) => lateFillOf(id) !== null)) reasons.push(LATE_BUY);
     reasons.push(...this.#diverged, ...this.#sellOnly);
     const same = reasons.length === this.#halted.length && reasons.every((x, k) => x === this.#halted[k]);
@@ -1126,7 +1595,7 @@ export class Worker {
     // restart's status reads first.
     const asked = new Set<string>();
     for (;;) {
-      if (this.#stopping) return { ok: false, code: EXIT.clean, message: 'stopped during the start reconcile' };
+      if (this.#stopping) return { ok: false, code: this.#stopCode, message: 'stopped during the start reconcile' };
       this.step();
       const book = this.#engine.book;
       for (const i of Object.values(book.intents)) {
@@ -1171,6 +1640,9 @@ export class Worker {
     const d = this.#d;
     const r = await this.reconcile();
     if (!r.ok) return r;
+    // Packing the recording's saved-state copy is housekeeping: it runs beside the start, never ahead of the feeds (its
+    // disk time would delay them, by however long the disk takes). A stop waits for it before the recorder closes.
+    this.#packing = this.#packCopy();
     this.#journalRecovered();
     // Entries wait for the seed; this halt is released ahead of every live event, so the index waits with them.
     this.#seeding = true;
@@ -1186,9 +1658,7 @@ export class Worker {
       return { ok: false, code: EXIT.crash, message: `health server: ${e instanceof Error ? e.message : 'error'}` };
     }
     try {
-      this.#api = await startApiServer(d.config.api.host, d.config.api.port, () => this.apiInputs(), (command, auth) => {
-        this.#journal.write('decision', { action: 'command_refused', reasons: [`command ${command} refused`, auth === null ? 'unknown command' : `needs ${auth}`] });
-      });
+      this.#api = await startApiServer(d.config.api.host, d.config.api.port, () => this.apiInputs(), (command, auth) => this.#commandRefused(command, auth));
     } catch (e) {
       return { ok: false, code: EXIT.crash, message: `API server: ${e instanceof Error ? e.message : 'error'}` };
     }
@@ -1210,12 +1680,20 @@ export class Worker {
     }
     const loop = (): void => {
       if (this.#stopping) return;
+      // BEHIND: a cycle far over its interval means inputs waited that long unread; entries halt until it keeps up (the
+      // step's own halt check applies it).
+      const change = this.#behind.cycle((d.loopClock ?? (() => performance.now()))(), d.loopMs);
+      if (change !== null) {
+        d.log(change.behind
+          ? `Behind: a loop cycle ran ${(change.lateMs / 1000).toFixed(1)} s over its interval; new entries halt, exits run.`
+          : 'Caught up: every loop cycle on time for 30 s; entries resume once nothing else halts them.');
+      }
       try {
         this.step();
       } catch (e) {
         d.log(`Engine step failed: ${e instanceof Error ? `${e.name}: ${e.message}` : 'error'}`);
         process.exitCode = EXIT.crash;
-        void this.stop(EXIT.crash);
+        void this.stop(EXIT.crash, crashSite(e, this.#engine.lastHandled));
         return;
       }
       this.#loop = d.timers.setTimeout(loop, d.loopMs);
@@ -1228,6 +1706,8 @@ export class Worker {
       });
     };
     beat();
+    this.#loopDelay.enable();
+    this.#traceMem();
     this.#startSummary();
     // The loop already runs (exits never wait for the seed); entries resume once the seed is placed or given up.
     try {
@@ -1240,7 +1720,11 @@ export class Worker {
       for (const mint of pending) this.#createFor(mint);
       this.#checkHalt(d.timers.now());
     }
-    if (this.#stopping) return { ok: false, code: EXIT.clean, message: 'stopped during the start' };
+    // RESTART-KEEP: after the seed (whose fill reserves the shared budget while it runs), in the background.
+    this.#readRestored();
+    void this.#downtimeMigrations().catch((e: unknown) => d.log(`Downtime migrations not read: ${e instanceof Error ? e.message : 'error'}.`));
+    // A loop crash during the seed stopped the worker with the crash code: the start reports that code, never 0.
+    if (this.#stopping) return { ok: false, code: this.#stopCode, message: 'stopped during the start' };
     d.log(`Worker up: boot ${this.#boot}, release ${d.config.gitSha.slice(0, 12)}, recorder ${d.config.recorder ? 'on' : 'off'}, simulation ${d.config.simulate ? 'on' : 'off'}, ${this.#sources.length} feeds.`);
     return { ok: true };
   }
@@ -1256,6 +1740,9 @@ export class Worker {
     this.#observing = true;
     const r = await this.reconcile();
     if (!r.ok) return r;
+    // Packing the recording's saved-state copy is housekeeping: it runs beside the start, never ahead of the feeds (its
+    // disk time would delay them, by however long the disk takes). A stop waits for it before the recorder closes.
+    this.#packing = this.#packCopy();
     this.#journalRecovered();
     this.#sources = d.sources({ feed: this.#feed, timers: d.timers, pools: () => new Map() });
     for (const s of this.#sources) this.#feeds.set(s.name, { src: s, connected: false, last: null, droppedUntil: 0 });
@@ -1333,7 +1820,8 @@ export class Worker {
       coverage: order(coverage.filter((e) => e.key.startsWith('coverage:creates:') && compareMoments(e.moment, asOf) <= 0)),
       fill: order(result.mode === 'fill' ? result.creates : []),
       rugs: order(saved.rugs), asOf,
-      history: coverage.map((e, k) => ({ ...e, id: `${e.id}#pre${k}`, moment: { ...pos(1 + k), receivedAt: e.moment.receivedAt } })),
+      // WORKER-1d: a saved fact already carries an earlier boot's `#pre<k>`; it is replaced, not stacked, so ids stay short.
+      history: coverage.map((e, k) => ({ ...e, id: `${e.id.replace(/(#pre\d+)+$/, '')}#pre${k}`, moment: { ...pos(1 + k), receivedAt: e.moment.receivedAt } })),
     });
     // The restored index is in the seed now (and the strategy's index): this copy is released (WORKER-GROW).
     this.#restored = null;
@@ -1439,7 +1927,7 @@ export class Worker {
   #positionWatch(): PositionWatch {
     const d = this.#d;
     return new PositionWatch({
-      timers: d.timers, everyMs: d.config.watch.everyMs, staleMs: d.config.watch.staleMs, latencyMs: d.config.watch.latencyMs,
+      timers: d.timers, everyMs: d.config.watch.everyMs, staleMs: d.config.watch.staleMs, latencyMs: d.config.watch.latencyMs, verifyMs: d.config.watch.verifyMs,
       held: () => {
         const book = this.#engine.book;
         const open = Object.values(book.positions).filter((p) => p.status !== 'closed' && p.quantity > 0n).map((p) => ({
@@ -1454,6 +1942,8 @@ export class Worker {
       },
       marketAt: (mint) => this.#watchMarketAt(mint),
       read: d.watchRead ?? (() => Promise.reject(new Error('no second path configured'))),
+      head: () => (this.#lastSlot === null || this.#lastSlotAt === null ? null : { slot: this.#lastSlot, atMs: this.#lastSlotAt }),
+      maxLagSlots: d.session.policy.gates.maxStateSlotLag,
       put: (snap, atMs) => this.#fact(snapshotKey(snap.mint), { pool: snap.pool, slot: snap.slot, atMs, state: snap.state, ctx: snap.ctx }),
       alert: (mint, reason) => {
         this.#journal.write('alert', { level: 'critical', code: 'position_unpriced', mint, reasons: [`no fresh price for ${mint}`, reason] });
@@ -1508,8 +1998,8 @@ export class Worker {
       signer: 'none', lease_epoch: null,
       sol_reserve: this.#account.state.walletLamports === null ? null : String(this.#account.state.walletLamports),
       paused: this.#ctl.paused, boot: this.#boot, pid: process.pid, uptime_s: Math.round((now - this.#started) / 1000),
-      rss_bytes: process.memoryUsage().rss, mode: 'paper', recorder: this.#d.config.recorder ? 'on' : 'off', simulation: this.#d.config.simulate ? 'on' : 'off',
-      reconciled: this.#reconciled, exit_capable: this.#exitCapable(now), quota: ops.quota, lookups: ops.lookups, entries_halted: this.#halted.length > 0, halt_reasons: [...this.#halted], critical: [...(this.#watch?.critical ?? [])], feeds, journal_seq: this.#journal.seq, signing_key: false,
+      rss_bytes: process.memoryUsage().rss, last_exit: this.#lastExit, restarts_24h: this.#restartCounts(now), mode: 'paper', recorder: this.#d.config.recorder && this.#recorderFault === null ? 'on' : 'off', simulation: this.#d.config.simulate ? 'on' : 'off',
+      reconciled: this.#reconciled, exit_capable: this.#exitCapable(now), quota: ops.quota, lookups: ops.lookups, entries_halted: this.#halted.length > 0, halt_reasons: [...this.#halted], critical: [...(this.#watch?.critical ?? []), ...(this.#recorderFault === null ? [] : [this.#recorderFault])], feeds, journal_seq: this.#journal.seq, signing_key: false,
       entry_rule: this.#d.config.strategy.name,
       ...(this.#d.strategy.s0Diagnostic === true ? { s0_diagnostic: S0_DIAGNOSTIC_PARTS } : {}),
       ...(this.#seedOutcome === null ? {} : { graduates_seed: this.#seedOutcome }),
@@ -1518,19 +2008,75 @@ export class Worker {
   }
 
   /**
-   * OPS-SUMMARY: the daily summary, posted every `summaryMs` and just after Melbourne midnight. Only with a watchdog
-   * and its key; it runs beside the loop and never touches the engine, the ledger or the journal (it only reads it).
+   * OPS-SUMMARY: the daily summary, posted on the Melbourne wall-clock slots of `summaryMs`, just after Melbourne
+   * midnight, and once shortly after this (reconciled) start (SUMMARY-CLOCK). Only with a watchdog and its key; it runs
+   * beside the loop and never touches the engine, the ledger or the journal (it only reads it).
    */
   #startSummary(): void {
     const d = this.#d;
-    if (this.#summarizer() === null) return;
-    const run = (): void => {
-      if (this.#stopping) return;
-      void this.summaryNow().finally(() => {
-        if (!this.#stopping) this.#summaryTimer = d.timers.setTimeout(run, nextSummaryDelay(d.timers.now(), d.config.summaryMs));
-      });
-    };
-    this.#summaryTimer = d.timers.setTimeout(run, nextSummaryDelay(d.timers.now(), d.config.summaryMs));
+    const s = this.#summarizer();
+    if (s === null || this.#stopping) return;
+    this.#summaryClock = new SummaryClock({ timers: d.timers, everyMs: d.config.summaryMs, tick: () => this.summaryNow(), lastPostedMs: () => s.lastPostedMs });
+    this.#summaryClock.start();
+  }
+
+  /** MEM-TRACE: the memory sample, every MEM_EVERY_MS, for the next boot's reading of how this process ended. Never throws. */
+  #traceMem(): void {
+    if (this.#stopping) return;
+    try {
+      const now = this.#d.timers.now();
+      if (now - this.#memProbeAt >= PROBE_EVERY_MS) {
+        this.#memProbeAt = now;
+        this.#probeMem(now, false);
+        writeProbe(this.#d.config.stateDir, this.#memRecent);
+      }
+      writeMem(this.#d.config.stateDir, sampleMem(now, this.#cgroupMax));
+    } catch {
+      // A sample not written (a full disk) only leaves the next boot without it.
+    }
+    this.#memTimer = this.#d.timers.setTimeout(() => this.#traceMem(), MEM_EVERY_MS);
+  }
+
+  /** MEM-PROBE: one probe sample kept (counts only); `saving` when taken just before the state save. Never throws. */
+  #probeMem(now: number, saving: boolean): void {
+    let counts: ProbeCount[] = [];
+    try {
+      counts = this.#memCounts();
+    } catch {
+      // A count that fails leaves the sample with the heap figures only.
+    }
+    this.#memRecent.push(probeSample(now, saving, counts));
+    if (this.#memRecent.length > PROBE_KEEP) this.#memRecent.splice(0, this.#memRecent.length - PROBE_KEEP);
+  }
+
+  /** MEM-PROBE: the size of every major collection the worker reaches, counts only. */
+  #memCounts(): ProbeCount[] {
+    const { byPrefix, ...store } = this.#engine.sizes();
+    const d = this.#loopDelay;
+    const lag = d.count === 0 ? { max_ms: 0, p95_ms: 0 } : { max_ms: d.max / 1e6, p95_ms: d.percentile(95) / 1e6 };
+    d.reset();
+    return probeCounts({
+      loop: lag, fills: { active: FILLS.active, waiting: FILLS.waiting },
+      store, feed: this.#feed.sizes(), facts: this.#facts.sizes(), strategy: this.#strategy.sizes(),
+      worker: {
+        pools: this.#pools.size, pool_released: this.#poolReleasedAt.size, carries: this.#carries.size, fees: this.#fees.size, snapshots: this.#snapshots.size,
+        opened: this.#opened.size, create_sig: this.#createSig.size, complete_sig: this.#completeSig.size, migration_sig: this.#migrationSig.size,
+        symbols: this.#symbols.size, create_lookups: this.#createLookups.size, rug_vias: this.#rugVias.size, intent_at: this.#intentAt.size,
+        rows: this.#rows.length, fill_lines: this.#fillLines.length, restored_mints: this.#restoredMints.length, create_pending: this.#createPending.length,
+        exits_chars: this.#savedExits.length, seeds_chars: this.#savedSeeds.length,
+      },
+    }, byPrefix);
+  }
+
+  /** MEM-PROBE: a probe sample around the state save (`saving` true just before it, false just after), written at once. */
+  #markSave(saving: boolean): void {
+    try {
+      const now = this.#d.timers.now();
+      this.#probeMem(now, saving);
+      writeProbe(this.#d.config.stateDir, this.#memRecent);
+    } catch {
+      // Not written (a full disk): the save goes ahead regardless.
+    }
   }
 
   /** The summarizer, made on first use; null without a watchdog or its key. */
@@ -1548,7 +2094,7 @@ export class Worker {
           gitSha: d.config.gitSha, entryRule: d.config.strategy.name, recorder: d.config.recorder ? 'on' : 'off',
           uptimeS: (d.timers.now() - this.#started) / 1000, trades: this.#account.state.trades,
           openPositions: Object.values(this.#engine.book.positions).filter((p) => p.status !== 'closed').length,
-          solPrice: this.#solPrice, credits: d.ops?.().quota ?? [],
+          solPrice: this.#solPrice, credits: d.ops?.().quota ?? [], heliusExhaustion: d.heliusExhaustion?.() ?? null,
         };
       },
     });
@@ -1565,6 +2111,7 @@ export class Worker {
     const hb = this.#d.heartbeat;
     const url = this.#d.config.watchdogUrl;
     this.#beatSeq++;
+    if (this.#d.timers.now() - this.#refusals.since >= 60_000) this.#countRefusals();
     if (url === null || hb.key === null) return;
     const h = this.health();
     const p = Object.values(this.#engine.book.positions).find((x) => x.status !== 'closed' && x.status !== 'opening');
@@ -1596,13 +2143,30 @@ export class Worker {
   }
 
   /** Clean stop: entries stop, simulations finish (bounded), journal and recorder close, the ledger closes. */
-  async stop(code: number = EXIT.clean): Promise<number> {
-    if (this.#stopping) return code;
+  /** `crash`: where a crash happened (crash-site.ts), written on the stop line for the next boot's `last_exit`. */
+  async stop(code: number = EXIT.clean, crash?: string): Promise<number> {
+    if (this.#stopping) return this.stopped;
     this.#stopping = true;
+    this.#stopCode = code;
+    this.#stoppingNow(code);
+    try {
+      await this.#stop(code, crash);
+    } catch (e) {
+      // A stop that fails half way (a full disk) still ends the process, as a crash.
+      this.#d.log(`Stop failed: ${errorText(e)}.`);
+      this.#stopCode = code = EXIT.crash;
+    }
+    this.#stoppedNow(code);
+    return code;
+  }
+
+  async #stop(code: number, crash?: string): Promise<void> {
     const d = this.#d;
     if (this.#loop !== null) d.timers.clearTimeout(this.#loop);
     if (this.#beat !== null) d.timers.clearTimeout(this.#beat);
-    if (this.#summaryTimer !== null) d.timers.clearTimeout(this.#summaryTimer);
+    if (this.#memTimer !== null) d.timers.clearTimeout(this.#memTimer);
+    this.#loopDelay.disable();
+    this.#summaryClock?.stop();
     for (const s of this.#sources) s.stop();
     this.#probe?.stop();
     this.#watch?.stop();
@@ -1621,13 +2185,31 @@ export class Worker {
     // Past this point the state files belong to the next process: a simulation answering late writes nothing.
     this.#world.stop();
     const open = Object.values(this.#engine.book.positions).filter((p) => p.status !== 'closed').map((p) => p.id);
-    this.#journal.write('stop', { open_positions: open, open_intents: openIntents(this.#desk.book), reasons: [code === EXIT.clean ? 'signal' : 'crash'] });
-    this.#recorder?.close();
+    this.#journal.write('stop', { open_positions: open, open_intents: openIntents(this.#desk.book), reasons: code === EXIT.clean ? ['signal'] : crash === undefined ? ['crash'] : ['crash', crash] });
+    if (this.#packing !== null) await this.#packing;
+    this.#record((r) => r.close());
     this.#ledger.close();
     if (code === EXIT.clean) writeFileSync(join(d.config.stateDir, STATE_FILES.cleanStop), new Date(d.timers.now()).toISOString());
     await new Promise<void>((r) => (this.#server === null ? r() : this.#server.close(() => r())));
     await new Promise<void>((r) => (this.#api === null ? r() : this.#api.close(() => r())));
-    return code;
+  }
+
+  /** Restarts in the 24 h before `now`: planned (a runner drill's marker), deploys (a new release) and unplanned. */
+  #restartCounts(now: number): { readonly planned: number; readonly deploy: number; readonly unplanned: number } {
+    const recent = this.#restarts.filter((r) => r.at <= now && now - r.at < 86_400_000);
+    const n = (k: Restart['kind']): number => recent.filter((r) => r.kind === k).length;
+    return { planned: n('planned'), deploy: n('deploy'), unplanned: n('unplanned') };
+  }
+
+  /**
+   * An uncaught exception or rejection (main's fatal handler): the stop line, with where it happened, is written at once,
+   * since the process exits right after. Nothing else runs; the next boot reconciles as after any crash.
+   */
+  crashed(e: unknown): void {
+    try {
+      const open = Object.values(this.#engine.book.positions).filter((p) => p.status !== 'closed').map((p) => p.id);
+      this.#journal.write('stop', { open_positions: open, open_intents: openIntents(this.#desk.book), reasons: ['crash', crashSite(e)] });
+    } catch {}
   }
 
   /**
@@ -1637,10 +2219,16 @@ export class Worker {
    */
   async kill(): Promise<void> {
     this.#stopping = true;
+    // A killed process ends with no code of its own; a later `stop` on this object returns at once, as a crash.
+    this.#stopCode = EXIT.crash;
+    this.#stoppingNow(EXIT.crash);
+    this.#stoppedNow(EXIT.crash);
     this.#world.stop();
     if (this.#loop !== null) this.#d.timers.clearTimeout(this.#loop);
     if (this.#beat !== null) this.#d.timers.clearTimeout(this.#beat);
-    if (this.#summaryTimer !== null) this.#d.timers.clearTimeout(this.#summaryTimer);
+    if (this.#memTimer !== null) this.#d.timers.clearTimeout(this.#memTimer);
+    this.#loopDelay.disable();
+    this.#summaryClock?.stop();
     for (const s of this.#sources) s.stop();
     this.#watch?.stop();
     this.#ledger.close();
@@ -1651,9 +2239,11 @@ export class Worker {
   /** For the `--reconcile` entry: settle, report, close without starting anything. */
   async reconcileOnly(): Promise<StartResult> {
     const r = await this.reconcile();
+    // The unit's pre-step restores (and copies) the saved state too: packed, or linked to the stored copy, like a start's.
+    if (!this.#stopping) await this.#packCopy();
     // A signal during the reconcile runs the clean stop, which closes both.
     if (!this.#stopping) {
-      this.#recorder?.close();
+      this.#record((r) => r.close());
       this.#ledger.close();
     }
     return r;

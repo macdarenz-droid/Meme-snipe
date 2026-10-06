@@ -147,7 +147,7 @@ export const LANDS = { ...FILL_CONFIG.scenarios[PAPER_SCENARIO], landPpm: { pump
 /** Boots made per state folder: a test's n-th worker is `boot-<n>` whatever the process, its pid or the other tests. */
 const boots = new Map<string, number>();
 
-export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof LANDS; stateDir?: string; timers?: TestTimers; edgePpm?: bigint; http?: HttpClient; key?: string | null; config?: Record<string, string>; fetched?: string[]; found?: boolean; facts?: FactSource[]; seed?: (r: SeedRequest) => Promise<SeedResult>; seedWaitMs?: number; entry?: { timing: 'gates' | 'random'; salt: string; s0Diagnostic?: boolean }; sources?: (ctx: SourcesContext) => FeedSource[]; exposureRpc?: SeedRpc; ops?: WorkerDeps['ops']; universe?: 'U1' | 'U2'; cutRpc?: (ms: number) => void; seedMaxMs?: number; simulate?: (leg: SimLeg) => Promise<DryRunRecord>; worldFault?: WorkerDeps['worldFault']; summaryFault?: WorkerDeps['summaryFault']; watchRead?: WorkerDeps['watchRead'] | null; watchHalted?: () => boolean; schedulers?: NonNullable<WorkerDeps['schedulers']>; markedHistory?: WorkerDeps['markedHistory']; findCreate?: WorkerDeps['findCreate']; strategy?: Partial<StrategyConfig>; crashPoint?: WorkerDeps['crashPoint']; maxSeedCreates?: number; createSigsMax?: number } = {}): Harness => {
+export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof LANDS; stateDir?: string; timers?: TestTimers; edgePpm?: bigint; http?: HttpClient; key?: string | null; config?: Record<string, string>; fetched?: string[]; found?: boolean; facts?: FactSource[]; seed?: (r: SeedRequest) => Promise<SeedResult>; seedWaitMs?: number; entry?: { timing: 'gates' | 'random'; salt: string; s0Diagnostic?: boolean }; sources?: (ctx: SourcesContext) => FeedSource[]; exposureRpc?: SeedRpc; ops?: WorkerDeps['ops']; universe?: 'U1' | 'U2'; cutRpc?: (ms: number) => void; seedMaxMs?: number; simulate?: (leg: SimLeg) => Promise<DryRunRecord>; worldFault?: WorkerDeps['worldFault']; summaryFault?: WorkerDeps['summaryFault']; watchRead?: WorkerDeps['watchRead'] | null; watchHalted?: () => boolean; schedulers?: NonNullable<WorkerDeps['schedulers']>; markedHistory?: WorkerDeps['markedHistory']; sizeProbe?: WorkerDeps['sizeProbe']; findCreate?: WorkerDeps['findCreate']; strategy?: Partial<StrategyConfig>; crashPoint?: WorkerDeps['crashPoint']; maxSeedCreates?: number; createSigsMax?: number ; restartReads?: WorkerDeps['restartReads']; fetchedWhy?: [string, string][]; phase?: 'reconcile'; pack?: WorkerDeps['pack']; heliusExhaustion?: WorkerDeps['heliusExhaustion']; loopClock?: WorkerDeps['loopClock'] } = {}): Harness => {
   const stateDir = o.stateDir ?? tempState();
   const timers = o.timers ?? virtualTimers(T - 16 * 86_400_000);
   const session = startSession(TRIAL_POLICY);
@@ -177,8 +177,9 @@ export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof L
       return made;
     }),
     simulate: o.simulate ?? okSimulation(legs),
-    fetchTx: async (sig) => {
+    fetchTx: async (sig, why) => {
       o.fetched?.push(sig);
+      o.fetchedWhy?.push([sig, why]);
       return o.found ?? false;
     },
     seed: async (r) => {
@@ -186,14 +187,19 @@ export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof L
       return o.seed === undefined ? { mode: 'none', creates: [], coverage: [], report: 'test: not seeded' } : o.seed(r);
     },
     seedWaitMs: o.seedWaitMs ?? 1_000,
+    ...(o.loopClock === undefined ? {} : { loopClock: o.loopClock }),
     ...(o.seedMaxMs === undefined ? {} : { seedMaxMs: o.seedMaxMs }),
     ...(o.maxSeedCreates === undefined ? {} : { maxSeedCreates: o.maxSeedCreates }),
     ...(o.createSigsMax === undefined ? {} : { createSigsMax: o.createSigsMax }),
+    ...(o.phase === undefined ? {} : { phase: o.phase }),
     ...(o.cutRpc === undefined ? {} : { cutRpc: o.cutRpc }),
     ...(o.exposureRpc === undefined ? {} : { exposureRpc: o.exposureRpc }),
+    ...(o.restartReads === undefined ? {} : { restartReads: o.restartReads }),
     ...(o.ops === undefined ? {} : { ops: o.ops }),
     ...(o.markedHistory === undefined ? {} : { markedHistory: o.markedHistory }),
+    ...(o.sizeProbe === undefined ? {} : { sizeProbe: o.sizeProbe }),
     ...(o.findCreate === undefined ? {} : { findCreate: o.findCreate }),
+    ...(o.pack === undefined ? {} : { pack: o.pack }),
     heartbeat: { http: o.http ?? noHttp, key: o.key === undefined ? null : o.key, ownerChatId: '42' },
     ...(o.facts === undefined ? {} : { facts: o.facts, schedulers: o.schedulers ?? { helius: new Scheduler(HELIUS_FREE, { timers }), alchemy: new Scheduler(ALCHEMY_FREE, { timers }), jupiter: new Scheduler(JUPITER_FREE, { timers }), rugcheck: new Scheduler(RUGCHECK_FREE, { timers }) } }),
     ...(o.worldFault === undefined ? {} : { worldFault: o.worldFault }),
@@ -202,6 +208,7 @@ export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof L
     // A second path is configured unless a test says none (null); unscripted, every read fails.
     ...(o.watchRead === null ? {} : { watchRead: o.watchRead ?? (() => Promise.reject(new Error('no second path scripted'))) }),
     ...(o.watchHalted === undefined ? {} : { watchHalted: o.watchHalted }),
+    ...(o.heliusExhaustion === undefined ? {} : { heliusExhaustion: o.heliusExhaustion }),
     reconcileTimeoutMs: o.reconcileTimeoutMs ?? 120_000, loopMs: 100, staleFeedMs: 10_000, log: (l) => void logs.push(l),
   });
   return { worker, timers, legs, logs, stateDir, session, sources, order };
@@ -228,6 +235,8 @@ export class Market {
    * default, as live (POS-1): after entry nothing re-reads the pool, and its state moves only with `chainSwap`.
    */
   heldPoolFacts = false;
+  /** When set, `pool()` publishes the pool fact at exactly these reserves (FEES-KEEP: the pool a swap left). */
+  poolAt: PoolState | null = null;
   /** The SOL/USD price the `pool()` and `solPrice()` facts carry (micro-dollars). */
   solUsd: bigint = SOL_PRICE;
   /** The pool's reserves as the last `accountsRead` or `chainSwap` left them. */
@@ -272,7 +281,10 @@ export class Market {
       return { ...v, obs: { ...v.obs, slot: v.obs.slot === null ? null : slot, receivedAt: this.now - 50, ...over } };
     };
     const base = now(poolKey(MINT)) as unknown as Record<string, unknown>;
-    if (this.heldPoolFacts || !this.held()) this.fact(poolKey(MINT), { ...base, quoteVault: ((base['quoteVault'] as bigint) * quoteScalePpm) / 1_000_000n });
+    const at = this.poolAt;
+    const reserves = at === null ? { quoteVault: ((base['quoteVault'] as bigint) * quoteScalePpm) / 1_000_000n }
+      : { baseVault: at.baseReserve, quoteVault: at.quoteVault, pool: { ...(base['pool'] as object), virtualQuoteReserves: at.virtualQuoteReserves } };
+    if (this.heldPoolFacts || !this.held()) this.fact(poolKey(MINT), { ...base, ...reserves });
     if (this.withFees) this.fact(feesKey(MINT), FEE_CONTEXT);
     this.fact(SOL_PRICE_KEY, { value: this.solUsd, atMs: this.now - 50 });
     for (const k of [lpKey(MINT), holdersKey(MINT), softKey(MINT), xcheckKey(MINT), EXEC_HEALTH_KEY]) this.fact(k, now(k));
@@ -317,6 +329,24 @@ export class Market {
     this.offchain(RAW.accounts(MINT), { mint: MINT, slot, commitment: 'confirmed', accounts });
     const f = facts0().get(poolKey(MINT))!.value as { baseVault: bigint; quoteVault: bigint; pool: { virtualQuoteReserves?: bigint } };
     this.#chain = { baseReserve: f.baseVault, quoteVault: f.quoteVault, virtualQuoteReserves: f.pool.virtualQuoteReserves ?? 0n };
+  }
+
+  #failed = 0;
+  /**
+   * FAILED-LOGS: a bot's failed swap on the passing pool: a real swap's log lines (the Borsh event included) with `err`
+   * set, seen at processed in the current slot. Its sighting always goes on the feed; its lines only with `lines` (what
+   * the socket did before FAILED-LOGS). The chain's reserves do not move.
+   */
+  failedSwap(lines: boolean): void {
+    const n = ++this.#failed;
+    const slot = this.#slot ?? 0n;
+    const err = { InstructionError: [3, { Custom: 6004 }] };
+    const f = facts0().get(poolKey(MINT))!.value as { baseVault: bigint; quoteVault: bigint; pool: { virtualQuoteReserves?: bigint } };
+    const pre = this.#chain ?? { baseReserve: f.baseVault, quoteVault: f.quoteVault, virtualQuoteReserves: f.pool.virtualQuoteReserves ?? 0n };
+    const { logs } = swapLog({ pool: POOL_ADDRESS, coinCreator: DEV, supply: SUPPLY, pre, side: 'buy', base: 1_000_000n, atMs: this.now });
+    const signature = `failedswap${n}`;
+    this.#h.worker.feed.ingest('helius', { type: 'seen', signature, slot, err, via: `logs:${POOL_ADDRESS}`, detail: null }, { receivedAt: this.now });
+    if (lines) this.#h.worker.feed.ingest('helius', { type: 'logs', signature, slot, err, via: `logs:${POOL_ADDRESS}`, logs }, { receivedAt: this.now });
   }
 
   /** The pool's reserves as the chain now holds them (after the last `chainSwap`). */
@@ -381,7 +411,7 @@ export const until = async (m: Market, maxMs: number, ready: () => boolean, each
 };
 
 /** Sets up 15 days of coverage, a migrated candidate and minute pool bars, then every passing fact at T. */
-export const passingMarket = async (h: Harness, o: { readonly fees?: boolean; readonly heldPoolFacts?: boolean; readonly omit?: readonly string[]; readonly coverageAt?: number } = {}): Promise<Market> => {
+export const passingMarket = async (h: Harness, o: { readonly fees?: boolean; readonly heldPoolFacts?: boolean; readonly omit?: readonly string[]; readonly coverageAt?: number; readonly before?: { readonly atMs: number; readonly run: (m: Market) => void } } = {}): Promise<Market> => {
   const m = new Market(h, { heldPoolFacts: o.heldPoolFacts ?? false });
   m.withFees = o.fees ?? true;
   m.omit = new Set(o.omit ?? []);
@@ -400,6 +430,13 @@ export const passingMarket = async (h: Harness, o: { readonly fees?: boolean; re
     m.slot();
     m.offchain('coverage:creates:start', (facts.get('coverage:creates:start')!.value as { value: unknown }).value);
     await m.run(3_000);
+  }
+  // A test's own events between the coverage start and the migration (`before`, at its own moment).
+  if (o.before !== undefined) {
+    h.timers.set(o.before.atMs);
+    m.slot();
+    o.before.run(m);
+    await m.run(1_000);
   }
   // 20 minutes before T: the migration (90 min before T) and a pool fact every minute, for the ATR bars.
   h.timers.set(T - 20 * 60_000);
