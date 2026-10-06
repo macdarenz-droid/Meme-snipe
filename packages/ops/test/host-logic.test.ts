@@ -880,3 +880,39 @@ describe('HOST-CAPS on the host', () => {
     expect(read('ops/install.sh')).toContain('install_file /etc/systemd/journald.conf.d/zeroed-journal.conf');
   });
 });
+
+describe('recording upload alerts (RECORD-UPLOAD)', () => {
+  const now = 1_800_000_000;
+  const alerts = (status: unknown) => sh(`record_alerts ${now}`, JSON.stringify(status)).out.split('\n').map((l) => l.split('|').slice(0, 2).join(' '));
+  const ok = { at: now * 1000, failed_runs: 0, running: false, kept: [], backlog_age_s: 0 };
+  const on = (keys: string[]) => ['failed', 'backlog', 'kept', 'stale'].map((k) => `${keys.includes(k) ? 'on' : 'off'} record-upload-${k}`);
+
+  it('raises one alert per problem: 3 failed runs, a backlog over a day, kept files, no report for 3 hours', () => {
+    expect(alerts(ok)).toEqual(on([]));
+    expect(alerts({ ...ok, failed_runs: 2 })).toEqual(on([]));
+    expect(alerts({ ...ok, failed_runs: 3 })).toEqual(on(['failed']));
+    // The run in progress counted itself already.
+    expect(alerts({ ...ok, failed_runs: 3, running: true })).toEqual(on([]));
+    expect(alerts({ ...ok, backlog_age_s: 86_401 })).toEqual(on(['backlog']));
+    expect(alerts({ ...ok, kept: [{ key: 'b/days/d/frames-000.jsonl.zst', why: 'holds a stored credential' }] })).toEqual(on(['kept']));
+    expect(alerts({ ...ok, at: (now - 10_801) * 1000 })).toEqual(on(['stale']));
+  });
+
+  it('says nothing before the first run or with the switch off, and keeps every line to one line without the separator', () => {
+    expect(alerts({})).toEqual(on([]));
+    expect(alerts({ enabled: false, failed_runs: 9, at: 0 })).toEqual(on([]));
+    expect(sh(`record_alerts ${now}`, 'not json').out).toBe('');
+    const r = sh(`record_alerts ${now}`, JSON.stringify({ ...ok, failed_runs: 4, last_error: 'a|b\nc' })).out.split('\n');
+    expect(r).toHaveLength(4);
+    expect(r[0]).toBe('on|record-upload-failed|ALERT Zeroed host: the recording upload failed 4 runs in a row (last: a b c). Recordings stay on the server until it works again.');
+  });
+
+  it('zeroed-check raises and clears them from the uploader\'s status file, and the switch decides', () => {
+    const check = read('ops/host/files/usr/local/sbin/zeroed-check');
+    expect(check).toContain(`if [ "$(jq -r '.record_upload == true' /opt/zeroed/current/ops/host-config.json 2>/dev/null || echo false)" = true ]; then\n  rec="$(cat /var/lib/zeroed-record-upload/status.json 2>/dev/null || echo '{}')"`);
+    expect(check).toContain(`if [ "$what" = on ]; then alert "$key" "$text"; else alert_clear "$key" "$text"; fi`);
+    expect(check).toContain('done < <(printf \'%s\' "$rec" | record_alerts "$(date +%s)")');
+    // Before the key check's early exits, so it runs on a server whatever its pairing state.
+    expect(check.indexOf('record_alerts')).toBeLessThan(check.indexOf('keys_stored || exit 0'));
+  });
+});

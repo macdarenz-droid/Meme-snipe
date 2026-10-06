@@ -1,5 +1,7 @@
 {
   "offsite_backup": false,
+  "record_upload": true,
+  "record_upload_delete_local": true,
   "worker": "release",
   "shakedown": {
     "ZEROED_STRATEGY": "S0",
