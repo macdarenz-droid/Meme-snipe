@@ -2245,6 +2245,34 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - `restart-keep.test.ts`: an ended candidate is not restored, with the live run's record and tail; a never-evaluated one has no tail; one ms inside the window it is still restored, at the window's end exactly it is not; the in-window candidate's decisions equal a restore of it alone; a worker restarted after the window reads none of the candidate's transactions.
   - Hand mutants killed: no read limit; urgent reads at the back; waiting reads run after a stop; scan count not saved; unreadable file not counted as spent; no fill limit; no reservation; no refund; a finished fill not waking the next; the scan file not wired in production; the window check off by one either way (`>` at the exact end, one ms late); an ended candidate dropped without its tail; the check moved before the pool is noted.
 
+## The funnel names refusals truly (FUNNEL-TRUTH, `worker/src/run/api.ts` `classify`, `run/worker.ts`)
+
+- **2026-10-05 · Why.** The owner's funnel (16:00–16:05) read "hard rejects 24 → costs 21 → risk 0" with "Costs 20", though no candidate reached risk that day. The daily summary listed none at R14 and showed pool-data refusals instead. There were two causes.
+  - `checkOf` let every reason it did not know fall through to `cost`, shown as "Costs". The pool-data refusals took that path: "pool state unknown/malformed/flagged" and "fee context unknown".
+  - "live SOL price unknown" contained "SOL price", so it counted as `risk`, stage 2. That refusal comes before the pool is read and before any hard reject. Each boot starts without a price for a few seconds, so candidates were lifted to "costs passed", and the funnel keeps a mint's furthest stage.
+- **2026-10-05 · The fix (server only; supervisor ruling: nothing may break the installed app).**
+  - `classify(reason)` returns the check and the stage the candidate truly passed, in the order `#evaluate` judges: regime, SOL price, pool data, sizing, hard rejects, account, stop, risk. It uses only checks the installed app's strict schema knows.
+  - Missing or unusable inputs read as H16, "Stale or unknown data", which is true of each. They are the SOL price, pool state, fee terms and a hard-reject pass that left a gate unevaluated, all at stage 0, and the account snapshot at stage 1.
+  - `no round trip:` and `stop:` are `size`, stage 1.
+  - `risk sized … gates judged …` is `size`, stage 2.
+  - Risk's refusal, fault or failed mark is `risk`, stage 1: none proves the cost gate passed. A size mismatch follows risk approval and therefore retains stage 2.
+  - A reason not listed gets no check and stays at "seen": never "Costs".
+  - Pool data is stage 0, not 1 as first asked: `#market` reads the pool before the hard rejects run.
+  - Every reject site in strategy.ts is listed in the test, and a guard counts them, so a new one fails the test until it is classified.
+- **2026-10-06 · Independent review correction.** Only H1–H17 with a valid delimiter may be returned as hard-check identifiers; unknown gate names return no check, preserving the installed app's strict enum. Generic risk refusals, failed marks and faults keep stage 1 because risk may refuse before or at R14. Worker-level fault and real R14 tests prove the costs count stays zero. Six unknown-gate cases, both worker scenarios and the classification expectation failed before the correction (9 failed, 2 passed); all 11 tests pass after. No risk limit or decision logic changed.
+- **2026-10-05 · Follow-up (next app release).** Proper labels: a `data` check ("Missing data") and an `other` check, in place of H16 and no check. These need the app's schema first, then the server (PROJECT_STATE).
+- **2026-10-05 · Tests.** `worker/test/funnel-truth.test.ts`:
+  - Every reason maps to its check and stage, and each check is one the app knows. A real R14 line is `risk`, stage 1, labelled "Costs" in decisions but never counted as a cost gate pass. An unknown reason names no check.
+  - The reject-site guard.
+  - Through the real worker, a boot with no SOL price and then no fee terms leaves the candidate at "seen", with stages hard-rejects/costs/risk/entered all 0 and rejects H16 1. Funnel and decisions pass the base app's strict schema.
+  - Fails on the base. Mutants killed:
+    - fallthrough to `cost`;
+    - SOL price at the risk stage;
+    - the account at the risk stage;
+    - the stage ignored;
+    - the size mismatch as risk;
+    - fee terms unnamed.
+
 ## Fee tiers from the chain (FEE-TIER-NOW; `facts/readers.ts` `readBatch`, `run/worker.ts`)
 
 - **Why (supervisor ruling, 2026-10-05):** a PumpSwap swap event reports the fee tier of its own pre-trade market cap. A swap that crosses a tier threshold therefore leaves the next quote priced at the old tier, live and after a restart. No check on reserves alone can tell whether two market caps share a tier: the thresholds live only in the pump-fees FeeConfig account. Pump's own advice is to read FeeConfig rather than infer tiers (research/execution.md, quant.md F11).
