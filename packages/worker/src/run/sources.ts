@@ -253,6 +253,7 @@ export class LiveProviders {
   readonly jupiter: Scheduler;
   readonly rugcheck: Scheduler;
   #fetcher: TxFetcher | null = null;
+  #stream: RpcStream | null = null;
   /** The worker's feed, once `feeds` has run: where a create lookup puts the create it verified. */
   #feed: SourcesContext['feed'] | null = null;
 
@@ -289,6 +290,11 @@ export class LiveProviders {
     return { quota, lookups: { counts: [...this.#lookups] } };
   }
 
+  /** F6 (MEM-PROBE): notifications the Helius stream holds now across its watches' catch-ups (0 before the feeds). */
+  heldNotices(): number {
+    return this.#stream?.heldNotices ?? 0;
+  }
+
   /** The feeds, built on the worker's live Feed. */
   feeds(ctx: SourcesContext): FeedSource[] {
     const o = this.#o;
@@ -303,6 +309,7 @@ export class LiveProviders {
       provider: 'helius', url: () => heliusWsUrl(o.secrets), factory: o.factory, timers, feed, scheduler: this.helius,
       creditsPerByte: HELIUS_WS_CREDITS_PER_BYTE, creditsPerConnection: HELIUS_WS_CREDITS_PER_CONNECTION, http: hRpc, fetcher, socket, backfillLimit: 100,
     });
+    this.#stream = helius;
     helius.watchSlots(P1);
     helius.watchLogs(PUMP_CREATE_AUTHORITY, { priority: P3, decodeLogs: true, coverage: 'creates' });
     helius.watchLogs(PUMP_MIGRATION_AUTHORITY, { priority: P2, decodeLogs: true, fetch: P2 });

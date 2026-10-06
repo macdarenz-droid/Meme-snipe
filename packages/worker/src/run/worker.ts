@@ -190,6 +190,8 @@ export interface WorkerDeps {
   readonly heliusExhaustion?: () => { readonly exhausted: boolean; readonly count: number; readonly firstAtMs: number | null };
   /** RUN-1c's quota (free-plan providers, credits since boot by class) and historical-lookup latency counts. */
   readonly ops?: () => { readonly quota: readonly QuotaStatus[]; readonly lookups: { readonly counts: readonly number[] } };
+  /** F6 (MEM-PROBE): notifications the Helius stream holds in its catch-ups now (`RpcStream.heldNotices`). */
+  readonly streamHeld?: () => number;
   /** RUN-1d's drop-rpc drill: refuses every RPC call for `ms` (main wraps the providers' HTTP in an RpcCut). */
   readonly cutRpc?: (ms: number) => void;
   /** RUN-1c's exposure rebuild: chain history reads (Helius) for each exposed trade's pool. */
@@ -2091,13 +2093,13 @@ export class Worker {
 
   /** MEM-PROBE: the size of every major collection the worker reaches, counts only. */
   #memCounts(): ProbeCount[] {
-    const { byPrefix, ...store } = this.#engine.sizes();
+    const { byPrefix, entriesByPrefix, bytesByPrefix, ...store } = this.#engine.sizes();
     const d = this.#loopDelay;
     const lag = d.count === 0 ? { max_ms: 0, p95_ms: 0 } : { max_ms: d.max / 1e6, p95_ms: d.percentile(95) / 1e6 };
     d.reset();
     return probeCounts({
       loop: lag, fills: { active: FILLS.active, waiting: FILLS.waiting },
-      store, feed: this.#feed.sizes(), facts: this.#facts.sizes(), strategy: this.#strategy.sizes(),
+      store, feed: { ...this.#feed.sizes(), stream_held: this.#d.streamHeld?.() ?? 0 }, facts: this.#facts.sizes(), strategy: this.#strategy.sizes(),
       worker: {
         pools: this.#pools.size, pool_released: this.#poolReleasedAt.size, carries: this.#carries.size, fees: this.#fees.size, snapshots: this.#snapshots.size,
         opened: this.#opened.size, create_sig: this.#createSig.size, complete_sig: this.#completeSig.size, migration_sig: this.#migrationSig.size,
@@ -2105,7 +2107,7 @@ export class Worker {
         rows: this.#rows.length, fill_lines: this.#fillLines.length, restored_mints: this.#restoredMints.length, create_pending: this.#createPending.length,
         exits_chars: this.#savedExits.length, seeds_chars: this.#savedSeeds.length,
       },
-    }, byPrefix);
+    }, byPrefix, entriesByPrefix, bytesByPrefix);
   }
 
   /** MEM-PROBE: a probe sample around the state save (`saving` true just before it, false just after), written at once. */

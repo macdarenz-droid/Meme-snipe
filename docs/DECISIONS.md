@@ -2760,6 +2760,43 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
 - **Coverage.** Each shed range becomes a recorded coverage gap (`coverage:trades:<pool>:gap`, reason `shed`), placed first in its first slot, so it sorts before every shed event. H11 refuses the pool from that slot (H16 `gap`), live and in the recording's replay alike. Shed frames are ranked before they drop, so live and replay give the same moments after a shed.
 - **Cost.** A shed tail pool censors its REC-1 counterfactual for that range.
 
+## The store keeps only the newest of every running and regime fact (STORE-GROWTH, `run/store-rules.ts`)
+
+- **2026-10-06 · Why.** Live on 5efb9ae0 (MEM-PROBE, 6.9 min before crash 27): store entries grew about 2,870 a minute
+  while store keys grew about 77 a minute (almost all create logs, one entry each). So the growth was in existing
+  keys. The harness (heap snapshots 20 and 30 min, entries per key kind) found single-key series kept whole for the
+  process: `worker:fact-reads` (+143 a minute, the day's read counts restated at every read) and `worker:sol-price`
+  (+60 a minute), with the regime's series and their raw reads growing the same way at lower rates.
+- **What.** Newest value only (`liveCollapse`), after checking every reader: `history` is asked for trade, coverage and
+  deployer keys only, and no gate or worker lookup asks for a time before now.
+  - The worker's running facts: `worker:sol-price` (the strategy looks it up as of now) and `worker:fact-reads`
+    (nothing reads it from the store).
+  - The regime's other series, stated whole like the graduates fact: `gates/sol-usd`, `gates/curve-volume`,
+    `gates/exec-health` (read as of now by the regime and H8), and their raw reads `sol-usd`,
+    `read:chain-volume-hour`, `read:exec-health` (the producer acts on the released read and keeps its own series).
+- **F1b, F4** (supervisor rulings, after a reader check each): newest value only for an undecoded program event
+  (`<pump|pump_amm>:other:<program>`: nothing reads it, the producer skips `other`; the key is the program, so it never
+  retires), a creator's on-demand deployer check (`coverage:rugs:deployer:<creator>`: H14 reads it as of now; `history`
+  reads only the `coverage:<stream>:start|gap|resume` keys) and a feed's status (`feed:status:<feed>`: the worker acts
+  on it as it arrives).
+- **F6.** MEM-PROBE also carries the Helius stream's held catch-up notifications (`feed_stream_held`,
+  `RpcStream.heldNotices`, passed by main).
+- **Create logs** (supervisor item 2): already let go 13 h after their create when the coin has not migrated
+  (OOM-MINT, `CREATE_KEEP_MS` + `CREATE_LATE_MS`); live's create-log keys still grow while that window fills after a
+  restart (about 70 a minute, about 55k at the full window). Shortening it changes which coins are refused
+  `create-expired`, so it is left to a ruling.
+- **Probe.** MEM-PROBE also reports the largest kinds by rough size in KB (`store_b_<kind>`) and by entries
+  (`store_e_<kind>`), six each, after the twelve `store_k_<kind>`: a one-key kind whose series grows, or a kind of
+  large values, is seen. Rough size is `roughBytes` of the newest value times the series' length (at most 256 values
+  walked per value, the rest scaled), for the sampled keys; 92 codes a sample, under the cap of 96.
+- **Evidence (fail before, pass after).** `store-rules.test.ts`: each of the eight keys keeps one entry after an
+  hour of ticks, and a lookup as of now returns the newest (before: one entry a tick); `mem-counts.test.ts`: entries and rough bytes per kind exactly, sampled
+  at scale, the `store_b_` and `store_e_` codes, `roughBytes` within a factor of two on a value it stops early in.
+  Hand mutants killed: sol-price whole, fact-reads whole, `read:exec-health` whole, no `store_e_` codes, entries
+  counted as keys, no `store_b_` codes, no field cost, no scaling of skipped values, `other` events whole, the
+  deployer check whole, feed status whole, no `feed_stream_held`. The per-mint `read:` keys stay
+  whole (supervisor: bounded per mint, refuted as the climb).
+
 ## The 5-min save streams its payload (SAVE-SPIKE, `persist/state.ts`)
 
 - **2026-10-06 · Why.** Live on 5efb9ae0 died at a save (crash 27, MEM-PROBE): the last sample, 2 s before death, was
@@ -2780,3 +2817,39 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   `null` for an omitted element, no omission of a key, a piece not hashed, no batch flush, no `toJSON`.
 - **Not in this card.** Why 41.2k coverage facts are kept is STORE-GROWTH's question; loading still parses the payload
   line whole (the boot side, ruled separately as BOOT-CAP).
+
+## A trade key keeps a few failing entries, not all (F1, `gates/tails.ts`, `engine/asof.ts`)
+
+- **2026-10-06 · Why** (supervisor's crash hunt, crashes 27 to 30). The store kept, of a trade-event key, its newest
+  entry and every entry whose 8-byte tail would fail H5. On 6 Oct the tails were non-zero on most mainnet pools on
+  every swap (9 of 12 young pools, 68 of 101 swaps; 27 of 27 older pools), so every swap stayed: 30,000 real notices
+  kept 21,116 entries, 66 MB (about 3.3 KB an entry), against 1,128 entries with the tails zeroed. Live fit: about
+  2.7 to 3.7 KB of old space per store entry, death in 12 to 36 minutes. The harness never had non-zero tails.
+- **What** (supervisor ruling F1, fail-closed). A collapse can now class an older entry (`Collapse`): per class the
+  store keeps the earliest, the latest in order and the one received last; of entries kept for nothing, only the one
+  received last while it was received after the newest. Trade keys class failing entries by kind (`event-tail`,
+  `malformed`): at most eight entries a key whatever the tape, three when every swap fails.
+  - The check answers by kind, not by order across kinds (facts review B1): any wrong or non-zero tail in range
+    rejects (`event-tail`, H5), else any unreadable one refuses (`malformed`, H16), each named by its earliest entry.
+    Before, the first failing entry in order answered, so a dropped middle entry of one kind could let the other kind
+    answer (H5 for H16 or back); on a whole tape it also turned an H5 reject into an H16 refusal when an unreadable
+    event came first. Both block an entry; the class is now exact.
+  - The same verdict (pass, H5, H16) for any `since`: per kind, a slot since needs the latest of that kind in order and
+    a receipt-time since the one received last; "any entry since" the newest or the latest received; all are kept.
+    The entry it names is exact for a since at or before the key's first entry, which is the production since (the
+    migration).
+  - The receipt-time rule (one received after the newest) beyond the supervisor's five also bounds clean entries
+    that a late fill used to leave behind for good.
+  - Newest-only keys (`false` for every entry) keep their newest and at most the latest received before it: lookups
+    as of now are unchanged.
+- **Ruling recorded:** comparing the verdict class instead of the whole answer for an arbitrary `since` is not a
+  loosening; the whole answer, offending entry included, is still compared for a since at the tape's start.
+- **Evidence (fail before, pass after).** `tails-collapse.test.ts`: 5,000 records with tail `546c140000000000` keep
+  three entries and still reject naming the first (before: 5,000); the failing entry received last stays though not
+  last in order (receipt-time since); 400 random tapes: same verdict for every since, same answer from the start, at
+  most eight entries a key, the verdict compared as H5 and H16 map it; the reviewer's tape (unreadable, unreadable,
+  non-zero, unreadable, clean) answers `event-tail` for every since in both stores. `store-rules.test.ts`: real mainnet swaps (`fixtures/crash-hunt/mainnet-swaps-2026-10-06.json`,
+  public chain data from the supervisor's hunt) at 30,000 notices keep at most five entries a trade key and under
+  8 MB. Hand mutants killed: every failing entry kept, the latest received dropped, the earliest dropped, the latest
+  in order dropped, nothing kept of the `false` class, the two kinds merged into one class (P5), the answer by order
+  across kinds.

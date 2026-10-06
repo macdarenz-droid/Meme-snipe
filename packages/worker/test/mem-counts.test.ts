@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  MEM_FILE, PROBE_EVERY_MS, PROBE_FILE, PROBE_KEEP, PROBE_MAX_COUNTS, PROBE_STORE_KINDS, deathMem, parseDeathMem, probeCode, probeCounts, readMem, readProbe, writeMem, writeProbe,
+  MEM_FILE, PROBE_EVERY_MS, PROBE_FILE, PROBE_KEEP, PROBE_MAX_COUNTS, PROBE_STORE_KINDS, PROBE_STORE_SIZE_KINDS, deathMem, parseDeathMem, probeCode, probeCounts, readMem, readProbe, writeMem, writeProbe,
   type MemSample, type ProbeSample,
 } from '../src/run/mem-trace.ts';
 import { buildSummary, emptySummaryState, foldText, summaryBody, withoutProbe } from '../src/run/summary.ts';
@@ -13,7 +13,7 @@ import { SUMMARY_MAX_BYTES, checkSummary } from '../../ops/src/watchdog/summary.
 import { melbourneDate } from '../src/run/api.ts';
 import { STATE_FILES } from '../../runner/src/contract.ts';
 import { Market, makeWorker, tempState, virtualTimers, T } from './worker-harness.ts';
-import { AsOfStore, PROBE_KIND_SAMPLE } from '../../core/src/engine/asof.ts';
+import { AsOfStore, PROBE_KIND_SAMPLE, roughBytes } from '../../core/src/engine/asof.ts';
 
 const MB = 1_048_576;
 const sample = (over: Partial<MemSample> = {}): MemSample => ({ at: 1_000_000, heap_used: 100 * MB, heap_limit: 500 * MB, rss: 300 * MB, external: 1, array_buffers: 1, cgroup_max: null, ...over });
@@ -50,7 +50,10 @@ describe('the counts', () => {
     small.record('gates:mint:m', 1, now, 'i4');
     small.record('plain', 1, now, 'i5');
     // A key with no `:` has no tail to index.
-    expect(small.sizes()).toEqual({ keys: 4, entries: 5, tails: 3, byPrefix: new Map([['logs:pump', 2], ['gates:mint', 1], ['plain', 1]]) });
+    small.record('plain', 2, now, 'i6');
+    small.record('plain', 3, now, 'i7');
+    // STORE-GROWTH: entries per kind too: one key (`plain`) with three entries outweighs two keys with three between them.
+    expect(small.sizes()).toEqual({ keys: 4, entries: 7, tails: 3, byPrefix: new Map([['logs:pump', 2], ['gates:mint', 1], ['plain', 1]]), entriesByPrefix: new Map([['logs:pump', 3], ['gates:mint', 1], ['plain', 3]]), bytesByPrefix: new Map([['logs:pump', 24], ['gates:mint', 8], ['plain', 24]]) });
     const big = new AsOfStore({ now: () => now });
     const n = 3 * PROBE_KIND_SAMPLE;
     for (let i = 0; i < n; i++) big.record(`${i % 3 === 0 ? 'read:accounts' : 'pump:TradeEvent'}:${i}`, i, now, `i${i}`);
@@ -60,6 +63,38 @@ describe('the counts', () => {
     const est = (k: string) => z.byPrefix.get(k) ?? 0;
     expect(Math.abs(est('read:accounts') - n / 3)).toBeLessThan(0.05 * n / 3);
     expect(Math.abs(est('pump:TradeEvent') - 2 * n / 3)).toBeLessThan(0.05 * 2 * n / 3);
+    expect(Math.abs((z.entriesByPrefix.get('read:accounts') ?? 0) - n / 3)).toBeLessThan(0.05 * n / 3);
+  });
+
+  it('STORE-GROWTH: the largest kinds by entries follow the kinds by keys, masked and summed the same way', () => {
+    const mint = 'So11111111111111111111111111111111111111112';
+    const keys = new Map([['logs:pump', 500], ['worker:fact-reads', 1]]);
+    const entries = new Map([['logs:pump', 500], ['worker:fact-reads', 5_723], [`read:${mint}`, 3], ['read:x', 1]]);
+    const bytes = new Map([['read:holders', 4_096_000], ['logs:pump', 512_000]]);
+    expect(probeCounts({ store: { keys: 501 } }, keys, entries, bytes)).toEqual([
+      { code: 'store_keys', count: 501 },
+      { code: 'store_k_logs_pump', count: 500 }, { code: 'store_k_worker_fact-reads', count: 1 },
+      { code: 'store_b_read_holders', count: 4_000 }, { code: 'store_b_logs_pump', count: 500 },
+      { code: 'store_e_worker_fact-reads', count: 5_723 }, { code: 'store_e_logs_pump', count: 500 }, { code: 'store_e_read_x', count: 4 },
+    ]);
+    const many = new Map(Array.from({ length: 40 }, (_, i) => [`k${i}`, 1_000 - i] as const));
+    expect(probeCounts({}, new Map(), many).map((x) => x.code)).toEqual(Array.from({ length: PROBE_STORE_SIZE_KINDS }, (_, i) => `store_e_k${i}`));
+    expect(probeCounts({}, new Map(), new Map(), many).map((x) => x.code)).toEqual(Array.from({ length: PROBE_STORE_SIZE_KINDS }, (_, i) => `store_b_k${i}`));
+    // Today's 69 group codes (80 in a live sample less its 12 key kinds, plus F6's stream_held), then the key, size and
+    // entry kinds: under the cap.
+    expect(69 + PROBE_STORE_KINDS + 2 * PROBE_STORE_SIZE_KINDS).toBeLessThanOrEqual(PROBE_MAX_COUNTS);
+  });
+
+  it('roughBytes ranks values by size and stops early on a huge one', () => {
+    const holders = { accounts: Array.from({ length: 20 }, (_, i) => ({ address: 'A'.repeat(44), owner: 'O'.repeat(44), amount: BigInt(i) })) };
+    expect(roughBytes(holders)).toBeGreaterThan(20 * 2 * 44);
+    expect(roughBytes(1)).toBe(8);
+    expect(roughBytes('abc')).toBe(19);
+    const huge = Array.from({ length: 100_000 }, () => 1);
+    // Scaled from what it saw: within a factor of two of the full walk (16, then 16 a field and 8 a number).
+    const full = 16 + 24 * huge.length;
+    expect(roughBytes(huge)).toBeGreaterThan(full / 2);
+    expect(roughBytes(huge)).toBeLessThan(full * 2);
   });
 
   it('mem.json keeps the sample and the recent probes; only well-formed probes are read back', () => {
@@ -104,7 +139,8 @@ describe('in the worker', () => {
   it('keeps a probe sample each minute with the major collections, and one just before and just after each save', async () => {
     const stateDir = tempState();
     const timers = virtualTimers(T);
-    const h = makeWorker({ stateDir, timers, seedWaitMs: 0 });
+    // F6: the Helius stream's held catch-up notifications, as main passes them (`RpcStream.heldNotices`).
+    const h = makeWorker({ stateDir, timers, seedWaitMs: 0, streamHeld: () => 1_234 });
     const m = new Market(h);
     const started = h.worker.start();
     while (!h.order.includes('start helius-ws')) await new Promise<void>((r) => setImmediate(r));
@@ -112,6 +148,7 @@ describe('in the worker', () => {
     expect(await started).toEqual({ ok: true });
     await m.run(PROBE_EVERY_MS + 11_000, 500, () => m.slot());
     const recent = readProbe(stateDir);
+    expect(recent.at(-1)!.counts.find((c) => c.code === 'feed_stream_held')?.count).toBe(1_234);
     expect(recent.length).toBeGreaterThanOrEqual(2);
     expect(JSON.parse(readFileSync(join(stateDir, MEM_FILE), 'utf8'))).not.toHaveProperty('recent');
     const codes = new Set(recent.at(-1)!.counts.map((c) => c.code));
