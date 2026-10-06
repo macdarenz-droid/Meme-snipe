@@ -4,7 +4,7 @@
 // token balances, that the pool's base vault, quote vault and virtual quote reserves are the same right before and
 // right after the event. Raw `getTransaction` results are cached under data/ (git-ignored).
 //
-//   node research/pool-noop-events/collect.ts discover <pages>      program-wide recent transactions with the events
+//   node research/pool-noop-events/collect.ts discover <pages> [sig] program-wide transactions with the events (back from sig)
 //   node research/pool-noop-events/collect.ts tapes <per-disc>      each found pool's swaps around the event
 //   node research/pool-noop-events/collect.ts report                writes data/report.json and prints the counts
 //
@@ -60,10 +60,11 @@ const discOf = (e: LocatedEvent): string | null => (e.program === 'pump_amm' && 
 interface Occurrence { sig: string; slot: number; disc: string; outerIx: number; innerIx: number; pools: string[] }
 
 /** Program-wide recent transactions; keeps those holding a target event, with the pools whose swaps appear in them. */
-const discover = async (pages: number) => {
+const discover = async (pages: number, from?: string) => {
   const found = readJson<Occurrence[]>('occurrences.json', []);
   const have = new Set(found.map((o) => `${o.sig}:${o.outerIx}:${o.innerIx}`));
-  let before: string | undefined = readJson<{ before?: string }>('cursor.json', {}).before;
+  // `from`: page back from this signature instead of the saved cursor (a window known to hold the events).
+  let before: string | undefined = from ?? readJson<{ before?: string }>('cursor.json', {}).before;
   for (let p = 0; p < pages; p++) {
     const res = (await rpc('getSignaturesForAddress', [PUMP_AMM_PROGRAM, { limit: 1000, ...(before ? { before } : {}) }])) as { signature: string; err: unknown }[];
     if (res.length === 0) break;
@@ -184,7 +185,7 @@ const report = () => {
 };
 
 const [cmd, a] = process.argv.slice(2);
-if (cmd === 'discover') await discover(Number(a ?? 1));
+if (cmd === 'discover') await discover(Number(a ?? 1), process.argv[4]);
 else if (cmd === 'tapes') await tapes(Number(a ?? 60));
 else if (cmd === 'report') report();
 else console.log('discover <pages> | tapes <per-disc> | report');
