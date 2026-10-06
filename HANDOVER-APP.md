@@ -6,7 +6,7 @@ From here on, S2 owns this file. S2 keeps it current on its own branch `claude/s
 
 ## Active S2 work
 
-Owner crash first. Exact24986078253 fourfreshPASS + GitHubCI37401395612check/historicalgreen;localfullcheck running once from14:19:32AEDT. Actualmainnetmemory69.73→0.467MiB; no unsafe coin becomes eligible. Exact245e466c3df has source-recorded bothPASS and CI37400036289green; independentPERSISTunionreviewPASS. Neither fix merged/deployed;currentbase/tag/live958. Latestreport14:01AEDTshows33unplannedrestarts,lastdeath13:06:03. EarlierS1-onlymerges/Deploy remains unresolved against owner new serveruploadrequest. Secretmetadata403preventsverifyingDEPLOY_CODEabsent; no workaround. APP/stability/RISK/SEC parked. Remainingday-scalegrowth and liveproofseparate; no READY/live-safe claim until allgates.
+The owner has put the crash first; the APP and stability queues are parked. PR249 head860782537089be2600efecaeb101e3fa19b65a5f has five fresh independent PASS reviews(facts,BT/run,PERSIST,EXIT,APP/API), published in comments6008650473 and6008759370, and green check/historical-data CI37401395612. Actual30,000-notice mainnet replay reduced retained heap69.73→0.467MiB without admitting an unsafe coin. A single unfiltered local pnpm check started14:19:32AEDT; all six type checks passed and the test result is pending. Existing PR245 head e466c3df54015383ae88805d64f41d6b40a19027 already has S1 facts/PERSIST PASS and green CI37400036289; the independent union review passes. Neither PR is merged or deployed. Current integration/tag/live code is958294a0136eb0ee4c0ca9272c2e561324ee9759. Latest report14:31AEDT: paper,33 crashes total,last death13:06:03,84.65min uptime. Owner answers are required on transferring S1-only merges/Deploy for these crash PRs and confirming DEPLOY_CODE absent; GitHub secret-metadata read returned403 and was not bypassed. Slower coverage/cache growth and3–5h/full-day crash-free proof remain separate. No readiness or sustained-stability claim yet.
 
 ## Latest handoff audit
 
@@ -140,6 +140,8 @@ S2-READY 6af4e43b707960316d8cd8419cb2e513fa9f4b60
 - These local limitations are historical. Current directly verified GitHub results are in Latest handoff audit; they do not establish that any future base-update head is green.
 
 ## S2 events (newest first)
+
+- **2026-10-06 14:37:28 AEDT** — Crash status summary refreshed: five exact-head independent reviews pass, both crash PRs have green named GitHub checks, and the one unfiltered local check continues. The latest 14:31 report still runs old code958294a0 with33 crashes total and84.65min uptime; no further crash is reported after13:06. Earlier release ownership and inaccessible secret metadata are the two pending owner clarifications. No release action is authorized by silence; no new implementation or duplicated CPU check.
 
 - **2026-10-06 14:33:10 AEDT** — New14:31AEDTprivate-report event: modepaper/git958294a0 unchanged,uptime5079s (~84.65min),unplanned33unchanged,lastdeath13:06:03. Thus no newlyreported crash in the latest30min interval; do not claim currentcrashingnow or attribute uptime to249(which remainsunmerged/undeployed). Persistenttrade-memory defect reproduced separately and3–5h/dayvalidation outstanding. FifthAPP/API exact860PASS verifiedcomment6008759370; allfivefreshreviewsandrequiredCIgreen,localfullstillpending. Ownerreleasequestionsremainunanswered; no merge/deploy/credential workaround.
 
