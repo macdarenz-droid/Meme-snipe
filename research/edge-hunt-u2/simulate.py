@@ -323,13 +323,24 @@ def run_trial(trial, pools, solusd):
     return trades, funnel
 
 
+STD_REAL, STD_BASE = 67.41, 206_900_000.0   # pump's standard create: 67.41 SOL real quote against 206.9M tokens
+
+
 def load(datadir, holdout):
+    """One migration per pool: the earliest record. A pool's later transactions can also log a Migrate instruction, and a
+    migration transaction can carry a buy in the same transaction, so its post balances are not the created pool. When
+    the post balances keep the standard pool's constant product (within 3%), the bot's migration price is the standard
+    create (CreatePoolEvent amounts); otherwise the record's own balances are used. A pool whose candles start more than
+    2 min before its earliest record migrated earlier (possibly before the window) and is excluded."""
     M = {}
     for l in open(os.path.join(datadir, 'migrations.jsonl')):
         d = json.loads(l)
-        if d.get('kind') == 'migrate' and d.get('pool') and d.get('tok') and d['pool'] not in M:
+        if d.get('kind') == 'migrate' and d.get('pool') and d.get('tok') and (d['pool'] not in M or M[d['pool']]['blockTime'] > d['blockTime']):
             M[d['pool']] = d
-    pools, cov = [], dict(migrations=len(M), fetched=0, err=0, empty=0, used=0)
+    for m in M.values():
+        if abs(m['sol'] * m['tok'] / (STD_REAL * STD_BASE) - 1) < 0.03:
+            m['sol'], m['tok'], m['migPriceSol'] = STD_REAL, STD_BASE, STD_REAL / STD_BASE
+    pools, cov = [], dict(migrations=len(M), fetched=0, err=0, empty=0, stale_window=0, earlier_migration=0, used=0)
     for pool_id, m in M.items():
         if (m['blockTime'] >= HOLDOUT_FROM) != holdout:
             continue
@@ -337,11 +348,19 @@ def load(datadir, holdout):
         if not os.path.exists(f):
             continue
         cov['fetched'] += 1
-        r = json.load(open(f))['resp']
+        o = json.load(open(f))
+        if o['migTs'] != m['blockTime']:
+            cov['stale_window'] += 1   # candles fetched for a later record; refetched by fetch_ohlcv REFETCH_WRONG=1
+            continue
+        r = o['resp']
         if '_err' in r:
             cov['err'] += 1
             continue
-        L = sorted(tuple(b) for b in r['data']['attributes']['ohlcv_list'] if b[0] + MIN > m['blockTime'] and b[1] > 0)
+        raw = r['data']['attributes']['ohlcv_list']
+        if raw and min(b[0] for b in raw) < m['blockTime'] - 120:
+            cov['earlier_migration'] += 1
+            continue
+        L = sorted(tuple(b) for b in raw if b[0] + MIN > m['blockTime'] and b[1] > 0)
         if not L:
             cov['empty'] += 1
             continue

@@ -22,11 +22,14 @@ async function rpc(method, params) {
 }
 const readMig = () => {
   const mig = new Map();
-  for (const l of fs.readFileSync(`${D}/migrations.jsonl`, 'utf8').trim().split('\n')) { try { const x = JSON.parse(l); if (x.mint && !mig.has(x.mint)) mig.set(x.mint, x); } catch {} }
+  for (const l of fs.readFileSync(`${D}/migrations.jsonl`, 'utf8').trim().split('\n')) { try { const x = JSON.parse(l); if (x.kind === 'migrate' && x.mint && x.pool && (!mig.has(x.mint) || mig.get(x.mint).blockTime > x.blockTime)) mig.set(x.mint, x); } catch {} }
   return mig;
 };
 const outF = `${D}/created.jsonl`;
-const done = new Set(fs.existsSync(outF) ? fs.readFileSync(outF, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l).mint) : []);
+// A pool's later transactions can also log a Migrate instruction; the migration is the earliest one. A check made
+// against a later record is redone (--recheck); the later line in created.jsonl wins.
+const doneAt = new Map(fs.existsSync(outF) ? fs.readFileSync(outF, 'utf8').trim().split('\n').filter(Boolean).map((l) => { const x = JSON.parse(l); return [x.mint, x.migTs]; }) : []);
+const done = new Set(doneAt.keys());
 async function check(m) {
   let before = m.sig, oldest = null, pages = 0, complete = false;
   for (;;) {
@@ -42,7 +45,11 @@ async function check(m) {
   done.add(m.mint);
   await sleep(700);
 }
-if (SIMS[0] === '--follow') {
+if (SIMS[0] === '--recheck') {
+  const todo = [...readMig().values()].filter((m) => doneAt.has(m.mint) && doneAt.get(m.mint) !== m.blockTime);
+  for (const m of todo) await check(m);
+  console.log('rechecked', todo.length);
+} else if (SIMS[0] === '--follow') {
   let idle = 0;
   while (idle < 20) {
     const todo = [...readMig().values()].filter((m) => m.kind === 'migrate' && m.sol >= 5 && !done.has(m.mint));

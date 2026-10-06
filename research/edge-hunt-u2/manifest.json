@@ -1,0 +1,30 @@
+{
+ "note": "raw data not committed (size); sha256 of the exact inputs used for results/. ohlcv_dir is sha256 over sorted lines \"<file> <sha256>\".",
+ "inputs": {
+  "migration_sigs.json": {
+   "sha256": "e8ed70a03d136e62a07f7a066e0350f8cbbc34166e265a943ab9e1cb2d0b72f2",
+   "bytes": 6255677
+  },
+  "migrations.jsonl": {
+   "sha256": "130c51801f0d81f460f1e633fa1842379e6987ed2608a324db117bb4ba2b1052",
+   "bytes": 7852913
+  },
+  "created.jsonl": {
+   "sha256": "d0892d94b7129663c6933c5ee6eeb86474be89c7766b19843fc96a19c5515785",
+   "bytes": 1597775
+  },
+  "solusd_hour.json": {
+   "sha256": "96f3783b78f181f091e700210d9e6cf16629529e544dc9e1433d501d8d8bed29",
+   "bytes": 100882
+  },
+  "preregistration.json": "8a76eec4935ec20b5cb766b027c71691883bfbb46d0f6bcf47a9b3b6458db0ca"
+ },
+ "ohlcv_dir": {
+  "files": 5309,
+  "sha256": "ccc2e21b8860861a08664c1c079b29866b6afd2516ec5ec9603ee35cdcfb08b8"
+ },
+ "outputs": {
+  "disc_final.json": "d766a17163e86d6ed522b0a62b005dc737477614269fae49d5248b0edd89562f",
+  "hold_T3.json": "3e40a47e6eb2472e4e4cbde39df3fbd27c4ed2ffc69dfff826f585772f09181a"
+ }
+}

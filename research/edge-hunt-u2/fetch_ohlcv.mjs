@@ -25,7 +25,16 @@ async function gt(path) {
 const seen = new Set(fs.readdirSync(OUT).map((f) => f.replace('.json', '')));
 let idle = 0, n = 0;
 while (idle < 20) {
-  const L = fs.existsSync(`${D}/migrations.jsonl`) ? fs.readFileSync(`${D}/migrations.jsonl`, 'utf8').trim().split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter((x) => x && x.pool && x.mint) : [];
+  const L0 = fs.existsSync(`${D}/migrations.jsonl`) ? fs.readFileSync(`${D}/migrations.jsonl`, 'utf8').trim().split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter((x) => x && x.kind === 'migrate' && x.pool && x.mint) : [];
+  // A pool's later transactions can also log a Migrate instruction: the migration is the pool's earliest record.
+  const first = new Map();
+  for (const x of L0) if (!first.has(x.pool) || first.get(x.pool).blockTime > x.blockTime) first.set(x.pool, x);
+  const L = [...first.values()];
+  if (process.env.REFETCH_WRONG) for (const x of L) {
+    if (!seen.has(x.pool)) continue;
+    const f = JSON.parse(fs.readFileSync(`${OUT}/${x.pool}.json`, 'utf8'));
+    if (f.migTs !== x.blockTime) seen.delete(x.pool);
+  }
   // H8 dust (< 5 SOL at migration) and H9 (created < 5 min before migration) reject in every trial: skip those graduates.
   const h9 = new Map();
   if (fs.existsSync(`${D}/created.jsonl`)) for (const l of fs.readFileSync(`${D}/created.jsonl`, 'utf8').trim().split('\n').filter(Boolean)) {
