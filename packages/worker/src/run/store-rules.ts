@@ -4,7 +4,7 @@
 import type { Collapse, Forget, Retention, Shape } from '../../../core/src/engine/index.ts';
 import { SEED_KEY, SOL_PRICE_KEY } from '../engine/strategy.ts';
 import { FACT_READS_KEY } from '../facts/source.ts';
-import { FUNDER_KEEP_MS, RAW } from '../../../core/src/facts/index.ts';
+import { FUNDER_KEEP_MS, HOLE_FETCH_PREFIX, RAW } from '../../../core/src/facts/index.ts';
 import { CURVE_VOLUME_KEY, EXEC_HEALTH_KEY, GRADUATES_KEY, LOG_CREATE_PREFIX, RUG_CHECK_PREFIX, SOL_USD_KEY, TX_CREATE_PREFIX, candlesKey, carryKey, compactCreate, compactCurveTrade, curveTradeKeys, mintKey, poolKey, streamKey, tradeTailCollapse } from '../../../core/src/gates/index.ts';
 
 const POOL_PREFIX = poolKey('');
@@ -75,9 +75,10 @@ const OTHER = /^(?:logs:)?(?:pump|pump_amm):other:/;
  * F4 (supervisor ruling): a creator's on-demand deployer check (`coverage:rugs:deployer:<creator>`, RUG-1c), stated
  * whole at every check, read by H14 as of now (`Evidence.read`; `history` reads only the `coverage:<stream>:start|gap|
  * resume` keys, which it is not); and a feed's status (`feed:status:<feed>`), which the worker acts on as it arrives
- * and nothing looks up in the store.
+ * and nothing looks up in the store. TRADE-GAP-HEAL: a hole's fetch outcome (`hole-fetch:<via>`), which the producer
+ * acts on as it is released and nothing looks up in the store.
  */
-const STATED = [RUG_CHECK_PREFIX, 'feed:status:'];
+const STATED = [RUG_CHECK_PREFIX, 'feed:status:', HOLE_FETCH_PREFIX];
 const NEWEST_ONLY = (): boolean => false;
 
 /**

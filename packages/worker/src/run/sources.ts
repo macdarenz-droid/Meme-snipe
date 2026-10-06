@@ -374,13 +374,14 @@ export class LiveProviders {
   }
 
   /**
-   * A transaction at confirmed (P2), put on the feed; true when found and readable. One DEC-1 cannot decode reads as
-   * not found, so a cut trade log it was fetched for still becomes a rugs gap (a decode failure is a fact gap).
+   * A transaction at confirmed (P2 unless asked lower), put on the feed; true when found and readable. One DEC-1 cannot
+   * decode reads as not found, so a cut trade log it was fetched for still becomes a rugs gap (a decode failure is a
+   * fact gap). TRADE-GAP-HEAL's pool-trade holes ask at P3, below every position and exit read.
    */
-  async fetchTx(signature: string): Promise<boolean> {
+  async fetchTx(signature: string, priority: typeof P2 | typeof P3 = P2): Promise<boolean> {
     if (this.#fetcher === null) return false;
     try {
-      const found = await this.#fetcher.fetch(signature, P2);
+      const found = await this.#fetcher.fetch(signature, priority);
       return found !== null && found.undecodable !== true;
     } catch {
       return false;

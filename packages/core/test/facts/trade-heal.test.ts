@@ -1,0 +1,318 @@
+// TRADE-GAP-HEAL: a cut or undecodable log on a pool's trade stream is a hole; once WORKER-1 has fetched the hole's
+// transaction (its events released, then its `hole-fetch:` outcome), the producer puts every swap since the book's mark
+// in exact chain order and heals the hole only when the reserves chain is exact again. Fail closed otherwise. Swaps
+// here continue the fixture pool's real read; each one's logged amounts come from the exact PumpSwap math.
+import { describe, expect, it } from 'vitest';
+import { type PoolState, poolBuyExactBase, poolSell } from '../../src/amm/index.ts';
+import { startSession, TRIAL_POLICY } from '../../src/config/index.ts';
+import { OFF_CHAIN, type MarketEvent, type Moment } from '../../src/engine/index.ts';
+import { HEAL_WAIT_MS, HOLE_FETCH_PREFIX, RAW, STREAMS } from '../../src/facts/index.ts';
+import { observedFeeContext } from '../../src/fills/index.ts';
+import { Evidence, candlesKey, parseCandles, parsePool, poolKey, streamKey } from '../../src/gates/index.ts';
+import { bps } from '../../src/units/index.ts';
+import { FIX, FactWorld, MINT, POOL, coverage, offchain, slotNotice } from './helpers.ts';
+
+const policy = startSession(TRIAL_POLICY).policy;
+const R = BigInt(FIX.accountsRead.slot);
+const T0 = 1_791_100_000_000;
+const STREAM = STREAMS.trades(POOL);
+const VIA = `logs:${POOL}`;
+const FEES = { split: { lp: bps(2), protocol: bps(93), creator: bps(30) }, buybackFeeBps: bps(5_000), instruction: 'v1' as const };
+const SUPPLY = 1_000_000_000_000_000n;
+const ctx = observedFeeContext(FEES, SUPPLY, { mayhemMode: false, transferFee: false, transferHook: false });
+
+/** Receipt time of a slot; trade timestamps step 25 s a slot, so the candles span several minutes. */
+const at = (slot: bigint): number => T0 + Number(slot - R) * 400;
+const stamp = (slot: bigint): bigint => BigInt(Math.floor(T0 / 1000)) + (slot - R) * 25n;
+
+interface Swap {
+  readonly sig: string;
+  readonly slot: bigint;
+  readonly after: PoolState;
+  readonly name: 'BuyEvent' | 'SellEvent';
+  readonly data: Record<string, unknown>;
+}
+
+let n = 0;
+/** A swap on `pre`, its amounts from the exact math. */
+const swap = (side: 'buy' | 'sell', pre: PoolState, base: bigint, slot: bigint): Swap => {
+  const q = side === 'buy' ? poolBuyExactBase(pre, base, ctx) : poolSell(pre, base, ctx);
+  if (!q.ok) throw new Error(q.reason);
+  const t = q.trade;
+  const common = {
+    timestamp: stamp(slot), poolBaseTokenReserves: pre.baseReserve, poolQuoteTokenReserves: pre.quoteVault, virtualQuoteReserves: pre.virtualQuoteReserves,
+    lpFeeBasisPoints: 2n, lpFee: t.lpFee, protocolFeeBasisPoints: 93n, protocolFee: t.protocolFee, coinCreatorFeeBasisPoints: 30n, coinCreatorFee: t.creatorFee,
+    buybackFeeBasisPoints: 5_000n, buybackFee: t.buybackFee, baseSupply: SUPPLY, pool: POOL, user: 'trader',
+  };
+  const data = side === 'buy'
+    ? { ...common, baseAmountOut: base, quoteAmountIn: t.quote, quoteAmountInWithLpFee: t.quote + t.lpFee, userQuoteAmountIn: t.userQuote, ixName: 'buy' }
+    : { ...common, baseAmountIn: base, quoteAmountOut: t.quote, quoteAmountOutWithoutLpFee: t.quote - t.lpFee, userQuoteAmountOut: t.userQuote };
+  return { sig: `sig${n++}`, slot, after: t.after, name: side === 'buy' ? 'BuyEvent' : 'SellEvent', data };
+};
+
+/** The swap's confirmed log line on the pool watch, released at its slot (rank `k` in it); `truncated` when cut after it. */
+const logOf = (s: Swap, k = 0, truncated = false): MarketEvent => ({
+  kind: 'market', id: `log:${s.sig}:confirmed:00000`, moment: { slot: s.slot, txIndex: 2 ** 32 + k, ixIndex: 2 ** 36, receivedAt: at(s.slot) + k },
+  key: `logs:pump_amm:${s.name}:${POOL}`,
+  value: { event: { program: 'pump_amm', name: s.name, data: s.data, logIndex: 0 }, signature: s.sig, txSlot: s.slot, truncated, via: VIA, commitment: 'confirmed', source: 'helius', backfilled: false, seq: n++ },
+});
+
+/** A cut log with no event left (`logs:truncated:`), or one DEC-1 cannot read (`logs:undecodable:`), at its slot. */
+const hole = (sig: string, slot: bigint, kind: 'truncated' | 'undecodable' = 'truncated', k = 0): MarketEvent => ({
+  kind: 'market', id: `log:${sig}:confirmed:${kind}`, moment: { slot, txIndex: 2 ** 32 + k, ixIndex: 2 ** 36, receivedAt: at(slot) + k },
+  key: `logs:${kind}:${VIA}`, value: { signature: sig, source: 'helius', backfilled: false, seq: n++ },
+});
+
+/** A fetched transaction's events (`ev:`), released late: off-chain at `arrives`. */
+const fetched = (sig: string, slot: bigint, arrives: bigint, events: readonly { name: string; data?: Record<string, unknown> }[], ix = 1): MarketEvent[] =>
+  events.map((e, i) => ({
+    kind: 'market', id: `ev:${sig}:00000:${String(i).padStart(5, '0')}`, moment: { slot: arrives, txIndex: OFF_CHAIN, ixIndex: ix, receivedAt: at(arrives) + 10 },
+    key: `pump_amm:${e.name}:${POOL}`,
+    value: { event: { program: 'pump_amm', name: e.name, ...(e.data === undefined ? { discriminator: '0011223344556677' } : { data: e.data }), signature: sig, slot, txIndex: 0, outerIx: 0, innerIx: i }, txSlot: slot, blockTime: null, source: 'helius', backfilled: false, seq: n++ },
+  }));
+const fetchedSwaps = (sig: string, slot: bigint, arrives: bigint, swaps: readonly Swap[], ix = 1): MarketEvent[] => fetched(sig, slot, arrives, swaps.map((s) => ({ name: s.name, data: s.data })), ix);
+
+/** WORKER-1's fetch outcome for a hole, after the fetched transaction's events. */
+const outcome = (sig: string, found: boolean, arrives: bigint, extraMs = 20, ix = 2): MarketEvent => ({
+  kind: 'market', id: `${HOLE_FETCH_PREFIX}${VIA}#${n++}`, moment: { slot: arrives, txIndex: OFF_CHAIN, ixIndex: ix, receivedAt: at(arrives) + extraMs },
+  key: `${HOLE_FETCH_PREFIX}${VIA}`, value: { value: { signature: sig, found }, source: 'worker', backfilled: false, seq: n++ },
+});
+
+/** A pump event of a fetched transaction (create pool, graduation, migration), at its slot. */
+const lifecycleEv = (name: string, data: Record<string, unknown>, slot: bigint, i: number): MarketEvent => ({
+  kind: 'market', id: `ev:life${i}:00000:00000`, moment: { slot, txIndex: 2 ** 32 + i, ixIndex: 1, receivedAt: at(slot) },
+  key: `${name === 'CreatePoolEvent' ? 'pump_amm' : 'pump'}:${name}:${MINT}`,
+  value: { event: { program: name === 'CreatePoolEvent' ? 'pump_amm' : 'pump', name, data, signature: `life${i}`, slot, txIndex: 0, outerIx: 0, innerIx: 0 }, txSlot: slot, blockTime: null, source: 'helius', backfilled: false, seq: n++ },
+});
+
+/** The stream started, the coin graduated and migrated to POOL, and the fixture read (the chain's base) applied. */
+const opened = (): { world: FactWorld; state: PoolState } => {
+  const read = (): MarketEvent => offchain(RAW.accounts(MINT), { ...FIX.accountsRead, slot: R }, R, at(R), 'helius');
+  const p = parsePool(new FactWorld().push(read()).last(poolKey(MINT)))!;
+  const state: PoolState = { baseReserve: p.baseVault, quoteVault: p.quoteVault, virtualQuoteReserves: p.pool.virtualQuoteReserves ?? 0n };
+  const world = new FactWorld();
+  const P = R - 5n;
+  world.push(
+    coverage(STREAM, 'start', { fromSlot: P - 1n, via: VIA }, P - 2n, at(P - 2n)),
+    lifecycleEv('CompleteEvent', { mint: MINT, timestamp: stamp(P - 1n) }, P - 1n, 0),
+    lifecycleEv('CreatePoolEvent', { timestamp: stamp(P), baseMint: MINT, pool: POOL, poolQuoteAmount: state.quoteVault, poolBaseAmount: state.baseReserve }, P, 1),
+    lifecycleEv('CompletePumpAmmMigrationEvent', { mint: MINT, pool: POOL, timestamp: stamp(P) }, P, 2),
+    read(),
+  );
+  return { world, state };
+};
+
+/** Five chained swaps, one a slot, from the read's state. */
+const tape = (state: PoolState): Swap[] => {
+  const out: Swap[] = [];
+  let pre = state;
+  const sizes = [1_000_000n, 3_000_000n, 2_000_000n, 1_500_000n, 2_500_000n];
+  sizes.forEach((b, i) => {
+    const s = swap(i % 2 === 0 ? 'buy' : 'sell', pre, state.baseReserve / 1000n + b, R + 1n + BigInt(i));
+    out.push(s);
+    pre = s.after;
+  });
+  return out;
+};
+
+const now = (slot: bigint): Moment => ({ slot, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt: at(slot) + 100 });
+const H = R + 7n;
+const head = (w: FactWorld): FactWorld => w.push(slotNotice(H, at(H) + 50));
+const candles = (w: FactWorld) => parseCandles(w.last(candlesKey(MINT)))!;
+const gapFree = (w: FactWorld) => (w.last(streamKey(STREAM)) as { gapFreeSince: bigint }).gapFreeSince;
+const verdicts = (w: FactWorld) => {
+  const e = new Evidence(w.ctx(now(H)), policy);
+  const c = e.read('candles', candlesKey(MINT), parseCandles, 'state', 'H11');
+  const p = e.read('pool', poolKey(MINT), parsePool, 'state', 'H12');
+  return { candles: c.ok ? 'ok' : `${c.reason.gate}:${c.reason.code}`, pool: p.ok ? 'ok' : `${p.reason.gate}:${p.reason.code}` };
+};
+/** A fact without its receipt time (a healed fact is known when the heal ran; the complete tape's earlier). */
+const noReceipt = (v: unknown): unknown => {
+  const o = v as { obs: Record<string, unknown> };
+  const { receivedAt: _r, ...obs } = o.obs;
+  return { ...o, obs };
+};
+
+/** The complete tape: every swap's log line. */
+const complete = () => {
+  const { world, state } = opened();
+  const s = tape(state);
+  world.push(...s.map((x) => logOf(x)));
+  return { world: head(world), s };
+};
+
+/** The same tape with swap 3 (index 2) cut on the watch, its transaction fetched after swap 5, then the outcome. */
+const cut = (o: { found?: boolean; send?: 'none' | 'tx' | 'both'; fetchedSwaps?: (s: Swap[]) => Swap[] } = {}) => {
+  const { world, state } = opened();
+  const s = tape(state);
+  world.push(logOf(s[0]!), logOf(s[1]!), hole(s[2]!.sig, s[2]!.slot), logOf(s[3]!), logOf(s[4]!));
+  const arrives = R + 6n;
+  const send = o.send ?? 'both';
+  if (send !== 'none') world.push(...fetchedSwaps(s[2]!.sig, s[2]!.slot, arrives, o.fetchedSwaps?.(s) ?? [s[2]!]));
+  if (send === 'both') world.push(outcome(s[2]!.sig, o.found ?? true, arrives));
+  return { world: head(world), s };
+};
+
+describe('a hole in a pool\'s trade stream, healed by its fetched transaction (TRADE-GAP-HEAL)', () => {
+  it('the complete tape: candles and pool current, H11 and H12 pass', () => {
+    const { world } = complete();
+    expect(verdicts(world)).toEqual({ candles: 'ok', pool: 'ok' });
+  });
+
+  it('a cut log alone is a gap: H11 refuses (H16 gap) and the pool is stale until a later swap re-bases it', () => {
+    const { world } = cut({ send: 'none' });
+    expect(gapFree(world)).toBe(R + 4n);
+    expect(verdicts(world).candles).toBe('H16:gap');
+  });
+
+  it('a cut log, then its fetched transaction and the found outcome: the hole heals and every fact equals the complete tape', () => {
+    const a = cut();
+    const b = complete();
+    expect(gapFree(a.world)).toBe(gapFree(b.world));
+    expect(noReceipt(candles(a.world))).toEqual(noReceipt(candles(b.world)));
+    expect(noReceipt(a.world.last(poolKey(MINT)))).toEqual(noReceipt(b.world.last(poolKey(MINT))));
+    expect(verdicts(a.world)).toEqual({ candles: 'ok', pool: 'ok' });
+    expect(verdicts(a.world)).toEqual(verdicts(b.world));
+    // Every fact key either tape released ends at the same value (receipt times aside).
+    const lastFacts = (w: FactWorld) => {
+      const out = new Map<string, unknown>();
+      for (const e of w.released) if (e.id.includes('~')) out.set(e.key, noReceipt(e.value));
+      return [...out].sort(([x], [y]) => (x < y ? -1 : 1));
+    };
+    expect(lastFacts(a.world)).toEqual(lastFacts(b.world));
+    // No lookahead: the healed facts are released at the outcome's moment, not before.
+    const healed = a.world.facts(candlesKey(MINT)).at(-1)!;
+    expect(healed.moment.slot).toBe(R + 6n);
+    expect(healed.id.startsWith(HOLE_FETCH_PREFIX)).toBe(true);
+  });
+
+  it('an undecodable log heals the same way', () => {
+    const { world, state } = opened();
+    const s = tape(state);
+    world.push(logOf(s[0]!), logOf(s[1]!), hole(s[2]!.sig, s[2]!.slot, 'undecodable'), logOf(s[3]!), logOf(s[4]!));
+    world.push(...fetchedSwaps(s[2]!.sig, s[2]!.slot, R + 6n, [s[2]!]), outcome(s[2]!.sig, true, R + 6n));
+    head(world);
+    expect(noReceipt(candles(world))).toEqual(noReceipt(candles(complete().world)));
+    expect(verdicts(world)).toEqual({ candles: 'ok', pool: 'ok' });
+  });
+
+  it('a log cut after its first swap (two swaps in the transaction): the fetched copy brings the second, the first counts once', () => {
+    // Complete: swap 3 and swap 3b in one transaction at slot R+3.
+    const build = (cutIt: boolean) => {
+      const { world, state } = opened();
+      const s = tape(state);
+      const s3b = swap('buy', s[2]!.after, 777_777n, s[2]!.slot);
+      const s3bSig = { ...s3b, sig: s[2]!.sig };
+      const s4 = swap('sell', s3b.after, 1_234_567n, R + 4n);
+      const s5 = swap('buy', s4.after, 2_345_678n, R + 5n);
+      const logs: MarketEvent[] = [logOf(s[0]!), logOf(s[1]!)];
+      if (cutIt) logs.push(logOf(s[2]!, 0, true));
+      else logs.push(logOf(s[2]!), { ...logOf(s3bSig), id: `log:${s[2]!.sig}:confirmed:00001` });
+      logs.push(logOf(s4), logOf(s5));
+      world.push(...logs);
+      if (cutIt) world.push(...fetchedSwaps(s[2]!.sig, s[2]!.slot, R + 6n, [s[2]!, s3bSig]), outcome(s[2]!.sig, true, R + 6n));
+      return head(world);
+    };
+    const a = build(true);
+    const b = build(false);
+    expect(noReceipt(candles(a))).toEqual(noReceipt(candles(b)));
+    expect(noReceipt(a.last(poolKey(MINT)))).toEqual(noReceipt(b.last(poolKey(MINT))));
+    expect(verdicts(a)).toEqual({ candles: 'ok', pool: 'ok' });
+  });
+
+  it('a failed fetch keeps the gap: not found, no outcome yet (pending), or none at all within the wait (capped or never sent)', () => {
+    expect(verdicts(cut({ found: false }).world).candles).toBe('H16:gap');
+    expect(gapFree(cut({ found: false }).world)).toBe(R + 4n);
+    // Its transaction released but no outcome yet: still pending.
+    expect(verdicts(cut({ send: 'tx' }).world).candles).toBe('H16:gap');
+    // A found outcome that comes after the wait (or a capped fetch that never sends one): the hole stays.
+    const { world, state } = opened();
+    const s = tape(state);
+    world.push(logOf(s[0]!), logOf(s[1]!), hole(s[2]!.sig, s[2]!.slot), logOf(s[3]!), logOf(s[4]!));
+    const late = R + 6n;
+    world.push(...fetchedSwaps(s[2]!.sig, s[2]!.slot, late, [s[2]!]), outcome(s[2]!.sig, true, late, HEAL_WAIT_MS + 1_000));
+    head(world);
+    expect(verdicts(world).candles).toBe('H16:gap');
+  });
+
+  it('a found outcome with no swap released (the transaction did not carry the missing swap): the chain does not hold, the hole stays', () => {
+    const { world } = cut({ fetchedSwaps: () => [] });
+    expect(verdicts(world).candles).toBe('H16:gap');
+    expect(gapFree(world)).toBe(R + 4n);
+  });
+
+  it('a hole that hides a reserves change heals only when the chain is exact: a fetched swap that does not chain keeps it', () => {
+    // The fetched transaction carries a swap whose amounts differ from what happened (it does not reach swap 4's start).
+    const { world } = cut({ fetchedSwaps: (s) => [swap('buy', s[1]!.after, 999n, s[2]!.slot)].map((x) => ({ ...x, sig: s[2]!.sig })) });
+    expect(verdicts(world).candles).toBe('H16:gap');
+    // A swap missed outside the hole (swap 4's log never came): the chain breaks there, so the hole is not healed.
+    const { world: w2, state } = opened();
+    const s = tape(state);
+    w2.push(logOf(s[0]!), logOf(s[1]!), hole(s[2]!.sig, s[2]!.slot), logOf(s[4]!));
+    w2.push(...fetchedSwaps(s[2]!.sig, s[2]!.slot, R + 6n, [s[2]!]), outcome(s[2]!.sig, true, R + 6n));
+    head(w2);
+    expect(verdicts(w2).candles).toBe('H16:gap');
+  });
+
+  it('a hole whose transaction also moved the pool another way (a deposit, an unnamed event) is never healed', () => {
+    const { world, state } = opened();
+    const s = tape(state);
+    world.push(logOf(s[0]!), logOf(s[1]!), hole(s[2]!.sig, s[2]!.slot), logOf(s[3]!), logOf(s[4]!));
+    world.push(...fetched(s[2]!.sig, s[2]!.slot, R + 6n, [{ name: s[2]!.name, data: s[2]!.data }, { name: 'other' }]), outcome(s[2]!.sig, true, R + 6n));
+    head(world);
+    expect(verdicts(world).candles).toBe('H16:gap');
+  });
+
+  it('out of order: same-slot swaps released in the wrong order, and the hole\'s swap fetched last, are put back in chain order', () => {
+    // Complete: s0, s1, then at slot R+3: s2 and s2b (s2 first on chain), then s3, s4.
+    const build = (mode: 'complete' | 'scrambled') => {
+      const { world, state } = opened();
+      const s = tape(state);
+      const s2b = swap('sell', s[2]!.after, 444_444n, s[2]!.slot);
+      const s3 = swap('buy', s2b.after, 1_111_111n, R + 4n);
+      const s4 = swap('sell', s3.after, 2_222_222n, R + 5n);
+      if (mode === 'complete') world.push(logOf(s[0]!), logOf(s[1]!), logOf(s[2]!, 0), logOf(s2b, 1), logOf(s3), logOf(s4));
+      else {
+        // s2b's log arrives first in its slot; s2's log is cut (released after it); s2 is fetched last.
+        world.push(logOf(s[0]!), logOf(s[1]!), logOf(s2b, 0), hole(s[2]!.sig, s[2]!.slot, 'truncated', 1), logOf(s3), logOf(s4));
+        world.push(...fetchedSwaps(s[2]!.sig, s[2]!.slot, R + 6n, [s[2]!]), outcome(s[2]!.sig, true, R + 6n));
+      }
+      return head(world);
+    };
+    const a = build('scrambled');
+    const b = build('complete');
+    expect(noReceipt(candles(a))).toEqual(noReceipt(candles(b)));
+    expect(noReceipt(a.last(poolKey(MINT)))).toEqual(noReceipt(b.last(poolKey(MINT))));
+    expect(verdicts(a)).toEqual({ candles: 'ok', pool: 'ok' });
+  });
+
+  it('two holes heal only once both transactions are in; a later swap keeps chaining on the healed state', () => {
+    const { world, state } = opened();
+    const s = tape(state);
+    world.push(logOf(s[0]!), hole(s[1]!.sig, s[1]!.slot), logOf(s[2]!), hole(s[3]!.sig, s[3]!.slot), logOf(s[4]!));
+    world.push(slotNotice(R + 6n, at(R + 6n)), ...fetchedSwaps(s[1]!.sig, s[1]!.slot, R + 6n, [s[1]!]), outcome(s[1]!.sig, true, R + 6n));
+    expect(gapFree(world)).toBe(R + 5n);
+    world.push(...fetchedSwaps(s[3]!.sig, s[3]!.slot, R + 6n, [s[3]!], 3), outcome(s[3]!.sig, true, R + 6n, 30, 4));
+    head(world);
+    expect(noReceipt(candles(world))).toEqual(noReceipt(candles(complete().world)));
+    expect(verdicts(world)).toEqual({ candles: 'ok', pool: 'ok' });
+    // The next swap applies on the healed chain, clean.
+    const s6 = swap('buy', s[4]!.after, 1_000_000n, H + 1n);
+    world.push(logOf(s6), slotNotice(H + 1n, at(H + 1n) + 50));
+    const p = parsePool(world.last(poolKey(MINT)))!;
+    expect(p.obs.quality).toEqual([]);
+    expect(p.baseVault).toBe(s6.after.baseReserve);
+  });
+
+  it('a hole before the book has a swap to anchor on stays (fail closed)', () => {
+    const { world, state } = opened();
+    const s = tape(state);
+    world.push(hole(s[0]!.sig, s[0]!.slot), logOf(s[1]!), logOf(s[2]!), logOf(s[3]!), logOf(s[4]!));
+    world.push(...fetchedSwaps(s[0]!.sig, s[0]!.slot, R + 6n, [s[0]!]), outcome(s[0]!.sig, true, R + 6n));
+    head(world);
+    expect(verdicts(world).candles).toBe('H16:gap');
+    // The hole's late fetched swap is never applied out of order: the chain, re-based by the next swap, stays clean.
+    expect(verdicts(world).pool).toBe('ok');
+    expect(parsePool(world.last(poolKey(MINT)))!.baseVault).toBe(s[4]!.after.baseReserve);
+  });
+});
