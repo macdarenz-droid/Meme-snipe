@@ -852,17 +852,17 @@ export class LiveStrategy implements Strategy {
   watchedPools(): Map<string, { readonly mint: string; readonly held: boolean; readonly fromSlot?: bigint }> {
     const exitHeld = new Set([...this.#exits.keys()].map((pid) => this.#mintOf(pid)));
     for (const p of Object.values(this.#book?.positions ?? {})) if (p.status !== 'closed') exitHeld.add(String(p.mint));
-    const held = new Set(exitHeld);
-    for (const s of this.#seeds.values()) held.add(s.mint);
-    for (const i of Object.values(this.#book?.intents ?? {})) if (i.intent.purpose === 'entry' || this.#mayLand(String(i.intent.mint))) held.add(String(i.intent.mint));
+    const protectedMints = new Set(exitHeld);
+    for (const s of this.#seeds.values()) protectedMints.add(s.mint);
+    for (const i of Object.values(this.#book?.intents ?? {})) if (i.intent.purpose === 'entry' || this.committed(String(i.intent.mint))) protectedMints.add(String(i.intent.mint));
     const out = new Map<string, { mint: string; held: boolean; fromSlot?: bigint }>();
-    for (const mint of new Set([...this.watched(), ...held])) {
-      if (this.#stoppedPools.has(mint) && !held.has(mint)) continue;
+    for (const mint of new Set([...this.watched(), ...protectedMints])) {
+      if (this.#stoppedPools.has(mint) && !this.#poolProtected(mint)) continue;
       const pool = this.#poolOfMint.get(mint);
       // A candidate's pool is watched from its migration (S0-ZERO): its candles are observed from the pool's creation.
       // A held pool is already watched (an exit never waits on a catch-up).
       const from = this.#cands.has(mint) && !exitHeld.has(mint) ? this.#migrationSlot.get(mint) : undefined;
-      if (pool !== undefined) out.set(pool, { mint, held: held.has(mint), ...(from === undefined ? {} : { fromSlot: from }) });
+      if (pool !== undefined) out.set(pool, { mint, held: this.committed(mint), ...(from === undefined ? {} : { fromSlot: from }) });
     }
     for (const [mint, t] of this.#tail) if (!this.#stoppedPools.has(mint) && !out.has(t.pool)) out.set(t.pool, { mint, held: false });
     return out;
@@ -1393,7 +1393,16 @@ export class LiveStrategy implements Strategy {
    */
   #held(mint: string): boolean {
     if (this.watched().has(mint)) return true;
-    return this.#money(mint);
+    return this.#poolProtected(mint);
+  }
+
+  /** Every entry keeps its pool/state, even terminal without attempts; money priority remains `committed` only. */
+  #hasEntry(mint: string): boolean {
+    return Object.values(this.#book?.intents ?? {}).some((i) => String(i.intent.mint) === mint && i.intent.purpose === 'entry');
+  }
+
+  #poolProtected(mint: string): boolean {
+    return this.committed(mint) || this.#hasEntry(mint);
   }
 
   /**
@@ -1440,7 +1449,10 @@ export class LiveStrategy implements Strategy {
   #book: StrategyContext['book'] | null = null;
 
   #forget(mint: string): void {
-    if (this.#held(mint)) return;
+    if (this.#held(mint)) {
+      if (this.#hasEntry(mint)) this.#letGoLater.add(mint);
+      return;
+    }
     const pool = this.#poolOfMint.get(mint);
     if (pool !== undefined) this.#mintOfPool.delete(pool);
     for (const m of [this.#poolOfMint, this.#observedFees, this.#tradeAt, this.#deployerSales, this.#flow, this.#deployerMemo, this.#migrationSlot, this.#swapAt, this.#inputsRestored]) m.delete(mint);
@@ -2337,23 +2349,19 @@ export class LiveStrategy implements Strategy {
       if (this.#stoppedPools.has(cand.mint) || this.#batchOpen.has(cand.mint)) continue;
       // A candidate itself is kept. Every money/exit path holds its swaps, including a seed before it is booked and
       // a terminal entry with an attempt which could land late. An entry already in the book is never cut.
-      if (this.committed(cand.mint)
-        || Object.values(ctx.book.intents).some((i) => String(i.intent.mint) === cand.mint && i.intent.purpose === 'entry')) continue;
-      // These gates' irreversible verdicts do not depend on trade size or a quote. The request still satisfies the
-      // actual gate evaluator's contract; no fabricated round-trip pass can reach an entry or H15.
+      if (this.#poolProtected(cand.mint)) continue;
+      // Use the full actual staged verdict, including H16 from every reached gate, not just the selected rejects.
+      // This request cannot pass H15 or propose an entry: no fabricated quote/simulation success is supplied.
       const req = { mint: cand.mint, universe: c.universe, notional: session.policy.capital.minNotional, spend: 1n as Lamports, roundTrip: { ok: false as const, reason: 'missing-params' as const, detail: 'swap-watch verdict needs no trade quote' } };
-      const hard = evaluateHardRejects(gctx, deps, req, { only: ['H8', 'H9'], stopAtFirst: false });
+      const expiry = this.#createExpiry(cand.mint, gctx);
+      // Most candidates cannot be cut: do not scan accounts/holders on every frame just to discover that again.
+      // This is the actual H9 gate, only a prefilter; every proposed drop still needs the full staged H16 check.
+      if (expiry === null && !evaluateHardRejects(gctx, deps, req, { only: ['H9'] }).reasons.some((r) => r.gate === 'H9' && r.code === 'instant-graduation')) continue;
+      const { hard } = stagedHardRejects(gctx, deps, req);
       // H16 wins over a known adverse reason: unknown, partial, stale or unconfirmed evidence never drops a watch.
       if (hard.reasons.some((r) => r.gate === 'H16')) continue;
-      const read = gctx.lookup(migrationKey(cand.mint));
-      const migration = read.ok ? parseMigration(read.value) : null;
-      // H11 examines the last closed candle at this policy's checkpoint. Before it, that candle can still change.
-      const chase = migration !== null && ctx.now.receivedAt >= migration.migratedAtMs + session.policy.gates.chaseCheckAfterMs
-        ? evaluateHardRejects(gctx, deps, req, { only: ['H11'], stopAtFirst: false }) : null;
-      if (chase?.reasons.some((r) => r.gate === 'H16')) continue;
-      const expiry = this.#createExpiry(cand.mint, gctx);
-      const reason: GateReasonLine | undefined = expiry ?? hard.reasons.find((r) => (r.gate === 'H8' && r.code === 'dust-at-migration') || (r.gate === 'H9' && r.code === 'instant-graduation'))
-        ?? chase?.reasons.find((r) => r.gate === 'H11' && r.code === 'chase-at-5m');
+      // H8/H11 still need observed swaps and REC-1 tails: dropping them degrades staged G3 evidence to H16.
+      const reason: GateReasonLine | undefined = expiry ?? hard.reasons.find((r) => r.gate === 'H9' && r.code === 'instant-graduation');
       if (reason === undefined) continue;
       this.#stoppedPools.add(cand.mint);
       out.push({ action: null, reasons: ['pool watch stopped', c.universe, cand.mint, reason.code, reason.detail ?? ''] });

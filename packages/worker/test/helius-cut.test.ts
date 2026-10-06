@@ -3,17 +3,18 @@ import { FILL_CONFIG, RESEARCH_CONFIG, RUG_CONFIG } from '../../core/src/config/
 import { emptyBook } from '../../core/src/lifecycle/book.ts';
 import { newEntryIntent, newPosition } from '../../core/src/lifecycle/index.ts';
 import { entryKey, intentId, mint, positionId } from '../../core/src/domain/index.ts';
-import { lamports } from '../../core/src/units/index.ts';
+import { lamports, raw } from '../../core/src/units/index.ts';
 import type { StrategyContext } from '../../core/src/engine/index.ts';
-import { candlesKey, createKey, migrationKey, poolKey } from '../../core/src/gates/index.ts';
+import { candlesKey, createKey, deployerKey, holdersKey, migrationKey, poolKey, stagedHardRejects } from '../../core/src/gates/index.ts';
 import { RAW } from '../../core/src/facts/raw.ts';
-import { MINT, NOW, POOL_ADDRESS, T, contextOf, passingFacts, patch, session } from '../../core/test/gates/world.ts';
+import { DEV, FEE_CONTEXT, MINT, NOW, POOL_ADDRESS, T, contextOf, passingFacts, patch, request, session } from '../../core/test/gates/world.ts';
+import { attempt } from '../../core/test/fixtures.ts';
 import { FakeSocketHub } from '../src/providers/index.ts';
 import { DEFAULT_LIVE_FEED, LiveFeed, rpcHandler, scriptedHttp } from '../src/providers/index.ts';
 import { RpcSocket } from '../src/providers/rpc-socket.ts';
 import { SOCKET_BYTE_KINDS } from '../src/providers/rpc-socket.ts';
 import { ALCHEMY_FREE, HELIUS_FREE, JUPITER_FREE, RUGCHECK_FREE, Scheduler, HELIUS_WS_CREDITS_PER_BYTE, HELIUS_WS_CREDITS_PER_CONNECTION, ManualTimers } from '../src/scheduler/index.ts';
-import { HALT_KEY, LiveStrategy, RESTORE_KEY, type StrategyConfig } from '../src/engine/strategy.ts';
+import { HALT_KEY, SOL_PRICE_KEY, feesKey, LiveStrategy, RESTORE_KEY, type StrategyConfig } from '../src/engine/strategy.ts';
 import { strategyConfig } from '../src/run/settings.ts';
 import { CreditBook, LiveProviders, PUMP_CREATE_AUTHORITY, PUMP_MIGRATION_AUTHORITY } from '../src/run/sources.ts';
 import { blockNetwork, testSecrets } from './helpers.ts';
@@ -112,6 +113,103 @@ describe('Helius socket waste', () => {
     rpc.stop();
   });
 
+  it.each([true, false])('preserves a held exit receipt with a shared server ID (new ACK first: %s)', (reverse) => {
+      const w = world();
+      w.step();
+      const hub = new FakeSocketHub();
+      const timers = new ManualTimers(T);
+      const rpc = new RpcSocket('held', () => 'wss://ws.test', hub.factory, timers, { initialMs: 1_000, maxMs: 8_000, idleMs: 60_000 });
+      const served: unknown[] = [];
+      const priorities: number[] = [];
+      const pools = new PoolWatch({ stream: {
+        watchLogs: (pool, opts) => { priorities.push(opts.priority); return rpc.add({ method: 'logsSubscribe', params: [{ mentions: [pool] }, { commitment: opts.commitment }], unsubscribe: 'logsUnsubscribe', notification: 'logsNotification', onNotify: (r) => served.push(r) }); },
+        unwatch: (id) => rpc.remove(id), setPriority: () => true,
+      }, timers, pools: () => w.strategy.watchedPools(), everyMs: 2_000 });
+      rpc.start(); hub.last.open(); pools.sync();
+      const old = hub.last.requests()[0]!.id;
+      // H9 removes the candidate before its ACK; a later position needs the identical pool immediately.
+      w.facts.set(createKey(MINT), instantFacts().get(createKey(MINT))!);
+      w.step(); pools.sync();
+      const p = { ...newPosition({ id: positionId(`p:${MINT}:1`), mint: mint(MINT), venue: 'pumpswap', entryIntentId: intentId('en:late') }), status: 'exit_blocked' as const, quantity: raw(100n), bought: raw(100n), cost: lamports(100n) };
+      const book = emptyBook({ maxOpenPositions: 1 });
+      w.setBook({ ...book, positions: { [p.id]: p } });
+      w.step('chain:slot', { ...NOW, receivedAt: T + 400 }); pools.sync();
+      const next = hub.last.requests().findLast((r) => r.method === 'logsSubscribe')!.id;
+      expect(next).not.toBe(old);
+      for (const id of reverse ? [next, old] : [old, next]) hub.last.push({ jsonrpc: '2.0', id, result: 701 });
+      expect(w.strategy.watchedPools().get(POOL_ADDRESS)?.held).toBe(true);
+      expect(priorities.at(-1)).toBe(1);
+      expect(hub.last.requests().filter((r) => r.method === 'logsUnsubscribe')).toEqual([]);
+      hub.last.push({ method: 'logsNotification', params: { subscription: 701, result: 'exit-sell-trigger' } });
+      expect(served).toEqual(['exit-sell-trigger']);
+      rpc.stop();
+  });
+
+  it.each(['refused', 'removed', 'different ID'] as const)('cleans the deferred ghost after its replacement is %s', (outcome) => {
+    const hub = new FakeSocketHub();
+    const rpc = new RpcSocket('test', () => 'wss://ws.test', hub.factory, new ManualTimers(T), { initialMs: 1_000, maxMs: 8_000, idleMs: 60_000 });
+    const seen: unknown[] = [];
+    const spec = { method: 'logsSubscribe', params: [{ mentions: [MINT] }, { commitment: 'confirmed', encoding: 'json' }], unsubscribe: 'logsUnsubscribe', notification: 'logsNotification', onNotify: (r: unknown) => seen.push(r) };
+    const old = rpc.add(spec); rpc.start(); hub.last.open(); const oldId = hub.last.requests()[0]!.id;
+    rpc.remove(old); const next = rpc.add({ ...spec, params: [{ mentions: [MINT] }, { encoding: 'json', commitment: 'confirmed' }] }); const nextId = hub.last.requests()[1]!.id;
+    hub.last.push({ jsonrpc: '2.0', id: oldId, result: 701 });
+    expect(hub.last.requests().filter((r) => r.method === 'logsUnsubscribe')).toEqual([]);
+    if (outcome === 'removed') rpc.remove(next);
+    else hub.last.push({ jsonrpc: '2.0', id: nextId, ...(outcome === 'refused' ? { error: { code: -1 } } : { result: 702 }) });
+    expect(hub.last.requests().filter((r) => r.method === 'logsUnsubscribe').map((r) => r.params)).toEqual([[701]]);
+    hub.last.push({ method: 'logsNotification', params: { subscription: 701, result: 'ghost' } });
+    expect(seen).toEqual([]);
+    if (outcome === 'different ID') {
+      hub.last.push({ method: 'logsNotification', params: { subscription: 702, result: 'desired' } });
+      expect(seen).toEqual(['desired']); rpc.remove(next);
+      expect(hub.last.requests().filter((r) => r.method === 'logsUnsubscribe').map((r) => r.params)).toEqual([[701], [702]]);
+    }
+    rpc.stop();
+  });
+
+  it('unsubscribes a shared server ID only when its last desired owner leaves', () => {
+    const hub = new FakeSocketHub();
+    let bytes = 0;
+    const rpc = new RpcSocket('test', () => 'wss://ws.test', hub.factory, new ManualTimers(T), { initialMs: 1_000, maxMs: 8_000, idleMs: 60_000 }, { onBytes: (n) => { bytes += n; } });
+    const seen: unknown[][] = [[], []];
+    const handles = seen.map((s) => rpc.add({ method: 'logsSubscribe', params: [MINT], unsubscribe: 'logsUnsubscribe', notification: 'logsNotification', onNotify: (r) => s.push(r) }));
+    rpc.start(); hub.last.open();
+    for (const r of hub.last.requests()) hub.last.push({ jsonrpc: '2.0', id: r.id, result: 701 });
+    const frame = { method: 'logsNotification', params: { subscription: 701, result: 'both' } };
+    const before = bytes; hub.last.push(frame);
+    expect(bytes - before).toBe(Buffer.byteLength(JSON.stringify(frame)));
+    expect(seen).toEqual([['both'], ['both']]);
+    rpc.remove(handles[0]!);
+    expect(hub.last.requests().filter((r) => r.method === 'logsUnsubscribe')).toEqual([]);
+    hub.last.push({ method: 'logsNotification', params: { subscription: 701, result: 'last' } });
+    expect(seen).toEqual([['both'], ['both', 'last']]);
+    rpc.remove(handles[1]!);
+    expect(hub.last.requests().filter((r) => r.method === 'logsUnsubscribe').map((r) => r.params)).toEqual([[701]]);
+    rpc.stop();
+  });
+
+  it('bounds abandoned ACK metadata by reconnecting and discards deferred IDs across stop/start', () => {
+    const hub = new FakeSocketHub(); const timers = new ManualTimers(T);
+    const rpc = new RpcSocket('test', () => 'wss://ws.test', hub.factory, timers, { initialMs: 1_000, maxMs: 8_000, idleMs: 60_000 });
+    const seen: unknown[] = [];
+    const spec = { method: 'logsSubscribe', params: [MINT], unsubscribe: 'logsUnsubscribe', notification: 'logsNotification', onNotify: (r: unknown) => seen.push(r) };
+    rpc.start(); hub.last.open();
+    for (let n = 0; n < 257; n++) rpc.remove(rpc.add(spec));
+    expect(rpc.socket.state).toBe('waiting'); expect(rpc.size).toBe(0);
+    timers.advance(1_000); hub.last.open();
+    const old = rpc.add(spec); const oldId = hub.last.requests()[0]!.id;
+    rpc.remove(old); rpc.add(spec);
+    hub.last.push({ jsonrpc: '2.0', id: oldId, result: 701 });
+    expect(hub.last.requests().filter((r) => r.method === 'logsUnsubscribe')).toEqual([]);
+    const stale = hub.last.onmessage!;
+    rpc.stop(); rpc.start(); hub.last.open();
+    hub.last.push({ jsonrpc: '2.0', id: hub.last.requests()[0]!.id, result: 701 });
+    stale({ data: JSON.stringify({ jsonrpc: '2.0', id: oldId, result: 701 }) });
+    expect(hub.last.requests().filter((r) => r.method === 'logsUnsubscribe')).toEqual([]);
+    hub.last.push({ method: 'logsNotification', params: { subscription: 701, result: 'held' } });
+    expect(seen).toEqual(['held']); rpc.stop();
+  });
+
   it('journals fixed buckets once a minute with the same wire-byte total and quota charge', () => {
     const hub = new FakeSocketHub();
     const timers = new ManualTimers(T);
@@ -167,7 +265,7 @@ describe('Helius socket waste', () => {
   });
 });
 
-const world = (facts = passingFacts(), s = session(), over: Partial<StrategyConfig> = {}) => {
+const world = (facts = passingFacts(), s = session(), over: Partial<StrategyConfig> = {}, observedCoverage = true) => {
   const config = { ...strategyConfig(s.policy, FILL_CONFIG, RESEARCH_CONFIG, 0n, { timing: 'gates', salt: '' }), ...over };
   const strategy = new LiveStrategy({ session: s, rugs: RUG_CONFIG, config });
   let book = emptyBook({ maxOpenPositions: s.policy.positions.maxOpen });
@@ -177,20 +275,89 @@ const world = (facts = passingFacts(), s = session(), over: Partial<StrategyConf
     const r = gctx.lookup(key);
     return strategy.onMarket({ kind: 'market', id: `cut:${key}:${now.receivedAt}`, moment: now, key, value: value ?? (r.ok ? r.value : null) }, ctx);
   };
+  // The live evaluator uses the strategy's own deployer index; known fixtures must observe its real coverage start.
+  const start = facts.get('coverage:creates:start');
+  if (observedCoverage && start !== undefined) step('coverage:creates:start', start.moment, start.value);
   return { strategy, step, facts, config, setBook: (b: typeof book) => { book = b; } };
 };
 
 const pendingEntry = () => newEntryIntent({ id: intentId('en:pending'), key: entryKey(mint(MINT), 'U2.1.1'), mint: mint(MINT), purpose: 'entry', side: 'buy', venue: 'pumpswap', positionId: positionId(`p:${MINT}:1`), spend: lamports(1n) });
+const instantFacts = (f = passingFacts()) => patch(f, createKey(MINT), { createdAtMs: (f.get(migrationKey(MINT))!.value as { graduatedAtMs: number }).graduatedAtMs });
 
 describe('gate-proven pool retirement', () => {
-  it('drops dust swaps from the actual H8 verdict and keeps the candidate and fact watches', () => {
+  it('full stage-one H16 keeps H9 alongside missing or partial deployer evidence', () => {
+    const base = passingFacts();
+    const migration = base.get(migrationKey(MINT))!.value as { graduatedAtMs: number };
+    for (const partial of [false, true]) {
+      const f = patch(base, createKey(MINT), { createdAtMs: migration.graduatedAtMs });
+      if (!partial) f.delete(deployerKey(DEV));
+      else {
+        const row = f.get(deployerKey(DEV))!;
+        const value = row.value as { obs: object };
+        f.set(deployerKey(DEV), { ...row, value: { ...value, obs: { ...value.obs, quality: ['partial'] } } });
+      }
+      const actual = stagedHardRejects(contextOf(f, NOW), { session: session(), mode: 'live', rugLabeller: 'RUG-1' }, request());
+      expect(actual.hard.reasons.some((r) => r.gate === 'H9' && r.code === 'instant-graduation')).toBe(true);
+      expect(actual.hard.reasons.some((r) => r.gate === 'H16' && r.neededBy === 'H14')).toBe(true);
+      const w = world(f, session(), {}, false); const decisions = w.step();
+      expect(w.strategy.watchedPools().has(POOL_ADDRESS)).toBe(true);
+      expect(decisions.some((d) => d.reasons[0] === 'pool watch stopped')).toBe(false);
+    }
+  });
+
+  it.each(['candidate', 'cancelled'] as const)('preserves a %s entry watch through its window, at canonical money priority', (status) => {
+      const w = world(); const entry = { ...pendingEntry(), status };
+      const book = emptyBook({ maxOpenPositions: 1 });
+      w.setBook({ ...book, intents: { [entry.intent.id]: entry } }); w.step();
+      expect(w.strategy.watchedPools().get(POOL_ADDRESS)?.held).toBe(status === 'candidate');
+      const migration = w.facts.get(migrationKey(MINT))!.value as { migratedAtMs: number };
+      w.step('chain:slot', { ...NOW, receivedAt: migration.migratedAtMs + w.config.windowToMs });
+      expect(w.strategy.watchedPools().get(POOL_ADDRESS)?.held).toBe(status === 'candidate');
+      expect(w.strategy.retired()).toEqual([]);
+      w.setBook(book); w.step('chain:slot', { ...NOW, receivedAt: migration.migratedAtMs + w.config.windowToMs + 1 });
+      expect(w.strategy.watchedPools().has(POOL_ADDRESS)).toBe(false);
+      expect(w.strategy.retired()).toContain(POOL_ADDRESS);
+  });
+
+  it('full later-stage H16 keeps create-expiry watches with missing or partial holders', () => {
+    const base = passingFacts();
+    const migration = base.get(migrationKey(MINT))!.value as { migratedAtMs: number };
+    for (const partial of [false, true]) {
+      const f = patch(base, createKey(MINT), { createdAtMs: migration.migratedAtMs - 12 * 3_600_000 - 1 });
+      if (!partial) f.delete(holdersKey(MINT));
+      else {
+        const row = f.get(holdersKey(MINT))!; const value = row.value as { obs: object };
+        f.set(holdersKey(MINT), { ...row, value: { ...value, obs: { ...value.obs, quality: ['partial'] } } });
+      }
+      const actual = stagedHardRejects(contextOf(f, NOW), { session: session(), mode: 'live', rugLabeller: 'RUG-1' }, request());
+      expect(actual.hard.reasons.some((r) => r.gate === 'H16' && r.neededBy === 'H12')).toBe(true);
+      const w = world(f); const decisions = w.step();
+      expect(w.strategy.watchedPools().has(POOL_ADDRESS)).toBe(true);
+      expect(decisions.some((d) => d.reasons[0] === 'pool watch stopped')).toBe(false);
+    }
+  });
+
+  it('a cancelled entry with a possibly broadcast attempt remains money traffic through its window', () => {
+    const w = world(instantFacts()); const pending = pendingEntry();
+    const entry = { ...pending, status: 'cancelled' as const, attempts: [attempt(pending.intent.id, 1, NOW.slot + 1_000n)] };
+    const book = emptyBook({ maxOpenPositions: 1 });
+    w.setBook({ ...book, intents: { [entry.intent.id]: entry } });
+    expect(w.step().some((d) => d.reasons[0] === 'pool watch stopped')).toBe(false);
+    expect(w.strategy.committed(MINT)).toBe(true);
+    expect(w.strategy.watchedPools().get(POOL_ADDRESS)?.held).toBe(true);
+    const migration = w.facts.get(migrationKey(MINT))!.value as { migratedAtMs: number };
+    w.step('chain:slot', { ...NOW, receivedAt: migration.migratedAtMs + w.config.windowToMs });
+    expect(w.strategy.watchedPools().get(POOL_ADDRESS)?.held).toBe(true);
+    expect(w.strategy.retired()).toEqual([]);
+  });
+  it('keeps H8 dust swaps observed for counterfactual evidence, with candidate and fact watches', () => {
     const w = world(patch(passingFacts(), migrationKey(MINT), { quoteAtMigration: 1n }));
     const decisions = w.step();
-    expect(w.strategy.watchedPools().has(POOL_ADDRESS)).toBe(false);
+    expect(w.strategy.watchedPools().has(POOL_ADDRESS)).toBe(true);
     expect(w.strategy.watched().has(MINT)).toBe(true);
     expect(w.strategy.candidates().has(MINT)).toBe(true);
     expect(w.strategy.retired()).toEqual([]);
-    expect(decisions.some((d) => d.reasons[0] === 'pool watch stopped' && d.reasons.includes('dust-at-migration'))).toBe(true);
+    expect(decisions.some((d) => d.reasons[0] === 'pool watch stopped')).toBe(false);
   });
 
   it('drops instant graduation and create-expired using their existing verdicts', () => {
@@ -232,10 +399,10 @@ describe('gate-proven pool retirement', () => {
     expect(unchanged.strategy.watchedPools().has(POOL_ADDRESS)).toBe(true);
     const tightened = world(f, session({ dustPoolMinAtMigration: 7_000_000_000n as never }));
     tightened.step();
-    expect(tightened.strategy.watchedPools().has(POOL_ADDRESS)).toBe(false);
+    expect(tightened.strategy.watchedPools().has(POOL_ADDRESS)).toBe(true);
   });
 
-  it('waits for the policy checkpoint and follows actual U2/U1 H11 behavior, including diagnostic mode', () => {
+  it('keeps H11 observations at the checkpoint in U2, U1 and diagnostic mode', () => {
     const migratedAtMs = T - 4 * 60_000;
     let f = patch(passingFacts(), migrationKey(MINT), { migratedAtMs, graduatedAtMs: migratedAtMs });
     const p = { quote: 200_000_000_000n, base: 206_900_000_000_000n };
@@ -245,14 +412,14 @@ describe('gate-proven pool retirement', () => {
     expect(w.strategy.watchedPools().has(POOL_ADDRESS)).toBe(true);
     const at = { ...NOW, receivedAt: T + 60_000 };
     const d = w.step('chain:slot', at);
-    expect(w.strategy.watchedPools().has(POOL_ADDRESS)).toBe(false);
-    expect(d.some((x) => x.reasons.includes('chase-at-5m'))).toBe(true);
+    expect(w.strategy.watchedPools().has(POOL_ADDRESS)).toBe(true);
+    expect(d.some((x) => x.reasons[0] === 'pool watch stopped')).toBe(false);
     const control = world(f, session(), { universe: 'U1', s0Diagnostic: true });
     control.step(migrationKey(MINT), at);
     expect(control.strategy.watchedPools().has(POOL_ADDRESS)).toBe(true);
     const diagnostic = world(f, session(), { s0Diagnostic: true });
     diagnostic.step(migrationKey(MINT), at);
-    expect(diagnostic.strategy.watchedPools().has(POOL_ADDRESS)).toBe(false);
+    expect(diagnostic.strategy.watchedPools().has(POOL_ADDRESS)).toBe(true);
   });
 
   it('H16 on the checkpoint candles overrides even a known dust reject', () => {
@@ -264,7 +431,7 @@ describe('gate-proven pool retirement', () => {
   });
 
   it('waits for a coherent read batch to close and drops on that exact event', () => {
-    const f = patch(passingFacts(), migrationKey(MINT), { quoteAtMigration: 1n });
+    const f = instantFacts();
     const w = world(f);
     w.step(RAW.batchOpen(MINT), NOW, { mint: MINT });
     w.step();
@@ -284,7 +451,10 @@ describe('gate-proven pool retirement', () => {
   });
 
   it('a stopped migration still receives its +30 minute survival read and is never producer-retired early', async () => {
-    const f = patch(passingFacts(), migrationKey(MINT), { migratedAtMs: T, graduatedAtMs: T, quoteAtMigration: 1n });
+    const migratedAtMs = T - 5 * 60_000;
+    let f = instantFacts(patch(passingFacts(), migrationKey(MINT), { migratedAtMs, graduatedAtMs: migratedAtMs }));
+    const price = (f.get(migrationKey(MINT))!.value as { price: object }).price;
+    f = patch(f, candlesKey(MINT), { candles: [{ startMs: migratedAtMs + 4 * 60_000, open: price, high: price, close: price }] });
     const w = world(f);
     w.step();
     expect(w.strategy.watchedPools().has(POOL_ADDRESS)).toBe(false);
@@ -300,7 +470,7 @@ describe('gate-proven pool retirement', () => {
       jupiter: new Scheduler(JUPITER_FREE, { timers }), rugcheck: new Scheduler(RUGCHECK_FREE, { timers }),
     }, watched: () => w.strategy.watched(), candidates: () => w.strategy.candidates(), ingest: { ingest: () => {} }, tip: () => NOW.slot });
     for (let k = 0; k < 10; k++) await Promise.resolve();
-    timers.advance(30 * 60_000 + 4_000);
+    timers.advance(25 * 60_000 + 4_000);
     for (let k = 0; k < 10; k++) await Promise.resolve();
     expect(reads).toEqual([]);
     expect(w.strategy.retired()).toEqual([]);
@@ -314,9 +484,9 @@ describe('gate-proven pool retirement', () => {
   });
 
   it('protects a pending seed and restores candidate drops only from proven gate facts', () => {
-    const f = patch(passingFacts(), migrationKey(MINT), { quoteAtMigration: 1n });
+    const f = instantFacts();
     const migration = f.get(migrationKey(MINT))!.value as { migratedAtMs: number; obs: { slot: bigint } };
-    const candidate = { mint: MINT, pool: POOL_ADDRESS, migratedAtMs: migration.migratedAtMs, migrationSlot: migration.obs.slot, tries: 0, lastEvalMs: null, lastReason: 'hard reject H8 dust-at-migration', bars: [], fees: null };
+    const candidate = { mint: MINT, pool: POOL_ADDRESS, migratedAtMs: migration.migratedAtMs, migrationSlot: migration.obs.slot, tries: 0, lastEvalMs: null, lastReason: 'hard reject H9 instant-graduation', bars: [], fees: null };
     const restore = { exits: {}, candidates: [candidate] };
     const dropped = world(f);
     dropped.step(RESTORE_KEY, NOW, restore);
@@ -333,14 +503,14 @@ describe('gate-proven pool retirement', () => {
   });
 
   it('never sheds an entry intent, any nonclosed position or a late position on a stopped candidate', () => {
-    const f = patch(passingFacts(), migrationKey(MINT), { quoteAtMigration: 1n });
+    const f = instantFacts();
     const empty = emptyBook({ maxOpenPositions: 1 });
     for (const status of ['candidate', 'cancelled'] as const) {
       const w = world(f);
       const entry = { ...pendingEntry(), status };
       w.setBook({ ...empty, intents: { [entry.intent.id]: entry } });
       expect(w.step().some((d) => d.reasons[0] === 'pool watch stopped')).toBe(false);
-      expect(w.strategy.watchedPools().get(POOL_ADDRESS)?.held).toBe(true);
+      expect(w.strategy.watchedPools().get(POOL_ADDRESS)?.held).toBe(status === 'candidate');
     }
     const position = newPosition({ id: positionId(`p:${MINT}:1`), mint: mint(MINT), venue: 'pumpswap', entryIntentId: intentId('en:pending') });
     for (const status of ['opening', 'open', 'exit_requested', 'exit_pending', 'exit_blocked'] as const) {
@@ -357,16 +527,37 @@ describe('gate-proven pool retirement', () => {
     expect(late.strategy.watchedPools().get(POOL_ADDRESS)?.held).toBe(true);
   });
 
-  it('keeps the normal reject log but never starts a swap tail for a proven immutable reject', () => {
-    const f = patch(passingFacts(), migrationKey(MINT), { quoteAtMigration: 1n });
+  it('keeps H8 and H11 reject logs and counterfactual swap tails', () => {
+    const base = passingFacts();
+    const migratedAtMs = (base.get(migrationKey(MINT))!.value as { migratedAtMs: number }).migratedAtMs;
+    const p = { quote: 200_000_000_000n, base: 206_900_000_000_000n };
+    const cases = [
+      { code: 'dust-at-migration', f: patch(base, migrationKey(MINT), { quoteAtMigration: 1n }) },
+      { code: 'chase-at-5m', f: patch(base, candlesKey(MINT), { candles: [{ startMs: migratedAtMs + 4 * 60_000, open: p, high: p, close: p }] }) },
+    ];
+    for (const { f, code } of cases) {
+      f.set(HALT_KEY, { value: { halted: false, reasons: [] }, moment: NOW });
+      f.set(SOL_PRICE_KEY, { value: { value: 150_000_000n, atMs: T }, moment: NOW });
+      f.set(feesKey(MINT), { value: FEE_CONTEXT, moment: NOW });
+      expect(stagedHardRejects(contextOf(f, NOW), { session: session(), mode: 'live', rugLabeller: 'RUG-1' }, request()).hard.reasons.some((r) => r.code === code)).toBe(true);
+      const w = world(f);
+      const before = w.step();
+      expect(before.some((d) => d.reasons[0] === 'reject' && d.reasons.some((r) => r.includes(code)))).toBe(true);
+      expect(w.strategy.candidates().get(MINT)?.lastEvalMs).not.toBeNull();
+      w.step('chain:slot', { ...NOW, receivedAt: migratedAtMs + w.config.windowToMs });
+      expect(w.strategy.candidates().has(MINT)).toBe(false);
+      expect(w.strategy.tail.has(MINT)).toBe(true);
+      expect(w.strategy.watchedPools().has(POOL_ADDRESS)).toBe(true);
+    }
+  });
+
+  it('keeps the normal H9 reject log but never starts its swap tail', () => {
+    const f = instantFacts();
     f.set(HALT_KEY, { value: { halted: false, reasons: [] }, moment: NOW });
-    const w = world(f);
-    const before = w.step();
+    const w = world(f); const before = w.step();
     expect(before.some((d) => d.reasons[0] === 'reject')).toBe(true);
-    expect(w.strategy.candidates().get(MINT)?.lastEvalMs).not.toBeNull();
     const migratedAtMs = (f.get(migrationKey(MINT))!.value as { migratedAtMs: number }).migratedAtMs;
     w.step('chain:slot', { ...NOW, receivedAt: migratedAtMs + w.config.windowToMs });
-    expect(w.strategy.candidates().has(MINT)).toBe(false);
     expect(w.strategy.tail.has(MINT)).toBe(false);
     expect(w.strategy.watchedPools().has(POOL_ADDRESS)).toBe(false);
   });
@@ -382,7 +573,7 @@ describe('gate-proven pool retirement', () => {
     expect(adds).toBe(1);
     const row = w.facts.get(migrationKey(MINT))!;
     const migration = row.value as { migratedAtMs: number };
-    w.facts.set(migrationKey(MINT), { ...row, value: { ...(row.value as object), quoteAtMigration: 1n } });
+    w.facts.set(createKey(MINT), { ...w.facts.get(createKey(MINT))!, value: { ...(w.facts.get(createKey(MINT))!.value as object), createdAtMs: (row.value as { graduatedAtMs: number }).graduatedAtMs } });
     w.step();
     for (let k = 0; k < 100; k++) pools.sync();
     expect([adds, removes, pools.watching.size]).toEqual([1, 1, 0]);
@@ -393,13 +584,14 @@ describe('gate-proven pool retirement', () => {
     // The production producer's tombstone policy remains S1's; this checks only the swap-retirement memo lifecycle.
     const again = { ...end, receivedAt: end.receivedAt + 1 };
     w.facts.set(migrationKey(MINT), { moment: again, value: { ...(row.value as object), migratedAtMs: again.receivedAt, graduatedAtMs: again.receivedAt } });
+    w.facts.set(createKey(MINT), { moment: again, value: { ...(row.value as object), ...(passingFacts().get(createKey(MINT))!.value as object) } });
     w.step(migrationKey(MINT), again);
     expect(w.strategy.watchedPools().get(POOL_ADDRESS)?.held).toBe(false);
     pools.sync();
     expect([adds, removes, pools.watching.size]).toEqual([2, 1, 1]);
   });
 
-  it('recorded H8/H9/H11/create-expired drops replay at the identical event, ten times each', async () => {
+  it('recorded H9/create-expired drops and retained H8/H11 watches replay identically, ten times each', async () => {
     const base = passingFacts();
     const migration = base.get(migrationKey(MINT))!.value as { graduatedAtMs: number; migratedAtMs: number };
     const p = { quote: 200_000_000_000n, base: 206_900_000_000_000n };
@@ -416,13 +608,14 @@ describe('gate-proven pool retirement', () => {
       market.omit = new Set();
       market.fact(key, { ...(base.get(key)!.value as object), ...change });
       await market.run(3_000, 400, () => { market.slot(); market.pool(); });
-      expect(h.worker.strategy.watchedPools().has(POOL_ADDRESS), code).toBe(false);
+      const retained = code === 'dust-at-migration' || code === 'chase-at-5m';
+      expect(h.worker.strategy.watchedPools().has(POOL_ADDRESS), code).toBe(retained);
       expect(h.worker.strategy.candidates().has(MINT), code).toBe(true);
       await h.worker.stop();
       const live = loadSession(h.stateDir)[0]!.live;
       const drops = live.filter((l) => l.includes('"pool watch stopped"'));
-      expect(drops, code).toHaveLength(1);
-      expect(drops[0], code).toContain(code);
+      expect(drops, code).toHaveLength(retained ? 0 : 1);
+      if (!retained) expect(drops[0], code).toContain(code);
       const r = checkSession(h.stateDir, { session: h.session, rugs: RUG_CONFIG, strategy: h.worker.strategyConfig }, replayLedgerFile, 10);
       expect(r.ok, code).toBe(true);
       expect(r.boots[0], code).toMatchObject({ deterministic: true, divergence: null, replays: 10 });
