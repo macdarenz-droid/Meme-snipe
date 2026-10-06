@@ -48,6 +48,12 @@ The previous S1 account reached its usage limit about 12:45 PM. The owner made t
 - No host access, no secrets access (owner only), as before.
 
 **Log (Melbourne time, newest first)**
+- 3:48 AM **TRADE-GAP-HEAL step 1 measurement** (7 graduates of 6 Oct, public RPC, a random 400 txs per pool over migration to +6 h). Cut pool-trade logs per coin: mean about 150, median about 16, p90 about 460, max about 760; the spread is very wide (one coin had 19% of its txs cut), so order of magnitude only. Healing every hole would be about 190k getTransaction a day (about 5.8M credits a month), against Helius free at 1M a month, so not affordable. S1 accepts the builder's design:
+  - fetch for candidate pools only;
+  - a per-pool limit of 30 holes (beyond that, refuse at once at no cost);
+  - a daily cap of 3,000 at P3, below exit and held-position reads (about 90k–360k credits a month worst case);
+  - heal only when the chain is exact.
+  Expect about 5 of 7 coins healable, with the cap reached after about the first 200 candidates of each UTC day. The owner's credit/plan decision decides whether to raise it. PR due about 5:00 AM.
 - 3:38 AM **#260 H16-WHY merged → 3ee09a5a.** ops/contract PASS at a52368e8; the delta to cab51752 touched no ops or summary file (verified). worker/facts delta PASS at cab51752: B1 closed, 11 of 12 mutants killed. CI was green on cab51752 (check, e2e, historical-data), the head contained 7f1ff241, and merge-tree was equal. Follow-ups recorded, not built: facts N1 (a retry without the isLost check survives the tests; cost only) and N2 (the cap is per process-day and the boot re-ask repeats on every start, so a crash loop during an outage could spend credits with no monthly halt, sources.ts:84-91). Deploy when push CI is green (re-run Android release if needed). This deploy also runs the new zeroed-update, which switches on the upload timer: verify zeroed-data tags after it. TRADE-GAP-HEAL told the base moved.
 - 3:15 AM **Owner: "Start an agent for letter B now"** (item 2: cut pool-trade logs → permanent H11/H16 gap on about 57% of coins). This is an explicit owner exception to one-task-at-a-time. Builder TRADE-GAP-HEAL session_01VTn22ZTvSUzWe72saEX2md (Opus) on claude/trade-gap-heal from claude/h16-why (it reuses #260's cut-log fetch path; base merge after #260 merges). Steps:
   1. Measure cut logs per coin on mainnet first (public RPC) and report.
