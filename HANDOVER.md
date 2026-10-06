@@ -48,6 +48,12 @@ The previous S1 account reached its usage limit about 12:45 PM. The owner made t
 - No host access, no secrets access (owner only), as before.
 
 **Log (Melbourne time, newest first)**
+- 5:22 AM DEDUP-PER-WATCH repro (dedup-per-watch.test.ts on df3da20).
+  - (1) Not true: with a complete log, both pools get their swaps; the producer routes by the event's own pool.
+  - (2) True, fail-open: a cut log makes a hole only on the first watch's pool. The second pool's stream stays "gap-free" (test gapFreeSince 1000 vs 1006), so H11 can pass.
+  - (3) True: #chainOther stales the via's pool (producer.ts:1418). Unnamed 'other' events carry no pool.
+  - Plan accepted by S1: keep global dedup for everything the engine consumes. A later copy of the same signature+commitment from another watch is an `echo` frame that releases only per-watch markers (logs:truncated/undecodable:<via> → a hole plus one shared heal fetch per signature; logs:pool-other:<via>). #chainOther stales data.pool when named, else the via's pool plus every echo via.
+  - Rejected: full per-watch dedup (double counts) and naming pools from account keys (notifications carry none).
 - 5:20 AM **#262 BT parity FAIL** (comment 6022632650; it read the df3da20c delta, and parity is unchanged by it).
   - B1 is docs and classification: DECISIONS overclaims live/backtest equality. Live still refuses where the backtest enters: (a) a heal pending, (b) not found, (c) more than 30 holes, (d) past the cap, (e) after a restart, (f) tainted or other. This must be documented as a live-only veto in ARCHITECTURE §16.3 and counted in G3.
   - N1: add a tx-shaped reference tape (mutant C survives trade-heal.test.ts). N3: add a TEST-1 recording test.
