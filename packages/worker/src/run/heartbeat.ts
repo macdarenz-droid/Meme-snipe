@@ -20,7 +20,9 @@ export interface HeartbeatPosition {
 export const heartbeatBody = (h: Health, position: HeartbeatPosition | null, ownerChatId: string | null): string => {
   const feedAges: Record<string, number> = {};
   for (const [k, v] of Object.entries(h.feed_ages_ms)) if (v !== null) feedAges[k] = v;
-  return jsonText({ ...h, feed_ages_ms: feedAges, open_position: position, owner_chat_id: ownerChatId });
+  // Disk data is approved for the local /health response only.
+  const { disk: _localDisk, ...approvedHealth } = h;
+  return jsonText({ ...approvedHealth, feed_ages_ms: feedAges, open_position: position, owner_chat_id: ownerChatId });
 };
 
 export const signHeartbeat = (key: string, t: number, body: string): string =>

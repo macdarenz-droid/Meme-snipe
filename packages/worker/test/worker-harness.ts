@@ -147,7 +147,7 @@ export const LANDS = { ...FILL_CONFIG.scenarios[PAPER_SCENARIO], landPpm: { pump
 /** Boots made per state folder: a test's n-th worker is `boot-<n>` whatever the process, its pid or the other tests. */
 const boots = new Map<string, number>();
 
-export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof LANDS; stateDir?: string; timers?: TestTimers; edgePpm?: bigint; http?: HttpClient; key?: string | null; config?: Record<string, string>; fetched?: string[]; found?: boolean; facts?: FactSource[]; seed?: (r: SeedRequest) => Promise<SeedResult>; seedWaitMs?: number; entry?: { timing: 'gates' | 'random'; salt: string; s0Diagnostic?: boolean }; sources?: (ctx: SourcesContext) => FeedSource[]; exposureRpc?: SeedRpc; ops?: WorkerDeps['ops']; universe?: 'U1' | 'U2'; cutRpc?: (ms: number) => void; seedMaxMs?: number; simulate?: (leg: SimLeg) => Promise<DryRunRecord>; worldFault?: WorkerDeps['worldFault']; summaryFault?: WorkerDeps['summaryFault']; watchRead?: WorkerDeps['watchRead'] | null; watchHalted?: () => boolean; schedulers?: NonNullable<WorkerDeps['schedulers']>; markedHistory?: WorkerDeps['markedHistory']; sizeProbe?: WorkerDeps['sizeProbe']; findCreate?: WorkerDeps['findCreate']; strategy?: Partial<StrategyConfig>; crashPoint?: WorkerDeps['crashPoint']; maxSeedCreates?: number; createSigsMax?: number ; restartReads?: WorkerDeps['restartReads']; fetchedWhy?: [string, string][]; phase?: 'reconcile'; pack?: WorkerDeps['pack']; heliusExhaustion?: WorkerDeps['heliusExhaustion']; loopClock?: WorkerDeps['loopClock'] } = {}): Harness => {
+export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof LANDS; stateDir?: string; timers?: TestTimers; edgePpm?: bigint; http?: HttpClient; key?: string | null; config?: Record<string, string>; fetched?: string[]; found?: boolean; facts?: FactSource[]; seed?: (r: SeedRequest) => Promise<SeedResult>; seedWaitMs?: number; entry?: { timing: 'gates' | 'random'; salt: string; s0Diagnostic?: boolean }; sources?: (ctx: SourcesContext) => FeedSource[]; exposureRpc?: SeedRpc; ops?: WorkerDeps['ops']; universe?: 'U1' | 'U2'; cutRpc?: (ms: number) => void; seedMaxMs?: number; simulate?: (leg: SimLeg) => Promise<DryRunRecord>; worldFault?: WorkerDeps['worldFault']; summaryFault?: WorkerDeps['summaryFault']; watchRead?: WorkerDeps['watchRead'] | null; watchHalted?: () => boolean; schedulers?: NonNullable<WorkerDeps['schedulers']>; markedHistory?: WorkerDeps['markedHistory']; sizeProbe?: WorkerDeps['sizeProbe']; findCreate?: WorkerDeps['findCreate']; strategy?: Partial<StrategyConfig>; crashPoint?: WorkerDeps['crashPoint']; maxSeedCreates?: number; createSigsMax?: number ; restartReads?: WorkerDeps['restartReads']; fetchedWhy?: [string, string][]; phase?: 'reconcile'; pack?: WorkerDeps['pack']; disk?: WorkerDeps['disk']; append?: WorkerDeps['append']; heliusExhaustion?: WorkerDeps['heliusExhaustion']; loopClock?: WorkerDeps['loopClock'] } = {}): Harness => {
   const stateDir = o.stateDir ?? tempState();
   const timers = o.timers ?? virtualTimers(T - 16 * 86_400_000);
   const session = startSession(TRIAL_POLICY);
@@ -205,9 +205,11 @@ export const makeWorker = (o: { reconcileTimeoutMs?: number; scenario?: typeof L
     ...(o.worldFault === undefined ? {} : { worldFault: o.worldFault }),
     ...(o.summaryFault === undefined ? {} : { summaryFault: o.summaryFault }),
     ...(o.crashPoint === undefined ? {} : { crashPoint: o.crashPoint }),
+    ...(o.append === undefined ? {} : { append: o.append }),
     // A second path is configured unless a test says none (null); unscripted, every read fails.
     ...(o.watchRead === null ? {} : { watchRead: o.watchRead ?? (() => Promise.reject(new Error('no second path scripted'))) }),
     ...(o.watchHalted === undefined ? {} : { watchHalted: o.watchHalted }),
+    ...(o.disk === undefined ? {} : { disk: o.disk }),
     ...(o.heliusExhaustion === undefined ? {} : { heliusExhaustion: o.heliusExhaustion }),
     reconcileTimeoutMs: o.reconcileTimeoutMs ?? 120_000, loopMs: 100, staleFeedMs: 10_000, log: (l) => void logs.push(l),
   });

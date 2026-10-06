@@ -4,7 +4,7 @@
 // Paper only: there is no signing key and no path that sends a transaction.
 import { readEnvironment } from '../boot/environment.ts';
 import { FILL_CONFIG, RESEARCH_CONFIG, RUG_CONFIG, TRIAL_POLICY, startSession } from '../../core/src/config/index.ts';
-import { EXIT } from '../../runner/src/contract.ts';
+import { EXIT, STATE_FILES } from '../../runner/src/contract.ts';
 import { DryRunRpc } from './dryrun/index.ts';
 import { liveFacts } from './facts/index.ts';
 import { COINBASE_PUBLIC, GITHUB_DOWNLOADS, GITHUB_RELEASES, GOPLUS_FREE, P2 } from './scheduler/index.ts';
@@ -12,6 +12,7 @@ import { toAddress } from '../../core/src/chain/index.ts';
 import { DEFAULT_LIVE_FEED, fetchHttp, globalSocketFactory, heliusRpcUrl } from './providers/index.ts';
 import { systemTimers } from './scheduler/index.ts';
 import { SLOT_MS, parseConfig, watchTimingProblem } from './run/config.ts';
+import { readDisk } from './run/disk.ts';
 import { liveSimulator, provisionalCalibration } from './run/live-sim.ts';
 import { PAPER_SCENARIO, strategyConfig } from './run/settings.ts';
 import { CreditBook, FEED_COMMITMENTS, LiveProviders, PUMP_CREATE_AUTHORITY } from './run/sources.ts';
@@ -113,6 +114,9 @@ try {
     exposureRpc: providers.seedRpc(),
     watchRead: providers.watchRead(),
     watchHalted: () => providers.alchemy.halted,
+    // DISK-GUARD: free space where the state lives, and the recorder's bytes.
+    disk: (atMs) => readDisk(config.stateDir, join(config.stateDir, STATE_FILES.recorder), atMs),
+    diskPolicy: config.disk,
     delayProbe: { confirmed: (sig) => providers.confirmed(sig), via: `logs:${PUMP_CREATE_AUTHORITY}`, everyMs: 60_000 },
     commitments: FEED_COMMITMENTS,
     heartbeat: { http: http.heartbeat, key: environment.host.heartbeat_hmac_key, ownerChatId: environment.host.telegram_chat_id },

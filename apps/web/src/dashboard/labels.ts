@@ -59,6 +59,7 @@ export const HALT_LABEL: Record<Exclude<HaltCode, 'other'>, string> = {
   seeding: 'seeding',
   divergence: 'ledger mismatch',
   budget: 'request budget',
+  'disk-low': 'disk nearly full',
   'daily-loss': 'daily loss',
   'weekly-loss': 'weekly loss',
   'weekly-review': 'weekly review',

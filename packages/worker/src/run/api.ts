@@ -14,6 +14,7 @@ import { type TradeUsd, tradeUsd } from '../../../core/src/fills/index.ts';
 import { type PaperLegs, type PaperTrade, paperTradeLamports, tradePnl, tradeSol } from './account.ts';
 import type { PaperAttempt } from './paper-world.ts';
 import { SEEDING, STOPS_EVERY_MS } from '../engine/strategy.ts';
+import { DISK_LOW } from './disk.ts';
 import type { LogRecord } from '../../../core/src/engine/index.ts';
 
 const MODE = 'paper' as const;
@@ -254,6 +255,8 @@ export const haltOf = (reason: string): { readonly code: string; readonly source
   if (reason === 'starting') return { code: 'starting', source: null };
   if (reason === 'owner pause (watchdog)') return { code: 'paused', source: null };
   if (reason === SEEDING) return { code: 'seeding', source: null };
+  // The verified older app rejects new halt enums. Local health and bot diagnostics retain the disk reason.
+  if (reason === DISK_LOW) return { code: 'other', source: null };
   if (reason.startsWith('ledger and book diverged')) return { code: 'divergence', source: null };
   return { code: 'other', source: null };
 };

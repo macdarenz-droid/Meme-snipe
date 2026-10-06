@@ -7,7 +7,7 @@
 // `open_intents` → seed the deployer index (SEED-1's hook) → start the live sources → trade. Nothing enters before the
 // reconcile line; a reconcile that cannot settle every intent exits 3.
 import { randomBytes } from 'node:crypto';
-import { copyFileSync, existsSync, linkSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, linkSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { journalLines, placeBookingsAt } from './booked.ts';
 import type { Server } from 'node:http';
 import { join } from 'node:path';
@@ -18,7 +18,7 @@ import type { Book, BookEvent } from '../../../core/src/lifecycle/index.ts';
 import { isTerminal, isUnresolved } from '../../../core/src/lifecycle/index.ts';
 import { attemptFee, type FillNetwork, type FillScenario, lateFillOf } from '../../../core/src/fills/index.ts';
 import type { MicroUsd } from '../../../core/src/units/index.ts';
-import { EXIT, LOOKUP_BOUNDS_MS, STATE_FILES, type FeedHealth, type Health, type JournalKind, type QuotaStatus, type RecoveredFields } from '../../../runner/src/contract.ts';
+import { EXIT, LOOKUP_BOUNDS_MS, STATE_FILES, type DiskHealth, type FeedHealth, type Health, type JournalKind, type QuotaStatus, type RecoveredFields } from '../../../runner/src/contract.ts';
 import type { DryRunRecord } from '../dryrun/index.ts';
 import { CANDIDATE_RESTORED, NO_UNIVERSE, type SavedGraduates, type SavedTail, resolveUniverse, sellOnlyReason } from '../engine/strategy.ts';
 import { RAW } from '../../../core/src/facts/raw.ts';
@@ -53,6 +53,7 @@ import { CappedMap } from './capped-map.ts';
 import { jsonText } from './json.ts';
 import { Journal } from './journal.ts';
 import { type PaperMarket, type PaperState, PaperWorld, type SimLeg } from './paper-world.ts';
+import { DEFAULT_DISK_POLICY, DISK_EVERY_MS, DISK_HISTORY_FILE, DISK_LOW, DISK_OK, addPoint, daysToFull, nextDiskState, parseHistory, type DiskPoint, type DiskPolicy, type DiskSample, type DiskState } from './disk.ts';
 import { Recorder, sealLeftovers } from './recorder.ts';
 import { entryPrice, openPositionsHealth } from './open-positions.ts';
 import { type RiskInput, evaluateExit, riskSnapshot } from '../../../core/src/risk/index.ts';
@@ -80,6 +81,9 @@ import { type PoolFeeContext, effectiveQuoteReserve, poolSell } from '../../../c
 import { liveCollapse, liveForget, liveRetention, liveShape } from './store-rules.ts';
 import { BEHIND, BehindGuard, SHED_HELD_FRAMES } from './behind.ts';
 import { tradesStream } from './pool-watch.ts';
+
+/** DISK-GUARD: how often deployers.jsonl is cut to the look-back while running. */
+const STORE_TRIM_EVERY_MS = 86_400_000;
 
 /** The halt reason while the book holds a late buy's position, which paper does not settle yet (risk ruling on #133). */
 export const LATE_BUY = 'late buy not settled by paper; entries off';
@@ -214,6 +218,8 @@ export interface WorkerDeps {
   readonly summaryFault?: () => void;
   /** Test seam: the desk calls it right after each of a fill's two durable writes (ARCHITECTURE §12.4). */
   readonly crashPoint?: (point: 'fill-journaled' | 'fill-committed', intentId: string) => void;
+  /** Test seam (DISK-GUARD): the journal's and deployers.jsonl's appends (default appendFileSync), to make one fail with ENOSPC. */
+  readonly append?: (path: string, text: string) => void;
   /**
    * WATCH-1's second path: one getMultipleAccounts at confirmed through the quota scheduler at P1, on a provider other
    * than the live feed's (Alchemy). Without it every stale held position raises the critical alert.
@@ -221,6 +227,13 @@ export interface WorkerDeps {
   readonly watchRead?: (addresses: readonly string[], minContextSlot: bigint | null) => Promise<WatchRead>;
   /** True while the second path's provider budget is halted (its scheduler's haltShare): entries stop. */
   readonly watchHalted?: () => boolean;
+  /**
+   * DISK-GUARD: one reading of free space on the state directory's filesystem and of the recorder's bytes (main passes
+   * `readDisk`; null when it cannot read). Without it (tests) the guard is off and health carries no disk reading.
+   */
+  readonly disk?: (atMs: number) => DiskSample | null;
+  /** DISK-GUARD's steps (default DEFAULT_DISK_POLICY). */
+  readonly diskPolicy?: DiskPolicy;
 }
 
 export interface SeedRequest {
@@ -431,6 +444,17 @@ export class Worker {
   /** Watches that carry rug coverage (`coverage:rugs:start` vias): a cut log on one is a gap until its transaction is read. */
   #rugVias = new Set<string>();
   #intentAt = new Map<string, number>();
+  /** DISK-GUARD: the steps taken, the latest reading, when it was read, and the hourly readings for the slope. */
+  #disk: DiskState = DISK_OK;
+  #diskSample: DiskSample | null = null;
+  #diskAt: number | null = null;
+  #diskHistory: DiskPoint[] = [];
+  /** DISK-GUARD: a journal line was lost for lack of space since the last log of it. */
+  #journalNoSpace = false;
+  /** DISK-GUARD: a deployer-index line was lost for lack of space since the last log of it. */
+  #storeNoSpace = false;
+  /** DISK-GUARD: when deployers.jsonl was last cut to the look-back (at start, then once a day). */
+  #storeTrimmedAt = 0;
   /** Entries start halted: nothing enters before the first feed check says otherwise. */
   #halted: readonly string[] = ['starting'];
   /** SEED-1's seed is not placed yet: entries halt (SEEDING), exits run. */
@@ -507,6 +531,7 @@ export class Worker {
     this.#boot = d.boot ?? `${now.toString(36)}-${process.pid}`;
     mkdirSync(c.stateDir, { recursive: true });
     this.#journal = new Journal(join(c.stateDir, STATE_FILES.journal), this.#boot, () => d.timers.now(), {
+      ...(d.append === undefined ? {} : { append: d.append }),
       onNoSpace: () => {
         this.#journalFault = 'journal failed (ENOSPC): evidence lost, entries off until a restart';
         this.#recorder = null;
@@ -568,7 +593,18 @@ export class Worker {
     try {
       mkdirSync(recRoot, { recursive: true });
       for (const b of sealLeftovers(recRoot, this.#boot)) d.log(`Recorder: sealed files of boot ${b} left by a stop without a clean stop.`);
-      this.#recorder = c.recorder && this.#journalFault === null ? new Recorder({ root: recRoot, boot: this.#boot, gitSha: c.gitSha, rotateBytes: 64 * 1024 * 1024, ...(d.commitments === undefined ? {} : { commitments: d.commitments }) }) : null;
+      this.#recorder = c.recorder && this.#journalFault === null
+        ? new Recorder({
+          root: recRoot, boot: this.#boot, gitSha: c.gitSha, rotateBytes: 64 * 1024 * 1024, ...(d.commitments === undefined ? {} : { commitments: d.commitments }),
+          now: () => d.timers.now(),
+          // DISK-GUARD: a write failed for lack of space and the recorder paused itself (not a recorder fault): read the
+          // disk now, so entries stop without waiting for the next minute, and the recorder resumes once space is back.
+          onNoSpace: () => {
+            d.log('Recorder: a write failed (no space left on the device); recording paused.');
+            this.#diskAt = null;
+          },
+        })
+        : null;
     } catch (e) {
       if (c.recorder) this.#recorderFailed(e);
       else d.log(`Recorder: leftovers not sealed: ${errorText(e)}.`);
@@ -578,6 +614,7 @@ export class Worker {
       record: (row, at) => this.#record((r) => r.delay(row, at)),
       onError: (e) => d.log(`Delay probe: sample not recorded: ${errorText(e)}.`),
     });
+    this.#diskHistory = parseHistory(existsSync(join(c.stateDir, DISK_HISTORY_FILE)) ? readFileSync(join(c.stateDir, DISK_HISTORY_FILE), 'utf8') : '[]');
 
     // RUN-1d: no ledger at all means a cold start (host lost with no backup): what comes back comes from the chain. A
     // paper position is not on chain, so nothing does. Marked until a full start journals its `recovered` line.
@@ -682,7 +719,7 @@ export class Worker {
             this.#desk.journalBeforeDispatch(this.#engine.records as readonly LogRecord[]);
             this.#journal.ensureDurable();
           }
-          if (this.#recorderFault !== null || this.#journalFault !== null) {
+          if (this.#recorderFault !== null || this.#journalFault !== null || this.#deployerStore.failing || this.#storeNoSpace || this.#disk.entriesRefused) {
             this.#report({ type: 'intent', intentId: effect.intentId, event: { type: 'send_error', message: 'entries halted: evidence not recorded' } });
             return;
           }
@@ -690,7 +727,18 @@ export class Worker {
       }
       this.#world.run(effect, moment);
     } }, seed, book: bookConfig, retention: liveRetention, collapse: liveCollapse, shape: liveShape, forget: liveForget });
-    this.#deployerStore = new DeployerStore(c.stateDir);
+    // DISK-GUARD: a line that does not fit is not a crash; its range becomes a coverage gap once there is room, and
+    // entries remain stopped across restarts until verified saved-data repair.
+    this.#deployerStore = new DeployerStore(c.stateDir, undefined, {
+      ...(d.append === undefined ? {} : { append: d.append }),
+      onNoSpace: () => {
+        if (!this.#storeNoSpace) d.log('Deployer index: a saved line was not written (no space left on the device); entries stay stopped until saved-data uncertainty is verified and repaired.');
+        this.#storeNoSpace = true;
+        this.#diskAt = null;
+      },
+    });
+    if (this.#deployerStore.failing) d.log('Deployer index: durable saved-data uncertainty; creates and rugs remain unknown and entries stay stopped until verified repair.');
+    this.#storeTrimmedAt = now;
     const storeFrom = now - (d.session.policy.gates.deployerRugLookbackDays + 1) * 86_400_000;
     // PERSIST-1: the saved index, labeller and coverage, when the file holds up (else a fresh start: not covered).
     // Restored through the seed fact (recorded, so a replay rebuilds the same state) before any decision; the
@@ -754,7 +802,7 @@ export class Worker {
       }
       this.#restored = { asOf: restored.asOf, ref };
       this.#handoff = { ref, index: restored.index, labeller: restored.labeller };
-      this.#saved = { creates: [], rugs: [], coverage: restored.coverage, last: { slot: restored.asOf.slot, ms: restored.asOf.receivedAt } };
+      this.#saved = { creates: [], rugs: [], coverage: [...restored.coverage, ...this.#deployerStore.uncertaintyCoverage()].sort(compareEvents), last: { slot: restored.asOf.slot, ms: restored.asOf.receivedAt } };
       d.log(`Saved state restored as of slot ${restored.asOf.slot}; ${restored.coverage.length} coverage facts, ${restored.fills.length} gaps to fill.`);
     } else if (restored.reason !== 'no saved state') d.log(`Saved state discarded (${restored.reason}): starting as a fresh process.`);
     this.#desk = new Desk({
@@ -1381,7 +1429,73 @@ export class Worker {
     this.#saveExits();
     this.#markAccount(now);
     if (now - this.#lastSaveMs >= PERSIST_EVERY_MS) this.#persist(now);
+    if (this.#diskAt === null || now - this.#diskAt >= DISK_EVERY_MS) this.#checkDisk(now);
+    if (now - this.#storeTrimmedAt >= STORE_TRIM_EVERY_MS) this.#trimStore(now);
     this.#checkHalt(now);
+  }
+
+  /**
+   * DISK-GUARD: reads free space, takes or undoes each step, journals and logs every change, and keeps an hourly reading
+   * for the slope. The recorder stays paused while it paused itself on a failed write until free space is back above its
+   * resume line.
+   */
+  /**
+   * DISK-GUARD: deployers.jsonl cut to the look-back plus a day while running, as at start, so it stays bounded however
+   * long the worker runs (the index already holds what it needs; only rugs and coverage pass through memory). A failed
+   * cut (no room for the copy) leaves the file whole and is tried again in an hour.
+   */
+  #trimStore(now: number): void {
+    const from = now - (this.#d.session.policy.gates.deployerRugLookbackDays + 1) * 86_400_000;
+    try {
+      this.#deployerStore.load(from, { keepCreates: false });
+      this.#storeTrimmedAt = now;
+    } catch (e) {
+      this.#storeTrimmedAt = now - STORE_TRIM_EVERY_MS + 3_600_000;
+      this.#d.log(`Deployer index: the saved file was not cut to the look-back: ${errorText(e)}; tried again in an hour.`);
+    }
+  }
+
+  #checkDisk(now: number): void {
+    // Lines lost for lack of space: their journal `coverage_gap` goes first, once there is room.
+    if (this.#journal.failing && this.#journal.retry()) {
+      this.#journalNoSpace = false;
+      this.#d.log('Journal: writing again; the lines lost for lack of space are counted in a coverage_gap line.');
+    }
+    const read = this.#d.disk;
+    if (read === undefined) return;
+    this.#diskAt = now;
+    const s = read(now);
+    const policy = this.#d.diskPolicy ?? DEFAULT_DISK_POLICY;
+    let next = nextDiskState(this.#disk, s, policy);
+    const rec = this.#recorder;
+    if (rec !== null && rec.paused && !next.recorderPaused && (s === null || s.freeBytes < policy.recorderResumeBytes)) next = { ...next, recorderPaused: true };
+    this.#diskSample = s;
+    const free = s === null ? null : s.freeBytes;
+    if (next.recorderPaused !== this.#disk.recorderPaused || (rec !== null && rec.paused !== next.recorderPaused)) {
+      if (next.recorderPaused) this.#record((r) => r.pause(now, free === null ? 'free space unknown' : `free space ${free} bytes, below ${policy.recorderPauseBytes}`));
+      else this.#record((r) => r.resume(now));
+      if (next.recorderPaused !== this.#disk.recorderPaused) {
+        this.#journal.write('disk', { step: next.recorderPaused ? 'recorder_paused' : 'recorder_resumed', free_bytes: free, reasons: [next.recorderPaused ? 'free space low' : 'free space back'] });
+        this.#d.log(`Disk: ${free ?? 'unknown'} bytes free; recording ${next.recorderPaused ? 'paused' : 'resumed'}.`);
+      }
+    }
+    if (next.entriesRefused !== this.#disk.entriesRefused) {
+      this.#journal.write('disk', { step: next.entriesRefused ? 'entries_refused' : 'entries_allowed', free_bytes: free, reasons: [next.entriesRefused ? DISK_LOW : 'free space back'] });
+      this.#d.log(`Disk: ${free ?? 'unknown'} bytes free; new entries ${next.entriesRefused ? 'refused (exits continue)' : 'allowed again'}.`);
+    }
+    this.#disk = next;
+    if (s !== null) {
+      const h = addPoint(this.#diskHistory, s);
+      if (h !== this.#diskHistory) {
+        this.#diskHistory = h;
+        try {
+          writeFileSync(join(this.#d.config.stateDir, `${DISK_HISTORY_FILE}.tmp`), JSON.stringify(h));
+          renameSync(join(this.#d.config.stateDir, `${DISK_HISTORY_FILE}.tmp`), join(this.#d.config.stateDir, DISK_HISTORY_FILE));
+        } catch {
+          // no room for it: the slope waits for the next hour
+        }
+      }
+    }
   }
 
   /**
@@ -1604,6 +1718,8 @@ export class Worker {
     // HELIUS-EXHAUSTED: no entry is judged while Helius refuses for credits; named, never an evidence refusal.
     if (this.#d.heliusExhaustion?.().exhausted === true) reasons.push(HELIUS_EXHAUSTED);
     if (this.#seeding) reasons.push(SEEDING);
+    if (this.#disk.entriesRefused || this.#journal.failing || this.#deployerStore.failing) reasons.push(DISK_LOW);
+
     if (this.#behind.behind) reasons.push(BEHIND);
     if (this.#recorderFault !== null) reasons.push(this.#recorderFault);
     if (this.#journalFault !== null) reasons.push(this.#journalFault);
@@ -2030,6 +2146,7 @@ export class Worker {
       signer: 'none', lease_epoch: null,
       sol_reserve: this.#account.state.walletLamports === null ? null : String(this.#account.state.walletLamports),
       paused: this.#ctl.paused, boot: this.#boot, pid: process.pid, uptime_s: Math.round((now - this.#started) / 1000),
+      ...(this.#d.disk === undefined ? {} : { disk: this.#diskHealth() }),
       rss_bytes: process.memoryUsage().rss, last_exit: this.#lastExit, restarts_24h: this.#restartCounts(now), mode: 'paper', recorder: this.#d.config.recorder && this.#recorderFault === null && this.#journalFault === null ? 'on' : 'off', simulation: this.#d.config.simulate ? 'on' : 'off',
       reconciled: this.#reconciled, exit_capable: this.#exitCapable(now), quota: ops.quota, lookups: ops.lookups, entries_halted: this.#halted.length > 0 || this.#journalFault !== null, halt_reasons: [...this.#halted, ...(this.#journalFault !== null && !this.#halted.includes(this.#journalFault) ? [this.#journalFault] : [])], critical: [...(this.#watch?.critical ?? []), ...(this.#recorderFault === null ? [] : [this.#recorderFault]), ...(this.#journalFault === null ? [] : [this.#journalFault])], feeds, journal_seq: this.#journal.seq, signing_key: false,
       entry_rule: this.#d.config.strategy.name,
@@ -2037,6 +2154,17 @@ export class Worker {
       ...(this.#seedOutcome === null ? {} : { graduates_seed: this.#seedOutcome }),
     };
     return h;
+  }
+
+  /** DISK-GUARD's reading for health and the heartbeat: null fields until the first reading or when it failed. */
+  #diskHealth(): DiskHealth {
+    const s = this.#diskSample;
+    return {
+      free_bytes: s?.freeBytes ?? null, total_bytes: s?.totalBytes ?? null, recorder_bytes: s?.recorderBytes ?? null,
+      days_to_full: s === null ? null : daysToFull(this.#diskHistory, s),
+      recorder: this.#recorder === null || this.#recorderFault !== null ? 'off' : this.#recorder.paused ? 'paused' : 'on',
+      entries_refused: this.#disk.entriesRefused,
+    };
   }
 
   /**

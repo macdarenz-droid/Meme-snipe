@@ -153,7 +153,8 @@ in_c "stat -c '%a %U' /etc/zeroed/deploy-code /etc/zeroed/age/host.key" | sort -
 in_c "nft list ruleset" >"$LOGS/nft.txt"
 grep -q 'hook input priority filter; policy drop;' "$LOGS/nft.txt" && ! grep -q 'dport 22' "$LOGS/nft.txt" || fail "inbound not closed"
 in_c "systemctl is-enabled unattended-upgrades && grep -q 'Unattended-Upgrade \"1\"' /etc/apt/apt.conf.d/20auto-upgrades" >/dev/null || fail "unattended security updates not on"
-pass "install: 6-word EFF deploy code shown (root-only 0400 on disk), signer up, worker waiting, timers on, inbound policy drop with no SSH, unattended upgrades on"
+in_c "grep -qx 'SystemMaxUse=500M' /etc/systemd/journald.conf.d/zeroed-journal.conf && grep -qx 'SystemKeepFree=2G' /etc/systemd/journald.conf.d/zeroed-journal.conf" || fail "the system journal has no size cap (DISK-GUARD)"
+pass "install: 6-word EFF deploy code shown (root-only 0400 on disk), signer up, worker waiting, timers on, inbound policy drop with no SSH, unattended upgrades on, system journal capped"
 
 # ---------- 3. Deploy with a wrong code fails cleanly ----------
 publish() { # issued log code [extra env...]
@@ -311,8 +312,20 @@ fi
 in_c "echo 2 > /var/lib/zeroed/open_intents"
 upd_run || true
 [ -z "$(current)" ] || fail "deployed with open intents"
+# Held by a worker that is not running: no alert on the first run (a routine restart is over by the next one), one
+# alert with where the console steps are on the second; its start (reconcile first) writes the count again, and the
+# deploy that follows says the hold is gone.
+in_c "systemctl stop zeroed-worker.service && echo 2 > /var/lib/zeroed/open_intents"
+upd_run || true
+[ -z "$(current)" ] || fail "deployed with open intents and the worker stopped"
+grep -q 'is held: the worker is inactive' "$STATE/telegram.jsonl" && fail "the intents hold alerted on its first run"
+upd_run || true
+[ -z "$(current)" ] || fail "deployed with open intents and the worker stopped"
+grep -q 'is held: the worker is inactive and its last open-intent count is 2. Nothing updates until a worker starts and reconciles.' "$STATE/telegram.jsonl" || fail "no alert for an update held by a stopped worker"
+in_c "systemctl start zeroed-worker.service"
 in_c "echo 0 > /var/lib/zeroed/open_intents"
 upd_run || fail "update failed on a green, GitHub-signed commit"
+grep -q 'CLEARED Zeroed host: no open intents hold update' "$STATE/telegram.jsonl" || fail "the intents hold was not cleared"
 [ "$(current)" = "/opt/zeroed/releases/$signed" ] || fail "current release not switched"
 in_c "journalctl -u zeroed-update -o cat --no-pager" >"$LOGS/update-journal.txt"
 grep -q 'its checks are red' "$LOGS/update-journal.txt" && grep -q 'its checks are pending' "$LOGS/update-journal.txt" && grep -q 'open intents (2)' "$LOGS/update-journal.txt" || fail "update reasons not logged"
@@ -325,6 +338,25 @@ git -C "$BARE" tag -f deploy "$signed" >/dev/null && git -C "$BARE" update-serve
 pass "update: waits on failed and pending checks, on a red ops end-to-end at ${e2e_signed:0:12} and on open intents; deploys the green GitHub-signed merge ${signed:0:12} with reconcile first; refuses unsigned ${unsigned:0:12}"
 
 # ---------- 9. Backup and restore drill ----------
+# §8's update applied the signed release's own host files. On a pull request that release is the base's merge, so
+# its zeroed-backup and restore scripts are the base's, not this branch's: put this branch's host files back first,
+# as the merge of this branch would, so §9 tests what the branch ships (on push they are the same files).
+in_c "ZEROED_NO_WAIT=1 bash /root/i --update" >"$LOGS/console/update-branch-files-9.txt" 2>&1 || { cat "$LOGS/console/update-branch-files-9.txt"; fail "install --update before the backup drill (this branch's host files)"; }
+for f in sbin/zeroed-backup sbin/zeroed-restore sbin/zeroed-restore-drill lib/zeroed/logic.sh; do
+  docker exec -i "$C" cmp -s "/usr/local/$f" - <"$ROOT/ops/host/files/usr/local/$f" || fail "test setup: this branch's $f not in place"
+done
+# JSON state beside the ledger: the worker's exit plans (empty: the release's worker refuses any other shape, and
+# §8 may have switched to it) and durable entry seed state with an unused mint marker. Both approved state
+# files must come back byte for byte (OPS-1j); unrelated files are excluded.
+MARK="{\"e2e\":{\"mint\":\"$(rnd 8)\"}}"
+in_c "printf '{}\n' > /var/lib/zeroed/exits.json && printf '%s\n' '$MARK' > /var/lib/zeroed/entry-seeds.json && chown zeroed-worker: /var/lib/zeroed/exits.json /var/lib/zeroed/entry-seeds.json"
+# The owner's controls (BACKUP-STATE): a tripped kill switch, in the worker's own control.json shape, written while the
+# worker is stopped (a running worker rewrites the file from what it holds) and read by the worker as it starts.
+KILL_AT="$(( $(date +%s) * 1000 ))"
+latches() { printf '{"paused":false,"pausedAtMs":null,"latches":{"killTrippedAtMs":%s,"killRearmedAtMs":null,"weeklyTrippedAtMs":null,"weeklyReviewedAtMs":null,"lossReviewedAtMs":null,"sizeStepUpApproved":false}}' "$1"; }
+in_c "systemctl stop zeroed-worker.service && printf '%s\n' '$(latches "$KILL_AT")' > /var/lib/zeroed/control.json && chown zeroed-worker: /var/lib/zeroed/control.json && systemctl start zeroed-worker.service"
+in_c "for i in \$(seq 60); do systemctl is-active --quiet zeroed-worker.service && exit 0; sleep 1; done; exit 1" || fail "worker not back with a tripped kill switch"
+in_c "jq -e '.latches.killTrippedAtMs == $KILL_AT' /var/lib/zeroed/control.json" >/dev/null || fail "the worker did not keep its tripped kill switch"
 in_c "systemctl start zeroed-backup.service" || fail "backup failed"
 bk="$(in_c "ls -1 /var/backups/zeroed/ | tail -1")"
 [[ "$bk" =~ ^zeroed-[0-9]{8}T[0-9]{6}Z\.tar\.age$ ]] || fail "no backup file"
@@ -332,9 +364,26 @@ in_c "zeroed-restore-drill /etc/zeroed/age/host.key" >"$LOGS/drill-host.txt" 2>&
 in_c "cp /var/backups/zeroed/$bk /root/tampered.age && printf 'x' | dd of=/root/tampered.age bs=1 seek=200 conv=notrunc 2>/dev/null"
 in_c "zeroed-restore-drill /etc/zeroed/age/host.key /root/tampered.age" >"$LOGS/drill-tampered.txt" 2>&1 && fail "tampered backup passed"
 in_c "rm -f /root/tampered.age"
-grep -q '^PASS' "$LOGS/drill-host.txt" && grep -q 'host_events' "$LOGS/drill-host.txt" && grep -q '^FAIL' "$LOGS/drill-tampered.txt" || fail "drill output"
+grep -q '^PASS' "$LOGS/drill-host.txt" && grep -q 'host_events' "$LOGS/drill-host.txt" && grep -q '^  exits.json: ' "$LOGS/drill-host.txt" && grep -q '^  entry-seeds.json: ' "$LOGS/drill-host.txt" && grep -q '^FAIL' "$LOGS/drill-tampered.txt" || fail "drill output"
 in_c "systemctl is-enabled zeroed-backup.timer && systemctl show -p TimersCalendar --value zeroed-backup.timer" | grep -q 'OnCalendar=\*-\*-\* \*:00:00' || fail "backup timer is not hourly"
-pass "backup: hourly timer, $bk encrypted; restore drill PASS into a scratch directory, FAIL on a tampered file"
+# Real restore: the newer state goes aside, the backup's comes back, the evidence stays, the worker starts again.
+# The evidence is append-only and the worker appends to it as it stops and starts, so "kept" means every byte
+# that was there before the restore is still there, in place.
+# The newer state has the kill switch cleared, as a host rebuilt without the backup would: the restore must bring the
+# trip back, and the worker that starts on it must keep it.
+in_c "systemctl stop zeroed-worker.service && printf '%s\n' '$(latches null)' > /var/lib/zeroed/control.json"
+in_c "printf '{\"newer\":true}\n' > /var/lib/zeroed/entry-seeds.json && touch /var/lib/zeroed/journal.jsonl && cp /var/lib/zeroed/journal.jsonl /root/journal-before.jsonl"
+in_c "zeroed-restore /etc/zeroed/age/host.key" >"$LOGS/restore.txt" 2>&1 || { cat "$LOGS/restore.txt"; fail "restore"; }
+[ "$(in_c "cat /var/lib/zeroed/entry-seeds.json")" = "$MARK" ] || fail "restore did not bring back the worker's JSON state"
+in_c "grep -lx '{\"newer\":true}' /var/lib/zeroed-prerestore/*/entry-seeds.json" >/dev/null || fail "restore did not keep the replaced state aside"
+in_c "cmp -s -n \$(stat -c %s /root/journal-before.jsonl) /root/journal-before.jsonl /var/lib/zeroed/journal.jsonl" || fail "restore touched the evidence"
+in_c "rm -f /root/journal-before.jsonl"
+in_c "test ! -e /var/lib/zeroed/MANIFEST.sha256 && stat -c %U /var/lib/zeroed/exits.json /var/lib/zeroed/entry-seeds.json | sort -u" | grep -qx zeroed-worker || fail "restored files not the worker's"
+in_c "for i in \$(seq 60); do systemctl is-active --quiet zeroed-worker.service && exit 0; sleep 1; done; exit 1" || fail "worker not back after restore"
+in_c "jq -e '.latches.killTrippedAtMs == $KILL_AT' /var/lib/zeroed-prerestore/*/control.json" >/dev/null && fail "test setup: the replaced control.json still had the trip"
+sleep 5
+in_c "systemctl is-active --quiet zeroed-worker.service && jq -e '.latches.killTrippedAtMs == $KILL_AT' /var/lib/zeroed/control.json" >/dev/null || fail "the tripped kill switch did not survive the restore"
+pass "backup: hourly timer, $bk encrypted, worker JSON state included; restore drill PASS into a scratch directory, FAIL on a tampered file; zeroed-restore brings the state back, keeps the evidence and the replaced state, restarts the worker; a tripped kill switch survives a restore over a host that had it cleared"
 
 # Off-server copy: the owner's backup code (shown once, never stored), then a silent Telegram document.
 BCODE="$(in_c "zeroed-backup-code" | tee "$LOGS/console/backup-code.txt" | sed -n 's/^  \([a-z -]*\)$/\1/p')"
@@ -351,7 +400,7 @@ in_c "zeroed-status" | grep "off-server copy off (waits for the owner's approval
 in_c "printf '{\"offsite_backup\": true}\n' > /opt/zeroed/current/ops/host-config.json && systemctl start zeroed-backup-offsite.service" || fail "off-server copy failed"
 grep -q "\"method\":\"sendDocument\",\"token_ok\":true,\"chat_id\":\"$T_CHAT\"" "$STATE/telegram.jsonl" || fail "backup not sent to the owner chat"
 printf '%s' "$BCODE" | node "$ROOT/ops/host/files/usr/local/lib/zeroed/derive-key.mjs" --backup >"$E2E/owner-backup.id"
-age -d -i "$E2E/owner-backup.id" "$STATE/received-document" | tar -t | grep -q 'MANIFEST.sha256' || fail "the Telegram copy does not open with the backup code"
+age -d -i "$E2E/owner-backup.id" "$STATE/received-document" | tar -tz | grep -q 'MANIFEST.sha256' || fail "the Telegram copy does not open with the backup code"
 docker cp "$STATE/received-document" "$C:/root/received.age" >/dev/null
 in_c "age -d -i /etc/zeroed/age/host.key /root/received.age >/dev/null 2>&1" && fail "the Telegram copy opens with the host key"
 in_c "rm -f /root/received.age"
@@ -602,6 +651,9 @@ code="$(in_c "curl -s -o /dev/null -w '%{http_code}' -X POST -d '{}' http://127.
 [ "$code" = 403 ] || fail "the drill endpoint is not on (HTTP $code, want 403; 404 is drills off, 000 is not listening)"
 in_c "curl -fsS -m 3 http://127.0.0.1:8787/health" >"$LOGS/health-real.json" || fail "health does not answer on 127.0.0.1:8787"
 jq -e '.mode == "paper" and .signing_key == false and .reconciled == true' "$LOGS/health-real.json" >/dev/null || fail "health is not paper, reconciled, without a signing key"
+# DISK-GUARD: the worker reads the host's disk (the state directory's filesystem) once a minute, from its first step.
+in_c "for i in \$(seq 90); do curl -fsS -m 3 http://127.0.0.1:8787/health | jq -e '.disk.free_bytes > 0 and .disk.total_bytes >= .disk.free_bytes' >/dev/null && exit 0; sleep 1; done; exit 1" || fail "the worker's health has no disk reading"
+in_c "curl -fsS -m 3 http://127.0.0.1:8787/health" | jq -e '.disk.entries_refused == false and .disk.recorder == "on"' >/dev/null || fail "the worker refused entries or paused its recorder on a host with room"
 # PRACTICE-ON: the S0 shakedown with S0's diagnostic set, from the release's host-config, in the worker's environment,
 # /health and start line; journaled as not qualifying, with the paper edge.
 parts='["regime-volume","regime-survival","exec-health","h14-creates-coverage"]'

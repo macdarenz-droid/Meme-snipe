@@ -31,6 +31,12 @@ export interface RecorderOptions {
   readonly rotateBytes: number;
   /** The commitment each feed actually uses, by feed and subscription (listed in the manifest for BT-1c). */
   readonly commitments?: Readonly<Record<string, string>>;
+  /** The time a pause forced by a failed write starts at (the worker's clock; default Date.now). */
+  readonly now?: () => number;
+  /** Told when a write failed for lack of space and the recorder paused itself (DISK-GUARD). */
+  readonly onNoSpace?: () => void;
+  /** Test seam: appends to a plain file (default appendFileSync), so a test can make a write fail with ENOSPC. */
+  readonly append?: (path: string, text: string) => void;
 }
 
 interface Open {
@@ -80,6 +86,8 @@ export class Recorder {
   readonly #buffer = new Map<Table, string[]>();
   readonly #coverage: Coverage = { first_slot: null, last_slot: null, first_block_time: null, last_block_time: null };
   readonly #gaps: unknown[] = [];
+  /** DISK-GUARD: while set, nothing is written; the open gap in `#gaps` counts what was dropped. */
+  #paused: { gap: { reason: string; from_ms: number; to_ms: number | null; dropped: { frames: number; releases: number; delays: number }; unwritten_rows?: number } } | null = null;
   readonly #attachments: Attachment[] = [];
   #frames = 0;
   #raw = 0;
@@ -102,8 +110,52 @@ export class Recorder {
     return { frames: this.#frames, raw: this.#raw, releases: this.#releases };
   }
 
+  get paused(): boolean {
+    return this.#paused !== null;
+  }
+
+  /**
+   * DISK-GUARD: stops writing (free space is low, or a write failed for lack of it). What is buffered is written and
+   * every open file sealed first, as far as space allows; the stop is a `coverage_gaps` entry with its start, its end
+   * (null while it lasts, so a crash leaves it open) and how many rows were not written. A replay of this boot does not
+   * cover the gap.
+   */
+  pause(atMs: number, reason: string): void {
+    if (this.#paused !== null) return;
+    try {
+      this.flush();
+      for (const t of TABLES) this.#seal(t);
+    } catch {
+      // no room even for that: the plain files stay, and the next start seals them (sealLeftovers)
+    }
+    const gap = { reason: `recorder paused: ${reason}`, from_ms: atMs, to_ms: null as number | null, dropped: { frames: 0, releases: 0, delays: 0 } };
+    this.#paused = { gap };
+    this.#gaps.push(gap);
+    this.#tryManifest();
+  }
+
+  /** Writes again from `atMs`; the gap gets its end. */
+  resume(atMs: number): void {
+    if (this.#paused === null) return;
+    this.#paused.gap.to_ms = atMs;
+    this.#paused = null;
+    this.#tryManifest();
+  }
+
+  #tryManifest(): void {
+    try {
+      this.#writeManifest();
+    } catch {
+      // written again at the next seal, resume or clean stop
+    }
+  }
+
   /** FEED-1 `onFrame`: every frame, duplicates included. */
   frame(f: Frame): void {
+    if (this.#paused !== null) {
+      this.#paused.gap.dropped.frames++;
+      return;
+    }
     this.#frames++;
     this.#push('frames', f.receivedAt, typedText(f));
     const raw = rawRecord(f);
@@ -127,6 +179,10 @@ export class Recorder {
 
   /** FEED-1 `onRelease`: the event handed to the engine, in release order. */
   release(r: Release, receivedAt: number): void {
+    if (this.#paused !== null) {
+      this.#paused.gap.dropped.releases++;
+      return;
+    }
     this.#releases++;
     this.#push('releases', receivedAt, JSON.stringify(r));
   }
@@ -136,6 +192,10 @@ export class Recorder {
    * with each arrival time on this host and the commitment of each path.
    */
   delay(row: Readonly<Record<string, unknown>>, atMs: number): void {
+    if (this.#paused !== null) {
+      this.#paused.gap.dropped.delays++;
+      return;
+    }
     this.#push('delays', atMs, JSON.stringify(row, (_k, v: unknown) => (typeof v === 'bigint' ? v.toString() : v)));
   }
 
@@ -178,13 +238,29 @@ export class Recorder {
     if (buf === undefined || buf.length === 0 || o === undefined) return;
     const r = redactCounted(buf.join('\n'));
     o.redactions += r.count;
-    appendFileSync(o.path, `${r.text}\n`);
+    (this.#o.append ?? appendFileSync)(o.path, `${r.text}\n`);
     buf.length = 0;
   }
 
-  /** Writes every buffered line. Called before the engine acts on what was ingested. */
+  /**
+   * Writes every buffered line. Called before the engine acts on what was ingested. A write that fails for lack of
+   * space pauses the recorder (DISK-GUARD) instead of stopping the worker: its state, ledger and journal come first.
+   */
   flush(): void {
-    for (const t of TABLES) this.#flushTable(t);
+    try {
+      for (const t of TABLES) this.#flushTable(t);
+    } catch (e) {
+      if ((e as { code?: unknown }).code !== 'ENOSPC') throw e;
+      let lost = 0;
+      for (const t of TABLES) lost += this.#buffer.get(t)?.splice(0).length ?? 0;
+      if (this.#paused === null) {
+        const gap = { reason: 'recorder paused: a write failed (no space left on the device)', from_ms: (this.#o.now ?? Date.now)(), to_ms: null as number | null, dropped: { frames: 0, releases: 0, delays: 0 }, unwritten_rows: lost };
+        this.#paused = { gap };
+        this.#gaps.push(gap);
+        this.#tryManifest();
+      }
+      this.#o.onNoSpace?.();
+    }
   }
 
   #seal(t: Table): void {

@@ -17,6 +17,7 @@ import { HELIUS_EXHAUSTED, type HttpClient } from '../providers/index.ts';
 import type { PaperTrade } from './account.ts';
 import { lamportsUsd, melbourneDate, usdText } from './api.ts';
 import { SEEDING } from '../engine/strategy.ts';
+import { DISK_LOW } from './disk.ts';
 import { StateFile } from './state.ts';
 import { parseDeathMem, type DeathMem } from './mem-trace.ts';
 import { melbourneDay } from '../../../core/src/risk/index.ts';
@@ -73,6 +74,7 @@ export const haltCode = (reason: string): string => {
   if (reason === 'owner pause (watchdog)') return 'owner-pause';
   if (reason === 'second price path unavailable') return 'second-path-unavailable';
   if (reason === SEEDING) return 'seeding';
+  if (reason === DISK_LOW) return 'disk-low';
   if (reason === HELIUS_EXHAUSTED) return 'helius-exhausted';
   if (reason === 'starting') return 'starting';
   if (reason.startsWith('sell-only')) return 'sell-only';

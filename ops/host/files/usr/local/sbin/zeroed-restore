@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# Validate and stage on the live filesystem before stopping. Directory renames install the snapshot;
+# every post-stop failure restores the earlier directory and attempts its restart. Live evidence never comes
+# from an archive (including legacy reserve manifests). No partially copied state is started.
+set -euo pipefail
+umask 077
+SRC="${ZEROED_BACKUP_SRC:-/var/lib/zeroed}"
+OUT="${ZEROED_BACKUP_OUT:-/var/backups/zeroed}"
+ASIDE="${ZEROED_RESTORE_ASIDE:-/var/lib/zeroed-prerestore}"
+DRILL="${ZEROED_RESTORE_DRILL:-/usr/local/sbin/zeroed-restore-drill}"
+identity="${1:?usage: zeroed-restore IDENTITY_FILE [BACKUP_FILE]}"
+backup="${2:-$(ls -1 "$OUT"/zeroed-*.tar.age 2>/dev/null | LC_ALL=C sort -r | head -n 1)}"
+[ -n "$backup" ] && [ -f "$backup" ] || { echo "No backup found; nothing restored."; exit 1; }
+"$DRILL" "$identity" "$backup" || { echo "The backup failed the restore drill; nothing restored."; exit 1; }
+[ -d "$SRC" ] && [ ! -L "$SRC" ] || { echo "Live state must be a real directory; nothing restored."; exit 1; }
+budget="${ZEROED_BACKUP_SNAPSHOT_BYTES:-134217728}"
+pause="${ZEROED_DISK_RECORDER_PAUSE_BYTES:-1610612736}"
+[[ "$budget" =~ ^[1-9][0-9]{0,8}$ && "$pause" =~ ^[1-9][0-9]{0,15}$ ]] && [ "$budget" -le 134217728 ] || { echo "Invalid restore disk budget."; exit 1; }
+sample="$(stat -f -c '%a:%S' -- "$SRC")"
+IFS=: read -r blocks size <<< "$sample"
+[[ "$blocks" =~ ^[0-9]{1,15}$ && "$size" =~ ^[0-9]{1,9}$ ]] && [ "$((blocks * size))" -ge "$((pause + budget * 2 + 65536))" ] || { echo "Insufficient free disk above the recorder pause line; nothing restored."; exit 1; }
+mkdir -p "$ASIDE"
+[ ! -L "$ASIDE" ] && [ "$(stat -c %d "$SRC")" = "$(stat -c %d "$ASIDE")" ] || { echo "Restore aside must share the live filesystem; nothing restored."; exit 1; }
+work="$(mktemp -d "$(dirname "$SRC")/.restore.XXXXXX")"
+mkdir "$work/snap"
+stopped=0
+old_moved=0
+installed=0
+aside="$(mktemp -d "$ASIDE/$(date -u +%Y%m%dT%H%M%SZ).XXXXXX")"
+rmdir "$aside"
+cleanup() {
+  result=$?
+  trap - EXIT
+  if [ "$result" -ne 0 ] && [ "$stopped" = 1 ]; then
+    rollback=0
+    if [ "$old_moved" = 1 ]; then
+      if [ "$installed" = 1 ]; then
+        for name in journal.jsonl journal.jsonl.reserve recorder; do
+          if [ -e "$SRC/$name" ] || [ -L "$SRC/$name" ]; then mv -- "$SRC/$name" "$aside/$name" || rollback=1; fi
+        done
+        [ "$rollback" = 0 ] && mv -- "$SRC" "$work/failed" || rollback=1
+      fi
+      [ "$rollback" = 0 ] && mv -- "$aside" "$SRC" || rollback=1
+    fi
+    if [ "$rollback" = 0 ]; then
+      systemctl start zeroed-worker.service || echo "Restore rollback preserved prior state; worker restart failed. Owner console recovery required."
+      echo "Restore failed; prior state restored and restart attempted."
+    else
+      echo "Restore rollback failed; worker remains stopped. Prior state is in $aside; owner console recovery required."
+    fi
+  fi
+  rm -rf "$work"
+  exit "$result"
+}
+trap cleanup EXIT
+files="$(node "${ZEROED_LIB:-/usr/local/lib/zeroed}/backup-safety.mjs" prepare "$identity" "$backup" "$work/snap")"
+paused=""
+if [ ! -e "$work/snap/control.json" ]; then
+  printf '{"paused":true,"pausedAtMs":%s,"latches":{"killTrippedAtMs":null,"killRearmedAtMs":null,"weeklyTrippedAtMs":null,"weeklyReviewedAtMs":null,"lossReviewedAtMs":null,"sizeStepUpApproved":false}}\n' "$(($(date +%s) * 1000))" > "$work/snap/control.json"
+  paused=" The backup had no control.json, so entries start paused."
+fi
+node "${ZEROED_LIB:-/usr/local/lib/zeroed}/backup-safety.mjs" stage-marker "$work/snap" "$SRC"
+# Ownership and all allocating writes finish while the old worker is still running.
+chown -R zeroed-worker:zeroed-worker "$work/snap"
+systemctl stop zeroed-worker.service
+stopped=1
+mv -- "$SRC" "$aside"
+old_moved=1
+# Sample the live marker after stop; its dirty bit can have changed while staging. No allocating write remains.
+node "${ZEROED_LIB:-/usr/local/lib/zeroed}/backup-safety.mjs" merge-marker "$work/snap" "$aside"
+mv -- "$work/snap" "$SRC"
+installed=1
+for name in journal.jsonl journal.jsonl.reserve recorder; do
+  if [ -e "$aside/$name" ] || [ -L "$aside/$name" ]; then mv -- "$aside/$name" "$SRC/$name"; fi
+done
+systemctl start zeroed-worker.service
+stopped=0
+echo "Restored $(basename "$backup"): $files file(s); prior state kept in $aside. The worker reconciles before it trades.$paused"

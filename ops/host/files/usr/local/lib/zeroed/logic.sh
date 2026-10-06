@@ -171,3 +171,40 @@ e2e_commit() {
     fi
   done
 }
+
+# backup_files STATE_DIR: known durable bot state only. This allowlist is checked against the real worker paths.
+# Ledger WAL/SHM files are never copied: SQLite online backup incorporates committed WAL pages. The journal and
+# its reserve, recordings, host reports, runtime markers, temp files and unrelated files are never selected.
+backup_files() {
+  node "${ZEROED_LIB:-/usr/local/lib/zeroed}/backup-safety.mjs" list "$1"
+}
+
+# intents_hold ACTIVE STATE_DIR: true while a code update or a worker restart must wait for open intents. ACTIVE
+# is "active" when zeroed-worker.service is active. The worker's count (STATE_DIR/open_intents) must read
+# exactly 0, whether the worker is active or not (activating, reconciling, restarting, stopped). A missing or
+# unreadable count holds, except on a host with no worker state at all (no count and no ledger.sqlite), where
+# nothing can be open.
+intents_hold() {
+  local n
+  n="$(cat "$2/open_intents" 2>/dev/null)" || n=unknown
+  [ "$n" = 0 ] && return 1
+  [ "$1" != active ] && [ ! -e "$2/open_intents" ] && [ ! -e "$2/ledger.sqlite" ] && return 1
+  return 0
+}
+
+# prunable_releases ROOT CURRENT PREV NOW_S: release folders under ROOT that may go (DISK-GUARD), one per line. Kept:
+# the current release, the one before it (the roll-back target), the 3 newest, anything changed in the last 7 days and
+# anything half-written (*.new). Each release is a full copy of the repository, and every update adds one.
+prunable_releases() {
+  local root="$1" cur="$2" prev="$3" now="$4" d
+  local -a all=()
+  while IFS= read -r d; do all+=("$d"); done < <(find "$root" -mindepth 1 -maxdepth 1 -type d ! -name '*.new' -printf '%T@ %p\n' 2>/dev/null | LC_ALL=C sort -rn | cut -d' ' -f2-)
+  local i=0
+  for d in "${all[@]}"; do
+    i=$((i + 1))
+    [ "$i" -gt 3 ] || continue
+    [ "$d" != "$cur" ] && [ "$d" != "$prev" ] || continue
+    [ "$(( now - $(stat -c %Y "$d") ))" -gt 604800 ] || continue
+    printf '%s\n' "$d"
+  done
+}

@@ -111,6 +111,7 @@ describe('counts from the journal', () => {
     expect(haltCode('feed pumpportal disconnected')).toBe('feed-disconnected');
     expect(haltCode('second price path unavailable')).toBe('second-path-unavailable');
     expect(haltCode('deployer index seeding')).toBe('seeding');
+    expect(haltCode('disk low')).toBe('disk-low');
     expect(haltCode('sell-only: no new entries; the positions below are flattened')).toBe('sell-only');
     expect(haltCode('ledger and book diverged; entries off until a restart')).toBe('ledger-diverged');
     // The feed's name is never kept, whatever it holds.

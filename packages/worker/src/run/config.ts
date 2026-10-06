@@ -1,6 +1,7 @@
 // The worker's settings from its environment (docs/ARCHITECTURE.md §12.4). Pure: the entry passes the environment in
 // (boot/environment.ts is the one place that reads it). Anything refused exits 2; live is never set from here.
 import { DEFAULT_HEALTH_ADDR, EXIT, REGISTERED_STRATEGIES, isLoopback } from '../../../runner/src/contract.ts';
+import { DEFAULT_DISK_POLICY, validDiskPolicy, type DiskPolicy } from './disk.ts';
 
 /**
  * FILL-BUDGET (supervisor ruling, 5 Oct, under the owner's decision "max out account 1": no Helius rationing): the default
@@ -29,6 +30,8 @@ export interface WorkerConfig {
   readonly heartbeatMs: number;
   /** OPS-SUMMARY: how often the daily summary is posted to the watchdog (ZEROED_SUMMARY_MS, default 30 minutes). */
   readonly summaryMs: number;
+  /** DISK-GUARD: free-space lines for pausing the recorder and refusing entries (ZEROED_DISK_*). */
+  readonly disk: DiskPolicy;
   /**
    * FILL-BUDGET: credits the fills may spend in a UTC day (ZEROED_FILL_CREDITS_PER_DAY, default `FILL_CREDITS_PER_DAY`).
    * The owner's decision is no Helius rationing; past the account's real end, HELIUS-EXHAUSTED holds non-exit calls.
@@ -166,6 +169,16 @@ export const parseConfig = (
   const s0Diagnostic = diagText === 'on';
   if (s0Diagnostic && name !== 'S0') return refuse('refused: ZEROED_S0_DIAGNOSTIC is only for the S0 shakedown');
   if (s0Diagnostic && (qualifying || qualifyingRun !== null)) return refuse('refused: ZEROED_S0_DIAGNOSTIC is never used in a release with a qualifying run');
+  // DISK-GUARD's steps in bytes of free space (disk.ts DEFAULT_DISK_POLICY when unset); they must keep their order.
+  const diskNames = { recorderPauseBytes: 'ZEROED_DISK_RECORDER_PAUSE_BYTES', recorderResumeBytes: 'ZEROED_DISK_RECORDER_RESUME_BYTES', entryFloorBytes: 'ZEROED_DISK_ENTRY_FLOOR_BYTES', entryResumeBytes: 'ZEROED_DISK_ENTRY_RESUME_BYTES' } as const;
+  const disk: Record<keyof DiskPolicy, number> = { ...DEFAULT_DISK_POLICY };
+  for (const [k, n] of Object.entries(diskNames) as [keyof DiskPolicy, string][]) {
+    const v = env[n];
+    if (v === undefined) continue;
+    if (!/^[1-9][0-9]{0,15}$/.test(v)) return refuse(`refused: ${n} must be a whole number of bytes`);
+    disk[k] = Number(v);
+  }
+  if (!validDiskPolicy(disk)) return refuse('refused: the ZEROED_DISK_* lines must keep their order (entry floor < entry resume, entry floor < recorder pause < recorder resume)');
   const watchdog = env['WATCHDOG_URL'] ?? '';
   if (watchdog !== '' && !/^https:\/\/[^\s/]+(\/[^\s]*)?$/.test(watchdog)) return refuse('refused: WATCHDOG_URL must be an https URL');
   return {
@@ -179,6 +192,7 @@ export const parseConfig = (
       watchdogUrl: watchdog === '' ? null : watchdog.replace(/\/$/, ''),
       heartbeatMs: beat, summaryMs, fillCreditsPerDay, watch: { everyMs: watchEvery, staleMs: watchStale, latencyMs: watchLatency, verifyMs: watchVerify }, wallet, standIns,
       strategy: { name, paperEdgePpm, qualifying, s0Diagnostic },
+      disk,
     },
   };
 };

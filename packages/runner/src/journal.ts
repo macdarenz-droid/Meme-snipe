@@ -116,6 +116,10 @@ export const checkJournalLines = (raw: Iterable<string>, opts: { readonly allowT
       case 'journal_repair':
         repairs += 1;
         break;
+      case 'journal_gap':
+        // DISK-GUARD: lines the worker could not write for lack of space are missing evidence, never a complete journal.
+        add(`seq ${l.seq}: ${String(l['lost'])} line(s) not written from ${String(l['from_ts'])} (no space left on the device)`);
+        break;
       case 'simulation':
         simulations += 1;
         if (typeof l.trade !== 'string' || (l['leg'] !== 'entry' && l['leg'] !== 'exit')) add(`seq ${l.seq}: simulation without trade and leg`);

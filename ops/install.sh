@@ -73,6 +73,7 @@ managed() {
   case "$p" in
     /usr/local/sbin/zeroed-* | /usr/local/lib/zeroed/* | /usr/local/share/zeroed/* | /usr/local/bin/node) return 0 ;;
     /etc/systemd/system/zeroed-* | /etc/zeroed/* | /etc/nftables.conf | /etc/apt/apt.conf.d/* | /etc/ssh/sshd_config.d/*) return 0 ;;
+    /etc/systemd/journald.conf.d/zeroed-*) return 0 ;;
     /var/lib/zeroed-host/* | /opt/zeroed/*) return 0 ;;
   esac
   return 1
@@ -112,6 +113,7 @@ roll_back() {
     b=$((b + 1))
   done < "$JOURNAL"
   systemctl daemon-reload
+  systemctl restart systemd-journald >/dev/null 2>&1 || true
   while read -r kind p en act; do
     [ "$kind" = unit ] && [[ "$p" =~ ^zeroed-[A-Za-z0-9@._-]+$ ]] || continue
     [ "$en" != 1 ] || systemctl enable "$p" >/dev/null 2>&1
@@ -246,6 +248,13 @@ table inet zeroed {
   }
 }
 __ZEROED_FILE__
+install_file /etc/systemd/journald.conf.d/zeroed-journal.conf 0644 <<'__ZEROED_FILE__'
+# DISK-GUARD: the system journal never takes the room the worker's state, ledger and journal need. At most 500 MB,
+# and it leaves at least 2 GB free (systemd's defaults on a 25 GB disk are 2.5 GB and 15%).
+[Journal]
+SystemMaxUse=500M
+SystemKeepFree=2G
+__ZEROED_FILE__
 install_file /etc/systemd/system/zeroed-backup-offsite.service 0644 <<'__ZEROED_FILE__'
 [Unit]
 Description=Zeroed: daily off-server copy of the newest backup (silent Telegram document)
@@ -277,10 +286,11 @@ WantedBy=timers.target
 __ZEROED_FILE__
 install_file /etc/systemd/system/zeroed-backup.service 0644 <<'__ZEROED_FILE__'
 [Unit]
-Description=Zeroed: encrypted backup of the SQLite files
+Description=Zeroed: bounded encrypted backup of bot state
 
 [Service]
 Type=oneshot
+EnvironmentFile=-/etc/zeroed/worker.env
 ExecStart=/usr/local/sbin/zeroed-backup
 UMask=0077
 Nice=10
@@ -958,6 +968,254 @@ const stop = () => {
 process.on('SIGTERM', stop);
 process.on('SIGINT', stop);
 __ZEROED_FILE__
+install_file /usr/local/lib/zeroed/backup-safety.mjs 0644 <<'__ZEROED_FILE__'
+#!/usr/bin/env node
+// Host backup boundary. Built-in Node modules only; never trusts tar paths, modes, links or manifests.
+import * as fs from 'node:fs';
+import { createHash } from 'node:crypto';
+import { spawn, spawnSync } from 'node:child_process';
+import { Transform } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
+import { createGunzip, createGzip } from 'node:zlib';
+import { createInterface } from 'node:readline';
+import { join } from 'node:path';
+const names = new Set(['ledger.sqlite','account.json','exits.json','entry-seeds.json','paper.json','deployer-state.json','deployers.jsonl','deployers.jsonl.reserve','fill-budget.json','credits.json','control.json','exposure.json','cold_start']);
+const allowed = p => names.has(p) || /^chain-volume\/data-volume-\d{4}-\d{2}-\d{2}\.json$/.test(p);
+const legacy = p => p === 'journal.jsonl.reserve';
+const limit = Number(process.env.ZEROED_BACKUP_SNAPSHOT_BYTES ?? 134217728);
+if (!Number.isSafeInteger(limit) || limit < 1 || limit > 134217728) throw Error('invalid snapshot limit');
+const regular = (p, max = limit) => {
+  const fd = fs.openSync(p, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+  try { const s = fs.fstatSync(fd); if (!s.isFile() || s.nlink !== 1 || s.size > max) throw Error('nonregular or oversized state input'); return fd; }
+  catch (e) { fs.closeSync(fd); throw e; }
+};
+const root = p => { const s = fs.lstatSync(p); if (!s.isDirectory() || s.isSymbolicLink()) throw Error('state root must be a real directory'); };
+const directory = p => fs.openSync(p, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW);
+const source = (dir, rel, max=Number.MAX_SAFE_INTEGER) => {
+  if (!allowed(rel) && rel !== 'ledger.sqlite-wal') throw Error('unexpected state source');
+  const dirs=[directory(dir)];
+  try { let path='/proc/self/fd/'+dirs[0]; if(rel.startsWith('chain-volume/')){dirs.push(directory(path+'/chain-volume'));path='/proc/self/fd/'+dirs[1];}return regular(path+'/'+rel.split('/').at(-1),max); }
+  finally {for(const fd of dirs)fs.closeSync(fd);}
+};
+const bounded = () => { let bytes = 0; return new Transform({ transform(chunk, _, cb) { bytes += chunk.length; cb(bytes > limit ? Error('snapshot limit exceeded') : null, chunk); } }); };
+const hashRange = (fd, at, size, output) => {
+  const hash = createHash('sha256'), chunk = Buffer.alloc(65536);
+  for (let n = 0; n < size;) {
+    const got = fs.readSync(fd, chunk, 0, Math.min(chunk.length, size - n), at + n);
+    if (!got) throw Error('archive truncated');
+    hash.update(chunk.subarray(0, got));
+    if(output!==undefined){for(let written=0;written<got;){const count=fs.writeSync(output,chunk,written,got-written);if(count<=0)throw Error('snapshot write made no progress');written+=count;}}
+    n += got;
+  }
+  return hash.digest('hex');
+};
+const markerName='deployers.jsonl.reserve';
+const markerDirty = p => {
+  const fd=regular(p,65536);
+  try {const b=fs.readFileSync(fd);if(b.length===0)return true;if(b.length!==65536||b[0]>1||b.subarray(1).some(v=>v!==0))throw Error('invalid deployer uncertainty marker');return b[0]===1;}
+  finally{fs.closeSync(fd);}
+};
+const lexists = p => {try{fs.lstatSync(p);return true;}catch(e){if(e.code==='ENOENT')return false;throw e;}};
+const hasSaved = dir => ['deployers.jsonl','deployer-state.json'].some(rel=>fs.existsSync(join(dir,rel)));
+function mergeMarker(stage,prior,create) {
+  const target=join(stage,markerName), old=join(prior,markerName);
+  const stageDirty=lexists(target)?markerDirty(target):hasSaved(stage);
+  const priorDirty=lexists(old)?markerDirty(old):hasSaved(prior);
+  const dirty=stageDirty||priorDirty;
+  if(!lexists(target)) {
+    if(!create)throw Error('staged deployer marker missing');
+    const b=Buffer.alloc(65536);b[0]=dirty?1:0;fs.writeFileSync(target,b,{flag:'wx',mode:0o600});
+    const fd=regular(target,65536);try{fs.fsyncSync(fd);}finally{fs.closeSync(fd);}
+  } else if(dirty&&fs.statSync(target).size!==0){const fd=fs.openSync(target,fs.constants.O_RDWR|fs.constants.O_NOFOLLOW);try{if(fs.writeSync(fd,Buffer.from([1]),0,1,0)!==1)throw Error('uncertainty marker short write');fs.fsyncSync(fd);}finally{fs.closeSync(fd);}}
+}
+function selected(dir) {
+  root(dir); const found=[];
+  for(const rel of names){if(!lexists(join(dir,rel)))continue;const fd=source(dir,rel);fs.closeSync(fd);found.push(rel);}
+  if(lexists(join(dir,'chain-volume'))){root(join(dir,'chain-volume'));for(const name of fs.readdirSync(join(dir,'chain-volume'))){const rel='chain-volume/'+name;if(allowed(rel)){const fd=source(dir,rel);fs.closeSync(fd);found.push(rel);}}}
+  if(found.length>4096)throw Error('too many state files');
+  return found.sort();
+}
+function generation(dir) {
+  const found=selected(dir), wal=found.includes('ledger.sqlite')&&lexists(join(dir,'ledger.sqlite-wal'));
+  const hash=createHash('sha256');
+  const metadata=s=>[s.dev,s.ino,s.size,s.nlink,s.mtimeNs,s.ctimeNs].join(':');
+  for(const rel of [...found,...(wal?['ledger.sqlite-wal']:[])]){
+    const fd=source(dir,rel,limit);
+    try {const before=fs.fstatSync(fd,{bigint:true}),meta=metadata(before);hash.update(rel+'\0'+meta+'\0'+hashRange(fd,0,Number(before.size))+'\n');if(metadata(fs.fstatSync(fd,{bigint:true}))!==meta)throw Error('source changed during generation scan');}
+    finally{fs.closeSync(fd);}
+  }
+  if(JSON.stringify(selected(dir))!==JSON.stringify(found)||(found.includes('ledger.sqlite')&&lexists(join(dir,'ledger.sqlite-wal')))!==wal)throw Error('source allowlist/WAL changed during generation scan');
+  return {names:found,stamp:hash.digest('hex')};
+}
+// Validate the copied WAL before SQLite can silently disregard a torn/corrupt tail.
+function walFrames(p) {
+  const fd=regular(p);try {
+    const bytes=fs.readFileSync(fd);if(bytes.length<32)throw Error('truncated SQLite WAL');
+    const magic=bytes.readUInt32BE(0), little=magic===0x377f0682;
+    if(!little&&magic!==0x377f0683)throw Error('invalid SQLite WAL magic');
+    const page=bytes.readUInt32BE(8), width=page+24;
+    if(bytes.readUInt32BE(4)!==3007000||page<512||page>65536||(page&(page-1))||((bytes.length-32)%width))throw Error('invalid or torn SQLite WAL');
+    const word=(b,n)=>little?b.readUInt32LE(n):b.readUInt32BE(n);
+    let s0=0,s1=0;
+    const checksum=b=>{for(let n=0;n<b.length;n+=8){s0=(s0+word(b,n)+s1)>>>0;s1=(s1+word(b,n+4)+s0)>>>0;}};
+    checksum(bytes.subarray(0,24));
+    if(s0!==bytes.readUInt32BE(24)||s1!==bytes.readUInt32BE(28))throw Error('SQLite WAL header checksum mismatch');
+    let commit=0,count=0;
+    for(let at=32;at<bytes.length;at+=width){
+      if(bytes.readUInt32BE(at)===0||bytes.readUInt32BE(at+8)!==bytes.readUInt32BE(16)||bytes.readUInt32BE(at+12)!==bytes.readUInt32BE(20))throw Error('SQLite WAL frame identity mismatch');
+      checksum(bytes.subarray(at,at+8));checksum(bytes.subarray(at+24,at+width));
+      if(s0!==bytes.readUInt32BE(at+16)||s1!==bytes.readUInt32BE(at+20))throw Error('SQLite WAL frame checksum mismatch');
+      commit=bytes.readUInt32BE(at+4);count++;
+    }
+    if(count&&!commit)throw Error('SQLite WAL has an uncommitted tail');
+    return count;
+  }finally{fs.closeSync(fd);}
+}
+function sqliteStage(dir,dest,max) {
+  root(dest);let bytes=0,frames=0;
+  for(const rel of ['ledger.sqlite',...(lexists(join(dir,'ledger.sqlite-wal'))?['ledger.sqlite-wal']:[])]){
+    const fd=source(dir,rel,max-bytes);try {
+      const size=fs.fstatSync(fd).size,out=fs.openSync(join(dest,rel),'wx',0o600);
+      try{hashRange(fd,0,size,out);fs.fsyncSync(out);}finally{fs.closeSync(out);}
+      if(fs.fstatSync(fd).size!==size)throw Error('SQLite source changed during staging');bytes+=size;
+    }finally{fs.closeSync(fd);}
+  }
+  if(lexists(join(dest,'ledger.sqlite-wal')))frames=walFrames(join(dest,'ledger.sqlite-wal'));
+  // SQLite's private WAL index grows in 32 KiB regions. Charge it even if the exclusive reader avoids SHM.
+  const shm=32768*(1+Math.ceil(Math.max(0,frames-4062)/4096));
+  if(bytes+shm>=max)throw Error('SQLite scratch exceeds snapshot limit');
+  console.log(bytes+shm);
+}
+async function validate(p, rel) {
+  const fd = regular(p); let input;
+  try {
+    if (rel === markerName) markerDirty(p);
+    else if (rel === 'deployer-state.json') {
+      input = fs.createReadStream(p, {fd, autoClose:true});
+      const lines = createInterface({ input, crlfDelay: Infinity });
+      const it = lines[Symbol.asyncIterator]();
+      const first = await it.next(); const head = JSON.parse(first.value ?? '');
+      if (head.format === 'zeroed-deployer-state') {
+        if (head.version !== 2) throw Error('saved state version invalid');
+        const hash = createHash('sha256'); let count = 0, previous;
+        for (let line = await it.next(); !line.done; line = await it.next()) {
+          if (previous !== undefined) { JSON.parse(previous); hash.update(previous + '\n'); count++; }
+          previous = line.value;
+        }
+        const footer = JSON.parse(previous ?? '');
+        if (!count || footer.lines !== count || footer.sha256 !== hash.digest('hex')) throw Error('saved state footer/hash/count invalid');
+      } else {
+        let text = first.value; for (let line = await it.next(); !line.done; line = await it.next()) text += '\n' + line.value; const v = JSON.parse(text);
+        if (v.version !== 1 || typeof v.payload !== 'string' || createHash('sha256').update(v.payload).digest('hex') !== v.sha256) throw Error('saved state checksum/version invalid');
+        JSON.parse(v.payload);
+      }
+      lines.close();
+    } else if (rel === 'ledger.sqlite') {
+      const check=spawnSync('sqlite3',['-readonly',p,'PRAGMA integrity_check;'],{encoding:'utf8',maxBuffer:65536});
+      if(check.status!==0||check.stdout.trim()!=='ok')throw Error('SQLite integrity check failed');
+    } else if (rel.endsWith('.json')) JSON.parse(fs.readFileSync(fd, 'utf8'));
+  } catch (e) { throw Error(rel + ' is not valid JSON or versioned state'); }
+  finally { if (input) input.destroy(); else fs.closeSync(fd); }
+}
+async function pack(snap, recipients, dest) {
+  const tar=spawn('tar',['-C',snap,'-c','.'],{stdio:['ignore','pipe','ignore']});
+  const age=spawn('age',['-R',recipients],{stdio:['pipe','pipe','ignore']});
+  const exit=child=>new Promise((resolve,reject)=>{child.on('error',reject);child.on('exit',code=>code===0?resolve():reject(Error('archive/encryption failed')));});
+  const jobs=[exit(tar),exit(age),pipeline(tar.stdout,bounded(),createGzip(),age.stdin),pipeline(age.stdout,bounded(),fs.createWriteStream(dest,{flags:'wx',mode:0o600}))];
+  try { await Promise.all(jobs); } catch(e) { tar.kill();age.kill();await Promise.allSettled(jobs);throw e; }
+}
+async function prepare(identity, archive, dest) {
+  root(dest);
+  const pause=Number(process.env.ZEROED_DISK_RECORDER_PAUSE_BYTES ?? 1610612736);
+  if(!Number.isSafeInteger(pause)||pause<1)throw Error('invalid disk pause line');
+  const room=fs.statfsSync(dest,{bigint:true});
+  if(room.bavail*room.bsize<BigInt(pause)+BigInt(limit)*2n+65536n)throw Error('insufficient free disk above recorder pause line');
+  const input = regular(archive), compressed = join(dest, '.compressed'), raw = join(dest, '.raw');
+  const child = spawn('age', ['-d','-i',identity], {stdio:[input,'pipe','ignore']});
+  const exited = new Promise((resolve,reject) => { child.on('error', reject); child.on('exit', code => code === 0 ? resolve() : reject(Error('decryption failed'))); });
+  // Attach immediately so a pipeline failure cannot leave an unhandled rejection.
+  exited.catch(() => {});
+  try {
+    await pipeline(child.stdout, bounded(), fs.createWriteStream(compressed, {flags:'wx',mode:0o600}));
+    await exited;
+  } catch (e) { child.kill(); await exited.catch(() => {}); throw e; }
+  finally { fs.closeSync(input); }
+  const magic = Buffer.alloc(2), cfd = regular(compressed); fs.readSync(cfd, magic, 0, 2, 0); fs.closeSync(cfd);
+  if (magic[0] === 31 && magic[1] === 139) await pipeline(fs.createReadStream(compressed), createGunzip(), bounded(), fs.createWriteStream(raw,{flags:'wx',mode:0o600}));
+  else fs.renameSync(compressed, raw);
+  fs.rmSync(compressed,{force:true});
+  const fd = regular(raw), length = fs.fstatSync(fd).size, members = new Map();
+  try {
+    if (length % 512) throw Error('invalid tar length');
+    const header = Buffer.alloc(512); let offset = 0, ended = false;
+    const field = (start,size) => { const b = header.subarray(start,start+size); const zero=b.indexOf(0); if (zero !== -1 && b.subarray(zero).some(v=>v!==0)) throw Error('invalid tar text'); const text=b.subarray(0,zero===-1?size:zero).toString('utf8'); if (!/^[\x20-\x7e]*$/.test(text)) throw Error('invalid tar text'); return text; };
+    const octal = (start,size) => { const text=header.subarray(start,start+size).toString('ascii').replace(/[\0 ]+$/,'').trim(); if (!/^[0-7]+$/.test(text)) throw Error('invalid tar number'); const n=parseInt(text,8); if (!Number.isSafeInteger(n)) throw Error('invalid tar number'); return n; };
+    while (offset < length) {
+      fs.readSync(fd,header,0,512,offset);
+      if (header.every(v=>v===0)) {
+        if (length-offset < 1024) throw Error('missing tar end');
+        const tail=Buffer.alloc(65536); for(let at=offset;at<length;) {const n=fs.readSync(fd,tail,0,Math.min(tail.length,length-at),at); if(!n||tail.subarray(0,n).some(v=>v!==0)) throw Error('data after tar end');at+=n;} ended=true;break;
+      }
+      const expected=octal(148,8); let sum=0;for(let i=0;i<512;i++)sum+=i>=148&&i<156?32:header[i];if(sum!==expected)throw Error('tar checksum invalid');
+      const magic=field(257,6); if(magic!==''&&magic!=='ustar'&&magic!=='ustar ')throw Error('tar format unsupported');
+      const prefix=magic==='ustar'?field(345,155):''; let name=(prefix?prefix+'/':'')+field(0,100), type=header[156];
+      const size=octal(124,12); if(size>limit||offset+512+Math.ceil(size/512)*512>length)throw Error('tar member exceeds boundary');
+      if(name.startsWith('./'))name=name.slice(2);
+      if(type===53) {if(size!==0||!['','chain-volume/','chain-volume'].includes(name))throw Error('unexpected archive directory');}
+      else {
+        if(type!==0&&type!==48)throw Error('links/special archive members forbidden');
+        if(name!=='MANIFEST.sha256'&&!allowed(name)&&!legacy(name))throw Error('unexpected archive member');
+        if(members.has(name)||members.size>=4096)throw Error('duplicate/too many archive members');
+        if(name==='MANIFEST.sha256'&&size>65536)throw Error('manifest too large');
+        const at=offset+512; members.set(name,{at,size,hash:hashRange(fd,at,size)});
+      }
+      offset+=512+Math.ceil(size/512)*512;
+    }
+    if(!ended)throw Error('missing tar end');
+    const manifest=members.get('MANIFEST.sha256');if(!manifest)throw Error('manifest missing');
+    const body=Buffer.alloc(manifest.size);fs.readSync(fd,body,0,body.length,manifest.at);
+    const rows=body.toString('utf8').split('\n');if(rows.pop()!=='')throw Error('manifest final newline missing');
+    const selected=new Set();
+    for(const row of rows){const m=/^([a-f0-9]{64})  (.+)$/.exec(row);if(!m||(!allowed(m[2])&&!legacy(m[2]))||selected.has(m[2]))throw Error('invalid manifest path or duplicate');const member=members.get(m[2]);if(!member||member.hash!==m[1])throw Error('manifest integrity mismatch');selected.add(m[2]);}
+    if(!selected.size||members.size!==selected.size+1)throw Error('manifest/archive member mismatch');
+    let restored=0;
+    for(const rel of selected){const m=members.get(rel);if(legacy(rel)){if(m.size!==0&&m.size!==65536)throw Error('invalid legacy reserve');const b=Buffer.alloc(m.size);fs.readSync(fd,b,0,b.length,m.at);if(b.some(v=>v!==0))throw Error('invalid legacy reserve');continue;}
+      if(rel.startsWith('chain-volume/'))fs.mkdirSync(join(dest,'chain-volume'),{mode:0o700,recursive:true});
+      const out=fs.openSync(join(dest,rel),'wx',0o600);try{hashRange(fd,m.at,m.size,out);fs.fsyncSync(out);}finally{fs.closeSync(out);}await validate(join(dest,rel),rel);
+      if(rel==='ledger.sqlite'){
+        const live=process.env.ZEROED_BACKUP_SRC??'/var/lib/zeroed';
+        if(lexists(join(live,rel))){
+          const checkfd=source(live,rel);fs.closeSync(checkfd);
+          const sql="SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name;";
+          const tables=p=>spawnSync('sqlite3',['-readonly',p,sql],{encoding:'utf8',maxBuffer:65536});
+          const prior=tables(join(live,rel)),snapshot=tables(join(dest,rel));
+          if(prior.status!==0||snapshot.status!==0||prior.stdout!==snapshot.stdout)throw Error('ledger.sqlite tables differ from live database');
+        }
+      }
+      restored++;
+    }
+    if(!restored)throw Error('archive holds no durable state');
+    // Older snapshots cannot certify whether saves lost same-slot events. Carry conservative uncertainty.
+    if(hasSaved(dest)&&!selected.has(markerName)){const b=Buffer.alloc(65536);b[0]=1;fs.writeFileSync(join(dest,markerName),b,{flag:'wx',mode:0o600});}
+    for(const name of ['',...(fs.existsSync(join(dest,'chain-volume'))?['chain-volume']:[])]){const dfd=directory(join(dest,name));try{fs.fsyncSync(dfd);}finally{fs.closeSync(dfd);}}
+    console.log(restored);
+  }finally{fs.closeSync(fd);fs.rmSync(raw,{force:true});}
+}
+try {
+  const [cmd,...args]=process.argv.slice(2);
+  if(cmd==='list')console.log(selected(args[0]).join('\n'));
+  else if(cmd==='sqlite-stage')sqliteStage(args[0],args[1],Number(args[2]));
+  else if(cmd==='generation')console.log(JSON.stringify(generation(args[0])));
+  else if(cmd==='copy'){const [dir,rel,dest]=args, max=Number(args[3]);const fd=source(dir,rel);try{const out=fs.openSync(dest,'wx',0o600);try{const size=fs.fstatSync(fd).size;if(size>max)throw Error('snapshot limit exceeded');hashRange(fd,0,size,out);if(fs.fstatSync(fd).size!==size)throw Error('state changed size during snapshot');}finally{fs.closeSync(out);}}finally{fs.closeSync(fd);}}
+  else if(cmd==='check'){const fd=source(args[0],args[1]);fs.closeSync(fd);}
+  else if(cmd==='validate')await validate(...args);
+  else if(cmd==='prepare')await prepare(...args);
+  else if(cmd==='pack')await pack(...args);
+  else if(cmd==='stage-marker')mergeMarker(args[0],args[1],true);
+  else if(cmd==='merge-marker')mergeMarker(args[0],args[1],false);
+  else throw Error('unknown backup safety command');
+}catch(e){console.error('Backup safety FAIL: '+(e.code ?? e.message));process.exitCode=1;}
+__ZEROED_FILE__
 install_file /usr/local/lib/zeroed/common.sh 0644 <<'__ZEROED_FILE__'
 # Shared helpers for the Zeroed host scripts. Sourced, never run. Never prints a secret value.
 # shellcheck shell=bash
@@ -1107,11 +1365,11 @@ webhook_off() {
   printf 'none\n' > "$STATE_DIR/webhook_expected"
 }
 
-# worker_busy: true while a qualifying dry run is active or the worker reports open intents (or cannot say).
+# worker_busy: true while a qualifying dry run is active or the worker reports open intents (or cannot say),
+# whether the worker is active or not (logic.sh intents_hold).
 worker_busy() {
   [ -z "$(qualifying_run "$EVIDENCE_ROOT" "$(systemctl list-units 'zeroed-dryrun@*' --state=active,activating --plain --no-legend 2>/dev/null || true)")" ] || return 0
-  systemctl is-active --quiet zeroed-worker.service || return 1
-  [ "$(cat /var/lib/zeroed/open_intents 2>/dev/null || echo unknown)" != 0 ]
+  intents_hold "$(systemctl is-active zeroed-worker.service 2>/dev/null || true)" /var/lib/zeroed
 }
 
 keys_stored() { for n in "${API_NAMES[@]}"; do [ -s "$CRED_DIR/${n,,}" ] || return 1; done; }
@@ -1347,6 +1605,43 @@ e2e_commit() {
     fi
   done
 }
+
+# backup_files STATE_DIR: known durable bot state only. This allowlist is checked against the real worker paths.
+# Ledger WAL/SHM files are never copied: SQLite online backup incorporates committed WAL pages. The journal and
+# its reserve, recordings, host reports, runtime markers, temp files and unrelated files are never selected.
+backup_files() {
+  node "${ZEROED_LIB:-/usr/local/lib/zeroed}/backup-safety.mjs" list "$1"
+}
+
+# intents_hold ACTIVE STATE_DIR: true while a code update or a worker restart must wait for open intents. ACTIVE
+# is "active" when zeroed-worker.service is active. The worker's count (STATE_DIR/open_intents) must read
+# exactly 0, whether the worker is active or not (activating, reconciling, restarting, stopped). A missing or
+# unreadable count holds, except on a host with no worker state at all (no count and no ledger.sqlite), where
+# nothing can be open.
+intents_hold() {
+  local n
+  n="$(cat "$2/open_intents" 2>/dev/null)" || n=unknown
+  [ "$n" = 0 ] && return 1
+  [ "$1" != active ] && [ ! -e "$2/open_intents" ] && [ ! -e "$2/ledger.sqlite" ] && return 1
+  return 0
+}
+
+# prunable_releases ROOT CURRENT PREV NOW_S: release folders under ROOT that may go (DISK-GUARD), one per line. Kept:
+# the current release, the one before it (the roll-back target), the 3 newest, anything changed in the last 7 days and
+# anything half-written (*.new). Each release is a full copy of the repository, and every update adds one.
+prunable_releases() {
+  local root="$1" cur="$2" prev="$3" now="$4" d
+  local -a all=()
+  while IFS= read -r d; do all+=("$d"); done < <(find "$root" -mindepth 1 -maxdepth 1 -type d ! -name '*.new' -printf '%T@ %p\n' 2>/dev/null | LC_ALL=C sort -rn | cut -d' ' -f2-)
+  local i=0
+  for d in "${all[@]}"; do
+    i=$((i + 1))
+    [ "$i" -gt 3 ] || continue
+    [ "$d" != "$cur" ] && [ "$d" != "$prev" ] || continue
+    [ "$(( now - $(stat -c %Y "$d") ))" -gt 604800 ] || continue
+    printf '%s\n' "$d"
+  done
+}
 __ZEROED_FILE__
 install_file /usr/local/lib/zeroed/worker-smoke 0755 <<'__ZEROED_FILE__'
 #!/usr/bin/env bash
@@ -1490,39 +1785,125 @@ exec /usr/local/bin/node "${heap[@]}" "$entry" "$@"
 __ZEROED_FILE__
 install_file /usr/local/sbin/zeroed-backup 0755 <<'__ZEROED_FILE__'
 #!/usr/bin/env bash
-# Hourly encrypted backup of every SQLite file under /var/lib/zeroed. Each file is copied with SQLite's
-# online backup (consistent under WAL), checked, listed in a manifest with its SHA-256, packed and
-# encrypted with age to /etc/zeroed/backup-recipients (the host key, plus the owner's key once the
-# Deploy workflow delivered one). Keeps the newest 72 locally.
+# Hourly state-only backup: consistent SQLite online backup, complete durable JSON/deployer state, SHA-256 manifest,
+# gzip before age encryption. Retained encrypted archives total at most 256 MiB and 72 copies; raw staging and the
+# encrypted candidate each have a 128 MiB ceiling. No partial snapshot is published. Skip when either filesystem
+# cannot leave the worker's configured recorder pause line free after maximum staging. Existing evidence stays.
 set -euo pipefail
 umask 077
+. "${ZEROED_LIB:-/usr/local/lib/zeroed}/logic.sh"
 
 SRC="${ZEROED_BACKUP_SRC:-/var/lib/zeroed}"
 OUT="${ZEROED_BACKUP_OUT:-/var/backups/zeroed}"
 RECIPIENTS="${ZEROED_BACKUP_RECIPIENTS:-/etc/zeroed/backup-recipients}"
 KEEP="${ZEROED_BACKUP_KEEP:-72}"
-
+MAX_BYTES="${ZEROED_BACKUP_MAX_BYTES:-268435456}"
+SNAPSHOT_BYTES="${ZEROED_BACKUP_SNAPSHOT_BYTES:-134217728}"
+PAUSE_BYTES="${ZEROED_DISK_RECORDER_PAUSE_BYTES:-1610612736}"
+for n in "$KEEP" "$MAX_BYTES" "$SNAPSHOT_BYTES" "$PAUSE_BYTES"; do
+  [[ "$n" =~ ^[1-9][0-9]{0,15}$ ]] || { echo "Invalid backup disk budget."; exit 1; }
+done
+[ "$KEEP" -ge 2 ] && [ "$KEEP" -le 72 ] && [ "$MAX_BYTES" -le 268435456 ] &&
+  [ "$SNAPSHOT_BYTES" -le 134217728 ] && [ "$((SNAPSHOT_BYTES * 2))" -le "$MAX_BYTES" ] ||
+  { echo "Invalid backup disk budget (at most 256 MiB, 72 copies; room for two snapshots required)."; exit 1; }
 [ -s "$RECIPIENTS" ] || { echo "No backup recipients yet (keys not delivered); nothing backed up."; exit 0; }
-mapfile -t dbs < <(cd "$SRC" && find . -type f \( -name '*.sqlite' -o -name '*.db' \) | sed 's#^\./##' | LC_ALL=C sort)
-[ "${#dbs[@]}" -gt 0 ] || { echo "No SQLite files yet; nothing backed up."; exit 0; }
+[ -d "$SRC" ] || { echo "No worker state yet; nothing backed up."; exit 0; }
+before="$(node "${ZEROED_LIB:-/usr/local/lib/zeroed}/backup-safety.mjs" generation "$SRC")" || { echo "Unsafe, changing, or oversized state source (snapshot limit); nothing published."; exit 1; }
+mapfile -t found < <(jq -r '.names[]' <<< "$before")
+[ "${#found[@]}" -gt 0 ] || { echo "No worker state yet; nothing backed up."; exit 0; }
+mkdir -p "$OUT"
+# Lock the directory itself: manual runs cannot race the timer's budget or leave a persistent lock file.
+exec {lock}<"$OUT"
+flock -n "$lock" || { echo "Backup skipped: another backup is running."; exit 0; }
 
-work="$(mktemp -d)"
+# bavail × block size: the same unprivileged free bytes as worker statfs. Never count root's reserved blocks.
+room() {
+  local sample blocks size
+  sample="$(stat -f -c '%a:%S' -- "$1")" || return 1
+  IFS=: read -r blocks size <<< "$sample"
+  [[ "$blocks" =~ ^[0-9]{1,15}$ && "$size" =~ ^[0-9]{1,9}$ ]] || return 1
+  [ "$((blocks * size))" -ge "$((PAUSE_BYTES + SNAPSHOT_BYTES * 2 + 65536))" ]
+}
+if ! room "$SRC" || ! room "$OUT"; then
+  echo "Backup skipped: insufficient free disk above the recorder pause line for bounded staging."
+  exit 0
+fi
+work="$(mktemp -d "$OUT/.backup.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/snap"
-for rel in "${dbs[@]}"; do
+manifest_bytes=0
+for rel in "${found[@]}"; do manifest_bytes=$((manifest_bytes + 67 + ${#rel})); done
+[ "$manifest_bytes" -le 65536 ] && [ "$manifest_bytes" -lt "$SNAPSHOT_BYTES" ] || { echo "Manifest exceeds the snapshot limit; nothing published."; exit 1; }
+files=()
+bytes=0
+for rel in "${found[@]}"; do
   mkdir -p "$work/snap/$(dirname "$rel")"
-  sqlite3 "$SRC/$rel" ".timeout 10000" ".backup '$work/snap/$rel'"
-  check="$(sqlite3 "$work/snap/$rel" 'PRAGMA integrity_check;')"
-  [ "$check" = ok ] || { echo "Backup copy of $rel failed its integrity check."; exit 1; }
+  remaining=$((SNAPSHOT_BYTES - bytes - manifest_bytes))
+  [ "$remaining" -gt 0 ] || { echo "Backup exceeds the state snapshot limit; nothing published."; exit 1; }
+  case "$rel" in
+    *.sqlite)
+      # Never open live SQLite: even a read-only SQLite open can chmod the WAL, changing its ctime.
+      # Copy bounded main/WAL bytes first; the full live generation check below proves a stable capture.
+      mkdir "$work/sqlite"
+      scratch="$(node "${ZEROED_LIB:-/usr/local/lib/zeroed}/backup-safety.mjs" sqlite-stage "$SRC" "$work/sqlite" "$remaining")" ||
+        { echo "SQLite staging failed or exceeds the state snapshot limit; nothing published."; exit 1; }
+      sqlite_room=$((remaining - scratch))
+      [ "$sqlite_room" -gt 0 ] || { echo "SQLite staging exceeds the state snapshot limit; nothing published."; exit 1; }
+      # Charge scratch main/WAL/SHM plus the online-copy output at the same time against the raw ceiling.
+      (ulimit -f "$((sqlite_room / 1024))"; sqlite3 -readonly "$work/sqlite/$rel" ".timeout 10000" ".backup '$work/snap/$rel'") ||
+        { echo "SQLite backup failed or exceeds the state snapshot limit; nothing published."; exit 1; }
+      [ "$(stat -c %s "$work/snap/$rel")" -le "$sqlite_room" ] ||
+        { echo "SQLite backup exceeds the state snapshot limit; nothing published."; exit 1; }
+      rm -rf "$work/sqlite"
+      # Normalize only the private, fully recovered copy. Standalone archive readers need no WAL/SHM.
+      mode="$(sqlite3 "$work/snap/$rel" 'PRAGMA journal_mode=DELETE;')" || { echo "SQLite snapshot normalization failed; nothing published."; exit 1; }
+      [ "$mode" = delete ] && [ ! -e "$work/snap/$rel-wal" ] && [ ! -e "$work/snap/$rel-shm" ] ||
+        { echo "SQLite snapshot still needs side files; nothing published."; exit 1; }
+      check="$(sqlite3 "$work/snap/$rel" 'PRAGMA integrity_check;')"
+      [ "$check" = ok ] || { echo "Backup copy of $rel failed its integrity check."; exit 1; }
+      ;;
+    *)
+      node "${ZEROED_LIB:-/usr/local/lib/zeroed}/backup-safety.mjs" copy "$SRC" "$rel" "$work/snap/$rel" "$remaining" ||
+        { echo "Could not copy $rel; snapshot incomplete or exceeds the snapshot limit; nothing published."; exit 1; }
+      ;;
+  esac
+  size="$(stat -c %s "$work/snap/$rel")"
+  [ "$size" -le "$remaining" ] || { echo "Backup exceeds the state snapshot limit; nothing published."; exit 1; }
+  bytes=$((bytes + size))
+  node "${ZEROED_LIB:-/usr/local/lib/zeroed}/backup-safety.mjs" validate "$work/snap/$rel" "$rel" || { echo "Backup copy of $rel is not valid JSON or versioned state."; exit 1; }
+  files+=("$rel")
 done
-(cd "$work/snap" && sha256sum -- "${dbs[@]}") > "$work/snap/MANIFEST.sha256"
-
+[ "${#files[@]}" -gt 0 ] || { echo "No worker state yet; nothing backed up."; exit 0; }
+(cd "$work/snap" && sha256sum -- "${files[@]}") > "$work/snap/MANIFEST.sha256"
+[ "$((bytes + $(stat -c %s "$work/snap/MANIFEST.sha256")))" -le "$SNAPSHOT_BYTES" ] ||
+  { echo "Backup exceeds the state snapshot limit; nothing published."; exit 1; }
+# Optimistic whole-capture stability: all durable names, bytes and generations plus live SQLite WAL.
+# A clean marker can cycle while files are copied; its changed generation (and changed store bytes) rejects
+# the entire snapshot. New known files, atomic replacements and WAL-only commits also reject it.
+after="$(node "${ZEROED_LIB:-/usr/local/lib/zeroed}/backup-safety.mjs" generation "$SRC")" || { echo "State changed during capture; nothing published."; exit 1; }
+[ "$before" = "$after" ] || { echo "State changed during capture; nothing published."; exit 1; }
+# Compression precedes encryption. The destination limit bounds encrypted staging even for incompressible data.
+node "${ZEROED_LIB:-/usr/local/lib/zeroed}/backup-safety.mjs" pack "$work/snap" "$RECIPIENTS" "$work/candidate" ||
+  { echo "Backup compression/encryption failed or exceeds the snapshot limit; nothing published."; exit 1; }
+size="$(stat -c %s "$work/candidate")"
+[ "$size" -le "$SNAPSHOT_BYTES" ] || { echo "Backup exceeds the encrypted snapshot limit; nothing published."; exit 1; }
 ts="$(date -u +%Y%m%dT%H%M%SZ)"
-mkdir -p "$OUT"
-tar -C "$work/snap" -c . | age -R "$RECIPIENTS" -o "$OUT/zeroed-$ts.tar.age.new"
-mv -f "$OUT/zeroed-$ts.tar.age.new" "$OUT/zeroed-$ts.tar.age"
-ls -1 "$OUT"/zeroed-*.tar.age | LC_ALL=C sort -r | tail -n +"$((KEEP + 1))" | xargs -r rm -f
-echo "Backup zeroed-$ts.tar.age: ${#dbs[@]} file(s), $(wc -l < "$RECIPIENTS") recipient(s)."
+[ ! -e "$OUT/zeroed-$ts.tar.age" ] || { echo "Backup skipped: this second already has a backup."; exit 0; }
+mapfile -t old < <(find "$OUT" -maxdepth 1 -type f -name 'zeroed-*.tar.age' -printf '%f\n' | LC_ALL=C sort)
+total=0
+for name in "${old[@]}"; do total=$((total + $(stat -c %s "$OUT/$name"))); done
+count=${#old[@]}
+prune=0
+while [ "$((total + size))" -gt "$MAX_BYTES" ] || [ "$((count + 1))" -gt "$KEEP" ]; do
+  # Always retain the newest existing copy until the verified candidate is atomically published.
+  [ "$count" -gt 1 ] || { echo "Backup skipped: the newest existing backup plus this snapshot exceeds the total cap."; exit 0; }
+  total=$((total - $(stat -c %s "$OUT/${old[$prune]}")))
+  prune=$((prune + 1))
+  count=$((count - 1))
+done
+for ((i=0; i<prune; i++)); do rm -f -- "$OUT/${old[$i]}"; done
+mv -- "$work/candidate" "$OUT/zeroed-$ts.tar.age"
+echo "Backup zeroed-$ts.tar.age: ${#files[@]} file(s), $(wc -l < "$RECIPIENTS") recipient(s)."
 __ZEROED_FILE__
 install_file /usr/local/sbin/zeroed-backup-code 0755 <<'__ZEROED_FILE__'
 #!/usr/bin/env bash
@@ -1816,11 +2197,92 @@ fi
 log "Send this to your bot in Telegram:  /pair $(cat "$PAIR_CODE_FILE")"
 log "One try only, within 30 minutes; a wrong or late code needs a new one from here."
 __ZEROED_FILE__
+install_file /usr/local/sbin/zeroed-restore 0755 <<'__ZEROED_FILE__'
+#!/usr/bin/env bash
+# Validate and stage on the live filesystem before stopping. Directory renames install the snapshot;
+# every post-stop failure restores the earlier directory and attempts its restart. Live evidence never comes
+# from an archive (including legacy reserve manifests). No partially copied state is started.
+set -euo pipefail
+umask 077
+SRC="${ZEROED_BACKUP_SRC:-/var/lib/zeroed}"
+OUT="${ZEROED_BACKUP_OUT:-/var/backups/zeroed}"
+ASIDE="${ZEROED_RESTORE_ASIDE:-/var/lib/zeroed-prerestore}"
+DRILL="${ZEROED_RESTORE_DRILL:-/usr/local/sbin/zeroed-restore-drill}"
+identity="${1:?usage: zeroed-restore IDENTITY_FILE [BACKUP_FILE]}"
+backup="${2:-$(ls -1 "$OUT"/zeroed-*.tar.age 2>/dev/null | LC_ALL=C sort -r | head -n 1)}"
+[ -n "$backup" ] && [ -f "$backup" ] || { echo "No backup found; nothing restored."; exit 1; }
+"$DRILL" "$identity" "$backup" || { echo "The backup failed the restore drill; nothing restored."; exit 1; }
+[ -d "$SRC" ] && [ ! -L "$SRC" ] || { echo "Live state must be a real directory; nothing restored."; exit 1; }
+budget="${ZEROED_BACKUP_SNAPSHOT_BYTES:-134217728}"
+pause="${ZEROED_DISK_RECORDER_PAUSE_BYTES:-1610612736}"
+[[ "$budget" =~ ^[1-9][0-9]{0,8}$ && "$pause" =~ ^[1-9][0-9]{0,15}$ ]] && [ "$budget" -le 134217728 ] || { echo "Invalid restore disk budget."; exit 1; }
+sample="$(stat -f -c '%a:%S' -- "$SRC")"
+IFS=: read -r blocks size <<< "$sample"
+[[ "$blocks" =~ ^[0-9]{1,15}$ && "$size" =~ ^[0-9]{1,9}$ ]] && [ "$((blocks * size))" -ge "$((pause + budget * 2 + 65536))" ] || { echo "Insufficient free disk above the recorder pause line; nothing restored."; exit 1; }
+mkdir -p "$ASIDE"
+[ ! -L "$ASIDE" ] && [ "$(stat -c %d "$SRC")" = "$(stat -c %d "$ASIDE")" ] || { echo "Restore aside must share the live filesystem; nothing restored."; exit 1; }
+work="$(mktemp -d "$(dirname "$SRC")/.restore.XXXXXX")"
+mkdir "$work/snap"
+stopped=0
+old_moved=0
+installed=0
+aside="$(mktemp -d "$ASIDE/$(date -u +%Y%m%dT%H%M%SZ).XXXXXX")"
+rmdir "$aside"
+cleanup() {
+  result=$?
+  trap - EXIT
+  if [ "$result" -ne 0 ] && [ "$stopped" = 1 ]; then
+    rollback=0
+    if [ "$old_moved" = 1 ]; then
+      if [ "$installed" = 1 ]; then
+        for name in journal.jsonl journal.jsonl.reserve recorder; do
+          if [ -e "$SRC/$name" ] || [ -L "$SRC/$name" ]; then mv -- "$SRC/$name" "$aside/$name" || rollback=1; fi
+        done
+        [ "$rollback" = 0 ] && mv -- "$SRC" "$work/failed" || rollback=1
+      fi
+      [ "$rollback" = 0 ] && mv -- "$aside" "$SRC" || rollback=1
+    fi
+    if [ "$rollback" = 0 ]; then
+      systemctl start zeroed-worker.service || echo "Restore rollback preserved prior state; worker restart failed. Owner console recovery required."
+      echo "Restore failed; prior state restored and restart attempted."
+    else
+      echo "Restore rollback failed; worker remains stopped. Prior state is in $aside; owner console recovery required."
+    fi
+  fi
+  rm -rf "$work"
+  exit "$result"
+}
+trap cleanup EXIT
+files="$(node "${ZEROED_LIB:-/usr/local/lib/zeroed}/backup-safety.mjs" prepare "$identity" "$backup" "$work/snap")"
+paused=""
+if [ ! -e "$work/snap/control.json" ]; then
+  printf '{"paused":true,"pausedAtMs":%s,"latches":{"killTrippedAtMs":null,"killRearmedAtMs":null,"weeklyTrippedAtMs":null,"weeklyReviewedAtMs":null,"lossReviewedAtMs":null,"sizeStepUpApproved":false}}\n' "$(($(date +%s) * 1000))" > "$work/snap/control.json"
+  paused=" The backup had no control.json, so entries start paused."
+fi
+node "${ZEROED_LIB:-/usr/local/lib/zeroed}/backup-safety.mjs" stage-marker "$work/snap" "$SRC"
+# Ownership and all allocating writes finish while the old worker is still running.
+chown -R zeroed-worker:zeroed-worker "$work/snap"
+systemctl stop zeroed-worker.service
+stopped=1
+mv -- "$SRC" "$aside"
+old_moved=1
+# Sample the live marker after stop; its dirty bit can have changed while staging. No allocating write remains.
+node "${ZEROED_LIB:-/usr/local/lib/zeroed}/backup-safety.mjs" merge-marker "$work/snap" "$aside"
+mv -- "$work/snap" "$SRC"
+installed=1
+for name in journal.jsonl journal.jsonl.reserve recorder; do
+  if [ -e "$aside/$name" ] || [ -L "$aside/$name" ]; then mv -- "$aside/$name" "$SRC/$name"; fi
+done
+systemctl start zeroed-worker.service
+stopped=0
+echo "Restored $(basename "$backup"): $files file(s); prior state kept in $aside. The worker reconciles before it trades.$paused"
+__ZEROED_FILE__
 install_file /usr/local/sbin/zeroed-restore-drill 0755 <<'__ZEROED_FILE__'
 #!/usr/bin/env bash
 # Restore drill: decrypts a backup with the given age identity into a scratch directory (never over the
-# live files), checks every file against the manifest, runs SQLite's integrity check, and compares the
-# tables with the live database. Prints PASS or FAIL; exits non-zero on FAIL.
+# live files) and checks every file against the manifest. SQLite files must pass the integrity check and have
+# the live database's tables; JSON state files must parse. Prints each file, then PASS or FAIL; exits non-zero
+# on FAIL.
 #   zeroed-restore-drill IDENTITY_FILE [BACKUP_FILE]    (default: the newest backup)
 set -euo pipefail
 umask 077
@@ -1835,23 +2297,28 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 fail() { echo "FAIL: $*"; exit 1; }
 
-age -d -i "$identity" "$backup" 2>/dev/null | tar -x -C "$work" --no-same-owner 2>/dev/null || fail "cannot decrypt or unpack $(basename "$backup")"
-[ -f "$work/MANIFEST.sha256" ] || fail "manifest missing"
-(cd "$work" && sha256sum --quiet -c MANIFEST.sha256) >/dev/null 2>&1 || fail "a file does not match the manifest"
+node "${ZEROED_LIB:-/usr/local/lib/zeroed}/backup-safety.mjs" prepare "$identity" "$backup" "$work" >/dev/null || fail "archive preflight failed"
 
 files=0
 while read -r _ rel; do
   files=$((files + 1))
-  [ "$(sqlite3 "$work/$rel" 'PRAGMA integrity_check;')" = ok ] || fail "$rel failed the integrity check"
-  tables="$(sqlite3 "$work/$rel" "SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name;")"
-  for t in $tables; do
-    printf '  %s %s: %s rows\n' "$rel" "$t" "$(sqlite3 "$work/$rel" "SELECT count(*) FROM \"$t\";")"
-  done
-  if [ -f "$SRC/$rel" ]; then
-    live="$(sqlite3 -readonly "$SRC/$rel" "SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name;" 2>/dev/null || true)"
-    [ "$live" = "$tables" ] || fail "$rel tables differ from the live database"
-  fi
-done < "$work/MANIFEST.sha256"
+  case "$rel" in
+    *.sqlite | *.db)
+      [ "$(sqlite3 "$work/$rel" 'PRAGMA integrity_check;')" = ok ] || fail "$rel failed the integrity check"
+      tables="$(sqlite3 "$work/$rel" "SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name;")"
+      printf '  %s: SQLite integrity verified\n' "$rel"
+      if [ -f "$SRC/$rel" ]; then
+        live="$(sqlite3 -readonly "$SRC/$rel" "SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name;" 2>/dev/null || true)"
+        [ "$live" = "$tables" ] || fail "$rel tables differ from the live database"
+      fi
+      ;;
+    *.json)
+      jq empty "$work/$rel" >/dev/null 2>&1 || fail "$rel is not valid JSON"
+      printf '  %s: %s bytes\n' "$rel" "$(wc -c < "$work/$rel")"
+      ;;
+    *) printf '  %s: %s bytes\n' "$rel" "$(wc -c < "$work/$rel")" ;;
+  esac
+done < <(find "$work" -type f -printf '%P\n' | LC_ALL=C sort | sed 's/^/validated /')
 [ "$files" -gt 0 ] || fail "backup holds no files"
 echo "PASS: $(basename "$backup"), $files file(s) restored to a scratch directory and verified."
 __ZEROED_FILE__
@@ -2256,13 +2723,28 @@ if [ -n "$run" ]; then
   exit 0
 fi
 
-if systemctl is-active --quiet zeroed-worker.service; then
-  open="$(cat /var/lib/zeroed/open_intents 2>/dev/null || echo unknown)"
-  if [ "$open" != 0 ]; then
-    log "Waiting on ${commit:0:12}: the worker has open intents ($open)."
-    exit 0
+# Fails closed: a worker that is starting, reconciling, restarting or stopped holds the update too unless its
+# last count is 0 (logic.sh intents_hold). A hold by a worker that is not running is never silent: only a worker
+# that starts and reconciles can lift it, so the owner is told once, with where the console steps are. A routine
+# restart is over within one run (every 5 minutes), so the alert waits for a second run in a row with it down.
+wstate="$(systemctl is-active zeroed-worker.service 2>/dev/null || true)"
+if intents_hold "$wstate" /var/lib/zeroed; then
+  n="$(cat /var/lib/zeroed/open_intents 2>/dev/null || echo unknown)"
+  log "Waiting on ${commit:0:12}: the worker has open intents ($n)."
+  if [ "$wstate" != active ]; then
+    down="$(cat "$STATE_DIR/intents_hold_down" 2>/dev/null || true)"
+    [[ "$down" =~ ^(0|[1-9][0-9]{0,5})$ ]] || down=0
+    down=$((down + 1))
+    printf '%s\n' "$down" > "$STATE_DIR/intents_hold_down"
+    [ "$down" -lt 2 ] || alert intents-hold "ALERT Zeroed host: update ${commit:0:12} is held: the worker is ${wstate:-unknown} and its last open-intent count is $n. Nothing updates until a worker starts and reconciles. Console steps: ops/README.md, \"Updates held by open intents\"."
+  else
+    rm -f "$STATE_DIR/intents_hold_down"
+    alert_clear intents-hold "CLEARED Zeroed host: the worker is running again; update ${commit:0:12} waits for its open intents ($n) to finish."
   fi
+  exit 0
 fi
+rm -f "$STATE_DIR/intents_hold_down"
+alert_clear intents-hold "CLEARED Zeroed host: no open intents hold update ${commit:0:12} now."
 
 dest="/opt/zeroed/releases/$commit"
 if [ ! -d "$dest" ]; then
@@ -2349,6 +2831,10 @@ if [ -s "$CRED_DIR/helius_api_key" ]; then
   worker="restarted and up"
   alert_clear worker-switch "CLEARED Zeroed host: the worker of ${commit:0:12} is up."
 fi
+# DISK-GUARD: old releases go once the new one runs; it and the one before it (the roll-back target) stay.
+for old in $(prunable_releases /opt/zeroed/releases "$dest" "$prev" "$(date +%s)"); do
+  rm -rf -- "$old" && log "Removed the old release $(basename "$old" | cut -c1-12) (DISK-GUARD)."
+done
 log "Deployed ${commit:0:12}. Worker: $worker."
 notify "Zeroed host: deployed ${commit:0:12}. Worker $worker." || true
 __ZEROED_FILE__
@@ -10228,6 +10714,8 @@ printf '%s\n' "${new_units[@]}" > /var/lib/zeroed-host/release-units
 
 say "Services"
 systemctl daemon-reload
+# DISK-GUARD: journald reads its size limits only when it starts.
+[[ " ${CHANGED[*]} " != *" /etc/systemd/journald.conf.d/zeroed-journal.conf "* ]] || systemctl restart systemd-journald
 systemctl enable --now zeroed-signer.service >/dev/null
 systemctl enable zeroed-worker.service >/dev/null
 systemctl enable --now zeroed-pair.timer zeroed-update.timer zeroed-backup.timer zeroed-check.timer >/dev/null

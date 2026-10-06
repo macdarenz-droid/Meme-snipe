@@ -781,7 +781,39 @@ describe('deploy gate (OPS-GATE): named runs from GitHub Actions, shared by the 
     expect(e2e(opsCommit)).toBe(opsCommit);
     expect(e2e(root0)).toBe('');
     git('echo 3 > packages/ops/src/y && git add packages && git commit -q -m pkg');
-    expect(e2e('HEAD')).toBe(git('git rev-parse HEAD'));
+    const pkg = git('git rev-parse HEAD');
+    expect(e2e('HEAD')).toBe(pkg);
+    // A side branch that adds and then removes an ops file, merged into int: its first-parent change is empty, so
+    // pkg (whose e2e ran) still decides. Walking every parent would pick the side commit that removed the file.
+    git('git checkout -q -b side && echo 4 > ops/z && git add ops && GIT_COMMITTER_DATE=2030-01-01T00:00:00Z git commit -q -m side-on');
+    git('git rm -q ops/z && GIT_COMMITTER_DATE=2030-01-02T00:00:00Z git commit -q -m side-off');
+    git('git checkout -q int && GIT_COMMITTER_DATE=2030-01-03T00:00:00Z git merge -q --no-ff -m merge side');
+    expect(e2e('HEAD')).toBe(pkg);
+  });
+
+  it("zeroed-update's own gate, run in bash: check on the commit, then e2e on its e2e commit", () => {
+    const update = read('ops/host/files/usr/local/sbin/zeroed-update');
+    const gate = update.slice(update.indexOf('check_runs() {'), update.indexOf('if [ "$verdict" != green ]; then'));
+    expect(gate).toContain('commit_verdict e2e');
+    const C = 'c'.repeat(40);
+    const E = 'e'.repeat(40);
+    const run = (check: Run[], e2e: Run[], e2eCommit = E) =>
+      sh(
+        `curl() { case "$*" in *"/commits/$C/"*) printf '%s' "$CHECK" ;; *"/commits/$E/"*) printf '%s' "$E2E" ;; *) return 22 ;; esac; }
+e2e_commit() { printf '%s' "$E2E_COMMIT"; }
+ZEROED_API_URL=https://api.github.test ZEROED_REPO=o/r REPO_DIR=/nonexistent commit="$C"
+${gate}
+printf '%s\n' "$verdict"`,
+        '',
+        { C, E, CHECK: reply(check), E2E: reply(e2e), E2E_COMMIT: e2eCommit },
+      ).out;
+    const ok = [{ name: 'check' }];
+    expect(run(ok, [{ name: 'e2e' }])).toBe('green');
+    expect(run(ok, [{ name: 'e2e', conclusion: 'failure' }])).toBe('red: the ops end-to-end of eeeeeeeeeeee: e2e failed');
+    expect(run(ok, [{ name: 'e2e', status: 'in_progress', conclusion: null }])).toBe('pending: the ops end-to-end of eeeeeeeeeeee: e2e still running');
+    expect(run(ok, [])).toBe('none: the ops end-to-end of eeeeeeeeeeee: no e2e run from GitHub Actions');
+    expect(run(ok, [{ name: 'e2e' }], '')).toBe('none: no commit at or before it touched the ops end-to-end paths');
+    expect(run([{ name: 'check', conclusion: 'failure' }], [{ name: 'e2e' }])).toBe('red: check failed');
   });
 
   it('uses the same paths the ops end-to-end workflow runs on, and both callers use the shared gate', () => {
@@ -798,5 +830,54 @@ describe('deploy gate (OPS-GATE): named runs from GitHub Actions, shared by the 
       expect(s).not.toMatch(/conclusion == "skipped"/);
     }
     expect(tag).toContain('. "$here/../host/files/usr/local/lib/zeroed/logic.sh"');
+  });
+});
+
+describe('DISK-GUARD on the host', () => {
+  it('prunable_releases keeps the current release, the roll-back target, the 3 newest, the last 7 days and half-written ones', () => {
+    const root = join(tmp, 'releases');
+    const now = 2_000_000_000;
+    const day = 86_400;
+    const make = (name: string, ageDays: number) => {
+      mkdirSync(join(root, name), { recursive: true });
+      spawnSync('touch', ['-d', `@${now - ageDays * day}`, join(root, name)]);
+    };
+    make('r1', 30);
+    make('r2', 20);
+    make('cur', 15);
+    make('prev', 14);
+    make('r5', 12);
+    make('r6', 10);
+    make('r7', 9);
+    make('r8', 8);
+    make('r9', 3);
+    make('x.new', 40);
+    const out = (cur: string, prev: string) => sh(`prunable_releases "${root}" "${join(root, cur)}" "${join(root, prev)}" ${now}`).out.split('\n').filter(Boolean).map((p) => p.slice(root.length + 1)).sort();
+    // Newest three (r9, r8, r7) stay; cur and prev stay; r6 (10 days), r5 and the older ones go; x.new is never touched.
+    expect(out('cur', 'prev')).toEqual(['r1', 'r2', 'r5', 'r6']);
+    expect(out('r1', 'r2')).toEqual(['cur', 'prev', 'r5', 'r6']);
+    // With three newer releases, one exactly 7 days old is kept; one second more and it goes.
+    make('n1', 1);
+    make('n2', 1);
+    make('n3', 1);
+    make('r6', 7);
+    expect(out('cur', 'prev')).toEqual(['r1', 'r2', 'r5', 'r7', 'r8']);
+    spawnSync('touch', ['-d', `@${now - 7 * day - 1}`, join(root, 'r6')]);
+    expect(out('cur', 'prev')).toEqual(['r1', 'r2', 'r5', 'r6', 'r7', 'r8']);
+    rmSync(root, { recursive: true, force: true });
+    mkdirSync(root);
+    expect(sh(`prunable_releases "${root}" a b ${now}`).out).toBe('');
+  });
+
+  it('zeroed-update prunes only after a deploy that stayed up, and the system journal has a size cap the installer applies', () => {
+    const update = read('ops/host/files/usr/local/sbin/zeroed-update');
+    const prune = update.indexOf('prunable_releases /opt/zeroed/releases "$dest" "$prev"');
+    expect(prune).toBeGreaterThan(update.indexOf('if ! why="$(holds)"; then rollback "$why"; fi'));
+    expect(prune).toBeLessThan(update.indexOf('log "Deployed ${commit:0:12}. Worker: $worker."'));
+    const conf = read('ops/host/files/etc/systemd/journald.conf.d/zeroed-journal.conf');
+    expect(conf.split('\n')).toEqual(expect.arrayContaining(['[Journal]', 'SystemMaxUse=500M', 'SystemKeepFree=2G']));
+    const main = read('ops/host/install-main.sh');
+    expect(main).toContain('/etc/systemd/journald.conf.d/zeroed-*) return 0 ;;');
+    expect(main).toContain('[[ " ${CHANGED[*]} " != *" /etc/systemd/journald.conf.d/zeroed-journal.conf "* ]] || systemctl restart systemd-journald');
   });
 });
