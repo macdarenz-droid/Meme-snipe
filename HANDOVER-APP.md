@@ -6,7 +6,7 @@ From here on, S2 owns this file. S2 keeps it current on its own branch `claude/s
 
 ## Active S2 work
 
-S2 queue is unpaused. GitHub access is restored through the existing supported connection; pending local handover is now publishing. Disk #246616a7d53 has five review PASS, final full check/CI gate pending and S1 reserve approval before landing. FUNNEL #237aac10e38 has two review PASS, full-check slot/CI gate pending. RISK-DIAL design-only and assigned Helius-cut builder are active. No risk code before final-design OK; S1 alone merges/deploys.
+S2 continues assigned queue. Disk246616 is S2-READY with five PASS, local fullcheck and exactheadCIgreen; S1 latest-baseupdate/CI and reserve-data acceptance before landing. FUNNEL237aac full local check active, two PASS and CIgreen. RISK247 design-only owner contract choice pending;500-only operative, no code. Helius21 focused build/mutants active; FILL-THROW221 test-only refresh active. S1 alone merges/deploys.
 
 ## Latest handoff audit
 
@@ -29,6 +29,8 @@ Updated **2026-10-06 10:09:09 AEDT**. File handoffs remain accepted as PR commen
 
 ### DISK-CRASH — #246
 
+S2-READY 616a7d531b7ba4066051e96f3d722963a9134366
+
 Head: `616a7d531b7ba4066051e96f3d722963a9134366`; branch `claude/s2-disk-crash`; contains verified integration base `5efb9ae0497523c84e3bb49a82bce989652cdb0b`. All independent reviews below are on this exact head:
 
 | Reviewer | Area | Verdict |
@@ -39,9 +41,17 @@ Head: `616a7d531b7ba4066051e96f3d722963a9134366`; branch `claude/s2-disk-crash`;
 | disk_crash_persist_review | saved data | PASS |
 | disk_crash_run_review | run/CI and disk resource behavior | PASS |
 
-Review evidence published in [PR comment6005719422](https://github.com/macdarenz-droid/Meme-snipe/pull/246#issuecomment-6005719422). Builder: 204 focused tests in nine files and package typechecks PASS; exact crash regression failed on base, plus eight correction and four truth regressions failed before their fixes. Single final local full check and required [GitHub CI37390321713](https://github.com/macdarenz-droid/Meme-snipe/actions/runs/37390321713) are pending; **not S2-READY yet**.
+Review evidence published in [PR comment6005719422](https://github.com/macdarenz-droid/Meme-snipe/pull/246#issuecomment-6005719422); readiness published and verified in [comment6006262617](https://github.com/macdarenz-droid/Meme-snipe/pull/246#issuecomment-6006262617). Builder: 204 focused tests in nine files and package typechecks PASS; exact crash regression failed on base, plus eight correction and four truth regressions failed before their fixes. Single final local `pnpm check` **PASS exit0**, 242/242 files and5593/5593 tests, duration1848.11s; log `/tmp/s2-disk-crash-check-616a7d53.log`, no retries. Required [GitHub CI37390321713](https://github.com/macdarenz-droid/Meme-snipe/actions/runs/37390321713) is **green on exact616a7d53**: check and historical-data SUCCESS, including build. Before landing S1 performs its planned latest-base update from contained5efb9ae0 to current8107eb79 or newer and requires green CI on that resulting head; prior-head results do not claim to run on a future merge. Any task-logic delta comes back for exact-head review.
 
 **S1 step before landing:** accept the new public bot-diagnostic `journal.jsonl.reserve` shape under this file's saved-data rule after persist PASS. Fixed 64 KiB zeros when armed, zero-length marker after observed journal ENOSPC; existing gap/summary schemas, no personal/key data. No owner credential or phone action. Durable ledger/state policies are unchanged; injected faults and SIGKILL do not prove prolonged survival on a physically saturated volume or power loss. Wider #149 backup/disk-budget delta stays on `claude/ops-1j` for its own review; not included here. S1 alone merges/deploys and validates the live server.
+
+### RISK-DIAL — draft design #247, blocked; no build
+
+Exact head `b0d153f2786ce4e857390f6d81b1d9d423153e66`; branch `claude/s2-risk-dial-design`; contains8107eb7953659baa5cde01a90789d5fff45d1023 by ordinary merge. Only `docs/ARCHITECTURE.md` differs from that base; all production files identical. [Draft PR247](https://github.com/macdarenz-droid/Meme-snipe/pull/247) is concrete and published; not S2-READY or implementation authority.
+
+Independent corrective DESIGN results on exact b0d153f2786ce4e857390f6d81b1d9d423153e66: `risk_dial_auth_design_review` APP/API-auth **PASS**; `risk_dial_exit_design_review` EXIT **PASS**; `risk_dial_risk_design_review` RISK **CHANGES NEEDED overall**, no remaining repairable delta findings. Full verdicts in [comment6006267522](https://github.com/macdarenz-droid/Meme-snipe/pull/247#issuecomment-6006267522). Previous1ef74084 CHANGES NEEDED remains historical. No runtime tests/CI success claimed for documentation reviews.
+
+**Owner-only unresolved contract choice:** original strict global every-error500 cannot permit remote raised admissions because the host cannot instantly know a phone-observed failure. Alternative explicitly unapproved: one previously delivered single-use proof can admit/first-send within its original maximum2-second deadline before host learns phone error; all locally observed errors reset500. Native pairing/auth, first-send expiry, accounting/exit fences and mathematical bounds are corrected. Choice asked after technical reviews and concrete draft publication; pending, preselection/silence is no answer. A bounded choice would still require updated design, fresh risk PASS and separate final exact-head owner build/credential-storage approval. **Current enforcement stays500-only; no risk code/settings/live change.** Other assigned work continues independently.
 
 ### APP-TRUTH — #216
 
@@ -118,6 +128,8 @@ S2-READY 6af4e43b707960316d8cd8419cb2e513fa9f4b60
 - These local limitations are historical. Current directly verified GitHub results are in Latest handoff audit; they do not establish that any future base-update head is green.
 
 ## S2 events (newest first)
+
+- **2026-10-06 11:17:35 AEDT** — DISK #246 final pnpmcheck exit0:242files5593testsPASS1848.11s, no retry; exact616 CI37390321713 check/historical-dataSUCCESS. S2-READY616 published+verified comment6006262617 with five reviews, containedbase5ef, S1 saved-reserve acceptance and planned latest-baseupdate/CI explicitly listed. Fullslot released; FUNNELaac fullcheck started11:16, CI37390690060 alreadygreen. RISK correctiveb0d153f2 APP/authPASS and EXITPASS; RISK CHANGESNEEDED only irreducible owner error-contract choice. Published draftPR247 and verdictcomment6006267522; owner asked strict500 versus disclosed2-second single-use uncertainty, not finalbuildapproval. FILL-THROW221 one visible refreshbuilder starts existingtest-onlybase merge; no duplicate feature work.
 
 - **2026-10-06 11:14:31 AEDT** — Fresh explicit tracking fetch verified S1 docs a11f76333ce98e9f9a14f28f6952f34708f38aac and integration8107eb7953659baa5cde01a90789d5fff45d1023 (BEHIND merged). Current full disk check remains frozen616; no workspace mutated mid-check. RISK-DIAL corrective docs head b0d153f2786ce4e857390f6d81b1d9d423153e66 contains8107 through ordinary merge and differs only ARCHITECTURE; three independent corrective area reviews started on exacthead. Strict500 operative, unresolved error-contract alternative explicitly unapproved; no risk code. Helius builder has14 new focused tests,34 existing s0-zero controls and four real drop sessions replayed10times passing, latest-base merge next; no ready claim.
 
