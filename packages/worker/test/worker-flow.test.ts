@@ -12,7 +12,7 @@ import type { LogRecord } from '../../core/src/engine/index.ts';
 import { EXEC_HEALTH_KEY, migrationKey } from '../../core/src/gates/index.ts';
 import { passingFacts } from '../../core/test/gates/world.ts';
 import { parseHeartbeat } from '../../ops/src/watchdog/logic.ts';
-import { HALT_KEY, SEEDING, s0EntryAt, universeOfKey } from '../src/engine/strategy.ts';
+import { HALT_KEY, S0_DRAWS, SEEDING, s0EntryAt, universeOfKey } from '../src/engine/strategy.ts';
 import { FILL_CONFIG, PRICE_SCALE, TRIAL_POLICY } from '../../core/src/config/index.ts';
 import type { SavedExit } from '../src/engine/strategy.ts';
 import { type MicroUsd, microUsdToLamports } from '../../core/src/units/index.ts';
@@ -135,8 +135,11 @@ describe('S0, the random-entry control (shakedown mode, supervisor ruling 2026-1
     expect(positions(early).some((p) => String(p.mint) === String(MINT))).toBe(true);
     await early.worker.stop();
     const late = makeWorker({ entry: { timing: 'random', salt: saltWhere((at) => at > T + 10 * 60_000) } });
+    // ENTRY-MEMO: a candidate waiting for its moment draws it once, however many events pass while it waits.
+    S0_DRAWS.count = 0;
     await entered(late);
     expect(positions(late)).toEqual([]);
+    expect(S0_DRAWS.count).toBe(1);
     await late.worker.stop();
   });
 

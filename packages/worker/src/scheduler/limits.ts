@@ -22,6 +22,8 @@ export const HELIUS_WS_CREDITS_PER_CONNECTION = 1;
 export const HELIUS_PARSED_CREDITS_PER_EVENT = 1;
 /** Standard RPC calls (getTransaction, getSignaturesForAddress, getAccountInfo): 1 credit (§1.2). */
 export const HELIUS_RPC_CREDITS = 1;
+/** Helius credits for one getProgramAccounts (published price; gpa-probe run 37149567929 used it). */
+export const HELIUS_GPA_CREDITS = 10;
 
 /** Alchemy Free: 30M compute units a month, 25 requests a second (data.md §4); bulk WebSocket traffic goes here. */
 export const ALCHEMY_FREE: SchedulerSpec = {

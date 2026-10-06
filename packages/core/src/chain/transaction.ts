@@ -113,6 +113,48 @@ export const logEvents = (logs: readonly string[], err: unknown): LogEvents => {
   return { events, truncated };
 };
 
+/**
+ * HOLD-COMPACT: the same log lines with every line `logEvents` cannot use blanked (''), in place, so each kept line keeps
+ * its index (an event's id and moment come from its line's index). Kept: the `Program data:` lines of pump and PumpSwap,
+ * and the invoke and result lines of every call on their path; every other call's subtree, `Program log:` and
+ * compute lines are blanked. `logEvents` reads the result exactly as the original. Lines it would refuse or stop on
+ * (a depth or a close out of order, an unclosed call, `Log truncated`) come back unchanged, so the refusal is the same.
+ */
+export const compactLogs = (logs: readonly string[]): readonly string[] => {
+  const out = new Array<string>(logs.length).fill('');
+  const stack: { program: string; start: number; keep: boolean }[] = [];
+  for (let i = 0; i < logs.length; i++) {
+    const line = logs[i]!;
+    if (line === 'Log truncated') return logs;
+    const inv = INVOKE.exec(line);
+    if (inv) {
+      if (Number(inv[2]) !== stack.length + 1) return logs;
+      stack.push({ program: inv[1]!, start: i, keep: false });
+      continue;
+    }
+    const res = RESULT.exec(line);
+    if (res) {
+      const top = stack.pop();
+      if (top === undefined || top.program !== res[1]) return logs;
+      if (top.keep) {
+        out[top.start] = logs[top.start]!;
+        out[i] = line;
+        const parent = stack.at(-1);
+        if (parent !== undefined) parent.keep = true;
+      }
+      continue;
+    }
+    if (DATA.test(line)) {
+      const top = stack.at(-1);
+      if (top !== undefined && programName(top.program) !== null) {
+        out[i] = line;
+        top.keep = true;
+      }
+    }
+  }
+  return stack.length === 0 ? out : logs;
+};
+
 /** Builds a record from a `getTransaction` result fetched with `encoding: "base64"` and `maxSupportedTransactionVersion: 1`. */
 export const recordFromRpc = (signature: string, res: RpcTransactionBase64, txIndex: number | null = null): TransactionRecord => {
   const [b64, encoding] = res.transaction;
