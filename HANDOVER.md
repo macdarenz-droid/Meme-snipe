@@ -48,6 +48,7 @@ The previous S1 account reached its usage limit about 12:45 PM. The owner made t
 - No host access, no secrets access (owner only), as before.
 
 **Log (Melbourne time, newest first)**
+- 4:18 AM REPLAY addendum: the "pool transaction other than a swap" pool flag (10 sample coins) is real behaviour. The decoder doesn't know two PumpSwap events from instructions that don't change reserves: 929fbdac925838f4 (CloseUserVolumeAccumulator, inside ordinary buys, e.g. tx 61maqXtM…, slot 453770305) and 6161d7905d92167c (ExtendAccount, e.g. 3QCPuf8R…, slot 453770300). producer.ts #chainOther (:1123) marks the pool stale on any non-swap pump_amm event until the next gap-free swap re-bases it (pool PUXx1iSe had 17 between migration and 04:12Z). Added to card POOL-FIRST-READ as part 2: name these events and treat them as no-change only with on-chain proof that reserves are unchanged (like TAIL-PROOF), fail-closed for anything unknown. Documented on claude/replay-1000 3e909e4 README.
 - 4:16 AM **REPLAY-1000 correction + new bot finding.**
   - Harness fixes (d96dcab): confirmed reads now lag 1 slot, and log notices follow the subscription's commitment.
   - Re-run interim, unchanged: 0 trades, 47/47 refused (no-H5, H5, what-if). Coins failing each gate: H16 not-covered 43, gap 33, H9 29, pool-flagged 10, H16 missing 10, H11 5, degraded 4. What-if adds H14 serial-deployer 8 and prior-rug 3.
