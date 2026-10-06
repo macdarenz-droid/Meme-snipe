@@ -48,6 +48,11 @@ The previous S1 account reached its usage limit about 12:45 PM. The owner made t
 - No host access, no secrets access (owner only), as before.
 
 **Log (Melbourne time, newest first)**
+- 5:20 AM **#262 BT parity FAIL** (comment 6022632650; it read the df3da20c delta, and parity is unchanged by it).
+  - B1 is docs and classification: DECISIONS overclaims live/backtest equality. Live still refuses where the backtest enters: (a) a heal pending, (b) not found, (c) more than 30 holes, (d) past the cap, (e) after a restart, (f) tainted or other. This must be documented as a live-only veto in ARCHITECTURE §16.3 and counted in G3.
+  - N1: add a tx-shaped reference tape (mutant C survives trade-heal.test.ts). N3: add a TEST-1 recording test.
+  - Builder told to fix B1, N1 and N3.
+  - Follow-up card recorded: **BT-HEAL-MODEL**, to model the same holes and heal rules in the backtest from logMessages 'Log truncated', due before G2/G3. Verify first that getTransaction truncation matches logsSubscribe truncation.
 - 5:14 AM **Owner: "Parallel"** (FACTS-REREAD and DEDUP-PER-WATCH at the same time).
   - FACTS-REREAD: the H16-WHY builder session_01WfhsYJ7BbBsRjr72zuL1US, on claude/facts-reread from trade-gap-heal df3da20c.
   - DEDUP-PER-WATCH: new builder session_01175TAau6AqgWgadNor2wUv (Opus), on claude/dedup-per-watch from df3da20c; it confirms the fail-open with a test first.
