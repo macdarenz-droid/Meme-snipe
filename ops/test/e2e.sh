@@ -427,6 +427,11 @@ pass "watchdog (locked wrangler dev, miniflare): signed heartbeats from the host
 # one of its files holds a credential-shaped value (kept on the server, alerted, cleared once it is gone). Earlier
 # sections' real worker boots stay as they are (changed minutes ago, so not touched); every check names these two.
 DATA="$STATE/data-repo"
+# Section 8 applied the deployed release's host files (right for a release); put this branch's back, as 10b does.
+in_c "ZEROED_NO_WAIT=1 bash /root/i --update" >"$LOGS/console/update-branch-files-9c.txt" 2>&1 || { cat "$LOGS/console/update-branch-files-9c.txt"; fail "install --update (this branch's host files, 9c)"; }
+for f in usr/local/sbin/zeroed-check usr/local/lib/zeroed/logic.sh usr/local/lib/zeroed/record-upload.mjs usr/local/sbin/zeroed-record-upload etc/systemd/system/zeroed-record-upload@.service; do
+  docker exec -i "$C" cmp -s "/$f" - <"$ROOT/ops/host/files/$f" || fail "test setup: this branch's /$f not in place"
+done
 in_c "jq '.record_upload = true | .record_upload_delete_local = true' /opt/zeroed/current/ops/host-config.json > /tmp/hc && cat /tmp/hc > /opt/zeroed/current/ops/host-config.json"
 in_c "install -d -o zeroed-worker -g zeroed-worker -m 0700 /var/lib/zeroed/recorder"
 fixture="$(docker exec -i "$C" runuser -u zeroed-worker -- /usr/local/bin/node --input-type=module - <<'NODE'
