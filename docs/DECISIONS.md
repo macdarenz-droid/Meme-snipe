@@ -2703,6 +2703,16 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
     (FEES-KEEP); a bar is left out only when a block time crossed a minute boundary ahead of local receipt.
   - Effect: H14 can see a create, and the labeller a launch, up to one skew (seconds) earlier after a restart than
     without it; a restored candidate's window starts up to one skew earlier.
+  - Accepted fail-open edges (supervisor ruling). Each is at most one clamp (seconds; over 10 s it is logged, the
+    tripwire) and needs a window edge to fall inside those same seconds; refusing the save instead discards the whole
+    state and reads not covered for a look-back, which fails far wider:
+    - H14 serial count (`hard.ts`, `createdAtMs > now - DAY_MS`): a clamped create leaves the 24 h window up to one skew
+      early, so the count can read one lower for those seconds.
+    - Labeller age (`rug-labeller.ts`, `age = at - createdAtMs`): a clamped launch reads older, so a rule that applies
+      within N ms of a launch can stop applying up to one skew early.
+    - Coverage (`createsCoverage`: `firstStart` and `lastLossy.at` by receipt time): a clamped start reads covered up to
+      one skew earlier, and a clamped lossy gap can fall just before a window start it was really inside. Receipt time
+      only: slot is never moved.
   - Visibility: each clamp is counted with the largest; the worker logs a save whose largest clamp is over 10 s
     (`CLAMP_LOG_MS`; "Saved state: N times dated after the save's moment were saved as at it, the latest X s after."),
     so a real future-dated bug stays visible.
@@ -2715,7 +2725,9 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
     process start's receipt time refused the whole seed, so H14 read not covered for a full look-back after a restart
     near a create. A block time up to `CHAIN_SKEW_MS` (60 s, config/platform.ts) after the start is now taken as at the
     start; further is still refused (the SEED-1 leak guard's hour-ahead case is unchanged), and a create released after
-    the start is refused by its moment whatever its block time. Bounded here, unlike the save's clamp: a seed has no
+    the start is refused by its moment whatever its block time. A seeded or filled create taken as at the start is up to 60 s early, so it
+    leaves the 24 h serial window up to 60 s early: the same accepted edge as the save's clamp, bounded at 60 s instead
+    of logged. Bounded here, unlike the save's clamp: a seed has no
     save log to show a large one, and an hour-ahead block time cannot be skew. Test: `deployer-index.test.ts` "SAVE-ASOF:
     a create whose block time is seconds after the process start"; mutants killed: no bound, no clamp, `>=` at the
     bound, no refusal.
