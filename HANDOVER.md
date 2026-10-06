@@ -48,6 +48,7 @@ The previous S1 account reached its usage limit about 12:45 PM. The owner made t
 - No host access, no secrets access (owner only), as before.
 
 **Log (Melbourne time, newest first)**
+- 8:56 PM **Owner sent a Fable review** (read-only, at 7e5aa96, 6.5/10) and asked: verify what is true now, rank by effect on bot trading, owner picks the first task, the rest park; one task at a time, each closed and reviewed before the next (rule in CLAUDE.md). Verification workflow wf_281f6178-a9d running (6 adversarial verifiers by group, a completeness critic, then a tiered ranking).
 - 8:43 PM **Blocker research done** (session_01NsQjZGjxGh57ih72Q5aqAZ, archived; small samples, figures approximate). After COMPLETION-READ, these refusals are correct under today's rules:
   - H8 $15k floor (about 125 SOL effective at SOL $120): about 85% of U2 pools fail;
   - H11 chase at +5 min (0 bps above migration): every liquid pool sampled failed. Joint H8 + H11 pass: 0 of 22 sampled;
