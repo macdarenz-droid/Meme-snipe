@@ -2689,3 +2689,24 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
 - **What.** A loop cycle late by more than 10 s (the loop's monotonic clock) halts entries (`behind`, through the halt check); the halt clears after 30 s of cycles under 2 s. Exits keep running. Past 20,000 held frames, the feed sheds the held log frames of candidate pools only: never a pool that is held, has a position or seed, or has an exit or entry in flight (`LiveStrategy.committed`).
 - **Coverage.** Each shed range becomes a recorded coverage gap (`coverage:trades:<pool>:gap`, reason `shed`), placed first in its first slot, so it sorts before every shed event. H11 refuses the pool from that slot (H16 `gap`), live and in the recording's replay alike. Shed frames are ranked before they drop, so live and replay give the same moments after a shed.
 - **Cost.** A shed tail pool censors its REC-1 counterfactual for that range.
+
+## The 5-min save streams its payload (SAVE-SPIKE, `persist/state.ts`)
+
+- **2026-10-06 · Why.** Live on 5efb9ae0 died at a save (crash 27, MEM-PROBE): the last sample, 2 s before death, was
+  saving with old space at 412 MB and large-object space at 8 MB; the death record had large-object space at 107 MB.
+  The payload line (everything but the mint rows) was one `JSON.stringify` of the whole state, copied again to add its
+  newline, then written whole. With live's 41.2k coverage facts it is about 23 MB of text, so each save added about
+  47 MB of large objects (measured on the day2 state with coverage raised to 41.2k), on top of old space.
+- **What.** `streamJson` writes the payload in pieces: the payload's keys, its tables, and their rows, each row as one
+  `JSON.stringify` (`PAYLOAD_DEPTH` 3). Pieces are hashed as they go (the same digest as the whole line) and written in
+  batches of about 1 MiB. The file is byte for byte the same (same sha256 at 1.7k and 41.2k coverage facts), so the
+  saved format, the loader and the recording copy are unchanged.
+- **Measured** (day2 state, coverage raised to 41.2k): large-object space after a save, without a collection, +47 MB
+  before, +0.7 MB after.
+- **Evidence (fail before, pass after).** `save-spike.test.ts`: `streamJson` equals `JSON.stringify` with the bigint
+  replacer at every depth (omitted keys, `null` elements, `toJSON`, escapes); a saved file's payload line is the
+  one-string text and loads; at 41.2k coverage facts every write is at most 1 MiB plus one row and no piece reaches
+  1 KiB; a save adds under 4 MB to large-object space. Hand mutants killed: the one-string payload back, depth 0, no
+  `null` for an omitted element, no omission of a key, a piece not hashed, no batch flush, no `toJSON`.
+- **Not in this card.** Why 41.2k coverage facts are kept is STORE-GROWTH's question; loading still parses the payload
+  line whole (the boot side, ruled separately as BOOT-CAP).
