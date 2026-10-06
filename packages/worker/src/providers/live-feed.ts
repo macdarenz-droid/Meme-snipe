@@ -151,6 +151,13 @@ export class LiveFeed implements Feed {
   /** FEED-KEYS: the dedupe keys as 96-bit tags (`TagSet`), and each placement slot's tags as pairs, for the prune. */
   readonly #keys = new TagSet();
   readonly #keysBySlot = new Map<bigint, number[]>();
+  /**
+   * DEDUP-PER-WATCH (review B1): the dedupe keys of first copies `shed` dropped with no other watch's copy held to take
+   * their place, by the slot they were dropped from (pruned like the keys). The next copy from a watch not shed is
+   * released whole, not as an echo, so its pool still gets the transaction's events.
+   */
+  readonly #shedKeys = new TagSet();
+  readonly #shedKeysBySlot = new Map<bigint, number[]>();
   readonly #gaps = new Map<string, { readonly fromSlot: bigint; readonly since: number }>();
   #ready: { readonly event: FeedEvent; readonly frameSeq: number; readonly late: boolean }[] = [];
   #releases = 0;
@@ -212,8 +219,11 @@ export class LiveFeed implements Feed {
     // DEDUP-PER-WATCH: a log's copy on its own watch. Taken already on another watch only: an echo, which releases that
     // watch's hole and pool-other mark (canonical.ts `echoEvents`); taken on this watch too: a duplicate.
     const own = body.type === 'logs' ? keyTag(echoKey(body)) : null;
-    const echo = duplicate && own !== null && !this.#keys.has(own);
-    if (echo) {
+    let echo = duplicate && own !== null && !this.#keys.has(own);
+    // Review B1: its first copy was shed: this copy stands in for it, whole.
+    const promoted = echo && key !== null && this.#shedKeys.delete(key);
+    if (promoted) echo = false;
+    if (echo || promoted) {
       duplicate = false;
       // Its slot already released: placed after everything, so its hole is never refused as out of order (fail closed).
       if (place.at === 'chain' && place.slot <= this.#released) place = { at: 'offchain', slot: this.openSlot, arrival: true };
@@ -225,7 +235,7 @@ export class LiveFeed implements Feed {
       this.#duplicates++;
       return frame;
     }
-    for (const k of [echo ? null : key, own]) {
+    for (const k of [echo || promoted ? null : key, own]) {
       if (k === null) continue;
       this.#keys.add(k);
       const list = this.#keysBySlot.get(place.slot);
@@ -264,6 +274,8 @@ export class LiveFeed implements Feed {
    */
   shed(shed: (via: string) => boolean): Map<string, { fromSlot: bigint; toSlot: bigint }> {
     const out = new Map<string, { fromSlot: bigint; toSlot: bigint }>();
+    /** Review B1: first copies dropped (a log's whole copy), by dedupe key, with the slot each was dropped from. */
+    const firsts = new Map<string, bigint>();
     for (const [slot, frames] of this.#held) {
       const named = (f: Frame) => 'via' in f.body && typeof f.body.via === 'string' && shed(f.body.via);
       if (!frames.some(named)) continue;
@@ -275,6 +287,7 @@ export class LiveFeed implements Feed {
       const kept = frames.filter((f) => {
         const via = 'via' in f.body && typeof f.body.via === 'string' ? f.body.via : null;
         if (via === null || !shed(via)) return true;
+        if (f.body.type === 'logs' && f.echo !== true) firsts.set(dedupKey(f.body)!, slot);
         const r = out.get(via);
         if (r === undefined) out.set(via, { fromSlot: slot, toSlot: slot });
         else {
@@ -286,8 +299,43 @@ export class LiveFeed implements Feed {
       if (kept.length === 0) this.#held.delete(slot);
       else if (kept.length < frames.length) this.#held.set(slot, kept);
     }
+    if (firsts.size > 0) this.#standIn(firsts);
     if (this.#held.size === 0) this.#firstHeldAt = null;
     return out;
+  }
+
+  /**
+   * DEDUP-PER-WATCH (review B1): a shed first copy carried the transaction's events for every watch that saw it; the
+   * other watches' copies are echoes that carry only their own marks. The earliest echo still held on a watch not shed
+   * is put back as a new whole copy (recorded like any frame, so the replay releases what live does), in its place:
+   * a held pool on it keeps its swaps. With none held, the next copy from such a watch is taken whole (`#shedKeys`).
+   */
+  #standIn(firsts: ReadonlyMap<string, bigint>): void {
+    const best = new Map<string, Frame>();
+    for (const frames of this.#held.values()) {
+      for (const f of frames) {
+        if (f.echo !== true || f.body.type !== 'logs') continue;
+        const k = dedupKey(f.body)!;
+        const b = best.get(k);
+        if (firsts.has(k) && (b === undefined || f.seq < b.seq)) best.set(k, f);
+      }
+    }
+    for (const [k, slot] of firsts) {
+      const echo = best.get(k);
+      if (echo === undefined) {
+        const tag = keyTag(k);
+        if (!this.#shedKeys.add(tag)) continue;
+        const list = this.#shedKeysBySlot.get(slot);
+        if (list === undefined) this.#shedKeysBySlot.set(slot, [tag[0], tag[1]]);
+        else list.push(tag[0], tag[1]);
+        continue;
+      }
+      const frames = this.#held.get(echo.place.slot)!;
+      frames.splice(frames.indexOf(echo), 1);
+      const frame: Frame = Object.freeze({ seq: this.#seq++, receivedAt: this.#lastReceivedAt, source: echo.source, backfilled: echo.backfilled, place: echo.place, duplicate: false, body: echo.body });
+      this.#opts.onFrame?.(frame);
+      frames.push(frame);
+    }
   }
 
   /** A provider lost its stream from `fromSlot`: hold the release point below it until its backfill ends or the hold times out. */
@@ -388,5 +436,10 @@ export class LiveFeed implements Feed {
       this.#keysBySlot.delete(slot);
     }
     for (const slot of this.#ranks.keys()) if (slot <= cutoff) this.#ranks.delete(slot);
+    for (const [slot, keys] of this.#shedKeysBySlot) {
+      if (slot > cutoff) continue;
+      for (let i = 0; i < keys.length; i += 2) this.#shedKeys.delete([keys[i]!, keys[i + 1]!]);
+      this.#shedKeysBySlot.delete(slot);
+    }
   }
 }

@@ -319,7 +319,7 @@ const echoEvents = (
   try {
     read = logEvents(b.logs, b.err);
   } catch (e) {
-    return [{ kind: 'market', id: id('undecodable'), moment: at(LOG_IX_BASE), key: `logs:undecodable:${b.via}`, value: { signature: b.signature, error: e instanceof Error ? e.message : 'undecodable', ...meta(f) } }];
+    return [{ kind: 'market', id: id('undecodable'), moment: at(LOG_IX_BASE), key: `logs:undecodable:${b.via}`, value: { signature: b.signature, txSlot: b.slot, error: e instanceof Error ? e.message : 'undecodable', ...meta(f) } }];
   }
   const out: FeedEvent[] = [];
   const other = read.events.find(unnamedPoolEvent);
@@ -329,7 +329,8 @@ const echoEvents = (
       value: { signature: b.signature, name: other.name, txSlot: b.slot, via: b.via, ...(b.commitment === undefined ? {} : { commitment: b.commitment }), ...meta(f) },
     });
   }
-  if (read.truncated) out.push({ kind: 'market', id: id('truncated'), moment: at(LOG_IX_BASE), key: `logs:truncated:${b.via}`, value: { signature: b.signature, ...meta(f) } });
+  // `txSlot`: the transaction's own slot, which a late echo's off-chain placement does not show.
+  if (read.truncated) out.push({ kind: 'market', id: id('truncated'), moment: at(LOG_IX_BASE), key: `logs:truncated:${b.via}`, value: { signature: b.signature, txSlot: b.slot, ...meta(f) } });
   return out;
 };
 
@@ -351,6 +352,9 @@ export const decodable = (r: TransactionRecord): boolean => {
  * them, so nothing here depends on when the frames arrived relative to the release point.
  */
 export const frameEvents = (frames: readonly Frame[]): FeedEvent[] => {
+  // DEDUP-PER-WATCH: an echo only exists in recorded live data, which has its release record: replayed with
+  // `replayRecorded`, never re-sorted here (a whole copy that `shed` dropped would be released here as well as its stand-in).
+  if (frames.some((f) => f.echo === true)) throw new RangeError('recorded live frames (with echoes) replay with replayRecorded and their release record');
   const kept = frames.filter((f) => !f.duplicate).sort((a, b) => a.seq - b.seq);
   const ranks = new Map<bigint, Map<string, number>>();
   for (const f of kept) {

@@ -12,7 +12,7 @@ import { DeployerIndex, candlesKey, parsePool, parseStream, poolKey, streamKey }
 import { FIX, FactWorld, MINT, POOL } from '../../core/test/facts/helpers.ts';
 import { encode } from '../../core/test/chain/encode.ts';
 import { swapLog } from '../../core/test/facts/swaps.ts';
-import { DEFAULT_LIVE_FEED, LiveFeed, replayRecorded, type Frame, type FrameBody, type Release } from '../src/providers/index.ts';
+import { DEFAULT_LIVE_FEED, LiveFeed, frameEvents, replayRecorded, type Frame, type FrameBody, type Release } from '../src/providers/index.ts';
 import { parseTyped, typedText } from '../src/run/json.ts';
 import { CUT_CREATE_RETRY_MS } from '../src/run/worker.ts';
 import { type Harness, POOL_ADDRESS, makeWorker, passingMarket, slotAt } from './worker-harness.ts';
@@ -278,6 +278,29 @@ describe('DEDUP-PER-WATCH parity', () => {
     expect(typedText(again.released.filter((e) => e.id.includes('~')).map((e) => [e.key, e.value]))).toBe(typedText(once.released.filter((e) => e.id.includes('~')).map((e) => [e.key, e.value])));
   });
 
+  it('ten runs give the same frames, releases, events and facts, and each replays to them', () => {
+    const texts = new Set<string>();
+    for (let i = 0; i < 10; i++) {
+      const h = healed();
+      const r = replayRecorded(h.frames.map((f) => parseTyped(typedText(f)) as Frame), h.releases);
+      const replayed: MarketEvent[] = [];
+      for (let e = r.feed.next(); e !== null; e = r.feed.next()) if (e.kind === 'market') replayed.push(e);
+      expect(typedText(replayed)).toBe(typedText(h.events));
+      const facts = h.world.released.filter((e) => e.id.includes('~')).map((e) => [e.key, e.value]);
+      texts.add(typedText({ frames: h.frames, releases: h.releases, events: h.events, facts }));
+    }
+    expect(texts.size).toBe(1);
+  });
+
+  it('a recording with echoes is refused under the pre-echo rules (an echo read as a whole copy), and by frameEvents', () => {
+    const h = healed();
+    // The pre-echo reader knows no `echo`: it makes the copy's whole events, under the first copy's ids, from a frame
+    // the release record does not name for them.
+    const old = h.frames.map((f) => (f.echo === true ? { ...f, echo: undefined } : f)) as Frame[];
+    expect(() => replayRecorded(old, h.releases)).toThrow(/is not in frame/);
+    expect(() => frameEvents(h.frames)).toThrow(/replayRecorded/);
+  });
+
   it('a recording made before echoes (the other watch\'s copy a duplicate) replays as it did', () => {
     const h = healed();
     const old = h.frames.map((f) => (f.echo === true ? { ...f, echo: undefined, duplicate: true } : f)) as Frame[];
@@ -381,4 +404,44 @@ describe('DEDUP-PER-WATCH: a cut creates log seen first on another watch', () =>
     for (let e = feed.next(); e !== null; e = feed.next()) if (e.kind === 'market') idx.observe(e);
     expect(idx.lostCreates(0, t + 20)).toEqual([SIG]);
   });
+});
+
+describe('DEDUP-PER-WATCH: shedding the first copy keeps the other watch\'s swaps (review B1)', () => {
+  // One transaction swaps on pool A and pool B; A's watch heard it first. Behind, the worker sheds A (a candidate) and
+  // keeps B (held). A's copy is dropped: B must still get its swap (or a hole), live and in the recording's replay.
+  const S = S0 + 5n;
+  const logs = () => [...swapOf(A, S).logs, ...swapOf(B, S).logs];
+  const run = (o: { readonly lateB?: boolean } = {}) => {
+    const frames: Frame[] = [];
+    const releases: Release[] = [];
+    const feed = new LiveFeed({ ...DEFAULT_LIVE_FEED, horizonSlots: 0, onFrame: (f) => frames.push(f), onRelease: (_e, r) => releases.push(r) });
+    const t = at(S);
+    const body = (via: string): FrameBody => ({ type: 'logs', signature: SIG, slot: S, err: null, via, logs: logs(), commitment: 'confirmed' });
+    feed.ingest('helius', body(VIA(A)), { receivedAt: t });
+    if (o.lateB !== true) feed.ingest('helius', body(VIA(B)), { receivedAt: t + 1 });
+    const shed = feed.shed((via) => via === VIA(A));
+    expect([...shed.keys()]).toEqual([VIA(A)]);
+    if (o.lateB === true) feed.ingest('helius', body(VIA(B)), { receivedAt: t + 1 });
+    feed.ingest('helius', { type: 'slot', slot: S + 1n, parent: S, root: null }, { receivedAt: t + 10 });
+    feed.advance(t + 11);
+    const out: MarketEvent[] = [];
+    for (let e = feed.next(); e !== null; e = feed.next()) if (e.kind === 'market') out.push(e);
+    return { frames, releases, out };
+  };
+
+  for (const lateB of [false, true]) {
+    it(`pool B gets its swap (B's copy ${lateB ? 'after' : 'before'} the shed), and the replay equals live`, () => {
+      const r = run({ lateB });
+      const w = opened();
+      const before = candleWrites(w, B);
+      w.push(...r.out);
+      expect(candleWrites(w, B)).toBeGreaterThan(before);
+      expect(r.out.some((e) => e.key === `logs:pump_amm:BuyEvent:${B.pool}`)).toBe(true);
+      const frames = r.frames.map((f) => parseTyped(typedText(f)) as Frame);
+      const rp = replayRecorded(frames, r.releases.map((x) => parseTyped(typedText(x)) as Release));
+      const replayed: MarketEvent[] = [];
+      for (let e = rp.feed.next(); e !== null; e = rp.feed.next()) if (e.kind === 'market') replayed.push(e);
+      expect(typedText(replayed)).toBe(typedText(r.out));
+    });
+  }
 });
