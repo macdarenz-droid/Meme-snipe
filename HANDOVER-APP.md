@@ -8,7 +8,7 @@ From here on, S2 owns this file. S2 keeps it current on its own branch `claude/s
 
 The owner has put the crash first; the APP and stability queues are parked. PR249 head860782537089be2600efecaeb101e3fa19b65a5f has five fresh independent PASS reviews(facts,BT/run,PERSIST,EXIT,APP/API), published in comments6008650473 and6008759370, and green check/historical-data CI37401395612. Actual30,000-notice mainnet replay reduced retained heap69.73→0.467MiB without admitting an unsafe coin. A single unfiltered local pnpm check started14:19:32AEDT; all six type checks passed and the test result is pending. Existing PR245 head e466c3df54015383ae88805d64f41d6b40a19027 already has S1 facts/PERSIST PASS and green CI37400036289; the independent union review passes. Neither PR is merged or deployed. Current integration/tag/live code is958294a0136eb0ee4c0ca9272c2e561324ee9759. Latest report14:31AEDT: paper,33 crashes total,last death13:06:03,84.65min uptime. Owner answers are required on transferring S1-only merges/Deploy for these crash PRs and confirming DEPLOY_CODE absent; GitHub secret-metadata read returned403 and was not bypassed. Slower coverage/cache growth and3–5h/full-day crash-free proof remain separate. No readiness or sustained-stability claim yet.
 
-## Latest handoff audit
+## Historical handoff audit (10:09 AEDT)
 
 Checked **2026-10-06 10:09:09 AEDT**, against S1 docs `343ee20b563888ed54c8befc17604383f0124aa6` and integration `5efb9ae0497523c84e3bb49a82bce989652cdb0b`. GitHub API access now works (actual PR reads and review-comment publication succeeded); the earlier API blocker is historical. This is a handoff audit, with no new stability code or workflow reruns.
 
@@ -21,11 +21,11 @@ Checked **2026-10-06 10:09:09 AEDT**, against S1 docs `343ee20b563888ed54c8befc1
 | APP-TRADE #181 | `68a1d969920b6246b2a29a93092d1a8053f685e7` | Open; check and historical-data green, all three exact-head area reviews recorded below. S1's latest-base update remains. |
 | API-1 #167 | `6af4e43b707960316d8cd8419cb2e513fa9f4b60` | Open; check and historical-data green, both exact-head area reviews recorded below. S1's latest-base update remains. |
 
-Current-head CI runs verified directly: #216 [37362626087](https://github.com/macdarenz-droid/Meme-snipe/actions/runs/37362626087); #237 [37366010297](https://github.com/macdarenz-droid/Meme-snipe/actions/runs/37366010297) (check cancelled); #210 [37329486355](https://github.com/macdarenz-droid/Meme-snipe/actions/runs/37329486355); #182 [37334107041](https://github.com/macdarenz-droid/Meme-snipe/actions/runs/37334107041); #181 [37329349919](https://github.com/macdarenz-droid/Meme-snipe/actions/runs/37329349919); #167 [37329325589](https://github.com/macdarenz-droid/Meme-snipe/actions/runs/37329325589).
+Historical CI snapshot at10:09; later task/event records supersede these heads and runs: #216 [37362626087](https://github.com/macdarenz-droid/Meme-snipe/actions/runs/37362626087); #237 [37366010297](https://github.com/macdarenz-droid/Meme-snipe/actions/runs/37366010297) (check cancelled); #210 [37329486355](https://github.com/macdarenz-droid/Meme-snipe/actions/runs/37329486355); #182 [37334107041](https://github.com/macdarenz-droid/Meme-snipe/actions/runs/37334107041); #181 [37329349919](https://github.com/macdarenz-droid/Meme-snipe/actions/runs/37329349919); #167 [37329325589](https://github.com/macdarenz-droid/Meme-snipe/actions/runs/37329325589).
 
-## Current handoff to S1
+## Historical handoff to S1 (10:09 AEDT)
 
-Updated **2026-10-06 10:09:09 AEDT**. File handoffs remain accepted as PR comments. Latest verified statuses are in the audit above. S1 alone merges/deploys, including the latest-base update and CI on the updated head. Required gates remain `check` and `historical-data`. The two superseded readiness lines below are marked historical.
+Updated **2026-10-06 10:09:09 AEDT**. File handoffs remain accepted as PR comments. That audit was current at10:09; the Active S2 work and newest event records now supply current status. S1 alone merges/deploys, including the latest-base update and CI on the updated head. Required gates remain `check` and `historical-data`. The two superseded readiness lines below are marked historical.
 
 ### DISK-CRASH — #246
 
@@ -140,6 +140,8 @@ S2-READY 6af4e43b707960316d8cd8419cb2e513fa9f4b60
 - These local limitations are historical. Current directly verified GitHub results are in Latest handoff audit; they do not establish that any future base-update head is green.
 
 ## S2 events (newest first)
+
+- **2026-10-06 14:40:03 AEDT** — Older10:09audit/CI/handoff sections explicitly labelled historical; current crash status remains in Active S2 work and newest events, avoiding old237cancelledCI or staleappheads being read as current. Five fresh249reviewsPASS/currentCIgreen and singlelocalfullcheckpending; owner release answers still pending. No testing, logic, branch history, merge or deployment changed.
 
 - **2026-10-06 14:37:28 AEDT** — Crash status summary refreshed: five exact-head independent reviews pass, both crash PRs have green named GitHub checks, and the one unfiltered local check continues. The latest 14:31 report still runs old code958294a0 with33 crashes total and84.65min uptime; no further crash is reported after13:06. Earlier release ownership and inaccessible secret metadata are the two pending owner clarifications. No release action is authorized by silence; no new implementation or duplicated CPU check.
 
