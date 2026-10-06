@@ -40,7 +40,7 @@ db="$1"; shift
 case "$*" in
   *.backup*) [ -z "\${ZEROED_TEST_SNAPSHOT_HOOK:-}" ] || node "$ZEROED_TEST_SNAPSHOT_HOOK" "$ZEROED_BACKUP_SRC"; dest="$*"; dest="\${dest##*.backup \\'}"; cp "$db" "\${dest%\\'}" ;;
   *integrity_check*) echo ok ;;
-  *sqlite_schema*) echo trades ;;
+  *sqlite_schema*) if [ -n "\${ZEROED_TEST_SCHEMA_CHANGED:-}" ] && [ "$db" != "$ZEROED_BACKUP_SRC/ledger.sqlite" ]; then echo changed; else echo trades; fi ;;
   *count*) echo 3 ;;
 esac
 `);
@@ -95,11 +95,18 @@ const STATE: Record<string, string> = {
 };
 const BOT_STATE = ['account.json', 'chain-volume/data-volume-2026-10-03.json', 'cold_start', 'control.json', 'credits.json', 'deployer-state.json', 'deployers.jsonl', 'deployers.jsonl.reserve', 'entry-seeds.json', 'exits.json', 'exposure.json', 'fill-budget.json', 'ledger.sqlite', 'paper.json'];
 
+// A checksummed committed WAL frame for stand-in SQLite; real WAL recovery is covered by the offline e2e.
+const fixtureWal=(committed=true):Buffer=>{
+  const b=Buffer.alloc(32+24+512);b.writeUInt32BE(0x377f0682,0);b.writeUInt32BE(3007000,4);b.writeUInt32BE(512,8);b.writeUInt32BE(1,16);b.writeUInt32BE(2,20);
+  let s0=0,s1=0;const checksum=(at:number,size:number)=>{for(let n=at;n<at+size;n+=8){s0=(s0+b.readUInt32LE(n)+s1)>>>0;s1=(s1+b.readUInt32LE(n+4)+s0)>>>0;}};
+  checksum(0,24);b.writeUInt32BE(s0,24);b.writeUInt32BE(s1,28);
+  b.writeUInt32BE(1,32);b.writeUInt32BE(committed?1:0,36);b.writeUInt32BE(1,40);b.writeUInt32BE(2,44);checksum(32,8);checksum(56,512);b.writeUInt32BE(s0,48);b.writeUInt32BE(s1,52);return b;
+};
 const stateDir = (name: string, files: Record<string, string> = STATE): string => {
   const dir = join(tmp, name);
   for (const [rel, body] of Object.entries(files)) {
     mkdirSync(dirname(join(dir, rel)), { recursive: true });
-    writeFileSync(join(dir, rel), body);
+    writeFileSync(join(dir, rel), rel==='ledger.sqlite-wal'&&body==='wal'?fixtureWal():body);
   }
   return dir;
 };
@@ -291,6 +298,20 @@ describe('backup disk budget', () => {
   });
 });
 
+describe('bounded SQLite scratch and WAL validation',()=>{
+  it.each(['torn','checksum','uncommitted'])('rejects %s WAL without publishing a partial backup',kind=>{
+    const src=stateDir(`bad-wal-${kind}`),out=join(tmp,`bad-wal-${kind}-out`),wal=fixtureWal(kind!=='uncommitted');
+    if(kind==='checksum')wal[wal.length-1]=1;
+    writeFileSync(join(src,'ledger.sqlite-wal'),kind==='torn'?wal.subarray(0,wal.length-1):wal);
+    const r=backup(src,out);expect(r.status,r.out).toBe(1);expect(r.bundle).toBeNull();expect(readdirSync(out)).toEqual([]);
+  });
+  it('charges simultaneous SQLite scratch and output against the raw ceiling',()=>{
+    const src=stateDir('sqlite-scratch-cap',{'ledger.sqlite':'x'.repeat(70000)}),out=join(tmp,'sqlite-scratch-cap-out');
+    const r=backup(src,out,{ZEROED_BACKUP_MAX_BYTES:'262144',ZEROED_BACKUP_SNAPSHOT_BYTES:'131072'});
+    expect(r.status,r.out).toBe(1);expect(r.bundle).toBeNull();expect(readdirSync(out)).toEqual([]);
+  });
+});
+
 describe('whole-capture source generation stability',()=>{
   it.each(['marker-cycle','new-state','state-replacement','wal-only'])('rejects the whole archive after an interleaved %s update',kind=>{
     const files={...STATE};if(kind==='new-state')delete files['credits.json'];
@@ -390,6 +411,13 @@ describe('restore drill and restore', () => {
     expect(readFileSync(calls, 'utf8')).toBe(`drill ${id} ${made.bundle!}\n`);
     expect(readFileSync(join(live, 'account.json'), 'utf8')).toBe('{"newer":true}\n');
     expect(existsSync(join(tmp, 'aside-refused'))).toBe(false);
+  });
+
+  it('rechecks the staged SQLite schema before stop even when the external drill reports success',()=>{
+    const live=stateDir('restore-schema-changed'),drill=join(tmp,'successful-schema-drill');
+    writeFileSync(drill,'#!/usr/bin/env bash\nexit 0\n');chmodSync(drill,0o755);writeFileSync(calls,'');
+    const r=run('zeroed-restore',[id,made.bundle!],{ZEROED_BACKUP_SRC:live,ZEROED_BACKUP_OUT:out,ZEROED_RESTORE_ASIDE:join(tmp,'schema-aside'),ZEROED_RESTORE_DRILL:drill,ZEROED_TEST_SCHEMA_CHANGED:'1'});
+    expect(r.status,r.out).toBe(1);expect(r.out).toContain('tables differ');expect(readFileSync(calls,'utf8')).toBe('');expect(readFileSync(join(live,'account.json'),'utf8')).toBe(STATE['account.json']);
   });
 
   it('a backup without control.json restores with entries paused, in the form the worker reads', () => {

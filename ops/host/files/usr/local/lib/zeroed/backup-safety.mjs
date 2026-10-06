@@ -32,7 +32,9 @@ const hashRange = (fd, at, size, output) => {
   for (let n = 0; n < size;) {
     const got = fs.readSync(fd, chunk, 0, Math.min(chunk.length, size - n), at + n);
     if (!got) throw Error('archive truncated');
-    hash.update(chunk.subarray(0, got)); if (output !== undefined) fs.writeSync(output, chunk, 0, got); n += got;
+    hash.update(chunk.subarray(0, got));
+    if(output!==undefined){for(let written=0;written<got;){const count=fs.writeSync(output,chunk,written,got-written);if(count<=0)throw Error('snapshot write made no progress');written+=count;}}
+    n += got;
   }
   return hash.digest('hex');
 };
@@ -73,6 +75,45 @@ function generation(dir) {
   }
   if(JSON.stringify(selected(dir))!==JSON.stringify(found)||(found.includes('ledger.sqlite')&&lexists(join(dir,'ledger.sqlite-wal')))!==wal)throw Error('source allowlist/WAL changed during generation scan');
   return {names:found,stamp:hash.digest('hex')};
+}
+// Validate the copied WAL before SQLite can silently disregard a torn/corrupt tail.
+function walFrames(p) {
+  const fd=regular(p);try {
+    const bytes=fs.readFileSync(fd);if(bytes.length<32)throw Error('truncated SQLite WAL');
+    const magic=bytes.readUInt32BE(0), little=magic===0x377f0682;
+    if(!little&&magic!==0x377f0683)throw Error('invalid SQLite WAL magic');
+    const page=bytes.readUInt32BE(8), width=page+24;
+    if(bytes.readUInt32BE(4)!==3007000||page<512||page>65536||(page&(page-1))||((bytes.length-32)%width))throw Error('invalid or torn SQLite WAL');
+    const word=(b,n)=>little?b.readUInt32LE(n):b.readUInt32BE(n);
+    let s0=0,s1=0;
+    const checksum=b=>{for(let n=0;n<b.length;n+=8){s0=(s0+word(b,n)+s1)>>>0;s1=(s1+word(b,n+4)+s0)>>>0;}};
+    checksum(bytes.subarray(0,24));
+    if(s0!==bytes.readUInt32BE(24)||s1!==bytes.readUInt32BE(28))throw Error('SQLite WAL header checksum mismatch');
+    let commit=0,count=0;
+    for(let at=32;at<bytes.length;at+=width){
+      if(bytes.readUInt32BE(at)===0||bytes.readUInt32BE(at+8)!==bytes.readUInt32BE(16)||bytes.readUInt32BE(at+12)!==bytes.readUInt32BE(20))throw Error('SQLite WAL frame identity mismatch');
+      checksum(bytes.subarray(at,at+8));checksum(bytes.subarray(at+24,at+width));
+      if(s0!==bytes.readUInt32BE(at+16)||s1!==bytes.readUInt32BE(at+20))throw Error('SQLite WAL frame checksum mismatch');
+      commit=bytes.readUInt32BE(at+4);count++;
+    }
+    if(count&&!commit)throw Error('SQLite WAL has an uncommitted tail');
+    return count;
+  }finally{fs.closeSync(fd);}
+}
+function sqliteStage(dir,dest,max) {
+  root(dest);let bytes=0,frames=0;
+  for(const rel of ['ledger.sqlite',...(lexists(join(dir,'ledger.sqlite-wal'))?['ledger.sqlite-wal']:[])]){
+    const fd=source(dir,rel,max-bytes);try {
+      const size=fs.fstatSync(fd).size,out=fs.openSync(join(dest,rel),'wx',0o600);
+      try{hashRange(fd,0,size,out);fs.fsyncSync(out);}finally{fs.closeSync(out);}
+      if(fs.fstatSync(fd).size!==size)throw Error('SQLite source changed during staging');bytes+=size;
+    }finally{fs.closeSync(fd);}
+  }
+  if(lexists(join(dest,'ledger.sqlite-wal')))frames=walFrames(join(dest,'ledger.sqlite-wal'));
+  // SQLite's private WAL index grows in 32 KiB regions. Charge it even if the exclusive reader avoids SHM.
+  const shm=lexists(join(dest,'ledger.sqlite-wal'))?32768*(1+Math.ceil(Math.max(0,frames-4062)/4096)):0;
+  if(bytes+shm>=max)throw Error('SQLite scratch exceeds snapshot limit');
+  console.log(bytes+shm);
 }
 async function validate(p, rel) {
   const fd = regular(p); let input;
@@ -169,7 +210,18 @@ async function prepare(identity, archive, dest) {
     let restored=0;
     for(const rel of selected){const m=members.get(rel);if(legacy(rel)){if(m.size!==0&&m.size!==65536)throw Error('invalid legacy reserve');const b=Buffer.alloc(m.size);fs.readSync(fd,b,0,b.length,m.at);if(b.some(v=>v!==0))throw Error('invalid legacy reserve');continue;}
       if(rel.startsWith('chain-volume/'))fs.mkdirSync(join(dest,'chain-volume'),{mode:0o700,recursive:true});
-      const out=fs.openSync(join(dest,rel),'wx',0o600);try{hashRange(fd,m.at,m.size,out);fs.fsyncSync(out);}finally{fs.closeSync(out);}await validate(join(dest,rel),rel);restored++;
+      const out=fs.openSync(join(dest,rel),'wx',0o600);try{hashRange(fd,m.at,m.size,out);fs.fsyncSync(out);}finally{fs.closeSync(out);}await validate(join(dest,rel),rel);
+      if(rel==='ledger.sqlite'){
+        const live=process.env.ZEROED_BACKUP_SRC??'/var/lib/zeroed';
+        if(lexists(join(live,rel))){
+          const checkfd=source(live,rel);fs.closeSync(checkfd);
+          const sql="SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name;";
+          const tables=p=>spawnSync('sqlite3',['-readonly',p,sql],{encoding:'utf8',maxBuffer:65536});
+          const prior=tables(join(live,rel)),snapshot=tables(join(dest,rel));
+          if(prior.status!==0||snapshot.status!==0||prior.stdout!==snapshot.stdout)throw Error('ledger.sqlite tables differ from live database');
+        }
+      }
+      restored++;
     }
     if(!restored)throw Error('archive holds no durable state');
     // Older snapshots cannot certify whether saves lost same-slot events. Carry conservative uncertainty.
@@ -181,6 +233,7 @@ async function prepare(identity, archive, dest) {
 try {
   const [cmd,...args]=process.argv.slice(2);
   if(cmd==='list')console.log(selected(args[0]).join('\n'));
+  else if(cmd==='sqlite-stage')sqliteStage(args[0],args[1],Number(args[2]));
   else if(cmd==='generation')console.log(JSON.stringify(generation(args[0])));
   else if(cmd==='copy'){const [dir,rel,dest]=args, max=Number(args[3]);const fd=source(dir,rel);try{const out=fs.openSync(dest,'wx',0o600);try{const size=fs.fstatSync(fd).size;if(size>max)throw Error('snapshot limit exceeded');hashRange(fd,0,size,out);if(fs.fstatSync(fd).size!==size)throw Error('state changed size during snapshot');}finally{fs.closeSync(out);}}finally{fs.closeSync(fd);}}
   else if(cmd==='check'){const fd=source(args[0],args[1]);fs.closeSync(fd);}
