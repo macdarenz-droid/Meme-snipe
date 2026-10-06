@@ -71,33 +71,34 @@ export class PublicRpc {
   async call(method: string, params: unknown[]): Promise<{ result?: unknown; error?: { code: number; message: string } }> {
     // Offline (a test fixture): only the cache answers.
     if (this.urls.length === 0) throw new Error(`offline: ${method} ${JSON.stringify(params).slice(0, 120)} is not in the cache`);
-    for (let attempt = 0; attempt < 40; attempt++) {
-      const url = this.urls[Math.min(this.urls.length - 1, Math.floor(attempt / 8))]!;
+    // A transient failure (429, 5xx, a dropped connection, a node that is behind) is never an answer: the replay's virtual
+    // time stands still while the world reads, so the call is retried until an endpoint answers. After 8 failures in a
+    // row on one endpoint the next is tried, in turn.
+    for (let attempt = 0; ; attempt++) {
+      const url = this.urls[Math.floor(attempt / 8) % this.urls.length]!;
       await this.#slot(url);
       this.stats.calls[method] = (this.stats.calls[method] ?? 0) + 1;
+      const backoff = Math.min(30_000, 500 * 2 ** Math.min(attempt % 8, 6));
       try {
         const res = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: this.#id++, method, params }), signal: AbortSignal.timeout(60_000) });
         if (res.status === 429 || res.status >= 500) {
           this.stats.retries++;
           await res.text().catch(() => '');
-          await sleep(Math.min(20_000, 500 * (attempt % 8 + 1)));
+          await sleep(backoff);
           continue;
         }
         const body = (await res.json()) as { result?: unknown; error?: { code: number; message: string } };
-        // Transient node errors (behind, long-term storage hiccups) are retried; everything else is an answer.
-        if (body.error !== undefined && [-32004, -32005, -32014, -32016, -32603, -32000].includes(body.error.code) && attempt < 24) {
+        if (body.error !== undefined && [-32004, -32005, -32014, -32016, -32603, -32000].includes(body.error.code)) {
           this.stats.retries++;
-          await sleep(1_000 * (attempt % 8 + 1));
+          await sleep(backoff);
           continue;
         }
         return body;
-      } catch (e) {
+      } catch {
         this.stats.retries++;
-        if (attempt === 39) throw e;
-        await sleep(500 * 2 ** Math.min(attempt % 8, 4));
+        await sleep(backoff);
       }
     }
-    throw new Error(`${method}: gave up after retries`);
   }
 
   /**
@@ -180,8 +181,9 @@ export class PublicRpc {
 
 export const atomicWrite = (path: string, text: string): void => {
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(`${path}.tmp`, text);
-  renameSync(`${path}.tmp`, path);
+  const tmp = `${path}.${process.pid}.${tmpSeq++}.tmp`;
+  writeFileSync(tmp, text);
+  renameSync(tmp, path);
 };
 
 /** Runs `f` over `items` with at most `n` in flight; results in input order. */
@@ -201,8 +203,11 @@ export const pool = async <T, R>(items: readonly T[], n: number, f: (item: T, i:
 /** A transaction's cache file: zstd JSON, fanned out by the signature's first two characters. */
 export const txFile = (dir: string, signature: string): string => join(dir, 'tx', signature.slice(0, 2), `${signature}.json.zst`);
 export const readZ = (path: string): unknown => JSON.parse(zstdDecompressSync(readFileSync(path)).toString('utf8'));
+let tmpSeq = 0;
+/** Written whole, under a temporary name unique to this process (several processes share the cache). */
 export const writeZ = (path: string, v: unknown): void => {
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(`${path}.tmp`, zstdCompressSync(Buffer.from(JSON.stringify(v))));
-  renameSync(`${path}.tmp`, path);
+  const tmp = `${path}.${process.pid}.${tmpSeq++}.tmp`;
+  writeFileSync(tmp, zstdCompressSync(Buffer.from(JSON.stringify(v))));
+  renameSync(tmp, path);
 };

@@ -34,6 +34,8 @@ export interface CoinResult {
   readonly gate: string | null;
   readonly code: string | null;
   readonly reason: string | null;
+  /** Every gate and code of that rejection (a coin usually fails several). */
+  readonly all?: readonly string[];
 }
 
 const big = (v: unknown): bigint => (typeof v === 'string' && /^-?\d+$/.test(v) ? BigInt(v) : typeof v === 'number' ? BigInt(v) : 0n);
@@ -51,7 +53,9 @@ export const analyze = (runDir: string, coins: readonly RunCoin[]) => {
     const r = l['reasons'] as string[] | undefined;
     const mint = r?.[2];
     if (mint === undefined || !full.has(mint)) continue;
-    if (l['action'] === 'reject' || (r?.[0] === 'no entry')) last.set(mint, l);
+    // The last typed rejection (a window's end line repeats its reason without the typed list).
+    if (l['action'] === 'reject') last.set(mint, l);
+    else if (r?.[0] === 'no entry' && !last.has(mint)) last.set(mint, l);
   }
   const trades: Trade[] = entries.filter((e) => full.has(String(e['mint']))).map((e) => {
     const trade = String(e['trade']);
@@ -73,9 +77,13 @@ export const analyze = (runDir: string, coins: readonly RunCoin[]) => {
     if (entered.has(c.mint)) return { mint: c.mint, decision: 'entered', gate: null, code: null, reason: null };
     const l = last.get(c.mint);
     if (l === undefined) return { mint: c.mint, decision: 'not-evaluated', gate: null, code: null, reason: null };
-    const g = (l['gate_reasons'] as { gate?: string; code?: string; input?: string; neededBy?: string }[] | undefined)?.[0];
+    const gs = (l['gate_reasons'] as { gate?: string; code?: string; input?: string; neededBy?: string }[] | undefined) ?? [];
+    const g = gs[0];
     const r = l['reasons'] as string[];
-    return { mint: c.mint, decision: 'refused', gate: g === undefined ? null : `${g.gate ?? '?'}${g.neededBy !== undefined ? `/${g.neededBy}` : ''}`, code: g?.code ?? null, reason: r[3] ?? r[0] ?? null };
+    return {
+      mint: c.mint, decision: 'refused', gate: g === undefined ? null : `${g.gate ?? '?'}${g.neededBy !== undefined ? `/${g.neededBy}` : ''}`, code: g?.code ?? null, reason: r[3] ?? r[0] ?? null,
+      all: [...new Set(gs.map((x) => `${x.gate ?? '?'}:${x.code ?? '?'}`))],
+    };
   });
   const closed = trades.filter((t) => t.closed);
   const nets = closed.map((t) => Number(t.net) / LAMPORTS);
@@ -83,10 +91,16 @@ export const analyze = (runDir: string, coins: readonly RunCoin[]) => {
   const sd = nets.length < 2 || mean === null ? null : Math.sqrt(nets.reduce((a, b) => a + (b - mean) ** 2, 0) / (nets.length - 1));
   const half = sd === null ? null : 1.96 * sd / Math.sqrt(nets.length);
   const byGate: Record<string, number> = {};
-  for (const r of results) if (r.decision === 'refused') byGate[`${r.gate}:${r.code}`] = (byGate[`${r.gate}:${r.code}`] ?? 0) + 1;
+  const anyGate: Record<string, number> = {};
+  for (const r of results) {
+    if (r.decision !== 'refused') continue;
+    byGate[`${r.gate}:${r.code}`] = (byGate[`${r.gate}:${r.code}`] ?? 0) + 1;
+    for (const k of r.all ?? []) anyGate[k] = (anyGate[k] ?? 0) + 1;
+  }
   return {
     coins: coins.length, entered: entered.size, refused: results.filter((r) => r.decision === 'refused').length, notEvaluated: results.filter((r) => r.decision === 'not-evaluated').length,
     refusalsByGate: Object.fromEntries(Object.entries(byGate).sort((a, b) => b[1] - a[1])),
+    coinsFailingEachGate: Object.fromEntries(Object.entries(anyGate).sort((a, b) => b[1] - a[1])),
     trades: trades.length, closedTrades: closed.length, wins: closed.filter((t) => t.net > 0n).length,
     winRate: closed.length === 0 ? null : closed.filter((t) => t.net > 0n).length / closed.length,
     meanNetSol: mean, ci95: half === null || mean === null ? null : [mean - half, mean + half], totalNetSol: nets.reduce((a, b) => a + b, 0),

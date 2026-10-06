@@ -46,6 +46,13 @@ const main = async () => {
     byCreator[creator] = theirs.map((x) => x.signature);
     for (const x of theirs) creates.set(x.signature, index.find((i) => i.signature === x.signature)!);
   }
+  // Every create from ALL_CREATES_FROM on (env, ISO; the earliest still on publicnode's ledger when collected): the live
+  // creates watch receives every create, and a cut create log anywhere changes H14 for every coin (README "Streams").
+  const allFrom = process.env['ALL_CREATES_FROM'];
+  if (allFrom !== undefined) {
+    const t = Date.parse(allFrom) / 1000;
+    for (const x of index) if (x.err === null && (x.blockTime ?? 0) >= t && x.slot <= endSlot && rpc.hasTx(x.signature)) creates.set(x.signature, x);
+  }
   writeFileSync(join(out!, 'coins.json'), JSON.stringify(full.map(pick)));
   writeFileSync(join(out!, 'others.json'), JSON.stringify(others.map(pick)));
   writeFileSync(join(out!, 'creates.json'), JSON.stringify([...creates.values()].sort((a, b) => a.slot - b.slot)));
