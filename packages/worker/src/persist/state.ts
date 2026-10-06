@@ -17,7 +17,7 @@ import { Writable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { createZstdCompress, createZstdDecompress } from 'node:zlib';
 import { fileLines } from '../../../runner/src/lines.ts';
-import { atomicWrite, writeAll, type WriteFn } from '../run/state.ts';
+import { atomicWrite, commitTemp, writeAll, type WriteFn } from '../run/state.ts';
 import type { RugConfig } from '../../../core/src/config/rugs.ts';
 import { DAY_MS } from '../../../core/src/config/time.ts';
 import { compareEvents, compareMoments, type MarketEvent, type Moment } from '../../../core/src/engine/index.ts';
@@ -148,7 +148,10 @@ const reviver = (_k: string, v: unknown): unknown => {
   return v;
 };
 
-/** Writes atomically with every write checked (`atomicWrite`, #159 review N2): a failure leaves the old file whole. */
+/**
+ * Writes atomically: a temporary file, every write checked, its size on disk checked, flushed, then renamed over the old
+ * one (`atomicWrite`, #159 review N2). A crash or a short write leaves the old file whole.
+ */
 const writeAtomic = (path: string, text: string, write?: WriteFn): void => atomicWrite(path, text, write);
 
 /**
@@ -217,9 +220,11 @@ type MintRow = readonly [string, readonly (readonly [string, number])[]];
  * one line per creator's mint row (`mintRows`, else the rows of `s.index.mints`); a last line with the sha256 of every
  * line between the first and the last (each with its newline) and their count. Nothing is held whole: at a full
  * look-back the old single payload string was about 65 MB, twice over. Written to a temp file with every write checked,
- * flushed, then renamed (#159 review N2): a failure leaves the old file whole.
+ * flushed, its size on disk checked, then renamed (`commitTemp`, #159 review N2): a failure leaves the old file whole.
  */
-export const saveState = (path: string, s: SavedState, o: { readonly mintRows?: Iterable<MintRow>; readonly write?: WriteFn } = {}): void => {
+export const saveState = (path: string, s: SavedState, opts: { readonly mintRows?: Iterable<MintRow>; readonly write?: WriteFn } | WriteFn = {}): void => {
+  // A bare write function (N2-WRITES' test hook, from before the options) is the `write` option.
+  const o = typeof opts === 'function' ? { write: opts } : opts;
   for (const e of s.coverage) {
     if (after(e.moment, s.asOf)) throw new RangeError(`coverage fact ${e.id} is dated after the snapshot moment`);
   }
@@ -235,8 +240,9 @@ export const saveState = (path: string, s: SavedState, o: { readonly mintRows?: 
   let lines = 0;
   let out: string[] = [];
   let bytes = 0;
+  let written = 0;
   const flush = (): void => {
-    if (out.length > 0) writeAll(fd, out.join(''), o.write);
+    if (out.length > 0) written += writeAll(fd, out.join(''), o.write);
     out = [];
     bytes = 0;
   };
@@ -263,14 +269,12 @@ export const saveState = (path: string, s: SavedState, o: { readonly mintRows?: 
     for (const r of rows) line((emit) => emit(JSON.stringify(r)), true);
     line((emit) => emit(JSON.stringify({ sha256: hash.digest('hex'), lines })), false);
     flush();
-    fsyncSync(fd);
   } catch (e) {
     closeSync(fd);
     rmSync(tmp, { force: true });
     throw e;
   }
-  closeSync(fd);
-  renameSync(tmp, path);
+  commitTemp(fd, tmp, path, written);
 };
 
 /** The sha256 of a file's bytes, read in chunks (the recording copy's binding, WORKER-GROW). */

@@ -2685,3 +2685,12 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   `null` for an omitted element, no omission of a key, a piece not hashed, no batch flush, no `toJSON`.
 - **Not in this card.** Why 41.2k coverage facts are kept is STORE-GROWTH's question; loading still parses the payload
   line whole (the boot side, ruled separately as BOOT-CAP).
+
+## Checked writes (N2-WRITES, #159 review N2, `run/state.ts`, `persist/state.ts`, `run/deployer-store.ts`)
+
+- **2026-10-05 · A short write never replaces a good file.** Re-rated blocking under the owner's golden rule (a cut `deployers.jsonl` could let H14 pass a deployer who rugged). `writeSync`'s count was ignored in `atomicWrite`, the deployer state save and the deployer store rewrite. Now:
+  - `writeAll` loops on short writes and throws on one that makes no progress;
+  - `commitTemp` flushes, checks that the temp file's size on disk equals the bytes written, and only then renames;
+  - on any failure the temp file is removed and the old file stays whole.
+  Tests: `packages/worker/test/n2-writes.test.ts`, with a write that stops, one that reports bytes it did not write (caught only by the size check), and one that writes a byte at a time. The three failure tests fail on the base source; mutants (count ignored, size not checked, temp left) are killed.
+- **2026-10-05 · The streamed save too (base merge with G4b).** WORKER-GROW's streamed `saveState` (version 2) counts the bytes `writeAll` wrote across its batches and renames through `commitTemp`, so its size is checked before the rename like every other atomic write; the deployer store's rewrite keeps G4b's seed-cap refusal after its `commitTemp`.
