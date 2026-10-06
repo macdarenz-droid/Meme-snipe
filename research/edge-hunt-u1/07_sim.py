@@ -93,11 +93,12 @@ def simulate(s, bars1, spans):
         full = None
         if l <= stop: full = ('stop', min(stop, next_open(end, c)))
         if partials >= 1:
+            # the trail level comes from bars before this one (a bar's high may come after its low)
+            if full is None and trail is not None and l <= trail: full = ('trail', min(trail, next_open(end, c)))
+            if full is None and pnl(c) <= 0: full = ('break_even', next_open(end, c))
             peak = max(peak, h)
             a = atr_at(pool, end)
             if a is not None: trail = max(trail or 0, peak - 3 * a)
-            if full is None and trail is not None and l <= trail: full = ('trail', min(trail, next_open(end, c)))
-            if full is None and pnl(c) <= 0: full = ('break_even', next_open(end, c))
         if b:
             neg_run = neg_run + 1 if c < prev_close else 0
             prev_close = c
@@ -124,6 +125,7 @@ def simulate(s, bars1, spans):
             'gross_move': (exit_px or last) / pe - 1, 'reason': reason, 'hold_min': (t_exit - opened) / 60,
             'partials': partials, 'S': S, 'B': s['B'], 'stop_pct': 1 - stop / s['p']}
 
+MISSING = []
 def run(signals, need_only=False):
     trades, need, missing = [], [], 0
     cur = None
@@ -135,9 +137,8 @@ def run(signals, need_only=False):
         if need_only:
             need.append({'pool': s['pool'], 'T': T}); last_day = day; continue
         bars1, spans = m1(s['pool'])
-        if bars1 is None: missing += 1; continue
-        r = simulate(s, bars1, spans)
-        if r is None: missing += 1; continue
+        r = None if bars1 is None else simulate(s, bars1, spans)
+        if r is None: missing += 1; MISSING.append({'pool': s['pool'], 'T': T}); continue
         trades.append(r); last_day = day; last_exit = T + 60 + r['hold_min'] * 60
         if r['reason'] == 'stop': block_until = last_exit + 86400
     return (need if need_only else trades), missing
@@ -186,4 +187,5 @@ if __name__ == '__main__':
                 tr, miss = run(load_signals(a.period, [r], u))
                 res[f'{r}-{u}'] = dict(summary(tr), missing_m1=miss)
                 json.dump(tr, open(os.path.join(DATA, f'trades_{a.period}_{r}_{u}{a.tag}.json'), 'w'))
+        json.dump(MISSING, open(os.path.join(DATA, 'need_missing.json'), 'w'))
         print(json.dumps(res, indent=1))

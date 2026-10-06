@@ -6,7 +6,11 @@
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 import { gt, sleep, DATA, WALL_S } from './lib.mjs';
-const MIN_TX = 30, AUDIT = 0.008; // audit: hash fraction < 0.008 = 10% of the P=0.08 sample
+const MIN_TX = 30, AUDIT = 0.008;
+// BUSY_ONLY (set 2026-10-06 23:30 Melbourne, after the first 408 pools): of 39 pools with any U1 hour, all with tradeable
+// bars were 'busy' (more than one page of signatures, known=false); none of ~250 fetched pools with 30+ known
+// signatures reached U1. From then on only busy pools (plus the audit subset) are fetched; README reports the check.
+const BUSY_ONLY = true; // audit: hash fraction < 0.008 = 10% of the P=0.08 sample
 const frac = (sig) => parseInt(crypto.createHash('sha256').update(sig).digest('hex').slice(0, 8), 16) / 2 ** 32;
 const FOLLOW = process.argv.includes('--follow');
 const BD = DATA + 'bars/'; fs.mkdirSync(BD, { recursive: true });
@@ -50,7 +54,7 @@ while (true) {
   const act = new Map(fs.readFileSync(DATA + 'activity.jsonl', 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse).map(a => [a.pool, a]));
   const ms = fs.readFileSync(DATA + 'migrations.jsonl', 'utf8').trim().split('\n').map(JSON.parse)
     .filter(x => x.pool && x.t + D1 < WALL_S - 3 * 3600 && x.sol > 1 && !seen.has(x.pool) && act.has(x.pool))
-    .filter(x => { const a = act.get(x.pool); return a.err || !a.known || a.n >= MIN_TX || frac(x.sig) < AUDIT; });
+    .filter(x => { const a = act.get(x.pool); return a.err || !a.known || (!BUSY_ONLY && a.n >= MIN_TX) || frac(x.sig) < AUDIT; });
   // Busiest first (activity in days 1-14; unknown = busier than one page), audit subset interleaved at the front.
   const score = (x) => { const a = act.get(x.pool); return frac(x.sig) < AUDIT ? 1e9 : (a.err || !a.known ? 1e6 : a.n); };
   ms.sort((a, b) => score(b) - score(a));

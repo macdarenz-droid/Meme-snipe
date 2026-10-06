@@ -2,7 +2,7 @@
 // [T, T + 130 min]. Entries of one pool within ~14 h share one call. Never a bar ending after the wall.
 import fs from 'node:fs';
 import { gt, DATA, WALL_S } from './lib.mjs';
-const need = JSON.parse(fs.readFileSync(DATA + 'need.json'));
+const need = JSON.parse(fs.readFileSync(DATA + (process.argv[2] || 'need.json')));
 const MD = DATA + 'm1/'; fs.mkdirSync(MD, { recursive: true });
 const byPool = new Map();
 for (const e of need) { if (!byPool.has(e.pool)) byPool.set(e.pool, []); byPool.get(e.pool).push(e.T); }

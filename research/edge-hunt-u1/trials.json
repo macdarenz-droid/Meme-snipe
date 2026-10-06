@@ -10,6 +10,22 @@
   "selection": "Candidate = the primary trial with the highest lower 95% bound (coin-cluster bootstrap) of mean net return per trade on the screen, among trials with n >= 30 and screen mean net > 0. If no trial qualifies: no candidate, and the holdout is not read.",
   "holdoutVerdict": "pass = holdout mean net > 0 and lower 95% bound > 0; unclear = mean > 0 but the bound <= 0; fail = mean <= 0.",
   "control": "S0 (random U1 entry, same exits and costs) in A and B: a control, not a trial.",
-  "primary": ["H1-A", "H2-A", "H3-A", "H6-A", "H1-B", "H2-B", "H3-B", "H6-B"],
-  "variants": []
+  "primary": [
+    "H1-A",
+    "H2-A",
+    "H3-A",
+    "H6-A",
+    "H1-B",
+    "H2-B",
+    "H3-B",
+    "H6-B"
+  ],
+  "variants": [],
+  "outcome": {
+    "written": "2026-10-07T02:35+11:00 (Melbourne)",
+    "screen": "results/screen.json",
+    "candidate": null,
+    "why": "no primary trial had n >= 30 and a positive screen mean (H6-B +0.14% has n = 10)",
+    "holdout": "not read"
+  }
 }
