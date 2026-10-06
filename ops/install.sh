@@ -73,6 +73,7 @@ managed() {
   case "$p" in
     /usr/local/sbin/zeroed-* | /usr/local/lib/zeroed/* | /usr/local/share/zeroed/* | /usr/local/bin/node) return 0 ;;
     /etc/systemd/system/zeroed-* | /etc/zeroed/* | /etc/nftables.conf | /etc/apt/apt.conf.d/* | /etc/ssh/sshd_config.d/*) return 0 ;;
+    /etc/systemd/journald.conf.d/zeroed-*) return 0 ;;
     /var/lib/zeroed-host/* | /opt/zeroed/*) return 0 ;;
   esac
   return 1
@@ -112,6 +113,7 @@ roll_back() {
     b=$((b + 1))
   done < "$JOURNAL"
   systemctl daemon-reload
+  systemctl restart systemd-journald >/dev/null 2>&1 || true
   while read -r kind p en act; do
     [ "$kind" = unit ] && [[ "$p" =~ ^zeroed-[A-Za-z0-9@._-]+$ ]] || continue
     [ "$en" != 1 ] || systemctl enable "$p" >/dev/null 2>&1
@@ -245,6 +247,13 @@ table inet zeroed {
     meta skuid "zeroed-worker" drop
   }
 }
+__ZEROED_FILE__
+install_file /etc/systemd/journald.conf.d/zeroed-journal.conf 0644 <<'__ZEROED_FILE__'
+# HOST-CAPS: the system journal never takes the room the worker's state, ledger and journal need. At most 500 MB,
+# and it leaves at least 2 GB free (systemd's defaults on a 25 GB disk are 2.5 GB and 15%).
+[Journal]
+SystemMaxUse=500M
+SystemKeepFree=2G
 __ZEROED_FILE__
 install_file /etc/systemd/system/zeroed-backup-offsite.service 0644 <<'__ZEROED_FILE__'
 [Unit]
@@ -1431,6 +1440,23 @@ e2e_commit() {
   done
 }
 
+# prunable_releases ROOT CURRENT PREV TAG_COMMIT: release folders under ROOT that may go (HOST-CAPS), one per line.
+# Kept: the current release, the one before it (the roll-back target), the deploy tag's commit, the 3 newest others
+# and anything that is not a 40-hex commit folder (half-written *.new and strays are never listed). No age rule.
+# Fails closed: when CURRENT is not a folder under ROOT, nothing goes.
+# Each release is a full copy of the repository (about 68 MB), and every update adds one.
+prunable_releases() {
+  local root="${1%/}" cur="$2" prev="$3" tag="$4" d i=0
+  [ -n "$cur" ] && [ -d "$cur" ] && [ "$(dirname "$cur")" = "$root" ] || return 0
+  while IFS= read -r d; do
+    [[ "${d##*/}" =~ ^[0-9a-f]{40}$ ]] || continue
+    [ "$d" != "$cur" ] && [ "$d" != "$prev" ] && [ "$d" != "$root/$tag" ] || continue
+    i=$((i + 1))
+    [ "$i" -gt 3 ] || continue
+    printf '%s\n' "$d"
+  done < <(find "$root" -mindepth 1 -maxdepth 1 -type d ! -name '*.new' -printf '%T@ %p\n' 2>/dev/null | LC_ALL=C sort -rn | cut -d' ' -f2-)
+}
+
 # record_alerts NOW: reads the recording uploader's status.json (RECORD-UPLOAD; it runs as the worker's user, so its
 # alerts are raised here) on stdin and prints one "on|KEY|TEXT" or "off|KEY|TEXT" line per alert: 3 failed runs in a
 # row, recordings waiting longer than a day, files kept back from upload, no status for 3 hours. {"enabled":false}
@@ -2107,7 +2133,8 @@ export class Uploader {
   /** What the day's index lists: its archived records (a finished day, see prune) and those still in the state. */
   dayRecords(day) {
     const out = new Map();
-    if (this.state.index[day]?.archived) {
+    // Read whenever the file is there, not only by the flag: a day's archived records are never left out of its index.
+    if (this.state.index[day]?.archived || existsSync(this.archivePath(day))) {
       const a = JSON.parse(readFileSync(this.archivePath(day), 'utf8'));
       for (const [key, r] of Object.entries(a.files)) out.set(key, r);
     }
@@ -2182,7 +2209,9 @@ export class Uploader {
       if (!recs.every(([, r]) => this.finished(r) && this.bootDone(r.boot ?? null, cache))) continue;
       if (st.hash !== this.indexContent(day).hash) continue;
       mkdirSync(join(this.cfg.stateDir, 'days'), { recursive: true });
+      // dayRecords holds the archive's records plus these, so the file only ever grows.
       const all = Object.fromEntries(this.dayRecords(day));
+      if (existsSync(this.archivePath(day)) && Object.keys(JSON.parse(readFileSync(this.archivePath(day), 'utf8')).files).some((k) => !(k in all))) continue;
       writeAtomic(this.archivePath(day), `${JSON.stringify({ v: 1, day, files: all })}\n`);
       for (const [key, r] of recs) {
         const sha = r.sha256;
@@ -2233,7 +2262,8 @@ export class Uploader {
     }
     // The index is a file of its own, never an entry of another index.
     delete this.state.files[key];
-    this.state.index[day] = { n: p.n, hash: p.hash, verified: true, keys: p.keys, pending: null, release: rec.release, asset: rec.asset, asset_id: rec.asset_id, size: rec.size, sha256: rec.sha256 };
+    // An archived day stays archived: its file still holds records this index listed.
+    this.state.index[day] = { n: p.n, hash: p.hash, verified: true, keys: p.keys, pending: null, ...(st.archived ? { archived: true } : {}), release: rec.release, asset: rec.asset, asset_id: rec.asset_id, size: rec.size, sha256: rec.sha256 };
     rmSync(this.indexTmp(day, p.n), { force: true });
     this.save();
     return 'up';
@@ -3479,6 +3509,12 @@ if [ -s "$CRED_DIR/helius_api_key" ]; then
   worker="restarted and up"
   alert_clear worker-switch "CLEARED Zeroed host: the worker of ${commit:0:12} is up."
 fi
+# HOST-CAPS: old releases go once the new one runs; it, the one before it (the roll-back target) and the 3 newest stay.
+# Never during a switch (a rollback exits above); an unreadable current prunes nothing (logic.sh).
+# One name per line, never word-split or globbed (prunable_releases lists only 40-hex release folders).
+while IFS= read -r old; do
+  [ -n "$old" ] && rm -rf -- "$old" && log "Removed the old release $(basename "$old" | cut -c1-12) (HOST-CAPS)."
+done < <(prunable_releases /opt/zeroed/releases "$(readlink -f /opt/zeroed/current 2>/dev/null || true)" "$prev" "$commit")
 log "Deployed ${commit:0:12}. Worker: $worker."
 notify "Zeroed host: deployed ${commit:0:12}. Worker $worker." || true
 __ZEROED_FILE__
@@ -11358,6 +11394,8 @@ printf '%s\n' "${new_units[@]}" > /var/lib/zeroed-host/release-units
 
 say "Services"
 systemctl daemon-reload
+# HOST-CAPS: journald reads its size limits only when it starts.
+[[ " ${CHANGED[*]} " != *" /etc/systemd/journald.conf.d/zeroed-journal.conf "* ]] || systemctl restart systemd-journald
 systemctl enable --now zeroed-signer.service >/dev/null
 systemctl enable zeroed-worker.service >/dev/null
 systemctl enable --now zeroed-pair.timer zeroed-update.timer zeroed-backup.timer zeroed-check.timer >/dev/null

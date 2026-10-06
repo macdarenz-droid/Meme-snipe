@@ -178,7 +178,7 @@ describe('worker API contract', () => {
     const api = httpApi('https://worker.example/', fake);
     expect((await api.trades('paper')).mode).toBe('paper');
     await expect(api.stats('paper')).rejects.toBeInstanceOf(DataError);
-    expect(seen).toEqual([`https://worker.example${PATHS.trades('paper')}`, `https://worker.example${PATHS.stats('paper')}`]);
+    expect(seen).toEqual([`https://worker.example${PATHS.trades('paper')}?money=lamports`, `https://worker.example${PATHS.stats('paper')}?money=lamports`]);
     expect(PATHS.calendar('backtest', '2026-08')).toBe('/api/v1/backtest/calendar/2026-08');
   });
 });

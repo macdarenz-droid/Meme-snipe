@@ -605,8 +605,13 @@ in_c "cat /var/lib/zeroed-host/deployed" | has -x 000000000000000000000000000000
 in_c "rm -rf /opt/zeroed/releases/$signed/packages/runner/systemd && mkdir -p /opt/zeroed/releases/$signed/packages/runner"
 docker cp "$ROOT/ops/install.sh" "$C:/opt/zeroed/releases/$signed/ops/install.sh"
 docker cp "$ROOT/packages/runner/systemd" "$C:/opt/zeroed/releases/$signed/packages/runner/systemd"
+# HOST-CAPS: eight older releases pile up beside the current one; the deploy that follows leaves at most 5 (the current
+# release, the previous one, the deploy tag's commit and the 3 newest others), and the oldest go.
+in_c "for i in 1 2 3 4 5 6 7 8; do h=\$(printf '%040x' \$i); mkdir -p /opt/zeroed/releases/\$h && touch -d \"\$i days ago\" /opt/zeroed/releases/\$h; done"
 upd_run || { in_c "cat /var/lib/zeroed-host/host_update.log"; fail "host apply"; }
 in_c "cat /var/lib/zeroed-host/deployed" | has -x "$signed" || fail "not switched after the host files applied"
+in_c "ls -1d /opt/zeroed/releases/*/ | wc -l" | has -x '[1-5]' || fail "old releases were not pruned (HOST-CAPS: at most 5 stay)"
+in_c "test -d /opt/zeroed/releases/$signed && test -d /opt/zeroed/releases/\$(printf '%040x' 1) && test ! -e /opt/zeroed/releases/\$(printf '%040x' 5) && test ! -e /opt/zeroed/releases/\$(printf '%040x' 8)" || fail "the wrong releases were pruned (HOST-CAPS)"
 tail -n +"$((n0 + 1))" "$STATE/telegram.jsonl" | has 'CLEARED Zeroed host: the host files of' || fail "failed-apply alert not cleared"
 jl zeroed-update | has "Host files from ${signed:0:12} applied." || fail "host apply not logged"
 for u in $(ls "$ROOT/packages/runner/systemd"); do in_c "cmp -s /etc/systemd/system/$u /opt/zeroed/current/packages/runner/systemd/$u" || fail "RUN-1 unit $u not installed"; done

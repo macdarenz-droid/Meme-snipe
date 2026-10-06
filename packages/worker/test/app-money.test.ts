@@ -44,7 +44,7 @@ const servedWith = (patch: Record<string, unknown>) => {
   return {
     status: env('status', views.status(i as never)) as { risk: { kind: string; usedUsd: string; limitUsd: string | null }[]; haltReasons: { code: string }[] },
     stats: env('stats', views.stats(i as never)) as { trades: number; netUsd: string; maxDrawdownUsd: string; meanNetUsd: string | null },
-    charts: env('charts', views.charts(i as never)) as { cumulative: { cumNetUsd: string }[]; daily: { date: string; netUsd: string }[]; costsByKind: { kind: string; amountUsd: string }[]; costsDaily: { totalUsd: string }[] },
+    charts: env('charts', (route('/api/v1/paper/charts', () => i as never).body as { data: unknown }).data) as { cumulative: { cumNetUsd: string }[]; daily: { date: string; netUsd: string }[]; costsByKind: { kind: string; amountUsd: string }[]; costsDaily: { totalUsd: string }[] },
     calendar: views.calendar(i as never, month) as { days: { date: string; netUsd: string; trades: number }[] },
   };
 };

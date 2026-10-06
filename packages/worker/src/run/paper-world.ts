@@ -80,6 +80,8 @@ export interface PaperWorldDeps {
   readonly scenario: FillScenario;
   readonly network: FillNetwork;
   readonly ladderFees: readonly bigint[];
+  /** The rung #sendExit recorded for this signed attempt, across partial owners and blocked retries. */
+  readonly exitRung: (i: IntentState) => number;
   readonly market: (mint: string) => PaperMarket | null;
   readonly maxSolOut: (i: IntentState) => bigint;
   /** TEST-2's dryRunTrade for one leg; null when simulation is off. Never throws (failures are records). */
@@ -272,7 +274,7 @@ export class PaperWorld implements EffectRunner {
     if (i === undefined || attempt === undefined || height === null) return;
     const draw = drawAttempt(createRng(`${this.#d.seed}:${sig}`), this.#d.scenario, i.intent.venue);
     const exit = i.intent.purpose === 'exit';
-    const rung = Math.min(i.attempts.length - 1, this.#d.ladderFees.length - 1);
+    const rung = exit ? this.#d.exitRung(i) : 0;
     const a: PaperAttempt = {
       intentId, signature: sig, purpose: i.intent.purpose, trade: i.intent.positionId, mint: i.intent.mint,
       inAmount: attempt.quote.inAmount, quotedOut: attempt.quote.quotedOut, minOut: attempt.quote.minOut,

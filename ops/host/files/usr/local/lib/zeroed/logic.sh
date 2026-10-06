@@ -172,6 +172,23 @@ e2e_commit() {
   done
 }
 
+# prunable_releases ROOT CURRENT PREV TAG_COMMIT: release folders under ROOT that may go (HOST-CAPS), one per line.
+# Kept: the current release, the one before it (the roll-back target), the deploy tag's commit, the 3 newest others
+# and anything that is not a 40-hex commit folder (half-written *.new and strays are never listed). No age rule.
+# Fails closed: when CURRENT is not a folder under ROOT, nothing goes.
+# Each release is a full copy of the repository (about 68 MB), and every update adds one.
+prunable_releases() {
+  local root="${1%/}" cur="$2" prev="$3" tag="$4" d i=0
+  [ -n "$cur" ] && [ -d "$cur" ] && [ "$(dirname "$cur")" = "$root" ] || return 0
+  while IFS= read -r d; do
+    [[ "${d##*/}" =~ ^[0-9a-f]{40}$ ]] || continue
+    [ "$d" != "$cur" ] && [ "$d" != "$prev" ] && [ "$d" != "$root/$tag" ] || continue
+    i=$((i + 1))
+    [ "$i" -gt 3 ] || continue
+    printf '%s\n' "$d"
+  done < <(find "$root" -mindepth 1 -maxdepth 1 -type d ! -name '*.new' -printf '%T@ %p\n' 2>/dev/null | LC_ALL=C sort -rn | cut -d' ' -f2-)
+}
+
 # record_alerts NOW: reads the recording uploader's status.json (RECORD-UPLOAD; it runs as the worker's user, so its
 # alerts are raised here) on stdin and prints one "on|KEY|TEXT" or "off|KEY|TEXT" line per alert: 3 failed runs in a
 # row, recordings waiting longer than a day, files kept back from upload, no status for 3 hours. {"enabled":false}
