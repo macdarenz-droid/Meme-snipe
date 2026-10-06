@@ -138,6 +138,7 @@ const extendsOf = async (want: number, maxPages: number) => {
   }
   console.log(`${pools.size} pools`);
   const lamportsOf = (tx: any, pool: string): { pre: number; post: number } | null => {
+    if (!tx?.meta) return null;
     const msgKeys: string[] = tx.transaction?.message?.accountKeys?.map((k: any) => (typeof k === 'string' ? k : k.pubkey)) ?? [];
     const keys = [...msgKeys, ...(tx.meta?.loadedAddresses?.writable ?? []), ...(tx.meta?.loadedAddresses?.readonly ?? [])];
     const i = keys.indexOf(pool);
