@@ -68,6 +68,11 @@ export const DOWNTIME_CREDIT_CAP = 3_000;
 /** RESTART-KEEP: transactions read before a migration to find its curve's completion. */
 const COMPLETION_READS = 5;
 export const PERSIST_EVERY_MS = 5 * 60_000;
+/** SAVE-ASOF: a save whose largest clamp (`AsOfClamp`) is over this is logged: a skew of seconds is normal, more is a bug. */
+export const CLAMP_LOG_MS = 10_000;
+/** SAVE-ASOF: the log line for a save whose largest clamp is over CLAMP_LOG_MS, else null. */
+export const clampNote = (clamp: { readonly count: number; readonly maxMs: number }): string | null =>
+  clamp.maxMs > CLAMP_LOG_MS ? `Saved state: ${clamp.count} times dated after the save's moment were saved as at it, the latest ${(clamp.maxMs / 1000).toFixed(1)} s after.` : null;
 /** STATE-DEDUPE: the recorder folder holding each distinct saved state once, packed, named by the sha256 of its plain bytes. */
 export const SAVED_STATES = 'saved-state';
 import { type Control, NO_CONTROL, type Restart, StateFile, controlFile, exitsFile, seedsFile, exposedFile, NO_EXPOSED, exitKind, restartsAfterBoot, restartsFile } from './state.ts';
@@ -1419,6 +1424,9 @@ export class Worker {
       // RESTART-KEEP: each candidate with the transactions a restart reads again for its gate facts.
       const candidates = state.state.candidates.map((c) => ({ ...c, signatures: { create: this.#createSig.get(c.mint) ?? null, complete: this.#completeSig.get(c.mint) ?? null, migration: this.#migrationSig.get(c.mint) ?? null } }));
       saveState(join(this.#d.config.stateDir, PERSIST_FILE), { ...state.state, candidates }, { mintRows: state.mintRows });
+      // SAVE-ASOF: times after the save's moment are saved as at it; a skew of seconds is normal, more is a bug to see.
+      const note = clampNote(state.clamp);
+      if (note !== null) this.#d.log(note);
       return true;
     } catch (e) {
       this.#d.log(`Saved state not written: ${e instanceof Error ? e.message : 'error'}.`);

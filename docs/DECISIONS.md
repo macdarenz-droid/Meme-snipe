@@ -2660,6 +2660,99 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - Hand mutants killed: three wrong backward-shift conditions; the low half ignored.
 
 
+## A save is never refused or discarded for an in-order run of events (SAVE-ASOF, WORKER-HARDEN)
+- **Why.** Moments order by slot first, and receipt times need not follow it: a frame of an earlier slot can arrive after
+  a later slot's (two providers, fetched transactions), and both are released in slot order after the confirmation hold.
+  The save's moment is the last event's, so its receipt time can be earlier than an event handled before it.
+  - A candidate evaluated on that earlier-handled event carried `lastEvalMs` after the moment, and state.ts refused the
+    whole save (`candidate … is dated after the snapshot moment`), at every turn until a later event came. The 24-h
+    harness run logged it at 16 of its last 17 saves.
+  - The deployer index's `first` and `last` moments could carry a receipt time after the moment the same way; the save
+    was written, and restore refused it (`the snapshot claims a moment after its as-of moment`): the restart discarded
+    the saved state.
+- **What.** The save keeps the moment as it is (the last event's, as FEES-KEEP pins) and saves each such time as at the
+  moment, never after: `lastEvalMs` is `min(lastEvalMs, asOf.receivedAt)`; the index snapshot's `first` and `last` keep
+  their slot, transaction and instruction and take `asOf.receivedAt` when theirs is later. This was chosen over moving the
+  moment's receipt time to the latest seen: that would change what every other check of the save means (and the pinned
+  FEES-KEEP behaviour), while this keeps every restore check exact and unchanged.
+  - Effect on a restored candidate: it is evaluated again up to one receipt skew (seconds) earlier than without the
+    clamp; an evaluation only recomputes the gates.
+  - Effect on the index: its coverage start can read up to one receipt skew earlier by receipt time, never by slot; this
+    happens only when the index's first event lands within seconds of a save.
+- **Evidence (fail before, pass after).** `save-asof.test.ts`:
+  - a candidate evaluated on an event received after the save's moment is saved as at it; the save is written and
+    restores (before: refused);
+  - with no candidate, the index's first and last moments received after the moment still restore (before: refused at
+    restore);
+  - an evaluation at or before the moment is saved as it was;
+  - a candidate truly after the moment is still refused by the save's own check, and on restore.
+  - Hand mutants killed: no clamp on `lastEvalMs`, on `last`, on `first`; a clamp applied always.
+  - `worker-flow.test.ts`, the H14 restart drill: on the base its restart **discarded** the saved state (`the snapshot
+    claims a moment after its as-of moment`, then a fresh start), and it passed on that fallback (`close.fromSlot`
+    null). Now the restart restores the state, asserted, and the fill closes the restart gap the restore opened at the
+    saved moment (`close.fromSlot` = the saved moment's slot, persist/state.ts); the rest of the drill is unchanged.
+- **Persist review (supervisor, 2026-10-06): every time a restore compares, saved as at the moment** (`AsOfClamp`, core
+  `gates/as-of-clamp.ts`). Two kinds of time can be after the moment without anything being wrong: a receipt time (the
+  slot-order case above) and a chain block time, which is routinely seconds off local receipt. Each one restore
+  compares with the moment is saved as at it; slot, transaction and instruction are kept, and nothing is dropped:
+  - the index's `first`/`last` moments;
+  - the index's mint rows (a create's block time) and the rug labeller's launches' `createdAtMs` (same);
+  - saved coverage facts' receipt times: an off-chain fact and a later chain frame need not arrive in moment order, and
+    the downtime fill's facts carry fetch times, so "never later" cannot be shown from the code; clamped instead;
+  - a candidate's `migratedAtMs` (the migration's block time): before, a candidate migrated "after" the moment by it was
+    left out of the save, and lost at a restart; every candidate comes from a released event, so none is left out now.
+  - Labels are not clamped (facts review B1): H14 and the soft features count a prior rug or an unjudged mint while
+    `knownAtMs` (its receipt time) is inside the look-back, so a clamp could drop one from the look-back early, a
+    known rugger missed. A label keeps its exact receipt time, and restore checks it by moment (`compareMoments`, slot
+    first, the engine's own order): one after the save's moment (a later slot, or its slot at a later transaction or
+    instruction) is refused as before, and so is one received more than `CHAIN_SKEW_MS` after the moment, which
+    cannot be skew (persist review: the receipt check stays bounded). The save refuses the same label (facts review
+    B1): `snapshot` throws, the worker logs "Saved state not written: …" and keeps the last good file, instead of
+    writing a file restore would discard. A dropped label would fail open too, so none is dropped.
+  - Capped (facts review B2): a time more than `CHAIN_SKEW_MS` (60 s) after the moment cannot be skew, and refuses
+    the save with its reason ("a saved time is N ms after the save's moment, more than the 60000 ms of clock skew
+    allowed"), logged as "Saved state not written: …", the last file kept: the fail-closed behaviour from before
+    SAVE-ASOF, kept for the extreme case.
+  - Not clamped: price bars (minute starts; clamping would break the alignment) and fee terms stay filtered as before
+    (FEES-KEEP); a bar is left out only when a block time crossed a minute boundary ahead of local receipt.
+  - Effect: H14 can see a create, and the labeller a launch, up to one skew (seconds) earlier after a restart than
+    without it; a restored candidate's window starts up to one skew earlier.
+  - Accepted fail-open edges (supervisor ruling). Each is at most one clamp (at most 60 s, capped; over 10 s it is
+    logged, the tripwire) and needs a window edge to fall inside those same seconds; refusing the save instead discards the whole
+    state and reads not covered for a look-back, which fails far wider:
+    - H14 serial count (`hard.ts`, `createdAtMs > now - DAY_MS`): a clamped create leaves the 24 h window up to one skew
+      early, so the count can read one lower for those seconds.
+    - Labeller age (`rug-labeller.ts`, `age = at - createdAtMs`): a clamped launch reads older, so a rule that applies
+      within N ms of a launch can stop applying up to one skew early.
+    - Coverage (`createsCoverage`: `firstStart` and `lastLossy.at` by receipt time): a clamped start reads covered up to
+      one skew earlier, and a clamped lossy gap can fall just before a window start it was really inside. Receipt time
+      only: slot is never moved. The same for the index's own start (`DeployerIndex.factFor` `own`, from
+      `first.receivedAt`): a clamped `first` reads the index as watching up to one skew earlier.
+  - Not checked (facts review N2): the index's lost-create rows (`lost`, `atMs` when a log read may have lost a
+    create) have no as-of check on restore; they only name signatures to fetch again, and decide nothing.
+  - Visibility: each clamp is counted with the largest; the worker logs a save whose largest clamp is over 10 s
+    (`CLAMP_LOG_MS`; "Saved state: N times dated after the save's moment were saved as at it, the latest X s after."),
+    so a real future-dated bug stays visible.
+  - Evidence: `save-asof.test.ts`: labels received after the moment restore with their exact receipt time and the
+    look-back edge reads as before the restart; a label later in the moment's order (slot, transaction, instruction)
+    or received over 60 s after it is refused, just under 60 s restores exactly (before: every late label refused);
+    the first moment and a mint row 5 s late restore with slot, transaction and instruction kept; a create, launch and
+    coverage fact after the moment restore; a candidate migrated 5 s after the moment is saved (before: left out); a
+    clamp just under 60 s is saved, just over refuses the save, also through the worker (reason logged, file kept); the
+    log line at 9 s, 10 s and 11 s. Hand mutants killed: labels checked by receipt time, labels unchecked, labels
+    clamped, no cap, the cap at `>=`, the log at `>=`, the clamp moving a transaction index, mint rows unclamped,
+    labeller unclamped, coverage unclamped, the candidate filter back, clamps not counted, `first` unclamped.
+  - The seed and the downtime fill (`DeployerIndex.#checked`, supervisor ruling): a create whose block time was after the
+    process start's receipt time refused the whole seed, so H14 read not covered for a full look-back after a restart
+    near a create. A block time up to `CHAIN_SKEW_MS` (60 s, config/platform.ts) after the start is now taken as at the
+    start; further is still refused (the SEED-1 leak guard's hour-ahead case is unchanged), and a create released after
+    the start is refused by its moment whatever its block time. A seeded or filled create taken as at the start is up to 60 s early, so it
+    leaves the 24 h serial window up to 60 s early: the same accepted edge as the save's clamp, bounded at 60 s instead
+    of logged. Bounded here, unlike the save's clamp: a seed has no
+    save log to show a large one, and an hour-ahead block time cannot be skew. Test: `deployer-index.test.ts` "SAVE-ASOF:
+    a create whose block time is seconds after the process start"; mutants killed: no bound, no clamp, `>=` at the
+    bound, no refusal.
+
 ## Falling behind the feeds (BEHIND, `run/behind.ts`)
 
 - **2026-10-06 · Why.** A worker that falls behind its feeds holds every unreleased frame in memory, and the hold grows until the heap runs out.

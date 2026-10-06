@@ -5,7 +5,7 @@ import {
   DAY_MS, DeployerIndex, HOUR_MS, createKey, rugCheckKey, type RugCheckFact, createsCoverage, deployerKey, evaluateHardRejects, evaluateSoftFeatures, type GateContext, type GateReason, type HardGate,
 } from '../../src/gates/index.ts';
 import { CONFIG } from '../fixtures.ts';
-import { RUG_CHECK_CONFIG } from '../../src/config/index.ts';
+import { CHAIN_SKEW_MS, RUG_CHECK_CONFIG } from '../../src/config/index.ts';
 import { CREATED_AT, DEV, MINT, NOW, SLOT, T, W, deps, drop, passingFacts, request, session, type Facts } from './world.ts';
 
 const at = (receivedAt: number, slot: bigint, ix = OFF_CHAIN): Moment => ({ slot, txIndex: ix, ixIndex: ix, receivedAt });
@@ -547,6 +547,20 @@ describe('SEED-1: seeding the index at start-up', () => {
     expect(() => idx.seed([late], [seedStart()], ASOF)).toThrow(/chain time after/);
     expect(idx.factFor(DEV, NOW, 0)).toMatchObject({ mints: [], coverageFromMs: Number.MAX_SAFE_INTEGER });
     expect(idx.last).toBeNull();
+  });
+
+  it('SAVE-ASOF: a create whose block time is seconds after the process start (clock skew) is seeded and filled as at the start; one released after it is still refused', () => {
+    // Released before ASOF in moment order, its block time 5 s after ASOF's receipt time.
+    const skewed = (mint: string, slot: bigint) => marketOf(`pump:CreateEvent:${mint}`, createEvent(mint, DEV, ASOF.receivedAt + 5_000, slot), at(ASOF.receivedAt - 2_000, slot, 7), `ev:${mint}:00000:00000`);
+    const idx = new DeployerIndex();
+    expect(idx.seed([skewed('K1', ASOF.slot - 2n)], [seedStart()], ASOF)).toMatchObject({ creates: 1 });
+    expect(idx.fill([skewed('K2', ASOF.slot - 1n)], ASOF)).toEqual({ creates: 1 });
+    expect(idx.factFor(DEV, ASOF, 0).mints).toEqual([{ mint: 'K1', createdAtMs: ASOF.receivedAt }, { mint: 'K2', createdAtMs: ASOF.receivedAt }]);
+    // At the skew bound it is taken; past it, refused (the leak guard above: an hour ahead).
+    expect(new DeployerIndex().seed([marketOf('pump:CreateEvent:B', createEvent('B', DEV, ASOF.receivedAt + CHAIN_SKEW_MS, ASOF.slot - 2n), at(ASOF.receivedAt - 2_000, ASOF.slot - 2n, 7), 'ev:B:00000:00000')], [seedStart()], ASOF)).toMatchObject({ creates: 1 });
+    expect(() => new DeployerIndex().seed([marketOf('pump:CreateEvent:B', createEvent('B', DEV, ASOF.receivedAt + CHAIN_SKEW_MS + 1_000, ASOF.slot - 2n), at(ASOF.receivedAt - 2_000, ASOF.slot - 2n, 7), 'ev:B:00000:00000')], [seedStart()], ASOF)).toThrow(/chain time after/);
+    // Released after the start (by slot), it is refused whatever its block time.
+    expect(() => new DeployerIndex().seed([marketOf('pump:CreateEvent:F', createEvent('F', DEV, ASOF.receivedAt - 60_000, ASOF.slot + 1n), at(ASOF.receivedAt - 3_000, ASOF.slot + 1n, 7), 'ev:F:00000:00000')], [seedStart()], ASOF)).toThrow(/dated after the process start/);
   });
 
   it('downtime fill: creates backfilled after a restart enter an index that already has live events; the start is kept', () => {
