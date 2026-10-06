@@ -323,7 +323,7 @@ export class LiveProviders {
     const fill = budget === undefined ? undefined : tradesFill({ feed, rpc: hRpc, timers, budget, pools: ctx.pools, ...(ctx.journal === undefined ? {} : { journal: ctx.journal }) });
     const pools = new PoolWatch({ stream: helius, timers, pools: ctx.pools, everyMs: 2_000, ...(fill === undefined ? {} : { fill }) });
     const pumpportal = new PumpPortalSource({ factory: o.factory, timers, feed, fetcher, migrationFetch: P3 });
-    const sol = new CoinbaseSolPrice({ factory: o.factory, timers, feed, key: SOL_PRICE_KEY });
+    const sol = new CoinbaseSolPrice({ factory: o.factory, timers, feed, key: SOL_PRICE_KEY, onAlive: (at) => ctx.alive?.('coinbase', at) });
     return [
       {
         name: 'helius-ws', critical: true, sources: ['helius'],
