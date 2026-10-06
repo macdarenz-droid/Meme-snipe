@@ -48,6 +48,7 @@ The previous S1 account reached its usage limit about 12:45 PM. The owner made t
 - No host access, no secrets access (owner only), as before.
 
 **Log (Melbourne time, newest first)**
+- 5:03 AM hourly. 3ee09a5a up 3,632 s, unplanned 0 (no crash since 1:06 PM: about 15 h 55 min). Day: seen 479, refused 313, entered 0. Helius 73,285 this boot (about 73k an hour; the #260 fetches add some). **Stage-1-missing keeps growing:** curve/H7 96→124, migration/H10 96→124, candles/H11 93→121, create 85→113 in 30 min, so it is not only restart seeding. Read-only diagnosis (no fix until #262 closes, by the owner's one-fix rule) handed to the H16-WHY builder session_01WfhsYJ7BbBsRjr72zuL1US, which knows this code: which mechanism drops the stage-1 facts inside the window, the in-window share, and the smallest fail-closed fix with its memory cost.
 - 5:00 AM **#262 worker/facts FAIL** at f209a0b3 (comment 6022268044).
   - B1: the daily cut-trade cap lives in memory and resets on restart (crash-loop credit burn).
   - B2: the h.other guard (producer.ts:847) and the !mc.clean guard (:893) have no tests; both mutants survive.
