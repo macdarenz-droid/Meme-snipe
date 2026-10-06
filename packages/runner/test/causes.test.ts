@@ -9,7 +9,7 @@ import { checkJournal } from '../src/journal.ts';
 import { item4 } from '../src/item4.ts';
 import { DEFAULT_CAUSES, makePlan } from '../src/plan.ts';
 import { buildReport, recoveryByCause, type DrillOutcome, type RunMeta, type Sample } from '../src/report.ts';
-import { exitShed, offsiteNote, recoveredState } from '../src/runner.ts';
+import { UNEXERCISED_RETRIES, exitShed, killDue, offsiteNote, recoveredState, unexercisedRetry } from '../src/runner.ts';
 import { fullDrills, OPS_OK } from './fixtures.ts';
 
 const rec = (boot: string, extra: Record<string, unknown>): JournalLine => ({ seq: 1, ts: '2026-10-04T00:00:00.000Z', boot, kind: 'recovered', ...extra }) as JournalLine;
@@ -158,5 +158,42 @@ describe('helpers', () => {
     expect(calls.at(-1)).toBe('systemctl stop zeroed-worker-tabletop.service');
     expect(readdirSync(dir)).toEqual([]);
     await expect(c.wipe()).rejects.toThrow(/never run on the qualifying host/);
+  });
+});
+
+describe('a restart that kills with nothing to keep is tried again (drills_by_cause root cause)', () => {
+  const done = (o: Partial<DrillOutcome>): DrillOutcome => ({ id: 'restart-1', kind: 'restart', cause: 'reboot', plannedAt: 0, at: 0, pass: true, keep: 1, recoveredMs: 1, notes: [], ...o }) as DrillOutcome;
+  const base = { id: 'restart-2', cause: 'reboot', pass: true, keep: 0, offRun: false, retryPending: false, outcomes: [] as DrillOutcome[] };
+
+  it('retries a passed drill with nothing to keep, up to three times, then reports the tries spent', () => {
+    expect(unexercisedRetry(base)).toBe('retry');
+    expect(unexercisedRetry({ ...base, id: 'restart-2-retry-2' })).toBe('retry');
+    expect(unexercisedRetry({ ...base, id: 'restart-2-retry-3' })).toBe('used');
+    expect(UNEXERCISED_RETRIES).toBe(3);
+  });
+
+  it('never retries a failed drill, one that kept something, a tabletop, or a cause already exercised; one retry waits at a time', () => {
+    expect(unexercisedRetry({ ...base, pass: false })).toBeNull();
+    expect(unexercisedRetry({ ...base, keep: 1 })).toBeNull();
+    expect(unexercisedRetry({ ...base, offRun: true })).toBeNull();
+    expect(unexercisedRetry({ ...base, retryPending: true })).toBeNull();
+    expect(unexercisedRetry({ ...base, outcomes: [done({})] })).toBeNull();
+    // Another cause exercised, or this cause only with nothing kept, a failure or a skip: still retried.
+    expect(unexercisedRetry({ ...base, outcomes: [done({ cause: 'crash' }), done({ keep: 0 }), done({ pass: false }), done({ skipped: true })] })).toBe('retry');
+  });
+});
+
+describe('when a restart drill kills (killDue)', () => {
+  const k = { inTrade: true, fresh: false, sawFlat: false, waitedMs: 100, windowMs: 2000 };
+  it('a first try kills on the first trade it sees open, or at the window end', () => {
+    expect(killDue(k)).toBe(true);
+    expect(killDue({ ...k, inTrade: false })).toBe(false);
+    expect(killDue({ ...k, inTrade: false, waitedMs: 2000 })).toBe(true);
+  });
+  it('a fresh try waits for a trade opened after it saw the worker flat; the window end still kills', () => {
+    expect(killDue({ ...k, fresh: true })).toBe(false);
+    expect(killDue({ ...k, fresh: true, sawFlat: true })).toBe(true);
+    expect(killDue({ ...k, fresh: true, inTrade: false, sawFlat: true })).toBe(false);
+    expect(killDue({ ...k, fresh: true, waitedMs: 2000 })).toBe(true);
   });
 });

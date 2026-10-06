@@ -215,32 +215,39 @@ export const buildReport = (
   /** The registered strategies (contract.ts REGISTERED_STRATEGIES); tests pass their own. */
   registered?: readonly string[],
 ): Report => {
-  const guard = meta.name === undefined ? null : entryRule(journal.starts, meta.strategy ?? 'none', registered);
+  const windowSamples = samples.filter((s) => s.t >= meta.startedAt && s.t < endedAt);
+  const windowBoots = new Set(windowSamples.flatMap((s) => s.boot ?? []));
+  const startGuard = meta.name === undefined ? null : entryRule(journal.starts, meta.strategy ?? 'none', registered);
+  const guard = startGuard === null || journal.starts.some((s) => windowBoots.has(s.boot)) ? startGuard
+    : { ...startGuard, ok: false, problems: [...startGuard.problems, 'no qualifying start observed within the run window'] };
   const up = uptime(samples, sampleMs, meta.startedAt, endedAt);
   const rss = samples.flatMap((s) => (s.rss_bytes === null ? [] : [s.rss_bytes / MB])).sort((a, b) => a - b);
   const commits = [...new Set(samples.flatMap((s) => (s.git_sha === null ? [] : [s.git_sha])))];
-  const firstUp = samples.find((s) => s.up);
+  const firstUp = windowSamples.find((s) => s.up);
   const upSamples = samples.filter((s) => s.up);
   const stub = upSamples.some((s) => s.stub);
   // The accept's "kill mid-trade at least 3 times" counts process crashes; the other causes are counted per cause.
-  const restartsMidTrade = drills.filter((d) => d.kind === 'restart' && (d.cause ?? 'crash') === 'crash' && d.pass && d.midTrade === true).length;
+  // An in-window kill may recover later. A drill begun after the cutoff earns no positive qualification credit;
+  // every failure remains in the checks and the full drill/exposure evidence below.
+  const scoredDrills = drills.filter((d) => !d.pass || (d.at >= meta.startedAt && d.at < endedAt));
+  const restartsMidTrade = scoredDrills.filter((d) => d.kind === 'restart' && (d.cause ?? 'crash') === 'crash' && d.pass && d.midTrade === true).length;
   const restarts = drills.filter((d) => d.kind === 'restart');
-  const byCause = recoveryByCause(meta, drills);
+  const byCause = recoveryByCause(meta, scoredDrills);
   const feedsPlanned = meta.plan.flatMap((d) => (d.kind === 'feed' ? [d.feed] : []));
-  const feedsPassed = [...new Set(drills.flatMap((d) => (d.kind === 'feed' && d.pass && d.feed !== undefined ? [d.feed] : [])))].sort();
+  const feedsPassed = [...new Set(scoredDrills.flatMap((d) => (d.kind === 'feed' && d.pass && d.feed !== undefined ? [d.feed] : [])))].sort();
   const durationMs = endedAt - meta.startedAt;
   const maxMb = rss.length ? rss[rss.length - 1]! : null;
   const checks: Record<string, boolean> = {
     duration: durationMs >= meta.targetMs,
     uptime: up >= 0.99,
-    memory: maxMb !== null && maxMb < MEMORY_LIMIT_MB * 0.875,
+    memory: windowSamples.some((s) => s.rss_bytes !== null) && maxMb !== null && maxMb < MEMORY_LIMIT_MB * 0.875,
     recorder_and_simulation_from_start: firstUp !== undefined && upSamples.every((s) => s.recorder && s.simulation),
     journal_complete: journal.complete,
     restart_drills: restartsMidTrade >= 3,
     feed_drills: feedsPlanned.length > 0 && feedsPlanned.every((f) => feedsPassed.includes(f)),
     every_drill_passed: drills.every((d) => d.pass),
-    one_commit: commits.length === 1 && commits[0] === meta.commit,
-    feeds_fixed: upSamples.every((s) => s.feeds === feedsPlanned.slice().sort().join(',')),
+    one_commit: windowSamples.some((s) => s.git_sha === meta.commit) && commits.length === 1 && commits[0] === meta.commit,
+    feeds_fixed: firstUp !== undefined && upSamples.every((s) => s.feeds === feedsPlanned.slice().sort().join(',')),
     real_worker: !stub,
     // RUN-1c: the free plans must last the month, and exits and position monitoring (P0, P1) are never shed.
     quota_reported: ops.quota.reported,

@@ -8,6 +8,7 @@ import { STUB_ENTRY, type Health, type JournalLine } from '../src/contract.ts';
 import { LocalControl } from '../src/control.ts';
 import type { DrillOutcome } from '../src/report.ts';
 import { closedSince, heldAtKill, httpHealth, openedSince, runSegment } from '../src/runner.ts';
+import { journalLines, tradePhases } from './trade-phases.ts';
 
 const root = join(import.meta.dirname, '..', '..', '..');
 const freePort = (): Promise<number> =>
@@ -75,35 +76,71 @@ describe('a trade that closed between the reply and the kill', () => {
     expect(heldAtKill({ pending_exits: ['t'], positions: [] }, 0)).toBe(true);
   });
 
-  it('is not a mid-trade kill and exposes nothing (the reply still showed it open)', async () => {
+  const closedScenario = async (secondTrade: boolean) => {
     const dir = mkdtempSync(join(tmpdir(), 'ci1-closed-'));
     const addr = `127.0.0.1:${await freePort()}`;
     const stateDir = join(dir, 'state');
     const evidenceDir = join(dir, 'ev');
-    // The first reply with an open position is handed back unchanged for 2 s: by the kill the stub (1 s cycle) has
-    // closed that trade, as a reply delayed by a loaded runner would hide.
+    const phases = tradePhases(dir, 'hold');
+    const segmentEnd = Date.now() + 8000;
+    // Start the scenario when the registered first drill is due, then observe the actual entry and closing exit.
+    // The old reply lasts the original 2 s; each requested entry/exit is observed before returning it.
     let frozen: { h: Health; until: number } | null = null;
     const fetchHealth = async (a: string): Promise<Health | null> => {
       const h = await httpHealth(a);
       if (frozen && h?.boot === frozen.h.boot && Date.now() < frozen.until) return frozen.h;
-      if (frozen === null && h?.open_position) frozen = { h, until: Date.now() + 2000 };
+      if (frozen === null && h?.reconciled && existsSync(join(evidenceDir, 'run.json'))) {
+        const meta = JSON.parse(readFileSync(join(evidenceDir, 'run.json'), 'utf8')) as { startedAt: number; plan: { id: string; atMs: number }[] };
+        if (Date.now() >= meta.startedAt + meta.plan.find((d) => d.id === 'restart-1')!.atMs) {
+          phases.set('entry');
+          const open = await phases.wait(a, Math.min(segmentEnd, Date.now() + 6000), (reply) => reply.boot === h.boot && reply.open_position !== null);
+          frozen = { h: open, until: Date.now() + 2000 };
+          phases.set('exit');
+          await phases.wait(a, Math.min(segmentEnd, Date.now() + 6000), (reply) => reply.boot === open.boot && reply.open_position === null && reply.pending_exits.length === 0);
+          if (secondTrade) {
+            phases.set('entry');
+            await phases.wait(a, Math.min(segmentEnd, Date.now() + 6000), (reply) => reply.boot === open.boot && reply.open_position !== null && reply.open_position.trade !== open.open_position!.trade);
+            phases.set('hold');
+          }
+          return open;
+        }
+      }
       return h;
     };
     const control = new LocalControl({
       entry: STUB_ENTRY, cwd: root, logPath: join(evidenceDir, 'w.log'), stateDir, restartDelayMs: 200,
-      env: { PATH: process.env['PATH'] ?? '', ZEROED_STATE_DIR: stateDir, ZEROED_MODE: 'paper', ZEROED_RECORDER: 'on', ZEROED_SIMULATE: 'on', ZEROED_DRILLS: 'on', ZEROED_HEALTH_ADDR: addr, ZEROED_GIT_SHA: 'c0ffee', ZEROED_STUB_TICK_MS: '50', ZEROED_STUB_CYCLE_MS: '1000', ZEROED_STUB_EXIT_DELAY_MS: '300' },
+      env: { PATH: process.env['PATH'] ?? '', ZEROED_STATE_DIR: stateDir, ZEROED_MODE: 'paper', ZEROED_RECORDER: 'on', ZEROED_SIMULATE: 'on', ZEROED_DRILLS: 'on', ZEROED_HEALTH_ADDR: addr, ZEROED_GIT_SHA: 'c0ffee', ZEROED_STUB_TICK_MS: '50', ZEROED_STUB_CYCLE_MS: '1000', ZEROED_STUB_EXIT_DELAY_MS: '300', ZEROED_STUB_TRADE_PHASE_FILE: phases.file },
     });
     await runSegment({
       identity: { label: 'rehearsal', commit: 'c0ffee' }, healthAddr: addr, stateDir, evidenceDir, keepRecorded: 'copy', sampleMs: 100, recoverMs: 6000,
-      log: () => {}, control, segmentEnd: Date.now() + 8000, hostDrills: 'wipe', fetchHealth, handover: false,
+      log: () => {}, control, segmentEnd, hostDrills: 'wipe', fetchHealth, handover: false,
       // The first crash falls due at once and waits for the frozen "in trade" reply.
       newRun: { runId: 'run', targetMs: 60_000, entry: STUB_ENTRY, restarts: 3, causes: ['crash', 'crash', 'crash'], restartWindowMs: 20_000, rpcDrops: 0 },
     });
     const drills = JSON.parse(readFileSync(join(evidenceDir, 'drills.json'), 'utf8')) as DrillOutcome[];
     const d = drills.find((x) => x.id === 'restart-1')!;
+    return { d, stateDir };
+  };
+
+  it('is not a mid-trade kill and exposes nothing (the reply still showed it open)', async () => {
+    const { d, stateDir } = await closedScenario(false);
     expect(d.notes.join(' ')).toMatch(/closed between the last reply and the kill \(journal\)/);
     expect(d).toMatchObject({ pass: true, midTrade: false, keep: 0 });
     expect(d.exposure).toBeUndefined();
+    const beforeKill = journalLines(stateDir).filter((line) => Date.parse(line.ts) <= d.at && line.kind === 'entry');
+    expect(beforeKill).toHaveLength(1);
+    expect(journalLines(stateDir).some((line) => line.kind === 'exit' && line.trade === beforeKill[0]!.trade && line.position === 'closed' && Date.parse(line.ts) <= d.at)).toBe(true);
+  }, 40_000);
+
+  it('a second trade opened after that stale reply must be kept and exposed even though the first closed', async () => {
+    const { d, stateDir } = await closedScenario(true);
+    expect(d.notes.join(' ')).toMatch(/closed between the last reply and the kill \(journal\)/);
+    expect(d.notes.join(' ')).toMatch(/opened between the last reply and the kill \(journal\)/);
+    expect(d).toMatchObject({ pass: true, midTrade: true, keep: 1 });
+    expect(d.state).toMatchObject({ state_ok: true, universe_ok: true, missing: [] });
+    const entries = journalLines(stateDir).filter((line) => line.kind === 'entry' && Date.parse(line.ts) <= d.at);
+    expect(entries).toHaveLength(2);
+    expect(d.exposure?.trades).toEqual([entries[1]!.trade]);
   }, 40_000);
 });
 
@@ -120,22 +157,29 @@ describe('a trade opened between the reply and the kill (the mirror case)', () =
     expect(openedSince([line(5, 'entry', 't1')], 'b', 4)).toEqual([{ trade: 't1', universe: 'unknown' }]);
   });
 
-  it.each([
-    ['showed none', false],
-    ['showed it as an entry in flight (counted once, not twice)', true],
-  ])('is a trade the restart must keep, and the drill checks it (the reply %s)', async (_, inFlight) => {
+  const openedScenario = async (inFlight: boolean, land: boolean): Promise<{ d: DrillOutcome; stateDir: string; landed: boolean; frozen: { h: Health; until: number } | null }> => {
     const dir = mkdtempSync(join(tmpdir(), 'ci1-opened-'));
     const addr = `127.0.0.1:${await freePort()}`;
     const stateDir = join(dir, 'state');
     const evidenceDir = join(dir, 'ev');
-    // The first reconciled reply (flat: the stub opens its first trade one 6 s cycle after start) is handed back
-    // unchanged for 8 s, so the kill at about 6.5 s comes after an entry the runner never saw.
+    const phases = tradePhases(dir, 'hold');
+    const segmentEnd = Date.now() + 12_000;
+    // Preserve the original 8/10 s stale-reply windows, but land a real entry after that flat reply.
     let frozen: { h: Health; until: number } | null = null;
+    let landed = false;
     const fetchHealth = async (a: string): Promise<Health | null> => {
       const h = await httpHealth(a);
-      if (frozen && h?.boot === frozen.h.boot && Date.now() < frozen.until) return frozen.h;
+      if (frozen && h?.boot === frozen.h.boot && Date.now() < frozen.until) {
+        if (land && !landed && existsSync(join(evidenceDir, 'run.json'))) {
+          phases.set('entry');
+          const entered = await phases.wait(a, Math.min(segmentEnd, Date.now() + 6000), (reply) => reply.boot === frozen!.h.boot && reply.open_position?.trade === `${reply.boot}-t1`);
+          phases.set('hold');
+          expect(entered.journal_seq).toBeGreaterThan(frozen.h.journal_seq);
+          landed = true;
+        }
+        return frozen.h;
+      }
       if (frozen === null && h?.reconciled && !h.open_position) {
-        // The stub's first trade is `<boot>-t1`: shown in flight, it lands before the kill.
         const shown: Health = inFlight ? { ...h, unresolved_intents: { ...h.unresolved_intents, count: 1, trades: [`${h.boot}-t1`] } } : h;
         frozen = { h: shown, until: Date.now() + (inFlight ? 10_000 : 8000) };
         return shown;
@@ -144,21 +188,45 @@ describe('a trade opened between the reply and the kill (the mirror case)', () =
     };
     const control = new LocalControl({
       entry: STUB_ENTRY, cwd: root, logPath: join(evidenceDir, 'w.log'), stateDir, restartDelayMs: 200,
-      env: { PATH: process.env['PATH'] ?? '', ZEROED_STATE_DIR: stateDir, ZEROED_MODE: 'paper', ZEROED_RECORDER: 'on', ZEROED_SIMULATE: 'on', ZEROED_DRILLS: 'on', ZEROED_HEALTH_ADDR: addr, ZEROED_GIT_SHA: 'c0ffee', ZEROED_STUB_TICK_MS: '50', ZEROED_STUB_CYCLE_MS: '6000', ZEROED_STUB_EXIT_DELAY_MS: '300' },
+      env: { PATH: process.env['PATH'] ?? '', ZEROED_STATE_DIR: stateDir, ZEROED_MODE: 'paper', ZEROED_RECORDER: 'on', ZEROED_SIMULATE: 'on', ZEROED_DRILLS: 'on', ZEROED_HEALTH_ADDR: addr, ZEROED_GIT_SHA: 'c0ffee', ZEROED_STUB_TICK_MS: '50', ZEROED_STUB_CYCLE_MS: '6000', ZEROED_STUB_EXIT_DELAY_MS: '300', ZEROED_STUB_TRADE_PHASE_FILE: phases.file },
     });
     await runSegment({
       identity: { label: 'rehearsal', commit: 'c0ffee' }, healthAddr: addr, stateDir, evidenceDir, keepRecorded: 'copy', sampleMs: 100, recoverMs: 6000,
-      log: () => {}, control, segmentEnd: Date.now() + 12_000, hostDrills: 'wipe', fetchHealth, handover: false,
+      log: () => {}, control, segmentEnd, hostDrills: 'wipe', fetchHealth, handover: false,
       // restart-1 falls due at 3 s; the frozen reply shows no trade, so it kills when its 3.5 s window ends. Shown in
-      // flight, the reply reads as mid-trade: it falls due at 7 s instead, after the entry (about 5.5 s) and before the exit.
+      // flight, the reply reads as mid-trade: it falls due at 7 s instead, after the observed entry and before any commanded exit.
       newRun: { runId: 'run', targetMs: inFlight ? 140_000 : 60_000, entry: STUB_ENTRY, restarts: 3, causes: ['crash', 'crash', 'crash'], restartWindowMs: 3500, rpcDrops: 0 },
     });
     const drills = JSON.parse(readFileSync(join(evidenceDir, 'drills.json'), 'utf8')) as DrillOutcome[];
     const d = drills.find((x) => x.id === 'restart-1')!;
+    return { d, stateDir, landed, frozen };
+  };
+
+  it.each([
+    ['showed none', false],
+    ['showed it as an entry in flight (counted once, not twice)', true],
+  ])('is a trade the restart must keep, and the drill checks it (the reply %s)', async (_, inFlight) => {
+    const { d, stateDir, landed, frozen } = await openedScenario(inFlight, true);
     expect(d.notes.join(' ')).toMatch(/opened between the last reply and the kill \(journal\)/);
     expect(d).toMatchObject({ midTrade: true, keep: 1 });
     expect(d.state).toMatchObject({ state_ok: true, universe_ok: true, missing: [] });
     expect(d.exposure?.trades).toHaveLength(1);
+    expect(landed).toBe(true);
+    const entries = journalLines(stateDir).filter((line) => line.kind === 'entry' && line.trade === frozen!.h.unresolved_intents.trades?.[0]);
+    const actual = journalLines(stateDir).filter((line) => line.kind === 'entry' && line.boot === frozen!.h.boot);
+    expect(actual).toHaveLength(1);
+    expect(actual[0]!.seq).toBeGreaterThan(frozen!.h.journal_seq);
+    expect(Date.parse(actual[0]!.ts)).toBeLessThanOrEqual(d.at);
+    if (inFlight) expect(entries).toHaveLength(1);
+  }, 40_000);
+
+  it('a genuinely flat stale reply with no landed entry has nothing to keep or expose', async () => {
+    const { d, stateDir, landed } = await openedScenario(false, false);
+    expect(landed).toBe(false);
+    expect(journalLines(stateDir).filter((line) => line.kind === 'entry')).toEqual([]);
+    expect(d.notes.join(' ')).not.toMatch(/opened between the last reply and the kill/);
+    expect(d).toMatchObject({ pass: true, midTrade: false, keep: 0 });
+    expect(d.exposure).toBeUndefined();
   }, 40_000);
 });
 

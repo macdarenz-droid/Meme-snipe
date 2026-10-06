@@ -5,11 +5,13 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { STUB_ENTRY } from '../src/contract.ts';
+import { type Health, STUB_ENTRY } from '../src/contract.ts';
 import { LocalControl } from '../src/control.ts';
 import { reportMarkdown, type DrillOutcome, type Report } from '../src/report.ts';
 import { httpHealth, runSegment } from '../src/runner.ts';
 import { scanPaths } from '../src/scan.ts';
+import { journalLines, tradePhases } from './trade-phases.ts';
+import { nativeStub } from './native-stub.ts';
 
 const root = join(import.meta.dirname, '..', '..', '..');
 const freePort = (): Promise<number> =>
@@ -27,9 +29,9 @@ const setup = async (envOver: Record<string, string> = {}) => {
   const addr = `127.0.0.1:${await freePort()}`;
   const stateDir = join(dir, 'state');
   const evidenceDir = join(dir, 'evidence', 'run');
-  const control = () =>
+  const control = (entry = STUB_ENTRY) =>
     new LocalControl({
-      entry: STUB_ENTRY,
+      entry,
       cwd: root,
       logPath: join(evidenceDir, 'logs', 'worker.log'),
       stateDir,
@@ -84,13 +86,14 @@ describe('runner with the stub worker', () => {
 
   it('runs restart and feed drills, survives a job handover, and writes complete evidence', async () => {
     const t = await setup();
-    const newRun = { runId: 'run', targetMs: 16_000, entry: STUB_ENTRY, restarts: 3, causes: ['crash', 'crash', 'crash'] as const, restartWindowMs: 2500, feedDropMs: 600, rpcDrops: 0 };
+    const entry = nativeStub(t.dir);
+    const newRun = { runId: 'run', targetMs: 16_000, entry, restarts: 3, causes: ['crash', 'crash', 'crash'] as const, restartWindowMs: 2500, feedDropMs: 600, rpcDrops: 0 };
     const common = { identity: { label: 'rehearsal' as const, commit: 'c0ffee' }, healthAddr: t.addr, stateDir: t.stateDir, evidenceDir: t.evidenceDir, keepRecorded: 'copy' as const, sampleMs: 100, recoverMs: 5000, log: quiet };
     // Job 1 stops part-way, like a GitHub job at its time limit; job 2 restores and finishes.
-    const first = await runSegment({ ...common, control: t.control(), newRun, segmentEnd: Date.now() + 8000, recordedDir: join(t.dir, 'rec1'), recordedArtifact: 'rec1' });
+    const first = await runSegment({ ...common, control: t.control(entry), newRun, segmentEnd: Date.now() + 8000, recordedDir: join(t.dir, 'rec1'), recordedArtifact: 'rec1' });
     expect(first).toMatchObject({ done: false, aborted: null, report: null });
     expect(existsSync(join(t.stateDir, 'clean_stop'))).toBe(true);
-    const second = await runSegment({ ...common, control: t.control(), segmentEnd: Number.POSITIVE_INFINITY, recordedDir: join(t.dir, 'rec2'), recordedArtifact: 'rec2' });
+    const second = await runSegment({ ...common, control: t.control(entry), segmentEnd: Number.POSITIVE_INFINITY, recordedDir: join(t.dir, 'rec2'), recordedArtifact: 'rec2' });
     expect(second.done).toBe(true);
     const r = second.report as Report;
 
@@ -152,6 +155,28 @@ describe('runner with the stub worker', () => {
     expect(scanPaths([t.dir], new Map(Object.entries(FAKE))).map((f) => f.what)).toEqual(['HELIUS_API_KEY']);
   }, 60_000);
 
+  it('stopping between a killed child and its pending restart stays unclean and never invents a graceful-stop marker', async () => {
+    const t = await setup();
+    const phases = tradePhases(t.dir, 'hold');
+    const control = new LocalControl({
+      entry: STUB_ENTRY, cwd: root, logPath: join(t.evidenceDir, 'logs', 'worker.log'), stateDir: t.stateDir,
+      restartDelayMs: 60_000,
+      env: { PATH: process.env['PATH'] ?? '', ...FAKE, ZEROED_STATE_DIR: t.stateDir, ZEROED_MODE: 'paper', ZEROED_RECORDER: 'on', ZEROED_SIMULATE: 'on', ZEROED_DRILLS: 'on', ZEROED_HEALTH_ADDR: t.addr, ZEROED_GIT_SHA: 'c0ffee', ZEROED_STUB_TICK_MS: '50', ZEROED_STUB_TRADE_PHASE_FILE: phases.file },
+    });
+    try {
+      await control.start();
+      await phases.wait(t.addr, Date.now() + 6000, (h) => h.reconciled && h.exit_capable);
+      await control.kill();
+      await control.stop();
+      expect(control.starts).toBe(1);
+      expect(existsSync(join(t.stateDir, 'clean_stop'))).toBe(false);
+      expect(journalLines(t.stateDir).some((line) => line.kind === 'stop')).toBe(false);
+      expect(await httpHealth(t.addr)).toBeNull();
+    } finally {
+      await control.stop();
+    }
+  }, 30_000);
+
   // CI-1: under parallel load a reply describes the worker a moment before the runner acts on it (the trade it shows
   // may close before the kill or the copy). 150 ms old replies reproduced it every time; the runner must not care.
   it.each([['fresh replies', 0], ['replies 150 ms old (a loaded runner)', 150]])('drills every cause: crash, reboot, host loss from backup, chain rebuild and RPC loss, %s', async (_, staleMs) => {
@@ -179,6 +204,46 @@ describe('runner with the stub worker', () => {
     expect(reportMarkdown(r)).toContain("## Recovery by cause");
   }, 90_000);
 
+  // Root cause of the intermittent "drills every cause" failure (supervisor card, 2026-10-05): under load a reply can
+  // show a trade that closes before the kill. That drill has nothing to keep, so it passes but does not exercise its
+  // cause, and a cause planned once then failed drills_by_cause. Here it happens on purpose: while the boot the reboot
+  // drill kills is up, every trade is shown only once it has closed, so that kill always finds nothing to keep.
+  it('a restart that kills with nothing to keep is tried again, so its cause is still exercised (drills_by_cause)', async () => {
+    const t = await setup();
+    const boots = new Set<string>();
+    let held: Health | null = null;
+    const lateTrades = async (addr: string): Promise<Health | null> => {
+      const h = await httpHealth(addr);
+      if (h === null) return h;
+      boots.add(h.boot);
+      // The second boot is the one the reboot drill kills (a crash first); every other boot is shown as it is.
+      if (boots.size !== 2 || h.boot !== [...boots][1]) return h;
+      const open = h.open_position !== null || h.unresolved_intents.count > 0;
+      if (open) {
+        held ??= h;
+        return { ...h, open_position: null, open_positions: [], pending_exits: [], unresolved_intents: { ...h.unresolved_intents, count: 0, oldest_age_s: null, trades: [] } };
+      }
+      // Closed: the reply that showed it open arrives now, too late.
+      const late = held;
+      held = null;
+      return late ?? h;
+    };
+    const res = await runSegment({
+      identity: { label: 'rehearsal', commit: 'c0ffee' }, healthAddr: t.addr, stateDir: t.stateDir, evidenceDir: t.evidenceDir, keepRecorded: 'copy', fetchHealth: lateTrades,
+      sampleMs: 100, recoverMs: 6000, log: quiet, control: t.control(), segmentEnd: Number.POSITIVE_INFINITY, hostDrills: 'wipe', backupEveryMs: 1500,
+      newRun: { runId: 'run', targetMs: 24_000, entry: STUB_ENTRY, restarts: 4, causes: ['crash', 'reboot', 'host-loss', 'chain-rebuild'] as const, restartWindowMs: 2000, feedDropMs: 500, rpcDrops: 1, rpcDropMs: 700 },
+    });
+    const r = res.report as Report;
+    const reboots = r.drills.filter((d) => d.kind === 'restart' && d.cause === 'reboot');
+    // The planned reboot passed with nothing to keep, and was tried again.
+    expect(reboots[0]).toMatchObject({ pass: true, keep: 0 });
+    expect(reboots[0]!.notes.join(' ')).toContain('nothing to keep at the kill: tried again (try 1 of 3)');
+    expect(reboots.length).toBeGreaterThan(1);
+    expect(reboots.at(-1)!.id).toMatch(/^restart-2-retry-\d$/);
+    expect(r.recovery_by_cause['reboot']!.exercised).toBeGreaterThan(0);
+    expect(r.checks).toMatchObject({ drills_by_cause: true, every_drill_passed: true, recovered_state: true });
+  }, 90_000);
+
   it.each([['fresh replies', 0], ['replies 150 ms old (a loaded runner)', 150]])('on the qualifying host, host loss and chain rebuild run as a reconcile-only tabletop beside the live worker, %s', async (_, staleMs) => {
     const t = await setup();
     const control = t.control();
@@ -197,7 +262,16 @@ describe('runner with the stub worker', () => {
     }
     expect(table.find((d) => d.cause === 'chain-rebuild')!.state!.source).toBe('chain');
     // The live worker was never stopped by either tabletop: one boot until the crash drill.
-    expect(r.journal.boots).toBe(2);
+    // One boot for the start and one for the live crash drill, plus one for each try of a live restart that passed with
+    // nothing to keep (RUN-1d's unexercised retry); every such try follows a drill that kept nothing.
+    const tries = r.drills.filter((d) => d.kind === 'restart' && d.off_run !== true && /-retry-\d+$/.test(d.id));
+    for (const d of tries) {
+      const n = Number(/-retry-(\d+)$/.exec(d.id)![1]);
+      const root = d.id.replace(/-retry-\d+$/, '');
+      const before = r.drills.find((x) => x.id === (n === 1 ? root : `${root}-retry-${n - 1}`))!;
+      expect(before).toMatchObject({ pass: true, keep: 0 });
+    }
+    expect(r.journal.boots).toBe(2 + tries.length);
     expect(r.checks).toMatchObject({ recovered_state: true, restored_universe_kept: true, journal_complete: true });
     expect(reportMarkdown(r)).toContain('(tabletop beside the run)');
   }, 60_000);

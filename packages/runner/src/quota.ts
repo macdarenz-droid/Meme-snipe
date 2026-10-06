@@ -169,7 +169,7 @@ const s1 = (ms: number): number => Math.round(ms / 100) / 10;
  * `gap_id`, `to_ts` set). A gap still open when its boot ends runs to the next boot's start (or the end of the run),
  * and every boot's down window, from its last journal line to the next boot's `start`, is a gap in every stream.
  */
-export const coverageGaps = (journal: readonly JournalLine[], endMs: number): CoverageReport => {
+export const coverageGaps = (journal: readonly JournalLine[], endMs: number, startMs = Number.NEGATIVE_INFINITY): CoverageReport => {
   const problems: string[] = [];
   const intervals = new Map<string, [number, number][]>(COVERAGE_STREAMS.map((s) => [s, []]));
   const openAtEnd = new Map<string, number>();
@@ -216,18 +216,23 @@ export const coverageGaps = (journal: readonly JournalLine[], endMs: number): Co
       problems.push(`seq ${l.seq}: coverage_gap ${id} has a bad to_ts`);
       continue;
     }
-    open.delete(id);
+    // A close observed after the fixed end cannot claim the gap was closed within the run.
+    if (to > endMs) open.set(id, { stream, from, boot: l.boot });
+    else open.delete(id);
     intervals.get(stream)!.push([from, to]);
   }
   for (const g of open.values()) {
-    const end = nextStart(g.boot);
+    if (g.from >= endMs) continue;
+    const end = Math.min(nextStart(g.boot), endMs);
     intervals.get(g.stream)!.push([g.from, Math.max(g.from, end)]);
     if (end === endMs) openAtEnd.set(g.stream, (openAtEnd.get(g.stream) ?? 0) + 1);
   }
   const streams: Record<string, StreamCoverage> = {};
   for (const [stream, list] of [...intervals].sort(([a], [b]) => a.localeCompare(b))) {
     const merged: [number, number][] = [];
-    for (const [a, b] of [...list].sort((x, y) => x[0] - y[0])) {
+    // Retain and validate all journal evidence, while measuring only coverage before the fixed end.
+    const bounded = list.filter(([a, b]) => a < endMs && b >= startMs).map(([a, b]): [number, number] => [Math.max(a, startMs), Math.min(b, endMs)]);
+    for (const [a, b] of bounded.sort((x, y) => x[0] - y[0])) {
       const last = merged[merged.length - 1];
       if (last && a <= last[1]) last[1] = Math.max(last[1], b);
       else merged.push([a, b]);

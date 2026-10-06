@@ -170,6 +170,13 @@ interface RestartPending {
   killedMono?: number;
   prevBoot?: string | null;
   midTrade?: boolean;
+  /**
+   * A try of a drill that had nothing to keep (`unexercisedRetry`): it kills on a trade it saw open after seeing the
+   * worker flat in its own window (the most time before that trade closes), or at the window's end.
+   */
+  fresh?: boolean;
+  /** A fresh try saw the worker with no trade open in its window. */
+  sawFlat?: boolean;
   /** A position was open at the kill: measure the unprotected exposure until the new boot is exit capable. */
   open?: boolean;
   trades?: readonly string[];
@@ -217,7 +224,7 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
   const dropFeed = o.dropFeed ?? httpDropFeed;
   const ev = o.evidenceDir;
   mkdirSync(ev, { recursive: true });
-  const P = { meta: join(ev, 'run.json'), samples: join(ev, 'samples.jsonl'), drills: join(ev, 'drills.json'), segments: join(ev, 'segments.json'), manifest: join(ev, 'recorded.json'), boots: join(ev, 'boots.json'), backup: join(ev, 'backup.json'), reboot: join(ev, 'pending-reboot.json'), retry: join(ev, 'host-loss-retry.json') };
+  const P = { meta: join(ev, 'run.json'), samples: join(ev, 'samples.jsonl'), drills: join(ev, 'drills.json'), segments: join(ev, 'segments.json'), manifest: join(ev, 'recorded.json'), boots: join(ev, 'boots.json'), backup: join(ev, 'backup.json'), reboot: join(ev, 'pending-reboot.json'), retry: join(ev, 'host-loss-retry.json'), again: join(ev, 'unexercised-retry.json') };
   const resumed = existsSync(P.meta);
   if (!resumed && !o.newRun) throw new Error(`no run in ${ev} and no new-run options`);
 
@@ -230,6 +237,8 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
   // A host-loss tabletop that could only self-report is tried again after the host's next backup (kept on disk across
   // segments). Each try is its own drill, labelled; only a compared one exercises host loss on a VPS run.
   let retry = readJson<HostLossRetry | null>(P.retry, null);
+  // A restart that passed with nothing to keep, tried again (its own slot and file, so neither retry overwrites the other).
+  let again = readJson<HostLossRetry | null>(P.again, null);
   const prev = segments[segments.length - 1];
   const segStart = Date.now();
   segments.push({ start: segStart, end: null, lastInTrade: false, lastBoot: null });
@@ -297,6 +306,10 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
     rmSync(P.retry, { force: true });
     retry = null;
   }
+  if (again !== null && done.has(retryId(again))) {
+    rmSync(P.again, { force: true });
+    again = null;
+  }
   const rebooted = readJson<RestartPending | null>(P.reboot, null);
   // Already recorded (the runner stopped between recording it and deleting the file): never run it twice.
   if (rebooted && done.has(rebooted.drill.id)) rmSync(P.reboot, { force: true });
@@ -304,10 +317,16 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
   const handovers = outcomes.filter((d) => d.kind === 'handover').length;
 
   let last: Sample | null = null;
-  while (Date.now() < endAt) {
+  // The final report includes every kill this runner started. An async kill or health request may cross runEnd:
+  // finish that restart within its existing recovery bound, without starting another drill or crossing segmentEnd.
+  const finishingRestart = (): boolean => pending?.kind === 'restart' && pending.killedAt !== undefined;
+  while (Date.now() < endAt || (Date.now() < o.segmentEnd && finishingRestart())) {
     const t = Date.now();
     const h = await fetchHealth(o.healthAddr);
-    const s = toSample(t, h);
+    const sampledAt = Date.now();
+    if (sampledAt >= o.segmentEnd || (sampledAt >= endAt && !finishingRestart())) break;
+    // Availability is observed when the reply arrives, never backdated to a request made before the cutoff.
+    const s = toSample(sampledAt, h);
     if (h) noteBoot(h);
     appendFileSync(P.samples, `${JSON.stringify(s)}\n`);
     last = s;
@@ -317,6 +336,7 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
     if (o.backupEveryMs !== undefined && pending === null && h?.reconciled && (backup === null || t - backup.at >= o.backupEveryMs)) {
       await takeBackup(h, t);
     }
+    if (Date.now() >= endAt && !finishingRestart()) break;
 
     if (pending === null) {
       const due = meta.plan.find((d) => !done.has(d.id) && d.atMs <= rel);
@@ -325,6 +345,10 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
         if (orig) pending = { kind: 'restart', drill: { ...orig, id: retryId(retry) }, since: t };
         // The file stays until the try is recorded, so a runner crash mid-try runs it again after the restart.
         retry = null;
+      } else if (due === undefined && again !== null && t >= again.dueAt) {
+        const orig = meta.plan.find((d): d is Extract<Drill, { kind: 'restart' }> => d.id === again!.drill && d.kind === 'restart');
+        if (orig) pending = { kind: 'restart', drill: { ...orig, id: retryId(again) }, since: t, fresh: true };
+        again = null;
       }
       if (due?.kind === 'restart') pending = { kind: 'restart', drill: due, since: t };
       else if (due?.kind === 'rpc') {
@@ -352,7 +376,8 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
       // The runner's own backups (a rehearsal, wipe or tabletop): host loss restores the copy it takes for the drill.
       const localHostLoss = cause === 'host-loss' && o.backupEveryMs !== undefined;
       if (p.killedAt === undefined) {
-        const due = s.in_trade || t - p.since >= p.drill.windowMs;
+        if (p.fresh && h !== null && !s.in_trade) p.sawFlat = true;
+        const due = killDue({ inTrade: s.in_trade, fresh: p.fresh === true, sawFlat: p.sawFlat === true, waitedMs: t - p.since, windowMs: p.drill.windowMs });
         if (localHostLoss && !p.snapped && t - p.since >= 2 * p.drill.windowMs) {
           record({ ...base, at: t, pass: false, recoveredMs: null, notes: ['no backup to restore: the worker\'s state never held still for a copy'] });
           pending = null;
@@ -446,7 +471,8 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
         p.ok = reconciledFirst(wDir, ws.boot!);
       }
       // Recovered means reconciled and able to exit (DECISIONS, Standby), timed for every restart, open position or not.
-      if (pending !== null && p.killedAt !== undefined && p.reconciledAt !== undefined && ws.exit_capable && ws.boot !== p.prevBoot) {
+      // A host reboot can bring the runner back after the worker recovered: its journal below supplies the wall times.
+      if (pending !== null && p.killedAt !== undefined && p.reconciledAt !== undefined && ws.exit_capable && ws.boot !== p.prevBoot && (clock === 'wall' || since() <= recoverMs)) {
         const k = p.killedAt;
         const lines = journalLines(wDir);
         let recovery = { reconciled_ms: p.reconciledAt, exit_capable_ms: since(), clock };
@@ -530,7 +556,19 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
             notes.push(`tried again after the next backup (try ${attempt} of ${HOST_LOSS_RETRIES})`);
           } else notes.push(`no compared restore after ${HOST_LOSS_RETRIES} retries`);
         }
-        record({ ...base, midTrade: p.midTrade === true, at: k, pass: p.ok === true && state.state_ok && state.universe_ok && !unknown, ...(p.table ? { off_run: true } : {}), ...(hostTable ? { compared: p.backupKept !== undefined } : {}), keep: p.keep ?? 0, recoveredMs: recovery.reconciled_ms, recovery, state, ...(exposure ? { exposure } : {}), notes });
+        const pass = p.ok === true && state.state_ok && state.universe_ok && !unknown;
+        // A drill that passed with nothing to keep did not exercise its cause: the trade closed between the reply and the
+        // kill, or none opened in the window. It proves nothing, so the cause is tried again one window later while no
+        // drill of it has been exercised and tries remain (a cause planned once otherwise fails drills_by_cause on timing).
+        const tryAgain = unexercisedRetry({ id: p.drill.id, cause, pass, keep: p.keep ?? 0, offRun: hostTable, retryPending: again !== null, outcomes });
+        if (tryAgain === 'retry') {
+          const root = p.drill.id.replace(/-retry-\d+$/, '');
+          const attempt = p.drill.id === root ? 1 : Number(p.drill.id.slice(root.length + '-retry-'.length)) + 1;
+          again = { drill: root, attempt, dueAt: Date.now() + p.drill.windowMs };
+          writeFileSync(P.again, JSON.stringify(again));
+          notes.push(`nothing to keep at the kill: tried again (try ${attempt} of ${UNEXERCISED_RETRIES})`);
+        } else if (tryAgain === 'used') notes.push(`nothing to keep at the kill after ${UNEXERCISED_RETRIES} retries`);
+        record({ ...base, midTrade: p.midTrade === true, at: k, pass, ...(p.table ? { off_run: true } : {}), ...(hostTable ? { compared: p.backupKept !== undefined } : {}), keep: p.keep ?? 0, recoveredMs: recovery.reconciled_ms, recovery, state, ...(exposure ? { exposure } : {}), notes });
         pending = null;
       } else if (pending !== null && p.killedAt !== undefined && since() > recoverMs) {
         if (p.table) await endTabletop(p.drill.id, p.table);
@@ -682,6 +720,8 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
     // A host-loss retry ends when its own try is recorded (a self-reported try has already written the next one).
     const r = readJson<HostLossRetry | null>(P.retry, null);
     if (r !== null && retryId(r) === d.id) rmSync(P.retry, { force: true });
+    const a = readJson<HostLossRetry | null>(P.again, null);
+    if (a !== null && retryId(a) === d.id) rmSync(P.again, { force: true });
     outcomes.push(d);
     done.add(d.id);
     saveDrills();
@@ -712,14 +752,18 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
       const jr = checkJournalLines(existsSync(journalPath) ? fileLines(journalPath) : [], { allowTornTail: true });
       const samples = readLines<Sample>(P.samples);
       const journal = readLines<JournalLine>(journalPath);
-      const i4 = item4(journal, m.label, samples.some((s) => s.up && s.stub));
+      // Recovery may finish later, but it cannot extend the registered observation window or dilute credit use.
+      // All charged credits, raw evidence and recovery faults remain; only positive time credit stops at runEnd.
+      const scoredEnd = Math.min(seg.end, m.startedAt + m.targetMs);
+      const windowJournal = journal.filter((l) => Date.parse(l.ts) >= m.startedAt && Date.parse(l.ts) < scoredEnd);
+      const i4 = item4(journal, m.label, samples.some((s) => s.up && s.stub), { start: m.startedAt, end: scoredEnd });
       const ops = {
-        quota: quotaReport(Object.values(boots), seg.end - m.startedAt),
+        quota: quotaReport(Object.values(boots), scoredEnd - m.startedAt),
         lookups: lookupLatency(Object.values(boots)),
-        coverage: coverageGaps(journal, seg.end),
-        rejections: rejections(journal),
+        coverage: coverageGaps(journal, scoredEnd, m.startedAt),
+        rejections: rejections(windowJournal),
       };
-      report = buildReport(m, samples, sampleMs, seg.end, jr, withChainMoves(outcomes, journal), manifest, i4, ops);
+      report = buildReport(m, samples, sampleMs, scoredEnd, jr, withChainMoves(outcomes, journal), manifest, i4, ops);
       if (aborted) report = { ...report, pass: false, checks: { ...report.checks, not_aborted: false } };
       writeFileSync(join(ev, 'report.json'), JSON.stringify(report, null, 2));
       writeFileSync(join(ev, 'REPORT.md'), reportMarkdown(report));
@@ -941,6 +985,32 @@ interface HostLossRetry {
 }
 
 const retryId = (r: HostLossRetry): string => `${r.drill}-retry-${r.attempt}`;
+
+/**
+ * When a restart drill kills: on the first reply with a trade open, or at its window's end. A fresh try (of a drill that
+ * had nothing to keep) kills only on a trade it saw open after seeing the worker flat, so the trade has the most time
+ * left before it closes; a stale reply near a trade's end is what left the first try with nothing to keep.
+ */
+export const killDue = (k: { readonly inTrade: boolean; readonly fresh: boolean; readonly sawFlat: boolean; readonly waitedMs: number; readonly windowMs: number }): boolean =>
+  (k.inTrade && (!k.fresh || k.sawFlat)) || k.waitedMs >= k.windowMs;
+
+/** Retries of a restart drill that passed with nothing to keep (its cause not exercised), at most. */
+export const UNEXERCISED_RETRIES = 3;
+
+/** A passed restart of `cause` that had something to keep: the report's `exercised` (report.ts recoveryByCause). */
+const exercised = (d: DrillOutcome, cause: string): boolean => d.kind === 'restart' && (d.cause ?? 'crash') === cause && d.pass && d.skipped !== true && (d.keep ?? 0) > 0;
+
+/**
+ * Whether a restart drill just recorded is tried again because it did not exercise its cause: it passed with nothing to
+ * keep, no drill of its cause has been exercised, it ran on the live worker (a tabletop has its own retry) and no other
+ * retry is waiting. A failed drill is never retried: its failure stands. 'used' when the tries are spent.
+ */
+export const unexercisedRetry = (d: { readonly id: string; readonly cause: string; readonly pass: boolean; readonly keep: number; readonly offRun: boolean; readonly retryPending: boolean; readonly outcomes: readonly DrillOutcome[] }): 'retry' | 'used' | null => {
+  if (d.offRun || d.retryPending || !d.pass || d.keep > 0 || d.outcomes.some((o) => exercised(o, d.cause))) return null;
+  const m = /-retry-(\d+)$/.exec(d.id);
+  const attempt = m === null ? 1 : Number(m[1]) + 1;
+  return attempt <= UNEXERCISED_RETRIES ? 'retry' : 'used';
+};
 
 /** Retries of a self-reported host-loss tabletop, at most; each starts the tabletop worker once. */
 export const HOST_LOSS_RETRIES = 3;
