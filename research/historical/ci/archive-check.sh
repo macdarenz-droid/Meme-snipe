@@ -3,7 +3,19 @@
 # archive once whether it serves our scanner again, and if it does, dispatch the next
 # scan batch. Run by .github/workflows/archive-check.yml.
 #
-#   - While a data-scan run is active or queued, it does nothing (no request at all).
+#   - While a data-scan run that may read the archive is active or queued, it does
+#     nothing (no request at all). A run counts as Helius-only (source helius, which
+#     never touches the archive) only when its title, set by data-scan.yml's run-name,
+#     is exactly "data-scan scan source=helius"; any other title (the archive source,
+#     a run dispatched before run-name existed, anything unexpected) counts as archive,
+#     unless its id is in HELIUS_RUNS (a manual dispatch input, digits and commas only,
+#     for Helius runs dispatched before run-name; scheduled checks never set it).
+#   - A served answer dispatches a scan beside any Helius-only runs: data-scan runs the
+#     two sources in separate concurrency groups ("data-scan" for the archive and
+#     assembly, "data-scan-helius" for Helius), each one at a time (ARCHIVE-LANE). The
+#     archive lane itself stays single: no request while a run that may read the archive
+#     is active or queued, so a dispatch never runs beside an archive scan and never
+#     replaces a pending chained archive run.
 #   - Otherwise it makes ONE request: a range GET of 64 bytes with the scanner's own
 #     User-Agent (read from scanner/archive.go), from the runner. Never another agent,
 #     host, address, proxy or client: that would be getting around the block, which
@@ -11,17 +23,20 @@
 #   - Any answer but a 206 of at most 64 bytes is logged (status, bytes, cf-ray, time)
 #     and the check stops until the next one. No retries. No answer can stream: the
 #     body is cut after 65 bytes, which aborts the transfer.
-#   - On success it dispatches data-scan.yml (mode scan, max_mbps 80) for the next 8
-#     unpublished days: pre-holdout days from 2026-09-21 back to 2026-07-20 first (run
+#   - On success it dispatches data-scan.yml (mode scan, max_mbps ARCHIVE_MAX_MBPS) for
+#     the next ARCHIVE_DAYS_PER_CHECK unpublished days (archive-limits.conf: 1 day, 40
+#     MB/s), and only while the scanner's request cap is at most ARCHIVE_MAX_RPS: pre-holdout days from 2026-09-21 back to 2026-07-20 first (run
 #     1's days lead), then the holdout days 2026-10-01 back to 2026-09-22. The scan
-#     keeps its own limits: one job, at most 80 MB/s and 40 requests/s, stop on any 429
-#     with a back-off of at least 1 h.
+#     keeps its own limits (archive-limits.conf): one job, any 429 stops the chain with
+#     a back-off of at least 3 h.
 #
 # Env: GH_REPO (owner/repo), REF (branch to dispatch on), GH_TOKEN for gh;
 # GH_BIN, CURL_BIN and ARCHIVE_CHECK_URL (a local fake server) are for tests only; the
 # workflow sets none of them (test-ci.sh checks).
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=archive-limits.conf
+. "$here/archive-limits.conf"
 gh=${GH_BIN:-gh}
 curl=${CURL_BIN:-curl}
 : "${GH_REPO:?}" "${REF:?}"
@@ -34,10 +49,22 @@ if [[ -z "$ua" || "$ua" != zeroed-historical-scanner/* ]]; then
   exit 1
 fi
 
-active=$("$gh" run list --repo "$GH_REPO" --workflow data-scan.yml --limit 50 --json status \
-  --jq '[.[] | select(.status != "completed")] | length')
-if [[ "$active" != "0" ]]; then
-  echo "archive-check $(date -u +%FT%TZ): $active data-scan run(s) active or queued; no request made" | tee -a "$summary"
+named=${HELIUS_RUNS:-}
+if [[ -n "$named" && ! "$named" =~ ^[0-9]+(,[0-9]+)*$ ]]; then
+  echo "archive-check: helius_runs must be run ids separated by commas, got '$named'; no request made" | tee -a "$summary"
+  exit 1
+fi
+runs=$("$gh" run list --repo "$GH_REPO" --workflow data-scan.yml --limit 50 --json databaseId,status,displayTitle \
+  --jq '.[] | select(.status != "completed") | "\(.databaseId)\t\(.displayTitle)"')
+active=0 archive=0
+while IFS=$'\t' read -r id title; do
+  [[ -n "$id" ]] || continue
+  active=$(( active + 1 ))
+  if [[ "$title" == "data-scan scan source=helius" || ",$named," == *",$id,"* ]]; then continue; fi
+  archive=$(( archive + 1 ))
+done <<< "$runs"
+if (( archive > 0 )); then
+  echo "archive-check $(date -u +%FT%TZ): $archive data-scan run(s) that may read the archive active or queued; no request made" | tee -a "$summary"
   exit 0
 fi
 
@@ -69,6 +96,9 @@ if ! [[ "$code" == 206 && $rc == 0 && $got -le 64 ]]; then
   echo "archive-check: not served; nothing dispatched until the next check" | tee -a "$summary"
   exit 0
 fi
+# Helius-only runs (the $active counted above) do not block a dispatch: they run in their
+# own concurrency group (data-scan-helius), so an archive scan never waits behind one and
+# never replaces one's pending chained run (ARCHIVE-LANE).
 
 # The queue: pre-holdout days newest first, then the holdout days newest first.
 queue=()
@@ -77,19 +107,27 @@ while [[ "$d" > 2026-07-19 ]]; do queue+=("$d"); d=$(date -u -d "$d - 1 day" +%F
 d=2026-10-01
 while [[ "$d" > 2026-09-21 ]]; do queue+=("$d"); d=$(date -u -d "$d - 1 day" +%F); done
 
+# ARCHIVE-SAFE hold: no dispatch while the scanner's request cap is above the limit.
+if ! cap=$("$here/scan-day.sh" --rps-ok "${ARCHIVE_GO:-$here/../scanner/archive.go}"); then
+  echo "archive-check: served; held: the scanner's request cap ($cap/s, scanner/archive.go) is above $ARCHIVE_MAX_RPS/s (archive-limits.conf); nothing dispatched" | tee -a "$summary"
+  exit 0
+fi
+
 batch=()
 for d in "${queue[@]}"; do
+  # A Helius day is read over RPC, never from the archive (ARCHIVE-NODUP).
+  [[ " $HELIUS_DAYS " == *" $d "* ]] && continue
   # A day with a release is published (data-scan's own check judges completeness).
   if "$gh" api "repos/$GH_REPO/releases/tags/data-day-$d" --silent >/dev/null 2>&1; then
     continue
   fi
   batch+=("$d")
-  (( ${#batch[@]} == 8 )) && break
+  (( ${#batch[@]} == ARCHIVE_DAYS_PER_CHECK )) && break
 done
 if (( ${#batch[@]} == 0 )); then
   echo "archive-check: served, and every day of the window is published; nothing to dispatch" | tee -a "$summary"
   exit 0
 fi
 days=$(IFS=,; echo "${batch[*]}")
-"$gh" workflow run data-scan.yml --repo "$GH_REPO" --ref "$REF" -f mode=scan -f days="$days" -f max_mbps=80
+"$gh" workflow run data-scan.yml --repo "$GH_REPO" --ref "$REF" -f mode=scan -f days="$days" -f max_mbps="$ARCHIVE_MAX_MBPS"
 echo "archive-check: served; dispatched data-scan for $days" | tee -a "$summary"

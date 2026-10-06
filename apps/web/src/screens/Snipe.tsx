@@ -24,7 +24,8 @@ export function SessionCard({ session, label = sessionLabel(session), onStart }:
     ['Mode', session.mode === 'live' ? 'Live' : 'Paper'],
     ['Bankroll', usd(session.bankrollUsd)],
     ['Entry', session.entryUsd === null ? NOT_SET : session.maxEntryUsd === null ? formatUsd(session.entryUsd) : `${formatUsd(session.entryUsd)}, max ${formatUsd(session.maxEntryUsd)}`],
-    ['Open positions', session.maxOpenPositions === null ? NOT_SET : String(session.maxOpenPositions)],
+    // R3's limit, not a count of open trades (APP-TRUTH): the same words as the halt it stops entries with.
+    ['Open trade limit', session.maxOpenPositions === null ? NOT_SET : String(session.maxOpenPositions)],
     ['Daily loss', usd(session.dailyLossLimitUsd)],
     ['Weekly loss', usd(session.weeklyLossLimitUsd)],
     ['Session loss', usd(session.sessionLossLimitUsd)],

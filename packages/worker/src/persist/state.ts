@@ -12,13 +12,16 @@
 //   is "not covered", never "clean";
 // - the fill plan tops up only from the saved moment (or an older open gap) to now, within the daily credit budget.
 import { createHash } from 'node:crypto';
-import { closeSync, existsSync, openSync, readFileSync, readSync, rmSync } from 'node:fs';
+import { closeSync, createReadStream, createWriteStream, existsSync, fsyncSync, openSync, readFileSync, readSync, renameSync, rmSync } from 'node:fs';
+import { Writable, Transform } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
+import { createZstdCompress, createZstdDecompress } from 'node:zlib';
 import { fileLines } from '../../../runner/src/lines.ts';
 import { atomicWrite, commitTemp, writeAll, type WriteFn } from '../run/state.ts';
 import type { RugConfig } from '../../../core/src/config/rugs.ts';
 import { DAY_MS } from '../../../core/src/config/time.ts';
 import { compareEvents, compareMoments, type MarketEvent, type Moment } from '../../../core/src/engine/index.ts';
-import { DeployerIndex, RugLabeller, type DeployerIndexState, type RugLabellerState } from '../../../core/src/gates/index.ts';
+import { DeployerIndex, RepeatedRowError, RugLabeller, type DeployerIndexState, type RugLabellerState } from '../../../core/src/gates/index.ts';
 import { SEED_VIA } from '../seed/seed.ts';
 import { parseGraduatesSeed } from '../../../core/src/facts/raw.ts';
 import type { SavedCandidate, SavedGraduates, SavedTail } from '../engine/strategy.ts';
@@ -140,7 +143,9 @@ const candidatesProblem = (c: unknown, asOf: Moment, saving: boolean): void => {
       throw new RangeError('a saved candidate is malformed');
     }
     const at = saving ? 'snapshot' : 'saved';
-    if ((x['migratedAtMs'] as number) > asOf.receivedAt || ((x['lastEvalMs'] as number | null) ?? Number.NEGATIVE_INFINITY) > asOf.receivedAt || (x['bars'] as { startMs: number }[]).some((b) => b.startMs > asOf.receivedAt)) throw new RangeError(`candidate ${x['mint']} is dated after the ${at} moment`);
+    if ((x['migratedAtMs'] as number) > asOf.receivedAt || ((x['lastEvalMs'] as number | null) ?? Number.NEGATIVE_INFINITY) > asOf.receivedAt || (x['bars'] as { startMs: number }[]).some((b) => b.startMs > asOf.receivedAt)
+      // FEES-KEEP: the saved fee terms are refused like a bar when dated after the moment; malformed ones restore as none.
+      || (isObj(x['fees']) && typeof x['fees']['atMs'] === 'number' && x['fees']['atMs'] > asOf.receivedAt)) throw new RangeError(`candidate ${x['mint']} is dated after the ${at} moment`);
     if (seen.has(x['mint'])) throw new RangeError(`candidate ${x['mint']} appears twice`);
     seen.add(x['mint']);
   }
@@ -231,6 +236,63 @@ export const fileSha256 = (path: string): string => {
     closeSync(fd);
   }
   return hash.digest('hex');
+};
+
+/** A file's size and sha256. */
+export interface FileHash {
+  readonly bytes: number;
+  readonly sha256: string;
+}
+
+/** A pass-through stream that hashes and counts what goes by. */
+const hashing = (): { readonly stream: Transform; readonly result: () => FileHash } => {
+  const hash = createHash('sha256');
+  let bytes = 0;
+  const stream = new Transform({
+    transform(chunk: Buffer, _enc, done) {
+      hash.update(chunk);
+      bytes += chunk.length;
+      done(null, chunk);
+    },
+  });
+  return { stream, result: () => ({ bytes, sha256: hash.digest('hex') }) };
+};
+
+const discard = (): Writable => new Writable({ write: (_c, _e, done) => done() });
+
+/** The size and sha256 of a zstd file's content, streamed (never held whole). */
+export const zstdContentHash = async (zst: string): Promise<FileHash> => {
+  const h = hashing();
+  await pipeline(createReadStream(zst), createZstdDecompress(), h.stream, discard());
+  return h.result();
+};
+
+/**
+ * G4c: a recording's saved-state copy, packed to `<path>.zst` by streaming (memory stays flat), flushed, and checked to
+ * decompress to exactly the plain bytes (`content`) before the plain copy is removed. On any failure the plain copy
+ * stays and the partial `.zst` is removed. Returns the packed file's own size and hash, and its content's.
+ */
+export const packFile = async (path: string, content: FileHash): Promise<{ readonly packed: FileHash; readonly content: FileHash }> => {
+  const zst = `${path}.zst`;
+  const tmp = `${zst}.tmp`;
+  try {
+    const h = hashing();
+    await pipeline(createReadStream(path), createZstdCompress(), h.stream, createWriteStream(tmp, { mode: 0o600 }));
+    const fd = openSync(tmp, 'r');
+    try {
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    const back = await zstdContentHash(tmp);
+    if (back.sha256 !== content.sha256 || back.bytes !== content.bytes) throw new Error(`packed copy decompresses to sha256 ${back.sha256} (${back.bytes} bytes), not ${content.sha256} (${content.bytes} bytes)`);
+    renameSync(tmp, zst);
+    rmSync(path);
+    return { packed: h.result(), content };
+  } catch (e) {
+    rmSync(tmp, { force: true });
+    throw e;
+  }
 };
 
 type Obj = Readonly<Record<string, unknown>>;
@@ -327,10 +389,29 @@ export const loadState = (path: string, rugs: RugConfig, continuing: (stream: st
     if (s.graduates !== undefined) graduatesProblem(s.graduates, asOf, false);
     if (s.candidates !== undefined) candidatesProblem(s.candidates, asOf, false);
     if (s.tails !== undefined) tailsProblem(s.tails);
-    const index = streamed === null ? DeployerIndex.restore(s.index) : DeployerIndex.restore(s.index, rows(streamed));
-    if (streamed !== null) {
-      const t = streamed.trailer === null ? null : JSON.parse(streamed.trailer) as unknown;
-      if (!isObj(t) || t['sha256'] !== streamed.hash.digest('hex') || t['lines'] !== streamed.count) throw new RangeError('saved state checksum does not match, or the file is cut');
+    const checkTrailer = (st: NonNullable<typeof streamed>): void => {
+      const t = st.trailer === null ? null : JSON.parse(st.trailer) as unknown;
+      if (!isObj(t) || t['sha256'] !== st.hash.digest('hex') || t['lines'] !== st.count) throw new RangeError('saved state checksum does not match, or the file is cut');
+    };
+    let index: DeployerIndex;
+    if (streamed === null) index = DeployerIndex.restore(s.index);
+    else {
+      const it = rows(streamed);
+      // No `return` on what the restore iterates: its `for…of` would close the generator on a throw, and the drain
+      // below would then hash nothing (persist review).
+      const once: Iterable<unknown> = { [Symbol.iterator]: () => ({ next: () => it.next() }) };
+      try {
+        index = DeployerIndex.restore(s.index, once);
+      } catch (e) {
+        // DEPLOYER-COMPACT: a repeated creator row or mint is what a cut or doubled file looks like mid-stream: the rest
+        // is read for the checksum, whose failure is the reason, as before; an intact file that repeats one is refused
+        // for that.
+        if (!(e instanceof RepeatedRowError)) throw e;
+        for (let r = it.next(); r.done !== true; r = it.next()) { /* hashed by `rows` */ }
+        checkTrailer(streamed);
+        throw e;
+      }
+      checkTrailer(streamed);
     }
     const labeller = RugLabeller.restore(rugs, s.labeller, asOf);
     const coverage = [...s.coverage].sort(compareEvents);

@@ -6,7 +6,7 @@ import { appendFileSync, closeSync, existsSync, openSync, rmSync } from 'node:fs
 import { fileLines } from '../../../runner/src/lines.ts';
 import { join } from 'node:path';
 import type { MarketEvent } from '../../../core/src/engine/index.ts';
-import { LOG_CREATE_PREFIX, RUG_PREFIX, RUG_UNJUDGED_PREFIX, TX_CREATE_PREFIX } from '../../../core/src/gates/index.ts';
+import { LOG_CREATE_PREFIX, RUG_PREFIX, RUG_UNJUDGED_PREFIX, TX_CREATE_PREFIX, pruneCoverage } from '../../../core/src/gates/index.ts';
 import { parseTyped, typedText } from './json.ts';
 import { commitTemp, writeAll, type WriteFn } from './state.ts';
 
@@ -56,8 +56,8 @@ export class DeployerStore {
 
   /**
    * The saved events received at or after `fromMs`, in release order, with the file rewritten to just those (a torn
-   * last line from a kill is dropped). Coverage facts are all kept: a start older than the window is what says the
-   * stream has run since before it.
+   * last line from a kill is dropped). Older coverage facts are cut by `pruneCoverage` (WORKER-1d), not dropped: a
+   * start older than the window is what says the stream has run since before it, and an open gap stays open.
    */
   load(fromMs: number, o: { readonly keepCreates?: boolean; readonly maxCreates?: number; readonly onCreate?: (e: MarketEvent) => void } = {}): SavedDeployers {
     if (!existsSync(this.#path)) return { creates: [], rugs: [], coverage: [], last: null };
@@ -68,6 +68,22 @@ export class DeployerStore {
     const keepCreates = o.keepCreates ?? true;
     const maxCreates = o.maxCreates ?? Number.POSITIVE_INFINITY;
     let creates = 0;
+    // WORKER-1d: which coverage facts to keep is decided over all of them first (`pruneCoverage`: the latest start per
+    // stream and watch, a watch's history while it has an open gap, unreadable ones). Only coverage lines are held, and
+    // after the first pruned load they are few.
+    const coverageFacts: MarketEvent[] = [];
+    for (const line of fileLines(this.#path)) {
+      if (!line.includes('"coverage:')) continue;
+      try {
+        const e = parseTyped(line) as MarketEvent;
+        if (isCoverage(e.key)) coverageFacts.push(e);
+      } catch {
+        // a torn line: skipped below too
+      }
+    }
+    const keepSet = new Set(pruneCoverage(coverageFacts, fromMs));
+    const keepCoverage = coverageFacts.map((e) => keepSet.has(e));
+    let coverageAt = 0;
     let last: { slot: bigint; ms: number } | null = null;
     const kept: MarketEvent[] = [];
     // Streamed in chunks and rewritten in 1 MiB batches (GROWTH-SWEEP): 15 days of creates is about a million lines, too big
@@ -93,6 +109,8 @@ export class DeployerStore {
         }
         if (!isCoverage(e.key) && e.moment.receivedAt < fromMs) continue;
         if (last === null || e.moment.slot > last.slot) last = { slot: e.moment.slot, ms: e.moment.receivedAt };
+        // A coverage fact the prune drops is neither kept nor written back (it is older than `fromMs`).
+        if (isCoverage(e.key) && keepCoverage[coverageAt++] !== true) continue;
         if (isCreate(e.key)) {
           creates++;
           // CREATE-AFTER-RESTART: every create in the window is shown to `onCreate` (its mint and signature), kept or not.

@@ -1,7 +1,7 @@
 // FACTS-1 read budget: what one candidate costs per minute on the free plans, from the readers' call counts and the
 // providers' published prices (scheduler/limits.ts, docs/research/data.md §1.2, §7.3). An estimate with its
 // assumptions written out, checked by test/facts-readers.test.ts so a change to a reader or a limit shows here.
-import { ALCHEMY_FREE, HELIUS_FREE, HELIUS_RPC_CREDITS, RUGCHECK_FREE, GOPLUS_FREE } from '../scheduler/limits.ts';
+import { ALCHEMY_FREE, HELIUS_FREE, HELIUS_GPA_CREDITS, HELIUS_RPC_CREDITS, RUGCHECK_FREE, GOPLUS_FREE } from '../scheduler/limits.ts';
 import { HOLDER_SCANS_PER_DAY } from './readers.ts';
 import { RUG_CHECK_CONFIG } from '../../../core/src/config/rugs.ts';
 import { DEPLOYER_CHECK_CREDITS_PER_DAY } from './deployer-checks.ts';
@@ -25,8 +25,7 @@ export const ASSUMPTIONS = {
   ownerBatchesPerScan: 1,
 } as const;
 
-/** Helius credits for one getProgramAccounts (published price; gpa-probe run 37149567929 used it). */
-export const HELIUS_GPA_CREDITS = 10;
+export { HELIUS_GPA_CREDITS };
 
 /**
  * Helius credits of one complete holder scan (`readHoldersAll`): the mint read, one getProgramAccounts and the owner
