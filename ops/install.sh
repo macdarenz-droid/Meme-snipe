@@ -1500,6 +1500,7 @@ export const MAX_UPLOADS_PER_RUN = 300;
 /** A day's journal is uploaded once the day has ended and this much more has passed. */
 const JOURNAL_GRACE_MS = 10 * 60_000;
 const STOP_AFTER_FAILURES = 3;
+const TAKEN = 'a different file has this name in the data repository';
 const BOOT_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 const DATA_RE = /^days\/(\d{4}-\d{2}-\d{2})\/((?:frames|releases)-\d{3}\.jsonl\.zst)$/;
@@ -1747,6 +1748,22 @@ export const itemsOf = (b) => {
   return items;
 };
 
+/**
+ * A journal line as uploaded: a refused Telegram command's own text (typed by a person, so possibly personal) is replaced
+ * with "[redacted]"; an unreadable line naming a refused command is left out. Every other line goes byte for byte.
+ */
+export const scrubJournalLine = (line) => {
+  if (!line.includes('command_refused')) return line;
+  try {
+    const j = JSON.parse(line.toString('utf8'));
+    if (j?.action !== 'command_refused' || !Array.isArray(j.reasons)) return line;
+    j.reasons = j.reasons.map((r) => (typeof r === 'string' && /^command [\s\S]* refused$/.test(r) ? 'command [redacted] refused' : r));
+    return Buffer.from(`${JSON.stringify(j)}\n`);
+  } catch {
+    return Buffer.alloc(0);
+  }
+};
+
 /** The signed header for one request: the watchdog checks "t\nRECORD\n/record\n<header>" with the heartbeat key. */
 export const signHeader = (key, fields, nowS) => {
   const text = JSON.stringify({ v: 1, op: fields.op, t: nowS, nonce: randomBytes(16).toString('hex'), day: fields.day, release: fields.release, boot: fields.boot, file: fields.file, size: fields.size, sha256: fields.sha256, ...(fields.op === 'check' ? { asset_id: fields.asset_id } : {}) });
@@ -1811,6 +1828,7 @@ export class Uploader {
     this.uploads = 0;
     this.counts = { uploaded: 0, verified: 0, deleted: 0, freed_bytes: 0, vanished: 0 };
     this.vanishedFiles = [];
+    this.bootItems = new Map();
     this.lastError = null;
     this.stopped = false;
     this.lastStatus = 0;
@@ -1854,7 +1872,7 @@ export class Uploader {
     const files = this.state.files;
     if (files[it.key]?.vanished_at) return;
     if (RECORDER_KINDS.has(it.kind)) {
-      files[it.key] = { ...(files[it.key] ?? { day: it.day, boot: it.boot, path: it.rel }), vanished_at: this.d.now() };
+      files[it.key] = { ...(files[it.key] ?? { day: it.day, boot: it.boot, path: it.rel }), vanished_at: this.d.now(), listed: { sha256: it.sha256, bytes: it.size } };
       this.save();
     }
     this.counts.vanished++;
@@ -1895,12 +1913,22 @@ export class Uploader {
       }
     }
     if (rec?.vanished_at || this.uploads >= MAX_UPLOADS_PER_RUN) return;
+    if (it.kind === 'manifest' && !this.manifestFinal(it.boot)) return;
     try {
       await this.send(it);
     } catch (e) {
       if (!isGone(e)) throw e;
       this.vanish(it);
     }
+  }
+
+  /**
+   * A boot's manifest goes up once, and its copy can never be replaced: only after every frames and releases file it
+   * lists is confirmed upstream or recorded as vanished, so the copy is final (RECORD-BUDGET's notes included).
+   */
+  manifestFinal(boot) {
+    const b = this.bootItems.get(boot) ?? [];
+    return b.every((i) => i.kind !== 'data' || this.state.files[i.key]?.verified === true || this.state.files[i.key]?.vanished_at !== undefined);
   }
 
   /** upload()'s checks and sends; a file that vanishes at any step throws ENOENT, which upload() reports. */
@@ -1959,7 +1987,7 @@ export class Uploader {
       }
       if (r.status === 503 && j.retry === true) continue;
       if (r.status === 409 && j.error === 'replayed request') continue;
-      if (r.status === 409) return this.keep(it.key, 'a different file has this name in the data repository');
+      if (r.status === 409) return this.keep(it.key, TAKEN);
       if (Number.isSafeInteger(j.asset_id)) {
         files[it.key] = { day: it.day, boot: it.boot, path: it.rel, release, asset: j.name ?? null, asset_id: j.asset_id, size: h0.bytes, sha256: h0.sha256, verified: false };
         this.save();
@@ -2034,7 +2062,7 @@ export class Uploader {
             day = d;
             if (!isDone(day)) return;
           }
-          yield line;
+          yield scrubJournalLine(line);
           pos += line.length;
           buf = buf.subarray(i + 1);
         }
@@ -2058,13 +2086,28 @@ export class Uploader {
   /** index-N.json for a day once its uploaded set changed: every confirmed file with its asset and sha256, and the boots' manifests. */
   async index(day) {
     const st = (this.state.index[day] ??= { n: 0, hash: null, verified: false, keys: [], pending: null });
-    const entries = Object.entries(this.state.files)
-      .filter(([key, r]) => r.day === day && r.verified && !key.startsWith('index/'))
-      .sort(([a], [b]) => (a < b ? -1 : 1))
+    const sorted = Object.entries(this.state.files)
+      .filter(([key, r]) => r.day === day && !key.startsWith('index/'))
+      .sort(([a], [b]) => (a < b ? -1 : 1));
+    const entries = sorted
+      .filter(([, r]) => r.verified)
       .map(([key, r]) => ({ key, boot: r.boot, path: r.path, release: r.release, asset: r.asset, asset_id: r.asset_id, size: r.size, sha256: r.sha256 }));
-    if (entries.length === 0) return;
-    const hash = createHash('sha256').update(JSON.stringify(entries)).digest('hex');
+    // Files gone from the server before they were sent (RECORD-BUDGET): named here, since the boot's manifest still lists them.
+    const vanished = sorted
+      .filter(([, r]) => !r.verified && r.vanished_at !== undefined)
+      .map(([key, r]) => ({ key, boot: r.boot, path: r.path, sha256: r.listed?.sha256 ?? null, bytes: r.listed?.bytes ?? null, at: new Date(r.vanished_at).toISOString() }));
+    if (entries.length === 0 && vanished.length === 0) return;
+    // Without vanished files the hash is the one earlier versions saved, so no day is indexed again for nothing.
+    const hash = createHash('sha256').update(JSON.stringify(vanished.length === 0 ? entries : { files: entries, vanished })).digest('hex');
     if (st.pending === null && st.verified && st.hash === hash) return;
+    // A number taken by another index (the state file was lost and numbering restarted) moves on to the next one.
+    for (let tries = 0; tries < 20 && !this.stopped; tries++) {
+      if ((await this.indexOnce(day, st, entries, vanished, hash)) !== 'taken') return;
+    }
+  }
+
+  /** One try at the day's next index-N: 'taken' when GitHub already holds other bytes under that name. */
+  async indexOnce(day, st, entries, vanished, hash) {
     if (st.pending === null || !existsSync(this.indexTmp(day, st.pending.n))) {
       const n = st.n + 1;
       const boots = {};
@@ -2076,7 +2119,7 @@ export class Uploader {
           boots[e.boot] = null;
         }
       }
-      const body = JSON.stringify({ v: 1, kind: 'zeroed-record-index', day, n, created: new Date(this.d.now()).toISOString(), files: entries, boots });
+      const body = JSON.stringify({ v: 1, kind: 'zeroed-record-index', day, n, created: new Date(this.d.now()).toISOString(), files: entries, vanished, boots });
       writeAtomic(this.indexTmp(day, n), signIndex(this.cfg.key, body));
       const h = await hashFile(this.indexTmp(day, n));
       st.pending = { n, hash, keys: entries.map((e) => e.key), sha256: h.sha256, size: h.bytes };
@@ -2086,12 +2129,23 @@ export class Uploader {
     const key = `index/${day}/${p.n}`;
     await this.upload({ key, kind: 'index', boot: null, day, path: this.indexTmp(day, p.n), rel: `index-${p.n}.json`, file: `index-${p.n}.json`, size: p.size, sha256: p.sha256, open: false });
     const rec = this.state.files[key];
-    if (!rec?.verified) return;
+    if (!rec?.verified) {
+      const at = this.kept.findIndex((k) => k.key === key && k.why === TAKEN);
+      if (at === -1) return 'not up';
+      this.kept.splice(at, 1);
+      this.d.log(`index-${p.n}.json for ${day} is taken by another index; trying index-${p.n + 1}.json.`);
+      rmSync(this.indexTmp(day, p.n), { force: true });
+      st.n = p.n;
+      st.pending = null;
+      this.save();
+      return 'taken';
+    }
     // The index is a file of its own, never an entry of another index.
     delete this.state.files[key];
     this.state.index[day] = { n: p.n, hash: p.hash, verified: true, keys: p.keys, pending: null, release: rec.release, asset: rec.asset, asset_id: rec.asset_id, size: rec.size, sha256: rec.sha256 };
     rmSync(this.indexTmp(day, p.n), { force: true });
     this.save();
+    return 'up';
   }
 
   indexTmp(day, n) {
@@ -2152,13 +2206,17 @@ export class Uploader {
     try {
       const boots = await readBoots(this.cfg, now, this.d.workerActive);
       const items = boots.flatMap(itemsOf);
+      for (const i of items) this.bootItems.set(i.boot, [...(this.bootItems.get(i.boot) ?? []), i]);
       const days = [...new Set(items.map((i) => i.day))].sort().filter((d) => this.cfg.scope === 'all' || d === this.cfg.scope);
-      for (const day of days) {
-        if (this.stopped) break;
-        for (const it of items.filter((i) => i.day === day)) {
+      // Manifests last: each waits until every file it lists is settled upstream (manifestFinal).
+      for (const last of [false, true]) {
+        for (const day of days) {
           if (this.stopped) break;
-          await this.upload(it);
-          this.tick();
+          for (const it of items.filter((i) => i.day === day && (i.kind === 'manifest') === last)) {
+            if (this.stopped) break;
+            await this.upload(it);
+            this.tick();
+          }
         }
       }
       if (!this.stopped) await this.journalDays();

@@ -464,6 +464,11 @@ describe('a file deleted by someone else during the run (RECORD-BUDGET)', () => 
     expect(x.log.filter((l: string) => l.startsWith('Vanished before upload'))).toEqual([`Vanished before upload: ${boot}/days/${D2}/frames-000.jsonl.zst.`]);
     expect(x.log.at(-1)).toMatch(/ 1 vanished before upload, /);
     expect(x.state().files[`${boot}/days/${D2}/frames-000.jsonl.zst`]).toMatchObject({ vanished_at: NOW });
+    // Recorded upstream: the day's signed index names it as vanished, with its listed sha256 and size.
+    const listed = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8')).days[0].files.find((e: { path: string }) => e.path === `days/${D2}/frames-000.jsonl.zst`);
+    const idx = indexBody(x.r, 1, `rec-${D2}`);
+    expect(idx.vanished).toEqual([{ key: `${boot}/days/${D2}/frames-000.jsonl.zst`, boot, path: `days/${D2}/frames-000.jsonl.zst`, sha256: listed.sha256, bytes: listed.bytes, at: new Date(NOW).toISOString() }]);
+    expect(idx.files.map((e: { key: string }) => e.key)).not.toContain(`${boot}/days/${D2}/frames-000.jsonl.zst`);
     // Reported once: a run after the folder settled neither counts it again nor tries to send it, and deletes the others.
     fsHooks.beforeStream = null;
     age(dir);
@@ -508,6 +513,147 @@ describe('a file deleted by someone else during the run (RECORD-BUDGET)', () => 
   });
 });
 
+/** The transport with the check replies for one file (by its signed file name) changed. */
+const tamper = (base: Transport, file: string, edit: (j: Record<string, unknown>) => Record<string, unknown>, times = Infinity): Transport => {
+  let left = times;
+  return {
+    put: base.put,
+    check: async (h) => {
+      const r = await base.check(h);
+      if ((JSON.parse(h.text) as { file: string }).file !== file || left <= 0 || r.json === null) return r;
+      left--;
+      return { ...r, json: edit(r.json as Record<string, unknown>) };
+    },
+  };
+};
+const assetOf = (r: ReturnType<typeof rig>, name: string) => [...r.gh.assets.values()].find((a) => a.name === name)!;
+const indexBody = (r: ReturnType<typeof rig>, n: number, release: string) => {
+  const a = [...r.gh.assets.values()].find((v) => v.name === `index-${n}.json` && v.browser_download_url.includes(`/download/${release}/`))!;
+  return JSON.parse(Buffer.from(a.bytes).toString().split('\n')[0]!);
+};
+
+describe('data review: the read-back and index gates', () => {
+  /** Run 1 uploads and indexes with deletes off; `between` changes something; run 2 may delete. */
+  const twoRuns = async (between: (x: ReturnType<typeof uploader>, boot: string) => Transport | void) => {
+    const f = fx();
+    const boot = bootId(30, 150);
+    const dir = makeBoot(f, boot);
+    const x = uploader(f, { deleteLocal: false });
+    expect(await x.u.run()).toBe(0);
+    const t = between(x, boot);
+    const y = uploader(f, { r: x.r, ...(t ? { transport: t } : {}) });
+    await y.u.run();
+    return { dir, y };
+  };
+
+  it.each([
+    ['its digest changed', (a: { digest: string | null }) => void (a.digest = `sha256:${'0'.repeat(64)}`)],
+    ['its size changed', (a: { size: number }) => void (a.size += 1)],
+    ['it is no longer "uploaded"', (a: { state: string }) => void (a.state = 'starter')],
+  ])('keeps the local file when, at delete time, GitHub\'s asset shows %s', async (_why, change) => {
+    const { dir, y } = await twoRuns((x, boot) => change(assetOf(x.r, `${boot}.frames-000.jsonl.zst`) as never));
+    expect(exists(dir, `days/${D2}/frames-000.jsonl.zst`)).toBe(true);
+    // The others pass every gate, so the delete run did run.
+    expect(exists(dir, `days/${D2}/frames-001.jsonl.zst`)).toBe(false);
+    expect(y.status().deleted).toBe(2);
+  });
+
+  it.each([
+    ['match: false', (j: Record<string, unknown>) => ({ ...j, match: false })],
+    ['another digest', (j: Record<string, unknown>) => ({ ...j, digest: `sha256:${'0'.repeat(64)}` })],
+    ['another size', (j: Record<string, unknown>) => ({ ...j, size: (j['size'] as number) + 1 })],
+    ['a state other than "uploaded"', (j: Record<string, unknown>) => ({ ...j, state: 'starter' })],
+    ['another asset id', (j: Record<string, unknown>) => ({ ...j, asset_id: (j['asset_id'] as number) + 1 })],
+  ])('keeps the local file when the delete-time check answers ok with %s (each condition on its own)', async (_why, edit) => {
+    const { dir, y } = await twoRuns((x) => tamper(inproc(x.r), 'frames-000.jsonl.zst', edit));
+    expect(exists(dir, `days/${D2}/frames-000.jsonl.zst`)).toBe(true);
+    expect(exists(dir, `days/${D2}/frames-001.jsonl.zst`)).toBe(false);
+    expect(y.status().deleted).toBe(2);
+  });
+
+  it('a confirmed file the standing index does not list yet is kept when the new index fails to go up', async () => {
+    const f = fx();
+    const a = bootId(40, 151);
+    const dirA = makeBoot(f, a);
+    const x = uploader(f, { deleteLocal: false });
+    expect(await x.u.run()).toBe(0);
+    // A second ended boot of the same day; its files are confirmed, but every index upload now fails.
+    const b = bootId(30, 152);
+    const dirB = makeBoot(f, b);
+    const base = inproc(x.r);
+    const t: Transport = {
+      put: async (h, path, size) => ((JSON.parse(h.text) as { file: string }).file.startsWith('index-') ? { status: 502, json: { error: 'down' } } : base.put(h, path, size)),
+      check: base.check,
+    };
+    const y = uploader(f, { r: x.r, transport: t });
+    expect(await y.u.run()).toBe(1);
+    expect(y.state().files[`${b}/days/${D2}/frames-000.jsonl.zst`]).toMatchObject({ verified: true });
+    expect(exists(dirB, `days/${D2}/frames-000.jsonl.zst`)).toBe(true);
+    expect(exists(dirB, `days/${D2}/releases-000.jsonl.zst`)).toBe(true);
+    expect(exists(dirA, `days/${D2}/frames-000.jsonl.zst`)).toBe(false);
+  });
+
+  it('an upload whose read-back does not confirm it is not counted, not indexed, and its boot\'s manifest waits until it is', async () => {
+    const f = fx();
+    const boot = bootId(30, 153);
+    const dir = makeBoot(f, boot);
+    const r = rig();
+    const key = `${boot}/days/${D2}/frames-000.jsonl.zst`;
+    // Only the read-back right after the upload answers a mismatch.
+    const x = uploader(f, { r, transport: tamper(inproc(r), 'frames-000.jsonl.zst', (j) => ({ ...j, match: false }), 1) });
+    expect(await x.u.run()).toBe(1);
+    expect(x.state().files[key]).toMatchObject({ verified: false });
+    expect(indexBody(r, 1, `rec-${D2}`).files.map((e: { key: string }) => e.key)).not.toContain(key);
+    expect(assetNames(r)).not.toContain(`${boot}.manifest.json`);
+    expect(exists(dir, `days/${D2}/frames-000.jsonl.zst`)).toBe(true);
+    // The next run (after the deletes above have settled) reads it back again, confirms it, lists it, and only then
+    // sends the manifest.
+    age(dir);
+    const y = uploader(f, { r });
+    expect(await y.u.run()).toBe(0);
+    expect(y.state().files[key]).toMatchObject({ verified: true });
+    expect(indexBody(r, 2, `rec-${D2}`).files.map((e: { key: string }) => e.key)).toContain(key);
+    expect(assetNames(r)).toContain(`${boot}.manifest.json`);
+  });
+
+  it('a file curl cannot read because it was deleted while sent counts as vanished, not as a failure', async () => {
+    const f = fx();
+    const boot = bootId(30, 154);
+    const dir = makeBoot(f, boot);
+    const r = rig();
+    const base = inproc(r);
+    const t: Transport = {
+      put: async (h, path, size) => {
+        if ((JSON.parse(h.text) as { file: string }).file !== 'frames-000.jsonl.zst') return base.put(h, path, size);
+        unlinkSync(path);
+        return { status: 0, json: null, error: 'curl exit 26: read error' } as Reply;
+      },
+      check: base.check,
+    };
+    const x = uploader(f, { r, transport: t });
+    expect(await x.u.run()).toBe(0);
+    expect(x.status()).toMatchObject({ ok: true, vanished: 1, vanished_files: [`${boot}/days/${D2}/frames-000.jsonl.zst`], last_error: null });
+    expect(exists(dir, `days/${D2}/frames-001.jsonl.zst`)).toBe(true);
+  });
+
+  it('after the state file is lost, a taken index number moves to the next free one, and deletes go on', async () => {
+    const f = fx();
+    const a = bootId(40, 155);
+    makeBoot(f, a);
+    const x = uploader(f, { deleteLocal: false });
+    expect(await x.u.run()).toBe(0);
+    rmSync(f.stateDir, { recursive: true, force: true });
+    const b = bootId(30, 156);
+    const dirB = makeBoot(f, b);
+    const y = uploader(f, { r: x.r });
+    expect(await y.u.run()).toBe(0);
+    expect(y.status().kept).toEqual([]);
+    expect(y.state().index[D2]).toMatchObject({ n: 2, verified: true });
+    expect(indexBody(x.r, 2, `rec-${D2}`).files.map((e: { key: string }) => e.key)).toContain(`${b}/days/${D2}/frames-000.jsonl.zst`);
+    expect(exists(dirB, `days/${D2}/frames-000.jsonl.zst`)).toBe(false);
+  });
+});
+
 describe('redaction scan', () => {
   it('keeps the same patterns as the worker (packages/worker/src/run/redact.ts)', () => {
     const src = readFileSync(join(ROOT, 'packages/worker/src/run/redact.ts'), 'utf8');
@@ -538,7 +684,8 @@ describe('redaction scan', () => {
       { key: `${boot}/days/${D2}/frames-000.jsonl.zst`, why: 'holds a credential-shaped value' },
       { key: `${boot}/days/${D2}/releases-000.jsonl.zst`, why: 'holds a stored credential' },
     ]);
-    expect(assetNames(x.r)).toEqual([`${boot}.frames-001.jsonl.zst`, `${boot}.manifest.json`, 'index-1.json'].sort());
+    // The manifest waits while a file it lists is kept back (its copy would be final); the index carries its content.
+    expect(assetNames(x.r)).toEqual([`${boot}.frames-001.jsonl.zst`, 'index-1.json'].sort());
     expect(exists(dir, `days/${D2}/frames-000.jsonl.zst`)).toBe(true);
     expect(exists(dir, `days/${D2}/releases-000.jsonl.zst`)).toBe(true);
     expect(readFileSync(join(f.stateDir, 'status.json'), 'utf8')).not.toContain(SECRET);
@@ -580,6 +727,29 @@ describe('journal days and the signed index', () => {
     const before = x.r.gh.assets.size;
     await uploader(f, { r: x.r }).u.run();
     expect(x.r.gh.assets.size).toBe(before);
+  });
+
+  it('the uploaded journal never carries the text of a refused command (typed by a person); the server\'s journal is unchanged', async () => {
+    const f = fx();
+    const E = day(3);
+    const typed = '/sell everything to Alice 0412';
+    const refused = `${JSON.stringify({ seq: 2, ts: `${E}T02:00:00.000Z`, boot: 'b', kind: 'decision', action: 'command_refused', reasons: [`command ${typed.slice(0, 32)} refused`, 'unknown command'] })}\n`;
+    const many = `${JSON.stringify({ seq: 3, ts: `${E}T02:00:01.000Z`, boot: 'b', kind: 'decision', action: 'command_refused', reasons: ['4 more commands refused', 'not journaled one by one (over 6 a minute)'] })}\n`;
+    const other = `${JSON.stringify({ seq: 4, ts: `${E}T03:00:00.000Z`, boot: 'b', kind: 'decision', action: 'skip', reasons: ['command refused'] })}\n`;
+    const text = `${JSON.stringify({ seq: 1, ts: `${E}T01:00:00.000Z`, boot: 'b', kind: 'start' })}\n${refused}${many}${other}`;
+    writeFileSync(f.journal, text);
+    const x = uploader(f);
+    expect(await x.u.run()).toBe(0);
+    const { zstdDecompressSync } = await import('node:zlib');
+    const sent = zstdDecompressSync(Buffer.from(assetOf(x.r, `journal-${E}.jsonl.zst`).bytes)).toString();
+    expect(sent).not.toContain('Alice');
+    expect(sent).not.toContain('/sell');
+    const ls = sent.trimEnd().split('\n').map((l) => JSON.parse(l));
+    expect(ls.map((l) => l.seq)).toEqual([1, 2, 3, 4]);
+    expect(ls[1]).toEqual({ ...JSON.parse(refused), reasons: ['command [redacted] refused', 'unknown command'] });
+    expect(ls[2]).toEqual(JSON.parse(many));
+    expect(ls[3]).toEqual(JSON.parse(other));
+    expect(readFileSync(f.journal, 'utf8')).toBe(text);
   });
 
   it('a day still inside its 10-minute grace after midnight waits', async () => {
