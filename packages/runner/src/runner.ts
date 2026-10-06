@@ -1,7 +1,6 @@
 // The dry-run runner: samples the worker's health, runs the pre-set drills, and writes the evidence folder.
 // One call runs one segment: the whole run on the VPS, or one ~5 h 50 min GitHub Actions job in the fallback,
 // which resumes from the evidence folder and worker state the previous job saved.
-import { createHash } from 'node:crypto';
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { performance } from 'node:perf_hooks';
 import { dirname, join } from 'node:path';
@@ -11,7 +10,7 @@ import { EXIT_UNIVERSES } from '../../core/src/config/index.ts';
 import { item4 } from './item4.ts';
 import { checkQuota, coverageGaps, lookupLatency, quotaReport, rejections, type BootTotals } from './quota.ts';
 import { checkJournalLines } from './journal.ts';
-import { fileLines } from './lines.ts';
+import { fileHash, fileLines } from './lines.ts';
 import { makePlan, type Drill } from './plan.ts';
 import { buildReport, reportMarkdown, type DrillOutcome, type Kept, type Label, type RecordedFile, type RecoveredState, type Report, type RunMeta, type Sample } from './report.ts';
 
@@ -736,8 +735,8 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
     for (const name of recordedFiles(dir)) {
       const src = join(dir, name);
       const path = `recorder/${name}`;
-      const data = readFileSync(src);
-      const sha256 = createHash('sha256').update(data).digest('hex');
+      // Hashed in chunks: a recorded day file can be large, and is never held whole.
+      const { bytes, sha256 } = fileHash(src);
       if (o.keepRecorded === 'copy') {
         const out = join(o.recordedDir ?? join(ev, 'recorded'), name);
         mkdirSync(dirname(out), { recursive: true });
@@ -745,7 +744,7 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
         // Shipped with this job's recorded-data artifact; not carried forward in the state artifact.
         rmSync(src);
       }
-      const entry = { path, bytes: data.length, sha256, kept: o.keepRecorded === 'copy' ? (o.recordedArtifact ?? 'artifact') : 'host' };
+      const entry = { path, bytes, sha256, kept: o.keepRecorded === 'copy' ? (o.recordedArtifact ?? 'artifact') : 'host' };
       const i = manifest.findIndex((f) => f.path === path);
       if (i >= 0) manifest[i] = entry;
       else manifest.push(entry);

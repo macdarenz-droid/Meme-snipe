@@ -2687,3 +2687,5 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   `null` for an omitted element, no omission of a key, a piece not hashed, no batch flush, no `toJSON`.
 - **Not in this card.** Why 41.2k coverage facts are kept is STORE-GROWTH's question; loading still parses the payload
   line whole (the boot side, ruled separately as BOOT-CAP).
+
+- **2026-10-05 · The runner hashes recorded files in chunks (review of #192).** `collectRecorded` read each recorder file whole to hash it. It now uses `fileHash` (runner `lines.ts`), which reads 1 MiB at a time, so a large day file never sits in memory. The size and sha256 are unchanged at every chunk size (test). Evidence: `packages/runner/test/hash.test.ts` (fails on the base); mutants (count the chunk size instead of the bytes read; hash the whole buffer) are killed.
