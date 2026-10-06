@@ -45,10 +45,12 @@ describe('the source', () => {
   });
 
   it('a heartbeat of another product, or without a product, is not liveness', () => {
-    const { socket, alive } = setup();
+    const { socket, alive, prices } = setup();
     socket.push(heartbeat({ product_id: 'BTC-USD' }));
     socket.push({ type: 'heartbeat' });
+    socket.push({ type: 'ticker', product_id: 'BTC-USD', price: '60000.5', time: '2026-10-06T00:00:10.000000Z' });
     expect(alive).toEqual([]);
+    expect(prices()).toEqual([]);
   });
 
   it('heartbeats never set or re-date the price: R1 still judges the ticker\'s own age', () => {
@@ -105,10 +107,12 @@ describe('the worker\'s stale halt', () => {
     expect(result).toEqual({ ok: true });
     return { h, m, hub };
   };
-  const run = async (m: Market, h: H, hub: FakeSocketHub, ms: number, beat: boolean): Promise<void> => {
+  const run = async (m: Market, h: H, hub: FakeSocketHub, ms: number, beat: boolean, chain = true): Promise<void> => {
     await m.run(ms, 400, () => {
-      m.slot();
-      h.worker.feed.ingest('helius' as Source, { type: 'offchain', key: 'feed:status:helius', value: { state: 'up' } }, { receivedAt: m.now });
+      if (chain) {
+        m.slot();
+        h.worker.feed.ingest('helius' as Source, { type: 'offchain', key: 'feed:status:helius', value: { state: 'up' } }, { receivedAt: m.now });
+      }
       if (beat) hub.sockets.at(-1)?.push(heartbeat());
     });
   };
@@ -126,6 +130,16 @@ describe('the worker\'s stale halt', () => {
     const { h, m, hub } = await boot(18942, false);
     await run(m, h, hub, 30_000, true);
     expect(halted(h)).toBe(true);
+    await h.worker.stop();
+  }, 60_000);
+
+  it('Coinbase heartbeats never keep another feed fresh: a silent Helius still halts and cannot exit', async () => {
+    const { h, m, hub } = await boot(18946, true);
+    await run(m, h, hub, 15_000, true, false);
+    const reasons = h.worker.health().halt_reasons;
+    expect(reasons).toContain('feed helius-ws stale');
+    expect(reasons).not.toContain('feed coinbase-ws stale');
+    expect(h.worker.health().exit_capable).toBe(false);
     await h.worker.stop();
   }, 60_000);
 
