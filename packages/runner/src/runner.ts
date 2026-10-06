@@ -317,9 +317,13 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
   const handovers = outcomes.filter((d) => d.kind === 'handover').length;
 
   let last: Sample | null = null;
-  while (Date.now() < endAt) {
+  // The final report includes every kill this runner started. An async kill or health request may cross runEnd:
+  // finish that restart within its existing recovery bound, without starting another drill or crossing segmentEnd.
+  const finishingRestart = (): boolean => pending?.kind === 'restart' && pending.killedAt !== undefined;
+  while (Date.now() < endAt || (Date.now() < o.segmentEnd && finishingRestart())) {
     const t = Date.now();
     const h = await fetchHealth(o.healthAddr);
+    if (Date.now() >= o.segmentEnd || (Date.now() >= endAt && !finishingRestart())) break;
     const s = toSample(t, h);
     if (h) noteBoot(h);
     appendFileSync(P.samples, `${JSON.stringify(s)}\n`);
@@ -330,6 +334,7 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
     if (o.backupEveryMs !== undefined && pending === null && h?.reconciled && (backup === null || t - backup.at >= o.backupEveryMs)) {
       await takeBackup(h, t);
     }
+    if (Date.now() >= endAt && !finishingRestart()) break;
 
     if (pending === null) {
       const due = meta.plan.find((d) => !done.has(d.id) && d.atMs <= rel);
@@ -464,7 +469,8 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
         p.ok = reconciledFirst(wDir, ws.boot!);
       }
       // Recovered means reconciled and able to exit (DECISIONS, Standby), timed for every restart, open position or not.
-      if (pending !== null && p.killedAt !== undefined && p.reconciledAt !== undefined && ws.exit_capable && ws.boot !== p.prevBoot) {
+      // A host reboot can bring the runner back after the worker recovered: its journal below supplies the wall times.
+      if (pending !== null && p.killedAt !== undefined && p.reconciledAt !== undefined && ws.exit_capable && ws.boot !== p.prevBoot && (clock === 'wall' || since() <= recoverMs)) {
         const k = p.killedAt;
         const lines = journalLines(wDir);
         let recovery = { reconciled_ms: p.reconciledAt, exit_capable_ms: since(), clock };
