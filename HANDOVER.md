@@ -48,6 +48,7 @@ The previous S1 account reached its usage limit about 12:45 PM. The owner made t
 - No host access, no secrets access (owner only), as before.
 
 **Log (Melbourne time, newest first)**
+- 3:03 AM hourly (no owner post; nothing new for the owner since 2:30 AM). 7f1ff241 up 6,538 s, unplanned 0 (no crash since 1:06 PM: 13 h 56 min). Day: seen 341, refused 192, entered 0. Helius 112,436 this boot (about 62k an hour); about 530k used since the key change (boot sums, approximate), so it runs out about 10–11 AM (estimate). zeroed-data tags: 0 (upload timer waits for the next switch, as noted at 2:05 AM). #260: B1 fix in progress.
 - 3:03 AM **REPLAY-1000 interim** (Mode B with no rate cap; 47 sample graduates of 6 Oct that migrated before 14:55Z; the other 963 feed the regime; creates from 18:20Z on 5 Oct):
   - 0 trades in every run: no-H5 f87ee90, H5 e138ad2, and the what-if 49f5b09 that adds cut-create fetches. H5 decided no coin.
   - Coins failing each gate (a coin can fail several):
