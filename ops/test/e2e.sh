@@ -673,6 +673,14 @@ prac="$orig-practice"
 in_c "rm -rf '$prac' && cp -a '$rel' '$prac' && rm -rf '$prac/packages'"
 git -C "$ROOT" archive HEAD packages ops/host-config.json | docker exec -i "$C" tar -x -C "$prac" || fail "this commit's worker could not be added to the test release"
 rel="$prac"
+# PAUSE (owner, 2026-10-07): while this commit's host-config runs the stand-in ("worker": "stub"), the release's own
+# worker is still tested here, with "release" in this test copy only, so every fix keeps its end-to-end proof. The
+# paused value itself is pinned by ops-files.test.ts and host-logic.test.ts; any other value fails here.
+case "$(in_c "jq -r '.worker' '$rel/ops/host-config.json'")" in
+  release) ;;
+  stub) in_c "jq '.worker = \"release\"' '$rel/ops/host-config.json' > /tmp/hc && mv /tmp/hc '$rel/ops/host-config.json'" ;;
+  *) fail "this commit's host-config names neither the release's worker nor the stand-in" ;;
+esac
 in_c "jq -e '.worker == \"release\" and (.shakedown | type) == \"object\"' '$rel/ops/host-config.json'" >/dev/null || fail "this commit's host-config does not run the release's worker with shakedown settings"
 # No node_modules: the worker runs on Node 22's type stripping with no runtime dependency.
 in_c "find '$rel' -name node_modules | grep -q ." && fail "the release carries node_modules"
