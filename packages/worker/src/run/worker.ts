@@ -490,13 +490,13 @@ export class Worker {
   /** Retries waiting to ask again, for cut creates logs and cut pool-trade logs (cleared at a stop). */
   readonly #cutCreateTimers = new Set<TimerHandle>();
   /** TRADE-GAP-HEAL: the pool watches (`coverage:trades:<pool>:start` vias): a cut log on one is a hole in its trade stream. */
-  readonly #tradeVias = new Set<string>();
+  readonly #tradeVias = new CappedMap<string, true>(TRADE_VIAS_KEPT);
   /** Cut-pool-trade-log fetches this UTC day (bounded by CUT_TRADE_FETCHES_PER_DAY), and that day. */
   #cutTradeFetches = { day: -1, count: 0 };
   /** Signatures of cut pool-trade logs already asked for (a cut log names its signature on each of its events). */
-  readonly #cutTradeSeen = new Set<string>();
+  readonly #cutTradeSeen = new CappedMap<string, true>(CUT_TRADE_FETCHES_PER_DAY);
   /** Holes asked for per pool watch (bounded by CUT_TRADE_HOLES_PER_POOL; the oldest watches are forgotten first). */
-  readonly #cutTradePerPool = new Map<string, number>();
+  readonly #cutTradePerPool = new CappedMap<string, number>(TRADE_VIAS_KEPT);
   #intentAt = new Map<string, number>();
   /** Entries start halted: nothing enters before the first feed check says otherwise. */
   #halted: readonly string[] = ['starting'];
@@ -1155,10 +1155,7 @@ export class Worker {
       if (isObj(v) && typeof v['via'] === 'string') this.#createVias.add(v['via']);
     } else if (m.key.startsWith('coverage:trades:') && m.key.endsWith(':start')) {
       const v = isObj(m.value) && isObj(m.value['value']) ? m.value['value'] : m.value;
-      if (isObj(v) && typeof v['via'] === 'string') {
-        this.#tradeVias.add(v['via']);
-        if (this.#tradeVias.size > TRADE_VIAS_KEPT) this.#tradeVias.delete(this.#tradeVias.values().next().value!);
-      }
+      if (isObj(v) && typeof v['via'] === 'string') this.#tradeVias.set(v['via'], true);
     }
     this.#cutTradeLog(m);
     if (m.key.startsWith('logs:pump:CreateEvent:') && isObj(m.value) && isObj(m.value['event']) && isObj(m.value['event']['data'])) {
@@ -1502,14 +1499,12 @@ export class Worker {
    */
   #cutPoolLog(sig: string, via: string): void {
     if (this.#cutTradeSeen.has(sig)) return;
-    this.#cutTradeSeen.add(sig);
+    this.#cutTradeSeen.set(sig, true);
     // Only a candidate's candles are judged (H11): a held position's chain re-bases on its next swap, a tail's candles
     // are never read. Their holes spend nothing.
     if (!this.#candidatePool(via)) return this.#holeOutcome(via, sig, false);
-    if (this.#cutTradeSeen.size > CUT_TRADE_FETCHES_PER_DAY) this.#cutTradeSeen.delete(this.#cutTradeSeen.values().next().value!);
     const holes = (this.#cutTradePerPool.get(via) ?? 0) + 1;
     this.#cutTradePerPool.set(via, holes);
-    if (this.#cutTradePerPool.size > TRADE_VIAS_KEPT) this.#cutTradePerPool.delete(this.#cutTradePerPool.keys().next().value!);
     if (holes > CUT_TRADE_HOLES_PER_POOL || !this.#takeCutTradeFetch()) return this.#holeOutcome(via, sig, false);
     this.#cutPoolTry(sig, via, 0);
   }
