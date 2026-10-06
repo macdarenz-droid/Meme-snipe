@@ -39,6 +39,7 @@ db="$1"; shift
 [ -z "\${ZEROED_TEST_REMOVE_FILE:-}" ] || rm -f -- "$ZEROED_TEST_REMOVE_FILE"
 case "$*" in
   *.backup*) [ -z "\${ZEROED_TEST_SNAPSHOT_HOOK:-}" ] || node "$ZEROED_TEST_SNAPSHOT_HOOK" "$ZEROED_BACKUP_SRC"; dest="$*"; dest="\${dest##*.backup \\'}"; cp "$db" "\${dest%\\'}" ;;
+  *journal_mode=DELETE*) echo delete ;;
   *integrity_check*) echo ok ;;
   *sqlite_schema*) if [ -n "\${ZEROED_TEST_SCHEMA_CHANGED:-}" ] && [ "$db" != "$ZEROED_BACKUP_SRC/ledger.sqlite" ]; then echo changed; else echo trades; fi ;;
   *count*) echo 3 ;;

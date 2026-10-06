@@ -1082,7 +1082,7 @@ function sqliteStage(dir,dest,max) {
   }
   if(lexists(join(dest,'ledger.sqlite-wal')))frames=walFrames(join(dest,'ledger.sqlite-wal'));
   // SQLite's private WAL index grows in 32 KiB regions. Charge it even if the exclusive reader avoids SHM.
-  const shm=lexists(join(dest,'ledger.sqlite-wal'))?32768*(1+Math.ceil(Math.max(0,frames-4062)/4096)):0;
+  const shm=32768*(1+Math.ceil(Math.max(0,frames-4062)/4096));
   if(bytes+shm>=max)throw Error('SQLite scratch exceeds snapshot limit');
   console.log(bytes+shm);
 }
@@ -1855,6 +1855,10 @@ for rel in "${found[@]}"; do
       [ "$(stat -c %s "$work/snap/$rel")" -le "$sqlite_room" ] ||
         { echo "SQLite backup exceeds the state snapshot limit; nothing published."; exit 1; }
       rm -rf "$work/sqlite"
+      # Normalize only the private, fully recovered copy. Standalone archive readers need no WAL/SHM.
+      mode="$(sqlite3 "$work/snap/$rel" 'PRAGMA journal_mode=DELETE;')" || { echo "SQLite snapshot normalization failed; nothing published."; exit 1; }
+      [ "$mode" = delete ] && [ ! -e "$work/snap/$rel-wal" ] && [ ! -e "$work/snap/$rel-shm" ] ||
+        { echo "SQLite snapshot still needs side files; nothing published."; exit 1; }
       check="$(sqlite3 "$work/snap/$rel" 'PRAGMA integrity_check;')"
       [ "$check" = ok ] || { echo "Backup copy of $rel failed its integrity check."; exit 1; }
       ;;

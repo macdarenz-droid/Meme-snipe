@@ -111,7 +111,7 @@ function sqliteStage(dir,dest,max) {
   }
   if(lexists(join(dest,'ledger.sqlite-wal')))frames=walFrames(join(dest,'ledger.sqlite-wal'));
   // SQLite's private WAL index grows in 32 KiB regions. Charge it even if the exclusive reader avoids SHM.
-  const shm=lexists(join(dest,'ledger.sqlite-wal'))?32768*(1+Math.ceil(Math.max(0,frames-4062)/4096)):0;
+  const shm=32768*(1+Math.ceil(Math.max(0,frames-4062)/4096));
   if(bytes+shm>=max)throw Error('SQLite scratch exceeds snapshot limit');
   console.log(bytes+shm);
 }
