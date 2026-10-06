@@ -69,6 +69,13 @@ export { PERSIST_FILE } from '../persist/index.ts';
 export const DOWNTIME_CREDIT_CAP = 3_000;
 /** RESTART-KEEP, COMPLETION-READ: transactions read before a migration to find its curve's completion. */
 export const COMPLETION_READS = 5;
+/**
+ * H16-WHY C: the most cut creates logs whose transaction is fetched in one UTC day, per process. About 2,000 a day are
+ * expected (S1: 41 of 600 sampled creates on 6 Oct were cut, at about 30,000 creates a day); each costs one Helius
+ * getTransaction (1 credit) when found at once, and up to 4 when it needs every retry. Past the cap the hole stays and
+ * H14 refuses (fail closed).
+ */
+export const CUT_CREATE_FETCHES_PER_DAY = 3_000;
 /** COMPLETION-READ: the credits one completion read reserves: 1 signatures page and up to COMPLETION_READS transactions. */
 export const COMPLETION_CREDITS = callCost('helius', 'getSignaturesForAddress') + COMPLETION_READS * callCost('helius', 'getTransaction');
 const MIGRATION_TX_PREFIX = 'pump:CompletePumpAmmMigrationEvent:';
@@ -155,7 +162,7 @@ export interface WorkerDeps {
    * Fetches a transaction at confirmed and puts it on the feed; resolves true when it was found. Used for a shortlisted
    * mint's create (item 9: live H9, H12–H14 need the confirmed create) and for a cut trade log on a rug-covered stream.
    */
-  readonly fetchTx: (signature: string, why: 'create' | 'cut-log' | 'restore') => Promise<boolean>;
+  readonly fetchTx: (signature: string, why: 'create' | 'cut-log' | 'cut-create' | 'restore') => Promise<boolean>;
   /**
    * RESTART-KEEP: signature reads on SEED-1's RPC, charged to the fill budget: the migrations of a restart's downtime,
    * and (COMPLETION-READ) each fetched migration's curve completion. Without it they are not read: coins that migrated
@@ -451,6 +458,13 @@ export class Worker {
   readonly #createLookups = new Set<string>();
   /** Watches that carry rug coverage (`coverage:rugs:start` vias): a cut log on one is a gap until its transaction is read. */
   #rugVias = new Set<string>();
+  /**
+   * H16-WHY C: watches that carry the creates stream (`coverage:creates:start` vias). A cut log on one may hide a create,
+   * and H14 refuses every coin while it is a hole (DeployerIndex.lostCreate); its transaction is fetched to close it.
+   */
+  #createVias = new Set<string>();
+  /** Cut creates logs fetched this UTC day (bounded by CUT_CREATE_FETCHES_PER_DAY), and that day. */
+  #cutCreateFetches = { day: -1, count: 0 };
   #intentAt = new Map<string, number>();
   /** Entries start halted: nothing enters before the first feed check says otherwise. */
   #halted: readonly string[] = ['starting'];
@@ -1104,6 +1118,9 @@ export class Worker {
     } else if (m.key === 'coverage:rugs:start') {
       const v = isObj(m.value) && isObj(m.value['value']) ? m.value['value'] : m.value;
       if (isObj(v) && typeof v['via'] === 'string') this.#rugVias.add(v['via']);
+    } else if (m.key === 'coverage:creates:start') {
+      const v = isObj(m.value) && isObj(m.value['value']) ? m.value['value'] : m.value;
+      if (isObj(v) && typeof v['via'] === 'string') this.#createVias.add(v['via']);
     }
     this.#cutTradeLog(m);
     if (m.key.startsWith('logs:pump:CreateEvent:') && isObj(m.value) && isObj(m.value['event']) && isObj(m.value['event']['data'])) {
@@ -1368,7 +1385,9 @@ export class Worker {
     const via = m.key.startsWith('logs:truncated:') ? m.key.slice('logs:truncated:'.length)
       : m.key.startsWith('logs:undecodable:') ? m.key.slice('logs:undecodable:'.length)
         : m.key.startsWith('logs:') && v['truncated'] === true && typeof v['via'] === 'string' ? v['via'] : null;
-    if (via === null || !this.#rugVias.has(via)) return;
+    if (via === null) return;
+    if (this.#createVias.has(via) && !this.#rugVias.has(via)) return this.#cutCreateLog(v['signature']);
+    if (!this.#rugVias.has(via)) return;
     const sig = v['signature'];
     const slot = m.moment.slot;
     void this.#d.fetchTx(sig, 'cut-log').catch(() => false).then((found) => {
@@ -1376,6 +1395,26 @@ export class Worker {
       this.#feed.ingest('worker', { type: 'offchain', key: 'coverage:rugs:gap', value: { fromSlot: slot, toSlot: slot, reason: `cut trade log ${sig}, transaction not found`, via } }, { receivedAt: this.#d.timers.now() });
     });
   }
+
+  /**
+   * H16-WHY C: a cut or undecodable log on the creates watch. Its transaction is fetched; once released, its `ev:` events
+   * clear the hole in the deployer index. Fails closed: a fetch that fails, finds nothing, is not back yet or is past
+   * the day's cap leaves the hole, and H14 keeps refusing across it. A repeat for the same signature is not counted
+   * again (the fetcher answers it from its own memory; `#cutCreateSeen` keeps the count honest).
+   */
+  #cutCreateLog(sig: string): void {
+    if (this.#cutCreateSeen.has(sig)) return;
+    const day = Math.floor(this.#d.timers.now() / 86_400_000);
+    if (day !== this.#cutCreateFetches.day) this.#cutCreateFetches = { day, count: 0 };
+    if (this.#cutCreateFetches.count >= CUT_CREATE_FETCHES_PER_DAY) return;
+    this.#cutCreateFetches.count += 1;
+    this.#cutCreateSeen.add(sig);
+    if (this.#cutCreateSeen.size > CUT_CREATE_FETCHES_PER_DAY) this.#cutCreateSeen.delete(this.#cutCreateSeen.values().next().value!);
+    void this.#d.fetchTx(sig, 'cut-create').catch(() => false);
+  }
+
+  /** Signatures of cut creates logs already fetched (a truncated log with several events names its signature on each). */
+  readonly #cutCreateSeen = new Set<string>();
 
   #paperMarket(mint: string): PaperMarket | null {
     const m = this.poolOf(mint);

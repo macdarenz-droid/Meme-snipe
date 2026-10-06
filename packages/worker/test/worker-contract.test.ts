@@ -29,6 +29,8 @@ import { Journal, lastLines } from '../src/run/journal.ts';
 import { redact, setSecretValues } from '../src/run/redact.ts';
 import { CreditBook } from '../src/run/sources.ts';
 import { MINT, T, Market, makeWorker, slotAt, tempState, virtualTimers } from './worker-harness.ts';
+import { recordOf, tx } from './helpers.ts';
+import { CUT_CREATE_FETCHES_PER_DAY } from '../src/run/worker.ts';
 
 const lines = (dir: string) => readFileSync(join(dir, 'journal.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>);
 const ROOT = join(import.meta.dirname, '..', '..', '..');
@@ -506,6 +508,58 @@ describe('a cut trade log on a rug-covered stream (RUG-1 wiring rule)', () => {
     const off = await run(false, false);
     expect(off.fetched).toEqual([]);
     expect(off.gaps).toEqual([]);
+  });
+});
+
+describe('H16-WHY C: a cut log on the creates watch', () => {
+  const VIA = 'logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM';
+  const create = recordOf(tx('pump CreateEvent'));
+  const now = (h: ReturnType<typeof makeWorker>) => ({ slot: 0n, txIndex: 0, ixIndex: 0, receivedAt: h.timers.now() });
+  const cut = (h: ReturnType<typeof makeWorker>, signature: string, slot = 1_001n) =>
+    h.worker.feed.ingest('helius', { type: 'logs', signature, slot, err: null, via: VIA, logs: ['Program 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P invoke [1]', 'Log truncated'] }, { receivedAt: h.timers.now() });
+  const start = async (found: boolean, fetchedWhy: [string, string][]) => {
+    const h = makeWorker({ found, fetchedWhy });
+    await h.worker.reconcile();
+    const m = new Market(h);
+    m.slot(1_000n);
+    m.offchain('coverage:creates:start', { fromSlot: 900n, via: VIA });
+    await m.run(1_000, 200, () => m.slot());
+    return { h, m };
+  };
+
+  it('is fetched, and its released transaction closes the hole H14 refuses across', async () => {
+    const fetchedWhy: [string, string][] = [];
+    const { h, m } = await start(true, fetchedWhy);
+    cut(h, create.signature);
+    await m.run(2_000, 200, () => m.slot());
+    expect(fetchedWhy).toEqual([[create.signature, 'cut-create']]);
+    // Asked for, not yet on the feed: still a hole (never cleared by the ask alone).
+    expect(h.worker.strategy.deployers.lostCreate(0, now(h))).toMatchObject({ signature: create.signature, via: VIA });
+    // The fetcher puts the transaction on the feed: its ev: events close the hole.
+    h.worker.feed.ingest('helius', { type: 'tx', record: create }, { receivedAt: h.timers.now(), lookup: true });
+    await m.run(2_000, 200, () => m.slot());
+    expect(h.worker.strategy.deployers.lostCreate(0, now(h))).toBeNull();
+    // Not a rug-covered watch: no rugs gap either way.
+    expect(fetchedWhy.filter(([, why]) => why === 'cut-log')).toEqual([]);
+    await h.worker.stop();
+  });
+
+  it('fails closed: a transaction not found leaves the hole; a signature is fetched once; past the day\'s cap nothing is fetched', async () => {
+    const fetchedWhy: [string, string][] = [];
+    const { h, m } = await start(false, fetchedWhy);
+    cut(h, create.signature);
+    cut(h, create.signature, 1_002n);
+    await m.run(3_000, 200, () => m.slot());
+    expect(fetchedWhy).toEqual([[create.signature, 'cut-create']]);
+    expect(h.worker.strategy.deployers.lostCreate(0, now(h))).toMatchObject({ signature: create.signature });
+    // The cap: CUT_CREATE_FETCHES_PER_DAY fetches in a UTC day, then none (the holes stay, H14 refuses).
+    const B58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+    const sig = (k: number) => `${B58[k % 58]}${B58[Math.floor(k / 58)]}${'4'.repeat(86)}`;
+    for (let k = 1; k <= CUT_CREATE_FETCHES_PER_DAY; k++) cut(h, sig(k), 1_003n);
+    await m.run(3_000, 200, () => m.slot());
+    expect(fetchedWhy).toHaveLength(CUT_CREATE_FETCHES_PER_DAY);
+    expect(fetchedWhy.at(-1)).toEqual([sig(CUT_CREATE_FETCHES_PER_DAY - 1), 'cut-create']);
+    await h.worker.stop();
   });
 });
 
