@@ -57,6 +57,7 @@ export interface SummaryState {
 export const emptySummaryState = (): SummaryState => ({ v: 1, offset: 0, halts: [], days: {}, lastDay: null });
 /** Days kept in summary.json: today, yesterday (its final post) and one spare. */
 const KEEP_DAYS = 3;
+const JOURNAL_COUNTS_INCOMPLETE = 'journal-counts-incomplete';
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 export const summaryFile = (dir: string) =>
@@ -114,7 +115,31 @@ export const foldLine = (s: SummaryState, line: unknown): void => {
   const day = (s.days[dayKey] ??= emptyDay());
   const kind = line['kind'];
   const reasons = Array.isArray(line['reasons']) ? line['reasons'].filter((r): r is string => typeof r === 'string') : [];
-  if (kind === 'start') {
+  if (kind === 'coverage_gap' && line['stream'] === 'journal') {
+    const from = typeof line['from_ts'] === 'string' ? Date.parse(line['from_ts']) : Number.NaN;
+    const to = typeof line['to_ts'] === 'string' ? Date.parse(line['to_ts']) : Number.NaN;
+    const affected = new Set<string>();
+    if (Number.isFinite(from) && Number.isFinite(to) && from <= to) {
+      const end = Math.min(to, ms);
+      try {
+        // Only recent dates matter; do not ask the timezone rules to resolve an arbitrarily old from_ts.
+        const first = melbourneDate(Math.max(from, end - KEEP_DAYS * 86_400_000));
+        let key = melbourneDate(end);
+        // Calendar dates, not 24h of Melbourne wall time (DST days differ). Never walk an unbounded loss range.
+        for (let n = 0; n < KEEP_DAYS && key >= first; n++) {
+          affected.add(key);
+          key = new Date(Date.parse(`${key}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
+        }
+      } catch (e) {
+        if (!(e instanceof RangeError)) throw e;
+        // Unsupported historical dates cannot make a journal loss marker disappear: warn on its receipt day.
+        affected.clear();
+      }
+    }
+    if (affected.size === 0) affected.add(dayKey);
+    for (const key of affected) bump((s.days[key] ??= emptyDay()).alerts, JOURNAL_COUNTS_INCOMPLETE);
+    pruneDays(s);
+  } else if (kind === 'start') {
     // The unit's `--reconcile` pre-step writes its own start line (RESTART-CAUSE): only real boots are counted.
     if (line['phase'] !== 'reconcile') {
       day.starts += 1;
@@ -309,6 +334,11 @@ export const buildSummary = (i: SummaryInputs): Summary => {
       if (x === null) return { ...base, by_class: by };
       return { ...base, by_class: by, exhausted: { count: Math.max(0, Math.floor(x.count)), first_at: x.firstAtMs === null ? null : iso(x.firstAtMs) } };
     });
+  const alerts = counts(f.alerts);
+  const incomplete = f.alerts[JOURNAL_COUNTS_INCOMPLETE];
+  if (incomplete !== undefined && !alerts.some((a) => a.code === JOURNAL_COUNTS_INCOMPLETE)) {
+    alerts[alerts.length - 1] = { code: JOURNAL_COUNTS_INCOMPLETE, count: incomplete };
+  }
   const sha = f.gitSha ?? (fits(i.gitSha, PATTERNS.SHA) ? i.gitSha : 'unknown');
   return {
     v: SUMMARY_VERSION,
@@ -327,7 +357,7 @@ export const buildSummary = (i: SummaryInputs): Summary => {
       crash_sites: crashSites(f.crashSites ?? {}),
       last_death: f.lastDeath === undefined ? null : lastDeathOf(f.lastDeath),
     },
-    alerts: counts(f.alerts),
+    alerts,
     halts: counts(f.halts),
     candidates: {
       seen: cands.length,
@@ -560,6 +590,9 @@ export class Summarizer {
 
   /** One checked, signed post; null when the guards refuse the summary (nothing is sent). */
   async #send(day: string, s: Summary, url: string, key: string, now: number): Promise<PostResult | null> {
+    // A fault can arrive during folding, a previous post, or a midnight/fallback send. Recheck the same live
+    // callback at each send; its throw follows tick's existing caught/logged path.
+    this.#d.live();
     const b = summaryBody(s);
     if ('refused' in b) {
       this.#d.log(`Summary for ${day} not sent: ${b.refused}.`);

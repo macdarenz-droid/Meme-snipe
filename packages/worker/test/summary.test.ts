@@ -11,7 +11,7 @@ import type { HttpClient } from '../src/providers/index.ts';
 import type { PaperTrade } from '../src/run/account.ts';
 import {
   SUMMARY_AFTER_START_MS, SUMMARY_MIN_GAP_MS, Summarizer, SummaryClock, buildSummary, emptySummaryState, foldLine, foldNewLines, foldText, haltCode,
-  nextSummaryDelay, signSummary, summaryBody, type SummaryInputs,
+  nextSummaryDelay, signSummary, withoutProbe, withoutLastDeath, withoutRestartCause, withoutCreditDetail, summaryBody, type SummaryInputs,
 } from '../src/run/summary.ts';
 import { ManualTimers } from '../src/scheduler/timers.ts';
 import { MINT, makeWorker, passingMarket, tempState } from './worker-harness.ts';
@@ -80,6 +80,30 @@ describe('counts from the journal', () => {
     foldLine(s, line('start', Date.parse('2026-10-04T12:59:59.000Z'), { git_sha: 'a'.repeat(40) }));
     foldLine(s, line('start', Date.parse('2026-10-04T13:00:00.000Z'), { git_sha: 'a'.repeat(40) }));
     expect(Object.keys(s.days).sort()).toEqual(['2026-10-04', '2026-10-05']);
+  });
+
+  it('journal count loss flags both Melbourne days at midnight; unknown loss counts markers and every fallback preserves the warning', () => {
+    const s = emptySummaryState();
+    const from = Date.parse('2026-10-04T12:59:59.000Z');
+    const to = Date.parse('2026-10-04T13:00:01.000Z');
+    foldLine(s, line('coverage_gap', to, { stream: 'journal', from_ts: at(from), to_ts: at(to), lost: null }));
+    for (const day of ['2026-10-04', '2026-10-05']) {
+      expect(s.days[day]?.alerts).toEqual({ 'journal-counts-incomplete': 1 });
+      const summary = buildSummary(inputs({ day, nowMs: to, fold: s.days[day] }));
+      for (const projected of [summary, withoutProbe(summary), withoutLastDeath(summary), withoutRestartCause(summary), withoutCreditDetail(summary)]) {
+        expect(projected.alerts).toContainEqual({ code: 'journal-counts-incomplete', count: 1 });
+        // The strict current guard accepts the current shape; historical projections intentionally remove required keys.
+        if (projected === summary) expect(checkSummary(JSON.stringify(projected)).ok).toBe(true);
+      }
+    }
+    foldLine(s, line('coverage_gap', to + 1, { stream: 'journal', from_ts: at(from), to_ts: at(to + 1), lost: 999 }));
+    expect(s.days['2026-10-04']!.alerts['journal-counts-incomplete']).toBe(2);
+    expect(s.days['2026-10-05']!.alerts['journal-counts-incomplete']).toBe(2);
+    for (let n = 0; n < 70; n++) s.days['2026-10-04']!.alerts[`fault_${n}`] = 10;
+    expect(buildSummary(inputs({ fold: s.days['2026-10-04'] })).alerts).toContainEqual({ code: 'journal-counts-incomplete', count: 2 });
+    const bounded = emptySummaryState();
+    foldLine(bounded, line('coverage_gap', to, { stream: 'journal', from_ts: '1970-01-01T00:00:00.000Z', to_ts: at(to), lost: null }));
+    expect(Object.keys(bounded.days)).toHaveLength(3);
   });
 
   it('names halts by fixed codes only', () => {
@@ -273,6 +297,24 @@ describe('the worker-side guard', () => {
     await sz.tick();
     expect(calls).toEqual([]);
     expect(logs).toEqual([`Summary for ${DAY} not sent: forbidden pattern: uuid key.`]);
+  });
+});
+
+describe('a disk fault while a summary is being posted', () => {
+  it('rechecks live eligibility before fallback sends and before the next day post', async () => {
+    const dir = tempState();
+    writeFileSync(join(dir, 'journal.jsonl'), '');
+    const bodies: string[] = [];
+    const logs: string[] = [];
+    let failed = false;
+    const sz = new Summarizer({
+      journalPath: join(dir, 'journal.jsonl'), stateDir: dir, watchdogUrl: 'https://w.test', key: 'k', now: () => NOON,
+      log: (l) => void logs.push(l), live: () => { if (failed) throw new Error('journal fault'); return inputs(); },
+      http: (async (req) => { bodies.push(String(req.body)); failed = true; return { status: 400, header: () => null, text: '{}' }; }) as HttpClient,
+    });
+    await sz.tick();
+    expect(bodies).toHaveLength(1);
+    expect(logs).toContain('Summary skipped: Error.');
   });
 });
 

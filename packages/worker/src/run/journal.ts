@@ -1,9 +1,8 @@
 // journal.jsonl (docs/ARCHITECTURE.md §12.4): one JSON line per event, appended synchronously, so a kill can tear only
 // the last line. At open a torn last line is cut and a `journal_repair` line follows the boot's `start`; `seq` runs on
-// across restarts. DISK-GUARD: a line that cannot be written for lack of space is counted, not thrown (the worker keeps
-// exiting positions on a full disk); the next line that fits is preceded by a `journal_gap` line with the count, so the
-// evidence says what it is missing, and `seq` stays unbroken.
-import { appendFileSync, closeSync, existsSync, openSync, readSync, statSync, truncateSync } from 'node:fs';
+// across restarts. ENOSPC loses evidence, never exits: attempts consume seqs, a bounded loss counter becomes a
+// coverage_gap once space returns. No new journal kind or health/API shape is needed.
+import { appendFileSync, closeSync, existsSync, fsyncSync, openSync, readSync, statSync, truncateSync, writeSync } from 'node:fs';
 import { redact } from './redact.ts';
 import type { JournalKind } from '../../../runner/src/contract.ts';
 import { jsonText } from './json.ts';
@@ -46,27 +45,32 @@ export const lastLines = (path: string, chunk = 64 * 1024): { readonly lines: st
 };
 
 export interface JournalOptions {
-  /** Told when a line was not written for lack of space (ENOSPC). */
+  /** One notification per pending ENOSPC interval. Never writes back to this journal. */
   readonly onNoSpace?: () => void;
-  /** Test seam: appends a line (default appendFileSync), so a test can make a write fail with ENOSPC. */
+  /** Test seam; production appends synchronously. */
   readonly append?: (path: string, text: string) => void;
 }
 
-/** True when the file is missing, empty or ends with a newline (no part of a line left by a short write). */
-const endsWithNewline = (path: string): boolean => {
-  const size = existsSync(path) ? statSync(path).size : 0;
-  if (size === 0) return true;
-  const b = Buffer.alloc(1);
-  const fd = openSync(path, 'r');
-  try {
-    readSync(fd, b, 0, 1, size - 1);
-  } finally {
-    closeSync(fd);
-  }
-  return b[0] === 0x0a;
-};
+// Bounded emergency headroom for journal recovery and durable exit writes. This is not a sustained disk budget:
+// entries/recording stop, and ledger/state errors still throw if the remaining space is exhausted.
+const RESERVE_BYTES = 64 * 1024;
 
 const noSpace = (e: unknown): boolean => typeof e === 'object' && e !== null && (e as { code?: unknown }).code === 'ENOSPC';
+const armedReserve = (path: string): boolean => {
+  if (statSync(path).size !== RESERVE_BYTES) return false;
+  const fd = openSync(path, 'r');
+  const b = Buffer.alloc(RESERVE_BYTES);
+  try { return readSync(fd, b, 0, b.length, 0) === b.length && b.every((x) => x === 0); } finally { closeSync(fd); }
+};
+
+const terminated = (path: string): boolean => {
+  const size = statSync(path).size;
+  if (size === 0) return true;
+  const fd = openSync(path, 'r');
+  const b = Buffer.alloc(1);
+  try { readSync(fd, b, 0, 1, size - 1); } finally { closeSync(fd); }
+  return b[0] === 0x0a;
+};
 
 export class Journal {
   readonly #path: string;
@@ -74,8 +78,15 @@ export class Journal {
   readonly #now: () => number;
   readonly #o: JournalOptions;
   #seq = 0;
-  /** DISK-GUARD: lines not written for lack of space since the last `journal_gap`, and when the first of them was due. */
-  #lost: { count: number; fromMs: number } | null = null;
+  // Constant memory regardless of how long disk stays full: no retained lines or fields.
+  #lost: { count: number; fromMs: number; fromSeq: number; toSeq: number } | null = null;
+  #truncateAt: number | null = null;
+  #restartGap = false;
+  #startPending = false;
+  #started = false;
+  readonly #reserve: string;
+  #reserveReleased = false;
+  #noSpaceNotified = false;
   /** When the last whole line before this process was written (the previous process's last sign of life), or null. */
   readonly previousMs: number | null = null;
   /** True when a torn last line was cut at open. */
@@ -92,6 +103,7 @@ export class Journal {
     this.#boot = boot;
     this.#now = now;
     this.#o = o;
+    this.#reserve = `${path}.reserve`;
     let repaired = false;
     if (existsSync(path)) {
       // Only the file's tail is read: the last line (cut if torn) and the one before it give the seq and the previous
@@ -99,11 +111,15 @@ export class Journal {
       const { lines, offsets } = lastLines(path);
       const last = lines[lines.length - 1];
       if (last !== undefined) {
+        const complete = terminated(path); // I/O errors are strict, never confused with malformed JSON.
         try {
+          if (!complete) throw new SyntaxError('unterminated append');
           JSON.parse(last);
-        } catch {
+        } catch (e) {
+          if (!(e instanceof SyntaxError)) throw e;
           // Keep everything before the torn line, newline included.
-          truncateSync(path, offsets[offsets.length - 1]!);
+          this.#truncateAt = offsets[offsets.length - 1]!;
+          this.#repairTail();
           lines.pop();
           repaired = true;
         }
@@ -121,57 +137,178 @@ export class Journal {
       }
     }
     this.repaired = repaired;
+    // A full-size reserve survives clean stops AND kill drills. Only observed ENOSPC truncates it to a persistent
+    // marker; a normal no-stop restart does not assert evidence loss.
+    this.#restartGap = existsSync(this.#reserve) ? !armedReserve(this.#reserve) : existsSync(path) && statSync(path).size > 0;
+    this.#reserveReleased = existsSync(this.#reserve) && statSync(this.#reserve).size === 0;
+    if (!existsSync(this.#reserve) && !this.#restartGap) this.#armReserve();
   }
 
   get seq(): number {
     return this.#seq;
   }
 
-  /** True while lines were lost for lack of space and their `journal_gap` is not written yet. */
   get failing(): boolean {
-    return this.#lost !== null;
+    return this.#lost !== null || this.#restartGap;
   }
 
-  /**
-   * Appends one line. A line that does not fit (ENOSPC) is counted instead and its `seq` is not used; any other error
-   * is thrown as before.
-   */
   write(kind: JournalKind, fields: Readonly<Record<string, unknown>> = {}): void {
     const now = this.#now();
-    if (!this.#gap(now)) return this.#count(now);
-    if (!this.#line(now, kind, fields)) this.#count(now);
+    if (!this.retry()) {
+      this.#seq++;
+      if (kind === 'start') this.#startPending = true;
+      this.#count(now);
+      return;
+    }
+    this.#seq++;
+    if (!this.#line(this.#seq, now, kind, fields)) {
+      if (kind === 'start') this.#startPending = true;
+      this.#count(now);
+      return;
+    }
+    if (kind === 'start') {
+      this.#started = true;
+      this.retry();
+    }
   }
 
-  /** Writes the pending `journal_gap` line if there is room now (the worker tries once a minute); true when none is pending. */
+  /** Try to record the missing interval; failed retries never inflate the lost event count or reuse event seqs. */
   retry(): boolean {
-    return this.#gap(this.#now());
-  }
-
-  #gap(now: number): boolean {
+    if (this.#startPending) {
+      if (!this.#line(this.#seq + 1, this.#now(), 'start', { reasons: ['original start evidence lost: no space left on device'] })) return false;
+      this.#seq++;
+      this.#startPending = false;
+      this.#started = true;
+    }
     const lost = this.#lost;
-    if (lost === null) return true;
-    // A newline first when a short write left part of a lost line, so that fragment stands alone (the runner flags it).
-    const ok = this.#line(now, 'journal_gap', { lost: lost.count, from_ts: new Date(lost.fromMs).toISOString(), reasons: [`${lost.count} journal line(s) not written: no space left on the device`] }, endsWithNewline(this.#path) ? '' : '\n');
-    if (ok) this.#lost = null;
-    return ok;
+    // A pre-start recorder fault can lose its alert; start remains the first whole line of the new boot.
+    if (!this.#started) return this.#repairTail();
+    if (lost === null && !(this.#restartGap && this.#started)) return this.#repairTail();
+    const now = this.#now();
+    const seq = this.#seq + 1;
+    if (!this.#line(seq, now, 'coverage_gap', {
+      stream: 'journal', gap_id: `${this.#boot}:${lost?.fromSeq ?? 'disk-restart'}`,
+      lost: this.#restartGap ? null : lost!.count,
+      ...(lost === null ? {} : { from_seq: lost.fromSeq, to_seq: lost.toSeq, known_lost: lost.count }),
+      from_ts: new Date(this.#restartGap ? Math.min(this.previousMs ?? now, now) : lost!.fromMs).toISOString(),
+      to_ts: new Date(now).toISOString(),
+      reason: this.#restartGap ? 'journal reserve missing or released; tail evidence count is unknown' : 'journal events not written: no space left on device',
+    })) return false;
+    this.#seq = seq;
+    this.#lost = null;
+    this.#restartGap = false;
+    // Refill only after the recovery gap was fsynced. An ENOSPC refill leaves the zero-size marker and entries off.
+    this.#armReserve();
+    if (!this.#restartGap) this.#noSpaceNotified = false;
+    return true;
   }
 
-  #count(now: number): void {
-    if (this.#lost === null) this.#lost = { count: 0, fromMs: now };
-    this.#lost.count += 1;
+  /** Before a new entry is sent, its existing decision evidence must reach durable storage. */
+  ensureDurable(): boolean {
+    if (this.failing) return false;
+    const fd = openSync(this.#path, 'r');
+    try { fsyncSync(fd); } catch (e) {
+      if (!noSpace(e)) throw e;
+      this.#releaseReserve();
+      this.#restartGap = true;
+      this.#notifyNoSpace();
+      return false;
+    } finally { closeSync(fd); }
+    return true;
+  }
+
+  #notifyNoSpace(): void {
+    if (this.#noSpaceNotified) return;
+    this.#noSpaceNotified = true;
     this.#o.onNoSpace?.();
   }
 
-  /** One line; false (and `seq` unchanged) when it did not fit. */
-  #line(now: number, kind: JournalKind, fields: Readonly<Record<string, unknown>>, before = ''): boolean {
-    const seq = this.#seq + 1;
+  #count(now: number): void {
+    if (this.#lost === null) {
+      this.#lost = { count: 1, fromMs: now, fromSeq: this.#seq, toSeq: this.#seq };
+      this.#notifyNoSpace();
+    } else { this.#lost.count++; this.#lost.toSeq = this.#seq; }
+  }
+
+  #armReserve(): void {
+    let fd: number;
+    try { fd = openSync(this.#reserve, 'w', 0o600); } catch (e) {
+      if (!noSpace(e)) throw e;
+      this.#restartGap = true;
+      this.#notifyNoSpace();
+      return;
+    }
     try {
-      (this.#o.append ?? appendFileSync)(this.#path, `${before}${redact(jsonText({ seq, ts: new Date(now).toISOString(), boot: this.#boot, kind, ...fields }))}\n`);
+      const zeros = Buffer.alloc(64 * 1024);
+      for (let off = 0; off < RESERVE_BYTES;) {
+        const n = writeSync(fd, zeros, 0, Math.min(zeros.length, RESERVE_BYTES - off));
+        if (n <= 0) throw new Error('journal reserve short write');
+        off += n;
+      }
+      fsyncSync(fd);
+      this.#reserveReleased = false;
     } catch (e) {
       if (!noSpace(e)) throw e;
+      this.#reserveReleased = false;
+      this.#releaseReserve();
+      this.#restartGap = true;
+      this.#notifyNoSpace();
+    } finally { closeSync(fd); }
+  }
+
+  #releaseReserve(): void {
+    if (this.#reserveReleased) return;
+    // Truncation frees blocks without allocating a new marker. Keep the empty inode until the recovery gap is
+    // durable; no ledger, saved state, journal history or recording is ever removed.
+    let fd: number;
+    try { fd = openSync(this.#reserve, 'r+'); } catch (e) {
+      if (typeof e === 'object' && e !== null && (e as { code?: unknown }).code === 'ENOENT') return;
+      if (!noSpace(e)) throw e;
+      return;
+    }
+    try {
+      truncateSync(this.#reserve, 0);
+      fsyncSync(fd);
+      this.#reserveReleased = true;
+    } catch (e) {
+      if (!noSpace(e)) throw e;
+      // The device can even refuse reserve release; retain the process latch and retry on its next failed write.
+    } finally { closeSync(fd); }
+  }
+
+  #repairTail(): boolean {
+    if (this.#truncateAt === null) return true;
+    try {
+      truncateSync(this.#path, this.#truncateAt);
+    } catch (e) {
+      if (!noSpace(e)) throw e;
+      this.#releaseReserve();
+      this.#notifyNoSpace();
       return false;
     }
-    this.#seq = seq;
+    this.#truncateAt = null;
+    return true;
+  }
+
+  #line(seq: number, now: number, kind: JournalKind, fields: Readonly<Record<string, unknown>>): boolean {
+    if (!this.#repairTail()) return false;
+    const before = existsSync(this.#path) ? statSync(this.#path).size : 0;
+    try {
+      (this.#o.append ?? appendFileSync)(this.#path, `${redact(jsonText({ seq, ts: new Date(now).toISOString(), boot: this.#boot, kind, ...fields }))}\n`);
+      if (kind === 'coverage_gap' && fields['stream'] === 'journal') {
+        const fd = openSync(this.#path, 'r');
+        try { fsyncSync(fd); } finally { closeSync(fd); }
+      }
+    } catch (e) {
+      if (!noSpace(e)) throw e;
+      this.#releaseReserve();
+      this.#notifyNoSpace();
+      // appendFileSync may have written a prefix, including valid JSON without its newline. Remove ONLY this failed
+      // append before any next line; otherwise recovery could join two events or create a duplicate seq.
+      if (existsSync(this.#path) && statSync(this.#path).size !== before) this.#truncateAt = before;
+      this.#repairTail();
+      return false;
+    }
     return true;
   }
 }

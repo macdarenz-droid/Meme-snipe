@@ -375,12 +375,15 @@ export class Worker {
   #restarts: readonly Restart[];
   readonly #started: number;
   readonly #journal: Journal;
+  #journalStarted = false;
   #recorder: Recorder | null = null;
   /**
    * The recorder's first failure (a full disk, ENOSPC): recording stops, entries halt for the rest of the process and
    * the alert goes up; exits and the rest of the worker go on. Never a crash, so a disk that stays full is no crash loop.
    */
   #recorderFault: string | null = null;
+  /** Evidence lost on disk: entries stay off this boot, including after journal recovery; exits continue. */
+  #journalFault: string | null = null;
   /** API command refusals journaled in the current minute, and those counted only (see `#commandRefused`). */
   readonly #refusals = { since: -Infinity, written: 0, dropped: 0 };
   readonly #ledger: Ledger;
@@ -527,14 +530,12 @@ export class Worker {
     this.#funnel.fromMs = now;
     this.#boot = d.boot ?? `${now.toString(36)}-${process.pid}`;
     mkdirSync(c.stateDir, { recursive: true });
-    // DISK-GUARD: a line that does not fit is counted (a `journal_gap` line follows once there is room), never a crash;
-    // entries stop while one is pending, and the disk is read again now.
     this.#journal = new Journal(join(c.stateDir, STATE_FILES.journal), this.#boot, () => d.timers.now(), {
       ...(d.append === undefined ? {} : { append: d.append }),
       onNoSpace: () => {
-        if (!this.#journalNoSpace) d.log('Journal: a line was not written (no space left on the device); entries stop until it can write again.');
-        this.#journalNoSpace = true;
-        this.#diskAt = null;
+        this.#journalFault = 'journal failed (ENOSPC): evidence lost, entries off until a restart';
+        this.#recorder = null;
+        d.log('Journal full: evidence lost; entries halt, exits go on.');
       },
     });
     this.#fillLines = readJournalFills(join(c.stateDir, STATE_FILES.journal));
@@ -592,7 +593,7 @@ export class Worker {
     try {
       mkdirSync(recRoot, { recursive: true });
       for (const b of sealLeftovers(recRoot, this.#boot)) d.log(`Recorder: sealed files of boot ${b} left by a stop without a clean stop.`);
-      this.#recorder = c.recorder
+      this.#recorder = c.recorder && this.#journalFault === null
         ? new Recorder({
           root: recRoot, boot: this.#boot, gitSha: c.gitSha, rotateBytes: 64 * 1024 * 1024, ...(d.commitments === undefined ? {} : { commitments: d.commitments }),
           now: () => d.timers.now(),
@@ -658,6 +659,8 @@ export class Worker {
       // The main boot names its restart's kind and how the previous process ended, for the daily summary's counts.
       ...(d.phase === 'reconcile' ? { phase: 'reconcile' } : { restart: this.#restarts[this.#restarts.length - 1]?.kind ?? null, exit: exitKind(this.#lastExit), ...(this.#lastExit?.startsWith('fatal error (') ? { crash_site: this.#lastExit.slice('fatal error ('.length, -1) } : {}), ...(this.#deathMem === null ? {} : { death_mem: this.#deathMem }) }),
     });
+    this.#journalStarted = true;
+    if (this.#recorderFault !== null) this.#journal.write('alert', { level: 'critical', code: 'recorder_failed', reasons: [this.#recorderFault] });
     if (this.#journal.repaired) this.#journal.write('journal_repair', { detail: 'torn last line removed' });
     if (this.#sellOnly.length > 0) {
       this.#journal.write('halt', { reasons: ['sell-only: no new entries; the positions below are flattened', ...this.#sellOnly] });
@@ -706,7 +709,24 @@ export class Worker {
       }
       if (e.key === GRADUATES_SEED_KEY) this.#graduatesSeed(e.value);
     });
-    this.#engine = new Engine({ clock: this.#feed.clock, feed: this.#facts.feed, strategy: this.#strategy, runner: this.#world, seed, book: bookConfig, retention: liveRetention, collapse: liveCollapse, shape: liveShape, forget: liveForget });
+    this.#engine = new Engine({ clock: this.#feed.clock, feed: this.#facts.feed, strategy: this.#strategy, runner: { run: (effect, moment) => {
+      if (effect.type === 'broadcast') {
+        const intent = this.#engine.book.intents[effect.intentId];
+        // The engine applies prepare/sign/submit before Desk sees their records. Check evidence BEFORE a new buy
+        // reaches the outside world. Existing attempts, status reads, late fills and exits continue normally.
+        if (intent?.intent.purpose === 'entry' && !this.#world.attempts.has(effect.signature)) {
+          if (this.#recorderFault === null && this.#journalFault === null) {
+            this.#desk.journalBeforeDispatch(this.#engine.records as readonly LogRecord[]);
+            this.#journal.ensureDurable();
+          }
+          if (this.#recorderFault !== null || this.#journalFault !== null) {
+            this.#report({ type: 'intent', intentId: effect.intentId, event: { type: 'send_error', message: 'entries halted: evidence not recorded' } });
+            return;
+          }
+        }
+      }
+      this.#world.run(effect, moment);
+    } }, seed, book: bookConfig, retention: liveRetention, collapse: liveCollapse, shape: liveShape, forget: liveForget });
     // DISK-GUARD: a line that does not fit is not a crash; its range becomes a coverage gap once there is room, and
     // entries stop until then.
     this.#deployerStore = new DeployerStore(c.stateDir, undefined, {
@@ -812,7 +832,7 @@ export class Worker {
       },
       reserved: (r) => this.#account.reserved(r.mint, r.atMs),
       // The recorder fault refuses entries from the moment it is found, ahead of its halt fact (WORKER-CRASH review B1).
-      entriesBlocked: () => this.#recorderFault,
+      entriesBlocked: () => this.#recorderFault ?? this.#journalFault,
       filled: (r) => {
         // A fill re-booked from its held journal line carries that line's rate (PAPER-1); otherwise the price now.
         this.#account.filled(r, r.solUsd !== undefined ? r.solUsd : this.#solPrice, this.#legs());
@@ -993,8 +1013,11 @@ export class Worker {
     if (this.#recorderFault !== null) return;
     const code = isObj(e) && typeof e['code'] === 'string' ? e['code'] : e instanceof Error ? e.name : 'error';
     this.#recorderFault = `recorder failed (${code}): recording stopped, entries off until a restart`;
+    // Drop buffered rows after the first failure; no more recording is attempted in this process.
+    this.#recorder = null;
     this.#d.log(`Recorder failed: ${errorText(e)}. Recording stopped; entries halt, exits go on.`);
     try {
+      if (!this.#journalStarted) return;
       this.#journal.write('alert', { level: 'critical', code: 'recorder_failed', reasons: [this.#recorderFault, errorText(e)] });
     } catch (j) {
       this.#d.log(`Journal: the recorder alert was not written: ${errorText(j)}.`);
@@ -1659,7 +1682,7 @@ export class Worker {
     const d = this.#d;
     return {
       nowMs: d.timers.now(), policy: d.session.policy, policyVersion: d.session.versionHash, strategyVersion: d.strategy.version,
-      connected: this.#reconciled && [...this.#feeds.values()].some((f) => f.connected), halted: this.#halted, paused: this.#ctl.paused,
+      connected: this.#reconciled && [...this.#feeds.values()].some((f) => f.connected), halted: [...this.#halted, ...(this.#journalFault !== null && !this.#halted.includes(this.#journalFault) ? [this.#journalFault] : [])], paused: this.#ctl.paused,
       exitCapable: this.#exitCapable(d.timers.now()), budgetHalted: (d.ops?.().quota ?? []).filter((q) => q.halted).map((q) => q.provider),
       alerts: [...this.#alerts], regime: this.#strategy.regime(), regimeMaxAgeMs: 2 * d.strategy.evaluateEveryMs, stops: this.#strategy.riskStops(),
       book: this.#engine.book, trades: this.#account.state.trades, accountCosts: this.#account.costRecords(), attempts: this.#world.attempts, legs: this.#legs(), decisions: this.#rows, funnel: this.#funnel,
@@ -1694,16 +1717,14 @@ export class Worker {
     // HELIUS-EXHAUSTED: no entry is judged while Helius refuses for credits; named, never an evidence refusal.
     if (this.#d.heliusExhaustion?.().exhausted === true) reasons.push(HELIUS_EXHAUSTED);
     if (this.#seeding) reasons.push(SEEDING);
-<<<<<<< HEAD
     if (this.#disk.entriesRefused || this.#journal.failing || this.#deployerStore.failing) reasons.push(DISK_LOW);
     if (this.#storeNoSpace && !this.#deployerStore.failing) {
       this.#storeNoSpace = false;
       this.#d.log('Deployer index: writing again; the lost range is saved as a coverage gap.');
     }
-=======
     if (this.#behind.behind) reasons.push(BEHIND);
->>>>>>> refs/ops149/base
     if (this.#recorderFault !== null) reasons.push(this.#recorderFault);
+    if (this.#journalFault !== null) reasons.push(this.#journalFault);
     if (Object.keys(this.#desk.book.positions).some((id) => lateFillOf(id) !== null)) reasons.push(LATE_BUY);
     reasons.push(...this.#diverged, ...this.#sellOnly);
     const same = reasons.length === this.#halted.length && reasons.every((x, k) => x === this.#halted[k]);
@@ -2127,10 +2148,9 @@ export class Worker {
       signer: 'none', lease_epoch: null,
       sol_reserve: this.#account.state.walletLamports === null ? null : String(this.#account.state.walletLamports),
       paused: this.#ctl.paused, boot: this.#boot, pid: process.pid, uptime_s: Math.round((now - this.#started) / 1000),
-      rss_bytes: process.memoryUsage().rss,
       ...(this.#d.disk === undefined ? {} : { disk: this.#diskHealth() }),
-      last_exit: this.#lastExit, restarts_24h: this.#restartCounts(now), mode: 'paper', recorder: this.#d.config.recorder && this.#recorderFault === null ? 'on' : 'off', simulation: this.#d.config.simulate ? 'on' : 'off',
-      reconciled: this.#reconciled, exit_capable: this.#exitCapable(now), quota: ops.quota, lookups: ops.lookups, entries_halted: this.#halted.length > 0, halt_reasons: [...this.#halted], critical: [...(this.#watch?.critical ?? []), ...(this.#recorderFault === null ? [] : [this.#recorderFault])], feeds, journal_seq: this.#journal.seq, signing_key: false,
+      rss_bytes: process.memoryUsage().rss, last_exit: this.#lastExit, restarts_24h: this.#restartCounts(now), mode: 'paper', recorder: this.#d.config.recorder && this.#recorderFault === null && this.#journalFault === null ? 'on' : 'off', simulation: this.#d.config.simulate ? 'on' : 'off',
+      reconciled: this.#reconciled, exit_capable: this.#exitCapable(now), quota: ops.quota, lookups: ops.lookups, entries_halted: this.#halted.length > 0 || this.#journalFault !== null, halt_reasons: [...this.#halted, ...(this.#journalFault !== null && !this.#halted.includes(this.#journalFault) ? [this.#journalFault] : [])], critical: [...(this.#watch?.critical ?? []), ...(this.#recorderFault === null ? [] : [this.#recorderFault]), ...(this.#journalFault === null ? [] : [this.#journalFault])], feeds, journal_seq: this.#journal.seq, signing_key: false,
       entry_rule: this.#d.config.strategy.name,
       ...(this.#d.strategy.s0Diagnostic === true ? { s0_diagnostic: S0_DIAGNOSTIC_PARTS } : {}),
       ...(this.#seedOutcome === null ? {} : { graduates_seed: this.#seedOutcome }),
@@ -2231,6 +2251,7 @@ export class Worker {
       journalPath: join(d.config.stateDir, STATE_FILES.journal), stateDir: d.config.stateDir, http: d.heartbeat.http,
       watchdogUrl: url, key, now: () => d.timers.now(), log: d.log,
       live: () => {
+        if (this.#journalFault !== null) throw new Error('journal evidence incomplete: summary suppressed');
         d.summaryFault?.();
         return {
           gitSha: d.config.gitSha, entryRule: d.config.strategy.name, recorder: d.config.recorder ? 'on' : 'off',
