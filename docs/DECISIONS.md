@@ -3291,7 +3291,7 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
 
 ## Server paused on the stand-in until every blocker is fixed (PAUSE, `ops/host-config.json` `"worker": "stub"`)
 
-- **Owner, 2026-10-07 about 6:25 AM Melbourne:** "Keep refining bot before u update server. Or its better no server first until u fix the bot all issues. To stop wasting tokens. You can pause server, start server again when all has been fixed."
+- **Owner, 2026-10-07 about 6:20 AM Melbourne:** "Keep refining bot before u update server. Or its better no server first until u fix the bot all issues. To stop wasting tokens. You can pause server, start server again when all has been fixed."
 - **What changes:** the release's `ops/host-config.json` names `"worker": "stub"`, so `worker_entry` (`logic.sh`) starts the host's stand-in (`/opt/zeroed/stub/worker.mjs`) instead of the release's worker. The stand-in makes no Helius, Alchemy or Jupiter calls. It keeps the heartbeat, the ledger file and the health route (`git_sha`, `mode: paper`), so the update gate still switches and `worker-smoke` passes (it skips the stand-in, `worker-smoke:19`).
 - **What stops while paused:** paper decisions, the recorder, the 30-minute summaries to the data repository, and the no-crash clock. Expect zeroed-check's "record-upload-stale" alert after about 3 hours. The upload timer still runs, finds nothing new, and deletes nothing extra.
 - **Why:** the worker spent about 80k Helius credits an hour by its own count (2026-10-07 summary) while no coin could pass the hard rejects, and each restart's seed can take up to `SEED_CREDIT_CAP` (150k). The data was paid for and could not produce a trade.
