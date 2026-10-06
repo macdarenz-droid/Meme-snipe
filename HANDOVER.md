@@ -48,6 +48,13 @@ The previous S1 account reached its usage limit about 12:45 PM. The owner made t
 - No host access, no secrets access (owner only), as before.
 
 **Log (Melbourne time, newest first)**
+- 3:16 AM **Owner: "Start an agent for letter B now"** (item 2: cut pool-trade logs → permanent H11/H16 gap on about 57% of coins). This is an explicit owner exception to one-task-at-a-time. Builder TRADE-GAP-HEAL session_01VTn22ZTvSUzWe72saEX2md (Opus) on claude/trade-gap-heal from claude/h16-why (it reuses #260's cut-log fetch path; base merge after #260 merges). Steps:
+  1. Measure cut logs per coin on mainnet first (public RPC) and report.
+  2. Fetch cut or undecodable pool-trade logs below exit priority, with a daily cap and bounded retry.
+  3. Heal the producer's gap only when the reserves chain is exact again; fail-closed.
+  4. Parity test: healed tape equals complete tape.
+  5. DECISIONS, including credit math against the Helius free plan.
+  Reviews: worker/facts + BT parity. The owner also got a plain explanation of graduation and H9.
 - 3:03 AM hourly (no owner post; nothing new for the owner since 2:30 AM). 7f1ff241 up 6,538 s, unplanned 0 (no crash since 1:06 PM: 13 h 56 min). Day: seen 341, refused 192, entered 0. Helius 112,436 this boot (about 62k an hour); about 530k used since the key change (boot sums, approximate), so it runs out about 10–11 AM (estimate). zeroed-data tags: 0 (upload timer waits for the next switch, as noted at 2:05 AM). #260: B1 fix in progress.
 - 3:03 AM **REPLAY-1000 interim** (Mode B with no rate cap; 47 sample graduates of 6 Oct that migrated before 14:55Z; the other 963 feed the regime; creates from 18:20Z on 5 Oct):
   - 0 trades in every run: no-H5 f87ee90, H5 e138ad2, and the what-if 49f5b09 that adds cut-create fetches. H5 decided no coin.
