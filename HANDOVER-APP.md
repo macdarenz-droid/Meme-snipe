@@ -141,6 +141,8 @@ S2-READY 6af4e43b707960316d8cd8419cb2e513fa9f4b60
 
 ## S2 events (newest first)
 
+- **2026-10-06 15:04:24 AEDT** — Final candidate206a84689631a421bf1bb9eb0d479398bc3b5b14 created by ordinary local delivery merge of860 plus own fixturecommit6fa2e545; finaltree equals validated fixturetree, clean, six test/stubfiles only. Fresh API, facts, strategy-consumer, EXIT and PERSIST agents review this exacthead read-only; first APP/API+run/CI staticPASS received. Root Node22.23.3 frozeninstall and selectedCREATE diagnosis passed (1selected/8unrun;5268Bfull/1642Bcompact;unchanged30s/samplecount/caps). Builder allocated one unfiltered final corrected-head Node22 pnpm check. Read live report15:01 AEDT: paper958,33unplanned unchanged,uptime6879s (114.65min),lastdeath13:06; existing249fix not live, no new reported death. No remote task push/PRmerge/deploy/integrationpush.
+
 - **2026-10-06 15:01:13 AEDT** — Original860 isolated CREATE diagnosis completed14:59:46 AEDT:1selectedPASS/8unrun,exit0,case22.648s within unchanged30s,5252Bfull/1639Bcompact and unchanged3000+3000samples/caps; frozenhead/statusclean. Confirms the full-run fourth failure is scheduling/runtime timing, not a measured byte-cap breach. Root activated official checksum-verified Node22.23.3 outsidecheckout and is running one CI-runtime-matched frozeninstall+same selectedCREATE diagnosis before finalcorrected-headfull; no source/test/workflow/concurrency/timeout changes for timing.
 
 - **2026-10-06 14:59:53 AEDT** — Corrected a handoff-only timestamp typo in the preceding fixture-validation event: actual completion14:59:00 AEDT (03:59UTC), not15:59UTC. Raw immutable validation metadata retains the correct time, results34/34PASS and original unchanged bounds. No source/test changes.
