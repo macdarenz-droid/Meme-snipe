@@ -2681,14 +2681,6 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - The regime's other series, stated whole like the graduates fact: `gates/sol-usd`, `gates/curve-volume`,
     `gates/exec-health` (read as of now by the regime and H8), and their raw reads `sol-usd`,
     `read:chain-volume-hour`, `read:exec-health` (the producer acts on the released read and keeps its own series).
-- **Read bodies** (supervisor ruling, crash 28: old space grew about 4 KB for every new store entry). Every raw read
-  (`read:` — holders with their largest accounts, the complete holder scan with every account, simulation, the
-  cross-checks, funder), a batch's open and close (`read-batch:`, `reads:`), and the facts a read restates whole
-  (`gates/holders:` with the account list again, `gates/insiders:`, `gates/sim:`, `gates/xcheck:`, `gates/lp:`, and
-  `facts/abstentions:holders`) keep only their newest value. Nothing looks a raw read up in the store (the producer and
-  the strategy act on the released read); the gates look the facts up as of now (`Evidence.read`). Before, each re-read
-  of a candidate stacked another holder list. The earlier pin that `gates/holders:` and `read:holders:` keep their
-  whole series (OOM-HEADS) is replaced by this rule; the create and migration facts stay whole (stated once).
 - **Create logs** (supervisor item 2): already let go 13 h after their create when the coin has not migrated
   (OOM-MINT, `CREATE_KEEP_MS` + `CREATE_LATE_MS`); live's create-log keys still grow while that window fills after a
   restart (about 70 a minute, about 55k at the full window). Shortening it changes which coins are refused
@@ -2698,12 +2690,11 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   large values, is seen. Rough size is `roughBytes` of the newest value times the series' length (at most 256 values
   walked per value, the rest scaled), for the sampled keys; 92 codes a sample, under the cap of 96.
 - **Evidence (fail before, pass after).** `store-rules.test.ts`: each of the eight keys keeps one entry after an
-  hour of ticks, and a lookup as of now returns the newest (before: one entry a tick); fifteen read and per-read fact
-  keys re-read 120 times keep one entry each; `mem-counts.test.ts`: entries and rough bytes per kind exactly, sampled
+  hour of ticks, and a lookup as of now returns the newest (before: one entry a tick); `mem-counts.test.ts`: entries and rough bytes per kind exactly, sampled
   at scale, the `store_b_` and `store_e_` codes, `roughBytes` within a factor of two on a value it stops early in.
   Hand mutants killed: sol-price whole, fact-reads whole, `read:exec-health` whole, no `store_e_` codes, entries
-  counted as keys, raw reads whole, holders facts whole, abstentions whole, no `store_b_` codes, no field cost, no
-  scaling of skipped values.
+  counted as keys, no `store_b_` codes, no field cost, no scaling of skipped values. The per-mint `read:` keys stay
+  whole (supervisor: bounded per mint, refuted as the climb).
 
 ## The 5-min save streams its payload (SAVE-SPIKE, `persist/state.ts`)
 
@@ -2725,3 +2716,32 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   `null` for an omitted element, no omission of a key, a piece not hashed, no batch flush, no `toJSON`.
 - **Not in this card.** Why 41.2k coverage facts are kept is STORE-GROWTH's question; loading still parses the payload
   line whole (the boot side, ruled separately as BOOT-CAP).
+
+## A trade key keeps a few failing entries, not all (F1, `gates/tails.ts`, `engine/asof.ts`)
+
+- **2026-10-06 · Why** (supervisor's crash hunt, crashes 27 to 30). The store kept, of a trade-event key, its newest
+  entry and every entry whose 8-byte tail would fail H5. On 6 Oct the tails were non-zero on most mainnet pools on
+  every swap (9 of 12 young pools, 68 of 101 swaps; 27 of 27 older pools), so every swap stayed: 30,000 real notices
+  kept 21,116 entries, 66 MB (about 3.3 KB an entry), against 1,128 entries with the tails zeroed. Live fit: about
+  2.7 to 3.7 KB of old space per store entry, death in 12 to 36 minutes. The harness never had non-zero tails.
+- **What** (supervisor ruling F1, fail-closed). A collapse can now class an older entry (`Collapse`): per class the
+  store keeps the earliest, the latest in order and the one received last; of entries kept for nothing, only the one
+  received last while it was received after the newest. Trade keys class failing entries by kind (`event-tail`,
+  `malformed`): at most eight entries a key whatever the tape, three when every swap fails.
+  - H5 gives the same verdict (pass, reject, not covered) for any `since`: a slot since needs the latest failing in
+    order, a receipt-time since the one received last, and "any entry since" the newest or the latest received; all
+    are kept. The entry it names is exact for a since at or before the key's first entry, which is the production
+    since (the migration).
+  - The receipt-time rule (one received after the newest) beyond the supervisor's five also bounds clean entries
+    that a late fill used to leave behind for good.
+  - Newest-only keys (`false` for every entry) keep their newest and at most the latest received before it: lookups
+    as of now are unchanged.
+- **Ruling recorded:** comparing the verdict class instead of the whole answer for an arbitrary `since` is not a
+  loosening; the whole answer, offending entry included, is still compared for a since at the tape's start.
+- **Evidence (fail before, pass after).** `tails-collapse.test.ts`: 5,000 records with tail `546c140000000000` keep
+  three entries and still reject naming the first (before: 5,000); the failing entry received last stays though not
+  last in order (receipt-time since); 400 random tapes: same verdict for every since, same answer from the start, at
+  most eight entries a key. `store-rules.test.ts`: real mainnet swaps (`fixtures/crash-hunt/mainnet-swaps-2026-10-06.json`,
+  public chain data from the supervisor's hunt) at 30,000 notices keep at most five entries a trade key and under
+  8 MB. Hand mutants killed: every failing entry kept, the latest received dropped, the earliest dropped, the latest
+  in order dropped, nothing kept of the `false` class.

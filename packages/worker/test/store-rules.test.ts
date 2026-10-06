@@ -9,9 +9,13 @@ import type { PoolState } from '../../core/src/amm/index.ts';
 import { swapLog } from '../../core/test/facts/swaps.ts';
 import { POOL_FACT_KEEP_MS, liveCollapse, liveRetention } from '../src/run/store-rules.ts';
 import { DEV, POOL_ADDRESS, SUPPLY, makeWorker, passingMarket } from './worker-harness.ts';
-import { CURVE_VOLUME_KEY, EXEC_HEALTH_KEY, SOL_USD_KEY, holdersKey, insidersKey, lpKey, simKey, xcheckKey, candlesKey, carryKey, poolKey, poolTradeKeys, streamKey } from '../../core/src/gates/index.ts';
-import { HOLDER_ABSTENTIONS_KEY, RAW, STREAMS } from '../../core/src/facts/index.ts';
+import { CURVE_VOLUME_KEY, EXEC_HEALTH_KEY, SOL_USD_KEY, candlesKey, carryKey, poolKey, poolTradeKeys, streamKey } from '../../core/src/gates/index.ts';
+import { RAW, STREAMS } from '../../core/src/facts/index.ts';
 import { AsOfStore, SimClock } from '../../core/src/engine/index.ts';
+import { deepFreeze } from '../../core/src/engine/freeze.ts';
+import { eventsOfFrame } from '../src/providers/canonical.ts';
+import { readFileSync } from 'node:fs';
+import { liveForget, liveShape } from '../src/run/store-rules.ts';
 import { SOL_PRICE_KEY } from '../src/engine/strategy.ts';
 import { FACT_READS_KEY } from '../src/facts/source.ts';
 
@@ -25,26 +29,47 @@ const tailed = (pre: PoolState, side: 'buy' | 'sell', atMs: number): { logs: str
   return { logs: [logs[0]!, `Program data: ${toBase64(Uint8Array.from([...data, 0, 0, 0, 0, 0, 0, 0, 0]))}`, logs[2]!], after };
 };
 
+describe('F1: real mainnet swaps with non-zero event tails (2026-10-06)', () => {
+  // Public mainnet swap logs on 27 SOL-quoted pump pools, 6 Oct 2026 (supervisor's crash hunt): every one carries a
+  // non-zero 8-byte tail, so before F1 every swap stayed in the store (21,116 entries, 66 MB at 30,000 notices).
+  const swaps = JSON.parse(readFileSync(new URL('./fixtures/crash-hunt/mainnet-swaps-2026-10-06.json', import.meta.url), 'utf8')) as { signature: string; slot: number; logs: string[] }[];
+  it('30,000 notices keep at most five entries a trade key and under 8 MB', () => {
+    let now = { slot: 1n, txIndex: 0, ixIndex: 0, receivedAt: 1_759_700_000_000 };
+    const store = new AsOfStore({ now: () => now }, liveRetention, liveCollapse, liveShape, liveForget);
+    const ranks = { get: () => 0 };
+    const B58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+    const sig = (i: number) => Array.from({ length: 88 }, (_, k) => B58[(i * 31 + k * 7 + ((i >> k % 13) & 31)) % 58]).join('');
+    gc(); gc();
+    const before = process.memoryUsage().heapUsed;
+    const tradeKeys = new Set<string>();
+    for (let i = 0; i < 30_000; i++) {
+      const s = swaps[i % swaps.length]!;
+      const slot = 453_000_000n + BigInt(i);
+      const receivedAt = 1_759_700_000_000 + i * 20;
+      // The socket hands over freshly parsed strings each time.
+      const msg = JSON.parse(JSON.stringify({ signature: sig(i), logs: s.logs })) as { signature: string; logs: string[] };
+      const frame = { seq: i, receivedAt, source: 'helius', backfilled: false, duplicate: false, place: { at: 'chain', slot }, body: { type: 'logs', signature: msg.signature, slot, err: null, via: `logs:${'P'.repeat(44)}`, logs: msg.logs, commitment: 'confirmed' } };
+      now = { slot, txIndex: Number.MAX_SAFE_INTEGER, ixIndex: Number.MAX_SAFE_INTEGER, receivedAt };
+      for (const e of eventsOfFrame(frame as never, ranks as never)) {
+        const ev = deepFreeze(e) as { key: string; value: unknown; moment: typeof now; id: string };
+        store.record(ev.key, ev.value, ev.moment, ev.id);
+        if (liveCollapse(ev.key) !== null && /(?:BuyEvent|SellEvent|TradeEvent):/.test(ev.key)) tradeKeys.add(ev.key);
+      }
+    }
+    gc(); gc();
+    const retained = (process.memoryUsage().heapUsed - before) / 1_048_576;
+    expect(tradeKeys.size).toBeGreaterThan(0);
+    for (const k of tradeKeys) expect((store.history(k, { slot: 0n, txIndex: 0, ixIndex: 0, receivedAt: 0 }) as readonly unknown[]).length, k).toBeLessThanOrEqual(5);
+    expect(retained).toBeLessThan(8);
+    (globalThis as Record<string, unknown>)['f1Keep'] = store;
+  }, 120_000);
+});
+
 describe('the live store under a busy pool (OOM-SWAPS)', () => {
   it('the worker and its parity replay use the live rules: trade keys collapse, pool facts keep a minute', () => {
     for (const k of poolTradeKeys(POOL_ADDRESS)) expect(liveCollapse(k)).not.toBeNull();
     expect(liveRetention(poolKey('M'))).toBe(POOL_FACT_KEEP_MS);
     expect(liveRetention('worker:sol-price')).toBeNull();
-  });
-
-  it('STORE-GROWTH (read bodies): every raw read, a batch\'s open and close, and the facts a read restates keep only their newest value: a candidate re-read an hour keeps one holder list', () => {
-    const keys = [RAW.holders('M'), RAW.holdersAll('M'), RAW.sim('M'), RAW.rugcheck('M'), RAW.goplus('M'), RAW.jupiter('M'), RAW.funder('W'), RAW.batchOpen('M'), RAW.batchClose('M'), holdersKey('M'), insidersKey('M'), simKey('M'), xcheckKey('M'), lpKey('M'), HOLDER_ABSTENTIONS_KEY];
-    const clock = new SimClock({ slot: 0n, txIndex: 0, ixIndex: 0, receivedAt: 0 });
-    const store = new AsOfStore(clock, liveRetention, liveCollapse);
-    // Twenty accounts with addresses, as a holders read carries.
-    const accounts = Array.from({ length: 20 }, (_, i) => ({ address: `A${i}`.padEnd(44, 'x'), owner: `O${i}`.padEnd(44, 'y'), amount: BigInt(i) }));
-    for (let t = 1; t <= 120; t++) {
-      const m = { slot: BigInt(t), txIndex: 0, ixIndex: 0, receivedAt: t * 30_000 };
-      clock.advanceTo(m);
-      for (const k of keys) store.record(k, { t, accounts }, m, 'reads');
-    }
-    expect(store.sizes().entries).toBe(keys.length);
-    for (const k of keys) expect(store.lookup(k), k).toMatchObject({ ok: true, value: { t: 120 } });
   });
 
   it('STORE-GROWTH: the worker\'s running facts (SOL/USD, the day\'s read counts) and the regime\'s series with their raw reads keep only their newest value; a lookup as of now is unchanged', () => {
@@ -98,7 +123,7 @@ describe('the live store under a busy pool (OOM-SWAPS)', () => {
       expect(keepOlder, k).not.toBeNull();
       expect(keepOlder!({ moment: { slot: 1n, txIndex: 0, ixIndex: 0, receivedAt: 0 }, value: {}, source: 's' }), k).toBe(false);
     }
-    for (const k of ['gates/create:M', 'gates/migration:M', 'coverage:creates:start', 'chain:slots']) expect(liveCollapse(k), k).toBeNull();
+    for (const k of ['gates/holders:M', 'read:holders:M', 'gates/create:M', 'gates/migration:M', 'coverage:creates:start', 'chain:slots']) expect(liveCollapse(k), k).toBeNull();
   });
 
   it('240 pool trade streams at 2.5 slot notices a second and 4,050 swaps a minute leave the heap flat (it grew 19 MB in two minutes; live, about 20 MB a minute)', async () => {

@@ -1,6 +1,7 @@
-// GATE-1c: the 8 unpublished bytes the 2026-10-02 upgrade appends to trade events (UPG-1, venues.md §2.7). They are
-// zero on every SOL-quoted market sampled; a non-zero tail, or a tail of the wrong length, on a market we would price
-// means an unpublished field is live there, so that market is refused. No tail evidence is never a pass.
+// GATE-1c: the 8 unpublished bytes the 2026-10-02 upgrade appends to trade events (UPG-1, venues.md §2.7). They were
+// zero on every SOL-quoted market sampled on 2-3 Oct; on 6 Oct they were non-zero on most pools sampled (supervisor's
+// crash hunt, F1). A non-zero tail, or a tail of the wrong length, on a market we would price means an unpublished
+// field is live there, so that market is refused. No tail evidence is never a pass.
 import { EVENT_TAIL_BYTES, EVENT_TAIL_UPGRADE_SLOT } from '../config/chain-upgrades.ts';
 import type { AsOfEntry } from '../engine/asof.ts';
 import type { Moment } from '../engine/moment.ts';
@@ -97,17 +98,21 @@ const tailVerdict = (e: AsOfEntry, program: Program, what: string): Exclude<Tail
 const TRADE_KEY = /^(?:logs:)?(pump_amm):(?:BuyEvent|SellEvent):|^(?:logs:)?(pump):TradeEvent:/;
 
 /**
- * OOM-SWAPS: the store keeps, of a trade-event key, its newest entry and every entry whose tail would fail the check
- * (`Collapse`). `checkTape` answers the same from that subset: it reads only the first failing entry in order, which is
- * kept, and whether any entry is there since migration, which the newest (the latest slot and receipt) answers. The
- * event count it returns is not read by any gate. A live pool trades thousands of times a minute, each event with its
- * six addresses: the whole tape filled the worker's heap in minutes (the backtest feed keeps the same subset, sim/facts.ts).
+ * OOM-SWAPS, F1 (supervisor ruling): the store keeps, of a trade-event key, its newest entry and, of the entries whose
+ * tail would fail the check, per kind (`event-tail`, `malformed`) the earliest, the latest in order and the one received
+ * last (`Collapse`), so at most eight entries a key. `checkTape` gives the same verdict (pass, reject, not covered) from
+ * that subset for any `since`: an entry that passes the since filter exists exactly when the newest (by slot) or the
+ * latest received does, and a failing one exactly when the latest failing in order (a slot since) or the one received
+ * last (a time since) does. The entry it names is exact for a since at or before the key's first entry (the
+ * migration). The event count it returns is not read by any gate. Before F1 every failing entry stayed; since non-zero
+ * tails became common on mainnet (2026-10-06), that was every swap, about 3 KB each, and the worker's heap ran out in
+ * minutes (the backtest feed keeps its own subset, sim/facts.ts).
  */
-export const tradeTailCollapse = (key: string): ((older: AsOfEntry) => boolean) | null => {
+export const tradeTailCollapse = (key: string): ((older: AsOfEntry) => boolean | string) | null => {
   const m = TRADE_KEY.exec(key);
   if (m === null) return null;
   const program: Program = m[1] !== undefined ? 'pump_amm' : 'pump';
-  return (older) => tailVerdict(older, program, key) !== null;
+  return (older) => tailVerdict(older, program, key)?.code ?? false;
 };
 
 type Ctx = { readonly now: Moment; readonly history: GateContext['history'] };
