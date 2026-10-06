@@ -37,7 +37,7 @@ export const RESTART_CAUSES: readonly RestartCause[] = ['crash', 'reboot', 'host
  * Evidence in the state dir: kept through a host-loss or chain-rebuild drill (the runner copies them aside and back),
  * because they are the run's record, not the bot's state. Everything else in the state dir is bot state.
  */
-export const EVIDENCE_FILES: readonly string[] = ['journal.jsonl', 'recorder'];
+export const EVIDENCE_FILES: readonly string[] = ['journal.jsonl', 'journal.jsonl.reserve', 'recorder'];
 
 export const STATE_FILES = {
   journal: 'journal.jsonl',
