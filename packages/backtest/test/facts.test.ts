@@ -249,6 +249,8 @@ describe('fact projector', () => {
     expect(tails).toHaveLength(2);
     expect(tails[1]!.value).toMatchObject({ event: { trailing: 8, extra: '0100000000000000' } });
     expect(typeof (tails[1]!.value as { txSlot: unknown }).txSlot).toBe('bigint');
+    // H5-POOL-TAILS: each pool event carries its pre-trade quote vault, as live's decoded event does.
+    for (const t of tails) expect((t.value as { event: { data: { poolQuoteTokenReserves: unknown } } }).event.data.poolQuoteTokenReserves).toBeGreaterThan(0n);
   });
 
   it('releases checks due at one block in salted-hash order, so a fixed salt decides true ties', () => {

@@ -177,7 +177,7 @@ The same outside reviewer answered nine follow-up questions on 8370c2a. Each cla
   - E is one common endpoint for every registered universe, and no universe is dropped after counts. Entries stop at the cutoff, and an observation-only tail lets labels mature.
   - The holdout is opened once, at E. If it is short of n ≥ max(300, n_power) or of 10 trade days, the result is "not proven".
   - n_power is computed for each attempt's α and this procedure. The report gives power once n is reached, the probability of reaching n by E, and the overall pass probability.
-  - A window past 10-01 crosses B5 (10-02 15:47 UTC). UPG-1 found SOL-market fields, quotes, fees and rent unchanged there, and H5 refuses any non-zero tail, so B5 changes nothing we trade. Results are reported before and after B5. B2–B4 stay hard boundaries for every window.
+  - A window past 10-01 crosses B5 (10-02 15:47 UTC). UPG-1 found SOL-market fields, quotes, fees and rent unchanged there, and H5 refuses any non-zero tail, so B5 changes nothing we trade. (2026-10-06, H5-POOL-TAILS: H5 now passes a pool tail up to the event's quote vault, which TAIL-PROOF measured as the unswept creator fee with no effect on a trade's money; curve tails stay refused.) Results are reported before and after B5. B2–B4 stay hard boundaries for every window.
   - Repeated attempts share one error budget. Attempt 1 is tested at family α = 0.04 (Holm across universes, with n_power simulated at that level). Attempt k ≥ 2 is tested at 0.01 / 2^(k−1) on a new, later window. At most 0.05 family error is spent across attempts. The bound requires valid testing under each attempt's registered selection, stopping and dependence assumptions.
   - The 48-hour dry run is operational evidence and G3 only. It is never part of the holdout. STATS-1b, BT-2.
 - **Rent.** Rent follows the transaction's real outcome:
@@ -3021,6 +3021,41 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
 **Risk.** A heartbeat arriving while ticker trades have stopped (a quiet market) now leaves entries on, but the price ages past 2 s and R1 refuses each entry until a trade prices it again. So quiet minutes no longer halt the worker, and no entry is judged on an old price. Heartbeats come only from the same socket, so a half-open connection that stops delivering anything still goes stale (and the socket's own 30 s idle timer reconnects it).
 
 **Evidence** (`test/coinbase-liveness.test.ts`): heartbeats only for 30 s give no halt (it halts without the signal); no frames for over 10 s still halts; heartbeats after a ticker leave the one price fact unchanged and R1 refuses it as stale; heartbeats add no frame; the subscription names both channels. Hand mutants killed: heartbeat sets the price, heartbeat re-dates the price, heartbeat ignored.
+
+## H5 accepts the pool's creator-fee tail (H5-POOL-TAILS, `gates/tails.ts`; owner "Go", 2026-10-06)
+
+**Why.** Since 2026-10-06 most SOL PumpSwap pools carry a non-zero 8-byte trade-event tail. H5 refused any non-zero tail, so once #255 lets coins past H16 it would refuse most coins. TAIL-PROOF (#257; reviews PASS from facts and chain/backtest) measured the pool tail as the unswept creator fee, a little-endian u64. It grows by exactly `coin_creator_fee` on each v2 trade, and the creator sweep pays it out and resets it (891/891 tape trades, 3/3 sweeps). 1,188 non-zero-tail trades on 36 pools reproduce exactly in the quote, the vaults and the swap's own transfers. The tail does not change a trade's money.
+
+**Rule** (one function, `tailVerdict`, used by the check and the store's collapse):
+- A PumpSwap (`pump_amm`) BuyEvent/SellEvent after its boundary slot (452,654,882) passes with a tail of exactly 8 bytes of any value, as long as that u64 is at most the event's own pre-trade quote vault (`poolQuoteTokenReserves`, where the unswept fee sits).
+- Above the vault, or non-hex: `event-tail` (H5). A non-zero tail with no readable vault (not a non-negative bigint): `malformed` (H16). A zero tail needs no vault.
+
+**Still refused, unchanged:**
+- A non-zero curve (`pump` TradeEvent) tail: the proof does not cover the curve.
+- A wrong length, before, at or after the boundary: `event-tail`.
+- A non-zero pool tail in the boundary slot itself.
+- An unreadable tail: `malformed`.
+- No trade since migration: not covered.
+- A swap that does not reproduce its event, or whose reserves do not chain: the pool fact goes stale (`producer.ts` `#chainSwap`), with or without a tail.
+
+**Bound checked first.** On all 467 fixture vectors (359 non-zero, 108 zero) and all 894 tape trades, the tail is at most the vault. The largest ratio is 0.44% on the vectors and 2.2% on the tapes. None breaks the bound.
+
+**Backtest parity.** The backtest feed's pool tail fact (`backtest/src/sim/facts.ts` `tradeTailValue`) now carries the dataset's `pool_quote_token_reserves` (`row.pre.quoteVault`) as `event.data.poolQuoteTokenReserves`, the field live reads from the decoded event. No other code re-implements the zero-tail rule: `chain/schema.ts` `trailingNonZero` is for account layouts, and the matches in `research/tail-proof` are research scripts.
+
+**Sample limit.** The evidence is one 38-minute window on one day (2026-10-06 09:42–10:20 UTC), 36 pools, only 31 v2-instruction trades, and 3 tapes. It is evidence, not proof for every pool. The vault bound is the fail-closed guard against a tail that means something else.
+
+**Evidence.**
+- `core/test/gates/tails-pool-fee.test.ts`: every real non-zero vector passes and was refused before. Also covered: the bound at equal and one above, a missing vault, wrong lengths, the boundary slot, the curve, not covered, the collapse, and the hard rejects end to end.
+- `backtest/test/tail-parity.test.ts`: live and backtest give the same answer on every real trade, with and without the vault moved below the tail.
+- `core/test/facts/pool-chain.test.ts`: a non-zero-tail swap that does not reproduce, or does not chain, still goes stale.
+- Changed expectations in `tails.test.ts` and `tails-collapse.test.ts`: refused pool tails now carry a vault below the tail.
+- Mutants killed:
+  - the bound dropped;
+  - curve non-zero accepted;
+  - any length accepted;
+  - non-zero accepted in the boundary slot;
+  - a missing vault passed;
+  - the backtest dropping the vault.
 
 ## Recording upload (RECORD-UPLOAD, `ops/host/files/usr/local/lib/zeroed/record-upload.mjs`, `packages/ops/src/watchdog/record.ts`)
 

@@ -198,7 +198,7 @@ Ranked by evidence strength, then cost. All read from our own chain reads first;
 | H2 | Mint authority not null | 0 | Dilution rug |
 | H3 | Freeze authority not null | 0 | Freeze honeypot |
 | H4 | Any Token-2022 extension outside the allowlist {MetadataPointer, TokenMetadata, GroupPointer, TokenGroup, GroupMemberPointer, TokenGroupMember, DefaultAccountState=Initialized with null freeze authority}. Blocks PermanentDelegate, TransferHook, Pausable, NonTransferable, TransferFeeConfig, MintCloseAuthority, Confidential*, ScaledUiAmount, InterestBearing, PermissionedBurn and any unknown type | 0 | Each can make a token unsellable ([safety.md](research/safety.md) §1.3). A PermanentDelegate can be revoked by the current delegate and then never set again ([safety.md](research/safety.md) Fact-check F4); the trial still blocks the extension whether or not it is revoked (safest choice; pump mints do not carry it) |
-| H5 | Venue or pool not allowlisted (§4), not canonical, mayhem mode, or non-SOL quote | 1 read + PDA | Non-canonical LP is withdrawable |
+| H5 | Venue or pool not allowlisted (§4), not canonical, mayhem mode, or non-SOL quote; or a trade-event tail GATE-1c refuses (wrong length, a non-zero curve tail, a pool tail above its quote vault) | 1 read + PDA | Non-canonical LP is withdrawable |
 | H6 | LP withdrawable | 0–1 | Liquidity withdrawal is 20.4% of rugs |
 | H7 | Curve complete but not migrated | 0 | Stuck state |
 | H8 | **Dust pool**: under 5 SOL at migration, or effective quote reserves below the liquidity floor (§8) now | 0 | Dust pools: median −96% at +1 h; 21.6% of migrations ([empirical.md](research/empirical.md) Q1) |
@@ -752,7 +752,7 @@ Critical paths: the proof, ENG-1 + DEC-1 → BT-1 → (GATE-1, RISK-1, EXIT-1) �
 | SEED-1 | Seeds DeployerIndex at start-up from published days, then from RPC (newest first, under a credit cap), with a gap mode for downtime backfill | Without it H14 is not-covered for 14 days after any start |
 | RUG-1c | On-demand per-deployer rug check by RPC under a credit cap, live and backtest (cached supplement) | Neither the free live feed nor the day releases see every prior mint's trades |
 | LEDGER-1c | Account version (derived from append-only row counts) checked inside the reservation transaction; one-transaction snapshot read; paper and live refuse unversioned writes | Closes the stale-snapshot double entry |
-| GATE-1c | H5 refuses unexplained event tails on the pool and curve tapes | B5 left an unpublished 8-byte field |
+| GATE-1c | H5 refuses unexplained event tails on the pool and curve tapes. Pool tails after B5 pass with any value up to the event's quote vault (the unswept creator fee, H5-POOL-TAILS); curve tails must be zero; a wrong length refuses on both | B5 left an unpublished 8-byte field |
 | UPG-1 / UPG-1b | B5 identified; regime boundaries B2–B4 found; decoders, quotes and signer checked against them | Trade economics changed inside the window |
 | RUN-1b | Item-4 block in the runner report; bad lines can't leave the denominator | Pre-funding item 4 is scored, not trusted |
 | OPS-1c, OPS-1d | Server sets the Telegram webhook after pairing; webhook retry, key-mismatch alerts, re-pair; `install.sh --update`; RUN-1 units; evidence relay through the watchdog; Tailscale serve | Setup fixes and the live view |
