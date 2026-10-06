@@ -96,7 +96,7 @@ export interface BootInput {
   /** The copy of the saved state the boot restored from (`<recording>/deployer-state.json`), or null when there is none. */
   readonly savedState?: string | null;
   /** Why this boot cannot be replayed at all (it has decisions but no recording or no seed), or null. */
-  readonly missing: 'no recording' | 'no seed' | null;
+  readonly missing: 'no recording' | 'no seed' | 'pruned' | null;
   readonly seed: string;
   readonly frames: readonly Frame[];
   readonly releases: readonly Release[];
@@ -119,7 +119,7 @@ export interface Divergence {
 
 export interface BootReport {
   readonly boot: string;
-  readonly missing: 'no recording' | 'no seed' | null;
+  readonly missing: 'no recording' | 'no seed' | 'pruned' | null;
   readonly decisions: number;
   readonly replays: number;
   /** Every replay gave the same lines. */
@@ -210,6 +210,18 @@ const redactionsOf = (dir: string): number => {
   return (m.coverage_gaps ?? []).reduce((n, g) => n + (typeof g.redactions === 'number' ? g.redactions : 0), 0);
 };
 
+/**
+ * RECORD-BUDGET: whether the byte budget deleted any of this boot's recording (its manifest's `pruned`), or a file its
+ * manifest lists is gone: what is left replays only part of what live saw, so it is named, not replayed.
+ */
+const prunedFrom = (dir: string): boolean => {
+  const path = join(dir, 'manifest.json');
+  if (!existsSync(path)) return false;
+  const m = JSON.parse(readFileSync(path, 'utf8')) as { pruned?: unknown[]; days?: { files?: { path?: unknown }[] }[] };
+  if ((m.pruned ?? []).length > 0) return true;
+  return (m.days ?? []).some((d) => (d.files ?? []).some((f) => typeof f.path === 'string' && !existsSync(join(dir, f.path))));
+};
+
 /** Every boot of a worker state folder: its recording, seed and live decision lines. */
 export const loadSession = (stateDir: string): BootInput[] => {
   const journal = readFileSync(join(stateDir, STATE_FILES.journal), 'utf8').split('\n').filter((l) => l !== '');
@@ -229,7 +241,7 @@ export const loadSession = (stateDir: string): BootInput[] => {
     }
     // A boot that decided nothing (a reconcile-only run) has nothing to compare; one that did must be replayable.
     if (live.length === 0 && Object.keys(excluded).length === 0) continue;
-    const missing = j.seed === undefined ? 'no seed' : !existsSync(dir) ? 'no recording' : null;
+    const missing = j.seed === undefined ? 'no seed' : !existsSync(dir) ? 'no recording' : prunedFrom(dir) ? 'pruned' : null;
     out.push({
       boot: j.boot, missing, seed: j.seed ?? '', live, excluded, redactions: missing === 'no recording' ? 0 : redactionsOf(dir),
       savedState: existsSync(join(dir, PERSIST_FILE)) ? join(dir, PERSIST_FILE) : existsSync(join(dir, `${PERSIST_FILE}.zst`)) ? join(dir, `${PERSIST_FILE}.zst`) : null,

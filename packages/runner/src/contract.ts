@@ -169,7 +169,12 @@ export type JournalKind =
   /** CREATE-AFTER-RESTART: a shortlisted mint's create looked up from its oldest signature (found or why not, pages, credits). */
   | 'create_lookup'
   /** PERSIST-2: a graduates seed taken or refused (`source`, `accepted`, `added`, `reason`). */
-  | 'graduates_seed';
+  | 'graduates_seed'
+  /**
+   * RECORD-BUDGET: a pass that deleted recordings (`reason` cap or floor, `files`, `bytes`, `boots` removed whole,
+   * `free_bytes` and `recorder_bytes` after).
+   */
+  | 'recorder_prune';
 
 /**
  * The fields of a `recovered` line, typed so the worker writes what the runner reads (no cast can hide drift). A

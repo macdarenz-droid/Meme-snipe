@@ -2926,6 +2926,84 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   in order dropped, nothing kept of the `false` class, the two kinds merged into one class (P5), the answer by order
   across kinds.
 
+## The recorder hashes each sealed file once (G4c, `run/recorder.ts`)
+
+- **2026-10-04 · G4c: the recorder hashes each sealed file once.** The manifest is rewritten at every seal and listed every sealed file by reading and hashing it again, so a boot's manifest work grew with the square of its file count (each 64 MiB rotation re-read every earlier file). Each file is now hashed from the compressed bytes as it is sealed, and the manifest lists that seal-time size and hash; a file a crashed boot had sealed keeps the size and hash its manifest listed (review N1), and a file sealed at the next start is hashed then. A later change to a sealed file now shows as a hash mismatch instead of being re-hashed into the manifest. Evidence: `packages/worker/test/worker-grow-c.test.ts` (the seal-time test fails on the base); hand mutants R1 (ignore the kept hashes) and R2 (hash other bytes) are killed; R3 (do not keep the seal's hash) is equivalent, since the manifest write that follows hashes the file once and keeps it.
+
+## Recordings kept under a byte cap and a free-disk floor (RECORD-BUDGET, `run/recorder-budget.ts`)
+
+- **2026-10-06 · Why** (owner, 6 Oct: "once its saved it will auto delete to stop populating the server. Which is 23gb.
+  1 whole day of trading fills the server data"). The live recorder writes about 4.5 to 7 GB a day; a full disk
+  crash-loops the worker. The upload half is RECORD-UPLOAD (#244); this is the hard local budget, which holds whether
+  or not uploads succeed.
+- **What.** A pass (`pruneRecordings`) runs at start before the leftovers are sealed (a full disk would otherwise fail
+  the recorder for the whole boot) and before the deployer store is loaded and rewritten, then once a minute beside the
+  memory sample, whether the recorder is on, off or failed. It deletes sealed recording files
+  (`(frames|raw|releases|pre|delays)-NNN.jsonl.zst`) oldest first, while the recordings are over the cap; when the
+  disk has less free than the floor, until it has the floor plus 0.5 GiB. Bytes count once per inode.
+  - Order: UTC day, then boot start (the base-36 boot id), then seal time (the `.zst`'s mtime, written once at the
+    seal), then name. Each table rotates on its own, so file numbers do not line up across tables: by number,
+    `releases-000` (often a whole day) went right after `frames-000` and left `frames-001…` without the releases that
+    order them (data review B3). By seal, one period's tables go together.
+  - An ended boot keeps its folder, `manifest.json` and attachments; the upload (#244) finds boots by their manifest
+    (data review B2). Its manifest is rewritten in place (`notePruned`): `days` from what is on disk, each deleted file
+    appended to `pruned[]` with the size and sha256 the manifest listed, every other field kept (B1). An ended boot's day
+    folders left empty, and its empty `days/`, are removed. The running boot's never are: its next file in that folder
+    may still be only buffered (the folder is made when a file opens, not at each flush), so a removed folder made the
+    next flush fail and the recorder fault (persist delta review B1). Only a folder that never recorded (no recording file, none
+    listed or pruned; a reconcile pre-step's manifest and saved state) is removed whole, first, and named.
+  - A packed saved state in `recorder/saved-state/` goes only at link count 1 (no boot links it) and never while a
+    pack runs. Ended boots keep their attachments, so their store copies stay until #244 removes the boot.
+  - Never touched: the running boot's plain `.jsonl`, any `*.tmp`, the manifest and attachments of any boot that
+    recorded; symlinks (the walk is lstat only) and anything whose real path leaves `recorder/`; everything else in the
+    state dir (it is never walked).
+  - The running boot's deleted files leave `days[].files` and go to its manifest's `pruned[]` through the recorder (or
+    through `notePruned` when the recorder is off or failed). Its file numbers never go back (a high-water mark per
+    table and day), so a deleted newest `-002` is followed by `-003`. `sealLeftovers` skips a folder that goes while it
+    reads (ENOENT).
+  - Each pass that deletes writes a `recorder_prune` journal line: reason `cap` or `floor`, `files`, `bytes`, `paths`
+    (every deleted file, `<boot>/days/<day>/<file>` or `saved-state/<sha>.zst`), `boots` (the never-recorded folders
+    removed, by name), and free and recorder bytes after. A failed pass, a manifest not rewritten, or a pass still over
+    with nothing left to delete logs and journals a critical alert (`recorder_budget`) at most once an hour and is
+    listed in /health `critical` until a pass is within both bounds. A pass never throws.
+  - Parity (TEST-1): a boot with a non-empty `pruned[]`, or a listed file gone, is reported `missing: 'pruned'` and not
+    replayed, so a partial recording never reads as an engine divergence (data review N2).
+- **Thresholds (settings, not constants).** `ZEROED_RECORDER_MAX_BYTES`, default 8 GiB (8.59 GB);
+  `ZEROED_DISK_PRUNE_FREE_BYTES`, default 3 GiB, values under 2 GiB refused (exit 2). Arithmetic from S1's research
+  (not re-measured here): on the 23 GB disk with an 8 GiB cap the steady state leaves about 5.5 GB free; the worst
+  short-term need between passes is about 1.26 GiB, under the 3 GiB floor. At 7 GB a day the cap holds about 1.2 days
+  of recording on the host; anything older lives only where RECORD-UPLOAD put it. Kept manifests and attachments
+  count against the cap; if they alone exceed it, the pass is short and alerts.
+- **Saved-data ruling** (S1, CLAUDE.md "Stored data"): the `recorder_prune` line and `pruned[]` hold only the bot's own
+  diagnostics; approved.
+- **Evidence (fail before, pass after).** `record-budget.test.ts`: T1 cap order and total, ended manifests rewritten,
+  one count per inode; B1 a partly pruned ended boot (20 sealed files) lists only what is on disk and the deleted file
+  under `pruned` with its seal-time sha256; B2 an ended boot keeps manifest and attachments, a never-recorded folder
+  goes and is named, an unreadable manifest's folder stays; B3 `releases-000` sealed after `frames-001` outlives it;
+  T2 floor target exactly floor + 0.5 GiB, nothing left reported as short; T3 state files, the open `.jsonl`, a
+  `.tmp`, manifests and symlinks (to outside and inside) byte-identical after 20 passes at free 0; T4 `pruned[]` with
+  the seal-time hash and recording going on; T5 `-003` after `-002` is deleted; T6 a vanished folder in
+  `sealLeftovers`; T7 store files only at link count 1 and not while packing; N1 a removed link frees nothing while
+  another holds the bytes; the config. `record-budget-worker.test.ts`: T8 the start pass before the deployer store's
+  rewrite, minute passes deleting the running boot's files, `recorder_prune` lines naming paths and boots, the ended
+  boot's manifest kept with `pruned`, /health recorder on; N3 the start pass before the leftovers' seal; T2 alert once
+  an hour, a failing pass alerts, the pass runs with the recorder off; T6 no recorder fault; T7 no store deletion while
+  the pack is held. `parity.test.ts`: N2. Hand mutants killed: newest first, open file not excluded, symlink check
+  removed, floor target = floor, no high-water mark, packing ignored, no start pass, start pass after the leftovers'
+  seal, ENOENT not skipped, links freed per link, store file at any link count, `pruned` not recorded, ended manifest
+  not rewritten, `pruned` sha256 not from the listing, recorded boot removed whole, journal without paths, order by
+  number instead of seal, alert not hourly, pruned boot replayed; and each guard layer alone (persist review note 3):
+  the real-path check (a day folder swapped for a symlink between the walk and the delete, through the `afterWalk`
+  test seam) and the boot-name check (a symlinked boot inside the recorder), the config's exact-integer bound, the
+  stale budget fault.
+- **2026-10-06 · Persist review notes 3 to 5.** Each guard layer has a test of its own. `ZEROED_RECORDER_MAX_BYTES` and
+  `ZEROED_DISK_PRUNE_FREE_BYTES` above 2^53 - 1 are refused (exit 2): they could not be held exactly. A
+  file in place of the recorder folder holds nothing to prune: a running recorder raises `recorder_failed` there, and
+  the pass still judges free space (statfs of the state dir), so a disk under the floor alerts even with the recorder
+  off; otherwise the budget fault is cleared, never left stale. A missing recorder folder is made again and judged as
+  usual.
+- **Not in this card.** Uploads and removing ended boots after read-back (#244).
+
 ## Money in SOL first (APP-SOL, owner 2026-10-05: success is counted in SOL; `components/Money.tsx`, `lib/money.ts` `formatSol`)
 - **2026-10-05 · The worker serves lamports beside every dollar figure.** Exact integer strings from the lamports it already holds:
   - Trades: size (what the entry swapped in), net (the paper account's `tradeSol`, including late settlements), gross (net plus costs), each cost kind, the fills.
