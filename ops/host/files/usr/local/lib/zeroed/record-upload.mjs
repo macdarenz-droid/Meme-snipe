@@ -647,7 +647,8 @@ export class Uploader {
   /** What the day's index lists: its archived records (a finished day, see prune) and those still in the state. */
   dayRecords(day) {
     const out = new Map();
-    if (this.state.index[day]?.archived) {
+    // Read whenever the file is there, not only by the flag: a day's archived records are never left out of its index.
+    if (this.state.index[day]?.archived || existsSync(this.archivePath(day))) {
       const a = JSON.parse(readFileSync(this.archivePath(day), 'utf8'));
       for (const [key, r] of Object.entries(a.files)) out.set(key, r);
     }
@@ -722,7 +723,9 @@ export class Uploader {
       if (!recs.every(([, r]) => this.finished(r) && this.bootDone(r.boot ?? null, cache))) continue;
       if (st.hash !== this.indexContent(day).hash) continue;
       mkdirSync(join(this.cfg.stateDir, 'days'), { recursive: true });
+      // dayRecords holds the archive's records plus these, so the file only ever grows.
       const all = Object.fromEntries(this.dayRecords(day));
+      if (existsSync(this.archivePath(day)) && Object.keys(JSON.parse(readFileSync(this.archivePath(day), 'utf8')).files).some((k) => !(k in all))) continue;
       writeAtomic(this.archivePath(day), `${JSON.stringify({ v: 1, day, files: all })}\n`);
       for (const [key, r] of recs) {
         const sha = r.sha256;
@@ -773,7 +776,8 @@ export class Uploader {
     }
     // The index is a file of its own, never an entry of another index.
     delete this.state.files[key];
-    this.state.index[day] = { n: p.n, hash: p.hash, verified: true, keys: p.keys, pending: null, release: rec.release, asset: rec.asset, asset_id: rec.asset_id, size: rec.size, sha256: rec.sha256 };
+    // An archived day stays archived: its file still holds records this index listed.
+    this.state.index[day] = { n: p.n, hash: p.hash, verified: true, keys: p.keys, pending: null, ...(st.archived ? { archived: true } : {}), release: rec.release, asset: rec.asset, asset_id: rec.asset_id, size: rec.size, sha256: rec.sha256 };
     rmSync(this.indexTmp(day, p.n), { force: true });
     this.save();
     return 'up';

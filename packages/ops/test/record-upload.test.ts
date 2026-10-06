@@ -699,6 +699,13 @@ describe('ops review: the index read-back gate and a bounded state', () => {
     const keys = indexBody(x.r, 2, `rec-${D4}`).files.map((e: { key: string }) => e.key);
     expect(keys).toEqual(expect.arrayContaining([`${a}/days/${D4}/frames-000.jsonl.zst`, `${a}/manifest.json`, `${b}/days/${D4}/frames-000.jsonl.zst`, `${b}/manifest.json`]));
     expect(keys).toHaveLength(8);
+    // Once more: the day stays archived with every record, and no index-3 goes up without the archived files.
+    const w = uploader(f, { r: x.r });
+    expect(await w.u.run()).toBe(0);
+    expect(assetNames(x.r)).not.toContain('index-3.json');
+    expect(w.state().index[D4]).toMatchObject({ n: 2, verified: true });
+    const all = new Set([...Object.keys(JSON.parse(readFileSync(join(f.stateDir, 'days', `${D4}.json`), 'utf8')).files), ...Object.keys(w.state().files)]);
+    expect(all.size).toBe(8);
   });
 
   it('with deletes off nothing is archived or marked done, so switching deletes on later still deletes', async () => {
