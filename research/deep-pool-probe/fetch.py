@@ -4,7 +4,7 @@
   python3 -I fetch.py daily <universe.json> <outdir>      # daily OHLCV per pool, before the wall
   python3 -I fetch.py bars <eligible.json> <outdir>       # 5-minute OHLCV per pool, 2026-07-19 to the wall
 """
-import glob, json, os, ssl, sys, time, urllib.request
+import glob, json, os, ssl, sys, time, urllib.error, urllib.request
 
 WALL = 1789999200            # 2026-09-21T14:00:00Z
 START = 1784419200           # 2026-07-19T00:00:00Z (3-day look-back before 07-22)
@@ -20,13 +20,18 @@ def ctx():
 CTX = ctx()
 
 def get(url):
-    for attempt in range(6):
+    """JSON body; None when the pool is unknown (404). Backs off on 429 and network errors."""
+    for attempt in range(8):
         try:
             req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json'})
             with urllib.request.urlopen(req, timeout=30, context=CTX) as r:
                 return json.load(r)
-        except Exception as e:  # 429 or network: back off
-            time.sleep(5 * (attempt + 1))
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return None
+            time.sleep(20 * (attempt + 1))
+        except Exception:
+            time.sleep(10 * (attempt + 1))
     raise RuntimeError('failed: ' + url)
 
 def universe(src, out):
@@ -61,8 +66,8 @@ def daily(uni, outdir):
         if os.path.exists(p):
             continue
         d = get(GT.format(u['pool'], 'day', 1, WALL, 120))
-        json.dump(d, open(p, 'w'))
-        time.sleep(2.1)
+        json.dump(d or {}, open(p, 'w'))
+        time.sleep(6.5)
 
 def bars(elig, outdir):
     os.makedirs(outdir, exist_ok=True)
@@ -72,9 +77,9 @@ def bars(elig, outdir):
             continue
         rows, before = {}, WALL
         while before > START:
-            d = get(GT.format(u['pool'], 'minute', 5, before, 1000))
+            d = get(GT.format(u['pool'], 'minute', 5, before, 1000)) or {}
             lst = (d.get('data') or {}).get('attributes', {}).get('ohlcv_list') or []
-            time.sleep(2.1)
+            time.sleep(6.5)
             if not lst:
                 break
             for r in lst:
