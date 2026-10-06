@@ -506,3 +506,35 @@ describe('DEDUP-PER-WATCH: a copy that comes after a shed and after its slot was
     expect(feed.sizes()['shed_keys']).toBe(0);
   });
 });
+
+describe('DEDUP-PER-WATCH: one whole copy after a shed, never two (review P3)', () => {
+  // A's copy is shed with nothing held; B's copy then stands in, whole; C's copy and second-provider copies on A and B
+  // follow. Each swap must be released once (the shed key is spent by B's copy), and the replay must equal live.
+  const S = S0 + 5n;
+  const C = { mint: addr(21), pool: addr(22) };
+  it('releases each swap once and the replay equals live', () => {
+    const frames: Frame[] = [];
+    const releases: Release[] = [];
+    const feed = new LiveFeed({ ...DEFAULT_LIVE_FEED, horizonSlots: 0, onFrame: (f) => frames.push(f), onRelease: (_e, r) => releases.push(r) });
+    const t = at(S);
+    const body = (via: string): FrameBody => ({ type: 'logs', signature: SIG, slot: S, err: null, via, logs: [...swapOf(A, S).logs, ...swapOf(B, S).logs], commitment: 'confirmed' });
+    feed.ingest('helius', body(VIA(A)), { receivedAt: t });
+    feed.shed((via) => via === VIA(A));
+    const b = feed.ingest('helius', body(VIA(B)), { receivedAt: t + 1 });
+    expect(b.echo).toBeUndefined();
+    const c = feed.ingest('helius', body(VIA(C)), { receivedAt: t + 2 });
+    expect(c.echo).toBe(true);
+    expect(feed.ingest('alchemy', body(VIA(A)), { receivedAt: t + 3 }).duplicate).toBe(true);
+    expect(feed.ingest('alchemy', body(VIA(B)), { receivedAt: t + 4 }).duplicate).toBe(true);
+    feed.ingest('helius', { type: 'slot', slot: S + 1n, parent: S, root: null }, { receivedAt: t + 10 });
+    feed.advance(t + 11);
+    const out: MarketEvent[] = [];
+    for (let e = feed.next(); e !== null; e = feed.next()) if (e.kind === 'market') out.push(e);
+    const swaps = out.filter((e) => e.key.startsWith('logs:pump_amm:BuyEvent:')).map((e) => e.key);
+    expect(swaps.sort()).toEqual([`logs:pump_amm:BuyEvent:${A.pool}`, `logs:pump_amm:BuyEvent:${B.pool}`].sort());
+    const rp = replayRecorded(frames.map((f) => parseTyped(typedText(f)) as Frame), releases.map((x) => parseTyped(typedText(x)) as Release));
+    const replayed: MarketEvent[] = [];
+    for (let e = rp.feed.next(); e !== null; e = rp.feed.next()) if (e.kind === 'market') replayed.push(e);
+    expect(typedText(replayed)).toBe(typedText(out));
+  });
+});
