@@ -3,12 +3,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import { sign, type Heartbeat } from '../src/watchdog/logic.ts';
 import { CODE_REPO, writeReports } from '../src/watchdog/reports.ts';
-import { FORBIDDEN, FORBIDDEN_KEY, SHAPE_KEYS, checkSummary, forbiddenIn, isSummary, type Summary } from '../src/watchdog/summary.ts';
+import { FORBIDDEN, FORBIDDEN_KEY, SHAPE_KEYS, SUMMARY_MAX_PROBES, SUMMARY_MAX_PROBE_COUNTS, checkSummary, forbiddenIn, isSummary, type Summary } from '../src/watchdog/summary.ts';
 import { Watchdog, type DurableState, type Env } from '../src/watchdog/worker.ts';
 import { MINT, goodSummary } from './summary-fixture.ts';
 
 const KEY = 'test-hmac-key-0123456789abcdef';
-
 
 /** The same planted values as the worker side's test, one per forbidden kind. */
 const PLANTED = [
@@ -25,6 +24,7 @@ const STRING_FIELDS: readonly ((s: Record<string, any>, v: string) => void)[] = 
   (s, v) => (s.day = v), (s, v) => (s.generated_at = v), (s, v) => (s.mode = v),
   (s, v) => (s.worker.git_sha = v), (s, v) => (s.worker.entry_rule = v), (s, v) => (s.worker.recorder = v),
   (s, v) => (s.alerts[0].code = v), (s, v) => (s.halts[0].code = v),
+  (s, v) => (s.worker.exits[0].code = v), (s, v) => (s.worker.crash_sites[0].error = v), (s, v) => (s.worker.crash_sites[0].file = v), (s, v) => (s.worker.crash_sites[0].event = v),
   (s, v) => (s.candidates.refused_by_reason[0].gate = v), (s, v) => (s.candidates.refused_by_reason[0].code = v),
   (s, v) => (s.trades[0].mint = v), (s, v) => (s.trades[0].opened_at = v), (s, v) => (s.trades[0].closed_at = v), (s, v) => (s.trades[0].size_usd = v),
   (s, v) => (s.trades[0].exit_reason = v), (s, v) => (s.trades[0].net_lamports = v), (s, v) => (s.trades[0].net_usd = v),
@@ -33,7 +33,7 @@ const STRING_FIELDS: readonly ((s: Record<string, any>, v: string) => void)[] = 
   (s, v) => (s.worker.host = v), (s, v) => (s.note = v), (s, v) => (s.trades[0].wallet = v),
 ];
 
-const AMOUNT_FIELDS = new Set([13, 15, 16, 17, 18]);
+const AMOUNT_FIELDS = new Set([17, 19, 20, 21, 22]);
 
 describe('the summary guards', () => {
   it('accept the exact shape and refuse a missing, extra or mistyped field', () => {
@@ -58,6 +58,93 @@ describe('the summary guards', () => {
         expect(checkSummary(JSON.stringify(s)).ok, `${secret} in field ${k}`).toBe(false);
       }
     }
+  });
+
+  it('refuse a URL, a host:port and a message in every RESTART-CAUSE field, and keep their shape exact', () => {
+    const set: readonly ((s: Record<string, any>, v: unknown) => void)[] = [
+      (s, v) => (s.worker.exits[0].code = v), (s, v) => (s.worker.crash_sites[0].error = v),
+      (s, v) => (s.worker.crash_sites[0].file = v), (s, v) => (s.worker.crash_sites[0].event = v),
+    ];
+    const bad = [
+      'https://mainnet.helius-rpc.com/?api-key=abc', 'wss://x.example/ws', 'localhost:8899', 'rpc:8899', '10.0.0.1:443', 'mainnet.helius-rpc.com:443',
+      'Unexpected token < in JSON', 'fetch failed: ECONNREFUSED', 'connect ECONNREFUSED 127.0.0.1:8899', 'packages/x/src/a.ts:12',
+      'packages/worker/src/run/http://evil.ts', 'packages/worker/src/evil.com.ts', 'logs:pump.fun:Create', 'a:b:c:d', '',
+    ];
+    for (const v of bad) {
+      for (const [k, f] of set.entries()) {
+        const s = structuredClone(goodSummary()) as unknown as Record<string, any>;
+        f(s, v);
+        expect(checkSummary(JSON.stringify(s)).ok, `${v} in field ${k}`).toBe(false);
+      }
+    }
+    const ok = (over: Record<string, unknown>) => checkSummary(JSON.stringify(goodSummary({ worker: { ...goodSummary().worker, ...over } as Summary['worker'] }))).ok;
+    const site = goodSummary().worker.crash_sites![0]!;
+    expect(ok({ exits: [{ code: 'killed', count: 1 }, { code: 'clean', count: 1 }], crash_sites: [{ ...site, file: null, line: null, event: null, error: 'non-error' }] })).toBe(true);
+    expect(ok({ exits: [{ code: 'other', count: 1 }] })).toBe(false);
+    // HEAP-GUARD: a death just after a sample near a memory limit.
+    expect(ok({ exits: [{ code: 'oom', count: 2 }, { code: 'crash', count: 1 }] })).toBe(true);
+    expect(ok({ crash_sites: [{ ...site, file: null }] })).toBe(false);
+    expect(ok({ crash_sites: [{ ...site, line: null }] })).toBe(false);
+    expect(ok({ crash_sites: [{ ...site, line: -1 }] })).toBe(false);
+    expect(ok({ crash_sites: [{ ...site, note: 'x' }] })).toBe(false);
+    expect(ok({ crash_sites: Array.from({ length: 9 }, () => site) })).toBe(false);
+    expect(ok({ restarts: { planned: 0, deploy: 0 } })).toBe(false);
+    expect(ok({ restarts: { planned: 0, deploy: 0, unplanned: 0, other: 0 } })).toBe(false);
+    expect(ok({ restarts: { planned: 0, deploy: 0, unplanned: 1.5 } })).toBe(false);
+  });
+
+  it('accept a worker from before RESTART-CAUSE (none of its keys), never some of them (a deploy is not atomic)', () => {
+    const w = goodSummary().worker as Record<string, unknown>;
+    const { restarts, exits, crash_sites, ...old } = w;
+    expect(checkSummary(JSON.stringify(goodSummary({ worker: old as Summary['worker'] }))).ok).toBe(true);
+    for (const part of [{ restarts }, { exits }, { crash_sites }, { restarts, exits }, { restarts, crash_sites }, { exits, crash_sites }]) {
+      expect(checkSummary(JSON.stringify(goodSummary({ worker: { ...old, ...part } as unknown as Summary['worker'] }))).ok, Object.keys(part).join()).toBe(false);
+    }
+    expect(checkSummary(JSON.stringify(goodSummary({ worker: { ...old, restarts, exits, crash_sites } as Summary['worker'] }))).ok).toBe(true);
+    expect(checkSummary(JSON.stringify(goodSummary({ worker: { ...old, note: 1 } as unknown as Summary['worker'] }))).ok).toBe(false);
+  });
+
+  it('accept the memory at the last death (MEM-SUMMARY) only beside RESTART-CAUSE\'s keys, in exactly its shape, numbers and codes only', () => {
+    const w = goodSummary().worker as Record<string, unknown>;
+    const death = {
+      at: '2026-10-04T01:59:00.000Z', uptime_s: 612, heap_used_mb: 590, heap_limit_mb: 600,
+      spaces: [{ space: 'old', used_mb: 500 }, { space: 'large-object', used_mb: 60 }],
+      sample: { at: '2026-10-04T01:58:55.000Z', heap_used_mb: 580, heap_limit_mb: 600, rss_mb: 700, external_mb: 3, array_buffers_mb: 2 },
+    };
+    const ok = (worker: Record<string, unknown>) => checkSummary(JSON.stringify(goodSummary({ worker: worker as unknown as Summary['worker'] }))).ok;
+    expect(ok({ ...w, last_death: death })).toBe(true);
+    expect(ok({ ...w, last_death: null })).toBe(true);
+    expect(ok({ ...w, last_death: { ...death, uptime_s: null, heap_used_mb: null, heap_limit_mb: null, spaces: [], sample: null } })).toBe(true);
+    // Not without RESTART-CAUSE's keys (one shape per watchdog generation).
+    const { restarts, exits, crash_sites, ...old } = w;
+    void restarts; void exits; void crash_sites;
+    expect(ok({ ...old, last_death: death })).toBe(false);
+    for (const bad of [
+      { ...death, at: 1_000 }, { ...death, at: 'yesterday' }, { ...death, uptime_s: -1 }, { ...death, heap_used_mb: 1.5 }, { ...death, heap_limit_mb: '600' },
+      { ...death, spaces: [{ space: 'Old Space', used_mb: 1 }] }, { ...death, spaces: [{ space: 'https://x.example/a', used_mb: 1 }] },
+      { ...death, spaces: [{ space: 'old', used_mb: 1, note: 'x' }] }, { ...death, spaces: Array.from({ length: 17 }, () => ({ space: 'old', used_mb: 1 })) },
+      { ...death, sample: { ...death.sample, rss_mb: undefined } }, { ...death, sample: { ...death.sample, host: 'api.helius.dev' } },
+      { ...death, sample: { ...death.sample, at: '2026-10-04' } }, { ...death, note: 'x' }, 'x', [],
+    ]) expect(ok({ ...w, last_death: bad }), JSON.stringify(bad)).toBe(false);
+    // A planted secret anywhere in it is refused by the pattern guard too.
+    expect(ok({ ...w, last_death: { ...death, spaces: [{ space: 'ghp_abcdefghijklmnopqrstuvwxyz0123456789', used_mb: 1 }] } })).toBe(false);
+  });
+
+  it('accept the memory probe samples in the last death (MEM-PROBE) in exactly their shape, counts and codes only, bounded', () => {
+    const w = goodSummary().worker as Record<string, unknown>;
+    const death = { at: '2026-10-05T19:36:33.000Z', uptime_s: 1_808, heap_used_mb: 563, heap_limit_mb: 572, spaces: [{ space: 'old', used_mb: 484 }], sample: null };
+    const row = { at: '2026-10-05T19:35:33.000Z', heap_used_mb: 527, old_mb: 450, large_object_mb: 72, saving: true, counts: [{ code: 'store_keys', count: 120_000 }, { code: 'store_k_read_accounts', count: 9 }] };
+    const ok = (last_death: unknown) => checkSummary(JSON.stringify(goodSummary({ worker: { ...w, last_death } as unknown as Summary['worker'] }))).ok;
+    expect(ok({ ...death, recent: [row] })).toBe(true);
+    expect(ok({ ...death, recent: [] })).toBe(true);
+    expect(ok({ ...death, recent: Array.from({ length: SUMMARY_MAX_PROBES }, () => row) })).toBe(true);
+    expect(ok({ ...death, recent: [{ ...row, counts: Array.from({ length: SUMMARY_MAX_PROBE_COUNTS }, (_, i) => ({ code: `c${i}`, count: i })) }] })).toBe(true);
+    for (const bad of [
+      Array.from({ length: SUMMARY_MAX_PROBES + 1 }, () => row), [{ ...row, counts: Array.from({ length: SUMMARY_MAX_PROBE_COUNTS + 1 }, (_, i) => ({ code: `c${i}`, count: i })) }],
+      [{ ...row, saving: 'yes' }], [{ ...row, old_mb: -1 }], [{ ...row, large_object_mb: 1.5 }], [{ ...row, at: 'now' }], [{ ...row, note: 'x' }],
+      [{ ...row, counts: [{ code: 'Store Keys', count: 1 }] }], [{ ...row, counts: [{ code: 'store_keys', count: 1, mint: 'x' }] }], [{ ...row, counts: [{ code: 'store_keys', count: -1 }] }],
+      [{ ...row, counts: [{ code: 'ghp_abcdefghijklmnopqrstuvwxyz0123456789', count: 1 }] }], 'x', {},
+    ]) expect(ok({ ...death, recent: bad }), JSON.stringify(bad).slice(0, 120)).toBe(false);
   });
 
   it('name each forbidden kind, and never flag a mint address or a normal summary', () => {

@@ -8,7 +8,7 @@ import { BacktestReportView, groupMonth } from '../src/dashboard/BacktestReport.
 import { Boundary } from '../src/dashboard/Boundary.tsx';
 import { monthTotals, PnlCalendar } from '../src/dashboard/Calendar.tsx';
 import { Dashboard } from '../src/dashboard/Dashboard.tsx';
-import { headline, Journal, OpenPosition, Stats, StatusFlags } from '../src/dashboard/Sections.tsx';
+import { headline, JournalList, OpenPosition, Stats, StatusFlags } from '../src/dashboard/Sections.tsx';
 import { Load, OfflineContext, STALE_TICK_MS, startStaleTicker } from '../src/dashboard/State.tsx';
 import { TradeDetail, TradeTable } from '../src/dashboard/Trades.tsx';
 import { fixtureApi, fixtureDays, fixtureDecisions, fixturePosition, fixtureReport, fixtureStats, fixtureTrades } from '../src/dev/dashboardFixtures.ts';
@@ -100,7 +100,9 @@ describe('decisions, position and status', () => {
     const rejected = fixtureDecisions('paper').find((d) => d.outcome === 'rejected');
     if (!rejected) throw new Error('no rejection');
     expect(headline(rejected)).toMatch(/: .+ \(needs .+\)$/);
-    const out = text(html(h(Journal, { decisions: fixtureDecisions('paper'), onOpen: noop })));
+    // Every row, as after enough presses of "Show more" (APP-TRUTH: the journal opens on the newest 5).
+    const all = fixtureDecisions('paper');
+    const out = text(html(h(JournalList, { decisions: all, onOpen: noop, shown: all.length, onMore: noop })));
     expect(out).toContain('Rejected');
     expect(out).toContain('Entered');
   });

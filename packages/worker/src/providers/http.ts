@@ -84,9 +84,31 @@ export const scrub = (text: string, secrets: Secrets, names: readonly SecretName
 };
 
 /** A provider request failed. The message never holds a URL or a key. */
+/**
+ * HELIUS-EXHAUSTED: a provider's answer that its plan's credits are used up. Helius answers 429 "max usage reached"
+ * (docs: billing/rate-limits, billing FAQ); an ordinary 429 is a rate limit. Matched on the body, never logged.
+ */
+export const creditsExhausted = (status: number, text: string): boolean => status === 429 && /max usage reached/i.test(text);
+
+/** The entry halt reason while Helius refuses for credits (summary halt code `helius-exhausted`). */
+export const HELIUS_EXHAUSTED = 'helius credits exhausted';
+
+/**
+ * The error for a 429: credits exhausted (the scheduler holds the provider's non-exit calls and re-checks slowly) or a
+ * rate limit (the scheduler treats its window as full).
+ */
+export const refusal429 = (scheduler: { penalize(): void; exhausted(): void }, provider: string, what: string, text: string): ProviderError => {
+  if (creditsExhausted(429, text)) {
+    scheduler.exhausted();
+    return new ProviderError(provider, 'exhausted', `${what}: credits exhausted (max usage reached)`, 429);
+  }
+  scheduler.penalize();
+  return new ProviderError(provider, 'rate_limited', `${what} rate limited`, 429);
+};
+
 export class ProviderError extends Error {
   readonly provider: string;
-  readonly kind: 'timeout' | 'network' | 'http' | 'rate_limited' | 'rpc' | 'shape';
+  readonly kind: 'timeout' | 'network' | 'http' | 'rate_limited' | 'exhausted' | 'rpc' | 'shape';
   readonly status: number | null;
   constructor(provider: string, kind: ProviderError['kind'], message: string, status: number | null = null) {
     super(`${provider}: ${message}`);

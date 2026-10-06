@@ -1465,11 +1465,28 @@ if [ "$entry" != /opt/zeroed/stub/worker.mjs ]; then
 fi
 export ZEROED_MODE=paper ZEROED_RECORDER=on ZEROED_SIMULATE=on ZEROED_DRILLS=on
 export ZEROED_HEALTH_ADDR="$WORKER_HEALTH_ADDR" ZEROED_API_ADDR="$WORKER_API_ADDR"
+# HEAP-GUARD: V8's default heap limit follows the machine's RAM (about half of it: roughly 500 MB on the 1 GB host), not
+# the unit's MemoryMax=800M, and a heap past it aborts with no handler ("no clean stop"). 560 MB of old space, plus the
+# young generation (up to 48 MB) and the measured native overhead (RSS less heap: 127 MB at a 100k-mint boot, 147 MB at
+# 1M), stays under 800M. A fatal error writes a compact report into the state dir (StateDirectory: writable under
+# ProtectSystem=strict), which the next start's reconcile reads to name the death.
+reports="${STATE_DIRECTORY:-/var/lib/zeroed}/reports"
+mkdir -p "$reports"
+# Only the newest 5 reports are kept: a restart loop would otherwise write one every few minutes. The newest (the last
+# death's) is the one the reconcile reads. Safe with no report at all (nullglob).
+shopt -s nullglob
+old=("$reports"/report.*.json)
+shopt -u nullglob
+if [ "${#old[@]}" -gt 5 ]; then
+  mapfile -t old < <(ls -1t -- "${old[@]}")
+  rm -f -- "${old[@]:5}"
+fi
+heap=(--max-old-space-size=560 --report-on-fatalerror --report-compact "--report-directory=$reports")
 if [ "$entry" != /opt/zeroed/stub/worker.mjs ]; then
   cd /opt/zeroed/current
-  exec /usr/local/bin/node --no-warnings "$entry" "$@"
+  exec /usr/local/bin/node --no-warnings "${heap[@]}" "$entry" "$@"
 fi
-exec /usr/local/bin/node "$entry" "$@"
+exec /usr/local/bin/node "${heap[@]}" "$entry" "$@"
 __ZEROED_FILE__
 install_file /usr/local/sbin/zeroed-backup 0755 <<'__ZEROED_FILE__'
 #!/usr/bin/env bash
@@ -2275,30 +2292,31 @@ else
   systemctl disable --now zeroed-backup-offsite.timer >/dev/null 2>&1 || true
 fi
 
-# answers: the worker's health route says paper. The release's worker serves it on WORKER_HEALTH_ADDR; the host's
-# stand-in on the API address.
+# answers SHA: the worker's health route says paper and names release SHA (its git_sha, the release folder's name), so
+# an answer from the worker that ran before the switch never counts. The release's worker serves it on
+# WORKER_HEALTH_ADDR; the host's stand-in on the API address.
 answers() {
   local a
   for a in "$WORKER_HEALTH_ADDR" "$WORKER_API_ADDR"; do
-    curl -fsS -m 2 "http://$a/health" 2>/dev/null | jq -e '.mode == "paper"' >/dev/null 2>&1 && return 0
+    curl -fsS -m 2 "http://$a/health" 2>/dev/null | jq -e --arg sha "$1" '.mode == "paper" and .git_sha == $sha' >/dev/null 2>&1 && return 0
   done
   return 1
 }
 
-# holds: the restarted worker answers its health route in paper within 60 s, then runs SWITCH_HOLD_S more with no
-# restart and still answering. Prints why when it does not.
+# holds: the restarted worker answers its health route in paper, as the new commit, within 60 s, then runs
+# SWITCH_HOLD_S more with no restart and still answering as it. Prints why when it does not.
 holds() {
   local up=0 n0
   for _ in $(seq 1 60); do
-    if systemctl is-active --quiet zeroed-worker.service && answers; then up=1; break; fi
+    if systemctl is-active --quiet zeroed-worker.service && answers "$commit"; then up=1; break; fi
     sleep 1
   done
-  [ "$up" = 1 ] || { echo "its health route did not answer within 60 s"; return 1; }
+  [ "$up" = 1 ] || { echo "its health route did not answer as ${commit:0:12} within 60 s"; return 1; }
   n0="$(systemctl show -p NRestarts --value zeroed-worker.service)"
   sleep "$SWITCH_HOLD_S"
   systemctl is-active --quiet zeroed-worker.service && [ "$(systemctl show -p NRestarts --value zeroed-worker.service)" = "$n0" ] ||
     { echo "it stopped or restarted within ${SWITCH_HOLD_S} s of answering"; return 1; }
-  answers || { echo "its health route stopped answering within ${SWITCH_HOLD_S} s"; return 1; }
+  answers "$commit" || { echo "its health route stopped answering as ${commit:0:12} within ${SWITCH_HOLD_S} s"; return 1; }
 }
 
 # rollback WHY: the new release's worker did not stay up. Back to the release that ran before (its host files too),

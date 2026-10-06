@@ -137,6 +137,9 @@ export interface SimTiming {
 /** The lower median (a whole number, as ExecStats needs), null when empty. */
 const lowerMedian = (xs: readonly number[]): number | null => (xs.length === 0 ? null : [...xs].sort((a, b) => a - b)[(xs.length - 1) >> 1]!);
 
+/** A paper attempt that was in flight when its process stopped: it never lands. */
+const lostInRestart = (a: PaperAttempt): boolean => a.outcome === 'expired' && a.reason.startsWith('lost');
+
 export class PaperWorld implements EffectRunner {
   readonly #d: PaperWorldDeps;
   readonly #attempts: Map<string, PaperAttempt>;
@@ -184,7 +187,7 @@ export class PaperWorld implements EffectRunner {
    */
   #heightFor(sig: string, lastValid: bigint): bigint | null {
     const a = this.#attempts.get(sig);
-    if (a === undefined || (a.outcome === 'expired' && a.reason.startsWith('lost'))) return lastValid + 1n;
+    if (a === undefined || lostInRestart(a)) return lastValid + 1n;
     return this.#height;
   }
 
@@ -256,8 +259,13 @@ export class PaperWorld implements EffectRunner {
   }
 
   #broadcast(intentId: IntentId, sig: Signature): void {
-    // Rebroadcasts send the same bytes: the same signature lands at most once, so its fate was drawn already.
-    if (this.#attempts.has(sig)) return;
+    // Rebroadcasts send the same bytes: the same signature lands at most once, so its fate was drawn already. One lost
+    // in a restart is the exception (EXIT-KEEP B3): a kill after this world saved the attempt but before the ledger
+    // booked it leaves the book without the intent, so the re-made intent gets the same id and the same paper
+    // signature. It is a new send, made by this process (a real re-made exit is a new transaction); ignoring it left
+    // the intent waiting out its blockhash (about 150 slots) and burned a ladder rung.
+    const known = this.#attempts.get(sig);
+    if (known !== undefined && !lostInRestart(known)) return;
     const i = this.#intent(intentId);
     const attempt = i?.attempts.find((a) => a.signature === sig);
     const height = this.#height;
