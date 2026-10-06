@@ -2,6 +2,9 @@
 // public `ticker` channel for SOL-USD, one WebSocket, no key (the same exchange FACTS-1 reads SOL/USD bars from).
 // Each fact is dated at the trade's own exchange time, never at its receipt, so a stalled feed ages instead of looking
 // fresh. At most one fact per `minGapMs`: prices tick many times a second.
+// COINBASE-LIVENESS: `ticker` only speaks when a trade happens, and SOL-USD has quiet gaps past 10 s, so the `heartbeat`
+// channel (about one frame a second) is subscribed too. A heartbeat only calls `onAlive`: it is never a price, never
+// a frame on the feed (so never recorded or replayed), and never touches the price's own date.
 import { MICRO_PER_USD } from '../../../core/src/units/index.ts';
 import type { Timers } from '../scheduler/index.ts';
 import type { SocketFactory } from './http.ts';
@@ -25,6 +28,8 @@ export interface CoinbaseOptions {
   /** The fact key (the strategy's SOL_PRICE_KEY). */
   readonly key: string;
   readonly minGapMs?: number;
+  /** Called with the receipt time of each SOL-USD heartbeat: feed liveness for the stale check, nothing else. */
+  readonly onAlive?: (atMs: number) => void;
   readonly url?: string;
   readonly socket?: SocketOptions;
 }
@@ -38,7 +43,7 @@ export class CoinbaseSolPrice {
     this.#o = o;
     this.#socket = new ReconnectingSocket('coinbase', () => o.url ?? COINBASE_WS_URL, o.factory, o.timers, o.socket ?? SOCKET, {
       onOpen: () => {
-        this.#socket.send(JSON.stringify({ type: 'subscribe', product_ids: ['SOL-USD'], channels: ['ticker'] }));
+        this.#socket.send(JSON.stringify({ type: 'subscribe', product_ids: ['SOL-USD'], channels: ['ticker', 'heartbeat'] }));
         this.#status('up', {});
       },
       onMessage: (text) => this.#message(text),
@@ -67,6 +72,10 @@ export class CoinbaseSolPrice {
     }
     if (typeof m !== 'object' || m === null) return;
     const t = m as Record<string, unknown>;
+    if (t['type'] === 'heartbeat') {
+      if (t['product_id'] === 'SOL-USD') this.#o.onAlive?.(this.#o.timers.now());
+      return;
+    }
     if (t['type'] !== 'ticker' || t['product_id'] !== 'SOL-USD' || typeof t['price'] !== 'string' || typeof t['time'] !== 'string') return;
     const value = dollarsToMicro(t['price']);
     const tradeAt = Date.parse(t['time']);
