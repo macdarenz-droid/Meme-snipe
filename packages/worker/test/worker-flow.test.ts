@@ -1257,7 +1257,11 @@ describe('restart drill: H14 creates coverage across a restart (SEED-1 ruling 20
     const h2 = makeWorker({ stateDir, timers, seed: (r) => (requests.push(r), seed(r)), config: ports(1) });
     await boot(h2);
     expect(requests[0]!.saved.last).not.toBeNull();
-    expect(requests[0]!.close).toEqual({ via: VIA, fromSlot: null });
+    // SAVE-ASOF: the saved state is restored (before, restore refused it: the index's last moment had a receipt time
+    // after the save's moment, and the restart started fresh), so the fill closes the restart gap the restore opened at
+    // the saved moment (persist/state.ts).
+    expect(h2.logs.some((l) => l.startsWith('Saved state restored as of slot'))).toBe(true);
+    expect(requests[0]!.close).toEqual({ via: VIA, fromSlot: requests[0]!.saved.last!.slot });
     expect(h2.worker.strategy.coverage).toEqual(first);
     // The seed came after live events, which waited for it: the index took it in full, never refused.
     const seeds = lines(stateDir).filter((l) => l['boot'] === h2.worker.boot && l['kind'] === 'decision' && /^seed/.test((l['reasons'] as string[])[0] ?? ''));
