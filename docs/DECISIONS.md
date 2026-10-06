@@ -2731,3 +2731,10 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
     save log to show a large one, and an hour-ahead block time cannot be skew. Test: `deployer-index.test.ts` "SAVE-ASOF:
     a create whose block time is seconds after the process start"; mutants killed: no bound, no clamp, `>=` at the
     bound, no refusal.
+
+## Falling behind the feeds (BEHIND, `run/behind.ts`)
+
+- **2026-10-06 · Why.** A worker that falls behind its feeds holds every unreleased frame in memory, and the hold grows until the heap runs out.
+- **What.** A loop cycle late by more than 10 s (the loop's monotonic clock) halts entries (`behind`, through the halt check); the halt clears after 30 s of cycles under 2 s. Exits keep running. Past 20,000 held frames, the feed sheds the held log frames of candidate pools only: never a pool that is held, has a position or seed, or has an exit or entry in flight (`LiveStrategy.committed`).
+- **Coverage.** Each shed range becomes a recorded coverage gap (`coverage:trades:<pool>:gap`, reason `shed`), placed first in its first slot, so it sorts before every shed event. H11 refuses the pool from that slot (H16 `gap`), live and in the recording's replay alike. Shed frames are ranked before they drop, so live and replay give the same moments after a shed.
+- **Cost.** A shed tail pool censors its REC-1 counterfactual for that range.

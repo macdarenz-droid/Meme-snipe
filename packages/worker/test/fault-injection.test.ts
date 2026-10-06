@@ -20,6 +20,7 @@ import { FEE_CONTEXT } from '../../core/test/gates/world.ts';
 import { PUMP_AMM_GLOBAL_CONFIG, fromBase64 } from '../../core/src/chain/index.ts';
 import { PUMP_AMM_FEE_CONFIG, type ReadAccount, decodeSnapshot } from '../src/run/snapshot.ts';
 import type { WatchRead } from '../src/run/watch.ts';
+import { BEHIND } from '../src/run/behind.ts';
 import { SLOT_MS, parseConfig } from '../src/run/config.ts';
 import { DEFAULT_LIVE_FEED } from '../src/providers/live-feed.ts';
 import { SECOND_PATH_UNAVAILABLE } from '../src/run/worker.ts';
@@ -262,6 +263,46 @@ describe('§18: a feed gap (TEST-3)', () => {
       m.pool();
     }, 400);
     expect(h.worker.health().exit_capable).toBe(false);
+    await h.worker.stop();
+  });
+});
+
+describe('§18: the worker falls behind its feeds (BEHIND)', () => {
+  it('a loop cycle over 10 s late halts new entries, the open position still exits, and entries resume after 30 s on time', async () => {
+    // The loop's own monotonic clock: each cycle 100 ms, plus `late` (how far the worker runs behind its inputs).
+    let mono = 0;
+    let late = 0;
+    const feeds = [scriptedSource('helius-ws', true, ['helius']), scriptedSource('coinbase-ws', true, ['coinbase'])];
+    const h = makeWorker({ timers: dueTimers(T - 16 * 86_400_000), sources: () => feeds, config: { ZEROED_HEALTH_ADDR: '127.0.0.1:18920', ZEROED_API_ADDR: '127.0.0.1:18921' }, loopClock: () => (mono += 100 + late) });
+    const boot0 = new Market(h);
+    await boot(h, boot0, feeds);
+    // The passing market with its held pool's facts (what an exit is priced from).
+    const m = await passingMarket(h, { heldPoolFacts: true });
+    const on = (scale = 1_000_000n) => () => { up(h, m, 'coinbase'); up(h, m, 'helius'); tick(m, scale)(); };
+    await until(m, () => Object.values(h.worker.book.positions).some((p) => p.status === 'open'), 30_000, on());
+    const pid = Object.values(h.worker.book.positions).find((p) => p.status === 'open')!.id;
+    expect(h.worker.health().entries_halted).toBe(false);
+    // The worker falls 15 s behind: entries halt, named, journaled and logged.
+    late = 15_000;
+    await until(m, () => h.worker.health().halt_reasons.includes(BEHIND), 10_000, on());
+    const haltAt = m.now;
+    expect(kinds(h.stateDir, 'halt').at(-1)!['reasons']).toEqual([BEHIND]);
+    expect(h.logs.some((l) => l.startsWith('Behind: a loop cycle ran 15.0 s over its interval'))).toBe(true);
+    // Behind, the price falls through the stop: the open position still exits.
+    await until(m, () => h.worker.book.positions[pid]!.status === 'closed', 60_000, on(700_000n));
+    expect(h.worker.book.positions[pid]!.status).toBe('closed');
+    expect(h.worker.health().halt_reasons).toEqual([BEHIND]);
+    // Still behind with the market passing again: no entry is proposed.
+    await m.run(10_000, 400, on());
+    const proposed = () => kinds(h.stateDir, 'decision').filter((l) => l['action'] === 'enter').map((l) => Date.parse(String(l['ts'])));
+    expect(proposed().filter((t) => t > haltAt)).toEqual([]);
+    // On time again: the halt clears only after 30 s of calm cycles.
+    late = 0;
+    const calmFrom = mono;
+    await until(m, () => !h.worker.health().entries_halted, 120_000, on());
+    expect(mono - calmFrom).toBeGreaterThanOrEqual(30_000);
+    expect(kinds(h.stateDir, 'resume').length).toBeGreaterThan(0);
+    expect(h.logs.some((l) => l.startsWith('Caught up:'))).toBe(true);
     await h.worker.stop();
   });
 });
