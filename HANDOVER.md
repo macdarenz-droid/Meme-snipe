@@ -48,6 +48,19 @@ The previous S1 account reached its usage limit about 12:45 PM. The owner made t
 - No host access, no secrets access (owner only), as before.
 
 **Log (Melbourne time, newest first)**
+- 3:03 AM **REPLAY-1000 interim** (Mode B with no rate cap; 47 sample graduates of 6 Oct that migrated before 14:55Z; the other 963 feed the regime; creates from 18:20Z on 5 Oct):
+  - 0 trades in every run: no-H5 f87ee90, H5 e138ad2, and the what-if 49f5b09 that adds cut-create fetches. H5 decided no coin.
+  - Coins failing each gate (a coin can fail several):
+    - H16 not-covered from cut creates (H14): 43
+    - H9 instant graduation: 29
+    - H16 gap from cut pool logs: 29
+    - H16 missing (late re-checks): 10
+    - H16 degraded (Helius candles partial): 8
+    - H11 chase: 5
+  - With cut-create fetches: not-covered drops to 39, 6 coins then fail H14 serial-deployer, and "302 slots behind" and -32016 answers appear (possibly harness artifacts, being checked).
+  - Final full-day runs once the day's data closes (about 6 PM Melbourne 7 Oct), as PR #259.
+
+  Picture so far: even with #260 C, coins still meet the cut-pool-log gap, H9 and serial-deployer, and the EDGE research shows no profitable rule in U1, plus losses for U2 relaxations. The owner gets one combined decision brief once EDGE-U2 is final (about 7–9 AM).
 - 3:00 AM #260 CI green on a52368e8 (check, historical-data, e2e). **REPLAY-1000's answer on H16 'missing'** (47 sample coins at e138ad2, Mode B):
   - Every one comes from evidence.ts:89: "no migration" (hard.ts:157, 8 coins), "no curve" (hard.ts:279, 8), "no create" (hard.ts:149-155, 2).
   - All of them came from late re-evaluations, 1.5–4 h after migration and outside the entry window, once the facts were no longer held (eviction likely, not verified).
