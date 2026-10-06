@@ -2,7 +2,8 @@
 // Without it the store kept every event for the process: each swap on a watched pool left its trade event and a fresh
 // pool fact (about 10 KB with their addresses), and at a few thousand swaps a minute the heap reached its limit in minutes.
 import type { Collapse, Forget, Retention, Shape } from '../../../core/src/engine/index.ts';
-import { SEED_KEY } from '../engine/strategy.ts';
+import { SEED_KEY, SOL_PRICE_KEY } from '../engine/strategy.ts';
+import { FACT_READS_KEY } from '../facts/source.ts';
 import { FUNDER_KEEP_MS, RAW } from '../../../core/src/facts/index.ts';
 import { GRADUATES_KEY, LOG_CREATE_PREFIX, TX_CREATE_PREFIX, candlesKey, carryKey, compactCreate, compactCurveTrade, curveTradeKeys, mintKey, poolKey, streamKey, tradeTailCollapse } from '../../../core/src/gates/index.ts';
 
@@ -49,13 +50,20 @@ const READS = [RAW.accounts(''), mintKey('')];
  * for an older value.
  */
 const GRADUATES = GRADUATES_KEY;
+/**
+ * STORE-GROWTH: the worker's own running facts, each stated again whole: SOL/USD at every price tick (`worker:sol-price`,
+ * about one a second live), and the day's read counts at every read (`worker:fact-reads`). The strategy looks the price
+ * up as of now only; nothing looks the read counts up in the store (the source keeps its own counts). Kept whole, both
+ * grew for the process: in the harness about 200 entries a minute between them, more at live's read rate.
+ */
+const RUNNING = [SOL_PRICE_KEY, FACT_READS_KEY];
 const NEWEST_ONLY = (): boolean => false;
 
 /**
- * The live store's collapse: a head fact, a seen signature, the slot notice, an account read and its mint fact, and the graduates fact keep their newest value; a trade key keeps its newest event
+ * The live store's collapse: a head fact, a seen signature, the slot notice, an account read and its mint fact, the graduates fact, and the worker's running facts keep their newest value; a trade key keeps its newest event
  * and every event whose tail would fail (`tradeTailCollapse`).
  */
-export const liveCollapse: Collapse = (key) => (key === SLOT || key === GRADUATES || key.startsWith(SEEN) || HEADS.some((p) => key.startsWith(p)) || READS.some((p) => key.startsWith(p)) ? NEWEST_ONLY : tradeTailCollapse(key));
+export const liveCollapse: Collapse = (key) => (key === SLOT || key === GRADUATES || RUNNING.includes(key) || key.startsWith(SEEN) || HEADS.some((p) => key.startsWith(p)) || READS.some((p) => key.startsWith(p)) ? NEWEST_ONLY : tradeTailCollapse(key));
 
 const CURVE_TRADE = curveTradeKeys('');
 /**

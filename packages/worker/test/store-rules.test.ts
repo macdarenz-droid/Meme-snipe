@@ -11,6 +11,9 @@ import { POOL_FACT_KEEP_MS, liveCollapse, liveRetention } from '../src/run/store
 import { DEV, POOL_ADDRESS, SUPPLY, makeWorker, passingMarket } from './worker-harness.ts';
 import { candlesKey, carryKey, poolKey, poolTradeKeys, streamKey } from '../../core/src/gates/index.ts';
 import { STREAMS } from '../../core/src/facts/index.ts';
+import { AsOfStore, SimClock } from '../../core/src/engine/index.ts';
+import { SOL_PRICE_KEY } from '../src/engine/strategy.ts';
+import { FACT_READS_KEY } from '../src/facts/source.ts';
 
 setFlagsFromString('--expose-gc');
 const gc = runInNewContext('gc') as () => void;
@@ -27,7 +30,24 @@ describe('the live store under a busy pool (OOM-SWAPS)', () => {
     for (const k of poolTradeKeys(POOL_ADDRESS)) expect(liveCollapse(k)).not.toBeNull();
     expect(liveRetention(poolKey('M'))).toBe(POOL_FACT_KEEP_MS);
     expect(liveRetention('worker:sol-price')).toBeNull();
-    expect(liveCollapse('worker:sol-price')).toBeNull();
+  });
+
+  it('STORE-GROWTH: the worker\'s running facts (SOL/USD, the day\'s read counts) keep only their newest value; a lookup as of now is unchanged', () => {
+    for (const k of [SOL_PRICE_KEY, FACT_READS_KEY]) {
+      const keepOlder = liveCollapse(k);
+      expect(keepOlder, k).not.toBeNull();
+      expect(keepOlder!({ moment: { slot: 1n, txIndex: 0, ixIndex: 0, receivedAt: 0 }, value: {}, source: 's' }), k).toBe(false);
+      // A price tick a second for an hour: one entry kept (before: 3,600), and the newest is what a lookup returns.
+      const clock = new SimClock({ slot: 0n, txIndex: 0, ixIndex: 0, receivedAt: 0 });
+      const store = new AsOfStore(clock, liveRetention, liveCollapse);
+      for (let t = 1; t <= 3_600; t++) {
+        const m = { slot: BigInt(t), txIndex: 0, ixIndex: 0, receivedAt: t * 1_000 };
+        clock.advanceTo(m);
+        store.record(k, { price: t }, m, 'worker');
+      }
+      expect(store.sizes().entries, k).toBe(1);
+      expect(store.lookup(k), k).toMatchObject({ ok: true, value: { price: 3_600 } });
+    }
   });
 
   it('12,000 swaps over two minutes after the first leave the heap flat (it grew about 10 KB a swap)', async () => {
