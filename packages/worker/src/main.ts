@@ -7,7 +7,7 @@ import { FILL_CONFIG, RESEARCH_CONFIG, RUG_CONFIG, TRIAL_POLICY, startSession } 
 import { EXIT } from '../../runner/src/contract.ts';
 import { DryRunRpc } from './dryrun/index.ts';
 import { liveFacts } from './facts/index.ts';
-import { COINBASE_PUBLIC, GITHUB_DOWNLOADS, GITHUB_RELEASES, GOPLUS_FREE, P2 } from './scheduler/index.ts';
+import { COINBASE_PUBLIC, GITHUB_DOWNLOADS, GITHUB_RELEASES, GOPLUS_FREE, P2, P3 } from './scheduler/index.ts';
 import { toAddress } from '../../core/src/chain/index.ts';
 import { DEFAULT_LIVE_FEED, fetchHttp, globalSocketFactory, heliusRpcUrl } from './providers/index.ts';
 import { systemTimers } from './scheduler/index.ts';
@@ -94,7 +94,8 @@ try {
     scenario: FILL_CONFIG.scenarios[PAPER_SCENARIO], network: FILL_CONFIG.network, timers,
     sources: (ctx) => providers.feeds(ctx),
     simulate,
-    fetchTx: (sig) => providers.fetchTx(sig),
+    // TRADE-GAP-HEAL: a pool-trade hole's transaction at P3, below position and exit reads; everything else at P2.
+    fetchTx: (sig, why) => providers.fetchTx(sig, why === 'cut-trade' ? P3 : P2),
     findCreate: (mint) => providers.findCreate(mint, timers),
     seed: (r) => runSeed(r, { rpc: providers.seedRpc(), timers, budget: fillBudget }),
     // RESTART-KEEP: the downtime's migrations and unseen creates, on the same RPC and the same daily fill budget.

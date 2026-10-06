@@ -114,6 +114,25 @@ export const TRADE_REPEAT_WINDOW_MS = HOUR_MS;
 export const RETIRED_KEEP = 100_000;
 
 /**
+ * TRADE-GAP-HEAL: the key prefix of a cut or undecodable pool-trade log's fetch outcome, `hole-fetch:<via>` with
+ * `{ signature, found }`. WORKER-1 puts it on the feed after the fetch settles (a found transaction's events are on
+ * the feed before it), so the producer knows the hole's transaction is complete, or that it will not come.
+ */
+export const HOLE_FETCH_PREFIX = 'hole-fetch:';
+
+/**
+ * TRADE-GAP-HEAL: how long a hole in a pool's trade stream waits for its transaction before it stays for good (by
+ * receipt time): the worker's tries span 30 minutes of waits (2, 4, 8 and 16 minutes) plus the reads themselves.
+ */
+export const HEAL_WAIT_MS = 45 * MINUTE_MS;
+
+/** TRADE-GAP-HEAL: the most swaps one pool's heal keeps while it waits (20,000, a fifth of RETIRED_KEEP); past it the hole stays (memory bound). */
+export const HEAL_TAPE_MAX = RETIRED_KEEP / 5;
+
+/** TRADE-GAP-HEAL: hole signatures remembered (20,000, a fifth of RETIRED_KEEP), so a late fetched copy of a hole's swaps is never applied out of order. */
+export const HOLE_SIGS_KEEP = RETIRED_KEEP / 5;
+
+/**
  * G4a (supervisor ruling): how long a wallet's funder read (`read:funder:<wallet>`, its first SOL funding: fixed once it
  * happened) is kept: a day. The store forgets the read's key after the same time (worker `liveForget`).
  */
@@ -156,6 +175,8 @@ interface Seen {
   readonly commitment: Commitment;
   readonly backfilled: boolean;
   readonly signature: string;
+  /** From a log line (a watch); false for a fetched transaction's event. */
+  readonly fromLogs: boolean;
 }
 
 /** A DEC-1 program event from a FEED-1 market event, with where and how it was seen; null for anything else. */
@@ -174,7 +195,7 @@ export const programEvent = (e: MarketEvent): { readonly ev: PumpEventData; read
     ev: ev as unknown as PumpEventData,
     seen: {
       provider: typeof v['source'] === 'string' ? v['source'] : 'feed', slot: v['txSlot'], receivedAt: e.moment.receivedAt, commitment,
-      backfilled: v['backfilled'] === true, signature,
+      backfilled: v['backfilled'] === true, signature, fromLogs,
     },
     truncated: fromLogs && v['truncated'] === true,
   };
@@ -211,14 +232,61 @@ interface CandleBook {
   newestMs: number;
   /** `newestMs` at the last sweep: the next runs once the newest trade is a quarter window later. */
   sweptMs: number;
+  /** TRADE-GAP-HEAL: the last swap the book applied: its post-trade reserves anchor a heal's chain. */
+  lastSwap: SwapEv | null;
+  /** TRADE-GAP-HEAL: the book as it was before its newest trade slot's first swap, and the swaps since. */
+  mark: BookMark | null;
+}
+
+export type SwapEv = Extract<PumpEventData, { name: 'BuyEvent' | 'SellEvent' }>;
+
+/** TRADE-GAP-HEAL: a swap as released, with where it was seen. */
+interface TapeSwap {
+  readonly ev: SwapEv;
+  readonly seen: Seen;
+}
+
+/**
+ * TRADE-GAP-HEAL: a candle book (and its pool's chain) as it was before the first swap of slot `slot`, and every swap
+ * the book took since, in release order. A hole at `slot` or later can be healed from here: the swaps are put back in
+ * exact chain order from this state.
+ */
+interface BookMark {
+  readonly slot: bigint;
+  readonly candles: readonly Candle[];
+  readonly partial: boolean;
+  readonly newestMs: number;
+  readonly sweptMs: number;
+  readonly reserve: Reserve | undefined;
+  readonly lastSwap: SwapEv | null;
+  /** The pool's chain at the mark (the object, so a read that replaced it since is seen), or null without one. */
+  readonly chain: { readonly ref: PoolChain; readonly state: PoolState; readonly coveredFrom: bigint; readonly clean: boolean } | null;
+  readonly tape: TapeSwap[];
+  /** A pool transaction other than a swap was seen since the mark: the chain cannot be healed across it. */
+  other: boolean;
+}
+
+/** TRADE-GAP-HEAL: a pool whose trade stream has holes waiting for their transactions. */
+interface Heal {
+  readonly startedAt: number;
+  readonly mark: BookMark;
+  /** Every swap the book took since the mark, in release order. */
+  readonly tape: TapeSwap[];
+  /** The holes by signature: `arrived` once the fetch put the whole transaction on the feed. */
+  readonly holes: Map<string, { readonly slot: bigint; arrived: boolean }>;
+  /** The holes' own swaps on this pool, held back from the book and the chain until the heal. */
+  readonly fetched: TapeSwap[];
+  other: boolean;
+  /** A hole's transaction holds a pool event other than a swap: never healed. */
+  tainted: boolean;
 }
 
 // ---------- Streams ----------
 
 interface StreamState {
   fromSlot: bigint;
-  /** Ranges the stream may have missed: bounded gaps and holes (a cut or undecodable log), inclusive. */
-  readonly gaps: { readonly from: bigint | null; readonly to: bigint }[];
+  /** Ranges the stream may have missed: bounded gaps and holes (a cut or undecodable log, by its signature), inclusive. */
+  gaps: { readonly from: bigint | null; readonly to: bigint; readonly sig?: string }[];
   /** Open gaps by their start (`toSlot` not known yet); a null start is unknown, so it covers everything. */
   readonly open: Map<string, bigint | null>;
   readonly vias: Set<string>;
@@ -380,6 +448,34 @@ interface PoolChain {
   readonly applied: Set<string>;
 }
 
+const effectiveOf = (s: PoolState): bigint => s.quoteVault + s.virtualQuoteReserves;
+
+/**
+ * TRADE-GAP-HEAL: swaps in exact chain order from `from` (a pool's reserves after the swap before them): slot by slot,
+ * each next swap the one whose pre-trade reserves (base, and vault + virtual) equal the reserves so far, and its replay
+ * (core fills `swapEventState`) the reserves after it. Null when any slot leaves a swap that does not chain, two that
+ * could come next, or one that does not reproduce its event: the order is not proven.
+ */
+export const chainOrder = <T extends { readonly ev: SwapEv; readonly seen: { readonly slot: bigint } }>(from: PoolState, swaps: readonly T[]): { readonly t: T; readonly after: PoolState }[] | null => {
+  const slots = [...new Set(swaps.map((t) => t.seen.slot))].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  const out: { t: T; after: PoolState }[] = [];
+  let cur = from;
+  for (const slot of slots) {
+    const rest = swaps.filter((t) => t.seen.slot === slot);
+    while (rest.length > 0) {
+      const next = rest.filter((t) => t.ev.data.poolBaseTokenReserves === cur.baseReserve && t.ev.data.poolQuoteTokenReserves + (t.ev.data.virtualQuoteReserves ?? 0n) === effectiveOf(cur));
+      if (next.length !== 1) return null;
+      const t = next[0]!;
+      const r = swapEventState(t.ev);
+      if (!r.ok) return null;
+      out.push({ t, after: r.after });
+      cur = r.after;
+      rest.splice(rest.indexOf(t), 1);
+    }
+  }
+  return out;
+};
+
 /** Swap ids a pool chain remembers for repeats: a repeat (a log line and a fetched transaction) comes within seconds. */
 const APPLIED_KEPT = 512;
 
@@ -394,6 +490,10 @@ export class FactProducer {
   readonly #walletMints = new Map<string, Set<string>>();
   readonly #reserves = new Map<string, Reserve>();
   readonly #chains = new Map<string, PoolChain>();
+  /** TRADE-GAP-HEAL: pools waiting for their holes' transactions. */
+  readonly #heals = new Map<string, Heal>();
+  /** TRADE-GAP-HEAL: signatures of cut or undecodable logs on a trade stream (capped). */
+  readonly #holeSigs = new Set<string>();
   /** OOM-MINT: pools let go (`retire`): their candle book is never built again, so no later trade is ever applied. */
   readonly #retiredPools = new Set<string>();
   /** OOM-MINT: mints let go (`retire`): their track is never kept again. */
@@ -432,11 +532,13 @@ export class FactProducer {
     this.#survival(e, put);
     this.#forgetFunders(e.moment.receivedAt);
     this.#chainOther(e, put);
+    this.#holeTxOther(e);
     const pe = programEvent(e);
     if (pe !== null) this.#program(pe.ev, pe.seen, pe.truncated, e, put);
     else if (e.key === 'chain:slot') this.#slot(e, put);
     else if (e.key.startsWith('coverage:')) this.#coverage(e, put);
     else if (e.key.startsWith('logs:truncated:') || e.key.startsWith('logs:undecodable:')) this.#hole(e.key.slice(e.key.indexOf(':', 5) + 1), e.moment.slot, put, e);
+    else if (e.key.startsWith(HOLE_FETCH_PREFIX)) this.#holeFetched(e.key.slice(HOLE_FETCH_PREFIX.length), e, put);
     else this.#raw(e, put);
     this.#flushGraduates(e, put);
     return [...out].map(([key, value]) => ({ key, value }));
@@ -503,7 +605,7 @@ export class FactProducer {
         if (!t.pools.has(d.pool)) t.pools.set(d.pool, { pool: d.pool, slot: seen.slot, atMs, quote: d.poolQuoteAmount, base: d.poolBaseAmount });
         if (!this.#poolMint.has(d.pool)) this.#poolMint.set(d.pool, d.baseMint);
         if (!this.#books.has(d.pool) && !this.#retiredPools.has(d.pool)) {
-          this.#books.set(d.pool, { pool: d.pool, mint: d.baseMint, openedAtMs: atMs, fromSlot: seen.slot, candles: [], partial: false, seen: new RepeatTags(), newestMs: atMs, sweptMs: atMs });
+          this.#books.set(d.pool, { pool: d.pool, mint: d.baseMint, openedAtMs: atMs, fromSlot: seen.slot, candles: [], partial: false, seen: new RepeatTags(), newestMs: atMs, sweptMs: atMs, lastSwap: null, mark: null });
           this.#reserves.set(d.pool, { atMs, effective: d.poolQuoteAmount });
           this.#writeCandles(d.pool, seen.provider, seen.receivedAt, put);
         }
@@ -589,12 +691,29 @@ export class FactProducer {
     return { wallets: bySlot.filter(([, at]) => at <= through).map(([w]) => w).sort(), through };
   }
 
-  #swap(ev: Extract<PumpEventData, { name: 'BuyEvent' | 'SellEvent' }>, seen: Seen, put: (k: string, v: unknown) => void): void {
-    this.#chainSwap(ev, seen, put);
+  #swap(ev: SwapEv, seen: Seen, put: (k: string, v: unknown) => void): void {
     const d = ev.data;
+    // TRADE-GAP-HEAL: a hole's own swaps, from its fetched transaction, are never applied as they arrive (behind newer
+    // swaps, out of order): they wait for the heal, which puts them in chain order, or are dropped with it.
+    if (!seen.fromLogs && this.#holeSigs.has(`${d.pool} ${seen.signature}`)) {
+      const h = this.#heals.get(d.pool);
+      if (h !== undefined && h.holes.has(seen.signature)) h.fetched.push({ ev, seen });
+      return;
+    }
     const book = this.#books.get(d.pool);
+    if (book !== undefined && (book.mark === null || seen.slot > book.mark.slot)) this.#markBook(book, seen.slot, true);
+    this.#chainSwap(ev, seen, put);
     const atMs = ms(d.timestamp);
     if (book === undefined || atMs === null) return;
+    this.#bookSwap(book, ev, seen, atMs, put, false);
+  }
+
+  /**
+   * A swap into the candle book. `replay` (TRADE-GAP-HEAL): the heal re-applies swaps already counted once, in chain
+   * order from a mark, so the repeat check is skipped and nothing is written until the heal is done.
+   */
+  #bookSwap(book: CandleBook, ev: SwapEv, seen: Seen, atMs: number, put: (k: string, v: unknown) => void, replay: boolean): void {
+    const d = ev.data;
     const virtual = d.virtualQuoteReserves ?? 0n;
     const baseBefore = d.poolBaseTokenReserves;
     const quoteBefore = d.poolQuoteTokenReserves;
@@ -602,13 +721,16 @@ export class FactProducer {
     // the answer never depends on which old ids a sweep has dropped: never applied, the candles flagged partial.
     if (atMs < book.newestMs - this.#o.tradeRepeatMs) {
       book.partial = true;
-      this.#writeCandles(d.pool, seen.provider, seen.receivedAt, put);
+      this.#took(book, ev, seen, replay);
+      if (!replay) this.#writeCandles(d.pool, seen.provider, seen.receivedAt, put);
       return;
     }
     // The same trade from a fetched transaction and from a log line counts once.
     const tag = tradeRepeatTag(seen.signature, baseBefore, quoteBefore);
-    if (book.seen.has(tag)) return;
-    book.seen.add(tag, Math.floor(atMs / MINUTE_MS));
+    if (book.seen.has(tag)) {
+      if (!replay) return;
+    } else book.seen.add(tag, Math.floor(atMs / MINUTE_MS));
+    this.#took(book, ev, seen, replay);
     if (atMs > book.newestMs) book.newestMs = atMs;
     this.#sweepSeen(book);
     // Reserves in Buy/SellEvent are before the trade; after it the base moves by the base amount and the quote by the
@@ -621,7 +743,168 @@ export class FactProducer {
     this.#reserves.set(d.pool, { atMs, effective: after.quote + virtual });
     if (pre === null || post === null) book.partial = true;
     else this.#addTrade(book, atMs, pre, post);
-    this.#writeCandles(d.pool, seen.provider, seen.receivedAt, put);
+    if (!replay) this.#writeCandles(d.pool, seen.provider, seen.receivedAt, put);
+  }
+
+  // ---------- Healing a pool's trade stream (TRADE-GAP-HEAL) ----------
+
+  /** A swap the book took (applied, or refused as too old): kept since the mark, and by a waiting heal. */
+  #took(book: CandleBook, ev: SwapEv, seen: Seen, replay: boolean): void {
+    book.lastSwap = ev;
+    book.mark?.tape.push({ ev, seen });
+    if (replay) return;
+    const h = this.#heals.get(book.pool);
+    if (h === undefined) return;
+    h.tape.push({ ev, seen });
+    if (this.#expired(h, seen.receivedAt)) this.#heals.delete(book.pool);
+  }
+
+  /** The book (and its pool's chain) before the first swap of `slot`: a heal of a hole at that slot or later starts here. */
+  #markBook(book: CandleBook, slot: bigint, withChain: boolean): void {
+    const c = withChain ? this.#chains.get(book.pool) : undefined;
+    book.mark = {
+      slot, candles: [...book.candles], partial: book.partial, newestMs: book.newestMs, sweptMs: book.sweptMs, reserve: this.#reserves.get(book.pool),
+      lastSwap: book.lastSwap, chain: c === undefined ? null : { ref: c, state: c.state, coveredFrom: c.coveredFrom, clean: c.stale === null }, tape: [], other: false,
+    };
+  }
+
+  #expired(h: Heal, now: number): boolean {
+    return now - h.startedAt > HEAL_WAIT_MS || h.tape.length + h.fetched.length > HEAL_TAPE_MAX;
+  }
+
+  /**
+   * A cut or undecodable log on a pool's trade stream. Healable only from a mark at or before its slot (every swap
+   * since is kept) whose last swap anchors the chain; otherwise, or without a signature, the hole stays for good.
+   * A swap taken behind the book's newest slot (released late) puts the hole before the mark: not healable.
+   */
+  #holeHeal(pool: string, sig: string | undefined, slot: bigint, at: number): void {
+    if (sig === undefined) {
+      this.#heals.delete(pool);
+      return;
+    }
+    cappedAdd(this.#holeSigs, `${pool} ${sig}`, HOLE_SIGS_KEEP);
+    let h = this.#heals.get(pool);
+    if (h === undefined) {
+      const book = this.#books.get(pool);
+      if (book === undefined) return;
+      // No swap at the hole's slot or later taken yet: the book as it is now is the state before that slot.
+      if (book.mark === null || slot > book.mark.slot) this.#markBook(book, slot, true);
+      const m = book.mark!;
+      if (slot < m.slot || m.lastSwap === null) return;
+      h = { startedAt: at, mark: m, tape: [...m.tape], holes: new Map(), fetched: [], other: m.other, tainted: false };
+      this.#heals.set(pool, h);
+    } else if (slot < h.mark.slot) {
+      this.#heals.delete(pool);
+      return;
+    }
+    if (!h.holes.has(sig)) h.holes.set(sig, { slot, arrived: false });
+  }
+
+  /**
+   * WORKER-1 says how a hole's fetch ended. Not found (or too late): the hole stays for good. Found: its transaction is
+   * on the feed, every event of it released before this; once every hole of the pool has arrived, the heal runs.
+   */
+  #holeFetched(via: string, e: MarketEvent, put: (k: string, v: unknown) => void): void {
+    const v = unwrap(e.value);
+    if (!isObj(v) || typeof v['signature'] !== 'string') return;
+    const sig = v['signature'];
+    for (const [name, s] of this.#streams) {
+      if (!s.vias.has(via) || !name.startsWith('trades:')) continue;
+      const pool = name.slice('trades:'.length);
+      const h = this.#heals.get(pool);
+      const hole = h?.holes.get(sig);
+      if (h === undefined || hole === undefined) continue;
+      if (v['found'] !== true || this.#expired(h, e.moment.receivedAt)) {
+        this.#heals.delete(pool);
+        continue;
+      }
+      hole.arrived = true;
+      if ([...h.holes.values()].every((x) => x.arrived)) this.#heal(pool, h, e, put);
+    }
+  }
+
+  /** A hole's fetched transaction holds a PumpSwap event other than a swap (it may have moved the reserves): no heal. */
+  #holeTxOther(e: MarketEvent): void {
+    if (this.#heals.size === 0 || e.key.startsWith('logs:')) return;
+    const v = e.value;
+    if (!isObj(v) || !isObj(v['event'])) return;
+    const ev = v['event'];
+    if (ev['program'] !== 'pump_amm' || ev['name'] === 'BuyEvent' || ev['name'] === 'SellEvent' || typeof ev['signature'] !== 'string') return;
+    for (const h of this.#heals.values()) if (h.holes.has(ev['signature'])) h.tainted = true;
+  }
+
+  /**
+   * Every hole's transaction is in: the swaps since the mark and the holes' own are put in exact chain order (slot by
+   * slot, each swap's pre-trade reserves equal to the post-trade reserves before it, from the mark's last swap on, base
+   * and effective quote). Only when every swap chains is the book rebuilt from the mark in that order, the holes taken
+   * out of the stream's gaps, and the pool's chain set to the end of it (when it was clean at the mark and nothing else
+   * replaced it). Anything else leaves every hole for good (fail closed).
+   */
+  #heal(pool: string, h: Heal, e: MarketEvent, put: (k: string, v: unknown) => void): void {
+    this.#heals.delete(pool);
+    const book = this.#books.get(pool);
+    const m = h.mark;
+    if (book === undefined || h.tainted || h.other || m.lastSwap === null) return;
+    const idOf = (t: TapeSwap): string => `${t.seen.signature}:${t.ev.data.poolBaseTokenReserves}:${t.ev.data.poolQuoteTokenReserves}`;
+    const ids = new Set<string>();
+    const all: TapeSwap[] = [];
+    for (const t of h.tape) {
+      if (ids.has(idOf(t))) continue;
+      ids.add(idOf(t));
+      all.push(t);
+    }
+    for (const t of h.fetched) {
+      if (ids.has(idOf(t))) continue;
+      // Taken before the mark (a delivery from another path): already in the state the heal starts from.
+      if (book.seen.has(tradeRepeatTag(t.seen.signature, t.ev.data.poolBaseTokenReserves, t.ev.data.poolQuoteTokenReserves))) continue;
+      ids.add(idOf(t));
+      all.push(t);
+    }
+    const anchor = swapEventState(m.lastSwap);
+    if (!anchor.ok) return;
+    const order = chainOrder(anchor.after, all);
+    if (order === null) return;
+    // The book, rebuilt from the mark in chain order.
+    book.candles.splice(0, book.candles.length, ...m.candles);
+    book.partial = m.partial;
+    book.newestMs = m.newestMs;
+    book.sweptMs = m.sweptMs;
+    book.lastSwap = m.lastSwap;
+    book.mark = null;
+    if (m.reserve === undefined) this.#reserves.delete(pool);
+    else this.#reserves.set(pool, m.reserve);
+    for (const { t } of order) {
+      const mark = book.mark as BookMark | null;
+      if (mark === null || t.seen.slot > mark.slot) this.#markBook(book, t.seen.slot, false);
+      const atMs = ms(t.ev.data.timestamp);
+      if (atMs !== null) this.#bookSwap(book, t.ev, t.seen, atMs, put, true);
+    }
+    const s = this.#streams.get(STREAMS.trades(pool));
+    if (s !== undefined) {
+      s.gaps = s.gaps.filter((g) => g.sig === undefined || !h.holes.has(g.sig));
+      const f = this.#streamFact(s, e);
+      if (f !== undefined) put(streamKey(STREAMS.trades(pool)), f);
+    }
+    const last = order.at(-1);
+    this.#writeCandles(pool, last?.t.seen.provider ?? 'facts', e.moment.receivedAt, put);
+    // The chain: only from a clean state at the mark that is the anchor itself, on the same chain (no read since).
+    const mc = m.chain;
+    const c = this.#chains.get(pool);
+    if (last === undefined || mc === null || c !== mc.ref || !mc.clean || c.readSlot >= m.slot || c.lastSlot > last.t.seen.slot) return;
+    if (mc.state.baseReserve !== anchor.after.baseReserve || effectiveOf(mc.state) !== effectiveOf(anchor.after)) return;
+    if (!this.#tradesCovered(pool, mc.coveredFrom)) return;
+    c.state = last.after;
+    c.coveredFrom = mc.coveredFrom;
+    c.stale = null;
+    c.lastSlot = last.t.seen.slot;
+    c.seen.clear();
+    for (const { t } of order) {
+      if (t.seen.slot === c.lastSlot) c.seen.add(idOf(t));
+      c.applied.add(idOf(t));
+      if (c.applied.size > APPLIED_KEPT) c.applied.delete(c.applied.values().next().value!);
+    }
+    const ls = last.t.seen;
+    put(poolKey(c.mint), this.#chainFact(c, { provider: ls.provider, slot: ls.slot, receivedAt: e.moment.receivedAt, quality: quality(ls.backfilled), commitment: ls.commitment }, c.state, null));
   }
 
   /**
@@ -648,6 +931,7 @@ export class FactProducer {
     for (const id of ids) {
       // Tombstoned whether or not state was built yet, so a pool create or a mint create delivered later never builds it.
       this.#books.delete(id);
+      this.#heals.delete(id);
       this.#tombstone(this.#retiredPools, id);
       this.#tombstone(this.#retiredMints, id);
       this.#poolMint.delete(id);
@@ -799,6 +1083,8 @@ export class FactProducer {
     const v = isObj(e.value) ? e.value['slot'] : undefined;
     if (typeof v !== 'bigint' || (this.#head !== null && v <= this.#head)) return;
     this.#head = v;
+    // TRADE-GAP-HEAL: a heal that waited too long is let go: its holes stay.
+    for (const [pool, h] of this.#heals) if (this.#expired(h, e.moment.receivedAt)) this.#heals.delete(pool);
     for (const [name, s] of this.#streams) {
       const f = this.#streamFact(s, e);
       if (f !== undefined) put(streamKey(name), f);
@@ -852,9 +1138,11 @@ export class FactProducer {
   }
 
   #hole(via: string, slot: bigint, put: (k: string, v: unknown) => void, e: MarketEvent): void {
+    const sig = isObj(e.value) && typeof e.value['signature'] === 'string' ? e.value['signature'] : undefined;
     for (const [name, s] of this.#streams) {
       if (!s.vias.has(via)) continue;
-      s.gaps.push({ from: slot, to: slot });
+      s.gaps.push(sig === undefined ? { from: slot, to: slot } : { from: slot, to: slot, sig });
+      if (name.startsWith('trades:')) this.#holeHeal(name.slice('trades:'.length), sig, slot, e.moment.receivedAt);
       const f = this.#streamFact(s, e);
       if (f !== undefined) put(streamKey(name), f);
       this.#refreshInsiders(name, e, put);
@@ -1126,7 +1414,13 @@ export class FactProducer {
     if (!isObj(v) || v['commitment'] !== 'confirmed' || typeof v['via'] !== 'string' || !v['via'].startsWith('logs:') || typeof v['txSlot'] !== 'bigint') return;
     const name = isObj(v['event']) ? v['event']['name'] : undefined;
     if (name === 'BuyEvent' || name === 'SellEvent') return;
-    const c = this.#chains.get(v['via'].slice('logs:'.length));
+    // TRADE-GAP-HEAL: no heal across it (a pool transaction other than a swap may move the reserves).
+    const pool = v['via'].slice('logs:'.length);
+    const b = this.#books.get(pool);
+    if (b?.mark) b.mark.other = true;
+    const h = this.#heals.get(pool);
+    if (h !== undefined) h.other = true;
+    const c = this.#chains.get(pool);
     if (c === undefined || v['txSlot'] <= c.readSlot) return;
     this.#stale(c, 'gap', `a pool transaction other than a swap (${typeof name === 'string' ? name : 'unnamed'})`, { provider: sourceOf(e), slot: v['txSlot'], receivedAt: e.moment.receivedAt, quality: [], commitment: 'confirmed' }, put);
   }
@@ -1220,6 +1514,7 @@ export class FactProducer {
   }
 
   #forgetPool(pool: string): void {
+    this.#heals.delete(pool);
     this.#chains.delete(pool);
     this.#streams.delete(STREAMS.trades(pool));
   }

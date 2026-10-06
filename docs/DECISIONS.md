@@ -3180,3 +3180,111 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - A cut log with several events naming one signature is fetched once (the worker's own guard).
   - The cap: none past 3,000, then the next UTC day starts a new count; a clock stepped back a day does not reset a spent day.
   - Mutants killed: no fetch; clearing without the transaction (the deployer index clearing on the cut log's own `log:` id); no cap; no retry; no boot re-ask; no once-per-signature guard; no day roll; a day reset on any change rather than only forward.
+
+## A hole in a pool's trade stream is healed from its fetched transaction (TRADE-GAP-HEAL, `facts/producer.ts` `#heal`, `run/worker.ts` `#cutPoolLog`)
+
+- **2026-10-07 · Why (#260 part B finding 6, REPLAY-1000).**
+  - A cut ("Log truncated") or undecodable log on a pool watch is a hole in that pool's trade stream.
+  - The candles' stream is then not gap-free since the pool opened (`gapFreeSince`), so H11 refuses the coin (H16 `gap`) for the rest of its window. Nothing healed it.
+  - On REPLAY's sample of 6 Oct graduates, 29 of 47 coins failed this way.
+- **Measured (mainnet, keyless public RPCs, 7 Oct about 3:50 AM Melbourne).**
+  - Method: 7 graduates that migrated 6 Oct 08:39–09:30 UTC, window from migration to +6 h (4 h candidate window + 2 h hold). A random 400 of each pool's transactions in the window, read with `getTransaction`.
+  - What counts as a hole: a successful transaction whose logs DEC-1 reports cut or cannot read (canonical.ts's rule; a failed one makes none).
+  - Estimated holes per coin (rate × the pool's transactions in the window): 742, 264, 17, 16, 1, 0, 0.
+  - Mean about 150, median about 16, p90 about 460, max about 760. No undecodable logs were seen.
+  - The coins differ widely (one had 19% of its transactions cut). A single hit in 400 has a 95% interval of about 0.006–1.4%, so these are orders of magnitude only.
+  - About 1,280 coins migrate a day (31 of 40 sampled migration-authority transactions were migrations; 711 succeeded in 10.35 h; approximate). Each becomes a candidate whose pool is watched.
+- **Credit math (Helius free plan: 1M credits a month, and the account is near its end; owner action pending).**
+  - Healing every hole: about 1,280 × 150 ≈ 190k `getTransaction` a day, about 5.8M credits a month. Not affordable.
+  - A heal is all or nothing per coin: H11 needs no hole since the pool opened. So the spend goes only where a heal can land:
+    - **Candidates only.** A candidate's pool is fetched for (`watchedPools` gives it its migration slot). A held position's chain re-bases on its next swap anyway, and a tail's candles are never read: their holes are told not found and spend nothing.
+    - **`CUT_TRADE_HOLES_PER_POOL` = 30.** Past it, the pool's later holes are told not found at once. With 30, 5 of the 7 measured coins are healable.
+    - **`CUT_TRADE_FETCHES_PER_DAY` = 3,000 tries a UTC day per process.** First tries and retries count; the day only moves forward. This is the same as the creates cap (H16-WHY C).
+  - Each try is one Helius `getTransaction` (1 credit), up to 4 with the fetcher's own quick retries. So the cap is 3,000–12,000 credits a day, about 90k–360k a month at most.
+  - Expected demand under the pool limit is about 1,280 × 13 ≈ 17k tries a day. The cap binds and heals roughly the first 200 candidates of each UTC day.
+  - Raising it is the owner's call once credits are settled (more credits, or a paid plan).
+- **The caps hold across restarts (review B1).**
+  - The day's counts of both capped fetches (this card's and H16-WHY C's cut creates logs) are saved at each try in `fetch-caps.json` (`{ day, cutCreate, cutTrade }`, the UTC day number), with the worker's other state files, before the fetch is made.
+  - A restart or a crash loop therefore never starts a day's caps from zero, which would let them burn credits toward the Helius halt that also refuses P1 held-position reads.
+  - A new UTC day starts both counts at zero, and the day only moves forward.
+  - Fail safe:
+    - a file that cannot be read counts the day as spent for both;
+    - a save that fails refuses that fetch.
+- **Exits and held positions first.**
+  - Tries are asked at P3 (`main.ts`), the lowest class. The Helius scheduler keeps its floors for P0 and P1 every second, and sheds P3 first when a queue is full.
+  - The daily cap bounds the month, so these reads can never take the credits an exit or a held position's read needs.
+- **How it works.**
+  - **Worker.** It learns the pool watches from `coverage:trades:<pool>:start` vias. A cut or undecodable log on one is fetched once per signature through the shared `TxFetcher` (`fetchTx(sig, 'cut-trade')`).
+    - A failed try is asked again after 2, 4, 8 and 16 minutes while the pool is still a candidate's, as for creates.
+    - When the fetch settles, the worker puts the outcome on the feed: `hole-fetch:<via>` with `{ signature, found }`.
+    - A found transaction's events are already on the feed before the outcome, so the outcome is released after them.
+  - **Producer.**
+    - Each candle book keeps a mark: its state (and its pool chain's) before the first swap of its newest trade slot, and every swap it took since. A hole at that slot or later starts a heal from the mark and keeps every later swap.
+    - The hole's own swaps from its fetched transaction are held back, never applied out of order. A late fetched copy of a hole that cannot be healed is dropped, so it never makes the chain stale.
+    - Once every hole of the pool has a found outcome, the heal puts the mark's swaps and the holes' swaps in exact chain order. It works slot by slot: each next swap is the one whose pre-trade base and effective quote equal the reserves so far, starting from the mark's last swap, and replaying it (`swapEventState`) must reproduce its event.
+    - Only when every swap chains does it rebuild the book from the mark in that order, take the holes out of the stream's gaps, and release the candles and stream facts. The pool's chain is also set to the end, when it was clean at the mark, is the same chain (no read since) and its stream is covered.
+- **Fail closed.**
+  - The hole stays for good when:
+    - the outcome is not found, or the fetch was capped or the pool was not a candidate's (both say not found);
+    - no outcome comes within 45 minutes (`HEAL_WAIT_MS`), or a heal holds more than 20,000 swaps (`HEAL_TAPE_MAX`);
+    - the hole's slot is before the mark (a swap was released late), or the mark has no swap to anchor on (a hole before the pool's first swap);
+    - the hole's transaction holds another PumpSwap event (a deposit, an unnamed one), or a pool transaction other than a swap was seen since the mark;
+    - any swap does not chain, two could come next, or one does not reproduce.
+  - Until the heal, the gap and H11's refusal stand.
+  - The heal state is in memory: a restart drops pending heals and their holes stay (fail closed).
+- **Known limits (review N1–N3).**
+  - **N1.** One transaction cut on two pool watches is asked for once. The live feed already keeps one copy of a log notification per signature, whatever the watch (`dedupKey`), so only the first watch's hole is ever released.
+  - **N2.** `HOLE_SIGS_KEEP` (20,000 hole signatures) covers about 2.5 hours at the measured rate, well above the 45-minute wait. A hole forgotten early only lets its late fetched swaps apply as they arrive, which can only make the chain stale; they also stay in the heal's tape.
+  - **N3.** There is no cap on the swaps held by all heals together. Each heal holds at most 20,000, and only pools with a pending hole hold any, normally for seconds. A starved P3 queue holds them up to 45 minutes.
+- **No lookahead, and parity.**
+  - Healed facts are released at the outcome's moment, from events already released.
+  - The backtest's dataset holds full transactions (events from inner instructions, never logs), so it has no holes. Live after a heal reaches the same facts as the backtest.
+  - Test: the same tape ends at the same value for every fact key (receipt times aside), with the same H11 and H12 verdicts, in three forms:
+    - (a) with a cut log healed by its fetch;
+    - (b) complete from the start, as log lines;
+    - (c) complete as the backtest's full-transaction events (review N1).
+  - Recorded live data replays the outcome event, so a replay heals the same way. A TEST-1 recording test of a heal was not added: the harness's sessions take their candles as facts, so no decision depends on a heal there (BT review N3, optional).
+- **A live-only veto where no heal lands (BT parity review B1, 2026-10-07).**
+  - Only a hole that heals reaches the backtest's facts. In each of these cases live keeps H11's refusal (H16 `gap`, input `stream`) where the backtest, which has no holes, can enter:
+    - (a) a heal pending: its transaction not yet fetched, up to 45 minutes (`HEAL_WAIT_MS`);
+    - (b) the transaction not found in 5 tries;
+    - (c) a pool past `CUT_TRADE_HOLES_PER_POOL` (30) holes (2 of the 7 measured coins);
+    - (d) the day's `CUT_TRADE_FETCHES_PER_DAY` cap spent (about 200 of about 1,280 candidates a day are healed);
+    - (e) a restart while a heal is pending (heal state is in memory);
+    - (f) a hole whose transaction holds another PumpSwap event, or a non-swap pool transaction seen since the mark, and every other fail-closed case above.
+  - It only removes trades, never adds one, so it is a **live-only veto** (ARCHITECTURE §16.3):
+    - G3 counts it in the veto rate v and scores its vetoed candidates for Δ;
+    - the backtest report's bias note names it.
+  - The gates tag no live-only veto in live mode. `live-only-not-applied` (H15, H16 cross-checks) is a backtest-mode note, and the backtest has no hole to note, so no gate code changes here.
+  - To count this veto in G3, a hole-caused `gap` must be told apart from a feed gap. That, and modelling the same holes and heal rules in the backtest from the dataset's `logMessages` ("Log truncated"), is the follow-up card BT-HEAL-MODEL (S1), needed before the G2/G3 evidence.
+- **Evidence (the heal and cap tests fail on the code before this change).**
+  - `core test/facts/trade-heal.test.ts`:
+    - heal from a cut log and from an undecodable log;
+    - a log cut after its first swap (the first counts once);
+    - same-slot swaps released out of order put back in chain order;
+    - two holes heal only together;
+    - not found, pending, and an outcome after the wait keep the gap;
+    - no swap in the fetched transaction, a swap that does not chain, a swap missed outside the hole, a deposit in the hole's transaction, and a hole before the first swap all keep the gap;
+    - the parity test.
+  - `worker test/trade-heal.test.ts`:
+    - fetched once as `cut-trade` with a found outcome;
+    - retried after its waits;
+    - all tries fail gives not found once;
+    - a pool not a candidate's fetches nothing;
+    - the per-pool limit, the day's cap and the next day's count;
+    - a non-pool watch is left alone.
+  - Mutants killed:
+    - clearing the gap without the transaction (on a not-found outcome; before the chain check);
+    - skipping the continuity check;
+    - no daily cap; no per-pool limit; fetching for pools that are not a candidate's;
+    - no retry; no found outcome.
+  - After review (each test fails without its guard):
+    - a deposit after the last swap blocks the heal (`h.other`);
+    - a chain stale at the mark stays stale (`!mc.clean`);
+    - two swaps that could come next give no order;
+    - more than `HEAL_TAPE_MAX` swaps lets the heal go;
+    - a hole released behind the mark is never healed;
+    - both caps hold across a restart, and a new UTC day resets them;
+    - an unreadable `fetch-caps.json` counts the day as spent;
+    - a count that cannot be saved refuses the fetch (review N6);
+    - the backtest-shape tape kills mutant C, which moves only fetched-transaction swaps one candle later.
