@@ -3,7 +3,7 @@
 // createReplay) and DATA-1's raw-record path (recordFromRaw). Real mainnet transactions and reads
 // (core/test/facts/fixtures/facts.json); the producers are core's, unchanged in every path.
 import { describe, expect, it } from 'vitest';
-import { toBase64, type TransactionRecord } from '../../core/src/chain/index.ts';
+import { toBase64, transactionEvents, type TransactionRecord } from '../../core/src/chain/index.ts';
 import { createReplay, Engine, runToEnd, type Clock, type Feed, type FeedEvent, type MarketEvent, type Strategy } from '../../core/src/engine/index.ts';
 import { FactFeed, FactProducer, RAW, STREAMS } from '../../core/src/facts/index.ts';
 import {
@@ -31,26 +31,39 @@ const reader = (): Strategy => ({
 
 const engineOn = (clock: Clock, feed: Feed) => new Engine({ clock, feed, strategy: reader(), runner: { run: () => undefined }, seed: 'facts-parity', book: CONFIG });
 
-interface Arrival { readonly at: number; readonly source: Source; readonly body: FrameBody; readonly lookup?: boolean }
+interface Arrival { readonly at: number; readonly source: Source; readonly body: FrameBody; readonly lookup?: boolean; readonly backfilled?: boolean }
 
-/** The recorded coin as the live worker would receive it: fetched transactions, coverage, slot notices and reads. */
+/** COMPLETION-READ: the worker's read of the curve's completing buy lands this long after the migration's fetch. */
+const COMPLETION_READ_MS = 300;
+
+/**
+ * The recorded coin as the live worker would receive it: fetched transactions, coverage, slot notices and reads. The
+ * migration transaction carries no CompleteEvent (mainnet today); the completing buy is never fetched on its own live
+ * (no pump-program trade stream): it arrives only through the worker's completion read (worker.ts #readCompletion),
+ * after the migration, as that read puts it on the feed (a backfilled lookup).
+ */
 const script = (records: readonly TransactionRecord[]): Arrival[] => {
   const out: Arrival[] = [];
   const complete = chainTx('pump CompleteEvent (curve filled)');
   const migrate = chainTx('migration CreatePoolEvent');
-  const all = [...records, complete, migrate].filter((r, i, a) => a.findIndex((x) => x.signature === r.signature) === i).sort((a, b) => (a.slot < b.slot ? -1 : a.slot > b.slot ? 1 : 0));
+  const all = [...records, migrate].filter((r, i, a) => r.signature !== complete.signature && a.findIndex((x) => x.signature === r.signature) === i).sort((a, b) => (a.slot < b.slot ? -1 : a.slot > b.slot ? 1 : 0));
   const first = all[0]!;
   const t0 = (first.blockTime ?? 0) * 1000;
   out.push({ at: t0 - 2000, source: 'worker', body: { type: 'offchain', key: `coverage:${STREAMS.mintTxs(MINT)}:start`, value: { fromSlot: first.slot, via: `sigs:${MINT}` } } });
   out.push({ at: t0 - 1000, source: 'worker', body: { type: 'offchain', key: `coverage:${STREAMS.trades(POOL)}:start`, value: { fromSlot: migrate.slot, via: `logs:${POOL}` } } });
   let lastSlot = -1n;
+  let floor = 0;
   for (const r of all) {
-    const at = (r.blockTime ?? 0) * 1000 + 500;
+    const at = Math.max((r.blockTime ?? 0) * 1000 + 500, floor);
     if (r.slot !== lastSlot) {
       out.push({ at, source: 'helius', body: { type: 'slot', slot: r.slot, parent: r.slot - 1n, root: r.slot - 32n } });
       lastSlot = r.slot;
     }
     out.push({ at: at + 50, source: 'helius', body: { type: 'tx', record: r }, lookup: true });
+    if (r.signature === migrate.signature) {
+      floor = at + 50 + COMPLETION_READ_MS;
+      out.push({ at: floor, source: 'helius', body: { type: 'tx', record: complete }, lookup: true, backfilled: true });
+    }
   }
   const end = (all.at(-1)!.blockTime ?? 0) * 1000 + 2000;
   for (const f of FIX.funders) out.push({ at: end, source: 'helius', body: { type: 'offchain', key: RAW.funder(f.wallet), value: { ...f, slot: f.slot === null ? null : BigInt(f.slot) } } });
@@ -72,7 +85,7 @@ const live = (arrivals: readonly Arrival[]) => {
   const engine = engineOn(feed.clock, tap);
   let last = 0;
   for (const a of arrivals) {
-    feed.ingest(a.source, a.body, { receivedAt: a.at, lookup: a.lookup ?? false });
+    feed.ingest(a.source, a.body, { receivedAt: a.at, lookup: a.lookup ?? false, backfilled: a.backfilled ?? false });
     feed.advance(a.at);
     engine.drain();
     last = a.at;
@@ -94,6 +107,20 @@ const factEvents = (events: readonly FeedEvent[]) => events.filter((e) => e.id.i
 describe('fact parity', () => {
   const records = RECORDS.map((r) => r.rec);
   const run = live(script(records));
+
+  it('COMPLETION-READ: the migration carries no CompleteEvent; the completion arrives only through the read, after it', () => {
+    const complete = chainTx('pump CompleteEvent (curve filled)');
+    const migrate = chainTx('migration CreatePoolEvent');
+    expect(transactionEvents(migrate).some((e) => e.name === 'CompleteEvent')).toBe(false);
+    const txFrames = run.frames.filter((f) => f.body.type === 'tx').map((f) => ({ seq: f.seq, sig: (f.body as { record: TransactionRecord }).record.signature, backfilled: f.backfilled }));
+    const mig = txFrames.filter((f) => f.sig === migrate.signature);
+    const read = txFrames.filter((f) => f.sig === complete.signature);
+    expect(mig).toHaveLength(1);
+    expect(read).toEqual([{ seq: expect.any(Number), sig: complete.signature, backfilled: true }]);
+    expect(read[0]!.seq).toBeGreaterThan(mig[0]!.seq);
+    // The migration fact forms from it, after the read.
+    expect(factEvents(run.seen).some((e) => (e as MarketEvent).key === migrationKey(MINT))).toBe(true);
+  });
 
   it('the live path produces the coin\'s facts from real data', () => {
     const keys = new Set(factEvents(run.seen).map((e) => (e as MarketEvent).key));

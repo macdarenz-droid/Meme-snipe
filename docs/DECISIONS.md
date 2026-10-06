@@ -2973,6 +2973,39 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
 
 **Evidence.** `packages/ops/test/host-logic.test.ts` (HOST-CAPS): the keep rules, 9 releases leave 5, no age rule, an unreadable current prunes nothing, the drop-in's content and the installer's managed-file entry and restart. `ops/test/e2e.sh`: the drop-in is on the host, and 6 deploys leave at most 5 releases.
 
+## A live graduate reads its completing buy (COMPLETION-READ, `run/worker.ts` `#completionFor`)
+
+**Why.** On 2026-10-06 the paper bot saw 1,132 candidates and none passed the hard rejects; 544 refusals read as H7. H7 passes on the migration fact (`gates/migration:<mint>`), and the producer forms that fact only from a confirmed CompleteEvent, CompletePumpAmmMigrationEvent and CreatePoolEvent (`core/src/facts/producer.ts` `#migration`). On mainnet today the migration transaction carries CreatePoolEvent, InitBoostEvent, CompletePumpAmmMigrationEvent and BuyEvent and no CompleteEvent: the CompleteEvent is in the completing buy, a separate transaction on the bonding curve (checked through DEC-1's decoder on `u8U24mio…` and `2hkGg1nf…`, read from the public RPC on 2026-10-06; fixture `packages/worker/test/fixtures/completion-read.json`). The live worker has no pump-program trade stream (`tradeStreams: false`), so it never fetched that buy, and the fact never formed.
+
+**Rule.**
+- Every released, fetched migration (`pump:CompletePumpAmmMigrationEvent:<mint>` with an `ev:` id: the live watch's fetch, a reconnect's backfill, a restore or a downtime read) whose completion is not in `#completeSig` runs the existing `#readCompletion(bondingCurve, migrationSig)`: one `getSignaturesForAddress(curve, before: migration, limit 5)`, then `getTransaction` on each successful signature, newest first, until one carries the CompleteEvent. Each read goes on the feed at confirmed (backfilled lookup), and the producer forms the migration fact unchanged. No core gate changed.
+- Charged to the fill budget at P2. `COMPLETION_CREDITS` (6) is reserved first and the unused part refunded. When the budget has less than 6, nothing is read and the log says so. If the reads are not configured or a read fails, the fact stays missing (H16); a completion is never invented.
+- Once per migration transaction: the fetcher and the feed drop a repeat. Nothing new is kept per mint: the read is triggered by the release, never by an evaluation.
+- The downtime read no longer calls `#readCompletion` itself. Its migrations are released like live ones and take the same path, so its log counts only the authority's pages and transactions. The budget pays the same total (test: 4 credits).
+
+**Cost (arithmetic; the graduate rate is the supervisor's estimate, not measured here).**
+- Per graduate: 1 signatures page plus up to 5 transactions, each 1 Helius credit (`HELIUS_RPC_CREDITS`). That is 6 at most, and 2 when the completing buy is the newest successful signature before the migration (as in the fixture; failed buys after completion are skipped without a read).
+- At about 1,000–1,500 graduates a day: typically 2,000–3,000 credits a day, at most 6,000–9,000, out of the 20,000-credit daily fill budget (`FILL_CREDITS_PER_DAY`), which the trade fills share.
+- Monthly on Helius (1,000,000 credits, entries halt at 70%): typically 60,000–90,000 (6–9%), at most 180,000–270,000 (18–27%). The worst case is real money in credits. Watch the per-day spend in the first live days, and verify the graduate rate from the journal.
+
+**Labels.** In `api.ts` `classify` (shared by the funnel and the decisions view), a hard-reject reason whose first reason is an H16 (`hard reject H7,H9,H10: H16 missing no curve …`) is filed under H16, not under the step it held up. This changes the display only.
+
+**Backtest parity.** The backtest (`backtest/src/sim/facts.ts`: `graduatedAtMs` from the dataset's CompleteEvent, and the migration fact in `snapshot` at a check moment) and the study see the completion in chain order, before the migration. Live sees it a read after the migration's fetch, which takes seconds. No decision falls in between, because every decision window opens an hour or more after the migration: live U2 at `u2WindowFromMs` (60 min), and study U1 at 1 day and U2 at 60 min. So both form the fact before the first decision. `completion-read.test.ts` pins that bound. The one live-only difference is a failed or unfunded read, which leaves live at H16 where the backtest passes H7. That is a fail-closed gap, never an extra trade. The recorded-replay parity holds because the read's transactions are recorded frames.
+
+**Open question for the facts reviewer (not changed here).** The curve fact (`gates/curve:<mint>`) is read with the `state` freshness rule in H7's fallback path. A CompleteEvent is a one-time event, so an old but true completion may be judged stale. Should it take the event rule instead? This card leaves it unchanged.
+
+**Evidence.**
+- `packages/worker/test/completion-read.test.ts`, 7 tests:
+  - (i) a live migration shaped like today's mainnet reads the curve once (2 credits charged), the migration fact appears, and H7 passes from then on;
+  - (iii) with the budget spent, a failed signatures read, a missing transaction, or no reads configured, the fact stays missing (H16 missing curve, neededBy H7), and the read is not repeated over an hour of steps;
+  - the backtest-window bound.
+- `facts-parity.test.ts`: the complete transaction now arrives through the read (a backfilled lookup after the migration), and the live, replay, backtest re-sort and raw paths still agree.
+- `funnel-truth.test.ts`: the H16 labels in the funnel and the decisions view.
+- Mutants killed:
+  - the live read removed (5 tests fail);
+  - the read repeated on every step (2 fail);
+  - H16 filed under the step (2 fail).
+
 ## The SOL/USD feed's heartbeat keeps it live (COINBASE-LIVENESS, `providers/coinbase.ts`, `run/worker.ts` `#alive`)
 
 **Problem.** The `coinbase-ws` feed is critical and counts as stale after 10 s with no frame (`staleFeedMs`). The source subscribed to `ticker` only, which sends a frame only when a SOL-USD trade happens. A researcher counted 31 gaps over 10 s in 30 minutes of Coinbase's public trades (longest about 26 s), roughly 62 an hour, so entries halted on quiet minutes with a live connection (351 feed-stale halts in about 9 hours on the live summary). These figures are the researcher's, not re-measured here.

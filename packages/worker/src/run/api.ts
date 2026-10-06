@@ -147,6 +147,9 @@ export const classify = (reason: string): { readonly check: string | null; reado
   if (/^(pool state (unknown|malformed|flagged)|fee context unknown)/.test(reason)) return { check: 'H16', stage: 0 };
   // The hard rejects: one that failed, or a pass that left a gate unevaluated (fail closed: its inputs were not known).
   const hard = /^hard reject (H(?:1[0-7]|[1-9]))(?=[:,\s]|$)/.exec(reason);
+  // COMPLETION-READ: a step that failed for a missing or unusable input (its first reason an H16) is filed under H16,
+  // not under the step it held up: "hard reject H7,H9,H10: H16 missing no curve …" is missing data, not a stuck curve.
+  if (hard !== null && /^hard reject [^:]*: H16 /.test(reason)) return { check: 'H16', stage: 0 };
   if (hard !== null) return { check: hard[1]!, stage: 0 };
   if (reason === 'hard rejects incomplete') return { check: 'H16', stage: 0 };
   // After the hard rejects passed: the account, then the stop at the size.
