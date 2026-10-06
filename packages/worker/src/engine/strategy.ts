@@ -29,7 +29,7 @@ import {
   atr, checkStopDistance, decideExit, execPrice, liquidationValue, exitAttemptsOf, exitBookEvents, exitSettings, newTracker, noteAttempt,
 } from '../../../core/src/exits/index.ts';
 import {
-  type Coverage, type DeployerIndexState, type GateContext, type GraduatesFact, type RugLabellerState, type S0DiagnosticPart, DeployerIndex, GRADUATES_KEY, hardAllowsEntry, LOG_CREATE_PREFIX, NOT_EVALUATED, stagedHardRejects, RugLabeller, TX_CREATE_PREFIX, type PoolFact, carryKey, createKey, createKeepVerdict, CREATE_LATE_MS, createOf, createsCoverage, evaluateHardRejects, evaluateRegime, migrationKey, parseCreate, parseGraduates, parseMigration, parsePool, poolKey, pruneCoverage,
+  type Coverage, type DeployerIndexState, type GateContext, type GraduatesFact, type RugLabellerState, type S0DiagnosticPart, DeployerIndex, GRADUATES_KEY, hardAllowsEntry, LOG_CREATE_PREFIX, NOT_EVALUATED, stagedHardRejects, RugLabeller, TX_CREATE_PREFIX, type PoolFact, carryKey, createKey, createKeepVerdict, CREATE_LATE_MS, createOf, createsCoverage, evaluateRegime, migrationKey, parseCreate, parseGraduates, parseMigration, parsePool, poolKey, pruneCoverage,
 } from '../../../core/src/gates/index.ts';
 import type { GraduatesSeed } from '../../../core/src/facts/raw.ts';
 import { type BookEvent, type IntentState, isTerminal } from '../../../core/src/lifecycle/index.ts';
@@ -850,16 +850,21 @@ export class LiveStrategy implements Strategy {
    * position, with whether a position holds it (exit traffic).
    */
   watchedPools(): Map<string, { readonly mint: string; readonly held: boolean; readonly fromSlot?: bigint }> {
-    const held = new Set([...this.#exits.keys()].map((pid) => this.#mintOf(pid)));
+    const exitHeld = new Set([...this.#exits.keys()].map((pid) => this.#mintOf(pid)));
+    for (const p of Object.values(this.#book?.positions ?? {})) if (p.status !== 'closed') exitHeld.add(String(p.mint));
+    const protectedMints = new Set(exitHeld);
+    for (const s of this.#seeds.values()) protectedMints.add(s.mint);
+    for (const i of Object.values(this.#book?.intents ?? {})) if (i.intent.purpose === 'entry' || this.committed(String(i.intent.mint))) protectedMints.add(String(i.intent.mint));
     const out = new Map<string, { mint: string; held: boolean; fromSlot?: bigint }>();
-    for (const mint of this.watched()) {
+    for (const mint of new Set([...this.watched(), ...protectedMints])) {
+      if (this.#stoppedPools.has(mint) && !this.#poolProtected(mint)) continue;
       const pool = this.#poolOfMint.get(mint);
       // A candidate's pool is watched from its migration (S0-ZERO): its candles are observed from the pool's creation.
       // A held pool is already watched (an exit never waits on a catch-up).
-      const from = this.#cands.has(mint) && !held.has(mint) ? this.#migrationSlot.get(mint) : undefined;
-      if (pool !== undefined) out.set(pool, { mint, held: held.has(mint), ...(from === undefined ? {} : { fromSlot: from }) });
+      const from = this.#cands.has(mint) && !exitHeld.has(mint) ? this.#migrationSlot.get(mint) : undefined;
+      if (pool !== undefined) out.set(pool, { mint, held: this.committed(mint), ...(from === undefined ? {} : { fromSlot: from }) });
     }
-    for (const [mint, t] of this.#tail) if (!out.has(t.pool)) out.set(t.pool, { mint, held: false });
+    for (const [mint, t] of this.#tail) if (!this.#stoppedPools.has(mint) && !out.has(t.pool)) out.set(t.pool, { mint, held: false });
     return out;
   }
 
@@ -955,6 +960,7 @@ export class LiveStrategy implements Strategy {
     this.#track(e, ctx);
     this.#lifecycle(ctx, out);
     this.#manage(ctx, out);
+    this.#stopPoolWatches(ctx, gctx, out);
     // At most one entry step per call, and only while nothing else acted: ctx.book is the book before these decisions.
     this.#windowEnds(ctx.now.receivedAt, out);
     if (!out.some((d) => d.action !== null)) this.#entries(ctx, gctx, out, due);
@@ -1026,12 +1032,10 @@ export class LiveStrategy implements Strategy {
       // Terms from a swap seen in this run are never replaced by saved ones (a candidate already listed is not restored at
       // all, so no case reaches this today; kept so an order change cannot regress).
       if (c.fees != null && !this.#observedFees.has(c.mint)) this.#observedFees.set(c.mint, { ctx: feeContextOf(c.fees), terms: c.fees, restored: true });
-      // STEP-B: a window that ended during the downtime ends here, as the first event after the restore would end it,
-      // before the candidate is listed: it is not restored, so none of its transactions is read again and its pool
-      // gets no catch-up, which no decision could use (a boot after a long stop restored every saved candidate and read
-      // each one again, then dropped them all at the first event).
+      // STEP-B: an ended window gets no bars/catch-up and is never externally listed after this restore event.
+      // The same event's #windowEnds ends it after all saved money state is loaded and the actual current expiry/H16
+      // verdict is checked; ending it here would start a tail before re-proving a known create-expiry drop.
       if (atMs >= c.migratedAtMs + this.#d.config.windowToMs) {
-        this.#endWindow(c, out);
         continue;
       }
       if (c.bars.length > 0 && !this.#bars.has(c.mint)) this.#bars.set(c.mint, [...c.bars]);
@@ -1387,7 +1391,16 @@ export class LiveStrategy implements Strategy {
    */
   #held(mint: string): boolean {
     if (this.watched().has(mint)) return true;
-    return this.#money(mint);
+    return this.#poolProtected(mint);
+  }
+
+  /** Every entry keeps its pool/state, even terminal without attempts; money priority remains `committed` only. */
+  #hasEntry(mint: string): boolean {
+    return Object.values(this.#book?.intents ?? {}).some((i) => String(i.intent.mint) === mint && i.intent.purpose === 'entry');
+  }
+
+  #poolProtected(mint: string): boolean {
+    return this.committed(mint) || this.#hasEntry(mint);
   }
 
   /**
@@ -1434,7 +1447,10 @@ export class LiveStrategy implements Strategy {
   #book: StrategyContext['book'] | null = null;
 
   #forget(mint: string): void {
-    if (this.#held(mint)) return;
+    if (this.#held(mint)) {
+      if (this.#hasEntry(mint)) this.#letGoLater.add(mint);
+      return;
+    }
     const pool = this.#poolOfMint.get(mint);
     if (pool !== undefined) this.#mintOfPool.delete(pool);
     for (const m of [this.#poolOfMint, this.#observedFees, this.#tradeAt, this.#deployerSales, this.#flow, this.#deployerMemo, this.#migrationSlot, this.#swapAt, this.#inputsRestored]) m.delete(mint);
@@ -1447,6 +1463,7 @@ export class LiveStrategy implements Strategy {
    */
   #retire(mint: string, pool: string | null): void {
     if (this.#held(mint) || this.#tail.has(mint)) return;
+    this.#stoppedPools.delete(mint);
     this.#letGo.push(mint);
     if (pool !== null) this.#letGo.push(pool);
   }
@@ -2229,7 +2246,7 @@ export class LiveStrategy implements Strategy {
     const c = this.#d.config;
     const to = cand.migratedAtMs + c.windowToMs;
     const pool = this.#poolOfMint.get(cand.mint);
-    if (cand.lastReason !== null && pool !== undefined) {
+    if (cand.lastReason !== null && pool !== undefined && !this.#stoppedPools.has(cand.mint)) {
       // At the cap the pool is not watched: logged, so G3 censors that coin with the reason, never imputes it.
       if (this.#tail.size >= c.maxTails) out.push({ action: null, reasons: [NO_TAIL, c.universe, cand.mint, `tail cap ${c.maxTails}`] });
       else this.#tail.set(cand.mint, { pool, untilMs: to + exitsFor(this.#d.session.policy.exits, c.universe).tMaxMs });
@@ -2318,6 +2335,43 @@ export class LiveStrategy implements Strategy {
     return text;
   }
 
+  /** Swap watches only. Candidates and producer state remain, including every shortlisted migration's +30 min read.
+   * Nothing is restored from lastReason: a boot must prove the reject again from its as-of gate facts. */
+  readonly #stoppedPools = new Set<string>();
+
+  #stopPoolWatches(ctx: StrategyContext, gctx: GateContext, out: Decision[]): void {
+    const c = this.#d.config;
+    const session = this.#d.session;
+    const deps = { session, mode: 'live' as const, rugLabeller: 'RUG-1' as const, ...(c.s0Diagnostic === true ? { s0Diagnostic: true as const } : {}) };
+    for (const cand of this.#cands.values()) {
+      if (this.#stoppedPools.has(cand.mint) || this.#batchOpen.has(cand.mint)) continue;
+      // A candidate itself is kept. Every money/exit path holds its swaps, including a seed before it is booked and
+      // a terminal entry with an attempt which could land late. An entry already in the book is never cut.
+      if (this.#poolProtected(cand.mint)) continue;
+      // Use the full actual staged verdict, including H16 from every reached gate, not just the selected rejects.
+      // This request cannot pass H15 or propose an entry: no fabricated quote/simulation success is supplied.
+      const req = { mint: cand.mint, universe: c.universe, notional: session.policy.capital.minNotional, spend: 1n as Lamports, roundTrip: { ok: false as const, reason: 'missing-params' as const, detail: 'swap-watch verdict needs no trade quote' } };
+      const expiry = this.#createExpiry(cand.mint, gctx);
+      // Most candidates cannot be cut: do not scan accounts/holders on every frame just to discover that again.
+      if (expiry === null) continue;
+      const { hard } = stagedHardRejects(gctx, deps, req);
+      // H16 wins over a known adverse reason: unknown, partial, stale or unconfirmed evidence never drops a watch.
+      if (hard.reasons.some((r) => r.gate === 'H16')) continue;
+      // H8/H9/H11 keep observed swaps and REC-1 tails: a normal unwatch also flags the actual pool reserve chain.
+      this.#stoppedPools.add(cand.mint);
+      out.push({ action: null, reasons: ['pool watch stopped', c.universe, cand.mint, expiry.code, expiry.detail ?? ''] });
+    }
+  }
+
+  /** One create-expired rule for entry evaluation and swap-watch retirement. */
+  #createExpiry(mint: string, gctx: GateContext): GateReasonLine | null {
+    const c = this.#d.config;
+    const kept = createKeepVerdict(gctx, mint, c.createKeepMs);
+    if (kept?.expired === true) return { gate: 'worker', code: 'create-expired', detail: kept.detail };
+    if (kept === null && this.createExpired(mint)) return { gate: 'worker', code: 'create-expired', detail: `its create was let go ${(c.createKeepMs + CREATE_LATE_MS) / 3_600_000} h after it with no migration seen` };
+    return null;
+  }
+
   /** One candidate through regime, hard rejects and risk. Returns the reject reason, or null when it proposed an entry. */
   #evaluate(cand: Candidate, ctx: StrategyContext, gctx: GateContext, out: Decision[]): string | null {
     this.#lastTrips = [];
@@ -2327,9 +2381,8 @@ export class LiveStrategy implements Strategy {
     const diag = c.s0Diagnostic === true ? { s0Diagnostic: true } as const : {};
     // OOM-MINT: a coin that migrated more than `createKeepMs` after its create is refused before anything is judged,
     // from the facts as the backtest does; when its create's facts were let go, from the expired mark.
-    const kept = createKeepVerdict(gctx, cand.mint, c.createKeepMs);
-    if (kept?.expired === true) return this.#fail('create expired', [{ gate: 'worker', code: 'create-expired', detail: kept.detail }]);
-    if (kept === null && this.createExpired(cand.mint)) return this.#fail('create expired', [{ gate: 'worker', code: 'create-expired', detail: `its create was let go ${(c.createKeepMs + CREATE_LATE_MS) / 3_600_000} h after it with no migration seen` }]);
+    const expiry = this.#createExpiry(cand.mint, gctx);
+    if (expiry !== null) return this.#fail('create expired', [expiry]);
     const regime = evaluateRegime(gctx, { session, mode: 'live', ...diag });
     this.#waived = [...regime.waived];
     this.#regime = { atMs: gctx.now.receivedAt, on: regime.on, reasons: regime.reasons.map((x) => ({ code: x.code, input: x.input ?? null })), waived: [...regime.waived] };
@@ -2508,4 +2561,3 @@ export const reservationOf = (reasons: readonly string[]): { reservationId: stri
     return null;
   }
 };
-

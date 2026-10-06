@@ -54,9 +54,10 @@ describe('BEHIND: the shed cap', () => {
     const m = await passingMarket(h, HELD);
     const inFlight = () => Object.values(h!.worker.book.intents).some((i) => i.intent.purpose === 'entry' && i.attempts.length > 0);
     expect(await until(m, 30_000, inFlight, () => { m.slot(); m.pool(); })).toBe(true);
-    // Its position is still opening: the pool is not held (no exit plan yet), yet money is in flight on it.
+    // Money is in flight while its position is still opening. HELIUS-CUT keeps the pool at exit priority before a
+    // plan exists; BEHIND must also keep it through the canonical committed-mint guard.
     expect(Object.values(h.worker.book.positions).map((p) => p.status)).toEqual(['opening']);
-    expect(h.worker.strategy.watchedPools().get(POOL_ADDRESS)?.held).toBe(false);
+    expect(h.worker.strategy.watchedPools().get(POOL_ADDRESS)?.held).toBe(true);
     flood(h, POOL_ADDRESS);
     h.worker.step();
     expect(h.logs.some((l) => l.includes('candidate pools\' trade streams'))).toBe(false);
