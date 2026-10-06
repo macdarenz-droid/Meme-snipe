@@ -220,8 +220,13 @@ export class LiveFeed implements Feed {
     // watch's hole and pool-other mark (canonical.ts `echoEvents`); taken on this watch too: a duplicate.
     const own = body.type === 'logs' ? keyTag(echoKey(body)) : null;
     let echo = duplicate && own !== null && !this.#keys.has(own);
-    // Review B1: its first copy was shed: this copy stands in for it, whole.
-    const promoted = echo && key !== null && this.#shedKeys.delete(key);
+    // Review B1: its first copy was shed: this copy stands in for it, whole, while its slot is still held. Review N1:
+    // once its slot was released (or it is placed off-chain anyway), its swaps would land behind newer ones on its pool:
+    // it stays an echo and gives its watch a hole (`lost`), healed in order by the hole's fetch or kept (fail closed). The
+    // key stays, so every later copy from another watch fails closed the same way.
+    const shedFirst = echo && key !== null && this.#shedKeys.has(key);
+    const lost = shedFirst && (place.at === 'offchain' || place.slot <= this.#released);
+    const promoted = shedFirst && !lost && this.#shedKeys.delete(key!);
     if (promoted) echo = false;
     if (echo || promoted) {
       duplicate = false;
@@ -229,7 +234,7 @@ export class LiveFeed implements Feed {
       if (place.at === 'chain' && place.slot <= this.#released) place = { at: 'offchain', slot: this.openSlot, arrival: true };
     }
     // Frozen one level down: the body may hold transaction bytes, and a typed array with elements cannot be frozen.
-    const frame: Frame = Object.freeze({ seq: this.#seq++, receivedAt, source, backfilled, place: Object.freeze(place), duplicate, ...(echo ? { echo: true as const } : {}), body: Object.freeze(body) });
+    const frame: Frame = Object.freeze({ seq: this.#seq++, receivedAt, source, backfilled, place: Object.freeze(place), duplicate, ...(echo ? { echo: true as const } : {}), ...(lost ? { lost: true as const } : {}), body: Object.freeze(body) });
     this.#opts.onFrame?.(frame);
     if (duplicate) {
       this.#duplicates++;
@@ -407,7 +412,7 @@ export class LiveFeed implements Feed {
     for (const f of this.#held.values()) held += f.length;
     let ranks = 0;
     for (const m of this.#ranks.values()) ranks += m.size;
-    return { held, held_slots: this.#held.size, ranks, rank_slots: this.#ranks.size, keys: this.#keys.size, key_slots: this.#keysBySlot.size, gaps: this.#gaps.size, ready: this.#ready.length - this.#head };
+    return { held, held_slots: this.#held.size, ranks, rank_slots: this.#ranks.size, keys: this.#keys.size, key_slots: this.#keysBySlot.size, shed_keys: this.#shedKeys.size, gaps: this.#gaps.size, ready: this.#ready.length - this.#head };
   }
 
   status(): LiveFeedStatus {

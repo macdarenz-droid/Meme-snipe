@@ -91,6 +91,11 @@ export interface Frame {
    * (`echoEvents`). Recordings made before it carry none: those copies were duplicates and replay as they did.
    */
   readonly echo?: true;
+  /**
+   * DEDUP-PER-WATCH (review N1): an echo standing in for a whole copy `shed` dropped, too late to be released whole (its
+   * slot already released): its watch gets a hole (`logs:truncated:<via>`), as if the log were cut.
+   */
+  readonly lost?: true;
   readonly body: FrameBody;
 }
 
@@ -329,8 +334,9 @@ const echoEvents = (
       value: { signature: b.signature, name: other.name, txSlot: b.slot, via: b.via, ...(b.commitment === undefined ? {} : { commitment: b.commitment }), ...meta(f) },
     });
   }
-  // `txSlot`: the transaction's own slot, which a late echo's off-chain placement does not show.
-  if (read.truncated) out.push({ kind: 'market', id: id('truncated'), moment: at(LOG_IX_BASE), key: `logs:truncated:${b.via}`, value: { signature: b.signature, txSlot: b.slot, ...meta(f) } });
+  // `txSlot`: the transaction's own slot, which a late echo's off-chain placement does not show. A `lost` echo's watch
+  // missed the transaction's events (its whole copy was shed): a hole too.
+  if (read.truncated || f.lost === true) out.push({ kind: 'market', id: id('truncated'), moment: at(LOG_IX_BASE), key: `logs:truncated:${b.via}`, value: { signature: b.signature, txSlot: b.slot, ...meta(f) } });
   return out;
 };
 

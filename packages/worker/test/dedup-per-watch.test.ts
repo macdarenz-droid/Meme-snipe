@@ -445,3 +445,64 @@ describe('DEDUP-PER-WATCH: shedding the first copy keeps the other watch\'s swap
     });
   }
 });
+
+describe('DEDUP-PER-WATCH: a copy that comes after a shed and after its slot was released (review N1)', () => {
+  // Tx X swaps on A and B at S; A's copy came first, and A is shed with no B copy held. S is released; B's own tx Y at
+  // S + 2 (a sell on the state after X's buy) is released; then B's copy of X arrives. Released whole off-chain it
+  // would put X's buy behind Y's sell: B's price would be wrong and read as clean. It must fail closed instead.
+  const S = S0 + 5n;
+  const SIG_Y = '6QYKumkywidnDav6oDdP4teAY247nwxDg3gWsZ1nAmnsejadN6r2YmxJiuLXy4bxw9eDvpCgr7fHLSBfpRehCMBM';
+  const buyB = swapOf(B, S);
+  const sellB = swapLog({ pool: B.pool, coinCreator: CREATOR, supply: SUPPLY, pre: buyB.after, side: 'sell', base: 400_000_000n, atMs: at(S + 2n) });
+  const x = (via: string): FrameBody => ({ type: 'logs', signature: SIG, slot: S, err: null, via, logs: [...swapOf(A, S).logs, ...buyB.logs], commitment: 'confirmed' });
+
+  const live = () => {
+    const frames: Frame[] = [];
+    const releases: Release[] = [];
+    const feed = new LiveFeed({ ...DEFAULT_LIVE_FEED, horizonSlots: 0, onFrame: (f) => frames.push(f), onRelease: (_e, r) => releases.push(r) });
+    const out: MarketEvent[] = [];
+    const tick = (slot: bigint): void => {
+      feed.ingest('helius', { type: 'slot', slot, parent: slot - 1n, root: null }, { receivedAt: at(slot) });
+      feed.advance(at(slot) + 1);
+      for (let e = feed.next(); e !== null; e = feed.next()) if (e.kind === 'market') out.push(e);
+    };
+    feed.ingest('helius', x(VIA(A)), { receivedAt: at(S) });
+    feed.shed((via) => via === VIA(A));
+    tick(S + 1n);
+    feed.ingest('helius', { type: 'logs', signature: SIG_Y, slot: S + 2n, err: null, via: VIA(B), logs: sellB.logs, commitment: 'confirmed' }, { receivedAt: at(S + 2n) });
+    tick(S + 3n);
+    feed.ingest('helius', x(VIA(B)), { receivedAt: at(S + 3n) + 5 });
+    tick(S + 5n);
+    return { frames, releases, out };
+  };
+  const closes = (w: FactWorld) => (w.last(candlesKey(B.mint)) as { candles: unknown }).candles;
+
+  it('B gets a hole covering S (or candles equal to the in-order ones), and the replay equals live', () => {
+    const r = live();
+    const w = opened().push(...r.out);
+    // In order: X's buy, then Y's sell, both on B's watch.
+    const ref = opened();
+    through(ref, buyB.logs, S, [VIA(B)]);
+    through(ref, sellB.logs, S + 2n, [VIA(B)]);
+    const ok = gapFree(w, B) > S || typedText(closes(w)) === typedText(closes(ref));
+    expect(ok).toBe(true);
+    expect(gapFree(w, B)).toBeGreaterThan(S);
+    const rp = replayRecorded(r.frames.map((f) => parseTyped(typedText(f)) as Frame), r.releases);
+    const replayed: MarketEvent[] = [];
+    for (let e = rp.feed.next(); e !== null; e = rp.feed.next()) if (e.kind === 'market') replayed.push(e);
+    expect(typedText(replayed)).toBe(typedText(r.out));
+  });
+
+  it('the shed keys are forgotten with the dedupe keys (bounded memory)', () => {
+    const feed = new LiveFeed({ ...DEFAULT_LIVE_FEED, horizonSlots: 0, keepSlots: 2 });
+    feed.ingest('helius', x(VIA(A)), { receivedAt: at(S) });
+    feed.shed((via) => via === VIA(A));
+    expect(feed.sizes()['shed_keys']).toBe(1);
+    for (let k = 1n; k <= 5n; k++) {
+      feed.ingest('helius', { type: 'slot', slot: S + k, parent: S + k - 1n, root: null }, { receivedAt: at(S + k) });
+      feed.advance(at(S + k) + 1);
+      while (feed.next() !== null);
+    }
+    expect(feed.sizes()['shed_keys']).toBe(0);
+  });
+});
