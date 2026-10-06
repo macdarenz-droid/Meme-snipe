@@ -3,7 +3,9 @@
 // Worker fetch and never reads the body: it checks the signed header, takes a one-use nonce from the Durable Object,
 // checks the destination, then pipes the body behind a fixed length to uploads.github.com and reads the asset back by id
 // (the upload's reply is never trusted). Free plan: a 100 MB request body (capped here at 95 MB), 10 ms CPU (fetch waits
-// do not count; a native pipe uses none), 50 subrequests (one file uses at most about 20).
+// do not count; a native pipe uses none), 50 subrequests (one file uses at most about 20). A day's release id is kept in
+// the Durable Object, so an upload never reads the release back: a near-full release's reply (900 assets, about 1.5 MB of
+// JSON) takes 4–7 ms to parse, too close to the CPU limit.
 //
 // Header `x-zeroed-record`: JSON {v, op, t, nonce, day, release, boot, file, size, sha256, asset_id?}, signed with the
 // heartbeat key in `x-zeroed-signature` over "t\nRECORD\n/record\n<header>". RECORD is a method word no HTTP request
@@ -49,8 +51,10 @@ type Fetch = (url: string, init: RequestInit) => Promise<Response>;
 
 export interface RecordDeps {
   readonly fetch: Fetch;
-  /** Marks the nonce used; false when it was used before (or the store refused). */
-  readonly takeNonce: (nonce: string, t: number) => Promise<boolean>;
+  /** Marks the nonce used (ok false when it was used before, or the store refused), with the release's id when known. */
+  readonly takeNonce: (nonce: string, t: number, release: string) => Promise<{ readonly ok: boolean; readonly releaseId: number | null }>;
+  /** Keeps (or, with null, forgets) a release's id for the next upload. */
+  readonly rememberRelease: (release: string, id: number | null) => Promise<void>;
   /** The body behind a fixed length (Workers' FixedLengthStream), so the upload carries a Content-Length. Never awaited. */
   readonly fixedLength: (body: ReadableStream<Uint8Array>, size: number) => ReadableStream<Uint8Array>;
   readonly nowS: () => number;
@@ -183,15 +187,13 @@ class GitHub {
     return { status: res.status, json: j };
   }
 
-  /** The day's release, created as a prerelease that never becomes "latest" when it is not there yet. */
-  async release(tag: string, day: string): Promise<{ id: number; assets: Asset[] } | string> {
-    const read = async (): Promise<{ id: number; assets: Asset[] } | number> => {
+  /** The day's release id, created as a prerelease that never becomes "latest" when it is not there yet. */
+  async release(tag: string, day: string): Promise<{ id: number } | string> {
+    const read = async (): Promise<{ id: number } | number> => {
       const r = await this.call('GET', `/releases/tags/${encodeURIComponent(tag)}`);
       if (r.status !== 200) return r.status;
-      const j = r.json as { id?: unknown; assets?: unknown };
-      if (!Number.isSafeInteger(j?.id)) return 502;
-      const assets = Array.isArray(j.assets) ? j.assets.map(asAsset).filter((a): a is Asset => a !== null) : [];
-      return { id: j.id as number, assets };
+      const j = r.json as { id?: unknown };
+      return Number.isSafeInteger(j?.id) ? { id: j.id as number } : 502;
     };
     const got = await read();
     if (typeof got !== 'number') return got;
@@ -201,7 +203,7 @@ class GitHub {
     });
     if (c.status === 201) {
       const id = (c.json as { id?: unknown } | null)?.id;
-      return Number.isSafeInteger(id) ? { id: id as number, assets: [] } : 'release create unreadable';
+      return Number.isSafeInteger(id) ? { id: id as number } : 'release create unreadable';
     }
     // Created at the same moment by another request: read it again.
     if (c.status === 422) {
@@ -265,13 +267,14 @@ export async function handleRecord(req: Request, env: RecordEnv, d: RecordDeps):
     const len = req.headers.get('content-length');
     if (req.body === null || (len !== null && len !== String(h.size))) return json({ error: 'body length differs from the signed size' }, 400);
   }
-  if (!(await d.takeNonce(h.nonce, t))) return json({ error: 'replayed request' }, 409);
+  const n = await d.takeNonce(h.nonce, t, h.release);
+  if (!n.ok) return json({ error: 'replayed request' }, 409);
   const dest = await checkDestination(env, d.fetch, TIMEOUT_MS);
   if (!dest.ok || dest.repo === undefined) return json({ error: dest.ok ? 'no repository' : dest.reason }, 503);
   const gh = new GitHub(d.fetch, env.GITHUB_API ?? API, env.GITHUB_UPLOADS ?? UPLOADS, dest.repo, env.REPORTS_TOKEN ?? '');
   const name = assetName(h);
   try {
-    return h.op === 'check' ? await check(gh, h, name) : await put(gh, h, name, req.body as ReadableStream<Uint8Array>, d);
+    return h.op === 'check' ? await check(gh, h, name) : await put(gh, h, name, req.body as ReadableStream<Uint8Array>, d, n.releaseId);
   } catch {
     return json({ error: 'GitHub did not answer' }, 502);
   }
@@ -287,20 +290,24 @@ async function check(gh: GitHub, h: RecordHeader, name: string): Promise<Respons
   return json({ ok: true, ...view(a), match: sameBytes(a, h) });
 }
 
-async function put(gh: GitHub, h: RecordHeader, name: string, body: ReadableStream<Uint8Array>, d: RecordDeps): Promise<Response> {
-  const rel = await gh.release(h.release, h.day);
-  if (typeof rel === 'string') return json({ error: rel }, 502);
-  // Already there (a reply lost on the way back): the same finished bytes count as uploaded, without sending them again;
-  // an unfinished one is removed first and the body (not read yet) is sent now.
-  const listed = rel.assets.find((a) => a.name === name);
-  if (listed !== undefined) {
-    const r = await existing(gh, h, listed.id);
-    if (r instanceof Response) return r;
+async function put(gh: GitHub, h: RecordHeader, name: string, body: ReadableStream<Uint8Array>, d: RecordDeps, known: number | null): Promise<Response> {
+  let releaseId = known;
+  if (releaseId === null) {
+    const rel = await gh.release(h.release, h.day);
+    if (typeof rel === 'string') return json({ error: rel }, 502);
+    releaseId = rel.id;
+    await d.rememberRelease(h.release, releaseId);
   }
-  const up = await gh.upload(rel.id, name, d.fixedLength(body, h.size), h.size);
+  const up = await gh.upload(releaseId, name, d.fixedLength(body, h.size), h.size);
+  // The kept id names a release that is gone: forget it; the host sends again and the release is found or made anew.
+  if (up.status === 404 && known !== null) {
+    await d.rememberRelease(h.release, null);
+    return json({ error: 'the release was not found; send again', retry: true }, 503);
+  }
   if (up.status === 422) {
-    // The body is spent: whatever is found, a removed unfinished upload is sent again by the host.
-    const found = await gh.findByName(rel.id, name);
+    // The name exists (a reply lost on the way back, or an unfinished upload). The body is spent: same finished bytes
+    // count as uploaded, other finished bytes are refused, and an unfinished upload is removed and sent again.
+    const found = await gh.findByName(releaseId, name);
     if (typeof found === 'number') return json({ error: `asset list HTTP ${found}` }, 502);
     if (found === null) return json({ error: 'upload refused (HTTP 422)' }, 502);
     const r = await existing(gh, h, found.id);

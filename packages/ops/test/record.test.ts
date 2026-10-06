@@ -93,7 +93,13 @@ describe('POST /record', () => {
     expect(r.gh.releases.get('rec-2026-10-05')?.body).toMatchObject({ tag_name: 'rec-2026-10-05', prerelease: true, make_latest: 'false' });
     expect(r.gh.calls.filter((c) => c.startsWith('POST UP'))).toHaveLength(1);
     expect(r.gh.calls).toContain(`GET /repos/${REPO}/releases/assets/${res.json!['asset_id']}`);
-    expect(r.doPaths).toEqual(['/record-nonce']);
+    // The day's release id is kept in the Durable Object: the next upload neither reads nor creates the release.
+    expect(r.doPaths).toEqual(['/record-nonce', '/record-release']);
+    expect(r.mem.get('record_releases')).toEqual({ 'rec-2026-10-05': r.gh.releases.get('rec-2026-10-05')!.id });
+    const calls = r.gh.calls.length;
+    const other = 'releases bytes\n';
+    expect((await send(r, header({ file: 'releases-000.jsonl.zst', size: Buffer.byteLength(other), sha256: sha(other) }), other)).status).toBe(200);
+    expect(r.gh.calls.slice(calls).filter((c) => c.includes('/releases/tags/') || c === `POST /repos/${REPO}/releases`)).toEqual([]);
     // The reply names no token, repository or URL.
     expect(JSON.stringify(res.json)).not.toMatch(/github_pat|zeroed-data|https?:/);
   });
@@ -182,18 +188,26 @@ describe('POST /record', () => {
     expect(r.gh.assets.size).toBe(1);
   });
 
-  it('a name that exists: the same finished bytes count as uploaded without sending them again', async () => {
+  it('a name that exists: the same finished bytes count as uploaded (found by name after the upload\'s 422)', async () => {
     const r = rig();
     expect((await send(r, header())).status).toBe(200);
     const again = await send(r, header());
     expect(again.status).toBe(200);
     expect(again.json).toMatchObject({ ok: true, existed: true });
-    expect(r.gh.calls.filter((c) => c.startsWith('POST UP'))).toHaveLength(1);
-    // Not in the release listing: the upload's 422 finds it by name.
-    r.gh.knobs.listAssetsInRelease = false;
-    const third = await send(r, header());
-    expect(third.json).toMatchObject({ ok: true, existed: true });
-    expect(r.gh.calls.filter((c) => c.startsWith('POST UP'))).toHaveLength(2);
+    expect(r.gh.assets.size).toBe(1);
+  });
+
+  it('a kept release id whose release is gone is forgotten, and the next send finds or makes the release again', async () => {
+    const r = rig();
+    expect((await send(r, header())).status).toBe(200);
+    r.gh.releases.clear();
+    r.gh.assets.clear();
+    const gone = await send(r, header());
+    expect(gone.status).toBe(503);
+    expect(gone.json).toMatchObject({ retry: true });
+    expect(r.mem.get('record_releases')).toEqual({});
+    expect((await send(r, header())).json).toMatchObject({ ok: true, state: 'uploaded' });
+    expect([...r.gh.releases.keys()]).toEqual(['rec-2026-10-05']);
   });
 
   it('a name that exists with other finished bytes is never replaced', async () => {
@@ -203,35 +217,27 @@ describe('POST /record', () => {
     const res = await send(r, header({ size: Buffer.byteLength(other), sha256: sha(other) }), other);
     expect(res.status).toBe(409);
     expect([...r.gh.assets.values()].map((a) => Buffer.from(a.bytes).toString())).toEqual(['frames bytes\n']);
-    r.gh.knobs.listAssetsInRelease = false;
     expect((await send(r, header({ size: Buffer.byteLength(other), sha256: sha(other) }), other)).status).toBe(409);
     expect(r.gh.assets.size).toBe(1);
   });
 
-  it('an unfinished upload under the name is removed: sent at once when listed, otherwise the host sends again', async () => {
+  it('an unfinished upload under the name is removed and the host is told to send again', async () => {
     const r = rig();
     r.gh.knobs.unfinished = true;
     expect((await send(r, header())).status).toBe(422); // not "uploaded": deleted as not the signed bytes
-    r.gh.knobs.unfinished = true;
+    expect(r.gh.assets.size).toBe(0);
     r.gh.knobs.noDigest = true;
     expect((await send(r, header())).status).toBe(502); // no digest: kept, unfinished
+    expect([...r.gh.assets.values()].map((a) => a.state)).toEqual(['starter']);
     r.gh.knobs.unfinished = false;
     r.gh.knobs.noDigest = false;
+    const again = await send(r, header());
+    expect(again.status).toBe(503);
+    expect(again.json).toMatchObject({ retry: true });
+    expect(r.gh.assets.size).toBe(0);
     const res = await send(r, header());
     expect(res.json).toMatchObject({ ok: true, state: 'uploaded' });
     expect([...r.gh.assets.values()].map((a) => a.state)).toEqual(['uploaded']);
-    // Found only through the upload's 422: removed, and the host is told to send again.
-    const r2 = rig();
-    r2.gh.knobs.unfinished = true;
-    r2.gh.knobs.noDigest = true;
-    await send(r2, header());
-    r2.gh.knobs.unfinished = false;
-    r2.gh.knobs.noDigest = false;
-    r2.gh.knobs.listAssetsInRelease = false;
-    const again = await send(r2, header());
-    expect(again.status).toBe(503);
-    expect(again.json).toMatchObject({ retry: true });
-    expect(r2.gh.assets.size).toBe(0);
   });
 
   it('a body shorter than the signed size fails the upload', async () => {

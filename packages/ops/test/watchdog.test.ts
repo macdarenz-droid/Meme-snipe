@@ -280,4 +280,20 @@ describe('Durable Object', () => {
     expect((await n('not hex')).status).toBe(400);
     vi.unstubAllGlobals();
   });
+
+  it('the release path keeps only day release ids, the newest 64 days, and forgets on null', async () => {
+    const h = harness();
+    const keep = (release: string, id: unknown) => h.post('/record-release', JSON.stringify({ release, id }));
+    for (const bad of [['latest', 1], ['rec-2026-10-05', 0], ['rec-2026-10-05', 'x'], ['rec-2026-10-05.100', 1]] as const) expect((await keep(bad[0], bad[1])).status, String(bad)).toBe(400);
+    for (let d = 1; d <= 70; d++) expect((await keep(`rec-2026-${String(Math.ceil(d / 28)).padStart(2, '0')}-${String(((d - 1) % 28) + 1).padStart(2, '0')}`, d)).status).toBe(200);
+    const ids = h.mem.get('record_releases') as Record<string, number>;
+    expect(Object.keys(ids)).toHaveLength(64);
+    expect(ids['rec-2026-01-01']).toBeUndefined();
+    expect(ids['rec-2026-03-14']).toBe(70);
+    await keep('rec-2026-03-14', null);
+    expect((h.mem.get('record_releases') as Record<string, number>)['rec-2026-03-14']).toBeUndefined();
+    const r = await h.post('/record-nonce', JSON.stringify({ nonce: 'c'.repeat(32), t: Math.floor(Date.now() / 1000), release: 'rec-2026-03-13' }));
+    expect(await r.json()).toEqual({ ok: true, release_id: 69 });
+    vi.unstubAllGlobals();
+  });
 });

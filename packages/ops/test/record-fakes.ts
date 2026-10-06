@@ -17,7 +17,7 @@ export function fakeGitHub(meta: { full_name?: string; private?: boolean } = {})
   const releases = new Map<string, { id: number; tag: string; body: Record<string, unknown> }>();
   const assets = new Map<number, FakeAsset>();
   const calls: string[] = [];
-  const knobs = { corrupt: false, noDigest: false, unfinished: false, wrongSize: false, listAssetsInRelease: true };
+  const knobs = { corrupt: false, noDigest: false, unfinished: false, wrongSize: false };
   let nextId = 100;
   const res = (status: number, body?: unknown) => new Response(body === undefined ? null : JSON.stringify(body), { status });
   const view = (a: FakeAsset) => ({ id: a.id, name: a.name, size: a.size, state: a.state, digest: a.digest, browser_download_url: a.browser_download_url });
@@ -31,7 +31,7 @@ export function fakeGitHub(meta: { full_name?: string; private?: boolean } = {})
     if (u.origin === API && (m = new RegExp(`^${base}/releases/tags/([^/]+)$`).exec(u.pathname))) {
       const r = releases.get(decodeURIComponent(m[1]!));
       if (!r) return res(404, { message: 'Not Found' });
-      return res(200, { id: r.id, tag_name: r.tag, assets: knobs.listAssetsInRelease ? [...assets.values()].filter((a) => a.release === r.id).map(view) : [] });
+      return res(200, { id: r.id, tag_name: r.tag, assets: [...assets.values()].filter((a) => a.release === r.id).map(view) });
     }
     if (u.origin === API && u.pathname === `${base}/releases` && method === 'POST') {
       const body = JSON.parse(String(init.body)) as Record<string, unknown>;
@@ -57,9 +57,10 @@ export function fakeGitHub(meta: { full_name?: string; private?: boolean } = {})
     }
     if (u.origin === UP && (m = new RegExp(`^${base}/releases/(\\d+)/assets$`).exec(u.pathname)) && method === 'POST') {
       const rid = Number(m[1]);
-      const tag = [...releases.values()].find((r) => r.id === rid)?.tag ?? '';
+      const tag = [...releases.values()].find((r) => r.id === rid)?.tag;
       const name = u.searchParams.get('name') ?? '';
       const bytes = new Uint8Array(await new Response(init.body as ReadableStream).arrayBuffer());
+      if (tag === undefined) return res(404, { message: 'Not Found' });
       if ([...assets.values()].some((a) => a.release === rid && a.name === name)) return res(422, { message: 'Validation Failed', errors: [{ resource: 'ReleaseAsset', code: 'already_exists', field: 'name' }] });
       const stored = knobs.corrupt ? new Uint8Array([...bytes, 0]) : bytes;
       const a: FakeAsset = {

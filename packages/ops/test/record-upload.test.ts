@@ -108,13 +108,13 @@ const inproc = (r: ReturnType<typeof rig>): Transport => {
   return { put: (h, path) => call(h, readFileSync(path)), check: (h) => call(h, null) };
 };
 
-const uploader = (f: Fx, o: { deleteLocal?: boolean; active?: boolean; scope?: string; values?: string[]; transport?: Transport; r?: ReturnType<typeof rig> } = {}) => {
+const uploader = (f: Fx, o: { deleteLocal?: boolean; active?: boolean; scope?: string; values?: string[]; transport?: Transport; r?: ReturnType<typeof rig>; now?: number } = {}) => {
   const r = o.r ?? rig();
   const transport = o.transport ?? inproc(r);
   const log: string[] = [];
   const u = new up.Uploader(
     { root: f.root, journal: f.journal, stateDir: f.stateDir, key: KEY, values: o.values ?? [SECRET], deleteLocal: o.deleteLocal ?? true, scope: o.scope ?? 'all' },
-    { transport, workerActive: async () => o.active ?? false, now: () => NOW, log: (s: string) => log.push(s) },
+    { transport, workerActive: async () => o.active ?? false, now: () => o.now ?? NOW, log: (s: string) => log.push(s) },
   );
   return { u, r, log, status: () => JSON.parse(readFileSync(join(f.stateDir, 'status.json'), 'utf8')), state: () => JSON.parse(readFileSync(join(f.stateDir, 'state.json'), 'utf8')) };
 };
@@ -464,21 +464,45 @@ describe('redaction scan', () => {
 describe('journal days and the signed index', () => {
   it('uploads each ended UTC day of the journal once, never today, and resumes from the saved offset', async () => {
     const f = fx();
+    // Days 3 and 2 back: always ended, whatever the time of day (yesterday is still in its 10-minute grace just after midnight).
+    const E1 = day(3);
+    const E2 = day(2);
     const at = (d: string, h: string) => `${d}T${h}:00:00.000Z`;
     const jl = (d: string, h: string, k: string) => `${JSON.stringify({ seq: 1, ts: at(d, h), boot: 'b', kind: k })}\n`;
-    writeFileSync(f.journal, jl(D2, '01', 'start') + jl(D2, '23', 'decision') + jl(D1, '00', 'decision') + jl(D1, '12', 'stop') + jl(TODAY, '00', 'start'));
+    writeFileSync(f.journal, jl(E1, '01', 'start') + jl(E1, '23', 'decision') + jl(E2, '00', 'decision') + jl(E2, '12', 'stop') + jl(TODAY, '00', 'start'));
     const x = uploader(f);
     expect(await x.u.run()).toBe(0);
-    expect(assetNames(x.r)).toEqual(['index-1.json', 'index-1.json', `journal-${D1}.jsonl.zst`, `journal-${D2}.jsonl.zst`].sort());
-    const j1 = [...x.r.gh.assets.values()].find((a) => a.name === `journal-${D1}.jsonl.zst`)!;
+    expect(assetNames(x.r)).toEqual(['index-1.json', 'index-1.json', `journal-${E1}.jsonl.zst`, `journal-${E2}.jsonl.zst`].sort());
+    const j2 = [...x.r.gh.assets.values()].find((a) => a.name === `journal-${E2}.jsonl.zst`)!;
     const { zstdDecompressSync } = await import('node:zlib');
-    expect(zstdDecompressSync(Buffer.from(j1.bytes)).toString()).toBe(jl(D1, '00', 'decision') + jl(D1, '12', 'stop'));
-    expect(x.state().journal.offset).toBe(Buffer.byteLength(jl(D2, '01', 'start') + jl(D2, '23', 'decision') + jl(D1, '00', 'decision') + jl(D1, '12', 'stop')));
+    expect(zstdDecompressSync(Buffer.from(j2.bytes)).toString()).toBe(jl(E2, '00', 'decision') + jl(E2, '12', 'stop'));
+    expect(x.state().journal.offset).toBe(Buffer.byteLength(jl(E1, '01', 'start') + jl(E1, '23', 'decision') + jl(E2, '00', 'decision') + jl(E2, '12', 'stop')));
     // The journal is never deleted, and a second run sends nothing new.
     expect(existsSync(f.journal)).toBe(true);
     const before = x.r.gh.assets.size;
     await uploader(f, { r: x.r }).u.run();
     expect(x.r.gh.assets.size).toBe(before);
+  });
+
+  it('a day still inside its 10-minute grace after midnight waits', async () => {
+    const f = fx();
+    const at = (d: string, hm: string) => `${d}T${hm}:00.000Z`;
+    const jl = (d: string, hm: string) => `${JSON.stringify({ seq: 1, ts: at(d, hm), boot: 'b', kind: 'decision' })}\n`;
+    const now = Date.parse(`${TODAY}T00:05:00.000Z`);
+    writeFileSync(f.journal, jl(D1, '23:59') + jl(TODAY, '00:01'));
+    // The watchdog checks the signed time against its own clock: both run on this one.
+    vi.useFakeTimers({ toFake: ['Date'], now });
+    try {
+      const x = uploader(f, { now });
+      expect(await x.u.run()).toBe(0);
+      expect(assetNames(x.r)).toEqual([]);
+      vi.setSystemTime(now + 6 * 60_000);
+      const later = uploader(f, { r: x.r, now: now + 6 * 60_000 });
+      expect(await later.u.run()).toBe(0);
+      expect(assetNames(x.r)).toEqual(['index-1.json', `journal-${D1}.jsonl.zst`]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('the index lists every confirmed file with its asset and sha256, ends in an HMAC line, and a change is a new N (never a replacement)', async () => {
