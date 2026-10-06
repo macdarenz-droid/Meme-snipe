@@ -48,6 +48,11 @@ The previous S1 account reached its usage limit about 12:45 PM. The owner made t
 - No host access, no secrets access (owner only), as before.
 
 **Log (Melbourne time, newest first)**
+- 5:14 AM **Owner: "Parallel"** (FACTS-REREAD and DEDUP-PER-WATCH at the same time).
+  - FACTS-REREAD: the H16-WHY builder session_01WfhsYJ7BbBsRjr72zuL1US, on claude/facts-reread from trade-gap-heal df3da20c.
+  - DEDUP-PER-WATCH: new builder session_01175TAau6AqgWgadNor2wUv (Opus), on claude/dedup-per-watch from df3da20c; it confirms the fail-open with a test first.
+  - #262 facts delta PASS at df3da20c (comment 6022459237; non-blocking N6: the failed-save path is untested; N7: a leftover comment). Still waiting on the #262 BT parity review and CI.
+  - Deploy plan: #262 + DEDUP + FACTS-REREAD in one restart. POOL-FIRST-READ (with the unknown-events part) comes after.
 - 5:10 AM **Stage-1 facts diagnosis** (H16-WHY builder, code reading on 3ee09a5a; not observed live).
   - Ruled out: retention, forget and collapse never delete a candidate's facts (store-rules.ts:19, :87, :116; the only delete is retire for unheld mints, asof.ts:188-201, strategy.ts:1486-1490). No key mismatch (producer.ts:535 vs hard.ts:157/274/279/339/148). So the facts were never written in this process.
   - All of these refusals fall inside the entry window (strategy.ts:2294-2297), so each blocks a coin that could still enter. curve/H7 = migration/H10 = one gap: no migration fact.
