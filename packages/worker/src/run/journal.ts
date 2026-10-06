@@ -49,6 +49,8 @@ export interface JournalOptions {
   readonly onNoSpace?: () => void;
   /** Test seam; production appends synchronously. */
   readonly append?: (path: string, text: string) => void;
+  /** Told every line as written (its kind and text), after it is on disk (FUNNEL-PERSIST: the app's views follow it). Its errors are ignored. */
+  readonly written?: (kind: JournalKind, text: string) => void;
 }
 
 // Bounded emergency headroom for journal recovery and durable exit writes. This is not a sustained disk budget:
@@ -293,8 +295,9 @@ export class Journal {
   #line(seq: number, now: number, kind: JournalKind, fields: Readonly<Record<string, unknown>>): boolean {
     if (!this.#repairTail()) return false;
     const before = existsSync(this.#path) ? statSync(this.#path).size : 0;
+    const text = redact(jsonText({ seq, ts: new Date(now).toISOString(), boot: this.#boot, kind, ...fields }));
     try {
-      (this.#o.append ?? appendFileSync)(this.#path, `${redact(jsonText({ seq, ts: new Date(now).toISOString(), boot: this.#boot, kind, ...fields }))}\n`);
+      (this.#o.append ?? appendFileSync)(this.#path, `${text}\n`);
       if (kind === 'coverage_gap' && fields['stream'] === 'journal') {
         const fd = openSync(this.#path, 'r');
         try { fsyncSync(fd); } finally { closeSync(fd); }
@@ -308,6 +311,14 @@ export class Journal {
       if (existsSync(this.#path) && statSync(this.#path).size !== before) this.#truncateAt = before;
       this.#repairTail();
       return false;
+    }
+    // Only a line that reached the file is told (a line lost to ENOSPC is not), outside the append's ENOSPC handling.
+    // Observer only: a throwing hook must never skip the caller's bookkeeping (retry's seq, gap and reserve, or a
+    // desk's ledger write after its entry line), so its error is dropped here (no logger is in reach of the journal).
+    try {
+      this.#o.written?.(kind, text);
+    } catch {
+      // ignored by design
     }
     return true;
   }

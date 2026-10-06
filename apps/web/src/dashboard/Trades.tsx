@@ -1,9 +1,10 @@
 import { useState, type ReactNode } from 'react';
 import type { Fill, TradeRecord } from '../api/contract.ts';
 import { TokenActions } from '../components/TokenActions.tsx';
+import { Money, moneyText, moneyTone } from '../components/Money.tsx';
 import { Empty } from '../components/ui.tsx';
 import { formatDuration, shortAddress } from '../lib/format.ts';
-import { formatPriceDec, formatR, formatReturn, formatSolExact, formatUsdExact, negUsd, returnHundredths, toneOf, toneOfReturn } from '../lib/money.ts';
+import { formatPriceDec, formatR, formatReturn, formatUsdExact, negUsd, returnHundredths, returnLamports, toneOf, toneOfReturn } from '../lib/money.ts';
 import { EXIT_LABEL, TRADE_REASON_LABEL, VENUE_LABEL } from './labels.ts';
 import { Checks } from './Sections.tsx';
 import { melDateTime, melTime } from './time.ts';
@@ -12,7 +13,11 @@ const PAGE = 25;
 const SOLSCAN = 'https://solscan.io/tx/';
 
 /** The fields the table shows; full trade records and backtest report trades both have them. */
-export type TradeRow = Pick<TradeRecord, 'id' | 'symbol' | 'mint' | 'netUsd' | 'realizedR' | 'sizeUsd' | 'holdSeconds' | 'closedAt' | 'exitReason'> & { costs: { totalUsd: string } };
+export type TradeRow = Pick<TradeRecord, 'id' | 'symbol' | 'mint' | 'netUsd' | 'realizedR' | 'sizeUsd' | 'holdSeconds' | 'closedAt' | 'exitReason'> & Partial<Pick<TradeRecord, 'netLamports' | 'sizeLamports'>> & { costs: { totalUsd: string; totalLamports?: string } };
+
+/** A trade's return: on SOL when served (APP-SOL: net lamports ÷ entry lamports), else net ÷ size in dollars. */
+export const tradeReturn = (t: TradeRow): bigint | null =>
+  t.netLamports != null && t.sizeLamports != null ? returnLamports(t.netLamports, t.sizeLamports) : returnHundredths(t.netUsd, t.sizeUsd);
 
 export function TradeTable<T extends TradeRow>({ trades, onSelect }: { trades: T[]; onSelect?: (t: T) => void }) {
   const [shown, setShown] = useState(PAGE);
@@ -39,7 +44,7 @@ export function TradeTable<T extends TradeRow>({ trades, onSelect }: { trades: T
               <tr key={t.id} className="row-link">
                 <td>
                   {onSelect ? (
-                    <button type="button" className="row-button" onClick={() => onSelect(t)} aria-label={`${t.symbol}, ${formatUsdExact(t.netUsd, true)}, details`}>
+                    <button type="button" className="row-button" onClick={() => onSelect(t)} aria-label={`${t.symbol}, ${moneyText(t.netLamports, t.netUsd, true)}, details`}>
                       <span className="token-symbol">{t.symbol}</span>
                       <span className="mono muted">{shortAddress(t.mint)}</span>
                     </button>
@@ -51,11 +56,11 @@ export function TradeTable<T extends TradeRow>({ trades, onSelect }: { trades: T
                   )}
                   <TokenActions mint={t.mint} />
                 </td>
-                <td className={`num ${toneOf(t.netUsd)}`}>{formatUsdExact(t.netUsd, true)}</td>
-                <td className={`num ${toneOfReturn(returnHundredths(t.netUsd, t.sizeUsd))}`}>{formatReturn(returnHundredths(t.netUsd, t.sizeUsd))}</td>
+                <td className={`num ${moneyTone(t.netLamports, t.netUsd)}`}><Money lamports={t.netLamports} usd={t.netUsd} signed /></td>
+                <td className={`num ${toneOfReturn(tradeReturn(t))}`}>{formatReturn(tradeReturn(t))}</td>
                 <td className="num">{t.realizedR ? formatR(t.realizedR) : '—'}</td>
-                <td className="num">{formatUsdExact(t.sizeUsd)}</td>
-                <td className="num">{formatUsdExact(t.costs.totalUsd)}</td>
+                <td className="num"><Money lamports={t.sizeLamports} usd={t.sizeUsd} /></td>
+                <td className="num"><Money lamports={t.costs.totalLamports} usd={t.costs.totalUsd} /></td>
                 <td className="num">{formatDuration(t.holdSeconds)}</td>
                 <td className="mono muted">{melDateTime(t.closedAt)}</td>
                 <td className="muted truncate">{EXIT_LABEL[t.exitReason]}</td>
@@ -97,8 +102,8 @@ function FillRow({ f }: { f: Fill }) {
       <td>{f.side === 'buy' ? 'Buy' : 'Sell'}</td>
       <td className="mono">{melTime(f.at)}</td>
       <td className="num">{formatPriceDec(f.priceUsd)}</td>
-      <td className="num">{formatUsdExact(f.quotedUsd)}</td>
-      <td className="num">{formatUsdExact(f.filledUsd)}</td>
+      <td className="num"><Money lamports={f.quotedLamports} usd={f.quotedUsd} /></td>
+      <td className="num"><Money lamports={f.filledLamports} usd={f.filledUsd} /></td>
       <td className="num">{f.slippageBps} bps</td>
       <td className="num">{f.attempts}</td>
       <td className="mono">
@@ -124,7 +129,8 @@ export function tradeReasons(t: TradeRecord): string[] {
 /** Every detail of one trade: entry and exit, fills, fees split, rent, slippage, reasons and signatures. */
 export function TradeDetail({ trade }: { trade: TradeRecord }) {
   const c = trade.costs;
-  const cost = (v: string) => formatUsdExact(v);
+  const cost = (usd: string, lam: string | undefined) => <Money lamports={lam} usd={usd} />;
+  const neg = (l: string) => (l.startsWith('-') ? l.slice(1) : l === '0' ? l : `-${l}`);
   return (
     <div className="detail">
       <Rows
@@ -137,12 +143,11 @@ export function TradeDetail({ trade }: { trade: TradeRecord }) {
           ['Exit', `${formatPriceDec(trade.exitPriceUsd)} · ${melDateTime(trade.closedAt)}`, 'num'],
           ['Held', formatDuration(trade.holdSeconds), 'num'],
           ['Exit reason', EXIT_LABEL[trade.exitReason]],
-          ['Size', formatUsdExact(trade.sizeUsd), 'num'],
-          ['Gross', formatUsdExact(trade.grossUsd, true), `num ${toneOf(trade.grossUsd)}`],
-          ['Costs', formatUsdExact(negUsd(c.totalUsd)), 'num'],
-          ['Net', formatUsdExact(trade.netUsd, true), `num ${toneOf(trade.netUsd)}`],
-          ['Return', formatReturn(returnHundredths(trade.netUsd, trade.sizeUsd)), `num ${toneOfReturn(returnHundredths(trade.netUsd, trade.sizeUsd))}`],
-          ['Net in SOL', formatSolExact(trade.netSol, true), `num ${toneOf(trade.tradingUsd)}`],
+          ['Size', <Money lamports={trade.sizeLamports} usd={trade.sizeUsd} />, 'num'],
+          ['Gross', <Money lamports={trade.grossLamports} usd={trade.grossUsd} signed />, `num ${moneyTone(trade.grossLamports, trade.grossUsd)}`],
+          ['Costs', <Money lamports={c.totalLamports == null ? null : neg(c.totalLamports)} usd={negUsd(c.totalUsd)} />, 'num'],
+          ['Net', <Money lamports={trade.netLamports} usd={trade.netUsd} signed />, `num ${moneyTone(trade.netLamports, trade.netUsd)}`],
+          ['Return', formatReturn(tradeReturn(trade)), `num ${toneOfReturn(tradeReturn(trade))}`],
           ['Trading', formatUsdExact(trade.tradingUsd, true), `num ${toneOf(trade.tradingUsd)}`],
           ['SOL price move', formatUsdExact(trade.solMoveUsd, true), `num ${toneOf(trade.solMoveUsd)}`],
           ['Planned R', trade.plannedR ? formatR(trade.plannedR) : '—', 'num'],
@@ -154,15 +159,15 @@ export function TradeDetail({ trade }: { trade: TradeRecord }) {
       <h3>Costs</h3>
       <Rows
         rows={[
-          ['Venue fees', cost(c.venueFeeUsd), 'num'],
-          ['Creator fees', cost(c.creatorFeeUsd), 'num'],
-          ['Priority fees', cost(c.priorityFeeUsd), 'num'],
-          ['Tips', cost(c.tipUsd), 'num'],
-          ['Network fees', cost(c.networkFeeUsd), 'num'],
-          ['Slippage', cost(c.slippageUsd), 'num'],
-          ['Rent paid', cost(c.rentPaidUsd), 'num'],
-          ['Rent returned', formatUsdExact(negUsd(c.rentReturnedUsd)), 'num'],
-          ['Total', cost(c.totalUsd), 'num dash-total'],
+          ['Venue fees', cost(c.venueFeeUsd, c.venueFeeLamports), 'num'],
+          ['Creator fees', cost(c.creatorFeeUsd, c.creatorFeeLamports), 'num'],
+          ['Priority fees', cost(c.priorityFeeUsd, c.priorityFeeLamports), 'num'],
+          ['Tips', cost(c.tipUsd, c.tipLamports), 'num'],
+          ['Network fees', cost(c.networkFeeUsd, c.networkFeeLamports), 'num'],
+          ['Slippage', cost(c.slippageUsd, c.slippageLamports), 'num'],
+          ['Rent paid', cost(c.rentPaidUsd, c.rentPaidLamports), 'num'],
+          ['Rent returned', cost(negUsd(c.rentReturnedUsd), c.rentReturnedLamports == null ? undefined : neg(c.rentReturnedLamports)), 'num'],
+          ['Total', cost(c.totalUsd, c.totalLamports), 'num dash-total'],
         ]}
       />
       <h3>Fills</h3>
