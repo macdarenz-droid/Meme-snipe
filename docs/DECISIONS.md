@@ -3083,3 +3083,18 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - the live read removed (5 tests fail);
   - the read repeated on every step (2 fail);
   - H16 filed under the step (2 fail).
+
+## The SOL/USD feed's heartbeat keeps it live (COINBASE-LIVENESS, `providers/coinbase.ts`, `run/worker.ts` `#alive`)
+
+**Problem.** The `coinbase-ws` feed is critical and counts as stale after 10 s with no frame (`staleFeedMs`). The source subscribed to `ticker` only, which sends a frame only when a SOL-USD trade happens. A researcher counted 31 gaps over 10 s in 30 minutes of Coinbase's public trades (longest about 26 s), roughly 62 an hour, so entries halted on quiet minutes with a live connection (351 feed-stale halts in about 9 hours on the live summary). These figures are the researcher's, not re-measured here.
+
+**Ruling.** Coinbase's Exchange WebSocket docs list a per-product `heartbeat` channel, "every second", with `type`, `sequence`, `last_trade_id`, `product_id` and `time` (checked against docs.cdp.coinbase.com on 2026-10-06). The source now subscribes to `['ticker', 'heartbeat']` for SOL-USD. A SOL-USD heartbeat calls `onAlive`, which the worker applies to the feed's last-seen time for the stale check, and nothing else.
+
+**What a heartbeat never does.**
+- It never sets the SOL price and never refreshes its date. The price fact still carries the trade's own exchange time, so R1 `sol_price_stale` and `maxQuoteAgeMs` (2000 ms) judge the price's own age. Liveness is not price freshness.
+- It is never a frame on the feed (`alive` is a side call, not `feed.ingest`), so it is never recorded, never released to the engine, and the backtest and parity replay see exactly the frames they saw before. The recorded halt fact stays the one the worker computed.
+- It does not change `connected`: a closed socket is still "disconnected", and with no frame and no heartbeat for over 10 s the halt still fires.
+
+**Risk.** A heartbeat arriving while ticker trades have stopped (a quiet market) now leaves entries on, but the price ages past 2 s and R1 refuses each entry until a trade prices it again. So quiet minutes no longer halt the worker, and no entry is judged on an old price. Heartbeats come only from the same socket, so a half-open connection that stops delivering anything still goes stale (and the socket's own 30 s idle timer reconnects it).
+
+**Evidence** (`test/coinbase-liveness.test.ts`): heartbeats only for 30 s give no halt (it halts without the signal); no frames for over 10 s still halts; heartbeats after a ticker leave the one price fact unchanged and R1 refuses it as stale; heartbeats add no frame; the subscription names both channels. Hand mutants killed: heartbeat sets the price, heartbeat re-dates the price, heartbeat ignored.
