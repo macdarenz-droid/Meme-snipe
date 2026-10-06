@@ -69,14 +69,21 @@ def daily(uni, outdir):
         json.dump(d or {}, open(p, 'w'))
         time.sleep(6.5)
 
-def bars(elig, outdir):
+def bars(elig, outdir, groups='ABC'):
+    """5-minute bars for each eligible pool, only over its eligible days plus the 3-day look-back
+    and the longest holding window; pools of group A first, then B, then C."""
     os.makedirs(outdir, exist_ok=True)
-    for u in json.load(open(elig)):
+    pools = [u for u in json.load(open(elig)) if u['best'] in groups]
+    pools.sort(key=lambda u: u['best'])
+    for u in pools:
         p = os.path.join(outdir, u['pool'] + '.json')
         if os.path.exists(p):
             continue
-        rows, before = {}, WALL
-        while before > START:
+        days = sorted(int(d) for d in u['days'])
+        start = max(START, days[0] - 3 * 86400 - 3600)
+        end = min(WALL, days[-1] + 86400 + 3 * 3600)
+        rows, before = {}, end
+        while before > start:
             d = get(GT.format(u['pool'], 'minute', 5, before, 1000)) or {}
             lst = (d.get('data') or {}).get('attributes', {}).get('ohlcv_list') or []
             time.sleep(6.5)
