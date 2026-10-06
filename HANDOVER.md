@@ -255,6 +255,13 @@ Supervisor: session_01Ec4DXEAqLxM6M1WGVQG5se (same account as every worker). Hou
 Parked with no card: STATS builder 01Qy4q1, SANDBOX-TIDY 01MoXXP, DATA-STORE 018c27u, OPS-SUMMARY 01HHYJq. Data reviewer 01XAwN7: ARCHIVE-SAFE reviews, then ARCHIVE-WATCH.
 
 **Log (Melbourne time)**
+- 11:14 AM **Crash 27 on 5efb9ae0** at 11:08:51, uptime 1,809 s. **First MEM-PROBE data** (last_death.recent, 10 samples):
+  - Trigger: the 5-min save. The last sample has saving:true (heap 428, old 412, large-object 8); the death record has large-object 107, so the save allocates about 100 MB at once on top of old space. The 00:03:49 save also jumped the heap 382 → 409.
+  - Old-space baseline: about 359 MB at about 20 min uptime, growing about 10 MB/min.
+  - The loop is not behind (p95 31 ms; held about 200; fills 0), so the backlog theory is out.
+  - Linear growers: store_entries about +2,800/min (66.8k → 86.7k); logs:pump keys; create/symbol/deployer about +37/min. Bounded: feed keys and ranks, coverage 41k, seed history 40k.
+  - Builder told: A) SAVE-SPIKE first (stream or chunk the save; test pins peak extra heap); B) STORE-GROWTH (entries and bytes per key kind, then bound them).
+  - Crash-hunt so far: E1–E9, BOOT-1..5, FETCH-1..3 refuted by verify, side-save-spike (now confirmed live).
 - 11:12 AM **Harness report** (builder, 1×, day2 state, about 65 swaps/s, 110 failed tx/s, about 1 MB/s socket text). g45 on 5efb9ae0, heap after GC: 57/52/60/63/69/88 MB at 5–42 min; diff growth about 0.4–0.8 MB/min, all bounded state. glive on 5811c658: 88/108/117 MB at 10/20/30 min, 2–4× more; growth retainer LiveFeed.#keys (Set of signature strings) + #ranks (SigRanks), exactly what #239 FEED-KEYS replaced with 96-bit tags. Consistent with #239 fixing it, NOT proof: the harness still grows about 10× slower than live did. Harness gaps: no 429s, no socket drops/re-subscribes/fill re-queues, synthetic PumpPortal, pollers return 404, no MEV or long lines, low loop lag. Next if live MEM-PROBE shows growth elsewhere: inject those inputs.
 - 11:11 AM **#243 BEHIND merged → 8107eb79** (BT and facts PASS at a2f2d3e6; CI check + historical-data green 11:09; merge-tree equal). #245's DECISIONS conflict with it was resolved by the builder (c1cf0787, a pure base merge: merge-tree equal, delta from 62ffca8d = #243's 12 files exactly; both sections kept). S1 checked the same code locally: typecheck clean, 11 affected files and 251 tests pass. Persist PASS carries over. Waiting: facts on #245 and CI on c1cf0787. Then one Deploy of #243 + #245 after push CI and the release re-run on each merge commit.
 - 11:07 AM **#245 persist final PASS at 62ffca8d** (docs-only delta on code passed at 24bfc74d and 02887a07). Waiting for facts and CI.
