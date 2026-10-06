@@ -10,9 +10,12 @@
 #     a run dispatched before run-name existed, anything unexpected) counts as archive,
 #     unless its id is in HELIUS_RUNS (a manual dispatch input, digits and commas only,
 #     for Helius runs dispatched before run-name; scheduled checks never set it).
-#   - A served answer dispatches a scan only while no data-scan run at all is active or
-#     queued: one lane (data-scan's concurrency group "data-scan"), and a new dispatch
-#     must never replace a pending chained run of a Helius day.
+#   - A served answer dispatches a scan beside any Helius-only runs: data-scan runs the
+#     two sources in separate concurrency groups ("data-scan" for the archive and
+#     assembly, "data-scan-helius" for Helius), each one at a time (ARCHIVE-LANE). The
+#     archive lane itself stays single: no request while a run that may read the archive
+#     is active or queued, so a dispatch never runs beside an archive scan and never
+#     replaces a pending chained archive run.
 #   - Otherwise it makes ONE request: a range GET of 64 bytes with the scanner's own
 #     User-Agent (read from scanner/archive.go), from the runner. Never another agent,
 #     host, address, proxy or client: that would be getting around the block, which
@@ -93,10 +96,9 @@ if ! [[ "$code" == 206 && $rc == 0 && $got -le 64 ]]; then
   echo "archive-check: not served; nothing dispatched until the next check" | tee -a "$summary"
   exit 0
 fi
-if (( active > 0 )); then
-  echo "archive-check: served; nothing dispatched while $active Helius data-scan run(s) are active or queued (one lane; the next check dispatches once they end)" | tee -a "$summary"
-  exit 0
-fi
+# Helius-only runs (the $active counted above) do not block a dispatch: they run in their
+# own concurrency group (data-scan-helius), so an archive scan never waits behind one and
+# never replaces one's pending chained run (ARCHIVE-LANE).
 
 # The queue: pre-holdout days newest first, then the holdout days newest first.
 queue=()
@@ -113,6 +115,8 @@ fi
 
 batch=()
 for d in "${queue[@]}"; do
+  # A Helius day is read over RPC, never from the archive (ARCHIVE-NODUP).
+  [[ " $HELIUS_DAYS " == *" $d "* ]] && continue
   # A day with a release is published (data-scan's own check judges completeness).
   if "$gh" api "repos/$GH_REPO/releases/tags/data-day-$d" --silent >/dev/null 2>&1; then
     continue

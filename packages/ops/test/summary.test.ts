@@ -3,7 +3,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { sign, type Heartbeat } from '../src/watchdog/logic.ts';
 import { CODE_REPO, writeReports } from '../src/watchdog/reports.ts';
-import { FORBIDDEN, FORBIDDEN_KEY, SHAPE_KEYS, checkSummary, forbiddenIn, isSummary, type Summary } from '../src/watchdog/summary.ts';
+import { FORBIDDEN, FORBIDDEN_KEY, SHAPE_KEYS, SUMMARY_MAX_PROBES, SUMMARY_MAX_PROBE_COUNTS, checkSummary, forbiddenIn, isSummary, type Summary } from '../src/watchdog/summary.ts';
 import { Watchdog, type DurableState, type Env } from '../src/watchdog/worker.ts';
 
 const KEY = 'test-hmac-key-0123456789abcdef';
@@ -117,6 +117,49 @@ describe('the summary guards', () => {
     }
     expect(checkSummary(JSON.stringify(goodSummary({ worker: { ...old, restarts, exits, crash_sites } as Summary['worker'] }))).ok).toBe(true);
     expect(checkSummary(JSON.stringify(goodSummary({ worker: { ...old, note: 1 } as unknown as Summary['worker'] }))).ok).toBe(false);
+  });
+
+  it('accept the memory at the last death (MEM-SUMMARY) only beside RESTART-CAUSE\'s keys, in exactly its shape, numbers and codes only', () => {
+    const w = goodSummary().worker as Record<string, unknown>;
+    const death = {
+      at: '2026-10-04T01:59:00.000Z', uptime_s: 612, heap_used_mb: 590, heap_limit_mb: 600,
+      spaces: [{ space: 'old', used_mb: 500 }, { space: 'large-object', used_mb: 60 }],
+      sample: { at: '2026-10-04T01:58:55.000Z', heap_used_mb: 580, heap_limit_mb: 600, rss_mb: 700, external_mb: 3, array_buffers_mb: 2 },
+    };
+    const ok = (worker: Record<string, unknown>) => checkSummary(JSON.stringify(goodSummary({ worker: worker as unknown as Summary['worker'] }))).ok;
+    expect(ok({ ...w, last_death: death })).toBe(true);
+    expect(ok({ ...w, last_death: null })).toBe(true);
+    expect(ok({ ...w, last_death: { ...death, uptime_s: null, heap_used_mb: null, heap_limit_mb: null, spaces: [], sample: null } })).toBe(true);
+    // Not without RESTART-CAUSE's keys (one shape per watchdog generation).
+    const { restarts, exits, crash_sites, ...old } = w;
+    void restarts; void exits; void crash_sites;
+    expect(ok({ ...old, last_death: death })).toBe(false);
+    for (const bad of [
+      { ...death, at: 1_000 }, { ...death, at: 'yesterday' }, { ...death, uptime_s: -1 }, { ...death, heap_used_mb: 1.5 }, { ...death, heap_limit_mb: '600' },
+      { ...death, spaces: [{ space: 'Old Space', used_mb: 1 }] }, { ...death, spaces: [{ space: 'https://x.example/a', used_mb: 1 }] },
+      { ...death, spaces: [{ space: 'old', used_mb: 1, note: 'x' }] }, { ...death, spaces: Array.from({ length: 17 }, () => ({ space: 'old', used_mb: 1 })) },
+      { ...death, sample: { ...death.sample, rss_mb: undefined } }, { ...death, sample: { ...death.sample, host: 'api.helius.dev' } },
+      { ...death, sample: { ...death.sample, at: '2026-10-04' } }, { ...death, note: 'x' }, 'x', [],
+    ]) expect(ok({ ...w, last_death: bad }), JSON.stringify(bad)).toBe(false);
+    // A planted secret anywhere in it is refused by the pattern guard too.
+    expect(ok({ ...w, last_death: { ...death, spaces: [{ space: 'ghp_abcdefghijklmnopqrstuvwxyz0123456789', used_mb: 1 }] } })).toBe(false);
+  });
+
+  it('accept the memory probe samples in the last death (MEM-PROBE) in exactly their shape, counts and codes only, bounded', () => {
+    const w = goodSummary().worker as Record<string, unknown>;
+    const death = { at: '2026-10-05T19:36:33.000Z', uptime_s: 1_808, heap_used_mb: 563, heap_limit_mb: 572, spaces: [{ space: 'old', used_mb: 484 }], sample: null };
+    const row = { at: '2026-10-05T19:35:33.000Z', heap_used_mb: 527, old_mb: 450, large_object_mb: 72, saving: true, counts: [{ code: 'store_keys', count: 120_000 }, { code: 'store_k_read_accounts', count: 9 }] };
+    const ok = (last_death: unknown) => checkSummary(JSON.stringify(goodSummary({ worker: { ...w, last_death } as unknown as Summary['worker'] }))).ok;
+    expect(ok({ ...death, recent: [row] })).toBe(true);
+    expect(ok({ ...death, recent: [] })).toBe(true);
+    expect(ok({ ...death, recent: Array.from({ length: SUMMARY_MAX_PROBES }, () => row) })).toBe(true);
+    expect(ok({ ...death, recent: [{ ...row, counts: Array.from({ length: SUMMARY_MAX_PROBE_COUNTS }, (_, i) => ({ code: `c${i}`, count: i })) }] })).toBe(true);
+    for (const bad of [
+      Array.from({ length: SUMMARY_MAX_PROBES + 1 }, () => row), [{ ...row, counts: Array.from({ length: SUMMARY_MAX_PROBE_COUNTS + 1 }, (_, i) => ({ code: `c${i}`, count: i })) }],
+      [{ ...row, saving: 'yes' }], [{ ...row, old_mb: -1 }], [{ ...row, large_object_mb: 1.5 }], [{ ...row, at: 'now' }], [{ ...row, note: 'x' }],
+      [{ ...row, counts: [{ code: 'Store Keys', count: 1 }] }], [{ ...row, counts: [{ code: 'store_keys', count: 1, mint: 'x' }] }], [{ ...row, counts: [{ code: 'store_keys', count: -1 }] }],
+      [{ ...row, counts: [{ code: 'ghp_abcdefghijklmnopqrstuvwxyz0123456789', count: 1 }] }], 'x', {},
+    ]) expect(ok({ ...death, recent: bad }), JSON.stringify(bad).slice(0, 120)).toBe(false);
   });
 
   it('name each forbidden kind, and never flag a mint address or a normal summary', () => {

@@ -82,6 +82,15 @@ export class CreditBook {
   }
 }
 
+/**
+ * HELIUS-EXHAUSTED (owner, 5 Oct): the worker's own count never stops Helius; Helius's own answer does ("max usage
+ * reached", a 429 the scheduler holds and re-checks). So the worker's Helius scheduler has no monthly halt: its count
+ * runs from the UTC month and cannot see what else the account spent, so it could neither stop in time nor know the
+ * account's end. The count is still kept (credits.json) and reported.
+ */
+const { budget: _heliusMonthly, ...HELIUS_NO_HALT } = HELIUS_FREE;
+export const HELIUS_WORKER: SchedulerSpec = HELIUS_NO_HALT;
+
 export interface LiveProviderOptions {
   /**
    * Full pump and PumpSwap trade log streams with rug coverage (`coverage:rugs:*`). Off on the free plans (about 14M
@@ -104,6 +113,8 @@ export const TRADES_FILL_CREDITS = 500;
 
 /** STEP-B: in-run fills that may read at once; more wait their turn (oldest first), so a boot's catch-up stays flat. */
 export const TRADES_FILLS_IN_FLIGHT = 2;
+/** MEM-PROBE: trade fills reading now and waiting for a slot, over every fill limiter in this process (counts only). */
+export const FILLS = { active: 0, waiting: 0 };
 
 /**
  * S0-ZERO: FILL-2's in-run fill for the pool watches (a candidate's catch-up from its migration, any reconnect gap).
@@ -125,8 +136,13 @@ export const tradesFill = (o: {
   let active = 0;
   const waiting: (() => void)[] = [];
   return async (gap: Parameters<ReturnType<typeof ingestingFill>>[0]): Promise<boolean> => {
-    if (active >= (o.inFlight ?? TRADES_FILLS_IN_FLIGHT)) await new Promise<void>((go) => waiting.push(go));
+    if (active >= (o.inFlight ?? TRADES_FILLS_IN_FLIGHT)) {
+      FILLS.waiting++;
+      await new Promise<void>((go) => waiting.push(go));
+      FILLS.waiting--;
+    }
     active++;
+    FILLS.active++;
     try {
       const cap = Math.min(TRADES_FILL_CREDITS, o.budget.remaining(o.timers.now()));
       if (cap > 0) o.budget.spend(cap, o.timers.now());
@@ -149,6 +165,7 @@ export const tradesFill = (o: {
       return ok;
     } finally {
       active--;
+      FILLS.active--;
       waiting.shift()?.();
     }
   };
@@ -240,7 +257,7 @@ export class LiveProviders {
   #feed: SourcesContext['feed'] | null = null;
 
   constructor(o: LiveProviderOptions) {
-    this.helius = o.credits.scheduler(HELIUS_FREE);
+    this.helius = o.credits.scheduler(HELIUS_WORKER);
     this.alchemy = o.credits.scheduler(ALCHEMY_FREE);
     this.jupiter = o.credits.scheduler(JUPITER_FREE);
     this.rugcheck = o.credits.scheduler(RUGCHECK_FREE);
@@ -265,7 +282,8 @@ export class LiveProviders {
       const cls = st.creditsByClass.map((c) => Math.ceil(c)) as [number, number, number, number];
       return {
         provider: st.provider, credits_used: cls[0] + cls[1] + cls[2] + cls[3], credits_by_class: cls,
-        monthly_credits: s.spec.budget?.monthlyCredits ?? null, granted: st.granted, shed: st.shed, halted: st.halted,
+        // The plan's published credits, as the run contract checks them (Helius's too, though its scheduler has no halt).
+        monthly_credits: (s === this.helius ? HELIUS_FREE.budget : s.spec.budget)?.monthlyCredits ?? null, granted: st.granted, shed: st.shed, halted: st.halted,
       };
     });
     return { quota, lookups: { counts: [...this.#lookups] } };
