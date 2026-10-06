@@ -323,8 +323,10 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
   while (Date.now() < endAt || (Date.now() < o.segmentEnd && finishingRestart())) {
     const t = Date.now();
     const h = await fetchHealth(o.healthAddr);
-    if (Date.now() >= o.segmentEnd || (Date.now() >= endAt && !finishingRestart())) break;
-    const s = toSample(t, h);
+    const sampledAt = Date.now();
+    if (sampledAt >= o.segmentEnd || (sampledAt >= endAt && !finishingRestart())) break;
+    // Availability is observed when the reply arrives, never backdated to a request made before the cutoff.
+    const s = toSample(sampledAt, h);
     if (h) noteBoot(h);
     appendFileSync(P.samples, `${JSON.stringify(s)}\n`);
     last = s;
@@ -750,14 +752,18 @@ export const runSegment = async (o: SegmentOptions): Promise<SegmentResult> => {
       const jr = checkJournalLines(existsSync(journalPath) ? fileLines(journalPath) : [], { allowTornTail: true });
       const samples = readLines<Sample>(P.samples);
       const journal = readLines<JournalLine>(journalPath);
-      const i4 = item4(journal, m.label, samples.some((s) => s.up && s.stub));
+      // Recovery may finish later, but it cannot extend the registered observation window or dilute credit use.
+      // All charged credits, raw evidence and recovery faults remain; only positive time credit stops at runEnd.
+      const scoredEnd = Math.min(seg.end, m.startedAt + m.targetMs);
+      const windowJournal = journal.filter((l) => Date.parse(l.ts) >= m.startedAt && Date.parse(l.ts) < scoredEnd);
+      const i4 = item4(journal, m.label, samples.some((s) => s.up && s.stub), { start: m.startedAt, end: scoredEnd });
       const ops = {
-        quota: quotaReport(Object.values(boots), seg.end - m.startedAt),
+        quota: quotaReport(Object.values(boots), scoredEnd - m.startedAt),
         lookups: lookupLatency(Object.values(boots)),
-        coverage: coverageGaps(journal, seg.end),
-        rejections: rejections(journal),
+        coverage: coverageGaps(journal, scoredEnd, m.startedAt),
+        rejections: rejections(windowJournal),
       };
-      report = buildReport(m, samples, sampleMs, seg.end, jr, withChainMoves(outcomes, journal), manifest, i4, ops);
+      report = buildReport(m, samples, sampleMs, scoredEnd, jr, withChainMoves(outcomes, journal), manifest, i4, ops);
       if (aborted) report = { ...report, pass: false, checks: { ...report.checks, not_aborted: false } };
       writeFileSync(join(ev, 'report.json'), JSON.stringify(report, null, 2));
       writeFileSync(join(ev, 'REPORT.md'), reportMarkdown(report));

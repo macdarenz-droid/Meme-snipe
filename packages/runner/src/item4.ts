@@ -138,20 +138,30 @@ export const simulationLatency = (journal: readonly JournalLine[]): Item4['laten
   return { timed, median_ms: lowerMedian(ms), median_slots: lowerMedian(slots), held_landing: held, expired_by_simulation: expired };
 };
 
-export const item4 = (journal: readonly JournalLine[], label: Label, stub: boolean): Item4 => {
-  // Every simulation line is scored: a bad line counts as a failed trade, so it can never leave the denominator.
-  const records = journal.filter((l) => l.kind === 'simulation').map(toRecord);
+export const item4 = (journal: readonly JournalLine[], label: Label, stub: boolean, window?: { readonly start: number; readonly end: number }): Item4 => {
+  // Within the observation window every simulation is scored, including every malformed or failed trade.
+  const simulations = journal.filter((l) => l.kind === 'simulation');
+  const inside = (l: JournalLine): boolean => window === undefined || (Date.parse(l.ts) >= window.start && Date.parse(l.ts) < window.end);
+  const records = simulations.filter(inside).map(toRecord);
   const r = dryRunReport(records);
+  // Late successes provide no qualifying credit. A late failure or bad amount still blocks its bound, without
+  // letting other late successes dilute it. The raw journal and latency evidence remain complete.
+  const tail = window === undefined ? [] : simulations.filter((l) => !inside(l) && !(Date.parse(l.ts) < window.start)).map((l) => dryRunReport([toRecord(l)]));
+  const successPass = r.successPass && tail.every((t) => t.successPass);
+  const medianPass = r.medianPass && tail.every((t) => t.medianPass);
+  const eachPass = r.eachPass && tail.every((t) => t.eachPass);
+  const pass = successPass && medianPass && eachPass;
   const counts = label === 'vps' && !stub;
   return {
     counts,
-    note: counts
+    note: (counts
       ? 'VPS run with the real worker: item 4 is judged from these numbers.'
-      : `${label === 'rehearsal' ? 'Rehearsal' : 'Stub worker'}: does not count for item 4.`,
+      : `${label === 'rehearsal' ? 'Rehearsal' : 'Stub worker'}: does not count for item 4.`)
+      + (tail.some((t) => !t.pass) ? ' Recovery-tail simulation faults block their bounds; late successes earn no credit.' : ''),
     bounds: {
-      success: { pass: r.successPass, percent: Math.round(r.successPercent * 100) / 100, min_percent: DRYRUN_GATE.minSuccessPercent },
-      median: { pass: r.medianPass, points: r.medianErrorPoints, max_points: DRYRUN_GATE.maxMedianE4 / E4_PER_POINT },
-      each: { pass: r.eachPass, max_seen_points: r.maxErrorPoints, max_points: DRYRUN_GATE.maxEachE4 / E4_PER_POINT },
+      success: { pass: successPass, percent: Math.round(r.successPercent * 100) / 100, min_percent: DRYRUN_GATE.minSuccessPercent },
+      median: { pass: medianPass, points: r.medianErrorPoints, max_points: DRYRUN_GATE.maxMedianE4 / E4_PER_POINT },
+      each: { pass: eachPass, max_seen_points: r.maxErrorPoints, max_points: DRYRUN_GATE.maxEachE4 / E4_PER_POINT },
     },
     trades: r.trades,
     successes: r.successes,
@@ -161,7 +171,7 @@ export const item4 = (journal: readonly JournalLine[], label: Label, stub: boole
     median_quote_age_slots: r.medianQuoteAgeSlots,
     worst: r.worst,
     latency: simulationLatency(journal),
-    bounds_pass: r.pass,
-    pass: counts && r.pass,
+    bounds_pass: pass,
+    pass: counts && pass,
   };
 };
