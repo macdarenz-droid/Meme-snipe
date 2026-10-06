@@ -54,7 +54,7 @@ async function startMock(api: DashboardApi = fixtureApi()): Promise<Mock> {
   const requests: Mock['requests'] = [];
   const server = createServer((req, res) => {
     requests.push({ method: req.method ?? '', url: req.url ?? '', headers: req.headers });
-    const route = req.method === 'GET' ? routes.get(req.url ?? '') : undefined;
+    const route = req.method === 'GET' ? routes.get(new URL(req.url ?? '', 'http://localhost').pathname) : undefined;
     if (!route) {
       res.writeHead(404).end();
       return;
@@ -173,6 +173,7 @@ describe('contract mock server', () => {
     expect(mock.requests).toHaveLength(8);
     for (const r of mock.requests) {
       expect(r.method).toBe('GET');
+      expect(new URL(r.url, 'http://localhost').searchParams.get('money')).toBe('lamports');
       expect(r.headers.authorization).toBeUndefined();
       expect(r.headers.cookie).toBeUndefined();
     }
@@ -267,7 +268,7 @@ describe('contract mock server', () => {
     store.setServer(ORIGIN);
     const fixtures = fixtureApi();
     const get = async (url: string) =>
-      url.endsWith(PATHS.stats('paper')) ? { status: 200, body: JSON.stringify(await fixtures.stats('live')) } : { status: 200, body: JSON.stringify(await fixtures.trades('paper')) };
+      new URL(url).pathname === PATHS.stats('paper') ? { status: 200, body: JSON.stringify(await fixtures.stats('live')) } : { status: 200, body: JSON.stringify(await fixtures.trades('paper')) };
     let t = Date.parse('2026-10-03T03:00:00Z');
     const api = httpApi(ORIGIN, get, store, () => t);
     const states: string[] = [];

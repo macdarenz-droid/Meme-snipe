@@ -42,7 +42,7 @@ export function httpApi(origin: string, get: Getter = defaultGetter, reach?: Rea
   async function call<T>(path: string, mode: Mode, check: Check, endpoint: string = path): Promise<Envelope<T>> {
     let res: Got;
     try {
-      res = await get(base + path);
+      res = await get(base + path + (path === PATHS.backtestReport() ? '' : '?money=lamports'));
     } catch {
       reach?.reportOffline(origin);
       throw new OfflineError('worker not reachable');

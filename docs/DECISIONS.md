@@ -883,7 +883,7 @@ Supervisor rulings, late evening:
   - The 5 SOL sustained-reserve candidate keeps 11 of 33 collapse labels, against 19 by exit cost.
   - Deployer first sales of 2% or more were followed by a collapse in 16 of 17 launches; first sales under 0.5% in 8 of 9.
   - rugs-1 missed none by design in this sample: 1 launch had a transfer-then-sell and 9 a creation-slot bundle dump, but all were labelled by another rule.
-  
+
   The sample is small and drawn from a single hour, so it only shows that the tool works and where the questions are (micro peaks dominate the collapse-only labels). The value is chosen on practice days.
 - **2026-10-04 · RUG-1c: an on-demand check of the candidate's deployer** (`packages/core/src/gates/deployer-check.ts`, `packages/worker/src/providers/deployer-check.ts`, config `rug-check-1`). The free live plan cannot watch every trade, and the backtest day files hold sampled tapes, so neither gives stream coverage of the rug half for every prior mint. At decision time the worker takes the deployer index's mints by the candidate's creator inside the look-back (the candidate excepted) and, for each, newest launch first: pages the mint's signatures at confirmed back past its launch, then reads its successful transactions oldest first, strictly before the as-of slot (a fetched transaction's place inside a slot is not known, so the decision's own slot is never read) and up to the end of its rugs-1 windows, decodes them with DEC-1 and FEED-1's canonical events, and judges them with the same labeller, stopping at the first label. Each mint ends `rug`, `clear` (windows ended before the as-of time), `open` (a prior mint under 24 h old: judged on what exists so far, and again at the next check), `unfetched` (credit cap, an RPC failure, or a history without the create) or `unjudged` (no supply). The worker releases a `rug:<mint>` label per rug and one `coverage:rugs:deployer:<creator>` fact (as-of slot as `obs.slot`, confirmed).
 - **2026-10-04 · H14 with a deployer check.** When the `coverage:rugs` stream does not cover the look-back, H14 reads the deployer's check and accepts it only if it is for this creator, lists mints from at or before the look-back start, is at most `maxLagSlots` behind the decision (and not after it), and lists every prior mint the index knows from `rugCheckFromMs` on as `rug`, `clear` or `open`. That is the look-back start less the longest rug window (1 day): a mint launched just before the look-back can still be labelled inside it, and the stream path would count that label, so the check reads those mints too. Every signatures page is asked with `minContextSlot` = the as-of slot less one, so a node that has not seen that far fails the read and the mint is `unfetched`; it is never judged on a shorter history. Known limit: a check is accepted up to 300 slots (about 2 minutes) behind the decision, so a dump in that last stretch is not seen on the check path. The next check, at the next decision, sees it. Anything else, including no check, is H16 `not-covered` (neededBy H14). Rugs found by the check count as prior rugs, with the index's labels. This is also the closer for a restart (PERSIST-1): the open restart gap in `coverage:rugs` keeps the stream uncovered for the look-back, so each candidate's deployer is checked on demand. The check gives coverage for that deployer's mints only, never the stream, and a deployer it cannot fully check stays not covered.
@@ -1912,7 +1912,7 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - FILL-2 on real mainnet transactions: complete when the history ends at this pool's creation; incomplete when it ends at a swap or another pool's;
   - H11 on the live path with the real migration and swaps: rejects while the catch-up is open, passes after the resume, rejects on a lossy catch-up and on coverage from the first live slot; a reconnect gap after the catch-up passes again once filled in full and keeps rejecting when the fill was lossy.
 - **2026-10-05 · Restart gaps (supervisor ruling: S0-ZERO owns the wiring).** A pool's trade coverage is held in memory and is not saved across a restart, so there is no saved restart gap on a pool to fill. Once candidates are restored at a restart (card RESTART-KEEP), each restored candidate's pool gets `coverFrom` at its migration and goes through this same catch-up fill. That fill can be hours of trades, so it may hit `TRADES_FILL_CREDITS` and stay lossy; RESTART-KEEP sizes that cap from the measured `trades_fill` lines. Open positions do not need trades from before a restart: EXIT-1's flow starts again after a restart, as recorded under WORKER-1e.
-  
+
   16 hand mutants, all caught. Among them: resume on a partial fill; coverage opened at the first live slot; no hold; no release after the fill; overflow not lossy; any history end complete; `after` dropped in the fill or the stream; no `fromSlot` from the strategy or the pool watch; held pools given `coverFrom`; no budget booking; budget ignored in the cap; `after` ignored by the feed.
 
 ## Open trade as a live trade (APP-TRADE, `run/api.ts` `openPnl`, `lib/money.ts` `returnHundredths`, `dashboard/Sections.tsx` `OpenPosition`)
@@ -2828,3 +2828,39 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   8 MB. Hand mutants killed: every failing entry kept, the latest received dropped, the earliest dropped, the latest
   in order dropped, nothing kept of the `false` class, the two kinds merged into one class (P5), the answer by order
   across kinds.
+
+## Money in SOL first (APP-SOL, owner 2026-10-05: success is counted in SOL; `components/Money.tsx`, `lib/money.ts` `formatSol`)
+- **2026-10-05 · The worker serves lamports beside every dollar figure.** Exact integer strings from the lamports it already holds:
+  - Trades: size (what the entry swapped in), net (the paper account's `tradeSol`, including late settlements), gross (net plus costs), each cost kind, the fills.
+  - The open trade: size, liquidation value, Unrealized, Costs so far and P&L (`openPnl`, so P&L = Unrealized − Costs so far holds in lamports too).
+  - Stats net, drawdown and mean; the charts' cumulative, daily and costs; the calendar's day net.
+  - The risk meters: open exposure in lamports. The daily-loss used and limit are the policy's dollars converted at the current SOL price (used up, limit down), until SOL-BOOKS gives core's own SOL limits.
+  - `status.solPriceUsd`: the current SOL price.
+  - The dollar fields stay. The app's schema takes every lamport field as `optional()`, so a worker without them still loads and shows dollars as before. APP-SOL additions are served only with `?money=lamports`, which the new app requests. Default v1 responses keep the integration-base contract, including APP-MONEY fields and enums.
+- **2026-10-05 · Review B1/N1.**
+  - The interim daily-loss meter's rounding is pinned at a SOL price that does not divide the dollar figures ($150.000001): used is rounded up, the limit down.
+  - Whenever the dollars say the limit is reached, so does SOL.
+  - A trade whose lamport net is unknown fails closed. The SOL totals it belongs to (stats, a calendar day, the charts from it on, the trade's own net and gross) are not served, and the app shows their dollars. It never counts as 0 SOL.
+  - Mutants caught: the limit rounded up, used rounded down, an unknown net summed as 0, stats served regardless, a trade's net as 0.
+- **2026-10-05 · The app shows SOL first.**
+  - "+0.0123 SOL": four decimals, rounded half away from zero. Under 0.0001 SOL it keeps four significant digits ("0.000005 SOL"), so a fee never reads 0.0000. Exact from the integer.
+  - The dollars sit in a small line under it at the current SOL price, never toned, never the headline. Without a price there is no dollar line.
+  - Colour follows the SOL sign.
+  - It covers the open trade, the trades list and detail (with every cost and fill), Results, the risk meters, the Daily P&L calendar (cells, day sheet, month net), and the Net P&L, daily and costs charts.
+  - A chart or calendar uses SOL only when every point carries lamports; else dollars.
+  - The backtest report stays in dollars (its figures are dollar-native).
+- **2026-10-05 · Return is on SOL.** It is net lamports ÷ entry lamports, exact (`returnLamports`, the same rounding as the dollar return). A trade that lost SOL reads as a loss even if the dollars rose.
+- **2026-10-05 · Evidence.**
+  - `apps/web/test/app-sol.test.ts` and `packages/worker/test/app-sol-api.test.ts`: 8 tests, 7 failing before. The eighth pins the older-worker dollar fallback.
+  - The real worker's lamports match their sources: trade net, entry swaps, gross = net + costs, stats, charts and calendar sums, `openPnl`, open exposure, the SOL price.
+  - Hand mutants, all caught (15):
+    - Return on dollars (open trade, trades);
+    - small amounts at four decimals; SOL truncated;
+    - dollars first; the dollar line at the wrong scale;
+    - meters, charts or calendar in dollars despite lamports;
+    - the worker's net, size, stats or calendar from the wrong source; gross without costs; no SOL price.
+
+- **2026-10-06 · Integration delta.** APP-MONEY remains the dollar source: partial sales, close remainders, late settlements and wallet setup/failed-entry costs stay at their own times. SOL totals follow those same events, with exact rented amounts and attempt costs from shared paper settlement. `netSol`, `tradingUsd` and `solMoveUsd` are preserved. An unvalued movement absent from the dollar timeline invalidates the whole affected calendar month and daily/cumulative SOL chart aggregates, even when that day has no dollar row; an empty calendar cannot establish a known zero SOL sum; a trade's known lamports remain available.
+  - Default and unknown capabilities pass the strict response schema frozen at base `efa3b006`; the opt-in route passes the new schema, and the HTTP dispatch retains its query. Existing default enums are unchanged.
+  - The owner's installed APK commit has not been confirmed; this verifies the integration-base contract, not a guessed device version. A new APK is required to show SOL first. Risk limits remain dollar policy values converted conservatively until SOL-BOOKS.
+  - Delta regressions cover capability/default compatibility, partial/late/account-cost sums, unvalued late settlement failure, HTTP query forwarding, exact paid/returned rent and the owned entry size of a late-fill position (so its Return has the correct denominator).
