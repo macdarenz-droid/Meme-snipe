@@ -99,7 +99,8 @@ describe('rebuildFunnel', () => {
     appendFileSync(p, '{"seq":4,"ts":"2026-10-04T02:00:00.000Z","boot":"b","kind":"decision","reasons":["reject","U2","B"');
     const v = rebuildFunnel(p, NOW);
     expect([...v.funnel.stage.keys()]).toEqual(['A']);
-    expect(v.rows.map((r) => [r.mint, r.outcome, r.check])).toEqual([['A', 'rejected', 'H12']]);
+    // COMPLETION-READ: a step held up by a missing input ("H12: H16 missing holders") is filed under H16.
+    expect(v.rows.map((r) => [r.mint, r.outcome, r.check])).toEqual([['A', 'rejected', 'H16']]);
   });
 
   it('a trade with partial fills is entered once; lines after the start moment are not read', () => {

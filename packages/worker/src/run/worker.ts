@@ -66,8 +66,11 @@ import type { CreateLookup } from './sources.ts';
 export { PERSIST_FILE } from '../persist/index.ts';
 /** RESTART-KEEP: the downtime migrations' credit cap. */
 export const DOWNTIME_CREDIT_CAP = 3_000;
-/** RESTART-KEEP: transactions read before a migration to find its curve's completion. */
-const COMPLETION_READS = 5;
+/** RESTART-KEEP, COMPLETION-READ: transactions read before a migration to find its curve's completion. */
+export const COMPLETION_READS = 5;
+/** COMPLETION-READ: the credits one completion read reserves: 1 signatures page and up to COMPLETION_READS transactions. */
+export const COMPLETION_CREDITS = callCost('helius', 'getSignaturesForAddress') + COMPLETION_READS * callCost('helius', 'getTransaction');
+const MIGRATION_TX_PREFIX = 'pump:CompletePumpAmmMigrationEvent:';
 export const PERSIST_EVERY_MS = 5 * 60_000;
 /** SAVE-ASOF: a save whose largest clamp (`AsOfClamp`) is over this is logged: a skew of seconds is normal, more is a bug. */
 export const CLAMP_LOG_MS = 10_000;
@@ -113,6 +116,11 @@ export interface SourcesContext {
   readonly timers: Timers;
   /** The pools to watch for swaps: candidates' and open positions' (the strategy's `watchedPools`). */
   readonly pools: () => ReadonlyMap<string, { readonly mint: string; readonly held: boolean; readonly fromSlot?: bigint }>;
+  /**
+   * COINBASE-LIVENESS: a frame-free sign of life for the feeds that deliver `source`, at `atMs`. It moves only the
+   * feed's age for the stale halt; it puts nothing on the Feed, so nothing is recorded, replayed or priced from it.
+   */
+  readonly alive?: (source: string, atMs: number) => void;
   /** Writes a journal line (S0-ZERO: each in-run fill of a pool's trade gap, `trades_fill`). */
   readonly journal?: (kind: 'trades_fill', fields: Readonly<Record<string, unknown>>) => void;
 }
@@ -149,8 +157,10 @@ export interface WorkerDeps {
    */
   readonly fetchTx: (signature: string, why: 'create' | 'cut-log' | 'restore') => Promise<boolean>;
   /**
-   * RESTART-KEEP: signature reads on SEED-1's RPC, charged to the fill budget: the migrations of a restart's downtime.
-   * Without it they are not read: coins that migrated while the worker was down are not candidates.
+   * RESTART-KEEP: signature reads on SEED-1's RPC, charged to the fill budget: the migrations of a restart's downtime,
+   * and (COMPLETION-READ) each fetched migration's curve completion. Without it they are not read: coins that migrated
+   * while the worker was down are not candidates, and a migration whose completion is in its own transaction never forms
+   * its migration fact.
    */
   readonly restartReads?: { readonly rpc: SeedRpc; readonly budget: { remaining(nowMs: number): number; spend(credits: number, nowMs: number): void; refund(credits: number, nowMs: number): void } };
   /** Test seam: the pack of the recording's saved-state copy (persist's `packFile` unless a test holds it open). */
@@ -1003,6 +1013,10 @@ export class Worker {
     return h;
   }
 
+  readonly #alive = (source: string, atMs: number): void => {
+    for (const s of this.#feeds.values()) if (s.src.sources.includes(source) && (s.last === null || atMs > s.last)) s.last = atMs;
+  };
+
   #onFrame(f: Frame): void {
     this.#record((r) => r.frame(f));
     this.#probe?.frame(f);
@@ -1074,6 +1088,7 @@ export class Worker {
     }
     if (m.key.startsWith('logs:pump:CreateEvent:') && isObj(m.value) && typeof m.value['signature'] === 'string') this.#noteCreateSig(m.key.slice('logs:pump:CreateEvent:'.length), m.value['signature']);
     this.#noteSignature(m);
+    this.#completionFor(m);
   }
 
   #noteCreateSig(mint: string, signature: string): void {
@@ -1107,8 +1122,8 @@ export class Worker {
    * RESTART-KEEP: the migrations of the downtime, from the migration authority's signatures after the saved slot up
    * to the head seen now (the live watch, started before, covers the rest; the feed drops what both read). Each
    * transaction goes on the feed at confirmed, as the live watch's fetch would put it, so the producer and the strategy
-   * find those candidates as they would live. A curve completion in its own transaction is read from the curve.
-   * Charged to the fill budget; a partial read is logged and the coins it missed are not candidates.
+   * find those candidates as they would live; a curve completion in its own transaction is read from the curve when the
+   * migration is released (COMPLETION-READ, #completionFor), as live. Charged to the fill budget; a partial read is logged and the coins it missed are not candidates.
    */
   async #downtimeMigrations(): Promise<void> {
     const rr = this.#d.restartReads;
@@ -1133,12 +1148,46 @@ export class Worker {
         const evs = transactionEvents(record);
         const m = evs.find((e) => e.name === 'CompletePumpAmmMigrationEvent');
         if (m === undefined) continue;
+        // Its curve completion is read when the migration is released (#completionFor), as for a live one.
         migrations++;
-        if (!evs.some((e) => e.name === 'CompleteEvent') && 'bondingCurve' in m.data) used += await this.#readCompletion(rr, String(m.data.bondingCurve), record.signature, cap - used);
       }
       this.#d.log(`Downtime migrations: ${migrations} from slot ${from + 1n} to ${until}, ${used} credits, ${res.stoppedBy}${res.gaps.length > 0 ? `, ${res.gaps.length} unread` : ''}.`);
     } finally {
       rr.budget.refund(Math.max(0, cap - used), this.#d.timers.now());
+    }
+  }
+
+  /**
+   * COMPLETION-READ: a fetched migration (a confirmed `pump:CompletePumpAmmMigrationEvent`, live, after a reconnect, a
+   * restore or a downtime read) whose curve completion was not seen. On mainnet the migration transaction carries no
+   * CompleteEvent: it is in the completing buy, its own transaction a few slots before, and without it the migration
+   * fact never forms (H7 waits on H16 forever). So the curve's signatures before the migration are read once
+   * (#readCompletion) and the completion goes on the feed at confirmed, as a fetched transaction. Charged to the fill
+   * budget at P2. No budget, no reads configured or a failed read leaves the fact missing (H16), never invented. Once
+   * per migration transaction: the fetcher and the feed drop a repeat, and nothing is kept per mint.
+   */
+  #completionFor(m: MarketEvent): void {
+    if (!m.key.startsWith(MIGRATION_TX_PREFIX)) return;
+    const tx = /^ev:([^:]+):/.exec(m.id);
+    const ev = isObj(m.value) && isObj(m.value['event']) ? m.value['event'] : null;
+    const curve = ev !== null && isObj(ev['data']) ? ev['data']['bondingCurve'] : undefined;
+    if (tx === null || typeof curve !== 'string') return;
+    void this.#liveCompletion(m.key.slice(MIGRATION_TX_PREFIX.length), curve, tx[1]!).catch((e: unknown) => this.#d.log(`Curve completion of ${curve} not read: ${e instanceof Error ? e.message : 'error'}.`));
+  }
+
+  async #liveCompletion(mint: string, curve: string, migration: string): Promise<void> {
+    // A CompleteEvent in the migration's own transaction (the older layout) is released with it, before this runs.
+    await Promise.resolve();
+    const rr = this.#d.restartReads;
+    if (rr === undefined || this.#stopping || this.#completeSig.has(mint)) return;
+    const now = this.#d.timers.now();
+    if (rr.budget.remaining(now) < COMPLETION_CREDITS) return this.#d.log(`Curve completion of ${mint} not read: the fill budget is spent; H7 waits for it.`);
+    rr.budget.spend(COMPLETION_CREDITS, now);
+    let used = 0;
+    try {
+      used = await this.#readCompletion(rr, curve, migration, COMPLETION_CREDITS);
+    } finally {
+      rr.budget.refund(Math.max(0, COMPLETION_CREDITS - used), this.#d.timers.now());
     }
   }
 
@@ -1658,7 +1707,7 @@ export class Worker {
     // Entries wait for the seed; this halt is released ahead of every live event, so the index waits with them.
     this.#seeding = true;
     this.#checkHalt(d.timers.now());
-    this.#sources = d.sources({ feed: this.#feed, timers: d.timers, pools: () => this.#strategy.watchedPools(), journal: (kind, fields) => this.#journal.write(kind, fields) });
+    this.#sources = d.sources({ feed: this.#feed, timers: d.timers, alive: this.#alive, pools: () => this.#strategy.watchedPools(), journal: (kind, fields) => this.#journal.write(kind, fields) });
     for (const s of this.#sources) this.#feeds.set(s.name, { src: s, connected: false, last: null, droppedUntil: 0 });
     try {
       this.#server = await startHealthServer(d.config.health.host, d.config.health.port, {
@@ -1755,7 +1804,7 @@ export class Worker {
     // disk time would delay them, by however long the disk takes). A stop waits for it before the recorder closes.
     this.#packing = this.#packCopy();
     this.#journalRecovered();
-    this.#sources = d.sources({ feed: this.#feed, timers: d.timers, pools: () => new Map() });
+    this.#sources = d.sources({ feed: this.#feed, timers: d.timers, alive: this.#alive, pools: () => new Map() });
     for (const s of this.#sources) this.#feeds.set(s.name, { src: s, connected: false, last: null, droppedUntil: 0 });
     try {
       this.#server = await startHealthServer(d.config.health.host, d.config.health.port, { health: () => this.health(), drill: null });
