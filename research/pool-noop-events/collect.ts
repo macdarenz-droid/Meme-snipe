@@ -10,7 +10,7 @@
 //   node research/pool-noop-events/collect.ts report                writes data/report.json and prints the counts
 //
 // Only Node built-ins and packages/core. SOLANA_RPC is read from the environment and defaults to the public endpoint.
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PUMP_AMM_PROGRAM, recordFromRpc, transactionEvents, type LocatedEvent } from '../../packages/core/src/chain/index.ts';
@@ -128,8 +128,15 @@ const tapes = async (perDisc: number) => {
 const extendsOf = async (want: number, maxPages: number) => {
   const found = readJson<Occurrence[]>('occurrences.json', []);
   const tried = readJson<Record<string, string>>('extend-tried.json', {});
+  // Every pool swapped in any cached transaction.
   const pools = new Set<string>();
-  for (const o of found) for (const p of o.pools) pools.add(p);
+  for (const f of readdirSync(TX_DIR)) {
+    const sig = f.slice(0, -'.json'.length);
+    try {
+      for (const e of events(sig, JSON.parse(readFileSync(join(TX_DIR, f), 'utf8')))) if (isSwap(e)) pools.add(e.data.pool as string);
+    } catch { /* undecodable */ }
+  }
+  console.log(`${pools.size} pools`);
   const lamportsOf = (tx: any, pool: string): { pre: number; post: number } | null => {
     const msgKeys: string[] = tx.transaction?.message?.accountKeys?.map((k: any) => (typeof k === 'string' ? k : k.pubkey)) ?? [];
     const keys = [...msgKeys, ...(tx.meta?.loadedAddresses?.writable ?? []), ...(tx.meta?.loadedAddresses?.readonly ?? [])];
@@ -140,7 +147,7 @@ const extendsOf = async (want: number, maxPages: number) => {
   let n = found.filter((o) => o.disc === '6161d7905d92167c').length;
   for (const pool of pools) {
     if (n >= want) break;
-    if (tried[pool] !== undefined) continue;
+    if (tried[pool] !== undefined && tried[pool] !== 'too long or empty') continue;
     const sigs: string[] = [];
     let before: string | undefined;
     for (let p = 0; p < maxPages; p++) {
