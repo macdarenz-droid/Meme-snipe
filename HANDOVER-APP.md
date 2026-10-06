@@ -141,6 +141,8 @@ S2-READY 6af4e43b707960316d8cd8419cb2e513fa9f4b60
 
 ## S2 events (newest first)
 
+- **2026-10-06 15:01:13 AEDT** — Original860 isolated CREATE diagnosis completed14:59:46 AEDT:1selectedPASS/8unrun,exit0,case22.648s within unchanged30s,5252Bfull/1639Bcompact and unchanged3000+3000samples/caps; frozenhead/statusclean. Confirms the full-run fourth failure is scheduling/runtime timing, not a measured byte-cap breach. Root activated official checksum-verified Node22.23.3 outsidecheckout and is running one CI-runtime-matched frozeninstall+same selectedCREATE diagnosis before finalcorrected-headfull; no source/test/workflow/concurrency/timeout changes for timing.
+
 - **2026-10-06 14:59:53 AEDT** — Corrected a handoff-only timestamp typo in the preceding fixture-validation event: actual completion14:59:00 AEDT (03:59UTC), not15:59UTC. Raw immutable validation metadata retains the correct time, results34/34PASS and original unchanged bounds. No source/test changes.
 
 - **2026-10-06 14:59:27 AEDT** — Corrected fixture-tree Node24 validation completed14:59:00 AEDT (03:59:00 UTC): frozen offline installPASS (151reused/0downloads), runner typecheckPASS, complete ci1+runner+nativeparity34/34PASS across3files,0skips,exit0,14:56:02→14:59:00 (2m58s). Actual-entry/no-entry/second-trade/unclean-stop controls plus allcausesfresh+150msstale and original recovery/segment/target bounds passed. These ran on the prepared own working tree, not yet committed; finalhead full validation and independent reviews remain. One original860 CREATE timeout diagnosis runs next, unchanged30s/3000samples/2048Bcap. OfficialNode22.23.3 archive SHA256 verified, activation awaits CPUrelease; no push/merge/deploy.
