@@ -6,7 +6,7 @@ From here on, S2 owns this file. S2 keeps it current on its own branch `claude/s
 
 ## Active S2 work
 
-S2 continues assigned queue. Disk246616 is S2-READY with five PASS, local fullcheck and exactheadCIgreen; S1 latest-baseupdate/CI and reserve-data acceptance before landing. FUNNEL237aac full local check active, two PASS and CIgreen. RISK247 design-only owner contract choice pending;500-only operative, no code. Helius21 focused build/mutants active; FILL-THROW221 test-only refresh active. S1 alone merges/deploys.
+S2 continues assigned APP/stability queue; S1-only pause does not apply. DISK246 merged by S1 as958294a0; Deploy/live survival belongs to S1. FUNNEL237aac S2-READY published with two PASS, local5577PASS and exactCIgreen; S1 final base/CI before237→210 and appbatch. FILL221 full localcheck ownsCPUslot since12:01; RUN193 original loaded proof16/16PASS, codePASS98487 awaitingpublication/full/CI. N2b88 andRecorder1870230 fresh independentPASS published, CIpending/localfullqueued; SEC3e70 andTx207eaa exactCIgreen/fullqueued. Helius thirdcorrection inprogress after genuine BT/persistH9 blockers; only create-expiry cutting +journalC remains provisional. OPS149 corrects backup/restore blockers while three remaining wholecandidate areas audit. RISK247 design-only ownercontractchoice pending;500-only operative/no code. S1 alone merges/deploys; actualinstalledAPK SHA unverified.
 
 ## Latest handoff audit
 
@@ -15,7 +15,7 @@ Checked **2026-10-06 10:09:09 AEDT**, against S1 docs `343ee20b563888ed54c8befc1
 | App task | Current head | Verified status |
 |---|---|---|
 | APP-TRUTH #216 | `dfc48711c607b71904d19a74b7a3259bccd9b47f` | S1 merged as `e34bce34449dcaa2333baab9212d2a9399815350`; check and historical-data green. Do not rebuild. |
-| FUNNEL-TRUTH #237 | `aac10e38dffa65134be390233bd173be5f9b880c` | Refreshed to base `5efb9ae0`; APP/API and facts independent PASS, identified expiry truth fix covered. CI37390690060 running; local full-check slot pending. Not S2-READY yet. |
+| FUNNEL-TRUTH #237 | `aac10e38dffa65134be390233bd173be5f9b880c` | Refreshed to base `5efb9ae0`; APP/API and facts independent PASS, identified expiry truth fix covered. CI37390690060 check/historical-data SUCCESS; local full check5577/5577 PASS. S2-READY published6007099853; S1 final latest-base merge/CI pending. |
 | FUNNEL-PERSIST #210 | `d31c32e7240f4090262bd4516d41a8982f46e991` | Open; check and historical-data green, exact-head reviews recorded below. S1's latest-base update remains. |
 | APP-SOL #182 | `6da3244f90c77273f601a8bda45fb1c1669c18e2` | Open; check, historical-data and Android build green. Fresh independent APP/API delta PASS on this head; verdict posted to PR. S1's latest-base update remains. |
 | APP-TRADE #181 | `68a1d969920b6246b2a29a93092d1a8053f685e7` | Open; check and historical-data green, all three exact-head area reviews recorded below. S1's latest-base update remains. |
@@ -31,7 +31,7 @@ Updated **2026-10-06 10:09:09 AEDT**. File handoffs remain accepted as PR commen
 
 Historical reviewed readiness: S2-READY 616a7d531b7ba4066051e96f3d722963a9134366
 
-**Latest S1 step:** saved reserve shape approved11:21; S1 performs pure latest-base merges and runs CI before landing. Verified d1850132c828cfc2a300ee59cdb142fbe22c8556 equals automaticmerge(616,8107), then S1 advanced the branch again after SAVE-SPIKE8c375. Current merged head must be fetched/CI-checked by S1; below are the original exact616 reviews/checks, carried by S1's explicit small-gap pure-merge protocol, not fabricated new-head executions.
+**MERGED by S1 12:01 AEDT** as `958294a0136eb0ee4c0ca9272c2e561324ee9759`; branch head `143064e71d3bbfef1ff74d97345a252fd5e527c8`, exact-head CI37394983605 SUCCESS. Saved reserve shape approved11:21. Original five616 reviews carried via verified pure base merges and S1 acceptance; no new-head review execution invented. S1 owns Deploy and live survival validation. Historical preparation: Verified d1850132c828cfc2a300ee59cdb142fbe22c8556 equals automaticmerge(616,8107), then S1 advanced the branch again after SAVE-SPIKE8c375. Current merged head must be fetched/CI-checked by S1; below are the original exact616 reviews/checks, carried by S1's explicit small-gap pure-merge protocol, not fabricated new-head executions.
 
 Head: `616a7d531b7ba4066051e96f3d722963a9134366`; branch `claude/s2-disk-crash`; contains verified integration base `5efb9ae0497523c84e3bb49a82bce989652cdb0b`. All independent reviews below are on this exact head:
 
@@ -67,20 +67,22 @@ Historical handoff: `S2-READY ed5adc47223546e433e0151571ab3e72b1cbd84f` (S1 has 
 
 ### FUNNEL-TRUTH — #237
 
-Current head: `aac10e38dffa65134be390233bd173be5f9b880c`, branch `claude/funnel-truth`; contains latest verified base `5efb9ae0497523c84e3bb49a82bce989652cdb0b`. **Not S2-READY yet**: CI and local full check are pending.
+Current head: `aac10e38dffa65134be390233bd173be5f9b880c`, branch `claude/funnel-truth`; contains latest verified base `5efb9ae0497523c84e3bb49a82bce989652cdb0b`. **S2-READY**: both independent reviews, exact-head CI and single local full check PASS.
+
+S2-READY aac10e38dffa65134be390233bd173be5f9b880c
 
 - **PASS** — `funnel_refresh_api_review` — APP/API/run — exact `aac10e38dffa65134be390233bd173be5f9b880c`; 24 focused tests, typecheck and valid/invalid schema matrix.
 - **PASS** — `funnel_refresh_facts_review` — strategy/worker facts — exact `aac10e38dffa65134be390233bd173be5f9b880c`; 35 focused tests, source guard and real evaluation-order audit.
 - Merge `e5facb3166c2fd88219c6b5e64bc4620255130ca` is exactly automatic `merge-tree(c2f426b1,5efb9ae0)`. Added delta only maps exact worker/create-expired to existing discovered checks failed, leaving other worker misses missing and expiry unclassified at stage0. No new APK enum or invented hard check.
 - Two expiry cases fail before; focused 35/35, strict source guard and workspace typecheck pass. Guard pins all13 refusal sites plus both exact expiry text/gate/code sites. No skipped or weakened guard.
-- Review verdicts posted on PR #237; [CI37390690060](https://github.com/macdarenz-droid/Meme-snipe/actions/runs/37390690060) **check and historical-data SUCCESS on exactaac**. Single local full check started11:16 on frozenaac, still awaiting actual summary/exit; `/tmp/s2-funnel-aac10e38-fullcheck.log`. No retry or mutation. No owner action; land before #210. S1 latest-base update/CI at merge slot remains required.
+- Review verdicts posted on PR #237; [CI37390690060](https://github.com/macdarenz-droid/Meme-snipe/actions/runs/37390690060) **check and historical-data SUCCESS on exactaac**. Single local full check **PASS exit0**, 242 files/5577 tests, 11:16:03–11:51:39 AEDT (test duration2106.77s); `/tmp/s2-funnel-aac10e38-fullcheck.log`, exitfile `/tmp/s2-funnel-aac10e38-fullcheck.exit`. Readiness [comment6007099853](https://github.com/macdarenz-droid/Meme-snipe/pull/237#issuecomment-6007099853) published and read back. No retry or mutation. No owner action; land before #210. S1 latest-base update/CI at merge slot remains required.
 - Older readiness `682a80d6ef08b97128c5abf984a99be126e263a8` is historical.
 
 ### SEC-1 — #136, preparation; not S2-READY
 
 Published head `3e70c9fe17ee15f0697e1b3fe2c1bd6f6117da8b`, branch `claude/sec-1`, contains8107 by ordinary merge. Independent `sec1_ops_delta_review` security/ops/run+APPbuild **PASS on this exacthead**; prior626d7d31 CHANGES NEEDED preserved. Both signing-secret bindings now require exact integration ref and push/manual events; every other event/ref receives empty values. Reviewer evaluated10 actual-YAML synthetic cases,21/21 Android tests/types PASS;9failbefore12pass on unchanged626. Original signing refusals/certificate/release/OPS-GATE guards remain intact.
 
-Verdict [comment6006650525](https://github.com/macdarenz-droid/Meme-snipe/pull/136#issuecomment-6006650525) verified. Required **CI37394840199** running on exacthead; separate Android-preview run37394840216 succeeded, which does **not** establish check/historical-data. Local full-check slot pending. PR body updated through supported REST because gh edit's GraphQL endpoint failed on deprecated projectCards; no permission denial or alternate auth.
+Verdict [comment6006650525](https://github.com/macdarenz-droid/Meme-snipe/pull/136#issuecomment-6006650525) verified. Required **CI37394840199 check/historical-data SUCCESS** on exacthead; separate Android-preview run37394840216 succeeded, which does **not** establish check/historical-data. Local full-check slot pending. PR body updated through supported REST because gh edit's GraphQL endpoint failed on deprecated projectCards; no permission denial or alternate auth.
 
 Owner steps remain in branch docs/ANDROID_PREVIEW.md: privately create/back up PKCS12 key/password, add PREVIEW_KEYSTORE_B64/PREVIEW_KEYSTORE_PASSWORD and PREVIEW_CERT_SHA256, remove temporary exports/Codespace and exposed cache. After approved new preview, uninstall/reinstall Zeroed; existing app data is lost. No keys/secrets/cache read or generated by S2. .github work is preparation only; S1 merges and coordinates #149 order. No owner setup claimed complete.
 
@@ -138,6 +140,8 @@ S2-READY 6af4e43b707960316d8cd8419cb2e513fa9f4b60
 - These local limitations are historical. Current directly verified GitHub results are in Latest handoff audit; they do not establish that any future base-update head is green.
 
 ## S2 events (newest first)
+
+- **2026-10-06 12:03:28 AEDT** — Verified S1 docs7b293de9 and integration958294a0: S1 merged DISK24612:01 with CI37394983605 green on143064e7; no duplicate crash work. FUNNEL237 S2-READY aac10e38 published/readback6007099853: APP/API and factsPASS, CI37390690060 check+historicalgreen, one local fullcheck5577/5577 exit0. S1 final latest-base update/greenCI gate before merge237 then210. Recorder18702309ef0 ordinarypush verified, two fresh areaPASS comment6007100110 readback; undrafted only to enable required precheckCI37397164912, notREADY. N2b88 freshpersistPASS comment6006868648 verified; CI37395645281 inprogress. SEC3e70 requiredCI37394840199 green; Tx207eaaCI37394214352 green; FILL221d862CI37393463906 green. RUN98487 eight original loadinvocations16/16PASS at98.43–99.99%CPU, ownburners cleaned; CPUslot passed to FILL221 fullcheck12:01:09. Helius8c6 BT/persistCHANGESNEEDED H9 real poolinvalidate and expiry-downtime tail; samebuilder retains H9 watches/tails with fail-before guards. OPS149e5d9 OPS/persistCHANGESNEEDED restorecontainment/caps, legacyreserveoverwrite, missingstate and streamhash; samebuildercorrecting separately, fresh APP/API/EXIT/facts audits started. No code riskdial untilownerfinalapproval; no S2 merge/deploy/integrationpush.
 
 - **2026-10-06 11:45:19 AEDT** — SEC3e70 publishedordinarypushverified, correctivePASScomment6006650525 verified; PRbodyupdatedsupportedRESTafterghGraphQLdeprecatedprojectCards failure(notpermissiondenial). CI37394840199 runningexact3e70; Androidrun37394840216SUCCESSisnotrequiredcheck/historicalevidence. Recorder187 local02309ef0 containslatest8c375,99focusedtests/3typesPASS, freshpersist+BT started. N2newb88a623b9ff11f2ccb1e58576145ad96c948def0 freshpersistPASS: unchangedN2hunks+baseSAVESPIKE, independent2736051byteUTF8/trailer/line-countcomparisonPASS;127tests/typesPASS, ordinarypushpublishing. Wider149 onebuilderactive backup compression/cap/localdisk/heartbeatprivacy; accidentalnewworktree preservedthenmigratedtoindependentclone, no progressloss/historyrewrite. RUNfix now also pins latepositive simulation/rejectmix scoring, receipt-time samples and fixedqualificationwindow; nostress onobsolete426. Currenthandoff sections correctedtodistinguishS1acceptedreserve/puremergeCI andoriginal616 executions.
 
