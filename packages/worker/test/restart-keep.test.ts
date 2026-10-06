@@ -701,7 +701,9 @@ describe('RESTART-KEEP: a restart keeps the candidates in their window', () => {
     for (let k = 0; k < 100 && !h2.logs.some((l) => l.startsWith('Downtime migrations')); k++) await new Promise<void>((r) => setImmediate(r));
     await m2.run(2_000, 400, () => m2.slot());
     expect(asked).toEqual([PUMP_MIGRATION_AUTHORITY, `${mig.bondingCurve} before ${migrate.signature}`, ...asked.slice(2)]);
-    expect(h2.logs.find((l) => l.startsWith('Downtime migrations'))).toMatch(/^Downtime migrations: 1 from slot \d+ to \d+, 4 credits, done\.$/);
+    // The authority's page and the migration (2); the completion's page and transaction (2) are charged by COMPLETION-READ
+    // when the migration is released, as live: the budget still pays 4 in all.
+    expect(h2.logs.find((l) => l.startsWith('Downtime migrations'))).toMatch(/^Downtime migrations: 1 from slot \d+ to \d+, 2 credits, done\.$/);
     // Released to the strategy, as the live migration watch's fetch would have: the coin is shortlisted.
     expect(decisions(h2).some((r) => r[0] === 'shortlist' && r[2] === mig.mint)).toBe(true);
     expect(left).toBe(5_000 - 4);

@@ -14,6 +14,7 @@ import { createKey } from '../../core/src/gates/index.ts';
 import { passingFacts } from '../../core/test/gates/world.ts';
 import { checksOf, classify, route } from '../src/run/api.ts';
 import { markedHistory } from '../src/engine/marks.ts';
+import { FunnelView } from '../src/run/funnel.ts';
 import { MIGRATED_AT, MINT, makeWorker, passingMarket } from './worker-harness.ts';
 
 type Funnel = { stages: { stage: string; count: number }[]; rejects: { check: string; count: number }[] };
@@ -33,6 +34,10 @@ const REASONS: readonly (readonly [string, string, string | null, number])[] = [
   ['#market fee terms', 'fee context unknown', 'H16', 0],
   ['#evaluate hard incomplete', 'hard rejects incomplete', 'H16', 0],
   ['#evaluate hard reject', 'hard reject H7: H7 stuck-curve x', 'H7', 0],
+  // COMPLETION-READ: a step held up by a missing input is the missing input (H16), not the step.
+  ['#evaluate hard reject, missing input', 'hard reject H7,H9,H10: H16 missing no curve as of slot 1', 'H16', 0],
+  ['#evaluate hard reject, unusable input', 'hard reject H11: H16 stale curve as of slot 1; H11 x', 'H16', 0],
+  ['#evaluate hard reject, a failed step first', 'hard reject H7,H9: H7 stuck-curve x; H16 missing y', 'H7', 0],
   ['#evaluate account', 'account snapshot unknown', 'H16', 1],
   ['#stopAt no round trip', 'no round trip: no-liquidity', 'size', 1],
   ['#stopAt no ATR', 'stop: not enough price bars for the ATR', 'size', 1],
@@ -55,6 +60,17 @@ describe('FUNNEL-TRUTH: each refusal at the check and stage it truly reached', (
     expect(CHECK_LABEL['H16']).toBe('Stale or unknown data');
     // A reason not listed names no check and stays at "seen": never "Costs", never a stage it did not reach.
     expect(classify('something new')).toEqual({ check: null, stage: 0 });
+  });
+
+  it('COMPLETION-READ: a hard step held up by a missing input is filed under H16 in the funnel and the decisions view alike', () => {
+    const at = Date.parse('2026-10-06T02:00:00Z');
+    const view = new FunnelView(at);
+    const why = 'hard reject H7,H9,H10: H16 missing no curve as of slot 1';
+    view.apply({ seq: 1, ts: new Date(at).toISOString(), kind: 'decision', event: 'ev-1', reasons: ['shortlist', 'x', MINT] });
+    view.apply({ seq: 2, ts: new Date(at + 1_000).toISOString(), kind: 'decision', event: 'ev-2', reasons: ['reject', 'x', MINT, why] });
+    expect(classify(why)).toEqual({ check: 'H16', stage: 0 });
+    expect(view.funnel.stage.get(MINT)).toEqual(expect.objectContaining({ check: 'H16', stage: 0 }));
+    expect(view.rows.map((r) => r.check)).toEqual(['H16']);
   });
 
   it('an expired create is failed, while worker input gaps still read as missing', () => {
