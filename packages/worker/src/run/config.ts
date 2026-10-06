@@ -174,9 +174,10 @@ export const parseConfig = (
   if (s0Diagnostic && name !== 'S0') return refuse('refused: ZEROED_S0_DIAGNOSTIC is only for the S0 shakedown');
   if (s0Diagnostic && (qualifying || qualifyingRun !== null)) return refuse('refused: ZEROED_S0_DIAGNOSTIC is never used in a release with a qualifying run');
   const maxText = env['ZEROED_RECORDER_MAX_BYTES'];
-  if (maxText !== undefined && !/^[1-9][0-9]{0,15}$/.test(maxText)) return refuse('refused: ZEROED_RECORDER_MAX_BYTES must be a whole number of bytes, at least 1');
+  // Exact whole numbers only: a value past 2^53 - 1 would be rounded.
+  if (maxText !== undefined && (!/^[1-9][0-9]{0,15}$/.test(maxText) || !Number.isSafeInteger(Number(maxText)))) return refuse(`refused: ZEROED_RECORDER_MAX_BYTES must be a whole number of bytes from 1 to ${Number.MAX_SAFE_INTEGER}`);
   const floorText = env['ZEROED_DISK_PRUNE_FREE_BYTES'];
-  if (floorText !== undefined && (!/^[0-9]{1,16}$/.test(floorText) || Number(floorText) < MIN_DISK_PRUNE_FREE_BYTES)) return refuse(`refused: ZEROED_DISK_PRUNE_FREE_BYTES must be a whole number of bytes, at least ${MIN_DISK_PRUNE_FREE_BYTES} (2 GiB)`);
+  if (floorText !== undefined && (!/^[0-9]{1,16}$/.test(floorText) || !Number.isSafeInteger(Number(floorText)) || Number(floorText) < MIN_DISK_PRUNE_FREE_BYTES)) return refuse(`refused: ZEROED_DISK_PRUNE_FREE_BYTES must be a whole number of bytes from ${MIN_DISK_PRUNE_FREE_BYTES} (2 GiB) to ${Number.MAX_SAFE_INTEGER}`);
   const recorderBudget = { maxBytes: maxText === undefined ? RECORDER_MAX_BYTES : Number(maxText), floorBytes: floorText === undefined ? DISK_PRUNE_FREE_BYTES : Number(floorText) };
   const watchdog = env['WATCHDOG_URL'] ?? '';
   if (watchdog !== '' && !/^https:\/\/[^\s/]+(\/[^\s]*)?$/.test(watchdog)) return refuse('refused: WATCHDOG_URL must be an https URL');

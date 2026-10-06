@@ -2,7 +2,7 @@
 // A pass deletes sealed recording files oldest first and never touches the running boot's open files, temporary files,
 // symlinks, anything outside the recorder folder or the rest of the state dir.
 import { createHash } from 'node:crypto';
-import { existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, statSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { parseConfig } from '../src/run/config.ts';
@@ -238,6 +238,39 @@ describe('the recorder budget (RECORD-BUDGET)', () => {
     expect(existsSync(join(root, B1))).toBe(true);
   });
 
+  it('T3: the real-path check alone stops a day folder swapped for a symlink between the walk and the delete', () => {
+    const root = join(tempState(), 'recorder');
+    const outside = join(tempState(), 'elsewhere');
+    put(join(outside, 'frames-000.jsonl.zst'), 'outside, never deleted');
+    data(root, B1, DAY1, 'frames-000.jsonl.zst');
+    manifests(root);
+    const day = join(root, B1, 'days', DAY1);
+    const r = pruneRecordings(opts(root, {
+      maxBytes: 1,
+      afterWalk: () => {
+        renameSync(day, join(root, B1, 'days', 'moved'));
+        symlinkSync(outside, day);
+      },
+    }));
+    // lstat of the file sees a regular file (its folder is the link): only the real path says it left the recorder.
+    expect(r.deleted).toEqual([]);
+    expect(readFileSync(join(outside, 'frames-000.jsonl.zst'), 'utf8')).toBe('outside, never deleted');
+  });
+
+  it('T3: a boot folder that is a symlink inside the recorder is never walked as a boot (the boot-name check alone)', () => {
+    const root = join(tempState(), 'recorder');
+    data(root, B1, DAY1, 'frames-000.jsonl.zst');
+    data(root, B1, DAY1, 'frames-001.jsonl.zst');
+    manifests(root);
+    // An older boot id pointing at B1: inside the recorder, so the real-path check lets its files through.
+    const alias = bootId(1_780_000_000_000);
+    symlinkSync(join(root, B1), join(root, alias));
+    const r = pruneRecordings(opts(root, { maxBytes: 1_000 + MANIFEST_BYTES(root, B1) }));
+    expect(r.deleted).toEqual([{ boot: B1, path: `days/${DAY1}/frames-000.jsonl.zst`, bytes: 1_000 }]);
+    expect(lstatSync(join(root, alias)).isSymbolicLink()).toBe(true);
+    expect(manifestOf(root, B1).pruned.map((p) => p.path)).toEqual([`days/${DAY1}/frames-000.jsonl.zst`]);
+  });
+
   it('T4: the running boot\'s deleted file leaves days[].files and is listed under pruned with its seal-time hash; the recorder goes on', () => {
     const root = tempState();
     const at = Date.parse(`${DAY2}T00:00:00Z`);
@@ -355,5 +388,11 @@ describe('the recorder budget (RECORD-BUDGET)', () => {
       expect(p).toMatchObject({ ok: false, code: 2 });
     }
     expect(parseConfig({ ...base, ZEROED_DISK_PRUNE_FREE_BYTES: String(2 * GiB) }, () => null).ok).toBe(true);
+    // Exact whole numbers only: past 2^53 - 1 a value would be rounded (persist review note 4).
+    for (const bad of [{ ZEROED_RECORDER_MAX_BYTES: '9007199254740992' }, { ZEROED_DISK_PRUNE_FREE_BYTES: '9007199254740993' }, { ZEROED_RECORDER_MAX_BYTES: '9999999999999999' }]) {
+      expect(parseConfig({ ...base, ...bad }, () => null)).toMatchObject({ ok: false, code: 2 });
+    }
+    const top = parseConfig({ ...base, ZEROED_RECORDER_MAX_BYTES: '9007199254740991', ZEROED_DISK_PRUNE_FREE_BYTES: '9007199254740991' }, () => null);
+    expect(top.ok && top.config.recorderBudget).toEqual({ maxBytes: Number.MAX_SAFE_INTEGER, floorBytes: Number.MAX_SAFE_INTEGER });
   });
 });

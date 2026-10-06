@@ -2989,9 +2989,13 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   removed, floor target = floor, no high-water mark, packing ignored, no start pass, start pass after the leftovers'
   seal, ENOENT not skipped, links freed per link, store file at any link count, `pruned` not recorded, ended manifest
   not rewritten, `pruned` sha256 not from the listing, recorded boot removed whole, journal without paths, order by
-  number instead of seal, alert not hourly, pruned boot replayed. Survives: the real-path check alone removed (the
-  lstat checks already stop every case a test can build; it guards a folder swapped for a symlink between the walk and
-  the delete).
+  number instead of seal, alert not hourly, pruned boot replayed; and each guard layer alone (persist review note 3):
+  the real-path check (a day folder swapped for a symlink between the walk and the delete, through the `afterWalk`
+  test seam) and the boot-name check (a symlinked boot inside the recorder), the config's exact-integer bound, the
+  stale budget fault.
+- **2026-10-06 · Persist review notes 3 to 5.** Each guard layer has a test of its own. `ZEROED_RECORDER_MAX_BYTES` and
+  `ZEROED_DISK_PRUNE_FREE_BYTES` above 2^53 - 1 are refused (exit 2): they could not be held exactly. A pass that finds
+  no recorder folder to judge (a file in its place) clears the budget fault; the recorder's own failure is the alert.
 - **Not in this card.** Uploads and removing ended boots after read-back (#244).
 
 ## Money in SOL first (APP-SOL, owner 2026-10-05: success is counted in SOL; `components/Money.tsx`, `lib/money.ts` `formatSol`)

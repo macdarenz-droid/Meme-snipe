@@ -48,6 +48,8 @@ export interface PruneOptions {
   readonly freeBytes?: (root: string) => number;
   /** True while the worker packs its saved-state copy: the saved-state store is left alone. */
   readonly packing: () => boolean;
+  /** Test seam: runs between the walk and the deletions (a folder swapped for a symlink in that gap). */
+  readonly afterWalk?: () => void;
 }
 
 export interface Pruned {
@@ -287,6 +289,7 @@ export const pruneRecordings = (o: PruneOptions): PruneResult => {
     }
   }
   const text = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+  o.afterWalk?.();
   candidates.sort((a, b) => text(a.day, b.day) || a.start - b.start || text(a.boot, b.boot) || a.sealed - b.sealed || text(a.name, b.name));
   /** Per boot, the day folders touched and the files deleted (paths in the boot's folder). */
   const touched = new Map<string, { days: Set<string>; files: { path: string; bytes: number }[] }>();

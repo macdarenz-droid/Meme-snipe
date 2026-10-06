@@ -2101,7 +2101,10 @@ export class Worker {
       // The free-space floor holds even before anything is recorded (the folder is made here at a first start). A path
       // that is not a folder holds no recording to prune: the recorder's own failure is the alert for it.
       if (!existsSync(root)) mkdirSync(root, { recursive: true });
-      if (!statSync(root).isDirectory()) return;
+      if (!statSync(root).isDirectory()) {
+        this.#budgetFault = null;
+        return;
+      }
       const r = pruneRecordings({ root, current: this.#boot, maxBytes: b.maxBytes, floorBytes: b.floorBytes, packing: () => this.#packRunning, ...(d.diskFree === undefined ? {} : { freeBytes: d.diskFree }) });
       const reason = r.reason;
       const own = r.deleted.filter((p) => p.boot === this.#boot);

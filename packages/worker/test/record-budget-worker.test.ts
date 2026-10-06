@@ -2,7 +2,7 @@
 // rewritten), then one a minute beside the memory sample, whether the recorder is on, off or failed. A pass that deletes
 // writes a `recorder_prune` line; one that fails, or is still over with nothing left, raises the critical alert at
 // most once an hour.
-import { linkSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { linkSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { packFile } from '../src/persist/index.ts';
@@ -117,6 +117,28 @@ describe('the recorder budget in the worker (RECORD-BUDGET)', () => {
     expect(existsSync(`${leftover}.zst`)).toBe(true);
     await h.worker.kill();
   });
+
+  it('a budget fault clears when the next pass has nothing to judge (persist review note 5)', async () => {
+    const stateDir = tempState();
+    const timers = virtualTimers(T);
+    let failing = false;
+    const h = makeWorker({ stateDir, timers, diskFree: () => {
+      if (failing) throw new Error('statfs failed');
+      return 100 * GiB;
+    } });
+    const m = await boot(h);
+    failing = true;
+    const budget = (): boolean => h.worker.health().critical.some((c) => c.startsWith('recorder budget'));
+    for (let k = 0; k < 200 && !budget(); k++) await m.run(10_000, 1_000);
+    expect(budget()).toBe(true);
+    // The recorder folder is gone and a file stands in its place: no pass can judge it, so no stale fault is left.
+    failing = false;
+    rmSync(join(stateDir, 'recorder'), { recursive: true });
+    writeFileSync(join(stateDir, 'recorder'), 'not a folder');
+    for (let k = 0; k < 200 && budget(); k++) await m.run(10_000, 1_000);
+    expect(budget()).toBe(false);
+    await h.worker.stop();
+  }, 60_000);
 
   it('T6: a past boot\'s folder that goes while the leftovers are sealed causes no recorder fault', async () => {
     const stateDir = tempState();
