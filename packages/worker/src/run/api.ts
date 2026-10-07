@@ -422,6 +422,13 @@ const ACCOUNT_COST_KIND: Readonly<Record<string, string>> = { wallet_setup: 'ren
  * SOL-BOOKS: the session's limits in lamports, converted as core risk converts them at the opening SOL price (B, q_max
  * and the loss lines rounded down, q_min up), so the app shows the limits risk enforces. None before the opening price.
  */
+/** R7's line in lamports from the opening price, as risk converts it (B rounded down, then its share); null before it. */
+const openingDailyLimit = (i: ApiInputs): bigint | null => {
+  const opening = i.openingSolPrice ?? null;
+  if (opening === null || opening <= 0n) return null;
+  return (microUsdToLamports(i.policy.capital.bankroll, opening, 'floor') * BigInt(i.policy.loss.dailyBps)) / 10_000n;
+};
+
 const sessionLamports = (i: ApiInputs) => {
   const opening = i.openingSolPrice ?? null;
   if (opening === null || opening <= 0n) return {};
@@ -469,10 +476,16 @@ export const views = {
     const r7 = fresh ? (i.stops!.dayLoss ?? null) : null;
     const r7Limit = fresh ? (i.stops!.dailyLimit ?? null) : null;
     const realisedLoss = realisedLossToday(i);
-    if (r7Limit !== null && realisedLoss >= r7Limit && !halts.some((h) => h.code === 'daily-loss')) halts.push({ code: 'daily-loss', source: null });
+    // With no current R7 read, the same line from the opening price (as risk converts it), so a realised loss past it
+    // still shows the daily-loss stop beside risk-unknown (run/CI review nit 2).
+    const haltLimit = r7Limit ?? openingDailyLimit(i);
+    if (haltLimit !== null && realisedLoss >= haltLimit && !halts.some((h) => h.code === 'daily-loss')) halts.push({ code: 'daily-loss', source: null });
     const dayLoss = r7 === null ? null : r7 > realisedLoss ? r7 : realisedLoss;
-    const dayLossUsd = dayLoss === null ? 0n : i.solPrice === null ? 0n : lamportsToMicroUsd(dayLoss as Lamports, i.solPrice, 'ceil');
-    const dayLimitUsd = r7Limit !== null && i.solPrice !== null ? lamportsToMicroUsd(r7Limit as Lamports, i.solPrice, 'floor') : dailyLimit;
+    // The dollar line at the current SOL price, else the opening one (after a restart, before the first live price): a
+    // loss is never shown as $0 (run/CI review B1); with neither, the meter's dollars are the configured ones.
+    const usdPx = i.solPrice ?? i.openingSolPrice ?? null;
+    const dayLossUsd = dayLoss === null || usdPx === null ? 0n : lamportsToMicroUsd(dayLoss as Lamports, usdPx, 'ceil');
+    const dayLimitUsd = r7Limit !== null && usdPx !== null ? lamportsToMicroUsd(r7Limit as Lamports, usdPx, 'floor') : dailyLimit;
     return {
       mode: MODE, connected: i.connected, flags: [...flags], solPriceUsd: i.solPrice === null ? null : usdText(i.solPrice),
       haltReasons: halts.map((h) => ({ mode: MODE, ...h })),
@@ -648,7 +661,7 @@ export const views = {
       return s + (v === null ? 0n : tradeNetUsd(i, t)! - v.trading);
     }, 0n);
     return {
-      mode: MODE, trades: n, requiredTrades: 30, netUsd: usdText(net), netSol: solText(closed.reduce((s, t) => s + (tradeSol(t) ?? 0n), 0n) - appCosts(i).reduce((s, c) => s + c.lamports, 0n)), ...lamField('netLamports', netLam), ...lamField('maxDrawdownLamports', netLam === null ? null : solDd), ...(tradeLam === null ? {} : { meanNetLamports: n === 0 ? null : lamText(tradeLam / BigInt(n)) }), solMoveUsd: usdText(solMove), maxDrawdownUsd: usdText(dd),
+      mode: MODE, trades: n, requiredTrades: 30, netUsd: usdText(net), netSol: solText(i.trades.filter((t) => t.closedAtMs !== null).reduce((s, t) => s + (tradeSol(t) ?? 0n), 0n) - appCosts(i).reduce((s, c) => s + c.lamports, 0n)), ...lamField('netLamports', netLam), ...lamField('maxDrawdownLamports', netLam === null ? null : solDd), ...(tradeLam === null ? {} : { meanNetLamports: n === 0 ? null : lamText(tradeLam / BigInt(n)) }), solMoveUsd: usdText(solMove), maxDrawdownUsd: usdText(dd),
       winRate: n === 0 ? null : (nets.filter((x) => x > 0n).length / n).toFixed(4), meanNetUsd: n === 0 ? null : usdText(tradeNet / BigInt(n)),
       meanR: null, ci95: null,
     };

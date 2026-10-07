@@ -244,11 +244,42 @@ describe('BT-2 study runs', () => {
     const rent = oneTimeRent(FILL_CONFIG);
     expect(rent).toBeGreaterThan(0n);
     // SOL-BOOKS: the rent is booked in lamports, exact.
-    expect(s.walletSetup).toEqual({ atMs: W0, amount: rent, kind: 'wallet_setup' });
-    // SOL/USD is 120.00 all day, the opening price: bankroll B in lamports (floor) plus the operations floor, minus the
-    // rent. NAV is the whole wallet in lamports, so no conversion slack.
-    const opening = (TRIAL_POLICY.capital.bankroll * 1_000_000_000n) / 120_000_000n + TRIAL_POLICY.reserve.opsFloor;
+    // At the first SOL/USD price at or after the walk-forward start (B1), as live books it at its first price.
+    expect(s.walletSetup).toEqual({ atMs: expect.any(Number), amount: rent, kind: 'wallet_setup' });
+    expect(s.walletSetup!.atMs).toBeGreaterThanOrEqual(W0);
+    // SOL/USD is 120.00 all day, the opening price: bankroll B in lamports (floor), minus the rent; no operations floor
+    // on top (BT parity review B2: live funds the wallet with B). NAV is the whole wallet in lamports.
+    const opening = (TRIAL_POLICY.capital.bankroll * 1_000_000_000n) / 120_000_000n;
     expect(s.navMarks[0]!.nav).toBe(opening - rent);
+  });
+
+  // BT parity review B1: live fixes the opening price at its first price after it starts; the replay's lead-in (15 days
+  // of history before the walk-forward start) never sets it.
+  it('deployment replay: the opening SOL price is the first price at or after the walk-forward start, never a lead-in one', () => {
+    // SOL at $100 for the first of the lead-in's 15 days (its first points), then $200 from a day before the start.
+    const moving = { ...sol, bars: sol.bars.map((b) => ({ ...b, close: b.start < W0 - 24 * 3_600_000 ? '100.00' : '200.00' })) };
+    let st: import('../src/strategy/study.ts').StudyStrategy | null = null;
+    run([SETUP], { mode: 'deployment', series: [moving], onStrategy: (x) => { st = x; } });
+    const s = st as unknown as import('../src/strategy/study.ts').StudyStrategy;
+    expect(s.openingPrice).toBe(200_000_000n);
+    expect(s.walletSetup!.atMs).toBeGreaterThanOrEqual(W0);
+    // B is 0.1 SOL at $200 (not 0.2 SOL at the lead-in's $100), less the setup rent; no operations floor on top (B2).
+    expect(s.navMarks[0]!.nav).toBe((TRIAL_POLICY.capital.bankroll * 1_000_000_000n) / 200_000_000n - oneTimeRent(FILL_CONFIG));
+  });
+
+  // BT parity review N1: a future SOL/USD point planted in the series is out of the deployment's reach: the opening
+  // price, the NAV marks and every decision are those of the run without it.
+  it('deployment replay: a SOL/USD point after the window never reaches the opening price or a decision', () => {
+    const planted = { ...sol, bars: [...sol.bars, { start: W0 + 30 * 3_600_000, close: '999999.00' }] };
+    const go = (series: typeof sol) => {
+      let st: import('../src/strategy/study.ts').StudyStrategy | null = null;
+      const r = run([SETUP], { mode: 'deployment', series: [series], onStrategy: (x) => { st = x; } });
+      const s = st as unknown as import('../src/strategy/study.ts').StudyStrategy;
+      return { decisions: JSON.stringify(decisions(r.r.records), (_k, v) => (typeof v === 'bigint' ? String(v) : v)), opening: s.openingPrice, nav: s.navMarks.map((x) => String(x.nav)) };
+    };
+    const clean = go(sol);
+    expect(clean.opening).toBe(120_000_000n);
+    expect(go(planted)).toEqual(clean);
   });
 
   // Paper is real money: a close or mark priced at a SOL/USD close older than 2 h (plus its delivery) is still booked,

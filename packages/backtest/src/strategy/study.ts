@@ -193,10 +193,10 @@ export class StudyStrategy implements Strategy {
 
   /**
    * The running account for RISK-1, in lamports (SOL-BOOKS), marked at executable liquidation value; `wallet` is what
-   * the wallet holds, the operations floor included as in opening equity, so economic NAV equals equity. The dollar
-   * drawdown figures value marks at `px` and each close at its own price, as before.
+   * the wallet holds (B less the setup, plus what was realized, less what is committed), so economic NAV equals equity,
+   * as live. The dollar drawdown figures value marks at `px` and each close at its own price; none without a price.
    */
-  #account(ctx: StrategyContext, px: MicroUsd, now: number): { history: AccountHistory; wallet: Lamports } {
+  #account(ctx: StrategyContext, px: MicroUsd | null, now: number): { history: AccountHistory; wallet: Lamports } {
     const policy = this.#o.session.policy;
     const opening = this.#openingPx ?? (0n as MicroUsd);
     const open: OpenPosition[] = [];
@@ -210,16 +210,21 @@ export class StudyStrategy implements Strategy {
       const cost = (p.cost + t.fixedCosts) as Lamports;
       const mark = liq !== null && liq.ok ? (liq.value as Lamports) : null;
       committed += cost;
-      openUsd += (mark === null ? 0n : lamportsToMicroUsd(mark, px, 'floor')) - lamportsToMicroUsd(cost, px, 'ceil');
+      if (px !== null) openUsd += (mark === null ? 0n : lamportsToMicroUsd(mark, px, 'floor')) - lamportsToMicroUsd(cost, px, 'ceil');
       open.push({ mint: p.mint, openedAtMs: t.plan?.openedAtMs ?? now, notional: cost, mark, markAtMs: mark !== null ? now : null });
     }
     const unresolved = Object.values(ctx.book.intents).filter((i) => i.intent.purpose === 'entry' && !isTerminal(i)).map((i) => ({ mint: i.intent.mint }));
     const realized = this.#closed.reduce((a, c) => a + c.netPnl, 0n);
     const setupCost = this.#setupCost?.amount ?? 0n;
-    const equityUsd = policy.capital.bankroll - this.#setupUsd + this.#realizedUsd + openUsd;
-    if (equityUsd > this.#stats.peakEquityUsd) this.#stats.peakEquityUsd = equityUsd;
-    if (this.#stats.peakEquityUsd - equityUsd > this.#stats.maxDrawdownUsd) this.#stats.maxDrawdownUsd = this.#stats.peakEquityUsd - equityUsd;
-    const openingEquity = (opening > 0n ? microUsdToLamports(policy.capital.bankroll, opening, 'floor') : 0n) + policy.reserve.opsFloor;
+    // The dollar drawdown figures (display only) need a SOL/USD price for the marks; risk's figures below do not.
+    if (px !== null) {
+      const equityUsd = policy.capital.bankroll - this.#setupUsd + this.#realizedUsd + openUsd;
+      if (equityUsd > this.#stats.peakEquityUsd) this.#stats.peakEquityUsd = equityUsd;
+      if (this.#stats.peakEquityUsd - equityUsd > this.#stats.maxDrawdownUsd) this.#stats.maxDrawdownUsd = this.#stats.peakEquityUsd - equityUsd;
+    }
+    // As live (account.ts `fact`): B in lamports at the opening price, the wallet B less the setup, plus what was realized,
+    // less what is committed to open positions. No operations floor on top (BT parity review B2).
+    const openingEquity = opening > 0n ? microUsdToLamports(policy.capital.bankroll, opening, 'floor') : 0n;
     const wallet = (openingEquity - setupCost + realized - committed) as Lamports;
     // R10's high-water mark comes from recorded NAV observations, in the evaluator's own definition.
     const nav = economicNav(wallet, open);
@@ -270,18 +275,25 @@ export class StudyStrategy implements Strategy {
 
   /**
    * The wallet's setup rent, booked as live books it (WORKER-1 `wallet_setup`, the worker's own `oneTimeRent`): one
-   * account cost at the walk-forward start, in lamports. That hour's SOL price is the opening price that fixes the
-   * policy's dollars in SOL (SOL-BOOKS, as live at its first price). Equity starts at bankroll minus the rent, and the
-   * rent counts toward day 1's loss, as live.
+   * account cost in lamports, at the first SOL/USD price the account sees once the walk-forward starts, as live books it
+   * at the first price after the worker starts. That price, as of that moment, is the opening price that fixes the
+   * policy's dollars in SOL (SOL-BOOKS); a lead-in price is never one (BT parity review B1: the lead-in's first point is
+   * up to 15 days older). Equity starts at bankroll minus the rent, and the rent counts toward that day's loss, as live.
    */
-  #walletSetup(e: MarketEvent): void {
+  #walletSetup(e: MarketEvent, now: number): void {
+    if (now < this.#o.entriesFrom) return;
     const sol = parseSolUsd(e.value);
-    const px = sol === null ? null : solUsdAt(sol, this.#o.entriesFrom);
-    if (px === null) return;
+    const px = sol === null ? null : solUsdAt(sol, now);
+    if (px === null || px.price <= 0n) return;
     const rent = oneTimeRent(this.#o.fills) as Lamports;
     this.#openingPx = px.price as MicroUsd;
-    this.#setupCost = { atMs: this.#o.entriesFrom, amount: rent, kind: 'wallet_setup' };
+    this.#setupCost = { atMs: now, amount: rent, kind: 'wallet_setup' };
     this.#setupUsd = lamportsToMicroUsd(rent, px.price as MicroUsd, 'ceil');
+  }
+
+  /** The deployment's opening SOL price (SOL-BOOKS), null until its first price after the start. */
+  get openingPrice(): MicroUsd | null {
+    return this.#openingPx;
   }
 
   /** NAV observations recorded for R10 (deployment modes). */
@@ -301,7 +313,7 @@ export class StudyStrategy implements Strategy {
 
   onMarket(e: MarketEvent, ctx: StrategyContext): readonly Decision[] {
     this.#deployers.observe(e);
-    if (this.#deploy && this.#setupCost === null && e.key === SOL_USD_KEY) this.#walletSetup(e);
+    if (this.#deploy && this.#setupCost === null && e.key === SOL_USD_KEY) this.#walletSetup(e, ctx.now.receivedAt);
     if (e.key === 'slot') this.#prune(ctx.now.receivedAt);
     const out: Decision[] = [];
     if (e.key.startsWith('pool:')) this.#tape(e, ctx);
@@ -432,9 +444,14 @@ export class StudyStrategy implements Strategy {
     const px = solForEntry(ctx, now);
     const stop = (stage: Stage, cls: StopClass, gates?: HardResult) => this.funnel.record(tag, mint, stage, cls, gates);
     if (view === null || pool === null) return void (stop('market data', 'not covered'), say('no entry', 'pool state unknown'));
+    // As live (strategy.ts #evaluate): a deployment's account has no opening SOL price until its first price after the
+    // start; no entry is judged before it (risk's R1).
+    if (this.#deploy && this.#openingPx === null) return void (stop('market data', 'not covered'), say('no entry', 'opening SOL price unknown'));
     if (px === null || px === 'stale') return void (stop('market data', 'not covered'), say('no entry', px === null ? 'SOL/USD unknown' : 'SOL/USD stale'));
     const policy = this.#o.session.policy;
-    const spend = microUsdToLamports(policy.capital.minNotional, px.price as MicroUsd, 'ceil');
+    // q_min in SOL at the opening price in a deployment, as live sizes it (BT parity review B3); a strategy-mode check is
+    // its own account, opened at this hour's price.
+    const spend = microUsdToLamports(policy.capital.minNotional, (this.#deploy ? this.#openingPx! : px.price) as MicroUsd, 'ceil');
     const quoter = pumpSwapRoundTrip(poolState(view), observedFeeContext(view.fees, view.baseSupply, NORMAL));
 
     // Stage 1 (FACTS-1 staging): the stream-derived hard rejects, every one evaluated (calibration log). Only a
@@ -471,9 +488,10 @@ export class StudyStrategy implements Strategy {
     const view = pv !== null && pv.ok ? (pv.value as PoolView) : null;
     const px = solForEntry(ctx, now);
     if (view === null || pool === null) return void (this.#pending.delete(key), stop('market data', 'not covered'), say('no entry', 'pool state unknown'));
+    if (this.#deploy && this.#openingPx === null) return void (this.#pending.delete(key), stop('market data', 'not covered'), say('no entry', 'opening SOL price unknown'));
     if (px === null || px === 'stale') return void (this.#pending.delete(key), stop('market data', 'not covered'), say('no entry', px === null ? 'SOL/USD unknown' : 'SOL/USD stale'));
     const policy = this.#o.session.policy;
-    const spend = microUsdToLamports(policy.capital.minNotional, px.price as MicroUsd, 'ceil');
+    const spend = microUsdToLamports(policy.capital.minNotional, (this.#deploy ? this.#openingPx! : px.price) as MicroUsd, 'ceil');
     const quoter = pumpSwapRoundTrip(poolState(view), observedFeeContext(view.fees, view.baseSupply, NORMAL));
     // Every stage from stage 1 again, at this moment (audit B2): stages 1-2 when the account reads land, all of them
     // when the holder scan lands. The earlier stages' answers only decided which reads to ask for.
@@ -524,7 +542,8 @@ export class StudyStrategy implements Strategy {
     const rent = { tokenAccount: net.tokenAccountRent, tokenAccountClosedOnExit: true, oneTime: 0n, transient: 0n };
     const deploy = this.#deploy;
     const account = deploy ? this.#account(ctx, px.price as MicroUsd, now) : null;
-    const bankrollLamports = account === null ? microUsdToLamports(policy.capital.bankroll, px.price as MicroUsd, 'floor') + policy.reserve.opsFloor : account.wallet;
+    // No operations floor on top of B (BT parity review B2): the wallet holds B, as live funds it.
+    const bankrollLamports = account === null ? microUsdToLamports(policy.capital.bankroll, px.price as MicroUsd, 'floor') : account.wallet;
     // Outside deployment each check is its own one-trade account, opened at this hour's price.
     const fresh: AccountHistory = {
       openingEquity: bankrollLamports as Lamports, openingSolPrice: px.price as MicroUsd, openedAtMs: now - 1, flows: [], costs: [], closedTrades: [], openPositions: [], entries: [],
@@ -681,7 +700,8 @@ export class StudyStrategy implements Strategy {
         // Equity marked at executable liquidation value on every update of the open position (drawdown).
         const pt = solUsdForBooks(ctx, now);
         if (pt !== null && pt.stale) this.#stats.staleSolUsdMarks++;
-        if (pt !== null) this.#account(ctx, pt.price as MicroUsd, now);
+        // R10's NAV marks are lamports: recorded with or without a SOL/USD price (BT parity review N4).
+        this.#account(ctx, pt === null ? null : (pt.price as MicroUsd), now);
       }
       // A merge that adds no new reason to the exit owner changes nothing; it is not logged.
       const d = step.decision;

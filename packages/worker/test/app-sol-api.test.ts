@@ -78,7 +78,7 @@ describe('lamports beside dollars (APP-SOL)', () => {
 describe('SOL-BOOKS: the daily-loss meter and the session limits are risk\'s own lamports', () => {
   // $150.000001 per SOL: dollar figures that do not divide into whole lamports.
   const PRICE = 150_000_001n as MicroUsd;
-  const served = (dayLoss: bigint, dailyLimit: bigint, solPrice: MicroUsd = PRICE) => {
+  const served = (dayLoss: bigint, dailyLimit: bigint, solPrice: MicroUsd | null = PRICE) => {
     const h = makeWorker();
     const base = h.worker.apiInputs();
     void h.worker.stop();
@@ -117,6 +117,38 @@ describe('SOL-BOOKS: the daily-loss meter and the session limits are risk\'s own
     expect(halted(1_200_000n, 1_000_000n)).toBe(true);
     expect(halted(1_600_000n, 2_000_000n)).toBe(false);
     expect(halted(2_000_000n, 2_000_000n)).toBe(true);
+  });
+
+  it('run/CI review: no live SOL price (a restart before the first price): the loss shows in dollars at the opening price, never $0', () => {
+    const { meter } = served(5_000_000n, 9_999_999n, null as unknown as MicroUsd);
+    expect(meter.usedLamports).toBe('5000000');
+    expect(meter.usedUsd).not.toBe('0');
+    expect(meter.usedUsd).toBe(usdText(lamportsToMicroUsd(5_000_000n as Lamports, PRICE, 'ceil')));
+    expect(meter.limitUsd).toBe(usdText(lamportsToMicroUsd(9_999_999n as Lamports, PRICE, 'floor')));
+  });
+
+  it('run/CI review: with R7\'s read stale, a realised loss past the opening price\'s daily line still shows the daily-loss stop', () => {
+    const h = makeWorker();
+    const base = h.worker.apiInputs();
+    void h.worker.stop();
+    const line = (microUsdToLamports(base.policy.capital.bankroll, PRICE, 'floor') * BigInt(base.policy.loss.dailyBps)) / 10_000n;
+    const halts = (loss: bigint) => {
+      const t = { positionId: 'p1', mint: 'm', openedAtMs: base.nowMs - 120_000, closedAtMs: base.nowMs - 60_000, notional: 2_000_000n, netLamports: -loss, netPnl: null, stoppedOut: false, booked: 0n, openSolPrice: PRICE };
+      const i = { ...base, solPrice: PRICE, openingSolPrice: PRICE, trades: [t], accountCosts: [], stops: { atMs: base.nowMs - 60_000, codes: [], dayLoss: 0n, dailyLimit: line } };
+      return (views.status(i as never) as { haltReasons: { code: string }[] }).haltReasons.map((x) => x.code);
+    };
+    expect(halts(line)).toEqual(expect.arrayContaining(['risk-unknown', 'daily-loss']));
+    expect(halts(line - 1n)).not.toContain('daily-loss');
+  });
+
+  it('run/CI review: the SOL net counts every closed trade, one with no dollar figure too', () => {
+    const h = makeWorker();
+    const base = h.worker.apiInputs();
+    void h.worker.stop();
+    const t = (id: string, netLamports: bigint) => ({ positionId: id, mint: 'm', openedAtMs: base.nowMs - 120_000, closedAtMs: base.nowMs - 60_000, notional: 2_000_000n, netLamports, netPnl: null, stoppedOut: false, booked: 0n, openSolPrice: null });
+    // No price at all: neither trade has a dollar figure, both are in the SOL net.
+    const stats = views.stats({ ...base, solPrice: null, accountCosts: [], trades: [t('a', -1_000_000n), t('b', 3_000_000n)] } as never) as { netSol: string };
+    expect(stats.netSol).toBe('0.002000000');
   });
 
   it('a closed trade\'s size is its lamports in dollars at its entry price', () => {
