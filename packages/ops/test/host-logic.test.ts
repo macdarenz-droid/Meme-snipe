@@ -380,7 +380,10 @@ describe('worker start and API address', () => {
     // After the switch: the new worker must stay up, else back to the release that ran, not tried again, one alert.
     const after = upd.slice(upd.indexOf('ln -sfn "$dest" /opt/zeroed/current.new'));
     expect(upd.indexOf('prev="$(readlink -f /opt/zeroed/current 2>/dev/null || true)"')).toBeLessThan(upd.indexOf('ln -sfn "$dest" /opt/zeroed/current.new'));
-    expect(after).toMatch(/systemctl restart zeroed-worker\.service \|\| rollback "it failed to start"\n\s+if ! why="\$\(holds\)"; then rollback "\$why"; fi/);
+    expect(after).toMatch(/systemctl restart zeroed-worker\.service \|\| due_rollback "it failed to start"\n\s+if ! why="\$\(holds\)"; then due_rollback "\$why"; fi/);
+    // RC-FIXES-2b (red team C R3-2): a due rollback goes through probation_check's gate, which ends in rollback().
+    const due = upd.slice(upd.indexOf('due_rollback() {'));
+    expect(due.slice(0, due.indexOf('\n}\n'))).toMatch(/> "\$STATE_DIR\/probation"\n\s+probation_check\n\s+exit 1$/);
     const rb = upd.slice(upd.indexOf('rollback() {'), upd.indexOf('# Restart with reconcile first'));
     for (const want of ['printf \'%s\\n\' "$commit" > "$STATE_DIR/failed_release"', 'ln -sfn "$prev" /opt/zeroed/current.new', 'printf \'%s\\n\' "$current" > "$STATE_DIR/deployed"', 'apply_host', 'systemctl restart zeroed-worker.service', 'alert worker-switch "ALERT']) expect(rb, want).toContain(want);
     expect(upd).toContain('[ "$commit" != "$(cat "$STATE_DIR/failed_release" 2>/dev/null || true)" ] || exit 0');

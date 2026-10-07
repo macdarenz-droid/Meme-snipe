@@ -43,6 +43,8 @@ export const STATE_FILES = {
   journal: 'journal.jsonl',
   recorder: 'recorder',
   openIntents: 'open_intents',
+  /** RC-FIXES-2b: positions not closed, written with `open_intents` (the host's rollback holds while it is not 0). */
+  openPositions: 'open_positions',
   drillToken: 'drill.token',
   cleanStop: 'clean_stop',
   /** RESTART-ALERT: written by the runner just before a drill kills or reboots the worker; the next boot reads and removes it. */

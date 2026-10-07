@@ -43,6 +43,7 @@ const setup = (): void => {
   symlinkSync(join(root, `opt/zeroed/releases/${A}`), join(root, 'opt/zeroed/current'));
   writeFileSync(join(root, 'state/deployed'), `${A}\n`);
   writeFileSync(join(root, 'var/lib/zeroed/open_intents'), '0');
+  writeFileSync(join(root, 'var/lib/zeroed/open_positions'), '0');
   writeFileSync(join(root, 'cred/helius_api_key'), 'x');
   writeFileSync(join(root, 'sd/nrestarts'), '0');
   writeFileSync(join(root, 'sd/health_sha'), B);
@@ -167,7 +168,7 @@ describe('RC-R2-3: probation after a switch', () => {
     set('sd/nrestarts', 1);
     expect(run('zeroed-update').status).toBe(0);
     expect(read('state/deployed').trim()).toBe(B);
-    expect(read('alerts')).toMatch(/^worker-probation-held\|ALERT Zeroed host: rollback held: 1 open intents\./);
+    expect(read('alerts')).toMatch(/^worker-probation-held\|ALERT Zeroed host: rollback held: 1 open intents, 0 open positions\./);
     // Still held next run; one alert per episode (the alert stand-in records each call, the real one dedupes by key).
     set('sd/now', 1_800_000_000 + 8_000);
     run('zeroed-update');
@@ -177,7 +178,7 @@ describe('RC-R2-3: probation after a switch', () => {
     rmSync(join(root, 'var/lib/zeroed/open_intents'));
     run('zeroed-update');
     expect(read('state/deployed').trim()).toBe(B);
-    expect(read('alerts')).toMatch(/rollback held: unknown open intents/);
+    expect(read('alerts')).toMatch(/rollback held: unknown open intents, 0 open positions/);
     // Past the window and with no intent open: the rollback goes ahead.
     set('var/lib/zeroed/open_intents', 0);
     expect(run('zeroed-update').status).toBe(1);
@@ -198,6 +199,8 @@ describe('RC-R2-3: probation after a switch', () => {
     setup();
     rmSync(join(root, 'opt/zeroed/current'));
     rmSync(join(root, 'state/deployed'));
+    // The stand-in writes no open_positions: with no earlier release nothing waits on it.
+    rmSync(join(root, 'var/lib/zeroed/open_positions'));
     expect(run('zeroed-update').status).toBe(0);
     expect(read('state/probation').trim()).toBe(`${B}||||`.replace('||||', `|||1800000000|0`));
     set('sd/nrestarts', 1);
@@ -206,6 +209,40 @@ describe('RC-R2-3: probation after a switch', () => {
     expect(spawnSync('readlink', ['-f', join(root, 'opt/zeroed/current')], { encoding: 'utf8' }).stdout.trim()).toBe(join(root, `opt/zeroed/releases/${B}`));
     expect(read('state/deployed').trim()).toBe(B);
     expect(read('state/probation')).toBe('');
+  });
+
+  it('RC-FIXES-2b: an open position with no intent in flight holds a due rollback; an unreadable count holds; 0 rolls back', () => {
+    deploy();
+    set('var/lib/zeroed/open_positions', 1);
+    set('sd/nrestarts', 1);
+    expect(run('zeroed-update').status).toBe(0);
+    expect(read('state/deployed').trim()).toBe(B);
+    expect(read('alerts')).toMatch(/^worker-probation-held\|ALERT Zeroed host: rollback held: 0 open intents, 1 open positions\./);
+    rmSync(join(root, 'var/lib/zeroed/open_positions'));
+    run('zeroed-update');
+    expect(read('state/deployed').trim()).toBe(B);
+    expect(read('alerts')).toMatch(/rollback held: 0 open intents, unknown open positions/);
+    set('var/lib/zeroed/open_positions', 0);
+    expect(run('zeroed-update').status).toBe(1);
+    expect(read('state/deployed').trim()).toBe(A);
+  });
+
+  it('RC-FIXES-2b: a qualifying dry run that starts while a rollback waits holds it; it goes ahead once the run has ended', () => {
+    deploy();
+    set('var/lib/zeroed/open_intents', 1);
+    set('sd/nrestarts', 1);
+    run('zeroed-update');
+    expect(read('state/probation')).toMatch(/\|it restarted 1 time/);
+    // The intent settles, but a qualifying run has started meanwhile.
+    set('var/lib/zeroed/open_intents', 0);
+    mkdirSync(join(root, 'ev/run2'), { recursive: true });
+    writeFileSync(join(root, 'ev/run2/run.json'), '{"name":"q2"}');
+    expect(run('zeroed-update').status).toBe(0);
+    expect(read('state/deployed').trim()).toBe(B);
+    expect(read('alerts')).toMatch(/rollback held: a qualifying dry run is active/);
+    writeFileSync(join(root, 'ev/run2/report.json'), '{"pass":false}');
+    expect(run('zeroed-update').status).toBe(1);
+    expect(read('state/deployed').trim()).toBe(A);
   });
 });
 
