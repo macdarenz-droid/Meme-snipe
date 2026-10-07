@@ -918,3 +918,199 @@ Accept every finding: reviewer R4-1 and red team R4-01..R4-07.
 8. **R4-1.** D04 (ARCH:1680) says "…until the rolling 31-day sum falls below the cap".
 
 Also merge `origin/ccr-14987baf-i6lrsl` (now `d901c5c1`) with a merge commit before pushing.
+
+## Rounds 5 and 6 (head `53ab0d64`, 8 Oct 2026)
+
+Round 6 (supervisor message to the builder): per-account caps split into fixed allocations; the Helius account cap defaults to 5M per rolling 31 days; B10-ACK may set acctCap up to 9.5M inside its window; the job may run off the host.
+
+### Fresh review (FAIL on R6-1 only)
+
+Z0D rounds 5 and 6 delta review, PR #286. Head 53ab0d6465ac172e332351e3d89cd8c1e38e61f4 (confirmed by ls-remote; base d901c5c1 merged with a merge commit, and research/verify-m0-m1/RESULTS.md is identical to the base). Spec: docs/reviews/Z0D.md @ 88c62219 for round 5 (items 1-8), plus your round 6 message. Nothing edited or pushed; nothing sent to the owner.
+
+RESULT: FAIL, on one item only. You asked me to check that the risk of choice (b) is recorded, and it is not. Everything else in rounds 5 and 6 is DONE. The fix is one or two lines; nothing else needs a further round.
+
+NEW FINDINGS
+R6-1 MAJOR (your check on choice (b)): the risk of a 31-day engine Helius outage is not recorded.
+- The behaviour is specified in SPEC-A A-M14-05 step 2 and the case at SPEC-A:2507: engine allocation = max(0, 5M − 50k − the job's credits still inside the rolling 31 days). After an 8.6M job, the engine's Helius allocation is therefore 0 for up to 31 days after the window.
+- No risk line says so. DECISIONS:114 and ARCH D04 say only "the engine (the rest, shrinking during the job window)".
+- What the engine loses during that time:
+  - Helius as RPC C: P0/P1 failover, and the single expiry-proof provider while Chainstack is stopped (ARCH D04);
+  - getPriorityFeeEstimate (ARCH:1285, D15), which falls back to the floor.
+- It is fail-safe: entries are blocked if both RPC B and RPC C are out. It also lands in M2, before any live trading, unless the job is late.
+- Fix: one risk sentence in DECISIONS:114 and ARCH D04: "after the job window the engine's Helius allocation can be 0 for up to 31 days; meanwhile RPC C failover, Helius expiry proofs and fee estimates are unavailable to the engine (fee estimates use the floor); the job is scheduled so this ends before any M4 live step, and this is measured again before M4."
+
+R6-2 MINOR: MIGRATION's Owner waits B-10 row (:751) and card Z-H (:823) do not name the B10-ACK row the owner's acknowledgement must produce. Its format is `B10-ACK cap= ackAt= from= to= [acctCap≤9.5M]` (SPEC-A A-M13-06 step 3). Until that row exists, the job's allocation is 0. Fix: add the row name and its format to both places, so the owner step is exact.
+
+Note (no finding): acctCap up to 9.5M is 95% of the plan's volume. That is above the 50% default, but it applies only inside the window and only by the owner's own B10-ACK row. This matches CLAUDE.md "History for the past-data test" (the cap the owner has seen). The ≤ 50% rate buckets are unchanged.
+
+ROUND 5 ITEMS
+1. R4-01: DONE. A-M13-06 step 1 sets one rule: every return-based gate (B-2, B-6, B-8, R-2, R-3, R-4, P-2, P-2b, P-3, others) decides on the conservative row plus the D04 fixed cost. Cases for B-8 and R-4 at SPEC-A:2268.
+2. R4-02: DONE.
+   - Helius is counted per account with a ledger saved before each send, and every request is counted.
+   - The B-10 job has its own allocation and hard stop.
+   - The evaluator reads cap, ackAt and the window from the DECISIONS row at a commit, checked against that commit's blob hash, never from the report. There is a case for a report that claims a larger cap.
+   - Engine use is in the same account allocation scheme.
+3. R4-03: DONE. One Chainstack ledger per account; off-host research never uses Chainstack; per-account vs per-key allowance marked VERIFY before M1 (D04, A-M14-05). There is a case for two keys on one account.
+4. R4-04: DONE.
+   - Blocks and runs are kept per configKey across builds.
+   - fixes[] entries are tied to the promoted build by ancestry.
+   - A previously failed fault case needs 3 passing runs in a row; a failed dry-run block needs a fix plus a fresh 48 h block.
+   - Covered in ARCH P-5/P-10 (:470, :475), SPEC-A step 5 with cases at :2277, and SPEC-B B-M26-04 step 7 with cases.
+5. R4-05: DONE (SPEC-B:1450-1453 with cases 4, 6, 7 and 8).
+   - Sizing is in output terms: out(b) − lpFee(b) ≤ realVault × (10,000 − slippageBps)/10,000.
+   - token_program_refusal is checked first; exceeds_real_vault applies only when the failing instruction is the PumpSwap sell.
+   - After 5 refusals in a row: a critical alert and paused re-sends.
+   - Fees spent on refused sells are booked in stuck_cost.
+6. R4-06: DONE. Crash, illegal-state and unreconciled-intent counts come from replayRunId (the A-M11-01 run record). listSha256 is checked against listFile, which must be written before the replay. Coverage is recomputed from pageLog. Each has a case.
+7. R4-07: DONE.
+   - The signer never writes the engine ledger and draws on its own block from root-owned /etc/bot/rpc-allocation.json (0644).
+   - File owners and modes: engine /data/rpc-usage.db bot:sentinel 0660; signer /var/lib/signer/rpc-usage.json signer 0600; job /data/b10-usage.db bot 0600.
+   - There is a case for the engine trying to write the signer's file.
+8. R4-1: DONE. D04 says "until the rolling 31-day sum falls below the cap".
+
+ROUND 6 ITEMS
+- Fixed allocations per account cap, each with its own ledger: DONE. Helius: signer 50k (POLICY, VERIFY before M4), the job, and the engine; Chainstack: signer 50k RU and the engine. Allocations that add up to more than the cap refuse at start with E_ALLOCATION_EXCEEDS_CAP (case included).
+- B-10 job allocation 0 until a B10-ACK row exists: DONE (case: first request refused before it is sent).
+- Helius account cap 5M per rolling 31 days by default: DONE (A-M14-05; config rpc.helius.rolling_31d_credit_cap).
+- acctCap up to 9.5M only inside the window: DONE (case: 9.5M − 50k − 8.6M = 850k inside the window).
+- The job runs on or off the host under its own ledger: DONE (A-M14-05; the job uses the M14 ledger code).
+- (a) from= and to= in B10-ACK: DONE (A-M13-06 step 3).
+- (b) Job credits stay in the rolling sum, so the engine allocation can be 0: behaviour DONE; risk record MISSING (R6-1).
+- (c) acctCap above 9.5M refused: DONE (case: 9.6M refused, default applies).
+
+SCRIPTS
+- FACTS.json: parses; 292 facts, no duplicate IDs. No cited ID is undefined; every RS and VF fact is cited. C-01..C-77 are each defined once; none is undefined or cited only in its own row.
+- Ticket graph:
+  - 63 A, 81 B and 32 UI tickets: 176 in all.
+  - No undefined dependencies and no cycles.
+  - Later-milestone dependencies: only UI-T14 → B-M17-08 and B-M29-04, the known live-acceptance-only cases.
+  - Listed and table counts per milestone match: M0 24/24, M1 25/25, M2 46/46, M3 49/49, M4 27/27, Deferred 2/2. M4b shows 5 listed and 3 in the table, as before.
+
+CONSISTENCY AND SCOPE
+- ARCH D04, the 11.1 tables, SPEC-A A-M14-01/02/05 and A-M13-06, SPEC-B B-M20-04 and B-M26-04, MIGRATION:703 and DECISIONS:113-114 agree on per-account ledgers, signer blocks, allocations and caps.
+- Nothing is loosened; every change tightens or is owner-gated (acctCap).
+- The diff touches docs/blueprint/**, DECISIONS:113-114 and MIGRATION:703, plus the base merge. No code changed.
+
+FAIL · 53ab0d6465ac172e332351e3d89cd8c1e38e61f4 (only R6-1 blocks; with that risk line added, this round passes)
+
+### Red team (0 BLOCKER, 5 MAJOR, 3 MINOR)
+
+# Red team, rounds 5 and 6: card Z0D at `53ab0d64` — FAIL (0 BLOCKER, 5 MAJOR, 3 MINOR)
+
+Head confirmed with ls-remote: 53ab0d6465ac172e332351e3d89cd8c1e38e61f4. Rulings read from docs/reviews/Z0D.md @ 88c62219, plus the round 6 rows in ARCH, SPEC-A A-M14-05 and DECISIONS.
+
+## Round 4 findings
+- **Closed:** R4-01 (A-M13-06 step 1: every return-based gate, P included, on the conservative row plus $59; cases for B-8 and R-4), R4-03 (one ledger per account, VERIFY before M1; off-host research never uses Chainstack), R4-06, R4-07.
+- **Closed, with residuals:**
+  - R4-02: new holes in the allocation scheme (R5-01 to R5-04).
+  - R4-04: fix records are weak (R5-07).
+  - R4-05: sizing and classification order are now correct, but a drained pool can be held forever (R5-05).
+- **Exit sizing checked.**
+  - Correct direction. The SDK refuses when vault &lt; out − lp, and the constraint `out(b) − lpFee(b) ≤ V × (1 − s)` stays inside that.
+  - Protocol and creator fees also leave the vault, which is why the rule uses out − lp. That is right.
+  - The concavity argument for b ≤ 0.99 × maxSellableBase holds.
+  - The classification order is safe: token_program_refusal first; the PumpSwap sell instruction only; the snapshot at or before the failure slot.
+
+## MAJOR
+
+**R5-01. A change of Helius cap at the window edge lets the account go over the plan.** (A-M14-05 allocations; D04)
+- Each allocation's ledger enforces only its own rolling sum. The engine's allocation shrinks when the B-10 window opens, but credits the engine has already spent are not taken off the job's allocation.
+- Example with the stated values:
+  - The engine spends up to 4.95M in the 31 days before `from`.
+  - The window opens with acctCap 9.5M, and the job spends its 8.6M cap in the first days.
+  - One rolling 31-day window then holds about 13.55M, over Developer's 10M.
+- Whether Helius bills overage or only throttles is not in the register; worth checking. Either way, "≤ the plan, no overage" is broken. The "allocations ≤ cap at start" check compares allocations, not amounts already spent.
+- The reverse also hurts. After `to` the cap falls back to 5M while the job's 8.6M is still inside the rolling sum. The engine's allocation is then max(0, …) = 0 for up to 31 days: a Helius blackout for priority fees, failover and expiry proofs.
+- Fix:
+  - one account-level rolling ledger as well, checked before every send by every allocation;
+  - the job's usable cap = min(row cap, acctCap − signer − the engine's actual rolling spend at window start);
+  - state the blackout after the window and its effect (RPC C failover), or size the window so the engine keeps a floor.
+
+**R5-02. The job's ledger can be duplicated or lost.**
+- Two runs at once (on and off the host, or two off-host restarts) each open "its own ledger", so the allocation is spent twice.
+- An off-host ledger that is lost restarts at 0 and can spend the whole allocation again.
+- The engine's formula subtracts "the job's credits still inside the rolling 31-day sum", but the host cannot see an off-host ledger. That number is undefined.
+- Fix:
+  - one consumption ledger per `B10-ACK` id, holding an exclusive lease;
+  - a second instance refuses to start;
+  - the ledger is checkpointed off the job machine;
+  - a missing or unreadable ledger counts as the full allocation spent;
+  - until the job reports its final total, the host assumes the job has spent its full cap.
+
+**R5-03. Where the B10-ACK row comes from, and whether it can change, is not pinned for spending.**
+- The evaluator pins `&lt;commitSha&gt;:&lt;id&gt;` with a blob hash, but only after the fact.
+- The job's runtime allocation is "0 until an owner B10-ACK row exists in DECISIONS.md". It is not said which checkout or commit is read, or whether the commit must be on main.
+- Agents write DECISIONS.md, so an agent-written row (or a later edit to `cap`, `acctCap` or `to`) can enable or raise spending. A row on an unmerged branch also counts.
+- Fix:
+  - B10-ACK rows are append-only, with an immutable id; any change is a new id;
+  - the row must be on origin/main and quote the owner's message and time word for word;
+  - the job pins the ack id, commit and blob hash at start, and stops if any of them changes;
+  - the evaluator requires the same pinned ack.
+
+**R5-04. Rate limits are not split between processes.** Owner rule: ≤ 50% of documented limits.
+- Credits are split into allocations, but request rates are not.
+- The engine (≤ 5 req/s), the signer and the B-10 job (off host, "its own ≤ 50% limiter") all hit the same Helius account. Each one at 50% puts the total above 50% of the documented rate.
+- Fix: split the account's 50% rate budget between engine, signer and job in `/etc/bot/rpc-allocation.json`, the same way as credits. Every limiter reads its share from there.
+
+**R5-05. A drained position can stay open forever.** (SPEC-B B-M20-04 step 5)
+- If the real vault stays below the margined output, or the margined size is 0, re-sends pause "until a snapshot reads the vault above". `exceeds_real_vault` never counts toward cannot-sell.
+- A pool drained for good (the usual end of a rug) therefore leaves a position that is never `stuck`, never written off and never closed.
+- It keeps holding MAXOPEN and exposure, which can block every new entry. Its loss is never booked in SOL.
+- Fix: after the 5-refusal pause plus a time limit T (for example the strategy's time stop), or with the margined size at 0 for T, mark it cannot-sell and `stuck`. Value it at the most the vault can pay (often 0), book the loss, and free the slot.
+
+## MINOR
+
+**R5-06. The Helius plan is contradictory.** A-M14-01 defaults still say "Helius Free (1M credits/month…)". A-M14-05 caps Helius at 5M as "50% of Developer's 10M", and validation refuses any cap above 50% of the documented allowance. A builder following A-M14-01 gets a refusal or the wrong plan. Fix: one plan in both places (Developer, the key the bot shares per DECISIONS O7).
+
+**R5-07. Fix records and the configKey history are weak.**
+- An operator can add `{ failureId, fixCommitSha }` for any ancestor commit. Nothing checks that the commit is later than the failure, cites the failureId, or was reviewed.
+- Failures are kept per configKey. A new configKey restarts B and R, so the cost of dodging is high. But fault-injection failures are engine bugs, not config bugs.
+- Fix:
+  - require the fix commit to be after the failure, to name the failureId in its message, and to be merged to main through review;
+  - keep the P-10 history by build lineage, across configKeys.
+- Test 6 asserts b ≤ ⌊0.99 × maxSellableBase⌋. Because lp is rounded up and out is rounded down, this can miss by 1 unit; allow ±1.
+
+**R5-08. Window and storage details are missing.**
+- `from` and `to` are UTC dates, but it is not said whether each end is included. The window has no maximum length, so a long window keeps acctCap at 9.5M for months.
+- The job may need 95–255 GB off the host, and nothing says this costs $0 (owner rule: no new spend).
+- Fix: [from, to) in UTC, a maximum length (for example 14 days), and the named $0 storage location.
+
+## Totals
+BLOCKER 0; MAJOR 5 (R5-01 to R5-05); MINOR 3 (R5-06 to R5-08). R5-01 becomes a BLOCKER if Helius bills overage automatically on Developer. Head attacked: 53ab0d6465ac172e332351e3d89cd8c1e38e61f4. Nothing edited or pushed; nothing sent to the owner.
+
+### Supervisor rulings for round 7 (8 Oct 2026, about 1:30 AM)
+
+Round 6's allocation scheme is too easy to get wrong, so round 7 makes it simpler. Accept the reviewer's R6-1 and R6-2 and the red team's R5-01..R5-08, with these rulings.
+
+1. **The B-10 job runs alone on Helius (R5-01, R5-02, R5-04, R6-1).** During the job window [from, to), in UTC:
+   - The engine and the signer use no Helius at all. Their Helius allocation is 0, and they run on Shyft and Chainstack.
+   - The window is allowed only while no live or paper session depends on Helius. In practice that means M2, before any M3 paper session.
+   - Before the job starts, a check reads the account's rolling 31-day Helius spend from the single account-level ledger. Every consumer checks that same ledger before every send. The job's usable cap is min(row cap, acctCap − that rolling spend).
+   - The account's 50% rate budget is split in `/etc/bot/rpc-allocation.json`, the same way as credits. During the window the job holds the whole Helius rate share; outside it, the job holds none.
+   - After the window, the engine's Helius allocation can be 0 for up to 31 days. Record that risk in DECISIONS:114 and in ARCH D04, in the reviewer's words (R6-1): RPC C failover, Helius expiry proofs and fee estimates are unavailable to the engine, and fees fall back to the floor. Also record that the job is scheduled so this ends before any M3 paper or M4 live step, and that this is measured again before M4.
+2. **One job instance (R5-02).**
+   - There is one consumption ledger per B10-ACK id, holding an exclusive lease. A second instance refuses to start.
+   - The ledger is checkpointed off the job machine after every page. A missing or unreadable ledger counts as the full allocation spent.
+   - Until the job reports its final total, the host assumes the full cap has been spent.
+3. **The B10-ACK row (R5-03, R6-2).**
+   - Rows are append-only, with an immutable id. Any change is a new id.
+   - The row must be on `origin/ccr-14987baf-i6lrsl`, the integration branch, and must quote the owner's message and time word for word. The supervisor writes it only from an owner message.
+   - The job pins the ack id, the commit and the blob hash at start, and stops if any of them changes. The evaluator requires the same pinned ack.
+   - Name the row and its format (`B10-ACK id= cap= acctCap≤9.5M ackAt= from= to=`) in MIGRATION's Owner waits row for B-10 (:751) and in card Z-H (:823).
+   - The window [from, to) is in UTC, with a maximum length of 14 days.
+4. **Drained positions (R5-05).** If a position stays in the 5-refusal pause for longer than the strategy's time stop T, or if its margined size is 0 for longer than T:
+   - mark it cannot-sell and `stuck`;
+   - value it at the most the vault can pay (often 0);
+   - book the loss in SOL;
+   - free its MAXOPEN slot;
+   - raise a critical alert.
+
+   Add a case for this.
+5. **R5-06.** One Helius plan everywhere: the Developer plan. The bot shares the key under DECISIONS O7. Fix the A-M14-01 defaults to match.
+6. **R5-07.**
+   - A fix record needs a fix commit that comes after the failure, names the failureId in its message, and was merged to the integration branch through review.
+   - P-10's failure history is kept per build lineage, across configKeys.
+   - Test 6 allows ±1 base unit.
+7. **R5-08.** The storage for the job must be named as a $0 location. That is a precondition from the Z-H research (docs/reviews/ZH.md item 3) and a hard precondition before any spend.
+
+Before pushing, read the whole allocation and B-10 text once more with one question in mind: "how could this spend more than the owner acknowledged, or more than the plan?" Fix anything you find, and list it in your reply.
