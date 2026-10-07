@@ -243,6 +243,10 @@ def replay(c, sigs, label):
                               'slot': trig_s.slot, 'delay_s': trig_s.t - tend, 'fills': f}
     return res
 
+def missing(r):
+    return any(r.get(k, {}).get('reason') in ('none-in-range', 'no swap after exit bar in range')
+               for k in ('R1_rt', 'R2_rt', 'R1_hourly', 'R2_hourly'))
+
 def need_end(c):
     return max(c['R1_hourly']['exit_bar_start'], c['R2_hourly']['exit_bar_start']) + 3600 + 900
 
@@ -263,14 +267,22 @@ def run(which):
         if label in out['trades']:
             continue
         try:
-            sigs = coin_sigs(c, need_end(c))
-            ok = sum(1 for x in sigs if x['err'] is None)
-            led = heli.credits()['credits']
-            if led + 10 * ok > heli.CAP - RESERVE:
-                out['skipped'][label] = f'would exceed cap: up to {ok} transactions ({10 * ok} credits), {led} used'
-                print(label, 'SKIP', out['skipped'][label]); continue
-            r = replay(c, sigs, label)
-            r['sigs_in_range'] = ok
+            r = None
+            # widen the range only when a trigger or an exit swap lies past it (thin pools, no early trigger)
+            for t_end in (need_end(c), c['entry_ts'] + HOLD + 86400):
+                if t_end < need_end(c) or (r is not None and not missing(r)):
+                    break
+                sigs = coin_sigs(c, t_end)
+                ok = sum(1 for x in sigs if x['err'] is None)
+                led = heli.credits()['credits']
+                if led + 10 * ok > heli.CAP - RESERVE:
+                    r = None
+                    out['skipped'][label] = f'would exceed cap: up to {ok} transactions ({10 * ok} credits), {led} used'
+                    print(label, 'SKIP', out['skipped'][label]); break
+                r = replay(c, sigs, label)
+                r['sigs_in_range'] = ok; r['range_end'] = t_end
+            if r is None:
+                continue
         except heli.CapReached as ex:
             out['skipped'][label] = 'cap reached: ' + str(ex); print(label, 'CAP'); break
         out['trades'][label] = r
