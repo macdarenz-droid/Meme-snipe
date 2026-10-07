@@ -108,6 +108,7 @@ One row per decision in the table; detailed module decisions follow in sections 
 | 2026-10-07 | The bot moves to the dedicated Vultr `vc2-1c-2gb` (2 GB, 55 GB); the 1 GB `zeroed` is stopped and kept until its ledger, state and journal are saved (owner) | The worker ran out of V8 memory on 1 GB; D07 | `CLAUDE.md` "Host" |
 | 2026-10-07 | No bugs migrate: a Zeroed module enters the Blueprint build only under the map's Rules; no old server state is reused; only the stand-in runs until the paper gates pass, except the Blueprint's keyless recorder after its cards are reviewed and red-teamed and its paper engine at M3, each after the three-red-team step (owner) | Owner rule | [MIGRATION.md](MIGRATION.md) "Rules" |
 | 2026-10-07 | Research addendum `research/BLUEPRINT_ADDENDUM.md` (72f1793f) adopted item by item; A17 changed: after both strategies fail the bot records only and never paper-trades a failed rule (supervisor) | Rules 4; "No knowingly losing trades" | [MIGRATION.md](MIGRATION.md) "Research addendum"; section below |
+| 2026-10-07 | Addendum A05 kill-only Phase 0 check adopted; A06 item 2: forward data plus a replay of clean history already held; A17: stop date 31 Dec 2026, spend cap = current spend, nothing new; A18: no early CoinGecko screen for now (owner) | Owner: "Do all whats recommended" (about 10:58 PM) | [MIGRATION.md](MIGRATION.md) "Research addendum" |
 
 ## Supervisor rulings after the external review (2026-10-04)
 
@@ -3544,7 +3545,7 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
 `research/BLUEPRINT_ADDENDUM.md` at `72f1793f` on `ccr-7fae2302-drz4co`, adopted item by item in `docs/MIGRATION.md` "Research addendum" (owner rule: every rejection is recorded here with its reason).
 
 - **A17, changed.** The addendum says that when MR-01 and PM-01 both fail, "the bot only records and paper-trades". The paper-trading part is not adopted: paper-trading a rule that research shows loses would break "No knowingly losing trades … not even as practice" (`CLAUDE.md`). After both fail, the bot records only, asks for no deposit, and research goes on within the owner's stop date and spend cap; until the owner sets them, no new research spend (owner rule "No extra data spend"). The hold-SOL and JitoSOL baselines are adopted as written.
-- **No other item is rejected.** A01 is settled by the owner's 2 GB host decision. A05, A06 item 2, A17's values and A18 wait for the owner.
+- **No other item is rejected.** A01 is settled by the owner's 2 GB host decision. The owner took the recommendations on A05, A06 item 2, A17's values and A18 (about 10:58 PM).
 
 ### Terms register (A02)
 
