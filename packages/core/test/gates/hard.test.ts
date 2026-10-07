@@ -230,6 +230,9 @@ describe('unknown, stale or degraded input rejects with a reason (H16)', () => {
     // 2 slots of state lag + 2,000 ms / 400 ms = 7 slots.
     const sim = (slot: bigint | null) => reasonsOf(patch(passingFacts(), simKey(MINT), { obs: obs({ slot, receivedAt: T - 500 }) }));
     expect(codesFor(sim(SLOT - 7n), 'H15')).toEqual([]);
+    // F3: a fresh simulation's lag is journalled.
+    const fresh = evaluateHardRejects(contextOf(patch(passingFacts(), simKey(MINT), { obs: obs({ slot: SLOT - 7n, receivedAt: T - 500 }) })), deps('live'), request(), { stopAtFirst: false });
+    expect(fresh.notes).toContainEqual({ gate: 'H15', code: 'sim-slot-lag', detail: `simulation at slot ${SLOT - 7n}, 7 slots behind the tip (at most 7)` });
     expect(sim(SLOT - 8n)).toContainEqual(expect.objectContaining({ gate: 'H16', code: 'stale', input: 'sim', neededBy: 'H15', value: '8', limit: '7' }));
     expect(sim(null)).toContainEqual(expect.objectContaining({ gate: 'H16', code: 'malformed', input: 'sim', neededBy: 'H15' }));
   });

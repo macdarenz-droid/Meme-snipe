@@ -930,6 +930,8 @@ export class LiveStrategy implements Strategy {
     // PERSIST-2: the newest graduates fact released so far, with only the entries whose survival mark was reached by
     // the save moment (the fact itself is never newer than the last released event).
     const items = (this.#graduatesFact?.items ?? []).filter((g) => g.migratedAtMs + this.#d.session.policy.regime.survivalAfterMs <= asOf.receivedAt);
+    // R2-6: the series' unobserved stretches (already pruned at its keep line) go with it, so the next restart sums them.
+    const unobserved = this.#graduatesFact?.unobserved ?? [];
     // RESTART-KEEP: every candidate in its window. SAVE-ASOF: every saved time as at the moment, never after
     // (`AsOfClamp`): moments order by slot first and receipt times need not follow, so an evaluation can carry a time
     // after the moment (an event of an earlier slot received later), and a migration's time is its chain block time,
@@ -940,7 +942,7 @@ export class LiveStrategy implements Strategy {
     // WORKER-GROW: the index's mint rows are streamed into the file by the save, never built whole; the graduates ride
     // in the payload line.
     return {
-      state: { asOf, index: this.#deployers.snapshot(asOf, retainFromMs, { mints: false, clamp }), labeller: this.#labeller.snapshot(clamp), coverage: pruneCoverage(this.#coverageFacts, retainFromMs).map((e) => (e.moment.receivedAt <= asOf.receivedAt ? e : { ...e, moment: clamp.moment(e.moment) })), graduates: { asOfMs: asOf.receivedAt, items }, candidates, tails: [...this.#tail].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([mint, t]) => ({ mint, pool: t.pool, untilMs: t.untilMs })) },
+      state: { asOf, index: this.#deployers.snapshot(asOf, retainFromMs, { mints: false, clamp }), labeller: this.#labeller.snapshot(clamp), coverage: pruneCoverage(this.#coverageFacts, retainFromMs).map((e) => (e.moment.receivedAt <= asOf.receivedAt ? e : { ...e, moment: clamp.moment(e.moment) })), graduates: { asOfMs: asOf.receivedAt, items, ...(unobserved.length === 0 ? {} : { unobserved }) }, candidates, tails: [...this.#tail].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([mint, t]) => ({ mint, pool: t.pool, untilMs: t.untilMs })) },
       mintRows: this.#deployers.mintRows(retainFromMs, clamp),
       clamp,
     };

@@ -153,6 +153,11 @@ export interface GraduatesSeed {
   readonly source: 'persist' | 'data-1';
   readonly asOfMs: number;
   readonly items: readonly { readonly mint: string; readonly migratedAtMs: number; readonly reserveAfter: bigint }[];
+  /**
+   * R2-6: survival marks, each [fromMs, toMs), the series did not observe (earlier restarts). Absent in files saved
+   * before it: none known (the new restart's own stretch is still added).
+   */
+  readonly unobserved?: readonly { readonly fromMs: number; readonly toMs: number }[];
 }
 
 // ---------- Shape checks ----------
@@ -215,6 +220,7 @@ export const parseVolumeHour = (v: unknown): VolumeHour | null =>
 export const parseGraduatesSeed = (v: unknown): GraduatesSeed | null =>
   isObj(v) && (v['source'] === 'persist' || v['source'] === 'data-1') && isCount(v['asOfMs'])
   && every(v['items'], (i): i is GraduatesSeed['items'][number] => isObj(i) && isStr(i['mint']) && isCount(i['migratedAtMs']) && isNat(i['reserveAfter']))
+  && (v['unobserved'] === undefined || every(v['unobserved'], (u): u is { fromMs: number; toMs: number } => isObj(u) && isCount(u['fromMs']) && isCount(u['toMs']) && (u['fromMs'] as number) <= (u['toMs'] as number)))
     ? (v as unknown as GraduatesSeed) : null;
 
 export const parseExecStats = (v: unknown): ExecStats | null =>

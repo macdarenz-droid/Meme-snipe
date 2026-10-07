@@ -67,11 +67,9 @@ export class DeployerIndex {
     this.#trackLoss(e);
     if (e.key.startsWith(LOG_CREATE_PREFIX) || e.key.startsWith(TX_CREATE_PREFIX)) {
       const c = createOf(e.value);
-      // R2-7: a block time up to CHAIN_SKEW_MS ahead of the receipt clock is taken as the receipt time, as `seed` and
-      // `fill` clamp to their as-of, so a create released before now counts in H14's 24 h window. Further ahead is no
-      // clock skew and keeps its chain time.
-      const r = e.moment.receivedAt;
-      if (c !== null) this.#mints.add(c.creator, c.mint, c.createdAtMs > r && c.createdAtMs <= r + CHAIN_SKEW_MS ? r : c.createdAtMs);
+      // R2-7: a block time ahead of the receipt clock, by any amount (a host clock behind), is taken as the receipt time,
+      // so a create released before now always counts in H14's 24 h window. That only counts more: the safe side.
+      if (c !== null) this.#mints.add(c.creator, c.mint, Math.min(c.createdAtMs, e.moment.receivedAt));
       return;
     }
     const into = e.key.startsWith(RUG_PREFIX) ? this.#rugs : e.key.startsWith(RUG_UNJUDGED_PREFIX) ? this.#unjudged : null;

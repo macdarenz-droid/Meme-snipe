@@ -580,15 +580,17 @@ const h15 = (env: Env): Outcome => {
   const { maxStateSlotLag, maxQuoteAgeMs } = env.policy.gates;
   const simLag = BigInt(maxStateSlotLag + Math.ceil(maxQuoteAgeMs / SIM_SLOT_MS));
   const simBehind = env.ev.tip - simSlot;
-  if (simBehind > simLag) return { reasons: [{ gate: 'H16', code: 'stale', input: 'sim', neededBy: 'H15', detail: `simulation at slot ${simSlot}, ${simBehind} slots behind`, value: String(simBehind), limit: String(simLag) }] };
-  if (!s.fact.ok) return reject('H15', 'sim-failed', `round-trip simulation failed: ${s.fact.error ?? 'no error given'}`, { input: 'sim' });
+  if (simBehind > simLag) return { reasons: [{ gate: 'H16', code: 'stale', input: 'sim', neededBy: 'H15', detail: `simulation at slot ${simSlot}, ${simBehind} slots behind the tip (at most ${simLag})`, value: String(simBehind), limit: String(simLag) }] };
+  // F3: the lag of a fresh simulation is journalled too, so the dry run can measure its spread against the bound.
+  const notes: GateNote[] = [{ gate: 'H15', code: 'sim-slot-lag', detail: `simulation at slot ${simSlot}, ${simBehind} slots behind the tip (at most ${simLag})` }];
+  if (!s.fact.ok) return { notes, ...reject('H15', 'sim-failed', `round-trip simulation failed: ${s.fact.error ?? 'no error given'}`, { input: 'sim' }) };
   // Like with like: the simulation buys and sells at once, so its loss is compared with the model of that same
   // sequence (the sell on the reserves the buy left), never with the planned exit, whose impacts would hide a charge.
   const simLoss = s.fact.paid - s.fact.proceeds;
   const modelled = q.trade.paid - q.trade.immediateProceeds + ROUND_TRIP_ROUNDING_LAMPORTS;
   return simLoss > modelled
-    ? reject('H15', 'sim-loss', `simulated round trip lost ${simLoss} lamports, the model allows ${modelled}`, { input: 'sim', value: String(simLoss), limit: String(modelled) })
-    : PASS;
+    ? { notes, ...reject('H15', 'sim-loss', `simulated round trip lost ${simLoss} lamports, the model allows ${modelled}`, { input: 'sim', value: String(simLoss), limit: String(modelled) }) }
+    : { reasons: [], notes };
 };
 
 /** Solana's nominal slot time, ms: turns H15's receipt age into slots. */

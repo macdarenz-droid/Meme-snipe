@@ -3515,6 +3515,7 @@ Red team A's round-2 report (`packages/worker/test/redteam/REPORT.md`, "Round 2"
 - **R2-4, H15's simulation slot** (`gates/hard.ts` H15, `gates/evidence.ts` `tip`).
   - Before: only the 2 s receipt age was checked; a simulation 5,000 slots behind the tip passed.
   - Now: a simulation with no context slot is `malformed`. One more than `maxStateSlotLag + ceil(maxQuoteAgeMs / 400)` slots behind the tip (7 with the trial policy) is `stale`. 400 ms is Solana's nominal slot time; slower slots only put a fresh simulation fewer slots behind, so no fresh simulation is refused. Live raw sim reads always carry the node's context slot (`parseSimRead` requires it).
+  - Review F3: the lag (tip − simulation slot) is in the `stale` reason's detail. A fresh simulation journals it as an H15 `sim-slot-lag` note, so the dry run can check its p99 against the bound of 7.
   - Rejected: binding the slot to the pool read's slot. In one read batch the account read can land a slot after the simulation, so it would refuse sound simulations.
 - **R2-5, H16 cross-check per field** (`gates/hard.ts` H16).
   - Before: a source counted when it reported either authority, so an authority no third party reported passed unchecked.
@@ -3530,12 +3531,21 @@ Red team A's round-2 report (`packages/worker/test/redteam/REPORT.md`, "Round 2"
       - A deploy (minutes down plus the 30 min of lost pending marks) is judged.
       - Still stricter than 959d801, which judged the restored series whatever it held.
     - Adding the field changes the trial policy's version hash (the pinned value in `config/policy.test.ts` is updated).
-  - Only the newest stretch is kept. Each restart's own stretch is at least `survivalAfterMs` long and is measured on its own; a window holding an older stretch as well is not summed. Known limit: a restart twice inside a day, each under 2 h, is judged. No new saved data is needed: the saved series stays `{ asOfMs, items }`.
+  - **Review F1 (S1 ruling, saved-shape change approved by S1: only the bot's own coverage record, no personal data).** Every restart's stretch is kept, not just the newest.
+    - The stretches are saved with the series as `unobserved: [{ fromMs, toMs }]`, pruned at the series' keep line.
+    - The seed carries them, and the new restart adds its own.
+    - The regime sums their overlap with each check window, current and earlier: the union, so a stretch saved twice counts once.
+    - Why: with only the newest stretch known, after a second restart a check before it judged the first restart's missing marks as covered. **Fail-open.**
+    - A file saved before the list loads as "none known" plus the new restart's stretch, which is what happened before.
   - A seed that adds no graduate now still releases a fact, which carries the stretch.
   - The 14 daily shares the median is taken from are not gated on the stretch, for the same reason. The backtest has no restarts, so its results do not change.
+  - **Time-of-day bias, accepted for now (review F4).**
+    - A hole is not spread evenly over the day, so the observed 24 h share leans toward the observed hours.
+    - The reviewer bounds the shift at about 1.7 points for a 2 h hole at the peak hour. That is the same order as daily sampling noise (standard error about 1.3 points).
+    - Hour-matching the baseline is deferred. A measured hour-of-day profile from the recordings is a later card.
 - **R2-7, the serial count and block time ahead of the clock** (`gates/deployer-index.ts` `observe`).
   - Before: a create whose block time was ahead of the local clock was in the index but left out of H14's 24 h count until the clock passed it.
-  - Now: a block time up to `CHAIN_SKEW_MS` ahead of its receipt is taken as the receipt time, as `seed` and `fill` clamp to their as-of. Further ahead is no clock skew and keeps its chain time.
+  - Now (review F2): a block time ahead of its receipt, by any amount, is taken as the receipt time. A host clock more than `CHAIN_SKEW_MS` behind would otherwise under-count H14's 24 h serial count. Clamping only counts more: the safe side.
 - **Evidence.**
   - Fail before (on 959d801), pass after, all 8: `core/test/redteam2/h15-sim-slot-unbound`, `core/test/redteam2/h16-xcheck-partial-field` (2), `worker/test/redteam2/graduates-restore-hole`, `rug-check-before-lookback`, `serial-chain-ahead`, `worker/test/redteam3/graduates-quote-mint`, `rugs-coverage-store-restart`.
   - Boundary tests added: H14 checked-rug look-back edge and the undated rug (`gates/deployer-index.test.ts`); the clamp's skew edge (same file); the H15 slot lag of 7 against 8, and a missing slot (`gates/hard.test.ts`); the 20 h outage, a 40 min hole, exactly 2 h and 2 h + 1 ms, and a hole sliding out of the window (`gates/regime.test.ts`); a seed that adds nothing still marks its hole (`facts/producer.test.ts`).

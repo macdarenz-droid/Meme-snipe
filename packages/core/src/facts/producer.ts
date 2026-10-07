@@ -562,8 +562,8 @@ export class FactProducer {
   }
   readonly #pending = new Map<string, Pending>();
   readonly #graduates: GraduatesFact['items'][number][] = [];
-  /** R2-6: the newest stretch of survival marks this series did not observe (set by a seed). */
-  #unobserved: { readonly fromMs: number; readonly toMs: number } | null = null;
+  /** R2-6: the stretches of survival marks this series did not observe (the seed's, and this restart's own). */
+  #unobserved: { readonly fromMs: number; readonly toMs: number }[] = [];
   readonly #sol = new Map<number, bigint>();
   readonly #volume: ChainVolumeDays;
   #abstain = new Map<string, number>();
@@ -1731,9 +1731,9 @@ export class FactProducer {
     }
     if (add.length > 0) this.#graduates.push(...add);
     // R2-6: the marks from the seed's as-of to one survival window after its release were not observed: the downtime,
-    // and the marks the old process still had pending (not saved). Only the newest hole is kept: a 24 h window that
-    // touches an older one and reaches past the newest covers the newest too.
-    this.#unobserved = { fromMs: r.asOfMs, toMs: at + this.#o.survivalAfterMs };
+    // and the marks the old process still had pending (not saved). Earlier restarts' stretches come with the seed and
+    // are kept with it, so the regime sums every hole in a window (pruned with the series at its keep line).
+    this.#unobserved.push(...(r.unobserved ?? []), { fromMs: r.asOfMs, toMs: at + this.#o.survivalAfterMs });
     this.#graduatesChanged = true;
     return { accepted: true, added: add.length, reason: null };
   }
@@ -1773,6 +1773,7 @@ export class FactProducer {
     this.#graduatesChanged = false;
     const g = graduatesFact(this.#graduates, e.moment.receivedAt, this.#o.graduatesKeepMs, this.#unobserved);
     this.#graduates.splice(0, this.#graduates.length, ...g.kept);
+    this.#unobserved.splice(0, this.#unobserved.length, ...(g.value.unobserved ?? []));
     put(GRADUATES_KEY, g.value);
   }
 }
@@ -1784,7 +1785,7 @@ type GraduateItem = GraduatesFact['items'][number];
  * items that migrated within `keepMs` are kept, in their given order; the fact lists them by migration time, then mint.
  */
 export const graduatesFact = (
-  items: readonly GraduateItem[], nowMs: number, keepMs: number, unobserved: { readonly fromMs: number; readonly toMs: number } | null = null,
+  items: readonly GraduateItem[], nowMs: number, keepMs: number, unobserved: readonly { readonly fromMs: number; readonly toMs: number }[] = [],
 ): { readonly kept: GraduateItem[]; readonly value: GraduatesFact } => {
   const keepFrom = nowMs - keepMs;
   const kept = items.filter((x) => x.migratedAtMs >= keepFrom);
@@ -1793,7 +1794,11 @@ export const graduatesFact = (
     value: {
       obs: { provider: 'facts', slot: null, receivedAt: nowMs, quality: [] },
       items: [...kept].sort((a, b) => a.migratedAtMs - b.migratedAtMs || (a.mint < b.mint ? -1 : a.mint > b.mint ? 1 : 0)),
-      ...(unobserved === null || unobserved.toMs < keepFrom ? {} : { unobserved }),
+      ...(() => {
+        // R2-6: a stretch ending before the keep line covers no mark the series still holds.
+        const kept = unobserved.filter((u) => u.toMs >= keepFrom).sort((a, b) => a.fromMs - b.fromMs || a.toMs - b.toMs);
+        return kept.length === 0 ? {} : { unobserved: kept };
+      })(),
     },
   };
 };

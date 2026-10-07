@@ -9,7 +9,7 @@ import type { PolicySession } from '../config/session.ts';
 import type { Policy } from '../config/policy.ts';
 import { Evidence, type GateContext } from './evidence.ts';
 import {
-  type CurveVolumeFact, type GraduatesFact, type SolUsdFact,
+  type CurveVolumeFact, type GraduatesFact, type UnobservedStretch, type SolUsdFact,
   CURVE_VOLUME_KEY, EXEC_HEALTH_KEY, GRADUATES_KEY, SOL_USD_KEY, parseCurveVolume, parseExecHealth, parseGraduates, parseSolUsd,
 } from './facts.ts';
 import type { Mode } from './hard.ts';
@@ -87,6 +87,22 @@ const median = (xs: readonly Frac[]): Frac => {
 
 const unknown = (condition: RegimeCondition, input: FactName, code: EvidenceCode, detail: string): ConditionResult => ({ condition, ok: null, code, input, detail });
 
+/**
+ * R2-6: how much of (from, to] the stretches cover, overlaps counted once (merged first, so a stretch repeated by two
+ * restarts' saves never counts twice).
+ */
+export const unobservedIn = (stretches: readonly UnobservedStretch[], from: number, to: number): number => {
+  const clipped = stretches.map((s) => [Math.max(s.fromMs, from), Math.min(s.toMs, to)] as const).filter(([a, b]) => b > a).sort((x, y) => x[0] - y[0]);
+  let sum = 0;
+  let end = Number.MIN_SAFE_INTEGER;
+  for (const [a, b] of clipped) {
+    const start = Math.max(a, end);
+    if (b > start) sum += b - start;
+    end = Math.max(end, b);
+  }
+  return sum;
+};
+
 /** Survival share of graduates whose +30 min mark falls in the 24 h before `at`, against the median of the 14 days before. */
 export const survivalCondition = (g: GraduatesFact, at: number, p: Policy['regime']): ConditionResult => {
   const known = g.items.filter((i) => i.migratedAtMs + p.survivalAfterMs <= at);
@@ -95,11 +111,10 @@ export const survivalCondition = (g: GraduatesFact, at: number, p: Policy['regim
     if (inWindow.length === 0) return null;
     return { n: BigInt(inWindow.filter((i) => i.reserveAfter > p.survivalReserveFloor).length), d: BigInt(inWindow.length) };
   };
-  // R2-6 (S1 ruling): the 24 h share is judged on the observed marks while a restart's unobserved stretch covers at most
-  // survivalMaxUnobservedMs of the window; more (a long outage) is not covered.
-  const u = g.unobserved;
-  const hole = u === undefined ? 0 : Math.max(0, Math.min(u.toMs, at) - Math.max(u.fromMs, at - DAY_MS));
-  if (hole > p.survivalMaxUnobservedMs) return unknown('survival', 'graduates', 'not-covered', `${hole} ms of the 24 h before ${at} were not observed (marks from ${u!.fromMs} to ${u!.toMs}); at most ${p.survivalMaxUnobservedMs} ms`);
+  // R2-6 (S1 ruling): the 24 h share is judged on the observed marks while the restarts' unobserved stretches together
+  // cover at most survivalMaxUnobservedMs of the window; more (a long outage, or several restarts) is not covered.
+  const hole = unobservedIn(g.unobserved ?? [], at - DAY_MS, at);
+  if (hole > p.survivalMaxUnobservedMs) return unknown('survival', 'graduates', 'not-covered', `${hole} ms of the 24 h before ${at} were not observed; at most ${p.survivalMaxUnobservedMs} ms`);
   const recent = share(at - DAY_MS, at);
   if (recent === null) return unknown('survival', 'graduates', 'not-covered', `no graduate reached +${p.survivalAfterMs} ms in the 24 h before ${at}`);
   const days: Frac[] = [];

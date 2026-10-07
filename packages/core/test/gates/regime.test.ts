@@ -1,7 +1,7 @@
 // Regime gate (docs/ARCHITECTURE.md §6.4): computed as of the decision moment from stored snapshots only.
 import { describe, expect, it } from 'vitest';
 import { startSession, TRIAL_POLICY } from '../../src/config/index.ts';
-import { CURVE_VOLUME_KEY, DAY_MS, EXEC_HEALTH_KEY, GRADUATES_KEY, HOUR_MS, SOL_USD_KEY, evaluateRegime, type Mode } from '../../src/gates/index.ts';
+import { CURVE_VOLUME_KEY, DAY_MS, EXEC_HEALTH_KEY, GRADUATES_KEY, HOUR_MS, SOL_USD_KEY, evaluateRegime, unobservedIn, type Mode } from '../../src/gates/index.ts';
 import { NOW, SLOT, SOL_PRICE, T, contextOf, deps, drop, eventObs, obs, passingFacts, patch, solPoints, volumeDays, type Facts } from './world.ts';
 
 const run = (facts: Facts, mode: Mode = 'live', s = deps(mode).session) => evaluateRegime(contextOf(facts), { session: s, mode });
@@ -70,12 +70,12 @@ describe('regime gate', () => {
   it('R2-6: survival is judged on observed marks unless a restart\'s hole covers more than 2 h of the 24 h window', () => {
     const MAX = TRIAL_POLICY.regime.survivalMaxUnobservedMs;
     expect(MAX).toBe(2 * HOUR_MS);
-    const surv = (fromMs: number, toMs: number) => run(patch(passingFacts(), GRADUATES_KEY, { unobserved: { fromMs, toMs } })).checks[0]!.conditions[0]!;
+    const surv = (fromMs: number, toMs: number, more: { fromMs: number; toMs: number }[] = []) => run(patch(passingFacts(), GRADUATES_KEY, { unobserved: [{ fromMs, toMs }, ...more] })).checks[0]!.conditions[0]!;
     const judged = expect.objectContaining({ condition: 'survival', ok: true });
     const notCovered = expect.objectContaining({ condition: 'survival', ok: null, code: 'not-covered' });
     // The red team's case: a 20 h outage inside the current check's window.
     expect(surv(C0 - 21 * HOUR_MS, C0 - HOUR_MS)).toEqual(notCovered);
-    expect(run(patch(passingFacts(), GRADUATES_KEY, { unobserved: { fromMs: C0 - 21 * HOUR_MS, toMs: C0 - HOUR_MS } })).on).toBe(false);
+    expect(run(patch(passingFacts(), GRADUATES_KEY, { unobserved: [{ fromMs: C0 - 21 * HOUR_MS, toMs: C0 - HOUR_MS }] })).on).toBe(false);
     // A deploy: minutes down plus the 30 min of lost pending marks.
     expect(surv(C0 - 5 * HOUR_MS, C0 - 5 * HOUR_MS + 40 * 60_000)).toEqual(judged);
     // The limit exactly, and one ms over.
@@ -89,6 +89,23 @@ describe('regime gate', () => {
     // ...and one starting at the check itself, or after it, covers nothing of it.
     expect(surv(C0, C0 + 20 * HOUR_MS)).toEqual(judged);
     expect(surv(C0 - MAX - 1, C0 + 20 * HOUR_MS)).toEqual(notCovered);
+    // F1: two restarts' holes in one window are summed: 1.5 h + 1.5 h is over the limit, 1 h + 1 h is not.
+    expect(surv(C0 - 10 * HOUR_MS, C0 - 8.5 * HOUR_MS, [{ fromMs: C0 - 5 * HOUR_MS, toMs: C0 - 3.5 * HOUR_MS }])).toEqual(notCovered);
+    expect(surv(C0 - 10 * HOUR_MS, C0 - 9 * HOUR_MS, [{ fromMs: C0 - 5 * HOUR_MS, toMs: C0 - 4 * HOUR_MS }])).toEqual(judged);
+    expect(surv(C0 - 10 * HOUR_MS, C0 - 9 * HOUR_MS, [{ fromMs: C0 - 5 * HOUR_MS, toMs: C0 - 4 * HOUR_MS + 1 }])).toEqual(notCovered);
+    // A stretch saved twice (or two that overlap) counts once.
+    expect(surv(C0 - 10 * HOUR_MS, C0 - 8.5 * HOUR_MS, [{ fromMs: C0 - 10 * HOUR_MS, toMs: C0 - 8.5 * HOUR_MS }, { fromMs: C0 - 9 * HOUR_MS, toMs: C0 - 8.5 * HOUR_MS }])).toEqual(judged);
+    // An earlier check (k = 1) is judged on its own window: a 2.5 h hole ending at C0 - 30 min misses C1's last hour.
+    const both = run(patch(passingFacts(), GRADUATES_KEY, { unobserved: [{ fromMs: C0 - 3 * HOUR_MS, toMs: C0 - 30 * 60_000 }] }));
+    expect(both.checks.map((c) => c.conditions[0]!.ok)).toEqual([null, true]);
+  });
+
+  it('R2-6: the unobserved stretches sum by their union inside the window', () => {
+    expect(unobservedIn([], 0, 100)).toBe(0);
+    expect(unobservedIn([{ fromMs: 10, toMs: 20 }, { fromMs: 15, toMs: 30 }, { fromMs: 50, toMs: 60 }], 0, 100)).toBe(30);
+    expect(unobservedIn([{ fromMs: -10, toMs: 5 }, { fromMs: 95, toMs: 200 }], 0, 100)).toBe(10);
+    expect(unobservedIn([{ fromMs: 100, toMs: 200 }, { fromMs: -50, toMs: 0 }], 0, 100)).toBe(0);
+    expect(unobservedIn([{ fromMs: 0, toMs: 100 }, { fromMs: 10, toMs: 20 }], 0, 100)).toBe(100);
   });
 
   it('is off at once when the current check cannot be computed (unknown evidence)', () => {

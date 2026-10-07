@@ -299,6 +299,48 @@ describe('PERSIST-1 in the worker', () => {
     await h2.worker.stop();
   });
 
+  it('R2-6 F1: each restart\'s unobserved stretch is saved with the series and summed after the next restart', async () => {
+    const stateDir = tempState();
+    const timers = virtualTimers(T);
+    const seed = (r: SeedRequest) => runSeed(r, { rpc: emptyRpc, timers });
+    const P = TRIAL_POLICY.regime;
+    const h1 = makeWorker({ stateDir, timers, seed });
+    const m1 = await boot(h1);
+    const items = Array.from({ length: 64 }, (_, k) => ({ mint: `Grad${k}`, migratedAtMs: m1.now - 2 * 3_600_000 - k * 6 * 3_600_000, reserveAfter: 100_000_000_000n }))
+      .sort((a, b) => a.migratedAtMs - b.migratedAtMs);
+    m1.fact(GRADUATES_KEY, { obs: { provider: 'facts', slot: null, receivedAt: m1.now, quality: [] }, items });
+    await m1.run(1_000, 200, () => m1.slot());
+    await h1.worker.stop();
+    const save1 = loadState(join(stateDir, PERSIST_FILE), RUG_CONFIG);
+    expect(save1.ok && save1.graduates?.unobserved).toBeUndefined();
+    const down = 3_600_000;
+    // Restart 1, an hour down: its stretch runs from the save to 30 min after the start (1 h 30 min).
+    timers.set(timers.now() + down);
+    const h2 = makeWorker({ stateDir, timers, seed });
+    const m2 = await boot(h2);
+    await m2.run(1_000, 200, () => m2.slot());
+    const h1Stretch = h2.worker.strategy.persistable(0)!.state.graduates.unobserved!;
+    expect(h1Stretch).toHaveLength(1);
+    expect(h1Stretch[0]!.fromMs).toBe(save1.ok ? save1.asOf.receivedAt : 0);
+    await h2.worker.stop();
+    const save2 = loadState(join(stateDir, PERSIST_FILE), RUG_CONFIG);
+    expect(save2.ok && save2.graduates?.unobserved).toEqual(h1Stretch);
+    // Restart 2, an hour down again: both stretches are known.
+    timers.set(timers.now() + down);
+    const h3 = makeWorker({ stateDir, timers, seed });
+    const m3 = await boot(h3);
+    await m3.run(1_000, 200, () => m3.slot());
+    const g = h3.worker.strategy.persistable(0)!.state.graduates;
+    expect(g.unobserved).toHaveLength(2);
+    expect(g.unobserved![0]).toEqual(h1Stretch[0]);
+    const fact = (unobserved: typeof g.unobserved) => ({ obs: { provider: 'facts', slot: null, receivedAt: m3.now, quality: [] }, items: g.items, ...(unobserved === undefined ? {} : { unobserved }) });
+    const at = g.unobserved![1]!.toMs + 60_000;
+    // Each stretch alone is about 1.5 h (judged); summed they are over 2 h. Before F1 only the newest was known.
+    expect(survivalCondition(fact([g.unobserved![1]!]), at, P).ok).not.toBeNull();
+    expect(survivalCondition(fact(g.unobserved), at, P)).toMatchObject({ ok: null, code: 'not-covered' });
+    await h3.worker.stop();
+  });
+
   it('PERSIST-2: a restart inside the 14-day window keeps survival known (the series comes back through a recorded seed read)', async () => {
     const stateDir = tempState();
     const timers = virtualTimers(T);

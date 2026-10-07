@@ -1035,7 +1035,7 @@ describe('graduate survival', () => {
         const both = live().push(seed(built, mark + 30_000, mark + 40_000, source));
         expect(both.facts(GRADUATES_KEY)).toHaveLength(2);
         expect(items(both)).toEqual(built);
-        expect((both.last(GRADUATES_KEY) as { unobserved?: unknown }).unobserved).toEqual({ fromMs: mark + 30_000, toMs: mark + 40_000 + 30 * 60_000 });
+        expect((both.last(GRADUATES_KEY) as { unobserved?: unknown }).unobserved).toEqual([{ fromMs: mark + 30_000, toMs: mark + 40_000 + 30 * 60_000 }]);
       }
     });
 
@@ -1044,9 +1044,20 @@ describe('graduate survival', () => {
       expect(new FactWorld().push(seed(built, mark + 30_000, mark + 29_999)).facts(GRADUATES_KEY)).toEqual([]);
       // R2-6: the entry does not count, but the seed's hole is marked.
       expect(new FactWorld().push(seed(built, mark - 1, mark + 30_000)).facts(GRADUATES_KEY).map((f) => f.value)).toEqual([
-        expect.objectContaining({ items: [], unobserved: { fromMs: mark - 1, toMs: mark + 30_000 + 30 * 60_000 } }),
+        expect.objectContaining({ items: [], unobserved: [{ fromMs: mark - 1, toMs: mark + 30_000 + 30 * 60_000 }] }),
       ]);
       expect(items(new FactWorld().push(seed(built, mark, mark + 30_000)))).toEqual(built);
+    });
+
+    it('R2-6 F1: the seed\'s earlier stretches are carried and this restart\'s is added; one past the keep line is pruned', () => {
+      // The keep window is 16 d 30 min (FactWorld's options): the 40-day-old stretch is past it.
+      const earlier = { fromMs: mark - 5 * 3_600_000, toMs: mark - 4 * 3_600_000 };
+      const old = { fromMs: mark - 40 * 86_400_000, toMs: mark - 39 * 86_400_000 };
+      const w = new FactWorld().push(offchain(RAW.graduatesSeed, { source: 'persist', asOfMs: mark + 30_000, items: [], unobserved: [old, earlier] }, migrate.slot + 5000n, mark + 40_000));
+      expect((w.last(GRADUATES_KEY) as { unobserved?: unknown }).unobserved).toEqual([earlier, { fromMs: mark + 30_000, toMs: mark + 40_000 + 30 * 60_000 }]);
+      // A malformed stretch refuses the seed.
+      const bad = new FactWorld().push(offchain(RAW.graduatesSeed, { source: 'persist', asOfMs: mark + 30_000, items: [], unobserved: [{ fromMs: 2, toMs: 1 }] }, migrate.slot + 5000n, mark + 40_000));
+      expect(bad.last(GRADUATES_SEED_KEY)).toEqual(expect.objectContaining({ accepted: false, reason: 'malformed seed' }));
     });
 
     it('a graduate this process measures replaces its seeded entry: counted once, at the live value', () => {
