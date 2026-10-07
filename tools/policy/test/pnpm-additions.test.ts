@@ -16,7 +16,9 @@ import { finding } from '../finding.ts';
 import { gitAt, parseAddedLines, type Git } from '../git.ts';
 import { scanGitattributes } from '../gitattributes.ts';
 import { isGuarded } from '../drift.ts';
-import { checkHosts, decodeEscapes, EVIDENCE_FILES, hostScanned, isSourceLike, scanHosts, stripComment } from '../hosts.ts';
+import {
+  ARCHIVE_FILES, BINARY_PROBE, binaryContent, checkHosts, decodeEscapes, EVIDENCE_FILES, hostScanned, inQuotedProse, isSourceLike, joinedLines, scanHosts, stripComment,
+} from '../hosts.ts';
 import { checkImports, looseModuleRefs } from '../imports.ts';
 import type { PnpmLock } from '../lockfile.ts';
 import { checkManifests } from '../manifests.ts';
@@ -128,7 +130,74 @@ describe('pump.fun-operated hosts (owner rule A02)', () => {
     assert.deepEqual(codes(scanHosts(`venue = ${HOST} AMM v2`, 'run.sh')), ['E_PUMP_FUN_HOST']);
   });
 
-  it('decides binary by extension alone; a NUL in any other file is E_BINARY_SOURCE and the file is still read (RT3-01, RT4-01, rulings 5.1, 6.1)', () => {
+  it('ruling 7.3: `:` starts a value only after a key, and a shell argument inside quoted prose is prose (RT5-03)', () => {
+    const hit = (line: string, file = 'f.ts'): void => assert.deepEqual(codes(scanHosts(line, file)), ['E_PUMP_FUN_HOST'], `${file}: ${line}`);
+    const miss = (line: string, file = 'f.ts'): void => assert.deepEqual(scanHosts(line, file), [], `${file}: ${line}`);
+    // The red team's two strings.
+    miss(`log('venue: ${HOST}')`); miss(`log('venue: ${HOST}')`, 'run.sh'); miss(`echo "checking ${HOST} now"`, 'run.sh');
+    miss(`  run: echo "checking ${HOST} now"`, 'ci.yml'); miss(`msg = "status: ${HOST}"`);
+    // Keys still start a value: at the start of a line, after a list dash, '{' or ','.
+    hit(`host: ${HOST}`); hit(`  - host: ${HOST}`, 'a.yml'); hit(`with: {host: ${HOST}}`, 'a.yml'); hit(`{"a": 1, "host": ${HOST}}`, 'a.json');
+    hit(`"api": "${HOST}:443"`, 'a.json');
+    // A quoted host on its own, or an unquoted argument, is still a shell argument.
+    hit(`wget -qO- "${HOST}"`, 'run.sh'); hit(`nc '${HOST}' 443`, 'run.sh'); hit(`echo "checking now" ${HOST} 443`, 'run.sh');
+    hit(`curl -H "Host: ${HOST}" https://x`, 'run.sh');
+    assert.equal(inQuotedProse('echo "a b c"', 8), true);
+    assert.equal(inQuotedProse('echo "abc"', 7), false, 'one word');
+    assert.equal(inQuotedProse('echo "a b" c', 11), false, 'outside');
+    assert.equal(inQuotedProse('echo "a b', 8), true, 'an unclosed quote runs to the end of the line');
+  });
+
+  it('ruling 7.2: a `\\` continuation and a YAML folded block are read joined (RT5-02)', () => {
+    const [head, tail] = [HOST.slice(0, 4), HOST.slice(4)];
+    // A JS string continued with `\`, a shell command split inside the host, and a folded YAML value.
+    assert.deepEqual(scanHosts(`const a = 1;\nconst u = 'https://frontend-api.${head}\\\n${tail}/coins';\n`, 'f.ts').map((f) => f.file), ['f.ts:2']);
+    assert.deepEqual(scanHosts(`curl -s https://frontend-api.${head}\\\n    ${tail}/coins\n`, 'run.sh').map((f) => f.file), ['run.sh:1']);
+    assert.deepEqual(scanHosts(`env:\n  FEED: >-\n    https://frontend-api.${head}\n    ${tail}/coins\nnext: 1\n`, 'a.yml').map((f) => f.file), ['a.yml:2']);
+    // Each line is still read on its own; a run that already has a hit adds none.
+    assert.deepEqual(scanHosts(`x = 1 \\\nh = "${HOST}"\n`, 'f.py').map((f) => f.file), ['f.py:2']);
+    // Not a folded block outside YAML, and a literal block (`|`) keeps its lines.
+    assert.deepEqual(scanHosts(`a: >\n  https://frontend-api.${head}\n  ${tail}/coins\n`, 'f.ts'), []);
+    assert.deepEqual(scanHosts(`a: |\n  https://frontend-api.${head}\n  ${tail}/coins\n`, 'a.yml'), []);
+    assert.deepEqual(joinedLines('a \\\n  b \\\nc\nd\n', 'f.sh'), [{ first: 1, last: 3, texts: ['a   b c', 'a b c'] }]);
+    // An old Zeroed file: a run counts when any of its lines was added.
+    const repo = goodRepo();
+    try {
+      write(repo.dir, ZEROED_FILE, `const u = 'https://frontend-api.${head}\\\n${tail}/coins';\n`);
+      assert.deepEqual(checkHosts(repo.dir, [ZEROED_FILE], safetyLinesOf(false, new Map([[ZEROED_FILE, new Set([2])]]))).map((x) => x.file), [`${ZEROED_FILE}:1`]);
+      assert.deepEqual(checkHosts(repo.dir, [ZEROED_FILE], safetyLinesOf(false, new Map([[ZEROED_FILE, new Set([3])]]))), []);
+    } finally { repo.remove(); }
+  });
+
+  it('ruling 7.1: a binary name needs binary content; binaries are searched as bytes; a new archive is refused (RT5-01)', () => {
+    const png = Buffer.from('\x89PNG\r\n\x1a\n', 'latin1');
+    assert.equal(binaryContent('.png', png), true, 'magic number');
+    assert.equal(binaryContent('.png', Buffer.from('#!/bin/sh\n')), false, 'text under a binary name');
+    assert.equal(binaryContent('.bin', Buffer.from('a\0b')), true, 'a NUL early');
+    assert.equal(binaryContent('.bin', Buffer.concat([Buffer.alloc(BINARY_PROBE, 'a'), Buffer.from('\0')])), false, 'a NUL past git\'s probe');
+    assert.equal(binaryContent('.pyc', Buffer.from('\xcb\x0d\x0d\x0a', 'latin1')), true, '.pyc magic');
+    assert.equal(hostScanned('web/logo.png', Buffer.concat([png, Buffer.from(`x = "https://${HOST}/coins"\n`)])), false, 'a real PNG is not read as text');
+    assert.equal(hostScanned('web/empty.png', ''), false, 'an empty file holds nothing');
+    assert.deepEqual(ARCHIVE_FILES, {}, 'no archive is listed yet');
+    const repo = goodRepo();
+    try {
+      // The red team's two cases: a shell script named .png, and a .pyc holding the host in plain bytes.
+      write(repo.dir, 'ops/bin/fetch.png', `#!/bin/sh\ncurl -s https://frontend-api.${HOST}/coins\n`);
+      mkdirSync(join(repo.dir, 'research/x/__pycache__'), { recursive: true });
+      writeFileSync(join(repo.dir, 'research/x/__pycache__/feed.cpython-313.pyc'),
+        Buffer.concat([Buffer.from('\xf3\x0d\x0d\x0a\0\0\0\0\0\0\0\0\0\0\0\0\xe3', 'latin1'), Buffer.from(`\x1chttps://frontend-api.${HOST}/coins\x00`, 'latin1')]));
+      // A real image with no host passes; a new archive is refused whatever it holds.
+      mkdirSync(join(repo.dir, 'web'), { recursive: true });
+      writeFileSync(join(repo.dir, 'web/real.png'), Buffer.concat([png, Buffer.from([0, 0, 0, 13]), Buffer.from('IHDR')]));
+      writeFileSync(join(repo.dir, 'research/x/data.zip'), Buffer.from('PK\x03\x04\0\0', 'latin1'));
+      repo.commit('a binary name on a script, a compiled module and an archive');
+      assert.deepEqual(runChecks(repo.dir, 'main').map((f) => `${f.code} ${f.file}`), [
+        'E_BINARY_SOURCE ops/bin/fetch.png', 'E_PUMP_FUN_HOST ops/bin/fetch.png:2',
+        'E_PUMP_FUN_HOST research/x/__pycache__/feed.cpython-313.pyc', 'E_ARCHIVE research/x/data.zip']);
+    } finally { repo.remove(); }
+  });
+
+  it('binary needs a binary extension and binary content; a NUL in any other file is E_BINARY_SOURCE and the file is still read (RT3-01, RT4-01, rulings 5.1, 6.1, 7.1)', () => {
     const repo = goodRepo();
     try {
       // The red team's case: a new .mjs file with a NUL in a comment and a pump.fun fetch. It parses and lints.
@@ -141,8 +210,9 @@ describe('pump.fun-operated hosts (owner rule A02)', () => {
     assert.equal(isSourceLike('ops/bin/tool', `#!/bin/sh\n\0`), true);
     assert.equal(isSourceLike('prod.env', ''), true);
     assert.equal(hostScanned('data/blob.dat', `\0${body}`), true, 'an extension not on BINARY_EXTENSIONS: read, NUL or not (ruling 6.1)');
-    assert.equal(hostScanned('web/logo.png', `\0${body}`), false, 'by extension');
-    assert.equal(hostScanned('web/cache.zst', `\0${body}`), false, 'by extension');
+    assert.equal(hostScanned('web/logo.png', `\0${body}`), false, 'a binary extension and a NUL early');
+    assert.equal(hostScanned('web/cache.zst', `\0${body}`), false, 'a binary extension and a NUL early');
+    assert.equal(hostScanned('web/logo.png', body), true, 'a binary name on text: read (ruling 7.1)');
   });
 
   it('a bad commit: an extension-less file with no #! line, an early NUL and a curl line; and a .java file with a NUL (RT4-01, ruling 6.1)', () => {
@@ -163,15 +233,19 @@ describe('pump.fun-operated hosts (owner rule A02)', () => {
       const body = `x = "${CAPS}"\ncurl -s ${HOST}/api/coins\n`;
       const read = ['scanner/main.go', 'svc/lib.rs', 'tools-x/a.rb', 'ops-x/zeroed-feed.service', 'ops-x/zeroed-feed.timer', 'ops-x/nginx.conf', 'ops-x/app.ini',
         'db/seed.sql', 'web/index.html', 'prod.env', 'ops-x/.env', 'ops-x/bin/zeroed-pull', 'packages/x/config.json', 'packages/x/notes.txt', 'packages/x/data.jsonl',
-        'docs/x/feed.ts', 'docs/x/probe.py', 'docs/x/run-me'];
-      const skipped = ['docs/blueprint/FACTS.json', 'docs/x/notes.txt', 'packages/x/README.md', 'docs/x/README.md', 'web/logo.png', 'web/logo.svg', 'packages/x/blob.bin'];
+        'docs/x/feed.ts', 'docs/x/probe.py', 'docs/x/run-me', 'web/logo.svg', 'web/logo.png', 'packages/x/blob.bin'];
+      // Round 7: SVG is XML text and read; a .png holding text is read as text (ruling 7.1a); a binary file is searched as
+      // latin1 bytes for the literal domain (ruling 7.1b), so blob.bin is found too.
+      const skipped = ['docs/blueprint/FACTS.json', 'docs/x/notes.txt', 'packages/x/README.md', 'docs/x/README.md'];
       for (const f of [...read, ...skipped]) write(repo.dir, f, f === 'ops-x/bin/zeroed-pull' || f === 'docs/x/run-me' ? `#!/usr/bin/env bash\n${body}` : body);
       write(repo.dir, 'packages/x/blob.bin', `\0${body}`);
       const files = [...read, ...skipped];
-      assert.deepEqual([...new Set(checkHosts(repo.dir, files).map((x) => x.file.replace(/:\d+$/, '')))].sort(), [...read].sort());
+      const found = checkHosts(repo.dir, files);
+      assert.deepEqual([...new Set(found.filter((x) => x.code === 'E_PUMP_FUN_HOST').map((x) => x.file.replace(/:\d+$/, '')))].sort(), [...read].sort());
+      assert.deepEqual(found.filter((x) => x.code !== 'E_PUMP_FUN_HOST').map((x) => `${x.code} ${x.file}`), ['E_BINARY_SOURCE web/logo.png']);
       assert.equal(hostScanned('docs/x/notes.txt', body), false);
       assert.equal(hostScanned('docs/x/run-me', `#!/bin/sh\n${body}`), true, 'code under docs/ by its #! line');
-      assert.equal(hostScanned('packages/x/blob.bin', `a\0b`), false, 'a binary extension: skipped');
+      assert.equal(hostScanned('packages/x/blob.bin', `a\0b`), false, 'a binary extension and a NUL: not read as text');
       for (const [file, reason] of Object.entries(EVIDENCE_FILES)) {
         assert.ok(reason.length > 10, `${file} names its reason`);
         assert.equal(hostScanned(file, body), false, file);
@@ -217,12 +291,19 @@ describe('pump.fun-operated hosts (owner rule A02)', () => {
   it('this repository has none outside old Zeroed lines; --include-zeroed reports the Zeroed files with a host (ruling 3.2 list)', () => {
     const files = gitFiles();
     assert.deepEqual(checkHosts(REPO_ROOT, files), []);
-    const zeroed = [...new Set(checkHosts(REPO_ROOT, files, safetyLinesOf(true, null)).map((x) => x.file.replace(/:\d+$/, '')))];
+    const all = checkHosts(REPO_ROOT, files, safetyLinesOf(true, null));
+    const zeroed = [...new Set(all.filter((x) => x.code === 'E_PUMP_FUN_HOST').map((x) => x.file.replace(/:\d+$/, '')))];
+    // Round 7: every archive the tree holds is an old Zeroed file (ruling 7.1c), and no binary name holds text.
+    const archives = all.filter((x) => x.code === 'E_ARCHIVE').map((x) => x.file);
+    assert.ok(archives.length > 0 && archives.every((f) => inZeroed(f)), 'only old Zeroed archives');
+    assert.deepEqual(all.filter((x) => !['E_PUMP_FUN_HOST', 'E_ARCHIVE'].includes(x.code)), []);
     // Every text file is read now (ruling 3.2); docs/ non-code and Markdown are not, and code under docs/ is.
     // Round 5: meta.json is a named evidence file now (ruling 5.5). Round 6: ruling 6.5 drops the docstrings and pf.py's
     // stop message (a domain followed by words is prose in the value form) that ruling 5.4 had added.
+    // Round 7: two old compiled modules hold the host in plain bytes (ruling 7.1b).
     assert.deepEqual(zeroed, ['apps/web/src/components/TokenActions.tsx', 'apps/web/test/app-trade.test.ts',
-      'docs/handover/sandbox/supervisor/files/bundle_probe.py', 'research/brainstorm/collect.py']);
+      'docs/handover/sandbox/supervisor/files/bundle_probe.py', 'research/brainstorm/collect.py',
+      'research/launch-probe/__pycache__/fetch.cpython-313.pyc', 'research/launch-probe/__pycache__/pumpdec.cpython-313.pyc']);
   });
 
   it('collect.py stops before anything runs, and meta.json is named evidence with its reason (ruling 5.5)', () => {
