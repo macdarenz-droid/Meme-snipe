@@ -48,6 +48,13 @@ The previous S1 account reached its usage limit about 12:45 PM. The owner made t
 - No host access, no secrets access (owner only), as before.
 
 **Log (Melbourne time, newest first)**
+- 6:19 PM **Red team C round 4 on #280** (claude/redteam-c 5fb491f). C1, H1, R2-1/2/4 are CLOSED. New:
+  - HIGH R4-1: a false state_lost latch at the resume, because old releases never wrote control.json. Fix: a one-time state-version marker.
+  - HIGH R4-2: cutAtKill forgives any replay lines of the last event. Fix: forgive exactly one trailing submit, or use a 'dispatching' line.
+  - MEDIUM R4-3: StateRefused crash-loops, then the probation rolls to the stand-in. Fix: a refused.json via the heartbeat, a distinct exit code in RestartPreventExitStatus; the zeroed-update side goes to 2b.
+  - LOW: transient markers in the backup.
+  - Routed to the RC-FIXES builder; the ops reviewer told.
+- 6:19 PM **Next red team task:** red team A round 3 (re-verify #272/#273/#276/#269, report only what's new, plus attack the 'never trades' class on 9f7cf812).
 - 6:16 PM U1-B: no other keyless archive RPC exists (mainnet aliases share the IP; publicnode and leorpc have no archive; drpc, ankr and onfinality need keys). The researcher's pacing is fixed at ~1.14 tx/s, so decoding finishes about Thu 8 Oct 12:30 PM (uncertain), with the analysis after.
 - 6:11 PM U1-B: the graduation list is complete (74,703, the same as U1). Decoding is the bottleneck: about 0.65 tx/s on a shared IP, ~30 h, so done about Fri 9 Oct 12:10 AM (corrected by the researcher; analysis a few hours after). Ruling: keep the full pre-registered set, no interim reads; extra free keyless RPCs allowed if their terms permit.
 - 6:10 PM **Red team B round 3 final** (claude/redteam-b 2c0b86d).
