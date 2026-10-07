@@ -67,3 +67,4 @@ Written 2026-10-07 about 20:25 Melbourne, before any API call for this test. Des
 This file is committed and pushed, then its commit hash and time are added below in a second commit, pushed, and only then is the first API call made. Analysis code is reviewed by a fresh-context reviewer before RESULTS.md is written.
 
 ## Commit record
+- PREREG committed and pushed as `2349dfe263c13a2157d59fa5391de438790fe9f3` (remote ref checked with git ls-remote), recorded at 2026-10-07 20:22 AEDT (2026-10-07T09:22Z), before the first API call of this test.
