@@ -67,21 +67,28 @@ describe('regime gate', () => {
     expect(r.checks[0]!.conditions[0]).toEqual(expect.objectContaining({ condition: 'survival', ok: false, value: expect.stringMatching(/^0\//) }));
   });
 
-  it('R2-6: survival is not judged on a 24 h window that touches an unobserved stretch of marks', () => {
-    // Checks at C0 and C1: a hole ending exactly at C1 - 24 h leaves both windows observed; one ms later C1 is unknown.
-    const at = (toMs: number) => run(patch(passingFacts(), GRADUATES_KEY, { unobserved: { fromMs: toMs - 20 * HOUR_MS, toMs } }));
-    const edge = at(C1 - DAY_MS);
-    expect(edge.on).toBe(true);
-    expect(edge.checks.map((c) => c.conditions[0]!.ok)).toEqual([true, true]);
-    const touched = at(C1 - DAY_MS + 1);
-    expect(touched.checks[1]!.conditions[0]).toEqual(expect.objectContaining({ condition: 'survival', ok: null, code: 'not-covered' }));
-    expect(touched.checks[0]!.conditions[0]).toEqual(expect.objectContaining({ condition: 'survival', ok: true }));
-    // Touching the current check's window turns the regime off at once.
-    const current = at(C0 - DAY_MS + 1);
-    expect(current.checks[0]!.conditions[0]).toEqual(expect.objectContaining({ condition: 'survival', ok: null, code: 'not-covered' }));
-    expect(current.on).toBe(false);
-    // A hole starting after the check is not in its window.
-    expect(run(patch(passingFacts(), GRADUATES_KEY, { unobserved: { fromMs: C0 + 1, toMs: C0 + HOUR_MS } })).checks[0]!.conditions[0]).toEqual(expect.objectContaining({ ok: true }));
+  it('R2-6: survival is judged on observed marks unless a restart\'s hole covers more than 2 h of the 24 h window', () => {
+    const MAX = TRIAL_POLICY.regime.survivalMaxUnobservedMs;
+    expect(MAX).toBe(2 * HOUR_MS);
+    const surv = (fromMs: number, toMs: number) => run(patch(passingFacts(), GRADUATES_KEY, { unobserved: { fromMs, toMs } })).checks[0]!.conditions[0]!;
+    const judged = expect.objectContaining({ condition: 'survival', ok: true });
+    const notCovered = expect.objectContaining({ condition: 'survival', ok: null, code: 'not-covered' });
+    // The red team's case: a 20 h outage inside the current check's window.
+    expect(surv(C0 - 21 * HOUR_MS, C0 - HOUR_MS)).toEqual(notCovered);
+    expect(run(patch(passingFacts(), GRADUATES_KEY, { unobserved: { fromMs: C0 - 21 * HOUR_MS, toMs: C0 - HOUR_MS } })).on).toBe(false);
+    // A deploy: minutes down plus the 30 min of lost pending marks.
+    expect(surv(C0 - 5 * HOUR_MS, C0 - 5 * HOUR_MS + 40 * 60_000)).toEqual(judged);
+    // The limit exactly, and one ms over.
+    expect(surv(C0 - 10 * HOUR_MS, C0 - 10 * HOUR_MS + MAX)).toEqual(judged);
+    expect(surv(C0 - 10 * HOUR_MS, C0 - 10 * HOUR_MS + MAX + 1)).toEqual(notCovered);
+    // A 3 h hole sliding out of the window's start: counted only where it overlaps.
+    const edge = C0 - DAY_MS;
+    expect(surv(edge - HOUR_MS + 1, edge + 2 * HOUR_MS + 1)).toEqual(notCovered);
+    expect(surv(edge - HOUR_MS, edge + 2 * HOUR_MS)).toEqual(judged);
+    expect(surv(edge - 3 * HOUR_MS, edge)).toEqual(judged);
+    // ...and one starting at the check itself, or after it, covers nothing of it.
+    expect(surv(C0, C0 + 20 * HOUR_MS)).toEqual(judged);
+    expect(surv(C0 - MAX - 1, C0 + 20 * HOUR_MS)).toEqual(notCovered);
   });
 
   it('is off at once when the current check cannot be computed (unknown evidence)', () => {

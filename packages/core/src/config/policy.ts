@@ -112,6 +112,11 @@ export interface Policy {
     readonly survivalReserveFloor: Lamports;
     readonly survivalAfterMs: number;
     readonly survivalMedianDays: number;
+    /**
+     * R2-6: the most of the 24 h survival window a restart's unobserved stretch may cover; more is not covered, less is
+     * judged on the observed marks (S1 ruling, docs/DECISIONS.md A2-GATE-FIXES).
+     */
+    readonly survivalMaxUnobservedMs: number;
     readonly volumePercentile: number;
     /** Cap on the expanding volume window, in days. */
     readonly volumeWindowDays: number;
@@ -208,6 +213,7 @@ const TRIAL_VALUES: Policy = {
     survivalReserveFloor: sol('30'),
     survivalAfterMs: 30 * MINUTE,
     survivalMedianDays: 14,
+    survivalMaxUnobservedMs: 2 * HOUR,
     volumePercentile: 25,
     volumeWindowDays: 365,
     volumeLagDays: 3,

@@ -3521,16 +3521,24 @@ Red team A's round-2 report (`packages/worker/test/redteam/REPORT.md`, "Round 2"
   - Now: each of mint authority and freeze authority needs at least one source that reported it; otherwise H16 `missing`.
 - **R2-6, a restart's hole in the graduates series** (`facts/producer.ts` `#seedGraduates`, `graduatesFact`; `gates/facts.ts` `GraduatesFact.unobserved`; `gates/regime.ts` `survivalCondition`).
   - Before: a restored series was released as current, and survival over a 24 h window that was mostly downtime was judged (after a 20 h outage, from 4 h of data).
-  - Now: an accepted seed marks survival marks in `[seed asOfMs, release + survivalAfterMs)` as unobserved. That covers the downtime and the marks the old process still had pending, which are not saved. The graduates fact carries the stretch (`unobserved`) while it is inside the keep window. Survival over a 24 h window that touches it is `not-covered`, so the regime stays off until 24 h of observed marks exist after each restart. Item dates are the graduates' real migration times, as before.
-  - Only the newest stretch is kept. A contiguous 24 h window that touches an older stretch and reaches past the newest covers the newest too. So no new saved data is needed: the saved series stays `{ asOfMs, items }`.
+  - Now: an accepted seed marks survival marks in `[seed asOfMs, release + survivalAfterMs)` as unobserved. That covers the downtime and the marks the old process still had pending, which are not saved. The graduates fact carries the stretch (`unobserved`) while it is inside the keep window. Item dates are the graduates' real migration times, as before.
+  - **S1 ruling (2026-10-07):** the 24 h share is judged on the observed marks unless the stretch covers more than `regime.survivalMaxUnobservedMs` of the window. Default 2 h, configurable; a policy override may only lower it.
+    - Overlap = max(0, min(toMs, at) − max(fromMs, at − 24 h)). More than the limit is `not-covered`.
+    - Gating on any overlap would turn every restart, deploys included, into about 24.5 h with the regime off. A share from a smaller observed sample is not missing data read as zero, the same reasoning as for the 14 daily shares.
+    - What this gives:
+      - A 20 h outage (the red team's case) is refused.
+      - A deploy (minutes down plus the 30 min of lost pending marks) is judged.
+      - Still stricter than 959d801, which judged the restored series whatever it held.
+    - Adding the field changes the trial policy's version hash (the pinned value in `config/policy.test.ts` is updated).
+  - Only the newest stretch is kept. Each restart's own stretch is at least `survivalAfterMs` long and is measured on its own; a window holding an older stretch as well is not summed. Known limit: a restart twice inside a day, each under 2 h, is judged. No new saved data is needed: the saved series stays `{ asOfMs, items }`.
   - A seed that adds no graduate now still releases a fact, which carries the stretch.
-  - **Residual, named:** the 14 daily shares the median is taken from are not gated on the stretch. Gating them would keep the regime off for 15 days after every restart. A day with a hole is a share from a smaller sample, not a share of missing data read as zero. The backtest has no restarts, so its results do not change.
+  - The 14 daily shares the median is taken from are not gated on the stretch, for the same reason. The backtest has no restarts, so its results do not change.
 - **R2-7, the serial count and block time ahead of the clock** (`gates/deployer-index.ts` `observe`).
   - Before: a create whose block time was ahead of the local clock was in the index but left out of H14's 24 h count until the clock passed it.
   - Now: a block time up to `CHAIN_SKEW_MS` ahead of its receipt is taken as the receipt time, as `seed` and `fill` clamp to their as-of. Further ahead is no clock skew and keeps its chain time.
 - **Evidence.**
   - Fail before (on 959d801), pass after, all 8: `core/test/redteam2/h15-sim-slot-unbound`, `core/test/redteam2/h16-xcheck-partial-field` (2), `worker/test/redteam2/graduates-restore-hole`, `rug-check-before-lookback`, `serial-chain-ahead`, `worker/test/redteam3/graduates-quote-mint`, `rugs-coverage-store-restart`.
-  - Boundary tests added: H14 checked-rug look-back edge and the undated rug (`gates/deployer-index.test.ts`); the clamp's skew edge (same file); the H15 slot lag of 7 against 8, and a missing slot (`gates/hard.test.ts`); the hole edge against the current and older check (`gates/regime.test.ts`); a seed that adds nothing still marks its hole (`facts/producer.test.ts`).
+  - Boundary tests added: H14 checked-rug look-back edge and the undated rug (`gates/deployer-index.test.ts`); the clamp's skew edge (same file); the H15 slot lag of 7 against 8, and a missing slot (`gates/hard.test.ts`); the 20 h outage, a 40 min hole, exactly 2 h and 2 h + 1 ms, and a hole sliding out of the window (`gates/regime.test.ts`); a seed that adds nothing still marks its hole (`facts/producer.test.ts`).
   - Fixtures changed to the real shape, with no assertion loosened:
     - The gate world's simulation carries a context slot, as live raw sim reads must.
     - Two check labels dated `atMs: 0` (1970) now have real dates.
@@ -3541,5 +3549,5 @@ Red team A's round-2 report (`packages/worker/test/redteam/REPORT.md`, "Round 2"
     - R2-3: any quote mint.
     - R2-4: no slot bound; `>=` for `>`; a null slot passes.
     - R2-5: no per-field check.
-    - R2-6: no hole set; the hole without its survival window; the regime ignores the hole; `>=` for `>` at the hole's edge.
+    - R2-6: no hole set; the hole without its survival window; the regime ignores the hole; `>=` for `>` against the limit; the overlap measured without clipping to the window.
     - R2-7: no clamp; an unbounded clamp.
