@@ -83,6 +83,13 @@
   - CLAUDE.md is updated (`ee65f311`). No Helius credit goes to B-10. The "no bulk historical downloads" exception now covers only these Old Faithful days, read in small batches.
   - Card **Z-H-OF** (docs and batch plan) went to builder `session_01QxNHHJxUan1nnCAi2E5QEP` (branch `claude/zh-old-faithful`). Covered: the archive's documented limits (VERIFY), the batch plan, storage per batch, the #214 vs 09-21 Helius cache options, and switching the Blueprint docs off the Helius B-10 machinery (P21 stays).
   - Then a fresh review and red team. Code cards follow (#214 revival, the batch scheduler). No download before those are reviewed and merged.
+- **8 Oct about 7:26 AM, owner: "A"** (phone access, MIGRATION clash O4).
+  - No APK: the phone uses the dashboard in its browser over Tailscale, with a home-screen shortcut. Recorded in CLAUDE.md "Phone access".
+  - Card **APK-REMOVE**, after #287 Z01 merges, because it changes `.github/**` and so needs the label:
+    - remove `android-preview.yml`, `require-check.sh`, `publish-preview.sh` and their tests in `apps/web/test/android-workflow.test.ts`;
+    - mark MIGRATION O4 resolved, with a DECISIONS row;
+    - leave the rest of `apps/web` and the existing `preview` release untouched.
+  - Then a review and a red team.
 - **Follow-ups (identified, not yet carded):**
   1. Z0D-2 docs:
      - the replay-mode ruling (`replay_unavailable` treated as assumed-pass-flagged in B-10 runs only, refused in paper and live; `docs/reviews/ZH.md` round 2 ruling 2);
