@@ -755,7 +755,7 @@ export class FactReaders {
       renameSync(`${f}.tmp`, f);
       return true;
     } catch {
-      this.#o.log?.('Holder scan count not saved: it is kept in this process only, and the scan is not made.');
+      this.#o.log?.('Holder scan count not saved: it is kept in this process only.');
       return false;
     }
   }
