@@ -68,6 +68,33 @@ describe('account-level trips latch from the account valuation (RISK-LATCH)', ()
     await h3.worker.stop();
   });
 
+  it('F3: SOL gone from the wallet with no trade booked latches R10 from the NAV line on the next valuation, and it holds across a restart', async () => {
+    const h = makeWorker();
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    const m = new Market(h);
+    await m.run(4_000, 400, () => priced(h, m, 1_000_000n));
+    const file = accountFile(h.stateDir);
+    expect(file.read(null as never).navPeak?.nav).toBe(file.read(null as never).walletLamports);
+    await h.worker.stop();
+    // 35% of the wallet's SOL gone, no trade: the ledger's equity is unchanged, the NAV (the wallet's SOL) is not.
+    const a = file.read(null as never);
+    file.write({ ...a, walletLamports: (a.walletLamports! * 65n) / 100n } as never);
+    const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers });
+    expect(await h2.worker.reconcile()).toEqual({ ok: true });
+    const m2 = new Market(h2);
+    await m2.run(4_000, 400, () => priced(h2, m2, 1_000_000n));
+    const at = latches(h2).killTrippedAtMs;
+    expect(at).not.toBeNull();
+    expect(h2.logs.some((l) => l.startsWith('Risk tripped on the account valuation') && l.includes('kill_switch'))).toBe(true);
+    await h2.worker.stop();
+    const h3 = makeWorker({ stateDir: h.stateDir, timers: h.timers });
+    expect(await h3.worker.reconcile()).toEqual({ ok: true });
+    const m3 = new Market(h3);
+    await m3.run(4_000, 400, () => priced(h3, m3, 1_000_000n));
+    expect(latches(h3).killTrippedAtMs).toBe(at);
+    await h3.worker.stop();
+  });
+
   it('a weekly loss already booked latches R9 on the next valuation, with no candidate and no position', async () => {
     const h = makeWorker();
     expect(await h.worker.reconcile()).toEqual({ ok: true });

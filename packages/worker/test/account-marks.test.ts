@@ -138,9 +138,10 @@ describe('SOL-BOOKS: an account.json from before is converted once at the openin
   it('marks in micro-dollars become lamports rounded up, trade sizes rounded down, the dollar NAV peak is dropped; once', () => {
     const dir = tempState();
     const file = accountFile(dir);
-    // A file as the dry run wrote it before SOL-BOOKS: no opening price, no `books`, dollar marks and sizes.
+    // A file as the dry run wrote it before SOL-BOOKS: no opening price, no `books`, dollar marks and sizes. Its wallet
+    // was funded at $150 (133,333,334 lamports, B rounded down at a hair under $150), then booked a 1,000-lamport loss.
     file.write({
-      openedAtMs: T - 30 * 24 * HOUR, openingEquity: usd(20), walletLamports: 133_000_000n, oneTimePaid: true, entries: [],
+      openedAtMs: T - 30 * 24 * HOUR, openingEquity: usd(20), walletLamports: 133_332_334n, oneTimePaid: true, entries: [],
       dayMark: { startMs: melbourneDay(T).start, atMs: T, equity: usd(19.5) as never },
       weekMark: { startMs: melbourneWeek(T).start, atMs: T, equity: usd(19.5) as never },
       navPeak: { atMs: T, nav: usd(17.000003) as never },
@@ -150,9 +151,10 @@ describe('SOL-BOOKS: an account.json from before is converted once at the openin
     // Before the first price there is no opening price: the history says so, and risk refuses (R1) without latching.
     const ledger = openLedger(join(dir, 'ledger.sqlite'), 'paper');
     expect(a.fact(ledger, emptyBook({ maxOpenPositions: 5 }), NO_LATCHES, T, noLegs).history.openingSolPrice).toBe(0n);
-    a.price(usd(150), T);
+    // The first price after the deploy is $90; the opening is read from the wallet (F1): $150, where B is its funded SOL.
+    a.price(usd(90), T);
     // $150: $19.50 is 130,000,000 lamports exactly; $17.000003 is 113,333,353.3, rounded up; $2 is 13,333,333.3, down.
-    expect(a.state).toMatchObject({ openingSolPrice: usd(150), books: 'sol', walletLamports: 133_000_000n });
+    expect(a.state).toMatchObject({ openingSolPrice: usd(150), books: 'sol', walletLamports: 133_332_334n });
     expect(a.state.dayMark!.equity).toBe(130_000_000n);
     expect(a.state.weekMark!.equity).toBe(130_000_000n);
     // The dollar NAV peak is dropped (its SOL is unknown; converting it would count a past SOL/USD fall as a SOL loss).
@@ -196,6 +198,40 @@ describe('SOL-BOOKS: an account.json from before is converted once at the openin
     expect(old.state.navPeak).toEqual({ atMs: T + 1, nav: 153_333_333n });
   });
 
+  it('F1: the funded SOL is the wallet less what the account booked (setup, stray fees, trade results), B never above it', () => {
+    const dir = tempState();
+    // Funded with 0.2 SOL at $100; then the setup (2,000,000), a stray fee (15,000) and a trade that lost 1,000,000.
+    accountFile(dir).write({
+      openedAtMs: T - 30 * 24 * HOUR, openingEquity: usd(20), walletLamports: 200_000_000n - 2_000_000n - 15_000n - 1_000_000n, oneTimePaid: true, entries: [],
+      setup: { atMs: T - 29 * 24 * HOUR, lamports: 2_000_000n, cost: usd(0.2) }, strayFees: { s1: { atMs: T - 2 * HOUR, lamports: 15_000n, cost: usd(0.0015) } },
+      trades: [{ positionId: 'p:x:1', mint: 'MintX', openedAtMs: T - 3 * HOUR, notional: usd(2) as never, closedAtMs: T - 2 * HOUR, netLamports: -1_000_000n, netPnl: usd(-0.1), stoppedOut: true, booked: -1_000_000n }],
+    });
+    const a = new PaperAccount(accountFile(dir), usd(20), T, 0n);
+    a.price(usd(69), T);
+    expect(a.state.openingSolPrice).toBe(usd(100));
+    // An inexact funding: 133,333,333 lamports for $20 is $150.000000375 per SOL, rounded up, so B (rounded down) fits.
+    const dir2 = tempState();
+    accountFile(dir2).write({ openedAtMs: T - HOUR, openingEquity: usd(20), walletLamports: 133_333_333n, trades: [], entries: [], oneTimePaid: true });
+    const b = new PaperAccount(accountFile(dir2), usd(20), T, 0n);
+    b.price(usd(103.5), T);
+    expect(b.state.openingSolPrice).toBe(150_000_001n);
+    const ledger = openLedger(join(dir2, 'ledger.sqlite'), 'paper');
+    expect(b.fact(ledger, emptyBook({ maxOpenPositions: 5 }), NO_LATCHES, T, noLegs).history.openingEquity).toBe(133_333_332n);
+    ledger.close();
+    // No funded SOL left to read (the account booked more than it held): no opening, risk refuses (R1).
+    const dir3 = tempState();
+    accountFile(dir3).write({ openedAtMs: T - HOUR, openingEquity: usd(20), walletLamports: 0n, trades: [{ positionId: 'p:y:1', mint: 'MintY', openedAtMs: T - 2 * HOUR, notional: usd(2) as never, closedAtMs: T - HOUR, netLamports: 5n, netPnl: 1n as MicroUsd, stoppedOut: false, booked: 5n }], entries: [], oneTimePaid: true });
+    const c = new PaperAccount(accountFile(dir3), usd(20), T, 0n);
+    c.price(usd(100), T);
+    expect(c.state.openingSolPrice).toBeUndefined();
+    // None at all (an empty wallet, nothing booked): no opening either, and no division by zero.
+    const dir4 = tempState();
+    accountFile(dir4).write({ openedAtMs: T - HOUR, openingEquity: usd(20), walletLamports: 0n, trades: [], entries: [], oneTimePaid: true });
+    const d = new PaperAccount(accountFile(dir4), usd(20), T, 0n);
+    expect(() => d.price(usd(100), T)).not.toThrow();
+    expect(d.state.openingSolPrice).toBeUndefined();
+  });
+
   it('a new account starts in SOL: the first price is the opening price, and later prices change no figure', () => {
     const dir = tempState();
     const a = new PaperAccount(accountFile(dir), usd(20), T, 0n);
@@ -233,10 +269,14 @@ describe('SOL-BOOKS: an account.json from before is converted once at the openin
     expect(d.allow).toBe(false);
     expect(d.reasons.map((r) => r.code)).toContain('bankroll_invalid');
     expect(d.trips).toEqual([]);
-    // Nothing is marked from such a valuation either; the first price opens the books and is kept.
+    // Nothing is marked from such a valuation either. The first price ($60) opens the books at the price the wallet was
+    // funded at ($100: B is its 0.2 SOL), never at $60, where B would be 0.333 SOL and the wallet 40% under it (F1).
     expect(a.mark({ dayStartMs: melbourneDay(T).start, weekStartMs: melbourneWeek(T).start, equity: 0n as Lamports, nav: 200_000_000n as Lamports }, true, null, T)).toBe(false);
-    a.price(usd(100), T);
+    a.price(usd(60), T);
     expect(a.state).toMatchObject({ openingSolPrice: usd(100), walletLamports: 200_000_000n });
+    const ledger2 = openLedger(join(dir, 'ledger2.sqlite'), 'paper');
+    expect(a.fact(ledger2, emptyBook({ maxOpenPositions: 5 }), NO_LATCHES, T, noLegs).history.openingEquity).toBe(200_000_000n);
+    ledger2.close();
   });
 });
 

@@ -6,7 +6,7 @@ import { type FillNetwork, type LegCosts, type TradeLamports, entryShare, feePar
 import type { Ledger } from '../../../core/src/ledger/index.ts';
 import { type Book, isTerminal } from '../../../core/src/lifecycle/index.ts';
 import { type AccountCost, type AccountHistory, type ClosedTrade, type Latches, type RiskSnapshot, melbourneDay, melbourneWeek } from '../../../core/src/risk/index.ts';
-import { type Lamports, type MicroUsd, lamportsToMicroUsd, microUsdToLamports } from '../../../core/src/units/index.ts';
+import { LAMPORTS_PER_SOL, type Lamports, type MicroUsd, lamportsToMicroUsd, microUsdToLamports } from '../../../core/src/units/index.ts';
 import type { AccountFact } from '../engine/strategy.ts';
 import type { PaperAttempt } from './paper-world.ts';
 import type { FilledRecord } from './desk.ts';
@@ -164,7 +164,8 @@ export interface AccountState {
 export interface StrayFee {
   readonly atMs: number;
   readonly lamports: bigint;
-  readonly cost: MicroUsd;
+  /** Display only: micro-dollars at the first SOL price at or after its booking, rounded up; null until then (SOL-BOOKS). */
+  readonly cost: MicroUsd | null;
 }
 
 export interface BoundaryMark {
@@ -227,33 +228,54 @@ export class PaperAccount {
     if (solPrice === null || solPrice <= 0n) return;
     const opening = this.#s.openingSolPrice === undefined;
     if (!opening && this.#s.walletLamports !== null && this.#s.oneTimePaid === true) return;
-    if (opening) this.#open(solPrice);
+    if (opening && !this.#open(solPrice)) return;
     if (this.#s.walletLamports === null) this.#s.walletLamports = microUsdToLamports(this.#s.openingEquity, this.#s.openingSolPrice!, 'floor');
     this.#setUp(solPrice, nowMs);
     this.#file.write(this.#s);
   }
 
   /**
-   * SOL-BOOKS: fixes the opening SOL price. A file from before kept its day and week marks and trade sizes in
-   * micro-dollars; they are converted once at this price, each rounded the tighter way (marks up, sizes down), so no
-   * line or cap loosens. Trade results are already in lamports (`netLamports`, each part's `lamports`).
+   * SOL-BOOKS: fixes the opening SOL price. A new account opens at this price: the bankroll becomes its wallet here.
    *
-   * Its NAV peak is dropped, not converted: it was the highest dollar value of the wallet's SOL, so with the SOL unchanged
-   * it is the highest SOL/USD price seen, and converting it at today's price would turn a past SOL/USD fall into a SOL
-   * drawdown (a fall of 30% since that high trips R10, latched until the owner re-arms; owner's rule: a SOL/USD move
-   * alone never trips a limit). The peak is recorded again in lamports at the next fully marked valuation; R10's other
-   * line, on the ledger's realized equity (trade results already in lamports), is unchanged.
+   * An account whose wallet is already in lamports (a file from before SOL-BOOKS, or one in SOL that lost its opening
+   * price) was funded at another price: its first price, not this one. Opening at this price would make the bankroll
+   * B / this price while the wallet is still B / that one, so a SOL/USD fall since then alone would read as a drawdown
+   * (31% latches R10; risk review F1). Its opening price is read from the wallet instead: the SOL it was funded with
+   * (the wallet less what the account itself has booked since: the setup rent, stray fees and each trade's net), and
+   * the price at which B is that SOL, rounded up, so B in lamports (rounded down) is never more than the wallet held.
+   * One stored price keeps every limit (B, q_min, q_max, the floors) converted at the same rate the wallet was. With no
+   * positive funded SOL the opening stays unset (risk refuses entries, R1) and false is returned.
+   *
+   * A file from before also kept its day and week marks and trade sizes in micro-dollars: converted once at the opening
+   * price, each rounded the tighter way (marks up, sizes down). Trade results are already in lamports. Its NAV peak is
+   * dropped, not converted: with the wallet's SOL unchanged it is the highest SOL/USD price seen, and converting it
+   * would turn a past SOL/USD fall into a SOL drawdown (R10; owner's rule: a SOL/USD move alone never trips a limit). It
+   * is recorded again in lamports at the next fully marked valuation; R10's ledger line is unchanged.
    */
-  #open(price: MicroUsd): void {
-    this.#s.openingSolPrice = price;
+  #open(price: MicroUsd): boolean {
+    const funded = this.#fundedLamports();
+    if (funded !== null && funded <= 0n) return false;
+    const B = this.#s.openingEquity as bigint;
+    const opening = (funded === null ? price : (B * LAMPORTS_PER_SOL + funded - 1n) / funded) as MicroUsd;
+    if (opening <= 0n) return false;
+    this.#s.openingSolPrice = opening;
     if (this.#s.books !== 'sol') {
-      const up = (v: bigint): Lamports => (v <= 0n ? (v as Lamports) : microUsdToLamports(v as MicroUsd, price, 'ceil'));
+      const up = (v: bigint): Lamports => (v <= 0n ? (v as Lamports) : microUsdToLamports(v as MicroUsd, opening, 'ceil'));
       if (this.#s.dayMark !== undefined) this.#s.dayMark = { ...this.#s.dayMark, equity: up(this.#s.dayMark.equity) };
       if (this.#s.weekMark !== undefined) this.#s.weekMark = { ...this.#s.weekMark, equity: up(this.#s.weekMark.equity) };
       delete this.#s.navPeak;
-      for (const t of this.#s.trades) t.notional = (t.notional <= 0n ? t.notional : microUsdToLamports(t.notional as unknown as MicroUsd, price, 'floor'));
+      for (const t of this.#s.trades) t.notional = (t.notional <= 0n ? t.notional : microUsdToLamports(t.notional as unknown as MicroUsd, opening, 'floor'));
       this.#s.books = 'sol';
     }
+    return true;
+  }
+
+  /** The SOL the wallet was funded with, when it is already in lamports: the wallet less what the account has booked. */
+  #fundedLamports(): bigint | null {
+    const w = this.#s.walletLamports;
+    if (w === null) return null;
+    const strays = Object.values(this.#s.strayFees ?? {}).reduce((t, r) => t + r.lamports, this.#s.strayFolded?.lamports ?? 0n);
+    return w + (this.#s.setup?.lamports ?? 0n) + strays - this.#s.trades.reduce((t, x) => t + x.booked, 0n);
   }
 
   /**
@@ -373,6 +395,18 @@ export class PaperAccount {
   priceLate(book: Book, legs: PaperLegs, solPrice: MicroUsd | null, nowMs: number): boolean {
     if (solPrice === null || solPrice <= 0n) return false;
     let changed = false;
+    // Stray fees booked by their lamports with no price (risk review F2): their dollar figure at this price, rounded up.
+    const priced = (r: StrayFee): StrayFee => ({ ...r, cost: lamportsToMicroUsd(r.lamports as Lamports, solPrice, 'ceil') });
+    for (const [sig, r] of Object.entries(this.#s.strayFees ?? {})) {
+      if (r.cost === null && nowMs >= r.atMs) {
+        this.#s.strayFees![sig] = priced(r);
+        changed = true;
+      }
+    }
+    if (this.#s.strayFolded !== undefined && this.#s.strayFolded.cost === null) {
+      this.#s.strayFolded = priced(this.#s.strayFolded);
+      changed = true;
+    }
     for (const t of this.#s.trades) {
       if ((t.openSolPrice === null || t.openSolPrice === undefined) && nowMs >= t.openedAtMs && t.closedAtMs === null) {
         t.openSolPrice = solPrice;
@@ -452,11 +486,13 @@ export class PaperAccount {
       this.#book(t, book, legs);
       moved ||= t.booked !== before;
     }
-    if (solPrice !== null && this.#s.walletLamports !== null) {
+    // SOL-BOOKS (risk review F2): booked by its lamports at once, priced or not, as risk counts it; its dollar figure is
+    // display only and waits for a SOL price when none is known (`priceLate`).
+    if (this.#s.walletLamports !== null) {
       for (const { signature, atMs, lamports } of this.#unbookedStrays(book, legs)) {
         // Dated when booked if that is later than its send (ACCOUNT-RATE F3): a fee found after midnight counts in the day it
         // is booked, never only in a day already past. Booking is never before the send, so the fold's rule still holds.
-        (this.#s.strayFees ??= {})[signature] = { atMs: Math.max(atMs, nowMs), lamports, cost: lamportsToMicroUsd(lamports as Lamports, solPrice, 'ceil') };
+        (this.#s.strayFees ??= {})[signature] = { atMs: Math.max(atMs, nowMs), lamports, cost: solPrice === null ? null : lamportsToMicroUsd(lamports as Lamports, solPrice, 'ceil') };
         this.#s.walletLamports -= lamports;
         moved = true;
       }
@@ -550,9 +586,10 @@ export class PaperAccount {
     }
     const old = Object.entries(records).filter(([, r]) => r.atMs < before);
     if (old.length === 0) return false;
-    let total = this.#s.strayFolded ?? { atMs: this.#s.openedAtMs, lamports: 0n, cost: 0n as MicroUsd };
+    let total: StrayFee = this.#s.strayFolded ?? { atMs: this.#s.openedAtMs, lamports: 0n, cost: 0n as MicroUsd };
     for (const [sig, r] of old) {
-      total = { atMs: Math.max(total.atMs, r.atMs), lamports: total.lamports + r.lamports, cost: (total.cost + r.cost) as MicroUsd };
+      // A dollar figure not known yet leaves the total's unknown too (display only; the lamports are exact).
+      total = { atMs: Math.max(total.atMs, r.atMs), lamports: total.lamports + r.lamports, cost: total.cost === null || r.cost === null ? null : ((total.cost + r.cost) as MicroUsd) };
       delete records[sig];
     }
     this.#s.strayFolded = total;
@@ -652,8 +689,10 @@ export class PaperAccount {
     const costs: CostRecord[] = su === undefined ? [] : [{ atMs: su.atMs, amount: lam(su.lamports), lamports: su.lamports, usd: su.cost, kind: 'wallet_setup' }];
     // Fees of entries that never filled (PAPER-1): account costs too, never trades.
     const sf = this.#s.strayFolded;
-    if (sf !== undefined) costs.push({ atMs: sf.atMs, amount: lam(sf.lamports), lamports: sf.lamports, usd: sf.cost, kind: 'failed_entry' });
-    for (const r of Object.values(this.#s.strayFees ?? {})) costs.push({ atMs: r.atMs, amount: lam(r.lamports), lamports: r.lamports, usd: r.cost, kind: 'failed_entry' });
+    // A stray's dollars not known yet (no price at its booking): at `solPrice` for display, rounded up; 0 with none.
+    const usdOf = (r: StrayFee): MicroUsd => (r.cost ?? (solPrice === null ? 0n : lamportsToMicroUsd(r.lamports as Lamports, solPrice, 'ceil'))) as MicroUsd;
+    if (sf !== undefined) costs.push({ atMs: sf.atMs, amount: lam(sf.lamports), lamports: sf.lamports, usd: usdOf(sf), kind: 'failed_entry' });
+    for (const r of Object.values(this.#s.strayFees ?? {})) costs.push({ atMs: r.atMs, amount: lam(r.lamports), lamports: r.lamports, usd: usdOf(r), kind: 'failed_entry' });
     costs.push(...this.#openTradeCosts(book, legs, solPrice, nowMs));
     // A loss that landed after its trade closed counts on the day it was booked (PAPER-2); a late gain is not counted
     // (the safe side: a day's loss is never lowered after the fact).
@@ -712,7 +751,8 @@ export class PaperAccount {
     return {
       history, latches, solBalance: this.#s.walletLamports === null ? null : { value: this.#s.walletLamports as Lamports, atMs: nowMs }, paper: true,
       oneTimeRent: this.#s.oneTimePaid === true ? 0n : this.#oneTimeRent,
-      // A stray fee is out of `costs` until a fresh price books it: risk is told, and refuses entries until it is in.
+      // A stray fee is out of `costs` until `settle` books it (by its lamports, priced or not): risk is told, and refuses
+      // entries until it is in.
       // SOL-BOOKS: a close is in `closedTrades` by its lamports at once; only its dollar figure (display) waits for a price.
       unvalued: this.#unbookedStrays(book, legs).length,
     };

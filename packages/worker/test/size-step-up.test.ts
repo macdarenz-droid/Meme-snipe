@@ -54,12 +54,16 @@ const simulating = (asked: bigint[]) => new LiveFacts({
 
 type Line = { kind: string; action?: string; reasons?: string[]; gate_reasons?: { gate: string; code: string; detail?: string }[] };
 
+/** A trade won 0.02 SOL 18 days ago (a file from before: its size in micro-dollars, its result in lamports). */
+const WON = { positionId: 'p:won:1', mint: 'WonMint', openedAtMs: T - 19 * DAY, notional: TRIAL_POLICY.capital.minNotional, closedAtMs: T - 18 * DAY, netLamports: 20_000_000n, netPnl: 3_000_000n, stoppedOut: false, booked: 20_000_000n };
+
 const run = async (stepUp: boolean, port: number, sizeProbe?: WorkerDeps['sizeProbe'], markedHistory?: WorkerDeps['markedHistory'], after?: () => void, seen?: (h: ReturnType<typeof makeWorker>) => void) => {
   const stateDir = tempState();
   controlFile(stateDir).write({ paused: false, pausedAtMs: null, latches: { ...NO_LATCHES, sizeStepUpApproved: stepUp } });
   // A wallet that has grown past the bankroll (about $23 of SOL on a $20 bankroll, its setup paid): above every
-  // high-water mark, so no drawdown returns the size to the minimum and the owner's step-up applies.
-  accountFile(stateDir).write({ openedAtMs: T - 20 * DAY, openingEquity: TRIAL_POLICY.capital.bankroll, walletLamports: 153_333_333n, trades: [], entries: [], oneTimePaid: true });
+  // high-water mark, so no drawdown returns the size to the minimum and the owner's step-up applies. SOL-BOOKS (risk
+  // review F1): the growth is a booked winning trade, so the wallet's funded SOL is the bankroll at the passing price.
+  accountFile(stateDir).write({ openedAtMs: T - 20 * DAY, openingEquity: TRIAL_POLICY.capital.bankroll, walletLamports: 153_333_334n, trades: [WON], entries: [], oneTimePaid: true } as never);
   const asked: bigint[] = [];
   const h = makeWorker({ stateDir, timers: dueTimers(T - 16 * DAY), facts: [simulating(asked)], ...(sizeProbe === undefined ? {} : { sizeProbe }), ...(markedHistory === undefined ? {} : { markedHistory }), config: { ZEROED_HEALTH_ADDR: `127.0.0.1:${port}`, ZEROED_API_ADDR: `127.0.0.1:${port + 1}` } });
   seen?.(h);

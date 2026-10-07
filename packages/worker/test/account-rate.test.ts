@@ -141,12 +141,12 @@ describe('ACCOUNT-RATE F1: an open trade\'s costs outside its basis', () => {
     const each = realNet.signaturesPerTx * realNet.baseFeePerSignature + 500_000n;
     // Each failed attempt dated when the account first saw it (the settle at T, after its send); the rent at the entry
     // (yesterday). SOL-BOOKS: risk counts them in lamports, exactly (the app shows them in dollars too).
-    const eachUsd = each as Lamports;
-    const feesUsd = 3n * eachUsd;
-    const rentUsd = realNet.tokenAccountRent as Lamports;
+    const eachLamports = each as Lamports;
+    const feesLamports = 3n * eachLamports;
+    const rentLamports = realNet.tokenAccountRent as Lamports;
     expect(fact.history.costs.filter((c) => c.kind === 'open_trade')).toEqual([
-      ...sigs.map(() => ({ atMs: T, amount: eachUsd, kind: 'open_trade' })),
-      { atMs: T - 20 * HOUR, amount: rentUsd, kind: 'open_trade' },
+      ...sigs.map(() => ({ atMs: T, amount: eachLamports, kind: 'open_trade' })),
+      { atMs: T - 20 * HOUR, amount: rentLamports, kind: 'open_trade' },
     ]);
     // The position marked at its basis (no price move): only these costs make the day's and week's loss.
     const marked = { ...fact.history, openPositions: fact.history.openPositions.map((x) => ({ ...x, mark: x.notional, markAtMs: T })) };
@@ -156,8 +156,8 @@ describe('ACCOUNT-RATE F1: an open trade\'s costs outside its basis', () => {
     };
     const snap = riskSnapshot(input)!;
     const sameDay = melbourneDay(T).start <= T - 20 * HOUR;
-    expect(snap.dayLoss).toBeGreaterThanOrEqual(feesUsd + (sameDay ? rentUsd : 0n));
-    expect(snap.weekLoss).toBeGreaterThanOrEqual(feesUsd);
+    expect(snap.dayLoss).toBeGreaterThanOrEqual(feesLamports + (sameDay ? rentLamports : 0n));
+    expect(snap.weekLoss).toBeGreaterThanOrEqual(feesLamports);
     ledger.close();
   });
 
@@ -398,7 +398,7 @@ describe('ACCOUNT-RATE with RISK-PARTIAL: each entry fee counts once', () => {
     a.filled({ ...base, purpose: 'exit', book: bookAt(1), atMs: T - 2 * HOUR + 60_000, reasons: ['partial exit'] }, PX, legsAt(1));
     const ledger = openLedger(join(dir, 'ledger.sqlite'), 'paper');
     // SOL-BOOKS: risk counts these in lamports.
-    const rentUsd = net.tokenAccountRent as Lamports;
+    const rentLamports = net.tokenAccountRent as Lamports;
     const openCosts = (stage: 1 | 2) => a.fact(ledger, bookAt(stage), NO_LATCHES, T, legsAt(stage)).history.costs.filter((c) => c.kind === 'open_trade').map((c) => c.amount);
     const dayLoss = (stage: 1 | 2) => {
       const fact = a.fact(ledger, bookAt(stage), NO_LATCHES, T, legsAt(stage));
@@ -412,14 +412,14 @@ describe('ACCOUNT-RATE with RISK-PARTIAL: each entry fee counts once', () => {
     const part = a.state.trades[0]!.partials![0]!;
     const soldShare = (20_000_000n + fee(0n, 'filled')) - ((20_000_000n + fee(0n, 'filled')) * 500_000n + 1_000_000n - 1n) / 1_000_000n;
     expect(part.lamports).toBe(9_000_000n - fee(0n, 'filled') - fee(500_000n, 'failed') - soldShare);
-    expect(openCosts(1)).toEqual([rentUsd]);
+    expect(openCosts(1)).toEqual([rentLamports]);
     // Risk's day loss: the part's realized loss (F inside it) and the rent, nothing more (the remainder marked at its basis).
-    expect(dayLoss(1)).toBe(-part.lamports + rentUsd);
+    expect(dayLoss(1)).toBe(-part.lamports + rentLamports);
     // A second failed sell after the part: an open-trade cost, once.
     a.settle(bookAt(2), legsAt(2), PX, T - HOUR);
-    const f2Usd = fee(700_000n, 'failed') as Lamports;
-    expect(openCosts(2).sort()).toEqual([f2Usd, rentUsd].sort());
-    expect(dayLoss(2)).toBe(-part.lamports + rentUsd + f2Usd);
+    const f2Lamports = fee(700_000n, 'failed') as Lamports;
+    expect(openCosts(2).sort()).toEqual([f2Lamports, rentLamports].sort());
+    expect(dayLoss(2)).toBe(-part.lamports + rentLamports + f2Lamports);
     ledger.close();
   });
 });

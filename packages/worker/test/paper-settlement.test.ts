@@ -107,8 +107,8 @@ describe('a restart books what account.json missed', () => {
   });
 });
 
-describe('a restart books a failed entry\'s fees at its first SOL price', () => {
-  it('an entry that ends unfilled during the restart reconcile (no price yet) has its fee booked by the first price', async () => {
+describe('a restart books a failed entry\'s fees by their lamports, with or without a SOL price (SOL-BOOKS, risk review F2)', () => {
+  it('an entry that ends unfilled during the restart reconcile (no price yet) has its fee booked then, once', async () => {
     const scenario = { ...LANDS, landPpm: { pumpswap: 0n, 'pump-curve': 0n }, dropPpm: 0n };
     const h = makeWorker({ scenario });
     expect(await h.worker.reconcile()).toEqual({ ok: true });
@@ -126,15 +126,17 @@ describe('a restart books a failed entry\'s fees at its first SOL price', () => 
     await h.worker.stop();
     const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers, scenario });
     expect(await h2.worker.reconcile()).toEqual({ ok: true });
-    // The reconcile ended the entry with no SOL price in this process: nothing booked yet.
+    // The reconcile ended the entry with no SOL price in this process: its fee is booked by its lamports at once.
     expect(Object.values(h2.worker.book.intents).every((i) => i.intent.purpose !== 'entry' || isTerminal(i))).toBe(true);
-    expect(wallet(h.stateDir)).toBe(unbooked);
-    // The first price, and nothing else: the fee is booked, once.
+    expect(wallet(h.stateDir)).toBe(unbooked - fees);
+    expect(Object.values(accountFile(h.stateDir).read(null as never).strayFees ?? {}).every((r) => r.cost === null)).toBe(true);
+    // The first price, and nothing else: nothing is charged again; the fee's dollars are known now.
     const m2 = new Market(h2);
     m2.solPrice();
     m2.slot();
     await m2.run(400, 100);
     expect(wallet(h.stateDir)).toBe(unbooked - fees);
+    expect(Object.values(accountFile(h.stateDir).read(null as never).strayFees ?? {}).every((r) => r.cost !== null)).toBe(true);
     m2.solPrice();
     m2.slot();
     await m2.run(400, 100);
@@ -397,7 +399,7 @@ describe('M4: fees of an entry that never filled are an account cost, booked onc
     ledger.close();
   });
 
-  it('a fee not yet booked (no SOL price) is never folded past: it is charged once when the price comes (risk review of #133)', () => {
+  it('a fee booked with no SOL price is never folded past: it is charged once (risk review of #133; SOL-BOOKS F2)', () => {
     const dir = tempState();
     const file = accountFile(dir);
     const start = melbourneWeek(T).start;
@@ -410,15 +412,20 @@ describe('M4: fees of an entry that never filled are an account cost, booked onc
     const pendingA = { positions: {}, intents: { ...bookOf([b]).intents, ...bookOf([a], 'broadcast').intents } } as unknown as Book;
     account.settle(pendingA, legsOf([a, b]), PRICE, start - DAY);
     expect(Object.keys(account.state.strayFees!)).toEqual(['b']);
-    // A new process in the next week, no SOL price yet: a's entry has ended, but its fee cannot be priced. The fold must
-    // not pass it.
+    // A new process in the next week, no SOL price yet: a's entry has ended; its fee is booked by its lamports, dated
+    // now, with no dollar figure yet. The fold must not pass it.
     const restarted = new PaperAccount(file, 20_000_000n as MicroUsd, start + 1_000, 0n);
     restarted.settle(bookOf([a, b]), legsOf([a, b]), null, start + 1_000);
-    expect(restarted.state.strayFolded === undefined || restarted.state.strayFolded.atMs < a.sentAtMs!).toBe(true);
-    // The first price: a is charged, once.
+    // Booked, so the fold may pass its send time: b folds, a stays a record in this week (never folded unbooked).
+    expect(restarted.state.strayFees!['a']).toEqual({ atMs: start + 1_000, lamports: attemptFee(net, 20_000n, 'failed'), cost: null });
+    // Prices after, and a's own fold a week later: a is charged once in all.
     restarted.settle(bookOf([a, b]), legsOf([a, b]), PRICE, start + 2_000);
     restarted.settle(bookOf([a, b]), legsOf([a, b]), PRICE, start + 3_000);
     const fees = attemptFee(net, 20_000n, 'failed') + attemptFee(net, 30_000n, 'failed');
+    expect(restarted.state.walletLamports).toBe(opening - fees);
+    restarted.settle(bookOf([a, b]), legsOf([a, b]), null, start + 8 * DAY);
+    expect(restarted.state.strayFees).toEqual({});
+    expect(restarted.state.strayFolded?.lamports).toBe(fees);
     expect(restarted.state.walletLamports).toBe(opening - fees);
   });
 

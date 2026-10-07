@@ -57,23 +57,27 @@ const boot = async (h: ReturnType<typeof makeWorker>) => {
   h.worker.feed.ingest('helius', { type: 'offchain', key: 'feed:status:helius', value: { state: 'up' } }, { receivedAt: h.timers.now() });
 };
 
+/** A trade won 0.02 SOL 18 days ago (a file from before: its size in micro-dollars, its result in lamports). */
+const WON = { positionId: 'p:won:1', mint: 'WonMint', openedAtMs: T - 19 * DAY, notional: TRIAL_POLICY.capital.minNotional, closedAtMs: T - 18 * DAY, netLamports: 20_000_000n, netPnl: 3_000_000n, stoppedOut: false, booked: 20_000_000n };
+/** The bankroll's SOL at the passing price, as a file from before funded its wallet at its own first price. */
+const FUNDED = 133_333_334n;
+const FALL = (SOL_PRICE * 89n) / 100n;
+
 describe('RB-1b: a SOL/USD fall alone never returns the size to the minimum', () => {
-  it('with the owner\'s step-up approved and the wallet above every high-water mark, an 11% SOL/USD fall leaves the entry above q_min', async () => {
+  it('with the owner\'s step-up approved and the wallet above every high-water mark, SOL/USD 11% lower at the deploy leaves the entry above q_min', async () => {
     const stateDir = tempState();
     controlFile(stateDir).write({ paused: false, pausedAtMs: null, latches: { ...NO_LATCHES, sizeStepUpApproved: true } });
-    // A wallet grown past the bankroll (about $23 of SOL on $20 at the passing price), its setup paid, no trade yet; its
-    // NAV peak is that SOL at the passing price, as a file from before SOL-BOOKS records it (micro-dollars).
-    accountFile(stateDir).write({ openedAtMs: T - 20 * DAY, openingEquity: TRIAL_POLICY.capital.bankroll, walletLamports: 153_333_333n, trades: [], entries: [], oneTimePaid: true, navPeak: { atMs: T - 17 * DAY, nav: 23_000_000n } } as never);
+    // A file from before SOL-BOOKS: funded at the passing price, grown by a winning trade to about $23 of SOL there, its
+    // NAV peak that SOL at that price (micro-dollars).
+    accountFile(stateDir).write({ openedAtMs: T - 20 * DAY, openingEquity: TRIAL_POLICY.capital.bankroll, walletLamports: FUNDED + WON.booked, trades: [WON], entries: [], oneTimePaid: true, navPeak: { atMs: T - 17 * DAY, nav: 23_000_000n } } as never);
     const h = makeWorker({ stateDir, timers: dueTimers(T - 16 * DAY), facts: [simulating()], config: { ZEROED_HEALTH_ADDR: '127.0.0.1:19140', ZEROED_API_ADDR: '127.0.0.1:19141' } });
     await boot(h);
-    // The first SOL price is the passing one, while nothing is a candidate yet (SOL-BOOKS: the opening price). After it,
-    // no price until the coin is ready; then SOL/USD is 11% lower for good.
+    // Every price after the deploy is 11% under the price the wallet was funded at.
     const m = await passingMarket(h, {
       heldPoolFacts: true, omit: [SOL_PRICE_KEY, simKey(MINT)],
-      before: { atMs: T - 30 * 60_000, run: (x) => { x.omit = new Set([simKey(MINT)]); x.solPrice(); x.omit = new Set([SOL_PRICE_KEY, simKey(MINT)]); } },
+      before: { atMs: T - 30 * 60_000, run: (x) => { x.solUsd = FALL; x.omit = new Set([simKey(MINT)]); x.solPrice(); x.omit = new Set([SOL_PRICE_KEY, simKey(MINT)]); } },
     });
     expect(entries(h)).toEqual([]);
-    m.solUsd = (SOL_PRICE * 89n) / 100n;
     m.omit = new Set([simKey(MINT)]);
     await m.run(120_000, 400, () => { m.slot(); m.pool(); });
     await h.worker.stop();
@@ -81,25 +85,39 @@ describe('RB-1b: a SOL/USD fall alone never returns the size to the minimum', ()
     expect(made.length, rejectCodes(stateDir).slice(-6).join(', ')).toBeGreaterThan(0);
     // The SOL is the same and so is every SOL figure: the owner's step-up still applies.
     // q_min in lamports is at most its value at the lower price (dollar books sized it there), so above both.
-    const minAtFall = microUsdToLamports(TRIAL_POLICY.capital.minNotional, ((SOL_PRICE * 89n) / 100n) as MicroUsd, 'ceil');
+    const minAtFall = microUsdToLamports(TRIAL_POLICY.capital.minNotional, FALL as MicroUsd, 'ceil');
     expect(BigInt((made[0]!.intent as { spend: bigint }).spend), `q_min ${MIN_SPEND} at the passing price, ${minAtFall} after the fall`).toBeGreaterThan(minAtFall);
+    expect(rejectCodes(stateDir)).not.toContain('wallet_below_kill_line');
   }, 120_000);
 });
 
-describe('RB-1m: the deploy of SOL-BOOKS onto a file from before', () => {
-  it('a dollar NAV peak recorded when SOL/USD was 45% higher latches no kill switch at the first price after the deploy', async () => {
+describe('RB-1m: the deploy of SOL-BOOKS onto a file from before (risk review F1)', () => {
+  const deployed = async (file: Record<string, unknown>, port: number) => {
     const stateDir = tempState();
-    // The wallet's SOL never changed (no trade): its peak in dollars was that SOL at the passing price.
-    accountFile(stateDir).write({ openedAtMs: T - 20 * DAY, openingEquity: TRIAL_POLICY.capital.bankroll, walletLamports: 153_333_333n, trades: [], entries: [], oneTimePaid: true, navPeak: { atMs: T - 17 * DAY, nav: 23_000_000n } } as never);
-    const h = makeWorker({ stateDir, config: { ZEROED_HEALTH_ADDR: '127.0.0.1:19146', ZEROED_API_ADDR: '127.0.0.1:19147' } });
+    accountFile(stateDir).write({ openedAtMs: T - 20 * DAY, openingEquity: TRIAL_POLICY.capital.bankroll, walletLamports: FUNDED, trades: [], entries: [], oneTimePaid: true, ...file } as never);
+    const h = makeWorker({ stateDir, config: { ZEROED_HEALTH_ADDR: `127.0.0.1:${port}`, ZEROED_API_ADDR: `127.0.0.1:${port + 1}` } });
     expect(await h.worker.reconcile()).toEqual({ ok: true });
     const m = new Market(h);
-    // SOL/USD now 69% of then: in dollars a 31% fall from the peak, past R10's 30%; in SOL nothing moved.
+    // SOL/USD now 69% of the price the wallet was funded at: in dollars a 31% fall, past R10's 30%; in SOL nothing moved.
     m.solUsd = (SOL_PRICE * 69n) / 100n;
     await m.run(4_000, 400, () => { m.slot(); m.solPrice(); h.worker.step(); });
+    const codes = h.worker.apiInputs().stops?.codes ?? null;
     expect(controlFile(stateDir).read(NO_CONTROL).latches.killTrippedAtMs).toBeNull();
     expect(h.logs.some((l) => l.startsWith('Risk tripped on the account valuation'))).toBe(false);
+    expect(codes).not.toBeNull();
+    expect(codes).not.toContain('kill_switch');
+    expect(codes).not.toContain('wallet_below_kill_line');
+    // The opening is read from the wallet: the bankroll in lamports is its funded SOL, not B at today's price.
+    const a = accountFile(stateDir).read(null as never);
+    expect(microUsdToLamports(TRIAL_POLICY.capital.bankroll, a.openingSolPrice!, 'floor') <= FUNDED).toBe(true);
+    expect(FUNDED - microUsdToLamports(TRIAL_POLICY.capital.bankroll, a.openingSolPrice!, 'floor') < 2n).toBe(true);
     await h.worker.stop();
+  };
+  it('a file from before with a dollar NAV peak latches nothing at the first price after the deploy', async () => {
+    await deployed({ navPeak: { atMs: T - 17 * DAY, nav: TRIAL_POLICY.capital.bankroll } }, 19146);
+  });
+  it('a file in SOL that lost its opening price latches nothing either', async () => {
+    await deployed({ books: 'sol' }, 19148);
   });
 });
 
