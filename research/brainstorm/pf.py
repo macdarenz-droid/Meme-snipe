@@ -1,5 +1,11 @@
 import sys, json, time, urllib.request, urllib.error
-H = {'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json', 'Origin': 'https://pump.fun', 'Referer': 'https://pump.fun/'}
+import os
+# STOPPED 2026-10-07: pump.fun Terms of Use (updated 25 Sep 2026) s21(h) bar bots and scripts except as s6.1 permits,
+# tracking other users, and forged headers. This script used to send pump.fun's own Origin/Referer. It no longer forges
+# headers and refuses to run unless the owner has approved its use (PUMPFUN_OWNER_OK=1).
+if os.environ.get('PUMPFUN_OWNER_OK') != '1':
+    raise SystemExit('pump.fun access is stopped pending the owner decision (Terms s21(h)); see research/hype/RESEARCH.md')
+H = {'User-Agent': 'meme-snipe-research', 'Accept': 'application/json'}
 def get(url, tries=12, base=4):
     for i in range(tries):
         req = urllib.request.Request(url, headers=H)
