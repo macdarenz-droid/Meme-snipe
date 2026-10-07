@@ -59,7 +59,7 @@ The previous S1 account reached its usage limit about 12:45 PM. The owner made t
   - #272 c752a6d red alone (about 26 tests) → LATE-LOG's round.
   - C's probes R3-1..4, r4-* → RC-STATE runs them on its head (the merge used the pre-#279 base).
   - state-navpeak → SOL-BOOKS judges stale vs real.
-  - A's probes: volume-one-missing-day → #276 checks it on 58eb1422; curve-tail-parity → A-FACTS BT; creates-reconnect-14-days → H14-HOLES; unstamped-swap-skipped = RT-A6, LOW, unreachable, known.
+  - A's probes: volume-one-missing-day PASSES on #276 58eb1422 (2/2; the probe is committed in #276, byte-identical); curve-tail-parity → A-FACTS BT; creates-reconnect-14-days → H14-HOLES; unstamped-swap-skipped = RT-A6, LOW, unreachable, known.
   - Red team B parked (not archived) for round 5: the final integration attack on the settled heads before Deploy 1.
   - **Red team slot → red team A round 4, PARALYSIS HUNT** (012Ke512): every path where one event blocks every candidate for long, ranked by trades lost per day, with probes; the known ones listed.
 - 8:54 PM **#281 review CHANGES NEEDED** on 1af9484 (01QkAcbw).
