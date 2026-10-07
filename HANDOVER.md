@@ -95,6 +95,10 @@
   - it starts as soon as its inputs exist (B-M25-01 Config from Z02; the A-M08-02 features interface, faked behind its type until Z09). Order and dependencies are to be confirmed against SPEC-A when carded;
   - the dashboard switch comes with the UI strategy screen (VM-03 `strategies[]`; A3 for live modes).
   - MR-01 stop: the owner's message did not say yes or no; asked to confirm.
+- **8 Oct about 7:31 AM, owner: MR-01 parked** ("Sure insert mr 01 as my future strategy"; CLAUDE.md "MR-01 parked"). This rules on C-76.
+  - What stops: the A-M09-02 build, the PREREG (`claude/research-phase0-prereg`, on hold, not merged), the A05 Phase 0 kill check of MR-01, and the A-24b precondition work. No MR-01 trades in any mode.
+  - D08: PM-01 (paper at most) and the owner's research edges, entering through the strategy slot (Z-STRAT), are the strategy tracks.
+  - Card **C76-DOCS** (docs only): replace "OWNER PENDING" for C-76 in ARCH 3.2 and D08, SPEC-A C-76 and A-M09-02, MIGRATION (A05, PREREG, Owner waits) and DECISIONS with this ruling.
 - **Follow-ups (identified, not yet carded):**
   1. Z0D-2 docs:
      - the replay-mode ruling (`replay_unavailable` treated as assumed-pass-flagged in B-10 runs only, refused in paper and live; `docs/reviews/ZH.md` round 2 ruling 2);
