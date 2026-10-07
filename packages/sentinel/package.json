@@ -1,0 +1,11 @@
+{
+  "name": "@bot/sentinel",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Kill sentinel and standalone exit path (M29).",
+  "license": "UNLICENSED",
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}

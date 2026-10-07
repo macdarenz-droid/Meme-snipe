@@ -9,9 +9,10 @@ WORKER_HEALTH_ADDR=127.0.0.1:8787 # the worker's health route for the runner (RU
 TABLETOP_API_ADDR=127.0.0.1:8789 # reserved for RUN-1d's zeroed-worker-tabletop (never published)
 SMOKE_HEALTH_ADDR=127.0.0.1:8797 # worker-smoke's trial start of a new release (never published)
 SMOKE_API_ADDR=127.0.0.1:8798
-SMOKE_MEMORY_MAX=280M # the trial's memory cap: the host has 1 GB and the live worker (up to 800M) keeps running
+SMOKE_MEMORY_MAX=280M # the trial's memory cap beside the live worker (up to 800M): set for the 1 GB server and kept on the 2 GB one while only the stand-in runs (Z10 sizes the recorder's unit from measurement)
 SMOKE_HOLD_S=30 # after its first health answer, the trial worker must still run and answer this long
 SWITCH_HOLD_S=30 # after a switch, the new worker must run this long with no restart and health answering
+PROBATION_S=7200 # RC-R2-3: after a switch, any automatic restart of the worker within this window rolls it back
 RELEASE_UNIT_RE='^zeroed-(dryrun[a-z0-9-]*@?|worker-tabletop)\.(service|timer)$' # units taken from the release
 
 # backoff_s TRIES: seconds to wait after TRIES failed tries in a row (1 min, doubling, at most 30 min).
@@ -103,15 +104,57 @@ unit_sandbox() {
 # public (none on a correct host: the app cannot tell a public Funnel address from a tailnet one).
 funnel_ports() { jq -r '(.AllowFunnel // {}) | to_entries[] | select(.value == true) | .key' 2>/dev/null || true; }
 
-# worker_entry RELEASE_DIR: the program the worker unit runs. The release's own worker (WORKER-1) only when
-# the release's ops/host-config.json says "worker": "release" (a reviewed commit) and the file exists; the
-# host's stand-in otherwise. Switching the host to the real worker is a decision, not a side effect of a merge.
+# worker_entry RELEASE_DIR: the program the worker unit runs. The release's own worker (WORKER-1) only when the
+# release's ops/host-config.json says "worker": "release" (a reviewed commit) and the file exists; the host's stand-in
+# when it says "worker": "stub", or when no release is deployed yet (RELEASE_DIR does not exist and is not a link: a
+# first install). Switching the host to the real worker is a decision, not a side effect of a merge. RC-M4: anything
+# else is refused, never run as the stand-in (which passes worker-smoke and update health, so the host would look
+# healthy with no trading worker): a host-config missing or unreadable, a "worker" value missing or unknown, or
+# "release" without its main.ts. A refusal says why on stderr and returns 1: worker-start and worker-smoke then fail,
+# loudly.
+STUB_ENTRY=/opt/zeroed/stub/worker.mjs # the host's stand-in worker
 worker_entry() {
-  if [ "$(jq -r '.worker // "stub"' "$1/ops/host-config.json" 2>/dev/null || echo stub)" = release ] && [ -f "$1/packages/worker/src/main.ts" ]; then
-    printf '%s\n' "$1/packages/worker/src/main.ts"
-  else
-    printf '%s\n' /opt/zeroed/stub/worker.mjs
+  # Nothing there at all (not even a dangling link: that is a release gone missing, refused below).
+  if [ ! -e "$1" ] && [ ! -L "$1" ]; then
+    printf '%s\n' "$STUB_ENTRY"
+    return 0
   fi
+  local w
+  if ! w="$(jq -er 'if type == "object" then (.worker // "(missing)") | if type == "string" then . else "(not a string)" end else error("not an object") end' "$1/ops/host-config.json" 2>/dev/null)"; then
+    echo "refused: $1/ops/host-config.json is missing or cannot be read, so the worker to run is unknown" >&2
+    return 1
+  fi
+  case "$w" in
+    release)
+      if [ -f "$1/packages/worker/src/main.ts" ]; then
+        printf '%s\n' "$1/packages/worker/src/main.ts"
+      else
+        echo "refused: host-config says \"worker\": \"release\" but $1/packages/worker/src/main.ts is missing" >&2
+        return 1
+      fi
+      ;;
+    stub) printf '%s\n' "$STUB_ENTRY" ;;
+    *)
+      echo "refused: host-config \"worker\" is $(printf '%s' "$w" | tr -c 'A-Za-z0-9()_. -' '?' | cut -c1-40), not \"release\" or \"stub\"" >&2
+      return 1
+      ;;
+  esac
+}
+
+# worker_refused FILE STATUS: why the worker refused to start, or nothing (RC-FIXES-2b, #280's contract). FILE is the
+# worker's <state>/refused.json ({reason, atMs, commit}); STATUS is the unit's ExecMainStatus, where 78 is a refusal.
+# One line, at most 200 characters, never the separator "|".
+worker_refused() {
+  local r
+  if [ -e "$1" ]; then
+    r="$(jq -r '"\(.reason // "no reason given") (commit \((.commit // "?") | tostring | .[0:12]))"' "$1" 2>/dev/null)" || r="refused.json cannot be read"
+    [ -n "$r" ] || r="refused.json cannot be read"
+  elif [ "$2" = 78 ]; then
+    r="exit 78 with no refused.json"
+  else
+    return 0
+  fi
+  printf '%s\n' "$r" | tr -d '\r|' | tr '\n' ' ' | cut -c1-200 | sed 's/ *$//'
 }
 
 # The only worker settings a release's ops/host-config.json may give (PRACTICE-ON): the S0 shakedown's, in its
@@ -135,19 +178,25 @@ ssh_open() { grep -Eq 'tcp dport 22 .*accept'; }
 
 # ---------- Deploy gate (OPS-GATE): what "green" means, shared by the server (zeroed-update) and the Deploy
 # workflow (ops/deploy/tag.sh), so the two always agree. ----------
-# Only GitHub Actions' own check runs count; the Deploy job's run (zeroed-deploy) never does.
+# Only GitHub Actions' own check runs count; the Deploy job's run (zeroed-deploy) never does, and neither does the
+# scheduled advisory report (zeroed-advisories, .github/workflows/audit-schedule.yml): it runs daily on the newest
+# commit of the default branch, so a failed, cancelled or still-running report would otherwise hold back a commit
+# that nothing in its own diff broke (Z01 supervisor ruling 3.4). tools/policy refuses that job name in any other
+# workflow (E_AUDIT_JOB_NAME), so no other run can borrow it.
 DEPLOY_CHECK_APP=github-actions
 DEPLOY_SELF_JOB=zeroed-deploy
+DEPLOY_AUDIT_JOB=zeroed-advisories
 # The paths whose change runs the ops end-to-end (.github/workflows/ops-e2e.yml `paths`; a test keeps them equal).
 E2E_PATHS=(ops packages/ops .github/workflows/deploy.yml .github/workflows/ops-e2e.yml)
 
 # commit_verdict NAME: reads a commit's check-runs reply (GitHub API) on stdin and prints one line, "green" or
 # "red|pending|none: <why>". Green needs a successful run named NAME from GitHub Actions on that commit, every
-# other GitHub Actions run finished and none failed. A run from another app, or an all-skipped set, never makes
+# other GitHub Actions run finished and none failed (the Deploy job and the advisory report aside). A run from
+# another app, or an all-skipped set, never makes
 # it green; a listing GitHub cut short (more runs than returned) is "none".
 commit_verdict() {
-  jq -r --arg name "$1" --arg app "$DEPLOY_CHECK_APP" --arg self "$DEPLOY_SELF_JOB" '
-    [(.check_runs // [])[] | select((.app.slug // "") == $app and .name != $self)] as $r
+  jq -r --arg name "$1" --arg app "$DEPLOY_CHECK_APP" --arg self "$DEPLOY_SELF_JOB" --arg audit "$DEPLOY_AUDIT_JOB" '
+    [(.check_runs // [])[] | select((.app.slug // "") == $app and .name != $self and .name != $audit)] as $r
     | ([$r[] | select(.name == $name)] | sort_by(.completed_at // .started_at // "") | last) as $n
     | if (.total_count // 0) > ((.check_runs // []) | length) then "none: more check runs than GitHub listed"
       elif any($r[]; .status != "completed") then "pending: \([$r[] | select(.status != "completed") | .name] | unique | join(", ")) still running"
@@ -170,4 +219,52 @@ e2e_commit() {
       return 0
     fi
   done
+}
+
+# prunable_releases ROOT CURRENT PREV TAG_COMMIT: release folders under ROOT that may go (HOST-CAPS), one per line.
+# Kept: the current release, the one before it (the roll-back target), the deploy tag's commit, the 3 newest others
+# and anything that is not a 40-hex commit folder (half-written *.new and strays are never listed). No age rule.
+# Fails closed: when CURRENT is not a folder under ROOT, nothing goes.
+# Each release is a full copy of the repository (about 68 MB), and every update adds one.
+prunable_releases() {
+  local root="${1%/}" cur="$2" prev="$3" tag="$4" d i=0
+  [ -n "$cur" ] && [ -d "$cur" ] && [ "$(dirname "$cur")" = "$root" ] || return 0
+  while IFS= read -r d; do
+    [[ "${d##*/}" =~ ^[0-9a-f]{40}$ ]] || continue
+    [ "$d" != "$cur" ] && [ "$d" != "$prev" ] && [ "$d" != "$root/$tag" ] || continue
+    i=$((i + 1))
+    [ "$i" -gt 3 ] || continue
+    printf '%s\n' "$d"
+  done < <(find "$root" -mindepth 1 -maxdepth 1 -type d ! -name '*.new' -printf '%T@ %p\n' 2>/dev/null | LC_ALL=C sort -rn | cut -d' ' -f2-)
+}
+
+# record_alerts NOW: reads the recording uploader's status.json (RECORD-UPLOAD; it runs as the worker's user, so its
+# alerts are raised here) on stdin and prints one "on|KEY|TEXT" or "off|KEY|TEXT" line per alert: 3 failed runs in a
+# row, recordings waiting longer than a day, files kept back from upload, no status for 3 hours. {"enabled":false}
+# (the switch is off) clears them all. RC-M5: with the switch on, a status with no report time (none written: '{}', the
+# uploader never ran) raises the no-report alert and leaves the others as they are; it never clears them. Input that
+# is not JSON prints nothing, so every alert keeps its state.
+record_alerts() {
+  jq -r --argjson now "$1" '
+    def clean: tostring | gsub("[\r\n|]"; " ") | .[0:300];
+    if .enabled != false and (.at | type) != "number" then
+      "on|record-upload-stale|ALERT Zeroed host: the recording upload is on but has never reported (no status written). Recordings may be deleted at the disk cap without being uploaded."
+    else
+    (.enabled != false) as $on
+    | (((.failed_runs // 0) - (if .running == true then 1 else 0 end))) as $failed
+    | (.kept // []) as $kept
+    | [
+        (if $on and $failed >= 3
+         then "on|record-upload-failed|ALERT Zeroed host: the recording upload failed \($failed) runs in a row (last: \(.last_error // "unknown" | clean)). Recordings stay on the server until it works again."
+         else "off|record-upload-failed|CLEARED Zeroed host: the recording upload works again." end),
+        (if $on and (.backlog_age_s // 0) > 86400
+         then "on|record-upload-backlog|ALERT Zeroed host: recordings older than a day are still waiting to upload (\(.pending // 0) files). Their disk space is not freed until they are up."
+         else "off|record-upload-backlog|CLEARED Zeroed host: no recording waits longer than a day to upload." end),
+        (if $on and ($kept | length) > 0
+         then "on|record-upload-kept|ALERT Zeroed host: \($kept | length) recording file(s) kept on the server, not uploaded: \([$kept[0:5][] | "\(.key // "?") (\(.why // "?"))"] | join(", ") | clean)."
+         else "off|record-upload-kept|CLEARED Zeroed host: no recording file is kept back from upload." end),
+        (if $on and ($now - (.at / 1000)) > 10800
+         then "on|record-upload-stale|ALERT Zeroed host: the recording upload has not reported for over 3 hours."
+         else "off|record-upload-stale|CLEARED Zeroed host: the recording upload reports again." end)
+      ] | .[] end' 2>/dev/null || true
 }

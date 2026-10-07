@@ -39,6 +39,17 @@ export interface ReasonCount {
   readonly code: string;
   readonly count: number;
 }
+/**
+ * H16-WHY: refused candidates by an H16 reason of their last refusal: its code, the input it names and the hard gate
+ * that needed it. Fixed names only (a FactName and H1–H17); null when the journal line named none (a line from before
+ * H16-WHY, or an evidence reason without one). A candidate counts once under each of its distinct H16 reasons.
+ */
+export interface H16Count {
+  readonly code: string;
+  readonly input: string | null;
+  readonly needed_by: string | null;
+  readonly count: number;
+}
 export interface SummaryTrade {
   readonly mint: string;
   readonly opened_at: string;
@@ -68,10 +79,27 @@ export interface LastDeath {
   readonly heap_limit_mb: number | null;
   readonly spaces: readonly { readonly space: string; readonly used_mb: number }[];
   readonly sample: { readonly at: string; readonly heap_used_mb: number; readonly heap_limit_mb: number; readonly rss_mb: number; readonly external_mb: number; readonly array_buffers_mb: number } | null;
+  /**
+   * MEM-PROBE: the worker's last memory probe samples before the death, oldest first: heap, old and large-object MB, a
+   * save in progress, and the size of each major collection by code. Counts only. Optional: a worker from before it
+   * still posts.
+   */
+  readonly recent?: readonly ProbeRow[];
+}
+export interface ProbeRow {
+  readonly at: string;
+  readonly heap_used_mb: number;
+  readonly old_mb: number;
+  readonly large_object_mb: number;
+  readonly saving: boolean;
+  readonly counts: readonly CodeCount[];
 }
 
 /** At most this many heap spaces in `last_death`. */
 export const SUMMARY_MAX_SPACES = 16;
+/** At most this many probe samples in `last_death.recent`, and counts in each. */
+export const SUMMARY_MAX_PROBES = 10;
+export const SUMMARY_MAX_PROBE_COUNTS = 96;
 
 export interface Summary {
   readonly v: 1;
@@ -114,6 +142,13 @@ export interface Summary {
     /** Each refused candidate's last refusal reason, most frequent first, at most SUMMARY_TOP_REASONS. */
     readonly refused_by_reason: readonly ReasonCount[];
     readonly refused_other: number;
+    /**
+     * H16-WHY: both or neither; present only when a refused candidate's last refusal had an H16 reason. Refused
+     * candidates by H16 reason (code, input, needing gate), most frequent first, at most SUMMARY_TOP_REASONS; the rest
+     * summed in `h16_other`. A candidate counts under each of its distinct H16 reasons. A worker from before them still posts.
+     */
+    readonly h16_by_input?: readonly H16Count[];
+    readonly h16_other?: number;
   };
   /** Paper trades opened or closed that day, plus those still open. */
   readonly trades: readonly SummaryTrade[];
@@ -193,6 +228,15 @@ const list = (v: unknown, max: number, item: (x: unknown) => boolean): boolean =
 
 const codeCount = (x: unknown) => exact(x, ['code', 'count']) && str(x['code'], PATTERNS.CODE) && count(x['count']);
 const reasonCount = (x: unknown) => exact(x, ['gate', 'code', 'count']) && str(x['gate'], PATTERNS.GATE) && str(x['code'], PATTERNS.CODE) && count(x['count']);
+const h16Count = (x: unknown) =>
+  exact(x, ['code', 'input', 'needed_by', 'count']) && str(x['code'], PATTERNS.CODE) && strOrNull(x['input'], PATTERNS.CODE) &&
+  strOrNull(x['needed_by'], PATTERNS.GATE) && count(x['count']);
+/** H16-WHY's keys of `candidates`: present both together or not at all. */
+export const H16_KEYS = ['h16_by_input', 'h16_other'] as const;
+const CANDIDATE_KEYS = ['seen', 'entered', 'refused', 'refused_by_reason', 'refused_other'] as const;
+const candidates = (c: unknown): boolean =>
+  (exact(c, CANDIDATE_KEYS) || (exact(c, [...CANDIDATE_KEYS, ...H16_KEYS]) && list(c['h16_by_input'], SUMMARY_TOP_REASONS, h16Count) && count(c['h16_other']))) &&
+  count(c['seen']) && count(c['entered']) && count(c['refused']) && list(c['refused_by_reason'], SUMMARY_TOP_REASONS, reasonCount) && count(c['refused_other']);
 const trade = (x: unknown) =>
   exact(x, ['mint', 'opened_at', 'closed_at', 'size_usd', 'exit_reason', 'net_lamports', 'net_usd']) &&
   str(x['mint'], PATTERNS.MINT) && str(x['opened_at'], PATTERNS.TIME) && strOrNull(x['closed_at'], PATTERNS.TIME) &&
@@ -218,8 +262,13 @@ const WORKER_KEYS = ['git_sha', 'entry_rule', 'uptime_s', 'starts', 'recorder'] 
 /** RESTART-CAUSE's keys of `worker`: present all together or not at all. */
 export const RESTART_CAUSE_KEYS = ['restarts', 'exits', 'crash_sites'] as const;
 const countOrNull = (v: unknown): boolean => v === null || count(v);
+const probeRow = (y: unknown): boolean =>
+  exact(y, ['at', 'heap_used_mb', 'old_mb', 'large_object_mb', 'saving', 'counts']) && str(y['at'], PATTERNS.TIME) &&
+  count(y['heap_used_mb']) && count(y['old_mb']) && count(y['large_object_mb']) && typeof y['saving'] === 'boolean' &&
+  list(y['counts'], SUMMARY_MAX_PROBE_COUNTS, (c) => exact(c, ['code', 'count']) && str(c['code'], PATTERNS.CODE) && count(c['count']));
 const lastDeath = (x: unknown): boolean => x === null || (
-  exact(x, ['at', 'uptime_s', 'heap_used_mb', 'heap_limit_mb', 'spaces', 'sample']) && str(x['at'], PATTERNS.TIME) &&
+  exact(x, ['at', 'uptime_s', 'heap_used_mb', 'heap_limit_mb', 'spaces', 'sample', ...(typeof x === 'object' && Object.hasOwn(x, 'recent') ? ['recent'] : [])]) && str(x['at'], PATTERNS.TIME) &&
+  (!Object.hasOwn(x, 'recent') || list(x['recent'], SUMMARY_MAX_PROBES, probeRow)) &&
   countOrNull(x['uptime_s']) && countOrNull(x['heap_used_mb']) && countOrNull(x['heap_limit_mb']) &&
   list(x['spaces'], SUMMARY_MAX_SPACES, (y) => exact(y, ['space', 'used_mb']) && str(y['space'], PATTERNS.CODE) && count(y['used_mb'])) &&
   (x['sample'] === null || (exact(x['sample'], ['at', 'heap_used_mb', 'heap_limit_mb', 'rss_mb', 'external_mb', 'array_buffers_mb']) &&
@@ -237,9 +286,10 @@ export const SHAPE_KEYS: readonly string[] = [
   'v', 'day', 'final', 'generated_at', 'mode', 'worker', 'alerts', 'halts', 'candidates', 'trades', 'trades_dropped', 'pnl', 'open_positions', 'provider_credits',
   'git_sha', 'entry_rule', 'uptime_s', 'starts', 'recorder', 'restarts', 'exits', 'crash_sites', 'last_death',
   'at', 'heap_used_mb', 'heap_limit_mb', 'spaces', 'space', 'used_mb', 'sample', 'rss_mb', 'external_mb', 'array_buffers_mb',
+  'recent', 'old_mb', 'large_object_mb', 'saving', 'counts',
   'planned', 'deploy', 'unplanned', 'error', 'file', 'line', 'event',
   'code', 'count', 'gate',
-  'seen', 'entered', 'refused', 'refused_by_reason', 'refused_other',
+  'seen', 'entered', 'refused', 'refused_by_reason', 'refused_other', 'h16_by_input', 'h16_other', 'input', 'needed_by',
   'mint', 'opened_at', 'closed_at', 'size_usd', 'exit_reason', 'net_lamports', 'net_usd',
   'closed_trades',
   'provider', 'used_since_boot', 'monthly',
@@ -257,8 +307,7 @@ export const isSummary = (x: unknown): x is Summary => {
     isObj(w) && restartCause(w) && str(w['git_sha'], PATTERNS.SHA) && str(w['entry_rule'], PATTERNS.RULE) &&
     count(w['uptime_s']) && count(w['starts']) && (w['recorder'] === null || w['recorder'] === 'on' || w['recorder'] === 'off') &&
     list(x['alerts'], 64, codeCount) && list(x['halts'], 64, codeCount) &&
-    exact(c, ['seen', 'entered', 'refused', 'refused_by_reason', 'refused_other']) && count(c['seen']) && count(c['entered']) && count(c['refused']) &&
-    list(c['refused_by_reason'], SUMMARY_TOP_REASONS, reasonCount) && count(c['refused_other']) &&
+    candidates(c) &&
     list(x['trades'], SUMMARY_MAX_TRADES, trade) && count(x['trades_dropped']) &&
     exact(p, ['closed_trades', 'net_lamports', 'net_usd']) && count(p['closed_trades']) && str(p['net_lamports'], PATTERNS.LAMPORTS) && str(p['net_usd'], PATTERNS.USD) &&
     count(x['open_positions']) && list(x['provider_credits'], 16, credits)

@@ -7,7 +7,7 @@ import { FILL_CONFIG, RESEARCH_CONFIG, RUG_CONFIG, TRIAL_POLICY, startSession } 
 import { EXIT } from '../../runner/src/contract.ts';
 import { DryRunRpc } from './dryrun/index.ts';
 import { liveFacts } from './facts/index.ts';
-import { COINBASE_PUBLIC, GITHUB_DOWNLOADS, GITHUB_RELEASES, GOPLUS_FREE, P2 } from './scheduler/index.ts';
+import { COINBASE_PUBLIC, GITHUB_DOWNLOADS, GITHUB_RELEASES, GOPLUS_FREE, P2, P3 } from './scheduler/index.ts';
 import { toAddress } from '../../core/src/chain/index.ts';
 import { DEFAULT_LIVE_FEED, fetchHttp, globalSocketFactory, heliusRpcUrl } from './providers/index.ts';
 import { systemTimers } from './scheduler/index.ts';
@@ -41,7 +41,7 @@ if (environment.keyMaterial.length > 0) {
 const config = parsed.config;
 const timers = systemTimers();
 const session = startSession(TRIAL_POLICY);
-const credits = new CreditBook(config.stateDir, timers);
+const credits = new CreditBook(config.stateDir, timers, fail);
 const rpcCut = new RpcCut(timers);
 const http = liveHttp(rpcCut, fetchHttp);
 const providerHttp = http.providers;
@@ -94,8 +94,9 @@ try {
     scenario: FILL_CONFIG.scenarios[PAPER_SCENARIO], network: FILL_CONFIG.network, timers,
     sources: (ctx) => providers.feeds(ctx),
     simulate,
-    fetchTx: (sig) => providers.fetchTx(sig),
-    findCreate: (mint) => providers.findCreate(mint, timers),
+    // TRADE-GAP-HEAL: a pool-trade hole's transaction at P3, below position and exit reads; everything else at P2.
+    fetchTx: (sig, why, spent) => providers.fetchTx(sig, why === 'cut-trade' ? P3 : P2, spent),
+    findCreate: (mint, budget) => providers.findCreate(mint, timers, budget),
     seed: (r) => runSeed(r, { rpc: providers.seedRpc(), timers, budget: fillBudget }),
     // RESTART-KEEP: the downtime's migrations and unseen creates, on the same RPC and the same daily fill budget.
     restartReads: { rpc: providers.seedRpc(), budget: fillBudget },
@@ -106,6 +107,7 @@ try {
       const s = providers.helius.status();
       return { exhausted: s.exhausted, count: s.exhaustedCount, firstAtMs: s.exhaustedFirstAtMs };
     },
+    streamHeld: () => providers.heldNotices(),
     cutRpc: (ms) => rpcCut.cut(ms),
     // FACTS-1b: FACTS-1's readers on the worker's Feed; core's producer makes the gate facts from what they read.
     facts: [liveFacts({ policy, secrets: environment.secrets, http: http.facts, goplus: credits.scheduler(GOPLUS_FREE), coinbase: credits.scheduler(COINBASE_PUBLIC), github: { api: credits.scheduler(GITHUB_RELEASES), downloads: credits.scheduler(GITHUB_DOWNLOADS), stateDir: config.stateDir }, stateDir: config.stateDir, log, ...(h15 === undefined ? {} : { sim: h15 }), ...(config.strategy.s0Diagnostic ? { execStats: () => worker?.execStats() ?? null } : {}) })],

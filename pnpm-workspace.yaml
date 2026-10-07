@@ -1,3 +1,50 @@
 packages:
   - packages/*
   - apps/*
+  - tools
+
+# Dependency policy (B-M30-01, ARCH 12.3; DEPENDENCIES.md). Settings verified in the pnpm 10.x docs
+# (pnpm/pnpm.io versioned_docs/version-10.x/settings.md); checked by tools/policy/pnpmconfig.ts.
+# 14 days in minutes (minimumReleaseAge is a number of minutes, added in pnpm 10.16.0). pnpm applies it when it
+# resolves (pnpm add, update, install without --frozen-lockfile); a frozen install does not re-check the lockfile, so
+# CI also runs tools/policy/bin/age.ts on every version new against the base branch.
+minimumReleaseAge: 20160
+# Exact versions that were already in the base branch's lockfile before this rule existed and are younger than
+# 14 days (listed in DEPENDENCIES.md, "Release-age exclusions"). pnpm accepts name@version entries from 10.19.0.
+# Each may be removed once it is 14 days old; no other version of these packages is excluded.
+minimumReleaseAgeExclude:
+  - '@oxc-project/types@0.152.0'
+  - '@rolldown/binding-android-arm-eabi@1.2.12'
+  - '@rolldown/binding-android-arm64@1.2.12'
+  - '@rolldown/binding-darwin-arm64@1.2.12'
+  - '@rolldown/binding-darwin-x64@1.2.12'
+  - '@rolldown/binding-freebsd-x64@1.2.12'
+  - '@rolldown/binding-linux-arm-gnueabihf@1.2.12'
+  - '@rolldown/binding-linux-arm64-gnu@1.2.12'
+  - '@rolldown/binding-linux-arm64-musl@1.2.12'
+  - '@rolldown/binding-linux-ppc64-gnu@1.2.12'
+  - '@rolldown/binding-linux-s390x-gnu@1.2.12'
+  - '@rolldown/binding-linux-x64-gnu@1.2.12'
+  - '@rolldown/binding-linux-x64-musl@1.2.12'
+  - '@rolldown/binding-openharmony-arm64@1.2.12'
+  - '@rolldown/binding-win32-arm64-msvc@1.2.12'
+  - '@rolldown/binding-win32-x64-msvc@1.2.12'
+  - '@types/node@22.20.5'
+  - '@vitest/mocker@5.0.3'
+  - '@vitest/spy@5.0.3'
+  - 'chai@6.3.0'
+  - 'framer-motion@14.0.0'
+  - 'motion@14.0.0'
+  - 'motion-dom@14.0.0'
+  - 'motion-utils@14.0.0'
+  - 'rolldown@1.2.12'
+  - 'source-map-js@1.2.2'
+  - 'std-env@4.3.0'
+  - 'vite@8.3.2'
+  - 'vitest@5.0.3'
+# Install fails when a dependency has a build script (preinstall, install, postinstall) that is not reviewed
+# (added in pnpm 10.3.0). No dependency is allowed to build: there is no allowBuilds or onlyBuiltDependencies list.
+strictDepBuilds: true
+# Only direct dependencies may come from git or a tarball URL (added in pnpm 10.26.0); the policy check also
+# refuses every source but the npm registry.
+blockExoticSubdeps: true

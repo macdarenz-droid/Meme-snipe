@@ -16,6 +16,8 @@ const intervalMs = Number(process.env.ZEROED_HEARTBEAT_MS ?? 20_000);
 const NAMES = ['helius_api_key', 'alchemy_api_key', 'jupiter_api_key', 'telegram_bot_token', 'telegram_chat_id'];
 
 const loaded = credDir ? NAMES.filter((n) => existsSync(join(credDir, n))) : [];
+// RC-FIXES-2b: whether a ledger was here before this process (a release worker may have traded on it).
+const hadLedger = existsSync(join(stateDir, 'ledger.sqlite'));
 const db = new DatabaseSync(join(stateDir, 'ledger.sqlite'));
 db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;');
 db.exec('CREATE TABLE IF NOT EXISTS host_events (id INTEGER PRIMARY KEY, ts TEXT NOT NULL, kind TEXT NOT NULL, detail TEXT)');
@@ -29,10 +31,18 @@ try {
 
 if (process.argv.includes('--reconcile')) {
   const ok = loaded.length === NAMES.length;
-  // Contract with the host's update check: the number of open intents after reconcile.
-  writeFileSync(join(stateDir, 'open_intents'), '0\n');
-  event('reconcile', `stub: 0 open intents, ${ok ? 'ok' : 'credentials missing'}`);
-  console.log(`Reconcile: 0 open intents, ${loaded.length} of ${NAMES.length} credentials present. ${ok ? 'OK' : 'Refusing to start.'}`);
+  // Contract with the host's update check: the number of open intents (and open positions) after reconcile. RC-FIXES-2b
+  // (red team C R3-5): the stand-in settles nothing, so it never writes 0 over a count a release worker left. A count
+  // that is missing is 0 only on a host where no ledger existed before this process (nothing ever traded), else unknown.
+  const count = (f) => {
+    const p = join(stateDir, f);
+    if (!existsSync(p)) writeFileSync(p, hadLedger ? 'unknown\n' : '0\n');
+    return readFileSync(p, 'utf8').trim();
+  };
+  const intents = count('open_intents');
+  const positions = count('open_positions');
+  event('reconcile', `stub: ${intents} open intents, ${positions} open positions, ${ok ? 'ok' : 'credentials missing'}`);
+  console.log(`Reconcile: ${intents} open intents, ${loaded.length} of ${NAMES.length} credentials present. ${ok ? 'OK' : 'Refusing to start.'}`);
   db.close();
   process.exit(ok ? 0 : 1);
 }

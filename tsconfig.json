@@ -1,0 +1,28 @@
+{
+  "extends": "./tsconfig.bot.json",
+  "include": [
+    "packages/types/src/**/*.ts",
+    "packages/types/test/**/*.ts",
+    "packages/botctl/src/**/*.ts",
+    "packages/botctl/test/**/*.ts",
+    "packages/contract/src/**/*.ts",
+    "packages/contract/test/**/*.ts",
+    "packages/dashboard/src/**/*.ts",
+    "packages/dashboard/test/**/*.ts",
+    "packages/engine/src/**/*.ts",
+    "packages/engine/test/**/*.ts",
+    "packages/exitpath/src/**/*.ts",
+    "packages/exitpath/test/**/*.ts",
+    "packages/research/src/**/*.ts",
+    "packages/research/test/**/*.ts",
+    "packages/sentinel/src/**/*.ts",
+    "packages/sentinel/test/**/*.ts",
+    "packages/signer/src/**/*.ts",
+    "packages/signer/test/**/*.ts",
+    "packages/venue/src/**/*.ts",
+    "packages/venue/test/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules"
+  ]
+}

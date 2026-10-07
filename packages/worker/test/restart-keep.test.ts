@@ -663,7 +663,9 @@ describe('RESTART-KEEP: a restart keeps the candidates in their window', () => {
     const budget = { remaining: () => left, spend: (c: number) => { left -= c; }, refund: (c: number) => { left += c; } };
     const { h2 } = await restart(h, timers, seed, { restartReads: { rpc, budget } });
     for (let k = 0; k < 100 && !h2.logs.some((l) => l.startsWith('Downtime migrations')); k++) await new Promise<void>((r) => setImmediate(r));
-    expect(asked[0]).toEqual(expect.objectContaining({ address: PUMP_MIGRATION_AUTHORITY }));
+    // The downtime read is the one call on the migration authority (FACTS-REREAD may also read a restored candidate's
+    // curve on the same RPC, under its own budget: never this budget, which the downtime read alone spends).
+    expect(asked.filter((a) => a.address === PUMP_MIGRATION_AUTHORITY)).toEqual([expect.objectContaining({ address: PUMP_MIGRATION_AUTHORITY })]);
     expect(h2.logs.find((l) => l.startsWith('Downtime migrations'))).toMatch(new RegExp(`^Downtime migrations: 0 from slot ${from + 1n} to \\d+, 1 credits, done\\.$`));
     expect(left).toBe(4_999);
     await h2.worker.stop();
@@ -701,7 +703,9 @@ describe('RESTART-KEEP: a restart keeps the candidates in their window', () => {
     for (let k = 0; k < 100 && !h2.logs.some((l) => l.startsWith('Downtime migrations')); k++) await new Promise<void>((r) => setImmediate(r));
     await m2.run(2_000, 400, () => m2.slot());
     expect(asked).toEqual([PUMP_MIGRATION_AUTHORITY, `${mig.bondingCurve} before ${migrate.signature}`, ...asked.slice(2)]);
-    expect(h2.logs.find((l) => l.startsWith('Downtime migrations'))).toMatch(/^Downtime migrations: 1 from slot \d+ to \d+, 4 credits, done\.$/);
+    // The authority's page and the migration (2); the completion's page and transaction (2) are charged by COMPLETION-READ
+    // when the migration is released, as live: the budget still pays 4 in all.
+    expect(h2.logs.find((l) => l.startsWith('Downtime migrations'))).toMatch(/^Downtime migrations: 1 from slot \d+ to \d+, 2 credits, done\.$/);
     // Released to the strategy, as the live migration watch's fetch would have: the coin is shortlisted.
     expect(decisions(h2).some((r) => r[0] === 'shortlist' && r[2] === mig.mint)).toBe(true);
     expect(left).toBe(5_000 - 4);

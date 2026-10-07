@@ -1,9 +1,11 @@
-// Local stand-in for github.com (release downloads, dumb-HTTP git), api.github.com (release metadata) and
+// Local stand-in for github.com (release downloads, dumb-HTTP git), api.github.com (release metadata, and the private data
+// repository e2e-owner/zeroed-data with uploads.github.com for RECORD-UPLOAD) and
 // api.telegram.org (getUpdates, sendMessage, sendDocument, setWebhook, deleteWebhook, getWebhookInfo), for ops/test/e2e.sh. State lives in files under STATE so the
 // gh and wrangler stubs can share it. Never logs a request URL (a bot token would be in it): the token is
 // only compared with the token Telegram knows and the result recorded as true or false.
 //   STATE=dir GIT_ROOT=dir PORT=8787 node fake-services.mjs
-import { appendFileSync, existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { join, normalize } from 'node:path';
 
@@ -21,6 +23,77 @@ const webhook = () => {
   }
 };
 
+// RECORD-UPLOAD: the private data repository as GitHub answers it: the repository (private), contents, releases by tag
+// and created, asset uploads (a Content-Length is required, as GitHub refuses chunked bodies; each upload is logged with
+// whether it had one), assets by id (digest "sha256:<hex>") and their deletion, and a release's asset list.
+const DATA = 'e2e-owner/zeroed-data';
+const dataDir = () => join(STATE, 'data-repo');
+const dataState = () => {
+  try {
+    return JSON.parse(readFileSync(join(dataDir(), 'state.json'), 'utf8'));
+  } catch {
+    return { next: 1, releases: {}, assets: {}, contents: {} };
+  }
+};
+const saveData = (d) => {
+  mkdirSync(join(dataDir(), 'assets'), { recursive: true });
+  writeFileSync(join(dataDir(), 'state.json'), JSON.stringify(d));
+};
+const assetView = (a) => ({ id: a.id, name: a.name, size: a.size, state: 'uploaded', digest: `sha256:${a.sha256}`, browser_download_url: `https://github.com/${DATA}/releases/download/${a.tag}/${a.name}` });
+const dataRepo = (req, url, rest, bytes, send) => {
+  const d = dataState();
+  let m;
+  if (rest === '' && req.method === 'GET') return send(200, JSON.stringify({ full_name: DATA, private: true }));
+  if ((m = /^\/contents\/(.+)$/.exec(rest))) {
+    if (req.method === 'GET') return d.contents[m[1]] ? send(200, JSON.stringify({ sha: d.contents[m[1]] })) : send(404, '{"message":"Not Found"}');
+    d.contents[m[1]] = createHash('sha1').update(bytes).digest('hex');
+    saveData(d);
+    return send(201, '{}');
+  }
+  if ((m = /^\/releases\/tags\/([^/]+)$/.exec(rest)) && req.method === 'GET') {
+    const r = d.releases[m[1]];
+    if (!r) return send(404, '{"message":"Not Found"}');
+    return send(200, JSON.stringify({ id: r.id, tag_name: m[1], assets: Object.values(d.assets).filter((a) => a.tag === m[1]).map(assetView) }));
+  }
+  if (rest === '/releases' && req.method === 'POST') {
+    const b = JSON.parse(bytes.toString('utf8'));
+    if (d.releases[b.tag_name]) return send(422, '{"message":"Validation Failed","errors":[{"code":"already_exists"}]}');
+    d.releases[b.tag_name] = { id: d.next++, body: b };
+    saveData(d);
+    appendFileSync(join(dataDir(), 'calls.jsonl'), JSON.stringify({ call: 'create-release', ...b }) + '\n');
+    return send(201, JSON.stringify({ id: d.releases[b.tag_name].id, tag_name: b.tag_name }));
+  }
+  if ((m = /^\/releases\/(\d+)\/assets$/.exec(rest))) {
+    const tag = Object.keys(d.releases).find((t) => d.releases[t].id === Number(m[1]));
+    if (!tag) return send(404, '{"message":"Not Found"}');
+    if (req.method === 'GET') return send(200, JSON.stringify(Object.values(d.assets).filter((a) => a.tag === tag).map(assetView)));
+    const name = url.searchParams.get('name') ?? '';
+    const length = req.headers['content-length'];
+    const chunked = /chunked/i.test(req.headers['transfer-encoding'] ?? '');
+    appendFileSync(join(dataDir(), 'calls.jsonl'), JSON.stringify({ call: 'upload', tag, name, length: length ?? null, chunked, bytes: bytes.length }) + '\n');
+    if (length === undefined || chunked || Number(length) !== bytes.length) return send(400, '{"message":"Content-Length required"}');
+    if (Object.values(d.assets).some((a) => a.tag === tag && a.name === name)) return send(422, '{"message":"Validation Failed","errors":[{"code":"already_exists","field":"name"}]}');
+    const a = { id: d.next++, tag, name, size: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') };
+    d.assets[a.id] = a;
+    saveData(d);
+    writeFileSync(join(dataDir(), 'assets', String(a.id)), bytes);
+    return send(201, JSON.stringify(assetView(a)));
+  }
+  if ((m = /^\/releases\/assets\/(\d+)$/.exec(rest))) {
+    const a = d.assets[m[1]];
+    if (!a) return send(404, '{"message":"Not Found"}');
+    if (req.method === 'DELETE') {
+      delete d.assets[m[1]];
+      saveData(d);
+      rmSync(join(dataDir(), 'assets', m[1]), { force: true });
+      appendFileSync(join(dataDir(), 'calls.jsonl'), JSON.stringify({ call: 'delete', name: a.name }) + '\n');
+      return send(204, '');
+    }
+    return send(200, JSON.stringify(assetView(a)));
+  }
+  return send(404, '{"message":"Not Found"}');
+};
+
 createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   const p = decodeURIComponent(url.pathname);
@@ -33,6 +106,7 @@ createServer(async (req, res) => {
   };
 
   let m;
+  if ((m = /^\/repos\/e2e-owner\/zeroed-data(\/.*)?$/.exec(p))) return dataRepo(req, url, m[1] ?? '', Buffer.from(body, 'latin1'), send);
   if ((m = /^\/[^/]+\/[^/]+\/releases\/download\/([^/]+)\/bundle\.age$/.exec(p))) {
     const dir = rel(m[1]);
     if (!existsSync(join(dir, 'bundle.age'))) return send(404, 'Not Found', 'text/plain');

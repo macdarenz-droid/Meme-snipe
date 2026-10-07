@@ -120,6 +120,9 @@ describe('the live worker records staged rejects, and the recording replays to t
     const stage3 = rejects.find((l) => (l.reasons ?? []).some((x) => x.includes('H16 malformed holders')));
     expect(stage3).toBeDefined();
     expect(stage3!.reasons!.join(' ')).not.toContain(NOT_EVALUATED);
+    // H16-WHY: the journal names each H16 reason's input and the hard gate that needed it (the summary counts them).
+    expect(stage2!.gate_reasons![0]).toEqual({ gate: 'H16', code: 'malformed', detail: expect.any(String), input: 'mint', neededBy: expect.stringMatching(/^H\d{1,2}$/) });
+    expect(stage3!.gate_reasons![0]).toEqual({ gate: 'H16', code: 'malformed', detail: expect.any(String), input: 'holders', neededBy: expect.stringMatching(/^H\d{1,2}$/) });
 
     // The recording, replayed through the same engine path: the same decisions, with the same typed reasons.
     const dir = join(h.stateDir, 'recorder', h.worker.boot);

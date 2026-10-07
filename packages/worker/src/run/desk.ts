@@ -12,6 +12,8 @@ import { GATE_REASONS_PREFIX, S0_DIAGNOSTIC_PREFIX, reservationOf, universeOfKey
 
 /** Open intents for the host's update gate: intents not finished (`open_intents`, ops/README.md). */
 export const openIntents = (book: Book): number => Object.values(book.intents).filter((s) => !isTerminal(s)).length;
+/** Open positions for the host's rollback hold (`open_positions`, RC-FIXES-2b): every position not closed. */
+export const openPositions = (book: Book): number => Object.values(book.positions).filter((p) => p.status !== 'closed').length;
 
 export interface DeskDeps {
   readonly ledger: Ledger;
@@ -174,6 +176,19 @@ export class Desk {
     this.#written.add(eventId);
   }
 
+  /** Pending decisions precede a new buy's external send. Weak references avoid retaining consumed engine records. */
+  readonly #journaledBeforeDispatch = new WeakSet<LogRecord>();
+
+  journalBeforeDispatch(records: readonly LogRecord[]): void {
+    for (const r of records) {
+      if (this.#journaledBeforeDispatch.has(r)) continue;
+      const line = journalFields(r);
+      if (line === null) continue;
+      this.#d.journal('decision', line);
+      this.#journaledBeforeDispatch.add(r);
+    }
+  }
+
   /** Takes records the engine added, each once, in order (the caller drops them afterwards). */
   consume(records: readonly LogRecord[]): void {
     for (const r of records) this.#one(r);
@@ -181,7 +196,7 @@ export class Desk {
 
   #one(r: LogRecord): void {
     const line = journalFields(r);
-    if (line !== null) this.#d.journal('decision', line);
+    if (line !== null && !this.#journaledBeforeDispatch.delete(r)) this.#d.journal('decision', line);
     if (r.type === 'start') return;
     if (r.type === 'fault') {
       this.illegal++;

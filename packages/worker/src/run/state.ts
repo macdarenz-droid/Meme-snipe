@@ -67,9 +67,32 @@ const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object
 export interface Credits {
   readonly month: string;
   readonly used: Readonly<Record<string, number>>;
+  /**
+   * RC-FIXES: the counts of other months (at most the last few), so a boot whose clock reads another month never wipes
+   * one: back on the right clock, its count is there again. Absent in files from before.
+   */
+  readonly months?: Readonly<Record<string, Readonly<Record<string, number>>>>;
 }
+const isMonth = (x: unknown): x is string => typeof x === 'string' && /^\d{4}-\d{2}$/.test(x);
+const isUsed = (x: unknown): boolean => isObj(x) && Object.values(x).every((n) => typeof n === 'number' && Number.isFinite(n) && n >= 0);
 export const creditsFile = (dir: string) =>
-  new StateFile<Credits>(dir, 'credits.json', (v) => (isObj(v) && typeof v['month'] === 'string' && isObj(v['used']) && Object.values(v['used']).every((x) => typeof x === 'number' && x >= 0) ? (v as unknown as Credits) : null));
+  new StateFile<Credits>(dir, 'credits.json', (v) => (isObj(v) && isMonth(v['month']) && isUsed(v['used'])
+    && (v['months'] === undefined || (isObj(v['months']) && Object.entries(v['months']).every(([m, u]) => isMonth(m) && isUsed(u)))) ? (v as unknown as Credits) : null));
+
+/**
+ * TRADE-GAP-HEAL review B1: the day's counts of the capped transaction fetches (cut creates logs, cut pool-trade logs),
+ * by UTC day number, so a restart (or a crash loop) never starts the day's caps again from zero.
+ */
+export interface FetchCaps {
+  readonly day: number;
+  readonly cutCreate: number;
+  readonly cutTrade: number;
+  /** FACTS-REREAD: the day's credits spent re-reading candidates' missing stage-1 facts (absent in a file from before it: 0). */
+  readonly reread?: number;
+}
+const isCount = (x: unknown): boolean => typeof x === 'number' && Number.isSafeInteger(x) && x >= 0;
+export const fetchCapsFile = (dir: string) =>
+  new StateFile<FetchCaps>(dir, 'fetch-caps.json', (v) => (isObj(v) && typeof v['day'] === 'number' && Number.isSafeInteger(v['day']) && isCount(v['cutCreate']) && isCount(v['cutTrade']) && (v['reread'] === undefined || isCount(v['reread'])) ? (v as unknown as FetchCaps) : null));
 
 /** The month a credit total belongs to. */
 export const creditMonth = (ms: number): string => new Date(ms).toISOString().slice(0, 7);

@@ -1,0 +1,13 @@
+{
+  "name": "@bot/tools",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Policy checks and the bot lint rules (B-M30-01, B-M19-01). A workspace project only so that @typescript-eslint/parser resolves its TypeScript peer to typescript 6.0.3 (it does not support the repository's TypeScript 7); its files are checked as root-level code.",
+  "license": "UNLICENSED",
+  "devDependencies": {
+    "@typescript-eslint/parser": "8.70.1",
+    "eslint": "10.11.0",
+    "typescript": "6.0.3"
+  }
+}

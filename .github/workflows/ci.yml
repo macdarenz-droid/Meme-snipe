@@ -6,33 +6,74 @@ on:
   push:
     branches: [main, ccr-14987baf-i6lrsl]
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    # labeled and unlabeled re-run the review-label check (tools/policy/drift.ts) when a reviewer adds the label.
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
 
 permissions:
   contents: read
 
 concurrency:
-  # One run per pull request; every push to the base branches gets its own group, so none is dropped.
-  group: ci-${{ github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  # One run per pull request; every push to the base branches gets its own group, so none is dropped. A label event
+  # (labeled, unlabeled) gets a group of its own, named by the action, the label and the run, so no later label event or
+  # push cancels the run that carries the review label, and it cancels nothing (supervisor ruling 3.3, red team RT2-04;
+  # tools/policy/config.ts CI_CONCURRENCY_GROUP). Pushes to a pull request still cancel its older push runs.
+  group: ci-${{ github.event.pull_request.number && format('pr-{0}{1}', github.event.pull_request.number, (github.event.action == 'labeled' || github.event.action == 'unlabeled') && format('-{0}-{1}-{2}', github.event.action, github.event.label.name, github.run_id) || '') || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   check:
+    # The deploy gate (ops/host/files/usr/local/lib/zeroed/logic.sh, ops/deploy/tag.sh) keys on this job's name.
+    # B-M30-01 dependency policy (Z01): tools/policy/config.ts CI_REQUIRED_STEPS run unconditionally, in this order, and
+    # before the last of them this job runs only checkout, pnpm/action-setup and setup-node (checked by `pnpm lint`).
+    # No secrets: read-only token, credentials not persisted, no package-manager cache, installs run no scripts.
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
     # The full suite took 13 min 10 s to 13 min 34 s on the base (5 Oct) and passed 15 min with BT-2 #41's study tests,
-    # so a passing run was cancelled. 30 min still stops a hung run; no test is skipped or shortened (supervisor, DECISIONS).
-    timeout-minutes: 30
+    # so a passing run was cancelled. Z01 adds lint, the install and the policy steps, and a reviewer measured 30.7 min
+    # for `pnpm test` alone under load, so 30 min became 45 (round 1 review F3; supervisor ruling 3). It still stops a
+    # hung run; no test is skipped or shortened (supervisor, DECISIONS).
+    timeout-minutes: 45
+    env:
+      # The base the policy compares against: the pull request's base branch, or on a push the pushed branch itself
+      # (nothing changed against it, so the drift and age checks pass and make no registry request).
+      POLICY_BASE_REF: ${{ format('origin/{0}', github.base_ref || github.ref_name) }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: 22
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
+          node-version-file: .node-version
+      - name: Install (frozen lockfile; .npmrc ignore-scripts)
+        run: pnpm install --frozen-lockfile
+      - name: Installed packages have no install scripts; allowlist licences match
+        run: node tools/policy/bin/installed.ts
+      # The label counts only on the run whose own event added it (tools/policy/drift.ts; supervisor ruling 7), so it
+      # is always newer than this head: PR_LABEL_ADDED is empty on every other event.
+      - name: Lockfile and policy file changes need the deps-reviewed:<hash> label
+        env:
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          PR_LABEL_ADDED: ${{ github.event.action == 'labeled' && github.event.label.name || '' }}
+        run: node tools/policy/bin/drift.ts
+      - name: Lint and policy checks
+        run: pnpm lint
       - run: pnpm typecheck
-      - run: pnpm test
+      - name: Tests
+        shell: bash
+        run: pnpm test 2>&1 | tee test-output.log
+      - name: Secrets scan of the test log
+        run: node tools/policy/bin/secrets.ts test-output.log
+      # On a pull request the audit fails only for a package version that pull request adds; on a push it reports only
+      # (tools/policy/audit.ts; supervisor ruling 1). Advisories for versions already in use are reported by
+      # .github/workflows/audit-schedule.yml, which never fails.
+      - name: Audit (packages of the checked workspace projects)
+        env:
+          POLICY_EVENT: ${{ github.event_name }}
+        run: node tools/policy/bin/audit.ts
+      - name: Dependency age (14 days)
+        run: node tools/policy/bin/age.ts
       - run: pnpm -r --if-present build
 
   historical-data:

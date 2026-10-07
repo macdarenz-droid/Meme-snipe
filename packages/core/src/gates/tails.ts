@@ -1,6 +1,13 @@
-// GATE-1c: the 8 unpublished bytes the 2026-10-02 upgrade appends to trade events (UPG-1, venues.md §2.7). They are
-// zero on every SOL-quoted market sampled; a non-zero tail, or a tail of the wrong length, on a market we would price
-// means an unpublished field is live there, so that market is refused. No tail evidence is never a pass.
+// GATE-1c: the 8 unpublished bytes the 2026-10-02 upgrade appends to trade events (UPG-1, venues.md §2.7). They were
+// zero on every SOL-quoted market sampled on 2-3 Oct; on 6 Oct they were non-zero on most pools sampled (supervisor's
+// crash hunt, F1). TAIL-PROOF (venues.md §2.7, DECISIONS.md "H5 accepts the pool's creator-fee tail") measured the pool
+// tail as the unswept creator fee, a u64 that does not change a trade's money. So (H5-POOL-TAILS):
+// - a PumpSwap (`pump_amm`) trade event after its boundary slot passes with 8 bytes of any value, when that u64 is at
+//   most the event's own pre-trade quote vault (`poolQuoteTokenReserves`, where the unswept fee sits); above it the
+//   market is refused, and a non-zero tail with no readable vault is unreadable (`malformed`);
+// - a bonding-curve (`pump`) trade event still needs zeros (the proof does not cover the curve);
+// - a tail of the wrong length, or non-zero in the boundary slot itself, is refused on both.
+// No tail evidence is never a pass.
 import { EVENT_TAIL_BYTES, EVENT_TAIL_UPGRADE_SLOT } from '../config/chain-upgrades.ts';
 import type { AsOfEntry } from '../engine/asof.ts';
 import type { Moment } from '../engine/moment.ts';
@@ -42,8 +49,8 @@ type Program = keyof typeof EVENT_TAIL_UPGRADE_SLOT;
 
 /**
  * Checks every trade event under `keys` released as of now (and since `since`, when given), in release order.
- * Rejects on the first whose tail is non-zero or of a length the `program`'s boundary does not allow; refuses an
- * unreadable event or a refused history; with `required`, no event at all is not covered.
+ * Rejects when any tail fails `tailVerdict` as `event-tail` (naming the earliest);
+ * else refuses an unreadable event (the earliest) or a refused history; with `required`, no event at all is not covered.
  */
 const checkTape = (
   ctx: { readonly now: Moment; readonly history: GateContext['history'] }, keys: readonly string[], program: Program,
@@ -62,16 +69,25 @@ const checkTape = (
   if (entries.length === 0) {
     return required ? { ok: false, code: 'not-covered', detail: `no trade event of ${what} since migration` } : { ok: true, events: 0 };
   }
+  // F1 (facts review B1): the answer does not depend on the order across kinds: any refused tail in range
+  // rejects (`event-tail`, H5); else any unreadable one refuses (`malformed`, H16), each named by its earliest entry.
+  let malformed: Exclude<TailCheck, { readonly ok: true }> | null = null;
   for (const e of entries) {
     const failed = tailVerdict(e, program, what);
-    if (failed !== null) return failed;
+    if (failed === null) continue;
+    if (failed.code === 'event-tail') return failed;
+    malformed ??= failed;
   }
-  return { ok: true, events: entries.length };
+  return malformed ?? { ok: true, events: entries.length };
 };
+
+/** The 8-byte tail as the little-endian u64 the pool program writes (TAIL-PROOF). */
+const u64le = (hex: string): bigint => BigInt(`0x${(hex.match(/../g) ?? []).reverse().join('')}`);
 
 /**
  * One trade event's tail against the boundary: null when it passes; else the failure (`malformed` for an event with no
- * readable tail, `event-tail` for a wrong length or non-zero bytes). The check and the store's collapse both use it.
+ * readable tail, or a non-zero pool tail with no readable vault; `event-tail` for a wrong length, non-zero bytes the
+ * rule does not accept, or a pool tail above the vault). The check and the store's collapse both use it.
  */
 const tailVerdict = (e: AsOfEntry, program: Program, what: string): Exclude<TailCheck, { readonly ok: true }> | null => {
   const v = isObj(e.value) ? e.value : null;
@@ -87,8 +103,18 @@ const tailVerdict = (e: AsOfEntry, program: Program, what: string): Exclude<Tail
   if (!allowed.includes(trailing) || extra.length !== 2 * trailing) {
     return { ok: false, code: 'event-tail', signature, detail: `${what} trade event tail is ${trailing} bytes at slot ${slot}; the upgrade boundary allows ${allowed.join(' or ')} (first offending signature ${signature})` };
   }
-  if (/[^0]/.test(extra)) {
+  if (!/[^0]/.test(extra)) return null;
+  if (program !== 'pump_amm' || slot <= EVENT_TAIL_UPGRADE_SLOT.pump_amm || !/^[0-9a-f]*$/.test(extra)) {
     return { ok: false, code: 'event-tail', signature, detail: `${what} trade event tail is non-zero (${extra}) on a SOL-quoted market (first offending signature ${signature})` };
+  }
+  // PumpSwap after B5: the tail is the pool's unswept creator fee, held in its quote vault, so it can never exceed it.
+  const vault = isObj(ev['data']) ? ev['data']['poolQuoteTokenReserves'] : undefined;
+  if (typeof vault !== 'bigint' || vault < 0n) {
+    return { ok: false, code: 'malformed', signature, detail: `${what} trade event ${signature} has a non-zero tail (${extra}) and no readable quote vault` };
+  }
+  const fee = u64le(extra);
+  if (fee > vault) {
+    return { ok: false, code: 'event-tail', signature, detail: `${what} trade event tail ${fee} (${extra}) is above the pool's quote vault ${vault} (first offending signature ${signature})` };
   }
   return null;
 };
@@ -97,17 +123,21 @@ const tailVerdict = (e: AsOfEntry, program: Program, what: string): Exclude<Tail
 const TRADE_KEY = /^(?:logs:)?(pump_amm):(?:BuyEvent|SellEvent):|^(?:logs:)?(pump):TradeEvent:/;
 
 /**
- * OOM-SWAPS: the store keeps, of a trade-event key, its newest entry and every entry whose tail would fail the check
- * (`Collapse`). `checkTape` answers the same from that subset: it reads only the first failing entry in order, which is
- * kept, and whether any entry is there since migration, which the newest (the latest slot and receipt) answers. The
- * event count it returns is not read by any gate. A live pool trades thousands of times a minute, each event with its
- * six addresses: the whole tape filled the worker's heap in minutes (the backtest feed keeps the same subset, sim/facts.ts).
+ * OOM-SWAPS, F1 (supervisor ruling): the store keeps, of a trade-event key, its newest entry and, of the entries whose
+ * tail would fail the check, per kind (`event-tail`, `malformed`) the earliest, the latest in order and the one received
+ * last (`Collapse`), so at most eight entries a key. `checkTape` gives the same verdict (pass, `event-tail` for H5,
+ * `malformed` or not covered for H16) from that subset for any `since`: it answers by kind, not by order across kinds
+ * (facts review B1), and per kind an entry in range exists exactly when the latest of that kind in order (a slot since)
+ * or the one received last (a time since) does; an entry at all, when the newest or the latest received does. The
+ * entry it names is exact for a since at or before the key's first entry (the migration). The event count it returns is not read by any gate. Before F1 every failing entry stayed; since non-zero
+ * tails became common on mainnet (2026-10-06), that was every swap, about 3 KB each, and the worker's heap ran out in
+ * minutes (the backtest feed keeps its own subset, sim/facts.ts).
  */
-export const tradeTailCollapse = (key: string): ((older: AsOfEntry) => boolean) | null => {
+export const tradeTailCollapse = (key: string): ((older: AsOfEntry) => boolean | string) | null => {
   const m = TRADE_KEY.exec(key);
   if (m === null) return null;
   const program: Program = m[1] !== undefined ? 'pump_amm' : 'pump';
-  return (older) => tailVerdict(older, program, key) !== null;
+  return (older) => tailVerdict(older, program, key)?.code ?? false;
 };
 
 type Ctx = { readonly now: Moment; readonly history: GateContext['history'] };

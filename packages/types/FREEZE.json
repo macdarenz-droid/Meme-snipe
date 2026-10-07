@@ -1,0 +1,19 @@
+{
+  "package": "@bot/types",
+  "version": "1.0.0",
+  "sha256": "c9d47f80a0ffab37cf8d4b785fac504c36195e7a1df478351ab08674b4ef4ef3",
+  "files": [
+    "package.json",
+    "src/canon.ts",
+    "src/contract.ts",
+    "src/execution.ts",
+    "src/index.ts",
+    "src/referenced.ts",
+    "src/types.ts",
+    "src/units.ts",
+    "tsconfig.json",
+    "../../tsconfig.bot.json",
+    "../../tsconfig.json"
+  ],
+  "typescript": "7.0.2"
+}

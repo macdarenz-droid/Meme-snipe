@@ -9,7 +9,8 @@
 import type { Clock, Feed, FeedEvent, Moment } from '../../../core/src/engine/index.ts';
 import { compareEvents, compareMoments, GENESIS } from '../../../core/src/engine/index.ts';
 import { deepFreeze } from '../../../core/src/engine/freeze.ts';
-import { chainSlot, dedupKey, eventsOfFrame, rankIn, type Frame, type FrameBody, type Source } from './canonical.ts';
+import { TagSet, keyTag } from './tag-set.ts';
+import { SigRanks, chainSlot, dedupKey, echoKey, eventsOfFrame, rankIn, type Frame, type FrameBody, type Source } from './canonical.ts';
 
 export interface LiveFeedOptions {
   /** A slot is released once the tip is this many slots past it (late notifications get that long to arrive). */
@@ -59,6 +60,11 @@ export interface IngestOptions {
    * after every off-chain fact ingested before them (FILL-ORDER: off-chain frames keep arrival order, canonical.ts).
    */
   readonly after?: boolean;
+  /**
+   * BEHIND: an off-chain body placed first in this slot, which must still be held (above the release point): a shed
+   * range's coverage gap, so it is released before any event of the range, in live and in the recording's replay alike.
+   */
+  readonly firstIn?: bigint;
 }
 
 export interface LiveFeedStatus {
@@ -141,9 +147,17 @@ export class LiveFeed implements Feed {
   #firstHeldAt: number | null = null;
   #released: bigint;
   readonly #held = new Map<bigint, Frame[]>();
-  readonly #ranks = new Map<bigint, Map<string, number>>();
-  readonly #keys = new Set<string>();
-  readonly #keysBySlot = new Map<bigint, string[]>();
+  readonly #ranks = new Map<bigint, SigRanks>();
+  /** FEED-KEYS: the dedupe keys as 96-bit tags (`TagSet`), and each placement slot's tags as pairs, for the prune. */
+  readonly #keys = new TagSet();
+  readonly #keysBySlot = new Map<bigint, number[]>();
+  /**
+   * DEDUP-PER-WATCH (review B1): the dedupe keys of first copies `shed` dropped with no other watch's copy held to take
+   * their place, by the slot they were dropped from (pruned like the keys). The next copy from a watch not shed is
+   * released whole, not as an echo, so its pool still gets the transaction's events.
+   */
+  readonly #shedKeys = new TagSet();
+  readonly #shedKeysBySlot = new Map<bigint, number[]>();
   readonly #gaps = new Map<string, { readonly fromSlot: bigint; readonly since: number }>();
   #ready: { readonly event: FeedEvent; readonly frameSeq: number; readonly late: boolean }[] = [];
   #releases = 0;
@@ -194,22 +208,44 @@ export class LiveFeed implements Feed {
     const cutoff = this.#released - BigInt(this.#opts.keepSlots);
     let place: Frame['place'];
     // FILL-ORDER: every off-chain frame in arrival order (canonical.ts `arrival`).
-    if (cs === null || cs <= cutoff || o.after === true || (o.lookup === true && cs <= this.#released)) place = { at: 'offchain', slot: this.openSlot, arrival: true };
+    if (cs === null && o.firstIn !== undefined) {
+      if (o.firstIn <= this.#released) throw new RangeError(`slot ${o.firstIn} is already released`);
+      place = { at: 'chain', slot: o.firstIn, first: true };
+    } else if (cs === null || cs <= cutoff || o.after === true || (o.lookup === true && cs <= this.#released)) place = { at: 'offchain', slot: this.openSlot, arrival: true };
     else place = { at: 'chain', slot: cs };
-    const key = dedupKey(body);
-    const duplicate = key !== null && this.#keys.has(key);
+    const text = dedupKey(body);
+    const key = text === null ? null : keyTag(text);
+    let duplicate = key !== null && this.#keys.has(key);
+    // DEDUP-PER-WATCH: a log's copy on its own watch. Taken already on another watch only: an echo, which releases that
+    // watch's hole and pool-other mark (canonical.ts `echoEvents`); taken on this watch too: a duplicate.
+    const own = body.type === 'logs' ? keyTag(echoKey(body)) : null;
+    let echo = duplicate && own !== null && !this.#keys.has(own);
+    // Review B1: its first copy was shed: this copy stands in for it, whole, while its slot is still held. Review N1:
+    // once its slot was released (or it is placed off-chain anyway), its swaps would land behind newer ones on its pool:
+    // it stays an echo and gives its watch a hole (`lost`), healed in order by the hole's fetch or kept (fail closed). The
+    // key stays, so every later copy from another watch fails closed the same way.
+    const shedFirst = echo && key !== null && this.#shedKeys.has(key);
+    const lost = shedFirst && (place.at === 'offchain' || place.slot <= this.#released);
+    const promoted = shedFirst && !lost && this.#shedKeys.delete(key!);
+    if (promoted) echo = false;
+    if (echo || promoted) {
+      duplicate = false;
+      // Its slot already released: placed after everything, so its hole is never refused as out of order (fail closed).
+      if (place.at === 'chain' && place.slot <= this.#released) place = { at: 'offchain', slot: this.openSlot, arrival: true };
+    }
     // Frozen one level down: the body may hold transaction bytes, and a typed array with elements cannot be frozen.
-    const frame: Frame = Object.freeze({ seq: this.#seq++, receivedAt, source, backfilled, place: Object.freeze(place), duplicate, body: Object.freeze(body) });
+    const frame: Frame = Object.freeze({ seq: this.#seq++, receivedAt, source, backfilled, place: Object.freeze(place), duplicate, ...(echo ? { echo: true as const } : {}), ...(lost ? { lost: true as const } : {}), body: Object.freeze(body) });
     this.#opts.onFrame?.(frame);
     if (duplicate) {
       this.#duplicates++;
       return frame;
     }
-    if (key !== null) {
-      this.#keys.add(key);
+    for (const k of [echo || promoted ? null : key, own]) {
+      if (k === null) continue;
+      this.#keys.add(k);
       const list = this.#keysBySlot.get(place.slot);
-      if (list === undefined) this.#keysBySlot.set(place.slot, [key]);
-      else list.push(key);
+      if (list === undefined) this.#keysBySlot.set(place.slot, [k[0], k[1]]);
+      else list.push(k[0], k[1]);
     }
     if (cs !== null && !backfilled && (this.#tip === null || cs > this.#tip)) {
       this.#tip = cs;
@@ -227,6 +263,84 @@ export class LiveFeed implements Feed {
     else held.push(frame);
     this.#firstHeldAt ??= receivedAt;
     return frame;
+  }
+
+  /** BEHIND: frames held now (not yet released), the backlog the shed cap bounds. */
+  get heldFrames(): number {
+    let n = 0;
+    for (const f of this.#held.values()) n += f.length;
+    return n;
+  }
+
+  /**
+   * BEHIND: drops every held (not yet released) frame of a stream `shed` names, by its `via`, and returns each shed
+   * stream's slot range. Frames without a stream (transactions, slots, facts) always stay. The worker opens a coverage
+   * gap over each range, so a candidate on a shed stream fails closed; it never sheds a held position's stream.
+   */
+  shed(shed: (via: string) => boolean): Map<string, { fromSlot: bigint; toSlot: bigint }> {
+    const out = new Map<string, { fromSlot: bigint; toSlot: bigint }>();
+    /** Review B1: first copies dropped (a log's whole copy), by dedupe key, with the slot each was dropped from. */
+    const firsts = new Map<string, bigint>();
+    for (const [slot, frames] of this.#held) {
+      const named = (f: Frame) => 'via' in f.body && typeof f.body.via === 'string' && shed(f.body.via);
+      if (!frames.some(named)) continue;
+      // Ranked first, in arrival order, as the recording's replay ranks every recorded frame of the slot: a shed frame
+      // keeps its rank, so a frame released from this slot later takes the same transaction index live and in replay.
+      let ranks = this.#ranks.get(slot);
+      if (ranks === undefined) this.#ranks.set(slot, (ranks = new SigRanks()));
+      for (const f of [...frames].sort((a, b) => a.seq - b.seq)) rankIn(ranks, f);
+      const kept = frames.filter((f) => {
+        const via = 'via' in f.body && typeof f.body.via === 'string' ? f.body.via : null;
+        if (via === null || !shed(via)) return true;
+        if (f.body.type === 'logs' && f.echo !== true) firsts.set(dedupKey(f.body)!, slot);
+        const r = out.get(via);
+        if (r === undefined) out.set(via, { fromSlot: slot, toSlot: slot });
+        else {
+          if (slot < r.fromSlot) r.fromSlot = slot;
+          if (slot > r.toSlot) r.toSlot = slot;
+        }
+        return false;
+      });
+      if (kept.length === 0) this.#held.delete(slot);
+      else if (kept.length < frames.length) this.#held.set(slot, kept);
+    }
+    if (firsts.size > 0) this.#standIn(firsts);
+    if (this.#held.size === 0) this.#firstHeldAt = null;
+    return out;
+  }
+
+  /**
+   * DEDUP-PER-WATCH (review B1): a shed first copy carried the transaction's events for every watch that saw it; the
+   * other watches' copies are echoes that carry only their own marks. The earliest echo still held on a watch not shed
+   * is put back as a new whole copy (recorded like any frame, so the replay releases what live does), in its place:
+   * a held pool on it keeps its swaps. With none held, the next copy from such a watch is taken whole (`#shedKeys`).
+   */
+  #standIn(firsts: ReadonlyMap<string, bigint>): void {
+    const best = new Map<string, Frame>();
+    for (const frames of this.#held.values()) {
+      for (const f of frames) {
+        if (f.echo !== true || f.body.type !== 'logs') continue;
+        const k = dedupKey(f.body)!;
+        const b = best.get(k);
+        if (firsts.has(k) && (b === undefined || f.seq < b.seq)) best.set(k, f);
+      }
+    }
+    for (const [k, slot] of firsts) {
+      const echo = best.get(k);
+      if (echo === undefined) {
+        const tag = keyTag(k);
+        if (!this.#shedKeys.add(tag)) continue;
+        const list = this.#shedKeysBySlot.get(slot);
+        if (list === undefined) this.#shedKeysBySlot.set(slot, [tag[0], tag[1]]);
+        else list.push(tag[0], tag[1]);
+        continue;
+      }
+      const frames = this.#held.get(echo.place.slot)!;
+      frames.splice(frames.indexOf(echo), 1);
+      const frame: Frame = Object.freeze({ seq: this.#seq++, receivedAt: this.#lastReceivedAt, source: echo.source, backfilled: echo.backfilled, place: echo.place, duplicate: false, body: echo.body });
+      this.#opts.onFrame?.(frame);
+      frames.push(frame);
+    }
   }
 
   /** A provider lost its stream from `fromSlot`: hold the release point below it until its backfill ends or the hold times out. */
@@ -292,6 +406,15 @@ export class LiveFeed implements Feed {
     return r.event;
   }
 
+  /** MEM-PROBE: counts only: held frames, slot ranks, dedupe keys and their slot lists, gaps, events ready. */
+  sizes(): Record<string, number> {
+    let held = 0;
+    for (const f of this.#held.values()) held += f.length;
+    let ranks = 0;
+    for (const m of this.#ranks.values()) ranks += m.size;
+    return { held, held_slots: this.#held.size, ranks, rank_slots: this.#ranks.size, keys: this.#keys.size, key_slots: this.#keysBySlot.size, shed_keys: this.#shedKeys.size, gaps: this.#gaps.size, ready: this.#ready.length - this.#head };
+  }
+
   status(): LiveFeedStatus {
     let held = 0;
     for (const f of this.#held.values()) held += f.length;
@@ -303,7 +426,7 @@ export class LiveFeed implements Feed {
 
   #eventsOf(frames: readonly Frame[], slot: bigint): { event: FeedEvent; frameSeq: number }[] {
     let ranks = this.#ranks.get(slot);
-    if (ranks === undefined) this.#ranks.set(slot, (ranks = new Map()));
+    if (ranks === undefined) this.#ranks.set(slot, (ranks = new SigRanks()));
     const sorted = [...frames].sort((a, b) => a.seq - b.seq);
     for (const f of sorted) rankIn(ranks, f);
     return sorted.flatMap((f) => eventsOfFrame(f, ranks).map((e) => ({ event: deepFreeze(e), frameSeq: f.seq })));
@@ -314,9 +437,14 @@ export class LiveFeed implements Feed {
     const cutoff = this.#released - BigInt(this.#opts.keepSlots);
     for (const [slot, keys] of this.#keysBySlot) {
       if (slot > cutoff) continue;
-      for (const k of keys) this.#keys.delete(k);
+      for (let i = 0; i < keys.length; i += 2) this.#keys.delete([keys[i]!, keys[i + 1]!]);
       this.#keysBySlot.delete(slot);
     }
     for (const slot of this.#ranks.keys()) if (slot <= cutoff) this.#ranks.delete(slot);
+    for (const [slot, keys] of this.#shedKeysBySlot) {
+      if (slot > cutoff) continue;
+      for (let i = 0; i < keys.length; i += 2) this.#shedKeys.delete([keys[i]!, keys[i + 1]!]);
+      this.#shedKeysBySlot.delete(slot);
+    }
   }
 }

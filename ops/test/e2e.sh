@@ -83,12 +83,15 @@ gpg --batch --quiet --import "$ROOT/ops/host/files/etc/zeroed/github-web-flow.as
 signed=""
 signed2="" # an older GitHub-signed merge: SWITCH-1's broken-release update case deploys "it"
 unsigned=""
-for c in $(git -C "$BARE" rev-list --first-parent --max-count=50 "$BRANCH"); do
+# The whole first-parent history, newest first, until all three are found: every merge since 5 Oct is
+# GitHub-signed, so the newest unsigned commit lies further back than any fixed window (it was 54 back on 8 Oct).
+for c in $(git -C "$BARE" rev-list --first-parent "$BRANCH"); do
   if git -C "$BARE" verify-commit --raw "$c" 2>&1 | grep -q 'VALIDSIG .* 968479A1AFF927E37D1A566BB5690EEEBB952194$'; then
     if [ -z "$signed" ]; then signed="$c"; elif [ -z "$signed2" ]; then signed2="$c"; fi
   else
     [ -n "$unsigned" ] || unsigned="$c"
   fi
+  [ -n "$signed" ] && [ -n "$signed2" ] && [ -n "$unsigned" ] && break
 done
 [ -n "$signed" ] && [ -n "$signed2" ] && [ -n "$unsigned" ] || fail "test repo needs two GitHub-signed and an unsigned commit on $BRANCH"
 git -C "$BARE" tag -f deploy "$signed" >/dev/null
@@ -138,9 +141,26 @@ hash="$(printf '%s' "$line" | sed -n "s/.*echo '\([0-9a-f]\{64\}\)  i'.*/\1/p")"
 pin="$(printf '%s' "$line" | sed -n 's#.*raw\.githubusercontent\.com/macdarenz-droid/Meme-snipe/\([0-9a-f]\{40\}\)/ops/install\.sh.*#\1#p')"
 [ "$(sha256sum < "$ROOT/ops/install.sh" | cut -c1-64)" = "$hash" ] || fail "install.sh does not match the hash in the README line"
 [ -n "$pin" ] && [ "$(git -C "$ROOT" show "$pin:ops/install.sh" | sha256sum | cut -c1-64)" = "$hash" ] || fail "the pinned commit ${pin:0:12} does not hold this install.sh (re-pin the README)"
+git -C "$ROOT" merge-base --is-ancestor "$pin" HEAD || fail "pin is not in this branch's history"
 docker cp "$ROOT/ops/install.sh" "$C:/root/i"
 in_c "cd /root && echo '$hash  i' | sha256sum -c" >"$LOGS/console/hash-check.txt" 2>&1 || fail "hash check in the container"
 pass "README line: ${#line} ASCII characters, pinned to ${pin:0:12} which holds install.sh with the same SHA-256; checked in the container"
+# D07 preflight (Z00), through the same file: a full install on a host below 1.5 GiB of RAM or
+# with a /var/lib filesystem under 40 GB stops before it changes anything. This container has the runner's RAM and disk,
+# so the small host is staged with mounts inside it (a 1 GB server's /proc/meminfo, a 25.6 GB tmpfs on /var/lib),
+# never with an option or variable of the installer: it has none.
+in_c "awk '\$1 == \"MemTotal:\" { \$2 = 1004316 } { print }' /proc/meminfo > /root/meminfo-1gb"
+in_c "mount --bind /root/meminfo-1gb /proc/meminfo"
+rc=0; in_c "ZEROED_NO_WAIT=1 bash /root/i" >"$LOGS/console/install-d07-ram.txt" 2>&1 || rc=$?
+in_c "umount /proc/meminfo"
+[ "$rc" = 1 ] && grep -qF "Install stopped: this server is below the bot's host minimum (docs/blueprint/ARCH.md D07): it has 0.96 GiB of RAM; the bot needs a 2 GB server (at least 1.5 GiB reported). Use the 2 GB Vultr server" "$LOGS/console/install-d07-ram.txt" || { cat "$LOGS/console/install-d07-ram.txt"; fail "D07: a 1 GB server was not refused (exit $rc)"; }
+in_c "mount -t tmpfs -o size=25000000k zeroed-e2e-small /var/lib"
+rc=0; in_c "ZEROED_NO_WAIT=1 bash /root/i" >"$LOGS/console/install-d07-disk.txt" 2>&1 || rc=$?
+in_c "umount /var/lib"
+[ "$rc" = 1 ] && grep -qF "Install stopped: this server is below the bot's host minimum (docs/blueprint/ARCH.md D07): the disk that holds /var/lib is 25.6 GB; the bot needs at least 40 GB." "$LOGS/console/install-d07-disk.txt" || { cat "$LOGS/console/install-d07-disk.txt"; fail "D07: a 25 GB disk was not refused (exit $rc)"; }
+grep -q '^==>' "$LOGS/console/install-d07-ram.txt" "$LOGS/console/install-d07-disk.txt" && fail "D07: a refused install started a step"
+in_c "! test -e /etc/zeroed && ! test -e /var/lib/zeroed-host && ! test -e /usr/local/bin/node && ! getent passwd zeroed-worker >/dev/null && ! grep -q 'MemTotal: *1004316 ' /proc/meminfo && test -d /var/lib/dpkg" || fail "D07: a refused install changed the server, or the staged mounts stayed"
+pass "D07 preflight: a 1 GB server and a 25.6 GB disk are refused with the reason, before any change"
 docker exec -e ZEROED_NO_WAIT=1 -e ZEROED_GITHUB_URL="$BASE" -e ZEROED_API_URL="$BASE" -e ZEROED_TELEGRAM_URL="$BASE" "$C" bash /root/i >"$LOGS/console/install.txt" 2>&1 || { tail -20 "$LOGS/console/install.txt"; fail "install"; }
 CODE1="$(sed -n 's/^  Deploy code:  \([a-z -]*\)$/\1/p' "$LOGS/console/install.txt")"
 [ "$(printf '%s' "$CODE1" | wc -w)" = 6 ] || fail "installer did not show a 6-word deploy code"
@@ -321,6 +341,8 @@ git -C "$BARE" tag -f deploy "$unsigned" >/dev/null && git -C "$BARE" update-ser
 echo success >"$STATE/checks/$unsigned"
 upd_run && fail "an unsigned commit was deployed"
 [ "$(current)" = "/opt/zeroed/releases/$signed" ] || fail "current moved to an unsigned commit"
+in_c "journalctl -u zeroed-update -o cat --no-pager" >"$LOGS/update-journal.txt"
+grep -qF "Refused deploy tag ${unsigned:0:12}: not signed by GitHub's merge key." "$LOGS/update-journal.txt" || fail "the unsigned commit was not refused for its signature"
 git -C "$BARE" tag -f deploy "$signed" >/dev/null && git -C "$BARE" update-server-info
 pass "update: waits on failed and pending checks, on a red ops end-to-end at ${e2e_signed:0:12} and on open intents; deploys the green GitHub-signed merge ${signed:0:12} with reconcile first; refuses unsigned ${unsigned:0:12}"
 
@@ -369,6 +391,8 @@ cp -r "$ROOT/packages/ops/src" "$ROOT/packages/ops/wrangler.toml" "$WD/"
   printf 'TELEGRAM_BOT_TOKEN=%s\n' "$(cat "$STATE/wrangler-secrets/TELEGRAM_BOT_TOKEN")"
   printf 'TELEGRAM_WEBHOOK_SECRET=%s\n' "$(cat "$STATE/wrangler-secrets/TELEGRAM_WEBHOOK_SECRET")"
   printf 'TELEGRAM_API=http://127.0.0.1:%s\nCHAIN_RPC_URL=\nHEARTBEAT_MAX_AGE_S=10\n' "$PORT"
+  # RECORD-UPLOAD (9c): the private data repository and GitHub's API and upload hosts, all the fake's.
+  printf 'DATA_REPO=e2e-owner/zeroed-data\nREPORTS_TOKEN=github_pat_TEST%s\nGITHUB_API=http://127.0.0.1:%s\nGITHUB_UPLOADS=http://127.0.0.1:%s\n' "$(rnd 16)" "$PORT" "$PORT"
 } >"$WD/.dev.vars"
 curl -s -m 2 -o /dev/null http://127.0.0.1:443/ && fail "port 443 is already in use"
 (cd "$ROOT/ops/watchdog/deploy" && npm ci --ignore-scripts --no-audit --no-fund >/dev/null 2>&1) || fail "npm ci of the locked watchdog tooling"
@@ -419,11 +443,130 @@ wait_for 10 "resume notice" "tail -2 '$STATE/telegram.jsonl' | grep -q 'Entries 
 tail -n +"$((n0 + 1))" "$STATE/telegram.jsonl" | grep -E '"method":"sendMessage"' | grep -v "\"chat_id\":\"$T_CHAT\"" | grep -q . && fail "the watchdog wrote to a chat other than the owner's"
 pass "watchdog (locked wrangler dev, miniflare): signed heartbeats from the host teach it the owner chat; quiet while fresh; /pause and /status only from the owner chat and the right webhook secret; worker applied pause and later the resume; /resume refused over Telegram; stale alert once, cleared on return; resume only from the host"
 
+# ---------- 9c. Recording upload (RECORD-UPLOAD) through the real watchdog to the fake private data repository ----------
+# Two boots as the recorder leaves them, their files a day old: the older one ended (uploaded, then its frames and releases
+# deleted); the other is the newest folder while the worker runs (its id is the newest; uploaded, nothing deleted), and
+# one of its files holds a credential-shaped value (kept on the server, alerted, cleared once it is gone). Earlier
+# sections' real worker boots stay as they are (changed minutes ago, so not touched); every check names these two.
+DATA="$STATE/data-repo"
+# Section 8 applied the deployed release's host files (right for a release); put this branch's back, as 10b does.
+in_c "ZEROED_NO_WAIT=1 bash /root/i --update" >"$LOGS/console/update-branch-files-9c.txt" 2>&1 || { cat "$LOGS/console/update-branch-files-9c.txt"; fail "install --update (this branch's host files, 9c)"; }
+for f in usr/local/sbin/zeroed-check usr/local/lib/zeroed/logic.sh usr/local/lib/zeroed/record-upload.mjs usr/local/sbin/zeroed-record-upload etc/systemd/system/zeroed-record-upload@.service; do
+  docker exec -i "$C" cmp -s "/$f" - <"$ROOT/ops/host/files/$f" || fail "test setup: this branch's /$f not in place"
+done
+in_c "jq '.record_upload = true | .record_upload_delete_local = true' /opt/zeroed/current/ops/host-config.json > /tmp/hc && cat /tmp/hc > /opt/zeroed/current/ops/host-config.json"
+in_c "install -d -o zeroed-worker -g zeroed-worker -m 0700 /var/lib/zeroed/recorder"
+fixture="$(docker exec -i "$C" runuser -u zeroed-worker -- /usr/local/bin/node --input-type=module - <<'NODE'
+import { createHash } from 'node:crypto';
+import { mkdirSync, readdirSync, utimesSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { zstdCompressSync } from 'node:zlib';
+const root = '/var/lib/zeroed/recorder';
+const now = Date.now();
+const day = new Date(now - 86_400_000).toISOString().slice(0, 10);
+const out = { day, boots: {} };
+for (const [h, pid, plant] of [[30, 4101, false], [-1, 4102, true]]) {
+  const boot = `${(now - h * 3_600_000).toString(36)}-${pid}`;
+  const dir = join(root, boot);
+  mkdirSync(join(dir, 'days', day), { recursive: true });
+  const files = ['delays-000', 'frames-000', 'raw-000', 'releases-000'].map((t) => {
+    const text = plant && t === 'releases-000' ? '{"u":"https://rpc.e2e.test/?api-key=E2EPLANTED"}\n' : `{"boot":"${boot}","t":"${t}"}\n`.repeat(2000);
+    const b = zstdCompressSync(Buffer.from(text));
+    const path = `days/${day}/${t}.jsonl.zst`;
+    writeFileSync(join(dir, path), b);
+    return { path, bytes: b.length, sha256: createHash('sha256').update(b).digest('hex') };
+  });
+  writeFileSync(join(dir, 'manifest.json'), `${JSON.stringify({ schema: 2, source: 'live-recorder', boot, window: { from: day }, attachments: [], days: [{ day, files }] })}\n`);
+  out.boots[boot] = files;
+}
+const t = (now - 3_600_000) / 1000;
+const walk = (d) => {
+  for (const e of readdirSync(d, { withFileTypes: true })) {
+    if (e.isDirectory()) walk(join(d, e.name));
+    utimesSync(join(d, e.name), t, t);
+  }
+  utimesSync(d, t, t);
+};
+for (const boot of Object.keys(out.boots)) walk(join(root, boot));
+console.log(JSON.stringify(out));
+NODE
+)" || fail "recording fixture"
+RDAY="$(printf '%s' "$fixture" | jq -r .day)"
+OLD="$(printf '%s' "$fixture" | jq -r '.boots | keys[] | select(endswith("-4101"))')"
+NEW="$(printf '%s' "$fixture" | jq -r '.boots | keys[] | select(endswith("-4102"))')"
+sha_of() { printf '%s' "$fixture" | jq -r --arg b "$1" --arg p "days/$RDAY/$2.jsonl.zst" '.boots[$b][] | select(.path == $p) | .sha256'; }
+in_c "systemctl is-active zeroed-worker" >/dev/null || fail "the worker must run for the newest-boot case"
+# Telegram lines from here on (zeroed-check's timer may raise the alert before the explicit runs below do).
+n0="$(wc -l <"$STATE/telegram.jsonl")"
+in_c "systemctl start zeroed-record-upload@all.service" || { in_c "journalctl -u zeroed-record-upload@all -o cat --no-pager | tail -30"; fail "recording upload run"; }
+in_c "journalctl -u zeroed-record-upload@all -o cat --no-pager" >"$LOGS/record-upload-1.txt"
+grep -q "Recording upload: .* kept, 0 failed\.$" "$LOGS/record-upload-1.txt" || { cat "$LOGS/record-upload-1.txt"; fail "recording upload summary"; }
+# What the day's release holds: the ended boot's frames, releases and manifest, the newest boot's clean files, the day's
+# index; never raw or delays, never the planted file. Every asset's bytes are the local file's (sha256).
+# (A run near UTC midnight may also send that day's journal: left out here.)
+names="$(jq -r --arg t "rec-$RDAY" '.assets[] | select(.tag == $t) | .name | select(startswith("journal-") | not)' "$DATA/state.json" | sort | tr '\n' ' ')"
+want="$(printf '%s\n' index-1.json "$NEW.frames-000.jsonl.zst" "$OLD.frames-000.jsonl.zst" "$OLD.manifest.json" "$OLD.releases-000.jsonl.zst" | sort | tr '\n' ' ')"
+[ "$names" = "$want" ] || fail "data repository assets: $names (want $want)"
+for b in "$OLD" "$NEW"; do for t in frames-000 releases-000; do
+  want="$(sha_of "$b" "$t")"
+  got="$(jq -r --arg n "$b.$t.jsonl.zst" '.assets[] | select(.name == $n) | .sha256' "$DATA/state.json")"
+  [ "$b/$t" = "$NEW/releases-000" ] && { [ -z "$got" ] || fail "the planted file was uploaded"; continue; }
+  [ -n "$want" ] && [ "$got" = "$want" ] || fail "$b.$t: uploaded bytes differ from the recording"
+done; done
+jq -e --arg t "rec-$RDAY" 'select(.call == "create-release") | select(.tag_name == $t and .prerelease == true and .make_latest == "false")' "$DATA/calls.jsonl" >/dev/null || fail "release rec-$RDAY not a prerelease kept from latest"
+# FixedLengthStream in the real Worker runtime: every upload carried its exact Content-Length, none was chunked.
+jq -s -e 'map(select(.call == "upload")) | length > 0 and all(.chunked == false and .length != null and (.length | tonumber) == .bytes)' "$DATA/calls.jsonl" >/dev/null || fail "an upload was chunked or had no Content-Length"
+idx="$(jq -r --arg t "rec-$RDAY" '.assets[] | select(.tag == $t and .name == "index-1.json") | .id' "$DATA/state.json")"
+head -1 "$DATA/assets/$idx" | jq -e --arg d "$RDAY" '.kind == "zeroed-record-index" and .day == $d and (.files | map(select(.boot != null)) | length) == 4' >/dev/null || fail "day index"
+tail -1 "$DATA/assets/$idx" | grep -Eq '^hmac-sha256=[0-9a-f]{64}$' || fail "day index HMAC line"
+# On the server: the ended boot's frames and releases are gone, its raw, delays and manifest stay; the newest boot keeps all.
+in_c "cd /var/lib/zeroed/recorder/$OLD && [ ! -e days/$RDAY/frames-000.jsonl.zst ] && [ ! -e days/$RDAY/releases-000.jsonl.zst ] && [ -e days/$RDAY/raw-000.jsonl.zst ] && [ -e days/$RDAY/delays-000.jsonl.zst ] && [ -e manifest.json ]" || fail "ended boot: wrong files deleted or kept"
+in_c "cd /var/lib/zeroed/recorder/$NEW && for t in frames-000 releases-000 raw-000 delays-000; do [ -e days/$RDAY/\$t.jsonl.zst ] || exit 1; done" || fail "newest boot lost a file"
+# Who ran it: the worker's user with no capability; its state is its own.
+[ "$(in_c "systemctl show -p User --value zeroed-record-upload@all.service")" = zeroed-worker ] || fail "uploader user"
+[ -z "$(in_c "systemctl show -p CapabilityBoundingSet --value zeroed-record-upload@all.service")" ] || fail "uploader holds a capability"
+# What it can reach: never the signer's folders, and of the worker's state only the recorder and the journal.
+in_c "systemctl show -p InaccessiblePaths --value zeroed-record-upload@all.service" | grep -q '/run/zeroed-signer' || fail "uploader can reach the signer's socket folder"
+in_c "systemctl show -p InaccessiblePaths --value zeroed-record-upload@all.service" | grep -q '/var/lib/zeroed-signer' || fail "uploader can reach the signer's state"
+in_c "systemctl show -p TemporaryFileSystem --value zeroed-record-upload@all.service" | grep -q '/var/lib/zeroed:ro' || fail "uploader sees the worker's whole state folder"
+[ "$(in_c "stat -c '%U %a' /var/lib/zeroed-record-upload/state.json")" = "zeroed-worker 600" ] || fail "uploader state owner or mode"
+# The kept file: alerted from the status file by zeroed-check, once, to the owner chat; cleared once it is gone.
+in_c "zeroed-check" >/dev/null 2>&1 || true
+tail -n +"$((n0 + 1))" "$STATE/telegram.jsonl" | grep -q "\"chat_id\":\"$T_CHAT\",\"text\":\"ALERT Zeroed host: 1 recording file(s) kept on the server, not uploaded: $NEW/days/$RDAY/releases-000.jsonl.zst (holds a credential-shaped value)" || fail "kept-file alert"
+in_c "zeroed-check" >/dev/null 2>&1 || true
+[ "$(tail -n +"$((n0 + 1))" "$STATE/telegram.jsonl" | grep -c 'recording file(s) kept')" = 1 ] || fail "kept-file alert repeated"
+in_c "rm /var/lib/zeroed/recorder/$NEW/days/$RDAY/releases-000.jsonl.zst"
+u0="$(grep -cE "\"call\":\"upload\",\"tag\":\"rec-$RDAY\",\"name\":\"($OLD|$NEW)\." "$DATA/calls.jsonl")"
+in_c "zeroed-record-upload --day $RDAY" >"$LOGS/record-upload-2.txt" 2>&1 || { cat "$LOGS/record-upload-2.txt"; fail "zeroed-record-upload --day"; }
+[ "$(grep -cE "\"call\":\"upload\",\"tag\":\"rec-$RDAY\",\"name\":\"($OLD|$NEW)\." "$DATA/calls.jsonl")" = "$u0" ] || fail "a second run uploaded again"
+in_c "zeroed-check" >/dev/null 2>&1 || true
+tail -n +"$((n0 + 1))" "$STATE/telegram.jsonl" | grep -q 'CLEARED Zeroed host: no recording file is kept back from upload.' || fail "kept-file alert not cleared"
+in_c "zeroed-record-upload --day 2026-02-30" >/dev/null 2>&1 && fail "a day that does not exist was accepted"
+# Back as it was for the later sections: switch off, no recordings, no uploader state.
+in_c "jq 'del(.record_upload, .record_upload_delete_local)' /opt/zeroed/current/ops/host-config.json > /tmp/hc && cat /tmp/hc > /opt/zeroed/current/ops/host-config.json"
+in_c "rm -rf /var/lib/zeroed/recorder/$OLD /var/lib/zeroed/recorder/$NEW /var/lib/zeroed-record-upload/state.json /var/lib/zeroed-record-upload/status.json /var/lib/zeroed-record-upload/tmp"
+in_c "zeroed-check" >/dev/null 2>&1 || true
+pass "recording upload (locked wrangler dev): an ended boot's frames, releases and manifest uploaded byte for byte through the signed watchdog route with a fixed Content-Length, then its frames and releases deleted (raw, delays, manifest kept); the newest boot while the worker runs uploaded and untouched; a credential-shaped file kept, alerted once and cleared; a day prerelease never latest; signed day index; as the worker's user with no capability; a second run sends nothing"
+
 # ---------- 10. Restart and crash drills ----------
+# RC-R2-3 on real systemd: the release deployed in section 8 is on probation. A planned restart never counts; the
+# kill -9 below raises NRestarts and the probation sees it. There is no earlier release here, so it alerts and drops.
+in_c "test -s /var/lib/zeroed-host/probation" || fail "no probation after the switch in section 8"
 r0="$(in_c "journalctl -u zeroed-worker -o cat --no-pager | grep -c 'Reconcile: 0 open intents'")"
 in_c "systemctl restart zeroed-worker"
+wait_for 30 "worker back after a planned restart" "docker exec $C systemctl is-active zeroed-worker"
+nr0="$(in_c "systemctl show -p NRestarts --value zeroed-worker")"
+upd_run || fail "zeroed-update after a planned restart"
+in_c "test -s /var/lib/zeroed-host/probation" || fail "a planned restart ended the probation"
+in_c "cat /var/lib/zeroed-host/deployed" | grep -qx "$signed" || fail "a planned restart moved the deployed record"
 in_c "kill -9 \$(systemctl show -p MainPID --value zeroed-worker)"
 wait_for 30 "worker back after kill -9" "docker exec $C systemctl is-active zeroed-worker"
+[ "$(in_c "systemctl show -p NRestarts --value zeroed-worker")" -gt "$nr0" ] || fail "kill -9 did not raise NRestarts"
+upd_run && fail "zeroed-update did not see the kill -9 during the probation"
+in_c "journalctl -u zeroed-update -o cat --no-pager" | grep -q "did not stay up after the switch (it restarted 1 time(s) within .* of the switch (probation 120 min)), and there is no earlier release to go back to" || fail "probation rollback with no earlier release not alerted"
+in_c "test ! -e /var/lib/zeroed-host/probation" || fail "the probation was not dropped"
+in_c "cat /var/lib/zeroed-host/deployed" | grep -qx "$signed" || fail "the deployed record moved with no earlier release"
+pass "probation (RC-R2-3) on real systemd: a planned restart leaves it; kill -9 raises NRestarts, the next zeroed-update sees it, alerts that there is no earlier release and drops it"
 sleep 2
 r1="$(in_c "journalctl -u zeroed-worker -o cat --no-pager | grep -c 'Reconcile: 0 open intents'")"
 [ "$r1" -ge $((r0 + 2)) ] || fail "reconcile did not run before each start ($r0 -> $r1)"
@@ -498,8 +641,13 @@ in_c "cat /var/lib/zeroed-host/deployed" | has -x 000000000000000000000000000000
 in_c "rm -rf /opt/zeroed/releases/$signed/packages/runner/systemd && mkdir -p /opt/zeroed/releases/$signed/packages/runner"
 docker cp "$ROOT/ops/install.sh" "$C:/opt/zeroed/releases/$signed/ops/install.sh"
 docker cp "$ROOT/packages/runner/systemd" "$C:/opt/zeroed/releases/$signed/packages/runner/systemd"
+# HOST-CAPS: eight older releases pile up beside the current one; the deploy that follows leaves at most 5 (the current
+# release, the previous one, the deploy tag's commit and the 3 newest others), and the oldest go.
+in_c "for i in 1 2 3 4 5 6 7 8; do h=\$(printf '%040x' \$i); mkdir -p /opt/zeroed/releases/\$h && touch -d \"\$i days ago\" /opt/zeroed/releases/\$h; done"
 upd_run || { in_c "cat /var/lib/zeroed-host/host_update.log"; fail "host apply"; }
 in_c "cat /var/lib/zeroed-host/deployed" | has -x "$signed" || fail "not switched after the host files applied"
+in_c "ls -1d /opt/zeroed/releases/*/ | wc -l" | has -x '[1-5]' || fail "old releases were not pruned (HOST-CAPS: at most 5 stay)"
+in_c "test -d /opt/zeroed/releases/$signed && test -d /opt/zeroed/releases/\$(printf '%040x' 1) && test ! -e /opt/zeroed/releases/\$(printf '%040x' 5) && test ! -e /opt/zeroed/releases/\$(printf '%040x' 8)" || fail "the wrong releases were pruned (HOST-CAPS)"
 tail -n +"$((n0 + 1))" "$STATE/telegram.jsonl" | has 'CLEARED Zeroed host: the host files of' || fail "failed-apply alert not cleared"
 jl zeroed-update | has "Host files from ${signed:0:12} applied." || fail "host apply not logged"
 for u in $(ls "$ROOT/packages/runner/systemd"); do in_c "cmp -s /etc/systemd/system/$u /opt/zeroed/current/packages/runner/systemd/$u" || fail "RUN-1 unit $u not installed"; done
@@ -517,6 +665,12 @@ in_c "sed -i 's/^\(    tcp dport 22\)/#SSH_RULE#\1/' /etc/nftables.conf && nft -
 in_c "ZEROED_NO_WAIT=1 bash /root/i --update" >"$LOGS/console/update-ssh-closed.txt" 2>&1 || fail "install --update (SSH closed)"
 in_c "nft list ruleset" | has 'dport 22' && fail "--update opened SSH that was closed"
 grep -q 'Deploy code' "$LOGS/console/update-ssh-open.txt" "$LOGS/console/update-ssh-closed.txt" && fail "--update showed a code"
+# D07 on an update (Z00): a running server below the minimum only gets a warning, and the update goes through.
+in_c "mount --bind /root/meminfo-1gb /proc/meminfo"
+rc=0; in_c "ZEROED_NO_WAIT=1 bash /root/i --update" >"$LOGS/console/update-d07.txt" 2>&1 || rc=$?
+in_c "umount /proc/meminfo"
+[ "$rc" = 0 ] && grep -qF "Warning: this server is below the bot's host minimum (D07): it has 0.96 GiB of RAM; the bot needs a 2 GB server (at least 1.5 GiB reported)." "$LOGS/console/update-d07.txt" && grep -q '^==> Updated: ' "$LOGS/console/update-d07.txt" || { cat "$LOGS/console/update-d07.txt"; fail "D07: --update on a small server did not warn and go through (exit $rc)"; }
+pass "D07 preflight: --update on a server below the minimum warns and updates"
 in_c "nft list ruleset" | has 'iifname "tailscale0" tcp dport 443 accept' || fail "tailnet HTTPS rule"
 wait_for 30 "worker running after the update" "docker exec $C systemctl is-active zeroed-worker"
 in_c "systemctl show -p ExecStart --value zeroed-worker" | has /usr/local/lib/zeroed/worker-start || fail "worker not started by the wrapper"
@@ -561,6 +715,14 @@ prac="$orig-practice"
 in_c "rm -rf '$prac' && cp -a '$rel' '$prac' && rm -rf '$prac/packages'"
 git -C "$ROOT" archive HEAD packages ops/host-config.json | docker exec -i "$C" tar -x -C "$prac" || fail "this commit's worker could not be added to the test release"
 rel="$prac"
+# PAUSE (owner, 2026-10-07): while this commit's host-config runs the stand-in ("worker": "stub"), the release's own
+# worker is still tested here, with "release" in this test copy only, so every fix keeps its end-to-end proof. The
+# paused value itself is pinned by ops-files.test.ts and host-logic.test.ts; any other value fails here.
+case "$(in_c "jq -r '.worker' '$rel/ops/host-config.json'")" in
+  release) ;;
+  stub) in_c "jq '.worker = \"release\"' '$rel/ops/host-config.json' > /tmp/hc && mv /tmp/hc '$rel/ops/host-config.json'" ;;
+  *) fail "this commit's host-config names neither the release's worker nor the stand-in" ;;
+esac
 in_c "jq -e '.worker == \"release\" and (.shakedown | type) == \"object\"' '$rel/ops/host-config.json'" >/dev/null || fail "this commit's host-config does not run the release's worker with shakedown settings"
 # No node_modules: the worker runs on Node 22's type stripping with no runtime dependency.
 in_c "find '$rel' -name node_modules | grep -q ." && fail "the release carries node_modules"

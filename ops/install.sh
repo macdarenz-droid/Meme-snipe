@@ -49,6 +49,36 @@ if [ -n "$SSH_KEY" ]; then
   [[ "$SSH_KEY" =~ ^(ssh-ed25519|ecdsa-sha2-nistp256|sk-ssh-ed25519@openssh.com)\ [A-Za-z0-9+/=]+(\ [^[:cntrl:]]*)?$ ]] || die "--ssh-key must be one public key line (ssh-ed25519 or ecdsa)"
 fi
 
+# D07 preflight (docs/blueprint/ARCH.md D07 and M07): the bot's host is a 2 GB server, which the OS reports as
+# about 1.9 GiB (not measured), with a disk of at least 50 GB. Both are read from the host itself (/proc/meminfo,
+# and df on the filesystem that holds /var/lib); no option or variable changes them. The RAM floor is 1.5 GiB: it
+# refuses the 1 GB server (about 0.96 GiB) by a wide margin, no Vultr plan sits between 1 GB and 2 GB, and the
+# 2 GB server's exact MemTotal is not measured (a crash-dump reservation could lower it). The filesystem floor is
+# 40 GB by size (docs/DECISIONS.md): it refuses the 25 GB server (about 23 GB) widely, while the 55 GB disk's
+# filesystem, smaller than the disk and not measured, keeps a margin. Size, so a host holding data passes a re-run. A full install refuses a host below either, before it changes
+# anything; an update only warns, so zeroed-update never rolls a running server back over it.
+D07_MEM_MIN_KB=1572864   # 1.5 GiB in kB
+D07_DISK_MIN_KB=39062500 # 40 GB (40 × 10^9 bytes) in kB
+d07_shortfalls() { # MemTotal kB, size kB of the filesystem holding /var/lib: one line per shortfall
+  if ! [[ "$1" =~ ^[0-9]{1,12}$ ]]; then echo "its RAM could not be read from /proc/meminfo"
+  elif [ "$1" -lt "$D07_MEM_MIN_KB" ]; then
+    awk -v k="$1" 'BEGIN { printf "it has %.2f GiB of RAM; the bot needs a 2 GB server (at least 1.5 GiB reported)\n", k / 1048576 }'
+  fi
+  if ! [[ "$2" =~ ^[0-9]{1,15}$ ]]; then echo "the size of the disk that holds /var/lib could not be read"
+  elif [ "$2" -lt "$D07_DISK_MIN_KB" ]; then
+    awk -v k="$2" 'BEGIN { printf "the disk that holds /var/lib is %.1f GB; the bot needs at least 40 GB\n", k * 1024 / 1e9 }'
+  fi
+}
+d07_short="$(d07_shortfalls "$(awk '$1 == "MemTotal:" { print $2; exit }' /proc/meminfo 2>/dev/null || true)" \
+  "$(df -P -k /var/lib 2>/dev/null | awk 'NR == 2 { print $2 }' || true)")"
+if [ -n "$d07_short" ]; then
+  if [ "$UPDATE" = 1 ]; then
+    while IFS= read -r line; do printf 'Warning: this server is below the bot'\''s host minimum (D07): %s.\n' "$line" >&2; done <<< "$d07_short"
+  else
+    die "this server is below the bot's host minimum (docs/blueprint/ARCH.md D07): ${d07_short//$'\n'/; }. Use the 2 GB Vultr server (vc2-1c-2gb, 55 GB SSD)."
+  fi
+fi
+
 # An update is all or nothing. Before it changes a host path it keeps the old file (*.zeroed-old) or notes
 # that the path is new, and before it stops a unit it notes whether that unit was enabled and running, all in
 # a journal on disk. If any later step fails (Node, the firewall, the signing key, a package, a unit), the
@@ -73,6 +103,7 @@ managed() {
   case "$p" in
     /usr/local/sbin/zeroed-* | /usr/local/lib/zeroed/* | /usr/local/share/zeroed/* | /usr/local/bin/node) return 0 ;;
     /etc/systemd/system/zeroed-* | /etc/zeroed/* | /etc/nftables.conf | /etc/apt/apt.conf.d/* | /etc/ssh/sshd_config.d/*) return 0 ;;
+    /etc/systemd/journald.conf.d/zeroed-*) return 0 ;;
     /var/lib/zeroed-host/* | /opt/zeroed/*) return 0 ;;
   esac
   return 1
@@ -112,6 +143,7 @@ roll_back() {
     b=$((b + 1))
   done < "$JOURNAL"
   systemctl daemon-reload
+  systemctl restart systemd-journald >/dev/null 2>&1 || true
   while read -r kind p en act; do
     [ "$kind" = unit ] && [[ "$p" =~ ^zeroed-[A-Za-z0-9@._-]+$ ]] || continue
     [ "$en" != 1 ] || systemctl enable "$p" >/dev/null 2>&1
@@ -246,6 +278,13 @@ table inet zeroed {
   }
 }
 __ZEROED_FILE__
+install_file /etc/systemd/journald.conf.d/zeroed-journal.conf 0644 <<'__ZEROED_FILE__'
+# HOST-CAPS: the system journal never takes the room the worker's state, ledger and journal need. At most 500 MB,
+# and it leaves at least 2 GB free (systemd's defaults on a 25 GB disk are 2.5 GB and 15%).
+[Journal]
+SystemMaxUse=500M
+SystemKeepFree=2G
+__ZEROED_FILE__
 install_file /etc/systemd/system/zeroed-backup-offsite.service 0644 <<'__ZEROED_FILE__'
 [Unit]
 Description=Zeroed: daily off-server copy of the newest backup (silent Telegram document)
@@ -356,6 +395,89 @@ AccuracySec=5s
 
 [Install]
 WantedBy=timers.target
+__ZEROED_FILE__
+install_file /etc/systemd/system/zeroed-record-upload.timer 0644 <<'__ZEROED_FILE__'
+[Unit]
+Description=Zeroed: hourly upload of sealed recordings
+
+[Timer]
+# 10 minutes after boot or after the timer is switched on, then an hour after each run ends.
+OnBootSec=10min
+OnActiveSec=10min
+OnUnitInactiveSec=1h
+Unit=zeroed-record-upload@all.service
+
+[Install]
+WantedBy=timers.target
+__ZEROED_FILE__
+install_file /etc/systemd/system/zeroed-record-upload@.service 0644 <<'__ZEROED_FILE__'
+[Unit]
+Description=Zeroed: upload sealed recordings to the private data repository (%i)
+Documentation=https://github.com/macdarenz-droid/Meme-snipe/blob/ccr-14987baf-i6lrsl/ops/README.md
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/var/lib/zeroed/recorder
+
+[Service]
+Type=oneshot
+# The worker's own user: it already holds every credential read here and owns the recorder, so no capability is needed.
+# That user is in the zeroed-signer group (/etc/group), which systemd applies here too, so the signer's folders are made
+# inaccessible below.
+User=zeroed-worker
+Group=zeroed-worker
+EnvironmentFile=/etc/zeroed/worker.env
+# %i is "all" (the timer) or one UTC day (zeroed-record-upload --day). One run at a time, the hourly one or a manual one.
+ExecStart=/usr/bin/flock /var/lib/zeroed-record-upload/run.lock /usr/local/bin/node --max-old-space-size=48 /usr/local/lib/zeroed/record-upload.mjs --scope %i
+# A oneshot's default 90 s would stop the first run (days of backlog at 2 MB/s).
+TimeoutStartSec=12h
+ImportCredential=heartbeat_hmac_key
+ImportCredential=helius_api_key
+ImportCredential=alchemy_api_key
+ImportCredential=jupiter_api_key
+ImportCredential=telegram_bot_token
+ImportCredential=telegram_chat_id
+StateDirectory=zeroed-record-upload
+StateDirectoryMode=0700
+# Of the worker's state only the recorder (read and delete) and the journal (read) are visible: an empty read-only
+# /var/lib/zeroed with those two bound in, so the ledger and the rest of the worker's state are out of reach.
+TemporaryFileSystem=/var/lib/zeroed:ro
+BindPaths=/var/lib/zeroed/recorder
+BindReadOnlyPaths=-/var/lib/zeroed/journal.jsonl
+InaccessiblePaths=-/run/zeroed-signer -/var/lib/zeroed-signer
+UMask=0077
+Nice=19
+IOSchedulingClass=idle
+CPUQuota=25%
+MemoryMax=96M
+OOMScoreAdjust=1000
+TasksMax=32
+LimitCORE=0
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+KeyringMode=private
+DevicePolicy=closed
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @mount @debug @cpu-emulation @obsolete
+SystemCallErrorNumber=EPERM
 __ZEROED_FILE__
 install_file /etc/systemd/system/zeroed-signer.service 0644 <<'__ZEROED_FILE__'
 [Unit]
@@ -818,6 +940,8 @@ const intervalMs = Number(process.env.ZEROED_HEARTBEAT_MS ?? 20_000);
 const NAMES = ['helius_api_key', 'alchemy_api_key', 'jupiter_api_key', 'telegram_bot_token', 'telegram_chat_id'];
 
 const loaded = credDir ? NAMES.filter((n) => existsSync(join(credDir, n))) : [];
+// RC-FIXES-2b: whether a ledger was here before this process (a release worker may have traded on it).
+const hadLedger = existsSync(join(stateDir, 'ledger.sqlite'));
 const db = new DatabaseSync(join(stateDir, 'ledger.sqlite'));
 db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;');
 db.exec('CREATE TABLE IF NOT EXISTS host_events (id INTEGER PRIMARY KEY, ts TEXT NOT NULL, kind TEXT NOT NULL, detail TEXT)');
@@ -831,10 +955,18 @@ try {
 
 if (process.argv.includes('--reconcile')) {
   const ok = loaded.length === NAMES.length;
-  // Contract with the host's update check: the number of open intents after reconcile.
-  writeFileSync(join(stateDir, 'open_intents'), '0\n');
-  event('reconcile', `stub: 0 open intents, ${ok ? 'ok' : 'credentials missing'}`);
-  console.log(`Reconcile: 0 open intents, ${loaded.length} of ${NAMES.length} credentials present. ${ok ? 'OK' : 'Refusing to start.'}`);
+  // Contract with the host's update check: the number of open intents (and open positions) after reconcile. RC-FIXES-2b
+  // (red team C R3-5): the stand-in settles nothing, so it never writes 0 over a count a release worker left. A count
+  // that is missing is 0 only on a host where no ledger existed before this process (nothing ever traded), else unknown.
+  const count = (f) => {
+    const p = join(stateDir, f);
+    if (!existsSync(p)) writeFileSync(p, hadLedger ? 'unknown\n' : '0\n');
+    return readFileSync(p, 'utf8').trim();
+  };
+  const intents = count('open_intents');
+  const positions = count('open_positions');
+  event('reconcile', `stub: ${intents} open intents, ${positions} open positions, ${ok ? 'ok' : 'credentials missing'}`);
+  console.log(`Reconcile: ${intents} open intents, ${loaded.length} of ${NAMES.length} credentials present. ${ok ? 'OK' : 'Refusing to start.'}`);
   db.close();
   process.exit(ok ? 0 : 1);
 }
@@ -1185,9 +1317,10 @@ WORKER_HEALTH_ADDR=127.0.0.1:8787 # the worker's health route for the runner (RU
 TABLETOP_API_ADDR=127.0.0.1:8789 # reserved for RUN-1d's zeroed-worker-tabletop (never published)
 SMOKE_HEALTH_ADDR=127.0.0.1:8797 # worker-smoke's trial start of a new release (never published)
 SMOKE_API_ADDR=127.0.0.1:8798
-SMOKE_MEMORY_MAX=280M # the trial's memory cap: the host has 1 GB and the live worker (up to 800M) keeps running
+SMOKE_MEMORY_MAX=280M # the trial's memory cap beside the live worker (up to 800M): set for the 1 GB server and kept on the 2 GB one while only the stand-in runs (Z10 sizes the recorder's unit from measurement)
 SMOKE_HOLD_S=30 # after its first health answer, the trial worker must still run and answer this long
 SWITCH_HOLD_S=30 # after a switch, the new worker must run this long with no restart and health answering
+PROBATION_S=7200 # RC-R2-3: after a switch, any automatic restart of the worker within this window rolls it back
 RELEASE_UNIT_RE='^zeroed-(dryrun[a-z0-9-]*@?|worker-tabletop)\.(service|timer)$' # units taken from the release
 
 # backoff_s TRIES: seconds to wait after TRIES failed tries in a row (1 min, doubling, at most 30 min).
@@ -1279,15 +1412,57 @@ unit_sandbox() {
 # public (none on a correct host: the app cannot tell a public Funnel address from a tailnet one).
 funnel_ports() { jq -r '(.AllowFunnel // {}) | to_entries[] | select(.value == true) | .key' 2>/dev/null || true; }
 
-# worker_entry RELEASE_DIR: the program the worker unit runs. The release's own worker (WORKER-1) only when
-# the release's ops/host-config.json says "worker": "release" (a reviewed commit) and the file exists; the
-# host's stand-in otherwise. Switching the host to the real worker is a decision, not a side effect of a merge.
+# worker_entry RELEASE_DIR: the program the worker unit runs. The release's own worker (WORKER-1) only when the
+# release's ops/host-config.json says "worker": "release" (a reviewed commit) and the file exists; the host's stand-in
+# when it says "worker": "stub", or when no release is deployed yet (RELEASE_DIR does not exist and is not a link: a
+# first install). Switching the host to the real worker is a decision, not a side effect of a merge. RC-M4: anything
+# else is refused, never run as the stand-in (which passes worker-smoke and update health, so the host would look
+# healthy with no trading worker): a host-config missing or unreadable, a "worker" value missing or unknown, or
+# "release" without its main.ts. A refusal says why on stderr and returns 1: worker-start and worker-smoke then fail,
+# loudly.
+STUB_ENTRY=/opt/zeroed/stub/worker.mjs # the host's stand-in worker
 worker_entry() {
-  if [ "$(jq -r '.worker // "stub"' "$1/ops/host-config.json" 2>/dev/null || echo stub)" = release ] && [ -f "$1/packages/worker/src/main.ts" ]; then
-    printf '%s\n' "$1/packages/worker/src/main.ts"
-  else
-    printf '%s\n' /opt/zeroed/stub/worker.mjs
+  # Nothing there at all (not even a dangling link: that is a release gone missing, refused below).
+  if [ ! -e "$1" ] && [ ! -L "$1" ]; then
+    printf '%s\n' "$STUB_ENTRY"
+    return 0
   fi
+  local w
+  if ! w="$(jq -er 'if type == "object" then (.worker // "(missing)") | if type == "string" then . else "(not a string)" end else error("not an object") end' "$1/ops/host-config.json" 2>/dev/null)"; then
+    echo "refused: $1/ops/host-config.json is missing or cannot be read, so the worker to run is unknown" >&2
+    return 1
+  fi
+  case "$w" in
+    release)
+      if [ -f "$1/packages/worker/src/main.ts" ]; then
+        printf '%s\n' "$1/packages/worker/src/main.ts"
+      else
+        echo "refused: host-config says \"worker\": \"release\" but $1/packages/worker/src/main.ts is missing" >&2
+        return 1
+      fi
+      ;;
+    stub) printf '%s\n' "$STUB_ENTRY" ;;
+    *)
+      echo "refused: host-config \"worker\" is $(printf '%s' "$w" | tr -c 'A-Za-z0-9()_. -' '?' | cut -c1-40), not \"release\" or \"stub\"" >&2
+      return 1
+      ;;
+  esac
+}
+
+# worker_refused FILE STATUS: why the worker refused to start, or nothing (RC-FIXES-2b, #280's contract). FILE is the
+# worker's <state>/refused.json ({reason, atMs, commit}); STATUS is the unit's ExecMainStatus, where 78 is a refusal.
+# One line, at most 200 characters, never the separator "|".
+worker_refused() {
+  local r
+  if [ -e "$1" ]; then
+    r="$(jq -r '"\(.reason // "no reason given") (commit \((.commit // "?") | tostring | .[0:12]))"' "$1" 2>/dev/null)" || r="refused.json cannot be read"
+    [ -n "$r" ] || r="refused.json cannot be read"
+  elif [ "$2" = 78 ]; then
+    r="exit 78 with no refused.json"
+  else
+    return 0
+  fi
+  printf '%s\n' "$r" | tr -d '\r|' | tr '\n' ' ' | cut -c1-200 | sed 's/ *$//'
 }
 
 # The only worker settings a release's ops/host-config.json may give (PRACTICE-ON): the S0 shakedown's, in its
@@ -1311,19 +1486,25 @@ ssh_open() { grep -Eq 'tcp dport 22 .*accept'; }
 
 # ---------- Deploy gate (OPS-GATE): what "green" means, shared by the server (zeroed-update) and the Deploy
 # workflow (ops/deploy/tag.sh), so the two always agree. ----------
-# Only GitHub Actions' own check runs count; the Deploy job's run (zeroed-deploy) never does.
+# Only GitHub Actions' own check runs count; the Deploy job's run (zeroed-deploy) never does, and neither does the
+# scheduled advisory report (zeroed-advisories, .github/workflows/audit-schedule.yml): it runs daily on the newest
+# commit of the default branch, so a failed, cancelled or still-running report would otherwise hold back a commit
+# that nothing in its own diff broke (Z01 supervisor ruling 3.4). tools/policy refuses that job name in any other
+# workflow (E_AUDIT_JOB_NAME), so no other run can borrow it.
 DEPLOY_CHECK_APP=github-actions
 DEPLOY_SELF_JOB=zeroed-deploy
+DEPLOY_AUDIT_JOB=zeroed-advisories
 # The paths whose change runs the ops end-to-end (.github/workflows/ops-e2e.yml `paths`; a test keeps them equal).
 E2E_PATHS=(ops packages/ops .github/workflows/deploy.yml .github/workflows/ops-e2e.yml)
 
 # commit_verdict NAME: reads a commit's check-runs reply (GitHub API) on stdin and prints one line, "green" or
 # "red|pending|none: <why>". Green needs a successful run named NAME from GitHub Actions on that commit, every
-# other GitHub Actions run finished and none failed. A run from another app, or an all-skipped set, never makes
+# other GitHub Actions run finished and none failed (the Deploy job and the advisory report aside). A run from
+# another app, or an all-skipped set, never makes
 # it green; a listing GitHub cut short (more runs than returned) is "none".
 commit_verdict() {
-  jq -r --arg name "$1" --arg app "$DEPLOY_CHECK_APP" --arg self "$DEPLOY_SELF_JOB" '
-    [(.check_runs // [])[] | select((.app.slug // "") == $app and .name != $self)] as $r
+  jq -r --arg name "$1" --arg app "$DEPLOY_CHECK_APP" --arg self "$DEPLOY_SELF_JOB" --arg audit "$DEPLOY_AUDIT_JOB" '
+    [(.check_runs // [])[] | select((.app.slug // "") == $app and .name != $self and .name != $audit)] as $r
     | ([$r[] | select(.name == $name)] | sort_by(.completed_at // .started_at // "") | last) as $n
     | if (.total_count // 0) > ((.check_runs // []) | length) then "none: more check runs than GitHub listed"
       elif any($r[]; .status != "completed") then "pending: \([$r[] | select(.status != "completed") | .name] | unique | join(", ")) still running"
@@ -1346,6 +1527,1038 @@ e2e_commit() {
       return 0
     fi
   done
+}
+
+# prunable_releases ROOT CURRENT PREV TAG_COMMIT: release folders under ROOT that may go (HOST-CAPS), one per line.
+# Kept: the current release, the one before it (the roll-back target), the deploy tag's commit, the 3 newest others
+# and anything that is not a 40-hex commit folder (half-written *.new and strays are never listed). No age rule.
+# Fails closed: when CURRENT is not a folder under ROOT, nothing goes.
+# Each release is a full copy of the repository (about 68 MB), and every update adds one.
+prunable_releases() {
+  local root="${1%/}" cur="$2" prev="$3" tag="$4" d i=0
+  [ -n "$cur" ] && [ -d "$cur" ] && [ "$(dirname "$cur")" = "$root" ] || return 0
+  while IFS= read -r d; do
+    [[ "${d##*/}" =~ ^[0-9a-f]{40}$ ]] || continue
+    [ "$d" != "$cur" ] && [ "$d" != "$prev" ] && [ "$d" != "$root/$tag" ] || continue
+    i=$((i + 1))
+    [ "$i" -gt 3 ] || continue
+    printf '%s\n' "$d"
+  done < <(find "$root" -mindepth 1 -maxdepth 1 -type d ! -name '*.new' -printf '%T@ %p\n' 2>/dev/null | LC_ALL=C sort -rn | cut -d' ' -f2-)
+}
+
+# record_alerts NOW: reads the recording uploader's status.json (RECORD-UPLOAD; it runs as the worker's user, so its
+# alerts are raised here) on stdin and prints one "on|KEY|TEXT" or "off|KEY|TEXT" line per alert: 3 failed runs in a
+# row, recordings waiting longer than a day, files kept back from upload, no status for 3 hours. {"enabled":false}
+# (the switch is off) clears them all. RC-M5: with the switch on, a status with no report time (none written: '{}', the
+# uploader never ran) raises the no-report alert and leaves the others as they are; it never clears them. Input that
+# is not JSON prints nothing, so every alert keeps its state.
+record_alerts() {
+  jq -r --argjson now "$1" '
+    def clean: tostring | gsub("[\r\n|]"; " ") | .[0:300];
+    if .enabled != false and (.at | type) != "number" then
+      "on|record-upload-stale|ALERT Zeroed host: the recording upload is on but has never reported (no status written). Recordings may be deleted at the disk cap without being uploaded."
+    else
+    (.enabled != false) as $on
+    | (((.failed_runs // 0) - (if .running == true then 1 else 0 end))) as $failed
+    | (.kept // []) as $kept
+    | [
+        (if $on and $failed >= 3
+         then "on|record-upload-failed|ALERT Zeroed host: the recording upload failed \($failed) runs in a row (last: \(.last_error // "unknown" | clean)). Recordings stay on the server until it works again."
+         else "off|record-upload-failed|CLEARED Zeroed host: the recording upload works again." end),
+        (if $on and (.backlog_age_s // 0) > 86400
+         then "on|record-upload-backlog|ALERT Zeroed host: recordings older than a day are still waiting to upload (\(.pending // 0) files). Their disk space is not freed until they are up."
+         else "off|record-upload-backlog|CLEARED Zeroed host: no recording waits longer than a day to upload." end),
+        (if $on and ($kept | length) > 0
+         then "on|record-upload-kept|ALERT Zeroed host: \($kept | length) recording file(s) kept on the server, not uploaded: \([$kept[0:5][] | "\(.key // "?") (\(.why // "?"))"] | join(", ") | clean)."
+         else "off|record-upload-kept|CLEARED Zeroed host: no recording file is kept back from upload." end),
+        (if $on and ($now - (.at / 1000)) > 10800
+         then "on|record-upload-stale|ALERT Zeroed host: the recording upload has not reported for over 3 hours."
+         else "off|record-upload-stale|CLEARED Zeroed host: the recording upload reports again." end)
+      ] | .[] end' 2>/dev/null || true
+}
+__ZEROED_FILE__
+install_file /usr/local/lib/zeroed/record-upload.mjs 0644 <<'__ZEROED_FILE__'
+// RECORD-UPLOAD (owner, 2026-10-06: "Approve upload"; "Okay yes delete after upload"). Uploads the recorder's sealed files
+// (public market data and the bot's own decisions; never keys, tokens, wallet or personal data) through the watchdog's
+// signed POST /record to GitHub Release assets in the private data repository, one prerelease per UTC day (rec-YYYY-MM-DD,
+// overflow rec-YYYY-MM-DD.N past 900 assets), and deletes a local frames or releases file only after its uploaded copy
+// is read back with the same sha256 and size and the day's signed index lists it.
+//   What goes: per boot, frames-NNN and releases-NNN (.jsonl.zst, listed with sha256 in the boot's manifest),
+//   and once the boot has ended its manifest.json, its saved-state attachment and its packed gaps; per ended UTC day, that day's
+//   journal lines (journal-YYYY-MM-DD.jsonl.zst) and index-N.json. Never raw, delays or plain .jsonl files.
+//   What is deleted (only with "record_upload_delete_local": true): frames and releases files of ended boots, each
+//   checked again just before (see deleteFile). Never a manifest, a saved state, the journal, raw or delays files.
+// Runs as the worker's user (zeroed-record-upload@.service: no capabilities, the recorder its only writable data path),
+// one file at a time, oldest first, at 2 MB/s. Node built-ins only; curl sends the body with its headers on stdin.
+//   node record-upload.mjs --scope all|YYYY-MM-DD
+import { execFile, spawn } from 'node:child_process';
+import { createHash, createHmac, randomBytes } from 'node:crypto';
+import { closeSync, createReadStream, createWriteStream, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { pipeline } from 'node:stream/promises';
+import { fileURLToPath } from 'node:url';
+import { createZstdCompress, createZstdDecompress } from 'node:zlib';
+
+/** The worker's redaction patterns, kept identical to packages/worker/src/run/redact.ts (a test compares them). */
+export const PATTERNS = [
+  /([?&](?:api[-_]?key|apikey|key|token|access[-_]?token)=)[^&\s"'\\]+/gi,
+  /(\.alchemy\.com\/v2\/)[^\s"'\\/?#]+/gi,
+  /(\/bot)\d+:[A-Za-z0-9_-]+/g,
+];
+const MARK = '[redacted]';
+/** The credentials the worker holds, so the only ones its recordings could carry. */
+export const CREDENTIALS = ['helius_api_key', 'alchemy_api_key', 'jupiter_api_key', 'telegram_bot_token', 'telegram_chat_id', 'heartbeat_hmac_key'];
+
+export const DEFAULTS = {
+  root: '/var/lib/zeroed/recorder',
+  journal: '/var/lib/zeroed/journal.jsonl',
+  stateDir: '/var/lib/zeroed-record-upload',
+  hostConfig: '/opt/zeroed/current/ops/host-config.json',
+};
+/** A boot (or an open boot's file) unchanged this long counts as settled. */
+export const QUIET_MS = 15 * 60_000;
+/** The watchdog's body cap (the free plan allows 100 MB). */
+export const MAX_BYTES = 95_000_000;
+/** GitHub allows 1000 assets per release; past this many the day moves to its next overflow release. */
+export const RELEASE_ASSETS = 900;
+/** GitHub's secondary limit is 500 content writes an hour; a run stays well under it. */
+export const MAX_UPLOADS_PER_RUN = 300;
+/** A day's journal is uploaded once the day has ended and this much more has passed. */
+const JOURNAL_GRACE_MS = 10 * 60_000;
+const STOP_AFTER_FAILURES = 3;
+const TAKEN = 'a different file has this name in the data repository';
+const BOOT_RE = /^[A-Za-z0-9_-]{1,64}$/;
+const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+const DATA_RE = /^days\/(\d{4}-\d{2}-\d{2})\/((?:frames|releases)-\d{3}\.jsonl\.zst)$/;
+const ATTACHMENTS = new Set(['deployer-state.json', 'deployer-state.json.zst']);
+// RC-H3: the recorder's packed stream-gap chunks (gaps-NNN.jsonl.zst) go up with the manifest, like the saved state.
+const GAPS_ATTACHMENT = /^gaps-\d{3,6}\.jsonl\.zst$/;
+const isSha = (s) => typeof s === 'string' && /^[0-9a-f]{64}$/.test(s);
+const isBytes = (n) => Number.isSafeInteger(n) && n > 0;
+/** True for "no such file": RECORD-BUDGET deletes recordings on its own schedule, so any file may vanish mid-run. */
+const isGone = (e) => e?.code === 'ENOENT';
+/** Recorder files (not the uploader's own journal and index copies): one that vanishes is reported once. */
+const RECORDER_KINDS = new Set(['data', 'manifest', 'attachment']);
+const dayOf = (ms) => new Date(ms).toISOString().slice(0, 10);
+const dayEnd = (day) => Date.parse(`${day}T00:00:00Z`) + 86_400_000;
+
+/** The boot's start time from its id (`<ms in base 36>-<pid>`), or null. */
+export const bootTime = (boot) => {
+  const m = /^([0-9a-z]{1,12})-\d{1,10}$/.exec(boot);
+  const t = m ? parseInt(m[1], 36) : Number.NaN;
+  return t > 1.5e12 && t < 4.1e12 ? t : null;
+};
+
+export const hashFile = async (path) => {
+  const h = createHash('sha256');
+  let bytes = 0;
+  for await (const c of createReadStream(path)) {
+    h.update(c);
+    bytes += c.length;
+  }
+  return { sha256: h.digest('hex'), bytes };
+};
+
+/** A reason (never the value) when the text holds a stored credential or a credential-shaped value not already redacted. */
+export const hitIn = (text, values) => {
+  for (const v of values) if (text.includes(v)) return 'a stored credential';
+  for (const p of PATTERNS) for (const m of text.matchAll(p)) if (m[0].slice(m[1].length) !== MARK) return 'a credential-shaped value';
+  return null;
+};
+
+const CARRY_MAX = 8 * 1024 * 1024;
+
+/**
+ * Streams the file (decompressed when .zst) through hitIn. Pieces end at a newline or a double quote, which no pattern
+ * match and no credential value contains, so a split never hides one; memory stays flat. Null when clean.
+ */
+export const scanFile = async (path, values) => {
+  const cuts = values.some((v) => v.includes('"')) ? ['\n'] : ['\n', '"'];
+  const src = createReadStream(path);
+  const dec = path.endsWith('.zst') ? createZstdDecompress() : null;
+  // Not pipeline(): it may close the decompressor before its last output is read. A read error ends the loop below.
+  if (dec) src.on('error', (e) => dec.destroy(e));
+  const stream = dec ? src.pipe(dec) : src;
+  const td = new TextDecoder('utf-8');
+  let carry = '';
+  let hit = null;
+  try {
+    for await (const chunk of stream) {
+      const text = carry + td.decode(chunk, { stream: true });
+      const cut = Math.max(...cuts.map((c) => text.lastIndexOf(c)));
+      if (cut === -1) {
+        carry = text;
+        if (carry.length > CARRY_MAX) return 'a run of text too long to check';
+        continue;
+      }
+      hit = hitIn(text.slice(0, cut + 1), values);
+      if (hit) return hit;
+      carry = text.slice(cut + 1);
+    }
+    return hitIn(carry + td.decode(), values);
+  } finally {
+    src.destroy();
+    dec?.destroy();
+  }
+};
+
+/** Written to a temporary file, flushed to disk, renamed over the old one, and the folder flushed too. */
+export const writeAtomic = (path, text) => {
+  const tmp = `${path}.tmp`;
+  const fd = openSync(tmp, 'w', 0o600);
+  try {
+    writeSync(fd, text);
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+  renameSync(tmp, path);
+  const d = openSync(dirname(path), 'r');
+  try {
+    fsyncSync(d);
+  } finally {
+    closeSync(d);
+  }
+};
+
+const freshState = () => ({ v: 1, files: {}, shared: {}, shared_done: {}, done_boots: {}, releases: {}, journal: { offset: 0, days: {}, pending: null }, index: {}, failed_runs: 0 });
+/** A day's file records move out of state.json into their own file once the day is finished and this much older. */
+export const ARCHIVE_AFTER_MS = 2 * 86_400_000;
+
+/** The saved state; a missing or unreadable one starts fresh (GitHub is the record: names that exist are matched again). */
+export const loadState = (dir) => {
+  try {
+    const s = JSON.parse(readFileSync(join(dir, 'state.json'), 'utf8'));
+    if (s && s.v === 1 && typeof s.files === 'object') return { ...freshState(), ...s, journal: { ...freshState().journal, ...s.journal } };
+  } catch {}
+  return freshState();
+};
+
+/** The boot of the journal's last start line, read back from the end in pieces (the journal is never read whole). */
+export const lastStartBoot = (path) => {
+  if (!existsSync(path)) return null;
+  const fd = openSync(path, 'r');
+  try {
+    let pos = fstatSync(fd).size;
+    let tail = Buffer.alloc(0);
+    while (pos > 0) {
+      const n = Math.min(1 << 20, pos);
+      pos -= n;
+      const b = Buffer.alloc(n);
+      readSync(fd, b, 0, n, pos);
+      tail = Buffer.concat([b, tail]);
+      const first = pos === 0 ? 0 : tail.indexOf(0x0a) + 1;
+      if (first === 0 && pos > 0) continue;
+      const lines = tail.subarray(first).toString('utf8').split('\n');
+      for (let i = lines.length - 1; i >= 0; i--) {
+        if (!/"kind"\s*:\s*"start"/.test(lines[i])) continue;
+        try {
+          const j = JSON.parse(lines[i]);
+          if (j.kind === 'start' && typeof j.boot === 'string') return j.boot;
+        } catch {}
+      }
+      tail = tail.subarray(0, first);
+    }
+    return null;
+  } finally {
+    closeSync(fd);
+  }
+};
+
+/** True unless systemd says the worker is inactive or failed (no answer counts as running). */
+export const systemWorkerActive = () =>
+  new Promise((resolve) => {
+    execFile('systemctl', ['is-active', 'zeroed-worker.service'], { timeout: 30_000 }, (_e, out) => {
+      const s = String(out ?? '').trim();
+      resolve(!(s === 'inactive' || s === 'failed'));
+    });
+  });
+
+/** Walks a boot folder: settled when no plain .jsonl, no .tmp and no link is in it and nothing changed for QUIET_MS. */
+export const settled = (dir, now) => {
+  let newest = 0;
+  const walk = (d) => {
+    const st = lstatSync(d);
+    newest = Math.max(newest, st.mtimeMs);
+    for (const name of readdirSync(d)) {
+      const p = join(d, name);
+      const s = lstatSync(p);
+      if (s.isSymbolicLink()) return 'a link';
+      if (name.endsWith('.jsonl') || name.endsWith('.tmp')) return 'an open file';
+      if (s.isDirectory()) {
+        const w = walk(p);
+        if (w) return w;
+      } else {
+        newest = Math.max(newest, s.mtimeMs);
+      }
+    }
+    return null;
+  };
+  const why = walk(dir);
+  if (why) return why;
+  return now - newest < QUIET_MS ? 'changed in the last 15 minutes' : null;
+};
+
+/**
+ * The recorder's boot folders, oldest first, each with its manifest and whether it is open: the running boot (the
+ * journal's last start), the newest folder while the worker runs, and any folder not settled. An open boot's sealed
+ * files are uploaded (they never change once sealed), but nothing in it is ever deleted.
+ */
+export const readBoots = async (cfg, now, workerActive, skip = new Set()) => {
+  if (!existsSync(cfg.root)) return [];
+  const boots = [];
+  for (const name of readdirSync(cfg.root)) {
+    if (!BOOT_RE.test(name) || name === 'saved-state' || skip.has(name)) continue;
+    const dir = join(cfg.root, name);
+    let manifest = null;
+    let mtime = 0;
+    try {
+      if (!lstatSync(dir).isDirectory()) continue;
+      const mp = join(dir, 'manifest.json');
+      const st = lstatSync(mp);
+      if (!st.isFile()) continue;
+      mtime = st.mtimeMs;
+      manifest = JSON.parse(readFileSync(mp, 'utf8'));
+    } catch {
+      continue;
+    }
+    if (manifest?.boot !== name || manifest.source !== 'live-recorder' || !Array.isArray(manifest.days)) continue;
+    boots.push({ boot: name, dir, manifest, time: bootTime(name) ?? mtime });
+  }
+  boots.sort((a, b) => a.time - b.time || (a.boot < b.boot ? -1 : 1));
+  const running = await runningBoots(cfg, boots, workerActive);
+  for (const b of boots) {
+    let why;
+    try {
+      why = running.has(b.boot) ? 'the running boot' : settled(b.dir, now);
+    } catch (e) {
+      if (!isGone(e)) throw e;
+      // A file went while the folder was walked: open for this run (its sealed files still go up, nothing is deleted).
+      why = 'a file went while it was listed';
+    }
+    b.open = why !== null;
+    b.why = why;
+  }
+  return boots;
+};
+
+/** The boots that may still be written: the journal's last start, and the newest folder while the worker is up. */
+const runningBoots = async (cfg, boots, workerActive) => {
+  const out = new Set();
+  const started = lastStartBoot(cfg.journal);
+  if (started) out.add(started);
+  if (boots.length > 0 && (await workerActive())) out.add(boots[boots.length - 1].boot);
+  return out;
+};
+
+const firstDay = (b) => {
+  const days = b.manifest.days.map((d) => d.day).filter((d) => typeof d === 'string' && DAY_RE.test(d)).sort();
+  const t = bootTime(b.boot);
+  return days[0] ?? (t === null ? null : dayOf(t));
+};
+
+/** What one boot contributes: its listed frames and releases files; once ended, its manifest, saved-state attachment and packed gaps. */
+export const itemsOf = (b) => {
+  const items = [];
+  for (const d of b.manifest.days) {
+    for (const f of Array.isArray(d?.files) ? d.files : []) {
+      const m = DATA_RE.exec(f?.path ?? '');
+      if (!m || m[1] !== d.day || !isSha(f.sha256) || !isBytes(f.bytes)) continue;
+      items.push({ key: `${b.boot}/${f.path}`, kind: 'data', boot: b.boot, day: d.day, path: join(b.dir, f.path), rel: f.path, file: m[2], size: f.bytes, sha256: f.sha256, open: b.open });
+    }
+  }
+  const day = firstDay(b);
+  if (!b.open && day !== null) {
+    items.push({ key: `${b.boot}/manifest.json`, kind: 'manifest', boot: b.boot, day, path: join(b.dir, 'manifest.json'), rel: 'manifest.json', file: 'manifest.json', size: null, sha256: null, open: false });
+    for (const a of Array.isArray(b.manifest.attachments) ? b.manifest.attachments : []) {
+      if (!(ATTACHMENTS.has(a?.file) || GAPS_ATTACHMENT.test(a?.file ?? '')) || !isSha(a.sha256) || !isBytes(a.bytes)) continue;
+      items.push({ key: `${b.boot}/${a.file}`, kind: 'attachment', boot: b.boot, day, path: join(b.dir, a.file), rel: a.file, file: a.file, size: a.bytes, sha256: a.sha256, open: false });
+    }
+  }
+  return items;
+};
+
+/**
+ * A journal line as uploaded: a refused Telegram command's own text (typed by a person, so possibly personal) is replaced
+ * with "[redacted]"; an unreadable line naming a refused command is left out. Every other line goes byte for byte.
+ */
+export const scrubJournalLine = (line) => {
+  if (!line.includes('command_refused')) return line;
+  try {
+    const j = JSON.parse(line.toString('utf8'));
+    if (j?.action !== 'command_refused' || !Array.isArray(j.reasons)) return line;
+    j.reasons = j.reasons.map((r) => (typeof r === 'string' && /^command [\s\S]* refused$/.test(r) ? 'command [redacted] refused' : r));
+    return Buffer.from(`${JSON.stringify(j)}\n`);
+  } catch {
+    return Buffer.alloc(0);
+  }
+};
+
+/** The signed header for one request: the watchdog checks "t\nRECORD\n/record\n<header>" with the heartbeat key. */
+export const signHeader = (key, fields, nowS) => {
+  const text = JSON.stringify({ v: 1, op: fields.op, t: nowS, nonce: randomBytes(16).toString('hex'), day: fields.day, release: fields.release, boot: fields.boot, file: fields.file, size: fields.size, sha256: fields.sha256, ...(fields.op === 'check' ? { asset_id: fields.asset_id } : {}) });
+  const sig = createHmac('sha256', key).update(`${nowS}\nRECORD\n/record\n${text}`).digest('hex');
+  return { text, signature: `t=${nowS},v1=${sig}` };
+};
+
+/** The index's last line: an HMAC with the heartbeat key over "RECORD-INDEX\n<body>". */
+export const signIndex = (key, body) => `${body}\nhmac-sha256=${createHmac('sha256', key).update(`RECORD-INDEX\n${body}`).digest('hex')}\n`;
+
+const quote = (s) => `"${String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+
+/** The real transport: curl for an upload (config and headers on stdin, never in argv), fetch for a read-back. */
+export const watchdogTransport = (url, curl = 'curl') => ({
+  put: (h, path, size) =>
+    new Promise((resolve) => {
+      const conf = [
+        `url = ${quote(`${url}/record`)}`, 'request = "POST"', `upload-file = ${quote(path)}`,
+        `header = ${quote(`x-zeroed-record: ${h.text}`)}`, `header = ${quote(`x-zeroed-signature: ${h.signature}`)}`,
+        'header = "content-type: application/octet-stream"', 'header = "expect:"', 'limit-rate = 2M', 'connect-timeout = 30',
+        `max-time = ${Math.ceil(size / 2_000_000) + 300}`, 'silent', 'show-error', 'write-out = "\\n%{http_code}"',
+      ].join('\n');
+      const c = spawn(curl, ['-K', '-'], { stdio: ['pipe', 'pipe', 'pipe'] });
+      let out = '';
+      let err = '';
+      c.stdout.on('data', (d) => (out += d));
+      c.stderr.on('data', (d) => (err += d));
+      c.on('error', () => resolve({ status: 0, json: null, error: 'curl did not start' }));
+      c.on('close', (code) => {
+        const nl = out.lastIndexOf('\n');
+        const status = Number(out.slice(nl + 1));
+        let json = null;
+        try {
+          json = JSON.parse(out.slice(0, nl));
+        } catch {}
+        resolve({ status: Number.isInteger(status) ? status : 0, json, ...(code === 0 ? {} : { error: `curl exit ${code}: ${err.trim().slice(0, 200)}` }) });
+      });
+      c.stdin.end(`${conf}\n`);
+    }),
+  check: async (h) => {
+    try {
+      const res = await fetch(`${url}/record`, { method: 'POST', headers: { 'x-zeroed-record': h.text, 'x-zeroed-signature': h.signature }, signal: AbortSignal.timeout(60_000) });
+      return { status: res.status, json: await res.json().catch(() => null) };
+    } catch {
+      return { status: 0, json: null, error: 'the watchdog did not answer' };
+    }
+  },
+});
+
+export class Uploader {
+  /**
+   * cfg: { root, journal, stateDir, key, values, deleteLocal, scope ('all' | day) }.
+   * deps: { transport: { put, check }, workerActive: () => Promise<boolean>, now: () => ms, log }.
+   */
+  constructor(cfg, deps) {
+    this.cfg = cfg;
+    this.d = deps;
+    this.state = loadState(cfg.stateDir);
+    this.kept = [];
+    this.failures = 0;
+    this.inARow = 0;
+    this.uploads = 0;
+    this.counts = { uploaded: 0, verified: 0, deleted: 0, freed_bytes: 0, vanished: 0 };
+    this.vanishedFiles = [];
+    this.bootItems = new Map();
+    this.lastError = null;
+    this.stopped = false;
+    this.lastStatus = 0;
+    mkdirSync(join(cfg.stateDir, 'tmp'), { recursive: true });
+  }
+
+  save() {
+    writeAtomic(join(this.cfg.stateDir, 'state.json'), `${JSON.stringify(this.state)}\n`);
+  }
+
+  status(extra) {
+    writeAtomic(join(this.cfg.stateDir, 'status.json'), `${JSON.stringify({ v: 1, at: this.d.now(), scope: this.cfg.scope, delete_local: this.cfg.deleteLocal, failed_runs: this.state.failed_runs, ...this.counts, vanished_files: this.vanishedFiles, kept: this.kept, last_error: this.lastError, ...extra })}\n`);
+  }
+
+  /** The status file, at most once a minute during a run, so a long first run never looks stalled. */
+  tick() {
+    if (this.d.now() - this.lastStatus < 60_000) return;
+    this.lastStatus = this.d.now();
+    this.status({ running: true });
+  }
+
+  fail(what) {
+    this.failures++;
+    this.inARow++;
+    this.lastError = what;
+    this.d.log(`Not uploaded: ${what}.`);
+    if (this.inARow >= STOP_AFTER_FAILURES) this.stopped = true;
+  }
+
+  keep(key, why) {
+    this.kept.push({ key, why });
+    this.d.log(`Kept on the server, not uploaded: ${key} (${why}).`);
+  }
+
+  /**
+   * A listed file that is no longer on the server (deleted before it was sent): skipped, counted and reported, never a
+   * failure, and the run goes on. A recorder file is marked in the state so it is reported once and not tried again; an
+   * asset sent earlier but not yet confirmed is still read back on later runs.
+   */
+  vanish(it) {
+    const files = this.state.files;
+    if (files[it.key]?.vanished_at) return;
+    if (RECORDER_KINDS.has(it.kind)) {
+      files[it.key] = { ...(files[it.key] ?? { day: it.day, boot: it.boot, path: it.rel }), vanished_at: this.d.now(), listed: { sha256: it.sha256, bytes: it.size } };
+      this.save();
+    }
+    this.counts.vanished++;
+    this.vanishedFiles.push(it.key);
+    this.d.log(`Vanished before upload: ${it.key}.`);
+  }
+
+  release(day) {
+    const r = (this.state.releases[day] ??= { n: 0, count: 0 });
+    if (r.count >= RELEASE_ASSETS && r.n < 99) {
+      r.n++;
+      r.count = 0;
+    }
+    return r.n === 0 ? `rec-${day}` : `rec-${day}.${r.n}`;
+  }
+
+  /** Reads an asset back by id through the watchdog; true only for exactly these bytes, finished, under this name. */
+  async verify(rec, it) {
+    const h = signHeader(this.cfg.key, { op: 'check', day: it.day, release: rec.release, boot: it.boot, file: it.file, size: rec.size, sha256: rec.sha256, asset_id: rec.asset_id }, Math.floor(this.d.now() / 1000));
+    const r = await this.d.transport.check(h);
+    const j = r.json ?? {};
+    return r.status === 200 && j.ok === true && j.match === true && j.asset_id === rec.asset_id && j.size === rec.size && j.digest === `sha256:${rec.sha256}` && j.state === 'uploaded';
+  }
+
+  /** One file: checked, scanned, hashed again, sent, read back. The state is saved after every step that changes it. */
+  async upload(it) {
+    const files = this.state.files;
+    const rec = files[it.key];
+    if (rec?.verified || rec?.deleted_at) return;
+    if (rec?.asset_id) {
+      // Sent before but not confirmed (no digest yet, or the read-back did not answer): read it back again.
+      if (await this.verify(rec, it)) {
+        rec.verified = true;
+        this.counts.verified++;
+        this.inARow = 0;
+        this.save();
+        return;
+      }
+    }
+    if (rec?.vanished_at || this.uploads >= MAX_UPLOADS_PER_RUN) return;
+    if (it.kind === 'manifest' && !this.manifestFinal(it.boot)) return;
+    try {
+      await this.send(it);
+    } catch (e) {
+      if (!isGone(e)) throw e;
+      this.vanish(it);
+    }
+  }
+
+  /**
+   * A boot's manifest goes up once, and its copy can never be replaced: only after every frames and releases file it
+   * lists is confirmed upstream or recorded as vanished, so the copy is final (RECORD-BUDGET's notes included).
+   */
+  manifestFinal(boot) {
+    const b = this.bootItems.get(boot) ?? [];
+    return b.every((i) => i.kind !== 'data' || this.state.files[i.key]?.verified === true || this.state.files[i.key]?.vanished_at !== undefined);
+  }
+
+  /** upload()'s checks and sends; a file that vanishes at any step throws ENOENT, which upload() reports. */
+  async send(it) {
+    const files = this.state.files;
+    const rec = files[it.key];
+    const st = lstatSync(it.path);
+    if (!st.isFile()) return this.keep(it.key, 'not a plain file');
+    if (it.open && this.d.now() - st.mtimeMs < QUIET_MS) return;
+    if (st.size > MAX_BYTES) return this.keep(it.key, 'over 95 MB');
+    if (it.sha256 !== null && st.size !== it.size) return this.keep(it.key, 'size differs from its manifest');
+    const before = await hashFile(it.path);
+    if (it.sha256 !== null && (before.sha256 !== it.sha256 || before.bytes !== it.size)) return this.keep(it.key, 'bytes differ from its manifest');
+    let hit;
+    try {
+      hit = await scanFile(it.path, this.cfg.values);
+    } catch (e) {
+      if (isGone(e)) throw e;
+      hit = 'unreadable text';
+    }
+    if (hit) return this.keep(it.key, `holds ${hit}`);
+    // Hashed again just before sending: the watchdog keeps the asset only if GitHub's digest equals this.
+    const h0 = await hashFile(it.path);
+    if (h0.sha256 !== before.sha256 || h0.bytes !== before.bytes) return this.fail(`${it.key}: changed while it was checked`);
+    const sref = this.state.shared[h0.sha256];
+    const shared = it.kind === 'attachment' ? (files[sref] ?? this.state.shared_done[h0.sha256]) : undefined;
+    if (shared?.verified) {
+      // The same saved state is already up (an earlier boot restored the same bytes): listed, never sent twice.
+      files[it.key] = { day: it.day, boot: it.boot, path: it.rel, release: shared.release, asset: shared.asset, asset_id: shared.asset_id, size: shared.size, sha256: shared.sha256, verified: true, ref: sref };
+      this.save();
+      return;
+    }
+    const release = rec?.release ?? this.release(it.day);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const h = signHeader(this.cfg.key, { op: 'put', day: it.day, release, boot: it.boot, file: it.file, size: h0.bytes, sha256: h0.sha256 }, Math.floor(this.d.now() / 1000));
+      this.uploads++;
+      const r = await this.d.transport.put(h, it.path, h0.bytes);
+      const j = r.json ?? {};
+      if (r.status === 200 && j.ok === true && Number.isSafeInteger(j.asset_id)) {
+        const next = { day: it.day, boot: it.boot, path: it.rel, release, asset: j.name, asset_id: j.asset_id, size: h0.bytes, sha256: h0.sha256, verified: false };
+        files[it.key] = next;
+        const r0 = (this.state.releases[it.day] ??= { n: 0, count: 0 });
+        if (!j.existed && release === (r0.n === 0 ? `rec-${it.day}` : `rec-${it.day}.${r0.n}`)) r0.count++;
+        this.counts.uploaded++;
+        this.save();
+        // Never the upload's reply: a fresh read-back by id decides.
+        if (await this.verify(next, it)) {
+          next.verified = true;
+          this.counts.verified++;
+          if (it.kind === 'attachment') this.state.shared[h0.sha256] ??= it.key;
+          this.inARow = 0;
+          this.save();
+        } else {
+          this.fail(`${it.key}: uploaded, but the read-back did not confirm it`);
+        }
+        return;
+      }
+      if (r.status === 503 && j.retry === true) continue;
+      if (r.status === 409 && j.error === 'replayed request') continue;
+      if (r.status === 409) return this.keep(it.key, TAKEN);
+      if (Number.isSafeInteger(j.asset_id)) {
+        files[it.key] = { day: it.day, boot: it.boot, path: it.rel, release, asset: j.name ?? null, asset_id: j.asset_id, size: h0.bytes, sha256: h0.sha256, verified: false };
+        this.save();
+      }
+      // curl could not read a file deleted while it was sent: that is a vanish, not a failure.
+      if (!existsSync(it.path)) return this.vanish(it);
+      return this.fail(`${it.key}: HTTP ${r.status}${typeof j.error === 'string' ? ` (${j.error})` : ''}${r.error ? ` (${r.error})` : ''}`);
+    }
+    this.fail(`${it.key}: the watchdog asked to send again three times`);
+  }
+
+  /**
+   * Each ended UTC day's journal lines as journal-YYYY-MM-DD.jsonl.zst, read forward from the saved offset. A line goes
+   * to the later of its own day and the day being collected, so every line is sent exactly once, in order.
+   */
+  async journalDays() {
+    const j = this.state.journal;
+    const path = this.cfg.journal;
+    if (!existsSync(path)) return;
+    const size = statSync(path).size;
+    if (size < j.offset) {
+      this.d.log('The journal is shorter than the saved offset; reading it again from the start (days already up are skipped).');
+      j.offset = 0;
+      j.pending = null;
+    }
+    while (!this.stopped && this.uploads < MAX_UPLOADS_PER_RUN) {
+      const group = j.pending && existsSync(this.journalTmp(j.pending.day)) ? j.pending : await this.collectDay(j.offset);
+      if (group === null) return;
+      if (!j.days[group.day]) {
+        j.pending = group;
+        this.save();
+        const it = { key: `journal/${group.day}`, kind: 'journal', boot: null, day: group.day, path: this.journalTmp(group.day), rel: `journal-${group.day}.jsonl.zst`, file: `journal-${group.day}.jsonl.zst`, size: group.size, sha256: group.sha256, open: false };
+        await this.upload(it);
+        if (!this.state.files[it.key]?.verified) return;
+        j.days[group.day] = true;
+      }
+      j.offset = group.end;
+      j.pending = null;
+      rmSync(this.journalTmp(group.day), { force: true });
+      this.save();
+    }
+  }
+
+  journalTmp(day) {
+    return join(this.cfg.stateDir, 'tmp', `journal-${day}.jsonl.zst`);
+  }
+
+  /** The first ended day from offset on, compressed to the temporary folder; null when the day there has not ended. */
+  async collectDay(offset) {
+    const now = this.d.now();
+    const lines = createReadStream(this.cfg.journal, { start: offset });
+    let pos = offset;
+    let rest = Buffer.alloc(0);
+    let day = null;
+    let end = null;
+    const self = this;
+    const isDone = (d) => d !== null && now >= dayEnd(d) + JOURNAL_GRACE_MS;
+    async function* group() {
+      for await (const chunk of lines) {
+        let buf = rest.length ? Buffer.concat([rest, chunk]) : chunk;
+        let i;
+        while ((i = buf.indexOf(0x0a)) !== -1) {
+          const line = buf.subarray(0, i + 1);
+          const m = /"ts":"(\d{4}-\d{2}-\d{2})T/.exec(line.subarray(0, 200).toString('latin1'));
+          const lineDay = m ? m[1] : day;
+          const d = day === null ? lineDay : lineDay !== null && lineDay > day ? lineDay : day;
+          if (day !== null && d !== day) {
+            end = pos;
+            return;
+          }
+          if (day === null && d !== null) {
+            day = d;
+            if (!isDone(day)) return;
+          }
+          yield scrubJournalLine(line);
+          pos += line.length;
+          buf = buf.subarray(i + 1);
+        }
+        rest = Buffer.from(buf);
+      }
+      // End of the file: the day is complete only once it has ended (a torn last line is never sent).
+      if (day !== null && isDone(day)) end = pos;
+    }
+    const tmp = join(self.cfg.stateDir, 'tmp', 'journal.part');
+    await pipeline(group, createZstdCompress(), createWriteStream(tmp, { mode: 0o600 }));
+    lines.destroy();
+    if (day === null || end === null || !isDone(day) || end === offset) {
+      rmSync(tmp, { force: true });
+      return null;
+    }
+    renameSync(tmp, this.journalTmp(day));
+    const h = await hashFile(this.journalTmp(day));
+    return { day, end, sha256: h.sha256, size: h.bytes };
+  }
+
+  /** index-N.json for a day once its uploaded set changed: every confirmed file with its asset and sha256, and the boots' manifests. */
+  async index(day) {
+    const st = (this.state.index[day] ??= { n: 0, hash: null, verified: false, keys: [], pending: null });
+    const { entries, vanished, hash } = this.indexContent(day);
+    if (entries.length === 0 && vanished.length === 0) return;
+    if (st.pending === null && st.verified && st.hash === hash) return;
+    // A number taken by another index (the state file was lost and numbering restarted) moves on to the next one.
+    for (let tries = 0; tries < 20 && !this.stopped; tries++) {
+      if ((await this.indexOnce(day, st, entries, vanished, hash)) !== 'taken') return;
+    }
+  }
+
+  /** What the day's index lists: its archived records (a finished day, see prune) and those still in the state. */
+  dayRecords(day) {
+    const out = new Map();
+    // Read whenever the file is there, not only by the flag: a day's archived records are never left out of its index.
+    if (this.state.index[day]?.archived || existsSync(this.archivePath(day))) {
+      const a = JSON.parse(readFileSync(this.archivePath(day), 'utf8'));
+      for (const [key, r] of Object.entries(a.files)) out.set(key, r);
+    }
+    for (const [key, r] of Object.entries(this.state.files)) if (r.day === day && !key.startsWith('index/')) out.set(key, r);
+    return out;
+  }
+
+  archivePath(day) {
+    return join(this.cfg.stateDir, 'days', `${day}.json`);
+  }
+
+  indexContent(day) {
+    const sorted = [...this.dayRecords(day)].sort(([a], [b]) => (a < b ? -1 : 1));
+    const entries = sorted
+      .filter(([, r]) => r.verified)
+      .map(([key, r]) => ({ key, boot: r.boot, path: r.path, release: r.release, asset: r.asset, asset_id: r.asset_id, size: r.size, sha256: r.sha256 }));
+    // Files gone from the server before they were sent (RECORD-BUDGET): named here, since the boot's manifest still lists them.
+    const vanished = sorted
+      .filter(([, r]) => !r.verified && r.vanished_at !== undefined)
+      .map(([key, r]) => ({ key, boot: r.boot, path: r.path, sha256: r.listed?.sha256 ?? null, bytes: r.listed?.bytes ?? null, at: new Date(r.vanished_at).toISOString() }));
+    // Without vanished files the hash is the one earlier versions saved, so no day is indexed again for nothing.
+    const hash = createHash('sha256').update(JSON.stringify(vanished.length === 0 ? entries : { files: entries, vanished })).digest('hex');
+    return { entries, vanished, hash };
+  }
+
+  /**
+   * Nothing left to do for this record: confirmed upstream and, for a frames or releases file, no longer on the server
+   * (deleted here, or by RECORD-BUDGET after it went up); or vanished before upload. With deletes off a frames or releases
+   * file stays and so never finishes: switching deletes on later still finds every one.
+   */
+  finished(r) {
+    if (r === undefined) return false;
+    if (!r.verified) return r.vanished_at !== undefined && !r.asset_id;
+    if (!DATA_RE.test(r.path ?? '') || r.deleted_at !== undefined) return true;
+    try {
+      lstatSync(join(this.cfg.root, r.boot, r.path));
+      return false;
+    } catch (e) {
+      return isGone(e);
+    }
+  }
+
+  /** A boot that can add no more records: marked done, or its folder is gone. */
+  bootDone(boot, cache) {
+    if (boot === null) return true;
+    if (!cache.has(boot)) cache.set(boot, this.state.done_boots[boot] !== undefined || !existsSync(join(this.cfg.root, boot)));
+    return cache.get(boot);
+  }
+
+  /**
+   * Keeps state.json small (it is read whole under a 48 MB heap): a boot whose every item is finished is marked done and
+   * never listed again; a day whose records are all finished, whose boots are all done, whose standing index lists exactly
+   * them, and which ended ARCHIVE_AFTER_MS ago moves to days/<day>.json, read again only if that day ever gets a new record.
+   */
+  prune(boots) {
+    const now = this.d.now();
+    for (const b of boots) {
+      const its = this.bootItems.get(b.boot) ?? [];
+      if (!b.open && its.some((i) => i.kind === 'manifest') && its.every((i) => this.finished(this.state.files[i.key]))) this.state.done_boots[b.boot] = now;
+    }
+    const byDay = new Map();
+    for (const [key, r] of Object.entries(this.state.files)) {
+      if (key.startsWith('index/')) continue;
+      if (!byDay.has(r.day)) byDay.set(r.day, []);
+      byDay.get(r.day).push([key, r]);
+    }
+    const cache = new Map();
+    for (const [day, recs] of byDay) {
+      if (now < dayEnd(day) + ARCHIVE_AFTER_MS) continue;
+      const st = this.state.index[day];
+      if (!st?.verified || st.pending !== null) continue;
+      if (!recs.every(([, r]) => this.finished(r) && this.bootDone(r.boot ?? null, cache))) continue;
+      if (st.hash !== this.indexContent(day).hash) continue;
+      mkdirSync(join(this.cfg.stateDir, 'days'), { recursive: true });
+      // dayRecords holds the archive's records plus these, so the file only ever grows.
+      const all = Object.fromEntries(this.dayRecords(day));
+      if (existsSync(this.archivePath(day)) && Object.keys(JSON.parse(readFileSync(this.archivePath(day), 'utf8')).files).some((k) => !(k in all))) continue;
+      writeAtomic(this.archivePath(day), `${JSON.stringify({ v: 1, day, files: all })}\n`);
+      for (const [key, r] of recs) {
+        const sha = r.sha256;
+        if (sha && this.state.shared[sha] === key) {
+          this.state.shared_done[sha] = { ...r, key };
+          delete this.state.shared[sha];
+        }
+        delete this.state.files[key];
+      }
+      st.archived = true;
+      st.keys = [];
+    }
+  }
+
+  /** One try at the day's next index-N: 'taken' when GitHub already holds other bytes under that name. */
+  async indexOnce(day, st, entries, vanished, hash) {
+    if (st.pending === null || !existsSync(this.indexTmp(day, st.pending.n))) {
+      const n = st.n + 1;
+      const boots = {};
+      for (const e of entries) {
+        if (e.boot === null || boots[e.boot]) continue;
+        try {
+          boots[e.boot] = JSON.parse(readFileSync(join(this.cfg.root, e.boot, 'manifest.json'), 'utf8'));
+        } catch {
+          boots[e.boot] = null;
+        }
+      }
+      const body = JSON.stringify({ v: 1, kind: 'zeroed-record-index', day, n, created: new Date(this.d.now()).toISOString(), files: entries, vanished, boots });
+      writeAtomic(this.indexTmp(day, n), signIndex(this.cfg.key, body));
+      const h = await hashFile(this.indexTmp(day, n));
+      st.pending = { n, hash, keys: entries.map((e) => e.key), sha256: h.sha256, size: h.bytes };
+      this.save();
+    }
+    const p = st.pending;
+    const key = `index/${day}/${p.n}`;
+    await this.upload({ key, kind: 'index', boot: null, day, path: this.indexTmp(day, p.n), rel: `index-${p.n}.json`, file: `index-${p.n}.json`, size: p.size, sha256: p.sha256, open: false });
+    const rec = this.state.files[key];
+    if (!rec?.verified) {
+      const at = this.kept.findIndex((k) => k.key === key && k.why === TAKEN);
+      if (at === -1) return 'not up';
+      this.kept.splice(at, 1);
+      this.d.log(`index-${p.n}.json for ${day} is taken by another index; trying index-${p.n + 1}.json.`);
+      rmSync(this.indexTmp(day, p.n), { force: true });
+      st.n = p.n;
+      st.pending = null;
+      this.save();
+      return 'taken';
+    }
+    // The index is a file of its own, never an entry of another index.
+    delete this.state.files[key];
+    // An archived day stays archived: its file still holds records this index listed.
+    this.state.index[day] = { n: p.n, hash: p.hash, verified: true, keys: p.keys, pending: null, ...(st.archived ? { archived: true } : {}), release: rec.release, asset: rec.asset, asset_id: rec.asset_id, size: rec.size, sha256: rec.sha256 };
+    rmSync(this.indexTmp(day, p.n), { force: true });
+    this.save();
+    return 'up';
+  }
+
+  indexTmp(day, n) {
+    return join(this.cfg.stateDir, 'tmp', `index-${day}-${n}.json`);
+  }
+
+  /** The day's newest index, read back now: it must still be there before anything it lists is deleted. */
+  async indexStands(day) {
+    const s = this.state.index[day];
+    if (!s?.verified) return false;
+    return this.verify(s, { day, boot: null, file: `index-${s.n}.json` });
+  }
+
+  /**
+   * Deletes one frames or releases file of an ended boot, only when all hold: (1) listed with this sha256 and size in its
+   * boot's manifest, read again now, and the file hashes to it now; (2) its boot is not running, checked again now; (3) a
+   * plain file whose real path is inside the recorder folder; (4) GitHub's asset, read back now, has digest
+   * sha256:<local>, the same size and state "uploaded"; (5) the day's signed index lists it and still stands; (6) the
+   * delete is in the state file before the file goes. Anything else keeps the file.
+   */
+  async deleteFile(it, running) {
+    const rec = this.state.files[it.key];
+    if (!rec?.verified || rec.deleted_at || it.kind !== 'data') return;
+    const m = DATA_RE.exec(it.rel);
+    if (!m || running.has(it.boot)) return;
+    if (!this.state.index[it.day]?.keys.includes(it.key)) return;
+    try {
+      // The recorder folder itself must be a real folder at its own path: nothing outside it is ever deleted.
+      if (lstatSync(this.cfg.root).isSymbolicLink()) return;
+      const root = realpathSync(this.cfg.root);
+      const path = join(root, it.boot, it.rel);
+      const st = lstatSync(path);
+      if (!st.isFile() || st.isSymbolicLink() || realpathSync(path) !== path || !path.startsWith(`${root}/`)) return;
+      const man = JSON.parse(readFileSync(join(root, it.boot, 'manifest.json'), 'utf8'));
+      const listed = (man.days ?? []).find((d) => d?.day === m[1])?.files?.find((f) => f?.path === it.rel);
+      if (!listed || listed.sha256 !== rec.sha256 || listed.bytes !== rec.size || rec.sha256 !== it.sha256) return;
+      const h = await hashFile(path);
+      if (h.sha256 !== rec.sha256 || h.bytes !== rec.size) return;
+      if (!(await this.verify(rec, it))) return;
+      rec.deleting = this.d.now();
+      this.save();
+      unlinkSync(path);
+      rec.deleted_at = this.d.now();
+      delete rec.deleting;
+      this.counts.deleted++;
+      this.counts.freed_bytes += h.bytes;
+      this.save();
+    } catch (e) {
+      this.d.log(`Kept ${it.key}: ${e instanceof Error ? e.code ?? 'error' : 'error'} while checking it.`);
+    }
+  }
+
+  async run() {
+    const now = this.d.now();
+    this.state.failed_runs++;
+    this.save();
+    this.status({ running: true });
+    try {
+      const names = new Set(existsSync(this.cfg.root) ? readdirSync(this.cfg.root) : []);
+      for (const b of Object.keys(this.state.done_boots)) if (!names.has(b)) delete this.state.done_boots[b];
+      // A done boot has nothing left to send or delete: never read again, so a run's work stays bounded.
+      const boots = await readBoots(this.cfg, now, this.d.workerActive, new Set(Object.keys(this.state.done_boots)));
+      const items = boots.flatMap(itemsOf);
+      for (const i of items) this.bootItems.set(i.boot, [...(this.bootItems.get(i.boot) ?? []), i]);
+      const days = [...new Set(items.map((i) => i.day))].sort().filter((d) => this.cfg.scope === 'all' || d === this.cfg.scope);
+      // Manifests last: each waits until every file it lists is settled upstream (manifestFinal).
+      for (const last of [false, true]) {
+        for (const day of days) {
+          if (this.stopped) break;
+          for (const it of items.filter((i) => i.day === day && (i.kind === 'manifest') === last)) {
+            if (this.stopped) break;
+            await this.upload(it);
+            this.tick();
+          }
+        }
+      }
+      if (!this.stopped) await this.journalDays();
+      const touched = [...new Set(Object.values(this.state.files).map((r) => r.day))].sort().filter((d) => this.cfg.scope === 'all' || d === this.cfg.scope);
+      for (const day of touched) if (!this.stopped) await this.index(day);
+      if (this.cfg.deleteLocal && !this.stopped) {
+        // The running set is read again now, not taken from the start of the run.
+        const fresh = await readBoots(this.cfg, this.d.now(), this.d.workerActive, new Set(Object.keys(this.state.done_boots)));
+        const running = new Set(fresh.filter((b) => b.open).map((b) => b.boot));
+        for (const day of days) {
+          const mine = items.filter((i) => i.day === day && i.kind === 'data' && this.state.files[i.key]?.verified && !this.state.files[i.key]?.deleted_at);
+          if (mine.length === 0 || !(await this.indexStands(day))) continue;
+          for (const it of mine) await this.deleteFile(it, running);
+        }
+      }
+      // Each waiting file's age, read once; one deleted meanwhile is left out.
+      const pending = items
+        .filter((i) => !this.state.files[i.key]?.verified && !this.state.files[i.key]?.deleted_at && !this.state.files[i.key]?.vanished_at && !this.kept.some((k) => k.key === i.key) && existsSync(i.path))
+        .map((i) => {
+          try {
+            return statSync(i.path).mtimeMs;
+          } catch (e) {
+            if (isGone(e)) return null;
+            throw e;
+          }
+        })
+        .filter((t) => t !== null);
+      const oldest = pending.reduce((m, t) => Math.min(m, t), this.journalBacklogFrom());
+      this.prune(boots);
+      if (this.failures === 0) this.state.failed_runs = 0;
+      this.save();
+      this.status({ running: false, ok: this.failures === 0, pending: pending.length, backlog_age_s: Number.isFinite(oldest) ? Math.max(0, Math.round((this.d.now() - oldest) / 1000)) : 0 });
+      this.d.log(`Recording upload: ${this.counts.uploaded} sent, ${this.counts.verified} confirmed, ${this.counts.deleted} deleted (${this.counts.freed_bytes} bytes), ${this.counts.vanished} vanished before upload, ${pending.length} waiting, ${this.kept.length} kept, ${this.failures} failed.`);
+      return this.failures === 0 ? 0 : 1;
+    } catch (e) {
+      this.lastError = e instanceof Error ? `${e.name}: ${e.code ?? e.message.slice(0, 120)}` : 'error';
+      this.status({ running: false, ok: false });
+      this.d.log(`Recording upload stopped: ${this.lastError}.`);
+      return 1;
+    }
+  }
+
+  /** When the oldest ended day still waiting in the journal ended (Infinity when none waits). */
+  journalBacklogFrom() {
+    const j = this.state.journal;
+    if (!existsSync(this.cfg.journal) || statSync(this.cfg.journal).size <= j.offset) return Number.POSITIVE_INFINITY;
+    const first = j.pending?.day ?? null;
+    if (first !== null) return dayEnd(first);
+    try {
+      const b = Buffer.alloc(200);
+      const fd = openSync(this.cfg.journal, 'r');
+      try {
+        readSync(fd, b, 0, 200, j.offset);
+      } finally {
+        closeSync(fd);
+      }
+      const m = /"ts":"(\d{4}-\d{2}-\d{2})T/.exec(b.toString('latin1'));
+      return m && this.d.now() >= dayEnd(m[1]) ? dayEnd(m[1]) : Number.POSITIVE_INFINITY;
+    } catch {
+      return Number.POSITIVE_INFINITY;
+    }
+  }
+}
+
+/** Credentials from systemd's credentials folder (trimmed as the worker reads them); values under 8 characters are not scanned for, as the worker does not redact them. */
+export const readCredentials = (dir) => {
+  const read = (n) => {
+    try {
+      const v = readFileSync(join(dir, n), 'utf8').trim();
+      return v === '' ? null : v;
+    } catch {
+      return null;
+    }
+  };
+  const key = dir ? read('heartbeat_hmac_key') : null;
+  const values = dir ? CREDENTIALS.map(read).filter((v) => v !== null && v.length >= 8) : [];
+  return { key, values: [...new Set(values)].sort((a, b) => b.length - a.length) };
+};
+
+const main = async () => {
+  const i = process.argv.indexOf('--scope');
+  const scope = i === -1 ? 'all' : process.argv[i + 1];
+  if (scope !== 'all' && !(DAY_RE.test(scope ?? '') && dayOf(Date.parse(`${scope}T00:00:00Z`)) === scope)) {
+    console.log('Usage: record-upload.mjs --scope all|YYYY-MM-DD');
+    return 2;
+  }
+  const cfg = { ...DEFAULTS, scope };
+  let hc = {};
+  try {
+    hc = JSON.parse(readFileSync(cfg.hostConfig, 'utf8'));
+  } catch {}
+  if (hc.record_upload !== true) {
+    console.log('Recording upload is off (ops/host-config.json "record_upload").');
+    // The unit's state folder (systemd makes it); never created here.
+    if (existsSync(cfg.stateDir)) writeAtomic(join(cfg.stateDir, 'status.json'), `${JSON.stringify({ v: 1, at: Date.now(), enabled: false })}\n`);
+    return 0;
+  }
+  const { key, values } = readCredentials(process.env.CREDENTIALS_DIRECTORY);
+  const url = process.env.WATCHDOG_URL ?? '';
+  const up = new Uploader(
+    { ...cfg, key: key ?? '', values, deleteLocal: hc.record_upload_delete_local === true },
+    { transport: watchdogTransport(url.replace(/\/+$/, '')), workerActive: systemWorkerActive, now: Date.now, log: (s) => console.log(s) },
+  );
+  if (!key || !/^https?:\/\/[^\s"]+$/.test(url)) {
+    up.state.failed_runs++;
+    up.save();
+    up.lastError = !key ? 'no heartbeat key' : 'no watchdog address';
+    up.status({ running: false, ok: false });
+    console.log(`Recording upload cannot run: ${up.lastError}.`);
+    return 1;
+  }
+  return up.run();
+};
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  main().then(
+    (code) => process.exit(code),
+    (e) => {
+      console.log(`Recording upload failed: ${e instanceof Error ? e.name : 'error'}.`);
+      process.exit(1);
+    },
+  );
 }
 __ZEROED_FILE__
 install_file /usr/local/lib/zeroed/worker-smoke 0755 <<'__ZEROED_FILE__'
@@ -1451,7 +2664,7 @@ install_file /usr/local/lib/zeroed/worker-start 0755 <<'__ZEROED_FILE__'
 # environment (ARCHITECTURE.md 12.4): paper mode, recorder and simulation on from the first minute, the drill
 # endpoint on, the health route for the runner and the worker API both on loopback only (tailscale serve
 # publishes the API to the tailnet, 17). The release's worker (WORKER-1) runs only once the release's
-# ops/host-config.json says "worker": "release"; until then the host's stand-in. The release's worker also takes the
+# ops/host-config.json says "worker": "release"; the host's stand-in only on "stub" (anything else is refused: RC-M4). The release's worker also takes the
 # S0 shakedown settings of that file's "shakedown" block (PRACTICE-ON). Live is never set here or in any environment
 # file: the worker refuses any mode but paper.
 set -euo pipefail
@@ -1598,6 +2811,10 @@ install_file /usr/local/sbin/zeroed-check 0755 <<'__ZEROED_FILE__'
 #  3. A worker restart that waits for the dry run to end (re-pairing) runs once nothing is in flight.
 #  4. The index of the dry-run evidence kept on the host, for the worker API.
 #  0. Tailscale Funnel must be off (the live view is tailnet only); on is an alert and it is turned off.
+#  5. The recording upload's alerts (failed runs, a backlog over a day, files kept back, no report for 3 hours).
+#  6. A standing alert while the bot sits on the stand-in after a rollback.
+#  7. A worker that refused to start on lost or corrupt state (its refused.json, or exit 78), with the reason.
+#  8. A worker unit that systemd stopped restarting (failed).
 # Alerts go to the paired chat once per episode, with a "cleared" line after. Never prints a value.
 set -euo pipefail
 umask 077
@@ -1607,6 +2824,34 @@ lock
 # 4 first: it needs no keys.
 install -d -m 0755 "$(dirname "$EVIDENCE_INDEX")"
 (umask 022; evidence_index "$EVIDENCE_ROOT" > "$EVIDENCE_INDEX.new" 2>/dev/null && mv -f "$EVIDENCE_INDEX.new" "$EVIDENCE_INDEX") || rm -f "$EVIDENCE_INDEX.new"
+
+# 5. Recording upload (RECORD-UPLOAD): its alerts, from the status file the uploader writes (it runs as the worker's
+# user and cannot reach Telegram's token or this folder). The switch off clears them.
+if [ "$(jq -r '.record_upload == true' /opt/zeroed/current/ops/host-config.json 2>/dev/null || echo false)" = true ]; then
+  rec="$(cat /var/lib/zeroed-record-upload/status.json 2>/dev/null || echo '{}')"
+else
+  rec='{"enabled":false}'
+fi
+while IFS='|' read -r what key text; do
+  if [ "$what" = on ]; then alert "$key" "$text"; else alert_clear "$key" "$text"; fi
+done < <(printf '%s' "$rec" | record_alerts "$(date +%s)")
+
+# 6. RC-FIXES-2b (red team C R3-6): the bot never sits on the stand-in silently after a rollback. While a rollback put
+# it there and the stand-in still runs, one standing alert; cleared once a release worker runs again.
+if [ -s "$STATE_DIR/standin_after_rollback" ] && [ "$(worker_entry /opt/zeroed/current 2>/dev/null || true)" = "$STUB_ENTRY" ]; then
+  alert standin "ALERT Zeroed host: the bot is on the stand-in worker after a rollback ($(head -c 200 "$STATE_DIR/standin_after_rollback" | tr -d '\n')): no trading and no exits until a new release deploys."
+else
+  rm -f "$STATE_DIR/standin_after_rollback"
+  alert_clear standin "CLEARED Zeroed host: a release worker runs again."
+fi
+
+# 7. RC-FIXES-2b (#280's contract): a worker that refused to start on lost or corrupt state, by name and reason.
+refused="$(worker_refused /var/lib/zeroed/refused.json "$(systemctl show -p ExecMainStatus --value zeroed-worker.service 2>/dev/null || true)")"
+if [ -n "$refused" ]; then
+  alert worker-refused "ALERT Zeroed host: the worker refused to start: $refused. It stays stopped until the state is looked at."
+else
+  alert_clear worker-refused "CLEARED Zeroed host: the worker no longer refuses to start."
+fi
 
 # 0. Funnel: the worker API must stay on the tailnet. Funnel on for any port is an alert, and it is turned off. Each
 # tailscale call is bounded, so the minute check never hangs on it.
@@ -1665,6 +2910,13 @@ else
 fi
 
 paired || exit 0
+
+# 8. RC-FIXES-2b: a worker unit that failed for good (systemd gave up restarting it), with how it last ended.
+if [ -z "$refused" ] && systemctl is-failed --quiet zeroed-worker.service 2>/dev/null; then
+  alert worker-failed "ALERT Zeroed host: the worker has stopped for good ($(systemctl show -p Result --value zeroed-worker.service 2>/dev/null || echo unknown), exit $(systemctl show -p ExecMainStatus --value zeroed-worker.service 2>/dev/null || echo unknown)). Nothing trades and no exit runs."
+else
+  alert_clear worker-failed "CLEARED Zeroed host: the worker runs again."
+fi
 
 # 2. Webhook: a pending set, when due.
 if [ -e "$STATE_DIR/webhook_tries" ]; then
@@ -1816,6 +3068,31 @@ fi
 log "Send this to your bot in Telegram:  /pair $(cat "$PAIR_CODE_FILE")"
 log "One try only, within 30 minutes; a wrong or late code needs a new one from here."
 __ZEROED_FILE__
+install_file /usr/local/sbin/zeroed-record-upload 0755 <<'__ZEROED_FILE__'
+#!/usr/bin/env bash
+# RECORD-UPLOAD at the console: one run now, for every recording (no argument) or one UTC day (--day YYYY-MM-DD), in
+# the same sandbox as the hourly run (zeroed-record-upload@<scope>.service, as the worker's user, after any run in
+# progress). It uploads only while ops/host-config.json says "record_upload": true. Its last lines are shown.
+set -euo pipefail
+. /usr/local/lib/zeroed/common.sh
+usage() { log "Usage: zeroed-record-upload [--day YYYY-MM-DD]"; exit 2; }
+scope=all
+case "${1:-}" in
+  '') ;;
+  --day)
+    day="${2:-}"
+    [[ "$day" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] && [ "$(date -u -d "$day" +%F 2>/dev/null || true)" = "$day" ] || usage
+    scope="$day"
+    ;;
+  *) usage ;;
+esac
+unit="zeroed-record-upload@$scope.service"
+since="$(date -u '+%Y-%m-%d %H:%M:%S')"
+rc=0
+systemctl start "$unit" || rc=$?
+journalctl -u "$unit" --since "$since UTC" -o cat --no-pager 2>/dev/null | tail -n 40 || true
+exit "$rc"
+__ZEROED_FILE__
 install_file /usr/local/sbin/zeroed-restore-drill 0755 <<'__ZEROED_FILE__'
 #!/usr/bin/env bash
 # Restore drill: decrypts a backup with the given age identity into a scratch directory (never over the
@@ -1955,6 +3232,9 @@ if [ "${wpid:-0}" != 0 ] && [ -r "/proc/$wpid/cmdline" ]; then
   esac
 fi
 log "Worker:    $(systemctl is-active zeroed-worker.service 2>/dev/null || true)$wkind"
+# RC-FIXES-2b (#280's contract): a refusal to start, with its reason.
+refused="$(worker_refused /var/lib/zeroed/refused.json "$(systemctl show -p ExecMainStatus --value zeroed-worker.service 2>/dev/null || true)")"
+[ -z "$refused" ] || log "Refused:   $refused"
 log "Signer:    $(systemctl is-active zeroed-signer.service 2>/dev/null || true)"
 log "Release:   $(cut -c1-12 "$STATE_DIR/deployed" 2>/dev/null || echo 'none yet')"
 run="$(qualifying_run "$EVIDENCE_ROOT" "$(systemctl list-units 'zeroed-dryrun@*' --state=active,activating --plain --no-legend 2>/dev/null || true)")"
@@ -2190,10 +3470,6 @@ set -euo pipefail
 . /usr/local/lib/zeroed/common.sh
 
 REPO_DIR=/opt/zeroed/repo
-git -C "$REPO_DIR" fetch --quiet --force --no-tags origin \
-  "+refs/tags/deploy:refs/tags/deploy" "+refs/heads/$ZEROED_BRANCH:refs/remotes/origin/$ZEROED_BRANCH" 2>/dev/null || exit 0
-commit="$(git -C "$REPO_DIR" rev-parse --verify --quiet 'refs/tags/deploy^{commit}')" || exit 0
-current="$(cat "$STATE_DIR/deployed" 2>/dev/null || true)"
 
 # apply_host COMMIT DIR: the new release's installer in update mode (its RUN-1 units read from DIR), so host
 # changes arrive with the code and nobody pastes the install line again. Releases from before --update
@@ -2213,7 +3489,165 @@ apply_host() {
   fi
 }
 
+# answers SHA: the worker's health route says paper and names release SHA (its git_sha, the release folder's name), so
+# an answer from the worker that ran before the switch never counts. The release's worker serves it on
+# WORKER_HEALTH_ADDR; the host's stand-in on the API address.
+answers() {
+  local a
+  for a in "$WORKER_HEALTH_ADDR" "$WORKER_API_ADDR"; do
+    curl -fsS -m 2 "http://$a/health" 2>/dev/null | jq -e --arg sha "$1" '.mode == "paper" and .git_sha == $sha' >/dev/null 2>&1 && return 0
+  done
+  return 1
+}
+
+# holds: the restarted worker answers its health route in paper, as the new commit, within 60 s, then runs
+# SWITCH_HOLD_S more with no restart and still answering as it. Prints why when it does not.
+holds() {
+  local up=0 n0
+  for _ in $(seq 1 60); do
+    if systemctl is-active --quiet zeroed-worker.service && answers "$commit"; then up=1; break; fi
+    sleep 1
+  done
+  [ "$up" = 1 ] || { echo "its health route did not answer as ${commit:0:12} within 60 s"; return 1; }
+  n0="$(systemctl show -p NRestarts --value zeroed-worker.service)"
+  sleep "$SWITCH_HOLD_S"
+  systemctl is-active --quiet zeroed-worker.service && [ "$(systemctl show -p NRestarts --value zeroed-worker.service)" = "$n0" ] ||
+    { echo "it stopped or restarted within ${SWITCH_HOLD_S} s of answering"; return 1; }
+  answers "$commit" || { echo "its health route stopped answering as ${commit:0:12} within ${SWITCH_HOLD_S} s"; return 1; }
+}
+
+# rollback WHY: the new release's worker did not stay up. Back to the release that ran before (its host files too),
+# its commit as deployed, its worker restarted; the new commit is not tried again; one alert.
+rollback() {
+  local why="$1" note="" pc pprev pcur pstart pbase pdue
+  # RC-R2-3: the failed release's probation ends here (the restarts were its own).
+  rm -f "$STATE_DIR/probation"
+  alert_clear worker-probation "CLEARED Zeroed host: the probation of ${commit:0:12} has ended."
+  # RC-FIXES-2b (red team C R3-6): every rollback is told, also a second one in a row; the key is cleared first.
+  rm -f "$STATE_DIR/alerts/worker-switch"
+  if [ -z "$prev" ] || [ ! -d "$prev" ] || [ "$prev" = "$dest" ]; then
+    rm -f "$STATE_DIR/probation.prev"
+    alert worker-switch "ALERT Zeroed host: the worker of ${commit:0:12} did not stay up after the switch ($why), and there is no earlier release to go back to."
+    exit 1
+  fi
+  case "$(worker_entry "$prev" 2>/dev/null || echo refused)" in
+    "$STUB_ENTRY")
+      note=" The bot is now paused on the stand-in worker: $(basename "$prev" | cut -c1-12) replaced ${commit:0:12}, and the next deploy needs a new commit."
+      # RC-FIXES-2b (red team C R3-6): zeroed-check keeps a standing alert while the bot sits on the stand-in after this.
+      printf '%s\n' "${commit:0:12} rolled back to $(basename "$prev" | cut -c1-12)" > "$STATE_DIR/standin_after_rollback" ;;
+    refused) note=" The release before, $(basename "$prev" | cut -c1-12), names no worker the host can run, so the worker will not start: the bot is stopped." ;;
+  esac
+  printf '%s\n' "$commit" > "$STATE_DIR/failed_release"
+  ln -sfn "$prev" /opt/zeroed/current.new
+  mv -Tf /opt/zeroed/current.new /opt/zeroed/current
+  printf '%s\n' "$current" > "$STATE_DIR/deployed"
+  apply_host "${current:-$(basename "$prev")}" "$prev" || true
+  systemctl reset-failed zeroed-worker.service >/dev/null 2>&1 || true
+  systemctl restart zeroed-worker.service || true
+  # RC-FIXES-2b (red team C R3-4): the release gone back to keeps the probation it had before the failed switch, from a
+  # new restart baseline (the failed release's restarts are not its own).
+  if [ -s "$STATE_DIR/probation.prev" ] && [ "$(cut -d'|' -f1 "$STATE_DIR/probation.prev")" = "$current" ]; then
+    IFS='|' read -r pc pprev pcur pstart pbase pdue < "$STATE_DIR/probation.prev" || true
+    printf '%s|%s|%s|%s|%s|%s\n' "$pc" "$pprev" "$pcur" "$pstart" "$(systemctl show -p NRestarts --value zeroed-worker.service 2>/dev/null || echo 0)" "$pdue" > "$STATE_DIR/probation"
+  fi
+  rm -f "$STATE_DIR/probation.prev"
+  log "The worker of ${commit:0:12} did not stay up after the switch ($why); back on $(basename "$prev" | cut -c1-12)."
+  alert worker-switch "ALERT Zeroed host: the worker of ${commit:0:12} did not stay up after the switch ($why), so the server went back to $(basename "$prev" | cut -c1-12). ${commit:0:12} is not tried again; a newer deploy is.$note"
+  exit 1
+}
+
+# RC-R2-3: probation. A release can pass the trial start and the switch hold, then crash at minute 10, and one restart
+# every 10 minutes never reaches the unit's start limit. For PROBATION_S after a switch, every run checks the unit's
+# automatic restarts (NRestarts, which a planned `systemctl restart` never raises) against the count right after the
+# hold. Any increase makes a rollback due, to the release that ran before, with one alert, as a failed hold does
+# (DECISIONS 2026-10-07, RC-R2-3):
+#   - during a qualifying dry run (its drills restart the worker on purpose) an increase is an alert, never a rollback;
+#   - a due rollback waits, like the forward switch, while the worker reports open intents or open positions (or a count
+#     cannot be read), and while a qualifying dry run is active: one alert, checked again every run, also past the
+#     window, and done once nothing is open;
+#   - when the release before runs the host's stand-in, the alert says the bot is now paused on it.
+# The probation ends with the window (unless a rollback is due), or when another release is deployed.
+probation_check() {
+  local f="$STATE_DIR/probation" pc pprev pcur pstart pbase pdue now n open pos why note="" refused
+  [ -s "$f" ] || return 0
+  IFS='|' read -r pc pprev pcur pstart pbase pdue < "$f" || true
+  now="$(date +%s)"
+  if [ "$pc" != "$(cat "$STATE_DIR/deployed" 2>/dev/null || true)" ] || ! [[ "$pstart" =~ ^[0-9]+$ ]] || ! [[ "$pbase" =~ ^[0-9]+$ ]]; then
+    rm -f "$f"
+    alert_clear worker-probation "CLEARED Zeroed host: the probation of ${pc:0:12} has ended."
+    return 0
+  fi
+  # RC-FIXES-2b (#280's contract): a worker that refused to start on lost or corrupt state is never rolled back (older
+  # code would start on the very state it refused). The probation holds, with one alert naming the reason, until the
+  # refusal is gone.
+  refused="$(worker_refused /var/lib/zeroed/refused.json "$(systemctl show -p ExecMainStatus --value zeroed-worker.service 2>/dev/null || true)")"
+  if [ -n "$refused" ]; then
+    alert worker-refused "ALERT Zeroed host: the worker of ${pc:0:12} refused to start: $refused. It is not rolled back (older code would start on the state it refused); the state needs the owner."
+    return 0
+  fi
+  if [ -z "$pdue" ]; then
+    if [ $((now - pstart)) -ge "$PROBATION_S" ]; then
+      rm -f "$f"
+      log "The worker of ${pc:0:12} stayed up through its probation."
+      # RC-FIXES-2b (red team C R3-3): the probation alert's episode ends with it.
+      alert_clear worker-probation "CLEARED Zeroed host: the probation of ${pc:0:12} has ended."
+      return 0
+    fi
+    n="$(systemctl show -p NRestarts --value zeroed-worker.service 2>/dev/null || true)"
+    if ! [[ "$n" =~ ^[0-9]+$ ]]; then
+      alert worker-probation "ALERT Zeroed host: the worker's restart count cannot be read during the probation of ${pc:0:12}."
+      return 0
+    fi
+    [ "$n" -gt "$pbase" ] || return 0
+    if [ -n "$(active_run)" ]; then
+      alert worker-probation "ALERT Zeroed host: the worker of ${pc:0:12} restarted $((n - pbase)) time(s) within $(((now - pstart) / 60)) min of its switch, during a qualifying dry run, so it is not rolled back."
+      return 0
+    fi
+    pdue="it restarted $((n - pbase)) time(s) within $(((now - pstart) / 60)) min of the switch (probation $((PROBATION_S / 60)) min)"
+    printf '%s|%s|%s|%s|%s|%s\n' "$pc" "$pprev" "$pcur" "$pstart" "$pbase" "${pdue//|/ }" > "$f"
+  fi
+  # With no earlier release there is nothing to go back to and nothing moves: alert and drop at once (rollback()).
+  if [ -z "$pprev" ] || [ ! -d "$pprev" ]; then
+    rm -f "$f"
+    commit="$pc" prev="" current="$pcur" dest="/opt/zeroed/releases/$pc"
+    rollback "$pdue"
+  fi
+  # RC-FIXES-2b: a qualifying dry run that started while the rollback waited holds it too (never inside a run).
+  if [ -n "$(active_run)" ]; then
+    alert worker-probation-held "ALERT Zeroed host: rollback held: a qualifying dry run is active. The worker of ${pc:0:12} did not stay up ($pdue); it goes back once the run has ended and nothing is open."
+    return 0
+  fi
+  # Open intents, and open positions (RC-FIXES-2b: a held position must not pass to older code or the stand-in); a
+  # count that cannot be read holds.
+  open="$(cat /var/lib/zeroed/open_intents 2>/dev/null || echo unknown)"
+  pos="$(cat /var/lib/zeroed/open_positions 2>/dev/null || echo unknown)"
+  if [ "$open" != 0 ] || [ "$pos" != 0 ]; then
+    alert worker-probation-held "ALERT Zeroed host: rollback held: $open open intents, $pos open positions. The worker of ${pc:0:12} did not stay up ($pdue); it goes back once nothing is open."
+    return 0
+  fi
+  why="$pdue"
+  rm -f "$f"
+  alert_clear worker-probation-held "CLEARED Zeroed host: nothing is open; the rollback of ${pc:0:12} goes ahead."
+  commit="$pc" prev="$pprev" current="$pcur" dest="/opt/zeroed/releases/$pc"
+  rollback "$why"
+}
+
+# due_rollback WHY (RC-FIXES-2b, red team C R3-2): the new release did not start or hold. Its rollback is recorded as due
+# and goes through probation_check's gate (no qualifying run, nothing open): done now, or held with one alert and done
+# by a later run.
+due_rollback() {
+  printf '%s|%s|%s|%s|%s|%s\n' "$commit" "$prev" "$current" "$(date +%s)" 0 "${1//|/ }" > "$STATE_DIR/probation"
+  probation_check
+  exit 1
+}
+
 active_run() { qualifying_run "$EVIDENCE_ROOT" "$(systemctl list-units 'zeroed-dryrun@*' --state=active,activating --plain --no-legend 2>/dev/null || true)"; }
+# The probation first, whether GitHub answers or not.
+probation_check
+git -C "$REPO_DIR" fetch --quiet --force --no-tags origin \
+  "+refs/tags/deploy:refs/tags/deploy" "+refs/heads/$ZEROED_BRANCH:refs/remotes/origin/$ZEROED_BRANCH" 2>/dev/null || exit 0
+commit="$(git -C "$REPO_DIR" rev-parse --verify --quiet 'refs/tags/deploy^{commit}')" || exit 0
+current="$(cat "$STATE_DIR/deployed" 2>/dev/null || true)"
 [ "$commit" != "$current" ] || exit 0
 # A release that was switched to and rolled back (its worker did not stay up) is not tried again; a newer deploy is.
 [ "$commit" != "$(cat "$STATE_DIR/failed_release" 2>/dev/null || true)" ] || exit 0
@@ -2270,6 +3704,16 @@ if [ ! -d "$dest" ]; then
   git -C "$REPO_DIR" archive "$commit" | tar -x -C "$dest.new" --no-same-owner
   mv "$dest.new" "$dest"
 fi
+# RC-FIXES-2b (red team C R3-1): onto the host's stand-in from a worker that is not, never while a position is open (the
+# stand-in runs no exits and reports none): it waits while the worker reports open positions, or the count cannot be
+# read, like the intents above.
+if [ "$(worker_entry "$dest" 2>/dev/null || true)" = "$STUB_ENTRY" ] && [ "$(worker_entry /opt/zeroed/current 2>/dev/null || true)" != "$STUB_ENTRY" ]; then
+  pos="$(cat /var/lib/zeroed/open_positions 2>/dev/null || echo unknown)"
+  if [ "$pos" != 0 ]; then
+    log "Waiting on ${commit:0:12}: it runs the stand-in, and the worker has open positions ($pos)."
+    exit 0
+  fi
+fi
 # The release's own worker must start before anything changes (SWITCH-1): a trial start beside the running worker
 # (worker-smoke). If it cannot start, nothing switches, the running worker is untouched, and the owner gets one alert.
 if ! why="$(/usr/local/lib/zeroed/worker-smoke "$dest" 2>&1)"; then
@@ -2281,6 +3725,12 @@ alert_clear worker-smoke "CLEARED Zeroed host: the worker of ${commit:0:12} star
 # Host files first: on failure nothing switches and the worker keeps running the release it has.
 apply_host "$commit" "$dest" || exit 1
 prev="$(readlink -f /opt/zeroed/current 2>/dev/null || true)"
+# No current yet (a first deploy): readlink -f prints /opt/zeroed/current itself, and a rollback to it would point
+# current at itself. Only a real release folder is a rollback target.
+{ [ -d "$prev" ] && [ ! -L "$prev" ]; } || prev=""
+# RC-R2-3: a new switch ends the probation of the release before it; RC-FIXES-2b (R3-4): kept aside, so a rollback to
+# that release puts it back.
+if [ -s "$STATE_DIR/probation" ]; then mv -f "$STATE_DIR/probation" "$STATE_DIR/probation.prev"; else rm -f "$STATE_DIR/probation.prev"; fi
 ln -sfn "$dest" /opt/zeroed/current.new
 mv -Tf /opt/zeroed/current.new /opt/zeroed/current
 printf '%s\n' "$commit" > "$STATE_DIR/deployed"
@@ -2291,64 +3741,32 @@ if [ "$(jq -r '.offsite_backup == true' /opt/zeroed/current/ops/host-config.json
 else
   systemctl disable --now zeroed-backup-offsite.timer >/dev/null 2>&1 || true
 fi
-
-# answers SHA: the worker's health route says paper and names release SHA (its git_sha, the release folder's name), so
-# an answer from the worker that ran before the switch never counts. The release's worker serves it on
-# WORKER_HEALTH_ADDR; the host's stand-in on the API address.
-answers() {
-  local a
-  for a in "$WORKER_HEALTH_ADDR" "$WORKER_API_ADDR"; do
-    curl -fsS -m 2 "http://$a/health" 2>/dev/null | jq -e --arg sha "$1" '.mode == "paper" and .git_sha == $sha' >/dev/null 2>&1 && return 0
-  done
-  return 1
-}
-
-# holds: the restarted worker answers its health route in paper, as the new commit, within 60 s, then runs
-# SWITCH_HOLD_S more with no restart and still answering as it. Prints why when it does not.
-holds() {
-  local up=0 n0
-  for _ in $(seq 1 60); do
-    if systemctl is-active --quiet zeroed-worker.service && answers "$commit"; then up=1; break; fi
-    sleep 1
-  done
-  [ "$up" = 1 ] || { echo "its health route did not answer as ${commit:0:12} within 60 s"; return 1; }
-  n0="$(systemctl show -p NRestarts --value zeroed-worker.service)"
-  sleep "$SWITCH_HOLD_S"
-  systemctl is-active --quiet zeroed-worker.service && [ "$(systemctl show -p NRestarts --value zeroed-worker.service)" = "$n0" ] ||
-    { echo "it stopped or restarted within ${SWITCH_HOLD_S} s of answering"; return 1; }
-  answers "$commit" || { echo "its health route stopped answering as ${commit:0:12} within ${SWITCH_HOLD_S} s"; return 1; }
-}
-
-# rollback WHY: the new release's worker did not stay up. Back to the release that ran before (its host files too),
-# its commit as deployed, its worker restarted; the new commit is not tried again; one alert.
-rollback() {
-  local why="$1"
-  if [ -z "$prev" ] || [ ! -d "$prev" ] || [ "$prev" = "$dest" ]; then
-    alert worker-switch "ALERT Zeroed host: the worker of ${commit:0:12} did not stay up after the switch ($why), and there is no earlier release to go back to."
-    exit 1
-  fi
-  printf '%s\n' "$commit" > "$STATE_DIR/failed_release"
-  ln -sfn "$prev" /opt/zeroed/current.new
-  mv -Tf /opt/zeroed/current.new /opt/zeroed/current
-  printf '%s\n' "$current" > "$STATE_DIR/deployed"
-  apply_host "${current:-$(basename "$prev")}" "$prev" || true
-  systemctl reset-failed zeroed-worker.service >/dev/null 2>&1 || true
-  systemctl restart zeroed-worker.service || true
-  log "The worker of ${commit:0:12} did not stay up after the switch ($why); back on $(basename "$prev" | cut -c1-12)."
-  alert worker-switch "ALERT Zeroed host: the worker of ${commit:0:12} did not stay up after the switch ($why), so the server went back to $(basename "$prev" | cut -c1-12). ${commit:0:12} is not tried again; a newer deploy is."
-  exit 1
-}
+# RECORD-UPLOAD (owner, 2026-10-06 "Approve upload"): sealed recordings to the private data repository, hourly.
+if [ "$(jq -r '.record_upload == true' /opt/zeroed/current/ops/host-config.json 2>/dev/null || echo false)" = true ]; then
+  systemctl enable --now zeroed-record-upload.timer >/dev/null 2>&1 || true
+else
+  systemctl disable --now zeroed-record-upload.timer >/dev/null 2>&1 || true
+fi
 
 # Restart with reconcile first (ExecStartPre). Before pairing the worker is not started at all. After a restart the
 # new worker must stay up, or the server goes back to the release it ran (SWITCH-1).
 worker="not started (no keys yet)"
 if [ -s "$CRED_DIR/helius_api_key" ]; then
   systemctl reset-failed zeroed-worker.service >/dev/null 2>&1 || true
-  systemctl restart zeroed-worker.service || rollback "it failed to start"
-  if ! why="$(holds)"; then rollback "$why"; fi
+  systemctl restart zeroed-worker.service || due_rollback "it failed to start"
+  if ! why="$(holds)"; then due_rollback "$why"; fi
+  # RC-R2-3: the probation baseline, the restart count right after the hold.
+  printf '%s|%s|%s|%s|%s\n' "$commit" "$prev" "$current" "$(date +%s)" "$(systemctl show -p NRestarts --value zeroed-worker.service 2>/dev/null || echo 0)" > "$STATE_DIR/probation"
+  rm -f "$STATE_DIR/probation.prev" "$STATE_DIR/standin_after_rollback"
   worker="restarted and up"
   alert_clear worker-switch "CLEARED Zeroed host: the worker of ${commit:0:12} is up."
 fi
+# HOST-CAPS: old releases go once the new one runs; it, the one before it (the roll-back target) and the 3 newest stay.
+# Never during a switch (a rollback exits above); an unreadable current prunes nothing (logic.sh).
+# One name per line, never word-split or globbed (prunable_releases lists only 40-hex release folders).
+while IFS= read -r old; do
+  [ -n "$old" ] && rm -rf -- "$old" && log "Removed the old release $(basename "$old" | cut -c1-12) (HOST-CAPS)."
+done < <(prunable_releases /opt/zeroed/releases "$(readlink -f /opt/zeroed/current 2>/dev/null || true)" "$prev" "$commit")
 log "Deployed ${commit:0:12}. Worker: $worker."
 notify "Zeroed host: deployed ${commit:0:12}. Worker $worker." || true
 __ZEROED_FILE__
@@ -10228,6 +11646,8 @@ printf '%s\n' "${new_units[@]}" > /var/lib/zeroed-host/release-units
 
 say "Services"
 systemctl daemon-reload
+# HOST-CAPS: journald reads its size limits only when it starts.
+[[ " ${CHANGED[*]} " != *" /etc/systemd/journald.conf.d/zeroed-journal.conf "* ]] || systemctl restart systemd-journald
 systemctl enable --now zeroed-signer.service >/dev/null
 systemctl enable zeroed-worker.service >/dev/null
 systemctl enable --now zeroed-pair.timer zeroed-update.timer zeroed-backup.timer zeroed-check.timer >/dev/null

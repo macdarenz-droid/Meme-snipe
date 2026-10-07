@@ -16,10 +16,6 @@ set -euo pipefail
 . /usr/local/lib/zeroed/common.sh
 
 REPO_DIR=/opt/zeroed/repo
-git -C "$REPO_DIR" fetch --quiet --force --no-tags origin \
-  "+refs/tags/deploy:refs/tags/deploy" "+refs/heads/$ZEROED_BRANCH:refs/remotes/origin/$ZEROED_BRANCH" 2>/dev/null || exit 0
-commit="$(git -C "$REPO_DIR" rev-parse --verify --quiet 'refs/tags/deploy^{commit}')" || exit 0
-current="$(cat "$STATE_DIR/deployed" 2>/dev/null || true)"
 
 # apply_host COMMIT DIR: the new release's installer in update mode (its RUN-1 units read from DIR), so host
 # changes arrive with the code and nobody pastes the install line again. Releases from before --update
@@ -39,7 +35,165 @@ apply_host() {
   fi
 }
 
+# answers SHA: the worker's health route says paper and names release SHA (its git_sha, the release folder's name), so
+# an answer from the worker that ran before the switch never counts. The release's worker serves it on
+# WORKER_HEALTH_ADDR; the host's stand-in on the API address.
+answers() {
+  local a
+  for a in "$WORKER_HEALTH_ADDR" "$WORKER_API_ADDR"; do
+    curl -fsS -m 2 "http://$a/health" 2>/dev/null | jq -e --arg sha "$1" '.mode == "paper" and .git_sha == $sha' >/dev/null 2>&1 && return 0
+  done
+  return 1
+}
+
+# holds: the restarted worker answers its health route in paper, as the new commit, within 60 s, then runs
+# SWITCH_HOLD_S more with no restart and still answering as it. Prints why when it does not.
+holds() {
+  local up=0 n0
+  for _ in $(seq 1 60); do
+    if systemctl is-active --quiet zeroed-worker.service && answers "$commit"; then up=1; break; fi
+    sleep 1
+  done
+  [ "$up" = 1 ] || { echo "its health route did not answer as ${commit:0:12} within 60 s"; return 1; }
+  n0="$(systemctl show -p NRestarts --value zeroed-worker.service)"
+  sleep "$SWITCH_HOLD_S"
+  systemctl is-active --quiet zeroed-worker.service && [ "$(systemctl show -p NRestarts --value zeroed-worker.service)" = "$n0" ] ||
+    { echo "it stopped or restarted within ${SWITCH_HOLD_S} s of answering"; return 1; }
+  answers "$commit" || { echo "its health route stopped answering as ${commit:0:12} within ${SWITCH_HOLD_S} s"; return 1; }
+}
+
+# rollback WHY: the new release's worker did not stay up. Back to the release that ran before (its host files too),
+# its commit as deployed, its worker restarted; the new commit is not tried again; one alert.
+rollback() {
+  local why="$1" note="" pc pprev pcur pstart pbase pdue
+  # RC-R2-3: the failed release's probation ends here (the restarts were its own).
+  rm -f "$STATE_DIR/probation"
+  alert_clear worker-probation "CLEARED Zeroed host: the probation of ${commit:0:12} has ended."
+  # RC-FIXES-2b (red team C R3-6): every rollback is told, also a second one in a row; the key is cleared first.
+  rm -f "$STATE_DIR/alerts/worker-switch"
+  if [ -z "$prev" ] || [ ! -d "$prev" ] || [ "$prev" = "$dest" ]; then
+    rm -f "$STATE_DIR/probation.prev"
+    alert worker-switch "ALERT Zeroed host: the worker of ${commit:0:12} did not stay up after the switch ($why), and there is no earlier release to go back to."
+    exit 1
+  fi
+  case "$(worker_entry "$prev" 2>/dev/null || echo refused)" in
+    "$STUB_ENTRY")
+      note=" The bot is now paused on the stand-in worker: $(basename "$prev" | cut -c1-12) replaced ${commit:0:12}, and the next deploy needs a new commit."
+      # RC-FIXES-2b (red team C R3-6): zeroed-check keeps a standing alert while the bot sits on the stand-in after this.
+      printf '%s\n' "${commit:0:12} rolled back to $(basename "$prev" | cut -c1-12)" > "$STATE_DIR/standin_after_rollback" ;;
+    refused) note=" The release before, $(basename "$prev" | cut -c1-12), names no worker the host can run, so the worker will not start: the bot is stopped." ;;
+  esac
+  printf '%s\n' "$commit" > "$STATE_DIR/failed_release"
+  ln -sfn "$prev" /opt/zeroed/current.new
+  mv -Tf /opt/zeroed/current.new /opt/zeroed/current
+  printf '%s\n' "$current" > "$STATE_DIR/deployed"
+  apply_host "${current:-$(basename "$prev")}" "$prev" || true
+  systemctl reset-failed zeroed-worker.service >/dev/null 2>&1 || true
+  systemctl restart zeroed-worker.service || true
+  # RC-FIXES-2b (red team C R3-4): the release gone back to keeps the probation it had before the failed switch, from a
+  # new restart baseline (the failed release's restarts are not its own).
+  if [ -s "$STATE_DIR/probation.prev" ] && [ "$(cut -d'|' -f1 "$STATE_DIR/probation.prev")" = "$current" ]; then
+    IFS='|' read -r pc pprev pcur pstart pbase pdue < "$STATE_DIR/probation.prev" || true
+    printf '%s|%s|%s|%s|%s|%s\n' "$pc" "$pprev" "$pcur" "$pstart" "$(systemctl show -p NRestarts --value zeroed-worker.service 2>/dev/null || echo 0)" "$pdue" > "$STATE_DIR/probation"
+  fi
+  rm -f "$STATE_DIR/probation.prev"
+  log "The worker of ${commit:0:12} did not stay up after the switch ($why); back on $(basename "$prev" | cut -c1-12)."
+  alert worker-switch "ALERT Zeroed host: the worker of ${commit:0:12} did not stay up after the switch ($why), so the server went back to $(basename "$prev" | cut -c1-12). ${commit:0:12} is not tried again; a newer deploy is.$note"
+  exit 1
+}
+
+# RC-R2-3: probation. A release can pass the trial start and the switch hold, then crash at minute 10, and one restart
+# every 10 minutes never reaches the unit's start limit. For PROBATION_S after a switch, every run checks the unit's
+# automatic restarts (NRestarts, which a planned `systemctl restart` never raises) against the count right after the
+# hold. Any increase makes a rollback due, to the release that ran before, with one alert, as a failed hold does
+# (DECISIONS 2026-10-07, RC-R2-3):
+#   - during a qualifying dry run (its drills restart the worker on purpose) an increase is an alert, never a rollback;
+#   - a due rollback waits, like the forward switch, while the worker reports open intents or open positions (or a count
+#     cannot be read), and while a qualifying dry run is active: one alert, checked again every run, also past the
+#     window, and done once nothing is open;
+#   - when the release before runs the host's stand-in, the alert says the bot is now paused on it.
+# The probation ends with the window (unless a rollback is due), or when another release is deployed.
+probation_check() {
+  local f="$STATE_DIR/probation" pc pprev pcur pstart pbase pdue now n open pos why note="" refused
+  [ -s "$f" ] || return 0
+  IFS='|' read -r pc pprev pcur pstart pbase pdue < "$f" || true
+  now="$(date +%s)"
+  if [ "$pc" != "$(cat "$STATE_DIR/deployed" 2>/dev/null || true)" ] || ! [[ "$pstart" =~ ^[0-9]+$ ]] || ! [[ "$pbase" =~ ^[0-9]+$ ]]; then
+    rm -f "$f"
+    alert_clear worker-probation "CLEARED Zeroed host: the probation of ${pc:0:12} has ended."
+    return 0
+  fi
+  # RC-FIXES-2b (#280's contract): a worker that refused to start on lost or corrupt state is never rolled back (older
+  # code would start on the very state it refused). The probation holds, with one alert naming the reason, until the
+  # refusal is gone.
+  refused="$(worker_refused /var/lib/zeroed/refused.json "$(systemctl show -p ExecMainStatus --value zeroed-worker.service 2>/dev/null || true)")"
+  if [ -n "$refused" ]; then
+    alert worker-refused "ALERT Zeroed host: the worker of ${pc:0:12} refused to start: $refused. It is not rolled back (older code would start on the state it refused); the state needs the owner."
+    return 0
+  fi
+  if [ -z "$pdue" ]; then
+    if [ $((now - pstart)) -ge "$PROBATION_S" ]; then
+      rm -f "$f"
+      log "The worker of ${pc:0:12} stayed up through its probation."
+      # RC-FIXES-2b (red team C R3-3): the probation alert's episode ends with it.
+      alert_clear worker-probation "CLEARED Zeroed host: the probation of ${pc:0:12} has ended."
+      return 0
+    fi
+    n="$(systemctl show -p NRestarts --value zeroed-worker.service 2>/dev/null || true)"
+    if ! [[ "$n" =~ ^[0-9]+$ ]]; then
+      alert worker-probation "ALERT Zeroed host: the worker's restart count cannot be read during the probation of ${pc:0:12}."
+      return 0
+    fi
+    [ "$n" -gt "$pbase" ] || return 0
+    if [ -n "$(active_run)" ]; then
+      alert worker-probation "ALERT Zeroed host: the worker of ${pc:0:12} restarted $((n - pbase)) time(s) within $(((now - pstart) / 60)) min of its switch, during a qualifying dry run, so it is not rolled back."
+      return 0
+    fi
+    pdue="it restarted $((n - pbase)) time(s) within $(((now - pstart) / 60)) min of the switch (probation $((PROBATION_S / 60)) min)"
+    printf '%s|%s|%s|%s|%s|%s\n' "$pc" "$pprev" "$pcur" "$pstart" "$pbase" "${pdue//|/ }" > "$f"
+  fi
+  # With no earlier release there is nothing to go back to and nothing moves: alert and drop at once (rollback()).
+  if [ -z "$pprev" ] || [ ! -d "$pprev" ]; then
+    rm -f "$f"
+    commit="$pc" prev="" current="$pcur" dest="/opt/zeroed/releases/$pc"
+    rollback "$pdue"
+  fi
+  # RC-FIXES-2b: a qualifying dry run that started while the rollback waited holds it too (never inside a run).
+  if [ -n "$(active_run)" ]; then
+    alert worker-probation-held "ALERT Zeroed host: rollback held: a qualifying dry run is active. The worker of ${pc:0:12} did not stay up ($pdue); it goes back once the run has ended and nothing is open."
+    return 0
+  fi
+  # Open intents, and open positions (RC-FIXES-2b: a held position must not pass to older code or the stand-in); a
+  # count that cannot be read holds.
+  open="$(cat /var/lib/zeroed/open_intents 2>/dev/null || echo unknown)"
+  pos="$(cat /var/lib/zeroed/open_positions 2>/dev/null || echo unknown)"
+  if [ "$open" != 0 ] || [ "$pos" != 0 ]; then
+    alert worker-probation-held "ALERT Zeroed host: rollback held: $open open intents, $pos open positions. The worker of ${pc:0:12} did not stay up ($pdue); it goes back once nothing is open."
+    return 0
+  fi
+  why="$pdue"
+  rm -f "$f"
+  alert_clear worker-probation-held "CLEARED Zeroed host: nothing is open; the rollback of ${pc:0:12} goes ahead."
+  commit="$pc" prev="$pprev" current="$pcur" dest="/opt/zeroed/releases/$pc"
+  rollback "$why"
+}
+
+# due_rollback WHY (RC-FIXES-2b, red team C R3-2): the new release did not start or hold. Its rollback is recorded as due
+# and goes through probation_check's gate (no qualifying run, nothing open): done now, or held with one alert and done
+# by a later run.
+due_rollback() {
+  printf '%s|%s|%s|%s|%s|%s\n' "$commit" "$prev" "$current" "$(date +%s)" 0 "${1//|/ }" > "$STATE_DIR/probation"
+  probation_check
+  exit 1
+}
+
 active_run() { qualifying_run "$EVIDENCE_ROOT" "$(systemctl list-units 'zeroed-dryrun@*' --state=active,activating --plain --no-legend 2>/dev/null || true)"; }
+# The probation first, whether GitHub answers or not.
+probation_check
+git -C "$REPO_DIR" fetch --quiet --force --no-tags origin \
+  "+refs/tags/deploy:refs/tags/deploy" "+refs/heads/$ZEROED_BRANCH:refs/remotes/origin/$ZEROED_BRANCH" 2>/dev/null || exit 0
+commit="$(git -C "$REPO_DIR" rev-parse --verify --quiet 'refs/tags/deploy^{commit}')" || exit 0
+current="$(cat "$STATE_DIR/deployed" 2>/dev/null || true)"
 [ "$commit" != "$current" ] || exit 0
 # A release that was switched to and rolled back (its worker did not stay up) is not tried again; a newer deploy is.
 [ "$commit" != "$(cat "$STATE_DIR/failed_release" 2>/dev/null || true)" ] || exit 0
@@ -96,6 +250,16 @@ if [ ! -d "$dest" ]; then
   git -C "$REPO_DIR" archive "$commit" | tar -x -C "$dest.new" --no-same-owner
   mv "$dest.new" "$dest"
 fi
+# RC-FIXES-2b (red team C R3-1): onto the host's stand-in from a worker that is not, never while a position is open (the
+# stand-in runs no exits and reports none): it waits while the worker reports open positions, or the count cannot be
+# read, like the intents above.
+if [ "$(worker_entry "$dest" 2>/dev/null || true)" = "$STUB_ENTRY" ] && [ "$(worker_entry /opt/zeroed/current 2>/dev/null || true)" != "$STUB_ENTRY" ]; then
+  pos="$(cat /var/lib/zeroed/open_positions 2>/dev/null || echo unknown)"
+  if [ "$pos" != 0 ]; then
+    log "Waiting on ${commit:0:12}: it runs the stand-in, and the worker has open positions ($pos)."
+    exit 0
+  fi
+fi
 # The release's own worker must start before anything changes (SWITCH-1): a trial start beside the running worker
 # (worker-smoke). If it cannot start, nothing switches, the running worker is untouched, and the owner gets one alert.
 if ! why="$(/usr/local/lib/zeroed/worker-smoke "$dest" 2>&1)"; then
@@ -107,6 +271,12 @@ alert_clear worker-smoke "CLEARED Zeroed host: the worker of ${commit:0:12} star
 # Host files first: on failure nothing switches and the worker keeps running the release it has.
 apply_host "$commit" "$dest" || exit 1
 prev="$(readlink -f /opt/zeroed/current 2>/dev/null || true)"
+# No current yet (a first deploy): readlink -f prints /opt/zeroed/current itself, and a rollback to it would point
+# current at itself. Only a real release folder is a rollback target.
+{ [ -d "$prev" ] && [ ! -L "$prev" ]; } || prev=""
+# RC-R2-3: a new switch ends the probation of the release before it; RC-FIXES-2b (R3-4): kept aside, so a rollback to
+# that release puts it back.
+if [ -s "$STATE_DIR/probation" ]; then mv -f "$STATE_DIR/probation" "$STATE_DIR/probation.prev"; else rm -f "$STATE_DIR/probation.prev"; fi
 ln -sfn "$dest" /opt/zeroed/current.new
 mv -Tf /opt/zeroed/current.new /opt/zeroed/current
 printf '%s\n' "$commit" > "$STATE_DIR/deployed"
@@ -117,63 +287,31 @@ if [ "$(jq -r '.offsite_backup == true' /opt/zeroed/current/ops/host-config.json
 else
   systemctl disable --now zeroed-backup-offsite.timer >/dev/null 2>&1 || true
 fi
-
-# answers SHA: the worker's health route says paper and names release SHA (its git_sha, the release folder's name), so
-# an answer from the worker that ran before the switch never counts. The release's worker serves it on
-# WORKER_HEALTH_ADDR; the host's stand-in on the API address.
-answers() {
-  local a
-  for a in "$WORKER_HEALTH_ADDR" "$WORKER_API_ADDR"; do
-    curl -fsS -m 2 "http://$a/health" 2>/dev/null | jq -e --arg sha "$1" '.mode == "paper" and .git_sha == $sha' >/dev/null 2>&1 && return 0
-  done
-  return 1
-}
-
-# holds: the restarted worker answers its health route in paper, as the new commit, within 60 s, then runs
-# SWITCH_HOLD_S more with no restart and still answering as it. Prints why when it does not.
-holds() {
-  local up=0 n0
-  for _ in $(seq 1 60); do
-    if systemctl is-active --quiet zeroed-worker.service && answers "$commit"; then up=1; break; fi
-    sleep 1
-  done
-  [ "$up" = 1 ] || { echo "its health route did not answer as ${commit:0:12} within 60 s"; return 1; }
-  n0="$(systemctl show -p NRestarts --value zeroed-worker.service)"
-  sleep "$SWITCH_HOLD_S"
-  systemctl is-active --quiet zeroed-worker.service && [ "$(systemctl show -p NRestarts --value zeroed-worker.service)" = "$n0" ] ||
-    { echo "it stopped or restarted within ${SWITCH_HOLD_S} s of answering"; return 1; }
-  answers "$commit" || { echo "its health route stopped answering as ${commit:0:12} within ${SWITCH_HOLD_S} s"; return 1; }
-}
-
-# rollback WHY: the new release's worker did not stay up. Back to the release that ran before (its host files too),
-# its commit as deployed, its worker restarted; the new commit is not tried again; one alert.
-rollback() {
-  local why="$1"
-  if [ -z "$prev" ] || [ ! -d "$prev" ] || [ "$prev" = "$dest" ]; then
-    alert worker-switch "ALERT Zeroed host: the worker of ${commit:0:12} did not stay up after the switch ($why), and there is no earlier release to go back to."
-    exit 1
-  fi
-  printf '%s\n' "$commit" > "$STATE_DIR/failed_release"
-  ln -sfn "$prev" /opt/zeroed/current.new
-  mv -Tf /opt/zeroed/current.new /opt/zeroed/current
-  printf '%s\n' "$current" > "$STATE_DIR/deployed"
-  apply_host "${current:-$(basename "$prev")}" "$prev" || true
-  systemctl reset-failed zeroed-worker.service >/dev/null 2>&1 || true
-  systemctl restart zeroed-worker.service || true
-  log "The worker of ${commit:0:12} did not stay up after the switch ($why); back on $(basename "$prev" | cut -c1-12)."
-  alert worker-switch "ALERT Zeroed host: the worker of ${commit:0:12} did not stay up after the switch ($why), so the server went back to $(basename "$prev" | cut -c1-12). ${commit:0:12} is not tried again; a newer deploy is."
-  exit 1
-}
+# RECORD-UPLOAD (owner, 2026-10-06 "Approve upload"): sealed recordings to the private data repository, hourly.
+if [ "$(jq -r '.record_upload == true' /opt/zeroed/current/ops/host-config.json 2>/dev/null || echo false)" = true ]; then
+  systemctl enable --now zeroed-record-upload.timer >/dev/null 2>&1 || true
+else
+  systemctl disable --now zeroed-record-upload.timer >/dev/null 2>&1 || true
+fi
 
 # Restart with reconcile first (ExecStartPre). Before pairing the worker is not started at all. After a restart the
 # new worker must stay up, or the server goes back to the release it ran (SWITCH-1).
 worker="not started (no keys yet)"
 if [ -s "$CRED_DIR/helius_api_key" ]; then
   systemctl reset-failed zeroed-worker.service >/dev/null 2>&1 || true
-  systemctl restart zeroed-worker.service || rollback "it failed to start"
-  if ! why="$(holds)"; then rollback "$why"; fi
+  systemctl restart zeroed-worker.service || due_rollback "it failed to start"
+  if ! why="$(holds)"; then due_rollback "$why"; fi
+  # RC-R2-3: the probation baseline, the restart count right after the hold.
+  printf '%s|%s|%s|%s|%s\n' "$commit" "$prev" "$current" "$(date +%s)" "$(systemctl show -p NRestarts --value zeroed-worker.service 2>/dev/null || echo 0)" > "$STATE_DIR/probation"
+  rm -f "$STATE_DIR/probation.prev" "$STATE_DIR/standin_after_rollback"
   worker="restarted and up"
   alert_clear worker-switch "CLEARED Zeroed host: the worker of ${commit:0:12} is up."
 fi
+# HOST-CAPS: old releases go once the new one runs; it, the one before it (the roll-back target) and the 3 newest stay.
+# Never during a switch (a rollback exits above); an unreadable current prunes nothing (logic.sh).
+# One name per line, never word-split or globbed (prunable_releases lists only 40-hex release folders).
+while IFS= read -r old; do
+  [ -n "$old" ] && rm -rf -- "$old" && log "Removed the old release $(basename "$old" | cut -c1-12) (HOST-CAPS)."
+done < <(prunable_releases /opt/zeroed/releases "$(readlink -f /opt/zeroed/current 2>/dev/null || true)" "$prev" "$commit")
 log "Deployed ${commit:0:12}. Worker: $worker."
 notify "Zeroed host: deployed ${commit:0:12}. Worker $worker." || true

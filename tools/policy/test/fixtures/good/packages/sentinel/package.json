@@ -1,0 +1,1 @@
+{ "name": "@bot/sentinel", "version": "0.0.0", "private": true, "dependencies": { "@bot/venue": "workspace:*", "@solana/kit": "8.4.0" } }

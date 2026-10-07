@@ -1,0 +1,805 @@
+{
+ "asOf": {
+  "slot": {
+   "$bigint": "452900044"
+  },
+  "txIndex": 0,
+  "ixIndex": 0,
+  "receivedAt": 1791003600000
+ },
+ "snapshot": {
+  "asOf": {
+   "slot": {
+    "$bigint": "452900044"
+   },
+   "txIndex": 0,
+   "ixIndex": 0,
+   "receivedAt": 1791003600000
+  },
+  "first": {
+   "slot": {
+    "$bigint": "452900000"
+   },
+   "txIndex": 0,
+   "ixIndex": 0,
+   "receivedAt": 1791000000000
+  },
+  "last": {
+   "slot": {
+    "$bigint": "452900042"
+   },
+   "txIndex": 0,
+   "ixIndex": 0,
+   "receivedAt": 1791003060000
+  },
+  "seeded": false,
+  "mints": [
+   [
+    "CW8AAC1GXS64dcd6CXZh4nUjPququUHpsiCLJfdxuXdH",
+    [
+     [
+      "F5Eukj9jzxg1QXbxALUzDSqthgsz6ff2toCu9z565PKN",
+      1791000115000
+     ],
+     [
+      "OddMint7",
+      1791000420000
+     ],
+     [
+      "4kbppamH2viEuJQVBmqWSv3hSvDvV3Nec8FyvgSi4AHm",
+      1791000720000
+     ],
+     [
+      "EuKVpQU7p9uBaP9pgdiRK7ZbRPqQKSPQ8fu4gyMX7UH1",
+      1791001020000
+     ],
+     [
+      "5EAkF58UjPgudESTt6mHcJQWYwTk5n6WqbK4cTo8Y5qp",
+      1791001320000
+     ],
+     [
+      "5HS6u2ARL4uZyrQFSv1rhF3ycjXnnstPMeXDmf2fSb7Q",
+      1791001620000
+     ],
+     [
+      "vZq8SB6oXAp2HfDrCjNDDuJYCpVTepuDTWqoSF6jmju",
+      1791001920000
+     ],
+     [
+      "2ymwPSKRxxEnLw6NoBGgGwALF8Uu4kPTM6B8uTExHPUt",
+      1791002220000
+     ]
+    ]
+   ],
+   [
+    "FCQkqzAKgC1iSY4a9PB2jU3J4zSxccj3yBeQdYK62gLs",
+    [
+     [
+      "Et8APGWT4V1V1Pe94vN9wTvi1ZLaC1uXfvreJ4QRAxeF",
+      1791000240000
+     ],
+     [
+      "F2LCXGhuCazca9GdzpVv9mnn7QvtZsua44aqanQMn6Kx",
+      1791000540000
+     ],
+     [
+      "9PQHAGm1iFyDbcawPcrnHT5an3GHyxbASZ79p3V9NY3a",
+      1791000840000
+     ],
+     [
+      "HjF9XkvhHRHmR1E8kKiUdsSiG1gjKHfR8majovxfA8xx",
+      1791001140000
+     ],
+     [
+      "6ZXr3dvRUcL2omff5fyAQLqq5MWc1KV7toxWBj23SBjk",
+      1791001440000
+     ],
+     [
+      "BUUmvoxH9yBcu6h5qZJrUSyJ1EbkDgz11WXPT3qp7Rzm",
+      1791001740000
+     ],
+     [
+      "4xesRVbk5xdrRgVr4NeHdGSJJ7t1x8zAXEu1BsyoGAF1",
+      1791002040000
+     ],
+     [
+      "FT6ZxvMN98Jox3sVVg5EkasQripzoU26ewBxRN56rein",
+      1791002340000
+     ]
+    ]
+   ],
+   [
+    "GruFRaz5zeR3iy7bvRXTLBYUAda5j4ELj97opDezU9vZ",
+    [
+     [
+      "HoQcoihha5ttbwCpcXLm6XV4zhZAz9rSLtAUFK8GfGaX",
+      1791000060000
+     ],
+     [
+      "CYAJbtzKimvCEiPadkJc8ww4Q9QFFZsXQS1iH7bRrpMq",
+      1791000360000
+     ],
+     [
+      "2oMTTHjnbaJiiHx2jtCGhbEj5CdFvtxjQUgk1fBfg5zx",
+      1791000660000
+     ],
+     [
+      "4wEqvShP9ACzeyvVYSrcFNSnV6R7h1zaf5LEo5rE3wzX",
+      1791000960000
+     ],
+     [
+      "7izmNqCrvEsUZxHsQWjxXDFFPekcJzD2xUA5Cr9jJyq",
+      1791001260000
+     ],
+     [
+      "73JACT1hd35A5uqY3uJ8W7Bty5MGQw5Di37z2WsejpG9",
+      1791001560000
+     ],
+     [
+      "6zeCsaSzMaQrSBWSLs4bs9GVf4T5Qkpb7PyHRjjFAQcc",
+      1791001860000
+     ],
+     [
+      "kkugsawf9EZpzz6JWPS93eMsQprfSkZHrc5D8ZQHbrX",
+      1791002160000
+     ]
+    ]
+   ],
+   [
+    "JA6aqDSiSMPT7vJy1BpirRXgnSywS1iAfgfLHPeejhQx",
+    [
+     [
+      "e899kFTdrYTt4DYHuNcZfgbKPYdyGcDPh5hzTh11YYA",
+      1791000000000
+     ],
+     [
+      "8LXU8szRix7iLsdPLjDpBYHbb1BLL1CXgGaf9s91FmGe",
+      1791000300000
+     ],
+     [
+      "7ndXZBuTQFdex7DcdeNUQZNtqzkyzwtThnM6EzpAf4fK",
+      1791000600000
+     ],
+     [
+      "94rGvdzBa58w2hun1XgosPyFRyr1T2jT9CzDBEDttxYr",
+      1791000900000
+     ],
+     [
+      "OddMint20",
+      1791001200000
+     ],
+     [
+      "8g6HETJbYymGQZn39LzMhUT8TWk4zdVvpyuhJkVQPwXn",
+      1791001500000
+     ],
+     [
+      "37TZe8Prq4Ewqo8VErNGRQF4z57uFY9Kkz6s3Fmmy8si",
+      1791001800000
+     ],
+     [
+      "AVhuy5MULLFcC66oydAhraapGxXaU9Lc5XQKJ4Cw9iR9",
+      1791002100000
+     ]
+    ]
+   ],
+   [
+    "NotAnAddressCreator",
+    [
+     [
+      "9cgMc7sZhZghjV7McAC6dE37hSL3ghcbhKLYyxXXtG47",
+      1791000180000
+     ],
+     [
+      "6TuM35VYBothdwRApzYQcy6E918tgHSiXgEF8MLNNWV4",
+      1791000480000
+     ],
+     [
+      "51vmXnnPs3RyCzGruLqn544KmEsdbqzj67GUFZe6PoDo",
+      1791000780000
+     ],
+     [
+      "E35Vc2fLVPrk68gEgB5584upWfTAbHg4iswi9xvvXWuq",
+      1791001080000
+     ],
+     [
+      "2Vms3nfY5QbbYidp9wq4TqS5aqcv3Bhc8inSQskZkeyg",
+      1791001380000
+     ],
+     [
+      "5KZdepEABe1L8LGnJYfxE3p8Zbyr62morFq6XicEuwmu",
+      1791001680000
+     ],
+     [
+      "OddMint33",
+      1791001980000
+     ],
+     [
+      "HoYVVSc8wDikTTxG9hvRUELPbZDkQSfRroT46HgcabdH",
+      1791002280000
+     ]
+    ]
+   ]
+  ],
+  "rugs": [
+   [
+    "JA6aqDSiSMPT7vJy1BpirRXgnSywS1iAfgfLHPeejhQx",
+    [
+     [
+      "e899kFTdrYTt4DYHuNcZfgbKPYdyGcDPh5hzTh11YYA",
+      {
+       "at": {
+        "slot": {
+         "$bigint": "452900042"
+        },
+        "txIndex": 0,
+        "ixIndex": 0,
+        "receivedAt": 1791003060000
+       },
+       "kind": "drain"
+      }
+     ]
+    ]
+   ]
+  ],
+  "unjudged": [],
+  "createVias": [
+   "logs:pump"
+  ],
+  "lost": []
+ },
+ "pruned": {
+  "asOf": {
+   "slot": {
+    "$bigint": "452900044"
+   },
+   "txIndex": 0,
+   "ixIndex": 0,
+   "receivedAt": 1791003600000
+  },
+  "first": {
+   "slot": {
+    "$bigint": "452900000"
+   },
+   "txIndex": 0,
+   "ixIndex": 0,
+   "receivedAt": 1791001200000
+  },
+  "last": {
+   "slot": {
+    "$bigint": "452900042"
+   },
+   "txIndex": 0,
+   "ixIndex": 0,
+   "receivedAt": 1791003060000
+  },
+  "seeded": false,
+  "mints": [
+   [
+    "CW8AAC1GXS64dcd6CXZh4nUjPququUHpsiCLJfdxuXdH",
+    [
+     [
+      "5EAkF58UjPgudESTt6mHcJQWYwTk5n6WqbK4cTo8Y5qp",
+      1791001320000
+     ],
+     [
+      "5HS6u2ARL4uZyrQFSv1rhF3ycjXnnstPMeXDmf2fSb7Q",
+      1791001620000
+     ],
+     [
+      "vZq8SB6oXAp2HfDrCjNDDuJYCpVTepuDTWqoSF6jmju",
+      1791001920000
+     ],
+     [
+      "2ymwPSKRxxEnLw6NoBGgGwALF8Uu4kPTM6B8uTExHPUt",
+      1791002220000
+     ]
+    ]
+   ],
+   [
+    "FCQkqzAKgC1iSY4a9PB2jU3J4zSxccj3yBeQdYK62gLs",
+    [
+     [
+      "6ZXr3dvRUcL2omff5fyAQLqq5MWc1KV7toxWBj23SBjk",
+      1791001440000
+     ],
+     [
+      "BUUmvoxH9yBcu6h5qZJrUSyJ1EbkDgz11WXPT3qp7Rzm",
+      1791001740000
+     ],
+     [
+      "4xesRVbk5xdrRgVr4NeHdGSJJ7t1x8zAXEu1BsyoGAF1",
+      1791002040000
+     ],
+     [
+      "FT6ZxvMN98Jox3sVVg5EkasQripzoU26ewBxRN56rein",
+      1791002340000
+     ]
+    ]
+   ],
+   [
+    "GruFRaz5zeR3iy7bvRXTLBYUAda5j4ELj97opDezU9vZ",
+    [
+     [
+      "7izmNqCrvEsUZxHsQWjxXDFFPekcJzD2xUA5Cr9jJyq",
+      1791001260000
+     ],
+     [
+      "73JACT1hd35A5uqY3uJ8W7Bty5MGQw5Di37z2WsejpG9",
+      1791001560000
+     ],
+     [
+      "6zeCsaSzMaQrSBWSLs4bs9GVf4T5Qkpb7PyHRjjFAQcc",
+      1791001860000
+     ],
+     [
+      "kkugsawf9EZpzz6JWPS93eMsQprfSkZHrc5D8ZQHbrX",
+      1791002160000
+     ]
+    ]
+   ],
+   [
+    "JA6aqDSiSMPT7vJy1BpirRXgnSywS1iAfgfLHPeejhQx",
+    [
+     [
+      "OddMint20",
+      1791001200000
+     ],
+     [
+      "8g6HETJbYymGQZn39LzMhUT8TWk4zdVvpyuhJkVQPwXn",
+      1791001500000
+     ],
+     [
+      "37TZe8Prq4Ewqo8VErNGRQF4z57uFY9Kkz6s3Fmmy8si",
+      1791001800000
+     ],
+     [
+      "AVhuy5MULLFcC66oydAhraapGxXaU9Lc5XQKJ4Cw9iR9",
+      1791002100000
+     ]
+    ]
+   ],
+   [
+    "NotAnAddressCreator",
+    [
+     [
+      "2Vms3nfY5QbbYidp9wq4TqS5aqcv3Bhc8inSQskZkeyg",
+      1791001380000
+     ],
+     [
+      "5KZdepEABe1L8LGnJYfxE3p8Zbyr62morFq6XicEuwmu",
+      1791001680000
+     ],
+     [
+      "OddMint33",
+      1791001980000
+     ],
+     [
+      "HoYVVSc8wDikTTxG9hvRUELPbZDkQSfRroT46HgcabdH",
+      1791002280000
+     ]
+    ]
+   ]
+  ],
+  "rugs": [
+   [
+    "JA6aqDSiSMPT7vJy1BpirRXgnSywS1iAfgfLHPeejhQx",
+    [
+     [
+      "e899kFTdrYTt4DYHuNcZfgbKPYdyGcDPh5hzTh11YYA",
+      {
+       "at": {
+        "slot": {
+         "$bigint": "452900042"
+        },
+        "txIndex": 0,
+        "ixIndex": 0,
+        "receivedAt": 1791003060000
+       },
+       "kind": "drain"
+      }
+     ]
+    ]
+   ]
+  ],
+  "unjudged": [],
+  "createVias": [
+   "logs:pump"
+  ],
+  "lost": []
+ },
+ "facts": {
+  "JA6aqDSiSMPT7vJy1BpirRXgnSywS1iAfgfLHPeejhQx": {
+   "obs": {
+    "provider": "deployer-index",
+    "slot": {
+     "$bigint": "452900044"
+    },
+    "receivedAt": 1791003600000,
+    "quality": [],
+    "commitment": "confirmed"
+   },
+   "coverageFromMs": 1791000000000,
+   "mints": [
+    {
+     "mint": "37TZe8Prq4Ewqo8VErNGRQF4z57uFY9Kkz6s3Fmmy8si",
+     "createdAtMs": 1791001800000
+    },
+    {
+     "mint": "7ndXZBuTQFdex7DcdeNUQZNtqzkyzwtThnM6EzpAf4fK",
+     "createdAtMs": 1791000600000
+    },
+    {
+     "mint": "8LXU8szRix7iLsdPLjDpBYHbb1BLL1CXgGaf9s91FmGe",
+     "createdAtMs": 1791000300000
+    },
+    {
+     "mint": "8g6HETJbYymGQZn39LzMhUT8TWk4zdVvpyuhJkVQPwXn",
+     "createdAtMs": 1791001500000
+    },
+    {
+     "mint": "94rGvdzBa58w2hun1XgosPyFRyr1T2jT9CzDBEDttxYr",
+     "createdAtMs": 1791000900000
+    },
+    {
+     "mint": "AVhuy5MULLFcC66oydAhraapGxXaU9Lc5XQKJ4Cw9iR9",
+     "createdAtMs": 1791002100000
+    },
+    {
+     "mint": "OddMint20",
+     "createdAtMs": 1791001200000
+    },
+    {
+     "mint": "e899kFTdrYTt4DYHuNcZfgbKPYdyGcDPh5hzTh11YYA",
+     "createdAtMs": 1791000000000
+    }
+   ],
+   "rugs": [
+    {
+     "mint": "e899kFTdrYTt4DYHuNcZfgbKPYdyGcDPh5hzTh11YYA",
+     "knownAtMs": 1791003060000,
+     "kind": "drain"
+    }
+   ],
+   "unjudged": []
+  },
+  "GruFRaz5zeR3iy7bvRXTLBYUAda5j4ELj97opDezU9vZ": {
+   "obs": {
+    "provider": "deployer-index",
+    "slot": {
+     "$bigint": "452900044"
+    },
+    "receivedAt": 1791003600000,
+    "quality": [],
+    "commitment": "confirmed"
+   },
+   "coverageFromMs": 1791000000000,
+   "mints": [
+    {
+     "mint": "2oMTTHjnbaJiiHx2jtCGhbEj5CdFvtxjQUgk1fBfg5zx",
+     "createdAtMs": 1791000660000
+    },
+    {
+     "mint": "4wEqvShP9ACzeyvVYSrcFNSnV6R7h1zaf5LEo5rE3wzX",
+     "createdAtMs": 1791000960000
+    },
+    {
+     "mint": "6zeCsaSzMaQrSBWSLs4bs9GVf4T5Qkpb7PyHRjjFAQcc",
+     "createdAtMs": 1791001860000
+    },
+    {
+     "mint": "73JACT1hd35A5uqY3uJ8W7Bty5MGQw5Di37z2WsejpG9",
+     "createdAtMs": 1791001560000
+    },
+    {
+     "mint": "7izmNqCrvEsUZxHsQWjxXDFFPekcJzD2xUA5Cr9jJyq",
+     "createdAtMs": 1791001260000
+    },
+    {
+     "mint": "CYAJbtzKimvCEiPadkJc8ww4Q9QFFZsXQS1iH7bRrpMq",
+     "createdAtMs": 1791000360000
+    },
+    {
+     "mint": "HoQcoihha5ttbwCpcXLm6XV4zhZAz9rSLtAUFK8GfGaX",
+     "createdAtMs": 1791000060000
+    },
+    {
+     "mint": "kkugsawf9EZpzz6JWPS93eMsQprfSkZHrc5D8ZQHbrX",
+     "createdAtMs": 1791002160000
+    }
+   ],
+   "rugs": [],
+   "unjudged": []
+  },
+  "CW8AAC1GXS64dcd6CXZh4nUjPququUHpsiCLJfdxuXdH": {
+   "obs": {
+    "provider": "deployer-index",
+    "slot": {
+     "$bigint": "452900044"
+    },
+    "receivedAt": 1791003600000,
+    "quality": [],
+    "commitment": "confirmed"
+   },
+   "coverageFromMs": 1791000000000,
+   "mints": [
+    {
+     "mint": "2ymwPSKRxxEnLw6NoBGgGwALF8Uu4kPTM6B8uTExHPUt",
+     "createdAtMs": 1791002220000
+    },
+    {
+     "mint": "4kbppamH2viEuJQVBmqWSv3hSvDvV3Nec8FyvgSi4AHm",
+     "createdAtMs": 1791000720000
+    },
+    {
+     "mint": "5EAkF58UjPgudESTt6mHcJQWYwTk5n6WqbK4cTo8Y5qp",
+     "createdAtMs": 1791001320000
+    },
+    {
+     "mint": "5HS6u2ARL4uZyrQFSv1rhF3ycjXnnstPMeXDmf2fSb7Q",
+     "createdAtMs": 1791001620000
+    },
+    {
+     "mint": "EuKVpQU7p9uBaP9pgdiRK7ZbRPqQKSPQ8fu4gyMX7UH1",
+     "createdAtMs": 1791001020000
+    },
+    {
+     "mint": "F5Eukj9jzxg1QXbxALUzDSqthgsz6ff2toCu9z565PKN",
+     "createdAtMs": 1791000115000
+    },
+    {
+     "mint": "OddMint7",
+     "createdAtMs": 1791000420000
+    },
+    {
+     "mint": "vZq8SB6oXAp2HfDrCjNDDuJYCpVTepuDTWqoSF6jmju",
+     "createdAtMs": 1791001920000
+    }
+   ],
+   "rugs": [],
+   "unjudged": []
+  },
+  "NotAnAddressCreator": {
+   "obs": {
+    "provider": "deployer-index",
+    "slot": {
+     "$bigint": "452900044"
+    },
+    "receivedAt": 1791003600000,
+    "quality": [],
+    "commitment": "confirmed"
+   },
+   "coverageFromMs": 1791000000000,
+   "mints": [
+    {
+     "mint": "2Vms3nfY5QbbYidp9wq4TqS5aqcv3Bhc8inSQskZkeyg",
+     "createdAtMs": 1791001380000
+    },
+    {
+     "mint": "51vmXnnPs3RyCzGruLqn544KmEsdbqzj67GUFZe6PoDo",
+     "createdAtMs": 1791000780000
+    },
+    {
+     "mint": "5KZdepEABe1L8LGnJYfxE3p8Zbyr62morFq6XicEuwmu",
+     "createdAtMs": 1791001680000
+    },
+    {
+     "mint": "6TuM35VYBothdwRApzYQcy6E918tgHSiXgEF8MLNNWV4",
+     "createdAtMs": 1791000480000
+    },
+    {
+     "mint": "9cgMc7sZhZghjV7McAC6dE37hSL3ghcbhKLYyxXXtG47",
+     "createdAtMs": 1791000180000
+    },
+    {
+     "mint": "E35Vc2fLVPrk68gEgB5584upWfTAbHg4iswi9xvvXWuq",
+     "createdAtMs": 1791001080000
+    },
+    {
+     "mint": "HoYVVSc8wDikTTxG9hvRUELPbZDkQSfRroT46HgcabdH",
+     "createdAtMs": 1791002280000
+    },
+    {
+     "mint": "OddMint33",
+     "createdAtMs": 1791001980000
+    }
+   ],
+   "rugs": [],
+   "unjudged": []
+  },
+  "FCQkqzAKgC1iSY4a9PB2jU3J4zSxccj3yBeQdYK62gLs": {
+   "obs": {
+    "provider": "deployer-index",
+    "slot": {
+     "$bigint": "452900044"
+    },
+    "receivedAt": 1791003600000,
+    "quality": [],
+    "commitment": "confirmed"
+   },
+   "coverageFromMs": 1791000000000,
+   "mints": [
+    {
+     "mint": "4xesRVbk5xdrRgVr4NeHdGSJJ7t1x8zAXEu1BsyoGAF1",
+     "createdAtMs": 1791002040000
+    },
+    {
+     "mint": "6ZXr3dvRUcL2omff5fyAQLqq5MWc1KV7toxWBj23SBjk",
+     "createdAtMs": 1791001440000
+    },
+    {
+     "mint": "9PQHAGm1iFyDbcawPcrnHT5an3GHyxbASZ79p3V9NY3a",
+     "createdAtMs": 1791000840000
+    },
+    {
+     "mint": "BUUmvoxH9yBcu6h5qZJrUSyJ1EbkDgz11WXPT3qp7Rzm",
+     "createdAtMs": 1791001740000
+    },
+    {
+     "mint": "Et8APGWT4V1V1Pe94vN9wTvi1ZLaC1uXfvreJ4QRAxeF",
+     "createdAtMs": 1791000240000
+    },
+    {
+     "mint": "F2LCXGhuCazca9GdzpVv9mnn7QvtZsua44aqanQMn6Kx",
+     "createdAtMs": 1791000540000
+    },
+    {
+     "mint": "FT6ZxvMN98Jox3sVVg5EkasQripzoU26ewBxRN56rein",
+     "createdAtMs": 1791002340000
+    },
+    {
+     "mint": "HjF9XkvhHRHmR1E8kKiUdsSiG1gjKHfR8majovxfA8xx",
+     "createdAtMs": 1791001140000
+    }
+   ],
+   "rugs": [],
+   "unjudged": []
+  }
+ },
+ "mintRows": [
+  [
+   "CW8AAC1GXS64dcd6CXZh4nUjPququUHpsiCLJfdxuXdH",
+   [
+    [
+     "4kbppamH2viEuJQVBmqWSv3hSvDvV3Nec8FyvgSi4AHm",
+     1791000720000
+    ],
+    [
+     "EuKVpQU7p9uBaP9pgdiRK7ZbRPqQKSPQ8fu4gyMX7UH1",
+     1791001020000
+    ],
+    [
+     "5EAkF58UjPgudESTt6mHcJQWYwTk5n6WqbK4cTo8Y5qp",
+     1791001320000
+    ],
+    [
+     "5HS6u2ARL4uZyrQFSv1rhF3ycjXnnstPMeXDmf2fSb7Q",
+     1791001620000
+    ],
+    [
+     "vZq8SB6oXAp2HfDrCjNDDuJYCpVTepuDTWqoSF6jmju",
+     1791001920000
+    ],
+    [
+     "2ymwPSKRxxEnLw6NoBGgGwALF8Uu4kPTM6B8uTExHPUt",
+     1791002220000
+    ]
+   ]
+  ],
+  [
+   "FCQkqzAKgC1iSY4a9PB2jU3J4zSxccj3yBeQdYK62gLs",
+   [
+    [
+     "9PQHAGm1iFyDbcawPcrnHT5an3GHyxbASZ79p3V9NY3a",
+     1791000840000
+    ],
+    [
+     "HjF9XkvhHRHmR1E8kKiUdsSiG1gjKHfR8majovxfA8xx",
+     1791001140000
+    ],
+    [
+     "6ZXr3dvRUcL2omff5fyAQLqq5MWc1KV7toxWBj23SBjk",
+     1791001440000
+    ],
+    [
+     "BUUmvoxH9yBcu6h5qZJrUSyJ1EbkDgz11WXPT3qp7Rzm",
+     1791001740000
+    ],
+    [
+     "4xesRVbk5xdrRgVr4NeHdGSJJ7t1x8zAXEu1BsyoGAF1",
+     1791002040000
+    ],
+    [
+     "FT6ZxvMN98Jox3sVVg5EkasQripzoU26ewBxRN56rein",
+     1791002340000
+    ]
+   ]
+  ],
+  [
+   "GruFRaz5zeR3iy7bvRXTLBYUAda5j4ELj97opDezU9vZ",
+   [
+    [
+     "2oMTTHjnbaJiiHx2jtCGhbEj5CdFvtxjQUgk1fBfg5zx",
+     1791000660000
+    ],
+    [
+     "4wEqvShP9ACzeyvVYSrcFNSnV6R7h1zaf5LEo5rE3wzX",
+     1791000960000
+    ],
+    [
+     "7izmNqCrvEsUZxHsQWjxXDFFPekcJzD2xUA5Cr9jJyq",
+     1791001260000
+    ],
+    [
+     "73JACT1hd35A5uqY3uJ8W7Bty5MGQw5Di37z2WsejpG9",
+     1791001560000
+    ],
+    [
+     "6zeCsaSzMaQrSBWSLs4bs9GVf4T5Qkpb7PyHRjjFAQcc",
+     1791001860000
+    ],
+    [
+     "kkugsawf9EZpzz6JWPS93eMsQprfSkZHrc5D8ZQHbrX",
+     1791002160000
+    ]
+   ]
+  ],
+  [
+   "JA6aqDSiSMPT7vJy1BpirRXgnSywS1iAfgfLHPeejhQx",
+   [
+    [
+     "7ndXZBuTQFdex7DcdeNUQZNtqzkyzwtThnM6EzpAf4fK",
+     1791000600000
+    ],
+    [
+     "94rGvdzBa58w2hun1XgosPyFRyr1T2jT9CzDBEDttxYr",
+     1791000900000
+    ],
+    [
+     "OddMint20",
+     1791001200000
+    ],
+    [
+     "8g6HETJbYymGQZn39LzMhUT8TWk4zdVvpyuhJkVQPwXn",
+     1791001500000
+    ],
+    [
+     "37TZe8Prq4Ewqo8VErNGRQF4z57uFY9Kkz6s3Fmmy8si",
+     1791001800000
+    ],
+    [
+     "AVhuy5MULLFcC66oydAhraapGxXaU9Lc5XQKJ4Cw9iR9",
+     1791002100000
+    ]
+   ]
+  ],
+  [
+   "NotAnAddressCreator",
+   [
+    [
+     "51vmXnnPs3RyCzGruLqn544KmEsdbqzj67GUFZe6PoDo",
+     1791000780000
+    ],
+    [
+     "E35Vc2fLVPrk68gEgB5584upWfTAbHg4iswi9xvvXWuq",
+     1791001080000
+    ],
+    [
+     "2Vms3nfY5QbbYidp9wq4TqS5aqcv3Bhc8inSQskZkeyg",
+     1791001380000
+    ],
+    [
+     "5KZdepEABe1L8LGnJYfxE3p8Zbyr62morFq6XicEuwmu",
+     1791001680000
+    ],
+    [
+     "OddMint33",
+     1791001980000
+    ],
+    [
+     "HoYVVSc8wDikTTxG9hvRUELPbZDkQSfRroT46HgcabdH",
+     1791002280000
+    ]
+   ]
+  ]
+ ]
+}

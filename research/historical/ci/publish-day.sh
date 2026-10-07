@@ -75,7 +75,7 @@ for f in "${files[@]}"; do
   [ -f "$f" ] || { echo "missing $f"; exit 1; }
   grep -q "  $f\$" "$sums" || { echo "$f is not listed in $sums"; exit 1; }
 done
-sha256sum -c "$sums"
+sha256sum -c --strict "$sums"
 files+=("$sums")
 tag="data-day-$d"
 st=$(release_state "$tag" "$d")

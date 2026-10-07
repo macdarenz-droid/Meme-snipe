@@ -67,6 +67,25 @@ describe('android-preview workflow', () => {
     expect(run([runs({ name: 'check', status: 'completed', conclusion: 'failure', started_at: '2026-10-04T01:00:00Z', app: gha }, { name: 'check', status: 'completed', conclusion: 'success', started_at: '2026-10-04T02:00:00Z', app: gha })]).status).toBe(0);
   });
 
+  it('waits for check longer than CI lets check run, inside its own job timeout', () => {
+    const script = readFileSync(fileURLToPath(new URL('../../../.github/scripts/require-check.sh', import.meta.url)), 'utf8');
+    const ci = readFileSync(fileURLToPath(new URL('../../../.github/workflows/ci.yml', import.meta.url)), 'utf8');
+    const defaults = [...script.matchAll(/\$\{WAIT_S:-(\d+)\}/g)].map((m) => Number(m[1]));
+    expect(defaults.length).toBeGreaterThan(0);
+    expect(new Set(defaults).size).toBe(1);
+    const wait = defaults[0]!;
+    const fromCheck = ci.slice(ci.indexOf('\n  check:') + 1);
+    const nextJob = fromCheck.slice(1).search(/\n {2}[A-Za-z][\w-]*:/);
+    const checkJob = nextJob < 0 ? fromCheck : fromCheck.slice(0, nextJob + 1);
+    const checkMinutes = Number(/timeout-minutes: (\d+)/.exec(checkJob)?.[1]);
+    const releaseMinutes = Number(/timeout-minutes: (\d+)/.exec(releaseJob)?.[1]);
+    expect(checkMinutes).toBeGreaterThan(0);
+    // check may start a little after this release job begins waiting, so the wait covers its whole timeout.
+    expect(wait).toBeGreaterThanOrEqual(checkMinutes * 60);
+    // The release job's own timeout leaves 10 min for download and publish after the longest wait.
+    expect(releaseMinutes * 60).toBeGreaterThanOrEqual(wait + 600);
+  });
+
   it('commits no keystore', () => {
     expect(readFileSync(fileURLToPath(new URL('../../../.gitignore', import.meta.url)), 'utf8')).toMatch(/\*\.keystore/);
   });

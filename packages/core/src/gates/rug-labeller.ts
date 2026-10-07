@@ -12,6 +12,7 @@ import type { RugConfig } from '../config/rugs.ts';
 import { SECOND_MS } from '../config/time.ts';
 import { BPS_DENOMINATOR } from '../units/index.ts';
 import { RUG_PREFIX, RUG_UNJUDGED_PREFIX } from './deployer-index.ts';
+import type { AsOfClamp } from './as-of-clamp.ts';
 
 export type RugRule = 'creator-dump' | 'collapse';
 
@@ -311,13 +312,15 @@ export class RugLabeller {
   }
 
   /** PERSIST-1: the labeller's tables, for a restart without a re-read of every tracked launch's trades. */
-  snapshot(): RugLabellerState {
+  snapshot(clamp?: AsOfClamp): RugLabellerState {
     const byKey = <T>(xs: T[], k: (x: T) => string) => xs.sort((a, b) => (k(a) < k(b) ? -1 : k(a) > k(b) ? 1 : 0));
     return {
       version: this.#config.version,
       // Arrival order is kept: the drop of old launches walks the table from the oldest.
       launches: [...this.#launches.values()].map((l) => ({
-        mint: l.mint, creator: l.creator, sellers: [...l.sellers].sort(), createdAtMs: l.createdAtMs, pool: l.pool, supply: l.supply,
+        // SAVE-ASOF: a launch's time is its create's chain block time, routinely seconds off local receipt; restore refuses
+        // one after the saved moment, so it is saved as at the moment (`AsOfClamp`), never dropped.
+        mint: l.mint, creator: l.creator, sellers: [...l.sellers].sort(), createdAtMs: clamp === undefined ? l.createdAtMs : clamp.ms(l.createdAtMs), pool: l.pool, supply: l.supply,
         sold: l.sold, sales: [...l.sales].sort(), peak: l.peak, peakState: l.peakState,
       })),
       pools: byKey([...this.#pools], ([p]) => p),

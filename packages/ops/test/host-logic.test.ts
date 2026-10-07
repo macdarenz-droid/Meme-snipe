@@ -1,7 +1,7 @@
 // OPS-1e: the host's decision helpers (ops/host/files/usr/local/lib/zeroed/logic.sh) run in bash here, and
 // the scripts that use them are checked for the wiring the e2e (ops/test/e2e.sh) then drives on a real host.
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -261,33 +261,50 @@ describe('worker start and API address', () => {
     expect(readdirSync(dir).sort()).toEqual(['notes.txt', 'report.2026.04.json', 'report.2026.05.json', 'report.2026.06.json', 'report.2026.07.json', 'report.2026.08.json']);
   });
 
-  it("runs the release's worker only when the release's host-config says so; the stand-in otherwise", () => {
+  it("runs the release's worker only when the release's host-config says so; the stand-in only when it says \"stub\" (RC-M4: anything else is refused)", () => {
     const rel = join(tmp, 'release');
     const cfg = (o: unknown) => {
       mkdirSync(join(rel, 'ops'), { recursive: true });
       writeFileSync(join(rel, 'ops/host-config.json'), JSON.stringify(o));
     };
     const entry = () => sh(`worker_entry "${rel}"`).out;
+    const refused = (why: RegExp) => {
+      const r = sh(`worker_entry "${rel}"`);
+      expect(r.status).toBe(1);
+      expect(r.out).toBe('');
+      expect(r.err).toMatch(why);
+    };
     const STUB = '/opt/zeroed/stub/worker.mjs';
     const MAIN = join(rel, 'packages/worker/src/main.ts');
-    expect(entry()).toBe(STUB); // no release files at all
+    expect(entry()).toBe(STUB); // no release deployed yet (a first install)
     mkdirSync(join(rel, 'packages/worker/src'), { recursive: true });
     writeFileSync(MAIN, '');
-    expect(entry()).toBe(STUB); // main.ts but no host-config
+    refused(/host-config\.json is missing or cannot be read/); // main.ts but no host-config
     cfg({ offsite_backup: false });
-    expect(entry()).toBe(STUB);
+    refused(/"worker" is \(missing\), not "release" or "stub"/);
     cfg({ worker: 'stub' });
     expect(entry()).toBe(STUB);
     cfg({ worker: 'Release' });
-    expect(entry()).toBe(STUB);
+    refused(/"worker" is Release, not "release" or "stub"/);
+    cfg({ worker: 7 });
+    refused(/"worker" is \(not a string\)/);
+    cfg(['release']);
+    refused(/cannot be read/);
     cfg({ worker: 'release' });
     expect(entry()).toBe(MAIN);
     rmSync(MAIN);
-    expect(entry()).toBe(STUB); // asked for, but the release has no worker
+    refused(/main\.ts is missing/); // asked for, but the release has no worker
     writeFileSync(join(rel, 'ops/host-config.json'), '{not json');
-    expect(entry()).toBe(STUB);
+    refused(/cannot be read/);
+    // worker-start and worker-smoke take it under `set -e`: a refusal stops them, never runs anything.
+    expect(sh(`e="$(worker_entry "${rel}")"; echo "ran $e"`)).toMatchObject({ status: 1, out: '' });
+    // A dangling link (a current whose release folder went) is refused, never the stand-in.
+    const dangling = join(tmp, 'dangling-current');
+    symlinkSync(join(tmp, 'no-such-release'), dangling);
+    expect(sh(`worker_entry "${dangling}"`)).toMatchObject({ status: 1, out: '' });
     // SWITCH-1 is the reviewed switch: the repository now runs the release's own worker.
-    expect(JSON.parse(read('ops/host-config.json')).worker).toBe('release');
+    // PAUSE (owner, 2026-10-07): the host runs the stand-in until every blocker is fixed; back to 'release' then.
+    expect(JSON.parse(read('ops/host-config.json')).worker).toBe('stub');
   });
 
   it("PRACTICE-ON: the release's shakedown settings, and only those, go to its worker", () => {
@@ -363,7 +380,10 @@ describe('worker start and API address', () => {
     // After the switch: the new worker must stay up, else back to the release that ran, not tried again, one alert.
     const after = upd.slice(upd.indexOf('ln -sfn "$dest" /opt/zeroed/current.new'));
     expect(upd.indexOf('prev="$(readlink -f /opt/zeroed/current 2>/dev/null || true)"')).toBeLessThan(upd.indexOf('ln -sfn "$dest" /opt/zeroed/current.new'));
-    expect(after).toMatch(/systemctl restart zeroed-worker\.service \|\| rollback "it failed to start"\n\s+if ! why="\$\(holds\)"; then rollback "\$why"; fi/);
+    expect(after).toMatch(/systemctl restart zeroed-worker\.service \|\| due_rollback "it failed to start"\n\s+if ! why="\$\(holds\)"; then due_rollback "\$why"; fi/);
+    // RC-FIXES-2b (red team C R3-2): a due rollback goes through probation_check's gate, which ends in rollback().
+    const due = upd.slice(upd.indexOf('due_rollback() {'));
+    expect(due.slice(0, due.indexOf('\n}\n'))).toMatch(/> "\$STATE_DIR\/probation"\n\s+probation_check\n\s+exit 1$/);
     const rb = upd.slice(upd.indexOf('rollback() {'), upd.indexOf('# Restart with reconcile first'));
     for (const want of ['printf \'%s\\n\' "$commit" > "$STATE_DIR/failed_release"', 'ln -sfn "$prev" /opt/zeroed/current.new', 'printf \'%s\\n\' "$current" > "$STATE_DIR/deployed"', 'apply_host', 'systemctl restart zeroed-worker.service', 'alert worker-switch "ALERT']) expect(rb, want).toContain(want);
     expect(upd).toContain('[ "$commit" != "$(cat "$STATE_DIR/failed_release" 2>/dev/null || true)" ] || exit 0');
@@ -723,7 +743,10 @@ describe('install.sh --update', () => {
   });
 
   it('zeroed-update applies the new release\'s host files before it switches or restarts anything; a failure keeps the old release', () => {
-    const s = read('ops/host/files/usr/local/sbin/zeroed-update');
+    const file = read('ops/host/files/usr/local/sbin/zeroed-update');
+    // The run's own steps, after the function definitions (rollback, which the probation also uses, moves current too).
+    const s = file.slice(file.indexOf('\nprobation_check\n'));
+    expect(file.indexOf('\nprobation_check\n')).toBeGreaterThan(file.indexOf('\nrollback() {'));
     const apply = s.indexOf('apply_host "$commit" "$dest" || exit 1');
     expect(apply).toBeGreaterThan(s.indexOf('mv "$dest.new" "$dest"'));
     for (const later of ['ln -sfn "$dest" /opt/zeroed/current.new', 'mv -Tf /opt/zeroed/current.new /opt/zeroed/current', `printf '%s\\n' "$commit" > "$STATE_DIR/deployed"`, 'systemctl restart zeroed-worker.service', 'zeroed-backup-offsite.timer']) {
@@ -731,9 +754,9 @@ describe('install.sh --update', () => {
     }
     // After every gate: a retry next run goes through the same gates (deployed is not moved on failure).
     for (const gate of ['run="$(active_run)"', 'open="$(cat /var/lib/zeroed/open_intents', 'if [ "$verdict" != green ]']) expect(s.indexOf(gate), gate).toBeLessThan(apply);
-    expect(s.match(/apply_host "\$commit"/g)).toHaveLength(1);
-    expect(s).toContain('if ZEROED_RELEASE_DIR="$2" bash "$installer" --update > "$STATE_DIR/host_update.log" 2>&1; then');
-    expect(s).toContain(`grep -q -- '--update) UPDATE=1' "$installer"`);
+    expect(file.match(/apply_host "\$commit"/g)).toHaveLength(1);
+    expect(file).toContain('if ZEROED_RELEASE_DIR="$2" bash "$installer" --update > "$STATE_DIR/host_update.log" 2>&1; then');
+    expect(file).toContain(`grep -q -- '--update) UPDATE=1' "$installer"`);
     // The new release's RUN-1 units, not the running one's.
     expect(main).toContain('RELEASE_UNITS="${ZEROED_RELEASE_DIR:-/opt/zeroed/current}/packages/runner/systemd"');
   });
@@ -759,6 +782,18 @@ describe('deploy gate (OPS-GATE): named runs from GitHub Actions, shared by the 
     ['a cancelled check', [{ name: 'check', conclusion: 'cancelled' }], /^red: check failed$/],
   ])('refuses %s', (_, runs, why) => {
     expect(verdict(runs as Run[])).toMatch(why);
+  });
+  it('ignores the scheduled advisory report (zeroed-advisories) whatever its state, and only that name (Z01 ruling 3.4)', () => {
+    for (const state of [{ conclusion: 'failure' }, { conclusion: 'cancelled' }, { conclusion: 'timed_out' }, { status: 'in_progress', conclusion: null },
+      { status: 'queued', conclusion: null }]) {
+      expect(verdict([{ name: 'check' }, { name: 'zeroed-advisories', ...state }]), JSON.stringify(state)).toBe('green');
+    }
+    expect(verdict([{ name: 'zeroed-advisories' }]), 'it never stands in for check').toMatch(/^none: no check run/);
+    expect(verdict([{ name: 'check' }, { name: 'advisories', conclusion: 'failure' }])).toBe('red: advisories failed');
+    expect(verdict([{ name: 'check' }, { name: 'zeroed-advisories-x', status: 'in_progress', conclusion: null }])).toBe('pending: zeroed-advisories-x still running');
+    expect(sh('echo "$DEPLOY_AUDIT_JOB"').out).toBe('zeroed-advisories');
+    const wf = read('.github/workflows/audit-schedule.yml');
+    expect(wf).toMatch(/^jobs:\n {2}zeroed-advisories:\n/m);
   });
   it('refuses a listing GitHub cut short, and reads the latest run of a re-run name', () => {
     expect(verdict([{ name: 'check' }], 'check', 101)).toMatch(/^none: more check runs/);
@@ -798,5 +833,198 @@ describe('deploy gate (OPS-GATE): named runs from GitHub Actions, shared by the 
       expect(s).not.toMatch(/conclusion == "skipped"/);
     }
     expect(tag).toContain('. "$here/../host/files/usr/local/lib/zeroed/logic.sh"');
+  });
+});
+
+describe('HOST-CAPS on the host', () => {
+  const rel = join(tmp, 'caps-releases');
+  // Release folders are 40-hex commit names. The tests label them r1..r9 and map them here.
+  const H = (l: string) => (/^r\d$/.test(l) ? l.slice(1).padStart(40, '0') : l);
+  const label = (n: string) => (/^0{39}\d$/.test(n) ? `r${n.slice(-1)}` : n);
+  // names are oldest first, each one second newer than the one before, in 2023 (no age rule: all are old).
+  const make = (names: string[], base = 1_700_000_000) => {
+    rmSync(rel, { recursive: true, force: true });
+    mkdirSync(rel, { recursive: true });
+    names.forEach((n, i) => {
+      mkdirSync(join(rel, H(n)));
+      spawnSync('touch', ['-d', `@${base + i}`, join(rel, H(n))]);
+    });
+  };
+  const gone = (cur: string, prev: string, tag: string) =>
+    sh(`prunable_releases "${rel}" "${cur ? join(rel, H(cur)) : ''}" "${prev ? join(rel, H(prev)) : ''}" "${H(tag)}"`)
+      .out.split('\n').filter(Boolean).map((p) => label(p.slice(rel.length + 1))).sort();
+
+  it('prunable_releases keeps current, previous, the deploy tag and the 3 newest others, whatever their age', () => {
+    make(['r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7', 'r8', 'r9']);
+    expect(gone('r9', 'r8', 'r9')).toEqual(['r1', 'r2', 'r3', 'r4']);
+    expect(9 - gone('r9', 'r8', 'r9').length).toBe(5);
+    expect(gone('r1', 'r2', 'r1')).toEqual(['r3', 'r4', 'r5', 'r6']);
+    expect(gone('r9', 'r8', 'r1')).toEqual(['r2', 'r3', 'r4']);
+  });
+
+  it('prunes folders of any age, including ones made just now (no age rule)', () => {
+    make(['r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7', 'r8', 'r9'], Math.floor(Date.now() / 1000) - 60);
+    expect(gone('r9', 'r8', 'r9')).toEqual(['r1', 'r2', 'r3', 'r4']);
+  });
+
+  it('prunable_releases lists only 40-hex release folders: half-written, odd names, spaces and a * are never listed', () => {
+    make(['r1', 'r2', `${'f'.repeat(40)}.new`, 'r3', 'r4', 'r5', 'r6', 'r7']);
+    for (const odd of ['*', 'a b', '-rf', 'ABCDEF'.repeat(7).slice(0, 40), 'a'.repeat(39), 'a'.repeat(41)]) mkdirSync(join(rel, odd));
+    expect(gone('r7', 'r6', 'r7')).toEqual(['r1', 'r2']);
+    // The same folders as the only ones beyond the keep set still list nothing odd.
+    make(['r5', 'r6', 'r7']);
+    for (const odd of ['*', 'a b']) mkdirSync(join(rel, odd));
+    expect(gone('r7', 'r6', 'r7')).toEqual([]);
+  });
+
+  it('prunable_releases prunes nothing when current cannot be read', () => {
+    make(['r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7']);
+    expect(gone('', 'r6', 'r7')).toEqual([]);
+    expect(gone('missing', 'r6', 'r7')).toEqual([]);
+    expect(sh(`prunable_releases "${rel}" /etc "${join(rel, H('r6'))}" ${H('r7')}`).out).toBe('');
+    rmSync(rel, { recursive: true, force: true });
+    mkdirSync(rel);
+    expect(gone('a', 'b', 'c')).toEqual([]);
+  });
+
+  it("zeroed-update's prune loop never word-splits or globs the names, and runs only in a real run with * and space folders", () => {
+    const update = read('ops/host/files/usr/local/sbin/zeroed-update');
+    expect(update).not.toMatch(/for old in \$\(/);
+    expect(update).toContain('while IFS= read -r old; do');
+    // Run the loop itself against a releases root that holds a '*' and an 'a b' folder: only the old 40-hex folders go.
+    make(['r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7']);
+    for (const odd of ['*', 'a b']) mkdirSync(join(rel, odd));
+    const start = update.indexOf('while IFS= read -r old; do');
+    const loop = update.slice(start, update.indexOf('\n', update.indexOf('done < <(prunable_releases', start)));
+    const cur = join(rel, H('r7'));
+    const r = sh(`log() { :; }; prev="${join(rel, H('r6'))}"; commit="${H('r7')}"; ${loop.replace('/opt/zeroed/releases', rel).replace('"$(readlink -f /opt/zeroed/current 2>/dev/null || true)"', `"${cur}"`)}; ls -1 "${rel}"`);
+    expect(r.out.split('\n').filter(Boolean).sort()).toEqual(['*', 'a b', ...['r3', 'r4', 'r5', 'r6', 'r7'].map(H)].sort());
+  });
+
+  it('zeroed-update prunes only after a deploy that stayed up, and the system journal has a size cap the installer applies', () => {
+    const update = read('ops/host/files/usr/local/sbin/zeroed-update');
+    const prune = update.indexOf('prunable_releases /opt/zeroed/releases');
+    expect(prune).toBeGreaterThan(update.indexOf('if ! why="$(holds)"; then rollback "$why"; fi'));
+    expect(prune).toBeLessThan(update.indexOf('log "Deployed ${commit:0:12}. Worker: $worker."'));
+    expect(update).toContain('"$(readlink -f /opt/zeroed/current 2>/dev/null || true)" "$prev" "$commit")');
+    const conf = read('ops/host/files/etc/systemd/journald.conf.d/zeroed-journal.conf');
+    expect(conf.split('\n').filter((l) => l && !l.startsWith('#'))).toEqual(['[Journal]', 'SystemMaxUse=500M', 'SystemKeepFree=2G']);
+    const main = read('ops/host/install-main.sh');
+    expect(main).toContain('/etc/systemd/journald.conf.d/zeroed-*) return 0 ;;');
+    expect(main).toContain('[[ " ${CHANGED[*]} " != *" /etc/systemd/journald.conf.d/zeroed-journal.conf "* ]] || systemctl restart systemd-journald');
+    expect(read('ops/install.sh')).toContain('install_file /etc/systemd/journald.conf.d/zeroed-journal.conf');
+  });
+});
+
+describe('recording upload alerts (RECORD-UPLOAD)', () => {
+  const now = 1_800_000_000;
+  const alerts = (status: unknown) => sh(`record_alerts ${now}`, JSON.stringify(status)).out.split('\n').map((l) => l.split('|').slice(0, 2).join(' '));
+  const ok = { at: now * 1000, failed_runs: 0, running: false, kept: [], backlog_age_s: 0 };
+  const on = (keys: string[]) => ['failed', 'backlog', 'kept', 'stale'].map((k) => `${keys.includes(k) ? 'on' : 'off'} record-upload-${k}`);
+
+  it('raises one alert per problem: 3 failed runs, a backlog over a day, kept files, no report for 3 hours', () => {
+    expect(alerts(ok)).toEqual(on([]));
+    expect(alerts({ ...ok, failed_runs: 2 })).toEqual(on([]));
+    expect(alerts({ ...ok, failed_runs: 3 })).toEqual(on(['failed']));
+    // The run in progress counted itself already.
+    expect(alerts({ ...ok, failed_runs: 3, running: true })).toEqual(on([]));
+    expect(alerts({ ...ok, backlog_age_s: 86_401 })).toEqual(on(['backlog']));
+    expect(alerts({ ...ok, kept: [{ key: 'b/days/d/frames-000.jsonl.zst', why: 'holds a stored credential' }] })).toEqual(on(['kept']));
+    expect(alerts({ ...ok, at: (now - 10_801) * 1000 })).toEqual(on(['stale']));
+  });
+
+  it('with the switch on, a missing status raises the no-report alert and clears nothing (RC-M5); the switch off clears all; every line stays one line', () => {
+    expect(alerts({})).toEqual(['on record-upload-stale']);
+    expect(alerts({ failed_runs: 9, at: null })).toEqual(['on record-upload-stale']);
+    expect(alerts({ enabled: false, failed_runs: 9, at: 0 })).toEqual(on([]));
+    expect(alerts({ enabled: false })).toEqual(on([]));
+    expect(sh(`record_alerts ${now}`, 'not json').out).toBe('');
+    const r = sh(`record_alerts ${now}`, JSON.stringify({ ...ok, failed_runs: 4, last_error: 'a|b\nc' })).out.split('\n');
+    expect(r).toHaveLength(4);
+    expect(r[0]).toBe('on|record-upload-failed|ALERT Zeroed host: the recording upload failed 4 runs in a row (last: a b c). Recordings stay on the server until it works again.');
+  });
+
+  it('zeroed-check raises and clears them from the uploader\'s status file, and the switch decides', () => {
+    const check = read('ops/host/files/usr/local/sbin/zeroed-check');
+    expect(check).toContain(`if [ "$(jq -r '.record_upload == true' /opt/zeroed/current/ops/host-config.json 2>/dev/null || echo false)" = true ]; then\n  rec="$(cat /var/lib/zeroed-record-upload/status.json 2>/dev/null || echo '{}')"`);
+    expect(check).toContain(`if [ "$what" = on ]; then alert "$key" "$text"; else alert_clear "$key" "$text"; fi`);
+    expect(check).toContain('done < <(printf \'%s\' "$rec" | record_alerts "$(date +%s)")');
+    // Before the key check's early exits, so it runs on a server whatever its pairing state.
+    expect(check.indexOf('record_alerts')).toBeLessThan(check.indexOf('keys_stored || exit 0'));
+  });
+});
+
+describe('D07 host preflight (Z00)', () => {
+  // The block runs from the built ops/install.sh, the file the README line downloads. Its reads stay real; the
+  // test only shadows df and awk's /proc/meminfo with bash functions, which no host or environment can do.
+  const script = read('ops/install.sh');
+  const block = script.slice(script.indexOf('D07_MEM_MIN_KB='), script.indexOf('\n# An update is all or nothing.'));
+  const die = script.slice(script.indexOf('die() {'), script.indexOf('\n', script.indexOf('die() {')));
+  const GIB = 1048576;
+  const run = (update: 0 | 1, memKb: string, diskKb: string) => {
+    const dir = mkdtempSync(join(tmp, 'd07-'));
+    writeFileSync(join(dir, 'meminfo'), `MemTotal:       ${memKb} kB\nMemFree:          100000 kB\n`);
+    const r = spawnSync('bash', ['-c', `set -euo pipefail; UPDATE=${update}; ${die}
+      df() { [ "$*" = "-P -k /var/lib" ] && [ -n "${diskKb}" ] || return 1; printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\n/dev/vda2 %s 9 9 1%% /\\n' "${diskKb}"; }
+      awk() { if [ "\${@: -1}" = /proc/meminfo ]; then command awk "\${@:1:$#-1}" "${dir}/meminfo"; else command awk "$@"; fi; }
+      ${block}
+      echo went-on`], { encoding: 'utf8', env: { PATH: process.env['PATH'] ?? '' } });
+    return { status: r.status, out: r.stdout.trim(), err: r.stderr.trim() };
+  };
+  const twoGb = '2014180'; // a typical 2 GB VM's MemTotal (1.92 GiB)
+  const disk55 = '52700000'; // a 55 GB disk's filesystem, in kB (53.96 GB)
+
+  it('passes the 2 GB, 55 GB host and the boundaries: 1.5 GiB and 40 GB exactly', () => {
+    expect(run(0, twoGb, disk55)).toEqual({ status: 0, out: 'went-on', err: '' });
+    // The low estimate of the 55 GB disk's filesystem (about 50.6 GB, not measured; review F1) passes with a margin.
+    expect(run(0, twoGb, '49414063')).toEqual({ status: 0, out: 'went-on', err: '' });
+    expect(run(0, String(1.5 * GIB), '39062500')).toEqual({ status: 0, out: 'went-on', err: '' });
+  });
+
+  it('a full install refuses below either minimum, says why, and stops before any change', () => {
+    const oneGb = run(0, '1004316', disk55); // the 1 GB server zeroed
+    expect(oneGb.status).toBe(1);
+    expect(oneGb.out).toBe('');
+    expect(oneGb.err).toBe("Install stopped: this server is below the bot's host minimum (docs/blueprint/ARCH.md D07): it has 0.96 GiB of RAM; the bot needs a 2 GB server (at least 1.5 GiB reported). Use the 2 GB Vultr server (vc2-1c-2gb, 55 GB SSD).");
+    expect(run(0, String(1.5 * GIB - 1), disk55).status).toBe(1);
+    const smallDisk = run(0, twoGb, '24413000'); // 25 GB
+    expect(smallDisk.status).toBe(1);
+    expect(smallDisk.err).toContain('the disk that holds /var/lib is 25.0 GB; the bot needs at least 40 GB.');
+    expect(run(0, twoGb, '22460938').status).toBe(1); // the 25 GB server's filesystem, about 23 GB
+    expect(run(0, twoGb, '39062499').status).toBe(1);
+    const both = run(0, '1004316', '24413000');
+    expect(both.err).toContain('it has 0.96 GiB of RAM; the bot needs a 2 GB server (at least 1.5 GiB reported); the disk that holds /var/lib is 25.0 GB');
+    // Unreadable or odd values refuse too.
+    for (const [m, d] of [['', disk55], ['abc', disk55], [twoGb, ''], [twoGb, '-5'], ['1e9', disk55]] as const) {
+      const r = run(0, m, d);
+      expect(r.status, `${m}/${d}`).toBe(1);
+      expect(r.err, `${m}/${d}`).toMatch(/could not be read/);
+    }
+  });
+
+  it('an update only warns, so a running server keeps updating', () => {
+    const r = run(1, '1004316', '24413000');
+    expect(r.status).toBe(0);
+    expect(r.out).toBe('went-on');
+    expect(r.err.split('\n')).toEqual([
+      "Warning: this server is below the bot's host minimum (D07): it has 0.96 GiB of RAM; the bot needs a 2 GB server (at least 1.5 GiB reported).",
+      "Warning: this server is below the bot's host minimum (D07): the disk that holds /var/lib is 25.0 GB; the bot needs at least 40 GB.",
+    ]);
+    expect(run(1, twoGb, disk55)).toEqual({ status: 0, out: 'went-on', err: '' });
+  });
+
+  it('reads only the host, before anything changes, with no way to skip it', () => {
+    expect(block).toContain(`awk '$1 == "MemTotal:" { print $2; exit }' /proc/meminfo`);
+    expect(block).toContain("df -P -k /var/lib 2>/dev/null | awk 'NR == 2 { print $2 }'");
+    expect(block).not.toMatch(/ZEROED_|E2E|\$\{[A-Z_]+:-/);
+    expect(block).toMatch(/^D07_MEM_MIN_KB=1572864 /m);
+    expect(block).toMatch(/^D07_DISK_MIN_KB=39062500 /m);
+    // After the root, OS and option checks; before the journal, apt, files or users.
+    const at = script.indexOf('D07_MEM_MIN_KB=');
+    expect(script.indexOf('die "needs an x86_64 server"')).toBeLessThan(at);
+    expect(script.indexOf('--ssh-key must be one public key line')).toBeLessThan(at);
+    for (const later of ['JOURNAL=/var/lib/zeroed-host/update-journal', 'say "Packages"', 'say "Users"', 'say "Files"', 'install_file /']) {
+      expect(script.indexOf(later), later).toBeGreaterThan(at);
+    }
   });
 });

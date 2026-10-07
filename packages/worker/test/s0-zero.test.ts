@@ -4,8 +4,10 @@
 // (H11 keeps rejecting). The live trades seen meanwhile are held back and reach the feed after the fill's.
 import { describe, expect, it } from 'vitest';
 import { writeFileSync } from 'node:fs';
+import { setFlagsFromString } from 'node:v8';
+import { runInNewContext } from 'node:vm';
 import { join } from 'node:path';
-import { encodeBase58, transactionEvents, type TransactionRecord } from '../../core/src/chain/index.ts';
+import { compactLogs, encodeBase58, transactionEvents, type TransactionRecord } from '../../core/src/chain/index.ts';
 import { startSession, TRIAL_POLICY } from '../../core/src/config/index.ts';
 import { OFF_CHAIN, type Moment } from '../../core/src/engine/index.ts';
 import { Evidence, candlesKey, migrationKey, parseCandles, parseMigration } from '../../core/src/gates/index.ts';
@@ -24,7 +26,7 @@ import { DEPLOYER_CHECK_CREDITS_PER_DAY } from '../src/facts/deployer-checks.ts'
 import { holderScanCreditsPerDay } from '../src/facts/budget.ts';
 import { fillTradeGaps, type SeedRpc } from '../src/seed/index.ts';
 import { PoolWatch } from '../src/run/pool-watch.ts';
-import { CreditBook, LiveProviders, TRADES_FILL_CREDITS, TRADES_FILLS_IN_FLIGHT, tradesFill } from '../src/run/sources.ts';
+import { CreditBook, FILLS, LiveProviders, TRADES_FILL_CREDITS, TRADES_FILLS_IN_FLIGHT, tradesFill } from '../src/run/sources.ts';
 import { DailyBudget } from '../src/persist/index.ts';
 import { blockNetwork, recordOf, settle, testSecrets, tx, TXS } from './helpers.ts';
 
@@ -69,7 +71,9 @@ const setup = (o: { readonly fill?: Fill; readonly coverFrom?: bigint } = {}) =>
     return [b.key.split(':').at(-1)!, b.value];
   });
   const logFrames = () => frames.filter((f) => f.body.type === 'logs' || f.body.type === 'seen');
-  return { timers, hub, feed, frames, stream, poolId, slot, log, coverage, logFrames };
+  // FAILED-LOGS: a failed transaction's notification, with log lines that would decode if it had succeeded.
+  const failedLog = (n: number, signature: string) => hub.last.push({ jsonrpc: '2.0', method: 'logsNotification', params: { subscription: 200, result: { context: { slot: n }, value: { signature, err: { InstructionError: [3, { Custom: 6004 }] }, logs: ['Program log: x'] } } } });
+  return { timers, hub, feed, frames, stream, poolId, slot, log, failedLog, coverage, logFrames };
 };
 
 describe('a candidate pool watch starts its coverage at the migration', () => {
@@ -140,6 +144,47 @@ describe('a candidate pool watch starts its coverage at the migration', () => {
     t.log(605, 'C'.padEnd(88, '1'));
     await settle(20);
     expect(t.logFrames().at(-1)!.place.at).toBe('chain');
+  });
+
+  it('FAILED-LOGS: a failed transaction held during the catch-up keeps no lines, and is released as its sighting only', async () => {
+    const pending: ((ok: boolean) => void)[] = [];
+    const t = setup({ coverFrom: 590n, fill: () => new Promise<boolean>((r) => { pending.push(r); }) });
+    await settle(20);
+    t.log(602, 'A'.padEnd(88, '1'));
+    t.failedLog(602, 'B'.padEnd(88, '1'));
+    await t.slot(604);
+    expect(t.logFrames()).toEqual([]);
+    pending[0]!(true);
+    await settle(20);
+    const live = t.frames.filter((f) => ['logs', 'seen'].includes(f.body.type)).map((f) => [f.body.type, (f.body as { signature: string }).signature.slice(0, 1)]);
+    expect(live).toEqual([['seen', 'A'], ['logs', 'A'], ['seen', 'B']]);
+  });
+
+  it('FAILED-LOGS: failed notifications held during a catch-up cost almost nothing (their whole log, which compactLogs keeps, is dropped)', async () => {
+    setFlagsFromString('--expose-gc');
+    const gc = runInNewContext('gc') as () => void;
+    const pending: ((ok: boolean) => void)[] = [];
+    const t = setup({ coverFrom: 590n, fill: () => new Promise<boolean>((r) => { pending.push(r); }) });
+    await settle(20);
+    await t.slot(601);
+    // A bot's failed swap: 40 lines of calls, ending in the failure (no clean close, so compactLogs returns it whole).
+    const call = (k: number) => [`Program ${'T'.repeat(43)} invoke [1]`, `Program log: Instruction: TransferChecked ${k} ${'x'.repeat(30)}`, `Program ${'T'.repeat(43)} consumed 6200 of 200000 compute units`, `Program ${'T'.repeat(43)} success`];
+    const lines = [...Array.from({ length: 9 }, (_, k) => call(k)).flat(), 'Program log: AnchorError occurred. Error Code: ExceededSlippage.', `Program ${'p'.repeat(43)} failed: custom program error: 0x1774`];
+    expect(compactLogs(lines)).toBe(lines);
+    const b58 = (k: number) => [...String(k)].map((d) => 'abcdefghij'[Number(d)]).join('');
+    const n = 2_000;
+    gc();
+    const before = process.memoryUsage().heapUsed;
+    for (let k = 0; k < n; k++) t.hub.last.push({ jsonrpc: '2.0', method: 'logsNotification', params: { subscription: 200, result: { context: { slot: 602 }, value: { signature: `F${b58(k)}`.padEnd(88, '1'), err: { InstructionError: [3, { Custom: 6004 }] }, logs: lines.map((l) => `${l} `.trimEnd()) } } } });
+    await settle(20);
+    gc();
+    const perNotice = (process.memoryUsage().heapUsed - before) / n;
+    expect(t.stream.heldNotices).toBe(n);
+    // Kept whole, each held about 3.8 KB of lines (38 strings); without them a held notice is its signature, slot and err.
+    process.stderr.write(`FAILED-LOGS held per notice: ${perNotice.toFixed(0)} B\n`);
+    expect(perNotice).toBeLessThan(800);
+    pending[0]!(true);
+    await settle(20);
   });
 
   it('a hold that overflows releases at once and the catch-up stays lossy even if the fill says complete', async () => {
@@ -390,9 +435,15 @@ describe('the in-run fill spends from the daily budget and is journaled', () => 
     const many: SignatureInfo[] = Array.from({ length: 400 }, (_, k) => ({ signature: `Many${k}`.replace(/0/g, 'z').padEnd(44, '1'), slot: BigInt(hyg.slot), err: null, blockTime: 1_791_032_000 }));
     let reading = 0;
     let most = 0;
+    // MEM-PROBE: the process-wide fill counts the memory probe reports, as seen while fills read.
+    let mostActive = 0;
+    let mostWaiting = 0;
     const busy: SeedRpc = {
       getSignaturesForAddress: async (_a, o) => { const from = o.before === undefined ? 0 : many.findIndex((x) => x.signature === o.before) + 1; return many.slice(from, from + o.limit); },
-      getTransaction: async () => { reading++; most = Math.max(most, reading); await settle(0); reading--; return recordOf(hyg); },
+      getTransaction: async () => {
+        reading++; most = Math.max(most, reading); mostActive = Math.max(mostActive, FILLS.active); mostWaiting = Math.max(mostWaiting, FILLS.waiting);
+        await settle(0); reading--; return recordOf(hyg);
+      },
     };
     const daily = TRADES_FILL_CREDITS * 3 + 100;
     const budget = DailyBudget.load(join(tempState(), 'fill-budget.json'), daily, now);
@@ -407,6 +458,9 @@ describe('the in-run fill spends from the daily budget and is journaled', () => 
     expect(TRADES_FILLS_IN_FLIGHT).toBe(2);
     expect(most).toBeGreaterThan(0);
     expect(most).toBeLessThanOrEqual(TRADES_FILLS_IN_FLIGHT);
+    expect(mostActive).toBe(TRADES_FILLS_IN_FLIGHT);
+    expect(mostWaiting).toBe(12 - TRADES_FILLS_IN_FLIGHT);
+    expect(FILLS).toEqual({ active: 0, waiting: 0 });
     const total = used.reduce((a, b) => a + b, 0);
     expect(total).toBeLessThanOrEqual(daily);
     expect(daily - budget.remaining(now)).toBe(total);
@@ -593,6 +647,25 @@ describe('H11 on the live path: migration, a late subscribe, then trades', () =>
       if (filled) expect(r.ok).toBe(true);
       else expect(!r.ok && r.reason).toMatchObject({ gate: 'H16', code: 'gap', input: 'stream' });
     }
+  });
+
+  it('BEHIND (facts review B1): a shed range\'s gap released first in the range keeps H11 rejecting on every event of it; released after it, the range\'s events would pass without the shed swap', () => {
+    // The catch-up resumed in full up to the last swaps' slot; the swaps of that slot are shed (never released).
+    const drop = swaps.at(-1)!.slot;
+    const base = () => new FactWorld().push(
+      ...txEvents(create), ...txEvents(complete), ...txEvents(migrate),
+      coverage(stream, 'start', { fromSlot: migrate.slot, via: `logs:${POOL}` }, migrate.slot, atOf(migrate) + 2_000),
+      coverage(stream, 'gap', { fromSlot: migrate.slot, toSlot: null, reason: 'catch-up', via: `logs:${POOL}` }, migrate.slot, atOf(migrate) + 2_001),
+      ...swaps.filter((s) => s.slot < drop).flatMap((s) => txEvents(s)),
+      coverage(stream, 'resume', { fromSlot: migrate.slot, toSlot: drop - 1n, via: `logs:${POOL}` }, drop - 1n, at - 10),
+    );
+    // As the worker places it: first in the range's first slot (index 0, 0), before any event of the range.
+    const shedGap = { ...coverage(stream, 'gap', { fromSlot: drop, toSlot: head, reason: 'shed', via: `logs:${POOL}` }, drop, at - 5), moment: { slot: drop, txIndex: 0, ixIndex: 0, receivedAt: at - 5 } };
+    const placed = base().push(shedGap, slotNotice(drop, at - 4));
+    const r = h11(placed, drop, at - 3);
+    expect(!r.ok && r.reason).toMatchObject({ gate: 'H16', code: 'gap', input: 'stream' });
+    // Without the gap yet (placed after the range, at the open slot): an event of the range passes, the swap missing.
+    expect(h11(base().push(slotNotice(drop, at - 4)), drop, at - 3).ok).toBe(true);
   });
 
   it('coverage that starts at the first live slot, as before S0-ZERO, never passes: H16 gap', () => {

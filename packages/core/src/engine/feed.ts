@@ -31,6 +31,8 @@ export type FeedEvent = MarketEvent | WorldEvent;
  */
 export interface Feed {
   next(): FeedEvent | null;
+  /** OOM-MINT: mints and pools nothing will read again (`Strategy.retired`): a feed that keeps state per address drops it. */
+  retire?(ids: readonly string[]): void;
 }
 
 /** Validates an event and returns a frozen copy, so neither the engine nor the caller can change it afterwards. */
