@@ -48,6 +48,7 @@ The previous S1 account reached its usage limit about 12:45 PM. The owner made t
 - No host access, no secrets access (owner only), as before.
 
 **Log (Melbourne time, newest first)**
+- 6:11 PM U1-B: the graduation list is complete (74,703, the same as U1). Decoding is the bottleneck: about 0.65 tx/s on a shared IP, ~30 h, so done around 11:30 PM tonight to 1 AM Fri (uncertain). Ruling: keep the full pre-registered set, no interim reads; extra free keyless RPCs allowed if their terms permit.
 - 6:10 PM **Red team B round 3 final** (claude/redteam-b 2c0b86d).
   - New CRITICAL RB-11 (#275's haircut, the same as the window ruling) and HIGH RB-10 (#197 migration day/week marks; ruled 'drop').
   - Closed on the fix heads: RB-1/1b/1m/2a-c, M2, RB-5 rules, N1, N2, and RB-8 start (0/364 fail to start).
