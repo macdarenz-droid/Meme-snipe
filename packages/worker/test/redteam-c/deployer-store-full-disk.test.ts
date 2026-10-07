@@ -110,4 +110,18 @@ describe('RC-FIXES-2b/2c: deployer store on a full disk', () => {
     // Rewritten closed: a second load reads the same.
     expect(new DeployerStore(dir).load(0).coverage.map((c) => (c.value as { value: unknown }).value)).toEqual([gap(201n, 201n), gap(201n, 201n)]);
   });
+
+  it('a lost event older than the newest saved one (an out-of-order keep): the load closes its gap up to the newest saved slot', async () => {
+    const dir = fresh();
+    (await import('node:fs')).mkdirSync(dir);
+    disk.free = Number.POSITIVE_INFINITY;
+    const s = new DeployerStore(dir, { now: () => 1 });
+    s.keep(rug(300, 1) as never);
+    disk.free = 0;
+    s.keep(rug(250, 2) as never);
+    disk.free = Number.POSITIVE_INFINITY;
+    const gaps = new DeployerStore(dir).load(0).coverage.map((c) => (c.value as { value: unknown }).value);
+    expect(gaps).toEqual([gap(250n, 300n), gap(250n, 300n)]);
+  });
 });
+
