@@ -42,7 +42,7 @@ What is **not** known: PM-01's own rule (a 15 s breakout above the post-migratio
    one row per migration, `block_time_utc` as `YYYY-MM-DDTHH:MM:SSZ`, addresses and signature in base58, rows sorted by `(slot, tx_index, ix_index)` ascending.
 4. Its sha256 over the exact file bytes is recorded in the day's M07 manifest (A-M05-03) and in every run that reads day D. A run refuses a day whose file hash differs from the manifest.
 
-**For the B-10 history pull.** The Old Faithful pinned migration list for day D (`research/z-h-estimate/OLD-FAITHFUL.md` §2, "The PM-01 universe is a pinned input") must be a superset of `pm01-universe-D.csv`. The replay derives the day's list from it with rules 1–3 above, so the result is deterministic and its sha256 is checkable. K3 retention for each listed pool runs from the migration slot to **migration + 300 min** (§12, proposal PM01-P5): last entry before migration + 120 min, time stop 120 min, plus 60 min for the exit ladder. A position still open when the pool's data ends is closed by the pessimistic `no_data` rule (ARCH §9.3), never dropped.
+**For the B-10 history pull.** The Old Faithful pinned migration list for day D (`research/z-h-estimate/OLD-FAITHFUL.md` §2, "The PM-01 universe is a pinned input") must be a superset of `pm01-universe-D.csv`. The replay derives the day's list from it with rules 1–3 above, so the result is deterministic and its sha256 is checkable. K3 retention for each listed pool runs from the migration slot to **migration + 300 min** (PM01-P5, accepted as the proposal for the OF-3 step, §13; the supervisor records it in DECISIONS with the measured sizes before batch 3): last entry before migration + 120 min, time stop 120 min, plus 60 min for the exit ladder. A position still open when the pool's data ends is closed by the pessimistic `no_data` rule (ARCH §9.3), never dropped.
 
 ## 4. Rules (no free parameter left)
 
@@ -54,7 +54,7 @@ What is **not** known: PM-01's own rule (a 15 s breakout above the post-migratio
 ### 4.2 Eligibility at a decision (all at the decision snapshot; any check that cannot be computed fails closed)
 - `pool_age`: decision time in `[migration + 20 min, migration + 120 min)` (ARCH §8.4).
 - Hard checks of ARCH §8.4 as M06 implements them, at their PM thresholds: `min_depth` effective quote ≥ 85 SOL (85,000,000,000 lamports); `real_vs_effective_quote` ≥ 0.6; `fee_ceiling` ≤ 125 bps per side; `top10_holders` ≤ 35%; `single_holder` ≤ 10%; `lp_withdrawable_max`; `pool_canonical`; `venue_enabled`; `fee_config_known`; `mint_*` and `t22_*` checks; `metadata_matches_mint`; `mayhem_or_special`; `usdc_quote`; `honeypot_sim`; `dump_flag` (hard for PM). Soft checks (`metadata_mutable`, `creator_balance`, `insider_network`) are logged and change nothing in PM-01's decision.
-- **`dump_flag` needs a PM baseline.** As written, M08's `dumpFlagState` uses returns from `now − 6 h` to `now − 30 min` and needs 50% coverage (A-M08-02 step 5, `features.min_coverage_bps`). A pool at most 120 min old can never reach that, so every PM-01 decision would be `insufficient` → `error` → no entry. This file therefore registers the PM baseline in proposal PM01-P1 (§12): returns from bar 0 to `now − 30 min`, with the 50% coverage rule over that span and a span of at least 10 min. So the first decision with a valid flag is at migration + 40 min. The 30-min dump window and the −4 × MAD rule are unchanged (no loosening of a hard check). **If the supervisor rules otherwise, this section is amended before the first run.**
+- **`dump_flag` PM-01 baseline (ruled, PM01-P1, §13).** As written, M08's `dumpFlagState` uses returns from `now − 6 h` to `now − 30 min` and needs 50% coverage (A-M08-02 step 5, `features.min_coverage_bps`). A pool at most 120 min old can never reach that, so every PM-01 decision would be `insufficient` → `error` → no entry. For **PM-01 only**, the baseline runs from migration (bar 0) to `now − 30 min` and needs at least 10 min of data (40 complete 15 s bars); the 50% coverage rule still applies over that span. Under 10 min stays `insufficient` (fail closed). So the first valid entry is at migration + 40 min; `entryFromMs` stays 1,200,000, and decisions from 20 to 40 min fail closed on this check. The 30-min dump window and the −4 × MAD rule are unchanged (no loosening of a hard check). Every other strategy keeps the 6 h baseline. The report counts the entries whose baseline was shorter than 6 h and gives the result with and without them (§7.4).
 - Data freshness guards of ARCH §8.5 (observation lag ≤ 12 slots at decision, ≤ 8 at build).
 - Every 15 s bar from bar 0 to the decision bar is complete. One incomplete bar means the post-migration high is unknown, so no decision is made in that pool (fail closed; counted as `start_missing` or `gap`, §8.3).
 
@@ -113,7 +113,7 @@ Sizes are fixed in lamports, so SOL/USD never moves a result ("Profit is counted
 - A21 sets PM-01's stressed gap prior at about 8,270 bps. `MAXRISK` prices a trade at notional × 82.7% plus its round-trip cost, and its hard ceiling is 50,000,000 lamports (ARCH §8.1, §3.5). That caps a PM-01 trade at about **57,000,000 lamports (about $8.5)** at the minimum eligible depth. $20 and above cannot be held under today's ceilings.
 - At $5 the stressed risk plus conservative round-trip cost is about 29,200,000 lamports, inside the ceiling.
 - **Engine equity for every gate run** (CHOICE): `E_bt` = 20,000,000,000 lamports (20 SOL) with the **live-small** limit profile (the stricter one). Then `MAXRISK` = 0.25% `E` = 50,000,000; `MAXRISK_PF` = 100,000,000 (two $5 positions fit, `MAXOPEN` = 2); `MAXPOS` = min(1% `E`, 66,666,667) admits $5; `MAXEXP` = 2% `E` = 400,000,000. So percentage limits never shrink the $5 size, and count limits (`MAXOPEN`, `PERTOKEN`, per-token daily entries, `LOSSRUN`, `DAYLOSS`) work as in the engine. `REGIME` and `ENTRYRATE` are MR-only (ARCH §8.1).
-- **Reported lines** ($20 to $10,000) run the same rules with `E_bt` = 600 × size and every lamport ceiling scaled by size ÷ $5 (proposal PM01-P3). They are never gate inputs. For each, the report states the ceilings and equity that size would need; raising any ceiling is the owner's alone.
+- **Reported lines** ($20, $100, $1,000 and $10,000) run the same rules with `E_bt` = 600 × size and every lamport ceiling scaled by size ÷ $5 (ruled, PM01-P3, §13). They are reported only, never gate inputs, and never a change to the bot's ceilings. Each line shows gross return, fixed costs, percentage fees and price impact apart (§5.3). For each, the report states the ceilings and equity that size would need; raising any ceiling is the owner's alone.
 - `DEPTHPCT` (≤ 0.5% of min(real, effective) quote) is never scaled: it is market depth, not a limit. A size above it is **refused, not shrunk**, in every line, so each line's trade count shows plainly how many pools could take that size.
 
 ### 5.3 Cost rows (A-M10-03, C-50, C-77)
@@ -170,12 +170,21 @@ Plain reading: at $5, PM-01 needs an average gross gain of roughly 5% a trade pl
 
 - `W_B` is at least 30 days. It ends at the first UTC midnight at which it has ≥ 30 days and ≥ 300 closed trades of the selected config, and B-5 is recomputed for its real length (ARCH §3.4 B-1). Trade **counts** may be read while `W_B` runs, to say when it will end; **no return** is computed on any `W_B` day until `W_B` has ended.
 - **Embargo and purge** (ARCH §3.4 out-of-sample protocol): a trade whose holding period crosses a segment boundary (selection | final 20%, `W_B` | `W_R`) is dropped from both sides and counted. Entries in the first 300 min after a boundary are not taken (300 min = the longest hold, §3).
-- **Regime breaks** (A12, A16): any venue upgrade or fee-config change inside a window that L-4 would flag is a hard boundary; trades crossing it are dropped and each side is reported. Whether a window continues across it is proposal PM01-P4.
+- **Regime breaks** (A12, A16; ruled, PM01-P4, §13): any venue upgrade or fee-config change inside a window that L-4 would flag is a hard boundary; trades crossing it are dropped and each side is reported. What happens next depends on its class:
+
+  | Class | Kinds of change | Effect on the window | Known boundaries (`docs/research/venues.md` §2.7) |
+  |---|---|---|---|
+  | Economic | Any fee change; a change to the reserves or pricing maths; a new mandatory account or an instruction that changes cost; a change in who is paid a fee; a `disable_flags` change; a rent-per-byte change | Ends the window. Its counts restart after the boundary, with the 300-min embargo above | B1 (adds `virtual_quote_reserves`, which §4.1's price reads: reserves maths; "none seen" in 3–6 blocks is not proof), B2 (BOOST: liquidity held back and bought-and-burned), B3 (fee and creator-fee config), B4 (holder rewards: who is paid the creator fee) |
+  | Decoder-only | Layout-only changes (event or account bytes added or moved, same economics) | Reported; the window continues | B5 (8-byte event tail; "economics unchanged" per UPG-1) |
+
+  A boundary not shown to be decoder-only within one day of it counts as economic. B5 stays decoder-only only while UPG-1's "economics unchanged" finding stands; if it is contradicted, B5 is economic. B1–B5 all lie before 2026-10-21, so none falls inside `W_B` or `W_R`; they show how a new boundary is classed.
 - **Dates today.** The recorder is not running yet (server paused), so no calendar date can be named. Each window's start and end are written to `docs/DECISIONS.md` on the day they are fixed by the rules above, and A-M13-05 refuses any overlap (`E_WINDOW_OVERLAP`).
 - **Calendar.** With `W_B` starting no earlier than 2026-10-21, `W_B` + `W_R` end no earlier than 2026-12-04, and later if trades come slowly. If PM-01's gates are still running on 31 Dec 2026, the OWNER PENDING clause of C-56 applies (ARCH D08).
 
 ### 6.3 B-10 history days
 B-10 replays the selected config transaction by transaction on the Old Faithful days (2026-07-23 to 08-21 with lead-in 07-22; ARCH §3.4 B-10) with the replay key on. Those runs count **only** crashes, illegal states and unreconciled intents; none of their trades enter any return statistic (C-78). They are not a walk-forward fold and they decide nothing about profit. They lie before regime boundaries B3 (2026-09-09) and B4 (2026-09-12), which does not matter for crash counts.
+
+A kill-only screen of PM-01 on the B-10 days (one that could stop PM-01 but never pass it) is **not** part of this file. It is an option waiting on the owner (supervisor ruling 6, §13); it is added only by an amendment after the owner says yes, and before the first run.
 
 ## 7. Primary metric, tests and sample size
 
@@ -195,7 +204,7 @@ Mean net return per trade **in SOL**: (SOL received − SOL spent − every cost
 - **≥ 300 out-of-sample trades** in `W_R`, whatever `n_80` says (R-1).
 
 ### 7.4 Reported beside the tests (decide nothing)
-Lean and strict rows; the 414,009 line; the five sizes; a delayed-entry line (one more 15 s bar of delay); A22's skew reporting (outcome bins ≤ stop, small loss, 0–2×, 2–10×, 10–50×, ≥ 50×; the loss bill; week-clustered intervals; the top 1% of trades' share of P&L; A22's capped mean, whose unit A-M13-04 fixes; with a +1,500 bps target it should rarely bind); hold-SOL and JitoSOL baselines (C-56).
+Lean and strict rows; the 414,009 line; the five sizes; the count of entries whose `dump_flag` baseline was shorter than 6 h, and the primary metric with and without them (PM01-P1); a delayed-entry line (one more 15 s bar of delay); A22's skew reporting (outcome bins ≤ stop, small loss, 0–2×, 2–10×, 10–50×, ≥ 50×; the loss bill; week-clustered intervals; the top 1% of trades' share of P&L; A22's capped mean, whose unit A-M13-04 fixes; with a +1,500 bps target it should rarely bind); hold-SOL and JitoSOL baselines (C-56).
 
 ## 8. Study hygiene (A12, C-63)
 
@@ -214,7 +223,7 @@ Every computation of a PM-01 signal or return on any day is logged in M13's view
 ## 9. Random-entry benchmark (A-M13-06, C-65)
 
 - For each PM-01 trade, 10 random entries in the **same pool** and the **same UTC hour**, drawn with the random-entry seed, from complete 15 s bar closes inside that pool's PM window where every entry-time filter of §4.2 passes (the size's `DEPTHPCT` and `k` included) but the breakout and depth-rising conditions are not required. Each random entry runs the same config's exits and costs.
-- C-65's third key, the 6 h MAD decile, cannot exist for a pool at most 120 min old, and C-65's overlap rule uses MR's lookback `L`. The PM reading is proposal PM01-P2: MAD of 15 s returns from bar 0 to the candidate bar, deciles over all candidate bars of the same window; `L` = 60 s (the depth-rising look-back), so a candidate whose holding period overlaps `[signal − 60 s, signal]` is dropped.
+- C-65's third key, the 6 h MAD decile, cannot exist for a pool at most 120 min old, and C-65's overlap rule uses MR's lookback `L`. The PM reading (ruled, PM01-P2, §13): MAD of 15 s returns since migration (bar 0) to the candidate bar, deciles over all candidate bars of the same window; `L` = 60 s (the depth-rising look-back), so a candidate whose holding period overlaps `[signal − 60 s, signal]` is dropped.
 - Fewer than 10 candidates: all are used. None: the trade counts in §7 but not in the excess test; `n_b` (trades with at least one random entry) is reported.
 - Excess per trade = trade net return − mean net return of its random entries, on the conservative row. Test: §7.3's interval on the excess, lower bound > 0, beside B-2 and R-2.
 
@@ -237,7 +246,7 @@ PM-01 stage → `failed` (absorbing; A-M13-05 step 3) when any of these happens.
 4. `W_B` reaches 90 days with fewer than 300 closed trades (CHOICE, mirroring R-1's 90-day rule): B-1 cannot be met in a usable time; the case goes to the owner with the recommendation stop.
 5. Gate P fails P-2, P-2b, P-3 or P-4 with sufficient data.
 6. The C-56 end state: if PM-01 has not passed by 31 Dec 2026, the OWNER PENDING clause applies; no new PM work starts after that date.
-7. A venue change (L-4 kind) that changes PM-01's trade economics in the middle of `W_R`, if the supervisor rules (PM01-P4) that the windows cannot continue across it.
+An economic boundary inside `W_B` or `W_R` is not a kill: it ends that window and its counts restart after it (§6.2, PM01-P4).
 
 A gate that is only `pending_data` never kills and never passes.
 
@@ -245,11 +254,11 @@ A gate that is only `pending_data` never kills and never passes.
 
 | # | Number | How it is fixed | Before |
 |---|---|---|---|
-| PM01-P1 | PM `dump_flag` baseline (start, coverage, minimum span) | Supervisor ruling (proposal in §4.2), then an M08 change with its `affectsReturns` key | First run |
-| PM01-P2 | Random-entry matching for PM (MAD look-back, `L`) | Supervisor ruling (proposal in §9) | First run |
-| PM01-P3 | Ceilings and `E_bt` for the reported sizes | Supervisor ruling (proposal in §5.2) | First run |
-| PM01-P4 | Whether a window continues across a market boundary | Supervisor ruling | First run |
-| PM01-P5 | K3 retention horizon (migration + 300 min) | Supervisor ruling, recorded with the OF-3 retention choice | Batch 3 of the Old Faithful pull |
+| PM01-P1 | PM `dump_flag` baseline (start, coverage, minimum span) | Ruled (§13). Still needs the M08 change, with its own `affectsReturns` key | First run |
+| PM01-P2 | Random-entry matching for PM (MAD look-back, `L`) | Ruled (§13) | — |
+| PM01-P3 | Ceilings and `E_bt` for the reported sizes | Ruled (§13) | — |
+| PM01-P4 | Whether a window continues across a market boundary | Ruled (§13); classes in §6.2 | — |
+| PM01-P5 | K3 retention horizon (migration + 300 min) | Accepted as the proposal for the OF-3 step (§13); the supervisor records it with the measured sizes | Batch 3 of the Old Faithful pull |
 | — | Exact stressed gap prior (A21 says "about 8,270") | A-M10-04 freezes it in the parameter set; §5.2 is recomputed and amended if it changes the $5 verdict | First run |
 | — | Exact cost-row lamports (rent account size, janitor priority) | A-M10-03 code and golden tests; §5.4 is illustration only | First run |
 | — | A21 directional stress (`g`, `N`) | A-M10-04 / A-M11-03 tickets; recorded here by amendment | First run |
@@ -257,3 +266,14 @@ A gate that is only `pending_data` never kills and never passes.
 | — | PM-01's trade rate | Counted while `W_B` runs (counts only, §6.2) | — |
 | — | Window dates | Fixed by §6.2's rules and written to DECISIONS on the day | Each window's start |
 | — | `honeypot_sim` and holder state in recorded `W_B` data | If the engine cannot supply them from M07 records, every entry fails closed; that is a defect to fix in the data path, never a check to skip ("Discipline, not paralysis") | First run |
+
+## 13. Rulings
+
+Supervisor rulings of 8 Oct 2026, about 9:30 AM (Melbourne), in `docs/reviews/PM01-PREREG.md` on `claude/supervisor-docs`. Applied here before the first run.
+
+1. **PM01-P1, accepted** as a PM-01-only rule, fixed in §4.2: baseline from migration to `now − 30 min`, at least 10 min of data, dump rule unchanged, first valid entry at migration + 40 min. Other strategies keep the 6 h baseline; under 10 min stays `insufficient`. The report counts entries with a baseline under 6 h and gives the result with and without them (§7.4).
+2. **PM01-P2, accepted**, fixed in §9: MAD since migration, `L` = 60 s.
+3. **PM01-P3, accepted**, fixed in §5.2: gates decide at $5 with `E_bt` = 20 SOL on the live-small profile; $20 to $10,000 are reported lines only, with scaled `E_bt` and ceilings, each showing gross return, fixed costs, percentage fees and price impact apart.
+4. **PM01-P4, accepted**, fixed in §6.2: economic boundaries end the window; decoder-only boundaries are reported and the window continues; a boundary not shown to be decoder-only within one day counts as economic. The class table ties B1–B5 to the classes.
+5. **PM01-P5, accepted as the proposal for the OF-3 step** (§3): K3 keeps migration to migration + 300 min. The supervisor records it in DECISIONS with the measured sizes before batch 3.
+6. **Kill-only screen on the B-10 days: not added.** Mentioned in §6.3 only as an option waiting on the owner.
