@@ -244,3 +244,146 @@ Detail for R2-02:
 - **Z08 and Z09 additions:** these match A01, A03, A02, A07 and A05.
 - **New DECISIONS table rows:** the Blueprint authority, the host move, "no bugs migrate" with the recorder and paper-engine exception, and the addendum row. All four match `CLAUDE.md` "Blueprint" and "Host".
 - **HANDOVER:** the A17 change and the owner decisions sent (A05, A06 item 2, A17 values, A18) match the addendum's note to the supervisor. That note listed A01 too, which is resolved.
+
+# Round 3: fix check (`0aecee3b`)
+
+Asked by the supervisor on 2026-10-07. Target: `docs/MIGRATION.md`, `CLAUDE.md` and `docs/DECISIONS.md` on `claude/blueprint-migration` at `0aecee3b` (fix commits `46b4aa85` to `0aecee3b`). Line numbers ("L") in this round are lines of `docs/MIGRATION.md` at `0aecee3b`. Code was read at the same commit. No network except git. Owner decisions of about 10:58 PM (A05, A06 item 2, A17 values, A18) and about 11:00 PM (Shyft free with Chainstack free backup, Telegram as the D27 (c) channel with codes only, no PumpPortal for now) are taken as given.
+
+## Summary (round 3)
+
+| State | Count |
+|---|---|
+| Closed | 42 |
+| Partly closed | 2 (m16, R2-01) |
+| Still open | 0 |
+
+New findings: 0 BLOCKER, 2 MAJOR, 9 MINOR.
+
+The two new majors:
+- Z04 is ordered before Z06, but its A-M13-03 needs A-M10-01 in Z06 (R3-01). This came from round 2's own wrong evidence in R2-03.
+- Owner pre-funding item 2's history replay binds the M2 exit, but no card builds it and its pass rule is not written (R3-02).
+
+## What was checked (round 3)
+
+- **Every finding ID** in rounds 1 and 2 (44 rows below).
+- **Ticket coverage.** Every M0 (24), M1 (25), M2 (45), M3 (49) and M4 (26) ticket in `INTEGRATION.md:19-23` appears in the map's cards or milestone lists (L747-828). M4b and Deferred tickets (A-M01-06, A-M02-07, B-M16-09; B-M16-06, B-M16-08) are not placed; group A marks A-M01-06 and A-M02-07 "Gated, Phase 3b". That is a note, not a finding.
+- **Ticket order.** Each card's tickets were checked against the dependency columns of `SPEC-A.md:55-117`, `SPEC-B.md:48` and `UI.md:2320-2326`. Z03 needs Z02: right. Z06 needs Z02 and Z03: right. Z07, Z08 and Z09: right. Z04: wrong (R3-01). Z05: a small gap (R3-11).
+- **Verdict counts.** A script over L77-208 gives 63 group A rows: 32 adapt, 9 replace, 22 missing. This matches L75.
+- **O6c arithmetic.** It was re-done and every figure is right:
+  - C = (5 + 5) × (5,000 + 500,000 + 5,000) = 5,100,000 lamports;
+  - 2% of $20 at $150 = 2,666,667 lamports;
+  - break-even SOL price ≈ $78;
+  - $2 + $0.765 = $2.77;
+  - 0.25% E at a 20% stop ≈ $0.25.
+  The code citations for it (`evaluate.ts:388-398`, `policy.ts:274-284`, `fills.ts:45-49`) match.
+- **Citations.** About 45 file:line citations were read at `0aecee3b`. Those added or changed by the fixes are below; all hold, except where a row names a finding.
+
+| Citation (map line) | Read |
+|---|---|
+| `worker/src/run/sources.ts:207-214` (L208, L448) | `const { budget: _heliusMonthly, ...HELIUS_NO_HALT } = HELIUS_FREE` |
+| `scheduler/limits.ts:35` (L208) | Alchemy `haltShare: 0.7` |
+| `limits.ts:46` (L774) | `getMultipleAccounts: 20` |
+| `risk/types.ts:270`, `:305` (L194, L703) | `equity: MicroUsd`; `navHighWaterMark: MicroUsd \| null` |
+| `tx/compile.ts:25,113`; `:26,95` (L231, L286) | 1,232 constant and check; `V0_PREFIX` and its use |
+| `tx/policy.ts:167` (L231) | "compute budget takes no accounts" |
+| `tx/policy.ts:1-4,57-63,109-114` (L97) | default deny, worst-case SOL out from bytes; swap table by program and discriminator |
+| `worker/src/run/config.ts:81-84` (L419, L445) | "400 ms keeps 1.44x headroom"; `SLOT_MS = 400` |
+| `core/src/gates/hard.ts:568`, `:592` (L133-134) | H15 sim read; H16 `reported` filter |
+| `worker/src/run/worker.ts:79`, `:555`, `:1636`, `:2306-2307`, `:818-823` (L105, L113, L208, L234) | cut-create cap; `#poolReleasedAt`; `#fetchCaps`; `LATE_BUY` and `#sellOnly`; the sell-only loop |
+| `worker/src/run/sources.ts:124`; `persist/state.ts:536` (L208) | unreadable credits sets the month used; `refund(` |
+| `paper-world.ts:190-194`, `:275`, `:317`, `:378`, `:391` (L184, L481-482, L608) | `#heightFor`; `drawAttempt`; `#land`; `#reconcile`; the balance-read comment |
+| `exits/rules.ts:350-352` (L235, L607) | "exit blocked: retries used" hold |
+| `engine/asof.ts:188` (L174, L487) | `retire(` |
+| `worker-start:20-24,36`; `host-logic.test.ts:218,365`; `e2e.sh:234,716`; `logic.sh:12` (L543) | the 1 GB sizing and its tests, as stated |
+| `zeroed-update:239-245` (L331) | the `open_intents` wait |
+| `recorder-budget.ts:1-2` (L142, L520) | "whether or not they were uploaded" |
+| `ops/host-config.json:9` (L449) | `ZEROED_PAPER_EDGE_PPM: "178092"` |
+| `HANDOVER.md:167-170`, `:283-287`, `:302`, `:386` (L412, L724, L448, L480, L706) | Helius "Same key as before"; the 80k burn; H11 26%; §3.2(xi) open |
+| `SPEC-A.md:112` (L757); ARCH `:2044`; FACTS `:987` | A-M14-01 row; `MAXPOS` row; LD-08 |
+| Research branch: `research/hype/RESEARCH.md:45`, `docs/research/historical-data.md:35-36`, `docs/research/data.md:16,225`, `research/SUPERVISOR_MESSAGES.md:82-83` (DECISIONS terms register, L705) | DexScreener "Commercial use allowed"; 403 on the terms page; 13.6% missed; `api-key` only for paid streams; the owner's pump.fun words |
+
+The research branch tip is now `72c3b438`; `git diff 72f1793f 72c3b438 -- research/BLUEPRINT_ADDENDUM.md` is empty.
+
+## Status of each earlier finding
+
+| ID | Status | Evidence at `0aecee3b` |
+|---|---|---|
+| B-01 | closed | Bug table row L46. Every bug column L81-208 and L230-245. "Open red team findings" L453-488; "Red team C" L572-597; "Red team A and B" L603-620; L833. A script compared IDs: every RT-A, R2-n and NT-n ID in red team A's report, every finding ID in red team C's, and every RB finding is in the map. RB-3, 4, 6, 7, 9, 12 and 13 are passes, not findings (`redteam-b/REPORT.md:132,159,167`). |
+| B-02 | closed | L3 quotes the owner rule with all four conditions; L71 "not deleted". |
+| M01 | closed | L208 and L448: Helius has no worker-side halt; B4's test asserts the projection and `degraded_reads`. |
+| M02 | closed (at `cb2a1458`) | L351. |
+| M03 | closed | A-M04-02 replace (L114); A-M11-02 replace with the carried proofs named (L175); A-M11-01 "adapt (clock and as-of code only)" (L174). |
+| M04 | closed | A-M02-06 adapt with the `policy.ts` seed (L97). |
+| M05 | closed | One rule in L142, L520 and L779-783: delete only after a verified upload; at the cap, halt and alert. It is the stricter reading of both owner rules. |
+| M06 | closed | Z03 needs Z01 and Z02 (L757); batches L762. A separate order error is in R3-01. |
+| M07 | closed | Z10 acceptance L771. Update gate and deploy tag "adapt until the ops e2e passes" (L331, L529-530). |
+| M08 | closed | Owner decision (`CLAUDE.md` "Data source, alerts and PumpPortal"; DECISIONS row). Z07 and Z08 need the Shyft key (L768-769). The arithmetic is at L773-777. |
+| M09 | closed | Pre-funding table "Decision: adopted" for all six items (L684-689). M2 exit L807, M3 exit L820, M4 L824. |
+| M10 | closed | Size sweep in Z09 (L770), the M1 exit (L785) and M2 reports (L805). |
+| M11 | closed | Rule 3 L30, A01 L410, Process L738, Z10 L771, M3 L820, `CLAUDE.md` "No bugs migrate". One stale line is in R3-05. |
+| M12 | closed | L760. Not verified: the claim that C03 imports `@solana/kit` only in the venue package at `6ae4d62`, because Snipe-solana was not read. |
+| M13 | closed | O6, O6a, O6b, O6c (L720-723); arithmetic re-checked above. |
+| m01 | closed | L194, L703 cite `types.ts:270,305`. |
+| m02 | closed | L231 `compile.ts:25,113`, `policy.ts:167`; L286 `compile.ts:26,95`. |
+| m03 | closed | L706 `HANDOVER.md:386`. |
+| m04 | closed | L236, L503: round 4 item 4 and RB-1. |
+| m05 | closed | L104 (backoff test on A-M03-01; the burn test moved); L115, L204. |
+| m06 | closed | L445: `config.ts:84` is kept as a guard upper bound. |
+| m07 | closed | B3 L447 and B4 L448: "stays behind; acceptance test on the new module". B4 uses a synthetic hour. |
+| m08 | closed | L50. |
+| m09 | closed | L44: "#268 … removes the key". |
+| m10 | closed | L195 names the seed. |
+| m11 | closed | Rows added L594-597. The status they give R3-3 and R3-4 is wrong (R3-03). |
+| m12 | closed | Z00 flagged (L751). M2 and M3 ticket lists (L789-818) match INTEGRATION. A-M09-02 and A-M09-03 named (L791). The B-M19-03 and B-M29-04 splits are carried in L753, L798, L804 and L826. |
+| m13 | closed | L6 explains the `74e7258` head; L7 pins the research tips by purpose. Not verified: the Snipe-solana head (not read). |
+| m14 | closed | L206. |
+| m15 | closed | L740 (Worker loop), L741 (logo). |
+| m16 | partly closed | Fixed in L30 and L410. L542 still says "once M1 is reviewed" (R3-05). |
+| R2-01 | partly closed | Fixed in A03 (L412) and O7 (L724): the $49 counts until the owner rules. The fix also asked to "Record the open question in DECISIONS". No DECISIONS row records it: the terms register's Helius row is §3.2(xi), a different question. |
+| R2-02 | closed | A06 L415; table L684-689; exits L807, L820, L824; tickets named (A-M11, A-M12-02, A-M13-06). |
+| R2-03 | closed as asked | Z06 split, UI-T07 in Z05, Z04 needs Z01 (L755-762). Round 2's evidence was wrong for A-M13-03, so the asked fix carries an order error (R3-01). |
+| R2-04 | closed | L411, L705, Z01 L752, DECISIONS terms register: "any pump.fun-operated host". |
+| R2-05 | closed | Owner decision (PumpPortal not used for now); L705, L769, DECISIONS register. |
+| R2-06 | closed | L411, L705 and the DECISIONS register label it a supervisor tightening, and they agree. |
+| R2-07 | closed | DECISIONS register DexScreener row cites both lines; both read right. |
+| R2-08 | closed | L424 pins the reviewed RESULTS.md. |
+| R2-09 | closed | L419 allows a named upper bound for guards. |
+| R2-10 | closed | Z07 carries A08 (L768); Z09 carries the size sweep (L770). |
+| R2-11 | closed | L410, L769. |
+| R2-12 | closed | L6 (edited here; Z0D gets a fresh reviewer). |
+| R2-13 | closed | DECISIONS A17 bullet. The owner has since set the values (`CLAUDE.md` "Research addendum decisions"). |
+
+## Findings (round 3)
+
+### MAJOR
+
+| ID | Section, line | What is wrong | Evidence | Fix |
+|---|---|---|---|---|
+| R3-01 | Ticket order Z04 L755; batches L762 | Z04 holds A-M13-03 and "Needs Z01"; the batches run Z04 before Z06. A-M13-03 depends on A-M10-01 ("RNG only"), which is in Z06. A builder would start A-M13-03 before its dependency exists. Round 2's R2-03 caused this: it said A-M13-03 had no A dependency, and that was wrong. | `SPEC-A.md:106` (A-M13-03 depends on A-M10-01); `SPEC-A.md:2020` ("Depends on: A-M10-01 (RNG only)"); MIGRATION L758 (A-M10-01 in Z06) | Split Z04. A-M07-01 needs Z01 only, which keeps the recorder path first (A01). A-M13-03 needs Z06, or A-M10-01's RNG part (no dependencies, `SPEC-A.md:92`) moves into an early card and only its latency model waits for A10's function. |
+| R3-02 | A06 L415; pre-funding item 2 L685; M2 exit L807 | The M2 exit binds owner item 2's transaction-level replay of clean history, but nothing makes it runnable or testable. The gaps are in the bullets after this table. | `CLAUDE.md` "No deposit before proof" item 2 (unchanged; "all required"); MIGRATION L174, L175, L270, L447 | Add an M2 card: a transaction-level history feed into the same engine code (alongside A-M11-01), with the owner's pass rule as acceptance. List the clean days held, outside the B3 windows, with their count. If fewer than 30 clean days are held, say so to the owner rather than run a shorter check. |
+
+Detail for R3-02:
+- **No card builds it.** A-M11-01's loader reads M07 segments (L174), and A-M11-02 runs on 15 s bars (L175). No ticket feeds the chain archive into the Blueprint engine.
+- **No pass rule.** The owner's rule is not written anywhere: at least 30 days (target 60), survivorship-free, the same engine code, and zero crashes, illegal states or unreconciled intents.
+- **Called an extra check.** L415 and L685 call it "an extra check", which can read as optional.
+- **No day count.** It is not stated how many clean days are held (L270, B3 L447).
+
+### MINOR
+
+| ID | Section, line | What is wrong | Evidence | Fix |
+|---|---|---|---|---|
+| R3-03 | Red team C table L595-596; M30 row L245 | R3-3 (the `worker-probation` key never cleared) and R3-4 (a failed newer deploy deletes the older probation) are marked "none / open (LOW)". Both were fixed by RC-FIXES-2b `f1796f4e` (#279), which is in the base `cd4d7a64`. The key is cleared at `zeroed-update:71,123,139`. The commit's tests are named "R3-3:" and "R3-4:". The map's own citation `zeroed-update:114,119` points at a comment and a `read` line. | `git merge-base --is-ancestor f1796f4e cd4d7a64` → yes; `git show f1796f4e` (`packages/ops/test/redteam-c/r3-resume-sequence.test.ts`, 327 lines) | Mark both "closed by #279 (RC-FIXES-2b), merged, not deployed", like R3-1, R3-2, R3-5 and R3-6 (L588). Keep the probe as the reused gate's test. Drop "or recorded as accepted residuals" from L245. |
+| R3-04 | HANDOVER citations, many lines | HANDOVER grew 2 lines near its top between `72c1bc17` and `0aecee3b`. Citations written before then now point 2 lines early, while citations added by the fixes are right. For example, L517 and L716 cite `:1580` for "25 GB", but `:1580` is now a RES-5c line, and the disk note is `:1582`. | `git show 72c1bc17:HANDOVER.md` against `0aecee3b` at each line | Re-pin each citation, or cite HANDOVER at a sha or by section number (§5.x), since it changes daily. |
+| R3-05 | Host move table L542 | It says the recorder runs "once M1 is reviewed". That contradicts Rule 3 L30, A01 L410, Process L738 and `CLAUDE.md` "No bugs migrate": once Z07–Z10 are reviewed and red-teamed, and after the three-red-team step. This is m16's residue. | MIGRATION L30, L542, L738 | Use the Rule 3 wording in L542. |
+| R3-06 | L31; L653; L657; L700 | Lines left stale by the owner decisions: Rule 4 "Until it lands, the input is `SUPERVISOR_MESSAGES.md`" (the addendum has landed); TELEGRAM "needs recorded consent" (recorded, O1); Shyft and Chainstack "need the owner" (approved); the Phase 0 clash still recommends "New providers need the owner's approval". | `CLAUDE.md` "Data source, alerts and PumpPortal"; DECISIONS rows of 2026-10-07 | Mark each one decided, with the date and a pointer to the decision. |
+| R3-07 | `CLAUDE.md` "No bugs migrate"; DECISIONS row "No bugs migrate … (owner)" | The fix added "once its cards are reviewed and red-teamed … and after the three-red-team step" inside text credited to the owner's "Ok" (2026-10-07). The owner said "Ok" to the earlier wording ("once M1 is reviewed … through the deploy gate"). The new clause only tightens, and it follows the owner's own 6:25 AM rule, but it now reads as words the owner approved. | `git diff 72c1bc17 0aecee3b -- CLAUDE.md` | Mark the added clause "(supervisor, applying 'Pause, fix, red-team, then resume', 2026-10-07)". Do the same in the DECISIONS row. |
+| R3-08 | Z10 L771 | Z10's acceptance includes "a 48 h soak with the heap bounded". It does not say where the soak runs. Rule 3 (L30) lets the recorder onto the server only after Z07–Z10 are reviewed and red-teamed, so a soak on the server before review breaks Rule 3. | MIGRATION L30, L771, L785 | Say the soak runs off the server (for example, the ops e2e container on recorded input), or name the M1 exit's 48 h run as the soak after switch-on and drop it from Z10's acceptance. |
+| R3-09 | Phase 0 read provider L773-777; M1 exit L785 | The backup (Chainstack at one read every 2 s) is half the 1 Hz design. A-M07-03 counts coverage as successful polls over scheduled polls. The M1 exit needs ≥ 95%, and 15 s bars and the A-M04-02 grades assume 1 Hz. The map does not say whether a backup day keeps a 1 Hz schedule (coverage then falls near 50%) or halves it (coarser bars), or whether such a day counts toward Phase 0. | `SPEC-A.md:1328` (coverage definition); ARCH line 937 | State the backup's schedule, how its days are marked (for example, `lowCoverage`), and whether they count toward the M1 exit and A05's week. |
+| R3-10 | Z09 L770 (A-M03-02); DECISIONS PumpPortal row | A-M03-02 measures PumpPortal's coverage (`gapBps`), backfills "on every PumpPortal reconnect", and depends on A-M03-01. With PumpPortal not run (owner), the map does not say how A-M03-02 is accepted. | `SPEC-A.md:68` (A-M03-02 depends on A-M03-01), `:713`, `:721`, `:727` | Add a C-xx in Z0D: the `gapBps` path is tested on fixtures only, and the 60 s timer is the only live trigger until the owner rules on PumpPortal. |
+| R3-11 | Z05 L756 | UI-T07 depends on VM-03 (`UI.md:2326`), whose zod schema is B-M28-01 (`SPEC-B.md:2262`) in Z02, while Z05 needs only Z01. The Blueprint disagrees with itself: INTEGRATION calls the UI design-system track "independent of the backend after B-M30-01" (`INTEGRATION.md:33`), and B-M28-01 lists only "UI-T08 and later" as consumers (`SPEC-B.md:2266`). Z02 and Z05 share a batch, so the effect is small. | `UI.md:2326`; `SPEC-B.md:2262,2266`; `INTEGRATION.md:33` | Z05 needs Z02 for UI-T07, or UI-T07 is built on a VM-03 fixture. Record the choice in Z0D. |
+
+## Not verified (round 3)
+
+- Snipe-solana (its head, C03's import claim at `6ae4d62`): not in this session's scope.
+- Where the "clean history already held" is stored, and how many days of it fall outside the B3 windows (R3-02).
+- Shyft's free-plan limits beyond FACTS LD-33 ("unlimited credits at 10 req/s"; its fair use is UNVERIFIED there).
