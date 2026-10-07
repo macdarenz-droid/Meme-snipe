@@ -203,13 +203,13 @@ export class Recorder {
    * RC-FIXES: every buffered line written and on disk (fsync of each open file), before an entry reaches the outside
    * world, so the recording always replays to the journaled entry (TEST-1), whatever kills the process after.
    */
-  durable(): void {
+  durable(sync: (fd: number) => void = fsyncSync): void {
     this.flush();
     for (const o of this.#open.values()) {
       if (!existsSync(o.path)) continue;
       const fd = openSync(o.path, 'r');
       try {
-        fsyncSync(fd);
+        sync(fd);
       } finally {
         closeSync(fd);
       }

@@ -1,6 +1,10 @@
 // RC-FIXES: a killed boot's journal may end inside one event's decisions (an entry's `submit` is logged after its buy is
 // sent); the replay may go on past the journal's end with that event's lines only, and only for a boot with no stop line.
+import { mkdtempSync, readdirSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { Recorder } from '../src/run/recorder.ts';
 import { RUG_CONFIG } from '../../core/src/config/index.ts';
 import { type BootInput, checkBoot, cutAtKill, loadSession, type ParityDeps } from '../src/run/parity.ts';
 import { makeWorker, passingMarket } from './worker-harness.ts';
@@ -38,5 +42,20 @@ describe('RC-FIXES: parity forgives only a kill inside the last event', () => {
     const boots = loadSession(h.stateDir);
     expect(boots.length).toBeGreaterThan(0);
     expect(boots.every((b) => b.stopped === true)).toBe(true);
+  });
+});
+
+describe('RC-FIXES: Recorder.durable', () => {
+  it('writes every buffered line and fsyncs each open file; a failing fsync throws (the worker then refuses the entry)', () => {
+    const root = mkdtempSync(join(tmpdir(), 'durable-'));
+    const rec = new Recorder({ root, boot: 'b1', gitSha: 'abc', rotateBytes: 1 << 20 });
+    rec.delay({ n: 1 }, Date.UTC(2026, 9, 7));
+    const synced: number[] = [];
+    rec.durable((fd) => void synced.push(fd));
+    expect(synced).toHaveLength(1);
+    const day = readdirSync(join(root, 'b1', 'days'))[0]!;
+    const file = readdirSync(join(root, 'b1', 'days', day))[0]!;
+    expect(readFileSync(join(root, 'b1', 'days', day, file), 'utf8')).toContain('"n":1');
+    expect(() => rec.durable(() => { throw Object.assign(new Error('no space'), { code: 'ENOSPC' }); })).toThrow('no space');
   });
 });
