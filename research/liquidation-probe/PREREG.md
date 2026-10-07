@@ -254,3 +254,17 @@ The draft above is the registered design. These points make it executable; none 
 **Gate**
 - F21. **Early check.** "H3 events found" counts H3 events after every exclusion (and the hold-time rule if adopted) and before control matching. "Credits spent" is this probe's ledger total. If fewer than 2,000 candidate bars exist, the early check is replaced by processing all of them.
 - F22. **No outcome before the gate.** Stage 1 reads no bar or reserve after a sale's own transaction. The one exception is step 1's bar screen on the full bar's low; it cannot decide whether a sale is found, because any sale with a 3% own drop leaves the low at or below 0.97 × M.
+
+## Pre-data fixes after the stage-1 code review (2026-10-08 Melbourne; before any bar was downloaded or any sale classified)
+A fresh-context review of `stage1.py` found that the registered bar screen leaks look-ahead. The fixes below come before any 5-minute bar exists in this run. Only the gTFA smoke and code tests have been made: 15 calls, on bars chosen by hand, none of them classified into the table.
+- F23. **Bar screen (replaces step 1's 3% threshold and corrects F22).** GeckoTerminal highs, lows and closes are trade prices, not prices after each trade. A constant-product sale that drops the pool price by 3% prints near √0.97 ≈ 0.985 of the price before it, before fees. A 3% screen on the bar low would therefore find such a sale only when later trades in the bar fall further, which is look-ahead into the stage-2 hold. The screen becomes (M − low)/M ≥ 1%, with M unchanged. Step 4's own-reserve 3% test still decides what counts as a large sale.
+  - This 1% is a judgement. It leaves about 0.5 points of margin for an M that sits below the pre-sale price, which happens when the previous trade was a buy whose print lies below its post-trade price. A buy that moved the price by more than about 1% just before a 3% sale can still hide that sale. This residual is reported.
+  - The early check and the budget projection use the new candidate list.
+- F24. **Pagination.** Helius returns a `paginationToken` even on a short last page. The first 50 short pages that are not the last allowed page are followed. If none of them returns more rows, a short page is treated as the end from then on; otherwise every token is followed. The counts are reported.
+- F25. **Reading of the remaining rules.**
+  - "Until 150 events": the gate prefix ends at the bar, in seeded order, that holds the 150th event.
+  - If fewer than 20 full exits exist by the early check, the hold-time rule is dropped.
+  - Control ties are broken by the SHA-256 of `H3-v1|<event signature>|<control signature>`.
+  - An event's own seller is not excluded as a control (PREREG limits only repeats among controls).
+  - Depth and m60 terciles are taken over all large sales with an m60 value, including no-seller, after-cutoff and bot sales (literal F20).
+  - A full exit left unchecked when the credit cap stops the run is grouped "unchecked: credit cap", never as an event or a control.

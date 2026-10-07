@@ -22,7 +22,8 @@ WALL = 1789999200                             # 2026-09-21T14:00:00Z
 DEC_START = 1784678400                        # 2026-07-22T00:00:00Z
 CUTOFF = 1789997340                           # 2026-09-21T13:29:00Z
 BAR, DAY = 300, 86400
-DROP = 0.03
+DROP = 0.03                                   # step 4: the sale's own reserve-implied drop
+SCREEN = 0.01                                 # step 1 bar screen on trade prints (PREREG F23)
 FULL = 0.10
 WIN = 600
 BOT_N = 50
@@ -73,7 +74,7 @@ def candidate_bars(pools, bars):
             if u['days'] is not None and (ts - ts % DAY) not in u['days']:
                 continue
             M = max(h, rb[i - 1][4]) if i > 0 else h
-            if M > 0 and (M - l) / M >= DROP:
+            if M > 0 and (M - l) / M >= SCREEN:
                 out.append({'pool': p, 'start': ts, 'M': M, 'low': l, 'key': seed_key(p, ts)})
     out.sort(key=lambda b: b['key'])
     return out
@@ -124,7 +125,7 @@ def has_proceeds(tx, owner):
     return sol > 0 or st > 0
 
 def order(tx):
-    return (tx['slot'], tx.get('transactionIndex', 0))
+    return (tx['slot'], tx['transactionIndex'])
 
 # ---------- PumpSwap ----------
 def ps_events(tx, pool):
@@ -182,6 +183,8 @@ def _ray_vaults(pool, mint, txs):
         return saved[pool]
     acc = hel.rpc('getAccountInfo', [pool, {'encoding': 'base64'}])
     import base64
+    if not acc or not acc.get('value'):
+        return {'meme': None, 'sol': None, 'program': None}
     data = base64.b64decode(acc['value']['data'][0])
     found = {}
     for tx in txs:
@@ -267,7 +270,7 @@ def process_bar(b, pools, cap):
         if drop < DROP:
             continue
         t = tx['blockTime']
-        sale = {'sig': sig_of(tx), 'slot': tx['slot'], 'idx': tx.get('transactionIndex', 0), 't': t,
+        sale = {'sig': sig_of(tx), 'slot': tx['slot'], 'idx': tx['transactionIndex'], 't': t,
                 'drop': drop, 'sol_res0': sl['sol_res0'], 'virt': sl['virt'], 'coin_creator': sl['coin_creator'],
                 'n_ev': sl['n_ev'], 'venue': u['venue'], 'mint': u['mint'], 'pool': u['pool']}
         excl_owner = {u['pool'], PUMPSWAP, (v or {}).get('program')} | (
@@ -366,7 +369,9 @@ def apply_hold(sale, state):
 def group(sale, state):
     if sale.get('class') != 'full exit':
         return sale.get('class')
-    e = sale.get('excl') or {}
+    if 'excl' not in sale:
+        return 'unchecked: credit cap'
+    e = sale['excl']
     if e.get('creator'):
         return 'excluded: creator'
     if e.get('young'):
@@ -422,7 +427,7 @@ def match(sales):
     ctrl = [s for s in large if s['group'] == 'single-coin']
     out = {}
     for ev in [s for s in large if s['group'] == 'H3 event']:
-        c = [x for x in ctrl if cell(x) == cell(ev) and abs(x['t'] - ev['t']) <= 7 * DAY and x['seller'] != ev['seller']]
+        c = [x for x in ctrl if cell(x) == cell(ev) and abs(x['t'] - ev['t']) <= 7 * DAY]
         c.sort(key=lambda x: (x['pool'] != ev['pool'], abs(x['t'] - ev['t']),
                               hashlib.sha256(f"H3-v1|{ev['sig']}|{x['sig']}".encode()).hexdigest()))
         pick, sellers = [], set()
@@ -500,7 +505,7 @@ def run():
         process(first, hel.STAGE1_CAP)
         finish_sales(first)
         if len(st['hold_checks']) < 20 and st['hold_rule'] is None:
-            st['hold_rule'] = False if st['hold_checks'] else None
+            st['hold_rule'] = False
             st['hold_rule_note'] = f"only {len(st['hold_checks'])} full-exit sales by the early check; rule dropped"
             finish_sales(first)
         save_state(st)
@@ -534,7 +539,22 @@ def run():
         if k not in st['done']:
             break
         done_n += 1
-    finish_sales(done_n)
+    try:
+        finish_sales(done_n)
+    except hel.CapReached as e:                # sales left without checks are grouped 'unchecked: credit cap'
+        st['stop'] = (st['stop'] or '') + '; final checks hit the cap: ' + str(e)
+        for k in ordk[:done_n]:
+            for s in st['done'][k]['sales']:
+                if 'm60' not in s:
+                    s['m60'], s['m60_n'] = m60(s['t'])
+                s['group'] = group(s, st)
+    # "until 150 events": the gate prefix ends at the bar that holds the 150th event in seeded order
+    n_ev = 0
+    for i, k in enumerate(ordk[:done_n]):
+        n_ev += sum(1 for s in st['done'][k]['sales'] if s.get('group') == 'H3 event')
+        if n_ev >= TARGET_EVENTS:
+            done_n = i + 1
+            break
     st['processed_prefix'] = done_n
     save_state(st)
     gate(st, ordk[:done_n])

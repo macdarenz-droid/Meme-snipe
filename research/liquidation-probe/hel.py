@@ -80,20 +80,48 @@ def rpc(method, params, cap=None):
         return res
     raise RuntimeError('rpc retries exhausted for ' + method)
 
+_short = {'checked': 0, 'extra': 0}
+_short_lock = threading.Lock()
+
+def _short_state():
+    p = os.path.join(SCRATCH, 'short_pages.json')
+    with _short_lock:
+        if os.path.exists(p) and not _short['checked']:
+            _short.update(json.load(open(p)))
+        return _short, p
+
 def gtfa(address, filters, details='full', order='asc', limit=100, cap=None, max_pages=None):
     """All transactions (or signatures) of gTFA for `address` under `filters`, following pagination.
-    Returns (rows, complete): complete is False if max_pages stopped it early."""
-    rows, token, pages = [], None, 0
+    Returns (rows, complete): complete is False if max_pages stopped it early.
+    Helius returns a paginationToken even on a short last page. The first 50 short pages are followed to verify that
+    a short page is the end (PREREG F23); only if none of them returns more rows is a short page treated as the end."""
+    rows, token, pages, after_short = [], None, 0, False
     while True:
         opt = {'transactionDetails': details, 'sortOrder': order, 'limit': limit, 'filters': filters,
                'commitment': 'finalized', 'encoding': 'json', 'maxSupportedTransactionVersion': 1}
         if token:
             opt['paginationToken'] = token
-        res = rpc('getTransactionsForAddress', [address, opt], cap=cap)
+        res = rpc('getTransactionsForAddress', [address, opt], cap=cap) or {}
         pages += 1
-        rows += res.get('data') or []
+        data = res.get('data') or []
+        rows += data
         token = res.get('paginationToken')
-        if not token or not res.get('data') or len(res['data']) < limit:
+        if after_short:
+            st, p = _short_state()
+            with _short_lock:
+                st['checked'] += 1
+                st['extra'] += 1 if data else 0
+                json.dump(st, open(p, 'w'))
+        if not token or not data:
             return rows, True
+        if len(data) < limit:
+            st, p = _short_state()
+            if st['checked'] >= 50 and st['extra'] == 0:
+                return rows, True
+            if max_pages and pages >= max_pages:
+                return rows, False
+            after_short = True
+            continue
+        after_short = False
         if max_pages and pages >= max_pages:
             return rows, False
