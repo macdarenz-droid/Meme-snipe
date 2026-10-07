@@ -74,7 +74,11 @@ importers:
 
   packages/dashboard: {}
 
-  packages/engine: {}
+  packages/engine:
+    dependencies:
+      '@bot/types':
+        specifier: workspace:*
+        version: link:../types
 
   packages/exitpath: {}
 
