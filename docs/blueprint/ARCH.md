@@ -3306,3 +3306,10 @@ Not registered: the addendum's A06 trade rates of 8.3 and 4.7 trades a day (disc
 | Z-H prep P21: every Helius workflow reserves its maximum credits in the account ledger or is removed, before M2's first Helius use and any B-10 pin; until then "no overage" holds only for ledger-recorded spend, and exhaustion would stop Helius for the signer and engine too | D04; SPEC-A A-M14-05; MIGRATION; DECISIONS | U1 |
 | Guard behaviour tests add: active through the lease only, through the row only, unreadable integration branch, a reset-crossing window | SPEC-A A-M14-05 | U2 |
 | P18 requires every `uses:` in the hashed workflows and the guard action pinned to a full 40-character sha (local `./` exempt) | D04; SPEC-A A-M14-05; MIGRATION | U3 |
+
+**Final push of card Z0D-2 (2026-10-08; red team V1–V2 on `10692d41`; supervisor rulings for the final push).** Every change only tightens.
+
+| Change | Where | Source |
+|---|---|---|
+| P21 reservations written by compare-and-swap to `zeroed-data` `helius/<runId>/reservation.json`, counted by the host into S for 31 days; an uncounted run refuses to send | SPEC-A A-M14-05; MIGRATION; DECISIONS | V1 |
+| Owner step: confirm Helius autoscaling off (limit 0) and keep it off, recorded in DECISIONS before any B-10 pin and M2's first Helius use | SPEC-A A-M14-05; MIGRATION Owner waits; DECISIONS | V2 |
