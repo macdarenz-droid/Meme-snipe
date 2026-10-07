@@ -69,6 +69,12 @@
 - **8 Oct about 6:00 AM:**
   - **#290 merged at `90ec75ce`** (the new base). It fixes the ops end-to-end fixture: every merge since 5 Oct is GitHub-signed, so the newest unsigned commit, 54 back, had left the 50-commit window. As a result the end-to-end on the push of `be8ecd01` was red, which blocked the deploy gate's `e2e_commit`. Review and red team PASS; check, historical-data and e2e green. Next: confirm the e2e push run on `90ec75ce` is green, because it is now the `e2e_commit` for deploys.
   - **#287 Z01:** the rounds 3–4 review passed (M1, M2). Red team round 3 found 2 MAJOR (a NUL byte, `.gitattributes`). Round 5 rulings are at `b3c2de32` and were sent to the builder, together with the merge of `90ec75ce`. They include the hard exit in `research/brainstorm/collect.py` (the #283 follow-up).
+- **8 Oct about 6:40 AM:**
+  - The ops e2e push run on `90ec75ce` is green, so `90ec75ce` is the deploy gate's `e2e_commit`.
+  - **Base still red:** the Android preview `release` job fails on every base push (`85a61e60`, `90ec75ce`). Cause: `require-check.sh` waits 20 min, but `check` takes about 26 min. `commit_verdict` reads that failure as red, so no new commit can deploy (the owner's host move included).
+  - Fix: **#291** (`claude/preview-wait` @ `fbfc206d`) raises the wait to 3000 s and the release job's timeout to 60 min, with a test tying both to `ci.yml`. Reviewer and red team: `session_01N7FRJ66aZuxPtJtLMC6NPq`.
+  - Watch: `check` (about 26.5 min) is close to its own 30-min timeout on the base until #287 raises it to 45.
+  - #287 Z01 round 5 at `8dc7fe97`: full suite 7,315/7,315. Delta review and red team round 4 are running.
 - **Follow-ups (identified, not yet carded):**
   1. Z0D-2 docs:
      - the replay-mode ruling (`replay_unavailable` treated as assumed-pass-flagged in B-10 runs only, refused in paper and live; `docs/reviews/ZH.md` round 2 ruling 2);
