@@ -1248,6 +1248,8 @@ worker_busy() {
 
 keys_stored() { for n in "${API_NAMES[@]}"; do [ -s "$CRED_DIR/${n,,}" ] || return 1; done; }
 paired() { [ -s "$CRED_DIR/telegram_chat_id" ]; }
+# worker_ready: the worker may start: every key stored and the owner's chat paired (its unit's ConditionPathExists, and more).
+worker_ready() { keys_stored && paired; }
 __ZEROED_FILE__
 install_file /usr/local/lib/zeroed/derive-key.mjs 0644 <<'__ZEROED_FILE__'
 // Derives the one-time age identity for the Deploy handoff from the deploy code (6 words), read on stdin;
@@ -3748,10 +3750,13 @@ else
   systemctl disable --now zeroed-record-upload.timer >/dev/null 2>&1 || true
 fi
 
-# Restart with reconcile first (ExecStartPre). Before pairing the worker is not started at all. After a restart the
-# new worker must stay up, or the server goes back to the release it ran (SWITCH-1).
+# Restart with reconcile first (ExecStartPre). Before the keys and the pairing the worker is not started at all: its unit
+# would skip the start (ConditionPathExists), the hold below would wait for nothing and roll a good release back
+# (OPS-CLEAN, 8 Oct). Pairing starts it (zeroed-telegram-pair). After a restart the new worker must stay up, or the
+# server goes back to the release it ran (SWITCH-1).
 worker="not started (no keys yet)"
-if [ -s "$CRED_DIR/helius_api_key" ]; then
+if keys_stored && ! paired; then worker="not started (not paired yet)"; fi
+if worker_ready; then
   systemctl reset-failed zeroed-worker.service >/dev/null 2>&1 || true
   systemctl restart zeroed-worker.service || due_rollback "it failed to start"
   if ! why="$(holds)"; then due_rollback "$why"; fi

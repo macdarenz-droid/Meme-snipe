@@ -155,3 +155,5 @@ worker_busy() {
 
 keys_stored() { for n in "${API_NAMES[@]}"; do [ -s "$CRED_DIR/${n,,}" ] || return 1; done; }
 paired() { [ -s "$CRED_DIR/telegram_chat_id" ]; }
+# worker_ready: the worker may start: every key stored and the owner's chat paired (its unit's ConditionPathExists, and more).
+worker_ready() { keys_stored && paired; }

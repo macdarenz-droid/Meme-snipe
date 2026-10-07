@@ -294,10 +294,13 @@ else
   systemctl disable --now zeroed-record-upload.timer >/dev/null 2>&1 || true
 fi
 
-# Restart with reconcile first (ExecStartPre). Before pairing the worker is not started at all. After a restart the
-# new worker must stay up, or the server goes back to the release it ran (SWITCH-1).
+# Restart with reconcile first (ExecStartPre). Before the keys and the pairing the worker is not started at all: its unit
+# would skip the start (ConditionPathExists), the hold below would wait for nothing and roll a good release back
+# (OPS-CLEAN, 8 Oct). Pairing starts it (zeroed-telegram-pair). After a restart the new worker must stay up, or the
+# server goes back to the release it ran (SWITCH-1).
 worker="not started (no keys yet)"
-if [ -s "$CRED_DIR/helius_api_key" ]; then
+if keys_stored && ! paired; then worker="not started (not paired yet)"; fi
+if worker_ready; then
   systemctl reset-failed zeroed-worker.service >/dev/null 2>&1 || true
   systemctl restart zeroed-worker.service || due_rollback "it failed to start"
   if ! why="$(holds)"; then due_rollback "$why"; fi
