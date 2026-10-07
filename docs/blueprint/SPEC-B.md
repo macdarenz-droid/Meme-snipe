@@ -1,5 +1,7 @@
 # Build specification - group B
 
+Edited in Meme-snipe from 2026-10-07 (card Z0D); source commit `74e7258` of `macdarenz-droid/Snipe-solana` `main`.
+
 Execution, landing, positions, risk, custody, books and operations for the Solana meme-coin trading bot (modules M15-M30).
 
 - Written 2026-10-06 by the group B spec writer. Design and build specifications only; no production code. Code fragments are interface specifications in TypeScript, the language chosen in ARCH D05.
@@ -21,13 +23,13 @@ Group B work follows the gated phases of ARCH section 18. A phase's tickets star
 |---|---|---|---|
 | **M0 Foundations** | 0 | B-M15-01, B-M19-01, B-M24-01, B-M24-02, B-M25-01, B-M27-01, B-M28-01, B-M30-01 | Shared packages frozen with fixture tests; CI enforces the dependency policy; `node:sqlite` VERIFY result recorded; schema (including group A tables) migrates; config bootstrap; structured logging; slot clock reads two providers |
 | **M1 Recording and Phase 0 decision** | 0 | — (group A only; B tickets of M0 support it) | A-24/A-24b/A-48 report accepted (A-M13-01) |
-| **M2 Research and engine core in simulation** | 1 | B-M15-03, B-M16-01, B-M16-02, B-M16-03, B-M16-05, B-M19-02, B-M19-03, B-M19-04, B-M19-05, B-M20-01, B-M20-02, B-M20-03, B-M20-04, B-M21-01, B-M21-02, B-M21-03, B-M21-06, B-M22-01, B-M22-02, B-M22-05, B-M23-01, B-M23-02, B-M23-03 | Gates B and R evaluable with the engine's own code; stage `replay_passed` or stop (D08) |
-| **M3 Paper** | 2 | B-M15-02, B-M20-05, B-M21-04, B-M21-05, B-M22-03, B-M23-04, B-M23-05, B-M24-03, B-M24-04, B-M25-02, B-M25-03, B-M26-01, B-M26-02, B-M26-03, B-M26-04, B-M26-05, B-M27-02, B-M28-02, B-M28-03, B-M28-04, B-M28-05 | Gates P-1..P-6 and P-9 evaluable; stage `paper_passed` or stop. **First milestone producing paper-trading results** |
-| **M4 Live path → live-small** (blocked by the M3 gate result) | 3 | B-M16-04, B-M16-07, B-M16-10, B-M17-01, B-M17-02, B-M17-03, B-M17-04, B-M17-05, B-M17-06, B-M17-07, B-M17-08, B-M18-01, B-M18-02, B-M18-03, B-M18-04, B-M18-05, B-M22-04, B-M22-06, B-M29-01, B-M29-02, B-M29-03, B-M29-04, B-M30-02, B-M30-03; plus B-M19-03 live acceptance (its `(live only)` dependencies) | Gates P-7, P-8 and the go-live checklist → `live_small`; LS gates → `live`; D26 (ii) or (iii) before `live` (LS-7) |
+| **M2 Research and engine core in simulation** | 1 | B-M15-03, B-M16-01, B-M16-02, B-M16-03, B-M16-05, B-M19-02, B-M19-03, B-M19-04, B-M19-05, B-M29-05, B-M20-01, B-M20-02, B-M20-03, B-M20-04, B-M21-01, B-M21-02, B-M21-03, B-M21-06, B-M22-01, B-M22-02, B-M22-05, B-M23-01, B-M23-02, B-M23-03 | Gates B and R evaluable with the engine's own code; stage `replay_passed` or stop (D08) |
+| **M3 Paper** | 2 | B-M15-02, B-M20-05, B-M21-04, B-M21-05, B-M22-03, B-M23-04, B-M23-05, B-M24-03, B-M24-04, B-M25-02, B-M25-03, B-M26-01, B-M26-02, B-M26-03, B-M26-04, B-M26-05, B-M27-02, B-M28-02, B-M28-03, B-M28-04, B-M28-05 | Gates P-1..P-6, P-9 and P-10 evaluable; stage `paper_passed` or stop. **First milestone producing paper-trading results** |
+| **M4 Live path → live-small** (blocked by the M3 gate result) | 3 | B-M16-04, B-M16-07, B-M16-10, B-M17-01, B-M17-02, B-M17-03, B-M17-04, B-M17-05, B-M17-06, B-M17-07, B-M17-08, B-M18-01, B-M18-02, B-M18-03, B-M18-04, B-M18-05, B-M19-06, B-M22-04, B-M22-06, B-M29-01, B-M29-02, B-M29-03, B-M29-04, B-M30-02, B-M30-03 | Gates P-7, P-8 and the go-live checklist → `live_small`; LS gates → `live`; D26 (ii) or (iii) before `live` (LS-7) |
 | **M4b Raydium** (only on the D01/D18 trigger) | 3b | B-M16-09; Raydium additions in B-M17-04/05 and B-M29-02 | M01 Raydium venue spec accepted; P-6 on Raydium pools |
 | **Deferred / research only** | any | B-M16-06, B-M16-08 | Built only when a research or PM-01 paper ticket needs it |
 
-`B-M29-04`'s `import-run` subcommand may be delivered early (M2) because it needs only B-M24-02 and A-M13-08's spool; the rest of the ticket is M4.
+Split on 2026-10-07 (INTEGRATION "Remaining issues"): `botctl import-run` is B-M29-05 (M2; it needs only B-M24-02 and A-M13-08's spool) and the rest of `botctl` is B-M29-04 (M4); the live execution port is B-M19-06 (M4) and the simulation and paper wiring stays B-M19-03 (M2).
 
 ### Ticket dependency list (group B internal and group A tickets; integration)
 
@@ -61,13 +63,14 @@ Group B work follows the gated phases of ARCH section 18. A phase's tickets star
 | B-M22-01 | B-M24-02, B-M25-01 | — | M2 |
 | B-M22-02 | B-M22-01 | A-M14-02 | M2 |
 | B-M22-03 | B-M22-02 | A-M02-03, A-M14-02 | M3 |
-| B-M22-04 | B-M22-03, B-M16-10, B-M19-03 | — | M4 |
+| B-M22-04 | B-M22-03, B-M16-10, B-M19-06 | — | M4 |
 | B-M22-05 | B-M22-01 | — | M2 |
 | B-M22-06 | B-M22-03, B-M23-01 | A-M02-03, A-M14-02 | M4 |
 | B-M19-02 | B-M24-02, B-M22-01 | — | M2 |
-| B-M19-03 | B-M19-02, B-M16-04 (live only), B-M17-01 (live only), B-M18-01 (live only) | — | M2 |
+| B-M19-03 | B-M19-02 | — | M2 |
 | B-M19-04 | B-M19-03, B-M22-02 | — | M2 |
 | B-M19-05 | B-M19-03 | A-M14-03 | M2 |
+| B-M19-06 | B-M19-03, B-M16-04, B-M17-01, B-M18-01 | — | M4 |
 | B-M18-01 | B-M19-01, B-M15-01 | A-M14-04 | M4 |
 | B-M18-02 | B-M18-01 | A-M14-03, A-M14-04 | M4 |
 | B-M18-03 | B-M18-01 | A-M02-03, A-M14-02 | M4 |
@@ -109,7 +112,8 @@ Group B work follows the gated phases of ARCH section 18. A phase's tickets star
 | B-M29-01 | B-M17-08 | — | M4 |
 | B-M29-02 | B-M29-01, B-M16-04, B-M18-04 (shared proof code) | A-M01-03, A-M02-02 | M4 |
 | B-M29-03 | B-M29-01 | — | M4 |
-| B-M29-04 | B-M29-01 (except `import-run`, which needs only B-M24-02) | A-M13-08 | M4 |
+| B-M29-04 | B-M29-01, B-M29-05 | — | M4 |
+| B-M29-05 | B-M24-02 | A-M13-08 | M2 |
 | B-M30-02 | B-M30-01, B-M17-01, B-M29-01 | — | M4 |
 | B-M30-03 | B-M30-02, B-M24-04 | A-M07-03 | M4 |
 
@@ -185,10 +189,10 @@ type RpcContextSlotEvent = { providerLabel: string; contextSlot: Slot; method: s
   2. Given a read with `contextSlot` 95 and highest seen 105, then `observationLagSlots(95)` returns 10.
   3. Given `heightOn('B')`, then exactly one RPC call is made with `provider = 'B'` and the returned slot and height come from that one response (asserted with a recording fake gateway).
   4. Given 30 samples totalling 6,725 slots in 1,800 s, then `slotDurationMsEstimate()` returns 267.66 ± 0.01 (DERIVED from [LD-08] figures).
-- **Tests:** unit (max logic, outlier rule, lag, estimator); property (for any interleaving of events, `highestSeenSlot` is non-decreasing and ≥ every accepted context slot); integration with fixture `FX-RPC-EPOCHINFO` and `FX-RPC-PERFSAMPLES` (recorded responses); failure injection: primary provider timeouts, a provider returning a slot 1,000,000 ahead.
+- **Tests:** unit (max logic, outlier rule, lag, estimator); property (for any interleaving of events, `highestSeenSlot` is non-decreasing and ≥ every accepted context slot); integration with fixture `FX-RPC-EPOCHINFO` and `FX-RPC-PERFSAMPLES` (recorded responses); failure injection: primary provider timeouts, a provider returning a slot 1,000,000 ahead. Clarification C-61 (A10): one slot-to-time function, owned here; the 12-, 20- and 8-slot thresholds are rechecked at 400, 267 and 200 ms per slot.
 - **Observability:** metrics `highest_seen_slot`, `provider_slot_lag` (provider), `slot_duration_ms_estimate`, `height_reading_age_ms`; log codes `m15.slot_outlier`, `m15.height_failover`, `m15.samples_empty`.
 - **Security notes:** Reads only; no secrets. Provider labels only (never URLs) in logs and metrics (ARCH 12.4).
-- **Facts used:** LD-07, LD-08, LD-09, LD-05. VERIFY: `getEpochInfo` fields (A-36), `getRecentPerformanceSamples` field names, `getBlockTime` resolution (A-37).
+- **Facts used:** LD-07, LD-08, LD-09, LD-05. VERIFY: `getEpochInfo` fields (A-36), `getRecentPerformanceSamples` field names, `getBlockTime` resolution (A-37); settled by VF-12.
 - **Definition of done:** Common DoD; `VERIFY.md` entries for A-36 and the performance-sample fields; M04 and M18 consume `observationLagSlots` and `heightOn` through the exported interface only.
 
 #### B-M15-02 — Blockhash cache
@@ -1012,10 +1016,10 @@ interface PathClient { send(path: LandingPath, signedTx: Uint8Array): Promise<Re
   5. Paths: `sender` (keyed HTTPS global endpoint), `rpc` (`sendTransaction` on a second provider with `maxRetries: 0` [LD-07] and `skipPreflight: true` (CL-24)), `jito_tx` (rung ≥ 2 and only when the transaction carries a Jito tip), `jupiter_execute` (rung 4 only; **never rebroadcast**: Jupiter lands it [EX-25], and auto-retrying services must not be client-rebroadcast, ARCH M18).
   6. A send stops when B-M18-03 reports a final status or B-M18-04 proves expiry (`stop(attemptId)`).
   7. `onNotLanded`: when an exit attempt has no `processed` evidence `exit_supersede_slots` (8) slots after its first send (slot = M15 `highestSeenSlot` at send vs now), emit once (drives supersession in B-M19-05).
-  8. Capacity (DERIVED, ARCH M18): 3 exits + 1 entry in flight at 200 ms slots = 4 attempts × 1 req/s per path against the keyed Sender bucket of 40 req/s; the keyless fallback (0.8 req/s) gives each attempt one send every 5 s, which is why keyed Sender is the default.
+  8. Capacity (DERIVED, ARCH M18): 3 exits + 1 entry in flight at 200 ms slots = 4 attempts × 1 req/s per path against the keyed Sender bucket of 25 req/s (≤ 50% of documented, owner rule); the keyless fallback (0.5 req/s) gives each attempt one send every 8 s, which is why keyed Sender is the default.
 - **Shared resources and concurrency:** Send capacity per path and region (owner M14 buckets, M18 scheduler; ARCH 7.2). The scheduler's queue is owned here; single event loop.
 - **Config:** `m18.region` (default `fra`, D07; used only for bucket keys, never to pick plain-HTTP regional URLs); `m18.exit_supersede_slots` (8; 2-40; `affectsReturns: true`); `m18.min_rebroadcast_ms` (1,000; ≥ 1,000).
-- **Edge cases and failure handling:** All paths refusing → keep rebroadcasting within buckets until expiry is proven (ARCH M18). Process restart → in-flight attempts are re-enqueued from `tx_attempt` rows with stored signed bytes (signed bytes are persisted by M19 before the first send, B-M19-03).
+- **Edge cases and failure handling:** All paths refusing → keep rebroadcasting within buckets until expiry is proven (ARCH M18). Process restart → in-flight attempts are re-enqueued from `tx_attempt` rows with stored signed bytes (signed bytes are persisted by M19 before the first send, B-M19-06).
 - **Acceptance criteria:**
   1. Given 3 exits and 1 entry enqueued at once with a bucket of 1 token per 25 ms, then the 3 exit first sends precede the entry's first send (ARCH 16.5 "Flatten of 3 positions plus 1 entry").
   2. Given repeated 429s on Sender, then the measured request rate never exceeds the bucket rate and Sender is still attempted after back-off.
@@ -1049,7 +1053,7 @@ interface PathClient { send(path: LandingPath, signedTx: Uint8Array): Promise<Re
 - **Tests:** unit with recorded HTTP fixtures (`FX-SENDER-OK`, `FX-SENDER-429`, `FX-JITO-OK`, `FX-RPC-SEND-OK`; keys redacted); integration in paper mode is impossible (no signing) — the first live use is the 0.01 SOL live-small drill (checklist item 3b).
 - **Observability:** metrics `send_latency_ms` (path), `send_result_total` (path, result); log code `m18.path_rejected` (sanitised).
 - **Security notes:** M14 never logs URLs (keys may be in the query); this client logs only path labels.
-- **Facts used:** LD-06, LD-07, LD-09, LD-17, LD-18, LD-22, LD-27, LD-V06. VERIFY: A-40, Jito request path and body.
+- **Facts used:** LD-06, LD-07, LD-09, LD-17, LD-18, LD-22, LD-27, LD-V06. VERIFY: Jito request path and body; A-40 settled by VF-14.
 - **Definition of done:** Common DoD; A-40 resolved.
 
 #### B-M18-03 — Status polling, transaction fetch, fill extraction and failure taxonomy
@@ -1158,7 +1162,7 @@ interface ExecutionPort {
   onResult(h: (r: AttemptResult) => void): () => void;    // added: final and intermediate results (landed_processed, confirmed_*, expired, unknown)
   onNotLanded(h: (e: { attemptId: Id; slotsSinceFirstSend: number }) => void): () => void;   // integration (C-29): drives exit supersession in every mode
 }
-// Integration (C-29/CL-27 merged): this is the single ExecutionPort for live (B-M19-03), paper (A-M12-01) and sim (A-M11-02).
+// Integration (C-29/CL-27 merged): this is the single ExecutionPort for live (B-M19-06, wired by B-M19-03), paper (A-M12-01) and sim (A-M11-02).
 // Ports read an attempt's intent through OrderManager.intent(intentId) (B-M19-02, CL-29); AttemptRequest carries no amounts.
 // CL-28: ladder parameters shared by M19 (executes attempts) and M20 (owns the ladder), so neither imports the other
 interface RungParams { rung: 1 | 2 | 3 | 4 | 5; route: 'direct' | 'jupiter_order'; slippageBps: Bps; cuPriceMultiplier: 1 | 2 | 3;
@@ -1228,44 +1232,28 @@ const TERMINAL_INTENT: ReadonlySet<OrderState> = new Set(['rejected', 'filled', 
 - **Facts used:** none external.
 - **Definition of done:** Common DoD; ARCH 16.2 state-machine properties pass.
 
-#### B-M19-03 — Live execution port: build → sign → persist → send
+#### B-M19-03 — Execution port wiring and attempt lifecycle (simulation and paper)
 
-- **Module:** M19 · **Size:** L (~2.5 engineer-days) · **Phase:** 2 (paper wiring with M12), 3 (live)
-- **Goal:** Implement `ExecutionPort` for live modes: build with M16, sign through the signer socket, persist the signature and signed bytes **before** sending, send through M18, and map every signer and builder response to the ARCH 7.3 transitions, including the signer timeout path through `status_of`.
-- **Depends on:** B-M19-02, B-M16-04 (and B-M16-07 for rung 4), B-M17-01 (protocol, live only), B-M18-01 (live only). Group A: M12 implements the same port for paper.
-- **Interfaces:** `ExecutionPort` (B-M19-01); signer client:
-
-```ts
-interface SignerClient {               // over /run/signer/engine.sock (identity 'engine' from SO_PEERCRED)
-  sign(r: SignRequest, timeoutMs: number): Promise<Result<SignResponse & { ok: true }, { code: SignerError | 'E_TIMEOUT' | 'E_SOCKET'; message: string; hintMismatch: boolean }>>;
-  statusOf(intentId: Id): Promise<Result<StatusOfResponse, { code: 'E_TIMEOUT' | 'E_SOCKET' }>>;
-  status(): Promise<Result<SignerStatus, { code: 'E_TIMEOUT' | 'E_SOCKET' }>>;
-  latch(r: LatchRequest): Promise<Result<true, { code: string }>>;
-  lease(r: LeaseRequest): Promise<Result<true, { code: string }>>;
-  setMode(r: SetModeRequest): Promise<Result<true, { code: string }>>;
-}
-```
-
+- **Module:** M19 · **Size:** S (~1 engineer-day) · **Phase:** 1-2 (simulation and paper; split from the original B-M19-03 on 2026-10-07, INTEGRATION "Remaining issues")
+- **Goal:** The mode-independent half of the execution port: the `tx_attempt` row lifecycle, port selection by mode (M11's simulation port, M12's paper port; the live port is B-M19-06), and the mapping of every `AttemptResult` to the ARCH 7.3 transitions, so the order manager runs the same code in every mode.
+- **Depends on:** B-M19-02. Group A: M11 (`SimExecutionPort`, A-M11-02) and M12 (`PaperExecutionPort`, A-M12-01) implement the same port.
+- **Interfaces:** `ExecutionPort` (B-M19-01); `selectExecutionPort(mode): ExecutionPort` (NEW).
 - **Logic:**
-  1. `submit(AttemptRequest)`: create the `tx_attempt` row (`building`), return `{ attemptId, signature: null }` immediately; continue asynchronously.
-  2. Build: `buildSwap` (rungs 1-3, 5) or `buildOrderExit` (rung 4). Map: `E_NO_ROUTE`/`E_QUOTE_DRIFT`/`E_ROUTE_POOL_MISMATCH`/`E_TOO_LARGE`/`E_ROUTE` → entry `abandoned` (reservation released), exit → next rung via B-M19-05; `E_ZERO_BALANCE` (sell) → `filled` if an earlier attempt of this intent or the sentinel journal shows the sale, otherwise `reconciling` (ARCH 7.3); `E_BLOCKHASH` → entry `abandoned`, exit retry in 2 s.
-  3. Sign: `sign({ kind: 'sign', requestId, intentId, messageBytesB64, hint, priorAttempts })` with `timeoutMs = 2,000` (ARCH 7.3). Mapping: `ok` → persist `signature`, `signedTxB64`, `lastValidBlockHeight` and the signer's `classification` on the attempt row **in one committed transaction before any send** (crash safety), then `in_flight`; `E_HALTED`/`E_EXITS_ONLY`/`E_MODE`/`E_CAP_DAY`/`E_HOTCAP` (buys) → `cancelled`, reservation released; `E_LEASE` (exit) → intent parked, position stays `closing`, alert (the sentinel owns exits for this mint); `E_BALANCE` (exit) → back to `building` with a fresh balance read, counted as `balance_mismatch`; `E_DUPLICATE` (exit, 2 unexpired) → wait for B-M18 results then rebuild; `E_PROOF_REQUIRED` (buy) → `reconciling`; any other policy refusal → `abandoned` and `security` critical alert; `hintMismatch: true` → `security` critical alert in every case.
-  4. Signer timeout or socket error → `statusOf(intentId)` first: if a message for this attempt's message hash exists, adopt its signature and go to `in_flight`; otherwise back to `building` (ARCH 7.3).
-  5. Send: M18 `send({ attemptId, side, signedTx, signature, lastValidBlockHeight, paths })`; `paths` = rung's paths (`sender` + `rpc` at rung 1; + `jito_tx` from rung 2; `jupiter_execute` at rung 4).
-  6. Results from M18 `onResult` update the attempt row and drive the intent (B-M19-04/05).
-  7. Paper mode: the same `OrderManager` uses M12's port (group A); no signer or sender calls exist in paper (a startup assertion refuses to construct the live port while mode is `paper` unless positions opened in live are being managed with `keep_managing`, ARCH 7.7).
-- **Shared resources and concurrency:** Attempt records (owner M19); signer state (owner M17, via protocol). The signed bytes persisted here are what M18 rebroadcasts after a restart.
-- **Config:** `m19.signer_timeout_ms` (2,000; 500-10,000); `m19.signer_socket_path`.
-- **Edge cases and failure handling:** Crash after signing, before send → on restart the signature is known (persisted) and the status query decides (ARCH 16.5); crash after sign returned but before persistence → `statusOf` adopts it (ARCH 7.6 step 4).
+  1. `submit(AttemptRequest)`: create the `tx_attempt` row (`building`), return `{ attemptId, signature: null }` immediately; continue asynchronously in the selected port.
+  2. Results from the port's `onResult` and `onNotLanded` update the attempt row and drive the intent (B-M19-04/05), with the same transitions the live port uses (ARCH 7.3).
+  3. Mode selection: `backtest`/`replay` → M11's port; `paper` → M12's port. A startup assertion refuses to construct the live port while mode is `paper` unless positions opened in live are being managed with `keep_managing` (ARCH 7.7); before B-M19-06 exists, any live mode refuses to start.
+- **Shared resources and concurrency:** Attempt records (owner M19).
+- **Config:** none beyond the mode.
+- **Edge cases and failure handling:** Engine restart with pending simulated or paper attempts → they resolve as M11/M12 define (paper: `expired`, pessimistic); the attempt row records it.
 - **Acceptance criteria:**
-  1. Given the signer returns a signature and the engine is killed before sending, when it restarts, then no second buy message is requested and the attempt is resolved by status query (landed or expired).
-  2. Given a signer timeout and `statusOf` showing a signature for the same message hash, then the attempt adopts it without re-signing.
-  3. Given `E_LEASE` on an exit, then the intent is parked and an alert is raised; no retry loop runs.
-- **Tests:** unit with a fake signer and fake sender (every response code); integration with the real signer binary in CI (three users); failure injection: kill at each step (ARCH 16.5 first two rows).
-- **Observability:** metrics `signer_latency_ms`, `signer_refusals_total` (code), `build_sign_segment_ms` (route; D05 trigger metric, CL-14); log codes `m19.signed`, `m19.sign_refused`, `m19.sign_timeout_adopted`.
-- **Security notes:** The engine never sees key material; it only sends message bytes. `hintMismatch` is always a security alert.
-- **Facts used:** LD-07 (same signed bytes rebroadcast idempotently).
-- **Definition of done:** Common DoD; ARCH 16.5 rows "Crash after signing", "Crash after send", "Signer down / refuses" pass.
+  1. Given mode `paper`, when the engine starts, then the live port is not constructed and no signer or sender call exists.
+  2. Given a paper `AttemptResult` for an entry and one for an exit, then the attempt rows and intents move through exactly the ARCH 7.3 transitions the live port would produce for the same result.
+  3. Given a live mode while B-M19-06 is absent, then the engine refuses to start.
+- **Tests:** unit with fake simulation and paper ports (every `AttemptStatus`); the replay-vs-paper parity test (A-M11-03).
+- **Observability:** metric `attempts_total{mode,status}`.
+- **Security notes:** No key, signer or sender path exists in this ticket.
+- **Facts used:** none external.
+- **Definition of done:** Common DoD; gate runs in M2 (A-M11-02/03) drive the order manager through this ticket.
 
 #### B-M19-04 — Entries: single attempt, fast evidence poll and reconciliation of unknown outcomes
 
@@ -1318,6 +1306,45 @@ interface SignerClient {               // over /run/signer/engine.sock (identity
 - **Security notes:** None beyond conventions.
 - **Facts used:** LD-02.
 - **Definition of done:** Common DoD; ARCH 16.5 exit rows pass.
+
+#### B-M19-06 — Live execution port: build → sign → persist → send
+
+- **Module:** M19 · **Size:** L (~2 engineer-days) · **Phase:** 3 (live; split from the original B-M19-03 on 2026-10-07, whose simulation and paper half is now B-M19-03)
+- **Goal:** Implement `ExecutionPort` for live modes: build with M16, sign through the signer socket, persist the signature and signed bytes **before** sending, send through M18, and map every signer and builder response to the ARCH 7.3 transitions, including the signer timeout path through `status_of`.
+- **Depends on:** B-M19-03, B-M16-04 (and B-M16-07 for rung 4), B-M17-01 (protocol), B-M18-01. Group A: M12 implements the same port for paper.
+- **Interfaces:** `ExecutionPort` (B-M19-01); signer client:
+
+```ts
+interface SignerClient {               // over /run/signer/engine.sock (identity 'engine' from SO_PEERCRED)
+  sign(r: SignRequest, timeoutMs: number): Promise<Result<SignResponse & { ok: true }, { code: SignerError | 'E_TIMEOUT' | 'E_SOCKET'; message: string; hintMismatch: boolean }>>;
+  statusOf(intentId: Id): Promise<Result<StatusOfResponse, { code: 'E_TIMEOUT' | 'E_SOCKET' }>>;
+  status(): Promise<Result<SignerStatus, { code: 'E_TIMEOUT' | 'E_SOCKET' }>>;
+  latch(r: LatchRequest): Promise<Result<true, { code: string }>>;
+  lease(r: LeaseRequest): Promise<Result<true, { code: string }>>;
+  setMode(r: SetModeRequest): Promise<Result<true, { code: string }>>;
+}
+```
+
+- **Logic:**
+  1. `submit(AttemptRequest)`: the attempt row and result handling are B-M19-03's; this port continues asynchronously from `building`.
+  2. Build: `buildSwap` (rungs 1-3, 5) or `buildOrderExit` (rung 4). Map: `E_NO_ROUTE`/`E_QUOTE_DRIFT`/`E_ROUTE_POOL_MISMATCH`/`E_TOO_LARGE`/`E_ROUTE` → entry `abandoned` (reservation released), exit → next rung via B-M19-05; `E_ZERO_BALANCE` (sell) → `filled` if an earlier attempt of this intent or the sentinel journal shows the sale, otherwise `reconciling` (ARCH 7.3); `E_BLOCKHASH` → entry `abandoned`, exit retry in 2 s.
+  3. Sign: `sign({ kind: 'sign', requestId, intentId, messageBytesB64, hint, priorAttempts })` with `timeoutMs = 2,000` (ARCH 7.3). Mapping: `ok` → persist `signature`, `signedTxB64`, `lastValidBlockHeight` and the signer's `classification` on the attempt row **in one committed transaction before any send** (crash safety), then `in_flight`; `E_HALTED`/`E_EXITS_ONLY`/`E_MODE`/`E_CAP_DAY`/`E_HOTCAP` (buys) → `cancelled`, reservation released; `E_LEASE` (exit) → intent parked, position stays `closing`, alert (the sentinel owns exits for this mint); `E_BALANCE` (exit) → back to `building` with a fresh balance read, counted as `balance_mismatch`; `E_DUPLICATE` (exit, 2 unexpired) → wait for B-M18 results then rebuild; `E_PROOF_REQUIRED` (buy) → `reconciling`; any other policy refusal → `abandoned` and `security` critical alert; `hintMismatch: true` → `security` critical alert in every case.
+  4. Signer timeout or socket error → `statusOf(intentId)` first: if a message for this attempt's message hash exists, adopt its signature and go to `in_flight`; otherwise back to `building` (ARCH 7.3).
+  5. Send: M18 `send({ attemptId, side, signedTx, signature, lastValidBlockHeight, paths })`; `paths` = rung's paths (`sender` + `rpc` at rung 1; + `jito_tx` from rung 2; `jupiter_execute` at rung 4).
+  6. Results from M18 `onResult` go to B-M19-03's result handling, which updates the attempt row and drives the intent (B-M19-04/05).
+  7. Paper mode never constructs this port (B-M19-03's startup assertion).
+- **Shared resources and concurrency:** Attempt records (owner M19); signer state (owner M17, via protocol). The signed bytes persisted here are what M18 rebroadcasts after a restart.
+- **Config:** `m19.signer_timeout_ms` (2,000; 500-10,000); `m19.signer_socket_path`.
+- **Edge cases and failure handling:** Crash after signing, before send → on restart the signature is known (persisted) and the status query decides (ARCH 16.5); crash after sign returned but before persistence → `statusOf` adopts it (ARCH 7.6 step 4).
+- **Acceptance criteria:**
+  1. Given the signer returns a signature and the engine is killed before sending, when it restarts, then no second buy message is requested and the attempt is resolved by status query (landed or expired).
+  2. Given a signer timeout and `statusOf` showing a signature for the same message hash, then the attempt adopts it without re-signing.
+  3. Given `E_LEASE` on an exit, then the intent is parked and an alert is raised; no retry loop runs.
+- **Tests:** unit with a fake signer and fake sender (every response code); integration with the real signer binary in CI (three users); failure injection: kill at each step (ARCH 16.5 first two rows).
+- **Observability:** metrics `signer_latency_ms`, `signer_refusals_total` (code), `build_sign_segment_ms` (route; D05 trigger metric, CL-14); log codes `m19.signed`, `m19.sign_refused`, `m19.sign_timeout_adopted`.
+- **Security notes:** The engine never sees key material; it only sends message bytes. `hintMismatch` is always a security alert.
+- **Facts used:** LD-07 (same signed bytes rebroadcast idempotently).
+- **Definition of done:** Common DoD; ARCH 16.5 rows "Crash after signing", "Crash after send", "Signer down / refuses" pass.
 
 ---
 
@@ -1420,9 +1447,14 @@ Shared interface (exact copy of ARCH M20): `ExitReason`, `ExitTrigger`, `Positio
   2. `entry cap` = min(50,000 lamports, 20 bps of the position's entry notional) expressed as a CU price for the route's CU limit; exit priority ceiling 600,000 lamports (ARCH 8.3). In `minimum` fee mode (`FEEDAY` exceeded) every rung uses the configured floor price and minimum tips, still sent, critical alert (CA-08).
   3. D09 switch: exit failure rate > 10% over 30 exits → Jito path from rung 1 (config `m20.jito_from_rung1`, set by the operator after the trigger alert; not automatic, CL-34).
   4. Chunking from the start: if M01's quote for the full balance has `priceImpactBps` > the rung's slippage cap, the exit starts chunked (25% chunks) at that rung (D09 (d)).
-  5. Cannot-sell (ARCH 8.6): `token_program_refusal` once; or 3 consecutive `unknown` failures on the swap instruction; or 2 consecutive failed combined sell simulations from M06 `pre_exit` screens (this ticket requests `withSellSim: true` after every failed exit attempt; the simulation never delays the next attempt, C-43); or our token account frozen (M06/M22 read). Never counted: `slippage`, `compute_exceeded`, `insufficient_funds_fee`, `account_state`, `balance_mismatch`, `venue_disabled`, `blockhash_expired`. On cannot-sell → `stuck`, mint blacklisted (M05), venue blocked for entries if venue-wide.
-  6. Rung 5: 3 consecutive counting failures → cannot-sell evaluation (`stuck`).
-  7. Escalation alerts: rung 3 warning, rung 4 critical, `stuck` critical.
+  5. **Real-vault sizing (supervisor rulings, Z0D rounds 3, 4 and 5; C-13, C-60 [VF-05]).** A PumpSwap sell whose output exceeds the real quote vault is refused, not clamped. Every sell attempt, at every rung and for every chunk, is sized **in output terms**: the base amount is the largest `b ≤ planned size` with `out(b) − lpFee(b) ≤ realQuoteVault × (10,000 − slippageBps) / 10,000`, where `out` and `lpFee` come from A-M01-03 on the pool state used for the quote and `slippageBps` is the rung's slippage bound (output is concave in input, so a margin taken on base units would be too small). When the quote for the planned size returns `E_EXCEEDS_REAL_VAULT`, the attempt sells that margined size and the rest stays in the position for the next attempt. `E_EXCEEDS_REAL_VAULT` is a quote-time result, not an on-chain failure class: it is **not** a cannot-sell failure and never moves a step 6 counter. If the margined size is 0, no attempt is sent, an alert (critical) is raised, and the sell is re-quoted on every new snapshot.
+     - **Refusal on chain (VERIFY).** The program's error code for a sell above the real vault is not verified. A failed sell is classified in this order: `token_program_refusal` first (it counts, step 6); then `exceeds_real_vault` only when the failing instruction is the PumpSwap sell itself and the real quote vault on the last snapshot at or before the failure slot is below the attempt's gross output less the LP fee; anything else by step 6's classes. `exceeds_real_vault` does not count toward cannot-sell; once the code is verified, that code is mapped to the same class.
+     - **Repeated refusals.** After 5 `exceeds_real_vault` refusals in a row on a position: alert (critical), and automatic re-sends pause until a snapshot reads the real vault above the next attempt's margined output (`out − lpFee` at the margined size).
+     - **Cost.** The fees and tips spent on refused sells are booked in the stuck-cost line (M23 `CostItem.kind` `stuck_cost`, ARCH M23) for that position.
+     - **Drained for good (supervisor rulings, Z0D rounds 7 and 8).** With `T_drained` = max(the strategy's time stop `T`, 24 h): if a position stays in the 5-refusal pause for longer than `T_drained`, or its margined size is 0 for longer than `T_drained`, then (1) if the margined size on the latest snapshot is above 0, one last sell at that size is sent and its **real** proceeds are booked; (2) the position is marked cannot-sell and `stuck`, the rest is valued at 0 and written off (B-M20-05, proceeds 0), so equity only ever holds amounts actually realised and the loss is booked in SOL (M22/M23); (3) its `MAXOPEN` slot is freed (M21); (4) an alert (critical) is raised. **Recovery watch:** for 7 days after `stuck`, a read-only re-quote runs every hour inside the ≤ 50% read budget (M14 P4); if the margined size rises above 0, an automatic recovery sell at that size runs (an exception to `stuck` blocking `close` and to the mint blacklist, for this position only) and its proceeds are booked through M22's ledger as realised proceeds of the written-off position, in SOL (a recovery, not a cost item; ARCH M23 cost kinds). After 7 days the watch ends.
+  6. Cannot-sell (ARCH 8.6): `token_program_refusal` once; or 3 consecutive `unknown` failures on the swap instruction; or 2 consecutive failed combined sell simulations from M06 `pre_exit` screens (this ticket requests `withSellSim: true` after every failed exit attempt; the simulation never delays the next attempt, C-43); or our token account frozen (M06/M22 read). Never counted: `slippage`, `compute_exceeded`, `insufficient_funds_fee`, `account_state`, `balance_mismatch`, `venue_disabled`, `blockhash_expired`, `exceeds_real_vault` (step 5). On cannot-sell → `stuck`, mint blacklisted (M05), venue blocked for entries if venue-wide.
+  7. Rung 5: 3 consecutive counting failures → cannot-sell evaluation (`stuck`).
+  8. Escalation alerts: rung 3 warning, rung 4 critical, `stuck` critical.
 - **Shared resources and concurrency:** Pure function of config plus per-position counters (owned here).
 - **Config:** `m20.ladder` (table above; each rung's slippage `affectsReturns: true`; raising any value is A3, lowering A1, via M25/M26); `m20.slippage_hard_ceiling_bps` (2,500, ceiling file).
 - **Edge cases and failure handling:** Every rung failed and venue disabled → `stuck` with alert; no infinite loop (ARCH 16.5 "Venue disables sell").
@@ -1430,17 +1462,24 @@ Shared interface (exact copy of ARCH M20): `ExitReason`, `ExitTrigger`, `Positio
   1. Given rung 2 for a $10 position (entry cap = min(50,000, 20 bps × 66,666,667 = 133,333) = 50,000 lamports; DERIVED), then the rung-2 priority budget is 100,000 lamports (CU price = 100,000 × 10^6 / CU limit) and tips are 6,000.
   2. Given 3 `compute_exceeded` failures, then no cannot-sell.
   3. Given one `token_program_refusal`, then `stuck` and the mint is blacklisted.
-- **Tests:** unit (table, classification counters); property (no sequence of non-counting failures produces `stuck`); worst-case fee sum equals ARCH 8.7's ≈ 3,000,000 lamports per position (shared constant with M22's float).
+  4. Given the drained-pool fixture (17.58 SOL virtual, 0.27 SOL real quote [RS-17]) and a position whose full sell would pay out more than the real vault less the LP fee, then the first attempt sells the margined size of step 5 (never above `maxSellableBase`), the quote does not throw, no cannot-sell counter moves, the position stays open with the remainder, and a later snapshot with a refilled vault sells the rest.
+  5. Given `maxSellableBase` = 0, then no attempt is sent, a critical alert is raised and the position is not marked `stuck`.
+  6. Given rung 1 (100 bps) on the drained-pool fixture, then the attempt's base amount `b` satisfies `out(b) − lpFee(b) ≤ 0.99 × realQuoteVault` and `b + 1` does not, and `b` ≤ ⌊0.99 × `maxSellableBase`⌋ + 1 (output is concave in input, so the output-terms margin is never smaller than a base-terms one; ±1 base unit for the round-up of `lpFee` and the round-down of `out`).
+  7. Given three failed sells in a row whose failing instruction is the PumpSwap sell and whose prior snapshot shows the real vault below the gross output less the LP fee, then they are `exceeds_real_vault`, no cannot-sell counter moves and the position is not `stuck`; given a failed sell that is a `token_program_refusal`, then it is classed so even if the vault is short, and the position is `stuck`; given a failing instruction that is not the PumpSwap sell, then it is not `exceeds_real_vault`.
+  8. Given 5 `exceeds_real_vault` refusals in a row, then a critical alert is raised and no re-send happens until a snapshot shows the vault above the next margined output; and the 5 attempts' fees and tips appear as `stuck_cost` for that position.
+  9. Given an MR-01 position (`T` = 30 min) in the 5-refusal pause for 23 h, then it is not yet `stuck` (`T_drained` = 24 h); after 24 h with a margined size of 1,000 base units, then one last sell of 1,000 is sent and its real proceeds are booked, the position becomes `stuck`, the rest is valued at 0 and written off, the SOL loss is booked, `MAXOPEN` frees one slot so a new entry can pass, and a critical alert is raised; with a margined size of 0, no sell is sent and the whole position is written off.
+  10. Given a `stuck` position whose pool's vault refills on day 3, then the hourly re-quote finds a margined size above 0, a recovery sell runs and its proceeds are booked through M22's ledger as realised proceeds (a recovery) in SOL; given no refill within 7 days, then the re-quotes stop; given the re-quotes, then they use P4 reads only, inside the ≤ 50% budget.
+- **Tests:** unit (table, classification counters, real-vault sizing on `fx/pumpswap/drained_pool.json`); property (no sequence of non-counting failures produces `stuck`); worst-case fee sum equals ARCH 8.7's ≈ 3,000,000 lamports per position (shared constant with M22's float).
 - **Observability:** metrics `exit_rung_total`, `cannot_sell_total` (cause); log codes `m20.rung_escalated`, `m20.stuck`.
 - **Security notes:** None.
-- **Facts used:** LD-02, LD-17, LD-22, EX-25, TH-02, TH-08, TH-10.
+- **Facts used:** LD-02, LD-17, LD-22, EX-25, TH-02, TH-08, TH-10, VF-05.
 - **Definition of done:** Common DoD; ladder table exported; a unit test asserts the ladder's worst-case fees per position ≤ M22's configured `m22.float_per_position_lamports` (B-M22-01 reads the float from config, so B-M22-01 does not build-depend on this ticket; integration cycle break).
 
 #### B-M20-05 — Operator actions, exit leases and sentinel fill import
 
 - **Module:** M20 · **Size:** M (~1.5 engineer-days) · **Phase:** 2 (close, flatten, write-off), 3 (lease, import)
 - **Goal:** Implement `close`, `flattenAll`, `writeOff`, lease-aware exit gating and `importSentinelFills` (ARCH 7.6 step 5, CA-13).
-- **Depends on:** B-M20-04. Group B: M17 lease status via B-M19-03 `SignerClient`, M22 `written_off` list, M23 journal.
+- **Depends on:** B-M20-04. Group B: M17 lease status via B-M19-06 `SignerClient` (live only), M22 `written_off` list, M23 journal.
 - **Interfaces:** `PositionManager.close`, `flattenAll`, `writeOff`, `importSentinelFills` (ARCH M20).
 - **Logic:**
   1. `close(positionId, reason, maxSlippageBps)`: allowed for non-terminal, non-`stuck` positions; creates (or returns the existing) exit intent with `maxSlippageBps` ≤ 2,500; reason `manual_close`.
@@ -1494,7 +1533,7 @@ interface LimitRegistry { binding(limitId: string, mode: Mode, E: Lamports): big
   1. Given `E` = 6,666,666,667 in live-small, then `MAXPOS` binding = 66,666,667 and `MAXRISK_PF` binding = 33,333,333.
   2. Given `E` = 20 SOL in live, then `MAXPOS` binding = min(500,000,000, 350,000,000) = 350,000,000.
   3. Given an `update_limit` above the ceiling, then validation rejects it (`E_CEILING`).
-- **Tests:** unit (binding table for 5 equity levels × 2 modes); property (binding ≤ ceiling always).
+- **Tests:** unit (binding table for 5 equity levels × 2 modes); property (binding ≤ ceiling always). Clarification C-62 (A11): property test, doubling or halving SOL/USD leaves every limit unchanged.
 - **Observability:** metrics `limit_usage_bps` (limit), `breaker_tripped` (breaker); log code `m21.limit_state`.
 - **Security notes:** Ceilings are root-owned; the API cannot raise them (ARCH M25).
 - **Facts used:** ST-38, ST-39 (sizing rationale, ARCH 3.5).
@@ -1524,7 +1563,7 @@ interface LimitRegistry { binding(limitId: string, mode: Mode, E: Lamports): big
   1. Given live-small, `E = E_ref`, stop 400 bps, prior stress 2,000 bps, cost 70 bps and a requested 66,666,667: stressed loss = ceil(66,666,667 × 2,070 / 10,000) = 13,800,001 ≤ `MAXRISK` 16,666,667, so the size passes `MAXRISK`; with one open position of stressed loss 20,000,000, `MAXRISK_PF` (33,333,333) leaves 13,333,333, so the size shrinks to floor(13,333,333 × 10,000 / 2,070) = 64,412,236 (stressed loss 13,333,333) and is accepted at that size (DERIVED; the cost bps is held fixed in this example).
   2. Given a hard screen check with status `error`, then `rejected` and the check appears in `checks[]` with status `error`.
   3. Given 200 random proposals, then `evaluate` p99 ≤ 5 ms on the target host class.
-- **Tests:** unit (each check; worked examples); property (ARCH 16.2: no sequence of accepted entries exceeds `MAXOPEN`, `MAXEXP`, `MAXRISK_PF`, `ENTRYRATE`, `PERTOKEN`, `FEEDAY`); benchmark.
+- **Tests:** unit (each check; worked examples); property (ARCH 16.2: no sequence of accepted entries exceeds `MAXOPEN`, `MAXEXP`, `MAXRISK_PF`, `ENTRYRATE`, `PERTOKEN`, `FEEDAY`); benchmark. Clarification C-71 (A23): exposure counts exit costs; size grows only from realised SOL.
 - **Observability:** metrics `decisions_total` (decision, reason), `decision_latency_ms`, `stressed_risk_lamports`, `exposure_lamports`; log code `m21.decision`.
 - **Security notes:** None.
 - **Facts used:** ST-04, ST-38, ST-39, EX-07, EX-V01, TH-30 (rationale for thresholds via ARCH 8.4).
@@ -1584,7 +1623,7 @@ interface FlowAdjustedEquity { indexNow(): { index: number; equityLamports: Lamp
   1. Given a sweep of 0.3 SOL to cold during the day, then `DAYLOSS` usage and drawdown are unchanged (ARCH 16.2 flow-adjustment property; ARCH 16.5 "Daily sweep larger than the signer day cap").
   2. Given 5 consecutive losing trades, then entries pause for 60 min and resume automatically.
   3. Given drawdown 15.1%, then HALT, demotion to paper and cancellation of any pending A3 command.
-- **Tests:** unit; property (random interleavings of trades, sweeps, refills and transfers give the same drawdown and daily loss as the trades alone; ARCH 16.2); integration with M26.
+- **Tests:** unit; property (random interleavings of trades, sweeps, refills and transfers give the same drawdown and daily loss as the trades alone; ARCH 16.2); integration with M26. Clarification C-62 (A11): property test, doubling or halving SOL/USD leaves the SOL P&L, equity and every loss limit unchanged.
 - **Observability:** metrics `equity_lamports`, `daily_loss_used_lamports`, `drawdown_bps`, `breaker_tripped`; log codes `m21.breaker_trip`, `m21.auto_demote`.
 - **Security notes:** None.
 - **Facts used:** ST-39 (de-risk on drawdown), ST-33 (why L-1 is slow; fast brakes are DAYLOSS/WEEKLOSS/DDKILL).
@@ -1605,7 +1644,7 @@ interface FlowAdjustedEquity { indexNow(): { index: number; equityLamports: Lamp
 - **Config:** `m21.feeday_live_small_lamports` (2,000,000), `m21.feeday_live_lamports` (5,000,000), `m21.fixed_cost_warn_bps` (200), `m21.fixed_cost_max_bps` (300); all ceilinged.
 - **Edge cases and failure handling:** SOL/USD unknown → fixed-cost burden `null` → treated as breached for promotion (stricter) and a warning.
 - **Acceptance criteria:** Given `FEEDAY` exhausted with 3 positions needing exits, then exits pass `preSendCheck`, `exitFeeMode()` = `minimum`, a critical alert exists and entries are rejected `E_FEEDAY` (ARCH 16.5 CA-08 row).
-- **Tests:** unit; property ("no fee or spend cap ever rejects an exit").
+- **Tests:** unit; property ("no fee or spend cap ever rejects an exit"). Clarification C-71 (A23): entries pause when the fixed cost exceeds `k`% of the stake.
 - **Observability:** metrics `fee_spend_today_lamports`, `fixed_cost_burden_bps`.
 - **Security notes:** None.
 - **Facts used:** LD-35, LD-V07 (fixed-cost context via ARCH 1.4).
@@ -1721,7 +1760,7 @@ interface Equity { E(): Lamports; Etrade(): Lamports; components(): { hotSol: La
 
 - **Module:** M22 · **Size:** M (~1.5 engineer-days) · **Phase:** 3
 - **Goal:** Close zero-balance ATAs to recover rent (CA-29), unwrap stray wSOL, sweep excess hot SOL to cold daily and on demand (leaving float, reservations, rent and a 0.01 SOL buffer), and execute the operator's `close_unsolicited` command.
-- **Depends on:** B-M22-03, B-M16-10, B-M19-03.
+- **Depends on:** B-M22-03, B-M16-10, B-M19-06.
 - **Interfaces:** `Wallet.janitor()`, `sweepIfAboveCap()` (ARCH M22); maintenance submission through M19 (`submitMaintenance`, CL-44).
 - **Logic:**
   1. Janitor (every 60 s, at most one janitor transaction per minute): candidate ATAs = registry entries with chain balance exactly 0 whose mint has no non-terminal position or intent, excluding mints in the D22 keep-open window (24 h after a close when the D22 switch is on); build with B-M16-10; submit as maintenance `janitor`; on confirmation book `rent_refund` per closed account (M23) and mark `closed_at`. Never counts toward cannot-sell.
@@ -1935,7 +1974,7 @@ interface OutboxRow { seq: bigint; topic: string; payloadJson: string; createdAt
 - **Tests:** unit; crash-injection (kill -9 during 10,000 transactions; verify outbox and state agree); benchmark.
 - **Observability:** metrics `db_write_latency_ms`, `outbox_backlog`; log code `m24.outbox_replay`.
 - **Security notes:** DB file owned by `bot`, mode 0600; not readable by `signer` or `sentinel` except the sentinel journal path is separate.
-- **Facts used:** none external. VERIFY: A-45.
+- **Facts used:** VF-08 (Node 24 ≥ 24.15.0 and `node:sqlite` status; A-45 resolved by it).
 - **Definition of done:** Common DoD; decision recorded with measurements.
 
 #### B-M24-02 — Schema, migrations, append-only triggers and PERTOKEN indexes for all modules
@@ -2080,7 +2119,7 @@ Shared interface (exact copy of ARCH M26): `CommandService` (`preview`, `submit`
 
 - **Module:** M26 · **Size:** M (~2 engineer-days) · **Phase:** 2 (paper), 3 (signer latch, sentinel)
 - **Goal:** Own `system_state` (mode, trading state, `state_version`) and every trading-state transition of ARCH 7.7, implement HALT semantics D24 with component acknowledgements within 2 s, RESUME, `exits_only`, and the engine side of the sentinel heartbeat and `start_refused` protocol.
-- **Depends on:** B-M24-03, B-M27-01. Group B: B-M19-03 `SignerClient` (latch), M19 `cancelUnsent`, M20, M21; M29 heartbeat socket (B-M29-01).
+- **Depends on:** B-M24-03, B-M27-01. Group B: B-M19-06 `SignerClient` (latch; live modes only), M19 `cancelUnsent`, M20, M21; M29 heartbeat socket (B-M29-01).
 - **Interfaces:** `ModeController` (ARCH). Heartbeat messages (ARCH M29, plus CL-56):
 
 ```ts
@@ -2162,18 +2201,18 @@ type SentinelToEngine = { kind: 'ack'; seq: number } | { kind: 'halt_ack'; haltI
 - **Depends on:** B-M26-03, B-M21-04. Group A: A-M13-06 `evaluateGates` and the `ExternalGateInputs` interface (C-39), A-M13-05 `Analytics.stage` and `StageMachine.onDemotion` / `onModeCommand` (resolves CL-57). Group B: `SignerClient.setMode`, `SignerClient.status`.
 - **Interfaces:** `ModeController.state()`; internal `Readiness { payload(target: 'live_small' | 'live'): ReadinessVm }` producing VM-18 fields (`gates[]` from M13 `GateEvaluation`, `blocking_reasons`, `cooldown_until`, `min_dwell_until`, `caps_after_promotion` from M21 bindings for the target mode, `checklist[]` = ARCH 16.7 items 1-14 (including 3b-3d and 4b), `required_phrase`, plus `strategy_id`, `strategy_stage`, `stage_entered_at`, `trial_key` (UC-09)).
 - **Logic:**
-  1. Start mode: config `start_mode` (default `paper`) or the persisted mode; a live mode at start requires the persisted mode to be live **and** the signer unlocked normally; otherwise start in `paper` and positions opened in live keep being managed with real exits (`keep_managing`, which needs the signer at least in `exits_only`).
+  1. Start mode: config `start_mode` (default `paper`) or the persisted mode; a live mode at start requires the persisted mode to be live **and** the signer unlocked normally; otherwise start in `paper` and positions opened in live keep being managed with real exits (`keep_managing`, which needs the signer at least in `exits_only`). **Helius guard (Z0D round 8).** While a B-10 reservation is active in the Helius account ledger, or while the engine's remaining rolling Helius headroom is below its floor (1,000,000 credits, POLICY, A-M14-05), M26 refuses every switch to paper or above (`set_mode` to `paper`, `live_small` or `live`, reason `helius_unavailable`), and at start it opens no paper session: the engine starts with entries blocked and the reason recorded. Exits of open positions are never blocked by this guard.
   2. `paper → live_small` (A3, +60 s): the active strategy's stage is `paper_passed`; VM-18 gates P-1..P-9 pass (P-7 drill within 7 days, P-8 checklist + phrase + step-up + delay); no cooldown; signer unlocked; hot wallet ≤ `HOTCAP`; fixed-cost burden ≤ 3%; at most 1 strategy live (ARCH 8.1 "Strategies live at once"; internal short code `MAXSTRAT`, CL-64). Re-checked at `effective_at`. On apply: `SignerClient.setMode('live_small')` (the signer refuses unless its own `max_mode` allows it), M21 loads live-small limits, VM-03 `live_caps` populated.
   3. `live_small → live` (A3): gates LS-1..LS-7 (LS-7: D26 (ii) or (iii) in place, or `MAXEXP` stays 2%).
   4. Lowering (A1, immediate): `set_mode` down; `SignerClient.setMode(lower)` first (fail-safe order), then engine mode; `open_positions_policy` = `keep_managing` (default) or `flatten` (M20 `flattenAll`).
   5. Automatic demotion (from M21: L-1, L-2/DDKILL, L-4): mode → `paper` immediately, actor `risk_engine`, `cooldown_until = now + 7 days`, the strategy's stage drops to `replay_passed` (M13), pending A3 commands cancelled, positions `keep_managing`.
   6. VM-18 `blocking_reasons` include every failing guard with a code.
-  7. **`ExternalGateInputs` adapter (integration, C-39).** This ticket implements A-M13-06's `ExternalGateInputs` by aggregating: `drills()` from the drill records of B-M26-01 (halt acknowledgement times) and B-M29-04 (`botctl` kill drill); `checklist()` from this ticket's checklist; `paperLedgerUnexplainedDiffs()` from B-M22-05; `fixedMonthlyLamports()` from B-M23-03 and `equityLamports()` = the **real chain `E`** from B-M22-01 (CL-45); `realisedVsModelledCost()` from B-M23-03 step 4; `landing()` from B-M18-03 statistics; `reconciliation()` from B-M22-03; `signerUnlockOption()` from config of D26 (B-M17-02). Any unavailable source returns `null`/throws `input_unavailable` so the gate fails (A-M13-06 rule). The adapter is injected into M13 at engine start, so group A has no build dependency on group B for it.
+  7. **`ExternalGateInputs` adapter (integration, C-39).** This ticket implements A-M13-06's `ExternalGateInputs` by aggregating: `drills()` from the drill records of B-M26-01 (halt acknowledgement times) and B-M29-04 (`botctl` kill drill); `checklist()` from this ticket's checklist; `paperLedgerUnexplainedDiffs()` from B-M22-05; `fixedMonthlyLamports()` from B-M23-03 and `equityLamports()` = the **real chain `E`** from B-M22-01 (CL-45); `realisedVsModelledCost()` from B-M23-03 step 4; `landing()` from B-M18-03 statistics; `reconciliation()` from B-M22-03; `signerUnlockOption()` from config of D26 (B-M17-02). Any unavailable source returns `null`/throws `input_unavailable` so the gate fails (A-M13-06 rule). The adapter is injected into M13 at engine start, so group A has no build dependency on group B for it. Owner items 3 and 5 (2026-10-07, C-49): the adapter also supplies the dry-run uptime and drill records (P-5) and the failure-injection results of the build being promoted (P-10); A-M13-06 adds the matching `ExternalGateInputs` fields, and a missing input fails the gate. **Producers (supervisor ruling, Z0D round 3; C-49):** this ticket produces only P-5 `dryRun` and P-10 `faultInjection`. `dryRun(buildSha, configKey)` comes from this ticket's dry-run block records: **every** block declared is recorded here (declaration time, `buildSha`, `configKey`, block start and end, final status `passed`, `failed` or `aborted`) before it starts, append-only, with uptime from B-M26-01 health and drills from the B-M26-01 and B-M29-04 drill records inside each block, and every block of every build in the promoted build's lineage, whatever its `configKey`, is returned (Z0D round 8). `engineHelius(fromMs, toMs)` comes from A-M14-05's Helius account ledger: for each minute it reports whether the engine's Helius allocation was 0 or below its floor, and whether a B-10 reservation was active (Z0D round 9; without it every P gate fails closed and M3 cannot exit). `faultInjection(buildSha, configKey)` returns **every** section 16.5 failure-injection run of every build in the promoted build's lineage, whatever its `configKey`, append-only (fault-injection failures are engine bugs, not configuration bugs; Z0D round 7). Fix records `{ failureId, fixCommitSha }` are appended by the operator when a fix lands, and this ticket fills their checks from the build's provenance and the integration branch's history (B-M30-01): a fix record is valid only if its fix commit is not in the failing build (not an ancestor of its `buildSha`), names the `failureId` in its commit message, adds a test that cites the `failureId` and links two CI runs of it: one on the fix commit's parent, where it fails, and one on the fix commit, where it passes, was merged to the integration branch (ARCH 3.4) through a reviewed PR, and is an ancestor of the promoted `buildSha` (`inPromotedBuild`, from the build's provenance) (Z0D round 7). A-M13-06 fails P-5 or P-10 if any block or run of the promoted build failed, or if an earlier build's failure is not cleared (rounds 4 and 5). B-9 `replayDeterminism` and B-10 `historyReplay` are **not** produced here: the adapter wraps A-M13-06's M2 bundle-backed implementation (A-M11-01's 10-replay run record; card Z-H's report) unchanged. P-6 `shadowCoverage` passes A-M12-02 `p6Stats` through unchanged.
   8. Stage changes: promotions call `StageMachine.onModeCommand`; automatic demotions call `StageMachine.onDemotion({ strategyId, reason: 'L-1' | 'L-2' | 'L-4' | 'operator' })` (DDKILL = L-2).
 - **Shared resources and concurrency:** System mode (owner M26); strategy stage (owner M13, changed through its API); signer mode (owner M17, via protocol).
 - **Config:** `m26.start_mode` (`paper`); `m26.cooldown_after_demotion_ms` (7 days).
 - **Edge cases and failure handling:** Signer refuses `set_mode` (its `max_mode` is lower) → promotion fails with reason `signer_mode_refused` and nothing changes.
-- **Acceptance criteria:** with any P gate failing, the promotion is rejected at submit and again at `effective_at`; an auto-demotion sets the signer to `paper` before the engine mode changes; exits of live positions continue to be signed after demotion (ARCH 16.5 CA-05 row).
+- **Acceptance criteria:** given an active B-10 reservation, then `set_mode('paper')` is refused with `helius_unavailable` and a restart opens no paper session; given engine Helius headroom of 999,999 credits, then the same; given headroom back at 1,000,000, then the switch is allowed (if every other guard holds). With any P gate failing, the promotion is rejected at submit and again at `effective_at`; an auto-demotion sets the signer to `paper` before the engine mode changes; exits of live positions continue to be signed after demotion (ARCH 16.5 CA-05 row). Producers (C-49): given a declared 48 h block with one restart drill and one disconnect drill, then `dryRun` returns that block with its `buildSha`, `configKey` and declaration time; given a block recorded only after it started, or two shorter blocks, then `dryRun` reports them as such and P-5 fails; given a failed block followed by a passing one, then `dryRun` returns both; given two fault-injection runs of one build, then `faultInjection` returns both; given a `W_P` in which the engine always had Helius above its floor and no reservation was active, then `engineHelius` returns 0 and 0 minutes; given a 10-minute engine Helius outage in `W_P`, then it returns `minutesWithoutHelius` = 10; given a failure-injection run of build X and a promotion of build Y of the same `configKey`, then `faultInjection(Y, configKey)` returns X's run as well as Y's, and P-10 fails while Y has no run of its own; given a failed run on X and a later rebuild Y, then the failed run is still returned; given the M2 bundle-backed `replayDeterminism` and `historyReplay`, then the adapter returns exactly their values (no second source).
 - **Tests:** unit (guards); integration with fake M13 evaluations and the real signer.
 - **Observability:** metrics `mode` (gauge), `promotions_total` (result), `demotions_total` (cause).
 - **Security notes:** Promotions require the signer's independent consent (`max_mode` in a root-owned file), so a compromised engine alone cannot enable live buys or raise the live level.
@@ -2278,7 +2317,7 @@ type SentinelToEngine = { kind: 'ack'; seq: number } | { kind: 'halt_ack'; haltI
 - **Tests:** unit (schemas), property (random valid payloads round-trip), fixture suite.
 - **Observability:** none.
 - **Security notes:** `UntrustedString` enforces byte limits (symbol 32, name 64).
-- **Facts used:** none from the register (UI conventions cite UI-F30/UI-F31 in `UI.md`). VERIFY: the zod version and licence pinned by UI-T01 (the UI document lists a version; confirm at build time).
+- **Facts used:** VF-16 (package versions and licences); otherwise none from the register (UI conventions cite UI-F30/UI-F31 in `UI.md`). VERIFY: the zod version and licence pinned by UI-T01 (the UI document lists a version; confirm at build time).
 - **Definition of done:** Common DoD; package tagged and consumed by UI-T08.
 
 #### B-M28-02 — HTTP server, network exposure, passkey authentication, sessions, CSRF and step-up
@@ -2394,7 +2433,7 @@ type SentinelToEngine = { kind: 'ack'; seq: number } | { kind: 'halt_ack'; haltI
 
 #### B-M29-01 — Sentinel process, heartbeat server, watchdog latch and balance-drop latch
 
-- **Module:** M29 · **Size:** M (~2 engineer-days) · **Phase:** 3 (the `import-run` spool part of B-M29-04 is Phase 1)
+- **Module:** M29 · **Size:** M (~2 engineer-days) · **Phase:** 3 (the `import-run` spool ticket B-M29-05 is Phase 1)
 - **Goal:** An independent process (user `sentinel`) that watches the engine's heartbeat, sets the signer latch when the engine is silent for 10 s, keeps its own cache of live positions, and latches on an unexplained hot-wallet balance drop (CA-01, CA-17).
 - **Depends on:** B-M17-08 (signer protocol on `ops.sock`). Uses the heartbeat protocol of B-M26-01.
 - **Interfaces:** server socket `/run/sentinel/engine.sock` (mode 0660, group `bot`); messages `EngineToSentinel`/`SentinelToEngine` (B-M26-01) with the heartbeat extended by `positions: Array<{ mint: Pubkey; poolId: Pubkey; venue: VenueId; tokenProgram: Pubkey; sizeBase: BaseUnits }>` (CL-61); state file `/var/lib/sentinel/state.json` (fsync'd).
@@ -2464,10 +2503,10 @@ type SentinelToEngine = { kind: 'ack'; seq: number } | { kind: 'halt_ack'; haltI
 
 #### B-M29-04 — `botctl` operator CLI
 
-- **Module:** M29 · **Size:** M (~1.5 engineer-days) · **Phase:** 1 (`import-run`), 3 (all others)
-- **Goal:** The host CLI run by the operator's own login user over SSH on the tailnet: `status`, `halt`, `flatten`, `unlock`, `lock`, `resume-latch`, `release-lease`, `import-run`, `sweep`, plus `enroll-passkey` (CL-60).
-- **Depends on:** B-M29-01 (B-M24-02 only for `import-run`). Group A: M13 `importRunBundle` (via the engine's import job, CL-62).
-- **Interfaces:** command lines (ARCH M29): `botctl status`; `botctl halt --reason <text>`; `botctl flatten --max-slippage-bps <n>`; `botctl unlock [--exits-only]`; `botctl lock`; `botctl resume-latch --reason <text>`; `botctl release-lease`; `botctl import-run <bundle>`; `botctl sweep [--lamports <n>]`; `botctl enroll-passkey`.
+- **Module:** M29 · **Size:** M (~1.25 engineer-days) · **Phase:** 3 (`import-run` was split out as B-M29-05 on 2026-10-07)
+- **Goal:** The host CLI run by the operator's own login user over SSH on the tailnet: `status`, `halt`, `flatten`, `unlock`, `lock`, `resume-latch`, `release-lease`, `sweep`, plus `enroll-passkey` (CL-60); `import-run` is B-M29-05 and ships in the same `botctl` binary.
+- **Depends on:** B-M29-01, B-M29-05 (the `botctl` binary and its config). Group A: none.
+- **Interfaces:** command lines (ARCH M29): `botctl status`; `botctl halt --reason <text>`; `botctl flatten --max-slippage-bps <n>`; `botctl unlock [--exits-only]`; `botctl lock`; `botctl resume-latch --reason <text>`; `botctl release-lease`; `botctl sweep [--lamports <n>]`; `botctl enroll-passkey`.
 - **Logic:**
   1. `status`: signer `status` (ops.sock) + sentinel status + engine trading state (from the sentinel's last heartbeat).
   2. `halt`: signer `latch(halt)` directly (identity `operator_cli`) and a halt request to the engine relayed by the sentinel; works with the engine hung or dead (ARCH 12.6).
@@ -2475,7 +2514,7 @@ type SentinelToEngine = { kind: 'ack'; seq: number } | { kind: 'halt_ack'; haltI
   4. `unlock`: reads the passphrase with terminal echo disabled, sends it to the signer over `ops.sock`, zero-fills the buffer; never logged or echoed; `--exits-only` loads the key in `exits_only`.
   5. `resume-latch`: clears a latch set by the sentinel, the CLI or `system` (D28 (a)); prints that the dashboard RESUME (A2) is still required; the signer log entry is imported into the audit log.
   6. `release-lease`: returns exits to the engine after a takeover, only after confirming the sentinel journal was imported (prompts if not).
-  7. `import-run <bundle>`: copies the bundle into the import spool `/var/lib/bot/import-spool/` (group `botops`, write-only for the operator); the engine's single-writer import job runs M13 `importRunBundle` (signature against the root-owned research public key, manifest hashes against the host index) and writes the result file the CLI waits for (CL-62). No computation of runs happens on the host (CA-26).
+  7. `import-run`: see B-M29-05.
   8. `sweep [--lamports n]`: asks the engine to sweep (or a test sweep of `n` lamports, checklist item 4).
   9. `enroll-passkey`: asks M28 (through a local admin file in the spool) for a single-use enrollment token, valid 10 minutes, printed once.
 - **Shared resources and concurrency:** Uses the owners' protocols only.
@@ -2488,6 +2527,25 @@ type SentinelToEngine = { kind: 'ack'; seq: number } | { kind: 'halt_ack'; haltI
 - **Facts used:** none external.
 - **Definition of done:** Common DoD; out-of-band instructions in `UI.md` U-14 match these commands exactly (ARCH 12.6).
 
+
+#### B-M29-05 — `botctl import-run`
+
+- **Module:** M29 · **Size:** S (~0.25 engineer-days) · **Phase:** 1 (split from B-M29-04 on 2026-10-07, INTEGRATION "Remaining issues")
+- **Goal:** The one `botctl` subcommand gate runs need in M2: hand a signed run bundle from the research machine to the engine's import job.
+- **Depends on:** B-M24-02. Group A: A-M13-08 (`importRunBundle`, run by the engine's import job, CL-62 = C-38).
+- **Interfaces:** `botctl import-run <bundle>`; `/etc/botctl/config.json` (spool path).
+- **Logic:**
+  1. Copy the bundle into the import spool `/var/lib/bot/import-spool/` (group `botops`, write-only for the operator); the engine's single-writer import job runs M13 `importRunBundle` (signature against the root-owned research public key, manifest hashes against the host index) and writes the result file the CLI waits for (CL-62). No computation of runs happens on the host (CA-26).
+  2. Print the result (imported, or the refusal code) and exit non-zero on refusal.
+- **Shared resources and concurrency:** The spool directory; the engine's import job is the only writer to `bot.db` (ARCH 4.5).
+- **Config:** `/etc/botctl/config.json` (spool path, result timeout).
+- **Edge cases and failure handling:** Engine down → the bundle waits in the spool; the CLI times out with a clear message and the bundle is imported at the next start. A tampered bundle → the import job refuses with `E_SIGNATURE`.
+- **Acceptance criteria:** Given a valid bundle, then it appears in VM-21 after import; given a bundle with one changed byte, then it is refused and nothing is written; `botctl` never writes `bot.db` directly.
+- **Tests:** integration with the engine's import job on a test host.
+- **Observability:** logs `botctl.import_run` (no secrets).
+- **Security notes:** The research key is not the trading key; a forged bundle is still checked against host manifests (A-M13-08).
+- **Facts used:** none external.
+- **Definition of done:** Common DoD; A-M11-05 bundles import on a clean host test.
 ---
 
 ### M30 Build, deploy and supply chain
@@ -2512,7 +2570,7 @@ type SentinelToEngine = { kind: 'ack'; seq: number } | { kind: 'halt_ack'; haltI
 - **Tests:** CI self-tests with deliberately bad commits.
 - **Observability:** CI reports.
 - **Security notes:** The research bundle signing key and any provider keys never enter CI.
-- **Facts used:** TH-37, TH-38, TH-39, TH-40, TH-41, LD-05, LD-36.
+- **Facts used:** TH-37, TH-38, TH-39, TH-40, TH-41, LD-05, LD-36, VF-16.
 - **Definition of done:** Common DoD; policy documented in `DEPENDENCIES.md`.
 
 #### B-M30-02 — Host provisioning, systemd hardening, firewall and egress allowlist
@@ -2603,7 +2661,7 @@ Ambiguities in `ARCH.md` that a ticket had to resolve, with the reading chosen (
 | CL-01 | M15 `highestSeenSlot()` is "max contextSlot over every response from any provider", but only M14 sees every response and M14's interface has no hook | M14 publishes `rpc.context_slot { providerLabel, contextSlot, method, atMs }` on the event bus for every response with a context slot (new M14 obligation) **Integration:** adopted; A-M14-01 publishes this exact shape (C-05 updated to include `method`). | B-M15-01 |
 | CL-02 | Degraded-mode budget (11.2) lists height readings "only while attempts are unresolved" | M15 polls heights every 10 s in degraded mode; M18 still calls `heightOn` on demand for expiry proofs | B-M15-01 |
 | CL-03 | D02 (b) mentions skipping Jito tips on non-Jito leaders via M15 | `jitoLeaderShareBps` is informational only; per-leader tip skipping (needs a leader schedule) is out of scope in v1; tips are always included on rung ≥ 2 | B-M15-03 |
-| CL-04 | Rung 4 lands via Jupiter `/execute`, but `LandingPath` has only `sender`, `jito_tx`, `rpc` | Add `'jupiter_execute'` to `LandingPath` in `@bot/types`; M14 provides a send bucket for it (Jupiter's separate `/execute` limits [EX-29]); never rebroadcast **Integration:** adopted; A-M14-04 adds the `jupiter_execute` bucket (80% of Jupiter `/execute` limits [EX-29]); ARCH M18 `LandingPath` amended (5.0b). | B-M19-01, B-M18-01, B-M18-05 |
+| CL-04 | Rung 4 lands via Jupiter `/execute`, but `LandingPath` has only `sender`, `jito_tx`, `rpc` | Add `'jupiter_execute'` to `LandingPath` in `@bot/types`; M14 provides a send bucket for it (Jupiter's separate `/execute` limits [EX-29]); never rebroadcast **Integration:** adopted; A-M14-04 adds the `jupiter_execute` bucket (≤ 50% of Jupiter `/execute` limits [EX-29], owner rule; was 80%); ARCH M18 `LandingPath` amended (5.0b). | B-M19-01, B-M18-01, B-M18-05 |
 | CL-05 | Tip accounts must be on the signer's allowlist, but ARCH does not say where M16 gets them | Tip-account lists are reviewed config (never fetched at runtime), `requiresRestart`, and must hash-match the signer's policy file | B-M16-01, B-M17-06 |
 | CL-06 | PumpSwap `track_volume` may create a `user_volume_accumulator` like the curve's (rent paid by the user [EX-13]); ARCH reservation formula omits it | VERIFY; if it does, the first-trade reservation includes that rent | B-M16-03, B-M22-01 |
 | CL-07 | Honeypot simulation transaction content beyond "buy then sell" | Simulation-only builds carry no tips (tips do not affect sellability and would distort the output check); `minQuoteOut = 0` on the simulated sell so the output is observed | B-M16-05 |
@@ -2613,7 +2671,7 @@ Ambiguities in `ARCH.md` that a ticket had to resolve, with the reading chosen (
 | CL-11 | Signer may `Burn` only for mints "the engine has marked unsolicited and the operator confirmed", which the signer cannot verify | Signer additionally refuses a burn for any mint present in its own persisted `buyMints` list (every mint it has ever signed a buy for), so a buggy or compromised engine cannot burn position tokens | B-M16-10, B-M17-03, B-M17-06, B-M22-04 |
 | CL-12 | Exit fee caps are per rung (8.3), but the signer cannot trust the engine's rung | Signer enforces an absolute exit cap = base 5,000 + priority ceiling 600,000 + 2 × tip cap 10,000 = 625,000 lamports (2,000,000 for rung-4 simulated exits); the engine enforces per-rung values | B-M17-06 |
 | CL-13 | Rung-4 check "total fees + Jupiter fee + tips ≤ 2,000,000" from a simulation that cannot separate Jupiter's fee | Fee-like outflow = simulated network fee + every lamport increase of a System-owned non-hot account + every wSOL increase of a token account not owned by the hot wallet; ambiguous outflows count as fees (refusal is the safe direction; the ladder moves to rung 5) | B-M17-06 |
-| CL-14 | The signer must read balances itself at `confirmed` (exits: ATA balance; buys: hot balance for `HOTCAP`), but section 10 targets a 2 ms sign step and D05 triggers on build + sign p95 > 30 ms | The signer's RPC reads are required by policy and are kept; the D05 trigger metric `build_sign_segment_ms` excludes the signer's network reads (the signer reports its own CPU time in the response metadata), so a network round trip cannot trigger a language switch | B-M17-06, B-M19-03 |
+| CL-14 | The signer must read balances itself at `confirmed` (exits: ATA balance; buys: hot balance for `HOTCAP`), but section 10 targets a 2 ms sign step and D05 triggers on build + sign p95 > 30 ms | The signer's RPC reads are required by policy and are kept; the D05 trigger metric `build_sign_segment_ms` excludes the signer's network reads (the signer reports its own CPU time in the response metadata), so a network round trip cannot trigger a language switch | B-M17-06, B-M19-06 |
 | CL-15 | `SignerStatus` is defined but no request returns it; it lacks mode, persistence health and per-mint leases needed by M26/M27/M29 | Add `StatusRequest` and fields `mode`, `persistence`, `leases[]` **Integration:** adopted into ARCH M17 (5.0b). | B-M17-01, B-M17-03, B-M17-08 |
 | CL-16 | "The mode is raised by the engine within the signer's ceilings file and lowered by anyone" has no protocol message | Add `SetModeRequest`; the engine can raise the signer mode only up to `max_mode` in the signer's root-owned policy (default `paper`, set by the operator at each promotion) **Integration:** adopted into ARCH M17 (5.0b). | B-M17-08, B-M26-04 |
 | CL-17 | Key generation and rotation (12.2) have no tool | An offline `signer-keytool` (init, rotate, verify) in the signer package, run as user `signer`, never prints the seed | B-M17-02 |
@@ -2661,7 +2719,7 @@ Ambiguities in `ARCH.md` that a ticket had to resolve, with the reading chosen (
 | CL-59 | "Bind to 127.0.0.1 and reach it over a tailnet" needs a forwarding mechanism | Use Tailscale's local forwarding of a loopback port or a tailnet-only listener (VERIFY); never bind `0.0.0.0` | B-M28-02 |
 | CL-60 | No way to enroll the first passkey or recover from a lost one | `botctl enroll-passkey` issues a single-use 10-minute token on the host | B-M28-02, B-M29-04 |
 | CL-61 | The sentinel must flatten "live positions" without the engine's database | The heartbeat carries the live positions list (`mint`, `poolId`, `venue`, `tokenProgram`, `sizeBase`), persisted by the sentinel; on takeover it sells only cached mints with an on-chain balance **Integration:** the heartbeat type in B-M26-01 now carries `positions[]`. | B-M29-01, B-M29-02 |
-| CL-62 | `botctl import-run` "writes into `bot.db`", but the engine is the single writer and the CLI runs as the operator user | The CLI drops the bundle into an import spool; the engine's import job (single writer) runs M13 `importRunBundle` and writes a result the CLI waits for **Integration:** consistent with C-38; A-M13-08 owns `importRunBundle` in the engine. | B-M29-04 |
+| CL-62 | `botctl import-run` "writes into `bot.db`", but the engine is the single writer and the CLI runs as the operator user | The CLI drops the bundle into an import spool; the engine's import job (single writer) runs M13 `importRunBundle` and writes a result the CLI waits for **Integration:** consistent with C-38; A-M13-08 owns `importRunBundle` in the engine. | B-M29-05 (split from B-M29-04, 2026-10-07) |
 | CL-63 | `client_kind = mobile` restrictions rely on a client declaration | Recorded limitation: client kind is self-declared; the binding protection for A2/A3 is the passkey step-up | B-M28-02 |
 | CL-64 | "Strategies live at once" has no short code | Internal short code `MAXSTRAT` | B-M26-04 |
 | CL-65 | ARCH 18 puts M16 build-only work in Phase 2, but M06 (Phase 1) needs `buildSimulationOnly` | B-M16-01/02/03/05 and the rent oracle are pulled into Phase 1 (no key, simulation only) **Integration:** adopted and extended: the whole engine core moves to global milestone M2 (`INTEGRATION.md`); ARCH 18 amended. | Build order |
@@ -2700,7 +2758,7 @@ Rewritten at integration with producing **ticket IDs** (the "Depends on (group A
 | B-M26-03, B-M26-04 | A-M13-05, A-M13-06 | `evaluateGates`, `stage`, `StageMachine.onModeCommand` / `onDemotion` (CL-57), `ExternalGateInputs` implemented by B-M26-04 (C-39) |
 | B-M27-02 | A-M14-05, A-M03-01 | `health()`, `creditUsage()`, discovery `health()` |
 | B-M28-03 | A-M04-01, A-M05-01, A-M06-02, A-M06-03, A-M07-03, A-M08-03, A-M09-01, A-M13-04, A-M13-06, A-M13-08, A-M14-05 | projection sources for VM-04..VM-18, VM-21 |
-| B-M29-04 | A-M13-08 | `importRunBundle` (run by the engine's import job, CL-62 = C-38) |
+| B-M29-05 | A-M13-08 | `importRunBundle` (run by the engine's import job, CL-62 = C-38) |
 
 ## Unverified items affecting this group
 
@@ -2750,4 +2808,4 @@ Every item below must be resolved (source URL, date read, result) in `VERIFY.md`
 | Effectiveness of `jitodontfront` / `mev-protect` on small swaps | UNVERIFIED [LD-16, LD-22] | B-M16-01, B-M23-05 (measured by `detectSandwich`) | Post-trade sandwich detection |
 | Landing rate and confirm latency from Frankfurt | UNVERIFIED (excluded claims) | B-M18-01..03 targets, gate LS-4 | Live-small measurement |
 | Self-hosted push software for D27 (b) | UNVERIFIED | B-M29-03 option (b) | Dependency review if chosen |
-| Any edge for MR-01 | No evidence (A-23) | Whether any M4 ticket is ever built | Gates B, R and P |
+| Any edge for MR-01 | Negative sub-hour proxy evidence; MR-01's 15 s signal untested (A-23) | Whether any M4 ticket is ever built | Gates B, R and P |

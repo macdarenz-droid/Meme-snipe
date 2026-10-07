@@ -1,5 +1,7 @@
 # Dashboard design and UX
 
+Edited in Meme-snipe from 2026-10-07 (card Z0D); source commit `74e7258` of `macdarenz-droid/Snipe-solana` `main`.
+
 Operator dashboard for the Solana meme-coin trading bot: design system, screens, view-model contract, front-end stack and UI build tickets.
 
 - Author role: product designer and front-end architect (fact-ID prefix `UI`).
@@ -1744,14 +1746,14 @@ REST `GET /api/v1/runs`, `GET /api/v1/runs/{run_id}`; topic `runs` (push `upsert
 | Vite | 8.3.3 | MIT | Vite docs: regular patches for `vite@8.3`; important fixes backported to 7.3 and 8.2; security patches to 6.4 and 8.1 (UI-F34). Engines `node ^20.19.0 \|\| >=22.12.0` |
 | @vitejs/plugin-react | 6.1.2 | MIT | Peer `vite ^8.0.0` |
 | TypeScript | `latest` 7.0.2; 6.0.3 is the newest 6.0.x | Apache-2.0 | **typescript-eslint 8.71.1 declares peer `typescript >=4.8.4 <6.1.0`**, so TS 7 is not yet supported by the linter. **Pin TypeScript 6.0.x** until typescript-eslint widens its range |
-| typescript-eslint / ESLint | 8.71.1 / 10.12.0 | — | Peer `eslint ^8.57.0 \|\| ^9.0.0 \|\| ^10.0.0` |
-| Next.js | 16.3.8 | — | Considered and not chosen (D-UI-04) |
+| typescript-eslint / ESLint | 8.71.1 / 10.12.0 | MIT / MIT (checked 2026-10-07, VF-16) | Peer `eslint ^8.57.0 \|\| ^9.0.0 \|\| ^10.0.0` |
+| Next.js | 16.3.8 (16.4.0 on 2026-10-07) | MIT (VF-16) | Considered and not chosen (D-UI-04) |
 | @tanstack/react-router | 1.170.41 | MIT | Typed URL search params (docs page exists) |
 | @tanstack/react-query | 5.104.1 | MIT | Peer `react ^18 \|\| ^19` |
 | @tanstack/react-table | 9.2.6 | MIT | Peer `react >=18`; engines `node >=20` |
 | @tanstack/react-virtual | 3.14.13 | MIT | — |
 | radix-ui | 1.7.0 | MIT | Unstyled accessible primitives (dialog, popover, tabs, tooltip) |
-| cmdk | 1.1.1 | MIT | Command palette primitive; last published 2025-08-27 |
+| cmdk | 1.1.1 | MIT | Command palette primitive; published 2025-03-14 (2025-08-27 is the registry's modified time; corrected 2026-10-07, VF-16) |
 | zod | 4.6.5 | MIT | Runtime schema validation of every VM payload |
 | uPlot | 1.6.32 | MIT | Last published 2025-03-14. The README claims ~50 KB min and benchmarks against Chart.js and ECharts; these are the author's own claims (UI-F36) |
 | lightweight-charts | 5.2.1 | Apache-2.0 | **Licence requires attribution**: "This license requires specifying TradingView as the product creator … add the 'attribution notice' from the NOTICE file and a link to https://www.tradingview.com/ to the page"; the `attributionLogo` chart option satisfies the link requirement (README, UI-F35). Built-in series: Area, Bar, Baseline, Candlestick, Histogram, Line; custom series via plugins (UI-F35) |
@@ -1761,12 +1763,12 @@ REST `GET /api/v1/runs`, `GET /api/v1/runs/{run_id}`; topic `runs` (push `upsert
 | @fontsource-variable/inter, …/jetbrains-mono | 5.3.0 | OFL-1.1 | Self-hosted fonts |
 | tailwindcss | 4.3.3 | MIT | Alternative for D-UI-06 |
 | motion | 14.0.0 | MIT | **Not needed**; CSS transitions cover the motion spec |
-| Vitest | 5.0.3 | — | Unit and component tests |
-| @playwright/test | 1.63.0 | — | End-to-end and screenshot tests |
-| axe-core / @axe-core/playwright | 4.14.0 / 4.13.0 | — | Automated accessibility checks |
-| Storybook | 10.6.1 | — | Component state catalogue + visual regression source |
+| Vitest | 5.0.3 | MIT (VF-16) | Unit and component tests |
+| @playwright/test | 1.63.0 | Apache-2.0 (VF-16) | End-to-end and screenshot tests |
+| axe-core / @axe-core/playwright | 4.14.0 / 4.13.0 | MPL-2.0 / MPL-2.0 (VF-16) | Automated accessibility checks. Allowed for dev and test only, never at runtime (Meme-snipe `docs/DECISIONS.md`, 2026-10-07) |
+| Storybook | 10.6.1 | MIT (VF-16) | Component state catalogue + visual regression source |
 
-Licence fields not listed ("—") were not checked in this session; check them before adoption (open question Q-12).
+Licence fields not listed ("—") were not checked in this session; check them before adoption (open question Q-12). On 2026-10-07 every remaining "—" licence above was checked against the npm registry (VF-16), and every listed version was still `latest` except Next.js.
 
 ### Recommendation
 
@@ -1841,7 +1843,7 @@ Controls that apply whichever option is chosen:
 
 - **Goal:** a reproducible React 19 + TypeScript 6.0 + Vite 8 single-page app that builds to static files and is served by the bot API on the same origin, with the test harness in place.
 - **Depends on:** none (stack per Front-end stack).
-- **Behaviour:** Vite project with `@vitejs/plugin-react`; TypeScript pinned to the 6.0.x line (typescript-eslint peer range, UI-F32); ESLint + typescript-eslint; Vitest; Playwright with `@axe-core/playwright`; Storybook 10; CSS Modules. Scripts: `dev`, `build`, `test`, `test:e2e`, `test:visual`, `storybook`, `lint`, `typecheck`. A mock API server (fixture-driven REST + SSE) for development and tests, so the UI can be built before the backend exists. The build emits hashed assets and an `index.html`; there is no Node runtime in production. The development server binds to `127.0.0.1` only. A lint rule bans `parseFloat`/`Number(` on identifiers matching `/_(lamports|base|usd_e6|slot|micro_lamports_per_cu)$/`.
+- **Behaviour:** Vite project with `@vitejs/plugin-react`; TypeScript pinned to the 6.0.x line (typescript-eslint peer range, UI-F32; versions and licences rechecked 2026-10-07, VF-16); ESLint + typescript-eslint; Vitest; Playwright with `@axe-core/playwright`; Storybook 10; CSS Modules. Scripts: `dev`, `build`, `test`, `test:e2e`, `test:visual`, `storybook`, `lint`, `typecheck`. A mock API server (fixture-driven REST + SSE) for development and tests, so the UI can be built before the backend exists. The build emits hashed assets and an `index.html`; there is no Node runtime in production. The development server binds to `127.0.0.1` only. A lint rule bans `parseFloat`/`Number(` on identifiers matching `/_(lamports|base|usd_e6|slot|micro_lamports_per_cu)$/`.
 - **States:** n/a.
 - **Edge cases:** Node version below Vite 8's engines (`^20.19.0 || >=22.12.0`, UI-F32) → the setup script fails with a clear message.
 - **Acceptance criteria:**
@@ -1892,7 +1894,7 @@ Controls that apply whichever option is chosen:
 
 - **Goal:** C01, C02, C07–C14, C19–C22, C43 (Button, IconButton, TextInput, AmountInput, Select/Combobox, Switch, Checkbox/Radio/SegmentedControl, Tabs, Tooltip, Popover/Menu, Toast, Banner, Badge/StatusPill, Kbd, NavItem) with every state in the inventory.
 - **Depends on:** UI-T02, UI-T03; DS Component inventory; Radix primitives.
-- **Behaviour:** built on Radix where a primitive exists (dialog, popover, tooltip, tabs, select), styled with tokens. Buttons keep their label while loading (spinner at left, width locked). AmountInput parses user text into an exact string in the target unit (SOL → lamports with at most 9 decimals; bps as an integer) and reports `invalid`, `out-of-range` or `exceeds-limit` with the min/max/limit shown. Tooltips open after 400ms on hover and immediately on focus. Toasts: polite by default, `role="alert"` for danger. Lucide icons verified to exist in the installed version; any missing name gets a replacement recorded in this spec.
+- **Behaviour:** built on Radix where a primitive exists (dialog, popover, tooltip, tabs, select), styled with tokens. Buttons keep their label while loading (spinner at left, width locked). AmountInput parses user text into an exact string in the target unit (SOL → lamports with at most 9 decimals; bps as an integer) and reports `invalid`, `out-of-range` or `exceeds-limit` with the min/max/limit shown. Tooltips open after 400ms on hover and immediately on focus. Toasts: polite by default, `role="alert"` for danger. Lucide icons verified to exist in the installed version (`lucide-react` 1.52.0, VF-16); any missing name gets a replacement recorded in this spec.
 - **States:** exactly those in C01–C22 and C43.
 - **Edge cases:** AmountInput receiving `0.1234567891` SOL (10 decimals) → invalid, never rounded; pasting `1,000.5` → accepted as `1000.5` with the thousands separator stripped; locales that use a comma decimal separator → the UI is English-only (open question Q-09), and the input accepts `.` only.
 - **Acceptance criteria:**
