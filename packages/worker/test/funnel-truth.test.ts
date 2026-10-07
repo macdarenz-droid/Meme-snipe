@@ -46,6 +46,8 @@ const REASONS: readonly (readonly [string, string, string | null, number])[] = [
   ['#evaluate risk fault', 'risk fault: x', 'risk', 1],
   ['#evaluate risk refusal', 'risk R14 cost_gate: round trip 59822 ppm is above 500 bps', 'risk', 1],
   ['#evaluate size mismatch', 'risk sized 2 lamports, gates judged 1', 'size', 2],
+  // LATE-LOG: a held pass names no failed check and stands past the hard rejects (costs and risk are judged again).
+  ['#evaluate confirm wait', 'confirm wait: passed at slot 1; proposed once slot 7 is released and it passes again', null, 1],
 ];
 
 describe('FUNNEL-TRUTH: each refusal at the check and stage it truly reached', () => {
@@ -149,7 +151,7 @@ describe('FUNNEL-TRUTH: each refusal at the check and stage it truly reached', (
   it('the list above is every reject site in strategy.ts: a new one fails here until it is classified', () => {
     const src = readFileSync(join(import.meta.dirname, '../src/engine/strategy.ts'), 'utf8');
     // #evaluate's `#fail` calls (the market miss, the stop text and the regime pass their own text through).
-    expect(src.match(/return this\.#fail\(/g)).toHaveLength(13);
+    expect(src.match(/return this\.#fail\(/g)).toHaveLength(14);
     // #236 added both paths to the same pre-gate refusal, covered above by reason and exact worker code.
     expect(src.match(/return this\.#fail\('create expired', \[\{ gate: 'worker', code: 'create-expired',/g)).toHaveLength(2);
     // #market's misses and #stopAt's texts.

@@ -97,8 +97,21 @@ export interface ProducerOptions {
   readonly insiderSlots: number;
   /** Funder lookups cover the first this many distinct buyers (§16.3: 20). */
   readonly firstBuyers: number;
+  /**
+   * LATE-LOG: slots past a graduate's survival mark (in released slots) before its survival is settled, so a confirmed
+   * pool log delivered late cannot change a permanent survival entry (default `CONFIRM_LAG_SLOTS`).
+   */
+  readonly confirmLagSlots?: number;
   readonly execHealth?: ExecHealthLimits;
 }
+
+/**
+ * LATE-LOG (S1 ruling, 2026-10-07): how many released slots a confirmed pool log can still arrive after its own slot was
+ * released. Measured on the 6 Oct recordings (boot muwxcwu3, docs/DECISIONS.md "LATE-LOG"): at most 5 slots past the
+ * release point, so 6. A survival mark waits this long before it is settled, and an entry that passed its gates waits
+ * this long and passes them again before it is proposed (`StrategyConfig.confirmLagSlots`). Exits never wait.
+ */
+export const CONFIRM_LAG_SLOTS = 6;
 
 /**
  * OOM-SEEN (supervisor ruling, Option A): the candle book remembers each trade's id for an hour behind the pool's newest
@@ -171,6 +184,7 @@ export const producerOptions = (p: Policy, execHealth?: ExecHealthLimits): Produ
   volumeKeepMs: (p.regime.volumeWindowDays + p.regime.volumeLagDays + 2) * 24 * HOUR_MS,
   insiderSlots: 2,
   firstBuyers: 20,
+  confirmLagSlots: CONFIRM_LAG_SLOTS,
   ...(execHealth === undefined ? {} : { execHealth }),
 });
 
@@ -241,13 +255,41 @@ interface CandleBook {
   readonly seen: RepeatTags;
   /** The newest trade time applied. */
   newestMs: number;
+  /** LATE-LOG: the newest slot of a swap the book applied; a swap from an earlier slot that arrives after it is not applied. */
+  newestSlot: bigint | null;
   /** `newestMs` at the last sweep: the next runs once the newest trade is a quarter window later. */
   sweptMs: number;
   /** TRADE-GAP-HEAL: the last swap the book applied: its post-trade reserves anchor a heal's chain. */
   lastSwap: SwapEv | null;
   /** TRADE-GAP-HEAL: the book as it was before its newest trade slot's first swap, and the swaps since. */
   mark: BookMark | null;
+  /**
+   * LATE-LOG (RT-A1b): the book before the first applied swap of each of its last `BOOK_SNAPS_KEEP` swap slots, oldest
+   * first, so a swap released behind newer ones is put back in chain order (`#reorder`) instead of leaving the candles
+   * partial for good.
+   */
+  readonly snaps: BookSnap[];
+  /** LATE-LOG (RT-A1b): every swap applied since the oldest snapshot, in the order applied. */
+  readonly recent: TapeSwap[];
 }
+
+/** LATE-LOG (RT-A1b): the book before the first applied swap of `slot`; `at` is where that swap sits in `recent`. */
+interface BookSnap {
+  readonly slot: bigint;
+  readonly candles: readonly Candle[];
+  readonly newestMs: number;
+  readonly sweptMs: number;
+  readonly newestSlot: bigint | null;
+  readonly reserve: Reserve | undefined;
+  readonly lastSwap: SwapEv | null;
+  at: number;
+}
+
+/**
+ * LATE-LOG (RT-A1b): swap slots a book keeps snapshots for. A confirmed log arrives at most 5 released slots late
+ * (measured, docs/DECISIONS.md "LATE-LOG"), so at most 5 newer swap slots can sit in front of it; 16 leaves room.
+ */
+export const BOOK_SNAPS_KEEP = 16;
 
 export type SwapEv = Extract<PumpEventData, { name: 'BuyEvent' | 'SellEvent' }>;
 
@@ -432,6 +474,8 @@ interface Pending {
   readonly pool: string;
   readonly migratedAtMs: number;
   readonly slot: bigint;
+  /** LATE-LOG: the slot of the first event at or after its survival mark; settled once the head is `confirmLagSlots` past it. */
+  markSlot?: bigint;
 }
 
 /** Effective quote reserves (vault + virtual) of a pool, as of a time. */
@@ -592,7 +636,8 @@ export class FactProducer {
     if (pe !== null) this.#program(pe.ev, pe.seen, pe.truncated, e, put);
     else if (e.key === 'chain:slot') this.#slot(e, put);
     else if (e.key.startsWith('coverage:')) this.#coverage(e, put);
-    else if (e.key.startsWith('logs:truncated:') || e.key.startsWith('logs:undecodable:')) this.#hole(e.key.slice(e.key.indexOf(':', 5) + 1), e.moment.slot, put, e);
+    // LATE-LOG (review LOW-3): at the transaction's own slot, which an off-chain (late) placement does not show.
+    else if (e.key.startsWith('logs:truncated:') || e.key.startsWith('logs:undecodable:')) this.#hole(e.key.slice(e.key.indexOf(':', 5) + 1), isObj(e.value) && typeof e.value['txSlot'] === 'bigint' ? e.value['txSlot'] : e.moment.slot, put, e);
     else if (e.key.startsWith(HOLE_FETCH_PREFIX)) this.#holeFetched(e.key.slice(HOLE_FETCH_PREFIX.length), e, put);
     else this.#raw(e, put);
     this.#flushGraduates(e, put);
@@ -660,7 +705,7 @@ export class FactProducer {
         if (!t.pools.has(d.pool)) t.pools.set(d.pool, { pool: d.pool, slot: seen.slot, atMs, quote: d.poolQuoteAmount, base: d.poolBaseAmount });
         if (!this.#poolMint.has(d.pool)) this.#poolMint.set(d.pool, d.baseMint);
         if (!this.#books.has(d.pool) && !this.#retiredPools.has(d.pool)) {
-          this.#books.set(d.pool, { pool: d.pool, mint: d.baseMint, openedAtMs: atMs, fromSlot: seen.slot, candles: [], partial: false, seen: new RepeatTags(), newestMs: atMs, sweptMs: atMs, lastSwap: null, mark: null });
+          this.#books.set(d.pool, { pool: d.pool, mint: d.baseMint, openedAtMs: atMs, fromSlot: seen.slot, candles: [], partial: false, seen: new RepeatTags(), newestMs: atMs, sweptMs: atMs, newestSlot: null, lastSwap: null, mark: null, snaps: [], recent: [] });
           this.#reserves.set(d.pool, { atMs, effective: d.poolQuoteAmount });
           this.#writeCandles(d.pool, seen.provider, seen.receivedAt, put);
           this.#bookOpen(d.pool, seen.signature);
@@ -789,6 +834,25 @@ export class FactProducer {
     if (book.seen.has(tag)) {
       if (!replay) return;
     } else book.seen.add(tag, Math.floor(atMs / MINUTE_MS));
+    // LATE-LOG: a swap released after a swap of a later slot on this pool (a confirmed log delivered late, or a fetched
+    // transaction the watch never delivered) is not applied as it comes: a candle's close would be the wrong trade's.
+    // Review HIGH-1: nor one in the newest slot itself that does not start where the last applied one ended (out of
+    // chain order, or something else moved the pool between them). RT-A1b: the book is rebuilt in chain order from its
+    // snapshot before that slot (`#reorder`); only when the swaps do not chain are the candles no longer proven
+    // complete (fail closed, as an earlier-stamped trade). A heal still keeps it on its tape.
+    if (!replay && book.newestSlot !== null && (seen.slot < book.newestSlot || (seen.slot === book.newestSlot && !this.#chainsOn(book, ev)))) {
+      if (this.#reorder(book, ev, seen, put)) return;
+      book.partial = true;
+      this.#took(book, ev, seen, replay);
+      this.#writeCandles(d.pool, seen.provider, seen.receivedAt, put);
+      return;
+    }
+    if (book.newestSlot === null || seen.slot > book.newestSlot) {
+      this.#snap(book, seen.slot);
+      book.newestSlot = seen.slot;
+    }
+    book.lastSwap = ev;
+    book.recent.push({ ev, seen });
     this.#took(book, ev, seen, replay);
     if (atMs > book.newestMs) book.newestMs = atMs;
     this.#sweepSeen(book);
@@ -805,11 +869,80 @@ export class FactProducer {
     if (!replay) this.#writeCandles(d.pool, seen.provider, seen.receivedAt, put);
   }
 
+  /** LATE-LOG (RT-A1b): the book before the first applied swap of `slot`; the oldest past `BOOK_SNAPS_KEEP` goes. */
+  #snap(book: CandleBook, slot: bigint): void {
+    book.snaps.push({
+      slot, candles: [...book.candles], newestMs: book.newestMs, sweptMs: book.sweptMs, newestSlot: book.newestSlot,
+      reserve: this.#reserves.get(book.pool), lastSwap: book.lastSwap, at: book.recent.length,
+    });
+    if (book.snaps.length <= BOOK_SNAPS_KEEP) return;
+    book.snaps.shift();
+    const cut = book.snaps[0]!.at;
+    book.recent.splice(0, cut);
+    for (const x of book.snaps) x.at -= cut;
+  }
+
+  /**
+   * LATE-LOG (RT-A1b): a swap released out of chain order. From a snapshot whose swaps are all from its slot or earlier
+   * (anchored on the last of them; the latest such from which they chain), it and every
+   * swap applied since are put in exact chain order (`chainOrder`, as a heal does); only if they chain is the book rebuilt
+   * from the snapshot in that order and its candles written. False (nothing changed) when no kept snapshot gives a chain.
+   */
+  #reorder(book: CandleBook, ev: SwapEv, seen: Seen, put: (k: string, v: unknown) => void): boolean {
+    // From the latest snapshot holding no applied swap from a later slot than this one's (its state is then before this
+    // swap) back to the oldest: the first from which every swap since chains (a swap applied out of order across slots
+    // before this one came, its own snapshot's anchor is wrong; an older one's is not).
+    let i = book.snaps.length - 1;
+    let order: ReturnType<typeof chainOrder<TapeSwap>> = null;
+    for (; i >= 0 && order === null; i--) {
+      const x = book.snaps[i]!;
+      if (x.newestSlot === null || x.newestSlot > seen.slot || x.lastSwap === null) continue;
+      const anchor = swapEventState(x.lastSwap);
+      if (anchor.ok) order = chainOrder(anchor.after, [...book.recent.slice(x.at), { ev, seen }]);
+    }
+    if (order === null) return false;
+    i++;
+    const s = book.snaps[i]!;
+    // Taken: on the mark's tape and a waiting heal's, as any swap the book takes.
+    this.#took(book, ev, seen, false);
+    book.candles.splice(0, book.candles.length, ...s.candles);
+    // `partial` is kept as it is: a too-old trade refused since the snapshot is not on the tape, so it is never undone
+    // here (only a heal from an earlier mark clears it).
+    book.newestMs = s.newestMs;
+    book.sweptMs = s.sweptMs;
+    book.newestSlot = s.newestSlot;
+    book.lastSwap = s.lastSwap;
+    book.mark = null;
+    if (s.reserve === undefined) this.#reserves.delete(book.pool);
+    else this.#reserves.set(book.pool, s.reserve);
+    book.snaps.length = i;
+    book.recent.length = s.at;
+    for (const { t } of order) {
+      const mark = book.mark as BookMark | null;
+      if (mark === null || t.seen.slot > mark.slot) this.#markBook(book, t.seen.slot, false);
+      const atMs = ms(t.ev.data.timestamp);
+      if (atMs !== null) this.#bookSwap(book, t.ev, t.seen, atMs, put, true);
+    }
+    this.#writeCandles(book.pool, seen.provider, seen.receivedAt, put);
+    return true;
+  }
+
+  /** LATE-LOG: the swap's pre-trade reserves (base, and vault + virtual) are the last applied swap's post-trade ones. */
+  #chainsOn(book: CandleBook, ev: SwapEv): boolean {
+    if (book.lastSwap === null) return false;
+    const last = swapEventState(book.lastSwap);
+    if (!last.ok) return false;
+    const d = ev.data;
+    return d.poolBaseTokenReserves === last.after.baseReserve && d.poolQuoteTokenReserves + (d.virtualQuoteReserves ?? 0n) === effectiveOf(last.after);
+  }
+
   // ---------- Healing a pool's trade stream (TRADE-GAP-HEAL) ----------
 
-  /** A swap the book took (applied, or refused as too old): kept since the mark, and by a waiting heal. */
+  /**
+   * A swap the book took (applied, or refused as too old or out of order): kept since the mark, and by a waiting heal.
+   * LATE-LOG (review LOW-4): `lastSwap`, a heal's anchor, is set only by a swap the book applied (`#bookSwap`).
+   */
   #took(book: CandleBook, ev: SwapEv, seen: Seen, replay: boolean): void {
-    book.lastSwap = ev;
     book.mark?.tape.push({ ev, seen });
     if (replay) return;
     const h = this.#heals.get(book.pool);
@@ -930,6 +1063,10 @@ export class FactProducer {
     book.sweptMs = m.sweptMs;
     book.lastSwap = m.lastSwap;
     book.mark = null;
+    // LATE-LOG (RT-A1b): the snapshots are of the book before the heal; the replay below takes them again, slot by slot.
+    book.snaps.length = 0;
+    book.recent.length = 0;
+    book.newestSlot = null;
     if (m.reserve === undefined) this.#reserves.delete(pool);
     else this.#reserves.set(pool, m.reserve);
     for (const { t } of order) {
@@ -1015,10 +1152,13 @@ export class FactProducer {
     return { funders: this.#funders.size, books: this.#books.size, mints: this.#mints.size, walletMints: this.#walletMints.size, retiredPools: this.#retiredPools.size, retiredMints: this.#retiredMints.size, streams: this.#streams.size, chains: this.#chains.size, preReads: this.#preReads.size };
   }
 
-  /** OOM-SEEN: the trade ids a pool's candle book remembers, and its last reserve (tests and diagnostics). */
-  candleBook(pool: string): { readonly ids: number; readonly reserve: { readonly atMs: number; readonly effective: bigint } | undefined } | undefined {
+  /**
+   * OOM-SEEN: the trade ids a pool's candle book remembers, and its last reserve; LATE-LOG (RT-A1b): its snapshots and the
+   * swaps kept since the oldest (tests and diagnostics).
+   */
+  candleBook(pool: string): { readonly ids: number; readonly reserve: { readonly atMs: number; readonly effective: bigint } | undefined; readonly snaps: number; readonly recent: number } | undefined {
     const b = this.#books.get(pool);
-    return b === undefined ? undefined : { ids: b.seen.size, reserve: this.#reserves.get(pool) };
+    return b === undefined ? undefined : { ids: b.seen.size, reserve: this.#reserves.get(pool), snaps: b.snaps.length, recent: b.recent.length };
   }
 
   #addTrade(book: CandleBook, atMs: number, pre: Price, post: Price): void {
@@ -1753,7 +1893,12 @@ export class FactProducer {
       // With every trade of the pool seen from migration to the mark, the last reserve before the mark is the reserve at it.
       const r = this.#reserves.get(p.pool);
       const through = this.#head !== null && this.#head < e.moment.slot ? this.#head : e.moment.slot;
-      if (r !== undefined && r.atMs <= mark && this.#covered(STREAMS.trades(p.pool), p.slot, through)) this.#resolve(p, r.effective);
+      // LATE-LOG: a confirmed swap from before the mark can still arrive up to `confirmLagSlots` released slots later;
+      // the entry is permanent and feeds the regime gate, so it waits that long (the read window still ends it).
+      // The mark's slot: this first event at or after it (never below the head; a late estimate only waits longer).
+      p.markSlot ??= e.moment.slot > through ? e.moment.slot : through;
+      const settled = through >= p.markSlot + BigInt(this.#o.confirmLagSlots ?? CONFIRM_LAG_SLOTS);
+      if (settled && r !== undefined && r.atMs <= mark && this.#covered(STREAMS.trades(p.pool), p.slot, through)) this.#resolve(p, r.effective);
       else if (now > mark + this.#o.survivalReadWindowMs) this.#settle(p.pool);
     }
     this.#flushGraduates(e, put);

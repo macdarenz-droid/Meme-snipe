@@ -262,27 +262,50 @@ describe('live Feed', () => {
       { at: arrivals[i]!.at + 3, source: 'helius', body: { type: 'seen', signature: (early.signature.startsWith('1') ? '2' : '1') + early.signature.slice(1), slot: BigInt(early.slot), err: null, via: 'logs:y', detail: null } },
     );
     const live = run(arrivals, { horizonSlots: 4 });
-    expect(live.released.filter((r) => r.late)).toHaveLength(3);
-    expect(live.engine.records.filter((r) => r.type === 'fault').length).toBeGreaterThan(0);
+    // LATE-LOG: the three late frames are placed off-chain and released in order: none is refused.
+    expect(live.frames.filter((f) => f.late === true)).toHaveLength(3);
+    expect(live.feed.status().late).toBe(3);
+    expect(live.released.filter((r) => r.late)).toEqual([]);
+    expect(live.engine.records.filter((r) => r.type === 'fault')).toEqual([]);
     const back = replayLive(live.frames, live.releases);
     expect(back.ids).toEqual(live.released.map((r) => r.id));
     expect(back.engine.logHash()).toBe(live.engine.logHash());
-    // A re-sort would accept what live refused: it must differ, which is why the release record exists.
-    expect(replay(live.frames).engine.logHash()).not.toBe(live.engine.logHash());
     // A tampered record is refused, not replayed.
     expect(() => replayRecorded(live.frames, live.releases.slice(1))).toThrow(/missing/);
   });
 
-  it('a fact that arrives after its slot was released is released marked late, and the engine refuses it as out_of_order', () => {
+  it('LATE-LOG: a fact that arrives after its slot was released is placed off-chain, marked late, and accepted', () => {
     const arrivals = script();
     const late = tx('pump CreateEvent', 1);
     const pos = arrivals.findIndex((a) => a.body.type === 'slot' && a.body.slot === 452941205n);
     arrivals.splice(pos + 1, 0, { at: arrivals[pos]!.at + 1, source: 'alchemy', body: { type: 'account', slot: BigInt(late.slot), address: PUMP_GLOBAL, owner: PUMP_GLOBAL, lamports: 1n, data: Uint8Array.of(9) } });
     const live = run(arrivals, { horizonSlots: 4 });
-    const lateIds = live.released.filter((r) => r.late).map((r) => r.id);
-    expect(lateIds).toEqual([expect.stringMatching(new RegExp(`^acct:${PUMP_GLOBAL}:${late.slot}:`))]);
-    expect(live.engine.records.filter((r) => r.type === 'fault')).toEqual([expect.objectContaining({ fault: 'out_of_order', eventId: lateIds[0] })]);
+    const frame = live.frames.find((f) => f.body.type === 'account' && f.body.lamports === 1n)!;
+    expect(frame.late).toBe(true);
+    expect(frame.place.at).toBe('offchain');
+    expect(frame.place.slot).toBeGreaterThan(BigInt(late.slot));
+    const id = live.released.find((r) => r.id.startsWith(`acct:${PUMP_GLOBAL}:${late.slot}:`))!;
+    expect(id.late).toBe(false);
+    expect(live.engine.records.filter((r) => r.type === 'fault')).toEqual([]);
     expect(live.feed.status().late).toBe(1);
+    // A re-sort of the frames places it where live did: the backtest replay of the frames gives the same log.
+    expect(replay(live.frames).engine.logHash()).toBe(live.engine.logHash());
+  });
+
+  it('LATE-LOG: whatever the delivery delays, the engine refuses nothing, and the recording replays exactly', () => {
+    // Seeded delays of 0 to 3 s on every non-slot frame (horizons 0 to 2 slots, 400 ms a slot): many arrive late.
+    for (let seed = 1; seed <= 12; seed++) {
+      let x = seed;
+      const rnd = (): number => ((x = (x * 1_103_515_245 + 12_345) % 2_147_483_648) / 2_147_483_648);
+      const arrivals = script().map((a, k) => ({ ...a, at: a.body.type === 'slot' ? a.at : a.at + Math.floor(rnd() * 3_000), k }))
+        .sort((a, b) => a.at - b.at || a.k - b.k);
+      const live = run(arrivals, { horizonSlots: seed % 3 });
+      expect(live.engine.records.filter((r) => r.type === 'fault')).toEqual([]);
+      expect(live.released.filter((r) => r.late)).toEqual([]);
+      if (seed === 1) expect(live.feed.status().late).toBeGreaterThan(0);
+      const back = replayLive(live.frames, live.releases);
+      expect(back.engine.logHash()).toBe(live.engine.logHash());
+    }
   });
 
   it('a lookup answered after its slot was released enters as an off-chain fact at the open slot, and is accepted', () => {
@@ -353,8 +376,14 @@ describe('live Feed', () => {
     feed.advance(1);
     const old = feed.ingest('helius', { type: 'seen', signature: tx('pump TradeEvent').signature, slot: 900n, err: null, via: 'logs:x', detail: null }, { receivedAt: 2 });
     expect(old.place).toEqual({ at: 'offchain', slot: 1_001n, arrival: true });
+    // LATE-LOG: one inside keepSlots but already released is placed off-chain too, marked late (never released out of order).
     const recent = feed.ingest('helius', { type: 'seen', signature: tx('pump TradeEvent', 1).signature, slot: 995n, err: null, via: 'logs:x', detail: null }, { receivedAt: 3 });
-    expect(recent.place).toEqual({ at: 'chain', slot: 995n });
+    expect(recent.place).toEqual({ at: 'offchain', slot: 1_001n, arrival: true });
+    expect(recent.late).toBe(true);
+    // Not late: one of a slot still held stays on the chain.
+    const held = feed.ingest('helius', { type: 'seen', signature: tx('pump TradeEvent', 2).signature, slot: 1_001n, err: null, via: 'logs:x', detail: null }, { receivedAt: 4 });
+    expect(held.place).toEqual({ at: 'chain', slot: 1_001n });
+    expect(held.late).toBeUndefined();
   });
 
   it('a copy that comes back after its dedup key was forgotten still gets a unique event id', () => {

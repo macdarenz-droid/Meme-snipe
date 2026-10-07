@@ -115,7 +115,9 @@ describe('DEDUP-PER-WATCH: a transaction touching two watched pools', () => {
     expect(late.place.at).toBe('offchain');
     feed.ingest('helius', { type: 'slot', slot: S + 2n, parent: S + 1n, root: null }, { receivedAt: t + 30 });
     drain(t + 31);
-    expect(feed.status().late).toBe(0);
+    // LATE-LOG: counted late (its slot was released when it came), and released in order: the engine refuses nothing.
+    expect(late.late).toBe(true);
+    expect(feed.status().late).toBe(1);
     w.push(...out);
     expect(gapFree(w, B)).toBeGreaterThan(S);
   });
