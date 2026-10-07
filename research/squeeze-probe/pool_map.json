@@ -1,0 +1,1109 @@
+{
+ "WIF": {
+  "mint": "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm",
+  "rule": 1,
+  "pool": "EP2ib6dYdEeqD8MfE2ezHCxX3kP3K2eLKkirfPm5eyMx",
+  "venue": "Raydium AMM v4",
+  "program": "amm_v4",
+  "token_vault": "7UYZ4vX13mmGiopayLZAduo8aie77yZ3o8FMzTeAX8uJ",
+  "sol_vault": "7e9ExBAvDvuJP3GE6eKL5aSMi4RfXv3LkQaiNZBPmffR",
+  "fee": 0.0025,
+  "fee_fields": {
+   "trade": [
+    25,
+    10000
+   ],
+   "swap": [
+    25,
+    10000
+   ]
+  }
+ },
+ "POPCAT": {
+  "mint": "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr",
+  "rule": 1,
+  "pool": "FRhB8L7Y9Qq41qZXYLtC2nw8An1RJfLLxRF2x9RwLLMo",
+  "venue": "Raydium AMM v4",
+  "program": "amm_v4",
+  "token_vault": "4Vc6N76UBu26c3jJDKBAbvSD7zPLuQWStBk7QgVEoeoS",
+  "sol_vault": "n6CwMY77wdEftf2VF6uPvbusYoraYUci3nYBPqH1DJ5",
+  "fee": 0.0025,
+  "fee_fields": {
+   "trade": [
+    25,
+    10000
+   ],
+   "swap": [
+    25,
+    10000
+   ]
+  }
+ },
+ "BOME": {
+  "mint": "ukHH6c7mMyiWCf1b9pnWe25TSpkDDt3H5pQZgZ74J82",
+  "rule": 1,
+  "pool": "DSUvc5qf5LJHHV5e2tD184ixotSnCnwj7i4jJa4Xsrmt",
+  "venue": "Raydium AMM v4",
+  "program": "amm_v4",
+  "token_vault": "FBba2XsQVhkoQDMfbNLVmo7dsvssdT39BMzVc2eFfE21",
+  "sol_vault": "GuXKCb9ibwSeRSdSYqaCL3dcxBZ7jJcj6Y7rDwzmUBu9",
+  "fee": 0.0025,
+  "fee_fields": {
+   "trade": [
+    25,
+    10000
+   ],
+   "swap": [
+    25,
+    10000
+   ]
+  }
+ },
+ "MEW": {
+  "mint": "MEW1gQWJ3nEXg2qgERiKu7FAFj79PHvQVREQUzScPP5",
+  "rule": 1,
+  "pool": "879F697iuDJGMevRkRcnW21fcXiAeLJK1ffsw2ATebce",
+  "venue": "Raydium AMM v4",
+  "program": "amm_v4",
+  "token_vault": "4HqAjFKuQX7tnXEkxsjGQha3G4bcgER8qPXRahn9gj8F",
+  "sol_vault": "BhNdEGJef9jSqT1iCEkFZ2bYZCdpC1vuiWtqDt87vBVp",
+  "fee": 0.0025,
+  "fee_fields": {
+   "trade": [
+    25,
+    10000
+   ],
+   "swap": [
+    25,
+    10000
+   ]
+  }
+ },
+ "GOAT": {
+  "mint": "CzLSujWBLFsSjncfkh59rUFqvafWcY5tzedWJSuypump",
+  "rule": 1,
+  "pool": "9Tb2ohu5P16BpBarqd3N27WnkF51Ukfs8Z1GzzLDxVZW",
+  "venue": "Raydium AMM v4",
+  "program": "amm_v4",
+  "token_vault": "FhMHm2TVY9ULmZJvjjRx849Jn2ZRirVhJbTncHULTSvH",
+  "sol_vault": "HQD2eNuCRbDCFfaPjFt6ZttM8EiD4BPg1MXy2ALVwobg",
+  "fee": 0.0025,
+  "fee_fields": {
+   "trade": [
+    25,
+    10000
+   ],
+   "swap": [
+    25,
+    10000
+   ]
+  }
+ },
+ "PNUT": {
+  "mint": "2qEHjDLDLbuBgRYvsxhc5D6uDWAivNFZGan56P1tpump",
+  "rule": 1,
+  "pool": "4AZRPNEfCJ7iw28rJu5aUyeQhYcvdcNm8cswyL51AY9i",
+  "venue": "Raydium AMM v4",
+  "program": "amm_v4",
+  "token_vault": "2zxMeSRkYa462Zo7v5K7kFKtvpRC4MpvuC1HwA88sCR3",
+  "sol_vault": "AEwsZFbKVzf2MqADSHHhwqyWmTWYzruTG1HkMw8Mjq5",
+  "fee": 0.0025,
+  "fee_fields": {
+   "trade": [
+    25,
+    10000
+   ],
+   "swap": [
+    25,
+    10000
+   ]
+  }
+ },
+ "MOODENG": {
+  "mint": "ED5nyyWEzpPPiWimP8vYm7sD7TD3LAt3Q3gRTWHzPJBY",
+  "rule": 1,
+  "pool": "22WrmyTj8x2TRVQen3fxxi2r4Rn6JDHWoMTpsSmn8RUd",
+  "venue": "Raydium AMM v4",
+  "program": "amm_v4",
+  "token_vault": "7eoNaWgHkMQrcABabYyvbHzTS3aRyDTRDWVWUARJwfUA",
+  "sol_vault": "BqK3MWZbv3DgcsKZBZR1KWVbhKGf2Y5uMdjvqWu4So74",
+  "fee": 0.0025,
+  "fee_fields": {
+   "trade": [
+    25,
+    10000
+   ],
+   "swap": [
+    25,
+    10000
+   ]
+  }
+ },
+ "CHILLGUY": {
+  "mint": "Df6yfrKC8kZE3KNkrHERKzAetSxbrWeniQfyJY4Jpump",
+  "rule": 1,
+  "pool": "93tjgwff5Ac5ThyMi8C4WejVVQq4tuMeMuYW1LEYZ7bu",
+  "venue": "Raydium AMM v4",
+  "program": "amm_v4",
+  "token_vault": "9hAGakxBPaDcn2XAfEhkPoBbR3Nh5Mb4k49HpEQowBPc",
+  "sol_vault": "4uEW9EhHdDrdnvL5h8CPFB26iArwSyBeMxh59TV1uYka",
+  "fee": 0.0025,
+  "fee_fields": {
+   "trade": [
+    25,
+    10000
+   ],
+   "swap": [
+    25,
+    10000
+   ]
+  }
+ },
+ "FARTCOIN": {
+  "mint": "9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump",
+  "gt_fetched": "2026-10-07T16:44:56Z",
+  "gt_first_page": [
+   [
+    "Bzc9NZfMqkXR6fz1DBph7BDf9BroyEf6pnzESP7v5iiw",
+    "raydium",
+    8317490.2328
+   ],
+   [
+    "Tuy6gMupGQN7wCZ8rVP1EuLRYB132VSo9Smy4AJvQgn",
+    "orca",
+    1123324.9149
+   ],
+   [
+    "C9U2Ksk6KKWvLEeo5yUQ7Xu46X7NzeBJtd9PBfuXaUSM",
+    "orca",
+    269319.6309
+   ],
+   [
+    "J5jzvT22u1Mt6de4gkBhEsTSTjBfYS7A6aF5jzu9ihkC",
+    "orca",
+    33232.1711
+   ],
+   [
+    "56jyDYmrQo5mFZUEbuUDNYiWGFGPsyr3gQhoTcyzQ96g",
+    "orca",
+    78349.6848
+   ],
+   [
+    "FAYL7CoNENA6jGCWVJb5MZ7mjKuiiyYRkDTopdVticpp",
+    "humidifi",
+    59411.2518
+   ],
+   [
+    "6wJ7W3oHj7ex6MVFp2o26NSof3aey7U8Brs8E371WCXA",
+    "meteora",
+    139771.8555
+   ],
+   [
+    "AZ82R741qr3k6xA2xciK2AQecqpGQWU3TBg7wjcde4Kk",
+    "raydium",
+    28593.6843
+   ],
+   [
+    "6NSvJoFdUiskaQ6jcXgeTECci2gn243m9yM5hyNffm6t",
+    "raydium",
+    16252.2479
+   ],
+   [
+    "E5952YKjsJVnrBozAEmj5mftpStw1mKZSyuMboCT7mti",
+    "raydium",
+    46167.123
+   ],
+   [
+    "9CkWqmXeZdUwPtt2VTAfwXcGTyHVPpGVjeHKM3SZfdb1",
+    "orca",
+    32051.3042
+   ],
+   [
+    "FdjBRWXzieV1Qtn8FLDWWk2HK1HSQWYduo8y4F1e8GWu",
+    "raydium-clmm",
+    11638.0492
+   ],
+   [
+    "BhjvwZoCir2jqVrdGemebDFmTeMW3eENFrxYffkPfj1Y",
+    "meteora",
+    28683.8644
+   ],
+   [
+    "7wkFP7EHYTgeUG5ouX64ftTsMuXpR1gFCJK6knyp22Rd",
+    "meteora",
+    8557.7683
+   ],
+   [
+    "7RLNLxVdVevhdh46ARajyaUkBkVLUx6yen7zWeBxLmPx",
+    "raydium",
+    12814.7522
+   ],
+   [
+    "85aGuq5zEUUU6n16FbRLHBA8Y2GpN1rXnr5RZLgnsZmq",
+    "raydium",
+    12260.8957
+   ],
+   [
+    "CDsYRLCJU7MCvgmvTfKzedcgqnJCq2DtqcZc5tamCWgN",
+    "meteora",
+    30182.6678
+   ],
+   [
+    "sjSCmQA7kBgfugsZNphw5brpPZfFP9RRJktV7W5FvHw",
+    "raydium-clmm",
+    14060.8187
+   ],
+   [
+    "6sbt9LnjtEZac17fQkNCjBcq6F5ZGnzq22W4ir1RLkDi",
+    "raydium-clmm",
+    22817.0909
+   ],
+   [
+    "4wRT4yYS3k5yysMuABGvNp3Kg5R43c3dxLPv8fvEn29N",
+    "raydium-clmm",
+    14134.821
+   ]
+  ],
+  "rule": 2,
+  "pool": "Bzc9NZfMqkXR6fz1DBph7BDf9BroyEf6pnzESP7v5iiw",
+  "gt_dex": "raydium",
+  "reserve_usd_lookup": 8317490.2328,
+  "program": "amm_v4",
+  "venue": "Raydium AMM v4",
+  "token_vault": "7bxbfwXi1CY7zWUXW35PBMZjhPD27SarVuHaehMzR2Fn",
+  "sol_vault": "F6iWqisguZYprVwp916BgGR7d5ahP6Ev5E213k8y3MEb",
+  "fee": 0.0025,
+  "fee_fields": {
+   "trade": [
+    25,
+    10000
+   ],
+   "swap": [
+    25,
+    10000
+   ]
+  }
+ },
+ "PENGU": {
+  "mint": "2zMMhcVQEXDtdE6vsFS7S7D5oUodfJHE8vd1gnBouauv",
+  "gt_fetched": "2026-10-07T16:45:04Z",
+  "gt_first_page": [
+   [
+    "DdMA1cHcHEqYfttc1z1sJEY978CcU1pyjNuTWTNmdvzU",
+    "meteora",
+    4012414.469
+   ],
+   [
+    "FAqh648xeeaTqL7du49sztp9nfj5PjRQrfvaMccyd9cz",
+    "orca",
+    3894483.9173
+   ],
+   [
+    "2866MvCKPGz9LdnPcmPueoV3mA2Ac1ceEQ8Xqb9VNefu",
+    "humidifi",
+    272655.78
+   ],
+   [
+    "9qKxzRejsV6Bp2zkefXWCbGvg61c3hHei7ShXJ4FythA",
+    "pumpswap",
+    1605464.2307
+   ],
+   [
+    "D4J77RpC5k8Nkh6h8bUw2CJBJrykSRqMuNz49f2Fbx3a",
+    "zerofi",
+    35195.11
+   ],
+   [
+    "ByKfqBGyHQj1hmEUouXfueLJEU1SHdJz3uMtd1yXGunS",
+    "raydium",
+    119848.4827
+   ],
+   [
+    "A3N64gxHQL8b2cQ75JM3nVqoRFYWmntaEUFfDmhYe1Nv",
+    "meteora",
+    76102.471
+   ],
+   [
+    "Rqpge7JJCvqWProDNC3bFvELU1rp9pZucZB1RM4G51j",
+    "raydium",
+    12768.6157
+   ],
+   [
+    "3AJriMfHP8m8Eox8skUpobdC2FG6ZEFrrRXWbvXEMZ8U",
+    "meteora",
+    13989.9927
+   ],
+   [
+    "B4Vwozy1FGtp8SELXSXydWSzavPUGnJ77DURV2k4MhUV",
+    "raydium-clmm",
+    24851.178
+   ],
+   [
+    "EVoLf6P7pz7b6oRK5xBsAMtwrNZePQw68Skri1eyVqUr",
+    "raydium",
+    38046.3394
+   ],
+   [
+    "H8S3Xm93y6ufMjHJue7XQHh6sAQ8SzQvJGwwNYdRpeCq",
+    "raydium",
+    28232.4019
+   ],
+   [
+    "9uX6G8ZaRVxGSVybyYwqjHdgA1hgQqsospqD4m1sG3u2",
+    "meteora",
+    84648.5217
+   ],
+   [
+    "4r2AGQRjuLpGL9o1vuW1mkcVHvE4DTi7YZJhqGHj2qeR",
+    "raydium-clmm",
+    42543.5519
+   ],
+   [
+    "B7vo5GWKdSxeASDsSshwiN2G4AMwmsMcMZ3wUwSCRR1",
+    "meteora",
+    21834.4156
+   ],
+   [
+    "Bgu3DH5p46JU3Jp67vkzLA9dbhBNcq1L9wUSyqmH3vC7",
+    "raydium",
+    13686.6146
+   ],
+   [
+    "2XsP9HcAq91t9bNLVwhGDpSZaURhMAT8YmkwMeXEvVtD",
+    "raydium-clmm",
+    6109.6221
+   ],
+   [
+    "C3bBWcHHWpfpmevH8MAnKTRED1tVcAwDGC9TY89UZEtd",
+    "orca",
+    46353.9756
+   ],
+   [
+    "4DRwovSL7X4gWN94CrZQrDvgY2ytdMveWDHQU6LEGWg3",
+    "pancakeswap-v3-solana",
+    4666.4548
+   ],
+   [
+    "J9yamhT7DgmCWoZd5DUx3Wz7HAaCF9M6sTdVXQ8xzUps",
+    "meteora",
+    12351.2832
+   ]
+  ],
+  "rule": null,
+  "out": "no Raydium AMM v4/CPMM pool paired with WSOL >= $250k on GT first page"
+ },
+ "ZEREBRO": {
+  "mint": "8x5VqbHA8D7NkD52uNuS5nnt3PwA8pLD34ymskeSo2Wn",
+  "rule": 1,
+  "pool": "3sjNoCnkkhWPVXYGDtem8rCciHSGc9jSFZuUAzKbvRVp",
+  "venue": "Raydium AMM v4",
+  "program": "amm_v4",
+  "token_vault": "8HrRmXh66XLnbEfMbdwm5rL93WkNyz75e7knhbKQGp2A",
+  "sol_vault": "4KNAPXsCNtcUbLb2SQVWzUbx3aMgMenAUB2bqRrUiqqx",
+  "fee": 0.0025,
+  "fee_fields": {
+   "trade": [
+    25,
+    10000
+   ],
+   "swap": [
+    25,
+    10000
+   ]
+  }
+ },
+ "GRIFFAIN": {
+  "mint": "KENJSUYLASHUMfHyy5o4Hp2FdNqZg1AsUPhfH2kYvEP",
+  "rule": 1,
+  "pool": "CpsMssqi3P9VMvNqxrdWVbSBCwyUHbGgNcrw7MorBq3g",
+  "venue": "Raydium AMM v4",
+  "program": "amm_v4",
+  "token_vault": "Fc6N56tJwRLCt7FPWzzPJTDXHFuY5Nkit3YvuPNm9y7f",
+  "sol_vault": "6KYMpvbU2D1wJS5EwQMC818aRJWP3nAZfbwspw16oWUY",
+  "fee": 0.0025,
+  "fee_fields": {
+   "trade": [
+    25,
+    10000
+   ],
+   "swap": [
+    25,
+    10000
+   ]
+  }
+ },
+ "VINE": {
+  "mint": "6AJcP7wuLwmRYLBNbi825wgguaPsWzPBEHcHndpRpump",
+  "rule": 1,
+  "pool": "58fzJMbX5PatnfJPqWWsqkVFPRKptkbb5r2vCw4Qq3z9",
+  "venue": "Raydium AMM v4",
+  "program": "amm_v4",
+  "token_vault": "4JnEAJb3yVTi1PNWf3jPsX9Brrrkk8RFUGH5jVzHGE8M",
+  "sol_vault": "QcN96fjobzhR2PdBNbUKZX4e9DDk6g8KgYYbYRACP99",
+  "fee": 0.0025,
+  "fee_fields": {
+   "trade": [
+    25,
+    10000
+   ],
+   "swap": [
+    25,
+    10000
+   ]
+  }
+ },
+ "USELESS": {
+  "mint": "Dz9mQ9NzkBcCsuGPFJ3r1bS4wgqKMHBPiVuniW8Mbonk",
+  "rule": 1,
+  "pool": "Q2sPHPdUWFMg7M7wwrQKLrn619cAucfRsmhVJffodSp",
+  "venue": "Raydium CPMM",
+  "program": "cpmm",
+  "token_vault": "9xsCiNwYQXM3ZeHFSVj9JQdP1vREJREpN23f6wvxA1ty",
+  "sol_vault": "HgNPDD8bpbSrGyHegiCT5xrYxHTfwLfZydwGkjNCJRKA",
+  "amm_config": "D4FPEruKEHrG5TenZ2mpDGEfu1iUvTiqBxvpU8HLBvC2",
+  "cfg": {
+   "trade_fee_rate": 2500,
+   "protocol_fee_rate": 120000,
+   "fund_fee_rate": 40000,
+   "creator_fee_rate": 500
+  },
+  "creator_fee_flags": [
+   0,
+   0
+  ],
+  "fee": 0.003
+ },
+ "kBONK": {
+  "mint": "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263",
+  "gt_fetched": "2026-10-07T16:44:48Z",
+  "gt_first_page": [
+   [
+    "5zpyutJu9ee6jFymDGoK7F6S5Kczqtc9FomP3ueKuyA9",
+    "orca",
+    397007.8555
+   ],
+   [
+    "31p1hptjhFo6ZD8oBqkfutNXQKGGPyi7YcEAfsyKW777",
+    "meteora",
+    256562.6867
+   ],
+   [
+    "AtcGozT6i1GR3wJAjVwRwmt7qbHqZrBUqKs2DcMAKoVe",
+    "meteora",
+    211456.6125
+   ],
+   [
+    "2Sra9Xw28W25LecbFhHzV4nP2BoWx7G1mqyMJPnJHFF5",
+    "raydium",
+    95085.7959
+   ],
+   [
+    "3UwfrdLTpAjxTRni1boc5HUWe6hzc4HgE5yLdvEp2Noc",
+    "raydium-clmm",
+    192160.2656
+   ],
+   [
+    "5Dp922oSaj9rdLHTxZzq1B7QV7KmwY7U7K1JNCRhc45J",
+    "zerofi",
+    93842.9549
+   ],
+   [
+    "3ne4mWqdYuNiYrYZC9TrA3FcfuFdErghH97vNPbjicr1",
+    "orca",
+    90882.5107
+   ],
+   [
+    "BqnpCdDLPV2pFdAaLnVidmn3G93RP2p5oRdGEY2sJGez",
+    "orca",
+    157656.5546
+   ],
+   [
+    "FpJTqPiuLkFXqgKQV8HkBaPoneEt6hoqtnwtWEfSBTHk",
+    "raydium",
+    11224.4229
+   ],
+   [
+    "GtKKKs3yaPdHbQd2aZS4SfWhy8zQ988BJGnKNndLxYsN",
+    "raydium-clmm",
+    28551.2609
+   ],
+   [
+    "G7mw1d83ismcQJKkzt62Ug4noXCjVhu3eV7U5EMgge6Z",
+    "raydium",
+    25294.1049
+   ],
+   [
+    "CBLZqRexZ4XBV1JF3JpxAjME4bRZS9kNnP56Afvm9fYW",
+    "meteora",
+    8276.6753
+   ],
+   [
+    "7eexH14UjhNxJe6zTT3f1Vb1E8iACsBMVaWheDEmxdT2",
+    "meteora",
+    17524.6402
+   ],
+   [
+    "8QaXeHBrShJTdtN1rWCccBxpSVvKksQ2PCu5nufb2zbk",
+    "orca",
+    37856.7123
+   ],
+   [
+    "6oFWm7KPLfxnwMb3z5xwBoXNSPP3JJyirAPqPSiVcnsp",
+    "meteora",
+    7358.2385
+   ],
+   [
+    "278P6iwdEeX5tUFMGxmi2tii3EAho4iHzfiroKLKCQKj",
+    "meteora",
+    23424.3194
+   ],
+   [
+    "HVNwzt7Pxfu76KHCMQPTLuTCLTm6WnQ1esLv4eizseSv",
+    "raydium",
+    20281.5274
+   ],
+   [
+    "N4xy6PT672fPyA969nQy7jTQ17AsMZ1jrbgm8ZvRKYK",
+    "meteora",
+    9049.9715
+   ],
+   [
+    "E7VkHPdTo8UKh54agKifhXtfVRMubzW4pttytSGuyApq",
+    "raydium",
+    4544.6981
+   ],
+   [
+    "HToym65Q2pD5LxGYjAkn42TMe8xdLubs9WTMW92HCmb1",
+    "raydium",
+    5015.2787
+   ]
+  ],
+  "rule": null,
+  "out": "no Raydium AMM v4/CPMM pool paired with WSOL >= $250k on GT first page"
+ },
+ "SPX": {
+  "mint": "J3NKxxXZcnNiMjKw9hYb2K4LUxgwB6t1FtPtQVsv3KFr",
+  "rule": 1,
+  "pool": "9t1H1uDJ558iMPNkEPSN1fqkpC4XSPQ6cqSf6uEsTfTR",
+  "venue": "Raydium AMM v4",
+  "program": "amm_v4",
+  "token_vault": "rFkn84fuSQ3ovZECNLF7JnX5xy1to6KR7LM6TSQtKgT",
+  "sol_vault": "DGUVmREQ4hpRmkf9sRP4Fb48az5ACCLoxH4FMrvEPrZN",
+  "fee": 0.0025,
+  "fee_fields": {
+   "trade": [
+    25,
+    10000
+   ],
+   "swap": [
+    25,
+    10000
+   ]
+  }
+ },
+ "TRUMP": {
+  "mint": "6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN",
+  "gt_fetched": "2026-10-07T16:45:12Z",
+  "gt_first_page": [
+   [
+    "3C5YE97HADPDxZehYq9Cis8AXr9aNyrUsczKzE1nDbW9",
+    "meteora",
+    11609599.5053
+   ],
+   [
+    "9d9mb8kooFfaD3SctgZtkxQypkshx6ezhbKio89ixyy2",
+    "meteora",
+    10302404.4968
+   ],
+   [
+    "CRoTdDUM3NJGbuvB7Vr9rhmRxnSswMjnTLC1ANjhwsdq",
+    "raydium-clmm",
+    2893138.0395
+   ],
+   [
+    "Ckp1kwZqosaLU1h3zWtuaMBubyWM7LX3cxYezRVin7p2",
+    "orca",
+    235439.8594
+   ],
+   [
+    "5WrgXzWiz93g4L5XBmr3ggMybW5gfL7drNAKoQMgpDHc",
+    "orca",
+    918046.2418
+   ],
+   [
+    "AjotvEmqbVWu9UPt3DKCiTgVxRxZYcVu99XshPdws9go",
+    "humidifi",
+    51584.2413
+   ],
+   [
+    "AkM2Ua4ZJwkcjQ3dKiV2wMeiK1b1a9TaUXoWjf3c94Wr",
+    "raydium",
+    40468.056
+   ],
+   [
+    "3yjaSpnrrjnhRJubirLAKT1rzErfZwte7fLF2kmjkGAd",
+    "raydium-clmm",
+    3516.6286
+   ],
+   [
+    "2JCzaAXpbBTF5XZHVUHJebzUcMYt53ceWBD8gHv44ZWa",
+    "byreal",
+    4148.7342
+   ],
+   [
+    "Ecjn9eVBDC5h1eKDyLABGrauuGQTvGmJYUWjKMCmQmBG",
+    "orca",
+    15.0584
+   ],
+   [
+    "CsVe97sDiaXkVfVjiwyYp4zKZXD7TckaRcLVgqbFuUay",
+    "raydium-clmm",
+    13233.4931
+   ],
+   [
+    "6nD6d8gG17wakW6Wu5URktBZQp3uxp5orgPa576QXigJ",
+    "orca",
+    15714.7027
+   ],
+   [
+    "4CTUHtiHrPHFT4Zc1qNScrposmM7xfupU7EVDWCR7PZw",
+    "meteora",
+    33110.0802
+   ],
+   [
+    "GQsPr4RJk9AZkkfWHud7v4MtotcxhaYzZHdsPCg9vNvW",
+    "raydium-clmm",
+    65901.7197
+   ],
+   [
+    "6KX9iiLFBcwfjq3uMqeeMukaMZt5rQYTsbZZTnxbzsz6",
+    "orca",
+    5574.5635
+   ],
+   [
+    "2AqCHmNjmni2kMbrwc3FUY6aakEdsBitHtPsr42XaBbz",
+    "orca",
+    12287.822
+   ],
+   [
+    "CSuxcg1SEq6Pr14FxbpbouTkU7QRu5HPAQD4LEyD9K29",
+    "raydium-clmm",
+    1905.0621
+   ],
+   [
+    "A8nPhpCJqtqHdqUk35Uj9Hy2YsGXFkCZGuNwvkD3k7VC",
+    "meteora",
+    41874.1522
+   ],
+   [
+    "6uqNoghWR37pFYnWfSMwv1xEAhPGUJCJe2C8fsB96ro1",
+    "raydium-clmm",
+    1293.2113
+   ],
+   [
+    "2WZBegXPv7iNpTf4D3eABw13CGj78S5SnQfjAvrvvsbU",
+    "raydium",
+    5975.6523
+   ]
+  ],
+  "rule": null,
+  "out": "no Raydium AMM v4/CPMM pool paired with WSOL >= $250k on GT first page"
+ },
+ "MELANIA": {
+  "mint": "FUAfBo2jgks6gB4Z4LfZkqSZgzNucisEHqnNebaRxM1P",
+  "gt_fetched": "2026-10-07T16:45:20Z",
+  "gt_first_page": [
+   [
+    "9DiruRpjnAnzhn6ts5HGLouHtJrT1JGsPbXNYCrFz2ad",
+    "meteora",
+    12146848.6754
+   ],
+   [
+    "EU2ur3KC1hFaqzwbNnXgW9Sdscow7JscjUTAZSXNgbqZ",
+    "raydium",
+    26052.8751
+   ],
+   [
+    "3qhdX4gRWJabvcTLSw8UKrqHENF1ZVeXegQnrada6B5B",
+    "meteora",
+    6465.172
+   ],
+   [
+    "AG8znhPJ4m2TJsCX8QvVAPRwr6UJXmCRuecQL8TyM3JQ",
+    "raydium-clmm",
+    2899.4923
+   ],
+   [
+    "2Q26jDvVGx7kGs4d1UBNhA6AVNjbGbhWpqDJTJwkm3cV",
+    "raydium-clmm",
+    1001.8738
+   ],
+   [
+    "HySL6Zha5WRSqfA4MpE7hATyBEM518yLwvBkGQ4z8zqa",
+    "orca",
+    1377.3298
+   ],
+   [
+    "4q1d8xiftXysa8asehv9dC4ELYxBCmGT1zkiZGZR5h11",
+    "orca",
+    2054.622
+   ],
+   [
+    "5Csbv2ikbN5QG7HE7155bQ8kHutjuZEtgA8nTBWgR6eS",
+    "raydium",
+    417.5761
+   ],
+   [
+    "798PWsQs1CHpV61rq8J19MdGWztXYDoB8XfgQgWcHaRY",
+    "meteora",
+    1471.0783
+   ],
+   [
+    "9KxrP3bA6RyALhpvFcrUoWy8mjYXzV6oFCoE4XxoMFDU",
+    "orca",
+    165.4154
+   ],
+   [
+    "E2Urow45oN2gXnU3oo8HQjHbmH1Fa9hCy5wmxPreAwch",
+    "meteora",
+    125.9222
+   ],
+   [
+    "HFk3p5e6gk6JkRfm4Zkekif64aUuZNqH1DoAdTRTPtBS",
+    "raydium-clmm",
+    66.0292
+   ],
+   [
+    "37XbmDySjrHrcdvF2e3nq8tYUhsF5B2iLPu2DbojZx85",
+    "raydium-clmm",
+    33.8728
+   ],
+   [
+    "3gUtqG3TFYfeWvDbVb5T9QvxMT5ZRCkrk1HRDUckhgHT",
+    "raydium",
+    67.7385
+   ],
+   [
+    "5S1Z654ZGK9kyBQWgdT7EcorjuTSibc5W65zywdkzpfM",
+    "orca",
+    31.4091
+   ],
+   [
+    "3wasYDjnfq5U9h4nfpmUAHp2xa3e9L18fugjNQ6D4xxz",
+    "raydium",
+    56.1195
+   ],
+   [
+    "E3e7K4jEnAfC9BD9Y4En9VpiwWe3RYFdBaAzaYbebUus",
+    "orca",
+    37.432
+   ],
+   [
+    "HT73nQjW4QvCy3TtHPT6tWsLoFHKVHKiY12PbNaiwctC",
+    "raydium",
+    29.0826
+   ],
+   [
+    "8JpnnXZ1RJ8XxbjavvopTU8QNSXMb9rYpMtVmxhPCy8x",
+    "raydium",
+    26.7447
+   ],
+   [
+    "HLXEZDQ3Pf2oSFfxskkrj9kGGkyNHg9986Ko7duXH53K",
+    "meteora",
+    21.0902
+   ]
+  ],
+  "rule": null,
+  "out": "no Raydium AMM v4/CPMM pool paired with WSOL >= $250k on GT first page"
+ },
+ "YZY": {
+  "mint": "DrZ26cKJDksVRWib3DVVsjo9eeXccc7hKhDJviiYEEZY",
+  "rule": null,
+  "out": "not in cheap-venue universe and not a rule-2 coin"
+ },
+ "AI16Z": {
+  "mint": "HeLp6NuQkmYB4pYWo2zYs22mESHXPQYzXbB8n4V98jwC",
+  "gt_fetched": "2026-10-07T16:45:28Z",
+  "gt_first_page": [
+   [
+    "7qAVrzrbULwg1B13YseqA95Uapf8EVp9jQE5uipqFMoP",
+    "raydium",
+    56291.792
+   ],
+   [
+    "AwRjXenxTTiHnLZe56iwxNGrWZn1bZMSE6QsvjCSPsGA",
+    "orca",
+    16087.0494
+   ],
+   [
+    "HxAtySJiZf1DzdTXsVYGfg5mmG53GRvZatZ8p8493uKi",
+    "raydium",
+    10200.1527
+   ],
+   [
+    "44W73kGYQgXCTNkGxUmHv8DDBPCxojBcX49uuKmbFc9U",
+    "orca",
+    2535.8666
+   ],
+   [
+    "Cjjn3aeRJZJY87r2Q9MYbuz3XAG8j4tDHC8FmMayKTa5",
+    "raydium",
+    1170.915
+   ],
+   [
+    "E7gGyhmJ3TYqVgoTF6e4cpArRcsUoxKGeE2Y5rP6GKXd",
+    "meteora-damm-v2",
+    1184.229
+   ],
+   [
+    "8sN9549P3Zn6xpQRqpApN57xzkCh6sJxLwuEjcG2W4Ji",
+    "raydium-clmm",
+    3133.1249
+   ],
+   [
+    "GMtQEzi8XkEjp2SbwnKJ6BnUM9ugkgpSQY1tafZHLxQo",
+    "orca",
+    332.0823
+   ],
+   [
+    "DWrUUequRDauQa1mBJUmnWdEv5BoXBgTBe2CJQ76CHjk",
+    "raydium",
+    181.1983
+   ],
+   [
+    "AogLVpRGYideoiLpTAuuQTuALjXLi2xZFNxQ2vqrKTJR",
+    "orca",
+    268.9008
+   ],
+   [
+    "GsUgjmtLBn7SGGVvb4QA8nJ2UFiBBYcBDHBC8GDDG5of",
+    "raydium",
+    78.9063
+   ],
+   [
+    "5CA47W1bF6aWA2H1tAtofunFKhWF3ZWrvHk23NHmHzha",
+    "raydium-clmm",
+    61.9176
+   ],
+   [
+    "B5vZVJtBrCbGs5tr9Gy81Q1YR8C14fN5zJ3Sod9vBmey",
+    "raydium-clmm",
+    27.9965
+   ],
+   [
+    "6L6PHX1hk3KBosJafHRLzL3Ybjd6tiaWjQho1sHK7RMC",
+    "meteora-damm-v2",
+    48.5146
+   ],
+   [
+    "CdT9SCJk2uSrDipxAkNpYbpbxn7Nbuy6zX1MXxN53QXa",
+    "orca",
+    35.1163
+   ],
+   [
+    "CF9sZGyiJKVrdhXaiF7AVeXzciCqbktzTykGSLMZ7Yjf",
+    "orca",
+    22.5664
+   ],
+   [
+    "2f52cmyPTJ91WcX5S7Kki2zGAprHmPGTJG8oLWr7DCth",
+    "orca",
+    17.1974
+   ],
+   [
+    "4uC6KzfqMBJ6ZCBQYWwkfA2uSdA6LdFnw24jcrE1Vvoi",
+    "meteora-damm-v2",
+    15.8494
+   ],
+   [
+    "EqjqpEh4TJCrqJATECt4iH8TD98fbwUVND4xdTVGPRgv",
+    "raydium",
+    9.7071
+   ],
+   [
+    "DSy9fqYN6XqswGKqibQg7ammCDKRPWyN2S1aBthcHr99",
+    "orca",
+    11.4805
+   ]
+  ],
+  "rule": null,
+  "out": "no Raydium AMM v4/CPMM pool paired with WSOL >= $250k on GT first page"
+ },
+ "MYRO": {
+  "mint": "Bm3dgkZrjH7eaz1GBH1R2ZHkp7nZUoPNJhjekoxepump",
+  "gt_fetched": "2026-10-07T16:46:37Z",
+  "gt_first_page": [
+   [
+    "CV2m2hK9wfugve2dySNLSWQuyM9R2tRwXeUTuUWzh8Dr",
+    "pumpswap",
+    149577.0833
+   ],
+   [
+    "74ibYjzjnG8SpZDvyxu4YaXZKWefWrH6B7LZ2tJhk1to",
+    "meteora-damm-v2",
+    13.6303
+   ],
+   [
+    "AhpQPS8AeGFXEgn75TXwJyqS7qg1CjuWrUPnXbBgKPDf",
+    "meteora",
+    320.5958
+   ],
+   [
+    "2GCwg8XP56sr1gBKSXHbrLVdftyorKJUtBZfZZ1SDu1D",
+    "raydium-clmm",
+    279.1499
+   ],
+   [
+    "6TfoKp3JVz9nXPuBnK9sTNDXy6T2yudYgYfwaZqd6h5v",
+    "defituna",
+    95.8137
+   ],
+   [
+    "GZ87EvfecebzLqgsbn9Q1oiHwsbs243orfcvrxeoktSQ",
+    "meteora-damm-v2",
+    6.339
+   ],
+   [
+    "89XyBEYKLmHfSNbKqgtxyQt2CV5rZZ7xW2USc22XLw6h",
+    "pump-fun",
+    0.0
+   ]
+  ],
+  "rule": null,
+  "out": "no Raydium AMM v4/CPMM pool paired with WSOL >= $250k on GT first page"
+ },
+ "LAUNCHCOIN": {
+  "mint": "BLVxek8YMXUQhcKmMvrFTrzh5FXg8ec88Crp6otEaCMf",
+  "rule": null,
+  "out": "not in cheap-venue universe and not a rule-2 coin"
+ },
+ "JELLY": {
+  "mint": "FeR8VBqNRSUD5NtXAj2n3j1dAHkZHfyDktKuLXD4pump",
+  "rule": 1,
+  "pool": "3bC2e2RxcfvF9oP22LvbaNsVwoS2T98q6ErCRoayQYdq",
+  "venue": "Raydium AMM v4",
+  "program": "amm_v4",
+  "token_vault": "AWqyxgarzsDrADVmcv9r3vzeL2s5WWPmZhLgnYKjyndF",
+  "sol_vault": "D1GHCUZCEjraHeGaooBYbvtBhe3t4186EUmKwMjoRWoe",
+  "fee": 0.0025,
+  "fee_fields": {
+   "trade": [
+    25,
+    10000
+   ],
+   "swap": [
+    25,
+    10000
+   ]
+  }
+ },
+ "DOOD": {
+  "mint": "DvjbEsdca43oQcw2h3HW1CT7N3x5vRcr3QrvTUHnXvgV",
+  "gt_fetched": "2026-10-07T16:46:45Z",
+  "gt_first_page": [
+   [
+    "5KXE8RMF7iW9Ptn665AHfzsMFjYb4LV2Ta8eZEtsTwWC",
+    "raydium",
+    494589.0844
+   ],
+   [
+    "5wRj5DPdM6Jd84B7reRwUMmerEk4T2PFsZDJQ5boYsic",
+    "orca",
+    143949.6241
+   ],
+   [
+    "C7d8wrDTcTLZ89tQz49hAnbWbXnPL7c6S4BP7LMynMKv",
+    "orca",
+    11936.8986
+   ],
+   [
+    "ZSwYf4YGm1L2JKWVS8KjHo1B6tUC9ZSsS16CTQvLDpw",
+    "orca",
+    683.0893
+   ],
+   [
+    "DG5XU3oqMVDfa5Gf8zpvbDzxwHwpvjNHQC2S33PuKxzc",
+    "orca",
+    1407.5175
+   ],
+   [
+    "FMk3g52a6wwFVV8iPwgXXDpwyT1cAGwrmfAgRcsjeWBj",
+    "orca",
+    525.0659
+   ],
+   [
+    "3nR2aBA234s94KDiqKhjvvvtn4tL1C7mBTzmskztqbjH",
+    "byreal",
+    25940.8652
+   ],
+   [
+    "BybpTjPidsGFtqJF4jfjz66eWKNw8ygAZP78DA5J5mNi",
+    "raydium-clmm",
+    121.718
+   ],
+   [
+    "H44x4V1ETsj3eFefGv7erHQPCP5bj7QRuu7QtJPRNQNP",
+    "meteora-damm-v2",
+    84.5239
+   ],
+   [
+    "G9BLUquRypgR92tXq5PxD9BfBqMSWLFZFmsSJoBm8dZr",
+    "raydium",
+    73.0208
+   ],
+   [
+    "9yq3eyNdJ53ew1CySVpWLPTY14JpKVskDGso6i5RRXN8",
+    "raydium",
+    40.6775
+   ],
+   [
+    "7kNj2SvyKX9GVos7dcLX9pfzzPnWxEBUQ7EkzJN7kwW5",
+    "raydium-clmm",
+    18.5301
+   ],
+   [
+    "DLBo4TCowq8D2KSxJYMdv2KEhv6nkF7K6GJi589zhqCm",
+    "meteora",
+    0.3971
+   ],
+   [
+    "4LrXdcS85Vax4Amdg79hz8WpPFQLSbZ2fc1W9164MSTh",
+    "meteora-damm-v2",
+    0.1635
+   ],
+   [
+    "knMcqjFvHn3FdLrcJAAjFRoAA3v2hA4GQFrntLNYyg5",
+    "pumpswap",
+    0.0817
+   ],
+   [
+    "EVMf9MfmkZYAH59Av89LLnrqoVrvcDjG7Ni4nFr8LesW",
+    "raydium-clmm",
+    15991.1016
+   ],
+   [
+    "FPPp7XXMFHwoEhnLuWoFszxsNLE2yXgFBJga5oDgtc6Q",
+    "meteora",
+    29443.7823
+   ],
+   [
+    "8KWkbRL9J1Pg8Jyw5R1cEhRHAQv9NP8CkUKgDTtN3r6L",
+    "meteora",
+    11679.9039
+   ],
+   [
+    "4TwdQ8cZKpn5WT9fn91WB5c5aBv47KwAXgRKEdfVd5Wj",
+    "raydium-clmm",
+    3421.5674
+   ],
+   [
+    "5DeAT8kWkQUHwWfWWXK2XTGGePGE1dJWtTfJJfWJ3jYr",
+    "meteora",
+    7387.6961
+   ]
+  ],
+  "rule": null,
+  "out": "no Raydium AMM v4/CPMM pool paired with WSOL >= $250k on GT first page"
+ }
+}

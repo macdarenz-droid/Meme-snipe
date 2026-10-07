@@ -1,0 +1,2046 @@
+[
+ {
+  "hl": "BTC",
+  "symbol": "BTC",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "bitcoin",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "ETH",
+  "symbol": "ETH",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "ethereum",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "ATOM",
+  "symbol": "ATOM",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "cosmos",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "MATIC",
+  "symbol": "MATIC",
+  "delisted": true,
+  "meme": "no",
+  "cg_id": null,
+  "source": "coingecko: no Solana coin with this symbol"
+ },
+ {
+  "hl": "DYDX",
+  "symbol": "DYDX",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "dydx-chain",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "SOL",
+  "symbol": "SOL",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "solana",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "AVAX",
+  "symbol": "AVAX",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "avalanche-2",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "BNB",
+  "symbol": "BNB",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "binancecoin",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "APE",
+  "symbol": "APE",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "apecoin",
+  "solana_mint": "C1MHyoTJpRTeS9AQCyspNVu2EWAYCZwmJ1jNkEArFP1f",
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "OP",
+  "symbol": "OP",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "optimism",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "LTC",
+  "symbol": "LTC",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "litecoin",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "ARB",
+  "symbol": "ARB",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "arbitrum",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "DOGE",
+  "symbol": "DOGE",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "dogecoin",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "INJ",
+  "symbol": "INJ",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "injective-protocol",
+  "solana_mint": "1NJMqVM4PadjuzYmeB7zV7q7DV8oB3ExaQCd9x6KsLz",
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "SUI",
+  "symbol": "SUI",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "sui",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "kPEPE",
+  "symbol": "PEPE",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "pepe",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "CRV",
+  "symbol": "CRV",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "curve-dao-token",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "LDO",
+  "symbol": "LDO",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "lido-dao",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "LINK",
+  "symbol": "LINK",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "chainlink",
+  "solana_mint": "LinkhB3afbBKb2EQQu7s7umdZceV3wcvAUJhQAfQ23L",
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "STX",
+  "symbol": "STX",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "blockstack",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "RNDR",
+  "symbol": "RNDR",
+  "delisted": true,
+  "meme": "no",
+  "cg_id": null,
+  "source": "coingecko: no Solana coin with this symbol"
+ },
+ {
+  "hl": "CFX",
+  "symbol": "CFX",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "conflux-token",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "FTM",
+  "symbol": "FTM",
+  "delisted": true,
+  "meme": "no",
+  "cg_id": null,
+  "source": "coingecko: no Solana coin with this symbol"
+ },
+ {
+  "hl": "GMX",
+  "symbol": "GMX",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "gmx",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "SNX",
+  "symbol": "SNX",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "havven",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "XRP",
+  "symbol": "XRP",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "ripple",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "BCH",
+  "symbol": "BCH",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "bitcoin-cash",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "APT",
+  "symbol": "APT",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "aptos",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "AAVE",
+  "symbol": "AAVE",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "aave",
+  "solana_mint": "AavE1kKKnesPw4MuRJmJ9jZs9QzEE8CPxQ3ViczUDfc1",
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "COMP",
+  "symbol": "COMP",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "compound-governance-token",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "MKR",
+  "symbol": "MKR",
+  "delisted": true,
+  "meme": "no",
+  "cg_id": null,
+  "source": "coingecko: no Solana coin with this symbol"
+ },
+ {
+  "hl": "WLD",
+  "symbol": "WLD",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "worldcoin-wld",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "FXS",
+  "symbol": "FXS",
+  "delisted": true,
+  "meme": "no",
+  "cg_id": null,
+  "source": "coingecko: no Solana coin with this symbol"
+ },
+ {
+  "hl": "HPOS",
+  "symbol": "HPOS",
+  "delisted": true,
+  "meme": "no",
+  "cg_id": null,
+  "source": "coingecko: no Solana coin with this symbol"
+ },
+ {
+  "hl": "RLB",
+  "symbol": "RLB",
+  "delisted": true,
+  "meme": "no",
+  "cg_id": "rollbit-coin",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "UNIBOT",
+  "symbol": "UNIBOT",
+  "delisted": true,
+  "meme": "no",
+  "cg_id": null,
+  "source": "coingecko: no Solana coin with this symbol"
+ },
+ {
+  "hl": "YGG",
+  "symbol": "YGG",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "yield-guild-games",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "TRX",
+  "symbol": "TRX",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "tron",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "kSHIB",
+  "symbol": "SHIB",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "shiba-inu",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "UNI",
+  "symbol": "UNI",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "uniswap",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "SEI",
+  "symbol": "SEI",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "sei-network",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "RUNE",
+  "symbol": "RUNE",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "thorchain",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "OX",
+  "symbol": "OX",
+  "delisted": true,
+  "meme": "no",
+  "source": "manual: OX.FUN exchange token"
+ },
+ {
+  "hl": "FRIEND",
+  "symbol": "FRIEND",
+  "delisted": true,
+  "meme": "no",
+  "cg_id": null,
+  "source": "coingecko: no Solana coin with this symbol"
+ },
+ {
+  "hl": "SHIA",
+  "symbol": "SHIA",
+  "delisted": true,
+  "meme": "no",
+  "cg_id": null,
+  "source": "coingecko: no Solana coin with this symbol"
+ },
+ {
+  "hl": "CYBER",
+  "symbol": "CYBER",
+  "delisted": true,
+  "meme": "no",
+  "cg_id": "cyberconnect",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "ZRO",
+  "symbol": "ZRO",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "layerzero",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "BLZ",
+  "symbol": "BLZ",
+  "delisted": true,
+  "meme": "no",
+  "cg_id": null,
+  "source": "coingecko: no Solana coin with this symbol"
+ },
+ {
+  "hl": "DOT",
+  "symbol": "DOT",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "polkadot",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "BANANA",
+  "symbol": "BANANA",
+  "delisted": false,
+  "meme": "no",
+  "source": "manual: Banana Gun (Ethereum bot token)"
+ },
+ {
+  "hl": "TRB",
+  "symbol": "TRB",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "tellor",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "FTT",
+  "symbol": "FTT",
+  "delisted": true,
+  "meme": "no",
+  "source": "manual: FTX token"
+ },
+ {
+  "hl": "LOOM",
+  "symbol": "LOOM",
+  "delisted": true,
+  "meme": "no",
+  "source": "manual: HL perp is Loom Network (CoinGecko loom-network-new, Ethereum); matched loom-4 has ~$118k cap"
+ },
+ {
+  "hl": "OGN",
+  "symbol": "OGN",
+  "delisted": true,
+  "meme": "no",
+  "cg_id": null,
+  "source": "coingecko: no Solana coin with this symbol"
+ },
+ {
+  "hl": "RDNT",
+  "symbol": "RDNT",
+  "delisted": true,
+  "meme": "no",
+  "cg_id": null,
+  "source": "coingecko: no Solana coin with this symbol"
+ },
+ {
+  "hl": "ARK",
+  "symbol": "ARK",
+  "delisted": true,
+  "meme": "no",
+  "cg_id": "ark",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "BNT",
+  "symbol": "BNT",
+  "delisted": true,
+  "meme": "no",
+  "cg_id": "bancor",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "CANTO",
+  "symbol": "CANTO",
+  "delisted": true,
+  "meme": "no",
+  "cg_id": null,
+  "source": "coingecko: no Solana coin with this symbol"
+ },
+ {
+  "hl": "REQ",
+  "symbol": "REQ",
+  "delisted": true,
+  "meme": "no",
+  "cg_id": "request-network",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "BIGTIME",
+  "symbol": "BIGTIME",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "big-time",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "KAS",
+  "symbol": "KAS",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "kaspa",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "ORBS",
+  "symbol": "ORBS",
+  "delisted": true,
+  "meme": "no",
+  "cg_id": "orbs",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "BLUR",
+  "symbol": "BLUR",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "blur",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "TIA",
+  "symbol": "TIA",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "celestia",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "BSV",
+  "symbol": "BSV",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "bitcoin-cash-sv",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "ADA",
+  "symbol": "ADA",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "cardano",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "TON",
+  "symbol": "TON",
+  "delisted": true,
+  "meme": "no",
+  "cg_id": "tokamak-network",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "MINA",
+  "symbol": "MINA",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "mina-protocol",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "POLYX",
+  "symbol": "POLYX",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "polymesh",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "GAS",
+  "symbol": "GAS",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "gas",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "PENDLE",
+  "symbol": "PENDLE",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "pendle",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "STG",
+  "symbol": "STG",
+  "delisted": true,
+  "meme": "no",
+  "cg_id": "stargate-finance",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "FET",
+  "symbol": "FET",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "fetch-ai",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "STRAX",
+  "symbol": "STRAX",
+  "delisted": true,
+  "meme": "no",
+  "cg_id": "stratis",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "NEAR",
+  "symbol": "NEAR",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "near",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "MEME",
+  "symbol": "MEME",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "memetoon",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "ORDI",
+  "symbol": "ORDI",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "ordinals",
+  "solana_mint": "u9nmK5sQovm6ACVCQbbq8xUMpFqdPSYxdxVwXUX4sjY",
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "BADGER",
+  "symbol": "BADGER",
+  "delisted": true,
+  "meme": "no",
+  "source": "manual: Badger DAO (Ethereum)"
+ },
+ {
+  "hl": "NEO",
+  "symbol": "NEO",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "neo",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "ZEN",
+  "symbol": "ZEN",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "zencash",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "FIL",
+  "symbol": "FIL",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "filecoin",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "PYTH",
+  "symbol": "PYTH",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "pyth-network",
+  "solana_mint": "HZ1JovNiVvGrGNiiYvEozEVgZ58xaU3RKwX8eACQBCt3",
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "SUSHI",
+  "symbol": "SUSHI",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "sushi",
+  "solana_mint": "ChVzxWRmrTeSgwd3Ui3UumcN8KX7VK3WaD4KGeSKpypj",
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "ILV",
+  "symbol": "ILV",
+  "delisted": true,
+  "meme": "no",
+  "cg_id": "illuvium",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "IMX",
+  "symbol": "IMX",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "immutable-x",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "kBONK",
+  "symbol": "BONK",
+  "delisted": false,
+  "meme": "yes",
+  "cg_id": "bonk",
+  "solana_mint": "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263",
+  "source": "coingecko solana-meme-coins category"
+ },
+ {
+  "hl": "GMT",
+  "symbol": "GMT",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "stepn",
+  "solana_mint": "7i5KKsX2weiTkry7jA4ZwSuXGhs5eJBEjY8vVxR4pfRx",
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "SUPER",
+  "symbol": "SUPER",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "superfarm",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "USTC",
+  "symbol": "USTC",
+  "delisted": true,
+  "meme": "no",
+  "cg_id": "terrausd",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "NFTI",
+  "symbol": "NFTI",
+  "delisted": true,
+  "meme": "no",
+  "cg_id": null,
+  "source": "coingecko: no Solana coin with this symbol"
+ },
+ {
+  "hl": "JUP",
+  "symbol": "JUP",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "jupiter-exchange-solana",
+  "solana_mint": "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN",
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "kLUNC",
+  "symbol": "LUNC",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "terra-luna",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "RSR",
+  "symbol": "RSR",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "reserve-rights-token",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "GALA",
+  "symbol": "GALA",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "gala",
+  "solana_mint": "eEUiUs4JWYZrp72djAGF1A8PhpR6rHphGeGN7GbVLp6",
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "JTO",
+  "symbol": "JTO",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "jito-governance-token",
+  "solana_mint": "jtojtomepa8beP8AuQc6eXt5FriJwfFMwQx2v2f9mCL",
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "NTRN",
+  "symbol": "NTRN",
+  "delisted": true,
+  "meme": "no",
+  "cg_id": null,
+  "source": "coingecko: no Solana coin with this symbol"
+ },
+ {
+  "hl": "ACE",
+  "symbol": "ACE",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "endurance",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "MAV",
+  "symbol": "MAV",
+  "delisted": true,
+  "meme": "no",
+  "cg_id": null,
+  "source": "coingecko: no Solana coin with this symbol"
+ },
+ {
+  "hl": "WIF",
+  "symbol": "WIF",
+  "delisted": false,
+  "meme": "yes",
+  "cg_id": "dogwifcoin",
+  "solana_mint": "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm",
+  "source": "coingecko solana-meme-coins category"
+ },
+ {
+  "hl": "CAKE",
+  "symbol": "CAKE",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "pancakeswap-token",
+  "solana_mint": "4qQeZ5LwSz6HuupUu8jCtgXyW1mYQcNbFAW1sWZp89HL",
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "PEOPLE",
+  "symbol": "PEOPLE",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "constitutiondao",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "ENS",
+  "symbol": "ENS",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "ethereum-name-service",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "ETC",
+  "symbol": "ETC",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "ethereum-classic",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "XAI",
+  "symbol": "XAI",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "sideshift-token",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "MANTA",
+  "symbol": "MANTA",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "manta-network",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "UMA",
+  "symbol": "UMA",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "uma",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "ONDO",
+  "symbol": "ONDO",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "ondo-finance",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "ALT",
+  "symbol": "ALT",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "altlayer",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "ZETA",
+  "symbol": "ZETA",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "zetachain",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "DYM",
+  "symbol": "DYM",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": null,
+  "source": "coingecko: no Solana coin with this symbol"
+ },
+ {
+  "hl": "MAVIA",
+  "symbol": "MAVIA",
+  "delisted": true,
+  "meme": "no",
+  "cg_id": null,
+  "source": "coingecko: no Solana coin with this symbol"
+ },
+ {
+  "hl": "W",
+  "symbol": "W",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "wormhole",
+  "solana_mint": "85VBFQZC9TZkfaptBWjvUw7YbZjy52A6mjtPGjstQAmQ",
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "PANDORA",
+  "symbol": "PANDORA",
+  "delisted": true,
+  "meme": "no",
+  "cg_id": null,
+  "source": "coingecko: no Solana coin with this symbol"
+ },
+ {
+  "hl": "STRK",
+  "symbol": "STRK",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "starknet",
+  "solana_mint": "HsRpHQn6VbyMs5b5j5SV6xQ2VvpvvCCzu19GjytVSCoz",
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "PIXEL",
+  "symbol": "PIXEL",
+  "delisted": true,
+  "meme": "no",
+  "source": "manual: Pixels (Ronin game)"
+ },
+ {
+  "hl": "AI",
+  "symbol": "AI",
+  "delisted": true,
+  "meme": "no",
+  "cg_id": "artificial-inu-3",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "TAO",
+  "symbol": "TAO",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "bittensor",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "AR",
+  "symbol": "AR",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "arweave",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "MYRO",
+  "symbol": "MYRO",
+  "delisted": true,
+  "meme": "yes",
+  "cg_id": "myro",
+  "solana_mint": "Bm3dgkZrjH7eaz1GBH1R2ZHkp7nZUoPNJhjekoxepump",
+  "source": "coingecko solana-meme-coins category"
+ },
+ {
+  "hl": "kFLOKI",
+  "symbol": "FLOKI",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "floki",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "BOME",
+  "symbol": "BOME",
+  "delisted": false,
+  "meme": "yes",
+  "cg_id": "book-of-meme",
+  "solana_mint": "ukHH6c7mMyiWCf1b9pnWe25TSpkDDt3H5pQZgZ74J82",
+  "source": "coingecko solana-meme-coins category"
+ },
+ {
+  "hl": "ETHFI",
+  "symbol": "ETHFI",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "ether-fi",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "ENA",
+  "symbol": "ENA",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "ethena",
+  "solana_mint": "72QvBVwpxqmheEPfaCwWSWqEFsUy3rhWt6JhQBMNTwD1",
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "MNT",
+  "symbol": "MNT",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "mantle",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "TNSR",
+  "symbol": "TNSR",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "tensor",
+  "solana_mint": "TNSRxcUxoT9xBG3de7PiJyTDYu7kskLqcpddxnEJAS6",
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "SAGA",
+  "symbol": "SAGA",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": null,
+  "source": "coingecko: no Solana coin with this symbol"
+ },
+ {
+  "hl": "MERL",
+  "symbol": "MERL",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "merlin-chain",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "HBAR",
+  "symbol": "HBAR",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "hedera-hashgraph",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "POPCAT",
+  "symbol": "POPCAT",
+  "delisted": false,
+  "meme": "yes",
+  "cg_id": "popcat",
+  "solana_mint": "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr",
+  "source": "coingecko solana-meme-coins category"
+ },
+ {
+  "hl": "OMNI",
+  "symbol": "OMNI",
+  "delisted": true,
+  "meme": "no",
+  "source": "manual: HL perp is Omni Network (CoinGecko omni-network); matched omni-2 has ~$113k cap"
+ },
+ {
+  "hl": "EIGEN",
+  "symbol": "EIGEN",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "eigenlayer",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "REZ",
+  "symbol": "REZ",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "renzo",
+  "solana_mint": "3DK98MXPz8TRuim7rfQnebSLpA7VSoc79Bgiee1m4Zw5",
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "NOT",
+  "symbol": "NOT",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "notcoin",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "TURBO",
+  "symbol": "TURBO",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "turbo",
+  "solana_mint": "2Dyzu65QA9zdX1UeE7Gx71k7fiwyUK6sZdrvJ7auq5wm",
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "BRETT",
+  "symbol": "BRETT",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "based-brett",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "IO",
+  "symbol": "IO",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "io",
+  "solana_mint": "BZLbGTNCSFfoth2GYDtwr7e4imWzpR5jqcUuGEwr646K",
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "ZK",
+  "symbol": "ZK",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "zksync",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "BLAST",
+  "symbol": "BLAST",
+  "delisted": true,
+  "meme": "no",
+  "cg_id": null,
+  "source": "coingecko: no Solana coin with this symbol"
+ },
+ {
+  "hl": "LISTA",
+  "symbol": "LISTA",
+  "delisted": true,
+  "meme": "no",
+  "cg_id": "lista",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "MEW",
+  "symbol": "MEW",
+  "delisted": true,
+  "meme": "yes",
+  "cg_id": "cat-in-a-dogs-world",
+  "solana_mint": "MEW1gQWJ3nEXg2qgERiKu7FAFj79PHvQVREQUzScPP5",
+  "source": "coingecko solana-meme-coins category"
+ },
+ {
+  "hl": "RENDER",
+  "symbol": "RENDER",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "render-token",
+  "solana_mint": "rndrizKT3MK1iimdxRdWabcF7Zg7AR5T4nud4EkHBof",
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "kDOGS",
+  "symbol": "DOGS",
+  "delisted": true,
+  "meme": "no",
+  "cg_id": "dogs-2",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "POL",
+  "symbol": "POL",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "polygon-ecosystem-token",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "CATI",
+  "symbol": "CATI",
+  "delisted": true,
+  "meme": "no",
+  "cg_id": "catizen",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "CELO",
+  "symbol": "CELO",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "celo",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "HMSTR",
+  "symbol": "HMSTR",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": null,
+  "source": "coingecko: no Solana coin with this symbol"
+ },
+ {
+  "hl": "SCR",
+  "symbol": "SCR",
+  "delisted": true,
+  "meme": "no",
+  "cg_id": null,
+  "source": "coingecko: no Solana coin with this symbol"
+ },
+ {
+  "hl": "NEIROETH",
+  "symbol": "NEIROETH",
+  "delisted": true,
+  "meme": "no",
+  "cg_id": null,
+  "source": "coingecko: no Solana coin with this symbol"
+ },
+ {
+  "hl": "kNEIRO",
+  "symbol": "NEIRO",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "neiro-3",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "GOAT",
+  "symbol": "GOAT",
+  "delisted": false,
+  "meme": "yes",
+  "cg_id": "goatseus-maximus",
+  "solana_mint": "CzLSujWBLFsSjncfkh59rUFqvafWcY5tzedWJSuypump",
+  "source": "coingecko solana-meme-coins category"
+ },
+ {
+  "hl": "MOODENG",
+  "symbol": "MOODENG",
+  "delisted": false,
+  "meme": "yes",
+  "cg_id": "moo-deng",
+  "solana_mint": "ED5nyyWEzpPPiWimP8vYm7sD7TD3LAt3Q3gRTWHzPJBY",
+  "source": "coingecko solana-meme-coins category"
+ },
+ {
+  "hl": "GRASS",
+  "symbol": "GRASS",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "grass",
+  "solana_mint": "Grass7B4RdKfBCjTKgSqnXkqjwiGvQyFbuSCUJr3XXjs",
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "PURR",
+  "symbol": "PURR",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "purr-2",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "PNUT",
+  "symbol": "PNUT",
+  "delisted": false,
+  "meme": "yes",
+  "cg_id": "peanut-the-squirrel",
+  "solana_mint": "2qEHjDLDLbuBgRYvsxhc5D6uDWAivNFZGan56P1tpump",
+  "source": "coingecko solana-meme-coins category"
+ },
+ {
+  "hl": "XLM",
+  "symbol": "XLM",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "stellar",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "CHILLGUY",
+  "symbol": "CHILLGUY",
+  "delisted": true,
+  "meme": "yes",
+  "cg_id": "chill-guy",
+  "solana_mint": "Df6yfrKC8kZE3KNkrHERKzAetSxbrWeniQfyJY4Jpump",
+  "source": "coingecko solana-meme-coins category"
+ },
+ {
+  "hl": "SAND",
+  "symbol": "SAND",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "the-sandbox",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "IOTA",
+  "symbol": "IOTA",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "iota",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "ALGO",
+  "symbol": "ALGO",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "algorand",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "HYPE",
+  "symbol": "HYPE",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "hyperliquid",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "ME",
+  "symbol": "ME",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "magic-eden",
+  "solana_mint": "MEFNBXixkEbait3xn9bkm8WsJzXtVsaJEn4c8Sam21u",
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "MOVE",
+  "symbol": "MOVE",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "movement",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "VIRTUAL",
+  "symbol": "VIRTUAL",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "virtual-protocol",
+  "solana_mint": "3iQL8BFS2vE7mww4ehAqQHAsbmRNCrPxizWAT2Zfyr9y",
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "PENGU",
+  "symbol": "PENGU",
+  "delisted": false,
+  "meme": "yes",
+  "cg_id": "pudgy-penguins",
+  "solana_mint": "2zMMhcVQEXDtdE6vsFS7S7D5oUodfJHE8vd1gnBouauv",
+  "source": "coingecko solana-meme-coins category"
+ },
+ {
+  "hl": "USUAL",
+  "symbol": "USUAL",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "usual",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "FARTCOIN",
+  "symbol": "FARTCOIN",
+  "delisted": false,
+  "meme": "yes",
+  "cg_id": "fartcoin",
+  "solana_mint": "9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump",
+  "source": "coingecko solana-meme-coins category"
+ },
+ {
+  "hl": "AI16Z",
+  "symbol": "AI16Z",
+  "delisted": true,
+  "meme": "yes",
+  "source": "manual: expected set; CoinGecko id ai16z, Solana mint HeLp6NuQ...; out of the category top 500"
+ },
+ {
+  "hl": "AIXBT",
+  "symbol": "AIXBT",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "aixbt",
+  "solana_mint": "14zP2ToQ79XWvc7FQpm4bRnp9d6Mp1rFfsUW3gpLcRX",
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "ZEREBRO",
+  "symbol": "ZEREBRO",
+  "delisted": true,
+  "meme": "yes",
+  "cg_id": "zerebro",
+  "solana_mint": "8x5VqbHA8D7NkD52uNuS5nnt3PwA8pLD34ymskeSo2Wn",
+  "source": "coingecko solana-meme-coins category"
+ },
+ {
+  "hl": "BIO",
+  "symbol": "BIO",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "bio-protocol",
+  "solana_mint": "bioJ9JTqW62MLz7UKHU69gtKhPpGi1BQhccj2kmSvUJ",
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "GRIFFAIN",
+  "symbol": "GRIFFAIN",
+  "delisted": false,
+  "meme": "yes",
+  "source": "manual: expected set; CoinGecko griffain, Solana mint KENJSUYL...; CoinGecko files it outside the meme category"
+ },
+ {
+  "hl": "SPX",
+  "symbol": "SPX",
+  "delisted": false,
+  "meme": "yes",
+  "source": "manual: expected set; CoinGecko spx6900 (Ethereum native; Solana mint J3NKxxXZ... is the Wormhole-bridged token)"
+ },
+ {
+  "hl": "S",
+  "symbol": "S",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "sonic-3",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "MORPHO",
+  "symbol": "MORPHO",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "morpho",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "TRUMP",
+  "symbol": "TRUMP",
+  "delisted": false,
+  "meme": "yes",
+  "cg_id": "official-trump",
+  "solana_mint": "6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN",
+  "source": "coingecko solana-meme-coins category"
+ },
+ {
+  "hl": "MELANIA",
+  "symbol": "MELANIA",
+  "delisted": false,
+  "meme": "yes",
+  "cg_id": "melania-meme",
+  "solana_mint": "FUAfBo2jgks6gB4Z4LfZkqSZgzNucisEHqnNebaRxM1P",
+  "source": "coingecko solana-meme-coins category"
+ },
+ {
+  "hl": "ANIME",
+  "symbol": "ANIME",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "anime",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "VINE",
+  "symbol": "VINE",
+  "delisted": true,
+  "meme": "yes",
+  "cg_id": "vine",
+  "solana_mint": "6AJcP7wuLwmRYLBNbi825wgguaPsWzPBEHcHndpRpump",
+  "source": "coingecko solana-meme-coins category"
+ },
+ {
+  "hl": "VVV",
+  "symbol": "VVV",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "venice-token",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "JELLY",
+  "symbol": "JELLY",
+  "delisted": true,
+  "meme": "yes",
+  "source": "manual: expected set; CoinGecko id jelly-my-jelly (symbol JELLYJELLY), Solana mint FeR8VBqN...pump"
+ },
+ {
+  "hl": "BERA",
+  "symbol": "BERA",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "berachain-bera",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "TST",
+  "symbol": "TST",
+  "delisted": true,
+  "meme": "no",
+  "source": "manual: BNB Chain test token"
+ },
+ {
+  "hl": "LAYER",
+  "symbol": "LAYER",
+  "delisted": false,
+  "meme": "no",
+  "source": "manual: Solayer: Solana infrastructure, not a meme"
+ },
+ {
+  "hl": "IP",
+  "symbol": "IP",
+  "delisted": true,
+  "meme": "no",
+  "cg_id": null,
+  "source": "coingecko: no Solana coin with this symbol"
+ },
+ {
+  "hl": "OM",
+  "symbol": "OM",
+  "delisted": true,
+  "meme": "no",
+  "cg_id": null,
+  "source": "coingecko: no Solana coin with this symbol"
+ },
+ {
+  "hl": "KAITO",
+  "symbol": "KAITO",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "kaito",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "NIL",
+  "symbol": "NIL",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "nillion",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "PAXG",
+  "symbol": "PAXG",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "pax-gold",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "PROMPT",
+  "symbol": "PROMPT",
+  "delisted": true,
+  "meme": "no",
+  "source": "manual: Wayfinder PROMPT: AI agent token, not a Solana meme"
+ },
+ {
+  "hl": "BABY",
+  "symbol": "BABY",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "babylon",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "WCT",
+  "symbol": "WCT",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "connect-token-wct",
+  "solana_mint": "WCTk5xWdn5SYg56twGj32sUF3W4WFQ48ogezLBuYTBY",
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "HYPER",
+  "symbol": "HYPER",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "hyperlane",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "ZORA",
+  "symbol": "ZORA",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "zora",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "INIT",
+  "symbol": "INIT",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "initia",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "DOOD",
+  "symbol": "DOOD",
+  "delisted": true,
+  "meme": "yes",
+  "source": "manual: expected set; CoinGecko id doodles, Solana mint DvjbEsdc...; out of the category top 500"
+ },
+ {
+  "hl": "LAUNCHCOIN",
+  "symbol": "LAUNCHCOIN",
+  "delisted": true,
+  "meme": "yes",
+  "source": "manual: expected set; CoinGecko id ben-pasternak (now \"Believe\"), Solana mint BLVxek8Y..."
+ },
+ {
+  "hl": "NXPC",
+  "symbol": "NXPC",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "nexpace",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "SOPH",
+  "symbol": "SOPH",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "sophon",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "RESOLV",
+  "symbol": "RESOLV",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": null,
+  "source": "coingecko: no Solana coin with this symbol"
+ },
+ {
+  "hl": "SYRUP",
+  "symbol": "SYRUP",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "syrup",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "PUMP",
+  "symbol": "PUMP",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "pump-fun",
+  "solana_mint": "pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn",
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "PROVE",
+  "symbol": "PROVE",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "succinct",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "YZY",
+  "symbol": "YZY",
+  "delisted": true,
+  "meme": "yes",
+  "source": "manual: expected set; CoinGecko yzy, Solana mint DrZ26cKJ...; CoinGecko files it outside the meme category"
+ },
+ {
+  "hl": "XPL",
+  "symbol": "XPL",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "plasma",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "WLFI",
+  "symbol": "WLFI",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "world-liberty-financial",
+  "solana_mint": "WLFinEv6ypjkczcS83FZqFpgFZYwQXutRbxGe7oC16g",
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "LINEA",
+  "symbol": "LINEA",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "linea",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "SKY",
+  "symbol": "SKY",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "sky",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "ASTER",
+  "symbol": "ASTER",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "aster-2",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "AVNT",
+  "symbol": "AVNT",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "avantis",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "STBL",
+  "symbol": "STBL",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": null,
+  "source": "coingecko: no Solana coin with this symbol"
+ },
+ {
+  "hl": "0G",
+  "symbol": "0G",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "zero-gravity",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "HEMI",
+  "symbol": "HEMI",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "hemi",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "APEX",
+  "symbol": "APEX",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "apex-token-2",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "2Z",
+  "symbol": "2Z",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "doublezero",
+  "solana_mint": "J6pQQ3FAcJQeWPPGppWRb4nM8jU3wLyYbRrLh7feMfvd",
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "ZEC",
+  "symbol": "ZEC",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "zcash",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "MON",
+  "symbol": "MON",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "monad",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "MET",
+  "symbol": "MET",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "meteora",
+  "solana_mint": "METvsvVRapdj9cFLzq4Tr43xK4tAjQfwX76z3n6mWQL",
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "MEGA",
+  "symbol": "MEGA",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "megaeth",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "CC",
+  "symbol": "CC",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "canton-network",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "ICP",
+  "symbol": "ICP",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "internet-computer",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "AERO",
+  "symbol": "AERO",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "aerodrome-finance",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "STABLE",
+  "symbol": "STABLE",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "stable-2",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "FOGO",
+  "symbol": "FOGO",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "fogo",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "LIT",
+  "symbol": "LIT",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "lighter",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "XMR",
+  "symbol": "XMR",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "monero",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "AXS",
+  "symbol": "AXS",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "axie-infinity",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "DASH",
+  "symbol": "DASH",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "dash",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "SKR",
+  "symbol": "SKR",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "seeker",
+  "solana_mint": "SKRbvo6Gf7GondiT3BbTfuRDPqLWei4j2Qy2NPGZhW3",
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "AZTEC",
+  "symbol": "AZTEC",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "aztec",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "CHIP",
+  "symbol": "CHIP",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "chip-2",
+  "solana_mint": "chipCAT7vi5CZtbZsn9z7iMPXvFwyAnKz3QFu8XVuHm",
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "GRAM",
+  "symbol": "GRAM",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "the-open-network",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "CASHCAT",
+  "symbol": "CASHCAT",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "cash-cat",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "PONS",
+  "symbol": "PONS",
+  "delisted": false,
+  "meme": "no",
+  "cg_id": "pons",
+  "solana_mint": null,
+  "source": "coingecko: largest coin with this symbol is not in solana-meme-coins"
+ },
+ {
+  "hl": "USELESS",
+  "symbol": "USELESS",
+  "delisted": false,
+  "meme": "yes",
+  "cg_id": "useless-3",
+  "solana_mint": "Dz9mQ9NzkBcCsuGPFJ3r1bS4wgqKMHBPiVuniW8Mbonk",
+  "source": "coingecko solana-meme-coins category"
+ }
+]
