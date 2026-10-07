@@ -140,3 +140,19 @@ At the trigger swap (the decision):
 - Funding groups are a heuristic; the hub threshold and one hop are choices, not proven.
 - GeckoTerminal hourly bars can carry prints that never appear in swaps (execution audit); exit decisions inherit that.
 - Exit latency L is a stand-in for detection plus landing time.
+
+## Amendment before any outcome (2026-10-08, parent session): P3 secondary and family-wide level
+No outcome has been computed (`outcome.py` never ran; see `RESULTS.md`), so this is added before any outcome.
+- **Coin list behind `screen.py`'s `gt_daily`:** `../deep-pool-probe/eligible.json`, the 163 pools of the 481-coin
+  survivor list (`../deep-pool-probe/universe.json`, pump.fun market-cap ranking fetched 2026-10-06) that closed a
+  day at ≥ 9,820 SOL. **Survivors only**, not survivorship-free. `gt.py daily` also queued the lottery random sample
+  but was stopped after these 163; no random-sample coin entered the screen.
+- **ABS-S1 (P3), fixed-sequence secondary.** Exactly as defined in block P3 of `../CONNECT_THE_DOTS.md` (commit
+  33ab1169): within group A, A events whose seller fully exited (not the creator, a bot or a wallet under 7 days old),
+  whose real quote vault held ≥ 0.80 of its pre-sale level and whose m60 is above its trailing 30-day 33rd
+  percentile, against A events that pass the last two tests but fail the seller test. It is tested at this probe's
+  level **only if** the primary rejects (A − B lower bound > 0 and A net lower bound > 0); otherwise it is descriptive.
+  Its own unresolved rule applies (fewer than 30 events or 15 days, or any coin above 30%). On the Step 1 data it
+  could have at most 5 tradable A events, so it is unresolved.
+- **Family-wide control (k = 12):** the primary is also reported at 99.58% (α = 0.05/12 = 0.0042) beside the
+  registered 95%. A "supported" verdict at 95% that fails at 99.58% is reported as such. This only tightens the bar.
