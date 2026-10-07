@@ -555,6 +555,9 @@ ExecStartPre=/usr/local/lib/zeroed/worker-start --reconcile
 ExecStart=/usr/local/lib/zeroed/worker-start
 Restart=always
 RestartSec=5
+# A start refused on the saved state (EXIT.stateRefused = 78, EX_CONFIG, packages/runner/src/contract.ts) is not retried:
+# the files must be restored first; refused.json in the state dir says why (ops/README.md, "A refused start").
+RestartPreventExitStatus=78
 TimeoutStopSec=30
 LoadCredentialEncrypted=helius_api_key:/etc/credstore.encrypted/helius_api_key
 LoadCredentialEncrypted=alchemy_api_key:/etc/credstore.encrypted/alchemy_api_key
@@ -2640,10 +2643,17 @@ exec /usr/local/bin/node "${heap[@]}" "$entry" "$@"
 __ZEROED_FILE__
 install_file /usr/local/sbin/zeroed-backup 0755 <<'__ZEROED_FILE__'
 #!/usr/bin/env bash
-# Hourly encrypted backup of every SQLite file under /var/lib/zeroed. Each file is copied with SQLite's
-# online backup (consistent under WAL), checked, listed in a manifest with its SHA-256, packed and
-# encrypted with age to /etc/zeroed/backup-recipients (the host key, plus the owner's key once the
-# Deploy workflow delivered one). Keeps the newest 72 locally.
+# Hourly encrypted backup of the worker's state under /var/lib/zeroed. Every SQLite file is copied with
+# SQLite's online backup (consistent under WAL) and checked; every other state file (the owner's pause and
+# the risk latches, the paper wallet and attempts, exit plans, budgets) is copied as it is (RC-FIXES: a
+# restore of the ledger alone came back with the kill switch unlatched). Left out: the journal and the
+# recording (large, uploaded on their own), the one-boot markers (clean_stop, planned_restart, cold_start, the drill
+# token, the exit handoff, refused.json: a stale one would mislabel the restored boot), and the deployer index (deployers.jsonl, deployer-state.json:
+# hundreds of MB, rebuilt from the chain; until then H14 is not covered, fail closed). The ledger and the
+# files that must agree with it are taken as one cut: copied again until none of those files changed while
+# the ledger was copied. Everything is listed in a manifest with its SHA-256, packed and encrypted with age
+# to /etc/zeroed/backup-recipients (the host key, plus the owner's key once the Deploy workflow delivered
+# one). Keeps the newest 72 locally.
 set -euo pipefail
 umask 077
 
@@ -2655,24 +2665,46 @@ KEEP="${ZEROED_BACKUP_KEEP:-72}"
 [ -s "$RECIPIENTS" ] || { echo "No backup recipients yet (keys not delivered); nothing backed up."; exit 0; }
 mapfile -t dbs < <(cd "$SRC" && find . -type f \( -name '*.sqlite' -o -name '*.db' \) | sed 's#^\./##' | LC_ALL=C sort)
 [ "${#dbs[@]}" -gt 0 ] || { echo "No SQLite files yet; nothing backed up."; exit 0; }
+mapfile -t files < <(cd "$SRC" && find . -type f ! -path './recorder/*' ! -name 'journal.jsonl*' ! -name 'deployers.jsonl' ! -name 'deployer-state.json' \
+  ! -name '*.sqlite' ! -name '*.db' ! -name '*.sqlite-*' ! -name '*.db-*' ! -name '*.lock' ! -name '*.tmp' ! -name '*.new' \
+  ! -name clean_stop ! -name planned_restart ! -name cold_start ! -name drill.token ! -name last_exit.json ! -name refused.json \
+  | sed 's#^\./##' | LC_ALL=C sort)
+# The files that must agree with the ledger (state-check.ts): one cut with it.
+cut_hashes() { (cd "$SRC" && for f in account.json paper.json exits.json control.json entry-seeds.json exposure.json; do [ -f "$f" ] && sha256sum -- "$f"; done; true); }
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
-mkdir -p "$work/snap"
+same=""
+for _ in 1 2 3 4 5; do
+  rm -rf "$work/snap"
+  mkdir -p "$work/snap"
+  before="$(cut_hashes)"
+  for rel in "${files[@]}"; do
+    [ -f "$SRC/$rel" ] || continue
+    mkdir -p "$work/snap/$(dirname "$rel")"
+    cp -p -- "$SRC/$rel" "$work/snap/$rel"
+  done
+  for rel in "${dbs[@]}"; do
+    mkdir -p "$work/snap/$(dirname "$rel")"
+    sqlite3 "$SRC/$rel" ".timeout 10000" ".backup '$work/snap/$rel'"
+  done
+  if [ "$(cut_hashes)" = "$before" ]; then same=1; break; fi
+  sleep 1
+done
+[ -n "$same" ] || { echo "The ledger and its state files kept changing; no consistent backup taken."; exit 1; }
 for rel in "${dbs[@]}"; do
-  mkdir -p "$work/snap/$(dirname "$rel")"
-  sqlite3 "$SRC/$rel" ".timeout 10000" ".backup '$work/snap/$rel'"
   check="$(sqlite3 "$work/snap/$rel" 'PRAGMA integrity_check;')"
   [ "$check" = ok ] || { echo "Backup copy of $rel failed its integrity check."; exit 1; }
 done
-(cd "$work/snap" && sha256sum -- "${dbs[@]}") > "$work/snap/MANIFEST.sha256"
+mapfile -t packed < <(cd "$work/snap" && find . -type f | sed 's#^\./##' | LC_ALL=C sort)
+(cd "$work/snap" && sha256sum -- "${packed[@]}") > "$work/snap/MANIFEST.sha256"
 
 ts="$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p "$OUT"
 tar -C "$work/snap" -c . | age -R "$RECIPIENTS" -o "$OUT/zeroed-$ts.tar.age.new"
 mv -f "$OUT/zeroed-$ts.tar.age.new" "$OUT/zeroed-$ts.tar.age"
 ls -1 "$OUT"/zeroed-*.tar.age | LC_ALL=C sort -r | tail -n +"$((KEEP + 1))" | xargs -r rm -f
-echo "Backup zeroed-$ts.tar.age: ${#dbs[@]} file(s), $(wc -l < "$RECIPIENTS") recipient(s)."
+echo "Backup zeroed-$ts.tar.age: ${#packed[@]} file(s), ${#dbs[@]} SQLite, $(wc -l < "$RECIPIENTS") recipient(s)."
 __ZEROED_FILE__
 install_file /usr/local/sbin/zeroed-backup-code 0755 <<'__ZEROED_FILE__'
 #!/usr/bin/env bash
@@ -3006,8 +3038,9 @@ __ZEROED_FILE__
 install_file /usr/local/sbin/zeroed-restore-drill 0755 <<'__ZEROED_FILE__'
 #!/usr/bin/env bash
 # Restore drill: decrypts a backup with the given age identity into a scratch directory (never over the
-# live files), checks every file against the manifest, runs SQLite's integrity check, and compares the
-# tables with the live database. Prints PASS or FAIL; exits non-zero on FAIL.
+# live files), checks every file against the manifest, runs SQLite's integrity check on each database and
+# compares its tables with the live one, and checks every JSON state file parses. Prints PASS or FAIL; exits
+# non-zero on FAIL.
 #   zeroed-restore-drill IDENTITY_FILE [BACKUP_FILE]    (default: the newest backup)
 set -euo pipefail
 umask 077
@@ -3027,8 +3060,14 @@ age -d -i "$identity" "$backup" 2>/dev/null | tar -x -C "$work" --no-same-owner 
 (cd "$work" && sha256sum --quiet -c MANIFEST.sha256) >/dev/null 2>&1 || fail "a file does not match the manifest"
 
 files=0
+dbs=0
 while read -r _ rel; do
   files=$((files + 1))
+  case "$rel" in
+    *.json) node -e 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))' "$work/$rel" 2>/dev/null || fail "$rel is not valid JSON"; continue ;;
+    *.sqlite|*.db) dbs=$((dbs + 1)) ;;
+    *) continue ;;
+  esac
   [ "$(sqlite3 "$work/$rel" 'PRAGMA integrity_check;')" = ok ] || fail "$rel failed the integrity check"
   tables="$(sqlite3 "$work/$rel" "SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name;")"
   for t in $tables; do
@@ -3040,7 +3079,8 @@ while read -r _ rel; do
   fi
 done < "$work/MANIFEST.sha256"
 [ "$files" -gt 0 ] || fail "backup holds no files"
-echo "PASS: $(basename "$backup"), $files file(s) restored to a scratch directory and verified."
+[ "$dbs" -gt 0 ] || fail "backup holds no database"
+echo "PASS: $(basename "$backup"), $files file(s) ($dbs database(s)) restored to a scratch directory and verified."
 __ZEROED_FILE__
 install_file /usr/local/sbin/zeroed-resume 0755 <<'__ZEROED_FILE__'
 #!/usr/bin/env bash

@@ -5,7 +5,12 @@
 export const WORKER_ENTRY = 'packages/worker/src/main.ts';
 export const STUB_ENTRY = 'packages/runner/stub/worker.ts';
 
-export const EXIT = { clean: 0, crash: 1, config: 2, reconcileFailed: 3 } as const;
+/**
+ * Worker exit codes. `stateRefused` (RC-STATE, S1's contract): the saved state disagrees with itself and the worker
+ * will not start on it. It is 78 (EX_CONFIG), listed in zeroed-worker.service's RestartPreventExitStatus (a restart
+ * cannot fix it), and `<stateDir>/refused.json` ({reason, atMs, commit}, fsynced first) says why.
+ */
+export const EXIT = { clean: 0, crash: 1, config: 2, reconcileFailed: 3, stateRefused: 78 } as const;
 
 /** Runner exit codes. `refused` and `aborted` are in the host unit's RestartPreventExitStatus: never retried. */
 export const RUNNER_EXIT = { ok: 0, crash: 1, refused: 2, aborted: 4 } as const;
@@ -145,6 +150,11 @@ export interface Health {
 
 export type JournalKind =
   | 'start' | 'reconcile' | 'decision' | 'entry' | 'exit' | 'simulation' | 'feed' | 'halt' | 'resume' | 'stop' | 'journal_repair'
+  /**
+   * RC-STATE: an entry's buy is about to be sent (`intent`, `signature`), fsynced first. The engine logs that entry's
+   * `submit` after the send, so a kill right after it leaves the journal without it; parity forgives exactly that line.
+   */
+  | 'dispatching'
   /** A coverage gap of a discovery stream: journaled when it opens (to_ts null) and again when it closes, same gap_id. */
   | 'coverage_gap'
   /** After a restart with an open position: the worst price move over the down window, rebuilt from chain history. */

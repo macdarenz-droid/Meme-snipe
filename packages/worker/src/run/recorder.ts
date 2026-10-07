@@ -13,7 +13,7 @@
 // file is hashed once, from the bytes written when it is sealed; the manifest lists that hash and never re-reads it.
 import { createHash } from 'node:crypto';
 import { redactCounted } from './redact.ts';
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, truncateSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, truncateSync, writeFileSync } from 'node:fs';
 import { basename, join, relative } from 'node:path';
 import { zstdCompressSync, zstdDecompressSync } from 'node:zlib';
 import { toBase64 } from '../../../core/src/chain/index.ts';
@@ -202,7 +202,11 @@ export class Recorder {
     if (!this.#open.has(t)) {
       const n = this.#nextNumber(t, day);
       const dir = join(this.#dir, 'days', day);
+      const made = !existsSync(dir);
       mkdirSync(dir, { recursive: true });
+      // RC-STATE review: a new file's (and a new day folder's) name reaches disk at the next durable(), with the folder.
+      this.#newDirs.add(dir);
+      if (made) this.#newDirs.add(join(this.#dir, 'days'));
       this.#open.set(t, { day, n, path: join(dir, `${t}-${pad(n)}.jsonl`), bytes: 0, rows: 0, redactions: 0 });
     }
     const o = this.#open.get(t)!;
@@ -237,6 +241,29 @@ export class Recorder {
   flush(): void {
     for (const t of TABLES) this.#flushTable(t);
     this.#flushGaps();
+  }
+
+  /** Folders that gained a file (or a day folder) since the last durable(): their entries are fsynced there. */
+  readonly #newDirs = new Set<string>();
+
+  /**
+   * RC-FIXES: every buffered line written and on disk (fsync of each open file and the gaps file), and every folder that
+   * gained a file since the last call (a new file at rotation, a new day) fsynced too, before an entry reaches the
+   * outside world, so the recording always replays to the journaled entry (TEST-1), whatever kills the process after.
+   */
+  durable(sync: (fd: number) => void = fsyncSync): void {
+    this.flush();
+    const paths = [...[...this.#open.values()].map((o) => o.path), join(this.#dir, GAPS_FILE), ...this.#newDirs];
+    for (const p of paths) {
+      if (!existsSync(p)) continue;
+      const fd = openSync(p, 'r');
+      try {
+        sync(fd);
+      } finally {
+        closeSync(fd);
+      }
+    }
+    this.#newDirs.clear();
   }
 
   #seal(t: Table): void {

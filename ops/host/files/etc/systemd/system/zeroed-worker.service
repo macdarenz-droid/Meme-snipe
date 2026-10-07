@@ -21,6 +21,9 @@ ExecStartPre=/usr/local/lib/zeroed/worker-start --reconcile
 ExecStart=/usr/local/lib/zeroed/worker-start
 Restart=always
 RestartSec=5
+# A start refused on the saved state (EXIT.stateRefused = 78, EX_CONFIG, packages/runner/src/contract.ts) is not retried:
+# the files must be restored first; refused.json in the state dir says why (ops/README.md, "A refused start").
+RestartPreventExitStatus=78
 TimeoutStopSec=30
 LoadCredentialEncrypted=helius_api_key:/etc/credstore.encrypted/helius_api_key
 LoadCredentialEncrypted=alchemy_api_key:/etc/credstore.encrypted/alchemy_api_key

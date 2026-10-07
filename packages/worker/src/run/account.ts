@@ -132,7 +132,22 @@ export interface AccountState {
   strayFees?: Record<string, StrayFee>;
   /** Stray fees from before the current Melbourne week, folded into one total: every attempt sent at or before `atMs`. */
   strayFolded?: StrayFee;
+  /**
+   * RC-FIXES: how many trades and entries this file held when it was written. Neither list ever shrinks, so a file whose
+   * lists are shorter than its counts lost records (an entry booked twice, R11's count reset) and is refused. Absent in
+   * files from before.
+   */
+  counts?: { readonly trades: number; readonly entries: number };
+  /**
+   * RC-FIXES: which of the fields that, once set, are never unset (`KEPT_FIELDS`) this file held when it was written. One
+   * listed but gone was lost (the setup rent paid again, R10's high-water mark or the day's and week's marks started
+   * again): refused. Absent in files from before.
+   */
+  present?: readonly string[];
 }
+
+/** Fields that, once set, stay set for the life of the account. */
+const KEPT_FIELDS = ['walletLamports', 'oneTimePaid', 'setup', 'navPeak', 'dayMark', 'weekMark'] as const;
 
 export interface StrayFee {
   readonly atMs: number;
@@ -148,8 +163,45 @@ export interface BoundaryMark {
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
-export const accountFile = (dir: string) =>
-  new StateFile<AccountState>(dir, 'account.json', (v) => (isObj(v) && typeof v['openedAtMs'] === 'number' && typeof v['openingEquity'] === 'bigint' && Array.isArray(v['trades']) && Array.isArray(v['entries']) ? (v as unknown as AccountState) : null));
+/** No paper wallet holds more lamports than SOL's whole supply (about 6e17): a larger figure is damage. */
+const MAX_LAMPORTS = 10n ** 18n;
+const isTime = (x: unknown): x is number => typeof x === 'number' && Number.isSafeInteger(x) && x >= 0;
+const isInt = (x: unknown): x is bigint => typeof x === 'bigint';
+const isNonNeg = (x: unknown): x is bigint => isInt(x) && x >= 0n;
+const isMark = (x: unknown): boolean => isObj(x) && isTime(x['startMs']) && isTime(x['atMs']) && isInt(x['equity']);
+const isFee = (x: unknown): boolean => isObj(x) && isTime(x['atMs']) && isNonNeg(x['lamports']) && isNonNeg(x['cost']);
+const opt = (x: unknown, ok: (y: unknown) => boolean): boolean => x === undefined || ok(x);
+const isTrade = (t: unknown): boolean => isObj(t) && typeof t['positionId'] === 'string' && typeof t['mint'] === 'string' && isTime(t['openedAtMs'])
+  && isInt(t['notional']) && isInt(t['booked']) && typeof t['stoppedOut'] === 'boolean'
+  && (t['closedAtMs'] === null || isTime(t['closedAtMs'])) && (t['netLamports'] === null || isInt(t['netLamports'])) && (t['netPnl'] === null || isInt(t['netPnl']));
+
+/**
+ * RC-FIXES (R2-4): the whole file checked, not four fields. Every figure has its type and range. Lists shorter than
+ * their saved counts lost records, and a field the file says it held but no longer does was lost (`present`): without
+ * them a restart books an entry twice, pays the setup rent again, or starts R10's high-water mark and the day's and
+ * week's losses again. Anything else is damage: the start is refused.
+ */
+export const checkAccount = (v: unknown): AccountState | null => {
+  if (!isObj(v) || !isTime(v['openedAtMs']) || !isInt(v['openingEquity']) || v['openingEquity'] <= 0n) return null;
+  const w = v['walletLamports'];
+  if (!(w === null || (isNonNeg(w) && w < MAX_LAMPORTS))) return null;
+  const trades = v['trades'];
+  const entries = v['entries'];
+  if (!Array.isArray(trades) || !trades.every(isTrade)) return null;
+  if (!Array.isArray(entries) || !entries.every((e) => isObj(e) && typeof e['mint'] === 'string' && isTime(e['atMs']))) return null;
+  if (!opt(v['oneTimePaid'], (x) => typeof x === 'boolean') || !opt(v['setup'], isFee) || !opt(v['dayMark'], isMark) || !opt(v['weekMark'], isMark)) return null;
+  if (!opt(v['navPeak'], (x) => isObj(x) && isTime(x['atMs']) && isInt(x['nav']) && x['nav'] > 0n)) return null;
+  if (!opt(v['strayFees'], (x) => isObj(x) && Object.values(x).every(isFee)) || !opt(v['strayFolded'], isFee)) return null;
+  const counts = v['counts'];
+  if (!opt(counts, (x) => isObj(x) && isTime(x['trades']) && isTime(x['entries']))) return null;
+  if (isObj(counts) && (trades.length < (counts['trades'] as number) || entries.length < (counts['entries'] as number))) return null;
+  const present = v['present'];
+  if (!opt(present, (x) => Array.isArray(x) && x.every((k) => typeof k === 'string'))) return null;
+  if (Array.isArray(present) && present.some((k) => v[k as string] === undefined || v[k as string] === null)) return null;
+  return v as unknown as AccountState;
+};
+
+export const accountFile = (dir: string) => new StateFile<AccountState>(dir, 'account.json', checkAccount);
 
 /**
  * The share of the basis (entry SOL and fees) that `sold` of `bought` tokens carries: the rest keeps its share rounded
@@ -186,6 +238,13 @@ export class PaperAccount {
     file.write(this.#s);
   }
 
+  /** Writes the file with its list counts (RC-FIXES). */
+  #save(): void {
+    this.#s.counts = { trades: this.#s.trades.length, entries: this.#s.entries.length };
+    this.#s.present = KEPT_FIELDS.filter((k) => this.#s[k] !== undefined && this.#s[k] !== null);
+    this.#file.write(this.#s);
+  }
+
   get state(): Readonly<AccountState> {
     return this.#s;
   }
@@ -196,7 +255,7 @@ export class PaperAccount {
     if (this.#s.walletLamports !== null && this.#s.oneTimePaid === true) return;
     if (this.#s.walletLamports === null) this.#s.walletLamports = microUsdToLamports(this.#s.openingEquity, solPrice, 'floor');
     this.#setUp(solPrice, nowMs);
-    this.#file.write(this.#s);
+    this.#save();
   }
 
   /**
@@ -237,13 +296,13 @@ export class PaperAccount {
       this.#s.navPeak = { atMs: nowMs, nav: s.nav };
       changed = true;
     }
-    if (changed) this.#file.write(this.#s);
+    if (changed) this.#save();
     return changed;
   }
 
   reserved(mint: string, atMs: number): void {
     this.#s.entries.push({ mint, atMs });
-    this.#file.write(this.#s);
+    this.#save();
   }
 
   /** A fill was booked: move the paper wallet, open or close the trade record. */
@@ -285,7 +344,7 @@ export class PaperAccount {
     // A sale booked late can change trades already closed: its own (a late sell) and its entry's others (a sell that
     // closed the shared account returns the rent to the entry's first trade).
     if (p !== undefined) this.#resettleClosed(r.book, p.entryIntentId, legs, r.atMs);
-    this.#file.write(this.#s);
+    this.#save();
   }
 
   /**
@@ -297,7 +356,7 @@ export class PaperAccount {
     const p = book.positions[positionId];
     if (p === undefined) return false;
     const moved = this.#resettleClosed(book, p.entryIntentId, legs, nowMs);
-    if (moved) this.#file.write(this.#s);
+    if (moved) this.#save();
     return moved;
   }
 
@@ -368,7 +427,7 @@ export class PaperAccount {
       }
     }
     const folded = this.#fold(book, legs, nowMs);
-    if (moved || folded) this.#file.write(this.#s);
+    if (moved || folded) this.#save();
     return moved;
   }
 
