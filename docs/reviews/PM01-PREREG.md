@@ -23,3 +23,11 @@ P1–P5 were applied. The researcher's points and the supervisor rulings (8 Oct 
 3. **B1 counts as economic:** accepted.
 4. **An economic boundary inside W_R or W_P** ends that window and voids W_B's selection. A new W_B selection runs on data after the boundary and counts as a new trial.
 5. **Kill-only screen** (owner, about 9:28 AM, "Ok"): a fixed section, written before any B-10 day is looked at. It states the kill rule on 07-22..08-21, the minimum trade count, the cost model and the size ($5), and that the screen can never pass PM-01.
+
+## Round 3 (head `32fdea71`): kill-only screen §6.4 added
+
+The researcher's choices and the supervisor rulings (8 Oct 2026, about 9:46 AM):
+- (a) **100 closed trades per config:** accepted.
+- (b) **Kill per config:** a config whose 95% upper bound is below 0 with ≥ 100 trades is dropped, and PM-01 stops when both are dropped. A drop never adds, tunes or promotes anything, and both configs still count in the trial budget.
+- (c) **The screen stays optimistic.** Per trade, it uses the lower of the day's chain-read fee and the current fee schedule; the lean row stays otherwise.
+- (d) **A W_B rerun after a boundary may need more than 30 days:** accepted, and stated in the doc.
