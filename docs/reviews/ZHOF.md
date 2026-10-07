@@ -104,3 +104,32 @@ I accept every finding. Together with the rulings above (C-56, K3, D30, owner an
 11. **B-10 needs a named strategy.** In SPEC-A A-M13-06, a replay that names no strategy, or a strategy other than the selected configuration, fails B-10. Add a case.
 12. **LOW-3, NIT-1, NIT-2:** split the §1 row; quote the page exactly; mark `b10ReservationActiveMinutes` and the "reservation active" minute [not chosen, C-79].
 13. **The open points ruled above** (C-56, K3, D30 parked, A-24b parked, owner answers): apply them in the same push.
+
+### Delta reports on `60612d8b` (written before the hold reached them)
+
+- Reviewer: FAIL. C-76 is mostly fixed, with evidence. HIGH-1 and MEDIUM-1 are still open. New:
+  - MEDIUM-2: stale C-76 text at ARCH:3132, :3150, :3235, and the last sentences of SPEC-A C-76.
+  - MEDIUM-3: the A17/C-56 end state is ambiguous with MR-01 parked.
+- Red team: 8 MAJOR (round 1's 1–6 and 8 carried; round-1 #7 downgraded to MEDIUM; #14 closed). New:
+  - MAJOR 15: the A17 stop can no longer trigger, because a parked strategy never "fails".
+  - MEDIUM 16: `W_B`'s start is still tied to MR-01's pre-registration (SPEC-A:2022, C-26 :2602).
+  - Downgraded #7: make the K3/K2 choice an OF-3 precondition with recorded numbers, and tell the owner that the days may wait unused.
+- Checked by the red team: no gate passes with nothing real behind it, except the A17 stop (#15).
+
+### Supervisor rulings, round 2 addendum (8 Oct 2026, about 8:00 AM)
+
+14. **C-56 re-keyed (MAJOR 15, MEDIUM-3).** This replaces the open-point ruling 1 wording.
+    - "If PM-01 fails and no other strategy is in its gates (parked MR-01 counts as failed), strategy work the agents start stops by 31 Dec 2026, with the spend cap the owner already pays."
+    - A strategy the owner brings through the M09 slot may continue after 31 Dec within that same spend. This is the owner's 8 Oct "Strategy slots" instruction, the later one.
+    - Write this into C-56, ARCH D08 (:1722) and :3090, MIGRATION A17 and the DECISIONS row. Add an acceptance line: PM-01 fails, with no other strategy in its gates, so the stop applies.
+    - The owner's stop date and spend cap are not weakened.
+15. **Stale C-76 text (MEDIUM-2).**
+    - Mark ARCH:3132 RULED.
+    - Tag ARCH:3150 and :3235 [not chosen, C-79], or remove C-76 from them.
+    - Rewrite the last sentences of SPEC-A C-76 to match the ruling: no Phase 0 check of MR-01 runs, and the owner wait is resolved.
+16. **`W_B`'s start (MEDIUM 16).** `W_B` begins after the configurations of the stage's strategy (PM-01 or a slot strategy) are pre-registered. The Phase 0 study week stays excluded. Fix SPEC-A:2022 and C-26.
+17. **Retention decided from measurement (red team #7, refines ruling 7).**
+    - Batch 1 keeps raw records for every canonical pool (K2) for that one day, so both sizes are measured: PM-01's universe and the full set.
+    - The retention for batches 2 onward is then chosen and recorded before batch 2, as an OF-3 step with the numbers: K3 if the 31-day PM-01 projection fits under 0.5 TB, otherwise stop and ask the owner.
+    - Batch 1's extra raw is trimmed to the chosen retention.
+    - The docs say plainly, and so will the supervisor to the owner, that the days may wait unused until a strategy reaches gate B, and under A17 may never be used.
