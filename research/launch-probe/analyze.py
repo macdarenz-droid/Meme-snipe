@@ -68,6 +68,7 @@ class Coin:
         self.complete_t = rec['completes'][0][3] if rec['completes'] else None
         self.swaps = rec['swaps']
         self.thinned = bool(rec.get('pool_thinned'))
+        self.fill_fallback = False
         self.skeys = [tuple(s[:3]) for s in self.swaps]
         ev = [('c', tuple(r[:3]), r[3], i) for i, r in enumerate(tr)]
         ev += [('p', tuple(s[:3]), s[3], i) for i, s in enumerate(self.swaps)]
@@ -130,8 +131,9 @@ def fill_key(coin, slot):
         return key
     for k in coin.skeys:
         if k[0] >= slot:
-            return k
-    return coin.skeys[-1] if coin.skeys else key
+            return last_key_by_slot(coin, k[0])     # after every fetched swap of that slot (all are fetched)
+    coin.fill_fallback = True                       # no fetched swap at or after the fill slot: last one
+    return key
 
 def entry(coin, L, slotlen):
     s_e = coin.L['slot'] + L
@@ -258,6 +260,8 @@ def run(w):
                 per.setdefault((L, k), []).append((day, v, fl, bool(c.breaks)))
         meta['no_entry'][L] = ne
     meta['unpriced_coins'] = sum(1 for c in coins if c.unpriced)
+    meta['pool_thinned_coins'] = sum(1 for c in coins if c.thinned)
+    meta['st_fill_fallback_coins'] = sum(1 for c in coins if c.fill_fallback)
     res = {}
     for (L, k), rows in per.items():
         res['L%d_%s' % (L, k)] = {
