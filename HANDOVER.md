@@ -48,6 +48,20 @@ The previous S1 account reached its usage limit about 12:45 PM. The owner made t
 - No host access, no secrets access (owner only), as before.
 
 **Log (Melbourne time, newest first)**
+- 6:31 PM **Red team A round 3** (claude/redteam-a 1244422; heads tested #269 e225f11, #272 c752a6d, #273 b5875f9, #276 5540c2c).
+  - **Closed:** RT-A1/A3 (#272), RT-A7/A9 (#273), R2-1..R2-7 (#276 5540c2c), RT-A4/A5 (#269). RT-A6 is still open (LOW, unreachable on mainnet).
+  - **NEW:**
+    - HIGH RT-A1b (#272): a late swap behind a newer one makes the candles partial FOREVER (no hole, so no heal), and H11 refuses the coin all window. Fix: rebuild from the last mark with chainOrder; go partial only if the swaps don't chain.
+    - HIGH RT-A2b (#273): readMintHistory's curve trades are judged by live H5 but not released in the backtest.
+    - **CRITICAL NT-2 (base): every creates-watch reconnect blocks H14 for EVERY coin for 14 days** (the backfill records the missed signatures but doesn't fetch them).
+    - HIGH NT-1 (base): one missing, uncovered or re-published chain-volume day turns the regime off for up to 365 days. Fix: the percentile over the days present, plus an alert.
+    - Deployer-check staleness counts queue time (asOf at request; fix: at read start).
+  - **Routed:**
+    - A-FACTS 011dr7vM resumed now (#273 round + RT-A2b, then H14-HOLES with NT-2 + hole classes + deployer asOf + parity);
+    - RT-A1b → LATE-LOG card (when its slot comes);
+    - NT-1 → A2-GATE card (when its slot comes).
+- 6:31 PM **Red team B, next task:** an integration attack: a local merge of all fix heads on 9f7cf812 (conflicts, full test, all red-team probes, cross-PR interactions).
+- **Builders running now:** SOL-BOOKS, MEM-FIXES, RC-FIXES-2b, EXIT-FILL, RC-FIXES (#280 round), A-FACTS. **Queued:** LATE-LOG (+RT-A1b), A2-GATE (+NT-1 and the F1 saved holes), POOL-FIRST-READ-2 (#269 report), CURVE-TAIL-PROOF.
 - 6:30 PM data-keep run 37585646367 SUCCESS on 9f7cf812: 1 entry kept, the 09-21 progress cache (data-rpc-2026-09-21-37360664411-1; last accessed 2026-10-05T23:08Z before the run). The restore refreshed its last access (the proof step passed). No assets entries exist. The paid 09-21 reads are safe; next scheduled keep 10 Oct 04:23Z.
 - 6:20 PM **#280 ops review FAIL on 10347648** (01QkAcbw; 1,748 ops+worker tests; 11 reverts each failing).
   - BLOCKING: no CI or e2e yet; the README pin is stale; the branch is behind 9f7cf812, with conflicts in README and recorder.ts.
