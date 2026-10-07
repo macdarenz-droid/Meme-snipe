@@ -1,0 +1,11 @@
+{
+  "name": "@bot/dashboard",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Operator dashboard SPA (UI.md).",
+  "license": "UNLICENSED",
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}

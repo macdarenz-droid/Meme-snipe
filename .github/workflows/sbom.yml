@@ -1,0 +1,32 @@
+# SBOM per release (B-M30-01 logic 5; ARCH 12.3): a CycloneDX document of the production dependencies of the checked
+# workspace projects (tools/policy/sbom.ts), built for every release tag and kept as a workflow artifact. Read-only
+# token, no secrets, credentials not persisted, installs run no scripts.
+name: sbom
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  sbom:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+      - run: pnpm install --frozen-lockfile
+      - name: SBOM (CycloneDX 1.6, production dependencies)
+        shell: bash
+        run: node tools/policy/bin/sbom.ts > sbom.cdx.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sbom-${{ github.ref_name }}
+          path: sbom.cdx.json

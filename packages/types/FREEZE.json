@@ -1,0 +1,15 @@
+{
+  "package": "@bot/types",
+  "version": "1.0.0",
+  "sha256": "9d79b1cd468cca5372fc7454434c7fefa51e1fce384457f6c72902d2d0b8c5b3",
+  "files": [
+    "package.json",
+    "src/canon.ts",
+    "src/contract.ts",
+    "src/execution.ts",
+    "src/index.ts",
+    "src/referenced.ts",
+    "src/types.ts",
+    "src/units.ts"
+  ]
+}

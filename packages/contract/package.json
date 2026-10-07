@@ -1,0 +1,11 @@
+{
+  "name": "@bot/contract",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Dashboard view-model zod schemas (M28, B-M28-01).",
+  "license": "UNLICENSED",
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}

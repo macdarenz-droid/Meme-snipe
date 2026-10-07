@@ -1,0 +1,11 @@
+{
+  "name": "@bot/signer",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Signer process (M17). Zero third-party runtime dependencies.",
+  "license": "UNLICENSED",
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "name": "@bot/types",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Shared types, execution contract, canonical JSON and unit codecs (ARCH 5.0, 5.0a, 5.0b; B-M19-01). No runtime dependencies.",
+  "license": "UNLICENSED",
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}
