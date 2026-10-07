@@ -346,7 +346,7 @@ Decision (supervisor): Snipe-solana stops being a build home. #5, #6 and #7 are 
 
 ## Research carried in
 
-Addendum: `research/BLUEPRINT_ADDENDUM.md` is not on `ccr-7fae2302-drz4co` at `7b162ed8` (checked before this push), so nothing from it is adopted here; the input stays `research/SUPERVISOR_MESSAGES.md` (Rules, item 4).
+Addendum: `research/BLUEPRINT_ADDENDUM.md` landed at `72f1793f` on `ccr-7fae2302-drz4co`, after this section was written. It is adopted item by item in "Research addendum" below (Rules, item 4).
 
 Source: branch `ccr-7fae2302-drz4co` (read at tip `1baca138`), cited as `R:<path>:<line>`; PR #267 head `2c85293f`, cited as `PR267:<path>:<line>`. Nothing here was re-run.
 
@@ -394,6 +394,43 @@ Git shows only that none is finished. Whether any process is still running canno
 - **MR-01:** the 5-minute proxies lose; in MR-01's own tier the result is negative but not significant. The 15 s signal and the "reversion to 6 h median" exit are untested. The bounce fades within 5 minutes (`RESULTS.md:25`), so 1 Hz polling may already be too slow. Phase 0 (A-24, A-24b) is still the first gate; the deep-pool probe is a strong prior that it fails.
 - **PM-01:** no direct test. Its neighbours (relaxed U2, hour-1 runner) lost 10.6% and 22.4%. D08 already holds PM-01 to replay until B and R pass on post-BOOST data.
 - **Gates:** nothing here passes any gate; vendor-bar and partial results can only kill. Every study used pre-wall or holdout-window data, so none can serve as a Blueprint `W_B` holdout.
+
+## Research addendum
+
+`research/BLUEPRINT_ADDENDUM.md` at `72f1793f` on `ccr-7fae2302-drz4co` (unchanged at the branch tip `84f572ad`). Rulings by the supervisor under Rules 4.
+- **Rulings:** adopt (as written); adopt, changed (the change and its reason are in `docs/DECISIONS.md`, "2026-10-07 Blueprint addendum"); owner (the owner decides, with a recommendation); resolved (an owner decision already covers it).
+- **Priorities as the addendum sets them:** P0 now; P1 before its Blueprint ticket; P2 after the bot-first gate.
+- **Unfinished runs:** results enter only after their RESULTS.md and a fresh review.
+- **Register:** each adopted item's evidence becomes a FACTS register entry (path and sha), and each ruling a C-xx in the Blueprint docs (card Z0D below).
+
+| ID | P | Ruling | Carried by | Acceptance check |
+|---|---|---|---|---|
+| A01 Recording host | P0 | resolved | Owner, 7 Oct: the 2 GB host (`CLAUDE.md` "Host"); the keyless recorder runs there once M1 is reviewed ("Clashes for the owner", Process). Gate windows count from the first recorded day, so the recorder path (Z07, Z08, Z10) goes first in M1. | A-M07-03's disk-budget test uses the real disk of the 2 GB host (55 GB) |
+| A02 Data sources and terms | P0 | adopt | Z01 (CI check); A-M03-02 (chain backfill on by default, D12); `docs/DECISIONS.md` terms register. Data collected before 2026-10-07 may serve research only, never a Blueprint universe or gate | A CI check fails on any pump.fun frontend host in bot or research code (pinned docs and SDK test oracles excepted) |
+| A03 Credits and fixed costs | P0 | adopt | A-M03-03 (D30 budget from the first enumeration count, not A-43's 50,000; vaults read daily on an unmetered provider, every 6 h only near a tier threshold); A-M14-05 (burn-rate test = bug B4); VM-14 shows only services the bot uses. Helius Developer is a research cost (D29) while the bot stays on D04's free tiers. This settles O7's Helius point unless the owner moves the bot onto it. | Phase 0 reports the pool count and the budget; the burn test fails on the zero-trade pattern |
+| A04 MR-01 evidence | P0 | adopt | Z0D: ARCH §3.2, §3.3 and A-23 say "negative sub-hour proxy evidence; MR-01's 15 s signal untested"; a D08 C-xx says the proxy is not CS-1; no low-volume config; "drops from one large sale" becomes an open point beside C-22 | §3.2, §3.3 and A-23 cite register facts |
+| A05 Phase 0 conditional check | P0 | owner | A-M13-01 (Z09): on the Phase 0 week's 15 s bars, run only MR-01's two registered configs; forward return 5–60 min at 0/1/2-bar delays, and its excess over same-pool, same-hour random entries; kill MR-01 unless the raw return beats the conservative hurdle (A07) and the excess is above zero. It can never pass a config, and the week stays outside `W_B`. Recommendation: yes (it only tightens). | Rule committed before the data; output by horizon and delay with A14 intervals |
+| A06 Owner pre-funding map | P0 | adopt (doc) + owner (item 2) | "Clashes for the owner", Pre-funding gate: item 1 = 10 identical replays; item 4 adds ≥ 95% simulating to P-6; item 6 raises R-1 and P-1 to 300 out-of-sample trades at 80% power; blindness = planted-marker leak test and exact parity. All tighten, so they are adopted. Item 2 (history replay against forward M07 data) goes to the owner. Plan `W_B` for up to about 65 days. | The clash table lists them; the leak test fails on a leaking module |
+| A07 Conservative cost row | P1 | adopt | A-M10-03 (Z09): the conservative row from pessimistic Blueprint parameters; 414,009 lamports only as a sensitivity line; B-2 must pass under it until each parameter is measured; q added to ARCH §2.3 (Z0D); a fixed-cost cap of k% of the stake, with k fixed in the PREREG | M10 carries both rows and reports show both |
+| A08 Quote fixtures | P1 | adopt | A-M01-02/03 (Z07): creator fee read per pool from chain at decision time, for the quote and the ≤ 30 bps filter; CORE-2 goldens (313 curve, 353 PumpSwap) imported under Rules 1; reserve timing encoded (PumpSwap events pre-swap, pump `TradeEvent` post-trade). The `docs/research/quant.md:54,352` fix goes on the research branch | A fixture fails a quote that uses the tier table alone or the vault alone |
+| A09 Drained-pool fixture | P1 | adopt | A-M06-04 and B-M20 (M2): H8 is **replace** (min_depth and `real_vs_effective_quote` in lamports, bug B2); keep the ratio ≥ 0.5/0.6, DEPTHPCT, collapse below 0.4 and the sell clamp | The fixture (17.58 SOL virtual, 0.27 SOL real) is green in M06 and M20: entry rejected, collapse exit fires, proceeds clamped |
+| A10 Slot-to-time | P1 | adopt | Z06 (B-M15-01): one slot-to-time function (live sampling; per-day block-time anchors in history), replacing `slotMsAssumed` and every `SLOT_MS` (bug B1); the 12-, 20- and 8-slot thresholds rechecked at 400, 267 and 200 ms. Z06 lands before A-M10-01 (Z04). | Slots convert within ±1 s of `getBlockTime` anchors on two dates with different slot lengths (recorded fixtures, no live calls); no other slot constant exists |
+| A11 SOL-only limits | P1 | adopt | B-M21 (M2): #197 is replace (as in "Known bugs, Money") | Property test: doubling or halving SOL/USD leaves every limit and the SOL P&L unchanged |
+| A12 Historical studies | P1 | adopt | A-M13-02 and A-M13-05 (M2): exclusions at entry time only, no field observed after the decision, dust and start-missing counts with a −100% line, B2–B4 as regime breaks, a viewed-window ledger; no `affects_returns` parameter from a viewed window without a re-test, and none from the H8, H9 or H11 study (bug B3) | Exclusion table in every report; a lint flags viewed-window overlaps |
+| A13 Vendor bars | P1 | adopt | A-M11-04 (M2): CS-1 decides on the optimistic line; a realistic line beside it; optimistic pass with realistic kill = "fragile"; an unfinished bar's volume is never known | A synthetic vendor series test shows both lines |
+| A14 Gate statistics | P1 | adopt | A-M13-03 (Z04): the more conservative of the stationary bootstrap and a calendar-day cluster t-interval, with DEFF; A-M13-06 (M2): beside B-2 and R-2, the lower bound of (rule − matched random) above zero, 10 random entries per trade matched on pool, hour and 6 h MAD decile | Coverage within ±2 points of 95% on day-correlated simulations |
+| A15 Swap replayer | P1 | adopt, gated | A-M10-05 (M2): `research/execution-audit` validates M10's fill and stop-gap models; it stays a research tool (Python), not bot code. Bulk use waits for the owner's credit approval and the Helius §3.2(xi) answer | A golden replay reproduces `audit_results.json`; cost per pool-day measured first |
+| A16 Registration and regimes | P1 | adopt | A-M13-02 (M2): research PREREG discipline (pushed before data and checked with ls-remote, wall, stress costs, seeds, random benchmark, realistic line, amendments only before the first run, fresh reviewer); a declared primary for multi-config screens; L-4 gets B1–B5. A-M01-05 / A-M02-05: an unknown event length demotes the venue | An unknown event length demotes the venue |
+| A17 End state with no edge | P1 | owner; adopt, changed | D08 gets the owner's stop date and spend cap; PerfStats shows hold-SOL and JitoSOL baselines. Changed: after both strategies fail, the bot records only and does **not** paper-trade the failed rules ("No knowingly losing trades"; reason in DECISIONS). | D08 holds the owner's values |
+| A18 Optional early CS-1 | P2 | owner | A-M11-04 from `research/mr01-screen/MR01_SPEC.md` (2cf0c0f7). Needs a CoinGecko Demo key (new provider) and the terms ruling. Recommendation: not now. A05 gives the same kill from our own data within about a week of recording, with no new provider or terms risk. | The PREREG is pushed first |
+| A19 PM-01 screen | P2 | adopt | D08 and A-M11 (M2): PM-01 is screened only on swap-level (A15) or 1 Hz M07 data | The PREREG names the data |
+| A20 Families already tested | P2 | adopt (doc) | Z0D: ARCH §3.2 lists them with universe and window | Each family listed with its universe and window |
+| A21 PM-01 exits and event data | P2 | adopt | A-M10-04 and A-M11-03 (M2, PM-01 track only): `stressedGapBps` prior about 8,270 for PM-01 (MR keeps 2,000 until C-24's 50 stop exits); a directional R-4 stress; a jackpot fixture; BOOST and mayhem-agent trades out of demand features | M10 holds a prior per strategy |
+| A22 Skewed-strategy reporting | P2 | adopt | A-M13-04 and VM-09 (M2/M3): mean capped at +19, outcome bins, loss bill, week-clustered intervals; no tail-index fits; the top 1% supplies at most 50% of P&L | VM-09 has these fields |
+| A23 Sizing | P2 | adopt | B-M21 (M2): exposure counts exit costs; pause when the fixed cost exceeds k% of the stake; grow only from realised SOL; live values are the owner's | An M21 property test |
+| A24 Forward-test protocols | P2 | adopt | Research lane: attention stays out of entry rules until a forward test passes, in the stated test order | A PREREG and its result come before any adoption |
+
+Not adopted by the research itself: Holm at gate B (redundant) and an owner pick journal (parked until asked). No item is rejected outright. The one change (A17) is recorded in `docs/DECISIONS.md` and `HANDOVER.md`.
 
 ## Known bugs
 
@@ -641,22 +678,23 @@ Milestones follow `docs/blueprint/INTEGRATION.md`: a milestone starts only when 
 | Card | Tickets | Source | Needs |
 |---|---|---|---|
 | Z00 Host move | B-M30-02 part: D07 preflight (≥ 1.9 GiB RAM, ≥ 50 GB disk) in `ops/host/install-main.sh`; 1 GB wording in `ops/README.md`, `docs/ARCHITECTURE.md`, `docs/DECISIONS.md`, `PROJECT_STATE.md` | adapt (installer) + port (C12 preflight) | the owner's install on the 2 GB host |
-| Z01 Foundation | B-M30-01 (dependency policy on pnpm: `DEPENDENCIES.md` allowlist, age rule, audit, SBOM, lint; the `check` job keeps its name), B-M19-01 (`@bot/types` 1.0.0) | port (C01), tests in Vitest | — |
+| Z01 Foundation | B-M30-01 (dependency policy on pnpm: `DEPENDENCIES.md` allowlist, age rule, audit, SBOM, lint, and the A02 check against pump.fun frontend hosts; the `check` job keeps its name), B-M19-01 (`@bot/types` 1.0.0) | port (C01), tests in Vitest | — |
+| Z0D Blueprint docs | Addendum A04, A06 (doc), A07 (q in §2.3), A20; D12 backfill on by default (A02); FACTS register entries and C-xx rulings for every adopted item; the terms register | docs only | — |
 | Z02 Persistence and contract | B-M24-01, B-M24-02, B-M25-01, B-M27-01, B-M28-01 | port (C02, #5); LEDGER-1 parts only where C02 lacks them | Z01 |
 | Z03 Read path and decoders | A-M14-01, A-M14-02 (≤ 50% of limits, `Retry-After`, stop after 3 failures), A-M02-01..03, A-M01-01 | port (C03, #6, with its SPEC-A rulings, and C11 fixtures); DEC-1's mainnet goldens added as tests | Z01 |
-| Z04 Maths | A-M10-01, A-M13-03, A-M07-01 | adapt (`core/src/stats`, RNG; B1 test for the latency model), new (A-M07-01 queue) | Z01 |
+| Z04 Maths | A-M10-01, A-M13-03 (with A14's cluster interval and DEFF), A-M07-01 | adapt (`core/src/stats`, RNG; B1 test for the latency model), new (A-M07-01 queue) | Z01, Z06 (A10's slot-to-time function) |
 | Z05 UI system | UI-T01..UI-T06 | port (C05, #7); the no-AI-wording guard moved onto it | Z01 |
-| Z06 Tail | B-M15-01 (slot clock, measured slot time: B1), UI-T07 | new; B1 fail-before tests from "Known bugs" | Z02, Z03, Z05 |
+| Z06 Tail | B-M15-01 (slot clock and A10's one slot-to-time function: B1), UI-T07 | new; B1 fail-before tests from "Known bugs" | Z02, Z03, Z05 |
 
-Batches: Z00 and Z01 first; then Z02, Z03, Z05; then Z04, Z06. M0 exit as in INTEGRATION.
+Batches: Z00, Z01 and Z0D first; then Z02, Z03, Z05; then Z06, then Z04. M0 exit as in INTEGRATION.
 
 ### M1 Recording and the Phase 0 decision
 
 | Card | Tickets | Source | Needs |
 |---|---|---|---|
 | Z07 Venue and pool | A-M01-02..05, A-M02-04, A-M02-05, A-M04-01..03 | adapt (quote maths and goldens, orientation, snapshot decode; B2 tests); new (1 Hz poller, ring buffer, transport seam) | Z03, Z06 |
-| Z08 Capture | A-M14-03, A-M14-05 (burn-rate projection: B4), A-M03-01, A-M03-03, A-M03-04, A-M07-02, A-M07-03 | adapt (PumpPortal client; recorder seal and sha256); new | Z02, Z03, Z04 |
-| Z09 Universe and study | A-M03-02, A-M05-01..03, A-M08-01..03, A-M10-03, A-M13-01 | new; A-M10-03 adapts Zeroed's lamport cost maths | Z07, Z08 |
+| Z08 Capture | A-M14-03, A-M14-05 (burn-rate projection: B4, A03), A-M03-01, A-M03-03 (A03 budget from the first enumeration count), A-M03-04, A-M07-02, A-M07-03 (A01 disk test on 55 GB) | adapt (PumpPortal client; recorder seal and sha256); new | Z02, Z03, Z04 |
+| Z09 Universe and study | A-M03-02 (A02 backfill on), A-M05-01..03, A-M08-01..03, A-M10-03 (A07 conservative row), A-M13-01 (with A05 if the owner agrees) | new; A-M10-03 adapts Zeroed's lamport cost maths | Z07, Z08 |
 | Z10 Recorder on the server | the keyless recorder process and its unit on the 2 GB host, replacing the stand-in through the deploy gate (owner agreed) | new; Zeroed's update gate, units and upload cycle reused | Z09, Z00 |
 
 M1 exit: 48 h unattended recording with at least 95% coverage, then the A-24 / A-24b / A-48 report. **Stop MR-01** on the INTEGRATION condition. The recorder runs only on free, unmetered quota with a hard cap (no Helius headroom, owner rule), and every new provider waits for the owner.

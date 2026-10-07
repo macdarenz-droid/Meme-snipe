@@ -104,6 +104,10 @@ One row per decision in the table; detailed module decisions follow in sections 
 | 2026-10-07 | RC-M3: a daily budget file dated more than one UTC day ahead of the clock (a wrong clock wrote it) counts today as fully spent and is rewritten with today's date; a file dated tomorrow keeps its spend (fill budget, holder scans, deployer checks, cut-log and re-read counts) | Never more than one true day's budget, and never locked past the next midnight (red team C M3; S1 ruling on #271 for holder scans dated tomorrow) | `packages/worker/src/run/budget-day.ts`; `packages/worker/test/redteam-c/state-budget-future.test.ts` |
 | 2026-10-07 | RC-FIXES-2b (from #149 DISK-GUARD): a deployer-store append that fails (a full disk) never throws. It is cut back to the last whole line, logged at most once a minute, and the first append that works again writes a closed `coverage:creates:gap` and `coverage:rugs:gap` (via `worker:deployer-store`) over the lost slots, so a restart reading the store takes that span as not covered (H14 fails closed) | The last known full-disk crash path: `appendFileSync` reached `main.ts` as fatal, so a full disk crash-looped the worker | `packages/worker/src/run/deployer-store.ts`; `packages/worker/test/redteam-c/deployer-store-full-disk.test.ts` |
 | 2026-10-07 | RC-FIXES-2b (S1, #280's contract): a worker that refuses to start on lost or corrupt state (it writes `<state>/refused.json` = {reason, atMs, commit} and exits 78) is never rolled back: the probation and a failed switch hold with one alert naming the reason, until the refusal is gone, because older code would start on the defaults the worker refused. zeroed-check raises it by name and reason (and a worker unit systemd stopped restarting), zeroed-status shows it, and the stand-in never clears it | Rolling back would put older code on the very state the new worker refused | `ops/host/files/usr/local/lib/zeroed/logic.sh` `worker_refused`; `packages/ops/test/redteam-c/r3-resume-sequence.test.ts` |
+| 2026-10-07 | The Blueprint (`docs/blueprint/`) is the design authority; its dashboard and look replace the app and its two themes; the name stays Zeroed (owner) | Owner decision | `CLAUDE.md` "Blueprint", [MIGRATION.md](MIGRATION.md) |
+| 2026-10-07 | The bot moves to the dedicated Vultr `vc2-1c-2gb` (2 GB, 55 GB); the 1 GB `zeroed` is stopped and kept until its ledger, state and journal are saved (owner) | The worker ran out of V8 memory on 1 GB; D07 | `CLAUDE.md` "Host" |
+| 2026-10-07 | No bugs migrate: a Zeroed module enters the Blueprint build only under the map's Rules; no old server state is reused; only the stand-in runs until the paper gates pass, except the Blueprint's keyless recorder after its M1 review and its paper engine at M3 (owner) | Owner rule | [MIGRATION.md](MIGRATION.md) "Rules" |
+| 2026-10-07 | Research addendum `research/BLUEPRINT_ADDENDUM.md` (72f1793f) adopted item by item; A17 changed: after both strategies fail the bot records only and never paper-trades a failed rule (supervisor) | Rules 4; "No knowingly losing trades" | [MIGRATION.md](MIGRATION.md) "Research addendum"; section below |
 
 ## Supervisor rulings after the external review (2026-10-04)
 
@@ -3534,3 +3538,23 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
     - **One scan a day at most (review of #274, MEDIUM).** Before, such a coin alternated forever, spending one of the shared 100 daily scans every other batch. Now it is refused for the rest of the UTC day: no more scans, with a log line naming it so the count can be measured. A second bank read is decided later, on that count.
     - The remembered owners and the refused coins start again at each UTC day (LOW-5), so they hold at most a day's scanned coins.
     - The accounts bank and the bounded holder view always land.
+
+## Blueprint addendum (2026-10-07, supervisor)
+
+`research/BLUEPRINT_ADDENDUM.md` at `72f1793f` on `ccr-7fae2302-drz4co`, adopted item by item in `docs/MIGRATION.md` "Research addendum" (owner rule: every rejection is recorded here with its reason).
+
+- **A17, changed.** The addendum says that when MR-01 and PM-01 both fail, "the bot only records and paper-trades". The paper-trading part is not adopted: paper-trading a rule that research shows loses would break "No knowingly losing trades … not even as practice" (`CLAUDE.md`). After both fail, the bot records only, asks for no deposit, and research goes on within the owner's stop date and spend cap. The hold-SOL and JitoSOL baselines are adopted as written.
+- **No other item is rejected.** A01 is settled by the owner's 2 GB host decision. A05, A06 item 2, A17's values and A18 wait for the owner.
+
+### Terms register (A02)
+
+Readings of terms, not legal advice. Dated, newest last.
+
+| Date | Source | Reading | Status |
+|---|---|---|---|
+| 2026-10-07 | pump.fun Terms §21(h) | Bans bots and forged headers. The bot and research make no pump.fun frontend request; data collected before 2026-10-07 serves research only, never a Blueprint universe or gate | Rule in force (owner) |
+| 2026-10-07 | Helius §3.2(xi) | Use for a lawful business purpose only | Open with the owner |
+| 2026-10-07 | DexScreener | Allowed on 2026-10-07; an earlier read got HTTP 403 (`research/hype/RESEARCH.md:45` on `ccr-7fae2302-drz4co`) | Readable; any new provider still needs the owner |
+| 2026-10-07 | GeckoTerminal / CoinGecko (keyless) | The terms appear to bar storage and scheduled polling (partly unverified, `docs/research/historical-data.md:35-36` on `ccr-7fae2302-drz4co`) | Owner decides before any use (A18) |
+| 2026-10-07 | PumpPortal | Missed 13.6% of creates; the key is only for paid streams (`docs/research/data.md:16,225` on `ccr-7fae2302-drz4co`). Whether pump.fun's §21(h) reaches it is not verified | Used with the chain backfill on (D12) |
+
