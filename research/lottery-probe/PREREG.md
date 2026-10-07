@@ -24,3 +24,11 @@ Per line: coins with data, trades, win rate, mean and median net, average win an
 A line is **profitable** only if, at $20: the mean net > 0 with the 95% lower bound > 0, and P(100 trades end positive) ≥ 60%. Otherwise **not supported**. Nine lines are tested; a single pass is reported with that count.
 
 Correction before any price was downloaded: the window holds 28,563 SOL-quoted graduates (29,382 is the count across all quote mints); the 900 are drawn from the 28,563.
+
+## Amendments before any return (2026-10-07, from the pre-run review; only file formats and pool accounts had been read)
+
+1. **Dust graduates (the bot's own H8 rule).** In 29 of the first 91 files the first price is below the floor a normal canonical pool can reach (85 × 206.9M / 1e18 = 1.76e-8 SOL). On-chain reads of three such pools show canonical PumpSwap pools (index 0, the coin's mint, SOL quote) seeded with about 1/36 of the normal LP supply, i.e. dust pools with well under 5 SOL. The bot rejects these at migration (H8, dust-at-migration). Rule: no entry if the pool's first bar opens below 2.41e-8 SOL (5 SOL against 206.9M tokens), or if any bar from the first bar to the entry bar prints below 1.76e-8 SOL. Counted and reported.
+2. **Migration hour found.** t0 is accepted as the migration hour only if the first bar opens between 0.5× and 10× the canonical effective migration price (85 / 206.9M = 4.108e-7 SOL). Otherwise the coin's early history is treated as missing: no entry, counted, and a sensitivity line books it at −100% − fixed.
+3. **Window.** Pools whose holds would pass the fetched window are refetched ending at min(t0 + 41 days, the wall), as the text above already says; closes are carried only up to the fetched window's end, and a trade whose exit falls after it is left out (time-only).
+4. **Every coin counted.** The run refuses to start unless all 900 coins have a file; coins with no data are listed and also booked at −100% − fixed in a sensitivity line.
+5. **Reporting.** P(100 trades end positive) is also reported drawing days first, and without the top 1% of trades. A line with fewer than 100 trades is labelled "insufficient". The verdict rule is unchanged.
