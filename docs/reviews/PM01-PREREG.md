@@ -63,7 +63,7 @@ Reviewer `session_013E5iKPuZrpnyNX74jpF6ui`, about 9:38 AM. The citations and ar
 - M6: kill rule 1 kills on engineering failures (B-9, B-10).
 - m1–m6: the embargo reason; W_R's start; lamport and SOL columns per size, with sandwich and stuck terms as their own lines; fee_config_known until P12; pulling or measuring is not looking; the citation branch.
 
-### Supervisor rulings for round 4 (8 Oct 2026, 9:41 AM)
+### Supervisor rulings for round 4 (8 Oct 2026, 9:40 AM)
 
 These answer the red team (R) and the reviewer (V) together.
 1. **One-config W_B (V-B1, R-M3).**
@@ -102,4 +102,4 @@ These answer the red team (R) and the reviewer (V) together.
     - lamport and SOL columns per size, marked DERIVED, with sandwich and stuck terms as their own lines;
     - fee_config_known and venue_enabled stay fail-closed until P12, so the screen is pending_data until then and a key-on run is only logged;
     - pulling and measuring the days is not looking at them, and no PM-01 signal or return is computed before the merge sha is recorded.
-20. **Times.** Cite the ruling times as corrected above (9:26, 9:30, 9:32 and 9:41 AM), or the section of this file.
+20. **Times.** Cite the ruling times as corrected above (9:26, 9:30, 9:32 and 9:40 AM), or the section of this file.
