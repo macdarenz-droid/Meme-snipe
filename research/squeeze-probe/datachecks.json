@@ -1,0 +1,99 @@
+{
+ "pool_first_tx": {
+  "BOME": 1710401207,
+  "CHILLGUY": 1731701302,
+  "FARTCOIN": 1729231787,
+  "GOAT": 1728595144,
+  "GRIFFAIN": 1730593613,
+  "MEW": 1711430534,
+  "MOODENG": 1725994387,
+  "PNUT": 1730387206,
+  "POPCAT": 1702415044,
+  "SPX": 1703129888,
+  "VINE": 1737591763,
+  "WIF": 1700510070,
+  "ZEREBRO": 1730142507
+ },
+ "programs_in_primary": [
+  "amm_v4"
+ ],
+ "reserve_check": {
+  "amm_v4": {
+   "sampled": 200,
+   "swaps_found": 191,
+   "fail": 10,
+   "fail_share": 0.05235602094240838,
+   "dropped": true,
+   "worst": [
+    {
+     "coin": "WIF",
+     "t": 1737587397,
+     "sig": "5UTWubqWjYhz7HmidvRTgoG2GXaop3NCcrMMZrpaL6KKBix3BrpefGNo8MqsbjvEmybKbyFvtnqJZ7uSwU88cuMk",
+     "dir": "buy",
+     "p_eff": 6.3175,
+     "p_pre": 5.498343405001959,
+     "p_post": 5.498343405006983,
+     "dev": 0.14898243610012885,
+     "ok": false,
+     "size_share": 4.890767897062758e-13
+    },
+    {
+     "coin": "POPCAT",
+     "t": 1724453516,
+     "sig": "2xZF6joFSMNNpV94etPVpCHL2eY59NXNwwycoFCWqoZEUJVfip5dZ7ZetK3rdNm9ZNaiGh7oh8rwpsZipC8RKKaR",
+     "dir": "sell",
+     "p_eff": 0.0048024252247384925,
+     "p_pre": 0.004898690666160105,
+     "p_post": 0.0048986906661276945,
+     "dev": 0.020045172362771035,
+     "ok": false,
+     "size_share": 3.2711857737589604e-12
+    },
+    {
+     "coin": "GOAT",
+     "t": 1751260322,
+     "sig": "cVp8nEeoEEB2tUpLvEAWRxsVKoT5wPSe5mbZgcPk9XagMNgCSHgzEmGUhYzYUzfNhfdmPuiaWYLsiGKtKkK9Vyo",
+     "dir": "buy",
+     "p_eff": 0.6783,
+     "p_pre": 0.6690459627030101,
+     "p_post": 0.6690459627063228,
+     "dev": 0.013831691407633961,
+     "ok": false,
+     "size_share": 2.4957941712714945e-12
+    },
+    {
+     "coin": "GOAT",
+     "t": 1735450794,
+     "sig": "Uhimx9x7XHs1SNVR4fEh8SgyJGkY1oLWLBw3HwDSifTMNZ1mRn6uQHt3GF3QHRH1iZe8RKUjufyxAeTd7iUdZvQ",
+     "dir": "buy",
+     "p_eff": 2.2670454545454546,
+     "p_pre": 2.2375489168094282,
+     "p_post": 2.237548916814619,
+     "dev": 0.013182521959263616,
+     "ok": false,
+     "size_share": 1.1690612628172242e-12
+    },
+    {
+     "coin": "MOODENG",
+     "t": 1752708387,
+     "sig": "58MCiakSvcr8gLpqB6ivVDJX3pyEQQqqfGEqvQauLsDoXMypemsQAshCGabEqoBEJa1R6ZJpTNBdFqvN8rn8zcbj",
+     "dir": "buy",
+     "p_eff": 1.16375,
+     "p_pre": 1.152284827134077,
+     "p_post": 1.1522848271374238,
+     "dev": 0.00994994691638773,
+     "ok": false,
+     "size_share": 1.4611884542023377e-12
+    }
+   ]
+  }
+ },
+ "credits": {
+  "calls": 230,
+  "credits": 2300,
+  "by_method": {
+   "getTransactionsForAddress": 214,
+   "getAccountInfo": 16
+  }
+ }
+}

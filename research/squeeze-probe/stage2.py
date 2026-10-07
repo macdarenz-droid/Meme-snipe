@@ -21,6 +21,7 @@ FIXED = 414_009                         # lamports per round trip (research/lott
 MAXCOST = 0.015
 N_C1, N_ARM, N_C2 = 10, 3, 5
 TAG = 'H1-v1'
+T2 = os.environ.get('SQ_TRIAL') == 'T2'          # H1-T2 (PREREG item 21): amended data check 3 only
 PMAP = json.load(open(os.path.join(HERE, 'pool_map.json')))
 
 
@@ -106,7 +107,7 @@ def fill(coin, s0, s1):
 
 
 # ------------------------------------------------------------------ data checks
-def check(st, out):
+def check(st, out, t2=False):
     import hel
     first = {}
     coins = sorted({e['coin'] for t in st['tables'].values() for e in t['events']})
@@ -127,7 +128,7 @@ def check(st, out):
             if a >= hi:
                 rows.append(None); continue                           # pool younger than the range: skipped
             t = a + rng.randrange(hi - a)
-            rows.append(swap_check(c, t))
+            rows.append(swap_check(c, t, t2))
         ok = [r for r in rows if r and r.get('ok') is not None]
         fail = [r for r in ok if not r['ok']]
         res['reserve_check'][prog] = {'sampled': 200, 'swaps_found': len(ok), 'fail': len(fail),
@@ -135,17 +136,24 @@ def check(st, out):
                                       'dropped': len(fail) / max(1, len(ok)) > 0.05,
                                       'worst': sorted(ok, key=lambda r: -r['dev'])[:5]}
     res['credits'] = hel.ledger()
-    json.dump(res, open(os.path.join(out, 'datachecks.json'), 'w'), indent=1)
+    json.dump(res, open(os.path.join(out, 'datachecks_t2.json' if t2 else 'datachecks.json'), 'w'), indent=1)
     print(json.dumps({k: v for k, v in res.items() if k != 'reserve_check'}, indent=1))
     for p, v in res['reserve_check'].items():
         print(p, {k: v[k] for k in ('sampled', 'swaps_found', 'fail', 'fail_share', 'dropped')})
 
 
-def swap_check(c, t):
+def swap_check(c, t, t2=False):
+    """Registered check: the latest of 5 pool transactions that is a swap. H1-T2 (PREREG item 21): the latest
+    of up to 30 that is a single-ray_log swap with |dSOL| >= 1,000,000 lamports."""
     import hel
     pool = PMAP[c]['pool']; f = PMAP[c]['fee']
-    r = hel.gtfa_last(pool, t, None, 5)
-    for tx in r.get('data') or []:
+    txs = list((hel.gtfa_last(pool, t, None, 5) if not t2 else hel.gtfa_last(pool, t, None, 30)).get('data') or [])
+    for tx in txs:
+        if t2:
+            a, b = vaults(tx, c, 'pre'), vaults(tx, c, 'post')
+            logs = tx['meta'].get('logMessages') or []
+            if not a or not b or abs(b[0] - a[0]) < 1_000_000 or sum('ray_log' in l for l in logs) != 1:
+                continue
         a, b = vaults(tx, c, 'pre'), vaults(tx, c, 'post')
         if not a or not b:
             continue
@@ -224,7 +232,7 @@ def run_controls(P, e, ranked, nwant, ex):
 def price(st, out):
     import hel
     first = json.load(open(os.path.join(out, 'pool_first_tx.json')))
-    dc = json.load(open(os.path.join(out, 'datachecks.json')))
+    dc = json.load(open(os.path.join(out, 'datachecks_t2.json' if T2 else 'datachecks.json')))
     dropped = {p for p, v in dc['reserve_check'].items() if v['dropped']}
     P = Pricer(out, first)
     resp = os.path.join(out, 'priced.json')
@@ -480,4 +488,9 @@ if __name__ == '__main__':
     else:
         st = load(sys.argv[2], sys.argv[3])
         os.makedirs(sys.argv[4], exist_ok=True)
-        (check if cmd == 'check' else price)(st, sys.argv[4])
+        if cmd == 'check':
+            check(st, sys.argv[4])
+        elif cmd == 'check_t2':
+            check(st, sys.argv[4], True)
+        else:
+            price(st, sys.argv[4])
