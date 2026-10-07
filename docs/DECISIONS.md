@@ -3497,3 +3497,25 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - Review B1: shedding pool A's whole copy still gives held pool B its swap, whether B's copy came before or after the shed (both fail before the fix), and the replay equals live.
   - Ten runs give the same frames, releases, events and facts, and each replays to them. A recording with echoes is refused under the pre-echo rules and by `frameEvents`.
   - Parity: live (cut log on both watches, fetched, healed) ends with the same candles and coverage as the backtest of the full transaction on both pools. The recording, round-tripped through its JSON, replays to the same events and facts; a recording made before echoes replays as it did.
+
+## Red team C's provider findings fixed (RC-FIXES, `providers/socket.ts`, `run/sources.ts` `CreditBook`, `run/worker.ts` `FETCH_TX_CREDITS`, `facts/readers.ts` `#scanOwners`)
+
+- **2026-10-07 · Why.** Red team C reproduced four faults on 959d8017 (probes on `claude/redteam-c`, brought in as `worker/test/redteam-c/`):
+  - **Crash loop.** `CreditBook`'s one-second save ran from a timer. A failed write (disk full, EACCES, EISDIR) threw there, an uncaughtException, and the worker exited. Every restart repeated it on the first spend until systemd stopped the unit, with open positions unwatched.
+  - **Reconnect storm.** `ReconnectingSocket` reset its backoff on every open. A server that accepts and closes at once was reopened every second: 601 Helius opens and 1,798 credits in ten minutes with two log watches.
+  - **Re-read under-count.** FACTS-REREAD booked 1 credit per `fetchTx`, but the shared fetcher retries a null answer 3 times: up to 4 Helius credits, plus Alchemy.
+  - **Stuck coin.** `FactReaders` kept every holder owner it ever saw per mint and put them all in the next bank. After about 73, every later batch for that coin failed ("N accounts do not fit one bank") for the life of the process.
+- **Choices.**
+  - **Socket.** The backoff resets only once a connection proves healthy: a message `healthyMs` (default `idleMs`) or more after it opened. A close before that keeps doubling the wait up to `maxMs`. Connection attempts are also capped at `DEFAULT_CONNECTS_PER_HOUR` = 60 in any rolling hour. At the cap the next try waits for the window, the down reason names the ceiling, and the feed stays down, so a critical feed halts entries through the existing feed path. PumpPortal's ban rule is unchanged.
+  - **Credit book.** A save never throws. A failed one keeps the book dirty, logs once per error kind and is retried every second.
+    - Saves are written ahead: each one puts `used + CREDIT_RESERVE` (1,000) on disk, and a spend that passes what disk holds is saved at once. So the saved count is never below what was spent, and a restart over-counts by at most the reserve, never under.
+    - If that save fails, the count on disk is behind. Every provider whose count gates spending (one with a monthly budget: Alchemy) is held as halted for every class but P0 until a save lands. Exits keep P0. The Alchemy hold also halts entries through `watchHalted` (second price path unavailable).
+    - Helius is not held: its count gates nothing (HELIUS-EXHAUSTED).
+    - The only under-count left is a death after a failed save. It is bounded by the spend that crossed the reserve plus P0 calls while held.
+    - Counts never go backwards. A lower total from a scheduler is not taken.
+  - **Fetch credits.** `fetchTx` tells its caller the Helius credits it spent, retries included. FACTS-REREAD books `FETCH_TX_CREDITS` (4) per fetch before it asks and gives back what was not used. A fetch that never says what it spent is charged all 4.
+    - The cut-create and cut-trade caps count tries, not credits, and DECISIONS already sizes them at up to 4 credits a try (TRADE-GAP-HEAL). They stay as they are.
+    - COMPLETION-READ, the seed, the trade fills and the create lookup call RPC directly and book each call. They have no under-count.
+  - **Holder owners.** A bank carries the owners of this batch's listed accounts only, plus, when the batch scans, the last scan's off-curve owners.
+    - If those do not fit in one bank (100), no scan is taken and the cap is not spent. H12/H13 fail closed, and the owners are forgotten, so the next batch scans afresh.
+    - The accounts bank and the bounded holder view always land.
