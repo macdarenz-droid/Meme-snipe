@@ -61,7 +61,7 @@ All S1 work is stopped. Each S1 session was interrupted, then told to stop its b
 | #268 RESUME-WORKER | resume-worker @ 25c4d9bf | last; host-logic.test.ts conflict | after Deploy 1 |
 
 - **Cards not started or barely started:** FRESH-BATCH (WIP fresh-batch-wip @ 54953095: the probes only), REGIME-PARALYSIS, HALTS (DUST-WRITEOFF + R4 items 4/5), PERSIST-PARALYSIS, H14-HOLES, CURVE-TAIL-PROOF, NT-1b. Sources: red team A round 4 (redteam-a @ 37637052), red team B round 4 (redteam-b @ 30aae66b), red team C (redteam-c @ 5fb491f0).
-- **Research:** REPLAY-1000 (replay-1000 @ eac1353f) and U1-B (edge-hunt-u1b @ f4a43cd4) were stopped mid-run; their checkpoints are in their replies below.
+- **Research:** U1-B stopped at 11,138/74,703 decoded, WIP edge-hunt-u1b-wip @ 1a8e9e9. REPLAY-1000 (replay-1000 @ eac1353f) was still saving to replay-1000-wip at 9:22 PM. A2-GATE left only copied probe files uncommitted on claude/regime-paralysis (no loss: they are on redteam-a).
 - **S1 slip:** at 9:19 PM S1 made one no-op Workflow call by mistake (0 agents, 0 tokens). No other agent was started after the stop.
 
 ## S1 on the new account (from Tue 6 Oct 4:48 PM)
