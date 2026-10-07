@@ -1419,6 +1419,22 @@ worker_entry() {
   esac
 }
 
+# worker_refused FILE STATUS: why the worker refused to start, or nothing (RC-FIXES-2b, #280's contract). FILE is the
+# worker's <state>/refused.json ({reason, atMs, commit}); STATUS is the unit's ExecMainStatus, where 78 is a refusal.
+# One line, at most 200 characters, never the separator "|".
+worker_refused() {
+  local r
+  if [ -e "$1" ]; then
+    r="$(jq -r '"\(.reason // "no reason given") (commit \((.commit // "?") | tostring | .[0:12]))"' "$1" 2>/dev/null)" || r="refused.json cannot be read"
+    [ -n "$r" ] || r="refused.json cannot be read"
+  elif [ "$2" = 78 ]; then
+    r="exit 78 with no refused.json"
+  else
+    return 0
+  fi
+  printf '%s\n' "$r" | tr -d '\r|' | tr '\n' ' ' | cut -c1-200 | sed 's/ *$//'
+}
+
 # The only worker settings a release's ops/host-config.json may give (PRACTICE-ON): the S0 shakedown's, in its
 # "shakedown" block. Mode, recorder, simulation, drills and addresses stay with worker-start; live is never one of them.
 SHAKEDOWN_NAMES='ZEROED_STRATEGY ZEROED_S0_DIAGNOSTIC ZEROED_PAPER_EDGE_PPM ZEROED_STANDINS ZEROED_WALLET'
@@ -2761,6 +2777,8 @@ install_file /usr/local/sbin/zeroed-check 0755 <<'__ZEROED_FILE__'
 #  0. Tailscale Funnel must be off (the live view is tailnet only); on is an alert and it is turned off.
 #  5. The recording upload's alerts (failed runs, a backlog over a day, files kept back, no report for 3 hours).
 #  6. A standing alert while the bot sits on the stand-in after a rollback.
+#  7. A worker that refused to start on lost or corrupt state (its refused.json, or exit 78), with the reason.
+#  8. A worker unit that systemd stopped restarting (failed).
 # Alerts go to the paired chat once per episode, with a "cleared" line after. Never prints a value.
 set -euo pipefail
 umask 077
@@ -2789,6 +2807,14 @@ if [ -s "$STATE_DIR/standin_after_rollback" ] && [ "$(worker_entry /opt/zeroed/c
 else
   rm -f "$STATE_DIR/standin_after_rollback"
   alert_clear standin "CLEARED Zeroed host: a release worker runs again."
+fi
+
+# 7. RC-FIXES-2b (#280's contract): a worker that refused to start on lost or corrupt state, by name and reason.
+refused="$(worker_refused /var/lib/zeroed/refused.json "$(systemctl show -p ExecMainStatus --value zeroed-worker.service 2>/dev/null || true)")"
+if [ -n "$refused" ]; then
+  alert worker-refused "ALERT Zeroed host: the worker refused to start: $refused. It stays stopped until the state is looked at."
+else
+  alert_clear worker-refused "CLEARED Zeroed host: the worker no longer refuses to start."
 fi
 
 # 0. Funnel: the worker API must stay on the tailnet. Funnel on for any port is an alert, and it is turned off. Each
@@ -2848,6 +2874,13 @@ else
 fi
 
 paired || exit 0
+
+# 8. RC-FIXES-2b: a worker unit that failed for good (systemd gave up restarting it), with how it last ended.
+if [ -z "$refused" ] && systemctl is-failed --quiet zeroed-worker.service 2>/dev/null; then
+  alert worker-failed "ALERT Zeroed host: the worker has stopped for good ($(systemctl show -p Result --value zeroed-worker.service 2>/dev/null || echo unknown), exit $(systemctl show -p ExecMainStatus --value zeroed-worker.service 2>/dev/null || echo unknown)). Nothing trades and no exit runs."
+else
+  alert_clear worker-failed "CLEARED Zeroed host: the worker runs again."
+fi
 
 # 2. Webhook: a pending set, when due.
 if [ -e "$STATE_DIR/webhook_tries" ]; then
@@ -3163,6 +3196,9 @@ if [ "${wpid:-0}" != 0 ] && [ -r "/proc/$wpid/cmdline" ]; then
   esac
 fi
 log "Worker:    $(systemctl is-active zeroed-worker.service 2>/dev/null || true)$wkind"
+# RC-FIXES-2b (#280's contract): a refusal to start, with its reason.
+refused="$(worker_refused /var/lib/zeroed/refused.json "$(systemctl show -p ExecMainStatus --value zeroed-worker.service 2>/dev/null || true)")"
+[ -z "$refused" ] || log "Refused:   $refused"
 log "Signer:    $(systemctl is-active zeroed-signer.service 2>/dev/null || true)"
 log "Release:   $(cut -c1-12 "$STATE_DIR/deployed" 2>/dev/null || echo 'none yet')"
 run="$(qualifying_run "$EVIDENCE_ROOT" "$(systemctl list-units 'zeroed-dryrun@*' --state=active,activating --plain --no-legend 2>/dev/null || true)")"
@@ -3496,13 +3532,21 @@ rollback() {
 #   - when the release before runs the host's stand-in, the alert says the bot is now paused on it.
 # The probation ends with the window (unless a rollback is due), or when another release is deployed.
 probation_check() {
-  local f="$STATE_DIR/probation" pc pprev pcur pstart pbase pdue now n open pos why note=""
+  local f="$STATE_DIR/probation" pc pprev pcur pstart pbase pdue now n open pos why note="" refused
   [ -s "$f" ] || return 0
   IFS='|' read -r pc pprev pcur pstart pbase pdue < "$f" || true
   now="$(date +%s)"
   if [ "$pc" != "$(cat "$STATE_DIR/deployed" 2>/dev/null || true)" ] || ! [[ "$pstart" =~ ^[0-9]+$ ]] || ! [[ "$pbase" =~ ^[0-9]+$ ]]; then
     rm -f "$f"
     alert_clear worker-probation "CLEARED Zeroed host: the probation of ${pc:0:12} has ended."
+    return 0
+  fi
+  # RC-FIXES-2b (#280's contract): a worker that refused to start on lost or corrupt state is never rolled back (older
+  # code would start on the very state it refused). The probation holds, with one alert naming the reason, until the
+  # refusal is gone.
+  refused="$(worker_refused /var/lib/zeroed/refused.json "$(systemctl show -p ExecMainStatus --value zeroed-worker.service 2>/dev/null || true)")"
+  if [ -n "$refused" ]; then
+    alert worker-refused "ALERT Zeroed host: the worker of ${pc:0:12} refused to start: $refused. It is not rolled back (older code would start on the state it refused); the state needs the owner."
     return 0
   fi
   if [ -z "$pdue" ]; then

@@ -10,6 +10,8 @@
 #  0. Tailscale Funnel must be off (the live view is tailnet only); on is an alert and it is turned off.
 #  5. The recording upload's alerts (failed runs, a backlog over a day, files kept back, no report for 3 hours).
 #  6. A standing alert while the bot sits on the stand-in after a rollback.
+#  7. A worker that refused to start on lost or corrupt state (its refused.json, or exit 78), with the reason.
+#  8. A worker unit that systemd stopped restarting (failed).
 # Alerts go to the paired chat once per episode, with a "cleared" line after. Never prints a value.
 set -euo pipefail
 umask 077
@@ -38,6 +40,14 @@ if [ -s "$STATE_DIR/standin_after_rollback" ] && [ "$(worker_entry /opt/zeroed/c
 else
   rm -f "$STATE_DIR/standin_after_rollback"
   alert_clear standin "CLEARED Zeroed host: a release worker runs again."
+fi
+
+# 7. RC-FIXES-2b (#280's contract): a worker that refused to start on lost or corrupt state, by name and reason.
+refused="$(worker_refused /var/lib/zeroed/refused.json "$(systemctl show -p ExecMainStatus --value zeroed-worker.service 2>/dev/null || true)")"
+if [ -n "$refused" ]; then
+  alert worker-refused "ALERT Zeroed host: the worker refused to start: $refused. It stays stopped until the state is looked at."
+else
+  alert_clear worker-refused "CLEARED Zeroed host: the worker no longer refuses to start."
 fi
 
 # 0. Funnel: the worker API must stay on the tailnet. Funnel on for any port is an alert, and it is turned off. Each
@@ -97,6 +107,13 @@ else
 fi
 
 paired || exit 0
+
+# 8. RC-FIXES-2b: a worker unit that failed for good (systemd gave up restarting it), with how it last ended.
+if [ -z "$refused" ] && systemctl is-failed --quiet zeroed-worker.service 2>/dev/null; then
+  alert worker-failed "ALERT Zeroed host: the worker has stopped for good ($(systemctl show -p Result --value zeroed-worker.service 2>/dev/null || echo unknown), exit $(systemctl show -p ExecMainStatus --value zeroed-worker.service 2>/dev/null || echo unknown)). Nothing trades and no exit runs."
+else
+  alert_clear worker-failed "CLEARED Zeroed host: the worker runs again."
+fi
 
 # 2. Webhook: a pending set, when due.
 if [ -e "$STATE_DIR/webhook_tries" ]; then

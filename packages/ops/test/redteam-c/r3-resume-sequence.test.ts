@@ -348,3 +348,74 @@ describe('RC-FIXES-2b: the gates around the stand-in', () => {
     })).toMatchObject({ intents: '2\n', positions: '1\n' });
   });
 });
+
+describe("RC-FIXES-2b: a worker that refuses to start (#280's refused.json and exit 78)", () => {
+  const logic = (script: string) => spawnSync('bash', ['-c', `set -euo pipefail; . "${join(repo, `${F}/usr/local/lib/zeroed/logic.sh`)}"; ${script}`], { encoding: 'utf8' });
+
+  it('worker_refused names the reason and commit, an unreadable file, or a bare exit 78; nothing otherwise', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'r3-refused-'));
+    roots.push(dir);
+    const f = join(dir, 'refused.json');
+    expect(logic(`worker_refused "${f}" 0`).stdout).toBe('');
+    expect(logic(`worker_refused "${f}" 78`).stdout.trim()).toBe('exit 78 with no refused.json');
+    writeFileSync(f, JSON.stringify({ reason: 'ledger has trades but control.json is missing | latch lost', atMs: 1, commit: 'a'.repeat(40) }));
+    expect(logic(`worker_refused "${f}" 0`).stdout.trim()).toBe(`ledger has trades but control.json is missing  latch lost (commit ${'a'.repeat(12)})`);
+    writeFileSync(f, '{not json');
+    expect(logic(`worker_refused "${f}" 0`).stdout.trim()).toBe('refused.json cannot be read');
+  });
+
+  it('a refusal during the probation holds it with an alert naming the reason, never a rollback; once gone, the rollback goes ahead', () => {
+    deploy2();
+    set('var/lib/zeroed/refused.json', JSON.stringify({ reason: 'account.json missing beside a ledger with trades', atMs: 1, commit: D2 }));
+    at(600);
+    set('sd/nrestarts', 1);
+    expect(update().status).toBe(0);
+    expect(current()).toBe(rel(D2));
+    expect(read('notify')).toMatch(/ALERT Zeroed host: the worker of 25c4d9bfcfd7 refused to start: account\.json missing beside a ledger with trades \(commit 25c4d9bfcfd7\)\. It is not rolled back/);
+    expect(read('state/probation')).toMatch(new RegExp(`^${D2}\\|`));
+    rmSync(join(root, 'var/lib/zeroed/refused.json'));
+    expect(update().status).toBe(1);
+    expect(current()).toBe(rel(D1));
+  });
+
+  it('a new release that refuses at its switch is held there (no rollback onto older code)', () => {
+    setup(D2);
+    exe('systemctl', `case "$1" in
+  show) case "$*" in *ExecMainStatus*) echo 78 ;; *) cat ${root}/sd/nrestarts ;; esac ;;
+  is-active) exit 3 ;;
+  list-units) ;;
+  *) exit 0 ;;
+esac`);
+    set('sd/health', JSON.stringify({ mode: 'paper', git_sha: D1 }));
+    expect(update().status).toBe(1);
+    expect(current()).toBe(rel(D2));
+    expect(read('state/failed_release')).toBe('');
+    expect(read('notify')).toMatch(/refused to start: exit 78 with no refused\.json/);
+  });
+
+  it('zeroed-check raises the refusal by name and reason, and clears it once it is gone', () => {
+    setup(D2);
+    set('var/lib/zeroed/refused.json', JSON.stringify({ reason: 'control.json unreadable', atMs: 1, commit: D2 }));
+    expect(check().status).toBe(0);
+    expect(read('notify')).toMatch(/ALERT Zeroed host: the worker refused to start: control\.json unreadable \(commit 25c4d9bfcfd7\)/);
+    rmSync(join(root, 'var/lib/zeroed/refused.json'));
+    check();
+    expect(read('notify')).toMatch(/CLEARED Zeroed host: the worker no longer refuses to start\./);
+  });
+
+  it('the stand-in never clears refused.json', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'r3-stub-'));
+    roots.push(dir);
+    const state = join(dir, 'state');
+    const creds = join(dir, 'creds');
+    mkdirSync(state);
+    mkdirSync(creds);
+    for (const n of ['helius_api_key', 'alchemy_api_key', 'jupiter_api_key', 'telegram_bot_token', 'telegram_chat_id']) writeFileSync(join(creds, n), 'x');
+    const refused = JSON.stringify({ reason: 'x', atMs: 1, commit: D2 });
+    writeFileSync(join(state, 'refused.json'), refused);
+    writeFileSync(join(dir, 'worker.mjs'), readFileSync(join(repo, `${F}/opt/zeroed/stub/worker.mjs`), 'utf8'));
+    const r = spawnSync(process.execPath, ['--no-warnings', join(dir, 'worker.mjs'), '--reconcile'], { encoding: 'utf8', env: { ...process.env, STATE_DIRECTORY: state, CREDENTIALS_DIRECTORY: creds } });
+    expect(r.status, r.stderr).toBe(0);
+    expect(readFileSync(join(state, 'refused.json'), 'utf8')).toBe(refused);
+  });
+});

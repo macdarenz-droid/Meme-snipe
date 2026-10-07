@@ -114,13 +114,21 @@ rollback() {
 #   - when the release before runs the host's stand-in, the alert says the bot is now paused on it.
 # The probation ends with the window (unless a rollback is due), or when another release is deployed.
 probation_check() {
-  local f="$STATE_DIR/probation" pc pprev pcur pstart pbase pdue now n open pos why note=""
+  local f="$STATE_DIR/probation" pc pprev pcur pstart pbase pdue now n open pos why note="" refused
   [ -s "$f" ] || return 0
   IFS='|' read -r pc pprev pcur pstart pbase pdue < "$f" || true
   now="$(date +%s)"
   if [ "$pc" != "$(cat "$STATE_DIR/deployed" 2>/dev/null || true)" ] || ! [[ "$pstart" =~ ^[0-9]+$ ]] || ! [[ "$pbase" =~ ^[0-9]+$ ]]; then
     rm -f "$f"
     alert_clear worker-probation "CLEARED Zeroed host: the probation of ${pc:0:12} has ended."
+    return 0
+  fi
+  # RC-FIXES-2b (#280's contract): a worker that refused to start on lost or corrupt state is never rolled back (older
+  # code would start on the very state it refused). The probation holds, with one alert naming the reason, until the
+  # refusal is gone.
+  refused="$(worker_refused /var/lib/zeroed/refused.json "$(systemctl show -p ExecMainStatus --value zeroed-worker.service 2>/dev/null || true)")"
+  if [ -n "$refused" ]; then
+    alert worker-refused "ALERT Zeroed host: the worker of ${pc:0:12} refused to start: $refused. It is not rolled back (older code would start on the state it refused); the state needs the owner."
     return 0
   fi
   if [ -z "$pdue" ]; then
