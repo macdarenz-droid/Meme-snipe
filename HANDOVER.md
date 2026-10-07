@@ -61,6 +61,10 @@
      - add a hard exit to `research/brainstorm/collect.py`.
   4. Z01: the coverage gate after 14 Oct; the 1.0.0 tag; the deps-reviewed label after its review; a guard.yml rework.
   5. MIGRATION:285/519 notes were done in Z00.
+  6. Z01 follow-ups:
+     - A guard card: test a `pull_request_target` guard on a scratch repo, or teach `logic.sh` to ignore that check run (the guard was removed from #287).
+     - Only the supervisor adds `deps-reviewed:<hash>`, after reading the diff. It is re-added (remove + add) after any push that changes a guarded file.
+     - The scheduled audit can be marked failed if its runner is lost. It is pending for about a minute a day (accepted).
 - **History for owner item 2 (B-10, card Z-H):** zeroed-data holds only the old server's recordings for 4, 5 and 6 Oct (releases `rec-2026-10-04/05/06`, about 0.4 MB, 3 MB and 4.6 GB) and the summaries; this repo has no `data-day-*` release. Far below 30 clean days, so the owner is told before M2 starts.
 - **Owner, 7 Oct about 9:30 PM:** "When ur done archive all workers": after the map is done, every worker session is archived.
 
