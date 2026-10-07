@@ -673,9 +673,9 @@ prac="$orig-practice"
 in_c "rm -rf '$prac' && cp -a '$rel' '$prac' && rm -rf '$prac/packages'"
 git -C "$ROOT" archive HEAD packages ops/host-config.json | docker exec -i "$C" tar -x -C "$prac" || fail "this commit's worker could not be added to the test release"
 rel="$prac"
-# PAUSE (owner, 2026-10-07): while this commit's host-config runs the stand-in ("worker": "stub"), the release's own
-# worker is still tested here, with "release" in this test copy only, so every fix keeps its end-to-end proof. The
-# paused value itself is pinned by ops-files.test.ts and host-logic.test.ts; any other value fails here.
+# A commit whose host-config runs the stand-in ("worker": "stub", as during the 7 Oct pause) still has the release's own
+# worker tested here, with "release" in this test copy only, so every fix keeps its end-to-end proof. The committed
+# value is pinned by ops-files.test.ts and host-logic.test.ts; any other value fails here.
 case "$(in_c "jq -r '.worker' '$rel/ops/host-config.json'")" in
   release) ;;
   stub) in_c "jq '.worker = \"release\"' '$rel/ops/host-config.json' > /tmp/hc && mv /tmp/hc '$rel/ops/host-config.json'" ;;
@@ -722,15 +722,17 @@ code="$(in_c "curl -s -o /dev/null -w '%{http_code}' -X POST -d '{}' http://127.
 [ "$code" = 403 ] || fail "the drill endpoint is not on (HTTP $code, want 403; 404 is drills off, 000 is not listening)"
 in_c "curl -fsS -m 3 http://127.0.0.1:8787/health" >"$LOGS/health-real.json" || fail "health does not answer on 127.0.0.1:8787"
 jq -e '.mode == "paper" and .signing_key == false and .reconciled == true' "$LOGS/health-real.json" >/dev/null || fail "health is not paper, reconciled, without a signing key"
-# PRACTICE-ON: the S0 shakedown with S0's diagnostic set, from the release's host-config, in the worker's environment,
-# /health and start line; journaled as not qualifying, with the paper edge.
+# The S0 shakedown with S0's diagnostic set, from the release's host-config, in the worker's environment, /health and
+# start line; journaled as not qualifying, with the block's paper edge or none (null) when the block sets none, as since
+# RESUME-WORKER (no practice trades: risk refuses every entry).
 parts='["regime-volume","regime-survival","exec-health","h14-creates-coverage"]'
 jq -e --argjson p "$parts" '.entry_rule == "S0" and .s0_diagnostic == $p' "$LOGS/health-real.json" >/dev/null || fail "health does not show the S0 shakedown with its diagnostic set: $(jq -c '{entry_rule, s0_diagnostic}' "$LOGS/health-real.json")"
-edge="$(jq -r '.shakedown.ZEROED_PAPER_EDGE_PPM' "$ROOT/ops/host-config.json")"
-jq -e --argjson p "$parts" --arg e "$edge" '.entry_rule == "S0" and .qualifying == false and (.paper_edge_ppm | tostring) == $e and .s0_diagnostic == $p' "$LOGS/worker-start-record.json" >/dev/null || fail "the start record is not the non-qualifying S0 shakedown with its edge and set: $(cat "$LOGS/worker-start-record.json")"
+edge="$(jq -c '.shakedown.ZEROED_PAPER_EDGE_PPM // null' "$ROOT/ops/host-config.json")"
+jq -e --argjson p "$parts" --argjson e "$edge" '.entry_rule == "S0" and .qualifying == false and (if $e == null then .paper_edge_ppm == null else (.paper_edge_ppm | tostring) == $e end) and .s0_diagnostic == $p' "$LOGS/worker-start-record.json" >/dev/null || fail "the start record is not the non-qualifying S0 shakedown with its edge (or none) and set: $(cat "$LOGS/worker-start-record.json")"
 in_c "tr '\\0' '\\n' < /proc/\$(systemctl show -p MainPID --value zeroed-worker)/environ" >"$LOGS/worker-real-env.txt"
 jq -r '.shakedown | to_entries[] | "\(.key)=\(.value)"' "$ROOT/ops/host-config.json" | while IFS= read -r want; do grep -qxF -- "$want" "$LOGS/worker-real-env.txt" || { echo "missing $want"; exit 1; }; done || fail "the worker's environment lacks a shakedown setting"
 grep -qx 'ZEROED_MODE=paper' "$LOGS/worker-real-env.txt" || fail "the shakedown settings moved the worker out of paper"
+[ "$edge" = null ] && grep -q '^ZEROED_PAPER_EDGE_PPM=' "$LOGS/worker-real-env.txt" && fail "the worker has a paper edge its release's shakedown block does not set"
 in_c "curl -fsS -m 3 http://127.0.0.1:8788/api/v1/paper/status" >"$LOGS/api-real.json" || fail "the API does not answer on 127.0.0.1:8788"
 jq -e '.mode == "paper" and .data.mode == "paper"' "$LOGS/api-real.json" >/dev/null || fail "the API status is not paper"
 for port in 8787 8788; do curl -s -m 3 -o /dev/null "http://$CIP:$port/" && fail "the worker answered on the public interface ($port)"; done

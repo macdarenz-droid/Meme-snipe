@@ -1,6 +1,7 @@
-// PRACTICE-ON: the host's S0 shakedown can make practice trades. Its settings reach the worker through the one place
-// that reads the environment, a shakedown boot passes parity, /health names the entry rule, the host's shakedown values
-// are the ones derived in DECISIONS ("Practice trades on the host"), and the qualifying run still refuses all of it.
+// PRACTICE-ON, then RESUME-WORKER: the host's S0 shakedown runs only for its diagnostic, with no paper edge, so it makes
+// no trade (owner, 2026-10-06: no knowingly losing trades). Its settings reach the worker through the one place that
+// reads the environment, a shakedown boot passes parity, /health names the entry rule, risk refuses every entry, and the
+// qualifying run still refuses all of it (DECISIONS "Resume: the release's worker, no practice trades").
 import { spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -51,12 +52,12 @@ const withEnv = <R>(vars: Record<string, string | undefined>, f: () => R): R => 
 describe('the worker environment', () => {
   it('carries ZEROED_S0_DIAGNOSTIC from the process to the config, as main.ts reads it', () => {
     const env = withEnv({
-      ZEROED_STATE_DIR: '/tmp/practice-on', ZEROED_MODE: 'paper', ZEROED_STRATEGY: 'S0', ZEROED_S0_DIAGNOSTIC: 'on', ZEROED_PAPER_EDGE_PPM: '178092',
+      ZEROED_STATE_DIR: '/tmp/practice-on', ZEROED_MODE: 'paper', ZEROED_STRATEGY: 'S0', ZEROED_S0_DIAGNOSTIC: 'on', ZEROED_PAPER_EDGE_PPM: undefined,
       CREDENTIALS_DIRECTORY: undefined,
     }, () => readEnvironment());
     expect(env.env['ZEROED_S0_DIAGNOSTIC']).toBe('on');
     const p = parseConfig(env.env, () => null, null);
-    expect(p.ok && p.config.strategy).toEqual({ name: 'S0', paperEdgePpm: 178_092n, qualifying: false, s0Diagnostic: true });
+    expect(p.ok && p.config.strategy).toEqual({ name: 'S0', paperEdgePpm: null, qualifying: false, s0Diagnostic: true });
     // Read, it still meets every refusal: no S0, or a release that names a qualifying run.
     const noS0 = withEnv({ ZEROED_STATE_DIR: '/tmp/practice-on', ZEROED_MODE: 'paper', ZEROED_STRATEGY: undefined, ZEROED_PAPER_EDGE_PPM: undefined, ZEROED_S0_DIAGNOSTIC: 'on' }, () => readEnvironment());
     expect(parseConfig(noS0.env, () => null, null)).toMatchObject({ ok: false, message: 'refused: ZEROED_S0_DIAGNOSTIC is only for the S0 shakedown' });
@@ -145,7 +146,7 @@ describe('parity of an S0 shakedown boot with the diagnostic set', () => {
 
 describe('/health on the shakedown', () => {
   it('names the entry rule and the diagnostic parts; a worker on none names none and no set', () => {
-    const s0 = makeWorker({ entry: { timing: 'random', salt: 'S0', s0Diagnostic: true }, config: { ZEROED_STRATEGY: 'S0', ZEROED_S0_DIAGNOSTIC: 'on', ZEROED_PAPER_EDGE_PPM: '178092' } });
+    const s0 = makeWorker({ entry: { timing: 'random', salt: 'S0', s0Diagnostic: true }, config: { ZEROED_STRATEGY: 'S0', ZEROED_S0_DIAGNOSTIC: 'on' } });
     expect(s0.worker.health()).toMatchObject({ entry_rule: 'S0', s0_diagnostic: S0_DIAGNOSTIC_PARTS, mode: 'paper' });
     const none = makeWorker();
     expect(none.worker.health().entry_rule).toBe('none');
@@ -159,11 +160,12 @@ const SHAKEDOWN = HOST.shakedown;
 const hostEnv = (more: Record<string, string> = {}) => ({ ZEROED_STATE_DIR: '/tmp/practice-on', ZEROED_MODE: 'paper', ...SHAKEDOWN, ...more });
 
 describe("the host's shakedown settings", () => {
-  it('parse to S0 with the diagnostic set, the paper edge, the stand-in and the keyless wallet', () => {
+  it('parse to S0 with the diagnostic set, no paper edge, the stand-in and the keyless wallet', () => {
+    expect(Object.keys(SHAKEDOWN).sort()).toEqual(['ZEROED_S0_DIAGNOSTIC', 'ZEROED_STANDINS', 'ZEROED_STRATEGY', 'ZEROED_WALLET']);
     const p = parseConfig(hostEnv(), () => null, null);
     expect(p.ok).toBe(true);
     if (!p.ok) return;
-    expect(p.config.strategy).toEqual({ name: 'S0', paperEdgePpm: 178_092n, qualifying: false, s0Diagnostic: true });
+    expect(p.config.strategy).toEqual({ name: 'S0', paperEdgePpm: null, qualifying: false, s0Diagnostic: true });
     expect(p.config.standIns).toEqual(['CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM']);
     expect(p.config.wallet).toBe(SHAKEDOWN_WALLET);
   });
@@ -174,6 +176,8 @@ describe("the host's shakedown settings", () => {
       const p = parseConfig(env, () => null, 'qual-1');
       expect(p.ok, String(runId)).toBe(false);
     }
+    // With the old practice edge too.
+    expect(parseConfig(hostEnv({ ZEROED_PAPER_EDGE_PPM: '178092' }), () => null, 'qual-1').ok).toBe(false);
     // The keyless wallet alone (no S0, no edge, no set) is refused there too: items 3 and 4 need the signer's wallet.
     expect(parseConfig({ ZEROED_STATE_DIR: '/tmp/practice-on', ZEROED_MODE: 'paper', ZEROED_RUN_ID: 'rehearsal-1', ZEROED_WALLET: SHAKEDOWN_WALLET }, () => null, 'qual-1'))
       .toMatchObject({ ok: false, message: expect.stringContaining('ZEROED_WALLET is the shakedown') });
@@ -200,7 +204,50 @@ describe("the host's shakedown settings", () => {
   });
 });
 
-describe('the paper edge: the smallest that lets a first S0 trade pass the cost gate at the trial size', () => {
+describe("the host's shakedown makes no trade: no paper edge, so risk refuses every entry", () => {
+  // Owner (2026-10-06): no knowingly losing trades, never as practice. The host runs S0 with its diagnostic set only so
+  // the hard gates are evaluated and logged; with no ZEROED_PAPER_EDGE_PPM, main.ts gives risk an edge of 0.
+  const boot = async (edgePpm: bigint) => {
+    const h = makeWorker({ edgePpm, entry: { timing: 'random', salt: early, s0Diagnostic: true }, config: { ...SHAKEDOWN } });
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    // The parts the set waives stay missing, as on the host today; every hard gate's own inputs are there.
+    const m = await passingMarket(h, { ...HELD, omit: [CURVE_VOLUME_KEY, GRADUATES_KEY, EXEC_HEALTH_KEY], coverageAt: T - 2 * DAY });
+    await m.run(4_000, 100, () => m.pool());
+    await m.run(10_000, 400, () => {
+      m.slot();
+      m.pool();
+    });
+    const entries = Object.values(h.worker.book.intents).filter((i) => i.intent.purpose === 'entry');
+    await h.worker.stop();
+    const decisions = linesOf(h.stateDir).filter((l) => l['kind'] === 'decision' && l['action'] === 'reject').map((l) => (l['reasons'] as string[])[3]!);
+    return { entries, decisions, journal: linesOf(h.stateDir) };
+  };
+
+  it('a candidate that passes every hard gate is refused by risk (expected net not positive) and no entry intent is made', async () => {
+    expect(SHAKEDOWN).not.toHaveProperty('ZEROED_PAPER_EDGE_PPM');
+    const p = parseConfig(hostEnv(), () => null, null);
+    if (!p.ok) throw new Error(p.message);
+    expect(p.config.strategy).toEqual({ name: 'S0', paperEdgePpm: null, qualifying: false, s0Diagnostic: true });
+    // As main.ts builds it: the parsed edge, or 0 when none is set.
+    expect(readFileSync(join(ROOT, 'packages/worker/src/main.ts'), 'utf8')).toContain('config.strategy.paperEdgePpm ?? 0n');
+    const run = await boot(p.config.strategy.paperEdgePpm ?? 0n);
+    expect(run.journal.find((l) => l['kind'] === 'start')).toMatchObject({ entry_rule: 'S0', paper_edge_ppm: null, qualifying: false, s0_diagnostic: S0_DIAGNOSTIC_PARTS });
+    expect(run.entries).toEqual([]);
+    expect(run.journal.some((l) => l['kind'] === 'entry' || l['action'] === 'enter')).toBe(false);
+    // Past the hard gates (none of them rejects it), risk refuses it on R14: no edge clears the cost.
+    expect(run.decisions.some((r) => r.startsWith('hard reject'))).toBe(false);
+    const risk = run.decisions.filter((r) => r.startsWith('risk '));
+    expect(risk.length).toBeGreaterThan(0);
+    for (const r of risk) expect(r).toMatch(/^risk R14 expected_net_not_positive: sizing refused: edge-not-above-cost/);
+  });
+
+  it('the same candidate with the old practice edge (178,092 ppm) would have been entered: only the edge stops it', async () => {
+    const run = await boot(178_092n);
+    expect(run.entries.length).toBeGreaterThan(0);
+  });
+});
+
+describe('the former practice edge (no longer on the host): the smallest that let a first S0 trade pass the cost gate at the trial size', () => {
   // As risk sizes at the minimum stage (core risk/evaluate.ts): q from minNotional to max(minNotional, its lamports
   // rounded up), the policy's impact limit, and the minimum size must clear its fixed costs. The thinnest pool the
   // liquidity floor admits, at PumpSwap's highest canonical tier (1.25%: lp 2, protocol 93, creator 30 bps; RESEARCH.md),
@@ -231,8 +278,7 @@ describe('the paper edge: the smallest that lets a first S0 trade pass the cost 
   };
 
   it('178,092 ppm passes at the year-high SOL price and 178,091 does not; lower SOL prices need less', () => {
-    const edge = BigInt(SHAKEDOWN['ZEROED_PAPER_EDGE_PPM']!);
-    expect(edge).toBe(178_092n);
+    const edge = 178_092n;
     expect(firstTradePasses(edge, SOL_HIGH)).toBe(true);
     expect(firstTradePasses(edge - 1n, SOL_HIGH)).toBe(false);
     // At the price on 4 Oct 2026 the first trade needs 115,529 ppm, later trades 32,019: the edge covers both.

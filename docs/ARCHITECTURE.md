@@ -469,7 +469,7 @@ No deposit is asked for until all six pass on the same commit, with evidence kep
 
 **One qualifying dry run.** Items 3 and 4, the drills of item 5, G3 and the parity data must all come from the same run on the same commit, on the **VPS** (Frankfurt), started with the recorder and simulation on from its first minute. The GitHub Actions run (RUN-1 fallback) is a rehearsal: it finds bugs early and its evidence is kept, labelled "rehearsal", but it counts for none of the six items.
 
-**Shakedown first.** Without a registered strategy the worker makes no entries, so the first VPS run is an S0 shakedown with a paper-only edge setting (live mode refuses it), set by the release's `ops/host-config.json` (PRACTICE-ON). It proves the worker, the drills, the recorder and the simulation, and counts for none of the six items. The qualifying run starts on the commit that carries BT-2's registered configurations.
+**Shakedown first.** Without a registered strategy the worker makes no entries, so the first VPS run is an S0 shakedown with a paper-only edge setting (live mode refuses it), set by the release's `ops/host-config.json` (PRACTICE-ON). Since RESUME-WORKER (owner: no knowingly losing trades) the host's block sets no edge: S0 runs only for its diagnostic, the hard gates are evaluated and logged, and risk refuses every entry (DECISIONS "Resume: the release's worker, no practice trades"). It proves the worker, the drills, the recorder and the simulation, and counts for none of the six items. The qualifying run starts on the commit that carries BT-2's registered configurations.
 
 Also required by the owner's "blind backtest" rule, and part of the evidence for items 1, 2 and 6: the **leak test** and the **live/backtest parity test** (§16.1).
 

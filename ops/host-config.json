@@ -2,11 +2,10 @@
   "offsite_backup": false,
   "record_upload": true,
   "record_upload_delete_local": true,
-  "worker": "stub",
+  "worker": "release",
   "shakedown": {
     "ZEROED_STRATEGY": "S0",
     "ZEROED_S0_DIAGNOSTIC": "on",
-    "ZEROED_PAPER_EDGE_PPM": "178092",
     "ZEROED_STANDINS": "CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM",
     "ZEROED_WALLET": "FdmNGWTvFJfkioV6jPg6HCC1ng3T5vGo4fBKAgX3vTTf"
   }

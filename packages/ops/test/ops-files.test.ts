@@ -205,12 +205,13 @@ describe('deploy code', () => {
 describe('off-server backup gate', () => {
   it('ships off: the flag is false, the installer does not enable the timer, and the sender checks the flag first', () => {
     expect(JSON.parse(read('ops/host-config.json'))).toEqual({
-      offsite_backup: false, worker: 'stub', // PAUSE (owner, 2026-10-07): back to 'release' when every blocker is fixed
+      offsite_backup: false, worker: 'release', // RESUME-WORKER (S1, 2026-10-07): the release's worker, no practice trades
       // RECORD-UPLOAD: on by the owner's decision (6 Oct about 12:30 AM: "Approve upload", "Okay yes delete after upload").
       record_upload: true, record_upload_delete_local: true,
-      // PRACTICE-ON: the S0 shakedown (packages/worker/test/practice-on.test.ts checks each value).
+      // The S0 shakedown for its diagnostic only, with no paper edge, so risk refuses every entry (owner, 2026-10-06: no
+      // knowingly losing trades); packages/worker/test/practice-on.test.ts checks each value.
       shakedown: {
-        ZEROED_STRATEGY: 'S0', ZEROED_S0_DIAGNOSTIC: 'on', ZEROED_PAPER_EDGE_PPM: '178092',
+        ZEROED_STRATEGY: 'S0', ZEROED_S0_DIAGNOSTIC: 'on',
         ZEROED_STANDINS: 'CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM', ZEROED_WALLET: 'FdmNGWTvFJfkioV6jPg6HCC1ng3T5vGo4fBKAgX3vTTf',
       },
     });
