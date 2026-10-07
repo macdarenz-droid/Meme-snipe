@@ -1,7 +1,7 @@
 // The risk policy, docs/ARCHITECTURE.md §8 (R1 to R16), as pure functions over injected inputs. Every limit is read from
 // the locked session policy (CFG-1); nothing here is a money amount. Unknown or stale input refuses an entry, never
 // defaults. Exits never pass through these checks: `evaluateExit` always allows and only reports what is tripped.
-import type { Policy } from '../config/index.ts';
+import { DAY_MS, type Policy } from '../config/index.ts';
 import { PPM, type RoundTrip, costAtSize, feasibleSize, fixedCosts } from '../costs/index.ts';
 import {
   BPS_DENOMINATOR, LAMPORTS_PER_SOL, type Lamports, type MicroUsd, lamports, lamportsToMicroUsd, microUsdToLamports, mulDiv,
@@ -404,7 +404,7 @@ export const maxTradeCosts = (policy: Policy, request: Pick<EntryRequest, 'netwo
 };
 
 /** How long of RB-5's slow blocked-exit retries R4's reserve covers. */
-export const SLOW_RETRY_RESERVE_MS = 86_400_000;
+export const SLOW_RETRY_RESERVE_MS = DAY_MS;
 
 /** R4: the SOL operations reserve, computed live, never below the policy floor. */
 export const opsReserve = (policy: Policy, request: Pick<EntryRequest, 'rent'>, perExitAttempt: bigint): Lamports => {
