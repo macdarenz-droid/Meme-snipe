@@ -258,3 +258,204 @@ No credit is spent until two things have happened: a strategy has survived Phase
 12. **Owner summary (F4 / RT-04).** Rewrite it as at most 6 short lines in plain words. Cover: credits (point and upper bound), the cap, what happens if the pull stops early, the preconditions (Phase 0 survival, the C-76 ruling, Helius terms, storage, the Z-H prep code, no other Helius consumer), that it is a robustness check rather than proof of an edge, and the free Old Faithful alternative.
 
 Push to the same branch, and send the supervisor the head sha and an item→section table.
+
+## Round 2 (head `e6860267`, 8 Oct 2026)
+
+### Fresh review (FAIL: 3 MAJOR, 4 MINOR)
+
+REVIEW Z-H round 2 (delta) — claude/research-zh-estimate @ e686026777a914b60fcc0a81e8377722e9c95e59 (confirmed by ls-remote). Spec: your rulings 1–12 in docs/reviews/ZH.md @ 9f31f1ae; PR #286 @ e28dfab4. No Helius calls, no edits. Verdict: **FAIL** (3 MAJOR, 4 MINOR; no BLOCKER). The arithmetic is now sound. What fails is spend-rule fit and the honesty of the owner summary.
+
+YOUR CHECKS
+1. **Window: clean and post-BOOST. YES.**
+   - BOOST is 2026-07-21T14:23Z, slot 434,319,990. Source: research/historical/regimes.json:4 (B2, "admin BOOST on"), which agrees with ARCH §3.3 [ST-06].
+   - The lead-in 07-22 starts about 9.6 h after BOOST.
+   - 07-22..08-21 is outside B3_CONTAMINATED (09-22T00Z..10-21T00Z) and before any future W_R.
+   - 08-21 is the first 350 ms day (epoch 1020).
+2. **Arithmetic: REPRODUCED EXACTLY.** I ran `python3 -I estimate.py slot_grid.json`; the output is byte-identical to estimate.json. Recomputed:
+   - window 07-22..08-21 (31 days): point 7,735,933 (1,599 units, 7,185,977 blocks);
+   - upper 8,996,378, the sum of per-day uppers 286,939..315,070, so cap 9.0M;
+   - R_POINT 0.0763 from 319,730 credits / 66 units against a 09-21 model of 79 units (matches the measured plan);
+   - regime table, windows, 60 days (17.84M / 20.74M) and time (16.6 d at 5/s, 3.3 d at 25/s) all match.
+   - The grid's minimum produced share is 0.976, at a point before the window; ≥ 0.99 inside it, as stated.
+   - Still verified: scanner/scan.go:761-780 (rpcscan symlinks it) keeps only pump/PumpSwap instructions, so FeeConfig changes are dropped (P12 is correct).
+   - Still verified: the Helius terms quotes for §3.2(ii), (iv) and (xi), §6.2 and the 28 Sep 2026 date match helius.dev/terms, fetched today.
+3. **Fit with A-M14-05 (PR #286). Only partly; see N1.** The 1.1× rule holds if S ≤ 0.986M, since U = min(9.0M, 9.5M − S) ≥ 8.51M. Three conflicts the result does not address:
+   - (a) **14-day window.** The B-10 window `[from,to)` is at most 14 days and the job stops at `to`. At the only measured rate (5 blocks/s) reading alone takes 16.6 d plus about 1 d of QA. A one-window pull needs at least about 6.4 blocks/s sustained: 7.19M / (14 d − 23 h).
+   - (b) **exclusive=yes.** It needs "nothing else uses the Helius account during the window or in the 31 days before it". The worker and the audit used Helius on 7 Oct, so no window can open before about 8 Nov. The 6 Oct–6 Nov cycle framing ("leaves about 0.87M of the cycle", the owner line "of this month's 10 million") is therefore wrong.
+   - (c) **"No partial runs."** It gates the start on U ≥ 1.1 × point (8.51M), but the upper bound is 9.0M. With U between 8.51M and 9.0M the job can still stop short. Fix: recommend U ≥ upper (S ≤ 0.5M), or state the shortfall case. Also, "the rest waits for next month" means a new B10-ACK, and U counts as spent for 31 days.
+4. **Owner summary: NOT accurate. See N2.**
+
+RULINGS 1–12
+1. **DONE.** Note (M1 below): HANDOVER citations drifted. HANDOVER:1221 and :1285 are now 1231 and 1295 at 2b736a3c.
+2. **DONE** (P1–P13, files and tests), apart from the PR #286 alignment in N1:
+   - P1's ledger should be the A-M14-05 written-ahead ledger and lease in zeroed-data, not a second ledger.
+   - The admin usage API's cost and availability are VERIFY.
+3. **PARTIAL.** See N3.
+4. **DONE.** The 126k split is left VERIFY, honestly.
+5. **PARTIAL.** See N2: honeypot_sim.
+6. **DONE.** The Go-row holder movements are flagged for a ruling.
+7. **DONE.** RS-40, U1/U1-B, RS-24, RS-31, the deep-pool probe and the execution audit are listed. MR-01's timing is VERIFY. "Robustness only" is stated.
+8. **DONE.**
+9. **DONE.** Quotes verified.
+10. **DONE.**
+11. **DONE.**
+12. **PARTIAL.** See N2.
+
+NEW FINDINGS
+**N1 MAJOR — No reconciliation with A-M14-05 (PR #286).**
+- Missing: the 14-day window, the 31-day exclusivity (so the earliest start is about 8 Nov), the 1.1× rule against the 9.0M upper, the rolling 31-day acctCap of 9.5M against a 60-day pull (upper 20.74M needs at least 3 windows, not "two months"), and the throughput needed to finish inside one window.
+- Fix: add a short §7 subsection on fit with A-M14-05 at e28dfab4, and make throughput of at least about 6.4 blocks/s (inside 14 days) a P10 pass criterion.
+- PR #286 itself still cites the db3050b3 figures at SPEC-A:2498 (95–255 GB, 7.7M, cap 8.6M). Those need updating to this result before it merges. That is a Z0D-side follow-up.
+
+**N2 MAJOR — "PM-01 can be replayed with real gates" (§1:54, §5:222, owner line 5) contradicts §5:206.**
+- honeypot_sim is a HARD gate (Z0D ARCH:2193). Its `error` blocks entries (ARCH:1050), and §5 itself says it is "not possible in history".
+- So in an honest replay PM also fails closed on every entry, and PM B-10 is as vacuous as MR's unless the same replay-mode ruling covers honeypot_sim.
+- Fix: say so in §1 and §5. Make the ruling cover both strategies: holder gates for MR, honeypot_sim for both, and fee_config_known/venue_enabled until P12.
+- The owner summary should say a ruling is needed for both strategies, not MR only.
+- Also owner line 1: "of this month's 10 million" is wrong per N1(b), and "60 days … two months" is wrong (upper 20.7M is more than 2 × 10M and more than 2 × the 9.5M rolling cap).
+
+**N3 MAJOR — Storage and where it runs: the plan does not fit the runner as written.**
+- §6 sizes a day at about 17–45 GB, but the documented runner SSD is 14 GB (§6:248).
+- §6 says each unit's files move off the runner "before the next". P13 says "every finished day uploaded and verified before the next day starts".
+- The existing day pipeline (finalize parent-chain check, QA, determinism rescan, packaging; disk-guard needs 24 GB) works on a whole day locally.
+- Fix: P13 (or a new P14) must define per-unit upload with day-level finalize/QA run from the store, or measure /mnt space. Today the real free space is logged, not documented.
+
+**M1 MINOR — Pin HANDOVER citations to a sha.** RESULTS:104, :126, :128 cite 1221/1227/1285/1379; at 2b736a3c the figures are at 1231/1295 (319,730 at :1231 and :1295).
+**M2 MINOR — The total exposure is not bounded under one number.** P10 (12k), MR pool-age/mint lookups (≤ about 25k) and P12 (≤ about 1k) sit outside the 9.0M cap. Under A-M14-05 they count in S, so they reduce U. State that, or fold them into the row cap.
+**M3 MINOR — The margin of about 0.87M (§1:39) also ignores the possible 63k from the audit (§8).** It may be about 0.81M. This is moot under N1(b) anyway.
+**M4 MINOR — RESULTS:121 says "1 getBlocks per unit".** The upper formula is (units+1)×4,501×1.25. Fine, but say that the rescan unit also carries retries.
+
+RESULT: FAIL at e686026777a914b60fcc0a81e8377722e9c95e59. A round 3 needs N1–N3 and the owner-summary fixes. M1–M4 can ride along.
+
+### Red team (0 BLOCKER, 5 MAJOR, 3 MINOR)
+
+RED TEAM ROUND 2: Z-H estimate
+Target: research/z-h-estimate/RESULTS.md, claude/research-zh-estimate @ e686026777a914b60fcc0a81e8377722e9c95e59 (ls-remote confirmed).
+Read: rulings docs/reviews/ZH.md @ 9f31f1ae; Z0D PR #286 @ e28dfab4 (SPEC-A A-M14-05 ~:2490-2530, DECISIONS:114, ARCH:2197/:3190); Helius admin-usage and getTransfersByAddress pages (fetched 2026-10-07).
+No edits, pushes or Helius calls.
+
+VERDICT: the round-1 blockers are fixed, and the estimate is now sound. The owner summary is still not honest enough to show, because of what Z0D's spend rules do around the pull. The PM replay claim is also contradicted by the document's own gate table.
+Totals: 0 BLOCKER, 5 MAJOR, 3 MINOR.
+
+== VERIFIED OK ==
+- The per-day model reproduces 09-21's measured 79 units (estimate.json anchor_0921).
+- The day caps sum to 8,996,378, and 30.25 days × the regime figures are plausible. For example, at 420 ms: 205.7k slots plus the ±1 h margin gives 50–51 units, so about 249k point and 292.6k upper.
+- The window (07-23..08-21 with lead-in 07-22) is post-BOOST, before the holdout, and outside W_R.
+- The 09-21 reuse is dropped.
+- The pump_fees claim holds. rpcscan/scan.go is a symlink to scanner/scan.go, whose :761-780 keeps only pump and AMM instructions.
+- getTransfersByAddress is wallet-based (docs); the "MR holders cannot be rebuilt" claim stands.
+- The admin usage endpoint exists. It authenticates with the same key (X-Api-Key or ?api-key) and is per project. Its credit cost is still VERIFY.
+- The terms quotes match the text I fetched earlier (last updated 28 Sep 2026), and the owner question is fairly put.
+
+== MAJOR ==
+
+R2-01 MAJOR: the plan does not fit A-M14-05's 14-day B-10 window.
+- SPEC-A A-M14-05 says the window [from,to) is "at most 14 days" and "the job sends only inside [from,to) and stops at to".
+- RESULTS §3: reading takes 3.3–16.6 days plus about 23 h of QA. At the only measured rate (5 blocks/s), it overruns `to` and stops partway, with U counted in full for 31 days anyway.
+- Minimum sustained rate needed: 7.19M blocks ÷ (14 d − 23 h) ≈ 6.4 blocks/s, including gaps between chained jobs. Without margin this is unproven.
+- P10 (the throughput test, 12k credits) has no Helius allocation outside a B-10 window: the "B-10 job 0 credits" default applies. So P10 itself needs an ack or allocation.
+- RESULTS never mentions the 14-day limit.
+- Fix: make P10 a pass/fail gate, for example at least 8 blocks/s sustained and retries at or below 25%, or else no pull. State the 14-day limit and P10's own allocation path.
+
+R2-02 MAJOR: after the pull the engine has no Helius for about 31 days, and paper is blocked. The owner summary is silent, and two claims are wrong.
+- Under A-M14-05, U (about 9M) is "counted in full for 31 days". The default account cap returns to 5M after the window, so the engine's Helius allocation is 0. "M26 refuses paper or above until the engine's headroom is back above its floor" (1M).
+- So for about 31 days after the window, M3 paper cannot start (DECISIONS:114 states this risk on #286).
+- This collides directly with the owner's "Trading first" rule, and the owner is not told.
+- Wrong in RESULTS: "leaves at least about 0.87M of the cycle's 10M". Under the rolling-31-day ledger, the engine cannot use it.
+- Wrong in the summary: "the rest waits for next month". A second window needs S to fall: U = min(cap, 9.5M − S), and S includes the first U, so the rest waits about 31 days after the first window, not until 6 Nov. A second 30 days therefore pushes paper back another month.
+- Fix: put the paper-blocked month(s) into the owner summary in plain words, and correct both claims.
+
+R2-03 MAJOR: P1 diverges from the A-M14-05 contract. The owner steps and the U condition are missing.
+- A-M14-05 already specifies the job's spend control:
+  - the B10-ACK row, with exclusive=yes and a dashUsed reading no more than 3 days old;
+  - `botctl b10-reserve` run by the owner on the host, or a tailnet path;
+  - the Helius key placed by the owner as an Actions secret of the job's repo;
+  - a ledger written ahead in chunks of at most 10k before pages are fetched;
+  - a compare-and-swap lease with a 15-minute TTL in zeroed-data;
+  - a missing ledger counting as the whole U spent;
+  - an estimate cited with its file and sha;
+  - "no partial runs: start only if U ≥ 1.1 × the estimate the owner saw".
+- P1 is a different design: a per-run check with credits booked after each run, plus a Helius-usage tolerance. Two ledgers for one account would conflict.
+- The arithmetic the owner needs:
+  - 1.1 × 7.74M = 8.51M. That requires S ≤ 0.99M at reservation (U = 9.5M − S).
+  - For U to reach the proposed 9.0M cap, S must be ≤ 0.5M.
+  - If S is between 0.5M and 0.99M, U is below the 9.0M upper bound, so an early stop is possible.
+  - S includes the engine's rolling Helius use in M1 and M2. Its size is not estimated.
+- Fix: rewrite §7 as the Z-H prep implementation of A-M14-05; keep P2–P13 as additions. List the owner steps (b10-reserve or tailnet, the key secret, the B10-ACK message with the dashboard reading) in §1 and in the summary. State the S condition.
+
+R2-04 MAJOR: honeypot_sim blocks PM too, so "PM-01 can be replayed with real gates" contradicts §5's own table.
+- `honeypot_sim` is a HARD gate for every candidate (ARCH:2197 on #286: a buy-then-sell simulation, "hard").
+- §5's table says: "Not possible in history | Replay rule needed".
+- I found no replay or backtest rule for honeypot_sim anywhere in docs/blueprint on #286 (grep "honeypot" with replay, backtest or M11 found nothing).
+- Fail-closed, then, every PM candidate is rejected as well, and PM B-10 is as empty as MR's.
+- The §1 bottom line, the §5 verdict and the owner summary ("For the MR strategy …") all say only MR needs a ruling.
+- Fix: state that BOTH universes need a replay-mode ruling (honeypot_sim; plus the holder gates for MR). Put it in the summary before any spend. Without the ruling, the pull buys a run that never trades.
+
+R2-05 MAJOR: the cheapest window does not exercise the chain as it is today. The summary overstates what is proved.
+- 07-23..08-21 is entirely pre-B3 fees and pre-B4 event layout, at about 420 ms slots.
+- So B-10 never runs:
+  - the post-B4 decoder path the live bot uses today;
+  - the current fee regime;
+  - any slot time near the live 267 ms (200 ms is due at epoch 1052).
+- A hard-coded 400 ms bug (B1 class) would be invisible at 420 ms.
+- "It proves the bot runs without crashing on real history" reads as proof against today's chain.
+- Forward M07 data (gate B, A06 "both") covers the current regime, but the owner is not told that this was the trade-off for the lower price.
+- Fix: one line in the summary ("old-format days; today's format is covered by the live recording"). Or offer the costed option of adding the newest clean days (09-18..09-21 cost about 384k a day, outside the 9.0M).
+
+== MINOR ==
+
+R2-06 MINOR: the summary also omits:
+- the storage size (about 0.5–1.4 TB, which the owner must place);
+- the reading time (3.3–16.6 days, inside a 14-day window).
+And "9.0 million of this month's 10 million" implies the pull happens this cycle, but it cannot start before Phase 0 survival and the C-76 ruling (in practice M2). Say "a month's credits".
+
+R2-07 MINOR: the extras are outside the cap.
+- P10 (12k), P12 (up to about 1k), the MR age and config lookups (up to about 25k) and the admin-usage calls (cost VERIFY) are all outside the 9.0M, which equals the sum of the day caps.
+- Inside one ledger, they leave the last day short. Outside it, they breach the cap.
+- Fix: budget them inside U, or above it with their own allocation.
+
+R2-08 MINOR: GitHub storage.
+- GitHub releases have no stated total-size limit (supervisor-verified).
+- Putting 0.5–1.4 TB, mostly raw Helius getBlock responses, in one private repo's releases may still meet GitHub's acceptable-use and excessive-bandwidth terms, and the replay downloads it all again. I have not confirmed this.
+- It also raises the §3.2(ii)/(iv) question.
+- Fix: VERIFY GitHub's acceptable-use terms before the owner names it the "$0 location" (#286 storage precondition).
+
+Report time: 8 Oct 2026, about 1:50 AM Melbourne. Head unchanged at send: e686026777a914b60fcc0a81e8377722e9c95e59.
+
+### Supervisor rulings for round 3 (8 Oct 2026, about 1:55 AM)
+
+I accept every finding: the reviewer's N1–N3 and M1–M4, and the red team's R2-01..R2-08. The result must let the owner choose with the full picture. That includes what the pull would cost in paper-trading time.
+
+1. **Fit with A-M14-05 (N1, R2-01, R2-03).** Rewrite §7 as the Z-H prep implementation of A-M14-05, as written on PR #286 @ e28dfab4. Do not build a second ledger. Keep P2–P13 as additions. State:
+   - the 14-day window;
+   - the S conditions: U ≥ 1.1 × the point estimate needs S ≤ 0.99M, and the full 9.0M needs S ≤ 0.5M;
+   - what happens when S falls between those two values;
+   - that a second window waits about 31 days after the first.
+
+   P10 becomes a pass/fail gate: at least 8 blocks/s sustained, with retries at or below 25%, otherwise no pull. P10 needs its own small B10-ACK and allocation; name them.
+2. **Replay mode for gates that can't be rebuilt from history (N2, R2-04).** State that both universes, MR and PM, need a replay-mode ruling. Here is my ruling; record it as pending the Z0D spec change, which I will raise:
+   - In a B-10 run only, a gate whose input cannot exist in history (honeypot_sim, and holder state from before the window) receives a typed `replay_unavailable` value from the replay input provider.
+   - A config key, valid only in replay mode with a B-10 trial key, treats that value as "assumed pass, flagged".
+   - Config validation refuses that key in paper and live mode, and a test proves it.
+   - Every decision taken under the key is tagged, and it is excluded from every edge statistic (B, R and P).
+   - The engine code stays the same; only the input provider and the config differ.
+   - fee_config_known and venue_enabled stay fail-closed until P12 is done.
+3. **Storage (N3, R2-08).**
+   - Add P14: upload per unit, then run the day-level finalize and QA from the store. Or measure the runner's real free space on /mnt and cite it.
+   - VERIFY GitHub's acceptable-use and bandwidth terms for keeping 0.5–1.4 TB in a private repo's releases. Say what you could confirm and what you could not.
+4. **The paper blackout (R2-02).** Under A-M14-05, after the pull the engine has no Helius for about 31 days, so M3 paper cannot start.
+   - Put this in the owner summary in plain words.
+   - Correct "leaves about 0.87M" and "the rest waits for next month".
+   - Estimate the delay to paper trading for each option.
+5. **Old-format days (R2-05).** Add one line saying the window uses old-format days. Today's format is covered by the forward recording. Also cost the option of adding the newest clean days.
+6. **Extras (R2-07, M2).** Budget P10, P12, the MR lookups and the admin-usage calls inside U or under their own allocation. Give one total for all exposure.
+7. **Minors.** M1: pin HANDOVER citations to `2b736a3c`. M3, M4, R2-06: storage size, reading time, and "a month's credits" rather than "this month's".
+8. **Compare the options.** In §10, put side by side:
+   - (b) the Helius pull: credits, time, paper delay, storage, the terms question;
+   - Old Faithful: 0 credits, time, storage, politeness limits, and the exception it would need to "no bulk historical downloads";
+   - (c) dropping the history part.
+
+   For each, say what it proves and what it doesn't.
+9. **Owner summary.** At most 8 short lines in plain words, covering the options above, with no recommendation. I will add the recommendation.
+
+Push to the same branch, then send me the head sha and an item→section table.
