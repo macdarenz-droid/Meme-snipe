@@ -40,7 +40,7 @@ Phases follow ARCH section 18 (CB-14). A later milestone starts only when the ea
 | Milestone | ARCH phase | Tickets | Exit condition |
 |---|---|---|---|
 | MA-0a Foundations | 0 | A-M14-01, A-M14-02, A-M02-01, A-M02-02, A-M02-03, A-M01-01, A-M10-01, A-M07-01, A-M13-03 (pure statistics may start on day 1) | Read path talks to two free providers; PumpSwap pool, fee-config and mint accounts decode from fixtures; constants re-derive their PDAs |
-| MA-0b Recording | 0 | A-M14-03, A-M14-05, A-M02-04, A-M02-05, A-M01-02, A-M01-03, A-M01-04, A-M01-05, A-M03-01, A-M03-02, A-M03-03, A-M03-04, A-M04-01, A-M04-02, A-M04-03, A-M05-01, A-M05-02, A-M05-03, A-M07-02, A-M07-03, A-M08-01, A-M08-02, A-M08-03, A-M10-03 | The recorder runs 48 h unattended with snapshot coverage ≥ 95% of watched pool-minutes, the first daily universe manifest is written, and the first enumeration result (or the fallback) is recorded |
+| MA-0b Recording | 0 | A-M14-03, A-M14-05, A-M02-04, A-M02-05, A-M01-02, A-M01-03, A-M01-04, A-M01-05, A-M03-01, A-M03-02, A-M03-04, A-M04-01, A-M04-02, A-M04-03, A-M05-01, A-M05-02, A-M05-03, A-M07-02, A-M07-03, A-M08-01, A-M08-02, A-M08-03, A-M10-03 | The recorder runs 48 h unattended with snapshot coverage ≥ 95% of watched pool-minutes, the first daily universe manifest is written, and the first enumeration result (or the fallback) is recorded |
 | MA-0c Phase 0 decision | 0 | A-M13-01 | The A-48 report (disk and compression) is accepted by the product owner; A-24 and A-24b are parked with MR-01 (A-M13-01 "Parked parts"). MR-01 is already parked (C-76), so MA-0c unblocks no MR-01 ticket; the conditions below apply to a revised MR version entering through the strategy slot. **Stop MR-01** if fewer than 10 eligible pools on more than half of the days (and Phase 3b is not justified), if typical moves do not exceed the hurdle (ARCH 18), or if the kill-only check kills it (A-M13-01 step 9, C-48) |
 | MA-1 Research | 1 | A-M13-02, A-M13-05, A-M09-01, A-M09-02 (unblocked by MA-0c), A-M09-03 (optional, PM track), A-M06-01..A-M06-06, A-M10-02, A-M10-04, A-M10-05, A-M11-01..A-M11-05, A-M13-04, A-M13-06, A-M13-08 | Strategy stage `replay_passed` (gates B on `W_B`, R on `W_R`), or the strategy is `failed` per D08 and work stops |
 | MA-2 Paper | 2 | A-M12-01, A-M12-02, A-M02-06, A-M13-07 | Stage `paper_passed` (P-1..P-6, P-9, P-10), or stop |
@@ -68,18 +68,18 @@ Phases follow ARCH section 18 (CB-14). A later milestone starts only when the ea
 | A-M02-07 | S | 3b | A-M01-06 | — | B-M19-01, B-M30-01 | M4b |
 | A-M03-01 | M | 0 | A-M14-01 | M27 · metrics, alerts | B-M19-01, B-M27-01, B-M30-01 | M1 |
 | A-M03-02 | M | 0 | A-M03-01, A-M02-03, A-M01-04, A-M14-02 | — | B-M19-01, B-M24-02, B-M30-01 | M1 |
-| A-M03-03 | M | 0 | A-M01-01, A-M02-02, A-M14-02 | — | B-M19-01, B-M24-02, B-M30-01 | M1 |
-| A-M03-04 | S | 0 | A-M03-03, A-M14-03 | — | B-M19-01, B-M30-01 | M1 |
+| A-M03-03 | M | 0 | A-M01-01, A-M02-02, A-M14-02 | — | B-M19-01, B-M24-02, B-M30-01 | parked (D30, C-76; card Z-H-OF round 3) |
+| A-M03-04 | S | 0 | A-M03-02, A-M14-03 | — | B-M19-01, B-M30-01 | M1 |
 | A-M04-01 | M | 0 | A-M14-02, A-M02-02, A-M01-03, A-M01-04 | M15 · `ChainState.highestSeenSlot` | B-M15-01, B-M19-01, B-M30-01 | M1 |
 | A-M04-02 | M | 0 | A-M04-01 | M15 · `ChainState.highestSeenSlot`, `slotDurationMsEstimate` | B-M15-01, B-M19-01, B-M30-01 | M1 |
 | A-M04-03 | S | 0 | A-M04-01 | — | B-M19-01, B-M30-01 | M1 |
-| A-M05-01 | M | 0 | A-M03-02, A-M03-03, A-M04-02, A-M01-02 | M24 · `candidate` table; M22 · `written_off`/`unsolicited` lists | B-M19-01, B-M24-02, B-M25-01, B-M30-01 | M1 |
+| A-M05-01 | M | 0 | A-M03-02, A-M04-02, A-M01-02 | M24 · `candidate` table; M22 · `written_off`/`unsolicited` lists | B-M19-01, B-M24-02, B-M25-01, B-M30-01 | M1 |
 | A-M05-02 | M | 0 | A-M05-01, A-M04-01, A-M14-05 | M20 · caller of `pinForPosition`/`unpin` | B-M19-01, B-M30-01 | M1 |
 | A-M05-03 | S | 0 | A-M05-02, A-M07-02 | — | B-M19-01, B-M30-01 | M1 |
 | A-M06-01 | M | 1 | A-M05-01, A-M14-02 | M25 · `Config`; M24 · `screen_result` table | B-M19-01, B-M24-02, B-M25-01, B-M30-01 | M2 |
 | A-M06-02 | M | 1 | A-M06-01, A-M02-02 | M24 · `token` table | B-M19-01, B-M24-02, B-M30-01 | M2 |
 | A-M06-03 | M | 1 | A-M06-01, A-M02-02 | — | B-M19-01, B-M30-01 | M2 |
-| A-M06-04 | M | 1 | A-M06-01, A-M01-05, A-M04-02, A-M08-02, A-M03-03 | — | B-M19-01, B-M30-01 | M2 |
+| A-M06-04 | M | 1 | A-M06-01, A-M01-05, A-M04-02, A-M08-02 | — | B-M19-01, B-M30-01 | M2 |
 | A-M06-05 | M | 1 | A-M06-01, A-M10-03 | M16 · `TxBuilder.buildSimulationOnly`; M22 · `recordCashFlow` (`sim_funding` kind only, read side) | B-M15-03, B-M16-05, B-M19-01, B-M30-01 | M2 |
 | A-M06-06 | S | 1 | A-M06-01, A-M14-03 | M20 · consumer of `token.authority_changed` | B-M19-01, B-M30-01 | M2 |
 | A-M07-01 | M | 0 | — | — | B-M19-01, B-M30-01 | M0 |
@@ -805,14 +805,14 @@ interface EnumeratedPool { poolId: Pubkey; baseMint: Pubkey; isCanonical: boolea
 #### A-M03-04 — DexScreener coverage cross-check
 
 - **Module:** M03 · **Phase:** 0 · **Size:** S (≈ 0.5 engineer-day)
-- **Goal:** Check our enumeration against a second source so coverage is measured, not assumed [ST-25]; never used for trading decisions.
-- **Depends on:** A-M03-03, A-M14-03 (DexScreener client). B: none.
+- **Goal:** Check our pool coverage against a second source so coverage is measured, not assumed [ST-25]; never used for trading decisions. **Pointed at migrations (card Z-H-OF round 3):** with D30's enumeration (A-M03-03) parked, the cross-check runs on the pools of the migrations A-M03-02 recorded; the enumeration form returns only with D30.
+- **Depends on:** A-M03-02 (migrations; was A-M03-03, parked), A-M14-03 (DexScreener client). B: none.
 - **Interfaces:** `crossCheck(mints: Pubkey[]): Promise<{ checkedMints: number; poolsOnlyInVendor: Array<{ mint: Pubkey; pairAddress: Pubkey; dexId: string }>; asOfMs: UnixMs }>` (NEW, internal; result written into the daily manifest by A-M05-03).
-- **Logic:** 1. Daily, after enumeration, take the base mints of the candidate pools and call `/tokens/v1/{chainId}/{tokenAddresses}` with ≤ 30 addresses per call (300 requests/min [DA-26]). The `chainId` value for Solana and the response field names (pair address, DEX id, quote token): VERIFY against DexScreener's OpenAPI spec [DA-26]. 2. Report every pair the vendor lists for those mints with a PumpSwap DEX id that our enumeration did not return (possible enumeration gap). 3. Results go to the manifest only; vendor data never adds a pool to the universe (pools come only from chain reads).
+- **Logic:** 1. Daily, take the base mints of the pools migrated in the last 24 h (A-M03-02; with D30 unparked, also the enumerated candidate pools) and call `/tokens/v1/{chainId}/{tokenAddresses}` with ≤ 30 addresses per call (300 requests/min [DA-26]). The `chainId` value for Solana and the response field names (pair address, DEX id, quote token): VERIFY against DexScreener's OpenAPI spec [DA-26]. 2. Report every pair the vendor lists for those mints with a PumpSwap DEX id that our enumeration did not return (possible coverage gap: a migration we missed, or with D30 unparked an enumeration gap). 3. Results go to the manifest only; vendor data never adds a pool to the universe (pools come only from chain reads).
 - **Shared resources and concurrency:** none beyond M14's DexScreener bucket.
 - **Config:** `discovery.dexscreener.enabled` (bool, true); `discovery.dexscreener.max_calls_per_day` (count, 500, 0-5,000).
 - **Edge cases and failure handling:** 429 or licence revoked [DA-26] → skip, manifest records `cross_check: unavailable`; alert if unavailable > 1 h only while the check is running (ARCH M03).
-- **Acceptance criteria:** Given a vendor fixture listing one PumpSwap pair not in our enumeration, then the manifest lists it under `poolsOnlyInVendor`.
+- **Acceptance criteria:** Given a vendor fixture listing one PumpSwap pair not among the pools of our recorded migrations, then the manifest lists it under `poolsOnlyInVendor`.
 - **Tests:** fixture `fx/dexscreener/tokens_v1_sample.json` (captured after VERIFY).
 - **Observability:** `dexscreener_calls_total{status}`; log `M03.coverage_cross_check`.
 - **Security notes:** vendor data is untrusted and stored privately only (A-32: terms for storing data are an open question; never redistributed).
@@ -942,7 +942,7 @@ interface PoolTracker {
 
 - **Module:** M05 · **Phase:** 0 (prefilter and manifest only; screening states activate in Phase 1 with M06) · **Size:** M (≈ 1.5 engineer-days)
 - **Goal:** Implement the token-candidate state machine of ARCH 7.5 exactly, with the cheap prefilters, blacklist and cooldowns.
-- **Depends on:** A-M03-02, A-M03-03, A-M04-02, A-M01-02. B: M24 `candidate` table; M22 `written_off`/`unsolicited` mint lists (read); M20 position terminal events (topic).
+- **Depends on:** A-M03-02 (migrations only; A-M03-03 is parked with D30, card Z-H-OF round 3), A-M04-02, A-M01-02. B: M24 `candidate` table; M22 `written_off`/`unsolicited` mint lists (read); M20 position terminal events (topic).
 - **Interfaces (ARCH M05):**
 
 ```ts
@@ -963,7 +963,7 @@ interface Universe {
      - venue allowlisted and `venue_specified` (PumpSwap yes; Raydium only after A-M01-06) (ARCH 8.4);
      - fee per side ≤ the strategy's ceiling (MR 30 bps, PM 125 bps) from `feeFor` on the latest snapshot;
      - effective depth ≥ the strategy minimum (MR 300 SOL, PM 85 SOL);
-     - pool age ≥ minimum. **Age rule (clarification C-15):** age is proven only by (a) the pool's migration event slot time from A-M03-02, or (b) `firstEnumeratedAtMs` from A-M03-03 (the pool existed then). `ageMs = now − min(knownMigrationMs, firstEnumeratedAtMs)`; unknown → fails the prefilter. On the first day of recording, enumerated pools therefore qualify for MR only 24 h after first enumeration (conservative);
+     - pool age ≥ minimum. **Age rule (clarification C-15):** age is proven only by (a) the pool's migration event slot time from A-M03-02, or (b) `firstEnumeratedAtMs` from A-M03-03 (the pool existed then; (b) is unavailable while D30 is parked, card Z-H-OF round 3, so only (a) proves age). `ageMs = now − min(knownMigrationMs, firstEnumeratedAtMs)`; unknown → fails the prefilter. On the first day of recording, enumerated pools therefore qualify for MR only 24 h after first enumeration (conservative);
      - not blacklisted; normalised with `quoteMint = wSOL`.
      Fail → `prefiltered_out` with reasons; re-evaluated on the next discovery or every 6 h (ARCH 7.5).
   3. Pass → `screening` (Phase 1+: M06 `screen(purpose: 'universe')`). Phase 0 behaviour: with `universe.screening_required = false`, the candidate goes straight to `eligible` with reason `phase0_unscreened`. Validation: `screening_required = false` is accepted only while no strategy is enabled in any mode (so it can never feed a trade) (clarification C-44).
@@ -995,7 +995,7 @@ interface Universe {
   3. Database write failure → transition not applied; event retried; M24's halt rule applies if the disk is full.
 - **Acceptance criteria:**
   - Given a random sequence of events (property test), then no undefined transition occurs, a position ending `open_failed` or `written_off` always moves its candidate to `cooldown`, and a written-off mint is blacklisted (ARCH 16.2).
-  - Given a pool first enumerated 23 h ago with no known migration, then it fails the MR age prefilter; at 24 h it passes.
+  - (Only with D30 unparked.) Given a pool first enumerated 23 h ago with no known migration, then it fails the MR age prefilter; at 24 h it passes. With D30 parked, a pool with no known migration has no age proof and fails the MR age prefilter.
   - Given `screening_required = false` and an enabled strategy, then config validation rejects it.
 - **Tests:** unit per transition; property-based state-machine test; integration with M04/M03 fixtures; failure injection: backlog of 150.
 - **Observability:** metrics `candidates{state}` (gauge), `candidate_transitions_total{from,to}`, `blacklist_size`; log `M05.transition` (debug), `M05.blacklisted` (info).
@@ -1060,7 +1060,7 @@ interface UniverseManifestFile {                                                
   sha256: string /* of the canonical JSON without this field */ }
 ```
 
-- **Logic:** 1. During the day, track per pool the first and last time it was `eligible` or `watched` and every eviction. 2. At 00:00 UTC (wall clock; sim clock in research), write the file via M07 stream `universe_manifest` and hash it; M07 puts the hash into the day's `CoverageReport.universeManifestSha256`. 3. `a24.eligibleCount` = distinct pools eligible at any time that day; `maxSimultaneous` = the peak concurrent count. In Phase 0 eligibility is prefilter-only (`phase0_unscreened`), so the count is an **upper bound** and is labelled as such. 4. `enumerationCoverage` from A-M03-03; `crossCheck` from A-M03-04.
+- **Logic:** 1. During the day, track per pool the first and last time it was `eligible` or `watched` and every eviction. 2. At 00:00 UTC (wall clock; sim clock in research), write the file via M07 stream `universe_manifest` and hash it; M07 puts the hash into the day's `CoverageReport.universeManifestSha256`. 3. `a24.eligibleCount` = distinct pools eligible at any time that day; `maxSimultaneous` = the peak concurrent count. In Phase 0 eligibility is prefilter-only (`phase0_unscreened`), so the count is an **upper bound** and is labelled as such. 4. `enumerationCoverage` from A-M03-03 (while D30 is parked, card Z-H-OF round 3, it is `migrations_since_start`); `crossCheck` from A-M03-04.
 - **Shared resources and concurrency:** M05 owns the manifest content; M07 owns the file. Written once per day; regeneration for a past day is forbidden (immutable once hashed).
 - **Config:** none.
 - **Edge cases and failure handling:** engine down at midnight → on restart, write the missed day's manifest from persisted transitions with `generatedAtMs` later than the day end and a `late: true` flag; days with missing data are marked low coverage by M07.
@@ -1186,7 +1186,7 @@ interface TokenMetadataCache { get(mint: Pubkey): TokenMetadata | null; refresh(
 
 - **Module:** M06 · **Phase:** 1 · **Size:** M (≈ 1.5 engineer-days)
 - **Goal:** Implement the pool-level checks of ARCH 8.4 with the program's own withdrawal accounting.
-- **Depends on:** A-M06-01, A-M01-05, A-M04-02, A-M08-02, A-M03-03. B: none.
+- **Depends on:** A-M06-01, A-M01-05, A-M04-02, A-M08-02 (A-M03-03 removed: parked with D30, card Z-H-OF round 3; `pool_age` uses A-M05-01's proof rule). B: none.
 - **Interfaces:** `CheckProvider` implementations; LP distribution snapshot `{ lpMint: Pubkey; lpMintSupply: BaseUnits; holders: Array<{ owner: Pubkey; amount: BaseUnits; escrow: boolean }>; maxWithdrawableBps: number; asOfSlot: Slot }` (NEW, cached 10 min).
 - **Logic (check IDs from ARCH 8.4):**
   1. `pool_canonical` (hard): `isCanonical === true` (A-M01-01) [EX-08, TH-18]; `null` → `error`.

@@ -1,7 +1,7 @@
 # Z-H history from Old Faithful, in batches (card Z-H-OF)
 
 Card Z-H-OF, docs only. Round 1 written 2026-10-07 UTC (8 Oct about 7:30 AM Melbourne); **round 2** applies the
-supervisor's rulings in `docs/reviews/ZHOF.md` on `claude/supervisor-docs` @ `f9cccd40` (review FAIL, red team 8 MAJOR)
+supervisor's rulings in `docs/reviews/ZHOF.md` on `claude/supervisor-docs` @ `f9cccd40` (review FAIL, red team 8 MAJOR), with the round 2 addendum (items 14–17) @ `c2f8f899` and round 3 (items 18–20) @ `623974a5`,
 and the owner's answers of 8 Oct about 7:42 AM. It turns the owner's decision of 8 Oct about 7:25 AM, **"Old faithful but
 by batch to avoid blockage"** (`CLAUDE.md` "History for the past-data test" on `claude/supervisor-docs`), into a batch
 plan for gate B-10's history replay. It replaces route "B", the capped Helius download of PR #289 (Z0D-2).
