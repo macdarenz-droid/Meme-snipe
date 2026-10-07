@@ -48,7 +48,7 @@ The previous S1 account reached its usage limit about 12:45 PM. The owner made t
 - No host access, no secrets access (owner only), as before.
 
 **Log (Melbourne time, newest first)**
-- 9:13 PM **#276 facts/gates review PASS** on a54cd590 (01BWjnpv; full suite 6,883/6,883; 7/7 mutants killed; F1/F2/F3 closed; NT-1 acceptable). S1 accepts it for 58eb1422 (import-union merge, checked). Two LOWs, not blocking:
+- 9:13 PM **#276 facts/gates review PASS** on a54cd590 (01BWjnpv; full suite 6,883/6,883; 7/7 mutants killed; F1/F2/F3 closed; NT-1 acceptable). Then PASS on 58eb1422 itself too (merge = union of imports; RC-FIXES-2b gaps + R2-1 checked, no fail-open; 802/802 targeted). Two LOWs, not blocking:
   - (a) old state files carry no stretches, so the first restart after deploy forgets older holes. Moot: the downtime itself is a stretch over 2 h, so survival reads unknown across it.
   - (b) nothing caps NT-1's missing share (28 days scattered over a year). Follow-up card **NT-1b** after the resume; the critical alert covers it meanwhile.
   - Waiting for the BT parity review (012MXi9d) and CI check on 58eb1422.
