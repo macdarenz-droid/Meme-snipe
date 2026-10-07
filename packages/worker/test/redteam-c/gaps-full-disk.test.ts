@@ -9,7 +9,7 @@ const fault = vi.hoisted(() => ({ half: false }));
 vi.mock('node:fs', async (importOriginal) => {
   const fs = await importOriginal<typeof import('node:fs')>();
   const appendFileSync = ((path: string, data: string) => {
-    if (fault.half && String(path).endsWith('gaps.jsonl')) {
+    if (fault.half && /gaps-\d{3}\.jsonl$/.test(String(path))) {
       fault.half = false;
       fs.appendFileSync(path, data.slice(0, Math.floor(data.length / 2)));
       throw Object.assign(new Error('no space left on device'), { code: 'ENOSPC' });

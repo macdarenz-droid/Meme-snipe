@@ -141,6 +141,22 @@ worker_entry() {
   esac
 }
 
+# worker_refused FILE STATUS: why the worker refused to start, or nothing (RC-FIXES-2b, #280's contract). FILE is the
+# worker's <state>/refused.json ({reason, atMs, commit}); STATUS is the unit's ExecMainStatus, where 78 is a refusal.
+# One line, at most 200 characters, never the separator "|".
+worker_refused() {
+  local r
+  if [ -e "$1" ]; then
+    r="$(jq -r '"\(.reason // "no reason given") (commit \((.commit // "?") | tostring | .[0:12]))"' "$1" 2>/dev/null)" || r="refused.json cannot be read"
+    [ -n "$r" ] || r="refused.json cannot be read"
+  elif [ "$2" = 78 ]; then
+    r="exit 78 with no refused.json"
+  else
+    return 0
+  fi
+  printf '%s\n' "$r" | tr -d '\r|' | tr '\n' ' ' | cut -c1-200 | sed 's/ *$//'
+}
+
 # The only worker settings a release's ops/host-config.json may give (PRACTICE-ON): the S0 shakedown's, in its
 # "shakedown" block. Mode, recorder, simulation, drills and addresses stay with worker-start; live is never one of them.
 SHAKEDOWN_NAMES='ZEROED_STRATEGY ZEROED_S0_DIAGNOSTIC ZEROED_PAPER_EDGE_PPM ZEROED_STANDINS ZEROED_WALLET'

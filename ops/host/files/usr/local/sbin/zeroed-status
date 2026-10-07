@@ -53,6 +53,9 @@ if [ "${wpid:-0}" != 0 ] && [ -r "/proc/$wpid/cmdline" ]; then
   esac
 fi
 log "Worker:    $(systemctl is-active zeroed-worker.service 2>/dev/null || true)$wkind"
+# RC-FIXES-2b (#280's contract): a refusal to start, with its reason.
+refused="$(worker_refused /var/lib/zeroed/refused.json "$(systemctl show -p ExecMainStatus --value zeroed-worker.service 2>/dev/null || true)")"
+[ -z "$refused" ] || log "Refused:   $refused"
 log "Signer:    $(systemctl is-active zeroed-signer.service 2>/dev/null || true)"
 log "Release:   $(cut -c1-12 "$STATE_DIR/deployed" 2>/dev/null || echo 'none yet')"
 run="$(qualifying_run "$EVIDENCE_ROOT" "$(systemctl list-units 'zeroed-dryrun@*' --state=active,activating --plain --no-legend 2>/dev/null || true)")"

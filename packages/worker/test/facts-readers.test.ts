@@ -263,9 +263,10 @@ describe('fact readers', () => {
     timers.advance(86_400_000);
     expect(await pump(fresh().readHoldersAll(MINT), timers)).toBe(true);
     expect(gpaCalls).toBe(4);
-    // persist review B1: an unreadable file whose write-back fails (here the temp path is a directory) never throws
-    // out of the constructor (the worker's start): the readers come up, today stays spent, and one line is logged,
-    // with no path or error message in it.
+    // persist review B1: an unreadable file whose temporary path is unusable (a directory) never throws out of the
+    // constructor (the worker's start): the readers come up and today stays spent. RC-M1 (red team C round 3): the
+    // count is then written in place, so a restart reads today spent too. Both writes failing (a full disk) is in
+    // test/redteam-c/scan-cap.test.ts: one line logged, the scan refused.
     writeFileSync(scansFile, 'not json');
     mkdirSync(`${scansFile}.tmp`);
     const lines: string[] = [];
@@ -273,8 +274,8 @@ describe('fact readers', () => {
     expect(() => { stuck = new FactReaders({ feed: { ingest: () => {} }, rpc, http, timers, timeoutMs: 1000, holderScansPerDay: 1, scansFile, log: (l) => lines.push(l) }); }).not.toThrow();
     expect(await pump(stuck!.readHoldersAll(MINT), timers)).toBe(false);
     expect(gpaCalls).toBe(4);
-    expect(lines).toEqual(['Holder scan count not saved: it is kept in this process only.']);
-    expect(readFileSync(scansFile, 'utf8')).toBe('not json');
+    expect(lines).toEqual([]);
+    expect(JSON.parse(readFileSync(scansFile, 'utf8'))).toEqual({ day: Math.floor(timers.now() / 86_400_000), scans: Number.MAX_SAFE_INTEGER });
     expect(readers.outcomes.at(-1)).toMatchObject({ ok: false, detail: 'daily scan cap reached' });
     const r = parseHoldersAllRead((ingested[0]!.body as { value: unknown }).value)!;
     expect(r.accounts.length).toBe(hc.gpa.accounts.length);

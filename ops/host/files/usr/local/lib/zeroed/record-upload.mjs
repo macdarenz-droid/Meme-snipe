@@ -50,8 +50,9 @@ const TAKEN = 'a different file has this name in the data repository';
 const BOOT_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 const DATA_RE = /^days\/(\d{4}-\d{2}-\d{2})\/((?:frames|releases)-\d{3}\.jsonl\.zst)$/;
-// RC-H3: the recorder's packed stream gaps (gaps.jsonl.zst) go up with the manifest, like the saved state.
-const ATTACHMENTS = new Set(['deployer-state.json', 'deployer-state.json.zst', 'gaps.jsonl.zst']);
+const ATTACHMENTS = new Set(['deployer-state.json', 'deployer-state.json.zst']);
+// RC-H3: the recorder's packed stream-gap chunks (gaps-NNN.jsonl.zst) go up with the manifest, like the saved state.
+const GAPS_ATTACHMENT = /^gaps-\d{3,6}\.jsonl\.zst$/;
 const isSha = (s) => typeof s === 'string' && /^[0-9a-f]{64}$/.test(s);
 const isBytes = (n) => Number.isSafeInteger(n) && n > 0;
 /** True for "no such file": RECORD-BUDGET deletes recordings on its own schedule, so any file may vanish mid-run. */
@@ -290,7 +291,7 @@ export const itemsOf = (b) => {
   if (!b.open && day !== null) {
     items.push({ key: `${b.boot}/manifest.json`, kind: 'manifest', boot: b.boot, day, path: join(b.dir, 'manifest.json'), rel: 'manifest.json', file: 'manifest.json', size: null, sha256: null, open: false });
     for (const a of Array.isArray(b.manifest.attachments) ? b.manifest.attachments : []) {
-      if (!ATTACHMENTS.has(a?.file) || !isSha(a.sha256) || !isBytes(a.bytes)) continue;
+      if (!(ATTACHMENTS.has(a?.file) || GAPS_ATTACHMENT.test(a?.file ?? '')) || !isSha(a.sha256) || !isBytes(a.bytes)) continue;
       items.push({ key: `${b.boot}/${a.file}`, kind: 'attachment', boot: b.boot, day, path: join(b.dir, a.file), rel: a.file, file: a.file, size: a.bytes, sha256: a.sha256, open: false });
     }
   }
