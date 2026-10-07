@@ -8,10 +8,12 @@ import { readdirSync } from 'node:fs';
 import { CreateEventLayout, TradeEventLayout, PUMP_PROGRAM, encodeBase58, toBase64 } from '../../../core/src/chain/index.ts';
 import { encode } from '../../../core/test/chain/encode.ts';
 import { FEE_CONTEXT, passingFacts } from '../../../core/test/gates/world.ts';
-import { poolKey, migrationKey } from '../../../core/src/gates/index.ts';
+import { poolKey, migrationKey, lpKey, holdersKey, softKey, xcheckKey, simKey } from '../../../core/src/gates/index.ts';
+import { RAW } from '../../../core/src/facts/index.ts';
+import { account } from '../../../core/test/gates/world.ts';
 import { SOL_PRICE_KEY, feesKey } from '../../src/engine/strategy.ts';
 import { readProbe } from '../../src/run/mem-trace.ts';
-import { MINT, SOL_PRICE, makeWorker, slotAt, dueTimers, T } from '../worker-harness.ts';
+import { POOL, POOL_ADDRESS, MINT, SOL_PRICE, makeWorker, slotAt, dueTimers, T } from '../worker-harness.ts';
 
 const [hours, cpm, mpm, stepMs] = [Number(process.argv[2] ?? 2), Number(process.argv[3] ?? 25), Number(process.argv[4] ?? 1), Number(process.argv[5] ?? 1000)];
 const gc = (globalThis as { gc?: () => void }).gc!;
@@ -68,12 +70,25 @@ const poolT = (facts.get(poolKey(MINT))!.value) as { obs: Record<string, unknown
 const migT = (facts.get(migrationKey(MINT))!.value) as { obs: Record<string, unknown> } & Record<string, unknown>;
 
 process.stderr.write('mod\n');
+const READS = process.env['READS'] === '1';
+const LIFE_MIN = Number(process.env['LIFE_MIN'] ?? (READS ? 240 : 30));
+const accountsT = [POOL_ADDRESS, POOL.poolBaseTokenAccount, POOL.poolQuoteTokenAccount, MINT].map((a) => {
+  const x = account(a);
+  return { address: a, owner: x.owner, data: x.dataBase64 };
+});
+/** 20 largest holders, fresh strings each read (a live read's addresses are new strings every time). */
+const holdersT = () => Array.from({ length: 20 }, (_, i) => ({ address: `${'H'.repeat(40)}${String(i).padStart(4, '0')}`, owner: `${'O'.repeat(40)}${String(i).padStart(4, '0')}`, ownerProgram: null, amount: BigInt(1_000_000 + i), delegate: null, delegatedAmount: 0n }));
 const timers = dueTimers(T - 16 * 86_400_000);
 const h = makeWorker({ timers, seedWaitMs: 0, config: { ZEROED_RECORDER: process.env['REC'] ?? 'on' } });
 process.stderr.write('made\n');
 const feed = h.worker.feed;
+process.stderr.write('starting\n');
 const started = h.worker.start();
-while (!h.order.includes('start helius-ws')) await new Promise<void>((r) => setImmediate(r));
+process.stderr.write('started call\n');
+while (!h.order.includes('start helius-ws')) {
+  timers.set(timers.now() + 100);
+  await new Promise<void>((r) => setImmediate(r));
+}
 let lastSlot = 0n;
 const slot = (): bigint => {
   const want = slotAt(timers.now());
@@ -85,7 +100,13 @@ const slot = (): bigint => {
   return lastSlot;
 };
 slot();
-await started;
+let up = false;
+void started.then(() => (up = true));
+while (!up) {
+  timers.set(timers.now() + 100);
+  slot();
+  await new Promise<void>((r) => setImmediate(r));
+}
 const now = () => timers.now();
 feed.ingest('helius', { type: 'offchain', key: 'coverage:creates:start', value: { fromSlot: slot(), via: `logs:${CREATE_AUTH}` } }, { receivedAt: now() });
 
@@ -126,7 +147,7 @@ while (now() - start < total) {
       migDone++;
       const obs = { ...migT.obs, slot: s - 1n, receivedAt: now() - 50 };
       feed.ingest('worker', { type: 'fact', key: migrationKey(mint), value: { ...migT, obs, graduatedAtMs: now() - 1_000, migratedAtMs: now() - 500, pool } }, { receivedAt: now() });
-      pools.push({ mint, pool, until: now() + 30 * 60_000 });
+      pools.push({ mint, pool, until: now() + LIFE_MIN * 60_000 });
       feed.ingest('worker', { type: 'offchain', key: `coverage:trades:${pool}:start`, value: { fromSlot: s, via: `logs:${pool}` } }, { receivedAt: now() });
     }
   }
@@ -136,9 +157,26 @@ while (now() - start < total) {
     for (const p of pools) {
       const obs = { ...poolT.obs, slot: s - 1n, receivedAt: now() - 50 };
       feed.ingest('worker', { type: 'fact', key: poolKey(p.mint), value: { ...poolT, obs, address: p.pool, pool: { ...poolT.pool, baseMint: p.mint } } }, { receivedAt: now() });
-      feed.ingest('worker', { type: 'fact', key: feesKey(p.mint), value: FEE_CONTEXT }, { receivedAt: now() });
+      if (!READS) feed.ingest('worker', { type: 'fact', key: feesKey(p.mint), value: FEE_CONTEXT }, { receivedAt: now() });
     }
     feed.ingest('worker', { type: 'fact', key: SOL_PRICE_KEY, value: { value: SOL_PRICE, atMs: now() - 50 } }, { receivedAt: now() });
+  }
+  // READS: each live candidate's coherent batch read once a minute (minReadGapMs = 60 s), as FactReaders puts it on the
+  // feed: the raw reads (accounts, largest holders, simulation) and the fee context as offchain frames, and the gate
+  // facts the producer makes of them.
+  if (READS && (now() - start) % 60_000 < stepMs) {
+    for (const p of pools) {
+      const at = now() - 50;
+      const o = (k: (m: string) => string) => {
+        const v = facts.get(k(MINT))!.value as { obs: object };
+        return { ...v, obs: { ...v.obs, slot: s - 1n, receivedAt: at } };
+      };
+      feed.ingest('helius', { type: 'offchain', key: RAW.accounts(p.mint), value: { mint: p.mint, slot: s - 1n, commitment: 'confirmed', accounts: accountsT.map((a) => ({ ...a, address: a.address === POOL_ADDRESS ? p.pool : a.address })) } }, { receivedAt: now() });
+      feed.ingest('helius', { type: 'offchain', key: RAW.holders(p.mint), value: { mint: p.mint, slot: s - 1n, commitment: 'confirmed', supply: 1_000_000_000_000_000n, accounts: holdersT() } }, { receivedAt: now() });
+      feed.ingest('helius', { type: 'offchain', key: RAW.sim(p.mint), value: { mint: p.mint, slot: s - 1n, spend: 13_333_334n, ok: true, paid: 13_400_000n, proceeds: 12_900_000n, error: null } }, { receivedAt: now() });
+      feed.ingest('helius', { type: 'offchain', key: feesKey(p.mint), value: FEE_CONTEXT }, { receivedAt: now() });
+      for (const k of [lpKey, holdersKey, softKey, xcheckKey, simKey]) feed.ingest('worker', { type: 'fact', key: k(p.mint), value: o(k) }, { receivedAt: now() });
+    }
   }
   if ((now() - start) % 600_000 < stepMs) {
     for (const p of pools) feed.ingest('worker', { type: 'offchain', key: `coverage:trades:${p.pool}:gap`, value: { fromSlot: s - 10n, toSlot: s - 5n, reason: 'disconnect', via: `logs:${p.pool}` } }, { receivedAt: now() });
