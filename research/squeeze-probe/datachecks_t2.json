@@ -1,0 +1,99 @@
+{
+ "pool_first_tx": {
+  "BOME": 1710401207,
+  "CHILLGUY": 1731701302,
+  "FARTCOIN": 1729231787,
+  "GOAT": 1728595144,
+  "GRIFFAIN": 1730593613,
+  "MEW": 1711430534,
+  "MOODENG": 1725994387,
+  "PNUT": 1730387206,
+  "POPCAT": 1702415044,
+  "SPX": 1703129888,
+  "VINE": 1737591763,
+  "WIF": 1700510070,
+  "ZEREBRO": 1730142507
+ },
+ "programs_in_primary": [
+  "amm_v4"
+ ],
+ "reserve_check": {
+  "amm_v4": {
+   "sampled": 200,
+   "swaps_found": 196,
+   "fail": 1,
+   "fail_share": 0.00510204081632653,
+   "dropped": false,
+   "worst": [
+    {
+     "coin": "SPX",
+     "t": 1717891778,
+     "sig": "52au1ugDi3hjmt2mkSYxnmovWEGMY1LNYhwT33YtrbYA2N9hHkJdjFVvz9JPbURcVMxVsh69U1WyHNiFaJLcD1Qh",
+     "dir": "buy",
+     "p_eff": 0.0006313002821804513,
+     "p_pre": 0.0006295773743220597,
+     "p_post": 0.0006296383598225192,
+     "dev": 0.0026394871468768955,
+     "ok": false,
+     "size_share": 4.85581352840176e-05
+    },
+    {
+     "coin": "PNUT",
+     "t": 1757323819,
+     "sig": "3mvH5n422HztTB8LL8tZdrYdzMjH3y3pXBtvMzF17ob7ksrnPT3yp5QNMKVKtBXaLBUGVRVZ3CG58wnhGLqHu4rV",
+     "dir": "sell",
+     "p_eff": 1.0686882213435362,
+     "p_pre": 1.0686889455748954,
+     "p_post": 1.0686887141185495,
+     "dev": 4.611026895862125e-07,
+     "ok": true,
+     "size_share": 1.0815430011462138e-07
+    },
+    {
+     "coin": "SPX",
+     "t": 1752945678,
+     "sig": "HQpDxYE3XcRPYdMc124iVxc4rY2UH1Yc9KPX5WokKR7a7R6fthTzHRuYKJsp6DZVR1McVWEVqcipkFTvWDtVGzy",
+     "dir": "buy",
+     "p_eff": 0.1004505905668627,
+     "p_pre": 0.10045053116518753,
+     "p_post": 0.10045055218109296,
+     "dev": 3.821359755296072e-07,
+     "ok": true,
+     "size_share": 1.0473917837222206e-07
+    },
+    {
+     "coin": "PNUT",
+     "t": 1788837650,
+     "sig": "2nQpbLe8TMVE2VbRycs28dkew18xefY8YDhe35aHq9iTuvHkXBR3WAkmhNgpkQg45tnxoCojnURLxjBnPLp9NFzx",
+     "dir": "buy",
+     "p_eff": 0.48749553989660654,
+     "p_pre": 0.48749527255033415,
+     "p_post": 0.48749538476300025,
+     "dev": 3.182257948264322e-07,
+     "ok": true,
+     "size_share": 1.1523509221362416e-07
+    },
+    {
+     "coin": "CHILLGUY",
+     "t": 1785443661,
+     "sig": "5wkAPHfdWjhxFLCPUX1Zo9KorVuuhJrypzQXogjQLgUJXGXXknR7sJ3coYHD2NbfHd3WAMNYJzUgwkiTGA9nf4YG",
+     "dir": "buy",
+     "p_eff": 0.12148545459039024,
+     "p_pre": 0.12148535624740253,
+     "p_post": 0.12148542875842809,
+     "dev": 2.126342428798722e-07,
+     "ok": true,
+     "size_share": 2.9880879367138285e-07
+    }
+   ]
+  }
+ },
+ "credits": {
+  "calls": 430,
+  "credits": 4300,
+  "by_method": {
+   "getTransactionsForAddress": 414,
+   "getAccountInfo": 16
+  }
+ }
+}
