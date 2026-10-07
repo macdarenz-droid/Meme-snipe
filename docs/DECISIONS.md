@@ -3501,6 +3501,38 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - Ten runs give the same frames, releases, events and facts, and each replays to them. A recording with echoes is refused under the pre-echo rules and by `frameEvents`.
   - Parity: live (cut log on both watches, fetched, healed) ends with the same candles and coverage as the backtest of the full transaction on both pools. The recording, round-tripped through its JSON, replays to the same events and facts; a recording made before echoes replays as it did.
 
+## Red team C's provider findings fixed (RC-FIXES, `providers/socket.ts`, `run/sources.ts` `CreditBook`, `run/worker.ts` `FETCH_TX_CREDITS`, `facts/readers.ts` `#scanOwners`)
+
+- **2026-10-07 · Why.** Red team C reproduced these faults on 959d8017 (probes on `claude/redteam-c`, brought in as `worker/test/redteam-c/`):
+  - **Crash loop.** `CreditBook`'s one-second save ran from a timer. A failed write (disk full, EACCES, EISDIR) threw there, an uncaughtException, and the worker exited. Every restart repeated it on the first spend until systemd stopped the unit, with open positions unwatched.
+  - **Reconnect storm.** `ReconnectingSocket` reset its backoff on every open. A server that accepts and closes at once was reopened every second: 601 Helius opens and 1,798 credits in ten minutes with two log watches.
+  - **Re-read under-count.** FACTS-REREAD booked 1 credit per `fetchTx`, but the shared fetcher retries a null answer 3 times: up to 4 Helius credits, plus Alchemy.
+  - **Month reset (item 6).** A boot with the clock in another month dropped the saved month's counts and saved `{}`.
+  - **Stuck coin.** `FactReaders` kept every holder owner it ever saw per mint and put them all in the next bank. After about 73, every later batch for that coin failed ("N accounts do not fit one bank") for the life of the process.
+- **Choices.**
+  - **Socket.** The backoff resets only once a connection proves healthy: a message `healthyMs` (default `idleMs`) or more after it opened. A close before that keeps doubling the wait up to `maxMs`. Connection attempts stay under `DEFAULT_CONNECTS_PER_HOUR` = 60 in any rolling hour. The feed stays down meanwhile, so a critical feed halts entries through the existing feed path. PumpPortal's ban rule is unchanged.
+    - **Paced, never parked (review of #274, HIGH).** The first build waited at the cap for the oldest try to age out: up to about 32 minutes with Helius back, every hour of a long outage. Now, once the last hour holds a quarter of the ceiling (15), tries are spaced 4/3 × HOUR/ceiling apart (80 s).
+    - The burst before that (at most 15) plus a paced hour (at most 45) stays under 60. A simulated 6 h outage peaks at 56 tries in an hour, and the longest gap is 80 s.
+    - The wait for the oldest try stays only as a hard bound, which the pace never reaches. The down reason names the ceiling.
+    - **The budget this leaves (LOW-4).** A Helius server that accepts and closes forever still costs up to about 60 opens an hour × about 3 credits (a connection credit and a backfill page per log watch, the reviewer's count). That is about 130k credits a month, about 13% of the free plan. This is the intended bound.
+  - **Credit book.** A save never throws. A failed one keeps the book dirty, logs once per error kind and is retried every second.
+    - Saves are written ahead: each one puts `used + CREDIT_RESERVE` (1,000) on disk, and a spend that passes what disk holds is saved at once. So the saved count is never below what was spent, and a restart over-counts by at most the reserve, never under.
+    - If that save fails, the count on disk is behind. Every provider whose count gates spending (one with a monthly budget: Alchemy) is held as halted for every class but P0 until a save lands. Exits keep P0. The Alchemy hold also halts entries through `watchHalted` (second price path unavailable).
+    - Helius is not held: its count gates nothing (HELIUS-EXHAUSTED).
+    - The only under-count left is a death after a failed save. It is bounded by the spend that crossed the reserve plus P0 calls while held.
+    - Counts never go backwards. A lower total from a scheduler is not taken.
+    - Start and stop write the exact counts. Only saves made while spending carry the reserve.
+    - **Month steps (item 6).** credits.json keeps the last `CREDIT_MONTHS_KEPT` (3) other months' counts beside the current one. A boot whose clock reads a later month starts that month from zero and keeps the earlier month. A boot whose clock reads a month behind the latest saved one fails closed: it counts under the later month, from the sum of that month's count and the clock month's (review of #274: stepping back is always a clock error), and logs the step. The clock month is folded in once, so a later boot never adds it again.
+    - **An unreadable credits.json (review LOW, the same crash-loop class as RC-3).** It no longer throws at the boot. The month counts as spent: every budgeted provider starts at its whole monthly budget, so it is halted to P0. This is logged once. The first save writes those spent counts, never an empty file, so the rest of the month stays halted until a new month starts. So a clock a month off never wipes this month's Alchemy count, and the 70% halt never starts again from zero.
+  - **Fetch credits.** `fetchTx` tells its caller the Helius credits it spent, retries included. FACTS-REREAD books `FETCH_TX_CREDITS` (4) per fetch before it asks and gives back what was not used. A fetch that never says what it spent is charged all 4.
+    - The cut-create and cut-trade caps count tries, not credits, and DECISIONS already sizes them at up to 4 credits a try (TRADE-GAP-HEAL). They stay as they are.
+    - COMPLETION-READ, the seed, the trade fills and the create lookup call RPC directly and book each call. They have no under-count.
+  - **Holder owners.** A bank carries the owners of this batch's listed accounts only, plus, when the batch scans, the last scan's off-curve owners.
+    - If those do not fit in one bank (100), no scan is taken and the cap is not spent. H12/H13 fail closed.
+    - **One scan a day at most (review of #274, MEDIUM).** Before, such a coin alternated forever, spending one of the shared 100 daily scans every other batch. Now it is refused for the rest of the UTC day: no more scans, with a log line naming it so the count can be measured. A second bank read is decided later, on that count.
+    - The remembered owners and the refused coins start again at each UTC day (LOW-5), so they hold at most a day's scanned coins.
+    - The accounts bank and the bounded holder view always land.
+
 ## The saved state is checked whole at start, backed up whole, and an entry's recording is on disk before its send (RC-STATE, `run/state-check.ts`, `run/account.ts` `checkAccount`, `zeroed-backup`, `run/recorder.ts` `durable`, `run/parity.ts` `cutAtKill`)
 
 - **2026-10-07 · Why.** Red team C (items 5 and 7, round 2 R2-1, R2-2 and R2-4; probes on `claude/redteam-c`, brought in as `worker/test/redteam-c/` and `ops/test/redteam-c/`) found these on 959d8017:
