@@ -48,6 +48,7 @@ The previous S1 account reached its usage limit about 12:45 PM. The owner made t
 - No host access, no secrets access (owner only), as before.
 
 **Log (Melbourne time, newest first)**
+- 5:14 PM **Owner: 'Do whats best that u think its in the discipline of the bot. But not to the point it never trades and find winning trades.'** Recorded in CLAUDE.md (Discipline, not paralysis); sync to the integration branch with the next docs PR. Acting on it: **CURVE-TAIL-PROOF builder** session_016uuBF8L4bhBHzmAjkkTgyz (Opus, claude/curve-tail-proof: prove the 8-byte curve tail from IDL + fixture, accept only proven values in H5, parity, measured on the 47 coins). **EDGE-HUNT U1-B researcher** session_017PmchcqWASLkp1x1j26wFb (Opus, claude/edge-hunt-u1b: pre-registered H1-B/H6-B, ~70k public RPC + GeckoTerminal, no Helius, holdout 95% CI in SOL across sizes). The cut-create cap and the deployer-check lag are decided after the REPLAY-1000 full-day numbers.
 - 5:13 PM **Parked-PR audit done** (session_017bwgjwkgLPYjCLYR5MVVeC, archived). With #268, R14 refuses every entry, so **no parked PR must merge before the resume** (the server ledger's open positions were not checked; summaries show entered 0).
   - **BEFORE THE FIRST PAPER ENTRY IS ENABLED (A-entry), in order:**
     - #224 EXIT-KEEP downtime (not reviewed; downtime trades of held pools never caught up; base merge with conflicts, then EXIT/facts/persist/BT reviews);
