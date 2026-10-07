@@ -49,6 +49,14 @@
   - #287 Z01: round 2 builder `session_01Rdj1p51QyjzY7AgvHe7k8Q` is applying rulings 1–9 (`docs/reviews/Z01.md`).
   - #288 Z-H estimate: accepted at `9b7d18cf`. The owner has been given the three options (Helius B, Old Faithful, drop), with Old Faithful recommended.
   - Open owner choices: MR-01 stop (C-76), D30 pool list, B-10 route.
+- **8 Oct about 4:00 AM, state:**
+  - #285 Z00 merged at `be8ecd01`; #286 Z0D merged at `37436cd6`; #288 Z-H merged at `c74ba7ea` (the current base).
+  - #289 Z0D-2 (`42fb366b`): round 2 review PASS with 3 MINOR; red team 0 BLOCKER, 2 MAJOR, 3 MINOR. Round 3 rulings are in `docs/reviews/Z0D2.md` (`6ac6a4e0`), sent to builder `session_01GLdr1USnuQwYpZ3RWcnaJK`. Next: delta review (reviewer `session_012icMjedzJ6tkqyJTGAySQc`, red team `session_01AWVUXqqVwMANg2UxTyJ592`), CI, merge.
+  - #287 Z01 (`3b942ae0`): round 2 review PASS with 1 MAJOR to rule on; red team 0 BLOCKER, 2 MAJOR, 5 MINOR. Round 3 rulings are in `docs/reviews/Z01.md` (`b0a29e1d`), sent to builder `session_01Rdj1p51QyjzY7AgvHe7k8Q` together with the base merge of `c74ba7ea`. Next: delta review (reviewer `session_011tRoogkXXgSyzqnTrkqfMt`, red team `session_01AUcUzLjbLgv1qVogiQBkKb`), then the label, then the labeled run, then merge.
+  - Z01 merge procedure (RT2-03, RT2-07, R2-4; until the guard card lands):
+    1. Before merging any PR that touches `tools/**` or `.github/**`, run the base branch's `drift.ts` and `check.ts` locally against the PR merge commit. Use `git show origin/<base>:tools/policy/...` into a temp folder.
+    2. Add `deps-reviewed:<hash>` last, after reading the diff.
+    3. The labeled run must pass every step. Record the `check` duration it took.
 - **Follow-ups (identified, not yet carded):**
   1. Z0D-2 docs:
      - the replay-mode ruling (`replay_unavailable` treated as assumed-pass-flagged in B-10 runs only, refused in paper and live; `docs/reviews/ZH.md` round 2 ruling 2);
@@ -64,7 +72,8 @@
   6. Z01 follow-ups:
      - A guard card: test a `pull_request_target` guard on a scratch repo, or teach `logic.sh` to ignore that check run (the guard was removed from #287).
      - Only the supervisor adds `deps-reviewed:<hash>`, after reading the diff. It is re-added (remove + add) after any push that changes a guarded file.
-     - The scheduled audit can be marked failed if its runner is lost. It is pending for about a minute a day (accepted).
+     - The scheduled audit can be marked failed if its runner is lost, and it is pending for about a minute a day. Superseded by Z01 round 3 ruling 4: `commit_verdict` ignores the uniquely named audit job.
+     - Ops follow-up: `tag.sh` treats a pending newest commit as "skip to an older green commit". A Deploy pressed while CI runs re-deploys an older commit. Proposed fix: stop and retry instead. This is pre-existing behaviour, outside Z01.
 - **History for owner item 2 (B-10, card Z-H):** zeroed-data holds only the old server's recordings for 4, 5 and 6 Oct (releases `rec-2026-10-04/05/06`, about 0.4 MB, 3 MB and 4.6 GB) and the summaries; this repo has no `data-day-*` release. Far below 30 clean days, so the owner is told before M2 starts.
 - **Owner, 7 Oct about 9:30 PM:** "When ur done archive all workers": after the map is done, every worker session is archived.
 
