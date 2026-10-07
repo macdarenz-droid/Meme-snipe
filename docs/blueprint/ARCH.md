@@ -453,7 +453,7 @@ MinTRL examples (DERIVED with the formula in [ST-32], one-sided 95%, SR_ref = 0,
 | | B-7 | Max drawdown at intended live sizing ≤ 20% of `E` |
 | | B-8 | Positive in the final untouched holdout (last 20% of `W_B`) and in each calendar week of `W_B` separately [ST-06, ST-37] |
 | | B-9 | Owner item 1: 10 replays of the evaluated run (same `RunSpec`, seed and build) give byte-identical decision logs (C-49) |
-| | B-10 | Owner item 2, extra check: the selected configuration replayed transaction by transaction through the same engine code on clean history already held (no holdout-contaminated day, no new bulk download, no new credits) shows zero crashes, illegal states or unreconciled intents; the days used are listed. It can fail the stage, never pass it alone (C-49) |
+| | B-10 | Owner item 2, required beside B-1..B-8: the selected configuration replayed transaction by transaction through the same engine code on at least 30 days (target 60) of survivorship-free history already held, outside the holdout-contaminated windows, with no new bulk download and no new credits, shows zero crashes, illegal states or unreconciled intents; the days used are listed. If fewer than 30 clean days are held, the owner is told before M2 starts and no shorter check stands in for it. It can fail the stage, never pass it alone (Meme-snipe card Z-H, C-49) |
 | Backtest passed → Replay passed (on `W_R`) | R-1 | ≥ 14 days of self-recorded post-BOOST snapshot data after `W_B` and ≥ max(300, `n_80`) trades, where `n_80` = ⌈DEFF × ((1.960 + 0.842) / `S_B`)²⌉ is the count that gives 80% power at a two-sided 5% level for the selected configuration's per-trade net Sharpe `S_B` measured on `W_B`, and DEFF is the same-day design effect (A-M13-03). Owner item 6: `W_R` is the untouched out-of-sample holdout, and the selected rules are frozen before it starts (C-49) |
 | | R-2 | Net mean CI lower bound > 0 (as B-2) |
 | | R-3 | Replay mean ≥ 50% of the `W_B` point estimate (otherwise the bar-level backtest is optimistic; investigate before proceeding) |
@@ -491,7 +491,7 @@ Stage `paper_passed` requires P-1..P-6, P-9 and P-10; P-7 (drills) and P-8 (chec
 | Owner item | Requirement | Where it binds |
 |---|---|---|
 | 1 Deterministic replay | The same market data replayed 10 times gives identical decision logs | B-9; A-M11-01 acceptance; INTEGRATION M2 exit |
-| 2 Historical backtest | Owner's choice "both" (2026-10-07): gate B on forward M07 data (`W_B` ≥ 30 days), plus a transaction-level replay of clean history already held, through the same engine code, with zero crashes, illegal states or unreconciled intents | B-1..B-8 on `W_B`; B-10; INTEGRATION M2 exit |
+| 2 Historical backtest | Owner's choice "both" (2026-10-07), both required: gate B on forward M07 data (`W_B` ≥ 30 days), and a transaction-level replay of at least 30 days (target 60) of clean, survivorship-free history already held, through the same engine code, with zero crashes, illegal states or unreconciled intents | B-1..B-8 on `W_B`; B-10 (card Z-H); INTEGRATION M2 exit |
 | 3 Live dry run | ≥ 48 h of the full engine on live feeds, ≥ 99% uptime, restart and disconnect drills, every decision logged with reasons | P-5; INTEGRATION M3 exit |
 | 4 Dry-run execution | Every paper entry and exit built as a real transaction and simulated (never sent); ≥ 95% simulate successfully with amounts within tolerance | P-6; A-M12-02; INTEGRATION M3 exit |
 | 5 Fault injection | Timeouts, stale feeds, rate limits and restarts mid-trade pass the acceptance cases | Section 16.5 tests at the M2 exit on the engine build; P-10 on the build promoted to `paper_passed` |
@@ -3063,7 +3063,7 @@ From this date the Blueprint is edited in `macdarenz-droid/Meme-snipe` (source c
 | The deep-pool proxy is not CS-1 | D08 | A04 | C-46 |
 | No low-volume configuration; open point "drops from one large sale" beside C-22 | 3.3; SPEC-A C-22 | A04 | C-46, C-47 |
 | Phase 0 kill-only check of MR-01's two configurations | 3.3; SPEC-A A-M13-01 (step 9, `killCheck`) | A05 (owner) | C-48 |
-| Owner pre-funding items 1-6 mapped to gates: B-9, B-10, R-1 (≥ max(300, `n_80`)), P-5 (48 h dry run), P-6 (≥ 95% simulate), new P-10 (fault injection); `paper_passed` needs P-10; plan `W_B` for up to about 65 days | 3.4; SPEC-A A-M11-01, A-M11-03, A-M12-02; SPEC-B B-M26-04; INTEGRATION M2, M3, M4 exits and gate table | A06 (item 2: owner) | C-49 |
+| Owner pre-funding items 1-6 mapped to gates: B-9, B-10 (≥ 30 clean history days, required), R-1 (≥ max(300, `n_80`)), P-5 (48 h dry run), P-6 (≥ 95% simulate), new P-10 (fault injection); `paper_passed` needs P-10; plan `W_B` for up to about 65 days | 3.4; SPEC-A A-M11-01, A-M11-03, A-M12-02; SPEC-B B-M26-04; INTEGRATION M2, M3, M4 exits and gate table | A06 (item 2: owner) | C-49 |
 | Planted-marker leak test; replay-vs-paper parity made exact (was "within the model's stated tolerance"); 10 identical replays | 16.4; SPEC-A A-M11-01, A-M11-03 | A06 (owner rule "Backtests are blind and reproduce live") | C-49 |
 | q in the break-even formula; conservative cost row binding for B-2 and R-2 until measured; 414,009 lamports as a sensitivity line only; fixed-cost cap of `k`% fixed in the PREREG | 2.3 | A07 | C-50 |
 | Families already tested, each with universe and window | 3.2 | A20 | C-51 |
@@ -3075,5 +3075,6 @@ From this date the Blueprint is edited in `macdarenz-droid/Meme-snipe` (source c
 | No early CoinGecko coarse screen for now | D08 | A18 (owner) | C-57 |
 | PM-01 screened only on swap-level or 1 Hz data | D08 | A19 | C-68 |
 | Rulings for A03, A08-A16, A21-A24 recorded; their ticket work stays with the cards Meme-snipe's map names | SPEC-A clarifications | A03, A08-A16, A21-A24 | C-58..C-67, C-69..C-72 |
+| A-M03-02's coverage path tested on fixtures only while PumpPortal is unused; UI-T07 built on a VM-03 fixture | SPEC-A A-M03-02; UI-T07 via INTEGRATION's fixture-first rule | Map round 3 red team (R3-10, R3-11) | C-73, C-74 |
 | B-M19-03 split into B-M19-03 (simulation and paper wiring, M2) and B-M19-06 (live port, M4); B-M29-04 split into B-M29-05 (`botctl import-run`, M2) and B-M29-04 (the rest, M4) | SPEC-B; INTEGRATION; ARCH 5.0b I-01, I-28 | INTEGRATION "Remaining issues" | — |
 | Register: RS-01..RS-39 added (this repo's research results, path:line @ `72f1793f`); `RS-*` added to the label line | FACTS.json; header | Addendum "Adopting" | — |
