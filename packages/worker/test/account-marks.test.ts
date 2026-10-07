@@ -99,8 +99,8 @@ describe('PaperAccount marks', () => {
     const tomorrow = a.fact(ledger, book, NO_LATCHES, melbourneDay(T).end + HOUR, noLegs).history;
     expect(tomorrow.markedAtDayStart).toBeNull();
     expect(tomorrow.markedAtWeekStart).toBe(sol(19.5));
-    // A peak taken after the moment asked about is not handed over.
-    expect(a.fact(ledger, book, NO_LATCHES, T - 1, noLegs).history.navMarks).toEqual([]);
+    // A peak dated after the moment asked about (the clock stepped back) is still handed over, dated then (red team C M2).
+    expect(a.fact(ledger, book, NO_LATCHES, T - 1, noLegs).history.navMarks).toEqual([{ atMs: T - 1, nav: sol(20.5) }]);
     const nextWeek = a.fact(ledger, book, NO_LATCHES, melbourneWeek(T).end + HOUR, noLegs).history;
     expect(nextWeek.markedAtWeekStart).toBeNull();
     ledger.close();
@@ -237,6 +237,30 @@ describe('SOL-BOOKS: an account.json from before is converted once at the openin
     expect(a.mark({ dayStartMs: melbourneDay(T).start, weekStartMs: melbourneWeek(T).start, equity: 0n as Lamports, nav: 200_000_000n as Lamports }, true, null, T)).toBe(false);
     a.price(usd(100), T);
     expect(a.state).toMatchObject({ openingSolPrice: usd(100), walletLamports: 200_000_000n });
+  });
+});
+
+describe('red team C M2: a clock stepped back never lowers the NAV peak', () => {
+  it('R10 still trips when the clock reads 1 s before the recorded NAV peak', () => {
+    const dir = tempState();
+    const ledger = openLedger(join(dir, 'ledger.sqlite'), 'paper');
+    const a = new PaperAccount(accountFile(dir), usd(20), T - 10 * HOUR, 0n);
+    a.price(usd(100), T - 10 * HOUR);
+    // The NAV peaked at 0.3 SOL ($30 at the $100 opening) at T; the wallet now holds 0.2 SOL, under 70% of the peak.
+    a.mark(snap(T, 20, 30), true, null, T);
+    const codesAt = (nowMs: number) => {
+      const fact = a.fact(ledger, emptyBook({ maxOpenPositions: 5 }), NO_LATCHES, nowMs, noLegs);
+      const input = {
+        session: startSession(TRIAL_POLICY), mode: 'paper' as const, clock: { now: () => ({ slot: 1n, txIndex: 0, ixIndex: 0, receivedAt: nowMs }) },
+        account: fact.history, latches: NO_LATCHES, market: { solBalance: fact.solBalance, regime: 'unknown' as const },
+      };
+      const req = { mint: 'MintY', requestedNotional: usd(2), network: { priorityFee: 0n, tip: 0n, baseFee: 5_000n }, rent: { ata: 0n, oneTime: 0n } };
+      return evaluateEntry(input, req as unknown as Parameters<typeof evaluateEntry>[1]).reasons.map((r) => r.code);
+    };
+    expect(codesAt(T + 1_000)).toContain('kill_switch');
+    expect(codesAt(T - 1_000)).toContain('kill_switch');
+    expect(codesAt(T - HOUR)).toContain('kill_switch');
+    ledger.close();
   });
 });
 

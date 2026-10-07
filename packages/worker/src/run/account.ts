@@ -702,7 +702,9 @@ export class PaperAccount {
       // loss only), and the NAV peak since the last re-arm.
       markedAtDayStart: this.#s.dayMark !== undefined && this.#s.dayMark.startMs === melbourneDay(nowMs).start ? this.#s.dayMark.equity : null,
       markedAtWeekStart: this.#s.weekMark !== undefined && this.#s.weekMark.startMs === melbourneWeek(nowMs).start ? this.#s.weekMark.equity : null,
-      navMarks: this.#s.navPeak === undefined || this.#s.navPeak.atMs > nowMs ? [] : [{ atMs: this.#s.navPeak.atMs, nav: this.#s.navPeak.nav }],
+      // A peak dated after now (the clock stepped back) is still the peak: dated now, never dropped (red team C M2,
+      // supervisor ruling: a clock step back never lowers a risk mark or peak; it fails closed).
+      navMarks: this.#s.navPeak === undefined ? [] : [{ atMs: Math.min(this.#s.navPeak.atMs, nowMs), nav: this.#s.navPeak.nav }],
       entries: this.#s.entries.map((e) => ({ mint: e.mint as Mint, atMs: e.atMs })),
       unresolvedEntries: Object.values(book.intents).filter((i) => i.intent.purpose === 'entry' && !isTerminal(i) && i.reservation?.status === 'held').map((i) => ({ mint: i.intent.mint })),
       heldReservations: held, version,
