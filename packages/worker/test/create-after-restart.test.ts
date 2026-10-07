@@ -14,7 +14,7 @@ import { DeployerStore } from '../src/run/deployer-store.ts';
 import { OFF_CHAIN } from '../../core/src/engine/index.ts';
 import { DeployerIndex, RugLabeller } from '../../core/src/gates/index.ts';
 import { RUG_CONFIG } from '../../core/src/config/rugs.ts';
-import { type DailyBudget, PERSIST_FILE, saveState } from '../src/persist/index.ts';
+import { type BudgetDay, type DailyBudget, PERSIST_FILE, saveState } from '../src/persist/index.ts';
 import { CREATE_LOOKUP_CREDITS, CreditBook, type CreateLookup, LiveProviders, findCreate } from '../src/run/sources.ts';
 import { DEFAULT_LIVE_FEED, FakeSocketHub, LiveFeed, rpcHandler, scriptedHttp, type Frame } from '../src/providers/index.ts';
 import { ManualTimers } from '../src/scheduler/index.ts';
@@ -43,6 +43,7 @@ const budget = (left: number) => {
       b.left -= c;
       b.spent += c;
       b.calls.push(`spend ${c}`);
+      return '' as BudgetDay;
     },
     refund: (c: number) => {
       b.left += c;

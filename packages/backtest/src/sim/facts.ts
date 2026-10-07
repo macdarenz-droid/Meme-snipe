@@ -185,6 +185,11 @@ interface MintState {
   candlesHead: Candle[];
   candlesTail: Candle[];
   creationBuyers: Set<string>;
+  /**
+   * RT-A2b: the insider window live's H13 read fetches (readers.ts `readMintHistory`): the distinct first buyers seen so
+   * far (cleared once the window closes) and the window's last slot, null while it is still open.
+   */
+  insiderWindow: { buyers: Set<string>; through: bigint | null };
   view: PoolView | null;
   checks: Map<string, number>;
   checkSeq: number;
@@ -208,6 +213,10 @@ export const tradeTailValue = (row: TailRow, vault?: bigint): unknown => ({
   event: { trailing: row.extraHex.length / 2, extra: row.extraHex, ...(vault === undefined ? {} : { data: { poolQuoteTokenReserves: vault } }) },
   txSlot: row.slot, signature: row.signature,
 });
+
+/** RT-A2b: live's insider read window (core/src/facts/producer.ts `producerOptions`: `insiderSlots`, `firstBuyers`). */
+export const INSIDER_SLOTS = 2n;
+export const FIRST_BUYERS = 20;
 
 export class FactProjector {
   readonly #o: FactOptions;
@@ -277,7 +286,7 @@ export class FactProjector {
       s = {
         mint, sampled: true, create: null, graduatedAtMs: null, migration: null, pool: null,
         lp: { supply: 0n, known: false, minted: 0n, burned: 0n }, account: null, pendingExt: [], supply: 0n, holderProblem: null,
-        candlesHead: [], candlesTail: [], creationBuyers: new Set(), view: null, checks: new Map(), checkSeq: 0, tailSeen: false,
+        candlesHead: [], candlesTail: [], creationBuyers: new Set(), insiderWindow: { buyers: new Set(), through: null }, view: null, checks: new Map(), checkSeq: 0, tailSeen: false,
       };
       this.#mints.set(mint, s);
     }
@@ -529,8 +538,11 @@ export class FactProjector {
    * RT-A2 (H5's curve half, parity with live): live does not watch the curve (`tradeStreams: false`), so the curve
    * trades its store holds are those of the transactions it reads: the create transaction (the creates watch, or the
    * create fetched at shortlist; H9 needs it) and the completing buy (COMPLETION-READ or FACTS-REREAD; H7 needs it).
+   * RT-A2b: live also ingests, for H13's insider read, every transaction of the mint from its create through the
+   * insider window's last slot (`#inInsiderWindow`), so their curve trades are in its store too.
    * The backtest releases the tails of those same transactions only, whole, as live ingests them: every curve trade
-   * of the create transaction, and every curve trade of the transaction whose trade empties the curve
+   * of the create transaction and of the insider window, and every curve trade of the transaction whose trade empties
+   * the curve
    * (`realTokenReserves` 0, the completing buy). The completing transaction's earlier trades are held (`#curveTx`) until
    * that trade arrives and released with it, at its moment: the same transaction, so nothing past it is seen early. A
    * tail anywhere else on the curve is never seen live, so the backtest does not see it either: the two judge the same
@@ -540,7 +552,7 @@ export class FactProjector {
     const s = this.#mints.get(row.mint);
     if (s === undefined) return;
     if (this.#curveTx.signature !== row.signature) this.#curveTx = { signature: row.signature, rows: [] };
-    if (row.signature === s.create?.signature) {
+    if (row.signature === s.create?.signature || this.#inInsiderWindow(s, row)) {
       if (row.extraHex !== '') this.#tail(`te:${row.signature}:${row.evIdx}`, `pump:TradeEvent:${row.mint}`, row, m, out);
     } else if (row.realTokenReserves === 0n) {
       for (const r of this.#curveTx.rows) if (r.mint === row.mint) this.#tail(`te:${r.signature}:${r.evIdx}`, `pump:TradeEvent:${r.mint}`, r, m, out);
@@ -556,6 +568,26 @@ export class FactProjector {
       realTokenReserves: row.realTokenReserves, quoteMint: row.quoteMint === SYSTEM ? NATIVE_MINT : row.quoteMint, realQuoteReserves: row.realSolReserves,
     };
     this.#label(this.#labeller.observe({ kind: 'market', id: `ev:${row.signature}:${row.evIdx}`, moment: m, key: 'pump', value: { event: { program: 'pump', name: 'TradeEvent', data }, signature: row.signature } }), m, out);
+  }
+
+  /**
+   * RT-A2b: whether a curve trade falls in the insider window live's H13 read fetches (`readMintHistory`, whole slots
+   * from the create's): through the create's slot + INSIDER_SLOTS, or through the slot of the FIRST_BUYERS-th distinct
+   * first buyer when that is later. Rows arrive in chain order, so the window is known to be closed only once that
+   * buyer's slot has passed.
+   */
+  #inInsiderWindow(s: MintState, row: CurveTradeRow): boolean {
+    if (s.create === null) return false;
+    const w = s.insiderWindow;
+    if (w.through === null && row.isBuy && !w.buyers.has(row.user)) {
+      w.buyers.add(row.user);
+      if (w.buyers.size >= FIRST_BUYERS) {
+        const floor = s.create.slot + INSIDER_SLOTS;
+        w.through = row.slot > floor ? row.slot : floor;
+        w.buyers.clear();
+      }
+    }
+    return w.through === null || row.slot <= w.through;
   }
 
   #ammTrade(row: AmmSwapRow, m: Moment, out: FeedEvent[]): void {

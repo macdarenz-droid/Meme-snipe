@@ -17,7 +17,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { DailyBudget } from '../../src/persist/state.ts';
+import { type BudgetDay, DailyBudget } from '../../src/persist/state.ts';
 import { FILL_CREDITS_PER_DAY } from '../../src/run/config.ts';
 import { DOWNTIME_CREDIT_CAP, type SeedRequest } from '../../src/run/worker.ts';
 import { runSeed } from '../../src/run/seed-start.ts';
@@ -37,22 +37,22 @@ describe('RT-A9: the fills\' budget refunds a pre-midnight reserve to the new da
     // #downtimeMigrations: the cap is booked before the backfill reads.
     const t0 = midnight - 10_000;
     const cap = Math.min(DOWNTIME_CREDIT_CAP, b.remaining(t0));
-    b.spend(cap, t0);
+    const day0 = b.spend(cap, t0);
     // Past midnight, while the backfill still runs, the new day's readers (pool fills, completion reads) take all of
     // the new day's budget.
     const t1 = midnight + 5_000;
     const newDay = b.remaining(t1);
     expect(newDay).toBe(FILL_CREDITS_PER_DAY);
-    b.spend(newDay, t1);
+    const day1 = b.spend(newDay, t1);
     expect(b.remaining(t1)).toBe(0);
-    // The backfill ends having used nothing (no downtime migrations), and gives back its reserve, named by the moment
-    // it was booked at (A-FACTS-FIXES: every caller passes its spend's moment, see the call-site tests below).
+    // The backfill ends having used nothing (no downtime migrations), and gives back its reserve, named by the day its
+    // spend answered (A-FACTS-FIXES: `spend` returns it and `refund` takes it, so no caller can name another day).
     const used = 0;
-    b.refund(Math.max(0, cap - used), t0);
+    b.refund(Math.max(0, cap - used), day0);
     // Correct: the old day's unused reserve never becomes new-day credit; the new day has spent its 20,000.
     expect(b.remaining(midnight + 31_000)).toBe(0);
     // A same-day refund still gives back (the new day's own reserve).
-    b.refund(500, t1);
+    b.refund(500, day1);
     expect(b.remaining(midnight + 32_000)).toBe(500);
   });
 
@@ -60,8 +60,8 @@ describe('RT-A9: the fills\' budget refunds a pre-midnight reserve to the new da
     const path = join(mkdtempSync(join(tmpdir(), 'rt-a9-')), 'fill-budget.json');
     const midnight = 20_000 * DAY_MS;
     const b = DailyBudget.load(path, FILL_CREDITS_PER_DAY, midnight - 10_000);
-    b.spend(3_000, midnight - 10_000);
-    b.refund(3_000, midnight - 10_000);
+    const day = b.spend(3_000, midnight - 10_000);
+    b.refund(3_000, day);
     expect(b.remaining(midnight - 9_000)).toBe(FILL_CREDITS_PER_DAY);
     expect(b.remaining(midnight + 1_000)).toBe(FILL_CREDITS_PER_DAY);
   });
@@ -77,7 +77,7 @@ describe('RT-A9: the fills\' budget callers refund to their reserve\'s moment', 
   };
   const spy = () => {
     const calls: [string, number, number][] = [];
-    return { calls, budget: { remaining: () => 10_000, spend: (c: number, ms: number) => { calls.push(['spend', c, ms]); }, refund: (c: number, ms: number) => { calls.push(['refund', c, ms]); } } };
+    return { calls, budget: { remaining: () => 10_000, spend: (c: number, ms: number) => { calls.push(['spend', c, ms]); return String(ms) as BudgetDay; }, refund: (c: number, day: BudgetDay) => { calls.push(['refund', c, Number(day)]); } } };
   };
   const sameMoment = (calls: [string, number, number][]) => {
     const spend = calls.find((c) => c[0] === 'spend');

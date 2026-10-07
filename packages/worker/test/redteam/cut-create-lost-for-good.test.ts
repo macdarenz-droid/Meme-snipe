@@ -17,7 +17,7 @@
 // busy day (more creates, or a restart re-asking a backlog) spends the cap; from then on every new cut log is a
 // 14-day block on all coins. Golden rule: every wrongly refused coin is a real loss.
 import { describe, expect, it } from 'vitest';
-import { CUT_CREATE_FETCHES_PER_DAY, CUT_CREATE_RETRY_MS } from '../../src/run/worker.ts';
+import { CUT_CREATE_FETCHES_PER_DAY, CUT_CREATE_RETRY_MS, LOST_CREATE_REASKS_PER_DAY } from '../../src/run/worker.ts';
 import { fetchCapsFile } from '../../src/run/state.ts';
 import { Market, makeWorker, tempState, virtualTimers } from '../worker-harness.ts';
 
@@ -127,5 +127,41 @@ describe('RT-A8: a cut creates log refused by the day\'s cap is never asked for 
     await nextDay(h2, m2);
     expect(again).toEqual([[X, 'cut-create'], [X, 'cut-create']]);
     await h2.worker.stop();
+  }, 60_000);
+
+  // The red team's original probe (1b5fb0f), restored at the review of #273: a backlog of holes larger than the day's
+  // cap (here 3,000 fetches the harness answers "found" without releasing their transactions, so their holes stay). The
+  // next day's re-ask goes newest first, so the newest hole X is asked for; the re-asks stop at their share, and a fresh
+  // cut log that day is still fetched from the rest of the cap.
+  it('original probe: a backlog bigger than the cap; the next UTC day asks for the newest hole first, within its share, and fresh logs keep the rest', async () => {
+    const fetchedWhy: [string, string][] = [];
+    const h = makeWorker({ found: true, fetchedWhy });
+    const m = await boot(h);
+    for (let k = 1; k <= CUT_CREATE_FETCHES_PER_DAY; k++) cut(h, sig(k), 1_003n);
+    await m.run(2_000, 200, () => m.slot());
+    expect(fetchedWhy).toHaveLength(CUT_CREATE_FETCHES_PER_DAY);
+    // The day's cap is spent: X's log arrives now and is not fetched (fail closed for today, as documented).
+    const X = sig(CUT_CREATE_FETCHES_PER_DAY + 7);
+    cut(h, X, 1_005n);
+    await m.run(2_000, 200, () => m.slot());
+    expect(fetchedWhy.some(([s]) => s === X)).toBe(false);
+    expect(h.worker.strategy.deployers.isLost(X)).toBe(true);
+    // The next UTC day: the cap is back, X is still a hole that blocks H14 for every coin.
+    const before = fetchedWhy.length;
+    await nextDay(h, m);
+    expect(h.worker.strategy.deployers.lostCreate(0, now(h))).not.toBeNull();
+    // X, the newest, is asked for (once); the day's re-asks stop at their share.
+    expect(fetchedWhy.filter(([s]) => s === X)).toEqual([[X, 'cut-create']]);
+    expect(fetchedWhy.slice(before)[0]).toEqual([X, 'cut-create']);
+    expect(fetchedWhy.length - before).toBe(LOST_CREATE_REASKS_PER_DAY);
+    // A fresh cut log that day is fetched from the rest of the cap.
+    const Y = sig(CUT_CREATE_FETCHES_PER_DAY + 9);
+    cut(h, Y, 1_007n);
+    await m.run(2_000, 200, () => m.slot());
+    expect(fetchedWhy.filter(([s]) => s === Y)).toEqual([[Y, 'cut-create']]);
+    // Later steps of the same day ask no more re-asks.
+    await m.run(60_000, 1_000, () => m.slot());
+    expect(fetchedWhy.length - before).toBe(LOST_CREATE_REASKS_PER_DAY + 1);
+    await h.worker.stop();
   }, 60_000);
 });

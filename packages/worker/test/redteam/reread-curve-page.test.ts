@@ -79,12 +79,13 @@ describe('RT-A7: the re-read reads only the curve\'s newest page, so failed late
   const failed = (n: number, tag: string, slot: (i: number) => bigint) => Array.from({ length: n }, (_, i) => ({ signature: `${tag}${i}`, slot: slot(i), err: { InstructionError: [2, { Custom: 6005 }] }, blockTime: migrate.blockTime! + 3 }));
   const sigPages = (asked: string[]) => asked.filter((a) => a.startsWith(`sigs ${CURVE}`));
 
-  it('a full page of failed attempts after the migration: the re-read pages back with `before` and brings the completion', async () => {
-    const late = failed(CURVE_PAGE_LIMIT + 50, 'failedLateBuy', (i) => migrate.slot + BigInt(200 - i));
+  it('more pages of failed attempts after the migration than a try can page (7 pages): the re-read reads from the migration and brings the completion', async () => {
+    const late = failed(7 * CURVE_PAGE_LIMIT, 'failedLateBuy', (i) => migrate.slot + BigInt(10_000 - i));
     const { asked, rpc } = curveRpc([...late, { signature: migrate.signature, slot: migrate.slot, err: null, blockTime: migrate.blockTime }, ...before]);
     const r = await run(rpc, { reread: null });
-    expect(sigPages(asked).slice(0, 2)).toEqual([`sigs ${CURVE}`, `sigs ${CURVE} before ${late[CURVE_PAGE_LIMIT - 1]!.signature}`]);
-    expect(asked).toContain(`tx ${complete.signature}`);
+    // The migration's signature is known (its fetch through the fetcher failed): read by it, then the curve before it.
+    expect(sigPages(asked)).toEqual([`sigs ${CURVE} before ${migrate.signature}`]);
+    expect(asked.slice(0, 3)).toEqual([`tx ${migrate.signature}`, `sigs ${CURVE} before ${migrate.signature}`, `tx ${complete.signature}`]);
     expect(r.judged.some((j) => j.migration)).toBe(true);
     expect(missingMigration(r.last.r)).toBe(false);
   }, 120_000);
@@ -100,9 +101,9 @@ describe('RT-A7: the re-read reads only the curve\'s newest page, so failed late
     expect(r.judged.some((j) => j.migration)).toBe(true);
   }, 120_000);
 
-  it('a curve of nothing but failed attempts: every try stays inside its reserve and the refusal stands (fail closed)', async () => {
-    const late = failed(20 * CURVE_PAGE_LIMIT, 'failedLateBuy', (i) => migrate.slot + BigInt(5_000 - i));
-    const { asked, rpc } = curveRpc([...late, { signature: migrate.signature, slot: migrate.slot, err: null, blockTime: migrate.blockTime }, ...before]);
+  it('20 pages of failed attempts between the completion and the migration: every try stays inside its reserve and the refusal stands (fail closed)', async () => {
+    const between = failed(20 * CURVE_PAGE_LIMIT, 'failedEarlyBuy', (i) => migrate.slot - BigInt(i % 3));
+    const { asked, rpc } = curveRpc([{ signature: migrate.signature, slot: migrate.slot, err: null, blockTime: migrate.blockTime }, ...between, ...before]);
     const r = await run(rpc, { reread: null });
     expect(asked).not.toContain(`tx ${complete.signature}`);
     const tries = CUT_CREATE_RETRY_MS.length + 1;

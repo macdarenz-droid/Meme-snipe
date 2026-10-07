@@ -9,6 +9,7 @@ import { candlesKey, evaluateHardRejects, migrationKey, type GateContext, type G
 import type { MicroUsd, Lamports } from '../../../core/src/units/index.ts';
 import { RESEARCH_CONFIG } from '../../../core/src/config/index.ts';
 import { COMPLETION_CREDITS, type WorkerDeps } from '../../src/run/worker.ts';
+import type { BudgetDay, FillBudget } from '../../src/persist/index.ts';
 import { fetchCapsFile } from '../../src/run/state.ts';
 import { type Harness, Market, makeWorker, tempState, virtualTimers } from '../worker-harness.ts';
 import { PUMP_MIGRATION_AUTHORITY as MIGRATION_AUTHORITY } from '../../src/run/sources.ts';
@@ -39,9 +40,9 @@ const judge = (ctx: StrategyContext): HardResult => {
 };
 export const missingMigration = (r: HardResult) => r.reasons.some((x) => x.gate === 'H16' && x.code === 'missing' && (x.input === 'curve' || x.input === 'migration'));
 
-export const run = async (rpc: Rpc, o: { readonly reread?: number | null; readonly stateDir?: string; readonly window?: boolean; readonly logsOnly?: boolean; readonly timers?: ReturnType<typeof virtualTimers>; readonly noMigration?: boolean; readonly runMs?: number; readonly findCreate?: WorkerDeps['findCreate']; readonly fill?: number; readonly found?: (sig: string, why: string, h: Harness) => boolean; readonly after?: (h: Harness, m: Market, tick: () => void) => Promise<void>; readonly beforeLand?: (h: Harness, m: Market, tick: () => void) => Promise<void>; readonly budget?: { remaining(nowMs: number): number; spend(credits: number, nowMs: number): void; refund(credits: number, nowMs: number): void } } = {}) => {
+export const run = async (rpc: Rpc, o: { readonly reread?: number | null; readonly stateDir?: string; readonly window?: boolean; readonly logsOnly?: boolean; readonly timers?: ReturnType<typeof virtualTimers>; readonly noMigration?: boolean; readonly runMs?: number; readonly findCreate?: WorkerDeps['findCreate']; readonly fill?: number; readonly found?: (sig: string, why: string, h: Harness) => boolean; readonly after?: (h: Harness, m: Market, tick: () => void) => Promise<void>; readonly beforeLand?: (h: Harness, m: Market, tick: () => void) => Promise<void>; readonly budget?: FillBudget } = {}) => {
   let left = o.fill ?? COMPLETION_CREDITS - 1;
-  const budget = o.budget ?? { remaining: () => left, spend: (c: number) => { left -= c; }, refund: (c: number) => { left += c; } };
+  const budget = o.budget ?? { remaining: () => left, spend: (c: number) => { left -= c; return '' as BudgetDay; }, refund: (c: number) => { left += c; } };
   const timers = o.timers ?? virtualTimers(AT - 30_000);
   const stateDir = o.stateDir ?? tempState();
   if (o.reread !== undefined && o.reread !== null) fetchCapsFile(stateDir).write({ day: Math.floor(timers.now() / DAY_MS), cutCreate: 0, cutTrade: 0, reread: o.reread });

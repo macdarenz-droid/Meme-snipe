@@ -2,6 +2,7 @@
 // again, under its own daily budget in fetch-caps.json (never the fills' budget the boot seed can empty), with bounded
 // retries. Fail-closed: the facts form only from the transactions put on the feed; a spent budget or spent retries keep
 // the refusal. Real public mainnet transactions (test/fixtures/completion-read.json, as COMPLETION-READ's tests).
+import type { BudgetDay } from '../src/persist/index.ts';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -58,11 +59,12 @@ const curveRpc = (fail = 0) => {
   const rpc: Rpc = {
     getSignaturesForAddress: async (address, o) => {
       asked.push(`sigs ${address}${o.before === undefined ? '' : ` before ${o.before}`}`);
+      // Any read of the curve (newest, or before the migration: RT-A7) fails while `fail` lasts.
+      if (address === CURVE && failures > 0) {
+        failures--;
+        throw new Error('timeout');
+      }
       if (address === CURVE && o.before === undefined) {
-        if (failures > 0) {
-          failures--;
-          throw new Error('timeout');
-        }
         return [{ signature: migrate.signature, slot: migrate.slot, err: null, blockTime: migrate.blockTime }, ...FIX.curveSignaturesBeforeMigration.map((x) => ({ ...x, slot: BigInt(x.slot) }))];
       }
       return address === CURVE && o.before === migrate.signature ? FIX.curveSignaturesBeforeMigration.map((x) => ({ ...x, slot: BigInt(x.slot) })) : [];
@@ -80,9 +82,10 @@ const curveRpc = (fail = 0) => {
  * migration watch's fetch puts it on the feed, then the run goes into the candidate's window. `reread` is what
  * fetch-caps.json holds for today when it starts (null: no file).
  */
-const run = async (rpc: Rpc, o: { readonly reread?: number | null; readonly stateDir?: string; readonly window?: boolean; readonly logsOnly?: boolean; readonly timers?: ReturnType<typeof virtualTimers>; readonly noMigration?: boolean; readonly runMs?: number; readonly findCreate?: WorkerDeps['findCreate']; readonly fill?: number; readonly found?: (sig: string, why: string, h: Harness) => boolean; readonly after?: (h: Harness, m: Market, tick: () => void) => Promise<void>; readonly beforeLand?: (h: Harness, m: Market, tick: () => void) => Promise<void> } = {}) => {
+const run = async (rpc: Rpc, o: { readonly reread?: number | null; readonly stateDir?: string; readonly window?: boolean; readonly logsOnly?: boolean; readonly timers?: ReturnType<typeof virtualTimers>; readonly noMigration?: boolean; readonly runMs?: number; readonly findCreate?: WorkerDeps['findCreate']; readonly fill?: number; readonly found?: (sig: string, why: string, h: Harness) => boolean; readonly after?: (h: Harness, m: Market, tick: () => void) => Promise<void>; readonly beforeLand?: (h: Harness, m: Market, tick: () => void) => Promise<void>; readonly onFill?: () => void } = {}) => {
   let left = o.fill ?? COMPLETION_CREDITS - 1;
-  const budget = { remaining: () => left, spend: (c: number) => { left -= c; }, refund: (c: number) => { left += c; } };
+  // `onFill`: each spend from the fills' budget (COMPLETION-READ's reserve; the re-read never spends from it).
+  const budget = { remaining: () => left, spend: (c: number) => { left -= c; o.onFill?.(); return '' as BudgetDay; }, refund: (c: number) => { left += c; } };
   const timers = o.timers ?? virtualTimers(AT - 30_000);
   const stateDir = o.stateDir ?? tempState();
   if (o.reread !== undefined && o.reread !== null) fetchCapsFile(stateDir).write({ day: Math.floor(timers.now() / DAY_MS), cutCreate: 0, cutTrade: 0, reread: o.reread });
@@ -140,7 +143,8 @@ const run = async (rpc: Rpc, o: { readonly reread?: number | null; readonly stat
   return { h, judged, last, fillLeft: () => left, caps, rereads };
 };
 
-const curveReads = (asked: readonly string[]) => asked.filter((a) => a === `sigs ${CURVE}`).length;
+/** The curve pages asked (newest, or before the migration: RT-A7). */
+const curveReads = (asked: readonly string[]) => asked.filter((a) => a.startsWith(`sigs ${CURVE}`)).length;
 
 describe('FACTS-REREAD: a candidate missing its migration fact has it read again under its own budget', () => {
   it('reads the stage-1 inputs a reject names as H16 missing, and nothing else', () => {
@@ -165,9 +169,9 @@ describe('FACTS-REREAD: a candidate missing its migration fact has it read again
     // COMPLETION-READ skipped for want of the fills' budget; that budget is never touched by the re-read.
     expect(r.h.logs).toContain(`Curve completion of ${MINT} not read: the fill budget is spent; H7 waits for it.`);
     expect(r.fillLeft()).toBe(COMPLETION_CREDITS - 1);
-    expect(asked).toEqual([`sigs ${CURVE}`, `tx ${migrate.signature}`, `tx ${complete.signature}`]);
-    // Charged to fetch-caps.json: the migration asked by its signature (1), the page and the two transactions read (3);
-    // the rest of the reserve given back.
+    expect(asked).toEqual([`tx ${migrate.signature}`, `sigs ${CURVE} before ${migrate.signature}`, `tx ${complete.signature}`]);
+    // RT-A7: the migration read by its signature (the fetcher's ask failed), then the curve from before it. Charged to
+    // fetch-caps.json: the fetcher's ask (1), the migration, the page and the completion (3); the rest given back.
     expect(r.caps.reread).toBe(4);
     expect(r.rereads).toEqual([expect.objectContaining({ mint: MINT, try: 1, why: 'fill-budget', needs: ['curve'], landed: true })]);
     const first = r.judged.findIndex((j) => j.migration);
@@ -188,11 +192,11 @@ describe('FACTS-REREAD: a candidate missing its migration fact has it read again
 
   it('(b) the migration watch\'s fetch failed: the candidate\'s migration is asked for again, the curve brings it, H7 and H10 pass', async () => {
     const { asked, rpc } = curveRpc();
-    const r = await run(rpc, { reread: null, logsOnly: true });
+    const r = await run(rpc, { reread: null, logsOnly: true, onFill: () => asked.push('fills') });
     // No completion read (it keys on the fetched transaction); the failed fetch's status asked for the re-read.
-    expect(asked.filter((a) => a.includes('before'))).toEqual([]);
+    expect(asked.filter((a) => a === 'fills')).toEqual([]);
     expect(r.rereads[0]).toEqual(expect.objectContaining({ mint: MINT, try: 1, why: 'fetch-failed', needs: ['migration'], landed: true }));
-    expect(asked).toEqual([`sigs ${CURVE}`, `tx ${migrate.signature}`, `tx ${complete.signature}`]);
+    expect(asked).toEqual([`tx ${migrate.signature}`, `sigs ${CURVE} before ${migrate.signature}`, `tx ${complete.signature}`]);
     const first = r.judged.findIndex((j) => j.migration);
     expect(first).toBeGreaterThan(-1);
     expect(r.judged.slice(0, first).some((j) => missingMigration(j.r))).toBe(true);
@@ -213,7 +217,7 @@ describe('FACTS-REREAD: a candidate missing its migration fact has it read again
     expect(second.h.logs.some((l) => l.startsWith('Saved state restored'))).toBe(true);
     // The journal holds both processes: the second one's re-read is the one asked because of the restore.
     expect(second.rereads.find((x) => x['why'] === 'restored')).toEqual(expect.objectContaining({ mint: MINT, try: 1, landed: true }));
-    expect(asked.slice(0, 3)).toEqual([`sigs ${CURVE}`, `tx ${migrate.signature}`, `tx ${complete.signature}`]);
+    expect(asked.slice(0, 3)).toEqual([`tx ${migrate.signature}`, `sigs ${CURVE} before ${migrate.signature}`, `tx ${complete.signature}`]);
     // Before its window opened: no refusal was needed to ask.
     const formed = second.judged.find((j) => j.migration);
     expect(formed).toBeDefined();
@@ -296,9 +300,10 @@ describe('FACTS-REREAD: a candidate missing its migration fact has it read again
     const t = await run(rpc2, { reread: null });
     expect(t.rereads.map((x) => [x['try'], x['landed']])).toEqual([[1, false], [2, true]]);
     // The first try reads on past the completion it cannot get; the second skips the migration it already has.
-    const second = asked2.lastIndexOf(`sigs ${CURVE}`);
-    expect(asked2.slice(0, 3)).toEqual([`sigs ${CURVE}`, `tx ${migrate.signature}`, `tx ${complete.signature}`]);
-    expect(asked2.slice(second)).toEqual([`sigs ${CURVE}`, `tx ${complete.signature}`]);
+    // RT-A7: the second try reads from the migration it already has (`before` it), past any failed late buys.
+    const second = asked2.lastIndexOf(`sigs ${CURVE} before ${migrate.signature}`);
+    expect(asked2.slice(0, 3)).toEqual([`tx ${migrate.signature}`, `sigs ${CURVE} before ${migrate.signature}`, `tx ${complete.signature}`]);
+    expect(asked2.slice(second)).toEqual([`sigs ${CURVE} before ${migrate.signature}`, `tx ${complete.signature}`]);
     expect(asked2.filter((a) => a === `tx ${migrate.signature}`)).toHaveLength(1);
     expect(missingMigration(t.last.r)).toBe(false);
   }, 120_000);
@@ -347,9 +352,9 @@ describe('FACTS-REREAD: a candidate missing its migration fact has it read again
     const get = rpc.getTransaction;
     rpc.getTransaction = async (sig) => (first && sig === complete.signature ? ((first = false), asked.push(`tx ${sig}`), null) : get(sig));
     // The fills' budget has room: only the running re-read keeps COMPLETION-READ from reading the curve as well.
-    const r = await run(rpc, { reread: null, logsOnly: true, fill: 10 * COMPLETION_CREDITS });
+    const r = await run(rpc, { reread: null, logsOnly: true, fill: 10 * COMPLETION_CREDITS, onFill: () => asked.push('fills') });
     expect(r.rereads.map((x) => [x['try'], x['landed']])).toEqual([[1, false], [2, true]]);
-    expect(asked.filter((a) => a.includes('before'))).toEqual([]);
+    expect(asked.filter((a) => a === 'fills')).toEqual([]);
     expect(r.fillLeft()).toBe(10 * COMPLETION_CREDITS);
     expect(missingMigration(r.last.r)).toBe(false);
   }, 60_000);
@@ -418,12 +423,14 @@ describe('FACTS-REREAD: a candidate missing its migration fact has it read again
     const get = rpc.getTransaction;
     // The completion cannot be read during the chain's five tries; it can afterwards.
     rpc.getTransaction = async (sig) => (sig === complete.signature && fails-- > 0 ? (asked.push(`tx ${sig}`), null) : get(sig));
-    const r = await run(rpc, { reread: null, logsOnly: true, fill: 10 * COMPLETION_CREDITS });
+    const r = await run(rpc, { reread: null, logsOnly: true, fill: 10 * COMPLETION_CREDITS, onFill: () => asked.push('fills') });
     expect(r.rereads.map((x) => x['landed'])).toEqual([false, false, false, false, false]);
-    // After the last try, COMPLETION-READ reads the curve before the migration once, from the fills' budget.
-    const before = asked.findIndex((a) => a.includes('before'));
-    expect(before).toBeGreaterThan(asked.lastIndexOf(`sigs ${CURVE}`));
-    expect(asked.filter((a) => a.includes('before'))).toHaveLength(1);
+    // After the last try, COMPLETION-READ reads the curve before the migration once, from the fills' budget: its one
+    // spend comes after every re-read page, and the only page after it is its own.
+    const fills = asked.indexOf('fills');
+    expect(asked.filter((a) => a === 'fills')).toHaveLength(1);
+    expect(asked.slice(0, fills).filter((a) => a.startsWith(`sigs ${CURVE}`)).length).toBeGreaterThanOrEqual(5);
+    expect(asked.slice(fills + 1).filter((a) => a.startsWith('sigs'))).toEqual([`sigs ${CURVE} before ${migrate.signature}`]);
     expect(r.fillLeft()).toBeLessThan(10 * COMPLETION_CREDITS);
     expect(missingMigration(r.last.r)).toBe(false);
     // Parity (TEST-1): the late completion is a recorded transaction: the session replays ten times to the same decisions.
@@ -447,9 +454,9 @@ describe('FACTS-REREAD: a candidate missing its migration fact has it read again
     };
     // The day's budget pays for exactly one try: the second parks the chain.
     const cost = 1 + 1 + REREAD_CURVE_READS;
-    const befores = () => asked.filter((a) => a.includes('before')).length;
+    const befores = () => asked.filter((a) => a === 'fills').length;
     const r = await run(rpc, {
-      reread: REREAD_CREDITS_PER_DAY - cost, logsOnly: true, fill: 10 * COMPLETION_CREDITS, window: false, runMs: CUT_CREATE_RETRY_MS[0]! + 60_000,
+      reread: REREAD_CREDITS_PER_DAY - cost, logsOnly: true, fill: 10 * COMPLETION_CREDITS, window: false, runMs: CUT_CREATE_RETRY_MS[0]! + 60_000, onFill: () => asked.push('fills'),
       after: async (h, m, tick) => {
         // Parked: COMPLETION-READ, which stood aside for the running chain, was made once and found nothing.
         expect(befores()).toBe(1);
@@ -457,10 +464,13 @@ describe('FACTS-REREAD: a candidate missing its migration fact has it read again
         slow = true;
         h.timers.set((Math.floor(h.timers.now() / DAY_MS) + 1) * DAY_MS + 1_000);
         h.worker.step();
-        const pages = curveReads(asked);
+        // Every curve page (the resumed try reads from the migration it has, RT-A7, so `before` it).
+        const curvePages = () => asked.filter((x) => x.startsWith(`sigs ${CURVE}`)).length;
+        const pages = curvePages();
         // The resumed try reads the curve again (slowly) while the next steps close the coin's window.
         for (let k = 0; k < 30; k++) await new Promise<void>((res) => setImmediate(res));
-        expect(curveReads(asked)).toBe(pages + 1);
+        expect(curvePages()).toBe(pages + 1);
+        expect(befores()).toBe(1);
         await m.run(60_000, 5_000, tick);
       },
     });

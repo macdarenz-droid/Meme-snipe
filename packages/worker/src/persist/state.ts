@@ -482,6 +482,15 @@ export const loadState = (path: string, rugs: RugConfig, continuing: (stream: st
   }
 };
 
+/** RT-A9: the UTC day a budget's `spend` booked its credits on; a refund names it, so it cannot go to another day. */
+export type BudgetDay = string & { readonly __budgetDay: unique symbol };
+/** The fills' daily budget as its readers use it (`DailyBudget`, or a test's stand-in). */
+export interface FillBudget {
+  remaining(nowMs: number): number;
+  spend(credits: number, nowMs: number): BudgetDay;
+  refund(credits: number, day: BudgetDay): void;
+}
+
 /**
  * The fill's daily credit budget, kept in its own small file so it survives a discarded state. A day is a UTC day.
  * A missing file is a first boot (the full budget); an unreadable one counts today as spent (fail safe on spend: a
@@ -518,23 +527,26 @@ export class DailyBudget {
     return Math.max(0, this.#daily - this.#spent);
   }
 
-  /** Records credits spent and saves at once, so a crash right after a fill cannot forget it. */
-  spend(credits: number, nowMs: number): void {
+  /**
+   * Records credits spent and saves at once, so a crash right after a fill cannot forget it. Answers the UTC day they
+   * were booked on, the only thing `refund` takes back to.
+   */
+  spend(credits: number, nowMs: number): BudgetDay {
     if (!Number.isSafeInteger(credits) || credits < 0) throw new RangeError('credits must be a non-negative integer');
     this.#roll(nowMs);
     this.#spent += credits;
     writeAtomic(this.#path, JSON.stringify({ version: 1, day: this.#day, spent: this.#spent }));
+    return this.#day as BudgetDay;
   }
 
   /**
-   * Gives back credits reserved by `spend` and not used (never below zero). `reservedAtMs` is the moment the matching
-   * `spend` was booked at: the refund goes back to that UTC day only, so a reserve taken before midnight and refunded
-   * after it never lowers the new day's count (RT-A9; FACTS-REREAD's `rereadRefund` rule). A day that has passed takes
-   * nothing back.
+   * Gives back credits reserved by `spend` and not used (never below zero), to the day that `spend` answered only, so
+   * a reserve taken before midnight and refunded after it never lowers the new day's count (RT-A9; FACTS-REREAD's
+   * `rereadRefund` rule). A day that has passed takes nothing back.
    */
-  refund(credits: number, reservedAtMs: number): void {
+  refund(credits: number, day: BudgetDay): void {
     if (!Number.isSafeInteger(credits) || credits < 0) throw new RangeError('credits must be a non-negative integer');
-    if (dayOf(reservedAtMs) !== this.#day) return;
+    if (day !== this.#day) return;
     this.#spent = Math.max(0, this.#spent - credits);
     writeAtomic(this.#path, JSON.stringify({ version: 1, day: this.#day, spent: this.#spent }));
   }

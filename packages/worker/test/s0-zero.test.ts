@@ -27,7 +27,7 @@ import { holderScanCreditsPerDay } from '../src/facts/budget.ts';
 import { fillTradeGaps, type SeedRpc } from '../src/seed/index.ts';
 import { PoolWatch } from '../src/run/pool-watch.ts';
 import { CreditBook, FILLS, LiveProviders, TRADES_FILL_CREDITS, TRADES_FILLS_IN_FLIGHT, tradesFill } from '../src/run/sources.ts';
-import { DailyBudget } from '../src/persist/index.ts';
+import { type BudgetDay, DailyBudget } from '../src/persist/index.ts';
 import { blockNetwork, recordOf, settle, testSecrets, tx, TXS } from './helpers.ts';
 
 blockNetwork();
@@ -370,7 +370,7 @@ describe('the in-run fill spends from the daily budget and is journaled', () => 
     const calls: string[] = [];
     const fill = tradesFill({
       feed, rpc: rpc(calls), timers,
-      budget: { remaining: () => { caps.push(remaining); return remaining; }, spend: (c) => { spent.push(c); remaining -= c; }, refund: (c) => { spent.push(-c); remaining += c; } },
+      budget: { remaining: () => { caps.push(remaining); return remaining; }, spend: (c) => { spent.push(c); remaining -= c; return '' as BudgetDay; }, refund: (c) => { spent.push(-c); remaining += c; } },
       pools: () => new Map([[pool, { mint: 'MintX', held: false, fromSlot: 452_941_200n }]]),
       journal: (k, f) => lines.push([k, { ...f }]),
     });
@@ -415,7 +415,7 @@ describe('the in-run fill spends from the daily budget and is journaled', () => 
       const lines: Record<string, unknown>[] = [];
       const fill = tradesFill({
         feed: new LiveFeed({ ...DEFAULT_LIVE_FEED, horizonSlots: 0 }), timers, rpc: busy,
-        budget: { remaining: () => remaining, spend: (c) => spent.push(c), refund: (c) => spent.push(-c) },
+        budget: { remaining: () => remaining, spend: (c) => (spent.push(c), '' as BudgetDay), refund: (c) => spent.push(-c) },
         pools: () => new Map(), journal: (_k, f) => lines.push({ ...f }),
       });
       expect(await fill({ address: pool, fromSlot: 452_941_200n, toSlot: 452_941_210n })).toBe(false);
@@ -504,14 +504,14 @@ describe('the in-run fill spends from the daily budget and is journaled', () => 
       const list: SignatureInfo[] = [...Array.from({ length: n }, (_, k) => ({ signature: `X${k}`.replace(/0/g, 'z').padEnd(88, '1'), slot: BigInt(hyg.slot), err: null, blockTime: 1_791_032_000 })), { signature: 'Older452941100'.padEnd(44, '1'), slot: 452_941_100n, err: null, blockTime: 1_791_032_000 }];
       const r: SeedRpc = { getSignaturesForAddress: async (_a, o) => (o.before === undefined ? list.slice(0, o.limit) : []), getTransaction: async () => recordOf(hyg) };
       const lines: Record<string, unknown>[] = [];
-      const f = tradesFill({ feed: new LiveFeed({ ...DEFAULT_LIVE_FEED, horizonSlots: 0 }), timers, rpc: r, budget: { remaining: () => cap, spend: () => {}, refund: () => {} }, pools: () => new Map(), journal: (_k, x) => lines.push({ ...x }) });
+      const f = tradesFill({ feed: new LiveFeed({ ...DEFAULT_LIVE_FEED, horizonSlots: 0 }), timers, rpc: r, budget: { remaining: () => cap, spend: () => '' as BudgetDay, refund: () => {} }, pools: () => new Map(), journal: (_k, x) => lines.push({ ...x }) });
       await f({ address: pool, fromSlot: 452_941_200n, toSlot: 452_941_210n });
       expect(lines[0], `n ${n}`).toMatchObject(stops ? { stopped_by: 'credit-cap', transactions: 0, credits: 1 } : { stopped_by: 'done', transactions: n, credits: 1 + n });
     }
     const run = async (list: SignatureInfo[], cap: number) => {
       const r: SeedRpc = { getSignaturesForAddress: async (_a, o) => { const from = o.before === undefined ? 0 : list.findIndex((x) => x.signature === o.before) + 1; return list.slice(from, from + o.limit); }, getTransaction: async () => recordOf(hyg) };
       const lines: Record<string, unknown>[] = [];
-      const f = tradesFill({ feed: new LiveFeed({ ...DEFAULT_LIVE_FEED, horizonSlots: 0 }), timers, rpc: r, budget: { remaining: () => cap, spend: () => {}, refund: () => {} }, pools: () => new Map(), journal: (_k, x) => lines.push({ ...x }) });
+      const f = tradesFill({ feed: new LiveFeed({ ...DEFAULT_LIVE_FEED, horizonSlots: 0 }), timers, rpc: r, budget: { remaining: () => cap, spend: () => '' as BudgetDay, refund: () => {} }, pools: () => new Map(), journal: (_k, x) => lines.push({ ...x }) });
       await f({ address: pool, fromSlot: 452_941_200n, toSlot: 452_941_210n });
       return lines[0]!;
     };

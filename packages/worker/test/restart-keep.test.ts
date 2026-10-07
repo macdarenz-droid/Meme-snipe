@@ -23,7 +23,7 @@ import { feesKey } from '../src/engine/strategy.ts';
 import { FEE_CONTEXT, passingFacts } from '../../core/test/gates/world.ts';
 import { chainTx } from '../../core/test/facts/helpers.ts';
 import { transactionEvents } from '../../core/src/chain/index.ts';
-import { loadState, saveState, type SavedCandidateState } from '../src/persist/index.ts';
+import { type BudgetDay, loadState, saveState, type SavedCandidateState } from '../src/persist/index.ts';
 import { runSeed } from '../src/run/seed-start.ts';
 import { DOWNTIME_CREDIT_CAP, PERSIST_FILE, type SeedRequest } from '../src/run/worker.ts';
 import { PUMP_MIGRATION_AUTHORITY } from '../src/run/sources.ts';
@@ -660,7 +660,7 @@ describe('RESTART-KEEP: a restart keeps the candidates in their window', () => {
       getTransaction: async () => null,
     };
     let left = 5_000;
-    const budget = { remaining: () => left, spend: (c: number) => { left -= c; }, refund: (c: number) => { left += c; } };
+    const budget = { remaining: () => left, spend: (c: number) => { left -= c; return '' as BudgetDay; }, refund: (c: number) => { left += c; } };
     const { h2 } = await restart(h, timers, seed, { restartReads: { rpc, budget } });
     for (let k = 0; k < 100 && !h2.logs.some((l) => l.startsWith('Downtime migrations')); k++) await new Promise<void>((r) => setImmediate(r));
     // The downtime read is the one call on the migration authority (FACTS-REREAD may also read a restored candidate's
@@ -685,7 +685,7 @@ describe('RESTART-KEEP: a restart keeps the candidates in their window', () => {
       getTransaction: async () => null,
     };
     const calls: [string, number, number][] = [];
-    const budget = { remaining: () => 5_000, spend: (c: number, ms: number) => { calls.push(['spend', c, ms]); }, refund: (c: number, ms: number) => { calls.push(['refund', c, ms]); } };
+    const budget = { remaining: () => 5_000, spend: (c: number, ms: number) => { calls.push(['spend', c, ms]); return String(ms) as BudgetDay; }, refund: (c: number, day: BudgetDay) => { calls.push(['refund', c, Number(day)]); } };
     const { h2 } = await restart(h, timers, seed, { restartReads: { rpc, budget } });
     for (let k = 0; k < 100 && !h2.logs.some((l) => l.startsWith('Downtime migrations')); k++) await new Promise<void>((r) => setImmediate(r));
     for (let k = 0; k < 20; k++) await new Promise<void>((r) => setImmediate(r));
@@ -722,7 +722,7 @@ describe('RESTART-KEEP: a restart keeps the candidates in their window', () => {
       getTransaction: async (sig: string) => (sig === migrate.signature ? migrate : sig === complete.signature ? complete : null),
     };
     let left = 5_000;
-    const budget = { remaining: () => left, spend: (c: number) => { left -= c; }, refund: (c: number) => { left += c; } };
+    const budget = { remaining: () => left, spend: (c: number) => { left -= c; return '' as BudgetDay; }, refund: (c: number) => { left += c; } };
     const { h2, m2 } = await restart(h, timers, seed, { restartReads: { rpc, budget } });
     for (let k = 0; k < 100 && !h2.logs.some((l) => l.startsWith('Downtime migrations')); k++) await new Promise<void>((r) => setImmediate(r));
     await m2.run(2_000, 400, () => m2.slot());

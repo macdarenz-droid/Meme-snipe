@@ -48,7 +48,7 @@ export const runSeed = async (r: SeedRequest, o: { readonly rpc: SeedRpc; readon
   const now = o.timers.now();
   const cap = o.budget === undefined ? SEED_CREDIT_CAP : Math.min(SEED_CREDIT_CAP, o.budget.remaining(now));
   // The whole cap is counted before the fill reads (a crash mid-fill cannot spend it again), the unused part after.
-  o.budget?.spend(cap, now);
+  const day = o.budget?.spend(cap, now);
   const rpc = { rpc: o.rpc, timers: o.timers, creditCap: cap, provider: 'helius' as const, signal: r.signal };
   const last = r.saved.last;
   // A first start reads no RPC history: about 64,000 creates a day means a 14-day look-back costs far more than the
@@ -61,7 +61,7 @@ export const runSeed = async (r: SeedRequest, o: { readonly rpc: SeedRpc; readon
       fill: { fromSlot: last.slot + 1n > r.untilSlot + 1n ? r.untilSlot + 1n : last.slot + 1n, fromMs: last.ms, ...(r.close === null ? {} : { close: r.close }), ...(r.liveStart === null ? {} : { liveStart: r.liveStart }) },
     });
   const p = s.report;
-  o.budget?.refund(cap - (p.rpc === null ? 0 : p.rpc.result.creditsUsed), now);
+  if (day !== undefined) o.budget?.refund(cap - (p.rpc === null ? 0 : p.rpc.result.creditsUsed), day);
   const rpcText = p.rpc === null ? 'no RPC' : `RPC ${p.rpc.result.creditsUsed} credits, stopped by ${p.rpc.result.stoppedBy}`;
   return { mode: p.mode, creates: s.creates, coverage: s.coverage, report: `${p.creates} creates, ${p.gaps.length} gaps, ${rpcText}` };
 };

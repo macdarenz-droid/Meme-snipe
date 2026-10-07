@@ -30,8 +30,9 @@ const replay = (plan: MintPlan, edit: (rows: DatasetRow[]) => DatasetRow[] = (x)
   for (const r of rows) events.push(...market.release(r));
   const mint = mints[0]!.mint;
   const curve = rows.filter((r): r is CurveTradeRow => r.kind === 'curve' && r.mint === mint);
-  const create = rows.flatMap((r) => (r.kind === 'event' && r.event === 'CreateEvent' ? [r.signature] : []))[0]!;
-  return { mint, curve, create, events: events.filter((e): e is MarketEvent => e.kind === 'market'), released: events.filter((e): e is MarketEvent => e.kind === 'market' && curveTradeKeys(mint).includes(e.key)) };
+  const created = rows.flatMap((r) => (r.kind === 'event' && r.event === 'CreateEvent' ? [r] : []))[0]!;
+  const create = created.signature;
+  return { mint, curve, create, createSlot: created.slot, events: events.filter((e): e is MarketEvent => e.kind === 'market'), released: events.filter((e): e is MarketEvent => e.kind === 'market' && curveTradeKeys(mint).includes(e.key)) };
 };
 
 /** H5's curve half over a store holding `values` (each at its own chain position). */
@@ -49,19 +50,33 @@ const verdict = (mint: string, values: readonly { readonly row: CurveTradeRow; r
 };
 
 /**
- * What live's store holds of the curve, modelled by transaction (as live ingests them, whole): every curve trade of the
- * create transaction and of the completing transaction (the one whose trade empties the curve), each with the tail as
- * live decodes it.
+ * The last slot of live's insider read (worker/src/facts/readers.ts `readMintHistory`, run for H13 on the live
+ * production values insiderSlots 2 and firstBuyers 20): whole slots from the create's through max(create slot + 2, the
+ * slot of the 20th distinct first buyer), or the whole curve when fewer buyers came.
  */
-const liveTape = (r: ReturnType<typeof replay>) => r.curve.filter((c) => c.signature === r.create || c.signature === r.curve.find((x) => x.realTokenReserves === 0n)!.signature)
+const insiderThrough = (r: ReturnType<typeof replay>): bigint => {
+  const first = new Map<string, bigint>();
+  for (const c of r.curve) if (c.isBuy && !first.has(c.user)) first.set(c.user, c.slot);
+  const twentieth = [...first.values()].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))[19];
+  if (twentieth === undefined) return r.curve.at(-1)!.slot;
+  return r.createSlot + 2n > twentieth ? r.createSlot + 2n : twentieth;
+};
+
+/**
+ * What live's store holds of the curve, modelled by transaction (as live ingests them, whole): every curve trade of the
+ * create transaction, of the insider read's transactions (RT-A2b) and of the completing transaction (the one whose
+ * trade empties the curve), each with the tail as live decodes it.
+ */
+const liveTape = (r: ReturnType<typeof replay>) => r.curve.filter((c) => c.signature === r.create || c.slot <= insiderThrough(r) || c.signature === r.curve.find((x) => x.realTokenReserves === 0n)!.signature)
   .map((row) => ({ row, value: { event: { program: 'pump', name: 'TradeEvent', data: { mint: row.mint, isBuy: row.isBuy }, trailing: row.extraHex.length / 2, extra: row.extraHex }, txSlot: row.slot, signature: row.signature } }));
 const backtestTape = (r: ReturnType<typeof replay>) => r.released.map((e) => ({ row: r.curve.find((c) => e.id === `te:${c.signature}:${c.evIdx}`)!, value: e.value }));
 const code = (t: TailCheck) => (t.ok ? 'pass' : t.code);
 
 describe('RT-A2: H5\'s curve half judges the same tape in the backtest as live', () => {
-  it('a non-zero tail on an early curve buy (one live never reads) is not released: both pass', () => {
-    const r = replay({ label: 'early', createSlot: 10, graduateAfter: 20 * MIN, devBuyBps: 100, curveTail: { buys: [5], hex: HEX } });
+  it('a non-zero tail on a curve buy past the insider window (one live never reads) is not released: both pass', () => {
+    const r = replay({ label: 'mid', createSlot: 10, graduateAfter: 20 * MIN, devBuyBps: 100, curveTail: { buys: [50], hex: HEX } });
     expect(r.curve.filter((c) => c.extraHex !== '')).toHaveLength(1);
+    expect(r.curve.find((c) => c.extraHex !== '')!.slot).toBeGreaterThan(insiderThrough(r));
     expect(r.released).toEqual([]);
     expect(code(verdict(r.mint, backtestTape(r)))).toBe(code(verdict(r.mint, liveTape(r))));
     expect(code(verdict(r.mint, backtestTape(r)))).toBe('pass');
@@ -123,5 +138,30 @@ describe('RT-A2: H5\'s curve half judges the same tape in the backtest as live',
     const asOf = (now: Moment) => checkCurveTails({ now, history: (k, f, t) => store.history(k, f, t) as readonly AsOfEntry[] }, r.mint);
     expect(code(asOf(before))).toBe('pass');
     expect(code(asOf(at))).toBe('event-tail');
+  });
+
+  it('RT-A2b: a non-zero tail on early curve buy #5 (inside the insider window live reads for H13) is released: both refuse event-tail', () => {
+    const r = replay({ label: 'early', createSlot: 10, graduateAfter: 20 * MIN, devBuyBps: 100, curveTail: { buys: [5], hex: HEX } });
+    const tailed = r.curve.find((c) => c.extraHex !== '')!;
+    expect(tailed.slot).toBeLessThanOrEqual(insiderThrough(r));
+    expect(r.released.map((e) => e.id)).toEqual([`te:${tailed.signature}:${tailed.evIdx}`]);
+    expect(r.released[0]!.moment).toEqual(rowMoment(tailed));
+    expect(code(verdict(r.mint, backtestTape(r)))).toBe('event-tail');
+    expect(code(verdict(r.mint, liveTape(r)))).toBe('event-tail');
+  });
+
+  it('RT-A2b: the window ends at the 20th first buyer\'s slot, whole: a tail in that slot is released, one in the next buy\'s slot is not', () => {
+    const plan = (buys: number[]): MintPlan => ({ label: 'edge', createSlot: 10, graduateAfter: 20 * MIN, curveTail: { buys, hex: HEX } });
+    const probe = replay(plan([]));
+    const through = insiderThrough(probe);
+    const inside = probe.curve.filter((c) => c.slot === through && c.realTokenReserves !== 0n);
+    const after = probe.curve.find((c) => c.slot > through)!;
+    expect(inside.length).toBeGreaterThan(0);
+    const k = (c: CurveTradeRow) => probe.curve.filter((x) => x.signature !== probe.create).indexOf(c);
+    const last = replay(plan([k(inside.at(-1)!)]));
+    expect(last.released).toHaveLength(1);
+    const next = replay(plan([k(after)]));
+    expect(next.released).toEqual([]);
+    for (const x of [last, next]) expect(code(verdict(x.mint, backtestTape(x)))).toBe(code(verdict(x.mint, liveTape(x))));
   });
 });
