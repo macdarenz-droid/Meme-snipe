@@ -117,6 +117,9 @@ export const checkJournalLines = (raw: Iterable<string>, opts: { readonly allowT
       case 'reconcile':
         if (l.ok === true) reconciled.add(l.boot);
         break;
+      case 'coverage_gap':
+        if (l['stream'] === 'journal') add(`seq ${l.seq}: journal evidence missing (${String(l['lost'] ?? 'unknown')} events)`);
+        break;
       case 'journal_repair':
         repairs += 1;
         break;

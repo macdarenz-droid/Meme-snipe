@@ -49,6 +49,9 @@ export function sessionView(status: Loaded<WorkerStatus>): SessionView {
     mode: 'paper', state: s.state, bankrollUsd: usdToPlot(s.bankrollUsd), entryUsd: usdToPlot(s.entryUsd), maxEntryUsd: usdToPlot(s.maxEntryUsd),
     maxOpenPositions: s.maxOpenPositions, dailyLossLimitUsd: usdToPlot(s.dailyLossLimitUsd), weeklyLossLimitUsd: usdToPlot(s.weeklyLossLimitUsd),
     sessionLossLimitUsd: s.sessionLossLimitUsd === null ? null : usdToPlot(s.sessionLossLimitUsd), workerConnected: true, startable: s.startable,
+    ...(s.bankrollLamports == null ? {} : {
+      lamports: { bankroll: s.bankrollLamports, entry: s.entryLamports ?? null, maxEntry: s.maxEntryLamports ?? null, dailyLoss: s.dailyLossLimitLamports ?? null, weeklyLoss: s.weeklyLossLimitLamports ?? null },
+    }),
   };
 }
 

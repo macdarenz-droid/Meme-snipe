@@ -9,7 +9,7 @@ import { emptyBook } from '../../core/src/lifecycle/index.ts';
 import { NO_LATCHES, evaluateEntry, melbourneDay, melbourneWeek, riskSnapshot } from '../../core/src/risk/index.ts';
 import type { Lamports, MicroUsd } from '../../core/src/units/index.ts';
 import { PaperAccount, accountFile } from '../src/run/account.ts';
-import { makeWorker, tempState, noLegs } from './worker-harness.ts';
+import { Market, makeWorker, tempState, noLegs } from './worker-harness.ts';
 
 const HOUR = 3_600_000;
 // 2026-10-06 15:00 Melbourne (AEDT, UTC+11): a Tuesday.
@@ -20,7 +20,12 @@ const sol = (x: number) => BigInt(Math.round(x * 10_000_000)) as Lamports;
 const snap = (at: number, equity: number, nav: number | null) => ({ dayStartMs: melbourneDay(at).start, weekStartMs: melbourneWeek(at).start, equity: sol(equity), nav: nav === null ? null : sol(nav) });
 
 describe('PaperAccount marks', () => {
-  const fresh = () => new PaperAccount(accountFile(tempState()), usd(20), T - 10 * HOUR, 0n);
+  // SOL-BOOKS: priced first (nothing is marked before the opening SOL price).
+  const fresh = () => {
+    const a = new PaperAccount(accountFile(tempState()), usd(20), T - 10 * HOUR, 0n);
+    a.price(usd(100), T - 10 * HOUR);
+    return a;
+  };
 
   it('takes the day and week mark once, at the first look at or after the boundary, with the time it was taken', () => {
     const a = fresh();
@@ -75,6 +80,7 @@ describe('PaperAccount marks', () => {
   it('survives a restart (kept in account.json)', () => {
     const dir = tempState();
     const a = new PaperAccount(accountFile(dir), usd(20), T - HOUR, 0n);
+    a.price(usd(100), T - HOUR);
     a.mark(snap(T, 19, 19.25), true, null, T);
     const b = new PaperAccount(accountFile(dir), usd(20), T + HOUR, 0n);
     expect(b.state.dayMark).toEqual(a.state.dayMark);
@@ -85,6 +91,7 @@ describe('PaperAccount marks', () => {
     const dir = tempState();
     const ledger = openLedger(join(dir, 'ledger.sqlite'), 'paper');
     const a = new PaperAccount(accountFile(dir), usd(20), T - 10 * HOUR, 0n);
+    a.price(usd(100), T - 10 * HOUR);
     a.mark(snap(T, 19.5, 20.5), true, null, T);
     const book = emptyBook({ maxOpenPositions: 5 });
     const today = a.fact(ledger, book, NO_LATCHES, T + HOUR, noLegs).history;
@@ -128,7 +135,7 @@ describe('PaperAccount marks', () => {
 });
 
 describe('SOL-BOOKS: an account.json from before is converted once at the opening SOL price', () => {
-  it('marks and the NAV peak in micro-dollars become lamports rounded up, trade sizes rounded down; once', () => {
+  it('marks in micro-dollars become lamports rounded up, trade sizes rounded down, the dollar NAV peak is dropped; once', () => {
     const dir = tempState();
     const file = accountFile(dir);
     // A file as the dry run wrote it before SOL-BOOKS: no opening price, no `books`, dollar marks and sizes.
@@ -148,14 +155,15 @@ describe('SOL-BOOKS: an account.json from before is converted once at the openin
     expect(a.state).toMatchObject({ openingSolPrice: usd(150), books: 'sol', walletLamports: 133_000_000n });
     expect(a.state.dayMark!.equity).toBe(130_000_000n);
     expect(a.state.weekMark!.equity).toBe(130_000_000n);
-    expect(a.state.navPeak!.nav).toBe(113_333_354n);
+    // The dollar NAV peak is dropped (its SOL is unknown; converting it would count a past SOL/USD fall as a SOL loss).
+    expect(a.state.navPeak).toBeUndefined();
     expect(a.state.trades[0]!.notional).toBe(13_333_333n);
     // A later price changes nothing, and a restart does not convert again.
     a.price(usd(90), T + HOUR);
     const b = new PaperAccount(file, usd(20), T + 2 * HOUR, 0n);
     b.price(usd(300), T + 2 * HOUR);
     expect(b.state).toMatchObject({ openingSolPrice: usd(150), books: 'sol' });
-    expect(b.state.navPeak!.nav).toBe(113_333_354n);
+    expect(b.state.navPeak).toBeUndefined();
     expect(b.state.trades[0]!.notional).toBe(13_333_333n);
     // Risk reads the lamports: the closed trade's result is its netLamports.
     const h = b.fact(ledger, emptyBook({ maxOpenPositions: 5 }), NO_LATCHES, T + 2 * HOUR, noLegs).history;
@@ -166,6 +174,28 @@ describe('SOL-BOOKS: an account.json from before is converted once at the openin
     ledger.close();
   });
 
+  it('nothing is marked before the opening price: no zero day or week mark, no NAV peak that a file from before would convert again', () => {
+    // A new file: before the first price risk's equity is 0 (no bankroll in lamports yet).
+    const fresh = new PaperAccount(accountFile(tempState()), usd(20), T, 0n);
+    const zero = { dayStartMs: melbourneDay(T).start, weekStartMs: melbourneWeek(T).start, equity: 0n as Lamports, nav: null };
+    expect(fresh.mark(zero, true, null, T)).toBe(false);
+    expect([fresh.state.dayMark, fresh.state.weekMark, fresh.state.navPeak]).toEqual([undefined, undefined, undefined]);
+    fresh.price(usd(100), T);
+    expect(fresh.mark({ ...zero, equity: 200_000_000n as Lamports, nav: 200_000_000n as Lamports }, true, null, T + 1)).toBe(true);
+    expect(fresh.state.dayMark!.equity).toBe(200_000_000n);
+    // A file from before with its wallet in lamports: risk's NAV (its SOL) before the opening is not recorded, so the
+    // opening never converts a lamport figure as if it were dollars (153,333,333 lamports read as $153.33 at $150 is
+    // 1,022,222,220 lamports, which would trip R10 at once).
+    const dir = tempState();
+    accountFile(dir).write({ openedAtMs: T - 20 * 24 * HOUR, openingEquity: usd(20), walletLamports: 153_333_333n, trades: [], entries: [], oneTimePaid: true });
+    const old = new PaperAccount(accountFile(dir), usd(20), T, 0n);
+    expect(old.mark({ ...zero, nav: 153_333_333n as Lamports }, true, null, T)).toBe(false);
+    old.price(usd(150), T);
+    expect(old.state.navPeak).toBeUndefined();
+    expect(old.mark({ ...zero, equity: 133_333_333n as Lamports, nav: 153_333_333n as Lamports }, true, null, T + 1)).toBe(true);
+    expect(old.state.navPeak).toEqual({ atMs: T + 1, nav: 153_333_333n });
+  });
+
   it('a new account starts in SOL: the first price is the opening price, and later prices change no figure', () => {
     const dir = tempState();
     const a = new PaperAccount(accountFile(dir), usd(20), T, 0n);
@@ -174,6 +204,39 @@ describe('SOL-BOOKS: an account.json from before is converted once at the openin
     expect(a.state).toMatchObject({ openingSolPrice: usd(100), walletLamports: 200_000_000n });
     a.price(usd(140), T + 1);
     expect(a.state).toMatchObject({ openingSolPrice: usd(100), walletLamports: 200_000_000n });
+    // A restart keeps the opening price: the first price after it (another one) changes no figure.
+    const dir2 = tempState();
+    const first = new PaperAccount(accountFile(dir2), usd(20), T, 0n);
+    first.price(usd(100), T);
+    const again = new PaperAccount(accountFile(dir2), usd(20), T + HOUR, 0n);
+    again.price(usd(60), T + HOUR);
+    expect(again.state).toMatchObject({ openingSolPrice: usd(100), walletLamports: 200_000_000n, books: 'sol' });
+    const ledger = openLedger(join(dir2, 'ledger.sqlite'), 'paper');
+    expect(again.fact(ledger, emptyBook({ maxOpenPositions: 5 }), NO_LATCHES, T + HOUR, noLegs).history).toMatchObject({ openingSolPrice: usd(100), openingEquity: 200_000_000n });
+    ledger.close();
+  });
+
+  it('a file in SOL with no opening price (a restart before the first price) is refused by risk (R1) and latches nothing', () => {
+    const dir = tempState();
+    accountFile(dir).write({ openedAtMs: T - HOUR, openingEquity: usd(20), books: 'sol', walletLamports: 200_000_000n, trades: [], entries: [], oneTimePaid: true });
+    const a = new PaperAccount(accountFile(dir), usd(20), T, 0n);
+    const ledger = openLedger(join(dir, 'ledger.sqlite'), 'paper');
+    const fact = a.fact(ledger, emptyBook({ maxOpenPositions: 5 }), NO_LATCHES, T, noLegs);
+    ledger.close();
+    expect(fact.history).toMatchObject({ openingSolPrice: 0n, openingEquity: 0n });
+    const input = {
+      session: startSession(TRIAL_POLICY), mode: 'paper' as const, clock: { now: () => ({ slot: 1n, txIndex: 0, ixIndex: 0, receivedAt: T }) },
+      account: fact.history, latches: NO_LATCHES, market: { solBalance: fact.solBalance, regime: 'on' as const },
+    };
+    const req = { mint: 'MintY', requestedNotional: usd(2), network: { priorityFee: 0n, tip: 0n, baseFee: 5_000n }, rent: { ata: 0n, oneTime: 0n } };
+    const d = evaluateEntry(input, req as unknown as Parameters<typeof evaluateEntry>[1]);
+    expect(d.allow).toBe(false);
+    expect(d.reasons.map((r) => r.code)).toContain('bankroll_invalid');
+    expect(d.trips).toEqual([]);
+    // Nothing is marked from such a valuation either; the first price opens the books and is kept.
+    expect(a.mark({ dayStartMs: melbourneDay(T).start, weekStartMs: melbourneWeek(T).start, equity: 0n as Lamports, nav: 200_000_000n as Lamports }, true, null, T)).toBe(false);
+    a.price(usd(100), T);
+    expect(a.state).toMatchObject({ openingSolPrice: usd(100), walletLamports: 200_000_000n });
   });
 });
 
@@ -181,11 +244,17 @@ describe('the worker records the marks', () => {
   it('after the reconcile, a step records this day\'s and week\'s marks in account.json', async () => {
     const h = makeWorker();
     expect(await h.worker.reconcile()).toEqual({ ok: true });
+    // SOL-BOOKS: nothing is marked before the opening SOL price; the first price opens the books.
     h.worker.step();
+    expect(accountFile(h.stateDir).read(null as never).dayMark).toBeUndefined();
+    const m = new Market(h);
+    await m.run(2_000, 400, () => { m.slot(); m.solPrice(); h.worker.step(); });
     const now = h.timers.now();
     const s = accountFile(h.stateDir).read(null as never);
-    expect(s.dayMark).toEqual({ startMs: melbourneDay(now).start, atMs: now, equity: expect.any(BigInt) });
-    expect(s.weekMark).toMatchObject({ startMs: melbourneWeek(now).start, atMs: now });
+    expect(s.openingSolPrice).toBeDefined();
+    expect(s.dayMark).toEqual({ startMs: melbourneDay(now).start, atMs: expect.any(Number), equity: expect.any(BigInt) });
+    expect(s.dayMark!.atMs).toBeLessThanOrEqual(now);
+    expect(s.weekMark).toMatchObject({ startMs: melbourneWeek(now).start, atMs: s.dayMark!.atMs });
     await h.worker.stop();
   });
 });

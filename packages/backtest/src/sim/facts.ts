@@ -198,6 +198,17 @@ const priceOf = (v: PoolView): Price | null => {
 };
 const above = (a: Price, b: Price) => a.quote * b.base > b.quote * a.base;
 
+type TailRow = { readonly slot: bigint; readonly signature: string; readonly extraHex: string };
+/**
+ * The trade-event value the feed releases for H5 (GATE-1c): the fields the tail check reads. A pool event carries its
+ * pre-trade quote vault (`vault`, the dataset's `pool_quote_token_reserves`) as live's decoded event does
+ * (`data.poolQuoteTokenReserves`), so H5-POOL-TAILS's vault bound reads the same number in both.
+ */
+export const tradeTailValue = (row: TailRow, vault?: bigint): unknown => ({
+  event: { trailing: row.extraHex.length / 2, extra: row.extraHex, ...(vault === undefined ? {} : { data: { poolQuoteTokenReserves: vault } }) },
+  txSlot: row.slot, signature: row.signature,
+});
+
 export class FactProjector {
   readonly #o: FactOptions;
   readonly #mints = new Map<string, MintState>();
@@ -332,6 +343,18 @@ export class FactProjector {
    * scan every pool's stream on every slot notice (about 94k pools over 16M slots in a 74-day run). The resolved items
    * go through FACTS-1's `graduatesFact` (the one aggregation the live producer uses) and are released as one fact.
    */
+  /** Survival tracks live now (tests). */
+  survivalTracked(): number {
+    return this.#survivalTracks.size;
+  }
+
+  /** POOL-FIRST-READ: events the live survival producers keep before a read or book (tests: none, no read comes). */
+  survivalKept(): number {
+    let n = 0;
+    for (const s of this.#survivalTracks.values()) n += s.producer.sizes().preReads;
+    return n;
+  }
+
   #feedSurvival(row: DatasetRow, m: Moment, out: FeedEvent[]): void {
     const o = this.#o.survival!;
     const ev = (key: string, value: unknown): MarketEvent => ({ kind: 'market', id: `sv:${this.#survivalSeq++}`, moment: m, key, value });
@@ -359,7 +382,8 @@ export class FactProjector {
       let s = this.#survivalTracks.get(mint);
       if (s === undefined) {
         if (row.event !== 'CompleteEvent') return;
-        s = { producer: new FactProducer(o), pool: null, markMs: null, done: false };
+        // No account read ever reaches it and its events come in chain order: nothing is kept before a read (POOL-FIRST-READ).
+        s = { producer: new FactProducer({ ...o, preReadKeep: 0 }), pool: null, markMs: null, done: false };
         this.#survivalTracks.set(mint, s);
       }
       if (row.event === 'CreatePoolEvent' && typeof d['pool'] === 'string' && s.pool === null) {
@@ -485,14 +509,16 @@ export class FactProjector {
   }
 
   /**
-   * The trade event as FEED-1 keys it, with its tail, for H5 (GATE-1c). The check rejects any event whose tail is
-   * not empty before the 2026-10-02 upgrade or not 8 zero bytes after it, needs at least one pool event since
-   * migration, and passes a curve with no events. So the feed releases a pool's first event since migration and
-   * every event that carries a tail (the only ones that can fail): the check sees the same answer as with every
-   * event, and the store does not hold millions of empty tails. Only the fields the check reads are kept.
+   * The trade event as FEED-1 keys it, with its tail, for H5 (GATE-1c). The check refuses an event whose tail is not
+   * empty before the 2026-10-02 upgrade or not 8 bytes after it, a non-zero curve tail, and a pool tail above the
+   * event's pre-trade quote vault (H5-POOL-TAILS); it needs at least one pool event since migration and passes a curve
+   * with no events. So the feed releases a pool's first event since migration and every event that carries a tail (the
+   * only ones that can fail): the check sees the same answer as with every event, and the store does not hold millions
+   * of empty tails. Only the fields the check reads are kept: a pool event's vault is the dataset's
+   * `pool_quote_token_reserves`, the field live reads from the decoded event.
    */
-  #tail(id: string, key: string, row: { readonly slot: bigint; readonly signature: string; readonly extraHex: string }, m: Moment, out: FeedEvent[]): void {
-    out.push(this.#fact(id, m, key, { event: { trailing: row.extraHex.length / 2, extra: row.extraHex }, txSlot: row.slot, signature: row.signature }));
+  #tail(id: string, key: string, row: TailRow, m: Moment, out: FeedEvent[], vault?: bigint): void {
+    out.push(this.#fact(id, m, key, tradeTailValue(row, vault)));
   }
 
   #curve(row: CurveTradeRow, m: Moment, out: FeedEvent[]): void {
@@ -514,7 +540,7 @@ export class FactProjector {
     const sell = row.side === 'sell';
     if (s.migration?.pool === row.pool && (!s.tailSeen || row.extraHex !== '')) {
       s.tailSeen = true;
-      this.#tail(`te:${row.signature}:${row.evIdx}`, `pump_amm:${sell ? 'SellEvent' : 'BuyEvent'}:${row.pool}`, row, m, out);
+      this.#tail(`te:${row.signature}:${row.evIdx}`, `pump_amm:${sell ? 'SellEvent' : 'BuyEvent'}:${row.pool}`, row, m, out, row.pre.quoteVault);
     }
     const data = {
       pool: row.pool, user: row.user, timestamp: BigInt(row.blockTime), poolQuoteTokenReserves: row.pre.quoteVault, poolBaseTokenReserves: row.pre.baseReserve,

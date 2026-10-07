@@ -28,6 +28,8 @@ export interface SessionView {
   workerConnected: boolean;
   /** Whether the worker accepts a session start from the app; false when it runs its own session (APP-HOME). */
   startable: boolean;
+  /** SOL-BOOKS: the limits in lamports as risk holds them (shown first, the dollars beside); absent from a worker without them. */
+  lamports?: { bankroll: string | null; entry: string | null; maxEntry: string | null; dailyLoss: string | null; weeklyLoss: string | null };
 }
 
 export interface WalletView {

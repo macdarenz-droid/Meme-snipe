@@ -9,15 +9,16 @@
 import { createHmac } from 'node:crypto';
 import { open, stat } from 'node:fs/promises';
 import {
-  PATTERNS, SUMMARY_MAX_BYTES, fits, SUMMARY_MAX_TRADES, SUMMARY_TOP_REASONS, SUMMARY_VERSION, checkSummary,
-  type CodeCount, type ProviderCredits, type ReasonCount, type Summary, type SummaryTrade,
+  CREDIT_DETAIL_KEYS, EXIT_KINDS, MEM_SUMMARY_KEY, PATTERNS, RESTART_CAUSE_KEYS, type LastDeath, SUMMARY_MAX_BYTES, SUMMARY_MAX_CRASH_SITES, fits, SUMMARY_MAX_TRADES, SUMMARY_TOP_REASONS, SUMMARY_VERSION, checkSummary, H16_KEYS,
+  type CodeCount, type H16Count, type CrashSite, type ProviderCredits, type ReasonCount, type Summary, type SummaryTrade,
 } from '../../../ops/src/watchdog/summary.ts';
 import type { MicroUsd } from '../../../core/src/units/index.ts';
-import type { HttpClient } from '../providers/index.ts';
-import type { PaperTrade } from './account.ts';
+import { HELIUS_EXHAUSTED, type HttpClient } from '../providers/index.ts';
+import { type PaperTrade, tradeSol } from './account.ts';
 import { lamportsUsd, melbourneDate, tradeNetUsd, usdText } from './api.ts';
 import { SEEDING } from '../engine/strategy.ts';
 import { StateFile } from './state.ts';
+import { parseDeathMem, type DeathMem } from './mem-trace.ts';
 import { melbourneDay } from '../../../core/src/risk/index.ts';
 import type { TimerHandle, Timers } from '../scheduler/timers.ts';
 
@@ -29,9 +30,29 @@ export interface DayFold {
   entryRule: string | null;
   alerts: Record<string, number>;
   halts: Record<string, number>;
-  /** Per candidate mint: its last refusal (gate, code) or null, and whether it was entered. */
-  cands: Record<string, { gate: string | null; code: string | null; entered: boolean }>;
+  /**
+   * Per candidate mint: its last refusal (gate, code) or null, and whether it was entered. H16-WHY: every distinct H16
+   * reason of that refusal as [code, input, needing gate] (absent in older state and when it had none).
+   */
+  cands: Record<string, CandFold>;
+  /** RESTART-CAUSE: restarts by kind, previous exits by kind, and crashes by site (a JSON key of error, file, line, event). Absent in older state. */
+  restarts?: Record<string, number>;
+  exits?: Record<string, number>;
+  crashSites?: Record<string, number>;
+  /** MEM-SUMMARY: the day's last start line's `death_mem` (the process before it died with no stop line). Absent in older state. */
+  lastDeath?: DeathMem;
 }
+
+export interface CandFold {
+  gate: string | null;
+  code: string | null;
+  entered: boolean;
+  h16?: H16Key[] | undefined;
+}
+/** An H16 reason as [code, input, needing gate]; a name that does not fit its pattern (or a line without it) is null. */
+export type H16Key = [string, string | null, string | null];
+/** The most H16 reasons kept per candidate (a stage-2 refusal has at most one per stage-2 gate and fact). */
+const H16_PER_CAND = 8;
 
 export interface SummaryState {
   readonly v: 1;
@@ -49,6 +70,7 @@ export interface SummaryState {
 export const emptySummaryState = (): SummaryState => ({ v: 1, offset: 0, halts: [], days: {}, lastDay: null });
 /** Days kept in summary.json: today, yesterday (its final post) and one spare. */
 const KEEP_DAYS = 3;
+const JOURNAL_COUNTS_INCOMPLETE = 'journal-counts-incomplete';
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 export const summaryFile = (dir: string) =>
@@ -65,20 +87,47 @@ export const haltCode = (reason: string): string => {
   if (reason === 'owner pause (watchdog)') return 'owner-pause';
   if (reason === 'second price path unavailable') return 'second-path-unavailable';
   if (reason === SEEDING) return 'seeding';
+  if (reason === HELIUS_EXHAUSTED) return 'helius-exhausted';
   if (reason === 'starting') return 'starting';
   if (reason.startsWith('sell-only')) return 'sell-only';
   if (reason.startsWith('ledger and book diverged') || reason.startsWith('ledger refused')) return 'ledger-diverged';
   return 'other';
 };
 
-/** A refusal's reason: the first typed gate reason (`gate_reasons`), or the worker's own when none is typed. */
-const refusal = (line: Record<string, unknown>): { gate: string; code: string } => {
-  const g = Array.isArray(line['gate_reasons']) ? line['gate_reasons'][0] : undefined;
+/**
+ * A refusal's reason: the first typed gate reason (`gate_reasons`), or the worker's own when none is typed. H16-WHY:
+ * with every distinct H16 reason of the line (a stage evaluates all its gates, so an H16 reason can follow another
+ * gate's), its input and needing gate each kept only when it fits its pattern (else null).
+ */
+const refusal = (line: Record<string, unknown>): Omit<CandFold, 'entered'> => {
+  const all = Array.isArray(line['gate_reasons']) ? line['gate_reasons'] : [];
+  const h16: H16Key[] = [];
+  for (const x of all) {
+    if (h16.length >= H16_PER_CAND) break;
+    const c = isObj(x) && x['gate'] === 'H16' ? code(x['code']) : null;
+    if (c === null) continue;
+    const k: H16Key = [c, code((x as Record<string, unknown>)['input']), fits((x as Record<string, unknown>)['neededBy'], PATTERNS.GATE) ? (x as Record<string, string>)['neededBy']! : null];
+    if (!h16.some((y) => y[0] === k[0] && y[1] === k[1] && y[2] === k[2])) h16.push(k);
+  }
+  const more = h16.length === 0 ? { h16: undefined } : { h16 };
+  const g = all[0];
   if (isObj(g) && fits(g['gate'], PATTERNS.GATE)) {
     const c = code(g['code']);
-    if (c !== null) return { gate: g['gate'], code: c };
+    if (c !== null) return { gate: g['gate'], code: c, ...more };
   }
-  return { gate: 'worker', code: 'untyped' };
+  return { gate: 'worker', code: 'untyped', ...more };
+};
+
+const RESTART_KINDS = new Set(['planned', 'deploy', 'unplanned']);
+/** A stop line's crash site (crash-site.ts): `<name> at <file>:<line>|no frame in packages/[ during <event>]`. */
+const SITE = /^(\S+) at (?:no frame in packages\/|(\S+):(\d{1,9}))(?: during (\S+))?$/;
+
+/** A crash site's parts, each kept only when it fits its pattern (a file that does not fit drops its line too). */
+export const parseCrashSite = (site: string): Omit<CrashSite, 'count'> | null => {
+  const m = SITE.exec(site);
+  if (m === null || !fits(m[1], PATTERNS.ERROR)) return null;
+  const file = fits(m[2], PATTERNS.FILE) ? m[2] : null;
+  return { error: m[1], file, line: file === null ? null : Number(m[3]), event: fits(m[4], PATTERNS.EVENT) ? m[4] : null };
 };
 
 const CANDIDATE_KINDS = new Set(['shortlist', 'reject', 'enter', 'no entry', 'risk approved']);
@@ -92,13 +141,51 @@ export const foldLine = (s: SummaryState, line: unknown): void => {
   const day = (s.days[dayKey] ??= emptyDay());
   const kind = line['kind'];
   const reasons = Array.isArray(line['reasons']) ? line['reasons'].filter((r): r is string => typeof r === 'string') : [];
-  if (kind === 'start') {
-    day.starts += 1;
+  if (kind === 'coverage_gap' && line['stream'] === 'journal') {
+    const from = typeof line['from_ts'] === 'string' ? Date.parse(line['from_ts']) : Number.NaN;
+    const to = typeof line['to_ts'] === 'string' ? Date.parse(line['to_ts']) : Number.NaN;
+    const affected = new Set<string>();
+    if (Number.isFinite(from) && Number.isFinite(to) && from <= to) {
+      const end = Math.min(to, ms);
+      try {
+        // Only recent dates matter; do not ask the timezone rules to resolve an arbitrarily old from_ts.
+        const first = melbourneDate(Math.max(from, end - KEEP_DAYS * 86_400_000));
+        let key = melbourneDate(end);
+        // Calendar dates, not 24h of Melbourne wall time (DST days differ). Never walk an unbounded loss range.
+        for (let n = 0; n < KEEP_DAYS && key >= first; n++) {
+          affected.add(key);
+          key = new Date(Date.parse(`${key}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
+        }
+      } catch (e) {
+        if (!(e instanceof RangeError)) throw e;
+        // Unsupported historical dates cannot make a journal loss marker disappear: warn on its receipt day.
+        affected.clear();
+      }
+    }
+    if (affected.size === 0) affected.add(dayKey);
+    for (const key of affected) bump((s.days[key] ??= emptyDay()).alerts, JOURNAL_COUNTS_INCOMPLETE);
+    pruneDays(s);
+  } else if (kind === 'start') {
+    // The unit's `--reconcile` pre-step writes its own start line (RESTART-CAUSE): only real boots are counted.
+    if (line['phase'] !== 'reconcile') {
+      day.starts += 1;
+      if (typeof line['restart'] === 'string' && RESTART_KINDS.has(line['restart'])) bump((day.restarts ??= {}), line['restart']);
+      if ((EXIT_KINDS as readonly unknown[]).includes(line['exit'])) bump((day.exits ??= {}), line['exit'] as string);
+      // HEAP-GUARD: a death on a fatal error leaves no stop line; the next boot's start line carries its site.
+      const site = typeof line['crash_site'] === 'string' ? parseCrashSite(line['crash_site']) : null;
+      if (site !== null) bump((day.crashSites ??= {}), JSON.stringify([site.error, site.file, site.line, site.event]));
+      // MEM-SUMMARY: the dead process's memory, numbers only (checked again: a malformed one is dropped, never guessed).
+      const dm = line['death_mem'] === undefined ? null : parseDeathMem(line['death_mem']);
+      if (dm !== null) day.lastDeath = dm;
+    }
     day.recorder = line['recorder'] === true || line['recorder'] === 'on' ? 'on' : line['recorder'] === false || line['recorder'] === 'off' ? 'off' : null;
     day.gitSha = fits(line['git_sha'], PATTERNS.SHA) ? line['git_sha'] : null;
     day.entryRule = fits(line['entry_rule'], PATTERNS.RULE) ? line['entry_rule'] : 'other';
     // A new process starts halted ('starting'); its first halt line is a new halt.
     s.halts = [];
+  } else if (kind === 'stop') {
+    const site = reasons[0] === 'crash' && reasons[1] !== undefined ? parseCrashSite(reasons[1]) : null;
+    if (site !== null) bump((day.crashSites ??= {}), JSON.stringify([site.error, site.file, site.line, site.event]));
   } else if (kind === 'alert') {
     if (line['level'] === 'critical') bump(day.alerts, code(line['code']) ?? 'other');
   } else if (kind === 'halt' || kind === 'resume') {
@@ -202,13 +289,24 @@ export interface SummaryInputs {
   readonly trades: readonly PaperTrade[];
   readonly openPositions: number;
   readonly solPrice: MicroUsd | null;
-  readonly credits: readonly { readonly provider: string; readonly credits_used: number; readonly monthly_credits: number | null }[];
+  readonly credits: readonly { readonly provider: string; readonly credits_used: number; readonly monthly_credits: number | null; readonly credits_by_class?: readonly number[] }[];
+  /** HELIUS-EXHAUSTED: Helius's "max usage reached" answers since boot and the first one's time; null when not wired. */
+  readonly heliusExhaustion?: { readonly count: number; readonly firstAtMs: number | null } | null;
 }
 
 const iso = (ms: number): string => new Date(ms).toISOString();
 const byCount = <T extends { count: number }>(a: T, b: T, ka: string, kb: string): number => b.count - a.count || (ka < kb ? -1 : ka > kb ? 1 : 0);
 const counts = (m: Record<string, number>): CodeCount[] =>
   Object.entries(m).map(([c, n]) => ({ code: c, count: n })).sort((a, b) => byCount(a, b, a.code, b.code)).slice(0, 64);
+
+const crashSites = (m: Record<string, number>): CrashSite[] =>
+  Object.entries(m)
+    .map(([k, n]) => {
+      const [error, file, line, event] = JSON.parse(k) as [string, string | null, number | null, string | null];
+      return { error, file, line, event, count: n };
+    })
+    .sort((a, b) => byCount(a, b, JSON.stringify(a), JSON.stringify(b)))
+    .slice(0, SUMMARY_MAX_CRASH_SITES);
 
 /** The book's exit reasons, as the app names them (api.ts EXIT_REASON); anything else is 'other'. */
 const EXIT = new Set(['stop', 'trailing_stop', 'take_profit', 'max_hold', 'thesis_lost', 'liquidity', 'emergency']);
@@ -233,27 +331,45 @@ export const buildSummary = (i: SummaryInputs): Summary => {
   }
   const reasons = [...refusedBy.values()].sort((a, b) => byCount(a, b, `${a.gate}/${a.code}`, `${b.gate}/${b.code}`));
   const top = reasons.slice(0, SUMMARY_TOP_REASONS);
+  const h16 = h16Counts(cands);
   const inDay = (ms: number | null) => ms !== null && melbourneDate(ms) === i.day;
   const inScope = i.trades.filter((t) => inDay(t.openedAtMs) || inDay(t.closedAtMs) || (!i.final && t.closedAtMs === null));
   // A trade whose mint is not a mint address is counted, never listed (nothing unchecked reaches the text).
   const listed = inScope.filter((t) => fits(t.mint, PATTERNS.MINT));
   const closed = i.trades.filter((t) => inDay(t.closedAtMs));
-  const netL = closed.reduce((s, t) => s + (t.netLamports ?? 0n), 0n);
-  // SOL-BOOKS: a trade with no dollar figure is valued from its lamports (api's tradeNetUsd), never read as zero.
+  // SOL-BOOKS: the SOL result first, each trade's whole result (its close and what landed after it, PAPER-2), as the
+  // app shows it; the dollars are its lamports' display (api's tradeNetUsd), never read as zero for want of a figure.
+  const netL = closed.reduce((s, t) => s + (tradeSol(t) ?? 0n), 0n);
   const netU = closed.reduce((s, t) => s + (tradeNetUsd(i, t) ?? 0n), 0n);
+  const usdOrNull = (v: bigint | null): string | null => (v === null ? null : usdText(v));
   const trades: SummaryTrade[] = listed.slice(0, SUMMARY_MAX_TRADES).map((t) => ({
     mint: t.mint,
     opened_at: iso(t.openedAtMs),
     closed_at: t.closedAtMs === null ? null : iso(t.closedAtMs),
-    size_usd: usdText(BigInt(t.notional)),
+    // SOL-BOOKS: the size is q in lamports; its dollars at the entry's price (display only).
+    size_usd: usdText(lamportsUsd(BigInt(t.notional), t.openSolPrice ?? t.closeSolPrice ?? i.solPrice)),
     exit_reason: exitReason(t),
-    net_lamports: t.netLamports === null ? null : t.netLamports.toString(),
-    net_usd: t.netPnl === null ? (t.netLamports === null ? null : usdText(lamportsUsd(t.netLamports, t.closeSolPrice ?? i.solPrice))) : usdText(BigInt(t.netPnl)),
+    net_lamports: tradeSol(t)?.toString() ?? null,
+    net_usd: t.closedAtMs === null ? null : usdOrNull(tradeNetUsd(i, t)),
   }));
   const credits: ProviderCredits[] = i.credits
     .filter((q) => fits(q.provider, PATTERNS.CODE))
     .slice(0, 16)
-    .map((q) => ({ provider: q.provider, used_since_boot: Math.max(0, Math.round(q.credits_used)), monthly: q.monthly_credits === null ? null : Math.max(0, Math.round(q.monthly_credits)) }));
+    .map((q) => {
+      const base: ProviderCredits = { provider: q.provider, used_since_boot: Math.max(0, Math.round(q.credits_used)), monthly: q.monthly_credits === null ? null : Math.max(0, Math.round(q.monthly_credits)) };
+      // HELIUS-EXHAUSTED: by class since boot (which reads spend), and Helius's "max usage reached" answers.
+      const cls = q.credits_by_class;
+      if (cls === undefined || cls.length !== 4) return base;
+      const by = cls.map((c) => Math.max(0, Math.ceil(c))) as unknown as readonly [number, number, number, number];
+      const x = q.provider === 'helius' ? i.heliusExhaustion ?? null : null;
+      if (x === null) return { ...base, by_class: by };
+      return { ...base, by_class: by, exhausted: { count: Math.max(0, Math.floor(x.count)), first_at: x.firstAtMs === null ? null : iso(x.firstAtMs) } };
+    });
+  const alerts = counts(f.alerts);
+  const incomplete = f.alerts[JOURNAL_COUNTS_INCOMPLETE];
+  if (incomplete !== undefined && !alerts.some((a) => a.code === JOURNAL_COUNTS_INCOMPLETE)) {
+    alerts[alerts.length - 1] = { code: JOURNAL_COUNTS_INCOMPLETE, count: incomplete };
+  }
   const sha = f.gitSha ?? (fits(i.gitSha, PATTERNS.SHA) ? i.gitSha : 'unknown');
   return {
     v: SUMMARY_VERSION,
@@ -267,8 +383,12 @@ export const buildSummary = (i: SummaryInputs): Summary => {
       uptime_s: Math.max(0, Math.floor(i.uptimeS)),
       starts: f.starts,
       recorder: f.recorder ?? i.recorder,
+      restarts: { planned: f.restarts?.['planned'] ?? 0, deploy: f.restarts?.['deploy'] ?? 0, unplanned: f.restarts?.['unplanned'] ?? 0 },
+      exits: counts(f.exits ?? {}),
+      crash_sites: crashSites(f.crashSites ?? {}),
+      last_death: f.lastDeath === undefined ? null : lastDeathOf(f.lastDeath),
     },
-    alerts: counts(f.alerts),
+    alerts,
     halts: counts(f.halts),
     candidates: {
       seen: cands.length,
@@ -276,6 +396,7 @@ export const buildSummary = (i: SummaryInputs): Summary => {
       refused,
       refused_by_reason: top,
       refused_other: reasons.slice(SUMMARY_TOP_REASONS).reduce((s, r) => s + r.count, 0),
+      ...(h16.length === 0 ? {} : { h16_by_input: h16.slice(0, SUMMARY_TOP_REASONS), h16_other: h16.slice(SUMMARY_TOP_REASONS).reduce((s, r) => s + r.count, 0) }),
     },
     trades,
     trades_dropped: inScope.length - trades.length,
@@ -285,9 +406,84 @@ export const buildSummary = (i: SummaryInputs): Summary => {
   };
 };
 
+/**
+ * H16-WHY: refused candidates by each distinct H16 reason of their last refusal (code, input, needing gate), most
+ * frequent first. A candidate counts once per reason, so the rows can sum to more than the refusals.
+ */
+const h16Counts = (cands: readonly CandFold[]): H16Count[] => {
+  const by = new Map<string, H16Count>();
+  for (const c of cands) {
+    if (c.entered || c.code === null || c.gate === null) continue;
+    for (const [code, input, neededBy] of c.h16 ?? []) {
+      const r = { code, input, needed_by: neededBy };
+      const k = JSON.stringify(r);
+      by.set(k, { ...r, count: (by.get(k)?.count ?? 0) + 1 });
+    }
+  }
+  return [...by.values()].sort((a, b) => byCount(a, b, JSON.stringify([a.code, a.input, a.needed_by]), JSON.stringify([b.code, b.input, b.needed_by])));
+};
+
+/** The summary without H16-WHY's keys of `candidates`, the shape a watchdog from before them accepts. */
+export const withoutH16 = (s: Summary): Summary => {
+  const c: Record<string, unknown> = { ...s.candidates };
+  for (const k of H16_KEYS) delete c[k];
+  return { ...s, candidates: c as unknown as Summary['candidates'] };
+};
+const hasH16 = (s: Summary): boolean => H16_KEYS.some((k) => Object.hasOwn(s.candidates, k));
+
+/** A death's memory in the summary's form: times as ISO strings. */
+const lastDeathOf = (d: DeathMem): LastDeath => ({
+  at: iso(d.at), uptime_s: d.uptime_s, heap_used_mb: d.heap_used_mb, heap_limit_mb: d.heap_limit_mb, spaces: d.spaces.map((x) => ({ ...x })),
+  sample: d.sample === null ? null : { ...d.sample, at: iso(d.sample.at) },
+  ...(d.recent === undefined || d.recent.length === 0 ? {} : { recent: d.recent.map((p) => ({ at: iso(p.at), heap_used_mb: p.heap_used_mb, old_mb: p.old_mb, large_object_mb: p.large_object_mb, saving: p.saving, counts: p.counts.map((c) => ({ code: c.code, count: c.count })) })) }),
+});
+
+/** The summary without MEM-PROBE's samples in `last_death`, the shape a watchdog from MEM-SUMMARY to before MEM-PROBE accepts. */
+export const withoutProbe = (s: Summary): Summary => {
+  const d = (s.worker as { readonly last_death?: LastDeath | null }).last_death;
+  if (d === undefined || d === null || !Object.hasOwn(d, 'recent')) return s;
+  const { recent: _recent, ...rest } = d;
+  return { ...s, worker: { ...s.worker, [MEM_SUMMARY_KEY]: rest } };
+};
+/** True when the summary carries MEM-PROBE's samples. */
+const hasProbe = (s: Summary): boolean => withoutProbe(s) !== s;
+
+/** The summary without MEM-SUMMARY's key of `worker`, the shape a watchdog from RESTART-CAUSE to before it accepts. */
+export const withoutLastDeath = (s: Summary): Summary => {
+  const w: Record<string, unknown> = { ...s.worker };
+  delete w[MEM_SUMMARY_KEY];
+  return { ...s, worker: w as unknown as Summary['worker'] };
+};
+
+/** The summary without RESTART-CAUSE's keys of `worker` (nor MEM-SUMMARY's), the shape a watchdog from before them accepts. */
+export const withoutRestartCause = (s: Summary): Summary => {
+  const w: Record<string, unknown> = { ...s.worker };
+  for (const k of [...RESTART_CAUSE_KEYS, MEM_SUMMARY_KEY]) delete w[k];
+  return { ...s, worker: w as unknown as Summary['worker'] };
+};
+
+/** The summary without HELIUS-EXHAUSTED's keys of each provider's credits, the shape a watchdog from before them accepts. */
+export const withoutCreditDetail = (s: Summary): Summary => ({
+  ...s,
+  provider_credits: s.provider_credits.map((c) => {
+    const o: Record<string, unknown> = { ...c };
+    for (const k of CREDIT_DETAIL_KEYS) delete o[k];
+    return o as unknown as ProviderCredits;
+  }),
+});
+
 /** The body to post, or null with the reason when either guard refuses it (then nothing is sent). */
-export const summaryBody = (s: Summary): { readonly body: string } | { readonly refused: string } => {
+export const summaryBody = (summary: Summary): { readonly body: string } | { readonly refused: string } => {
+  let s = summary;
   let body = JSON.stringify(s);
+  // MEM-PROBE: over the size cap, the oldest probe samples go first (the trades stay listed while they can).
+  const over = () => new TextEncoder().encode(body).length > SUMMARY_MAX_BYTES;
+  while (over() && hasProbe(s)) {
+    const d = (s.worker as { readonly last_death?: LastDeath | null }).last_death!;
+    const recent = d.recent!.slice(1);
+    s = recent.length === 0 ? withoutProbe(s) : { ...s, worker: { ...s.worker, [MEM_SUMMARY_KEY]: { ...d, recent } } };
+    body = JSON.stringify(s);
+  }
   // Over the size cap: list fewer trades (all are still counted) until it fits.
   let keep = s.trades.length;
   while (new TextEncoder().encode(body).length > SUMMARY_MAX_BYTES && keep > 0) {
@@ -418,18 +614,57 @@ export class Summarizer {
     const { watchdogUrl: url, key } = this.#d;
     if (url === null || key === null) return false;
     const s = (this.#d.build ?? buildSummary)({ ...this.#d.live(), day, final, nowMs: now, fold: this.#state.days[day] });
+    let res = await this.#send(day, s, url, key, now);
+    // A watchdog from before MEM-SUMMARY refuses its key, one from before HELIUS-EXHAUSTED the credit detail too, one
+    // from before RESTART-CAUSE its keys too (a deploy is not atomic): the day goes again without each in turn.
+    let sent = s;
+    // H16-WHY: a watchdog from before it refuses the H16 breakdown: the day goes again without it, then as below.
+    if (res !== null && !res.ok && res.reason === 'HTTP 400' && hasH16(sent)) {
+      this.#d.log(`Summary for ${day} refused; sent again without the H16 breakdown.`);
+      sent = withoutH16(sent);
+      res = await this.#send(day, sent, url, key, now);
+    }
+    // A watchdog from before MEM-PROBE refuses its samples: the day goes again without them, then as below.
+    if (res !== null && !res.ok && res.reason === 'HTTP 400' && hasProbe(sent)) {
+      this.#d.log(`Summary for ${day} refused; sent again without the memory probe samples.`);
+      sent = withoutProbe(sent);
+      res = await this.#send(day, sent, url, key, now);
+    }
+    if (res !== null && !res.ok && res.reason === 'HTTP 400' && Object.hasOwn(s.worker, MEM_SUMMARY_KEY)) {
+      this.#d.log(`Summary for ${day} refused; sent again without the memory at the last death.`);
+      sent = withoutLastDeath(sent);
+      res = await this.#send(day, sent, url, key, now);
+    }
+    const detail = sent.provider_credits.some((c) => CREDIT_DETAIL_KEYS.some((k) => Object.hasOwn(c, k)));
+    if (detail && res !== null && !res.ok && res.reason === 'HTTP 400') {
+      this.#d.log(`Summary for ${day} refused; sent again without the credit detail.`);
+      sent = withoutCreditDetail(sent);
+      res = await this.#send(day, sent, url, key, now);
+    }
+    if (res !== null && !res.ok && res.reason === 'HTTP 400') {
+      this.#d.log(`Summary for ${day} refused; sent again without the restart counts.`);
+      res = await this.#send(day, withoutRestartCause(withoutCreditDetail(sent)), url, key, now);
+    }
+    if (res === null) return false;
+    if (!res.ok) this.#d.log(`Summary for ${day} not accepted: ${res.reason}.`);
+    else if (!res.written) this.#d.log(`Summary for ${day} accepted, not written (the watchdog alerts why).`);
+    return res.ok;
+  }
+
+  /** One checked, signed post; null when the guards refuse the summary (nothing is sent). */
+  async #send(day: string, s: Summary, url: string, key: string, now: number): Promise<PostResult | null> {
+    // A fault can arrive during folding, a previous post, or a midnight/fallback send. Recheck the same live
+    // callback at each send; its throw follows tick's existing caught/logged path.
+    this.#d.live();
     const b = summaryBody(s);
     if ('refused' in b) {
       this.#d.log(`Summary for ${day} not sent: ${b.refused}.`);
-      return false;
+      return null;
     }
     // The watchdog takes each signature time once: two posts in one second get consecutive times.
     const t = Math.max(Math.floor(now / 1000), this.#lastT + 1);
     this.#lastT = t;
-    const res = await postSummary(this.#d.http, url, key, b.body, t);
-    if (!res.ok) this.#d.log(`Summary for ${day} not accepted: ${res.reason}.`);
-    else if (!res.written) this.#d.log(`Summary for ${day} accepted, not written (the watchdog alerts why).`);
-    return res.ok;
+    return postSummary(this.#d.http, url, key, b.body, t);
   }
 }
 

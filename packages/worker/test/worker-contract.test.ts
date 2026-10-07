@@ -29,6 +29,10 @@ import { Journal, lastLines } from '../src/run/journal.ts';
 import { redact, setSecretValues } from '../src/run/redact.ts';
 import { CreditBook } from '../src/run/sources.ts';
 import { MINT, T, Market, makeWorker, slotAt, tempState, virtualTimers, noLegs } from './worker-harness.ts';
+import { recordOf, tx } from './helpers.ts';
+import { CUT_CREATE_FETCHES_PER_DAY, CUT_CREATE_RETRY_MS } from '../src/run/worker.ts';
+import { logEvents } from '../../core/src/chain/index.ts';
+import type { TestTimers } from './worker-harness.ts';
 
 const lines = (dir: string) => readFileSync(join(dir, 'journal.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>);
 const ROOT = join(import.meta.dirname, '..', '..', '..');
@@ -65,8 +69,11 @@ describe('config and exit codes (§12.4)', () => {
       const p = parseConfig({ ...base, ...env }, () => null);
       return p.ok ? p.config.watch : null;
     };
-    expect(watch({})).toEqual({ everyMs: 200, staleMs: 500, latencyMs: 400 });
-    expect(watch({ ZEROED_WATCH_EVERY_MS: '300', ZEROED_WATCH_STALE_MS: '300', ZEROED_WATCH_LATENCY_MS: '100' })).toEqual({ everyMs: 300, staleMs: 300, latencyMs: 100 });
+    expect(watch({})).toEqual({ everyMs: 200, staleMs: 500, latencyMs: 400, verifyMs: 30_000 });
+    expect(watch({ ZEROED_WATCH_EVERY_MS: '300', ZEROED_WATCH_STALE_MS: '300', ZEROED_WATCH_LATENCY_MS: '100', ZEROED_WATCH_VERIFY_MS: '300' })).toEqual({ everyMs: 300, staleMs: 300, latencyMs: 100, verifyMs: 300 });
+    // WATCH-1c: the verify period is never shorter than the stale limit.
+    expect(watch({ ZEROED_WATCH_VERIFY_MS: '499' })).toBeNull();
+    expect(watch({ ZEROED_WATCH_VERIFY_MS: 'x' })).toBeNull();
     // Tied to the policy (review of #87): the oldest a watched market can be must stay below the quote age.
     const policyAge = TRIAL_POLICY.gates.maxQuoteAgeMs;
     const release = DEFAULT_LIVE_FEED.horizonSlots * SLOT_MS;
@@ -503,6 +510,156 @@ describe('a cut trade log on a rug-covered stream (RUG-1 wiring rule)', () => {
     const off = await run(false, false);
     expect(off.fetched).toEqual([]);
     expect(off.gaps).toEqual([]);
+  });
+});
+
+describe('H16-WHY C: a cut log on the creates watch', () => {
+  const VIA = 'logs:TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM';
+  const DAY_MS = 86_400_000;
+  const create = recordOf(tx('pump CreateEvent'));
+  const now = (h: { timers: { now(): number } }) => ({ slot: 0n, txIndex: 0, ixIndex: 0, receivedAt: h.timers.now() });
+  const cut = (h: ReturnType<typeof makeWorker>, signature: string, slot = 1_001n) =>
+    h.worker.feed.ingest('helius', { type: 'logs', signature, slot, err: null, via: VIA, logs: ['Program 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P invoke [1]', 'Log truncated'] }, { receivedAt: h.timers.now() });
+  const start = async (found: boolean | ((sig: string, why: string) => boolean), fetchedWhy: [string, string][], timers?: TestTimers) => {
+    const h = makeWorker({ found, fetchedWhy, ...(timers === undefined ? {} : { timers }) });
+    await h.worker.reconcile();
+    const m = new Market(h);
+    m.slot(1_000n);
+    m.offchain('coverage:creates:start', { fromSlot: 900n, via: VIA });
+    await m.run(1_000, 200, () => m.slot());
+    return { h, m };
+  };
+  const B58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+  const sig = (k: number) => `${B58[k % 58]}${B58[Math.floor(k / 58)]}${'4'.repeat(86)}`;
+  const tries = (w: [string, string][], s: string) => w.filter(([x, why]) => x === s && why === 'cut-create').length;
+  /** Turns of the event loop: each retry's wait fires on a turn (virtual timers move the clock by it), past any run's end. */
+  const settle = async (h: ReturnType<typeof makeWorker>, turns = 60) => {
+    for (let i = 0; i < turns; i++) {
+      h.worker.step();
+      await new Promise<void>((r) => setImmediate(r));
+    }
+  };
+
+  it('is fetched, and its released transaction closes the hole H14 refuses across', async () => {
+    const fetchedWhy: [string, string][] = [];
+    const { h, m } = await start(true, fetchedWhy);
+    cut(h, create.signature);
+    await m.run(2_000, 200, () => m.slot());
+    expect(fetchedWhy).toEqual([[create.signature, 'cut-create']]);
+    // Asked for, not yet on the feed: still a hole (never cleared by the ask alone).
+    expect(h.worker.strategy.deployers.lostCreate(0, now(h))).toMatchObject({ signature: create.signature, via: VIA });
+    // The fetcher puts the transaction on the feed: its ev: events close the hole.
+    h.worker.feed.ingest('helius', { type: 'tx', record: create }, { receivedAt: h.timers.now(), lookup: true });
+    await m.run(2_000, 200, () => m.slot());
+    expect(h.worker.strategy.deployers.lostCreate(0, now(h))).toBeNull();
+    // Not a rug-covered watch: no rugs gap either way.
+    expect(fetchedWhy.filter(([, why]) => why === 'cut-log')).toEqual([]);
+    await h.worker.stop();
+  });
+
+  it('a failed fetch is asked again after its wait, and the transaction it finds clears the hole (review B1)', async () => {
+    const fetchedWhy: [string, string][] = [];
+    let n = 0;
+    const { h, m } = await start(() => ++n >= 3, fetchedWhy);
+    const t0 = h.timers.now();
+    cut(h, create.signature);
+    // Two failures, then found: tries at 0, +2 and +6 minutes (virtual timers move the clock by each wait).
+    await m.run(2_000, 200, () => m.slot());
+    await settle(h);
+    expect(tries(fetchedWhy, create.signature)).toBe(3);
+    expect(h.timers.now() - t0).toBeGreaterThanOrEqual(CUT_CREATE_RETRY_MS[0]! + CUT_CREATE_RETRY_MS[1]!);
+    expect(h.worker.strategy.deployers.isLost(create.signature)).toBe(true);
+    h.worker.feed.ingest('helius', { type: 'tx', record: create }, { receivedAt: h.timers.now(), lookup: true });
+    await m.run(2_000, 200, () => m.slot());
+    expect(h.worker.strategy.deployers.lostCreate(0, now(h))).toBeNull();
+    expect(tries(fetchedWhy, create.signature)).toBe(3);
+    await h.worker.stop();
+  });
+
+  it('fails closed: after the last try the hole stays, H14 stays not covered, and no more tries are made', async () => {
+    const fetchedWhy: [string, string][] = [];
+    const { h, m } = await start(false, fetchedWhy);
+    cut(h, create.signature);
+    await m.run(2_000, 200, () => m.slot());
+    await settle(h);
+    expect(tries(fetchedWhy, create.signature)).toBe(CUT_CREATE_RETRY_MS.length + 1);
+    expect(h.worker.strategy.deployers.lostCreate(0, now(h))).toMatchObject({ signature: create.signature });
+    await settle(h);
+    await m.run(5_000, 200, () => m.slot());
+    expect(tries(fetchedWhy, create.signature)).toBe(CUT_CREATE_RETRY_MS.length + 1);
+    await h.worker.stop();
+  });
+
+  it('a hole restored at boot is asked for again (its fetch was out or failed when the last process ended)', async () => {
+    const first: [string, string][] = [];
+    const h = makeWorker({ found: false, fetchedWhy: first });
+    expect(await h.worker.start()).toEqual({ ok: true });
+    const m = new Market(h);
+    m.slot(slotAt(h.timers.now()));
+    m.offchain('coverage:creates:start', { fromSlot: 900n, via: VIA });
+    await m.run(1_000, 200, () => m.slot());
+    cut(h, create.signature, slotAt(h.timers.now()));
+    await m.run(2_000, 200, () => m.slot());
+    await settle(h);
+    expect(tries(first, create.signature)).toBe(CUT_CREATE_RETRY_MS.length + 1);
+    await h.worker.stop();
+    const again: [string, string][] = [];
+    const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers, found: true, fetchedWhy: again });
+    expect(await h2.worker.start()).toEqual({ ok: true });
+    await settle(h2, 5);
+    expect(h2.worker.strategy.deployers.isLost(create.signature)).toBe(true);
+    expect(again).toContainEqual([create.signature, 'cut-create']);
+    await h2.worker.stop();
+  });
+
+  it('a cut log naming its signature on several events is fetched once (the worker\'s own guard)', async () => {
+    const fetchedWhy: [string, string][] = [];
+    const { h, m } = await start(true, fetchedWhy);
+    // The create transaction's own log lines, cut at the end: each decoded event carries the signature and `truncated`.
+    h.worker.feed.ingest('helius', { type: 'logs', signature: create.signature, slot: 1_001n, err: null, via: VIA, logs: [...create.logMessages!, 'Log truncated'] }, { receivedAt: h.timers.now() });
+    await m.run(2_000, 200, () => m.slot());
+    expect(logEvents([...create.logMessages!, 'Log truncated'], null).events.length).toBeGreaterThanOrEqual(2);
+    expect(fetchedWhy).toEqual([[create.signature, 'cut-create']]);
+    await h.worker.stop();
+  });
+
+  it('the day\'s cap: no fetch past it, and the next UTC day starts a new count', async () => {
+    const fetchedWhy: [string, string][] = [];
+    const { h, m } = await start(true, fetchedWhy);
+    for (let k = 1; k <= CUT_CREATE_FETCHES_PER_DAY + 1; k++) cut(h, sig(k), 1_003n);
+    await m.run(3_000, 200, () => m.slot());
+    expect(fetchedWhy).toHaveLength(CUT_CREATE_FETCHES_PER_DAY);
+    const day = Math.floor(h.timers.now() / DAY_MS);
+    h.timers.set((day + 1) * DAY_MS + 1_000);
+    cut(h, sig(CUT_CREATE_FETCHES_PER_DAY + 2), 1_005n);
+    await m.run(1_000, 200, () => m.slot());
+    expect(fetchedWhy.at(-1)).toEqual([sig(CUT_CREATE_FETCHES_PER_DAY + 2), 'cut-create']);
+    await h.worker.stop();
+  });
+
+  it('a clock stepped back does not reset a spent day\'s count (a retry due then is not fetched)', async () => {
+    const v = virtualTimers(T - 16 * DAY_MS);
+    let back = 0;
+    const timers: TestTimers = { ...v, now: () => v.now() - back, set: (ms) => v.set(ms + back) };
+    const fetchedWhy: [string, string][] = [];
+    const X = sig(3_300);
+    // X's fetch fails, and the clock steps back a day as it does: X's retry runs on the earlier day.
+    const { h, m } = await start((s) => (s === X ? ((back = DAY_MS), false) : true), fetchedWhy, timers);
+    for (let k = 1; k < CUT_CREATE_FETCHES_PER_DAY; k++) cut(h, sig(k), 1_003n);
+    await m.run(1_000, 200, () => m.slot());
+    cut(h, X, 1_004n);
+    // Stepped until X is fetched, not run to a fixed end: the clock goes back a day as it is.
+    for (let i = 0; i < 50 && back === 0; i++) {
+      m.slot();
+      h.timers.set(h.timers.now() + 200);
+      h.worker.step();
+      await new Promise<void>((r) => setImmediate(r));
+    }
+    await settle(h);
+    expect(fetchedWhy).toHaveLength(CUT_CREATE_FETCHES_PER_DAY);
+    expect(tries(fetchedWhy, X)).toBe(1);
+    expect(back).toBe(DAY_MS);
+    await h.worker.stop();
   });
 });
 

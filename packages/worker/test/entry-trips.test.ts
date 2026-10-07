@@ -10,7 +10,7 @@ import { markedHistory } from '../src/engine/marks.ts';
 import { accountFile } from '../src/run/account.ts';
 import { controlFile } from '../src/run/state.ts';
 import { blockNetwork } from './helpers.ts';
-import { T, makeWorker, passingMarket, tempState, lam } from './worker-harness.ts';
+import { SOL_PRICE, T, makeWorker, passingMarket, tempState, lam } from './worker-harness.ts';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -73,7 +73,9 @@ describe('a stop reached on the entry path while flat is latched', () => {
   });
 
   it('NAV kill: the reject carries `trip kill_switch` as its own reason, and the kill latch is set', async () => {
-    const dir = seeded({ navPeak: { atMs: T - 3_600_000, nav: usd('40') } });
+    // SOL-BOOKS: a file in SOL (an old file's dollar NAV peak is dropped at the opening, not converted): a NAV peak of
+    // twice the bankroll's SOL, recorded an hour ago.
+    const dir = seeded({ books: 'sol', openingSolPrice: SOL_PRICE, navPeak: { atMs: T - 3_600_000, nav: lam('40') } });
     const e = entryPath();
     const { h, lines, latches } = await run(dir, e.mark);
     expect(e.seen.valuations).toBeGreaterThan(0);

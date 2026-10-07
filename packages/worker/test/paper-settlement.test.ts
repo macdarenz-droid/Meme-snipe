@@ -1028,7 +1028,8 @@ describe('PAPER-2: a closed trade is settled again when something lands after it
     const gain = tradePnl(t)! - atClose.netPnl!;
     expect(gain > 0n).toBe(true);
     // Another loss booked the same day (an account cost), so the meter has something to measure.
-    const other = { atMs: day + 60_000, amount: 0n, usd: gain * 3n, lamports: 0n, kind: 'wallet_setup' };
+    const gainSol = tradeSol(t)! - atClose.netLamports!;
+    const other = { atMs: day + 60_000, amount: gainSol * 3n, usd: gain * 3n, lamports: gainSol * 3n, kind: 'wallet_setup' };
     const inputs = { book, legs, attempts: legs.attempts, trades: account.state.trades, accountCosts: [...account.costRecords(emptyBook({ maxOpenPositions: 5 }), noLegs, PX, day + 120_000), other], symbol: () => 'M', strategyVersion: 's', policyVersion: 'p', solPrice: PX, nowMs: day + 120_000 } as unknown as ApiInputs;
     // Net: the trade's whole result (and the other cost).
     expect(views.stats(inputs)).toMatchObject({ netUsd: usdText(tradePnl(t)! - other.usd) });
@@ -1045,7 +1046,8 @@ describe('PAPER-2: a closed trade is settled again when something lands after it
     expect(curve[at - 1]!.at).toBe(new Date(T + 2).toISOString());
     // Risk: no cost for a gain. The day-loss meter: the other cost alone, the late gain not offsetting it.
     expect(account.costs(emptyBook({ maxOpenPositions: 5 }), noLegs, T + 3).filter((c) => c.kind === 'late_settlement')).toEqual([]);
-    expect(realisedLossToday(inputs)).toBe(other.usd);
+    // SOL-BOOKS: the meter's realised loss is in lamports.
+    expect(realisedLossToday(inputs)).toBe(other.lamports);
   });
 
   it('a sibling\'s sell closes the shared account after the main trade closed: the rent comes back to the main trade (item 4)', () => {

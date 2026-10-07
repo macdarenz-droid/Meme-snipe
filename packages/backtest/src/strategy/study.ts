@@ -25,7 +25,7 @@ import {
 } from '../../../core/src/exits/index.ts';
 import { observedFeeContext, type ScenarioName } from '../../../core/src/fills/index.ts';
 import {
-  DeployerIndex, evaluateHardRejects, evaluateRegime, type GateContext, holdersKey, parseHolders, parseSolUsd, SOL_USD_KEY, solUsdAt, TX_CREATE_PREFIX, type Universe,
+  CREATE_KEEP_MS, createKeepVerdict, DeployerIndex, evaluateHardRejects, evaluateRegime, type GateContext, holdersKey, parseHolders, parseSolUsd, SOL_USD_KEY, solUsdAt, TX_CREATE_PREFIX, type Universe,
   migrationKey, parseMigration, concentration, mintAccounts, poolKey, parsePool, type HardResult, type HardGate, HARD_GATES, HARD_STAGE_GROUPS, type Staged, stagedHardRejects,
 } from '../../../core/src/gates/index.ts';
 import { OBSERVED_TIP_KEY } from '../sim/market.ts';
@@ -69,6 +69,8 @@ export interface StudyOptions {
    * not produced yet (graduate survival and curve volume); every output of such a run says the regime was assumed on.
    */
   readonly regime?: 'evaluate' | 'assume-on';
+  /** OOM-MINT: the most a coin's migration may follow its create (`CREATE_KEEP_MS`, as live); later, it is refused. */
+  readonly createKeepMs?: number;
   /** The live read caps (READ_LIMITS). */
   readonly readLimits: ReadLimits;
 }
@@ -406,9 +408,16 @@ export class StudyStrategy implements Strategy {
     if (now < this.#o.entriesFrom || now >= this.#o.entriesTo) return;
     if (c.target !== null && c.checks < c.target) return;
     if (c.checks === 1 || c.target === c.checks) say('candidate', `check ${c.checks}`);
+    const gctxR: GateContext = { now: ctx.now, lookup: (k, a) => ctx.lookup(k, a), history: (k, f, t) => ctx.history(k, f, t), deployers: this.#deployers, observedTip: this.#tip(ctx) ?? ctx.now.slot };
+    // OOM-MINT (supervisor ruling on the BT review, B1): a coin that migrated more than CREATE_KEEP_MS after its create
+    // is refused before anything is judged, from the facts, as live refuses it.
+    const kept = createKeepVerdict(gctxR, mint, this.#o.createKeepMs ?? CREATE_KEEP_MS);
+    if (kept?.expired === true) {
+      this.funnel.record(tag, mint, 'create expired', 'adverse');
+      return void say('reject', 'worker:create-expired');
+    }
     // The regime gate first, as live (worker strategy: regime off rejects before any hard reject). Off is its own
     // funnel stage, never skipped: "not covered" when its inputs are unknown, adverse when its conditions fail.
-    const gctxR: GateContext = { now: ctx.now, lookup: (k, a) => ctx.lookup(k, a), history: (k, f, t) => ctx.history(k, f, t), deployers: this.#deployers, observedTip: this.#tip(ctx) ?? ctx.now.slot };
     const regime = this.#o.regime === 'assume-on' ? null : evaluateRegime(gctxR, { session: this.#o.session, mode: 'backtest' });
     if (regime !== null && !regime.on) {
       const unknown = regime.reasons.length > 0 && regime.reasons.every((r) => r.code === 'unknown');

@@ -35,7 +35,7 @@ describe('SOL/USD from the Coinbase ticker', () => {
   it('subscribes to the SOL-USD ticker and turns each trade into micro-dollars, dated at the trade', () => {
     const { hub, prices } = setup();
     expect(hub.last.url).toBe(COINBASE_WS_URL);
-    expect(hub.last.requests()).toEqual([{ type: 'subscribe', product_ids: ['SOL-USD'], channels: ['ticker'] }]);
+    expect(hub.last.requests()).toEqual([{ type: 'subscribe', product_ids: ['SOL-USD'], channels: ['ticker', 'heartbeat'] }]);
     hub.last.push(tick('119.92', '2026-10-04T00:00:09.250Z'));
     hub.last.push(tick('119.93', '2026-10-04T00:00:09.300Z')); // within 500 ms of the last: skipped
     hub.last.push(tick('120.1', '2026-10-04T00:00:09.900Z'));

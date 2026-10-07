@@ -10,6 +10,8 @@ import { LocalControl } from '../src/control.ts';
 import { reportMarkdown, type DrillOutcome, type Report } from '../src/report.ts';
 import { httpHealth, runSegment } from '../src/runner.ts';
 import { scanPaths } from '../src/scan.ts';
+import { journalLines, tradePhases } from './trade-phases.ts';
+import { nativeStub } from './native-stub.ts';
 
 const root = join(import.meta.dirname, '..', '..', '..');
 const freePort = (): Promise<number> =>
@@ -27,9 +29,9 @@ const setup = async (envOver: Record<string, string> = {}) => {
   const addr = `127.0.0.1:${await freePort()}`;
   const stateDir = join(dir, 'state');
   const evidenceDir = join(dir, 'evidence', 'run');
-  const control = () =>
+  const control = (entry = STUB_ENTRY) =>
     new LocalControl({
-      entry: STUB_ENTRY,
+      entry,
       cwd: root,
       logPath: join(evidenceDir, 'logs', 'worker.log'),
       stateDir,
@@ -62,21 +64,44 @@ const staleHealth = (ms: number) => async (addr: string) => {
 };
 
 describe('runner with the stub worker', () => {
-  it('runs restart and feed drills, survives a job handover, and writes complete evidence', async () => {
+  it('a drill whose kill fails leaves no planned_restart marker behind (RESTART-ALERT review)', async () => {
     const t = await setup();
+    const control = t.control();
+    control.kill = async () => {
+      throw new Error('kill failed');
+    };
     const newRun = { runId: 'run', targetMs: 16_000, entry: STUB_ENTRY, restarts: 3, causes: ['crash', 'crash', 'crash'] as const, restartWindowMs: 2500, feedDropMs: 600, rpcDrops: 0 };
     const common = { identity: { label: 'rehearsal' as const, commit: 'c0ffee' }, healthAddr: t.addr, stateDir: t.stateDir, evidenceDir: t.evidenceDir, keepRecorded: 'copy' as const, sampleMs: 100, recoverMs: 5000, log: quiet };
+    let killed = 0;
+    const kill = control.kill;
+    control.kill = async () => {
+      killed++;
+      return kill();
+    };
+    await runSegment({ ...common, control, newRun, segmentEnd: Number.POSITIVE_INFINITY, recordedDir: join(t.dir, 'rec'), recordedArtifact: 'rec' }).catch(() => undefined);
+    expect(killed).toBeGreaterThanOrEqual(1);
+    await control.stop();
+    expect(existsSync(join(t.stateDir, 'planned_restart'))).toBe(false);
+  });
+
+  it('runs restart and feed drills, survives a job handover, and writes complete evidence', async () => {
+    const t = await setup();
+    const entry = nativeStub(t.dir);
+    const newRun = { runId: 'run', targetMs: 16_000, entry, restarts: 3, causes: ['crash', 'crash', 'crash'] as const, restartWindowMs: 2500, feedDropMs: 600, rpcDrops: 0 };
+    const common = { identity: { label: 'rehearsal' as const, commit: 'c0ffee' }, healthAddr: t.addr, stateDir: t.stateDir, evidenceDir: t.evidenceDir, keepRecorded: 'copy' as const, sampleMs: 100, recoverMs: 5000, log: quiet };
     // Job 1 stops part-way, like a GitHub job at its time limit; job 2 restores and finishes.
-    const first = await runSegment({ ...common, control: t.control(), newRun, segmentEnd: Date.now() + 8000, recordedDir: join(t.dir, 'rec1'), recordedArtifact: 'rec1' });
+    const first = await runSegment({ ...common, control: t.control(entry), newRun, segmentEnd: Date.now() + 8000, recordedDir: join(t.dir, 'rec1'), recordedArtifact: 'rec1' });
     expect(first).toMatchObject({ done: false, aborted: null, report: null });
     expect(existsSync(join(t.stateDir, 'clean_stop'))).toBe(true);
-    const second = await runSegment({ ...common, control: t.control(), segmentEnd: Number.POSITIVE_INFINITY, recordedDir: join(t.dir, 'rec2'), recordedArtifact: 'rec2' });
+    const second = await runSegment({ ...common, control: t.control(entry), segmentEnd: Number.POSITIVE_INFINITY, recordedDir: join(t.dir, 'rec2'), recordedArtifact: 'rec2' });
     expect(second.done).toBe(true);
     const r = second.report as Report;
 
     const byKind = (k: string) => r.drills.filter((d) => d.kind === k);
     expect(byKind('restart')).toHaveLength(3);
     expect(byKind('restart').every((d) => d.pass && d.midTrade === true)).toBe(true);
+    // RESTART-ALERT: each crash drill left its marker for the next boot (the stub worker does not consume it).
+    expect(JSON.parse(readFileSync(join(t.stateDir, 'planned_restart'), 'utf8'))).toMatchObject({ cause: expect.stringMatching(/^drill restart-3 \(crash\)$/), at: expect.any(Number) });
     expect(byKind('handover')).toHaveLength(1);
     expect(byKind('handover')[0]!.pass).toBe(true);
     expect(r.drills_summary.feeds_passed).toEqual(['alchemy-ws', 'helius-ws', 'pumpportal']);
@@ -130,12 +155,45 @@ describe('runner with the stub worker', () => {
     expect(scanPaths([t.dir], new Map(Object.entries(FAKE))).map((f) => f.what)).toEqual(['HELIUS_API_KEY']);
   }, 60_000);
 
+  it('stopping between a killed child and its pending restart stays unclean and never invents a graceful-stop marker', async () => {
+    const t = await setup();
+    const phases = tradePhases(t.dir, 'hold');
+    const control = new LocalControl({
+      entry: STUB_ENTRY, cwd: root, logPath: join(t.evidenceDir, 'logs', 'worker.log'), stateDir: t.stateDir,
+      restartDelayMs: 60_000,
+      env: { PATH: process.env['PATH'] ?? '', ...FAKE, ZEROED_STATE_DIR: t.stateDir, ZEROED_MODE: 'paper', ZEROED_RECORDER: 'on', ZEROED_SIMULATE: 'on', ZEROED_DRILLS: 'on', ZEROED_HEALTH_ADDR: t.addr, ZEROED_GIT_SHA: 'c0ffee', ZEROED_STUB_TICK_MS: '50', ZEROED_STUB_TRADE_PHASE_FILE: phases.file },
+    });
+    try {
+      await control.start();
+      await phases.wait(t.addr, Date.now() + 6000, (h) => h.reconciled && h.exit_capable);
+      await control.kill();
+      await control.stop();
+      expect(control.starts).toBe(1);
+      expect(existsSync(join(t.stateDir, 'clean_stop'))).toBe(false);
+      expect(journalLines(t.stateDir).some((line) => line.kind === 'stop')).toBe(false);
+      expect(await httpHealth(t.addr)).toBeNull();
+    } finally {
+      await control.stop();
+    }
+  }, 30_000);
+
   // CI-1: under parallel load a reply describes the worker a moment before the runner acts on it (the trade it shows
   // may close before the kill or the copy). 150 ms old replies reproduced it every time; the runner must not care.
   it.each([['fresh replies', 0], ['replies 150 ms old (a loaded runner)', 150]])('drills every cause: crash, reboot, host loss from backup, chain rebuild and RPC loss, %s', async (_, staleMs) => {
-    const t = await setup();
+    const env: Record<string, string> = {};
+    const t = await setup(env);
+    const phases = tradePhases(t.dir, 'entry');
+    env['ZEROED_STUB_TRADE_PHASE_FILE'] = phases.file;
+    // Each cause must exercise recovery of a real position. Keep an observed entry open until the drill kills it;
+    // after a wipe, request another actual entry. CI-1 separately exercises the trade that closes before a kill.
+    const fetchHealth = async (addr: string) => {
+      const h = await httpHealth(addr);
+      if (h?.reconciled) phases.set(h.open_position === null ? 'entry' : 'hold');
+      if (staleMs > 0) await new Promise((resolve) => setTimeout(resolve, staleMs));
+      return h;
+    };
     const res = await runSegment({
-      identity: { label: 'rehearsal', commit: 'c0ffee' }, healthAddr: t.addr, stateDir: t.stateDir, evidenceDir: t.evidenceDir, keepRecorded: 'copy', fetchHealth: staleHealth(staleMs),
+      identity: { label: 'rehearsal', commit: 'c0ffee' }, healthAddr: t.addr, stateDir: t.stateDir, evidenceDir: t.evidenceDir, keepRecorded: 'copy', fetchHealth,
       sampleMs: 100, recoverMs: 6000, log: quiet, control: t.control(), segmentEnd: Number.POSITIVE_INFINITY, hostDrills: 'wipe', backupEveryMs: 1500,
       newRun: { runId: 'run', targetMs: 24_000, entry: STUB_ENTRY, restarts: 6, restartWindowMs: 2000, feedDropMs: 500, rpcDrops: 1, rpcDropMs: 700 },
     });
@@ -147,6 +205,12 @@ describe('runner with the stub worker', () => {
       expect(c[cause]!.exit_capable_ms.worst).not.toBeNull();
     }
     expect(r.checks).toMatchObject({ drills_by_cause: true, recovered_state: true, restored_universe_kept: true, every_drill_passed: true, journal_complete: true });
+    for (const d of r.drills.filter((drill) => drill.kind === 'restart')) {
+      expect(d.keep).toBeGreaterThan(0);
+      const actualEntries = journalLines(t.stateDir).filter((line) => line.kind === 'entry' && Date.parse(line.ts) <= d.at);
+      expect(actualEntries.length).toBeGreaterThan(0);
+      for (const trade of d.exposure?.trades ?? []) expect(actualEntries.some((line) => line.trade === trade)).toBe(true);
+    }
     const byCause = (k: string) => r.drills.filter((d) => d.cause === k);
     for (const d of byCause('host-loss')) expect(d.state).toMatchObject({ state_ok: true, source: 'state' });
     for (const d of byCause('chain-rebuild')) {

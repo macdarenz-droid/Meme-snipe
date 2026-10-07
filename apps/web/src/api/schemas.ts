@@ -14,6 +14,11 @@ export type Endpoint = 'status' | 'funnel' | 'decisions' | 'position' | 'calenda
 export const MINT_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 const MINT = re(MINT_RE, 'a base58 address');
 const SIGNATURE = re(/^[1-9A-HJ-NP-Za-km-z]{64,88}$/, 'a base58 signature');
+/** Lamports as the worker serves them (APP-SOL): an exact signed integer string. */
+const LAM = re(/^-?\d{1,20}$/, 'lamports');
+/** APP-SOL's lamport fields are optional(): a worker from before them still loads (and shows dollars). */
+const lam = optional(LAM);
+const lamN = optional(nullable(LAM));
 const MONTH = re(/^\d{4}-(0[1-9]|1[0-2])$/, 'a YYYY-MM month');
 const VENUE = oneOf('pump-curve', 'pumpswap');
 const UNIVERSE = oneOf('U1', 'U2', 'U3');
@@ -41,18 +46,21 @@ function build(m: Mode): Record<Endpoint, Check> {
     rentPaidUsd: usd,
     rentReturnedUsd: usd,
     totalUsd: usd,
+    venueFeeLamports: lam, creatorFeeLamports: lam, priorityFeeLamports: lam, tipLamports: lam, networkFeeLamports: lam, slippageLamports: lam, rentPaidLamports: lam, rentReturnedLamports: lam, totalLamports: lam,
   });
   return {
     status: obj({
       mode,
       connected: bool,
       flags: arr(oneOf(...STATUS_FLAGS), STATUS_FLAGS.length),
-      risk: arr(obj({ mode, kind: oneOf('open-exposure', 'daily-loss', 'weekly-loss', 'session-loss'), usedUsd: usd, limitUsd: nullable(usd) }), 10),
+      risk: arr(obj({ mode, kind: oneOf('open-exposure', 'daily-loss', 'weekly-loss', 'session-loss'), usedUsd: usd, limitUsd: nullable(usd), usedLamports: lamN, limitLamports: lamN }), 10),
+      solPriceUsd: optional(nullable(usd)),
       haltReasons: optional(arr(obj({ mode, code: oneOf(...HALT_CODES), source: nullable(str) }), 50)),
       exitCapable: optional(bool),
       session: optional(obj({
         state: oneOf('running', 'paused', 'ended'), bankrollUsd: usd, entryUsd: usd, maxEntryUsd: usd, maxOpenPositions: int,
         dailyLossLimitUsd: usd, weeklyLossLimitUsd: usd, sessionLossLimitUsd: nullable(usd), startable: bool,
+        bankrollLamports: lamN, entryLamports: lamN, maxEntryLamports: lamN, dailyLossLimitLamports: lamN, weeklyLossLimitLamports: lamN,
       })),
       alerts: optional(arr(obj({ mode, code: oneOf(...ALERT_CODES), subject: str, at: iso }), 50)),
       regime: optional(nullable(obj({ state: oneOf('on', 'off'), at: iso, current: bool, reasons: arr(obj({ mode, code: oneOf(...REGIME_REASON_CODES), input: nullable(str) }), 20), waived: arr(oneOf(...WAIVED_PARTS), 4) }))),
@@ -97,6 +105,7 @@ function build(m: Mode): Record<Endpoint, Check> {
         pnlUsd: optional(nullable(usd)),
         markPriceUsd: optional(nullable(dec)),
         markedAt: optional(nullable(iso)),
+        sizeLamports: lam, liquidationValueLamports: lam, unrealizedLamports: lam, costsSoFarLamports: lam, pnlLamports: lam,
         exitRules: arr(obj({ mode, rule: EXIT_RULE, trigger: str, state: oneOf('armed', 'triggered') }), 20),
         exit: oneOf('none', 'pending', 'blocked'),
         worker: oneOf('watching', 'exiting', 'reconciling'),
@@ -106,7 +115,7 @@ function build(m: Mode): Record<Endpoint, Check> {
       mode,
       month: MONTH,
       timeZone: oneOf('Australia/Melbourne'),
-      days: arr(obj({ mode, date: day, netUsd: usd, trades: int, pauses: int, tradeIds: arr(str, 10_000) }), 31),
+      days: arr(obj({ mode, date: day, netUsd: usd, netLamports: lam, trades: int, pauses: int, tradeIds: arr(str, 10_000) }), 31),
     }),
     trades: arr(
       obj({
@@ -127,6 +136,9 @@ function build(m: Mode): Record<Endpoint, Check> {
         grossUsd: usd,
         costs,
         netUsd: usd,
+        sizeLamports: lam,
+        grossLamports: lam,
+        netLamports: lam,
         netSol: dec,
         tradingUsd: usd,
         solMoveUsd: usd,
@@ -147,6 +159,8 @@ function build(m: Mode): Record<Endpoint, Check> {
             priceUsd: dec,
             quotedUsd: usd,
             filledUsd: usd,
+            quotedLamports: lam,
+            filledLamports: lam,
             slippageBps: sint,
             attempts: int,
           }),
@@ -156,11 +170,11 @@ function build(m: Mode): Record<Endpoint, Check> {
     ),
     charts: obj({
       mode,
-      cumulative: arr(obj({ mode, at: iso, cumNetUsd: usd })),
-      daily: arr(obj({ mode, date: day, netUsd: usd }), 5000),
+      cumulative: arr(obj({ mode, at: iso, cumNetUsd: usd, cumNetLamports: lam })),
+      daily: arr(obj({ mode, date: day, netUsd: usd, netLamports: lam }), 5000),
       rBuckets: arr(obj({ mode, fromR: dec, toR: dec, count: int }), 100),
-      costsDaily: arr(obj({ mode, date: day, totalUsd: usd }), 5000),
-      costsByKind: arr(obj({ mode, kind: COST_KIND, amountUsd: usd }), 10),
+      costsDaily: arr(obj({ mode, date: day, totalUsd: usd, totalLamports: lam }), 5000),
+      costsByKind: arr(obj({ mode, kind: COST_KIND, amountUsd: usd, amountLamports: lam }), 10),
     }),
     stats: obj({
       mode,
@@ -174,6 +188,9 @@ function build(m: Mode): Record<Endpoint, Check> {
       meanNetUsd: nullable(usd),
       meanR: nullable(dec),
       ci95: nullable(obj({ lowUsd: usd, highUsd: usd })),
+      netLamports: lam,
+      maxDrawdownLamports: lam,
+      meanNetLamports: lamN,
     }),
     discovered: obj({
       mode,

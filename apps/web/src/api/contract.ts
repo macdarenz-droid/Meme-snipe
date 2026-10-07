@@ -22,6 +22,17 @@ import type { BacktestReport, Day, Dec, ExitReason, ExitRule, Iso, ReportGroup, 
 // Shared with the backtester; types only, erased from the bundle.
 export type { BacktestReport, Day, Dec, ExitReason, ExitRule, Iso, ReportGroup, ReportResult, ReportTrade, TradeCosts, Universe, Usd, Venue };
 
+/**
+ * Lamports as the worker serves them (APP-SOL: the owner counts results in SOL): an exact signed integer string. Every
+ * lamport field is optional, absent from a worker that does not serve it; the app then shows the dollar figure.
+ */
+export type Lamports = string;
+/** A trade's costs in lamports, beside its dollar costs (APP-SOL). */
+export interface TradeCostsLamports {
+  venueFeeLamports: Lamports; creatorFeeLamports: Lamports; priorityFeeLamports: Lamports; tipLamports: Lamports;
+  networkFeeLamports: Lamports; slippageLamports: Lamports; rentPaidLamports: Lamports; rentReturnedLamports: Lamports; totalLamports: Lamports;
+}
+
 export const MODES = ['backtest', 'paper', 'live'] as const;
 export type Mode = (typeof MODES)[number];
 
@@ -88,6 +99,8 @@ export interface RiskMeter extends Moded {
   usedUsd: Usd;
   /** Null until the owner sets the limit. */
   limitUsd: Usd | null;
+  usedLamports?: Lamports | null;
+  limitLamports?: Lamports | null;
 }
 
 /** Why entries are off (API-1); `other` is a reason this app does not name. */
@@ -125,6 +138,8 @@ export interface WorkerStatus extends Moded {
   connected: boolean;
   flags: StatusFlag[];
   risk: RiskMeter[];
+  /** The current SOL price (APP-SOL): the small dollar line under each SOL figure. */
+  solPriceUsd?: Usd | null;
   /** API-1. Absent from a worker that does not serve them: the app then shows nothing for them. */
   haltReasons?: (Moded & { code: HaltCode; source: string | null })[];
   exitCapable?: boolean;
@@ -132,7 +147,11 @@ export interface WorkerStatus extends Moded {
   alerts?: (Moded & { code: AlertCode; subject: string; at: Iso })[];
   /** The latest regime evaluation; null before the first candidate. */
   /** The session the worker runs (APP-HOME): its state and the policy's limits; `startable` false when it runs its own. */
-  session?: { state: 'running' | 'paused' | 'ended'; bankrollUsd: Usd; entryUsd: Usd; maxEntryUsd: Usd; maxOpenPositions: number; dailyLossLimitUsd: Usd; weeklyLossLimitUsd: Usd; sessionLossLimitUsd: Usd | null; startable: boolean };
+  session?: {
+    state: 'running' | 'paused' | 'ended'; bankrollUsd: Usd; entryUsd: Usd; maxEntryUsd: Usd; maxOpenPositions: number; dailyLossLimitUsd: Usd; weeklyLossLimitUsd: Usd; sessionLossLimitUsd: Usd | null; startable: boolean;
+    /** SOL-BOOKS: the same limits in lamports, as risk holds them (the dollars at the session's opening SOL price); absent before it. */
+    bankrollLamports?: Lamports | null; entryLamports?: Lamports | null; maxEntryLamports?: Lamports | null; dailyLossLimitLamports?: Lamports | null; weeklyLossLimitLamports?: Lamports | null;
+  };
   regime?: { state: 'on' | 'off'; at: Iso; /** At most two candidate evaluation steps old as of asOf. */ current: boolean; reasons: (Moded & { code: RegimeReasonCode; input: string | null })[]; /** Not judged (S0 diagnostic): an "on" with any is practice only. */ waived: WaivedPart[] } | null;
 }
 
@@ -207,6 +226,11 @@ export interface PositionRecord extends Moded {
   liquidationValueUsd: Usd;
   unrealizedUsd: Usd;
   costsSoFarUsd: Usd;
+  sizeLamports?: Lamports;
+  liquidationValueLamports?: Lamports;
+  unrealizedLamports?: Lamports;
+  costsSoFarLamports?: Lamports;
+  pnlLamports?: Lamports;
   /** P&L so far: liquidation value plus exits sold, less the entry and every fee paid (APP-TRADE); null without a SOL price. */
   pnlUsd?: Usd | null;
   /** Our rest's executable price now, $/token, the price the stops judge; null when it cannot be quoted. */
@@ -223,6 +247,7 @@ export interface PositionRecord extends Moded {
 export interface DayRecord extends Moded {
   date: Day;
   netUsd: Usd;
+  netLamports?: Lamports;
   trades: number;
   /** Times entries paused that day (daily trigger, cooldown, owner pause). */
   pauses: number;
@@ -248,6 +273,8 @@ export interface Fill extends Moded {
   priceUsd: Dec;
   quotedUsd: Usd;
   filledUsd: Usd;
+  quotedLamports?: Lamports;
+  filledLamports?: Lamports;
   /** Fill against the local quote; positive is worse for us. */
   slippageBps: number;
   attempts: number;
@@ -272,9 +299,12 @@ export interface TradeRecord extends Moded {
   exitPriceUsd: Dec;
   sizeUsd: Usd;
   grossUsd: Usd;
-  costs: TradeCosts;
+  costs: TradeCosts & Partial<TradeCostsLamports>;
   /** Each cash flow at its own SOL price (entry at the entry, exit at the close). */
   netUsd: Usd;
+  sizeLamports?: Lamports;
+  grossLamports?: Lamports;
+  netLamports?: Lamports;
   /** The result in SOL, with no exchange rate. */
   netSol: Dec;
   /** netUsd in two parts: the SOL result at the close's SOL price, and SOL's own price move over the trade. */
@@ -295,13 +325,13 @@ export interface TradeRecord extends Moded {
 
 export interface ChartsView extends Moded {
   /** Cumulative net P&L after each closed trade. */
-  cumulative: (Moded & { at: Iso; cumNetUsd: Usd })[];
-  daily: (Moded & { date: Day; netUsd: Usd })[];
+  cumulative: (Moded & { at: Iso; cumNetUsd: Usd; cumNetLamports?: Lamports })[];
+  daily: (Moded & { date: Day; netUsd: Usd; netLamports?: Lamports })[];
   /** Realized R per trade, bucketed; counts are trades. */
   rBuckets: (Moded & { fromR: Dec; toR: Dec; count: number })[];
-  costsDaily: (Moded & { date: Day; totalUsd: Usd })[];
+  costsDaily: (Moded & { date: Day; totalUsd: Usd; totalLamports?: Lamports })[];
   /** Costs by type over the whole view; rent counts only what was not returned. They add up to the total cost. */
-  costsByKind: (Moded & { kind: CostKind; amountUsd: Usd })[];
+  costsByKind: (Moded & { kind: CostKind; amountUsd: Usd; amountLamports?: Lamports })[];
 }
 
 // Statistics -----------------------------------------------------------
@@ -317,6 +347,9 @@ export interface StatsView extends Moded {
   maxDrawdownUsd: Usd;
   winRate: Dec | null;
   meanNetUsd: Usd | null;
+  netLamports?: Lamports;
+  maxDrawdownLamports?: Lamports;
+  meanNetLamports?: Lamports | null;
   meanR: Dec | null;
   /** 95% interval of mean net return per trade (day-block bootstrap). */
   ci95: { lowUsd: Usd; highUsd: Usd } | null;

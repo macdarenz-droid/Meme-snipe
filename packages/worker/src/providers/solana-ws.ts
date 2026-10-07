@@ -8,6 +8,7 @@
 // have missed; on reopen, each log watch reads the signatures it missed and each account watch reads its current
 // state, all marked backfilled; then the hold ends. Two providers carry the position, so a copy from the other
 // provider usually got there first and the backfilled duplicate is dropped.
+import { compactLogs } from '../../../core/src/chain/index.ts';
 import { P0, P1, type Priority, ScheduleRefused, type Scheduler } from '../scheduler/scheduler.ts';
 import type { Timers } from '../scheduler/timers.ts';
 import { isAddress, isSignature } from './canonical.ts';
@@ -90,6 +91,19 @@ interface HeldNotice {
 
 /** Notifications one watch may hold during a catch-up; past it they go on the feed at once and the gap stays lossy. */
 export const CATCH_UP_HOLD_MAX = 5_000;
+/**
+ * HOLD-TOTAL: notifications all of a stream's watches may hold together. A swap's notification held as parsed was about
+ * 10.5 KB of heap (103 log lines); with ~230 pools in their catch-up at once and fills two at a time, the per-watch cap
+ * alone let the holds fill the 560 MB heap within minutes of every boot. Held notifications keep only the lines the
+ * log reader uses (`compactLogs`, about 2.1 KB each), so this total is about 50 MB. The watch whose notification would
+ * pass it overflows exactly as at the per-watch cap: what it holds goes on the feed at once and its catch-up stays lossy.
+ */
+export const CATCH_UP_HOLD_TOTAL = 24_000;
+/**
+ * FAILED-LOGS: failed transactions' notifications whose log lines were left off the feed, and those lines' characters,
+ * over every stream in this process (counts only): the share of live traffic they were, for the memory probe.
+ */
+export const FAILED_LOGS = { notices: 0, chars: 0 };
 
 interface CoverageGap {
   readonly fromSlot: bigint | null;
@@ -130,6 +144,8 @@ export class RpcStream {
   /** Told when the server accepts a watch's subscription (POOL-1: a refused watch's wait starts over once served). */
   readonly #served: ((id: number) => void)[] = [];
   #nextId = 1;
+  /** HOLD-TOTAL: notifications held now across every watch's catch-up. */
+  #heldTotal = 0;
   #lastSlot: bigint | null = null;
   #gapFrom: bigint | null = null;
   #wasDown = false;
@@ -206,16 +222,23 @@ export class RpcStream {
         if (w.lastLogSlot === null || slot > w.lastLogSlot) w.lastLogSlot = slot;
         const err = r.value.err ?? null;
         const lines = r.value.logs;
-        const n: HeldNotice = { signature, slot, err, lines: Array.isArray(lines) && lines.every((l) => typeof l === 'string') ? lines as string[] : null };
+        const ok = Array.isArray(lines) && lines.every((l) => typeof l === 'string');
+        if (err !== null && ok && opts.decodeLogs === true) {
+          FAILED_LOGS.notices++;
+          for (const l of lines as string[]) FAILED_LOGS.chars += l.length;
+        }
         if (w.held !== null) {
-          w.held.push(n);
-          if (w.held.length > CATCH_UP_HOLD_MAX) {
+          // HOLD-COMPACT: a held notification keeps only the lines the log reader uses, each at its own index. FAILED-LOGS:
+          // a failed transaction keeps none (it yields no events).
+          w.held.push({ signature, slot, err, lines: ok && err === null ? compactLogs(lines as string[]) : null });
+          this.#heldTotal++;
+          if (w.held.length > CATCH_UP_HOLD_MAX || this.#heldTotal > CATCH_UP_HOLD_TOTAL) {
             if (w.gap !== null) w.gap.overflow = true;
             this.#release(w);
           }
           return;
         }
-        this.#deliver(w, n, false);
+        this.#deliver(w, { signature, slot, err, lines: ok ? lines as string[] : null }, false);
       },
     });
   }
@@ -317,9 +340,16 @@ export class RpcStream {
   #deliver(w: Extract<Watch, { kind: 'logs' }>, n: HeldNotice, lookup: boolean): void {
     const { address, opts } = w;
     this.#seen(address, n.signature, n.slot, n.err, opts, false, lookup);
-    if (opts.decodeLogs === true && n.lines !== null) {
+    // FAILED-LOGS: a failed transaction's log lines yield no events (its effects were rolled back: `logEvents`), so only
+    // its sighting goes on the feed, never its lines (most of a busy pool's logs traffic is bots' failed swaps).
+    if (opts.decodeLogs === true && n.lines !== null && n.err === null) {
       this.#o.feed.ingest(this.provider, { type: 'logs', signature: n.signature, slot: n.slot, err: n.err, via: `logs:${address}`, logs: [...n.lines], ...(opts.commitment === undefined ? {} : { commitment: opts.commitment }) }, { receivedAt: this.#o.timers.now(), ...(lookup ? { lookup: true, after: true } : {}) });
     }
+  }
+
+  /** HOLD-TOTAL: notifications held now across every watch's catch-up (at most `CATCH_UP_HOLD_TOTAL`). */
+  get heldNotices(): number {
+    return this.#heldTotal;
   }
 
   /** Ends a catch-up hold: the held notifications go on the feed in arrival order, after everything ingested before. */
@@ -327,13 +357,15 @@ export class RpcStream {
     const held = w.held;
     if (held === null) return;
     w.held = null;
+    this.#heldTotal -= held.length;
     for (const n of held) this.#deliver(w, n, true);
   }
 
   #seen(address: string, signature: string, slot: bigint, err: unknown, opts: WatchOptions, backfilled: boolean, lookup = false): void {
     const f = this.#o.feed.ingest(this.provider, { type: 'seen', signature, slot, err, via: `logs:${address}`, detail: null }, { receivedAt: this.#o.timers.now(), backfilled, ...(lookup ? { lookup: true, after: true } : {}) });
     if (opts.fetch !== undefined && err === null && !f.duplicate && this.#o.fetcher) {
-      this.#o.fetcher.fetch(signature, opts.fetch, backfilled).catch(() => this.#status('fetch_failed', { signature }));
+      // FACTS-REREAD: a fetch no provider answered (null after the fetcher's retries) fails as an error does.
+      this.#o.fetcher.fetch(signature, opts.fetch, backfilled).then((f) => (f === null ? this.#status('fetch_failed', { signature }) : undefined), () => this.#status('fetch_failed', { signature }));
     }
   }
 
@@ -361,6 +393,7 @@ export class RpcStream {
   #catchUp(w: Extract<Watch, { kind: 'logs' }>, cover: bigint): void {
     this.#start(w, cover);
     w.gap = { fromSlot: cover, reason: 'catch-up', backfilled: true, lossy: true, liveAfter: null, fill: 'no' };
+    if (w.held !== null) this.#heldTotal -= w.held.length;
     w.held = [];
     this.#fact(`coverage:${w.opts.coverage}:gap`, { fromSlot: cover, toSlot: null, reason: 'catch-up', via: `logs:${w.address}` });
   }

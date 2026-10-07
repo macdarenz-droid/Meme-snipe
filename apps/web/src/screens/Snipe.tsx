@@ -8,6 +8,7 @@ import { Dashboard } from '../dashboard/Dashboard.tsx';
 import { OfflineContext } from '../dashboard/State.tsx';
 import { ModeSwitch } from '../dashboard/Sections.tsx';
 import { formatUsd } from '../lib/format.ts';
+import { formatSol } from '../lib/money.ts';
 import { sessionLabel } from '../shell/Status.tsx';
 import { ServerCard } from './Server.tsx';
 import { EMPTY_SESSION, type SessionView } from './types.ts';
@@ -20,13 +21,17 @@ export function SessionCard({ session, label = sessionLabel(session), onStart }:
   // A served session states every limit; one it leaves null is a limit its policy does not have. Without one, a value
   // is expected but missing.
   const usd = (v: number | null) => (v !== null ? formatUsd(v) : session.workerConnected ? NONE : NOT_SET);
+  // SOL first (the books are in SOL): the limit as risk holds it, its configured dollars beside it.
+  const lam = session.lamports;
+  const money = (l: string | null | undefined, v: number | null) => (l != null && v !== null ? `${formatSol(l)} (${formatUsd(v)})` : usd(v));
   const rows: [string, string][] = [
     ['Mode', session.mode === 'live' ? 'Live' : 'Paper'],
-    ['Bankroll', usd(session.bankrollUsd)],
-    ['Entry', session.entryUsd === null ? NOT_SET : session.maxEntryUsd === null ? formatUsd(session.entryUsd) : `${formatUsd(session.entryUsd)}, max ${formatUsd(session.maxEntryUsd)}`],
-    ['Open positions', session.maxOpenPositions === null ? NOT_SET : String(session.maxOpenPositions)],
-    ['Daily loss', usd(session.dailyLossLimitUsd)],
-    ['Weekly loss', usd(session.weeklyLossLimitUsd)],
+    ['Bankroll', money(lam?.bankroll, session.bankrollUsd)],
+    ['Entry', session.entryUsd === null ? NOT_SET : session.maxEntryUsd === null ? money(lam?.entry, session.entryUsd) : `${money(lam?.entry, session.entryUsd)}, max ${money(lam?.maxEntry, session.maxEntryUsd)}`],
+    // R3's limit, not a count of open trades (APP-TRUTH): the same words as the halt it stops entries with.
+    ['Open trade limit', session.maxOpenPositions === null ? NOT_SET : String(session.maxOpenPositions)],
+    ['Daily loss', money(lam?.dailyLoss, session.dailyLossLimitUsd)],
+    ['Weekly loss', money(lam?.weeklyLoss, session.weeklyLossLimitUsd)],
     ['Session loss', usd(session.sessionLossLimitUsd)],
   ];
   return (

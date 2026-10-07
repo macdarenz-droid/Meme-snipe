@@ -320,10 +320,28 @@ export interface OtherEvent {
  * `trailing` counts bytes after the last field of the pinned IDL and `extra` holds them as hex. They are kept, never
  * interpreted: since the unannounced 2026-10-02 upgrade (PumpSwap from slot 452,654,883, pump from 452,654,933) both
  * programs append 8 undocumented bytes to TradeEvent, BuyEvent and SellEvent (absent from pump-public-docs cb188ce, the
- * npm SDKs and the on-chain IDL accounts). Every sampled SOL-quoted event has them zero; every documented field before them
- * decodes and cross-checks unchanged (test/chain/events.test.ts, test/chain/upgrade.test.ts; venues.md 2.7).
+ * npm SDKs and the on-chain IDL accounts). On SOL PumpSwap pools they are the unswept creator fee as a u64 (TAIL-PROOF;
+ * GATE-1c reads them in `gates/tails.ts`); every documented field before them decodes and cross-checks unchanged (test/chain/events.test.ts, test/chain/upgrade.test.ts; venues.md 2.7).
  */
 export type ProgramEvent = (PumpEventData & { readonly trailing: number; readonly extra: string }) | OtherEvent;
+
+/**
+ * POOL-FIRST-READ part 2: PumpSwap events this module does not decode, proven on mainnet to leave every pool's base
+ * vault, quote vault and virtual quote reserves unchanged (research/pool-noop-events: the pool's swap before and the
+ * one after chain exactly across each, on contiguous tapes). Anchor event discriminators, sha256("event:<Name>")[0..8].
+ * Only these exact discriminators; any other unnamed PumpSwap event may move the reserves.
+ */
+export const PUMP_AMM_NO_CHANGE_EVENTS: ReadonlyMap<string, string> = new Map([
+  ['929fbdac925838f4', 'CloseUserVolumeAccumulatorEvent'],
+  ['6161d7905d92167c', 'ExtendAccountEvent'],
+]);
+
+/** True for a PumpSwap event in `PUMP_AMM_NO_CHANGE_EVENTS` (an unnamed one carrying its discriminator). */
+export const isNoChangePoolEvent = (e: unknown): boolean => {
+  if (typeof e !== 'object' || e === null) return false;
+  const x = e as { program?: unknown; name?: unknown; discriminator?: unknown };
+  return x.program === 'pump_amm' && x.name === 'other' && typeof x.discriminator === 'string' && PUMP_AMM_NO_CHANGE_EVENTS.has(x.discriminator);
+};
 
 type AnyLayout = { name: string; discriminator: Uint8Array; base: readonly unknown[]; added: readonly unknown[] };
 const LAYOUTS: Record<EventProgram, readonly AnyLayout[]> = {

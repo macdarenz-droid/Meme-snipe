@@ -8,7 +8,7 @@ import { TRIAL_POLICY } from '../../core/src/config/index.ts';
 import { RAW } from '../../core/src/facts/index.ts';
 import { simKey } from '../../core/src/gates/index.ts';
 import { NO_LATCHES } from '../../core/src/risk/index.ts';
-import { microUsdToLamports, type MicroUsd } from '../../core/src/units/index.ts';
+import { type Lamports, lamportsToMicroUsd, microUsdToLamports, type MicroUsd } from '../../core/src/units/index.ts';
 import { poolBuyExactQuoteIn, poolSell } from '../../core/src/amm/index.ts';
 import { BASE_VAULT, FEE_CONTEXT, POOL, QUOTE_VAULT } from '../../core/test/gates/world.ts';
 import { LiveFacts, type LiveReaders } from '../src/facts/index.ts';
@@ -101,6 +101,15 @@ describe('size step-up: the gates and the simulation judge the size risk uses', 
     expect(spend).toBeGreaterThan(MIN_SPEND);
     // H15 was judged on a simulation at the very size risk approved.
     expect(asked).toContain(spend);
+  }, 120_000);
+
+  it('SOL-BOOKS: the gates judge the stepped-up size in dollars at the opening SOL price (risk sizes it in lamports)', async () => {
+    const sizes: { spend: bigint; notional: bigint }[] = [];
+    const { h } = await run(true, 19026, (sized) => (sizes.push(sized), sized));
+    const up = sizes.filter((x) => x.spend > MIN_SPEND);
+    expect(up.length).toBeGreaterThan(0);
+    for (const x of up) expect(x.notional).toBe(lamportsToMicroUsd(x.spend as Lamports, SOL_PRICE as MicroUsd, 'floor'));
+    expect(accountFile(h.stateDir).read(null as never).openingSolPrice).toBe(SOL_PRICE);
   }, 120_000);
 
   it('a size the probe did not settle on is refused as a size mismatch after the gates, and nothing is booked', async () => {

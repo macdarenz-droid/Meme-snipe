@@ -234,9 +234,15 @@ export class PaperAccount {
   }
 
   /**
-   * SOL-BOOKS: fixes the opening SOL price. A file from before kept its marks, NAV peak and trade sizes in micro-dollars;
-   * they are converted once at this price, each rounded the tighter way (marks and the peak up, sizes down), so no
+   * SOL-BOOKS: fixes the opening SOL price. A file from before kept its day and week marks and trade sizes in
+   * micro-dollars; they are converted once at this price, each rounded the tighter way (marks up, sizes down), so no
    * line or cap loosens. Trade results are already in lamports (`netLamports`, each part's `lamports`).
+   *
+   * Its NAV peak is dropped, not converted: it was the highest dollar value of the wallet's SOL, so with the SOL unchanged
+   * it is the highest SOL/USD price seen, and converting it at today's price would turn a past SOL/USD fall into a SOL
+   * drawdown (a fall of 30% since that high trips R10, latched until the owner re-arms; owner's rule: a SOL/USD move
+   * alone never trips a limit). The peak is recorded again in lamports at the next fully marked valuation; R10's other
+   * line, on the ledger's realized equity (trade results already in lamports), is unchanged.
    */
   #open(price: MicroUsd): void {
     this.#s.openingSolPrice = price;
@@ -244,7 +250,7 @@ export class PaperAccount {
       const up = (v: bigint): Lamports => (v <= 0n ? (v as Lamports) : microUsdToLamports(v as MicroUsd, price, 'ceil'));
       if (this.#s.dayMark !== undefined) this.#s.dayMark = { ...this.#s.dayMark, equity: up(this.#s.dayMark.equity) };
       if (this.#s.weekMark !== undefined) this.#s.weekMark = { ...this.#s.weekMark, equity: up(this.#s.weekMark.equity) };
-      if (this.#s.navPeak !== undefined) this.#s.navPeak = { ...this.#s.navPeak, nav: up(this.#s.navPeak.nav) };
+      delete this.#s.navPeak;
       for (const t of this.#s.trades) t.notional = (t.notional <= 0n ? t.notional : microUsdToLamports(t.notional as unknown as MicroUsd, price, 'floor'));
       this.#s.books = 'sol';
     }

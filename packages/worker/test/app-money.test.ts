@@ -45,7 +45,7 @@ const servedWith = (patch: Record<string, unknown>) => {
   return {
     status: env('status', views.status(i as never)) as { risk: { kind: string; usedUsd: string; limitUsd: string | null }[]; haltReasons: { code: string }[] },
     stats: env('stats', views.stats(i as never)) as { trades: number; netUsd: string; maxDrawdownUsd: string; meanNetUsd: string | null },
-    charts: env('charts', views.charts(i as never)) as { cumulative: { cumNetUsd: string }[]; daily: { date: string; netUsd: string }[]; costsByKind: { kind: string; amountUsd: string }[]; costsDaily: { totalUsd: string }[] },
+    charts: env('charts', (route('/api/v1/paper/charts', () => i as never).body as { data: unknown }).data) as { cumulative: { cumNetUsd: string }[]; daily: { date: string; netUsd: string }[]; costsByKind: { kind: string; amountUsd: string }[]; costsDaily: { totalUsd: string }[] },
     calendar: views.calendar(i as never, month) as { days: { date: string; netUsd: string; trades: number }[] },
   };
 };
@@ -120,11 +120,12 @@ describe('the daily-loss meter is R7\'s figure (APP-MONEY)', () => {
   });
 
   it('a current R7 read from before a losing close or a cost: the meter shows the higher realised figure (risk review 1)', () => {
-    const t = { positionId: 'p1', mint: 'm', openedAtMs: DAY_START + HOUR, closedAtMs: NOW - 500, notional: 2_000_000n, netLamports: 0n, netPnl: -500_000n, stoppedOut: false, booked: 0n, openSolPrice: null };
+    // SOL-BOOKS: the meter counts lamports; at the $100 price −5,000,000 lamports is the −$0.50 shown.
+    const t = { positionId: 'p1', mint: 'm', openedAtMs: DAY_START + HOUR, closedAtMs: NOW - 500, notional: 2_000_000n, netLamports: -5_000_000n, netPnl: -500_000n, stoppedOut: false, booked: 0n, openSolPrice: null };
     // R7's figure in lamports: 1,000,000 is $0.10 at the $100 price.
     const read = { atMs: NOW - 1_000, codes: [] as string[], dayLoss: 1_000_000n };
     expect(meter(servedWith({ stops: read, trades: [t] }).status)).toMatchObject({ usedUsd: '0.5' });
-    expect(meter(servedWith({ stops: read, accountCosts: [{ atMs: NOW - 500, usd: 700_000n, lamports: 4_666_667n, kind: 'wallet_setup' }] }).status)).toMatchObject({ usedUsd: '0.7' });
+    expect(meter(servedWith({ stops: read, accountCosts: [{ atMs: NOW - 500, usd: 700_000n, lamports: 7_000_000n, kind: 'wallet_setup' }] }).status)).toMatchObject({ usedUsd: '0.7' });
     // R7's own figure when it is the higher (marked losses only it can see).
     expect(meter(servedWith({ stops: { ...read, dayLoss: 9_000_000n }, trades: [t] }).status)).toMatchObject({ usedUsd: '0.9' });
   });
@@ -142,7 +143,7 @@ describe('partial sales count at their own time, as core risk counts them (risk 
   // A partial sale yesterday (+0.3) and the close today: the whole trade nets −0.2, so the close's remainder is −0.5.
   // SOL-BOOKS: a part is its lamports, shown at the trade's price: 3,000,000 at $100 is +$0.30.
   const part = { atMs: DAY_START - HOUR, lamports: 3_000_000n };
-  const t = { positionId: 'p1', mint: 'm', openedAtMs: DAY_START - 2 * HOUR, closedAtMs: DAY_START + HOUR, notional: 2_000_000n, netLamports: 0n, netPnl: -200_000n, stoppedOut: false, booked: 0n, openSolPrice: null, partials: [part] };
+  const t = { positionId: 'p1', mint: 'm', openedAtMs: DAY_START - 2 * HOUR, closedAtMs: DAY_START + HOUR, notional: 2_000_000n, netLamports: -2_000_000n, netPnl: -200_000n, stoppedOut: false, booked: 0n, openSolPrice: null, partials: [part] };
 
   it('the day split, the meter, the curve and the net', () => {
     const s = servedWith({ trades: [t], stops: { atMs: NOW, codes: [] as string[], dayLoss: 0n } });

@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# RECORD-UPLOAD at the console: one run now, for every recording (no argument) or one UTC day (--day YYYY-MM-DD), in
+# the same sandbox as the hourly run (zeroed-record-upload@<scope>.service, as the worker's user, after any run in
+# progress). It uploads only while ops/host-config.json says "record_upload": true. Its last lines are shown.
+set -euo pipefail
+. /usr/local/lib/zeroed/common.sh
+usage() { log "Usage: zeroed-record-upload [--day YYYY-MM-DD]"; exit 2; }
+scope=all
+case "${1:-}" in
+  '') ;;
+  --day)
+    day="${2:-}"
+    [[ "$day" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] && [ "$(date -u -d "$day" +%F 2>/dev/null || true)" = "$day" ] || usage
+    scope="$day"
+    ;;
+  *) usage ;;
+esac
+unit="zeroed-record-upload@$scope.service"
+since="$(date -u '+%Y-%m-%d %H:%M:%S')"
+rc=0
+systemctl start "$unit" || rc=$?
+journalctl -u "$unit" --since "$since UTC" -o cat --no-pager 2>/dev/null | tail -n 40 || true
+exit "$rc"

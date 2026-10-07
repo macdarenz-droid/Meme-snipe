@@ -117,6 +117,12 @@ if [ "$(jq -r '.offsite_backup == true' /opt/zeroed/current/ops/host-config.json
 else
   systemctl disable --now zeroed-backup-offsite.timer >/dev/null 2>&1 || true
 fi
+# RECORD-UPLOAD (owner, 2026-10-06 "Approve upload"): sealed recordings to the private data repository, hourly.
+if [ "$(jq -r '.record_upload == true' /opt/zeroed/current/ops/host-config.json 2>/dev/null || echo false)" = true ]; then
+  systemctl enable --now zeroed-record-upload.timer >/dev/null 2>&1 || true
+else
+  systemctl disable --now zeroed-record-upload.timer >/dev/null 2>&1 || true
+fi
 
 # answers SHA: the worker's health route says paper and names release SHA (its git_sha, the release folder's name), so
 # an answer from the worker that ran before the switch never counts. The release's worker serves it on
@@ -175,5 +181,11 @@ if [ -s "$CRED_DIR/helius_api_key" ]; then
   worker="restarted and up"
   alert_clear worker-switch "CLEARED Zeroed host: the worker of ${commit:0:12} is up."
 fi
+# HOST-CAPS: old releases go once the new one runs; it, the one before it (the roll-back target) and the 3 newest stay.
+# Never during a switch (a rollback exits above); an unreadable current prunes nothing (logic.sh).
+# One name per line, never word-split or globbed (prunable_releases lists only 40-hex release folders).
+while IFS= read -r old; do
+  [ -n "$old" ] && rm -rf -- "$old" && log "Removed the old release $(basename "$old" | cut -c1-12) (HOST-CAPS)."
+done < <(prunable_releases /opt/zeroed/releases "$(readlink -f /opt/zeroed/current 2>/dev/null || true)" "$prev" "$commit")
 log "Deployed ${commit:0:12}. Worker: $worker."
 notify "Zeroed host: deployed ${commit:0:12}. Worker $worker." || true

@@ -11,7 +11,7 @@ import type { HttpClient } from '../src/providers/index.ts';
 import type { PaperTrade } from '../src/run/account.ts';
 import {
   SUMMARY_AFTER_START_MS, SUMMARY_MIN_GAP_MS, Summarizer, SummaryClock, buildSummary, emptySummaryState, foldLine, foldNewLines, foldText, haltCode,
-  nextSummaryDelay, signSummary, summaryBody, type SummaryInputs,
+  nextSummaryDelay, signSummary, withoutH16, withoutProbe, withoutLastDeath, withoutRestartCause, withoutCreditDetail, summaryBody, type SummaryInputs,
 } from '../src/run/summary.ts';
 import { ManualTimers } from '../src/scheduler/timers.ts';
 import { MINT, makeWorker, passingMarket, tempState } from './worker-harness.ts';
@@ -28,6 +28,10 @@ const M4 = 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263';
 const line = (kind: string, ms: number, f: Record<string, unknown> = {}) => ({ seq: 1, ts: at(ms), boot: 'b', kind, ...f });
 const reject = (ms: number, mint: string, gate: string, code: string) =>
   line('decision', ms, { action: 'reject', reasons: ['reject', 'U2', mint, `hard reject ${gate}`], gate_reasons: [{ gate, code, detail: 'x' }] });
+
+const B58 = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+const h16 = (ms: number, mint: string, code: string, input?: unknown, neededBy?: unknown) =>
+  line('decision', ms, { action: 'reject', reasons: ['reject', 'U2', mint, `hard reject H16`], gate_reasons: [{ gate: 'H16', code, detail: 'x', ...(input === undefined ? {} : { input }), ...(neededBy === undefined ? {} : { neededBy }) }] });
 
 const trade = (o: Partial<PaperTrade> = {}): PaperTrade => ({
   positionId: 'p1', mint: M1, openedAtMs: NOON, notional: 20_000_000n as Lamports, closedAtMs: NOON + 60_000, netLamports: -1_500_000n,
@@ -82,6 +86,30 @@ describe('counts from the journal', () => {
     expect(Object.keys(s.days).sort()).toEqual(['2026-10-04', '2026-10-05']);
   });
 
+  it('journal count loss flags both Melbourne days at midnight; unknown loss counts markers and every fallback preserves the warning', () => {
+    const s = emptySummaryState();
+    const from = Date.parse('2026-10-04T12:59:59.000Z');
+    const to = Date.parse('2026-10-04T13:00:01.000Z');
+    foldLine(s, line('coverage_gap', to, { stream: 'journal', from_ts: at(from), to_ts: at(to), lost: null }));
+    for (const day of ['2026-10-04', '2026-10-05']) {
+      expect(s.days[day]?.alerts).toEqual({ 'journal-counts-incomplete': 1 });
+      const summary = buildSummary(inputs({ day, nowMs: to, fold: s.days[day] }));
+      for (const projected of [summary, withoutProbe(summary), withoutLastDeath(summary), withoutRestartCause(summary), withoutCreditDetail(summary)]) {
+        expect(projected.alerts).toContainEqual({ code: 'journal-counts-incomplete', count: 1 });
+        // The strict current guard accepts the current shape; historical projections intentionally remove required keys.
+        if (projected === summary) expect(checkSummary(JSON.stringify(projected)).ok).toBe(true);
+      }
+    }
+    foldLine(s, line('coverage_gap', to + 1, { stream: 'journal', from_ts: at(from), to_ts: at(to + 1), lost: 999 }));
+    expect(s.days['2026-10-04']!.alerts['journal-counts-incomplete']).toBe(2);
+    expect(s.days['2026-10-05']!.alerts['journal-counts-incomplete']).toBe(2);
+    for (let n = 0; n < 70; n++) s.days['2026-10-04']!.alerts[`fault_${n}`] = 10;
+    expect(buildSummary(inputs({ fold: s.days['2026-10-04'] })).alerts).toContainEqual({ code: 'journal-counts-incomplete', count: 2 });
+    const bounded = emptySummaryState();
+    foldLine(bounded, line('coverage_gap', to, { stream: 'journal', from_ts: '1970-01-01T00:00:00.000Z', to_ts: at(to), lost: null }));
+    expect(Object.keys(bounded.days)).toHaveLength(3);
+  });
+
   it('names halts by fixed codes only', () => {
     expect(haltCode('feed helius-ws dropped by drill')).toBe('feed-drill');
     expect(haltCode('feed pumpportal disconnected')).toBe('feed-disconnected');
@@ -92,6 +120,91 @@ describe('counts from the journal', () => {
     // The feed's name is never kept, whatever it holds.
     expect(haltCode('feed https://10.0.0.1 stale')).toBe('feed-stale');
     expect(haltCode('anything else: 10.0.0.1')).toBe('other');
+  });
+});
+
+describe('H16-WHY: the H16 refusals by input and needing gate', () => {
+  it('counts each refused candidate\'s last refusal by every distinct H16 reason in it; a line without the names is null; an entry or a later other refusal drops it', () => {
+    const s = emptySummaryState();
+    const mints = Array.from({ length: 9 }, (_, k) => `${M1.slice(0, 40)}${'ABCDEFGHJ'[k]}`);
+    [
+      h16(NOON + 1, mints[0]!, 'missing', 'pool', 'H5'),
+      h16(NOON + 2, mints[1]!, 'missing', 'pool', 'H5'),
+      h16(NOON + 3, mints[2]!, 'missing', 'xcheck', 'H1'),
+      h16(NOON + 4, mints[3]!, 'stale', 'pool', 'H5'),
+      // A line from before H16-WHY, and one whose names do not fit their patterns (free text is never kept).
+      h16(NOON + 5, mints[4]!, 'missing'),
+      h16(NOON + 6, mints[5]!, 'missing', 'no pool as of slot 9', 'https://x'),
+      // H16 first, then refused by another gate: counted under that gate only.
+      h16(NOON + 7, mints[6]!, 'missing', 'pool', 'H17'),
+      reject(NOON + 8, mints[6]!, 'H7', 'top-holders'),
+      // H16, then entered: not refused.
+      h16(NOON + 9, mints[7]!, 'missing', 'pool', 'H5'),
+      line('entry', NOON + 10, { mint: mints[7], trade: 'p1', reasons: ['entry filled (paper)'] }),
+      // A stage evaluates all its gates: H8 first, then H16's cross-check, then H17's pool fields (twice: once counted).
+      line('decision', NOON + 11, { action: 'reject', reasons: ['reject', 'U2', mints[8], 'hard reject H8,H16,H17'], gate_reasons: [
+        { gate: 'H8', code: 'below-liquidity-floor', detail: 'x', input: 'pool' },
+        { gate: 'H16', code: 'missing', detail: 'x', input: 'xcheck', neededBy: 'H16' },
+        { gate: 'H16', code: 'missing', detail: 'x', input: 'pool', neededBy: 'H17' },
+        { gate: 'H16', code: 'missing', detail: 'y', input: 'pool', neededBy: 'H17' },
+      ] }),
+    ].forEach((l) => foldLine(s, l));
+    const sum = buildSummary(inputs({ fold: s.days[DAY] }));
+    expect(sum.candidates.refused_by_reason).toEqual([
+      { gate: 'H16', code: 'missing', count: 5 }, { gate: 'H16', code: 'stale', count: 1 }, { gate: 'H7', code: 'top-holders', count: 1 }, { gate: 'H8', code: 'below-liquidity-floor', count: 1 },
+    ]);
+    expect(sum.candidates.h16_by_input).toEqual([
+      // Ties in a fixed order (by the row's JSON), so two posts of the same counts are the same text.
+      { code: 'missing', input: 'pool', needed_by: 'H5', count: 2 },
+      { code: 'missing', input: null, needed_by: null, count: 2 },
+      { code: 'missing', input: 'pool', needed_by: 'H17', count: 1 },
+      { code: 'missing', input: 'xcheck', needed_by: 'H1', count: 1 },
+      { code: 'missing', input: 'xcheck', needed_by: 'H16', count: 1 },
+      { code: 'stale', input: 'pool', needed_by: 'H5', count: 1 },
+    ]);
+    expect(sum.candidates.h16_other).toBe(0);
+    const b = summaryBody(sum);
+    expect('body' in b && checkSummary(b.body).ok).toBe(true);
+    // Saved and read back (summary.json keeps the input and gate), the same counts.
+    const back = JSON.parse(JSON.stringify(s)) as typeof s;
+    expect(buildSummary(inputs({ fold: back.days[DAY] })).candidates).toEqual(sum.candidates);
+  });
+
+  it('names the top reasons and sums the rest; a day with no H16 refusal leaves both keys out (the older shape)', () => {
+    const s = emptySummaryState();
+    for (let k = 0; k < SUMMARY_TOP_REASONS + 3; k++) {
+      for (let n = 0; n <= k; n++) foldLine(s, h16(NOON + k * 100 + n, `${M2.slice(0, 38)}${B58[k]}${B58[n]}`, 'missing', `in${k}`, 'H5'));
+    }
+    const c = buildSummary(inputs({ fold: s.days[DAY] })).candidates;
+    expect(c.h16_by_input).toHaveLength(SUMMARY_TOP_REASONS);
+    expect(c.h16_by_input![0]).toEqual({ code: 'missing', input: `in${SUMMARY_TOP_REASONS + 2}`, needed_by: 'H5', count: SUMMARY_TOP_REASONS + 3 });
+    // The three smallest (1, 2 and 3 refusals) are summed.
+    expect(c.h16_other).toBe(6);
+    // One H16 reason per candidate here, so the rows and the rest add up to the refusals.
+    expect(c.h16_by_input!.reduce((t, r) => t + r.count, 0) + c.h16_other!).toBe(c.refused);
+    const none = emptySummaryState();
+    foldLine(none, reject(NOON, M1, 'H7', 'top-holders'));
+    expect(Object.keys(buildSummary(inputs({ fold: none.days[DAY] })).candidates)).toEqual(['seen', 'entered', 'refused', 'refused_by_reason', 'refused_other']);
+  });
+
+  it('a watchdog from before H16-WHY refuses the breakdown: the day goes again without it, keeping everything else', async () => {
+    const dir = tempState();
+    const bodies: string[] = [];
+    const logs: string[] = [];
+    const s = emptySummaryState();
+    foldLine(s, h16(NOON, M1, 'missing', 'pool', 'H5'));
+    const withH16 = buildSummary(inputs({ fold: s.days[DAY] }));
+    const sz = new Summarizer({
+      journalPath: join(dir, 'journal.jsonl'), stateDir: dir,
+      http: (async (req) => (bodies.push(String(req.body)), { status: String(req.body).includes('"h16_by_input"') ? 400 : 200, header: () => null, text: '{"ok":true,"written":true}' })) as HttpClient,
+      watchdogUrl: 'https://w.test', key: 'k', now: () => NOON, log: (l) => void logs.push(l), live: () => inputs(), build: () => withH16,
+    });
+    await sz.tick();
+    expect(bodies).toHaveLength(2);
+    expect(JSON.parse(bodies[0]!).candidates.h16_by_input).toEqual([{ code: 'missing', input: 'pool', needed_by: 'H5', count: 1 }]);
+    expect(JSON.parse(bodies[1]!)).toEqual(JSON.parse(JSON.stringify(withoutH16(withH16))));
+    expect(JSON.parse(bodies[1]!).candidates).toEqual({ seen: 1, entered: 0, refused: 1, refused_by_reason: [{ gate: 'H16', code: 'missing', count: 1 }], refused_other: 0 });
+    expect(logs).toEqual([`Summary for ${DAY} refused; sent again without the H16 breakdown.`]);
   });
 });
 
@@ -196,11 +309,21 @@ describe('the summary', () => {
     expect(s.candidates.refused_by_reason).toHaveLength(SUMMARY_TOP_REASONS);
     expect(s.candidates.refused_other).toBe(2);
     expect(s.provider_credits).toEqual([{ provider: 'helius', used_since_boot: 1234, monthly: 1_000_000 }]);
-    expect(s.worker).toEqual({ git_sha: 'a'.repeat(40), entry_rule: 'S0', uptime_s: 3600, starts: 1, recorder: 'on' });
+    expect(s.worker).toEqual({ git_sha: 'a'.repeat(40), entry_rule: 'S0', uptime_s: 3600, starts: 1, recorder: 'on', restarts: { planned: 0, deploy: 0, unplanned: 0 }, exits: [], crash_sites: [], last_death: null });
     const b = summaryBody(s);
     expect('body' in b && checkSummary(b.body).ok).toBe(true);
     // A final summary leaves out trades still open from another day.
     expect(buildSummary(inputs({ trades: [trade({ openedAtMs: NOON - 86_400_000, closedAtMs: null })], final: true })).trades).toEqual([]);
+  });
+
+  it('SOL-BOOKS: a trade\'s size is its lamports in dollars at its entry price, and its SOL net counts what landed after the close', () => {
+    // 20,000,000 lamports (0.02 SOL) entered at $150 is $3; at the current $200 it would read $4, and as micro-dollars $20.
+    const t = trade({ openSolPrice: 150_000_000n as MicroUsd, closeSolPrice: 150_000_000n as MicroUsd, late: [{ atMs: NOON + 120_000, lamports: -100_000n, usd: -15_000n as MicroUsd }] });
+    const s = buildSummary(inputs({ trades: [t] }));
+    expect(s.trades.map((x) => [x.size_usd, x.net_lamports, x.net_usd])).toEqual([['3', '-1600000', '-0.315']]);
+    expect(s.pnl).toEqual({ closed_trades: 1, net_lamports: '-1600000', net_usd: '-0.315' });
+    const b = summaryBody(s);
+    expect('body' in b && checkSummary(b.body).ok).toBe(true);
   });
 
   it('caps the trade list and fits the size cap, still counting every trade', () => {
@@ -272,6 +395,79 @@ describe('the worker-side guard', () => {
     await sz.tick();
     expect(calls).toEqual([]);
     expect(logs).toEqual([`Summary for ${DAY} not sent: forbidden pattern: uuid key.`]);
+  });
+});
+
+describe('a disk fault while a summary is being posted', () => {
+  it('rechecks live eligibility before fallback sends and before the next day post', async () => {
+    const dir = tempState();
+    writeFileSync(join(dir, 'journal.jsonl'), '');
+    const bodies: string[] = [];
+    const logs: string[] = [];
+    let failed = false;
+    const sz = new Summarizer({
+      journalPath: join(dir, 'journal.jsonl'), stateDir: dir, watchdogUrl: 'https://w.test', key: 'k', now: () => NOON,
+      log: (l) => void logs.push(l), live: () => { if (failed) throw new Error('journal fault'); return inputs(); },
+      http: (async (req) => { bodies.push(String(req.body)); failed = true; return { status: 400, header: () => null, text: '{}' }; }) as HttpClient,
+    });
+    await sz.tick();
+    expect(bodies).toHaveLength(1);
+    expect(logs).toContain('Summary skipped: Error.');
+  });
+});
+
+describe('a watchdog from before MEM-PROBE', () => {
+  it('refuses the probe samples: the day goes again without them, keeping the rest of the last death', async () => {
+    const dir = tempState();
+    const bodies: string[] = [];
+    const logs: string[] = [];
+    const base = buildSummary(inputs());
+    const death = { at: '2026-10-05T19:36:33.000Z', uptime_s: 1_808, heap_used_mb: 563, heap_limit_mb: 572, spaces: [], sample: null };
+    const recent = [{ at: '2026-10-05T19:35:33.000Z', heap_used_mb: 527, old_mb: 450, large_object_mb: 72, saving: false, counts: [{ code: 'store_keys', count: 1 }] }];
+    const withProbe = { ...base, worker: { ...base.worker, restarts: { planned: 0, deploy: 0, unplanned: 1 }, exits: [], crash_sites: [], last_death: { ...death, recent } } };
+    const sz = new Summarizer({
+      journalPath: join(dir, 'journal.jsonl'), stateDir: dir,
+      http: (async (req) => (bodies.push(String(req.body)), { status: String(req.body).includes('"recent"') ? 400 : 200, header: () => null, text: '{"ok":true,"written":true}' })) as HttpClient,
+      watchdogUrl: 'https://w.test', key: 'k', now: () => NOON, log: (l) => void logs.push(l), live: () => inputs(), build: () => withProbe,
+    });
+    await sz.tick();
+    expect(bodies).toHaveLength(2);
+    expect(JSON.parse(bodies[0]!).worker.last_death.recent).toEqual(recent);
+    expect(JSON.parse(bodies[1]!).worker.last_death).toEqual(death);
+    expect(logs).toEqual([`Summary for ${DAY} refused; sent again without the memory probe samples.`]);
+  });
+});
+
+describe('a watchdog from before RESTART-CAUSE (review of #209)', () => {
+  it('refuses the new keys: the day goes again without them, once; any other failure is not resent', async () => {
+    const dir = tempState();
+    const bodies: string[] = [];
+    const logs: string[] = [];
+    let status = (body: string): number => (body.includes('"crash_sites"') ? 400 : 200);
+    const sz = new Summarizer({
+      journalPath: join(dir, 'journal.jsonl'), stateDir: dir,
+      http: (async (req) => (bodies.push(String(req.body)), { status: status(String(req.body)), header: () => null, text: '{"ok":true,"written":true}' })) as HttpClient,
+      watchdogUrl: 'https://w.test', key: 'k', now: () => NOON, log: (l) => void logs.push(l), live: () => inputs(),
+    });
+    await sz.tick();
+    // MEM-SUMMARY: first without the death's memory (still refused by this watchdog), then without the restart counts.
+    expect(bodies).toHaveLength(3);
+    expect(Object.keys(JSON.parse(bodies[0]!).worker)).toEqual(expect.arrayContaining(['restarts', 'exits', 'crash_sites', 'last_death']));
+    expect(Object.keys(JSON.parse(bodies[1]!).worker).sort()).toEqual(['crash_sites', 'entry_rule', 'exits', 'git_sha', 'recorder', 'restarts', 'starts', 'uptime_s']);
+    const third = JSON.parse(bodies[2]!) as { worker: Record<string, unknown> };
+    expect(Object.keys(third.worker).sort()).toEqual(['entry_rule', 'git_sha', 'recorder', 'starts', 'uptime_s']);
+    expect(logs).toEqual([`Summary for ${DAY} refused; sent again without the memory at the last death.`, `Summary for ${DAY} refused; sent again without the restart counts.`]);
+    // A refusal of the old shape too is not resent again; a server error is not resent at all.
+    bodies.length = 0;
+    logs.length = 0;
+    status = () => 400;
+    await sz.tick();
+    expect(bodies).toHaveLength(3);
+    expect(logs.at(-1)).toBe(`Summary for ${DAY} not accepted: HTTP 400.`);
+    bodies.length = 0;
+    status = () => 500;
+    await sz.tick();
+    expect(bodies).toHaveLength(1);
   });
 });
 

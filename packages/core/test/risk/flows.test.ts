@@ -659,7 +659,7 @@ describe('a withdrawal that leaves no positive valuation is refused (RISK-1b rev
 // rounded so it is never looser; no live price enters, so a SOL/USD move alone changes no figure and no limit.
 describe('SOL-BOOKS: limits in SOL equal their dollar meaning at the opening price, never looser', () => {
   const ofBpsFloor = (v: bigint, b: number) => (v * BigInt(b)) / 10_000n;
-  for (const opening of ['100', '119.46', '87.123456', '250']) {
+  for (const opening of ['100', '119.46', '87.123456', '163.29', '250']) {
     test(`at an opening price of $${opening}`, () => {
       const price = solPriceMicroUsd(opening);
       const a = { ...account(), openingSolPrice: price, openingEquity: microUsdToLamports(TRIAL_POLICY.capital.bankroll, price, 'floor') };
@@ -673,6 +673,23 @@ describe('SOL-BOOKS: limits in SOL equal their dollar meaning at the opening pri
       expect(s.weeklyLimit).toBe(ofBpsFloor(s.bankroll, TRIAL_POLICY.loss.weeklyBps));
       // R10: the kill line is 70% of the opening SOL, and NAV equals its high-water mark with nothing traded.
       expect(s.nav).toBe(s.navHighWaterMark);
+      // q_min rounded up (never an entry under the dollar minimum), q_max rounded down (never above the dollar maximum).
+      // (At $250 the bankroll is 0.08 SOL and R7's line 0.006 SOL: a trade's fixed network costs and rent alone reach
+      // it, so every entry is refused, as it would be in dollars.)
+      const d = evaluateEntry(baseInput({ account: a }), baseRequest());
+      const up = evaluateEntry(baseInput({ account: a, latches: latches({ sizeStepUpApproved: true }) }), baseRequest());
+      if (opening === '250') expect([codes(d), codes(up)]).toEqual([['daily_loss'], ['daily_loss']]);
+      else {
+        expect((d as EntryAllowed).spendLamports).toBe(microUsdToLamports(TRIAL_POLICY.capital.minNotional, price, 'ceil'));
+        expect(lamportsToMicroUsd((d as EntryAllowed).spendLamports as Lamports, price, 'floor') >= TRIAL_POLICY.capital.minNotional).toBe(true);
+        const qMax = (up as EntryAllowed).caps.find((c) => c.name === 'maximum notional')!.notional;
+        expect(qMax).toBe(microUsdToLamports(TRIAL_POLICY.capital.maxNotional, price, 'floor'));
+        expect(lamportsToMicroUsd(qMax as Lamports, price, 'ceil') <= TRIAL_POLICY.capital.maxNotional).toBe(true);
+      }
+      // R12's floor rounded up: a pool one lamport under its dollar floor in SOL is refused.
+      const floor = microUsdToLamports(TRIAL_POLICY.liquidity.floorUsd, price, 'ceil');
+      expect(codes(evaluateEntry(baseInput({ account: a }), baseRequest({ poolLiquidity: (floor - 1n) as Lamports })))).toContain('liquidity_floor');
+      expect(codes(evaluateEntry(baseInput({ account: a }), baseRequest({ poolLiquidity: floor as Lamports })))).not.toContain('liquidity_floor');
     });
   }
 });
