@@ -119,3 +119,86 @@
 - **Re-read credits:** `fetchTx` is counted as 1 re-read credit, but the fetcher retries up to 3 more times, so real spend may be up to 4×.
 - **Restarts:** a restored candidate keeps its `lastReason`, so an identical refusal after a restart writes no record and `stage1Missing` may not fire. Not shown.
 - **Checked clean:** regime hysteresis, migration fact values (live CreatePoolEvent vs backtest migration event: equal on the real fixture), H8 with signed virtual reserves (fails closed), UTC day handling in every counter (no Melbourne mix-up), tradeRepeatTag collisions, and CappedMap early eviction (fails closed).
+
+# Round 2 (S1's request, same commit 959d801)
+
+**Verdict: 1 CRITICAL (latent: off in today's config), 2 HIGH, 3 MEDIUM, 1 LOW.**
+
+`npx vitest run packages/core/test/redteam2 packages/worker/test/redteam2 packages/worker/test/redteam3` gives 8 failing. Each fails on its stated assertion, not on setup.
+
+## CRITICAL (latent)
+
+### R2-1: after a restart seeded from the deployer store alone, H14's rug half reads as covered across the downtime
+
+- **Code:** `worker/src/run/worker.ts:2478-2481`.
+  - Only `coverage:creates:gap` gets the downtime gap.
+  - The saved `coverage:rugs:*` starts go into the seed history with no gap.
+  - `createsCoverage` (`deployer-index.ts:439`) then treats the new start as continuous.
+  - The persist path (`loadState`) gaps both streams, as DECISIONS ("The rug half after a restart") requires.
+- **Effect:** H14 skips the on-demand rug check (RUG-1c) and counts only labels, which missed every trade during the downtime. The attacker did not run a full H14 verdict end to end.
+- **Test:** `worker/test/redteam3/rugs-coverage-store-restart.test.ts`. It fails with `{"covered":true,…}`.
+- **Realism:** it needs `tradeStreams` on (off in `main.ts` today) and a boot without a usable state file (version change, corruption, or a kill before the first save).
+- **Fix:** on the store path, add an open gap for every started watch on both streams.
+
+## HIGH
+
+### R2-2: the on-demand rug check counts a rug from before the 14-day look-back (live ≠ backtest)
+
+- **Code:** `core/src/gates/deployer-check.ts:145` returns every `rug`, whatever its date. `hard.ts:551` adds these unfiltered, while the stream labels are filtered by `knownAtMs >= now - lookback`.
+- **Why live and backtest differ:** live has no rugs stream, so every live H14 uses the check. The backtest uses the stream.
+- **Test:** `worker/test/redteam2/rug-check-before-lookback.test.ts`. Live gives `prior-rug`; the backtest path gives no reason.
+- **Fix:** keep a checked rug only when `label.atMs >= now - lookback`.
+
+### R2-3: non-SOL-quoted graduates enter the regime's SOL survival series
+
+- **Code:** `core/src/facts/producer.ts:647-689`, `#resolve` at `:1696`, and `regime.ts:96`.
+  - The quote mint is never checked.
+  - A USDC pool's raw reserve is compared with the 30 SOL floor.
+- **Test:** `worker/test/redteam3/graduates-quote-mint.test.ts`.
+- **Effect:** the survival share moves with the USDC/SOL mix of graduates, not with SOL survival. Live and the backtest share the producer, so both are equally wrong.
+- **Fix:** keep the quote mint, and skip survival for pools that are not WSOL.
+
+## MEDIUM
+
+### R2-4: H15 accepts a simulation of any chain slot
+
+- **Code:** `hard.ts:568` with the offchain freshness rule, which checks only the 2 s receipt age.
+- **Test:** `core/test/redteam2/h15-sim-slot-unbound.test.ts`. A sim 5,000 slots behind the tip passes.
+- **Why not CRITICAL:** live is guarded only by the reader's `minContextSlot` (`sim/roundtrip.ts:41`), not by the gate.
+- **Fix:** refuse a sim whose slot is missing, or more than `maxStateSlotLag` behind the tip or behind the pool fact's slot.
+
+### R2-5: the H16 cross-check passes when no source reported one of the two authorities
+
+- **Code:** `hard.ts:592`.
+- **Test:** `core/test/redteam2/h16-xcheck-partial-field.test.ts`, 2 tests (mint authority and freeze authority).
+- **Note:** H2 and H3 still check our own read, so this loses only the independent check.
+- **Fix:** require at least one non-null source for each field.
+
+### R2-6: a restored graduates series is dated "now"
+
+- **Code:** `producer.ts:1711` and `:1764`, with `regime.ts:179`.
+- **Effect:** after a 20 h outage, the "last 24 h" survival share was judged from 4 h of data and passed instead of being unknown.
+- **Test:** `worker/test/redteam2/graduates-restore-hole.test.ts`.
+- **Fix:** date the fact at what the series has actually observed, and make survival unknown over an unobserved stretch.
+
+## LOW
+
+### R2-7: the serial-deployer count misses creates whose block time is ahead of the local clock
+
+- **Code:** `deployer-index.ts:211` and `hard.ts:518`. The live `observe` path does not clamp the block time.
+- **Test:** `worker/test/redteam2/serial-chain-ahead.test.ts`.
+- **Fix:** clamp `createdAtMs` to the event's receipt time in `observe`, as `seed` and `fill` already do.
+
+## Notes (checked; fail-closed or correct)
+
+- **Mint and H4/H17:** `decodeMint`, the Token-2022 extension allowlist (transfer hook, fee, permanent delegate and unknown types are all blocked) and `checkShape` hold. I could not verify offline that the extension numbering matches token-2022.
+- **H12/H13:** the supply read order, exact-sum completeness, holder classification and delegates hold.
+- **H5:** the canonical pool rule (index 0, creator PDA, and the account at the derived address) holds.
+- **S0 waivers:** none leaks into a normal run. The config refuses the diagnostic outside S0 or a qualifying run. One cosmetic issue: a "create expired" reject line can carry the previous candidate's stale S0 tag.
+- **Regime:** the hysteresis follows §6.4. Volume uses complete UTC days only. SOL change needs exact hourly points.
+- **Decoder:**
+  - Unknown PumpSwap events stale the chain on the logs path and taint heals.
+  - A shrunk layout throws, so the log or transaction becomes undecodable.
+  - Negative i128 virtual reserves give a partial book or a chain mismatch.
+  - Create, Complete, migration and CreatePool tails are never checked. That is safe only while pump appends fields.
+- **Restored candidates:** gates and spend are judged again after a restart, and migration, completion and create are re-fetched. The SAVE-ASOF clamp of `migratedAtMs` can open the entry window a few seconds early under host-clock skew (LOW, not probed).
