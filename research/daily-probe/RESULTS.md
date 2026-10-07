@@ -28,3 +28,11 @@ Survivor-only coin list (coins worth about $81k or more on 2026-10-06); daily OH
 - **The survivor list was badly biased.** In the 900-coin random sample, 33 of 588 normal canonical graduates closed at least one day at ≥ 9,820 SOL market cap; only 1 of those 33 is in the 481-coin list. Most coins that reach that size later die, so the first run mostly saw winners.
 - **Random-sample re-run** (registered; daily bars built from hourly): only 3 sampled coins were ever eligible (alive at group C size with 8 real daily bars). Every trade lost: D-REV3 one trade −72%, TREND four trades (mean −64%), buy-everything −26% at 1 day and −52% at 7 days. Too small to prove anything alone, but the direction matches the bias.
 - **Full re-test running.** 16,367 coins (all graduates since March whose pump.fun all-time high passes the filter, traded 9+ days, not dust on chain) are being downloaded in random order (about 32 hours at the free limit); the rules will be re-run on whatever has arrived, which is a random subsample at every point.
+
+## Survivorship-free re-test: partial check (2026-10-07 21:20 Melbourne)
+
+The registered universe has 16,367 random-order coins. Only 65 had daily prices so far: the download was paused for other work and restarted at this check. Run exactly as registered (`daily.py run` on the 481-coin list plus those 65).
+
+**Result: no change.** None of the 65 added coins produced an eligible pool-day: the candidates stayed at 9,008, the same as the survivor-only run. Every rule's numbers and verdicts are therefore identical (D-REV3 validation +3.62%, n=93; all five rules "not supported" under the amended verdict).
+
+This partial check says nothing yet about survivor bias. Most coins that pass the pump.fun all-time-high filter never trade at group-C size, because that all-time high includes opening spikes and fake prints (see `../brainstorm/RESULTS.md`). The full download needs about 30 hours more of free calls at 6.5 s each; the run is repeated when it finishes.
