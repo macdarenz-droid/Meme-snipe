@@ -90,7 +90,7 @@
     - mark MIGRATION O4 resolved, with a DECISIONS row;
     - leave the rest of `apps/web` and the existing `preview` release untouched.
   - Then a review and a red team.
-- **8 Oct about 7:35 AM, owner: strategy slots** (CLAUDE.md "Strategy slots"). Plan:
+- **8 Oct about 7:27 AM, owner: strategy slots** (CLAUDE.md "Strategy slots"). Plan:
   - card **Z-STRAT**: A-M09-01 runtime host, plus a strategy template (a known-answer example plugin), plus `docs/STRATEGY-INTAKE.md` (research → pre-registration through A-M13-02 → plugin → gates B, R, P → switch);
   - it starts as soon as its inputs exist (B-M25-01 Config from Z02; the A-M08-02 features interface, faked behind its type until Z09). Order and dependencies are to be confirmed against SPEC-A when carded;
   - the dashboard switch comes with the UI strategy screen (VM-03 `strategies[]`; A3 for live modes).
