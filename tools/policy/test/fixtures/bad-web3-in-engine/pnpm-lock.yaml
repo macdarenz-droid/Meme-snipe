@@ -1,0 +1,80 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    devDependencies:
+      typescript:
+        specifier: 6.0.3
+        version: 6.0.3
+
+  packages/engine:
+    dependencies:
+      '@bot/types':
+        specifier: workspace:*
+        version: link:../types
+      '@solana/web3.js':
+        specifier: 1.98.4
+        version: 1.98.4
+      '@bot/venue':
+        specifier: workspace:*
+        version: link:../venue
+
+  packages/sentinel:
+    dependencies:
+      '@bot/venue':
+        specifier: workspace:*
+        version: link:../venue
+      '@solana/kit':
+        specifier: 8.4.0
+        version: 8.4.0
+
+  packages/signer:
+    dependencies:
+      '@bot/types':
+        specifier: workspace:*
+        version: link:../types
+
+  packages/types: {}
+
+  packages/venue:
+    dependencies:
+      '@bot/types':
+        specifier: workspace:*
+        version: link:../types
+      '@solana/kit':
+        specifier: 8.4.0
+        version: 8.4.0
+
+packages:
+
+  '@solana/addresses@8.4.0':
+    resolution: {integrity: sha512-fixtureAddressesIntegrityHashNotARealOne==}
+
+  '@solana/kit@8.4.0':
+    resolution: {integrity: sha512-fixtureKitIntegrityHashNotARealOne==}
+    engines: {node: '>=20.18.0'}
+
+  typescript@6.0.3:
+    resolution: {integrity: sha512-fixtureTypescriptIntegrityHashNotARealOne==}
+    engines: {node: '>=14.17'}
+    hasBin: true
+
+  '@solana/web3.js@1.98.4':
+    resolution: {integrity: sha512-fixtureWeb3IntegrityHashNotARealOne==}
+
+snapshots:
+
+  '@solana/addresses@8.4.0': {}
+
+  '@solana/kit@8.4.0':
+    dependencies:
+      '@solana/addresses': 8.4.0
+
+  typescript@6.0.3: {}
+
+  '@solana/web3.js@1.98.4': {}

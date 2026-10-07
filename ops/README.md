@@ -10,7 +10,7 @@ Server: Vultr Shared CPU `vc2-1c-2gb`, Frankfurt, 1 vCPU / 2 GB (the OS reports 
 2. **Install.** Paste this one line the same way (Clipboard → Paste), then press Enter:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/07c7d076df4bc1ee22ac3efaa2bf38e0d8e0d7ed/ops/install.sh -o i && echo 'd2889a0cf7ea5b5aa0015d7dccb9ebc12ff9862bacec89a576da684c445d7465  i' | sha256sum -c && bash i
+curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/3e768f465579d942f65273f52e4e4045ffd83555/ops/install.sh -o i && echo 'f811469b54c955146c0ba92df473781b0611a64c894bc7f1c15d87efd0667910  i' | sha256sum -c && bash i
 ```
 
    The line checks the file against its SHA-256 before anything runs; a changed file stops at `sha256sum -c`. After about two minutes the screen shows a **deploy code** of 6 words.
@@ -19,7 +19,7 @@ curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/07c7d076
 
 The console screen can be left at any time (Ctrl+C); setup carries on in the background. `zeroed-status` shows where it stands and the codes again.
 
-SHA-256 of `install.sh`: `d2889a0cf7ea5b5aa0015d7dccb9ebc12ff9862bacec89a576da684c445d7465`
+SHA-256 of `install.sh`: `f811469b54c955146c0ba92df473781b0611a64c894bc7f1c15d87efd0667910`
 
 After any change to `ops/install.sh`, the commit in the line must move to one that holds the new file (`ops/test/e2e.sh` fails otherwise).
 
@@ -66,7 +66,7 @@ Run `zeroed-new-deploy-code` on the console and put the new 6 words in `DEPLOY_C
 Every Deploy run also moves the tag `deploy` to the newest commit on `ccr-14987baf-i6lrsl` that GitHub signed, which is a pull-request merge (`ops/deploy/tag.sh`). Every 5 minutes the server (`zeroed-update`) switches to it only when all of these hold:
 - the commit carries GitHub's merge signature (fingerprint `968479A1AFF927E37D1A566BB5690EEEBB952194`, pinned at install);
 - it is on the branch;
-- GitHub Actions' `check` passed on it, and every other GitHub Actions run on it finished green (public API; runs from other apps do not count, and none at all means wait);
+- GitHub Actions' `check` passed on it, and every other GitHub Actions run on it finished green (public API; runs from other apps do not count, and none at all means wait). The Deploy job's own run (`zeroed-deploy`) and the daily advisory report (`zeroed-advisories`, `.github/workflows/audit-schedule.yml`) never count, whatever their state: the report runs on the default branch's newest commit, so it must not hold that commit back (Z01 ruling 3.4);
 - `e2e` passed on the newest commit at or before it that changed the ops end-to-end paths (`ops/`, `packages/ops/`, the Deploy and ops e2e workflows), since a merge that leaves ops alone runs no e2e of its own;
 - no qualifying dry run is active: no `zeroed-dryrun@…` unit is running, and no named run in the evidence directory is missing its `report.json` (this covers the minutes after a reboot drill before the runner resumes);
 - the worker reports no open intent (`/var/lib/zeroed/open_intents`).

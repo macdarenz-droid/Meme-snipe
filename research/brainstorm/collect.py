@@ -1,4 +1,7 @@
 """List pump.fun graduates by creation time via frontend-api-v3 /coins/search-unrestricted (pumpSwapGraduatedOnly)."""
+# Stopped (owner rule A02, 2026-10-07: no new requests to pump.fun-operated hosts; Z01 ruling 5.5). This client must
+# not run again; it is kept as a record of how the 2026-10 sample was collected.
+raise SystemExit('stopped: no new requests to the venue host (owner rule A02, 2026-10-07); kept as a record only')
 import sys, json, time, calendar
 sys.path.insert(0, sys.argv[1])
 from pf import get

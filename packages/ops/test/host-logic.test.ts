@@ -783,6 +783,18 @@ describe('deploy gate (OPS-GATE): named runs from GitHub Actions, shared by the 
   ])('refuses %s', (_, runs, why) => {
     expect(verdict(runs as Run[])).toMatch(why);
   });
+  it('ignores the scheduled advisory report (zeroed-advisories) whatever its state, and only that name (Z01 ruling 3.4)', () => {
+    for (const state of [{ conclusion: 'failure' }, { conclusion: 'cancelled' }, { conclusion: 'timed_out' }, { status: 'in_progress', conclusion: null },
+      { status: 'queued', conclusion: null }]) {
+      expect(verdict([{ name: 'check' }, { name: 'zeroed-advisories', ...state }]), JSON.stringify(state)).toBe('green');
+    }
+    expect(verdict([{ name: 'zeroed-advisories' }]), 'it never stands in for check').toMatch(/^none: no check run/);
+    expect(verdict([{ name: 'check' }, { name: 'advisories', conclusion: 'failure' }])).toBe('red: advisories failed');
+    expect(verdict([{ name: 'check' }, { name: 'zeroed-advisories-x', status: 'in_progress', conclusion: null }])).toBe('pending: zeroed-advisories-x still running');
+    expect(sh('echo "$DEPLOY_AUDIT_JOB"').out).toBe('zeroed-advisories');
+    const wf = read('.github/workflows/audit-schedule.yml');
+    expect(wf).toMatch(/^jobs:\n {2}zeroed-advisories:\n/m);
+  });
   it('refuses a listing GitHub cut short, and reads the latest run of a re-run name', () => {
     expect(verdict([{ name: 'check' }], 'check', 101)).toMatch(/^none: more check runs/);
     expect(verdict([{ name: 'e2e', conclusion: 'success', completed_at: '2026-10-04T01:00:00Z' }, { name: 'e2e', conclusion: 'neutral', completed_at: '2026-10-04T00:00:00Z' }], 'e2e')).toBe('green');

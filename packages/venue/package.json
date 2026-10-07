@@ -1,0 +1,11 @@
+{
+  "name": "@bot/venue",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Venue registry, quote model and IDL decoders (M01, M02).",
+  "license": "UNLICENSED",
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "package": "@bot/types",
+  "version": "1.0.0",
+  "sha256": "4fda041143d2167e4e8c4306943a05bc23553f1f40edb60333c4be5ebbc28abf",
+  "files": [
+    "package.json",
+    "src/index.ts"
+  ],
+  "typescript": "6.0.3"
+}

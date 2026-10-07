@@ -1,0 +1,5 @@
+packages:
+  - packages/*
+minimumReleaseAge: 20160
+strictDepBuilds: true
+blockExoticSubdeps: true
