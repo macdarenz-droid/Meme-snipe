@@ -76,7 +76,8 @@ export class FileLogSink implements LogSink {
     const now = this.opts.clock.nowMs();
     const day = dayOf(now);
     if (day !== this.day) this.rotate(day);
-    else if (this.broken && now >= this.retryAt) this.open();
+    // A retry time left far ahead by a clock that came back is not waited for (red team C M3 pattern).
+    else if (this.broken && (now >= this.retryAt || now < this.retryAt - REOPEN_MS)) this.open();
     const rank = LEVELS.indexOf(level);
     const queued = this.stream === null ? 0 : this.stream.writableLength;
     if (rank < INFO && queued >= this.opts.queueBytes / 2) return 'shed';

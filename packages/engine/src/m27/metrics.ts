@@ -264,6 +264,13 @@ export class MetricsRegistry {
     const now = this.opts.clock.nowMs();
     const minute = Math.floor(now / 60_000) * 60_000;
     if (this.currentMinute === null) this.currentMinute = minute;
+    if (minute < this.currentMinute) {
+      // The clock ran ahead and came back (red team C M3 pattern): the minute being collected is stamped with a time
+      // that has not come yet, so its samples are dropped and collection restarts at the current minute, instead of
+      // writing no rollup until that time comes (or writing rows that would collide with that minute's later rows).
+      this.rollup(this.currentMinute as UnixMs);
+      this.currentMinute = minute;
+    }
     if (minute > this.currentMinute) {
       const ended = this.currentMinute;
       const { rows, gauges } = this.rollup(ended as UnixMs);

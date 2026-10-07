@@ -19,7 +19,7 @@
 // comments or empty statements) is refused before it runs, and every statement checks that the transaction is still
 // open before and after it runs, so nothing inside `withTx` can run outside the transaction (for example after a
 // caught RAISE(ROLLBACK)).
-import { chmodSync, existsSync } from 'node:fs';
+import { chmodSync, existsSync, statSync } from 'node:fs';
 import { backup, DatabaseSync, type StatementSync } from 'node:sqlite';
 import { canonicalJson, type Clock, type UnixMs } from '@bot/types';
 import type { Logger } from '../m27/log.ts';
@@ -155,13 +155,48 @@ function restrictFiles(path: string): void {
   for (const f of [path, `${path}-wal`, `${path}-shm`]) if (existsSync(f)) chmodSync(f, 0o600);
 }
 
+/**
+ * Holds an exclusive SQLite lock on `<db>-writer.lock` for the writer's whole life (ported from Zeroed's LEDGER-1
+ * writer lock, `packages/core/src/ledger/adapters/lock.ts`). It is an OS file lock, so the kernel drops it when the
+ * process dies: no pid file and no stale check. A second writer, in this process or another, is refused at once;
+ * two openers racing for a new lock file may both be refused, and neither runs (a start retries).
+ */
+function takeWriterLock(path: string): () => void {
+  const lockPath = `${path}-writer.lock`;
+  const lock = new DatabaseSync(lockPath, { timeout: 0 });
+  try {
+    lock.exec('PRAGMA locking_mode = EXCLUSIVE');
+    lock.exec('BEGIN EXCLUSIVE');
+  } catch (e) {
+    lock.close();
+    const message = (e as Error).message;
+    throw new Error(/locked|busy/i.test(message) ? `m24: ${path} already has a writer` : `m24: cannot take the writer lock of ${path}: ${message}`);
+  }
+  chmodSync(lockPath, 0o600);
+  return () => { if (lock.isOpen) lock.close(); };     // closing ends the transaction and drops the lock
+}
+
 /** Opens the writer (and the readers for a file database) with the M24 PRAGMAs. */
 export function openDb(opts: DbOptions): Db {
   const memory = opts.path === ':memory:';
-  const writer = new DatabaseSync(opts.path, { enableForeignKeyConstraints: true, timeout: 0 });
+  // An existing empty file is a lost or truncated database, never a first start: a new database has its WAL header
+  // written below before any other step, so it is not empty afterwards (red team C R2-C2: a 0-byte ledger opened as a
+  // fresh one and dropped an open position).
+  if (!memory && opts.path !== '' && existsSync(opts.path) && statSync(opts.path).size === 0) {
+    throw new Error(`m24: ${opts.path} exists and is empty; a lost or truncated database is never replaced by a fresh one`);
+  }
+  const release = memory || opts.path === '' ? () => {} : takeWriterLock(opts.path);
+  let writer: DatabaseSync;
+  try {
+    writer = new DatabaseSync(opts.path, { enableForeignKeyConstraints: true, timeout: 0 });
+  } catch (e) {
+    release();
+    throw e;
+  }
   const mode = (writer.prepare('PRAGMA journal_mode=WAL').get() as { journal_mode: string }).journal_mode;
   if (!memory && mode !== 'wal') {                    // an anonymous temporary database ('') cannot use WAL
     writer.close();
+    release();
     throw new Error(`m24: journal_mode is ${mode}, not wal`);
   }
   writer.exec('PRAGMA synchronous=FULL');
@@ -275,9 +310,11 @@ export function openDb(opts: DbOptions): Db {
           if (rows.length < DRAIN_BATCH) break;
         }
         const now = opts.clock.nowMs();
-        if (now - lastPruneMs >= 3_600_000) {
+        // A clock that ran ahead and came back must not stop pruning until that date (red team C M3 pattern).
+        if (now - lastPruneMs >= 3_600_000 || now < lastPruneMs) {
           lastPruneMs = now;
-          db.withTx((tx) => tx.run('DELETE FROM outbox WHERE published_at IS NOT NULL AND published_at < ?', now - OUTBOX_RETENTION_MS));
+          // A row stamped ahead of `now` was published under a clock that came back; it is delivered, so it goes too.
+          db.withTx((tx) => tx.run('DELETE FROM outbox WHERE published_at IS NOT NULL AND (published_at < ? OR published_at > ?)', now - OUTBOX_RETENTION_MS, now));
         }
       },
       backlog: () => backlog,
@@ -298,6 +335,7 @@ export function openDb(opts: DbOptions): Db {
     close(): void {
       for (const c of readerConns) c.close();
       writer.close();
+      release();
     },
   };
   return db;

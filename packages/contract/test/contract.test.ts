@@ -179,14 +179,25 @@ describe('shared scalars (UI.md conventions 2, 4, 5)', () => {
 });
 
 describe('one package version for every consumer (acceptance: the SPA and the backend import the same version)', () => {
-  it('every workspace package that depends on @bot/contract pins exactly its frozen version', () => {
+  // pnpm links `workspace:*` to the one copy in packages/contract and never falls back to the registry (the policy
+  // check, E_INTERNAL_NOT_LINKED, refuses any other spec for an internal package), so every consumer gets the frozen version.
+  it('every workspace package that depends on @bot/contract uses workspace:* and the lockfile links it to packages/contract', () => {
     const version = (JSON.parse(readFileSync(join(ROOT, 'packages/contract/package.json'), 'utf8')) as { version: string }).version;
     assert.equal(version, '1.0.0');
-    for (const dir of readdirSync(join(ROOT, 'packages'))) {
-      const pkg = JSON.parse(readFileSync(join(ROOT, 'packages', dir, 'package.json'), 'utf8')) as Record<string, Record<string, string> | undefined>;
-      for (const field of ['dependencies', 'devDependencies', 'peerDependencies']) {
-        const spec = pkg[field]?.['@bot/contract'];
-        if (spec !== undefined) assert.equal(spec, version, `${dir} ${field}`);
+    const lock = readFileSync(join(ROOT, 'pnpm-lock.yaml'), 'utf8');
+    for (const parent of ['packages', 'apps']) {
+      for (const dir of readdirSync(join(ROOT, parent))) {
+        let text: string;
+        try { text = readFileSync(join(ROOT, parent, dir, 'package.json'), 'utf8'); } catch { continue; }
+        const pkg = JSON.parse(text) as Record<string, Record<string, string> | undefined>;
+        for (const field of ['dependencies', 'devDependencies', 'peerDependencies']) {
+          const spec = pkg[field]?.['@bot/contract'];
+          if (spec === undefined) continue;
+          assert.equal(spec, 'workspace:*', `${parent}/${dir} ${field}`);
+          const importer = lock.split(/\n(?=  \S)/).find((block) => block.startsWith(`  ${parent}/${dir}:`));
+          assert.ok(importer?.includes("'@bot/contract':") === true, `${parent}/${dir} is in the lockfile`);
+          assert.match(importer ?? '', /'@bot\/contract':\n\s+specifier: workspace:\*\n\s+version: link:\.\.\/(\.\.\/packages\/)?contract\n/);
+        }
       }
     }
   });

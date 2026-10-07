@@ -11,7 +11,10 @@
 // - E_MIGRATION_CHECKSUM: an applied migration's text differs from this build's (edge case: start refused for entries);
 // - E_SCHEMA_NEWER: the database has a migration this build does not know (a downgrade);
 // - E_BACKUP_FAILED: migrations are pending but the start backup failed, so none is applied;
-// - E_MIGRATION_FAILED: a migration statement failed and everything was rolled back.
+// - E_MIGRATION_FAILED: a migration statement failed and everything was rolled back;
+// - E_FOREIGN_DATABASE: the file holds tables but not this schema's migration record (an old Zeroed ledger or the
+//   host stand-in's database at `m24.db_path`): nothing is applied on top of it and it is left as it was (MIGRATION
+//   Rule 3, the old state is never reused; red team B RB-15).
 import { createHash } from 'node:crypto';
 import type { Clock, Result } from '@bot/types';
 import type { Logger } from '../m27/log.ts';
@@ -25,7 +28,7 @@ export interface Migration { readonly version: number; readonly name: string; re
 /** Every migration of this build, in order. Append only. */
 export const MIGRATIONS: readonly Migration[] = [M0001_INITIAL];
 
-export type MigrateErrorCode = 'E_MIGRATION_CHECKSUM' | 'E_SCHEMA_NEWER' | 'E_BACKUP_FAILED' | 'E_MIGRATION_FAILED';
+export type MigrateErrorCode = 'E_MIGRATION_CHECKSUM' | 'E_SCHEMA_NEWER' | 'E_BACKUP_FAILED' | 'E_MIGRATION_FAILED' | 'E_FOREIGN_DATABASE';
 export interface MigrateError { code: MigrateErrorCode; message: string; version: number | null }
 export interface MigrateOk { from: number; to: number; applied: number[] }
 
@@ -52,6 +55,18 @@ export function checkMigrationList(list: readonly Migration[]): void {
 export const SCHEMA_MIGRATIONS_STATEMENT = (tableStatements('schema_migrations', TABLES.schema_migrations)[0] as string)
   .replace('CREATE TABLE "schema_migrations"', 'CREATE TABLE IF NOT EXISTS "schema_migrations"');
 
+const MIGRATION_COLUMNS = ['version', 'sha256', 'applied_at'];
+
+/** Why the database is not this schema's (null when it is, or when it is empty). */
+export function foreignDatabase(db: Db): string | null {
+  return db.withTx((tx) => {
+    if (tx.get("SELECT 1 AS x FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'") === undefined) return null;
+    const columns = tx.all("SELECT name FROM pragma_table_info('schema_migrations') ORDER BY cid").map((r) => r.name as string);
+    if (columns.length === 0) return 'it holds tables but no schema_migrations';
+    return columns.join(',') === MIGRATION_COLUMNS.join(',') ? null : `its schema_migrations has the columns ${columns.join(', ')}`;
+  });
+}
+
 /** Applied migrations as recorded in the database (empty when the table does not exist yet). */
 export function appliedMigrations(db: Db): Array<{ version: number; sha256: string }> {
   return db.withTx((tx) => {
@@ -76,6 +91,8 @@ export async function prepareDatabase(db: Db, opts: PrepareOptions): Promise<Res
     opts.log?.event('critical', 'm24.migration_failed', { version, error_code: code, message });
     return { ok: false, error: { code, message, version } };
   };
+  const foreign = foreignDatabase(db);
+  if (foreign !== null) return fail('E_FOREIGN_DATABASE', `the database is not this engine's (${foreign}); nothing applied`, null);
   const applied = appliedMigrations(db);
   for (const a of applied) {
     const known = list[a.version - 1];
