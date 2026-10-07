@@ -92,7 +92,13 @@ def gtfa_last(address, t_lte, pagination_token=None, limit=1):
             'encoding': 'json', 'maxSupportedTransactionVersion': 0}
     if pagination_token:
         opts['paginationToken'] = pagination_token
-    return rpc('getTransactionsForAddress', [address, opts])
+    try:
+        return rpc('getTransactionsForAddress', [address, opts])
+    except RuntimeError as e:                    # a version-1 transaction in the window: ask again allowing it
+        if '-32015' not in str(e):
+            raise
+        opts['maxSupportedTransactionVersion'] = 1
+        return rpc('getTransactionsForAddress', [address, opts])
 
 
 def gtfa_first(address):
