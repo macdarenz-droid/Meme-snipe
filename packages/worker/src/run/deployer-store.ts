@@ -2,7 +2,7 @@
 // (creates, rug labels, unjudged mints) and every creates and rugs coverage fact, appended as it is released, so a
 // restart re-seeds the index and puts the coverage history back into the engine instead of blanking H14 for a whole
 // look-back. Public chain data only. Kept for the look-back plus a day; older lines are dropped at each start.
-import { appendFileSync, closeSync, existsSync, fsyncSync, openSync, renameSync, rmSync, statSync, truncateSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, fsyncSync, openSync, renameSync, rmSync, statSync, truncateSync, writeFileSync } from 'node:fs';
 import { fileLines } from '../../../runner/src/lines.ts';
 import { join } from 'node:path';
 import type { MarketEvent } from '../../../core/src/engine/index.ts';
@@ -39,6 +39,18 @@ export interface SavedDeployers {
 
 /** The `via` of the coverage gaps a failed append leaves (RC-FIXES-2b). */
 export const STORE_GAP_VIA = 'worker:deployer-store';
+/**
+ * RC-FIXES-2c: space kept free beside the store (`deployers.jsonl.reserve`), so the first failed append of a full disk
+ * can still write its open gaps. A few gap lines need under 2 KB.
+ */
+export const STORE_RESERVE_BYTES = 16 * 1024;
+
+const storeGap = (stream: string, from: bigint, to: bigint | null, moment: MarketEvent['moment']): MarketEvent => ({
+  kind: 'market', id: `${STORE_GAP_VIA}:${stream}:${from}-${to ?? 'open'}`, moment, key: `coverage:${stream}:gap`,
+  value: { value: { fromSlot: from, toSlot: to, reason: 'deployer store append failed', via: STORE_GAP_VIA }, source: 'worker', backfilled: false, seq: 0 },
+});
+const gapVal = (e: MarketEvent): Record<string, unknown> | null => (isObj(e.value) && isObj(e.value['value']) ? e.value['value'] : null);
+const isStoreGap = (e: MarketEvent): boolean => /^coverage:(creates|rugs):gap$/.test(e.key) && gapVal(e)?.['via'] === STORE_GAP_VIA;
 
 export interface DeployerStoreOptions {
   /** For tests (a short write); the default checks every write's count. */
@@ -58,6 +70,8 @@ export class DeployerStore {
   #size: number | null = null;
   /** The slots of the events a failed append lost, not yet covered by a gap in the file. */
   #lost: { from: bigint; to: bigint } | null = null;
+  /** The first lost slot whose open gaps reached the file (written from the reserve), until a closing gap follows. */
+  #openFrom: bigint | null = null;
   #lastLog = Number.NEGATIVE_INFINITY;
 
   constructor(stateDir: string, o: WriteFn | DeployerStoreOptions = {}) {
@@ -66,6 +80,17 @@ export class DeployerStore {
     this.#write = opts.write;
     this.#log = opts.log;
     this.#now = opts.now ?? Date.now;
+    this.#reserve();
+  }
+
+  /** Puts the reserve back (best effort: a full disk leaves it out until a later append works). */
+  #reserve(): void {
+    const r = `${this.#path}.reserve`;
+    try {
+      if (!existsSync(r)) writeFileSync(r, Buffer.alloc(STORE_RESERVE_BYTES));
+    } catch {
+      rmSync(r, { force: true });
+    }
   }
 
   /**
@@ -79,12 +104,9 @@ export class DeployerStore {
     if (!isCreate(e.key) && !isRugFact(e.key) && !isCoverage(e.key)) return;
     const lines: string[] = [];
     if (this.#lost !== null) {
-      for (const stream of ['creates', 'rugs']) {
-        lines.push(typedText({
-          kind: 'market', id: `${STORE_GAP_VIA}:${stream}:${this.#lost.from}-${this.#lost.to}`, moment: e.moment, key: `coverage:${stream}:gap`,
-          value: { value: { fromSlot: this.#lost.from, toSlot: this.#lost.to, reason: 'deployer store append failed', via: STORE_GAP_VIA }, source: 'worker', backfilled: false, seq: 0 },
-        }));
-      }
+      // The closing gaps: from the first lost slot (the open gaps' own, so they close them) to the last.
+      const from = this.#openFrom !== null && this.#openFrom < this.#lost.from ? this.#openFrom : this.#lost.from;
+      for (const stream of ['creates', 'rugs']) lines.push(typedText(storeGap(stream, from, this.#lost.to, e.moment)));
     }
     lines.push(typedText(isCreate(e.key) ? compactCreate(e) : e));
     const text = `${lines.join('\n')}\n`;
@@ -92,13 +114,32 @@ export class DeployerStore {
       this.#size ??= existsSync(this.#path) ? statSync(this.#path).size : 0;
       appendFileSync(this.#path, text);
       this.#size += Buffer.byteLength(text);
+      if (this.#lost !== null) this.#reserve();
       this.#lost = null;
+      this.#openFrom = null;
     } catch (err) {
       try {
         if (this.#size !== null && existsSync(this.#path)) truncateSync(this.#path, this.#size);
       } catch {}
       const slot = e.moment.slot;
+      const first = this.#lost === null;
       this.#lost = this.#lost === null ? { from: slot, to: slot } : { from: slot < this.#lost.from ? slot : this.#lost.from, to: slot > this.#lost.to ? slot : this.#lost.to };
+      // RC-FIXES-2c: the episode's first loss writes open gaps at once, from the reserve's space, so a death before any
+      // write works again still leaves the loss on disk (the next start closes them: `load`). A loss in the same slot as
+      // the last saved event would otherwise sit before the restart's downtime gap, which starts after that slot.
+      if (first && this.#size !== null) {
+        const open = `${['creates', 'rugs'].map((stream) => typedText(storeGap(stream, slot, null, e.moment))).join('\n')}\n`;
+        try {
+          rmSync(`${this.#path}.reserve`, { force: true });
+          appendFileSync(this.#path, open);
+          this.#size += Buffer.byteLength(open);
+          this.#openFrom = slot;
+        } catch {
+          try {
+            if (existsSync(this.#path)) truncateSync(this.#path, this.#size);
+          } catch {}
+        }
+      }
       const now = this.#now();
       if (now - this.#lastLog >= 60_000) {
         this.#lastLog = now;
@@ -134,6 +175,10 @@ export class DeployerStore {
         // a torn line: skipped below too
       }
     }
+    // RC-FIXES-2c: a store gap left open (a death before any write worked again) is closed here, up to the newest saved
+    // slot: the restart's downtime gap starts after that slot, so together they cover every lost slot.
+    const closedStore = new Set(coverageFacts.filter((e) => isStoreGap(e) && gapVal(e)?.['toSlot'] !== null).map((e) => `${e.key}|${String(gapVal(e)?.['fromSlot'])}`));
+    const openStore: MarketEvent[] = [];
     const keepSet = new Set(pruneCoverage(coverageFacts, fromMs));
     const keepCoverage = coverageFacts.map((e) => keepSet.has(e));
     let coverageAt = 0;
@@ -163,6 +208,10 @@ export class DeployerStore {
         if (last === null || e.moment.slot > last.slot) last = { slot: e.moment.slot, ms: e.moment.receivedAt };
         // A coverage fact the prune drops is neither kept nor written back (it is older than `fromMs`).
         if (isCoverage(e.key) && keepCoverage[coverageAt++] !== true) continue;
+        if (isStoreGap(e) && gapVal(e)?.['toSlot'] === null && !closedStore.has(`${e.key}|${String(gapVal(e)?.['fromSlot'])}`)) {
+          openStore.push(e);
+          continue;
+        }
         if (isCreate(e.key)) {
           creates++;
           // CREATE-AFTER-RESTART: every create in the window is shown to `onCreate` (its mint and signature), kept or not.
@@ -173,6 +222,12 @@ export class DeployerStore {
         out.push(text);
         outBytes += text.length;
         if (outBytes >= 1 << 20) flush();
+      }
+      for (const g of openStore) {
+        const from = gapVal(g)?.['fromSlot'] as bigint;
+        const closed = storeGap(g.key.split(':')[1]!, from, last !== null && last.slot > from ? last.slot : from, g.moment);
+        kept.push(closed);
+        out.push(`${typedText(closed)}\n`);
       }
       flush();
       fsyncSync(fd);
@@ -194,12 +249,12 @@ export class DeployerStore {
  * The saved live creates watch, for the downtime fill's `close`: its open gap (via and first slot), or, when none was
  * open (a crash leaves none), the watch itself with no first slot. Null when no live watch ever started.
  */
-export const liveWatchToClose = (coverage: readonly MarketEvent[]): { readonly via: string; readonly fromSlot: bigint | null } | null => {
+export const liveWatchToClose = (coverage: readonly MarketEvent[], stream: 'creates' | 'rugs' = 'creates'): { readonly via: string; readonly fromSlot: bigint | null } | null => {
   const val = (e: MarketEvent): Record<string, unknown> | null => (isObj(e.value) && isObj(e.value['value']) ? e.value['value'] : isObj(e.value) ? e.value : null);
   let via: string | null = null;
   const open = new Map<string, bigint | null>();
   for (const e of coverage) {
-    if (!e.key.startsWith('coverage:creates:')) continue;
+    if (!e.key.startsWith(`coverage:${stream}:`)) continue;
     const v = val(e);
     if (v === null || typeof v['via'] !== 'string' || v['via'] === 'seed') continue;
     const w = v['via'];

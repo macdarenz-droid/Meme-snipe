@@ -2534,6 +2534,13 @@ export class Worker {
       // A restart without a fill: the downtime is an open gap on the saved watch, settled by its new start as lossy.
       extra.push({ kind: 'market', id: 'worker:downtime-gap', moment: { ...asOf }, key: 'coverage:creates:gap', value: { value: { fromSlot: saved.last.slot + 1n, toSlot: null, reason: 'worker down; no downtime fill', via: close.via }, source: 'worker', backfilled: false, seq: 0 } });
     }
+    // RC-FIXES-2c: the rugs half mirrors it. No fill reads the rug stream (RUGS_NOT_SEEDED), so the downtime is always an
+    // open gap on the saved rugs watch, settled by its new start as lossy; with no new start it stays open (H14 falls to
+    // the on-demand deployer check per candidate, RUG-1c). Before it, rug coverage read continuous across any restart.
+    const closeRugs = liveWatchToClose(saved.coverage, 'rugs');
+    if (saved.last !== null && closeRugs !== null) {
+      extra.push({ kind: 'market', id: 'worker:downtime-gap:rugs', moment: { ...asOf }, key: 'coverage:rugs:gap', value: { value: { fromSlot: saved.last.slot + 1n, toSlot: null, reason: 'worker down; rugs are never filled', via: closeRugs.via }, source: 'worker', backfilled: false, seq: 0 } });
+    }
     const order = (xs: readonly MarketEvent[]) => {
       const byId = new Map(xs.map((e) => [e.id, e]));
       return [...byId.values()].sort(compareEvents);
