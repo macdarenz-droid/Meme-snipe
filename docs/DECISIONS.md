@@ -3328,7 +3328,10 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - **Evidence.**
     - `core/test/facts/trade-heal.test.ts`: the late migration equals the in-order tape's candles and pool, with H11 and H12 ok. The migration transaction's own swap comes before the kept swaps. A pre-migration swap is not taken. A drop past the cap is partial. A pool dropped whole is partial. All 5 fail on the code before part 3.
     - `worker/test/facts-parity.test.ts`: the recorded coin's real migration transaction, released after 5 swaps through LiveFeed, gives the in-order candles and pool. This test fails before part 3. The recording of the late run replays identically 10 times (`replayRecorded`, the §16.1 replay), and the backtest re-sort gives the same facts and log.
-    - Not run with the worker's `checkSession`. In the worker harness, candles are published as ready facts, and the worker path that releases a migration late is FACTS-REREAD's (#263), which is not merged into this base.
+    - End to end through the worker, after FACTS-REREAD (#263) merged (`worker/test/facts-reread.test.ts`):
+      - Setup: the migration watch's fetch fails, the first re-read try fails, and the pool's watch carries three swaps before the second try lands the migration transaction.
+      - The candles equal those of the same tape with the migration landing first. On the producer without part 3 the late run kept only the migration's own buy.
+      - `checkSession(..., 10)` on the late session gives 10 deterministic replays and no divergence.
     - Mutants, parts 1 and 3 run together: 19 of 20 killed.
       - Part 3 kills: no keep for the book; no `#bookOpen`; no `#bookTake`; taking within the opening transaction; taking pre-migration swaps; no partial when swaps were dropped; no partial when the entry was lost whole; the eviction hook not marking the book lost; the entry never deleted.
       - The survivor (each side taking every kept event, not only its own) is equivalent. An event is kept for the book alone only while the chain exists, and a chain is only built afresh after its pool's entry was deleted (unwatch or `#forgetPool`).
