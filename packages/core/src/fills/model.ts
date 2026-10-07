@@ -1,7 +1,7 @@
 // The paper fill model (docs/ARCHITECTURE.md §11). A paper fill is a model, not proof a transaction would land.
 // Pure functions over a seeded Rng: the same seed and the same inputs give the same draws and fills, in the backtest
 // and in live paper mode alike. Parameters come from configuration (config/fills.ts), never from this file.
-import { type CoinFlags, type NoQuoteReason, type PoolState, poolBuyExactQuoteIn, poolSell } from '../amm/index.ts';
+import { type CoinFlags, type NoQuoteReason, type PoolFeeContext, type PoolState, poolBuyExactQuoteIn, poolSell } from '../amm/index.ts';
 import { PPM } from '../costs/index.ts';
 import type { Venue } from '../domain/index.ts';
 import { createRng, type Rng } from '../engine/index.ts';
@@ -265,7 +265,16 @@ export interface OurTrade {
   readonly slippagePpm: bigint;
 }
 
-const finish = (out: bigint, paid: bigint, after: PoolState, t: OurTrade, fees: Omit<ExecutionCosts, 'extraSlippage'>, haircutPpm = 0n): Execution => {
+/** The same trade with the fee terms already resolved (live paper holds the pool's fee context, not the observed fees). */
+export interface OurTradeIn {
+  readonly pool: PoolState;
+  readonly ctx: PoolFeeContext;
+  readonly quotedOut: bigint;
+  readonly minOut: bigint;
+  readonly slippagePpm: bigint;
+}
+
+const finish = (out: bigint, paid: bigint, after: PoolState, t: Pick<OurTrade, 'quotedOut' | 'minOut' | 'slippagePpm'>, fees: Omit<ExecutionCosts, 'extraSlippage'>, haircutPpm = 0n): Execution => {
   if (haircutPpm < 0n) throw new RangeError('haircut must be >= 0');
   const slipped = withSlippage(out, t.quotedOut, t.slippagePpm);
   const final = slipped - (haircutPpm >= PPM ? slipped : mulDiv(slipped, haircutPpm, PPM, 'ceil'));
@@ -279,8 +288,11 @@ const costsOf = (q: { readonly lpFee: bigint; readonly protocolFee: bigint; read
 });
 
 /** Our buy, spending at most `spend` lamports fees included, on the pool as it stands after every real trade of the slot. */
-export const executeBuy = (t: OurTrade, spend: bigint): Execution => {
-  const q = poolBuyExactQuoteIn(t.pool, spend, observedFeeContext(t.fees, t.baseSupply, t.coin));
+export const executeBuy = (t: OurTrade, spend: bigint): Execution => executeBuyIn({ ...t, ctx: observedFeeContext(t.fees, t.baseSupply, t.coin) }, spend);
+
+/** `executeBuy` on a resolved fee context: one execution model for the backtest and live paper (N2). */
+export const executeBuyIn = (t: OurTradeIn, spend: bigint): Execution => {
+  const q = poolBuyExactQuoteIn(t.pool, spend, t.ctx);
   return q.ok ? finish(q.trade.base, q.trade.userQuote, q.trade.after, t, costsOf(q.trade)) : q;
 };
 
@@ -289,8 +301,12 @@ export const executeBuy = (t: OurTrade, spend: bigint): Execution => {
  * proceeds for liquidity lost to earlier sellers (repeated exits); it is counted in extraSlippage, and the pool sees
  * the same sell.
  */
-export const executeSell = (t: OurTrade, tokens: bigint, haircutPpm = 0n): Execution => {
-  const q = poolSell(t.pool, tokens, observedFeeContext(t.fees, t.baseSupply, t.coin));
+export const executeSell = (t: OurTrade, tokens: bigint, haircutPpm = 0n): Execution =>
+  executeSellIn({ ...t, ctx: observedFeeContext(t.fees, t.baseSupply, t.coin) }, tokens, haircutPpm);
+
+/** `executeSell` on a resolved fee context (N2). */
+export const executeSellIn = (t: OurTradeIn, tokens: bigint, haircutPpm = 0n): Execution => {
+  const q = poolSell(t.pool, tokens, t.ctx);
   return q.ok ? finish(q.trade.userQuote, tokens, q.trade.after, t, costsOf(q.trade), haircutPpm) : q;
 };
 

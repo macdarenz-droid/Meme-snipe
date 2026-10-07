@@ -517,6 +517,8 @@ export class Worker {
   #lastSlot: bigint | null = null;
   /** When `#lastSlot` was released (WATCH-1d holds a snapshot's bank to a live head). */
   #lastSlotAt: number | null = null;
+  /** N1: when the latest slot notice was received, the feed's time: the paper landing at that slot dates its pool read by it. */
+  #lastSlotReceivedAt: number | null = null;
   #ticked: bigint | null = null;
   #solPrice: MicroUsd | null = null;
   /** Whether this process settled at its first SOL price after the reconcile (a stray fee needs a price; PAPER-1). */
@@ -830,7 +832,8 @@ export class Worker {
       seed, scenario: d.scenario, network: d.network,
       ladderFees: d.session.policy.exits.ladder.steps.map((s) => s.priorityFeeLamports as bigint),
       exitRung: (i) => this.#strategy.signedRung(i.intent.positionId, this.#engine.book),
-      market: (mint) => this.#paperMarket(mint),
+      market: (mint, purpose) => this.#paperMarket(mint, purpose),
+      maxQuoteAgeMs: d.session.policy.gates.maxQuoteAgeMs,
       maxSolOut: (i) => {
         const n = d.network;
         const ladder = d.session.policy.exits.ladder;
@@ -1224,6 +1227,7 @@ export class Worker {
     if (m.key === 'chain:slot' && !r.late && isObj(m.value) && typeof m.value['slot'] === 'bigint' && (this.#lastSlot === null || m.value['slot'] > this.#lastSlot)) {
       this.#lastSlot = m.value['slot'];
       this.#lastSlotAt = this.#d.timers.now();
+      this.#lastSlotReceivedAt = e.moment.receivedAt;
     }
     else if (m.key.startsWith(POOL_PREFIX)) this.#setPool(m.key.slice(POOL_PREFIX.length), m.value);
     // An off-chain frame (the batch's FEE-TIER-NOW read) arrives wrapped; a worker fact does not.
@@ -1490,8 +1494,8 @@ export class Worker {
   }
 
   /** The mint's newest whole market by the strategy's own rule (`chooseMarket`). */
-  #choice(mint: string): MarketChoice {
-    return chooseMarket(parsePool(this.#pools.get(mint)), this.#snapshots.get(mint) ?? null, this.#carries.get(mint)?.carry ?? null);
+  #choice(mint: string, carry = true): MarketChoice {
+    return chooseMarket(parsePool(this.#pools.get(mint)), this.#snapshots.get(mint) ?? null, carry ? this.#carries.get(mint)?.carry ?? null : null);
   }
 
   /**
@@ -1521,8 +1525,8 @@ export class Worker {
     return { baseReserve: p.baseVault, quoteVault: p.quoteVault, virtualQuoteReserves: p.pool.virtualQuoteReserves ?? 0n };
   }
 
-  poolOf(mint: string): { readonly address: string; readonly state: PaperMarket['pool']; readonly ctx: PoolFeeContext; readonly atMs: number } | null {
-    const c = this.#choice(mint);
+  poolOf(mint: string, carry = true): { readonly address: string; readonly state: PaperMarket['pool']; readonly ctx: PoolFeeContext; readonly atMs: number } | null {
+    const c = this.#choice(mint, carry);
     if (c.kind === 'snapshot') return { address: c.snap.pool, state: c.snap.state, ctx: c.snap.ctx, atMs: c.snap.atMs };
     if (c.kind !== 'pool') return null;
     const p = c.pool;
@@ -1955,9 +1959,10 @@ export class Worker {
   /** Signatures of cut creates logs already being fetched or fetched (a truncated log names its signature on each event). */
   readonly #cutCreateSeen = new Set<string>();
 
-  #paperMarket(mint: string): PaperMarket | null {
-    const m = this.poolOf(mint);
-    return m === null ? null : { pool: m.state, ctx: m.ctx };
+  /** N1: the read a paper attempt lands on, dated as the strategy dates it (an entry's never by a carry, as #sendEntry). */
+  #paperMarket(mint: string, purpose: 'entry' | 'exit'): PaperMarket | null {
+    const m = this.poolOf(mint, purpose === 'exit');
+    return m === null ? null : { pool: m.state, ctx: m.ctx, atMs: m.atMs };
   }
 
   /** What the paper account settles a trade from: the paper world's attempts and token accounts (PAPER-1). */
@@ -2045,7 +2050,7 @@ export class Worker {
     if (this.#lastSlot !== null && this.#lastSlot !== this.#ticked) {
       // Once per new paper block height: attempts due land, and intents in flight get their tick (rebroadcast, expiry).
       this.#ticked = this.#lastSlot;
-      this.#world.onSlot(this.#lastSlot);
+      this.#world.onSlot(this.#lastSlot, this.#lastSlotReceivedAt ?? this.#d.timers.now());
       if (Object.values(this.#engine.book.intents).some((i) => !isTerminal(i) && (isUnresolved(i) || i.status === 'signed'))) {
         this.#report({ type: 'tick', blockHeight: this.#lastSlot });
       }

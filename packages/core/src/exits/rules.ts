@@ -246,6 +246,20 @@ const negativeRun = (flow: readonly FlowMinute[], n: number, fromMs: number, now
 const maxOf = (a: bigint | null, b: bigint): bigint => (a !== null && a > b ? a : b);
 
 /** One update of one position. Pure: the same inputs always give the same step. */
+/**
+ * RB-5: the slow retries after the bounded ones. Doublings of `blockedRetryMs` before the first slow retry (64 ×, an
+ * hour at the trial's one minute: the fast retries already failed for minutes, so a pool that refused ten attempts is
+ * given time) and the most a wait doubles to (1,024 ×, about 17 hours). Each slow retry is one attempt at the last rung,
+ * so its fee is at most `retryCost`. Before the cap, k slow retries take (2^k − 1) × 64 × `blockedRetryMs` of waiting,
+ * so a position makes about log2 of its blocked time in them; after the cap, at most one per 1,024 × `blockedRetryMs`.
+ */
+export const SLOW_RETRY_FIRST_DOUBLINGS = 6;
+export const SLOW_RETRY_MAX_DOUBLINGS = 10;
+
+/** How long the slow retry after `done` earlier slow retries waits from the block it follows. */
+export const slowRetryWaitMs = (blockedRetryMs: number, done: number): number =>
+  blockedRetryMs * 2 ** Math.min(SLOW_RETRY_FIRST_DOUBLINGS + Math.max(0, done), SLOW_RETRY_MAX_DOUBLINGS);
+
 export const decideExit = (s: ExitSettings, plan: EntryPlan, h: Holding, t0: ExitTracker, obs: ExitObservation): ExitStep => {
   const g = s.exits;
   // Never a default: a universe without its own block throws.
@@ -349,8 +363,11 @@ export const decideExit = (s: ExitSettings, plan: EntryPlan, h: Holding, t0: Exi
     if (t.blockedAtMs === null) t = { ...t, blockedAtMs: now };
     // Retries are single attempts past the ladder, so the book bounds them too when the tracker was lost.
     const retries = Math.max(t.blockedRetries, used - g.ladder.maxAttempts);
-    if (retries >= g.blockedRetryAttempts) return hold('exit blocked: retries used', fired);
-    if (now < t.blockedAtMs! + g.blockedRetryMs) return hold('exit blocked: waiting to retry', fired);
+    // RB-5: past the bounded retries the position is never given up. Retries go on, each under the same rules (last
+    // rung, fresh quote, least proceeds above the attempt's cost), but each waits twice as long as the one before.
+    if (retries >= g.blockedRetryAttempts) {
+      if (now < t.blockedAtMs! + slowRetryWaitMs(g.blockedRetryMs, retries - g.blockedRetryAttempts)) return hold('exit blocked: retries used', fired);
+    } else if (now < t.blockedAtMs! + g.blockedRetryMs) return hold('exit blocked: waiting to retry', fired);
     if (!liq.ok) return hold(`exit blocked: ${liq.detail}`, fired);
     // The retry goes at the last rung: the least it may receive is the quote less that rung's slippage, and that, not
     // the quote, must pay for the attempt (EXIT-1b).

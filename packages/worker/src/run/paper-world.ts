@@ -6,12 +6,14 @@
 //
 // The paper chain's block height is the latest released slot. Attempt records are saved after every change, so a
 // restart answers status and balance reads for attempts made before it.
-import { type PoolFeeContext, type PoolState, poolBuyExactQuoteIn, poolSell } from '../../../core/src/amm/index.ts';
+import type { PoolFeeContext, PoolState } from '../../../core/src/amm/index.ts';
 import type { Fill, IntentId, Signature } from '../../../core/src/domain/index.ts';
 import { createRng, type EffectRunner, type Moment } from '../../../core/src/engine/index.ts';
-import { type AccountLeg, attemptFee, drawAttempt, type FillNetwork, type FillScenario, TokenAccounts, withSlippage } from '../../../core/src/fills/index.ts';
+import {
+  type AccountLeg, attemptFee, drawAttempt, executeBuyIn, executeSellIn, type FillNetwork, type FillScenario, NetworkState, providerDown, TokenAccounts, windowOf,
+} from '../../../core/src/fills/index.ts';
 import type { Book, BookEvent, Effect, IntentState } from '../../../core/src/lifecycle/index.ts';
-import type { Lamports, RawAmount } from '../../../core/src/units/index.ts';
+import { type Lamports, LAMPORTS_PER_SOL, type RawAmount, mulDiv } from '../../../core/src/units/index.ts';
 import type { ExecStats } from '../../../core/src/facts/raw.ts';
 import type { DryRunRecord } from '../dryrun/index.ts';
 import type { StateFile } from './state.ts';
@@ -40,6 +42,14 @@ export interface PaperAttempt {
   costs?: { readonly venueFee: bigint; readonly creatorFee: bigint; readonly slippage: bigint; readonly base: bigint; readonly priority: bigint; readonly tip: bigint };
   /** When it was broadcast and when it landed (ms). */
   sentAtMs?: number;
+  /** N2: sent while the shared network state was congested (the backtest's `congested`). Absent on older saves. */
+  congested?: boolean;
+  /** N2: the send path was down in its window, so it never reached a block whatever its draw. */
+  providerDown?: boolean;
+  /** N2: earlier exit attempts on its position: the liquidity haircut's multiple (the backtest's `exitRetry`). */
+  exitRetry?: number;
+  /** Times this signature was sent: more than one when it was lost in a restart and re-made (EXIT-KEEP B3). */
+  sends?: number;
 }
 
 export interface PaperState {
@@ -50,6 +60,8 @@ export interface PaperState {
 export interface PaperMarket {
   readonly pool: PoolState;
   readonly ctx: PoolFeeContext;
+  /** When the read was received, on the feed's clock; a read older than `maxQuoteAgeMs` at the landing slot is no price (N1). */
+  readonly atMs: number;
 }
 
 /** One leg to simulate (TEST-2). */
@@ -82,7 +94,9 @@ export interface PaperWorldDeps {
   readonly ladderFees: readonly bigint[];
   /** The rung #sendExit recorded for this signed attempt, across partial owners and blocked retries. */
   readonly exitRung: (i: IntentState) => number;
-  readonly market: (mint: string) => PaperMarket | null;
+  readonly market: (mint: string, purpose: 'entry' | 'exit') => PaperMarket | null;
+  /** The policy's quote age (gates.maxQuoteAgeMs): the freshness rule the attempt's own quote met. */
+  readonly maxQuoteAgeMs: number;
   readonly maxSolOut: (i: IntentState) => bigint;
   /** TEST-2's dryRunTrade for one leg; null when simulation is off. Never throws (failures are records). */
   readonly simulate: ((leg: SimLeg) => Promise<DryRunRecord>) | null;
@@ -139,6 +153,16 @@ export interface SimTiming {
 /** The lower median (a whole number, as ExecStats needs), null when empty. */
 const lowerMedian = (xs: readonly number[]): number | null => (xs.length === 0 ? null : [...xs].sort((a, b) => a - b)[(xs.length - 1) >> 1]!);
 
+/**
+ * N2: the previous window's whole-market volume, as the network state reads it. The backtest tallies every swap of its
+ * data; live paper sees only the pools it watches, a lower bound that would make congestion rarer than the backtest's.
+ * So live takes the volume that puts the entry chance at its cap: never more optimistic than the backtest.
+ */
+export const capVolume = (s: FillScenario): bigint => {
+  const n = s.congestion.network;
+  return n.activityEnterPpmPerSol <= 0n || n.maxEnterPpm <= n.enterPpm ? 0n : mulDiv(n.maxEnterPpm - n.enterPpm, LAMPORTS_PER_SOL, n.activityEnterPpmPerSol, 'ceil');
+};
+
 /** A paper attempt that was in flight when its process stopped: it never lands. */
 const lostInRestart = (a: PaperAttempt): boolean => a.outcome === 'expired' && a.reason.startsWith('lost');
 
@@ -155,9 +179,13 @@ export class PaperWorld implements EffectRunner {
   #stopped = false;
   /** The paper height each attempt was sent at, this process only (not saved: an older attempt has no landing delay). */
   readonly #sentHeight = new Map<string, bigint>();
+  /** N2: the backtest's shared network state, window by window from the paper height. */
+  readonly #network: NetworkState;
 
   constructor(d: PaperWorldDeps) {
     this.#d = d;
+    const cap = capVolume(d.scenario);
+    this.#network = new NetworkState(`${d.seed}:net`, d.scenario, () => cap);
     this.#attempts = new Map(Object.entries(d.file.read({ attempts: {} }).attempts).map(([k, v]) => [k, { ...v }]));
     // Paper attempts die with the process that made them: one still in flight at a restart never lands.
     let lost = 0;
@@ -272,15 +300,26 @@ export class PaperWorld implements EffectRunner {
     const attempt = i?.attempts.find((a) => a.signature === sig);
     const height = this.#height;
     if (i === undefined || attempt === undefined || height === null) return;
-    const draw = drawAttempt(createRng(`${this.#d.seed}:${sig}`), this.#d.scenario, i.intent.venue);
+    // N2, as the backtest's world: one shared network state per window (congested attempts land less often and later),
+    // a send path that is down for the whole window (the attempt never reaches a block), and each earlier exit attempt
+    // on the position taking `exitRetryHaircutPpm` off the next one's proceeds.
+    const win = windowOf(height, this.#d.scenario);
+    const congested = this.#network.congested(win);
+    const down = providerDown(this.#d.seed, win, this.#d.scenario);
+    const drawn = drawAttempt(createRng(`${this.#d.seed}:${sig}`), this.#d.scenario, i.intent.venue, congested);
+    const draw = down ? { ...drawn, fate: 'dropped' as const } : drawn;
     const exit = i.intent.purpose === 'exit';
     const rung = exit ? this.#d.exitRung(i) : 0;
+    // Every earlier exit send on the position counts, as the backtest counts every broadcast: one lost in a restart and
+    // re-made under the same signature (EXIT-KEEP B3) counts each of its sends.
+    const exitRetry = exit ? [...this.#attempts.values()].filter((x) => x.purpose === 'exit' && x.trade === i.intent.positionId).reduce((n, x) => n + (x.sends ?? 1), 0) : 0;
     const a: PaperAttempt = {
       intentId, signature: sig, purpose: i.intent.purpose, trade: i.intent.positionId, mint: i.intent.mint,
       inAmount: attempt.quote.inAmount, quotedOut: attempt.quote.quotedOut, minOut: attempt.quote.minOut,
       priorityFee: exit ? (this.#d.ladderFees[rung] ?? 0n) : this.#d.network.entryPriorityFee,
       lastValidBlockHeight: attempt.lastValidBlockHeight, fate: draw.fate, landSlot: height + BigInt(Math.max(1, draw.landingSlots)),
-      outcome: 'in_flight', reason: draw.fate, landedSlot: null, fill: null, simulated: this.#d.simulate === null, sentAtMs: this.#d.now(),
+      outcome: 'in_flight', reason: down ? 'provider' : draw.fate, landedSlot: null, fill: null, simulated: this.#d.simulate === null, sentAtMs: this.#d.now(),
+      congested, providerDown: down, exitRetry, sends: (known?.sends ?? 0) + 1,
     };
     this.#attempts.set(sig, a);
     this.#sentHeight.set(sig, height);
@@ -306,22 +345,25 @@ export class PaperWorld implements EffectRunner {
     this.pending.set(sig, p);
   }
 
-  /** A new paper block height (the latest released slot): attempts due at it land, in signature order. */
-  onSlot(slot: bigint): void {
+  /**
+   * A new paper block height (the latest released slot), received at `atMs` on the feed's clock (the clock pool reads
+   * and the strategy's quotes are dated by): attempts due at it land, in signature order.
+   */
+  onSlot(slot: bigint, atMs: number): void {
     if (this.#height !== null && slot <= this.#height) return;
     this.#height = slot;
     const due = [...this.#attempts.values()].filter((a) => a.outcome === 'in_flight' && a.simulated && a.landSlot <= slot).sort((x, y) => (x.signature < y.signature ? -1 : 1));
-    for (const a of due) this.#land(a, slot);
+    for (const a of due) this.#land(a, slot, atMs);
   }
 
-  #land(a: PaperAttempt, slot: bigint): void {
+  #land(a: PaperAttempt, slot: bigint, atMs: number): void {
     const done = (outcome: PaperAttempt['outcome'], reason: string): void => {
       a.outcome = outcome;
       a.reason = reason;
       this.#save();
     };
     if (slot > a.lastValidBlockHeight) return done('expired', 'blockhash expired before landing');
-    if (a.fate === 'dropped') return done('dropped', 'never reached a block (drawn)');
+    if (a.fate === 'dropped') return done('dropped', a.providerDown === true ? 'never reached a block (send path down)' : 'never reached a block (drawn)');
     a.landedSlot = slot;
     const failed = (reason: string): void => {
       done('failed', reason);
@@ -329,13 +371,17 @@ export class PaperWorld implements EffectRunner {
       this.#d.report({ type: 'intent', intentId: a.intentId as IntentId, event: { type: 'status', signature: a.signature as Signature, result: 'failed', commitment: 'finalized', blockHeight: slot, searchedHistory: false } });
     };
     if (a.fate === 'fails') return failed('landed failed (drawn)');
-    const m = this.#d.market(a.mint);
+    const m = this.#d.market(a.mint, a.purpose);
     if (m === null) return failed('pool state unknown');
-    const q = a.purpose === 'entry' ? poolBuyExactQuoteIn(m.pool, a.inAmount, m.ctx) : poolSell(m.pool, a.inAmount, m.ctx);
-    if (!q.ok) return failed(`no execution: ${q.reason}`);
-    const executed = a.purpose === 'entry' ? q.trade.base : q.trade.userQuote;
-    const out = withSlippage(executed, a.quotedOut, this.#d.scenario.slippagePpm);
-    if (out < a.minOut) return failed(`slippage: ${out} below min-out ${a.minOut}`);
+    // N1: the price at landing is known only from a read as fresh as the attempt's own quote had to be. An older one
+    // (a feed gap) is no price: the attempt fails and pays its fee, as a real one can, and never fills at the old read.
+    const age = atMs - m.atMs;
+    if (age > this.#d.maxQuoteAgeMs) return failed(`pool state stale: read ${age} ms before landing, above ${this.#d.maxQuoteAgeMs} ms`);
+    // The backtest's execution (N2): the scenario's extra slippage, then the repeated-exit haircut, against min-out.
+    const t = { pool: m.pool, ctx: m.ctx, quotedOut: a.quotedOut, minOut: a.minOut, slippagePpm: this.#d.scenario.slippagePpm };
+    const x = a.purpose === 'entry' ? executeBuyIn(t, a.inAmount) : executeSellIn(t, a.inAmount, BigInt(a.exitRetry ?? 0) * this.#d.scenario.exitRetryHaircutPpm);
+    if (!x.ok) return failed(x.reason === 'slippage' ? `slippage: ${x.detail}` : `no execution: ${x.reason}`);
+    const out = x.out;
     // The token account (PAPER-1): a sell of the whole balance closes it in the same transaction, and a failed close
     // fails the attempt; a new account may pick up dust. The backtest's world settles the same way.
     const acct = this.#accounts.settle(accountLeg(a, a.purpose === 'entry' ? out : a.inAmount), this.#d.scenario);
@@ -343,17 +389,19 @@ export class PaperWorld implements EffectRunner {
     if (acct.closedAccount) this.#closed.add(a.signature);
     const fee = attemptFee(this.#d.network, a.priorityFee, 'filled');
     const net = this.#d.network;
-    // Extra slippage in lamports: on a sell the shortfall itself; on a buy the tokens lost, valued at the fill's price.
-    const lost = executed - out;
-    const slipLamports = a.purpose === 'entry' ? (out > 0n ? (lost * q.trade.userQuote) / executed : 0n) : lost;
+    // Extra slippage in lamports (the haircut included): on a sell the shortfall itself; on a buy the tokens lost, valued
+    // at the fill's price.
+    const lost = x.costs.extraSlippage;
+    const executed = out + lost;
+    const slipLamports = a.purpose === 'entry' ? (out > 0n ? (lost * x.paid) / executed : 0n) : lost;
     a.costs = {
-      venueFee: q.trade.lpFee + q.trade.protocolFee, creatorFee: q.trade.creatorFee, slippage: slipLamports,
+      venueFee: x.costs.lpFee + x.costs.protocolFee, creatorFee: x.costs.creatorFee, slippage: slipLamports,
       base: net.signaturesPerTx * net.baseFeePerSignature, priority: a.priorityFee, tip: net.tip,
     };
     a.fill = {
       intentId: a.intentId as IntentId, signature: a.signature as Signature, slot, commitment: 'confirmed',
       tokens: (a.purpose === 'entry' ? out : a.inAmount) as RawAmount,
-      sol: (a.purpose === 'entry' ? q.trade.userQuote : out) as Lamports,
+      sol: (a.purpose === 'entry' ? x.paid : out) as Lamports,
       fees: fee as Lamports,
     };
     done('filled', 'filled');
