@@ -275,7 +275,7 @@ Every test above already scored the average net profit per trade after costs; no
 
 ### 9.2 Scorecard of every rule tested, in those terms ($200, after costs; `research/scorecard.json`)
 
-| Rule | Win rate | Avg win | Avg loss | Per trade | Months in profit | P(100 trades end positive) |
+| Rule | Win rate | Avg win | Avg loss | Per trade | Months in profit | Resampled 100-trade batches ending positive |
 |---|---|---|---|---|---|---|
 | 5-minute dip-buys (all versions) | 30–37% | +2.2 to +2.8% | −2.2 to −3.3% | −0.7 to −1.2% | 0 of 3 | 0–2% |
 | 5-minute breakout | 24–28% | +5.0% | −3.9% | −1.4% | 0 of 3 | 0% |

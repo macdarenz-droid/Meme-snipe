@@ -7,7 +7,7 @@ LB-1H and LB-24H: **not supported** at every hold. LB-SLOW: **insufficient** (48
 
 ## Numbers ($20 bets, in SOL, after costs)
 
-| Line | Trades | Win rate | Mean | Median | Avg win | Avg loss | Biggest winner | P(100 trades end positive) |
+| Line | Trades | Win rate | Mean | Median | Avg win | Avg loss | Biggest winner | Resampled 100-trade batches ending positive |
 |---|---|---|---|---|---|---|---|---|
 | LB-1H, hold 7 days | 492 | 4.3% | −32.6% | −15.4% | +119% | −39% | 11.1× | 0% |
 | LB-1H, hold 30 days | 487 | 1.6% | −39.5% | −21.4% | +70% | −41% | 6.3× | 0% |

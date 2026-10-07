@@ -172,5 +172,34 @@ def run(sample, hdir, outdir, configs=None):
     json.dump({'counts': counts, 'results': res}, open(os.path.join(outdir, 'results.json'), 'w'), indent=1)
     print(json.dumps(counts))
 
+VALIDATION = {'R1': ('trail', 0.3, 2.0, 0.4), 'R2': ('trail', 0.3, 2.0, 0.6), 'R3': ('trail', None, 2.0, 0.4),
+              'R4': ('ladder', 0.3, 2.0, 0.6)}
+
+def validate(sample, hdir, outdir):
+    """Exactly the pre-registered R1-R4, both execution lines, all usable coins."""
+    os.makedirs(outdir, exist_ok=True)
+    cs, counts = coins(sample, hdir)
+    for x in cs:
+        raw = {int(r[0]): r for r in json.load(open(os.path.join(hdir, x['u']['pool'] + '.json')))}
+        x['hi'] = [float(raw[t][2]) if t in raw else x['c'][i] for i, t in enumerate(x['ts'])]
+    res, verdict = {}, {}
+    for name, (kind, stop, arm, trail) in VALIDATION.items():
+        for mode in ('pess', 'opt'):
+            legs = []
+            for x in cs:
+                l = trade(x, stop, arm, trail, mode) if kind == 'trail' else trade_ladder(x, stop, [(5, 0.5)], arm, trail, mode)
+                if l is not None:
+                    legs.append((x, l[0], max(l[1], 1e-18)))
+            for sz, q in SIZES.items():
+                vals = [lottery.net(p0, p1, q)[0] for _, p0, p1 in legs]
+                res[f'{name}|{mode}|{sz}'] = stats(vals)
+                res[f'{name}|{mode}|{sz}|capped20x'] = stats([min(v, 19.0) for v in vals])
+                if sz == '$10':
+                    res[f'{name}|{mode}|{sz}|bankroll'] = bankroll([(x['ts'][1], v) for (x, _, _), v in zip(legs, vals)], 10.0)
+        a, b = res[f'{name}|pess|$10'], res[f'{name}|opt|$10']
+        verdict[name] = 'supported' if (a.get('n') and a['mean'] > 0 and b.get('n') and b['mean'] > 0) else 'not supported'
+    json.dump({'counts': counts, 'verdict': verdict, 'results': res}, open(os.path.join(outdir, 'validation.json'), 'w'), indent=1)
+    print(json.dumps({'counts': counts, 'verdict': verdict}))
+
 if __name__ == '__main__':
-    {'run': run, 'ladders': run_ladders}[sys.argv[1]](*sys.argv[2:])
+    {'run': run, 'ladders': run_ladders, 'validate': validate}[sys.argv[1]](*sys.argv[2:])
