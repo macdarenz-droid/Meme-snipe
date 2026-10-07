@@ -33,3 +33,44 @@ A bot that is profitable over a month or over about 100 trades, in any payoff sh
 7. Your recommended next three tests, in order, each with a clear kill rule.
 
 Please answer in plain English, with concrete rules we can test, and say how confident you are in each point.
+
+---
+
+## Follow-up 1 (2026-10-07, after your review; copy everything below the line)
+
+---
+
+Thank you. Here is what changed since your review, what we found, and where we would value your judgement.
+
+**Applied (all written into the pre-registrations before any validation price was read):**
+- Runner validation: a fresh random sample of 900 graduates created 2026-08-21..09-06 (seed fixed, drawn before any of its prices), disjoint from the exploration sample. Rules R1–R4 frozen; R4 is a take-profit ladder (half at 5×, fill at the level only in an hour with ≥ 20 SOL volume, rest trails 60%). 14-day holds end by 2026-09-20, before the sealed window (2026-09-22..10-20).
+- Truncated holds are dropped, not closed early. Every result also reports: returns capped at 20× (statistics only), a chronological account with $10 bets at their entry hours, overlapping positions, P&L by month, worst drawdown and peak capital tied up, and counts of ≥ 10× and ≥ 50× trades. The old "0% chance" line is now "share of 10,000 resampled batches with a positive total", with the caveat that it cannot show winners the sample never had. Objective: growth in SOL.
+- Jackpot capacity check on the exploration's ~330× coin (minute bars): one minute of 319 SOL selling cut it to 38.6% of peak, where it traded for 15 minutes. At that level the pool held about 519 SOL of quote. Selling a $10 position (~1.9M tokens) gives about 5.5% impact plus a 0.90% fee. A 60% trail was achievable there; a 40% trail could not fill at its level.
+- Short probe: S2 (short downtrends) declared primary, judged against S0 (short everything) on the actual-funding line. Listing day = first bar with trades; liquidation of a 1× short at 1.714× entry; hourly funding weighted by price; signed turnover; trades past the wall dropped; a monthly-cohort gate for S1.
+- Survivorship-free daily-drop test: the full universe needs daily prices for about 17,900 coins (about 35 hours of free calls), so it runs later. A small check on the random sample is registered.
+- **Not done yet:** a transaction-ordered replay of the trailing rule. We plan to pay for a month of transaction data (about $94) only if the validation shows jackpots recurring.
+
+**New exploration facts (not pre-registered; validation sample untouched):**
+- pump.fun's `ath_market_cap` equals GeckoTerminal's maximum hourly high on all 492 coins checked. So it includes the opening spike right after migration and fake prints. The median graduate's ATH (~2.3× the migration price) is the opening spike and is never revisited. Unusable as an outcome label.
+- Of 29,170 graduates created 2026-07-22..08-20, 9,663 (33%) have dust pools (LP supply < 1e12, read on chain).
+- Exit variants on the exploration sample:
+  - A tighter trail as the peak grows (60% below 10×, 40% to 50×, 30% above) was the only variant with a positive mean at pessimistic fills (+2.4%). Its capped-20× mean is negative.
+  - Selling half at 2× and killing coins below 1.2× at hour 6 both hurt, because they cut the one winner.
+  - Every positive line comes from that one coin.
+- Creation-time links (Twitter/website/Telegram), repeat creators and slow graduation separate nothing at pessimistic fills. Coins with no links did worst (−32.7% vs −16.0% for 2+ links; n=73).
+
+**New owner hypothesis, research running:** big runners are attention cascades. An influencer, Telegram call group or trend points at a coin, the crowd piles in, then one big holder sells and panic follows. We are researching:
+- public signal sources: X API, public Telegram channel previews, DexScreener boosts/profiles, pump.fun comments and livestreams, GeckoTerminal trending;
+- whether timestamped history exists for July–August 2026 coins;
+- on-chain attention proxies: unique buyers per minute, buy acceleration;
+- exits triggered by a top holder or the dev selling;
+- the literature on what followers of public calls earn.
+Read-only: the bot never posts, pays for promotion or joins pump groups.
+
+**Questions:**
+1. Every positive result rests on one ~330× coin in 492. Before we pay for transaction data, what minimum validation evidence would you accept? For example: at least k trades of ≥ 10×, a positive capped mean, positive months? Is there a better test for a jackpot strategy than a mean with a t-interval, such as a tail-index or peak-frequency estimate compared between exploration and validation?
+2. Attention signals: the historical hype records we can reach (Telegram channels found today, comments still online) come from channels and coins that survived. How would you remove that selection bias? With the sealed window ending 2026-10-20, would you rather run one clean forward test?
+3. Can following public calls ever be positive for a bot with seconds of latency, given that callers often buy first? Which leading signals would you rank first: caller wallets buying, paid DexScreener boosts, comment velocity, unique-buyer growth?
+4. Exits: is a "big holder sold" trigger likely to beat a 60% price trail after costs, on constant-product pools of about 85–500 SOL depth? How would you test it without transaction-level data?
+5. Research-wide selection: we have now tried many families: graduation window, copy-trading, 5-minute dip/breakout, daily holds, weekly trend, lottery basket, runner exits, short side, socials and creator cuts. How should the bar for the next confirmatory test change? Would you commit to a single test?
+6. What route are we missing?
