@@ -42,6 +42,25 @@
   - Follow-ups:
     - re-merge the 10 newer commits of the research branch `ccr-7fae2302-drz4co` (609cffc0) later;
     - #283 minors: `__pycache__` committed; `collect.py` stays runnable with an env flag; no Retry-After in old fetchers.
+- **8 Oct about 2:20 AM, state:**
+  - #283 merged at `c045c18a`.
+  - #285 Z00: green on `ddba569d`, which contains `c045c18a`. The merge is waiting on GitHub API 500 errors (retry loop).
+  - #286 Z0D: final PASS at `e28dfab4` (rounds 1–9; red team MINOR only in round 8, fixed). CI green on `e28dfab4`. After #285 merges, it needs a base merge plus CI (a trial merge was clean).
+  - #287 Z01: round 2 builder `session_01Rdj1p51QyjzY7AgvHe7k8Q` is applying rulings 1–9 (`docs/reviews/Z01.md`).
+  - #288 Z-H estimate: accepted at `9b7d18cf`. The owner has been given the three options (Helius B, Old Faithful, drop), with Old Faithful recommended.
+  - Open owner choices: MR-01 stop (C-76), D30 pool list, B-10 route.
+- **Follow-ups (identified, not yet carded):**
+  1. Z0D-2 docs:
+     - the replay-mode ruling (`replay_unavailable` treated as assumed-pass-flagged in B-10 runs only, refused in paper and live; `docs/reviews/ZH.md` round 2 ruling 2);
+     - exclusivity wording "nothing outside the bot's own spend ledger";
+     - SPEC-A:2498 still cites the db3050b3 estimate (95–255 GB, 7.7M, cap 8.6M). Point it at #288 instead.
+  2. Z00: the stale "at least 50 GB" comment in `install.sh:53`, at the next install.sh change.
+  3. #283 follow-ups:
+     - re-merge the 10 newer research commits (`609cffc0`);
+     - remove the `__pycache__` files;
+     - add a hard exit to `research/brainstorm/collect.py`.
+  4. Z01: the coverage gate after 14 Oct; the 1.0.0 tag; the deps-reviewed label after its review; a guard.yml rework.
+  5. MIGRATION:285/519 notes were done in Z00.
 - **History for owner item 2 (B-10, card Z-H):** zeroed-data holds only the old server's recordings for 4, 5 and 6 Oct (releases `rec-2026-10-04/05/06`, about 0.4 MB, 3 MB and 4.6 GB) and the summaries; this repo has no `data-day-*` release. Far below 30 clean days, so the owner is told before M2 starts.
 - **Owner, 7 Oct about 9:30 PM:** "When ur done archive all workers": after the map is done, every worker session is archived.
 
