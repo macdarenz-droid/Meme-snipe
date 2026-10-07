@@ -548,3 +548,192 @@ Principle (new C-77): a stop-only check (the A-24b move rule and the A05 kill ch
 16. **F9.** Cite each VF entry at the ticket it affects (per its RESULTS row). For a C-xx with no ticket impact, mark it "register only" in its row.
 
 The builder may edit docs/blueprint/** and the listed MIGRATION and DECISIONS lines only. Merge origin/ccr-14987baf-i6lrsl first if it has moved.
+
+## Round 3 (head `2dc25ffe`, 8 Oct 2026)
+
+### Fresh review (PASS, 5 MINOR)
+
+Z0D round 3 delta review, PR #286. Head 2dc25ffedebaf29bd86b97f6c8f2e9bfdadb800e (confirmed by ls-remote; base 94d55a84 is in its history). Rulings checked against docs/reviews/Z0D.md @ 71207016, and the owner's B-10 choice against CLAUDE.md @ 651b1737. Nothing edited or pushed; nothing sent to the owner.
+
+RESULT: PASS. Every round 2 finding (F1-F9) and every red-team finding (RT-01..RT-13) is DONE. Five new MINOR findings below are worth fixing in a later pass; none loosens a gate or affects money.
+
+NEW FINDINGS (all MINOR)
+N1. B-10 cannot check the owner's "estimate before spend" order.
+- SPEC-A:2219 and step 3 at :2232 require only that creditEstimateShownAtMs is non-null.
+- So a report whose estimate was shown after the first credit was spent still passes.
+- Fix: add firstCreditSpentAtMs and require creditEstimateShownAtMs &lt; firstCreditSpentAtMs.
+- Also, "at least 30 clean days" could mean cleanDaysHeld or daysUsed; say daysUsed.length ≥ 30.
+- Note: daysInsideWR is always 0 at B-10 time, because W_R starts after W_B. That is harmless.
+
+N2. Chainstack's 0.5 req/s cap and monthly hard stop also bind its live role.
+- ARCH:2346 lists Chainstack as RPC B: P0/P1 failover, the second provider for expiry proofs, signer endpoint 1. It is now capped at min(2.5, 0.5) req/s and goes dark for the rest of the month at 1.5M RU.
+- At 0.5 req/s of getSignaturesForAddress (2 RU each), the stop arrives around day 17 of the month.
+- The owner's "one read every 2 s" was about Phase 0 backup reads.
+- DECISIONS:113 records the risk for the keyless Sender only.
+- Fix: record the same risk for RPC B, name a fallback for expiry proofs once Chainstack is stopped, and re-measure before M4.
+
+N3. Judgement call (a): the A05 tests carry no monthly term.
+- ARCH:393, SPEC-A:2005 and C-77 (SPEC-A:2562) take the $10 monthly term out of the kill check.
+- This matches the PREREG's per-trade net(x), but it departs from your C-77 wording, "the lean row and the real monthly cost ($10)".
+- Effect: small sizes survive more easily. At $5 and 10 trades a day, the $10 term is about 67 bps (DERIVED).
+- It is stop-only, so no money is at risk: B, R and P still decide on the conservative row with the stricter fixed cost.
+- Please confirm (a) or say otherwise.
+
+N4. ARCH:1719 (D08) says the 1-minute screen was "KILLED at $200 and $1,000".
+- research/mr01-screen/RESULTS.md @ c67f37f9 registers the verdict at $200 only (line 7). $1,000 (−1.49%, CI −1.54 to −1.43) is an "Other lines" row.
+- RS-40's "25 survivor-only … pools" is the group-A candidate set (RESULTS:53). Trades came from 13 pools in discovery and 15 in validation.
+- Fix: say "KILLED at $200 (registered); also below zero at $1,000", and give the trading pool counts.
+- Every other RS-40 number matches the source: −0.77% and −0.76%; CIs −0.79 to −0.74 and −0.79 to −0.72; 7,368 and 5,377 trades; gross +0.04 to +0.06; random entries −0.83 to −0.84; 5ebb439 is 10:46 UTC on 7 Oct, which is 9:46 PM Melbourne.
+
+N5 (your file). MIGRATION:704, the "Coarse screens…" clash row, still recommends "Reuse data already held … Any new download needs the owner". The owner has since chosen option (b). Mark the row resolved, with a pointer to the Owner waits section and DECISIONS:112.
+
+CHECKLIST
+Round 2 findings:
+- F1: DONE. C-75 kept for D30, per your ruling 10. C-76 is at SPEC-A:2561. RS-40 is at FACTS.json:5100 (pending_review) and cited in ARCH §3.2 and D08 (ARCH:1719).
+- F2: DONE. The lean row decides. Precondition of R0 at SPEC-A:2010: the check refuses on prereg_mismatch, with an acceptance case. C-48 is aligned.
+- F3: DONE. ARCH:1236 and ARCH:2346. SPEC-A:2338 says 5 RPS, ≤ 50% for every provider, and validation refuses a higher rate.
+- F4: DONE. B-M20-04 step 5 at SPEC-B:1450; acceptance cases 4-5 at SPEC-B:1461; U-A04 updated; ARCH 8.4 row at ARCH:2187.
+- F5: DONE. ARCH:945 and D30 options at ARCH:1877.
+- F6: DONE. n_R defined; acceptance cases for S_low ≤ 0 and for more than 90 days. Option (c) is moot now that the owner chose (b).
+- F7: DONE. Producers are named in C-49, at SPEC-A:2214-2221 and at SPEC-B B-M26-04 step 7.
+- F8: DONE. Z-H's day count is in M0 (MIGRATION:823, INTEGRATION M0).
+- F9: DONE. Every VF and C ID is now cited outside its own row.
+
+Red-team findings:
+- RT-01: DONE. Same evidence as F2.
+- RT-02: DONE. Depth cap is 0.5% of min(real, effective), with an acceptance case.
+- RT-03: DONE. A-M13-01 steps 4-5 are per size, with the PREREG verdict rules and "(subset)".
+- RT-04: DONE. Rate min(2.5, 0.5); RU hard stop at 1.5M checked before each send; gSFA = 2 RU. The test case is right: 1,499,999 + 2 is refused, and the stop survives a restart. See N2.
+- RT-05: DONE. B-9 from A-M11-01's 10-replay record; B-10 from Z-H; B-gate inputs in M2 through the A-M13-08 bundle path, with an acceptance case.
+- RT-06: DONE. buildSha and configKey are on historyReplay and dryRun; the 48 h is one declared contiguous block inside W_P; paperLegs comes from A-M12-01's PaperLegCounter.
+- RT-07: DONE. Same evidence as F4.
+- RT-08: DONE. Superseded by the owner's choice of (b). The interface has source 'helius_capped_download', a cap, no waiver branch, and fails closed (see N1).
+- RT-09: DONE. Same evidence as F1.
+- RT-10: DONE. The boundary test is an SDK-math fixture; the on-chain result is "not verified"; no simulating as a holder.
+- RT-11: DONE. Same evidence as F6.
+- RT-12: DONE. ARCH:3069 says 25 cells; A-M13-01 step 1 follows the PREREG window; A-M01-02 has the first-tier and exotic → flat-fees rules, with cases.
+- RT-13: DONE. MIGRATION:745 Owner waits lists B-10, D30, the holder index, the 31 Dec rule and C-76. The INTEGRATION M2 exit names the A-M06-03 wait.
+
+Judgement calls:
+- (a): see N3.
+- (b): DONE (SPEC-A:2008).
+- (c): DONE. DECISIONS:113 says ≤ 50% for every bucket and records the risk (see N2).
+- (d): DONE.
+- (e): DONE. MIGRATION:703 is resolved.
+- (f): DONE. fx/pumpswap/drained_pool.json is named as a fixture to build; no file is added in this docs PR.
+
+SCRIPTS
+- FACTS.json: parses; 292 facts, no duplicate IDs. No cited ID is undefined, and every RS and VF fact is cited. C-01..C-77 are each defined once, every cited C ID exists, and none appears only in its own row.
+- Ticket graph:
+  - 63 A, 81 B and 32 UI tickets: 176 in all.
+  - No undefined dependencies and no cycles.
+  - Later-milestone dependencies: only UI-T14 → B-M17-08 and B-M29-04, the known live-acceptance-only cases.
+  - Listed and table counts per milestone match: M0 24/24, M1 25/25, M2 46/46, M3 49/49, M4 27/27, Deferred 2/2. M4b shows 5 listed and 3 in the table, as before.
+
+CONSISTENCY
+- B-10 says DECIDED (b) in the same terms in ARCH 3.4, the owner items table, D04/C-54 (the one exception), C-49, INTEGRATION M0/M2, MIGRATION A06/Z-H/Owner waits and DECISIONS:112. The only stale text left is N5.
+- Nothing is loosened against ARCH, the CLAUDE.md "Blueprint" and "Product" rules, or 651b1737.
+- Scope: docs/blueprint/**, DECISIONS:111-113 and the listed MIGRATION lines only. No code changed.
+
+PASS · 2dc25ffedebaf29bd86b97f6c8f2e9bfdadb800e
+
+### Red team (0 BLOCKER, 4 MAJOR, 5 MINOR)
+
+# Red team, round 3: card Z0D at `2dc25ffe` — FAIL (0 BLOCKER, 4 MAJOR, 5 MINOR)
+
+Head confirmed with ls-remote: 2dc25ffedebaf29bd86b97f6c8f2e9bfdadb800e. Rulings read from docs/reviews/Z0D.md @ 71207016; owner B-10 ruling from CLAUDE.md @ 651b1737.
+
+## Round 2 findings
+All 13 are closed in the docs.
+- RT-01: SPEC-A, ARCH 3.3 and C-48 agree on the lean row and the per-cell n_a/n_b rule. The PREREG @ df7d75da (branch head unchanged) still says strict, but SPEC-A now makes its amendment a precondition of R0, with a `prereg_mismatch` refusal and a test.
+- RT-02 to RT-13: each fixed where the ruling put it (depth cap; per-size A-24b; Chainstack rate and RU stop; producers and M2 injection; buildSha/configKey, the declared block and `paperLegs`; B-M20-04 step 5; B-10 decided; RS-40 and C-76; SDK-only boundary test; `n_R`; stale text; owner waits).
+
+## MAJOR
+
+**RT3-01. B-2 and R-2 do not use the conservative row in SPEC-A, and C-77's safety argument depends on that.**
+- ARCH B-2 (:450) and C-77 say passing gates decide on the conservative row with the stricter D04 fixed cost.
+- SPEC-A A-M13-06 step 3 (:2232) still says only "B-2 net mean CI lower bound &gt; 0"; R-2 is the same. A-M10-03 (:1633) has no conservative or strict row at all; C-50's "ticket work: A-M10-03" was never written into the ticket.
+- A builder following SPEC-A would gate on one unnamed cost row. That is looser than ARCH, and it removes the backstop that makes "the kill check decides on lean" acceptable.
+- Fix:
+  - A-M10-03: produce both rows and their parts.
+  - A-M13-06 B-2 and R-2: name the conservative row plus the D04 fixed cost.
+  - Acceptance: a strategy positive on lean and negative on the conservative row fails B-2.
+
+**RT3-02. B-10 can pass on a partial or self-certified history report.** `historyReplay` (:2217) and step 3 (:2232):
+- (a) "At least 30 clean days" does not say which field. A report with `cleanDaysHeld` = 30 and five entries in `daysUsed` passes as written. Require ≥ 30 distinct UTC days in `daysUsed`, each one clean.
+- (b) "Clean" has no definition. Nothing records whether each day's history is complete: pagination truncated, or the download stopped after 3 failures, leaves a partial day counted as clean. Nothing records that the universe was chosen without survivorship bias (owner item 2 says "survivorship-free"). Add a per-day coverage record and a universe-selection field, and fail on gaps.
+- (c) `daysInsideWR` and `daysInsideContaminated` are counts the report gives about itself. The evaluator should work them out from `daysUsed` against `W_R` (stage machine) and the B3 dates. Those dates (sealed holdout 2026-09-22 to 10-20, MIGRATION :448) appear nowhere in ARCH or SPEC-A, so the check cannot be measured from the spec.
+- (d) `creditEstimateShownAtMs` non-null does not prove the estimate came before the spend. Add `firstCreditSpentAtMs`, require shown &lt; first spent, and point to the owner's acknowledgement record in DECISIONS.
+- Stale builds: closed by the buildSha/configKey match.
+
+**RT3-03. P-5 and P-10 can pass after failed attempts.**
+- Nothing says which declared dry-run block counts, or what happens to failed ones. A builder can declare 48 h blocks until one passes. `faultInjection(buildSha)` has the same problem: several runs of one build, and any passing run is used.
+- Fix: record every declared block and every fault-injection run per buildSha. P-5 and P-10 fail if any block or run for the promoted build failed, and the report lists all of them.
+
+**RT3-04. The Chainstack RU stop can be bypassed.** A-M14-05 step 2 (:2465):
+- The counter lives in the M14 gateway. ARCH :2346 makes Chainstack "signer endpoint 1", and the signer and sentinel are separate processes. Research scripts holding the same key are not covered either. Each could run its own 0.5 req/s and its own count. Two uncounted processes making 2 RU calls reach about 5.2M RU a month, which is over 3M and would be billed as overage.
+- The counter is saved only every 5 minutes. A crash loop shorter than that never saves, so the count stays low.
+- Nothing says whether requests that fail, time out or hit 429 are counted.
+- Fix:
+  - one counter and one bucket per API key, shared by every process, saved before each send (or reserved in blocks);
+  - count every request sent, whatever the result;
+  - a test with two processes on one key.
+
+## MINOR
+
+**RT3-05. C-77 calls the lean row "costs we pay", but it is a best case.** (ARCH :442)
+- The PREREG lean row is a 35,000-lamport fixed cost with no sandwich, no stuck positions and no allowance for failed sends, all of which ARCH 2.1 says do happen.
+- Against "No knowingly losing trades": a stop-only check deciding on the lean row cannot by itself cause a trade, because B, R and P gates follow. So the owner rule holds once RT3-01 is fixed. Until then it does not hold.
+- Fix: describe the lean row as a lower bound on costs, and list the costs it leaves out.
+
+**RT3-06. Exits sized to the full `maxSellableBase` are still refused on chain if the vault falls before landing.** (SPEC-B B-M20-04 step 5, :1450)
+- A refusal on chain is probably classed `unknown`, since its error code is not verified. Three in a row mark the position cannot-sell and `stuck`.
+- Fix: size with a margin (for example the slippage bound). Classify the refusal code as non-counting once it is known; until then do not count it.
+
+**RT3-07. A-M13-01 step 4 (:1995) mixes units in its fixed term.**
+- `ceil(M × 10,000 / (30 × tradesPerDay × x))` divides dollars `M` by a lamport `x`. Convert `M` at the recorded SOL/USD (A-M10-03 step 7 already works in lamports).
+- Which row decides the `k` exclusion is still not stated; the PREREG uses strict fixed cost.
+
+**RT3-08. The billing-month assumption is unsafe.** A-M14-05 says the UTC-month counter "never resets early". If Chainstack bills from the account's start date, a UTC reset can be early. Fix: reset at the later of the UTC month and the account's billing date, or keep a rolling 30-day sum.
+
+**RT3-09. B-10 credits could be spent on a strategy that may already be dead.**
+- INTEGRATION M0 puts the credit estimate to the owner in M0, before the Phase 0 kill check and before the owner rules on C-76 (RS-40: MR-01 KILLED, both CIs below zero).
+- Fix: no download credit until a strategy survives Phase 0 and C-76 is ruled. Say this when the estimate goes to the owner.
+
+## Owner-rule checks
+- No pump.fun-operated hosts: clean.
+- Sends at ≤ 50%: done.
+- The Helius exception is limited to B-10, as the owner ruled.
+- Profit in SOL: no new break.
+
+## Totals
+BLOCKER 0; MAJOR 4 (RT3-01 to RT3-04); MINOR 5 (RT3-05 to RT3-09). Round 2's RT-01 to RT-13 are closed in the docs. Head attacked: 2dc25ffedebaf29bd86b97f6c8f2e9bfdadb800e. Nothing edited or pushed; nothing sent to the owner.
+
+### Supervisor rulings for round 4 (8 Oct 2026, about 1:10 AM)
+
+Accept every finding: reviewer N1–N5 and red team RT3-01..RT3-09.
+
+1. **RT3-01 (MAJOR).** A-M10-03 produces the lean row, the conservative row and the strict row, each with its parts.
+   - A-M13-06 B-2 and R-2 decide on the conservative row plus the D04 fixed cost. Until the Helius question is ruled, that fixed cost is the stricter $59.
+   - Add an acceptance case: a strategy that is positive on the lean row and negative on the conservative row fails B-2 and R-2.
+   - Write C-50's ticket work into A-M10-03.
+2. **RT3-02 + N1 (MAJOR): the B-10 report.**
+   - (a) It needs ≥ 30 distinct UTC days in `daysUsed`, and every one must be clean.
+   - (b) Each day carries a coverage record: pages fetched, truncation, failures, and complete true/false. The report also records how the universe was selected, from chain only (survivorship-free), and the source of that list. Any gap fails.
+   - (c) The evaluator works out W_R and B3 overlap itself, from `daysUsed` against the stage machine's W_R and the B3 dates. Write the B3 dates into ARCH and SPEC-A: the sealed holdout from 2026-09-22 to 2026-10-20 (MIGRATION:448), plus any other B3 window MIGRATION lists.
+   - (d) Add `firstCreditSpentAtMs`. Require `creditEstimateShownAtMs` < `firstCreditSpentAtMs`, and point to the owner's acknowledgement record in DECISIONS.
+3. **RT3-03 (MAJOR).** Record every declared dry-run block and every fault-injection run for each buildSha. P-5 and P-10 fail if any block or run for the promoted build failed. The report lists all of them.
+4. **RT3-04 (MAJOR) + RT3-08: Chainstack usage.**
+   - One RU counter and one bucket per API key, shared by every process: worker, signer, sentinel and research.
+   - The count is saved before each send. Reserving in blocks is allowed.
+   - Every request sent is counted, whatever its result.
+   - The cap is a rolling 31-day sum of no more than 1.5M RU, so no billing-date assumption is needed.
+   - Add a test with two processes on one key, and a crash-loop test.
+   - N2: record the same risk for RPC B's live role in DECISIONS, name the fallback for expiry proofs once Chainstack is stopped, and measure again before M4.
+5. **RT3-05.** C-77 describes the lean row as a lower bound on costs, and lists the costs it leaves out: sandwich, stuck positions and failed sends. It states that the owner rule "No knowingly losing trades" holds because B, R and P decide on the conservative row (item 1).
+6. **RT3-06.** Exit sells are sized at `maxSellableBase` minus a margin equal to the slippage bound. Once the on-chain refusal code is verified, that refusal does not count toward cannot-sell. Until then it is not counted either, and it is marked VERIFY.
+7. **RT3-07.** In A-M13-01 step 4, convert M from USD to lamports at the recorded SOL/USD. State which row decides the k exclusion: the lean row, by C-77, because it is stop-only.
+8. **RT3-09.** No B-10 download credit is spent until a strategy has survived Phase 0 and the owner has ruled on C-76. Say this in INTEGRATION M0 and in the card Z-H text. The estimate can still go to the owner earlier.
+9. **N3.** Judgement call (a) is confirmed: A05's tests are per trade, with no monthly term. Make C-77's wording say exactly that.
+10. **N4.** ARCH:1719 says "KILLED at $200 (registered); also below zero at $1,000". RS-40 gives the trading pool counts: 13 in discovery, 15 in validation, out of a candidate set of 25.
+11. **N5.** Mark MIGRATION:704 resolved, pointing to Owner waits and DECISIONS:112.
