@@ -2,7 +2,7 @@
 
 ## Round 1: researcher's open questions (head `edfb1cda`)
 
-### Supervisor rulings (8 Oct 2026, about 9:23 AM)
+### Supervisor rulings (8 Oct 2026, 9:21 AM)
 
 1. **A paper switch needs a PREREG.** Accepted. Validation refuses `paper` for a strategy unless a PREREG exists for its (id, version, paramsHash). This is the owner's own rule (CLAUDE.md "Strategy slots": "switchable in paper once its rules are written down in advance"). Name the lookup M25 needs from A-M13-02.
 2. **Action classes for `strategy.<id>.enabled_modes`.** Accepted. Adding `live_small` or `live` is A3; adding `paper` is A2; removing any mode is A1, since it lowers risk.
@@ -24,7 +24,7 @@ Red team `session_01HECcHHGsHibzJQLqXnMmYz`, about 9:26 AM. Full report in its t
 - M1: the source pin can be edited in place, and a version reused. M2: the pin misses features and shared code. M3: plugins can reach `fetch`, `process.env` and other globals. M4: the config bootstrap and engine start skip the validator. M5: the A3 class is proven on a pure function only. M6: no mechanism enforces the 31 Dec stop for agent-started strategies.
 - m1: two sources for the switch. m2: the selected configKey is not enforced after backtest_passed. m3: the system mode versus paper strategies. m4: negative evidence, and plugin state carried across runs.
 
-### Supervisor rulings for round 2 (8 Oct 2026, about 9:35 AM)
+### Supervisor rulings for round 2 (8 Oct 2026, 9:27 AM)
 
 All fixes are accepted, as follows.
 1. **B1.** Keep SPEC's key `strategy.<id>.enabled_modes`. The host emits in paper or live only when the running (version, paramsHash) equals the stage record's frozen version and configKey. Otherwise the strategy is disabled with `E_VERSION_NOT_STAGED` and a critical alert. The validator refuses paper and live on the same mismatch. A new version starts its own stage at `registered` and needs its own PREREG. Add ACs for an upgrade (X@2 while X@1 is live_small) and for a rollback.
@@ -52,13 +52,13 @@ Reviewer `session_011iA9FMWTMikWUyoerDHrq2`, about 9:27 AM. Rulings 1–8 were a
 - M4: C10 misquoted. UI.md:556 says C10 is never used for money-affecting toggles that need confirmation.
 - m1–m11: the L-3 wording; the edgeEstimate object shape; PROPOSED marks (step-up 5 min, `config/validate`); the VM-03 `name` source; a class for backtest and replay; no AC for live switches below paper_passed; varianceBps2 ≤ 0; "practice only" wording; the full live checklist; the ruling time.
 
-### Supervisor rulings (8 Oct 2026, about 9:38 AM), added to round 2
+### Supervisor rulings (8 Oct 2026, 9:27 AM), added to round 2
 
 14. **M1:** covered by ruling 2 (B2). Also add the disabled reason to Z-STRAT-UI.
 15. **M2:** limit AC-11 to the hand-computed fixture. Hand the after-cost and look-ahead checks to A-M11-02 with its citation, and list it under Dependencies.
 16. **M3:** add AC-17 (B1, pool updates dated from measured slot time) and AC-18 (B5, no config key can inject an edge), each with a fail-before test against the old `strategy.ts` and `engine.ts` behaviour.
 17. **M4:** no C10. Use a control that shows on or off and opens the UI-T13 dialog.
-18. **m1–m5, m8, m11:** fix as the reviewer says. The ruling time is about 9:23 AM.
+18. **m1–m5, m8, m11:** fix as the reviewer says. The round 1 ruling time is 9:21 AM (the researcher's first stamp was right).
 19. **m6:** refuse `backtest` and `replay` on the live host (UC-12), with a test row.
 20. **m7:** add the AC. The validator also refuses live modes below `paper_passed`.
 21. **m9:** use "They are marked shadow and do not count for any gate yet."
@@ -88,7 +88,7 @@ Red team, about 9:32 AM. All three round 1 blockers are closed. New or remaining
 - N6: a strategy-scoped violation at start stops the whole engine, with an outage scheduled for 1 Jan 2027.
 - n1–n5: the live switch shows "on" before set_mode; the meaning of "live" for MAXSTRAT; "calls" cannot be computed; the order of the Rulings list; AC-28 sizing.
 
-### Supervisor rulings for round 3 (8 Oct 2026, about 9:52 AM)
+### Supervisor rulings for round 3 (8 Oct 2026, 9:34 AM)
 
 23. **N1.** Stage records are keyed by (id, version). Registering X@2 never changes X@1's stage. Add a step to AC-17 that checks X@1's stage is unchanged. Add A-M13-05 and ARCH 15 to the open point 6 amendments.
 24. **N2.** paramsHash and the staging check are per configKey within the version's registered set. Each configuration's params are fixed in the PREREG. Config may only pick one of the registered configurations, never set free params. At `research`, the L89 check accepts any configKey in the registered set; from `backtest_passed` on, only the selected one (AC-24). Add an AC: configuration 2 is selected, then paper-traded.
@@ -124,3 +124,5 @@ Red team, about 9:32 AM. All three round 1 blockers are closed. New or remaining
 37. **Reviewer m2.** The A3 phrase is the supervisor's addition. Mark it so, and add B-M26-02 step 2 (requiredPhrase) to the amendments.
 38. **Reviewer m3.** Add the reviewer's refusal of a negative-evidence PREREG to §2, and say why the checklist puts it at step 3.
 39. **Reviewer m6.** "L-1, L-2 and L-4 demote it automatically; the operator can demote it (A1)."
+
+**Time correction (9:39 AM).** The ruling times above were first written as estimates (9:23, 9:35, 9:38 and 9:52), and some were later than the real time. They are now the commit times of this file, from `git log` in Melbourne time.
