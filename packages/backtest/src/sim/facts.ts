@@ -522,19 +522,33 @@ export class FactProjector {
     out.push(this.#fact(id, m, key, tradeTailValue(row, vault)));
   }
 
+  /** RT-A2: the tailed curve trades of the transaction being read, held until it proves to be a completing one. */
+  #curveTx: { signature: string; rows: CurveTradeRow[] } = { signature: '', rows: [] };
+
   /**
    * RT-A2 (H5's curve half, parity with live): live does not watch the curve (`tradeStreams: false`), so the curve
    * trades its store holds are those of the transactions it reads: the create transaction (the creates watch, or the
    * create fetched at shortlist; H9 needs it) and the completing buy (COMPLETION-READ or FACTS-REREAD; H7 needs it).
-   * The backtest releases the tails of those same trades only: the create transaction's and the one that empties the
-   * curve (`realTokenReserves` 0, the completing buy). A tail anywhere else on the curve is never seen live, so the
-   * backtest does not see it either: the two judge the same tape (DECISIONS "A-FACTS-FIXES").
+   * The backtest releases the tails of those same transactions only, whole, as live ingests them: every curve trade
+   * of the create transaction, and every curve trade of the transaction whose trade empties the curve
+   * (`realTokenReserves` 0, the completing buy). The completing transaction's earlier trades are held (`#curveTx`) until
+   * that trade arrives and released with it, at its moment: the same transaction, so nothing past it is seen early. A
+   * tail anywhere else on the curve is never seen live, so the backtest does not see it either: the two judge the same
+   * tape (DECISIONS "A-FACTS-FIXES").
    */
   #curve(row: CurveTradeRow, m: Moment, out: FeedEvent[]): void {
     const s = this.#mints.get(row.mint);
     if (s === undefined) return;
-    const seenLive = row.signature === s.create?.signature || row.realTokenReserves === 0n;
-    if (row.extraHex !== '' && seenLive) this.#tail(`te:${row.signature}:${row.evIdx}`, `pump:TradeEvent:${row.mint}`, row, m, out);
+    if (this.#curveTx.signature !== row.signature) this.#curveTx = { signature: row.signature, rows: [] };
+    if (row.signature === s.create?.signature) {
+      if (row.extraHex !== '') this.#tail(`te:${row.signature}:${row.evIdx}`, `pump:TradeEvent:${row.mint}`, row, m, out);
+    } else if (row.realTokenReserves === 0n) {
+      for (const r of this.#curveTx.rows) if (r.mint === row.mint) this.#tail(`te:${r.signature}:${r.evIdx}`, `pump:TradeEvent:${r.mint}`, r, m, out);
+      this.#curveTx.rows = this.#curveTx.rows.filter((r) => r.mint !== row.mint);
+      if (row.extraHex !== '') this.#tail(`te:${row.signature}:${row.evIdx}`, `pump:TradeEvent:${row.mint}`, row, m, out);
+    } else if (row.extraHex !== '') {
+      this.#curveTx.rows.push(row);
+    }
     if (s.create !== null && row.slot <= s.create.slot + 2n && row.isBuy) s.creationBuyers.add(row.user);
     const data = {
       mint: row.mint, solAmount: row.solAmount, tokenAmount: row.tokenAmount, isBuy: row.isBuy, user: row.user, timestamp: BigInt(row.blockTime),

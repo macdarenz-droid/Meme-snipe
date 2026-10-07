@@ -59,6 +59,11 @@ export interface MintPlan {
    * (`dev`), and the curve buys by their order (0 to 99; 99 is the completing buy, the one that empties the curve).
    */
   readonly curveTail?: { readonly dev?: boolean; readonly buys?: readonly number[]; readonly hex: string };
+  /**
+   * The completing transaction holds two curve buys: first half the last buy's tokens (curve not yet empty), then the
+   * rest (the completing buy). With `firstTail`, the first of the two carries this tail (hex).
+   */
+  readonly completeInTwo?: { readonly firstTail?: string };
   /** The first swap at or after this many slots since migration carries this tail (hex) in its event (H5). */
   readonly tail?: { readonly after: number; readonly hex: string };
   /** Stop the mint's swaps this many slots after migration (dead pool). */
@@ -190,8 +195,16 @@ export const studyWorld = (o: WorldOptions): { rows: DatasetRow[]; mints: WorldM
         const k = (s - p.createSlot - 1) / step;
         const user = key(`${seed}:t:${p.label}:${k % 80}`);
         const amount = CURVE_SOLD / 100n;
+        const two = p.completeInTwo !== undefined && k === 99;
+        if (two) {
+          rows.push({
+            kind: 'curve', slot, blockTime, txIdx: tx, evIdx: 0, signature, mint: pl.mint, isBuy: true, solAmount: 15_000_000n, tokenAmount: amount / 2n,
+            virtualSolReserves: 31_000_000_000n, virtualTokenReserves: 1_000_000_000_000_000n, realSolReserves: 1_000_000_000n, realTokenReserves: amount - amount / 2n,
+            mayhem: false, quoteMint: '11111111111111111111111111111111', user, extraHex: p.completeInTwo!.firstTail ?? '', userTokenAccount: key(`${seed}:ata:${user}:${p.label}`), userTokenOwner: user,
+          });
+        }
         rows.push({
-          kind: 'curve', slot, blockTime, txIdx: tx, evIdx: 0, signature, mint: pl.mint, isBuy: true, solAmount: 30_000_000n, tokenAmount: amount,
+          kind: 'curve', slot, blockTime, txIdx: tx, evIdx: two ? 1 : 0, signature, mint: pl.mint, isBuy: true, solAmount: two ? 15_000_000n : 30_000_000n, tokenAmount: two ? amount - amount / 2n : amount,
           virtualSolReserves: 31_000_000_000n, virtualTokenReserves: 1_000_000_000_000_000n, realSolReserves: 1_000_000_000n, realTokenReserves: CURVE_SOLD - BigInt(k + 1) * amount,
           mayhem: false, quoteMint: '11111111111111111111111111111111', user, extraHex: p.curveTail?.buys?.includes(k) === true ? p.curveTail.hex : '', userTokenAccount: key(`${seed}:ata:${user}:${p.label}`), userTokenOwner: user,
         });
