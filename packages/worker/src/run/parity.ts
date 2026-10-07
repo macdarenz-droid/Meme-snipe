@@ -106,6 +106,11 @@ export interface BootInput {
   readonly excluded: Readonly<Record<string, number>>;
   /** Values the recorder redacted from this boot's files (its manifest's gaps): a replay differs where they were. */
   readonly redactions: number;
+  /**
+   * RC-FIXES: false when the boot's journal has no `stop` line (the process was killed). Absent: not known, compared
+   * strictly.
+   */
+  readonly stopped?: boolean;
 }
 
 export interface Divergence {
@@ -186,7 +191,22 @@ export const checkBoot = (b: BootInput, d: ParityDeps, replays: number, replay: 
   const first = replay(b, d);
   let deterministic = true;
   for (let k = 1; k < replays; k++) if (firstDivergence(first, replay(b, d)) !== null) deterministic = false;
-  return { boot: b.boot, missing: null, decisions: b.live.length, replays, deterministic, divergence: firstDivergence(b.live, first), excluded: b.excluded, redactions: b.redactions };
+  return { boot: b.boot, missing: null, decisions: b.live.length, replays, deterministic, divergence: firstDivergence(b.live, b.stopped === false ? cutAtKill(b.live, first) : first), excluded: b.excluded, redactions: b.redactions };
+};
+
+/**
+ * RC-FIXES: a killed boot's journal can end inside one event's decisions. An entry's buy is sent while the engine
+ * applies its `submit`, before that decision is logged, so a kill right after the send leaves the journal without the
+ * `submit` line, while the recording (on disk before the send) replays it. Only that is forgiven: the replay may go on
+ * past the journal's end with lines of the journal's last event alone. Anything else, or any line before the end that
+ * differs, is still a divergence.
+ */
+export const cutAtKill = (live: readonly string[], replay: readonly string[]): readonly string[] => {
+  if (live.length === 0 || replay.length <= live.length) return replay;
+  const last = eventOf(live.at(-1)!);
+  if (last === null) return replay;
+  const extra = replay.slice(live.length);
+  return extra.every((l) => eventOf(l) === last) ? replay.slice(0, live.length) : replay;
 };
 
 const rows = <T>(dir: string, re: RegExp, parse: (l: string) => T): T[] => {
@@ -233,8 +253,10 @@ export const loadSession = (stateDir: string): BootInput[] => {
     const dir = join(recRoot, j.boot);
     const live: string[] = [];
     const excluded: Record<string, number> = {};
+    let stopped = false;
     for (const l of journal) {
       const r = JSON.parse(l) as { kind: string; boot: string; action?: string };
+      if (r.kind === 'stop' && r.boot === j.boot) stopped = true;
       if (r.kind !== 'decision' || r.boot !== j.boot) continue;
       if (r.action !== undefined && NOT_REPLAYED.includes(r.action)) excluded[r.action] = (excluded[r.action] ?? 0) + 1;
       else live.push(normalise(l));
@@ -243,7 +265,7 @@ export const loadSession = (stateDir: string): BootInput[] => {
     if (live.length === 0 && Object.keys(excluded).length === 0) continue;
     const missing = j.seed === undefined ? 'no seed' : !existsSync(dir) ? 'no recording' : prunedFrom(dir) ? 'pruned' : null;
     out.push({
-      boot: j.boot, missing, seed: j.seed ?? '', live, excluded, redactions: missing === 'no recording' ? 0 : redactionsOf(dir),
+      boot: j.boot, missing, seed: j.seed ?? '', live, excluded, stopped, redactions: missing === 'no recording' ? 0 : redactionsOf(dir),
       savedState: existsSync(join(dir, PERSIST_FILE)) ? join(dir, PERSIST_FILE) : existsSync(join(dir, `${PERSIST_FILE}.zst`)) ? join(dir, `${PERSIST_FILE}.zst`) : null,
       frames: rows(dir, /^frames-.*\.jsonl(\.zst)?$/, (l) => parseTyped(l) as Frame),
       releases: rows(dir, /^releases-.*\.jsonl(\.zst)?$/, (l) => JSON.parse(l) as Release),

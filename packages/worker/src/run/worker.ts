@@ -183,6 +183,7 @@ export const reserveBudget = (d: { readonly remaining: () => number; readonly ta
 export const clampNote = (clamp: { readonly count: number; readonly maxMs: number }): string | null =>
   clamp.maxMs > CLAMP_LOG_MS ? `Saved state: ${clamp.count} times dated after the save's moment were saved as at it, the latest ${(clamp.maxMs / 1000).toFixed(1)} s after.` : null;
 export { SAVED_STATES } from './recorder.ts';
+import { checkState, ledgerLost, ledgerPresent } from './state-check.ts';
 import { type Control, type FetchCaps, NO_CONTROL, type Restart, StateFile, controlFile, exitsFile, fetchCapsFile, seedsFile, exposedFile, NO_EXPOSED, exitKind, restartsAfterBoot, restartsFile } from './state.ts';
 import { LOG_CREATE_PREFIX, type PoolFact, S0_DIAGNOSTIC_PARTS, TX_CREATE_PREFIX, parsePool } from '../../../core/src/gates/index.ts';
 import type { ExecStats } from '../../../core/src/facts/raw.ts';
@@ -388,6 +389,11 @@ export const MAX_SEED_CREATES = 200_000;
 
 /** Present while the state dir began empty and no full start has journaled its `recovered` line yet. */
 const COLD_START = 'cold_start';
+
+/** RC-FIXES: the saved state disagrees with itself; the worker does not start on defaults. */
+export class StateRefused extends Error {
+  override readonly name = 'StateRefused';
+}
 /** CREATE-AFTER-RESTART: the wait before the one retry of a create lookup stopped by a transient error. */
 export const CREATE_RETRY_MS = 60_000;
 /** A saved create's id, live (`log:<signature>…`) or fetched (`ev:<signature>:…`): its transaction signature. */
@@ -631,6 +637,8 @@ export class Worker {
   #pruneAt = Number.NEGATIVE_INFINITY;
   #pruneAlertAt = Number.NEGATIVE_INFINITY;
   #budgetFault: string | null = null;
+  /** RC-FIXES: a state file lost at start that the start made safe (journaled as a critical alert after the start line). */
+  #stateAlert: string | null = null;
   /** RECORD-BUDGET: the start pass's journal lines, written once the start line is (it goes first). */
   readonly #pruneLines: (readonly [JournalKind, Record<string, unknown>])[] = [];
   #lastSaveMs = 0;
@@ -759,10 +767,33 @@ export class Worker {
 
     // RUN-1d: no ledger at all means a cold start (host lost with no backup): what comes back comes from the chain. A
     // paper position is not on chain, so nothing does. Marked until a full start journals its `recovered` line.
-    if (!existsSync(join(c.stateDir, Ledger.FILE))) writeFileSync(join(c.stateDir, COLD_START), new Date(now).toISOString());
+    // RC-FIXES: a missing or empty ledger is a cold start only when no other state file says the bot traded; otherwise
+    // it is a lost ledger and the start is refused before anything writes (an empty file would open as a new ledger).
+    const lostLedger = ledgerLost(c.stateDir);
+    if (lostLedger !== null) throw new StateRefused(lostLedger);
+    const existed = ledgerPresent(c.stateDir);
+    if (!existed) writeFileSync(join(c.stateDir, COLD_START), new Date(now).toISOString());
     this.#ledger = openLedger(join(c.stateDir, Ledger.FILE), 'paper');
+    // RC-FIXES: a ledger with trades needs the files that go with it, checked before any of them is read with a default.
+    const verdict = checkState(c.stateDir, {
+      existed,
+      traded: this.#ledger.allIntents().length > 0 || this.#ledger.allPositions().length > 0,
+      attempts: this.#ledger.allAttempts().map((a) => String(a.signature)),
+    });
+    if (verdict.refuse.length > 0) {
+      this.#ledger.close();
+      throw new StateRefused(verdict.refuse.join('; '));
+    }
     this.#control = controlFile(c.stateDir);
     this.#ctl = this.#control.read(NO_CONTROL);
+    if (verdict.controlLost) {
+      // The owner's pause and the risk latches are gone: the kill switch counts as tripped and entries stay paused until
+      // the owner re-arms and resumes (never a start with a kill switch silently reset).
+      this.#ctl = { ...this.#ctl, paused: true, pausedAtMs: now, latches: { ...this.#ctl.latches, killTrippedAtMs: now, killRearmedAtMs: null } };
+      this.#stateAlert = 'control.json was missing after an earlier start: kill switch latched and entries paused until the owner re-arms and resumes';
+    }
+    // Written at every start, so a later start that finds it missing knows it was lost.
+    this.#control.write(this.#ctl);
     this.#fetchCapsFile = fetchCapsFile(c.stateDir);
     try {
       this.#fetchCaps = { reread: 0, ...this.#fetchCapsFile.read({ day: -1, cutCreate: 0, cutTrade: 0, reread: 0 }) };
@@ -809,6 +840,10 @@ export class Worker {
     });
     this.#journalStarted = true;
     for (const [kind, fields] of this.#pruneLines.splice(0)) this.#journal.write(kind, fields);
+    if (this.#stateAlert !== null) {
+      this.#journal.write('alert', { level: 'critical', code: 'state_lost', reasons: [this.#stateAlert] });
+      d.log(`ALERT ${this.#stateAlert}.`);
+    }
     if (this.#recorderFault !== null) this.#journal.write('alert', { level: 'critical', code: 'recorder_failed', reasons: [this.#recorderFault] });
     if (this.#journal.repaired) this.#journal.write('journal_repair', { detail: 'torn last line removed' });
     if (this.#sellOnly.length > 0) {
@@ -865,6 +900,9 @@ export class Worker {
         // The engine applies prepare/sign/submit before Desk sees their records. Check evidence BEFORE a new buy
         // reaches the outside world. Existing attempts, status reads, late fills and exits continue normally.
         if (intent?.intent.purpose === 'entry' && !this.#world.attempts.has(effect.signature)) {
+          // RC-FIXES: the recording of this drain (its releases and frames) is on disk first; a failure sets the
+          // recorder fault and the entry is refused below (fail closed).
+          if (this.#recorderFault === null && this.#journalFault === null) this.#record((r) => r.durable());
           if (this.#recorderFault === null && this.#journalFault === null) {
             this.#desk.journalBeforeDispatch(this.#engine.records as readonly LogRecord[]);
             this.#journal.ensureDurable();

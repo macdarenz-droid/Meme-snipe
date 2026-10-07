@@ -329,6 +329,12 @@ in_c "systemctl start zeroed-backup.service" || fail "backup failed"
 bk="$(in_c "ls -1 /var/backups/zeroed/ | tail -1")"
 [[ "$bk" =~ ^zeroed-[0-9]{8}T[0-9]{6}Z\.tar\.age$ ]] || fail "no backup file"
 in_c "zeroed-restore-drill /etc/zeroed/age/host.key" >"$LOGS/drill-host.txt" 2>&1 || { cat "$LOGS/drill-host.txt"; fail "drill"; }
+# RC-FIXES: the backup holds every state file the worker restores from (each JSON state file the live state dir had),
+# and never the journal or the recording.
+in_c "age -d -i /etc/zeroed/age/host.key /var/backups/zeroed/$bk | tar -t" | sed 's#^\./##' | sort >"$LOGS/backup-list.txt" || fail "backup list"
+grep -Eq '^(journal\.jsonl|recorder/)' "$LOGS/backup-list.txt" && fail "the backup holds the journal or the recording"
+# (Files written after the backup was taken are not asked for.)
+for f in $(in_c "cd /var/lib/zeroed && find . -maxdepth 1 -type f -name '*.json' ! -name deployer-state.json ! -newer /var/backups/zeroed/$bk | sed 's#^\./##'" || true); do grep -qx "$f" "$LOGS/backup-list.txt" || fail "the backup lacks $f"; done
 in_c "cp /var/backups/zeroed/$bk /root/tampered.age && printf 'x' | dd of=/root/tampered.age bs=1 seek=200 conv=notrunc 2>/dev/null"
 in_c "zeroed-restore-drill /etc/zeroed/age/host.key /root/tampered.age" >"$LOGS/drill-tampered.txt" 2>&1 && fail "tampered backup passed"
 in_c "rm -f /root/tampered.age"

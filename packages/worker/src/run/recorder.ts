@@ -11,7 +11,7 @@
 // file is hashed once, from the bytes written when it is sealed; the manifest lists that hash and never re-reads it.
 import { createHash } from 'node:crypto';
 import { redactCounted } from './redact.ts';
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, join, relative } from 'node:path';
 import { zstdCompressSync } from 'node:zlib';
 import { toBase64 } from '../../../core/src/chain/index.ts';
@@ -197,6 +197,23 @@ export class Recorder {
   /** Writes every buffered line. Called before the engine acts on what was ingested. */
   flush(): void {
     for (const t of TABLES) this.#flushTable(t);
+  }
+
+  /**
+   * RC-FIXES: every buffered line written and on disk (fsync of each open file), before an entry reaches the outside
+   * world, so the recording always replays to the journaled entry (TEST-1), whatever kills the process after.
+   */
+  durable(): void {
+    this.flush();
+    for (const o of this.#open.values()) {
+      if (!existsSync(o.path)) continue;
+      const fd = openSync(o.path, 'r');
+      try {
+        fsyncSync(fd);
+      } finally {
+        closeSync(fd);
+      }
+    }
   }
 
   #seal(t: Table): void {
