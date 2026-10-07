@@ -27,7 +27,7 @@ import { Desk } from '../src/run/desk.ts';
 import type { FactContext } from '../src/run/facts.ts';
 import { Journal, lastLines } from '../src/run/journal.ts';
 import { redact, setSecretValues } from '../src/run/redact.ts';
-import { CreditBook } from '../src/run/sources.ts';
+import { CREDIT_RESERVE, CreditBook } from '../src/run/sources.ts';
 import { MINT, T, Market, makeWorker, slotAt, tempState, virtualTimers } from './worker-harness.ts';
 import { recordOf, tx } from './helpers.ts';
 import { CUT_CREATE_FETCHES_PER_DAY, CUT_CREATE_RETRY_MS } from '../src/run/worker.ts';
@@ -422,7 +422,9 @@ describe('the month\'s credit use survives a restart (FEED-1: the 70% halt is ne
     s.meter(700_000);
     await new Promise((r) => setTimeout(r, 20));
     const again = new CreditBook(dir, virtualTimers(T + 5_000)).scheduler(HELIUS_FREE);
-    expect(again.status().creditsUsed).toBe(700_000);
+    // RC-FIXES: no stop ran (a death), so the count saved ahead comes back: never less, at most CREDIT_RESERVE more.
+    expect(again.status().creditsUsed).toBeGreaterThanOrEqual(700_000);
+    expect(again.status().creditsUsed).toBeLessThanOrEqual(700_000 + CREDIT_RESERVE);
     // 70% of the month's budget: only P0 runs, after the restart too.
     expect(again.halted).toBe(true);
   });
