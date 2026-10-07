@@ -784,11 +784,18 @@ export class FactReaders {
     if (f === undefined) return true;
     // A write that fails (a full disk, a permission) never throws out of the readers (their constructor runs at the
     // worker's start): the count stays in memory, so what is spent stays spent in this process, and it is logged.
+    const text = JSON.stringify({ day: this.#scanDay, scans: this.#scans });
     try {
-      writeFileSync(`${f}.tmp`, JSON.stringify({ day: this.#scanDay, scans: this.#scans }));
+      writeFileSync(`${f}.tmp`, text);
       renameSync(`${f}.tmp`, f);
       return true;
     } catch {
+      // RC-M1 (red team C round 3): the temporary path unusable (a stray folder, say), the count is written in place. A
+      // torn in-place write reads as unreadable at the next start, which counts the day as spent (fail closed).
+      try {
+        writeFileSync(f, text);
+        return true;
+      } catch {}
       this.#o.log?.('Holder scan count not saved: it is kept in this process only.');
       return false;
     }

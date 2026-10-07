@@ -47,9 +47,10 @@ describe('record header', () => {
     expect(ok({ file: 'deployer-state.json.zst' })).toBe(true);
     expect(ok({ file: 'deployer-state.json' })).toBe(true);
     // RC-H3: the recorder's packed stream gaps; never the plain file, never outside a boot.
-    expect(ok({ file: 'gaps.jsonl.zst' })).toBe(true);
-    expect(ok({ file: 'gaps.jsonl' })).toBe(false);
-    expect(ok({ boot: null, file: 'gaps.jsonl.zst' })).toBe(false);
+    expect(ok({ file: 'gaps-000.jsonl.zst' })).toBe(true);
+    expect(ok({ file: 'gaps-1234.jsonl.zst' })).toBe(true);
+    for (const file of ['gaps.jsonl.zst', 'gaps-000.jsonl', 'gaps-00.jsonl.zst', 'gaps-000.jsonl.zst.tmp', 'gaps-1234567.jsonl.zst']) expect(ok({ file }), file).toBe(false);
+    expect(ok({ boot: null, file: 'gaps-000.jsonl.zst' })).toBe(false);
     expect(ok({ boot: null, file: 'journal-2026-10-05.jsonl.zst' })).toBe(true);
     expect(ok({ boot: null, file: 'index-3.json' })).toBe(true);
     expect(ok({ release: 'rec-2026-10-05.1' })).toBe(true);

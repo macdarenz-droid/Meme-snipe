@@ -30,7 +30,7 @@ import { DEFAULT_LIVE_FEED, type Frame, HELIUS_EXHAUSTED, type HttpClient, LiveF
 import type { TimerHandle, Timers } from '../scheduler/timers.ts';
 import { PaperAccount, type PaperLegs, accountFile } from './account.ts';
 import type { WorkerConfig } from './config.ts';
-import { Desk, FILL_RATE_UNKNOWN, journaledFillKeys, lineRate, lineReasons, openIntents } from './desk.ts';
+import { Desk, FILL_RATE_UNKNOWN, journaledFillKeys, lineRate, lineReasons, openIntents, openPositions } from './desk.ts';
 import { DeployerStore, liveWatchToClose, type SavedDeployers } from './deployer-store.ts';
 import { CoverageJournal } from './coverage-journal.ts';
 import { rebuildMove } from './exposure.ts';
@@ -902,7 +902,7 @@ export class Worker {
       }
       this.#world.run(effect, moment);
     } }, seed, book: bookConfig, retention: liveRetention, collapse: liveCollapse, shape: liveShape, forget: liveForget });
-    this.#deployerStore = new DeployerStore(c.stateDir);
+    this.#deployerStore = new DeployerStore(c.stateDir, { log: d.log, now: () => d.timers.now() });
     const storeFrom = now - (d.session.policy.gates.deployerRugLookbackDays + 1) * 86_400_000;
     // PERSIST-1: the saved index, labeller and coverage, when the file holds up (else a fresh start: not covered).
     // Restored through the seed fact (recorded, so a replay rebuilds the same state) before any decision; the
@@ -2023,6 +2023,10 @@ export class Worker {
   }
 
   #writeOpenIntents(): void {
+    // Positions first: the host reads both before it rolls a release back, and a position is never reported closed
+    // while its exit intent still reads open (RC-FIXES-2b).
+    const p = Math.max(openPositions(this.#desk.book), this.#reconciled ? 0 : openPositions(this.#engine.book));
+    writeFileSync(join(this.#d.config.stateDir, STATE_FILES.openPositions), `${p}\n`);
     const n = Math.max(openIntents(this.#desk.book), this.#reconciled ? 0 : openIntents(this.#engine.book));
     writeFileSync(join(this.#d.config.stateDir, STATE_FILES.openIntents), `${n}\n`);
   }
