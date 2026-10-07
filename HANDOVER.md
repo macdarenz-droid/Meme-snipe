@@ -48,6 +48,12 @@ The previous S1 account reached its usage limit about 12:45 PM. The owner made t
 - No host access, no secrets access (owner only), as before.
 
 **Log (Melbourne time, newest first)**
+- 8:54 PM **#281 review CHANGES NEEDED** on 1af9484 (01QkAcbw).
+  - The rugs side finding was false: the seed `history` carries every stream, including rugs, to H14. The test read the filtered field, so it asserted wrong behaviour as right.
+  - The true finding is a HIGH latent fail-open: no rugs downtime gap. After 15 days of rugs coverage, a restart reads as continuous, and rugs during downtime go unseen.
+  - Also needed: a fill-start test through seed-start (that mutant survives), and the late healed create lost under saved.last (not proven).
+  - RUG-1c is wired (5,000 credits/day).
+  - All routed to 015cNHfA in #281: a rugs downtime gap mirroring creates, closed by the fill when the fill covers it, else fail closed per coin via RUG-1c; measure the RUG-1c load vs the cap; fix the test and DECISIONS row; a seed-start fill test; prove or fix the late-create case.
 - 8:51 PM **Red team B integration interim: CRITICAL RB-17** (local merge of all fix heads). SOL-BOOKS books a stray fee with cost null when no SOL price is known. RC-STATE's checkAccount refuses that, so the worker can't start (refused at every start). Routed:
   - SOL-BOOKS (merges after #280) widens the checker to its exact StrayFee type, routes priceLate through #save(), and adds a ledger to its fixtures (never loosening the lost-ledger refusal).
   - RC-STATE adds a write→check round-trip test so a type change the checker doesn't follow fails a test, not a start.
