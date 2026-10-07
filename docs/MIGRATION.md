@@ -253,7 +253,7 @@ Under the owner's "no bugs migrate" rules ("Rules" above), **adapt** here means 
 | Data contracts | `apps/web/src/api/{contract,schema,schemas,reportSchema}.ts`; server `packages/worker/src/run/api.ts` | adapt (ideas only) | Strict checking that rejects a whole response on any unknown or mistyped field, `mode` on every record, decimal-string money and lamport strings carry over into B-M28-01 zod schemas. The shapes do not: camelCase envelope `{mode, asOf, data}` and dollars first (`contract.ts:6-8,41-47`) |
 | No-AI-wording guard | `apps/web/test/banned-copy.ts`, `copy-guard.test.ts`, `copy-scan.ts` | keep (owner rule) | Not a Blueprint ticket; it is an owner rule (`CLAUDE.md` "No AI wording in the UI") and must run on the new dashboard's source. `apps/web/test/copy-guard.test.ts` alone: 1 file, 7 tests passed at `5d7260f7`. It scans `apps/web/src` and the Android strings (`copy-guard.test.ts:27-49`), so it must be re-pointed at the new dashboard |
 | Deposit and Withdraw | `apps/web/src/funding/*` (Independent Reserve and Kraken route text, QR, saved-wallet check; step-up wired to `unavailableStepUp`, so no request can be made) | adapt | Owner rule (`CLAUDE.md` "Funding"). UI.md has no funding screen; see clash O3 |
-| Android APK | `apps/web/android`, `.github/workflows/android-preview.yml`, `docs/ANDROID_PREVIEW.md` | clash | See clash O4 |
+| Android APK | `apps/web/android` (its build workflow, scripts and `docs/ANDROID_PREVIEW.md` were removed on 8 Oct, OPS-CLEAN part 3) | clash | See clash O4 |
 
 ## Market and strategy decisions
 

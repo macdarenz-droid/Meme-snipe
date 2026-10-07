@@ -7,7 +7,7 @@ android {
         applicationId "com.macdarenz.zeroed"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        // CI sets these (android-preview.yml): versionCode = run number, versionName = preview-<short sha>.
+        // Set by a build that passes them (the preview workflow, removed on 8 Oct, did); otherwise 1 and dev.
         versionCode((project.findProperty('zeroedVersionCode') ?: '1').toInteger())
         versionName((project.findProperty('zeroedVersionName') ?: 'dev').toString())
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
