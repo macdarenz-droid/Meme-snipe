@@ -6,7 +6,7 @@ Updated 2026-10-08 04:30 AEDT. "Chance" is my judgement of the chance that the i
 
 | # | Idea (source) | Why it might work | Chance | Status / next step |
 |---|---|---|---|---|
-| 1 | **Absorption entry:** buy only after new, independent buyers absorb a large seller (advisor) | Uses information no price test used: who sold, who replaced them. Slow enough for our latency | low (about 10%) | Running on Helius, three-group test (`research/absorption-probe/`) |
+| 1 | **Absorption entry:** buy only after new, independent buyers absorb a large seller (advisor) | Uses information no price test used: who sold, who replaced them. Slow enough for our latency | low (about 10%) | **UNRESOLVED (too rare):** 44 confirmed large sales, 8 absorptions, 5 tradable in 55% of eligible pool-days; no returns computed (`research/absorption-probe/RESULTS.md`). Needs forward recording |
 | 2 | **Squeeze:** spot breakout while perp funding is very negative and open interest high (advisor) | A possible extra source of demand: forced short covering | low (about 5–10%) | Data check running (is historical open interest available?) |
 | 3 | **Audience gains:** a meme's usual buyers just made money elsewhere (advisor; Sun 2023) | Behavioural evidence that gains spill into lottery-like buying; it reads the buyers, not the chart | low (about 5–10%) | Data check running; needs a shared wallet-level dataset |
 | 4 | **Stacked loss-reducers:** real-time stop + hourly trail, paid-ad reject, hot-market timing, absorption entry (our research) | Each piece cut losses by a few points; together they might reach break-even | low (about 5%); high overfit risk | To be designed overnight; only an untouched holdout can judge it |
@@ -48,7 +48,7 @@ Every confirmatory primary from the outside reviewer's ideas, and the connect-th
 
 | Member | Status |
 |---|---|
-| Absorption entry (+ ABS-S1 secondary, fixed sequence) | running |
+| Absorption entry (+ ABS-S1 secondary, fixed sequence) | UNRESOLVED: too few events (5 tradable of about 30 needed) |
 | Squeeze, spot (H1) | registered primary UNRESOLVED (data check failed); new trial H1-T2 running |
 | Squeeze traded on the perp (H1-PERP, P1) | frozen; added to squeeze PREREG if no post-entry price has been read |
 | Liquidation fire-sale (H3) | stage 1 running |
