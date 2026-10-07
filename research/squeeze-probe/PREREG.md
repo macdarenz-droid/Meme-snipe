@@ -1,5 +1,3 @@
-<!-- Draft from the advisor-four-hypotheses workflow (2026-10-08). Scouted, designed and adversarially reviewed; every blocking or major issue was fixed in this text. run_now=True. The builder commits the final PREREG.md before any data pull. -->
-
 # Squeeze probe (H1): rules fixed before any return is computed
 
 File: `research/squeeze-probe/PREREG.md`. This is exploration, not proof. It tests the outside reviewer's H1 (2026-10-08). An adversarial review on 2026-10-08 checked this text before commit; its fixes are folded in.
@@ -222,6 +220,31 @@ No outcome is read in these checks.
 - **SPX** on Solana is the Wormhole-bridged token.
 - **JELLY's** delisting followed a deliberate squeeze.
 
+
+## Fixes made before any price was read (builder, 2026-10-07)
+Committed before any Binance kline, any Binance OI value or any pool price at an event time was downloaded. Done so far: Hyperliquid meta, CoinGecko lists, S3 file listings (names only), 8 GeckoTerminal pool lookups, 16 `getAccountInfo` reads and the one smoke call (170 credits booked). Each item below is a fix or a reading of an ambiguity, fixed now; none is loosened later.
+
+**Facts found (no rule changed).**
+1. **Smoke call passed.** `getTransactionsForAddress` (full, desc, limit 1, `filters.blockTime.lte`, `status: succeeded`) is served on this plan and returns `data[]` with `meta.preTokenBalances`/`postTokenBalances`, plus a `paginationToken`. `maxSupportedTransactionVersion` is sent as **0** (the highest Solana transaction version; the draft's "1" was a typo).
+2. **Pool map (rule outcome, `pool_map.json`).** Rule 1 gives 14 pools (13 AMM v4 plus USELESS CPMM). Rule 2 (GeckoTerminal, 2026-10-07) gives only FARTCOIN (AMM v4 Bzc9NZ…, $8.3M). kBONK, PENGU, TRUMP, MELANIA, AI16Z, MYRO and DOOD have no Raydium AMM v4 or CPMM pool paired with WSOL of $250k or more on the first page, so they are **out**; YZY and LAUNCHCOIN are out (no rule-1 pool, not rule-2 coins, and no Binance data). Fees read from the chain: every AMM v4 pool 25/10000 (trade and swap fields); USELESS CPMM 0.25% + 0.05% creator fee = **0.30%**.
+   - Consequence: the spot-signal coins left in the primary are WIF, BOME and PNUT, so arm D covers those three.
+3. **Classification** (`classification.json`, `classify.py`): 234 names, 24 yes, exactly the expected set. By-hand rulings are recorded with reasons (LOOM and OMNI are same-symbol Solana clones of non-Solana tokens; GRIFFAIN, SPX and YZY are in the fixed set although CoinGecko files them outside its meme category).
+
+**Readings fixed now (where the draft was ambiguous).**
+4. **OI as of h.** "OI as of h − 300 s" means the Data-table rule applied at t = h: the latest row with `create_time` ≤ h − 300 s, no older than 1 h before that bound. The 720 trailing values use the same rule at h − k·3600, k = 1…720.
+5. **Evaluable.** F is evaluable at h when hour h's funding row exists and at least 600 of the previous 720 rows exist; O when the as-of value exists and at least 600 of the 720 trailing values exist. Clean (C1) days need both evaluable at all 24 hours.
+6. **Breakout.** Strictly above the previous 72 closes; the 72 previous bars of both the coin and the SOL series must all exist (contiguous 5-minute opens). b6 counts the previous 72 bars that are themselves breakouts by this rule (a bar without a full window counts as no breakout).
+7. **Day and spacing.** "One event per coin per UTC day" uses the UTC day of T. Events are taken greedily in time order.
+8. **Matching variables.** r24 = log(close of the bar ending at T ÷ close of the bar ending at T − 24 h). m24 = median r24 over the 24 universe names that have both closes. vol6 = standard deviation (ddof 1) of the 72 log returns of the 73 closes ending at T. Standardization divides r24, m24 and vol6 by their standard deviations over the whole C1 candidate pool (all coins). The hour term is the circular hour distance ÷ 6, used as is. An event with r24 or vol6 missing gets no controls and is left out of the lift, counted.
+9. **Executable controls (order of reading).** Stage 1 freezes, for every event, the ranked candidate list (the nearest bar per candidate day, days sorted by distance, ties by the SHA-256 rule). Stage 2 walks that list in order and reads only the **entry** state to test executability, until 10 controls pass; exit states are read only for accepted controls. C2 does the same with a frozen, seeded list of random times (first 5 executable). No exit price ever decides whether a control is used.
+10. **Entry and exit times.** Entry state = latest successful pool transaction with blockTime ≤ floor(T + 7 s) carrying both vaults. Exit state = the same at floor(T + 7 s + 6 h) (the 60-second line: T + 60 s and T + 60 s + 6 h). Paging back stops after 10 pages; then the trade is non-executable ("no state").
+11. **Lines priced.** Events are priced at T + 7 s and T + 60 s; controls (C1, C1b, C2) at T + 7 s only. The stress line is n − 1 point on the events. Gross = exit vault price ÷ entry vault price − 1 (SOL per token), no fee, impact or fixed cost.
+12. **Data check 3 (reserves).** Done on AMM v4 pools only, unless a CPMM pool has a primary event or control. 200 seeded times, uniform over the primary's entry range and over the AMM v4 pools; at each, the latest pool transaction whose vault deltas have opposite signs (paging back up to 5) is the swap checked. Its fee-adjusted price (buy dx(1 − f)/|dy|, sell |dx|/(dy(1 − f))) must lie within 0.1% of the range between its pre and post vault ratios.
+13. **Holdout split.** D_split = the upper median of arm A's sorted distinct UTC event days (index n // 2). The sealed list is arm A's events with a UTC day ≥ D_split, hashed as canonical JSON.
+14. **Arm B and C controls.** Arm B: candidate days have F evaluable and false at every hour and the daily OI test evaluable and false on that day. Arm C: candidate days have the excess-funding test and O evaluable and false at every hour. The universe median funding uses the 24 names' rows in that hour. Typical price for arm B comes from Hyperliquid daily candles.
+15. **Arms D and E** are read from the primary's priced events (subsets), so they cost no extra credits.
+16. **Credit order.** Primary (events, C1, C2, then C1b), then arm A, B, C before D_split, while the booked total stays under 400,000. An arm that would cross the cap is reported as not run.
+17. **Credit confirmation.** The supervisor's task message (2026-10-07) sets the 400,000 hard cap for this probe; that is taken as the account-wide confirmation the executor notes ask for.
 
 ## Executor notes
 
