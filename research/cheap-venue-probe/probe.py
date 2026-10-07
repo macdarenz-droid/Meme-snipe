@@ -63,7 +63,14 @@ def universe(dl, excl_path, seeds_path, out):
             if fr['fee'] > MAX_FEE + 1e-12:
                 why.append(f"{p['pool']} {venue}: fee {fr['fee']:.4%} > 0.30%")
                 continue
-            cand = {**p, 'venue': venue, 'fee': fr['fee']}
+            fee = fr['fee']
+            if venue == 'Raydium CPMM':
+                # PREREG amendment: the creator fee is charged as if enabled (not verified per pool), an upper bound.
+                fee += fr.get('creator_fee') or 0
+            if fee > MAX_FEE + 1e-12:
+                why.append(f"{p['pool']} {venue}: fee {fee:.4%} (with creator fee) > 0.30%")
+                continue
+            cand = {**p, 'venue': venue, 'fee': fee}
             if best is None or (cand['fee'], -cand['reserve_usd']) < (best['fee'], -best['reserve_usd']):
                 best = cand
         if best:
@@ -335,7 +342,10 @@ def run(uni, bdir, outdir):
         path = os.path.join(bdir, p['pool'] + '.json')
         if not os.path.exists(path):
             continue
-        manifest.append({'pool': p['pool'], 'sha256': hashlib.sha256(open(path, 'rb').read()).hexdigest()})
+        rawb = json.load(open(path))
+        manifest.append({'pool': p['pool'], 'sym': p['symbol'], 'sha256': hashlib.sha256(open(path, 'rb').read()).hexdigest(),
+                         'bars': len(rawb), 'first': min((r[0] for r in rawb), default=None),
+                         'last': max((r[0] for r in rawb), default=None)})
         bars = load_bars(path)
         if not bars or len(bars[0]) < LOOKBACK + 20:
             continue

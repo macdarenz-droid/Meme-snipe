@@ -113,11 +113,13 @@ class CoinBoot:
     """iid bootstrap over coins (each coin is one trade)."""
     def __init__(self, n, seed=20261009):
         rng = np.random.default_rng(seed)
-        self.W = np.stack([np.bincount(rng.integers(0, n, n), minlength=n) for _ in range(B)]).astype(float)
+        self.W = np.empty((B, n), np.float32)          # about 130 MB at n = 1,640
+        for b in range(B):
+            self.W[b] = np.bincount(rng.integers(0, n, n), minlength=n)
 
     def sums(self, vals, mask):
         v = np.where(mask, np.asarray(vals, float), 0.0)
-        return self.W @ v, self.W @ mask.astype(float)
+        return (self.W @ v.astype(np.float32)).astype(float), (self.W @ mask.astype(np.float32)).astype(float)
 
 
 def diff_dist(bt, vals, g):
@@ -134,7 +136,6 @@ def mean_dist(bt, vals, g):
 
 def adj_dist(bt, vals, g, strata):
     """Stratified difference: sum over strata holding both groups of (n_s/N)(mean_P,s - mean_U,s), N over those strata."""
-    num = 0.0; tot = 0.0
     acc = []
     for s in sorted(set(strata)):
         m = strata == s
@@ -191,6 +192,8 @@ def random_band(vals, days, g, seed=20261008, reps=10000):
         pools.setdefault(d, []).append(i)
     need = {d: int(sum(1 for i in ix if g[i])) for d, ix in pools.items()}
     tot = sum(need.values())
+    if not tot:
+        return None
     out = np.empty(reps)
     for r in range(reps):
         s = 0.0
@@ -285,10 +288,11 @@ def run(sample, hdir, orders_path, out, p_ea='1', p_eb='1'):
     th = np.quantile(h1, [1 / 3, 2 / 3]); tv = np.quantile(lv, [1 / 3, 2 / 3])
     strata = np.searchsorted(th, h1, side='right') * 3 + np.searchsorted(tv, lv, side='right')
 
-    p_paid_pre = None
+    LEVEL = [None]
     res = {'counts': counts, 'mints': n_mints, 'orders_http200': n200, 'orders_http200_share': n200 / n_mints, 'usable_known': n}
 
     def compare(name, flag, key='net', subset=None, level=None, full=False):
+        level = level if level is not None else LEVEL[0]
         sel = np.array([subset(r) if subset else True for r in rows])
         g = np.array([bool(r[flag]) for r in rows])[sel]
         raw = [r[key] for r, s in zip(rows, sel) if s]
@@ -303,6 +307,9 @@ def run(sample, hdir, orders_path, out, p_ea='1', p_eb='1'):
         D = out['PAID']['mean_capped'] - out['UNPAID']['mean_capped']
         dd = diff_dist(bt, cv, g)
         out['D_capped'] = D; out['D_capped_ci95_day'] = pct(dd, 0.95); out['D_capped_p_day'] = boot_p(dd)
+        out['boot_reps_kept_day'] = int(len(dd))
+        if level is not None:
+            out['D_capped_ci_holm_day'] = pct(dd, level)
         out['D_log'] = out['PAID']['mean_log'] - out['UNPAID']['mean_log']; out['D_log_ci95_day'] = pct(diff_dist(bt, lgv, g), 0.95)
         out['D_uncapped'] = out['PAID']['mean'] - out['UNPAID']['mean']
         if full:
@@ -312,9 +319,14 @@ def run(sample, hdir, orders_path, out, p_ea='1', p_eb='1'):
         return out
 
     prim = compare('PAID', 'PAID', full=True)
+    if 'D_capped_p_day' not in prim:                      # an empty group: nothing to compare
+        res['primary'] = prim; res['verdict'] = 'insufficient data'
+        json.dump(res, open(out, 'w'), indent=1, default=float)
+        print(json.dumps({'counts': counts, 'n': n, 'verdict': res['verdict']}, default=float)); return
     ps = [prim['D_capped_p_day'], float(p_ea), float(p_eb)]
     rej, lvl = holm(ps)
     level = 1 - lvl[0]
+    LEVEL[0] = level
     dd = prim.pop('_dd'); pm = prim.pop('_paid_mean_dist')
     prim['holm'] = {'family_p': {'T1_PAID': ps[0], 'T2_EA': ps[1], 'T2_EB': ps[2]}, 'reject_T1_PAID': rej[0], 'level': level}
     prim['D_capped_ci_holm_day'] = pct(dd, level)
@@ -323,10 +335,11 @@ def run(sample, hdir, orders_path, out, p_ea='1', p_eb='1'):
     g = np.array([r['PAID'] for r in rows])
     capv = cap([r['net'] for r in rows])
     band = random_band(capv, days, g)
-    prim['random_band_holm'] = pct(band, level); prim['random_band_95'] = pct(band, 0.95)
     pm_obs = prim['PAID']['mean_capped']
-    prim['PAID_inside_band_holm'] = prim['random_band_holm'][0] <= pm_obs <= prim['random_band_holm'][1]
-    prim['PAID_inside_band_95'] = prim['random_band_95'][0] <= pm_obs <= prim['random_band_95'][1]
+    if band is not None:
+        prim['random_band_holm'] = pct(band, level); prim['random_band_95'] = pct(band, 0.95)
+        prim['PAID_inside_band_holm'] = prim['random_band_holm'][0] <= pm_obs <= prim['random_band_holm'][1]
+        prim['PAID_inside_band_95'] = prim['random_band_95'][0] <= pm_obs <= prim['random_band_95'][1]
     adj = adj_dist(db, capv, g, strata)
     prim['D_adj'] = adj_point(capv, g, strata); prim['D_adj_ci_holm_day'] = pct(adj, level); prim['D_adj_ci95_day'] = pct(adj, 0.95)
     prim['strata_counts'] = {int(s): [int(((strata == s) & g).sum()), int(((strata == s) & ~g).sum())] for s in sorted(set(strata))}
@@ -351,7 +364,7 @@ def run(sample, hdir, orders_path, out, p_ea='1', p_eb='1'):
     res['reasons'] = {grp: {k: sum(1 for r in rows if r['PAID'] == pv and r['reason'] == k) for k in ('stop', 'trail', 'time')}
                       for grp, pv in (('PAID', True), ('UNPAID', False))}
     res['at_entry'] = {grp: {'median_h1': statistics.median([r['h1'] for r in rows if r['PAID'] == pv]),
-                             'median_vol01_sol': statistics.median([math.exp(r['lv01']) for r in rows if r['PAID'] == pv])}
+                             'median_vol01_gt_volume_units': statistics.median([math.exp(r['lv01']) for r in rows if r['PAID'] == pv])}
                        for grp, pv in (('PAID', True), ('UNPAID', False)) if any(r['PAID'] == pv for r in rows)}
     big = [r for r in rows if r['peak'] >= 10]
     res['peak_ge_10x'] = {'n': len(big), 'paid': sum(r['PAID'] for r in big),
@@ -377,23 +390,23 @@ def verdict(res):
     p = res['primary']
     if res['orders_http200_share'] < 0.95 or res['usable_known'] < 1200:
         return 'insufficient data'
-    lo, hi = p['D_capped_ci_holm_day']
     better = p['holm']['reject_T1_PAID'] and p['D_capped'] > 0
     worse = p['holm']['reject_T1_PAID'] and p['D_capped'] < 0
     if better or worse:
         d60 = res['sensitivity']['PAID60'].get('D_capped')
-        if d60 is not None and (d60 > 0) != (p['D_capped'] > 0):
-            return 'waits for Test 3 (sign flips between 15- and 60-min buffers)'
+        flip = d60 is not None and d60 * p['D_capped'] < 0
+    if better and p['PAID_mean_capped_ci_holm_day'][1] < 0.08:
+        return 'kill (b): PAID better but cannot rescue the strategy'     # a kill is never deferred (amendment A1)
+    if (better or worse) and flip:
+        return 'waits for Test 3 (sign flips between 15- and 60-min buffers)'
     if better:
-        if p['PAID_mean_capped_ci_holm_day'][1] < 0.08:
-            return 'kill (b): PAID better but cannot rescue the strategy'
         a = p['D_adj_ci_holm_day']
         if a[0] <= 0 <= a[1]:
             return 'better, but adds nothing beyond price and volume: prefer a price-only rule'
         return 'better: candidate entry filter, needs a written validation PREREG'
     if worse:
         return 'worse: candidate reject or exit-width feature for a validation PREREG only'
-    if p['PAID_inside_band_holm']:
+    if p.get('PAID_inside_band_holm'):
         return 'kill (a): drop attention at entry as an entry signal'
     return 'no supported difference; PAID outside the random band; not an entry signal'
 
