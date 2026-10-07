@@ -103,3 +103,15 @@ These answer the red team (R) and the reviewer (V) together.
     - fee_config_known and venue_enabled stay fail-closed until P12, so the screen is pending_data until then and a key-on run is only logged;
     - pulling and measuring the days is not looking at them, and no PM-01 signal or return is computed before the merge sha is recorded.
 20. **Times.** Cite the ruling times as corrected above (9:26, 9:30, 9:32 and 9:40 AM), or the section of this file.
+
+## Round 4 (heads `7bc7815d`, then `79f8c6a5`)
+
+Rulings 1–20 were applied. The researcher's gap choices were accepted (8 Oct 2026, 9:44 AM):
+- (a) the kill subset needs ≥ 100 trades, or it is pending_data;
+- (b) a partial edge week is checked as it is, and a week with no trades is reported only;
+- (c) the denominator is the notional, 33,333,333 lamports (0.0333 SOL), fixed in lamports;
+- (d) W_B's end also needs the effective-size rule for every config;
+- (e) a trade with no candidate on one side is left out of that side, and the 0.8n rule applies overall;
+- (g) the drawdown bar is 666,666,660 lamports, beside the % of E limits.
+- (f) Principle: a failed engineering, determinism or data-integrity check never kills, and blocks until fixed and re-run; a failed evidence check (returns, risk, statistics) can kill. R-6 (correlated crash-day loss ≤ MAXRISK_PF) is an evidence check, so it stays in kill rule 2.
+Delta review: `session_013E5iKPuZrpnyNX74jpF6ui`. Red team round 2: `session_016GhUshWTj7tPMTadZoSCnF`.
