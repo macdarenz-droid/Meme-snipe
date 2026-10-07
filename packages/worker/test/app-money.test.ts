@@ -2,12 +2,12 @@
 // backtest report do, and the daily-loss meter is the figure R7 reads. Before, stats, charts and calendar summed closed
 // trades only and the meter summed today's losing trades only, so they disagreed with the wallet.
 import { describe, expect, it } from 'vitest';
-import { FILL_CONFIG, RESEARCH_CONFIG, RUG_CONFIG, TRIAL_POLICY, startSession, usd } from '../../core/src/config/index.ts';
+import { FILL_CONFIG, RESEARCH_CONFIG, RUG_CONFIG, TRIAL_POLICY, startSession, usd as dollars } from '../../core/src/config/index.ts';
 import type { MarketEvent, StrategyContext } from '../../core/src/engine/index.ts';
 import { emptyBook } from '../../core/src/lifecycle/book.ts';
 import { NO_LATCHES, riskSnapshot } from '../../core/src/risk/index.ts';
 import { lamports } from '../../core/src/units/index.ts';
-import { DAY_START, HOUR, NOW, PRICE, SOL, account, trade } from '../../core/test/risk/helpers.ts';
+import { DAY_START, HOUR, NOW, PRICE, SOL, account, trade, usd } from '../../core/test/risk/helpers.ts';
 import { checkEnvelope } from '../../../apps/web/src/api/modes.ts';
 import { schemaFor } from '../../../apps/web/src/api/schemas.ts';
 import { ACCOUNT_KEY, LiveStrategy, SOL_PRICE_KEY } from '../src/engine/strategy.ts';
@@ -37,7 +37,8 @@ const judged = (h: History) => {
 /** The status, stats, charts and calendar the app reads, from a worker's inputs with these trades, costs and stops. */
 const servedWith = (patch: Record<string, unknown>) => {
   const h = makeWorker();
-  const i = { ...h.worker.apiInputs(), halted: [], budgetHalted: [], nowMs: NOW, regime: null, stops: { atMs: NOW, codes: [] as string[], dayLoss: 0n }, trades: [], accountCosts: [], ...patch };
+  // SOL-BOOKS: R7's figures come in lamports and are shown at the SOL price, here the tests' $100 opening price.
+  const i = { ...h.worker.apiInputs(), solPrice: PRICE, halted: [], budgetHalted: [], nowMs: NOW, regime: null, stops: { atMs: NOW, codes: [] as string[], dayLoss: 0n }, trades: [], accountCosts: [], ...patch };
   void h.worker.stop();
   const env = (e: 'status' | 'stats' | 'charts', data: unknown) => checkEnvelope(JSON.parse(JSON.stringify({ mode: 'paper', asOf: new Date(NOW).toISOString(), data })), 'paper', schemaFor(e, 'paper')).data;
   const month = new Date(NOW).toISOString().slice(0, 7);
@@ -51,7 +52,7 @@ const servedWith = (patch: Record<string, unknown>) => {
 const meter = (s: ReturnType<typeof servedWith>['status']) => s.risk.find((r) => r.kind === 'daily-loss');
 
 describe('money totals count the account\'s costs (APP-MONEY)', () => {
-  const SETUP = { atMs: DAY_START + HOUR, amount: 1_234_567n, lamports: 8_230_447n, kind: 'wallet_setup' };
+  const SETUP = { atMs: DAY_START + HOUR, usd: 1_234_567n, lamports: 8_230_447n, kind: 'wallet_setup' };
 
   it('an account with its setup cost and no trades: net, drawdown, the curve and the day all read −setup', () => {
     const s = servedWith({ accountCosts: [SETUP] });
@@ -80,12 +81,16 @@ describe('money totals count the account\'s costs (APP-MONEY)', () => {
     await m.run(4_000, 100, () => m.pool());
     await m.run(10_000, 400, () => { m.slot(); m.pool(); });
     const i = h.worker.apiInputs();
-    expect(i.accountCosts.length).toBe(1);
+    // The wallet's setup, and while a trade is open its costs outside the basis (ACCOUNT-RATE: here the token-account
+    // rent not yet returned), each as risk reads them.
     expect(i.accountCosts[0]!.kind).toBe('wallet_setup');
-    expect(i.accountCosts[0]!.amount > 0n).toBe(true);
+    expect(i.accountCosts[0]!.usd > 0n).toBe(true);
+    const open = Object.values(h.worker.book.positions).some((p) => p.status !== 'closed');
+    expect(i.accountCosts.slice(1).every((c) => c.kind === 'open_trade')).toBe(true);
+    expect(i.accountCosts.length > 1).toBe(open);
     const stats = checkEnvelope(JSON.parse(JSON.stringify(route('/api/v1/paper/stats', () => i).body)), 'paper', schemaFor('stats', 'paper')).data as { netUsd: string };
     const tradeNet = i.trades.filter((t) => t.closedAtMs !== null).reduce((s, t) => s + (t.netPnl ?? 0n), 0n);
-    expect(stats.netUsd).toBe(usdText(tradeNet - i.accountCosts[0]!.amount));
+    expect(stats.netUsd).toBe(usdText(tradeNet - i.accountCosts.reduce((s, c) => s + c.usd, 0n)));
     await h.worker.stop();
   });
 });
@@ -103,23 +108,26 @@ describe('the daily-loss meter is R7\'s figure (APP-MONEY)', () => {
   it('counts a cost booked today with no trade', () => {
     const { stops } = judged(account({ costs: [{ atMs: DAY_START + HOUR, amount: usd('0.3'), kind: 'wallet_setup' }] }));
     expect(stops.dayLoss).toBe(usd('0.3'));
-    expect(meter(servedWith({ stops, accountCosts: [{ atMs: DAY_START + HOUR, amount: usd('0.3'), lamports: 2_000_000n, kind: 'wallet_setup' }] }).status)).toMatchObject({ usedUsd: '0.3' });
+    expect(meter(servedWith({ stops, accountCosts: [{ atMs: DAY_START + HOUR, usd: dollars('0.3'), lamports: 2_000_000n, kind: 'wallet_setup' }] }).status)).toMatchObject({ usedUsd: '0.3' });
   });
 
   it('a gain today offsets a loss, as R7 counts it: the old sum of losing trades read more', () => {
     const h = account({ closedTrades: [trade(DAY_START + HOUR, '-0.4'), trade(DAY_START + 2 * HOUR, '0.3')] });
     const { stops } = judged(h);
-    const trades = h.closedTrades.map((t) => ({ positionId: `p${t.closedAtMs}`, mint: t.mint, openedAtMs: t.openedAtMs, closedAtMs: t.closedAtMs, notional: t.notional, netLamports: 0n, netPnl: t.netPnl, stoppedOut: false, booked: 0n, openSolPrice: null }));
+    // SOL-BOOKS: the trades' results are lamports; the app shows them at the trade's price.
+    const trades = h.closedTrades.map((t) => ({ positionId: `p${t.closedAtMs}`, mint: t.mint, openedAtMs: t.openedAtMs, closedAtMs: t.closedAtMs, notional: t.notional, netLamports: t.netPnl, netPnl: null, stoppedOut: false, booked: 0n, openSolPrice: PRICE }));
     expect(meter(servedWith({ stops, trades }).status)).toMatchObject({ usedUsd: '0.1' });
   });
 
   it('a current R7 read from before a losing close or a cost: the meter shows the higher realised figure (risk review 1)', () => {
-    const t = { positionId: 'p1', mint: 'm', openedAtMs: DAY_START + HOUR, closedAtMs: NOW - 500, notional: 2_000_000n, netLamports: 0n, netPnl: -500_000n, stoppedOut: false, booked: 0n, openSolPrice: null };
-    const read = { atMs: NOW - 1_000, codes: [] as string[], dayLoss: 100_000n };
+    // SOL-BOOKS: the meter counts lamports; at the $100 price −5,000,000 lamports is the −$0.50 shown.
+    const t = { positionId: 'p1', mint: 'm', openedAtMs: DAY_START + HOUR, closedAtMs: NOW - 500, notional: 2_000_000n, netLamports: -5_000_000n, netPnl: -500_000n, stoppedOut: false, booked: 0n, openSolPrice: null };
+    // R7's figure in lamports: 1,000,000 is $0.10 at the $100 price.
+    const read = { atMs: NOW - 1_000, codes: [] as string[], dayLoss: 1_000_000n };
     expect(meter(servedWith({ stops: read, trades: [t] }).status)).toMatchObject({ usedUsd: '0.5' });
-    expect(meter(servedWith({ stops: read, accountCosts: [{ atMs: NOW - 500, amount: 700_000n, lamports: 4_666_667n, kind: 'wallet_setup' }] }).status)).toMatchObject({ usedUsd: '0.7' });
+    expect(meter(servedWith({ stops: read, accountCosts: [{ atMs: NOW - 500, usd: 700_000n, lamports: 7_000_000n, kind: 'wallet_setup' }] }).status)).toMatchObject({ usedUsd: '0.7' });
     // R7's own figure when it is the higher (marked losses only it can see).
-    expect(meter(servedWith({ stops: { ...read, dayLoss: 900_000n }, trades: [t] }).status)).toMatchObject({ usedUsd: '0.9' });
+    expect(meter(servedWith({ stops: { ...read, dayLoss: 9_000_000n }, trades: [t] }).status)).toMatchObject({ usedUsd: '0.9' });
   });
 
   it('unknown or old risk: no meter (never a 0), and the risk-unknown chip', () => {
@@ -133,8 +141,9 @@ describe('the daily-loss meter is R7\'s figure (APP-MONEY)', () => {
 
 describe('partial sales count at their own time, as core risk counts them (risk review 2, RISK-PARTIAL #132\'s shape)', () => {
   // A partial sale yesterday (+0.3) and the close today: the whole trade nets −0.2, so the close's remainder is −0.5.
-  const part = { atMs: DAY_START - HOUR, lamports: 0n, pnl: 300_000n };
-  const t = { positionId: 'p1', mint: 'm', openedAtMs: DAY_START - 2 * HOUR, closedAtMs: DAY_START + HOUR, notional: 2_000_000n, netLamports: 0n, netPnl: -200_000n, stoppedOut: false, booked: 0n, openSolPrice: null, partials: [part] };
+  // SOL-BOOKS: a part is its lamports, shown at the trade's price: 3,000,000 at $100 is +$0.30.
+  const part = { atMs: DAY_START - HOUR, lamports: 3_000_000n };
+  const t = { positionId: 'p1', mint: 'm', openedAtMs: DAY_START - 2 * HOUR, closedAtMs: DAY_START + HOUR, notional: 2_000_000n, netLamports: -2_000_000n, netPnl: -200_000n, stoppedOut: false, booked: 0n, openSolPrice: null, partials: [part] };
 
   it('the day split, the meter, the curve and the net', () => {
     const s = servedWith({ trades: [t], stops: { atMs: NOW, codes: [] as string[], dayLoss: 0n } });
@@ -149,7 +158,7 @@ describe('partial sales count at their own time, as core risk counts them (risk 
 
   it('splits the day exactly as core risk does (RISK-PARTIAL in the base): R7\'s figure and the app\'s realised one agree', () => {
     // The same trade for core: its partial yesterday, its whole net −0.2 at today's close.
-    const core = account({ closedTrades: [{ ...trade(DAY_START + HOUR, '-0.2'), partials: [{ atMs: DAY_START - HOUR, pnl: 300_000n as never }] }] });
+    const core = account({ closedTrades: [{ ...trade(DAY_START + HOUR, '-0.2'), partials: [{ atMs: DAY_START - HOUR, pnl: usd('0.3') }] }] });
     const { stops, core: snap } = judged(core);
     expect(snap.dayLoss).toBe(usd('0.5'));
     expect(stops.dayLoss).toBe(snap.dayLoss);

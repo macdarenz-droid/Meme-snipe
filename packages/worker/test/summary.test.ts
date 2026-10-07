@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { verifySignature } from '../../ops/src/watchdog/logic.ts';
 import { SUMMARY_MAX_TRADES, SUMMARY_TOP_REASONS, checkSummary } from '../../ops/src/watchdog/summary.ts';
-import type { MicroUsd } from '../../core/src/units/index.ts';
+import type { Lamports, MicroUsd } from '../../core/src/units/index.ts';
 import type { HttpClient } from '../src/providers/index.ts';
 import type { PaperTrade } from '../src/run/account.ts';
 import {
@@ -34,7 +34,7 @@ const h16 = (ms: number, mint: string, code: string, input?: unknown, neededBy?:
   line('decision', ms, { action: 'reject', reasons: ['reject', 'U2', mint, `hard reject H16`], gate_reasons: [{ gate: 'H16', code, detail: 'x', ...(input === undefined ? {} : { input }), ...(neededBy === undefined ? {} : { neededBy }) }] });
 
 const trade = (o: Partial<PaperTrade> = {}): PaperTrade => ({
-  positionId: 'p1', mint: M1, openedAtMs: NOON, notional: 3_000_000n as MicroUsd, closedAtMs: NOON + 60_000, netLamports: -1_500_000n,
+  positionId: 'p1', mint: M1, openedAtMs: NOON, notional: 20_000_000n as Lamports, closedAtMs: NOON + 60_000, netLamports: -1_500_000n,
   netPnl: -300_000n as MicroUsd, stoppedOut: true, booked: 0n, exitReasons: ['stop'], ...o,
 });
 const inputs = (o: Partial<SummaryInputs> = {}): SummaryInputs => ({
@@ -314,6 +314,16 @@ describe('the summary', () => {
     expect('body' in b && checkSummary(b.body).ok).toBe(true);
     // A final summary leaves out trades still open from another day.
     expect(buildSummary(inputs({ trades: [trade({ openedAtMs: NOON - 86_400_000, closedAtMs: null })], final: true })).trades).toEqual([]);
+  });
+
+  it('SOL-BOOKS: a trade\'s size is its lamports in dollars at its entry price, and its SOL net counts what landed after the close', () => {
+    // 20,000,000 lamports (0.02 SOL) entered at $150 is $3; at the current $200 it would read $4, and as micro-dollars $20.
+    const t = trade({ openSolPrice: 150_000_000n as MicroUsd, closeSolPrice: 150_000_000n as MicroUsd, late: [{ atMs: NOON + 120_000, lamports: -100_000n, usd: -15_000n as MicroUsd }] });
+    const s = buildSummary(inputs({ trades: [t] }));
+    expect(s.trades.map((x) => [x.size_usd, x.net_lamports, x.net_usd])).toEqual([['3', '-1600000', '-0.315']]);
+    expect(s.pnl).toEqual({ closed_trades: 1, net_lamports: '-1600000', net_usd: '-0.315' });
+    const b = summaryBody(s);
+    expect('body' in b && checkSummary(b.body).ok).toBe(true);
   });
 
   it('caps the trade list and fits the size cap, still counting every trade', () => {

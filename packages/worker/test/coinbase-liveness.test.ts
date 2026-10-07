@@ -68,9 +68,9 @@ describe('the source', () => {
     const price = prices()[0]!;
     const age = timers.now() - price.atMs;
     expect(age).toBeGreaterThan(TRIAL_POLICY.gates.maxQuoteAgeMs);
-    const i = baseInput();
-    const input = baseInput({ clock: clockAt(timers.now()), market: { ...i.market, solPrice: { value: price.value as MicroUsd, atMs: price.atMs } } });
-    expect(codes(evaluateEntry(input, baseRequest({ quoteAtMs: timers.now() })))).toContain('sol_price_stale');
+    // SOL-BOOKS: risk no longer reads the SOL price (`sol_price_stale` is gone); a price this old is no booking rate
+    // (the worker's `#bookingPrice` judges the price's own date, which no heartbeat moved).
+
   });
 });
 

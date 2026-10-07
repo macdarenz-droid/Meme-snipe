@@ -77,6 +77,20 @@ describe('Snipe: Session card', () => {
     expect(findBanned(t)).toEqual([]);
   });
 
+  it('SOL-BOOKS: with the limits in lamports served, each reads SOL first, its configured dollars beside it', () => {
+    // At a $150 opening price: B $20 is 133,333,333 lamports, q_min $2 13,333,334 (up), q_max $5 33,333,333, $1 6,666,666.
+    const sol = { ...session, bankrollLamports: '133333333', entryLamports: '13333334', maxEntryLamports: '33333333', dailyLossLimitLamports: '6666666', weeklyLossLimitLamports: '19999999' };
+    const t = card(ready({ ...running, session: sol }));
+    expect(t).toContain('Bankroll 0.1333 SOL ($20.00)');
+    expect(t).toContain('Entry 0.0133 SOL ($2.00), max 0.0333 SOL ($5.00)');
+    expect(t).toContain('Daily loss 0.0067 SOL ($1.00)');
+    expect(t).toContain('Weekly loss 0.0200 SOL ($3.00)');
+    expect(t).toContain('Session loss None');
+    expect(findBanned(t)).toEqual([]);
+    // A worker without them: dollars, as before.
+    expect(card(ready({ ...running, session }))).toContain('Bankroll $20.00');
+  });
+
   it('paused and ended read as such; the start button needs a worker that accepts a start and a start to send', () => {
     expect(card(ready({ ...running, flags: ['paused'], session: { ...session, state: 'paused' } }))).toContain('Session Paused');
     const ended = ready({ ...running, haltReasons: [{ mode: 'paper', code: 'session-ended', source: null }], session: { ...session, state: 'ended', startable: true } });

@@ -1,10 +1,13 @@
 // The risk policy, docs/ARCHITECTURE.md §8 (R1 to R16), as pure functions over injected inputs. Every limit is read from
 // the locked session policy (CFG-1); nothing here is a money amount. Unknown or stale input refuses an entry, never
 // defaults. Exits never pass through these checks: `evaluateExit` always allows and only reports what is tripped.
+// SOL-BOOKS (owner, 2026-10-05: "as long as the quantity of SOL keeps increasing"): every figure and limit is in
+// lamports. The policy's dollar amounts are converted once at the session's opening SOL price (`openingSolPrice`); risk
+// never reads the live SOL/USD price, so a price move alone never moves equity, counts as a loss or trips a limit.
 import type { Policy } from '../config/index.ts';
 import { PPM, type RoundTrip, costAtSize, feasibleSize, fixedCosts } from '../costs/index.ts';
 import {
-  BPS_DENOMINATOR, LAMPORTS_PER_SOL, type Lamports, type MicroUsd, lamports, lamportsToMicroUsd, microUsdToLamports, mulDiv,
+  BPS_DENOMINATOR, LAMPORTS_PER_SOL, type Lamports, type MicroUsd, type Rounding, lamports, microUsdToLamports, mulDiv,
 } from '../units/index.ts';
 import { melbourneDay, melbourneWeek } from './melbourne.ts';
 import type { ReservationRequest } from './reservation.ts';
@@ -19,7 +22,15 @@ const BPS = BPS_DENOMINATOR;
 const PPM_PER_BPS = PPM / BPS;
 
 const reason = (code: RiskCode, detail: string): RiskReason => ({ control: CODE_CONTROL[code], code, detail });
-const usd = (v: bigint): MicroUsd => v as MicroUsd;
+const lam = (v: bigint): Lamports => v as Lamports;
+/**
+ * The sizing search (`feasibleSize`) works in micro-dollars at a SOL price. At this price one micro-unit is one lamport
+ * exactly (lamports × 10⁹ / 10⁹), so sizing runs in lamports with no rounding of its own.
+ */
+const LAMPORT_UNIT = LAMPORTS_PER_SOL as unknown as MicroUsd;
+/** The policy's dollar amount `v` in lamports at the session's opening SOL price; null without a valid opening price. */
+const atOpening = (a: AccountHistory, v: MicroUsd, rounding: Rounding): bigint | null =>
+  a.openingSolPrice > 0n && v >= 0n ? microUsdToLamports(v, a.openingSolPrice, rounding) : null;
 const minBig = (a: bigint, b: bigint): bigint => (a < b ? a : b);
 const maxBig = (a: bigint, b: bigint): bigint => (a > b ? a : b);
 const sumBig = (xs: readonly bigint[]): bigint => xs.reduce((a, b) => a + b, 0n);
@@ -111,21 +122,22 @@ const weekBase = (a: AccountHistory, weekStartMs: number, equityAtStart: bigint)
 };
 
 /**
- * Economic NAV (RISK-1b, one definition for flow pricing and for the kill switch): the wallet's SOL above the
- * operations floor at the SOL/USD price, plus every open position at its executable mark, gains included. Null if a
- * position has no valid mark. The worker prices each deposit and withdrawal (`navBefore`) and each `NavMark` with it.
+ * Economic NAV (RISK-1b, one definition for flow pricing and for the kill switch), in lamports (SOL-BOOKS): the
+ * wallet's whole SOL, the operations floor included as in opening equity, plus every open position at its executable
+ * mark, gains included. Null if a position has no valid mark. The worker prices each deposit and withdrawal
+ * (`navBefore`) and each `NavMark` with it.
  */
-export const economicNav = (policy: Policy, balance: Lamports, price: MicroUsd, positions: readonly OpenPosition[]): MicroUsd | null => {
+export const economicNav = (balance: Lamports, positions: readonly OpenPosition[]): Lamports | null => {
   let marks = 0n;
   for (const p of positions) {
     if (p.mark === null || p.mark < 0n) return null;
     marks += p.mark;
   }
-  return usd(mulDiv(balance - policy.reserve.opsFloor, price, LAMPORTS_PER_SOL, 'floor') + marks);
+  return lam(balance + marks);
 };
 
 /**
- * High-water mark of economic NAV per unit, in dollars: every observation (NAV marks, each flow's `navBefore`, NAV now)
+ * High-water mark of economic NAV per unit, in lamports: every observation (NAV marks, each flow's `navBefore`, NAV now)
  * raises it, and flows scale it. An owner re-arm restarts it at the first NAV seen at or after the re-arm.
  */
 const navHighWaterMark = (a: AccountHistory, rearmAtMs: number | null, nowMs: number, navNow: bigint): bigint => {
@@ -156,6 +168,9 @@ const figures = (policy: Policy, a: AccountHistory, latches: Latches, nowMs: num
   if (a.flows.some((f) => f.navBefore + f.amount <= 0n)) problems.push(reason('bankroll_invalid', 'a withdrawal leaves no positive valuation'));
   if (a.costs.some((c) => c.amount < 0n)) problems.push(reason('bankroll_invalid', 'an account cost is negative'));
   if (a.navMarks.some((m) => m.nav <= 0n)) problems.push(reason('bankroll_invalid', 'a recorded NAV is not positive'));
+  // The bankroll B in lamports, fixed at the opening SOL price for the session. Floor: every limit is a share of it.
+  const bankroll = atOpening(a, policy.capital.bankroll, 'floor');
+  if (bankroll === null || bankroll <= 0n) problems.push(reason('bankroll_invalid', 'no valid opening SOL price fixes the bankroll in SOL'));
 
   // Marked loss of open positions. An unknown or stale mark counts as a total loss here, and refuses entries.
   let markedLoss = 0n;
@@ -197,14 +212,17 @@ const figures = (policy: Policy, a: AccountHistory, latches: Latches, nowMs: num
     trades,
     snapshot: {
       nowMs, dayStartMs: day.start, weekStartMs: week.start,
-      equity: usd(equity), highWaterMark: usd(highWaterMark_), dayLoss: usd(dayLoss), weekLoss: usd(weekLoss),
-      weekStartEquity: usd(atWeek.equity), weekBase: usd(base), weekBaseLoss: usd(maxBig(0n, base - equity)),
-      openExposure: usd(openExposure), lossStreak,
-      dayChangeMarked: dayChange === null ? null : usd(dayChange),
-      weekChangeMarked: weekChange === null ? null : usd(weekChange),
+      // With no valid opening price the bankroll is zero: every limit is then reached, and R1 refuses entries.
+      bankroll: lam(bankroll !== null && bankroll > 0n ? bankroll : 0n),
+      // Filled in by accountCheck.
+      dailyLimit: lam(0n), weeklyLimit: lam(0n),
+      equity: lam(equity), highWaterMark: lam(highWaterMark_), dayLoss: lam(dayLoss), weekLoss: lam(weekLoss),
+      weekStartEquity: lam(atWeek.equity), weekBase: lam(base), weekBaseLoss: lam(maxBig(0n, base - equity)),
+      openExposure: lam(openExposure), lossStreak,
+      dayChangeMarked: dayChange === null ? null : lam(dayChange),
+      weekChangeMarked: weekChange === null ? null : lam(weekChange),
       // Filled in by accountCheck, which has the market.
-      walletEquity: null, capital: usd(equity), nav: null, navHighWaterMark: null,
-      equitySol: null, capitalSol: null, navSol: null, navHighWaterMarkSol: null,
+      walletEquity: null, capital: lam(equity), nav: null, navHighWaterMark: null,
     },
   };
 };
@@ -224,40 +242,42 @@ const accountCheck = (input: RiskInput, nowMs: number): AccountCheck => {
   const { session, mode, account, latches, market } = input;
   const policy = session.policy;
   const f = figures(policy, account, latches, nowMs);
-  // Capital measured in SOL as well: the wallet's SOL above the operations floor at the fresh price, plus open
-  // positions marked as in equity. Every size and limit that scales with equity uses the lower of the two, so a fall
-  // in SOL tightens and a rise loosens nothing.
-  const price = market.solPrice !== null && fresh(market.solPrice.atMs, nowMs, policy.gates.maxQuoteAgeMs) && market.solPrice.value > 0n ? market.solPrice.value : null;
+  // Capital measured from the wallet as well: its SOL plus open positions marked as in equity. Every size and limit
+  // that scales with equity uses the lower of the two, so the wallet short of the ledger tightens and never loosens.
   const balance = market.solBalance !== null && fresh(market.solBalance.atMs, nowMs, policy.gates.maxQuoteAgeMs) ? market.solBalance.value : null;
-  const walletEquity = price === null || balance === null ? null
-    : mulDiv(balance - policy.reserve.opsFloor, price, LAMPORTS_PER_SOL, 'floor') + f.snapshot.openExposure;
+  const walletEquity = balance === null ? null : balance + f.snapshot.openExposure;
   // Economic NAV, only when it can be valued consistently: marks fresh, no entry in flight, and a balance read at or
   // after the account's latest change (a close or flow the balance has not seen yet would read as a loss and latch).
-  const lastChange = Math.max(account.openedAtMs, ...account.flows.map((x) => x.atMs), ...account.closedTrades.map((c) => c.closedAtMs), ...partialTimes(account),
-    ...account.costs.map((c) => c.atMs), ...account.entries.map((e) => e.atMs), ...account.openPositions.map((p) => p.openedAtMs));
-  const consistent = price !== null && balance !== null && market.solBalance !== null && market.solBalance.atMs >= lastChange
+  const lastChange = Math.max(account.openedAtMs, ...account.flows.map((x) => x.atMs), ...account.closedTrades.map((c) => c.closedAtMs),
+    ...partialTimes(account), ...account.costs.map((c) => c.atMs), ...account.entries.map((e) => e.atMs), ...account.openPositions.map((p) => p.openedAtMs));
+  const consistent = balance !== null && market.solBalance !== null && market.solBalance.atMs >= lastChange
     && account.unresolvedEntries.length === 0
     && account.openPositions.every((p) => p.markAtMs !== null && fresh(p.markAtMs, nowMs, policy.gates.maxQuoteAgeMs));
-  const nav = consistent ? economicNav(policy, balance, price, account.openPositions) : null;
+  const nav = consistent ? economicNav(balance, account.openPositions) : null;
   const navHwm = nav === null ? null : navHighWaterMark(account, latches.killRearmedAtMs, nowMs, nav);
   const capital = walletEquity === null ? f.snapshot.equity : minBig(f.snapshot.equity, walletEquity);
-  const sol = (v: bigint | null): Lamports | null => (v === null || price === null || v < 0n ? null : microUsdToLamports(usd(v), price, 'floor'));
+  // R7's trigger is a share of B; R9's line the tighter of a share of week-start equity and of the flow-scaled base.
+  const dailyLimit = ofBps(f.snapshot.bankroll, policy.loss.dailyBps, 'floor');
+  const weekLimit = ofBps(f.snapshot.weekStartEquity, policy.loss.weeklyBps, 'floor');
+  const weekBaseLimit = ofBps(f.snapshot.weekBase, policy.loss.weeklyBps, 'floor');
   const s: RiskSnapshot = {
     ...f.snapshot,
-    walletEquity: walletEquity === null ? null : usd(walletEquity),
-    capital: usd(capital),
-    nav: nav === null ? null : usd(nav),
-    navHighWaterMark: navHwm === null ? null : usd(navHwm),
-    equitySol: sol(f.snapshot.equity), capitalSol: sol(capital), navSol: sol(nav), navHighWaterMarkSol: sol(navHwm),
+    dailyLimit: lam(dailyLimit),
+    weeklyLimit: lam(minBig(weekLimit, weekBaseLimit)),
+    walletEquity: walletEquity === null ? null : lam(walletEquity),
+    capital: lam(capital),
+    nav,
+    navHighWaterMark: navHwm === null ? null : lam(navHwm),
   };
   const reasons: RiskReason[] = [...f.problems];
   const trips: Trip[] = [];
+  // SOL-BOOKS: with no SOL bankroll (no valid opening SOL price yet) every figure is zero and every line reads as
+  // reached. That proves no breach: R1 refuses entries, and nothing is handed back to latch.
+  const valued = f.snapshot.bankroll > 0n;
+  const trip = (t: Trip): void => { if (valued) trips.push(t); };
   const live = mode === 'live';
 
-  // R1: the bankroll and the price that values it.
-  // (A session policy always has a positive bankroll: CFG-1 validation.)
-  if (market.solPrice === null) reasons.push(reason('sol_price_unknown', 'no SOL price'));
-  else if (!fresh(market.solPrice.atMs, nowMs, policy.gates.maxQuoteAgeMs) || market.solPrice.value <= 0n) reasons.push(reason('sol_price_stale', 'SOL price is stale or invalid'));
+  // R1: the bankroll in SOL (a figure above); no live SOL/USD price is read (SOL-BOOKS).
 
   // R3: one open position, counting an unresolved entry.
   const open = account.openPositions.length + account.unresolvedEntries.length;
@@ -269,7 +289,6 @@ const accountCheck = (input: RiskInput, nowMs: number): AccountCheck => {
   else if (market.solBalance.value < policy.reserve.opsFloor) reasons.push(reason('ops_reserve', 'SOL balance is below the operations floor'));
 
   // R7: today's realized and marked loss against the daily trigger (costs of a new trade are added per entry).
-  const dailyLimit = ofBps(policy.capital.bankroll, policy.loss.dailyBps, 'floor');
   if (s.dayLoss >= dailyLimit) reasons.push(reason('daily_loss', 'daily loss trigger reached; entries resume at midnight Melbourne time'));
 
   // R8: consecutive losses.
@@ -292,22 +311,20 @@ const accountCheck = (input: RiskInput, nowMs: number): AccountCheck => {
   }
 
   // R9: weekly loss, latched until the week ends and the owner has reviewed it (a review strictly after the trip).
-  // Counted two ways and the tighter applies: in dollars against week-start equity, and time-weighted against the
+  // Counted two ways and the tighter applies: in lamports against week-start equity, and time-weighted against the
   // flow-scaled base (RISK-1b), so a flow can neither hide a weekly loss nor loosen the limit.
-  const weekLimit = ofBps(s.weekStartEquity, policy.loss.weeklyBps, 'floor');
-  const weekBaseLimit = ofBps(s.weekBase, policy.loss.weeklyBps, 'floor');
   const weeklyTripped = latches.weeklyTrippedAtMs;
   const weeklyLatched = weeklyTripped !== null && (
     latches.weeklyReviewedAtMs === null || latches.weeklyReviewedAtMs <= weeklyTripped || nowMs < melbourneWeek(weeklyTripped).end
   );
   if (s.weekLoss >= weekLimit || s.weekBaseLoss >= weekBaseLimit) {
     reasons.push(reason('weekly_loss', 'weekly loss trigger reached; paused for the week'));
-    if (!weeklyLatched) trips.push('weekly_loss');
+    if (!weeklyLatched) trip('weekly_loss');
   }
   if (weeklyLatched) reasons.push(reason('weekly_review', 'weekly loss trigger tripped; paused until the week ends and the owner reviews'));
 
   // R10: kill switch at 70% of the high-water mark, latched until the owner re-arms (strictly after the trip). Measured
-  // on economic NAV per unit (RISK-1b) and, kept so a rise in SOL never hides a trading loss, on the trading ledger.
+  // on economic NAV per unit (RISK-1b) and on the trading ledger, both in lamports.
   const killLine = ofBps(s.highWaterMark, policy.loss.killSwitchFloorBps, 'ceil');
   const navKillLine = s.navHighWaterMark === null ? null : ofBps(s.navHighWaterMark, policy.loss.killSwitchFloorBps, 'ceil');
   const killTripped = latches.killTrippedAtMs;
@@ -315,10 +332,10 @@ const accountCheck = (input: RiskInput, nowMs: number): AccountCheck => {
   const navBelow = s.nav !== null && navKillLine !== null && s.nav <= navKillLine;
   if (s.equity <= killLine || navBelow || killLatched) {
     reasons.push(reason('kill_switch', 'equity at or below the kill line; only the owner re-arms'));
-    if (!killLatched) trips.push('kill_switch');
+    if (!killLatched) trip('kill_switch');
   }
-  // Not latched: it follows the SOL price and lifts when the wallet's value is back above the line.
-  if (s.walletEquity !== null && s.walletEquity <= killLine) reasons.push(reason('wallet_below_kill_line', 'the wallet\'s value at the SOL price is at or below the kill line'));
+  // Not latched: it lifts when the wallet's SOL (with open positions at their marks) is back above the line.
+  if (s.walletEquity !== null && s.walletEquity <= killLine) reasons.push(reason('wallet_below_kill_line', 'the wallet\'s SOL is at or below the kill line'));
 
   // R11: entries per day, in paper exactly as live (supervisor ruling, golden rule: paper money is real money); only the
   // backtest's research evaluation is uncapped.
@@ -428,7 +445,14 @@ export const evaluateEntry = (input: RiskInput, request: EntryRequest): EntryDec
   const s = check.figures.snapshot;
   const reasons: RiskReason[] = [...check.reasons];
   const live = mode === 'live';
-  const qMin = policy.capital.minNotional;
+  // q_min, q_max and the liquidity floors in lamports at the opening SOL price (SOL-BOOKS). q_min is rounded up and
+  // q_max down, so the range never widens; the floors are rounded up.
+  const qMinL = atOpening(account, policy.capital.minNotional, 'ceil');
+  const qMaxL = atOpening(account, policy.capital.maxNotional, 'floor');
+  const floorL = atOpening(account, policy.liquidity.floorUsd, 'ceil');
+  const u1FloorL = atOpening(account, policy.liquidity.u1FloorUsd, 'ceil');
+  if (qMinL === null || qMaxL === null || floorL === null || u1FloorL === null) return refuse(reasons, check.trips, s);
+  const qMin = lam(qMinL);
 
   // R11: per mint, and no re-entry after a stop, in paper exactly as live (supervisor ruling); not in the backtest.
   if (mode !== 'backtest') {
@@ -453,13 +477,12 @@ export const evaluateEntry = (input: RiskInput, request: EntryRequest): EntryDec
   if (!targetOk) reasons.push(reason('median_target_invalid', 'the strategy median target is not valid'));
   // R12: liquidity floor.
   const u1 = request.universe === 'U1';
-  const floor = u1 ? maxBig(policy.liquidity.floorUsd, policy.liquidity.u1FloorUsd) : policy.liquidity.floorUsd;
+  const floor = u1 ? maxBig(floorL, u1FloorL) : floorL;
   if (request.poolLiquidity === null) reasons.push(reason('liquidity_unknown', 'pool liquidity is unknown'));
   else if (request.poolLiquidity < floor) reasons.push(reason('liquidity_floor', 'pool liquidity is below the floor'));
 
-  const price = market.solPrice?.value;
   const balance = market.solBalance?.value;
-  if (price === undefined || price <= 0n || balance === undefined) return refuse(reasons, check.trips, s);
+  if (balance === undefined) return refuse(reasons, check.trips, s);
 
   let costs: ReturnType<typeof maxTradeCosts>;
   try {
@@ -469,25 +492,23 @@ export const evaluateEntry = (input: RiskInput, request: EntryRequest): EntryDec
     return refuse(reasons, check.trips, s);
   }
   const cMax = costs.total;
-  const cMaxUsd = lamportsToMicroUsd(cMax, price, 'ceil');
-  const heldUsd = lamportsToMicroUsd(account.heldReservations, price, 'ceil');
+  const held = account.heldReservations;
   const openCount = BigInt(account.openPositions.length);
   // Remaining full loss of what is already open or reserved: positions at mark (plus their exit ladder) and held reservations.
-  const ladderUsd = lamportsToMicroUsd(lamports(costs.ladderWorst), price, 'ceil');
-  const committed = s.openExposure + openCount * ladderUsd;
+  const committed = s.openExposure + openCount * costs.ladderWorst;
 
   // R7 per entry: L_day + C must stay below the daily trigger.
-  if (s.dayLoss < check.dailyLimit && s.dayLoss + cMaxUsd >= check.dailyLimit) {
+  if (s.dayLoss < check.dailyLimit && s.dayLoss + cMax >= check.dailyLimit) {
     reasons.push(reason('daily_loss', 'the costs of this trade would reach the daily loss trigger'));
   }
 
   // Size caps on the notional, each net of the costs C where the control counts them.
   const caps: SizeCapEntry[] = [];
-  const cap = (control: SizeCapEntry['control'], name: string, notional: bigint) => caps.push({ control, name, notional: usd(notional) });
+  const cap = (control: SizeCapEntry['control'], name: string, notional: bigint) => caps.push({ control, name, notional: lam(notional) });
   const resetShare = BPS - BigInt(policy.capital.drawdownResetBps);
   const drawdownReset = s.capital * BPS <= s.highWaterMark * resetShare
     || (s.nav !== null && s.navHighWaterMark !== null && s.nav * BPS <= s.navHighWaterMark * resetShare);
-  cap('R2', 'maximum notional', policy.capital.maxNotional);
+  cap('R2', 'maximum notional', qMaxL);
   // Phase 1 and any 10% drawdown trade at the minimum. That is a choice of size inside the range, not a cap on it.
   const atMinimum = !latches.sizeStepUpApproved || drawdownReset;
   const stage: SizeCapEntry | undefined = atMinimum
@@ -496,19 +517,19 @@ export const evaluateEntry = (input: RiskInput, request: EntryRequest): EntryDec
   if (stage) caps.push(stage);
   const reserve = opsReserve(policy, request, costs.perExitAttempt);
   // Signed: a balance already short of the reserve gives a negative cap.
-  cap('R4', 'cash after the operations reserve', mulDiv(balance - reserve - cMax - request.rent.transient, price, LAMPORTS_PER_SOL, 'floor'));
+  cap('R4', 'cash after the operations reserve', balance - reserve - cMax - request.rent.transient);
   // R5 is planned risk (1R): q * s plus the costs the trade is expected to pay, F and proportional costs at the cost-gate
   // ceiling, so q * (s + gate) + F <= plannedRisk * B. The worst case C is reserved by R6 and R7.
   const fixed = fixedCosts(request.network, request.rent);
-  const fixedUsd = lamportsToMicroUsd(lamports(fixed.total), price, 'ceil');
+  const fixedL = fixed.total;
   if (stopOk) {
-    cap('R5', 'planned risk per trade', mulDiv(ofBps(minBig(policy.capital.bankroll, s.capital), policy.loss.plannedRiskBps, 'floor') - fixedUsd, BPS,
+    cap('R5', 'planned risk per trade', mulDiv(ofBps(minBig(s.bankroll, s.capital), policy.loss.plannedRiskBps, 'floor') - fixedL, BPS,
       BigInt(request.stopBps + policy.costGate.maxRoundTripBps), 'floor'));
   }
   const killAllowance = check.killRoom - committed;
   const weekAllowance = check.weekRoom - committed;
-  cap('R6', 'full loss above the kill line', killAllowance - heldUsd - cMaxUsd);
-  cap('R6', 'full loss inside the weekly limit', weekAllowance - heldUsd - cMaxUsd);
+  cap('R6', 'full loss above the kill line', killAllowance - held - cMax);
+  cap('R6', 'full loss inside the weekly limit', weekAllowance - held - cMax);
   if (request.poolLiquidity !== null) cap('R12', 'liquidity floor multiple', request.poolLiquidity / BigInt(policy.liquidity.floorNotionalMultiple));
   const lastTrade = check.figures.trades.at(-1);
   if (lastTrade && isLoss(lastTrade)) cap('R15', 'no larger size after a loss', lastTrade.notional);
@@ -527,21 +548,21 @@ export const evaluateEntry = (input: RiskInput, request: EntryRequest): EntryDec
 
   // Depth and expected net from the pool itself (CORE-2), inside the caps above.
   const tightest = caps.filter((c) => c !== stage).reduce((a, b) => (b.notional < a.notional ? b : a));
-  // q_min in lamports is rounded up, so a size cap of exactly q_min (R2 maximum, R15 same size after a loss) must admit
-  // that one rounding. Loss caps (R4, R5, R6, R12) admit nothing extra; the reservation check below is exact in lamports.
-  const minSpend = microUsdToLamports(qMin, price, 'ceil');
-  const minSpendUsd = lamportsToMicroUsd(lamports(minSpend), price, 'ceil');
+  // Every cap is in lamports, so q_min is the minimum spend itself. Loss caps (R4, R5, R6, R12) admit nothing extra; the
+  // reservation check below is exact. The sizing search runs at LAMPORT_UNIT, where its micro-units are lamports.
+  const minSpend: bigint = qMin;
   const sizeCaps = caps.filter((c) => c !== stage && (c.control === 'R2' || c.control === 'R15'));
   const lossCaps = caps.filter((c) => c !== stage && c.control !== 'R2' && c.control !== 'R15');
-  const shapeCap = sizeCaps.reduce((m, c) => minBig(m, c.notional), policy.capital.maxNotional as bigint);
-  const qCap = usd(lossCaps.reduce((m, c) => minBig(m, c.notional), maxBig(shapeCap, minSpendUsd)));
-  const cashNeedsUsd = fixedUsd + lamportsToMicroUsd(lamports(fixed.recoverableRent + request.rent.transient), price, 'ceil');
+  const shapeCap = sizeCaps.reduce((m, c) => minBig(m, c.notional), qMaxL);
+  const qCap = lossCaps.reduce((m, c) => minBig(m, c.notional), maxBig(shapeCap, minSpend));
+  const cashNeeds = fixedL + fixed.recoverableRent + request.rent.transient;
+  const units = (v: bigint): MicroUsd => v as MicroUsd;
   let sized: ReturnType<typeof feasibleSize>;
   try {
     sized = feasibleSize({
-      quote: request.quote, solPrice: price, edgePpm: request.edgePpm, network: request.network, rent: request.rent,
-      policy: { minNotional: qMin, maxNotional: qCap, maxImpactPpm: BigInt(policy.liquidity.maxImpactBps) * PPM_PER_BPS },
-      caps: { lossAllowance: usd(qCap + fixedUsd), riskBudget: usd(qCap + fixedUsd), executableDepth: qCap, cash: usd(qCap + cashNeedsUsd) },
+      quote: request.quote, solPrice: LAMPORT_UNIT, edgePpm: request.edgePpm, network: request.network, rent: request.rent,
+      policy: { minNotional: units(qMin), maxNotional: units(qCap), maxImpactPpm: BigInt(policy.liquidity.maxImpactBps) * PPM_PER_BPS },
+      caps: { lossAllowance: units(qCap + fixedL), riskBudget: units(qCap + fixedL), executableDepth: units(qCap), cash: units(qCap + cashNeeds) },
       extraPpm: request.extraPpm ?? 0n,
     });
   } catch (e) {
@@ -559,9 +580,9 @@ export const evaluateEntry = (input: RiskInput, request: EntryRequest): EntryDec
     return refuse([reason('expected_net_not_positive', 'the minimum size does not clear its fixed costs')], check.trips, s);
   }
   // A size cap (R2, R15) admits exactly the minimum spend and nothing between it and the cap.
-  const shapeSpend = maxBig(microUsdToLamports(usd(shapeCap), price, 'floor'), minSpend);
+  const shapeSpend = maxBig(shapeCap, minSpend);
   const spend = atMinimum ? minSpend : minBig(sized.range.maxLamports, shapeSpend);
-  const notional = spend === minSpend ? qMin : lamportsToMicroUsd(lamports(spend), price, 'floor');
+  const notional = lam(spend);
 
   // R14: the round trip at the chosen size, F included, within 5% and within a third of the median target.
   let roundTrip: RoundTrip;
@@ -586,7 +607,7 @@ export const evaluateEntry = (input: RiskInput, request: EntryRequest): EntryDec
   const amount = lamports(spend + cMax);
   const allowance = minBig(killAllowance, weekAllowance);
   // Positive here: every R6 cap passed, so the allowance holds at least q_min + C.
-  const maxHeld = microUsdToLamports(usd(allowance), price, 'floor');
+  const maxHeld = lam(allowance);
   if (account.heldReservations + amount > maxHeld) {
     const code: RiskCode = weekAllowance < killAllowance ? 'full_loss_week' : 'full_loss_kill_line';
     return refuse([reason(code, 'the full-loss reservation does not fit the remaining allowance')], check.trips, s);
@@ -601,10 +622,10 @@ export const evaluateEntry = (input: RiskInput, request: EntryRequest): EntryDec
   const stop = BigInt(request.stopBps);
   const slip = BigInt(policy.exits.ladder.steps.reduce((m, st) => Math.max(m, st.minOutBelowTriggerBps), 0));
   const loss = {
-    plannedRisk: usd(mulDiv(notional, stop + BigInt(policy.costGate.maxRoundTripBps), BPS, 'ceil') + fixedUsd),
+    plannedRisk: lam(mulDiv(notional, stop + BigInt(policy.costGate.maxRoundTripBps), BPS, 'ceil') + fixedL),
     // 1 − (1 − s)(1 − e) = s + e − s·e, in bps of bps.
-    stressed: usd(mulDiv(notional, stop * BPS + slip * BPS - stop * slip, BPS * BPS, 'ceil') + cMaxUsd),
-    reserved: lamportsToMicroUsd(amount, price, 'ceil'),
+    stressed: lam(mulDiv(notional, stop * BPS + slip * BPS - stop * slip, BPS * BPS, 'ceil') + cMax),
+    reserved: amount,
   };
   return {
     allow: true, reasons: [], trips: check.trips, snapshot: s, notional, spendLamports: spend, maxCostsLamports: cMax,

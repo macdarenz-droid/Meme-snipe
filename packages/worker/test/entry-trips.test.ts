@@ -4,13 +4,13 @@
 import { describe, expect, it } from 'vitest';
 import { usd } from '../../core/src/config/amounts.ts';
 import { melbourneWeek } from '../../core/src/risk/melbourne.ts';
-import type { MicroUsd } from '../../core/src/units/index.ts';
+import type { MicroUsd, Lamports } from '../../core/src/units/index.ts';
 import { simulationLatency } from '../../runner/src/item4.ts';
 import { markedHistory } from '../src/engine/marks.ts';
 import { accountFile } from '../src/run/account.ts';
 import { controlFile } from '../src/run/state.ts';
 import { blockNetwork } from './helpers.ts';
-import { T, makeWorker, passingMarket, tempState } from './worker-harness.ts';
+import { SOL_PRICE, T, makeWorker, passingMarket, tempState, lam } from './worker-harness.ts';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -26,11 +26,11 @@ const HELD = { heldPoolFacts: true } as const;
  */
 const entryPath = (inner: typeof markedHistory = markedHistory) => {
   const seen = { valuations: 0 };
-  const mark: typeof markedHistory = (h, held, sol, nowMs, st) => {
-    const r = inner(h, held, sol, nowMs, st);
+  const mark: typeof markedHistory = (h, held, nowMs, st) => {
+    const r = inner(h, held, nowMs, st);
     if (!(new Error().stack ?? '').includes('#markAccount')) return r;
     seen.valuations++;
-    return { ...r, openPositions: [...r.openPositions, { mint: 'Unmarked' as never, openedAtMs: nowMs, notional: 0n as MicroUsd, mark: null, markAtMs: null }] };
+    return { ...r, openPositions: [...r.openPositions, { mint: 'Unmarked' as never, openedAtMs: nowMs, notional: 0n as Lamports, mark: null, markAtMs: null }] };
   };
   return { mark, seen };
 };
@@ -73,7 +73,9 @@ describe('a stop reached on the entry path while flat is latched', () => {
   });
 
   it('NAV kill: the reject carries `trip kill_switch` as its own reason, and the kill latch is set', async () => {
-    const dir = seeded({ navPeak: { atMs: T - 3_600_000, nav: usd('40') } });
+    // SOL-BOOKS: a file in SOL (an old file's dollar NAV peak is dropped at the opening, not converted): a NAV peak of
+    // twice the bankroll's SOL, recorded an hour ago.
+    const dir = seeded({ books: 'sol', openingSolPrice: SOL_PRICE, navPeak: { atMs: T - 3_600_000, nav: lam('40') } });
     const e = entryPath();
     const { h, lines, latches } = await run(dir, e.mark);
     expect(e.seen.valuations).toBeGreaterThan(0);
@@ -94,11 +96,11 @@ describe('an entry-path trip latches only from a fully marked account', () => {
    * crosses the $4 weekly line (20% of $20); the account stays above the $14 kill line either way. The position's mark
    * is null, a micro-dollar older than maxQuoteAgeMs, or a fresh micro-dollar (a real fall).
    */
-  const steered = (mode: Seam, maxAgeMs: number): typeof markedHistory => (h0, held, sol, nowMs, st) => {
-    const lost = { mint: 'MintX' as never, openedAtMs: nowMs - 7_200_000, closedAtMs: nowMs - 3_600_000, notional: 3_000_000n as MicroUsd, netPnl: -2_010_000n as MicroUsd, stoppedOut: true };
-    const r = markedHistory({ ...h0, closedTrades: [...h0.closedTrades, lost] }, held, sol, nowMs, st);
-    const mark = mode === 'unmarked' ? { mark: null, markAtMs: null } : mode === 'stale' ? { mark: 1n as MicroUsd, markAtMs: nowMs - maxAgeMs - 1 } : { mark: 1n as MicroUsd, markAtMs: nowMs };
-    return { ...r, openPositions: [...r.openPositions, { mint: 'MintY' as never, openedAtMs: nowMs - 600_000, notional: 3_000_000n as MicroUsd, ...mark }] };
+  const steered = (mode: Seam, maxAgeMs: number): typeof markedHistory => (h0, held, nowMs, st) => {
+    const lost = { mint: 'MintX' as never, openedAtMs: nowMs - 7_200_000, closedAtMs: nowMs - 3_600_000, notional: lam('3'), netPnl: -lam('2.01') as Lamports, stoppedOut: true };
+    const r = markedHistory({ ...h0, closedTrades: [...h0.closedTrades, lost] }, held, nowMs, st);
+    const mark = mode === 'unmarked' ? { mark: null, markAtMs: null } : mode === 'stale' ? { mark: 1n as Lamports, markAtMs: nowMs - maxAgeMs - 1 } : { mark: 1n as Lamports, markAtMs: nowMs };
+    return { ...r, openPositions: [...r.openPositions, { mint: 'MintY' as never, openedAtMs: nowMs - 600_000, notional: lam('3'), ...mark }] };
   };
   const rejects = (lines: { kind: string; reasons?: string[] }[]) => lines.filter((l) => l.kind === 'decision' && l.reasons?.[0] === 'reject').map((l) => l.reasons!);
   const maxAge = makeWorker().session.policy.gates.maxQuoteAgeMs;

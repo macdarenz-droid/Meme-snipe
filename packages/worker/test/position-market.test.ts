@@ -100,7 +100,8 @@ describe('a held position priced from its pool\'s swap stream (POS-1)', () => {
     const exit = decisions(h).find((r) => r[0] === 'exit')!;
     const v = executableMark({ venue: 'pumpswap', pool, ctx: FEE_CONTEXT }, quantity, markSettings(h.session.policy, h.worker.strategyConfig.network));
     if (!v.ok) throw new Error('no mark');
-    expect(exit).toContain(`${MARK_PREFIX}${lamportsToMicroUsd(v.value as Lamports, SOL_PRICE as MicroUsd, 'floor')}`);
+    // SOL-BOOKS: the mark is the executable SOL itself, in lamports.
+    expect(exit).toContain(`${MARK_PREFIX}${v.value}`);
     const tripped = exit.find((x) => x.startsWith(TRIPPED_PREFIX))?.slice(TRIPPED_PREFIX.length).split(',') ?? [];
     // The position itself still counts against maxOpen; its value is known and fresh.
     expect(tripped).toContain('max_open_positions');
@@ -109,9 +110,9 @@ describe('a held position priced from its pool\'s swap stream (POS-1)', () => {
     await h.worker.stop();
   });
 
-  it('an input older than maxQuoteAgeMs leaves the mark unknown: with a stale SOL price the stop is judged with mark_unknown', async () => {
-    // Since EXIT-1c a due exit waits for a fresh quote, so an exit is never judged on a stale market; the SOL price
-    // is the other input a mark needs fresh (the same maxQuoteAgeMs).
+  it('SOL-BOOKS: a SOL/USD price older than maxQuoteAgeMs leaves the mark known; the stop is judged on the executable SOL', async () => {
+    // Since EXIT-1c a due exit waits for a fresh quote, so an exit is never judged on a stale market. Before SOL-BOOKS
+    // a stale SOL/USD price also left the mark unknown; the mark is now the executable SOL, which needs no price.
     const { h, m } = await entered();
     const pid = position(h)!.id;
     await until(m, () => false, 2_000, ticks(h, m));
@@ -123,8 +124,9 @@ describe('a held position priced from its pool\'s swap stream (POS-1)', () => {
     expect(closed, JSON.stringify(decisions(h).slice(-12))).toBe(true);
     const exit = decisions(h).find((r) => r[0] === 'exit')!;
     expect(exit.some((x) => x.startsWith('price_stop: '))).toBe(true);
-    expect(exit).toContain(`${MARK_PREFIX}unknown`);
-    expect(exit.find((x) => x.startsWith(TRIPPED_PREFIX))?.slice(TRIPPED_PREFIX.length).split(',')).toContain('mark_unknown');
+    expect(exit).not.toContain(`${MARK_PREFIX}unknown`);
+    expect(exit.some((x) => /^risk mark \d+$/.test(x))).toBe(true);
+    expect(exit.find((x) => x.startsWith(TRIPPED_PREFIX))?.slice(TRIPPED_PREFIX.length).split(',') ?? []).not.toContain('mark_unknown');
     await h.worker.stop();
   });
 
@@ -169,7 +171,7 @@ describe('a held position priced from its pool\'s swap stream (POS-1)', () => {
     // RISK-PARTIAL: the half sold at a profit is realized now; no trade is closed yet.
     const trade = () => accountFile(h.stateDir).read(null as unknown as AccountState).trades.find((t) => t.positionId === pid)!;
     expect(trade().partials).toHaveLength(1);
-    expect(trade().partials![0]!.pnl).toBeGreaterThan(0n);
+    expect(trade().partials![0]!.lamports).toBeGreaterThan(0n);
     expect(trade().closedAtMs).toBeNull();
     // A seller takes it back down under the trail: the runner closes on the trailing stop.
     m.chainSwap('sell', (m.chainState.baseReserve * 12n) / 100n, h.worker.feed.openSlot);

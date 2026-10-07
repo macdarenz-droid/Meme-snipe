@@ -60,6 +60,7 @@ function build(m: Mode): Record<Endpoint, Check> {
       session: optional(obj({
         state: oneOf('running', 'paused', 'ended'), bankrollUsd: usd, entryUsd: usd, maxEntryUsd: usd, maxOpenPositions: int,
         dailyLossLimitUsd: usd, weeklyLossLimitUsd: usd, sessionLossLimitUsd: nullable(usd), startable: bool,
+        bankrollLamports: lamN, entryLamports: lamN, maxEntryLamports: lamN, dailyLossLimitLamports: lamN, weeklyLossLimitLamports: lamN,
       })),
       alerts: optional(arr(obj({ mode, code: oneOf(...ALERT_CODES), subject: str, at: iso }), 50)),
       regime: optional(nullable(obj({ state: oneOf('on', 'off'), at: iso, current: bool, reasons: arr(obj({ mode, code: oneOf(...REGIME_REASON_CODES), input: nullable(str) }), 20), waived: arr(oneOf(...WAIVED_PARTS), 4) }))),

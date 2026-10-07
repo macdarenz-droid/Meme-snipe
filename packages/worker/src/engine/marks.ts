@@ -1,15 +1,15 @@
 // RISK-MARK: risk's mark of each open position. Risk counts an open position with no mark as a total loss and refuses
 // entries while one is unknown or stale, and R10's NAV needs every mark; so each mark is the position's executable
 // value now (core exits `executableMark`: the full-size sell after fees, less the worst slippage the exit ladder accepts
-// and that rung's network cost), valued at a fresh SOL price, and only from a fresh, usable market. Anything else keeps
+// and that rung's network cost), in lamports (SOL-BOOKS), and only from a fresh, usable market. Anything else keeps
 // the mark null. One helper for entries and exits (`riskAccount`); on the exit path a failure falls back to the
 // unmarked account, so marking can never block an exit.
 import type { PoolFeeContext, PoolState } from '../../../core/src/amm/index.ts';
 import type { Policy } from '../../../core/src/config/index.ts';
 import type { NetworkPolicy } from '../../../core/src/costs/index.ts';
 import { executableMark } from '../../../core/src/exits/index.ts';
-import type { AccountHistory, Timed } from '../../../core/src/risk/index.ts';
-import { type Lamports, type MicroUsd, lamportsToMicroUsd } from '../../../core/src/units/index.ts';
+import type { AccountHistory } from '../../../core/src/risk/index.ts';
+import type { Lamports } from '../../../core/src/units/index.ts';
 
 /** A held position as the mark needs it: its tokens and the market it sells into now, or why there is none. */
 export interface HeldMarket {
@@ -22,7 +22,7 @@ export interface MarkSettings {
   readonly slippageBps: number;
   /** That rung's exit transaction network cost, lamports: signatures × base fee + its priority fee + the tip. */
   readonly exitCost: bigint;
-  /** A market or SOL price older than this keeps the mark null (the gates' maxQuoteAgeMs). */
+  /** A market older than this keeps the mark null (the gates' maxQuoteAgeMs). */
   readonly maxAgeMs: number;
 }
 
@@ -36,24 +36,26 @@ export const markSettings = (policy: Policy, n: Pick<NetworkPolicy, 'signaturesP
 const fresh = (atMs: number, nowMs: number, maxAgeMs: number): boolean => atMs <= nowMs && nowMs - atMs <= maxAgeMs;
 
 /** The account history with each open position marked, or left null (a total loss to risk) when it cannot be. */
-export const markedHistory = (h: AccountHistory, held: (mint: string) => HeldMarket | undefined, sol: Timed<MicroUsd> | null, nowMs: number, s: MarkSettings): AccountHistory => ({
+export const markedHistory = (h: AccountHistory, held: (mint: string) => HeldMarket | undefined, nowMs: number, s: MarkSettings): AccountHistory => ({
   ...h,
   openPositions: h.openPositions.map((o) => {
     const p = held(o.mint);
     const m = p?.market ?? null;
-    if (p === undefined || m === null || sol === null || sol.value <= 0n || !fresh(sol.atMs, nowMs, s.maxAgeMs) || !fresh(m.atMs, nowMs, s.maxAgeMs)) return { ...o, mark: null, markAtMs: null };
+    if (p === undefined || m === null || !fresh(m.atMs, nowMs, s.maxAgeMs)) return { ...o, mark: null, markAtMs: null };
     const v = executableMark({ venue: 'pumpswap', pool: m.pool, ctx: m.ctx }, p.quantity, { slippageBps: s.slippageBps, exitCost: s.exitCost });
-    return v.ok ? { ...o, mark: lamportsToMicroUsd(v.value as Lamports, sol.value, 'floor'), markAtMs: m.atMs } : { ...o, mark: null, markAtMs: null };
+    // SOL-BOOKS: the mark is the executable SOL itself; no SOL/USD price enters it.
+    return v.ok ? { ...o, mark: v.value as Lamports, markAtMs: m.atMs } : { ...o, mark: null, markAtMs: null };
   }),
 });
 
 /**
- * RISK-LATCH: whether a valuation may latch R9 or R10. Only when the SOL price is fresh and every open position has a
- * fresh mark: risk counts an unknown mark as a total loss, a stand-in for refusing entries, never proof of a breach.
- * A negative mark is unknown to risk (core's valuation rule), so it never latches either.
+ * RISK-LATCH: whether a valuation may latch R9 or R10. Only when every open position has a fresh mark: risk counts an
+ * unknown mark as a total loss, a stand-in for refusing entries, never proof of a breach. A negative mark is unknown to
+ * risk (core's valuation rule), so it never latches either. SOL-BOOKS: marks and limits are in SOL, so the SOL/USD
+ * price no longer takes part.
  */
-export const latchable = (h: AccountHistory, sol: Timed<MicroUsd> | null, nowMs: number, maxAgeMs: number): boolean =>
-  sol !== null && fresh(sol.atMs, nowMs, maxAgeMs) && h.openPositions.every((o) => o.mark !== null && o.mark >= 0n && o.markAtMs !== null && fresh(o.markAtMs, nowMs, maxAgeMs));
+export const latchable = (h: AccountHistory, nowMs: number, maxAgeMs: number): boolean =>
+  h.openPositions.every((o) => o.mark !== null && o.mark >= 0n && o.markAtMs !== null && fresh(o.markAtMs, nowMs, maxAgeMs));
 
 /**
  * The account risk judges, for entries and exits alike. On an exit (`fallback`), any failure while marking gives the
@@ -61,13 +63,13 @@ export const latchable = (h: AccountHistory, sol: Timed<MicroUsd> | null, nowMs:
  * On an entry it throws, and the strategy refuses that candidate. `mark` replaces `markedHistory` (tests inject a fault).
  */
 export const riskAccount = (
-  h: AccountHistory, held: (mint: string) => HeldMarket | undefined, sol: Timed<MicroUsd> | null, nowMs: number, s: MarkSettings,
+  h: AccountHistory, held: (mint: string) => HeldMarket | undefined, nowMs: number, s: MarkSettings,
   o: { readonly fallback: boolean; readonly mark?: typeof markedHistory },
 ): AccountHistory => {
   const mark = o.mark ?? markedHistory;
-  if (!o.fallback) return mark(h, held, sol, nowMs, s);
+  if (!o.fallback) return mark(h, held, nowMs, s);
   try {
-    return mark(h, held, sol, nowMs, s);
+    return mark(h, held, nowMs, s);
   } catch {
     return h;
   }

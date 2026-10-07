@@ -2,12 +2,12 @@
 // (core risk's tripped entry controls, nothing latched), so the app never shows "Entries: On" while a stop refuses
 // every entry; and the regime evaluation counts only while current.
 import { describe, expect, it } from 'vitest';
-import { FILL_CONFIG, RESEARCH_CONFIG, RUG_CONFIG, TRIAL_POLICY, startSession, usd } from '../../core/src/config/index.ts';
+import { FILL_CONFIG, RESEARCH_CONFIG, RUG_CONFIG, TRIAL_POLICY, startSession } from '../../core/src/config/index.ts';
 import type { MarketEvent, StrategyContext } from '../../core/src/engine/index.ts';
 import { emptyBook } from '../../core/src/lifecycle/book.ts';
 import { type Latches, NO_LATCHES, maxTradeCosts } from '../../core/src/risk/index.ts';
-import { BPS_DENOMINATOR, lamports, lamportsToMicroUsd, mulDiv } from '../../core/src/units/index.ts';
-import { DAY_START, HOUR, MINUTE, NOW, PRICE, SOL, WEEK_START, account, latches, trade } from '../../core/test/risk/helpers.ts';
+import { BPS_DENOMINATOR, lamports, mulDiv } from '../../core/src/units/index.ts';
+import { DAY_START, HOUR, MINUTE, NOW, PRICE, SOL, WEEK_START, account, atOpening, latches, trade, usd } from '../../core/test/risk/helpers.ts';
 import { checkEnvelope } from '../../../apps/web/src/api/modes.ts';
 import { schemaFor } from '../../../apps/web/src/api/schemas.ts';
 import { ACCOUNT_KEY, LiveStrategy, SOL_PRICE_KEY } from '../src/engine/strategy.ts';
@@ -45,7 +45,7 @@ const small = (t: number) => trade(t, '-0.1');
 
 describe('the strategy reads the account stops from its risk state', () => {
   it('a clean account has none', () => {
-    expect(stopsOf(account())).toEqual({ atMs: NOW, codes: [], dayLoss: 0n });
+    expect(stopsOf(account())).toEqual({ atMs: NOW, codes: [], dayLoss: 0n, dailyLimit: atOpening(TRIAL_POLICY.capital.bankroll) * BigInt(TRIAL_POLICY.loss.dailyBps) / 10_000n });
   });
   it('daily loss reached (R7)', () => {
     expect(codes(account({ closedTrades: [trade(DAY_START + HOUR, '-1.5', { notional: usd('5') })] }))).toContain('daily_loss');
@@ -54,10 +54,11 @@ describe('the strategy reads the account stops from its risk state', () => {
     // The entry path's own rule (core evaluateEntry R7): L_day + C >= the daily limit refuses every entry.
     const policy = startSession(TRIAL_POLICY).policy;
     const config = strategyConfig(policy, FILL_CONFIG, RESEARCH_CONFIG);
-    const limit = mulDiv(policy.capital.bankroll, BigInt(policy.loss.dailyBps), BPS_DENOMINATOR, 'floor');
-    const costs = lamportsToMicroUsd(maxTradeCosts(policy, { network: config.network, rent: { ...config.rent, oneTime: 0n } }).total, PRICE, 'ceil');
+    // SOL-BOOKS: both in lamports; the limit is 7.5% of B at the opening price.
+    const limit = mulDiv(atOpening(policy.capital.bankroll), BigInt(policy.loss.dailyBps), BPS_DENOMINATOR, 'floor');
+    const costs = maxTradeCosts(policy, { network: config.network, rent: { ...config.rent, oneTime: 0n } }).total;
     expect(costs).toBeGreaterThan(0n);
-    const lost = (micro: bigint) => account({ closedTrades: [trade(DAY_START + HOUR, `-${micro / 1_000_000n}.${String(micro % 1_000_000n).padStart(6, '0')}`)] });
+    const lost = (l: bigint) => account({ closedTrades: [trade(DAY_START + HOUR, '0', { netPnl: -l as never })] });
     expect(codes(lost(limit - costs - 1n))).toEqual([]);
     expect(codes(lost(limit - costs))).toEqual(['daily_loss']);
     expect(codes(lost(limit - 1n))).toEqual(['daily_loss']);
@@ -86,13 +87,13 @@ describe('the strategy reads the account stops from its risk state', () => {
   it('core cannot evaluate the account (its account check throws, evaluateExit then reports nothing): unknown, never none', () => {
     // A moment before 2008: the Melbourne rules refuse it, so core's account check throws and the entry is refused.
     const old = Date.UTC(2007, 0, 1);
-    expect(stopsOf(account({ openedAtMs: old - HOUR }), NO_LATCHES, { now: old })).toEqual({ atMs: old, codes: null, dayLoss: null });
+    expect(stopsOf(account({ openedAtMs: old - HOUR }), NO_LATCHES, { now: old })).toEqual({ atMs: old, codes: null, dayLoss: null, dailyLimit: null });
   });
   it('marking fails (the entry path refuses with risk-mark-failed): unknown, never the unmarked account', () => {
-    expect(stopsOf(account(), NO_LATCHES, { markFails: true })).toEqual({ atMs: NOW, codes: null, dayLoss: null });
+    expect(stopsOf(account(), NO_LATCHES, { markFails: true })).toEqual({ atMs: NOW, codes: null, dayLoss: null, dailyLimit: null });
   });
   it('no account fact: unknown, never none', () => {
-    expect(stopsOf(null)).toEqual({ atMs: NOW, codes: null, dayLoss: null });
+    expect(stopsOf(null)).toEqual({ atMs: NOW, codes: null, dayLoss: null, dailyLimit: null });
   });
 });
 
@@ -140,7 +141,8 @@ describe('what the app reads: no stop and a current regime only when both are tr
     expect(halts(served({ stops: null }))).toEqual(['risk-unknown']);
   });
   it('the probe: daily loss used 2.00 of 1.00 on the meter serves daily-loss even before core risk reads it', () => {
-    expect(halts(served({ trades: [{ closedAtMs: NOW - MINUTE, netPnl: -2_000_000n, netLamports: null }] }))).toEqual(['daily-loss']);
+    // SOL-BOOKS: lamports against R7's lamport line: 0.02 SOL lost of a 0.01 SOL limit.
+    expect(halts(served({ trades: [{ closedAtMs: NOW - MINUTE, netPnl: -2_000_000n, netLamports: -20_000_000n }], stops: { atMs: NOW, codes: [] as string[], dayLoss: 0n, dailyLimit: 10_000_000n } }))).toEqual(['daily-loss']);
   });
   it('the regime parts the S0 diagnostic set waived are served with the regime', () => {
     expect(served({ regime: { atMs: NOW - 1_000, on: true, reasons: [], waived: ['regime-volume'] } }).regime).toMatchObject({ state: 'on', current: true, waived: ['regime-volume'] });

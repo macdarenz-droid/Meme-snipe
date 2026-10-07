@@ -14,8 +14,8 @@ import {
 } from '../../../ops/src/watchdog/summary.ts';
 import type { MicroUsd } from '../../../core/src/units/index.ts';
 import { HELIUS_EXHAUSTED, type HttpClient } from '../providers/index.ts';
-import type { PaperTrade } from './account.ts';
-import { lamportsUsd, melbourneDate, usdText } from './api.ts';
+import { type PaperTrade, tradeSol } from './account.ts';
+import { lamportsUsd, melbourneDate, tradeNetUsd, usdText } from './api.ts';
 import { SEEDING } from '../engine/strategy.ts';
 import { StateFile } from './state.ts';
 import { parseDeathMem, type DeathMem } from './mem-trace.ts';
@@ -337,16 +337,20 @@ export const buildSummary = (i: SummaryInputs): Summary => {
   // A trade whose mint is not a mint address is counted, never listed (nothing unchecked reaches the text).
   const listed = inScope.filter((t) => fits(t.mint, PATTERNS.MINT));
   const closed = i.trades.filter((t) => inDay(t.closedAtMs));
-  const netL = closed.reduce((s, t) => s + (t.netLamports ?? 0n), 0n);
-  const netU = closed.reduce((s, t) => s + BigInt(t.netPnl ?? 0n), 0n);
+  // SOL-BOOKS: the SOL result first, each trade's whole result (its close and what landed after it, PAPER-2), as the
+  // app shows it; the dollars are its lamports' display (api's tradeNetUsd), never read as zero for want of a figure.
+  const netL = closed.reduce((s, t) => s + (tradeSol(t) ?? 0n), 0n);
+  const netU = closed.reduce((s, t) => s + (tradeNetUsd(i, t) ?? 0n), 0n);
+  const usdOrNull = (v: bigint | null): string | null => (v === null ? null : usdText(v));
   const trades: SummaryTrade[] = listed.slice(0, SUMMARY_MAX_TRADES).map((t) => ({
     mint: t.mint,
     opened_at: iso(t.openedAtMs),
     closed_at: t.closedAtMs === null ? null : iso(t.closedAtMs),
-    size_usd: usdText(BigInt(t.notional)),
+    // SOL-BOOKS: the size is q in lamports; its dollars at the entry's price (display only).
+    size_usd: usdText(lamportsUsd(BigInt(t.notional), t.openSolPrice ?? t.closeSolPrice ?? i.solPrice)),
     exit_reason: exitReason(t),
-    net_lamports: t.netLamports === null ? null : t.netLamports.toString(),
-    net_usd: t.netPnl === null ? (t.netLamports === null ? null : usdText(lamportsUsd(t.netLamports, t.closeSolPrice ?? i.solPrice))) : usdText(BigInt(t.netPnl)),
+    net_lamports: tradeSol(t)?.toString() ?? null,
+    net_usd: t.closedAtMs === null ? null : usdOrNull(tradeNetUsd(i, t)),
   }));
   const credits: ProviderCredits[] = i.credits
     .filter((q) => fits(q.provider, PATTERNS.CODE))

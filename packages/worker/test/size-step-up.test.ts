@@ -8,7 +8,7 @@ import { TRIAL_POLICY } from '../../core/src/config/index.ts';
 import { RAW } from '../../core/src/facts/index.ts';
 import { simKey } from '../../core/src/gates/index.ts';
 import { NO_LATCHES } from '../../core/src/risk/index.ts';
-import { microUsdToLamports, type MicroUsd } from '../../core/src/units/index.ts';
+import { type Lamports, lamportsToMicroUsd, microUsdToLamports, type MicroUsd } from '../../core/src/units/index.ts';
 import { poolBuyExactQuoteIn, poolSell } from '../../core/src/amm/index.ts';
 import { BASE_VAULT, FEE_CONTEXT, POOL, QUOTE_VAULT } from '../../core/test/gates/world.ts';
 import { LiveFacts, type LiveReaders } from '../src/facts/index.ts';
@@ -54,12 +54,16 @@ const simulating = (asked: bigint[]) => new LiveFacts({
 
 type Line = { kind: string; action?: string; reasons?: string[]; gate_reasons?: { gate: string; code: string; detail?: string }[] };
 
+/** A trade won 0.02 SOL 18 days ago (a file from before: its size in micro-dollars, its result in lamports). */
+const WON = { positionId: 'p:won:1', mint: 'WonMint', openedAtMs: T - 19 * DAY, notional: TRIAL_POLICY.capital.minNotional, closedAtMs: T - 18 * DAY, netLamports: 20_000_000n, netPnl: 3_000_000n, stoppedOut: false, booked: 20_000_000n };
+
 const run = async (stepUp: boolean, port: number, sizeProbe?: WorkerDeps['sizeProbe'], markedHistory?: WorkerDeps['markedHistory'], after?: () => void, seen?: (h: ReturnType<typeof makeWorker>) => void) => {
   const stateDir = tempState();
   controlFile(stateDir).write({ paused: false, pausedAtMs: null, latches: { ...NO_LATCHES, sizeStepUpApproved: stepUp } });
   // A wallet that has grown past the bankroll (about $23 of SOL on a $20 bankroll, its setup paid): above every
-  // high-water mark, so no drawdown returns the size to the minimum and the owner's step-up applies.
-  accountFile(stateDir).write({ openedAtMs: T - 20 * DAY, openingEquity: TRIAL_POLICY.capital.bankroll, walletLamports: 153_333_333n, trades: [], entries: [], oneTimePaid: true });
+  // high-water mark, so no drawdown returns the size to the minimum and the owner's step-up applies. SOL-BOOKS (risk
+  // review F1): the growth is a booked winning trade, so the wallet's funded SOL is the bankroll at the passing price.
+  accountFile(stateDir).write({ openedAtMs: T - 20 * DAY, openingEquity: TRIAL_POLICY.capital.bankroll, walletLamports: 153_333_334n, trades: [WON], entries: [], oneTimePaid: true } as never);
   const asked: bigint[] = [];
   const h = makeWorker({ stateDir, timers: dueTimers(T - 16 * DAY), facts: [simulating(asked)], ...(sizeProbe === undefined ? {} : { sizeProbe }), ...(markedHistory === undefined ? {} : { markedHistory }), config: { ZEROED_HEALTH_ADDR: `127.0.0.1:${port}`, ZEROED_API_ADDR: `127.0.0.1:${port + 1}` } });
   seen?.(h);
@@ -101,6 +105,15 @@ describe('size step-up: the gates and the simulation judge the size risk uses', 
     expect(spend).toBeGreaterThan(MIN_SPEND);
     // H15 was judged on a simulation at the very size risk approved.
     expect(asked).toContain(spend);
+  }, 120_000);
+
+  it('SOL-BOOKS: the gates judge the stepped-up size in dollars at the opening SOL price (risk sizes it in lamports)', async () => {
+    const sizes: { spend: bigint; notional: bigint }[] = [];
+    const { h } = await run(true, 19026, (sized) => (sizes.push(sized), sized));
+    const up = sizes.filter((x) => x.spend > MIN_SPEND);
+    expect(up.length).toBeGreaterThan(0);
+    for (const x of up) expect(x.notional).toBe(lamportsToMicroUsd(x.spend as Lamports, SOL_PRICE as MicroUsd, 'floor'));
+    expect(accountFile(h.stateDir).read(null as never).openingSolPrice).toBe(SOL_PRICE);
   }, 120_000);
 
   it('a size the probe did not settle on is refused as a size mismatch after the gates, and nothing is booked', async () => {

@@ -15,7 +15,7 @@ export const CONTROL_IDS: readonly ControlId[] = [
 /** Why an entry is refused. Every code belongs to exactly one control (see CODE_CONTROL). */
 export type RiskCode =
   // R1 bankroll and its valuation
-  | 'bankroll_invalid' | 'sol_price_unknown' | 'sol_price_stale' | 'mark_unknown' | 'mark_stale' | 'risk_fault'
+  | 'bankroll_invalid' | 'mark_unknown' | 'mark_stale' | 'risk_fault'
   // R2 trade size range
   | 'size_below_minimum'
   // R3 open positions
@@ -50,7 +50,7 @@ export type RiskCode =
   | 'withdrawal_queued' | 'withdrawal_unreconciled' | 'withdrawal_over_free_cash' | 'withdrawal_invalid';
 
 export const CODE_CONTROL: Readonly<Record<RiskCode, ControlId>> = {
-  bankroll_invalid: 'R1', sol_price_unknown: 'R1', sol_price_stale: 'R1', mark_unknown: 'R1', mark_stale: 'R1', risk_fault: 'R1',
+  bankroll_invalid: 'R1', mark_unknown: 'R1', mark_stale: 'R1', risk_fault: 'R1',
   size_below_minimum: 'R2',
   max_open_positions: 'R3',
   balance_unknown: 'R4', balance_stale: 'R4', ops_reserve: 'R4',
@@ -93,16 +93,16 @@ export interface RiskClock {
  */
 export interface RealizedPart {
   readonly atMs: number;
-  readonly pnl: MicroUsd;
+  readonly pnl: Lamports;
 }
 
 export interface ClosedTrade {
   readonly mint: Mint;
   readonly openedAtMs: number;
   readonly closedAtMs: number;
-  readonly notional: MicroUsd;
+  readonly notional: Lamports;
   /** The whole trade's result: statistics (R8, win rate, loss streak) count each trade once, whole. */
-  readonly netPnl: MicroUsd;
+  readonly netPnl: Lamports;
   /** Closed by a stop (price, thesis or flow): blocks re-entry on the mint for the policy's re-entry window. */
   readonly stoppedOut: boolean;
   /**
@@ -116,9 +116,9 @@ export interface ClosedTrade {
 export interface OpenPosition {
   readonly mint: Mint;
   readonly openedAtMs: number;
-  /** Cost basis of what is still held in micro-dollars, entry costs included (after a partial sale, its remaining share). */
-  readonly notional: MicroUsd;
-  readonly mark: MicroUsd | null;
+  /** Cost basis of what is still held in lamports, entry costs included (after a partial sale, its remaining share). */
+  readonly notional: Lamports;
+  readonly mark: Lamports | null;
   readonly markAtMs: number | null;
   /** What partial sales of this position have realized so far (none when absent), counted in equity at their times. */
   readonly partials?: readonly RealizedPart[];
@@ -127,32 +127,34 @@ export interface OpenPosition {
 /** A deposit (positive) or withdrawal (negative) of trading capital. Neither counts as profit or loss. */
 export interface CashFlow {
   readonly atMs: number;
-  readonly amount: MicroUsd;
+  readonly amount: Lamports;
   /**
    * Economic NAV (`economicNav`) just before the flow. Units are issued or redeemed at it: the flow scales the
    * high-water marks and the week's base by (navBefore + amount) / navBefore. Must be positive; otherwise the history is
    * refused.
    */
-  readonly navBefore: MicroUsd;
+  readonly navBefore: Lamports;
 }
 
 /**
  * A cost of the account itself, not of a trade. `amount` is what was paid (zero or more). `failed_entry`: the fees of
  * an entry that never filled (the backtest's stray costs, PAPER-1): it lowers equity and counts toward the day's and
- * week's loss like any cost, and is never a trade (R8, R11, R15 and statistics do not see it). `late_settlement`: a loss
+ * week's loss like any cost, and is never a trade (R8, R11, R15 and statistics do not see it). `open_trade`: what an
+ * open trade has already paid outside its basis (a failed attempt's fees, token-account rent not yet returned), dated
+ * when paid (ACCOUNT-RATE F1); it moves into the trade's net P&L when the trade closes. `late_settlement`: a loss
  * that landed after its trade closed (a late fee, sale or rent outcome, PAPER-2), dated when it was booked, so the day
  * the trade closed is never rewritten after its checks ran; counted the same way.
  */
 export interface AccountCost {
   readonly atMs: number;
-  readonly amount: MicroUsd;
-  readonly kind: 'wallet_setup' | 'failed_entry' | 'late_settlement';
+  readonly amount: Lamports;
+  readonly kind: 'wallet_setup' | 'failed_entry' | 'open_trade' | 'late_settlement';
 }
 
 /** An economic NAV (`economicNav`) the worker observed and recorded; the NAV high-water mark is the peak of these. */
 export interface NavMark {
   readonly atMs: number;
-  readonly nav: MicroUsd;
+  readonly nav: Lamports;
 }
 
 /** Every entry that reserved exposure, whatever became of it (filled, failed, still unresolved). */
@@ -163,8 +165,17 @@ export interface EntryRecord {
 
 /** The ledger's account history. Loss figures are derived from it here, against Melbourne day and week boundaries. */
 export interface AccountHistory {
-  /** Trading equity when the ledger started, before any trade (the bankroll put in). */
-  readonly openingEquity: MicroUsd;
+  /**
+   * SOL-BOOKS (owner, 2026-10-05: the books are kept in SOL). Trading equity when the ledger started, before any trade:
+   * the whole wallet, in lamports (the bankroll put in, the operations floor included).
+   */
+  readonly openingEquity: Lamports;
+  /**
+   * The SOL/USD price fixed at session start that converts the policy's dollar amounts (bankroll B, q_min, q_max, the
+   * liquidity floors) into lamports once. Never the live price: a SOL/USD move alone never moves a figure or a limit.
+   * Not positive: the history is refused (R1).
+   */
+  readonly openingSolPrice: MicroUsd;
   readonly openedAtMs: number;
   readonly flows: readonly CashFlow[];
   readonly closedTrades: readonly ClosedTrade[];
@@ -181,8 +192,8 @@ export interface AccountHistory {
   /** Lamports held by those reservations right now (the reservation store's total). */
   readonly heldReservations: Lamports;
   /** Marked equity recorded at the start of today and of this week (same valuation as `equity`); null if not recorded. */
-  readonly markedAtDayStart: MicroUsd | null;
-  readonly markedAtWeekStart: MicroUsd | null;
+  readonly markedAtDayStart: Lamports | null;
+  readonly markedAtWeekStart: Lamports | null;
   /**
    * Economic NAV observations (R10). The worker records one at least at every evaluation that sees a fresh NAV and at
    * every close; peaks between observations are not seen.
@@ -221,8 +232,8 @@ export interface Timed<T> {
   readonly atMs: number;
 }
 
+/** SOL-BOOKS: risk reads no SOL/USD price; every figure is in lamports. */
 export interface MarketInputs {
-  readonly solPrice: Timed<MicroUsd> | null;
   /** Wallet SOL right now. */
   readonly solBalance: Timed<Lamports> | null;
   /** R16 regime gate state from GATE-1. */
@@ -245,8 +256,8 @@ export interface EntryRequest {
   /** Exact round-trip quote at current reserves (CORE-2). */
   readonly quote: RoundTripQuoter;
   readonly quoteAtMs: number;
-  /** Pool liquidity in micro-dollars, from the same snapshot as the quote; null if unknown. */
-  readonly poolLiquidity: MicroUsd | null;
+  /** Pool liquidity in lamports (both sides at the pool's own price), from the same snapshot as the quote; null if unknown. */
+  readonly poolLiquidity: Lamports | null;
   readonly network: NetworkPolicy;
   readonly rent: RentInputs;
   readonly extraPpm?: bigint;
@@ -261,24 +272,30 @@ export interface RiskInput {
   readonly market: MarketInputs;
 }
 
-/** Figures the decision was made on, for the decision log. */
+/** Figures the decision was made on, for the decision log. Every amount is in lamports (SOL-BOOKS). */
 export interface RiskSnapshot {
   readonly nowMs: number;
   readonly dayStartMs: number;
   readonly weekStartMs: number;
+  /** The bankroll B in lamports: the policy's dollar bankroll at the opening SOL price, fixed for the session. */
+  readonly bankroll: Lamports;
+  /** R7's trigger, the daily loss limit: `dailyBps` of `bankroll`. */
+  readonly dailyLimit: Lamports;
+  /** R9's line: the tighter of `weeklyBps` of week-start equity and of the flow-scaled week base. */
+  readonly weeklyLimit: Lamports;
   /** Realized equity plus marked losses (unrealized gains are not counted), net of deposits and withdrawals. */
-  readonly equity: MicroUsd;
-  readonly highWaterMark: MicroUsd;
+  readonly equity: Lamports;
+  readonly highWaterMark: Lamports;
   /** Loss since the Melbourne day / week start: the stricter of the realized and marked measures (see `dayChangeMarked`). */
-  readonly dayLoss: MicroUsd;
-  readonly weekLoss: MicroUsd;
-  readonly weekStartEquity: MicroUsd;
+  readonly dayLoss: Lamports;
+  readonly weekLoss: Lamports;
+  readonly weekStartEquity: Lamports;
   /** Week-start equity scaled by every deposit and withdrawal since (time-weighted). */
-  readonly weekBase: MicroUsd;
+  readonly weekBase: Lamports;
   /** Loss this week measured against `weekBase` (zero if none). */
-  readonly weekBaseLoss: MicroUsd;
+  readonly weekBaseLoss: Lamports;
   /** Remaining full loss of open positions (mark or cost, whichever is lower). */
-  readonly openExposure: MicroUsd;
+  readonly openExposure: Lamports;
   readonly lossStreak: number;
   /**
    * Change since the start of today and of this week at one valuation: equity now − marked equity at the boundary − net
@@ -287,27 +304,22 @@ export interface RiskSnapshot {
    * figure shows (WORKER-1c ruling); a null figure leaves the realized loss alone. Moving the limits onto this figure
    * alone is the owner's call.
    */
-  readonly dayChangeMarked: MicroUsd | null;
-  readonly weekChangeMarked: MicroUsd | null;
+  readonly dayChangeMarked: Lamports | null;
+  readonly weekChangeMarked: Lamports | null;
   /**
-   * Wallet-marked equity: wallet SOL above the operations floor at the fresh SOL/USD price, plus open positions at the
-   * same marks as `equity`. Null without a fresh price and balance (then no entry is allowed anyway).
+   * Wallet-marked equity: the wallet's SOL plus open positions at the same marks as `equity`. Null without a fresh
+   * balance (then no entry is allowed anyway).
    */
-  readonly walletEquity: MicroUsd | null;
+  readonly walletEquity: Lamports | null;
   /** Capital every size and limit that scales with equity uses: the lower of `equity` and `walletEquity`. */
-  readonly capital: MicroUsd;
+  readonly capital: Lamports;
   /**
-   * Economic NAV now (`economicNav`), and its time-weighted high-water mark (R10). Null when it cannot be valued
-   * consistently: no fresh price or balance, a position without a fresh mark, an entry still unresolved, or a balance
-   * read before the account's latest change.
+   * Economic NAV now (`economicNav`: the wallet's SOL plus every open position at its executable mark), and its
+   * time-weighted high-water mark (R10). Null when it cannot be valued consistently: no fresh balance, a position
+   * without a fresh mark, an entry still unresolved, or a balance read before the account's latest change.
    */
-  readonly nav: MicroUsd | null;
-  readonly navHighWaterMark: MicroUsd | null;
-  /** The same figures in SOL at the fresh price; null without one. */
-  readonly equitySol: Lamports | null;
-  readonly capitalSol: Lamports | null;
-  readonly navSol: Lamports | null;
-  readonly navHighWaterMarkSol: Lamports | null;
+  readonly nav: Lamports | null;
+  readonly navHighWaterMark: Lamports | null;
 }
 
 export type Trip = 'kill_switch' | 'weekly_loss';
@@ -315,7 +327,7 @@ export type Trip = 'kill_switch' | 'weekly_loss';
 export interface SizeCapEntry {
   readonly control: ControlId;
   readonly name: string;
-  readonly notional: MicroUsd;
+  readonly notional: Lamports;
 }
 
 export interface EntryAllowed {
@@ -323,7 +335,8 @@ export interface EntryAllowed {
   readonly reasons: readonly [];
   readonly trips: readonly Trip[];
   readonly snapshot: RiskSnapshot;
-  readonly notional: MicroUsd;
+  /** q, the SOL spent on the entry (equal to `spendLamports`). */
+  readonly notional: Lamports;
   readonly spendLamports: bigint;
   /** C: every cost the trade can incur, exit-ladder worst case included. */
   readonly maxCostsLamports: Lamports;
@@ -336,7 +349,7 @@ export interface EntryAllowed {
    * q × (1 − (1 − stop)(1 − emergency slippage)) + C. Reserved loss (R6): q + C, the whole notional plus every cost,
    * which is what sizing and the reservation are bounded by.
    */
-  readonly loss: { readonly plannedRisk: MicroUsd; readonly stressed: MicroUsd; readonly reserved: MicroUsd };
+  readonly loss: { readonly plannedRisk: Lamports; readonly stressed: Lamports; readonly reserved: Lamports };
   /** Hand this to the reservation store before preparing the transaction. */
   readonly reservation: ReservationRequest;
 }

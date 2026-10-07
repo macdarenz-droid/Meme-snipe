@@ -10,11 +10,11 @@ import { describe, expect, it } from 'vitest';
 import { executableMark } from '../../core/src/exits/index.ts';
 import { NO_LATCHES, melbourneDay, melbourneWeek, riskSnapshot } from '../../core/src/risk/index.ts';
 import { openLedger } from '../../core/src/ledger/index.ts';
-import { type Lamports, type MicroUsd, lamportsToMicroUsd } from '../../core/src/units/index.ts';
+import { type Lamports, microUsdToLamports } from '../../core/src/units/index.ts';
 import { markSettings } from '../src/engine/marks.ts';
 import { MARK_PREFIX, TRIPPED_PREFIX } from '../src/engine/strategy.ts';
 import { type AccountState, PaperAccount, accountFile } from '../src/run/account.ts';
-import { MINT, Market, SOL_PRICE, makeWorker, passingMarket } from './worker-harness.ts';
+import { MINT, Market, makeWorker, passingMarket } from './worker-harness.ts';
 
 type H = ReturnType<typeof makeWorker>;
 const lines = (h: H) => readFileSync(join(h.stateDir, 'journal.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>);
@@ -66,26 +66,27 @@ const acrossBoundary = async (h: H): Promise<{ h2: H; m2: Market; day: number; p
   return { h2, m2: new Market(h2, { heldPoolFacts: true }), day, pid };
 };
 
-/** The position's executable mark now (marks.ts's settings, the worker's newest market), micro-dollars. */
+/** The position's executable mark now (marks.ts's settings, the worker's newest market), lamports (SOL-BOOKS). */
 const markNow = (h: H): bigint => {
   const p = position(h)!;
   const pool = h.worker.poolOf(MINT)!;
   const v = executableMark({ venue: 'pumpswap', pool: pool.state, ctx: pool.ctx }, p.quantity, markSettings(h.session.policy, h.worker.strategyConfig.network));
   expect(v.ok).toBe(true);
-  return v.ok ? lamportsToMicroUsd(v.value as Lamports, SOL_PRICE as MicroUsd, 'floor') : 0n;
+  return v.ok ? v.value : 0n;
 };
 
 describe('boundary marks from the marked account (RISK-MARK)', () => {
   it('a day boundary with an open position records equity at the executable mark, not as a total loss', async () => {
     const { h } = await entered();
-    const cost = lamportsToMicroUsd(position(h)!.cost as Lamports, SOL_PRICE as MicroUsd, 'ceil');
+    const cost = position(h)!.cost;
     const { h2, m2, day } = await acrossBoundary(h);
     expect(await until(m2, () => account(h2).dayMark?.startMs === day, 20_000, tick(m2))).toBe(true);
     expect(position(h2)!.status).toBe('open');
     const a = account(h2);
     // A total loss would leave at most the opening equity less the entry's cost (fees and rent take a little more);
     // the marked equity carries the position's executable value on top, less those fees.
-    const totalLoss = a.openingEquity - cost;
+    // Opening equity in lamports: the bankroll at the opening (the harness's) SOL price.
+    const totalLoss = microUsdToLamports(a.openingEquity, a.openingSolPrice!, 'floor') - cost;
     expect(a.dayMark!.equity - totalLoss).toBeGreaterThan(markNow(h2) / 2n);
     expect(a.weekMark!.equity).toBe(a.dayMark!.equity);
     await h2.worker.stop();
@@ -126,12 +127,12 @@ describe('boundary marks from the marked account (RISK-MARK)', () => {
     // larger, so the trip itself does not single out either measure.
     const ledger = openLedger(join(h.stateDir, 'ledger.sqlite'), 'paper');
     const a = new PaperAccount(accountFile(h.stateDir), account(h2).openingEquity, at, 0n);
-    const fact = a.fact(ledger, h2.worker.book, NO_LATCHES, SOL_PRICE as MicroUsd, at);
+    const fact = a.fact(ledger, h2.worker.book, NO_LATCHES, at, h2.worker.legs);
     ledger.close();
-    const history = { ...fact.history, openPositions: fact.history.openPositions.map((o) => ({ ...o, mark: exitMark as MicroUsd, markAtMs: at })) };
+    const history = { ...fact.history, openPositions: fact.history.openPositions.map((o) => ({ ...o, mark: exitMark as Lamports, markAtMs: at })) };
     const snap = riskSnapshot({
       session: h2.session, mode: 'paper', clock: { now: () => ({ slot: 1n, txIndex: 0, ixIndex: 0, receivedAt: at }) },
-      account: history, latches: NO_LATCHES, market: { solPrice: { value: SOL_PRICE as MicroUsd, atMs: at }, solBalance: fact.solBalance, regime: 'unknown' },
+      account: history, latches: NO_LATCHES, market: { solBalance: fact.solBalance, regime: 'unknown' },
     })!;
     expect(history.markedAtDayStart).toBe(account(h2).dayMark!.equity);
     const notional = history.openPositions[0]!.notional;
@@ -140,7 +141,7 @@ describe('boundary marks from the marked account (RISK-MARK)', () => {
     expect(markedLoss).toBe(capped(atBoundary) - capped(exitMark));
     expect(markedLoss).toBeGreaterThan(0n);
     expect(snap.dayLoss).toBeGreaterThanOrEqual(markedLoss);
-    expect(snap.dayLoss).toBeGreaterThanOrEqual((h2.session.policy.capital.bankroll * BigInt(h2.session.policy.loss.dailyBps)) / 10_000n);
+    expect(snap.dayLoss).toBeGreaterThanOrEqual(snap.dailyLimit);
     expect(h2.worker.book.positions[pid]).toBeDefined();
   });
 

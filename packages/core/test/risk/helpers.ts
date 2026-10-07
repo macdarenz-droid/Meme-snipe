@@ -1,14 +1,14 @@
 // Fixtures for the risk tests: a locked trial session, a healthy account and an entry the policy allows.
 import { expect } from 'vitest';
 import { type PoolState } from '../../src/amm/index.ts';
-import { TRIAL_POLICY, startSession, usd } from '../../src/config/index.ts';
+import { TRIAL_POLICY, startSession, usd as dollars } from '../../src/config/index.ts';
 import { BASE_FEE_PER_SIGNATURE, type NetworkPolicy, type RentInputs, pumpSwapRoundTrip } from '../../src/costs/index.ts';
 import { type Mint, intentId, mint, reservationId } from '../../src/domain/index.ts';
 import {
   type AccountHistory, type CashFlow, type ClosedTrade, type EntryDecision, type EntryRequest, type Latches, type ReservationRequest,
   type ReservationStore, type ReserveResult, type RiskCode, type RiskInput, NO_LATCHES, evaluateEntry, evaluateExit,
 } from '../../src/risk/index.ts';
-import { type Lamports, type MicroUsd, bps, lamports, solPriceMicroUsd } from '../../src/units/index.ts';
+import { type Lamports, type MicroUsd, bps, lamports, microUsdToLamports, solPriceMicroUsd } from '../../src/units/index.ts';
 import { AMM_FEE_CONFIG, NORMAL_COIN, PUMP_GLOBAL } from '../amm/helpers.ts';
 import { key32 } from '../fixtures.ts';
 
@@ -19,7 +19,19 @@ export const MINUTE = 60_000;
 export const NOW = Date.UTC(2026, 9, 7, 2, 0);
 export const WEEK_START = Date.UTC(2026, 9, 4, 13, 0);
 export const DAY_START = Date.UTC(2026, 9, 6, 13, 0);
-export const PRICE = solPriceMicroUsd('119.46');
+/**
+ * SOL-BOOKS: the session's opening SOL price. $100 makes every dollar amount a whole number of lamports ($1 = 10⁷
+ * lamports), so a limit written in dollars is exactly the same limit in SOL at the opening price.
+ */
+export const PRICE = solPriceMicroUsd('100');
+/** A dollar amount (`'1.50'`) in lamports at the opening price `PRICE`: exact, so the tests read in dollars. */
+export const usd = (text: string): Lamports => microUsdToLamports(dollars(text), PRICE, 'floor');
+/** Lamports as the policy's dollars at the opening price; exact for a multiple of 10 lamports ($0.000001 = 10). */
+export const policyUsd = (v: Lamports): MicroUsd => ((v * PRICE) / SOL) as MicroUsd;
+/** The sizing search's price at which its micro-units are lamports (what risk passes, SOL-BOOKS). */
+export const LAMPORT_UNIT = SOL as MicroUsd;
+/** A policy dollar amount in lamports at the opening price, rounded as risk rounds it. */
+export const atOpening = (v: MicroUsd, rounding: 'floor' | 'ceil' = 'floor'): Lamports => microUsdToLamports(v, PRICE, rounding);
 
 export const MINT_A: Mint = mint(key32(11));
 export const MINT_B: Mint = mint(key32(12));
@@ -39,7 +51,7 @@ export const RENT: RentInputs = { tokenAccount: 1_513_840n, tokenAccountClosedOn
 
 export const clockAt = (ms: number) => ({ now: () => ({ receivedAt: ms }) });
 
-type FlowInput = Omit<CashFlow, 'navBefore'> & { readonly navBefore?: MicroUsd };
+type FlowInput = Omit<CashFlow, 'navBefore'> & { readonly navBefore?: Lamports };
 /**
  * A test account. A flow given without `navBefore` gets the realized equity just before it (trades at the same instant
  * first), which is the executable valuation the ledger records when no position is open.
@@ -52,10 +64,10 @@ export const account = (patch: Omit<Partial<AccountHistory>, 'flows'> & { readon
     ...f,
     navBefore: f.navBefore ?? ((opening
       + trades.filter((t) => t.closedAtMs <= f.atMs).reduce((n, t) => n + t.netPnl, 0n)
-      + flowsIn.filter((g) => g.atMs < f.atMs).reduce((n, g) => n + g.amount, 0n)) as MicroUsd),
+      + flowsIn.filter((g) => g.atMs < f.atMs).reduce((n, g) => n + g.amount, 0n)) as Lamports),
   }));
   return {
-    openingEquity: opening, openedAtMs: Date.UTC(2026, 8, 1), closedTrades: [], openPositions: [], entries: [],
+    openingEquity: opening, openingSolPrice: PRICE, openedAtMs: Date.UTC(2026, 8, 1), closedTrades: [], openPositions: [], entries: [],
     unresolvedEntries: [], heldReservations: lamports(0n), version: 0n, markedAtDayStart: null, markedAtWeekStart: null, navMarks: [], costs: [],
     ...patch, flows,
   };
@@ -63,7 +75,7 @@ export const account = (patch: Omit<Partial<AccountHistory>, 'flows'> & { readon
 
 export const trade = (closedAtMs: number, netPnl: string, patch: Partial<ClosedTrade> = {}): ClosedTrade => ({
   mint: MINT_B, openedAtMs: closedAtMs - 10 * MINUTE, closedAtMs, notional: usd('2'),
-  netPnl: (netPnl.startsWith('-') ? -usd(netPnl.slice(1)) : usd(netPnl)) as MicroUsd, stoppedOut: false, ...patch,
+  netPnl: (netPnl.startsWith('-') ? -usd(netPnl.slice(1)) : usd(netPnl)) as Lamports, stoppedOut: false, ...patch,
 });
 
 export const baseInput = (patch: Partial<RiskInput> = {}): RiskInput => ({
@@ -72,7 +84,7 @@ export const baseInput = (patch: Partial<RiskInput> = {}): RiskInput => ({
   clock: clockAt(NOW),
   account: account(),
   latches: NO_LATCHES,
-  market: { solPrice: { value: PRICE, atMs: NOW - 500 }, solBalance: { value: lamports(SOL), atMs: NOW - 500 }, regime: 'on' },
+  market: { solBalance: { value: lamports(SOL), atMs: NOW - 500 }, regime: 'on' },
   ...patch,
 });
 

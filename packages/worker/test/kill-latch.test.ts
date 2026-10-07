@@ -5,12 +5,13 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { MicroUsd } from '../../core/src/units/index.ts';
+import type { MicroUsd, Lamports } from '../../core/src/units/index.ts';
 import { markedHistory } from '../src/engine/marks.ts';
 import { SOL_PRICE_KEY, TRIPPED_PREFIX, TRIP_PREFIX } from '../src/engine/strategy.ts';
 import { accountFile } from '../src/run/account.ts';
 import { controlFile, NO_CONTROL } from '../src/run/state.ts';
-import { MINT, Market, SOL_PRICE, makeWorker, passingMarket, until } from './worker-harness.ts';
+import { microUsdToLamports } from '../../core/src/units/index.ts';
+import { MINT, Market, SOL_PRICE, makeWorker, passingMarket, until, lam } from './worker-harness.ts';
 
 type H = ReturnType<typeof makeWorker>;
 const latches = (h: H) => controlFile(h.stateDir).read(NO_CONTROL).latches;
@@ -23,32 +24,75 @@ const priced = (h: H, m: Market, ppm: bigint): void => {
 };
 
 describe('account-level trips latch from the account valuation (RISK-LATCH)', () => {
-  it('a NAV breach with no candidate and no position latches the kill switch, which holds after the recovery and a restart', async () => {
+  it('SOL-BOOKS: SOL at -40% and +40% with no trade trips nothing; NAV stays at its high-water mark (owner, 2026-10-05)', async () => {
     const h = makeWorker();
     expect(await h.worker.reconcile()).toEqual({ ok: true });
     const m = new Market(h);
-    priced(h, m, 1_000_000n);
     await m.run(4_000, 400, () => priced(h, m, 1_000_000n));
-    // The NAV (the wallet's SOL above the operations floor) is recorded; the high-water mark is the $20 opening.
-    expect(accountFile(h.stateDir).read(null as never).navPeak).toBeDefined();
-    expect(latches(h).killTrippedAtMs).toBeNull();
-    expect(Object.keys(h.worker.book.positions)).toHaveLength(0);
-
-    // SOL at 44% of the price: NAV under $8, below the $14 kill line (70% of the $20 peak).
-    await m.run(4_000, 400, () => priced(h, m, 440_000n));
-    const at = latches(h).killTrippedAtMs;
-    expect(at).not.toBeNull();
-
-    // The price recovers: the latch stays, with the moment of the trip.
-    await m.run(2_000, 400, () => priced(h, m, 1_000_000n));
-    expect(latches(h).killTrippedAtMs).toBe(at);
-
-    // A restart keeps it: the next process starts latched.
+    const before = accountFile(h.stateDir).read(null as never);
+    for (const ppm of [600_000n, 1_400_000n, 1_000_000n]) {
+      await m.run(4_000, 400, () => priced(h, m, ppm));
+      expect(latches(h), `SOL at ${ppm} ppm`).toEqual(NO_CONTROL.latches);
+      expect(h.logs.some((l) => l.startsWith('Risk tripped on the account valuation'))).toBe(false);
+    }
+    // The books are in SOL: the opening price, the wallet and the NAV peak are as they were at the opening.
+    const after = accountFile(h.stateDir).read(null as never);
+    expect(after.openingSolPrice).toBe(before.openingSolPrice);
+    expect(after.walletLamports).toBe(before.walletLamports);
+    expect(after.navPeak?.nav).toBe(after.walletLamports);
     await h.worker.stop();
+  });
+
+  it('a booked loss past the kill line latches R10 on the next valuation, with no candidate, and the latch holds across a restart', async () => {
+    const h = makeWorker();
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    const m = new Market(h);
+    await m.run(4_000, 400, () => priced(h, m, 1_000_000n));
+    await h.worker.stop();
+    // A closed trade lost 35% of the SOL bankroll (beyond the 30% kill line), written while stopped, as a restart finds
+    // it. Earlier than this week, so the weekly limit is not what trips.
+    const file = accountFile(h.stateDir);
+    const a = file.read(null as never);
+    const lost = (microUsdToLamports(a.openingEquity, a.openingSolPrice!, 'floor') * 35n) / 100n;
+    file.write({ ...a, walletLamports: a.walletLamports! - lost, trades: [{ positionId: 'p:x:1', mint: 'MintX', openedAtMs: m.now - 9 * 86_400_000, notional: lost, closedAtMs: m.now - 8 * 86_400_000, netLamports: -lost, netPnl: null, stoppedOut: true, booked: -lost }] } as never);
     const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers });
     expect(await h2.worker.reconcile()).toEqual({ ok: true });
-    expect(latches(h2).killTrippedAtMs).toBe(at);
+    const m2 = new Market(h2);
+    await m2.run(4_000, 400, () => priced(h2, m2, 1_000_000n));
+    const at = latches(h2).killTrippedAtMs;
+    expect(at).not.toBeNull();
     await h2.worker.stop();
+    const h3 = makeWorker({ stateDir: h.stateDir, timers: h.timers });
+    expect(await h3.worker.reconcile()).toEqual({ ok: true });
+    expect(latches(h3).killTrippedAtMs).toBe(at);
+    await h3.worker.stop();
+  });
+
+  it('F3: SOL gone from the wallet with no trade booked latches R10 from the NAV line on the next valuation, and it holds across a restart', async () => {
+    const h = makeWorker();
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    const m = new Market(h);
+    await m.run(4_000, 400, () => priced(h, m, 1_000_000n));
+    const file = accountFile(h.stateDir);
+    expect(file.read(null as never).navPeak?.nav).toBe(file.read(null as never).walletLamports);
+    await h.worker.stop();
+    // 35% of the wallet's SOL gone, no trade: the ledger's equity is unchanged, the NAV (the wallet's SOL) is not.
+    const a = file.read(null as never);
+    file.write({ ...a, walletLamports: (a.walletLamports! * 65n) / 100n } as never);
+    const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers });
+    expect(await h2.worker.reconcile()).toEqual({ ok: true });
+    const m2 = new Market(h2);
+    await m2.run(4_000, 400, () => priced(h2, m2, 1_000_000n));
+    const at = latches(h2).killTrippedAtMs;
+    expect(at).not.toBeNull();
+    expect(h2.logs.some((l) => l.startsWith('Risk tripped on the account valuation') && l.includes('kill_switch'))).toBe(true);
+    await h2.worker.stop();
+    const h3 = makeWorker({ stateDir: h.stateDir, timers: h.timers });
+    expect(await h3.worker.reconcile()).toEqual({ ok: true });
+    const m3 = new Market(h3);
+    await m3.run(4_000, 400, () => priced(h3, m3, 1_000_000n));
+    expect(latches(h3).killTrippedAtMs).toBe(at);
+    await h3.worker.stop();
   });
 
   it('a weekly loss already booked latches R9 on the next valuation, with no candidate and no position', async () => {
@@ -69,25 +113,6 @@ describe('account-level trips latch from the account valuation (RISK-LATCH)', ()
     await m2.run(4_000, 400, () => priced(h2, m2, 1_000_000n));
     expect(latches(h2).weeklyTrippedAtMs).not.toBeNull();
     await h2.worker.stop();
-  });
-
-  it('a SOL price older than maxQuoteAgeMs latches nothing, even one that puts the NAV under the kill line', async () => {
-    const h = makeWorker();
-    expect(await h.worker.reconcile()).toEqual({ ok: true });
-    const m = new Market(h);
-    await m.run(4_000, 400, () => priced(h, m, 1_000_000n));
-    // SOL at 44% (NAV under the kill line), but stamped older than maxQuoteAgeMs each time it is seen.
-    const old = h.session.policy.gates.maxQuoteAgeMs + 1;
-    await m.run(4_000, 400, () => {
-      m.slot();
-      m.fact(SOL_PRICE_KEY, { value: (SOL_PRICE * 440_000n) / 1_000_000n, atMs: m.now - old });
-      h.worker.step();
-    });
-    expect(latches(h).killTrippedAtMs).toBeNull();
-    // The same price, fresh, latches it.
-    await m.run(2_000, 400, () => priced(h, m, 440_000n));
-    expect(latches(h).killTrippedAtMs).not.toBeNull();
-    await h.worker.stop();
   });
 
   it('a NAV above the kill line latches nothing', async () => {
@@ -116,12 +141,12 @@ describe('a latch rests only on a fully marked valuation at a fresh SOL price (R
    */
   const steered = () => {
     const seam = { mode: 'real' as Seam };
-    const mark: typeof markedHistory = (h0, held, sol, nowMs, st) => {
-      const lost = { mint: 'MintX' as never, openedAtMs: nowMs - 7_200_000, closedAtMs: nowMs - 3_600_000, notional: 3_000_000n as never, netPnl: -2_010_000n as never, stoppedOut: true };
+    const mark: typeof markedHistory = (h0, held, nowMs, st) => {
+      const lost = { mint: 'MintX' as never, openedAtMs: nowMs - 7_200_000, closedAtMs: nowMs - 3_600_000, notional: lam('3'), netPnl: -lam('2.01') as Lamports, stoppedOut: true };
       const h1 = seam.mode === 'real' ? h0 : { ...h0, closedTrades: [...h0.closedTrades, lost] };
-      const r = markedHistory(h1, held, sol, nowMs, st);
+      const r = markedHistory(h1, held, nowMs, st);
       if (seam.mode === 'unmarked') return { ...r, openPositions: r.openPositions.map((o) => ({ ...o, mark: null, markAtMs: null })) };
-      if (seam.mode === 'dip') return { ...r, openPositions: r.openPositions.map((o) => (o.mark === null ? o : { ...o, mark: 1n as MicroUsd })) };
+      if (seam.mode === 'dip') return { ...r, openPositions: r.openPositions.map((o) => (o.mark === null ? o : { ...o, mark: 1n as Lamports })) };
       return r;
     };
     return { h: makeWorker({ markedHistory: mark }), seam };

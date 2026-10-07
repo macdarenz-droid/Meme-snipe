@@ -8,7 +8,7 @@ const fields = (v: unknown): string[] => Array.isArray(v) ? v.flatMap(fields) : 
 const added = (v: unknown) => fields(v).filter((k) => k.endsWith('Lamports') || k === 'solPriceUsd');
 const input = () => {
   const h = makeWorker();
-  const i = { ...h.worker.apiInputs(), trades: [], accountCosts: [{ atMs: h.timers.now(), amount: 100_000n, lamports: 1234567n, kind: 'wallet_setup' }], stops: { atMs: h.timers.now(), codes: [], dayLoss: 100_000n } } as ApiInputs;
+  const i = { ...h.worker.apiInputs(), trades: [], accountCosts: [{ atMs: h.timers.now(), usd: 100_000n, lamports: 1234567n, kind: 'wallet_setup' }], stops: { atMs: h.timers.now(), codes: [], dayLoss: 1234567n, dailyLimit: 10_000_000n } } as ApiInputs;
   void h.worker.stop();
   return i;
 };
@@ -78,7 +78,7 @@ describe('APP-SOL capability preserves the existing v1 contract', () => {
   });
   it('partial, close, late and account costs count exactly once at their own time', () => {
     const base = input();
-    const i = { ...base, accountCosts: [{ atMs: base.nowMs - 4000, amount: 20n, lamports: 2n, kind: 'failed_entry' }], trades: [{ positionId: 'p1', mint: 'm', openedAtMs: base.nowMs - 6000, closedAtMs: base.nowMs - 2000, notional: 100n, netPnl: -30n, netLamports: -3n, booked: 0n, stoppedOut: false, partials: [{ atMs: base.nowMs - 3000, pnl: 40n, lamports: 4n }], late: [{ atMs: base.nowMs - 1000, usd: -50n, lamports: -5n }] }] } as unknown as ApiInputs;
+    const i = { ...base, accountCosts: [{ atMs: base.nowMs - 4000, usd: 20n, lamports: 2n, kind: 'failed_entry' }], trades: [{ positionId: 'p1', mint: 'm', openedAtMs: base.nowMs - 6000, closedAtMs: base.nowMs - 2000, notional: 100n, netPnl: -30n, netLamports: -3n, booked: 0n, stoppedOut: false, partials: [{ atMs: base.nowMs - 3000, pnl: 40n, lamports: 4n }], late: [{ atMs: base.nowMs - 1000, usd: -50n, lamports: -5n }] }] } as unknown as ApiInputs;
     expect(views.charts(i).cumulative.map((c) => c.cumNetLamports)).toEqual(['-2', '2', '-5', '-10']);
     expect(views.stats(i)).toMatchObject({ netLamports: '-10', maxDrawdownLamports: '12', meanNetLamports: '-8' });
     expect(views.trades(i)[0]).toMatchObject({ netLamports: '-8' });

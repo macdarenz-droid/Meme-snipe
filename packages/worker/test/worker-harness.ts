@@ -1,5 +1,7 @@
+import type { PaperLegs } from '../src/run/account.ts';
 // A worker on virtual time with a scripted market, for the WORKER-1 tests. No network: the sources are scripted, the
 // simulation is a stub that records each leg, and time moves only when a wait asks for it.
+import { usd as usdOf } from '../../core/src/config/index.ts';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -19,7 +21,7 @@ import {
 } from '../../core/test/gates/world.ts';
 import { EXEC_HEALTH_KEY, TX_CREATE_PREFIX, holdersKey, lpKey, migrationKey, poolKey, simKey, softKey, streamKey, xcheckKey, type FactObs } from '../../core/src/gates/index.ts';
 import { SOL_PRICE_KEY, feesKey, type StrategyConfig } from '../src/engine/strategy.ts';
-import { type MicroUsd, microUsdToLamports } from '../../core/src/units/index.ts';
+import { type Lamports, type MicroUsd, microUsdToLamports } from '../../core/src/units/index.ts';
 import type { PoolState } from '../../core/src/amm/index.ts';
 import { RAW, STREAMS } from '../../core/src/facts/index.ts';
 import { account } from '../../core/test/gates/world.ts';
@@ -463,3 +465,9 @@ export const passingMarket = async (h: Harness, o: { readonly fees?: boolean; re
 };
 
 export { CREATED_AT, DEV, MIGRATED_AT, MINT, POOL, POOL_ADDRESS, SLOT, SOL_PRICE, SUPPLY, T };
+
+/** SOL-BOOKS: a dollar amount in lamports at the harness's SOL price (fixed as the opening price at the first price). */
+export const lam = (dollars: string): Lamports => microUsdToLamports(usdOf(dollars), SOL_PRICE as MicroUsd, 'floor');
+
+/** Paper legs with no attempts (an account fact for a book with no trades of its own). */
+export const noLegs: PaperLegs = { network: FILL_CONFIG.network, closedAccount: () => false, attempts: new Map() };

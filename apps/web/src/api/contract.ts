@@ -147,7 +147,11 @@ export interface WorkerStatus extends Moded {
   alerts?: (Moded & { code: AlertCode; subject: string; at: Iso })[];
   /** The latest regime evaluation; null before the first candidate. */
   /** The session the worker runs (APP-HOME): its state and the policy's limits; `startable` false when it runs its own. */
-  session?: { state: 'running' | 'paused' | 'ended'; bankrollUsd: Usd; entryUsd: Usd; maxEntryUsd: Usd; maxOpenPositions: number; dailyLossLimitUsd: Usd; weeklyLossLimitUsd: Usd; sessionLossLimitUsd: Usd | null; startable: boolean };
+  session?: {
+    state: 'running' | 'paused' | 'ended'; bankrollUsd: Usd; entryUsd: Usd; maxEntryUsd: Usd; maxOpenPositions: number; dailyLossLimitUsd: Usd; weeklyLossLimitUsd: Usd; sessionLossLimitUsd: Usd | null; startable: boolean;
+    /** SOL-BOOKS: the same limits in lamports, as risk holds them (the dollars at the session's opening SOL price); absent before it. */
+    bankrollLamports?: Lamports | null; entryLamports?: Lamports | null; maxEntryLamports?: Lamports | null; dailyLossLimitLamports?: Lamports | null; weeklyLossLimitLamports?: Lamports | null;
+  };
   regime?: { state: 'on' | 'off'; at: Iso; /** At most two candidate evaluation steps old as of asOf. */ current: boolean; reasons: (Moded & { code: RegimeReasonCode; input: string | null })[]; /** Not judged (S0 diagnostic): an "on" with any is practice only. */ waived: WaivedPart[] } | null;
 }
 

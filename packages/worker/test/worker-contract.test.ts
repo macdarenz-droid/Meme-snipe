@@ -28,7 +28,7 @@ import type { FactContext } from '../src/run/facts.ts';
 import { Journal, lastLines } from '../src/run/journal.ts';
 import { redact, setSecretValues } from '../src/run/redact.ts';
 import { CreditBook } from '../src/run/sources.ts';
-import { MINT, T, Market, makeWorker, slotAt, tempState, virtualTimers } from './worker-harness.ts';
+import { MINT, T, Market, makeWorker, slotAt, tempState, virtualTimers, noLegs } from './worker-harness.ts';
 import { recordOf, tx } from './helpers.ts';
 import { CUT_CREATE_FETCHES_PER_DAY, CUT_CREATE_RETRY_MS } from '../src/run/worker.ts';
 import { logEvents } from '../../core/src/chain/index.ts';
@@ -726,22 +726,23 @@ describe('the paper wallet\'s setup rent is an account cost (risk review of #48,
   const bankroll = 20_000_000n as MicroUsd;
   const price = 150_250_000n as MicroUsd;
 
-  it('right after setup there is one cost of the rent at the setup SOL price, rounded up, and no closed trade', () => {
+  it('right after setup there is one cost of the rent, in lamports (SOL-BOOKS), and no closed trade', () => {
     const dir = tempState();
     const ledger = openLedger(join(dir, 'ledger.sqlite'), 'paper');
     const account = new PaperAccount(accountFile(dir), bankroll, T - 60_000, rent);
     account.price(price, T - 1_000);
     const opening = microUsdToLamports(bankroll, price, 'floor');
     expect(account.state.walletLamports).toBe(opening - rent);
-    const fact = account.fact(ledger, emptyBook({ maxOpenPositions: 5 }), NO_LATCHES, price, T);
-    const cost = lamportsToMicroUsd(rent as Lamports, price, 'ceil');
-    expect(fact.history.costs).toEqual([{ atMs: T - 1_000, amount: cost, kind: 'wallet_setup' }]);
+    const fact = account.fact(ledger, emptyBook({ maxOpenPositions: 5 }), NO_LATCHES, T, noLegs);
+    expect(fact.history.costs).toEqual([{ atMs: T - 1_000, amount: rent, kind: 'wallet_setup' }]);
+    // The setup's price is the opening SOL price: a later price changes no figure.
+    expect(fact.history.openingSolPrice).toBe(price);
     expect(fact.history.closedTrades).toEqual([]);
     expect(fact.oneTimeRent).toBe(0n);
     // Paid once: a later price does not charge it again.
     account.price(160_000_000n as MicroUsd, T);
     expect(account.state.walletLamports).toBe(opening - rent);
-    expect(account.fact(ledger, emptyBook({ maxOpenPositions: 5 }), NO_LATCHES, price, T).history.costs).toHaveLength(1);
+    expect(account.fact(ledger, emptyBook({ maxOpenPositions: 5 }), NO_LATCHES, T, noLegs).history.costs).toHaveLength(1);
     ledger.close();
   });
 
@@ -752,14 +753,14 @@ describe('the paper wallet\'s setup rent is an account cost (risk review of #48,
     const account = new PaperAccount(file, bankroll, T - 3_600_000, rent);
     account.price(price, T - 3_000_000);
     // One closed losing trade, as the paper fills would book it.
-    file.write({ ...account.state, trades: [{ positionId: 'p:x:1', mint: MINT, openedAtMs: T - 600_000, notional: 2_000_000n as MicroUsd, closedAtMs: T - 60_000, netLamports: -100_000n, netPnl: -15_000n as MicroUsd, stoppedOut: true, booked: -100_000n }] });
+    file.write({ ...account.state, trades: [{ positionId: 'p:x:1', mint: MINT, openedAtMs: T - 600_000, notional: 13_311_148n as Lamports, closedAtMs: T - 60_000, netLamports: -100_000n, netPnl: -15_000n as MicroUsd, stoppedOut: true, booked: -100_000n }] });
     const reloaded = new PaperAccount(file, bankroll, T, rent);
-    const fact = reloaded.fact(ledger, emptyBook({ maxOpenPositions: 5 }), NO_LATCHES, price, T);
+    const fact = reloaded.fact(ledger, emptyBook({ maxOpenPositions: 5 }), NO_LATCHES, T, noLegs);
     expect(fact.history.closedTrades).toHaveLength(1);
     const session = startSession(TRIAL_POLICY);
     const r = evaluateExit({
       session, mode: 'paper', clock: { now: () => ({ slot: 1n, txIndex: 0, ixIndex: 0, receivedAt: T }) }, account: fact.history, latches: NO_LATCHES,
-      market: { solPrice: { value: price, atMs: T }, solBalance: fact.solBalance, regime: 'unknown' },
+      market: { solBalance: fact.solBalance, regime: 'unknown' },
     });
     expect(r.tripped.map((x) => x.code)).not.toContain('loss_cooldown');
     ledger.close();

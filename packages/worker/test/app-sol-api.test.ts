@@ -6,7 +6,7 @@ import { schemaFor, type Endpoint } from '../../../apps/web/src/api/schemas.ts';
 import { schemaFor as baselineSchema } from '../../../apps/web/test/fixtures/app-money-schemas.ts';
 import { PATHS } from '../../../apps/web/src/api/contract.ts';
 import { openPnl, route, usdText, views } from '../src/run/api.ts';
-import type { MicroUsd } from '../../core/src/units/index.ts';
+import { type Lamports, type MicroUsd, lamportsToMicroUsd, microUsdToLamports } from '../../core/src/units/index.ts';
 import { makeWorker, passingMarket } from './worker-harness.ts';
 
 const HELD = { heldPoolFacts: true } as const;
@@ -75,41 +75,73 @@ describe('lamports beside dollars (APP-SOL)', () => {
   });
 });
 
-describe('the interim daily-loss meter in SOL rounds on the safe side (review B1)', () => {
+describe('SOL-BOOKS: the daily-loss meter and the session limits are risk\'s own lamports', () => {
   // $150.000001 per SOL: dollar figures that do not divide into whole lamports.
   const PRICE = 150_000_001n as MicroUsd;
-  const ceilDiv = (a: bigint, b: bigint) => (a + b - 1n) / b;
-  const served = (lossMicro: bigint) => {
+  const served = (dayLoss: bigint, dailyLimit: bigint, solPrice: MicroUsd = PRICE) => {
     const h = makeWorker();
     const base = h.worker.apiInputs();
     void h.worker.stop();
-    const closed = { positionId: 'p1', mint: 'm', openedAtMs: base.nowMs - 120_000, closedAtMs: base.nowMs - 60_000, notional: 2_000_000n, netLamports: -1n, netPnl: -lossMicro, stoppedOut: false, booked: 0n, openSolPrice: PRICE };
-    const i = { ...base, solPrice: PRICE, trades: [closed], stops: { atMs: base.nowMs, codes: [], dayLoss: lossMicro } };
-    const status = views.status(i as never) as { risk: { kind: string; usedUsd: string; limitUsd: string | null; usedLamports: string | null; limitLamports: string | null }[] };
-    return { meter: status.risk.find((r) => r.kind === 'daily-loss')!, limitMicro: (BigInt(base.policy.capital.bankroll) * BigInt(base.policy.loss.dailyBps)) / 10_000n };
+    const i = { ...base, solPrice, openingSolPrice: PRICE, trades: [], accountCosts: [], stops: { atMs: base.nowMs, codes: [], dayLoss, dailyLimit } };
+    const status = views.status(i as never) as { risk: { kind: string; usedUsd: string; limitUsd: string | null; usedLamports: string | null; limitLamports: string | null }[]; session: Record<string, unknown>; haltReasons: { code: string }[] };
+    return { meter: status.risk.find((r) => r.kind === 'daily-loss')!, session: status.session, halts: status.haltReasons.map((x) => x.code), base };
   };
 
-  it('used is rounded up and the limit down, exactly', () => {
-    const { meter, limitMicro } = served(1_234_567n);
-    expect(meter.usedUsd).toBe('1.234567');
-    expect(BigInt(meter.usedLamports!)).toBe(ceilDiv(1_234_567n * 1_000_000_000n, PRICE));
-    expect(BigInt(meter.limitLamports!)).toBe((limitMicro * 1_000_000_000n) / PRICE);
-    // Neither divides evenly here, so rounding the other way would read differently.
-    expect((1_234_567n * 1_000_000_000n) % PRICE).not.toBe(0n);
-    expect((limitMicro * 1_000_000_000n) % PRICE).not.toBe(0n);
+  it('used and limit are R7\'s lamports exactly; the dollars beside them round the loss up and the limit down', () => {
+    const { meter } = served(8_230_452n, 9_999_999n);
+    expect([meter.usedLamports, meter.limitLamports]).toEqual(['8230452', '9999999']);
+    expect(meter.usedUsd).toBe(usdText(lamportsToMicroUsd(8_230_452n as Lamports, PRICE, 'ceil')));
+    expect(meter.limitUsd).toBe(usdText(lamportsToMicroUsd(9_999_999n as Lamports, PRICE, 'floor')));
+    expect(lamportsToMicroUsd(8_230_452n as Lamports, PRICE, 'ceil')).not.toBe(lamportsToMicroUsd(8_230_452n as Lamports, PRICE, 'floor'));
   });
 
-  it('whenever the dollars say the limit is reached, so do the SOL figures (never more room in SOL)', () => {
-    const { limitMicro } = served(0n);
-    for (const loss of [limitMicro, limitMicro + 1n, limitMicro - 1n, limitMicro / 2n]) {
-      const { meter } = served(loss);
-      const reachedUsd = loss >= limitMicro;
-      const reachedSol = BigInt(meter.usedLamports!) >= BigInt(meter.limitLamports!);
-      if (reachedUsd) expect(reachedSol, String(loss)).toBe(true);
+  it('a SOL/USD move alone moves no SOL figure, and the SOL meter alone decides the daily-loss halt', () => {
+    const at = served(5_000_000n, 9_999_999n);
+    for (const ppm of [500_000n, 1_340_000n]) {
+      const moved = served(5_000_000n, 9_999_999n, ((PRICE * ppm) / 1_000_000n) as MicroUsd);
+      expect([moved.meter.usedLamports, moved.meter.limitLamports]).toEqual([at.meter.usedLamports, at.meter.limitLamports]);
+      expect(moved.halts).not.toContain('daily-loss');
     }
-    // At the boundary itself: used equals the limit in dollars, and in SOL used is at least the limit.
-    const at = served(limitMicro).meter;
-    expect(BigInt(at.usedLamports!) >= BigInt(at.limitLamports!)).toBe(true);
+  });
+
+  it('between R7\'s reads, today\'s realised loss in lamports against R7\'s line in lamports decides the daily-loss halt', () => {
+    const h = makeWorker();
+    const base = h.worker.apiInputs();
+    void h.worker.stop();
+    const halted = (lossLamports: bigint, limit: bigint) => {
+      const t = { positionId: 'p1', mint: 'm', openedAtMs: base.nowMs - 120_000, closedAtMs: base.nowMs - 60_000, notional: 2_000_000n, netLamports: -lossLamports, netPnl: null, stoppedOut: false, booked: 0n, openSolPrice: PRICE };
+      const i = { ...base, solPrice: PRICE, openingSolPrice: PRICE, trades: [t], accountCosts: [], stops: { atMs: base.nowMs, codes: [], dayLoss: 0n, dailyLimit: limit } };
+      return (views.status(i as never) as { haltReasons: { code: string }[] }).haltReasons.some((x) => x.code === 'daily-loss');
+    };
+    // Lamports against lamports (the policy's $1.50 is 1,500,000 micro-dollars: never compared with lamports).
+    expect(halted(1_200_000n, 1_000_000n)).toBe(true);
+    expect(halted(1_600_000n, 2_000_000n)).toBe(false);
+    expect(halted(2_000_000n, 2_000_000n)).toBe(true);
+  });
+
+  it('a closed trade\'s size is its lamports in dollars at its entry price', () => {
+    const h = makeWorker();
+    const base = h.worker.apiInputs();
+    void h.worker.stop();
+    const t = { positionId: 'p1', mint: 'm', openedAtMs: base.nowMs - 120_000, closedAtMs: base.nowMs - 60_000, notional: 20_000_000n, netLamports: -1_000n, netPnl: null, stoppedOut: false, booked: 0n, openSolPrice: 150_000_000n, closeSolPrice: 150_000_000n };
+    // 0.02 SOL at $150 is $3 (at the current $200 it would read $4).
+    expect(views.trades({ ...base, solPrice: 200_000_000n, trades: [t] } as never)[0]).toMatchObject({ sizeUsd: '3' });
+  });
+
+  it('the session limits in lamports are the policy\'s dollars at the opening price, rounded as risk rounds them', () => {
+    // The current price differs from the opening one: the limits follow the opening price only.
+    const { session, base } = served(0n, 9_999_999n, 200_000_000n as MicroUsd);
+    const p = base.policy;
+    const b = microUsdToLamports(p.capital.bankroll, PRICE, 'floor');
+    expect(session).toMatchObject({
+      bankrollLamports: String(b), entryLamports: String(microUsdToLamports(p.capital.minNotional, PRICE, 'ceil')), maxEntryLamports: String(microUsdToLamports(p.capital.maxNotional, PRICE, 'floor')),
+      dailyLossLimitLamports: String((b * BigInt(p.loss.dailyBps)) / 10_000n), weeklyLossLimitLamports: String((b * BigInt(p.loss.weeklyBps)) / 10_000n),
+    });
+    // Before the opening price: none (the app shows the configured dollars).
+    const h = makeWorker();
+    const none = views.status({ ...h.worker.apiInputs(), openingSolPrice: null } as never) as { session: Record<string, unknown> };
+    void h.worker.stop();
+    expect(none.session).not.toHaveProperty('bankrollLamports');
   });
 });
 
