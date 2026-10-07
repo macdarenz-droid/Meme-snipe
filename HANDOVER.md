@@ -66,6 +66,9 @@
   - Helius workflows (Z0D-2 round 9 ruling 1, until MIGRATION P21 lands): no workflow that reads a `HELIUS*` secret is dispatched unless the supervisor first records its maximum credits here. Reason: those workflows reserve nothing in the account ledger.
   - Known risk (Z0D-2 F1, 8 Oct): the default branch `ccr-14987baf-i6lrsl` is unprotected (`"protected": false`). "Never push to the default branch" is enforced by practice only. A ruleset is an owner step listed in SPEC-A A-M14-05; it is required before any B-10 key is placed.
 - **8 Oct about 4:56 AM:** #289 Z0D-2 merged at `85a61e60` (the new base). Review PASS at `10692d41`; red team round 9 0 MAJOR; V1–V2 fixed in `03aaa87d` and checked by the supervisor; `check` (26.5 min) and `historical-data` green on `03aaa87d`. Builder, reviewer and red team archived. The Z01 builder was told to merge `85a61e60`.
+- **8 Oct about 6:00 AM:**
+  - **#290 merged at `90ec75ce`** (the new base). It fixes the ops end-to-end fixture: every merge since 5 Oct is GitHub-signed, so the newest unsigned commit, 54 back, had left the 50-commit window. As a result the end-to-end on the push of `be8ecd01` was red, which blocked the deploy gate's `e2e_commit`. Review and red team PASS; check, historical-data and e2e green. Next: confirm the e2e push run on `90ec75ce` is green, because it is now the `e2e_commit` for deploys.
+  - **#287 Z01:** the rounds 3–4 review passed (M1, M2). Red team round 3 found 2 MAJOR (a NUL byte, `.gitattributes`). Round 5 rulings are at `b3c2de32` and were sent to the builder, together with the merge of `90ec75ce`. They include the hard exit in `research/brainstorm/collect.py` (the #283 follow-up).
 - **Follow-ups (identified, not yet carded):**
   1. Z0D-2 docs:
      - the replay-mode ruling (`replay_unavailable` treated as assumed-pass-flagged in B-10 runs only, refused in paper and live; `docs/reviews/ZH.md` round 2 ruling 2);
