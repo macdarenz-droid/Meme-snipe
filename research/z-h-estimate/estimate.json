@@ -1009,5 +1009,31 @@
    "credits_upper_per_day_max": 450100,
    "min_produced_frac": 1.0
   }
- ]
+ ],
+ "mixed_26old_4new": {
+  "days": 32,
+  "credits_point": 8598359,
+  "credits_upper": 9997850,
+  "blocks": 7987091
+ },
+ "newest_4_with_leadin": {
+  "days": 5,
+  "credits_point": 1860021,
+  "credits_upper": 2160480,
+  "blocks": 1727789
+ },
+ "spend_rules": {
+  "extras_inside_U": {
+   "P12_fee_and_global_config_history": 1000,
+   "MR_pool_age_and_mint_lookups": 25000,
+   "admin_usage_reads": 100
+  },
+  "P10_own_allocation": 12000,
+  "estimate_shown_to_owner": 7762033,
+  "row_cap": 9022478,
+  "total_exposure_incl_P10": 9034478,
+  "S_max_for_start_U_ge_1_1x_estimate": 961763,
+  "S_max_for_full_row_cap": 477522,
+  "min_blocks_per_s_in_14d_window": 6.38
+ }
 }

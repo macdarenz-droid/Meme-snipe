@@ -92,4 +92,30 @@ for name, a, b in regimes:
                            'credits_point_per_day': round(sum(x['credits_point'] for x in xs) / len(xs)),
                            'credits_upper_per_day_max': max(x['credits_upper'] for x in xs),
                            'min_produced_frac': min(x['produced_frac'] for x in xs)})
+
+def daylist(names):
+    xs = [by[n] for n in names]
+    return {'days': len(xs), 'credits_point': sum(x['credits_point'] for x in xs),
+            'credits_upper': sum(x['credits_upper'] for x in xs),
+            'blocks': round(sum((x['units'] + 1) * UNIT * x['produced_frac'] for x in xs))}
+
+def span(a, b):
+    a, b = dt.date.fromisoformat(a), dt.date.fromisoformat(b)
+    return [(a + dt.timedelta(k)).isoformat() for k in range((b - a).days + 1)]
+
+# R2-05: 26 old-format days plus the 4 newest clean days (250 ms, post-B4), one lead-in day before each segment
+out['mixed_26old_4new'] = daylist(span('2026-07-26', '2026-08-21') + span('2026-09-17', '2026-09-21'))
+out['newest_4_with_leadin'] = daylist(span('2026-09-17', '2026-09-21'))
+# extras budgeted inside U (supervisor round 3 item 6); P10 has its own allocation
+EXTRAS = {'P12_fee_and_global_config_history': 1000, 'MR_pool_age_and_mint_lookups': 25000, 'admin_usage_reads': 100}
+P10_CAP = 12000
+ACCT_CAP = 9500000
+rec = out['cheapest_leadin1']
+est = rec['credits_point'] + sum(EXTRAS.values())
+cap = rec['credits_upper'] + sum(EXTRAS.values())
+out['spend_rules'] = {'extras_inside_U': EXTRAS, 'P10_own_allocation': P10_CAP,
+                      'estimate_shown_to_owner': est, 'row_cap': cap, 'total_exposure_incl_P10': cap + P10_CAP,
+                      'S_max_for_start_U_ge_1_1x_estimate': ACCT_CAP - math.ceil(1.1 * est),
+                      'S_max_for_full_row_cap': ACCT_CAP - cap,
+                      'min_blocks_per_s_in_14d_window': round(rec['blocks'] / (14 * 86400 - 31 * 45 * 60), 2)}
 json.dump(out, sys.stdout, indent=1)
