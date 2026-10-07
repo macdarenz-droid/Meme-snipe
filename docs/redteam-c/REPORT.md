@@ -1,6 +1,6 @@
 # Red team C: stays up, stays honest (commit 959d801)
 
-**Verdict: NOT READY.** 6 CRITICAL, 5 HIGH, 7 MEDIUM, each with a probe that fails on 959d80178b72faf59e6421b4350041a5425eec08. No product code was changed. Probes (they fail on purpose, so this branch is not for merge):
+**Verdict: NOT READY.** 6 CRITICAL, 4 HIGH, 5 MEDIUM, each with a probe that fails on 959d80178b72faf59e6421b4350041a5425eec08. No product code was changed. Probes (they fail on purpose, so this branch is not for merge):
 - `packages/worker/test/redteam-c/*.test.ts`
 - `packages/ops/test/redteam-c/*.test.ts`
 
