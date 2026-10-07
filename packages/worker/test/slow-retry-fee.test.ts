@@ -1,7 +1,8 @@
-// RB-5 risk ruling (EXIT-FILL-FIXES): a slow blocked-exit retry's fee is counted when it is paid, not when the trade
-// closes. A failed landing pays base and priority (PAPER-1, M4); the account books it into the wallet at once, and the
-// wallet is the SOL balance risk values the account by (its day and week loss lines included), while the position is
-// still blocked and open.
+// RB-5 risk ruling (EXIT-FILL-FIXES): a slow blocked-exit retry's fee is paid when it lands, not when the trade closes.
+// A failed landing pays base and priority (PAPER-1, M4); the account books it into the wallet at once, while the
+// position is still blocked and open. Risk takes capital as the lower of ledger and wallet-marked equity, so the fee
+// shrinks R5's and R6's room at once (core/test/risk/slow-retry-room.test.ts); the ledger's day and week loss count an
+// open trade's fees when paid with SOL-BOOKS (#197, ACCOUNT-RATE F1).
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
