@@ -31,3 +31,20 @@ The researcher's choices and the supervisor rulings (8 Oct 2026, about 9:46 AM):
 - (b) **Kill per config:** a config whose 95% upper bound is below 0 with ≥ 100 trades is dropped, and PM-01 stops when both are dropped. A drop never adds, tunes or promotes anything, and both configs still count in the trial budget.
 - (c) **The screen stays optimistic.** Per trade, it uses the lower of the day's chain-read fee and the current fee schedule; the lean row stays otherwise.
 - (d) **A W_B rerun after a boundary may need more than 30 days:** accepted, and stated in the doc.
+
+## Round 3 red team (head `c7a5007d`): 0 BLOCKER, 11 MAJOR, 8 MINOR
+
+Red team `session_016GhUshWTj7tPMTadZoSCnF`, about 9:36 AM. The full report is in its transcript. In short:
+- M1: W_B's end and its 80% selection point depend on each other.
+- M2: W_R and W_P have no no-peek rule, so a P4 restart can re-roll a failing holdout.
+- M3: with one config, B-4 is undefined.
+- M4: the assumed-pass inputs make the screen pessimistic.
+- M5: the bar construction from transaction-level state is unspecified.
+- M6: the §12 "First run" values can be settled after the screen.
+- M7: B-6's t is unspecified, and the iid t overstates confidence.
+- M8: the 300-trade floors can be met by a few correlated days.
+- M9: the random-entry benchmark's makeup is free.
+- M10: the boundary list misses the bonding-curve side.
+- M11: the monthly cost is fixed in SOL at $150.
+- m1: B-7 and R-5 are inert at E_bt 20 SOL. m2: W_P sizing. m3: coverage depends on the recorder's own list. m4: the universe day assignment and ix_index. m5: RNG draw order. m6: the screen runs once. m7: recovered trades, the B-8 week, and the denominator. m8: a dangling CLAUDE.md citation, and the dump_flag fire rate under P1.
+Held for the reviewer's report, so both go in one push.
