@@ -120,8 +120,10 @@ describe('RPC stream', () => {
     for (let e = feed.next(); e; e = feed.next()) if (e.kind === 'market') released.push(e);
     const seen = released.filter((e) => e.id.startsWith('seen:') && e.moment.slot > 501n);
     expect(seen.map((e) => [e.moment.slot, (e.value as { backfilled: boolean }).backfilled])).toEqual([[502n, true], [503n, true]]);
-    const status = released.filter((e) => e.key === 'feed:status:helius').map((e) => (e.value as { value: { state: string } }).value.state);
-    expect(status).toEqual(['up', 'down', 'up']);
+    const status = released.filter((e) => e.key === 'feed:status:helius').map((e) => (e.value as { value: { state: string; signature?: string } }).value);
+    expect(status.filter((v) => v.state !== 'fetch_failed').map((v) => v.state)).toEqual(['up', 'down', 'up']);
+    // FACTS-REREAD: every fetch the RPC answered null for (all three here) is reported failed, by its signature.
+    expect(status.filter((v) => v.state === 'fetch_failed').map((v) => v.signature).sort()).toEqual([t1.signature, t2.signature, t3.signature].sort());
   });
 
   it('a stream silent for idleMs is stale: it reconnects and backfills', async () => {

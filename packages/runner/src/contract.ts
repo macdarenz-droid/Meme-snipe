@@ -174,7 +174,12 @@ export type JournalKind =
    * RECORD-BUDGET: a pass that deleted recordings (`reason` cap or floor, `files`, `bytes`, `boots` removed whole,
    * `free_bytes` and `recorder_bytes` after).
    */
-  | 'recorder_prune';
+  | 'recorder_prune'
+  /**
+   * FACTS-REREAD: one try at re-reading a candidate's missing stage-1 facts (`mint`, `try`, `why` refused, restored or
+   * fill-budget, `needs`, `landed`).
+   */
+  | 'facts_reread';
 
 /**
  * The fields of a `recovered` line, typed so the worker writes what the runner reads (no cast can hide drift). A

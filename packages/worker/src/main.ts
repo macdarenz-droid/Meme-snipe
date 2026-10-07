@@ -96,7 +96,7 @@ try {
     simulate,
     // TRADE-GAP-HEAL: a pool-trade hole's transaction at P3, below position and exit reads; everything else at P2.
     fetchTx: (sig, why) => providers.fetchTx(sig, why === 'cut-trade' ? P3 : P2),
-    findCreate: (mint) => providers.findCreate(mint, timers),
+    findCreate: (mint, budget) => providers.findCreate(mint, timers, budget),
     seed: (r) => runSeed(r, { rpc: providers.seedRpc(), timers, budget: fillBudget }),
     // RESTART-KEEP: the downtime's migrations and unseen creates, on the same RPC and the same daily fill budget.
     restartReads: { rpc: providers.seedRpc(), budget: fillBudget },
