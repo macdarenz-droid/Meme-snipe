@@ -140,6 +140,7 @@ Only claims that held up against three critics are listed. All sources were read
 
 - Research scripts sent pump.fun's own Origin and Referer headers to its frontend API: to build the mint lists (lottery, daily and runner samples), to collect the socials fields (`../brainstorm/`), and to fetch 900 coins' callouts. t.me/s pages were also fetched. **Stopped 2026-10-07.** `../brainstorm/pf.py` no longer forges headers and refuses to run without the owner's approval. The scratch copies were replaced by that stopped version; this overwrote two scratch-only callout and tape scripts that were never in the repo.
 - The scratch callout files held raw caller wallet IDs, and a Kolscan page held names and handles. **Done 2026-10-07:** caller and callout IDs were replaced by salted hashes (the salt was not kept), and the Kolscan page was deleted. None of it was ever committed.
+- **Owner decision, 2026-10-07 about 8:15 PM Melbourne:** "Yes keep what we collected as is". The pump.fun data already collected (mint lists, socials fields, hashed callouts) stays in use as it is. New pump.fun requests stay stopped; that decision covers existing data only.
 - One owner decision covers:
   - pump.fun §21(h), including reusing data we already have;
   - Helius §3.2(xi), which also affects the bot's own key;
