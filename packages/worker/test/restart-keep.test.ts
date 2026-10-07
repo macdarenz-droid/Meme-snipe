@@ -663,7 +663,9 @@ describe('RESTART-KEEP: a restart keeps the candidates in their window', () => {
     const budget = { remaining: () => left, spend: (c: number) => { left -= c; }, refund: (c: number) => { left += c; } };
     const { h2 } = await restart(h, timers, seed, { restartReads: { rpc, budget } });
     for (let k = 0; k < 100 && !h2.logs.some((l) => l.startsWith('Downtime migrations')); k++) await new Promise<void>((r) => setImmediate(r));
-    expect(asked[0]).toEqual(expect.objectContaining({ address: PUMP_MIGRATION_AUTHORITY }));
+    // The downtime read is the one call on the migration authority (FACTS-REREAD may also read a restored candidate's
+    // curve on the same RPC, under its own budget: never this budget, which the downtime read alone spends).
+    expect(asked.filter((a) => a.address === PUMP_MIGRATION_AUTHORITY)).toEqual([expect.objectContaining({ address: PUMP_MIGRATION_AUTHORITY })]);
     expect(h2.logs.find((l) => l.startsWith('Downtime migrations'))).toMatch(new RegExp(`^Downtime migrations: 0 from slot ${from + 1n} to \\d+, 1 credits, done\\.$`));
     expect(left).toBe(4_999);
     await h2.worker.stop();

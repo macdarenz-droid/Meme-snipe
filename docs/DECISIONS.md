@@ -3289,6 +3289,83 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
     - a count that cannot be saved refuses the fetch (review N6);
     - the backtest-shape tape kills mutant C, which moves only fetched-transaction swaps one candle later.
 
+## A candidate's missing stage-1 facts are read again under their own budget (FACTS-REREAD, `run/worker.ts` `#rereadFacts`, `REREAD_CREDITS_PER_DAY`)
+
+- **2026-10-07 · Why (S1 card FACTS-REREAD, from the H16-WHY diagnosis).**
+  - Live, one hour after a boot, the biggest blocker was H16 `missing` for stage-1 facts: curve/H7 124, migration/H10 124, candles/H11 121, create/H14 and H9 113, growing about 56 coins an hour.
+  - Nothing removes these facts from a candidate. They were never written in that process:
+    - **a.** The saved state does not hold the store's facts, and a restored candidate gets one re-fetch of its migration, with no retry.
+    - **b.** The migration watch fetches each migration once, and a failure only sets a status.
+    - **c.** The completion and create lookups draw on the fills' daily budget, which the boot seed may take whole (`SEED_CREDIT_CAP` 150,000 against a 20,000 daily budget).
+  - Every such refusal is of a coin inside its entry window.
+- **What.**
+  - **Triggers.** A candidate's re-read starts on any of:
+    - a reject whose typed reasons name H16 `missing` for `migration`, `curve`, `candles` or `create` (`stage1Missing`);
+    - a restored candidate whose migration signature is unknown or whose one re-fetch failed (a);
+    - the migration watch's `fetch_failed` status for its migration (b). The stream now also reports a fetch that no provider answered (null), not only one that errored;
+    - a completion or create lookup that the fills' budget skipped (c).
+  - **A try.** It reads the migration by its saved signature through the shared fetcher. It then reads the newest transactions of the coin's bonding curve (`bondingCurveAddress`, REREAD_CURVE_READS = 6) and puts those carrying this mint's migration or completion on the feed, at confirmed, as of their own slots: COMPLETION-READ's path, so there is no lookahead. Finally it reads the create, by signature or with `findCreate` under this budget.
+    - **Curve, not pool.** The curve is read rather than the pool's oldest signatures because nothing trades on the curve after the migration. Its newest page therefore holds both the migration and the completion, while a pool's oldest signature needs paging back through every trade since then.
+  - **Retries.** A try that does not land everything it needs is asked again after 2, 4, 8 and 16 minutes, while the coin is still a candidate: 5 tries per candidate per process in all.
+    - **A try reads only what is pending.** The migration and its completion are read as a pair (the migration fact needs both), and each one that landed is kept, so a later try never reads it again: the migration by its signature is not asked twice, and the curve is not read once both are on the feed. `migration`, `curve` and `candles` leave the pending set only when both are on the feed; one of the two is not landed.
+    - **A need that arrives after a chain landed** (review B1, 2026-10-07): for example the create lookup the fills' budget skips only once the curve re-read has landed. It starts a new chain for that need alone, counted on from the candidate's earlier tries and under the same budget. A need that arrives while a chain runs is read at its next try.
+  - **Budget.** `REREAD_CREDITS_PER_DAY` = 6,000 credits a UTC day, counted in `fetch-caps.json` with the cut-log caps (TRADE-GAP-HEAL), never from the fills' budget.
+    - A try is all or nothing: a budget that cannot pay for every pending part (the migration's signature, the curve read and the create's least cost) spends nothing. The migration and curve credits are taken in one reserve and the unused part given back.
+    - A spent budget stops the chain at once, with no waits and no try counted. The chain is parked and resumes at the first step of the next UTC day, when the budget is back, if the coin is still a candidate (review, 2026-10-07). Parked chains are bounded like the re-read map (5,000) and scanned once a day.
+    - An unreadable file counts the day as spent.
+    - A file from before this has no `reread` count and reads as 0.
+    - A try costs at most 33 credits: 1 + 1 + 6, plus 1 or 25 for the create. About 10 when signatures are known.
+    - About 200 candidates are in their window at a restart, about 2,000 credits, plus live fetch failures.
+  - **COMPLETION-READ stands aside.** A migration the re-read put on the feed would start COMPLETION-READ's curve read from the fills' budget as well. While the mint's chain is running and still needs its completion, it does not: the chain reads the curve itself.
+  - **Candles: only the pool's book.** The `candles` need is served by the migration transaction, whose `CreatePoolEvent` opens the pool's candle book. The re-read brings no trade. What happens to H11 then is set out under "Candles after a late migration" below.
+  - **Fail-closed.** Nothing here decides anything. The facts form only from transactions put on the feed. Until they do, and after the last try or a spent budget, the refusal stands. Each try is journaled as `facts_reread` (mint, try, why, needs, landed).
+  - **readsFor is not the hook.** `readsFor` (facts/source.ts) is not where these reads go. The LiveFacts source it feeds has no fetcher, no saved signatures and no seed RPC; the worker has all three. The same refusal is read from the worker's decision records instead.
+- **Not changed: the seed's share of the fills' budget.** The seed reserves `min(SEED_CREDIT_CAP, remaining)` and returns what it does not use. After a long downtime it can spend the whole day's 20,000, and COMPLETION-READ and the create lookup then wait for the next UTC day. FACTS-REREAD no longer depends on that budget, so its reads are not starved.
+  - **Smallest safe further change (proposed, not made):** let the seed reserve at most `remaining − 6,000`, keeping room for about 1,000 completion reads of 6 credits. The seed's own floor is unchanged.
+  - Not made here, because it changes how much of a downtime the seed may fill, which needs its own review.
+- **Summary counter: not added.** It is not cheap: the summary's shape is exact on both sides, so it needs a new key, a watchdog fallback and tests. The live effect shows instead in the existing H16 breakdown (H16-WHY): the stage-1 `missing` rows should fall. The journal holds every try.
+- **Evidence.**
+  - `facts-reread.test.ts` (real mainnet migration and completion):
+    - `stage1Missing` names only stage-1 `missing` inputs;
+    - the fills' budget spent: the curve is read under this budget (fills' budget untouched, 4 credits counted on disk) and H7 and H10 pass once the fact forms;
+    - (b) a failed migration fetch: asked again, the curve brings it, H7 and H10 pass;
+    - (a) a restored candidate whose re-fetch failed: read at boot, before its window;
+    - a failed try is tried again after its wait and lands;
+    - every try failing keeps the refusal, after exactly 5 tries;
+    - the day's budget spent as `fetch-caps.json` says at boot: nothing read, refusal stands;
+    - an unreadable file counts as spent.
+  - `create-after-restart.test.ts`:
+    - a create lookup the fills' budget skipped is made again under this budget and the candidate passes H9;
+    - a refusal naming the create asks for it again.
+  - Eight of these fail on the code before this change. The other two (spent budget, unreadable file) pin fail-closed behaviour that held before.
+  - Mutants killed: no retry; no boot re-read; budget not persisted; no refusal trigger; no `fetch_failed` trigger; no fills'-budget trigger.
+  - Review fixes (2026-10-07), each new test failing on the code before:
+    - a create lookup skipped after the curve landed starts a new chain (tries 2 to 5, create only, the curve read once);
+    - a try that finds the migration without its completion is not landed, and the next one does not read the migration again;
+    - the exact budget edge: a try needing exactly what is left is made, and one credit less makes none;
+    - a chain parked on a spent budget resumes on the next UTC day in the same process, not before;
+    - the re-read's own migration starts no COMPLETION-READ curve read from the fills' budget;
+    - with the completion on the feed, a later try fetches the migration by its signature and reads no curve.
+    - Parity (TEST-1, `checkSession` with 10 replays) on the two `create-after-restart` re-read cases and on the fills'-budget case.
+    - Mutants killed: landed on either of migration or completion; budget check `<=` and off by one; a landed chain ignoring new needs; resume on the same day; no resume; no COMPLETION-READ skip; curve read again after both landed; migration read again from the curve; the try cap not shared; no refund.
+    - Not separately killable: `#takeFetch`'s own cap check behind the pre-check on the same path (no await between them), and the once-a-day scan guard (a speed guard; the per-chain day check is pinned).
+  - Second review round (2026-10-07):
+    - **Try cap across chains.** A chain that lands on its fifth try is spent, so a later need makes no sixth try. Pinned at the edge: landing on the fourth try leaves the later need its one try; landing on the fifth leaves it none.
+    - **A refund goes back to its own day.** A reserve taken before midnight UTC and refunded after it gave the credits back to the new day's count, so the new day could spend about 8 credits a chain past its cap. Each reserve (`reserveBudget`) now refunds to the day it was taken on, and to a later day nothing (`rereadRefund`). Both the chain and the create lookup go through it.
+    - **COMPLETION-READ comes back.** When it stood aside for a running chain, and that chain then stops without the completion (spent, parked, or landed without it), COMPLETION-READ is made then, under the fills' budget rules. Before, it never came back, and the coin stayed refused when a read could still work.
+    - Mutants killed: the cap off (no spent mark), and the cap at 4 or 6; refund to any day; the reserve's day lost or shifted; no chain refund; no COMPLETION-READ after a spent chain; none at all; one made although the chain read the completion.
+  - Existing tests isolated with the day's re-read budget spent (`completion-read`, `create-after-restart`), so they still pin COMPLETION-READ and CREATE-AFTER-RESTART alone.
+  - Two others updated: `streams` now pins the connection states and names every `fetch_failed`; `restart-keep` pins the one migration-authority read.
+
+### Candles after a late migration (finding, 2026-10-07; its fix is #266 part 3)
+
+- **What happens.** A pool's candle book opens only at the migration's `CreatePoolEvent` (`facts/producer.ts`). A swap released before that has no book and is dropped without a mark. When the migration lands late through the re-read, the book opens empty, with `fromSlot` at the migration. The trade stream has been gap-free since the pool watch started, so the candles fact reads as complete and current, with none of the earlier swaps.
+  - Reproduced with core's producer (`trade-heal.test.ts` world, the five swaps released before the late migration): candles `[]`, `completeness: complete`, Evidence `ok`. The same tape with the migration first gives two candles.
+  - **U2 (60 to 240 minutes after migration).** H11's chase check needs a candle closing between the migration and +5 minutes (`hard.ts` h11). When the migration lands after +5 minutes (as for any re-read started by a refusal made 5 minutes or more after the migration), none exists, so H11 refuses `not-covered` for good. That still blocks the coin. The spike check reads only the last 3 minutes, which are live, so this gives no false pass for U2.
+  - When the pool was not yet watched (no log sighting), the watch starts with a catch-up from the migration slot and backfills after the book exists, so the candles can form correctly (by reading `solana-ws.ts` `#catchUp`; not tested here).
+  - **The live 193 `missing candles/H11`** are coins with no candles fact at all. Their migration transaction (which holds the `CreatePoolEvent`) never reached the feed, the same cause as `missing migration`. The re-read turns them into `not-covered` when their pool was already watched.
+- **Fix proposed here, built in #266 part 3, not in this PR:** the producer keeps a bounded tape of the swaps released for a pool with no book yet. When the book opens late, it replays them in chain order through TRADE-GAP-HEAL's replay path, released at the opening moment (no lookahead). Over the bound, the book is marked `partial`, so H16 refuses. The smallest fail-closed step alone would be to mark a book `partial` when swaps were seen on its pool before it opened.
+
 ## Server paused on the stand-in until every blocker is fixed (PAUSE, `ops/host-config.json` `"worker": "stub"`)
 
 - **Owner, 2026-10-07 about 6:20 AM Melbourne:** "Keep refining bot before u update server. Or its better no server first until u fix the bot all issues. To stop wasting tokens. You can pause server, start server again when all has been fixed."

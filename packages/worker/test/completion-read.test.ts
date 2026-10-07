@@ -12,8 +12,9 @@ import { evaluateHardRejects, migrationKey, type GateContext, type GateRequest, 
 import type { MicroUsd, Lamports } from '../../core/src/units/index.ts';
 import { RESEARCH_CONFIG } from '../../core/src/config/index.ts';
 import { STUDY_CONFIG } from '../../backtest/src/strategy/config.ts';
-import { COMPLETION_CREDITS } from '../src/run/worker.ts';
-import { Market, makeWorker, virtualTimers } from './worker-harness.ts';
+import { COMPLETION_CREDITS, REREAD_CREDITS_PER_DAY } from '../src/run/worker.ts';
+import { fetchCapsFile } from '../src/run/state.ts';
+import { Market, makeWorker, tempState, virtualTimers } from './worker-harness.ts';
 
 interface Fixture {
   readonly meta: { readonly mint: string; readonly bondingCurve: string };
@@ -46,7 +47,11 @@ const run = async (rpc: Rpc, left0: number, o: { readonly reads?: boolean; reado
   let left = left0;
   const budget = { remaining: () => left, spend: (c: number) => { left -= c; }, refund: (c: number) => { left += c; } };
   const timers = virtualTimers(AT - 30_000);
-  const h = makeWorker({ timers, config: { ZEROED_HEALTH_ADDR: `127.0.0.1:${port++}`, ZEROED_API_ADDR: `127.0.0.1:${port++}` }, ...(o.reads === false ? {} : { restartReads: { rpc: rpc as never, budget } }) });
+  // COMPLETION-READ alone: FACTS-REREAD's own budget is spent for the day, so no re-read adds to these reads (its tests
+  // are in facts-reread.test.ts).
+  const stateDir = tempState();
+  fetchCapsFile(stateDir).write({ day: Math.floor(timers.now() / 86_400_000), cutCreate: 0, cutTrade: 0, reread: REREAD_CREDITS_PER_DAY });
+  const h = makeWorker({ stateDir, timers, config: { ZEROED_HEALTH_ADDR: `127.0.0.1:${port++}`, ZEROED_API_ADDR: `127.0.0.1:${port++}` }, ...(o.reads === false ? {} : { restartReads: { rpc: rpc as never, budget } }) });
   h7Session = h.session;
   // Every event the engine hands the strategy: H7 judged as of it, and whether the migration fact was there.
   const judged: { readonly key: string; readonly migration: boolean; readonly h7: HardResult }[] = [];
