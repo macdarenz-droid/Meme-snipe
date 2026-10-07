@@ -42,3 +42,24 @@ All fixes are accepted, as follows.
 13. **m4.** The handover evidence must show a positive after-cost expectancy; the reviewer refuses a PREREG whose own evidence is negative (§2 and checklist step 7). A fresh plugin instance per run.
 
 Next: the researcher applies 1–13. The reviewer's round 1 report is still collected. Then a delta review and red team at the new head.
+
+## Round 1 reviewer (head `a889f73b`): FAIL on 4 MAJOR, plus 11 MINOR
+
+Reviewer `session_011iA9FMWTMikWUyoerDHrq2`, about 9:27 AM. Rulings 1–8 were applied as written. Every SPEC citation it checked is correct, apart from those listed.
+- M1: a failed strategy still paper-trades (the same as red team B2).
+- M2: AC-11 cites A-M09-01, but the after-cost and look-ahead checks are A-M11-02's criteria (SPEC-A:1829-1830).
+- M3: MIGRATION's A-M09-01 B1 and B5 probes are not in the AC or test tables ("No bugs migrate").
+- M4: C10 misquoted. UI.md:556 says C10 is never used for money-affecting toggles that need confirmation.
+- m1–m11: the L-3 wording; the edgeEstimate object shape; PROPOSED marks (step-up 5 min, `config/validate`); the VM-03 `name` source; a class for backtest and replay; no AC for live switches below paper_passed; varianceBps2 ≤ 0; "practice only" wording; the full live checklist; the ruling time.
+
+### Supervisor rulings (8 Oct 2026, about 9:38 AM), added to round 2
+
+14. **M1:** covered by ruling 2 (B2). Also add the disabled reason to Z-STRAT-UI.
+15. **M2:** limit AC-11 to the hand-computed fixture. Hand the after-cost and look-ahead checks to A-M11-02 with its citation, and list it under Dependencies.
+16. **M3:** add AC-17 (B1, pool updates dated from measured slot time) and AC-18 (B5, no config key can inject an edge), each with a fail-before test against the old `strategy.ts` and `engine.ts` behaviour.
+17. **M4:** no C10. Use a control that shows on or off and opens the UI-T13 dialog.
+18. **m1–m5, m8, m11:** fix as the reviewer says. The ruling time is about 9:23 AM.
+19. **m6:** refuse `backtest` and `replay` on the live host (UC-12), with a test row.
+20. **m7:** add the AC. The validator also refuses live modes below `paper_passed`.
+21. **m9:** use "They are marked shadow and do not count for any gate yet."
+22. **m10:** add one plain line on what live also needs: the go-live checklist and kill drill (P-7, P-8), the signer's max_mode raised on the host, one strategy live at a time, and funding the wallet (owner only).
