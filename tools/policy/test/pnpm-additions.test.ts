@@ -2,7 +2,8 @@
 // the scoped audit, the SBOM, and the Zeroed scope (B-M30-01 logic 2, 3, 5; docs/MIGRATION.md "Toolchain").
 import { strict as assert } from 'node:assert';
 import { execFileSync } from 'node:child_process';
-import { lstatSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describe, it } from 'vitest';
 import { lockIds } from '../age.ts';
@@ -12,15 +13,16 @@ import {
 import { runChecks } from '../check.ts';
 import { ZEROED_DIRS, ZEROED_FILES_MANIFEST } from '../config.ts';
 import { finding } from '../finding.ts';
-import type { Git } from '../git.ts';
-import { checkHosts, hostScanned, scanHosts } from '../hosts.ts';
+import { parseAddedLines, type Git } from '../git.ts';
+import { checkHosts, EVIDENCE_FILES, hostScanned, scanHosts } from '../hosts.ts';
+import { checkImports, looseModuleRefs } from '../imports.ts';
 import type { PnpmLock } from '../lockfile.ts';
 import { checkManifests } from '../manifests.ts';
 import { checkPnpmConfig } from '../pnpmconfig.ts';
 import { readRepo, type RepoSnapshot } from '../repo.ts';
 import { buildSbom, main as sbomMain, npmPurl, sha512Hex } from '../sbom.ts';
-import { inZeroed, scopeOf, zeroedJob } from '../scope.ts';
-import { capture, codes, goodRepo, goodSnapshot, REPO_ROOT, runBin } from './helpers.ts';
+import { inZeroed, inZeroedPackage, safetyLinesOf, scopeOf, structureScopeOf, zeroedJob } from '../scope.ts';
+import { capture, codes, editText, goodRepo, goodSnapshot, REPO_ROOT, runBin, type TempRepo } from './helpers.ts';
 
 /** Built at run time so this source file writes no pump.fun host (the check reads tools/ too). */
 const HOST = ['pump', 'fun'].join('.');
@@ -49,39 +51,62 @@ describe('pump.fun-operated hosts (owner rule A02)', () => {
     assert.deepEqual(f.map((x) => `${x.file} ${x.message}`), [`a.ts:2 "//frontend-api.${HOST}" is a pump.fun-operated host; bot and research code makes no request to pump.fun (owner rule A02)`]);
   });
 
-  it('reads code and configuration only, never docs/ or Markdown: evidence keeps its wording (supervisor ruling, 2026-10-08)', () => {
+  it('finds the bare domain after whitespace with a path, and as a curl or wget argument (red team RT2-02, ruling 3.2)', () => {
+    // One form each; every one passed before.
+    for (const line of [`curl -s ${HOST}/api/coins`, `wget ${HOST}`, `wget -qO- "${HOST}"`, `curl -fsSL --retry 3 ${HOST}`, `  curl -H 'x: y' frontend-api.${HOST}`,
+      `resp=$(curl ${HOST.toUpperCase()}/coins)`, `GET ${HOST}/api/coins/latest`, `\tsee ${HOST}/board`]) {
+      assert.deepEqual(codes(scanHosts(line, 'run.sh')), ['E_PUMP_FUN_HOST'], line);
+    }
+    // A comment naming the on-chain program is not a request target.
+    for (const line of [`// The ${HOST} bonding curve program (6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P) holds the reserves.`,
+      `# ${HOST} bonding curve accounts are read from chain, never from ${HOST} itself`, `// curl is not used for the ${HOST} program`]) {
+      assert.deepEqual(scanHosts(line, 'a.ts'), [], line);
+    }
+  });
+
+  it('reads every text file but binaries, images, Markdown, non-code under docs/ and the named evidence files (ruling 3.2)', () => {
     const CAPS = ['Pump', 'fun'].join('.');
     const repo = goodRepo();
     try {
-      const quoted = `{ "route": "'${CAPS}'", "note": "the '${CAPS}' label" }\n`;
-      const files = ['docs/blueprint/FACTS.json', 'docs/x/feed.ts', 'packages/x/config.json', 'packages/x/a.yaml', 'packages/x/b.yml', 'packages/x/c.toml',
-        'packages/x/.env', 'packages/x/.env.local', 'research/x/probe.py', 'ops/x/run.sh', 'packages/x/a.tsx', 'packages/x/notes.txt', 'packages/x/data.jsonl',
-        'packages/x/README.md'];
-      for (const f of files) write(repo.dir, f, quoted);
-      assert.deepEqual(checkHosts(repo.dir, files).map((x) => x.file), ['ops/x/run.sh:1', 'packages/x/.env:1', 'packages/x/.env.local:1', 'packages/x/a.tsx:1',
-        'packages/x/a.yaml:1', 'packages/x/b.yml:1', 'packages/x/c.toml:1', 'packages/x/config.json:1', 'research/x/probe.py:1']);
-      for (const f of ['docs/blueprint/FACTS.json', 'docs/x/feed.ts', 'packages/x/README.md', 'packages/x/notes.txt']) assert.equal(hostScanned(f), false, f);
-      assert.equal(hostScanned('packages/x/config.json'), true);
+      const body = `x = "${CAPS}"\ncurl -s ${HOST}/api/coins\n`;
+      const read = ['scanner/main.go', 'svc/lib.rs', 'tools-x/a.rb', 'ops-x/zeroed-feed.service', 'ops-x/zeroed-feed.timer', 'ops-x/nginx.conf', 'ops-x/app.ini',
+        'db/seed.sql', 'web/index.html', 'prod.env', 'ops-x/.env', 'ops-x/bin/zeroed-pull', 'packages/x/config.json', 'packages/x/notes.txt', 'packages/x/data.jsonl',
+        'docs/x/feed.ts', 'docs/x/probe.py', 'docs/x/run-me'];
+      const skipped = ['docs/blueprint/FACTS.json', 'docs/x/notes.txt', 'packages/x/README.md', 'docs/x/README.md', 'web/logo.png', 'web/logo.svg', 'packages/x/blob.dat'];
+      for (const f of [...read, ...skipped]) write(repo.dir, f, f === 'ops-x/bin/zeroed-pull' || f === 'docs/x/run-me' ? `#!/usr/bin/env bash\n${body}` : body);
+      write(repo.dir, 'packages/x/blob.dat', `\0${body}`);
+      const files = [...read, ...skipped];
+      assert.deepEqual([...new Set(checkHosts(repo.dir, files).map((x) => x.file.replace(/:\d+$/, '')))].sort(), [...read].sort());
+      assert.equal(hostScanned('docs/x/notes.txt', body), false);
+      assert.equal(hostScanned('docs/x/run-me', `#!/bin/sh\n${body}`), true, 'code under docs/ by its #! line');
+      assert.equal(hostScanned('packages/x/blob.dat', `a\0b`), false, 'a NUL byte marks a binary');
+      for (const [file, reason] of Object.entries(EVIDENCE_FILES)) {
+        assert.ok(reason.length > 10, `${file} names its reason`);
+        assert.equal(hostScanned(file, body), false, file);
+      }
     } finally { repo.remove(); }
-    // The real evidence file passes as it is, quoted labels and all.
+    // The real evidence file passes as it is, quoted labels and all: docs/ non-code is not read.
     const facts = readFileSync(join(REPO_ROOT, 'docs/blueprint/FACTS.json'), 'utf8');
     assert.ok(facts.includes(`'${CAPS}'`), 'FACTS.json quotes the route label verbatim');
     assert.deepEqual(checkHosts(REPO_ROOT, ['docs/blueprint/FACTS.json']), []);
     assert.notDeepEqual(scanHosts(facts, 'packages/x/config.json'), [], 'the same text in package configuration fails');
   });
 
-  it('reads every checked file but Markdown and the fixtures; only the Zeroed manifest\'s own files are skipped', () => {
+  it('reads new files everywhere, and an old Zeroed file only on its added lines (ruling 3.1)', () => {
     const repo = goodRepo();
     try {
       const url = `https://${HOST}/coin/x`;
       // ZEROED_FILE is on the manifest (an existing Zeroed file); the others are not, so a new file under the same
-      // folder is read (round 1 review F4, red team RT-01).
+      // folder, a Zeroed-only package folder included, is read (round 1 review F4, red team RT-01, ruling 3.1).
       const files = ['packages/engine/src/a.ts', 'tools/x.mjs', 'ops-new/c.json', 'apps/web/src/new-feed.ts', 'research/new/feed.ts', 'ops/recorder/feed.ts',
-        ZEROED_FILE, 'README.md', 'tools/policy/test/fixtures/x.ts'];
-      for (const f of files) write(repo.dir, f, `const u = "${url}";\n`);
-      assert.deepEqual(checkHosts(repo.dir, files).map((x) => x.file),
-        ['apps/web/src/new-feed.ts:1', 'ops-new/c.json:1', 'ops/recorder/feed.ts:1', 'packages/engine/src/a.ts:1', 'research/new/feed.ts:1', 'tools/x.mjs:1']);
-      assert.deepEqual(checkHosts(repo.dir, files, scopeOf(true)).map((x) => x.file).includes(`${ZEROED_FILE}:1`), true);
+        'packages/worker/src/new-feed.ts', ZEROED_FILE, 'README.md', 'tools/policy/test/fixtures/x.ts'];
+      for (const f of files) write(repo.dir, f, `const u = "${url}";\nconst v = "${url}";\n`);
+      assert.deepEqual([...new Set(checkHosts(repo.dir, files).map((x) => x.file.replace(/:\d+$/, '')))],
+        ['apps/web/src/new-feed.ts', 'ops-new/c.json', 'ops/recorder/feed.ts', 'packages/engine/src/a.ts', 'packages/worker/src/new-feed.ts', 'research/new/feed.ts', 'tools/x.mjs']);
+      assert.deepEqual(checkHosts(repo.dir, [ZEROED_FILE], safetyLinesOf(false, new Map([[ZEROED_FILE, new Set([2])]]))).map((x) => x.file), [`${ZEROED_FILE}:2`],
+        'only the added line of an old Zeroed file');
+      assert.deepEqual(checkHosts(repo.dir, [ZEROED_FILE], safetyLinesOf(true, new Map())).map((x) => x.file), [`${ZEROED_FILE}:1`, `${ZEROED_FILE}:2`]);
+      assert.deepEqual(checkHosts(repo.dir, [ZEROED_FILE], safetyLinesOf(false, null)).length, 2, 'no merge base: read in full (fails closed)');
     } finally { repo.remove(); }
   });
 
@@ -97,18 +122,106 @@ describe('pump.fun-operated hosts (owner rule A02)', () => {
     } finally { repo.remove(); }
   });
 
-  it('this repository has none outside Zeroed\'s paths; Zeroed\'s app link, a sandbox probe and recorded image URLs are reported with --include-zeroed', () => {
+  it('this repository has none outside old Zeroed lines; --include-zeroed reports the Zeroed files with a host (ruling 3.2 list)', () => {
     const files = gitFiles();
     assert.deepEqual(checkHosts(REPO_ROOT, files), []);
-    const zeroed = [...new Set(checkHosts(REPO_ROOT, files, scopeOf(true)).map((x) => x.file.replace(/:\d+$/, '')))];
-    // Code and configuration only (supervisor ruling, 2026-10-08): docs/** and Markdown are never read, so the sandbox
-    // notes under docs/handover/ that the first version reported are out; the RT-04 forms add research/brainstorm.
+    const zeroed = [...new Set(checkHosts(REPO_ROOT, files, safetyLinesOf(true, null)).map((x) => x.file.replace(/:\d+$/, '')))];
+    // Every text file is read now (ruling 3.2); docs/ non-code and Markdown are not, and code under docs/ is.
     assert.deepEqual(zeroed, ['apps/web/src/components/TokenActions.tsx', 'apps/web/test/app-trade.test.ts',
-      'research/brainstorm/collect.py', 'research/empirical/backfill/meta.json']);
+      'docs/handover/sandbox/supervisor/files/bundle_probe.py', 'research/brainstorm/collect.py', 'research/empirical/backfill/meta.json']);
   });
 });
 
-/** The repository's tracked and untracked-not-ignored plain files (no links), as check.ts lists them. */
+describe('old Zeroed code: structure rules skip it, safety checks read its added lines (supervisor ruling 3.1)', () => {
+  /** Puts `file` with `text` on the base branch (main) and brings it into the pull request branch. */
+  const onBase = (repo: TempRepo, file: string, text: string): void => {
+    repo.git('checkout', '-q', 'main');
+    write(repo.dir, file, text);
+    repo.commit(`old ${file}`);
+    repo.git('checkout', '-q', 'pr');
+    repo.git('merge', '-q', '--ff-only', 'main');
+  };
+
+  it('RT2-01: a web3 import and a pump.fun fetch appended to research/empirical/lib.mjs fail; its old lines stay quiet', () => {
+    const repo = goodRepo();
+    try {
+      const file = 'research/empirical/lib.mjs';
+      assert.equal(inZeroed(file), true, 'on the manifest');
+      onBase(repo, file, `import { x } from '../../packages/core/src/x.mjs';\nexport const OLD = 'https://${HOST}/old';\n`);
+      assert.deepEqual(runChecks(repo.dir, 'main'), [], 'old lines are quiet');
+      editText(repo.dir, file, (t) => `${t}import { Connection } from '@solana/web3.js';\nexport const feed = () => fetch('https://frontend-api.${HOST}/coins');\n`);
+      repo.commit('append to an old Zeroed file');
+      const found = runChecks(repo.dir, 'main').map((f) => `${f.code} ${f.file}`);
+      assert.deepEqual(found, [`E_UNDECLARED_IMPORT ${file}:3`, `E_PUMP_FUN_HOST ${file}:4`]);
+    } finally { repo.remove(); }
+  });
+
+  it('RT2-01: a curl to the host appended to ops/host/files/usr/local/sbin/zeroed-backup fails', () => {
+    const repo = goodRepo();
+    try {
+      const file = 'ops/host/files/usr/local/sbin/zeroed-backup';
+      assert.equal(inZeroed(file), true, 'on the manifest');
+      onBase(repo, file, '#!/usr/bin/env bash\nset -euo pipefail\necho backup\n');
+      assert.deepEqual(runChecks(repo.dir, 'main'), []);
+      editText(repo.dir, file, (t) => `${t}curl -s ${HOST}/api/coins > /tmp/c\n`);
+      repo.commit('append a curl');
+      assert.deepEqual(runChecks(repo.dir, 'main').map((f) => `${f.code} ${f.file}`), [`E_PUMP_FUN_HOST ${file}:4`]);
+      // Uncommitted edits count too: the diff runs against the working tree.
+      editText(repo.dir, file, (t) => `${t}wget ${HOST}\n`);
+      assert.deepEqual(runChecks(repo.dir, 'main').map((f) => f.file), [`${file}:4`, `${file}:5`]);
+    } finally { repo.remove(); }
+  });
+
+  it('a new file under packages/worker/ that fetches a pump.fun host fails', () => {
+    const repo = goodRepo();
+    try {
+      write(repo.dir, 'packages/worker/src/feed.ts', `export const FEED = 'https://frontend-api-v3.${HOST}/coins/latest';\n`);
+      repo.commit('new worker file');
+      assert.deepEqual(runChecks(repo.dir, 'main').map((f) => `${f.code} ${f.file}`), ['E_PUMP_FUN_HOST packages/worker/src/feed.ts:1']);
+    } finally { repo.remove(); }
+  });
+
+  it('the reviewer\'s copied worker test passes as a new file: structure rules skip the package, safety checks find nothing (R2-1)', () => {
+    const { snapshot } = readRepo(REPO_ROOT);
+    const dir = mkdtempSync(join(tmpdir(), 'policy-worker-'));
+    try {
+      const copied = 'packages/worker/test/copied-account-marks.test.ts';
+      write(dir, copied, readFileSync(join(REPO_ROOT, 'packages/worker/test/account-marks.test.ts'), 'utf8'));
+      const snap = { ...snapshot, root: dir };
+      // What the structure rules would say: the copy imports across packages, as the Zeroed worker does.
+      assert.ok(codes(checkImports(snap, [copied], scopeOf(true))).includes('E_IMPORT_PATH'), 'the copy trips the structure rules when they apply');
+      assert.deepEqual(checkImports(snap, [copied]), [], 'structure rules skip packages/worker/; its imports are all declared');
+      assert.deepEqual(checkHosts(dir, [copied]), []);
+      assert.equal(inZeroedPackage(copied), true);
+      assert.equal(structureScopeOf(false)(copied), false);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('safety import rules still read every new file under a Zeroed package folder, and parse-failing old files line by line', () => {
+    const { snapshot } = readRepo(REPO_ROOT);
+    const dir = mkdtempSync(join(tmpdir(), 'policy-worker-'));
+    try {
+      const fresh = 'packages/worker/src/new-feed.ts';
+      write(dir, fresh, "import { Connection } from '@solana/web3.js';\nimport x from 'left-pad';\nimport { y } from '../../core/src/y.ts';\nexport const z = [Connection, x, y];\n");
+      const snap = { ...snapshot, root: dir };
+      assert.deepEqual(checkImports(snap, [fresh]).map((f) => `${f.code} ${f.file}`),
+        [`E_UNDECLARED_IMPORT ${fresh}:1`, `E_UNDECLARED_IMPORT ${fresh}:2`], 'safety codes only; the cross-package path is a structure rule');
+      const old = 'research/empirical/lib.mjs';
+      write(dir, old, "this is not { valid javascript\nimport bad from 'left-pad';\n");
+      assert.deepEqual(checkImports(snap, [old], structureScopeOf(false), safetyLinesOf(false, new Map([[old, new Set([2])]]))).map((f) => `${f.code} ${f.file}`),
+        [`E_UNDECLARED_IMPORT ${old}:2`], 'an unparsable old file is read line by line for its added imports');
+      assert.deepEqual(looseModuleRefs("import a from 'a';\nconst b = require(\"b\");\nexport * from 'c';\nawait import(`d`);\n").map((r) => `${r.line}:${r.specifier}`),
+        ['1:a', '2:b', '3:c', '4:d']);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('reads the lines a file gained from git diff -U0', () => {
+    const diff = ['diff --git a b', '--- x', '+++ research/a.mjs', '@@ -2,0 +3,2 @@', '+++ an added line that starts with ++', '+b', '@@ -9 +11 @@', '-old', '+new',
+      'diff --git c d', '--- y', '+++ /dev/null', '@@ -1 +0,0 @@', '-gone'].join('\n');
+    assert.deepEqual([...parseAddedLines(diff)].map(([f, l]) => `${f} ${[...l].join(',')}`), ['research/a.mjs 3,4,11']);
+  });
+});
+
 function gitFiles(): string[] {
   return execFileSync('git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard'], { cwd: REPO_ROOT, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 })
     .split('\0').filter((f) => {
@@ -236,6 +349,7 @@ describe('security audit of the checked workspace projects', () => {
     show: (_ref, path) => (path === 'pnpm-lock.yaml' ? baseLock : null),
     blob: () => null,
     mergeBase: () => (baseLock === null ? null : 'merge-base'),
+    addedLines: () => new Map(),
   });
 
   it('main: audits the checked projects\' packages only (Zeroed\'s with --include-zeroed), and fails closed', async () => {

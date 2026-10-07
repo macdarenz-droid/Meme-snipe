@@ -8,7 +8,7 @@
 // check. A file not on the manifest is checked, wherever it sits. The manifest is a guarded file, so changing it needs
 // the review label (drift.ts).
 import { readFileSync } from 'node:fs';
-import { ZEROED_JOBS, ZEROED_WORKFLOWS } from './config.ts';
+import { ZEROED_JOBS, ZEROED_PACKAGE_PREFIXES, ZEROED_WORKFLOWS } from './config.ts';
 
 /** The manifest's files, read once. Each line is a path relative to the repository root, `/`-separated. */
 export const ZEROED_FILES: ReadonlySet<string> = new Set(
@@ -36,6 +36,35 @@ export function inZeroed(path: string): boolean {
  */
 export function zeroedSourceFiles(): string[] {
   return [...ZEROED_FILES].filter((f) => /\.(?:ts|mts|cts|tsx|js|mjs|cjs|jsx)$/.test(f));
+}
+
+/** True when `path` (a file, or a directory ending in `/`) lies in a Zeroed-only package folder, new files included. */
+export function inZeroedPackage(path: string): boolean {
+  return ZEROED_PACKAGE_PREFIXES.some((p) => path.startsWith(p) || `${path}/` === p || path === p);
+}
+
+/**
+ * The structure rules' scope (supervisor ruling 3.1): every path but Zeroed's own files and anything under the
+ * Zeroed-only package folders. The other scoped checks (secrets, symbolic links, the allowlist, the workflows) keep the
+ * manifest scope of scopeOf, so nothing they read before is skipped now.
+ */
+export function structureScopeOf(includeZeroed: boolean): Scope {
+  const scope = (path: string): boolean => includeZeroed || !(inZeroed(path) || inZeroedPackage(path));
+  return Object.assign(scope, { job: (file: string, job: string): boolean => includeZeroed || !zeroedJob(file, job) });
+}
+
+/** Which lines of a file the safety checks read: all of it, or a set of 1-based line numbers. */
+export type SafetyLines = (file: string) => 'all' | ReadonlySet<number>;
+
+/**
+ * The safety checks' lines (supervisor ruling 3.1, red team RT2-01): every line of a file that is not old Zeroed code
+ * (a new file anywhere, the Zeroed-only package folders included), and only the added lines (git diff -U0 against
+ * merge-base(base, HEAD)) of an old Zeroed file, so an edit to one is checked while its old lines stay quiet. `added`
+ * null means the merge base is unknown: old Zeroed files are then read in full, which fails closed.
+ */
+export function safetyLinesOf(includeZeroed: boolean, added: ReadonlyMap<string, ReadonlySet<number>> | null): SafetyLines {
+  const none: ReadonlySet<number> = new Set();
+  return (file) => (includeZeroed || !inZeroed(file) || added === null ? 'all' : added.get(file) ?? none);
 }
 
 /** True when `job` of the workflow `file` is one of Zeroed's (config.ts ZEROED_JOBS). */

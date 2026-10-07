@@ -2,6 +2,9 @@ name: ci
 on: [pull_request]
 permissions:
   contents: read
+concurrency:
+  group: ci-${{ github.event.pull_request.number && format('pr-{0}{1}', github.event.pull_request.number, (github.event.action == 'labeled' || github.event.action == 'unlabeled') && format('-{0}-{1}-{2}', github.event.action, github.event.label.name, github.run_id) || '') || github.run_id }}
+  cancel-in-progress: true
 jobs:
   check:
     runs-on: ubuntu-24.04

@@ -30,7 +30,7 @@
 //   commit into pr/ (data), input by input, sets up Node from base/.node-version, and runs the base copy of the drift
 //   check in pr/, in a job without a condition, container or services.
 import {
-  AUDIT_SCHEDULE_WORKFLOW, CI_CHECKOUT_INPUTS, CI_JOB, CI_JOB_IF, CI_REQUIRED_STEP_ENV, CI_REQUIRED_STEPS, CI_SETUP_NODE_INPUTS, CI_WORKFLOW, GUARD_BASE_CHECKOUT, GUARD_COMMAND,
+  AUDIT_JOB, AUDIT_SCHEDULE_WORKFLOW, CI_CHECKOUT_INPUTS, CI_CONCURRENCY_GROUP, CI_JOB, CI_JOB_IF, CI_REQUIRED_STEP_ENV, CI_REQUIRED_STEPS, CI_SETUP_NODE_INPUTS, CI_WORKFLOW, GUARD_BASE_CHECKOUT, GUARD_COMMAND,
   GUARD_PR_CHECKOUT, GUARD_SETUP_NODE, GUARD_WORKFLOW, INTEGRATION_BRANCH, PR_TRIGGER_KEYS, PR_TRIGGER_TYPES, PUSH_TRIGGER_KEYS,
   WORKFLOW_ENV_VALUES, WORKFLOW_GUARDED_ENV, WORKFLOW_PNPM_COMMANDS, WORKFLOW_WRITE_PERMISSIONS,
 } from './config.ts';
@@ -263,6 +263,12 @@ function checkGuard(doc: YamlMap, findings: Finding[]): void {
  * red run on the default branch's newest commit and stop the deploy gate.
  */
 function checkAuditSchedule(doc: YamlMap, findings: Finding[]): void {
+  const jobs = mapOf(doc['jobs']);
+  const ids = Object.keys(jobs);
+  const job = mapOf(jobs[AUDIT_JOB]);
+  if (ids.length !== 1 || ids[0] !== AUDIT_JOB || ('name' in job && job['name'] !== AUDIT_JOB)) {
+    findings.push(finding('E_AUDIT_JOB_NAME', AUDIT_SCHEDULE_WORKFLOW, `the advisory report runs one job, "${AUDIT_JOB}", under that name: the deploy gate ignores only that check run (logic.sh DEPLOY_AUDIT_JOB)`));
+  }
   const on = triggers(doc['on']);
   if (!on.includes('schedule') || on.some((t) => t !== 'schedule' && t !== 'workflow_dispatch')) {
     findings.push(finding('E_AUDIT_SCHEDULE', AUDIT_SCHEDULE_WORKFLOW, 'the advisory report runs on schedule (and workflow_dispatch), and on no other trigger'));
@@ -318,9 +324,19 @@ export function checkWorkflows(snapshot: RepoSnapshot, scope: Scope = scopeOf(fa
   const findings: Finding[] = [];
   const docs = new Map<string, YamlMap | null>();
   for (const w of snapshot.workflows) if (scope(w.file)) docs.set(w.file, checkWorkflow(w.file, w.text, findings, scope));
+  // The deploy gate ignores the advisory report's job by name (ruling 3.4), so no other workflow, Zeroed's included,
+  // may use that name: a failing job of its own would hide from the gate. A text search, so a name in any field counts.
+  for (const w of snapshot.workflows) {
+    if (w.file !== AUDIT_SCHEDULE_WORKFLOW && w.text.includes(AUDIT_JOB)) {
+      findings.push(finding('E_AUDIT_JOB_NAME', w.file, `"${AUDIT_JOB}" is the advisory report's job, which the deploy gate ignores; no other workflow may use the name`));
+    }
+  }
   const ci = docs.get(CI_WORKFLOW);
   if (ci === undefined) findings.push(finding('E_CI_MISSING', CI_WORKFLOW, 'the CI workflow is missing'));
   else if (ci !== null) {
+    if (mapOf(ci['concurrency'])['group'] !== CI_CONCURRENCY_GROUP) {
+      findings.push(finding('E_CI_CONCURRENCY', `${CI_WORKFLOW} concurrency.group`, `must be ${CI_CONCURRENCY_GROUP}: a label event runs in a group of its own, so no later label event or push cancels the run that carries the review label (ruling 3.3)`));
+    }
     checkTrigger(CI_WORKFLOW, ci['on'], 'pull_request', findings);
     checkPushTrigger(CI_WORKFLOW, ci['on'], findings);
     checkRequiredSteps(ci, findings);

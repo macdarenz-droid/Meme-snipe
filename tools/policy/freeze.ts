@@ -5,7 +5,7 @@
 // a higher semantic version, a CHANGELOG.md section for it and sign-off lines from both group leads.
 import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname as posixDirname, join as posixJoin } from 'node:path/posix';
+import { dirname as posixDirname, join as posixJoin, relative as posixRelative } from 'node:path/posix';
 import { join } from 'node:path';
 import { finding, type Finding, type Io } from './finding.ts';
 import type { Git } from './git.ts';
@@ -25,35 +25,48 @@ function listSrc(root: string, rel: string): string[] {
 }
 
 /**
- * The tsconfig files a frozen package compiles with, relative to `dir`: its own tsconfig.json and every config it
- * extends, following the chain (red team RT-06). A compiler option decides what the frozen types mean (`strict`,
- * `exactOptionalPropertyTypes`, `noUncheckedIndexedAccess` and the rest), so a change to one is a change to the frozen
- * surface and needs the version bump, the changelog entry and both sign-offs. Only relative `extends` values are
- * followed; a package name would be a dependency, which a frozen zero-dependency package does not have.
+ * The tsconfig files a frozen package compiles with, relative to `dir`: `start` and every config it extends, following
+ * the chain depth first, an array `extends` entry by entry in its order (red team RT-06, RT2-06). A compiler option
+ * decides what the frozen types mean (`strict`, `exactOptionalPropertyTypes`, `noUncheckedIndexedAccess` and the rest),
+ * so a change to one is a change to the frozen surface and needs the version bump, the changelog entry and both
+ * sign-offs. Only relative `extends` values are followed; a package name would be a dependency, which a frozen
+ * zero-dependency package does not have. Each file is listed once.
  */
 export function tsconfigChain(root: string, dir: string, start = 'tsconfig.json'): string[] {
   const out: string[] = [];
-  for (let rel: string | null = start; rel !== null && !out.includes(rel);) {
-    const path = join(root, dir, rel);
-    if (!existsSync(path)) break;
+  const visit = (rel: string): void => {
+    if (out.includes(rel) || !existsSync(join(root, dir, rel))) return;
     out.push(rel);
     let extend: unknown;
     try {
-      extend = (JSON.parse(readFileSync(path, 'utf8')) as { extends?: unknown }).extends;
+      extend = (JSON.parse(readFileSync(join(root, dir, rel), 'utf8')) as { extends?: unknown }).extends;
     } catch {
-      break;                                                            // unreadable: the typecheck fails on it anyway
+      return;                                                           // unreadable: the typecheck fails on it anyway
     }
-    rel = typeof extend === 'string' && (extend.startsWith('./') || extend.startsWith('../'))
-      ? posixJoin(posixDirname(rel), extend)
-      : null;
-  }
+    for (const e of Array.isArray(extend) ? extend : [extend]) {
+      if (typeof e === 'string' && (e.startsWith('./') || e.startsWith('../'))) visit(posixJoin(posixDirname(rel), e));
+    }
+  };
+  visit(start);
   return out;
 }
 
-/** The frozen files of the package in `dir`, relative to `dir`: package.json, everything under src/, the tsconfigs. */
+/**
+ * The repository's root tsconfig.json, which is what `pnpm typecheck` compiles a frozen package's src/ with (it
+ * includes packages/types/src), and every config it extends, relative to `dir` (red team RT2-06; supervisor ruling 3.5).
+ */
+export function rootTsconfigChain(root: string, dir: string): string[] {
+  return tsconfigChain(root, dir, posixRelative(dir, 'tsconfig.json'));
+}
+
+/**
+ * The frozen files of the package in `dir`, relative to `dir`: package.json, everything under src/, the package's
+ * tsconfig chain and the root tsconfig chain, each file once.
+ */
 export function freezeFiles(root: string, dir: string): string[] {
   const src = existsSync(join(root, dir, 'src')) ? listSrc(join(root, dir), 'src') : [];
-  return ['package.json', ...src.sort(), ...tsconfigChain(root, dir)];
+  const configs = [...tsconfigChain(root, dir), ...rootTsconfigChain(root, dir)];
+  return ['package.json', ...src.sort(), ...configs.filter((c, i) => configs.indexOf(c) === i)];
 }
 
 /** sha256 over each file's relative path, byte length and bytes, in the given order. */

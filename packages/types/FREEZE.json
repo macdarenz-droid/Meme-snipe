@@ -1,7 +1,7 @@
 {
   "package": "@bot/types",
   "version": "1.0.0",
-  "sha256": "9fa8246f8275ce7eeeae42e0809aba4540769b2d127103e82c14f65a79d32473",
+  "sha256": "5e0ba93cb7bb2c5c522f68044aae6b3fb7faa027df582c37bc0985087d6027e9",
   "files": [
     "package.json",
     "src/canon.ts",
@@ -12,6 +12,7 @@
     "src/types.ts",
     "src/units.ts",
     "tsconfig.json",
-    "../../tsconfig.bot.json"
+    "../../tsconfig.bot.json",
+    "../../tsconfig.json"
   ]
 }

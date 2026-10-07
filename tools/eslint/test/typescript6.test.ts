@@ -82,8 +82,14 @@ describe('typescript 6.0.3 for the ESLint parser only', () => {
       assert.ok(zeroed.includes(file), file);
       assert.equal(await eslint.isPathIgnored(join(root, file)), true, file);
     }
-    for (const file of ['research/blueprint/feed.ts', 'packages/types/src/units.ts']) {
+    for (const file of ['research/blueprint/feed.ts', 'packages/types/src/units.ts', 'apps/feed/src/index.ts']) {
       assert.equal(await eslint.isPathIgnored(join(root, file)), false, file);
+    }
+    // Supervisor ruling 3.1 (review R2-1): the Zeroed-only package folders skip the structure rules by prefix, new
+    // files included, so a copied worker test lints clean; the policy check's safety rules still read it.
+    for (const file of ['packages/worker/test/copied-account-marks.test.ts', 'packages/core/src/new.ts', 'packages/backtest/x.ts', 'packages/ops/a.ts',
+      'packages/runner/b.ts', 'apps/web/src/new.tsx']) {
+      assert.equal(await eslint.isPathIgnored(join(root, file)), true, file);
     }
   });
 

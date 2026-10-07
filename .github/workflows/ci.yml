@@ -13,8 +13,11 @@ permissions:
   contents: read
 
 concurrency:
-  # One run per pull request; every push to the base branches gets its own group, so none is dropped.
-  group: ci-${{ github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  # One run per pull request; every push to the base branches gets its own group, so none is dropped. A label event
+  # (labeled, unlabeled) gets a group of its own, named by the action, the label and the run, so no later label event or
+  # push cancels the run that carries the review label, and it cancels nothing (supervisor ruling 3.3, red team RT2-04;
+  # tools/policy/config.ts CI_CONCURRENCY_GROUP). Pushes to a pull request still cancel its older push runs.
+  group: ci-${{ github.event.pull_request.number && format('pr-{0}{1}', github.event.pull_request.number, (github.event.action == 'labeled' || github.event.action == 'unlabeled') && format('-{0}-{1}-{2}', github.event.action, github.event.label.name, github.run_id) || '') || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:

@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { afterAll, describe, it } from 'vitest';
 import { checkAllowlist, isUnnamedReviewer, parseTable } from '../allowlist.ts';
 import { wallClockNowMs } from '../clock.ts';
-import { AUDIT_SCHEDULE_WORKFLOW, CI_JOB_IF, INTEGRATION_BRANCH } from '../config.ts';
+import { AUDIT_JOB, AUDIT_SCHEDULE_WORKFLOW, CI_CONCURRENCY_GROUP, CI_JOB_IF, INTEGRATION_BRANCH } from '../config.ts';
 import { formatFindings, type Finding } from '../finding.ts';
 import { checkLicences, type InstalledPackage } from '../installed.ts';
 import { checkLintConfig } from '../lintconfig.ts';
@@ -294,13 +294,41 @@ describe('workflows', () => {
     assert.deepEqual(bad('    - cron: "41 6 * * *"', '    - cron: "41 6 * * 1"'), [], 'the cron itself is not fixed');
   });
 
+  it('names the report\'s one job zeroed-advisories, a name no other workflow may use, Zeroed\'s included (ruling 3.4)', () => {
+    assert.deepEqual(checkWorkflows(ci(good)), []);
+    const job = '  zeroed-advisories:\n';
+    assert.ok(schedule.includes(job));
+    assert.deepEqual(codes(checkWorkflows(ci(good, guard, schedule.replace(job, '  advisories:\n')))), ['E_AUDIT_JOB_NAME'], 'renamed: the gate would count it again');
+    assert.deepEqual(codes(checkWorkflows(ci(good, guard, schedule.replace(job, `${job}    name: other\n`)))), ['E_AUDIT_JOB_NAME'], 'a display name changes the check run name');
+    assert.deepEqual(codes(checkWorkflows(ci(good, guard, `${schedule}  second:\n    runs-on: x\n    steps:\n      - continue-on-error: true\n        run: echo\n`))), ['E_AUDIT_JOB_NAME']);
+    const borrow = (text: string, file = '.github/workflows/other.yml'): string[] =>
+      codes(checkWorkflows({ ...ci(good), workflows: [...ci(good).workflows, { file, text }] }));
+    const other = 'name: other\non: [push]\npermissions:\n  contents: read\njobs:\n  zeroed-advisories:\n    runs-on: x\n    steps:\n      - run: exit 1\n';
+    assert.deepEqual(borrow(other), ['E_AUDIT_JOB_NAME'], 'a failing job hiding under the ignored name');
+    assert.deepEqual(borrow(other.replace('  zeroed-advisories:\n', '  x:\n    name: zeroed-advisories\n')), ['E_AUDIT_JOB_NAME'], 'by display name');
+    assert.deepEqual(borrow(other, '.github/workflows/deploy.yml'), ['E_AUDIT_JOB_NAME'], 'Zeroed\'s workflows too');
+    assert.deepEqual(codes(checkWorkflows(ci(good.replace('  check:\n', '  check:\n    name: zeroed-advisories\n')))), ['E_AUDIT_JOB_NAME'], 'ci.yml may not borrow it');
+    // The deploy gate ignores the same name the policy reserves.
+    const logic = readFileSync(join(REPO_ROOT, 'ops/host/files/usr/local/lib/zeroed/logic.sh'), 'utf8');
+    assert.ok(logic.includes(`DEPLOY_AUDIT_JOB=${AUDIT_JOB}\n`), 'logic.sh DEPLOY_AUDIT_JOB');
+  });
+
+  it('runs a label event in a concurrency group of its own, so nothing cancels the labeled run (ruling 3.3)', () => {
+    assert.ok(CI_CONCURRENCY_GROUP.includes('github.event.action') && CI_CONCURRENCY_GROUP.includes('github.event.label.name'));
+    assert.ok(realCi.includes(`  group: ${CI_CONCURRENCY_GROUP}\n`), 'this repository\'s ci.yml');
+    assert.deepEqual(checkWorkflows(ci(realCi)), []);
+    const old = "ci-${{ github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number) || github.run_id }}";
+    assert.deepEqual(codes(checkWorkflows(ci(realCi.replace(CI_CONCURRENCY_GROUP, old)))), ['E_CI_CONCURRENCY'], 'the round 2 group let a label event cancel the labeled run');
+    assert.deepEqual(codes(checkWorkflows(ci(realCi.replace(`  group: ${CI_CONCURRENCY_GROUP}\n`, '')))), ['E_CI_CONCURRENCY']);
+  });
+
   it('allows "issues: write" in the scheduled report only, and no other write anywhere (supervisor ruling 1)', () => {
     assert.ok(schedule.includes('  issues: write\n'), 'the report declares it');
     assert.deepEqual(checkWorkflows(ci(good)), []);
     for (const write of ['  packages: write\n', '  pull-requests: write\n', '  issues: write\n  actions: write\n']) {
       assert.deepEqual(codes(checkWorkflows(ci(good, guard, schedule.replace('  issues: write\n', write)))), ['E_WORKFLOW_PERMISSIONS'], write);
     }
-    assert.deepEqual(codes(checkWorkflows(ci(schedule.replace('name: audit-schedule', 'name: ci')))), ['E_WORKFLOW_PERMISSIONS', 'E_CI_JOB_NAME', 'E_CI_STEP_MISSING', 'E_WORKFLOW_TRIGGER'].sort(),
+    assert.deepEqual(codes(checkWorkflows(ci(schedule.replace('name: audit-schedule', 'name: ci')))), ['E_AUDIT_JOB_NAME', 'E_CI_CONCURRENCY', 'E_WORKFLOW_PERMISSIONS', 'E_CI_JOB_NAME', 'E_CI_STEP_MISSING', 'E_WORKFLOW_TRIGGER'].sort(),
       'the same permission in another workflow is refused');
     assert.deepEqual(codes(checkWorkflows(ci(good, guard, schedule.replace('    runs-on: ubuntu-24.04', '    runs-on: ubuntu-24.04\n    permissions:\n      issues: write')))), [],
       'the job may narrow to the same scope');
@@ -353,7 +381,7 @@ describe('workflows', () => {
     assert.deepEqual(disable('run: node tools/policy/bin/audit.ts', 'run: echo node tools/policy/bin/audit.ts'), ['E_CI_STEP_EXTRA', 'E_CI_STEP_MISSING']);
     const swapped = realCi.replace('run: pnpm lint', 'run: TMP').replace('run: pnpm typecheck', 'run: pnpm lint').replace('run: TMP', 'run: pnpm typecheck');
     assert.deepEqual(codes(checkWorkflows(ci(swapped))), ['E_CI_STEP_ORDER']);
-    assert.deepEqual(codes(checkWorkflows(ci('name: x\non: [pull_request]\npermissions:\n  contents: read\n'))), ['E_CI_JOB_NAME', 'E_CI_STEP_MISSING'], 'no jobs at all');
+    assert.deepEqual(codes(checkWorkflows(ci('name: x\non: [pull_request]\npermissions:\n  contents: read\n'))), ['E_CI_CONCURRENCY', 'E_CI_JOB_NAME', 'E_CI_STEP_MISSING'], 'no jobs at all');
     assert.deepEqual(checkWorkflows(ci(step('      - just a string step\n'))), [], 'a step that is not a mapping runs nothing');
     const split = `${good}  other:\n    runs-on: x\n    steps:\n      - run: pnpm lint\n`;
     assert.deepEqual(checkWorkflows(ci(split)), [], 'the job with the most required steps is the one checked');

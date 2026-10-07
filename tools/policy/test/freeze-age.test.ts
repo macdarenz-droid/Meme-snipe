@@ -11,10 +11,10 @@ import {
 } from '../age.ts';
 import { checkDrift, guardedFiles, guardedHash, isGuarded, reviewLabel, type GuardedFile } from '../drift.ts';
 import {
-  buildFreeze, changelogSection, checkFreeze, freezeFiles, freezeHash, freezeMain, semverGreater, tsconfigChain, writeFreeze,
+  buildFreeze, changelogSection, checkFreeze, freezeFiles, freezeHash, freezeMain, rootTsconfigChain, semverGreater, tsconfigChain, writeFreeze,
 } from '../freeze.ts';
 import type { Git } from '../git.ts';
-import { capture, codes, FIXTURES, runBin } from './helpers.ts';
+import { capture, codes, FIXTURES, REPO_ROOT, runBin } from './helpers.ts';
 
 const tmp = mkdtempSync(join(tmpdir(), 'policy-freeze-'));
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
@@ -39,6 +39,7 @@ function fakeGit(base: Record<string, string> | null): Git {
     files: () => Object.keys(base ?? {}),
     changedSince: () => [],
     mergeBase: () => (base === null ? null : 'merge-base'),
+    addedLines: () => new Map(),
   };
 }
 
@@ -82,6 +83,36 @@ describe('freeze manifest', () => {
     writeFileSync(join(dir, 'packages/types/tsconfig.json'), '{ not json\n');
     assert.deepEqual(tsconfigChain(dir, 'packages/types'), ['tsconfig.json'], 'an unreadable config is still frozen');
     assert.deepEqual(tsconfigChain(dir, 'packages/signer'), [], 'no tsconfig.json, nothing to follow');
+  });
+
+  it('follows an array extends entry by entry, and freezes the root tsconfig.json chain (red team RT2-06, ruling 3.5)', () => {
+    const dir = fixtureCopy('tsconfig-root');
+    writeFileSync(join(dir, 'tsconfig.bot.json'), '{ "compilerOptions": { "strict": true } }\n');
+    writeFileSync(join(dir, 'tsconfig.strict.json'), '{ "compilerOptions": { "exactOptionalPropertyTypes": true } }\n');
+    writeFileSync(join(dir, 'tsconfig.lib.json'), '{ "extends": "./tsconfig.bot.json" }\n');
+    writeFileSync(join(dir, 'packages/types/tsconfig.json'), '{ "extends": ["../../tsconfig.lib.json", "../../tsconfig.strict.json"] }\n');
+    assert.deepEqual(tsconfigChain(dir, 'packages/types'), ['tsconfig.json', '../../tsconfig.lib.json', '../../tsconfig.bot.json', '../../tsconfig.strict.json'],
+      'every entry of the array, depth first');
+    assert.deepEqual(rootTsconfigChain(dir, 'packages/types'), [], 'no root tsconfig.json');
+    writeFileSync(join(dir, 'tsconfig.json'), '{ "extends": ["./tsconfig.bot.json", "./tsconfig.strict.json"], "include": ["packages/types/src/**/*.ts"] }\n');
+    assert.deepEqual(rootTsconfigChain(dir, 'packages/types'), ['../../tsconfig.json', '../../tsconfig.bot.json', '../../tsconfig.strict.json']);
+    assert.deepEqual(freezeFiles(dir, 'packages/types'), ['package.json', 'src/index.ts', 'tsconfig.json', '../../tsconfig.lib.json', '../../tsconfig.bot.json',
+      '../../tsconfig.strict.json', '../../tsconfig.json'], 'each file once');
+    const before = freezeHash(dir, 'packages/types', freezeFiles(dir, 'packages/types'));
+    writeFileSync(join(dir, 'tsconfig.json'), '{ "extends": ["./tsconfig.bot.json", "./tsconfig.strict.json"], "include": ["packages/types/src/**/*.ts"], "compilerOptions": { "strict": false } }\n');
+    assert.notEqual(freezeHash(dir, 'packages/types', freezeFiles(dir, 'packages/types')), before, 'the root tsconfig.json is part of the frozen surface');
+    writeFileSync(join(dir, 'tsconfig.strict.json'), '{ "compilerOptions": { "exactOptionalPropertyTypes": false } }\n');
+    const recorded = writeFreeze(dir, 'packages/types');
+    writeFileSync(join(dir, 'tsconfig.strict.json'), '{ "compilerOptions": { "exactOptionalPropertyTypes": true } }\n');
+    assert.deepEqual(codes(checkFreeze(dir, ['packages/types'], fakeGit({ 'packages/types/FREEZE.json': JSON.stringify(recorded) }), 'base')),
+      ['E_FREEZE_BUMP', 'E_FREEZE_SIGNOFF', 'E_FROZEN_CHANGED'], 'a config reached only through an array extends counts');
+  });
+
+  it('freezes this repository\'s root tsconfig.json for @bot/types (ruling 3.5)', () => {
+    const files = freezeFiles(REPO_ROOT, 'packages/types');
+    assert.ok(files.includes('../../tsconfig.json') && files.includes('../../tsconfig.bot.json') && files.includes('tsconfig.json'), files.join(', '));
+    const recorded = JSON.parse(readFileSync(join(REPO_ROOT, 'packages/types/FREEZE.json'), 'utf8')) as { files: string[] };
+    assert.deepEqual(recorded.files, files);
   });
 
   it('a change to a frozen package\'s tsconfig needs a bump, a changelog entry and both sign-offs (red team RT-06)', () => {

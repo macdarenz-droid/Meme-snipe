@@ -25,6 +25,41 @@ export interface Git {
    * removed.
    */
   mergeBase(ref: string): string | null;
+  /**
+   * The lines each file gained since `ref` (a commit), as 1-based line numbers of the working tree's file: `git diff
+   * -U0` against the working tree, so committed and uncommitted changes both count. Files whose content did not change
+   * are absent. Supervisor ruling 3.1 (round 2 review R2-1, red team RT2-01): the safety checks read only these lines of
+   * old Zeroed files, so an edit to one is checked while its old lines stay quiet.
+   */
+  addedLines(ref: string): Map<string, Set<number>>;
+}
+
+/** Parses `git diff -U0 --no-prefix` output into the added line numbers of each new-side file. */
+export function parseAddedLines(diff: string): Map<string, Set<number>> {
+  const out = new Map<string, Set<number>>();
+  let file: string | null = null;
+  let header = false;                                                   // between "diff --git" and the first hunk
+  for (const line of diff.split('\n')) {
+    if (line.startsWith('diff --git ')) {
+      header = true;
+      file = null;
+      continue;
+    }
+    if (header && line.startsWith('+++ ')) {                           // an added line "++ x" also prints as "+++ x"
+      const name = line.slice(4);
+      file = name === '/dev/null' ? null : name.replace(/^"(.*)"$/, '$1');
+      continue;
+    }
+    const m = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(line);
+    if (m === null || file === null) continue;
+    header = false;
+    const start = Number(m[1]);
+    const count = m[2] === undefined ? 1 : Number(m[2]);
+    const lines = out.get(file) ?? new Set<number>();
+    for (let i = 0; i < count; i++) lines.add(start + i);
+    if (lines.size > 0) out.set(file, lines);
+  }
+  return out;
 }
 
 export function gitAt(root: string): Git {
@@ -49,5 +84,6 @@ export function gitAt(root: string): Git {
     files: (ref) => run(['ls-tree', '-r', '-z', '--name-only', ref]).split('\0').filter((f) => f !== ''),
     changedSince: (ref) => run(['diff', '--no-renames', '--name-only', '-z', `${ref}...HEAD`]).split('\0').filter((f) => f !== ''),
     mergeBase: (ref) => attempt(['merge-base', ref, 'HEAD'])?.trim() ?? null,
+    addedLines: (ref) => parseAddedLines(run(['-c', 'core.quotePath=false', 'diff', '-U0', '--no-color', '--no-ext-diff', '--no-renames', '--no-prefix', ref])),
   };
 }

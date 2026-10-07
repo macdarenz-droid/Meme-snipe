@@ -10,8 +10,9 @@
 //   the root devDependencies for files under test/. Outside packages/, the root manifest declares what may be used;
 //   under tools/ (a workspace project only for its TypeScript peer, config.ts TOOLS_DIR) tools/package.json and the
 //   root manifest do, and the files are otherwise checked as root-level code, as C01 checked tools/.
-// Zeroed's own files (the manifest of config.ts ZEROED_FILES_MANIFEST) are skipped unless the run includes them; a
-// new file under one of those folders is checked (round 1 review F4).
+// Zeroed's own files (the manifest of config.ts ZEROED_FILES_MANIFEST) and the Zeroed-only package folders (config.ts
+// ZEROED_PACKAGE_PREFIXES) skip the structure rules unless the run includes them; the safety rules (config.ts
+// SAFETY_IMPORT_CODES) still read every new file and the added lines of every old one (supervisor ruling 3.1).
 // `@bot/types` and `@bot/signer` production code may import only node: built-ins and @bot/* packages (their
 // closures are checked by E_THIRD_PARTY_RUNTIME), and `@solana/web3.js` is refused in the engine and signer whatever
 // the manifest says. A specifier that is not a string literal is refused. Under packages/ and tools/, every source
@@ -34,10 +35,10 @@ import { isBuiltin } from 'node:module';
 import { extname, join, posix } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parse } from '@typescript-eslint/parser';
-import { DATA_DIRS, FORBIDDEN_IN_PACKAGES, INTERNAL_SCOPE, NO_THIRD_PARTY, TOOLS_DIR, WEB3, WEB3_BANNED_IN } from './config.ts';
+import { DATA_DIRS, FORBIDDEN_IN_PACKAGES, INTERNAL_SCOPE, NO_THIRD_PARTY, SAFETY_IMPORT_CODES, TOOLS_DIR, WEB3, WEB3_BANNED_IN } from './config.ts';
 import { finding, type Finding } from './finding.ts';
 import { DEPENDENCY_FIELDS, PRODUCTION_FIELDS, type Manifest, type PackageJson, type RepoSnapshot } from './repo.ts';
-import { scopeOf, type Scope } from './scope.ts';
+import { safetyLinesOf, structureScopeOf, type SafetyLines, type Scope } from './scope.ts';
 
 /** JavaScript and TypeScript module extensions Node or a bundler would load. */
 export const SOURCE_EXTENSIONS = ['.ts', '.mts', '.cts', '.tsx', '.js', '.mjs', '.cjs', '.jsx'];
@@ -249,32 +250,59 @@ export function checkRef(ref: ModuleRef, file: string, scope: ImportScope): Find
   return finding('E_UNDECLARED_IMPORT', where, `${name} is not declared in ${manifest.file} (${fields}${(workspace && test) || scope.rootLike === true ? ', or the root package.json' : ''})`);
 }
 
-/** Checks every source file of `files` (paths relative to the repository root) that `scope` admits. */
-export function checkImports(snapshot: RepoSnapshot, files: readonly string[], scope: Scope = scopeOf(false)): Finding[] {
+/** Import specifiers of a module the parser cannot read, line by line (the safety checks' fallback, ruling 3.1). */
+export function looseModuleRefs(text: string): ModuleRef[] {
+  const refs: ModuleRef[] = [];
+  text.split('\n').forEach((line, i) => {
+    for (const m of line.matchAll(/(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*|^\s*import\s+|^\s*export\s+\*\s+from\s*)(['"`])([^'"`\n]+)\1/g)) {
+      refs.push({ specifier: m[2] as string, line: i + 1, kind: 'import' });
+    }
+  });
+  return refs;
+}
+
+/**
+ * Checks every source file of `files` (paths relative to the repository root). Supervisor ruling 3.1 splits the rules:
+ * - `scope` admits a file to every rule (the structure rules: import paths, source types, code loading, …); it skips
+ *   Zeroed's own files and the Zeroed-only package folders (scope.ts structureScopeOf);
+ * - a file it skips still gets the safety rules (config.ts SAFETY_IMPORT_CODES) on the lines `lines` names: every
+ *   line of a new file, the added lines of an old Zeroed file. A module the parser cannot read is then read line by
+ *   line for its import specifiers, so an added import is never missed.
+ */
+export function checkImports(snapshot: RepoSnapshot, files: readonly string[], scope: Scope = structureScopeOf(false),
+  lines: SafetyLines = safetyLinesOf(false, new Map())): Finding[] {
   const findings: Finding[] = [];
   const root = snapshot.manifests.find((m) => m.dir === '');
   const workspaces = snapshot.manifests.filter((m) => m.dir !== '');
   for (const file of [...files].sort()) {
-    if (DATA_DIRS.some((d) => file.startsWith(d)) || !scope(file)) continue;
+    if (DATA_DIRS.some((d) => file.startsWith(d))) continue;
+    const structural = scope(file);
+    const safety = structural ? 'all' : lines(file);
+    if (!structural && safety !== 'all' && safety.size === 0) continue;
     const ext = extname(file);
-    if (ext !== '.ts' && TS_ONLY_DIRS.some((d) => file.startsWith(d)) && [...SOURCE_EXTENSIONS, ...BINARY_MODULE_EXTENSIONS].includes(ext)) {
+    if (structural && ext !== '.ts' && TS_ONLY_DIRS.some((d) => file.startsWith(d)) && [...SOURCE_EXTENSIONS, ...BINARY_MODULE_EXTENSIONS].includes(ext)) {
       findings.push(finding('E_SOURCE_TYPE', file, `only .ts modules are allowed under ${TS_ONLY_DIRS.join(' and ')} (type-checked and linted); found ${ext}`));
     }
     if (!SOURCE_EXTENSIONS.includes(ext)) continue;
     const manifest = workspaces.find((m) => file.startsWith(`${m.dir}/`)) ?? root;
     if (manifest === undefined) continue;                               // no root manifest: reported by readRepo
+    const text = readFileSync(join(snapshot.root, file), 'utf8');
     let refs: ModuleRef[];
     try {
-      refs = moduleRefs(readFileSync(join(snapshot.root, file), 'utf8'), file);
+      refs = moduleRefs(text, file);
     } catch {
-      findings.push(finding('E_IMPORT_PARSE', file, 'cannot parse the module, so its imports cannot be checked'));
-      continue;
+      if (structural) {
+        findings.push(finding('E_IMPORT_PARSE', file, 'cannot parse the module, so its imports cannot be checked'));
+        continue;
+      }
+      refs = looseModuleRefs(text);
     }
     const rootLike = manifest.dir === TOOLS_DIR;
     const test = manifest.dir !== '' && !rootLike && file.startsWith(`${manifest.dir}/test/`);
     for (const ref of refs) {
       const f = checkRef(ref, file, { manifest, root, test, rootLike });
-      if (f) findings.push(f);
+      if (f === null) continue;
+      if (structural || (SAFETY_IMPORT_CODES.includes(f.code) && (safety === 'all' || safety.has(ref.line)))) findings.push(f);
     }
   }
   return findings;

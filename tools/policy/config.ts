@@ -126,6 +126,19 @@ export const ZEROED_DIRS = [
  * not know is refused (E_NEW_PACKAGE_DIR; red team RT-01 test 2). New packages go under `packages/`.
  */
 export const NEW_PACKAGE_DIRS = ['apps/'];
+/**
+ * Zeroed-only package folders (supervisor ruling 3.1, round 2 review R2-1). The Blueprint's structure rules (ESLint,
+ * the import-path and source-type rules) skip everything under these by prefix, new files included, so a Zeroed
+ * package can keep its own layout. The safety checks (the pump.fun host check, E_UNDECLARED_IMPORT and the forbidden
+ * imports) still read every new file here, and the added lines of every changed old one.
+ */
+export const ZEROED_PACKAGE_PREFIXES = ['packages/backtest/', 'packages/core/', 'packages/ops/', 'packages/runner/', 'packages/worker/', 'apps/web/'];
+/**
+ * Import findings that are safety checks (ruling 3.1): a package nobody declared, @solana/web3.js where it is banned,
+ * node:module in a workspace package, a third-party runtime import in a zero-dependency package. They run on every new
+ * file and on the added lines of old Zeroed files. Every other import finding is a structure rule.
+ */
+export const SAFETY_IMPORT_CODES = ['E_UNDECLARED_IMPORT', 'E_WEB3_BANNED', 'E_IMPORT_FORBIDDEN', 'E_THIRD_PARTY_RUNTIME'];
 /** Zeroed's workflows (operations, data and the app build). ci.yml and the policy's own workflows are always checked. */
 export const ZEROED_WORKFLOWS = [
   'android-preview.yml', 'archive-check.yml', 'backtest-trial.yml', 'data-helius-pilot.yml', 'data-keep.yml', 'data-scan.yml',
@@ -179,6 +192,14 @@ export const CI_REQUIRED_STEP_ENV: Readonly<Record<string, Readonly<Record<strin
 };
 
 /**
+ * The CI workflow's concurrency group (supervisor ruling 3.3, red team RT2-04 and review R2-4). A pull request's push
+ * runs share `ci-pr-<n>`, so a newer push cancels an older one; a label event's run is alone in a group named by its
+ * action, label and run id, so the run that carries the review label is never cancelled by a later label event or
+ * push, and never cancels another run. Pushes to the base branches each get their own group.
+ */
+export const CI_CONCURRENCY_GROUP = "ci-${{ github.event.pull_request.number && format('pr-{0}{1}', github.event.pull_request.number, (github.event.action == 'labeled' || github.event.action == 'unlabeled') && format('-{0}-{1}-{2}', github.event.action, github.event.label.name, github.run_id) || '') || github.run_id }}";
+
+/**
  * The one condition the CI job may carry: a draft pull request waits until it is marked ready (the
  * ready_for_review event then runs the job). A draft cannot be merged, so every merged head ran the checks.
  */
@@ -213,6 +234,12 @@ export const GUARD_SETUP_NODE: Readonly<Record<string, string>> = { 'node-versio
  * commit either. It is the one workflow allowed a write permission, and only `issues: write`.
  */
 export const AUDIT_SCHEDULE_WORKFLOW = '.github/workflows/audit-schedule.yml';
+/**
+ * The report's one job, and the check-run name the deploy gate ignores whatever its state (logic.sh DEPLOY_AUDIT_JOB;
+ * supervisor ruling 3.4). No other workflow may use it, Zeroed's included (E_AUDIT_JOB_NAME), or a failing job of its
+ * own could hide from the gate under that name.
+ */
+export const AUDIT_JOB = 'zeroed-advisories';
 /**
  * Write permissions a checked workflow may declare, by file and exact `scope: write` line. Everything else keeps the
  * read-only rule (E_WORKFLOW_PERMISSIONS). An issue is the only thing the scheduled report writes; it cannot change

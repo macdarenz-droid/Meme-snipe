@@ -5,8 +5,11 @@
 # which the 14-day rule usually delays. This workflow reports those advisories instead: it runs daily on the default
 # branch, prints what the registry answers and opens or updates one issue.
 #
-# It can never fail. Every step sets continue-on-error, so a registry outage, a GitHub API error or a missing tool
-# leaves the run green and the deploy gate undisturbed (tools/policy/workflows.ts checks that). `issues: write` is the
+# It cannot hold back a deploy. Every step sets continue-on-error, so a registry outage, a GitHub API error or a
+# missing tool leaves the run green (tools/policy/workflows.ts checks that). And the job's name, zeroed-advisories,
+# is one the deploy gate ignores whatever its state (ops/host/files/usr/local/lib/zeroed/logic.sh commit_verdict;
+# supervisor ruling 3.4), so a timeout, a lost runner or a run still in progress does not stop a deploy either. No
+# other workflow may use that name (E_AUDIT_JOB_NAME). `issues: write` is the
 # one write permission any checked workflow may declare (tools/policy/config.ts WORKFLOW_WRITE_PERMISSIONS); the token
 # is scoped to that and reaches only the step that writes the issue. No secrets, credentials not persisted, no install:
 # the policy tools import only node: built-ins and each other.
@@ -26,7 +29,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  advisories:
+  zeroed-advisories:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

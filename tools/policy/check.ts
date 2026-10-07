@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { lockIds } from './age.ts';
 import { checkAllowlist } from './allowlist.ts';
 import { DEFAULT_BASE_REF, FROZEN_PACKAGES, LOCKFILE } from './config.ts';
-import { formatFindings, type Finding, type Io } from './finding.ts';
+import { finding, formatFindings, type Finding, type Io } from './finding.ts';
 import { checkFreeze } from './freeze.ts';
 import { gitAt } from './git.ts';
 import { checkHosts } from './hosts.ts';
@@ -17,7 +17,7 @@ import { checkManifests } from './manifests.ts';
 import { checkNpmrc } from './npmrc.ts';
 import { checkPnpmConfig } from './pnpmconfig.ts';
 import { readRepo } from './repo.ts';
-import { scopeOf } from './scope.ts';
+import { safetyLinesOf, scopeOf, structureScopeOf } from './scope.ts';
 import { readAllowlist, scanFiles } from './secrets.ts';
 import { checkSubmodules, checkSymlinks } from './symlinks.ts';
 import { checkTyposquats } from './typosquat.ts';
@@ -45,8 +45,17 @@ export function runChecks(root: string, baseRef: string, options: { includeZeroe
   // cannot change what an older commit's run reads. No merge base means no base, so the release-age exclusions fail closed.
   const mergeBase = git.hasRef(baseRef) ? git.mergeBase(baseRef) : null;
   const baseIds = mergeBase === null ? null : lockIds(git.show(mergeBase, LOCKFILE));
+  // Supervisor ruling 3.1: the structure rules skip Zeroed's files and the Zeroed-only package folders; the safety
+  // checks read every new file and the lines old Zeroed files gained since the merge base. With no merge base the old
+  // files are read in full (fails closed) and the run reports E_BASE_REF.
+  const includeZeroed = options.includeZeroed === true;
+  const structure = structureScopeOf(includeZeroed);
+  const lines = safetyLinesOf(includeZeroed, mergeBase === null ? null : git.addedLines(mergeBase));
+  const baseFindings = git.hasRef(baseRef) && mergeBase === null
+    ? [finding('E_BASE_REF', baseRef, `no merge base between "${baseRef}" and HEAD, so the lines old Zeroed files gained are unknown`)] : [];
   return [
     ...findings,
+    ...baseFindings,
     ...checkManifests(snapshot),
     ...checkLockfile(snapshot),
     ...checkAllowlist(snapshot, scope),
@@ -55,8 +64,8 @@ export function runChecks(root: string, baseRef: string, options: { includeZeroe
     ...checkNpmrc(snapshot, files),
     ...checkPnpmConfig(snapshot, files.filter(scope), baseIds),
     ...checkLintConfig(snapshot, files),
-    ...checkImports(snapshot, files, scope),
-    ...checkHosts(root, files, scope),
+    ...checkImports(snapshot, files, structure, lines),
+    ...checkHosts(root, files, lines),
     ...scanFiles(root, files.filter(scope), readAllowlist(root)),
     ...checkFreeze(root, FROZEN_PACKAGES, git, baseRef),
   ];
