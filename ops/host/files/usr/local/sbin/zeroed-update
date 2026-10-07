@@ -212,6 +212,9 @@ alert_clear worker-smoke "CLEARED Zeroed host: the worker of ${commit:0:12} star
 # Host files first: on failure nothing switches and the worker keeps running the release it has.
 apply_host "$commit" "$dest" || exit 1
 prev="$(readlink -f /opt/zeroed/current 2>/dev/null || true)"
+# No current yet (a first deploy): readlink -f prints /opt/zeroed/current itself, and a rollback to it would point
+# current at itself. Only a real release folder is a rollback target.
+{ [ -d "$prev" ] && [ ! -L "$prev" ]; } || prev=""
 rm -f "$STATE_DIR/probation" # RC-R2-3: a new switch ends the probation of the release before it
 ln -sfn "$dest" /opt/zeroed/current.new
 mv -Tf /opt/zeroed/current.new /opt/zeroed/current

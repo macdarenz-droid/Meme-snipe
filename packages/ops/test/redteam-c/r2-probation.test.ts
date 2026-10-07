@@ -193,5 +193,19 @@ describe('RC-R2-3: probation after a switch', () => {
     expect(run('zeroed-update').status).toBe(1);
     expect(read('alerts')).toContain(`The bot is now paused on the stand-in worker: ${A.slice(0, 12)} replaced ${B.slice(0, 12)}, and the next deploy needs a new commit.`);
   });
+
+  it('a first deploy (no current before it) has no rollback target: a restart alerts and drops, and current stays on the release', () => {
+    setup();
+    rmSync(join(root, 'opt/zeroed/current'));
+    rmSync(join(root, 'state/deployed'));
+    expect(run('zeroed-update').status).toBe(0);
+    expect(read('state/probation').trim()).toBe(`${B}||||`.replace('||||', `|||1800000000|0`));
+    set('sd/nrestarts', 1);
+    expect(run('zeroed-update').status).toBe(1);
+    expect(read('alerts')).toMatch(/^worker-switch\|ALERT .*there is no earlier release to go back to\.$/m);
+    expect(spawnSync('readlink', ['-f', join(root, 'opt/zeroed/current')], { encoding: 'utf8' }).stdout.trim()).toBe(join(root, `opt/zeroed/releases/${B}`));
+    expect(read('state/deployed').trim()).toBe(B);
+    expect(read('state/probation')).toBe('');
+  });
 });
 
