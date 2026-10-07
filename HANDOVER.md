@@ -104,6 +104,12 @@
   - Every first-parent commit from `cd4d7a64` to `c6c8496f` has `"worker": "stub"` (checked).
   - The owner was told the 2 GB host move can go ahead.
   - #287 Z01 round 6 at `b42c08f4` (full suite 7,320/7,320): delta review and red team round 5 are running.
+- **8 Oct about 7:40 AM:** **#292 Z-H-OF** opened by builder `session_01QxNHHJxUan1nnCAi2E5QEP` at `99792ba7` (docs only; includes the C-76 ruling). Reviewer `session_01QKHK6RxUATkRY7SRF5MQEa`, red team `session_01QBWebYD6N9KJ7agcvkqTa9`.
+  - Plan: one UTC day per batch, dispatched by a served archive-check, at least 60 min after the last batch; 429/403/503 stops for ≥ 3 h; 3 failures stop the chain until a reviewed re-arm. Order: 07-22 lead-in, then 07-23..08-21, then 08-22..09-20 (60 days). About 3.4 h a batch and about 8 days for 31 days (12–16 days if crons drop). Storage about 0.2–0.26 TB for 31 days.
+  - Findings to act on: #214 must not merge before the batch scheduler (OF-2), or it dispatches 09-20 and then holdout days. `publish-day.sh:87` publishes to the PUBLIC repo, so OF-4 redirects it to zeroed-data first.
+  - Recommendation on 09-21: (a), drop the Helius cache when #214 merges. 09-21 stays in HELIUS_DAYS, and the DATA-KEEP refresh of it stops.
+  - Owner asked (7:40 AM): Triton's reply to the 4 Oct email; OK for 0.2–0.5 TB in zeroed-data.
+  - Z01 round 6 (`b42c08f4`): red team round 5 found 1 MAJOR (RT5-01: a binary extension skips any content). Reviewer report pending. Round 7 to rule. RT5-04 (Android release wait vs check queue) becomes moot with APK-REMOVE.
 - **Follow-ups (identified, not yet carded):**
   1. Z0D-2 docs:
      - the replay-mode ruling (`replay_unavailable` treated as assumed-pass-flagged in B-10 runs only, refused in paper and live; `docs/reviews/ZH.md` round 2 ruling 2);
