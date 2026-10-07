@@ -13,7 +13,7 @@
 // and start nothing: the coin is refused H16 missing curve/migration for its whole window although one more page
 // (2-3 credits) would bring both transactions. A good coin blocked for good: golden rule, a missed trade is a loss.
 import { describe, expect, it } from 'vitest';
-import { CURVE_PAGE_LIMIT, CUT_CREATE_RETRY_MS, REREAD_CURVE_READS } from '../../src/run/worker.ts';
+import { CURVE_PAGE_LIMIT, CUT_CREATE_RETRY_MS, FETCH_TX_CREDITS, REREAD_CURVE_READS } from '../../src/run/worker.ts';
 import { CURVE, FIX, complete, migrate, missingMigration, run, type Rpc } from './reread-kit.ts';
 
 const failedAfterMigration = Array.from({ length: 6 }, (_, i) => ({ signature: `failedLateBuy${i}`, slot: migrate.slot + BigInt(6 - i), err: { InstructionError: [2, { Custom: 6005 }] }, blockTime: migrate.blockTime! + 3 }));
@@ -108,9 +108,10 @@ describe('RT-A7: the re-read reads only the curve\'s newest page, so failed late
     expect(asked).not.toContain(`tx ${complete.signature}`);
     const tries = CUT_CREATE_RETRY_MS.length + 1;
     expect(r.rereads).toHaveLength(tries);
-    // Each try reserves the migration ask, a page and REREAD_CURVE_READS reads; its further pages come out of the reads.
-    const reserve = 1 + 1 + REREAD_CURVE_READS;
-    expect(sigPages(asked).length).toBeLessThanOrEqual(tries * (reserve - 1 - 1));
+    // Each try reserves at most the migration's fetch (FETCH_TX_CREDITS, RC-FIXES), a page and REREAD_CURVE_READS reads;
+    // its further pages come out of what is left, and a page is asked only while a read can follow it.
+    const reserve = FETCH_TX_CREDITS + 1 + REREAD_CURVE_READS;
+    expect(sigPages(asked).length).toBeLessThanOrEqual(tries * (reserve - 1));
     expect(sigPages(asked).length).toBeGreaterThan(tries);
     expect(r.caps.reread).toBeLessThanOrEqual(tries * reserve);
     expect(missingMigration(r.last.r)).toBe(true);
