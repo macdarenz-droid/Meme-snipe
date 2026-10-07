@@ -11,7 +11,7 @@ import type { Book, ExitReason as BookExitReason, PositionState } from '../../..
 import { melbourneDay } from '../../../core/src/risk/index.ts';
 import { type Lamports, type MicroUsd, lamportsToMicroUsd } from '../../../core/src/units/index.ts';
 import { type TradeUsd, tradeUsd } from '../../../core/src/fills/index.ts';
-import { type PaperLegs, type PaperTrade, paperTradeLamports } from './account.ts';
+import { type PaperLegs, type PaperTrade, paperTradeLamports, tradeSol } from './account.ts';
 import type { PaperAttempt } from './paper-world.ts';
 import { SEEDING, STOPS_EVERY_MS } from '../engine/strategy.ts';
 import type { LogRecord } from '../../../core/src/engine/index.ts';
@@ -38,16 +38,27 @@ export const lamportsUsd = (l: bigint, price: MicroUsd | null): bigint => {
 };
 
 /**
- * SOL-BOOKS: a closed trade's net in micro-dollars for display. The trade's own dollar figure when it has one, else its
- * lamports at the close's, the open's or the current SOL price, a loss rounded up (never shown smaller than it was).
- * Null (no figure) only without any price at all.
+ * SOL-BOOKS: a closed trade's net at its close in micro-dollars for display. The trade's own dollar figure when it has
+ * one, else its lamports at the close's, the open's or the current SOL price, a loss rounded up (never shown smaller
+ * than it was). Null (no figure) only without any price at all.
  */
-export const tradeNetUsd = (i: { readonly solPrice: MicroUsd | null }, t: PaperTrade): bigint | null => {
+export const closeNetUsd = (i: { readonly solPrice: MicroUsd | null }, t: PaperTrade): bigint | null => {
   if (t.netPnl !== null) return t.netPnl;
   const price = t.closeSolPrice ?? t.openSolPrice ?? i.solPrice;
   if (t.netLamports === null || price === null) return null;
-  const l = t.netLamports;
-  return l >= 0n ? lamportsToMicroUsd(l as Lamports, price, 'floor') : -lamportsToMicroUsd((-l) as Lamports, price, 'ceil');
+  return usdLossUp(t.netLamports, price);
+};
+
+/** What landed after a trade closed (PAPER-2), each in micro-dollars for display: its own figure, else its lamports at the trade's price. */
+export const lateUsd = (i: { readonly solPrice: MicroUsd | null }, t: PaperTrade): readonly { readonly atMs: number; readonly usd: bigint | null }[] => {
+  const price = t.closeSolPrice ?? t.openSolPrice ?? i.solPrice;
+  return (t.late ?? []).map((x) => ({ atMs: x.atMs, usd: x.usd !== null ? x.usd : price === null ? null : usdLossUp(x.lamports, price) }));
+};
+
+/** A closed trade's whole result in micro-dollars for display: its close and what landed after it (PAPER-2). */
+export const tradeNetUsd = (i: { readonly solPrice: MicroUsd | null }, t: PaperTrade): bigint | null => {
+  const close = closeNetUsd(i, t);
+  return close === null ? null : lateUsd(i, t).reduce((s, x) => s + (x.usd ?? 0n), close);
 };
 
 /** A token price in dollars per whole token, as a `Dec` with 12 places: lamports paid for `tokens` raw units. */
@@ -304,7 +315,14 @@ const usdLossUp = (l: bigint, price: MicroUsd): bigint =>
 export type MoneyEvent =
   | { readonly kind: 'close'; readonly atMs: number; readonly net: bigint; readonly trade: PaperTrade }
   | { readonly kind: 'partial'; readonly atMs: number; readonly net: bigint; readonly trade: PaperTrade }
-  | { readonly kind: 'cost'; readonly atMs: number; readonly net: bigint; readonly costKind: string };
+  | { readonly kind: 'cost'; readonly atMs: number; readonly net: bigint; readonly costKind: string }
+  | { readonly kind: 'late'; readonly atMs: number; readonly net: bigint; readonly trade: PaperTrade };
+
+/**
+ * The account costs the app totals: all but `late_settlement`, which is risk's view of a trade's late entries (PAPER-2);
+ * the app counts those as the trade's own `late` events instead, gains included, so nothing is counted twice.
+ */
+const appCosts = (i: ApiInputs) => i.accountCosts.filter((c) => c.kind !== 'late_settlement');
 
 /**
  * Every realised money movement the app totals (APP-MONEY), oldest first, counted as core risk counts equity: each
@@ -317,11 +335,23 @@ export const moneyEvents = (i: ApiInputs): MoneyEvent[] => {
   for (const t of i.trades) {
     const parts = partsOf(i, t);
     for (const p of parts) out.push({ kind: 'partial', atMs: p.atMs, net: p.pnl, trade: t });
-    const net = tradeNetUsd(i, t);
+    const net = closeNetUsd(i, t);
     if (t.closedAtMs !== null && net !== null) out.push({ kind: 'close', atMs: t.closedAtMs, net: net - parts.reduce((s, p) => s + p.pnl, 0n), trade: t });
+    // What landed after the close, on the day it was booked (PAPER-2), as risk counts a late loss.
+    if (t.closedAtMs !== null) for (const x of lateUsd(i, t)) if (x.usd !== null) out.push({ kind: 'late', atMs: x.atMs, net: x.usd, trade: t });
   }
-  for (const c of i.accountCosts) out.push({ kind: 'cost', atMs: c.atMs, net: -c.usd, costKind: c.part === undefined ? c.kind : `${c.kind}:${c.part}` });
+  for (const c of appCosts(i)) out.push({ kind: 'cost', atMs: c.atMs, net: -c.usd, costKind: c.part === undefined ? c.kind : `${c.kind}:${c.part}` });
   return out.sort((x, y) => x.atMs - y.atMs);
+};
+
+/**
+ * Today's realised loss (Melbourne day), gains offsetting, from the money events; a late gain is left out, as risk
+ * leaves it out (PAPER-2: a day's loss is never lowered after the fact), so the meter never reads below risk's view.
+ */
+export const realisedLossToday = (i: ApiInputs): bigint => {
+  const start = melbourneDay(i.nowMs).start;
+  const realised = -moneyEvents(i).filter((e) => e.atMs >= start && !(e.kind === 'late' && e.net > 0n)).reduce((s, e) => s + e.net, 0n);
+  return realised > 0n ? realised : 0n;
 };
 
 /**
@@ -329,7 +359,7 @@ export const moneyEvents = (i: ApiInputs): MoneyEvent[] => {
  * fees; an open trade's failed fees are network fees and its rent not yet returned is rent kept (ACCOUNT-RATE, until
  * the trade closes and its own costs show them).
  */
-const ACCOUNT_COST_KIND: Readonly<Record<string, string>> = { wallet_setup: 'rentKeptUsd', failed_entry: 'networkFeeUsd', 'open_trade:fee': 'networkFeeUsd', 'open_trade:rent': 'rentKeptUsd' };
+const ACCOUNT_COST_KIND: Readonly<Record<string, string>> = { wallet_setup: 'rentKeptUsd', failed_entry: 'networkFeeUsd', 'open_trade:fee': 'networkFeeUsd', 'open_trade:rent': 'rentKeptUsd', late_settlement: 'networkFeeUsd' };
 
 export const views = {
   status: (i: ApiInputs) => {
@@ -359,8 +389,7 @@ export const views = {
     // the meter and the daily-loss stop (in `halts`, from the same snapshot) agree. Between a fill and the snapshot's
     // next read, today's realised loss (trades and account costs, gains offsetting) counts too: it is never more than
     // R7's figure on the same data (marked losses only add), so it only closes that gap. Unknown: no meter, never 0.
-    const realised = -moneyEvents(i).filter((e) => e.atMs >= melbourneDay(i.nowMs).start).reduce((s, e) => s + e.net, 0n);
-    const realisedLoss = realised > 0n ? realised : 0n;
+    const realisedLoss = realisedLossToday(i);
     if (realisedLoss >= dailyLimit && !halts.some((h) => h.code === 'daily-loss')) halts.push({ code: 'daily-loss', source: null });
     const fresh = i.stops !== null && i.stops.codes !== null && i.nowMs - i.stops.atMs <= STOPS_MAX_AGE_MS;
     // SOL-BOOKS: R7's figures are lamports; shown at the current SOL price, the loss rounded up and the limit down.
@@ -516,10 +545,10 @@ export const views = {
     }
     const n = closed.length;
     // The account's SOL result, like its dollar net (APP-MONEY): the trades' and, as losses, the account costs' lamports.
-    const netSol = closed.reduce((s, t) => s + (t.netLamports ?? 0n), 0n) - i.accountCosts.reduce((s, c) => s + c.lamports, 0n);
+    const netSol = closed.reduce((s, t) => s + (tradeSol(t) ?? 0n), 0n) - appCosts(i).reduce((s, c) => s + c.lamports, 0n);
     const solMove = closed.reduce((s, t) => {
       const v = settledUsd(i, t);
-      return s + (v === null ? 0n : t.netPnl! - v.trading);
+      return s + (v === null ? 0n : tradeNetUsd(i, t)! - v.trading);
     }, 0n);
     return {
       mode: MODE, trades: n, requiredTrades: 30, netUsd: usdText(net), netSol: solText(netSol), solMoveUsd: usdText(solMove), maxDrawdownUsd: usdText(dd),
@@ -568,6 +597,7 @@ const tradeRecord = (i: ApiInputs, t: PaperTrade) => {
   const sol = (xs: PaperAttempt[]) => xs.reduce((s, a) => s + (a.fill?.sol ?? 0n), 0n);
   const tok = (xs: PaperAttempt[]) => xs.reduce((s, a) => s + (a.fill?.tokens ?? 0n), 0n);
   const c = costsOf(i, t);
+  // The trade's whole result: its close and what landed after it (PAPER-2).
   const net = tradeNetUsd(i, t) ?? 0n;
   // The dollar result split in two: the SOL result at the close's price, and SOL's own move over the trade.
   const trading = c.v === null ? net : c.v.trading;
@@ -578,13 +608,14 @@ const tradeRecord = (i: ApiInputs, t: PaperTrade) => {
     strategyVersion: i.strategyVersion, policyVersion: i.policyVersion, openedAt: iso(t.openedAtMs), closedAt: iso(t.closedAtMs!),
     holdSeconds: Math.max(0, Math.round((t.closedAtMs! - t.openedAtMs) / 1000)),
     entryPriceUsd: priceText(sol(buys), tok(buys), pxIn), exitPriceUsd: priceText(sol(sells), tok(sells), pxOut),
-    sizeUsd: usdText(t.notional), grossUsd: usdText(net + c.total),
+    // SOL-BOOKS: the size is q in lamports, shown in dollars at the entry's price.
+    sizeUsd: usdText(lamportsUsd(t.notional, pxIn)), grossUsd: usdText(net + c.total),
     costs: {
       venueFeeUsd: usdText(c.kinds.venueFeeUsd), creatorFeeUsd: usdText(c.kinds.creatorFeeUsd), priorityFeeUsd: usdText(c.kinds.priorityFeeUsd),
       tipUsd: usdText(c.kinds.tipUsd), networkFeeUsd: usdText(c.kinds.networkFeeUsd), slippageUsd: usdText(c.kinds.slippageUsd),
       rentPaidUsd: usdText(c.v?.costs.rentPaid ?? 0n), rentReturnedUsd: usdText(c.v?.costs.rentReturned ?? 0n), totalUsd: usdText(c.total),
     },
-    netUsd: usdText(net), netSol: solText(t.netLamports ?? 0n), tradingUsd: usdText(trading), solMoveUsd: usdText(net - trading),
+    netUsd: usdText(net), netSol: solText(tradeSol(t) ?? 0n), tradingUsd: usdText(trading), solMoveUsd: usdText(net - trading),
     plannedR: null, realizedR: null, mfeR: null, maeR: null,
     exitReason: reason === undefined ? 'blocked' : EXIT_REASON[reason], reasons: [...(t.exitReasons ?? [])], checks: [],
     fills: fills.map((a) => {

@@ -92,6 +92,12 @@ export interface PaperTrade {
    */
   pricedLate?: readonly ('open' | 'close')[];
   /**
+   * What landed after the trade closed (PAPER-2): each change to its net, in lamports and in micro-dollars (negative: a
+   * loss), dated when it was booked. The close's own `netLamports`/`netPnl` stay as they were, so a day already checked
+   * is never rewritten; a late loss counts toward the day it is booked (risk's `late_settlement` cost).
+   */
+  late?: { readonly atMs: number; readonly lamports: bigint; readonly usd: MicroUsd | null }[];
+  /**
    * RISK-PARTIAL: each partial sale's realized result (proceeds after its fees less its share of the basis), and the
    * tokens and net exit lamports those parts cover. Absent in files from before (no partial booked).
    */
@@ -104,6 +110,14 @@ export interface PaperTrade {
    */
   partialFailedExits?: readonly string[];
 }
+
+/** A trade's whole SOL result: at its close, and what landed after (PAPER-2). Null while open. */
+export const tradeSol = (t: PaperTrade): bigint | null =>
+  t.netLamports === null ? null : (t.late ?? []).reduce((s, x) => s + x.lamports, t.netLamports);
+
+/** A trade's whole dollar result: at its close, and what landed after (PAPER-2). Null while open or unvalued. */
+export const tradePnl = (t: PaperTrade): MicroUsd | null =>
+  t.netPnl === null ? null : ((t.late ?? []).reduce((s, x) => s + (x.usd ?? 0n), t.netPnl as bigint) as MicroUsd);
 
 export interface AccountState {
   readonly openedAtMs: number;
@@ -259,6 +273,11 @@ export class PaperAccount {
    * when anything changed (the account fact must be put again).
    */
   mark(s: Pick<RiskSnapshot, 'dayStartMs' | 'weekStartMs' | 'equity' | 'nav'>, marked: boolean, rearmAtMs: number | null, nowMs: number): boolean {
+    // SOL-BOOKS: nothing is marked before the opening SOL price. Risk's equity is zero then (no bankroll in lamports
+    // yet), so a day or week mark would hold 0 and drop the marked loss measure for that day and week; and a file from
+    // before keeps its marks in micro-dollars until the opening converts them, so a NAV peak written in lamports now
+    // would be converted again (about 6.7x at $150) and trip R10 at once.
+    if (this.#s.openingSolPrice === undefined) return false;
     let changed = false;
     if (marked && this.#s.dayMark?.startMs !== s.dayStartMs) {
       this.#s.dayMark = { startMs: s.dayStartMs, atMs: nowMs, equity: s.equity };
@@ -325,6 +344,9 @@ export class PaperAccount {
       t.closeSolPrice = solPrice;
       if (solPrice !== null) this.#value(t, l, solPrice);
     }
+    // A sale booked late can change trades already closed: its own (a late sell) and its entry's others (a sell that
+    // closed the shared account returns the rent to the entry's first trade).
+    if (p !== undefined) this.#resettleClosed(r.book, p.entryIntentId, legs, r.atMs);
     this.#file.write(this.#s);
   }
 
@@ -356,12 +378,58 @@ export class PaperAccount {
         if (l === null) continue;
         t.closeSolPrice = solPrice;
         this.#value(t, l, solPrice);
+        // The legs now hold what landed after the close too (PAPER-2): each such change, unvalued until now, is valued
+        // at this price (a loss rounded up) and keeps the day it was booked; the close's own result leaves it out.
+        if (t.late?.some((x) => x.usd === null) === true) {
+          t.late = t.late.map((x) => {
+            if (x.usd !== null) return x;
+            const usd = (x.lamports < 0n ? -lamportsToMicroUsd(-x.lamports as Lamports, solPrice, 'ceil') : lamportsToMicroUsd(x.lamports as Lamports, solPrice, 'floor')) as MicroUsd;
+            t.netPnl = (t.netPnl! - usd) as MicroUsd;
+            return { ...x, usd };
+          });
+        }
         t.pricedLate = [...(t.pricedLate ?? []), 'close'];
         changed = true;
       }
     }
     if (changed) this.#file.write(this.#s);
     return changed;
+  }
+
+  /**
+   * Re-settles the closed trades of the entry `positionId` belongs to, after something landed late (PAPER-2): a fee of
+   * an attempt that landed after its trade closed, or a sale or account close booked after it. The wallet moves by the
+   * change, and the trade's net is valued again at its own open and close prices. True when anything moved.
+   */
+  resettle(book: Book, positionId: string, legs: PaperLegs, nowMs: number): boolean {
+    const p = book.positions[positionId];
+    if (p === undefined) return false;
+    const moved = this.#resettleClosed(book, p.entryIntentId, legs, nowMs);
+    if (moved) this.#file.write(this.#s);
+    return moved;
+  }
+
+  #resettleClosed(book: Book, entryIntentId: string, legs: PaperLegs, nowMs: number): boolean {
+    let moved = false;
+    for (const t of this.#s.trades) {
+      if (t.closedAtMs === null || book.positions[t.positionId]?.entryIntentId !== entryIntentId) continue;
+      const before = t.booked;
+      const l = this.#book(t, book, legs);
+      if (l === null) continue;
+      // The wallet may have moved already (`filled` books its own position first); the trade's results follow it here.
+      if (t.booked !== before) moved = true;
+      const sol = tradeSol(t)!;
+      const now = tradeNet(l);
+      if (now === sol) continue;
+      // The change is dated now, as a late entry: the close's results, and the day they counted toward, stay as they were.
+      const pxIn = t.openSolPrice ?? null;
+      const pxOut = t.closeSolPrice ?? null;
+      const was = tradePnl(t);
+      const usd = was === null || pxIn === null || pxOut === null ? null : ((tradeUsd(l, pxIn, pxOut).net - was) as MicroUsd);
+      (t.late ??= []).push({ atMs: nowMs, lamports: now - sol, usd });
+      moved = true;
+    }
+    return moved;
   }
 
   /**
@@ -581,6 +649,17 @@ export class PaperAccount {
     if (sf !== undefined) costs.push({ atMs: sf.atMs, amount: lam(sf.lamports), lamports: sf.lamports, usd: sf.cost, kind: 'failed_entry' });
     for (const r of Object.values(this.#s.strayFees ?? {})) costs.push({ atMs: r.atMs, amount: lam(r.lamports), lamports: r.lamports, usd: r.cost, kind: 'failed_entry' });
     costs.push(...this.#openTradeCosts(book, legs, solPrice, nowMs));
+    // A loss that landed after its trade closed counts on the day it was booked (PAPER-2); a late gain is not counted
+    // (the safe side: a day's loss is never lowered after the fact).
+    // SOL-BOOKS: counted by its lamports, priced or not; its dollar figure is display only.
+    for (const t of this.#s.trades) {
+      const px = t.closeSolPrice ?? t.openSolPrice ?? solPrice;
+      for (const x of t.late ?? []) {
+        if (x.lamports >= 0n) continue;
+        const usd = x.usd !== null ? -x.usd : px === null ? 0n : lamportsToMicroUsd(-x.lamports as Lamports, px, 'ceil');
+        costs.push({ atMs: x.atMs, amount: -x.lamports as Lamports, lamports: -x.lamports, usd: usd as MicroUsd, kind: 'late_settlement' });
+      }
+    }
     return costs;
   }
 

@@ -16,7 +16,7 @@ import { type PoolFeeContext, type PoolState, effectiveQuoteReserve, poolBuyExac
 import { encodeBase58 } from '../../../core/src/chain/index.ts';
 import type { PolicySession, RugConfig } from '../../../core/src/config/index.ts';
 import { EXIT_UNIVERSES, type ExitUniverse, PRICE_SCALE, exitsFor } from '../../../core/src/config/index.ts';
-import { type NetworkPolicy, type RentInputs, pumpSwapRoundTrip } from '../../../core/src/costs/index.ts';
+import { type NetworkPolicy, type RentInputs, type RoundTripQuoter, pumpSwapRoundTrip } from '../../../core/src/costs/index.ts';
 import {
   type IntentId, type PositionId, type QuoteContext, type TransactionAttempt,
   attemptId, blockhash, entryKey, intentId, mint as toMint, positionId, reservationId, signature,
@@ -293,6 +293,8 @@ export interface StrategyDeps {
   readonly savedState?: (ref: SavedStateRef) => { readonly index: DeployerIndex; readonly labeller: RugLabeller };
   /** Replaces marks.ts `markedHistory` (tests inject a failure; production never sets it). */
   readonly markedHistory?: typeof markedHistory;
+  /** Test seam: replaces the size `#riskSize` settled on (tests force the probe and risk to disagree); production never sets it. */
+  readonly sizeProbe?: (sized: { readonly spend: Lamports; readonly notional: MicroUsd }) => { readonly spend: Lamports; readonly notional: MicroUsd };
 }
 
 const NORMAL = { mayhemMode: false, transferFee: false, transferHook: false } as const;
@@ -1431,8 +1433,17 @@ export class LiveStrategy implements Strategy {
         else if (i.status === 'exposure_reserved') this.#sendEntry(i, ctx, out);
         continue;
       }
-      if (i.status === 'exposure_reserved') this.#sendExit(i.intent.id, i.intent.positionId, mint, i.intent.quantity, 0, ctx, out);
-      else if (i.status === 'reconciled' && i.fills.length === 0) this.#replaceExit(i, ctx, out);
+      if (i.status !== 'exposure_reserved' && !(i.status === 'reconciled' && i.fills.length === 0)) continue;
+      // Never more than the position holds now (a late sale may have taken some or all of it, PAPER-2); nothing left:
+      // the exit is cancelled, never sent.
+      const held = ctx.book.positions[i.intent.positionId]?.quantity ?? 0n;
+      if (held === 0n) {
+        out.push({ action: { type: 'intent', intentId: i.intent.id, event: { type: 'cancel' } }, reasons: ['exit cancelled', mint, 'nothing left to sell'] });
+        continue;
+      }
+      const quantity = i.intent.quantity < held ? i.intent.quantity : held;
+      if (i.status === 'exposure_reserved') this.#sendExit(i.intent.id, i.intent.positionId, mint, quantity, 0, ctx, out);
+      else this.#replaceExit(i, quantity, ctx, out);
     }
   }
 
@@ -1518,7 +1529,7 @@ export class LiveStrategy implements Strategy {
   }
 
   /** An exit owner whose attempt resolved without a fill: the next rung while its budget lasts, else blocked. */
-  #replaceExit(i: IntentState, ctx: StrategyContext, out: Decision[]): void {
+  #replaceExit(i: IntentState, quantity: bigint, ctx: StrategyContext, out: Decision[]): void {
     if (i.intent.purpose !== 'exit') return;
     const pid = i.intent.positionId;
     const used = exitAttemptsOf(ctx.book.intents, pid);
@@ -1529,7 +1540,7 @@ export class LiveStrategy implements Strategy {
       out.push({ action: { type: 'exit_blocked', positionId: pid, reason: `exit attempts used: ${i.attempts.length} on this exit, ${used} on the position` }, reasons: ['exit blocked', i.intent.mint, 'attempts used'] });
       return;
     }
-    this.#sendExit(i.intent.id, pid, i.intent.mint, i.intent.quantity, i.attempts.length, ctx, out);
+    this.#sendExit(i.intent.id, pid, i.intent.mint, quantity, i.attempts.length, ctx, out);
   }
 
   /** Every open position: one EXIT-1 step per call, as book events. Exits are never blocked by risk (evaluateExit). */
@@ -1907,10 +1918,15 @@ export class LiveStrategy implements Strategy {
     // SOL-BOOKS: q_min in SOL at the session's opening SOL price, exactly as risk sizes it; no live SOL/USD price.
     const opening = acct.history.openingSolPrice;
     if (opening <= 0n) return this.#fail('opening SOL price unknown', [{ gate: 'worker', code: 'no-opening-price', detail: 'the account has no opening SOL price' }]);
-    const notional = policy.capital.minNotional;
-    const spend = microUsdToLamports(notional, opening, 'ceil');
-    cand.spend = spend;
     const quoter = pumpSwapRoundTrip(m.pool, m.ctx);
+    // AUDIT-RM4 F3: the gates and H15's simulation judge the size risk will use. At q_min unless the owner approved the
+    // step-up and no drawdown returns it to the minimum; then the size risk settles on, found before the gates run.
+    const minSpend = microUsdToLamports(policy.capital.minNotional, opening, 'ceil');
+    const probed = this.#riskSize(cand, ctx, opening, m, quoter, minSpend);
+    const sized = this.#d.sizeProbe === undefined ? probed : this.#d.sizeProbe(probed);
+    const notional = sized.notional;
+    const spend = sized.spend;
+    cand.spend = spend;
     const { hard, notEvaluated } = stagedHardRejects(gctx, { session, mode: 'live', rugLabeller: 'RUG-1', ...diag }, { mint: cand.mint, universe: c.universe, notional, spend, roundTrip: quoter(spend) });
     // The S0 diagnostic set's H14 note, from whichever stages ran (WORKER-1e).
     if (hard.notes.some((n) => n.code === 's0-diagnostic')) {
@@ -1929,20 +1945,9 @@ export class LiveStrategy implements Strategy {
       const detail = `${acct.unvalued} fee(s) not yet booked; waiting for a snapshot with them in`;
       return this.#fail(`account unvalued: ${detail}`, [{ gate: 'worker', code: 'account-unvalued', detail }]);
     }
-    // Stop: the tighter of the ATR limit and the policy's maximum distance, from the executable price after the buy.
-    const rt = quoter(spend);
-    if (!rt.ok) return this.#fail(`no round trip: ${rt.reason}`, [{ gate: 'worker', code: 'no-round-trip', detail: rt.reason }]);
-    const entryPx = execPrice(rt.trade.proceeds, rt.trade.tokens);
-    const ux = exitsFor(policy.exits, c.universe);
-    const range = atr(this.#bars.get(cand.mint) ?? [], ux.atrPeriod, ux.atrBarMs, ctx.now.receivedAt);
-    if (range === null) return this.#fail('stop: not enough price bars for the ATR', [{ gate: 'stop', code: 'no-atr', detail: 'not enough price bars for the ATR' }]);
-    const byAtr = (BigInt(ux.stopAtrTenths) * range) / 10n;
-    const byMax = (entryPx * BigInt(policy.loss.stopMaxBps)) / BPS;
-    const distance = byAtr < byMax ? byAtr : byMax;
-    const stopPrice = entryPx - distance;
-    const stop = checkStopDistance(policy, c.universe, entryPx, stopPrice, range);
-    if (!stop.ok) return this.#fail(`stop: ${stop.reason} ${stop.detail}`, [{ gate: 'stop', code: stop.reason, detail: stop.detail }]);
-    const stopBps = Number(mulDiv(distance, BPS, entryPx, 'ceil'));
+    const st = this.#stopAt(cand, ctx, quoter, spend);
+    if (!st.ok) return this.#fail(st.text, [st.line]);
+    const { stopPrice, stopBps } = st;
     // Numbered from the book (restored at start), so a restart never reuses an intent id or key.
     // Past every entry intent the book holds for the mint and every try saved before a restart (RESTART-KEEP): ids never repeat.
     cand.tries = 1 + Math.max(cand.tries, Object.values(ctx.book.intents).filter((i) => i.intent.purpose === 'entry' && i.intent.mint === cand.mint).length);
@@ -1960,13 +1965,7 @@ export class LiveStrategy implements Strategy {
     // RISK-FAULT: risk that cannot evaluate refuses the entry (fail-closed), logged, and the step goes on.
     let r: ReturnType<typeof evaluateEntry>;
     try {
-      r = evaluateEntry(
-        { session, mode: 'paper', clock: { now: () => ctx.now }, account, latches: acct.latches, market: { solBalance: this.#balance(acct, ctx), regime: 'on' } },
-        {
-          intentId: id, reservationId: rid, mint: toMint(cand.mint), universe: c.universe, stopBps, edgePpm: c.edgePpm, medianTargetBps: c.medianTargetBps,
-          quote: quoter, quoteAtMs: m.atMs, poolLiquidity: (reserveLiq * 2n) as Lamports, network: c.network, rent: { ...c.rent, oneTime: acct.oneTimeRent },
-        },
-      );
+      r = this.#entryRisk(cand, ctx, m, quoter, acct, account, stopBps, id, rid);
     } catch (e) {
       const detail = e instanceof Error ? e.message : 'error';
       return this.#fail(`risk fault: ${detail}`, [{ gate: 'R1', code: 'risk_fault', detail }]);
@@ -1993,6 +1992,77 @@ export class LiveStrategy implements Strategy {
     out.push({ action: { type: 'intent', intentId: id, event: { type: 'mark_eligible' } }, reasons: ['gates passed', ...base, `H1-H16 pass (${hard.passed.length} gates)`, ...this.#diagnostic()] });
     out.push({ action: { type: 'intent', intentId: id, event: { type: 'approve_risk' } }, reasons: ['risk approved', ...base, `${RESERVE_PREFIX}${JSON.stringify(request)}`, ...trips, ...this.#diagnostic()] });
     return null;
+  }
+
+  /**
+   * The stop for an entry of `spend`: the tighter of the ATR limit and the policy's maximum distance, from the
+   * executable price after the buy (the planned exit's proceeds per token at that size).
+   */
+  #stopAt(cand: Candidate, ctx: StrategyContext, quoter: RoundTripQuoter, spend: bigint):
+    { readonly ok: true; readonly stopPrice: bigint; readonly stopBps: number } | { readonly ok: false; readonly text: string; readonly line: GateReasonLine } {
+    const policy = this.#d.session.policy;
+    const rt = quoter(spend);
+    if (!rt.ok) return { ok: false, text: `no round trip: ${rt.reason}`, line: { gate: 'worker', code: 'no-round-trip', detail: rt.reason } };
+    const entryPx = execPrice(rt.trade.proceeds, rt.trade.tokens);
+    const ux = exitsFor(policy.exits, this.#d.config.universe);
+    const range = atr(this.#bars.get(cand.mint) ?? [], ux.atrPeriod, ux.atrBarMs, ctx.now.receivedAt);
+    if (range === null) return { ok: false, text: 'stop: not enough price bars for the ATR', line: { gate: 'stop', code: 'no-atr', detail: 'not enough price bars for the ATR' } };
+    const byAtr = (BigInt(ux.stopAtrTenths) * range) / 10n;
+    const byMax = (entryPx * BigInt(policy.loss.stopMaxBps)) / BPS;
+    const distance = byAtr < byMax ? byAtr : byMax;
+    const stopPrice = entryPx - distance;
+    const stop = checkStopDistance(policy, this.#d.config.universe, entryPx, stopPrice, range);
+    if (!stop.ok) return { ok: false, text: `stop: ${stop.reason} ${stop.detail}`, line: { gate: 'stop', code: stop.reason, detail: stop.detail } };
+    return { ok: true, stopPrice, stopBps: Number(mulDiv(distance, BPS, entryPx, 'ceil')) };
+  }
+
+  /** Risk's entry decision for this candidate at `stopBps` (R1–R15, sizing included): pure, nothing latches from it here. */
+  #entryRisk(cand: Candidate, ctx: StrategyContext, m: Market, quoter: RoundTripQuoter, acct: AccountFact, account: AccountHistory, stopBps: number, id: IntentId, rid: ReturnType<typeof reservationId>): ReturnType<typeof evaluateEntry> {
+    const c = this.#d.config;
+    return evaluateEntry(
+      { session: this.#d.session, mode: 'paper', clock: { now: () => ctx.now }, account, latches: acct.latches, market: { solBalance: this.#balance(acct, ctx), regime: 'on' } },
+      {
+        intentId: id, reservationId: rid, mint: toMint(cand.mint), universe: c.universe, stopBps, edgePpm: c.edgePpm, medianTargetBps: c.medianTargetBps,
+        quote: quoter, quoteAtMs: m.atMs, poolLiquidity: (effectiveQuoteReserve(m.pool) * 2n) as Lamports, network: c.network, rent: { ...c.rent, oneTime: acct.oneTimeRent },
+      },
+    );
+  }
+
+  /**
+   * AUDIT-RM4 F3: the size the gates and the simulation judge, the one risk will use. Risk sizes at q_min unless the
+   * owner approved the step-up (and no drawdown returns it to the minimum); then above it, by its caps. The stop
+   * depends on the size (the executable price after the buy) and risk's caps on the stop, so the size is settled by
+   * asking risk again at the stop of the size it chose, up to three times; a size that does not settle, or anything
+   * risk cannot judge yet (no account, no stop, a refusal), leaves q_min, and the decision after the gates still
+   * refuses any size risk did not settle on (`size-mismatch`). This probe never decides or latches anything.
+   */
+  #riskSize(cand: Candidate, ctx: StrategyContext, opening: MicroUsd, m: Market, quoter: RoundTripQuoter, minSpend: Lamports): { readonly spend: Lamports; readonly notional: MicroUsd } {
+    const atMin = { spend: minSpend, notional: this.#d.session.policy.capital.minNotional };
+    const acct = this.#account(ctx);
+    if (acct === null || !acct.latches.sizeStepUpApproved) return atMin;
+    let account: AccountHistory;
+    try {
+      account = this.#marked(acct.history, ctx, { fallback: false });
+    } catch {
+      return atMin;
+    }
+    const probe = { id: intentId(`size:${cand.mint}`), rid: reservationId(`size:${cand.mint}`) };
+    let spend: bigint = minSpend;
+    for (let k = 0; k < 3; k++) {
+      const st = this.#stopAt(cand, ctx, quoter, spend);
+      if (!st.ok) return atMin;
+      let r: ReturnType<typeof evaluateEntry>;
+      try {
+        r = this.#entryRisk(cand, ctx, m, quoter, acct, account, st.stopBps, probe.id, probe.rid);
+      } catch {
+        return atMin;
+      }
+      if (!r.allow) return atMin;
+      // SOL-BOOKS: risk's notional is lamports; the gates read dollars at the opening price, rounded down.
+      if (r.spendLamports === spend) return spend === minSpend ? atMin : { spend: r.spendLamports as Lamports, notional: lamportsToMicroUsd(r.notional, opening, 'floor') };
+      spend = r.spendLamports;
+    }
+    return atMin;
   }
 
   /** The account risk judges: each open position at its executable mark now, or null when it cannot be (marks.ts). */

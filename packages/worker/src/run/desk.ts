@@ -6,7 +6,7 @@
 import type { IntentId, ReservationId } from '../../../core/src/domain/index.ts';
 import type { LogRecord } from '../../../core/src/engine/index.ts';
 import type { Ledger } from '../../../core/src/ledger/index.ts';
-import { applyBookEvent, type Book, type BookConfig, type BookEvent, isIllegal, isTerminal, isUnresolved } from '../../../core/src/lifecycle/index.ts';
+import { applyBookEvent, type Book, type BookConfig, type BookEvent, emptyBook, isIllegal, isTerminal, isUnresolved } from '../../../core/src/lifecycle/index.ts';
 import type { Lamports, MicroUsd } from '../../../core/src/units/index.ts';
 import { GATE_REASONS_PREFIX, S0_DIAGNOSTIC_PREFIX, reservationOf, universeOfKey } from '../engine/strategy.ts';
 
@@ -46,6 +46,12 @@ export interface DeskDeps {
   readonly solUsd?: (atMs: number) => MicroUsd | null;
   /** Test seam: called right after each of a fill's two durable writes (a crash image is taken there). */
   readonly crashPoint?: (point: 'fill-journaled' | 'fill-committed', intentId: string) => void;
+  /**
+   * A reason no entry may reserve exposure right now, or null. Checked at the reservation, the step where an approved
+   * entry becomes exposure: a fault found inside a step reaches the engine as a halt fact only later, so an entry decided
+   * at or after the fault is refused here (exits never reserve, so they are not affected).
+   */
+  readonly entriesBlocked?: () => string | null;
 }
 
 /** A booked fill for the paper account; `closes`: the trade closes whatever the position's status (a late sell). */
@@ -143,7 +149,12 @@ export class Desk {
   #book: Book;
   /** World event ids whose book event the ledger already holds (restored at start, or a reservation written first). */
   readonly #written = new Set<string>();
-  /** Decision reasons per entry intent, carried onto its `entry` line. */
+  /**
+   * Reasons by intent: an entry's decision reasons, carried onto its `entry` line; an exit's trigger reasons, for a sell
+   * that lands after the exit ended (see #fill). Bounded (`#prune`): an intent's go once it has ended and its position
+   * holds nothing (no sale can land on an empty account; an entry's go at its fill, or with an empty position unfilled).
+   * A late landing can be reported long after its block height (a lagging read, a wallet sweep), so height is no bound.
+   */
   readonly #why = new Map<string, readonly string[]>();
   /** Engine records that were illegal or refused (should stay 0). */
   illegal = 0;
@@ -220,13 +231,46 @@ export class Desk {
       return;
     }
     if (fill !== null) this.#d.crashPoint?.('fill-committed', fill.intentId);
-    // An exit's trigger reasons, kept by exit intent for a sell that lands after the exit ended (see #fill).
-    if (event.type === 'trigger_exit') {
-      const owner = this.#book.positions[event.positionId]?.exitOwner;
-      if (owner) this.#why.set(owner.intentId, owner.reasons);
-    }
+    this.#keep(this.#book, event);
     this.#lateBuy(before, event, ts);
+    this.#prune();
     this.#after(fill, ts);
+  }
+
+  /** An exit's trigger reasons (merged into its owner by a later trigger). */
+  #keep(book: Book, event: BookEvent): void {
+    if (event.type !== 'trigger_exit') return;
+    const owner = book.positions[event.positionId]?.exitOwner;
+    if (owner) this.#why.set(owner.intentId, owner.reasons);
+  }
+
+  /** Drops reasons nothing can use any more (see `#why`). */
+  #prune(): void {
+    for (const id of this.#why.keys()) {
+      const s = this.#book.intents[id];
+      if (s === undefined || !isTerminal(s)) continue;
+      if ((this.#book.positions[s.intent.positionId]?.quantity ?? 0n) === 0n) this.#why.delete(id);
+    }
+  }
+
+  /**
+   * After a restart: the exits' trigger reasons from the ledger's stored events (replayed from an empty book), so a late
+   * sell after the restart still books its exit's reasons (a late stop counts as a stop).
+   */
+  rebuild(events: readonly BookEvent[], config: BookConfig): void {
+    let book = emptyBook(config);
+    for (const e of events) {
+      const r = applyBookEvent(book, e);
+      if (isIllegal(r)) continue;
+      book = r.state;
+      this.#keep(book, e);
+    }
+    this.#prune();
+  }
+
+  /** How many intents' reasons are kept (bounded; for tests). */
+  get keptReasons(): number {
+    return this.#why.size;
   }
 
   #after(fill: Fill | null, ts: number): void {
@@ -264,7 +308,8 @@ export class Desk {
     const reasons = purpose === 'entry'
       ? ['entry filled (paper)', ...(this.#why.get(s.intent.id) ?? [])]
       : ['exit filled (paper)', ...(owner?.intentId === s.intent.id ? owner.reasons : (this.#why.get(s.intent.id) ?? []))];
-    this.#why.delete(s.intent.id);
+    // An exit keeps its reasons for another of its attempts landing late (`#prune` drops them).
+    if (purpose === 'entry') this.#why.delete(s.intent.id);
     // A late sell that leaves nothing closes the trade even if another exit owns the position now (run/CI review B2:
     // that exit can only end unfilled, and the position stays at quantity 0).
     const closes = event.type === 'orphan_fill' && p !== undefined && p.quantity === 0n;
@@ -301,6 +346,11 @@ export class Desk {
     const reject = (why: string): void => {
       this.#d.report({ type: 'intent', intentId, event: { type: 'reject', reason: why } });
     };
+    const blocked = this.#d.entriesBlocked?.() ?? null;
+    if (blocked !== null) {
+      this.#d.journal('decision', { action: 'entry_refused', intent: intentId, reasons: [`entries halted: ${blocked}`, 'no exposure reserved'] });
+      return reject(`entries halted: ${blocked}`);
+    }
     if (req === null || req.intentId !== intentId) return reject('reservation request missing from the risk decision');
     const event: BookEvent = {
       type: 'intent', intentId,
