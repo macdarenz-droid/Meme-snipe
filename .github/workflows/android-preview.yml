@@ -131,7 +131,7 @@ jobs:
     needs: build
     if: github.ref == 'refs/heads/ccr-14987baf-i6lrsl' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     permissions:
       contents: write
       checks: read
