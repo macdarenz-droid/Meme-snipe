@@ -5107,7 +5107,7 @@
    "source_type": "repo_research",
    "as_of": "2026-10-08",
    "confidence": "medium",
-   "design_relevance": "D08 and ARCH 3.2: evidence against MR-01 at 1-minute resolution (C-76). Whether it stops MR-01 is OWNER PENDING; D08 is unchanged until the owner rules.",
+   "design_relevance": "D08 and ARCH 3.2: evidence against MR-01 at 1-minute resolution (C-76). Owner ruling 2026-10-08 about 7:31 AM (\"I see. Sure insert mr 01 as my future strategy\"): MR-01 is parked as a future, switched-off candidate; no plugin, PREREG, Phase 0 kill check or trades.",
    "verification": "pending_review",
    "note": "Coarse screen on vendor OHLCV with no reserves: it can stop work, never pass a gate (ARCH 3.4 \"Coarse screens can only kill\"). Survivor-only coin list, which favours dip-buying. 1-minute candles, not the spec's 15 s snapshots; filters that need reserves or chain state were not applied. Checked against the cited files by the Z0D builder on 2026-10-08. Pending review: a fresh reviewer re-checks it before it counts as verified.",
    "verifier_evidence": [

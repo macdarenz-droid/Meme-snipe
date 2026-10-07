@@ -1,5 +1,7 @@
 # Z-H credit estimate: 30 (target 60) days of history for the B-10 replay
 
+**Route not chosen (owner, 2026-10-08 about 7:25 AM: "Old faithful but by batch to avoid blockage").** B-10's history now comes from the Old Faithful archive at 0 Helius credits; the batch plan is [`OLD-FAITHFUL.md`](OLD-FAITHFUL.md) (card Z-H-OF). This file is kept as the record of the Helius route; its credit figures, P10 and the paper blackout no longer apply.
+
 Researcher card Z-H. Round 1: `db3050b3`. Round 2: `e6860267`. Round 3: `23eb1d6f` (review PASS). **Round 4 (final
 pass): 2026-10-07 UTC (8 Oct Melbourne)**, answering the round-3 red team (R3-01 to R3-04) and reviewer M1–M3 as
 relayed by the supervisor (§0). Round 3 answered the round-2 review and red team, and the supervisor's round-3 rulings 1–9, in `docs/reviews/ZH.md` at
