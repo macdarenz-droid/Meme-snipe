@@ -63,3 +63,15 @@ Reviewer `session_011iA9FMWTMikWUyoerDHrq2`, about 9:27 AM. Rulings 1–8 were a
 20. **m7:** add the AC. The validator also refuses live modes below `paper_passed`.
 21. **m9:** use "They are marked shadow and do not count for any gate yet."
 22. **m10:** add one plain line on what live also needs: the go-live checklist and kill drill (P-7, P-8), the signer's max_mode raised on the host, one strategy live at a time, and funding the wallet (owner only).
+
+## Round 2 delta review (head `e69fc5c6`): FAIL on 1 MAJOR, plus 6 MINOR
+
+Reviewer, about 9:33 AM. Rulings 1–22 are applied as written, and nothing weakens an owner rule or a gate.
+- M1: AC-21 (configKey, E_TRIAL_MISMATCH, the window reset) and AC-19's audited A1 removal test behaviour of A-M13-02/05/06 and B-M26-04, which Z-STRAT's scope excludes.
+- m1: the 5-min A2 step-up is in SPEC-B B-M26-02 step 2, so it is not PROPOSED.
+- m2: the A3 phrase `ENABLE <id>@<version> …` is not in SPEC. Mark it as the ruling's addition and list B-M26-02 step 2 among the amendments.
+- m3: the positive-evidence rule is missing from §2 (the reviewer's refusal).
+- m4: the order of the Rulings list.
+- m5: AC-28 should read "the PREREG sizing result, capped by M21".
+- m6: operator demotion is not automatic.
+Held until red team round 2 reports, so both go in one push.
