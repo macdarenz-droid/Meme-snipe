@@ -1,0 +1,62 @@
+{
+ "day": "2026-09-15",
+ "anchor_slot": 447380932,
+ "anchor_time": 1789516819,
+ "pools": [
+  {
+   "pool": "6unnG2hL8udPjDpu3TchvAtptu3dq8AS7tymrWDN2LLC",
+   "symbol": "TBB",
+   "eligible_days": 62,
+   "ok": 3372,
+   "failed": 2132,
+   "pages": 6,
+   "earliest_seen": 1789430924
+  },
+  {
+   "pool": "8N544CG9j44dkzu4CjSWHxpwekxHQPTR4R17Kw9y5FBk",
+   "symbol": "NORMIE",
+   "eligible_days": 62,
+   "ok": 116,
+   "failed": 44,
+   "pages": 1,
+   "earliest_seen": 1789431284
+  },
+  {
+   "pool": "31ZmTzEufRDBGKsJ7NicCkEKxtPQgAEMQvdbCuUfE6GX",
+   "symbol": "BOBO",
+   "eligible_days": 62,
+   "ok": 710,
+   "failed": 201,
+   "pages": 1,
+   "earliest_seen": 1789430448
+  },
+  {
+   "pool": "DPzKoJVewaH1wpchD3gWKeeGm7G2mXkBW48uRniAgbVx",
+   "symbol": "Cupsey",
+   "eligible_days": 62,
+   "ok": 6819,
+   "failed": 7219,
+   "pages": 15,
+   "earliest_seen": 1789430586
+  },
+  {
+   "pool": "EuAKdgnHKKe9ETSx7wd4NVb3EhbUptFemRrLdQaSdrkH",
+   "symbol": "Clash",
+   "eligible_days": 62,
+   "ok": 327,
+   "failed": 223,
+   "pages": 1,
+   "earliest_seen": 1789430703
+  },
+  {
+   "pool": "CqC3Hz1VLgRtoy8Kcahif6vxAcYNyQVM7SWxLXCQAfcK",
+   "symbol": "CLAW",
+   "eligible_days": 62,
+   "ok": 23637,
+   "failed": 13681,
+   "pages": 38,
+   "earliest_seen": 1789430416
+  }
+ ],
+ "calls": 73
+}
