@@ -7,7 +7,7 @@
 // trades (RUG-1's wiring rule).
 import { PUMP_AMM_PROGRAM, PUMP_PROGRAM, type TransactionRecord, transactionEvents } from '../../../core/src/chain/index.ts';
 import type { Fetched, SocketFactory, HttpClient, Secrets } from '../providers/index.ts';
-import { CoinbaseSolPrice, alchemyRpcUrl, heliusRpcUrl, heliusWsUrl, PumpPortalSource, RpcHttp, RpcStream, TxFetcher } from '../providers/index.ts';
+import { CoinbaseSolPrice, FETCH_TX_RETRIES, alchemyRpcUrl, heliusRpcUrl, heliusWsUrl, PumpPortalSource, RpcHttp, RpcStream, TxFetcher } from '../providers/index.ts';
 import {
   ALCHEMY_FREE, HELIUS_FREE, HELIUS_WS_CREDITS_PER_BYTE, HELIUS_WS_CREDITS_PER_CONNECTION, JUPITER_FREE, P0, P1, P2, P3,
   RUGCHECK_FREE, Scheduler, type SchedulerSpec,
@@ -29,56 +29,178 @@ export const PUMP_CREATE_AUTHORITY = 'TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eok
 export const PUMP_MIGRATION_AUTHORITY = '39azUYFWPz3VHgKCf3VChUwbpURdCHRxjWVowf5jUJjg';
 
 /**
- * The month's credit use per provider, loaded at start and saved at most once a second and at stop (FEED-1 DECISIONS:
- * a restart never resets the 70% halt). A new UTC month starts from zero on the next start.
+ * RC-FIXES: credits written ahead of the count. Each save puts `used + CREDIT_RESERVE` on disk, and a spend that would
+ * pass what disk holds is saved at once, so the saved count is never below what was spent: a death before the next save
+ * restarts from a count that is high by at most this much, never low.
+ */
+export const CREDIT_RESERVE = 1_000;
+/** Other months' counts kept in credits.json besides the current one. */
+export const CREDIT_MONTHS_KEPT = 3;
+
+/**
+ * The month's credit use per provider, loaded at start and saved at most once a second, at stop, and at once when a spend
+ * passes the saved reserve (FEED-1 DECISIONS: a restart never resets the 70% halt). A new UTC month starts from zero on
+ * the next start.
+ * RC-FIXES: a save never throws (it ran from a timer: a throw there is an uncaughtException and the worker exits, every
+ * restart again). A failed save keeps the book dirty, logs once per error kind and is retried every second. While the
+ * saved count is below what was spent, a restart would under-count, so every provider whose count gates spending (a
+ * monthly budget) is held as halted for every class but P0 (exits) until a save lands. Counts only ever go up.
+ * RC-FIXES: other months' counts are kept too (`CREDIT_MONTHS_KEPT`), so a boot whose clock reads another month never
+ * wipes one. A clock behind the latest saved month fails closed: the book keeps counting under that later month, from
+ * the sum of its count and the clock month's (folded in once), until the clock catches up. An unreadable file never
+ * throws: the month counts as spent for every budgeted provider (halted to P0).
  */
 export class CreditBook {
   readonly #file: ReturnType<typeof creditsFile>;
   readonly #timers: Timers;
+  readonly #log: (line: string) => void;
   readonly #used: Record<string, number>;
+  /** What the last save that landed holds, per provider. */
+  readonly #saved: Record<string, number>;
   readonly #month: string;
+  /** The other months' counts, kept as they were loaded. */
+  readonly #months: Record<string, Record<string, number>>;
+  readonly #budgeted: Scheduler[] = [];
+  readonly #logged = new Set<string>();
   #dirty = false;
+  #fault: string | null = null;
+  /** The error kind of the last save while it failed; null once a save lands. */
+  #failing: string | null = null;
+  /** credits.json could not be read at start (why): the month counts as spent for every budgeted provider. */
+  #unreadable: string | null = null;
   #timer: ReturnType<Timers['setTimeout']> | null = null;
 
-  constructor(stateDir: string, timers: Timers) {
+  constructor(stateDir: string, timers: Timers, log: (line: string) => void = (line) => console.error(line)) {
     this.#file = creditsFile(stateDir);
     this.#timers = timers;
-    this.#month = creditMonth(timers.now());
-    const saved = this.#file.read({ month: this.#month, used: {} });
-    this.#used = saved.month === this.#month ? { ...saved.used } : {};
-    this.#save();
+    this.#log = log;
+    const clock = creditMonth(timers.now());
+    let saved: Credits = { month: clock, used: {} };
+    try {
+      saved = this.#file.read(saved);
+    } catch (e) {
+      // RC-FIXES review: no throw (a boot that throws here crash-loops). The month counts as spent: every budgeted
+      // provider starts at its whole monthly budget, so it is halted to P0. A save that lands writes a good file.
+      this.#unreadable = e instanceof Error ? ((e as NodeJS.ErrnoException).code ?? 'not a valid state file') : 'error';
+      this.#log(`credits.json cannot be read (${this.#unreadable}): this month counts as spent, budgeted providers halted to exits`);
+    }
+    const all: Record<string, Record<string, number>> = { ...(saved.months ?? {}) };
+    all[saved.month] = { ...saved.used };
+    const latest = Object.keys(all).sort().at(-1)!;
+    if (latest > clock) {
+      // The clock is behind a month already counted: always a clock error. Never start that month again, never count
+      // less: the clock month's count is added to it (fail closed) and folded in, so a later boot never adds it twice.
+      this.#month = latest;
+      const used: Record<string, number> = { ...all[latest] };
+      for (const [k, v] of Object.entries(all[clock] ?? {})) used[k] = v + (used[k] ?? 0);
+      delete all[clock];
+      this.#used = used;
+      this.#log(`credits.json: the clock reads ${clock}, behind the saved ${latest}; counting under ${latest} until the clock catches up`);
+    } else {
+      this.#month = clock;
+      this.#used = { ...(all[clock] ?? {}) };
+    }
+    this.#saved = { ...(all[this.#month] ?? {}) };
+    delete all[this.#month];
+    this.#months = Object.fromEntries(Object.entries(all).sort(([a], [b]) => (a < b ? -1 : 1)).slice(-CREDIT_MONTHS_KEPT));
+    if (this.#unreadable === null) this.#save(false);
+    else {
+      // Not over the bad file with nothing in it: the first save carries the spent counts the schedulers start from.
+      this.#dirty = true;
+      this.#arm();
+    }
   }
 
   get used(): Readonly<Record<string, number>> {
     return this.#used;
   }
 
+  /** Why the saved count is behind the spend (the last save failed); null when disk holds at least what was spent. */
+  get fault(): string | null {
+    return this.#fault;
+  }
+
   scheduler(spec: SchedulerSpec): Scheduler {
-    return new Scheduler(spec, {
+    if (this.#unreadable !== null && spec.budget !== undefined) this.#used[spec.provider] = Math.max(this.#used[spec.provider] ?? 0, spec.budget.monthlyCredits);
+    const s = new Scheduler(spec, {
       timers: this.#timers,
       creditsUsed: this.#used[spec.provider] ?? 0,
       onSpend: (used) => {
+        // Never backwards: a count the scheduler lowers (a test's resetBudget) is not taken.
+        if (!(used > (this.#used[spec.provider] ?? 0))) return;
         this.#used[spec.provider] = used;
         this.#dirty = true;
-        this.#timer ??= this.#timers.setTimeout(() => {
-          this.#timer = null;
-          if (this.#dirty) this.#save();
-        }, 1_000);
+        // Past the saved reserve: saved now. While saves fail, the retry timer tries again (not every spend), and the
+        // budgeted providers are held at once.
+        if (used <= (this.#saved[spec.provider] ?? 0)) this.#arm();
+        else if (this.#failing === null) this.#save();
+        else {
+          this.#hold(this.#failing);
+          this.#arm();
+        }
       },
     });
+    if (spec.budget !== undefined) {
+      this.#budgeted.push(s);
+      if (this.#fault !== null) s.hold(this.#fault);
+    }
+    return s;
   }
 
-  #save(): void {
+  #arm(): void {
+    this.#timer ??= this.#timers.setTimeout(() => {
+      this.#timer = null;
+      if (this.#dirty) this.#save();
+    }, 1_000);
+  }
+
+  /**
+   * `reserve`: written ahead by `CREDIT_RESERVE` (while spending). Without it (at start and stop) the exact counts are
+   * written: nothing is spent after, and the next spend past them is saved at once with the reserve.
+   */
+  #save(reserve = true): void {
     this.#dirty = false;
-    const c: Credits = { month: this.#month, used: { ...this.#used } };
-    this.#file.write(c);
+    const ahead: Record<string, number> = {};
+    for (const [k, v] of Object.entries(this.#used)) ahead[k] = reserve ? Math.max(v + CREDIT_RESERVE, this.#saved[k] ?? 0) : v;
+    const c: Credits = { month: this.#month, used: ahead, ...(Object.keys(this.#months).length === 0 ? {} : { months: this.#months }) };
+    try {
+      this.#file.write(c);
+    } catch (e) {
+      this.#dirty = true;
+      const kind = e instanceof Error ? ((e as NodeJS.ErrnoException).code ?? e.name) : 'error';
+      this.#failing = kind;
+      if (!this.#logged.has(kind)) {
+        this.#logged.add(kind);
+        this.#log(`credits.json not saved (${kind}); retrying every second, budgeted providers held to exits while the saved count is behind`);
+      }
+      if (Object.entries(this.#used).some(([k, v]) => v > (this.#saved[k] ?? 0))) this.#hold(kind);
+      this.#arm();
+      return;
+    }
+    for (const k of Object.keys(this.#saved)) if (!(k in ahead)) delete this.#saved[k];
+    Object.assign(this.#saved, ahead);
+    this.#failing = null;
+    if (this.#fault !== null) {
+      this.#fault = null;
+      for (const s of this.#budgeted) s.hold(null);
+      this.#log('credits.json saved again; budgeted providers released');
+    }
   }
 
-  /** At stop. */
+  /** The saved count is behind the spend: every budgeted provider is held to P0 until a save lands. */
+  #hold(kind: string): void {
+    if (this.#fault !== null) return;
+    this.#fault = `credit count not saved (${kind}); budgeted providers held`;
+    for (const s of this.#budgeted) s.hold(this.#fault);
+  }
+
+  /** At stop. Never throws: a failed final save leaves the last file that landed. */
   flush(): void {
     if (this.#timer !== null) this.#timers.clearTimeout(this.#timer);
     this.#timer = null;
-    this.#save();
+    this.#save(false);
+    if (this.#timer !== null) this.#timers.clearTimeout(this.#timer);
+    this.#timer = null;
   }
 }
 
@@ -302,7 +424,7 @@ export class LiveProviders {
     const { feed, timers } = ctx;
     const hRpc = new RpcHttp({ provider: 'helius', url: () => heliusRpcUrl(o.secrets), http: o.http, scheduler: this.helius, timeoutMs: 10_000 });
     const aRpc = new RpcHttp({ provider: 'alchemy', url: () => alchemyRpcUrl(o.secrets), http: o.http, scheduler: this.alchemy, timeoutMs: 10_000 });
-    const fetcher = new TxFetcher({ clients: [hRpc, aRpc], feed, timers, retries: 3, retryMs: 1_000, remember: 50_000, onLookup: (ms) => this.#lookup(ms) });
+    const fetcher = new TxFetcher({ clients: [hRpc, aRpc], feed, timers, retries: FETCH_TX_RETRIES, retryMs: 1_000, remember: 50_000, onLookup: (ms) => this.#lookup(ms) });
     this.#fetcher = fetcher;
     this.#feed = feed;
     const socket = { initialMs: 1_000, maxMs: 30_000, idleMs: 30_000 };
@@ -381,14 +503,22 @@ export class LiveProviders {
    * A transaction at confirmed (P2 unless asked lower), put on the feed; true when found and readable. One DEC-1 cannot
    * decode reads as not found, so a cut trade log it was fetched for still becomes a rugs gap (a decode failure is a
    * fact gap). TRADE-GAP-HEAL's pool-trade holes ask at P3, below every position and exit read.
+   * RC-FIXES: `spent` is told once, when the fetch settles, the Helius credits it spent (its quick retries included:
+   * up to FETCH_TX_RETRIES + 1 calls), so a budgeted caller books what was used and not one call per fetch.
    */
-  async fetchTx(signature: string, priority: typeof P2 | typeof P3 = P2): Promise<boolean> {
-    if (this.#fetcher === null) return false;
+  async fetchTx(signature: string, priority: typeof P2 | typeof P3 = P2, spent?: (heliusCredits: number) => void): Promise<boolean> {
+    let credits = 0;
+    const onCall = (provider: string): void => {
+      if (provider === 'helius') credits += callCost('helius', 'getTransaction');
+    };
     try {
-      const found = await this.#fetcher.fetch(signature, priority);
+      if (this.#fetcher === null) return false;
+      const found = await this.#fetcher.fetch(signature, priority, false, onCall);
       return found !== null && found.undecodable !== true;
     } catch {
       return false;
+    } finally {
+      spent?.(credits);
     }
   }
 }

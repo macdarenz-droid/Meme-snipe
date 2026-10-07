@@ -128,6 +128,7 @@ export class Scheduler {
   #exhaustedUntil = Number.NEGATIVE_INFINITY;
   #exhaustedCount = 0;
   #exhaustedFirstAt: number | null = null;
+  #hold: string | null = null;
 
   /**
    * `creditsUsed` is the month's use so far, loaded from storage: a restart must never reset the budget.
@@ -145,7 +146,19 @@ export class Scheduler {
 
   get halted(): boolean {
     const b = this.spec.budget;
-    return b !== undefined && this.#used >= b.haltShare * b.monthlyCredits;
+    return this.#hold !== null || (b !== undefined && this.#used >= b.haltShare * b.monthlyCredits);
+  }
+
+  /**
+   * RC-FIXES: halts every class but P0, as the budget halt does, while `reason` is set (the month's count could not be
+   * saved, so after a restart it would under-count). Null lifts it.
+   */
+  hold(reason: string | null): void {
+    this.#hold = reason;
+  }
+
+  get held(): string | null {
+    return this.#hold;
   }
 
   /** Changes the reservations, e.g. hold Jupiter's 30/min for exits only while a position is open. */

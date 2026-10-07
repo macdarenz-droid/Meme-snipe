@@ -527,10 +527,24 @@ in_c "zeroed-check" >/dev/null 2>&1 || true
 pass "recording upload (locked wrangler dev): an ended boot's frames, releases and manifest uploaded byte for byte through the signed watchdog route with a fixed Content-Length, then its frames and releases deleted (raw, delays, manifest kept); the newest boot while the worker runs uploaded and untouched; a credential-shaped file kept, alerted once and cleared; a day prerelease never latest; signed day index; as the worker's user with no capability; a second run sends nothing"
 
 # ---------- 10. Restart and crash drills ----------
+# RC-R2-3 on real systemd: the release deployed in section 8 is on probation. A planned restart never counts; the
+# kill -9 below raises NRestarts and the probation sees it. There is no earlier release here, so it alerts and drops.
+in_c "test -s /var/lib/zeroed-host/probation" || fail "no probation after the switch in section 8"
 r0="$(in_c "journalctl -u zeroed-worker -o cat --no-pager | grep -c 'Reconcile: 0 open intents'")"
 in_c "systemctl restart zeroed-worker"
+wait_for 30 "worker back after a planned restart" "docker exec $C systemctl is-active zeroed-worker"
+nr0="$(in_c "systemctl show -p NRestarts --value zeroed-worker")"
+upd_run || fail "zeroed-update after a planned restart"
+in_c "test -s /var/lib/zeroed-host/probation" || fail "a planned restart ended the probation"
+in_c "cat /var/lib/zeroed-host/deployed" | grep -qx "$signed" || fail "a planned restart moved the deployed record"
 in_c "kill -9 \$(systemctl show -p MainPID --value zeroed-worker)"
 wait_for 30 "worker back after kill -9" "docker exec $C systemctl is-active zeroed-worker"
+[ "$(in_c "systemctl show -p NRestarts --value zeroed-worker")" -gt "$nr0" ] || fail "kill -9 did not raise NRestarts"
+upd_run && fail "zeroed-update did not see the kill -9 during the probation"
+in_c "journalctl -u zeroed-update -o cat --no-pager" | grep -q "did not stay up after the switch (it restarted 1 time(s) within .* of the switch (probation 120 min)), and there is no earlier release to go back to" || fail "probation rollback with no earlier release not alerted"
+in_c "test ! -e /var/lib/zeroed-host/probation" || fail "the probation was not dropped"
+in_c "cat /var/lib/zeroed-host/deployed" | grep -qx "$signed" || fail "the deployed record moved with no earlier release"
+pass "probation (RC-R2-3) on real systemd: a planned restart leaves it; kill -9 raises NRestarts, the next zeroed-update sees it, alerts that there is no earlier release and drops it"
 sleep 2
 r1="$(in_c "journalctl -u zeroed-worker -o cat --no-pager | grep -c 'Reconcile: 0 open intents'")"
 [ "$r1" -ge $((r0 + 2)) ] || fail "reconcile did not run before each start ($r0 -> $r1)"

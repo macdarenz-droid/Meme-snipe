@@ -26,6 +26,7 @@ import { type HttpClient, type Secrets, parseJson, ProviderError, refusal429, sc
 import type { IngestOptions } from '../providers/live-feed.ts';
 import { PUMP_AMM_FEE_CONFIG, decodeSnapshot } from '../run/snapshot.ts';
 import { feesKey } from '../engine/strategy.ts';
+import { farAhead } from '../run/budget-day.ts';
 
 /** Every JSON-RPC method the fact reads may call: reads only. Frozen; nothing that sends is or may be added. */
 export const FACT_RPC_METHODS = Object.freeze(['getAccountInfo', 'getMultipleAccounts', 'getProgramAccounts', 'getTokenLargestAccounts', 'getSignaturesForAddress', 'getTransaction'] as const);
@@ -272,6 +273,9 @@ export const JUPITER_BASE = 'https://api.jup.ag';
 export const COINBASE_BASE = 'https://api.exchange.coinbase.com';
 export const RELEASES_BASE = 'https://api.github.com/repos/macdarenz-droid/Meme-snipe';
 export const DOWNLOADS_BASE = 'https://github.com/macdarenz-droid/Meme-snipe';
+/** RC-FIXES: the most addresses one getMultipleAccounts bank takes. */
+const BANK_MAX = 100;
+
 /** Release list pages read per pass (100 releases a page); more would mean a runaway list, and the rest stay unknown. */
 export const RELEASE_PAGES_MAX = 10;
 
@@ -357,12 +361,9 @@ export class FactReaders {
         if (!Number.isSafeInteger(v['day']) || !Number.isSafeInteger(v['scans']) || (v['scans'] as number) < 0) throw new Error('bad scans file');
         this.#scanDay = v['day'] as number;
         this.#scans = v['scans'] as number;
-        // Dated after today (the clock stepped back since it was written): spent until that day has passed, never a
-        // fresh day's budget; written back so a later process reads the same.
-        if ((v['day'] as number) > Math.floor(o.timers.now() / 86_400_000)) {
-          this.#scans = Number.MAX_SAFE_INTEGER;
-          this.#saveScans();
-        }
+        // Dated tomorrow (the clock stepped back since it was written): its spend counts, as the fill budget's and the
+        // deployer checks' do (S1 ruling on #271: never a fresh budget, never locked to the end of tomorrow). Dated
+        // further ahead (a wrong clock wrote it): #takeScan counts today as spent, never every day until that date.
       } catch {
         // Unreadable: today's cap counts as spent, written back so the next UTC day starts again.
         this.#scanDay = Math.floor(o.timers.now() / 86_400_000);
@@ -529,8 +530,34 @@ export class FactReaders {
     return { addresses, slot: r.slot };
   }
 
-  /** Owners of the mint's holders seen so far (largest-account discovery and scans), so one bank can classify them. */
-  readonly #owners = new Map<string, Set<string>>();
+  /**
+   * RC-FIXES: the off-curve owners of each mint's last complete scan, so the next bank classifies them. Only the last scan's
+   * owners are kept: before, every owner ever seen stayed, and a coin whose top holders churned passed 100 addresses
+   * and had every later bank refused for the life of the process.
+   */
+  readonly #scanOwners = new Map<string, readonly string[]>();
+  /**
+   * RC-FIXES review: mints whose off-curve owners do not fit one bank, refused for the rest of the UTC day: no more of
+   * the shared daily scans go to a coin that cannot pass. Both maps start again at each UTC day, so they hold at most a
+   * day's scanned mints.
+   */
+  readonly #scanRefused = new Set<string>();
+  #ownersDay = -1;
+
+  #rollOwners(): void {
+    const day = Math.floor(this.#o.timers.now() / 86_400_000);
+    if (day === this.#ownersDay) return;
+    this.#ownersDay = day;
+    this.#scanOwners.clear();
+    this.#scanRefused.clear();
+  }
+
+  #refuseScan(mint: string, owners: number | null): void {
+    if (this.#scanRefused.has(mint)) return;
+    this.#scanRefused.add(mint);
+    this.#scanOwners.delete(mint);
+    this.#o.log?.(`Holder scan of ${mint} refused for the rest of the UTC day: ${owners === null ? 'its' : owners} off-curve owners do not fit one bank with its accounts; H12/H13 stay not covered.`);
+  }
 
   /**
    * READ-COHERENT: a candidate's stage-2 and stage-3 read inputs as one coherent batch, so every fact the decision
@@ -556,8 +583,8 @@ export class FactReaders {
     let banked = false;
     const prep = await this.#attempt(`batch-prep:${mint}`, async () => {
       const layout = await this.#layoutOf(mint, priority);
-      const known = this.#owners.get(mint) ?? new Set<string>();
-      this.#owners.set(mint, known);
+      // The listed accounts' owners at discovery, this batch only (the bank classifies them at its own slot).
+      const known = new Set<string>();
       let listed: readonly string[] = [];
       let minSlot = layout.slot ?? 0n;
       if (req.holders !== null) {
@@ -576,21 +603,29 @@ export class FactReaders {
           }
         }
       }
-      return { value: { layout: layout.addresses, listed: req.holders === 'largest' ? listed : [], minSlot }, detail: `${listed.length} listed, ${known.size} owners` };
+      return { value: { layout: layout.addresses, listed: req.holders === 'largest' ? listed : [], owners: [...known], minSlot }, detail: `${listed.length} listed, ${known.size} owners` };
     });
     const p = prep;
     if (p !== null) {
-      const ownersOf = [...(this.#owners.get(mint) ?? [])].filter((o) => !p.layout.includes(o) && !p.listed.includes(o)).sort();
       // FEE-TIER-NOW: PumpSwap's GlobalConfig and the pump-fees FeeConfig ride in the same bank (no extra call), so the
       // pool's fee context, every tier included, is read at the bank's slot with the pool.
       const fees: readonly string[] = [PUMP_AMM_GLOBAL_CONFIG, PUMP_AMM_FEE_CONFIG].filter((a) => !p.layout.includes(a));
-      const addresses = [...p.layout, ...p.listed, ...ownersOf.filter((o) => !fees.includes(o)), ...fees];
+      const base = [...new Set([...p.layout, ...p.listed, ...[...p.owners].sort(), ...fees])];
       // The scan's program is the mint's owner, learnt from the layout read (the mint is in every bank).
       const mintOwner = this.#mintProgram.get(mint);
-      const scanned = req.holders === 'all' && mintOwner !== undefined && this.#takeScan();
-      if (req.holders === 'all' && !scanned) this.#outcome({ read: `holders-all:${mint}`, ok: false, detail: mintOwner === undefined ? 'mint program not known' : 'daily scan cap reached' });
+      // RC-FIXES: the last scan's off-curve owners ride in the bank only when this batch scans, and only when they fit;
+      // if they do not, no scan is taken (fail closed: H12/H13 are never judged on owners the bank did not classify) and
+      // the coin is refused for the rest of the UTC day (review: never alternate spending the shared daily scans).
+      this.#rollOwners();
+      const remembered = req.holders === 'all' ? this.#scanOwners.get(mint) : undefined;
+      const extra = (remembered ?? []).filter((o) => !base.includes(o)).sort();
+      const fits = req.holders !== 'all' || (!this.#scanRefused.has(mint) && base.length + extra.length <= BANK_MAX);
+      if (!fits) this.#refuseScan(mint, remembered === undefined ? null : extra.length);
+      const scanned = req.holders === 'all' && mintOwner !== undefined && fits && this.#takeScan();
+      if (req.holders === 'all' && !scanned) this.#outcome({ read: `holders-all:${mint}`, ok: false, detail: mintOwner === undefined ? 'mint program not known' : !fits ? 'off-curve owners do not fit one bank: refused for the rest of the UTC day' : 'daily scan cap reached' });
+      const addresses = scanned ? [...base, ...extra] : base;
       // The final round: every call at once.
-      const bank = addresses.length <= 100 ? this.#o.rpc.getMultipleAccounts(addresses, priority) : Promise.reject(new Error(`${addresses.length} accounts do not fit one bank`));
+      const bank = addresses.length <= BANK_MAX ? this.#o.rpc.getMultipleAccounts(addresses, priority) : Promise.reject(new Error(`${addresses.length} accounts do not fit one bank`));
       const scan = scanned ? this.#scan(mintOwner!, mint, p.minSlot, priority) : null;
       bank.catch(() => undefined);
       scan?.catch(() => undefined);
@@ -610,8 +645,9 @@ export class FactReaders {
         if (m !== null) this.#mintProgram.set(mint, m.owner);
         put('helius', RAW.accounts(mint), { mint, slot: b.slot, commitment: 'confirmed', accounts: p.layout.map((address) => ({ address, owner: at(address)?.owner ?? null, data: at(address)?.data ?? null })) } satisfies AccountsRead);
         FactReaders.#feesOf(mint, p.layout, b.slot, at, put);
-        if (req.holders === 'largest') parts.push(this.#guard(`holders:${mint}`, async () => this.#bankedHolders(mint, b.slot, p.listed, at, put)).then(as('holders')));
-        if (scan !== null) parts.push(this.#guard(`holders-all:${mint}`, async () => this.#bankedScan(mint, b.slot, await scan, at, put)).then(as('holders-all')));
+        const inBank = new Set(addresses);
+        if (req.holders === 'largest') parts.push(this.#guard(`holders:${mint}`, async () => this.#bankedHolders(mint, b.slot, p.listed, inBank, at, put)).then(as('holders')));
+        if (scan !== null) parts.push(this.#guard(`holders-all:${mint}`, async () => this.#bankedScan(mint, b.slot, await scan, inBank, at, put)).then(as('holders-all')));
         return `slot ${b.slot}`;
       });
       if (!banked) await scan?.catch(() => undefined);
@@ -657,11 +693,10 @@ export class FactReaders {
   simulate: SimFn | null = null;
 
   /** The largest accounts at the bank's slot: balances, supply and owners' programs all from that one bank. */
-  #bankedHolders(mint: string, slot: bigint, listed: readonly string[], at: (address: string) => { owner: string; data: string } | null, put: Put): string {
+  #bankedHolders(mint: string, slot: bigint, listed: readonly string[], inBank: ReadonlySet<string>, at: (address: string) => { owner: string; data: string } | null, put: Put): string {
     const m = at(mint);
     if (m === null) throw new Error('mint account missing');
     const supply = decodeMint(fromBase64(m.data), m.owner as Address).supply;
-    const known = this.#owners.get(mint)!;
     const accounts: HoldersRead['accounts'][number][] = [];
     const unclassified: string[] = [];
     for (const address of listed) {
@@ -670,8 +705,8 @@ export class FactReaders {
       const t = decodeTokenAccount(fromBase64(v.data), v.owner as Address);
       if (t.mint !== mint) throw new Error(`token account ${address} is not of ${mint}`);
       const owner = t.owner as string;
-      if (!known.has(owner)) {
-        known.add(owner);
+      // An owner that changed after discovery was not in the bank: refused (the next batch discovers it afresh).
+      if (!inBank.has(owner)) {
         unclassified.push(owner);
         continue;
       }
@@ -685,14 +720,15 @@ export class FactReaders {
   }
 
   /** The complete scan, refused unless at or after the bank's supply read and with every off-curve owner classified by it. */
-  #bankedScan(mint: string, slot: bigint, s: Scan, at: (address: string) => { owner: string; data: string } | null, put: Put): string {
+  #bankedScan(mint: string, slot: bigint, s: Scan, inBank: ReadonlySet<string>, at: (address: string) => { owner: string; data: string } | null, put: Put): string {
     const m = at(mint);
     if (m === null) throw new Error('mint account missing');
     if (s.gpa.slot < slot) throw new Error(`scan at slot ${s.gpa.slot} is older than the supply read at ${slot}`);
-    const known = this.#owners.get(mint)!;
     const offCurve = offCurveOwners(s.gpa.accounts);
-    const missing = offCurve.filter((o) => !known.has(o));
-    for (const o of missing) known.add(o);
+    // The next scan's bank carries this scan's off-curve owners (only these); more than a bank holds: refused for the day.
+    if (offCurve.length <= BANK_MAX) this.#scanOwners.set(mint, offCurve);
+    else this.#refuseScan(mint, offCurve.length);
+    const missing = offCurve.filter((o) => !inBank.has(o));
     if (missing.length > 0) throw new Error(`off-curve owners ${missing.join(', ')} were not in the bank`);
     put('helius', RAW.holdersAll(mint), {
       mint, slot: s.gpa.slot, commitment: 'confirmed', program: m.owner, mintSlot: slot, mintData: m.data, accounts: s.gpa.accounts,
@@ -729,24 +765,39 @@ export class FactReaders {
     if (day > this.#scanDay) {
       this.#scanDay = day;
       this.#scans = 0;
+    } else if (farAhead(this.#scanDay, day)) {
+      // RC-M3: a count dated more than a day ahead (the saved file's, or this process's clock ran ahead and came back):
+      // today counts as spent, not every day until that date.
+      this.#scanDay = day;
+      this.#scans = Number.MAX_SAFE_INTEGER;
+      this.#saveScans();
     }
     if (this.#scans >= (this.#o.holderScansPerDay ?? HOLDER_SCANS_PER_DAY)) return false;
     this.#scans++;
-    // Counted on disk before the scan runs: a death during it still counts it.
-    this.#saveScans();
-    return true;
+    // Counted on disk before the scan runs: a death during it still counts it. RC-M1: a count that could not be written
+    // grants nothing (a restart the same day would read the cap as unspent); the scan stays counted in memory.
+    return this.#saveScans();
   }
 
-  #saveScans(): void {
+  #saveScans(): boolean {
     const f = this.#o.scansFile;
-    if (f === undefined) return;
+    if (f === undefined) return true;
     // A write that fails (a full disk, a permission) never throws out of the readers (their constructor runs at the
     // worker's start): the count stays in memory, so what is spent stays spent in this process, and it is logged.
+    const text = JSON.stringify({ day: this.#scanDay, scans: this.#scans });
     try {
-      writeFileSync(`${f}.tmp`, JSON.stringify({ day: this.#scanDay, scans: this.#scans }));
+      writeFileSync(`${f}.tmp`, text);
       renameSync(`${f}.tmp`, f);
+      return true;
     } catch {
+      // RC-M1 (red team C round 3): the temporary path unusable (a stray folder, say), the count is written in place. A
+      // torn in-place write reads as unreadable at the next start, which counts the day as spent (fail closed).
+      try {
+        writeFileSync(f, text);
+        return true;
+      } catch {}
       this.#o.log?.('Holder scan count not saved: it is kept in this process only.');
+      return false;
     }
   }
 

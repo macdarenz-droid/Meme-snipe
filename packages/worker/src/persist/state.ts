@@ -18,6 +18,7 @@ import { pipeline } from 'node:stream/promises';
 import { createZstdCompress, createZstdDecompress } from 'node:zlib';
 import { fileLines } from '../../../runner/src/lines.ts';
 import { atomicWrite, writeAll, type WriteFn } from '../run/state.ts';
+import { farAhead } from '../run/budget-day.ts';
 import type { RugConfig } from '../../../core/src/config/rugs.ts';
 import { DAY_MS } from '../../../core/src/config/time.ts';
 import { compareEvents, compareMoments, type MarketEvent, type Moment } from '../../../core/src/engine/index.ts';
@@ -490,6 +491,7 @@ export interface FillBudget {
   spend(credits: number, nowMs: number): BudgetDay;
   refund(credits: number, day: BudgetDay): void;
 }
+const dayNumber = (day: string): number => Math.floor(Date.parse(`${day}T00:00:00Z`) / DAY_MS);
 
 /**
  * The fill's daily credit budget, kept in its own small file so it survives a discarded state. A day is a UTC day.
@@ -515,7 +517,10 @@ export class DailyBudget {
     try {
       const o = JSON.parse(readFileSync(path, 'utf8')) as unknown;
       if (!isObj(o) || o['version'] !== 1 || typeof o['day'] !== 'string' || !Number.isSafeInteger(o['spent']) || (o['spent'] as number) < 0) throw new Error('bad budget file');
-      // A file dated today or later (the clock stepped back since it was written) keeps its spend (WORKER-1c).
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(o['day'] as string) || !Number.isSafeInteger(dayNumber(o['day'] as string))) throw new Error('bad budget day');
+      // RC-M3: dated more than a day ahead (a wrong clock wrote it): today counts as spent, written back.
+      if (farAhead(dayNumber(o['day'] as string), dayNumber(day))) return new DailyBudget(path, daily, day, daily).#saved();
+      // A file dated today or tomorrow (the clock stepped back since it was written) keeps its spend (WORKER-1c).
       return o['day'] >= day ? new DailyBudget(path, daily, o['day'] as string, o['spent'] as number) : new DailyBudget(path, daily, day, 0);
     } catch {
       return new DailyBudget(path, daily, day, daily);
@@ -551,12 +556,25 @@ export class DailyBudget {
     writeAtomic(this.#path, JSON.stringify({ version: 1, day: this.#day, spent: this.#spent }));
   }
 
+  /** Writes the budget; a write that fails leaves the file as it was (the next load applies the same rule). */
+  #saved(): DailyBudget {
+    try {
+      writeAtomic(this.#path, JSON.stringify({ version: 1, day: this.#day, spent: this.#spent }));
+    } catch {}
+    return this;
+  }
+
   #roll(nowMs: number): void {
     const day = dayOf(nowMs);
     // Only forward: a clock stepped back (NTP, a VM restore) keeps today's spend (WORKER-1c review).
     if (day > this.#day) {
       this.#day = day;
       this.#spent = 0;
+    } else if (farAhead(dayNumber(this.#day), dayNumber(day))) {
+      // RC-M3: this process's clock ran far ahead and came back: today counts as spent, not every day until that date.
+      this.#day = day;
+      this.#spent = Math.max(this.#spent, this.#daily);
+      this.#saved();
     }
   }
 }
