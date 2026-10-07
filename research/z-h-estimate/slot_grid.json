@@ -1,0 +1,996 @@
+{
+"start": 433400000,
+"end": 450200000,
+"step": 120000,
+"win": 2000,
+"calls": 283,
+"rows": [
+{
+"slot": 433400000,
+"first_produced": 433400000,
+"time": 1784257434,
+"win": 2000,
+"produced": 1952
+},
+{
+"slot": 433520000,
+"first_produced": 433520000,
+"time": 1784307403,
+"win": 2000,
+"produced": 1988
+},
+{
+"slot": 433640000,
+"first_produced": 433640000,
+"time": 1784357334,
+"win": 2000,
+"produced": 1996
+},
+{
+"slot": 433760000,
+"first_produced": 433760000,
+"time": 1784407335,
+"win": 2000,
+"produced": 1984
+},
+{
+"slot": 433880000,
+"first_produced": 433880000,
+"time": 1784457622,
+"win": 2000,
+"produced": 1996
+},
+{
+"slot": 434000000,
+"first_produced": 434000000,
+"time": 1784508165,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 434120000,
+"first_produced": 434120000,
+"time": 1784559496,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 434240000,
+"first_produced": 434240000,
+"time": 1784610225,
+"win": 2000,
+"produced": 1996
+},
+{
+"slot": 434360000,
+"first_produced": 434360000,
+"time": 1784660626,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 434480000,
+"first_produced": 434480000,
+"time": 1784711002,
+"win": 2000,
+"produced": 1996
+},
+{
+"slot": 434600000,
+"first_produced": 434600000,
+"time": 1784761486,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 434720000,
+"first_produced": 434720000,
+"time": 1784811725,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 434840000,
+"first_produced": 434840000,
+"time": 1784862126,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 434960000,
+"first_produced": 434960000,
+"time": 1784912473,
+"win": 2000,
+"produced": 1999
+},
+{
+"slot": 435080000,
+"first_produced": 435080000,
+"time": 1784962850,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 435200000,
+"first_produced": 435200000,
+"time": 1785013232,
+"win": 2000,
+"produced": 1999
+},
+{
+"slot": 435320000,
+"first_produced": 435320000,
+"time": 1785063597,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 435440000,
+"first_produced": 435440000,
+"time": 1785114051,
+"win": 2000,
+"produced": 1992
+},
+{
+"slot": 435560000,
+"first_produced": 435560000,
+"time": 1785164585,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 435680000,
+"first_produced": 435680000,
+"time": 1785215106,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 435800000,
+"first_produced": 435800000,
+"time": 1785265812,
+"win": 2000,
+"produced": 1994
+},
+{
+"slot": 435920000,
+"first_produced": 435920000,
+"time": 1785316580,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 436040000,
+"first_produced": 436040000,
+"time": 1785367345,
+"win": 2000,
+"produced": 1996
+},
+{
+"slot": 436160000,
+"first_produced": 436160000,
+"time": 1785417944,
+"win": 2000,
+"produced": 1980
+},
+{
+"slot": 436280000,
+"first_produced": 436280000,
+"time": 1785468584,
+"win": 2000,
+"produced": 1979
+},
+{
+"slot": 436400000,
+"first_produced": 436400000,
+"time": 1785519190,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 436520000,
+"first_produced": 436520000,
+"time": 1785569839,
+"win": 2000,
+"produced": 1996
+},
+{
+"slot": 436640000,
+"first_produced": 436640000,
+"time": 1785620549,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 436760000,
+"first_produced": 436760000,
+"time": 1785671191,
+"win": 2000,
+"produced": 1996
+},
+{
+"slot": 436880000,
+"first_produced": 436880000,
+"time": 1785721804,
+"win": 2000,
+"produced": 1996
+},
+{
+"slot": 437000000,
+"first_produced": 437000000,
+"time": 1785772468,
+"win": 2000,
+"produced": 1988
+},
+{
+"slot": 437120000,
+"first_produced": 437120000,
+"time": 1785823317,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 437240000,
+"first_produced": 437240000,
+"time": 1785874108,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 437360000,
+"first_produced": 437360000,
+"time": 1785924847,
+"win": 2000,
+"produced": 1992
+},
+{
+"slot": 437480000,
+"first_produced": 437480000,
+"time": 1785975575,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 437600000,
+"first_produced": 437600000,
+"time": 1786026336,
+"win": 2000,
+"produced": 1999
+},
+{
+"slot": 437720000,
+"first_produced": 437720000,
+"time": 1786077029,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 437840000,
+"first_produced": 437840000,
+"time": 1786127609,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 437960000,
+"first_produced": 437960000,
+"time": 1786178260,
+"win": 2000,
+"produced": 1992
+},
+{
+"slot": 438080000,
+"first_produced": 438080000,
+"time": 1786229046,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 438200000,
+"first_produced": 438200000,
+"time": 1786279609,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 438320000,
+"first_produced": 438320000,
+"time": 1786330452,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 438440000,
+"first_produced": 438440000,
+"time": 1786381158,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 438560000,
+"first_produced": 438560000,
+"time": 1786431781,
+"win": 2000,
+"produced": 1992
+},
+{
+"slot": 438680000,
+"first_produced": 438680000,
+"time": 1786482352,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 438800000,
+"first_produced": 438800000,
+"time": 1786532744,
+"win": 2000,
+"produced": 1996
+},
+{
+"slot": 438920000,
+"first_produced": 438920000,
+"time": 1786583096,
+"win": 2000,
+"produced": 1992
+},
+{
+"slot": 439040000,
+"first_produced": 439040000,
+"time": 1786633187,
+"win": 2000,
+"produced": 1996
+},
+{
+"slot": 439160000,
+"first_produced": 439160000,
+"time": 1786683173,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 439280000,
+"first_produced": 439280000,
+"time": 1786733002,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 439400000,
+"first_produced": 439400000,
+"time": 1786782884,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 439520000,
+"first_produced": 439520000,
+"time": 1786832793,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 439640000,
+"first_produced": 439640000,
+"time": 1786882692,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 439760000,
+"first_produced": 439760000,
+"time": 1786932558,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 439880000,
+"first_produced": 439880000,
+"time": 1786982308,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 440000000,
+"first_produced": 440000000,
+"time": 1787032201,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 440120000,
+"first_produced": 440120000,
+"time": 1787082069,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 440240000,
+"first_produced": 440240000,
+"time": 1787131941,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 440360000,
+"first_produced": 440360000,
+"time": 1787181971,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 440480000,
+"first_produced": 440480000,
+"time": 1787231804,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 440600000,
+"first_produced": 440600000,
+"time": 1787281728,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 440720000,
+"first_produced": 440720000,
+"time": 1787327678,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 440840000,
+"first_produced": 440840000,
+"time": 1787371633,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 440960000,
+"first_produced": 440960000,
+"time": 1787415649,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 441080000,
+"first_produced": 441080000,
+"time": 1787459739,
+"win": 2000,
+"produced": 1996
+},
+{
+"slot": 441200000,
+"first_produced": 441200000,
+"time": 1787503582,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 441320000,
+"first_produced": 441320000,
+"time": 1787547422,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 441440000,
+"first_produced": 441440000,
+"time": 1787591224,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 441560000,
+"first_produced": 441560000,
+"time": 1787635189,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 441680000,
+"first_produced": 441680000,
+"time": 1787679067,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 441800000,
+"first_produced": 441800000,
+"time": 1787722905,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 441920000,
+"first_produced": 441920000,
+"time": 1787766740,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 442040000,
+"first_produced": 442040000,
+"time": 1787810656,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 442160000,
+"first_produced": 442160000,
+"time": 1787854553,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 442280000,
+"first_produced": 442280000,
+"time": 1787898477,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 442400000,
+"first_produced": 442400000,
+"time": 1787940980,
+"win": 2000,
+"produced": 1992
+},
+{
+"slot": 442520000,
+"first_produced": 442520000,
+"time": 1787979078,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 442640000,
+"first_produced": 442640000,
+"time": 1788017074,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 442760000,
+"first_produced": 442760000,
+"time": 1788055142,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 442880000,
+"first_produced": 442880000,
+"time": 1788093136,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 443000000,
+"first_produced": 443000000,
+"time": 1788131236,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 443120000,
+"first_produced": 443120000,
+"time": 1788169371,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 443240000,
+"first_produced": 443240000,
+"time": 1788207425,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 443360000,
+"first_produced": 443360000,
+"time": 1788245538,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 443480000,
+"first_produced": 443480000,
+"time": 1788283719,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 443600000,
+"first_produced": 443600000,
+"time": 1788321671,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 443720000,
+"first_produced": 443720000,
+"time": 1788359405,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 443840000,
+"first_produced": 443840000,
+"time": 1788397230,
+"win": 2000,
+"produced": 1996
+},
+{
+"slot": 443960000,
+"first_produced": 443960000,
+"time": 1788434969,
+"win": 2000,
+"produced": 1984
+},
+{
+"slot": 444080000,
+"first_produced": 444080000,
+"time": 1788472842,
+"win": 2000,
+"produced": 1984
+},
+{
+"slot": 444200000,
+"first_produced": 444200000,
+"time": 1788510652,
+"win": 2000,
+"produced": 1988
+},
+{
+"slot": 444320000,
+"first_produced": 444320000,
+"time": 1788548557,
+"win": 2000,
+"produced": 1984
+},
+{
+"slot": 444440000,
+"first_produced": 444440000,
+"time": 1788586330,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 444560000,
+"first_produced": 444560000,
+"time": 1788624119,
+"win": 2000,
+"produced": 1999
+},
+{
+"slot": 444680000,
+"first_produced": 444680000,
+"time": 1788661989,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 444800000,
+"first_produced": 444800000,
+"time": 1788700002,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 444920000,
+"first_produced": 444920000,
+"time": 1788738027,
+"win": 2000,
+"produced": 1996
+},
+{
+"slot": 445040000,
+"first_produced": 445040000,
+"time": 1788776079,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 445160000,
+"first_produced": 445160000,
+"time": 1788814101,
+"win": 2000,
+"produced": 1999
+},
+{
+"slot": 445280000,
+"first_produced": 445280000,
+"time": 1788852042,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 445400000,
+"first_produced": 445400000,
+"time": 1788890030,
+"win": 2000,
+"produced": 1992
+},
+{
+"slot": 445520000,
+"first_produced": 445520000,
+"time": 1788928117,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 445640000,
+"first_produced": 445640000,
+"time": 1788966093,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 445760000,
+"first_produced": 445760000,
+"time": 1789004168,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 445880000,
+"first_produced": 445880000,
+"time": 1789041995,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 446000000,
+"first_produced": 446000000,
+"time": 1789080019,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 446120000,
+"first_produced": 446120000,
+"time": 1789117962,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 446240000,
+"first_produced": 446240000,
+"time": 1789156049,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 446360000,
+"first_produced": 446360000,
+"time": 1789194086,
+"win": 2000,
+"produced": 1992
+},
+{
+"slot": 446480000,
+"first_produced": 446480000,
+"time": 1789232105,
+"win": 2000,
+"produced": 1992
+},
+{
+"slot": 446600000,
+"first_produced": 446600000,
+"time": 1789270064,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 446720000,
+"first_produced": 446720000,
+"time": 1789307895,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 446840000,
+"first_produced": 446840000,
+"time": 1789345807,
+"win": 2000,
+"produced": 1996
+},
+{
+"slot": 446960000,
+"first_produced": 446960000,
+"time": 1789383659,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 447080000,
+"first_produced": 447080000,
+"time": 1789421613,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 447200000,
+"first_produced": 447200000,
+"time": 1789459523,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 447320000,
+"first_produced": 447320000,
+"time": 1789497443,
+"win": 2000,
+"produced": 1996
+},
+{
+"slot": 447440000,
+"first_produced": 447440000,
+"time": 1789535579,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 447560000,
+"first_produced": 447560000,
+"time": 1789573532,
+"win": 2000,
+"produced": 1996
+},
+{
+"slot": 447680000,
+"first_produced": 447680000,
+"time": 1789611642,
+"win": 2000,
+"produced": 1996
+},
+{
+"slot": 447800000,
+"first_produced": 447800000,
+"time": 1789649605,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 447920000,
+"first_produced": 447920000,
+"time": 1789687694,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 448040000,
+"first_produced": 448040000,
+"time": 1789722903,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 448160000,
+"first_produced": 448160000,
+"time": 1789754918,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 448280000,
+"first_produced": 448280000,
+"time": 1789786959,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 448400000,
+"first_produced": 448400000,
+"time": 1789818865,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 448520000,
+"first_produced": 448520000,
+"time": 1789850902,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 448640000,
+"first_produced": 448640000,
+"time": 1789882919,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 448760000,
+"first_produced": 448760000,
+"time": 1789914847,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 448880000,
+"first_produced": 448880000,
+"time": 1789946940,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 449000000,
+"first_produced": 449000000,
+"time": 1789978929,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 449120000,
+"first_produced": 449120000,
+"time": 1790011029,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 449240000,
+"first_produced": 449240000,
+"time": 1790043092,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 449360000,
+"first_produced": 449360000,
+"time": 1790075078,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 449480000,
+"first_produced": 449480000,
+"time": 1790107193,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 449600000,
+"first_produced": 449600000,
+"time": 1790139115,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 449720000,
+"first_produced": 449720000,
+"time": 1790170892,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 449840000,
+"first_produced": 449840000,
+"time": 1790202817,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 449960000,
+"first_produced": 449960000,
+"time": 1790234645,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 450080000,
+"first_produced": 450080000,
+"time": 1790266510,
+"win": 2000,
+"produced": 2000
+},
+{
+"slot": 450200000,
+"first_produced": 450200000,
+"time": 1790298563,
+"win": 2000,
+"produced": 2000
+}
+]
+}
