@@ -244,8 +244,9 @@ def fetch_all():
     Ls = [L for w in DRAWS for i, x in enumerate(_load('sample_%s.json' % w)) if i in keep[w] for L in x['launches']]
     random.Random(5).shuffle(Ls)
     done = 0
-    for L in Ls:
-        coin(L); done += 1
+    outer = ThreadPoolExecutor(4)                 # coins in parallel; the shared limiter keeps <= ~9.5 calls/s
+    for _ in outer.map(coin, Ls):
+        done += 1
         if done % 100 == 0:
             print('coins', done, '/', len(Ls), heli.credits(), flush=True)
     missing = [L['sig'] for L in Ls if not os.path.exists(os.path.join(EV, L['sig'] + '.json'))]
