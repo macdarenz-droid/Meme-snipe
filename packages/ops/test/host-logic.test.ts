@@ -261,31 +261,43 @@ describe('worker start and API address', () => {
     expect(readdirSync(dir).sort()).toEqual(['notes.txt', 'report.2026.04.json', 'report.2026.05.json', 'report.2026.06.json', 'report.2026.07.json', 'report.2026.08.json']);
   });
 
-  it("runs the release's worker only when the release's host-config says so; the stand-in otherwise", () => {
+  it("runs the release's worker only when the release's host-config says so; the stand-in only when it says \"stub\" (RC-M4: anything else is refused)", () => {
     const rel = join(tmp, 'release');
     const cfg = (o: unknown) => {
       mkdirSync(join(rel, 'ops'), { recursive: true });
       writeFileSync(join(rel, 'ops/host-config.json'), JSON.stringify(o));
     };
     const entry = () => sh(`worker_entry "${rel}"`).out;
+    const refused = (why: RegExp) => {
+      const r = sh(`worker_entry "${rel}"`);
+      expect(r.status).toBe(1);
+      expect(r.out).toBe('');
+      expect(r.err).toMatch(why);
+    };
     const STUB = '/opt/zeroed/stub/worker.mjs';
     const MAIN = join(rel, 'packages/worker/src/main.ts');
-    expect(entry()).toBe(STUB); // no release files at all
+    expect(entry()).toBe(STUB); // no release deployed yet (a first install)
     mkdirSync(join(rel, 'packages/worker/src'), { recursive: true });
     writeFileSync(MAIN, '');
-    expect(entry()).toBe(STUB); // main.ts but no host-config
+    refused(/host-config\.json is missing or cannot be read/); // main.ts but no host-config
     cfg({ offsite_backup: false });
-    expect(entry()).toBe(STUB);
+    refused(/"worker" is \(missing\), not "release" or "stub"/);
     cfg({ worker: 'stub' });
     expect(entry()).toBe(STUB);
     cfg({ worker: 'Release' });
-    expect(entry()).toBe(STUB);
+    refused(/"worker" is Release, not "release" or "stub"/);
+    cfg({ worker: 7 });
+    refused(/"worker" is \(not a string\)/);
+    cfg(['release']);
+    refused(/cannot be read/);
     cfg({ worker: 'release' });
     expect(entry()).toBe(MAIN);
     rmSync(MAIN);
-    expect(entry()).toBe(STUB); // asked for, but the release has no worker
+    refused(/main\.ts is missing/); // asked for, but the release has no worker
     writeFileSync(join(rel, 'ops/host-config.json'), '{not json');
-    expect(entry()).toBe(STUB);
+    refused(/cannot be read/);
+    // worker-start and worker-smoke take it under `set -e`: a refusal stops them, never runs anything.
+    expect(sh(`e="$(worker_entry "${rel}")"; echo "ran $e"`)).toMatchObject({ status: 1, out: '' });
     // SWITCH-1 is the reviewed switch: the repository now runs the release's own worker.
     // PAUSE (owner, 2026-10-07): the host runs the stand-in until every blocker is fixed; back to 'release' then.
     expect(JSON.parse(read('ops/host-config.json')).worker).toBe('stub');
@@ -899,9 +911,11 @@ describe('recording upload alerts (RECORD-UPLOAD)', () => {
     expect(alerts({ ...ok, at: (now - 10_801) * 1000 })).toEqual(on(['stale']));
   });
 
-  it('says nothing before the first run or with the switch off, and keeps every line to one line without the separator', () => {
-    expect(alerts({})).toEqual(on([]));
+  it('with the switch on, a missing status raises the no-report alert and clears nothing (RC-M5); the switch off clears all; every line stays one line', () => {
+    expect(alerts({})).toEqual(['on record-upload-stale']);
+    expect(alerts({ failed_runs: 9, at: null })).toEqual(['on record-upload-stale']);
     expect(alerts({ enabled: false, failed_runs: 9, at: 0 })).toEqual(on([]));
+    expect(alerts({ enabled: false })).toEqual(on([]));
     expect(sh(`record_alerts ${now}`, 'not json').out).toBe('');
     const r = sh(`record_alerts ${now}`, JSON.stringify({ ...ok, failed_runs: 4, last_error: 'a|b\nc' })).out.split('\n');
     expect(r).toHaveLength(4);

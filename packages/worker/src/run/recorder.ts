@@ -2,6 +2,7 @@
 // dataset layout (schema 2), so TEST-1 can replay what live fed and DATA-1's QA (research/historical/qa/check.mjs)
 // reads it. One dataset folder per boot, `recorder/<boot>/`:
 //   manifest.json                          schema 2, source "live-recorder", coverage, gaps, one entry per day and file
+//   gaps.jsonl                             every stream gap of the boot, one per line, in order (RC-H3)
 //   days/<UTC day>/frames-NNN.jsonl.zst    every frame as received (seq, receipt time, source, place, duplicate, body)
 //   days/<UTC day>/raw-NNN.jsonl.zst       every fetched transaction as a schema-2 raw record (DEC-1's shape)
 //   days/<UTC day>/releases-NNN.jsonl.zst  every event handed to the engine, in order (FEED-1 `Release`)
@@ -23,6 +24,9 @@ export const RECORDER_SCHEMA = 2;
 export const SAVED_STATES = 'saved-state';
 // `pre` held SEED-1's seed before it became a recorded frame; kept so an older boot's leftover files still seal.
 const TABLES = ['frames', 'raw', 'releases', 'pre', 'delays'] as const;
+/** RC-H3: every stream gap (`gap()`) is appended here; the manifest lists only the first MANIFEST_STREAM_GAPS of them. */
+export const GAPS_FILE = 'gaps.jsonl';
+export const MANIFEST_STREAM_GAPS = 500;
 type Table = (typeof TABLES)[number];
 
 export interface RecorderOptions {
@@ -82,7 +86,11 @@ export class Recorder {
   readonly #open = new Map<Table, Open>();
   readonly #buffer = new Map<Table, string[]>();
   readonly #coverage: Coverage = { first_slot: null, last_slot: null, first_block_time: null, last_block_time: null };
+  /** The manifest's `coverage_gaps`: seal gaps (redactions) and the first MANIFEST_STREAM_GAPS stream gaps. */
   readonly #gaps: unknown[] = [];
+  /** Stream gaps seen this boot (all of them are in GAPS_FILE once flushed), and those not yet appended there. */
+  #streamGaps = 0;
+  readonly #gapLines: string[] = [];
   readonly #attachments: Attachment[] = [];
   /** Sealed files' sizes and hashes, by path relative to the folder, as sealed (G4c: never re-read). */
   readonly #hashes: FileHashes = new Map();
@@ -148,9 +156,21 @@ export class Recorder {
     this.#push('delays', atMs, JSON.stringify(row, (_k, v: unknown) => (typeof v === 'bigint' ? v.toString() : v)));
   }
 
-  /** A stream gap (`coverage:*:gap`), listed in the manifest's `coverage_gaps`. */
+  /**
+   * A stream gap (`coverage:*:gap`). Every one is appended to GAPS_FILE at the next flush; the manifest lists the first
+   * MANIFEST_STREAM_GAPS and names the file and the total (RC-H3: a long boot's gaps once made a 77 MB manifest rewritten
+   * at every seal). `recordedGaps` reads them all back.
+   */
   gap(g: Readonly<Record<string, unknown>>): void {
-    this.#gaps.push(g);
+    this.#streamGaps++;
+    this.#gapLines.push(JSON.stringify(g, (_k, v: unknown) => (typeof v === 'bigint' ? v.toString() : v)));
+    if (this.#streamGaps <= MANIFEST_STREAM_GAPS) this.#gaps.push(g);
+  }
+
+  #flushGaps(): void {
+    if (this.#gapLines.length === 0) return;
+    appendFileSync(join(this.#dir, GAPS_FILE), `${redactCounted(this.#gapLines.join('\n')).text}\n`);
+    this.#gapLines.length = 0;
   }
 
   #push(t: Table, atMs: number, line: string): void {
@@ -197,6 +217,7 @@ export class Recorder {
   /** Writes every buffered line. Called before the engine acts on what was ingested. */
   flush(): void {
     for (const t of TABLES) this.#flushTable(t);
+    this.#flushGaps();
   }
 
   #seal(t: Table): void {
@@ -243,7 +264,10 @@ export class Recorder {
   }
 
   #writeManifest(): void {
-    writeManifest(this.#dir, { boot: this.#o.boot, git_sha: this.#o.gitSha, coverage: this.#coverage, coverage_gaps: this.#gaps, counts: this.#sealed, commitments: this.#o.commitments ?? null, attachments: this.#attachments, pruned: this.#pruned }, this.#hashes);
+    // The file always holds at least what the manifest counts.
+    this.#flushGaps();
+    const gapsFile = this.#streamGaps === 0 ? null : { path: GAPS_FILE, total: this.#streamGaps, listed: Math.min(this.#streamGaps, MANIFEST_STREAM_GAPS) };
+    writeManifest(this.#dir, { boot: this.#o.boot, git_sha: this.#o.gitSha, coverage: this.#coverage, coverage_gaps: this.#gaps, coverage_gaps_file: gapsFile, counts: this.#sealed, commitments: this.#o.commitments ?? null, attachments: this.#attachments, pruned: this.#pruned }, this.#hashes);
   }
 }
 
@@ -267,12 +291,20 @@ interface ManifestState {
   readonly git_sha: string | null;
   readonly coverage: Coverage;
   readonly coverage_gaps: readonly unknown[];
+  /** RC-H3: where every stream gap is, how many there are, and how many of the first ones `coverage_gaps` also lists. */
+  readonly coverage_gaps_file?: GapsFile | null;
   readonly counts: { readonly frames: number; readonly raw: number; readonly releases: number; readonly pre?: number; readonly delays?: number };
   readonly commitments?: Readonly<Record<string, string>> | null;
   /** Files kept beside the recording (WORKER-GROW: the saved state the boot restored from), each with its sha256 and size. */
   readonly attachments?: readonly Attachment[];
   /** RECORD-BUDGET: sealed files the byte budget deleted. */
   readonly pruned?: readonly PrunedFile[];
+}
+
+export interface GapsFile {
+  readonly path: string;
+  readonly total: number;
+  readonly listed: number;
 }
 
 /** A sealed file the byte budget deleted: its path in the folder, its size and sha256 as sealed (null if unknown). */
@@ -320,6 +352,7 @@ const writeManifest = (dir: string, s: ManifestState, hashes: FileHashes = new M
     window: { from: days[0] ?? null, to_exclusive: days.length === 0 ? null : next(days[days.length - 1]!) },
     coverage: s.coverage,
     coverage_gaps: s.coverage_gaps,
+    ...(s.coverage_gaps_file === null || s.coverage_gaps_file === undefined ? {} : { coverage_gaps_file: s.coverage_gaps_file }),
     commitments: s.commitments ?? null,
     attachments: s.attachments ?? [],
     pruned: s.pruned ?? [],
@@ -367,7 +400,7 @@ export const notePruned = (dir: string, entries: readonly { readonly path: strin
   writeManifest(dir, {
     boot: prev.boot ?? basename(dir), git_sha: prev.git_sha ?? null,
     coverage: prev.coverage ?? { first_slot: null, last_slot: null, first_block_time: null, last_block_time: null },
-    coverage_gaps: prev.coverage_gaps ?? [], commitments: prev.commitments ?? null, attachments: prev.attachments ?? [], pruned,
+    coverage_gaps: prev.coverage_gaps ?? [], coverage_gaps_file: prev.coverage_gaps_file ?? null, commitments: prev.commitments ?? null, attachments: prev.attachments ?? [], pruned,
     counts: {
       frames: u.frames ?? 0, raw: u.raw ?? 0, releases: u.releases ?? 0,
       ...(typeof u.pre === 'number' ? { pre: u.pre } : {}), ...(typeof u.delays === 'number' ? { delays: u.delays } : {}),
@@ -381,12 +414,48 @@ interface PrevManifest {
   git_sha?: string | null;
   coverage?: Coverage;
   coverage_gaps?: unknown[];
+  coverage_gaps_file?: GapsFile | null;
   commitments?: Record<string, string> | null;
   attachments?: Attachment[];
   pruned?: PrunedFile[];
   units?: { frames?: number; raw?: number; releases?: number; pre?: number; delays?: number }[];
   days?: unknown;
 }
+
+/** A crashed boot's gaps file: its torn last line cut, and its total counted from the whole lines. */
+const leftoverGaps = (dir: string, prev: GapsFile | null): GapsFile | null => {
+  const p = join(dir, GAPS_FILE);
+  if (!existsSync(p)) return prev;
+  const text = readFileSync(p, 'utf8');
+  const whole = text.endsWith('\n') ? text : text.slice(0, text.lastIndexOf('\n') + 1);
+  if (whole !== text) writeFileSync(p, whole);
+  const total = whole === '' ? 0 : whole.split('\n').length - 1;
+  return total === 0 ? prev : { path: GAPS_FILE, total, listed: Math.min(prev?.listed ?? 0, total) };
+};
+
+/**
+ * Every coverage gap of one recorder folder: the manifest's `coverage_gaps`, then the stream gaps it does not list, from
+ * GAPS_FILE (RC-H3). A torn last line (a kill mid-append) is not a gap and is skipped.
+ */
+export const recordedGaps = (dir: string): unknown[] => {
+  const m = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8')) as PrevManifest;
+  const listed = m.coverage_gaps ?? [];
+  const p = join(dir, GAPS_FILE);
+  if (!existsSync(p)) return [...listed];
+  const lines = readFileSync(p, 'utf8').split('\n');
+  const rest: unknown[] = [];
+  for (let i = m.coverage_gaps_file?.listed ?? 0; i < lines.length; i++) {
+    const l = lines[i]!;
+    if (l === '') continue;
+    try {
+      rest.push(JSON.parse(l));
+    } catch (e) {
+      if (i === lines.length - 1) continue;
+      throw e;
+    }
+  }
+  return [...listed, ...rest];
+};
 
 /**
  * At start, before this boot records anything: earlier boots' folders that a crash left with plain `.jsonl` files get
@@ -444,6 +513,7 @@ const sealBoot = (root: string, boot: string): boolean => {
     boot, git_sha: prev.git_sha ?? null,
     coverage: prev.coverage ?? { first_slot: null, last_slot: null, first_block_time: null, last_block_time: null },
     coverage_gaps: [...(prev.coverage_gaps ?? []), { reason: 'worker stopped without a clean stop; files sealed at the next start' }],
+    coverage_gaps_file: leftoverGaps(dir, prev.coverage_gaps_file ?? null),
     commitments: prev.commitments ?? null,
     attachments: prev.attachments ?? [],
     ...(prev.pruned === undefined ? {} : { pruned: prev.pruned }),

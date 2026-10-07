@@ -105,13 +105,36 @@ funnel_ports() { jq -r '(.AllowFunnel // {}) | to_entries[] | select(.value == t
 
 # worker_entry RELEASE_DIR: the program the worker unit runs. The release's own worker (WORKER-1) only when
 # the release's ops/host-config.json says "worker": "release" (a reviewed commit) and the file exists; the
-# host's stand-in otherwise. Switching the host to the real worker is a decision, not a side effect of a merge.
+# host's stand-in when it says "worker": "stub", or when no release is deployed yet (RELEASE_DIR does not exist: a first
+# install). Switching the host to the real worker is a decision, not a side effect of a merge. RC-M4: anything else is
+# refused, never run as the stand-in (which passes worker-smoke and update health, so the host would look healthy with
+# no trading worker): a host-config missing or unreadable, a "worker" value missing or unknown, or "release" without
+# its main.ts. A refusal says why on stderr and returns 1: worker-start and worker-smoke then fail, loudly.
 worker_entry() {
-  if [ "$(jq -r '.worker // "stub"' "$1/ops/host-config.json" 2>/dev/null || echo stub)" = release ] && [ -f "$1/packages/worker/src/main.ts" ]; then
-    printf '%s\n' "$1/packages/worker/src/main.ts"
-  else
+  if [ ! -e "$1" ]; then
     printf '%s\n' /opt/zeroed/stub/worker.mjs
+    return 0
   fi
+  local w
+  if ! w="$(jq -er 'if type == "object" then (.worker // "(missing)") | if type == "string" then . else "(not a string)" end else error("not an object") end' "$1/ops/host-config.json" 2>/dev/null)"; then
+    echo "refused: $1/ops/host-config.json is missing or cannot be read, so the worker to run is unknown" >&2
+    return 1
+  fi
+  case "$w" in
+    release)
+      if [ -f "$1/packages/worker/src/main.ts" ]; then
+        printf '%s\n' "$1/packages/worker/src/main.ts"
+      else
+        echo "refused: host-config says \"worker\": \"release\" but $1/packages/worker/src/main.ts is missing" >&2
+        return 1
+      fi
+      ;;
+    stub) printf '%s\n' /opt/zeroed/stub/worker.mjs ;;
+    *)
+      echo "refused: host-config \"worker\" is $(printf '%s' "$w" | tr -c 'A-Za-z0-9()_. -' '?' | cut -c1-40), not \"release\" or \"stub\"" >&2
+      return 1
+      ;;
+  esac
 }
 
 # The only worker settings a release's ops/host-config.json may give (PRACTICE-ON): the S0 shakedown's, in its
@@ -192,11 +215,16 @@ prunable_releases() {
 # record_alerts NOW: reads the recording uploader's status.json (RECORD-UPLOAD; it runs as the worker's user, so its
 # alerts are raised here) on stdin and prints one "on|KEY|TEXT" or "off|KEY|TEXT" line per alert: 3 failed runs in a
 # row, recordings waiting longer than a day, files kept back from upload, no status for 3 hours. {"enabled":false}
-# (the switch is off) clears them all; a status not written yet (before the first run) raises none.
+# (the switch is off) clears them all. RC-M5: with the switch on, a status with no report time (none written: '{}', the
+# uploader never ran) raises the no-report alert and leaves the others as they are; it never clears them. Input that
+# is not JSON prints nothing, so every alert keeps its state.
 record_alerts() {
   jq -r --argjson now "$1" '
     def clean: tostring | gsub("[\r\n|]"; " ") | .[0:300];
-    (.enabled != false and (.at | type) == "number") as $on
+    if .enabled != false and (.at | type) != "number" then
+      "on|record-upload-stale|ALERT Zeroed host: the recording upload is on but has never reported (no status written). Recordings may be deleted at the disk cap without being uploaded."
+    else
+    (.enabled != false) as $on
     | (((.failed_runs // 0) - (if .running == true then 1 else 0 end))) as $failed
     | (.kept // []) as $kept
     | [
@@ -212,5 +240,5 @@ record_alerts() {
         (if $on and ($now - (.at / 1000)) > 10800
          then "on|record-upload-stale|ALERT Zeroed host: the recording upload has not reported for over 3 hours."
          else "off|record-upload-stale|CLEARED Zeroed host: the recording upload reports again." end)
-      ] | .[]' 2>/dev/null || true
+      ] | .[] end' 2>/dev/null || true
 }

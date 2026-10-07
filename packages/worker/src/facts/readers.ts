@@ -26,6 +26,7 @@ import { type HttpClient, type Secrets, parseJson, ProviderError, refusal429, sc
 import type { IngestOptions } from '../providers/live-feed.ts';
 import { PUMP_AMM_FEE_CONFIG, decodeSnapshot } from '../run/snapshot.ts';
 import { feesKey } from '../engine/strategy.ts';
+import { farAhead } from '../run/budget-day.ts';
 
 /** Every JSON-RPC method the fact reads may call: reads only. Frozen; nothing that sends is or may be added. */
 export const FACT_RPC_METHODS = Object.freeze(['getAccountInfo', 'getMultipleAccounts', 'getProgramAccounts', 'getTokenLargestAccounts', 'getSignaturesForAddress', 'getTransaction'] as const);
@@ -358,8 +359,11 @@ export class FactReaders {
         this.#scanDay = v['day'] as number;
         this.#scans = v['scans'] as number;
         // Dated after today (the clock stepped back since it was written): spent until that day has passed, never a
-        // fresh day's budget; written back so a later process reads the same.
-        if ((v['day'] as number) > Math.floor(o.timers.now() / 86_400_000)) {
+        // fresh day's budget; written back so a later process reads the same. RC-M3: dated more than a day ahead (a
+        // wrong clock wrote it), only today counts as spent, never every day until that date.
+        const today = Math.floor(o.timers.now() / 86_400_000);
+        if ((v['day'] as number) > today) {
+          if (farAhead(v['day'] as number, today)) this.#scanDay = today;
           this.#scans = Number.MAX_SAFE_INTEGER;
           this.#saveScans();
         }
@@ -729,24 +733,31 @@ export class FactReaders {
     if (day > this.#scanDay) {
       this.#scanDay = day;
       this.#scans = 0;
+    } else if (farAhead(this.#scanDay, day)) {
+      // RC-M3: this process's clock ran far ahead and came back: today counts as spent, not every day until that date.
+      this.#scanDay = day;
+      this.#scans = Number.MAX_SAFE_INTEGER;
+      this.#saveScans();
     }
     if (this.#scans >= (this.#o.holderScansPerDay ?? HOLDER_SCANS_PER_DAY)) return false;
     this.#scans++;
-    // Counted on disk before the scan runs: a death during it still counts it.
-    this.#saveScans();
-    return true;
+    // Counted on disk before the scan runs: a death during it still counts it. RC-M1: a count that could not be written
+    // grants nothing (a restart the same day would read the cap as unspent); the scan stays counted in memory.
+    return this.#saveScans();
   }
 
-  #saveScans(): void {
+  #saveScans(): boolean {
     const f = this.#o.scansFile;
-    if (f === undefined) return;
+    if (f === undefined) return true;
     // A write that fails (a full disk, a permission) never throws out of the readers (their constructor runs at the
     // worker's start): the count stays in memory, so what is spent stays spent in this process, and it is logged.
     try {
       writeFileSync(`${f}.tmp`, JSON.stringify({ day: this.#scanDay, scans: this.#scans }));
       renameSync(`${f}.tmp`, f);
+      return true;
     } catch {
-      this.#o.log?.('Holder scan count not saved: it is kept in this process only.');
+      this.#o.log?.('Holder scan count not saved: it is kept in this process only, and the scan is not made.');
+      return false;
     }
   }
 
