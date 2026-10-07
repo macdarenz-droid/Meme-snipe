@@ -71,7 +71,7 @@ describe('RC-1: a socket that opens and is closed at once by the server backs of
     const opened = hub.sockets.filter((s) => s.url.includes('helius-rpc')).length;
     const used = providers.helius.status().creditsUsed;
     // Bounded by a backoff: about 25 reconnects in ten minutes, each a connection credit and one backfill page per log watch.
-    expect({ opened, credits: used }).toEqual({ opened: expect.toBeLessThanOrEqualTo(30) as unknown as number, credits: expect.toBeLessThanOrEqualTo(100) as unknown as number });
+    expect(`opened ${opened}, credits ${used}, ok ${opened <= 30 && used <= 100}`).toMatch(/ok true$/);
   });
 });
 
