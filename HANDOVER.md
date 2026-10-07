@@ -48,6 +48,7 @@ The previous S1 account reached its usage limit about 12:45 PM. The owner made t
 - No host access, no secrets access (owner only), as before.
 
 **Log (Melbourne time, newest first)**
+- 9:08 PM **Owner wait closed:** the owner messaged the 4 held builders. All 4 are now working: A-FACTS (re-read tests), SOL-BOOKS (backtest typecheck), LATE-LOG (mutants N9/N16/N17), MEM-FIXES (all 5 items + the no-gap ruling done locally, full suite running in the background). 8 builders are active.
 - 9:06 PM **#275 EXIT-FILL round** at 2720ee8 (merges cd4d7a64; 6,929 tests pass alone; the congestion test passes).
   - What's in it: the haircut window fills-4, in both models on the feed clock (window 1e15 = byte-identical to base on 24 replays; 10 min: 10/24 differ, all with fewer sends); F1 live starts at the cap; F2 carry at landing only; F3 R4 reserve + day-1 slow retries (a tightening); housekeeping; nit; mutants killed. BT-1d's test now counts exits booked blocked; the BT reviewer must confirm.
   - **RB-16 ruling: option B.** C stays 5+5; fees count when paid; R4 holds day 1; R6/R7 stop entries when the room is gone; exits never stop. Option A would have shrunk the trial's entry room: 4 risk tests refuse entries that pass today.
