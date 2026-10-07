@@ -190,25 +190,28 @@ def clopper_pearson(k, n, a=0.05):
     up = 1.0 if k == n else solve(lambda p: cdf(p, k), a / 2)
     return low, up
 
-BINS = [('loss at or past the stop (net <= -30%)', -1e9, -0.3), ('small loss (-30%, 0]', -0.3, 0.0), ('up to 2x proceeds (0, +100%]', 0.0, 1.0),
-        ('2x-10x proceeds', 1.0, 9.0), ('10x-50x proceeds', 9.0, 49.0), ('50x+ proceeds', 49.0, 1e18)]
+BINS = [('loss at or past the stop (net <= -30%)', lambda v: v <= -0.3), ('small loss (-30%, 0]', lambda v: -0.3 < v <= 0.0),
+        ('up to 2x proceeds (0, +100%)', lambda v: 0.0 < v < 1.0), ('2x-10x proceeds', lambda v: 1.0 <= v < 9.0),
+        ('10x-50x proceeds', lambda v: 9.0 <= v < 49.0), ('50x+ proceeds', lambda v: v >= 49.0)]   # agrees with n_ge_10x / n_ge_50x
 
 def tail_report(entries):
     """entries: [(entry_ts, net)] in SOL terms. Realised-return bins, loss bill, sensitivity and calendar clustering."""
     import datetime
     vals = [v for _, v in entries]; n = len(vals); tot = sum(vals)
     bins = []
-    for name, lo, hi in BINS:
-        sel = [v for v in vals if lo < v <= hi] if lo > -1e9 else [v for v in vals if v <= hi]
-        bins.append({'bin': name, 'count': len(sel), 'share': len(sel) / n, 'sum_net': sum(sel), 'share_of_total': (sum(sel) / tot) if tot else None})
+    for name, f in BINS:
+        sel = [v for v in vals if f(v)]
+        bins.append({'bin': name, 'count': len(sel), 'share': len(sel) / n if n else None, 'sum_net': sum(sel), 'share_of_total': (sum(sel) / tot) if tot else None})
     k10 = sum(1 for v in vals if v >= 9); k50 = sum(1 for v in vals if v >= 49)
     srt = sorted(vals)
     chron = [v for _, v in sorted(entries)]
+    ordinary = [v for v in vals if v < 9]
+    repl = statistics.fmean(ordinary) if ordinary else 0.0   # a lost winner becomes an average non-winner of the same rule and line
     seen = 0; halved_freq = []
     for v in chron:
         if v >= 9:
             seen += 1
-            halved_freq.append(v if seen % 2 == 1 else -0.3)   # every second 10x+ winner replaced by a stopped loss
+            halved_freq.append(v if seen % 2 == 1 else repl)   # every second 10x+ winner (time order) lost; no effect with one winner
         else:
             halved_freq.append(v)
     best_half = srt[:-1] + [srt[-1] / 2] if n else []
@@ -266,7 +269,7 @@ def validate(sample, hdir, outdir):
                 res[f'{name}|{mode}|{sz}|capped20x'] = stats([min(v, 19.0) for v in vals])
                 if sz == '$10':
                     res[f'{name}|{mode}|{sz}|bankroll'] = bankroll([(x['ts'][1], v) for (x, _, _), v in zip(legs, vals)], 10.0)
-                    tails[f'{name}|{mode}|{sz}'] = tail_report([(x['ts'][1], v) for (x, _, _), v in zip(legs, vals)])
+                    tails[f'{name}|{mode}|{sz}'] = tail_report([(x['ts'][1] + H, v) for (x, _, _), v in zip(legs, vals)])   # entry = close of hour 1
         a, b = res[f'{name}|pess|$10'], res[f'{name}|opt|$10']
         verdict[name] = 'supported' if (a.get('n') and a['mean'] > 0 and b.get('n') and b['mean'] > 0) else 'not supported'
     out = {'counts': counts, 'primary': PRIMARY, 'verdict_primary': verdict[PRIMARY], 'verdict_secondary': {k: v for k, v in verdict.items() if k != PRIMARY},
