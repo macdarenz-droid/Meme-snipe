@@ -9,6 +9,7 @@ import { typedText } from '../src/run/json.ts';
 import { NO_CONTROL, controlFile } from '../src/run/state.ts';
 import { StateRefused } from '../src/run/worker.ts';
 import { makeWorker } from './worker-harness.ts';
+import { EXIT } from '../../runner/src/contract.ts';
 
 const dir = (files: Record<string, string> = {}): string => {
   const d = mkdtempSync(join(tmpdir(), 'state-check-'));
@@ -52,10 +53,16 @@ describe('RC-FIXES: a ledger with trades needs its files', () => {
     expect(checkState(dir({ 'account.json': TRADED_ACCOUNT, 'paper.json': typedText({ attempts: { sigA: {} } }), 'control.json': '{}' }), traded).refuse).toEqual([expect.stringContaining('lacks 1 of the ledger\'s 2 filled attempts')]);
   });
 
-  it('control.json missing after an earlier start (traded or not): latched and paused, not refused; at a cold start: nothing', () => {
-    expect(checkState(dir({ 'account.json': TRADED_ACCOUNT, 'paper.json': typedText({ attempts: { sigA: {}, sigB: {} } }) }), traded)).toEqual({ refuse: [], controlLost: true });
-    expect(checkState(dir(), { existed: true, traded: false, fills: [] })).toEqual({ refuse: [], controlLost: true });
-    expect(checkState(dir(), { existed: false, traded: false, fills: [] })).toEqual({ refuse: [], controlLost: false });
+  it('control.json missing after a start of this code (the marker): latched and paused, not refused; at a cold start: nothing', () => {
+    const marked = { 'state-version.json': '{"version":1}' };
+    expect(checkState(dir({ ...marked, 'account.json': TRADED_ACCOUNT, 'paper.json': typedText({ attempts: { sigA: {}, sigB: {} } }) }), traded)).toEqual({ refuse: [], controlLost: true });
+    expect(checkState(dir(marked), { existed: true, traded: false, fills: [] })).toEqual({ refuse: [], controlLost: true });
+    expect(checkState(dir(marked), { existed: false, traded: false, fills: [] })).toEqual({ refuse: [], controlLost: false });
+  });
+
+  it('R4-1: before the marker (a dir from a release that wrote control.json only on a trip or a pause), a missing control.json was never written', () => {
+    expect(checkState(dir({ 'account.json': TRADED_ACCOUNT, 'paper.json': typedText({ attempts: { sigA: {}, sigB: {} } }) }), traded)).toEqual({ refuse: [], controlLost: false });
+    expect(checkState(dir(), { existed: true, traded: false, fills: [] })).toEqual({ refuse: [], controlLost: false });
   });
 
   it('an empty ledger while paper attempts or exit plans say the bot traded: refused (an older ledger restored with newer files)', () => {
@@ -138,5 +145,30 @@ describe('RC-FIXES: the worker at start', () => {
     // Still empty: SQLite did not open it as a new ledger, so the next start refuses again.
     expect(readFileSync(join(dir, 'ledger.sqlite'), 'utf8')).toBe('');
     expect(existsSync(join(dir, 'cold_start'))).toBe(false);
+    // R4-3: the reason is where it can be read: refused.json (with the exit code the unit does not restart) and the
+    // journal (a start line of its own, a critical alert, a stop line).
+    const refused = JSON.parse(readFileSync(join(dir, 'refused.json'), 'utf8')) as { reason: string; exit: number };
+    expect(refused.exit).toBe(EXIT.stateRefused);
+    expect(refused.reason).toContain('ledger.sqlite is empty');
+    const lines = readFileSync(join(dir, 'journal.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>);
+    const tail = lines.slice(-3).map((l) => [l['kind'], l['code'] ?? l['refused'] ?? null]);
+    expect(tail).toEqual([['start', true], ['alert', 'state_refused'], ['stop', null]]);
+  });
+
+  it('R4-3: the next start that is not refused removes refused.json', async () => {
+    const h = makeWorker();
+    writeFileSync(join(h.stateDir, 'refused.json'), '{"reason":"old"}\n');
+    await h.worker.stop();
+    const h2 = makeWorker({ stateDir: h.stateDir, timers: h.timers });
+    expect(existsSync(join(h.stateDir, 'refused.json'))).toBe(false);
+    await h2.worker.stop();
+  });
+});
+
+describe('RC-STATE: a refused start is not restarted', () => {
+  it('zeroed-worker.service names EXIT.stateRefused in RestartPreventExitStatus', () => {
+    const unit = readFileSync(new URL('../../../ops/host/files/etc/systemd/system/zeroed-worker.service', import.meta.url), 'utf8');
+    expect(unit).toMatch(new RegExp(`^RestartPreventExitStatus=${EXIT.stateRefused}$`, 'm'));
+    expect(unit).toMatch(/^Restart=always$/m);
   });
 });

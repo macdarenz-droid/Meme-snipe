@@ -23,7 +23,8 @@ const rig = (name: string) => {
   mkdirSync(bin, { recursive: true });
   writeFileSync(join(src, 'ledger.sqlite'), 'ledger');
   for (const f of ['control.json', 'account.json', 'exits.json', 'paper.json', 'credits.json', 'fill-budget.json']) writeFileSync(join(src, f), '{"a":1}\n');
-  for (const f of ['journal.jsonl', 'journal.jsonl.reserve', 'deployers.jsonl', 'deployer-state.json', 'ledger.sqlite-wal', 'ledger.sqlite-writer.lock', 'credits.json.tmp']) writeFileSync(join(src, f), 'x');
+  for (const f of ['journal.jsonl', 'journal.jsonl.reserve', 'deployers.jsonl', 'deployer-state.json', 'ledger.sqlite-wal', 'ledger.sqlite-writer.lock', 'credits.json.tmp',
+    'clean_stop', 'planned_restart', 'cold_start', 'drill.token', 'last_exit.json', 'refused.json']) writeFileSync(join(src, f), '{}');
   writeFileSync(join(src, 'recorder', 'boot1', 'frames.jsonl'), 'x');
   // sqlite3 is not on every machine: a stand-in that copies for ".backup", answers "ok" to the integrity check and lists
   // no tables.
@@ -51,7 +52,7 @@ case "$*" in *".backup '"*) d="\${3#.backup \\'}"; cp "$1" "\${d%\\'}";; *integr
 };
 
 describe.skipIf(!has('age') || !has('age-keygen'))('RC-FIXES: zeroed-backup packs the whole state', () => {
-  it('every state file and the ledger; never the journal, the recording, the deployer index, WAL, locks or temp files', () => {
+  it('every state file and the ledger; never the journal, the recording, the deployer index, WAL, locks, temp files or one-boot markers', () => {
     const r = rig('whole');
     const b = r.backup();
     expect(b.status, b.stderr + b.stdout).toBe(0);

@@ -183,8 +183,8 @@ export const reserveBudget = (d: { readonly remaining: () => number; readonly ta
 export const clampNote = (clamp: { readonly count: number; readonly maxMs: number }): string | null =>
   clamp.maxMs > CLAMP_LOG_MS ? `Saved state: ${clamp.count} times dated after the save's moment were saved as at it, the latest ${(clamp.maxMs / 1000).toFixed(1)} s after.` : null;
 export { SAVED_STATES } from './recorder.ts';
-import { checkState, ledgerLost, ledgerPresent } from './state-check.ts';
-import { type Control, type FetchCaps, NO_CONTROL, type Restart, StateFile, controlFile, exitsFile, fetchCapsFile, seedsFile, exposedFile, NO_EXPOSED, exitKind, restartsAfterBoot, restartsFile } from './state.ts';
+import { REFUSED_FILE, STATE_VERSION_FILE, checkState, ledgerLost, ledgerPresent } from './state-check.ts';
+import { atomicWrite, type Control, type FetchCaps, NO_CONTROL, type Restart, StateFile, controlFile, exitsFile, fetchCapsFile, seedsFile, exposedFile, NO_EXPOSED, exitKind, restartsAfterBoot, restartsFile } from './state.ts';
 import { LOG_CREATE_PREFIX, type PoolFact, S0_DIAGNOSTIC_PARTS, TX_CREATE_PREFIX, parsePool } from '../../../core/src/gates/index.ts';
 import type { ExecStats } from '../../../core/src/facts/raw.ts';
 
@@ -393,6 +393,13 @@ const COLD_START = 'cold_start';
 /** RC-FIXES: the saved state disagrees with itself; the worker does not start on defaults. */
 export class StateRefused extends Error {
   override readonly name = 'StateRefused';
+}
+
+/** RC-STATE review R4-3: the refusal written where it can be read: `refused.json` beside the journal. */
+export interface Refused {
+  readonly at: string;
+  readonly reason: string;
+  readonly exit: number;
 }
 /** CREATE-AFTER-RESTART: the wait before the one retry of a create lookup stopped by a transient error. */
 export const CREATE_RETRY_MS = 60_000;
@@ -770,7 +777,7 @@ export class Worker {
     // RC-FIXES: a missing or empty ledger is a cold start only when no other state file says the bot traded; otherwise
     // it is a lost ledger and the start is refused before anything writes (an empty file would open as a new ledger).
     const lostLedger = ledgerLost(c.stateDir, Ledger.FILE);
-    if (lostLedger !== null) throw new StateRefused(lostLedger);
+    if (lostLedger !== null) this.#refuse(lostLedger, c.gitSha);
     const existed = ledgerPresent(c.stateDir, Ledger.FILE);
     if (!existed) writeFileSync(join(c.stateDir, COLD_START), new Date(now).toISOString());
     this.#ledger = openLedger(join(c.stateDir, Ledger.FILE), 'paper');
@@ -782,8 +789,9 @@ export class Worker {
     });
     if (verdict.refuse.length > 0) {
       this.#ledger.close();
-      throw new StateRefused(verdict.refuse.join('; '));
+      this.#refuse(verdict.refuse.join('; '), c.gitSha);
     }
+    rmSync(join(c.stateDir, REFUSED_FILE), { force: true });
     this.#control = controlFile(c.stateDir);
     this.#ctl = this.#control.read(NO_CONTROL);
     if (verdict.controlLost) {
@@ -792,8 +800,11 @@ export class Worker {
       this.#ctl = { ...this.#ctl, paused: true, pausedAtMs: now, latches: { ...this.#ctl.latches, killTrippedAtMs: now, killRearmedAtMs: null } };
       this.#stateAlert = 'control.json was missing after an earlier start: kill switch latched and entries paused until the owner re-arms and resumes';
     }
-    // Written at every start, so a later start that finds it missing knows it was lost.
+    // Written at every start, so a later start that finds it missing knows it was lost (once the marker says a start of
+    // this code ran: before it, releases wrote control.json only on a trip or a pause).
     this.#control.write(this.#ctl);
+    const marker = join(c.stateDir, STATE_VERSION_FILE);
+    if (!existsSync(marker)) atomicWrite(marker, `${JSON.stringify({ version: 1, since: new Date(now).toISOString() })}\n`);
     this.#fetchCapsFile = fetchCapsFile(c.stateDir);
     try {
       this.#fetchCaps = { reread: 0, ...this.#fetchCapsFile.read({ day: -1, cutCreate: 0, cutTrade: 0, reread: 0 }) };
@@ -905,6 +916,7 @@ export class Worker {
           if (this.#recorderFault === null && this.#journalFault === null) this.#record((r) => r.durable());
           if (this.#recorderFault === null && this.#journalFault === null) {
             this.#desk.journalBeforeDispatch(this.#engine.records as readonly LogRecord[]);
+            this.#journal.write('dispatching', { intent: effect.intentId, signature: effect.signature });
             this.#journal.ensureDurable();
           }
           if (this.#recorderFault !== null || this.#journalFault !== null) {
@@ -2047,6 +2059,28 @@ export class Worker {
       this.#feed.ingest('worker', { type: 'offchain', key: `coverage:${tradesStream(pool)}:gap`, value: { fromSlot: r.fromSlot, toSlot: r.toSlot, reason: 'shed', via } }, { receivedAt: this.#d.timers.now(), firstIn: r.fromSlot });
     }
     if (shed.size > 0) this.#d.log(`Behind: the feed held over ${SHED_HELD_FRAMES} frames; shed ${shed.size} candidate pools' trade streams (coverage gaps, entries there refused).`);
+  }
+
+  /**
+   * RC-STATE review R4-3: the start is refused on the saved state. Said in the journal (a start line of its own, a
+   * critical `state_refused` alert and a stop line, fsynced) and in `refused.json`, so the owner, the heartbeat and
+   * zeroed-update can read why; then thrown, and main.ts exits with `EXIT.stateRefused`, which the unit does not restart.
+   */
+  #refuse(reason: string, gitSha: string | null): never {
+    try {
+      this.#journal.write('start', { git_sha: gitSha, pid: process.pid, refused: true });
+      this.#journal.write('alert', { level: 'critical', code: 'state_refused', reasons: [reason] });
+      this.#journal.write('stop', { open_positions: null, open_intents: null, reasons: ['state refused', reason] });
+      this.#journal.ensureDurable();
+    } catch (e) {
+      this.#d.log(`Journal: the refusal was not written: ${errorText(e)}.`);
+    }
+    try {
+      atomicWrite(join(this.#d.config.stateDir, REFUSED_FILE), `${JSON.stringify({ at: new Date(this.#d.timers.now()).toISOString(), reason, exit: EXIT.stateRefused } satisfies Refused)}\n`);
+    } catch (e) {
+      this.#d.log(`${REFUSED_FILE} not written: ${errorText(e)}.`);
+    }
+    throw new StateRefused(reason);
   }
 
   /** One engine step: release what is due, decide, record, write. */

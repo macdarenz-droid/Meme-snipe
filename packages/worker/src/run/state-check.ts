@@ -54,6 +54,14 @@ export const ledgerLost = (dir: string, ledger: string): string | null => {
 };
 
 /** What the ledger holds that the other state files must agree with. */
+/**
+ * RC-STATE review R4-1: written by the first start of this code. Releases before it wrote control.json only on a latch
+ * trip or an owner pause, so before this marker exists a missing control.json means never written, not lost.
+ */
+export const STATE_VERSION_FILE = 'state-version.json';
+/** RC-STATE review R4-3: why the last start was refused (removed by the next start that is not). */
+export const REFUSED_FILE = 'refused.json';
+
 export interface LedgerEvidence {
   /** The ledger was there before this start opened it (not a cold start). */
   readonly existed: boolean;
@@ -71,8 +79,9 @@ export interface StateVerdict {
   /** Why the start is refused; empty when it may go on. */
   readonly refuse: readonly string[];
   /**
-   * control.json is gone after an earlier start (every start writes it): start latched and paused, with a critical
-   * alert. An R10 latch can trip on a price move with no trade, so this does not wait for trades.
+   * control.json is gone after a start of this code (every start writes it, and the state-version marker says one ran):
+   * start latched and paused, with a critical alert. An R10 latch can trip on a price move with no trade, so this does
+   * not wait for trades.
    */
   readonly controlLost: boolean;
 }
@@ -87,7 +96,7 @@ export const checkState = (dir: string, ledger: LedgerEvidence): StateVerdict =>
       const why = traded(dir, f);
       if (why !== null) refuse.push(`the ledger holds no trades but ${why}`);
     }
-    return { refuse, controlLost: ledger.existed && !existsSync(join(dir, 'control.json')) };
+    return { refuse, controlLost: controlLost(dir, ledger.existed) };
   }
   if (!existsSync(join(dir, 'account.json'))) refuse.push('account.json is missing while the ledger holds trades (the paper wallet, NAV peak, day and week marks and entry count would start again)');
   const paper = join(dir, 'paper.json');
@@ -102,5 +111,8 @@ export const checkState = (dir: string, ledger: LedgerEvidence): StateVerdict =>
   }
   const lost = ledger.fills.filter((s) => !known.has(s));
   if (lost.length > 0) refuse.push(`paper.json ${existsSync(paper) ? `lacks ${lost.length} of the ledger's ${ledger.fills.length} filled attempts` : 'is missing while the ledger holds fills'} (their fees and fills would be counted again)`);
-  return { refuse, controlLost: ledger.existed && !existsSync(join(dir, 'control.json')) };
+  return { refuse, controlLost: controlLost(dir, ledger.existed) };
 };
+
+/** control.json is gone after a start of this code wrote it (the marker); before the marker it was never written. */
+const controlLost = (dir: string, existed: boolean): boolean => existed && existsSync(join(dir, STATE_VERSION_FILE)) && !existsSync(join(dir, 'control.json'));

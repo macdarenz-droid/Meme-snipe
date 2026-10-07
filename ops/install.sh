@@ -555,6 +555,9 @@ ExecStartPre=/usr/local/lib/zeroed/worker-start --reconcile
 ExecStart=/usr/local/lib/zeroed/worker-start
 Restart=always
 RestartSec=5
+# A start refused on the saved state (EXIT.stateRefused, packages/runner/src/contract.ts) is not retried: the files must be
+# restored first; refused.json in the state dir says why.
+RestartPreventExitStatus=5
 TimeoutStopSec=30
 LoadCredentialEncrypted=helius_api_key:/etc/credstore.encrypted/helius_api_key
 LoadCredentialEncrypted=alchemy_api_key:/etc/credstore.encrypted/alchemy_api_key
@@ -2611,7 +2614,8 @@ install_file /usr/local/sbin/zeroed-backup 0755 <<'__ZEROED_FILE__'
 # SQLite's online backup (consistent under WAL) and checked; every other state file (the owner's pause and
 # the risk latches, the paper wallet and attempts, exit plans, budgets) is copied as it is (RC-FIXES: a
 # restore of the ledger alone came back with the kill switch unlatched). Left out: the journal and the
-# recording (large, uploaded on their own), and the deployer index (deployers.jsonl, deployer-state.json:
+# recording (large, uploaded on their own), the one-boot markers (clean_stop, planned_restart, cold_start, the drill
+# token, the exit handoff, refused.json: a stale one would mislabel the restored boot), and the deployer index (deployers.jsonl, deployer-state.json:
 # hundreds of MB, rebuilt from the chain; until then H14 is not covered, fail closed). The ledger and the
 # files that must agree with it are taken as one cut: copied again until none of those files changed while
 # the ledger was copied. Everything is listed in a manifest with its SHA-256, packed and encrypted with age
@@ -2629,7 +2633,9 @@ KEEP="${ZEROED_BACKUP_KEEP:-72}"
 mapfile -t dbs < <(cd "$SRC" && find . -type f \( -name '*.sqlite' -o -name '*.db' \) | sed 's#^\./##' | LC_ALL=C sort)
 [ "${#dbs[@]}" -gt 0 ] || { echo "No SQLite files yet; nothing backed up."; exit 0; }
 mapfile -t files < <(cd "$SRC" && find . -type f ! -path './recorder/*' ! -name 'journal.jsonl*' ! -name 'deployers.jsonl' ! -name 'deployer-state.json' \
-  ! -name '*.sqlite' ! -name '*.db' ! -name '*.sqlite-*' ! -name '*.db-*' ! -name '*.lock' ! -name '*.tmp' ! -name '*.new' | sed 's#^\./##' | LC_ALL=C sort)
+  ! -name '*.sqlite' ! -name '*.db' ! -name '*.sqlite-*' ! -name '*.db-*' ! -name '*.lock' ! -name '*.tmp' ! -name '*.new' \
+  ! -name clean_stop ! -name planned_restart ! -name cold_start ! -name drill.token ! -name last_exit.json ! -name refused.json \
+  | sed 's#^\./##' | LC_ALL=C sort)
 # The files that must agree with the ledger (state-check.ts): one cut with it.
 cut() { (cd "$SRC" && for f in account.json paper.json exits.json control.json entry-seeds.json exposure.json; do [ -f "$f" ] && sha256sum -- "$f"; done; true); }
 

@@ -9,31 +9,37 @@ import { RUG_CONFIG } from '../../core/src/config/index.ts';
 import { type BootInput, checkBoot, cutAtKill, loadSession, type ParityDeps } from '../src/run/parity.ts';
 import { makeWorker, passingMarket } from './worker-harness.ts';
 
-const line = (action: string, event: string) => `{"kind":"decision","action":"${action}","event":"${event}"}`;
+const line = (action: string, event: string, intent = 'i1') => `{"kind":"decision","action":"${action}","intent":"${intent}","event":"${event}"}`;
 const LIVE = [line('propose', 'e1'), line('prepare', 'e2'), line('sign', 'e2')];
-const boot = (stopped: boolean | undefined): BootInput => ({ boot: 'b', missing: null, seed: 's', frames: [], releases: [], live: LIVE, excluded: {}, redactions: 0, ...(stopped === undefined ? {} : { stopped }) });
+const boot = (stopped: boolean | undefined, dispatched: string | null = 'i1'): BootInput => ({ boot: 'b', missing: null, seed: 's', frames: [], releases: [], live: LIVE, excluded: {}, redactions: 0, dispatched, ...(stopped === undefined ? {} : { stopped }) });
 
-describe('RC-FIXES: parity forgives only a kill inside the last event', () => {
-  it('cutAtKill: extras of the last live event are cut; any other extra, or a shorter replay, is left to differ', () => {
-    expect(cutAtKill(LIVE, [...LIVE, line('submit', 'e2')])).toEqual(LIVE);
-    expect(cutAtKill(LIVE, [...LIVE, line('submit', 'e2'), line('propose', 'e3')])).toHaveLength(5);
-    expect(cutAtKill(LIVE, [...LIVE, line('propose', 'e3')])).toHaveLength(4);
-    expect(cutAtKill(LIVE, LIVE.slice(0, 2))).toHaveLength(2);
-    expect(cutAtKill([], [line('submit', 'e2')])).toHaveLength(1);
+describe('RC-STATE: parity forgives only the one submit a kill after the send cuts off', () => {
+  it('cutAtKill: exactly one extra line, the dispatched intent\'s submit after its sign, at the same event; nothing else', () => {
+    expect(cutAtKill(LIVE, [...LIVE, line('submit', 'e2')], 'i1')).toEqual(LIVE);
+    // More than one extra line, another action, another intent, another event, or not after a sign: left to differ.
+    expect(cutAtKill(LIVE, [...LIVE, line('submit', 'e2'), line('propose', 'e3')], 'i1')).toHaveLength(5);
+    expect(cutAtKill(LIVE, [...LIVE, line('reject', 'e2')], 'i1')).toHaveLength(4);
+    expect(cutAtKill(LIVE, [...LIVE, line('submit', 'e2', 'i2')], 'i1')).toHaveLength(4);
+    expect(cutAtKill(LIVE, [...LIVE, line('submit', 'e2')], 'i2')).toHaveLength(4);
+    expect(cutAtKill(LIVE, [...LIVE, line('submit', 'e3')], 'i1')).toHaveLength(4);
+    expect(cutAtKill(LIVE.slice(0, 2), [...LIVE.slice(0, 2), line('submit', 'e2')], 'i1')).toHaveLength(3);
+    expect(cutAtKill(LIVE, LIVE.slice(0, 2), 'i1')).toHaveLength(2);
+    expect(cutAtKill([], [line('submit', 'e2')], 'i1')).toHaveLength(1);
   });
 
-  it('checkBoot: a killed boot (no stop line) passes with the cut; a stopped boot or one not known still diverges', () => {
+  it('checkBoot: only a killed boot (no stop line) whose journal ends on a dispatching line is cut', () => {
     const h = makeWorker();
     const deps: ParityDeps = { session: h.session, rugs: RUG_CONFIG, strategy: h.worker.strategyConfig };
     const replay = () => [...LIVE, line('submit', 'e2')];
     expect(checkBoot(boot(false), deps, 2, replay).divergence).toBeNull();
     expect(checkBoot(boot(true), deps, 2, replay).divergence).toMatchObject({ index: 3, live: null });
     expect(checkBoot(boot(undefined), deps, 2, replay).divergence).toMatchObject({ index: 3, live: null });
+    expect(checkBoot(boot(false, null), deps, 2, replay).divergence).toMatchObject({ index: 3, live: null });
     // A line before the end that differs is never forgiven.
     expect(checkBoot(boot(false), deps, 2, () => [LIVE[0]!, line('prepare', 'eX'), LIVE[2]!, line('submit', 'e2')]).divergence).toMatchObject({ index: 1 });
   });
 
-  it('loadSession: a boot with its stop line is stopped (compared strictly)', async () => {
+  it('loadSession: a boot with its stop line is stopped; its dispatching lines are journaled and closed by later decisions', async () => {
     const h = makeWorker();
     await h.worker.reconcile();
     const m = await passingMarket(h, { heldPoolFacts: true });
@@ -42,6 +48,9 @@ describe('RC-FIXES: parity forgives only a kill inside the last event', () => {
     const boots = loadSession(h.stateDir);
     expect(boots.length).toBeGreaterThan(0);
     expect(boots.every((b) => b.stopped === true)).toBe(true);
+    // Every dispatching line was followed by decisions: none is open.
+    expect(boots.every((b) => b.dispatched === null)).toBe(true);
+    expect(readFileSync(join(h.stateDir, 'journal.jsonl'), 'utf8')).toContain('"kind":"dispatching"');
   });
 });
 

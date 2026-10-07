@@ -16,11 +16,19 @@ const priced = (h: H, m: Market, ppm: bigint): void => {
   m.fact(SOL_PRICE_KEY, { value: (SOL_PRICE * ppm) / 1_000_000n, atMs: m.now - 50 });
   h.worker.step();
 };
-/** What `zeroed-backup` keeps: the SQLite files only. Everything else in the state dir is gone after a host loss. */
+/**
+ * What `zeroed-backup` keeps. RC-STATE (builder): it packed the SQLite files only when this probe was written (959d801);
+ * it now packs the whole state dir but the journal, the recording, the deployer index, WAL, lock and temp files and the
+ * one-boot markers (ops/test/backup-state.test.ts). Everything it leaves out is gone after a host loss.
+ */
 const hostLossRestore = (dir: string): string[] => {
   const gone: string[] = [];
+  const kept = (name: string): boolean => /\.(sqlite|db)$/.test(name)
+    || (!/^journal\.jsonl/.test(name) && name !== 'recorder' && name !== 'deployers.jsonl' && name !== 'deployer-state.json'
+      && !/\.(lock|tmp|new)$/.test(name) && !/-(wal|shm|journal|writer\.lock)$/.test(name)
+      && !['clean_stop', 'planned_restart', 'cold_start', 'drill.token', 'last_exit.json', 'refused.json'].includes(name));
   for (const name of readdirSync(dir)) {
-    if (/\.(sqlite|db)$/.test(name)) continue;
+    if (kept(name)) continue;
     rmSync(join(dir, name), { recursive: true, force: true });
     gone.push(name);
   }
@@ -41,7 +49,10 @@ describe('red team C: host-loss restore from the SQLite-only backup', () => {
     await h.worker.stop();
 
     const gone = hostLossRestore(h.stateDir);
-    expect(gone).toContain('control.json');
+    // RC-STATE (builder): the backup now keeps control.json and the state-version marker; it is the journal and the
+    // recording that are gone.
+    expect(gone).not.toContain('control.json');
+    expect(gone).toContain('journal.jsonl');
     let started = false;
     let latch: number | null = null;
     try {

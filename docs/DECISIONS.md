@@ -3511,8 +3511,15 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
     - The ledger is lost when it is missing or empty while account.json, paper.json or exits.json say the bot traded. An unreadable file counts as saying so. The start is refused (`StateRefused`) before the ledger is opened, so an empty file stays empty and every later start refuses again. Otherwise it is a cold start, as before.
     - A ledger that holds trades needs account.json, and paper.json must hold every fill the ledger holds; otherwise the start is refused. Attempts are not asked for: one signed but never sent is in the ledger and not in paper.json (a death between the two, TEST-3).
     - A ledger with no trades refuses paper attempts or exit plans that say the bot traded (an older ledger restored with newer files). account.json's trades alone are not refused there, because tests and tools seed them without a ledger. With the ledger file missing or empty they are refused, as above.
-    - control.json is written at every start. A start after an earlier one (the ledger was there) that finds it missing latches the kill switch, pauses entries and journals a critical `state_lost` alert. It does not wait for trades, since R10 can trip on a price move alone. A state dir from before this change that never wrote control.json gets that latch once; the owner re-arms and resumes.
-    - Refusing to start is the safe side for the files that hold money: the paper wallet and the paper attempts. Under `Restart=always` the unit retries every 5 s and refuses each time, with the reason in the log, until the files are restored. No position is watched meanwhile, but none is booked wrong.
+    - control.json is written at every start. A start that finds it missing latches the kill switch, pauses entries and journals a critical `state_lost` alert. This applies once the ledger was there and a start of this code has run. It does not wait for trades, since R10 can trip on a price move alone.
+    - **Upgrade marker (review R4-1).** Releases before this one wrote control.json only on a latch trip or an owner pause, so a dir from them has a ledger and no control.json with nothing lost. The first start of this code writes `state-version.json`. Before that marker exists, a missing control.json means never written, not lost. After it, a missing control.json is a loss. The backup carries the marker.
+      - The cost: a dir restored from an old, SQLite-only backup has no marker, so a latch from before the backup fix cannot be told apart from never latching. It comes back unlatched. Backups taken from this release on carry control.json and the marker.
+    - Refusing to start is the safe side for the files that hold money: the paper wallet and the paper attempts. No position is watched meanwhile, but none is booked wrong.
+    - **A refusal is visible and not retried (review R4-3).**
+      - The worker journals a start line of its own (`refused: true`), a critical `state_refused` alert and a stop line, all fsynced.
+      - It writes `refused.json` in the state dir (`at`, `reason`, `exit`) and exits with `EXIT.stateRefused` = 5.
+      - zeroed-worker.service lists 5 in `RestartPreventExitStatus`, so systemd does not loop on it. Whether systemd also honours this when the `--reconcile` ExecStartPre exits 5 is not verified here; the e2e is where to prove it.
+      - The next start that is not refused removes `refused.json`. Not rolling an update back onto the stand-in on a refusal is zeroed-update's part (RC-FIXES-2b).
   - **account.json checked whole (`checkAccount`).**
     - Every figure is checked for its type and range: the wallet from 0 up to SOL's supply, the opening equity and NAV peak above 0, and times as whole non-negative numbers.
     - Each write also records how many trades and entries the file holds, and which of the wallet, setup, NAV peak and day and week marks it held (`present`). None of these is ever removed or unset.
@@ -3521,12 +3528,22 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - **Backup (`zeroed-backup`).**
     - Everything in the state dir is packed, except:
       - the journal and the recording;
-      - the deployer index (`deployers.jsonl`, `deployer-state.json`): hundreds of MB at 15 days, × 72 hourly copies. Without it a restore starts the index from the live feed, and H14 stays not covered until the look-back passes (fail closed, as with no backup today);
+      - the deployer index (`deployers.jsonl`, `deployer-state.json`): hundreds of MB at 15 days, × 72 hourly copies. Without it a restore starts the index from the live feed, the same as a cold boot. Under the gates, H14 stays not covered until the look-back passes (fail closed). In S0 diagnostic mode, H14 judges over the short unbroken coverage from the restore on, exactly as after a cold boot, by S0's design (review item 5);
+      - the one-boot markers (`clean_stop`, `planned_restart`, `cold_start`, `drill.token`, `last_exit.json`, `refused.json`): a stale one would mislabel the restored boot's last exit (review item 4);
       - WAL, lock and temp files.
     - The ledger and the files that must agree with it (account, paper, exits, control, entry seeds, exposure) are one cut. They are copied again, up to 5 times, until none of them changed while the ledger was copied.
     - The restore drill (checks added only) also parses every JSON file and still needs at least one database. The e2e drill checks the backup holds every JSON state file and never the journal or the recording.
   - **Entry evidence.**
     - Before an entry's buy is sent, `Recorder.durable()` writes every buffered line and fsyncs each open file. A failure sets the recorder fault, and the entry is refused (fail closed). The cost is a flush and a few fsyncs per entry send, on the entry path only (a few a day), not per step.
     - The engine sends the buy while it applies `submit`, before that decision is logged. So a kill right after the send leaves a journal without `submit` while the recording replays it.
-    - `checkBoot` forgives only that, and only for a boot whose journal has no stop line: the replay may run past the journal's end with lines of the journal's last event alone. A clean boot, and any line that differs before the end, are still compared strictly.
-- **Evidence.** The probes fail on 959d8017 and pass here: r2-corrupt-state's 87 damage cases (20 failed before), state-backup-restore, entry-evidence and backup-coverage. New tests: `state-check.test.ts` (28), `kill-cut.test.ts` (3) and `ops/test/backup-state.test.ts` (3).
+    - Just before the send, the worker journals a `dispatching` line (intent, signature), fsynced with the decisions before it.
+    - **Exactly one line forgiven (review R4-2).** The first build forgave any replay line of the journal's last event, so a replay could enter where live had rejected. Now `checkBoot` forgives one line only, and only when all of these hold:
+      - the boot has no stop line;
+      - its journal ends on a `dispatching` line with no decision after it;
+      - the last decision is that intent's `sign`;
+      - the replay's only extra line is that intent's `submit`, at the same event.
+    - Anything else is a divergence: a different extra line, more than one, or any line before the end that differs.
+- **Evidence.**
+  - These probes fail on 959d8017 and pass here: r2-corrupt-state's 87 damage cases (20 failed before), state-backup-restore, entry-evidence and backup-coverage. state-backup-restore now restores what the backup keeps.
+  - Round 4's probes fail on 10347648 and pass here: r4-upgrade-latch (which also removes the marker, as an old release leaves no marker), r4-cut-at-kill and r4-refusal-visible.
+  - New tests: `state-check.test.ts` (31), `kill-cut.test.ts` (4) and `ops/test/backup-state.test.ts` (3).

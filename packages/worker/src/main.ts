@@ -22,7 +22,7 @@ import { RpcCut, liveHttp } from './run/rpc-cut.ts';
 import { FILL_BUDGET_FILE, runSeed } from './run/seed-start.ts';
 import { SIM_READS_PER_HOUR, simReader } from './run/sim-read.ts';
 import { RoundTripSimulator } from './sim/index.ts';
-import { Worker } from './run/worker.ts';
+import { StateRefused, Worker } from './run/worker.ts';
 
 const environment = readEnvironment();
 setSecretValues(environment.secretValues());
@@ -121,6 +121,12 @@ try {
     reconcileTimeoutMs: 60_000, loopMs: 100, staleFeedMs: 10_000, log,
   });
 } catch (e) {
+  // RC-STATE: a start refused on the saved state is no crash: its reason is in the journal and refused.json, and the
+  // unit does not restart this exit code (a restart cannot fix the files).
+  if (e instanceof StateRefused) {
+    fail(`Start refused: ${e.message}`);
+    process.exit(EXIT.stateRefused);
+  }
   fatal(e);
 }
 const w = worker!;
