@@ -108,8 +108,11 @@ describe('SAVE-ASOF', () => {
     const asOf = { slot: SLOT + 2n, txIndex: 1, ixIndex: 0, receivedAt: IN_WINDOW + 1_000 };
     idx.observe(market('rug:R', { mint: 'R', creator: 'Dev1111', rule: 'dump' }, rug));
     idx.observe(market('rug-unjudged:U', { mint: 'U', creator: 'Dev1111' }, unjudged));
-    // A create whose chain block time is 5 s after the moment's receipt time.
-    idx.observe(market('logs:pump:CreateEvent:M', createEvent('M', IN_WINDOW + 6_000, SLOT + 2n), asOf));
+    // A create whose chain block time is 5 s after the moment's receipt time (received at its block time: a block time
+    // ahead of its own receipt is clamped when observed, R2-7, so it would not reach the save's clamp).
+    idx.observe(market('logs:pump:CreateEvent:M', createEvent('M', IN_WINDOW + 6_000, SLOT + 2n), { ...asOf, txIndex: 0, receivedAt: IN_WINDOW + 6_000 }));
+    // The moment itself is the last event observed.
+    idx.observe(market('chain:slot', { slot: asOf.slot }, asOf));
     const clamp = new AsOfClamp(asOf.receivedAt);
     const saved = idx.snapshot(asOf, Number.MIN_SAFE_INTEGER, { clamp });
     expect(saved.first).toEqual({ ...rug, receivedAt: asOf.receivedAt });

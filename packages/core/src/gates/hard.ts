@@ -540,7 +540,10 @@ const h14 = (env: Env): Outcome => {
       const why = cover === null ? (chk.ok ? '' : chk.reason.detail) : cover.covered ? '' : cover.detail;
       return { notes, reasons: [...reasons, { gate: 'H16', code: 'not-covered', input: 'coverage', neededBy: 'H14', detail: `${RUG_LABELS_UNAVAILABLE}: ${env.rugLabeller} coverage: ${rugCov.detail}; deployer check: ${why}` }] };
     }
-    checked = cover.rugs;
+    // R2-2: a checked rug counts only inside the look-back, as the stream's labels do (live = backtest). One with no
+    // date is counted and noted: dropping it could pass a serial rugger, counting it only refuses more coins.
+    checked = cover.rugs.filter((x) => x.atMs === undefined || x.atMs >= now - lookback);
+    for (const x of cover.rugs.filter((r) => r.atMs === undefined)) notes.push({ gate: 'H14', code: 'rug-undated', detail: `deployer check found ${x.mint} a rug with no date; counted` });
   }
   const unjudged = (d.fact.unjudged ?? []).filter((x) => x.mint !== env.req.mint && x.knownAtMs <= now && x.knownAtMs >= now - lookback).map((x) => x.mint).sort();
   if (unjudged.length > 0) {
@@ -568,15 +571,30 @@ const h15 = (env: Env): Outcome => {
   const s = env.ev.read('sim', simKey(env.req.mint), parseSim, 'offchain', 'H15');
   if (!s.ok) return fromRead(s);
   if (s.fact.spend !== env.req.spend) return { reasons: [{ gate: 'H16', code: 'inconsistent', input: 'sim', neededBy: 'H15', detail: `simulated ${s.fact.spend}, request spends ${env.req.spend}` }] };
-  if (!s.fact.ok) return reject('H15', 'sim-failed', `round-trip simulation failed: ${s.fact.error ?? 'no error given'}`, { input: 'sim' });
+  // R2-4: the simulation must be of the moment decided on: a chain slot is required, within the state lag of the tip
+  // plus the slots its receipt age allows (400 ms slots, Solana's nominal slot time; slower slots only make a fresh
+  // simulation fewer slots behind). Not bound to the pool read's slot: the batch's account read can land a slot after
+  // the simulation. Live, the reader also asks the node for a context slot at or after the feed head.
+  const simSlot = s.fact.obs.slot;
+  if (simSlot === null) return { reasons: [{ gate: 'H16', code: 'malformed', input: 'sim', neededBy: 'H15', detail: 'the simulation has no context slot' }] };
+  const { maxStateSlotLag, maxQuoteAgeMs } = env.policy.gates;
+  const simLag = BigInt(maxStateSlotLag + Math.ceil(maxQuoteAgeMs / SIM_SLOT_MS));
+  const simBehind = env.ev.tip - simSlot;
+  if (simBehind > simLag) return { reasons: [{ gate: 'H16', code: 'stale', input: 'sim', neededBy: 'H15', detail: `simulation at slot ${simSlot}, ${simBehind} slots behind the tip (at most ${simLag})`, value: String(simBehind), limit: String(simLag) }] };
+  // F3: the lag of a fresh simulation is journalled too, so the dry run can measure its spread against the bound.
+  const notes: GateNote[] = [{ gate: 'H15', code: 'sim-slot-lag', detail: `simulation at slot ${simSlot}, ${simBehind} slots behind the tip (at most ${simLag})` }];
+  if (!s.fact.ok) return { notes, ...reject('H15', 'sim-failed', `round-trip simulation failed: ${s.fact.error ?? 'no error given'}`, { input: 'sim' }) };
   // Like with like: the simulation buys and sells at once, so its loss is compared with the model of that same
   // sequence (the sell on the reserves the buy left), never with the planned exit, whose impacts would hide a charge.
   const simLoss = s.fact.paid - s.fact.proceeds;
   const modelled = q.trade.paid - q.trade.immediateProceeds + ROUND_TRIP_ROUNDING_LAMPORTS;
   return simLoss > modelled
-    ? reject('H15', 'sim-loss', `simulated round trip lost ${simLoss} lamports, the model allows ${modelled}`, { input: 'sim', value: String(simLoss), limit: String(modelled) })
-    : PASS;
+    ? { notes, ...reject('H15', 'sim-loss', `simulated round trip lost ${simLoss} lamports, the model allows ${modelled}`, { input: 'sim', value: String(simLoss), limit: String(modelled) }) }
+    : { reasons: [], notes };
 };
+
+/** Solana's nominal slot time, ms: turns H15's receipt age into slots. */
+const SIM_SLOT_MS = 400;
 
 const AUTHORITY_FIELDS = ['mintAuthority', 'freezeAuthority'] as const;
 
@@ -591,6 +609,9 @@ const h16 = (env: Env): Outcome => {
   const own = { mintAuthority: m.account.mintAuthority === null ? 'none' : 'set', freezeAuthority: m.account.freezeAuthority === null ? 'none' : 'set' } as const;
   const reported = x.fact.sources.filter((s) => s.mintAuthority !== null || s.freezeAuthority !== null);
   if (reported.length === 0) return { reasons: [{ gate: 'H16', code: 'missing', input: 'xcheck', neededBy: 'H16', detail: 'no third party reported the authorities' }] };
+  // R2-5: each authority needs its own third-party report: one no source reported was never cross-checked.
+  const unreported = AUTHORITY_FIELDS.filter((field) => !reported.some((s) => s[field] !== null));
+  if (unreported.length > 0) return { reasons: [{ gate: 'H16', code: 'missing', input: 'xcheck', neededBy: 'H16', detail: `no third party reported ${unreported.join(' or ')}` }] };
   const reasons: GateReason[] = [];
   for (const s of [...reported].sort((a, b) => (a.provider < b.provider ? -1 : a.provider > b.provider ? 1 : 0))) {
     for (const field of AUTHORITY_FIELDS) {

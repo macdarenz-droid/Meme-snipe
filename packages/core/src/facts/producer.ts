@@ -19,6 +19,7 @@ import type { Commitment, QualityFlag } from '../domain/index.ts';
 import type { MarketEvent } from '../engine/feed.ts';
 import { flatCopy } from '../engine/asof.ts';
 import { RepeatTags, tradeRepeatTag } from './repeat-tags.ts';
+import { NATIVE_MINT } from '../chain/programs.ts';
 import type { PoolState } from '../amm/index.ts';
 import { swapEventState } from '../fills/pool.ts';
 import {
@@ -399,6 +400,8 @@ interface PoolCreated {
   readonly atMs: number;
   readonly quote: bigint;
   readonly base: bigint;
+  /** R2-3: the pool's quote mint; only a wrapped-SOL pool enters the SOL survival series. */
+  readonly quoteMint: string;
 }
 
 interface Account {
@@ -559,6 +562,8 @@ export class FactProducer {
   }
   readonly #pending = new Map<string, Pending>();
   readonly #graduates: GraduatesFact['items'][number][] = [];
+  /** R2-6: the stretches of survival marks this series did not observe (the seed's, and this restart's own). */
+  #unobserved: { readonly fromMs: number; readonly toMs: number }[] = [];
   readonly #sol = new Map<number, bigint>();
   readonly #volume: ChainVolumeDays;
   #abstain = new Map<string, number>();
@@ -657,7 +662,7 @@ export class FactProducer {
         const atMs = ms(d.timestamp);
         if (atMs === null) return;
         const t = this.#track(d.baseMint);
-        if (!t.pools.has(d.pool)) t.pools.set(d.pool, { pool: d.pool, slot: seen.slot, atMs, quote: d.poolQuoteAmount, base: d.poolBaseAmount });
+        if (!t.pools.has(d.pool)) t.pools.set(d.pool, { pool: d.pool, slot: seen.slot, atMs, quote: d.poolQuoteAmount, base: d.poolBaseAmount, quoteMint: String(d.quoteMint) });
         if (!this.#poolMint.has(d.pool)) this.#poolMint.set(d.pool, d.baseMint);
         if (!this.#books.has(d.pool) && !this.#retiredPools.has(d.pool)) {
           this.#books.set(d.pool, { pool: d.pool, mint: d.baseMint, openedAtMs: atMs, fromSlot: seen.slot, candles: [], partial: false, seen: new RepeatTags(), newestMs: atMs, sweptMs: atMs, lastSwap: null, mark: null });
@@ -694,7 +699,9 @@ export class FactProducer {
       obs: { provider: sourceOf(e), slot: m.slot, receivedAt: e.moment.receivedAt, quality: [], commitment: 'confirmed' },
       graduatedAtMs: t.completeAtMs, migratedAtMs: m.atMs, pool: m.pool, quoteAtMigration: created.quote, price: p,
     });
-    this.#pending.set(m.pool, { mint: t.mint, pool: m.pool, migratedAtMs: m.atMs, slot: m.slot });
+    // R2-3: survival is SOL survival: a pool quoted in another token (its reserve in that token's units) never enters
+    // the series, live or in the backtest (both run this producer). H5 refuses such a pool as a candidate too.
+    if (created.quoteMint === String(NATIVE_MINT)) this.#pending.set(m.pool, { mint: t.mint, pool: m.pool, migratedAtMs: m.atMs, slot: m.slot });
     if (this.#books.has(m.pool)) this.#writeCandles(m.pool, sourceOf(e), e.moment.receivedAt, put);
   }
 
@@ -1722,10 +1729,13 @@ export class FactProducer {
       have.set(i.mint, i);
       add.push({ mint: i.mint, migratedAtMs: i.migratedAtMs, reserveAfter: i.reserveAfter });
     }
-    if (add.length > 0) {
-      this.#graduates.push(...add);
-      this.#graduatesChanged = true;
-    }
+    if (add.length > 0) this.#graduates.push(...add);
+    // R2-6: the marks from the seed's as-of to one survival window after its release were not observed: the downtime,
+    // and the marks the old process still had pending (not saved). Earlier restarts' stretches come with the seed and
+    // are kept with it, so the regime sums every hole in a window (pruned with the series at its keep line).
+    const all = mergeStretches([...this.#unobserved, ...(r.unobserved ?? []), { fromMs: r.asOfMs, toMs: at + this.#o.survivalAfterMs }]);
+    this.#unobserved.splice(0, this.#unobserved.length, ...all);
+    this.#graduatesChanged = true;
     return { accepted: true, added: add.length, reason: null };
   }
 
@@ -1762,19 +1772,34 @@ export class FactProducer {
   #flushGraduates(e: MarketEvent, put: (k: string, v: unknown) => void): void {
     if (!this.#graduatesChanged) return;
     this.#graduatesChanged = false;
-    const g = graduatesFact(this.#graduates, e.moment.receivedAt, this.#o.graduatesKeepMs);
+    const g = graduatesFact(this.#graduates, e.moment.receivedAt, this.#o.graduatesKeepMs, this.#unobserved);
     this.#graduates.splice(0, this.#graduates.length, ...g.kept);
+    this.#unobserved.splice(0, this.#unobserved.length, ...(g.value.unobserved ?? []));
     put(GRADUATES_KEY, g.value);
   }
 }
 
 type GraduateItem = GraduatesFact['items'][number];
+type Stretch = { readonly fromMs: number; readonly toMs: number };
+
+/** R2-6: stretches sorted and merged where they overlap or touch, so the carried list stays one entry per hole. */
+export const mergeStretches = (xs: readonly Stretch[]): Stretch[] => {
+  const out: Stretch[] = [];
+  for (const x of [...xs].sort((a, b) => a.fromMs - b.fromMs || a.toMs - b.toMs)) {
+    const last = out.at(-1);
+    if (last !== undefined && x.fromMs <= last.toMs) out[out.length - 1] = { fromMs: last.fromMs, toMs: Math.max(last.toMs, x.toMs) };
+    else out.push(x);
+  }
+  return out;
+};
 
 /**
  * The graduates fact as of `nowMs` (one implementation for the live producer and the backtest, supervisor ruling):
  * items that migrated within `keepMs` are kept, in their given order; the fact lists them by migration time, then mint.
  */
-export const graduatesFact = (items: readonly GraduateItem[], nowMs: number, keepMs: number): { readonly kept: GraduateItem[]; readonly value: GraduatesFact } => {
+export const graduatesFact = (
+  items: readonly GraduateItem[], nowMs: number, keepMs: number, unobserved: readonly { readonly fromMs: number; readonly toMs: number }[] = [],
+): { readonly kept: GraduateItem[]; readonly value: GraduatesFact } => {
   const keepFrom = nowMs - keepMs;
   const kept = items.filter((x) => x.migratedAtMs >= keepFrom);
   return {
@@ -1782,6 +1807,11 @@ export const graduatesFact = (items: readonly GraduateItem[], nowMs: number, kee
     value: {
       obs: { provider: 'facts', slot: null, receivedAt: nowMs, quality: [] },
       items: [...kept].sort((a, b) => a.migratedAtMs - b.migratedAtMs || (a.mint < b.mint ? -1 : a.mint > b.mint ? 1 : 0)),
+      ...(() => {
+        // R2-6: a stretch ending before the keep line covers no mark the series still holds.
+        const kept = mergeStretches(unobserved.filter((u) => u.toMs >= keepFrom));
+        return kept.length === 0 ? {} : { unobserved: kept };
+      })(),
     },
   };
 };

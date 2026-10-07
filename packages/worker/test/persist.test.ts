@@ -416,6 +416,15 @@ describe('PERSIST-2: the graduates series in the saved state', () => {
     expect(r.ok && r.graduates).toEqual({ asOfMs: SAVED_AT.receivedAt, items: G });
   });
 
+  it('R2-6 F1: the unobserved stretches round-trip with the series; a malformed one discards the file', () => {
+    const path = join(tmp(), 'state.json');
+    const unobserved = [{ fromMs: SAVED_AT.receivedAt - 5 * HOUR_MS, toMs: SAVED_AT.receivedAt - 4 * HOUR_MS }];
+    saveState(path, savedState({ graduates: { asOfMs: SAVED_AT.receivedAt, items: G, unobserved } }));
+    const r = loadState(path, RUG_CONFIG);
+    expect(r.ok && r.graduates).toEqual({ asOfMs: SAVED_AT.receivedAt, items: G, unobserved });
+    expect(() => saveState(join(tmp(), 'bad.json'), savedState({ graduates: { asOfMs: SAVED_AT.receivedAt, items: G, unobserved: [{ fromMs: 2, toMs: 1 }] } }))).toThrow(/malformed/);
+  });
+
   it('a file from before PERSIST-2 still loads, with no series', () => {
     const path = join(tmp(), 'state.json');
     saveState(path, savedState());

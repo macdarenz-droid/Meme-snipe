@@ -3503,6 +3503,97 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
   - Ten runs give the same frames, releases, events and facts, and each replays to them. A recording with echoes is refused under the pre-echo rules and by `frameEvents`.
   - Parity: live (cut log on both watches, fetched, healed) ends with the same candles and coverage as the backtest of the full transaction on both pools. The recording, round-tripped through its JSON, replays to the same events and facts; a recording made before echoes replays as it did.
 
+## Red team A round 2: H14, H15, H16 and the regime's survival series (A2-GATE-FIXES)
+
+Red team A's round-2 report (`packages/worker/test/redteam/REPORT.md`, "Round 2", branch `claude/redteam-a` @ 00a517b) found seven gates or facts that passed on partial data or differed between live and the backtest. Each probe is now a test; each failed on 959d801. Every change below makes a gate stricter or makes live equal the backtest; no limit is loosened.
+
+- **R2-1, H14's rug half after a store-seeded restart** (`run/worker.ts` `#seedIndex`, `run/deployer-store.ts` `startedWatches`).
+  - Before: a restart seeded from `deployers.jsonl` alone (no usable state file) gave only the live creates watch a downtime gap. The saved `coverage:rugs:*` start read as continuous across the downtime, so H14 counted labels the labeller never had the trades for. **Fail-open** (latent: `tradeStreams` is off in `main.ts`).
+  - Now: every started watch on both streams (the seed's backfill aside) without an open gap gets an open `worker down` gap at the saved moment, as `loadState` does on the persist path. The live creates watch keeps its own rule: no gap when the downtime fill read it. On the persist path those gaps are already open, so none is added twice.
+- **R2-2, the on-demand rug check's look-back** (`gates/deployer-check.ts` `deployerCheckCovers`, `gates/hard.ts` H14).
+  - Before: a rug the check found counted whatever its date. Stream labels count only from `now - 14 d`. Live (check only) refused coins the backtest (stream) traded.
+  - Now: a checked rug carries its label's chain time (`atMs`) and counts only when `atMs >= now - lookback`, the stream's rule.
+  - **A rug with no usable date (no label, or `atMs` not a whole ms) is counted, and a `rug-undated` note is journalled.** Counting it refuses more coins. Dropping it could pass a serial rugger. The check's labeller always dates its labels (`RugLabel.atMs`, the chain time of the event that met the rule), so this only matters for a malformed fact.
+- **R2-3, non-SOL graduates in the survival series** (`facts/producer.ts` `#migration`).
+  - Before: a USDC-quoted pool's raw quote reserve was compared with the 30 SOL floor. Live and the backtest share the producer, so both were wrong the same way.
+  - Now: the producer keeps each created pool's quote mint, and only a wrapped-SOL pool (`NATIVE_MINT`, the mint H5 accepts) gets a survival mark. The migration fact is unchanged (H5 refuses such a pool as a candidate).
+- **R2-4, H15's simulation slot** (`gates/hard.ts` H15, `gates/evidence.ts` `tip`).
+  - Before: only the 2 s receipt age was checked; a simulation 5,000 slots behind the tip passed.
+  - Now: a simulation with no context slot is `malformed`. One more than `maxStateSlotLag + ceil(maxQuoteAgeMs / 400)` slots behind the tip (7 with the trial policy) is `stale`. 400 ms is Solana's nominal slot time; slower slots only put a fresh simulation fewer slots behind, so no fresh simulation is refused. Live raw sim reads always carry the node's context slot (`parseSimRead` requires it).
+  - Review F3: the lag (tip − simulation slot) is in the `stale` reason's detail. A fresh simulation journals it as an H15 `sim-slot-lag` note, so the dry run can check its p99 against the bound of 7.
+  - Rejected: binding the slot to the pool read's slot. In one read batch the account read can land a slot after the simulation, so it would refuse sound simulations.
+- **R2-5, H16 cross-check per field** (`gates/hard.ts` H16).
+  - Before: a source counted when it reported either authority, so an authority no third party reported passed unchecked.
+  - Now: each of mint authority and freeze authority needs at least one source that reported it; otherwise H16 `missing`.
+- **R2-6, a restart's hole in the graduates series** (`facts/producer.ts` `#seedGraduates`, `graduatesFact`; `gates/facts.ts` `GraduatesFact.unobserved`; `gates/regime.ts` `survivalCondition`).
+  - Before: a restored series was released as current, and survival over a 24 h window that was mostly downtime was judged (after a 20 h outage, from 4 h of data).
+  - Now: an accepted seed marks survival marks in `[seed asOfMs, release + survivalAfterMs)` as unobserved. That covers the downtime and the marks the old process still had pending, which are not saved. The graduates fact carries the stretch (`unobserved`) while it is inside the keep window. Item dates are the graduates' real migration times, as before.
+  - **S1 ruling (2026-10-07):** the 24 h share is judged on the observed marks unless the stretch covers more than `regime.survivalMaxUnobservedMs` of the window. Default 2 h, configurable; a policy override may only lower it.
+    - Overlap = max(0, min(toMs, at) − max(fromMs, at − 24 h)). More than the limit is `not-covered`.
+    - Gating on any overlap would turn every restart, deploys included, into about 24.5 h with the regime off. A share from a smaller observed sample is not missing data read as zero, the same reasoning as for the 14 daily shares.
+    - What this gives:
+      - A 20 h outage (the red team's case) is refused.
+      - A deploy (minutes down plus the 30 min of lost pending marks) is judged.
+      - Still stricter than 959d801, which judged the restored series whatever it held.
+    - Adding the field changes the trial policy's version hash (the pinned value in `config/policy.test.ts` is updated).
+  - **Review F1 (S1 ruling, saved-shape change approved by S1: only the bot's own coverage record, no personal data).** Every restart's stretch is kept, not just the newest.
+    - The stretches are saved with the series as `unobserved: [{ fromMs, toMs }]`, pruned at the series' keep line.
+    - The seed carries them, and the new restart adds its own. Stretches that overlap or touch are merged when carried and when pruned.
+    - The regime sums their overlap with each check window, current and earlier: the union, so a stretch saved twice counts once.
+    - Why: with only the newest stretch known, after a second restart a check before it judged the first restart's missing marks as covered. **Fail-open.**
+    - A file saved before the list loads as "none known" plus the new restart's stretch, which is what happened before.
+  - A seed that adds no graduate now still releases a fact, which carries the stretch.
+  - The 14 daily shares the median is taken from are not gated on the stretch, for the same reason. The backtest has no restarts, so its results do not change.
+  - **Time-of-day bias, accepted for now (review F4).**
+    - A hole is not spread evenly over the day, so the observed 24 h share leans toward the observed hours.
+    - The reviewer bounds the shift at about 1.7 points for a 2 h hole at the peak hour. That is the same order as daily sampling noise (standard error about 1.3 points).
+    - Hour-matching the baseline is deferred. A measured hour-of-day profile from the recordings is a later card.
+- **R2-7, the serial count and block time ahead of the clock** (`gates/deployer-index.ts` `observe`).
+  - Before: a create whose block time was ahead of the local clock was in the index but left out of H14's 24 h count until the clock passed it.
+  - Now (review F2): a block time ahead of its receipt, by any amount, is taken as the receipt time. A host clock more than `CHAIN_SKEW_MS` behind would otherwise under-count H14's 24 h serial count. Clamping only counts more: the safe side.
+- **Evidence.**
+  - Fail before (on 959d801), pass after, all 8: `core/test/redteam2/h15-sim-slot-unbound`, `core/test/redteam2/h16-xcheck-partial-field` (2), `worker/test/redteam2/graduates-restore-hole`, `rug-check-before-lookback`, `serial-chain-ahead`, `worker/test/redteam3/graduates-quote-mint`, `rugs-coverage-store-restart`.
+  - Review probes added: the second restart (20 h down, 2 h up, saved at A + 22 h 30 min, restarted 1 min later; survival at A + 24 h is not covered, while 184e418 judged it `1/1`); two 1.5 h restarts saved and summed end to end (`persist-worker.test.ts`); the save and load round trip (`persist.test.ts`).
+  - Boundary tests added: H14 checked-rug look-back edge and the undated rug (`gates/deployer-index.test.ts`); the clamp's skew edge (same file); the H15 slot lag of 7 against 8, and a missing slot (`gates/hard.test.ts`); the 20 h outage, a 40 min hole, exactly 2 h and 2 h + 1 ms, and a hole sliding out of the window (`gates/regime.test.ts`); a seed that adds nothing still marks its hole (`facts/producer.test.ts`).
+  - Fixtures changed to the real shape, with no assertion loosened:
+    - The gate world's simulation carries a context slot, as live raw sim reads must.
+    - Two check labels dated `atMs: 0` (1970) now have real dates.
+    - The save-asof create is received at its block time, so the save's clamp is still exercised.
+  - Mutants, all 16 killed, each one reverting one part of a fix:
+    - R2-1: no rugs gap.
+    - R2-2: no look-back filter; `>` for `>=`; an undated rug dropped; no note.
+    - R2-3: any quote mint.
+    - R2-4: no slot bound; `>=` for `>`; a null slot passes.
+    - R2-5: no per-field check.
+    - R2-6: no hole set; the hole without its survival window; the regime ignores the hole; `>=` for `>` against the limit; the overlap measured without clipping to the window.
+    - R2-7: no clamp; an unbounded clamp.
+
+## One missing chain-volume day no longer blocks the regime for a year (NT-1, red team A round 3; `gates/regime.ts` `volumeCondition`, `engine/strategy.ts` `volumeDaysMissing`, `run/worker.ts`)
+
+- **2026-10-07 · Why.** Red team A round 3 (`claude/redteam-a` @ 1244422, probe `core/test/redteam3/volume-one-missing-day.test.ts`) showed a never-trades fault.
+  - `volumeCondition` needed every UTC day of its window (up to 365).
+  - A day is absent when it is never published, when one of its hours is uncovered, or when its release changed after it was verified ("tampered"; FACTS-1d keeps it unknown for good).
+  - So one such day turned the regime off on every check, live and in the backtest, until it left the window: up to 365 days. The percentile it feeds would still rest on hundreds of days.
+- **Rule (S1 ruling).**
+  - The 25th percentile is taken over the days present in the window, as long as at least `volumeMinDays` (28) are present.
+  - Day L itself (the check day less the lag), whose volume is the value compared, must be present; otherwise unknown, as before.
+  - The days left out are listed on the condition (`missing`). Fewer than 28 present is unknown, with the counts named.
+- **Alert, never silent.**
+  - When the left-out set of the current judged check changes, the strategy tells the worker (`volumeDaysMissing`).
+  - The worker writes a critical `volume_days_missing` alert to the journal, naming the days. The daily summary counts it under alerts.
+  - The worker logs an `ALERT` line. When every day is present again, it writes `cleared`.
+  - A tampered day keeps its own alert from the reader (FACTS-1d).
+- **Effect on parity.** Live and the backtest share `volumeCondition`, so they stay equal. A backtest with every day present decides exactly as before: the synthetic BT-3 decision-log hashes are equal at base and head.
+- **Evidence.**
+  - The probe fails before (unknown with 196 of 197 days) and passes after.
+  - `gates/regime-volume.test.ts` covers:
+    - a missing day left out and named;
+    - day L missing: unknown;
+    - exactly 28 present: judged; 27: unknown;
+    - the window cap with a missing day inside it named, and one outside it not.
+  - `gates/regime.test.ts`: the judged day missing turns the regime off at once.
+  - `worker/test/volume-days-alert.test.ts`: the journal alert, the log line and the summary count, with the coin still judged and entered.
+
 ## Red team C's provider findings fixed (RC-FIXES, `providers/socket.ts`, `run/sources.ts` `CreditBook`, `run/worker.ts` `FETCH_TX_CREDITS`, `facts/readers.ts` `#scanOwners`)
 
 - **2026-10-07 · Why.** Red team C reproduced these faults on 959d8017 (probes on `claude/redteam-c`, brought in as `worker/test/redteam-c/`):

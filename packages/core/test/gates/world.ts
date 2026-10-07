@@ -171,7 +171,7 @@ export const passingFacts = (): Facts => {
     mints: [{ mint: MINT, createdAtMs: CREATED_AT }, { mint: 'Old1', createdAtMs: T - 20 * DAY_MS }],
     rugs: [{ mint: 'Old1', knownAtMs: T - 19 * DAY_MS }],
   }, at(T - 200_000, SLOT - 500n));
-  put(simKey(MINT), { obs: obs({ slot: null, receivedAt: T - 500 }), ok: true, spend: SPEND, ...simAmounts(), error: null }, at(T - 500, SLOT - 2n));
+  put(simKey(MINT), { obs: obs({ slot: SLOT - 2n, receivedAt: T - 500 }), ok: true, spend: SPEND, ...simAmounts(), error: null }, at(T - 500, SLOT - 2n));
   put(xcheckKey(MINT), {
     obs: obs({ slot: null, receivedAt: T - 900 }),
     sources: [{ provider: 'rugcheck', mintAuthority: 'none', freezeAuthority: 'none' }, { provider: 'goplus', mintAuthority: 'none', freezeAuthority: null }],

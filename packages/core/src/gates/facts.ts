@@ -207,9 +207,24 @@ export interface CurveVolumeFact {
 }
 
 /** Graduates with their effective quote reserves at migration + `survivalAfterMs`, each known at that time. */
+/** R2-6: survival marks in [fromMs, toMs) a graduates series did not observe. */
+export interface UnobservedStretch {
+  readonly fromMs: number;
+  readonly toMs: number;
+}
+
+/** A well-formed list of unobserved stretches (each from at or before to). */
+export const isStretches = (v: unknown): v is readonly UnobservedStretch[] =>
+  Array.isArray(v) && v.every((x) => typeof x === 'object' && x !== null && Number.isSafeInteger((x as UnobservedStretch).fromMs) && Number.isSafeInteger((x as UnobservedStretch).toMs) && (x as UnobservedStretch).fromMs <= (x as UnobservedStretch).toMs);
+
 export interface GraduatesFact {
   readonly obs: FactObs;
   readonly items: readonly { readonly mint: string; readonly migratedAtMs: number; readonly reserveAfter: bigint }[];
+  /**
+   * R2-6: stretches of survival marks, each [fromMs, toMs), this series did not observe (each restart: the downtime, and
+   * the pending marks the old process held). Survival over a window they cover more than the limit of is not judged.
+   */
+  readonly unobserved?: readonly UnobservedStretch[];
 }
 
 /** Live only: the bot's own execution health (failure share, landing delay, quote-versus-fill error). */
@@ -405,6 +420,7 @@ export const parseCurveVolume = (v: unknown): CurveVolumeFact | null =>
 
 export const parseGraduates = (v: unknown): GraduatesFact | null =>
   withObs(v) && every(v['items'], (i): i is GraduatesFact['items'][number] => isObj(i) && isStr(i['mint']) && isMs(i['migratedAtMs']) && isBig(i['reserveAfter']))
+  && (v['unobserved'] === undefined || isStretches(v['unobserved']))
     ? (v as unknown as GraduatesFact) : null;
 
 export const parseExecHealth = (v: unknown): ExecHealthFact | null =>

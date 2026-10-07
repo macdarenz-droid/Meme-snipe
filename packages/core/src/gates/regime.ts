@@ -9,7 +9,7 @@ import type { PolicySession } from '../config/session.ts';
 import type { Policy } from '../config/policy.ts';
 import { Evidence, type GateContext } from './evidence.ts';
 import {
-  type CurveVolumeFact, type GraduatesFact, type SolUsdFact,
+  type CurveVolumeFact, type GraduatesFact, type UnobservedStretch, type SolUsdFact,
   CURVE_VOLUME_KEY, EXEC_HEALTH_KEY, GRADUATES_KEY, SOL_USD_KEY, parseCurveVolume, parseExecHealth, parseGraduates, parseSolUsd,
 } from './facts.ts';
 import type { Mode } from './hard.ts';
@@ -22,7 +22,11 @@ export type RegimeCondition = 'survival' | 'volume' | 'sol-change';
 
 /** One condition at one check: its value and limit (logged as features), or why it could not be computed. */
 export type ConditionResult =
-  | { readonly condition: RegimeCondition; readonly ok: boolean; readonly value: string; readonly limit: string }
+  | {
+    readonly condition: RegimeCondition; readonly ok: boolean; readonly value: string; readonly limit: string;
+    /** NT-1: volume days inside the window left out of the percentile (not published, uncovered or tampered). */
+    readonly missing?: readonly number[];
+  }
   | { readonly condition: RegimeCondition; readonly ok: null; readonly code: EvidenceCode; readonly input: FactName; readonly detail: string };
 
 export interface RegimeCheck {
@@ -87,6 +91,22 @@ const median = (xs: readonly Frac[]): Frac => {
 
 const unknown = (condition: RegimeCondition, input: FactName, code: EvidenceCode, detail: string): ConditionResult => ({ condition, ok: null, code, input, detail });
 
+/**
+ * R2-6: how much of (from, to] the stretches cover, overlaps counted once (merged first, so a stretch repeated by two
+ * restarts' saves never counts twice).
+ */
+export const unobservedIn = (stretches: readonly UnobservedStretch[], from: number, to: number): number => {
+  const clipped = stretches.map((s) => [Math.max(s.fromMs, from), Math.min(s.toMs, to)] as const).filter(([a, b]) => b > a).sort((x, y) => x[0] - y[0]);
+  let sum = 0;
+  let end = Number.MIN_SAFE_INTEGER;
+  for (const [a, b] of clipped) {
+    const start = Math.max(a, end);
+    if (b > start) sum += b - start;
+    end = Math.max(end, b);
+  }
+  return sum;
+};
+
 /** Survival share of graduates whose +30 min mark falls in the 24 h before `at`, against the median of the 14 days before. */
 export const survivalCondition = (g: GraduatesFact, at: number, p: Policy['regime']): ConditionResult => {
   const known = g.items.filter((i) => i.migratedAtMs + p.survivalAfterMs <= at);
@@ -95,6 +115,10 @@ export const survivalCondition = (g: GraduatesFact, at: number, p: Policy['regim
     if (inWindow.length === 0) return null;
     return { n: BigInt(inWindow.filter((i) => i.reserveAfter > p.survivalReserveFloor).length), d: BigInt(inWindow.length) };
   };
+  // R2-6 (S1 ruling): the 24 h share is judged on the observed marks while the restarts' unobserved stretches together
+  // cover at most survivalMaxUnobservedMs of the window; more (a long outage, or several restarts) is not covered.
+  const hole = unobservedIn(g.unobserved ?? [], at - DAY_MS, at);
+  if (hole > p.survivalMaxUnobservedMs) return unknown('survival', 'graduates', 'not-covered', `${hole} ms of the 24 h before ${at} were not observed; at most ${p.survivalMaxUnobservedMs} ms`);
   const recent = share(at - DAY_MS, at);
   if (recent === null) return unknown('survival', 'graduates', 'not-covered', `no graduate reached +${p.survivalAfterMs} ms in the 24 h before ${at}`);
   const days: Frac[] = [];
@@ -109,8 +133,10 @@ export const survivalCondition = (g: GraduatesFact, at: number, p: Policy['regim
 
 /**
  * Curve volume of day L = D - volumeLagDays (D is the check's UTC day) against the nearest-rank percentile of the
- * expanding window from max(series start, L - volumeWindowDays + 1) to L. Fewer than volumeMinDays days in the window,
- * or any day in it missing, is unknown. The lag leaves room for the archive to finish a day before it is read.
+ * expanding window from max(series start, L - volumeWindowDays + 1) to L. The lag leaves room for the archive to finish a
+ * day before it is read. NT-1 (S1 ruling): the percentile is taken over the days present; a day not published,
+ * uncovered or tampered is left out and named in `missing` (the worker raises an alert), never a block for the year it
+ * stays in the window. Day L itself missing, or fewer than volumeMinDays days present, is unknown.
  */
 export const volumeCondition = (v: CurveVolumeFact, at: number, p: Policy['regime']): ConditionResult => {
   const lastDay = Math.floor(at / DAY_MS) - p.volumeLagDays;
@@ -120,17 +146,22 @@ export const volumeCondition = (v: CurveVolumeFact, at: number, p: Policy['regim
   }
   const byDay = new Map<number, bigint>();
   for (const d of v.days) if ((d.day + 1) * DAY_MS <= at) byDay.set(d.day, d.volumeLamports);
+  const last = byDay.get(lastDay);
+  if (last === undefined) return unknown('volume', 'curve-volume', 'not-covered', `no curve volume for UTC day ${lastDay}`);
   const span: bigint[] = [];
+  const missing: number[] = [];
   for (let day = firstDay; day <= lastDay; day++) {
     const x = byDay.get(day);
-    if (x === undefined) return unknown('volume', 'curve-volume', 'not-covered', `no curve volume for UTC day ${day}`);
-    span.push(x);
+    if (x === undefined) missing.push(day);
+    else span.push(x);
   }
-  const last = byDay.get(lastDay)!;
+  if (span.length < p.volumeMinDays) {
+    return unknown('volume', 'curve-volume', 'not-covered', `${span.length} days of curve volume present up to UTC day ${lastDay} (${missing.length} missing); ${p.volumeMinDays} needed`);
+  }
   const sorted = [...span].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
   const rank = Math.ceil((p.volumePercentile * sorted.length) / 100);
   const pct = sorted[Math.max(rank, 1) - 1]!;
-  return { condition: 'volume', ok: last >= pct, value: String(last), limit: String(pct) };
+  return { condition: 'volume', ok: last >= pct, value: String(last), limit: String(pct), ...(missing.length === 0 ? {} : { missing }) };
 };
 
 /** SOL's change over the 24 h ending at `at`, in basis points (rounded down), must be above the floor. */
