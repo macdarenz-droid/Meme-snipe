@@ -118,4 +118,43 @@ out['spend_rules'] = {'extras_inside_U': EXTRAS, 'P10_own_allocation': P10_CAP,
                       'S_max_for_start_U_ge_1_1x_estimate': ACCT_CAP - math.ceil(1.1 * est),
                       'S_max_for_full_row_cap': ACCT_CAP - cap,
                       'min_blocks_per_s_in_14d_window': round(rec['blocks'] / (14 * 86400 - 31 * 45 * 60), 2)}
+
+# R3-01: effective reading rate (round 4). One data-scan job: setup, a 300-min rpc-day budget, save, chain gap;
+# a unit cut at the budget end is re-read by the next job (half a unit lost on average); 45 min of QA a day.
+SETUP_MIN, SAVE_MIN, GAP_MIN, QA_MIN, BUDGET_MIN = 15, 10, 5, 45, 300   # ASSUMED; P10 measures them
+win_days = [by[n] for n in span('2026-07-22', '2026-08-21')]
+win_blocks = [(x['units'] + 1) * UNIT * x['produced_frac'] for x in win_days]
+
+def pull_wall_min(raw):
+    tot = 0; jobs = 0
+    for b in win_blocks:
+        unit_min = UNIT / raw / 60
+        t = b / raw / 60
+        n = math.ceil(t / (BUDGET_MIN - unit_min / 2))
+        jobs += n
+        tot += t + (n - 1) * unit_min / 2 + n * (SETUP_MIN + SAVE_MIN + GAP_MIN) + QA_MIN
+    return tot, jobs
+
+def p10_effective(raw):   # one full job plus one chained restart, no QA
+    read_s = 2 * (BUDGET_MIN - UNIT / raw / 60 / 2) * 60
+    wall_s = 2 * (SETUP_MIN + BUDGET_MIN + SAVE_MIN + GAP_MIN) * 60
+    return raw * read_s / wall_s
+
+lo, hi = 1.0, 50.0
+for _ in range(60):
+    m = (lo + hi) / 2
+    lo, hi = (lo, m) if pull_wall_min(m)[0] <= 14 * 1440 else (m, hi)
+rates = {}
+for r in (5, 7, 8, 9, 10, 12, 15, 25):
+    w, j = pull_wall_min(r)
+    rates[str(r)] = {'days': round(w / 1440, 2), 'jobs': j, 'effective_blocks_per_s': round(sum(win_blocks) / (w * 60), 2),
+                     'p10_effective_blocks_per_s': round(p10_effective(r), 2)}
+P10_RPS, P10_CONC = 12, 8
+out['effective_rate'] = {'assumptions_min': {'setup': SETUP_MIN, 'save': SAVE_MIN, 'chain_gap': GAP_MIN, 'qa_per_day': QA_MIN,
+                                             'rpc_day_budget': BUDGET_MIN, 'job_timeout': 355},
+                         'effective_needed_14d': round(sum(win_blocks) / (14 * 86400), 2),
+                         'raw_needed_14d': round(hi, 2), 'by_raw_rate': rates,
+                         'p10': {'rpc_rps': P10_RPS, 'rpc_conc': P10_CONC,
+                                 'credit_cap': P10_RPS * 2 * BUDGET_MIN * 60,
+                                 'max_effective_at_setting': round(p10_effective(P10_RPS), 2)}}
 json.dump(out, sys.stdout, indent=1)

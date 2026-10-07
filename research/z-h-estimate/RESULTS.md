@@ -1,7 +1,8 @@
 # Z-H credit estimate: 30 (target 60) days of history for the B-10 replay
 
-Researcher card Z-H. Round 1: `db3050b3`. Round 2: `e6860267`. **Round 3: 2026-10-07 UTC (8 Oct Melbourne).** It
-answers the round-2 review and red team, and the supervisor's round-3 rulings 1–9, in `docs/reviews/ZH.md` at
+Researcher card Z-H. Round 1: `db3050b3`. Round 2: `e6860267`. Round 3: `23eb1d6f` (review PASS). **Round 4 (final
+pass): 2026-10-07 UTC (8 Oct Melbourne)**, answering the round-3 red team (R3-01 to R3-04) and reviewer M1–M3 as
+relayed by the supervisor (§0). Round 3 answered the round-2 review and red team, and the supervisor's round-3 rulings 1–9, in `docs/reviews/ZH.md` at
 `17faca6c`, against the spend rules of A-M14-05 in Z0D PR #286 at `e28dfab4`.
 
 **No Helius call was made in any round.** Every figure comes from data already held, from official documentation
@@ -13,7 +14,17 @@ Labels: **MEASURED** (counted from data), **DERIVED** (arithmetic on measured or
 (judgement), **VERIFY** (not confirmed; check before relying on it). HANDOVER and PROJECT_STATE citations are pinned to
 `2b736a3c`.
 
-## 0. Round-3 changes (supervisor item → section)
+## 0. Round-4 changes (supervisor item → section)
+
+| Item | What changed | Section |
+|---|---|---|
+| R3-01 Effective rate | The reading rate is now modelled with the job's duty cycle (300-min budget, 355-min timeout, setup, save, chain gap, the unit cut at each budget end, 45 min of QA a day). The 14-day minimum is **5.94 blocks/s effective, about 7.15 raw**. P10 is now one full 300-min job plus one chained restart at one setting (`rpc_rps` 12, `RPC_CONC` 8). It passes only with an effective rate ≥ 8 blocks/s and retries ≤ 25%. **P10 cap 432,000.** New P16: an uncapped auto-chain inside the window | §1, §3, §7.3, §7.4 |
+| R3-02 Exclusivity wording | "nothing outside the bot's own spend ledger uses the Helius account" | §1, §7.1, §8, end |
+| R3-03 M2 cost of the blackout | No RPC C failover, no Helius expiry proofs and no fee estimates while the engine has no Helius; W_B can get gaps if Shyft fails | §10 |
+| R3-04 #214 | Old Faithful also needs PR #214 first; it is open and unmerged | §10 |
+| M1–M3 | Summary lines 2 and 6; GitHub storage risk in line 2; "engine use as else" closed by the supervisor's reading (a) | §8, §12, end |
+
+## 0a. Round-3 changes (kept for the record)
 
 | Item | What changed | Section |
 |---|---|---|
@@ -35,9 +46,9 @@ Labels: **MEASURED** (counted from data), **DERIVED** (arithmetic on measured or
   - the replay-mode ruling exists (§5): without it, both MR and PM make zero entries and B-10 proves nothing;
   - the Z-H prep code is built and reviewed (§7), and P10 has passed;
   - the owner's steps in §7 are done.
-- **Earliest start: about 8 Nov 2026.** A-M14-05's `exclusive=yes` means "nothing else uses the Helius account during
-  the window or in the 31 days before it". Helius was used outside the bot's ledger on 7 Oct (the old worker and the
-  execution audit, §8), so 31 days run to about 7 Nov, and only if nothing else uses the key until then. In practice
+- **Earliest start: about 8 Nov 2026.** A-M14-05's `exclusive=yes` means nothing outside the bot's own spend ledger uses the Helius account during
+  the window or in the 31 days before it (wording of the supervisor's round-4 ruling). Helius was used outside the bot's ledger on 7 Oct (the old worker and the
+  execution audit, §8), so 31 days run to about 7 Nov, and only if nothing outside the bot's own spend ledger uses the key until then. In practice
   the start is later: Phase 0 survival, C-76 and M2 come first.
 - **Recommended window: the 30 UTC days 2026-07-23 to 08-21, plus a 1-day lead-in (07-22).** It is the cheapest clean
   post-BOOST window, because its slots are about 420 ms. These are **old-format days** (pre-B3 fees, pre-B4 event
@@ -45,8 +56,8 @@ Labels: **MEASURED** (counted from data), **DERIVED** (arithmetic on measured or
 - **Credits (one `B10-ACK` window):**
   - estimate shown to the owner **7,762,033** (7,735,933 for the days + 26,100 extras);
   - row cap **9,022,478** (8,996,378 upper for the days + 26,100 extras);
-  - P10 separately: **12,000** under its own `B10-ACK`;
-  - **total exposure 9,034,478** (§3).
+  - P10 separately: **432,000** under its own `B10-ACK` (round 4: a full job plus a restart);
+  - **total exposure 9,454,478** (§3).
 - **The S condition.** `U = min(row cap, 9.5M − S)`, where S is the account's rolling 31-day Helius spend at reservation.
   - S ≤ **961,763**: the job may start (U ≥ 1.1 × estimate);
   - S ≤ **477,522**: it gets the full row cap;
@@ -57,9 +68,11 @@ Labels: **MEASURED** (counted from data), **DERIVED** (arithmetic on measured or
   and M26 refuses paper (A-M14-05 "After the window"). Paper (M3) can start no earlier than 31 days after the
   reservation. If M2 is still running for those 31 days, that costs nothing extra; if the pull is the last thing before
   M3, it costs up to 31 days. Each further window adds up to 31 more (§10).
-- **Time.** The window is at most 14 days, so the pull must average at least **6.4 blocks/s**, including about 23 h of
-  QA. Measured so far: 3 to 5 blocks/s on Free. **P10 must show ≥ 8 blocks/s sustained, with retries ≤ 25%, or there
-  is no pull** (§7).
+- **Time.** The window is at most 14 days. Counting the job's duty cycle (setup, save, chain gaps, units cut at each
+  300-min budget, QA), the pull must achieve at least **5.94 blocks/s effective**, which is about **7.15 blocks/s raw**
+  (§3). Measured so far: 3 to 5 blocks/s raw on Free. At 5 raw the effective rate is about 4.2, which takes about
+  20 days and does not fit. **P10 must show an effective rate ≥ 8 blocks/s over a full job and a restart, with retries
+  ≤ 25%, or there is no pull** (§7.3). That needs about 9 blocks/s raw, which puts the pull at about 11.6 days.
 - **Storage:** about 0.5 to 1.4 TB in private releases. GitHub's acceptable-use terms reserve the right to throttle or
   delete repositories with "significantly excessive" bandwidth; whether this pull qualifies is not confirmed (§6).
 - **60 days** (07-24 to 09-21 + lead-in) cost about 17.8M point, 20.7M upper. That is at least 3 windows (each
@@ -182,8 +195,8 @@ by the owner's 8 Oct rule in Z0D PR #286 (`docs/MIGRATION.md:823` on `claude/z0d
   - admin usage-endpoint reads: 100 (their credit cost is **VERIFY**; budgeted at 1 a call).
 - **Row cap (`cap=` in the `B10-ACK`): 9,022,478** = 8,996,378 + 26,100.
 - **Estimate shown to the owner (cited by file and sha in the reservation): 7,762,033** = 7,735,933 + 26,100.
-- **P10 throughput test: 12,000**, under its own `B10-ACK` (§7).
-- **Total exposure: 9,034,478.** The 12,000 of P10 is in S at the main reservation if it falls within the 31 days
+- **P10 throughput test: 432,000**, under its own `B10-ACK` (§7.3): its rate limit (12 req/s) × 2 × 300 min.
+- **Total exposure: 9,454,478.** P10's 432,000 is in S at the main reservation if it falls within the 31 days
   before it, so it counts inside the S limits below.
 - **S conditions** (A-M14-05: `U = min(row cap, acctCap − S)`, `acctCap` ≤ 9,500,000; start only if
   `U` ≥ 1.1 × the estimate):
@@ -191,12 +204,17 @@ by the owner's 8 Oct rule in Z0D PR #286 (`docs/MIGRATION.md:823` on `claude/z0d
   - full row cap: S ≤ 9,500,000 − 9,022,478 = **477,522**.
 - **What S holds:**
   - the signer's standing block of 50,000, if it is installed by then;
-  - P10's 12,000;
+  - P10's 432,000, if P10 ran within the 31 days before;
   - the engine's own Helius use in the 31 days before, which is unestimated: ARCH sizes the engine's whole Helius use
     to fit Helius Free's 1M a month (D03, §11.2), which alone could exceed both limits;
   - or the owner's `dashUsed` reading plus spend since, whichever is larger.
-  - So **in the 31 days before the reservation, the engine must use at most about 0.9M Helius credits for the job to
-    start, and at most about 0.41M for the full cap.** Run M1 and M2 mainly on Shyft and Chainstack (A-M14-02).
+- **With P10 inside the 31 days before** (signer 50,000 + P10 432,000 = 482,000):
+  - the engine may use at most about **0.48M** in those 31 days for the job to start;
+  - the full row cap is **out of reach**, since 482,000 > 477,522. The job would start with `U` just under the upper
+    bound.
+- **With P10 more than 31 days before:** at most about **0.91M** for the job to start, and about **0.43M** for the
+  full cap. That costs about 31 more days of calendar time.
+- Run M1 and M2 mainly on Shyft and Chainstack (A-M14-02).
 - **Between the two limits,** the job starts with `U` below the upper bound. If production and retries run high, it
   stops at `U` with fewer than 31 days read:
   - the finished days stay in the store (P14);
@@ -207,13 +225,32 @@ by the owner's 8 Oct rule in Z0D PR #286 (`docs/MIGRATION.md:823` on `claude/z0d
   31-day, the engine's allocation after the window is 5M − the signer's block − `U` (below 0), and nothing is left for
   the engine for 31 days. The 63k from the 7 Oct audit (§8) matters only through `dashUsed` and the 31-day exclusivity.
 
-**Time and transfer (DERIVED).**
+**Time and transfer (DERIVED; `estimate.json` `effective_rate`).**
 - Blocks to read: about 7.19M, including the rescans.
-- At 5 blocks/s (the only measured rate, Free) about **16.6 days** of reading, which does **not** fit the 14-day
-  window. At 8 blocks/s (P10's pass mark) about 10.4 days. At 25/s about 3.3 days.
-- Add about 45 minutes a day of QA and packaging (about 23 h).
-- The minimum average over a 14-day window is 7.19M / (14 d − 23 h) ≈ **6.4 blocks/s**, including gaps between chained
-  jobs. P10's 8 blocks/s leaves about 20% margin.
+- **Duty-cycle model.** A data-scan job's `rpc-day.sh` reads for at most 300 min inside a 355-min job timeout
+  (`data-scan.yml:23-24, 174, 317`). Per job I assume (ASSUMED; P10 measures them):
+  - setup 15 min;
+  - save 10 min;
+  - 5 min to the next chained job;
+  - half a unit lost when the budget cuts a unit (it is re-read by the next job, so those credits are also spent
+    twice; covered by the retry allowance);
+  - 45 min of QA, packaging and determinism per day.
+- **Effective rate needed to finish 31 days inside 14 days: 5.94 blocks/s**, which is about **7.15 blocks/s raw**.
+
+| Raw blocks/s | Jobs | Days end to end | Effective blocks/s (pull) | Effective blocks/s (P10's two jobs, no QA) |
+|---|---|---|---|---|
+| 5 (measured on Free) | 93 | 19.9 (does not fit) | 4.19 | 4.43 |
+| 8 | 62 | 12.8 | 6.52 | 7.16 |
+| 9 | 62 | 11.6 | 7.18 | 8.07 |
+| 10 | 62 | 10.7 | 7.80 | 8.98 |
+| 12 | 62 | 9.3 | 8.98 | 10.80 |
+| 25 | 31 | 4.9 | 16.83 | 22.61 |
+
+- P10's pass mark (≥ 8 effective over two jobs) means about 9 raw, which puts the pull at about 11.6 days: about 2.4
+  days of margin inside the 14.
+- **Jobs and chaining.** About 62 jobs. `MAX_CHAIN` is 12 chained runs (`data-scan.yml:504, 527`), so today's
+  workflow would need at least 5 hand re-dispatches, each a gap the model does not count. P16 replaces this with an
+  auto-chain bounded only by `to` and `U`.
 - `RPC_CONC` defaults to 4 (`ci/rpc-day.sh:58`), so throughput is about 4 divided by the `getBlock` latency: 8 blocks/s
   needs 500 ms or less at 4, or 1 s or less at 8.
 - Transfer: about 3.0 MB per block, the RPC pilot's figure, decompressed (`helius.go` counts bytes after decompression;
@@ -376,13 +413,13 @@ instance, ledger written ahead"). This card builds that design for the Z-H job a
    text says 2).
 6. Send the message from which the supervisor writes the pinned `B10-ACK` row:
    `B10-ACK id=<id> cap=9022478 acctCap=<≤ 9500000> exclusive=yes dashUsed=<credits>@<UTC date> ackAt=<ISO UTC> from=<UTC date> to=<UTC date ≤ from + 14 d>`.
-   `exclusive=yes` is the owner confirming that nothing else used the Helius account in the 31 days before `from` and
-   will not during the window (§8).
-7. The same as 4 to 6 for P10's own small window (§7.3), before the main one.
+   `exclusive=yes` is the owner confirming that nothing outside the bot's own spend ledger uses the Helius account in the 31 days before `from` or
+   during the window (§8).
+7. The same as 4 to 6 for P10's own window (§7.3, `cap=432000`), before the main one.
 
 ### 7.2 What A-M14-05 already fixes (the Z-H job must implement these exactly)
 - **Window `[from, to)` of at most 14 days.** The job sends only inside it and stops at `to`. A 31-day pull must
-  therefore average at least 6.4 blocks/s (§3).
+  therefore reach at least 5.94 blocks/s effective (about 7.15 raw, §3).
 - **`U = min(cap, acctCap − S)`, reserved as one entry.** S = max(the account ledger's rolling 31-day spend, the
   signer's block included; `dashUsed` + the ledger's spend since that reading). The job starts only if
   `U` ≥ 1.1 × the cited estimate.
@@ -407,22 +444,34 @@ instance, ledger written ahead"). This card builds that design for the Z-H job a
     the cycle's use. Mapping it to S is a spec decision for Z0D;
   - its own credit cost is **VERIFY**, and is budgeted inside `U` at 100.
 
-### 7.3 P10: throughput gate, with its own window
-- **Purpose:** prove the pull fits a 14-day window before any large spend.
-- **Pass mark:** at least **8 blocks/s sustained** over the test, and **retries ≤ 25%** of attempts. **Otherwise there
-  is no pull** (supervisor ruling). 8/s leaves about 20% margin over the 6.4/s minimum.
-- **Run:** two units (9,000 slots) of a window day, at `rpc_rps` 10 then 25, `RPC_CONC` 4 then 8. It reports blocks/s,
-  retry share, latency, and MB per block on the wire and decompressed.
+### 7.3 P10: throughput gate, with its own window (round 4)
+- **Purpose:** prove that the pull fits a 14-day window, with real job overheads, before any large spend.
+- **Run:** one full data-scan job (300-min `rpc-day` budget) plus one chained restart, at **one setting**:
+  `rpc_rps` 12, `RPC_CONC` 8, on window days (07-22 onward).
+  - It reports raw blocks/s, the **effective rate** (blocks read ÷ wall time from the first job's start to the second
+    job's end, setup, save and the chain gap included), retry share, latency, the time lost to the budget cut and the
+    restart, and MB per block on the wire and decompressed.
+- **Pass mark:** effective rate **≥ 8 blocks/s** and retries **≤ 25%** of attempts. **Otherwise there is no pull**
+  (supervisor ruling).
+  - 8 effective in P10 corresponds to about 9 raw, which is about 7.2 effective in the pull with QA: about 21% above
+    the 5.94 minimum.
+  - At this setting the highest possible P10 effective rate is about 10.8 (`estimate.json`).
+- **Credit cap: 432,000** = 12 req/s × 2 × 300 min × 60 s. Every attempt costs a credit, retries included, and the
+  limiter caps attempts. A setting of 10 req/s would cap at 360,000, but could reach only about 9.0 effective, too
+  close to the pass mark.
 - **Its own allocation:**
-  - a pinned row `B10-ACK id=<id-P10> cap=12000 acctCap=9500000 exclusive=yes dashUsed=…@… ackAt=… from=D to=D+1`;
-  - its own `botctl b10-reserve`;
+  - a pinned row `B10-ACK id=<id-P10> cap=432000 acctCap=9500000 exclusive=yes dashUsed=…@… ackAt=… from=D to=D+1`;
+  - its own `botctl b10-reserve` (two jobs fit in one day);
   - the same 31-day exclusivity, so P10 too can run no earlier than about 8 Nov.
-  - Its 12,000 then sits in S at the main reservation if that falls within 31 days.
-  - The units it reads count only as a test: they are not the main ack's `pageLog`, so they are read again in the main
-    window.
-- **Alternative for the supervisor:** run P10 as the first two units of the main window, with a stop rule. That saves
-  the second ack and the second exclusivity wait. But a P10 failure would then end a window whose whole `U` counts for
-  31 days. With the separate window, at most 12,000 is tied up.
+  - The units it reads count only as a test: they are not the main ack's `pageLog`, and they are read again in the
+    main window.
+- **Consequence for S (new in round 4).** P10's 432,000 stays in S for 31 days. If the main reservation follows
+  within 31 days, the start limit leaves the engine about 0.48M, and the full cap is out of reach (§3). Waiting 31 days
+  after P10 avoids that, at a cost of about 31 days.
+- **Alternative for the supervisor:** run P10 as the first full job and restart of the main window, with a stop rule
+  if it fails.
+  - Benefits: no second ack, no second exclusivity wait, no 432,000 in S, and its blocks count towards the 31 days.
+  - Cost: a failure would end a window whose whole `U` counts for 31 days.
 
 ### 7.4 Additions (each with file and test that fails before and passes after)
 
@@ -441,6 +490,7 @@ instance, ledger written ahead"). This card builds that design for the Z-H job a
 | P12 | pump_fees FeeConfig and PumpSwap GlobalConfig changes kept (filter) or fetched (`getTransactionsForAddress`, ≤ 1,000 inside `U`) | `rpcscan/scan.go` or a fetch script | fixture with a fee-config change → a row or record exists |
 | P13 | Storage per §6 (DATA-STORE + the DATA-PUB ruling) | DATA-STORE scripts | upload and read-back of a fixture day |
 | P14 | Per-unit upload, then day-level finalize, QA and parity from the store (§6) | `ci/rpc-day.sh`, `ci/check-day.sh`, `ci/package-day.sh`, `data-scan.yml` | test-ci: a fixture day with `FAKE_AVAIL` below one day's size completes; an upload or read-back failure stops before the next unit |
+| P16 | **Uncapped auto-chain inside the window.** In the Z-H job, the `continue` step re-dispatches after every resumable stop (time budget, back-off) with no `MAX_CHAIN` limit, while the time is before `to`, the written-ahead ledger has room under `U`, and the pinned ack is unchanged. It stops on a non-resumable exit, at `to`, at `U`, or on an ack change. No hand re-dispatch | `data-scan.yml` (`continue` job, `:495-533`) | test-ci: 70 resumable stops inside the window → 70 re-dispatches; a stop at or after `to`, with the ledger at `U`, or with a changed ack → no re-dispatch |
 | P15 | The replay-mode input provider and config key of §5 (pending the Z0D spec change): `replay_unavailable` → "assumed pass, flagged" only with a B-10 trial key; refused in paper and live | A-M11-01 loader, M25 config | config validation refuses the key in paper and live; every tagged decision is excluded from B, R and P statistics |
 
 **Cache scoping (RT-16).** This repo is public. Whether Actions caches made on the default branch can be restored by
@@ -464,12 +514,13 @@ commits). It counted 10 credits a call to be safe; the documented cost is 1. Whe
 after the audit is unknown. Helius's usage endpoint (§7.2) gives the per-product split; only the owner's dashboard or
 that endpoint can confirm it.
 
-**Precondition (A-M14-05 `exclusive=yes`):** the owner confirms that nothing else used the Helius account in the 31
-days before `from` and nothing will during the window. Every consumer above other than the bot's own ledger must
-therefore stay off the key for that time. Use on 7 Oct (the old worker and the audit) puts the earliest `from` at
-about 8 Nov. Whether the engine's own ledgered use in M1 and M2 counts as "else" is a reading for the supervisor. The
-spec counts it in S, which implies it is allowed; if it did count, a further 31 days without engine Helius would come
-before every window.
+**Precondition (A-M14-05 `exclusive=yes`):** the owner confirms that nothing outside the bot's own spend ledger uses the Helius account in the
+31 days before `from` or during the window (the supervisor's round-4 wording, to be carried into the Z0D spec).
+- Every consumer above outside that ledger (CI workflows, scripts, research sessions) must stay off the key for that
+  time.
+- Use on 7 Oct (the old worker and the audit, both outside the new ledger) puts the earliest `from` at about 8 Nov.
+- **Closed (supervisor's reading (a), round 4):** the engine's own ledgered Helius use in M1 and M2 is not "else". It
+  is allowed, and it counts in S (§3).
 
 **Separate key or project:**
 - The usage endpoint counts per project ("The project ID … must match the project associated with the API key").
@@ -505,10 +556,10 @@ option alone, assuming everything else is ready.
 
 | | (b) Helius pull (the owner's 8 Oct choice) | Old Faithful archive | (c) Drop the history part |
 |---|---|---|---|
-| Credits | Estimate 7.76M; row cap 9.02M; plus P10 12,000 under its own ack: exposure 9.03M of the account's 9.5M rolling cap. 60 days: about 17.8M point, 20.7M upper, at least 3 windows | **0** | 0 |
-| Earliest start | About 8 Nov (31-day exclusivity after the 7 Oct use), and only after Phase 0 survival, C-76, the terms answer, storage, the replay-mode ruling, the prep code and P10 | Any time after the scanner changes (P2, P11, P12, P14), storage, and the owner's exception | — |
-| Time | P10 must show ≥ 8 blocks/s → about 10.4 days of reading + about 1 day of QA inside a 14-day window; at the measured 5/s it does not fit | Reads about 600 GB per October day (`historical-data.md:86`; fewer blocks in July) at ≤ 40 MB/s (`ARCHIVE_MAX_MBPS`), about 4.2 h a day + QA; at most one day per served 3-hourly check. About 5 to 7 days for 31 days if every check is served | — |
-| Paper delay | **Up to 31 days** per window: the engine has no Helius for 31 days after each reservation (A-M14-05). 0 if M2 still has 31 days to run after the reservation. 60 days: up to about 93 | **0** (no Helius use) | **Blocked**: Z0D says "No branch waives B-10 (option (c) was not chosen)" (SPEC-A A-M13-06 on #286), so `backtest_passed`, and hence paper, cannot be reached unless the owner changes item 2 |
+| Credits | Estimate 7.76M; row cap 9.02M; plus P10 432,000 under its own ack: exposure 9.45M of the account's 9.5M rolling cap. 60 days: about 17.8M point, 20.7M upper, at least 3 windows | **0** | 0 |
+| Earliest start | About 8 Nov (31-day exclusivity after the 7 Oct use), and only after Phase 0 survival, C-76, the terms answer, storage, the replay-mode ruling, the prep code and P10 | Only after **PR #214** (ARCHIVE-SAFE B: scanner caps 10 req/s and 40 MB/s, every 503 stops). On 2026-10-07 it is **open and unmerged**: head `e48d71df`, base `ccr-14987baf-i6lrsl` at the stale `efa3b006`, last updated 2026-10-05, titled "DO NOT MERGE before the 09-21 chain ends" (read through the GitHub API). It moves the scanner revision, so it must merge before P2 freezes it. Then the scanner changes (P2, P11, P12, P14), storage and the owner's exception | — |
+| Time | P10 must show ≥ 8 blocks/s effective (about 9 raw), which gives about 11.6 days end to end inside a 14-day window. At the measured 5 raw (4.2 effective) it takes about 20 days and does not fit | Reads about 600 GB per October day (`historical-data.md:86`; fewer blocks in July) at ≤ 40 MB/s (`ARCHIVE_MAX_MBPS`), about 4.2 h a day + QA; at most one day per served 3-hourly check. About 5 to 7 days for 31 days if every check is served | — |
+| Paper delay | **Up to 31 days** per window: the engine has no Helius for 31 days after each reservation (A-M14-05). 0 if M2 still has 31 days to run after the reservation. 60 days: up to about 93. **Cost during M2 even when paper is not delayed:** with no Helius, the engine has no RPC C failover, no Helius expiry proofs and no fee estimates (fees fall back to the floor, D15). If Shyft fails, only Chainstack (0.5 req/s) remains, so the M07 recording, and hence `W_B`, can get gaps | **0** (no Helius use) | **Blocked**: Z0D says "No branch waives B-10 (option (c) was not chosen)" (SPEC-A A-M13-06 on #286), so `backtest_passed`, and hence paper, cannot be reached unless the owner changes item 2 |
 | Storage | 0.5 to 1.4 TB in private releases (§6); GitHub's "significantly excessive" clause unconfirmed | The same sizes and the same GitHub question. Publishing archive-derived files "waits on Triton" (DECISIONS, pilot baseline note); whether a private store needs Triton's answer is **VERIFY** | None |
 | Terms and politeness | Helius §3.2(xi) "lawful business purpose" question (§9); stop after 3 failures (P3); ≤ 25 req/s | Triton's terms bar getting around a block; `ARCHIVE_MAX_RPS` 10, one lane; any 429 → at least 3 h back-off and the chain stops; the scanner's identity never changed (DECISIONS "No disguise"). It served on 6 Oct (HANDOVER @ `2b736a3c`), but blocked the scanner for hours on 4 Oct | — |
 | Rule exception needed | Given on 8 Oct ("B") | "No bulk historical downloads" (carried 2026-10-06) needs **the same kind of owner exception** as Helius got. The owner said on 6 Oct "u can download other days for that politely", before that rule | The owner must change pre-funding item 2 |
@@ -534,9 +585,11 @@ option alone, assuming everything else is ready.
 - **DERIVED:** every credit, time, transfer and storage figure.
 - **ASSUMED:**
   - retries at most 25% (the upper bound);
+  - job overheads of 15 min setup, 10 min save, 5 min chain gap and 45 min QA a day (P10 measures them);
   - October row and raw sizes for July and August (±2×);
   - 100 to 2,000 MR pools for age lookups;
   - about 1 KB per raw record.
+- **Closed in round 4:** the engine's ledgered use is not "else" under `exclusive=yes` (supervisor's reading (a)).
 - **VERIFY:**
   - the cycle's real use and the 126k split;
   - the Developer throughput and retry rate (P10);
@@ -551,7 +604,6 @@ option alone, assuming everything else is ready.
   - whether the archive-derived private store needs a Triton ruling;
   - the runners' real free space on `/mnt` (logged in run summaries);
   - whether 0.5 to 1.4 TB in private releases is "significantly excessive" under GitHub's acceptable-use terms;
-  - whether the engine's own ledgered Helius use counts as "else" under `exclusive=yes`;
   - the engine's Helius use in M1 and M2 (it decides S).
 
 ## 13. Files
@@ -564,11 +616,11 @@ option alone, assuming everything else is ready.
 | `rec_rates.py`, `rec_summary.py`, `rec_summary_2026-10-06.json` | Round 1: young-pool rates from the 6 Oct recording |
 
 ## For the owner
-- History test costs about 7.8 million Helius credits (at most 9.0 million) of a month's 10 million, for 30 older days (23 Jul–21 Aug); 60 days needs at least 3 rounds.
-- Before any credit: a strategy survives Phase 0, you rule on C-76 and Helius's "lawful business purpose" question, you set up private storage (0.5–1.4 TB), the safety code passes, and nothing else uses the Helius key for 31 days, so about 8 Nov at the earliest.
-- After the download the bot has no Helius for 31 days, so paper trading can start up to 31 days later (about 93 days for 60 days).
-- Speed is unproven: a 12,000-credit test must show 8 blocks a second or there is no download; it then takes about 11 of its 14 days.
+- History test costs about 7.8 million Helius credits (at most 9.0 million) of a month's 10 million, for 30 older days (23 Jul–21 Aug), plus up to 432,000 for a speed test first; 60 days needs at least 3 rounds.
+- Before any credit: a strategy survives Phase 0; you rule on C-76 and Helius's "lawful business purpose" question; a rule for checks history can't rebuild is agreed; you set up private storage (0.5–1.4 TB, which GitHub may throttle at that size); the safety code passes; nothing outside the bot's own spend ledger uses the Helius account for 31 days. So about 8 Nov at the earliest.
+- After the download the bot has no Helius for 31 days: paper trading can start up to 31 days later (about 93 days for 60 days), and meanwhile the bot loses its Helius backup reads and fee estimates.
+- Speed is unproven: the real reading rate, after job restarts and checks, must be at least 6 blocks a second; the speed test must show 8 or there is no download. At the 5 a second seen so far it would take about 20 days, too long for the 14-day window.
 - If it stops early, the days read are kept and the rest waits about 31 days for another round.
-- It proves only that the bot doesn't crash on real history, not that it makes money; checks history can't rebuild (honeypot test, old holders) are assumed to pass and flagged.
-- Free option: the Old Faithful archive, 0 credits, about a week if not blocked, no Helius gap, but it needs the same storage and an exception to "no bulk downloads".
-- Or drop the history test: no cost, but your item 2 then fails and paper can't start unless you change that rule.
+- It proves only that the bot doesn't crash on real history, not that it makes money. Checks history can't rebuild (honeypot test, old holders) would be assumed to pass and flagged, under a rule that is still pending.
+- Free option: the Old Faithful archive: 0 credits, about a week if not blocked, no Helius gap. It needs a pending scanner fix (PR #214), the same storage, and an exception to "no bulk downloads".
+- Or drop the history test: no cost, but your item 2 then fails, and paper can't start unless you change that rule.

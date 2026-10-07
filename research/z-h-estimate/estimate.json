@@ -1035,5 +1035,73 @@
   "S_max_for_start_U_ge_1_1x_estimate": 961763,
   "S_max_for_full_row_cap": 477522,
   "min_blocks_per_s_in_14d_window": 6.38
+ },
+ "effective_rate": {
+  "assumptions_min": {
+   "setup": 15,
+   "save": 10,
+   "chain_gap": 5,
+   "qa_per_day": 45,
+   "rpc_day_budget": 300,
+   "job_timeout": 355
+  },
+  "effective_needed_14d": 5.94,
+  "raw_needed_14d": 7.15,
+  "by_raw_rate": {
+   "5": {
+    "days": 19.86,
+    "jobs": 93,
+    "effective_blocks_per_s": 4.19,
+    "p10_effective_blocks_per_s": 4.43
+   },
+   "7": {
+    "days": 14.28,
+    "jobs": 63,
+    "effective_blocks_per_s": 5.82,
+    "p10_effective_blocks_per_s": 6.25
+   },
+   "8": {
+    "days": 12.76,
+    "jobs": 62,
+    "effective_blocks_per_s": 6.52,
+    "p10_effective_blocks_per_s": 7.16
+   },
+   "9": {
+    "days": 11.59,
+    "jobs": 62,
+    "effective_blocks_per_s": 7.18,
+    "p10_effective_blocks_per_s": 8.07
+   },
+   "10": {
+    "days": 10.66,
+    "jobs": 62,
+    "effective_blocks_per_s": 7.8,
+    "p10_effective_blocks_per_s": 8.98
+   },
+   "12": {
+    "days": 9.26,
+    "jobs": 62,
+    "effective_blocks_per_s": 8.98,
+    "p10_effective_blocks_per_s": 10.8
+   },
+   "15": {
+    "days": 7.16,
+    "jobs": 31,
+    "effective_blocks_per_s": 11.62,
+    "p10_effective_blocks_per_s": 13.52
+   },
+   "25": {
+    "days": 4.94,
+    "jobs": 31,
+    "effective_blocks_per_s": 16.83,
+    "p10_effective_blocks_per_s": 22.61
+   }
+  },
+  "p10": {
+   "rpc_rps": 12,
+   "rpc_conc": 8,
+   "credit_cap": 432000,
+   "max_effective_at_setting": 10.8
+  }
  }
 }
