@@ -175,14 +175,84 @@ def run(sample, hdir, outdir, configs=None):
 VALIDATION = {'R1': ('trail', 0.3, 2.0, 0.4), 'R2': ('trail', 0.3, 2.0, 0.6), 'R3': ('trail', None, 2.0, 0.4),
               'R4': ('ladder', 0.3, 2.0, 0.6)}
 
+def clopper_pearson(k, n, a=0.05):
+    """Exact two-sided binomial interval (assumes independent trades; correlated launches make it too narrow)."""
+    from math import comb
+    cdf = lambda p, kk: sum(comb(n, j) * p ** j * (1 - p) ** (n - j) for j in range(kk + 1))
+    def solve(f, target):
+        lo, hi = 0.0, 1.0
+        for _ in range(60):
+            mid = (lo + hi) / 2
+            if f(mid) > target: lo = mid
+            else: hi = mid
+        return (lo + hi) / 2
+    low = 0.0 if k == 0 else solve(lambda p: cdf(p, k - 1), 1 - a / 2)   # P(X >= k | low) = a/2
+    up = 1.0 if k == n else solve(lambda p: cdf(p, k), a / 2)
+    return low, up
+
+BINS = [('loss at or past the stop (net <= -30%)', -1e9, -0.3), ('small loss (-30%, 0]', -0.3, 0.0), ('up to 2x proceeds (0, +100%]', 0.0, 1.0),
+        ('2x-10x proceeds', 1.0, 9.0), ('10x-50x proceeds', 9.0, 49.0), ('50x+ proceeds', 49.0, 1e18)]
+
+def tail_report(entries):
+    """entries: [(entry_ts, net)] in SOL terms. Realised-return bins, loss bill, sensitivity and calendar clustering."""
+    import datetime
+    vals = [v for _, v in entries]; n = len(vals); tot = sum(vals)
+    bins = []
+    for name, lo, hi in BINS:
+        sel = [v for v in vals if lo < v <= hi] if lo > -1e9 else [v for v in vals if v <= hi]
+        bins.append({'bin': name, 'count': len(sel), 'share': len(sel) / n, 'sum_net': sum(sel), 'share_of_total': (sum(sel) / tot) if tot else None})
+    k10 = sum(1 for v in vals if v >= 9); k50 = sum(1 for v in vals if v >= 49)
+    srt = sorted(vals)
+    chron = [v for _, v in sorted(entries)]
+    seen = 0; halved_freq = []
+    for v in chron:
+        if v >= 9:
+            seen += 1
+            halved_freq.append(v if seen % 2 == 1 else -0.3)   # every second 10x+ winner replaced by a stopped loss
+        else:
+            halved_freq.append(v)
+    best_half = srt[:-1] + [srt[-1] / 2] if n else []
+    worse = [v if v >= 9 else v - 0.05 for v in vals]
+    weeks = {}
+    for t, v in entries:
+        w = datetime.datetime.fromtimestamp(t, datetime.UTC).strftime('%G-W%V')
+        weeks.setdefault(w, []).append(v)
+    wk_means = [statistics.fmean(x) for x in weeks.values()]
+    wk_t = None
+    if len(wk_means) > 1:
+        m = statistics.fmean(wk_means); se = statistics.stdev(wk_means) / len(wk_means) ** 0.5
+        wk_t = {'weeks': len(wk_means), 'mean_of_weekly_means': m, 'approx_95': [m - 2 * se, m + 2 * se]}
+    return {'n': n, 'mean_net': tot / n if n else None, 'bins': bins,
+            'loss_bill_below_10x': sum(v for v in vals if v < 9),
+            'freq_ge_10x': [k10, clopper_pearson(k10, n)], 'freq_ge_50x': [k50, clopper_pearson(k50, n)],
+            'sensitivity_mean': {'without_best': statistics.fmean(srt[:-1]) if n > 1 else None,
+                                 'best_payout_halved': statistics.fmean(best_half) if n else None,
+                                 'non_winners_5pts_worse': statistics.fmean(worse) if n else None,
+                                 'every_second_10x_winner_lost': statistics.fmean(halved_freq) if n else None},
+            'weeks_with_10x_winner': sum(1 for x in weeks.values() if any(v >= 9 for v in x)),
+            'weekly': {w: {'n': len(x), 'sum_net': sum(x)} for w, x in sorted(weeks.items())}, 'weekly_clustered': wk_t}
+
+PRIMARY = 'R1'   # declared before any validation price was read (amendment 2026-10-07, second outside review)
+
 def validate(sample, hdir, outdir):
-    """Exactly the pre-registered R1-R4, both execution lines, all usable coins."""
+    """Exactly the pre-registered R1-R4, both execution lines, all usable coins. Entries are eligible only if
+    entry time + the full 14-day hold ends by the last full bar before the wall (an entry-time rule)."""
     os.makedirs(outdir, exist_ok=True)
     cs, counts = coins(sample, hdir)
+    last_bar = WALL - H
+    elig = []
+    counts['excluded-entry-near-cutoff'] = 0; counts['series-short'] = 0
+    for x in cs:
+        if x['ts'][1] + MAX_HOLD * H > last_bar:
+            counts['excluded-entry-near-cutoff'] += 1; continue
+        if 1 + MAX_HOLD > len(x['c']) - 1:
+            counts['series-short'] += 1; continue          # cannot happen when every series runs to the wall; reported
+        elig.append(x)
+    cs = elig
     for x in cs:
         raw = {int(r[0]): r for r in json.load(open(os.path.join(hdir, x['u']['pool'] + '.json')))}
         x['hi'] = [float(raw[t][2]) if t in raw else x['c'][i] for i, t in enumerate(x['ts'])]
-    res, verdict = {}, {}
+    res, verdict, tails = {}, {}, {}
     for name, (kind, stop, arm, trail) in VALIDATION.items():
         for mode in ('pess', 'opt'):
             legs = []
@@ -196,10 +266,17 @@ def validate(sample, hdir, outdir):
                 res[f'{name}|{mode}|{sz}|capped20x'] = stats([min(v, 19.0) for v in vals])
                 if sz == '$10':
                     res[f'{name}|{mode}|{sz}|bankroll'] = bankroll([(x['ts'][1], v) for (x, _, _), v in zip(legs, vals)], 10.0)
+                    tails[f'{name}|{mode}|{sz}'] = tail_report([(x['ts'][1], v) for (x, _, _), v in zip(legs, vals)])
         a, b = res[f'{name}|pess|$10'], res[f'{name}|opt|$10']
         verdict[name] = 'supported' if (a.get('n') and a['mean'] > 0 and b.get('n') and b['mean'] > 0) else 'not supported'
-    json.dump({'counts': counts, 'verdict': verdict, 'results': res}, open(os.path.join(outdir, 'validation.json'), 'w'), indent=1)
-    print(json.dumps({'counts': counts, 'verdict': verdict}))
+    out = {'counts': counts, 'primary': PRIMARY, 'verdict_primary': verdict[PRIMARY], 'verdict_secondary': {k: v for k, v in verdict.items() if k != PRIMARY},
+           'notes': {'hourly_line': 'decisions at each hourly close with only data known then (executable approximation)',
+                     'real_time_line': 'optimistic bound: uses the unfinished hour high and its final volume; not an execution model',
+                     'capped20x': 'net return capped at +1900% (gross proceeds 20x stake), statistics only',
+                     'units': 'net returns in SOL terms; bankroll figures are $10 bets at the fixed SOL/USD of lottery.py'},
+           'results': res, 'tails': tails}
+    json.dump(out, open(os.path.join(outdir, 'validation.json'), 'w'), indent=1)
+    print(json.dumps({'counts': counts, 'primary': PRIMARY, 'verdict_primary': verdict[PRIMARY], 'verdict_secondary': out['verdict_secondary']}))
 
 if __name__ == '__main__':
     {'run': run, 'ladders': run_ladders, 'validate': validate}[sys.argv[1]](*sys.argv[2:])
