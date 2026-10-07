@@ -26,8 +26,10 @@ jobs:
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
     # The full suite took 13 min 10 s to 13 min 34 s on the base (5 Oct) and passed 15 min with BT-2 #41's study tests,
-    # so a passing run was cancelled. 30 min still stops a hung run; no test is skipped or shortened (supervisor, DECISIONS).
-    timeout-minutes: 30
+    # so a passing run was cancelled. Z01 adds lint, the install and the policy steps, and a reviewer measured 30.7 min
+    # for `pnpm test` alone under load, so 30 min became 45 (round 1 review F3; supervisor ruling 3). It still stops a
+    # hung run; no test is skipped or shortened (supervisor, DECISIONS).
+    timeout-minutes: 45
     env:
       # The base the policy compares against: the pull request's base branch, or on a push the pushed branch itself
       # (nothing changed against it, so the drift and age checks pass and make no registry request).
@@ -45,9 +47,12 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Installed packages have no install scripts; allowlist licences match
         run: node tools/policy/bin/installed.ts
+      # The label counts only on the run whose own event added it (tools/policy/drift.ts; supervisor ruling 7), so it
+      # is always newer than this head: PR_LABEL_ADDED is empty on every other event.
       - name: Lockfile and policy file changes need the deps-reviewed:<hash> label
         env:
           PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          PR_LABEL_ADDED: ${{ github.event.action == 'labeled' && github.event.label.name || '' }}
         run: node tools/policy/bin/drift.ts
       - name: Lint and policy checks
         run: pnpm lint
@@ -57,7 +62,12 @@ jobs:
         run: pnpm test 2>&1 | tee test-output.log
       - name: Secrets scan of the test log
         run: node tools/policy/bin/secrets.ts test-output.log
+      # On a pull request the audit fails only for a package version that pull request adds; on a push it reports only
+      # (tools/policy/audit.ts; supervisor ruling 1). Advisories for versions already in use are reported by
+      # .github/workflows/audit-schedule.yml, which never fails.
       - name: Audit (packages of the checked workspace projects)
+        env:
+          POLICY_EVENT: ${{ github.event_name }}
         run: node tools/policy/bin/audit.ts
       - name: Dependency age (14 days)
         run: node tools/policy/bin/age.ts

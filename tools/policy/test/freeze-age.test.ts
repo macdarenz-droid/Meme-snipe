@@ -11,7 +11,7 @@ import {
 } from '../age.ts';
 import { checkDrift, guardedFiles, guardedHash, isGuarded, reviewLabel, type GuardedFile } from '../drift.ts';
 import {
-  buildFreeze, changelogSection, checkFreeze, freezeFiles, freezeHash, freezeMain, semverGreater, writeFreeze,
+  buildFreeze, changelogSection, checkFreeze, freezeFiles, freezeHash, freezeMain, semverGreater, tsconfigChain, writeFreeze,
 } from '../freeze.ts';
 import type { Git } from '../git.ts';
 import { capture, codes, FIXTURES, runBin } from './helpers.ts';
@@ -38,6 +38,7 @@ function fakeGit(base: Record<string, string> | null): Git {
     blob: (_ref, path) => (base?.[path] === undefined ? null : Buffer.from(base[path] as string)),
     files: () => Object.keys(base ?? {}),
     changedSince: () => [],
+    mergeBase: () => (base === null ? null : 'merge-base'),
   };
 }
 
@@ -60,6 +61,40 @@ describe('freeze manifest', () => {
     const before = freezeHash(dir, 'packages/types', freezeFiles(dir, 'packages/types'));
     writeFileSync(join(dir, 'packages/types/src/deep/b.ts'), 'export {}; \n');
     assert.notEqual(freezeHash(dir, 'packages/types', freezeFiles(dir, 'packages/types')), before);
+  });
+
+  it('freezes the package\'s tsconfig.json and every config it extends (red team RT-06)', () => {
+    const dir = fixtureCopy('tsconfig');
+    writeFileSync(join(dir, 'tsconfig.bot.json'), '{ "compilerOptions": { "strict": true } }\n');
+    writeFileSync(join(dir, 'tsconfig.shared.json'), '{ "extends": "./tsconfig.bot.json" }\n');
+    writeFileSync(join(dir, 'packages/types/tsconfig.json'), '{ "extends": "../../tsconfig.shared.json", "include": ["src/**/*.ts"] }\n');
+    assert.deepEqual(tsconfigChain(dir, 'packages/types'), ['tsconfig.json', '../../tsconfig.shared.json', '../../tsconfig.bot.json']);
+    assert.deepEqual(freezeFiles(dir, 'packages/types'),
+      ['package.json', 'src/index.ts', 'tsconfig.json', '../../tsconfig.shared.json', '../../tsconfig.bot.json']);
+    const before = freezeHash(dir, 'packages/types', freezeFiles(dir, 'packages/types'));
+    writeFileSync(join(dir, 'tsconfig.bot.json'), '{ "compilerOptions": { "strict": false } }\n');
+    assert.notEqual(freezeHash(dir, 'packages/types', freezeFiles(dir, 'packages/types')), before, 'a shared compiler option is part of the frozen surface');
+    // A package name in `extends` is a dependency, which a frozen zero-dependency package cannot have: not followed.
+    writeFileSync(join(dir, 'packages/types/tsconfig.json'), '{ "extends": "@tsconfig/node22/tsconfig.json" }\n');
+    assert.deepEqual(tsconfigChain(dir, 'packages/types'), ['tsconfig.json']);
+    writeFileSync(join(dir, 'packages/types/tsconfig.json'), '{ "extends": "./tsconfig.json" }\n');
+    assert.deepEqual(tsconfigChain(dir, 'packages/types'), ['tsconfig.json'], 'a cycle ends');
+    writeFileSync(join(dir, 'packages/types/tsconfig.json'), '{ not json\n');
+    assert.deepEqual(tsconfigChain(dir, 'packages/types'), ['tsconfig.json'], 'an unreadable config is still frozen');
+    assert.deepEqual(tsconfigChain(dir, 'packages/signer'), [], 'no tsconfig.json, nothing to follow');
+  });
+
+  it('a change to a frozen package\'s tsconfig needs a bump, a changelog entry and both sign-offs (red team RT-06)', () => {
+    const dir = fixtureCopy('tsconfig-bump');
+    writeFileSync(join(dir, 'packages/types/tsconfig.json'), '{ "include": ["src/**/*.ts"] }\n');
+    const recorded = writeFreeze(dir, 'packages/types');
+    assert.ok(recorded.files.includes('tsconfig.json'));
+    const base = fakeGit({ 'packages/types/FREEZE.json': JSON.stringify(recorded) });
+    assert.deepEqual(checkFreeze(dir, ['packages/types'], base, 'base'), []);
+    writeFileSync(join(dir, 'packages/types/tsconfig.json'), '{ "include": ["src/**/*.ts", "test/**/*.ts"] }\n');
+    assert.deepEqual(codes(checkFreeze(dir, ['packages/types'], base, 'base')), ['E_FREEZE_BUMP', 'E_FREEZE_SIGNOFF', 'E_FROZEN_CHANGED']);
+    writeFreeze(dir, 'packages/types');
+    assert.deepEqual(codes(checkFreeze(dir, ['packages/types'], base, 'base')), ['E_FREEZE_BUMP', 'E_FREEZE_SIGNOFF']);
   });
 
   it('records the package name, version, hash and files', () => {
@@ -327,6 +362,30 @@ describe('dependency age (14 days)', () => {
     assert.match(io4.text(), /E_LOCK_PARSE pnpm-lock\.yaml: line 1/);
   });
 
+  it('main: reads the base lockfile at the merge base, not at the base tip (round 1 review F5)', async () => {
+    const dir = fixtureCopy('age-merge-base');
+    const lock = readFileSync(join(dir, 'pnpm-lock.yaml'), 'utf8');
+    // The base branch moved on after this head forked: its tip no longer records @solana/kit at all. Reading the tip
+    // would make every version of this lockfile "new" and fetch (and fail) on versions this change never touched.
+    const tip = lock.replace(/ {2}'@solana\/kit@8\.4\.0':\n(.*\n)+?\n/, '\n');
+    assert.notEqual(tip, lock);
+    const refs: string[] = [];
+    const asked: string[] = [];
+    const git: Git = {
+      ...fakeGit({}),
+      mergeBase: () => 'merge-base',
+      show: (ref, path) => { refs.push(`${ref}:${path}`); return ref === 'merge-base' ? lock : tip; },
+    };
+    const io = capture();
+    assert.equal(await ageMain(dir, now, io, async (name) => { asked.push(name); return pk({}); }, git, 'origin/base', fakePacing()), 0);
+    assert.deepEqual(refs, ['merge-base:pnpm-lock.yaml']);
+    assert.deepEqual(asked, [], 'nothing is new against the merge base, so no request is made');
+    assert.match(io.text(), /0 package version\(s\) new against origin\/base/);
+    const io2 = capture();
+    assert.equal(await ageMain(dir, now, io2, async () => pk({}), { ...git, mergeBase: () => null }, 'origin/base', fakePacing()), 1);
+    assert.match(io2.text(), /E_BASE_REF origin\/base: no merge base between "origin\/base" and HEAD/);
+  });
+
   it('main: fails closed without the base ref and reports a stopped fetch', async () => {
     const dir = fixtureCopy('age-fail');
     const io = capture();
@@ -364,13 +423,23 @@ describe('review label for the lockfile and policy files', () => {
     assert.deepEqual(checkDrift(['src/a.ts'], [], files), []);
     assert.deepEqual(checkDrift(['.npmrc', 'pnpm-lock.yaml'], ['other'], files).map((f) => `${f.code} ${f.file}`), ['E_LOCK_DRIFT pnpm-lock.yaml']);
     assert.deepEqual(codes(checkDrift(['tools/policy/drift.ts'], ['other'], files)), ['E_POLICY_DRIFT']);
-    assert.deepEqual(checkDrift(['tools/policy/drift.ts', 'a.ts'], [reviewLabel(files)], files), []);
+    assert.deepEqual(checkDrift(['tools/policy/drift.ts', 'a.ts'], [reviewLabel(files)], files, reviewLabel(files)), []);
     assert.deepEqual(codes(checkDrift(['pnpm-lock.yaml'], ['deps-reviewed'], files)), ['E_LOCK_DRIFT']);
     const edited = [files[0] as GuardedFile, file('tools/policy/drift.ts', 'y')];
     assert.deepEqual(codes(checkDrift(['tools/policy/drift.ts'], [reviewLabel(files)], edited)), ['E_POLICY_DRIFT'], 'a policy edit makes the label stale');
     assert.deepEqual(codes(checkDrift(['pnpm-lock.yaml'], ['deps-reviewed'], [])), ['E_LOCK_DRIFT'], 'a removed lockfile cannot be labelled');
     const many = ['.npmrc', 'package.json', 'tools/a', 'tools/b', 'tools/c', 'tools/d', 'tools/e'];
     assert.match(checkDrift(many, [], files)[0]?.message ?? '', /^changed: \.npmrc, package\.json, tools\/a, tools\/b, tools\/c and 2 more\. .*"deps-reviewed:[0-9a-f]{32}", computed on the merge commit/);
+  });
+
+  it('counts the label only on the run whose own event added it (red team RT-03, supervisor ruling 7)', () => {
+    const label = reviewLabel(files);
+    assert.deepEqual(checkDrift(['pnpm-lock.yaml'], [label], files, label), [], 'the labeled event that added it');
+    const stale = checkDrift(['pnpm-lock.yaml'], [label], files, '');
+    assert.deepEqual(codes(stale), ['E_LOCK_DRIFT'], 'the same label on a later push run: not this run\'s event');
+    assert.match(stale[0]?.message ?? '', /was not added by this run's event, so it is older than this head: remove it and add it again/);
+    assert.deepEqual(codes(checkDrift(['pnpm-lock.yaml'], [label], files, 'other-label')), ['E_LOCK_DRIFT'], 'another label was added');
+    assert.deepEqual(checkDrift(['src/a.ts'], [], files, ''), [], 'a push that changes no guarded file needs no label');
   });
 
   it('reads the guarded files of a tree, and fails closed on one it cannot read', () => {

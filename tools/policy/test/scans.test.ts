@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { afterAll, describe, it } from 'vitest';
 import { checkAllowlist, isUnnamedReviewer, parseTable } from '../allowlist.ts';
 import { wallClockNowMs } from '../clock.ts';
-import { CI_JOB_IF, INTEGRATION_BRANCH } from '../config.ts';
+import { AUDIT_SCHEDULE_WORKFLOW, CI_JOB_IF, INTEGRATION_BRANCH } from '../config.ts';
 import { formatFindings, type Finding } from '../finding.ts';
 import { checkLicences, type InstalledPackage } from '../installed.ts';
 import { checkLintConfig } from '../lintconfig.ts';
@@ -192,9 +192,12 @@ describe('typosquat and known-malicious packages (TH-37, TH-38, TH-40, TH-41)', 
 describe('workflows', () => {
   const CI = '.github/workflows/ci.yml';
   const GUARD = '.github/workflows/guard.yml';
+  const SCHEDULE = AUDIT_SCHEDULE_WORKFLOW;
   const good = goodSnapshot().workflows.find((w) => w.file === CI)?.text as string;
   const guard = goodSnapshot().workflows.find((w) => w.file === GUARD)?.text as string;
-  const ci = (text: string, guardText: string = guard): RepoSnapshot => ({ ...goodSnapshot(), workflows: [{ file: CI, text }, { file: GUARD, text: guardText }] });
+  const schedule = goodSnapshot().workflows.find((w) => w.file === SCHEDULE)?.text as string;
+  const ci = (text: string, guardText: string = guard, scheduleText: string = schedule): RepoSnapshot =>
+    ({ ...goodSnapshot(), workflows: [{ file: CI, text }, { file: GUARD, text: guardText }, { file: SCHEDULE, text: scheduleText }] });
   const real = readdirSync(join(REPO_ROOT, '.github/workflows')).sort()
     .map((f) => ({ file: `.github/workflows/${f}`, text: readFileSync(join(REPO_ROOT, '.github/workflows', f), 'utf8') }));
   const realCi = real.find((w) => w.file === CI)?.text as string;
@@ -203,14 +206,17 @@ describe('workflows', () => {
   it('passes the good fixture and this repository, comments included', () => {
     assert.deepEqual(checkWorkflows(goodSnapshot()), []);
     assert.deepEqual(checkWorkflows({ ...goodSnapshot(), workflows: real }), []);
-    assert.ok([CI, GUARD, '.github/workflows/sbom.yml'].every((f) => real.some((w) => w.file === f)));
+    assert.ok([CI, SCHEDULE, '.github/workflows/sbom.yml'].every((f) => real.some((w) => w.file === f)));
+    // Supervisor ruling 2 (round 1 review F2): the guard is not in this repository. A pull_request_target run reports
+    // against the base branch's newest commit, so a failed guard run would stop every deploy from that commit on.
+    assert.equal(real.some((w) => w.file === GUARD), false, 'guard.yml is a follow-up card, not this PR');
     assert.deepEqual(checkWorkflows(ci(step('      # - uses: actions/x@v1\n      - run: echo done # comment\n'))), []);
   });
 
   it('skips Zeroed\'s workflows and jobs; --include-zeroed reads them', () => {
     const zeroed = checkWorkflows({ ...goodSnapshot(), workflows: real }, scopeOf(true));
     assert.ok(zeroed.length > 0, 'Zeroed\'s workflows use secrets and pnpm commands the policy refuses');
-    assert.ok(zeroed.every((f) => !f.file.startsWith(GUARD) && !f.file.startsWith('.github/workflows/sbom.yml')), 'only Zeroed\'s files and jobs');
+    assert.ok(zeroed.every((f) => ![SCHEDULE, '.github/workflows/sbom.yml'].some((ok) => f.file.startsWith(ok))), 'only Zeroed\'s files and jobs');
     assert.ok(zeroed.some((f) => f.file.startsWith(`${CI} jobs.historical-data`)), 'the historical-data job writes GITHUB_PATH');
     const extra = `${good}  historical-data:\n    runs-on: x\n    steps:\n      - run: echo /x >> "$GITHUB_PATH"\n`;
     assert.deepEqual(checkWorkflows(ci(extra)), []);
@@ -257,6 +263,50 @@ describe('workflows', () => {
     assert.deepEqual(codes(checkWorkflows(ci(good.replace('runs-on: ubuntu-24.04', 'runs-on: ubuntu-24.04\n    permissions:\n      issues: wrote')))), ['E_WORKFLOW_PERMISSIONS']);
   });
 
+  it('requires the event variables the drift and audit steps read (supervisor rulings 1 and 7)', () => {
+    const drop = (from: string): string[] => {
+      assert.ok(realCi.includes(from), from);
+      return codes(checkWorkflows(ci(realCi.replace(from, ''))));
+    };
+    // Without POLICY_EVENT the audit would fail a push on an advisory for a version already in use, which stops the
+    // deploy gate; without PR_LABELS or PR_LABEL_ADDED the review-label check would see no label.
+    assert.deepEqual(drop("          POLICY_EVENT: ${{ github.event_name }}\n"), ['E_CI_STEP_ENV']);
+    assert.deepEqual(drop("          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}\n"), ['E_CI_STEP_ENV']);
+    assert.deepEqual(drop("          PR_LABEL_ADDED: ${{ github.event.action == 'labeled' && github.event.label.name || '' }}\n"), ['E_CI_STEP_ENV']);
+    const wrong = realCi.replace('POLICY_EVENT: ${{ github.event_name }}', "POLICY_EVENT: push");
+    assert.deepEqual(codes(checkWorkflows(ci(wrong))), ['E_CI_STEP_ENV', 'E_WORKFLOW_ENV'], 'and only its reviewed value');
+    assert.deepEqual(codes(checkWorkflows(ci(realCi))), [], 'this repository passes');
+  });
+
+  it('requires the scheduled advisory report, on a schedule only, with every step continue-on-error (supervisor ruling 1)', () => {
+    assert.deepEqual(checkWorkflows(ci(good)), [], 'the fixture report passes');
+    const missing = checkWorkflows({ ...goodSnapshot(), workflows: [{ file: CI, text: good }, { file: GUARD, text: guard }] });
+    assert.deepEqual(codes(missing), ['E_AUDIT_SCHEDULE']);
+    assert.match(missing[0]?.message ?? '', /the scheduled advisory report is missing/);
+    const bad = (from: string, to: string): string[] => { assert.ok(schedule.includes(from), from); return codes(checkWorkflows(ci(good, guard, schedule.replace(from, to)))); };
+    assert.deepEqual(bad('on:\n  schedule:', 'on:\n  pull_request:\n  schedule:'), ['E_AUDIT_SCHEDULE'], 'no pull request may start it');
+    assert.deepEqual(bad('  schedule:\n    - cron: "41 6 * * *"\n', '  push:\n'), ['E_AUDIT_SCHEDULE'], 'it must run on a schedule');
+    for (const [from, to] of [['        continue-on-error: true\n        with:\n          persist-credentials: false\n', '        with:\n          persist-credentials: false\n'],
+      ['      - continue-on-error: true\n        shell: bash\n        env:\n          GH_TOKEN: ${{ github.token }}\n', '      - shell: bash\n        env:\n          GH_TOKEN: ${{ github.token }}\n'],
+      ['      - continue-on-error: true\n        shell: bash\n        env:\n          POLICY_EVENT', '      - shell: bash\n        env:\n          POLICY_EVENT']] as const) {
+      assert.deepEqual(bad(from, to), ['E_AUDIT_SCHEDULE'], 'a step that can fail would put a red run on the default branch\'s newest commit');
+    }
+    assert.deepEqual(bad('    - cron: "41 6 * * *"', '    - cron: "41 6 * * 1"'), [], 'the cron itself is not fixed');
+  });
+
+  it('allows "issues: write" in the scheduled report only, and no other write anywhere (supervisor ruling 1)', () => {
+    assert.ok(schedule.includes('  issues: write\n'), 'the report declares it');
+    assert.deepEqual(checkWorkflows(ci(good)), []);
+    for (const write of ['  packages: write\n', '  pull-requests: write\n', '  issues: write\n  actions: write\n']) {
+      assert.deepEqual(codes(checkWorkflows(ci(good, guard, schedule.replace('  issues: write\n', write)))), ['E_WORKFLOW_PERMISSIONS'], write);
+    }
+    assert.deepEqual(codes(checkWorkflows(ci(schedule.replace('name: audit-schedule', 'name: ci')))), ['E_WORKFLOW_PERMISSIONS', 'E_CI_JOB_NAME', 'E_CI_STEP_MISSING', 'E_WORKFLOW_TRIGGER'].sort(),
+      'the same permission in another workflow is refused');
+    assert.deepEqual(codes(checkWorkflows(ci(good, guard, schedule.replace('    runs-on: ubuntu-24.04', '    runs-on: ubuntu-24.04\n    permissions:\n      issues: write')))), [],
+      'the job may narrow to the same scope');
+    assert.deepEqual(codes(checkWorkflows(ci(good, guard, schedule.replace('    runs-on: ubuntu-24.04', '    runs-on: ubuntu-24.04\n    permissions:\n      packages: write')))), ['E_WORKFLOW_PERMISSIONS']);
+  });
+
   it('refuses pull_request_target and workflow_run outside the guard (C01 red-team m1)', () => {
     for (const on of ['on: [pull_request_target]', 'on: workflow_run', 'on:\n  pull_request_target:\n    types: [opened]']) {
       assert.deepEqual(codes(checkWorkflows(ci(good.replace('on: [pull_request]', on)))), ['E_WORKFLOW_TRIGGER'], on);
@@ -280,12 +330,12 @@ describe('workflows', () => {
   });
 
   it('requires each CI step as its own unconditional step, in order, in the job named check (C01 red-team m1)', () => {
-    assert.deepEqual(codes(checkWorkflows({ ...goodSnapshot(), workflows: [{ file: GUARD, text: guard }] })), ['E_CI_MISSING']);
-    const missing = checkWorkflows(ci(good.replace('      - run: node tools/policy/bin/audit.ts\n', '')));
+    assert.deepEqual(codes(checkWorkflows({ ...goodSnapshot(), workflows: [{ file: GUARD, text: guard }] })), ['E_AUDIT_SCHEDULE', 'E_CI_MISSING']);
+    const missing = checkWorkflows(ci(good.replace('      - env:\n          POLICY_EVENT: ${{ github.event_name }}\n        run: node tools/policy/bin/audit.ts\n', '')));
     assert.deepEqual(missing.map((f) => f.message), ['the CI workflow must run "node tools/policy/bin/audit.ts" as its own step']);
     const disable = (from: string, to: string): string[] => {
       assert.ok(realCi.includes(from), from);
-      return codes(checkWorkflows({ ...goodSnapshot(), workflows: [{ file: CI, text: realCi.replace(from, to) }, { file: GUARD, text: guard }] }));
+      return codes(checkWorkflows(ci(realCi.replace(from, to))));
     };
     const audit = '      - name: Audit (packages of the checked workspace projects)\n';
     assert.deepEqual(disable('      - name: Lockfile and policy', '      - if: false\n        name: Lockfile and policy'), ['E_CI_STEP_DISABLED']);
@@ -293,7 +343,7 @@ describe('workflows', () => {
     assert.deepEqual(disable(audit, `${audit}        working-directory: tools/policy/test/fixtures/good\n`), ['E_CI_STEP_DISABLED']);
     assert.deepEqual(disable(audit, `${audit}        shell: sh\n`), ['E_CI_STEP_DISABLED']);
     assert.deepEqual(disable('        shell: bash\n        run: pnpm test', '        run: pnpm test'), ['E_CI_STEP_DISABLED']);
-    assert.deepEqual(disable('    timeout-minutes: 30\n', '    timeout-minutes: 30\n    continue-on-error: true\n'), ['E_CI_STEP_DISABLED']);
+    assert.deepEqual(disable('    timeout-minutes: 45\n', '    timeout-minutes: 45\n    continue-on-error: true\n'), ['E_CI_STEP_DISABLED']);
     assert.deepEqual(disable(`    if: ${CI_JOB_IF}\n`, '    if: false\n'), ['E_CI_STEP_DISABLED'], 'only the draft skip');
     assert.deepEqual(disable(`    if: ${CI_JOB_IF}\n`, ''), [], 'no condition at all');
     assert.deepEqual(disable('  check:\n', '  verify:\n'), ['E_CI_JOB_NAME'], 'the deploy gate counts only the job named check');
@@ -367,7 +417,9 @@ describe('workflows', () => {
   });
 
   it('keeps the guard to the base branch\'s drift check on pull_request_target, the pull request as data (C01 red-team M3)', () => {
-    assert.deepEqual(codes(checkWorkflows({ ...goodSnapshot(), workflows: [{ file: CI, text: good }] })), ['E_GUARD_MISSING']);
+    // The guard is optional in the repository (supervisor ruling 2); these rules hold for the file the follow-up card
+    // brings back, and the fixture carries one so they are tested.
+    assert.deepEqual(codes(checkWorkflows({ ...goodSnapshot(), workflows: [{ file: CI, text: good }, { file: SCHEDULE, text: schedule }] })), []);
     const bad = (from: string, to: string): string[] => { assert.ok(guard.includes(from), from); return codes(checkWorkflows(ci(good, guard.replace(from, to)))); };
     assert.deepEqual(bad('  pull_request_target:', '  pull_request:'), ['E_GUARD']);
     assert.deepEqual(bad('on:\n', 'on:\n  push:\n'), ['E_GUARD']);

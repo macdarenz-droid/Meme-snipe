@@ -12,6 +12,7 @@ import { ESLint } from 'eslint';
 import { describe, it } from 'vitest';
 import { checkRef, moduleRefs } from '../../policy/imports.ts';
 import { readRepo } from '../../policy/repo.ts';
+import { zeroedSourceFiles } from '../../policy/scope.ts';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 const eslint = new ESLint({ cwd: root, overrideConfigFile: 'eslint.config.mjs' });
@@ -65,6 +66,25 @@ describe('typescript 6.0.3 for the ESLint parser only', () => {
     const [generic] = await eslint.lintText('export function f<T extends bigint>(x: T): T { return x; }\ndeclare const slot: bigint;\nexport const s = parseInt(String(slot), 10);\n',
       { filePath: join(root, 'packages/engine/src/planted.ts') });
     assert.deepEqual(generic?.messages.map((m) => m.ruleId), ['bot/no-number-on-units'], 'TypeScript generics parse; the unit rule fires');
+  });
+
+  it('lints a new source file under a Zeroed folder, and still ignores Zeroed\'s own files (red team RT-01)', async () => {
+    // Before the Zeroed manifest (round 1 review F4) the lint configuration ignored the folders, so a new file under
+    // research/, ops/ or apps/ was never linted. Only the manifest's own files are ignored now.
+    const planted = 'export const seenAt = Date.now();\nexport const pick = Math.random();\n';
+    for (const file of ['research/blueprint/feed.ts', 'ops/recorder/feed.ts', 'apps/feed/src/index.ts']) {
+      const [result] = await eslint.lintText(planted, { filePath: join(root, file), warnIgnored: false });
+      assert.deepEqual(result?.messages.map((m) => m.ruleId), ['bot/no-ambient-clock-or-random', 'bot/no-ambient-clock-or-random'], file);
+    }
+    const zeroed = zeroedSourceFiles();
+    assert.ok(zeroed.length > 500, `${zeroed.length} Zeroed source files are ignored`);
+    for (const file of ['apps/web/src/main.tsx', 'packages/core/src/amm/pump-curve.ts']) {
+      assert.ok(zeroed.includes(file), file);
+      assert.equal(await eslint.isPathIgnored(join(root, file)), true, file);
+    }
+    for (const file of ['research/blueprint/feed.ts', 'packages/types/src/units.ts']) {
+      assert.equal(await eslint.isPathIgnored(join(root, file)), false, file);
+    }
   });
 
   it('the import check parses every Blueprint .ts file, fails a planted bad import and fails on a parse error', () => {

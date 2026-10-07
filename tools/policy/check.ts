@@ -1,5 +1,5 @@
 // `pnpm lint` part 2: every offline policy check of B-M30-01 and the B-M19-01 freeze, over one repository.
-// `--include-zeroed` also reads Zeroed's paths (config.ts ZEROED_PATHS, ZEROED_WORKFLOWS), to report what the scoped
+// `--include-zeroed` also reads Zeroed's own files (config.ts ZEROED_FILES_MANIFEST, ZEROED_WORKFLOWS), to report what the scoped
 // checks would find there; CI runs without it.
 import { lstatSync } from 'node:fs';
 import { join } from 'node:path';
@@ -41,7 +41,10 @@ export function runChecks(root: string, baseRef: string, options: { includeZeroe
   const { snapshot, findings } = readRepo(root);
   // Not a deleted file, a FIFO, a file now a directory, or a symbolic link (one in Zeroed's paths is never followed).
   const files = listed.filter((f) => isPlainFile(root, f));
-  const baseIds = git.hasRef(baseRef) ? lockIds(git.show(baseRef, LOCKFILE)) : null;
+  // The base lockfile at merge-base(base, HEAD), not at the base tip (round 1 review F5): a newer push to the base
+  // cannot change what an older commit's run reads. No merge base means no base, so the release-age exclusions fail closed.
+  const mergeBase = git.hasRef(baseRef) ? git.mergeBase(baseRef) : null;
+  const baseIds = mergeBase === null ? null : lockIds(git.show(mergeBase, LOCKFILE));
   return [
     ...findings,
     ...checkManifests(snapshot),

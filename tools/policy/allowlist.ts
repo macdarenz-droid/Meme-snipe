@@ -1,5 +1,5 @@
 // DEPENDENCIES.md allowlist (B-M30-01 logic 3): every third-party package the lockfile installs for a checked
-// workspace project (every importer outside config.ts ZEROED_PATHS) is listed by exact name with purpose, licence and
+// workspace project (every importer the Zeroed manifest does not know) is listed by exact name with purpose, licence and
 // a named reviewer. An alias install (`"x": "npm:y@1.0.0"`) needs rows for both the real package and the alias name.
 // pnpm-lock.yaml v9 records no licence, so the licence cell is compared with each installed package's own
 // package.json by the installed-package scan (installed.ts), which CI runs right after the install.

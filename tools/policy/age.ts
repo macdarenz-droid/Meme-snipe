@@ -1,8 +1,9 @@
 // 14-day adoption rule (B-M30-01 logic 3; ARCH 12.3 POLICY; TH-37, TH-40): every package version the pull request
 // adds to the lockfile must have been published at least MIN_AGE_DAYS before today, unless DEPENDENCIES.md lists it
-// under "Age exceptions" (security fixes after review). Versions already in the base branch's lockfile passed this
-// check when they were added and only grow older, so they are not fetched again: a change that leaves the lockfile
-// alone makes no registry request at all.
+// under "Age exceptions" (security fixes after review). Versions already in the lockfile at merge-base(base, HEAD)
+// passed this check when they were added and only grow older, so they are not fetched again: a change that leaves the
+// lockfile alone makes no registry request at all. The merge base, not the base tip (round 1 review F5): a newer push
+// to the base branch then cannot change what an older commit's run checks, or fail it on an entry that push removed.
 //
 // Publish times are the `time` field of the full packument (GET https://registry.npmjs.org/<name>; read 2026-10-06:
 // the abbreviated `application/vnd.npm.install-v1+json` document has no `time`). The owner's rate rule (2026-10-06)
@@ -200,7 +201,15 @@ export async function main(root: string, nowMs: number, io: Io, fetchTimes: Fetc
     io.err(formatFindings([finding('E_LOCK_PARSE', LOCKFILE, read.error)]));
     return 1;
   }
-  const known = lockIds(git.show(baseRef, LOCKFILE));
+  // The base lockfile at merge-base(base, HEAD), not at the base tip (round 1 review F5): a run that starts after a
+  // newer push to the base then still sees the commits this head forked from, so it cannot fail on an entry the newer
+  // base commit removed or on a fetch that entry forced.
+  const mergeBase = git.mergeBase(baseRef);
+  if (mergeBase === null) {
+    io.err(formatFindings([finding('E_BASE_REF', baseRef, `no merge base between "${baseRef}" and HEAD; fetch the base branch or set POLICY_BASE_REF`)]));
+    return 1;
+  }
+  const known = lockIds(git.show(mergeBase, LOCKFILE));
   const entries = thirdPartyEntries(read.lock).map(({ name, version }) => ({ name, version }))
     .filter((e) => !known.has(`${e.name}@${e.version}`));
   const { ids, findings: rowFindings } = ageExceptions(readFileSync(join(root, 'DEPENDENCIES.md'), 'utf8'));

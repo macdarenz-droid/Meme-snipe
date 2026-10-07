@@ -1,11 +1,13 @@
 // Lint configuration (B-M30-01 logic 6, B-M19-01 logic 3). Inline eslint-disable comments are not honoured:
 // a rule is changed only here, in review. `pnpm lint` loads this file with `--config`, which switches off ESLint's
 // per-directory config lookup, and the policy check refuses any other eslint.config.* (C01 review finding R1).
-// Zeroed's paths (tools/policy/config.ts ZEROED_PATHS) are not linted: old Zeroed code stays as it is
-// (docs/MIGRATION.md) and reads the wall clock throughout.
+// Zeroed's own source files (tools/policy/zeroed-files.txt, the manifest of config.ts ZEROED_FILES_MANIFEST) are not
+// linted: old Zeroed code stays as it is (docs/MIGRATION.md) and reads the wall clock throughout. Those exact files,
+// not the folders they sit in (round 1 review F4, red team RT-01), so a new source file under apps/, ops/ or research/
+// is linted like any other.
 import tsParser from './tools/eslint/parser.ts';
 import bot from './tools/eslint/plugin.ts';
-import { ZEROED_PATHS } from './tools/policy/config.ts';
+import { zeroedSourceFiles } from './tools/policy/scope.ts';
 
 const WEB3_V1 = 'Banned in the engine and signer: use @solana/kit (B-M30-01; LD-05, LD-36, TH-37).';
 
@@ -24,7 +26,7 @@ const SOURCES = ['ts', 'mts', 'cts', 'tsx', 'js', 'mjs', 'cjs', 'jsx'];
 const sources = (dir) => SOURCES.map((ext) => `${dir}**/*.${ext}`);
 
 export default [
-  { ignores: ['**/node_modules/**', 'coverage/**', 'tools/policy/test/fixtures/**', ...ZEROED_PATHS.map((p) => `${p}**`)] },
+  { ignores: ['**/node_modules/**', 'coverage/**', 'tools/policy/test/fixtures/**', ...zeroedSourceFiles()] },
   {
     files: sources(''),
     // The Node timers no-implied-eval checks are declared, so the rule sees them as the globals they are.

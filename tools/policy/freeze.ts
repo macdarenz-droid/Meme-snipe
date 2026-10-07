@@ -1,9 +1,11 @@
 // Freeze mechanism for shared packages (B-M19-01 logic 2; ARCH 18 "frozen before tickets start").
-// FREEZE.json records the package version and a sha256 over package.json and every file under src/. The check fails
+// FREEZE.json records the package version and a sha256 over package.json, every file under src/, and the package's
+// tsconfig.json with every config it extends (red team RT-06). The check fails
 // when the files no longer match it. When they differ from the base branch's FREEZE.json, the change must also carry
 // a higher semantic version, a CHANGELOG.md section for it and sign-off lines from both group leads.
 import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname as posixDirname, join as posixJoin } from 'node:path/posix';
 import { join } from 'node:path';
 import { finding, type Finding, type Io } from './finding.ts';
 import type { Git } from './git.ts';
@@ -22,10 +24,36 @@ function listSrc(root: string, rel: string): string[] {
   return out;
 }
 
-/** The frozen files of the package in `dir`, relative to `dir`: package.json and everything under src/. */
+/**
+ * The tsconfig files a frozen package compiles with, relative to `dir`: its own tsconfig.json and every config it
+ * extends, following the chain (red team RT-06). A compiler option decides what the frozen types mean (`strict`,
+ * `exactOptionalPropertyTypes`, `noUncheckedIndexedAccess` and the rest), so a change to one is a change to the frozen
+ * surface and needs the version bump, the changelog entry and both sign-offs. Only relative `extends` values are
+ * followed; a package name would be a dependency, which a frozen zero-dependency package does not have.
+ */
+export function tsconfigChain(root: string, dir: string, start = 'tsconfig.json'): string[] {
+  const out: string[] = [];
+  for (let rel: string | null = start; rel !== null && !out.includes(rel);) {
+    const path = join(root, dir, rel);
+    if (!existsSync(path)) break;
+    out.push(rel);
+    let extend: unknown;
+    try {
+      extend = (JSON.parse(readFileSync(path, 'utf8')) as { extends?: unknown }).extends;
+    } catch {
+      break;                                                            // unreadable: the typecheck fails on it anyway
+    }
+    rel = typeof extend === 'string' && (extend.startsWith('./') || extend.startsWith('../'))
+      ? posixJoin(posixDirname(rel), extend)
+      : null;
+  }
+  return out;
+}
+
+/** The frozen files of the package in `dir`, relative to `dir`: package.json, everything under src/, the tsconfigs. */
 export function freezeFiles(root: string, dir: string): string[] {
   const src = existsSync(join(root, dir, 'src')) ? listSrc(join(root, dir), 'src') : [];
-  return ['package.json', ...src.sort()];
+  return ['package.json', ...src.sort(), ...tsconfigChain(root, dir)];
 }
 
 /** sha256 over each file's relative path, byte length and bytes, in the given order. */

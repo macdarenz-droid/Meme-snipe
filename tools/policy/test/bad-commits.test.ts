@@ -151,7 +151,12 @@ describe('repository scan and base ref', () => {
 
 describe('lockfile and policy files need the review label bound to their content (CI and guard steps)', () => {
   const labelOf = (repo: TempRepo): string => reviewLabel(guardedFiles(gitAt(repo.dir), 'HEAD'));
-  const drift = (repo: TempRepo, labels: string): ReturnType<typeof runBin> => runBin('drift.ts', [], repo.dir, { POLICY_BASE_REF: 'main', PR_LABELS: labels });
+  /**
+   * CI as the run that carries the label: PR_LABELS lists the pull request's labels and PR_LABEL_ADDED is the one this
+   * run's `labeled` event added (supervisor ruling 7; `added` tells the test to leave it empty, as a push run does).
+   */
+  const drift = (repo: TempRepo, labels: string, added: string | null = null): ReturnType<typeof runBin> =>
+    runBin('drift.ts', [], repo.dir, { POLICY_BASE_REF: 'main', PR_LABELS: labels, PR_LABEL_ADDED: added ?? labels });
   /** A lockfile change the other checks accept: another (fake) integrity hash for one package. */
   const lockEdit = (repo: TempRepo, tag: string, pkg = 'Typescript'): void =>
     editText(repo.dir, 'pnpm-lock.yaml', (t) => t.replace(new RegExp(`sha512-fixture${pkg}IntegrityHash[A-Za-z]*==`), `sha512-fixture${pkg}IntegrityHash${tag}==`));
@@ -171,7 +176,7 @@ describe('lockfile and policy files need the review label bound to their content
       assert.match(without.stderr, /E_LOCK_DRIFT pnpm-lock\.yaml: changed: pnpm-lock\.yaml\./);
       assert.ok(without.stderr.includes(`"${label}"`), 'the failure names the label to add');
       const io = capture();
-      assert.equal(driftMain([], { POLICY_BASE_REF: 'main', PR_LABELS: `x, ${label}` }, gitAt(repo.dir), io), 0);
+      assert.equal(driftMain([], { POLICY_BASE_REF: 'main', PR_LABELS: `x, ${label}`, PR_LABEL_ADDED: label }, gitAt(repo.dir), io), 0);
       assert.match(io.text(), /review label check passed/);
       assert.equal(drift(repo, label).status, 0);
     } finally { repo.remove(); }
@@ -185,6 +190,21 @@ describe('lockfile and policy files need the review label bound to their content
       const r = drift(repo, 'deps-reviewed');
       assert.equal(r.status, 1);
       assert.match(r.stderr, /E_LOCK_DRIFT/);
+    } finally { repo.remove(); }
+  });
+
+  it('the label passes only on the run whose own event added it (red team RT-03, supervisor ruling 7)', () => {
+    const repo = goodRepo();
+    try {
+      lockEdit(repo, 'Reviewed');
+      repo.commit('reviewed lockfile change');
+      const label = labelOf(repo);
+      assert.equal(drift(repo, label).status, 0, 'the labeled event');
+      const later = drift(repo, label, '');
+      assert.equal(later.status, 1, 'a later push run carries the same label but not the event');
+      assert.match(later.stderr, /was not added by this run's event, so it is older than this head/);
+      assert.equal(drift(repo, label, 'other').status, 1, 'another label was added by this event');
+      assert.equal(drift(repo, '', '').status, 1, 'no label at all');
     } finally { repo.remove(); }
   });
 
@@ -300,7 +320,9 @@ describe('lockfile and policy files need the review label bound to their content
     } finally { repo.remove(); }
   });
 
-  it('the guard runs the base branch\'s copy: neutering drift.ts in the same pull request no longer passes (C01 red-team M3)', () => {
+  // The guard workflow is a follow-up card, not this PR (supervisor ruling 2 for round 1 review F2); this keeps the
+  // property the card needs: the base branch's copy of the check catches a pull request that neutered its own copy.
+  it('a base copy of the drift check catches a neutered copy in the pull request (C01 red-team M3)', () => {
     const repo = goodRepo();
     const base = join(repo.dir, '..', `${basename(repo.dir)}-base`);
     try {

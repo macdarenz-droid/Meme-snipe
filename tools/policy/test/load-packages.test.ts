@@ -1,5 +1,5 @@
 // Runtime import check (C01 review finding R2): every module under packages/*/src is loaded in a child process with
-// load-hooks.ts preloaded and code generation from strings disallowed. Zeroed's packages (config.ts ZEROED_PATHS)
+// load-hooks.ts preloaded and code generation from strings disallowed. Zeroed's packages (the Zeroed manifest)
 // are not loaded: they import each other by relative path and run code at load time, as Zeroed always has. The entry code imports each module by a string
 // literal; a module the hooks refuse, or one that fails to load, is listed and the process exits 1.
 import { strict as assert } from 'node:assert';

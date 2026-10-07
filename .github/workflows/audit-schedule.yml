@@ -1,0 +1,76 @@
+# Scheduled advisory report (B-M30-01 logic 5; supervisor ruling 1 of 2026-10-08, for round 1 review F1 and red team
+# RT-02). The audit step of the `check` job fails only for a package version a pull request adds, so an advisory
+# published for a version already in use no longer turns a commit red — a red run on the integration branch would stop
+# the deploy gate (ops/host/files/usr/local/lib/zeroed/logic.sh commit_verdict) for as long as it took to adopt a patch,
+# which the 14-day rule usually delays. This workflow reports those advisories instead: it runs daily on the default
+# branch, prints what the registry answers and opens or updates one issue.
+#
+# It can never fail. Every step sets continue-on-error, so a registry outage, a GitHub API error or a missing tool
+# leaves the run green and the deploy gate undisturbed (tools/policy/workflows.ts checks that). `issues: write` is the
+# one write permission any checked workflow may declare (tools/policy/config.ts WORKFLOW_WRITE_PERMISSIONS); the token
+# is scoped to that and reaches only the step that writes the issue. No secrets, credentials not persisted, no install:
+# the policy tools import only node: built-ins and each other.
+name: audit-schedule
+
+on:
+  schedule:
+    - cron: "41 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: audit-schedule
+  cancel-in-progress: false
+
+jobs:
+  advisories:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        continue-on-error: true
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        continue-on-error: true
+        with:
+          node-version-file: .node-version
+      - name: Advisories for the packages in scope (report only)
+        continue-on-error: true
+        shell: bash
+        env:
+          POLICY_EVENT: ${{ github.event_name }}
+        run: node tools/policy/bin/audit.ts > advisories.txt 2>&1 || true
+      - name: Open or update the advisories issue
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat advisories.txt || true
+          if ! grep -q 'E_AUDIT' advisories.txt; then
+            echo "no advisories of severity low or above"
+            exit 0
+          fi
+          title="Dependency advisories: versions already in use"
+          {
+            echo "The dependency audit reported advisories for package versions the lockfile already holds, or"
+            echo "could not read the registry. Its whole output is below."
+            echo "The \`check\` job does not fail on either (supervisor ruling 1, 2026-10-08): an advisory here is"
+            echo "cleared by a reviewed dependency update, which the 14-day rule and the review label still govern."
+            echo
+            echo "Run: \`${GITHUB_RUN_ID}\` on \`${GITHUB_SHA}\`"
+            echo
+            echo '```'
+            cat advisories.txt
+            echo '```'
+          } > advisories-body.md
+          number="$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number // empty' || true)"
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body-file advisories-body.md
+          else
+            gh issue create --title "$title" --body-file advisories-body.md
+          fi

@@ -26,6 +26,16 @@ export const WORKSPACE_FILE = 'pnpm-workspace.yaml';
  */
 export const LOCK_REVIEW_LABEL_PREFIX = 'deps-reviewed:';
 export const LOCK_REVIEW_HASH_HEX = 32;
+/**
+ * Red team RT-03 (supervisor ruling 7, 2026-10-08): the label counts only when this very run is the `labeled` event
+ * that added it, so it is always newer than the head commit the run checks. GitHub's pull_request payload carries the
+ * label names but no times, and reading the label's timeline event would need a token in the job that runs the pull
+ * request's own code, so the event itself is the proof: ci.yml passes the added label's name in PR_LABEL_ADDED
+ * (empty on every other event). A push that leaves the guarded files alone keeps passing, because then nothing is
+ * guarded-changed at all; a push that changes them needs the supervisor to add the label again (remove and re-add when
+ * the hash did not change), which is the review this check stands for. Only the supervisor adds it (AGENTS.md).
+ */
+export const LABEL_EVENT_ENV = 'PR_LABEL_ADDED';
 
 /** Workspace packages whose public surface is frozen (ARCH 18; AGENTS.md file ownership). */
 export const FROZEN_PACKAGES = ['packages/types'];
@@ -92,15 +102,31 @@ export const INSTALL_LIFECYCLE_SCRIPTS = [
 /**
  * Old Zeroed code (docs/MIGRATION.md: "Old Zeroed code stays in place. It is not deleted, not run on the server, and
  * not fixed further"). The checks that would flag it today (imports, source types, code loading, symbolic links, lint,
- * the pump.fun host check, the allowlist of its dependencies, its workflows) skip these paths; every other path,
- * including any new one, is checked. `node tools/policy/bin/check.ts --include-zeroed` reports what they would find.
- * A path leaves this list when its code migrates; nothing is added to it without the supervisor.
+ * the pump.fun host check, the allowlist of its dependencies, its workflows) skip these files; every other path,
+ * including any new file under the same folders, is checked. `node tools/policy/bin/check.ts --include-zeroed`
+ * reports what they would find.
+ *
+ * Round 1 review F4 and red team RT-01 (supervisor ruling 4, 2026-10-08): the list used to be folder prefixes, so a
+ * NEW file under apps/, ops/ or research/ was skipped as well, and a new workspace package under apps/ took its whole
+ * dependency tree out of the allowlist and the audit. It is now a committed manifest of the exact files Zeroed had in
+ * the integration branch at c045c18a (ZEROED_FILES_MANIFEST, read by scope.ts), so only those files are skipped. The
+ * folders below are kept for one thing only: a path that ends in `/` (a workspace importer, a submodule candidate) is
+ * Zeroed when the manifest holds a file under it, which is why a new package directory is not. A file leaves the
+ * manifest when its code migrates; nothing is added to it without the supervisor (the manifest is a guarded file).
  */
-export const ZEROED_PATHS = [
+export const ZEROED_FILES_MANIFEST = 'tools/policy/zeroed-files.txt';
+/** The folders the manifest was built from; `apps/` is also a pnpm workspace folder (NEW_PACKAGE_DIRS below). */
+export const ZEROED_DIRS = [
   'apps/', 'brand/', 'docs/evidence/', 'docs/handover/', 'docs/research/', 'ops/', 'research/',
   'packages/backtest/', 'packages/core/', 'packages/ops/', 'packages/runner/', 'packages/worker/',
 ];
-/** Zeroed's workflows (operations, data and the app build). ci.yml and guard.yml are always checked. */
+/**
+ * Workspace folders that hold only Zeroed packages (pnpm-workspace.yaml `apps/*`): a new workspace package here would
+ * be new Blueprint code outside every scoped check, so any importer directory under them that the Zeroed manifest does
+ * not know is refused (E_NEW_PACKAGE_DIR; red team RT-01 test 2). New packages go under `packages/`.
+ */
+export const NEW_PACKAGE_DIRS = ['apps/'];
+/** Zeroed's workflows (operations, data and the app build). ci.yml and the policy's own workflows are always checked. */
 export const ZEROED_WORKFLOWS = [
   'android-preview.yml', 'archive-check.yml', 'backtest-trial.yml', 'data-helius-pilot.yml', 'data-keep.yml', 'data-scan.yml',
   'deploy.yml', 'dryrun-rehearsal.yml', 'dryrun-smoke.yml', 'gpa-probe.yml', 'ops-e2e.yml', 'owner-programs.yml',
@@ -138,12 +164,36 @@ export const CI_REQUIRED_STEPS: ReadonlyArray<{ run: string; shell?: string }> =
   { run: 'node tools/policy/bin/age.ts' },
 ];
 /**
+ * Environment variables a required step must set, by its `run` line and with these exact values (supervisor rulings 1
+ * and 7). They carry GitHub's own event facts into the checks: without POLICY_EVENT the audit would fail a push on an
+ * advisory published for a version already in use (the deploy-blocking case F1 and RT-02 found), and without
+ * PR_LABELS and PR_LABEL_ADDED the review-label check would see no label at all. A workflow may not set them to
+ * anything else either (WORKFLOW_ENV_VALUES).
+ */
+export const CI_REQUIRED_STEP_ENV: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  'node tools/policy/bin/drift.ts': {
+    PR_LABELS: "${{ join(github.event.pull_request.labels.*.name, ',') }}",
+    [LABEL_EVENT_ENV]: "${{ github.event.action == 'labeled' && github.event.label.name || '' }}",
+  },
+  'node tools/policy/bin/audit.ts': { POLICY_EVENT: '${{ github.event_name }}' },
+};
+
+/**
  * The one condition the CI job may carry: a draft pull request waits until it is marked ready (the
  * ready_for_review event then runs the job). A draft cannot be merged, so every merged head ran the checks.
  */
 export const CI_JOB_IF = "${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}";
 
-/** The guard workflow (review finding M3): pull_request_target, base branch code, the pull request as data only. */
+/**
+ * The guard workflow (review finding M3): pull_request_target, base branch code, the pull request as data only.
+ *
+ * Round 1 review F2 (supervisor ruling 2, 2026-10-08): the file is NOT in this repository. For pull_request_target
+ * GitHub reports the run against the base branch's newest commit, so a failed guard run would land on the integration
+ * branch's head and the deploy gate (ops/host/files/usr/local/lib/zeroed/logic.sh commit_verdict) would refuse that
+ * commit and every later one until another merge. The review-label check therefore runs only as the drift step of the
+ * `check` job, on the pull request's own copy. The rules below stay, so a follow-up card (recorded in DECISIONS, Z01)
+ * can bring a tested guard back under the same constraints; while no such file exists they check nothing.
+ */
 export const GUARD_WORKFLOW = '.github/workflows/guard.yml';
 export const GUARD_COMMAND = 'node ../base/tools/policy/bin/drift.ts';
 /** The guard's checkouts and Node setup, input by input (review finding R6): the base branch, and the pull request's merge commit as data. */
@@ -152,6 +202,25 @@ export const GUARD_PR_CHECKOUT: Readonly<Record<string, string>> = {
   ref: 'refs/pull/${{ github.event.pull_request.number }}/merge', path: 'pr', 'fetch-depth': '0', 'persist-credentials': 'false',
 };
 export const GUARD_SETUP_NODE: Readonly<Record<string, string>> = { 'node-version-file': 'base/.node-version' };
+
+/**
+ * The scheduled advisory report (round 1 review F1, red team RT-02; supervisor ruling 1, 2026-10-08). The audit step
+ * of the `check` job fails only for a package version the pull request adds (audit.ts), so an advisory published for a
+ * version already in use no longer turns a commit red — and no longer blocks every deploy for up to 14 days, because
+ * the patched version is usually younger than the 14-day rule. This workflow reports those advisories instead: it runs
+ * on a schedule against the default branch, opens or updates one issue, and never fails. Every step carries
+ * `continue-on-error: true`, so a registry outage or a GitHub API error cannot put a failed run on the branch's newest
+ * commit either. It is the one workflow allowed a write permission, and only `issues: write`.
+ */
+export const AUDIT_SCHEDULE_WORKFLOW = '.github/workflows/audit-schedule.yml';
+/**
+ * Write permissions a checked workflow may declare, by file and exact `scope: write` line. Everything else keeps the
+ * read-only rule (E_WORKFLOW_PERMISSIONS). An issue is the only thing the scheduled report writes; it cannot change
+ * code, releases or checks.
+ */
+export const WORKFLOW_WRITE_PERMISSIONS: Readonly<Record<string, readonly string[]>> = {
+  [AUDIT_SCHEDULE_WORKFLOW]: ['issues: write'],
+};
 
 /**
  * pnpm subcommands a checked workflow may run: an install only with --frozen-lockfile, the root scripts and a recursive
@@ -165,8 +234,12 @@ export const WORKFLOW_PNPM_COMMANDS = ['install', 'lint', 'typecheck', 'test', '
 export const WORKFLOW_ENV_VALUES: Readonly<Record<string, readonly string[]>> = {
   POLICY_BASE_REF: ["${{ format('origin/{0}', github.base_ref || github.ref_name) }}", 'origin/${{ github.base_ref }}'],
   PR_LABELS: ["${{ join(github.event.pull_request.labels.*.name, ',') }}"],
+  // The event name decides whether the audit fails or only reports (audit.ts), and the label event is the review
+  // label's proof (LABEL_EVENT_ENV). Both are GitHub's own values, which a pull request cannot set.
+  POLICY_EVENT: ['${{ github.event_name }}'],
+  [LABEL_EVENT_ENV]: ["${{ github.event.action == 'labeled' && github.event.label.name || '' }}"],
 };
-export const WORKFLOW_GUARDED_ENV = /^(POLICY_.*|PR_LABELS|NODE_.*|NPM_CONFIG_.*|PNPM_.*|COREPACK_.*|ESLINT_.*|ACTIONS_.*|GITHUB_.*|PATH|BASH_ENV|ENV|LD_PRELOAD)$/i;
+export const WORKFLOW_GUARDED_ENV = /^(POLICY_.*|PR_LABELS|PR_LABEL_ADDED|NODE_.*|NPM_CONFIG_.*|PNPM_.*|COREPACK_.*|ESLINT_.*|ACTIONS_.*|GITHUB_.*|PATH|BASH_ENV|ENV|LD_PRELOAD)$/i;
 
 /**
  * Trigger filters (review finding R6). ci.yml and guard.yml must run on every pull request: their pull_request and

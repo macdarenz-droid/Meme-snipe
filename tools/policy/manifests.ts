@@ -4,11 +4,12 @@
 // (`workspace:*`), which never falls back to the registry; pnpm 10 links a plain version only when
 // linkWorkspacePackages is on, which it is not by default (pnpm 10.x docs, workspaces.md).
 import {
-  INSTALL_LIFECYCLE_SCRIPTS, INTERNAL_SCOPE, INTERNAL_SPEC, NO_THIRD_PARTY, SENTINEL, WEB3, WEB3_BANNED_IN,
+  INSTALL_LIFECYCLE_SCRIPTS, INTERNAL_SCOPE, INTERNAL_SPEC, NEW_PACKAGE_DIRS, NO_THIRD_PARTY, SENTINEL, WEB3, WEB3_BANNED_IN,
 } from './config.ts';
 import { finding, type Finding } from './finding.ts';
 import { aliasTarget, EXACT_VERSION } from './lockfile.ts';
 import { DEPENDENCY_FIELDS, PRODUCTION_FIELDS, type Manifest, type RepoSnapshot } from './repo.ts';
+import { inZeroed } from './scope.ts';
 
 function checkManifest(m: Manifest, findings: Finding[]): void {
   const name = m.json.name ?? m.file;
@@ -50,8 +51,26 @@ function checkManifest(m: Manifest, findings: Finding[]): void {
   }
 }
 
+/**
+ * New workspace packages under Zeroed's workspace folders (config.ts NEW_PACKAGE_DIRS; red team RT-01 test 2). A
+ * package there would be new Blueprint code in a folder the scoped checks pass over, and its whole dependency tree
+ * would miss the allowlist and the audit. Zeroed's own packages are the ones the Zeroed manifest knows.
+ */
+function checkNewPackageDirs(snapshot: RepoSnapshot, findings: Finding[]): void {
+  const dirs = new Set([
+    ...snapshot.manifests.map((m) => m.dir).filter((d) => d !== ''),
+    ...Object.keys(snapshot.lock?.importers ?? {}).filter((d) => d !== '.'),
+  ]);
+  for (const dir of [...dirs].sort()) {
+    if (!NEW_PACKAGE_DIRS.some((d) => dir.startsWith(d)) || inZeroed(`${dir}/`)) continue;
+    findings.push(finding('E_NEW_PACKAGE_DIR', `${dir}/package.json`, `${NEW_PACKAGE_DIRS.join(', ')} hold Zeroed's packages, which the scoped checks skip; `
+      + 'a new workspace package goes under packages/, where every check reads it'));
+  }
+}
+
 export function checkManifests(snapshot: RepoSnapshot): Finding[] {
   const findings: Finding[] = [];
   for (const m of snapshot.manifests) checkManifest(m, findings);
+  checkNewPackageDirs(snapshot, findings);
   return findings;
 }

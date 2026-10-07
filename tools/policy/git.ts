@@ -18,6 +18,13 @@ export interface Git {
   files(ref: string): string[];
   /** Paths that differ between the merge base of `ref` and HEAD, and HEAD. Renames count as a deletion and an addition. */
   changedSince(ref: string): string[];
+  /**
+   * The merge base of `ref` and HEAD, or null when there is none (an unrelated or missing ref). Round 1 review F5:
+   * the age and audit checks read the base lockfile here, not at the tip of `ref`, so a run that starts after a newer
+   * push still compares against the commit the branch forked from and cannot be failed by a version the newer commit
+   * removed.
+   */
+  mergeBase(ref: string): string | null;
 }
 
 export function gitAt(root: string): Git {
@@ -41,5 +48,6 @@ export function gitAt(root: string): Git {
     },
     files: (ref) => run(['ls-tree', '-r', '-z', '--name-only', ref]).split('\0').filter((f) => f !== ''),
     changedSince: (ref) => run(['diff', '--no-renames', '--name-only', '-z', `${ref}...HEAD`]).split('\0').filter((f) => f !== ''),
+    mergeBase: (ref) => attempt(['merge-base', ref, 'HEAD'])?.trim() ?? null,
   };
 }

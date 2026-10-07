@@ -1,9 +1,10 @@
 // Unit tests: the YAML reader for workflows (C01 red-team finding m1) and pnpm's files, and the .npmrc and engines
 // check (finding m4).
 import { strict as assert } from 'node:assert';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'vitest';
+import { AUDIT_SCHEDULE_WORKFLOW } from '../config.ts';
 import type { Finding } from '../finding.ts';
 import { checkNpmrc, iniUnsafe, parseNpmrc } from '../npmrc.ts';
 import { readLock } from '../lockfile.ts';
@@ -123,8 +124,10 @@ describe('parseYaml', () => {
     assert.equal(ci.jobs.check.steps.length, 13);
     assert.ok('lock' in readLock(readFileSync(join(REPO_ROOT, 'pnpm-lock.yaml'), 'utf8')), 'pnpm-lock.yaml');
     assert.deepEqual((parseYaml(readFileSync(join(REPO_ROOT, 'pnpm-workspace.yaml'), 'utf8')) as { packages: unknown }).packages, ['packages/*', 'apps/*', 'tools']);
-    const guard = parseYaml(readFileSync(join(REPO_ROOT, '.github/workflows/guard.yml'), 'utf8')) as { on: Record<string, unknown> };
-    assert.deepEqual(Object.keys(guard.on), ['pull_request_target']);
+    // guard.yml is not in this repository (supervisor ruling 2); the scheduled advisory report is (ruling 1).
+    assert.equal(existsSync(join(REPO_ROOT, '.github/workflows/guard.yml')), false);
+    const schedule = parseYaml(readFileSync(join(REPO_ROOT, AUDIT_SCHEDULE_WORKFLOW), 'utf8')) as { on: Record<string, unknown> };
+    assert.deepEqual(Object.keys(schedule.on), ['schedule', 'workflow_dispatch']);
   });
 });
 

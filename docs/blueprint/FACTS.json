@@ -551,7 +551,7 @@
   {
    "id": "EX-27",
    "topic": "Observed Jupiter fee and routability on brand-new pump tokens",
-   "claim": "Keyless probes on 2026-10-06 of /swap/v1/quote and /swap/v2/order (no taker, quote-only) for two pump.fun tokens aged 9.9–37.7 s returned a route through the 'Pump.fun' label. /order returned router 'metis', mode 'ultra', feeBps 10 and platformFee.feeBps 10, not the 50 bps the docs list for tokens under 24 hours old. A token graduated 218 s earlier quoted via the 'Pump.fun Amm' label. The sample is small: 2 fresh tokens (4 probes) and 1 graduated token.",
+   "claim": "Keyless probes on 2026-10-06 of /swap/v1/quote and /swap/v2/order (no taker, quote-only) for two pump.fun tokens aged 9.9–37.7 s returned a route through the Pump.fun label. /order returned router 'metis', mode 'ultra', feeBps 10 and platformFee.feeBps 10, not the 50 bps the docs list for tokens under 24 hours old. A token graduated 218 s earlier quoted via the Pump.fun Amm label. The sample is small: 2 fresh tokens (4 probes) and 1 graduated token.",
    "sources": [
     "https://api.jup.ag/swap/v1/quote (keyless live probe)",
     "https://api.jup.ag/swap/v2/order (keyless live probe, no taker)"
@@ -561,7 +561,7 @@
    "confidence": "medium",
    "design_relevance": "Jupiter routes new pump tokens within seconds, but the fee actually charged may differ from the docs. Budget 50 bps worst case and reconcile real fees from /execute fields.",
    "verification": "confirmed",
-   "note": "I reproduced it on one pump token about 2 minutes old (D3npw9...): /order returned router metis, mode ultra, feeBps 10, platformFee.feeBps 10, route 'Pump.fun'; v1 quote also routed via 'Pump.fun'. I did not test a taker or an /execute fill. The sample is still very small.",
+   "note": "I reproduced it on one pump token about 2 minutes old (D3npw9...): /order returned router metis, mode ultra, feeBps 10, platformFee.feeBps 10, route Pump.fun; v1 quote also routed via Pump.fun. I did not test a taker or an /execute fill. The sample is still very small.",
    "verifier_evidence": [
     "https://api.jup.ag/swap/v2/order (keyless, no taker, my probe 2026-10-06)",
     "https://api.jup.ag/swap/v1/quote (keyless, my probe)"
@@ -2850,7 +2850,7 @@
   {
    "id": "TH-16",
    "topic": "Pump.fun coin creation (Token-2022)",
-   "claim": "Pump.fun's create_v2 instruction creates a new Token-2022 mint (program TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb) with decimals = 6, the metadata pointer set to the mint itself, and mint_authority set to a Pump PDA (seeds [b\"mint-authority\"]). Creator-chosen name is limited to 32 characters, symbol to 13 and URI to 200. RugCheck reports pulled on 2026-10-06 for recent '...pump' mints showed tokenProgram = TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb.",
+   "claim": "The pump.fun create_v2 instruction creates a new Token-2022 mint (program TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb) with decimals = 6, the metadata pointer set to the mint itself, and mint_authority set to a Pump PDA (seeds [b\"mint-authority\"]). Creator-chosen name is limited to 32 characters, symbol to 13 and URI to 200. RugCheck reports pulled on 2026-10-06 for recent '...pump' mints showed tokenProgram = TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb.",
    "sources": [
     "https://raw.githubusercontent.com/pump-fun/pump-public-docs/main/docs/instructions/COIN_CREATION.md",
     "https://raw.githubusercontent.com/solana-program/token-2022/main/interface/src/lib.rs",

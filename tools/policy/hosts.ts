@@ -8,14 +8,22 @@
 // list of other domains pump.fun operates was available, so none is listed; a new one is added here in review.
 // Third parties that serve pump.fun data (PumpPortal, RPC providers, GitHub, npm) are not pump.fun-operated hosts.
 //
-// Where: every text file in scope (config.ts ZEROED_PATHS are skipped unless the run includes them) except Markdown,
+// Where: every text file in scope (the Zeroed manifest's own files, config.ts ZEROED_FILES_MANIFEST, are skipped
+// unless the run includes them) except Markdown,
 // whose prose names the venue; the policy fixtures are data. What: a pump.fun host written as a request target:
 // - after `//` (a URL, any scheme, or a protocol-relative URL): https: // frontend-api.pump[.]fun/coins without the gaps;
-// - any subdomain of pump.fun anywhere (frontend-api.pump[.]fun in a host or header field);
-// - the bare domain, in lower case as a host is written, as the start of a string: right after a quote or backtick and
-//   followed by a quote, `/`, `:`, `?` or `#` (a display label such as "Pump.fun" is not a host).
-// The venue's name in prose or comments ("pump.fun bonding curve", "Pump.fun") is not a target. A host assembled at
-// run time from pieces (`'pump' + '.fun'`) is not found: review catches that.
+// - any subdomain of pump.fun anywhere (frontend-api.pump[.]fun in a host or header field), with or without a trailing
+//   dot;
+// - the bare domain where a host is written, in any letter case: after a quote or backtick, after `=`, after `: ` or at
+//   the start of a line, and ending there (a quote, `/`, `:`, `?`, `#`, a comma or the end of the line). A
+//   Markdown-style link label ([Pump[.]fun](url)) in a JSON or TypeScript string is prose, so a bracket is not one of
+//   these positions.
+// The venue's name in prose or comments ("the pump.fun bonding curve") is not a target, because words follow it on the
+// line; a quoted label (Pump[.]fun on its own inside quotes) is, so a label and a possessive are written another way
+// or live in Markdown, which is
+// not read. A host assembled at run time from pieces (`'pump' + '.fun'`) is not found: review catches that.
+// Red team RT-04 closed the forms this missed: a trailing dot, upper case in the bare domain, and the bare domain as a
+// YAML or .env value.
 import { readFileSync } from 'node:fs';
 import { extname, join } from 'node:path';
 import { DATA_DIRS } from './config.ts';
@@ -25,10 +33,20 @@ import { scopeOf, type Scope } from './scope.ts';
 /** File types that are prose, not code or configuration. */
 export const PROSE_EXTENSIONS = ['.md'];
 
-/** A pump.fun host in a request-target position (see the header): a URL host or any subdomain, in any case. */
-export const PUMP_FUN_HOST = /(?:\/\/(?:[A-Za-z0-9-]+\.)*pump\.fun(?![A-Za-z0-9-])|(?<![A-Za-z0-9-])(?:[A-Za-z0-9-]+\.)+pump\.fun(?![A-Za-z0-9.-]))/i;
-/** The bare domain, lower case, starting a string. */
-export const PUMP_FUN_STRING = /["'`]pump\.fun(?=["'`/:?#])/;
+/**
+ * A pump.fun host in a request-target position (see the header): a URL host or any subdomain, in any case, with or
+ * without the trailing dot of a fully qualified name (red team RT-04: frontend-api.pump[.]fun. passed before).
+ */
+export const PUMP_FUN_HOST = /(?:\/\/(?:[A-Za-z0-9-]+\.)*pump\.fun\.?(?![A-Za-z0-9-])|(?<![A-Za-z0-9-])(?:[A-Za-z0-9-]+\.)+pump\.fun\.?(?![A-Za-z0-9.-]))/i;
+/**
+ * The bare domain where a host is written, in any letter case and with an optional trailing dot (red team RT-04): at
+ * the start of a string (after a quote or backtick), after `=` (a .env or query value), after `: ` (a YAML or JSON
+ * value, and a `host:` header field), or at the start of a line. It ends there: a quote, `/`, `:`, `?`, `#`,
+ * whitespace, a comma or the end of the line follow. A display label in prose keeps the venue's name, but a label in
+ * one of these positions now counts as a host: write it some other way, or put it in Markdown, which is not read.
+ * Prose keeps passing because a bare domain followed by more words on the same line is not a host.
+ */
+export const PUMP_FUN_STRING = /(?:^|["'`]|=|,|:[ \t])pump\.fun\.?(?=["'`/:?#,]|[ \t]*$)/i;
 
 /** One finding per line that writes a pump.fun host as a request target. */
 export function scanHosts(text: string, file: string): Finding[] {

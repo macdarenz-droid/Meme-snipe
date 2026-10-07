@@ -7,7 +7,8 @@
 // reading anything else. Submodules are refused in the same pass (C01 red-team round 5, A7): a gitlink (index mode
 // 160000) and a nested repository that git lists as `dir/` are directories whose files belong to another repository,
 // so no check can read them, and reading one as a file crashed the scan with EISDIR. Zeroed's paths (config.ts
-// ZEROED_PATHS) hold symbolic links (research/historical/rpcscan shares the scanner's Go sources): they are skipped
+// ZEROED_FILES_MANIFEST) hold symbolic links (research/historical/rpcscan shares the scanner's Go sources): those
+// listed links are skipped
 // unless the run includes them, and no check follows them (check.ts reads only plain files).
 import { lstatSync } from 'node:fs';
 import { join } from 'node:path';

@@ -10,7 +10,8 @@
 //   the root devDependencies for files under test/. Outside packages/, the root manifest declares what may be used;
 //   under tools/ (a workspace project only for its TypeScript peer, config.ts TOOLS_DIR) tools/package.json and the
 //   root manifest do, and the files are otherwise checked as root-level code, as C01 checked tools/.
-// Zeroed's paths (config.ts ZEROED_PATHS) are skipped unless the run includes them.
+// Zeroed's own files (the manifest of config.ts ZEROED_FILES_MANIFEST) are skipped unless the run includes them; a
+// new file under one of those folders is checked (round 1 review F4).
 // `@bot/types` and `@bot/signer` production code may import only node: built-ins and @bot/* packages (their
 // closures are checked by E_THIRD_PARTY_RUNTIME), and `@solana/web3.js` is refused in the engine and signer whatever
 // the manifest says. A specifier that is not a string literal is refused. Under packages/ and tools/, every source

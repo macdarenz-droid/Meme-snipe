@@ -1,7 +1,11 @@
 // GitHub Actions checks (B-M30-01 logic 2 and 5; C01 review findings m1 and M3). Workflows are parsed (yaml.ts; a
 // file the reader cannot follow fails), then:
 // - every action and reusable workflow is pinned by a full commit SHA (a local `./` action is refused: nothing pins
-//   it); the token is read-only; no secrets are used;
+//   it); the token is read-only; no secrets are used. The one exception is the scheduled advisory report, which may
+//   declare `issues: write` and nothing else (config.ts WORKFLOW_WRITE_PERMISSIONS), because it opens or updates the
+//   issue that carries the advisories for versions already in use;
+// - that report must exist, may run only on a schedule (and by hand) and every step of it sets continue-on-error, so
+//   it can never put a failed run on the default branch's newest commit (supervisor ruling 1);
 // - no workflow runs on pull_request_target or workflow_run (they run with the base repository's token and secrets),
 //   except the guard, which uses pull_request_target to run the base branch's drift check against the pull request;
 // - run steps call pnpm only as `pnpm install --frozen-lockfile`, the root scripts (lint, typecheck, test), `pnpm
@@ -16,7 +20,8 @@
 // - ci.yml runs on every pull request (no branch, tag or path filter) and runs each required step (config.ts
 //   CI_REQUIRED_STEPS) as its own unconditional step, in order, in the job named `check` (the deploy gate keys on that
 //   name), without a container or services and with no condition but the draft skip of config.ts CI_JOB_IF; before
-//   the last required step that job runs nothing but the required steps, actions/checkout (no ref or repository),
+//   the last required step that job runs nothing but the required steps, each with the environment variables it needs
+//   (config.ts CI_REQUIRED_STEP_ENV), actions/checkout (no ref or repository),
 //   actions/setup-node from .node-version and pnpm/action-setup with no inputs (review finding R6);
 // - Zeroed's own workflows (config.ts ZEROED_WORKFLOWS) and Zeroed's jobs inside a checked one (ZEROED_JOBS: their
 //   own keys and steps) are not checked; any other workflow is, and so are the whole file's lines (secrets, write
@@ -25,9 +30,9 @@
 //   commit into pr/ (data), input by input, sets up Node from base/.node-version, and runs the base copy of the drift
 //   check in pr/, in a job without a condition, container or services.
 import {
-  CI_CHECKOUT_INPUTS, CI_JOB, CI_JOB_IF, CI_REQUIRED_STEPS, CI_SETUP_NODE_INPUTS, CI_WORKFLOW, GUARD_BASE_CHECKOUT, GUARD_COMMAND,
+  AUDIT_SCHEDULE_WORKFLOW, CI_CHECKOUT_INPUTS, CI_JOB, CI_JOB_IF, CI_REQUIRED_STEP_ENV, CI_REQUIRED_STEPS, CI_SETUP_NODE_INPUTS, CI_WORKFLOW, GUARD_BASE_CHECKOUT, GUARD_COMMAND,
   GUARD_PR_CHECKOUT, GUARD_SETUP_NODE, GUARD_WORKFLOW, INTEGRATION_BRANCH, PR_TRIGGER_KEYS, PR_TRIGGER_TYPES, PUSH_TRIGGER_KEYS,
-  WORKFLOW_ENV_VALUES, WORKFLOW_GUARDED_ENV, WORKFLOW_PNPM_COMMANDS,
+  WORKFLOW_ENV_VALUES, WORKFLOW_GUARDED_ENV, WORKFLOW_PNPM_COMMANDS, WORKFLOW_WRITE_PERMISSIONS,
 } from './config.ts';
 import { finding, type Finding } from './finding.ts';
 import type { RepoSnapshot } from './repo.ts';
@@ -67,8 +72,14 @@ function stepsOf(file: string, doc: YamlMap): Step[] {
   });
 }
 
-function readOnly(p: YamlValue | undefined): boolean {
-  return p === 'read-all' || (isMap(p) && Object.values(p).every((v) => v === 'read' || v === 'none'));
+/** Scopes `file` may declare as `write` (config.ts WORKFLOW_WRITE_PERMISSIONS); none for any other workflow. */
+function allowedWrites(file: string): string[] {
+  return [...(WORKFLOW_WRITE_PERMISSIONS[file] ?? [])];
+}
+
+function readOnly(p: YamlValue | undefined, file: string): boolean {
+  const writes = allowedWrites(file);
+  return p === 'read-all' || (isMap(p) && Object.entries(p).every(([scope, v]) => v === 'read' || v === 'none' || writes.includes(`${scope}: ${String(v)}`)));
 }
 
 /** Trigger names of an `on:` value (a name, a list of names or a map). */
@@ -79,11 +90,14 @@ export function triggers(on: YamlValue | undefined): string[] {
 }
 
 function checkLines(file: string, text: string, findings: Finding[]): void {
+  const writes = allowedWrites(file);
   text.split('\n').forEach((raw, i) => {
     const line = raw.replace(/(^|\s)#.*$/, '');
     const where = `${file}:${i + 1}`;
     if (SECRETS_USE.some((re) => re.test(line))) findings.push(finding('E_WORKFLOW_SECRETS', where, 'CI holds no secrets; do not reference secrets'));
-    if (/:\s*write\b|write-all/.test(line)) findings.push(finding('E_WORKFLOW_PERMISSIONS', where, 'CI permissions must be read-only'));
+    if ((/:\s*write\b|write-all/.test(line)) && !writes.includes(line.trim())) {
+      findings.push(finding('E_WORKFLOW_PERMISSIONS', where, `CI permissions must be read-only${writes.length > 0 ? ` (this workflow may declare only ${writes.join(', ')})` : ''}`));
+    }
   });
 }
 
@@ -192,6 +206,10 @@ function checkRequiredSteps(doc: YamlMap, findings: Finding[]): void {
     }
     const reasons = disabledBy(s.step, spec.shell);
     if (reasons.length > 0) findings.push(finding('E_CI_STEP_DISABLED', s.where, `"${spec.run}" must run unconditionally and block the job; remove or fix: ${reasons.join(', ')}`));
+    const env = mapOf(s.step['env']);
+    for (const [key, value] of Object.entries(CI_REQUIRED_STEP_ENV[spec.run] ?? {})) {
+      if (env[key] !== value) findings.push(finding('E_CI_STEP_ENV', s.where, `"${spec.run}" must set ${key} to "${value}": the check reads GitHub's own event facts from it`));
+    }
     if (s.index < last) findings.push(finding('E_CI_STEP_ORDER', s.where, `"${spec.run}" runs before a step it must follow (order: ${CI_REQUIRED_STEPS.map((r) => r.run).join(' → ')})`));
     last = Math.max(last, s.index);
   });
@@ -238,6 +256,25 @@ function checkGuard(doc: YamlMap, findings: Finding[]): void {
   if (!ran) findings.push(finding('E_GUARD', GUARD_WORKFLOW, `the guard must run "${GUARD_COMMAND}" in working-directory pr`));
 }
 
+/**
+ * The scheduled advisory report (config.ts AUDIT_SCHEDULE_WORKFLOW; supervisor ruling 1). It must exist, so the
+ * advisories the `check` job no longer fails on are still reported, it may run only on a schedule (and by hand), so no
+ * pull request can start it, and every step must carry `continue-on-error: true`, so no failure of its own can put a
+ * red run on the default branch's newest commit and stop the deploy gate.
+ */
+function checkAuditSchedule(doc: YamlMap, findings: Finding[]): void {
+  const on = triggers(doc['on']);
+  if (!on.includes('schedule') || on.some((t) => t !== 'schedule' && t !== 'workflow_dispatch')) {
+    findings.push(finding('E_AUDIT_SCHEDULE', AUDIT_SCHEDULE_WORKFLOW, 'the advisory report runs on schedule (and workflow_dispatch), and on no other trigger'));
+  }
+  for (const { step, where } of stepsOf(AUDIT_SCHEDULE_WORKFLOW, doc)) {
+    if (step['continue-on-error'] !== 'true') {                         // the reader gives every scalar as a string
+      findings.push(finding('E_AUDIT_SCHEDULE', where, 'every step of the advisory report sets "continue-on-error: true": a failed run of it would land on the '
+        + 'default branch\'s newest commit and the deploy gate would refuse that commit'));
+    }
+  }
+}
+
 function checkWorkflow(file: string, text: string, findings: Finding[], scope: Scope): YamlMap | null {
   checkLines(file, text, findings);
   let doc: YamlValue;
@@ -251,7 +288,7 @@ function checkWorkflow(file: string, text: string, findings: Finding[], scope: S
     findings.push(finding('E_WORKFLOW_PARSE', file, 'a workflow must be a mapping'));
     return null;
   }
-  if (!readOnly(doc['permissions'])) findings.push(finding('E_WORKFLOW_PERMISSIONS', file, 'set a top-level "permissions:" block that is read-only'));
+  if (!readOnly(doc['permissions'], file)) findings.push(finding('E_WORKFLOW_PERMISSIONS', file, 'set a top-level "permissions:" block that is read-only'));
   for (const t of triggers(doc['on'])) {
     if (PRIVILEGED_TRIGGERS.includes(t) && !(file === GUARD_WORKFLOW && t === 'pull_request_target')) {
       findings.push(finding('E_WORKFLOW_TRIGGER', file, `"${t}" runs with the base repository's token and secrets; not allowed`));
@@ -263,7 +300,7 @@ function checkWorkflow(file: string, text: string, findings: Finding[], scope: S
     const where = name === '' ? file : `${file} jobs.${name}`;
     if ('defaults' in j) findings.push(finding('E_WORKFLOW_DEFAULTS', where, '"defaults" changes the shell or directory of every step; set them per step'));
     if (name !== '') {
-      if ('permissions' in j && !readOnly(j['permissions'])) findings.push(finding('E_WORKFLOW_PERMISSIONS', where, 'job permissions must be read-only'));
+      if ('permissions' in j && !readOnly(j['permissions'], file)) findings.push(finding('E_WORKFLOW_PERMISSIONS', where, 'job permissions must be read-only'));
       checkEnv(`${where}.env`, j['env'], findings);
       checkUses(where, j['uses'], findings);
     }
@@ -288,8 +325,15 @@ export function checkWorkflows(snapshot: RepoSnapshot, scope: Scope = scopeOf(fa
     checkPushTrigger(CI_WORKFLOW, ci['on'], findings);
     checkRequiredSteps(ci, findings);
   }
+  // The guard is not in this repository (config.ts GUARD_WORKFLOW, supervisor ruling 2 for round 1 review F2): a
+  // pull_request_target run reports against the base branch's newest commit, so a failure would stop every deploy. Its
+  // rules stay, so the follow-up card can bring a tested guard back; while the file is absent they check nothing.
   const guard = docs.get(GUARD_WORKFLOW);
-  if (guard === undefined) findings.push(finding('E_GUARD_MISSING', GUARD_WORKFLOW, 'the guard workflow is missing (review finding M3)'));
-  else if (guard !== null) checkGuard(guard, findings);
+  if (guard !== undefined && guard !== null) checkGuard(guard, findings);
+  const schedule = docs.get(AUDIT_SCHEDULE_WORKFLOW);
+  if (schedule === undefined) {
+    findings.push(finding('E_AUDIT_SCHEDULE', AUDIT_SCHEDULE_WORKFLOW, 'the scheduled advisory report is missing: with the audit step failing only on the '
+      + 'versions a pull request adds, it is what reports an advisory for a version already in use (supervisor ruling 1)'));
+  } else if (schedule !== null) checkAuditSchedule(schedule, findings);
   return findings;
 }
