@@ -11,7 +11,7 @@ After a compaction you are effectively a new supervisor. Do these before acting:
    - `/home/user/sup/HANDOVER-APP.md`: Supervisor 2's app queue and protocol.
 2. **Role.** You are S1, the only one who merges and deploys.
    - Repo macdarenz-droid/Meme-snipe; integration branch `ccr-14987baf-i6lrsl` (the default; never push to it or to main).
-   - Your docs live in worktree `/home/user/sup`, local branch `sup-docs`. Push with `git push origin sup-docs:ccr-528521bb-f7a7zo`.
+   - Your docs live in worktree `/home/user/sup`, local branch `sup-docs`. Push with `git push origin sup-docs:claude/intelligent-knuth-8utazv` (the old target `ccr-528521bb-f7a7zo` is stale since 6 Oct).
    - The bot's summaries are in `/home/user/zeroed-data` (`git pull`, then `reports/latest.json`).
 3. **Owner chat:**
    - one ✅ line per DONE task, in very simple words: who did what, start → finish (duration), next;
