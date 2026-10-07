@@ -48,6 +48,14 @@ The previous S1 account reached its usage limit about 12:45 PM. The owner made t
 - No host access, no secrets access (owner only), as before.
 
 **Log (Melbourne time, newest first)**
+- 6:20 PM **#280 ops review FAIL on 10347648** (01QkAcbw; 1,748 ops+worker tests; 11 reverts each failing).
+  - BLOCKING: no CI or e2e yet; the README pin is stale; the branch is behind 9f7cf812, with conflicts in README and recorder.ts.
+  - HIGH: an old state dir latches the kill switch with no re-arm path (the same as R4-1).
+  - MEDIUM: refuse-to-start ends in a failed unit, and the #271 rollback goes onto older code.
+  - LOW: open trades with an empty ledger; durable() doesn't fsync the folder; the cut() name.
+  - Design items (2), (4), (5) and (6) judged OK.
+  - **S1 contract fixed for a state refusal:** <stateDir>/refused.json {reason, atMs, commit} fsynced + exit 78 in RestartPreventExitStatus; zeroed-update holds and alerts, never rolls back; zeroed-check alerts with the reason; the stand-in never clears it. Sent to the RC-FIXES builder (#280) and to RC-FIXES-2b (item 12).
+  - S1 marks #280 ready once it is re-pinned.
 - 6:19 PM **Red team C round 4 on #280** (claude/redteam-c 5fb491f). C1, H1, R2-1/2/4 are CLOSED. New:
   - HIGH R4-1: a false state_lost latch at the resume, because old releases never wrote control.json. Fix: a one-time state-version marker.
   - HIGH R4-2: cutAtKill forgives any replay lines of the last event. Fix: forgive exactly one trailing submit, or use a 'dispatching' line.
