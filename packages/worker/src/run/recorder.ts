@@ -2,8 +2,9 @@
 // dataset layout (schema 2), so TEST-1 can replay what live fed and DATA-1's QA (research/historical/qa/check.mjs)
 // reads it. One dataset folder per boot, `recorder/<boot>/`:
 //   manifest.json                          schema 2, source "live-recorder", coverage, gaps, one entry per day and file
-//   gaps.jsonl                             every stream gap of the boot, one per line, in order (RC-H3); packed to
-//                                          gaps.jsonl.zst at a clean stop or the next start, listed as an attachment
+//   gaps-NNN.jsonl(.zst)                   every stream gap of the boot, one per line, in order (RC-H3), in chunks of
+//                                          GAPS_CHUNK_BYTES; each chunk is packed and listed as an attachment when full,
+//                                          at a clean stop, or at the next start after a kill
 //   days/<UTC day>/frames-NNN.jsonl.zst    every frame as received (seq, receipt time, source, place, duplicate, body)
 //   days/<UTC day>/raw-NNN.jsonl.zst       every fetched transaction as a schema-2 raw record (DEC-1's shape)
 //   days/<UTC day>/releases-NNN.jsonl.zst  every event handed to the engine, in order (FEED-1 `Release`)
@@ -13,7 +14,7 @@
 // file is hashed once, from the bytes written when it is sealed; the manifest lists that hash and never re-reads it.
 import { createHash } from 'node:crypto';
 import { redactCounted } from './redact.ts';
-import { appendFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, truncateSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, truncateSync, writeFileSync } from 'node:fs';
 import { basename, join, relative } from 'node:path';
 import { zstdCompressSync, zstdDecompressSync } from 'node:zlib';
 import { toBase64 } from '../../../core/src/chain/index.ts';
@@ -26,10 +27,18 @@ export const SAVED_STATES = 'saved-state';
 // `pre` held SEED-1's seed before it became a recorded frame; kept so an older boot's leftover files still seal.
 const TABLES = ['frames', 'raw', 'releases', 'pre', 'delays'] as const;
 /** RC-H3: every stream gap (`gap()`) is appended here; the manifest lists only the first MANIFEST_STREAM_GAPS of them. */
-export const GAPS_FILE = 'gaps.jsonl';
 export const MANIFEST_STREAM_GAPS = 500;
-/** GAPS_FILE packed (zstd) once the boot has ended, so the folder settles and the file uploads with the manifest. */
-export const GAPS_PACKED = 'gaps.jsonl.zst';
+/**
+ * RC-H3 (S1 on #271): the gaps go in chunks of at most this many plain bytes (one flush's lines may pass it), so packing
+ * one (at a seal, a stop, or the next start after a kill) never holds more than a chunk in memory.
+ */
+export const GAPS_CHUNK_BYTES = 4 * 1024 * 1024;
+/** A gaps chunk's file name, plain while open; `.zst` once packed. */
+export const gapsChunk = (n: number): string => `gaps-${String(n).padStart(3, '0')}.jsonl`;
+const GAPS_PLAIN = /^gaps-(\d{3,6})\.jsonl$/;
+const GAPS_PACKED = /^gaps-(\d{3,6})\.jsonl\.zst$/;
+/** How the manifest names the chunks (`coverage_gaps_file.path`). */
+export const GAPS_FILES = 'gaps-NNN.jsonl.zst';
 type Table = (typeof TABLES)[number];
 
 export interface RecorderOptions {
@@ -93,10 +102,10 @@ export class Recorder {
   readonly #gaps: unknown[] = [];
   /** Stream gaps seen this boot (all of them are in GAPS_FILE once flushed), and those not yet appended there. */
   #streamGaps = 0;
-  /** Where the stream gaps are: GAPS_FILE while the boot runs, GAPS_PACKED after a clean stop. */
-  #gapsPath = GAPS_FILE;
-  /** Bytes of GAPS_FILE written whole by this boot. */
+  /** The open gaps chunk: its number, its bytes and lines written whole. */
+  #gapsChunk = 0;
   #gapsBytes = 0;
+  #gapsRows = 0;
   readonly #gapLines: string[] = [];
   readonly #attachments: Attachment[] = [];
   /** Sealed files' sizes and hashes, by path relative to the folder, as sealed (G4c: never re-read). */
@@ -164,7 +173,7 @@ export class Recorder {
   }
 
   /**
-   * A stream gap (`coverage:*:gap`). Every one is appended to GAPS_FILE at the next flush; the manifest lists the first
+   * A stream gap (`coverage:*:gap`). Every one is appended to the open gaps chunk at the next flush; the manifest lists the first
    * MANIFEST_STREAM_GAPS and names the file and the total (RC-H3: a long boot's gaps once made a 77 MB manifest rewritten
    * at every seal). `recordedGaps` reads them all back.
    */
@@ -175,21 +184,57 @@ export class Recorder {
   }
 
   #flushGaps(): void {
-    if (this.#gapLines.length === 0) return;
-    const path = join(this.#dir, GAPS_FILE);
-    const text = `${redactCounted(this.#gapLines.join('\n')).text}\n`;
-    try {
-      appendFileSync(path, text);
-    } catch (e) {
-      // A part written before the failure (a full disk) is cut back off: the lines stay buffered for the next flush, so
-      // the file never holds a repeated or torn gap line. A cut that fails too leaves at most a torn tail.
+    const lines = this.#gapLines;
+    while (lines.length > 0) {
+      // The lines that fit the open chunk (at least one); a full chunk is packed first, so no chunk passes
+      // GAPS_CHUNK_BYTES unless one line does.
+      let bytes = 0;
+      let n = 0;
+      while (n < lines.length) {
+        const b = Buffer.byteLength(lines[n]!) + 1;
+        if (n > 0 && this.#gapsBytes + bytes + b > GAPS_CHUNK_BYTES) break;
+        if (n === 0 && this.#gapsBytes > 0 && this.#gapsBytes + b > GAPS_CHUNK_BYTES) break;
+        bytes += b;
+        n++;
+      }
+      if (n === 0) {
+        this.#sealGaps();
+        continue;
+      }
+      const path = join(this.#dir, gapsChunk(this.#gapsChunk));
+      const text = `${redactCounted(lines.slice(0, n).join('\n')).text}\n`;
       try {
-        truncateSync(path, this.#gapsBytes);
-      } catch {}
-      throw e;
+        appendFileSync(path, text);
+      } catch (e) {
+        // A part written before the failure (a full disk) is cut back off: the lines stay buffered for the next flush,
+        // so a chunk never holds a repeated or torn gap line. A cut that fails too leaves at most a torn tail.
+        try {
+          truncateSync(path, this.#gapsBytes);
+        } catch {}
+        throw e;
+      }
+      this.#gapsBytes += Buffer.byteLength(text);
+      this.#gapsRows += n;
+      lines.splice(0, n);
     }
-    this.#gapsBytes += Buffer.byteLength(text);
-    this.#gapLines.length = 0;
+  }
+
+  /**
+   * Packs the open gaps chunk, crash-safe (S1 on #271): the `.zst` is written whole, then the manifest that lists it,
+   * and only then is the plain chunk removed. A kill at any step leaves the plain chunk, which the next start packs.
+   */
+  #sealGaps(): void {
+    const plain = join(this.#dir, gapsChunk(this.#gapsChunk));
+    if (!existsSync(plain)) return;
+    const a = packChunk(plain, this.#gapsRows);
+    const i = this.#attachments.findIndex((x) => x.file === a.file);
+    if (i !== -1) this.#attachments.splice(i, 1);
+    this.#attachments.push(a);
+    this.#writeManifestNow();
+    rmSync(plain);
+    this.#gapsChunk++;
+    this.#gapsBytes = 0;
+    this.#gapsRows = 0;
   }
 
   #push(t: Table, atMs: number, line: string): void {
@@ -280,14 +325,8 @@ export class Recorder {
   close(): void {
     this.flush();
     for (const t of TABLES) this.#seal(t);
-    // RC-H3: a plain .jsonl keeps an ended boot "open" for the uploader and the budget; the gaps go packed.
-    const a = packGaps(this.#dir);
-    if (a !== null) {
-      const i = this.#attachments.findIndex((x) => x.file === GAPS_PACKED);
-      if (i !== -1) this.#attachments.splice(i, 1);
-      this.#attachments.push(a);
-      this.#gapsPath = GAPS_PACKED;
-    }
+    // RC-H3: a plain .jsonl keeps an ended boot "open" for the uploader and the budget; the last gaps chunk goes packed.
+    this.#sealGaps();
     this.#writeManifest();
   }
 
@@ -318,9 +357,13 @@ export class Recorder {
   }
 
   #writeManifest(): void {
-    // The file always holds at least what the manifest counts.
+    // The chunks always hold at least what the manifest counts.
     this.#flushGaps();
-    const gapsFile = this.#streamGaps === 0 ? null : { path: this.#gapsPath, total: this.#streamGaps, listed: Math.min(this.#streamGaps, MANIFEST_STREAM_GAPS) };
+    this.#writeManifestNow();
+  }
+
+  #writeManifestNow(): void {
+    const gapsFile = this.#streamGaps === 0 ? null : { path: GAPS_FILES, total: this.#streamGaps, listed: Math.min(this.#streamGaps, MANIFEST_STREAM_GAPS) };
     writeManifest(this.#dir, { boot: this.#o.boot, git_sha: this.#o.gitSha, coverage: this.#coverage, coverage_gaps: this.#gaps, coverage_gaps_file: gapsFile, counts: this.#sealed, commitments: this.#o.commitments ?? null, attachments: this.#attachments, pruned: this.#pruned }, this.#hashes);
   }
 }
@@ -371,6 +414,8 @@ export interface PrunedFile {
 
 export interface Attachment {
   readonly file: string;
+  /** A gaps chunk's lines (RC-H3). */
+  readonly rows?: number;
   readonly sha256: string;
   readonly bytes: number;
   /** A packed file's content: what it decompresses to. */
@@ -476,54 +521,93 @@ interface PrevManifest {
   days?: unknown;
 }
 
-/**
- * Packs a boot's GAPS_FILE into GAPS_PACKED (written beside it, then the plain one removed) and returns its attachment
- * entry, with the packed file's hash and its content's. Null when there is no plain gaps file.
- */
-const packGaps = (dir: string): Attachment | null => {
-  const p = join(dir, GAPS_FILE);
-  if (!existsSync(p)) return null;
-  const plain = readFileSync(p);
-  const content = hashOf(plain);
-  const z = join(dir, GAPS_PACKED);
-  const packed = zstdCompressSync(plain);
+/** Packs one plain gaps chunk to `<chunk>.zst` (written whole, then renamed), and returns its attachment entry. */
+const packChunk = (plain: string, rows: number): Attachment => {
+  const text = readFileSync(plain);
+  const z = `${plain}.zst`;
+  const packed = zstdCompressSync(text);
   writeFileSync(`${z}.tmp`, packed);
   renameSync(`${z}.tmp`, z);
-  rmSync(p);
   const h = hashOf(packed);
-  return { file: GAPS_PACKED, sha256: h.sha256, bytes: h.bytes, content: { encoding: 'zstd', sha256: content.sha256, bytes: content.bytes } };
+  const c = hashOf(text);
+  return { file: basename(z), sha256: h.sha256, bytes: h.bytes, rows, content: { encoding: 'zstd', sha256: c.sha256, bytes: c.bytes } };
 };
 
-/** A crashed boot's gaps file: its torn last line cut, and its total counted from the whole lines. */
-const leftoverGaps = (dir: string, prev: GapsFile | null): GapsFile | null => {
-  const p = join(dir, GAPS_FILE);
-  if (!existsSync(p)) return prev;
-  const text = readFileSync(p, 'utf8');
-  const whole = text.endsWith('\n') ? text : text.slice(0, text.lastIndexOf('\n') + 1);
-  if (whole !== text) writeFileSync(p, whole);
-  const total = whole === '' ? 0 : whole.split('\n').length - 1;
-  return total === 0 ? prev : { path: GAPS_FILE, total, listed: Math.min(prev?.listed ?? 0, total) };
+/** A chunk's whole lines: a torn last line (a kill mid-append) is cut off the file. Returns how many lines it holds. */
+const wholeLines = (plain: string): number => {
+  const text = readFileSync(plain);
+  const end = text.lastIndexOf(0x0a) + 1;
+  if (end !== text.length) truncateSync(plain, end);
+  let n = 0;
+  for (let k = 0; k < end; k++) if (text[k] === 0x0a) n++;
+  return n;
+};
+
+const chunkNumbers = (dir: string, re: RegExp): number[] =>
+  readdirSync(dir).map((f) => re.exec(f)).filter((m): m is RegExpExecArray => m !== null).map((m) => Number(m[1])).sort((a, b) => a - b);
+
+/**
+ * A crashed boot's gaps (RC-H3, S1 on #271), crash-safe at every step of a seal: a `.zst.tmp` is dropped; a plain chunk
+ * whose `.zst` the manifest already lists only waits for its removal; any other plain chunk (torn line cut) is packed
+ * again; a `.zst` the manifest does not list, with no plain chunk beside it, is listed. Returns the attachments to write
+ * and the plain chunks to remove once a manifest listing them is on disk; null when there is nothing to do.
+ */
+const leftoverGaps = (dir: string, prev: readonly Attachment[]): { readonly attachments: Attachment[]; readonly remove: string[] } | null => {
+  let changed = false;
+  for (const f of readdirSync(dir)) {
+    if (/^gaps-\d{3,6}\.jsonl\.zst\.tmp$/.test(f)) {
+      rmSync(join(dir, f));
+      changed = true;
+    }
+  }
+  const attachments = [...prev];
+  const listed = new Set(prev.map((a) => a.file));
+  const remove: string[] = [];
+  for (const n of chunkNumbers(dir, GAPS_PLAIN)) {
+    const plain = join(dir, gapsChunk(n));
+    changed = true;
+    remove.push(plain);
+    if (listed.has(`${gapsChunk(n)}.zst`) && existsSync(`${plain}.zst`)) continue;
+    const a = packChunk(plain, wholeLines(plain));
+    const k = attachments.findIndex((x) => x.file === a.file);
+    if (k !== -1) attachments.splice(k, 1);
+    attachments.push(a);
+    listed.add(a.file);
+  }
+  for (const n of chunkNumbers(dir, GAPS_PACKED)) {
+    const file = `${gapsChunk(n)}.zst`;
+    if (listed.has(file)) continue;
+    const packed = readFileSync(join(dir, file));
+    const text = zstdDecompressSync(packed);
+    let rows = 0;
+    for (const b of text) if (b === 0x0a) rows++;
+    const h = hashOf(packed);
+    const c = hashOf(text);
+    attachments.push({ file, sha256: h.sha256, bytes: h.bytes, rows, content: { encoding: 'zstd', sha256: c.sha256, bytes: c.bytes } });
+    changed = true;
+  }
+  return changed ? { attachments, remove } : null;
 };
 
 /**
  * Every coverage gap of one recorder folder: the manifest's `coverage_gaps`, then the stream gaps it does not list, from
- * GAPS_FILE, or GAPS_PACKED once the boot ended (RC-H3). A torn last line (a kill mid-append) is not a gap and is skipped.
+ * the gaps chunks in order (plain while the boot runs or until the next start packs it, `.zst` once packed). A torn
+ * last line (a kill mid-append) is not a gap and is skipped.
  */
 export const recordedGaps = (dir: string): unknown[] => {
   const m = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8')) as PrevManifest;
   const listed = m.coverage_gaps ?? [];
-  // Packed once the boot ended; plain while it runs (or after a kill, until the next start packs it).
-  const z = join(dir, GAPS_PACKED);
-  const p = join(dir, GAPS_FILE);
-  const text = existsSync(p) ? readFileSync(p, 'utf8') : existsSync(z) ? zstdDecompressSync(readFileSync(z)).toString('utf8') : null;
-  if (text === null) return [...listed];
-  const lines = text.split('\n');
+  const numbers = [...new Set([...chunkNumbers(dir, GAPS_PLAIN), ...chunkNumbers(dir, GAPS_PACKED)])].sort((a, b) => a - b);
+  const lines: string[] = [];
+  for (const n of numbers) {
+    const plain = join(dir, gapsChunk(n));
+    const text = existsSync(plain) ? readFileSync(plain, 'utf8') : zstdDecompressSync(readFileSync(`${plain}.zst`)).toString('utf8');
+    lines.push(...text.split('\n').filter((l) => l !== ''));
+  }
   const rest: unknown[] = [];
   for (let i = m.coverage_gaps_file?.listed ?? 0; i < lines.length; i++) {
-    const l = lines[i]!;
-    if (l === '') continue;
     try {
-      rest.push(JSON.parse(l));
+      rest.push(JSON.parse(lines[i]!));
     } catch (e) {
       if (i === lines.length - 1) continue;
       throw e;
@@ -558,7 +642,7 @@ const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object
 const sealBoot = (root: string, boot: string): boolean => {
   const dir = join(root, boot);
   const daysDir = join(dir, 'days');
-  if (!existsSync(daysDir) && !existsSync(join(dir, GAPS_FILE))) return false;
+  if (!existsSync(dir) || !statSync(dir).isDirectory()) return false;
   let open = 0;
   const counts = { frames: 0, raw: 0, releases: 0, pre: 0, delays: 0 };
   const hashes: FileHashes = new Map();
@@ -576,29 +660,32 @@ const sealBoot = (root: string, boot: string): boolean => {
       open++;
     }
   }
-  if (open === 0 && !existsSync(join(dir, GAPS_FILE))) return false;
   let prev: PrevManifest = {};
   try {
     prev = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8')) as typeof prev;
   } catch {}
+  // RC-H3: the crashed boot's gaps chunks, packed and listed like a clean stop's (a kill at any step of a seal included).
+  const gaps = leftoverGaps(dir, prev.attachments ?? []);
+  if (open === 0 && gaps === null) return false;
   // Files the crashed boot had sealed keep the size and hash its manifest listed at their seal (G4c review N1), so a
   // change made to one between the crash and this start shows as a mismatch, not a fresh hash.
   for (const f of listedFiles(prev.days)) if (!hashes.has(f.path)) hashes.set(f.path, { bytes: f.bytes, sha256: f.sha256 });
-  // RC-H3: the crashed boot's gaps, torn line cut and counted, then packed and listed like a clean stop's.
-  const gapsFile = leftoverGaps(dir, prev.coverage_gaps_file ?? null);
-  const gapsPacked = packGaps(dir);
+  const attachments = gaps?.attachments ?? prev.attachments ?? [];
+  const gapRows = attachments.reduce((n, a) => n + (GAPS_PACKED.test(a.file) ? (a.rows ?? 0) : 0), 0);
   writeManifest(dir, {
     boot, git_sha: prev.git_sha ?? null,
     coverage: prev.coverage ?? { first_slot: null, last_slot: null, first_block_time: null, last_block_time: null },
     coverage_gaps: [...(prev.coverage_gaps ?? []), { reason: 'worker stopped without a clean stop; files sealed at the next start' }],
-    coverage_gaps_file: gapsFile === null ? null : { ...gapsFile, path: gapsPacked === null ? gapsFile.path : GAPS_PACKED },
+    coverage_gaps_file: gapRows === 0 ? prev.coverage_gaps_file ?? null : { path: GAPS_FILES, total: Math.max(gapRows, prev.coverage_gaps_file?.total ?? 0), listed: prev.coverage_gaps_file?.listed ?? 0 },
     commitments: prev.commitments ?? null,
-    attachments: gapsPacked === null ? prev.attachments ?? [] : [...(prev.attachments ?? []).filter((a) => a.file !== GAPS_PACKED), gapsPacked],
+    attachments,
     ...(prev.pruned === undefined ? {} : { pruned: prev.pruned }),
     counts: {
       frames: (prev.units?.[0]?.frames ?? 0) + counts.frames, raw: (prev.units?.[0]?.raw ?? 0) + counts.raw,
       releases: (prev.units?.[0]?.releases ?? 0) + counts.releases,
     },
   }, hashes);
+  // Only now that a manifest lists every packed chunk: the plain chunks go.
+  for (const plain of gaps?.remove ?? []) rmSync(plain, { force: true });
   return true;
 };

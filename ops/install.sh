@@ -913,6 +913,8 @@ const intervalMs = Number(process.env.ZEROED_HEARTBEAT_MS ?? 20_000);
 const NAMES = ['helius_api_key', 'alchemy_api_key', 'jupiter_api_key', 'telegram_bot_token', 'telegram_chat_id'];
 
 const loaded = credDir ? NAMES.filter((n) => existsSync(join(credDir, n))) : [];
+// RC-FIXES-2b: whether a ledger was here before this process (a release worker may have traded on it).
+const hadLedger = existsSync(join(stateDir, 'ledger.sqlite'));
 const db = new DatabaseSync(join(stateDir, 'ledger.sqlite'));
 db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;');
 db.exec('CREATE TABLE IF NOT EXISTS host_events (id INTEGER PRIMARY KEY, ts TEXT NOT NULL, kind TEXT NOT NULL, detail TEXT)');
@@ -926,10 +928,18 @@ try {
 
 if (process.argv.includes('--reconcile')) {
   const ok = loaded.length === NAMES.length;
-  // Contract with the host's update check: the number of open intents after reconcile.
-  writeFileSync(join(stateDir, 'open_intents'), '0\n');
-  event('reconcile', `stub: 0 open intents, ${ok ? 'ok' : 'credentials missing'}`);
-  console.log(`Reconcile: 0 open intents, ${loaded.length} of ${NAMES.length} credentials present. ${ok ? 'OK' : 'Refusing to start.'}`);
+  // Contract with the host's update check: the number of open intents (and open positions) after reconcile. RC-FIXES-2b
+  // (red team C R3-5): the stand-in settles nothing, so it never writes 0 over a count a release worker left. A count
+  // that is missing is 0 only on a host where no ledger existed before this process (nothing ever traded), else unknown.
+  const count = (f) => {
+    const p = join(stateDir, f);
+    if (!existsSync(p)) writeFileSync(p, hadLedger ? 'unknown\n' : '0\n');
+    return readFileSync(p, 'utf8').trim();
+  };
+  const intents = count('open_intents');
+  const positions = count('open_positions');
+  event('reconcile', `stub: ${intents} open intents, ${positions} open positions, ${ok ? 'ok' : 'credentials missing'}`);
+  console.log(`Reconcile: ${intents} open intents, ${loaded.length} of ${NAMES.length} credentials present. ${ok ? 'OK' : 'Refusing to start.'}`);
   db.close();
   process.exit(ok ? 0 : 1);
 }
@@ -1412,6 +1422,22 @@ worker_entry() {
   esac
 }
 
+# worker_refused FILE STATUS: why the worker refused to start, or nothing (RC-FIXES-2b, #280's contract). FILE is the
+# worker's <state>/refused.json ({reason, atMs, commit}); STATUS is the unit's ExecMainStatus, where 78 is a refusal.
+# One line, at most 200 characters, never the separator "|".
+worker_refused() {
+  local r
+  if [ -e "$1" ]; then
+    r="$(jq -r '"\(.reason // "no reason given") (commit \((.commit // "?") | tostring | .[0:12]))"' "$1" 2>/dev/null)" || r="refused.json cannot be read"
+    [ -n "$r" ] || r="refused.json cannot be read"
+  elif [ "$2" = 78 ]; then
+    r="exit 78 with no refused.json"
+  else
+    return 0
+  fi
+  printf '%s\n' "$r" | tr -d '\r|' | tr '\n' ' ' | cut -c1-200 | sed 's/ *$//'
+}
+
 # The only worker settings a release's ops/host-config.json may give (PRACTICE-ON): the S0 shakedown's, in its
 # "shakedown" block. Mode, recorder, simulation, drills and addresses stay with worker-start; live is never one of them.
 SHAKEDOWN_NAMES='ZEROED_STRATEGY ZEROED_S0_DIAGNOSTIC ZEROED_PAPER_EDGE_PPM ZEROED_STANDINS ZEROED_WALLET'
@@ -1571,8 +1597,9 @@ const TAKEN = 'a different file has this name in the data repository';
 const BOOT_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 const DATA_RE = /^days\/(\d{4}-\d{2}-\d{2})\/((?:frames|releases)-\d{3}\.jsonl\.zst)$/;
-// RC-H3: the recorder's packed stream gaps (gaps.jsonl.zst) go up with the manifest, like the saved state.
-const ATTACHMENTS = new Set(['deployer-state.json', 'deployer-state.json.zst', 'gaps.jsonl.zst']);
+const ATTACHMENTS = new Set(['deployer-state.json', 'deployer-state.json.zst']);
+// RC-H3: the recorder's packed stream-gap chunks (gaps-NNN.jsonl.zst) go up with the manifest, like the saved state.
+const GAPS_ATTACHMENT = /^gaps-\d{3,6}\.jsonl\.zst$/;
 const isSha = (s) => typeof s === 'string' && /^[0-9a-f]{64}$/.test(s);
 const isBytes = (n) => Number.isSafeInteger(n) && n > 0;
 /** True for "no such file": RECORD-BUDGET deletes recordings on its own schedule, so any file may vanish mid-run. */
@@ -1811,7 +1838,7 @@ export const itemsOf = (b) => {
   if (!b.open && day !== null) {
     items.push({ key: `${b.boot}/manifest.json`, kind: 'manifest', boot: b.boot, day, path: join(b.dir, 'manifest.json'), rel: 'manifest.json', file: 'manifest.json', size: null, sha256: null, open: false });
     for (const a of Array.isArray(b.manifest.attachments) ? b.manifest.attachments : []) {
-      if (!ATTACHMENTS.has(a?.file) || !isSha(a.sha256) || !isBytes(a.bytes)) continue;
+      if (!(ATTACHMENTS.has(a?.file) || GAPS_ATTACHMENT.test(a?.file ?? '')) || !isSha(a.sha256) || !isBytes(a.bytes)) continue;
       items.push({ key: `${b.boot}/${a.file}`, kind: 'attachment', boot: b.boot, day, path: join(b.dir, a.file), rel: a.file, file: a.file, size: a.bytes, sha256: a.sha256, open: false });
     }
   }
@@ -2781,6 +2808,9 @@ install_file /usr/local/sbin/zeroed-check 0755 <<'__ZEROED_FILE__'
 #  4. The index of the dry-run evidence kept on the host, for the worker API.
 #  0. Tailscale Funnel must be off (the live view is tailnet only); on is an alert and it is turned off.
 #  5. The recording upload's alerts (failed runs, a backlog over a day, files kept back, no report for 3 hours).
+#  6. A standing alert while the bot sits on the stand-in after a rollback.
+#  7. A worker that refused to start on lost or corrupt state (its refused.json, or exit 78), with the reason.
+#  8. A worker unit that systemd stopped restarting (failed).
 # Alerts go to the paired chat once per episode, with a "cleared" line after. Never prints a value.
 set -euo pipefail
 umask 077
@@ -2801,6 +2831,23 @@ fi
 while IFS='|' read -r what key text; do
   if [ "$what" = on ]; then alert "$key" "$text"; else alert_clear "$key" "$text"; fi
 done < <(printf '%s' "$rec" | record_alerts "$(date +%s)")
+
+# 6. RC-FIXES-2b (red team C R3-6): the bot never sits on the stand-in silently after a rollback. While a rollback put
+# it there and the stand-in still runs, one standing alert; cleared once a release worker runs again.
+if [ -s "$STATE_DIR/standin_after_rollback" ] && [ "$(worker_entry /opt/zeroed/current 2>/dev/null || true)" = "$STUB_ENTRY" ]; then
+  alert standin "ALERT Zeroed host: the bot is on the stand-in worker after a rollback ($(head -c 200 "$STATE_DIR/standin_after_rollback" | tr -d '\n')): no trading and no exits until a new release deploys."
+else
+  rm -f "$STATE_DIR/standin_after_rollback"
+  alert_clear standin "CLEARED Zeroed host: a release worker runs again."
+fi
+
+# 7. RC-FIXES-2b (#280's contract): a worker that refused to start on lost or corrupt state, by name and reason.
+refused="$(worker_refused /var/lib/zeroed/refused.json "$(systemctl show -p ExecMainStatus --value zeroed-worker.service 2>/dev/null || true)")"
+if [ -n "$refused" ]; then
+  alert worker-refused "ALERT Zeroed host: the worker refused to start: $refused. It stays stopped until the state is looked at."
+else
+  alert_clear worker-refused "CLEARED Zeroed host: the worker no longer refuses to start."
+fi
 
 # 0. Funnel: the worker API must stay on the tailnet. Funnel on for any port is an alert, and it is turned off. Each
 # tailscale call is bounded, so the minute check never hangs on it.
@@ -2859,6 +2906,13 @@ else
 fi
 
 paired || exit 0
+
+# 8. RC-FIXES-2b: a worker unit that failed for good (systemd gave up restarting it), with how it last ended.
+if [ -z "$refused" ] && systemctl is-failed --quiet zeroed-worker.service 2>/dev/null; then
+  alert worker-failed "ALERT Zeroed host: the worker has stopped for good ($(systemctl show -p Result --value zeroed-worker.service 2>/dev/null || echo unknown), exit $(systemctl show -p ExecMainStatus --value zeroed-worker.service 2>/dev/null || echo unknown)). Nothing trades and no exit runs."
+else
+  alert_clear worker-failed "CLEARED Zeroed host: the worker runs again."
+fi
 
 # 2. Webhook: a pending set, when due.
 if [ -e "$STATE_DIR/webhook_tries" ]; then
@@ -3182,6 +3236,9 @@ if [ "${wpid:-0}" != 0 ] && [ -r "/proc/$wpid/cmdline" ]; then
   esac
 fi
 log "Worker:    $(systemctl is-active zeroed-worker.service 2>/dev/null || true)$wkind"
+# RC-FIXES-2b (#280's contract): a refusal to start, with its reason.
+refused="$(worker_refused /var/lib/zeroed/refused.json "$(systemctl show -p ExecMainStatus --value zeroed-worker.service 2>/dev/null || true)")"
+[ -z "$refused" ] || log "Refused:   $refused"
 log "Signer:    $(systemctl is-active zeroed-signer.service 2>/dev/null || true)"
 log "Release:   $(cut -c1-12 "$STATE_DIR/deployed" 2>/dev/null || echo 'none yet')"
 run="$(qualifying_run "$EVIDENCE_ROOT" "$(systemctl list-units 'zeroed-dryrun@*' --state=active,activating --plain --no-legend 2>/dev/null || true)")"
@@ -3466,13 +3523,24 @@ holds() {
 # rollback WHY: the new release's worker did not stay up. Back to the release that ran before (its host files too),
 # its commit as deployed, its worker restarted; the new commit is not tried again; one alert.
 rollback() {
-  local why="$1" note="${2:-}"
-  # RC-R2-3: the release rolled back to is not on probation (the restarts were the failed release's).
+  local why="$1" note="" pc pprev pcur pstart pbase pdue
+  # RC-R2-3: the failed release's probation ends here (the restarts were its own).
   rm -f "$STATE_DIR/probation"
+  alert_clear worker-probation "CLEARED Zeroed host: the probation of ${commit:0:12} has ended."
+  # RC-FIXES-2b (red team C R3-6): every rollback is told, also a second one in a row; the key is cleared first.
+  rm -f "$STATE_DIR/alerts/worker-switch"
   if [ -z "$prev" ] || [ ! -d "$prev" ] || [ "$prev" = "$dest" ]; then
+    rm -f "$STATE_DIR/probation.prev"
     alert worker-switch "ALERT Zeroed host: the worker of ${commit:0:12} did not stay up after the switch ($why), and there is no earlier release to go back to."
     exit 1
   fi
+  case "$(worker_entry "$prev" 2>/dev/null || echo refused)" in
+    "$STUB_ENTRY")
+      note=" The bot is now paused on the stand-in worker: $(basename "$prev" | cut -c1-12) replaced ${commit:0:12}, and the next deploy needs a new commit."
+      # RC-FIXES-2b (red team C R3-6): zeroed-check keeps a standing alert while the bot sits on the stand-in after this.
+      printf '%s\n' "${commit:0:12} rolled back to $(basename "$prev" | cut -c1-12)" > "$STATE_DIR/standin_after_rollback" ;;
+    refused) note=" The release before, $(basename "$prev" | cut -c1-12), names no worker the host can run, so the worker will not start: the bot is stopped." ;;
+  esac
   printf '%s\n' "$commit" > "$STATE_DIR/failed_release"
   ln -sfn "$prev" /opt/zeroed/current.new
   mv -Tf /opt/zeroed/current.new /opt/zeroed/current
@@ -3480,6 +3548,13 @@ rollback() {
   apply_host "${current:-$(basename "$prev")}" "$prev" || true
   systemctl reset-failed zeroed-worker.service >/dev/null 2>&1 || true
   systemctl restart zeroed-worker.service || true
+  # RC-FIXES-2b (red team C R3-4): the release gone back to keeps the probation it had before the failed switch, from a
+  # new restart baseline (the failed release's restarts are not its own).
+  if [ -s "$STATE_DIR/probation.prev" ] && [ "$(cut -d'|' -f1 "$STATE_DIR/probation.prev")" = "$current" ]; then
+    IFS='|' read -r pc pprev pcur pstart pbase pdue < "$STATE_DIR/probation.prev" || true
+    printf '%s|%s|%s|%s|%s|%s\n' "$pc" "$pprev" "$pcur" "$pstart" "$(systemctl show -p NRestarts --value zeroed-worker.service 2>/dev/null || echo 0)" "$pdue" > "$STATE_DIR/probation"
+  fi
+  rm -f "$STATE_DIR/probation.prev"
   log "The worker of ${commit:0:12} did not stay up after the switch ($why); back on $(basename "$prev" | cut -c1-12)."
   alert worker-switch "ALERT Zeroed host: the worker of ${commit:0:12} did not stay up after the switch ($why), so the server went back to $(basename "$prev" | cut -c1-12). ${commit:0:12} is not tried again; a newer deploy is.$note"
   exit 1
@@ -3491,23 +3566,35 @@ rollback() {
 # hold. Any increase makes a rollback due, to the release that ran before, with one alert, as a failed hold does
 # (DECISIONS 2026-10-07, RC-R2-3):
 #   - during a qualifying dry run (its drills restart the worker on purpose) an increase is an alert, never a rollback;
-#   - a due rollback waits, like the forward switch, while the worker reports open intents (or the count cannot be
-#     read): one alert, checked again every run, also past the window, and done once the count reads 0;
+#   - a due rollback waits, like the forward switch, while the worker reports open intents or open positions (or a count
+#     cannot be read), and while a qualifying dry run is active: one alert, checked again every run, also past the
+#     window, and done once nothing is open;
 #   - when the release before runs the host's stand-in, the alert says the bot is now paused on it.
 # The probation ends with the window (unless a rollback is due), or when another release is deployed.
 probation_check() {
-  local f="$STATE_DIR/probation" pc pprev pcur pstart pbase pdue now n open why note=""
+  local f="$STATE_DIR/probation" pc pprev pcur pstart pbase pdue now n open pos why note="" refused
   [ -s "$f" ] || return 0
   IFS='|' read -r pc pprev pcur pstart pbase pdue < "$f" || true
   now="$(date +%s)"
   if [ "$pc" != "$(cat "$STATE_DIR/deployed" 2>/dev/null || true)" ] || ! [[ "$pstart" =~ ^[0-9]+$ ]] || ! [[ "$pbase" =~ ^[0-9]+$ ]]; then
     rm -f "$f"
+    alert_clear worker-probation "CLEARED Zeroed host: the probation of ${pc:0:12} has ended."
+    return 0
+  fi
+  # RC-FIXES-2b (#280's contract): a worker that refused to start on lost or corrupt state is never rolled back (older
+  # code would start on the very state it refused). The probation holds, with one alert naming the reason, until the
+  # refusal is gone.
+  refused="$(worker_refused /var/lib/zeroed/refused.json "$(systemctl show -p ExecMainStatus --value zeroed-worker.service 2>/dev/null || true)")"
+  if [ -n "$refused" ]; then
+    alert worker-refused "ALERT Zeroed host: the worker of ${pc:0:12} refused to start: $refused. It is not rolled back (older code would start on the state it refused); the state needs the owner."
     return 0
   fi
   if [ -z "$pdue" ]; then
     if [ $((now - pstart)) -ge "$PROBATION_S" ]; then
       rm -f "$f"
       log "The worker of ${pc:0:12} stayed up through its probation."
+      # RC-FIXES-2b (red team C R3-3): the probation alert's episode ends with it.
+      alert_clear worker-probation "CLEARED Zeroed host: the probation of ${pc:0:12} has ended."
       return 0
     fi
     n="$(systemctl show -p NRestarts --value zeroed-worker.service 2>/dev/null || true)"
@@ -3523,20 +3610,39 @@ probation_check() {
     pdue="it restarted $((n - pbase)) time(s) within $(((now - pstart) / 60)) min of the switch (probation $((PROBATION_S / 60)) min)"
     printf '%s|%s|%s|%s|%s|%s\n' "$pc" "$pprev" "$pcur" "$pstart" "$pbase" "${pdue//|/ }" > "$f"
   fi
+  # With no earlier release there is nothing to go back to and nothing moves: alert and drop at once (rollback()).
+  if [ -z "$pprev" ] || [ ! -d "$pprev" ]; then
+    rm -f "$f"
+    commit="$pc" prev="" current="$pcur" dest="/opt/zeroed/releases/$pc"
+    rollback "$pdue"
+  fi
+  # RC-FIXES-2b: a qualifying dry run that started while the rollback waited holds it too (never inside a run).
+  if [ -n "$(active_run)" ]; then
+    alert worker-probation-held "ALERT Zeroed host: rollback held: a qualifying dry run is active. The worker of ${pc:0:12} did not stay up ($pdue); it goes back once the run has ended and nothing is open."
+    return 0
+  fi
+  # Open intents, and open positions (RC-FIXES-2b: a held position must not pass to older code or the stand-in); a
+  # count that cannot be read holds.
   open="$(cat /var/lib/zeroed/open_intents 2>/dev/null || echo unknown)"
-  if [ "$open" != 0 ]; then
-    alert worker-probation-held "ALERT Zeroed host: rollback held: $open open intents. The worker of ${pc:0:12} did not stay up ($pdue); it goes back once no intent is open."
+  pos="$(cat /var/lib/zeroed/open_positions 2>/dev/null || echo unknown)"
+  if [ "$open" != 0 ] || [ "$pos" != 0 ]; then
+    alert worker-probation-held "ALERT Zeroed host: rollback held: $open open intents, $pos open positions. The worker of ${pc:0:12} did not stay up ($pdue); it goes back once nothing is open."
     return 0
   fi
   why="$pdue"
   rm -f "$f"
-  case "$(worker_entry "$pprev" 2>/dev/null || echo refused)" in
-    "$STUB_ENTRY") note=" The bot is now paused on the stand-in worker: $(basename "$pprev" | cut -c1-12) replaced ${pc:0:12}, and the next deploy needs a new commit." ;;
-    refused) note=" The release before, $(basename "$pprev" | cut -c1-12), names no worker the host can run, so the worker will not start: the bot is stopped." ;;
-  esac
-  alert_clear worker-probation-held "CLEARED Zeroed host: no intent is open; the rollback of ${pc:0:12} goes ahead."
+  alert_clear worker-probation-held "CLEARED Zeroed host: nothing is open; the rollback of ${pc:0:12} goes ahead."
   commit="$pc" prev="$pprev" current="$pcur" dest="/opt/zeroed/releases/$pc"
-  rollback "$why" "$note"
+  rollback "$why"
+}
+
+# due_rollback WHY (RC-FIXES-2b, red team C R3-2): the new release did not start or hold. Its rollback is recorded as due
+# and goes through probation_check's gate (no qualifying run, nothing open): done now, or held with one alert and done
+# by a later run.
+due_rollback() {
+  printf '%s|%s|%s|%s|%s|%s\n' "$commit" "$prev" "$current" "$(date +%s)" 0 "${1//|/ }" > "$STATE_DIR/probation"
+  probation_check
+  exit 1
 }
 
 active_run() { qualifying_run "$EVIDENCE_ROOT" "$(systemctl list-units 'zeroed-dryrun@*' --state=active,activating --plain --no-legend 2>/dev/null || true)"; }
@@ -3602,6 +3708,16 @@ if [ ! -d "$dest" ]; then
   git -C "$REPO_DIR" archive "$commit" | tar -x -C "$dest.new" --no-same-owner
   mv "$dest.new" "$dest"
 fi
+# RC-FIXES-2b (red team C R3-1): onto the host's stand-in from a worker that is not, never while a position is open (the
+# stand-in runs no exits and reports none): it waits while the worker reports open positions, or the count cannot be
+# read, like the intents above.
+if [ "$(worker_entry "$dest" 2>/dev/null || true)" = "$STUB_ENTRY" ] && [ "$(worker_entry /opt/zeroed/current 2>/dev/null || true)" != "$STUB_ENTRY" ]; then
+  pos="$(cat /var/lib/zeroed/open_positions 2>/dev/null || echo unknown)"
+  if [ "$pos" != 0 ]; then
+    log "Waiting on ${commit:0:12}: it runs the stand-in, and the worker has open positions ($pos)."
+    exit 0
+  fi
+fi
 # The release's own worker must start before anything changes (SWITCH-1): a trial start beside the running worker
 # (worker-smoke). If it cannot start, nothing switches, the running worker is untouched, and the owner gets one alert.
 if ! why="$(/usr/local/lib/zeroed/worker-smoke "$dest" 2>&1)"; then
@@ -3616,7 +3732,9 @@ prev="$(readlink -f /opt/zeroed/current 2>/dev/null || true)"
 # No current yet (a first deploy): readlink -f prints /opt/zeroed/current itself, and a rollback to it would point
 # current at itself. Only a real release folder is a rollback target.
 { [ -d "$prev" ] && [ ! -L "$prev" ]; } || prev=""
-rm -f "$STATE_DIR/probation" # RC-R2-3: a new switch ends the probation of the release before it
+# RC-R2-3: a new switch ends the probation of the release before it; RC-FIXES-2b (R3-4): kept aside, so a rollback to
+# that release puts it back.
+if [ -s "$STATE_DIR/probation" ]; then mv -f "$STATE_DIR/probation" "$STATE_DIR/probation.prev"; else rm -f "$STATE_DIR/probation.prev"; fi
 ln -sfn "$dest" /opt/zeroed/current.new
 mv -Tf /opt/zeroed/current.new /opt/zeroed/current
 printf '%s\n' "$commit" > "$STATE_DIR/deployed"
@@ -3639,10 +3757,11 @@ fi
 worker="not started (no keys yet)"
 if [ -s "$CRED_DIR/helius_api_key" ]; then
   systemctl reset-failed zeroed-worker.service >/dev/null 2>&1 || true
-  systemctl restart zeroed-worker.service || rollback "it failed to start"
-  if ! why="$(holds)"; then rollback "$why"; fi
+  systemctl restart zeroed-worker.service || due_rollback "it failed to start"
+  if ! why="$(holds)"; then due_rollback "$why"; fi
   # RC-R2-3: the probation baseline, the restart count right after the hold.
   printf '%s|%s|%s|%s|%s\n' "$commit" "$prev" "$current" "$(date +%s)" "$(systemctl show -p NRestarts --value zeroed-worker.service 2>/dev/null || echo 0)" > "$STATE_DIR/probation"
+  rm -f "$STATE_DIR/probation.prev" "$STATE_DIR/standin_after_rollback"
   worker="restarted and up"
   alert_clear worker-switch "CLEARED Zeroed host: the worker of ${commit:0:12} is up."
 fi

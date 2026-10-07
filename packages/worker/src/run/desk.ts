@@ -12,6 +12,8 @@ import { GATE_REASONS_PREFIX, S0_DIAGNOSTIC_PREFIX, reservationOf, universeOfKey
 
 /** Open intents for the host's update gate: intents not finished (`open_intents`, ops/README.md). */
 export const openIntents = (book: Book): number => Object.values(book.intents).filter((s) => !isTerminal(s)).length;
+/** Open positions for the host's rollback hold (`open_positions`, RC-FIXES-2b): every position not closed. */
+export const openPositions = (book: Book): number => Object.values(book.positions).filter((p) => p.status !== 'closed').length;
 
 export interface DeskDeps {
   readonly ledger: Ledger;

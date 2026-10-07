@@ -9,7 +9,10 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import worker from '../../../ops/src/watchdog/worker.ts';
 import { KEY, rig } from '../../../ops/test/record-fakes.ts';
-import { GAPS_FILE, GAPS_PACKED, Recorder, recordedGaps, sealLeftovers } from '../../src/run/recorder.ts';
+import { GAPS_FILES, Recorder, gapsChunk, recordedGaps, sealLeftovers } from '../../src/run/recorder.ts';
+
+const GAPS_PACKED = `${gapsChunk(0)}.zst`;
+const GAPS_FILE = gapsChunk(0);
 
 const MJS = join(fileURLToPath(new URL('../../../../', import.meta.url)), 'ops/host/files/usr/local/lib/zeroed/record-upload.mjs');
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -74,7 +77,7 @@ describe('RC-H3: an ended boot with stream gaps settles and uploads them', () =>
       const b = recordBoot(end);
       expect(readdirSync(b.dir).sort()).toEqual(['days', GAPS_PACKED, 'manifest.json']);
       const m = JSON.parse(readFileSync(join(b.dir, 'manifest.json'), 'utf8'));
-      expect(m.coverage_gaps_file).toMatchObject({ path: GAPS_PACKED, total: 600 });
+      expect(m.coverage_gaps_file).toMatchObject({ path: GAPS_FILES, total: 600 });
       expect(m.attachments).toEqual([expect.objectContaining({ file: GAPS_PACKED, sha256: expect.stringMatching(/^[0-9a-f]{64}$/), content: expect.objectContaining({ encoding: 'zstd' }) })]);
       // (c) every gap, in order, from the packed file.
       expect(recordedGaps(b.dir).filter((g) => (g as { key?: string }).key === 'coverage:rugs:gap')).toEqual(Array.from({ length: 600 }, (_, i) => gap(i)));
@@ -82,7 +85,7 @@ describe('RC-H3: an ended boot with stream gaps settles and uploads them', () =>
       expect(up.settled(b.dir, NOW)).toBeNull();
       const [boot] = await up.readBoots({ root: b.root, journal: join(b.base, 'journal.jsonl') }, NOW, async () => false);
       expect(boot.open).toBe(false);
-      expect(up.itemsOf(boot).map((i: { kind: string; file: string }) => `${i.kind} ${i.file}`).sort()).toEqual(['attachment gaps.jsonl.zst', 'data frames-000.jsonl.zst', 'data releases-000.jsonl.zst', 'manifest manifest.json']);
+      expect(up.itemsOf(boot).map((i: { kind: string; file: string }) => `${i.kind} ${i.file}`).sort()).toEqual(['attachment gaps-000.jsonl.zst', 'data frames-000.jsonl.zst', 'data releases-000.jsonl.zst', 'manifest manifest.json']);
       // (d) one run: everything goes up, then the uploaded frames and releases are deleted.
       const r = await upload(b);
       expect(r.code).toBe(0);
