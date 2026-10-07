@@ -1114,3 +1114,192 @@ Round 6's allocation scheme is too easy to get wrong, so round 7 makes it simple
 7. **R5-08.** The storage for the job must be named as a $0 location. That is a precondition from the Z-H research (docs/reviews/ZH.md item 3) and a hard precondition before any spend.
 
 Before pushing, read the whole allocation and B-10 text once more with one question in mind: "how could this spend more than the owner acknowledged, or more than the plan?" Fix anything you find, and list it in your reply.
+
+## Round 7 (head `281dc041`, 8 Oct 2026)
+
+### Fresh review (FAIL on R7-1)
+
+Z0D round 7 delta review, PR #286. Head 281dc0414aa82ef2d563ea27faf9f439709c015b (confirmed by ls-remote; base d901c5c1 is in its history). Spec: docs/reviews/Z0D.md @ d19cbb90, rulings for round 7, items 1-7, plus your conditions on choices (a)-(c). Nothing edited or pushed; nothing sent to the owner.
+
+RESULT: FAIL, on the condition you set for choice (a). It is not written down. One more item is only partly done. The rest is DONE.
+
+NEW FINDINGS
+R7-1 MAJOR (your condition on (a)): the precondition for `botctl b10-reserve` is not written down.
+- SPEC-A:2494 (A-M14-05) says only "the operator reserves on the host (a new `botctl b10-reserve &lt;ackId&gt;` subcommand, over the tailnet)".
+- No document says this needs either (i) the owner to run it on the host, or (ii) a tailnet path for the job machine that the owner sets up. Nor does any document make that a precondition before any spend.
+- This matters because the same section runs the job on GitHub-hosted runners (docs/reviews/ZH.md round 2 item 3). A runner reaches the tailnet only with a Tailscale auth key or OAuth client, which is an owner-only secret (AGENTS "Only the owner").
+- The precondition is missing from: A-M14-05's storage-precondition bullet, ARCH D04, DECISIONS:114, MIGRATION Owner waits B-10 (:751) and card Z-H (:823).
+- Fix: in each of those places add "Reservation precondition (before any credit): either the owner runs `botctl b10-reserve` on the host, or the owner sets up a tailnet path for the job machine; until one exists the job refuses to start."
+- Also add a case: "given no reservation record (reserve not run), the job refuses to start". The existing case refuses only without a pinned row.
+
+R7-2 MINOR (item 5, PARTIAL): "Helius Free" is still named as the bot's plan in ARCH.
+- ARCH:1234: the M14 provider table row "Helius Free | 10 req/s, sendTransaction 1/s, 1M credits/month".
+- ARCH:1657: the D02 default, "Sender endpoint with the Helius Free key".
+- These now contradict "Helius Developer everywhere", ARCH 11.1 RPC C (:2347) and A-M14-01 (SPEC-A:2363).
+- Fix: change both to Helius Developer, the owner's key under O7: 10M credits a month, 50 req/s, sendTransaction 5/s [LD-27], with the bot's 5M rolling cap.
+- The other "Helius Free" mentions are fine as they are: the D04 option list (:1674), the worst-case budget derivations (:976, :993, :1667-1668), and VF-11's documented gPA fact (:1879, SPEC-A:772). Those are historical or conservative.
+
+ITEMS
+1. B-10 job alone on Helius: DONE (SPEC-A A-M14-05 step 2 bullets; ARCH D04; DECISIONS:114).
+   - One account-level ledger is checked before every send.
+   - During [from, to) the engine and the signer are at 0 credits and 0 req/s and run on Shyft and Chainstack.
+   - A window opens only with no paper or live session; the job refuses to start if the mode is paper or above.
+   - U = min(row cap, acctCap − S), with S read from the account ledger.
+   - Rate shares are in /etc/bot/rpc-allocation.json: the job holds ≤ 25 req/s inside the window and 0 outside.
+   - The post-window risk is recorded in the reviewer's words in DECISIONS:114 and ARCH D04, including "ends before any M3 paper or M4 live step" and "measured again before M4".
+   - Cases cover U = 8.3M, S = 9.6M refused, and an engine request refused inside the window.
+2. One job instance: DONE. One ledger per ack id under an exclusive lease, with a second-instance refusal; a checkpoint off the machine after every page; a missing ledger counts as the whole U spent. The host counts all of U for 31 days whatever the job reports, which is stricter than "until the final total". Cases included.
+3. The B10-ACK row: DONE.
+   - Append-only with an immutable id, on origin/ccr-14987baf-i6lrsl, quoting the owner word for word, written by the supervisor only from an owner message.
+   - Id, commit and blob are pinned by the job, which stops on a change; the evaluator requires the same pin.
+   - The format `B10-ACK id= cap= acctCap≤9.5M ackAt= from= to=` is named at MIGRATION:751 and :823.
+   - [from, to) is in UTC, at most 14 days.
+   - Cases are in A-M13-06 and A-M14-05.
+4. Drained positions: DONE (SPEC-B B-M20-04 step 5 "Drained for good", case 9). After more than T in the pause, or at margined size 0: stuck, valued at what the vault pays, loss booked in SOL, MAXOPEN slot freed, critical alert.
+5. Helius Developer everywhere: PARTIAL. A-M14-01 (SPEC-A:2363) and ARCH 11.1 RPC C are fixed; ARCH:1234 and :1657 are not (R7-2).
+6. R5-07: DONE.
+   - A fix record is valid only if it is not in the failing build, names the failureId, was merged to the integration branch through a reviewed PR, and is in the promoted build.
+   - P-10 history is kept per build lineage across configKeys (SPEC-A step 5; SPEC-B B-M26-04).
+   - Test 6 allows ±1.
+   - Cases included.
+7. $0 storage: DONE. "A named $0 location, decided by the owner (DATA-PUB and DATA-STORE), before any credit" is in A-M14-05, D04, DECISIONS:114, and MIGRATION :751 and :823.
+
+BUILDER SELF-CHECK FIXES
+- Reservation only at or after `from`: DONE.
+- All of U counted for 31 days: DONE.
+- Only one active window: DONE.
+Each has a case in A-M14-05.
+
+CHOICES
+- (a) b10-reserve over the tailnet: written in the spec, but your condition is MISSING (R7-1).
+- (b) Rate shares outside the window: DONE (the job has 0 req/s outside; engine 5 req/s, signer 2 req/s, and shares over 25 req/s refuse).
+- (c) acctCap required: DONE (acctCap is mandatory in the row format at A-M13-06 step 3, MIGRATION and DECISIONS).
+
+SCRIPTS
+- FACTS.json: parses; 292 facts, no duplicate IDs. No cited ID is undefined; every RS and VF fact is cited. C-01..C-77 are each defined once; none is undefined or cited only in its own row.
+- Ticket graph:
+  - 63 A, 81 B and 32 UI tickets: 176 in all.
+  - No undefined dependencies and no cycles.
+  - Later-milestone dependencies: only UI-T14 → B-M17-08 and B-M29-04, the known live-acceptance-only cases.
+  - Listed and table counts per milestone match: M0 24/24, M1 25/25, M2 46/46, M3 49/49, M4 27/27, Deferred 2/2. M4b shows 5 listed and 3 in the table, as before.
+
+SPEND CHECK ("how could this spend more than the owner acknowledged, or more than the plan?")
+- Every path I traced is bounded.
+- The job is capped by U, which is reserved on the host and counted in full for 31 days.
+- The engine and the signer are at 0 inside the window; the account cap is 9.5M at most; the job stops at `to`; one window at a time; one instance per ack.
+- The only open gap is R7-1: how the off-host job reaches the host to reserve is undefined. That fails safe, because the job refuses to start without a reservation record, but it is not written down as an owner precondition.
+
+SCOPE
+- docs/blueprint/**, DECISIONS:114, and MIGRATION:751 and :823. No code changed.
+
+FAIL · 281dc0414aa82ef2d563ea27faf9f439709c015b (R7-1 blocks; R7-2 is minor; with both fixed, this round passes)
+
+### Red team (0 BLOCKER, 4 MAJOR, 4 MINOR)
+
+# Red team, round 7: card Z0D at `281dc041` — FAIL (0 BLOCKER, 4 MAJOR, 4 MINOR)
+
+Head confirmed with ls-remote: 281dc0414aa82ef2d563ea27faf9f439709c015b. Rulings read from docs/reviews/Z0D.md @ d19cbb90.
+
+## Round 5 findings
+- **Closed:**
+  - R5-01: the overage arithmetic works now. U = min(cap, acctCap − S) is reserved in full, and every consumer checks the account ledger. So any rolling 31-day window that contains the reservation is ≤ acctCap, and any later window is ≤ 5M. A billing month (≤ 31 days) sits inside one of those windows.
+  - R5-03, R5-04, R5-06, R5-08 (as a precondition).
+  - R5-07, apart from a residual (R7-06).
+- **Partly closed:**
+  - R5-02: closed in principle, but where the lease and checkpoint live is not defined (R7-04).
+  - R5-05: write-off added, but its accounting is inconsistent (R7-03).
+
+## MAJOR
+
+**R7-01. The account ledger sees only the bot's own Helius use, but the account is the owner's.**
+- DECISIONS O7 and D04 say the bot shares the owner's Developer key and plan. Anything else on that account (the owner's other apps, the stopped Zeroed worker if it is restarted, tools) never appears in S.
+- So U = min(cap, acctCap − S) can be too large, and the account can pass 10M (overage, or throttling) even though every bot ledger is right.
+- Fix:
+  - before reserving, read the account's real usage from Helius (dashboard or usage endpoint; whether an API exists is VERIFY) and take S = max(ledger, Helius-reported);
+  - or have the owner confirm in the B10-ACK row that nothing else uses the account during the window and the 31 days before it;
+  - simplest: a separate Helius key or account for the bot is out (new spend), so keep the confirmation.
+
+**R7-02. Paper and live sessions are blocked only when the job starts, not during the window or after it.**
+- A-M14-05: "the job refuses to start if the engine's system mode is paper or above". Nothing stops M26 from switching to paper after the job has started.
+- Nothing stops M26 during the up-to-31-day blackout after the window either ("scheduled so", not enforced).
+- A paper session in that state runs with no Helius: fee estimates fall to the floor (D15), and there is no RPC C failover.
+- Paper fills' modelled priority fees then come out too low, so P-2, P-3 and P-6 are judged on costs below real ones. That is a looser gate.
+- Fix:
+  - M26 refuses any change to paper or above while a B-10 reservation is active, or while the engine's Helius allocation is below what it needs (rolling sum ≥ 5M − signer − a floor);
+  - P gates fail any window in which the engine had no Helius;
+  - add an acceptance case for each.
+
+**R7-03. The drained-position write-off books SOL inconsistently and can write off too soon.** (SPEC-B B-M20-04 step 5, B-M20-05)
+- **Two valuations clash.** The new rule values a stuck position at "the most the vault can pay (often 0)". B-M20-05 `writeOff` records "proceeds 0". When the vault can pay something, the books show value X and then 0. And `close` is not allowed for `stuck`, so X can never be realised; it is a phantom asset in SOL.
+  - Fix: before marking `stuck`, send one last sell of the margined size if it is &gt; 0, and book its real proceeds. Then value the remainder at 0 and write it off. Equity only ever holds amounts that were realised.
+- **T is too short.** T is the strategy's time stop, 30 min for MR-01. A vault that refills after a burst of buying would already be written off. `stuck` blocks `close`, and the mint is blacklisted, so recovered value is lost for good.
+  - Fix: after `stuck`, re-quote at low frequency (for example hourly for 7 days, read-only, inside the ≤ 50% budget). If the margined size becomes &gt; 0, an operator or automatic recovery sell runs and books the proceeds as a recovery.
+  - Or use a longer T for drained pools, for example max(T, 24 h). This only affects when the slot is freed, so it costs entries, not money.
+- The slot release and the SOL booking themselves are correct.
+
+**R7-04. The off-host job's lease and checkpoint are undefined, so "one instance" and the cap cannot be measured.**
+- The job may run on GitHub-hosted runners. "A second instance on any machine refuses to start" needs a lease service, which is not named. Neither is the checkpoint store ("the store card Z-H prep names").
+- Checkpointing after every page means a runner that dies mid-page restarts from the last checkpoint and can spend one page beyond U. That is over the owner's row cap, though still under the plan.
+- The job needs the owner's Helius key as an Actions secret: a new place for the key, and keys belong to the owner. Its URLs must be redacted under the same rule as A-M14-03.
+- Fix:
+  - name the lease store and the checkpoint store;
+  - reserve each page's credits in the remote ledger before fetching it, so the ledger is written ahead, not after;
+  - the owner places the key, recorded in DECISIONS;
+  - the redaction rule applies to the job's logs.
+
+## MINOR
+
+**R7-05. The signer's 50k block has no renewal rule in the rolling ledger.**
+- The block is one account-ledger entry written at boot. After 31 days it drops out of the rolling sum, while the signer's own counter (its file) may keep going or reset.
+- A boot every day would re-reserve 50k each time.
+- Fix: renew the block as one standing rolling entry, and keep the signer's counter rolling over 31 days.
+
+**R7-06. Fix records can still be thin.**
+- A reviewed PR whose message names the failureId but only changes a comment is valid.
+- P-5 history is still kept per configKey, while P-10 is now per build lineage. A dry-run failure (uptime, crash) is an engine bug too.
+- Fix: a valid fix also needs a test that fails before and passes after, citing the failureId; key P-5 history by build lineage as well.
+
+**R7-07. The authority branch is hard-coded.**
+- `origin/ccr-14987baf-i6lrsl` is named as the branch the B10-ACK row and fix records must be on. It is a session branch, not main.
+- Fix: say "the repo's integration branch (today `ccr-14987baf-i6lrsl`; main after the cut-over)", in one place that is referenced elsewhere.
+
+**R7-08. A partial download wastes credits.**
+- If S is large, U can fall below the job's estimate (about 7.7M). The job then stops at U with fewer than 30 complete days, and B-10 fails after the credits are spent.
+- Fix: do not start unless U ≥ the estimate plus a margin; otherwise tell the owner and wait.
+
+## Totals
+BLOCKER 0; MAJOR 4 (R7-01 to R7-04); MINOR 4 (R7-05 to R7-08). Head attacked: 281dc0414aa82ef2d563ea27faf9f439709c015b. Nothing edited or pushed; nothing sent to the owner.
+
+### Supervisor rulings for round 8 (8 Oct 2026, about 1:35 AM)
+
+I accept every finding: the reviewer's R7-1 and R7-2, and the red team's R7-01..R7-08.
+
+1. **R7-1.** Add this sentence to A-M14-05's precondition bullet, ARCH D04, DECISIONS:114, MIGRATION:751 and MIGRATION:823: "Reservation precondition (before any credit): either the owner runs `botctl b10-reserve` on the host, or the owner sets up a tailnet path for the job machine; until one exists the job refuses to start." Add a case: with no reservation record, the job refuses to start.
+2. **R7-2.** In ARCH:1234 and ARCH:1657, name Helius Developer: the owner's key under O7, 10M credits a month, 50 req/s, sendTransaction 5/s [LD-27], and the bot's 5M rolling cap.
+3. **R7-01, owner-side use.** The B10-ACK row gains two fields, and both are required:
+   - `exclusive=yes`: the owner confirms that nothing else uses the Helius account during the window or in the 31 days before it.
+   - `dashUsed=<credits>`: the account's rolling usage, read by the owner from the Helius dashboard, with its date.
+
+   S is the larger of the bot's ledger and `dashUsed`. Whether Helius offers a usage API is VERIFY; if it does, it replaces `dashUsed`.
+4. **R7-02, no paper or live trading near the job.**
+   - M26 refuses any switch to paper or above while a B-10 reservation is active.
+   - It also refuses while the engine's Helius allocation is below what it needs. Name the floor.
+   - A P gate fails any window in which the engine had no Helius.
+   - Add a case for each.
+5. **R7-03, drained positions.**
+   - Before marking a position `stuck`, send one last sell at the margined size if that size is above 0, and book its real proceeds.
+   - Value the rest at 0 and write it off. Equity only ever holds amounts actually realised.
+   - For drained pools, T = max(the strategy's T, 24 h).
+   - After `stuck`, run a read-only re-quote every hour for 7 days, inside the ≤ 50% budget. If the margined size rises above 0, an automatic recovery sell runs and its proceeds are booked as a recovery in SOL.
+   - Add cases.
+6. **R7-04, how the job runs.** Name the lease store and the checkpoint store:
+   - Single instance: a GitHub Actions `concurrency` group for the job, plus a lease file in the private repo `macdarenz-droid/zeroed-data`, updated by compare-and-swap. A second instance refuses to start.
+   - The ledger is written ahead: credits are reserved in chunks of at most 10,000 in the remote ledger before the pages are fetched. At most one chunk can be lost, and it counts as spent. So spend is never above U.
+   - The owner places the Helius key as an Actions secret. Record this as an owner step in DECISIONS and in the Owner waits list.
+   - The redaction rule of A-M14-03 applies to the job's logs.
+7. **R7-05, the signer's block.** It is one standing rolling entry, renewed in place, never added again at each boot. The signer's counter rolls over 31 days.
+8. **R7-06, valid fixes.** A valid fix also needs a test that fails before the fix and passes after it, citing the failureId. P-5 history is kept per build lineage, like P-10.
+9. **R7-07, the integration branch.** Define it once: "the repo's integration branch (today `ccr-14987baf-i6lrsl`; `main` after the cut-over)". Refer to that definition everywhere else.
+10. **R7-08, no partial runs.** The job does not start unless U is at least the estimate plus 10%. Otherwise it reports to the owner and waits.
+
+Before pushing, run the self-check again ("how could this spend more than the owner acknowledged, or more than the plan, or loosen a gate?"), and list what you fix.
