@@ -149,3 +149,27 @@ Reviewer: FAIL. Rulings 1–13 and open points 1–4 are applied, and every numb
     - Recount M1 (24 tickets) and re-run the ticket graph.
 19. **MEDIUM-1:** align INTEGRATION M1's exit and ARCH Phase 0 (:2912) with MA-0c: the 48 h recording at ≥ 95% plus the A-48 report. The Stop-MR-01 conditions apply only to a revised MR version.
 20. **LOW-1:** cite ZHOF @ `c2f8f899` in DECISIONS:125 and OLD-FAITHFUL.md :4.
+
+### Red team round 3 on `ccd0d9c9` (also before `49529d6d`)
+
+2 MAJOR, 5 MEDIUM, 3 MINOR.
+- A is rulings 14–17, which `49529d6d` covers.
+- C (retention must not break the single revision) is answered by the builder's per-unit `retention` tag in `49529d6d`; check it at the final head.
+- F is the same as round 3 items 18–19.
+- New:
+  - B MAJOR: the arm and the 3-failure stop are enforced only in archive-check, so a manual data-scan dispatch reads the archive unarmed or after a stop.
+  - D: the 0.5 TB stop is checked only after batch 1.
+  - E: a day that fails QA is re-read whole without the owner.
+  - G: under OF-6, a missing day D blocks D+1's margin units.
+  - H: the dispatch marker's place and freshness are unspecified.
+  - I: PM-01 has no Phase 0 check; say so.
+
+### Supervisor rulings for round 3, continued (8 Oct 2026, about 8:15 AM)
+
+21. **B: the arm and the stop everywhere.** The data-scan plan job and `scan-day.sh` also refuse, before any request, when `ARCHIVE_ARM` is unset or not the pinned id, and when the 3-failure stop is active. Add test-ci: an unarmed manual dispatch is refused; a manual dispatch after 3 failures is refused.
+22. **D: the storage stop after every batch.** After each batch, OF-4 checks that the stored total plus the remaining days × the largest day so far stays ≤ 0.5 TB. Otherwise it stops and asks the owner. Add a test.
+23. **E: no whole-day re-read.** After a QA failure, only the units QA names are read again, and only after the owner is told. Otherwise the day counts as missing, B-10 is short, and the owner is asked about a spare day. Never re-read a whole day.
+24. **G: day order under OF-6.** Day D+1 is dispatched only after day D is stored, because D+1 takes D's margin units from the store. Write this into OF-2 and OF-6, with a test.
+25. **H: the marker.** Name where the dispatch marker lives (an Actions cache key or an artifact in the private store) and its TTL (at least 10 min).
+26. **I:** A-M13-01 "Parked parts" says plainly that PM-01 has no Phase 0 check; its first evidence is gate B.
+27. **C:** confirm in OLD-FAITHFUL.md §3 and OF-3 that one scanner revision covers both retention values, recorded per unit, and that finalize refuses a day that mixes them. If `49529d6d` already says this, cite the line.
