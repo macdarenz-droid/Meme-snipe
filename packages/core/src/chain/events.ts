@@ -325,6 +325,24 @@ export interface OtherEvent {
  */
 export type ProgramEvent = (PumpEventData & { readonly trailing: number; readonly extra: string }) | OtherEvent;
 
+/**
+ * POOL-FIRST-READ part 2: PumpSwap events this module does not decode, proven on mainnet to leave every pool's base
+ * vault, quote vault and virtual quote reserves unchanged (research/pool-noop-events: the pool's swap before and the
+ * one after chain exactly across each, on contiguous tapes). Anchor event discriminators, sha256("event:<Name>")[0..8].
+ * Only these exact discriminators; any other unnamed PumpSwap event may move the reserves.
+ */
+export const PUMP_AMM_NO_CHANGE_EVENTS: ReadonlyMap<string, string> = new Map([
+  ['929fbdac925838f4', 'CloseUserVolumeAccumulatorEvent'],
+  ['6161d7905d92167c', 'ExtendAccountEvent'],
+]);
+
+/** True for a PumpSwap event in `PUMP_AMM_NO_CHANGE_EVENTS` (an unnamed one carrying its discriminator). */
+export const isNoChangePoolEvent = (e: unknown): boolean => {
+  if (typeof e !== 'object' || e === null) return false;
+  const x = e as { program?: unknown; name?: unknown; discriminator?: unknown };
+  return x.program === 'pump_amm' && x.name === 'other' && typeof x.discriminator === 'string' && PUMP_AMM_NO_CHANGE_EVENTS.has(x.discriminator);
+};
+
 type AnyLayout = { name: string; discriminator: Uint8Array; base: readonly unknown[]; added: readonly unknown[] };
 const LAYOUTS: Record<EventProgram, readonly AnyLayout[]> = {
   pump: [TradeEventLayout, CreateEventLayout, CompleteEventLayout, CompletePumpAmmMigrationEventLayout],

@@ -177,6 +177,24 @@ describe('DEDUP-PER-WATCH: a PumpSwap event other than a swap stales the pool it
     expect(staleOf(w)).toMatch(/other than a swap \(InitBoostEvent\)/);
   });
 
+  /** POOL-FIRST-READ part 2: the two PumpSwap events proven on mainnet to leave the reserves unchanged, as logged. */
+  const hex = (h: string): number[] => h.match(/../g)!.map((x) => parseInt(x, 16));
+  const noChange = (d: string): string[] => invoke([...hex(d), 1, 2, 3, 4]);
+
+  for (const d of ['929fbdac925838f4', '6161d7905d92167c']) {
+    it(`a no-change event (${d}) seen first on another watch leaves this pool clean (no unnamed echo)`, () => {
+      const w = opened();
+      through(w, noChange(d), S, [VIA(A), VIA(PB)], atR(S));
+      expect(staleOf(w)).toBeUndefined();
+    });
+  }
+
+  it('a log holding a no-change event and an unnamed one still echoes the unnamed one: stale', () => {
+    const w = opened();
+    through(w, [...noChange('929fbdac925838f4'), ...unnamed], S, [VIA(A), VIA(PB)], atR(S));
+    expect(staleOf(w)).toMatch(/other than a swap/);
+  });
+
   it('a named event for another pool, on this pool\'s watch, leaves this pool clean', () => {
     const w = opened();
     through(w, boost(A.pool), S, [VIA(PB)], atR(S));

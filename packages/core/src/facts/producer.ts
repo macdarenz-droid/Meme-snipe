@@ -13,7 +13,7 @@
 import { DAY_MS, HOUR_MS, MINUTE_MS, SECOND_MS } from '../config/time.ts';
 import type { Policy } from '../config/policy.ts';
 import {
-  type Address, type PumpEventData, PUMP_AMM_PROGRAM, decodeMint, decodePool, decodeTokenAccount, fromBase64,
+  type Address, type PumpEventData, PUMP_AMM_PROGRAM, decodeMint, decodePool, decodeTokenAccount, fromBase64, isNoChangePoolEvent,
 } from '../chain/index.ts';
 import type { Commitment, QualityFlag } from '../domain/index.ts';
 import type { MarketEvent } from '../engine/feed.ts';
@@ -29,6 +29,7 @@ import {
 import { HOURLY_MAX_AGE_MS } from '../gates/series.ts';
 import { insiderLinks } from './funding.ts';
 import { ChainVolumeDays } from './volume.ts';
+import { CappedMap } from './capped-map.ts';
 import type { VolumeHour } from './raw.ts';
 import { BPS_DENOMINATOR } from '../units/index.ts';
 import {
@@ -68,6 +69,11 @@ export interface ExecHealthLimits {
 }
 
 export interface ProducerOptions {
+  /**
+   * POOL-FIRST-READ: events kept per pool before its first read or candle book (default `PRE_READ_KEEP`); 0 keeps none,
+   * for a producer no read ever reaches and whose events come in chain order (the backtest's survival producers).
+   */
+  readonly preReadKeep?: number;
   /** Candles kept from migration on, for the chase check (H11). */
   readonly candleFirstMs: number;
   /** Candles kept back from the newest, for the spike window (H11). */
@@ -131,6 +137,11 @@ export const HEAL_TAPE_MAX = RETIRED_KEEP / 5;
 
 /** TRADE-GAP-HEAL: hole signatures remembered (20,000, a fifth of RETIRED_KEEP), so a late fetched copy of a hole's swaps is never applied out of order. */
 export const HOLE_SIGS_KEEP = RETIRED_KEEP / 5;
+
+/** POOL-FIRST-READ: pools whose events are kept until their first account read (the oldest-kept pool let go first). */
+export const PRE_READ_POOLS = 64;
+/** POOL-FIRST-READ: a pool's newest events kept until its first read; one let go past the read's slot leaves the chain stale. */
+export const PRE_READ_KEEP = 64;
 
 /**
  * G4a (supervisor ruling): how long a wallet's funder read (`read:funder:<wallet>`, its first SOL funding: fixed once it
@@ -290,6 +301,11 @@ interface StreamState {
   /** Open gaps by their start (`toSlot` not known yet); a null start is unknown, so it covers everything. */
   readonly open: Map<string, bigint | null>;
   readonly vias: Set<string>;
+  /**
+   * POOL-FIRST-READ (trade streams): the pool's kept events were let go whole before its first read (`chain`) or its
+   * candle book (`book`). Kept with the stream, never in a capped set, so the mark cannot fall out (review of #266).
+   */
+  lost?: { chain: boolean; book: boolean };
 }
 
 /** The first slot after which the stream has had no gap at all. */
@@ -440,6 +456,8 @@ interface PoolChain {
   /** Slot of the newest swap seen since the read (applied or not); swaps up to the read's slot are already in it. */
   lastSlot: bigint;
   readonly readSlot: bigint;
+  /** POOL-FIRST-READ: slot of the newest pool event other than a swap since the read (the read's slot if none). */
+  otherSlot: bigint;
   /** Why the state is stale, while it is; a gap clears once a swap re-bases it, anything else needs a read. */
   stale: { readonly reason: string; readonly kind: 'gap' | 'mismatch' } | null;
   /** Swaps seen at `lastSlot` (a delivery twice, from a log line and a fetched transaction, counts once); older slots are refused anyway. */
@@ -476,6 +494,30 @@ export const chainOrder = <T extends { readonly ev: SwapEv; readonly seen: { rea
   return out;
 };
 
+/**
+ * POOL-FIRST-READ: a pool event released before the pool's chain (its first read) or its candle book (its migration's
+ * CreatePoolEvent) exists, kept to be applied once it does.
+ */
+type PreReadEvent = { readonly kind: 'swap'; readonly t: TapeSwap } | { readonly kind: 'other'; readonly slot: bigint; readonly name: string; readonly obs: FactObs };
+
+/** A kept event and which of the two still needs it. */
+interface Kept {
+  readonly x: PreReadEvent;
+  chain: boolean;
+  book: boolean;
+}
+
+/** A pool's kept events, in release order; per consumer, the newest slot it needed that was let go past the cap. */
+interface PreRead {
+  events: Kept[];
+  droppedChain: bigint | null;
+  droppedBook: bigint | null;
+}
+
+const newest = (a: bigint | null, b: bigint): bigint => (a === null || b > a ? b : a);
+
+const preReadSlot = (x: PreReadEvent): bigint => (x.kind === 'swap' ? x.t.seen.slot : x.slot);
+
 /** Swap ids a pool chain remembers for repeats: a repeat (a log line and a fetched transaction) comes within seconds. */
 const APPLIED_KEPT = 512;
 
@@ -490,6 +532,18 @@ export class FactProducer {
   readonly #walletMints = new Map<string, Set<string>>();
   readonly #reserves = new Map<string, Reserve>();
   readonly #chains = new Map<string, PoolChain>();
+  /** POOL-FIRST-READ: watched pools' events released before the pool's first read (capped; a pool let go is remembered). */
+  // A pool let go whole is marked on its trade stream (which every kept pool has): its chain starts stale, its book
+  // partial.
+  readonly #preReads = new CappedMap<string, PreRead>(PRE_READ_POOLS, (pool) => {
+    const s = this.#streams.get(STREAMS.trades(pool));
+    if (s === undefined) return;
+    s.lost ??= { chain: false, book: false };
+    if (!this.#chains.has(pool)) s.lost.chain = true;
+    if (!this.#books.has(pool)) s.lost.book = true;
+  });
+  /** POOL-FIRST-READ part 3: books opened late, with their kept swaps, until the opening transaction's events are in. */
+  readonly #bookPending = new Map<string, { readonly sig: string; readonly swaps: readonly TapeSwap[]; readonly partial: boolean }>();
   /** TRADE-GAP-HEAL: pools waiting for their holes' transactions. */
   readonly #heals = new Map<string, Heal>();
   /** TRADE-GAP-HEAL: signatures of cut or undecodable logs on a trade stream (capped). */
@@ -531,6 +585,7 @@ export class FactProducer {
     // Survival marks are judged on the state before this event: a trade after the mark must not date it.
     this.#survival(e, put);
     this.#forgetFunders(e.moment.receivedAt);
+    this.#bookTake(e, put);
     this.#chainOther(e, put);
     this.#holeTxOther(e);
     const pe = programEvent(e);
@@ -608,6 +663,7 @@ export class FactProducer {
           this.#books.set(d.pool, { pool: d.pool, mint: d.baseMint, openedAtMs: atMs, fromSlot: seen.slot, candles: [], partial: false, seen: new RepeatTags(), newestMs: atMs, sweptMs: atMs, lastSwap: null, mark: null });
           this.#reserves.set(d.pool, { atMs, effective: d.poolQuoteAmount });
           this.#writeCandles(d.pool, seen.provider, seen.receivedAt, put);
+          this.#bookOpen(d.pool, seen.signature);
         }
         this.#migration(t, e, put);
         return;
@@ -701,6 +757,9 @@ export class FactProducer {
       return;
     }
     const book = this.#books.get(d.pool);
+    // POOL-FIRST-READ: kept for the chain (no read yet) and for the candle book (no migration yet), whichever is missing.
+    const noChain = !this.#chains.has(d.pool);
+    if (noChain || book === undefined) this.#preRead(d.pool, { kind: 'swap', t: { ev, seen } }, noChain, book === undefined);
     if (book !== undefined && (book.mark === null || seen.slot > book.mark.slot)) this.#markBook(book, seen.slot, true);
     this.#chainSwap(ev, seen, put);
     const atMs = ms(d.timestamp);
@@ -829,7 +888,7 @@ export class FactProducer {
     const v = e.value;
     if (!isObj(v) || !isObj(v['event'])) return;
     const ev = v['event'];
-    if (ev['program'] !== 'pump_amm' || ev['name'] === 'BuyEvent' || ev['name'] === 'SellEvent' || typeof ev['signature'] !== 'string') return;
+    if (ev['program'] !== 'pump_amm' || ev['name'] === 'BuyEvent' || ev['name'] === 'SellEvent' || isNoChangePoolEvent(ev) || typeof ev['signature'] !== 'string') return;
     for (const h of this.#heals.values()) if (h.holes.has(ev['signature'])) h.tainted = true;
   }
 
@@ -952,8 +1011,8 @@ export class FactProducer {
   }
 
   /** OOM-MINT: how many entries the producer keeps per structure (tests and the memory ceiling). */
-  sizes(): { readonly books: number; readonly mints: number; readonly walletMints: number; readonly retiredPools: number; readonly retiredMints: number; readonly streams: number; readonly chains: number; readonly funders: number } {
-    return { funders: this.#funders.size, books: this.#books.size, mints: this.#mints.size, walletMints: this.#walletMints.size, retiredPools: this.#retiredPools.size, retiredMints: this.#retiredMints.size, streams: this.#streams.size, chains: this.#chains.size };
+  sizes(): { readonly books: number; readonly mints: number; readonly walletMints: number; readonly retiredPools: number; readonly retiredMints: number; readonly streams: number; readonly chains: number; readonly funders: number; readonly preReads: number } {
+    return { funders: this.#funders.size, books: this.#books.size, mints: this.#mints.size, walletMints: this.#walletMints.size, retiredPools: this.#retiredPools.size, retiredMints: this.#retiredMints.size, streams: this.#streams.size, chains: this.#chains.size, preReads: this.#preReads.size };
   }
 
   /** OOM-SEEN: the trade ids a pool's candle book remembers, and its last reserve (tests and diagnostics). */
@@ -1376,12 +1435,102 @@ export class FactProducer {
     // The fact's slot: the oldest of the accounts it was built from, so a swap after it is never taken as already in it.
     const slot = fact.obs.slot ?? 0n;
     const c = this.#chains.get(fact.address);
-    if (c !== undefined && c.lastSlot > slot) return;
-    this.#chains.set(fact.address, {
-      mint, read: fact, coveredFrom: slot + 1n, lastSlot: slot, readSlot: slot, stale: null, seen: new Set(), applied: new Set(),
+    // POOL-FIRST-READ: a pool event other than a swap newer than the read is not in it either.
+    if (c !== undefined && (c.lastSlot > slot || c.otherSlot > slot)) return;
+    const n: PoolChain = {
+      mint, read: fact, coveredFrom: slot + 1n, lastSlot: slot, readSlot: slot, otherSlot: slot, stale: null, seen: new Set(), applied: new Set(),
       state: { baseReserve: fact.baseVault, quoteVault: fact.quoteVault, virtualQuoteReserves: fact.pool.virtualQuoteReserves ?? 0n },
-    });
+    };
+    this.#chains.set(fact.address, n);
     put(poolKey(mint), fact);
+    if (c !== undefined) return;
+    const pre = this.#takePre(fact.address, 'chain');
+    // POOL-FIRST-READ: the pool's events released before this first read and newer than it are applied now, in release
+    // order, exactly as if the read had come first: every swap through the same checks (those at or before the read's
+    // slot are in it and skipped, the rest must chain). Events let go past the cap, if newer than the read, leave the chain stale (a gap: the
+    // next swap kept re-bases it on its own pre-trade reserves).
+    if (pre.lost || (pre.dropped !== null && pre.dropped > slot)) this.#stale(n, 'gap', 'pool events before the first read were let go', fact.obs, put);
+    for (const x of pre.events) {
+      if (x.kind === 'swap') this.#chainSwap(x.t.ev, x.t.seen, put);
+      else this.#otherOnChain(n, x.slot, x.name, x.obs, put);
+    }
+  }
+
+  /**
+   * POOL-FIRST-READ: keeps a watched pool's event released before its chain (`chain`) or its candle book (`book`)
+   * exists, the newest `PRE_READ_KEEP` of the pool. One buffer and one cap serve both.
+   */
+  #preRead(pool: string, x: PreReadEvent, chain: boolean, book: boolean): void {
+    const keep = this.#o.preReadKeep ?? PRE_READ_KEEP;
+    if (keep === 0 || (!chain && !book) || !this.#streams.has(STREAMS.trades(pool))) return;
+    let p = this.#preReads.get(pool);
+    if (p === undefined) {
+      p = { events: [], droppedChain: null, droppedBook: null };
+      this.#preReads.set(pool, p);
+    }
+    p.events.push({ x, chain, book });
+    if (p.events.length > keep) {
+      const k = p.events.shift()!;
+      if (k.chain) p.droppedChain = newest(p.droppedChain, preReadSlot(k.x));
+      if (k.book) p.droppedBook = newest(p.droppedBook, preReadSlot(k.x));
+    }
+  }
+
+  /**
+   * POOL-FIRST-READ: the kept events `who` (now existing) needs, in release order, the newest slot it needed that was
+   * let go, and whether the pool's kept events were let go whole. The rest stays for the other, while it is missing.
+   */
+  #takePre(pool: string, who: 'chain' | 'book'): { readonly events: PreReadEvent[]; readonly dropped: bigint | null; readonly lost: boolean } {
+    const s = this.#streams.get(STREAMS.trades(pool));
+    const lost = s?.lost?.[who] === true;
+    if (s?.lost !== undefined) s.lost[who] = false;
+    const p = this.#preReads.get(pool);
+    if (p === undefined) return { events: [], dropped: null, lost };
+    const events = p.events.filter((k) => k[who]).map((k) => k.x);
+    const dropped = who === 'chain' ? p.droppedChain : p.droppedBook;
+    for (const k of p.events) k[who] = false;
+    p.events = p.events.filter((k) => k.chain || k.book);
+    if (who === 'chain') p.droppedChain = null;
+    else p.droppedBook = null;
+    if (this.#chains.has(pool) && this.#books.has(pool)) this.#preReads.delete(pool);
+    return { events, dropped, lost };
+  }
+
+  /**
+   * POOL-FIRST-READ part 3: a candle book opened late (the migration's transaction released after swaps on its pool,
+   * as after a re-read) takes the swaps kept for it, in release order, exactly as `#swap` takes them live, so the
+   * candles equal an in-order run. They are taken once the opening transaction's own events are in (its first swap
+   * comes after its CreatePoolEvent, and every kept swap is from a later transaction: the pool did not exist before
+   * it), at the first event of another transaction (`#bookTake`). Swaps it needed that were let go past the cap, or a
+   * pool whose kept events were let go whole, leave the book partial (never complete with trades missing).
+   */
+  #bookOpen(pool: string, sig: string): void {
+    const book = this.#books.get(pool)!;
+    const pre = this.#takePre(pool, 'book');
+    const swaps = pre.events.flatMap((x) => (x.kind === 'swap' && x.t.seen.slot >= book.fromSlot ? [x.t] : []));
+    const partial = pre.lost || (pre.dropped !== null && pre.dropped >= book.fromSlot);
+    if (swaps.length > 0 || partial) this.#bookPending.set(pool, { sig, swaps, partial });
+  }
+
+  /** POOL-FIRST-READ part 3: books opened late take their kept swaps at the first event of another transaction. */
+  #bookTake(e: MarketEvent, put: (k: string, v: unknown) => void): void {
+    if (this.#bookPending.size === 0) return;
+    const sig = programEvent(e)?.seen.signature;
+    for (const [pool, p] of this.#bookPending) {
+      if (sig === p.sig) continue;
+      this.#bookPending.delete(pool);
+      const book = this.#books.get(pool);
+      if (book === undefined) continue;
+      for (const { ev, seen } of p.swaps) {
+        if (book.mark === null || seen.slot > book.mark.slot) this.#markBook(book, seen.slot, false);
+        const atMs = ms(ev.data.timestamp);
+        if (atMs !== null) this.#bookSwap(book, ev, seen, atMs, put, false);
+      }
+      if (p.partial) {
+        book.partial = true;
+        this.#writeCandles(pool, sourceOf(e), e.moment.receivedAt, put);
+      }
+    }
   }
 
   /** The pool fact of a chain's current state, observed as `obs`; flagged `partial` with its reason while stale. */
@@ -1418,6 +1567,9 @@ export class FactProducer {
     const ev = isObj(v['event']) ? v['event'] : undefined;
     const name = echo ? v['name'] : ev?.['name'];
     if (name === 'BuyEvent' || name === 'SellEvent') return;
+    // POOL-FIRST-READ part 2: an event proven on mainnet to leave the reserves unchanged is not a change (only its exact
+    // discriminators; an echo carries none, so it stays a change).
+    if (!echo && isNoChangePoolEvent(ev)) return;
     // DEDUP-PER-WATCH: the pool the event touched. A named one says it; one DEC-1 cannot name says nothing, so every
     // watch that saw its transaction counts it (this watch here, the others by their `pool-other` copies). Fail closed.
     const named = !echo && ev !== undefined && isObj(ev['data']) && typeof ev['data']['pool'] === 'string' ? ev['data']['pool'] : null;
@@ -1428,8 +1580,16 @@ export class FactProducer {
     const h = this.#heals.get(pool);
     if (h !== undefined) h.other = true;
     const c = this.#chains.get(pool);
-    if (c === undefined || v['txSlot'] <= c.readSlot) return;
-    this.#stale(c, 'gap', `a pool transaction other than a swap (${typeof name === 'string' ? name : 'unnamed'})`, { provider: sourceOf(e), slot: v['txSlot'], receivedAt: e.moment.receivedAt, quality: [], commitment: 'confirmed' }, put);
+    const label = typeof name === 'string' ? name : 'unnamed';
+    const obs: FactObs = { provider: sourceOf(e), slot: v['txSlot'], receivedAt: e.moment.receivedAt, quality: [], commitment: 'confirmed' };
+    if (c === undefined) return this.#preRead(pool, { kind: 'other', slot: v['txSlot'], name: label, obs }, true, false);
+    this.#otherOnChain(c, v['txSlot'], label, obs, put);
+  }
+
+  #otherOnChain(c: PoolChain, slot: bigint, name: string, obs: FactObs, put: (k: string, v: unknown) => void): void {
+    if (slot <= c.readSlot) return;
+    if (slot > c.otherSlot) c.otherSlot = slot;
+    this.#stale(c, 'gap', `a pool transaction other than a swap (${name})`, obs, put);
   }
 
   /** A gap or hole in a pool's trade stream makes its chain stale at once; a pool no longer watched drops its chain. */
@@ -1441,6 +1601,7 @@ export class FactProducer {
     if (e.key.endsWith(':gap') && isObj(v) && v['toSlot'] === null && v['reason'] === 'not watched') {
       const gone = this.#chains.get(pool);
       this.#chains.delete(pool);
+      this.#preReads.delete(pool);
       if (gone !== undefined && gone.stale === null) put(poolKey(gone.mint), this.#chainFact(gone, { provider: 'facts', slot: e.moment.slot, receivedAt: e.moment.receivedAt, quality: [], commitment: 'confirmed' }, gone.state, 'swap stream gap'));
       return;
     }
@@ -1458,7 +1619,9 @@ export class FactProducer {
   #chainSwap(ev: Extract<PumpEventData, { name: 'BuyEvent' | 'SellEvent' }>, seen: Seen, put: (k: string, v: unknown) => void): void {
     const d = ev.data;
     const c = this.#chains.get(d.pool);
-    if (c === undefined || seen.slot <= c.readSlot) return;
+    // POOL-FIRST-READ: a swap before the pool's first read was kept (`#swap`) until the read, which applies it if newer.
+    if (c === undefined) return;
+    if (seen.slot <= c.readSlot) return;
     const id = `${seen.signature}:${d.poolBaseTokenReserves}:${d.poolQuoteTokenReserves}`;
     if (c.seen.has(id)) return;
     c.seen.add(id);
@@ -1472,8 +1635,10 @@ export class FactProducer {
     if (c.stale?.kind === 'mismatch') return;
     if (c.stale !== null) {
       // Re-base after a gap on the swap's own pre-trade reserves; the coverage check below keeps it stale unless the
-      // stream has had no gap from this swap's slot on.
-      if (older) return;
+      // stream has had no gap from this swap's slot on. Review of #266 (P1/P2): never on a swap from the slot of a pool
+      // event other than a swap or before it (its order against that event is not proven, and the event's change would
+      // be lost): only a swap from a later slot, or a read at or after it, re-bases.
+      if (older || seen.slot <= c.otherSlot) return;
       c.coveredFrom = seen.slot;
       c.state = { baseReserve: d.poolBaseTokenReserves, quoteVault: d.poolQuoteTokenReserves, virtualQuoteReserves: d.virtualQuoteReserves ?? 0n };
       c.stale = null;
@@ -1523,6 +1688,8 @@ export class FactProducer {
   #forgetPool(pool: string): void {
     this.#heals.delete(pool);
     this.#chains.delete(pool);
+    this.#preReads.delete(pool);
+    this.#bookPending.delete(pool);
     this.#streams.delete(STREAMS.trades(pool));
   }
 

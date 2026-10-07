@@ -11,7 +11,7 @@
 // - Account states sort after every transaction of their slot (ACCOUNT_TX_INDEX), then by arrival.
 // - The slot notice, then off-chain facts (third-party reads, lookups made late, world reports), come last.
 import type { TransactionRecord } from '../../../core/src/chain/index.ts';
-import { logEvents, toBase64, transactionEvents } from '../../../core/src/chain/index.ts';
+import { isNoChangePoolEvent, logEvents, toBase64, transactionEvents } from '../../../core/src/chain/index.ts';
 import type { FeedEvent, Moment } from '../../../core/src/engine/index.ts';
 import { OFF_CHAIN } from '../../../core/src/engine/index.ts';
 import type { BookEvent } from '../../../core/src/lifecycle/index.ts';
@@ -305,7 +305,8 @@ export const eventsOfFrame = (f: Frame, ranks: Pick<Ranks, 'get'>): FeedEvent[] 
  * swap event (WATCH-1c's `#chainOther`) and names no pool, so only the watches that saw its transaction can say which
  * pools it may have touched. A named one carries its own `pool`, which the first copy's event already gives.
  */
-const unnamedPoolEvent = (e: { readonly program: string; readonly name: string }): boolean => e.program === 'pump_amm' && e.name === 'other';
+// POOL-FIRST-READ part 2: an event proven to leave the reserves unchanged is not echoed (only its exact discriminators).
+const unnamedPoolEvent = (e: { readonly program: string; readonly name: string }): boolean => e.program === 'pump_amm' && e.name === 'other' && !isNoChangePoolEvent(e);
 
 /**
  * DEDUP-PER-WATCH: an echo's events, on its own watch only (ids carry the watch, so each watch's copy stays apart):

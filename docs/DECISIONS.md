@@ -3289,6 +3289,92 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
     - a count that cannot be saved refuses the fetch (review N6);
     - the backtest-shape tape kills mutant C, which moves only fetched-transaction swaps one candle later.
 
+## Swaps released before a pool's first read are kept and applied (POOL-FIRST-READ, `facts/producer.ts` `#preRead`, `#chainRead`)
+
+- **2026-10-07 · Why (REPLAY-1000; S1 verified the code).**
+  - `#chainSwap` dropped every swap of a pool that had no chain yet. A first account read whose context slot is older than swaps already released then built the chain without them.
+  - The next swap's pre-trade reserves held the dropped swaps: "reserves mismatch", and the pool stayed flagged until a new read.
+  - Example: pool ECVuPnoq, 6 Oct 00:38Z. The read, answered for slot 453742328, arrived at slot 330, after the swaps of slot 329. 9 of REPLAY's 47 sample coins hit this.
+- **What changed.**
+  - A watched pool's (one with a `trades:` stream) swaps and other PumpSwap events released before its first read are kept, in release order.
+  - When the first read builds the chain, each kept event goes through the same code as a live one, in the same order, as if the read had come first: a swap through `#chainSwap` (skipped at or before the read's slot, otherwise it must chain and reproduce its event), another event through the same stale rule as WATCH-1c. Nothing is re-ordered: within a slot, release order is the order the stream applies live.
+  - A pool event other than a swap released before the first read used to be dropped too. A chain built from an older read then counted as clean and could be carried (WATCH-1c) without the change. It now makes the chain stale until the next swap, as it would after the read.
+- **Re-read (the same race on a later read).**
+  - A re-read answered for a slot older than a swap already applied was already left out (`lastSlot`).
+  - A re-read older than a pool event other than a swap seen since the last read was not: it re-based the chain clean, without that change. The chain now keeps `otherSlot`, and such a read is left out too (the chain stays stale until a newer read or the next swap).
+- **Bounds (worker heap 560 MB: `--max-old-space-size=560`, `ops/install.sh`; an earlier draft said 572, corrected after review of #266).**
+  - `PRE_READ_POOLS` = 64 pools (a `CappedMap`, oldest-kept pool let go first) × `PRE_READ_KEEP` = 64 events each (the newest). Measured: about 4.4 KB per kept swap with every string distinct, so at most about 18 MB (approximate, one measurement in vitest).
+  - A pool's kept events go when its read arrives, when it leaves the watch list, and when it is let go (`retire`, `#forgetPool`).
+  - `CappedMap` moved from the worker to core (`facts/capped-map.ts`, the worker re-exports it) and gained `delete` and an eviction hook. `delete` keeps no index per key, so OOM-MINT's per-entry memory budget (`sig-caps.test.ts`, under 230 B) still holds: a deleted key's ring place is freed only when the ring comes round to it, and a key set again before that can be let go early (never late; the cap always holds). For the producer, early means the pool's first read starts stale (fail closed).
+- **Fail closed.**
+  - Events let go past `PRE_READ_KEEP` whose slot is newer than the read, or a pool whose kept events were let go whole past `PRE_READ_POOLS` (marked on the pool's trade stream, so the mark lives as long as the stream and cannot fall out of a cap; review of #266): the chain starts stale (a gap). The next kept or live swap re-bases on its own pre-trade reserves, as after any gap.
+  - Any kept swap that does not chain or does not reproduce: stale (a mismatch, needs a read), exactly as live.
+  - State is in memory: a restart keeps nothing, and the first read after it is as before this change (the next swap then shows any mismatch).
+- **Parity.**
+  - The backtest reads accounts as of their slot, so it never has this race. Live with the late read now reaches the same pool state as live with the read in order and as the backtest's `ShiftedPool` replay of the same swaps' amm rows (`worker/test/facts-parity.test.ts`). The recorded replay and backtest re-sort of the late run give the same facts and log.
+- **Evidence.** `core/test/facts/pool-chain.test.ts` (POOL-FIRST-READ: 8 of its 11 tests fail on the code before; the other 3 guard behaviour that already held), `core/test/facts/capped-map.test.ts`, `worker/test/facts-parity.test.ts` (the late-read parity test fails before). Mutants killed: no buffer; kept swaps applied at or before the read's slot; kept other events applied at the read's slot; kept swaps applied without the continuity check; no stale for a pool let go whole; no stale for events let go past the cap; re-read ignoring `otherSlot`; other events not kept; kept events surviving an unwatch or a retire.
+- **Part 3: candles after a late migration (2026-10-07, S1; #263's finding).**
+  - **Why.** A pool's candle book opens only at the migration's `CreatePoolEvent`. Swaps released before it were dropped, so a migration released late (a FACTS-REREAD re-read after a restart or a failed fetch) opened an empty book. Its candles came out `[]`, complete, with Evidence ok, and H11's chase check then refused the coin `not-covered` for good.
+  - **Change.** The same buffer, with one cap for both: each kept event records whether the chain (no read yet), the book (no `CreatePoolEvent` yet), or both still need it. A non-swap event is kept for the chain only. Each side takes its own events when it opens; the pool's entry goes once both exist.
+  - **Order.** The migration transaction carries its own first swap after its `CreatePoolEvent`. On mainnet, the recorded coin's migration logs CreatePool, then InitBoost, then CompletePumpAmmMigration, then Buy.
+    - So the kept swaps are taken when the next event from another transaction arrives, not at the `CreatePoolEvent` (`#bookTake`).
+    - Every kept swap comes later in chain order, because the pool did not exist before that transaction. They are applied in release order through the same `#bookSwap` a live swap takes, so the candles equal an in-order run.
+    - Kept swaps from before the `CreatePoolEvent`'s slot are not taken.
+  - **Fail closed.** If a swap the book needed was dropped past the cap, or the pool's whole entry was dropped (the same mark on its trade stream), the book is marked partial. It never reads as complete with trades missing.
+  - **Memory, both parts together.** The buffer is the same cap, `PRE_READ_POOLS` × `PRE_READ_KEEP` = 64 × 64 events, so still about 18 MB at most (approximate, from the measured 4.4 KB per swap).
+    - A late book's pending swaps are taken out of that buffer and held only until the next event.
+    - The lost marks are two booleans on each watched pool's trade stream: no separate set.
+    - Against the 560 MB heap: about 18 MB at most, about 3%. The backtest's survival producers keep nothing (`preReadKeep: 0`), so that cost does not apply there.
+  - **Evidence.**
+    - `core/test/facts/trade-heal.test.ts`: the late migration equals the in-order tape's candles and pool, with H11 and H12 ok. The migration transaction's own swap comes before the kept swaps. A pre-migration swap is not taken. A drop past the cap is partial. A pool dropped whole is partial. All 5 fail on the code before part 3.
+    - `worker/test/facts-parity.test.ts`: the recorded coin's real migration transaction, released after 5 swaps through LiveFeed, gives the in-order candles and pool. This test fails before part 3. The recording of the late run replays identically 10 times (`replayRecorded`, the §16.1 replay), and the backtest re-sort gives the same facts and log.
+    - End to end through the worker, after FACTS-REREAD (#263) merged (`worker/test/facts-reread.test.ts`):
+      - Setup: the migration watch's fetch fails, the first re-read try fails, and the pool's watch carries three swaps before the second try lands the migration transaction.
+      - The candles equal those of the same tape with the migration landing first. On the producer without part 3 the late run kept only the migration's own buy.
+      - `checkSession(..., 10)` on the late session gives 10 deterministic replays and no divergence.
+    - Mutants, parts 1 and 3 run together: 19 of 20 killed.
+      - Part 3 kills: no keep for the book; no `#bookOpen`; no `#bookTake`; taking within the opening transaction; taking pre-migration swaps; no partial when swaps were dropped; no partial when the entry was lost whole; the eviction hook not marking the book lost; the entry never deleted.
+      - The survivor (each side taking every kept event, not only its own) is equivalent. An event is kept for the book alone only while the chain exists, and a chain is only built afresh after its pool's entry was deleted (unwatch or `#forgetPool`).
+- **Part 2: two PumpSwap events that leave the reserves unchanged (2026-10-07, S1; after DEDUP-PER-WATCH #264 merged).**
+  - **Why.** WATCH-1c stales a pool on any PumpSwap event other than a swap, so an unnamed event blocks carrying the pool's state until its next swap. REPLAY-1000 found two events doing this in ordinary trading: `929fbdac925838f4` inside buys, and `6161d7905d92167c` before them. They are `CloseUserVolumeAccumulatorEvent` and `ExtendAccountEvent`, identified by matching Anchor hashes.
+  - **Proof (research/pool-noop-events, keyless public RPC, slots 453,759,518 to 454,007,578).** For each case, the pool's swap just before and the one just after chain exactly across the event: base, vault and virtual reserves each compared, on contiguous tapes whose order is itself proven by chaining.
+    - CloseUserVolumeAccumulatorEvent: 80 unchanged, 0 changed, 58 inconclusive; 17 pools.
+    - ExtendAccountEvent: 62 unchanged, 0 changed, 16 inconclusive; 62 pools.
+    - Inconclusive means no contiguous tape, no swap on one side, or another PumpSwap event between. These cases are never counted either way.
+    - About two days of data: evidence, not proof for every pool.
+  - **Change.** `PUMP_AMM_NO_CHANGE_EVENTS` (`chain/events.ts`) holds exactly these two discriminators, on the PumpSwap program only. A matching event:
+    - does not stale the chain (`#chainOther`, before the first read too);
+    - does not taint a heal (`#holeTxOther`);
+    - is not echoed to other watches as an unnamed event (DEDUP-PER-WATCH's `canonical.ts` `unnamedPoolEvent`).
+    - Fail closed: any other unnamed event, the same bytes from the pump program, or a DEDUP echo (which carries no discriminator) still counts as a change. A log holding both a no-change event and an unknown one still echoes the unknown one.
+  - **Evidence.** Each new test fails on the code before part 2, or fails with its skip removed:
+    - core `pool-chain.test.ts`: both events leave the chain clean and carried; four other discriminators stay stale; a kept one leaves the first read clean.
+    - `trade-heal.test.ts`: a hole whose transaction holds one still heals; an unknown one does not.
+    - `no-change-events.test.ts`: the Anchor hashes; program and discriminator matched exactly.
+    - worker `dedup-per-watch.test.ts`: no echo for either event; an echo for an unknown one beside it.
+    - Mutants, 5 of 5 killed: accept any discriminator; no skip in `#chainOther`; no skip for heals; no skip for echoes; any program.
+- **Review fixes for parts 1 and 3 (2026-10-07, S1; each test-first).**
+  - **A swap older than a non-swap pool event never re-bases the chain (must fix: fail-open, already in the base).**
+    - The stale path re-based on any swap not older than the newest swap seen (`lastSlot`), which a non-swap event never moves. So a withdraw at S+3 followed by a swap from S+2 released after it rebuilt the chain clean, and the withdraw's change was lost.
+    - The same held for kept events replayed at the first read (probes P1 live and P2 kept: both failed on 8d45e3c1 and 1288c97e).
+    - Now the stale path never re-bases on a swap from the non-swap event's slot or before it (`otherSlot`). The order inside a slot is not proven, so the same slot does not re-base either.
+    - No deadlock: a swap from a later slot re-bases, and so does a read at or after the event (tests).
+  - **Lost marks cannot fall out.** The marks for a pool dropped whole were in sets capped at 20,000. Past that, a mark fell out and the pool's first read came out clean (fail-open). They now live on the pool's trade stream. Test: more than 20,000 pools dropped whole after it, and the first pool's read still starts stale.
+  - **Backtest memory.** The survival producers (one per graduating mint) kept up to 64 swaps each (about 280 KB) for a read that never comes. They now run with `preReadKeep: 0`: their events come in chain order and no read reaches them.
+    - Outputs unchanged: a two-mint survival run's released events hash the same on the code before and after (951 events, 2 graduates releases).
+    - Test: a live survival track keeps nothing.
+  - ARCHITECTURE §16.3 live-only vetoes row: added the stale chain and partial candles after a pool dropped whole, and the stale state after a non-swap event (live only, stricter).
+  - **Mutants (parts 1 and 3 with these fixes, one run, core and backtest tests): 26 of 27 killed.**
+    - Fix kills:
+      - the `otherSlot` check removed (P1/P2);
+      - same-slot re-base allowed (`<`);
+      - `otherSlot` never moved;
+      - lost mark ignored;
+      - eviction not marking the chain lost;
+      - lost mark never spent (a pool unwatched and watched again stayed stale at its next first read);
+      - `preReadKeep` ignored.
+    - The survivor is the equivalent unfiltered take (above).
+
 ## A candidate's missing stage-1 facts are read again under their own budget (FACTS-REREAD, `run/worker.ts` `#rereadFacts`, `REREAD_CREDITS_PER_DAY`)
 
 - **2026-10-07 · Why (S1 card FACTS-REREAD, from the H16-WHY diagnosis).**

@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { type PoolState, poolBuyExactBase, poolSell } from '../../src/amm/index.ts';
 import { startSession, TRIAL_POLICY } from '../../src/config/index.ts';
 import { OFF_CHAIN, type MarketEvent, type Moment } from '../../src/engine/index.ts';
-import { HEAL_TAPE_MAX, HEAL_WAIT_MS, HOLE_FETCH_PREFIX, RAW, STREAMS, type SwapEv, chainOrder } from '../../src/facts/index.ts';
+import { HEAL_TAPE_MAX, HEAL_WAIT_MS, HOLE_FETCH_PREFIX, PRE_READ_KEEP, PRE_READ_POOLS, RAW, STREAMS, type SwapEv, chainOrder } from '../../src/facts/index.ts';
 import { observedFeeContext } from '../../src/fills/index.ts';
 import { Evidence, candlesKey, parseCandles, parsePool, poolKey, streamKey } from '../../src/gates/index.ts';
 import { bps } from '../../src/units/index.ts';
@@ -442,5 +442,129 @@ describe('a hole in a pool\'s trade stream, healed by its fetched transaction (T
     head(world);
     expect(gapFree(world)).toBe(R + 3n);
     expect(verdicts(world).candles).toBe('H16:gap');
+  });
+});
+
+describe('a hole whose transaction holds a no-change PumpSwap event (POOL-FIRST-READ part 2)', () => {
+  const withEvent = (d: string) => {
+    const { world, state } = opened();
+    const s = tape(state);
+    world.push(logOf(s[0]!), logOf(s[1]!), hole(s[2]!.sig, s[2]!.slot), logOf(s[3]!), logOf(s[4]!));
+    const arrives = R + 6n;
+    const evs = fetched(s[2]!.sig, s[2]!.slot, arrives, [{ name: s[2]!.name, data: s[2]!.data }, { name: 'other' }]);
+    const o = evs[1]!.value as { event: Record<string, unknown> };
+    const tx = [evs[0]!, { ...evs[1]!, value: { ...o, event: { ...o.event, discriminator: d } } }];
+    world.push(...tx, outcome(s[2]!.sig, true, arrives));
+    return head(world);
+  };
+
+  it('a proven no-change event in it does not block the heal; any other unnamed one does', () => {
+    expect(gapFree(withEvent('929fbdac925838f4'))).toBe(gapFree(complete().world));
+    expect(gapFree(withEvent('6161d7905d92167c'))).toBe(gapFree(complete().world));
+    expect(gapFree(withEvent('0011223344556677'))).toBe(R + 4n);
+  });
+});
+
+describe('candles after a late migration (POOL-FIRST-READ part 3)', () => {
+  // #263's finding: the book opens only at the migration's CreatePoolEvent, and swaps released before it were dropped:
+  // with the migration released late (a re-read), the candles were [] and complete, and Evidence ok.
+  const P = R - 5n;
+  /** A pump event of the migration transaction, fetched late: off-chain at `arrives`, its own slot `slot`. */
+  const lateLife = (name: string, data: Record<string, unknown>, slot: bigint, arrives: bigint, i: number): MarketEvent => ({
+    kind: 'market', id: `ev:late${i}:00000:${String(i).padStart(5, '0')}`, moment: { slot: arrives, txIndex: OFF_CHAIN, ixIndex: i, receivedAt: at(arrives) + 10 + i },
+    key: `${name === 'CreatePoolEvent' ? 'pump_amm' : 'pump'}:${name}:${MINT}`,
+    value: { event: { program: name === 'CreatePoolEvent' ? 'pump_amm' : 'pump', name, data, signature: 'migrationtx', slot, txIndex: 0, outerIx: 0, innerIx: i }, txSlot: slot, blockTime: null, source: 'helius', backfilled: false, seq: n++ },
+  });
+  const migration = (state: PoolState, arrives: bigint): MarketEvent[] => [
+    lateLife('CompleteEvent', { mint: MINT, timestamp: stamp(P - 1n) }, P - 1n, arrives, 0),
+    lateLife('CreatePoolEvent', { timestamp: stamp(P), baseMint: MINT, pool: POOL, poolQuoteAmount: state.quoteVault, poolBaseAmount: state.baseReserve }, P, arrives, 1),
+    lateLife('CompletePumpAmmMigrationEvent', { mint: MINT, pool: POOL, timestamp: stamp(P) }, P, arrives, 2),
+  ];
+  const readEv = (): MarketEvent => offchain(RAW.accounts(MINT), { ...FIX.accountsRead, slot: R }, R, at(R), 'helius');
+  /** The stream started and the pool read, the swaps' log lines, then the migration's transaction (late). */
+  const late = (swaps: (state: PoolState) => Swap[], arrives = R + 6n) => {
+    const { state } = opened();
+    const s = swaps(state);
+    const world = new FactWorld().push(coverage(STREAM, 'start', { fromSlot: P - 1n, via: VIA }, P - 2n, at(P - 2n)), readEv(), ...s.map((x) => logOf(x)), ...migration(state, arrives));
+    return { world: head(world), s, state };
+  };
+
+  it('the late migration\'s candles and pool equal the in-order tape\'s, and H11 and H12 pass', () => {
+    const a = late(tape);
+    const b = complete();
+    expect(candles(a.world).candles.length).toBeGreaterThan(0);
+    expect(noReceipt(candles(a.world))).toEqual(noReceipt(candles(b.world)));
+    expect((a.world.last(candlesKey(MINT)) as { completeness?: string }).completeness).toBe((b.world.last(candlesKey(MINT)) as { completeness?: string }).completeness);
+    expect(noReceipt(a.world.last(poolKey(MINT)))).toEqual(noReceipt(b.world.last(poolKey(MINT))));
+    expect(verdicts(a.world)).toEqual({ candles: 'ok', pool: 'ok' });
+    // Both the chain (read first) and the book (migration last) now hold them: nothing is kept.
+    expect(a.world.producer.sizes().preReads).toBe(0);
+  });
+
+  it('the migration transaction\'s own swap (after its CreatePoolEvent) comes before the kept swaps: candles equal the in-order run', () => {
+    const { state } = opened();
+    const s = tape(state);
+    // The migration's own buy, logged after its CreatePoolEvent in the same transaction (mainnet: CreatePool, InitBoost,
+    // CompletePumpAmmMigration, Buy).
+    const own = swap('buy', state, 2_000_000n, P);
+    const ownEv = (moment: Moment): MarketEvent => ({
+      kind: 'market', id: `ev:migrationtx:00000:00003`, moment, key: `pump_amm:BuyEvent:${POOL}`,
+      value: { event: { program: 'pump_amm', name: 'BuyEvent', data: own.data, signature: 'migrationtx', slot: P, txIndex: 0, outerIx: 0, innerIx: 3 }, txSlot: P, blockTime: null, source: 'helius', backfilled: false, seq: n++ },
+    });
+    const start = coverage(STREAM, 'start', { fromSlot: P - 1n, via: VIA }, P - 2n, at(P - 2n));
+    const life = migration(state, R + 6n);
+    const lateRun = head(new FactWorld().push(start, readEv(), ...s.map((x) => logOf(x)), ...life, ownEv({ slot: R + 6n, txIndex: OFF_CHAIN, ixIndex: 3, receivedAt: at(R + 6n) + 13 })));
+    const inOrder = head(new FactWorld().push(
+      start, ...life.map((e, i) => ({ ...e, moment: { slot: P, txIndex: 2 ** 32, ixIndex: i, receivedAt: at(P) + i } })),
+      ownEv({ slot: P, txIndex: 2 ** 32, ixIndex: 3, receivedAt: at(P) + 3 }), readEv(), ...s.map((x) => logOf(x)),
+    ));
+    expect(candles(inOrder).obs.quality).toEqual([]);
+    expect(noReceipt(candles(lateRun))).toEqual(noReceipt(candles(inOrder)));
+  });
+
+  it('kept swaps from before the migration\'s slot are not the pool\'s trades: not taken into the book', () => {
+    const { state } = opened();
+    const s = tape(state);
+    // A swap on the pool stamped before its CreatePoolEvent's slot, released (late) just before the tape.
+    const e = logOf(swap('buy', state, 1_000_000n, P - 1n));
+    const early = { ...e, moment: { ...e.moment, slot: R + 1n, txIndex: 2 ** 32 - 1, receivedAt: at(R + 1n) - 1 } };
+    const world = head(new FactWorld().push(coverage(STREAM, 'start', { fromSlot: P - 1n, via: VIA }, P - 2n, at(P - 2n)), readEv(), early, ...s.map((x) => logOf(x)), ...migration(state, R + 6n)));
+    expect(noReceipt(candles(world))).toEqual(noReceipt(candles(complete().world)));
+  });
+
+  it('swaps let go past the cap before the migration: the candles are partial, never complete with trades missing', () => {
+    const a = late((state) => {
+      const out: Swap[] = [];
+      let pre = state;
+      for (let i = 0; i <= PRE_READ_KEEP; i++) {
+        const x = swap('buy', pre, 1_000n, R + 1n);
+        out.push(x);
+        pre = x.after;
+      }
+      return out;
+    }, R + 6n);
+    expect(candles(a.world).obs.quality).toContain('partial');
+    expect(verdicts(a.world).candles).not.toBe('ok');
+  });
+
+  it('a pool whose kept swaps were let go whole (past the pool cap) opens its book partial', () => {
+    const { state } = opened();
+    const s = tape(state);
+    const others = Array.from({ length: PRE_READ_POOLS }, (_, i) => `OtherPool${i}`);
+    const world = new FactWorld().push(
+      coverage(STREAM, 'start', { fromSlot: P - 1n, via: VIA }, P - 2n, at(P - 2n)),
+      ...others.map((p) => coverage(STREAMS.trades(p), 'start', { fromSlot: P - 1n, via: `logs:${p}` }, P - 2n, at(P - 2n))),
+      readEv(), logOf(s[0]!),
+    );
+    expect(world.producer.sizes().preReads).toBe(1);
+    // Other watched pools, none read nor migrated, each with a kept swap, push it out.
+    others.forEach((p, i) => {
+      const e = logOf(swap('buy', state, 1_000n, R + 2n), i + 1);
+      const v = e.value as { event: { data: Record<string, unknown> }; via: string };
+      world.push({ ...e, key: e.key.replace(POOL, p), value: { ...v, event: { ...v.event, data: { ...v.event.data, pool: p } }, via: `logs:${p}` } });
+    });
+    // Taken at the first event after the migration transaction's own (here the next slot notice).
+    head(world.push(...migration(state, R + 6n)));
+    expect(candles(world).obs.quality).toContain('partial');
   });
 });

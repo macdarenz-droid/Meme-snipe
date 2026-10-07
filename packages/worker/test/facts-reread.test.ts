@@ -5,9 +5,12 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { recordFromRpc, type RpcTransactionBase64 } from '../../core/src/chain/index.ts';
+import { recordFromRpc, transactionEvents, type RpcTransactionBase64 } from '../../core/src/chain/index.ts';
+import { STREAMS } from '../../core/src/facts/index.ts';
+import { swapEventState, type SwapEvent } from '../../core/src/fills/index.ts';
+import { swapLog } from '../../core/test/facts/swaps.ts';
 import type { MarketEvent, StrategyContext } from '../../core/src/engine/index.ts';
-import { evaluateHardRejects, migrationKey, type GateContext, type GateRequest, type HardResult } from '../../core/src/gates/index.ts';
+import { candlesKey, evaluateHardRejects, migrationKey, type GateContext, type GateRequest, type HardResult } from '../../core/src/gates/index.ts';
 import type { MicroUsd, Lamports } from '../../core/src/units/index.ts';
 import { RESEARCH_CONFIG, RUG_CONFIG } from '../../core/src/config/index.ts';
 import { COMPLETION_CREDITS, CUT_CREATE_RETRY_MS, REREAD_CREDITS_PER_DAY, REREAD_CURVE_READS, rereadRefund, reserveBudget, stage1Missing, type WorkerDeps } from '../src/run/worker.ts';
@@ -77,7 +80,7 @@ const curveRpc = (fail = 0) => {
  * migration watch's fetch puts it on the feed, then the run goes into the candidate's window. `reread` is what
  * fetch-caps.json holds for today when it starts (null: no file).
  */
-const run = async (rpc: Rpc, o: { readonly reread?: number | null; readonly stateDir?: string; readonly window?: boolean; readonly logsOnly?: boolean; readonly timers?: ReturnType<typeof virtualTimers>; readonly noMigration?: boolean; readonly runMs?: number; readonly findCreate?: WorkerDeps['findCreate']; readonly fill?: number; readonly found?: (sig: string, why: string, h: Harness) => boolean; readonly after?: (h: Harness, m: Market, tick: () => void) => Promise<void> } = {}) => {
+const run = async (rpc: Rpc, o: { readonly reread?: number | null; readonly stateDir?: string; readonly window?: boolean; readonly logsOnly?: boolean; readonly timers?: ReturnType<typeof virtualTimers>; readonly noMigration?: boolean; readonly runMs?: number; readonly findCreate?: WorkerDeps['findCreate']; readonly fill?: number; readonly found?: (sig: string, why: string, h: Harness) => boolean; readonly after?: (h: Harness, m: Market, tick: () => void) => Promise<void>; readonly beforeLand?: (h: Harness, m: Market, tick: () => void) => Promise<void> } = {}) => {
   let left = o.fill ?? COMPLETION_CREDITS - 1;
   const budget = { remaining: () => left, spend: (c: number) => { left -= c; }, refund: (c: number) => { left += c; } };
   const timers = o.timers ?? virtualTimers(AT - 30_000);
@@ -87,11 +90,12 @@ const run = async (rpc: Rpc, o: { readonly reread?: number | null; readonly stat
   const h = makeWorker({ ...(o.found === undefined ? {} : { found: (sig: string, why: string) => o.found!(sig, why, ref!) }), stateDir, timers, config: { ZEROED_HEALTH_ADDR: `127.0.0.1:${port++}`, ZEROED_API_ADDR: `127.0.0.1:${port++}` }, restartReads: { rpc: rpc as never, budget }, ...(o.findCreate === undefined ? {} : { findCreate: o.findCreate }) });
   ref = h;
   session = h.session;
-  const judged: { readonly at: number; readonly migration: boolean; readonly r: HardResult }[] = [];
+  const judged: { readonly at: number; readonly migration: boolean; readonly r: HardResult; readonly candles: unknown }[] = [];
   const s = h.worker.strategy as unknown as { onMarket: (e: MarketEvent, ctx: StrategyContext) => unknown };
   const onMarket = s.onMarket.bind(s);
   s.onMarket = (e, ctx) => {
-    judged.push({ at: ctx.now.receivedAt, migration: ctx.lookup(migrationKey(MINT)).ok, r: judge(ctx) });
+    const c = ctx.lookup(candlesKey(MINT));
+    judged.push({ at: ctx.now.receivedAt, migration: ctx.lookup(migrationKey(MINT)).ok, r: judge(ctx), candles: c.ok ? c.value : null });
     return onMarket(e, ctx);
   };
   const m = new Market(h);
@@ -115,8 +119,10 @@ const run = async (rpc: Rpc, o: { readonly reread?: number | null; readonly stat
     h.worker.feed.ingest('helius', { type: 'logs', signature: migrate.signature, slot: migrate.slot, err: null, via: `logs:${MIGRATION_AUTHORITY}`, logs: [...migrate.logMessages!] }, { receivedAt: m.now });
     await m.run(2_000, 400, tick);
     h.worker.feed.ingest('worker', { type: 'offchain', key: 'feed:status:helius', value: { state: 'fetch_failed', signature: migrate.signature } }, { receivedAt: m.now });
+    if (o.beforeLand !== undefined) await o.beforeLand(h, m, tick);
   } else {
     h.worker.feed.ingest('helius', { type: 'tx', record: migrate }, { receivedAt: m.now, lookup: true });
+    if (o.beforeLand !== undefined) await o.beforeLand(h, m, tick);
   }
   await m.run(20_000, 400, tick);
   if (o.runMs !== undefined) await m.run(o.runMs, 5_000, tick);
@@ -462,5 +468,54 @@ describe('FACTS-REREAD: a candidate missing its migration fact has it read again
     expect(r.rereads.map((x) => [x['try'], x['landed'], x['budget'] ?? null])).toEqual([[1, false, null], [2, false, 'spent'], [2, false, null]]);
     expect(r.h.logs).toContain(`Candidate ${MINT}: its stage-1 facts were not read again in 2 tries; its refusal stands.`);
     expect(befores()).toBe(1);
+  }, 120_000);
+});
+
+describe('candles after a migration re-read late, through the worker (POOL-FIRST-READ part 3, end to end)', () => {
+  // The migration watch's fetch fails (as (b) above), the first re-read try fails too, and meanwhile the pool's own
+  // watch carries swaps: the re-read's migration transaction lands after them. Before part 3 the candle book opened
+  // empty at the late CreatePoolEvent and those swaps were lost (candles complete with none of them).
+  const created = transactionEvents(migrate);
+  const pool = (created.find((e) => e.name === 'CreatePoolEvent') as unknown as { data: { pool: string } }).data.pool;
+  const own = swapEventState(created.find((e) => e.name === 'BuyEvent') as unknown as SwapEvent);
+  if (!own.ok) throw new Error(own.reason);
+  /**
+   * The pool's watch starts at the migration's slot, and three swaps continuing the migration's own buy follow at fixed
+   * times (30, 50 and 70 s after the migration) and their own slots: the same tape in both runs, put on the feed at
+   * once (the feed releases each in its slot, before the re-read's second try lands).
+   */
+  const swaps = (n: { count: number }) => async (h: Harness, m: Market): Promise<void> => {
+    m.offchain(`coverage:${STREAMS.trades(pool)}:start`, { fromSlot: migrate.slot, via: `logs:${pool}` });
+    let pre = own.after;
+    for (let i = 0; i < 3; i++) {
+      const atMs = AT + 30_000 + 20_000 * i;
+      const s = swapLog({ pool, coinCreator: CURVE, supply: 1_000_000_000_000_000n, pre, side: i % 2 === 0 ? 'buy' : 'sell', base: pre.baseReserve / BigInt(400 + 100 * i), atMs });
+      h.worker.feed.ingest('helius', { type: 'logs', signature: `lateswap${i}`, slot: slotFor(atMs), err: null, via: `logs:${pool}`, logs: s.logs, commitment: 'confirmed' }, { receivedAt: m.now });
+      pre = s.after;
+      n.count++;
+    }
+  };
+
+  it('the late run\'s candles equal the in-order run\'s (not empty), and the session replays ten times to the live decisions', async () => {
+    const lateCount = { count: 0 };
+    const { asked, rpc } = curveRpc(1);
+    const late = await run(rpc, { reread: null, logsOnly: true, beforeLand: swaps(lateCount), window: false, runMs: 6 * 60_000 });
+    // The swaps were on the feed before the re-read landed: its second try came after the first wait.
+    expect(lateCount.count).toBe(3);
+    // Every swap is released before the migration lands: on the producer without part 3 these candles lose them.
+    expect(curveReads(asked)).toBe(2);
+    expect(late.rereads.map((x) => [x['try'], x['landed']])).toEqual([[1, false], [2, true]]);
+    const landed = late.judged.findIndex((j) => j.migration);
+    expect(landed).toBeGreaterThan(-1);
+    const inOrder = await run(curveRpc().rpc, { reread: null, beforeLand: swaps({ count: 0 }), window: false, runMs: 6 * 60_000 });
+    const candlesOf = (r: typeof late) => (r.last.candles as { candles: unknown[] } | null)?.candles ?? null;
+    expect(candlesOf(inOrder)).not.toBeNull();
+    expect(candlesOf(inOrder)!.length).toBeGreaterThan(1);
+    expect(candlesOf(late)).toEqual(candlesOf(inOrder));
+    expect((late.last.candles as { obs: { quality: string[] } }).obs.quality).toEqual([]);
+    const p = checkSession(late.h.stateDir, { session: late.h.session, rugs: RUG_CONFIG, strategy: late.h.worker.strategyConfig }, replayLedgerFile, 10);
+    expect(p.boots.map((b) => [b.replays, b.deterministic, b.divergence])).toEqual([[10, true, null]]);
+    expect(p.boots[0]!.decisions).toBeGreaterThan(1);
+    expect(p.ok).toBe(true);
   }, 120_000);
 });
