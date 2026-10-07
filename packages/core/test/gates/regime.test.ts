@@ -70,7 +70,9 @@ describe('regime gate', () => {
   it('R2-6: survival is not judged on a 24 h window that touches an unobserved stretch of marks', () => {
     // Checks at C0 and C1: a hole ending exactly at C1 - 24 h leaves both windows observed; one ms later C1 is unknown.
     const at = (toMs: number) => run(patch(passingFacts(), GRADUATES_KEY, { unobserved: { fromMs: toMs - 20 * HOUR_MS, toMs } }));
-    expect(at(C1 - DAY_MS).on).toBe(true);
+    const edge = at(C1 - DAY_MS);
+    expect(edge.on).toBe(true);
+    expect(edge.checks.map((c) => c.conditions[0]!.ok)).toEqual([true, true]);
     const touched = at(C1 - DAY_MS + 1);
     expect(touched.checks[1]!.conditions[0]).toEqual(expect.objectContaining({ condition: 'survival', ok: null, code: 'not-covered' }));
     expect(touched.checks[0]!.conditions[0]).toEqual(expect.objectContaining({ condition: 'survival', ok: true }));

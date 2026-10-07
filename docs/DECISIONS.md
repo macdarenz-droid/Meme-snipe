@@ -3528,3 +3528,18 @@ Red team A's round-2 report (`packages/worker/test/redteam/REPORT.md`, "Round 2"
 - **R2-7, the serial count and block time ahead of the clock** (`gates/deployer-index.ts` `observe`).
   - Before: a create whose block time was ahead of the local clock was in the index but left out of H14's 24 h count until the clock passed it.
   - Now: a block time up to `CHAIN_SKEW_MS` ahead of its receipt is taken as the receipt time, as `seed` and `fill` clamp to their as-of. Further ahead is no clock skew and keeps its chain time.
+- **Evidence.**
+  - Fail before (on 959d801), pass after, all 8: `core/test/redteam2/h15-sim-slot-unbound`, `core/test/redteam2/h16-xcheck-partial-field` (2), `worker/test/redteam2/graduates-restore-hole`, `rug-check-before-lookback`, `serial-chain-ahead`, `worker/test/redteam3/graduates-quote-mint`, `rugs-coverage-store-restart`.
+  - Boundary tests added: H14 checked-rug look-back edge and the undated rug (`gates/deployer-index.test.ts`); the clamp's skew edge (same file); the H15 slot lag of 7 against 8, and a missing slot (`gates/hard.test.ts`); the hole edge against the current and older check (`gates/regime.test.ts`); a seed that adds nothing still marks its hole (`facts/producer.test.ts`).
+  - Fixtures changed to the real shape, with no assertion loosened:
+    - The gate world's simulation carries a context slot, as live raw sim reads must.
+    - Two check labels dated `atMs: 0` (1970) now have real dates.
+    - The save-asof create is received at its block time, so the save's clamp is still exercised.
+  - Mutants, all 16 killed, each one reverting one part of a fix:
+    - R2-1: no rugs gap.
+    - R2-2: no look-back filter; `>` for `>=`; an undated rug dropped; no note.
+    - R2-3: any quote mint.
+    - R2-4: no slot bound; `>=` for `>`; a null slot passes.
+    - R2-5: no per-field check.
+    - R2-6: no hole set; the hole without its survival window; the regime ignores the hole; `>=` for `>` at the hole's edge.
+    - R2-7: no clamp; an unbounded clamp.
