@@ -241,6 +241,8 @@ interface CandleBook {
   readonly seen: RepeatTags;
   /** The newest trade time applied. */
   newestMs: number;
+  /** LATE-LOG: the newest slot of a swap the book applied; a swap from an earlier slot that arrives after it is not applied. */
+  newestSlot: bigint | null;
   /** `newestMs` at the last sweep: the next runs once the newest trade is a quarter window later. */
   sweptMs: number;
   /** TRADE-GAP-HEAL: the last swap the book applied: its post-trade reserves anchor a heal's chain. */
@@ -660,7 +662,7 @@ export class FactProducer {
         if (!t.pools.has(d.pool)) t.pools.set(d.pool, { pool: d.pool, slot: seen.slot, atMs, quote: d.poolQuoteAmount, base: d.poolBaseAmount });
         if (!this.#poolMint.has(d.pool)) this.#poolMint.set(d.pool, d.baseMint);
         if (!this.#books.has(d.pool) && !this.#retiredPools.has(d.pool)) {
-          this.#books.set(d.pool, { pool: d.pool, mint: d.baseMint, openedAtMs: atMs, fromSlot: seen.slot, candles: [], partial: false, seen: new RepeatTags(), newestMs: atMs, sweptMs: atMs, lastSwap: null, mark: null });
+          this.#books.set(d.pool, { pool: d.pool, mint: d.baseMint, openedAtMs: atMs, fromSlot: seen.slot, candles: [], partial: false, seen: new RepeatTags(), newestMs: atMs, sweptMs: atMs, newestSlot: null, lastSwap: null, mark: null });
           this.#reserves.set(d.pool, { atMs, effective: d.poolQuoteAmount });
           this.#writeCandles(d.pool, seen.provider, seen.receivedAt, put);
           this.#bookOpen(d.pool, seen.signature);
@@ -789,6 +791,17 @@ export class FactProducer {
     if (book.seen.has(tag)) {
       if (!replay) return;
     } else book.seen.add(tag, Math.floor(atMs / MINUTE_MS));
+    // LATE-LOG: a swap released after a swap of a later slot on this pool (a confirmed log delivered late, or a fetched
+    // transaction the watch never delivered) cannot be applied in chain order: a candle's close would be the wrong
+    // trade's. Not applied, and the candles are no longer proven complete (fail closed, as an earlier-stamped trade).
+    // A heal still keeps it on its tape, and puts it in chain order.
+    if (!replay && book.newestSlot !== null && seen.slot < book.newestSlot) {
+      book.partial = true;
+      this.#took(book, ev, seen, replay);
+      this.#writeCandles(d.pool, seen.provider, seen.receivedAt, put);
+      return;
+    }
+    if (book.newestSlot === null || seen.slot > book.newestSlot) book.newestSlot = seen.slot;
     this.#took(book, ev, seen, replay);
     if (atMs > book.newestMs) book.newestMs = atMs;
     this.#sweepSeen(book);

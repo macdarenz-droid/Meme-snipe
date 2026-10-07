@@ -96,6 +96,11 @@ export interface Frame {
    * slot already released): its watch gets a hole (`logs:truncated:<via>`), as if the log were cut.
    */
   readonly lost?: true;
+  /**
+   * LATE-LOG: a chain fact that arrived after its slot was released, placed off-chain at the open slot instead (never
+   * released out of order). Recordings made before it carry none: those frames were released late and refused.
+   */
+  readonly late?: true;
   readonly body: FrameBody;
 }
 

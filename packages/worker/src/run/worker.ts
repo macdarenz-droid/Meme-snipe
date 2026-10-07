@@ -1220,7 +1220,8 @@ export class Worker {
     const m = e as unknown as MarketEvent;
     // The deployer index's inputs and the creates/rugs coverage, kept across restarts (SEED-1 ruling).
     if (!r.late) this.#deployerStore.keep(m);
-    // A late slot notice is refused by the engine (out of order): the paper height follows only accepted ones.
+    // A slot notice released out of order (recordings made before LATE-LOG) is refused by the engine: the paper height
+    // follows only accepted ones. Since LATE-LOG a late notice is placed off-chain and accepted; the height never moves back.
     if (m.key === 'chain:slot' && !r.late && isObj(m.value) && typeof m.value['slot'] === 'bigint' && (this.#lastSlot === null || m.value['slot'] > this.#lastSlot)) {
       this.#lastSlot = m.value['slot'];
       this.#lastSlotAt = this.#d.timers.now();
