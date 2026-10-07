@@ -1,7 +1,7 @@
 // The paper fill model (docs/ARCHITECTURE.md §11). A paper fill is a model, not proof a transaction would land.
 // Pure functions over a seeded Rng: the same seed and the same inputs give the same draws and fills, in the backtest
 // and in live paper mode alike. Parameters come from configuration (config/fills.ts), never from this file.
-import { type CoinFlags, type NoQuoteReason, type PoolState, poolBuyExactQuoteIn, poolSell } from '../amm/index.ts';
+import { type CoinFlags, type NoQuoteReason, type PoolFeeContext, type PoolState, poolBuyExactQuoteIn, poolSell } from '../amm/index.ts';
 import { PPM } from '../costs/index.ts';
 import type { Venue } from '../domain/index.ts';
 import { createRng, type Rng } from '../engine/index.ts';
@@ -88,6 +88,12 @@ export interface FillScenario {
    * off what the next one receives, as other sellers reach the pool first.
    */
   readonly exitRetryHaircutPpm: bigint;
+  /**
+   * The haircut counts only this position's exit sends in this window before the current send (ms, inclusive). Sellers
+   * who got ahead of an earlier, failed episode say nothing about a market met much later from a fresh quote: the fast
+   * ladder keeps its full haircut, and a slow blocked-exit retry (an hour or more later) starts from none.
+   */
+  readonly exitRetryHaircutWindowMs: number;
   /** Slots from landing until the status reads `confirmed`. */
   readonly confirmSlots: number;
   /** Slots from landing until the status reads `finalized` (a failure is terminal only then). */
@@ -166,19 +172,27 @@ export class NetworkState {
   readonly #seed: string;
   readonly #s: FillScenario;
   readonly #volumeBefore: (win: bigint) => bigint;
+  readonly #firstEnterPpm: bigint;
   #first: bigint | null = null;
   readonly #states: boolean[] = [];
 
-  constructor(seed: string, s: FillScenario, volumeBefore: (win: bigint) => bigint = () => 0n) {
+  /**
+   * `firstEnterPpm` is the entry chance the first window's stationary share is taken at: by default the base `enterPpm`
+   * (no activity, the backtest's start). Live paper, which steps at the activity cap, starts there too (BT-parity F1), so
+   * a restart never begins less congested than the chain settles to.
+   */
+  constructor(seed: string, s: FillScenario, volumeBefore: (win: bigint) => bigint = () => 0n, firstEnterPpm: bigint = s.congestion.network.enterPpm) {
     this.#seed = seed;
     this.#s = s;
     this.#volumeBefore = volumeBefore;
+    this.#firstEnterPpm = firstEnterPpm;
   }
 
   congested(win: bigint): boolean {
-    const { enterPpm, stayPpm } = this.#s.congestion.network;
+    const { stayPpm } = this.#s.congestion.network;
     if (this.#first === null) {
       const leave = PPM - stayPpm;
+      const enterPpm = this.#firstEnterPpm;
       const stationary = enterPpm + leave === 0n ? 0n : mulDiv(enterPpm, PPM, enterPpm + leave, 'floor');
       this.#first = win;
       this.#states.push(draw(`${this.#seed}:network:${win}`) < stationary);
@@ -224,6 +238,16 @@ export const closeSucceeds = (seed: string, s: FillScenario): boolean => ppmDraw
 /** Whether a new token account ends up with dust or an unsolicited token, from a seed per account. */
 export const accountGetsDust = (seed: string, s: FillScenario): boolean => ppmDraw(createRng(`${seed}:dust`)) < s.dustPpm;
 
+/**
+ * The repeated-exit haircut's multiple for a send at `nowMs`: the position's earlier exit sends at most
+ * `exitRetryHaircutWindowMs` before it (one model for the backtest and live paper).
+ */
+export const exitRetryCount = (earlierSendsMs: readonly number[], nowMs: number, s: FillScenario): number => {
+  const w = s.exitRetryHaircutWindowMs;
+  if (!Number.isSafeInteger(w) || w < 0) throw new RangeError('exitRetryHaircutWindowMs must be an integer >= 0');
+  return earlierSendsMs.filter((t) => t <= nowMs && nowMs - t <= w).length;
+};
+
 /** Lamports an attempt costs: a landed success pays base, priority and tip; a landed failure base and priority; a dropped one nothing. */
 export const attemptFee = (net: FillNetwork, priorityFee: bigint, fate: 'filled' | 'failed' | 'dropped'): bigint => {
   const base = net.signaturesPerTx * net.baseFeePerSignature;
@@ -265,7 +289,16 @@ export interface OurTrade {
   readonly slippagePpm: bigint;
 }
 
-const finish = (out: bigint, paid: bigint, after: PoolState, t: OurTrade, fees: Omit<ExecutionCosts, 'extraSlippage'>, haircutPpm = 0n): Execution => {
+/** The same trade with the fee terms already resolved (live paper holds the pool's fee context, not the observed fees). */
+export interface OurTradeIn {
+  readonly pool: PoolState;
+  readonly ctx: PoolFeeContext;
+  readonly quotedOut: bigint;
+  readonly minOut: bigint;
+  readonly slippagePpm: bigint;
+}
+
+const finish = (out: bigint, paid: bigint, after: PoolState, t: Pick<OurTrade, 'quotedOut' | 'minOut' | 'slippagePpm'>, fees: Omit<ExecutionCosts, 'extraSlippage'>, haircutPpm = 0n): Execution => {
   if (haircutPpm < 0n) throw new RangeError('haircut must be >= 0');
   const slipped = withSlippage(out, t.quotedOut, t.slippagePpm);
   const final = slipped - (haircutPpm >= PPM ? slipped : mulDiv(slipped, haircutPpm, PPM, 'ceil'));
@@ -279,8 +312,11 @@ const costsOf = (q: { readonly lpFee: bigint; readonly protocolFee: bigint; read
 });
 
 /** Our buy, spending at most `spend` lamports fees included, on the pool as it stands after every real trade of the slot. */
-export const executeBuy = (t: OurTrade, spend: bigint): Execution => {
-  const q = poolBuyExactQuoteIn(t.pool, spend, observedFeeContext(t.fees, t.baseSupply, t.coin));
+export const executeBuy = (t: OurTrade, spend: bigint): Execution => executeBuyIn({ ...t, ctx: observedFeeContext(t.fees, t.baseSupply, t.coin) }, spend);
+
+/** `executeBuy` on a resolved fee context: one execution model for the backtest and live paper (N2). */
+export const executeBuyIn = (t: OurTradeIn, spend: bigint): Execution => {
+  const q = poolBuyExactQuoteIn(t.pool, spend, t.ctx);
   return q.ok ? finish(q.trade.base, q.trade.userQuote, q.trade.after, t, costsOf(q.trade)) : q;
 };
 
@@ -289,8 +325,12 @@ export const executeBuy = (t: OurTrade, spend: bigint): Execution => {
  * proceeds for liquidity lost to earlier sellers (repeated exits); it is counted in extraSlippage, and the pool sees
  * the same sell.
  */
-export const executeSell = (t: OurTrade, tokens: bigint, haircutPpm = 0n): Execution => {
-  const q = poolSell(t.pool, tokens, observedFeeContext(t.fees, t.baseSupply, t.coin));
+export const executeSell = (t: OurTrade, tokens: bigint, haircutPpm = 0n): Execution =>
+  executeSellIn({ ...t, ctx: observedFeeContext(t.fees, t.baseSupply, t.coin) }, tokens, haircutPpm);
+
+/** `executeSell` on a resolved fee context (N2). */
+export const executeSellIn = (t: OurTradeIn, tokens: bigint, haircutPpm = 0n): Execution => {
+  const q = poolSell(t.pool, tokens, t.ctx);
   return q.ok ? finish(q.trade.userQuote, tokens, q.trade.after, t, costsOf(q.trade), haircutPpm) : q;
 };
 

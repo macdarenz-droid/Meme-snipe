@@ -1,4 +1,4 @@
-export { evaluateEntry, evaluateExit, economicNav, evaluateWithdrawal, maxTradeCosts, opsReserve, riskSnapshot } from './evaluate.ts';
+export { SLOW_RETRY_RESERVE_MS, evaluateEntry, evaluateExit, economicNav, evaluateWithdrawal, maxTradeCosts, opsReserve, riskSnapshot } from './evaluate.ts';
 export {
   EPOCH_YEAR, MELBOURNE_RULES, MS_PER_MINUTE, RULE_FROM_YEAR,
   civilFromDays, daylightEndUtc, daylightStartUtc, daysFromCivil, melbourneDay, melbourneDayNumber, melbourneMidnightUtc,

@@ -23,7 +23,7 @@ import type { DryRunRecord } from '../dryrun/index.ts';
 import { CANDIDATE_RESTORED, GATE_REASONS_PREFIX, NO_UNIVERSE, type SavedGraduates, type SavedTail, resolveUniverse, sellOnlyReason } from '../engine/strategy.ts';
 import { RAW } from '../../../core/src/facts/raw.ts';
 import { GRADUATES_SEED_KEY, HOLE_FETCH_PREFIX } from '../../../core/src/facts/producer.ts';
-import { ACCOUNT_KEY, HALT_KEY, LiveStrategy, unwrap, POOL_PREFIX, RESTORE_KEY, SEED_KEY, SEEDING, SHORTLIST, SNAPSHOT_PREFIX, SOL_PRICE_KEY, type SnapshotFact, type CarryFact, CARRY_PREFIX, type MarketChoice, chooseMarket, parseCarryFact, type StrategyConfig, type StrategyDeps, type SavedStateRef, TRIP_PREFIX, parseSnapshotFact, snapshotKey, snapshotWins } from '../engine/strategy.ts';
+import { ACCOUNT_KEY, HALT_KEY, LiveStrategy, unwrap, POOL_PREFIX, RESTORE_KEY, SEED_KEY, SEEDING, SHORTLIST, SNAPSHOT_PREFIX, SOL_PRICE_KEY, type SnapshotFact, type CarryFact, CARRY_PREFIX, type MarketChoice, chooseMarket, landingMarket, parseCarryFact, type StrategyConfig, type StrategyDeps, type SavedStateRef, TRIP_PREFIX, parseSnapshotFact, snapshotKey, snapshotWins } from '../engine/strategy.ts';
 import { SLOT_MS, watchTimingProblem } from './config.ts';
 import { PositionWatch, type WatchRead } from './watch.ts';
 import { DEFAULT_LIVE_FEED, type Frame, HELIUS_EXHAUSTED, type HttpClient, LiveFeed, type Release, seqId } from '../providers/index.ts';
@@ -538,6 +538,8 @@ export class Worker {
   #lastSlot: bigint | null = null;
   /** When `#lastSlot` was released (WATCH-1d holds a snapshot's bank to a live head). */
   #lastSlotAt: number | null = null;
+  /** N1: when the latest slot notice was received, the feed's time: the paper landing at that slot dates its pool read by it. */
+  #lastSlotReceivedAt: number | null = null;
   #ticked: bigint | null = null;
   #solPrice: MicroUsd | null = null;
   /** Whether this process settled at its first SOL price after the reconcile (a stray fee needs a price; PAPER-1). */
@@ -855,7 +857,8 @@ export class Worker {
       seed, scenario: d.scenario, network: d.network,
       ladderFees: d.session.policy.exits.ladder.steps.map((s) => s.priorityFeeLamports as bigint),
       exitRung: (i) => this.#strategy.signedRung(i.intent.positionId, this.#engine.book),
-      market: (mint) => this.#paperMarket(mint),
+      market: (mint, slot) => this.#paperMarket(mint, slot),
+      maxQuoteAgeMs: d.session.policy.gates.maxQuoteAgeMs,
       maxSolOut: (i) => {
         const n = d.network;
         const ladder = d.session.policy.exits.ladder;
@@ -1249,6 +1252,7 @@ export class Worker {
     if (m.key === 'chain:slot' && !r.late && isObj(m.value) && typeof m.value['slot'] === 'bigint' && (this.#lastSlot === null || m.value['slot'] > this.#lastSlot)) {
       this.#lastSlot = m.value['slot'];
       this.#lastSlotAt = this.#d.timers.now();
+      this.#lastSlotReceivedAt = e.moment.receivedAt;
     }
     else if (m.key.startsWith(POOL_PREFIX)) this.#setPool(m.key.slice(POOL_PREFIX.length), m.value);
     // An off-chain frame (the batch's FEE-TIER-NOW read) arrives wrapped; a worker fact does not.
@@ -1514,9 +1518,15 @@ export class Worker {
     this.#poolReleasedAt.set(mint, this.#d.timers.now());
   }
 
-  /** The mint's newest whole market by the strategy's own rule (`chooseMarket`). */
-  #choice(mint: string): MarketChoice {
-    return chooseMarket(parsePool(this.#pools.get(mint)), this.#snapshots.get(mint) ?? null, this.#carries.get(mint)?.carry ?? null);
+  /**
+   * The mint's newest whole market by the strategy's own rule (`chooseMarket`); with `landingSlot`, the market a paper
+   * attempt lands on at that slot (`landingMarket`).
+   */
+  #choice(mint: string, landingSlot?: bigint): MarketChoice {
+    const pool = parsePool(this.#pools.get(mint));
+    const snap = this.#snapshots.get(mint) ?? null;
+    const carry = this.#carries.get(mint)?.carry ?? null;
+    return landingSlot === undefined ? chooseMarket(pool, snap, carry) : landingMarket(pool, snap, carry, landingSlot);
   }
 
   /**
@@ -1546,8 +1556,8 @@ export class Worker {
     return { baseReserve: p.baseVault, quoteVault: p.quoteVault, virtualQuoteReserves: p.pool.virtualQuoteReserves ?? 0n };
   }
 
-  poolOf(mint: string): { readonly address: string; readonly state: PaperMarket['pool']; readonly ctx: PoolFeeContext; readonly atMs: number } | null {
-    const c = this.#choice(mint);
+  poolOf(mint: string, landingSlot?: bigint): { readonly address: string; readonly state: PaperMarket['pool']; readonly ctx: PoolFeeContext; readonly atMs: number } | null {
+    const c = this.#choice(mint, landingSlot);
     if (c.kind === 'snapshot') return { address: c.snap.pool, state: c.snap.state, ctx: c.snap.ctx, atMs: c.snap.atMs };
     if (c.kind !== 'pool') return null;
     const p = c.pool;
@@ -2003,9 +2013,15 @@ export class Worker {
   /** Signatures of cut creates logs already being fetched or fetched (a truncated log names its signature on each event). */
   readonly #cutCreateSeen = new Set<string>();
 
-  #paperMarket(mint: string): PaperMarket | null {
-    const m = this.poolOf(mint);
-    return m === null ? null : { pool: m.state, ctx: m.ctx };
+  /**
+   * N1: the read a paper attempt lands on at `slot`, and its date. A carry dates it for entries too (BT-parity F2), but
+   * only a carry through the landing slot: it proves the reserves unchanged up to the landing, which is all a landing
+   * needs. An entry's decision still never prices from a carry (#sendEntry, WATCH-1c risk review): that is about judging
+   * a candidate without a verify read.
+   */
+  #paperMarket(mint: string, slot: bigint): PaperMarket | null {
+    const m = this.poolOf(mint, slot);
+    return m === null ? null : { pool: m.state, ctx: m.ctx, atMs: m.atMs };
   }
 
   /** What the paper account settles a trade from: the paper world's attempts and token accounts (PAPER-1). */
@@ -2097,7 +2113,7 @@ export class Worker {
     if (this.#lastSlot !== null && this.#lastSlot !== this.#ticked) {
       // Once per new paper block height: attempts due land, and intents in flight get their tick (rebroadcast, expiry).
       this.#ticked = this.#lastSlot;
-      this.#world.onSlot(this.#lastSlot);
+      this.#world.onSlot(this.#lastSlot, this.#lastSlotReceivedAt ?? this.#d.timers.now());
       if (Object.values(this.#engine.book.intents).some((i) => !isTerminal(i) && (isUnresolved(i) || i.status === 'signed'))) {
         this.#report({ type: 'tick', blockHeight: this.#lastSlot });
       }
@@ -2322,11 +2338,21 @@ export class Worker {
     // reservation is released, an exit's position re-triggers. Intents that may have been sent settle through the
     // restart's status reads first.
     const asked = new Set<string>();
+    // RB-8: the read asked in each unresolved state, once. No slot arrives before the feeds start, so no tick re-asks; an
+    // answer that raced the state before it (a balance read refused "from unknown") would otherwise never come again.
+    const reread = new Set<string>();
     for (;;) {
       if (this.#stopping) return { ok: false, code: this.#stopCode, message: 'stopped during the start reconcile' };
       this.step();
       const book = this.#engine.book;
       for (const i of Object.values(book.intents)) {
+        if (!isTerminal(i) && isUnresolved(i) && !reread.has(`${i.intent.id}:${i.status}`)) {
+          reread.add(`${i.intent.id}:${i.status}`);
+          const now = { slot: this.#lastSlot ?? 0n, txIndex: OFF_CHAIN, ixIndex: OFF_CHAIN, receivedAt: d.timers.now() };
+          if (i.status === 'submitted' || i.status === 'pending' || i.status === 'unknown') {
+            this.#world.run({ type: 'check_status', intentId: i.intent.id, signatures: i.attempts.map((a) => a.signature), searchHistory: true }, now);
+          } else this.#world.run({ type: 'reconcile_balances', intentId: i.intent.id }, now);
+        }
         if (isTerminal(i) || isUnresolved(i) || i.status === 'signed' || asked.has(i.intent.id)) continue;
         this.#report({ type: 'intent', intentId: i.intent.id, event: { type: 'cancel' } });
         asked.add(i.intent.id);

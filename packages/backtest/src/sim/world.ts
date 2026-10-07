@@ -4,7 +4,7 @@
 // swaps see its impact (market.ts). Results come back to the engine only as feed events, never as return values.
 import type { Fill, IntentId, Signature } from '../../../core/src/domain/index.ts';
 import { type EffectRunner, type Moment, OFF_CHAIN, type Rng } from '../../../core/src/engine/index.ts';
-import { attemptFee, drawAttempt, NetworkState, providerDown, windowOf, executeBuy, executeSell, type ExecutionCosts, type FillNetwork, type FillScenario, TokenAccounts } from '../../../core/src/fills/index.ts';
+import { attemptFee, drawAttempt, exitRetryCount, NetworkState, providerDown, windowOf, executeBuy, executeSell, type ExecutionCosts, type FillNetwork, type FillScenario, TokenAccounts } from '../../../core/src/fills/index.ts';
 import type { Book, BookEvent, Effect, IntentState } from '../../../core/src/lifecycle/index.ts';
 import type { LadderStep } from '../../../core/src/config/index.ts';
 import type { RawAmount, Lamports } from '../../../core/src/units/index.ts';
@@ -33,7 +33,7 @@ export interface AttemptRecord {
   readonly congested: boolean;
   /** Why the attempt never reached a block regardless of its draw: the send path was down, or a failure burst. */
   readonly forcedDrop: 'provider' | 'burst' | null;
-  /** Earlier exit attempts on the same position (0 for entries and first exits): the liquidity haircut's multiple. */
+  /** Earlier exit sends on the same position inside the haircut window (0 for entries and first exits): its multiple. */
   readonly exitRetry: number;
   /** This filled sell emptied and closed the token account (atomic sell-and-close): its rent came back. */
   closedAccount: boolean;
@@ -64,7 +64,8 @@ export class World implements EffectRunner {
   readonly #d: WorldDeps;
   readonly attempts = new Map<string, AttemptRecord>();
   readonly alerts = new Map<string, number>();
-  readonly #exitAttempts = new Map<string, number>();
+  /** Each position's exit send times (ms), for the windowed repeated-exit haircut. */
+  readonly #exitSends = new Map<string, number[]>();
   /** Our token accounts (one per mint), from our own fills: the settlement paper mode shares (PAPER-1). */
   readonly #accounts = new TokenAccounts();
   #seq = 0;
@@ -157,8 +158,10 @@ export class World implements EffectRunner {
     let exitRetry = 0;
     if (i.intent.purpose === 'exit') {
       const position = i.intent.positionId;
-      exitRetry = this.#exitAttempts.get(position) ?? 0;
-      this.#exitAttempts.set(position, exitRetry + 1);
+      const sends = this.#exitSends.get(position) ?? [];
+      exitRetry = exitRetryCount(sends, now.receivedAt, this.#d.scenario);
+      sends.push(now.receivedAt);
+      this.#exitSends.set(position, sends);
     }
     const rec: AttemptRecord = {
       intentId, signature, purpose: i.intent.purpose, mint: i.intent.mint, priorityFee: this.#priorityFee(i, attempt.signedBytesRef),
