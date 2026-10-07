@@ -962,23 +962,23 @@ describe('D07 host preflight (Z00)', () => {
   const twoGb = '2014180'; // a typical 2 GB VM's MemTotal (1.92 GiB)
   const disk55 = '52700000'; // a 55 GB disk's filesystem, in kB (53.96 GB)
 
-  it('passes the 2 GB, 55 GB host and the boundaries: 1.85 GiB (shown as 1.9 GiB) and 50 GB exactly', () => {
+  it('passes the 2 GB, 55 GB host and the boundaries: 1.5 GiB and 50 GB exactly', () => {
     expect(run(0, twoGb, disk55)).toEqual({ status: 0, out: 'went-on', err: '' });
-    expect(run(0, String(Math.ceil(1.85 * GIB)), '48828125')).toEqual({ status: 0, out: 'went-on', err: '' });
+    expect(run(0, String(1.5 * GIB), '48828125')).toEqual({ status: 0, out: 'went-on', err: '' });
   });
 
   it('a full install refuses below either minimum, says why, and stops before any change', () => {
     const oneGb = run(0, '1004316', disk55); // the 1 GB server zeroed
     expect(oneGb.status).toBe(1);
     expect(oneGb.out).toBe('');
-    expect(oneGb.err).toBe("Install stopped: this server is below the bot's host minimum (docs/blueprint/ARCH.md D07): it has 0.96 GiB of RAM; the bot needs a 2 GB server (at least 1.9 GiB reported). Use the 2 GB Vultr server (vc2-1c-2gb, 55 GB SSD).");
-    expect(run(0, String(Math.ceil(1.85 * GIB) - 1), disk55).status).toBe(1);
+    expect(oneGb.err).toBe("Install stopped: this server is below the bot's host minimum (docs/blueprint/ARCH.md D07): it has 0.96 GiB of RAM; the bot needs a 2 GB server (at least 1.5 GiB reported). Use the 2 GB Vultr server (vc2-1c-2gb, 55 GB SSD).");
+    expect(run(0, String(1.5 * GIB - 1), disk55).status).toBe(1);
     const smallDisk = run(0, twoGb, '24413000'); // 25 GB
     expect(smallDisk.status).toBe(1);
     expect(smallDisk.err).toContain('the disk that holds /var/lib is 25.0 GB; the bot needs at least 50 GB.');
     expect(run(0, twoGb, '48828124').status).toBe(1);
     const both = run(0, '1004316', '24413000');
-    expect(both.err).toContain('it has 0.96 GiB of RAM; the bot needs a 2 GB server (at least 1.9 GiB reported); the disk that holds /var/lib is 25.0 GB');
+    expect(both.err).toContain('it has 0.96 GiB of RAM; the bot needs a 2 GB server (at least 1.5 GiB reported); the disk that holds /var/lib is 25.0 GB');
     // Unreadable or odd values refuse too.
     for (const [m, d] of [['', disk55], ['abc', disk55], [twoGb, ''], [twoGb, '-5'], ['1e9', disk55]] as const) {
       const r = run(0, m, d);
@@ -992,7 +992,7 @@ describe('D07 host preflight (Z00)', () => {
     expect(r.status).toBe(0);
     expect(r.out).toBe('went-on');
     expect(r.err.split('\n')).toEqual([
-      "Warning: this server is below the bot's host minimum (D07): it has 0.96 GiB of RAM; the bot needs a 2 GB server (at least 1.9 GiB reported).",
+      "Warning: this server is below the bot's host minimum (D07): it has 0.96 GiB of RAM; the bot needs a 2 GB server (at least 1.5 GiB reported).",
       "Warning: this server is below the bot's host minimum (D07): the disk that holds /var/lib is 25.0 GB; the bot needs at least 50 GB.",
     ]);
     expect(run(1, twoGb, disk55)).toEqual({ status: 0, out: 'went-on', err: '' });
@@ -1002,7 +1002,7 @@ describe('D07 host preflight (Z00)', () => {
     expect(block).toContain(`awk '$1 == "MemTotal:" { print $2; exit }' /proc/meminfo`);
     expect(block).toContain("df -P -k /var/lib 2>/dev/null | awk 'NR == 2 { print $2 }'");
     expect(block).not.toMatch(/ZEROED_|E2E|\$\{[A-Z_]+:-/);
-    expect(block).toMatch(/^D07_MEM_MIN_KB=1939866 /m);
+    expect(block).toMatch(/^D07_MEM_MIN_KB=1572864 /m);
     expect(block).toMatch(/^D07_DISK_MIN_KB=48828125 /m);
     // After the root, OS and option checks; before the journal, apt, files or users.
     const at = script.indexOf('D07_MEM_MIN_KB=');

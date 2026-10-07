@@ -51,16 +51,17 @@ fi
 
 # D07 preflight (docs/blueprint/ARCH.md D07 and M07): the bot's host is a 2 GB server, which the OS reports as
 # about 1.9 GiB, with a disk of at least 50 GB. Both are read from the host itself (/proc/meminfo, and df on
-# the filesystem that holds /var/lib); no option or variable changes them. RAM counts as reported to one
-# decimal, as `free -h` shows it, so the floor is 1.85 GiB; the disk counts by its size, so a host that
-# already holds data passes a re-run. A full install refuses a host below either, before it changes
+# the filesystem that holds /var/lib); no option or variable changes them. The RAM floor is 1.5 GiB: it refuses
+# the 1 GB server (about 0.96 GiB) by a wide margin, no Vultr plan sits between 1 GB and 2 GB, and the 2 GB
+# server's exact MemTotal is not measured (a crash-dump reservation could lower it). The disk counts by its
+# size, so a host that already holds data passes a re-run. A full install refuses a host below either, before it changes
 # anything; an update only warns, so zeroed-update never rolls a running server back over it.
-D07_MEM_MIN_KB=1939866   # 1.85 GiB in kB, the lowest MemTotal shown as 1.9 GiB
+D07_MEM_MIN_KB=1572864   # 1.5 GiB in kB
 D07_DISK_MIN_KB=48828125 # 50 GB (50 × 10^9 bytes) in kB
 d07_shortfalls() { # MemTotal kB, size kB of the filesystem holding /var/lib: one line per shortfall
   if ! [[ "$1" =~ ^[0-9]{1,12}$ ]]; then echo "its RAM could not be read from /proc/meminfo"
   elif [ "$1" -lt "$D07_MEM_MIN_KB" ]; then
-    awk -v k="$1" 'BEGIN { printf "it has %.2f GiB of RAM; the bot needs a 2 GB server (at least 1.9 GiB reported)\n", k / 1048576 }'
+    awk -v k="$1" 'BEGIN { printf "it has %.2f GiB of RAM; the bot needs a 2 GB server (at least 1.5 GiB reported)\n", k / 1048576 }'
   fi
   if ! [[ "$2" =~ ^[0-9]{1,15}$ ]]; then echo "the size of the disk that holds /var/lib could not be read"
   elif [ "$2" -lt "$D07_DISK_MIN_KB" ]; then

@@ -141,7 +141,7 @@ pin="$(printf '%s' "$line" | sed -n 's#.*raw\.githubusercontent\.com/macdarenz-d
 docker cp "$ROOT/ops/install.sh" "$C:/root/i"
 in_c "cd /root && echo '$hash  i' | sha256sum -c" >"$LOGS/console/hash-check.txt" 2>&1 || fail "hash check in the container"
 pass "README line: ${#line} ASCII characters, pinned to ${pin:0:12} which holds install.sh with the same SHA-256; checked in the container"
-# D07 preflight (Z00), through the same file: a full install on a host below 1.85 GiB of RAM (shown as 1.9 GiB) or
+# D07 preflight (Z00), through the same file: a full install on a host below 1.5 GiB of RAM or
 # with a /var/lib disk under 50 GB stops before it changes anything. This container has the runner's RAM and disk,
 # so the small host is staged with mounts inside it (a 1 GB server's /proc/meminfo, a 25.6 GB tmpfs on /var/lib),
 # never with an option or variable of the installer: it has none.
@@ -149,7 +149,7 @@ in_c "awk '\$1 == \"MemTotal:\" { \$2 = 1004316 } { print }' /proc/meminfo > /ro
 in_c "mount --bind /root/meminfo-1gb /proc/meminfo"
 rc=0; in_c "ZEROED_NO_WAIT=1 bash /root/i" >"$LOGS/console/install-d07-ram.txt" 2>&1 || rc=$?
 in_c "umount /proc/meminfo"
-[ "$rc" = 1 ] && grep -qF "Install stopped: this server is below the bot's host minimum (docs/blueprint/ARCH.md D07): it has 0.96 GiB of RAM; the bot needs a 2 GB server (at least 1.9 GiB reported). Use the 2 GB Vultr server" "$LOGS/console/install-d07-ram.txt" || { cat "$LOGS/console/install-d07-ram.txt"; fail "D07: a 1 GB server was not refused (exit $rc)"; }
+[ "$rc" = 1 ] && grep -qF "Install stopped: this server is below the bot's host minimum (docs/blueprint/ARCH.md D07): it has 0.96 GiB of RAM; the bot needs a 2 GB server (at least 1.5 GiB reported). Use the 2 GB Vultr server" "$LOGS/console/install-d07-ram.txt" || { cat "$LOGS/console/install-d07-ram.txt"; fail "D07: a 1 GB server was not refused (exit $rc)"; }
 in_c "mount -t tmpfs -o size=25000000k zeroed-e2e-small /var/lib"
 rc=0; in_c "ZEROED_NO_WAIT=1 bash /root/i" >"$LOGS/console/install-d07-disk.txt" 2>&1 || rc=$?
 in_c "umount /var/lib"
@@ -663,7 +663,7 @@ grep -q 'Deploy code' "$LOGS/console/update-ssh-open.txt" "$LOGS/console/update-
 in_c "mount --bind /root/meminfo-1gb /proc/meminfo"
 rc=0; in_c "ZEROED_NO_WAIT=1 bash /root/i --update" >"$LOGS/console/update-d07.txt" 2>&1 || rc=$?
 in_c "umount /proc/meminfo"
-[ "$rc" = 0 ] && grep -qF "Warning: this server is below the bot's host minimum (D07): it has 0.96 GiB of RAM; the bot needs a 2 GB server (at least 1.9 GiB reported)." "$LOGS/console/update-d07.txt" && grep -q '^==> Updated: ' "$LOGS/console/update-d07.txt" || { cat "$LOGS/console/update-d07.txt"; fail "D07: --update on a small server did not warn and go through (exit $rc)"; }
+[ "$rc" = 0 ] && grep -qF "Warning: this server is below the bot's host minimum (D07): it has 0.96 GiB of RAM; the bot needs a 2 GB server (at least 1.5 GiB reported)." "$LOGS/console/update-d07.txt" && grep -q '^==> Updated: ' "$LOGS/console/update-d07.txt" || { cat "$LOGS/console/update-d07.txt"; fail "D07: --update on a small server did not warn and go through (exit $rc)"; }
 pass "D07 preflight: --update on a server below the minimum warns and updates"
 in_c "nft list ruleset" | has 'iifname "tailscale0" tcp dport 443 accept' || fail "tailnet HTTPS rule"
 wait_for 30 "worker running after the update" "docker exec $C systemctl is-active zeroed-worker"
