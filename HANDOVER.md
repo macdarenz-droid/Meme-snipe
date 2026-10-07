@@ -75,6 +75,10 @@
   - Fix: **#291** (`claude/preview-wait` @ `fbfc206d`) raises the wait to 3000 s and the release job's timeout to 60 min, with a test tying both to `ci.yml`. Reviewer and red team: `session_01N7FRJ66aZuxPtJtLMC6NPq`.
   - Watch: `check` (about 26.5 min) is close to its own 30-min timeout on the base until #287 raises it to 45.
   - #287 Z01 round 5 at `8dc7fe97`: full suite 7,315/7,315. Delta review and red team round 4 are running.
+- **8 Oct about 7:05 AM:** **#291 merged at `c6c8496f`** (the new base). Review PASS. `check` (26.75 min) and historical-data are green on `fbfc206d`, and the Android build is green. Next: confirm the Android preview `release` run on `c6c8496f` is green, so the base is deployable again. #287 Z01 round 6 is with the builder, now including the `c6c8496f` merge.
+  - Follow-up, ops card (from the #291 red team, L2 and L3, low):
+    - A replaced pending Android release run shows as cancelled, and `commit_verdict` reads cancelled as red, so that one commit is skipped (the newest still deploys).
+    - The newest-commit test in the release job runs before the wait. Repeat it just before publish.
 - **Follow-ups (identified, not yet carded):**
   1. Z0D-2 docs:
      - the replay-mode ruling (`replay_unavailable` treated as assumed-pass-flagged in B-10 runs only, refused in paper and live; `docs/reviews/ZH.md` round 2 ruling 2);
