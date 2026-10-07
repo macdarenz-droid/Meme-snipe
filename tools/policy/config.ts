@@ -37,8 +37,8 @@ export const LOCK_REVIEW_HASH_HEX = 32;
  */
 export const LABEL_EVENT_ENV = 'PR_LABEL_ADDED';
 
-/** Workspace packages whose public surface is frozen (ARCH 18; AGENTS.md file ownership). */
-export const FROZEN_PACKAGES = ['packages/types'];
+/** Workspace packages whose public surface is frozen (ARCH 18; AGENTS.md file ownership; B-M28-01 for @bot/contract). */
+export const FROZEN_PACKAGES = ['packages/types', 'packages/contract'];
 
 /** The one ESLint configuration `pnpm lint` loads (`eslint --config`); every other eslint.config.* is refused. */
 export const ESLINT_CONFIG = 'eslint.config.mjs';

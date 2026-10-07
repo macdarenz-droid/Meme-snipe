@@ -206,6 +206,15 @@ Reviewer: whoever read the dependency diff and added the `deps-reviewed:<hash>` 
 | `why-is-node-running` | Transitive (dev only), required by `vitest` | MIT | supervisor (in the integration branch before Z01) |
 | `word-wrap` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (Z01 brief, 2026-10-07) |
 | `yocto-queue` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (Z01 brief, 2026-10-07) |
+| `zod` | Runtime schema check of every dashboard view model in `@bot/contract` (B-M28-01; UI.md UI-F32), imported by the dashboard and the server; production dependency. 4.6.5, published 2026-09-13 (24 days old on 2026-10-07), no dependencies of its own, no install script (npm registry, read 2026-10-07) | MIT | supervisor (Z02 brief, 2026-10-07) |
+
+## Built-in modules instead of packages
+
+Decisions where a Node built-in replaces a third-party package. Each was checked on the pinned Node release (`.node-version`).
+
+| Need | Decision | Evidence |
+|---|---|---|
+| SQLite library (CA-33, B-M24-01 spike; VERIFY A-45) | Node's built-in `node:sqlite`. No package, no install script, no downloaded binary. | nodejs/node `v22.23.3` `doc/api/sqlite.md` (read 2026-10-07): `DatabaseSync` (v22.5.0), `database.isTransaction` (v22.16.0), `statement.setReadBigInts` (v22.5.0), `sqlite.backup()` (v22.16.0); module "Stability: 1.1 - Active development". `packages/engine/test/m24/sqlite-verify.test.ts` re-checks explicit transactions, WAL, a read-only reader during a write and the online backup on every CI run. Node 22 prints an `ExperimentalWarning` once per process. Write latency on the 2 GB host is a server check (`node packages/engine/test/m24/write-latency.bench.ts <path> 2000`); the D06 switch trigger is p99 > 20 ms. |
 
 ## Age exceptions
 
