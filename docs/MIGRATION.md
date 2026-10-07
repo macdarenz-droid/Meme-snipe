@@ -1,9 +1,10 @@
 # Migration map
 
-How Zeroed moves into the Blueprint (owner decision, 2026-10-07; `CLAUDE.md` "Blueprint"). Analysis only: this document moves, deletes or changes no code. No Zeroed code is deleted before this map marks it **replace** and its replacement passes the same tests and replays (`CLAUDE.md` "Paper and backtest removal").
+How Zeroed moves into the Blueprint (owner decision, 2026-10-07; `CLAUDE.md` "Blueprint"). Analysis only: this document moves, deletes or changes no code. Deletion follows the owner's rule word for word (`CLAUDE.md` "Paper and backtest removal, later only"): nothing paper or backtest is removed until the owner says the app is ready; removal starts only from a reviewed plan that maps every module as paper-only, backtest-only or shared with live; shared code is never deleted; and each removal must replay recorded live data to identical decisions. A **replace** verdict here never permits a deletion by itself.
 
 - Zeroed base: `ccr-14987baf-i6lrsl` at `cd4d7a64`.
-- Blueprint: `docs/blueprint/` (ARCH, SPEC-A, SPEC-B, UI, INTEGRATION, FACTS), copied from `macdarenz-droid/Snipe-solana` `main` at `74e7258`.
+- Blueprint: `docs/blueprint/` (ARCH, SPEC-A, SPEC-B, UI, INTEGRATION, FACTS), copied from `macdarenz-droid/Snipe-solana` `main` at `74e7258` (its head: C11 #2 merged after C12 #3). From 2026-10-07 the Blueprint is edited here (card Z0D, with a fresh reviewer like every card); Snipe-solana is a read-only record.
+- Research: branch `ccr-7fae2302-drz4co`, read at `1baca138` for "Research carried in" and at `84f572ad` for the addendum (unchanged since `72f1793f`).
 
 ## Verdicts
 
@@ -26,7 +27,7 @@ Owner, 2026-10-07: "no bugs migrate". These bind every migration ticket.
 3. **Clean server state.**
    - The host, keys, Tailscale and the deploy gate are reused.
    - The old worker's saved state, ledgers and caches are not reused. The 2 GB host starts from a fresh install.
-   - Nothing runs on the server except the stand-in until the Blueprint's paper gates pass. The one exception the owner agreed (Clashes, Process): the Blueprint's keyless recorder once M1 is reviewed, and its paper engine once M3 starts, each through the deploy gate. No Zeroed worker and nothing that trades.
+   - Nothing runs on the server except the stand-in until the Blueprint's paper gates pass. The one exception the owner agreed (Clashes, Process): the Blueprint's keyless recorder once its cards (Z07–Z10) are reviewed and red-teamed, and its paper engine once M3 starts, each through the deploy gate and after the owner's three-red-team step (`CLAUDE.md` "Pause, fix, red-team, then resume"). No Zeroed worker and nothing that trades.
 4. **Research upgrades.** The verified addendum `research/BLUEPRINT_ADDENDUM.md` on `ccr-7fae2302-drz4co` is adopted item by item into this map and the tickets, each with its acceptance check. Each rejected item gets its reason in `docs/DECISIONS.md`. Until it lands, the input is `research/SUPERVISOR_MESSAGES.md` on that branch.
 
 ### Bugs left behind
@@ -40,12 +41,13 @@ Owner, 2026-10-07: "no bugs migrate". These bind every migration ticket.
 | Risk limits in micro-USD, not lamports | #197 SOL-BOOKS (open, not merged); risk core in `packages/core/src/risk` | M21, M23 | Known bugs, Money |
 | The watchdog cannot sell (no exit takeover) | §5.8: no signer and no key in the watchdog; `/pause` stops entries only | M29 (kill sentinel and standalone exit), D26, D28 | Operations |
 | Red team C critical findings | `claude/redteam-c` @ `5fb491f0` `docs/redteam-c/REPORT.md`; fixes #271, #274 and #279 merged into `cd4d7a64` but not deployed; #280 and #281 still open | M14 (reconnect storm, credit counting), M24 (crash-safe state), M30 (rollback and probation) | Operations |
-| Fake 17.8% paper edge | `ops/host-config.json` shakedown block `ZEROED_PAPER_EDGE_PPM: "178092"`, used by the S0 diagnostic; #268 resumes the worker with it | M09, M12, M13: an edge comes only from gated evidence, never from config | Known bugs, Data and strategy |
+| Fake 17.8% paper edge | `ops/host-config.json` shakedown block `ZEROED_PAPER_EDGE_PPM: "178092"`, used by the S0 diagnostic; #268 (RESUME-WORKER) removes the key from `host-config.json`, but the code path that reads it stays ("Known bugs", B5) | M09, M12, M13: an edge comes only from gated evidence, never from config | Known bugs, Data and strategy |
 | Holdout contamination | `docs/research/edge.md` §6.5.1 on `ccr-7fae2302-drz4co`: the study behind the H8, H9 and H11 thresholds used data inside the sealed holdout [22 Sep, 20 Oct) | M13 (trial registry and holdout), M06 (thresholds), D17 | Known bugs, Data and strategy |
+| Every other open red team A, B and C finding at `cd4d7a64` | `claude/redteam-a` `packages/worker/test/redteam/REPORT.md`, `claude/redteam-b` `redteam-b/REPORT.md`, `claude/redteam-c` `docs/redteam-c/REPORT.md`; `HANDOVER.md` §5 | The module named in each row's bug column | Known bugs, "Open red team findings" (Data and strategy); Operations, "Red team C" and "Open red team A and B findings" |
 
 ## Summary
 
-- **Nothing in Zeroed passes a Blueprint ticket as it stands**, so no module is **keep**. Group A: 63 tickets, 33 adapt, 7 replace, 23 missing. Group B: every module is adapt, replace or missing. Two parts are kept as they are because the Blueprint has nothing as strong: the update gate, and the owner's no-AI-wording guard.
+- **Nothing in Zeroed passes a Blueprint ticket as it stands**, so no Blueprint ticket is **keep**. Group A: 63 tickets (counts in "Group A modules"). Group B: every module is adapt, replace or missing. One owner-rule part is kept as it is: the no-AI-wording guard. The update gate and the deploy tag stay **adapt** until the ops e2e passes on the card that carries them.
 - **Worth carrying (adapt):**
   - quote maths with mainnet golden vectors;
   - the chain decoders;
@@ -55,7 +57,7 @@ Owner, 2026-10-07: "no bugs migrate". These bind every migration ticket.
   - the engine's blind-replay and leak proofs;
   - the statistics library;
   - the installer, the update gate and the watchdog.
-  Each one enters only under "Rules": the Blueprint acceptance tests pass, every bug that touches it has a fail-before test, and a fresh reviewer passes it.
+  Each one enters only under "Rules": the Blueprint acceptance tests pass, every bug that touches it (the bug table and every open red team finding) has a fail-before test, and a fresh reviewer passes it.
 - **Replaced:**
   - the market-data transport: a log stream per pool on metered Helius gives way to 1 Hz polling on free quota (D03, M04, M05);
   - the recorder queue, the bars, the paper port, and the micro-USD performance and gate code (M07, M08, M12, M13);
@@ -63,7 +65,7 @@ Owner, 2026-10-07: "no bugs migrate". These bind every migration ticket.
   - SOL/USD inside the limits (D20);
   - the strategy family (D08);
   - the 1 GB host (D07).
-- **Bugs:** all nine in "Bugs left behind" stay with the old code or arrive with a test that fails on it. The 250 ms slot claim is confirmed (LD-08), and the fix measures the slot time rather than hard-coding a new number.
+- **Bugs:** the nine named bugs and every open red team A, B and C finding stay with the old code or arrive with a test that fails on it. The 250 ms slot claim is confirmed (LD-08), and the fix measures the slot time rather than hard-coding a new number.
 - **Research:** the closest versions of MR-01 lost money, and PM-01's neighbours lost 10.6% and 22.4%. Nothing passes any gate. The Blueprint's own Phase 0 count (M1) is the next honest check, and its likely result is "stop MR-01".
 - **Toolchain:** keep pnpm and Vitest, because the deploy gate and the 1,321 focused tests run on them. Add the Blueprint's dependency policy on top. Snipe-solana's cards are ported with their tests rewritten in Vitest, keeping every assertion.
 - **Old Zeroed code stays in place.** It is not deleted, not run on the server, and not fixed further. Its open fix PRs are parked, because under "no bugs migrate" their findings become tests on the new modules.
@@ -405,21 +407,21 @@ Git shows only that none is finished. Whether any process is still running canno
 
 | ID | P | Ruling | Carried by | Acceptance check |
 |---|---|---|---|---|
-| A01 Recording host | P0 | resolved | Owner, 7 Oct: the 2 GB host (`CLAUDE.md` "Host"); the keyless recorder runs there once M1 is reviewed ("Clashes for the owner", Process). Gate windows count from the first recorded day, so the recorder path (Z07, Z08, Z10) goes first in M1. | A-M07-03's disk-budget test uses the real disk of the 2 GB host (55 GB) |
-| A02 Data sources and terms | P0 | adopt | Z01 (CI check); A-M03-02 (chain backfill on by default, D12); `docs/DECISIONS.md` terms register. Data collected before 2026-10-07 may serve research only, never a Blueprint universe or gate | A CI check fails on any pump.fun frontend host in bot or research code (pinned docs and SDK test oracles excepted) |
-| A03 Credits and fixed costs | P0 | adopt | A-M03-03 (D30 budget from the first enumeration count, not A-43's 50,000; vaults read daily on an unmetered provider, every 6 h only near a tier threshold); A-M14-05 (burn-rate test = bug B4); VM-14 shows only services the bot uses. Helius Developer is a research cost (D29) while the bot stays on D04's free tiers. This settles O7's Helius point unless the owner moves the bot onto it. | Phase 0 reports the pool count and the budget; the burn test fails on the zero-trade pattern |
+| A01 Recording host | P0 | resolved | Owner, 7 Oct: the 2 GB host (`CLAUDE.md` "Host"); the keyless recorder runs there once Z07–Z10 are reviewed and red-teamed ("Clashes for the owner", Process). Gate windows count from the first recorded day, so the recorder path (Z07, Z08, Z10) goes first in M1. | A-M07-03's budget is sized for a 55 GB disk; the installer checks the real disk at install (D07 preflight, Z00) |
+| A02 Data sources and terms | P0 | adopt, widened | Z01 (CI check); A-M03-02 (chain backfill on by default, D12); `docs/DECISIONS.md` terms register. The owner's rule is "no new pump.fun requests", so the check covers every pump.fun-operated host, not only the frontend. Data collected before 2026-10-07 serves research only, never a Blueprint universe or gate: a supervisor tightening of the owner's "keep what we collected", which the owner may lift | A CI check fails on any pump.fun-operated host in bot or research code (pinned IDLs on GitHub and SDK test oracles from npm are not pump.fun hosts) |
+| A03 Credits and fixed costs | P0 | adopt | A-M03-03 (D30 budget from the first enumeration count, not A-43's 50,000; vaults read daily on an unmetered provider, every 6 h only near a tier threshold); A-M14-05 (burn-rate test = bug B4); VM-14 shows only services the bot uses. Whether Helius Developer counts as the bot's fixed cost is the owner's (O7): the bot shares the owner's Developer-plan key, so until the owner rules it counts (stricter: P-9 floor about $1,967, not $334). | Phase 0 reports the pool count and the budget; the burn test fails on the zero-trade pattern |
 | A04 MR-01 evidence | P0 | adopt | Z0D: ARCH §3.2, §3.3 and A-23 say "negative sub-hour proxy evidence; MR-01's 15 s signal untested"; a D08 C-xx says the proxy is not CS-1; no low-volume config; "drops from one large sale" becomes an open point beside C-22 | §3.2, §3.3 and A-23 cite register facts |
 | A05 Phase 0 conditional check | P0 | owner | A-M13-01 (Z09): on the Phase 0 week's 15 s bars, run only MR-01's two registered configs; forward return 5–60 min at 0/1/2-bar delays, and its excess over same-pool, same-hour random entries; kill MR-01 unless the raw return beats the conservative hurdle (A07) and the excess is above zero. It can never pass a config, and the week stays outside `W_B`. Recommendation: yes (it only tightens). | Rule committed before the data; output by horizon and delay with A14 intervals |
-| A06 Owner pre-funding map | P0 | adopt (doc) + owner (item 2) | "Clashes for the owner", Pre-funding gate: item 1 = 10 identical replays; item 4 adds ≥ 95% simulating to P-6; item 6 raises R-1 and P-1 to 300 out-of-sample trades at 80% power; blindness = planted-marker leak test and exact parity. All tighten, so they are adopted. Item 2 (history replay against forward M07 data) goes to the owner. Plan `W_B` for up to about 65 days. | The clash table lists them; the leak test fails on a leaking module |
+| A06 Owner pre-funding map | P0 | adopt + owner (item 2) | All six owner items bind as written, on top of the Blueprint gates ("Ticket order", M2, M3 and M4 exits; pre-funding table under Clashes): item 1 = 10 identical replays; item 3 = 48 h live dry run at ≥ 99% uptime with drills; item 4 adds ≥ 95% simulating to P-6; item 5 = fault injection as a gate on the promoted build; item 6 whole (rules fixed in advance, walk-forward, an untouched holdout, ≥ 300 out-of-sample trades, 95% CI above zero, 80% power, dry-run consistency); blindness = planted-marker leak test and exact parity. Item 2 (history replay against forward M07 data) is the owner's (asked 7 Oct). Plan `W_B` for up to about 65 days. | M2, M3 and M4 exits name each item; the leak test fails on a leaking module |
 | A07 Conservative cost row | P1 | adopt | A-M10-03 (Z09): the conservative row from pessimistic Blueprint parameters; 414,009 lamports only as a sensitivity line; B-2 must pass under it until each parameter is measured; q added to ARCH §2.3 (Z0D); a fixed-cost cap of k% of the stake, with k fixed in the PREREG | M10 carries both rows and reports show both |
 | A08 Quote fixtures | P1 | adopt | A-M01-02/03 (Z07): creator fee read per pool from chain at decision time, for the quote and the ≤ 30 bps filter; CORE-2 goldens (313 curve, 353 PumpSwap) imported under Rules 1; reserve timing encoded (PumpSwap events pre-swap, pump `TradeEvent` post-trade). The `docs/research/quant.md:54,352` fix goes on the research branch | A fixture fails a quote that uses the tier table alone or the vault alone |
 | A09 Drained-pool fixture | P1 | adopt | A-M06-04 and B-M20 (M2): H8 is **replace** (min_depth and `real_vs_effective_quote` in lamports, bug B2); keep the ratio ≥ 0.5/0.6, DEPTHPCT, collapse below 0.4 and the sell clamp | The fixture (17.58 SOL virtual, 0.27 SOL real) is green in M06 and M20: entry rejected, collapse exit fires, proceeds clamped |
-| A10 Slot-to-time | P1 | adopt | Z06 (B-M15-01): one slot-to-time function (live sampling; per-day block-time anchors in history), replacing `slotMsAssumed` and every `SLOT_MS` (bug B1); the 12-, 20- and 8-slot thresholds rechecked at 400, 267 and 200 ms. Z06 lands before A-M10-01 (Z04). | Slots convert within ±1 s of `getBlockTime` anchors on two dates with different slot lengths (recorded fixtures, no live calls); no other slot constant exists |
+| A10 Slot-to-time | P1 | adopt | Z06 (B-M15-01): one slot-to-time function (live sampling; per-day block-time anchors in history), replacing `slotMsAssumed` and every `SLOT_MS` (bug B1); the 12-, 20- and 8-slot thresholds rechecked at 400, 267 and 200 ms. Z06 lands before A-M10-01 (Z04). | Slots convert within ±1 s of `getBlockTime` anchors on two dates with different slot lengths (recorded fixtures, no live calls); no other slot-duration constant dates anything. A named upper bound for timing guards stays allowed where a larger slot time is the stricter choice (`worker/src/run/config.ts:81-84`) |
 | A11 SOL-only limits | P1 | adopt | B-M21 (M2): #197 is replace (as in "Known bugs, Money") | Property test: doubling or halving SOL/USD leaves every limit and the SOL P&L unchanged |
 | A12 Historical studies | P1 | adopt | A-M13-02 and A-M13-05 (M2): exclusions at entry time only, no field observed after the decision, dust and start-missing counts with a −100% line, B2–B4 as regime breaks, a viewed-window ledger; no `affects_returns` parameter from a viewed window without a re-test, and none from the H8, H9 or H11 study (bug B3) | Exclusion table in every report; a lint flags viewed-window overlaps |
 | A13 Vendor bars | P1 | adopt | A-M11-04 (M2): CS-1 decides on the optimistic line; a realistic line beside it; optimistic pass with realistic kill = "fragile"; an unfinished bar's volume is never known | A synthetic vendor series test shows both lines |
 | A14 Gate statistics | P1 | adopt | A-M13-03 (Z04): the more conservative of the stationary bootstrap and a calendar-day cluster t-interval, with DEFF; A-M13-06 (M2): beside B-2 and R-2, the lower bound of (rule − matched random) above zero, 10 random entries per trade matched on pool, hour and 6 h MAD decile | Coverage within ±2 points of 95% on day-correlated simulations |
-| A15 Swap replayer | P1 | adopt, gated | A-M10-05 (M2): `research/execution-audit` validates M10's fill and stop-gap models; it stays a research tool (Python), not bot code. Bulk use waits for the owner's credit approval and the Helius §3.2(xi) answer | A golden replay reproduces `audit_results.json`; cost per pool-day measured first |
+| A15 Swap replayer | P1 | adopt, gated | A-M10-05 (M2): `research/execution-audit` validates M10's fill and stop-gap models; it stays a research tool (Python), not bot code. Bulk use waits for the owner's credit approval and the Helius §3.2(xi) answer | A golden replay reproduces the execution audit's reviewed RESULTS.md at its commit (not the in-progress `audit_results.json`); cost per pool-day measured first |
 | A16 Registration and regimes | P1 | adopt | A-M13-02 (M2): research PREREG discipline (pushed before data and checked with ls-remote, wall, stress costs, seeds, random benchmark, realistic line, amendments only before the first run, fresh reviewer); a declared primary for multi-config screens; L-4 gets B1–B5. A-M01-05 / A-M02-05: an unknown event length demotes the venue | An unknown event length demotes the venue |
 | A17 End state with no edge | P1 | owner; adopt, changed | D08 gets the owner's stop date and spend cap; PerfStats shows hold-SOL and JitoSOL baselines. Changed: after both strategies fail, the bot records only and does **not** paper-trade the failed rules ("No knowingly losing trades"; reason in DECISIONS). | D08 holds the owner's values |
 | A18 Optional early CS-1 | P2 | owner | A-M11-04 from `research/mr01-screen/MR01_SPEC.md` (2cf0c0f7). Needs a CoinGecko Demo key (new provider) and the terms ruling. Recommendation: not now. A05 gives the same kill from our own data within about a week of recording, with no new provider or terms risk. | The PREREG is pushed first |
@@ -666,8 +668,10 @@ Each row is a place where the Blueprint differs from an owner rule in `CLAUDE.md
 | Merge approval | The owner approves each batch; this session's safety check refused approvals the supervisor recorded on its own (AGENTS.md there, 2026-10-07). | The supervisor merges after a fresh review passes and every check is green (AGENTS.md "Supervisor"). | Keep this repo's rule, with the red team added: the supervisor merges after a fresh review, a red team and green checks. If the safety check refuses a merge, the supervisor asks the owner once for that merge. |
 | Batch size | At most three cards at a time; no new card until the current ones are reviewed, red-teamed and merged (owner, 2026-10-06). | One fix task at a time, the owner picks (owner, 2026-10-06 about 8:55 PM). | Build cards for new Blueprint modules run in batches of at most three, in separate packages. Fixes to code the server runs stay one at a time. |
 | Parallel work | Helpers ran inside the supervisor's chat. | One visible session per task; no hidden agents in the supervisor's chat (owner, 2026-10-03). | This repo's rule; already followed for this map. |
-| Server before the paper gates | The Blueprint's M1 exit needs its keyless recorder to run 48 h on the server, and M3's paper gates (P-1 needs at least 21 days of paper) need the paper engine on live data (`docs/blueprint/INTEGRATION.md` milestones). | Owner, 7 Oct: nothing runs on the server except the stand-in until the Blueprint's paper gates pass. | Read as: no Zeroed worker and nothing that trades until the gates allow it. The Blueprint's keyless recorder runs on the server once M1 is reviewed, and the paper engine once M3 starts, each through the deploy gate. **Owner agreed, 7 Oct ("Ok").** |
+| Server before the paper gates | The Blueprint's M1 exit needs its keyless recorder to run 48 h on the server, and M3's paper gates (P-1 needs at least 21 days of paper) need the paper engine on live data (`docs/blueprint/INTEGRATION.md` milestones). | Owner, 7 Oct: nothing runs on the server except the stand-in until the Blueprint's paper gates pass. | Read as: no Zeroed worker and nothing that trades until the gates allow it. The Blueprint's keyless recorder runs on the server once its cards (Z07–Z10) are reviewed and red-teamed, and the paper engine once M3 starts, each through the deploy gate and after the owner's three-red-team step ("Pause, fix, red-team, then resume"). **Owner agreed, 7 Oct ("Ok").** |
 | Models | Lighter steps on `claude-sonnet-5`. | Lighter steps on `claude-sonnet-5-5` at medium effort (owner, 2026-10-04). | This repo's rule. |
+| Worker loop | At most three cards per batch. | At least 3 builders, 2 researchers and 1 red team at a time (owner, 2026-10-07 5:40 PM, "Worker loop"). | Both hold: a batch of three build cards is the 3 builders; 2 research lanes run beside it (Phase 0 preparation, addendum items, the research probes); 1 red team attacks each finished card. |
+| Logo | The Blueprint dashboard's look replaces the app and its themes. | Name Zeroed and the "Slot" mark (owner, 2026-10-03; `docs/BRAND.md`); the owner kept the name on 7 Oct and said nothing about the logo. | The Slot mark stays on the new dashboard; only the owner can change it. |
 
 ## Ticket order
 
@@ -677,57 +681,86 @@ Milestones follow `docs/blueprint/INTEGRATION.md`: a milestone starts only when 
 
 | Card | Tickets | Source | Needs |
 |---|---|---|---|
-| Z00 Host move | B-M30-02 part: D07 preflight (≥ 1.9 GiB RAM, ≥ 50 GB disk) in `ops/host/install-main.sh`; 1 GB wording in `ops/README.md`, `docs/ARCHITECTURE.md`, `docs/DECISIONS.md`, `PROJECT_STATE.md` | adapt (installer) + port (C12 preflight) | the owner's install on the 2 GB host |
-| Z01 Foundation | B-M30-01 (dependency policy on pnpm: `DEPENDENCIES.md` allowlist, age rule, audit, SBOM, lint, and the A02 check against pump.fun frontend hosts; the `check` job keeps its name), B-M19-01 (`@bot/types` 1.0.0) | port (C01), tests in Vitest | — |
-| Z0D Blueprint docs | Addendum A04, A06 (doc), A07 (q in §2.3), A20; D12 backfill on by default (A02); FACTS register entries and C-xx rulings for every adopted item; the terms register | docs only | — |
+| Z00 Host move | Part of B-M30-02 (an M4 ticket), pulled into M0 on purpose for the owner's host move: the D07 preflight (≥ 1.9 GiB RAM, ≥ 50 GB disk) in `ops/host/install-main.sh`; the 1 GB wording in `ops/README.md`, `docs/ARCHITECTURE.md`, `docs/DECISIONS.md`, `PROJECT_STATE.md`. The rest of B-M30-02 stays in M4 | adapt (installer) + port (C12 preflight); ops e2e green on the card's commit | the owner's install on the 2 GB host |
+| Z01 Foundation | B-M30-01 (dependency policy on pnpm: `DEPENDENCIES.md` allowlist, age rule, audit, SBOM, lint, and the A02 check against every pump.fun-operated host; the `check` job keeps its name), B-M19-01 (`@bot/types` 1.0.0) | port (C01), tests in Vitest | — |
+| Z0D Blueprint docs | Addendum A04, A06 (doc), A07 (q in §2.3), A20; D12 backfill on by default (A02); FACTS register entries and C-xx rulings for every adopted item; the terms register; the B-M19-03 and B-M29-04 splits (INTEGRATION "Remaining issues") | docs only | — |
 | Z02 Persistence and contract | B-M24-01, B-M24-02, B-M25-01, B-M27-01, B-M28-01 | port (C02, #5); LEDGER-1 parts only where C02 lacks them | Z01 |
-| Z03 Read path and decoders | A-M14-01, A-M14-02 (≤ 50% of limits, `Retry-After`, stop after 3 failures), A-M02-01..03, A-M01-01 | port (C03, #6, with its SPEC-A rulings, and C11 fixtures); DEC-1's mainnet goldens added as tests | Z01 |
-| Z04 Maths | A-M10-01, A-M13-03 (with A14's cluster interval and DEFF), A-M07-01 | adapt (`core/src/stats`, RNG; B1 test for the latency model), new (A-M07-01 queue) | Z01, Z06 (A10's slot-to-time function) |
-| Z05 UI system | UI-T01..UI-T06 | port (C05, #7); the no-AI-wording guard moved onto it | Z01 |
-| Z06 Tail | B-M15-01 (slot clock and A10's one slot-to-time function: B1), UI-T07 | new; B1 fail-before tests from "Known bugs" | Z02, Z03, Z05 |
+| Z04 Recorder queue and statistics | A-M07-01, A-M13-03 (with A14's cluster interval and DEFF) | new (A-M07-01 queue); adapt (`core/src/stats`) | Z01 |
+| Z05 UI system | UI-T01..UI-T07 | port (C05, #7) for T01–T06; new T07; the no-AI-wording guard moved onto it | Z01 |
+| Z03 Read path and decoders | A-M14-01, A-M14-02 (≤ 50% of limits, `Retry-After`, stop after 3 failures), A-M02-01..03, A-M01-01 | port (C03, #6, with its SPEC-A rulings, and C11 fixtures); DEC-1's mainnet goldens added as tests | Z01, Z02 (A-M14-01 needs B-M25-01 and B-M27-01, SPEC-A line 112) |
+| Z06 Clock and latency | B-M15-01 (slot clock) with A10's one slot-to-time function (bug B1), A-M10-01 (latency model on that function) | new; adapt (RNG); B1 fail-before tests | Z02, Z03 |
 
-Batches: Z00, Z01 and Z0D first; then Z02, Z03, Z05; then Z06, then Z04. M0 exit as in INTEGRATION.
+Every port adds its dependencies only with a `DEPENDENCIES.md` entry and the supervisor's OK (`AGENTS.md` file table): zod (C02); `@solana/kit` (C03, imported only by the venue package for A-M01-01's PDA helpers, checked at C03 head `6ae4d62`); React 19.3, Radix UI, TanStack, Lucide, Playwright and axe-core (C05). The decoders (A-M02-01) and anything the signer imports stay dependency-free (INTEGRATION decision 10).
+
+Batches: Z00, Z01, Z0D; then Z02, Z04, Z05; then Z03; then Z06. M0 exit as in INTEGRATION.
 
 ### M1 Recording and the Phase 0 decision
 
 | Card | Tickets | Source | Needs |
 |---|---|---|---|
-| Z07 Venue and pool | A-M01-02..05, A-M02-04, A-M02-05, A-M04-01..03 | adapt (quote maths and goldens, orientation, snapshot decode; B2 tests); new (1 Hz poller, ring buffer, transport seam) | Z03, Z06 |
-| Z08 Capture | A-M14-03, A-M14-05 (burn-rate projection: B4, A03), A-M03-01, A-M03-03 (A03 budget from the first enumeration count), A-M03-04, A-M07-02, A-M07-03 (A01 disk test on 55 GB) | adapt (PumpPortal client; recorder seal and sha256); new | Z02, Z03, Z04 |
-| Z09 Universe and study | A-M03-02 (A02 backfill on), A-M05-01..03, A-M08-01..03, A-M10-03 (A07 conservative row), A-M13-01 (with A05 if the owner agrees) | new; A-M10-03 adapts Zeroed's lamport cost maths | Z07, Z08 |
-| Z10 Recorder on the server | the keyless recorder process and its unit on the 2 GB host, replacing the stand-in through the deploy gate (owner agreed) | new; Zeroed's update gate, units and upload cycle reused | Z09, Z00 |
+| Z07 Venue and pool | A-M01-02..05 (A08: creator fee read per pool from chain, CORE-2 goldens, reserve timing), A-M02-04, A-M02-05, A-M04-01..03 | adapt (quote maths and goldens, orientation, snapshot decode; B2 tests); new (1 Hz poller, ring buffer, transport seam) | Z03, Z06; **the owner's approval of the Phase 0 read provider** (below) |
+| Z08 Capture | A-M14-03, A-M14-05 (burn-rate projection: B4, A03), A-M03-01 (built, but not run against PumpPortal until the owner rules on §21(h)), A-M03-03 (A03 budget from the first enumeration count), A-M03-04, A-M07-02, A-M07-03 (budget sized for 55 GB; halt-and-alert rule below) | adapt (PumpPortal client; recorder seal and sha256); new | Z02, Z03, Z04; the same provider approval |
+| Z09 Universe and study | A-M03-02 (A02 backfill on), A-M05-01..03, A-M08-01..03, A-M10-03 (A07 conservative row; a size sweep at $5, $20, $100, $1,000 and $10,000 with gross, fixed, percentage fees and impact on min(real, effective) depth shown apart), A-M13-01 (the same size sweep; A05 if the owner agrees) | new; A-M10-03 adapts Zeroed's lamport cost maths | Z07, Z08 |
+| Z10 Recorder on the server | Acceptance: the keyless recorder process and unit replace the stand-in on the 2 GB host through the deploy gate; it serves `/health` and writes `open_intents` = 0 as the update gate expects (`zeroed-update`, `worker-start`); it deploys from `ccr-14987baf-i6lrsl`; unit and memory limits sized and measured for 2 GB (a 75% memory alert); a 48 h soak with the heap bounded; the ops e2e green on the card's commit; no key and no send path; the owner's three-red-team step passes before it is switched on | new; Zeroed's update gate, units and upload cycle reused | Z09, Z00 |
 
-M1 exit: 48 h unattended recording with at least 95% coverage, then the A-24 / A-24b / A-48 report. **Stop MR-01** on the INTEGRATION condition. The recorder runs only on free, unmetered quota with a hard cap (no Helius headroom, owner rule), and every new provider waits for the owner.
+**Phase 0 read provider (owner).** 1 Hz `getMultipleAccounts` is 86,400 calls a day, about 2.59M a month (derived). At ≤ 50% of the documented limits:
+- Alchemy free: 20 CU a call (`limits.ts:46`), about 51.8M CU a month against a 30M plan. It does not fit.
+- Chainstack free: 3M requests a month, so 1.5M at 50%. It fits only at one read every 2 s (about 1.3M).
+- Shyft free: the Blueprint's D04 default for reads. Its fair use is UNVERIFIED (A-07). It is a new provider.
+- Helius Developer: already paid, but "no extra data spend before the bot can trade" forbids its headroom until the owner allows it; the §3.2(xi) question is also open.
+
+**Recording disk rule (supervisor ruling, the stricter reading of the owner's "Recordings upload approved" and "Disk cycle"):**
+- While uploads run, a sealed recording is deleted only after a verified upload.
+- If uploads stop and the disk reaches its cap, recording halts with an alert. It never deletes unuploaded data and never fills the disk.
+- After production, the Blueprint's verified pull replaces the upload, under the same halt rule.
+- The ledger, state and journal are never deleted.
+
+M1 exit: 48 h unattended recording with at least 95% coverage, then the A-24 / A-24b / A-48 report, with the size sweep. **Stop MR-01** on the INTEGRATION condition, or on A05 if the owner agrees.
 
 ### M2 Research and engine core in simulation
 
-Starts only after the M1 exit, and only for a strategy Phase 0 did not stop.
-- **Screening:** A-M06-*, adapting GATE-1 with the B2 and B3 tests.
-- **Simulation:** A-M10-02/04/05, adapting BT-1 with the B1 tests and a sandwich model.
-- **Backtest and replay:** A-M11-*, adapting ENG-1's leak, shift and 10-replay proofs, which the owner rules require.
-- **Statistics and stages:** A-M13-*, adapting the stats; the gates are replaced; the B3 and B5 tests apply.
+Starts only after the M1 exit, and only for a strategy Phase 0 did not stop. The tickets, as INTEGRATION lists them:
+- **Screening:** A-M06-01..06, adapting GATE-1 with the B2 and B3 tests and the open red team gate findings.
+- **Runtime:** A-M09-01; A-M09-02 (MR-01); A-M09-03 (PM-01, an optional track held by D08).
+- **Simulation:** A-M10-02, A-M10-04 and A-M10-05, adapting BT-1 with the B1 tests and a sandwich model.
+- **Backtest and replay:** A-M11-01..05, carrying ENG-1's leak, shift and 10-replay proofs.
+- **Statistics and stages:** A-M13-02, A-M13-04, A-M13-05, A-M13-06 and A-M13-08, adapting the stats; the gates are replaced; the B3 and B5 tests apply.
 - **Engine core:**
-  - B-M19 and B-M20 adapt Zeroed's lifecycle and EXIT-1;
-  - B-M21, B-M22 and B-M23 are built in lamports from their tickets; #197 is not ported;
-  - B-M16-01/02/03/05 adapt TX-1;
-  - B-M15-03 and the A-M09 runtime.
+  - B-M15-03;
+  - B-M16-01, B-M16-02, B-M16-03 and B-M16-05, adapting TX-1;
+  - B-M19-02, B-M19-03 (the simulation and paper part of the split), B-M19-04 and B-M19-05;
+  - B-M20-01..04, adapting the lifecycle and EXIT-1 with the open RB and red team A exit tests;
+  - B-M21-01, B-M21-02, B-M21-03 and B-M21-06;
+  - B-M22-01, B-M22-02 and B-M22-05;
+  - B-M23-01..03.
+  M21, M22 and M23 are built in lamports from their tickets; #197 is not ported.
+- **Botctl:** B-M29-04's `import-run` part (the split).
+- **Reports:** every gate report shows the size sweep.
 
-Exit: `replay_passed`, or the strategy is `failed` and work stops (D08).
+Exit: `replay_passed` plus owner items 1 (10 identical replays), 2 (as the owner rules), 5 (fault injection on the promoted build) and 6 whole (rules fixed in advance, walk-forward, an untouched holdout with ≥ 300 out-of-sample trades, a 95% CI above zero, 80% power). Otherwise the strategy is `failed`, and work stops (D08, A17).
 
 ### M3 Paper
 
-- the paper port A-M12, a replacement;
-- the control plane B-M26;
-- the dashboard B-M28 with UI-T08..T31, replacing `apps/web`. The funding screens and the copy guard are carried (clash O3);
-- books and storage.
+The tickets, as INTEGRATION lists them:
+- A-M02-06, A-M12-01 (the paper port, a replacement, carrying N1 and N2 as tests), A-M12-02 and A-M13-07;
+- B-M15-02, B-M20-05;
+- B-M21-04 and B-M21-05;
+- B-M22-03, B-M23-04 and B-M23-05;
+- B-M24-03, B-M24-04, B-M25-02 and B-M25-03;
+- B-M26-01..05, B-M27-02 and B-M28-02..05;
+- UI-T08..T31, replacing `apps/web`. The funding screens and the copy guard are carried (clash O3), and the Slot mark stays.
 
-The paper engine goes to the server through the deploy gate (owner agreed). Exit: P-1..P-6 and P-9, plus the owner's pre-funding additions where the clash table adopts them.
+The paper engine goes to the server through the deploy gate, after the owner's three-red-team step (owner agreed). Exit: P-1..P-6 and P-9, plus owner items 3 (48 h live dry run, ≥ 99% uptime, restart and disconnect drills), 4 (≥ 95% of paper legs simulate successfully) and 6's dry-run consistency.
 
 ### M4 Live
 
-Blocked. It needs the paper gates, the go-live checklist and the owner. The signer (`packages/signer/**`) is built only here, with the owner's approval.
+Blocked. It needs the paper gates, all six owner pre-funding items passed, the go-live checklist and the owner.
+
+The tickets: A-M14-04; B-M16-04, B-M16-07 and B-M16-10; B-M17-01..08; B-M18-01..05; B-M22-04 and B-M22-06; B-M29-01..04; the rest of B-M30-02, and B-M30-03; the live part of B-M19-03; UI-T32.
+
+The signer (`packages/signer/**`) is built only here, with the owner's approval.
 
 ### Outside the milestones
 
-- **Research:** merge `ccr-7fae2302-drz4co` (owner allowed) as a docs-only PR. Adopt `research/BLUEPRINT_ADDENDUM.md` item by item when it lands (Rules 4).
-- **Zeroed's open PRs** (55, `HANDOVER.md` §3): parked, none merged. Their findings are covered by the bug tests above.
+- **Research:** merge `ccr-7fae2302-drz4co` (owner allowed) as a docs-only PR. The addendum is adopted in "Research addendum".
+- **Zeroed's open PRs** (55, `HANDOVER.md` §3): parked, none merged. Every open finding they fix is listed in the bug columns and red team tables above. A module that migrates carries those findings as fail-before tests.
