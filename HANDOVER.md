@@ -48,6 +48,7 @@ The previous S1 account reached its usage limit about 12:45 PM. The owner made t
 - No host access, no secrets access (owner only), as before.
 
 **Log (Melbourne time, newest first)**
+- 7:14 PM #279 flake explained by the builder's log: two vitest runs on one tree while the builder edited ops scripts (no mutants then). The evidence run for d138ba9 started after the last edit, with no edits during it (6,865 pass). New practice: mutants in a separate worktree, no edits during a full run. Follow-up 2c waits for the #279 merge; the builder believes the restart seed already covers the lost creates span (to prove with a test), while rugs are never seeded after any start.
 - 7:14 PM **#275 risk/exits review on cb1fb7a: CHANGES NEEDED** (01192sk8; 6,808 tests; mutants caught except one gap). The only blocker is RB-11 (the haircut window, in progress).
   - Gap: an entry filling on a carried read is untested. Reconciled with the BT reviewer's F2: S1 ruled carry at LANDING only, never for the decision; the exact test was sent.
   - F3: fees in daily loss at payment; size the fee reserve for the first day's slow retries.
