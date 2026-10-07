@@ -22,3 +22,5 @@ Net = (1 + g)(1 − f_entry)(1 − f_exit) / ((1 + q/R_entry)(1 + q(1 + g)/R_exi
 ## Statistics and verdict (fixed)
 Per line: coins with data, trades, win rate, mean and median net, average win and average loss, the largest multiple, the mean without the top 1% of trades (how much rests on the tail), the 95% interval of the mean by bootstrap over creation days (5,000 resamples), and P(100 trades end positive): 10,000 random batches of 100 trades drawn with replacement, share whose total net is > 0.
 A line is **profitable** only if, at $20: the mean net > 0 with the 95% lower bound > 0, and P(100 trades end positive) ≥ 60%. Otherwise **not supported**. Nine lines are tested; a single pass is reported with that count.
+
+Correction before any price was downloaded: the window holds 28,563 SOL-quoted graduates (29,382 is the count across all quote mints); the 900 are drawn from the 28,563.
