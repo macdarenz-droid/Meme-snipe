@@ -220,8 +220,8 @@ S1's docs live on branch `claude/intelligent-knuth-8utazv`: this file, `PROJECT_
 | New supervisor "SHITCOIN V2" (owner's) | `session_01UQmXJHSgmb2Tj7PK7VDKRz` | Takes over |
 | Owner's RESEARCH | `session_01E7rtEhgN2fF94brNDtps3Z` | Owner's; not S1's |
 | RESEARCH's children: cheap-venue dip, launch-delay, hype test 1, execution audit | `session_01TYj3rkCEeH9iKoHWBrEsgF`, `session_01RqodKpooGK5pMfAZW7CDC1`, `session_013H3pAJT1dVqGu3TJWb9pgU`, `session_0188CrmjrRVgYPVgABAT5AJR` | Owner's. Its Routine `trig_012XYt6hBHZzCnSzaN9xNzNz` fires once on 8 Oct 17:21Z (Fri 9 Oct 4:21 AM Melbourne) |
-| REPLAY-1000 (S1, parked) | `session_013usK4AZU5ZYkrwByaZkwou` | Stopped at virtual 6 Oct 12:59Z. WIP `claude/replay-1000-wip` @ d7783929. Its inputs sit in its own scratchpad and git-ignored data, not pushed. |
-| EDGE-HUNT-U1-B (S1, parked) | `session_017PmchcqWASLkp1x1j26wFb` | Stopped at 11,138/74,703 decoded. WIP `claude/edge-hunt-u1b-wip` @ 1a8e9e9a. Its fallback Routine is gone. |
+| REPLAY-1000 (S1, archived 9:36 PM on the owner's order) | `session_013usK4AZU5ZYkrwByaZkwou` | Stopped at virtual 6 Oct 12:59Z. WIP `claude/replay-1000-wip` @ d7783929. Its inputs sit in its own scratchpad and git-ignored data, not pushed. |
+| EDGE-HUNT-U1-B (S1, archived 9:36 PM on the owner's order) | `session_017PmchcqWASLkp1x1j26wFb` | Stopped at 11,138/74,703 decoded. WIP `claude/edge-hunt-u1b-wip` @ 1a8e9e9a. Its fallback Routine is gone. |
 | Supervisor 2 (app queue) | docs on `claude/s2-docs` @ 2ebd46e6 (`HANDOVER-APP.md`) | S1 has no live view of S2's sessions |
 
 **Archived by S1 at about 9:27 PM** under the archive rule (task ended by the freeze). The work is on the branches named in §3; `unarchive_session` brings any of them back.
@@ -418,6 +418,7 @@ The previous S1 account reached its usage limit about 12:45 PM. The owner made t
 - No host access, no secrets access (owner only), as before.
 
 **Log (Melbourne time, newest first)**
+- 9:36 PM Owner: "When ur done archive all workers". Archived REPLAY-1000 and U1-B as well. All 72 S1-started sessions are now archived (checked with list_sessions); their work is on the WIP branches named above.
 - 9:31 PM **Handover to the Blueprint supervisor written** (owner decision, about 9:25 PM). The new section is at the top of this file; PROJECT_STATE.md was updated too. Freeze kept: no merge or deploy since 9:19 PM. Archived 29 S1 sessions (12 builders, 14 reviewers, 3 red teams); REPLAY-1000 and U1-B are parked with WIP branches. CURVE-TAIL-PROOF's unpushed work was lost to a container reset. The hourly Routine is disabled. S1 stands down after sending this commit's sha to "SHITCOIN V2".
 - 9:18 PM **Red team A round 4, PARALYSIS HUNT** (claude/redteam-a @ 37637052, REPORT "Round 4"; 17 probes fail on cd4d7a64). 12 global blockers, ranked by trades lost:
   - (1) No batch ever lands fresh: readBatch waits on Promise.all, so the slot-lag ≤2 bank ages by the slowest cross-check or sim. Every mode, S0 included. S1 checked the code at cd4d7a64:readers.ts:550–640.
