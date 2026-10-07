@@ -9,6 +9,7 @@
 #  4. The index of the dry-run evidence kept on the host, for the worker API.
 #  0. Tailscale Funnel must be off (the live view is tailnet only); on is an alert and it is turned off.
 #  5. The recording upload's alerts (failed runs, a backlog over a day, files kept back, no report for 3 hours).
+#  6. A standing alert while the bot sits on the stand-in after a rollback.
 # Alerts go to the paired chat once per episode, with a "cleared" line after. Never prints a value.
 set -euo pipefail
 umask 077
@@ -29,6 +30,15 @@ fi
 while IFS='|' read -r what key text; do
   if [ "$what" = on ]; then alert "$key" "$text"; else alert_clear "$key" "$text"; fi
 done < <(printf '%s' "$rec" | record_alerts "$(date +%s)")
+
+# 6. RC-FIXES-2b (red team C R3-6): the bot never sits on the stand-in silently after a rollback. While a rollback put
+# it there and the stand-in still runs, one standing alert; cleared once a release worker runs again.
+if [ -s "$STATE_DIR/standin_after_rollback" ] && [ "$(worker_entry /opt/zeroed/current 2>/dev/null || true)" = "$STUB_ENTRY" ]; then
+  alert standin "ALERT Zeroed host: the bot is on the stand-in worker after a rollback ($(head -c 200 "$STATE_DIR/standin_after_rollback" | tr -d '\n')): no trading and no exits until a new release deploys."
+else
+  rm -f "$STATE_DIR/standin_after_rollback"
+  alert_clear standin "CLEARED Zeroed host: a release worker runs again."
+fi
 
 # 0. Funnel: the worker API must stay on the tailnet. Funnel on for any port is an alert, and it is turned off. Each
 # tailscale call is bounded, so the minute check never hangs on it.
