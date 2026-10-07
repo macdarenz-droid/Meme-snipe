@@ -1,6 +1,6 @@
 # Idea board: every idea, ranked by chance of profit (living document)
 
-Updated 2026-10-08 02:30 AEDT. "Chance" is my judgement of the chance that the idea yields a tradable edge after realistic costs and delay. It is not a measured probability. Order: open ideas from highest to lowest chance, then everything already tested. Evidence is on branch `ccr-7fae2302-drz4co`.
+Updated 2026-10-08 04:30 AEDT. "Chance" is my judgement of the chance that the idea yields a tradable edge after realistic costs and delay. It is not a measured probability. Order: open ideas from highest to lowest chance, then everything already tested. Evidence is on branch `ccr-7fae2302-drz4co`.
 
 ## Open ideas, highest chance first
 
@@ -41,3 +41,22 @@ Updated 2026-10-08 02:30 AEDT. "Chance" is my judgement of the chance that the i
 
 ## Common cause (`docs/research/edge.md` §10)
 Public signals add about a tenth of the round-trip toll. Ideas 1–3 and 6–10 try to use information beyond public price and social data (who sells, who buys, positioning, failed attempts). That is the only route the evidence leaves open.
+
+
+## Reviewer family and error control (2026-10-08)
+Every confirmatory primary from the outside reviewer's ideas, and the connect-the-dots survivors, counts toward one family: k = 12. Each primary is judged at 0.05/12 = 0.0042 (99.58% intervals), with 95% shown beside it. Weighted Bonferroni applies, and Holm only after all 12 report.
+
+| Member | Status |
+|---|---|
+| Absorption entry (+ ABS-S1 secondary, fixed sequence) | running |
+| Squeeze, spot (H1) | registered primary UNRESOLVED (data check failed); new trial H1-T2 running |
+| Squeeze traded on the perp (H1-PERP, P1) | frozen; added to squeeze PREREG if no post-entry price has been read |
+| Liquidation fire-sale (H3) | stage 1 running |
+| D-SPLIT: liquidated, not dying (P2) | frozen in `daily-probe/PREREG.md`; waits for the survivorship-free download |
+| Failed transactions; community crossing; SOLMEMES; audience gains | blocked on the shared tape (owner decisions) |
+| Buybacks | ready; deferred for GeckoTerminal load |
+| Listing (H4) | deferred: too few events |
+| Theme leader (H2) | forward-only |
+| Incentive expiry | dropped: too few events |
+
+Connect-the-dots (`CONNECT_THE_DOTS.md`): 14 combinations, none points to an edge. Three survivors earn cheap, fair tests, judged at about 3–5% each. The chance that at least one is real is about 9–14% (judgement).

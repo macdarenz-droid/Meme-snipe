@@ -55,3 +55,36 @@ A count on the lottery-basket sample (no returns) showed the survivor list misse
 - Daily bars built from the hourly bars (open of the first hour, high and low over the day, close of the last hour, volume summed; days with no hourly bar are missing and carried, as before). Only bars ending by the wall.
 - Same eligibility, signals, holds, costs and periods (discovery entries before 2026-08-16, validation after).
 - Expected to be small (a few dozen trades); reported with its intervals as a check on the survivor-only result, not as a verdict that can make a rule promising on its own.
+
+
+## Amendment: D-SPLIT combination test (registered 2026-10-08, before the full survivorship-free re-run is scored and before any seller data is read)
+
+From `../CONNECT_THE_DOTS.md` (combination S2, 'liquidated, not dying'). It is added as a separate trial. It does not change the registered survivorship-free re-test above, which is scored as written. Family-wide level: 99.58% (0.05/12; see `../IDEA_BOARD.md`, 'Reviewer family'). The block is reproduced verbatim:
+
+#### P2. D-SPLIT (in `research/daily-probe/PREREG.md`)
+- **When:** before the full survivorship-free re-run is scored and before any Helius read. The 65-coin partial check read no seller data (RESULTS lines 32–38).
+- **Data:**
+  - the registered survivorship-free universe (16,367 + 481);
+  - Helius `getTransactionsForAddress` over each signal pool's D−1, plus its last transaction by the end of D−2;
+  - liquidation `stage1.py` seller tests (F11–F17);
+  - a capped 20-signal pilot first (edge §10.4).
+- **Eligibility:** as the daily PREREG; any list filter using life after D−1 ("traded 9+ days", RESULTS line 30) gets a counted bias line.
+- **Signal** (data before D 00:00 UTC):
+  1. r1 ≤ −0.25 (log).
+  2. At least 50% of D−1's gross sell SOL comes from clean full exits (at most 10% left, F13; proceeds, F12). Not counted as clean: the creator (F17), creation-slot buyers, wallets funded one hop from the creator (`funding.py`), bots (F15) and wallets under 7 days old (F16). Transfers count as "unknown", in the denominator only.
+  3. √(x_eff·y) at the end of D−1 is at least 0.80 × its value at the end of D−2 (swaps never lower it). This is the editor's fix: a plain 80% reserve test would reject every fall beyond about 36%.
+  4. Calm: the median eligible r1 is above its trailing 60-day 33rd percentile.
+- **Controls:** the volatility-matched S0 (amendment 2); "dying" signals (failing test 2 through insiders, or test 3); non-calm signals.
+- **Entry:** the pool state at D 00:10 UTC, constant-product fill. **Exit:** the D+2 close.
+- **Costs:** the daily formula plus the exact-exit line (amendment 3), stress −1 point, in SOL.
+- **Sizes:** $5, $20, **$50**, $200, $1,000, $10,000.
+- **Statistics:** 3-day batch t (amendment 1) and a day-block bootstrap, the wider, at 99.58%. Primary: Δ = mean(net − S0vm) over the combo minus the same over D-REV signals failing test 2 or 3, intersection-union with combo net > 0.
+- **Verdict:**
+  - Unresolved: fewer than 100 signals or 30 days, or any coin above 30%.
+  - Killed: net ≤ 0, Δ ≤ 0, or Δ below the median $50 round trip (`research/SHARED_TAPE_PLAN.md` line 183).
+- **Sample:**
+  - June–September on the survivorship-free list (the split is blind there);
+  - confirmation by forward paper or a blind 2026-04-11..05-31 fetch (that range is leaving the 180-day reach);
+  - not the sealed window (1–7 A+B signals a month);
+  - Test 1 coins are too few (3 of 900 random coins were ever eligible), descriptive only.
+
