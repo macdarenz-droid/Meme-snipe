@@ -83,12 +83,15 @@ gpg --batch --quiet --import "$ROOT/ops/host/files/etc/zeroed/github-web-flow.as
 signed=""
 signed2="" # an older GitHub-signed merge: SWITCH-1's broken-release update case deploys "it"
 unsigned=""
-for c in $(git -C "$BARE" rev-list --first-parent --max-count=50 "$BRANCH"); do
+# The whole first-parent history, newest first, until all three are found: every merge since 5 Oct is
+# GitHub-signed, so the newest unsigned commit lies further back than any fixed window (it was 54 back on 8 Oct).
+for c in $(git -C "$BARE" rev-list --first-parent "$BRANCH"); do
   if git -C "$BARE" verify-commit --raw "$c" 2>&1 | grep -q 'VALIDSIG .* 968479A1AFF927E37D1A566BB5690EEEBB952194$'; then
     if [ -z "$signed" ]; then signed="$c"; elif [ -z "$signed2" ]; then signed2="$c"; fi
   else
     [ -n "$unsigned" ] || unsigned="$c"
   fi
+  [ -n "$signed" ] && [ -n "$signed2" ] && [ -n "$unsigned" ] && break
 done
 [ -n "$signed" ] && [ -n "$signed2" ] && [ -n "$unsigned" ] || fail "test repo needs two GitHub-signed and an unsigned commit on $BRANCH"
 git -C "$BARE" tag -f deploy "$signed" >/dev/null
@@ -338,6 +341,8 @@ git -C "$BARE" tag -f deploy "$unsigned" >/dev/null && git -C "$BARE" update-ser
 echo success >"$STATE/checks/$unsigned"
 upd_run && fail "an unsigned commit was deployed"
 [ "$(current)" = "/opt/zeroed/releases/$signed" ] || fail "current moved to an unsigned commit"
+in_c "journalctl -u zeroed-update -o cat --no-pager" >"$LOGS/update-journal.txt"
+grep -qF "Refused deploy tag ${unsigned:0:12}: not signed by GitHub's merge key." "$LOGS/update-journal.txt" || fail "the unsigned commit was not refused for its signature"
 git -C "$BARE" tag -f deploy "$signed" >/dev/null && git -C "$BARE" update-server-info
 pass "update: waits on failed and pending checks, on a red ops end-to-end at ${e2e_signed:0:12} and on open intents; deploys the green GitHub-signed merge ${signed:0:12} with reconcile first; refuses unsigned ${unsigned:0:12}"
 
