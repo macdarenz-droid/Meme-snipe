@@ -159,3 +159,41 @@ Red team, about 9:32 AM. All three round 1 blockers are closed. New or remaining
 48. **p3.** State the order: PREREG pushed → plugin built and pinned on main → preRegister records the source hash → W_B. The CI check uses the registry export, and the doc says where CI gets a fresh export.
 49. **p4.** The class of piled-up changes is the server-derived maximum over every change since the frozen configKey, recorded in the re-freeze audit.
 50. **p5.** One line: with X@1 live, upgrading means demoting to paper first and running X@2's full gates, so live trading pauses.
+
+## Round 4 (head `5d1ec4c4`): reviewer PASS (1 optional MINOR); red team 0 BLOCKER, 4 MAJOR, 5 MINOR
+
+- Reviewer n1: split the ruling 50 paragraph from the "Live only after the gates" sentences.
+- Red team:
+  - Q1: @bot/types runtime code (canonicalJson) is in every pin closure.
+  - Q2: group S lets admission keys and losing raises keep the stage.
+  - Q3: code deploys have no class, and "current gate" fails mid-window.
+  - Q4: owner PREREGs in the public repo publish the owner's edge.
+  - q1–q5: the A3 enable bound to a version; an atomic group S re-freeze; sandbox notes; registry export lag; after the 24 h alert.
+
+### Supervisor rulings for round 5 (8 Oct 2026, 9:45 AM)
+
+51. **Q1.** The pin hash covers only files inside the plugin's own package directory. Every runtime dependency outside it (the features package and the @bot/types runtime modules the plugin imports, as the build computes them) goes into one group P hash in configKey: `runtimeDepsHash()`, which replaces `featuresImplHash()` and is re-frozen through B-9. AC-35 also covers "a @bot/types change under existing pins passes CI".
+52. **Q2.**
+    - (a) Every affectsReturns key in the B-M25-01 schema carries a group tag. A CI test fails any key without one, and until it is tagged the key is treated as group P.
+    - (b) Group S holds only keys that change a trade's size or cost and never which trades happen. Admission keys (ladder, cooldown, entry rate, regime, dump window, max open positions, the per-token rule) are group P.
+    - (c) A group S raise is applied only if the re-run gate statistics, and the size table at the new size, still pass with the CI lower bound above 0. Otherwise the server refuses the A3, at preview or at effective_at, with the blocking reason.
+    - Add the AC: "A3 MAXPOS raise where the size table shows a negative mean at the new size → refused, stage and limit unchanged."
+53. **Q3.** Code deploys get their own rule.
+    - If B-9 is byte-identical and the model outputs are not more favourable, the change is re-frozen by an audited A2 with actor `system`.
+    - Otherwise, every gate already passed is re-run on its own recorded window with the new code. If all still pass, it is re-frozen by an audited A2; if not, the strategy is demoted through B-M26-04 to the last stage whose gate still passes.
+    - An open window continues under the new key from the deploy time, and the reset is recorded.
+    - Add ACs: byte-identical; differing but still passing; differing and failing.
+54. **Q4.** Owner-origin strategies are never published.
+    - An owner PREREG, its evidence and its plugin source live only in a private location. The public repo holds only a commitment: the sha256 of the PREREG and of the plugin closure, plus the private commit sha. `git ls-remote` on the private repo proves the pre-registration time, and CI checks the hashes.
+    - Agent-origin strategies may stay public.
+    - Where the private copy lives, and how the server gets the plugin, is the owner's choice (a new kind of stored data, and a deploy path); it was put to the owner at 9:45 AM.
+    - Until the owner answers, the doc names both options, and no owner strategy is merged anywhere public.
+55. **q1.** The scheduled A3 command is bound to id@version and cancelled at effective_at if the running version differs (B-M26-03 re-validation). Add `version` to VM-03 `strategies[]` in Z-STRAT-UI's contract gap.
+56. **q2.** A group S A1 lowering carries its own re-freeze in the same apply_config, at the same class, so a live strategy never goes dark waiting for a second action.
+57. **q3.** Add the sandbox notes to the card:
+    - features are passed with the bar, or through a synchronous proxy, with the same featuresHash;
+    - before the first A3, B-9 runs on the strategy's own W_B data through the sandbox;
+    - a timing criterion: per-bar IPC against `onbar_warn_ms`.
+58. **q4.** The runner refuses a second preRegister, or a registration, of the same id@version until its export entry is on main.
+59. **q5.** After the 24 h alert, the alert repeats daily, and the supervisor records a decision in DECISIONS within 2 days.
+60. **Reviewer n1.** Split the paragraph.
