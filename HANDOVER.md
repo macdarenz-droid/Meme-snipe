@@ -38,6 +38,32 @@ After a compaction you are effectively a new supervisor. Do these before acting:
 6. **Never:** commit secrets or account details (no Helius account figures, the server IP or the tailnet name); enable live trading or raise a limit; push to main; rewrite others' branches; skip or loosen a test; work around a denial; put a model id in a repo file.
 <!-- AFTER-COMPACT END -->
 
+## STOPPED FOR MIGRATION (owner, Wed 7 Oct 9:19 PM: "Stop all work. Im migrating this project.")
+
+All S1 work is stopped. Each S1 session was interrupted, then told to stop its background jobs, push any uncommitted work to a `-wip` branch (never to its PR branch), and wait for a person. Nothing was merged or deployed after the stop.
+
+- **Bot:** paused on the host stand-in. Deploy tag `171a61ce`; integration HEAD `ccr-14987baf-i6lrsl` = `cd4d7a64`. No money moved; paper only.
+- **Stopped:** S1's ScheduleWakeup loop; the hourly Routine `trig_01WoSui8581C7mb9J1F1KEtq` is **disabled** (not deleted); U1-B's fallback Routine is gone.
+- **Not touched (the owner's own):** session RESEARCH 01E7rtEh with its 4 child tests (cheap-venue dip, launch-delay, hype test 1, execution audit), SHITCOIN V2 01UQmXJH, and their Routine `trig_012XYt6hBHZzCnSzaN9xNzNz` (one-shot, 8 Oct 17:21Z = Fri 9 Oct 4:21 AM Melbourne).
+- **Open fix PRs at the stop** (heads checked with ls-remote at 9:21 PM):
+
+| PR | Branch @ head | Review state | Next |
+|---|---|---|---|
+| #276 A2-GATE-FIXES | a2-gate-fixes @ 58eb1422 | facts/gates PASS on 58eb1422; BT parity PASS on a54cd590 (3 LOWs: R2-2 time basis, backtest cases for USDC/missing day, no marker leak test); no parity run on 58eb1422 | CI check, then merge |
+| #275 EXIT-FILL-FIXES | exit-fill-fixes @ a626e3e4 | delta reviews on 2720ee8 cancelled; a626e3e unverified (suite stopped) | full suite, then delta reviews 01192sk8 + 01PmJncT; RB-16 = option B |
+| #281 RC-FIXES-2c | rc-fixes-2c @ ce258dd6 | CHANGES NEEDED on 1af9484; ce258dd is the fix round, unverified | full suite, then delta review 01QkAcbw |
+| #280 RC-STATE | rc-state @ 5bfc993d; WIP rc-state-wip @ 2315cbf9 | delta FAIL (ExecStartPre 78) | finish the round from the WIP (RB-15, RB-14, round-trip test, C probes) |
+| #277 MEM-FIXES | mem-fixes @ 2f7409b1; WIP mem-fixes-wip @ 78577d32 | PASS on b550541 + round 3 in the WIP | full suite + mutants on the WIP, push, delta 01NykdK5 |
+| #273 A-FACTS-FIXES | a-facts-fixes @ c41046c2 | round 2 pushed, unverified | full suite + mutants, deltas 0127TNr4/01QZc9Ug; then H14-HOLES |
+| #272 LATE-LOG | late-log @ eff442af | round pushed, unverified | full suite, delta 01EgsQ3Z |
+| #197 SOL-BOOKS | sol-books @ fcb6fc7a; WIP sol-books-wip @ 2f9ad229 | round in progress (+RB-17, RB-10, fixtures) | finish from the WIP |
+| #269 POOL-FIRST-READ-2 | pool-first-read-2 @ e225f112 | paused | report |
+| #268 RESUME-WORKER | resume-worker @ 25c4d9bf | last; host-logic.test.ts conflict | after Deploy 1 |
+
+- **Cards not started or barely started:** FRESH-BATCH (WIP fresh-batch-wip @ 54953095: the probes only), REGIME-PARALYSIS, HALTS (DUST-WRITEOFF + R4 items 4/5), PERSIST-PARALYSIS, H14-HOLES, CURVE-TAIL-PROOF, NT-1b. Sources: red team A round 4 (redteam-a @ 37637052), red team B round 4 (redteam-b @ 30aae66b), red team C (redteam-c @ 5fb491f0).
+- **Research:** REPLAY-1000 (replay-1000 @ eac1353f) and U1-B (edge-hunt-u1b @ f4a43cd4) were stopped mid-run; their checkpoints are in their replies below.
+- **S1 slip:** at 9:19 PM S1 made one no-op Workflow call by mistake (0 agents, 0 tokens). No other agent was started after the stop.
+
 ## S1 on the new account (from Tue 6 Oct 4:48 PM)
 
 The previous S1 account reached its usage limit about 12:45 PM. The owner made this session the new S1 ("U will be the new S1 who does all the task"): session_014vg21innqredKbReHHbTU8. Nothing from the old account is reachable from here: its builder and reviewer sessions, the hourly Routine and the S2 merge-check Routine.
