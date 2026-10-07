@@ -106,3 +106,72 @@ Each snapshot is restarted (`start()`, the host's reconcile and start) and drive
   - Two LOW notes: `paper-world.ts:347` reports a buy's slippage cost rounded down, and `account.ts` `soldBasis` can overstate a partial's gain by at most 1 lamport (the whole trade sums exactly at close). Neither affects the wallet.
 - **Item 4 (ladder at $1k and $10k):** `planAttempt` min-out is a ratio of the full-size trigger value. Rung choice is identical at $5, $1k and $10k, fees stay capped lamports, and the liquidation value is quoted at the real size, below spot × quantity. Test: `ladder-scale.test.ts`. The size-related exit risk at scale is RB-5 (a stuck blocked exit), not the ladder.
 - **Item 5 (Melbourne day and week across DST):** `melbourneTime` matches the tz database (Intl `Australia/Melbourne`) every 15 minutes within ±48 h of every change from 2008 to 2040. Day starts are local midnight, change days last 23 h and 25 h, and weeks start Monday 00:00 local. On 4 Oct 2026, a $1.60 loss at 23:59 Sunday (AEST start) counts toward Sunday's R7, and the day resets at Monday 00:00 AEDT (Sun 13:00Z). R9 and R11 use the same functions. Test: `melbourne-dst.test.ts`.
+
+# Round 3 (fix heads: #275 cb1fb7a, #197 fcb6fc7, and a local merge of both = 6a7c920)
+
+**Verdict: 1 new CRITICAL (RB-11, #275) and 1 new HIGH (RB-10, #197 migration). Every round 1–2 finding is closed on its fix head except RB-8, which is closed for start-up but whose end state is held open by RB-11. With no edge, nothing moves money. With an edge (test only), the ledger is exact to the lamport at $5, $100 and $10k, and P&L is in SOL.**
+
+The probes are in `redteam-b/round3/` because they compile only against the fix heads. Copy them into these places on the head named in the folder:
+- `eff/` → #275: `haircut.test.ts` goes to `packages/core/test/redteam-b/`, `redteam-b-crash.test.ts` goes to `packages/worker/test/`.
+- `sb/` → #197: `redteam-b-migrate.test.ts` goes to `packages/worker/test/`.
+- `both/` → the merge of #197 and #275: both files go to `packages/worker/test/`. Run `redteam-b-scale.test.ts` with `RB_SCALE=1|5|500` and, for the failed-entry path, `RB_LAND=80000`.
+
+## Re-verification
+
+| Finding | Head | State | Evidence |
+|---|---|---|---|
+| RB-1 (latched on an idle SOL/USD fall) | #197 fcb6fc7 | closed | `redteam-b-sol-kill.test.ts` RB-1w verbatim passes. Core risk takes no SOL/USD price at all now. |
+| RB-1b (drawdown reset from SOL/USD) | #197 | closed | `redteam-b-sol.test.ts` RB-1b passes |
+| RB-1m (deploy onto an old file) | #197 | closed, but see RB-10 | RB-1m passes; the new probe RB-10a (no trades, dollar marks and NAV peak, −30%) passes |
+| RB-2a/b/c (SOL loss hidden by a USD rise) | #197 | closed | Adapted probes pass. My original core probes fail only because their inputs are typed in dollars. Risk now reads `netPnl: Lamports` and marks in lamports, so the attack on dollar inputs no longer applies. |
+| M2 (NAV peak after a clock step back) | #197 | closed | `account-marks.test.ts` "red team C M2" passes |
+| RB-5 (stuck after blocked retries) | #275 cb1fb7a | closed in the rules, defeated in paper by RB-11 | `exits.test.ts` RB-5a passes (slow retries resume) |
+| N1 (fills on stale reads) | #275 | closed | `#land` fails an attempt whose read is older than `maxQuoteAgeMs` (paper-world.ts, N1 block); confirmed by reading the code, no separate probe |
+| N2 (fill parity) | #275 | closed, with a regression: RB-11 | Congestion, provider-down and the haircut are applied. The haircut has no time window. |
+| RB-8 (start reconcile never finishes) | #275 | closed (start-up) | All 364 images in the RB-8 variant now start (0 exit-3s, was 239). 224 of them end `exit_blocked` because of RB-11. |
+| Round 1–2 passes (RB-3, RB-4, RB-6, RB-7, RB-9) | #275 and the merge | still pass | Same probes, same results |
+
+## CRITICAL
+
+### RB-11 (#275): the repeated-exit haircut has no time window, so a paper exit can never fill after about the 6th send
+- **Where:** `packages/worker/src/run/paper-world.ts`:
+  - `#broadcast` sets `exitRetry` to every earlier exit send on the position, with no time limit;
+  - `#land` applies `exitRetry × exitRetryHaircutPpm` (conservative scenario: 5%) through `executeSellIn`.
+- **Scenario:** at an unchanged pool, on the last rung (min-out 25% under the quote), send 6 onward always fails on slippage. The 5 ladder attempts and 5 fast retries use 10 sends, so every RB-5 slow retry also fails. The position is blocked for ever in paper, and R3 then refuses every entry.
+- **Evidence:**
+  - Unit probe: `round3/eff/haircut.test.ts` RB-11a says "first send that can never fill: 6".
+  - Crash fuzz on cb1fb7a: 224 of 364 restart images end `exit_blocked`, with attempts failing "slippage: out 3277199 below min 3511284" at retry 6 and 8 on the same pool.
+- **Fix:** the announced delta, counting only sends within the last 10 minutes. Slow retries are ≥ 64 min apart, so each one goes out with no haircut. After the delta, re-run RB-11a with the window applied, and run the crash fuzz with a drive longer than the first slow retry (> 64 min).
+
+## HIGH
+
+### RB-10 (#197): migration converts the old dollar day/week marks at the opening price, which gives phantom day/week losses
+- **Where:** `packages/worker/src/run/account.ts` `#open`, lines 262–265: `dayMark`/`weekMark` (dollars) are multiplied up at the opening price.
+- **Why it is wrong:** an old mark holds B + Σ netPnl_usd, and each trade's dollar result was valued at its own SOL/USD price. Converting at the opening price over-states SOL by Σ(netPnl_usd / P_open − netLamports) for trades closed at other prices. Gains made while SOL/USD was high become a phantom loss; losses made then are partly hidden.
+- **Evidence** (`round3/sb/redteam-b-migrate.test.ts`, deploy at SOL/USD −30%):
+  - RB-10b: a +35% B trade at SOL/USD +30% → false `daily_loss`;
+  - RB-10c: a +75% B trade → R9 latched (`weeklyTrippedAtMs` set);
+  - RB-10a (no trades) and RB-10d (a real loss still shows) pass.
+- **Exposure:** only an old file with closed trades. Check the host's account.json before the deploy; with no trades this cannot happen.
+- **Fix:** drop `dayMark`/`weekMark` on migration, as `navPeak` already is. They are re-recorded in lamports at the next marked valuation, and the realized measure still covers the day. Alternatively, rebuild each mark as funded SOL + Σ booked before its boundary.
+
+## Item 2: the money path as the resume runs it (on the local merge of #197 and #275)
+- **RB-12a, no trade, no money:** S0, the diagnostic set on, edge 0, a market that passes the gates. The run covers about 26 h of event time across a Melbourne midnight while SOL/USD steps through −40% to +40% every hour. Results:
+  - wallet unchanged (131,987,133 lamports);
+  - no trade, no entry, no intent, no position;
+  - stray fees and the setup cost unchanged;
+  - R10 and R9 not latched;
+  - the daily limit unchanged (9,999,999 lamports);
+  - the day loss equals the one-time setup rent on its own day and resets to 0 the next day;
+  - the refusal names `expected_net_not_positive`.
+- **RB-13, one trade with an edge (test only):** entry, fill, a 30% fall, the stop exit, then settlement. Checked against the paper chain (paper.json): the wallet equals W0 + exit SOL − entry SOL − every landed attempt's fee, to the lamport, and `netLamports` is exactly that change.
+
+| Size | Spent (lamports) | Received (lamports) | netLamports | Wallet = chain |
+|---|---|---|---|---|
+| $5 trial | 13,333,334 | 9,363,193 | −4,030,141 | 127,956,992 |
+| $100 (×5) | 66,666,667 | 46,797,209 | −19,929,458 | 645,391,008 |
+| $10k (×500) | 6,666,666,667 | 4,458,472,607 | −2,208,254,060 | 64,457,066,406 |
+
+  With an 8% landing rate the entry never fills, which exercises the failed-entry fee path. Its stray fee is booked once, and the wallet equals the chain at ×1 and ×500.
+  - The ×5 and ×500 policies are built in the test only. Their depth limits are opened so the harness's single 245-SOL pool can take the size: this probes the money path, not the gates.
+  - A late fee (an attempt landing after its trade closed) did not occur in these draws and was not forced. PAPER-2's own tests cover it.
