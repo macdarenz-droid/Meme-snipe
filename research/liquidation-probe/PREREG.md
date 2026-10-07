@@ -1,4 +1,4 @@
-<!-- Draft from the advisor-four-hypotheses workflow (2026-10-08). Scouted, designed and adversarially reviewed; every blocking or major issue was fixed in this text. run_now=True. The builder commits the final PREREG.md before any data pull. -->
+<!-- From the advisor-four-hypotheses workflow draft (2026-10-08), scouted, designed and adversarially reviewed. Final text: the draft unchanged above "Pre-data fixes", plus that section. Committed before any data pull. -->
 
 # Portfolio-liquidation probe (H3): rules fixed before any return is computed
 
@@ -219,3 +219,38 @@ Model: claude-opus-5-5. HELIUS_API_KEY comes from the environment only.
 **Runtime.** About 1 builder day, plus about 2.3 h of GeckoTerminal time (plus 55 min if eligibility is regenerated) and 1–2 h of Helius time.
 
 **Likely outcome.** Unresolved at the early check, for 30–80k credits.
+
+## Pre-data fixes (2026-10-08 Melbourne, 2026-10-07 UTC; recorded before any data pull)
+The draft above is the registered design. These points make it executable; none of them uses data. Where a point narrows an ambiguity, the reading chosen is the literal one.
+
+**Inputs**
+- F1. **Eligible days.** No full eligible list with days exists in the repo or in this container. It is regenerated: GeckoTerminal daily bars for the 481 pools of `research/deep-pool-probe/universe.json`, then `research/deep-pool-probe/probe.py eligible` unchanged. U-PS = the regenerated pools with best group A or B. If the regenerated list differs from the committed one (163 pools: A 25, B 16, C 122), the regenerated list is used and the difference is reported. A pool's eligible days are all days in its `days` field (groups A, B or C as of the previous day's close). A candidate bar qualifies only if its start lies in an eligible UTC day.
+- F2. **U-RAY.** The 42 pools of `research/cheap-venue-probe/universe.json` whose `venue` is `Raydium AMM v4` or `Raydium CPMM`. Every day of the period is eligible (that probe had no per-day rule).
+- F3. **Bars.** Downloaded by `fetch.py` in this folder with the same GeckoTerminal requests as the two earlier probes (5-minute, `currency=token`, the meme priced in SOL, `before_timestamp` at the wall), at a 7-second pace with back-off on 429. Raw bars only: "the previous available bar" is the previous bar GeckoTerminal returned (a gap means no trades). SHA-256 per file is recorded.
+- F4. **Period.** A candidate bar starts at or after 2026-07-22T00:00Z and ends at or before the wall (2026-09-21T14:00Z). A large sale with block time after 2026-09-21T13:29:00Z is kept in the table with the reason "after cutoff" and is never an event or a control.
+- F5. **Seeded order.** Key = SHA-256 of the UTF-8 string `H3-v1|<pool>|<bar start unix seconds>`, sorted by hex digest ascending, over U-PS and U-RAY bars pooled.
+
+**Helius**
+- F6. **Method.** `getTransactionsForAddress` (gTFA) is smoke-tested with one call after this commit. If it works it is used as written (full mode, at most 100 transactions per page, ascending; signatures mode with limit 1 for existence checks). If the plan refuses it, the fallback is `getSignaturesForAddress` plus `getTransaction` with identical classification; the switch and its cost are recorded in RESULTS.md before any classification.
+- F7. **Credits.** Own ledger (10 per call, as heli.py), hard stop at 250,000; stage 1 stops at 200,000 including the smoke test and the setup reads. At most 5 requests a second. Read-only methods only.
+- F8. **Pool transactions.** gTFA on the pool address, `status: succeeded`, block time in [bar start, bar end).
+
+**Classifying a sale**
+- F9. **PumpSwap price.** For each transaction, the decoded Buy/Sell events of this pool in order. P_before from the first event's pre-swap effective reserves ((real quote + virtual quote) / base); P_after from the last event's post-swap reserves (post = pre ± base, pre ∓ `quote_amount_fee_adj`, as `research/execution-audit/audit.py`). The transaction sells the meme into the pool if its net base flow into the pool is positive.
+- F10. **Raydium price.** The pool's two vaults are found once per pool: the pool account is read (`getAccountInfo`) and the vaults are the two token accounts, owned by the Raydium authority, whose addresses appear in the pool account's data and in a pool transaction's token balances (one with the meme mint, one with WSOL). Price = WSOL vault / meme vault from `preTokenBalances` and `postTokenBalances`. Accrued protocol, fund or creator fees in the vaults are not subtracted (a stage-1 approximation, reported as a caveat). The transaction sells the meme into the pool if the meme vault rises.
+- F11. **Seller.** Per owner, the sum over that owner's token accounts of the mint's balance, before and after (an account missing after counts 0). Owners excluded as the seller candidate: the pool, the pool's vault authority, the AMM program. The seller is the remaining owner with the largest fall; no fall means "no seller found".
+- F12. **Proceeds.** In the same transaction, the owner's native SOL change (if the owner is an account key) plus its WSOL token change is above 0, or its USDC (`EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v`) or USDT (`Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB`) change is above 0. A rent refund alone can satisfy the SOL test; the raw deltas are kept.
+- F13. **Holdings before (current sale).** The seller-window transactions of step 6 plus the sale itself, in (slot, index) order: the owner's balance of the mint just before the first transaction in which that balance fell with proceeds (F12). Full exit if the balance after the current sale is at most 10% of that.
+- F14. **Other full exits (k).** The same test for every other mint in the seller window: a "sale" is a transaction where the owner's balance of mint m falls and F12 holds; holdings before = the balance before m's first sale in the window; m counts once some sale leaves the balance at most 10% of that. Excluded mints: SOL/WSOL, USDC, USDT, JitoSOL `J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn`, mSOL `mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So`, bSOL `bSo13r4TkiE4KumL71LsHTPpL2euBYLFx6h9HP3piy1`, jupSOL `jupSoLaHXQiZZTSfEWMTRRgpnyFm8f6sZdosWBjx93v`, INF `5oVNBeEEQvYi1cX3ir8Dx5n1P7pdxydbGF2X4TxVusJm` (addresses as known to the builder; an error here only affects LST sales).
+- F15. **Bots.** Counted over the seller window [t − 600 s, the sale): more than 50 successful transactions. Paging stops once 51 are seen.
+- F16. **Wallet age.** "First transaction less than 7 days before t" is tested as: no transaction of the owner (any status) with block time ≤ t − 7 days (gTFA signatures, limit 1). The two are equivalent.
+- F17. **Creator.** Both tests apply to every pool: the PumpSwap `coin_creator` from the decoded swap event (PumpSwap pools), and the fee payer of the mint's oldest transaction (gTFA on the mint, ascending, limit 1). Checked once per mint, only when the mint has a full-exit sale.
+- F18. **Order of checks.** Exclusions and the seller window run only for large sales that are full exits with proceeds (event, two-coin and control candidates). Partial large sales are recorded with the step-4 evidence only.
+
+**Hold time and market state**
+- F19. **Hold-time rule (step 8).** Held at least 1 h means: the owner has an incoming transfer of the mint with block time ≤ t − 3,600 s (gTFA signatures, `tokenTransfer {mint, direction: in}`). Validation on the first 20 full-exit sales: a second query with block time ≤ t, descending, limit 1, plus `getTransaction` on its result. "Correct" = all 20 return a transaction that raises the owner's balance of the mint. All 20 correct → the rule is adopted for events and controls; otherwise it is dropped. The decision is written to the stage-1 table before the early check.
+- F20. **m60.** Equal-weight mean, over all universe pools whose raw bars span both times (closes carried across gaps), of log(close at the last bar end ≤ t / close 60 minutes earlier). Terciles over all stage-1 large sales with an m60 value.
+
+**Gate**
+- F21. **Early check.** "H3 events found" counts H3 events after every exclusion (and the hold-time rule if adopted) and before control matching. "Credits spent" is this probe's ledger total. If fewer than 2,000 candidate bars exist, the early check is replaced by processing all of them.
+- F22. **No outcome before the gate.** Stage 1 reads no bar or reserve after a sale's own transaction. The one exception is step 1's bar screen on the full bar's low; it cannot decide whether a sale is found, because any sale with a 3% own drop leaves the low at or below 0.97 × M.
