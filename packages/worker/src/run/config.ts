@@ -1,6 +1,17 @@
 // The worker's settings from its environment (docs/ARCHITECTURE.md §12.4). Pure: the entry passes the environment in
 // (boot/environment.ts is the one place that reads it). Anything refused exits 2; live is never set from here.
 import { DEFAULT_HEALTH_ADDR, EXIT, REGISTERED_STRATEGIES, isLoopback } from '../../../runner/src/contract.ts';
+import { DISK_PRUNE_FREE_BYTES, MIN_DISK_PRUNE_FREE_BYTES, RECORDER_MAX_BYTES } from './recorder-budget.ts';
+
+/**
+ * FILL-BUDGET (supervisor ruling, 5 Oct, under the owner's decision "max out account 1": no Helius rationing): the default
+ * daily fill budget is 20,000, above the plan's share (seed-start.ts `PLAN_FILL_CREDITS_PER_DAY`, 3,870), which let one restart's
+ * catch-up wave spend the day and left every later coin without a fill. Configuration: ZEROED_FILL_CREDITS_PER_DAY.
+ * Each fill is still capped (TRADES_FILL_CREDITS) and two run at once. Helius has no monthly halt of the worker's own
+ * (`HELIUS_WORKER`): whatever is left here, Helius's own refusal for used-up credits (HELIUS-EXHAUSTED) holds every
+ * non-exit call.
+ */
+export const FILL_CREDITS_PER_DAY = 20_000;
 
 export interface WorkerConfig {
   readonly stateDir: string;
@@ -20,6 +31,11 @@ export interface WorkerConfig {
   /** OPS-SUMMARY: how often the daily summary is posted to the watchdog (ZEROED_SUMMARY_MS, default 30 minutes). */
   readonly summaryMs: number;
   /**
+   * FILL-BUDGET: credits the fills may spend in a UTC day (ZEROED_FILL_CREDITS_PER_DAY, default `FILL_CREDITS_PER_DAY`).
+   * The owner's decision is no Helius rationing; past the account's real end, HELIUS-EXHAUSTED holds non-exit calls.
+   */
+  readonly fillCreditsPerDay: number;
+  /**
    * WATCH-1: how often the position watch looks, and how old a held position's market may get before a snapshot is read
    * through the second path (ZEROED_WATCH_EVERY_MS, ZEROED_WATCH_STALE_MS).
    */
@@ -34,6 +50,12 @@ export interface WorkerConfig {
    * shakedown (supervisor ruling 2026-10-04). A qualifying run takes a strategy BT-2 registers.
    */
   readonly strategy: { readonly name: string; readonly paperEdgePpm: bigint | null; readonly qualifying: boolean; readonly s0Diagnostic: boolean };
+  /**
+   * RECORD-BUDGET: the recordings are kept at or below `maxBytes` (ZEROED_RECORDER_MAX_BYTES, default 8 GiB), and while
+   * the disk has less than `floorBytes` free (ZEROED_DISK_PRUNE_FREE_BYTES, default 3 GiB, at least 2 GiB) the oldest
+   * go until it has the floor plus 0.5 GiB. Absent (a test's hand-made config): the defaults.
+   */
+  readonly recorderBudget?: { readonly maxBytes: number; readonly floorBytes: number };
 }
 
 /**
@@ -111,6 +133,9 @@ export const parseConfig = (
   if (!Number.isSafeInteger(beat) || beat < 1_000) return refuse('refused: ZEROED_HEARTBEAT_MS must be a whole number of at least 1000');
   const summaryMs = env['ZEROED_SUMMARY_MS'] === undefined ? 1_800_000 : Number(env['ZEROED_SUMMARY_MS']);
   if (!Number.isSafeInteger(summaryMs) || summaryMs < 1_000 || summaryMs > 86_400_000) return refuse('refused: ZEROED_SUMMARY_MS must be a whole number from 1000 to 86400000');
+  const fillText = env['ZEROED_FILL_CREDITS_PER_DAY'];
+  const fillCreditsPerDay = fillText === undefined ? FILL_CREDITS_PER_DAY : Number(fillText);
+  if (fillText !== undefined && !/^[0-9]{1,9}$/.test(fillText)) return refuse('refused: ZEROED_FILL_CREDITS_PER_DAY must be a whole number from 0 to 999999999');
   const watchEvery = env['ZEROED_WATCH_EVERY_MS'] === undefined ? 200 : Number(env['ZEROED_WATCH_EVERY_MS']);
   if (!Number.isSafeInteger(watchEvery) || watchEvery < 100) return refuse('refused: ZEROED_WATCH_EVERY_MS must be a whole number of at least 100');
   const watchStale = env['ZEROED_WATCH_STALE_MS'] === undefined ? 500 : Number(env['ZEROED_WATCH_STALE_MS']);
@@ -148,6 +173,12 @@ export const parseConfig = (
   const s0Diagnostic = diagText === 'on';
   if (s0Diagnostic && name !== 'S0') return refuse('refused: ZEROED_S0_DIAGNOSTIC is only for the S0 shakedown');
   if (s0Diagnostic && (qualifying || qualifyingRun !== null)) return refuse('refused: ZEROED_S0_DIAGNOSTIC is never used in a release with a qualifying run');
+  const maxText = env['ZEROED_RECORDER_MAX_BYTES'];
+  // Exact whole numbers only: a value past 2^53 - 1 would be rounded.
+  if (maxText !== undefined && (!/^[1-9][0-9]{0,15}$/.test(maxText) || !Number.isSafeInteger(Number(maxText)))) return refuse(`refused: ZEROED_RECORDER_MAX_BYTES must be a whole number of bytes from 1 to ${Number.MAX_SAFE_INTEGER}`);
+  const floorText = env['ZEROED_DISK_PRUNE_FREE_BYTES'];
+  if (floorText !== undefined && (!/^[0-9]{1,16}$/.test(floorText) || !Number.isSafeInteger(Number(floorText)) || Number(floorText) < MIN_DISK_PRUNE_FREE_BYTES)) return refuse(`refused: ZEROED_DISK_PRUNE_FREE_BYTES must be a whole number of bytes from ${MIN_DISK_PRUNE_FREE_BYTES} (2 GiB) to ${Number.MAX_SAFE_INTEGER}`);
+  const recorderBudget = { maxBytes: maxText === undefined ? RECORDER_MAX_BYTES : Number(maxText), floorBytes: floorText === undefined ? DISK_PRUNE_FREE_BYTES : Number(floorText) };
   const watchdog = env['WATCHDOG_URL'] ?? '';
   if (watchdog !== '' && !/^https:\/\/[^\s/]+(\/[^\s]*)?$/.test(watchdog)) return refuse('refused: WATCHDOG_URL must be an https URL');
   return {
@@ -159,8 +190,9 @@ export const parseConfig = (
       runId: env['ZEROED_RUN_ID'] ?? null, runLabel: env['ZEROED_RUN_LABEL'] ?? null,
       gitSha: env['ZEROED_GIT_SHA'] ?? release() ?? 'unknown',
       watchdogUrl: watchdog === '' ? null : watchdog.replace(/\/$/, ''),
-      heartbeatMs: beat, summaryMs, watch: { everyMs: watchEvery, staleMs: watchStale, latencyMs: watchLatency, verifyMs: watchVerify }, wallet, standIns,
+      heartbeatMs: beat, summaryMs, fillCreditsPerDay, watch: { everyMs: watchEvery, staleMs: watchStale, latencyMs: watchLatency, verifyMs: watchVerify }, wallet, standIns,
       strategy: { name, paperEdgePpm, qualifying, s0Diagnostic },
+      recorderBudget,
     },
   };
 };

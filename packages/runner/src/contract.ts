@@ -37,7 +37,7 @@ export const RESTART_CAUSES: readonly RestartCause[] = ['crash', 'reboot', 'host
  * Evidence in the state dir: kept through a host-loss or chain-rebuild drill (the runner copies them aside and back),
  * because they are the run's record, not the bot's state. Everything else in the state dir is bot state.
  */
-export const EVIDENCE_FILES: readonly string[] = ['journal.jsonl', 'recorder'];
+export const EVIDENCE_FILES: readonly string[] = ['journal.jsonl', 'journal.jsonl.reserve', 'recorder'];
 
 export const STATE_FILES = {
   journal: 'journal.jsonl',
@@ -169,7 +169,17 @@ export type JournalKind =
   /** CREATE-AFTER-RESTART: a shortlisted mint's create looked up from its oldest signature (found or why not, pages, credits). */
   | 'create_lookup'
   /** PERSIST-2: a graduates seed taken or refused (`source`, `accepted`, `added`, `reason`). */
-  | 'graduates_seed';
+  | 'graduates_seed'
+  /**
+   * RECORD-BUDGET: a pass that deleted recordings (`reason` cap or floor, `files`, `bytes`, `boots` removed whole,
+   * `free_bytes` and `recorder_bytes` after).
+   */
+  | 'recorder_prune'
+  /**
+   * FACTS-REREAD: one try at re-reading a candidate's missing stage-1 facts (`mint`, `try`, `why` refused, restored or
+   * fill-budget, `needs`, `landed`).
+   */
+  | 'facts_reread';
 
 /**
  * The fields of a `recovered` line, typed so the worker writes what the runner reads (no cast can hide drift). A

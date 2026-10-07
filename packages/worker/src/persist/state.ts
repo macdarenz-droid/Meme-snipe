@@ -12,13 +12,16 @@
 //   is "not covered", never "clean";
 // - the fill plan tops up only from the saved moment (or an older open gap) to now, within the daily credit budget.
 import { createHash } from 'node:crypto';
-import { closeSync, existsSync, fsyncSync, openSync, readFileSync, readSync, renameSync, rmSync } from 'node:fs';
+import { closeSync, createReadStream, createWriteStream, existsSync, fsyncSync, openSync, readFileSync, readSync, renameSync, rmSync } from 'node:fs';
+import { Writable, Transform } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
+import { createZstdCompress, createZstdDecompress } from 'node:zlib';
 import { fileLines } from '../../../runner/src/lines.ts';
 import { atomicWrite, writeAll, type WriteFn } from '../run/state.ts';
 import type { RugConfig } from '../../../core/src/config/rugs.ts';
 import { DAY_MS } from '../../../core/src/config/time.ts';
 import { compareEvents, compareMoments, type MarketEvent, type Moment } from '../../../core/src/engine/index.ts';
-import { DeployerIndex, RugLabeller, type DeployerIndexState, type RugLabellerState } from '../../../core/src/gates/index.ts';
+import { DeployerIndex, RepeatedRowError, RugLabeller, type DeployerIndexState, type RugLabellerState } from '../../../core/src/gates/index.ts';
 import { SEED_VIA } from '../seed/seed.ts';
 import { parseGraduatesSeed } from '../../../core/src/facts/raw.ts';
 import type { SavedCandidate, SavedGraduates, SavedTail } from '../engine/strategy.ts';
@@ -88,6 +91,51 @@ export type Restored =
 
 // bigint survives JSON as { "$bigint": "123" }; nothing else in the state has that shape.
 const replacer = (_k: string, v: unknown): unknown => (typeof v === 'bigint' ? { $bigint: v.toString() } : v);
+/** SAVE-SPIKE: how deep the payload is written piece by piece: the payload, its tables, and their rows. */
+const PAYLOAD_DEPTH = 3;
+
+/**
+ * SAVE-SPIKE: `JSON.stringify(v, replacer)` emitted in pieces, arrays element by element and objects key by key down to
+ * `depth` levels, each deeper value as one `JSON.stringify`. The text is the same byte for byte: `toJSON`, then the
+ * replacer, on every value; a key whose value is then undefined, a function or a symbol is left out of an object, and
+ * such an element is `null` in an array.
+ */
+export const streamJson = (v: unknown, emit: (text: string) => void, depth: number): void => {
+  const prepared = (key: string, raw: unknown): unknown =>
+    replacer(key, typeof raw === 'object' && raw !== null && typeof (raw as { toJSON?: unknown }).toJSON === 'function' ? (raw as { toJSON: (k: string) => unknown }).toJSON(key) : raw);
+  const omitted = (x: unknown): boolean => x === undefined || typeof x === 'function' || typeof x === 'symbol';
+  // `x` has had toJSON and the replacer applied; returns the text still to emit, '' when it was emitted, null if omitted.
+  const step = (x: unknown, d: number): string | null => {
+    if (omitted(x)) return null;
+    if (d <= 0 || typeof x !== 'object' || x === null) return JSON.stringify(x, replacer);
+    if (Array.isArray(x)) {
+      emit('[');
+      for (let i = 0; i < x.length; i++) {
+        if (i > 0) emit(',');
+        const t = step(prepared(String(i), x[i]), d - 1);
+        if (t !== '') emit(t ?? 'null');
+      }
+      emit(']');
+      return '';
+    }
+    emit('{');
+    let first = true;
+    for (const k of Object.keys(x)) {
+      // Left out exactly as JSON.stringify leaves it out, decided before the key is written.
+      const x2 = prepared(k, (x as Record<string, unknown>)[k]);
+      if (omitted(x2)) continue;
+      emit(`${first ? '' : ','}${JSON.stringify(k)}:`);
+      first = false;
+      const t = step(x2, d - 1);
+      if (t !== '') emit(t!);
+    }
+    emit('}');
+    return '';
+  };
+  const t = step(prepared('', v), depth);
+  if (t !== '' && t !== null) emit(t);
+};
+
 const reviver = (_k: string, v: unknown): unknown => {
   if (typeof v === 'object' && v !== null && !Array.isArray(v)) {
     const o = v as Record<string, unknown>;
@@ -192,21 +240,28 @@ export const saveState = (path: string, s: SavedState, o: { readonly mintRows?: 
     out = [];
     bytes = 0;
   };
-  const line = (text: string, hashed: boolean): void => {
-    const l = `${text}\n`;
-    if (hashed) {
-      hash.update(l);
-      lines++;
-    }
-    out.push(l);
-    bytes += l.length;
+  // SAVE-SPIKE: a line goes out in pieces, hashed as it goes (the same digest as the whole line), written in batches of
+  // about 1 MiB: no piece and no batch is the whole payload.
+  let hashed = false;
+  const piece = (text: string): void => {
+    if (hashed) hash.update(text);
+    out.push(text);
+    bytes += text.length;
     if (bytes >= 1 << 20) flush();
   };
+  const line = (write: (emit: (text: string) => void) => void, isHashed: boolean): void => {
+    hashed = isHashed;
+    write(piece);
+    piece('\n');
+    if (isHashed) lines++;
+  };
   try {
-    line(JSON.stringify({ format: STATE_FORMAT, version: STATE_VERSION }), false);
-    line(JSON.stringify({ ...s, index: { ...s.index, mints: [] } }, replacer), true);
-    for (const r of rows) line(JSON.stringify(r), true);
-    line(JSON.stringify({ sha256: hash.digest('hex'), lines }), false);
+    line((emit) => emit(JSON.stringify({ format: STATE_FORMAT, version: STATE_VERSION })), false);
+    // SAVE-SPIKE: the payload, element by element (`streamJson`): byte for byte the one-string JSON.stringify, never
+    // held whole. At live sizes (41k coverage facts) the one string was about 23 MB, made twice per save.
+    line((emit) => streamJson({ ...s, index: { ...s.index, mints: [] } }, emit, PAYLOAD_DEPTH), true);
+    for (const r of rows) line((emit) => emit(JSON.stringify(r)), true);
+    line((emit) => emit(JSON.stringify({ sha256: hash.digest('hex'), lines })), false);
     flush();
     fsyncSync(fd);
   } catch (e) {
@@ -229,6 +284,63 @@ export const fileSha256 = (path: string): string => {
     closeSync(fd);
   }
   return hash.digest('hex');
+};
+
+/** A file's size and sha256. */
+export interface FileHash {
+  readonly bytes: number;
+  readonly sha256: string;
+}
+
+/** A pass-through stream that hashes and counts what goes by. */
+const hashing = (): { readonly stream: Transform; readonly result: () => FileHash } => {
+  const hash = createHash('sha256');
+  let bytes = 0;
+  const stream = new Transform({
+    transform(chunk: Buffer, _enc, done) {
+      hash.update(chunk);
+      bytes += chunk.length;
+      done(null, chunk);
+    },
+  });
+  return { stream, result: () => ({ bytes, sha256: hash.digest('hex') }) };
+};
+
+const discard = (): Writable => new Writable({ write: (_c, _e, done) => done() });
+
+/** The size and sha256 of a zstd file's content, streamed (never held whole). */
+export const zstdContentHash = async (zst: string): Promise<FileHash> => {
+  const h = hashing();
+  await pipeline(createReadStream(zst), createZstdDecompress(), h.stream, discard());
+  return h.result();
+};
+
+/**
+ * G4c: a recording's saved-state copy, packed to `<path>.zst` by streaming (memory stays flat), flushed, and checked to
+ * decompress to exactly the plain bytes (`content`) before the plain copy is removed. On any failure the plain copy
+ * stays and the partial `.zst` is removed. Returns the packed file's own size and hash, and its content's.
+ */
+export const packFile = async (path: string, content: FileHash): Promise<{ readonly packed: FileHash; readonly content: FileHash }> => {
+  const zst = `${path}.zst`;
+  const tmp = `${zst}.tmp`;
+  try {
+    const h = hashing();
+    await pipeline(createReadStream(path), createZstdCompress(), h.stream, createWriteStream(tmp, { mode: 0o600 }));
+    const fd = openSync(tmp, 'r');
+    try {
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    const back = await zstdContentHash(tmp);
+    if (back.sha256 !== content.sha256 || back.bytes !== content.bytes) throw new Error(`packed copy decompresses to sha256 ${back.sha256} (${back.bytes} bytes), not ${content.sha256} (${content.bytes} bytes)`);
+    renameSync(tmp, zst);
+    rmSync(path);
+    return { packed: h.result(), content };
+  } catch (e) {
+    rmSync(tmp, { force: true });
+    throw e;
+  }
 };
 
 type Obj = Readonly<Record<string, unknown>>;
@@ -325,10 +437,29 @@ export const loadState = (path: string, rugs: RugConfig, continuing: (stream: st
     if (s.graduates !== undefined) graduatesProblem(s.graduates, asOf, false);
     if (s.candidates !== undefined) candidatesProblem(s.candidates, asOf, false);
     if (s.tails !== undefined) tailsProblem(s.tails);
-    const index = streamed === null ? DeployerIndex.restore(s.index) : DeployerIndex.restore(s.index, rows(streamed));
-    if (streamed !== null) {
-      const t = streamed.trailer === null ? null : JSON.parse(streamed.trailer) as unknown;
-      if (!isObj(t) || t['sha256'] !== streamed.hash.digest('hex') || t['lines'] !== streamed.count) throw new RangeError('saved state checksum does not match, or the file is cut');
+    const checkTrailer = (st: NonNullable<typeof streamed>): void => {
+      const t = st.trailer === null ? null : JSON.parse(st.trailer) as unknown;
+      if (!isObj(t) || t['sha256'] !== st.hash.digest('hex') || t['lines'] !== st.count) throw new RangeError('saved state checksum does not match, or the file is cut');
+    };
+    let index: DeployerIndex;
+    if (streamed === null) index = DeployerIndex.restore(s.index);
+    else {
+      const it = rows(streamed);
+      // No `return` on what the restore iterates: its `for…of` would close the generator on a throw, and the drain
+      // below would then hash nothing (persist review).
+      const once: Iterable<unknown> = { [Symbol.iterator]: () => ({ next: () => it.next() }) };
+      try {
+        index = DeployerIndex.restore(s.index, once);
+      } catch (e) {
+        // DEPLOYER-COMPACT: a repeated creator row or mint is what a cut or doubled file looks like mid-stream: the rest
+        // is read for the checksum, whose failure is the reason, as before; an intact file that repeats one is refused
+        // for that.
+        if (!(e instanceof RepeatedRowError)) throw e;
+        for (let r = it.next(); r.done !== true; r = it.next()) { /* hashed by `rows` */ }
+        checkTrailer(streamed);
+        throw e;
+      }
+      checkTrailer(streamed);
     }
     const labeller = RugLabeller.restore(rugs, s.labeller, asOf);
     const coverage = [...s.coverage].sort(compareEvents);

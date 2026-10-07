@@ -171,3 +171,46 @@ e2e_commit() {
     fi
   done
 }
+
+# prunable_releases ROOT CURRENT PREV TAG_COMMIT: release folders under ROOT that may go (HOST-CAPS), one per line.
+# Kept: the current release, the one before it (the roll-back target), the deploy tag's commit, the 3 newest others
+# and anything that is not a 40-hex commit folder (half-written *.new and strays are never listed). No age rule.
+# Fails closed: when CURRENT is not a folder under ROOT, nothing goes.
+# Each release is a full copy of the repository (about 68 MB), and every update adds one.
+prunable_releases() {
+  local root="${1%/}" cur="$2" prev="$3" tag="$4" d i=0
+  [ -n "$cur" ] && [ -d "$cur" ] && [ "$(dirname "$cur")" = "$root" ] || return 0
+  while IFS= read -r d; do
+    [[ "${d##*/}" =~ ^[0-9a-f]{40}$ ]] || continue
+    [ "$d" != "$cur" ] && [ "$d" != "$prev" ] && [ "$d" != "$root/$tag" ] || continue
+    i=$((i + 1))
+    [ "$i" -gt 3 ] || continue
+    printf '%s\n' "$d"
+  done < <(find "$root" -mindepth 1 -maxdepth 1 -type d ! -name '*.new' -printf '%T@ %p\n' 2>/dev/null | LC_ALL=C sort -rn | cut -d' ' -f2-)
+}
+
+# record_alerts NOW: reads the recording uploader's status.json (RECORD-UPLOAD; it runs as the worker's user, so its
+# alerts are raised here) on stdin and prints one "on|KEY|TEXT" or "off|KEY|TEXT" line per alert: 3 failed runs in a
+# row, recordings waiting longer than a day, files kept back from upload, no status for 3 hours. {"enabled":false}
+# (the switch is off) clears them all; a status not written yet (before the first run) raises none.
+record_alerts() {
+  jq -r --argjson now "$1" '
+    def clean: tostring | gsub("[\r\n|]"; " ") | .[0:300];
+    (.enabled != false and (.at | type) == "number") as $on
+    | (((.failed_runs // 0) - (if .running == true then 1 else 0 end))) as $failed
+    | (.kept // []) as $kept
+    | [
+        (if $on and $failed >= 3
+         then "on|record-upload-failed|ALERT Zeroed host: the recording upload failed \($failed) runs in a row (last: \(.last_error // "unknown" | clean)). Recordings stay on the server until it works again."
+         else "off|record-upload-failed|CLEARED Zeroed host: the recording upload works again." end),
+        (if $on and (.backlog_age_s // 0) > 86400
+         then "on|record-upload-backlog|ALERT Zeroed host: recordings older than a day are still waiting to upload (\(.pending // 0) files). Their disk space is not freed until they are up."
+         else "off|record-upload-backlog|CLEARED Zeroed host: no recording waits longer than a day to upload." end),
+        (if $on and ($kept | length) > 0
+         then "on|record-upload-kept|ALERT Zeroed host: \($kept | length) recording file(s) kept on the server, not uploaded: \([$kept[0:5][] | "\(.key // "?") (\(.why // "?"))"] | join(", ") | clean)."
+         else "off|record-upload-kept|CLEARED Zeroed host: no recording file is kept back from upload." end),
+        (if $on and ($now - (.at / 1000)) > 10800
+         then "on|record-upload-stale|ALERT Zeroed host: the recording upload has not reported for over 3 hours."
+         else "off|record-upload-stale|CLEARED Zeroed host: the recording upload reports again." end)
+      ] | .[]' 2>/dev/null || true
+}

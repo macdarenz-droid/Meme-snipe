@@ -82,6 +82,15 @@ export class CreditBook {
   }
 }
 
+/**
+ * HELIUS-EXHAUSTED (owner, 5 Oct): the worker's own count never stops Helius; Helius's own answer does ("max usage
+ * reached", a 429 the scheduler holds and re-checks). So the worker's Helius scheduler has no monthly halt: its count
+ * runs from the UTC month and cannot see what else the account spent, so it could neither stop in time nor know the
+ * account's end. The count is still kept (credits.json) and reported.
+ */
+const { budget: _heliusMonthly, ...HELIUS_NO_HALT } = HELIUS_FREE;
+export const HELIUS_WORKER: SchedulerSpec = HELIUS_NO_HALT;
+
 export interface LiveProviderOptions {
   /**
    * Full pump and PumpSwap trade log streams with rug coverage (`coverage:rugs:*`). Off on the free plans (about 14M
@@ -102,32 +111,65 @@ export interface LiveProviderOptions {
 /** S0-ZERO: credits one in-run fill of a pool's trade gap may spend (a candidate's catch-up from its migration is a few transactions). */
 export const TRADES_FILL_CREDITS = 500;
 
+/** STEP-B: in-run fills that may read at once; more wait their turn (oldest first), so a boot's catch-up stays flat. */
+export const TRADES_FILLS_IN_FLIGHT = 2;
+/** MEM-PROBE: trade fills reading now and waiting for a slot, over every fill limiter in this process (counts only). */
+export const FILLS = { active: 0, waiting: 0 };
+
 /**
  * S0-ZERO: FILL-2's in-run fill for the pool watches (a candidate's catch-up from its migration, any reconnect gap).
  * Each fill may spend at most `TRADES_FILL_CREDITS` and never more than the daily budget has left (none left: no call,
- * the gap stays lossy); what it spent is booked to the budget, on top of the provider's own credit metering, and the
- * fill is journaled as `trades_fill` so the shakedown measures its size and credits.
+ * the gap stays lossy); the fill is journaled as `trades_fill` so the shakedown measures its size and credits.
+ * STEP-B: the cap is booked to the budget before the fill reads and what it did not use is given back after (as the
+ * seed and restart reads do), so fills running together never spend past the budget and a death mid-fill keeps the
+ * charge; at most `TRADES_FILLS_IN_FLIGHT` fills read at once.
  */
 export const tradesFill = (o: {
   readonly feed: Parameters<typeof ingestingFill>[0]['feed'];
   readonly rpc: Parameters<typeof ingestingFill>[0]['rpc'];
   readonly timers: Timers;
-  readonly budget: Pick<DailyBudget, 'remaining' | 'spend'>;
+  readonly budget: Pick<DailyBudget, 'remaining' | 'spend' | 'refund'>;
   readonly pools: SourcesContext['pools'];
   readonly journal?: NonNullable<SourcesContext['journal']>;
-}) => ingestingFill({
-  feed: o.feed, rpc: o.rpc, timers: o.timers, provider: 'helius',
-  creditCap: () => Math.min(TRADES_FILL_CREDITS, o.budget.remaining(o.timers.now())),
-  streamOf: tradesStream,
-  kindOf: (address) => (o.pools().get(address)?.held === true ? 'position' : 'candidate'),
-  onReport: (f: GapFill) => {
-    o.budget.spend(f.report.creditsUsed, o.timers.now());
-    o.journal?.('trades_fill', {
-      pool: f.gap.pool, mint: o.pools().get(f.gap.pool)?.mint ?? null, kind: f.gap.kind, from_slot: f.gap.fromSlot, until_slot: f.gap.untilSlot,
-      complete: f.complete, transactions: f.records.length, credits: f.report.creditsUsed, calls: f.report.calls, stopped_by: f.report.stoppedBy, latency_ms: f.report.latencyMs,
-    });
-  },
-});
+  readonly inFlight?: number;
+}) => {
+  let active = 0;
+  const waiting: (() => void)[] = [];
+  return async (gap: Parameters<ReturnType<typeof ingestingFill>>[0]): Promise<boolean> => {
+    if (active >= (o.inFlight ?? TRADES_FILLS_IN_FLIGHT)) {
+      FILLS.waiting++;
+      await new Promise<void>((go) => waiting.push(go));
+      FILLS.waiting--;
+    }
+    active++;
+    FILLS.active++;
+    try {
+      const cap = Math.min(TRADES_FILL_CREDITS, o.budget.remaining(o.timers.now()));
+      if (cap > 0) o.budget.spend(cap, o.timers.now());
+      let used = 0;
+      const ok = await ingestingFill({
+        feed: o.feed, rpc: o.rpc, timers: o.timers, provider: 'helius',
+        creditCap: () => cap,
+        streamOf: tradesStream,
+        kindOf: (address) => (o.pools().get(address)?.held === true ? 'position' : 'candidate'),
+        onReport: (f: GapFill) => {
+          used = f.report.creditsUsed;
+          o.journal?.('trades_fill', {
+            pool: f.gap.pool, mint: o.pools().get(f.gap.pool)?.mint ?? null, kind: f.gap.kind, from_slot: f.gap.fromSlot, until_slot: f.gap.untilSlot,
+            complete: f.complete, transactions: f.records.length, credits: f.report.creditsUsed, calls: f.report.calls, stopped_by: f.report.stoppedBy, latency_ms: f.report.latencyMs,
+          });
+        },
+      })(gap);
+      // A fill that threw keeps its whole reservation (fail safe on spend: what it read is not known).
+      if (cap > 0) o.budget.refund(Math.max(0, cap - used), o.timers.now());
+      return ok;
+    } finally {
+      active--;
+      FILLS.active--;
+      waiting.shift()?.();
+    }
+  };
+};
 
 /**
  * CREATE-AFTER-RESTART: the most one create lookup may spend: pages of the mint's signatures (1,000 each, newest first)
@@ -211,11 +253,12 @@ export class LiveProviders {
   readonly jupiter: Scheduler;
   readonly rugcheck: Scheduler;
   #fetcher: TxFetcher | null = null;
+  #stream: RpcStream | null = null;
   /** The worker's feed, once `feeds` has run: where a create lookup puts the create it verified. */
   #feed: SourcesContext['feed'] | null = null;
 
   constructor(o: LiveProviderOptions) {
-    this.helius = o.credits.scheduler(HELIUS_FREE);
+    this.helius = o.credits.scheduler(HELIUS_WORKER);
     this.alchemy = o.credits.scheduler(ALCHEMY_FREE);
     this.jupiter = o.credits.scheduler(JUPITER_FREE);
     this.rugcheck = o.credits.scheduler(RUGCHECK_FREE);
@@ -240,10 +283,16 @@ export class LiveProviders {
       const cls = st.creditsByClass.map((c) => Math.ceil(c)) as [number, number, number, number];
       return {
         provider: st.provider, credits_used: cls[0] + cls[1] + cls[2] + cls[3], credits_by_class: cls,
-        monthly_credits: s.spec.budget?.monthlyCredits ?? null, granted: st.granted, shed: st.shed, halted: st.halted,
+        // The plan's published credits, as the run contract checks them (Helius's too, though its scheduler has no halt).
+        monthly_credits: (s === this.helius ? HELIUS_FREE.budget : s.spec.budget)?.monthlyCredits ?? null, granted: st.granted, shed: st.shed, halted: st.halted,
       };
     });
     return { quota, lookups: { counts: [...this.#lookups] } };
+  }
+
+  /** F6 (MEM-PROBE): notifications the Helius stream holds now across its watches' catch-ups (0 before the feeds). */
+  heldNotices(): number {
+    return this.#stream?.heldNotices ?? 0;
   }
 
   /** The feeds, built on the worker's live Feed. */
@@ -260,6 +309,7 @@ export class LiveProviders {
       provider: 'helius', url: () => heliusWsUrl(o.secrets), factory: o.factory, timers, feed, scheduler: this.helius,
       creditsPerByte: HELIUS_WS_CREDITS_PER_BYTE, creditsPerConnection: HELIUS_WS_CREDITS_PER_CONNECTION, http: hRpc, fetcher, socket, backfillLimit: 100,
     });
+    this.#stream = helius;
     helius.watchSlots(P1);
     helius.watchLogs(PUMP_CREATE_AUTHORITY, { priority: P3, decodeLogs: true, coverage: 'creates' });
     helius.watchLogs(PUMP_MIGRATION_AUTHORITY, { priority: P2, decodeLogs: true, fetch: P2 });
@@ -273,7 +323,7 @@ export class LiveProviders {
     const fill = budget === undefined ? undefined : tradesFill({ feed, rpc: hRpc, timers, budget, pools: ctx.pools, ...(ctx.journal === undefined ? {} : { journal: ctx.journal }) });
     const pools = new PoolWatch({ stream: helius, timers, pools: ctx.pools, everyMs: 2_000, ...(fill === undefined ? {} : { fill }) });
     const pumpportal = new PumpPortalSource({ factory: o.factory, timers, feed, fetcher, migrationFetch: P3 });
-    const sol = new CoinbaseSolPrice({ factory: o.factory, timers, feed, key: SOL_PRICE_KEY });
+    const sol = new CoinbaseSolPrice({ factory: o.factory, timers, feed, key: SOL_PRICE_KEY, onAlive: (at) => ctx.alive?.('coinbase', at) });
     return [
       {
         name: 'helius-ws', critical: true, sources: ['helius'],
@@ -312,25 +362,29 @@ export class LiveProviders {
     return this.#fetcher === null ? null : this.#fetcher.fetch(signature, P3);
   }
 
-  /** CREATE-AFTER-RESTART: a shortlisted mint's create looked up from its oldest signature, under the fills' budget. */
-  async findCreate(mint: string, timers: Timers): Promise<CreateLookup> {
+  /**
+   * CREATE-AFTER-RESTART: a shortlisted mint's create looked up from its oldest signature, under the fills' budget, or
+   * under `budget` when one is given (FACTS-REREAD's own, which the boot seed cannot empty).
+   */
+  async findCreate(mint: string, timers: Timers, budget?: Pick<DailyBudget, 'remaining' | 'spend' | 'refund'>): Promise<CreateLookup> {
     const ingest = (record: TransactionRecord): boolean => {
       const feed = this.#feed;
       if (feed === null) return false;
       feed.ingest('helius', { type: 'tx', record }, { receivedAt: timers.now(), lookup: true });
       return true;
     };
-    return findCreate(mint, { rpc: this.seedRpc(), ingest, timers, budget: this.#o.fillBudget });
+    return findCreate(mint, { rpc: this.seedRpc(), ingest, timers, budget: budget ?? this.#o.fillBudget });
   }
 
   /**
-   * A transaction at confirmed (P2), put on the feed; true when found and readable. One DEC-1 cannot decode reads as
-   * not found, so a cut trade log it was fetched for still becomes a rugs gap (a decode failure is a fact gap).
+   * A transaction at confirmed (P2 unless asked lower), put on the feed; true when found and readable. One DEC-1 cannot
+   * decode reads as not found, so a cut trade log it was fetched for still becomes a rugs gap (a decode failure is a
+   * fact gap). TRADE-GAP-HEAL's pool-trade holes ask at P3, below every position and exit read.
    */
-  async fetchTx(signature: string): Promise<boolean> {
+  async fetchTx(signature: string, priority: typeof P2 | typeof P3 = P2): Promise<boolean> {
     if (this.#fetcher === null) return false;
     try {
-      const found = await this.#fetcher.fetch(signature, P2);
+      const found = await this.#fetcher.fetch(signature, priority);
       return found !== null && found.undecodable !== true;
     } catch {
       return false;

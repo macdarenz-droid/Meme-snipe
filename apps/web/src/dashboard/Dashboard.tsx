@@ -6,7 +6,7 @@ import { schemaFor } from '../api/schemas.ts';
 import { useEndpoint, type Loaded } from '../api/useEndpoint.ts';
 import { Sheet } from '../components/Sheet.tsx';
 import { Empty, Section } from '../components/ui.tsx';
-import { formatUsdExact, toneOf } from '../lib/money.ts';
+import { Money, SolPriceContext, moneyTone } from '../components/Money.tsx';
 import { BacktestReportView } from './BacktestReport.tsx';
 import { Boundary } from './Boundary.tsx';
 import { PnlCalendar } from './Calendar.tsx';
@@ -91,7 +91,7 @@ export function DashboardBody({ mode, month, setMonth, loaded, session }: { mode
     const list = shown.day.tradeIds.map((id) => tradeById.get(id)).filter((t): t is TradeRecord => !!t);
     body = (
       <>
-        <p className={`day-net num ${toneOf(shown.day.netUsd)}`}>{formatUsdExact(shown.day.netUsd, true)}</p>
+        <p className={`day-net num ${moneyTone(shown.day.netLamports, shown.day.netUsd)}`}><Money lamports={shown.day.netLamports} usd={shown.day.netUsd} signed /></p>
         <TradeTable trades={list} onSelect={(trade) => setOpen({ kind: 'trade', trade, from: shown.day })} />
       </>
     );
@@ -110,8 +110,10 @@ export function DashboardBody({ mode, month, setMonth, loaded, session }: { mode
   const tag = <ModeTag mode={mode} />;
   const backtest = mode === 'backtest';
 
+  // The current SOL price (APP-SOL) for the dollar line under each SOL figure.
+  const solPrice = status.state === 'ready' ? (status.data.solPriceUsd ?? null) : null;
   return (
-    <>
+    <SolPriceContext.Provider value={solPrice}>
       <Section aside={tag} title="Worker" className="span-2 dash-status">
         <Load loaded={status} rows={1}>
           {(s) => <StatusCard status={s} />}
@@ -217,6 +219,6 @@ export function DashboardBody({ mode, month, setMonth, loaded, session }: { mode
       >
         <Boundary key={sheetKey}>{body}</Boundary>
       </Sheet>
-    </>
+    </SolPriceContext.Provider>
   );
 }

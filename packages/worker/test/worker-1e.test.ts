@@ -121,6 +121,23 @@ describe('the S0 shakedown on live-like facts', () => {
   });
 });
 
+describe('the served regime under the set (API-1 N1\')', () => {
+  it('names every part of the set, H14\'s creates coverage included, even when the candidate stopped before H14', async () => {
+    const h = makeWorker({ entry: { timing: 'random', salt: early, s0Diagnostic: true }, config: { ZEROED_HEALTH_ADDR: '127.0.0.1:18986', ZEROED_API_ADDR: '127.0.0.1:18987' } });
+    expect(await h.worker.reconcile()).toEqual({ ok: true });
+    // No fee terms and no swap seen: the pool cannot be quoted, so the candidate stops before the hard gates run.
+    const m = await passingMarket(h, { ...HELD, fees: false, omit: [CURVE_VOLUME_KEY, GRADUATES_KEY, EXEC_HEALTH_KEY, simKey(MINT)], coverageAt: T - 2 * DAY });
+    await m.run(4_000, 400, () => {
+      m.slot();
+      m.pool();
+    });
+    const cand = h.worker.apiInputs().discovered.find((t) => t.mint === MINT)!;
+    expect(cand.gates).toEqual([expect.objectContaining({ gate: 'worker', code: 'no-fee-context' })]);
+    expect(servedWaived(h)).toEqual(['regime-volume', 'regime-survival', 'exec-health', 'h14-creates-coverage']);
+    await h.worker.stop();
+  });
+});
+
 describe('a reject line under the set', () => {
   it('is written again when only the parts it relied on change', async () => {
     const h = makeWorker({ entry: { timing: 'random', salt: early, s0Diagnostic: true }, config: { ZEROED_HEALTH_ADDR: '127.0.0.1:18984', ZEROED_API_ADDR: '127.0.0.1:18985' } });

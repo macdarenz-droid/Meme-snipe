@@ -66,6 +66,9 @@ awk -v m="$mbps" -v c="$ARCHIVE_MAX_MBPS" 'BEGIN { exit !(m + 0 > 0 && m + 0 <= 
 archive_go=${ARCHIVE_GO:-$(dirname "$0")/../scanner/archive.go}
 rps_ok "$archive_go" ||
   { echo "refused: the scanner's request cap ($(rps_cap "$archive_go" || true)/s, scanner/archive.go) is not in (0, $ARCHIVE_MAX_RPS] (archive-limits.conf)" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}" >&2; exit 2; }
+# ARCHIVE-NODUP: a Helius day is never read from the archive.
+[[ " $HELIUS_DAYS " == *" $day "* ]] &&
+  { echo "refused: $day is a Helius day (HELIUS_DAYS in archive-limits.conf); it is never read from the archive" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}" >&2; exit 2; }
 next=$(date -u -d "$day + 1 day" +%F)
 start=$(date +%s)
 case $budget in

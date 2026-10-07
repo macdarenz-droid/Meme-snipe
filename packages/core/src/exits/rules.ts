@@ -149,6 +149,21 @@ export const newTracker = (): ExitTracker => ({
   quoteFailures: 0, lastQuoteAtMs: null, flatMet: false, blockedAtMs: null, blockedRetries: 0, pendingFull: null,
 });
 
+/**
+ * The rung the next exit attempt uses: one above the highest rung tried (`lastRung`), or the attempt count when no rung
+ * is remembered (a restart: every attempt went at least one rung up from the first), held at the last rung. The one rule
+ * for the exit itself and for the open P&L's expected close fee (APP-TRADE follow-up).
+ */
+export const nextExitRung = (lastRung: number | null, used: number, last: number): number => Math.min(Math.max(lastRung === null ? 0 : lastRung + 1, used), last);
+
+/**
+ * The rung an exit owner's next attempt is sent at (the strategy's `#sendExit`, and the open P&L's expected close fee):
+ * an owner with no signed attempt yet uses its own start rung (a blocked retry's is the last), else `nextExitRung`.
+ * One rule, so the display and the send cannot drift (EXIT review of the APP-TRADE follow-up, B1/N1).
+ */
+export const attemptRung = (lastRung: number | null, used: number, last: number, owner: { readonly startRung: number; readonly signed: number } | null): number =>
+  owner !== null && owner.signed === 0 ? Math.min(owner.startRung, last) : nextExitRung(lastRung, used, last);
+
 /** Records the rung of a signed attempt. The attempt count itself comes from the book (`Holding.exitAttempts`). */
 export const noteAttempt = (t: ExitTracker, rung: number): ExitTracker => ({
   ...t, lastRung: t.lastRung !== null && t.lastRung > rung ? t.lastRung : rung,
@@ -310,8 +325,7 @@ export const decideExit = (s: ExitSettings, plan: EntryPlan, h: Holding, t0: Exi
   const last = g.ladder.steps.length - 1;
   const used = h.exitAttempts;
   const left = g.ladder.maxAttempts - used;
-  // Without a remembered rung (a restart), every attempt went at least one rung up from the first, so `used` is a floor.
-  const next = Math.min(Math.max(t.lastRung === null ? 0 : t.lastRung + 1, used), last);
+  const next = nextExitRung(t.lastRung, used, last);
   // Triggers read the whole holding's value; the order carries the quote for the quantity it sells (EXIT-1b), so its
   // min-out and the fresh quote at attempt time describe the same sale.
   const quoteFor = (quantity: bigint): Liquidation => (quantity === h.quantity || fresh === null ? liq : liquidationValue(fresh.value, quantity));

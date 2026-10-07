@@ -10,7 +10,7 @@ Server: Vultr High Performance, Frankfurt, 1 vCPU / 1 GB, image **Ubuntu 24.04 L
 2. **Install.** Paste this one line the same way (Clipboard → Paste), then press Enter:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/7bdb83a664746af2ad53b8382ab13d48b669ebe4/ops/install.sh -o i && echo '44aac6c9fdcb936e42d7b7597bf338e4fbeef2c9a2359ad45c28bdfca5489668  i' | sha256sum -c && bash i
+curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/ffebb1ec7cbcd0831fcde3d85abb42bbf6c323ac/ops/install.sh -o i && echo 'dafc0f7c89ba2c84bea6483d0106830a392aaff35dda38de3e05c7497a9b21ec  i' | sha256sum -c && bash i
 ```
 
    The line checks the file against its SHA-256 before anything runs; a changed file stops at `sha256sum -c`. After about two minutes the screen shows a **deploy code** of 6 words.
@@ -19,7 +19,7 @@ curl -fsSL https://raw.githubusercontent.com/macdarenz-droid/Meme-snipe/7bdb83a6
 
 The console screen can be left at any time (Ctrl+C); setup carries on in the background. `zeroed-status` shows where it stands and the codes again.
 
-SHA-256 of `install.sh`: `44aac6c9fdcb936e42d7b7597bf338e4fbeef2c9a2359ad45c28bdfca5489668`
+SHA-256 of `install.sh`: `dafc0f7c89ba2c84bea6483d0106830a392aaff35dda38de3e05c7497a9b21ec`
 
 After any change to `ops/install.sh`, the commit in the line must move to one that holds the new file (`ops/test/e2e.sh` fails otherwise).
 
@@ -155,6 +155,31 @@ Owner steps, once:
 If DATA-STORE's steps are already done, only steps 4 and 5 remain. When the token expires, the watchdog alerts "Daily summary not written: repository check HTTP 401". To fix it, make a new token as in step 2, replace `DATA_STORE_TOKEN`, and run Deploy.
 
 The Deploy step (`ops/deploy/reports.sh`) runs only when `CLOUDFLARE_API_TOKEN` and `DATA_STORE_TOKEN` exist, and only after the deploy tag moved. It deploys the watchdog's code from the commit the deploy tag names (the one the server runs), with `DATA_REPO`, and sets one secret, `REPORTS_TOKEN`, from stdin. It never touches the heartbeat key or any other secret, which a deploy keeps. It also refuses this repository's own name.
+
+## Recording upload (RECORD-UPLOAD)
+
+The owner approved it on 6 Oct ("Approve upload"; "Okay yes delete after upload"). The server's recordings go to the same private repository as the daily summary (`DATA_REPO`), so cloud agents can study and replay them. They hold public market data and the bot's own decisions, never a key, token, wallet or personal data. It is on in `ops/host-config.json` (`"record_upload": true`, `"record_upload_delete_local": true`). `zeroed-update` turns `zeroed-record-upload.timer` on or off with each release. The timer runs 10 minutes after boot or switch-on, then an hour after each run ends.
+
+- **What goes up:** from each boot folder in `/var/lib/zeroed/recorder`, the `frames-NNN` and `releases-NNN` files (`.jsonl.zst`, listed with their sha256 in the boot's manifest), once each is 15 minutes old. Once the boot has ended, its `manifest.json` and its saved state go too; a saved state already up is listed, never sent twice. For each ended UTC day: that day's journal lines (`journal-YYYY-MM-DD.jsonl.zst`) and a signed `index-N.json`. `raw-NNN`, `delays-NNN` and plain `.jsonl` files never go.
+- **Where:** GitHub Release assets, one prerelease per UTC day (`rec-YYYY-MM-DD`, never "latest"; past 900 assets `rec-YYYY-MM-DD.1`, `.2`, ...). Asset names are `<boot>.<file>`; day files keep their own name.
+- **How:** one file at a time, oldest first, at 2 MB/s. The file is checked against its manifest, scanned (below) and hashed again, then curl sends it to the watchdog's `POST /record`, its headers on stdin. The header is signed with the heartbeat key over `t\nRECORD\n/record\n<header>` and carries a one-use nonce. The watchdog checks the signature, the file allowlist and that the repository is private and not this one. It pipes the body to GitHub with a fixed length and reads the asset back by id. It keeps the asset only if GitHub's digest is `sha256:<the signed hash>` with the same size. A name that exists with the same bytes counts as up. An unfinished upload is removed and sent again. Other bytes under the name are never replaced. Then the host reads the asset back once more (`op: check`) before counting it.
+- **Bounded state:** `state.json` is read whole under a 48 MB heap, so it holds only unfinished work. A boot whose files are all confirmed upstream and gone from the server (or vanished) is marked done and never read again. A day whose records are all finished, whose standing index lists exactly them, and which ended 2 days ago moves to `days/<day>.json` in the state folder; it is read again only if that day ever gets a new record, and the next index then lists the archived files too. With deletes off, frames and releases files stay on the server and are never archived.
+- **A file deleted meanwhile:** RECORD-BUDGET deletes old recordings on its own schedule, so a listed file may be gone by the time it is checked, hashed or sent. It is skipped, logged once as "Vanished before upload", counted in the status file (`vanished`, `vanished_files`), and the run goes on; it is not a failure and raises no alert. A boot folder where a file went while it was listed counts as open for that run, so nothing in it is deleted until it has been quiet for 15 minutes again.
+- **Index:** `index-N.json` lists each confirmed file of the day (boot, path, release, asset, asset id, size, sha256), each recorder file that vanished before upload (`vanished`: key, boot, path, listed sha256 and bytes, when), and the boots' manifests. The index, not a manifest copy, says what is upstream: a boot's manifest goes up only once every file it lists is confirmed or vanished, and a file kept back holds it. The uploaded journal slices carry `command [redacted] refused` instead of a refused command's typed text. Its last line is `hmac-sha256=<hex>` over `RECORD-INDEX\n<body>`, with the heartbeat key. A changed set is a new N, never a replacement; the newest N wins. A number already taken upstream (after a lost state file) moves on to the next one. Download a day by verifying every file's sha256 against it.
+- **Redaction scan:** each file is read decompressed through the worker's own redaction patterns (`packages/worker/src/run/redact.ts`, kept equal by a test) and the credentials the worker holds. A hit (`[redacted]` alone is not one) keeps the file on the server, unchanged, and alerts naming the file, never the value.
+- **Delete after upload:** only a frames or releases file of an ended boot (not the journal's last start, not the newest folder while the worker runs, no plain `.jsonl` and nothing changed for 15 minutes). All of these must hold, checked just before the delete:
+  1. It is listed with this sha256 and size in its manifest, and it hashes to that now.
+  2. It is a plain file whose real path is inside the recorder folder.
+  3. GitHub's asset, read back now, has the same digest and size and is finished.
+  4. The day's signed index lists it and still stands.
+  5. The delete is written to the state file before the file goes.
+
+  Anything else keeps it. Manifests, saved states, the journal, raw and delays files are never deleted. A running boot's files are uploaded but never deleted: the worker re-reads its own boot folder on every file it seals.
+- **Sandbox:** `zeroed-record-upload@.service` runs as `zeroed-worker` with no capability. That user already holds every credential it reads and owns the recorder. It is in the signer's group, so the signer's `/run/zeroed-signer` and `/var/lib/zeroed-signer` are made inaccessible to the unit. Of the worker's `/var/lib/zeroed` it sees only the recorder (read and delete) and `journal.jsonl` (read): an empty read-only `/var/lib/zeroed` with those two bound in, so the ledger and the rest of the worker's state are out of reach. Its only writable data paths are the recorder and its own `/var/lib/zeroed-record-upload` (state, lock, status, finished days), at `Nice=19`, idle I/O, `CPUQuota=25%` and `MemoryMax=96M`.
+- **Alerts:** `zeroed-check` raises them from the uploader's status file, once each with a CLEARED line: 3 failed runs in a row, recordings waiting longer than a day, files kept back, no report for 3 hours.
+- **By hand:** `zeroed-record-upload` runs once now; `zeroed-record-upload --day YYYY-MM-DD` runs for one UTC day. Either way it runs in the same sandbox, after any run in progress.
+
+The token (`DATA_STORE_TOKEN`, deployed as `REPORTS_TOKEN`) already has **Contents: Read and write** on the data repository. That is what creating releases and uploading, reading and deleting their assets needs, so nothing changes for the owner.
 
 ## Host checks
 

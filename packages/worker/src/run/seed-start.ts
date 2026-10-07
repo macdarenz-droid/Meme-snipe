@@ -25,18 +25,21 @@ export const SEED_CREDIT_CAP = 150_000;
  */
 export const CAPPED_READ_CREDITS_PER_DAY = SIM_READS_PER_HOUR * 24 * 2 + 24 * 60 + 24 * 60 + DEPLOYER_CHECK_CREDITS_PER_DAY + holderScanCreditsPerDay();
 /**
- * The share of what is left of Helius's non-exit allowance (the monthly credits up to the 70% halt, less the capped
+ * The share of what is left of the plan's Helius non-exit allowance (HELIUS_FREE's monthly credits up to its 70% planning share, less the capped
  * reads) that the fills may use; the rest is for the uncapped reads (socket bytes, migration fetches, fact reads) until
  * the shakedown's quota report measures them. Supervisor to set it from those figures.
  */
 export const FILL_SHARE = 0.5;
 /**
- * Credits the fills may spend in a UTC day, across restarts (PERSIST-1's `DailyBudget`, wired by WORKER-1c; one budget
- * for the restart's downtime fill and the pool watches' in-run fills, S0-ZERO). Derived from the plan, not fixed:
+ * The plan's share of credits the fills may spend in a UTC day, across restarts (PERSIST-1's `DailyBudget`, wired by
+ * WORKER-1c; one budget for the restart's downtime fill and the pool watches' in-run fills, S0-ZERO). Derived from the plan:
  * (1,000,000 × 0.7 − 31 × 14,840) × 0.5 / 31 = 3,870 a day on Helius Free. A 31-day month keeps it inside any month.
- * Every call is also metered by the Helius scheduler, whose 70% halt refuses non-exit calls whatever is left here.
+ * Every call is also metered by the Helius scheduler, which has no monthly halt of the worker's own (`HELIUS_WORKER`); when
+ * Helius itself refuses for used-up credits (HELIUS-EXHAUSTED), non-exit calls are held whatever is left here.
  */
-export const FILL_CREDITS_PER_DAY = Math.floor(((HELIUS_FREE.budget!.monthlyCredits * HELIUS_FREE.budget!.haltShare) - 31 * CAPPED_READ_CREDITS_PER_DAY) * FILL_SHARE / 31);
+export const PLAN_FILL_CREDITS_PER_DAY = Math.floor(((HELIUS_FREE.budget!.monthlyCredits * HELIUS_FREE.budget!.haltShare) - 31 * CAPPED_READ_CREDITS_PER_DAY) * FILL_SHARE / 31);
+/** FILL-BUDGET: the configured default (see config.ts). */
+export { FILL_CREDITS_PER_DAY } from './config.ts';
 /** The budget's file in the worker's state dir. */
 export const FILL_BUDGET_FILE = 'fill-budget.json';
 

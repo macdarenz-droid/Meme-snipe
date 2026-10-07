@@ -39,6 +39,17 @@ export interface ReasonCount {
   readonly code: string;
   readonly count: number;
 }
+/**
+ * H16-WHY: refused candidates by an H16 reason of their last refusal: its code, the input it names and the hard gate
+ * that needed it. Fixed names only (a FactName and H1–H17); null when the journal line named none (a line from before
+ * H16-WHY, or an evidence reason without one). A candidate counts once under each of its distinct H16 reasons.
+ */
+export interface H16Count {
+  readonly code: string;
+  readonly input: string | null;
+  readonly needed_by: string | null;
+  readonly count: number;
+}
 export interface SummaryTrade {
   readonly mint: string;
   readonly opened_at: string;
@@ -48,11 +59,48 @@ export interface SummaryTrade {
   readonly net_lamports: string | null;
   readonly net_usd: string | null;
 }
+/** HELIUS-EXHAUSTED: the provider's "credits used up" answers since boot, and the first one's time (null: none). */
+export interface CreditExhaustion {
+  readonly count: number;
+  readonly first_at: string | null;
+}
 export interface ProviderCredits {
   readonly provider: string;
   readonly used_since_boot: number;
   readonly monthly: number | null;
+  /** HELIUS-EXHAUSTED: credits since boot by class (P0–P3; stream bytes count as P3). With `exhausted`, only on Helius. */
+  readonly by_class?: readonly [number, number, number, number];
+  readonly exhausted?: CreditExhaustion;
 }
+export interface LastDeath {
+  readonly at: string;
+  readonly uptime_s: number | null;
+  readonly heap_used_mb: number | null;
+  readonly heap_limit_mb: number | null;
+  readonly spaces: readonly { readonly space: string; readonly used_mb: number }[];
+  readonly sample: { readonly at: string; readonly heap_used_mb: number; readonly heap_limit_mb: number; readonly rss_mb: number; readonly external_mb: number; readonly array_buffers_mb: number } | null;
+  /**
+   * MEM-PROBE: the worker's last memory probe samples before the death, oldest first: heap, old and large-object MB, a
+   * save in progress, and the size of each major collection by code. Counts only. Optional: a worker from before it
+   * still posts.
+   */
+  readonly recent?: readonly ProbeRow[];
+}
+export interface ProbeRow {
+  readonly at: string;
+  readonly heap_used_mb: number;
+  readonly old_mb: number;
+  readonly large_object_mb: number;
+  readonly saving: boolean;
+  readonly counts: readonly CodeCount[];
+}
+
+/** At most this many heap spaces in `last_death`. */
+export const SUMMARY_MAX_SPACES = 16;
+/** At most this many probe samples in `last_death.recent`, and counts in each. */
+export const SUMMARY_MAX_PROBES = 10;
+export const SUMMARY_MAX_PROBE_COUNTS = 96;
+
 export interface Summary {
   readonly v: 1;
   /** The Melbourne date (YYYY-MM-DD) this summary covers. */
@@ -76,6 +124,12 @@ export interface Summary {
     readonly exits?: readonly CodeCount[];
     /** That day's crashes by site, most frequent first, at most SUMMARY_MAX_CRASH_SITES. */
     readonly crash_sites?: readonly CrashSite[];
+    /**
+     * MEM-SUMMARY: the memory of that day's last process to die with no stop line, or null: when (node's fatal report, else
+     * the last sample), its uptime, its heap used and limit, MB used per V8 space, and the last mem.json sample. Only
+     * alongside RESTART-CAUSE's keys; a worker from before it still posts.
+     */
+    readonly last_death?: LastDeath | null;
   };
   /** Critical alerts raised that day, by code. */
   readonly alerts: readonly CodeCount[];
@@ -88,6 +142,13 @@ export interface Summary {
     /** Each refused candidate's last refusal reason, most frequent first, at most SUMMARY_TOP_REASONS. */
     readonly refused_by_reason: readonly ReasonCount[];
     readonly refused_other: number;
+    /**
+     * H16-WHY: both or neither; present only when a refused candidate's last refusal had an H16 reason. Refused
+     * candidates by H16 reason (code, input, needing gate), most frequent first, at most SUMMARY_TOP_REASONS; the rest
+     * summed in `h16_other`. A candidate counts under each of its distinct H16 reasons. A worker from before them still posts.
+     */
+    readonly h16_by_input?: readonly H16Count[];
+    readonly h16_other?: number;
   };
   /** Paper trades opened or closed that day, plus those still open. */
   readonly trades: readonly SummaryTrade[];
@@ -167,6 +228,15 @@ const list = (v: unknown, max: number, item: (x: unknown) => boolean): boolean =
 
 const codeCount = (x: unknown) => exact(x, ['code', 'count']) && str(x['code'], PATTERNS.CODE) && count(x['count']);
 const reasonCount = (x: unknown) => exact(x, ['gate', 'code', 'count']) && str(x['gate'], PATTERNS.GATE) && str(x['code'], PATTERNS.CODE) && count(x['count']);
+const h16Count = (x: unknown) =>
+  exact(x, ['code', 'input', 'needed_by', 'count']) && str(x['code'], PATTERNS.CODE) && strOrNull(x['input'], PATTERNS.CODE) &&
+  strOrNull(x['needed_by'], PATTERNS.GATE) && count(x['count']);
+/** H16-WHY's keys of `candidates`: present both together or not at all. */
+export const H16_KEYS = ['h16_by_input', 'h16_other'] as const;
+const CANDIDATE_KEYS = ['seen', 'entered', 'refused', 'refused_by_reason', 'refused_other'] as const;
+const candidates = (c: unknown): boolean =>
+  (exact(c, CANDIDATE_KEYS) || (exact(c, [...CANDIDATE_KEYS, ...H16_KEYS]) && list(c['h16_by_input'], SUMMARY_TOP_REASONS, h16Count) && count(c['h16_other']))) &&
+  count(c['seen']) && count(c['entered']) && count(c['refused']) && list(c['refused_by_reason'], SUMMARY_TOP_REASONS, reasonCount) && count(c['refused_other']);
 const trade = (x: unknown) =>
   exact(x, ['mint', 'opened_at', 'closed_at', 'size_usd', 'exit_reason', 'net_lamports', 'net_usd']) &&
   str(x['mint'], PATTERNS.MINT) && str(x['opened_at'], PATTERNS.TIME) && strOrNull(x['closed_at'], PATTERNS.TIME) &&
@@ -177,27 +247,53 @@ const crashSite = (x: unknown) =>
   exact(x, ['error', 'file', 'line', 'event', 'count']) && str(x['error'], PATTERNS.ERROR) && strOrNull(x['file'], PATTERNS.FILE) &&
   (x['file'] === null ? x['line'] === null : count(x['line'])) && strOrNull(x['event'], PATTERNS.EVENT) && count(x['count']);
 const restarts = (x: unknown) => exact(x, ['planned', 'deploy', 'unplanned']) && count(x['planned']) && count(x['deploy']) && count(x['unplanned']);
+/** HELIUS-EXHAUSTED's keys of a provider's credits: `by_class` alone, or with `exhausted` (Helius); absent on an older worker. */
+export const CREDIT_DETAIL_KEYS = ['by_class', 'exhausted'] as const;
+const CREDIT_KEYS = ['provider', 'used_since_boot', 'monthly'] as const;
+const byClass = (x: unknown) => Array.isArray(x) && x.length === 4 && x.every(count);
+const exhaustion = (x: unknown) =>
+  exact(x, ['count', 'first_at']) && count(x['count']) && (x['count'] === 0 ? x['first_at'] === null : str(x['first_at'], PATTERNS.TIME));
 const credits = (x: unknown) =>
-  exact(x, ['provider', 'used_since_boot', 'monthly']) && str(x['provider'], PATTERNS.CODE) && count(x['used_since_boot']) && (x['monthly'] === null || count(x['monthly']));
+  (exact(x, CREDIT_KEYS) || (exact(x, [...CREDIT_KEYS, 'by_class']) && byClass(x['by_class'])) ||
+    (exact(x, [...CREDIT_KEYS, ...CREDIT_DETAIL_KEYS]) && byClass(x['by_class']) && x['provider'] === 'helius' && exhaustion(x['exhausted']))) &&
+  str(x['provider'], PATTERNS.CODE) && count(x['used_since_boot']) && (x['monthly'] === null || count(x['monthly']));
 
 const WORKER_KEYS = ['git_sha', 'entry_rule', 'uptime_s', 'starts', 'recorder'] as const;
 /** RESTART-CAUSE's keys of `worker`: present all together or not at all. */
 export const RESTART_CAUSE_KEYS = ['restarts', 'exits', 'crash_sites'] as const;
+const countOrNull = (v: unknown): boolean => v === null || count(v);
+const probeRow = (y: unknown): boolean =>
+  exact(y, ['at', 'heap_used_mb', 'old_mb', 'large_object_mb', 'saving', 'counts']) && str(y['at'], PATTERNS.TIME) &&
+  count(y['heap_used_mb']) && count(y['old_mb']) && count(y['large_object_mb']) && typeof y['saving'] === 'boolean' &&
+  list(y['counts'], SUMMARY_MAX_PROBE_COUNTS, (c) => exact(c, ['code', 'count']) && str(c['code'], PATTERNS.CODE) && count(c['count']));
+const lastDeath = (x: unknown): boolean => x === null || (
+  exact(x, ['at', 'uptime_s', 'heap_used_mb', 'heap_limit_mb', 'spaces', 'sample', ...(typeof x === 'object' && Object.hasOwn(x, 'recent') ? ['recent'] : [])]) && str(x['at'], PATTERNS.TIME) &&
+  (!Object.hasOwn(x, 'recent') || list(x['recent'], SUMMARY_MAX_PROBES, probeRow)) &&
+  countOrNull(x['uptime_s']) && countOrNull(x['heap_used_mb']) && countOrNull(x['heap_limit_mb']) &&
+  list(x['spaces'], SUMMARY_MAX_SPACES, (y) => exact(y, ['space', 'used_mb']) && str(y['space'], PATTERNS.CODE) && count(y['used_mb'])) &&
+  (x['sample'] === null || (exact(x['sample'], ['at', 'heap_used_mb', 'heap_limit_mb', 'rss_mb', 'external_mb', 'array_buffers_mb']) &&
+    str(x['sample']['at'], PATTERNS.TIME) && ['heap_used_mb', 'heap_limit_mb', 'rss_mb', 'external_mb', 'array_buffers_mb'].every((k) => count((x['sample'] as Record<string, unknown>)[k])))));
+/** MEM-SUMMARY's key of `worker`: optional, and only with RESTART-CAUSE's. */
+export const MEM_SUMMARY_KEY = 'last_death';
 const restartCause = (w: Record<string, unknown>): boolean =>
   RESTART_CAUSE_KEYS.some((k) => Object.hasOwn(w, k))
-    ? exact(w, [...WORKER_KEYS, ...RESTART_CAUSE_KEYS]) && restarts(w['restarts']) && list(w['exits'], EXIT_KINDS.length, exitCount) && list(w['crash_sites'], SUMMARY_MAX_CRASH_SITES, crashSite)
+    ? exact(w, [...WORKER_KEYS, ...RESTART_CAUSE_KEYS, ...(Object.hasOwn(w, MEM_SUMMARY_KEY) ? [MEM_SUMMARY_KEY] : [])]) && restarts(w['restarts']) &&
+      list(w['exits'], EXIT_KINDS.length, exitCount) && list(w['crash_sites'], SUMMARY_MAX_CRASH_SITES, crashSite) && (!Object.hasOwn(w, MEM_SUMMARY_KEY) || lastDeath(w[MEM_SUMMARY_KEY]))
     : exact(w, WORKER_KEYS);
 
 /** The keys of every object in the shape, for the key-name test. */
 export const SHAPE_KEYS: readonly string[] = [
   'v', 'day', 'final', 'generated_at', 'mode', 'worker', 'alerts', 'halts', 'candidates', 'trades', 'trades_dropped', 'pnl', 'open_positions', 'provider_credits',
-  'git_sha', 'entry_rule', 'uptime_s', 'starts', 'recorder', 'restarts', 'exits', 'crash_sites',
+  'git_sha', 'entry_rule', 'uptime_s', 'starts', 'recorder', 'restarts', 'exits', 'crash_sites', 'last_death',
+  'at', 'heap_used_mb', 'heap_limit_mb', 'spaces', 'space', 'used_mb', 'sample', 'rss_mb', 'external_mb', 'array_buffers_mb',
+  'recent', 'old_mb', 'large_object_mb', 'saving', 'counts',
   'planned', 'deploy', 'unplanned', 'error', 'file', 'line', 'event',
   'code', 'count', 'gate',
-  'seen', 'entered', 'refused', 'refused_by_reason', 'refused_other',
+  'seen', 'entered', 'refused', 'refused_by_reason', 'refused_other', 'h16_by_input', 'h16_other', 'input', 'needed_by',
   'mint', 'opened_at', 'closed_at', 'size_usd', 'exit_reason', 'net_lamports', 'net_usd',
   'closed_trades',
   'provider', 'used_since_boot', 'monthly',
+  'by_class', 'exhausted', 'first_at',
 ];
 
 /** True only for a value of exactly the summary's shape. */
@@ -211,8 +307,7 @@ export const isSummary = (x: unknown): x is Summary => {
     isObj(w) && restartCause(w) && str(w['git_sha'], PATTERNS.SHA) && str(w['entry_rule'], PATTERNS.RULE) &&
     count(w['uptime_s']) && count(w['starts']) && (w['recorder'] === null || w['recorder'] === 'on' || w['recorder'] === 'off') &&
     list(x['alerts'], 64, codeCount) && list(x['halts'], 64, codeCount) &&
-    exact(c, ['seen', 'entered', 'refused', 'refused_by_reason', 'refused_other']) && count(c['seen']) && count(c['entered']) && count(c['refused']) &&
-    list(c['refused_by_reason'], SUMMARY_TOP_REASONS, reasonCount) && count(c['refused_other']) &&
+    candidates(c) &&
     list(x['trades'], SUMMARY_MAX_TRADES, trade) && count(x['trades_dropped']) &&
     exact(p, ['closed_trades', 'net_lamports', 'net_usd']) && count(p['closed_trades']) && str(p['net_lamports'], PATTERNS.LAMPORTS) && str(p['net_usd'], PATTERNS.USD) &&
     count(x['open_positions']) && list(x['provider_credits'], 16, credits)

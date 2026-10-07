@@ -5,3 +5,5 @@ export * from './feed.ts';
 export * from './kinds.ts';
 export * from './funding.ts';
 export * from './volume.ts';
+export * from './repeat-tags.ts';
+export * from './capped-map.ts';
