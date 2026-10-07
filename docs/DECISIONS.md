@@ -3500,10 +3500,11 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
 
 ## Red team C's provider findings fixed (RC-FIXES, `providers/socket.ts`, `run/sources.ts` `CreditBook`, `run/worker.ts` `FETCH_TX_CREDITS`, `facts/readers.ts` `#scanOwners`)
 
-- **2026-10-07 · Why.** Red team C reproduced four faults on 959d8017 (probes on `claude/redteam-c`, brought in as `worker/test/redteam-c/`):
+- **2026-10-07 · Why.** Red team C reproduced these faults on 959d8017 (probes on `claude/redteam-c`, brought in as `worker/test/redteam-c/`):
   - **Crash loop.** `CreditBook`'s one-second save ran from a timer. A failed write (disk full, EACCES, EISDIR) threw there, an uncaughtException, and the worker exited. Every restart repeated it on the first spend until systemd stopped the unit, with open positions unwatched.
   - **Reconnect storm.** `ReconnectingSocket` reset its backoff on every open. A server that accepts and closes at once was reopened every second: 601 Helius opens and 1,798 credits in ten minutes with two log watches.
   - **Re-read under-count.** FACTS-REREAD booked 1 credit per `fetchTx`, but the shared fetcher retries a null answer 3 times: up to 4 Helius credits, plus Alchemy.
+  - **Month reset (item 6).** A boot with the clock in another month dropped the saved month's counts and saved `{}`.
   - **Stuck coin.** `FactReaders` kept every holder owner it ever saw per mint and put them all in the next bank. After about 73, every later batch for that coin failed ("N accounts do not fit one bank") for the life of the process.
 - **Choices.**
   - **Socket.** The backoff resets only once a connection proves healthy: a message `healthyMs` (default `idleMs`) or more after it opened. A close before that keeps doubling the wait up to `maxMs`. Connection attempts are also capped at `DEFAULT_CONNECTS_PER_HOUR` = 60 in any rolling hour. At the cap the next try waits for the window, the down reason names the ceiling, and the feed stays down, so a critical feed halts entries through the existing feed path. PumpPortal's ban rule is unchanged.
@@ -3513,6 +3514,8 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
     - Helius is not held: its count gates nothing (HELIUS-EXHAUSTED).
     - The only under-count left is a death after a failed save. It is bounded by the spend that crossed the reserve plus P0 calls while held.
     - Counts never go backwards. A lower total from a scheduler is not taken.
+    - Start and stop write the exact counts. Only saves made while spending carry the reserve.
+    - **Month steps (item 6).** credits.json keeps the last `CREDIT_MONTHS_KEPT` (3) other months' counts beside the current one. A boot whose clock reads a later month starts that month from zero and keeps the earlier month. A boot whose clock reads a month behind the latest saved one fails closed: it counts under the later month, from the larger of that month's count and the clock month's, and logs the step. So a clock a month off never wipes this month's Alchemy count, and the 70% halt never starts again from zero.
   - **Fetch credits.** `fetchTx` tells its caller the Helius credits it spent, retries included. FACTS-REREAD books `FETCH_TX_CREDITS` (4) per fetch before it asks and gives back what was not used. A fetch that never says what it spent is charged all 4.
     - The cut-create and cut-trade caps count tries, not credits, and DECISIONS already sizes them at up to 4 credits a try (TRADE-GAP-HEAL). They stay as they are.
     - COMPLETION-READ, the seed, the trade fills and the create lookup call RPC directly and book each call. They have no under-count.

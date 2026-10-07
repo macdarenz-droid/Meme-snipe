@@ -294,7 +294,7 @@ const FEE_ACCOUNTS = (() => {
   return new Map(f.accounts.slice(4).map((a) => [a.address, { owner: a.owner, data: [a.dataBase64, 'base64'], lamports: 1, executable: false }]));
 })();
 
-const batchRig = (o: { readonly bankSlot?: bigint; readonly scanSlot?: bigint; readonly extraPda?: boolean; readonly hold?: boolean; readonly scansPerDay?: number; readonly movedOwner?: boolean; readonly feeAccounts?: 'real' | 'foreign'; readonly manyPda?: number } = {}) => {
+const batchRig = (o: { readonly bankSlot?: bigint; readonly scanSlot?: bigint; readonly extraPda?: boolean; readonly hold?: boolean; readonly scansPerDay?: number; readonly movedOwner?: boolean; readonly feeAccounts?: 'real' | 'foreign'; readonly manyPda?: number; readonly changePda?: boolean } = {}) => {
   const timers = new ManualTimers(T);
   const frames: { key: string; value: unknown; receivedAt: number }[] = [];
   const seen: { method: string; params: unknown[] }[] = [];
@@ -307,12 +307,15 @@ const batchRig = (o: { readonly bankSlot?: bigint; readonly scanSlot?: bigint; r
   })();
   const pdaAccount = { address: ACC('pda-holder'), owner: PDA, amount: 1n };
   // RC-FIXES: `manyPda` empty token accounts, each owned by its own off-curve address (a coin held by many programs).
+  // With `changePda`, a second set of as many owners holds from the second scan on (the holders changed).
   const many: string[] = [];
-  for (let j = 0; many.length < (o.manyPda ?? 0); j++) {
+  for (let j = 0; many.length < (o.manyPda ?? 0) * (o.changePda === true ? 2 : 1); j++) {
     const a = ACC(`many-pda:${j}`);
     if (!isOnCurve(decodeBase58(a))) many.push(a);
   }
-  const manyAccounts = many.map((owner, i) => ({ address: ACC(`many-holder:${i}`), owner, amount: 0n }));
+  const holdersOf = (set: readonly string[]) => set.map((owner, i) => ({ address: ACC(`many-holder:${owner}:${i}`), owner, amount: 0n }));
+  let scans = 0;
+  const manyAccounts = (): { address: string; owner: string; amount: bigint }[] => holdersOf(o.changePda === true && scans > 1 ? many.slice(o.manyPda) : many.slice(0, o.manyPda ?? 0));
   let release: (() => void) | null = null;
   const http: HttpClient = async (req) => {
     if (req.url.includes('rugcheck')) return resp(200, JSON.stringify({ mint: MINT, mintAuthority: null, freezeAuthority: null }));
@@ -349,7 +352,8 @@ const batchRig = (o: { readonly bankSlot?: bigint; readonly scanSlot?: bigint; r
       case 'getProgramAccounts': {
         // The extra PDA's tokens come out of a filler, so the set still adds up to the supply.
         const filler = HOLDERS.find((a) => a.amount === 1_000_000_000_000n)!;
-        const list = [...(o.extraPda !== true ? HOLDERS : [...HOLDERS.map((a) => (a === filler ? { ...a, amount: a.amount - 1n } : a)), { ...filler, ...pdaAccount }]), ...manyAccounts];
+        scans++;
+        const list = [...(o.extraPda !== true ? HOLDERS : [...HOLDERS.map((a) => (a === filler ? { ...a, amount: a.amount - 1n } : a)), { ...filler, ...pdaAccount }]), ...manyAccounts()];
         const value = list.map((a) => ({ pubkey: a.address, account: acc(a.address) ?? { owner: MINT_ACCOUNT.owner, data: b64(tokenAccountData(MINT as Address, a.owner as Address, a.amount)), lamports: 1, executable: false } }));
         const answer = () => rpcResult(o.scanSlot ?? bankSlot, value.map((v, i) => (list[i]!.address === filler.address && o.extraPda === true ? { ...v, account: { owner: MINT_ACCOUNT.owner, data: b64(tokenAccountData(MINT as Address, filler.owner as Address, list[i]!.amount)), lamports: 1, executable: false } } : v)));
         if (o.hold !== true) return answer();
@@ -497,6 +501,17 @@ describe('FactReaders.readBatch', () => {
     // The bounded view is unaffected: it banks and lands every time.
     for (let k = 0; k < 3; k++) expect(allOk(await r.run({ holders: 'largest', spend: null, xcheck: false }))).toBe(true);
     expect(r.readers.outcomes.some((x) => x.detail.includes('do not fit one bank') && x.read.startsWith('accounts'))).toBe(false);
+  });
+
+  it('RC-FIXES: only the last scan\'s off-curve owners ride in the bank: holders that changed do not pile up', async () => {
+    // 40 owners, then 40 others: kept together they would not fit one bank with the rest (27 + 80 > 100).
+    const r = batchRig({ manyPda: 40, changePda: true });
+    const run = () => r.run({ holders: 'all', spend: null, xcheck: false });
+    expect(await run()).toEqual({ accounts: true, 'holders-all': false });
+    expect(await run()).toEqual({ accounts: true, 'holders-all': false });
+    r.frames.length = 0;
+    expect(allOk(await run())).toBe(true);
+    expect(keysOf(r.frames)).toContain(RAW.holdersAll(MINT));
   });
 
   it('each scan comes off the daily cap as before; at the cap the batch reads no scan and says so', async () => {

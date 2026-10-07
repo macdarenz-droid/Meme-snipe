@@ -115,7 +115,7 @@ describe('RC-3: the credit book\'s deferred save never throws out of its timer (
     // The disk refuses the next write (here the temp path is a directory, as an ENOSPC would refuse it).
     mkdirSync(join(dir, 'credits.json.tmp'));
     helius.meter(5);
-    // systemTimers runs this callback from Node's setTimeout: a throw is an uncaughtException, and main.ts's `fatal`
+    // the live timers run this callback from Node's setTimeout: a throw is an uncaughtException, and main.ts's `fatal`
     // exits the worker (EXIT.crash). The recorder's ENOSPC path stays up (disk-crash.test.ts); this one must too.
     expect(() => timers.advance(1_000)).not.toThrow();
   });

@@ -34,6 +34,8 @@ export const PUMP_MIGRATION_AUTHORITY = '39azUYFWPz3VHgKCf3VChUwbpURdCHRxjWVowf5
  * restarts from a count that is high by at most this much, never low.
  */
 export const CREDIT_RESERVE = 1_000;
+/** Other months' counts kept in credits.json besides the current one. */
+export const CREDIT_MONTHS_KEPT = 3;
 
 /**
  * The month's credit use per provider, loaded at start and saved at most once a second, at stop, and at once when a spend
@@ -43,6 +45,9 @@ export const CREDIT_RESERVE = 1_000;
  * restart again). A failed save keeps the book dirty, logs once per error kind and is retried every second. While the
  * saved count is below what was spent, a restart would under-count, so every provider whose count gates spending (a
  * monthly budget) is held as halted for every class but P0 (exits) until a save lands. Counts only ever go up.
+ * RC-FIXES: other months' counts are kept too (`CREDIT_MONTHS_KEPT`), so a boot whose clock reads another month never
+ * wipes one. A clock behind the latest saved month fails closed: the book keeps counting under that later month, from
+ * the larger of its count and the clock month's, until the clock catches up.
  */
 export class CreditBook {
   readonly #file: ReturnType<typeof creditsFile>;
@@ -52,6 +57,8 @@ export class CreditBook {
   /** What the last save that landed holds, per provider. */
   readonly #saved: Record<string, number>;
   readonly #month: string;
+  /** The other months' counts, kept as they were loaded. */
+  readonly #months: Record<string, Record<string, number>>;
   readonly #budgeted: Scheduler[] = [];
   readonly #logged = new Set<string>();
   #dirty = false;
@@ -64,11 +71,26 @@ export class CreditBook {
     this.#file = creditsFile(stateDir);
     this.#timers = timers;
     this.#log = log;
-    this.#month = creditMonth(timers.now());
-    const saved = this.#file.read({ month: this.#month, used: {} });
-    this.#used = saved.month === this.#month ? { ...saved.used } : {};
-    this.#saved = saved.month === this.#month ? { ...saved.used } : {};
-    this.#save();
+    const clock = creditMonth(timers.now());
+    const saved = this.#file.read({ month: clock, used: {} });
+    const all: Record<string, Record<string, number>> = { ...(saved.months ?? {}) };
+    all[saved.month] = { ...saved.used };
+    const latest = Object.keys(all).sort().at(-1)!;
+    if (latest > clock) {
+      // The clock is behind a month already counted: never start that month again, never count less.
+      this.#month = latest;
+      const used: Record<string, number> = { ...all[latest] };
+      for (const [k, v] of Object.entries(all[clock] ?? {})) used[k] = Math.max(v, used[k] ?? 0);
+      this.#used = used;
+      this.#log(`credits.json: the clock reads ${clock}, behind the saved ${latest}; counting under ${latest} until the clock catches up`);
+    } else {
+      this.#month = clock;
+      this.#used = { ...(all[clock] ?? {}) };
+    }
+    this.#saved = { ...(all[this.#month] ?? {}) };
+    delete all[this.#month];
+    this.#months = Object.fromEntries(Object.entries(all).sort(([a], [b]) => (a < b ? -1 : 1)).slice(-CREDIT_MONTHS_KEPT));
+    this.#save(false);
   }
 
   get used(): Readonly<Record<string, number>> {
@@ -113,11 +135,15 @@ export class CreditBook {
     }, 1_000);
   }
 
-  #save(): void {
+  /**
+   * `reserve`: written ahead by `CREDIT_RESERVE` (while spending). Without it (at start and stop) the exact counts are
+   * written: nothing is spent after, and the next spend past them is saved at once with the reserve.
+   */
+  #save(reserve = true): void {
     this.#dirty = false;
     const ahead: Record<string, number> = {};
-    for (const [k, v] of Object.entries(this.#used)) ahead[k] = Math.max(v + CREDIT_RESERVE, this.#saved[k] ?? 0);
-    const c: Credits = { month: this.#month, used: ahead };
+    for (const [k, v] of Object.entries(this.#used)) ahead[k] = reserve ? Math.max(v + CREDIT_RESERVE, this.#saved[k] ?? 0) : v;
+    const c: Credits = { month: this.#month, used: ahead, ...(Object.keys(this.#months).length === 0 ? {} : { months: this.#months }) };
     try {
       this.#file.write(c);
     } catch (e) {
@@ -132,6 +158,7 @@ export class CreditBook {
       this.#arm();
       return;
     }
+    for (const k of Object.keys(this.#saved)) if (!(k in ahead)) delete this.#saved[k];
     Object.assign(this.#saved, ahead);
     this.#failing = null;
     if (this.#fault !== null) {
@@ -152,7 +179,7 @@ export class CreditBook {
   flush(): void {
     if (this.#timer !== null) this.#timers.clearTimeout(this.#timer);
     this.#timer = null;
-    this.#save();
+    this.#save(false);
     if (this.#timer !== null) this.#timers.clearTimeout(this.#timer);
     this.#timer = null;
   }
