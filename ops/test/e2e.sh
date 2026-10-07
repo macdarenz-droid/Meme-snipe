@@ -773,17 +773,20 @@ in_c "sed -i '/^ZEROED_MODE=live\$/d' /etc/zeroed/worker.env"
 rc=0; in_c "cd /opt/zeroed/current && runuser -u zeroed-worker -- env -i PATH=/usr/bin:/bin ZEROED_MODE=live ZEROED_STATE_DIR=/tmp /usr/local/bin/node --no-warnings packages/worker/src/main.ts" >"$LOGS/worker-live.txt" 2>&1 || rc=$?
 [ "$rc" = 2 ] && grep -q 'refused: ZEROED_MODE must be paper' "$LOGS/worker-live.txt" || fail "the worker did not refuse live (exit $rc)"
 in_c "zeroed-status" | has "Worker:    active (the release's worker, ${relname:0:12})" || fail "zeroed-status does not say which worker runs"
-# RC-STATE: a start refused on its saved state (here: the ledger gone while an exit plan says the bot traded) is refused
-# by the --reconcile ExecStartPre with exit 78, which the unit does not restart; refused.json and the journal say why.
+# RC-STATE: a start refused on its saved state (here: the ledger gone while an exit plan says the bot traded). The
+# --reconcile ExecStartPre writes the refusal and exits 0 (systemd never reads RestartPreventExitStatus from a pre-step);
+# the main start refuses again with exit 78, which the unit does not restart. refused.json and the journal say why.
 # Put back, a clean start removes refused.json.
 in_c "systemctl stop zeroed-worker && rm -rf /root/rc-aside && mkdir /root/rc-aside && mv /var/lib/zeroed/ledger.sqlite* /root/rc-aside/ && cp -a /var/lib/zeroed/exits.json /root/rc-aside/exits.json 2>/dev/null; printf '{\"e2e-trade\":{}}\\n' > /var/lib/zeroed/exits.json && chown zeroed-worker: /var/lib/zeroed/exits.json" || fail "could not set up the refused state"
-in_c "systemctl reset-failed zeroed-worker 2>/dev/null; systemctl start zeroed-worker" >/dev/null 2>&1 && fail "a start on a lost ledger was not refused"
-r0="$(in_c "systemctl show -p NRestarts --value zeroed-worker")"
+# Type=simple: `systemctl start` returns once the main process is forked, before its own check refuses.
+in_c "systemctl reset-failed zeroed-worker 2>/dev/null; systemctl start zeroed-worker" >/dev/null 2>&1 || true
+wait_for 90 "the refused start's unit failed" "docker exec $C bash -c '[ \"\$(systemctl is-active zeroed-worker)\" = failed ]'"
 sleep 15
-[ "$(in_c "systemctl show -p NRestarts --value zeroed-worker")" = "$r0" ] || fail "a refused start was restarted (NRestarts moved)"
-in_c "systemctl is-active zeroed-worker" | has -x -e failed -e inactive || fail "a refused start left the unit $(in_c "systemctl is-active zeroed-worker")"
+[ "$(in_c "systemctl is-active zeroed-worker")" = failed ] || fail "a refused start did not stay failed ($(in_c "systemctl is-active zeroed-worker"))"
+[ "$(in_c "systemctl show -p NRestarts --value zeroed-worker")" = 0 ] || fail "a refused start was restarted (NRestarts $(in_c "systemctl show -p NRestarts --value zeroed-worker"))"
 in_c "systemctl show -p ExecStartPre --value zeroed-worker" >"$LOGS/refused-execstartpre.txt"
-grep -q 'status=78' "$LOGS/refused-execstartpre.txt" || fail "the refusal did not exit 78 from the --reconcile pre-step: $(cat "$LOGS/refused-execstartpre.txt")"
+grep -q 'status=0 }' "$LOGS/refused-execstartpre.txt" || fail "the --reconcile pre-step did not exit 0 on a refusal: $(cat "$LOGS/refused-execstartpre.txt")"
+[ "$(in_c "systemctl show -p ExecMainStatus --value zeroed-worker")" = 78 ] || fail "the main start did not exit 78 on a refusal (ExecMainStatus $(in_c "systemctl show -p ExecMainStatus --value zeroed-worker"))"
 in_c "cat /var/lib/zeroed/refused.json" >"$LOGS/refused.json" || fail "no refused.json"
 jq -e '(.reason | test("ledger.sqlite is missing")) and (.atMs | type) == "number" and has("commit")' "$LOGS/refused.json" >/dev/null || fail "refused.json does not say why: $(cat "$LOGS/refused.json")"
 in_c "tail -n 20 /var/lib/zeroed/journal.jsonl" | has '"code":"state_refused"' || fail "the journal has no state_refused alert"
@@ -791,7 +794,7 @@ in_c "mv /root/rc-aside/ledger.sqlite* /var/lib/zeroed/ && if [ -f /root/rc-asid
 wrestart
 wait_for 60 "the worker back after the refusal was put right" "docker exec $C systemctl is-active zeroed-worker"
 wait_for 60 "refused.json removed by the clean start" "docker exec $C bash -c '! test -e /var/lib/zeroed/refused.json'"
-pass "a start refused on its saved state: exit 78 from the --reconcile pre-step, no restart loop, the reason in refused.json and the journal; put back, a clean start removes refused.json"
+pass "a start refused on its saved state: the --reconcile pre-step writes it and exits 0, the main start exits 78 and is not restarted, the reason in refused.json and the journal; put back, a clean start removes refused.json"
 # A release whose worker cannot start is never switched to: a syntax error, a missing file, a refused config.
 broken() { # NAME: a copy of this release with the switch on, to break
   in_c "rm -rf '/opt/zeroed/releases/$1' && cp -a '$rel' '/opt/zeroed/releases/$1'"

@@ -122,10 +122,12 @@ try {
   });
 } catch (e) {
   // RC-STATE: a start refused on the saved state is no crash: its reason is in the journal and refused.json, and the
-  // unit does not restart this exit code (a restart cannot fix the files).
+  // unit does not restart this exit code (a restart cannot fix the files). systemd reads RestartPreventExitStatus from
+  // the main process only, never from an ExecStartPre (proven on systemd 255 in the e2e): so the unit's `--reconcile`
+  // pre-step, having written its refusal, exits 0, and the main start's own check refuses again and exits 78.
   if (e instanceof StateRefused) {
     fail(`Start refused: ${e.message}`);
-    process.exit(EXIT.stateRefused);
+    process.exit(environment.argv.includes('--reconcile') ? EXIT.clean : EXIT.stateRefused);
   }
   fatal(e);
 }

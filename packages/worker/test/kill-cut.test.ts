@@ -22,6 +22,10 @@ describe('RC-STATE: parity forgives only the one submit a kill after the send cu
     expect(cutAtKill(LIVE, [...LIVE, line('submit', 'e2', 'i2')], 'i1')).toHaveLength(4);
     expect(cutAtKill(LIVE, [...LIVE, line('submit', 'e2')], 'i2')).toHaveLength(4);
     expect(cutAtKill(LIVE, [...LIVE, line('submit', 'e3')], 'i1')).toHaveLength(4);
+    // Review of #280: two extra lines ending in the dispatched submit, and a journal whose last sign is another intent's.
+    expect(cutAtKill(LIVE, [...LIVE, line('prepare', 'e2'), line('submit', 'e2')], 'i1')).toHaveLength(5);
+    const otherSign = [line('propose', 'e1'), line('prepare', 'e2'), line('sign', 'e2', 'i2')];
+    expect(cutAtKill(otherSign, [...otherSign, line('submit', 'e2')], 'i1')).toHaveLength(4);
     expect(cutAtKill(LIVE.slice(0, 2), [...LIVE.slice(0, 2), line('submit', 'e2')], 'i1')).toHaveLength(3);
     expect(cutAtKill(LIVE, LIVE.slice(0, 2), 'i1')).toHaveLength(2);
     expect(cutAtKill([], [line('submit', 'e2')], 'i1')).toHaveLength(1);

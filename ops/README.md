@@ -93,7 +93,7 @@ To restore for real:
 
 ### A refused start
 
-The worker checks its saved files against each other before it starts. If they disagree, it does not start on defaults. For example: the ledger is missing or empty while the other files show trades, account.json is missing, or paper.json lacks a fill. It then writes the reason to `/var/lib/zeroed/refused.json` and to the journal, and exits with code 78. The unit does not restart it, so `systemctl status zeroed-worker` shows it failed.
+The worker checks its saved files against each other before it starts. If they disagree, it does not start on defaults. For example: the ledger is missing or empty while the other files show trades, account.json is missing, or paper.json lacks a fill. It then writes the reason to `/var/lib/zeroed/refused.json` and to the journal. The unit's `--reconcile` pre-step exits 0 after writing it, because systemd ignores RestartPreventExitStatus for a pre-step. The main start then checks again, refuses and exits with code 78 (`ExecMainStatus=78`). The unit does not restart it, so `systemctl status zeroed-worker` shows it failed.
 1. Read why: `cat /var/lib/zeroed/refused.json`
 2. Restore the files from the newest backup: the steps above, including `reset-failed`.
 3. If no backup holds them (one taken before this release packs only the ledger), the only safe way on is a cold start. The paper positions are not recovered, so they are written off, as on a host lost with no backup:

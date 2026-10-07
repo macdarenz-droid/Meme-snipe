@@ -3556,7 +3556,11 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
     - **A refusal is visible and not retried (review R4-3).**
       - The worker journals a start line of its own (`refused: true`), a critical `state_refused` alert and a stop line, all fsynced.
       - S1's contract: it writes `<stateDir>/refused.json` = `{reason, atMs, commit}` (temp file, fsync, rename) and exits with `EXIT.stateRefused` = 78 (EX_CONFIG).
-      - zeroed-worker.service lists 78 in `RestartPreventExitStatus`, so the unit stops failed instead of looping. An earlier draft of this record said it "retries every 5 s"; that was wrong once the refusal exits 78. Whether systemd also honours this when the `--reconcile` ExecStartPre exits 78 is not verified here; the e2e is where to prove it.
+      - zeroed-worker.service lists 78 in `RestartPreventExitStatus`, so the unit stops failed instead of looping. An earlier draft of this record said it "retries every 5 s"; that was wrong once the refusal exits 78.
+      - systemd reads RestartPreventExitStatus from the main process only. The first build exited 78 from the `--reconcile` ExecStartPre too, and the e2e on systemd 255 showed it restarting: "Control process exited … status=78", then the restart counter climbing, with ExecMainStatus 0.
+      - So now the pre-step writes its refusal and exits 0. The main start runs its own check, refuses again and exits 78, and the unit ends `failed` with NRestarts 0 (review of #280, option a). ExecMainStatus=78 is what zeroed-check, zeroed-update and zeroed-status read.
+      - The rejected alternative was a wrapper that refuses on a stale refused.json: it would never start after the owner restored the files.
+      - The e2e proves this path on real systemd: ExecStartPre status 0, ExecMainStatus 78, failed, NRestarts 0. Put back, a clean start removes refused.json.
       - The owner's recovery steps are in ops/README.md, "A refused start": read refused.json, restore, `systemctl reset-failed`, start. Without a backup that holds the files (an old, ledger-only one), the only safe way on is a cold start, with the old folder moved aside.
       - The next start that is not refused removes `refused.json`. Not rolling an update back onto the stand-in on a refusal is zeroed-update's part (RC-FIXES-2b).
   - **account.json checked whole (`checkAccount`).**
@@ -3581,7 +3585,7 @@ Owner decision (4 Oct 2026, about 10:25 PM Melbourne): "yes summary", to the sup
       - its journal ends on a `dispatching` line with no decision after it;
       - the last decision is that intent's `sign`;
       - the replay's only extra line is that intent's `submit`, at the same event.
-    - Anything else is a divergence: a different extra line, more than one, or any line before the end that differs.
+    - Anything else is a divergence: a different extra line, more than one, or any line before the end that differs. Two extra lines ending in the dispatched submit, and a journal whose last sign belongs to another intent, are tested (review of #280).
 - **Evidence.**
   - These probes fail on 959d8017 and pass here: r2-corrupt-state's 87 damage cases (20 failed before), state-backup-restore, entry-evidence and backup-coverage. state-backup-restore now restores what the backup keeps.
   - Round 4's probes fail on 10347648 and pass here: r4-upgrade-latch (which also removes the marker, as an old release leaves no marker), r4-cut-at-kill and r4-refusal-visible.
