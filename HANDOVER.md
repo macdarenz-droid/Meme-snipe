@@ -7,6 +7,7 @@
 - **Docs branch:** `claude/blueprint-migration` (this file, `PROJECT_STATE.md`, `CLAUDE.md`, the map).
 - **Freeze (kept):** no merges or deploys except a safety or security fix; the server stays on the stand-in; the worker is not resumed; #268 is not merged.
 - **Live sessions:** MIGRATION-A `session_01RaX4dmzVckU1JBZz8GrhL5` (group A map, branch `claude/migration-a`), MIGRATION-B `session_01Jox76wwmQcikEDF4RX9rEo` (group B and ops map, branch `claude/migration-b`). Check-in Routine `trig_0196N8rYLiNCNbep5ayrujKk` (one shot).
+- **Host move (owner, 7 Oct about 9:35 PM: "Lets use the 2gb"):** the owner installs the `vc2-1c-2gb` with the README line, `DEPLOY_CODE` and one Deploy run, pairs Telegram, then deletes `DEPLOY_CODE` again; the old `zeroed` is stopped first and kept. Freeze lifted for this one Deploy only: every first-parent commit from 171a61ce to cd4d7a64 has `"worker": "stub"` (checked), and 171a61ce is all green, so `tag.sh` cannot fall back below it. The failed Android preview job on cd4d7a64 (run 37597525662) was re-run at 9:37 PM so the tag lands on cd4d7a64 (S1's "Deploy 1, without #268").
 - **Owner, 7 Oct about 9:30 PM:** "When ur done archive all workers": after the map is done, every worker session is archived.
 
 ## S1's notes (record)
