@@ -53,6 +53,65 @@ def trade(x, stop, arm, trail, mode):
             return p0, fill, 'trail'
     return p0, c[last], 'time'
 
+def trade_ladder(x, stop, ladder, arm, trail, mode):
+    """Cut loss at -stop until the first take-profit fills; sell fraction f at each multiple m in `ladder`
+    [(m, f), ...]; the rest trails `trail` below its peak close once the close reaches `arm` x entry.
+    Returns (p0, average exit price)."""
+    c, v, lo = x['c'], x['v'], x['lo']
+    raw_hi = x.get('hi') or c
+    e = 1; p0 = c[e]; peak = p0; armed = False
+    left = 1.0; got = 0.0; steps = list(ladder)
+    last = min(len(c) - 1, e + MAX_HOLD)
+    for i in range(e + 1, last + 1):
+        if stop is not None and left == 1.0 and lo[i] <= p0 * (1 - stop):
+            lvl = p0 * (1 - stop)
+            return p0, (lvl if mode == 'opt' else min(lvl, c[i]))
+        while steps:
+            m, f = steps[0]
+            # a take-profit fills at its level, never above, and only in an hour with real volume;
+            # the hourly line needs an hourly close at or above the level, the real-time line only the hour's high
+            ok = v[i] >= VOL_OK and ((raw_hi[i] >= m * p0) if mode == 'opt' else (c[i] >= m * p0))
+            if not ok:
+                break
+            sell = min(f, left)
+            got += sell * m * p0
+            left -= sell; steps.pop(0)
+        if left <= 1e-9:
+            return p0, got
+        if c[i] > peak and v[i] > 0:
+            peak = c[i]
+        if not armed and peak >= arm * p0:
+            armed = True
+        if armed and c[i] <= peak * (1 - trail):
+            lvl = peak * (1 - trail)
+            fill = lvl if (mode == 'opt' and v[i] >= VOL_OK) else c[i]
+            return p0, got + left * fill
+    return p0, got + left * c[last]
+
+LADDERS = {
+    'TP5-all': [(5, 1.0)],
+    'TP10-all': [(10, 1.0)],
+    'half@5+trail': [(5, 0.5)],
+    'third@3,7+trail': [(3, 1 / 3), (7, 1 / 3)],
+    'quarter@5,10,20+trail': [(5, 0.25), (10, 0.25), (20, 0.25)],
+}
+
+def run_ladders(sample, hdir, outdir):
+    os.makedirs(outdir, exist_ok=True)
+    cs, counts = coins(sample, hdir)
+    for x in cs:
+        raw = {int(r[0]): r for r in json.load(open(os.path.join(hdir, x['u']['pool'] + '.json')))}
+        x['hi'] = [float(raw[t][2]) if t in raw else x['c'][i] for i, t in enumerate(x['ts'])]
+    res = {}
+    for name, lad in LADDERS.items():
+        for stop in (0.3, 0.5):
+            for trail in (0.4, 0.6):
+                for mode in ('pess', 'opt'):
+                    legs = [trade_ladder(x, stop, lad, 2.0, trail, mode) for x in cs]
+                    vals = [lottery.net(p0, max(p1, 1e-18), SIZES['$10'])[0] for p0, p1 in legs]
+                    res[f'{name}|stop={stop}|trail={trail}|{mode}|$10'] = stats(vals)
+    json.dump({'counts': counts, 'results': res}, open(os.path.join(outdir, 'ladders.json'), 'w'), indent=1)
+
 def stats(vals, seed=5):
     n = len(vals)
     if not n:
@@ -85,4 +144,4 @@ def run(sample, hdir, outdir, configs=None):
     print(json.dumps(counts))
 
 if __name__ == '__main__':
-    {'run': run}[sys.argv[1]](*sys.argv[2:])
+    {'run': run, 'ladders': run_ladders}[sys.argv[1]](*sys.argv[2:])

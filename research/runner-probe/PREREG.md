@@ -17,3 +17,10 @@ On the lottery probe's 900-coin sample (created 2026-07-22 to 08-20): 492 usable
 ## What will be reported and judged
 Per configuration and line: trades, win rate, mean and median per trade, the best trade, the mean without the best trade, the number of trades returning 10× or more and 50× or more, and P(100 trades end positive).
 A configuration is **supported** only if, at $10 on the hourly line (the conservative one), the mean per trade is > 0 in validation, and the real-time line's mean is also > 0. Because the payoff rests on rare winners, a single month cannot give a meaningful confidence interval; "supported" means only that the lucky tail showed up again, never that it is proven. The mean without the best trade is reported next to every result.
+
+## Amendment before any validation price was read (2026-10-07, owner brainstorm: take profit at 5×, 6×, 7× ...)
+Take-profit ladders were explored on the exploration sample (`runner.py ladders`; a take-profit fills at its level, never above, only in an hour with at least 20 SOL of volume). Selling everything at 5× or 10× lost in every version (it caps the rare winner that pays for the losses); partial ladders sat between full exits and pure trailing. One ladder is added to the validation:
+- **R4**: cut loss at −30% until the first take-profit; sell half at 5× (level fill, volume rule above); the rest arms at 2× and trails 60% below its peak close.
+Same execution lines, costs, report and support rule as R1–R3.
+
+Execution check on the exploration sample's biggest winner (minute bars, one call): it climbed in steady 0.1%-a-minute steps on about 0.2–0.9 SOL a minute, then a single minute with 319 SOL of selling cut it to 38.6% of its peak, where it traded for 15 minutes before falling further. A real-time trailing exit at 60% would have sold near that level (about 340× entry); a 40% trail could not have filled at its level. The real-time line is therefore close to achievable for a 60% trail and optimistic for a 40% trail.
