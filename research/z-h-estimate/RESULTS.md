@@ -616,10 +616,11 @@ option alone, assuming everything else is ready.
 | `rec_rates.py`, `rec_summary.py`, `rec_summary_2026-10-06.json` | Round 1: young-pool rates from the 6 Oct recording |
 
 ## For the owner
-- History test costs about 7.8 million Helius credits (at most 9.0 million) of a month's 10 million, for 30 older days (23 Jul–21 Aug), plus up to 432,000 for a speed test first; 60 days needs at least 3 rounds.
-- Before any credit: a strategy survives Phase 0; you rule on C-76 and Helius's "lawful business purpose" question; a rule for checks history can't rebuild is agreed; you set up private storage (0.5–1.4 TB, which GitHub may throttle at that size); the safety code passes; nothing outside the bot's own spend ledger uses the Helius account for 31 days. So about 8 Nov at the earliest.
+- History test costs about 7.8 million Helius credits (about 9.0 million at most) of a month's 10 million, for 30 older days (23 Jul–21 Aug), plus up to 432,000 for a speed test first; 60 days needs at least 3 rounds.
+- Before any credit: a strategy survives Phase 0; you rule on C-76 and Helius's "lawful business purpose" question; a rule for checks history can't rebuild is agreed; you set up private storage (0.5–1.4 TB, which GitHub may throttle or suspend at that size); the safety code passes; nothing outside the bot's own spend ledger uses the Helius account for 31 days. So about 8 Nov at the earliest.
 - After the download the bot has no Helius for 31 days: paper trading can start up to 31 days later (about 93 days for 60 days), and meanwhile the bot loses its Helius backup reads and fee estimates.
 - Speed is unproven: the real reading rate, after job restarts and checks, must be at least 6 blocks a second; the speed test must show 8 or there is no download. At the 5 a second seen so far it would take about 20 days, too long for the 14-day window.
+- The speed test's 432,000 stays counted for 31 days, so you choose: start the download soon after it, with less room, so it may stop early; or wait about a month more (to about early December) for full room.
 - If it stops early, the days read are kept and the rest waits about 31 days for another round.
 - It proves only that the bot doesn't crash on real history, not that it makes money. Checks history can't rebuild (honeypot test, old holders) would be assumed to pass and flagged, under a rule that is still pending.
 - Free option: the Old Faithful archive: 0 credits, about a week if not blocked, no Helius gap. It needs a pending scanner fix (PR #214), the same storage, and an exception to "no bulk downloads".

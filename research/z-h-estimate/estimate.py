@@ -108,7 +108,7 @@ out['mixed_26old_4new'] = daylist(span('2026-07-26', '2026-08-21') + span('2026-
 out['newest_4_with_leadin'] = daylist(span('2026-09-17', '2026-09-21'))
 # extras budgeted inside U (supervisor round 3 item 6); P10 has its own allocation
 EXTRAS = {'P12_fee_and_global_config_history': 1000, 'MR_pool_age_and_mint_lookups': 25000, 'admin_usage_reads': 100}
-P10_CAP = 12000
+P10_CAP = 12 * 2 * 300 * 60   # round 4: rpc_rps 12 x two 300-min jobs (one full job plus one chained restart)
 ACCT_CAP = 9500000
 rec = out['cheapest_leadin1']
 est = rec['credits_point'] + sum(EXTRAS.values())
@@ -116,8 +116,7 @@ cap = rec['credits_upper'] + sum(EXTRAS.values())
 out['spend_rules'] = {'extras_inside_U': EXTRAS, 'P10_own_allocation': P10_CAP,
                       'estimate_shown_to_owner': est, 'row_cap': cap, 'total_exposure_incl_P10': cap + P10_CAP,
                       'S_max_for_start_U_ge_1_1x_estimate': ACCT_CAP - math.ceil(1.1 * est),
-                      'S_max_for_full_row_cap': ACCT_CAP - cap,
-                      'min_blocks_per_s_in_14d_window': round(rec['blocks'] / (14 * 86400 - 31 * 45 * 60), 2)}
+                      'S_max_for_full_row_cap': ACCT_CAP - cap}
 
 # R3-01: effective reading rate (round 4). One data-scan job: setup, a 300-min rpc-day budget, save, chain gap;
 # a unit cut at the budget end is re-read by the next job (half a unit lost on average); 45 min of QA a day.
@@ -157,4 +156,8 @@ out['effective_rate'] = {'assumptions_min': {'setup': SETUP_MIN, 'save': SAVE_MI
                          'p10': {'rpc_rps': P10_RPS, 'rpc_conc': P10_CONC,
                                  'credit_cap': P10_RPS * 2 * BUDGET_MIN * 60,
                                  'max_effective_at_setting': round(p10_effective(P10_RPS), 2)}}
+assert out['effective_rate']['p10']['credit_cap'] == P10_CAP
+out['spend_rules']['effective_blocks_per_s_needed_14d'] = out['effective_rate']['effective_needed_14d']
+out['spend_rules']['raw_blocks_per_s_needed_14d'] = out['effective_rate']['raw_needed_14d']
+out['spend_rules']['p10_pass_effective_blocks_per_s'] = 8
 json.dump(out, sys.stdout, indent=1)

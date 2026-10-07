@@ -1028,13 +1028,15 @@
    "MR_pool_age_and_mint_lookups": 25000,
    "admin_usage_reads": 100
   },
-  "P10_own_allocation": 12000,
+  "P10_own_allocation": 432000,
   "estimate_shown_to_owner": 7762033,
   "row_cap": 9022478,
-  "total_exposure_incl_P10": 9034478,
+  "total_exposure_incl_P10": 9454478,
   "S_max_for_start_U_ge_1_1x_estimate": 961763,
   "S_max_for_full_row_cap": 477522,
-  "min_blocks_per_s_in_14d_window": 6.38
+  "effective_blocks_per_s_needed_14d": 5.94,
+  "raw_blocks_per_s_needed_14d": 7.15,
+  "p10_pass_effective_blocks_per_s": 8
  },
  "effective_rate": {
   "assumptions_min": {
