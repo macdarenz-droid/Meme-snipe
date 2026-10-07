@@ -286,9 +286,8 @@ describe('worker start and API address', () => {
     expect(entry()).toBe(STUB); // asked for, but the release has no worker
     writeFileSync(join(rel, 'ops/host-config.json'), '{not json');
     expect(entry()).toBe(STUB);
-    // SWITCH-1 is the reviewed switch: the repository now runs the release's own worker.
-    // PAUSE (owner, 2026-10-07): the host runs the stand-in until every blocker is fixed; back to 'release' then.
-    expect(JSON.parse(read('ops/host-config.json')).worker).toBe('stub');
+    // SWITCH-1 is the reviewed switch: the repository runs the release's own worker (again since RESUME-WORKER).
+    expect(JSON.parse(read('ops/host-config.json')).worker).toBe('release');
   });
 
   it("PRACTICE-ON: the release's shakedown settings, and only those, go to its worker", () => {
