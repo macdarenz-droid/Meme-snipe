@@ -420,5 +420,47 @@ describe('FACTS-REREAD: a candidate missing its migration fact has it read again
     expect(asked.filter((a) => a.includes('before'))).toHaveLength(1);
     expect(r.fillLeft()).toBeLessThan(10 * COMPLETION_CREDITS);
     expect(missingMigration(r.last.r)).toBe(false);
+    // Parity (TEST-1): the late completion is a recorded transaction: the session replays ten times to the same decisions.
+    const p = checkSession(r.h.stateDir, { session: r.h.session, rugs: RUG_CONFIG, strategy: r.h.worker.strategyConfig }, replayLedgerFile, 10);
+    expect(p.boots.map((b) => [b.replays, b.deterministic, b.divergence])).toEqual([[10, true, null]]);
+    expect(p.boots[0]!.decisions).toBeGreaterThan(1);
+    expect(p.ok).toBe(true);
   }, 60_000);
+
+  it('a COMPLETION-READ made when its chain parked is not made again when the chain resumes and is spent', async () => {
+    const { asked, rpc } = curveRpc();
+    const get = rpc.getTransaction;
+    // The completion can never be read: the chain's first try lands the migration only.
+    rpc.getTransaction = async (sig) => (sig === complete.signature ? (asked.push(`tx ${sig}`), null) : get(sig));
+    // After the day change the curve answers slowly, so the coin's window has closed by the time the resumed try ends.
+    let slow = false;
+    const sigs = rpc.getSignaturesForAddress;
+    rpc.getSignaturesForAddress = async (address, o) => {
+      for (let k = 0; slow && k < 5; k++) await new Promise<void>((res) => setImmediate(res));
+      return sigs(address, o);
+    };
+    // The day's budget pays for exactly one try: the second parks the chain.
+    const cost = 1 + 1 + REREAD_CURVE_READS;
+    const befores = () => asked.filter((a) => a.includes('before')).length;
+    const r = await run(rpc, {
+      reread: REREAD_CREDITS_PER_DAY - cost, logsOnly: true, fill: 10 * COMPLETION_CREDITS, window: false, runMs: CUT_CREATE_RETRY_MS[0]! + 60_000,
+      after: async (h, m, tick) => {
+        // Parked: COMPLETION-READ, which stood aside for the running chain, was made once and found nothing.
+        expect(befores()).toBe(1);
+        // The next UTC day: the first step resumes the chain (the coin still a candidate until an event says otherwise).
+        slow = true;
+        h.timers.set((Math.floor(h.timers.now() / DAY_MS) + 1) * DAY_MS + 1_000);
+        h.worker.step();
+        const pages = curveReads(asked);
+        // The resumed try reads the curve again (slowly) while the next steps close the coin's window.
+        for (let k = 0; k < 30; k++) await new Promise<void>((res) => setImmediate(res));
+        expect(curveReads(asked)).toBe(pages + 1);
+        await m.run(60_000, 5_000, tick);
+      },
+    });
+    // The resumed try fails after the coin left the candidates: the chain is spent, and COMPLETION-READ is not made again.
+    expect(r.rereads.map((x) => [x['try'], x['landed'], x['budget'] ?? null])).toEqual([[1, false, null], [2, false, 'spent'], [2, false, null]]);
+    expect(r.h.logs).toContain(`Candidate ${MINT}: its stage-1 facts were not read again in 2 tries; its refusal stands.`);
+    expect(befores()).toBe(1);
+  }, 120_000);
 });
