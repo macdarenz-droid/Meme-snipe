@@ -2,7 +2,7 @@
 
   python3 -I daily.py run <universe.json> <dailydir> <outdir>
 """
-import json, math, os, random, statistics, sys
+import json, math, os, statistics, sys
 
 WALL = 1789999200                      # 2026-09-21T14:00:00Z
 DAY = 86400
@@ -33,6 +33,11 @@ def group(m):
 def net(g, m, q):
     return g - 2 * fee_bps(m) / 1e4 - 2 * q / math.sqrt(K_MIG * m / 1e9) - FIXED_SOL / q
 
+def net_exact(g, m, m_exit, q):
+    R = math.sqrt(K_MIG * m / 1e9)
+    return (g - fee_bps(m) / 1e4 - q / R - fee_bps(m_exit) / 1e4 * (1 + g)
+            - (q / R) * (1 + g) ** 1.5 - FIXED_SOL / q)
+
 def load(path):
     """Contiguous daily closes and volumes from the first bar to the last full day before the wall."""
     d = json.load(open(path))
@@ -62,27 +67,39 @@ def candidates(uni, ddir):
             continue
         series[u['pool']] = s
         ts, c, v = s
-        for j in range(8, len(ts)):
-            D = ts[j]
-            if D < DEC_START:
-                continue
-            m = c[j - 1] * 1e9
-            g = group(m)
-            if not g or v[j - 1] <= 0 or min(c[j - 8:j]) <= 0:
-                continue
-            r1 = math.log(c[j - 1] / c[j - 2])
-            r7 = math.log(c[j - 1] / c[j - 8])
-            hi7 = max(c[j - 8:j - 1])
-            out.append({'pool': u['pool'], 'sym': u['symbol'], 'D': D, 'j': j, 'r1': r1, 'r7': r7,
-                        'newhigh': c[j - 1] > hi7, 'g': g, 'mcap': m})
+        real = 0
+        for j in range(len(ts)):
+            if j >= 8:
+                D = ts[j]
+                m = c[j - 1] * 1e9
+                g = group(m)
+                if D >= DEC_START and g and v[j - 1] > 0 and real >= 8 and min(c[j - 8:j]) > 0:
+                    r1 = math.log(c[j - 1] / c[j - 2])
+                    r7 = math.log(c[j - 1] / c[j - 8])
+                    hi7 = max(c[j - 8:j - 1])
+                    rets = [math.log(c[k] / c[k - 1]) for k in range(j - 7, j)]
+                    out.append({'pool': u['pool'], 'sym': u['symbol'], 'D': D, 'j': j, 'r1': r1, 'r7': r7,
+                                'newhigh': c[j - 1] > hi7, 'g': g, 'mcap': m, 'vol7': statistics.pstdev(rets)})
+            if v[j] > 0:
+                real += 1
     return out, series
+
+def add_vol_bucket(cands):
+    by = {}
+    for x in cands:
+        by.setdefault((x['D'], x['g']), []).append(x)
+    for xs in by.values():
+        xs.sort(key=lambda x: x['vol7'])
+        n = len(xs)
+        for i, x in enumerate(xs):
+            x['vq'] = min(4, i * 5 // n)
 
 def outcome(series, cand, H):
     ts, c, v = series[cand['pool']]
     k = cand['j'] + H - 1
     if k >= len(ts) or ts[k] + DAY > WALL:
         return None
-    return c[k] / c[cand['j'] - 1] - 1
+    return c[k] / c[cand['j'] - 1] - 1, c[k] * 1e9
 
 def select(cands):
     by_day = {}
@@ -102,83 +119,102 @@ def select(cands):
             sel['W-MOM'] += xs2[-k:]
     return sel
 
-def block_boot(days_vals, L, reps=BOOT, seed=11):
-    """days_vals: list of (day, [values]) in time order. Circular moving-block bootstrap of the trade-weighted mean."""
-    n = len(days_vals)
-    if n < 3:
-        return None
-    rng = random.Random(seed)
-    means = []
-    for _ in range(reps):
-        s = cnt = 0.0
-        picked = 0
-        while picked < n:
-            st = rng.randrange(n)
-            for o in range(L):
-                if picked >= n:
-                    break
-                xs = days_vals[(st + o) % n][1]
-                s += sum(xs); cnt += len(xs); picked += 1
-        if cnt:
-            means.append(s / cnt)
-    means.sort()
-    q = lambda p: means[min(len(means) - 1, max(0, int(p * len(means))))]
-    return {'95': [q(0.025), q(0.975)], '99': [q(0.005), q(0.995)]}
+def t_quantile(p, df):
+    def cdf(x):
+        if x == 0:
+            return 0.5
+        b, n = abs(x), 2000
+        hh = b / n
+        cst = math.gamma((df + 1) / 2) / (math.sqrt(df * math.pi) * math.gamma(df / 2))
+        f = lambda t: cst * (1 + t * t / df) ** (-(df + 1) / 2)
+        area = (f(0) + f(b) + sum((4 if k % 2 else 2) * f(k * hh) for k in range(1, n))) * hh / 3
+        return 0.5 + area if x > 0 else 0.5 - area
+    lo, hi = -200.0, 200.0
+    for _ in range(80):
+        mid = (lo + hi) / 2
+        if cdf(mid) < p:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2
 
-def summarize(trs, s0, H):
+def batch_t(points, H, start):
+    """points: list of (D, value, weight). Non-overlapping H-day calendar batches from `start`;
+    each batch's weighted mean; t-interval over batches."""
+    batches = {}
+    for D, x, w in points:
+        b = (D - start) // (H * DAY)
+        s_, w_ = batches.get(b, (0.0, 0.0))
+        batches[b] = (s_ + x * w, w_ + w)
+    means = [s_ / w_ for s_, w_ in batches.values() if w_ > 0]
+    k = len(means)
+    if k < 3:
+        return {'batches': k}
+    m = statistics.fmean(means)
+    se = statistics.stdev(means) / math.sqrt(k)
+    out = {'batches': k, 'mean_of_batches': m}
+    for lev, p in (('95', 0.975), ('99', 0.995)):
+        tq = t_quantile(p, k - 1)
+        out[lev] = [m - tq * se, m + tq * se]
+    return out
+
+def summarize(trs, s0, H, start, key='net'):
     if not trs:
         return {'n': 0}
-    L = max(H, 3)
-    byday = {}
-    for t in trs:
-        byday.setdefault(t['D'], []).append(t['net'])
-    dv = sorted(byday.items())
-    s0day = {}
+    pool = {}
     for t in s0:
-        s0day.setdefault(t['D'], []).append(t['net'])
-    diffs = [(D, [statistics.fmean(xs) - statistics.fmean(s0day[D])]) for D, xs in dv if D in s0day]
-    xs = [t['net'] for t in trs]
+        pool.setdefault((t['D'], t['g'], t['vq']), []).append(t[key])
+    diffs = []
+    for t in trs:
+        ref = pool.get((t['D'], t['g'], t['vq']))
+        if ref:
+            diffs.append((t['D'], t[key] - statistics.fmean(ref), 1.0))
+    xs = [t[key] for t in trs]
     return {
-        'n': len(trs), 'days': len(dv), 'pools': len({t['pool'] for t in trs}),
-        'mean_net': statistics.fmean(xs), 'median_net': statistics.median(xs),
+        'n': len(trs), 'days': len({t['D'] for t in trs}), 'pools': len({t['pool'] for t in trs}),
+        'mean': statistics.fmean(xs), 'median': statistics.median(xs),
         'win': sum(1 for x in xs if x > 0) / len(xs), 'mean_gross': statistics.fmean(t['gross'] for t in trs),
-        'mean_stress': statistics.fmean(x - STRESS for x in xs), 'ci': block_boot(dv, L),
-        's0_mean_net': statistics.fmean(t['net'] for t in s0) if s0 else None,
-        'diff_mean': statistics.fmean(d[1][0] for d in diffs) if diffs else None,
-        'diff_ci': block_boot(diffs, L) if diffs else None,
+        'mean_stress': statistics.fmean(x - STRESS for x in xs),
+        'ci': batch_t([(t['D'], t[key], 1.0) for t in trs], H, start),
+        's0_mean': statistics.fmean(t[key] for t in s0) if s0 else None,
+        'diff_vm_mean': statistics.fmean(d[1] for d in diffs) if diffs else None, 'diff_vm_n': len(diffs),
+        'diff_vm_ci': batch_t(diffs, H, start) if diffs else None,
     }
 
 def run(uni, ddir, outdir):
     os.makedirs(outdir, exist_ok=True)
     cands, series = candidates(uni, ddir)
+    add_vol_bucket(cands)
     sel = select(cands)
     results = {}
     for name, H in list(RULES.items()) + [('S0-H1', 1), ('S0-H3', 3), ('S0-H7', 7)]:
         base = sel[name] if name in sel else cands
-        s0base = cands
         rows, s0rows = [], []
-        for x in base:
-            g = outcome(series, x, H)
-            if g is not None:
-                rows.append({**x, 'gross': g})
-        for x in s0base:
-            g = outcome(series, x, H)
-            if g is not None:
-                s0rows.append({**x, 'gross': g})
+        for src, dst in ((base, rows), (cands, s0rows)):
+            for x in src:
+                o = outcome(series, x, H)
+                if o is not None:
+                    dst.append({**x, 'gross': o[0], 'm_exit': o[1]})
         results[name] = {}
         for sz, q in SIZES.items():
-            tr = [{**t, 'net': net(t['gross'], t['mcap'], q)} for t in rows]
-            s0 = [{**t, 'net': net(t['gross'], t['mcap'], q)} for t in s0rows]
+            tr = [{**t, 'net': net(t['gross'], t['mcap'], q), 'exact': net_exact(t['gross'], t['mcap'], t['m_exit'], q)} for t in rows]
+            s0 = [{**t, 'net': net(t['gross'], t['mcap'], q), 'exact': net_exact(t['gross'], t['mcap'], t['m_exit'], q)} for t in s0rows]
             for gname, gset in (('ABC', 'ABC'), ('AB', 'AB'), ('A', 'A'), ('C', 'C')):
                 for per, (lo, hi) in (('disc', (DEC_START, VAL_START)), ('val', (VAL_START, WALL)), ('all', (DEC_START, WALL))):
                     f = lambda t: t['g'] in gset and lo <= t['D'] < hi
-                    results[name][f'{sz}|{gname}|{per}'] = summarize([t for t in tr if f(t)], [t for t in s0 if f(t)], H)
+                    a, b = [t for t in tr if f(t)], [t for t in s0 if f(t)]
+                    for key in ('net', 'exact'):
+                        results[name][f'{sz}|{gname}|{per}|{key}'] = summarize(a, b, H, lo, key)
     verdict = {}
     for name in RULES:
-        v = results[name]['$200|ABC|val']; d = results[name]['$200|ABC|disc']
-        ok = (v.get('n', 0) > 0 and v['mean_net'] > 0 and v['ci'] and v['ci']['99'][0] > 0
-              and v['diff_ci'] and v['diff_ci']['95'][0] > 0
-              and d.get('n', 0) > 0 and d['mean_net'] > 0 and v['mean_stress'] > 0)
+        ok = True
+        for key in ('net', 'exact'):
+            v = results[name][f'$200|ABC|val|{key}']; d = results[name][f'$200|ABC|disc|{key}']
+            ab = results[name][f'$200|AB|val|{key}']
+            ok = ok and (v.get('n', 0) > 0 and v['mean'] > 0 and v['ci'].get('99') and v['ci']['99'][0] > 0
+                         and v['diff_vm_ci'] and v['diff_vm_ci'].get('95') and v['diff_vm_ci']['95'][0] > 0
+                         and ab.get('n', 0) > 0 and (ab['diff_vm_mean'] or 0) > 0
+                         and d.get('n', 0) > 0 and d['mean'] > 0 and v['mean_stress'] > 0)
         verdict[name] = 'promising' if ok else 'not supported'
     json.dump({'verdict': verdict, 'results': results, 'n_candidates': len(cands), 'n_pools': len(series)},
               open(os.path.join(outdir, 'results.json'), 'w'), indent=0)
