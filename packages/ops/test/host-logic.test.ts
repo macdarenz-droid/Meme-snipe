@@ -941,3 +941,76 @@ describe('recording upload alerts (RECORD-UPLOAD)', () => {
     expect(check.indexOf('record_alerts')).toBeLessThan(check.indexOf('keys_stored || exit 0'));
   });
 });
+
+describe('D07 host preflight (Z00)', () => {
+  // The block runs from the built ops/install.sh, the file the README line downloads. Its reads stay real; the
+  // test only shadows df and awk's /proc/meminfo with bash functions, which no host or environment can do.
+  const script = read('ops/install.sh');
+  const block = script.slice(script.indexOf('D07_MEM_MIN_KB='), script.indexOf('\n# An update is all or nothing.'));
+  const die = script.slice(script.indexOf('die() {'), script.indexOf('\n', script.indexOf('die() {')));
+  const GIB = 1048576;
+  const run = (update: 0 | 1, memKb: string, diskKb: string) => {
+    const dir = mkdtempSync(join(tmp, 'd07-'));
+    writeFileSync(join(dir, 'meminfo'), `MemTotal:       ${memKb} kB\nMemFree:          100000 kB\n`);
+    const r = spawnSync('bash', ['-c', `set -euo pipefail; UPDATE=${update}; ${die}
+      df() { [ "$*" = "-P -k /var/lib" ] && [ -n "${diskKb}" ] || return 1; printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\n/dev/vda2 %s 9 9 1%% /\\n' "${diskKb}"; }
+      awk() { if [ "\${@: -1}" = /proc/meminfo ]; then command awk "\${@:1:$#-1}" "${dir}/meminfo"; else command awk "$@"; fi; }
+      ${block}
+      echo went-on`], { encoding: 'utf8', env: { PATH: process.env['PATH'] ?? '' } });
+    return { status: r.status, out: r.stdout.trim(), err: r.stderr.trim() };
+  };
+  const twoGb = '2014180'; // a typical 2 GB VM's MemTotal (1.92 GiB)
+  const disk55 = '52700000'; // a 55 GB disk's filesystem, in kB (53.96 GB)
+
+  it('passes the 2 GB, 55 GB host and the boundaries: 1.85 GiB (shown as 1.9 GiB) and 50 GB exactly', () => {
+    expect(run(0, twoGb, disk55)).toEqual({ status: 0, out: 'went-on', err: '' });
+    expect(run(0, String(Math.ceil(1.85 * GIB)), '48828125')).toEqual({ status: 0, out: 'went-on', err: '' });
+  });
+
+  it('a full install refuses below either minimum, says why, and stops before any change', () => {
+    const oneGb = run(0, '1004316', disk55); // the 1 GB server zeroed
+    expect(oneGb.status).toBe(1);
+    expect(oneGb.out).toBe('');
+    expect(oneGb.err).toBe("Install stopped: this server is below the bot's host minimum (docs/blueprint/ARCH.md D07): it has 0.96 GiB of RAM; the bot needs a 2 GB server (at least 1.9 GiB reported). Use the 2 GB Vultr server (vc2-1c-2gb, 55 GB SSD).");
+    expect(run(0, String(Math.ceil(1.85 * GIB) - 1), disk55).status).toBe(1);
+    const smallDisk = run(0, twoGb, '24413000'); // 25 GB
+    expect(smallDisk.status).toBe(1);
+    expect(smallDisk.err).toContain('the disk that holds /var/lib is 25.0 GB; the bot needs at least 50 GB.');
+    expect(run(0, twoGb, '48828124').status).toBe(1);
+    const both = run(0, '1004316', '24413000');
+    expect(both.err).toContain('it has 0.96 GiB of RAM; the bot needs a 2 GB server (at least 1.9 GiB reported); the disk that holds /var/lib is 25.0 GB');
+    // Unreadable or odd values refuse too.
+    for (const [m, d] of [['', disk55], ['abc', disk55], [twoGb, ''], [twoGb, '-5'], ['1e9', disk55]] as const) {
+      const r = run(0, m, d);
+      expect(r.status, `${m}/${d}`).toBe(1);
+      expect(r.err, `${m}/${d}`).toMatch(/could not be read/);
+    }
+  });
+
+  it('an update only warns, so a running server keeps updating', () => {
+    const r = run(1, '1004316', '24413000');
+    expect(r.status).toBe(0);
+    expect(r.out).toBe('went-on');
+    expect(r.err.split('\n')).toEqual([
+      "Warning: this server is below the bot's host minimum (D07): it has 0.96 GiB of RAM; the bot needs a 2 GB server (at least 1.9 GiB reported).",
+      "Warning: this server is below the bot's host minimum (D07): the disk that holds /var/lib is 25.0 GB; the bot needs at least 50 GB.",
+    ]);
+    expect(run(1, twoGb, disk55)).toEqual({ status: 0, out: 'went-on', err: '' });
+  });
+
+  it('reads only the host, before anything changes, with no way to skip it', () => {
+    expect(block).toContain(`awk '$1 == "MemTotal:" { print $2; exit }' /proc/meminfo`);
+    expect(block).toContain("df -P -k /var/lib 2>/dev/null | awk 'NR == 2 { print $2 }'");
+    expect(block).not.toMatch(/ZEROED_|E2E|\$\{[A-Z_]+:-/);
+    expect(block).toMatch(/^D07_MEM_MIN_KB=1939866 /m);
+    expect(block).toMatch(/^D07_DISK_MIN_KB=48828125 /m);
+    // After the root, OS and option checks; before the journal, apt, files or users.
+    const at = script.indexOf('D07_MEM_MIN_KB=');
+    expect(script.indexOf('die "needs an x86_64 server"')).toBeLessThan(at);
+    expect(script.indexOf('--ssh-key must be one public key line')).toBeLessThan(at);
+    for (const later of ['JOURNAL=/var/lib/zeroed-host/update-journal', 'say "Packages"', 'say "Users"', '# @@FILES@@', 'install_file /']) {
+      const i = script.indexOf(later);
+      if (i >= 0) expect(i, later).toBeGreaterThan(at);
+    }
+  });
+});

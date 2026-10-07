@@ -38,7 +38,8 @@
 **Accounts:**
 - Helius Developer plan (10M credits a month, cycle 6 Oct–6 Nov 2026, autoscaling off; about 126k used on 7 Oct).
 - GitHub Pro.
-- Vultr `zeroed` (1 GB).
+- Vultr `vc2-1c-2gb` (2 GB, 55 GB, US$10/month): the bot's host from 7 Oct.
+- Vultr `zeroed` (1 GB): stopped, kept until its ledger, saved state and journal are kept elsewhere.
 - Cloudflare Workers Free.
 - Telegram @Zeroed_alerts_bot.
 
@@ -251,6 +252,7 @@ Owner, Mon 5 Oct about 5:07 AM (three marked screenshots): "These are future upd
 
 ## Owner setup
 - Hosting approved by the owner (2026-10-03): about US$6/month, Vultr High Performance in Frankfurt; Hetzner as backup.
+- New host (owner, 2026-10-07 about 9:35 PM: "Lets use the 2gb"): Vultr Shared CPU `vc2-1c-2gb`, Frankfurt, 1 vCPU, 2 GB (about 1.9 GiB reported), 55 GB SSD, Ubuntu 24.04 LTS x64, US$10/month, created by the owner on 6 Oct (`docs/blueprint/ARCH.md` D07). It is installed fresh with the README line (`ops/README.md`), whose installer refuses a host below the D07 minimum (Z00). Only the stand-in runs on it until the Blueprint's paper gates pass. The old server `zeroed` (below) is stopped, not deleted, until its ledger, saved state and journal are kept elsewhere; deleting it is then the owner's step. Its state is never reused.
 - API keys are in GitHub repository secrets and verified: `HELIUS_API_KEY`, `ALCHEMY_API_KEY`, `JUPITER_API_KEY`, `TELEGRAM_BOT_TOKEN` (bot @Zeroed_alerts_bot). Never in chat or in the repo.
 - Vultr: server `zeroed` running (vhp-1c-1gb, Frankfurt, Ubuntu 24.04.5, no backups, US$6/month), created 2026-10-03. Tailscale key expiry disabled for it by the owner (4 Oct, about 4:27 PM). Set up on 2026-10-04: keys stored (4), Telegram paired, signer active. Re-installed by the owner at pin e28788a (OPS-1g) on 4 Oct, with Tailscale (HTTPS on, `tailscale serve` to the tailnet only) and the holdout-registry ruleset, all done at 2:31 PM. Host code changes arrive through code-only Deploy runs (the supervisor may run them; `DEPLOY_CODE` stays deleted) and the server's update gate. The app shows "Server error" until the real worker runs.
 - Cloudflare: Account API token (Edit Cloudflare Workers template, 1-year expiry) is in GitHub secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`, verified active from CI. Renew before 2027-10-03.
