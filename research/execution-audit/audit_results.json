@@ -1,0 +1,185 @@
+{
+ "trades": {
+  "A-jackpot": {
+   "mint": "EsKJJ57YmEqpkG3bA6g527x8dznYfG2wArw5pKYNpump",
+   "pool": "3qFWj1FxVQV1oysJ7Td4fEicWEBMEwoVdxUjXRKadmtf",
+   "label": "A-jackpot",
+   "entry": {
+    "slot": 440320944,
+    "P_e": 4.4103217185064775e-08,
+    "p0_hourly_close": 4.39515587022198e-08,
+    "P_e_over_close": 1.0034505825805289,
+    "fee_bps": 95.0,
+    "model_fee_bps": 125.0,
+    "quote_eff_sol": 27.867735925,
+    "virtual_quote_sol": 17.5845053,
+    "tokens": 1877742.721540098,
+    "avg_fill": 4.465489862117017e-08,
+    "avg_fill_over_close": 1.0160026160554538,
+    "tokens_vs_model": 0.9997143392911498
+   },
+   "realtime_swaps_read": 90,
+   "mismatch_rt": 0,
+   "R1_rt": {
+    "reason": "trail",
+    "slot": 440594219,
+    "t": 1787279323,
+    "P_trig_over_Pe": 27.47564514657073,
+    "peak_over_Pe": 100.40130081332539,
+    "peak_slot_t": [
+     440594204,
+     1787279317
+    ],
+    "fills": {
+     "1": {
+      "mult": 26.653842497267828,
+      "p_marg": 1.2117643451989798e-06
+     },
+     "5": {
+      "mult": 26.653842497267828,
+      "p_marg": 1.2117643451989798e-06
+     },
+     "25": {
+      "mult": 28.033915138163646,
+      "p_marg": 1.2750089704981126e-06
+     },
+     "150": {
+      "mult": 35.55767200466942,
+      "p_marg": 1.6204260648387569e-06
+     }
+    },
+    "share_of_peak_value": {
+     "1": 0.268793847739175,
+     "5": 0.268793847739175,
+     "25": 0.28271135458059854,
+     "150": 0.35858557638593214
+    }
+   },
+   "R2_rt": {
+    "reason": "trail",
+    "slot": 440594219,
+    "t": 1787279323,
+    "P_trig_over_Pe": 27.47564514657073,
+    "peak_over_Pe": 100.40130081332539,
+    "peak_slot_t": [
+     440594204,
+     1787279317
+    ],
+    "fills": {
+     "1": {
+      "mult": 26.653842497267828,
+      "p_marg": 1.2117643451989798e-06
+     },
+     "5": {
+      "mult": 26.653842497267828,
+      "p_marg": 1.2117643451989798e-06
+     },
+     "25": {
+      "mult": 28.033915138163646,
+      "p_marg": 1.2750089704981126e-06
+     },
+     "150": {
+      "mult": 35.55767200466942,
+      "p_marg": 1.6204260648387569e-06
+     }
+    },
+    "share_of_peak_value": {
+     "1": 0.268793847739175,
+     "5": 0.268793847739175,
+     "25": 0.28271135458059854,
+     "150": 0.35858557638593214
+    }
+   },
+   "R1_hourly": {
+    "model_reason": "trail",
+    "model_net_$10": 129.7522177209362,
+    "model_p_exit_over_p0": 138.92205808960264,
+    "slot": 440624799,
+    "delay_s": 50,
+    "fills": {
+     "1": {
+      "mult": 131.91559787543596,
+      "p_marg": 6.110825757974693e-06
+     },
+     "5": {
+      "mult": 131.91559787543596,
+      "p_marg": 6.110825757974693e-06
+     },
+     "25": {
+      "mult": 131.67104855286874,
+      "p_marg": 6.099303762685442e-06
+     },
+     "150": {
+      "mult": 241.8037818821842,
+      "p_marg": 1.1337427683285344e-05
+     }
+    }
+   },
+   "R2_hourly": {
+    "model_reason": "trail",
+    "model_net_$10": 22.268466335959893,
+    "model_p_exit_over_p0": 24.2817829576094,
+    "slot": 440750993,
+    "delay_s": 221,
+    "fills": {
+     "1": {
+      "mult": 23.770396115192835,
+      "p_marg": 1.0795861963089598e-06
+     },
+     "5": {
+      "mult": 23.770396115192835,
+      "p_marg": 1.0795861963089598e-06
+     },
+     "25": {
+      "mult": 23.770396115192835,
+      "p_marg": 1.0795861963089598e-06
+     },
+     "150": {
+      "mult": 23.75321631227132,
+      "p_marg": 1.0788003066473271e-06
+     }
+    }
+   },
+   "sigs_in_range": 15949
+  },
+  "B-winner1": {
+   "mint": "HjoLebZzbqBHhBQCFwr3Fc2GCwVyTfHoULfjKuBnpump",
+   "pool": "Bkaxo2M8qfa3hCEx2UP71sgfRJ9h4WSbqbA73njdqes",
+   "label": "B-winner1",
+   "entry": {
+    "slot": 438448281,
+    "P_e": 2.0532089444952158e-08,
+    "p0_hourly_close": 2.0305245566128e-08,
+    "P_e_over_close": 1.0111716885218351,
+    "fee_bps": 125.0,
+    "model_fee_bps": 125.0,
+    "quote_eff_sol": 19.08164553,
+    "virtual_quote_sol": 17.584505369,
+    "tokens": 4016023.411779513,
+    "avg_fill": 2.087896465470525e-08,
+    "avg_fill_over_close": 1.0282547229832222,
+    "tokens_vs_model": 0.9892019911149312
+   },
+   "realtime_swaps_read": 173,
+   "mismatch_rt": 0,
+   "R1_rt": {
+    "reason": "none-in-range"
+   },
+   "R2_rt": {
+    "reason": "none-in-range"
+   },
+   "R1_hourly": {
+    "reason": "no swap after exit bar in range"
+   },
+   "R2_hourly": {
+    "reason": "no swap after exit bar in range"
+   },
+   "sigs_in_range": 178
+  }
+ },
+ "skipped": {},
+ "credits": {
+  "calls": 589,
+  "credits": 5890
+ }
+}
