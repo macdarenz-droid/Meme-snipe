@@ -45,6 +45,11 @@ probe does, transaction by transaction. This file is fixed and pushed before any
   fetched; pump.fun TradeEvent / CompleteEvent are decoded and ordered by (slot, transactionIndex, inner order).
 - Chain check: each trade's pre-state (post-state ∓ its amounts) must equal the previous post-state. Breaks are
   counted and reported; the primary analysis keeps those launches, a check reruns without them.
+  *Amendment 2026-10-07, before any return was computed (smoke test on 20 out-of-window launches, no window
+  data):* the check runs on the **real** reserves. In "mayhem mode" coins (a TradeEvent flag; 8 of the 20, traded
+  through program `MAyhSmz…`) the virtual SOL reserves move between trades by more than the logged amounts while
+  real reserves chain exactly, so a virtual jump is not missing data. The replay always uses each trade's logged
+  post-trade state, so these jumps are priced. Mayhem share and virtual-jump counts are reported.
 - Migration: the migrate transaction on the bonding curve gives the PumpSwap pool; its swaps from migration to
   creation + 3,900 s are fetched and replayed as in research/execution-audit (pre-swap reserves from each event,
   effective quote = real + virtual, LP + protocol + creator fees).

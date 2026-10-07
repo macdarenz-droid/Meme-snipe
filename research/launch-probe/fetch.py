@@ -1,8 +1,10 @@
 """Read-only Helius fetching for the launch probe (rules in PREREG.md).
 
   LP_SCRATCH=<dir outside repo> python3 -I fetch.py measure <n>          # signature counts only, no returns
-  LP_SCRATCH=<dir outside repo> python3 -I fetch.py sample <window> <n>   # draws launches, writes derived/sample_<window>.json
-  LP_SCRATCH=<dir outside repo> python3 -I fetch.py coins <window>        # fetches every sampled launch (cached)
+  LP_SCRATCH=... python3 -I fetch.py sample    # draws both windows, writes derived/sample_<window>.json
+  LP_SCRATCH=... python3 -I fetch.py list      # bonding-curve signature lists; counts and budget check
+  LP_SCRATCH=... python3 -I fetch.py fetch     # every successful transaction, decoded to scratch/events/
+  LP_SCRATCH=... python3 -I fetch.py slots     # slot length per UTC day
 
 Key hygiene and the credit cap are those of research/execution-audit/heli.py (key only inside its _url(),
 errors scrubbed, ledger in the scratch directory, 10 credits counted per call, hard stop at CAP). Raw responses
@@ -111,10 +113,141 @@ def measure(n):
     print('successful sigs to horizon: total', sum(r[1] for r in res), 'mean', sum(r[1] for r in res) / max(1, len(res)))
     print(heli.credits())
 
+
+AMM = heli.AMM
+CREATE_POOL = bytes([233, 146, 209, 142, 207, 104, 64, 188])
+DRAWS = {'discovery': (300, 20261071), 'validation': (250, 20261072)}
+RESERVE = 150_000
+EV = os.path.join(SCR, 'events')
+
+def _save(name, obj):
+    os.makedirs(DERIVED, exist_ok=True)
+    json.dump(obj, open(os.path.join(DERIVED, name), 'w'), indent=0)
+
+def _load(name):
+    return json.load(open(os.path.join(DERIVED, name)))
+
+def sample():
+    """Draw both windows; read each create transaction; write derived/sample_<window>.json."""
+    for w, (n, seed) in DRAWS.items():
+        d = draw(w, n, seed)
+        sigs = [s for x in d for s in x['sigs']]
+        recs = list(POOL.map(launch, sigs))
+        by = dict(zip(sigs, recs))
+        for x in d:
+            x['launches'] = [by[s] for s in x['sigs'] if by[s]]
+            x['not_create'] = [s for s in x['sigs'] if not by[s]]
+        assert all(L['time'] < WALL - HORIZON for x in d for L in x['launches'])
+        _save('sample_%s.json' % w, d)
+        print(w, 'draws', len(d), 'launches', sum(len(x['launches']) for x in d), heli.credits())
+
+def _sigfile(L):
+    return os.path.join(SCR, 'sigs', L['sig'] + '.json')
+
+def listing():
+    """Bonding-curve signatures of every sampled launch (cached in the scratch directory); counts only."""
+    os.makedirs(os.path.join(SCR, 'sigs'), exist_ok=True)
+    def one(L):
+        p = _sigfile(L)
+        if not os.path.exists(p):
+            json.dump(bc_sigs(L), open(p, 'w'))
+        rows = json.load(open(p))
+        return sum(1 for x in rows if x['err'] is None and x['signature'] != L['sig'])
+    out = {}
+    for w in DRAWS:
+        d = _load('sample_%s.json' % w)
+        Ls = [L for x in d for L in x['launches']]
+        cnt = list(POOL.map(one, Ls))
+        out[w] = {'launches': len(Ls), 'tx_to_fetch': sum(cnt), 'max': max(cnt)}
+    led = heli.credits()
+    need = sum(v['tx_to_fetch'] for v in out.values()) * heli.CREDITS_PER_CALL
+    out['credits_used'] = led['credits']; out['tx_credits_needed'] = need
+    out['fits'] = led['credits'] + need + RESERVE <= heli.CAP
+    _save('listing.json', out)
+    print(json.dumps(out))
+
+def _pool_of(t, mint):
+    keys = pumpdec.tx_keys(t)
+    for grp in t['meta'].get('innerInstructions') or []:
+        for ix in grp['instructions']:
+            if keys[ix['programIdIndex']] == AMM and heli.b58decode(ix['data'])[:8] == CREATE_POOL:
+                acc = [keys[a] for a in ix['accounts']]
+                if acc[3] == mint:
+                    return acc[0]
+    return None
+
+def coin(L):
+    """Fetch and decode one launch; writes <scratch>/events/<create sig>.json (derived event streams)."""
+    out_p = os.path.join(EV, L['sig'] + '.json')
+    if os.path.exists(out_p):
+        return json.load(open(out_p))
+    rows = [x for x in json.load(open(_sigfile(L))) if x['err'] is None]
+    if not rows or rows[0]['signature'] != L['sig']:
+        rows = [{'signature': L['sig'], 'err': None}] + [x for x in rows if x['signature'] != L['sig']]
+    txs = list(POOL.map(lambda x: tx(x['signature']), rows))
+    trades, completes, pool, mig = [], [], None, None
+    for t in txs:
+        if not t or t['meta'].get('err') is not None:
+            continue
+        for kind, k, e in pumpdec.events(t):
+            key = [t['slot'], t['transactionIndex'], k, t['blockTime']]
+            if kind == 'trade' and e['mint'] == L['mint']:
+                trades.append(key + [int(e['is_buy']), e['sol_amount'], e['token_amount'], e['vsol'], e['vtok'],
+                                     e['rsol'], e['rtok'], e['fee_bps'], e['creator_fee_bps'], e['user'],
+                                     e['mayhem']])
+            elif kind == 'complete' and e['mint'] == L['mint']:
+                completes.append(key)
+            elif kind == 'undecodable':
+                trades.append(key + ['undecodable'])
+        p = _pool_of(t, L['mint'])
+        if p and mig is None:
+            pool, mig = p, [t['slot'], t['transactionIndex'], 0, t['blockTime']]
+    trades.sort(key=lambda r: r[:3]); completes.sort()
+    swaps = []
+    if pool:
+        sys.path.insert(0, os.path.join(HERE, '..', 'execution-audit'))
+        import audit
+        prow = heli.pool_sigs(pool, mig[3] - 5, L['time'] + HORIZON)
+        prow = [x for x in prow if x['err'] is None and x['slot'] >= mig[0]]
+        got = list(POOL.map(lambda x: audit.swaps_of(x, pool), prow))
+        for g in got:
+            for s in g:
+                swaps.append([s.slot, s.idx, s.k, s.t, s.B0, s.Q0, s.V, s.B1, s.Q1, s.f, s.kind])
+        swaps.sort(key=lambda r: r[:3])
+    rec = {'launch': L, 'trades': trades, 'completes': completes, 'pool': pool, 'migrate': mig, 'swaps': swaps,
+           'n_sig_ok': len(rows)}
+    os.makedirs(EV, exist_ok=True)
+    json.dump(rec, open(out_p + '.tmp', 'w')); os.replace(out_p + '.tmp', out_p)
+    return rec
+
+def fetch_all():
+    Ls = [L for w in DRAWS for x in _load('sample_%s.json' % w) for L in x['launches']]
+    random.Random(5).shuffle(Ls)
+    done = 0
+    for L in Ls:
+        coin(L); done += 1
+        if done % 100 == 0:
+            print('coins', done, '/', len(Ls), heli.credits(), flush=True)
+    print('all coins', done, heli.credits())
+
+def slot_len():
+    """Mean slot length per UTC day from block times at both ends of the day (derived/slot_len.json)."""
+    out = {}
+    t0 = WINDOWS['discovery'][0]
+    pts = []
+    for d in range(0, (WINDOWS['validation'][1] - t0) // 86400 + 1):
+        s, t = heli.slot_for_time(t0 + d * 86400, tol=5)
+        pts.append((s, t))
+    for (s0, a), (s1, b) in zip(pts, pts[1:]):
+        out[str(a // 86400 * 86400)] = (b - a) / (s1 - s0)
+    _save('slot_len.json', {'points': pts, 'sec_per_slot_by_day_start': out})
+    print(min(out.values()), max(out.values()))
+
 if __name__ == '__main__':
     cmd = sys.argv[1]
     try:
-        if cmd == 'measure':
-            measure(int(sys.argv[2]))
+        {'measure': lambda: measure(int(sys.argv[2])), 'sample': sample, 'list': listing,
+         'fetch': fetch_all, 'slots': slot_len}[cmd]()
+        print(heli.credits())
     except Exception as e:
         print('error:', heli.scrub(type(e).__name__), heli.scrub(e)[:300], file=sys.stderr); raise SystemExit(1)

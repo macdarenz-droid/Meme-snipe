@@ -31,11 +31,11 @@ def decode_trade(b):
     ev['fee_bps'], ev['fee'] = struct.unpack_from('<QQ', b, p); p += 16
     ev['creator'], p = _pk(b, p)
     ev['creator_fee_bps'], ev['creator_fee'] = struct.unpack_from('<QQ', b, p); p += 16
-    ev['cashback_bps'] = ev['cashback'] = ev['buyback_bps'] = ev['buyback_fee'] = None
+    ev['cashback_bps'] = ev['cashback'] = ev['buyback_bps'] = ev['buyback_fee'] = ev['mayhem'] = None
     try:
         p += 1 + 8 + 8 + 8 + 8                                   # track_volume .. last_update_timestamp
         ev['ix_name'], p = _str(b, p)
-        p += 1                                                   # mayhem_mode
+        ev['mayhem'] = bool(b[p]); p += 1
         ev['cashback_bps'], ev['cashback'] = struct.unpack_from('<QQ', b, p); p += 16
         ev['buyback_bps'], ev['buyback_fee'] = struct.unpack_from('<QQ', b, p); p += 16
     except (struct.error, UnicodeDecodeError):
