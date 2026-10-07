@@ -1,6 +1,6 @@
 // Freeze mechanism for shared packages (B-M19-01 logic 2; ARCH 18 "frozen before tickets start").
 // FREEZE.json records the package version and a sha256 over package.json, every file under src/, and the package's
-// tsconfig.json with every config it extends (red team RT-06). The check fails
+// tsconfig.json with every config it extends (red team RT-06), and the root TypeScript version (RT3-06). The check fails
 // when the files no longer match it. When they differ from the base branch's FREEZE.json, the change must also carry
 // a higher semantic version, a CHANGELOG.md section for it and sign-off lines from both group leads.
 import { createHash } from 'node:crypto';
@@ -10,7 +10,23 @@ import { join } from 'node:path';
 import { finding, type Finding, type Io } from './finding.ts';
 import type { Git } from './git.ts';
 
-export interface FreezeManifest { package: string; version: string; sha256: string; files: string[] }
+/**
+ * `typescript`: the TypeScript the repository root compiles the frozen package with (red team RT3-06; ruling 5.6). The
+ * root manifest pins it exactly (E_PIN) and the frozen lockfile installs that version, so the manifest's spec is the
+ * version that runs. A different compiler can give the same types another meaning, so a change to it is a change to the
+ * frozen surface. Null when the root declares none.
+ */
+export interface FreezeManifest { package: string; version: string; sha256: string; files: string[]; typescript?: string | null }
+
+/** The TypeScript version the repository root declares (devDependencies first, then dependencies), or null. */
+export function rootTypescript(root: string): string | null {
+  try {
+    const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as { devDependencies?: Record<string, string>; dependencies?: Record<string, string> };
+    return pkg.devDependencies?.['typescript'] ?? pkg.dependencies?.['typescript'] ?? null;
+  } catch {
+    return null;
+  }
+}
 
 const SIGN_OFFS = ['Sign-off (group A lead):', 'Sign-off (group B lead):'];
 
@@ -112,7 +128,7 @@ export function freezeHash(root: string, dir: string, files: readonly string[]):
 export function buildFreeze(root: string, dir: string): FreezeManifest {
   const pkg = JSON.parse(readFileSync(join(root, dir, 'package.json'), 'utf8')) as { name?: string; version?: string };
   const files = freezeFiles(root, dir);
-  return { package: String(pkg.name), version: String(pkg.version), sha256: freezeHash(root, dir, files), files };
+  return { package: String(pkg.name), version: String(pkg.version), sha256: freezeHash(root, dir, files), files, typescript: rootTypescript(root) };
 }
 
 export function writeFreeze(root: string, dir: string): FreezeManifest {
@@ -175,6 +191,10 @@ export function checkFreeze(root: string, dirs: readonly string[], git: Git, bas
     if (current.sha256 !== recorded.sha256) {
       findings.push(finding('E_FROZEN_CHANGED', file, `${current.package} is frozen and its files changed; bump the version, add a CHANGELOG.md entry with both sign-offs, then run "node tools/policy/bin/freeze.ts ${dir}"`));
     }
+    if ((recorded.typescript ?? null) !== current.typescript) {
+      findings.push(finding('E_FROZEN_CHANGED', file, `${current.package} is frozen with TypeScript ${String(recorded.typescript ?? 'unrecorded')}; the root now declares ${String(current.typescript)}. `
+        + `A compiler change is a change to the frozen surface: bump the version, add a CHANGELOG.md entry with both sign-offs, then run "node tools/policy/bin/freeze.ts ${dir}"`));
+    }
     if (current.version !== recorded.version) {
       findings.push(finding('E_FREEZE_VERSION', file, `FREEZE.json records ${recorded.version} but package.json is ${current.version}`));
     }
@@ -184,7 +204,8 @@ export function checkFreeze(root: string, dirs: readonly string[], git: Git, bas
     if (!baseOk) continue;
     const baseText = git.show(baseRef, file);
     const base = baseText === null ? null : parseFreeze(baseText);
-    if (base === null || base.sha256 === current.sha256) continue;      // first freeze, or unchanged against the base
+    // First freeze, or unchanged against the base (files and compiler).
+    if (base === null || (base.sha256 === current.sha256 && (base.typescript ?? null) === current.typescript)) continue;
     if (!semverGreater(current.version, base.version)) {
       findings.push(finding('E_FREEZE_BUMP', file, `${current.package} changed against ${baseRef}; its version must be higher than ${base.version}`));
     }

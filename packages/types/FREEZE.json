@@ -14,5 +14,6 @@
     "tsconfig.json",
     "../../tsconfig.bot.json",
     "../../tsconfig.json"
-  ]
+  ],
+  "typescript": "7.0.2"
 }

@@ -313,6 +313,20 @@ describe('workflows', () => {
     assert.ok(logic.includes(`DEPLOY_AUDIT_JOB=${AUDIT_JOB}\n`), 'logic.sh DEPLOY_AUDIT_JOB');
   });
 
+  it('refuses an expression in any job name, in every workflow, Zeroed\'s included (RT3-03, M1, ruling 5.3)', () => {
+    const other = (job: string): string => `name: other\non: [push]\npermissions:\n  contents: read\njobs:\n  x:\n${job}    runs-on: x\n    steps:\n      - run: exit 1\n`;
+    const borrow = (text: string, file = '.github/workflows/other.yml'): string[] =>
+      codes(checkWorkflows({ ...ci(good), workflows: [...ci(good).workflows, { file, text }] }));
+    assert.deepEqual(borrow(other("    name: ${{ format('zeroed-{0}', 'advisories') }}\n")), ['E_JOB_NAME_EXPR'], 'the red team\'s computed name');
+    assert.deepEqual(borrow(other("    name: build-${{ matrix.os }}\n")), ['E_JOB_NAME_EXPR'], 'any expression');
+    assert.deepEqual(borrow(other("    name: ${{ format('zeroed-{0}', 'advisories') }}\n"), '.github/workflows/deploy.yml'), ['E_JOB_NAME_EXPR'], 'Zeroed\'s workflows too');
+    assert.deepEqual(borrow(other('    name: plain\n')), [], 'a plain name');
+    assert.deepEqual(borrow(other('').replace('      - run: exit 1\n', '      - name: step-${{ matrix.os }}\n        run: exit 1\n')), [], 'a step name is not a check run');
+    const unparsable = `name: x\non: {push: {}}\njobs:\n  a:\n    name: zeroed-${'${{'} 'advisories' }}\n    runs-on: x\n`;
+    assert.deepEqual(borrow(unparsable, '.github/workflows/backtest-trial.yml'), ['E_JOB_NAME_EXPR'], 'a workflow the reader cannot follow is searched as text');
+    assert.deepEqual(borrow(unparsable.replace("zeroed-${{ 'advisories' }}", 'plain'), '.github/workflows/backtest-trial.yml'), []);
+  });
+
   it('runs a label event in a concurrency group of its own, so nothing cancels the labeled run (ruling 3.3)', () => {
     assert.ok(CI_CONCURRENCY_GROUP.includes('github.event.action') && CI_CONCURRENCY_GROUP.includes('github.event.label.name'));
     assert.ok(realCi.includes(`  group: ${CI_CONCURRENCY_GROUP}\n`), 'this repository\'s ci.yml');

@@ -9,6 +9,7 @@ import { DEFAULT_BASE_REF, FROZEN_PACKAGES, LOCKFILE } from './config.ts';
 import { finding, formatFindings, type Finding, type Io } from './finding.ts';
 import { checkFreeze } from './freeze.ts';
 import { gitAt } from './git.ts';
+import { checkGitattributes } from './gitattributes.ts';
 import { checkHosts } from './hosts.ts';
 import { checkImports } from './imports.ts';
 import { checkLintConfig } from './lintconfig.ts';
@@ -50,7 +51,7 @@ export function runChecks(root: string, baseRef: string, options: { includeZeroe
   // files are read in full (fails closed) and the run reports E_BASE_REF.
   const includeZeroed = options.includeZeroed === true;
   const structure = structureScopeOf(includeZeroed);
-  const lines = safetyLinesOf(includeZeroed, mergeBase === null ? null : git.addedLines(mergeBase));
+  const lines = safetyLinesOf(includeZeroed, mergeBase === null ? null : git.addedLines(mergeBase), new Set(mergeBase === null ? [] : git.changedFiles(mergeBase)));
   const baseFindings = git.hasRef(baseRef) && mergeBase === null
     ? [finding('E_BASE_REF', baseRef, `no merge base between "${baseRef}" and HEAD, so the lines old Zeroed files gained are unknown`)] : [];
   return [
@@ -64,6 +65,7 @@ export function runChecks(root: string, baseRef: string, options: { includeZeroe
     ...checkNpmrc(snapshot, files),
     ...checkPnpmConfig(snapshot, files.filter(scope), baseIds),
     ...checkLintConfig(snapshot, files),
+    ...checkGitattributes(root, files),
     ...checkImports(snapshot, files, structure, lines),
     ...checkHosts(root, files, lines),
     ...scanFiles(root, files.filter(scope), readAllowlist(root)),

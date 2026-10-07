@@ -11,10 +11,10 @@ import {
 } from '../age.ts';
 import { checkDrift, guardedFiles, guardedHash, isGuarded, reviewLabel, type GuardedFile } from '../drift.ts';
 import {
-  buildFreeze, changelogSection, checkFreeze, freezeFiles, freezeHash, freezeMain, rootTsconfigChain, rootTsconfigProjection, semverGreater, sortedJson, tsconfigChain, writeFreeze,
+  buildFreeze, changelogSection, checkFreeze, freezeFiles, freezeHash, freezeMain, rootTsconfigChain, rootTsconfigProjection, rootTypescript, semverGreater, sortedJson, tsconfigChain, writeFreeze,
 } from '../freeze.ts';
 import type { Git } from '../git.ts';
-import { capture, codes, FIXTURES, REPO_ROOT, runBin } from './helpers.ts';
+import { capture, codes, editJson, FIXTURES, REPO_ROOT, runBin } from './helpers.ts';
 
 const tmp = mkdtempSync(join(tmpdir(), 'policy-freeze-'));
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
@@ -40,6 +40,7 @@ function fakeGit(base: Record<string, string> | null): Git {
     changedSince: () => [],
     mergeBase: () => (base === null ? null : 'merge-base'),
     addedLines: () => new Map(),
+    changedFiles: () => [],
   };
 }
 
@@ -139,6 +140,25 @@ describe('freeze manifest', () => {
     assert.deepEqual(codes(checkFreeze(dir, ['packages/types'], git, 'base')), ['E_FREEZE_BUMP', 'E_FREEZE_SIGNOFF', 'E_FROZEN_CHANGED'], 'the package tsconfig stays frozen whole');
     assert.equal(rootTsconfigProjection('{ not json'), '{ not json', 'an unreadable root config is hashed whole');
     assert.equal(sortedJson({ b: [{ d: 1, c: 2 }], a: null }), '{"a":null,"b":[{"c":2,"d":1}]}');
+  });
+
+  it('records the root TypeScript version; a different compiler is a change to the frozen surface (RT3-06, ruling 5.6)', () => {
+    const dir = fixtureCopy('typescript-version');
+    const recorded = writeFreeze(dir, 'packages/types');
+    assert.equal(recorded.typescript, '6.0.3', 'the root devDependency');
+    assert.equal(rootTypescript(dir), '6.0.3');
+    const git = fakeGit({ 'packages/types/FREEZE.json': JSON.stringify(recorded) });
+    assert.deepEqual(checkFreeze(dir, ['packages/types'], git, 'base'), []);
+    editJson(dir, 'package.json', (p) => { (p['devDependencies'] as Record<string, string>)['typescript'] = '6.0.4'; });
+    const f = checkFreeze(dir, ['packages/types'], git, 'base');
+    assert.deepEqual(codes(f), ['E_FREEZE_BUMP', 'E_FREEZE_SIGNOFF', 'E_FROZEN_CHANGED']);
+    assert.match(f.find((x) => x.code === 'E_FROZEN_CHANGED')?.message ?? '', /frozen with TypeScript 6\.0\.3; the root now declares 6\.0\.4/);
+    writeFreeze(dir, 'packages/types');
+    assert.deepEqual(codes(checkFreeze(dir, ['packages/types'], git, 'base')), ['E_FREEZE_BUMP', 'E_FREEZE_SIGNOFF'], 're-recorded, the base still had the old compiler');
+    const unrecorded = fakeGit({ 'packages/types/FREEZE.json': JSON.stringify({ ...recorded, typescript: undefined }) });
+    writeFileSync(join(dir, 'packages/types/FREEZE.json'), JSON.stringify({ ...recorded, typescript: undefined }));
+    assert.ok(codes(checkFreeze(dir, ['packages/types'], unrecorded, 'base')).includes('E_FROZEN_CHANGED'), 'a FREEZE.json without the version fails');
+    assert.equal(JSON.parse(readFileSync(join(REPO_ROOT, 'packages/types/FREEZE.json'), 'utf8')).typescript, rootTypescript(REPO_ROOT));
   });
 
   it('freezes this repository\'s root tsconfig.json for @bot/types (ruling 3.5)', () => {

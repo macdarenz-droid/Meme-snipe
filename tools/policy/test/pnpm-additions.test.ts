@@ -2,7 +2,7 @@
 // the scoped audit, the SBOM, and the Zeroed scope (B-M30-01 logic 2, 3, 5; docs/MIGRATION.md "Toolchain").
 import { strict as assert } from 'node:assert';
 import { execFileSync } from 'node:child_process';
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describe, it } from 'vitest';
@@ -13,8 +13,10 @@ import {
 import { runChecks } from '../check.ts';
 import { ZEROED_DIRS, ZEROED_FILES_MANIFEST } from '../config.ts';
 import { finding } from '../finding.ts';
-import { parseAddedLines, type Git } from '../git.ts';
-import { checkHosts, EVIDENCE_FILES, hostScanned, scanHosts } from '../hosts.ts';
+import { gitAt, parseAddedLines, type Git } from '../git.ts';
+import { scanGitattributes } from '../gitattributes.ts';
+import { isGuarded } from '../drift.ts';
+import { checkHosts, decodeEscapes, EVIDENCE_FILES, GIT_BINARY_PROBE, hostScanned, isSourceLike, scanHosts, stripComment } from '../hosts.ts';
 import { checkImports, looseModuleRefs } from '../imports.ts';
 import type { PnpmLock } from '../lockfile.ts';
 import { checkManifests } from '../manifests.ts';
@@ -41,11 +43,13 @@ describe('pump.fun-operated hosts (owner rule A02)', () => {
       // Red team RT-04 (supervisor ruling 8): a trailing dot, any letter case, and the bare domain as a value.
       `const u = "https://frontend-api.${HOST}./coins";`, `host: "frontend-api.${HOST}."`, `PUMP_HOST=frontend-api.${HOST}.`,
       `label = "${CAPS}"`, `x = '${CAPS}/coin'`, `host: ${HOST}`, `  host: ${CAPS}.`, `PUMP_HOST=${HOST}`, `PUMP_HOST=${CAPS}`,
-      `${HOST}/coins`, `${HOST}`, `"api": "${CAPS}:443"`, `hosts = ["${HOST}","${CAPS}"]`];
+      `${HOST}/coins`, `${HOST}`, `"api": "${CAPS}:443"`, `hosts = ["${HOST}","${CAPS}"]`,
+      // Ruling 5.4: a quoted value followed by whitespace counts now too.
+      `"${HOST} program"`, `"topic": "${CAPS} coin creation (Token-2022)"`];
     for (const line of hits) assert.deepEqual(codes(scanHosts(line, 'f.ts')), ['E_PUMP_FUN_HOST'], line);
     const misses = [`// the ${HOST} bonding curve`, `"${HOST}ny"`, `x.${HOST}ction`, `not${HOST}`, `const venue = 'pumpfun_curve';`,
-      `"${HOST} program"`, `'pump' + '.fun'`, `// venue: ${HOST} bonding curve`, `// claim: the ${CAPS} label routes it`,
-      `"topic": "${CAPS} coin creation (Token-2022)"`, `x = "${HOST}.io/x"`, `host: ${HOST}ny`, `note = "see [${CAPS}](https://x/y)"`];
+      `'pump' + '.fun'`, `// venue: ${HOST} bonding curve`, `// claim: the ${CAPS} label routes it`,
+      `x = "${HOST}.io/x"`, `host: ${HOST}ny`, `note = "see [${CAPS}](https://x/y)"`];
     for (const line of misses) assert.deepEqual(scanHosts(line, 'f.ts'), [], line);
     const f = scanHosts(`ok\nconst u = "https://frontend-api.${HOST}/coins";\n`, 'a.ts');
     assert.deepEqual(f.map((x) => `${x.file} ${x.message}`), [`a.ts:2 "//frontend-api.${HOST}" is a pump.fun-operated host; bot and research code makes no request to pump.fun (owner rule A02)`]);
@@ -64,6 +68,51 @@ describe('pump.fun-operated hosts (owner rule A02)', () => {
     }
   });
 
+  it('ruling 5.4 forms: whitespace around = and :, ; ) whitespace or :port after, any shell argument, decoded escapes (RT3-04)', () => {
+    const hit = (line: string, file = 'f.ts'): void => assert.deepEqual(codes(scanHosts(line, file)), ['E_PUMP_FUN_HOST'], `${file}: ${line}`);
+    const miss = (line: string, file = 'f.ts'): void => assert.deepEqual(scanHosts(line, file), [], `${file}: ${line}`);
+    // Whitespace around = and :
+    hit(`host = ${HOST}`); hit(`HOST =${HOST}`); hit(`host:${HOST}`); hit(`host :  ${HOST}`);
+    // ; ) whitespace :port or end of line after the domain
+    hit(`H=${HOST};`); hit(`url = ${HOST})`); hit(`h = ${HOST} 443`); hit(`target: ${HOST}:443`); hit(`H=${HOST}`);
+    // Any shell argument, in files whose lines run as commands
+    for (const file of ['run.sh', 'ci.yml', 'zeroed-x.service', 'Dockerfile']) {
+      hit(`nc ${HOST} 443`, file); hit(`openssl s_client -connect ${HOST}:443`, file); hit(`ping -c1 ${HOST}`, file); hit(`dig +short ${HOST}`, file);
+    }
+    miss(`nc ${HOST} 443`, 'ops/bin/probe-tool');
+    assert.deepEqual(codes(scanHosts(`#!/usr/bin/env bash\nnc ${HOST} 443\n`, 'ops/bin/probe-tool')), ['E_PUMP_FUN_HOST'], 'a #! shell script');
+    miss(`nc ${HOST} 443`, 'notes.ts');
+    // Escape-encoded literals are decoded first
+    // Built from pieces, so this file holds no encoded host of its own (the check reads tools/ too).
+    const enc = (sep: string): string => ['pump', 'fun'].join(sep);
+    hit(`fetch('${enc('\\u002e')}/api')`); hit(`fetch("\\x70${'ump'}.fun/x")`); hit(`u = 'https%3A%2F%2F${enc('%2E')}%2Fcoins'`);
+    hit(`h = '${enc('\\u{2e}')}'`);
+    // A comment naming the on-chain program stays quiet, in code and in shell
+    miss(`// The ${HOST} bonding curve program holds the reserves`); miss(`# the ${HOST} bonding curve program`, 'run.sh');
+    miss(`const x = 1; // reads the ${HOST} bonding curve from chain`);
+    assert.equal(decodeEscapes('a\\u0041b\\x42c%43\\u{44}'), 'aAbBcCD');
+    assert.equal(stripComment('x = 1 # tail'), 'x = 1 ');
+    assert.equal(stripComment('u = "https://a/b" // tail'), 'u = "https://a/b" ');
+    assert.equal(stripComment('  # whole line'), '');
+  });
+
+  it('decides binary by extension and git\'s view, never by a NUL alone; a NUL in code or config is E_BINARY_SOURCE (RT3-01, ruling 5.1)', () => {
+    const repo = goodRepo();
+    try {
+      // The red team's case: a new .mjs file with a NUL in a comment and a pump.fun fetch. It parses and lints.
+      write(repo.dir, 'research/x/feed.mjs', `// \0\nexport const f = () => fetch('https://frontend-api.${HOST}/coins');\n`);
+      repo.commit('a NUL to hide a fetch');
+      assert.deepEqual(runChecks(repo.dir, 'main').map((f) => `${f.code} ${f.file}`), ['E_BINARY_SOURCE research/x/feed.mjs', 'E_PUMP_FUN_HOST research/x/feed.mjs:2']);
+    } finally { repo.remove(); }
+    const body = `x = "https://${HOST}/coins"\n`;
+    assert.equal(hostScanned('ops/bin/tool', `#!/bin/sh\n\0${body}`), true, 'a #! file is read whatever it holds');
+    assert.equal(isSourceLike('ops/bin/tool', `#!/bin/sh\n\0`), true);
+    assert.equal(isSourceLike('prod.env', ''), true);
+    assert.equal(hostScanned('data/blob.dat', `\0${body}`), false, 'not code or config, NUL early: binary in git\'s view');
+    assert.equal(hostScanned('data/blob.dat', `${'a'.repeat(GIT_BINARY_PROBE)}\0${body}`), true, 'a NUL past git\'s probe: text in git\'s view');
+    assert.equal(hostScanned('web/logo.png', body), false, 'by extension');
+  });
+
   it('reads every text file but binaries, images, Markdown, non-code under docs/ and the named evidence files (ruling 3.2)', () => {
     const CAPS = ['Pump', 'fun'].join('.');
     const repo = goodRepo();
@@ -79,7 +128,7 @@ describe('pump.fun-operated hosts (owner rule A02)', () => {
       assert.deepEqual([...new Set(checkHosts(repo.dir, files).map((x) => x.file.replace(/:\d+$/, '')))].sort(), [...read].sort());
       assert.equal(hostScanned('docs/x/notes.txt', body), false);
       assert.equal(hostScanned('docs/x/run-me', `#!/bin/sh\n${body}`), true, 'code under docs/ by its #! line');
-      assert.equal(hostScanned('packages/x/blob.dat', `a\0b`), false, 'a NUL byte marks a binary');
+      assert.equal(hostScanned('packages/x/blob.dat', `a\0b`), false, 'a NUL byte early in a file that is not code or config: binary in git\'s view');
       for (const [file, reason] of Object.entries(EVIDENCE_FILES)) {
         assert.ok(reason.length > 10, `${file} names its reason`);
         assert.equal(hostScanned(file, body), false, file);
@@ -114,7 +163,7 @@ describe('pump.fun-operated hosts (owner rule A02)', () => {
     const repo = goodRepo();
     try {
       write(repo.dir, 'packages/engine/src/feed.ts', `export const FEED = 'https://frontend-api-v3.${HOST}/coins/latest';\n`);
-      repo.commit('pump.fun request');
+      repo.commit('request to the venue host');
       const r = runBin('check.ts', [repo.dir], repo.dir, { POLICY_BASE_REF: 'main' });
       assert.equal(r.status, 1);
       assert.match(r.stderr, /policy: E_PUMP_FUN_HOST packages\/engine\/src\/feed\.ts:1: /);
@@ -127,8 +176,23 @@ describe('pump.fun-operated hosts (owner rule A02)', () => {
     assert.deepEqual(checkHosts(REPO_ROOT, files), []);
     const zeroed = [...new Set(checkHosts(REPO_ROOT, files, safetyLinesOf(true, null)).map((x) => x.file.replace(/:\d+$/, '')))];
     // Every text file is read now (ruling 3.2); docs/ non-code and Markdown are not, and code under docs/ is.
+    // Round 5: meta.json is a named evidence file now (ruling 5.5); the wider forms of ruling 5.4 add three docstrings
+    // and pf.py's own stop message, all old Zeroed lines.
     assert.deepEqual(zeroed, ['apps/web/src/components/TokenActions.tsx', 'apps/web/test/app-trade.test.ts',
-      'docs/handover/sandbox/supervisor/files/bundle_probe.py', 'research/brainstorm/collect.py', 'research/empirical/backfill/meta.json']);
+      'docs/handover/sandbox/supervisor/files/bundle_probe.py', 'research/brainstorm/brainstorm2.py', 'research/brainstorm/collect.py',
+      'research/brainstorm/pf.py', 'research/launch-probe/pumpdec.py']);
+  });
+
+  it('collect.py stops before anything runs, and meta.json is named evidence with its reason (ruling 5.5)', () => {
+    const lines = readFileSync(join(REPO_ROOT, 'research/brainstorm/collect.py'), 'utf8').split('\n');
+    const first = lines.findIndex((l, i) => i > 0 && l.trim() !== '' && !l.trimStart().startsWith('#'));
+    assert.ok(lines[0]?.startsWith('"""') && lines[0].endsWith('"""'), 'a one-line docstring first');
+    assert.match(lines[first] ?? '', /^raise SystemExit\(/, 'the first statement after the docstring stops the script');
+    assert.match(lines.slice(1, first).join('\n'), /owner rule A02, 2026-10-07: no new requests/);
+    assert.ok(lines.slice(first + 1).some((l) => /^import /.test(l)), 'imports come after the stop');
+    const reason = EVIDENCE_FILES['research/empirical/backfill/meta.json'] ?? '';
+    assert.match(reason, /recorded .* never fetched from/);
+    for (const file of Object.keys(EVIDENCE_FILES)) assert.ok(lstatSync(join(REPO_ROOT, file)).isFile(), `${file} exists`);
   });
 });
 
@@ -213,6 +277,58 @@ describe('old Zeroed code: structure rules skip it, safety checks read its added
       assert.deepEqual(looseModuleRefs("import a from 'a';\nconst b = require(\"b\");\nexport * from 'c';\nawait import(`d`);\n").map((r) => `${r.line}:${r.specifier}`),
         ['1:a', '2:b', '3:c', '4:d']);
     } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('RT3-02: a .gitattributes line cannot hide an edit; -diff, binary, diff= and -text are refused (ruling 5.2)', () => {
+    const repo = goodRepo();
+    try {
+      const file = 'research/empirical/lib.mjs';
+      onBase(repo, file, 'export const OLD = 1;\n');
+      write(repo.dir, '.gitattributes', 'research/** -diff\n');
+      editText(repo.dir, file, (t) => `${t}export const feed = () => fetch('https://frontend-api.${HOST}/coins');\n`);
+      repo.commit('hide an edit behind -diff');
+      assert.deepEqual(runChecks(repo.dir, 'main').map((f) => `${f.code} ${f.file}`), ['E_GITATTRIBUTES .gitattributes:1', `E_PUMP_FUN_HOST ${file}:2`],
+        'git diff --text still shows the hunk, and the attribute is refused');
+      assert.equal(isGuarded('.gitattributes'), true);
+      assert.equal(isGuarded('research/x/.gitattributes'), true, 'at any depth');
+    } finally { repo.remove(); }
+    for (const attr of ['-diff', 'binary', 'diff=hide', 'diff=', '-text']) {
+      assert.deepEqual(codes(scanGitattributes(`# comment\n*.mjs ${attr}\n`, '.gitattributes')), ['E_GITATTRIBUTES'], attr);
+    }
+    assert.deepEqual(scanGitattributes('* text=auto eol=lf\n*.png -crlf\n*.sh text\n\n', '.gitattributes'), [], 'other attributes are fine');
+  });
+
+  it('a changed old Zeroed file without a hunk is read whole (ruling 5.2)', () => {
+    const old = 'research/empirical/lib.mjs';
+    const lines = safetyLinesOf(false, new Map([[old, new Set([3])]]), new Set([old, ZEROED_FILE]));
+    assert.equal(lines(ZEROED_FILE), 'all', 'changed, no hunk: read whole');
+    assert.deepEqual([...(lines(old) as Set<number>)], [3]);
+    assert.deepEqual([...(safetyLinesOf(false, new Map(), new Set())(ZEROED_FILE) as Set<number>)], [], 'unchanged: nothing');
+    const repo = goodRepo();
+    try {
+      const file = 'ops/host/files/usr/local/sbin/zeroed-backup';
+      onBase(repo, file, `#!/usr/bin/env bash\ncurl -s ${HOST}/api/coins\n`);
+      assert.deepEqual(runChecks(repo.dir, 'main'), [], 'old line quiet');
+      chmodSync(join(repo.dir, file), 0o755);
+      repo.commit('mode change only');
+      assert.deepEqual(runChecks(repo.dir, 'main').map((f) => `${f.code} ${f.file}`), [`E_PUMP_FUN_HOST ${file}:2`], 'no hunk to read: the whole file is read');
+      // A hunk that only removes lines is a parsable hunk with nothing added: the file is not read whole.
+      chmodSync(join(repo.dir, file), 0o644);
+      editText(repo.dir, file, (t) => t.replace('#!/usr/bin/env bash\n', ''));
+      repo.commit('remove a line');
+      assert.deepEqual(gitAt(repo.dir).addedLines('main').get(file)?.size, 0);
+    } finally { repo.remove(); }
+  });
+
+  it('runs git diff with --text, so a NUL byte or attribute cannot turn a file\'s diff into "Binary files differ"', () => {
+    const repo = goodRepo();
+    try {
+      const file = 'research/empirical/lib.mjs';
+      onBase(repo, file, 'export const OLD = 1;\n');
+      editText(repo.dir, file, (t) => `${t}// \0\nexport const NEW = 2;\n`);
+      assert.deepEqual([...(gitAt(repo.dir).addedLines('main').get(file) ?? [])], [2, 3]);
+      assert.deepEqual(gitAt(repo.dir).changedFiles('main'), [file]);
+    } finally { repo.remove(); }
   });
 
   it('reads the lines a file gained from git diff -U0', () => {
@@ -350,6 +466,7 @@ describe('security audit of the checked workspace projects', () => {
     blob: () => null,
     mergeBase: () => (baseLock === null ? null : 'merge-base'),
     addedLines: () => new Map(),
+    changedFiles: () => [],
   });
 
   it('main: audits the checked projects\' packages only (Zeroed\'s with --include-zeroed), and fails closed', async () => {

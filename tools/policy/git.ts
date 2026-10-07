@@ -28,10 +28,14 @@ export interface Git {
   /**
    * The lines each file gained since `ref` (a commit), as 1-based line numbers of the working tree's file: `git diff
    * -U0` against the working tree, so committed and uncommitted changes both count. Files whose content did not change
-   * are absent. Supervisor ruling 3.1 (round 2 review R2-1, red team RT2-01): the safety checks read only these lines of
-   * old Zeroed files, so an edit to one is checked while its old lines stay quiet.
+   * are absent; a file whose hunks only remove lines maps to an empty set. Supervisor ruling 3.1 (round 2 review R2-1,
+   * red team RT2-01): the safety checks read only these lines of old Zeroed files, so an edit to one is checked while
+   * its old lines stay quiet. `--text` (ruling 5.2, red team RT3-02): no attribute or NUL byte turns a file's diff into
+   * "Binary files differ".
    */
   addedLines(ref: string): Map<string, Set<number>>;
+  /** Tracked files whose working-tree content or mode differs from `ref`. A changed file absent from addedLines is read whole. */
+  changedFiles(ref: string): string[];
 }
 
 /** Parses `git diff -U0 --no-prefix` output into the added line numbers of each new-side file. */
@@ -57,7 +61,7 @@ export function parseAddedLines(diff: string): Map<string, Set<number>> {
     const count = m[2] === undefined ? 1 : Number(m[2]);
     const lines = out.get(file) ?? new Set<number>();
     for (let i = 0; i < count; i++) lines.add(start + i);
-    if (lines.size > 0) out.set(file, lines);
+    out.set(file, lines);                                               // a hunk that only removes lines: an empty set
   }
   return out;
 }
@@ -84,6 +88,7 @@ export function gitAt(root: string): Git {
     files: (ref) => run(['ls-tree', '-r', '-z', '--name-only', ref]).split('\0').filter((f) => f !== ''),
     changedSince: (ref) => run(['diff', '--no-renames', '--name-only', '-z', `${ref}...HEAD`]).split('\0').filter((f) => f !== ''),
     mergeBase: (ref) => attempt(['merge-base', ref, 'HEAD'])?.trim() ?? null,
-    addedLines: (ref) => parseAddedLines(run(['-c', 'core.quotePath=false', 'diff', '-U0', '--no-color', '--no-ext-diff', '--no-renames', '--no-prefix', ref])),
+    addedLines: (ref) => parseAddedLines(run(['-c', 'core.quotePath=false', 'diff', '-U0', '--no-color', '--no-ext-diff', '--no-renames', '--no-prefix', '--text', ref])),
+    changedFiles: (ref) => run(['diff', '--name-only', '-z', '--no-renames', ref]).split('\0').filter((f) => f !== ''),
   };
 }

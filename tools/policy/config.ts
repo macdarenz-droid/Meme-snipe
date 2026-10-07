@@ -59,8 +59,16 @@ export const GUARDED_FILES = [
   ...FROZEN_PACKAGES.flatMap((dir) => [`${dir}/FREEZE.json`, `${dir}/CHANGELOG.md`]),
 ];
 export const GUARDED_DIRS = ['tools/', '.github/'];
-/** tsconfig*.json and eslint.config.* at any depth. */
-export const GUARDED_PATTERNS = [/(^|\/)tsconfig[^/]*\.json$/, ESLINT_CONFIG_PATTERN];
+/**
+ * .gitattributes at any depth decides how git diffs a file, so it could hide an edit from the added-lines scan (red
+ * team RT3-02; ruling 5.2). It is guarded, and the policy check refuses the attributes that change a diff
+ * (GITATTRIBUTES_REFUSED).
+ */
+export const GITATTRIBUTES_PATTERN = /(^|\/)\.gitattributes$/;
+/** Attributes that turn a diff into "Binary files differ" or route it elsewhere: refused (E_GITATTRIBUTES). */
+export const GITATTRIBUTES_REFUSED = [/^-diff$/, /^binary$/, /^diff=/, /^-text$/];
+/** tsconfig*.json, eslint.config.* and .gitattributes at any depth. */
+export const GUARDED_PATTERNS = [/(^|\/)tsconfig[^/]*\.json$/, ESLINT_CONFIG_PATTERN, GITATTRIBUTES_PATTERN];
 
 /** Packages with no third-party package anywhere in their production dependency closure (ARCH 12.3, B-M30-01 logic 4). */
 export const NO_THIRD_PARTY = ['@bot/types', '@bot/signer'];

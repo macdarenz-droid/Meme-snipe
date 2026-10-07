@@ -60,11 +60,19 @@ export type SafetyLines = (file: string) => 'all' | ReadonlySet<number>;
  * The safety checks' lines (supervisor ruling 3.1, red team RT2-01): every line of a file that is not old Zeroed code
  * (a new file anywhere, the Zeroed-only package folders included), and only the added lines (git diff -U0 against
  * merge-base(base, HEAD)) of an old Zeroed file, so an edit to one is checked while its old lines stay quiet. `added`
- * null means the merge base is unknown: old Zeroed files are then read in full, which fails closed.
+ * null means the merge base is unknown: old Zeroed files are then read in full, which fails closed. An old file in
+ * `changed` with no hunk in `added` (a mode change, or a diff git would not print) is read in full too (ruling 5.2).
  */
-export function safetyLinesOf(includeZeroed: boolean, added: ReadonlyMap<string, ReadonlySet<number>> | null): SafetyLines {
+export function safetyLinesOf(includeZeroed: boolean, added: ReadonlyMap<string, ReadonlySet<number>> | null,
+  changed: ReadonlySet<string> = new Set()): SafetyLines {
   const none: ReadonlySet<number> = new Set();
-  return (file) => (includeZeroed || !inZeroed(file) || added === null ? 'all' : added.get(file) ?? none);
+  return (file) => {
+    if (includeZeroed || !inZeroed(file) || added === null) return 'all';
+    const lines = added.get(file);
+    // Ruling 5.2 (red team RT3-02): a changed old file whose diff has no hunk git would print is read whole.
+    if (lines === undefined) return changed.has(file) ? 'all' : none;
+    return lines;
+  };
 }
 
 /** True when `job` of the workflow `file` is one of Zeroed's (config.ts ZEROED_JOBS). */

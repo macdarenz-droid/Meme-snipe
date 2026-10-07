@@ -324,6 +324,22 @@ export function checkWorkflows(snapshot: RepoSnapshot, scope: Scope = scopeOf(fa
   const findings: Finding[] = [];
   const docs = new Map<string, YamlMap | null>();
   for (const w of snapshot.workflows) if (scope(w.file)) docs.set(w.file, checkWorkflow(w.file, w.text, findings, scope));
+  // A computed job name could take the reserved name at run time and hide from the deploy gate, which matches check
+  // runs by name (red team RT3-03, review M1; ruling 5.3): no job `name:` in any workflow, Zeroed's included, may hold
+  // an expression. A workflow the reader cannot follow is searched as text for a job-level `name:` line with one.
+  for (const w of snapshot.workflows) {
+    let jobs: YamlMap | null = null;
+    try {
+      const doc = parseYaml(w.text);
+      jobs = isMap(doc) ? mapOf(doc['jobs']) : {};
+    } catch { /* read as text below */ }
+    const computed = jobs !== null
+      ? Object.entries(jobs).filter(([, j]) => (textOf(mapOf(j)['name']) ?? '').includes('${{')).map(([id]) => `jobs.${id}.name`)
+      : (/^jobs:\s*$([\s\S]*)/m.exec(w.text)?.[1] ?? '').split('\n').filter((l) => /^ {4}name:.*\$\{\{/.test(l)).map((l) => l.trim());
+    for (const where of computed) {
+      findings.push(finding('E_JOB_NAME_EXPR', `${w.file} ${where}`, 'a job name may not hold an expression: the deploy gate matches check runs by name, so a computed name could take a reserved one'));
+    }
+  }
   // The deploy gate ignores the advisory report's job by name (ruling 3.4), so no other workflow, Zeroed's included,
   // may use that name: a failing job of its own would hide from the gate. A text search, so a name in any field counts.
   for (const w of snapshot.workflows) {
