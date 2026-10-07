@@ -32,7 +32,7 @@ The checks have self-tests: `tools/policy/test` commits deliberately bad changes
 
 ## Allowlist
 
-Reviewer: whoever read the dependency diff and added the `deps-reviewed:<hash>` label. "pending" (or an empty cell) fails `pnpm lint` until that name is filled in. The builder who proposes a package never fills this cell (AGENTS.md: builders never approve their own work). Z01's builder recorded where each approval came from, for the supervisor to confirm when adding the label: "in the integration branch before Z01" (the package was already installed), or "Z01 brief" (the supervisor pre-approved `eslint` 10.11.0, `@typescript-eslint/parser` 8.70.1 and `fast-check` 4.10.2 and their dependencies). `typescript` 6.0.3 (the parser's TypeScript peer) was asked of the supervisor on 2026-10-07.
+Reviewer: whoever read the dependency diff and added the `deps-reviewed:<hash>` label. "pending" (or an empty cell) fails `pnpm lint` until that name is filled in. The builder who proposes a package never fills this cell (AGENTS.md: builders never approve their own work). Z01's builder recorded where each approval came from, for the supervisor to confirm when adding the label: "in the integration branch before Z01" (the package was already installed), or "Z01 brief" (the supervisor pre-approved `eslint` 10.11.0, `@typescript-eslint/parser` 8.70.1 and `fast-check` 4.10.2 and their dependencies). `typescript` 6.0.3 (the parser's TypeScript peer) was approved by the supervisor on 2026-10-07, limited to `tools/`.
 
 | Package | Purpose | Licence | Reviewer |
 |---|---|---|---|
@@ -195,7 +195,7 @@ Reviewer: whoever read the dependency diff and added the `deps-reviewed:<hash>` 
 | `tinyglobby` | Transitive (dev only), required by `@typescript-eslint/parser`, `vitest` | MIT | supervisor (in the integration branch before Z01) |
 | `ts-api-utils` | Transitive (dev only), required by `@typescript-eslint/parser` | MIT | supervisor (Z01 brief, 2026-10-07) |
 | `type-check` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | MIT | supervisor (Z01 brief, 2026-10-07) |
-| `typescript` | Type checker: 7.0.2 for `pnpm typecheck`; 6.0.3 only as the TypeScript peer of `@typescript-eslint/parser` in `tools/` (dev only) | Apache-2.0 | supervisor (in the integration branch before Z01) |
+| `typescript` | Type checker: 7.0.2 for `pnpm typecheck` and every package's `tsc` (in the integration branch before Z01). 6.0.3 (published 2026-04-16, Apache-2.0) only in `tools/`, as the TypeScript peer of `@typescript-eslint/parser`: its peer range is below 6.1.0 and TypeScript 7 has no JS compiler API; used only by ESLint and the import-graph check (`tools/eslint/test/typescript6.test.ts`); remove it once typescript-eslint supports TypeScript 7 (dev only) | Apache-2.0 | supervisor (7.0.2 in the integration branch before Z01; 6.0.3 approved 2026-10-07, limited to `tools/`) |
 | `undici-types` | Transitive (dev only), required by `@types/node`, `vitest` | MIT | supervisor (in the integration branch before Z01) |
 | `uri-js` | Transitive (dev only), required by `@typescript-eslint/parser`, `eslint` | BSD-2-Clause | supervisor (Z01 brief, 2026-10-07) |
 | `vite` | Transitive (dev only), required by `vitest` | MIT | supervisor (in the integration branch before Z01) |
