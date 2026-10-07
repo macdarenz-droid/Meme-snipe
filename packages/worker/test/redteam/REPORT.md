@@ -202,3 +202,101 @@
   - Negative i128 virtual reserves give a partial book or a chain mismatch.
   - Create, Complete, migration and CreatePool tails are never checked. That is safe only while pump appends fields.
 - **Restored candidates:** gates and spend are judged again after a restart, and migration, completion and create are re-fetched. The SAVE-ASOF clamp of `migratedAtMs` can open the entry window a few seconds early under host-clock skew (LOW, not probed).
+
+# Round 3 (S1, 2026-10-07): fix heads re-verified, and the "never trades" class
+
+**Verdict: 2 new HIGH on the fix heads, 1 open finding not on S1's known list, 2 new "never trades" blockers on the merged base (1 CRITICAL, 1 HIGH).**
+
+**Method.** Every probe from rounds 1 and 2 was run on each PR head. Where a PR had adapted my probe to a new API, its own version was also run.
+
+| PR | Head |
+|---|---|
+| #269 | e225f11 (contains 3ebe808) |
+| #272 | c752a6d |
+| #273 | b5875f9 (contains 957fe181) |
+| #276 | 5540c2c (contains 184e418e) |
+
+## Part 1: status per finding (only what S1 did not already list as known)
+
+### #269 POOL-FIRST-READ-2
+
+- RT-A4: closed.
+- RT-A5: closed.
+- **RT-A6 still OPEN.** An unstamped swap is still left out of the candles with no `partial` flag. Probe: `core/test/redteam/unstamped-swap-skipped.test.ts`. It is not on the known list, but it is LOW and not reachable on mainnet.
+
+### #272 LATE-LOG
+
+- RT-A1 and RT-A3: closed. My original probes now fail only on their setup assertion (they expect chain placement; late frames are now placed off-chain). #272's adapted versions pass, and they keep my outcome assertions.
+- **NEW, HIGH ("never trades" class): RT-A1b, a late swap behind a newer one makes the pool's candles `partial` for good.**
+  - **Code:** `producer.ts` `#bookSwap`. A late swap from an older slot than the book's newest sets `book.partial = true`.
+  - **Why it sticks:** only a heal from an earlier restore point resets the flag, and with no hole there is no heal. H11 then refuses the coin (H16 degraded, input candles) for the rest of its window.
+  - **Why that is wrong:** every swap was delivered, and the late swap chains exactly between its neighbours. The book could be rebuilt in chain order, as TRADE-GAP-HEAL already does (`chainOrder`).
+  - **Rate:** 0.24% to 0.68% of confirmed PumpSwap notifications arrived late (public RPC, measured in round 1). An active pool with hundreds of swaps in its window will very likely hit this, so most active coins would be blocked for their whole window.
+  - **Probe:** `on-heads/pr272-rt-a1b-late-behind-sticky.test.ts.txt`. Even after 30 more on-time swaps over 30 minutes, the candles stay `['partial']` and H11 still refuses (H16 degraded, input candles).
+  - **Fix:** in place of the sticky flag, hold the late swap and rebuild the book from the last restore point through `chainOrder`, as a heal does. Go `partial` only when the swaps do not chain.
+
+### #273 A-FACTS-FIXES
+
+- RT-A7: closed (my original probes pass).
+- RT-A9: closed. `refund` now takes the moment of the matching `spend`, and every caller passes it. I checked all 7 call sites.
+- RT-A8: my original probe still fails; this is the known re-ask order.
+- **NEW, HIGH: RT-A2b, the RT-A2 fix opened the reverse parity gap.**
+  - **What the fix assumes:** the backtest now releases only the curve trades of the create transaction and the completing transaction, as the model of what live's store holds.
+  - **What live also holds:** for every candidate that reaches stage 3, live ingests every successful transaction of the mint from its create through max(create slot + 2, the slot of the 20th distinct first buyer). This is `facts/readers.ts` `readMintHistory`, with `feed.ingest({ type: 'tx' }, { lookup: true })`, as part of H13's insider precompute.
+  - **Effect:** those transactions' curve TradeEvents land under `pump:TradeEvent:<mint>`. From the next evaluation on, live H5 judges them. An early non-zero curve tail (for example on buy #5) now refuses the coin live and passes in the backtest. This is a live-only veto, and it is not in §16.3.
+  - **Probe:** `on-heads/pr273-rt-a2b-mint-history-curve.test.ts.txt`. It uses #273's own replay helpers. Expected `pass` (backtest) to equal `event-tail` (live after its stage-3 read); it does not.
+  - **Fix:** either have the backtest also release the insider window's curve trades, or keep `readMintHistory`'s transactions out of H5's tail keys. Then pin it with the same parity test.
+
+### #276 A2-GATE-FIXES
+
+- R2-1 to R2-7: all closed by my probes. R2-6's known open part (holes not saved or summed) is outside what my probe checks.
+
+## Part 2: what can block EVERY coin for hours or days (merged base 9f7cf812)
+
+For each, how long the block lasts and whether it fails closed for a real reason or only for missing bookkeeping.
+
+### NEW, CRITICAL ("never trades"): NT-2, every reconnect of the creates watch blocks H14 for every coin for 14 days
+
+- **Code:**
+  - The creates watch (`run/sources.ts`) has no `fill` and no `fetch`.
+  - Its reconnect gap is lossy from the start (`solana-ws.ts:450`, `lossy: decodeLogs === true`).
+  - The backfill only puts the missed signatures on the feed as sightings; nothing decodes them. The gap therefore closes as a bounded `coverage:creates:gap` (`#closeCoverage`).
+  - `createsCoverage` then reads H14 as not covered until that report is older than 14 days.
+- **Duration:** 14 days from each reconnect, however short the outage (a 2-second blip counts the same).
+- **Real or bookkeeping:** bookkeeping. The backfill already knows the missed signatures; a getTransaction each, as SEED-1's downtime fill does after a restart, would make the range a resume. DECISIONS covers only restarts ("a lossy gap restarts the 14 days"), not reconnects.
+- **Probe:** `redteam-r3/creates-reconnect-14-days.test.ts`, wired as production does. One missed create, seen by a complete backfill (1 of a 100 page), still closes as the bounded gap 603..612.
+- **Fix:** give the creates watch a fill: fetch the backfilled signatures and close the gap as a resume when all are decoded.
+
+### NEW, HIGH: NT-1, one missing chain-volume day turns the regime off for up to 365 days
+
+- **Code:** `volumeCondition` needs every day from max(2026-07-20, L−364) to L.
+- **A day is missing when:**
+  - the data job never publishes it;
+  - any of its hours is uncovered;
+  - its release ever changes after verification. It is then marked tampered, saved, and "never used again, after a restart too".
+- **Duration:** until the day leaves the 365-day window, so up to a year of the regime off.
+- **Real or bookkeeping:** bookkeeping. The 25th percentile would still rest on hundreds of days, and the 28-day minimum is met.
+- **Probe:** `core/test/redteam3/volume-one-missing-day.test.ts`. With 196 of 197 days present, the check gives `ok: null`.
+- **Fix:** judge the percentile over the days present (at least `volumeMinDays`), require only day L itself, and alert on missing or tampered days instead of blocking.
+
+### Known blockers, with durations
+
+- **A lasting creates hole (H14 `lostCreate`):** every coin is blocked for 14 days, until the hole leaves the look-back.
+  - On base, a hole whose fetch failed 5 times or was over the cap is asked again only at a restart (RT-A8; #273 adds a next-day re-ask, with the known order issue).
+  - An undecodable fetched transaction never clears (documented).
+  - Bookkeeping in the first case; a real decoder gap in the second.
+- **The cut-create cap (3,000 tries a day):** past the cap, the same 14-day block per hole. Bookkeeping.
+- **Deployer-check staleness (300 slots):**
+  - **Code:** the check's `asOf` is the tip when the read is *requested* (`source.ts:288`). Time spent waiting in the read queue (FACT_READS_IN_FLIGHT = 4, after holder scans and history reads) therefore counts against the 300 slots, about 2 minutes.
+  - **Effect:** when the queue wait plus the check's own run time exceed about 2 minutes (likely after a restart with hundreds of candidates), every check lands stale. It is asked again every 60 s and lands stale again, for as long as the backlog lasts. This blocks candidates, not all coins at once.
+  - **Real or bookkeeping:** bookkeeping. Taking `asOf` when the read starts would fix it.
+  - Not probed: it needs the queue's timing.
+- **The regime off after restarts:**
+  - **Graduates:** the series is saved across restarts (PERSIST-2). A lost or refused state leaves survival unknown for about 15 days (14 median days plus 24 h); the ALERT documents this. Real lack of data, but it could be rebuilt from chain history.
+  - **With #276:** more than 2 h unobserved in the last 24 h gives up to 24 h off. Reasonable.
+  - **SOL change:** recovers at start (27 h of hourly bars).
+  - **Volume:** see NT-1.
+
+### Still runs in a loop
+
+- **RT-A1b on #272 (above):** per active coin, for its whole window. The worst of the "never trades" items once #272 merges.
