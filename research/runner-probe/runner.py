@@ -38,7 +38,9 @@ def trade(x, stop, arm, trail, mode):
     """Enter at the close of hour 1. Returns (p0, p_exit, reason)."""
     c, v, lo = x['c'], x['v'], x['lo']
     e = 1; p0 = c[e]; peak = p0; armed = False
-    last = min(len(c) - 1, e + MAX_HOLD)
+    if e + MAX_HOLD > len(c) - 1:
+        return None                      # the full hold would run past the data window: left out (time-only)
+    last = e + MAX_HOLD
     for i in range(e + 1, last + 1):
         if stop is not None and lo[i] <= p0 * (1 - stop) and not armed:
             lvl = p0 * (1 - stop)
@@ -61,7 +63,9 @@ def trade_ladder(x, stop, ladder, arm, trail, mode):
     raw_hi = x.get('hi') or c
     e = 1; p0 = c[e]; peak = p0; armed = False
     left = 1.0; got = 0.0; steps = list(ladder)
-    last = min(len(c) - 1, e + MAX_HOLD)
+    if e + MAX_HOLD > len(c) - 1:
+        return None
+    last = e + MAX_HOLD
     for i in range(e + 1, last + 1):
         if stop is not None and left == 1.0 and lo[i] <= p0 * (1 - stop):
             lvl = p0 * (1 - stop)
@@ -107,10 +111,29 @@ def run_ladders(sample, hdir, outdir):
         for stop in (0.3, 0.5):
             for trail in (0.4, 0.6):
                 for mode in ('pess', 'opt'):
-                    legs = [trade_ladder(x, stop, lad, 2.0, trail, mode) for x in cs]
+                    legs = [l for l in (trade_ladder(x, stop, lad, 2.0, trail, mode) for x in cs) if l is not None]
                     vals = [lottery.net(p0, max(p1, 1e-18), SIZES['$10'])[0] for p0, p1 in legs]
                     res[f'{name}|stop={stop}|trail={trail}|{mode}|$10'] = stats(vals)
     json.dump({'counts': counts, 'results': res}, open(os.path.join(outdir, 'ladders.json'), 'w'), indent=1)
+
+def bankroll(entries, bet):
+    """Chronological account: every trade is a fixed bet placed at its entry hour and settled MAX_HOLD later at the
+    latest (positions overlap). Reports cumulative P&L by calendar month, the worst drawdown and peak capital tied up."""
+    import datetime
+    ev = []
+    for t, v in entries:
+        ev.append((t, -bet, 0)); ev.append((t + MAX_HOLD * H, bet * (1 + v), 1))
+    ev.sort()
+    cash = 0.0; out = 0.0; peak_out = 0.0; pnl = 0.0; peak_pnl = 0.0; dd = 0.0; months = {}
+    for t, amt, kind in ev:
+        if kind == 0:
+            out += bet; peak_out = max(peak_out, out)
+        else:
+            out -= bet; pnl += amt - bet
+            peak_pnl = max(peak_pnl, pnl); dd = min(dd, pnl - peak_pnl)
+            m = datetime.datetime.fromtimestamp(t, datetime.UTC).strftime('%Y-%m')
+            months[m] = months.get(m, 0.0) + (amt - bet)
+    return {'total_pnl_usd': pnl, 'worst_drawdown_usd': dd, 'peak_capital_tied_usd': peak_out, 'pnl_by_settle_month_usd': months}
 
 def stats(vals, seed=5):
     n = len(vals)
@@ -121,7 +144,9 @@ def stats(vals, seed=5):
     pos = sum(1 for _ in range(10000) if sum(vals[rng.randrange(n)] for _ in range(100)) > 0) / 10000
     return {'n': n, 'win': sum(1 for x in vals if x > 0) / n, 'mean': statistics.fmean(vals), 'median': statistics.median(vals),
             'best': srt[-1], 'mean_wo_best': statistics.fmean(srt[:-1]) if n > 1 else None,
-            'per100_total': statistics.fmean(vals) * 100, 'p100_positive': pos}
+            'per100_total': statistics.fmean(vals) * 100,
+            'p100_positive': pos, 'p100_note': 'share of 10,000 batches of 100 trades resampled from this sample whose total is > 0; cannot show winners never observed',
+            'n_ge_10x': sum(1 for x in vals if x >= 9), 'n_ge_50x': sum(1 for x in vals if x >= 49)}
 
 GRID = [(stop, arm, trail) for stop in (0.3, 0.5, None) for arm in (2.0, 3.0) for trail in (0.4, 0.6)]
 
@@ -135,11 +160,15 @@ def run(sample, hdir, outdir, configs=None):
         for stop, arm, trail in grid:
             for mode in ('pess', 'opt'):
                 key = f"{filt}|stop={stop}|arm={arm}|trail={trail}|{mode}"
-                legs = [trade(x, stop, arm, trail, mode) for x in pool]
+                legs = [(x, trade(x, stop, arm, trail, mode)) for x in pool]
+                legs = [(x, l) for x, l in legs if l is not None]
                 for sz, q in SIZES.items():
-                    vals = [lottery.net(p0, p1, q)[0] for p0, p1, _ in legs]
+                    vals = [lottery.net(l[0], l[1], q)[0] for _, l in legs]
                     res[f'{key}|{sz}'] = stats(vals)
-                res[f'{key}|reasons'] = {r: sum(1 for *_, rr in legs if rr == r) for r in ('stop', 'trail', 'time')}
+                    res[f'{key}|{sz}|capped20x'] = stats([min(v, 19.0) for v in vals])
+                    if sz == '$10':
+                        res[f'{key}|{sz}|bankroll'] = bankroll([(x['ts'][1], v) for (x, _), v in zip(legs, vals)], 10.0)
+                res[f'{key}|reasons'] = {r: sum(1 for _, l in legs if l[2] == r) for r in ('stop', 'trail', 'time')}
     json.dump({'counts': counts, 'results': res}, open(os.path.join(outdir, 'results.json'), 'w'), indent=1)
     print(json.dumps(counts))
 

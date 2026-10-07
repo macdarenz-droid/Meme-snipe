@@ -28,3 +28,6 @@ A rule is **profitable** only if in validation (USD, base costs): the mean > 0 w
 4. **Costs.** Turnover uses signed weights (a flip from long to short pays both legs); a stopped or liquidated weekly short pays its exit leg and re-enters at full cost.
 5. **Wall.** An S1 trade with entry + hold past the last full day before the wall is dropped whether the perp was delisted or not (time-only). A perp with no bar after entry closes at its entry price (cost only).
 6. **Added gate for S1:** a calendar-time test, the mean of monthly cohort returns (trades grouped by entry month) with its t-interval across months, must also have a lower bound above 0. Reported beside it: S1 without known ticker migrations (RENDER, POL, S), and S2 − S0 and S3 − S0 weekly differences.
+
+## Primary rule, declared before any result (2026-10-07, outside review)
+The primary short specification is **S2 (short downtrends)**, judged against **S0 (short everything)** at the same exposure: a pass also needs the S2 − S0 weekly difference on the actual-funding line to be positive in validation; otherwise S2 is reported as a broad market short, not a signal. S1 and S3 are secondary and reported without rescue sweeps of listing delays, stops or funding filters.
