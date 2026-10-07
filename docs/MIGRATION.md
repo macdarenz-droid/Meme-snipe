@@ -54,7 +54,18 @@ _Filled by MIGRATION-B._
 
 ## Snipe-solana work
 
-_Filled by the supervisor._
+Work built for the Blueprint in `macdarenz-droid/Snipe-solana` before the move. Every card there passed a fresh spec review and a red team. Its `main` is at `74e7258`.
+
+| Card | State there | Blueprint tickets | What it holds |
+|---|---|---|---|
+| C01 | merged, #1 (`060aca1`) | B-M30-01, B-M19-01 | npm-workspaces monorepo; dependency policy tool (exact pins, `DEPENDENCIES.md` allowlist, 14-day age, no install scripts, import-graph checks); ESLint; `node:test` at 100% coverage; guard and check workflows; `@bot/types` 1.0.0 frozen (tag not pushed: the session's git proxy refuses tag pushes) |
+| C11 | merged, #2 (`74e7258`) | C11 (fixtures) | mainnet fixtures for decoder, quote and poller tests |
+| C12 | merged, #3 (`a99487d`) | C12 (server install) | install scripts and systemd units for the dedicated `vc2-1c-2gb` host the owner created on 6 Oct (D07 owner decision); preflight refuses below 1.9 GiB RAM or 50 GB free disk |
+| C02 | open, #5, waiting for the owner's approval | B-M24-01, B-M24-02, B-M25-01, B-M27-01, B-M28-01 | `node:sqlite` persistence, schema and migrations, config, metrics, `@bot/contract` (zod 4.6.5) |
+| C03 | open, #6, waiting for the owner's approval | A-M14-01, A-M14-02, A-M02-01, A-M02-02, A-M02-03, A-M01-01 | provider registry, rate-limited read gateway, pinned IDLs and decoders, PDA helpers (`@solana/kit` 8.3.0); supervisor rulings in that PR's SPEC-A (A-M02-03 direct invoker by `stackHeight`; A-M01-01 async PDA helpers; A-M14-02 byte budget), not yet in `docs/blueprint/SPEC-A.md` |
+| C05 | open, #7, waiting for the owner's approval | UI-T01..UI-T06 | dashboard design system (React 19.3, Radix UI, TanStack, Lucide, self-hosted fonts; Playwright, axe-core) |
+
+Decision (supervisor): Snipe-solana stops being a build home. #5, #6 and #7 are not merged there, because nothing there runs on the server. Each card's code is ported into this repo as a ticket of its milestone wherever the module rows above find no better Zeroed code, and its tests are re-run on the ported commit (evidence counts only for the commit it ran on). The Snipe-solana repo stays as a read-only record.
 
 ## Research carried in
 
@@ -90,7 +101,12 @@ _Filled by MIGRATION-B._
 
 ### Process
 
-_Filled by the supervisor._
+| Clash | Blueprint build (Snipe-solana) | This repo | Recommendation |
+|---|---|---|---|
+| Merge approval | The owner approves each batch; this session's safety check refused approvals the supervisor recorded on its own (AGENTS.md there, 2026-10-07). | The supervisor merges after a fresh review passes and every check is green (AGENTS.md "Supervisor"). | Keep this repo's rule, with the red team added: the supervisor merges after a fresh review, a red team and green checks. If the safety check refuses a merge, the supervisor asks the owner once for that merge. |
+| Batch size | At most three cards at a time; no new card until the current ones are reviewed, red-teamed and merged (owner, 2026-10-06). | One fix task at a time, the owner picks (owner, 2026-10-06 about 8:55 PM). | Build cards for new Blueprint modules run in batches of at most three, in separate packages. Fixes to code the server runs stay one at a time. |
+| Parallel work | Helpers ran inside the supervisor's chat. | One visible session per task; no hidden agents in the supervisor's chat (owner, 2026-10-03). | This repo's rule; already followed for this map. |
+| Models | Lighter steps on `claude-sonnet-5`. | Lighter steps on `claude-sonnet-5-5` at medium effort (owner, 2026-10-04). | This repo's rule. |
 
 ## Ticket order
 
