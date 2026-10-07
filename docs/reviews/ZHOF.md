@@ -37,3 +37,70 @@ Old Faithful route for gate B-10 (owner, 8 Oct about 7:25 AM: "Old faithful but 
    - A-24 (the move distribution from recorded M07 data): keep it only where another gate or study uses it. Otherwise mark it optional evidence for a revised MR version.
    - Say so in ARCH, SPEC-A, MIGRATION and Owner waits.
 4. **Owner answers.** Record Triton "No reply" and "Store them" in OLD-FAITHFUL.md §1 and §3, the Z-H card, OF-4 (redirect `publish-day.sh` to zeroed-data, private, before batch 1) and DECISIONS.
+
+## Round 1 (head `99792ba7`; both reports were written before the C-76 commit `60612d8b` landed)
+
+### Fresh review (FAIL: 1 BLOCKING, 1 HIGH, 1 MEDIUM, 3 LOW, 2 NIT)
+
+Reviewer, about 7:43 AM. Items 1–6 of the Old Faithful part pass. All 7 sources were opened and say what is claimed. Every number was recomputed (blocks a day, GB a day, hours at 40 MB/s, 3.36 h a batch, 7.75 days for 31, 10,566 GB read, 0.198–0.264 TB stored, option (c) credits) and matches. The code citations match. Both builder findings are confirmed. Scripts clean.
+- BLOCKING-1: the C-76 ruling is missing. It is addressed by `60612d8b`, to be confirmed in the delta review.
+- HIGH-1: the plan queues 08-22..09-20 (61 days, about 23.9 TB read), beyond the owner's "30 days ... for these days only".
+- MEDIUM-1: K3 storage is sized on MR's universe; with MR parked, PM-01's raw size is VERIFY, bounded above by K2 (0.5–1.4 TB).
+- LOW-1: "4.7 h for a 250 ms day" is really the 269 ms mean.
+- LOW-2: "12–16 days" has no derivation (every other check dropped gives 15.5 days).
+- LOW-3: §1 row 4 joins two URLs.
+- NIT-1: quote "currently completely free to use" exactly.
+- NIT-2: `b10ReservationActiveMinutes` at SPEC-A:2253 and :2266 should be marked [not chosen, C-79].
+
+### Red team (0 CRITICAL, 8 MAJOR, 4 MEDIUM, 2 MINOR)
+
+Red team, about 7:44 AM. Clean: only `files.old-faithful.net` is reached; HELIUS_DAYS are refused; no past day is in W_R; the account ledger and P21 stay.
+1. archive-check sends its probe without reading the persisted back-off, so after a 429 a request goes out at about T+1 h.
+2. Holdout and out-of-list days can be read through a manual or chained data-scan; only archive-check's queue is guarded.
+3. OF-4 misses the public 14-day `day-DAY` artifact (`data-scan.yml:436-442`) and `publish-volume.sh:45`.
+4. "Day done" is read from the public repo, so once OF-4 publishes privately, 07-22 is re-read forever.
+5. No code hold makes OF-3..OF-6 land before the first dispatch.
+6. The day list goes beyond the owner's 30-day exception (same as HIGH-1).
+7. MR-01 is not parked in this diff, and K3 is sized on MR. Covered by `60612d8b` for the parking; retention below.
+8. The owner was shown 0.2–0.5 TB, which is not an upper bound.
+9. Two dispatches can race (a queued check runs before the new run is listed).
+10. Failures cannot be counted from run conclusions (a non-served check exits 0), and a re-arm cannot reset a count read from history.
+11. The time estimate understates a long block (the 4 Oct block lasted more than 6 h).
+12. The determinism rescan unit (`check-day.sh:80`) adds about 2% reading and a second read of one unit.
+13. #214's test-ci expects a dispatch of 2026-09-20.
+14. B-10 should fail when a replay names no strategy, or a strategy other than the selected configuration.
+
+### Supervisor rulings for round 2 (8 Oct 2026, about 7:55 AM)
+
+I accept every finding. Together with the rulings above (C-56, K3, D30, owner answers), apply these:
+
+1. **Days: 31 only.**
+   - The queue, the allow-list and every doc stop at 07-22..08-21: the lead-in plus 30 decision days.
+   - Days 08-22..09-20 are an owner question. The owner was asked at about 7:45 AM whether to continue to 60 after the first 30. They are not queued unless the owner says yes.
+   - Say plainly that 30 days leaves no spare if a day fails QA.
+2. **One allow-list, enforced everywhere.** `archive-limits.conf` holds the allow-list. The data-scan plan job, `scan-day.sh`, `check-day.sh` and archive-check all refuse any day outside it, and refuse HELIUS_DAYS. Add test-ci cases for a holdout day, a day before 07-22, and a manual dispatch.
+3. **Back-off before any request.** archive-check sends nothing, not even the 64-byte probe, until `ARCHIVE_BACKOFF_S` has passed since the last exit 4 or the last non-206 check. Every hold (back-off, arm, rps, queue empty) comes before the request. Add test-ci: a block 61 min ago means no request.
+4. **Nothing public.** OF-4 covers every archive-path output:
+   - `publish-day.sh` and `publish-volume.sh` go to zeroed-data (private);
+   - the `day-DAY` artifact is dropped, or kept in the Actions cache only.
+   - Add a test: no archive-path step writes a release or an artifact to `GITHUB_REPOSITORY`.
+5. **Completion from the private store.** "Is this day done?" reads zeroed-data and fails closed if zeroed-data cannot be read. Add a test.
+6. **An arm switch in code.** OF-2 adds a fail-closed arm value to `archive-limits.conf`, for example the pinned B10-PULL id, checked before any request. Only the last reviewed change after OF-3..OF-6 sets it. #214 merges with or after OF-2, and its test-ci is updated in that same change.
+7. **Retention K3 for PM-01, and an honest storage figure.**
+   - Batch 1 measures PM-01's raw-record size.
+   - The owner approved about 0.2–0.5 TB. If batch 1's projection for 31 days is above 0.5 TB, the chain stops after batch 1 and the owner is asked.
+   - Show the full range (about 0.1 to 1.4 TB), with its sources and the ±2× July uncertainty.
+   - No Phase 0 precondition is needed for the download itself (0 credits). B-10 runs only once a strategy reaches gate B.
+   - A future strategy that needs raw records for other pools reads those days again, at 0 credits, under the same batch rules, with the owner's OK.
+8. **Dispatch race.** Write a dispatch marker (or poll until the new run is listed) before a second check can dispatch. Add a test.
+9. **Countable failures.**
+   - A non-served check ends with a distinct, countable conclusion or run title.
+   - `archive-limits.conf` holds a re-arm timestamp, and the 3-failure count starts from it.
+   - Add tests.
+10. **Honest time.**
+    - State the long-block case: on 4 Oct a block lasted more than 6 h, so a similar block stops the chain after about 9 h until it is re-armed.
+    - Count the determinism rescan unit (about 2% more reading), and name it as the one allowed second read of a unit.
+    - Fix LOW-1 (the 269 ms day) and LOW-2 (derive the figure or drop it).
+11. **B-10 needs a named strategy.** In SPEC-A A-M13-06, a replay that names no strategy, or a strategy other than the selected configuration, fails B-10. Add a case.
+12. **LOW-3, NIT-1, NIT-2:** split the §1 row; quote the page exactly; mark `b10ReservationActiveMinutes` and the "reservation active" minute [not chosen, C-79].
+13. **The open points ruled above** (C-56, K3, D30 parked, A-24b parked, owner answers): apply them in the same push.
