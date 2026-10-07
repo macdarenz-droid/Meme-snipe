@@ -360,10 +360,8 @@ export class FactReaders {
         this.#scans = v['scans'] as number;
         // Dated after today (the clock stepped back since it was written): spent until that day has passed, never a
         // fresh day's budget; written back so a later process reads the same. RC-M3: dated more than a day ahead (a
-        // wrong clock wrote it), only today counts as spent, never every day until that date.
-        const today = Math.floor(o.timers.now() / 86_400_000);
-        if ((v['day'] as number) > today) {
-          if (farAhead(v['day'] as number, today)) this.#scanDay = today;
+        // wrong clock wrote it), #takeScan counts only today as spent, never every day until that date.
+        if ((v['day'] as number) > Math.floor(o.timers.now() / 86_400_000)) {
           this.#scans = Number.MAX_SAFE_INTEGER;
           this.#saveScans();
         }
@@ -734,7 +732,8 @@ export class FactReaders {
       this.#scanDay = day;
       this.#scans = 0;
     } else if (farAhead(this.#scanDay, day)) {
-      // RC-M3: this process's clock ran far ahead and came back: today counts as spent, not every day until that date.
+      // RC-M3: a count dated more than a day ahead (the saved file's, or this process's clock ran ahead and came back):
+      // today counts as spent, not every day until that date.
       this.#scanDay = day;
       this.#scans = Number.MAX_SAFE_INTEGER;
       this.#saveScans();

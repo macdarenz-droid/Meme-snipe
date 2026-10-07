@@ -92,3 +92,25 @@ describe('RC-C5 sweep: the other numeric checks fail closed on a missing value',
     expect(evaluate({ hb: ok, receivedAt: T0 }, T0, L, noChain).map((a) => a.key)).not.toContain('stop');
   });
 });
+
+describe('RC-R2-3: the watchdog reads the restarts and last exit the worker sends', () => {
+  it('alerts on 2 or more unplanned restarts in 24 h, never on planned or deploy ones', () => {
+    expect(judged(health({ restarts_24h: { planned: 9, deploy: 9, unplanned: 1 } }))).not.toContain('restarts');
+    expect(judged(health({ restarts_24h: { planned: 0, deploy: 0, unplanned: 2 } }))).toContain('restarts');
+  });
+
+  it('alerts when the last process crashed or ran out of memory, for the first day of the boot after it', () => {
+    for (const e of ['stop: crash', 'fatal error (heap)', 'no clean stop (near memory limit)']) expect(judged(health({ last_exit: e, uptime_s: 60 }))).toContain('last_exit');
+    for (const e of [null, 'stop: signal', 'planned: drill', 'no clean stop']) expect(judged(health({ last_exit: e, uptime_s: 60 }))).not.toContain('last_exit');
+    expect(judged(health({ last_exit: 'stop: crash', uptime_s: 86_400 }))).not.toContain('last_exit');
+  });
+
+  it('matches the worker\'s own exitKind for every kind', async () => {
+    const { exitKind } = await import('../../src/run/state.ts');
+    const { deathKind } = await import('../../../ops/src/watchdog/logic.ts');
+    for (const e of [null, 'stop: signal', 'stop: crash', 'fatal error (x)', 'no clean stop', 'no clean stop (near 790 MB)', 'planned: drill']) {
+      const k = exitKind(e);
+      expect(deathKind(e), String(e)).toBe(k === 'crash' || k === 'oom' ? k : null);
+    }
+  });
+});

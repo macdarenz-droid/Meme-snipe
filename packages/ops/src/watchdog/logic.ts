@@ -23,6 +23,11 @@ export interface Heartbeat {
   owner_chat_id?: string | null;
   /** Critical alerts the worker raised (WATCH-1: a held position with no fresh price), one line each. */
   critical?: string[];
+  /** How the previous process ended (RESTART-ALERT; worker state.ts `exitKind` reads it), and this boot's age. */
+  last_exit?: string | null;
+  uptime_s?: number;
+  /** Restarts in the last 24 h by kind (RESTART-ALERT). */
+  restarts_24h?: { planned?: number; deploy?: number; unplanned?: number };
 }
 
 export interface Stored {
@@ -121,6 +126,13 @@ export const reserveLamports = (v: unknown): bigint | null | 'unreadable' => {
 
 const solText = (lamports: bigint): string => `${lamports / LAMPORTS_PER_SOL}.${String(lamports % LAMPORTS_PER_SOL).padStart(9, '0')} SOL`;
 
+/** RC-R2-3: the worker's exitKind (worker run/state.ts) for the two kinds the watchdog alerts on. */
+export const deathKind = (lastExit: unknown): 'crash' | 'oom' | null =>
+  typeof lastExit !== 'string' ? null
+    : lastExit.startsWith('stop: crash') || lastExit.startsWith('fatal error (') ? 'crash'
+    : lastExit.startsWith('no clean stop (near ') ? 'oom'
+    : null;
+
 /** Shape check for a signed heartbeat. Signed by the host, but still never trusted blindly. */
 export function parseHeartbeat(body: string): Heartbeat | null {
   let x: unknown;
@@ -199,6 +211,12 @@ export function evaluate(s: Stored | undefined, now: number, l: Limits, chain: C
   if (reserve === 'unreadable') out.push({ key: 'reserve', text: `SOL reserve cannot be read (${JSON.stringify(hb.sol_reserve).slice(0, 40)}); floor ${solText(floor)}.` });
   else if (reserve !== null && reserve < floor) out.push({ key: 'reserve', text: `SOL reserve ${solText(reserve)} is below the floor ${solText(floor)}.` });
   if (hb.signer === 'unreachable' || hb.signer === 'timeout') out.push({ key: 'signer', text: `Worker cannot reach the signer (${hb.signer}).` });
+  // RC-R2-3: a worker that keeps dying (unplanned restarts) or whose last process crashed or ran out of memory. A crash
+  // is reported for the first 24 h of the boot after it (the restart count covers repeats).
+  const unplanned = hb.restarts_24h?.unplanned;
+  if (num(unplanned) && unplanned >= 2) out.push({ key: 'restarts', text: `Worker restarted unplanned ${unplanned} times in 24 h.` });
+  const died = deathKind(hb.last_exit);
+  if (died !== null && !(num(hb.uptime_s) && hb.uptime_s >= 86_400)) out.push({ key: 'last_exit', text: `Worker's last process ended in ${died === 'oom' ? 'a memory limit' : 'a crash'} (${String(hb.last_exit).slice(0, 80)}).` });
   const critical = Array.isArray(hb.critical) ? hb.critical.filter((c): c is string => typeof c === 'string' && c !== '') : [];
   if (critical.length > 0) out.push({ key: 'worker_critical', text: `Worker critical: ${critical.join('; ')}.` });
   return out;

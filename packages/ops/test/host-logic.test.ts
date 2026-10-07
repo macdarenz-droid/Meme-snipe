@@ -736,7 +736,10 @@ describe('install.sh --update', () => {
   });
 
   it('zeroed-update applies the new release\'s host files before it switches or restarts anything; a failure keeps the old release', () => {
-    const s = read('ops/host/files/usr/local/sbin/zeroed-update');
+    const file = read('ops/host/files/usr/local/sbin/zeroed-update');
+    // The run's own steps, after the function definitions (rollback, which the probation also uses, moves current too).
+    const s = file.slice(file.indexOf('\nprobation_check\n'));
+    expect(file.indexOf('\nprobation_check\n')).toBeGreaterThan(file.indexOf('\nrollback() {'));
     const apply = s.indexOf('apply_host "$commit" "$dest" || exit 1');
     expect(apply).toBeGreaterThan(s.indexOf('mv "$dest.new" "$dest"'));
     for (const later of ['ln -sfn "$dest" /opt/zeroed/current.new', 'mv -Tf /opt/zeroed/current.new /opt/zeroed/current', `printf '%s\\n' "$commit" > "$STATE_DIR/deployed"`, 'systemctl restart zeroed-worker.service', 'zeroed-backup-offsite.timer']) {
@@ -744,9 +747,9 @@ describe('install.sh --update', () => {
     }
     // After every gate: a retry next run goes through the same gates (deployed is not moved on failure).
     for (const gate of ['run="$(active_run)"', 'open="$(cat /var/lib/zeroed/open_intents', 'if [ "$verdict" != green ]']) expect(s.indexOf(gate), gate).toBeLessThan(apply);
-    expect(s.match(/apply_host "\$commit"/g)).toHaveLength(1);
-    expect(s).toContain('if ZEROED_RELEASE_DIR="$2" bash "$installer" --update > "$STATE_DIR/host_update.log" 2>&1; then');
-    expect(s).toContain(`grep -q -- '--update) UPDATE=1' "$installer"`);
+    expect(file.match(/apply_host "\$commit"/g)).toHaveLength(1);
+    expect(file).toContain('if ZEROED_RELEASE_DIR="$2" bash "$installer" --update > "$STATE_DIR/host_update.log" 2>&1; then');
+    expect(file).toContain(`grep -q -- '--update) UPDATE=1' "$installer"`);
     // The new release's RUN-1 units, not the running one's.
     expect(main).toContain('RELEASE_UNITS="${ZEROED_RELEASE_DIR:-/opt/zeroed/current}/packages/runner/systemd"');
   });

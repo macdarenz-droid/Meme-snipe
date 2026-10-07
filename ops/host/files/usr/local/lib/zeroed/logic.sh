@@ -12,6 +12,7 @@ SMOKE_API_ADDR=127.0.0.1:8798
 SMOKE_MEMORY_MAX=280M # the trial's memory cap: the host has 1 GB and the live worker (up to 800M) keeps running
 SMOKE_HOLD_S=30 # after its first health answer, the trial worker must still run and answer this long
 SWITCH_HOLD_S=30 # after a switch, the new worker must run this long with no restart and health answering
+PROBATION_S=7200 # RC-R2-3: after a switch, any automatic restart of the worker within this window rolls it back
 RELEASE_UNIT_RE='^zeroed-(dryrun[a-z0-9-]*@?|worker-tabletop)\.(service|timer)$' # units taken from the release
 
 # backoff_s TRIES: seconds to wait after TRIES failed tries in a row (1 min, doubling, at most 30 min).
